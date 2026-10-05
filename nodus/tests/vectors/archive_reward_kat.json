@@ -1,5 +1,5 @@
 {
- "spec": "docs/plans/2026-10-05-archive-reward-bytes.md items 1-5 and the \u00a76 sample derivation (APPROVED docs/plans/decisions/2026-10-05-archive-reward-bytes-approved.md)",
+ "spec": "docs/plans/2026-10-05-archive-reward-bytes.md items 1-5 and the \u00a76 sample derivation (APPROVED docs/plans/decisions/2026-10-05-archive-reward-bytes-approved.md); item 4 leaf and grace rule per K9 (docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md, K9 line of the bytes doc)",
  "oracle": "nodus/tests/vectors/archive_reward_oracle.py",
  "label": "SELF-CONSISTENT (independent re-implementation of the same document; not an external reference)",
  "conventions": {
@@ -11,7 +11,12 @@
   "inputs": "fp = SHA3-512('archive_reward_kat/fp/' + label); node_pk = concatenated SHA3-512('archive_reward_kat/pk/<label>/<j>') truncated to 2592 bytes; nonce = first 32 bytes of SHA3-512('archive_reward_kat/nonce/<name>'); opaque legs = SHA3-512('archive_reward_kat/opaque/<leg>')",
   "segment_blocks": 17280,
   "holders_R": 3,
-  "fail_streak_limit": 3
+  "fail_streak_limit": 3,
+  "grace_epoch_lengths": [
+   720,
+   15
+  ],
+  "grace_until_mid": "4294984576"
  },
  "readings": [
   "Synthetic block hashes: hash[h] = SHA3-512(b'ARCHIVE-KAT-H' | h) where 'ARCHIVE-KAT-H' is the 13 raw ASCII bytes (NOT padded to 16) and h is the global height as u64 big-endian; the dispatch wrote exactly this derivation and it is a test input, not a spec item.",
@@ -25,13 +30,18 @@
   "Item 3: holders(k, H) is a SET in the spec; the oracle lists it in ascending distance order (rank 0 = smallest) and gives each eligible member's distance. H selects storage_set(H) and enters no bytes; the members list in a vector IS storage_set(H).",
   "Item 3: eligibility is fail_streak < 3 strictly (fail_streak 2 eligible, 3 excluded); excluded members never hold k even when fewer than 3 members are eligible; 0 eligible -> empty holder set.",
   "Item 3: the spec relies on distinct node hashes for no ties; the oracle refuses duplicate node_pk hashes rather than define a tie rule.",
-  "Item 4: status(1) values ACTIVE=1, EXITING=2, RELEASED=3 are taken from the storage v1 oracle (the 2026-10-05 doc does not restate them); fail_streak(4) is u32 big-endian, appended last; bond, registered_height, exit_height are u64 big-endian.",
+  "Item 4: status(1) values ACTIVE=1, EXITING=2, RELEASED=3 are taken from the storage v1 oracle (the 2026-10-05 doc does not restate them); fail_streak(4) is u32 big-endian; bond, registered_height, exit_height are u64 big-endian.",
+  "Item 4 (K9): grace_until(8) is u64 big-endian and is the LAST field, appended after fail_streak; leaf preimage = 16 + 64 + 64 + 8 + 1 + 8 + 8 + 4 + 8 = 181 bytes. The tag stays NDS.STLEAF.v2 (never activated). The bytes doc's earlier Clarifications line 'fail_streak u32 BE, last field' is superseded by the K9 line of the same doc.",
+  "Item 4 (K9): the oracle imposes no relation between grace_until and registered_height / exit_height / status; any u64 is encoded as given.",
+  "K9 grace rule: n (segments the member holds at H that it did not hold at H-E) is an INPUT; the oracle does not derive it from holder sets. new grace_until = max(prev, H + n*E) when n > 0, else prev. H is not required to be a multiple of E (the vectors use multiples). H + n*E > 2^64-1 is undefined in the spec; the oracle refuses it and emits no vector for it (prev = 2^64-1 with n > 0 is covered and yields prev).",
+  "K9 probe rule: the decision says 'while the epoch start H < grace_until: m is not probed'. The oracle reads the grace_until in force for the epoch starting at H as the value AFTER the update at boundary H, so probed = H >= new_grace_until (any n > 0 therefore means not probed in epoch H, since new >= H + E > H). probed_vs_prev = H >= prev is emitted as well, for comparison only; the oracle's reading is 'probed'.",
+  "K9: 'not probed' also means earns nothing and fail_streak unchanged for that epoch (decision text); those consequences are not separate vectors here, only the probed bit is.",
   "Item 4: registry_root v2 = tagged_merkle('NDS.STRNODE.v1') over leaf-v2 hashes strictly ascending by node_fp (unsigned bytewise order); empty = SHA3-512(padded 'NDS.E.STREG.v1').",
   "Item 5: sets_root and reports_root are the unchanged 2026-10-04 legs and are opaque 64-byte inputs here; the all-empty case uses the empty tags NDS.E.STSET.v1 / NDS.E.STREP.v1 as named in the storage v1 oracle. Leg order: registry, sets, reports, segments. SYS.v5 is not covered (unchanged composition, outside the dispatched items).",
   "\u00a76: x_i = SHA3-512(padded 'NDS.STSAMP.v1' | nonce(32) | target_fp(64) | i(4 BE)) for i = 0, 1, 2; x_i[0..8] and x_i[8..12] are half-open byte ranges [0,8) and [8,12) read big-endian (u64 and u32).",
   "\u00a76: block index is a 0-based position in the target's eligible blocks sorted by ascending height (not a height); part index is 0-based. B = 0 or parts_total = 0 is undefined in the spec and is not a vector (the oracle raises)."
  ],
- "vector_count": 58,
+ "vector_count": 109,
  "vectors": {
   "tags": {
    "NDS.STSEG.v1": "4e44532e53545345472e763100000000",
@@ -759,64 +769,284 @@
   ],
   "registry_leaf_v2": [
    {
-    "name": "streak0_active",
-    "node_fp": "10f87a9762d8281fcd440acb2ed55c6878a4ae36ddde1418745f1153a37837b8ec62e0786a50dd9956aaf905270e113d40051b65084ff45c89543393bef6dafd",
-    "payee_fp": "4d78b0338bca5eecd22bc72800fa908f8f9c0807b72ecad3c95fac3c7f5d7dcc437220cb92991416135942f04f703e13e54d478f4beb25492ac03c5f370decac",
+    "name": "streak0_active_grace0",
+    "node_fp": "2da22504c5caec34740cdd571475d683e4f786fdcb0049426a941c145cebe569d489b63e51df046de65364cec6f118058e5cc1212cc7d1b6c5a99be72b3fb6c7",
+    "payee_fp": "75e8076f6066b426f2a4af2417a416b2d8fd6681e36a1e1dde69af8af548b07790543a6af4cc6b3cddd33ccbc0297553041da1a78f559387ec0eef180b8e64dd",
     "bond": "1000000000000000",
     "status": 1,
     "registered_height": "1440",
     "exit_height": "0",
     "fail_streak": "0",
-    "preimage": "4e44532e53544c4541462e763200000010f87a9762d8281fcd440acb2ed55c6878a4ae36ddde1418745f1153a37837b8ec62e0786a50dd9956aaf905270e113d40051b65084ff45c89543393bef6dafd4d78b0338bca5eecd22bc72800fa908f8f9c0807b72ecad3c95fac3c7f5d7dcc437220cb92991416135942f04f703e13e54d478f4beb25492ac03c5f370decac00038d7ea4c680000100000000000005a0000000000000000000000000",
-    "leaf": "5387326d495b3be128e92745ab78c074c6caa9f6140b3de92c96144b9703f605976a1335b89fb2440a76daf680f79f4a0659f8b2509da25086b0988a3c5c7c9f"
+    "grace_until": "0",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e76320000002da22504c5caec34740cdd571475d683e4f786fdcb0049426a941c145cebe569d489b63e51df046de65364cec6f118058e5cc1212cc7d1b6c5a99be72b3fb6c775e8076f6066b426f2a4af2417a416b2d8fd6681e36a1e1dde69af8af548b07790543a6af4cc6b3cddd33ccbc0297553041da1a78f559387ec0eef180b8e64dd00038d7ea4c680000100000000000005a00000000000000000000000000000000000000000",
+    "leaf": "8b14f7cc9680fd0e746c8d8254cfd0ad4000834ff3cc15fffbace6c675a3fca55fd891bb5cd712a4cfea5fdd7dcbf66dee34da536e7992621ba7b15c52b52d6b"
    },
    {
-    "name": "streak1_active",
-    "node_fp": "981226d357f09803e828958a928ef7385aaaa2883e2dcf91c4a8e775ef4b20d38fa53383efa3b6e12b9c3026454e8f577d2336716566aed1a15d81e6a8cdd975",
-    "payee_fp": "c6347b20df634e4b2081271bde032b5f01ba2c88b3c7a02cc0b8c659829e130a231ef7b5d5a87dd22a1d173ee8577189477124b90f3fe4a607a6d28244ddfacb",
+    "name": "streak0_active_grace1",
+    "node_fp": "401707430b4415c3a8cc4e1208b98bb476a61eadb9e33699a1323e5c67500372907a232f45039ce6682a279d0f32572cd2a80c4fc571c1207a18c36d482d6c64",
+    "payee_fp": "a2ac898cf8cf499e0a69424919593afc1e2aaed6f66dc56b5351624123ad8f4cc36e6e661bf1304ac9bf22fc09ba2d044d3a2f2c2181d18ae9648e7e75ca8d3c",
+    "bond": "1000000000000000",
+    "status": 1,
+    "registered_height": "1440",
+    "exit_height": "0",
+    "fail_streak": "0",
+    "grace_until": "1",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000401707430b4415c3a8cc4e1208b98bb476a61eadb9e33699a1323e5c67500372907a232f45039ce6682a279d0f32572cd2a80c4fc571c1207a18c36d482d6c64a2ac898cf8cf499e0a69424919593afc1e2aaed6f66dc56b5351624123ad8f4cc36e6e661bf1304ac9bf22fc09ba2d044d3a2f2c2181d18ae9648e7e75ca8d3c00038d7ea4c680000100000000000005a00000000000000000000000000000000000000001",
+    "leaf": "d2c865f552e93790d9bfdbabdb6c23b740d1255100072227ae674b749703e9576f7e5ffb81c2b264781aac5964c3c12fc22e7b8f8a28024d87a34f428800a60e"
+   },
+   {
+    "name": "streak0_active_gracemid",
+    "node_fp": "3e80fa56f947282cd900a9fb05449a0149a66ba7f802c96f17873ffc11b1d03b1f355bf4ae9cec9b9b45134989eca1b1900772b509cc36d4a2e1e32714c34c47",
+    "payee_fp": "df8777d863b5c19cedf40382441200f49dcc0be2b905e37b84ddb8650af79c540df0830f137edeb5c1b02e257d8f1d42ebe30165ffaef6caa960ec9bb51f8d76",
+    "bond": "1000000000000000",
+    "status": 1,
+    "registered_height": "1440",
+    "exit_height": "0",
+    "fail_streak": "0",
+    "grace_until": "4294984576",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e76320000003e80fa56f947282cd900a9fb05449a0149a66ba7f802c96f17873ffc11b1d03b1f355bf4ae9cec9b9b45134989eca1b1900772b509cc36d4a2e1e32714c34c47df8777d863b5c19cedf40382441200f49dcc0be2b905e37b84ddb8650af79c540df0830f137edeb5c1b02e257d8f1d42ebe30165ffaef6caa960ec9bb51f8d7600038d7ea4c680000100000000000005a00000000000000000000000000000000100004380",
+    "leaf": "07ff5e975d6cfc1593844193c72a9b97763312a8e7e1d62c3d92a273e9640e111994431b7a11908b263f59d03f6f2641e80607e02379eff7b386f81494992fdc"
+   },
+   {
+    "name": "streak0_active_graceu64max",
+    "node_fp": "1f18e2caa9c5d5e733049a2009822396be1b80c9b10eec5dd11157a12bffbdc0ba82c1b080bbd1dfc48bfb979d3b44e76cc728b9fc3d97354215905aadecb152",
+    "payee_fp": "8d4cb408373775290013a80cbe55474ffb874ff4b89e8c8eaf8a7580fb8bce6c97459ddee36610a26e9a33c8ea66b0779673765a5538fe5565567b6ae69c38b3",
+    "bond": "1000000000000000",
+    "status": 1,
+    "registered_height": "1440",
+    "exit_height": "0",
+    "fail_streak": "0",
+    "grace_until": "18446744073709551615",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e76320000001f18e2caa9c5d5e733049a2009822396be1b80c9b10eec5dd11157a12bffbdc0ba82c1b080bbd1dfc48bfb979d3b44e76cc728b9fc3d97354215905aadecb1528d4cb408373775290013a80cbe55474ffb874ff4b89e8c8eaf8a7580fb8bce6c97459ddee36610a26e9a33c8ea66b0779673765a5538fe5565567b6ae69c38b300038d7ea4c680000100000000000005a0000000000000000000000000ffffffffffffffff",
+    "leaf": "c9e6fef4c8fd70d9e50c8be59e9022b610bf4d8bfe3fb72430a1df7e277a703a928ae100142002051a1f1a90cf009e11a913faeaf5bbf72515186add9fd16da8"
+   },
+   {
+    "name": "streak1_active_grace0",
+    "node_fp": "c71181f12c4a50c23b21a9726fc5a3785896b445bf641f0959ab96998687c07b3be917cad4666486fdf34d248f50594ac4eea8c1e59d5e73b2518d671c690e3f",
+    "payee_fp": "f4b0318f706f2532791280223a9479cc72258e055795a1012d6b6c2f02f27af0e3f465656890b46785d3559224995ee08e59b594852a77122c493b58399e9f8c",
     "bond": "1",
     "status": 1,
     "registered_height": "720",
     "exit_height": "0",
     "fail_streak": "1",
-    "preimage": "4e44532e53544c4541462e7632000000981226d357f09803e828958a928ef7385aaaa2883e2dcf91c4a8e775ef4b20d38fa53383efa3b6e12b9c3026454e8f577d2336716566aed1a15d81e6a8cdd975c6347b20df634e4b2081271bde032b5f01ba2c88b3c7a02cc0b8c659829e130a231ef7b5d5a87dd22a1d173ee8577189477124b90f3fe4a607a6d28244ddfacb00000000000000010100000000000002d0000000000000000000000001",
-    "leaf": "a3622676c9d0b2d1f7793aa0fc5ab0d31d1d453251909073732d3dd0ab9219f90a54361e3d4ca8da2a28bf96e0af8ce5133757fc2ec006c02ccabf07f71518ee"
+    "grace_until": "0",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000c71181f12c4a50c23b21a9726fc5a3785896b445bf641f0959ab96998687c07b3be917cad4666486fdf34d248f50594ac4eea8c1e59d5e73b2518d671c690e3ff4b0318f706f2532791280223a9479cc72258e055795a1012d6b6c2f02f27af0e3f465656890b46785d3559224995ee08e59b594852a77122c493b58399e9f8c00000000000000010100000000000002d00000000000000000000000010000000000000000",
+    "leaf": "9579ed4d361a236400600197a910da11d70e2f7a6d1d35c6ceb8f8ccd603208d5e9bb6752e752a1159b1d99850ac46d95e81daabb3afa7a6e8e5b977d73f3bce"
    },
    {
-    "name": "streak3_exiting",
-    "node_fp": "8ff9e1f95b19a23b50109a81bf0f115903d98a1523445f89b33ee13d4700c485175a597e49b5f919ac06fc4fe4752569682b4c71c82b1544402da10968d6bb5b",
-    "payee_fp": "51d6a738ffb16e5bc6efb5da60856097309b78fec7958c909d86752974abd3fb8cb0c3838d3c5099e36b9825a716f53ae7b2e25a0642bd3ad908241572372048",
+    "name": "streak1_active_grace1",
+    "node_fp": "6c7fecb950d8097051d0fdae24922d551b514e617d18b78987b3c551034fc0e379462ef974c3352c1a348d1c0743b189d04ade177e3b611dad9445cc61ccf802",
+    "payee_fp": "9d262e2f5ff1324d5016cf86e0d897b512dda4b15c1a65ff01087ff889b3d728aeb03a68e3aea62f4d4b6de30cdcf04634cf76a5dce25990468a97691ca55a67",
+    "bond": "1",
+    "status": 1,
+    "registered_height": "720",
+    "exit_height": "0",
+    "fail_streak": "1",
+    "grace_until": "1",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e76320000006c7fecb950d8097051d0fdae24922d551b514e617d18b78987b3c551034fc0e379462ef974c3352c1a348d1c0743b189d04ade177e3b611dad9445cc61ccf8029d262e2f5ff1324d5016cf86e0d897b512dda4b15c1a65ff01087ff889b3d728aeb03a68e3aea62f4d4b6de30cdcf04634cf76a5dce25990468a97691ca55a6700000000000000010100000000000002d00000000000000000000000010000000000000001",
+    "leaf": "ef64f90acd89a0bb88f6b252dcd70a810b2f5edc9a2dbcdae2812b7958d098cdd2f8385712086173b9a42decdc3a162fed211ebb29135ad5d4143eec5dfdf986"
+   },
+   {
+    "name": "streak1_active_gracemid",
+    "node_fp": "a1b8f8900c2b22ca961eb1b73667d6777634bcf14e974d241cf02c696a0e0ba9edbdca8c2c2759484130d70123c5485a6be0953e10afbcbaae4e6b26b2adcdba",
+    "payee_fp": "ac558820842fa91e19cf0371b7577d40bef3dddcb2b3d6ffb7b0375783f13e73fcf36c9bec2b3ed8aa479caf92cfa3383a78042ebf45ebb39ad2ea6643695d32",
+    "bond": "1",
+    "status": 1,
+    "registered_height": "720",
+    "exit_height": "0",
+    "fail_streak": "1",
+    "grace_until": "4294984576",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000a1b8f8900c2b22ca961eb1b73667d6777634bcf14e974d241cf02c696a0e0ba9edbdca8c2c2759484130d70123c5485a6be0953e10afbcbaae4e6b26b2adcdbaac558820842fa91e19cf0371b7577d40bef3dddcb2b3d6ffb7b0375783f13e73fcf36c9bec2b3ed8aa479caf92cfa3383a78042ebf45ebb39ad2ea6643695d3200000000000000010100000000000002d00000000000000000000000010000000100004380",
+    "leaf": "43f9ed9b187d5fad133271be7f5233fff727fc349875ab0c03c2ba6a002e9b4b73437aeb06fe16c6ed3a9baf8e7eac7d4262c61db73425593953ffad743e10dd"
+   },
+   {
+    "name": "streak1_active_graceu64max",
+    "node_fp": "de1617337fb20108555f1cf58c94d87e459d7cf280837a7d63fa735d74158297763be3b4582d77c667dd45602393b073c5c5e4d3535e5f8d3f8314e193504258",
+    "payee_fp": "1ee3eb288ff3ab7c8cc421f9a7f7cab9768e4f99ec6dc1623d840236ad030cccda51754c030f5bf3978c4b8effc8003d360dd480bba4703fdefdf3947224e861",
+    "bond": "1",
+    "status": 1,
+    "registered_height": "720",
+    "exit_height": "0",
+    "fail_streak": "1",
+    "grace_until": "18446744073709551615",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000de1617337fb20108555f1cf58c94d87e459d7cf280837a7d63fa735d74158297763be3b4582d77c667dd45602393b073c5c5e4d3535e5f8d3f8314e1935042581ee3eb288ff3ab7c8cc421f9a7f7cab9768e4f99ec6dc1623d840236ad030cccda51754c030f5bf3978c4b8effc8003d360dd480bba4703fdefdf3947224e86100000000000000010100000000000002d0000000000000000000000001ffffffffffffffff",
+    "leaf": "a51183f2ec77b98a2601eaf8af70487be3bc7d57482ed36323cfb2bdeb7f634e0f6f2213eafff730e60f147a9f9802f74f1ce4c14402d2a69ffac31e31cffbe3"
+   },
+   {
+    "name": "streak3_exiting_grace0",
+    "node_fp": "f244d0b35e27220f48c1cb93cbbad507431a5c778523a2440a7e85263aaa59c0b99f1758fc333f47e3249df4895ee01b6013223dd9924587ef83f9ad65a432fb",
+    "payee_fp": "2ffa7db2be3239abe4209507af7c18c139c3e01f004072168f61d9585624865f475eafcec36560a022fb20e8e3c609b2e8e3dacdfe111e905309301688cd9ef8",
     "bond": "123456789",
     "status": 2,
     "registered_height": "4242",
     "exit_height": "99999",
     "fail_streak": "3",
-    "preimage": "4e44532e53544c4541462e76320000008ff9e1f95b19a23b50109a81bf0f115903d98a1523445f89b33ee13d4700c485175a597e49b5f919ac06fc4fe4752569682b4c71c82b1544402da10968d6bb5b51d6a738ffb16e5bc6efb5da60856097309b78fec7958c909d86752974abd3fb8cb0c3838d3c5099e36b9825a716f53ae7b2e25a0642bd3ad90824157237204800000000075bcd15020000000000001092000000000001869f00000003",
-    "leaf": "257f6e0133e725c36427b77f8ebfa9f254b4018b6788a6bb858b15b18df59e869a2d803ed6c78222a601d0913ff8576f1ed1366a96108003b2f572d1dbf861a1"
+    "grace_until": "0",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000f244d0b35e27220f48c1cb93cbbad507431a5c778523a2440a7e85263aaa59c0b99f1758fc333f47e3249df4895ee01b6013223dd9924587ef83f9ad65a432fb2ffa7db2be3239abe4209507af7c18c139c3e01f004072168f61d9585624865f475eafcec36560a022fb20e8e3c609b2e8e3dacdfe111e905309301688cd9ef800000000075bcd15020000000000001092000000000001869f000000030000000000000000",
+    "leaf": "7aaa762edd42f7d75ecbbe12fc5af166fb73d3536a87cadad771710a21cf8edcff56e8985a57afc0f98c41d62ebc4fce5333b616d10c9409d2efe343e9c46581"
    },
    {
-    "name": "streak_u32max_released",
-    "node_fp": "cf1e15d4519f7ed96b480f34dd808c18a00871f5512323c35eaeda85f679e3a6918ccff7b4e71bcac71a6a297be45c325a095270a7233a508911dcb0030c7210",
-    "payee_fp": "a7b49c5ccdd62e0a0c20a43402e9ce4ba9cb33552030a9c8c696eefa1d3123902adfcb2a85555ebee703f8941a60aa161a77cc450a53bbfa2231a70c1ba18d53",
+    "name": "streak3_exiting_grace1",
+    "node_fp": "0ec2497a69f998eb9ac42b91b8e3281fb864c487d1f101cac67934bdf622a591f605d92bb0bd8eb345f72d7086134ba126a08507c70387e285726322ce6c3a39",
+    "payee_fp": "4b7e6b8bf95e7bc7252ce6e00cdfacd80503e7c7cc9e80f6863d28b4f7d8b317f9e6468c8a5b6343a19f5e176a06f3f3d32bf1ce3bc47b55c024d953311aa08c",
+    "bond": "123456789",
+    "status": 2,
+    "registered_height": "4242",
+    "exit_height": "99999",
+    "fail_streak": "3",
+    "grace_until": "1",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e76320000000ec2497a69f998eb9ac42b91b8e3281fb864c487d1f101cac67934bdf622a591f605d92bb0bd8eb345f72d7086134ba126a08507c70387e285726322ce6c3a394b7e6b8bf95e7bc7252ce6e00cdfacd80503e7c7cc9e80f6863d28b4f7d8b317f9e6468c8a5b6343a19f5e176a06f3f3d32bf1ce3bc47b55c024d953311aa08c00000000075bcd15020000000000001092000000000001869f000000030000000000000001",
+    "leaf": "b4205b28dfda2eed0829a1ea088f63218096d293cc0b5418fbadc139594b56353519c1c596b218433536a4cdd3780f5ca471dc4b108cc332c9ab9dcbeb9e6e57"
+   },
+   {
+    "name": "streak3_exiting_gracemid",
+    "node_fp": "f7c240d4f7ef93390690da4c637f48e7027b122f576c2e18cb1ef57d6801990a7aa4b461faf3b1e74a25975d1f068d837456647a07a0f835298dde46da71f8e2",
+    "payee_fp": "b20c873a528e42b5b0fcdb1cfebb04f7d14928f9a8beef3362537012e787c42d90d371b45298b6f82ef6cc89a80aacb7891b1f729eb6d2e1758213b79e446284",
+    "bond": "123456789",
+    "status": 2,
+    "registered_height": "4242",
+    "exit_height": "99999",
+    "fail_streak": "3",
+    "grace_until": "4294984576",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000f7c240d4f7ef93390690da4c637f48e7027b122f576c2e18cb1ef57d6801990a7aa4b461faf3b1e74a25975d1f068d837456647a07a0f835298dde46da71f8e2b20c873a528e42b5b0fcdb1cfebb04f7d14928f9a8beef3362537012e787c42d90d371b45298b6f82ef6cc89a80aacb7891b1f729eb6d2e1758213b79e44628400000000075bcd15020000000000001092000000000001869f000000030000000100004380",
+    "leaf": "4bc5ffa27d954a1473b028ce73ab4807191783e19a17f1f050fff7945f8f71f728332bb1926cf3d7de53094df12bacee3c4d660dd7d18713be93202497389176"
+   },
+   {
+    "name": "streak3_exiting_graceu64max",
+    "node_fp": "6efc6390b2b9a0eeaad1af5c68ad74e4bec7163d98114a8c738edb511d721ef661fa5aefe2e47178963a93c8d777bef04f800bf95d2959a655b72bc81daf6833",
+    "payee_fp": "d81058d0bc01db5f8611c0839fc2a4c54ed89dc9d665cfc0ed75f8dea8da47dd1193dadab28e0e9c0e177695bda9769fde5a8a6771a3ae5bae2028e8f0d8282d",
+    "bond": "123456789",
+    "status": 2,
+    "registered_height": "4242",
+    "exit_height": "99999",
+    "fail_streak": "3",
+    "grace_until": "18446744073709551615",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e76320000006efc6390b2b9a0eeaad1af5c68ad74e4bec7163d98114a8c738edb511d721ef661fa5aefe2e47178963a93c8d777bef04f800bf95d2959a655b72bc81daf6833d81058d0bc01db5f8611c0839fc2a4c54ed89dc9d665cfc0ed75f8dea8da47dd1193dadab28e0e9c0e177695bda9769fde5a8a6771a3ae5bae2028e8f0d8282d00000000075bcd15020000000000001092000000000001869f00000003ffffffffffffffff",
+    "leaf": "a0e4fe848c8d4afc1db9f0728606a7df2d4add4a31482f791a0feedeb0a47ae5078dad6e9545bab71715b5b713663f60ed4013fe8b4c165546d4286ac167ce12"
+   },
+   {
+    "name": "streak_u32max_released_grace0",
+    "node_fp": "85a1903a681f33d591227e3901fd17d8ce6bee6aeae87be7590e808c50f6513a39fd78a7489a6f4beaecd23c1151e9850923aafac38497be1c995a170f2d4bd6",
+    "payee_fp": "b033c67787f0d999d1653a858c58198e7c4b40c0c8ff3b910e36318fb9f54f0e63166589bbd4932662854860a89f7b6a3989a11cb66ab04764bb8be6b8fd9b20",
     "bond": "18446744073709551615",
     "status": 3,
     "registered_height": "18446744073709551614",
     "exit_height": "18446744073709551615",
     "fail_streak": "4294967295",
-    "preimage": "4e44532e53544c4541462e7632000000cf1e15d4519f7ed96b480f34dd808c18a00871f5512323c35eaeda85f679e3a6918ccff7b4e71bcac71a6a297be45c325a095270a7233a508911dcb0030c7210a7b49c5ccdd62e0a0c20a43402e9ce4ba9cb33552030a9c8c696eefa1d3123902adfcb2a85555ebee703f8941a60aa161a77cc450a53bbfa2231a70c1ba18d53ffffffffffffffff03fffffffffffffffeffffffffffffffffffffffff",
-    "leaf": "0511dbeb5a674565587397918baee74ce8ef0b5a3347d975a041ad26219c2675a8bec0bc2219c64a2ec12a5bc0bafabc66257e6084db9a6f4703f30a39acc2d6"
+    "grace_until": "0",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e763200000085a1903a681f33d591227e3901fd17d8ce6bee6aeae87be7590e808c50f6513a39fd78a7489a6f4beaecd23c1151e9850923aafac38497be1c995a170f2d4bd6b033c67787f0d999d1653a858c58198e7c4b40c0c8ff3b910e36318fb9f54f0e63166589bbd4932662854860a89f7b6a3989a11cb66ab04764bb8be6b8fd9b20ffffffffffffffff03fffffffffffffffeffffffffffffffffffffffff0000000000000000",
+    "leaf": "864346d8d3550c9df98ce56e435e6be22b2c4fc6bfe190b41243cb08785e1800094e101473939b8dbd0ccde321c90d26980120eddd14a0553d008f5f54ac6fbc"
    },
    {
-    "name": "bond0_h0_streak2",
-    "node_fp": "7b1ad82f8567c5426b742d00431150cb1111e3a80d0e0980fd1ebc7c506e49696660e44f101d6d2ba8ef927fec1893e636ae121eb04f634b340595fa28b01420",
-    "payee_fp": "e6522d108609586209f18f9e19817058c94cdc7ac37d8ef7aaffdf6a20a7c70d6c52907f0724971cbf4304112a14a77c8ea4ca69e3255e4c01cf64ed9c6e193d",
+    "name": "streak_u32max_released_grace1",
+    "node_fp": "f66ad4fa3696aba642a4bcea8345b9887c222e0b504cc02d890fea1d5915daf34a6da9c457fea67145a84def5d0fc790ed710c421de3b51729fc132bb5c04640",
+    "payee_fp": "d9a887e5fe8db61b3a8f8deec4dd454c2833263c89199393b622a6951ffd164da613901327be284e851ceba2c66fdf12f74449da7dc45a583615cdb840402333",
+    "bond": "18446744073709551615",
+    "status": 3,
+    "registered_height": "18446744073709551614",
+    "exit_height": "18446744073709551615",
+    "fail_streak": "4294967295",
+    "grace_until": "1",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000f66ad4fa3696aba642a4bcea8345b9887c222e0b504cc02d890fea1d5915daf34a6da9c457fea67145a84def5d0fc790ed710c421de3b51729fc132bb5c04640d9a887e5fe8db61b3a8f8deec4dd454c2833263c89199393b622a6951ffd164da613901327be284e851ceba2c66fdf12f74449da7dc45a583615cdb840402333ffffffffffffffff03fffffffffffffffeffffffffffffffffffffffff0000000000000001",
+    "leaf": "f5b5f83c746f486c8626aca041ac759d17871463acbb756136b76736852f9c42d7d87e06873f4d723805ae94629e7df46976001c6e0854e0be686c78cf4612d1"
+   },
+   {
+    "name": "streak_u32max_released_gracemid",
+    "node_fp": "f7f9dd718f260f62bf0637d6ddd6a257e926af6355416c67b788ea00f8b3c90d8d46610159821cbef5422e9ed4a93aefe92fc88bc5a268cdce7c38da186a55ea",
+    "payee_fp": "5752d6979e28cab2d8a41391006beca4919ae5212ba298c7c41fcc6c79cc67281eddd7aac348a64487a90f347b80571f32cc8e487fd3abafee753dcac7e0f001",
+    "bond": "18446744073709551615",
+    "status": 3,
+    "registered_height": "18446744073709551614",
+    "exit_height": "18446744073709551615",
+    "fail_streak": "4294967295",
+    "grace_until": "4294984576",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000f7f9dd718f260f62bf0637d6ddd6a257e926af6355416c67b788ea00f8b3c90d8d46610159821cbef5422e9ed4a93aefe92fc88bc5a268cdce7c38da186a55ea5752d6979e28cab2d8a41391006beca4919ae5212ba298c7c41fcc6c79cc67281eddd7aac348a64487a90f347b80571f32cc8e487fd3abafee753dcac7e0f001ffffffffffffffff03fffffffffffffffeffffffffffffffffffffffff0000000100004380",
+    "leaf": "2827761d3d30d6929c65d0092a35df7ef1d5385623c38ab38209e062f8ceff6c17c3442ceccdbe622d63f1169d668b2b15c2cae80b62cc0471c996a4e3932cd6"
+   },
+   {
+    "name": "streak_u32max_released_graceu64max",
+    "node_fp": "bc5c52242c5dbcc1afd6852183c390c9e4273b19355bedd2d75b94f3fb38b4287b48df20f8f15b62be15fe1f6ac7ccd59f9518d1249f2b4f87353075c72ec9e8",
+    "payee_fp": "2c5475e3bee937585458cab02695c64da984fdbe41ec4e8e32ac070413e56bb1567660774efbc070d843db44591c766fbaf15d5b42150aad3e63642799d8522b",
+    "bond": "18446744073709551615",
+    "status": 3,
+    "registered_height": "18446744073709551614",
+    "exit_height": "18446744073709551615",
+    "fail_streak": "4294967295",
+    "grace_until": "18446744073709551615",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000bc5c52242c5dbcc1afd6852183c390c9e4273b19355bedd2d75b94f3fb38b4287b48df20f8f15b62be15fe1f6ac7ccd59f9518d1249f2b4f87353075c72ec9e82c5475e3bee937585458cab02695c64da984fdbe41ec4e8e32ac070413e56bb1567660774efbc070d843db44591c766fbaf15d5b42150aad3e63642799d8522bffffffffffffffff03fffffffffffffffeffffffffffffffffffffffffffffffffffffffff",
+    "leaf": "ecc2ba5db0b770d50441bc701950fd2ab614efc1341135c233e6b06b46a28205278d227be4d97cfb38a7b7ece9c8029c25162aed9ecec418bf341414ccbe7f63"
+   },
+   {
+    "name": "bond0_h0_streak2_grace0",
+    "node_fp": "b8d4b5429998096abbc7c0fcbc98e88542e134a02eeb5e092dea2cd0924db827873cd6ce3711b888f2c1be9262d8a5a156925b6b1672be8cf260384c20e0220c",
+    "payee_fp": "49bf1456d4aa3dacb41ae47842861b4366ae032de1a81b21712f22d7670c8f939f3e77a2f944f849b12ffec52d166c841801535fe88485eca2e5b646b4aa3d97",
     "bond": "0",
     "status": 1,
     "registered_height": "0",
     "exit_height": "0",
     "fail_streak": "2",
-    "preimage": "4e44532e53544c4541462e76320000007b1ad82f8567c5426b742d00431150cb1111e3a80d0e0980fd1ebc7c506e49696660e44f101d6d2ba8ef927fec1893e636ae121eb04f634b340595fa28b01420e6522d108609586209f18f9e19817058c94cdc7ac37d8ef7aaffdf6a20a7c70d6c52907f0724971cbf4304112a14a77c8ea4ca69e3255e4c01cf64ed9c6e193d0000000000000000010000000000000000000000000000000000000002",
-    "leaf": "1bc67cf6d550e4be3d08dfb58838a42aca4336eb4bc6828ef61f9638807c3b90fc21cfb3dc453583edea634b8de38be4db72ce052a8f152449e8feb9facc6336"
+    "grace_until": "0",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000b8d4b5429998096abbc7c0fcbc98e88542e134a02eeb5e092dea2cd0924db827873cd6ce3711b888f2c1be9262d8a5a156925b6b1672be8cf260384c20e0220c49bf1456d4aa3dacb41ae47842861b4366ae032de1a81b21712f22d7670c8f939f3e77a2f944f849b12ffec52d166c841801535fe88485eca2e5b646b4aa3d9700000000000000000100000000000000000000000000000000000000020000000000000000",
+    "leaf": "72f084341e719ce3fbd8aa388e32f9a9f97978c570b2d3d7f7ee1ec9867d8f32adde4332105eb5f9c40e01fd7519ddbcf4aa4dba426c100e348f986fddf5703b"
+   },
+   {
+    "name": "bond0_h0_streak2_grace1",
+    "node_fp": "63e93817c4b0d297d9931febafb145459598b83db319ac8cb4796b3a581a3b405d48907d7da3597b5b9aea19cf4364ed479b9ec4edb50b9a568c8e4a85927bf7",
+    "payee_fp": "c4e978d5fc39038df7dc5f2140213a77c0b4b47f6c647c3d8859b321959e9a60f1eb8ea66cf1ccbfd7c193a1edc03d1c354f388d3bc03f1b1b2654178f3a74fc",
+    "bond": "0",
+    "status": 1,
+    "registered_height": "0",
+    "exit_height": "0",
+    "fail_streak": "2",
+    "grace_until": "1",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e763200000063e93817c4b0d297d9931febafb145459598b83db319ac8cb4796b3a581a3b405d48907d7da3597b5b9aea19cf4364ed479b9ec4edb50b9a568c8e4a85927bf7c4e978d5fc39038df7dc5f2140213a77c0b4b47f6c647c3d8859b321959e9a60f1eb8ea66cf1ccbfd7c193a1edc03d1c354f388d3bc03f1b1b2654178f3a74fc00000000000000000100000000000000000000000000000000000000020000000000000001",
+    "leaf": "918d7e4f39d704b35dc27741442c73d4f975f558e49cf7a2e59f23107413e6b97d7a1c8f482a705aad59514c72da1faafdb89407fd44bb6b9d26d44f4ee5a792"
+   },
+   {
+    "name": "bond0_h0_streak2_gracemid",
+    "node_fp": "bbd4041628207a1abef179378a04adf1a99892bcb375c6fd53dd7254d202ee4b5fd51b26ae37f466b76720e506984c0ab2a6df392374aa236573b3b51cd07782",
+    "payee_fp": "a4f998c0e653b2438511247c5553ff26d7cca2eb30c90c1a1727688801731578c10b0bfd418c66703f5332a6537c9fa9888c56b575a93d4141dcf3ad5cb0f8f8",
+    "bond": "0",
+    "status": 1,
+    "registered_height": "0",
+    "exit_height": "0",
+    "fail_streak": "2",
+    "grace_until": "4294984576",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e7632000000bbd4041628207a1abef179378a04adf1a99892bcb375c6fd53dd7254d202ee4b5fd51b26ae37f466b76720e506984c0ab2a6df392374aa236573b3b51cd07782a4f998c0e653b2438511247c5553ff26d7cca2eb30c90c1a1727688801731578c10b0bfd418c66703f5332a6537c9fa9888c56b575a93d4141dcf3ad5cb0f8f800000000000000000100000000000000000000000000000000000000020000000100004380",
+    "leaf": "e6daadacc285d80101627af129883ef6098e36f91078fb9b7da6edd0d55bb019da7ce63c5343ee89c81b4410383a9deb375f9f6278b9f8f4ea888f51fc013060"
+   },
+   {
+    "name": "bond0_h0_streak2_graceu64max",
+    "node_fp": "09dac09d661132fe75116c9d80a703c4a48e60d624f69944cd797b964f4539c251b077d7ba18bd14dc14d5e2f309a7b2edc0120f646bd19e98aceeb0e4dfde89",
+    "payee_fp": "4105ddab8eb282972c3b55d85ee7420a97c5aebcde478bce762448fec8d34a7150cdf7acf87a25de37634622a3c4f30d28df13f562ba508f194c88a32e3ad4a2",
+    "bond": "0",
+    "status": 1,
+    "registered_height": "0",
+    "exit_height": "0",
+    "fail_streak": "2",
+    "grace_until": "18446744073709551615",
+    "preimage_len": 181,
+    "preimage": "4e44532e53544c4541462e763200000009dac09d661132fe75116c9d80a703c4a48e60d624f69944cd797b964f4539c251b077d7ba18bd14dc14d5e2f309a7b2edc0120f646bd19e98aceeb0e4dfde894105ddab8eb282972c3b55d85ee7420a97c5aebcde478bce762448fec8d34a7150cdf7acf87a25de37634622a3c4f30d28df13f562ba508f194c88a32e3ad4a20000000000000000010000000000000000000000000000000000000002ffffffffffffffff",
+    "leaf": "fc60b2f3c11151d29b52d276e4a45ca4a9df9f44fd85c9ff554f3aeef7ed8c76af38fccb371130287fb06aa15b068820a14434a66a02a3a2ecef2aa8a10bd36d"
    }
   ],
   "registry_root_v2": [
@@ -836,10 +1066,11 @@
       "registered_height": "0",
       "exit_height": "0",
       "fail_streak": "0",
-      "leaf": "901d57d182d9faef8c81bc4da423c8e528927ead130a29ae69bfc31ad64fbe87452330da31acc8502d49e27f63baaf50fc17d2c29a6fecf27845cba19d059891"
+      "grace_until": "1",
+      "leaf": "bc83361a50b1ff5103182414f490d56c33b2fddd055122acc54d8817bdcd73cfbc66d51134194c5f7a01e18e69fb815daab00433b8fb440a4fa190eb305a5f5f"
      }
     ],
-    "registry_root": "901d57d182d9faef8c81bc4da423c8e528927ead130a29ae69bfc31ad64fbe87452330da31acc8502d49e27f63baaf50fc17d2c29a6fecf27845cba19d059891"
+    "registry_root": "bc83361a50b1ff5103182414f490d56c33b2fddd055122acc54d8817bdcd73cfbc66d51134194c5f7a01e18e69fb815daab00433b8fb440a4fa190eb305a5f5f"
    },
    {
     "n": 2,
@@ -852,7 +1083,8 @@
       "registered_height": "0",
       "exit_height": "0",
       "fail_streak": "0",
-      "leaf": "0fe446ff3e5729302b8e70c4e650a0079e87bb209ae7b28d92448fdea1e7ccec33ccbfd67990bbdcbf1d10176dc18d2022518d01bc67f30921b1fd2d6c4eea06"
+      "grace_until": "1",
+      "leaf": "a0adbdead10372c275f4d72c39350891a98cbbd9d3c58ceba045f764af53bb3e5edd06e6923aadaa82f7eb38d2480b70017009520c00054d9bd32543d3122460"
      },
      {
       "node_fp": "c4ba38d0599ba38f333b645bc45e5f602dc943b8f67adddeaf37fe3c319a257077482f88fc69b2765d6585c09858d485115ac043fd1c1a09d27f276241663c56",
@@ -862,10 +1094,11 @@
       "registered_height": "1000",
       "exit_height": "1720",
       "fail_streak": "1",
-      "leaf": "a4fc65636e79f80d21944e8802b56c3827996928059acabeb80a40ae2da77f54b4905f67c73d204cdde3c0fb6b5fab75995e700ccc70eda72ce58610fd5b9d16"
+      "grace_until": "4294984576",
+      "leaf": "fb11b205eecfe4b3eaebc43e848511f29fc96b083bf100efaee4e9c3c286f73c752e071a3383a2a920774f8dc93642c1a9b68e1855057bed2d23ca6cdf1a9f55"
      }
     ],
-    "registry_root": "a2a1c7bc3cc5dbe33f456dddc8ed16a0bd2112a1e8ee6f5e537ee762c746cad691e432095e90807de5b37ebb167c5bad6ca71b97c01a6a3a83798c78914da89f"
+    "registry_root": "74b20679bd5d186ed08f64f4ff2445af644366fce8893a6e5c9652fd5f2e1bede49febd774352b98f61801e8a0e93493308f3583e828d95885cb3d35b6e85ebd"
    },
    {
     "n": 3,
@@ -878,7 +1111,8 @@
       "registered_height": "2000",
       "exit_height": "2720",
       "fail_streak": "3",
-      "leaf": "8c4b3bfaa736f9b13da463de641a79bf99d01f23e408a92f13e92f72fc9b62accf511f82fe6bc0db0009b3fa6008972b44b0507206385f5f998ad9b1dcb72dbe"
+      "grace_until": "18446744073709551615",
+      "leaf": "2d390935c0f470be4fcf567f4ffde0ef521fb1143567c132936c7ea3fbe0b883877dac1bf5e12af44e4a6929f6c21a7eece33b8cc37a1580264f89d01f6194fe"
      },
      {
       "node_fp": "78fd6845e63490e7c47c498a38ba727ad0a916bf7b988935cb5b092d266adc4f9010280c63147542410f0fc697ef5bcec01ede81659e05116608836cd5bf796f",
@@ -888,7 +1122,8 @@
       "registered_height": "1000",
       "exit_height": "1720",
       "fail_streak": "1",
-      "leaf": "aa55c9f2983b369916badd151de72d3c813207a63ed0c25f095f525df52ef2f14196c637f19693ada755d90848f21d88b7b8de2c75799300681027efa72311f5"
+      "grace_until": "4294984576",
+      "leaf": "69702c7c874bcce39009af4bf83bbf9c8e6dc2b44698215138943f706b583009b302d460f729ddf1a28862d7afcb98b2bdf519aaec7305aa97ad949f76dba621"
      },
      {
       "node_fp": "d6b4fb9c3a8375fbeb505c89cf0150540596168af468cb8d426aab11fe177c8f763c783a9fa0ede03dc41284272a89bc9b7c685cdb5206bed9f5f1259c3ac6af",
@@ -898,10 +1133,11 @@
       "registered_height": "0",
       "exit_height": "0",
       "fail_streak": "0",
-      "leaf": "dd1d495abcb0cabc09b12c6481e46eddda14f3efd58c41daad0504a298a5357a804af4c13005857cb9fe03c896f4acb24de7001e3dc964ec918f8a8ec6852c38"
+      "grace_until": "1",
+      "leaf": "60ada4d129a713eaece611834c3311467878d12cdf12b7ca981e25efd5cb34c05fb1e7db2396f54c8897ca8f020eadb15adb41be722936c9dd08b91436b33ca0"
      }
     ],
-    "registry_root": "b6d64e3b9a0dabaf50f9e44a6c72bfa75444577357269be804049a83f8175fc9205de0f9e2dc617176f07cad3d9dbc5e32535469902faac151b0bd8aea30eab5"
+    "registry_root": "9a01b58e852aa1ee0713c872d1d47c565e91dcc61d0be0d2f141e9e6b31ef3006155d8801cbb0cf06e0f79d010122731a21f15246e7a86e270f364c676f266d7"
    },
    {
     "n": 5,
@@ -914,7 +1150,8 @@
       "registered_height": "2000",
       "exit_height": "2720",
       "fail_streak": "3",
-      "leaf": "1aa16bf588bd5e0866571722af753220c0b508a30704679a4159b267fbcc26ed5a7459f47bb5a041f8a5871f1caf8b93763b8d1ec7df0645f8546aae8576ea81"
+      "grace_until": "18446744073709551615",
+      "leaf": "e6c6206eab8c7a8198dc8fc2267aa5c5bb4739cce785f1f362c34748f2a5f8bed1ab2726a633490c5579c01dec105bdaed0bf9a16a4268a8e3dd21ad23dd8a9a"
      },
      {
       "node_fp": "1c007099cf7502aab248314cc45f54d4e75a393ec136de0151cab108cd716cf301a3803c37dd2a8c5a3f2d3e5c15bd0270ccd390766c0c828ee4400768ca8d83",
@@ -924,7 +1161,8 @@
       "registered_height": "3000",
       "exit_height": "0",
       "fail_streak": "4294967295",
-      "leaf": "14b8bcb7fcf02b708ce5190c66d607a6b4fd37f72337a8eb225433d384f1c1ae37ca938edbd332e435c752127a532723179da0b196aa1fe57e66ea41baea9e00"
+      "grace_until": "0",
+      "leaf": "105d941ac461f70cc66254f232c53e2aade6752302408698f17b693b8649e7ad6049defefb85d605626289ded1a6ec45d041dcc362dd0220f8bbb22a8c4010e0"
      },
      {
       "node_fp": "1c52b4affcbfa976ad788140fbc838a94b19a6f6374f9658100d8086c8f1dd12c0da4f7bf60563ad9d91a3130aa1a5808cbce1cb864350fb33bf6c4100e63dda",
@@ -934,7 +1172,8 @@
       "registered_height": "0",
       "exit_height": "0",
       "fail_streak": "0",
-      "leaf": "630e12adc4a47344b28b2369bfee894913077ea1f5aab0589087b5ade890b32d4348f1b24a76476d750f1d175b95502deb495c01def76bae0b9081922ec94355"
+      "grace_until": "1",
+      "leaf": "43d4c1e92ff84dfe395906a137ae5ae639f0fdd2652f8662dd2eaf6e86bab30b1fce4b1cc35d693b8f9e6ff744fcdaf4dd3898f6a8dfc890724b81c637fc2cc1"
      },
      {
       "node_fp": "5ed68d46b41a841d9034562c99aacd308d19c1a085c4ebec8296f5425617cb5e9f9d7ed2b91bc8cca4721dc5152bcd4adb0fc1682976113c4c2425f4bcf9439d",
@@ -944,7 +1183,8 @@
       "registered_height": "1000",
       "exit_height": "1720",
       "fail_streak": "1",
-      "leaf": "4a940c0d94ca34da5ceffd67db1bc55c30573ada1c2d27e1a4fc44461186a66d2ae2bdaf4448cf5820a7ea7f4d735fdf3a4d25a47b072facbb81e5378be42e9f"
+      "grace_until": "4294984576",
+      "leaf": "7b5b81130f6cdbbfc2cdf1084ab92f08c48521188245c7b56e2fb855676d8fbe451bcd66a50aeb3b5dca30463c6f03fd5be174527c909585c6d58f63b4451736"
      },
      {
       "node_fp": "7246f7c1af7057a33775c458f8a4cd17c05a2ea512b4cb959f3bbd6f25151d55d8ae6cff826a3684b19b590cacffd05d22321c90d0073f5f830c589c2e741759",
@@ -954,10 +1194,383 @@
       "registered_height": "4000",
       "exit_height": "4720",
       "fail_streak": "2",
-      "leaf": "d1a6e06f138af3df26774fe151dcc10bdbfb19039f4dbc3f9ee0e3022860fa0b8e733bae7f153348ca8a593edbff4169347eb1d6bd1dcff2e639ad13d4547053"
+      "grace_until": "1",
+      "leaf": "3af0a5fdb187cf30420fa4289021f56ff642707099f1a3993d2a5ca00e00936cdd27129c3422c9167f58591cf2f95b01b02ce13679ad4fee3129d09a4c296ba6"
      }
     ],
-    "registry_root": "7fd519e989cc042315b2d12d69e23b797de7bb6f9dd314c50f58d27c3e68eff1e1e0da104441c1bb5d20c8553b26ffecda481832b0c8f33ea31de4fd67be8ff4"
+    "registry_root": "559523a7516b3cc05fa2aee3b56b4ac6e7ead138e3c0204134d93d052710c0c57b554a33659ddae443f03684ebffec449b5293ed548f2202c8183bcc81546354"
+   }
+  ],
+  "grace_rule": [
+   {
+    "E": 720,
+    "cases": [
+     {
+      "name": "n0_prev0",
+      "prev_grace_until": "0",
+      "H": "72000",
+      "n": 0,
+      "E": 720,
+      "new_grace_until": "0",
+      "probed": true,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_prev_below_H",
+      "prev_grace_until": "71280",
+      "H": "72000",
+      "n": 0,
+      "E": 720,
+      "new_grace_until": "71280",
+      "probed": true,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_prev_eq_H",
+      "prev_grace_until": "72000",
+      "H": "72000",
+      "n": 0,
+      "E": 720,
+      "new_grace_until": "72000",
+      "probed": true,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_prev_above_H",
+      "prev_grace_until": "74160",
+      "H": "72000",
+      "n": 0,
+      "E": 720,
+      "new_grace_until": "74160",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n0_prev_u64max",
+      "prev_grace_until": "18446744073709551615",
+      "H": "72000",
+      "n": 0,
+      "E": 720,
+      "new_grace_until": "18446744073709551615",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n1_prev0",
+      "prev_grace_until": "0",
+      "H": "72000",
+      "n": 1,
+      "E": 720,
+      "new_grace_until": "72720",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n2_prev0",
+      "prev_grace_until": "0",
+      "H": "72000",
+      "n": 2,
+      "E": 720,
+      "new_grace_until": "73440",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n3_prev_below_H",
+      "prev_grace_until": "71280",
+      "H": "72000",
+      "n": 3,
+      "E": 720,
+      "new_grace_until": "74160",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n1_prev_eq_H",
+      "prev_grace_until": "72000",
+      "H": "72000",
+      "n": 1,
+      "E": 720,
+      "new_grace_until": "72720",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n2_prev_eq_H_plus_2E",
+      "prev_grace_until": "73440",
+      "H": "72000",
+      "n": 2,
+      "E": 720,
+      "new_grace_until": "73440",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n2_prev_above_H_plus_2E",
+      "prev_grace_until": "75600",
+      "H": "72000",
+      "n": 2,
+      "E": 720,
+      "new_grace_until": "75600",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n5_prev_between",
+      "prev_grace_until": "73440",
+      "H": "72000",
+      "n": 5,
+      "E": 720,
+      "new_grace_until": "75600",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n1_prev_u64max",
+      "prev_grace_until": "18446744073709551615",
+      "H": "72000",
+      "n": 1,
+      "E": 720,
+      "new_grace_until": "18446744073709551615",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n17280_prev0",
+      "prev_grace_until": "0",
+      "H": "72000",
+      "n": 17280,
+      "E": 720,
+      "new_grace_until": "12513600",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n1_H0_prev0",
+      "prev_grace_until": "0",
+      "H": "0",
+      "n": 1,
+      "E": 720,
+      "new_grace_until": "720",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_H0_prev0",
+      "prev_grace_until": "0",
+      "H": "0",
+      "n": 0,
+      "E": 720,
+      "new_grace_until": "0",
+      "probed": true,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n4_Hbig_prev0",
+      "prev_grace_until": "0",
+      "H": "791648371998720",
+      "n": 4,
+      "E": 720,
+      "new_grace_until": "791648372001600",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_Hbig_prev_above",
+      "prev_grace_until": "791648371999440",
+      "H": "791648371998720",
+      "n": 0,
+      "E": 720,
+      "new_grace_until": "791648371999440",
+      "probed": false,
+      "probed_vs_prev": false
+     }
+    ]
+   },
+   {
+    "E": 15,
+    "cases": [
+     {
+      "name": "n0_prev0",
+      "prev_grace_until": "0",
+      "H": "1500",
+      "n": 0,
+      "E": 15,
+      "new_grace_until": "0",
+      "probed": true,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_prev_below_H",
+      "prev_grace_until": "1485",
+      "H": "1500",
+      "n": 0,
+      "E": 15,
+      "new_grace_until": "1485",
+      "probed": true,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_prev_eq_H",
+      "prev_grace_until": "1500",
+      "H": "1500",
+      "n": 0,
+      "E": 15,
+      "new_grace_until": "1500",
+      "probed": true,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_prev_above_H",
+      "prev_grace_until": "1545",
+      "H": "1500",
+      "n": 0,
+      "E": 15,
+      "new_grace_until": "1545",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n0_prev_u64max",
+      "prev_grace_until": "18446744073709551615",
+      "H": "1500",
+      "n": 0,
+      "E": 15,
+      "new_grace_until": "18446744073709551615",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n1_prev0",
+      "prev_grace_until": "0",
+      "H": "1500",
+      "n": 1,
+      "E": 15,
+      "new_grace_until": "1515",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n2_prev0",
+      "prev_grace_until": "0",
+      "H": "1500",
+      "n": 2,
+      "E": 15,
+      "new_grace_until": "1530",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n3_prev_below_H",
+      "prev_grace_until": "1485",
+      "H": "1500",
+      "n": 3,
+      "E": 15,
+      "new_grace_until": "1545",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n1_prev_eq_H",
+      "prev_grace_until": "1500",
+      "H": "1500",
+      "n": 1,
+      "E": 15,
+      "new_grace_until": "1515",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n2_prev_eq_H_plus_2E",
+      "prev_grace_until": "1530",
+      "H": "1500",
+      "n": 2,
+      "E": 15,
+      "new_grace_until": "1530",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n2_prev_above_H_plus_2E",
+      "prev_grace_until": "1575",
+      "H": "1500",
+      "n": 2,
+      "E": 15,
+      "new_grace_until": "1575",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n5_prev_between",
+      "prev_grace_until": "1530",
+      "H": "1500",
+      "n": 5,
+      "E": 15,
+      "new_grace_until": "1575",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n1_prev_u64max",
+      "prev_grace_until": "18446744073709551615",
+      "H": "1500",
+      "n": 1,
+      "E": 15,
+      "new_grace_until": "18446744073709551615",
+      "probed": false,
+      "probed_vs_prev": false
+     },
+     {
+      "name": "n17280_prev0",
+      "prev_grace_until": "0",
+      "H": "1500",
+      "n": 17280,
+      "E": 15,
+      "new_grace_until": "260700",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n1_H0_prev0",
+      "prev_grace_until": "0",
+      "H": "0",
+      "n": 1,
+      "E": 15,
+      "new_grace_until": "15",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_H0_prev0",
+      "prev_grace_until": "0",
+      "H": "0",
+      "n": 0,
+      "E": 15,
+      "new_grace_until": "0",
+      "probed": true,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n4_Hbig_prev0",
+      "prev_grace_until": "0",
+      "H": "16492674416640",
+      "n": 4,
+      "E": 15,
+      "new_grace_until": "16492674416700",
+      "probed": false,
+      "probed_vs_prev": true
+     },
+     {
+      "name": "n0_Hbig_prev_above",
+      "prev_grace_until": "16492674416655",
+      "H": "16492674416640",
+      "n": 0,
+      "E": 15,
+      "new_grace_until": "16492674416655",
+      "probed": false,
+      "probed_vs_prev": false
+     }
+    ]
    }
   ],
   "storage_root_v2": [
@@ -972,12 +1585,12 @@
    },
    {
     "name": "reg5_opaque_sets_reports_segs5",
-    "registry_root": "7fd519e989cc042315b2d12d69e23b797de7bb6f9dd314c50f58d27c3e68eff1e1e0da104441c1bb5d20c8553b26ffecda481832b0c8f33ea31de4fd67be8ff4",
+    "registry_root": "559523a7516b3cc05fa2aee3b56b4ac6e7ead138e3c0204134d93d052710c0c57b554a33659ddae443f03684ebffec449b5293ed548f2202c8183bcc81546354",
     "sets_root": "54ee5bf3968a3542e76f65b78f03ca39ebfec20b5ced3de49424b64d4a49f6239d2810242ed4d20de1ffec71712d33676c7a5cfd75e1b3fc2dd5561106285c0c",
     "reports_root": "d6ae26a324b1b02a0d07d4e1cd6ff1ff652e309590fb0924af159808fc55048e514d1386ec059627be6b65cbc63a66a613be7419ca06e96c5b516d9b18f41fad",
     "segments_root": "441d99ea4addbc30c0df648423c20e6b12d67c45aeccf4a93ade0c1a78362f26096e5aaa0bc3003d9eeb99f9659ec4837b5b0d224159807d13680ad37a603f88",
-    "preimage": "4e44532e53544f522e763200000000007fd519e989cc042315b2d12d69e23b797de7bb6f9dd314c50f58d27c3e68eff1e1e0da104441c1bb5d20c8553b26ffecda481832b0c8f33ea31de4fd67be8ff454ee5bf3968a3542e76f65b78f03ca39ebfec20b5ced3de49424b64d4a49f6239d2810242ed4d20de1ffec71712d33676c7a5cfd75e1b3fc2dd5561106285c0cd6ae26a324b1b02a0d07d4e1cd6ff1ff652e309590fb0924af159808fc55048e514d1386ec059627be6b65cbc63a66a613be7419ca06e96c5b516d9b18f41fad441d99ea4addbc30c0df648423c20e6b12d67c45aeccf4a93ade0c1a78362f26096e5aaa0bc3003d9eeb99f9659ec4837b5b0d224159807d13680ad37a603f88",
-    "storage_root": "8a080013d9045c9edc1baeb7b65124b58fabc43dd3a4a6f61239af36cd4b706b29dc3c2bb34cb90e8b2be0b606ddcbd9d9c915cd95dd19a49c1640d3530d727c"
+    "preimage": "4e44532e53544f522e76320000000000559523a7516b3cc05fa2aee3b56b4ac6e7ead138e3c0204134d93d052710c0c57b554a33659ddae443f03684ebffec449b5293ed548f2202c8183bcc8154635454ee5bf3968a3542e76f65b78f03ca39ebfec20b5ced3de49424b64d4a49f6239d2810242ed4d20de1ffec71712d33676c7a5cfd75e1b3fc2dd5561106285c0cd6ae26a324b1b02a0d07d4e1cd6ff1ff652e309590fb0924af159808fc55048e514d1386ec059627be6b65cbc63a66a613be7419ca06e96c5b516d9b18f41fad441d99ea4addbc30c0df648423c20e6b12d67c45aeccf4a93ade0c1a78362f26096e5aaa0bc3003d9eeb99f9659ec4837b5b0d224159807d13680ad37a603f88",
+    "storage_root": "459005831aacbfb129831d72baa8da4687216cc166755a495a548421c8b48ab96e164e45db019d74901b17a53fe36c225dabeb1a7943bc4eae9478f145b52973"
    },
    {
     "name": "reg_empty_segs5",

@@ -15,6 +15,13 @@ PROVENANCE
   No C implementation of the new items was read (none exists; author !=
   oracle).
 
+  K9 update (2026-10-05): item 4 leaf v2 gains grace_until(8, BE) after
+  fail_streak, and the grace rule is covered as a pure function. Written
+  from the K9 item of docs/plans/decisions/
+  2026-10-05-storage-reward-is-for-archive.md and the K9 line at the end of
+  docs/plans/2026-10-05-archive-reward-bytes.md ONLY; the C leaf
+  implementation was not read.
+
   Honest label: SELF-CONSISTENT. This proves a second implementation of the
   same document agrees byte for byte; it does not prove the document sound.
 
@@ -40,6 +47,9 @@ SEGMENT_BLOCKS = 17280          # K1: blocks per segment (count(4) constant)
 HOLDERS_R = 3                   # K4: R = 3 holders per segment
 FAIL_STREAK_LIMIT = 3           # K2: fail_streak >= 3 -> not eligible
 SAMPLES = 3                     # K3: i = 0, 1, 2
+EPOCH_LENGTHS = (720, 15)       # K9 grace vectors: production E, short E
+GRACE_MID = (1 << 32) + 17280   # K9 leaf vectors: mid grace_until, both
+                                # 32-bit halves non-zero
 
 STATUS_ACTIVE = 1
 STATUS_EXITING = 2
@@ -205,12 +215,13 @@ def holders(akey: bytes, members):
 # ── item 4: registry leaf v2 and registry root ────────────────────────────
 
 def registry_leaf_v2_preimage(node_fp, payee_fp, bond, status, reg_h,
-                              exit_h, fail_streak):
+                              exit_h, fail_streak, grace_until):
     assert len(node_fp) == FP_LEN and len(payee_fp) == FP_LEN
     if status not in (STATUS_ACTIVE, STATUS_EXITING, STATUS_RELEASED):
         raise ValueError("status invalid")
     return (tag(T_STLEAF2) + node_fp + payee_fp + be64(bond) +
-            bytes([status]) + be64(reg_h) + be64(exit_h) + be32(fail_streak))
+            bytes([status]) + be64(reg_h) + be64(exit_h) + be32(fail_streak) +
+            be64(grace_until))
 
 
 def registry_leaf_v2(*a):
@@ -224,6 +235,29 @@ def registry_root_v2(rows):
     if not strictly_ascending([r[0] for r in rows]):
         raise ValueError("registry rows not strictly ascending by node_fp")
     return tagged_merkle(T_STRNODE, [registry_leaf_v2(*r) for r in rows])
+
+
+# ── K9: grace rule (pure function) ────────────────────────────────────────
+
+def grace_update(prev: int, H: int, n: int, E: int) -> int:
+    """At boundary H, member gains n segments it did not hold at H-E:
+    n > 0 -> max(prev, H + n*E); n == 0 -> prev. Overflow past u64 is
+    undefined in the spec and refused."""
+    if not (0 <= prev <= U64_MAX and 0 <= H <= U64_MAX):
+        raise ValueError("u64 out of range")
+    if n < 0 or E < 1:
+        raise ValueError("n must be >= 0 and E >= 1")
+    if n == 0:
+        return prev
+    cand = H + n * E
+    if cand > U64_MAX:
+        raise ValueError("H + n*E exceeds u64 (undefined in spec)")
+    return max(prev, cand)
+
+
+def probed(H: int, grace_until: int) -> bool:
+    """Epoch starting at H is probed iff NOT (H < grace_until)."""
+    return H >= grace_until
 
 
 # ── item 5: storage leg v2 ────────────────────────────────────────────────
@@ -323,8 +357,31 @@ READINGS = [
     "oracle refuses duplicate node_pk hashes rather than define a tie rule.",
     "Item 4: status(1) values ACTIVE=1, EXITING=2, RELEASED=3 are taken from "
     "the storage v1 oracle (the 2026-10-05 doc does not restate them); "
-    "fail_streak(4) is u32 big-endian, appended last; bond, "
-    "registered_height, exit_height are u64 big-endian.",
+    "fail_streak(4) is u32 big-endian; bond, registered_height, exit_height "
+    "are u64 big-endian.",
+    "Item 4 (K9): grace_until(8) is u64 big-endian and is the LAST field, "
+    "appended after fail_streak; leaf preimage = 16 + 64 + 64 + 8 + 1 + 8 + "
+    "8 + 4 + 8 = 181 bytes. The tag stays NDS.STLEAF.v2 (never activated). "
+    "The bytes doc's earlier Clarifications line 'fail_streak u32 BE, last "
+    "field' is superseded by the K9 line of the same doc.",
+    "Item 4 (K9): the oracle imposes no relation between grace_until and "
+    "registered_height / exit_height / status; any u64 is encoded as given.",
+    "K9 grace rule: n (segments the member holds at H that it did not hold "
+    "at H-E) is an INPUT; the oracle does not derive it from holder sets. "
+    "new grace_until = max(prev, H + n*E) when n > 0, else prev. H is not "
+    "required to be a multiple of E (the vectors use multiples). H + n*E > "
+    "2^64-1 is undefined in the spec; the oracle refuses it and emits no "
+    "vector for it (prev = 2^64-1 with n > 0 is covered and yields prev).",
+    "K9 probe rule: the decision says 'while the epoch start H < "
+    "grace_until: m is not probed'. The oracle reads the grace_until in "
+    "force for the epoch starting at H as the value AFTER the update at "
+    "boundary H, so probed = H >= new_grace_until (any n > 0 therefore "
+    "means not probed in epoch H, since new >= H + E > H). "
+    "probed_vs_prev = H >= prev is emitted as well, for comparison only; "
+    "the oracle's reading is 'probed'.",
+    "K9: 'not probed' also means earns nothing and fail_streak unchanged "
+    "for that epoch (decision text); those consequences are not separate "
+    "vectors here, only the probed bit is.",
     "Item 4: registry_root v2 = tagged_merkle('NDS.STRNODE.v1') over leaf-v2 "
     "hashes strictly ascending by node_fp (unsigned bytewise order); empty "
     "= SHA3-512(padded 'NDS.E.STREG.v1').",
@@ -465,22 +522,27 @@ def build():
          U64_MAX - 1, U64_MAX, U32_MAX),
         ("bond0_h0_streak2", 0, STATUS_ACTIVE, 0, 0, 2),
     ]
+    grace_cases = [("0", 0), ("1", 1), ("mid", GRACE_MID), ("u64max", U64_MAX)]
     lv = []
-    for name, bond, st, rh, eh, fs in leaf_cases:
-        nf = fp("leaf/node/" + name)
-        pf = fp("leaf/payee/" + name)
-        pre = registry_leaf_v2_preimage(nf, pf, bond, st, rh, eh, fs)
-        lv.append({"name": name, "node_fp": X(nf), "payee_fp": X(pf),
-                   "bond": str(bond), "status": st,
-                   "registered_height": str(rh), "exit_height": str(eh),
-                   "fail_streak": str(fs), "preimage": X(pre),
-                   "leaf": X(h(pre))})
-        count += 1
+    for name0, bond, st, rh, eh, fs in leaf_cases:
+        for glabel, gu in grace_cases:
+            name = "%s_grace%s" % (name0, glabel)
+            nf = fp("leaf/node/" + name)
+            pf = fp("leaf/payee/" + name)
+            pre = registry_leaf_v2_preimage(nf, pf, bond, st, rh, eh, fs, gu)
+            lv.append({"name": name, "node_fp": X(nf), "payee_fp": X(pf),
+                       "bond": str(bond), "status": st,
+                       "registered_height": str(rh), "exit_height": str(eh),
+                       "fail_streak": str(fs), "grace_until": str(gu),
+                       "preimage_len": len(pre), "preimage": X(pre),
+                       "leaf": X(h(pre))})
+            count += 1
     vec["registry_leaf_v2"] = lv
 
     # item 4 — registry root v2
     statuses = [STATUS_ACTIVE, STATUS_EXITING, STATUS_RELEASED]
     streaks = [0, 1, 3, U32_MAX, 2]
+    graces = [0, 1, GRACE_MID, U64_MAX]
     rr = []
     reg_roots = {}
     for n in (0, 1, 2, 3, 5):
@@ -491,7 +553,8 @@ def build():
                          fp("reg/n%d/payee/%d" % (n, i)),
                          [0, 1, 10 ** 15, U64_MAX][i % 4], st, i * 1000,
                          0 if st == STATUS_ACTIVE else i * 1000 + 720,
-                         streaks[i % len(streaks)]))
+                         streaks[i % len(streaks)],
+                         graces[(i + 1) % len(graces)]))
         rows.sort(key=lambda r: r[0])
         root = registry_root_v2(rows)
         reg_roots[n] = root
@@ -501,11 +564,49 @@ def build():
                 "node_fp": X(r[0]), "payee_fp": X(r[1]), "bond": str(r[2]),
                 "status": r[3], "registered_height": str(r[4]),
                 "exit_height": str(r[5]), "fail_streak": str(r[6]),
+                "grace_until": str(r[7]),
                 "leaf": X(registry_leaf_v2(*r))} for r in rows],
             "registry_root": X(root),
         })
         count += 1
     vec["registry_root_v2"] = rr
+
+    # K9 — grace rule (pure function), per epoch length E
+    gr = []
+    for E in EPOCH_LENGTHS:
+        H = 100 * E
+        Hbig = (1 << 40) * E
+        cases = [
+            ("n0_prev0", 0, H, 0),
+            ("n0_prev_below_H", H - E, H, 0),
+            ("n0_prev_eq_H", H, H, 0),
+            ("n0_prev_above_H", H + 3 * E, H, 0),
+            ("n0_prev_u64max", U64_MAX, H, 0),
+            ("n1_prev0", 0, H, 1),
+            ("n2_prev0", 0, H, 2),
+            ("n3_prev_below_H", H - E, H, 3),
+            ("n1_prev_eq_H", H, H, 1),
+            ("n2_prev_eq_H_plus_2E", H + 2 * E, H, 2),
+            ("n2_prev_above_H_plus_2E", H + 5 * E, H, 2),
+            ("n5_prev_between", H + 2 * E, H, 5),
+            ("n1_prev_u64max", U64_MAX, H, 1),
+            ("n17280_prev0", 0, H, 17280),
+            ("n1_H0_prev0", 0, 0, 1),
+            ("n0_H0_prev0", 0, 0, 0),
+            ("n4_Hbig_prev0", 0, Hbig, 4),
+            ("n0_Hbig_prev_above", Hbig + E, Hbig, 0),
+        ]
+        out = []
+        for name, prev, hh, n in cases:
+            new = grace_update(prev, hh, n, E)
+            out.append({"name": name, "prev_grace_until": str(prev),
+                        "H": str(hh), "n": n, "E": E,
+                        "new_grace_until": str(new),
+                        "probed": probed(hh, new),
+                        "probed_vs_prev": probed(hh, prev)})
+            count += 1
+        gr.append({"E": E, "cases": out})
+    vec["grace_rule"] = gr
 
     # item 5 — storage root v2
     segs5 = segments_root([(k, roots[k]) for k in (1, 2, 3, 4, 5)])
@@ -554,7 +655,10 @@ def build():
         "spec": "docs/plans/2026-10-05-archive-reward-bytes.md items 1-5 "
                 "and the §6 sample derivation (APPROVED "
                 "docs/plans/decisions/"
-                "2026-10-05-archive-reward-bytes-approved.md)",
+                "2026-10-05-archive-reward-bytes-approved.md); item 4 leaf "
+                "and grace rule per K9 (docs/plans/decisions/"
+                "2026-10-05-storage-reward-is-for-archive.md, K9 line of the "
+                "bytes doc)",
         "oracle": "nodus/tests/vectors/archive_reward_oracle.py",
         "label": "SELF-CONSISTENT (independent re-implementation of the "
                  "same document; not an external reference)",
@@ -574,6 +678,8 @@ def build():
             "segment_blocks": SEGMENT_BLOCKS,
             "holders_R": HOLDERS_R,
             "fail_streak_limit": FAIL_STREAK_LIMIT,
+            "grace_epoch_lengths": list(EPOCH_LENGTHS),
+            "grace_until_mid": str(GRACE_MID),
         },
         "readings": READINGS,
         "vector_count": count,
