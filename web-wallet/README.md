@@ -170,8 +170,8 @@ the DNA Connect wallet's identity/actions/assets hierarchy as a reference.
 Creation and restore still default to temporary memory-only use. Saving a new
 encrypted copy or changing its password requires an unchecked-by-default risk
 acknowledgement alongside the storage warnings and a valid password of at least
-16 characters, entered twice with an exact match (0.1.57). The label explains the offline-guessing reason for the minimum;
-length alone is not a strength guarantee. Consent is rechecked before writing
+16 characters, entered twice with an exact match (0.1.57).
+Length alone is not a strength guarantee. Consent is rechecked before writing
 and cleared after saving or locking. Existing saved wallets can still unlock
 without a new save acknowledgement. No consent record or new secret is stored.
 
