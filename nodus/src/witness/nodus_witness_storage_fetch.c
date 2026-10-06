@@ -3,8 +3,8 @@
  * @brief Storage reward v1 rev 4 (the ARCHIVE reward), package B2b-2 —
  *        the channel 0x73 segment fetch: the wire and the serving side.
  *        Contract, layout, admission and the determinism statement:
- *        nodus_witness_storage_fetch.h. ⚠ The wire is pending operator
- *        approval.
+ *        nodus_witness_storage_fetch.h. The wire is approved (decision
+ *        K6b, 2026-10-07).
  *
  * Nothing here reads a clock or draws randomness; the only writes are
  * into the caller's output buffer.

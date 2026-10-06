@@ -1357,7 +1357,7 @@ validators in the storage node's `persistent_peers` (and/or the network file), s
 live connection to it. A storage node that is not connected to a validator when that validator's
 probe slot comes (and through the rest of the epoch) is NOT OK in that validator's report. Both ends
 must run a build that lists channel 0x72 (an older peer is never sent to on it). The segment fetch
-(channel 0x73, package B2b-2 — ⚠ the byte is pending operator approval) also uses EXISTING 4004
+(channel 0x73, package B2b-2 — approved 2026-10-07, decision K6b) also uses EXISTING 4004
 connections only: a storage node fetches from the other holders of a segment it is connected to, then
 from any connected peer (keep EU-6 / US-1 in `persistent_peers`). Serving nodes answer only a requester
 that is an ACTIVE member of the current frozen storage set. There is no byte limit per requester

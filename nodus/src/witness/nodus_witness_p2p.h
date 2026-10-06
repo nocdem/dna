@@ -217,11 +217,10 @@ struct nodus_witness;
 /** Segment fetch — a storage holder fetches an archive segment it must
  *  hold, one part per request (package B2b-2; design docs/plans/2026-10-
  *  05-archive-reward-design.md rev 4 §3; message layout
- *  nodus_witness_storage_fetch.h). ⚠ NOT IN THE OPERATOR-APPROVED
- *  CHANNEL LIST (decision 2026-09-26-witness-port-session.md item 3 names
- *  0x70 / 0x71; decision 2026-10-05-storage-reward-is-for-archive.md K6
- *  adds 0x72): 0x73 is this package's choice, PENDING the operator's
- *  approval of the byte. It collides with no reference channel (the same
+ *  nodus_witness_storage_fetch.h). In the operator-approved channel list
+ *  (decision 2026-09-26-witness-port-session.md item 3 names 0x70 /
+ *  0x71; decision 2026-10-05-storage-reward-is-for-archive.md K6 adds
+ *  0x72, K6b — 2026-10-07 — adds 0x73 as built). It collides with no reference channel (the same
  *  list as 0x72). A peer of an older build does not list it and is never
  *  sent to on it (cmt_p2p_peer.c peer_has_channel). */
 #define NODUS_P2P_CH_STFETCH  0x73

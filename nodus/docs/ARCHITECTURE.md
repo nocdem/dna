@@ -6550,15 +6550,14 @@ validators(k·17280): `nodus_cmt_ss_prune_states` runs with block pruning) FETCH
 included. **retain_blocks warning:** at every assignment (start,
 then once per epoch) `retain_blocks > 0` while an assigned segment is incomplete logs a WARN.
 
-**Channel 0x73 — the fetch (⚠ NEW WIRE, PENDING OPERATOR APPROVAL: the byte, the layouts, the codes and
-the bounds are this package's; the approved list is 0x70 / 0x71, K6 adds 0x72).** Descriptor: priority
+**Channel 0x73 — the fetch (APPROVED 2026-10-07, decision K6b: the byte, the layouts, the codes and the
+bounds below, as built; the approved list is 0x70 / 0x71, K6 adds 0x72, K6b adds 0x73).** Descriptor: priority
 1, send queue 4, receive capacity `NODUS_STFETCH_MSG_MAX` (≈ 610 KB: a terminal commit at 128 validators,
 `NODUS_SEG_COMMIT_MAX` = 159 + 128 × 4685 = 599 839 B, travels whole because its hash binding is over the
 whole). An undecodable message stops the peer (stop reason 423).
 - kind `0x01` REQUEST (37-byte body): `"NDS.STFETCH.v1"` padded to 16 ‖ k u64 ‖ h u64 ‖ part u32 ‖ cont u8.
   h ∈ segment k; part = the part index, or 0xFFFFFFFF = the terminal commit, or 0xFFFFFFFE = the validator
-  set validators(k·17280) (K8a; ⚠ this selector is part of the same PENDING wire — K8a approved that the
-  file carries the set, not how 0x73 moves it), both with h = k·17280; cont 0 = first request of block h
+  set validators(k·17280) (K8a; this selector is part of the wire K6b approved), both with h = k·17280; cont 0 = first request of block h
   (send header(h+1)), 1 = the requester continues block h and holds a verified header(h+1) (omit it);
   anything else is malformed.
 - kind `0x02` ANSWER: `rq[64] ‖ code(1)` and, when 0, `hdr_len u32 ‖ header(h+1) ‖ body_len u32 ‖ body ‖

@@ -17,13 +17,10 @@
  * session.md item 3 (the approved channel list: 0x70, 0x71). Design
  * docs/plans/2026-10-05-archive-reward-design.md rev 4 §3.
  *
- * ⚠ PENDING OPERATOR APPROVAL — NEW WIRE. The channel byte 0x73, the
- * request and answer layouts, the codes and the bounds below are this
- * package's choices; no approved record names them (the approved list
- * names 0x70 / 0x71; K6 adds 0x72). The part selector 0xFFFFFFFE (the
- * validator set, added for decision K8a) is part of this same pending
- * wire: K8a approved that the file carries the set, not how 0x73 moves
- * it.
+ * APPROVED WIRE (decision 2026-10-05-storage-reward-is-for-archive.md
+ * K6b, operator 2026-10-07): the channel byte 0x73, the request and
+ * answer layouts, the codes and the bounds below, as built — including
+ * the part selector 0xFFFFFFFE (the validator set of decision K8a).
  *
  * ── DETERMINISM (design rev 4 §7 D3, D4) ──────────────────────────────
  * Nothing here writes state or is read by the state machine. What a peer
@@ -123,7 +120,7 @@
 extern "C" {
 #endif
 
-/* ── wire constants (⚠ pending operator approval) ───────────────────── */
+/* ── wire constants (approved, K6b) ──────────────────────────────────── */
 
 #define NODUS_STFETCH_TAG            "NDS.STFETCH.v1"
 #define NODUS_STFETCH_TAG_LEN        16u
