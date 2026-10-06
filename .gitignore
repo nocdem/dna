@@ -90,3 +90,7 @@ CLAUDE.md
 
 # clangd per-project compilation-database pointers (local dev tooling)
 .clangd
+
+# Nodus EVM SDK (sdk/js): the built send module and installed packages
+sdk/js/wasm/
+sdk/js/node_modules/

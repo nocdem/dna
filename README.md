@@ -179,6 +179,7 @@ dna/
 │   └── dnac/                  # Nodus Chain wire codecs + the CometBFT port (cmt_*)
 ├── dnac/                      # Nodus Chain client library (compiled into libdna)
 ├── web-wallet/                # Nodus Web Wallet (wallet.nodusnetwork.io); connect/ = Nodus Connect core
+├── sdk/js/                    # Nodus EVM SDK for Node.js scripts (in-repo only, not on npm; sdk/js/README.md)
 ├── explorer/                  # Scan: block explorer daemon — read-only indexer + JSON API
 ├── website/                   # nodusnetwork.io, wiki.nodusnetwork.io, scan.nodusnetwork.io (static)
 ├── messenger/                 # DNA Connect (frozen): C library + Flutter app
