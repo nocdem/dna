@@ -14,6 +14,11 @@
 #                         here); every libevm.a consumer links both
 #   make statetest      — link the state-test runner, test_rlp_mpt and
 #                         test_precompile (tests/Makefile.statetest)
+#   make conformance FIXTURES=<fixtures/state_tests dir>
+#                       — the official Prague state tests (20-byte mode)
+#   make differential FIXTURES=<fixtures/state_tests dir>
+#                       — the same cases at addr_bytes 20 and 32, compared
+#                         (Nodus-derived, self-consistent; not official)
 #   make test_u256      — build/test_u256 (oracle vectors, default build)
 #   make test-portable  — build/test_u256_portable (-DEVM_U256_PORTABLE:
 #                         forces the portable 64x64 multiply, no __int128)
@@ -185,7 +190,7 @@ TRIE_OBJS  := $(TRIE_BUILD)/evm_trie.o $(TRIE_BUILD)/evm_trie_rlp.o \
 .PHONY: all lib deps test_u256 test-portable test test_addr32 \
         test_nodus_profile test_solc_exec vectors addr32-vectors \
         addr32-vectors-check \
-        statetest conformance clean test_trie trie-vectors trie-vectors-check \
+        statetest conformance differential clean test_trie trie-vectors trie-vectors-check \
         bench
 
 all: lib deps test_u256 test-portable
@@ -401,6 +406,13 @@ statetest: $(BUILD)/libevm.a $(BUILD)/libevm_deps.a $(GMP_LIB)
 conformance: statetest
 	./$(BUILD)/statetest/test_rlp_mpt
 	./$(BUILD)/statetest/statetest --fork Prague $(FIXTURES)
+
+# Differential 20/32 run (Kurultay #9 item 4): every eligible Prague case
+# through the engine at addr_bytes 20 and 32, normalized results compared.
+# Nodus-derived / self-consistent — NOT an official result (README
+# "Conformance"). Same FIXTURES as conformance.
+differential: statetest
+	./$(BUILD)/statetest/statetest --differential --fork Prague $(FIXTURES)
 
 clean:
 	rm -rf $(BUILD)
