@@ -1,6 +1,6 @@
 # DNAC — Nodus Chain Client Library
 
-**Version:** v0.20.1 (`dnac/include/dnac/version.h`)
+**Version:** v0.21.0 (`dnac/include/dnac/version.h`)
 
 DNAC is the **client side** of **Nodus Chain** (formerly "DNA Chain") — the
 post-quantum UTXO blockchain whose coin is NODUS, a public testnet since
