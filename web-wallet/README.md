@@ -30,6 +30,7 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
+- **Smart contracts in Nodus Connect too (0.1.63, 2026-10-06).** Nodus Connect's Wallet tab now has the same "Smart contracts · NODUS · Testnet" panel as the wallet page, mounted and registered as a wallet extension the way the shared vaults are (`src/connect-main.js`, before `src/app.js` loads; markup `#evm-panel`, `#evm-root` and the "Smart contracts" link `#nav-evm` in `connect-site/index.html`). Nothing about when it shows changed: it stays hidden exactly as on the wallet page until the connected node reports the EVM generation (`src/evm/ui.js` `showPanel`: `client.evmBuildable` / `evmReadable`, NODUS selected) — HF-5, `EVM_ACTIVE` voted to switch on at block 79,757 (decision `2026-10-06-hf5-evm-activation.md`). No new network request, polling or `src/evm/` change; both pages already had the same Content-Security-Policy. `test/connect-evm.test.js` checks the wiring and markup statically (source text, not a running page); the panel's placement in the Connect Wallet tab has not been looked at in a browser.
 - **Chain-name discovery and password controls (0.1.57, 2026-10-05).** Connect Home now puts **Register a chain name** directly below the identity, with an explanation of what the name is for. It stays visible but disabled until the wallet's existing name registration entry is ready, showing the name lookup's status or an availability note. Once ready, it opens Wallet and forwards to the existing registration shortcut, which selects NODUS and focuses the form. The entry disappears when the existing own-name display knows a name, and resets on lock/reopen. No new registration transaction path, name cache or polling was added.
   - Both sites show **Save current wallet** only without a saved copy. After saving or unlocking that copy, the section reads **Change saved password**, with current-password and new-password fields. A phrase-only session with a saved copy instead explains how to lock and unlock it; neither action nor password fields are offered. The result remains visible below the controls.
   - Saving and changing a password both require entering the new password twice. Missing or different confirmation shows an error and focuses confirmation before encryption or storage work, preserving the entries for correction. Confirmation clears with the other password inputs on an operation or lock and participates in the existing inactivity guard. The current-password, authenticated-session, consent and saved-history protections remain in place; encryption and storage formats are unchanged.
@@ -370,7 +371,7 @@ The browser test starts its own preview server and intercepts **all external HTT
 - `src/vault.js`: optional authenticated local encryption.
 - `src/app.js`, `index.html`, `src/style.css`: accountless responsive UI.
 - `src/wallet-extensions.js`, `src/site-lock.js`, `src/connect-main.js`, `connect-site/index.html`, `vite.connect.config.js`, `src/connect/ui/`: the Nodus Connect site build and the cross-site rule (section "Nodus Connect site" below).
-- `src/evm/` (unreleased): smart contracts on the Nodus EVM domain — `address.js`, `abi.js`, `units.js`, `rpc.js`, `contract.js`, `ui.js`; the C side is `crypto/nodus-send-wasm.c` "SMART CONTRACTS" over `../shared/dnac/evm_call_wire.c` (section "Smart contracts" at the end).
+- `src/evm/` (unreleased): smart contracts on the Nodus EVM domain — `address.js`, `abi.js`, `units.js`, `rpc.js`, `contract.js`, `ui.js`; the C side is `crypto/nodus-send-wasm.c` "SMART CONTRACTS" over `../shared/dnac/evm_call_wire.c` (section "Smart contracts" at the end). The panel (`ui.js`) is registered as a wallet extension by `src/main.js` and, since 0.1.63, `src/connect-main.js`.
 - `src/qr.js` (0.1.22): draws the receive-address QR code as SVG DOM nodes with `qrcode-generator`; `src/app.js` `setReceiveAddress()` is the only writer of the address text and its QR.
 - `scripts/third-party-licenses.mjs`, `vite.config.js` (0.1.22): collect the license notice of every npm package rendered into the bundle and write `dist/THIRD-PARTY-LICENSES.txt`; the build fails for a bundled package with no license field and no license file.
 - `test/`: offline and fully intercepted browser verification.
@@ -1943,6 +1944,14 @@ string "Message history" in the wallet's `app.js` chunk is the saved-wallet
 delete text of 0.1.37, not Messages UI.) Ixios is a build flag in both:
 `VITE_ENABLE_IXIOS=true npm run build:connect` for the same set as the wallet
 site.
+
+**Wallet extensions in Connect.** `src/connect-main.js` registers, before
+`src/app.js` loads: Messages, the own-name display, the shared vaults
+(`#vault-panel`) and — since 0.1.63 — the smart contracts (`src/evm/ui.js`,
+`#evm-panel` / `#evm-root`, nav link `#nav-evm`), mounted the same way as on
+the wallet page. The smart-contracts panel and its link stay hidden until
+the connected node reports the EVM generation (HF-5, switching on at block
+79,757), as on the wallet page.
 
 **One unlock, one session, one lock.** `src/wallet-extensions.js` is the only
 seam: `src/app.js` raises `attach`, `nodusReady`, `nodusConnectFailed`,
