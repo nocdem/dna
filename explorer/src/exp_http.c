@@ -245,6 +245,8 @@ static const char *param_name(uint32_t id) {
     case DNAC_CFG_NAME_PRICE_4P:          return "NAME_PRICE_4P";
     case DNAC_CFG_NAME_PRICE_5P:          return "NAME_PRICE_5P";
     case DNAC_CFG_NAME_PRICE_6P:          return "NAME_PRICE_6P";
+    case DNAC_CFG_EVM_ACTIVE:             return "EVM_ACTIVE";
+    case DNAC_CFG_EVM_BLOCK_GAS_LIMIT:    return "EVM_BLOCK_GAS_LIMIT";
     default:                              return NULL;
     }
 }
