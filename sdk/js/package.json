@@ -1,0 +1,22 @@
+{
+  "name": "@nodus/evm-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nodus EVM SDK for Node.js scripts — in-repo only, not published to npm. Built on the web wallet's EVM modules and send module.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "ws": "8.21.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "license": "Apache-2.0"
+}

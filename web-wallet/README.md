@@ -372,6 +372,7 @@ The browser test starts its own preview server and intercepts **all external HTT
 - `src/app.js`, `index.html`, `src/style.css`: accountless responsive UI.
 - `src/wallet-extensions.js`, `src/site-lock.js`, `src/connect-main.js`, `connect-site/index.html`, `vite.connect.config.js`, `src/connect/ui/`: the Nodus Connect site build and the cross-site rule (section "Nodus Connect site" below).
 - `src/evm/` (unreleased): smart contracts on the Nodus EVM domain — `address.js`, `abi.js`, `units.js`, `rpc.js`, `contract.js`, `ui.js`; the C side is `crypto/nodus-send-wasm.c` "SMART CONTRACTS" over `../shared/dnac/evm_call_wire.c` (section "Smart contracts" at the end). The panel (`ui.js`) is registered as a wallet extension by `src/main.js` and, since 0.1.63, `src/connect-main.js`.
+- `../sdk/js/` (not part of this package): the Nodus EVM SDK for Node.js scripts — imports `src/evm/`, `src/nodus/` and a node-environment build of the same send module (`scripts/build-nodus-send-wasm.sh parity`); see `sdk/js/README.md`.
 - `src/qr.js` (0.1.22): draws the receive-address QR code as SVG DOM nodes with `qrcode-generator`; `src/app.js` `setReceiveAddress()` is the only writer of the address text and its QR.
 - `scripts/third-party-licenses.mjs`, `vite.config.js` (0.1.22): collect the license notice of every npm package rendered into the bundle and write `dist/THIRD-PARTY-LICENSES.txt`; the build fails for a bundled package with no license field and no license file.
 - `test/`: offline and fully intercepted browser verification.

@@ -61,7 +61,8 @@ make lib            # build/libevm.a
 make deps           # build/libevm_deps.a (blst, c-kzg-4844, mcl, secp256k1 + the
                     # embedded KZG trusted setup) and build/gmp/install/lib/libgmp.a
 make test           # addr32-vectors-check, then run test_u256, test_u256_portable,
-                    # test_addr32, test_nodus_profile, test_solc_exec, test_trie
+                    # test_addr32, test_nodus_profile, test_solc_exec,
+                    # test_example_token (nodus/tools/evm/examples/out/), test_trie
 make statetest      # link the state-test runner, test_rlp_mpt, test_precompile
 make conformance FIXTURES=<extracted fixtures/state_tests dir>
                     # test_rlp_mpt + statetest --fork Prague over the fixtures
@@ -106,41 +107,65 @@ Compiled Solidity in 32-byte mode (the Nodus solc, four compiler configurations)
   (`tests/statetest.c:188-214`; `evm_precompile.c:323`, `:362`).
 - **EXCLUDED:** type-3 blob (EIP-4844) and type-4 set-code (EIP-7702)
   transactions — Nodus has no counterpart (`tests/statetest.c:134`,
-  `:1933-1944`). An excluded case is never counted as a pass.
+  `:2722-2736`). An excluded case is never counted as a pass.
 
 **Differential 20/32 (Nodus-derived, self-consistent).** `make differential
 FIXTURES=<fixtures/state_tests dir>` (`statetest --differential`) runs every
 eligible Prague case through the engine twice, `addr_bytes` 20 and 32, with the
 same pre-state, environment and transaction (fixture addresses are already
-zero-extended 32-byte words, `tests/statetest.c` `hex_addr`), and compares a
-normalized result: applied/refused, error or status, gas used, output,
-`wei_destroyed`, every post-state account keyed by its low 20 bytes (nonce,
-balance, code hash, storage) and the logs (emitter projected, topics, data).
-Measured over the same v5.4.0 fixtures: **ELIGIBLE 17 274 — AGREE 10 631,
-DIFFER 6 643, UNEXPLAINED 0, FAULT 0, ERROR 0; EXCLUDED 1 595** (985 + 610);
-17 274 + 1 595 = 18 869 Prague entries. DIFFER sub-labels: CREATE 6 236,
-WIDE_WORD 78, CREATE2_OR_DERIVED 168, CREATE + CREATE2_OR_DERIVED 157,
-WIDE_WORD + CREATE2_OR_DERIVED 3, CREATE + WIDE_WORD 1. The 20-byte side equals
-the fixture in 17 265 cases; the other 9 are exactly the DEVIATION list above.
-The output is byte-identical across runs; ≈ 36 s on the build host.
+zero-extended 32-byte words, `tests/statetest.c` `hex_addr`).
+
+*Strict comparison (primary).* The harness builds an **address map** per case
+from what the engine itself hashed: the runner is linked with
+`-Wl,--wrap=keccak256` (`tests/Makefile.statetest`), and while `evm_tx_apply`
+runs the wrapper keeps every CREATE preimage `rlp([sender, nonce])` and CREATE2
+preimage `0xff ‖ sender ‖ salt ‖ keccak(initcode)` of that run's width
+(`evm_interp.c:149-188`; a create tx reaches the same function from
+`evm_tx.c:354`). A 32-byte creation is paired with the 20-byte one of the same
+(creator mapped, nonce) or (creator mapped, salt, initcode hash) — or (creator
+mapped, salt) with the initcode equal after substitution — transitively for
+contracts created by created contracts. The 32-byte result is then translated
+(post accounts with their balance / nonce / code / storage, storage keys and
+values, log emitters, topics, 32-byte-aligned log-data and output words, the
+created address) and must **equal** the 20-byte result on every field:
+applied/refused, error or status, gas used (and before refund), output,
+`wei_destroyed`, post state, logs. A difference after substitution is
+S_DIFFER only with a width-dependent class: FIXTURE_20B (the fixture names
+the 20-byte *derived* address itself — pre-funded / EIP-7610 collision
+account, access list, a PUSH20 literal the 32-byte run read), WIDE_WORD (a
+stack word with high bytes that 20-byte mode masks, `evm_state.c:92-99`),
+MASKED_160 (Solidity's `AND(x, 2^160-1)` address cleanup turns a 32-byte
+address into a different account), ADDR_ARITH (verified: equal once an
+address-plus-small-offset word is translated too, e.g. CREATE's result + 1
+stored); anything else is S_UNEXPL, listed per case.
+
+Measured over the same v5.4.0 fixtures: **ELIGIBLE 17 274 — STRICT_AGREE
+16 960, STRICT_DIFFER 314, STRICT_UNEXPLAINED 0, ERROR 0, FAULT 0; EXCLUDED
+1 595** (985 + 610); 17 274 + 1 595 = 18 869 Prague entries. STRICT_DIFFER
+classes: FIXTURE_20B 226, WIDE_WORD 78, MASKED_160 6, ADDR_ARITH 1,
+FIXTURE_20B + UNPAIRED 3. 402 of the agreeing cases carried a CREATE2 pair;
+none needed the initcode-substitution fallback (it is unexercised by this
+corpus).
+Against the first, presence-based version of this mode (AGREE 10 631, DIFFER
+6 643 — still printed in the summary): **6 329 former DIFFER cases are now
+STRICT_AGREE**, i.e. equal field by field after substitution; the 314 remaining
+differences are all former DIFFER cases. The 20-byte side equals the fixture
+in 17 265 cases; the other 9 are exactly the DEVIATION list above. The output
+is byte-identical across runs; ≈ 36 s on the build host.
 How to read it:
 - The two runs are the **same implementation**: a bug both widths share is
   invisible. This is not an official result and not 32-byte conformance.
 - Both runs use the Ethereum profile (`nodus_profile = 0`); production also
   runs the Nodus profile (budget, tickets), which this run does not exercise.
-- A case is DIFFER, not UNEXPLAINED, when the 32-byte run produced a *wide*
-  address (non-zero byte in 0..11) — the only way the widths can part with
-  canonical inputs (`evm_addr_from_word`, `evm_state.c:92-99`; CREATE /
-  CREATE2 derivation, `evm_interp.c:149-186`). Attribution is by the presence
-  of a wide address, not by field-level causality: a 32-byte defect that only
-  shows in a case that also creates a contract lands in DIFFER. The sub-labels
-  are heuristic: CREATE is re-derived independently as
-  keccak(rlp([creator as 32 bytes, nonce])); WIDE_WORD means the low 20 bytes
-  name an address the 20-byte run saw; CREATE2_OR_DERIVED is unverified by
-  construction (the harness does not see the salt and initcode).
+- Only STRICT_AGREE is an equality. FIXTURE_20B, WIDE_WORD and MASKED_160 are
+  decided by *presence* of their evidence: a 32-byte defect inside one of
+  those 314 cases is not seen. Code bytes are not translated (a deployed code
+  that embeds its own address keeps its 32-byte form), nor are unaligned
+  address words or hashes of addresses; none of these was needed for this
+  corpus.
 - An opcode that charges the access cost before the backend read can run out
   of gas on a wide word without the harness seeing it; such a case would show
-  as UNEXPLAINED (none did).
+  as S_UNEXPL (none did).
 
 ## Precompiles and pinned libraries
 

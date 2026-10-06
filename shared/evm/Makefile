@@ -34,7 +34,13 @@
 #                         ../../nodus/tools/evm/solc/tests/exec/out/
 #                         (four compiler configurations) in 32-byte mode;
 #                         no solc needed; linked like test_addr32
-#   make test_trie      — build/test_trie: the Nodus EVM state trie (trie/,
+#   make test_example_token — build/test_example_token: the developer
+#                         pack's example token runs as an ERC-20-style
+#                         token in 32-byte mode. Runs the COMMITTED
+#                         bytecode under ../../nodus/tools/evm/examples/
+#                         out/ (two compiler configurations); no solc
+#                         needed; linked like test_addr32
+#   make test_trie     — build/test_trie: the Nodus EVM state trie (trie/,
 #                         SHA3-512 MPT, design 2026-10-04-nodus-evm-chain-
 #                         integration-design.md §6) against the committed
 #                         oracle vectors trie/trie_vectors.h
@@ -47,8 +53,8 @@
 #                         committed header
 #   make test           — check the committed addr32 vectors against their
 #                         oracle, then build and run the u256 test binaries,
-#                         test_addr32, test_nodus_profile, test_solc_exec
-#                         and test_trie
+#                         test_addr32, test_nodus_profile, test_solc_exec,
+#                         test_example_token and test_trie
 #                         (test_trie uses the committed trie vectors;
 #                         checking them against the oracle needs FIXTURES,
 #                         so it is trie-vectors-check, not part of
@@ -188,7 +194,7 @@ TRIE_OBJS  := $(TRIE_BUILD)/evm_trie.o $(TRIE_BUILD)/evm_trie_rlp.o \
               $(TBUILD)/evm_test_qgp_shim.o
 
 .PHONY: all lib deps test_u256 test-portable test test_addr32 \
-        test_nodus_profile test_solc_exec vectors addr32-vectors \
+        test_nodus_profile test_solc_exec test_example_token vectors addr32-vectors \
         addr32-vectors-check \
         statetest conformance differential clean test_trie trie-vectors trie-vectors-check \
         bench
@@ -332,6 +338,16 @@ $(BUILD)/test_solc_exec: $(TBUILD)/test_solc_exec.o $(ADDR32_SUPPORT) \
 	$(CC) $(CFLAGS) -o $@ $(TBUILD)/test_solc_exec.o $(ADDR32_SUPPORT) \
 	      $(BUILD)/libevm.a $(BUILD)/libevm_deps.a $(GMP_LIB) $(EVM_SYSLIBS)
 
+# Developer pack example token: runs the committed bytecode in
+# ../../nodus/tools/evm/examples/out/ (regenerated only by that directory's
+# build.sh); a missing .hex is a failure.
+test_example_token: $(BUILD)/test_example_token
+
+$(BUILD)/test_example_token: $(TBUILD)/test_example_token.o $(ADDR32_SUPPORT) \
+                             $(BUILD)/libevm.a $(BUILD)/libevm_deps.a
+	$(CC) $(CFLAGS) -o $@ $(TBUILD)/test_example_token.o $(ADDR32_SUPPORT) \
+	      $(BUILD)/libevm.a $(BUILD)/libevm_deps.a $(GMP_LIB) $(EVM_SYSLIBS)
+
 # Nodus EVM measurement gate (design 2026-10-04-nodus-evm-chain-integration-design.md
 # §8): the bare-engine bench. Same link line as test_addr32 (the in-memory
 # backend + keccak + qgp_sha3 + libevm.a + libevm_deps.a + GMP_LIB +
@@ -388,12 +404,13 @@ trie-vectors-check: | $(BUILD)
 
 test: addr32-vectors-check $(BUILD)/test_u256 $(BUILD)/test_u256_portable \
       $(BUILD)/test_addr32 $(BUILD)/test_nodus_profile \
-      $(BUILD)/test_solc_exec $(BUILD)/test_trie
+      $(BUILD)/test_solc_exec $(BUILD)/test_example_token $(BUILD)/test_trie
 	./$(BUILD)/test_u256
 	./$(BUILD)/test_u256_portable
 	./$(BUILD)/test_addr32
 	./$(BUILD)/test_nodus_profile
 	./$(BUILD)/test_solc_exec
+	./$(BUILD)/test_example_token
 	./$(BUILD)/test_trie
 
 vectors: $(BUILD)/u256_vectors.h
