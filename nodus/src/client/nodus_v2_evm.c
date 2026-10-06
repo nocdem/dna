@@ -302,6 +302,12 @@ int nodus_v2_evm_build(const nodus_v2_evm_req_t *req,
     dna_env_view_t *v = NULL;
     uint8_t own_raw[64];
     char own_hex[129];
+    /* declared before the first `goto done`: the error path reads fee and
+     * units (done: err->fee / err->units), and a goto may not jump over
+     * their initialisation (it did — GCC -Wmaybe-uninitialized, CI) */
+    uint64_t units = req->units, fee = 0, sum_in = 0, change = 0;
+    uint64_t final_min = 0;
+    int n_in = 0, shape_in = 1, shape_out = 1, settled = 0;
     if (qgp_sha3_512(req->pk, V2E_PK_LEN, own_raw) != 0) {
         rc = NODUS_V2_SPEND_ERR_HASH;
         goto done;
@@ -317,9 +323,6 @@ int nodus_v2_evm_build(const nodus_v2_evm_req_t *req,
     const uint64_t lock = (op == DNA_EVM_OP_DEPOSIT) ? call.amount_raw : 0;
     const uint32_t core_v = req->rs->core_ruleset_version;
     const dna_meter_policy_t *pol = req->rs->meter_policy;
-    uint64_t units = req->units, fee = 0, sum_in = 0, change = 0;
-    uint64_t final_min = 0;
-    int n_in = 0, shape_in = 1, shape_out = 1, settled = 0;
     for (int pass = 0; pass < NODUS_V2_EVM_MAX_PASSES && !settled; pass++) {
         uint64_t min_u = 0;
         rc = nodus_v2_evm_min_units(pol, core_v, op, ecall_len, eff, effb,
