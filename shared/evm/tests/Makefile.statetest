@@ -117,9 +117,12 @@ $(BUILD)/qgp_sha3.o: $(SHARED)/crypto/hash/qgp_sha3.c | $(BUILD)
 $(BUILD)/test_rlp_mpt: $(KAT_OBJS) $(KECCAK_OBJ) $(QGP_SHIM_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
+# --wrap=keccak256: the --differential mode records the engine's CREATE /
+# CREATE2 address preimages (statetest.c "creation events"); outside that
+# mode's evm_tx_apply window the wrapper only calls the real keccak256.
 $(BUILD)/statetest: $(HARNESS_OBJS) $(KECCAK_OBJ) $(QGP_SHIM_OBJ) $(SHA3_OBJ) \
                     $(EVM_LIB) $(EVM_DEPS_LIB) $(GMP_LIB)
-	$(CC) $(CFLAGS) -o $@ $(HARNESS_OBJS) $(KECCAK_OBJ) $(QGP_SHIM_OBJ) \
+	$(CC) $(CFLAGS) -Wl,--wrap=keccak256 -o $@ $(HARNESS_OBJS) $(KECCAK_OBJ) $(QGP_SHIM_OBJ) \
 	      $(SHA3_OBJ) $(EVM_LIB) $(EVM_DEPS_LIB) $(GMP_LIB) $(JSONC_LIBS) \
 	      $(EVM_SYSLIBS)
 
