@@ -250,8 +250,8 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
 }
 
 try {
-  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }] = await Promise.all([
-    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js')
+  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }, { mountSmartContracts, smartContractExtension }] = await Promise.all([
+    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js'), import('./evm/ui.js')
   ]);
   configureSite('connect');
   const { host, nameExtension } = wireShell({ messagesNavigate, ownIdText, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar, shownOwnName, profileEntryText });
@@ -262,6 +262,12 @@ try {
   // tell members and keep vaults through Messages (vaultHost).
   mountVaults({ panelNode: $('vault-panel'), rootNode: $('vaults-root'), messagesHost: vaultHost });
   registerExtension(vaultExtension);
+  // Smart contracts (src/evm/ui.js) in the Wallet tab's NODUS area, as on
+  // the wallet page (src/main.js): hidden unless the connected node reports
+  // the EVM generation (client.evmBuildable / evmReadable) and NODUS is the
+  // selected network.
+  mountSmartContracts({ panelNode: $('evm-panel'), rootNode: $('evm-root') });
+  registerExtension(smartContractExtension);
   await import('./app.js');
   for (const id of ['create', 'restore', 'unlock-wallet']) $(id).disabled = false;
   $('wallet-boot-status').hidden = true;
