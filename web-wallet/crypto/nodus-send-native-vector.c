@@ -70,6 +70,24 @@
  *   the staker's own for stake), amount, commission, fee, change, expiry,
  *   then one `input=` per input. Compared like the spend.
  *
+ * SMART CONTRACTS (0.1.64) — one more mode:
+ *
+ *   nodus-send-native-vector evm --op call|create|deposit|withdraw|redeem
+ *     --gen <dec> --seed <64hex> --chain <64hex> --tip <dec> --gas-price <dec>
+ *     --evm-ver <dec> --evm-hash <128hex> [--to <64hex>] [--value <64hex>]
+ *     [--gas <dec>] [--nonce <dec>] [--amount <dec>] [--dest <128hex>]
+ *     [--ticket <128hex>] [--data <hex>] [--access <64hex>:<64hex keys...>]
+ *     [--units <dec>] --expiry <dec> --coin <128hex>:<dec> [--coin ...]
+ *     --sign-random <hex, the bytes qgp_platform_random returns in order>
+ *   Builds with nsw_evm_offline_build (the shared builder
+ *   nodus/src/client/nodus_v2_evm.c, the function every wasm build runs).
+ *   An option not given is absent ("" / "0"), as the builder requires for
+ *   the fields an op does not carry. Two legs are signed: --sign-random
+ *   needs 64 bytes. Output, in this order: envelope, wire_id, intent_id,
+ *   chain_id, op, to, value, gas, nonce, units, amount, dest, ticket,
+ *   data_len, created, recipient, fee, change, expiry, then one `input=`
+ *   per input. Compared like the spend.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -128,6 +146,28 @@ int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
                             const char *expiry_dec);
 int nsw_built_op(void);
 const char *nsw_built_commission(void);
+uint8_t *nsw_evm_data_alloc(int len);
+void nsw_evm_access_reset(void);
+int nsw_evm_access_add(const char *addr_hex, const char *keys_hex);
+int nsw_evm_offline_build(int gen, int op, const char *chain_hex,
+                          const char *tip_dec, const char *gas_price_dec,
+                          const char *evm_ver_dec, const char *evm_hash_hex,
+                          const char *to_hex, const char *value_hex,
+                          const char *gas_dec, const char *nonce_dec,
+                          const char *amount_dec, const char *dest_hex,
+                          const char *ticket_hex, const char *units_dec,
+                          const char *expiry_dec);
+int nsw_evm_built_op(void);
+const char *nsw_evm_built_to(void);
+const char *nsw_evm_built_value(void);
+const char *nsw_evm_built_gas(void);
+const char *nsw_evm_built_nonce(void);
+const char *nsw_evm_built_units(void);
+const char *nsw_evm_built_amount(void);
+const char *nsw_evm_built_dest(void);
+const char *nsw_evm_built_ticket(void);
+int nsw_evm_built_data_len(void);
+const char *nsw_evm_built_created(void);
 
 /* This program's only output channels are its stdout lines and one stderr
  * line on failure (the build's QGP_LOG_* calls go through
@@ -429,7 +469,111 @@ static int main_stake(int argc, char **argv) {
     return 0;
 }
 
+#define VEC_EVM_DATA_MAX 49152               /* evm_call_wire.h DNA_EVM_MAX_INITCODE */
+
+static int main_evm(int argc, char **argv) {
+    const char *op_s = NULL, *gen_s = NULL, *seed = NULL, *chain = NULL,
+               *tip = NULL, *gas_price = NULL, *evm_ver = NULL, *evm_hash = NULL,
+               *to = "", *value = "", *gas = "0", *nonce = "0", *amount = "0",
+               *dest = "", *ticket = "", *data = "", *units = "0",
+               *expiry = NULL, *sign_random = NULL;
+    nsw_req_reset();
+    nsw_evm_access_reset();
+    for (int i = 2; i < argc; i += 2) {
+        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!v) return fail("every option takes a value");
+        if      (!strcmp(a, "--op"))          op_s = v;
+        else if (!strcmp(a, "--gen"))         gen_s = v;
+        else if (!strcmp(a, "--seed"))        seed = v;
+        else if (!strcmp(a, "--chain"))       chain = v;
+        else if (!strcmp(a, "--tip"))         tip = v;
+        else if (!strcmp(a, "--gas-price"))   gas_price = v;
+        else if (!strcmp(a, "--evm-ver"))     evm_ver = v;
+        else if (!strcmp(a, "--evm-hash"))    evm_hash = v;
+        else if (!strcmp(a, "--to"))          to = v;
+        else if (!strcmp(a, "--value"))       value = v;
+        else if (!strcmp(a, "--gas"))         gas = v;
+        else if (!strcmp(a, "--nonce"))       nonce = v;
+        else if (!strcmp(a, "--amount"))      amount = v;
+        else if (!strcmp(a, "--dest"))        dest = v;
+        else if (!strcmp(a, "--ticket"))      ticket = v;
+        else if (!strcmp(a, "--data"))        data = v;
+        else if (!strcmp(a, "--units"))       units = v;
+        else if (!strcmp(a, "--expiry"))      expiry = v;
+        else if (!strcmp(a, "--sign-random")) sign_random = v;
+        else if (!strcmp(a, "--access")) {
+            char addr[65];
+            const char *colon = strchr(v, ':');
+            if (!colon || colon - v != 64) return fail("--access is <64hex>:<64hex storage keys, concatenated>");
+            memcpy(addr, v, 64);
+            addr[64] = '\0';
+            if (nsw_evm_access_add(addr, colon + 1) != 0) return fail(nsw_error());
+        } else if (!strcmp(a, "--coin")) {
+            char nul[129];
+            const char *colon = strchr(v, ':');
+            if (!colon || colon - v != 128) return fail("--coin is <128hex>:<amount>");
+            memcpy(nul, v, 128);
+            nul[128] = '\0';
+            if (nsw_req_add_coin(nul, colon + 1) != 0) return fail(nsw_error());
+        } else return fail("unknown option (see the usage in nodus-send-native-vector.c)");
+    }
+    int op = !op_s ? 0 : !strcmp(op_s, "call") ? 1 : !strcmp(op_s, "create") ? 2
+           : !strcmp(op_s, "deposit") ? 3 : !strcmp(op_s, "withdraw") ? 4
+           : !strcmp(op_s, "redeem") ? 5 : 0;
+    uint64_t gen = 0;
+    if (!op || !gen_s || parse_dec(gen_s, &gen) != 0 || gen > 255 || !seed ||
+        !chain || !tip || !gas_price || !evm_ver || !evm_hash || !expiry ||
+        !sign_random)
+        return fail("evm needs --op call|create|deposit|withdraw|redeem --gen "
+                    "--seed --chain --tip --gas-price --evm-ver --evm-hash "
+                    "--expiry --coin --sign-random (and the op's own fields)");
+    size_t n = 0;
+    const size_t data_len = strlen(data) / 2;
+    if (data_len > VEC_EVM_DATA_MAX) return fail("--data is at most 49152 bytes");
+    if (data_len) {
+        uint8_t *buf = nsw_evm_data_alloc((int)data_len);
+        if (!buf || unhex(data, buf, data_len, &n) != 0 || n != data_len)
+            return fail("--data is lowercase hex");
+    } else {
+        nsw_evm_data_alloc(0);
+    }
+    if (unhex(seed, nsw_seed_buf(), 32, &n) != 0 || n != 32)
+        return fail("--seed is 32 bytes of lowercase hex");
+    if (unhex(sign_random, nsw_test_random_buf(), 4096, &n) != 0 ||
+        nsw_test_random_load((int)n) != 0)
+        return fail("--sign-random is at most 4096 bytes of lowercase hex");
+    if (nsw_evm_offline_build((int)gen, op, chain, tip, gas_price, evm_ver,
+                              evm_hash, to, value, gas, nonce, amount, dest,
+                              ticket, units, expiry) != 0)
+        return fail(nsw_error());
+    if (print_env()) return 1;
+    line("wire_id", nsw_built_wire());
+    line("intent_id", nsw_built_intent());
+    line("chain_id", nsw_built_chain());
+    char dec[24];
+    snprintf(dec, sizeof(dec), "%d", nsw_evm_built_op());
+    line("op", dec);
+    line("to", nsw_evm_built_to());
+    line("value", nsw_evm_built_value());
+    line("gas", nsw_evm_built_gas());
+    line("nonce", nsw_evm_built_nonce());
+    line("units", nsw_evm_built_units());
+    line("amount", nsw_evm_built_amount());
+    line("dest", nsw_evm_built_dest());
+    line("ticket", nsw_evm_built_ticket());
+    snprintf(dec, sizeof(dec), "%d", nsw_evm_built_data_len());
+    line("data_len", dec);
+    line("created", nsw_evm_built_created());
+    line("recipient", nsw_built_recipient());
+    line("fee", nsw_built_fee());
+    line("change", nsw_built_change());
+    line("expiry", nsw_built_expiry());
+    for (int i = 0; i < nsw_built_n_in(); i++) line("input", nsw_built_in(i));
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "evm")) return main_evm(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "claim-manifest")) return main_claim_manifest(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "claim")) return main_claim(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "stake")) return main_stake(argc, argv);

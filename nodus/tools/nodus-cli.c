@@ -6890,8 +6890,9 @@ done:
  * (EVM_TX_GAS_CAP 30 000 000 gas × w_gas 1 + EVM_READS_BASE 16 334 reads
  * × w_read 1 + FAIL_RESERVE 4 096 + the static units) costs ≈ 3.63 × 10^9
  * raw ≈ 36 NODUS at the genesis price of 121 raw / unit (decision
- * 2026-09-25-gas-price.md). A LOCAL placeholder value, not a chain rule —
- * the operator sets the final one; at prices above ≈ 166 raw / unit an
+ * 2026-09-25-gas-price.md). A LOCAL bound, not a chain rule — kept at
+ * 50 NODUS by the operator after the gas measurement (2026-10-07: the
+ * costliest valid call ≈ 36.3 NODUS at 121); at prices above ≈ 166 raw / unit an
  * honest full-cap call needs --yes or --max-fee. */
 #define EVM_FEE_CONFIRM_RAW  5000000000ull
 

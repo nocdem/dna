@@ -118,6 +118,89 @@ export class NodusEvm {
     return new NodusEvm(client, identity, pending);
   }
 
+  // OFFLINE build: ONE EVM envelope built and signed with NO network — the
+  // release send module's nsw_evm_offline_build through send-module.js
+  // evmBuildOffline (the same shared C builder as the networked writes,
+  // nodus/src/client/nodus_v2_evm.c). Nothing is sent: the caller carries
+  // the envelope to a node (or keeps it). The module is instantiated for
+  // this one build and locked, zeroed and released before this resolves.
+  // Options:
+  //   phrase        the 24-word recovery phrase (required)
+  //   tip           the chain tip a node reported (decimal / BigInt; required)
+  //   gasPrice      the gas price a node reported (dnac_fee_info; required)
+  //   expiryHeight  default tip + 90 — the only value the module accepts
+  //   generation    the rule-set generation (default: the EVM one the
+  //                 module was built with); a generation below it refuses
+  //   chainId       64 hex (default: the network's)
+  //   network / evm / wasmDir / moduleFactory   as for open(); evm null
+  //                 refuses (smart contracts off)
+  //   op            'deposit' | 'withdraw' | 'call' | 'create' | 'redeem'
+  //   amount        BigInt raw units (deposit / withdraw / redeem)
+  //   nonce         this identity's EVM nonce (all ops but redeem)
+  //   to            the contract (call), 0x + 64 hex
+  //   valueWei      BigInt (call / create; default 0n)
+  //   gasLimit      call / create
+  //   data          call data / initcode (hex or Uint8Array)
+  //   accessList    [{ address, storageKeys: [64 hex] }] (call / create)
+  //   dest          128-hex Nodus address (withdraw / redeem; default:
+  //                 this identity)
+  //   ticketId      128 hex (redeem)
+  //   units         the declared resource ceiling (default 0 = the minimum)
+  //   coins         [{ nullifier: 128 hex, amount }] — this identity's
+  //                 spendable NODUS coins (the funding inputs)
+  // Resolves { envelope: Uint8Array, intentId, decoded } — `decoded` read
+  // back from the signed bytes by the module (send-module.js evmBuild).
+  static async buildOffline({
+    phrase, network, evm, wasmDir = DEFAULT_WASM_DIR, moduleFactory,
+    tip, gasPrice, expiryHeight, generation, chainId,
+    op, amount = 0n, nonce = 0n, to, valueWei = 0n, gasLimit = 0n, data, accessList = [], dest, ticketId, units = 0n, coins
+  } = {}) {
+    const net = resolveNetwork({ network });
+    const evmNet = resolveEvmNetwork(evm);
+    if (!evmNet) throw new Error('Smart contracts are off (evm: null): nothing was built.');
+    if (!['deposit', 'withdraw', 'call', 'create', 'redeem'].includes(op)) throw new Error("op is 'deposit', 'withdraw', 'call', 'create' or 'redeem'.");
+    if (!Array.isArray(coins)) throw new Error('coins: this identity\'s spendable coins, [{ nullifier, amount }].');
+    const identity = await deriveIdentity(phrase);
+    const tipDec = decimal(tip, 'tip');
+    const request = {
+      chainId: chainId === undefined ? net.chainId : chainId,
+      tip: tipDec, gasPrice: decimal(gasPrice, 'gas price'),
+      expiryHeight: expiryHeight === undefined ? (BigInt(tipDec) + 90n).toString() : decimal(expiryHeight, 'expiryHeight'),
+      op, nonce: decimal(nonce, 'nonce'), units: decimal(units, 'units'),
+      coins: coins.map(c => ({ nullifier: c?.nullifier, amount: decimal(c?.amount, 'coin amount') }))
+    };
+    if (op === 'deposit' || op === 'withdraw' || op === 'redeem') request.amount = raw(amount, 'The amount').toString();
+    if (op === 'call') request.to = parseAddress(to);
+    if (op === 'call' || op === 'create') {
+      request.valueWei = word(valueWei, 'value');
+      request.gasLimit = decimal(gasLimit, 'gas limit');
+      if (data !== undefined) request.data = data instanceof Uint8Array ? data : hexToBytes(String(data).trim().replace(/^0x/, ''));
+      request.accessList = accessList.map(e => ({ address: parseAddress(e?.address), storageKeys: (e?.storageKeys ?? []).map((k, i) => word(k, `storage key ${i}`)) }));
+    }
+    if (op === 'withdraw' || op === 'redeem') request.dest = dest === undefined ? identity.fingerprint : dest;
+    if (op === 'redeem') request.ticketId = ticketId;
+    let factory = moduleFactory;
+    if (!factory) {
+      const glue = `${wasmDir.replace(/\/?$/, '/')}send-node.mjs`;
+      if (!existsSync(glue)) throw new Error(`The send module is not built: ${glue} is missing (run scripts/build-wasm.sh).`);
+      factory = () => createNodusSendModule(net, { evm: evmNet, loadGlue: () => import(pathToFileURL(glue).href) });
+    }
+    const api = await factory();
+    try {
+      if (typeof api.evmBuildOffline !== 'function') throw new Error('This send module offers no offline smart-contract build (its smart-contract settings were refused, or it predates web wallet 0.1.64). Nothing was built.');
+      request.generation = generation === undefined ? api.evmGeneration : Number(generation);
+      // the module wipes its copy on every path; this one is wiped here
+      const seed = signingSeed(phrase);
+      try { return await api.evmBuildOffline({ ...request, seed }); } finally { seed.fill(0); }
+    } finally {
+      // the lock order of web-wallet/src/nodus/client.js lock()
+      try { api.cancel(); } catch { /* the wipe below must still run */ }
+      try { api.lock(); } catch { /* the wipe below must still run */ }
+      try { new Uint8Array(api.memory.buffer).fill(0); } catch { /* release below must still run */ }
+      try { api.release(); } catch { /* nothing left to do */ }
+    }
+  }
+
   // open() + connect(); on a failed connection the module is locked.
   static async connect(options) {
     const evm = await NodusEvm.open(options);

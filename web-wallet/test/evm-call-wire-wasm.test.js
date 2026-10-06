@@ -42,6 +42,27 @@
 //     the evm_logs cursor) encodes to a CBOR array of 1..3 uints (bytes
 //     assembled HERE from RFC 8949 major types), and an empty element,
 //     more than 3 elements, a leading zero, 2^64 refuse.
+// The OFFLINE EVM build of the shipped module (0.1.64,
+// nsw_evm_offline_build) — with NODUS_SEND_PARITY_OUT AND
+// NODUS_SEND_VECTOR_BIN (`scripts/build-nodus-send-native-vector.sh`;
+// otherwise SKIP — a skip is not a pass), at the REAL EVM generation (3,
+// its pinned policy, no test op weight) and the compiled EVM ruleset
+// identity (send-module.js NODUS_EVM_NETWORK):
+//   - for DEPOSIT, WITHDRAW, CALL (data + one access-list entry), CREATE
+//     and REDEEM: the TEST wasm (fixed randomness) and the native vector
+//     build the same envelope and the same read-back, byte for byte;
+//     Σinputs = lock + fee + change;
+//   - the shipped wasm (hedged signature, send-node.mjs checked
+//     byte-identical with src/nodus/send.wasm): the same intent_id and
+//     read-back, a different wire_id;
+//   - send-module.js evmBuildOffline (the JS the SDK calls) on the shipped
+//     build gives the native vector's intent_id and decoded fields;
+//   - the module's refusals: a generation below the EVM one, an EVM ruleset
+//     identity other than the compiled one, an expiry other than tip + 90, a
+//     field the op does not carry, an unknown op — nothing built, and the
+//     seed buffer is wiped after every call.
+// Inputs SYNTHETIC (fixed seed, made-up coins and chain id): the builds
+// agree with each other; no node runs here.
 // Inputs are SYNTHETIC (fixed seed, made-up coins, chain id and EVM ruleset
 // hash, op weight 9 = 1 on top of generation 2): they prove the module's
 // codec and envelope shape (the shared builder nodus_v2_evm.c since Nodus EVM
@@ -52,7 +73,9 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { keccak_256 } from '@noble/hashes/sha3';
+import { createNodusSendModule, NODUS_EVM_NETWORK } from '../src/nodus/send-module.js';
 
 const wasmBytes = readFileSync(new URL('../src/nodus/send.wasm', import.meta.url));
 const EVM_ENTRY_POINTS = [
@@ -63,7 +86,9 @@ const EVM_ENTRY_POINTS = [
   // Nodus EVM Faz 4: the evm_estimate hand-over, the EVM generation, the §18 reads
   'nsw_evm_set_estimate', 'nsw_evm_generation', 'nsw_evm_query_buf', 'nsw_evm_query', 'nsw_evm_query_json',
   // red-team 1 F11: the CREATE address of the signed deployment
-  'nsw_evm_built_created'
+  'nsw_evm_built_created',
+  // 0.1.64: the OFFLINE EVM build (no node, every network fact given)
+  'nsw_evm_offline_build'
 ];
 
 test('the shipped send.wasm has every smart-contract entry point and no test-only one', () => {
@@ -378,5 +403,166 @@ test('§18 query arguments: key=U:a,b,c is a CBOR array of 1..3 u64; bad text re
   for (const bad of ['c=U:', 'c=U:,1', 'c=U:1,', 'c=U:1,,2', 'c=U:1,2,3,4', 'c=U:18446744073709551616', 'c=U:01', 'c=U:1 ,2',
     'c=U:-1', 'c=U:1,2,99999999999999999999999', 'c=V:1']) {
     assert.equal(args(bad), '', bad);
+  }
+});
+
+// ── the OFFLINE EVM build of the shipped module (0.1.64) ────────────────
+const VECTOR_BIN = process.env.NODUS_SEND_VECTOR_BIN;
+const skipOffline = !PARITY_OUT || !VECTOR_BIN
+  ? 'set NODUS_SEND_PARITY_OUT (build-nodus-send-wasm.sh parity) and NODUS_SEND_VECTOR_BIN (build-nodus-send-native-vector.sh)' : false;
+const hexOf = bytes => Buffer.from(bytes).toString('hex');
+const OFF = {
+  gen: 3, seed: fill(32, 11), chain: '66'.repeat(32), tip: '5000', gasPrice: '7', expiry: '5090',
+  coins: [['a1'.repeat(64), '100000000'], ['b2'.repeat(64), '300000000'], ['c3'.repeat(64), '50000000']],
+  signRandom: fill(64, 90)
+};
+const EVM_OPS = { call: 1, create: 2, deposit: 3, withdraw: 4, redeem: 5 };
+const OFF_CASES = {
+  deposit: { op: 'deposit', amount: '120000000', nonce: '4' },
+  withdraw: { op: 'withdraw', amount: '1500', nonce: '4', dest: DEST },
+  call: { op: 'call', to: TO, value: VALUE, gas: '60000', nonce: '4', data: DATA, access: [ACC_ADDR, ACC_KEY] },
+  create: { op: 'create', value: '00'.repeat(32), gas: '200000', nonce: '4', data: INIT },
+  redeem: { op: 'redeem', amount: '42', dest: DEST, ticket: TICKET }
+};
+const vectorOut = text => {
+  const out = { input: [] };
+  for (const line of text.trim().split('\n')) {
+    const at = line.indexOf('='), key = line.slice(0, at), value = line.slice(at + 1);
+    if (key === 'input') out.input.push(value); else out[key] = value;
+  }
+  return out;
+};
+function nativeOffline(c) {
+  const args = ['evm', '--op', c.op, '--gen', String(OFF.gen), '--seed', hexOf(OFF.seed), '--chain', OFF.chain, '--tip', OFF.tip,
+    '--gas-price', OFF.gasPrice, '--evm-ver', String(NODUS_EVM_NETWORK.evmRulesetVersion), '--evm-hash', NODUS_EVM_NETWORK.evmRulesetHash,
+    '--expiry', OFF.expiry, '--sign-random', hexOf(OFF.signRandom)];
+  for (const [flag, key] of [['--to', 'to'], ['--value', 'value'], ['--gas', 'gas'], ['--nonce', 'nonce'], ['--amount', 'amount'],
+    ['--dest', 'dest'], ['--ticket', 'ticket'], ['--data', 'data']]) if (c[key] !== undefined) args.push(flag, c[key]);
+  if (c.access) args.push('--access', `${c.access[0]}:${c.access[1]}`);
+  for (const [n, a] of OFF.coins) args.push('--coin', `${n}:${a}`);
+  return vectorOut(execFileSync(VECTOR_BIN, args, { encoding: 'utf8' }));
+}
+async function parityModule(file, fixedRandom) {
+  const path = join(PARITY_OUT, file);
+  assert.ok(existsSync(path), `${path} is missing — run build-nodus-send-wasm.sh parity`);
+  const { default: create } = await import(pathToFileURL(path).href);
+  const M = await create();
+  assert.equal(typeof M._nsw_test_random_buf === 'function', fixedRandom, 'test-only randomness entry point presence');
+  const num = (name, types = [], args = []) => M.ccall(name, 'number', types, args);
+  const str = (name, types = [], args = []) => M.ccall(name, 'string', types, args);
+  return { M, num, str };
+}
+const OFFLINE_TYPES = ['number', 'number', ...Array(14).fill('string')];
+// One nsw_evm_offline_build on a fresh module; `over` replaces the context.
+async function wasmOffline(file, { fixedRandom }, c, over = {}) {
+  const ctx = { ...OFF, evmVer: String(NODUS_EVM_NETWORK.evmRulesetVersion), evmHash: NODUS_EVM_NETWORK.evmRulesetHash, ...over };
+  const mod = await parityModule(file, fixedRandom), { M, num, str } = mod;
+  M.HEAPU8.set(OFF.seed, num('nsw_seed_buf'));
+  if (fixedRandom) {
+    M.HEAPU8.set(OFF.signRandom, num('nsw_test_random_buf'));
+    assert.equal(num('nsw_test_random_load', ['number'], [OFF.signRandom.length]), 0);
+  }
+  num('nsw_req_reset');
+  for (const [n, a] of OFF.coins) assert.equal(num('nsw_req_add_coin', ['string', 'string'], [n, a]), 0, str('nsw_error'));
+  num('nsw_evm_access_reset');
+  if (c.access) assert.equal(num('nsw_evm_access_add', ['string', 'string'], c.access), 0, str('nsw_error'));
+  setData(mod, c.data ?? '');
+  const rc = num('nsw_evm_offline_build', OFFLINE_TYPES, [ctx.gen, ctx.code ?? EVM_OPS[c.op], ctx.chain, ctx.tip, ctx.gasPrice, ctx.evmVer, ctx.evmHash,
+    c.to ?? '', c.value ?? '', c.gas ?? '0', c.nonce ?? '0', c.amount ?? '0', c.dest ?? '', c.ticket ?? '', '0', ctx.expiry]);
+  const seedWiped = M.HEAPU8.subarray(num('nsw_seed_buf'), num('nsw_seed_buf') + 32).every(b => b === 0);
+  if (rc !== 0) return { rc, error: str('nsw_error'), envLen: num('nsw_built_env_len'), seedWiped };
+  const at = num('nsw_built_env'), length = num('nsw_built_env_len'), input = [];
+  for (let i = 0; i < num('nsw_built_n_in'); i++) input.push(str('nsw_built_in', ['number'], [i]));
+  return {
+    rc, seedWiped,
+    out: {
+      envelope: hexOf(M.HEAPU8.subarray(at, at + length)), wire_id: str('nsw_built_wire'), intent_id: str('nsw_built_intent'),
+      chain_id: str('nsw_built_chain'), op: String(num('nsw_evm_built_op')), to: str('nsw_evm_built_to'), value: str('nsw_evm_built_value'),
+      gas: str('nsw_evm_built_gas'), nonce: str('nsw_evm_built_nonce'), units: str('nsw_evm_built_units'), amount: str('nsw_evm_built_amount'),
+      dest: str('nsw_evm_built_dest'), ticket: str('nsw_evm_built_ticket'), data_len: String(num('nsw_evm_built_data_len')),
+      created: str('nsw_evm_built_created'), recipient: str('nsw_built_recipient'), fee: str('nsw_built_fee'), change: str('nsw_built_change'),
+      expiry: str('nsw_built_expiry'), input
+    }
+  };
+}
+
+for (const [name, c] of Object.entries(OFF_CASES)) {
+  test(`offline EVM build (${name}): TEST wasm and the native vector build the same envelope byte for byte`, { skip: skipOffline }, async () => {
+    const native = nativeOffline(c), wasm = await wasmOffline('send-test-node.mjs', { fixedRandom: true }, c);
+    assert.equal(wasm.rc, 0, wasm.error);
+    assert.ok(wasm.seedWiped, 'the seed buffer is wiped');
+    assert.deepEqual(wasm.out, native);
+    const e = parseEnvelope(Buffer.from(native.envelope, 'hex'));
+    assert.deepEqual(e.legs.map(l => [l.domain, l.op]), [[1, 9], [2, EVM_OPS[c.op]]]);
+    assert.equal(e.legs[1].ver, NODUS_EVM_NETWORK.evmRulesetVersion);
+    assert.equal(native.op, String(EVM_OPS[c.op]));
+    assert.equal(native.chain_id, OFF.chain);
+    assert.equal(native.expiry, OFF.expiry);
+    assert.equal(e.fee, BigInt(native.fee));
+    if (c.to) assert.equal(native.to, c.to);
+    if (c.gas !== undefined) assert.equal(native.gas, c.gas);
+    if (c.data) assert.equal(native.data_len, String(c.data.length / 2));
+    if (c.amount !== undefined) assert.equal(native.amount, c.amount);
+    if (c.dest) assert.equal(native.dest, c.dest);
+    const amounts = new Map(OFF.coins), inSum = native.input.reduce((s, n) => s + BigInt(amounts.get(n)), 0n);
+    const lock = c.op === 'deposit' ? BigInt(c.amount) : 0n;
+    assert.equal(inSum, lock + BigInt(native.fee) + BigInt(native.change), 'inputs = lock + fee + change');
+  });
+  test(`offline EVM build (${name}): the shipped wasm has the same intent_id and read-back, a different wire_id`, { skip: skipOffline }, async () => {
+    assert.ok(readFileSync(join(PARITY_OUT, 'send-node.wasm')).equals(wasmBytes), 'send-node.wasm is not the shipped send.wasm — rebuild both');
+    const native = nativeOffline(c), shipped = await wasmOffline('send-node.mjs', { fixedRandom: false }, c);
+    assert.equal(shipped.rc, 0, shipped.error);
+    assert.ok(shipped.seedWiped, 'the seed buffer is wiped');
+    for (const key of Object.keys(native)) if (key !== 'envelope' && key !== 'wire_id') assert.deepEqual(shipped.out[key], native[key], key);
+    assert.notEqual(shipped.out.wire_id, native.wire_id);
+    assert.equal(shipped.out.envelope.length, native.envelope.length);
+  });
+}
+
+test('offline EVM build through send-module.js evmBuildOffline (shipped build): the native vector\'s intent_id and fields', { skip: skipOffline }, async () => {
+  const net = { chainId: OFF.chain, scheme: 'wss', endpoints: [{ host: '203.0.113.7', port: 443 }], pins: ['b'.repeat(128)] };
+  const loadGlue = () => import(pathToFileURL(join(PARITY_OUT, 'send-node.mjs')).href);
+  const coins = OFF.coins.map(([nullifier, amount]) => ({ nullifier, amount }));
+  for (const name of ['deposit', 'call']) {
+    const c = OFF_CASES[name], native = nativeOffline(c);
+    const api = await createNodusSendModule(net, { evm: NODUS_EVM_NETWORK, loadGlue });
+    try {
+      const seed = Uint8Array.from(OFF.seed);
+      const built = await api.evmBuildOffline({
+        seed, generation: OFF.gen, chainId: OFF.chain, tip: OFF.tip, gasPrice: OFF.gasPrice, op: c.op, to: c.to, valueWei: c.value,
+        gasLimit: c.gas, nonce: c.nonce, amount: c.amount, data: c.data ? Uint8Array.from(Buffer.from(c.data, 'hex')) : undefined,
+        accessList: c.access ? [{ address: c.access[0], storageKeys: [c.access[1]] }] : undefined, expiryHeight: OFF.expiry, coins
+      });
+      assert.equal(built.intentId, native.intent_id);
+      assert.equal(hexOf(built.envelope).length, native.envelope.length);
+      const d = built.decoded;
+      assert.deepEqual([d.op, d.to, d.valueWei, d.gasLimit, d.nonce, d.units, d.amount, d.dest, d.ticketId, String(d.dataLength), d.created, d.recipient, d.fee, d.change, d.expiryHeight, d.chainId, d.inputs],
+        [c.op, native.to, native.value, native.gas, native.nonce, native.units, native.amount, native.dest, native.ticket, native.data_len, native.created, native.recipient, native.fee, native.change, native.expiry, native.chain_id, native.input]);
+    } finally { api.release(); }
+  }
+  // without accepted smart-contract settings it is not offered
+  const off = await createNodusSendModule(net, { evm: null, loadGlue });
+  try { assert.equal(off.evmBuildOffline, undefined); } finally { off.release(); }
+});
+
+test('offline EVM build refusals in the shipped module: generation, EVM identity, expiry, foreign field, unknown op', { skip: skipOffline }, async () => {
+  const run = (c, over) => wasmOffline('send-node.mjs', { fixedRandom: false }, c, over);
+  const cases = [
+    [OFF_CASES.deposit, { gen: 2 }, /Invalid offline smart-contract input/],
+    [OFF_CASES.deposit, { evmHash: '5a'.repeat(64) }, /does not match the rules this page was built with/],
+    [OFF_CASES.deposit, { evmVer: '1' }, /does not match the rules this page was built with/],
+    [OFF_CASES.deposit, { expiry: '5091' }, /validity must end at block 5090/],
+    [{ ...OFF_CASES.deposit, to: TO }, {}, /Invalid offline smart-contract input/],
+    [{ ...OFF_CASES.redeem, nonce: '1' }, {}, /Invalid offline smart-contract input/],
+    [{ ...OFF_CASES.call, amount: '1' }, {}, /Invalid offline smart-contract input/],
+    [OFF_CASES.deposit, { code: 6 }, /Unknown smart-contract action/],
+    [{ ...OFF_CASES.deposit, data: DATA }, {}, /Contract data was given for a transfer/]
+  ];
+  for (const [c, over, why] of cases) {
+    const r = await run(c, over);
+    assert.notEqual(r.rc, 0, `${JSON.stringify(over)} must refuse`);
+    assert.match(r.error, why);
+    assert.equal(r.envLen, 0, 'nothing built after a refusal');
+    assert.ok(r.seedWiped, 'the seed buffer is wiped after a refusal');
   }
 });
