@@ -23,6 +23,7 @@ turns the ones it cannot support into compile errors.
 | `0001-nodus-address-256.patch` | the change, `git format-patch` against v0.8.30 |
 | `build.sh` | clone v0.8.30, verify the commit hash, apply the patch, build `solc`, print `solc --version` |
 | `tests/*.sol`, `tests/check.sh` | output checks (bytecode, IR, storage layout, ABI, diagnostics) — no execution |
+| `tests/exec/*.sol`, `tests/exec/build.sh`, `tests/exec/out/` | execution evidence: sources, the 4-configuration compile script, the committed bytecode run by `shared/evm/tests/test_solc_exec.c` (see "Execution evidence") |
 
 ## Build
 
@@ -146,6 +147,60 @@ Default EVM version: **prague** — unchanged from v0.8.30 (`liblangutil/EVMVers
     computed from the same signatures as upstream (`f(address)`), but an address value now
     occupies the full 32-byte word — a 20-byte, zero-left-padded value is a *different*
     account.
+
+## Execution evidence
+
+`check.sh` only inspects compiler output. `tests/exec/` runs the compiled code: the
+pre-vote gate Astra asked for in Kurultay #9
+(`docs/plans/decisions/2026-10-06-kurultay-9-evm-address-width-summary.md`; `astra-r2.md` item 6).
+
+- **Sources** (`tests/exec/`): `AddrStore.sol`, `AbiConv.sol`, `Calls.sol`, `Factory.sol`.
+- **Configurations** (`tests/exec/build.sh`, all `--evm-version prague`): `legacy`,
+  `legacy-opt` (`--optimize`, runs 200), `viair` (`--via-ir`), `viair-opt`
+  (`--via-ir --optimize`, runs 200). The script writes `out/<config>/<Contract>.creation.hex`
+  and `.runtime.hex`, plus `out/VERSION.txt` (the compiler line and the flags), and refuses a
+  solc without the `nodus.addr256` tag or one that prints any diagnostic. Sources are passed by
+  basename; two runs on one host gave a byte-identical `out/` (`diff -r` clean; other machines
+  not measured). When a `.sol` changes, `build.sh` must be re-run — nothing in the tree detects
+  sources and `out/` drifting apart.
+- **Runner**: `shared/evm/tests/test_solc_exec.c` deploys and calls the committed bytecode in the
+  engine's 32-byte mode with the Nodus profile, as `nodus_witness_rt_evm.c` configures it
+  (base fee 0, gas price 0, type-1 txs, 32-byte chain id). One deviation: the block coinbase is a
+  high-byte address (production uses zero), so that `block.coinbase` is exercised. No solc is
+  needed at test time; a missing `.hex` is a failure.
+- **What it checks**, with addresses whose high 12 bytes are non-zero: state variable (and its
+  raw slot), constructor argument, immutable, mapping key and value (raw slot =
+  `keccak256(key32 ‖ slot)`; the twin key with the same low 20 bytes reads zero), storage
+  struct and dynamic array (raw slots), memory struct/array, `abi.encode`,
+  `abi.encodePacked` (32 bytes), `abi.decode` from calldata and memory, calldata struct and
+  `address[]` parameters, `address` ↔ `uint256` / `bytes32` conversions, `==` / `!=` / `<`
+  between addresses that differ only in the high bytes, `msg.sender` / `tx.origin` /
+  `address(this)` / `block.coinbase`, a high-level and a low-level call (the callee's
+  `msg.sender`), `address.balance`, value transfer by `transfer` / `send` / `call{value}`
+  (the twin and the 20-byte projection stay untouched), `EXTCODESIZE` / `EXTCODEHASH`,
+  `DELEGATECALL` into a library, rule 7's deploy-time self address (a direct CALL of a
+  non-view library function reverts), `CREATE` and `CREATE2` from a contract against the
+  engine rule, an event's indexed address topic, and that every deployed code equals the
+  committed runtime (immutables / library self address filled with the full 32 bytes). Every
+  address assertion also requires that the result is not the 160-bit-masked value. The
+  CREATE / CREATE2 helpers of the test are checked at start-up against the committed oracle
+  vectors of `shared/evm/tests/addr32_oracle.py`.
+- **Command**:
+  ```
+  SOLC=/path/to/solc ./tests/exec/build.sh      # only when the sources or the compiler change
+  make -C shared/evm test_solc_exec && (cd shared/evm && ./build/test_solc_exec)   # also part of `make test`
+  ```
+- **Measured** (2026-10-06, `0.8.30+nodus.addr256.commit.73712a01.Linux.g++`): 178 assertions per
+  configuration, **178 passed / 0 failed in each of `legacy`, `legacy-opt`, `viair`,
+  `viair-opt`**; no compiler finding. Mutant check: with the expected address masked to 20 bytes
+  the test fails 58 assertions per configuration (every address assertion).
+- **Not covered**: external function types (refused, rule 6), linked libraries (refused,
+  rule 7), `ecrecover` (rule 9), the SMTChecker, inline assembly, optimizer run counts other
+  than 200, EVM versions other than prague, constructs not in the four sources, any compiler
+  other than the one recorded in `out/VERSION.txt`. The engine that runs the code is the
+  project's own (`shared/evm`): this is Nodus-derived, self-consistent evidence, not an external
+  conformance result; the engine's own 32-byte rules are pinned by `test_addr32.c`. There is no
+  20-byte/32-byte differential run here.
 
 ## Upstream sites changed (v0.8.30 line numbers)
 

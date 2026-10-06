@@ -61,7 +61,7 @@ make lib            # build/libevm.a
 make deps           # build/libevm_deps.a (blst, c-kzg-4844, mcl, secp256k1 + the
                     # embedded KZG trusted setup) and build/gmp/install/lib/libgmp.a
 make test           # addr32-vectors-check, then run test_u256, test_u256_portable,
-                    # test_addr32, test_nodus_profile, test_trie
+                    # test_addr32, test_nodus_profile, test_solc_exec, test_trie
 make statetest      # link the state-test runner, test_rlp_mpt, test_precompile
 make conformance FIXTURES=<extracted fixtures/state_tests dir>
                     # test_rlp_mpt + statetest --fork Prague over the fixtures
@@ -97,6 +97,8 @@ profile: budget, tickets, `evm_tx_prevalidate`), and on the chain side
 `nodus/tests/test_v2_evm.c` and the Genesis Protocol scenario
 `test_cmt_evm.sh`. Those are Nodus-derived, self-consistent checks, not an
 external conformance result (Kurultay #9, 2026-10-06).
+Compiled Solidity in 32-byte mode (the Nodus solc, four compiler configurations):
+`tests/test_solc_exec.c` — see `nodus/tools/evm/solc/README.md`, "Execution evidence".
 
 - **DEVIATION 9:** Prague modexp cases whose expected result differs only by
   the EIP-7823 input bound (lengths ≤ 1 024), which this engine adopts to
