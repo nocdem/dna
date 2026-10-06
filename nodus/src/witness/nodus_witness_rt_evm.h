@@ -91,6 +91,13 @@ extern "C" {
 #define NODUS_RT_EVM_Q               10000000000ull
 /** Gas of creating one ticket (design §5; pending the Faz 3 measurement). */
 #define NODUS_RT_EVM_TICKET_GAS      25000u
+/** The EVM address width in bytes (decision 2026-10-04-nodus-evm-domain;
+ *  kept at 32 by Kurultay #9, 2026-10-06-kurultay-9-evm-address-width-
+ *  summary.md). THE one definition: the engine configuration
+ *  (rtevm_vm_pre, evm_config_t.addr_bytes) reads it, and the EVM_ACTIVE
+ *  digest commits it (nodus_witness_runtime.c EVM_ACT_CONSTS, last
+ *  entry), so two binaries differing only in width vote different D. */
+#define NODUS_RT_EVM_ADDR_BYTES      32u
 
 /** The EVM descriptor's rule list {1..5} — the ONE array the production
  *  table entry and nodus_rt_evm_runtime_build share. */
@@ -99,7 +106,8 @@ extern const uint32_t NODUS_RT_EVM_RULES[NODUS_RT_EVM_N_RULES];
 
 /**
  * Fill `out` with the EVM runtime entry: domain DNA_DOMAIN_EVM, runtime
- * ABI 2, ruleset_version 1, rules {1..5}, no legacy tx types, the shared
+ * ABI 2, ruleset_version NODUS_RT_EVM_RULESET_VERSION_GEVM (2), rules
+ * {1..5}, no legacy tx types, the shared
  * ML-DSA-87 auth hook (auth_kind 1 only), exec_evm, prevalidate_evm, the
  * adapter, state root, invariant and state_init. `ruleset_hash` is
  * DERIVED here through dna_ruleset_desc_hash, `generation` 0 — the TEST

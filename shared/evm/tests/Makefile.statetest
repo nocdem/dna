@@ -27,6 +27,8 @@
 # Runner usage:
 #   $(BUILD)/statetest [--fork Prague] [--addr-bytes 20] [--filter S]
 #                      [--verbose] <fixtures/state_tests dir or file>...
+#   $(BUILD)/statetest --differential [--fork Prague] [--filter S]
+#                      [--verbose] <dir>   (20/32-byte differential)
 #   $(BUILD)/statetest --verify-fixture-roots <dir>   (harness self-check)
 #   $(BUILD)/statetest --list-forks <dir>
 #

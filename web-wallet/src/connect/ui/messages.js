@@ -1,8 +1,10 @@
-// Nodus Connect — Messages (contacts, requests, 1:1 text, own profile).
+// Nodus Connect — Messages (contacts, requests, 1:1 text, own profile, and
+// since package G3 the groups of src/connect/groups/).
 //
 // Governing records: docs/plans/decisions/2026-09-30-nodus-connect-thin-core.md
 // (first stage, Ek 2: contact list, send/accept contact requests, 1:1 text
-// messages, own profile edit — no groups, media or calls; Q1: only words
+// messages, own profile edit — no media or calls; groups follow
+// 2026-10-04-connect-groups.md and the groups design rev 1; Q1: only words
 // generated in this session are "fresh"; S8: history store = vault id),
 // 2026-09-30-connect-history-at-rest.md rev 2 (src/connect/store.js) and
 // 2026-10-01-connect-own-origin.md (Messages lives in the Nodus Connect site,
@@ -53,6 +55,13 @@ import { el, untrusted, button, website, fillAvatar } from './dom.js';
 import { parseNameOf } from '../../nodus/names.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup } from './chain-names.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
+// Groups (package G3): the state machine and its screens. Group invites,
+// accepts, welcomes and leaves travel as 1:1 messages (bytes item 7,
+// decision 13); they are routed to the groups module and never shown as
+// chat text (isControl below).
+import { createGroupsEngine } from '../groups/engine.js';
+import { createGroupsView } from '../groups/ui.js';
+import { controlType } from '../groups/model.js';
 
 const SYNC_MS = 30000;                   // how often requests and messages are checked
 const HISTORY_OPEN_MS = 15000;           // bound of the IndexedDB open + read (openLocal)
@@ -97,6 +106,8 @@ let nodusClient;                         // the wallet's client (nameOf), this s
 // LOCAL FIRST: Messages opens on the wallet's IDENTIFIED client from what
 // this device keeps (openLocal), then the NETWORK phase runs in the
 // background once the client is ready (goOnline -> sync).
+let groups;                              // the groups engine (src/connect/groups/engine.js), this session
+let groupsView;                          // its screens (src/connect/groups/ui.js), mounted once
 let netStarted = false;                  // the network phase started (client ready)
 let online = false;                      // own account checked on the network
                                          // (read, or a fresh one published):
@@ -130,10 +141,11 @@ function wipe() {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false; ownNameConfirmed = false; removeArmed = undefined;
-  netStarted = false; online = false;
+  netStarted = false; online = false; groups = undefined;
   for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
   notifyVaultHost();
   if (!ui) return;
+  groupsView?.reset();
   for (const control of [ui.addId, ui.addNote, ui.composer, ui.bio, ui.location, ui.website]) control.value = '';
   ui.composer.rows = 1; ui.counter.textContent = '';
   for (const line of [ui.addStatus, ui.sendStatus, ui.profileStatus, ui.copyStatus, ui.emptyCopyStatus, ui.requestsStatus, ui.contactsStatus, ui.sync, ui.ownId, ui.profileName, ui.avatarStatus, ui.ownAvatar]) line.textContent = '';
@@ -231,6 +243,20 @@ async function openLocal(gen) {
     messages = [...store.messages];
     for (const p of store.profiles) kept.set(p.fp, { id: p.id, record: p.record });
     for (const v of store.vaults || []) vaultRecs.set(v.address, { id: v.id, value: v.value });
+    // Groups: what this device keeps (store.js groupRecords / groupMessages);
+    // no network until the network phase.
+    groups = createGroupsEngine({
+      core, ownFp, state: () => state, takeSeq,
+      saveAll: ({ records = [], messages: groupMessages = [] }) => store.save(state, groupMessages, [], [], records),
+      sendDirect: sendControl,
+      isContact: fp => !!contactOf(fp)?.salt,
+      ensureProfile: fp => ensureProfile(fp, !!contactOf(fp)),
+      reloadProfile,
+      hasKemKey: fp => profiles.get(fp)?.has_mlkem === true,
+      nameStatus: groupNameStatus,
+      lookupName: groupNameLookup
+    });
+    groups.load({ records: store.groupRecords || [], messages: store.groupMessages || [] });
     for (const m of messages) if (m.dir === 'in') received.add(receivedKey(m.fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text }));
     const now = nowSeconds();
     for (const contact of state.contacts) if (hasUndelivered(messages, contact.fp, now)) unpublished.add(contact.fp);
@@ -447,6 +473,33 @@ async function ensureChainName(fp, keep = false, opened = false) {
   if (after.entry) state.chainNames[fp] = after.entry; else delete state.chainNames[fp];
   return after.changed;
 }
+// Groups (decisions 2026-10-04-connect-groups.md items 17 + 18): only IDs
+// with a confirmed chain name may be in a group. The groups engine reads the
+// same names as the rest of Messages: 'found' = a name is known (kept in
+// state.chainNames, or found this session — a name is permanent, so one is
+// enough); 'none' = a lookup ANSWERED "no name" this session (chainAsked is
+// set only by an answer); 'unknown' = no answer yet (never asked, or every
+// lookup failed — a failed lookup does not move it).
+function groupNameStatus(fp) {
+  if (!state) return 'unknown';
+  keptChainName(fp);
+  if (chainNameOf(fp)) return 'found';
+  return chainAsked.has(fp) ? 'none' : 'unknown';
+}
+// A lookup for the groups engine when no name is known: asked again even
+// after an earlier "no name" (that answer is never final), but never twice
+// for one ID within CHAIN_LOOKUP_SPACING_MS (ensureChainName, `opened`).
+// A found name is kept (state.chainNames) for every ID a group asks about —
+// a group member need not be a contact, and one confirmed name per identity
+// is enough (decision 17) — so a group's history shows at the next local
+// open without waiting for the network.
+async function groupNameLookup(fp) {
+  if (!isOpen()) return;
+  const gen = generation;
+  let moved;
+  try { moved = await ensureChainName(fp, true, true); } catch { return; }
+  if (moved && gen === generation && isOpen()) { try { await persist(); } catch { /* shown this session; the next save keeps it */ } }
+}
 // Opening a contact's conversation: a contact without a known chain name is
 // asked again right then (it may have registered a name after this session
 // first asked); a found name is shown at once and kept through the usual
@@ -527,6 +580,15 @@ async function sync() {
       }
     }
     if (syncMoved && gen === generation) await persist();
+    // Groups (package G3), after the 1:1 contacts — whose check delivered
+    // their invites, accepts, welcomes and leaves: one group at a time, each
+    // step awaited (design §6.4 F7); a group's failure is its own note.
+    let groupsFailed = 0;
+    if (gen === generation && groups) {
+      try { groupsFailed = await groups.syncAll(() => gen === generation); }
+      catch (error) { if (error instanceof StorageError) storageFailure = error; groupsFailed++; }
+      if (gen !== generation) return;
+    }
     // Names for the request screens: the profiles of the people we asked
     // and of those asking us (read once per session — ensureProfile caches;
     // a name shows only after nc_name_verify proved it).
@@ -536,7 +598,8 @@ async function sync() {
     }
     if (gen === generation) { fillOwnAvatar(); fillNameLine(); }
     if (gen === generation) {
-      const notChecked = failed ? ` ${failed} contact${failed === 1 ? '' : 's'} could not be checked (see Details in the conversation).` : '';
+      const notChecked = (failed ? ` ${failed} contact${failed === 1 ? '' : 's'} could not be checked (see Details in the conversation).` : '') +
+        (groupsFailed ? ` ${groupsFailed} group${groupsFailed === 1 ? '' : 's'} could not be checked.` : '');
       ui.sync.textContent = storageFailure
         ? `${storageFailure.message}${notChecked}`
         : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
@@ -651,6 +714,19 @@ async function syncContact(contact, gen, days) {
   }
   if (lost) dropped.set(fp, lost);
   if (other) others.set(fp, other); else others.delete(fp);
+  // Group invites / accepts / welcomes / leaves (package G3): handed to the
+  // groups module with `fp` — the AUTHENTICATED 1:1 sender (the outbox read
+  // checks the message's author is this contact) — and kept as 1:1 records
+  // flagged `control` (so they are deduplicated and acknowledged like any
+  // message) that the chat never shows. The group's own state is saved
+  // first: if that fails nothing of this check is kept and it runs again.
+  for (const m of arrived) {
+    if (!controlType(m.text)) continue;
+    m.control = true;
+    try { if (groups) await groups.onDirect(fp, m.text); }
+    catch (error) { for (const x of arrived) received.delete(receivedKey(fp, { seq: x.remoteSeq, senderTs: x.senderTs, text: x.text })); throw error; }
+    if (gen !== generation) return false;
+  }
   if (arrived.length) {
     for (const m of arrived) m.seq = takeSeq();
     try { await persist(arrived); }
@@ -697,6 +773,11 @@ async function publishOutbox(contact, gen) {
   await saveUpdated(markPublished(messages, contact.fp, set));
 }
 
+// A 1:1 record that carries a group control message (flagged when it was
+// kept; the text test also covers a record kept before the flag existed):
+// published, acknowledged and deduplicated like any message, never shown.
+const isControl = m => m.control === true || !!controlType(m.text);
+
 // ── read marks (UI only, this session; nothing is stored) ──────────────
 function newestSeq(fp) {
   let newest = -1n;
@@ -706,11 +787,11 @@ function newestSeq(fp) {
 function markRead(fp) { lastRead.set(fp, newestSeq(fp)); }
 function unreadCount(fp) {
   const seen = lastRead.get(fp) ?? -1n;
-  return messages.filter(m => m.fp === fp && m.dir === 'in' && BigInt(m.seq) > seen).length;
+  return messages.filter(m => m.fp === fp && m.dir === 'in' && !isControl(m) && BigInt(m.seq) > seen).length;
 }
 function lastMessage(fp) {
   let last;
-  for (const m of messages) if (m.fp === fp && (!last || compareLocal(m, last) > 0)) last = m;
+  for (const m of messages) if (m.fp === fp && !isControl(m) && (!last || compareLocal(m, last) > 0)) last = m;
   return last;
 }
 
@@ -920,7 +1001,16 @@ export function mountMessages(root, options = {}) {
   u.requestsBanner = button('', () => show('contacts', { tab: 'requests' }), 'nc-banner');
   u.requestsBanner.append(icon('requests'), u.requestsBannerText, icon('chevron'));
   u.contactList = setAttrs(el('ul', { className: 'contact-list' }), { 'aria-label': 'Conversations' });
-  u.chatsBody = el('div', { className: 'nc-chats-body' }, u.chipRow, u.requestsBanner, u.contactList);
+  // Groups (package G3, src/connect/groups/ui.js): invitations, group rows
+  // and "New group" above the conversations; a group's conversation in the
+  // pane; the New group dialog.
+  groupsView = createGroupsView({
+    engine: () => groups, isOpen, online: () => online, ownFp: () => ownFp, contacts: () => (state ? state.contacts : []),
+    el, button, untrusted, statusLine, input, setAttrs, icon, iconButton, backButton,
+    nameTitle, nameHint: fp => nameHint(fp), displayName, shortWhen, dayLabel, sameDay, explain,
+    openGroup, render
+  });
+  u.chatsBody = el('div', { className: 'nc-chats-body' }, u.chipRow, u.requestsBanner, groupsView.block, u.contactList);
   u.sync = el('p', { className: 'messenger-sync' });
   u.sync.setAttribute('role', 'status');
   u.fab = iconButton('userPlus', 'Add contact', () => openAdd(), 'nc-fab');
@@ -962,7 +1052,7 @@ export function mountMessages(root, options = {}) {
   u.sendForm.id = 'nc-send-form';
   u.notReady = el('p', { className: 'hint composer-closed', text: 'Messaging with this contact is not ready yet. It is checked again automatically.' });
   u.conversationView = el('div', { className: 'messenger-view messenger-conversation' }, u.convHead, u.convNote, u.convDiag, u.messageList, u.sendForm, u.notReady);
-  u.pane = el('div', { className: 'messenger-pane' }, u.emptyView, u.conversationView);
+  u.pane = el('div', { className: 'messenger-pane' }, u.emptyView, u.conversationView, groupsView.view);
 
   // Add contact (add_contact_dialog.dart): a modal dialog.
   u.addHeading = el('h2', { text: 'Add a contact' });
@@ -1044,7 +1134,7 @@ export function mountMessages(root, options = {}) {
 
   // One screen at a time on a narrow screen; on a wide one Chats stays next
   // to the open conversation (messenger.css, data-screen).
-  u.layout = el('div', { className: 'messenger' }, u.chats, u.pane, u.contactsView, u.profileView, u.addDialog);
+  u.layout = el('div', { className: 'messenger' }, u.chats, u.pane, u.contactsView, u.profileView, u.addDialog, groupsView.dialog);
   root.replaceChildren(u.layout);
   ui = u;
 
@@ -1089,7 +1179,7 @@ function showState(title, text, retry) {
 function show(next, { tab } = {}) {
   if (!ui) return;
   if (!isOpen()) next = 'list';
-  if (next !== 'conversation') selectedFp = undefined;
+  if (next !== 'conversation') { selectedFp = undefined; groupsView?.close(); }
   if (next !== 'contacts' && removeArmed) { removeArmed = undefined; ui.contactsStatus.textContent = ''; }
   if (next === 'contacts' && tab) { hubTab = tab; if (tab === 'requests') ui.requestsStatus.textContent = ''; }
   screen = next;
@@ -1115,7 +1205,19 @@ function openAdd() {
   ui.addId.focus();
 }
 
+// A group's conversation (src/connect/groups/ui.js), in the pane like a
+// contact's.
+function openGroup(gid) {
+  if (!isOpen() || !groups?.view(gid)) return;
+  selectedFp = undefined;
+  groupsView.open(gid);
+  screen = 'conversation';
+  render({ scroll: true });
+  groupsView.focus();
+}
+
 function selectContact(fp) {
+  groupsView?.close();
   selectedFp = fp; screen = 'conversation';
   ui.sendStatus.textContent = '';
   markRead(fp);
@@ -1132,8 +1234,12 @@ function setCount(node, count) {
 function render({ scroll = false } = {}) {
   if (!ui) return;
   const open = isOpen();
+  // A group's conversation is open (src/connect/groups/ui.js); a group that
+  // was left is not shown any more.
+  const shownGroup = open && screen === 'conversation' && groupsView?.selected ? groups?.view(groupsView.selected) : null;
+  const groupOpen = !!shownGroup && shownGroup.status !== 'left';
   // Closed: Chats only. A conversation whose contact is gone: back to Chats.
-  if ((!open && screen !== 'list') || (screen === 'conversation' && !(selectedFp && contactOf(selectedFp)))) { screen = 'list'; selectedFp = undefined; }
+  if ((!open && screen !== 'list') || (screen === 'conversation' && !groupOpen && !(selectedFp && contactOf(selectedFp)))) { screen = 'list'; selectedFp = undefined; groupsView?.close(); }
   // data-screen drives the layout (messenger.css); data-open the closed state.
   ui.layout.dataset.screen = screen;
   ui.layout.dataset.open = String(open);
@@ -1141,19 +1247,22 @@ function render({ scroll = false } = {}) {
   ui.chatsBody.hidden = !open;
   ui.fab.hidden = !open;
   ui.emptyView.hidden = screen !== 'list';
-  ui.conversationView.hidden = screen !== 'conversation';
+  ui.conversationView.hidden = screen !== 'conversation' || groupOpen;
   ui.contactsView.hidden = screen !== 'contacts';
   ui.profileView.hidden = screen !== 'profile';
   for (const control of [ui.requestsAction, ui.profileAction]) control.disabled = !open;
-  if (open && screen === 'conversation') markRead(selectedFp);
-  const unread = open ? state.contacts.reduce((sum, c) => sum + unreadCount(c.fp), 0) : 0;
+  if (open && screen === 'conversation' && !groupOpen) markRead(selectedFp);
+  // The group conversation is drawn first, so its read mark counts below.
+  if (groupOpen) groupsView.renderView({ scroll });
+  groupsView.view.hidden = !groupOpen;
+  const unread = open ? state.contacts.reduce((sum, c) => sum + unreadCount(c.fp), 0) + groupsView.unreadTotal() : 0;
   const waiting = open ? requests.length : 0;
   renderCounts(unread, waiting);
   renderEmpty(open);
   if (open) {
     renderChats();
     if (screen === 'contacts') renderContacts();
-    if (screen === 'conversation') renderConversation(scroll);
+    if (screen === 'conversation' && !groupOpen) renderConversation(scroll);
   }
   host.onUnread?.(unread);
   host.onRequests?.(waiting);
@@ -1184,6 +1293,10 @@ function renderCounts(unread, waiting) {
 // on the right its time and the unread count; a chevron.
 function renderChats() {
   for (const node of [ui.chipAll, ui.chipUnread, ui.chipChats]) node.setAttribute('aria-pressed', String(node.dataset.filter === filter));
+  // Groups above the conversations; the 'chats' chip shows one-to-one
+  // conversations only.
+  groupsView.renderBlock({ unreadOnly: filter === 'unread' });
+  if (filter === 'chats') groupsView.block.hidden = true;
   if (!state.contacts.length) {
     ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID using the add-contact button.' }));
     return;
@@ -1192,7 +1305,7 @@ function renderChats() {
   // messages in list order; ties keep the list order (stable sort).
   const ordered = state.contacts.map((c, index) => ({ c, index, last: lastMessage(c.fp) }))
     .sort((a, b) => (a.last && b.last ? compareLocal(b.last, a.last) : a.last ? -1 : b.last ? 1 : 0) || a.index - b.index);
-  // 'chats' shows the same list as 'all' (the app's Chats chip without groups).
+  // 'chats' shows the same conversations as 'all', without the groups.
   const shown = filter === 'unread' ? ordered.filter(({ c }) => unreadCount(c.fp) > 0) : ordered;
   if (!shown.length) {
     ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'All caught up. No unread messages.' }));
@@ -1297,7 +1410,7 @@ function renderConversation(scroll) {
 
   const items = [];
   let day;
-  for (const m of messages.filter(x => x.fp === contact.fp).sort(compareLocal)) {
+  for (const m of messages.filter(x => x.fp === contact.fp && !isControl(x)).sort(compareLocal)) {
     const at = new Date(m.at);
     if (!day || !sameDay(day, at)) { day = at; items.push(el('li', { className: 'message-day', text: dayLabel(at) })); }
     const mine = m.dir === 'out';
@@ -1609,6 +1722,34 @@ async function sendPayload(fp, text) {
   if (gen === generation) render();
 }
 
+// ── the groups module's use of Messages (src/connect/groups/) ──────────
+// A group invite / accept / welcome / leave to one contact: kept on this
+// device as a 1:1 message flagged `control` (never shown), then published
+// with that contact's pending set — the 30-second check publishes it again
+// until it is delivered, as any 1:1 message.
+async function sendControl(fp, text) {
+  if (!isOpen()) throw new Error('Messages is not open.');
+  if (!online) throw new Error(OFFLINE_SEND_TEXT);
+  const gen = generation, contact = contactOf(fp);
+  if (!contact?.salt) throw new Error('Messaging with this contact is not ready yet.');
+  if (typeof text !== 'string' || !text || text.length > PAYLOAD_TEXT_MAX) throw new Error('Invalid group message.');
+  const message = { seq: takeSeq(), fp, dir: 'out', text, ts: nowSeconds(), at: Date.now(), control: true };
+  await persist([message]);
+  if (gen !== generation) throw new Error('Messages is not open.');
+  messages.push(message); unpublished.add(fp);
+  try { await publishOutbox(contact, gen); } catch { /* retried by sync */ }
+}
+// A fresh owner-filtered read of a profile: its keys go back into the
+// module's verified cache (64 entries, connect/nc_wasm.c) before a group
+// key packet is built or a sender's messages are checked.
+async function reloadProfile(fp) {
+  if (fp === ownFp) return true;
+  const result = await core.profileGet(fp);
+  if (result.outcome !== 'found') return false;
+  profiles.set(fp, result.profile);
+  return true;
+}
+
 async function keepVault(address, value) {
   if (!isOpen()) throw new Error('Messages is not open.');
   if (typeof address !== 'string' || !VAULT_ADDRESS.test(address) || !value || typeof value !== 'object') throw new Error('Invalid vault.');
@@ -1639,7 +1780,7 @@ export const vaultHost = {
   persistent: () => isOpen() && !!store?.persistent,
   contacts: () => (isOpen() ? state.contacts.map(c => ({ fp: c.fp, ready: !!c.salt, name: displayName(c.fp), verified: namesOf(c.fp).verified })) : []),
   name: fp => (isOpen() && typeof fp === 'string' && VAULT_ADDRESS.test(fp) ? displayName(fp) : ''),
-  messages: () => (isOpen() ? messages.map(m => ({ fp: m.fp, dir: m.dir, text: m.text, at: m.at, seq: String(m.seq) })) : []),
+  messages: () => (isOpen() ? messages.filter(m => !isControl(m)).map(m => ({ fp: m.fp, dir: m.dir, text: m.text, at: m.at, seq: String(m.seq) })) : []),
   send: sendPayload,
   vaults: () => (isOpen() ? [...vaultRecs.entries()].map(([address, r]) => ({ address, value: r.value })) : []),
   keepVault,

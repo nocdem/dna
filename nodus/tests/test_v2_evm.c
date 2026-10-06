@@ -157,6 +157,21 @@
  *     then FAULTs before commit (V2AP_FAIL_BEFORE_COMMIT) leaves the
  *     whole database byte-identical and no batch open; the same envelope
  *     then applies, its storage root matching the full rebuild.
+ * 12b. the bridge's sender-code refusal (Kurultay #9 item 1, EVM ruleset
+ *     v2): a control first (key K deposits, then withdraws — no code);
+ *     then code is SEEDED at K's derived address through the adapter (a
+ *     synthetic collision, nonce and balance kept) and another key's
+ *     DEPOSIT re-anchors the EVM head (committed == recomputed after it).
+ *     (a) a WITHDRAW and (b) a DEPOSIT signed by K are refused by CheckTx
+ *     (new entry and recheck) and by the block, the ledger byte-identical
+ *     (EVM accounts, META, CORE outputs, the reserve); (c) after the
+ *     refusals a codeless sender's WITHDRAW (the other key) is admitted
+ *     and lands, K untouched (the adapter refuses an ACCT SET that strips
+ *     live code, so K's own codeless case is the control at the top).
+ *  Section 1 also proves the address width is in D (Kurultay #9 item 2):
+ *     a restatement of EVM_ACT_CONSTS re-derives the D literal, and the
+ *     same vector with a width of 20 — or without the width entry — does
+ *     not.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * The default standalone nodus build with the EVM runtime
@@ -178,7 +193,14 @@
  *  - The D literal and the EVM generation's pins are SELF-DERIVED
  *    (shared/dnac/tests/nodus_evm_activation_oracle.py, written by the
  *    implementing agent): section 1's selfcheck proves C encoder ==
- *    that file, NOT independence.
+ *    that file, NOT independence. Its width check restates the constant
+ *    vector by hand; the restatement is tied to the compiled one only by
+ *    re-deriving the D literal (a vector edited in both places at once
+ *    would still pass).
+ *  - Section 12b computes no address collision: it WRITES the state one
+ *    would produce, outside any block, and relies on an EVM-touching
+ *    block to re-anchor the head. If that re-anchoring DEPOSIT fails
+ *    ("O deposits"), the seam broke, not the bridge rule.
  *  - Section 8's probe is a test double: the real CheckTx probe
  *    (nodus_witness_cmt_app.c app_pend_probe — the pending set's
  *    other-owner rule, so a recheck of an admitted entry passes) and
@@ -1249,7 +1271,7 @@ static int view_of(uint8_t *buf, size_t cap, uint32_t core_op,
     legs[0].auth_data = &a;
     legs[1].hdr.domain_id = evm_dom;
     legs[1].hdr.runtime_op = evm_op;
-    legs[1].hdr.ruleset_version = 1;
+    legs[1].hdr.ruleset_version = NODUS_RT_EVM_RULESET_VERSION_GEVM;
     legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[1].hdr.auth_kind = 1;
     legs[1].hdr.call_len = evm_len;
@@ -1282,7 +1304,7 @@ static int test_shape(void) {
           g3[1].domain_id == DNA_DOMAIN_CORE &&
           g3[2].domain_id == DNA_DOMAIN_EVM, "the EVM slice"); OK();
     CHECK(g3[0].ruleset_version == 8 && g3[1].ruleset_version == 6 &&
-          g3[2].ruleset_version == 1, "SYSTEM v8 / CORE v6 / EVM v1"); OK();
+          g3[2].ruleset_version == 2, "SYSTEM v8 / CORE v6 / EVM v2"); OK();
     CHECK(g3[1].descriptor.rule_count == 9 &&
           g3[1].descriptor.rule_ids[8] == DNA_CORERULE_EVMFUND,
           "CORE owns rule 9"); OK();
@@ -1325,6 +1347,63 @@ static int test_shape(void) {
               memcmp(m.genesis_state_root, er, 64) == 0 &&
               m.domain_id == DNA_DOMAIN_EVM && m.quota_verify_cost == 0,
               "the D manifest: the empty EVM root, quota 0"); OK();
+
+        /* Kurultay #9 (docs/plans/decisions/2026-10-06-kurultay-9-evm-
+         * address-width-summary.md item 2): D commits the address width.
+         * The test restates nodus_witness_runtime.c EVM_ACT_CONSTS (file-
+         * local) in its order; leg 1 proves the restatement IS the
+         * compiled vector (it re-derives DEVM), leg 2 that the width
+         * entry changes D — two binaries differing only in width vote
+         * different values. */
+        uint64_t cv[] = {
+            NODUS_RT_EVM_Q, NODUS_RT_EVM_TICKET_GAS, NODUS_RT_EVM_TX_GAS_CAP,
+            NODUS_RT_EVM_READS_BASE, NODUS_RT_EVM_MAX_READ_BYTES,
+            DNA_METER_EVM_W_GAS, DNA_METER_EVM_FAIL_RESERVE,
+            DNA_METER_EVM_FAIL_EFFECTS, DNA_METER_EVM_FAIL_BYTES,
+            DNA_METER_STREAM_MAX_EFFECTS, DNA_METER_STREAM_MAX_EFFECT_BYTES,
+            NODUS_RT_EVM_BRIDGE_GAS, DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT,
+            DNAC_CFG_MIN_EVM_BLOCK_GAS, DNAC_CFG_MAX_EVM_BLOCK_GAS,
+            NODUS_RT_EVM_ADDR_BYTES
+        };
+        const uint32_t ncv = (uint32_t)(sizeof(cv) / sizeof(cv[0]));
+        const nodus_domain_runtime_t *rs =
+            nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_SYSTEM);
+        const nodus_domain_runtime_t *rco =
+            nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_CORE);
+        const nodus_domain_runtime_t *re =
+            nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_EVM);
+        uint8_t mh[DNA_DOM_HASH_LEN];
+        uint64_t d32 = 0, d20 = 0;
+        CHECK(rs && rco && re && dna_domman_hash(&m, mh) == 0, "D inputs");
+        CHECK(NODUS_RT_EVM_ADDR_BYTES == 32u && cv[ncv - 1] == 32u,
+              "the committed width is the 32 the engine runs with"); OK();
+        CHECK(dna_evm_activation_digest(NODUS_RT_GEN_EVM,
+                                        NODUS_RT_GEN_EVM_BASE,
+                                        rs->ruleset_hash, rco->ruleset_hash,
+                                        re->ruleset_hash, mh,
+                                        DNAC_EVM_ACTIVATION_SPEC_VERSION,
+                                        cv, ncv, &d32) == 0 &&
+              d32 == DEVM,
+              "the restated constant vector (width last) re-derives D");
+        OK();
+        cv[ncv - 1] = 20u;
+        CHECK(dna_evm_activation_digest(NODUS_RT_GEN_EVM,
+                                        NODUS_RT_GEN_EVM_BASE,
+                                        rs->ruleset_hash, rco->ruleset_hash,
+                                        re->ruleset_hash, mh,
+                                        DNAC_EVM_ACTIVATION_SPEC_VERSION,
+                                        cv, ncv, &d20) == 0 &&
+              d20 != DEVM,
+              "a 20-byte width in the vector gives a different D"); OK();
+        CHECK(dna_evm_activation_digest(NODUS_RT_GEN_EVM,
+                                        NODUS_RT_GEN_EVM_BASE,
+                                        rs->ruleset_hash, rco->ruleset_hash,
+                                        re->ruleset_hash, mh,
+                                        DNAC_EVM_ACTIVATION_SPEC_VERSION,
+                                        cv, ncv - 1, &d20) == 0 &&
+              d20 != DEVM,
+              "a vector WITHOUT the width (the v1 shape) does not give D");
+        OK();
     }
 
     /* the pairing rule (both runtimes apply it) */
@@ -1548,10 +1627,11 @@ static int test_edge(void) {
         uint64_t dh = 1, lu = 0;
         uint8_t hr[64], er[64];
         CHECK(head_of(A.w, DNA_DOMAIN_EVM, &rv, &dh, &lu, hr) == 0 &&
-              rv == 1 && dh == 0 && lu == HE - 1u &&
+              rv == NODUS_RT_EVM_RULESET_VERSION_GEVM && dh == 0 &&
+              lu == HE - 1u &&
               nodus_rt_evm_empty_state_root(er) == 0 &&
               memcmp(hr, er, 64) == 0,
-              "the EVM head: v1, height 0, at HE-1, the empty root"); OK();
+              "the EVM head: v2, height 0, at HE-1, the empty root"); OK();
         CHECK(q1(A.w, "SELECT COUNT(*) FROM evm_meta") == 1 &&
               reserve_of(A.w) == 0, "empty META, reserve 0"); OK();
         dna_domain_update_t uc, us;
@@ -4279,6 +4359,165 @@ static int test_trie_batch(void) {
     return 0;
 }
 
+/* ══ 12b. the bridge refuses a sender that carries code (Kurultay #9) ══ */
+
+/** SYNTHETIC COLLISION (Kurultay #9 item 1, docs/plans/decisions/
+ *  2026-10-06-kurultay-9-evm-address-width-summary.md; the seam Astra
+ *  named, astra-r1.md Q3): rewrite the EXISTING account at `addr` so its
+ *  code fields name `code` (cl 0 = the empty code), its nonce, balance and
+ *  storage count kept — no address collision is computed, the state one
+ *  would produce is written. Outside any block, through the EVM adapter
+ *  (tb_eff); the code chunk is stored first when absent. The domain head
+ *  still holds the old root: the caller applies an EVM-touching block
+ *  next, which re-anchors it. @return 0 / -1. */
+static int seed_code(nodus_witness_t *w, const uint8_t addr[32],
+                     const uint8_t *code, size_t cl) {
+    static const uint8_t none[1] = { 0 };
+    if (!code) code = none;
+    sqlite3_stmt *st = NULL;
+    uint8_t v[NODUS_RT_EVM_ACCT_LEN];
+    memset(v, 0, sizeof(v));
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT nonce, balance, storage_count FROM evm_accounts "
+            "WHERE addr = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, addr, 32, SQLITE_TRANSIENT);
+    int ok = sqlite3_step(st) == SQLITE_ROW &&
+             sqlite3_column_bytes(st, 1) == 32;
+    if (ok) {
+        put64(v, (uint64_t)sqlite3_column_int64(st, 0));
+        memcpy(v + 8, sqlite3_column_blob(st, 1), 32);
+        put64(v + 140, (uint64_t)sqlite3_column_int64(st, 2));
+    }
+    sqlite3_finalize(st);
+    if (!ok) return -1;
+    if (keccak256(code, cl, v + 40) != 0) return -1;
+    v[72] = (uint8_t)(cl >> 24); v[73] = (uint8_t)(cl >> 16);
+    v[74] = (uint8_t)(cl >> 8);  v[75] = (uint8_t)cl;
+    if (qgp_sha3_512(code, cl, v + 76) != 0) return -1;
+    if (cl > 0) {
+        uint8_t ck[65];
+        memcpy(ck, v + 76, 64);
+        ck[64] = 0;
+        if (sqlite3_prepare_v2(w->db, "SELECT COUNT(*) FROM evm_code WHERE "
+                               "digest = ?1", -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        sqlite3_bind_blob(st, 1, ck, 64, SQLITE_TRANSIENT);
+        int have = sqlite3_step(st) == SQLITE_ROW ?
+                   sqlite3_column_int(st, 0) : -1;
+        sqlite3_finalize(st);
+        if (have < 0) return -1;
+        if (have == 0 &&
+            tb_eff(w, NODUS_RT_EVM_OP_CODE, DNA_EFFECT_CREATE, ck, 65, code,
+                   (uint32_t)cl) != 0)
+            return -1;
+    }
+    return tb_eff(w, NODUS_RT_EVM_OP_ACCT, DNA_EFFECT_SET, addr, 32, v,
+                  NODUS_RT_EVM_ACCT_LEN);
+}
+
+static int test_bridge_sender_code(void) {
+    fixture_t fx;
+    CHECK(fx_evm_ready(&fx, "bcode") == 0, "EVM chain"); OK();
+    const int K = 0, O = 1, R = 2;
+    const uint8_t *sk = sender_of(K);
+    uint8_t call[512];
+    size_t cl;
+    uint32_t code = 0;
+    tx_t t;
+    nodus_v2_env_dry_run_t *d = calloc(1, sizeof(*d));
+    CHECK(d != NULL, "alloc");
+
+    /* control, no code: K deposits 10 and withdraws 1 to R */
+    CHECK(deposit_tx(&fx, K, 10, 0, &t) == 0 &&
+          apply_one(&fx, &t, NULL) == NODUS_V2_TX_OK,
+          "K deposits 10 (no code)"); OK();
+    tx_free(&t);
+    cl = enc_withdraw(call, 1, 1, g_k[R].fp);
+    CHECK(evm_tx(&fx, K, NODUS_RT_EVM_WITHDRAW, call, (uint32_t)cl, &t) == 0
+          && apply_one(&fx, &t, NULL) == NODUS_V2_TX_OK &&
+          owned_with(fx.w, R, 1) == 1, "K withdraws 1 to R (no code)"); OK();
+    tx_free(&t);
+    CHECK(acct_nonce(fx.w, sk) == 2 && acct_balance_lo(fx.w, sk) == 9ull * Q,
+          "K: nonce 2, balance 9 q"); OK();
+
+    /* K's derived address now carries code (the synthetic collision);
+     * O's DEPOSIT touches the EVM domain and re-anchors its head */
+    CHECK(seed_code(fx.w, sk, RT_REVERT, sizeof(RT_REVERT)) == 0,
+          "code seeded at K's derived address"); OK();
+    CHECK(deposit_tx(&fx, O, 5, 0, &t) == 0 &&
+          apply_one(&fx, &t, NULL) == NODUS_V2_TX_OK,
+          "O deposits (the EVM head re-anchors)"); OK();
+    tx_free(&t);
+    CHECK(invariants_ok(fx.w) && roots_ok(fx.w) == 0 &&
+          acct_nonce(fx.w, sk) == 2 && acct_balance_lo(fx.w, sk) == 9ull * Q,
+          "the seeded state is coherent: both invariants, committed root "
+          "== recomputed, K's nonce and balance kept"); OK();
+    const uint64_t r0 = reserve_of(fx.w);
+
+    /* (a) WITHDRAW signed by K: refused by CheckTx (new entry + recheck)
+     * and by the block, the ledger byte-identical (refused_one: EVM
+     * accounts, META, CORE outputs, the reserve) */
+    cl = enc_withdraw(call, 1, 2, g_k[R].fp);
+    CHECK(evm_tx(&fx, K, NODUS_RT_EVM_WITHDRAW, call, (uint32_t)cl, &t) == 0,
+          "WITHDRAW built");
+    CHECK(dry_ex(fx.w, &t, 0, d) == -1 && d->code == NODUS_V2_TX_ERR_EXEC,
+          "CheckTx refuses a WITHDRAW from a sender with code"); OK();
+    nodus_witness_v2_env_dry_run_free(d);
+    CHECK(dry_ex(fx.w, &t, 1, d) == -1,
+          "recheck refuses it too (the same pre-validation)"); OK();
+    nodus_witness_v2_env_dry_run_free(d);
+    CHECK(refused_one(&fx, &t, &code) == 0 && code == NODUS_V2_TX_ERR_EXEC &&
+          coin_live(fx.w, t.coin) == 1,
+          "the block refuses it; the ledger is byte-identical"); OK();
+    tx_free(&t);
+    CHECK(acct_nonce(fx.w, sk) == 2 && acct_balance_lo(fx.w, sk) == 9ull * Q
+          && owned_with(fx.w, R, 1) == 1 && reserve_of(fx.w) == r0,
+          "K's account, R's outputs and the reserve unchanged"); OK();
+
+    /* (b) DEPOSIT signed by K: refused likewise */
+    CHECK(deposit_tx(&fx, K, 5, 2, &t) == 0, "DEPOSIT built");
+    CHECK(dry_ex(fx.w, &t, 0, d) == -1 && d->code == NODUS_V2_TX_ERR_EXEC,
+          "CheckTx refuses a DEPOSIT to a sender with code"); OK();
+    nodus_witness_v2_env_dry_run_free(d);
+    CHECK(dry_ex(fx.w, &t, 1, d) == -1, "recheck refuses it too"); OK();
+    nodus_witness_v2_env_dry_run_free(d);
+    CHECK(refused_one(&fx, &t, &code) == 0 && code == NODUS_V2_TX_ERR_EXEC &&
+          coin_live(fx.w, t.coin) == 1,
+          "the block refuses it; the coin stays live"); OK();
+    tx_free(&t);
+    CHECK(acct_nonce(fx.w, sk) == 2 && acct_balance_lo(fx.w, sk) == 9ull * Q
+          && reserve_of(fx.w) == r0,
+          "K's account and the reserve unchanged"); OK();
+
+    /* (c) control on the same chain, after the refusals: a codeless
+     * sender's WITHDRAW (O, nonce 1, 1 to R) is admitted by CheckTx and
+     * lands — the refusals above were the code's alone, not a bridge that
+     * stopped working. (The adapter refuses an ACCT SET that removes live
+     * code — "ACCT SET replaces live code" — so the code is not stripped
+     * from K's account; the codeless case of K itself is the control at
+     * the top of this test.) */
+    cl = enc_withdraw(call, 1, 1, g_k[R].fp);
+    CHECK(evm_tx(&fx, O, NODUS_RT_EVM_WITHDRAW, call, (uint32_t)cl, &t) == 0,
+          "O's WITHDRAW built");
+    CHECK(dry_ex(fx.w, &t, 0, d) == 0 && d->code == NODUS_V2_TX_OK,
+          "CheckTx admits a codeless sender's WITHDRAW"); OK();
+    nodus_witness_v2_env_dry_run_free(d);
+    CHECK(dry_ex(fx.w, &t, 1, d) == 0, "recheck admits it too"); OK();
+    nodus_witness_v2_env_dry_run_free(d);
+    CHECK(apply_one(&fx, &t, NULL) == NODUS_V2_TX_OK &&
+          owned_with(fx.w, R, 1) == 2 && acct_nonce(fx.w, sk) == 2 &&
+          acct_balance_lo(fx.w, sk) == 9ull * Q &&
+          reserve_of(fx.w) == r0 - 1u,
+          "O's WITHDRAW lands; K untouched"); OK();
+    tx_free(&t);
+    CHECK(invariants_ok(fx.w) && roots_ok(fx.w) == 0,
+          "invariants and roots at the end"); OK();
+    free(d);
+    fx_close(&fx);
+    return 0;
+}
+
 /* ══ 13. the receipt index's BLOCK position (red-team 1 F12) ══════════ */
 
 /* LOG1: MSTORE(0, 0x2a); LOG1(offset 0, size 32, topic 7); STOP */
@@ -4464,6 +4703,7 @@ int main(void) {
     fails += test_upgrade();
     fails += test_describe_addr_index();
     fails += test_trie_batch();
+    fails += test_bridge_sender_code();
     fails += test_block_position();
     if (fails) {
         fprintf(stderr, "test_v2_evm: %d section(s) FAILED (%d checks "

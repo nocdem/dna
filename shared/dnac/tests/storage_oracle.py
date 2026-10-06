@@ -53,8 +53,11 @@ must reproduce the shipped EVM pins before generation 4 is emitted.
 INPUTS THAT EXIST ONLY IN C (readings, stated — no written record names
 them):
   * EVM generation descriptor contents: SYSTEM v8 rules {1..6} types
-    {4,5,6,7,9,10}; CORE v6 rules {1..9} types {1,2,3,11,12,13}; EVM v1 =
-    domain 2, "EVM", abi 2, rules {1..5}, no types, no policy.
+    {4,5,6,7,9,10}; CORE v6 rules {1..9} types {1,2,3,11,12,13}; EVM v2 =
+    domain 2, "EVM", abi 2, rules {1..5}, no types, no policy
+    (NODUS_RT_EVM_RULESET_VERSION_GEVM 2u, nodus_witness_runtime.h; v1 was
+    never voted). The activation constants end with
+    NODUS_RT_EVM_ADDR_BYTES (nodus_witness_rt_evm.h, 32u).
     Read at nodus_witness_runtime.c (comment above SYS_RULESET_HASH_GEVM,
     table entries) and nodus_witness_rt_evm.c NODUS_RT_EVM_RULES /
     nodus_rt_evm_runtime_build. Design §9 grounds "SYSTEM new version,
@@ -104,7 +107,7 @@ Stages, fail-closed:
                                               runtime.c SYS_METER_POLICY_DIGEST_GEVM
     C9  gen-3 SYSTEM v8 ruleset hash          runtime.c SYS_RULESET_HASH_GEVM
     C10 gen-3 DNA_CORE v6 ruleset hash        runtime.c CORE_RULESET_HASH_GEVM
-    C11 gen-3 EVM v1 ruleset hash             runtime.h NODUS_RT_EVM_RULESET_HASH_GEVM_INIT
+    C11 gen-3 EVM v2 ruleset hash             runtime.h NODUS_RT_EVM_RULESET_HASH_GEVM_INIT
     C12 gen-3 param-14 EVM_ACTIVE literal D (through the empty EVM root
         and the EVM manifest hash, computed here)
                                               dnac.h DNAC_CFG_EVM_ACTIVE_D
@@ -169,10 +172,13 @@ SHIPPED_RS_SYSTEM_V8 = (
 SHIPPED_RS_CORE_V6 = (
     "ddde5acbd811aad624cddbf6d6d0d3d4c1452e02ce83507b5edce94e6a43f9ef"
     "e6d79b7b35c00a34f5889160b5a0992af67c699cd609bbe21864476ccf6d1fc8")
-SHIPPED_RS_EVM_V1 = (
-    "415e6f97f58143f436bb3eae73582eff45078dcc23cb0497008838e494065533"
-    "c2ff1acf271db7aa71a47c6c9a36fc22ce8b0c6e5e3585922c5919e4349f11ae")
-SHIPPED_EVM_ACTIVE_D = 0x5a10af78d85302e6
+# EVM ruleset v2 (main f7aa7984: the bridge refuses a sender with code; the
+# address width is the last EVM activation constant). v1 was
+# 415e6f97…f11ae / D 0x5a10af78d85302e6, never voted.
+SHIPPED_RS_EVM_V2 = (
+    "6af8346d10c9ce5ced25b68e1ddd201be205e0d7d465e90412f78962206e775b"
+    "f85f6c1d71d4cf3833148893977dc8126dfa01fcae2c83ca6a06d74c1bf4465f")
+SHIPPED_EVM_ACTIVE_D = 0x029f47596864d407
 
 # ── the EVM generation (C-only readings — see the docstring) ──────────
 
@@ -185,7 +191,7 @@ CORE_RULES_GEVM = CORE_RULES_GEN2 + [9]   # + DNA_CORERULE_EVMFUND
 POLICY_MAX_OP_GEVM = 9
 DOMAIN_EVM = 2                         # shared/dnac/ledger_ids.h DNA_DOMAIN_EVM
 RUNTIME_ABI_V2 = 2                     # design §3
-EVM_RULESET_VERSION = 1
+EVM_RULESET_VERSION = 2                # NODUS_RT_EVM_RULESET_VERSION_GEVM
 EVM_RULES = [1, 2, 3, 4, 5]            # CALL CREATE DEPOSIT WITHDRAW REDEEM
 EVM_TYPES = []
 EVM_ACTIVATION_SPEC_VERSION = 1        # dnac.h DNAC_EVM_ACTIVATION_SPEC_VERSION
@@ -209,6 +215,7 @@ EVM_ACT_CONSTS = [
     30000000,                          # DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT
     1000000,                           # DNAC_CFG_MIN_EVM_BLOCK_GAS
     1000000000,                        # DNAC_CFG_MAX_EVM_BLOCK_GAS
+    32,                                # NODUS_RT_EVM_ADDR_BYTES (EVM v2)
 ]
 
 # DomainManifest v1 field values (domain_wire.h layout comment: the only
@@ -365,7 +372,7 @@ def control() -> bool:
          SHIPPED_METPOL_GEVM),
         ("C9  gen-3 SYSTEM ruleset v8", e_sys.hex(), SHIPPED_RS_SYSTEM_V8),
         ("C10 gen-3 DNA_CORE ruleset v6", e_core.hex(), SHIPPED_RS_CORE_V6),
-        ("C11 gen-3 EVM ruleset v1", e_evm.hex(), SHIPPED_RS_EVM_V1),
+        ("C11 gen-3 EVM ruleset v2", e_evm.hex(), SHIPPED_RS_EVM_V2),
         ("C12 gen-3 EVM_ACTIVE literal D (param 14)", "0x%016x" % e_d,
          "0x%016x" % SHIPPED_EVM_ACTIVE_D),
     ]

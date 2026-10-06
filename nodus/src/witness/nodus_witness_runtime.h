@@ -188,7 +188,7 @@ extern "C" {
 #define NODUS_RT_GEN_2               ((uint32_t)2)
 /** Nodus EVM (design §9): the EVM GENERATION — SYSTEM v8 (the policy pricing
  *  ops 1..9), CORE v6 (rule 9 EVMFUND, the reserved supply leaf and
- *  invariant), EVM v1 (the third domain, registered ACTIVE by phase 6b''
+ *  invariant), EVM v2 (the third domain, registered ACTIVE by phase 6b''
  *  at the end of block H-1 of the EVM_ACTIVE vote). The NEXT FREE number
  *  in this tree; ONE definition so a merge with another generation (HF-5)
  *  renumbers it here only — the D literal (dnac.h DNAC_CFG_EVM_ACTIVE_D)
@@ -202,17 +202,23 @@ extern "C" {
  *  and so does a client that cannot link the witness (the web wallet's
  *  send.wasm, nodus-send-wasm.c "SMART CONTRACTS"). The digest is
  *  re-derived from the descriptor by nodus_witness_runtime_selfcheck on
- *  every start of an EVM-enabled build, so a drift here refuses to start. */
-#define NODUS_RT_EVM_RULESET_VERSION_GEVM  1u
+ *  every start of an EVM-enabled build, so a drift here refuses to start.
+ *  Version 2 (Kurultay #9, docs/plans/decisions/2026-10-06-kurultay-9-
+ *  evm-address-width-summary.md items 1-2): the bridge refuses a DEPOSIT /
+ *  WITHDRAW sender that carries code, and the address width is committed
+ *  in D — new semantics, so a new version (the rule above), never v1
+ *  re-used. Digest: E4 of shared/dnac/tests/nodus_evm_activation_oracle.py
+ *  — SELF-DERIVED. */
+#define NODUS_RT_EVM_RULESET_VERSION_GEVM  2u
 #define NODUS_RT_EVM_RULESET_HASH_GEVM_INIT { \
-    0x41, 0x5e, 0x6f, 0x97, 0xf5, 0x81, 0x43, 0xf4, \
-    0x36, 0xbb, 0x3e, 0xae, 0x73, 0x58, 0x2e, 0xff, \
-    0x45, 0x07, 0x8d, 0xcc, 0x23, 0xcb, 0x04, 0x97, \
-    0x00, 0x88, 0x38, 0xe4, 0x94, 0x06, 0x55, 0x33, \
-    0xc2, 0xff, 0x1a, 0xcf, 0x27, 0x1d, 0xb7, 0xaa, \
-    0x71, 0xa4, 0x7c, 0x6c, 0x9a, 0x36, 0xfc, 0x22, \
-    0xce, 0x8b, 0x0c, 0x6e, 0x5e, 0x35, 0x85, 0x92, \
-    0x2c, 0x59, 0x19, 0xe4, 0x34, 0x9f, 0x11, 0xae  \
+    0x6a, 0xf8, 0x34, 0x6d, 0x10, 0xc9, 0xce, 0x5c, \
+    0xed, 0x25, 0xb6, 0x8e, 0x1d, 0xdd, 0x20, 0x1b, \
+    0xe2, 0x05, 0xe0, 0xd7, 0xd4, 0x65, 0xe9, 0x04, \
+    0x12, 0xf7, 0x89, 0x62, 0x20, 0x6e, 0x77, 0x5b, \
+    0xf8, 0x5f, 0x6c, 0x1d, 0x71, 0xd4, 0xcf, 0x38, \
+    0x33, 0x14, 0x88, 0x93, 0x97, 0x7d, 0xc8, 0x12, \
+    0x6d, 0xfa, 0x01, 0xfc, 0xae, 0x2c, 0x83, 0xca, \
+    0x6a, 0x06, 0xd7, 0x4c, 0x1b, 0xf4, 0x46, 0x5f  \
 }
 /** The generation the EVM generation is built on and switches FROM (its
  *  SYSTEM/CORE tuples are this one's plus the EVM changes). ONE definition;

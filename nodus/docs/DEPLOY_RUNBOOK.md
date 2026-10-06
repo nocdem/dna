@@ -58,7 +58,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | `state_root` format / wire format / DB schema | **STOP-ALL + chain wipe** |
 | Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
 | A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80; HF-2 param 7; HF-3 param 8; HF-4 param 9 — the rule-set generation switch, nodus 0.23.10) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
-| HF-5 Nodus EVM (nodus 0.24.0; param 14 `EVM_ACTIVE`, rule-set generation 3) — a release that also migrates the witness DB to schema **S17** at its first open | **Rolling**, one node at a time, but every node through **§4.1** (stop it, copy its data directory, only then start the new binary — the previous binary cannot open an S17 database). The `EVM_ACTIVE` vote is a §2.2 procedure, ONLY after 7/7 run the new binary |
+| HF-5 Nodus EVM (nodus 0.24.1 — 0.24.0 was never deployed and votes a different D; param 14 `EVM_ACTIVE`, rule-set generation 3) — a release that also migrates the witness DB to schema **S17** at its first open | **Rolling**, one node at a time, but every node through **§4.1** (stop it, copy its data directory, only then start the new binary — the previous binary cannot open an S17 database). The `EVM_ACTIVE` vote is a §2.2 procedure, ONLY after 7/7 run the new binary |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -724,8 +724,12 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-2 | governance approvals weighed by voting power (> 2/3); a touched domain that nets to zero applies | 7 `HF2_ACTIVE` | 1 | 724 | 1500 | 0.23.2 | `477E05BD7C62EE4A` |
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
-| HF-? storage, the fork AFTER HF-5 (**not voted** — placeholder) | rule-set generation 4 GEN_STORAGE (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v1 unchanged): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT in force from H | 16 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6; Nodus EVM took generation 3 and params 14 / 15) | the compiled storage vote literal — **not filled yet** (STORAGE-ORACLE) | — | — | not released | — |
+| HF-5 | rule-set generation 3: SYSTEM v8 / CORE v6 / EVM v2 — the EVM domain (domain 2) registered ACTIVE at the end of H−1; CORE op 9 EVMFUND; id 15 EVM_BLOCK_GAS_LIMIT in force | 14 `EVM_ACTIVE` | 188948158701949959 (D = 0x029f47596864d407) | 62425 | 79757 | 0.24.1 | `1D6A68F08EC42ED0` |
+| HF-? storage, the fork AFTER HF-5 (**not voted** — placeholder) | rule-set generation 4 GEN_STORAGE (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT in force from H | 16 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6; Nodus EVM took generation 3 and params 14 / 15) | 896171186953543716 (S4 = 0x0c6fd6f2484e6024; `DNAC_CFG_RULESET_GEN_STORAGE_D`, re-derived by `shared/dnac/tests/storage_oracle.py` over EVM v2) | — | — | not released | — |
 
+Read 2026-10-06: the HF-5 row on 7/7 (identical; proposed from EU-5, 7/7 approvals; the
+seven nodes on 0.24.1 — 0.24.0 was never deployed). The EVM is not active until block
+79757: the generation switches at the end of block 79756.
 Read 2026-10-02: the HF-4 row on 7/7 (identical; proposed from EU-5, 7/7 approvals; the
 seven nodes on 0.23.10 with identical D2/commit/consensus-constants startup lines, the web
 wallet, Connect, explorer and Scan released before the vote). The HF-3 row on 7/7 (identical; proposed from EU-5, 7/7 approvals); the
@@ -747,8 +751,8 @@ without `NODUS_EVM_ENABLED` (the messenger tree, Windows) carries neither genera
 and stops at the EVM edge. The binary's startup log carries a second line,
 `storage rule-set generation 4 vote 0x… (param 16, switch spec v1), built from git commit …`,
 compared on 7/7 before that vote exactly as the D2 line is before param 9. Before the vote:
-the oracle-filled pins and literal (all zero now — "STORAGE-ORACLE: NOT FILLED"; an
-EVM-enabled binary refuses to start until they are filled), the harness scenario, and every
+the oracle-filled pins and literal (filled in `4fedbbdc`, S4 = 0x0c6fd6f2484e6024, re-checked
+over EVM ruleset v2 on 2026-10-06), the harness scenario (`test_storage_archive.sh`), and every
 client that builds storage envelopes.
 
 ### Procedure
@@ -961,6 +965,42 @@ the nodus component split (item 13).
 6. **Reverting** is another hard fork: generation 1 cannot be voted back. Accepted by the
    operator (decision item 15): any seat on the HF-4 binary can propose param 9 at an H the
    operator did not pick — today all 7 seats are the operator's.
+
+**HF-5 — the same procedure for chain-config param 14 `EVM_ACTIVE`** (design
+`docs/plans/2026-10-04-nodus-evm-chain-integration-design.md` rev 3 §9; decision
+`docs/plans/decisions/2026-10-06-hf5-evm-activation.md`; numbering
+`docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md`; generation 3 = SYSTEM v8 / CORE v6
+/ EVM v2, `ARCHITECTURE.md` "Nodus EVM"). The rules each seat and the block apply
+(`nodus_witness_chain_config.c`):
+1. **Every node through §4.1 before the vote** (the 0.24.1 rollout row in the table at the top
+   of this file): the build migrates the witness DB to S17 at first open, so each node is
+   stopped and its data directory copied before the new binary starts. Then the version check
+   of step 2 above on 7/7.
+2. **Grace is SAFETY: 17 280 blocks** (`nodus_chain_config_grace_for_param`, the
+   `CC_PARAM_EVM_ACTIVE` case, `DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS` in `dnac.h`): `<H>` ≥ tip + 1
+   + 17 280.
+3. **The value domain is exactly the compiled D** (`nodus_chain_config_scalar_rules`, the
+   `CC_PARAM_EVM_ACTIVE` case: `new_value != DNAC_CFG_EVM_ACTIVE_D` is refused):
+   `0x029f47596864d407` = **188948158701949959** (`dnac.h` `DNAC_CFG_EVM_ACTIVE_D`). A binary
+   whose EVM generation differs refuses the vote at the vote block and diverges there.
+4. **Stateful rules** (`nodus_chain_config_stateful_rules_ex`, the `CC_PARAM_EVM_ACTIVE` case,
+   rules (a)-(g)): (a) single use — any earlier param-14 row refuses the vote; (b) HF-2 active;
+   (c) HF-3 active; (d) a non-zero gas price active (param 5); (e) the judging registry is at
+   generation 2 (`NODUS_RT_GEN_EVM_BASE` = `NODUS_RT_GEN_2`, `nodus_witness_runtime.h`); (f) H−1
+   is not an epoch boundary (`(H − 1) mod 720 ≠ 0`, `DNAC_EPOCH_LENGTH`); (g) H ≥ the chain's
+   initial height + 256 (`NODUS_CC_EVM_BLOCKHASH_WINDOW`, `nodus_chain_config.h`) — the first EVM
+   block's BLOCKHASH window must lie on the chain.
+5. **Vote** (value parsed as DECIMAL, as for HF-4):
+   `nodus-cli chain-config propose --param EVM_ACTIVE --value 188948158701949959 --effective <H>`
+   The row must appear identically on 7/7 (`chain_config_history`: param_id 14). Then add the
+   row to "Live hard forks" above in the same push, read back from 7/7.
+6. **After the vote is committed, a §4.1 restore is no longer a rollback path** (§4.1 step 2;
+   decision `2026-10-06-hf5-evm-activation.md` item 4): recovery is forward only — a fixed new
+   binary, never a rewind.
+7. **Param 15 `EVM_BLOCK_GAS_LIMIT`**: SAFETY grace as well (`nodus_chain_config_grace_for_param`);
+   range `[DNAC_CFG_MIN_EVM_BLOCK_GAS, DNAC_CFG_MAX_EVM_BLOCK_GAS]`; no stateful rule. With no
+   row the compiled `DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT` applies (`nodus_witness_v2_apply.c`
+   `env_evm_block_gas_limit`).
 
 **A node that missed the vote (still on the old binary when R committed):**
 - Upgrading its binary and restarting does **NOT** recover it: the ABCI handshake at

@@ -488,8 +488,10 @@ static const uint8_t CORE_RULESET_HASH_G2[DNA_DOM_HASH_LEN] = {
  *              meter_policy_digest = SYS_METER_POLICY_DIGEST_GEVM;
  *   CORE v6:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 6,
  *              rules {1..9}, types {1,2,3,11,12,13}, policy 64 zeros;
- *   EVM v1:    version 2, domain 2, "EVM", abi 2, ruleset_version 1,
- *              rules {1..5}, no types, policy 64 zeros.
+ *   EVM v2:    version 2, domain 2, "EVM", abi 2, ruleset_version 2,
+ *              rules {1..5}, no types, policy 64 zeros (v1 → v2:
+ *              Kurultay #9 — the bridge's EIP-3607 refusal and the
+ *              address width in D; runtime.h).
  * ⚠ SELF-DERIVED (E2..E4 of shared/dnac/tests/nodus_evm_activation_oracle.py,
  * written by the implementing agent; its control legs reproduce every
  * shipped generation-1/2 pin and D2 first) — NOT independent pins. An
@@ -1666,7 +1668,11 @@ void nodus_runtime_manifest_init(const nodus_domain_runtime_t *rt,
  * `consts`), in THIS order — shared/dnac/tests/nodus_evm_activation_oracle.py
  * EVM_CONSTS lists the same. A change to any of them changes D: two
  * binaries that price or bound EVM work differently cannot share a vote
- * value. */
+ * value. The LAST entry is the address width (Kurultay #9,
+ * docs/plans/decisions/2026-10-06-kurultay-9-evm-address-width-summary.md
+ * item 2): the same constant configures the engine (rtevm_vm_pre), so two
+ * binaries that differ only in width cannot share a vote value either
+ * (appended at the end; the order of the entries above is unchanged). */
 static const uint64_t EVM_ACT_CONSTS[] = {
     NODUS_RT_EVM_Q,
     NODUS_RT_EVM_TICKET_GAS,
@@ -1682,7 +1688,8 @@ static const uint64_t EVM_ACT_CONSTS[] = {
     NODUS_RT_EVM_BRIDGE_GAS,
     DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT,
     DNAC_CFG_MIN_EVM_BLOCK_GAS,
-    DNAC_CFG_MAX_EVM_BLOCK_GAS
+    DNAC_CFG_MAX_EVM_BLOCK_GAS,
+    NODUS_RT_EVM_ADDR_BYTES
 };
 _Static_assert(NODUS_RT_EVM_BLOCK_GAS_LIMIT ==
                    DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT,

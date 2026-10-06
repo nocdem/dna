@@ -5623,7 +5623,11 @@ rule (a) is proven at the approval responder only, rules (b) and (c) not as refu
 cap is not asserted; it runs at the short-epoch / short-grace build (15 / 15) — the LOGIC only,
 nothing about the production 720-block grace.
 
-### Nodus EVM (HF-5, v0.24.0) — smart contracts as a third domain, rule-set generation 3 (nodus 0.24.0 / dnac 0.20.0 — no EVM_ACTIVE vote yet)
+### Nodus EVM (HF-5, v0.24.0) — smart contracts as a third domain, rule-set generation 3 (live binary nodus 0.24.1 / dnac 0.20.1 — EVM_ACTIVE voted 2026-10-06, effective block 79 757)
+
+**0.24.1 / dnac 0.20.1 (2026-10-06, Kurultay #9):** EVM ruleset v1 → v2 — the bridge sender-code refusal and the address width in D (both described below); new EVM ruleset hash and D. 0.24.0 was never deployed.
+
+**Testnet vote (2026-10-06):** `EVM_ACTIVE` = 188948158701949959 (D 0x029f47596864d407) voted in block 62 425, effective block 79 757 (the generation switches at the end of 79 756), row identical on 7/7 (`DEPLOY_RUNBOOK.md` §2.2 "Live hard forks").
 
 **Governing records** (all local, `docs/plans/`): design `2026-10-04-nodus-evm-engine-design.md`
 (the engine) and `2026-10-04-nodus-evm-chain-integration-design.md` rev 3 + the rev 4-6 notes (the
@@ -5661,7 +5665,12 @@ Prague state tests, 20-byte mode; `make conformance FIXTURES=<dir>`): **PASS 17 
 FAULT 0, ERROR 0, PENDING 0, DEVIATION 9, EXCLUDED 1 595** (985 type-3 blob + 610 type-4
 set-code transactions), identical under ASan + UBSan + LSan — measured at commit `165c2f73`
 (its message), reported unchanged after the red-team 1 engine fixes in the ORCHESTRATOR's
-ledger. The 9 DEVIATIONs are the Prague modexp cases whose expected result differs only by the
+ledger. **That figure is 20-byte mode only; the production configuration is 32-byte mode
+(`NODUS_RT_EVM_ADDR_BYTES`, `nodus_witness_rt_evm.h`), which the official suite does not cover —
+it is covered by this project's own tests only** (`shared/evm/tests/test_addr32.c` against
+vectors from `addr32_oracle.py`, `shared/evm/tests/test_nodus_profile.c`, `nodus/tests/test_v2_evm.c`,
+the harness's `test_cmt_evm.sh`): Nodus-derived, self-consistent, not an external conformance
+result (Kurultay #9, 2026-10-06). The 9 DEVIATIONs are the Prague modexp cases whose expected result differs only by the
 EIP-7823 input bound (lengths ≤ 1 024) this engine adopts to bound modexp work; each is matched
 by exact name and never counted as a pass (`shared/evm/tests/statetest.c:180-206`;
 `evm_precompile.c:323`, `:362`). EXCLUDED = blob (EIP-4844) and set-code (EIP-7702)
@@ -5698,26 +5707,37 @@ with `stdc++`, `:956-958`) — the one C++ exception, k1 operator item 5.
 
 **Activation — rule-set generation 3 and two chain-config ids.**
 - *The generation.* `NODUS_RT_GEN_EVM` = 3 = SYSTEM v8 (a meter policy that prices ops 1..9),
-  CORE v6 (rule 9 EVMFUND, the reserve in the supply leaf and the invariant), EVM v1
-  (`runtime.h:172-179`); it is built on `NODUS_RT_GEN_EVM_BASE` = generation 2
-  (`runtime.h:200-204`); `NODUS_RT_GEN_MAX` is 3 under `NODUS_EVM_ENABLED`, else 2
-  (`runtime.h:211-215`). The EVM ruleset identity (version 1 + the 64-byte hash a client
-  binds) is a header constant, re-derived by `nodus_witness_runtime_selfcheck` on every start
-  (`runtime.h:180-199`).
+  CORE v6 (rule 9 EVMFUND, the reserve in the supply leaf and the invariant), EVM v2
+  (`runtime.h:173-180`); it is built on `NODUS_RT_GEN_EVM_BASE` = generation 2
+  (`runtime.h:207-211`); `NODUS_RT_GEN_MAX` is 3 under `NODUS_EVM_ENABLED`, else 2
+  (`runtime.h:212-222`). The EVM
+  ruleset identity (version 2 + the 64-byte hash a client binds, `6af8346d…4bf4465f`, E4 of the
+  oracle below) is a header constant, re-derived by `nodus_witness_runtime_selfcheck` on every
+  start (`runtime.h:181-206`). **Version 1 → 2** (Kurultay #9, 2026-10-06,
+  `decisions/2026-10-06-kurultay-9-evm-address-width-summary.md` items 1-2): the bridge's
+  sender-code refusal below and the address width in D are new semantics, so a new
+  `ruleset_version` (the rule at `runtime.h:85-87`: never a re-use). The web wallet pins the same
+  pair (`web-wallet/src/nodus/send-module.js` `NODUS_EVM_NETWORK`; `send.wasm` compiles the
+  header macros and must be rebuilt with them).
 - *Param 14 `EVM_ACTIVE`* (`DNAC_CFG_EVM_ACTIVE`, `dnac/include/dnac/dnac.h:661`): value domain
-  EXACTLY `DNAC_CFG_EVM_ACTIVE_D` = `0x5a10af78d85302e6` (decimal 6489879996601139942,
-  `dnac.h:1000`). **D** is the first 8 bytes, big-endian, top bit cleared, of
+  EXACTLY `DNAC_CFG_EVM_ACTIVE_D` = `0x029f47596864d407` (decimal 188948158701949959,
+  `dnac.h:1002`; EVM ruleset v2 with the address width committed, 2026-10-06). **D** is the first 8 bytes, big-endian, top bit cleared, of
   `SHA3-512("NDS.EVMACT.v1" (16 B, zero-padded) ‖ evm_generation u32 ‖ base_generation u32 ‖
   SYSTEM / CORE / EVM ruleset hashes ‖ the EVM manifest hash ‖ spec_version u32 ‖ n_consts u32 ‖
   n × u64)` (`shared/dnac/domain_wire.h:338-371`); the constants are the compiled EVM numbers
   (q, ticket gas, per-tx gas cap, read caps, `w_gas`, FAIL_RESERVE, the failure-effect shape,
-  the stream caps, the bridge gas, the param-15 default and range — `EVM_ACT_CONSTS`,
-  `nodus_witness_runtime.c:1441-1465`), so two binaries that price or bound EVM work
-  differently cannot share a vote value; `DNAC_EVM_ACTIVATION_SPEC_VERSION` = 1 names the
-  switch procedure (`dnac.h:982`). ⚠ **D is SELF-DERIVED by the implementing agent**
+  the stream caps, the bridge gas, the param-15 default and range, and — LAST, appended by
+  Kurultay #9 — the address width `NODUS_RT_EVM_ADDR_BYTES` = 32 — `EVM_ACT_CONSTS`,
+  `nodus_witness_runtime.c:1443-1469`), so two binaries that price or bound EVM work
+  differently, or differ only in address width, cannot share a vote value. The width is ONE
+  constant (`nodus_witness_rt_evm.h:100`) that also configures the engine
+  (`evm_config_t.addr_bytes`, `nodus_witness_rt_evm.c:1064`); `test_v2_evm` re-derives D from a
+  restated vector and proves a width of 20 in it gives a different D.
+  `DNAC_EVM_ACTIVATION_SPEC_VERSION` = 1 names the switch procedure (`dnac.h:982`) — the
+  procedure did not change, so it stays 1. ⚠ **D is SELF-DERIVED by the implementing agent**
   (`shared/dnac/tests/nodus_evm_activation_oracle.py`, built on `ruleset_desc_oracle.py`'s helpers)
-  — **not an independent pin** like HF-4's D2 (`dnac.h:993-999`); selfcheck re-derives it
-  through the C encoder on every start of an EVM build (`nodus_witness_runtime.c:1395-1408`).
+  — **not an independent pin** like HF-4's D2 (`dnac.h:994-1001`); selfcheck re-derives it
+  through the C encoder on every start of an EVM build (`nodus_witness_runtime.c:1396-1411`).
   Grace class SAFETY (`nodus_witness_chain_config.c:766-769`).
 - *Param 15 `EVM_BLOCK_GAS_LIMIT`* (`dnac.h:687`): the bound on a block's summed DECLARED EVM
   gas and the block environment's GASLIMIT; no row = `DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT` =
@@ -5795,9 +5815,25 @@ stays there, locked, and counts in `wei_live`.
 **Execution — two savepoints, an applied failure, FAIL_RESERVE** (`exec_evm_leg`,
 `nodus_witness_v2_apply.c:1805-2213`).
 - *Pre-validation before anything runs* (the ONE shared function,
-  `nodus_rt_evm_prevalidate`, `nodus_witness_rt_evm.c:1362`): call decode, pairing, the gas
+  `nodus_rt_evm_prevalidate`, `nodus_witness_rt_evm.c:1380`): call decode, pairing, the gas
   declaration, nonce == the committed nonce, value ≤ balance, intrinsic gas, EIP-3607, chain
   id. A refusal here is -1: the whole item rolls back and nothing is paid.
+- *The bridge's sender-code rule (EIP-3607 extended to DEPOSIT / WITHDRAW; Kurultay #9 item 1,
+  EVM ruleset v2).* CALL / CREATE refuse a sender account that carries code inside the engine
+  (`shared/evm/evm_tx.c:244-248`, `EVM_TXERR_SENDER_NOT_EOA`), but the bridge ops never enter
+  the engine. `rtevm_bridge_pre` (`nodus_witness_rt_evm.c:1246`, the rule at `:1281-1298`)
+  therefore refuses a DEPOSIT or WITHDRAW whose signer-derived account exists with a code hash
+  other than keccak256 of the empty code: without it a key whose derived address equals a
+  contract's address (a collision — probabilistic, never structurally excluded) could move that
+  contract's balance to a CORE output past its code, and a DEPOSIT would bump its nonce. The
+  engine's delegation-designator exception (EIP-7702) does not arise: every Nodus EVM tx is
+  type 1 (`nodus_witness_rt_evm.c:1089`), so no set-code transaction exists to write a
+  designator, and the bridge refuses any non-empty code. REDEEM is unchanged —
+  contract withdrawals go through tickets. The same function serves CheckTx (new entry and
+  recheck, `nodus_rt_evm_prevalidate`) and execution, so both refuse identically. Regression:
+  `test_v2_evm` section 12b (`test_bridge_sender_code`) seeds code at a real test signer's
+  derived address (a synthetic collision), proves WITHDRAW and DEPOSIT refused by CheckTx and by
+  the block with the ledger byte-identical, then removes the code and lands the same WITHDRAW.
 - *After execution starts there is no -1 for a CALL / CREATE*, only FAULT (-2). On success the
   WHOLE effect stream's count and canonical bytes are checked against the leg's declared
   ceilings, the stream caps and the unit budget BEFORE any page is applied, so page boundaries
@@ -6002,8 +6038,10 @@ change is a hard fork.
 - **No HF-5 runbook entry**; the at-open S17 migration needs the pre-rollout copy of §4.1.
 
 **Tests.** `test_v2_evm` (EVM build only: deploy / call, applied failures — REVERT, OOG,
-over-ceiling, BUDGET —, the bridge ops and tickets, the storage trie against the full-rebuild
-oracle, restart, a determinism twin and an inertness twin; `CMakeLists.txt:2293-2309`),
+over-ceiling, BUDGET —, the bridge ops and tickets, the bridge's sender-code refusal over a
+synthetic collision (section 12b), the address width in D (section 1), the storage trie against
+the full-rebuild oracle, restart, a determinism twin and an inertness twin;
+`CMakeLists.txt:2293-2309`),
 `test_evm_call_wire` (the call / EVMFUND codec through the node path, no engine needed,
 `:2260-2266`), `test_keccak256` (XKCP known answers, `:2311-2318`), the updated `test_v2_schema`,
 `test_hf4_table`, `test_hf4_params`, `test_v2_gas_price`, `test_v2_gen`, `test_server`,
@@ -6043,11 +6081,13 @@ pins, policy and edge row compile only under `NODUS_EVM_ENABLED` (`NODUS_RT_GEN_
 otherwise); the chain-config rules for param 16 are unconditional (as param 14's are), the client pins
 count is 4 unconditionally. The SYSTEM root composition is unchanged by the renumbering: main's SYSTEM
 root was still `NDS.SYS.v4` (Nodus EVM changed only CORE's supply leg, `NDS.SUPPLY.v3`), so storage's
-`NDS.SYS.v5` with the `NDS.STOR.v2` leg appended last stands. **Every storage pin is zero again
-("STORAGE-ORACLE: NOT FILLED")**: the GEN_STORAGE SYSTEM / CORE ruleset hashes, its meter-policy
-digest and `DNAC_CFG_RULESET_GEN_STORAGE_D`; the generation-4 entry of `nodus_ruleset_pins.h` is a
-hand-written zero placeholder. Until the independent oracle fills them, `nodus_witness_runtime_selfcheck`
-fails in an EVM-enabled build — the node refuses to start and every test that seeds a genesis fails.
+`NDS.SYS.v5` with the `NDS.STOR.v2` leg appended last stands. The renumbering zeroed every storage
+pin; they are FILLED since `4fedbbdc` from the independent oracle `shared/dnac/tests/storage_oracle.py`
+(the GEN_STORAGE SYSTEM / CORE ruleset hashes, its meter-policy digest, `DNAC_CFG_RULESET_GEN_STORAGE_D`
+= S4 = 0x0c6fd6f2484e6024) and `nodus_ruleset_pins.h` is regenerated. The oracle's controls were
+moved to EVM ruleset v2 on 2026-10-06 (main `f7aa7984`): S4 is unchanged, because it commits only the
+generation-4 SYSTEM and CORE hashes; the generation-4 EVM tuple is the EVM generation's own
+(`NODUS_RT_EVM_RULESET_VERSION_GEVM`) and follows v2.
 
 Decision `docs/plans/decisions/2026-10-04-storage-reward-approved.md` (the operator approved design
 rev 2.2 and the byte layouts, "Tamam, approved."); design `docs/plans/2026-10-04-storage-reward-v1-design.md`
@@ -6068,11 +6108,11 @@ appended; tx types unchanged) with a policy pricing ops 1..9 (weight 1; `w_op` i
 `runtime_op` across both domains, so ops 7 and 8 already had rows as CORE SYSFUND / NAME_REGISTER —
 op 9 is the one new row); CORE v6 — rules {1..8} unchanged, version bumped because SYSFUND now also
 pairs with the storage record ops. Same hooks, adapters and allowlists as generations 1 and 2.
-Selfcheck re-derives the generation's pins and the new vote literal. **⚠ The pins
+Selfcheck re-derives the generation's pins and the new vote literal. At this step the pins
 (`SYS_RULESET_HASH_G3`, `CORE_RULESET_HASH_G3`, `SYS_METER_POLICY_DIGEST_G3`) and
-`DNAC_CFG_RULESET_GEN_STORAGE_D` are NOT FILLED (STORAGE-ORACLE markers): until the independent oracle
-fills them the selfcheck fails and the node refuses to start** — the HF-4 A1 precedent (`53243195`,
-filled in `89f9da09`). The preimages are listed at the pins in `nodus_witness_runtime.c`. The
+`DNAC_CFG_RULESET_GEN_STORAGE_D` were left unfilled (STORAGE-ORACLE markers) — the HF-4 A1 precedent
+(`53243195`, filled in `89f9da09`); after the renumbering to generation 4 they were filled in
+`4fedbbdc` (see the K10 section above). The preimages are listed at the pins in `nodus_witness_runtime.c`. The
 generated `nodus/include/nodus/nodus_ruleset_pins.h` must be regenerated after the fill
 (`regen_ruleset_pins`; `test_ruleset_pins` byte-compares it).
 
@@ -6154,7 +6194,7 @@ owned by GEN_STORAGE only, refused by older generations' hooks, the literal re-d
 (v4 roots before the edge, the switch and the v5 root at H−1, the not-generation-2 FAULT; case E's
 out-of-range stand-in moved from 14 to 15), `test_storage_reg` (hook matrix + engine twin: register,
 refusals, exit, duplicate exit, supply conservation), `test_v2_gas_price` (id 14 is the last id).
-Every engine case FAILS until the STORAGE-ORACLE pins are filled.
+The engine cases failed until the STORAGE-ORACLE pins were filled (`4fedbbdc`); they pass since.
 
 ### Storage reward v1 rev 4 (the ARCHIVE reward), package B2a — segment roots, frozen storage sets, reports, settlement, exit release (2026-10-05, branch only — not versioned, not voted)
 
@@ -6290,7 +6330,7 @@ again after 3 failures → an OK epoch with weight → 0 and placed, over `nodus
 the "≥ 3 with no eligible block adds one" branch is proven only there); `test_roots_v2` (leaf v2 binding, 4-leg storage_root, the STSEG empty root;
 the 2026-10-04 KAT's registry_leaf / registry_root / storage_root sections named SUPERSEDED);
 `test_storage_reg` (record 2693 since K9, its roots check through the runtime hook); `test_hf4_switch` (the empty
-4-leg storage leg). Engine cases FAIL until the STORAGE-ORACLE pins are filled.
+4-leg storage leg). Engine cases failed until the STORAGE-ORACLE pins were filled (`4fedbbdc`).
 
 ### Storage reward v1 rev 4 (the ARCHIVE reward), package B2b-1 — the archive probe's node side (2026-10-05, branch only — not versioned, not voted)
 

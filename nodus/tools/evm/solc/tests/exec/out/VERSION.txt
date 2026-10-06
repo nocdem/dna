@@ -1,0 +1,6 @@
+Version: 0.8.30+nodus.addr256.commit.73712a01.Linux.g++
+sources: AbiConv.sol AddrStore.sol Calls.sol Factory.sol
+legacy: --evm-version prague --bin --bin-runtime
+legacy-opt: --evm-version prague --optimize --bin --bin-runtime
+viair: --evm-version prague --via-ir --bin --bin-runtime
+viair-opt: --evm-version prague --via-ir --optimize --bin --bin-runtime

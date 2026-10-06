@@ -8,7 +8,7 @@ oracle only.
 
 - **Reference (pinned):** `ethereum/execution-specs @a87891f7`
   (`a87891f7e69eab1f903233c61c5514d8c94bd5d1`), fork **Prague**
-  (`src/ethereum/forks/prague/`) — `evm.h:6-8`, `tests/statetest.c:14-15`;
+  (`src/ethereum/forks/prague/`) — `evm.h:6-8`, `tests/statetest.c:17-18`;
   every gas constant in `evm_gas.h` is copied from it with its source line.
 - **Status:** in the tree and wired into the node (`nodus/src/witness/nodus_witness_rt_evm.c`,
   built when `NODUS_EVM_ENABLED`); no chain has activated the EVM domain. Chain
@@ -61,7 +61,7 @@ make lib            # build/libevm.a
 make deps           # build/libevm_deps.a (blst, c-kzg-4844, mcl, secp256k1 + the
                     # embedded KZG trusted setup) and build/gmp/install/lib/libgmp.a
 make test           # addr32-vectors-check, then run test_u256, test_u256_portable,
-                    # test_addr32, test_nodus_profile, test_trie
+                    # test_addr32, test_nodus_profile, test_solc_exec, test_trie
 make statetest      # link the state-test runner, test_rlp_mpt, test_precompile
 make conformance FIXTURES=<extracted fixtures/state_tests dir>
                     # test_rlp_mpt + statetest --fork Prague over the fixtures
@@ -86,13 +86,61 @@ mode: **PASS 17 265, FAIL 0, FAULT 0, ERROR 0, PENDING 0, DEVIATION 9,
 EXCLUDED 1 595** (985 type-3 blob + 610 type-4 set-code), identical under
 ASan + UBSan + LSan — measured at commit `165c2f73` (its commit message).
 
+**The 17 265 figure is 20-byte mode only.** The production Nodus
+configuration is **32-byte** mode (`nodus/src/witness/nodus_witness_rt_evm.h`
+`NODUS_RT_EVM_ADDR_BYTES`), and the official suite does not cover it: its
+expected roots, addresses and logs are 20-byte Ethereum values. 32-byte mode
+is covered by this project's own tests only — `tests/test_addr32.c` (full-word
+address opcodes, CREATE / CREATE2 over the 32-byte sender, against vectors
+from `tests/addr32_oracle.py`), `tests/test_nodus_profile.c` (the Nodus
+profile: budget, tickets, `evm_tx_prevalidate`), and on the chain side
+`nodus/tests/test_v2_evm.c` and the Genesis Protocol scenario
+`test_cmt_evm.sh`. Those are Nodus-derived, self-consistent checks, not an
+external conformance result (Kurultay #9, 2026-10-06).
+Compiled Solidity in 32-byte mode (the Nodus solc, four compiler configurations):
+`tests/test_solc_exec.c` — see `nodus/tools/evm/solc/README.md`, "Execution evidence".
+
 - **DEVIATION 9:** Prague modexp cases whose expected result differs only by
   the EIP-7823 input bound (lengths ≤ 1 024), which this engine adopts to
   bound modexp work; each is matched by exact name and never counted as a pass
-  (`tests/statetest.c:180-206`; `evm_precompile.c:323`, `:362`).
+  (`tests/statetest.c:188-214`; `evm_precompile.c:323`, `:362`).
 - **EXCLUDED:** type-3 blob (EIP-4844) and type-4 set-code (EIP-7702)
-  transactions — Nodus has no counterpart (`tests/statetest.c:131`,
-  `:1265-1276`). An excluded case is never counted as a pass.
+  transactions — Nodus has no counterpart (`tests/statetest.c:134`,
+  `:1933-1944`). An excluded case is never counted as a pass.
+
+**Differential 20/32 (Nodus-derived, self-consistent).** `make differential
+FIXTURES=<fixtures/state_tests dir>` (`statetest --differential`) runs every
+eligible Prague case through the engine twice, `addr_bytes` 20 and 32, with the
+same pre-state, environment and transaction (fixture addresses are already
+zero-extended 32-byte words, `tests/statetest.c` `hex_addr`), and compares a
+normalized result: applied/refused, error or status, gas used, output,
+`wei_destroyed`, every post-state account keyed by its low 20 bytes (nonce,
+balance, code hash, storage) and the logs (emitter projected, topics, data).
+Measured over the same v5.4.0 fixtures: **ELIGIBLE 17 274 — AGREE 10 631,
+DIFFER 6 643, UNEXPLAINED 0, FAULT 0, ERROR 0; EXCLUDED 1 595** (985 + 610);
+17 274 + 1 595 = 18 869 Prague entries. DIFFER sub-labels: CREATE 6 236,
+WIDE_WORD 78, CREATE2_OR_DERIVED 168, CREATE + CREATE2_OR_DERIVED 157,
+WIDE_WORD + CREATE2_OR_DERIVED 3, CREATE + WIDE_WORD 1. The 20-byte side equals
+the fixture in 17 265 cases; the other 9 are exactly the DEVIATION list above.
+The output is byte-identical across runs; ≈ 36 s on the build host.
+How to read it:
+- The two runs are the **same implementation**: a bug both widths share is
+  invisible. This is not an official result and not 32-byte conformance.
+- Both runs use the Ethereum profile (`nodus_profile = 0`); production also
+  runs the Nodus profile (budget, tickets), which this run does not exercise.
+- A case is DIFFER, not UNEXPLAINED, when the 32-byte run produced a *wide*
+  address (non-zero byte in 0..11) — the only way the widths can part with
+  canonical inputs (`evm_addr_from_word`, `evm_state.c:92-99`; CREATE /
+  CREATE2 derivation, `evm_interp.c:149-186`). Attribution is by the presence
+  of a wide address, not by field-level causality: a 32-byte defect that only
+  shows in a case that also creates a contract lands in DIFFER. The sub-labels
+  are heuristic: CREATE is re-derived independently as
+  keccak(rlp([creator as 32 bytes, nonce])); WIDE_WORD means the low 20 bytes
+  name an address the 20-byte run saw; CREATE2_OR_DERIVED is unverified by
+  construction (the harness does not see the salt and initcode).
+- An opcode that charges the access cost before the backend read can run out
+  of gas on a wide word without the harness seeing it; such a case would show
+  as UNEXPLAINED (none did).
 
 ## Precompiles and pinned libraries
 

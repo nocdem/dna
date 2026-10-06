@@ -2,8 +2,15 @@
 r"""
 Oracle for the Nodus EVM activation package's pinned values: the EVM
 generation's SYSTEM meter-policy digest, the SYSTEM v8 / DNA_CORE v6 / EVM
-v1 ruleset hashes, the empty EVM domain root, the EVM registry manifest
+v2 ruleset hashes, the empty EVM domain root, the EVM registry manifest
 hash and the EVM_ACTIVE vote literal D.
+
+EVM v2 (2026-10-06, Kurultay #9 — docs/plans/decisions/
+2026-10-06-kurultay-9-evm-address-width-summary.md items 1-2): the bridge
+refuses a DEPOSIT / WITHDRAW sender that carries code, and the address
+width (32) is the last entry of EVM_CONSTS. New semantics = a new
+ruleset_version (nodus_witness_runtime.h), so E4, E6 and E7 moved; E1-E3
+and E5 did not.
 
 ⚠ PROVENANCE — SELF-DERIVED, NOT INDEPENDENT
 --------------------------------------------
@@ -37,7 +44,7 @@ Stages, fail-closed:
     E1 SYSTEM meter-policy digest, ops 1..9 weight 1
     E2 SYSTEM v8 ruleset hash
     E3 DNA_CORE v6 ruleset hash (rules {1..9})
-    E4 EVM v1 ruleset hash (domain 2, "EVM", ABI 2, rules {1..5}, no types)
+    E4 EVM v2 ruleset hash (domain 2, "EVM", ABI 2, rules {1..5}, no types)
     E5 empty EVM root
     E6 EVM manifest hash (genesis_state_root = E5)
     E7 D (EVM_ACTIVE literal)
@@ -84,7 +91,8 @@ CORE_VERSION_GEVM = 6
 CORE_RULES_GEVM = CORE_RULES + [8, 9]   # + NAME_REGISTER, EVMFUND
 DOMAIN_EVM = 2                 # shared/dnac/ledger_ids.h DNA_DOMAIN_EVM
 RUNTIME_ABI_V2 = 2
-EVM_VERSION = 1
+EVM_VERSION = 2               # NODUS_RT_EVM_RULESET_VERSION_GEVM (v1 → v2:
+                              # Kurultay #9 bridge EIP-3607 + width in D)
 EVM_RULES = [1, 2, 3, 4, 5]
 EVM_ACTIVATION_SPEC_VERSION = 1   # dnac.h DNAC_EVM_ACTIVATION_SPEC_VERSION
 
@@ -105,6 +113,9 @@ EVM_CONSTS = [
     30000000,        # DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT
     1000000,         # DNAC_CFG_MIN_EVM_BLOCK_GAS
     1000000000,      # DNAC_CFG_MAX_EVM_BLOCK_GAS
+    32,              # NODUS_RT_EVM_ADDR_BYTES (nodus_witness_rt_evm.h) —
+                     # the address width the engine is configured with;
+                     # appended by Kurultay #9 so D commits the width
 ]
 
 # DomainManifest constants (shared/dnac/domain_wire.h)
@@ -201,7 +212,7 @@ def main() -> int:
     print("E1 policy ops 1..9      %s" % e1.hex())
     print("E2 SYSTEM v8            %s" % e2.hex())
     print("E3 DNA_CORE v6          %s" % e3.hex())
-    print("E4 EVM v1               %s" % e4.hex())
+    print("E4 EVM v%d               %s" % (EVM_VERSION, e4.hex()))
     print("E5 empty EVM root       %s" % e5.hex())
     print("E6 EVM manifest hash    %s" % e6.hex())
     print("E7 D                    0x%016x (%d)" % (e7, e7))

@@ -50,6 +50,17 @@
 .nc-chip[aria-pressed="true"] .count-badge { background: var(--dark); color: var(--lime); }
 .nc-banner { display: flex; align-items: center; gap: 12px; flex-shrink: 0; width: auto; margin: 4px 12px 8px; padding: 12px 14px; border: 1px solid #d5f99840; border-radius: 12px; background: #d5f99806; color: var(--lime); font-size: 13px; font-weight: 500; text-align: left; }
 .nc-banner-text { flex: 1; min-width: 0; }
+/* Groups (package G3, src/connect/groups/ui.js): above the conversations. */
+.nc-groups { flex-shrink: 0; max-height: 45%; overflow-y: auto; border-bottom: 1px solid #d5f99814; }
+.nc-groups-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 16px 0; }
+.nc-groups-head h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.nc-groups-head button { margin: 0; }
+.nc-groups .contact-list { flex: none; overflow: visible; padding: 0; }
+.nc-groups > .hint { margin: 4px 16px 8px; }
+.nc-group-pick { list-style: none; margin: 0 0 8px; padding: 0; max-height: 240px; overflow-y: auto; }
+.nc-group-pick label { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-weight: 400; }
+.message-sender { margin-bottom: 2px; font-size: 12px; }
+.message-sender strong { font-size: 12px; }
 .contact-list { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 0 0 88px; }
 .contact-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; width: 100%; margin: 0; padding: 12px 16px; border: 0; border-radius: 0; background: transparent; color: var(--text); font-weight: 400; text-align: left; }
 .contact-row:hover { background: #d5f99806; filter: none; }

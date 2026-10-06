@@ -37,6 +37,7 @@ metadata disappear.
 | **Nodus Connect** — `web-wallet/connect/`, `messenger/codec/` | End-to-end encrypted messaging, built into the web wallet first; mobile and desktop later | In development, not released |
 | [**Scan**](explorer/) | Block explorer daemon: read-only indexer + JSON API | Live |
 | [**Website**](website/) | nodusnetwork.io with its Wiki and Scan frontends | Live |
+| [**QGP**](qgp/) | `qgp`: post-quantum (ML-DSA-87) signing of validator packages and their trust state | In development, not released |
 | [**DNA Connect**](messenger/) | The earlier Flutter messenger + wallet and its C library (`libdna`) | **Frozen** (see below) |
 
 ### DNA Connect is frozen

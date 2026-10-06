@@ -6,6 +6,9 @@
  * Usage:
  *   statetest [--fork Prague] [--addr-bytes 20] [--filter SUBSTR] [--verbose]
  *             <file-or-dir>...
+ *   statetest --differential [--fork Prague] [--filter S] [--verbose]
+ *             <file-or-dir>...   (20/32-byte differential, see the block
+ *             above run_diff_case; Nodus-derived, not an official result)
  *   statetest --list-forks <file-or-dir>...
  *   statetest --verify-fixture-roots [--fork F] [--filter S] <file-or-dir>...
  *
@@ -133,6 +136,10 @@
  * unavailable" outcome and no PENDING class.)
  * Exit: 0 iff FAIL == FAULT == ERROR == 0 and at least one case ran;
  * 1 otherwise; 2 usage; 3 no case of the selected fork was found.
+ * --differential has its own classes (AGREE / DIFFER / UNEXPLAINED /
+ * FAULT / ERROR / WIDE20 / EXCLUDED); exit 0 iff UNEXPLAINED == FAULT ==
+ * ERROR == WIDE20 == 0 and at least one case ran (an intended DIFFER is
+ * not a failure).
  *
  * Output goes to stdout/stderr through stdio: the report IS this test
  * tool's product (same practice as shared/crypto/zk/tests).
@@ -165,6 +172,7 @@ typedef struct {
     int         verbose;
     int         list_forks;
     int         verify_roots;
+    int         differential;
 } opts_t;
 
 typedef struct {
@@ -1176,6 +1184,668 @@ static void verify_fixture_root(const case_id_t *cid, json_object *post)
     evm_membackend_free(&mb);
 }
 
+/* ── --differential: the same case at addr_bytes 20 and 32 ─────────────
+ *
+ * NODUS-DERIVED, SELF-CONSISTENT — not an official result: both runs are
+ * this engine, so a bug the two widths share is invisible here. Kurultay
+ * #9 item 4 (docs/plans/decisions/2026-10-06-kurultay-9-evm-address-
+ * width-summary.md; Astra r1 Q2).
+ *
+ * Inputs. hex_addr rejects any fixture address with a non-zero byte in
+ * 0..11, so every pre-state / tx / access-list / coinbase address is
+ * already the right-aligned 32-byte word with zero high bytes — the
+ * zero-extended form the 32-byte engine accepts (evm_tx.c addr_canonical).
+ * Both runs therefore get the SAME loaded pre, env and built tx; only
+ * cfg.addr_bytes differs. nodus_profile = 0 in both (the Ethereum
+ * profile, as in the conformance run): production also runs the Nodus
+ * profile, which this mode does not exercise.
+ *
+ * Where the engine reads the width (grep of addr_bytes, read at f7aa7984):
+ *   evm_addr_from_word (evm_state.c:92-99) — a stack word becomes an
+ *     address: 20-byte mode masks bytes 0..11, 32-byte mode keeps them;
+ *     consumers CALL family (evm_interp.c:972), SELFDESTRUCT (:1154),
+ *     BALANCE (:1496), EXTCODESIZE (:1570), EXTCODECOPY (:1587),
+ *     EXTCODEHASH (:1637);
+ *   evm_compute_contract_address / create2_address (evm_interp.c:149-186)
+ *     — the creator is encoded with addr_bytes bytes, 32-byte mode keeps
+ *     the whole hash; used by CREATE/CREATE2 (:1109, :1113) and a create
+ *     tx (evm_tx.c:354);
+ *   addr_canonical (evm_tx.c:93-99) — cannot fire, inputs are canonical;
+ *   ticket_addr checks (evm_state.c:1268) — Nodus profile only.
+ * So with canonical inputs and profile 0 the two runs can only part when
+ * a WIDE address (non-zero byte in 0..11) arises in the 32-byte run. The
+ * runner records every address the engine hands the backend (a wrapper
+ * around the in-memory backend) and every post-state account.
+ *
+ * Normalized result, compared in this order (the first difference is
+ * the one reported): applied/refused -> tx_error or status -> gas_used ->
+ * gas_used_pre_refund -> output -> wei_destroyed -> post-state (accounts
+ * keyed by the low 20 bytes; nonce, balance, code_hash, storage) -> logs
+ * (count; emitter projected to 20 bytes; topics; data). State roots and
+ * logs hashes are NOT compared (trie keys / emitters differ in width).
+ *
+ * Verdict per case:
+ *   AGREE        normalized results equal
+ *   DIFFER       results differ AND the 32-byte run produced a wide
+ *                address; sub-labels (heuristic, per wide address):
+ *       CREATE       the address re-derives as keccak(rlp([creator as
+ *                    32 bytes, nonce])) for a known creator and a nonce
+ *                    in its pre..post range (CREATE / create tx);
+ *       WIDE_WORD    its low 20 bytes name an address the 20-byte run
+ *                    saw (pre-state, a backend read, its post-state) or a
+ *                    precompile number: a stack word with high bytes set
+ *                    that 20-byte mode masks (BALANCE, EXTCODE{SIZE,COPY,
+ *                    HASH}, the CALL family, SELFDESTRUCT, a precompile
+ *                    number with high bits);
+ *       CREATE2_OR_DERIVED  neither: not re-derivable here (CREATE2 needs
+ *                    salt + initcode the harness does not see, or a word
+ *                    computed from a created address).
+ *   UNEXPLAINED  results differ and no wide address was seen
+ *   FAULT        either run faulted (engine -2, inconsistent change set)
+ *   ERROR        the harness could not represent / compute the case
+ *   WIDE20       a wide address reached the backend in the 20-byte run
+ *                (masking failed) — counted separately, never expected
+ * Limit: BALANCE, EXTCODE{SIZE,COPY,HASH}, the CALL family and
+ * SELFDESTRUCT charge the access cost before
+ * the backend read; a wide word whose cold cost runs out of gas is never
+ * recorded, so such a case shows as UNEXPLAINED and is read by hand.
+ * --verbose also prints AGREE / BASELINE lines and, before each DIFFER
+ * line, one "wide 0x<32 bytes> <label>" line per wide address.
+ * BASELINE: the 20-byte run is also checked against the fixture (root,
+ * logs, expectException) so the reader knows the reference side is the
+ * conformant one; the documented DEVIATIONS show up there.
+ */
+
+typedef struct {
+    const evm_backend_t *inner;
+    evm_addr *seen;
+    size_t    n, cap;
+    int       oom;
+} rec_be_t;
+
+static int addr_is_wide(const evm_addr *a)
+{
+    for (int i = 0; i < 12; i++) if (a->b[i]) return 1;
+    return 0;
+}
+
+static void rec_note(rec_be_t *r, const evm_addr *a)
+{
+    if (r->n == r->cap) {
+        size_t ncap = r->cap ? r->cap * 2 : 32;
+        evm_addr *nv = realloc(r->seen, ncap * sizeof(*nv));
+        if (!nv) { r->oom = 1; return; }
+        r->seen = nv;
+        r->cap = ncap;
+    }
+    r->seen[r->n++] = *a;
+}
+
+static int rec_get_account(void *ctx, const evm_addr *addr, evm_account_t *out)
+{
+    rec_be_t *r = ctx;
+    rec_note(r, addr);
+    return r->inner->get_account(r->inner->ctx, addr, out);
+}
+
+static int rec_get_code(void *ctx, const evm_addr *addr, uint8_t *buf,
+                        size_t cap, size_t *len_out)
+{
+    rec_be_t *r = ctx;
+    rec_note(r, addr);
+    return r->inner->get_code(r->inner->ctx, addr, buf, cap, len_out);
+}
+
+static int rec_get_storage(void *ctx, const evm_addr *addr,
+                           const evm_bytes32 *key, evm_bytes32 *val_out)
+{
+    rec_be_t *r = ctx;
+    rec_note(r, addr);
+    return r->inner->get_storage(r->inner->ctx, addr, key, val_out);
+}
+
+static int rec_get_block_hash(void *ctx, uint64_t number, evm_bytes32 *hash_out,
+                              int *available)
+{
+    rec_be_t *r = ctx;
+    return r->inner->get_block_hash(r->inner->ctx, number, hash_out, available);
+}
+
+static int rec_has_storage(void *ctx, const evm_addr *addr, int *out)
+{
+    rec_be_t *r = ctx;
+    rec_note(r, addr);
+    return r->inner->has_storage(r->inner->ctx, addr, out);
+}
+
+static int cmp_addr(const void *a, const void *b)
+{
+    return memcmp(((const evm_addr *)a)->b, ((const evm_addr *)b)->b, 32);
+}
+
+/* Sort + deduplicate the recorded addresses (deterministic order). */
+static void rec_sort_unique(rec_be_t *r)
+{
+    if (r->n == 0) return;
+    qsort(r->seen, r->n, sizeof(evm_addr), cmp_addr);
+    size_t w = 1;
+    for (size_t i = 1; i < r->n; i++)
+        if (memcmp(r->seen[i].b, r->seen[w - 1].b, 32) != 0)
+            r->seen[w++] = r->seen[i];
+    r->n = w;
+}
+
+static int rec_contains(const rec_be_t *r, const evm_addr *a)
+{
+    return r->n && bsearch(a, r->seen, r->n, sizeof(evm_addr), cmp_addr);
+}
+
+enum { RUN_OK = 0, RUN_FAULT = 1, RUN_ERROR = 2 };
+
+/* One width's run of one case: everything the comparator needs. */
+typedef struct {
+    unsigned        addr_bytes;
+    int             outcome;            /* RUN_OK / RUN_FAULT / RUN_ERROR */
+    char            why[256];
+    int             rc;                 /* evm_tx_apply: 0 applied, -1 refused */
+    evm_tx_result_t res;
+    evm_membackend  post;
+    rec_be_t        rec;                /* addresses the backend served */
+} mode_run_t;
+
+static void mode_run_free(mode_run_t *m)
+{
+    evm_tx_result_free(&m->res);
+    evm_membackend_free(&m->post);
+    free(m->rec.seen);
+    memset(m, 0, sizeof(*m));
+}
+
+/* state_new -> tx_apply -> visit_changes -> build_post at one width.
+ * The same core as run_case, which is left as it is (the conformance path). */
+static void exec_mode(unsigned addr_bytes, const evm_membackend *pre,
+                      const test_env_t *te, const built_tx_t *bt, mode_run_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    m->addr_bytes = addr_bytes;
+    evm_membackend_init(&m->post);
+
+    evm_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.fork = EVM_FORK_PRAGUE;
+    cfg.addr_bytes = (uint8_t)addr_bytes;
+    cfg.chain_id = te->chain_id;
+    cfg.precompile_mask = EVM_PRECOMPILES_PRAGUE;
+
+    evm_backend_t inner, be;
+    evm_membackend_bind(pre, &inner);
+    m->rec.inner = &inner;
+    be.ctx = &m->rec;
+    be.get_account = rec_get_account;
+    be.get_code = rec_get_code;
+    be.get_storage = rec_get_storage;
+    be.get_block_hash = rec_get_block_hash;
+    be.has_storage = rec_has_storage;
+
+    evm_state_t *st = evm_state_new(&cfg, &be);
+    if (!st) {
+        m->outcome = RUN_FAULT;
+        snprintf(m->why, sizeof(m->why), "evm_state_new returned NULL");
+        return;
+    }
+    m->rc = evm_tx_apply(st, &te->env, &bt->tx, &m->res);
+    if (m->rec.oom) {
+        m->outcome = RUN_ERROR;
+        snprintf(m->why, sizeof(m->why), "harness out of memory (recorder)");
+        evm_state_free(st);
+        return;
+    }
+    if (m->rc != 0 && m->rc != -1) {
+        m->outcome = RUN_FAULT;
+        snprintf(m->why, sizeof(m->why), "evm_tx_apply returned %d", m->rc);
+        evm_state_free(st);
+        return;
+    }
+
+    changes_t cs;
+    memset(&cs, 0, sizeof(cs));
+    evm_change_visitor_t vis;
+    vis.account = visit_account;
+    vis.storage = visit_storage;
+    vis.ctx = &cs;
+    int vrc = evm_state_visit_changes(st, &vis);
+    if (vrc == VISIT_OOM) {
+        m->outcome = RUN_ERROR;
+        snprintf(m->why, sizeof(m->why), "harness out of memory");
+    } else if (vrc != 0) {
+        m->outcome = RUN_FAULT;
+        snprintf(m->why, sizeof(m->why), "evm_state_visit_changes: %s",
+                 cs.why[0] ? cs.why : "returned an unexpected value");
+    } else {
+        int prc = build_post(pre, &cs, &m->post, m->why, sizeof(m->why));
+        if (prc == -1) m->outcome = RUN_FAULT;
+        else if (prc != 0) {
+            m->outcome = RUN_ERROR;
+            snprintf(m->why, sizeof(m->why), "harness could not build post");
+        }
+    }
+    changes_free(&cs);
+    evm_state_free(st);
+    rec_sort_unique(&m->rec);
+}
+
+/* Post-state account keyed by its low 20 bytes (the 20-byte projection). */
+typedef struct {
+    const evm_mem_account *a;
+} proj_t;
+
+static int cmp_proj(const void *x, const void *y)
+{
+    const evm_mem_account *a = ((const proj_t *)x)->a;
+    const evm_mem_account *b = ((const proj_t *)y)->a;
+    int c = memcmp(a->addr.b + 12, b->addr.b + 12, 20);
+    return c ? c : memcmp(a->addr.b, b->addr.b, 12);   /* total order */
+}
+
+static proj_t *project_post(const evm_membackend *mb)
+{
+    proj_t *p = calloc(mb->n ? mb->n : 1, sizeof(*p));
+    if (!p) return NULL;
+    for (size_t i = 0; i < mb->n; i++) p[i].a = &mb->acc[i];
+    qsort(p, mb->n, sizeof(*p), cmp_proj);
+    return p;
+}
+
+static void addr20_str(const evm_addr *a, char out[43])
+{
+    static const char hx[] = "0123456789abcdef";
+    out[0] = '0';
+    out[1] = 'x';
+    for (int i = 0; i < 20; i++) {
+        out[2 + 2 * i] = hx[a->b[12 + i] >> 4];
+        out[3 + 2 * i] = hx[a->b[12 + i] & 15];
+    }
+    out[42] = '\0';
+}
+
+/* @return 0 equal, 1 differ (field/detail filled), -1 OOM. */
+static int compare_post(const evm_membackend *p20, const evm_membackend *p32,
+                        char *field, size_t flen)
+{
+    proj_t *a = project_post(p20), *b = project_post(p32);
+    int rc = 0;
+    char s[43];
+    if (!a || !b) { free(a); free(b); return -1; }
+    for (size_t i = 1; i < p32->n && rc == 0; i++)
+        if (memcmp(b[i - 1].a->addr.b + 12, b[i].a->addr.b + 12, 20) == 0) {
+            addr20_str(&b[i].a->addr, s);
+            snprintf(field, flen, "post.projection_collision %s", s);
+            rc = 1;
+        }
+    size_t i = 0, j = 0;
+    while (rc == 0 && (i < p20->n || j < p32->n)) {
+        if (i >= p20->n || j >= p32->n) {
+            const evm_mem_account *x = i < p20->n ? a[i].a : b[j].a;
+            addr20_str(&x->addr, s);
+            snprintf(field, flen, "post.account_set %s only in %u-byte run%s",
+                     s, i < p20->n ? 20u : 32u,
+                     addr_is_wide(&x->addr) ? " (wide)" : "");
+            rc = 1;
+            break;
+        }
+        const evm_mem_account *x = a[i].a, *y = b[j].a;
+        int c = memcmp(x->addr.b + 12, y->addr.b + 12, 20);
+        if (c != 0) {
+            const evm_mem_account *z = c < 0 ? x : y;
+            addr20_str(&z->addr, s);
+            snprintf(field, flen, "post.account_set %s only in %u-byte run%s",
+                     s, c < 0 ? 20u : 32u,
+                     addr_is_wide(&z->addr) ? " (wide)" : "");
+            rc = 1;
+            break;
+        }
+        addr20_str(&x->addr, s);
+        if (addr_is_wide(&y->addr))
+            { snprintf(field, flen, "post.wide_address %s", s); rc = 1; }
+        else if (x->nonce != y->nonce)
+            { snprintf(field, flen, "post.nonce %s", s); rc = 1; }
+        else if (memcmp(x->balance, y->balance, 32) != 0)
+            { snprintf(field, flen, "post.balance %s", s); rc = 1; }
+        else if (memcmp(x->code_hash.b, y->code_hash.b, 32) != 0)
+            { snprintf(field, flen, "post.code_hash %s", s); rc = 1; }
+        else if (x->n_slots != y->n_slots)
+            { snprintf(field, flen, "post.storage %s (slot count)", s); rc = 1; }
+        else {
+            for (size_t k = 0; k < x->n_slots; k++)
+                if (memcmp(x->slots[k].key.b, y->slots[k].key.b, 32) != 0 ||
+                    memcmp(x->slots[k].val.b, y->slots[k].val.b, 32) != 0) {
+                    snprintf(field, flen, "post.storage %s", s);
+                    rc = 1;
+                    break;
+                }
+        }
+        i++;
+        j++;
+    }
+    free(a);
+    free(b);
+    return rc;
+}
+
+/* First differing field of the normalized results. @return 0 equal,
+ * 1 differ, -1 OOM. */
+static int compare_runs(const mode_run_t *m20, const mode_run_t *m32,
+                        char *field, size_t flen)
+{
+    const evm_tx_result_t *r = &m20->res, *q = &m32->res;
+    if (m20->rc != m32->rc) {
+        snprintf(field, flen, "applied/refused (20: %s, 32: %s)",
+                 m20->rc == 0 ? status_name(r->status)
+                              : tx_error_name(r->tx_error),
+                 m32->rc == 0 ? status_name(q->status)
+                              : tx_error_name(q->tx_error));
+        return 1;
+    }
+    if (m20->rc == -1) {
+        if (r->tx_error != q->tx_error) {
+            snprintf(field, flen, "tx_error (20: %s, 32: %s)",
+                     tx_error_name(r->tx_error), tx_error_name(q->tx_error));
+            return 1;
+        }
+    } else if (r->status != q->status) {
+        snprintf(field, flen, "status (20: %s, 32: %s)",
+                 status_name(r->status), status_name(q->status));
+        return 1;
+    }
+    if (r->gas_used != q->gas_used) {
+        snprintf(field, flen, "gas_used (20: %llu, 32: %llu)",
+                 (unsigned long long)r->gas_used,
+                 (unsigned long long)q->gas_used);
+        return 1;
+    }
+    if (m20->rc == 0) {
+        if (r->gas_used_pre_refund != q->gas_used_pre_refund) {
+            snprintf(field, flen, "gas_used_pre_refund (20: %llu, 32: %llu)",
+                     (unsigned long long)r->gas_used_pre_refund,
+                     (unsigned long long)q->gas_used_pre_refund);
+            return 1;
+        }
+        if (r->output_len != q->output_len ||
+            (r->output_len &&
+             memcmp(r->output, q->output, r->output_len) != 0)) {
+            snprintf(field, flen, "output (20: %zu bytes, 32: %zu bytes)",
+                     r->output_len, q->output_len);
+            return 1;
+        }
+        uint8_t w20[32], w32[32];
+        evm_u256_to_be(w20, &r->wei_destroyed);
+        evm_u256_to_be(w32, &q->wei_destroyed);
+        if (memcmp(w20, w32, 32) != 0) {
+            snprintf(field, flen, "wei_destroyed");
+            return 1;
+        }
+    }
+    int prc = compare_post(&m20->post, &m32->post, field, flen);
+    if (prc != 0) return prc;
+    if (m20->rc == 0) {
+        if (r->n_logs != q->n_logs) {
+            snprintf(field, flen, "logs.count (20: %zu, 32: %zu)",
+                     r->n_logs, q->n_logs);
+            return 1;
+        }
+        for (size_t i = 0; i < r->n_logs; i++) {
+            const evm_log_t *x = &r->logs[i], *y = &q->logs[i];
+            if (addr_is_wide(&y->addr)) {
+                snprintf(field, flen, "logs[%zu].emitter (wide)", i);
+                return 1;
+            }
+            if (memcmp(x->addr.b + 12, y->addr.b + 12, 20) != 0) {
+                snprintf(field, flen, "logs[%zu].emitter", i);
+                return 1;
+            }
+            if (x->n_topics != y->n_topics ||
+                memcmp(x->topics, y->topics,
+                       (x->n_topics <= 4 ? x->n_topics : 4) *
+                       sizeof(evm_bytes32)) != 0) {
+                snprintf(field, flen, "logs[%zu].topics", i);
+                return 1;
+            }
+            if (x->data_len != y->data_len ||
+                (x->data_len && memcmp(x->data, y->data, x->data_len) != 0)) {
+                snprintf(field, flen, "logs[%zu].data", i);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* keccak(rlp([creator as 32 bytes, nonce])), the whole hash — the 32-byte
+ * CREATE derivation (evm_interp.c:149-167), recomputed independently.
+ * @return 0, -2. */
+static int create32_addr(const evm_addr *creator, uint64_t nonce,
+                         evm_addr *out)
+{
+    evm_rlp_buf b = {0};
+    int rc = evm_rlp_put_bytes(&b, creator->b, 32);
+    if (rc == 0) rc = evm_rlp_put_u64(&b, nonce);
+    if (rc == 0) rc = evm_rlp_wrap_list(&b, 0);
+    if (rc == 0 && keccak256(b.p, b.len, out->b) != 0) rc = -2;
+    evm_rlp_buf_free(&b);
+    return rc == 0 ? 0 : -2;
+}
+
+/* Nonce range a creator can have used: from its pre nonce (0 when it did
+ * not exist) to its 32-byte post nonce; a creator absent from the post
+ * (gone again in this tx) is tried over 64 nonces past its start. The
+ * search is bounded (4096 nonces per creator). */
+static int is_create_derived(const evm_addr *w, const evm_addr *creators,
+                             size_t n_creators, const evm_membackend *pre,
+                             const evm_membackend *post32)
+{
+    for (size_t c = 0; c < n_creators; c++) {
+        const evm_mem_account *pa = evm_membackend_find(pre, &creators[c]);
+        const evm_mem_account *qa = evm_membackend_find(post32, &creators[c]);
+        uint64_t lo = pa ? pa->nonce : 0, hi;
+        if (qa) hi = qa->nonce > lo ? qa->nonce : lo;
+        else hi = lo > UINT64_MAX - 64 ? UINT64_MAX : lo + 64;
+        if (hi - lo > 4096) hi = lo + 4096;     /* bounded search */
+        for (uint64_t n = lo; ; n++) {
+            evm_addr d;
+            if (create32_addr(&creators[c], n, &d) != 0) return -2;
+            if (memcmp(d.b, w->b, 32) == 0) return 1;
+            if (n == hi) break;
+        }
+    }
+    return 0;
+}
+
+enum { CLS_CREATE = 1, CLS_WIDE_WORD = 2, CLS_CREATE2_OR_DERIVED = 4 };
+
+typedef struct {
+    unsigned long agree, unexplained, fault, error, wide20;
+    unsigned long differ_by_mask[8];
+    unsigned long baseline_pass, baseline_other;
+} diff_counts_t;
+
+static diff_counts_t g_dc;
+
+static void class_str(unsigned mask, char *out, size_t len)
+{
+    snprintf(out, len, "%s%s%s%s%s",
+             (mask & CLS_CREATE) ? "CREATE" : "",
+             ((mask & CLS_CREATE) && (mask & ~(unsigned)CLS_CREATE)) ? "+" : "",
+             (mask & CLS_WIDE_WORD) ? "WIDE_WORD" : "",
+             ((mask & CLS_WIDE_WORD) && (mask & CLS_CREATE2_OR_DERIVED))
+                 ? "+" : "",
+             (mask & CLS_CREATE2_OR_DERIVED) ? "CREATE2_OR_DERIVED" : "");
+}
+
+/* Sub-labels for the wide addresses of a differing case. @return the
+ * class mask (0 = no wide address), -2 OOM/fault. */
+static int classify_wide(const mode_run_t *m20, const mode_run_t *m32,
+                         const evm_membackend *pre, const built_tx_t *bt)
+{
+    /* wide set: backend reads + post accounts + log emitters + created */
+    rec_be_t wide = {0};
+    for (size_t i = 0; i < m32->rec.n; i++)
+        if (addr_is_wide(&m32->rec.seen[i])) rec_note(&wide, &m32->rec.seen[i]);
+    for (size_t i = 0; i < m32->post.n; i++)
+        if (addr_is_wide(&m32->post.acc[i].addr))
+            rec_note(&wide, &m32->post.acc[i].addr);
+    if (m32->rc == 0) {
+        for (size_t i = 0; i < m32->res.n_logs; i++)
+            if (addr_is_wide(&m32->res.logs[i].addr))
+                rec_note(&wide, &m32->res.logs[i].addr);
+        if (bt->tx.is_create && addr_is_wide(&m32->res.created))
+            rec_note(&wide, &m32->res.created);
+    }
+    if (wide.oom) { free(wide.seen); return -2; }
+    rec_sort_unique(&wide);
+    if (wide.n == 0) { free(wide.seen); return 0; }
+
+    /* candidate creators: sender, pre, 32-byte post, every wide address */
+    rec_be_t cr = {0};
+    rec_note(&cr, &bt->tx.sender);
+    for (size_t i = 0; i < pre->n; i++) rec_note(&cr, &pre->acc[i].addr);
+    for (size_t i = 0; i < m32->post.n; i++)
+        rec_note(&cr, &m32->post.acc[i].addr);
+    for (size_t i = 0; i < wide.n; i++) rec_note(&cr, &wide.seen[i]);
+    if (cr.oom) { free(wide.seen); free(cr.seen); return -2; }
+    rec_sort_unique(&cr);
+
+    int mask = 0;
+    for (size_t i = 0; i < wide.n; i++) {
+        const evm_addr *w = &wide.seen[i];
+        int d = is_create_derived(w, cr.seen, cr.n, pre, &m32->post);
+        if (d < 0) { mask = -2; break; }
+        int lbl;
+        if (d) {
+            lbl = CLS_CREATE;
+        } else {
+            evm_addr low = *w;
+            memset(low.b, 0, 12);
+            int is_pc = 1;
+            for (int k = 12; k < 31; k++) if (low.b[k]) is_pc = 0;
+            if (low.b[31] == 0 || low.b[31] > 0x11) is_pc = 0;
+            if (is_pc || evm_membackend_find(pre, &low) ||
+                rec_contains(&m20->rec, &low) ||
+                evm_membackend_find(&m20->post, &low))
+                lbl = CLS_WIDE_WORD;
+            else
+                lbl = CLS_CREATE2_OR_DERIVED;
+        }
+        mask |= lbl;
+        if (g_opt.verbose) {
+            char cls[64];
+            class_str((unsigned)lbl, cls, sizeof(cls));
+            printf("    wide 0x");
+            hex_print(stdout, w->b, 32);
+            printf(" %s\n", cls);
+        }
+    }
+    free(wide.seen);
+    free(cr.seen);
+    return mask;
+}
+
+/* 20-byte run against the fixture (root, logs, expectException). */
+static int baseline_pass(const mode_run_t *m20, json_object *post)
+{
+    uint8_t want_root[32], want_logs[32], got_root[32], got_logs[32];
+    const char *s;
+    if (m20->outcome != RUN_OK) return 0;
+    if (!(s = jstr(post, "hash")) || hex_be32(s, want_root) ||
+        !(s = jstr(post, "logs")) || hex_be32(s, want_logs))
+        return 0;
+    int expect_exc = jstr(post, "expectException") != NULL;
+    if (expect_exc != (m20->rc == -1)) return 0;
+    if (evm_membackend_state_root(&m20->post, 20, got_root) != 0 ||
+        logs_hash(&m20->res, m20->rc == 0, 20, got_logs) != 0)
+        return 0;
+    return memcmp(got_root, want_root, 32) == 0 &&
+           memcmp(got_logs, want_logs, 32) == 0;
+}
+
+static void run_diff_case(const case_id_t *cid, json_object *test,
+                          json_object *post, const evm_membackend *pre,
+                          const test_env_t *te)
+{
+    char err[256] = "";
+    built_tx_t bt;
+    if (build_tx(jget(test, "transaction"), post, cid->d, cid->g, cid->v, &bt,
+                 err, sizeof(err)) != 0) {
+        report("ERROR", cid, "%s", err);
+        g_dc.error++;
+        built_tx_free(&bt);
+        return;
+    }
+
+    mode_run_t m20, m32;
+    exec_mode(20, pre, te, &bt, &m20);
+    exec_mode(32, pre, te, &bt, &m32);
+
+    if (m20.outcome == RUN_OK && baseline_pass(&m20, post)) g_dc.baseline_pass++;
+    else {
+        g_dc.baseline_other++;
+        if (g_opt.verbose) report("BASELINE", cid, "20-byte run != fixture");
+    }
+
+    for (size_t i = 0; i < m20.rec.n; i++)
+        if (addr_is_wide(&m20.rec.seen[i])) {
+            report("WIDE20", cid, "a wide address reached the backend in the "
+                   "20-byte run (masking failed)");
+            g_dc.wide20++;
+            break;
+        }
+
+    if (m20.outcome != RUN_OK || m32.outcome != RUN_OK) {
+        int fault = m20.outcome == RUN_FAULT || m32.outcome == RUN_FAULT;
+        report(fault ? "FAULT" : "ERROR", cid, "20: %s / 32: %s",
+               m20.outcome == RUN_OK ? "ok" : m20.why,
+               m32.outcome == RUN_OK ? "ok" : m32.why);
+        if (fault) g_dc.fault++;
+        else g_dc.error++;
+        goto done;
+    }
+
+    {
+        char field[160] = "";
+        int c = compare_runs(&m20, &m32, field, sizeof(field));
+        if (c < 0) {
+            report("ERROR", cid, "harness out of memory (compare)");
+            g_dc.error++;
+            goto done;
+        }
+        if (c == 0) {
+            g_dc.agree++;
+            if (g_opt.verbose) report("AGREE", cid, "%s", "");
+            goto done;
+        }
+        int mask = classify_wide(&m20, &m32, pre, &bt);
+        if (mask < 0) {
+            report("ERROR", cid, "harness out of memory (classify)");
+            g_dc.error++;
+            goto done;
+        }
+        if (mask == 0) {
+            report("UNEXPLAINED", cid, "first difference: %s; no wide address "
+                   "in the 32-byte run", field);
+            g_dc.unexplained++;
+            goto done;
+        }
+        char cls[64];
+        class_str((unsigned)mask, cls, sizeof(cls));
+        g_dc.differ_by_mask[mask & 7]++;
+        report("DIFFER", cid, "%s; first difference: %s", cls, field);
+    }
+
+done:
+    mode_run_free(&m20);
+    mode_run_free(&m32);
+    built_tx_free(&bt);
+}
+
 /* ── per-file driver ────────────────────────────────────────────────── */
 
 typedef struct {
@@ -1306,7 +1976,8 @@ static void run_file(const char *path)
                 g_cnt.error++;
                 continue;
             }
-            run_case(&cid, test, post, &pre, &te);
+            if (g_opt.differential) run_diff_case(&cid, test, post, &pre, &te);
+            else run_case(&cid, test, post, &pre, &te);
         }
         evm_membackend_free(&pre);
     }
@@ -1387,9 +2058,11 @@ static int usage(const char *argv0)
     fprintf(stderr,
             "usage: %s [--fork Prague] [--addr-bytes 20|32] [--filter S]\n"
             "          [--verbose] <file-or-dir>...\n"
+            "       %s --differential [--fork Prague] [--filter S] "
+            "[--verbose] <file-or-dir>...\n"
             "       %s --list-forks <file-or-dir>...\n"
             "       %s --verify-fixture-roots [--fork F] [--filter S] "
-            "<file-or-dir>...\n", argv0, argv0, argv0);
+            "<file-or-dir>...\n", argv0, argv0, argv0, argv0);
     return 2;
 }
 
@@ -1397,12 +2070,15 @@ int main(int argc, char **argv)
 {
     g_opt.fork = "Prague";
     g_opt.addr_bytes = 20;
-    int first_path = -1;
+    int first_path = -1, addr_bytes_given = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--fork") == 0 && i + 1 < argc) {
             g_opt.fork = argv[++i];
+        } else if (strcmp(argv[i], "--differential") == 0) {
+            g_opt.differential = 1;
         } else if (strcmp(argv[i], "--addr-bytes") == 0 && i + 1 < argc) {
             const char *a = argv[++i];
+            addr_bytes_given = 1;
             if (strcmp(a, "20") == 0) g_opt.addr_bytes = 20;
             else if (strcmp(a, "32") == 0) g_opt.addr_bytes = 32;
             else return usage(argv[0]);
@@ -1422,6 +2098,10 @@ int main(int argc, char **argv)
         }
     }
     if (first_path < 0) return usage(argv[0]);
+    /* --differential runs both widths itself */
+    if (g_opt.differential &&
+        (addr_bytes_given || g_opt.list_forks || g_opt.verify_roots))
+        return usage(argv[0]);
     if (!g_opt.list_forks && !g_opt.verify_roots &&
         strcmp(g_opt.fork, "Prague") != 0) {
         fprintf(stderr, "the engine implements only Prague (EVM_FORK_PRAGUE); "
@@ -1454,6 +2134,52 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < g_nforks; i++)
             printf("  %-28s %lu\n", g_forks[i].name, g_forks[i].n);
         exit_code = 0;
+    } else if (g_opt.differential) {
+        unsigned long excl = g_cnt.excl_blob + g_cnt.excl_setcode;
+        unsigned long differ = 0;
+        for (int k = 1; k < 8; k++) differ += g_dc.differ_by_mask[k];
+        unsigned long eligible = g_dc.agree + differ + g_dc.unexplained +
+                                 g_dc.fault + g_dc.error;
+        unsigned long error = g_dc.error + g_cnt.error;
+        printf("=== differential 20/32 summary: fork %s, %zu file(s)%s%s ===\n"
+               "    (Nodus-derived, self-consistent: the same engine runs "
+               "both widths;\n     shared bugs are invisible; NOT an official "
+               "result)\n",
+               g_opt.fork, paths.n, g_opt.filter ? ", filter " : "",
+               g_opt.filter ? g_opt.filter : "");
+        printf("ELIGIBLE     %lu   (both widths ran or were attempted)\n",
+               eligible);
+        printf("AGREE        %lu\n", g_dc.agree);
+        printf("DIFFER       %lu   (a wide address arose in the 32-byte run; "
+               "sub-labels heuristic)\n", differ);
+        for (int k = 1; k < 8; k++) {
+            if (!g_dc.differ_by_mask[k]) continue;
+            char cls[64];
+            class_str((unsigned)k, cls, sizeof(cls));
+            printf("  %-32s %lu\n", cls, g_dc.differ_by_mask[k]);
+        }
+        printf("UNEXPLAINED  %lu   (differ, no wide address seen)\n",
+               g_dc.unexplained);
+        printf("FAULT        %lu\n", g_dc.fault);
+        printf("ERROR        %lu   (harness could not represent the case)\n",
+               error);
+        printf("WIDE20       %lu   (wide address reached the backend in the "
+               "20-byte run)\n", g_dc.wide20);
+        printf("EXCLUDED     %lu   (design §1 — NOT compared)\n", excl);
+        printf("  type-3 blob (blobVersionedHashes/maxFeePerBlobGas) %lu\n",
+               g_cnt.excl_blob);
+        printf("  type-4 set-code (authorizationList)                %lu\n",
+               g_cnt.excl_setcode);
+        printf("BASELINE     %lu of %lu eligible 20-byte runs equal the fixture "
+               "(the rest include the documented DEVIATIONS)\n",
+               g_dc.baseline_pass, g_dc.baseline_pass + g_dc.baseline_other);
+        printf("TOTAL        %lu   (post entries of fork %s seen: %lu)\n",
+               eligible + g_cnt.error + excl, g_opt.fork, g_cases_seen);
+        if (g_cases_seen == 0) exit_code = 3;
+        else if (g_dc.unexplained || g_dc.fault || error || g_dc.wide20 ||
+                 eligible == 0)
+            exit_code = 1;
+        else exit_code = 0;
     } else {
         unsigned long excl = g_cnt.excl_blob + g_cnt.excl_setcode;
         unsigned long total = g_cnt.pass + g_cnt.fail + g_cnt.fault +

@@ -1563,6 +1563,190 @@ at-rest storage (Q4, NC-4). The json-c version of the frozen app build is not
 established (host 0.16, wasm 0.17); the profile signature is over json-c's
 output, so this is checked before release (NC-3).
 
+## Nodus Connect groups codec — G1 + G2 exports (unreleased, no UI)
+
+Byte layer of Connect groups (design `docs/plans/2026-10-04-connect-groups-design.md`
+rev 1; bytes `docs/plans/2026-10-05-connect-groups-bytes.md` items 1-7 + REV 2,
+approved 2026-10-05; decisions `2026-10-04-connect-groups.md` items 1-11).
+Pure C, no network, no clock, no storage; no page calls it yet.
+
+- `connect/nc_group.h` / `nc_group.c` — tags, `salt_v`, DHT addresses
+  (`"ncg:"` + hex, purposes HEAD / KEY PACKET / RECORD / OUTBOX), the key
+  packet (fresh ML-KEM-1024 encapsulation per member after `ek_check`, KEK by
+  HKDF-SHA3-256, RFC 3394 wrap, entries by `kem_ct`, owner ML-DSA-87
+  signature; reader: structure, signature FIRST, group / version / owner,
+  `prev_digest` conflict / unavailable, trial unwrap), the encrypted member
+  record, HEAD, the signed group message and its accept rule, the per-sender
+  day bucket (≤ 100 items, ≤ 1 MiB, text ≤ 4,000 B) and the invite / accept /
+  welcome JSON (exact field set, `invite_id`). Every parser checks lengths
+  before allocating, consumes exactly and refuses duplicates; secrets are
+  wiped. `nc_group.h` documents every layout and rule.
+- `connect/tests/test_nc_group.c` — every preimage, digest, address, KEK,
+  wrapped key, record and bucket of the independent oracle's
+  `test/fixtures/groups_kat.json` byte-compared; signatures verified (never
+  byte-compared, ML-DSA signing is randomized); the oracle's `kem_ct` are
+  not ML-KEM ciphertexts, so the packet vectors inject its shared secrets and
+  the real ML-KEM path is a round trip; every reject case refused.
+- `connect/nc_wasm.c` "groups codec" (G2) — the module's exports, linked into
+  the wallet's one module by `scripts/build-nodus-send-wasm.sh` (source
+  `connect/nc_group.c`): `nc_group_addr_str`, `nc_group_salt`,
+  `nc_group_kp_new` / `_kp_read`, `nc_group_record_new` / `_record_read`,
+  `nc_group_head_new` / `_head_read`, `nc_group_msg_new`,
+  `nc_group_bucket_read`, `nc_group_invite`, `nc_group_accept`,
+  `nc_group_welcome`, `nc_group_json_read`. All synchronous and pure (no
+  network); results are one JSON object (`nc_result()`), bytes as lowercase
+  hex, numbers as decimal strings; readers answer a `status`. Signing,
+  decapsulation and the own fingerprint use the session's Messages keys;
+  every other member's / owner's / sender's key comes from the verified
+  profile cache (`nc_profile_get` / `nc_profile_load`), never from the page.
+  The committed `src/nodus/send.wasm` is not rebuilt with them yet.
+
+Group message text is at least 1 byte (decision 11, operator 2026-10-05):
+seal, parse, bucket encode / decode and open all refuse an empty text. The
+oracle's vectors predate the decision (reading 13 calls an empty text
+valid); the test asserts that item, and the 2-item bucket that carries it,
+as refused, and compares only their layout.
+
+Not in G2: a bucket encoder export (sending a day bucket), group key /
+group id / `addr_secret` generation, and the membership accept rule as an
+export (the page applies it). `nc_group_bucket_read` reads buckets up to
+256 KiB (the hex argument is copied onto the 1 MiB C stack); a full 1 MiB
+bucket needs a heap input buffer export. (G3 below adds it, the
+bucket send with its read, the secret generator and the network reads /
+writes.)
+
+## Nodus Connect groups — G3 page side (unreleased)
+
+Groups in the Connect site: create a group, invite contacts, accept, send and
+read group messages, members (the owner adds / removes), leave. Design
+`docs/plans/2026-10-04-connect-groups-design.md` rev 1; bytes
+`docs/plans/2026-10-05-connect-groups-bytes.md` items 1-7 + REV 2; decisions
+`2026-10-04-connect-groups.md` items 1-18 (17 + 18: chain names, below),
+`2026-10-02-onchain-names.md` item 4, `2026-09-30-nodus-connect-thin-core.md`
+(S3: a read that could not be made never leads to a write; Q3 one device =
+warning only; Q4 history at rest), `2026-10-04-connect-local-first.md`.
+The committed `src/nodus/send.wasm` is NOT rebuilt here: the release build
+regenerates it with the new exports.
+
+**Module (C).** `connect/nc_group.c` / `.h`: `nc_group_kp_open_pinned` — the
+welcomed member opens packet N against the welcome's `kp_digest` (it holds no
+packet N-1; a different digest is a conflict), a reader rule, no new bytes;
+the leave of decision 13 (`{"type":"nodus_group_leave","v":1,"group_id":…}`,
+`nc_group_leave_encode`, parsed by `nc_group_json_parse`). `connect/nc_wasm.c`
+"groups (package G3)":
+
+| export | network | what |
+|---|---|---|
+| `nc_group_in_alloc(len)` | no | heap input buffer (≤ 1 MiB), filled by the page and consumed by the next export in the same queue slot |
+| `nc_group_random()` | no | `{ group_id, group_key, addr_secret }` from the module's one random source |
+| `nc_group_leave(gid)` | no | the leave JSON |
+| `nc_group_get(purpose, gid, secret, x, owner)` | one read | HEAD / packet / record read with the pinned owner (owner-filtered paged read) |
+| `nc_group_put(purpose, gid, secret, x)` | read + ≤ 1 write | the owner's HEAD (EXCLUSIVE) / packet / record (PERMANENT); the own row is read first in the same call: `wait` (unreadable), `unchanged`, `stale` (a newer HEAD), `conflict` (other bytes for that version), `taken`, `published`, `failed` |
+| `nc_group_bucket_send(gid, salt, v, day)` | read + ≤ 1 write | the sender's day bucket: own row read in the same call, merged with EVERY own item the page keeps for it (heap buffer), EPHEMERAL 7 days; `wait` / `refused` (own row not a bucket) / `full` (> 100 items or 1 MiB) |
+| `nc_group_bucket_fetch(gid, salt, v, day, key)` | one read | every sender's row (owner-less read), the row's owner must be its sender, every item verified and opened |
+
+`nc_group_kp_read` gains `pinned_digest_hex`; `nc_group_bucket_read` reads a
+bucket from the heap buffer when its hex argument is empty (full 1 MiB). A
+read that returned only OTHER owners' rows counts as "no own row" for the
+two writes (a removed member still knows the packet addresses, bytes §1, and
+could otherwise stop the owner from publishing); every other unreadable read
+is `wait`.
+
+**Page.** `src/connect/core.js` exposes every group export (`group*`).
+`src/connect/groups/model.js` holds the pure rules (accept rule of decision 6,
+next member list, 30-day rotation / "key is old", bucket versions, order,
+caps, stored-record checks); `groups/engine.js` the state machine:
+
+- member: `invited` → (Join) `accepting` → welcome from the pinned owner →
+  `joining` → packet N + record N read → `active`; a HEAD-announced packet
+  without our entry → `removed`; Leave → `left` (hidden, the owner told);
+  Ignore forgets the invitation (decline = no reply).
+- owner: `active` from creation; joins (accepts), leave requests, removals and
+  the key reaching 30 days stage the next version (record + key packet +
+  HEAD, kept on the device first — the packet in pieces), published record →
+  packet → HEAD LAST; only then is the version applied (members added or
+  removed in the view) and the welcomes sent. A joiner whose profile has no
+  ML-KEM-1024 key is refused by name; an existing member's key that cannot be
+  read makes the change wait.
+- each check (the 30-second Messages check, after the contacts): owner
+  change; member catch-up (HEAD → walk v+1 … HEAD.v, each packet bound to the
+  held digest); own unsent messages; today's and yesterday's buckets of the
+  newest version and the one before it (never below the version that added
+  this device — no pre-join history), the membership rule applied, messages
+  deduplicated by (group, sender, message id).
+- send: one at a time (the 0.1.55 rule); kept on the device first, then
+  published; the composer empties once it is kept.
+
+Invites, accepts, welcomes and leaves travel as 1:1 messages:
+`nc_plaintext_is_chat` returns `nodus_group_*` texts as chat (it drops only
+the old app's `group_invite`), so `ui/messages.js` takes every text that
+claims one of the four types off the chat, hands it to the engine with the
+authenticated 1:1 sender, and keeps it as a 1:1 record flagged `control`
+(published, acknowledged and deduplicated like any message, never shown).
+Invites only from a contact naming itself the owner; welcomes only from the
+pinned owner for the invite accepted; accepts only for a pending invite of
+that contact (consumed once); leaves only from a current member.
+
+**Only people with a chain name (0.1.61; decisions items 17 + 18).** Group
+membership is kept by the clients (not on the chain), so the clients enforce
+it; no byte or wire format changed. The engine reads a name state per ID
+through two page functions (`ui/messages.js` `groupNameStatus` /
+`groupNameLookup`, over the same lookup as the rest of Messages,
+`ensureChainName` → `nameOf` → `parseNameOf`): `found` = a chain name is
+known (kept in `state.chainNames` or found this session — a name is
+permanent, so one confirmed name is enough and is never asked again);
+`none` = a lookup ANSWERED "no name" (never final: asked again on the next
+check); `unknown` = no answer yet (never asked, or the lookup failed — a
+failed lookup changes nothing). A name found by a group lookup is kept in
+`state.chainNames` whoever it belongs to (a group member need not be a
+contact), so a group's history shows at the next local open.
+- create: refused without this ID's own confirmed name (`New group` says
+  why; the dialog does not open); invite and join need it too.
+- invite: only contacts whose name is confirmed; the New group list and the
+  owner's Invite list show the others greyed out with the reason.
+- join: an invitation whose owner has no confirmed name is not accepted (no
+  accept is sent); the invitation says so when the answer was "no name".
+- each check (`engine.js` `syncAll` → `checkNames`): every member, joiner,
+  invitee and inviting owner without a confirmed name is looked up — at most
+  once per ID per check, whatever the number of groups; the page also spaces
+  lookups of one ID by `CHAIN_LOOKUP_SPACING_MS` (60 s). Opening a group or
+  New group does one such round for the people shown.
+- owner: a MEMBER answered "no name" is removed automatically, with no
+  prompt, through `removeMember` — the same call as the owner's Remove — so
+  the next version (record, packet, HEAD last) leaves it out. Done once: it
+  is skipped while it is in `removals` or left out of a staged change, and
+  once the version is out it is no longer a member. A joiner answered "no
+  name" is not added (it stays listed as a joiner; the owner may withdraw
+  it); one not answered yet waits.
+- every member: messages of a sender without a confirmed name are kept on the
+  device but not shown and not counted as new — hidden when the answer was
+  "no name", waiting when there is no answer yet (shown once confirmed); the
+  member list marks such a person ("no chain name" / "checking chain name");
+  the group keeps working until the owner's change removes them.
+
+**Storage.** `state.groups` (gid → its `g` record); key versions in `k`
+records (all kept, decision 14), a staged packet in `x` pieces; group
+messages in the `messages` store with a `group` field, loaded apart from the
+1:1 list. Everything is sealed per record like the rest of the history;
+memory only for an unsaved wallet. Records left behind by a finished stage
+stay in the database (opened, not used).
+
+**Screens** (`src/connect/groups/ui.js`): the Groups part of Chats
+(invitations with Join / Ignore, group rows with unread counts, New group);
+the group conversation (sender names, a banner for "the owner has not been
+online for over 30 days", changes waiting, or "you are no longer in this
+group"); Members (owner: Invite a contact, Remove with a confirmation; a
+member: Leave). The Chats chip shows one-to-one conversations without groups.
+
+**Tests (written, not run in this package):** `test/connect-groups.test.js`
+(the state machine against a mocked core — what it proves and how it can lie
+are in its header), `test/connect-groups-names.test.js` (the chain-name rule
+of decisions 17 + 18 against a mocked lookup: create / invite / join refused
+without a name, one lookup per ID per check, a failed lookup changes nothing,
+the owner's removal happens once through `removeMember`, hidden and waiting
+messages), `connect/tests/test_nc_group.c` (pinned open, leave
+JSON), `test/connect-smoke.js` (the offline Groups part of Chats only).
+
 ## Nodus Connect Messages preview — NC-4c (unreleased, separate build)
 
 The Messages page under `/preview/` (design `docs/plans/2026-09-24-web-connect-design.md`

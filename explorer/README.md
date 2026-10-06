@@ -7,8 +7,11 @@ JSON API. The Nodus Scan frontend (`scan.nodusnetwork.io`) lives in
 `website/scan/` (see `website/deploy/README.md`); the legacy
 `scan.cpunk.io` frontend is no longer in this repository.
 
-**Version 0.2.3** adds stake releases (bond and delegation releases) from the
-same source. **Version 0.2.2** added actual payout amounts, recipient pages and
+**Version 0.2.4** names chain-config params 14 `EVM_ACTIVE` and 15
+`EVM_BLOCK_GAS_LIMIT` in `/api/governance` (shown by id before; the HF-5 vote
+of 2026-10-06 is param 14), and is the first deployed build carrying the
+Nodus EVM index (`item_evm`, `/api/evm/*`, below). **Version 0.2.3** added
+stake releases (bond and delegation releases) from the same source. **Version 0.2.2** added actual payout amounts, recipient pages and
 address reward history through an optional read-only local Nodus database. It
 does not rebuild the explorer index or change the node's owner-gated RPC.
 
