@@ -1621,7 +1621,8 @@ Groups in the Connect site: create a group, invite contacts, accept, send and
 read group messages, members (the owner adds / removes), leave. Design
 `docs/plans/2026-10-04-connect-groups-design.md` rev 1; bytes
 `docs/plans/2026-10-05-connect-groups-bytes.md` items 1-7 + REV 2; decisions
-`2026-10-04-connect-groups.md` items 1-14, `2026-09-30-nodus-connect-thin-core.md`
+`2026-10-04-connect-groups.md` items 1-18 (17 + 18: chain names, below),
+`2026-10-02-onchain-names.md` item 4, `2026-09-30-nodus-connect-thin-core.md`
 (S3: a read that could not be made never leads to a write; Q3 one device =
 warning only; Q4 history at rest), `2026-10-04-connect-local-first.md`.
 The committed `src/nodus/send.wasm` is NOT rebuilt here: the release build
@@ -1686,6 +1687,42 @@ Invites only from a contact naming itself the owner; welcomes only from the
 pinned owner for the invite accepted; accepts only for a pending invite of
 that contact (consumed once); leaves only from a current member.
 
+**Only people with a chain name (0.1.61; decisions items 17 + 18).** Group
+membership is kept by the clients (not on the chain), so the clients enforce
+it; no byte or wire format changed. The engine reads a name state per ID
+through two page functions (`ui/messages.js` `groupNameStatus` /
+`groupNameLookup`, over the same lookup as the rest of Messages,
+`ensureChainName` → `nameOf` → `parseNameOf`): `found` = a chain name is
+known (kept in `state.chainNames` or found this session — a name is
+permanent, so one confirmed name is enough and is never asked again);
+`none` = a lookup ANSWERED "no name" (never final: asked again on the next
+check); `unknown` = no answer yet (never asked, or the lookup failed — a
+failed lookup changes nothing). A found name of this ID or a contact is kept
+as before; a non-contact member's found name is held for the session only.
+- create: refused without this ID's own confirmed name (`New group` says
+  why; the dialog does not open); invite and join need it too.
+- invite: only contacts whose name is confirmed; the New group list and the
+  owner's Invite list show the others greyed out with the reason.
+- join: an invitation whose owner has no confirmed name is not accepted (no
+  accept is sent); the invitation says so when the answer was "no name".
+- each check (`engine.js` `syncAll` → `checkNames`): every member, joiner,
+  invitee and inviting owner without a confirmed name is looked up — at most
+  once per ID per check, whatever the number of groups; the page also spaces
+  lookups of one ID by `CHAIN_LOOKUP_SPACING_MS` (60 s). Opening a group or
+  New group does one such round for the people shown.
+- owner: a MEMBER answered "no name" is removed automatically, with no
+  prompt, through `removeMember` — the same call as the owner's Remove — so
+  the next version (record, packet, HEAD last) leaves it out. Done once: it
+  is skipped while it is in `removals` or left out of a staged change, and
+  once the version is out it is no longer a member. A joiner answered "no
+  name" is not added (it stays listed as a joiner; the owner may withdraw
+  it); one not answered yet waits.
+- every member: messages of a sender without a confirmed name are kept on the
+  device but not shown and not counted as new — hidden when the answer was
+  "no name", waiting when there is no answer yet (shown once confirmed); the
+  member list marks such a person ("no chain name" / "checking chain name");
+  the group keeps working until the owner's change removes them.
+
 **Storage.** `state.groups` (gid → its `g` record); key versions in `k`
 records (all kept, decision 14), a staged packet in `x` pieces; group
 messages in the `messages` store with a `group` field, loaded apart from the
@@ -1702,7 +1739,11 @@ member: Leave). The Chats chip shows one-to-one conversations without groups.
 
 **Tests (written, not run in this package):** `test/connect-groups.test.js`
 (the state machine against a mocked core — what it proves and how it can lie
-are in its header), `connect/tests/test_nc_group.c` (pinned open, leave
+are in its header), `test/connect-groups-names.test.js` (the chain-name rule
+of decisions 17 + 18 against a mocked lookup: create / invite / join refused
+without a name, one lookup per ID per check, a failed lookup changes nothing,
+the owner's removal happens once through `removeMember`, hidden and waiting
+messages), `connect/tests/test_nc_group.c` (pinned open, leave
 JSON), `test/connect-smoke.js` (the offline Groups part of Chats only).
 
 ## Nodus Connect Messages preview — NC-4c (unreleased, separate build)

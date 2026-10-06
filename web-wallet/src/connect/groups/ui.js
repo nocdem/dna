@@ -4,6 +4,14 @@
 // is old or the group changed, the members with the owner's add / remove,
 // Leave), and the New group dialog.
 //
+// Chain names (decisions 2026-10-04-connect-groups.md items 17 + 18): New
+// group opens only with this ID's confirmed chain name (else the reason is
+// said); the New group list and the owner's Invite list offer only contacts
+// whose chain name is confirmed (the others are listed, not selectable, with
+// the reason); an invitation from an owner without a name cannot be joined;
+// in Members a person without a name is marked and their messages are not
+// shown (the owner's client removes them, engine.js checkNames).
+//
 // HOST-DRIVEN, like src/connect/ui/messages.js, which owns the screens and
 // hands over its building blocks (`h`, below). Rendering follows that file's
 // rules (design rev 5 §1.9): every text through textContent; text written by
@@ -20,6 +28,12 @@
 import { textProblem, nameProblem, MAX_MEMBERS, TEXT_MAX_BYTES, GroupError } from './model.js';
 
 const OFFLINE_TEXT = 'This opens once Messages is connected to the network.';
+// Decision 17 (2026-10-04-connect-groups.md): only people with a chain name
+// may be in a group, the owner included.
+const OWN_NAME_TEXT = 'Groups are only for people with a chain name. Register a chain name for your ID first, then you can create and join groups.';
+const OWN_NAME_UNCHECKED_TEXT = 'Your chain name could not be checked right now. Try again in a minute.';
+const NO_NAME_TEXT = 'no chain name yet — groups are only for people with a chain name';
+const CHECKING_NAME_TEXT = 'checking chain name…';
 
 export function createGroupsView(h) {
   const { el, button, untrusted, statusLine, input, setAttrs } = h;
@@ -33,10 +47,12 @@ export function createGroupsView(h) {
   u.inviteList = setAttrs(el('ul', { className: 'request-list' }), { 'aria-label': 'Group invitations' });
   u.groupList = setAttrs(el('ul', { className: 'contact-list' }), { 'aria-label': 'Groups' });
   u.blockStatus = statusLine('hint');
-  u.newButton = button('New group', () => openCreate(), 'secondary small');
+  u.newButton = button('New group', () => void openCreate(), 'secondary small');
+  u.nameNeed = el('p', { className: 'hint', text: OWN_NAME_TEXT });
+  u.nameNeed.hidden = true;
   u.block = el('div', { className: 'nc-groups' },
     el('div', { className: 'nc-groups-head' }, el('h3', { text: 'Groups' }), u.newButton),
-    u.inviteList, u.groupList, u.blockStatus);
+    u.nameNeed, u.inviteList, u.groupList, u.blockStatus);
 
   // ── a group's conversation ─────────────────────────────────────────────
   u.avatar = el('span');
@@ -100,15 +116,23 @@ export function createGroupsView(h) {
     if (!engine) { u.block.hidden = true; return; }
     u.block.hidden = false;
     u.newButton.disabled = !h.online();
+    // decision 17: an answered "no name" for this ID is said next to New group
+    u.nameNeed.hidden = engine.nameStatus(h.ownFp()) !== 'none';
     const invites = engine.invitations();
-    u.inviteList.replaceChildren(...invites.map(inv => el('li', { className: 'request-row' },
-      groupAvatar(inv.name, inv.gid),
-      el('div', { className: 'request-main' },
-        el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Group invitation' }), untrusted(inv.name || 'Unnamed group', undefined, { name: true })),
-        el('span', { className: 'contact-claim' }, 'from ', h.nameTitle(inv.owner)),
-        el('div', { className: 'request-actions' },
-          button('Join', () => void acceptInvite(inv.gid), 'small'),
-          button('Ignore', () => void ignoreInvite(inv.gid), 'secondary small'))))));
+    u.inviteList.replaceChildren(...invites.map(inv => {
+      const join = button('Join', () => void acceptInvite(inv.gid), 'small');
+      // decision 17: a group whose owner has no chain name is not joined
+      join.disabled = inv.ownerName === 'none';
+      return el('li', { className: 'request-row' },
+        groupAvatar(inv.name, inv.gid),
+        el('div', { className: 'request-main' },
+          el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Group invitation' }), untrusted(inv.name || 'Unnamed group', undefined, { name: true })),
+          el('span', { className: 'contact-claim' }, 'from ', h.nameTitle(inv.owner)),
+          ...(inv.ownerName === 'none' ? [el('span', { className: 'contact-claim', text: 'This person has no chain name, so this invitation cannot be accepted. Groups are only for people with a chain name.' })] : []),
+          el('div', { className: 'request-actions' },
+            join,
+            button('Ignore', () => void ignoreInvite(inv.gid), 'secondary small'))));
+    }));
     u.inviteList.hidden = !invites.length;
     const rows = engine.list().filter(g => !unreadOnly || g.unread > 0)
       .map(g => ({ g, last: engine.lastMessage(g.gid) }))
@@ -152,6 +176,13 @@ export function createGroupsView(h) {
       ? 'The group\'s protection is over 30 days old; it is renewed automatically.'
       : 'The group\'s owner has not been online for over 30 days, so the group\'s protection has not been renewed. Messages still work.');
     if (g.refused.length) parts.push(`${g.refused.map(fp => h.displayName(fp)).join(', ')} could not join: their app cannot receive group messages yet.`);
+    // decision 18: members without a chain name are ignored until removed
+    const nameless = g.members.filter(fp => g.nameless.includes(fp));
+    if (nameless.length) {
+      parts.push(`${nameless.map(fp => h.displayName(fp)).join(', ')} ${nameless.length === 1 ? 'has' : 'have'} no chain name, so their messages are not shown. ` +
+        (g.role === 'owner' ? 'They are removed from the group automatically.' : 'The group\'s owner removes them automatically.'));
+    }
+    if (g.waiting) parts.push('Some messages are shown once their sender\'s chain name has been checked.');
     if (g.settingUp) parts.push('Updating the group on the network…');
     if (g.note) parts.push(g.note);
     return parts.join(' ');
@@ -217,26 +248,46 @@ export function createGroupsView(h) {
       }
       return el('li', { className: 'request-row' }, el('span'), main);
     };
-    const rows = g.members.map(fp => row(fp, fp === g.owner ? 'owner' : g.leaving.includes(fp) ? 'leaving — removed at the next group update' : ''));
-    for (const fp of g.joining) rows.push(row(fp, 'accepted — added at the next group update'));
-    for (const fp of g.invited) rows.push(row(fp, 'invited'));
+    // decision 18: a person without a chain name is marked; one not checked
+    // yet says so
+    const nameLabel = fp => (g.nameless.includes(fp) ? 'no chain name — messages not shown' : g.unconfirmed.includes(fp) ? CHECKING_NAME_TEXT : '');
+    const label = (...parts) => parts.filter(Boolean).join(' · ');
+    const rows = g.members.map(fp => row(fp, label(fp === g.owner ? 'owner' : g.leaving.includes(fp) ? 'leaving — removed at the next group update' : '', nameLabel(fp))));
+    for (const fp of g.joining) rows.push(row(fp, g.nameless.includes(fp) ? `accepted — not added: ${NO_NAME_TEXT}` : label('accepted — added at the next group update', nameLabel(fp))));
+    for (const fp of g.invited) rows.push(row(fp, label('invited', g.nameless.includes(fp) ? NO_NAME_TEXT : nameLabel(fp))));
     u.memberList.replaceChildren(...rows);
     u.inviteRow.hidden = !owner || g.status !== 'active';
     if (owner) {
+      // decision 17: only contacts whose chain name is confirmed can be
+      // invited; the others are listed, not selectable, with the reason
+      const engine = h.engine();
       const taken = new Set([...g.members, ...g.joining, ...g.invited]);
-      const free = h.contacts().filter(c => c.salt && !taken.has(c.fp));
-      u.inviteSelect.replaceChildren(...free.map(c => { const o = el('option', { text: h.displayName(c.fp) }); o.value = c.fp; return o; }));
-      u.inviteSelect.disabled = u.inviteButton.disabled = !free.length || !h.online() || taken.size >= MAX_MEMBERS;
+      const free = h.contacts().filter(c => c.salt && !taken.has(c.fp)).map(c => ({ fp: c.fp, name: engine.nameStatus(c.fp) }))
+        .sort((a, b) => (a.name === 'found' ? 0 : 1) - (b.name === 'found' ? 0 : 1));
+      u.inviteSelect.replaceChildren(...free.map(c => {
+        const o = el('option', { text: c.name === 'found' ? h.displayName(c.fp) : `${h.displayName(c.fp)} — ${c.name === 'none' ? NO_NAME_TEXT : CHECKING_NAME_TEXT}` });
+        o.value = c.fp;
+        o.disabled = c.name !== 'found';
+        return o;
+      }));
+      u.inviteSelect.disabled = u.inviteButton.disabled = !free.some(c => c.name === 'found') || !h.online() || taken.size >= MAX_MEMBERS;
     }
     u.leaveButton.hidden = owner || !['accepting', 'joining', 'active'].includes(g.status);
   }
 
+  // decision 17: a contact whose chain name is not confirmed is listed but
+  // cannot be chosen, with the reason.
   function renderPickList() {
+    const engine = h.engine();
     const contacts = h.contacts().filter(c => c.salt);
     u.pickList.replaceChildren(...(contacts.length ? contacts.map(c => {
       const box = input('input', { type: 'checkbox', id: `nc-group-pick-${c.fp.slice(0, 16)}` });
       box.value = c.fp;
-      return el('li', {}, setAttrs(el('label', {}, box, ' ', h.nameTitle(c.fp)), { for: box.id }));
+      const name = engine ? engine.nameStatus(c.fp) : 'unknown';
+      box.disabled = name !== 'found';
+      const parts = [box, ' ', h.nameTitle(c.fp)];
+      if (name !== 'found') parts.push(el('span', { className: 'contact-claim', text: ` — ${name === 'none' ? NO_NAME_TEXT : 'their chain name could not be checked right now'}` }));
+      return el('li', {}, setAttrs(el('label', {}, ...parts), { for: box.id }));
     }) : [el('li', { className: 'contact-empty', text: 'No contacts to invite yet. You can create the group and invite people later.' })]));
   }
 
@@ -250,14 +301,49 @@ export function createGroupsView(h) {
     catch (error) { statusNode.textContent = explain(error, fallback); }
     finally { busy.delete(key); h.render(); }
   }
-  function openCreate() {
+  // New group (decision 17): this ID's own chain name first — without one
+  // the dialog does not open and the reason is said; the contacts' names are
+  // checked in the same step (one lookup each where none is confirmed) so
+  // the list shows who can be invited.
+  async function openCreate() {
     if (!h.isOpen()) return;
     if (!h.online()) { u.blockStatus.textContent = OFFLINE_TEXT; return; }
+    const engine = h.engine();
+    if (!engine || busy.has('names')) return;
+    busy.add('names');
+    let names;
+    try {
+      u.blockStatus.textContent = 'Checking your chain name…';
+      names = await engine.checkPeople([h.ownFp(), ...h.contacts().filter(c => c.salt).map(c => c.fp)]);
+    } catch { names = new Map(); }
+    finally { busy.delete('names'); }
+    if (!h.isOpen() || h.engine() !== engine) return;
+    const own = names.get(h.ownFp());
+    if (own !== 'found') { u.blockStatus.textContent = own === 'none' ? OWN_NAME_TEXT : OWN_NAME_UNCHECKED_TEXT; h.render(); return; }
+    u.blockStatus.textContent = '';
     u.createStatus.textContent = '';
     u.nameInput.value = '';
     renderPickList();
     if (!u.dialog.open) u.dialog.showModal();
     u.nameInput.focus();
+  }
+  // Opening a group (decisions 17 + 18): the names of its people — and, for
+  // the owner, of the contacts the Invite list offers — are looked up once
+  // where none is confirmed; the view is drawn again with the answers. The
+  // owner's removal of a member without a name is the 30-second check's
+  // (engine syncAll).
+  async function checkNamesFor(gid) {
+    const engine = h.engine();
+    const g = engine?.view(gid);
+    if (!g || !h.online() || busy.has(`names:${gid}`)) return;
+    busy.add(`names:${gid}`);
+    try {
+      const people = [...g.members, ...g.joining, ...g.invited];
+      if (g.role === 'owner') people.push(...h.contacts().filter(c => c.salt).map(c => c.fp));
+      await engine.checkPeople(people.filter(fp => fp !== h.ownFp()));
+    } catch { /* asked again by the next check */ }
+    finally { busy.delete(`names:${gid}`); }
+    if (h.isOpen() && h.engine() === engine && selected === gid) h.render();
   }
   async function createGroup(event) {
     event.preventDefault();
@@ -339,7 +425,7 @@ export function createGroupsView(h) {
   return {
     block: u.block, view: u.view, dialog: u.dialog,
     get selected() { return selected; },
-    open(gid) { selected = gid; removeArmed = undefined; u.sendStatus.textContent = ''; u.membersStatus.textContent = ''; u.members.open = false; },
+    open(gid) { selected = gid; removeArmed = undefined; u.sendStatus.textContent = ''; u.membersStatus.textContent = ''; u.members.open = false; void checkNamesFor(gid); },
     close() { selected = undefined; removeArmed = undefined; },
     focus() { (u.form.hidden ? u.title : u.composer).focus({ preventScroll: true }); },
     renderBlock, renderView, unreadTotal,

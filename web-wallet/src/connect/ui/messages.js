@@ -252,7 +252,9 @@ async function openLocal(gen) {
       isContact: fp => !!contactOf(fp)?.salt,
       ensureProfile: fp => ensureProfile(fp, !!contactOf(fp)),
       reloadProfile,
-      hasKemKey: fp => profiles.get(fp)?.has_mlkem === true
+      hasKemKey: fp => profiles.get(fp)?.has_mlkem === true,
+      nameStatus: groupNameStatus,
+      lookupName: groupNameLookup
     });
     groups.load({ records: store.groupRecords || [], messages: store.groupMessages || [] });
     for (const m of messages) if (m.dir === 'in') received.add(receivedKey(m.fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text }));
@@ -470,6 +472,30 @@ async function ensureChainName(fp, keep = false, opened = false) {
   if (own) ownNameConfirmed = !!after.name;
   if (after.entry) state.chainNames[fp] = after.entry; else delete state.chainNames[fp];
   return after.changed;
+}
+// Groups (decisions 2026-10-04-connect-groups.md items 17 + 18): only IDs
+// with a confirmed chain name may be in a group. The groups engine reads the
+// same names as the rest of Messages: 'found' = a name is known (kept in
+// state.chainNames, or found this session — a name is permanent, so one is
+// enough); 'none' = a lookup ANSWERED "no name" this session (chainAsked is
+// set only by an answer); 'unknown' = no answer yet (never asked, or every
+// lookup failed — a failed lookup does not move it).
+function groupNameStatus(fp) {
+  if (!state) return 'unknown';
+  keptChainName(fp);
+  if (chainNameOf(fp)) return 'found';
+  return chainAsked.has(fp) ? 'none' : 'unknown';
+}
+// A lookup for the groups engine when no name is known: asked again even
+// after an earlier "no name" (that answer is never final), but never twice
+// for one ID within CHAIN_LOOKUP_SPACING_MS (ensureChainName, `opened`).
+// A found name of this ID or a contact is kept, as in the sync round.
+async function groupNameLookup(fp) {
+  if (!isOpen()) return;
+  const gen = generation;
+  let moved;
+  try { moved = await ensureChainName(fp, fp === ownFp || !!contactOf(fp), true); } catch { return; }
+  if (moved && gen === generation && isOpen()) { try { await persist(); } catch { /* shown this session; the next save keeps it */ } }
 }
 // Opening a contact's conversation: a contact without a known chain name is
 // asked again right then (it may have registered a name after this session

@@ -201,7 +201,11 @@ function party(net, fp, { contacts = [], kem = () => true } = {}) {
     isContact: x => p.contacts.includes(x),
     ensureProfile: async () => true,
     reloadProfile: async () => true,
-    hasKemKey: x => kem(x)
+    hasKemKey: x => kem(x),
+    // every identity has a chain name here (decision 17 is pinned in
+    // test/connect-groups-names.test.js)
+    nameStatus: () => 'found',
+    lookupName: async () => {}
   };
   p.engine = createGroupsEngine(p.deps);
   return p;

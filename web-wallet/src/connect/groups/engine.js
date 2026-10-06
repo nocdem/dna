@@ -4,7 +4,12 @@
 //   docs/plans/2026-10-04-connect-groups-design.md rev 1;
 //   docs/plans/2026-10-05-connect-groups-bytes.md items 1-7 + REV 2
 //     (approved: docs/plans/decisions/2026-10-05-groups-apt-bytes-approved.md);
-//   docs/plans/decisions/2026-10-04-connect-groups.md items 1-14;
+//   docs/plans/decisions/2026-10-04-connect-groups.md items 1-18 (17: only
+//     identities with an on-chain name, the owner included; 18: a nameless
+//     member is removed by the owner's client and ignored by every member's
+//     until then);
+//   docs/plans/decisions/2026-10-02-onchain-names.md item 4 (a chain name
+//     is permanent: one confirmed name per identity is enough);
 //   docs/plans/decisions/2026-09-30-nodus-connect-thin-core.md (S3: a read
 //     that could not be made never leads to a write — every network write
 //     here is a gated module export that reads first, in the same call;
@@ -35,6 +40,26 @@
 //                    back into the module's verified peer cache, which holds
 //                    64 peers)
 //   hasKemKey(fp)    whether that verified profile carries an ML-KEM-1024 key
+//   nameStatus(fp)   the chain name (HF-4) state of an ID, from what the page
+//                    holds, no network: 'found' (a confirmed name — kept or
+//                    found this session; names are permanent), 'none' (a
+//                    lookup ANSWERED "no name"), 'unknown' (not answered:
+//                    never asked, or every lookup failed)
+//   lookupName(fp)   asks the node when no name is known (the page spaces
+//                    lookups of one ID, src/connect/ui/messages.js
+//                    ensureChainName); nameStatus(fp) holds the outcome
+//                    afterwards. A failed lookup leaves nameStatus as it
+//                    was: nothing is decided on it.
+//
+// NAMES (decisions 17 + 18): a group holds only identities with a confirmed
+// chain name. The owner's client refuses to create without its own name and
+// invites only contacts with a name; a member's client joins only a group
+// whose owner has a name. Each check (syncAll) looks up every member, joiner,
+// invitee and inviting owner whose name is not confirmed — at most once per
+// ID per check. An answered "no name" makes the owner's client remove that
+// member through removeMember (the owner's own Remove: a new key version)
+// and every member's client hide its messages and mark it in the member
+// list; until a lookup answers, its messages wait unshown.
 //
 // STATES of one group (record `status`; role 'owner' | 'member'):
 //   member: invited --accept--> accepting --welcome from the pinned owner-->
@@ -79,7 +104,7 @@ const clone = g => structuredClone(g);
 const needsProfile = error => /profile first/i.test(String(error?.message || ''));
 
 export function createGroupsEngine(deps) {
-  const { core, ownFp, now = () => Date.now(), state, takeSeq, saveAll, sendDirect, isContact, ensureProfile, reloadProfile, hasKemKey } = deps;
+  const { core, ownFp, now = () => Date.now(), state, takeSeq, saveAll, sendDirect, isContact, ensureProfile, reloadProfile, hasKemKey, nameStatus, lookupName } = deps;
   const groups = new Map();                // gid -> group (with `keys`: Map v -> key record)
   const recIds = new Map();                // gid -> its 'g' record id
   const stagePackets = new Map();          // gid -> staged key packet (hex), from its pieces
@@ -109,6 +134,68 @@ export function createGroupsEngine(deps) {
       if (!needsProfile(error)) throw error;
       for (const fp of fps) if (fp !== ownFp) await reloadProfile(fp);
       return run();
+    }
+  }
+
+  // ── chain names (decisions 17 + 18) ───────────────────────────────────
+  // 'found' | 'none' | 'unknown'; anything else the page reports counts as
+  // 'unknown' (nothing is decided on it).
+  function nameOf(fp) {
+    let s;
+    try { s = nameStatus(fp); } catch { s = 'unknown'; }
+    return s === 'found' || s === 'none' ? s : 'unknown';
+  }
+  // A lookup when no name is confirmed; `asked`: the IDs already looked up
+  // in this check (decision 17: at most once per ID per check — a confirmed
+  // name is never asked again, a "no name" is asked again next check).
+  async function askName(fp, asked) {
+    if (nameOf(fp) === 'found' || asked?.has(fp)) return nameOf(fp);
+    asked?.add(fp);
+    try { await lookupName(fp); } catch { /* not an answer: nothing changes */ }
+    return nameOf(fp);
+  }
+  // Decision 17, the owner included: creating, inviting and joining need
+  // this identity's own confirmed chain name.
+  const OWN_NAME_NEEDED = {
+    create: 'You need a chain name before you can create a group. Groups are only for people with a chain name.',
+    invite: 'You need a chain name before you can invite people to a group.',
+    join: 'You need a chain name before you can join a group. Groups are only for people with a chain name.'
+  };
+  async function needOwnName(action) {
+    const own = await askName(ownFp);
+    if (own === 'none') throw new GroupError(OWN_NAME_NEEDED[action]);
+    if (own !== 'found') throw new GroupError('Your chain name could not be checked right now. Try again in a minute.');
+  }
+  // Decision 18: a received message is shown only once its sender's name is
+  // confirmed — an answered "no name" hides it, an unanswered lookup makes it
+  // wait. It stays kept on the device either way (a later confirmed name
+  // shows it); own messages are always shown.
+  const shown = m => m.dir === 'out' || nameOf(m.fp) === 'found';
+  // The people of a group whose names this device checks: the owner's
+  // members, joiners and invitees; a member's members of the version held
+  // (the owner included); an invitation's owner.
+  function peopleOf(g) {
+    const out = g.status === 'invited' ? [g.owner]
+      : [...current(g), ...(g.role === 'owner' ? [...g.joins.map(j => j.fp), ...g.invites.map(i => i.fp)] : [])];
+    return [...new Set(out)].filter(fp => fp !== ownFp).sort();
+  }
+  // One check's names for one group. The owner's client then removes every
+  // MEMBER answered "no name" through removeMember — the owner's own Remove
+  // (a new key version, decision 5) — with no prompt (decision 18). Once
+  // only: the member is then in `removals`, then left out of the staged
+  // change's members, then out of the member list. A joiner or invitee
+  // answered "no name" is not added (ownerSync) and is shown as such; the
+  // owner may withdraw it.
+  async function checkNames(gid, asked) {
+    let g = groups.get(gid);
+    if (!['invited', 'accepting', 'joining', 'active'].includes(g.status)) return;
+    for (const fp of peopleOf(g)) await askName(fp, asked);
+    if (g.role !== 'owner' || g.status !== 'active') return;
+    for (const fp of current(g)) {
+      if (fp === ownFp || nameOf(fp) !== 'none') continue;
+      g = groups.get(gid);
+      if (g.removals.includes(fp) || (g.stage && !g.stage.members.includes(fp))) continue;
+      await removeMember(gid, fp);
     }
   }
 
@@ -306,7 +393,9 @@ export function createGroupsEngine(deps) {
     const K = g.hw && keyOf(g, g.hw.v);
     if (!K) return;
     const removals = g.removals.filter(fp => K.members.includes(fp) && fp !== ownFp);
-    let joins = g.joins.filter(j => !K.members.includes(j.fp));
+    // decision 17: a joiner is added only once its chain name is confirmed;
+    // until then (or while it has none) it stays a joiner, listed as such.
+    let joins = g.joins.filter(j => !K.members.includes(j.fp) && nameOf(j.fp) === 'found');
     const due = rotationDue(K.issued, now());
     if (joins.length || removals.length || due) {
       // design §4: a member without an ML-KEM-1024 key cannot be added (an
@@ -491,12 +580,16 @@ export function createGroupsEngine(deps) {
   // note says what happened. `isCurrent()`: false once Messages closed.
   async function syncAll(isCurrent = () => true) {
     let failed = 0;
+    const asked = new Set();               // IDs whose chain name was looked up in this check
     for (const gid of [...groups.keys()].sort()) {
       if (!isCurrent()) return failed;
       try {
         let g = groups.get(gid);
         if (!g) continue;
         note(gid, null);                   // each check writes its own note
+        await checkNames(gid, asked);
+        if (!isCurrent()) return failed;
+        g = groups.get(gid);
         if (g.role === 'owner') await ownerSync(gid);
         else if (g.status === 'joining') await join(gid);
         if (!isCurrent()) return failed;
@@ -529,6 +622,7 @@ export function createGroupsEngine(deps) {
     const people = [...new Set(invitees)];
     if (people.some(fp => fp === ownFp || !isContact(fp))) throw new GroupError('Only your contacts can be invited.');
     if (people.length > MAX_MEMBERS - 1) throw new GroupError(`A group can have at most ${MAX_MEMBERS} members.`);
+    await needOwnName('create');
     const r = core.groupRandom();
     const g = newGroup({ gid: r.group_id, owner: ownFp, name: name.trim(), role: 'owner', status: 'active' });
     g.addr = r.addr_secret;
@@ -549,6 +643,10 @@ export function createGroupsEngine(deps) {
     if (members.includes(fp) || g.joins.some(j => j.fp === fp)) throw new GroupError('This person is already in the group.');
     const others = g.invites.filter(i => i.fp !== fp).length;
     if (members.length + g.joins.length + others >= MAX_MEMBERS) throw new GroupError(`A group can have at most ${MAX_MEMBERS} members.`);
+    await needOwnName('invite');
+    const named = await askName(fp);
+    if (named === 'none') throw new GroupError('Only contacts with a chain name can be invited to a group. This contact has none yet.');
+    if (named !== 'found') throw new GroupError('This contact\'s chain name could not be checked right now. Try again in a minute.');
     const r = await core.groupInvite(gid, g.name);
     const next = clone(g);
     next.invites = [...next.invites.filter(i => i.fp !== fp), { fp, id: r.invite_id, at: seconds() }];
@@ -560,6 +658,11 @@ export function createGroupsEngine(deps) {
     const g = groups.get(gid);
     if (!g || g.role !== 'member' || g.status !== 'invited' || !g.invite) throw new GroupError('This invitation is no longer open.');
     if (!isContact(g.owner)) throw new GroupError('Messaging with the person who invited you is not ready yet.');
+    // decision 17: a group whose owner has no chain name is not joined.
+    const owner = await askName(g.owner);
+    if (owner === 'none') throw new GroupError('This invitation cannot be accepted: the person who sent it has no chain name. Groups are only for people with a chain name.');
+    if (owner !== 'found') throw new GroupError('The chain name of the person who invited you could not be checked right now. Try again in a minute.');
+    await needOwnName('join');
     const json = core.groupAcceptJson(gid, g.invite.id);
     const next = clone(g);
     next.status = 'accepting';
@@ -625,26 +728,41 @@ export function createGroupsEngine(deps) {
   }
 
   // ── read marks and the view ───────────────────────────────────────────
+  // Only shown messages count (decision 18): a message that waits for its
+  // sender's name is neither read nor unread until it is shown.
   function newestSeq(gid) {
     let newest = -1n;
-    for (const m of messages) if (m.group === gid && BigInt(m.seq) > newest) newest = BigInt(m.seq);
+    for (const m of messages) if (m.group === gid && shown(m) && BigInt(m.seq) > newest) newest = BigInt(m.seq);
     return newest;
   }
   function markRead(gid) { lastRead.set(gid, newestSeq(gid)); }
   function unread(gid) {
     const seenSeq = lastRead.get(gid) ?? -1n;
-    return messages.filter(m => m.group === gid && m.dir === 'in' && BigInt(m.seq) > seenSeq).length;
+    return messages.filter(m => m.group === gid && m.dir === 'in' && shown(m) && BigInt(m.seq) > seenSeq).length;
+  }
+  // The people of a group (members, joiners, invitees; not this identity)
+  // by chain name state: `nameless` answered "no name", `unconfirmed` not
+  // answered yet.
+  function namesView(g, people) {
+    const others = [...new Set(people)].filter(fp => fp !== ownFp);
+    return { nameless: others.filter(fp => nameOf(fp) === 'none'), unconfirmed: others.filter(fp => nameOf(fp) === 'unknown') };
   }
   // A plain summary of one group for the screens.
   function view(gid) {
     const g = groups.get(gid);
     if (!g) return null;
     const K = g.hw && keyOf(g, g.hw.v);
+    const members = K ? [...K.members] : [g.owner], joining = g.joins.map(j => j.fp), invited = g.invites.map(i => i.fp);
+    // received messages not shown: their sender answered "no name"
+    // (hidden) or has no answer yet (waiting)
+    const hidden = messages.filter(m => m.group === gid && !shown(m)).length;
+    const waiting = messages.filter(m => m.group === gid && m.dir === 'in' && nameOf(m.fp) === 'unknown').length;
     return {
       gid, name: g.name, role: g.role, status: g.status, owner: g.owner,
       ready: g.status === 'active' && !!g.hw,
-      members: K ? [...K.members] : [g.owner],
-      joining: g.joins.map(j => j.fp), invited: g.invites.map(i => i.fp), leaving: [...g.removals],
+      members, joining, invited, leaving: [...g.removals],
+      ...namesView(g, [...members, ...joining, ...invited]),
+      hidden, waiting,
       refused: [...(g.refused || [])],
       settingUp: g.role === 'owner' && !!g.stage,
       keyOld: !!K && keyIsOld(K.issued, now()),
@@ -655,13 +773,25 @@ export function createGroupsEngine(deps) {
   // Groups shown in Chats (left ones are hidden, decision 13) and the open
   // invitations.
   function list() { return [...groups.values()].filter(g => g.status !== 'left' && g.status !== 'invited').map(g => view(g.gid)); }
-  function invitations() { return [...groups.values()].filter(g => g.status === 'invited').map(g => ({ gid: g.gid, name: g.name, owner: g.owner })); }
-  function conversation(gid) { return messages.filter(m => m.group === gid).sort((a, b) => (BigInt(a.seq) < BigInt(b.seq) ? -1 : 1)); }
-  function lastMessage(gid) { let last; for (const m of messages) if (m.group === gid && (!last || BigInt(m.seq) > BigInt(last.seq))) last = m; return last; }
+  // ownerName: the inviting owner's chain name state (decision 17: Join is
+  // refused while it is not 'found').
+  function invitations() { return [...groups.values()].filter(g => g.status === 'invited').map(g => ({ gid: g.gid, name: g.name, owner: g.owner, ownerName: nameOf(g.owner) })); }
+  // The shown messages (decision 18) in local order.
+  function conversation(gid) { return messages.filter(m => m.group === gid && shown(m)).sort((a, b) => (BigInt(a.seq) < BigInt(b.seq) ? -1 : 1)); }
+  function lastMessage(gid) { let last; for (const m of messages) if (m.group === gid && shown(m) && (!last || BigInt(m.seq) > BigInt(last.seq))) last = m; return last; }
+  // The UI's checks (the New group dialog, the owner's Invite list): the
+  // names of these IDs, looked up once in this call where none is
+  // confirmed. → Map fp -> 'found' | 'none' | 'unknown'.
+  async function checkPeople(fps) {
+    const asked = new Set(), out = new Map();
+    for (const fp of [...new Set(fps)].sort()) out.set(fp, await askName(fp, asked));
+    return out;
+  }
 
   return {
     load, onDirect, syncAll, create, invite, acceptInvite, ignoreInvite, leave, removeMember, send,
-    markRead, unread, view, list, invitations, conversation, lastMessage,
+    markRead, unread, view, list, invitations, conversation, lastMessage, checkPeople,
+    nameStatus: nameOf,
     get sending() { return sending; },
     // for the tests and the page's diagnostics
     group: gid => groups.get(gid), messages: () => messages
