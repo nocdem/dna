@@ -139,8 +139,11 @@
 #     -DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
 #     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
 #     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15
-#   (params 7, 8, 9 are ERGONOMIC; param 14 is SAFETY — dnac.h.) OLD = the
-#   live line (branch main's build); NEW = the Nodus EVM tree, built with
+#   (params 7, 8, 9 are ERGONOMIC; param 14 is SAFETY — dnac.h.) OLD = a
+#   PRE-EVM build (written when that was main's; the recorded PASS used
+#   main f3b79523, 0.23.18 — main is an EVM build since the Nodus EVM merge,
+#   and an EVM OLD FAILS this mode's gate: use the "MODE voted-before"
+#   pair below for that); NEW = the Nodus EVM tree, built with
 #   NODUS_EVM_ENABLED (the default of the standalone non-Windows nodus
 #   build, nodus/CMakeLists.txt; a NEW CLI without it fails gate 0, a NEW
 #   server without it would FAULT at the edge — phase 6b''). NEW's
@@ -161,7 +164,7 @@
 #   bytecode (fixtures/evm/README.md says how they were compiled).
 #   Exact command sequence (ORCHESTRATOR):
 #     F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
-#     git -C /opt/dna worktree add <OLD_TREE> main
+#     git -C /opt/dna worktree add <OLD_TREE> <a pre-EVM commit, e.g. f3b79523>
 #     cmake -S <OLD_TREE>/nodus -B <OLD_TREE>/nodus/build-evm -DCMAKE_C_FLAGS="$F"
 #     make -C <OLD_TREE>/nodus/build-evm -j"$(nproc)" nodus-server nodus-cli
 #     cmake -S <NEW_TREE>/nodus -B <NEW_TREE>/nodus/build-evm -DCMAKE_C_FLAGS="$F"
@@ -310,6 +313,112 @@
 #   - Written against the source; NOT yet run (the first run is the
 #     ORCHESTRATOR's).
 #
+# ── MODE voted-before (STAGEF_EVM_UPGRADE_MODE=voted-before) ────────────
+# Everything above describes the DEFAULT mode, voted-after (unset or
+# `voted-after`): roll first, vote on NEW. Any other value of the variable
+# FAILS at once (never silently the default). The scenario prints the mode
+# it runs ("[info] STAGEF_EVM_UPGRADE_MODE=…") before its SKIP gates (after
+# the split-mode SKIP); the voted-before [PASS] block names it again. The live situation this mode reproduces
+# (decision docs/plans/decisions/2026-10-06-hf5-evm-activation.md; runbook
+# §2.2 "Live hard forks" HF-5 row): the fleet ran nodus 0.24.1 — an EVM
+# build — and voted EVM_ACTIVE with it; before the effective height every
+# node is rolled to a LATER build carrying the same D (0.25.0: generation 4
+# code, inert until its own vote), and the chain crosses H on that build.
+#
+# WHAT IT PROVES (voted-before) — steps 0-2 and 6-12 as above, except:
+#   0'. Capability gate: OLD and NEW servers differ byte-wise (SKIP
+#       otherwise, unchanged); OLD's CLI knows HF2_ACTIVE / HF3_ACTIVE /
+#       RULESET_GEN2 (unchanged) AND passes EVM_ACTIVE to the connect step
+#       exactly as NEW's does; both CLIs' usage texts name `EVM_ACTIVE
+#       exactly <D>` and the two D values are EQUAL (FAIL naming both if
+#       not); OLD's `evm address --keys <node 1>` prints exactly one address,
+#       equal to NEW's for the same keys.
+#   2b. After generation 2 on OLD: the EVM_ACTIVE vote, cast by node 1's seat
+#       on the 7/7 OLD fleet with the OLD CLI — the same function as step 5
+#       (cc_guard, SAFETY grace + H_MARGIN, the F5 floor, rule (f), round 1
+#       7/7 = the seven OLD servers' agreement on D, the row byte-identical
+#       7/7 and committed < H, a second proposal from node 2's seat refused
+#       by the 6 others, ONE param-14 row three heights later) — with H
+#       raised by ROLL_MARGIN = 7 x ROLL_STEP_BLOCKS (4) blocks. Then, on
+#       7/7: the row is the voted one, one row, generation 2 (OLD CLI).
+#   3'. The roll OLD -> NEW (upgrade_node, unchanged: role, handshake, same
+#       chain file, real spends, 7/7 after every step). Before each step
+#       the remaining steps x max(ROLL_STEP_BLOCKS, the largest step
+#       MEASURED so far, in blocks) must end below H-1 on the highest node,
+#       else FAIL ("cannot finish before H-1"); after each step the highest
+#       tip + 1 < H (else FAIL: H-1 reached mid-roll), the step's block
+#       count is printed, the param-14 row is the voted one on 7/7 (one
+#       row) and 7/7 report generation 2 — each node asked with the CLI of
+#       the binary it runs.
+#   4'. Step 4's checks on the NEW fleet, labelled "between the vote and H
+#       (rolled)": generation 2 with generation 2's hashes, evm_meta empty
+#       and reserve 0 (OLD already migrated to S17), `evm balance` and
+#       `evm deploy` refused; step 5 does NOT vote again — it re-reads the
+#       row / one row / generation 2 on the 7/7 NEW fleet; the between-vote
+#       -and-H checks (tip + 1 < H before and after) run unchanged.
+#   6-12 unchanged: the crossing is made by NEW only (7/7 run NEW before
+#       H-1), the switch line names the D both CLIs carry, and step 12's
+#       pinned rejoin replays the vote block an OLD fleet committed on NEW.
+# WHAT IT REQUIRES (voted-before) — the compile flags and every variable
+#   above, plus STAGEF_EVM_UPGRADE_MODE=voted-before (read by THIS script
+#   only — the bring-up does not read it), and a DIFFERENT pair: OLD = the
+#   build that votes HF-5 (the live nodus 0.24.1, f7aa7984), NEW = the
+#   build rolled onto before H (nodus 0.25.0, main) — BOTH Nodus EVM builds
+#   (NODUS_EVM_ENABLED), both carrying the SAME DNAC_CFG_EVM_ACTIVE_D
+#   (0x029f47596864d407 in both trees today; the gate compares what the
+#   CLIs print, never this literal) and the same witness schema (NEW must
+#   open OLD's S17 database — a refusal shows as REFUSING START / a
+#   different chain file in upgrade_node). Exact sequence (ORCHESTRATOR):
+#     F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
+#     git -C /opt/dna worktree add <OLD_TREE> f7aa7984          # 0.24.1
+#     git -C /opt/dna worktree add <NEW_TREE> main              # 0.25.0
+#     cmake -S <OLD_TREE>/nodus -B <OLD_TREE>/nodus/build-se -DCMAKE_C_FLAGS="$F"
+#     make -C <OLD_TREE>/nodus/build-se -j"$(nproc)" nodus-server nodus-cli
+#     cmake -S <NEW_TREE>/nodus -B <NEW_TREE>/nodus/build-se -DCMAKE_C_FLAGS="$F"
+#     make -C <NEW_TREE>/nodus/build-se -j"$(nproc)" nodus-server nodus-cli
+#     export STAGEF_NODUS_BIN_OLD=<OLD_TREE>/nodus/build-se/nodus-server
+#     export STAGEF_NODUSCLI_BIN_OLD=<OLD_TREE>/nodus/build-se/nodus-cli
+#     export STAGEF_NODUS_BIN_NEW=<NEW_TREE>/nodus/build-se/nodus-server
+#     export STAGEF_NODUSCLI_BIN_NEW=<NEW_TREE>/nodus/build-se/nodus-cli
+#     export STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20
+#     export STAGEF_CC_GRACE_SAFETY=15 STAGEF_CC_GRACE_ERGONOMIC=15
+#     S=/opt/dna/nodus/tests/integration/stagef
+#     STAGEF_NODUS_BIN=$STAGEF_NODUS_BIN_OLD STAGEF_NODUSCLI_BIN=$STAGEF_NODUSCLI_BIN_OLD \
+#         bash $S/stagef_up_v2.sh
+#     STAGEF_EVM_UPGRADE_MODE=voted-before bash $S/tests/test_cmt_evm.sh; echo "rc=$?"
+#     bash $S/stagef_down.sh
+#   The default-mode pair (OLD = a pre-EVM build) FAILS this mode's gate,
+#   and this mode's pair FAILS the default gate — export the pair of the
+#   mode you run. SKIPs (99) as above.
+# WHAT IT LEAVES BEHIND (voted-before) — as above (same rows, accounts,
+#   coins, restarts, node 6 rebuilt); the param-14 row was committed by
+#   the OLD fleet; $BASE_DIR/evm/ holds both CLIs' logs.
+# HOW IT CAN LIE (voted-before) — everything above, plus:
+#   - **The gate compares the two CLIs' compiled D, not the servers'.**
+#     The OLD servers' D is proven by the 7/7 round-1 approvals (each seat
+#     compares the value with its own compiled D); the NEW servers' D only
+#     at H, by the switch line naming D 0x<D> on every node and the 7/7
+#     identical blocks — a NEW server with another D FAILS at step 6, not
+#     at the gate. What a NEW build with a DIFFERENT D does at H is not
+#     exercised (the gate FAILs first, by design).
+#   - **The schema is not compared directly** — only NEW opening OLD's
+#     chain file (same file, handshake completed, no REFUSING START).
+#   - **At E = 15 the F5 window floor, not the roll margin, likely decides
+#     H** (JUDGMENT, not measured: with the vote tip a few heights past H4,
+#     tip + 1 + 15 + 40 + 28 stays below the floor 262, so H = 262 and the
+#     roll guard has a wide slack and is not expected to bite — H is printed
+#     either way); at the production SAFETY grace the slack is 17 280 blocks. The guard is a projection — it can FAIL a roll
+#     that would still have fit (false RED), never pass one that did not:
+#     the hard check (highest tip + 1 < H after every step) is separate.
+#   - **The live roll's wall-clock spacing is not reproduced** (minutes
+#     here; the live window between vote and H was ~24 h) — nothing here
+#     depends on it, the margin is counted in blocks.
+#   - **Mixed OLD/NEW blocks between the vote and H carry only idle blocks
+#     and 1-in/1-out pump SPENDs** — no EVM envelope can exist before H.
+#   - **The second EVM_ACTIVE proposal is refused by OLD seats** (rule (a)
+#     on 0.24.1), not by NEW's; NEW's rule (a) refusal is exercised only in
+#     the default mode.
+#
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
 . "$(dirname "$0")/../stagef_env.sh"
@@ -349,6 +458,26 @@ WINDOW_MARGIN=5
 CC_GUARD_GAP=4
 PUMP_STOP_GAP=7            # the HF-4 template's idle window before an edge
 E_REQ=15
+# Nodus EVM upgrade mode (header "MODE voted-before"): voted-after = the
+# default path (roll, then vote); voted-before = vote on OLD, roll, cross H
+UPG_MODE="${STAGEF_EVM_UPGRADE_MODE:-voted-after}"
+case "$UPG_MODE" in
+    voted-after|voted-before) ;;
+    *) die "STAGEF_EVM_UPGRADE_MODE='$UPG_MODE' — the accepted values are voted-after (the default) and voted-before" ;;
+esac
+# voted-before: the blocks ONE rolling step may consume (upgrade_node pumps
+# fleet tip + 2; a restart may let an idle block land) — a layout choice,
+# not a timeout. H gets N x this on top of H_MARGIN; before every step the
+# roll is projected with max(this, the largest step MEASURED so far), and a
+# roll that would reach H-1 FAILS (never a pass).
+ROLL_STEP_BLOCKS=4
+ROLL_MARGIN=0
+if [ "$UPG_MODE" = voted-before ]; then
+    ROLL_MARGIN=$(( STAGEF_COMMITTEE_SIZE * ROLL_STEP_BLOCKS ))
+    echo "[info] STAGEF_EVM_UPGRADE_MODE=voted-before — EVM_ACTIVE voted on OLD, rolled OLD -> NEW before H-1, H crossed on NEW"
+else
+    echo "[info] STAGEF_EVM_UPGRADE_MODE=voted-after (default) — rolled OLD -> NEW first, EVM_ACTIVE voted on NEW"
+fi
 # Nodus EVM: the bridge amounts (raw units; q = 10^10 wei per raw unit, design §5)
 Q=10000000000
 D_RAW=100000000000         # 1 000 NODUS deposited
@@ -459,9 +588,17 @@ for nm in HF2_ACTIVE HF3_ACTIVE RULESET_GEN2; do
 done
 old_evm=$(probe "$OLD_CLI" EVM_ACTIVE 1)
 new_evm=$(probe "$NEW_CLI" EVM_ACTIVE 1)
+if [ "$UPG_MODE" = voted-before ]; then
+# voted-before: OLD is the build that VOTES HF-5 (the live 0.24.1) — its name
+# table must pass EVM_ACTIVE to the connect step exactly as NEW's does
+[[ "$old_evm" != *"Unknown param name"* && "$old_evm" == *"client_connect failed"* ]] || {
+    printf '%s\n' "$old_evm" >&2
+    die "voted-before: the OLD CLI did not pass EVM_ACTIVE through its name table to the connect step — OLD is not a Nodus EVM build"; }
+else
 [[ "$old_evm" == *"Unknown param name: EVM_ACTIVE"* ]] || {
     printf '%s\n' "$old_evm" >&2
     die "the OLD CLI's name table ACCEPTED EVM_ACTIVE — OLD is not a pre-Nodus-EVM build"; }
+fi
 [[ "$new_evm" != *"Unknown param name"* && "$new_evm" == *"client_connect failed"* ]] || {
     printf '%s\n' "$new_evm" >&2
     die "the NEW CLI did not pass EVM_ACTIVE through its name table to the connect step — NEW is not a Nodus EVM build"; }
@@ -474,7 +611,20 @@ D_DEC="${D_DEC%%$'\n'*}"
 [ -n "$D_DEC" ] || { printf '%s\n' "$usage_out" >&2; die "the NEW CLI's chain-config usage names no 'EVM_ACTIVE exactly <D>'"; }
 [ "$D_DEC" -gt 0 ] 2>/dev/null || die "the NEW CLI's EVM_ACTIVE literal '$D_DEC' is not a positive int64"
 D_HEX=$(printf '%016x' "$D_DEC")
+if [ "$UPG_MODE" = voted-before ]; then
+# voted-before: the OLD CLI's own literal, read the same way — the vote is cast
+# by OLD and judged at H by NEW, so the two builds must carry ONE D (a binary
+# with another D refuses the param-14 value, runbook §2.2 HF-5 item 3)
+usage_old=$(timeout 60 "$OLD_CLI" -s 127.0.0.1 -p "$PROBE_PORT" chain-config propose 2>&1 || true)
+D_DEC_OLD=$(sed -n 's/^  EVM_ACTIVE  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_old")
+D_DEC_OLD="${D_DEC_OLD%%$'\n'*}"
+[[ "$D_DEC_OLD" =~ ^[0-9]+$ ]] || { printf '%s\n' "$usage_old" >&2; die "voted-before: the OLD CLI's chain-config usage names no 'EVM_ACTIVE exactly <D>'"; }
+[ "$D_DEC_OLD" = "$D_DEC" ] || die \
+    "voted-before: the OLD CLI's EVM_ACTIVE literal $D_DEC_OLD (0x$(printf '%016x' "$D_DEC_OLD")) differs from the NEW CLI's $D_DEC (0x$D_HEX) — a fleet rolled onto NEW after an OLD vote would not carry the voted D"
+echo "[ok] capability gate (voted-before): OLD knows HF2/HF3/RULESET_GEN2 AND EVM_ACTIVE; NEW knows EVM_ACTIVE (probe port $PROBE_PORT, nothing reached); OLD's D = NEW's D = $D_DEC = 0x$D_HEX"
+else
 echo "[ok] capability gate: OLD knows HF2/HF3/RULESET_GEN2 and refuses EVM_ACTIVE by name; NEW knows EVM_ACTIVE (probe port $PROBE_PORT, nothing reached); NEW's D = $D_DEC = 0x$D_HEX"
+fi
 
 # ── cluster preconditions ───────────────────────────────────────────
 [ -n "${BASE_DIR:-}" ] && [ -d "$BASE_DIR" ] || die "no active Stage F run (bring one up with stagef_up_v2.sh)"
@@ -1089,10 +1239,23 @@ old_ea_addr=0
 while IFS= read -r line; do
     [[ "$line" =~ ^0x[0-9a-f]{64}$ ]] && old_ea_addr=1
 done <<< "$old_ea"
+if [ "$UPG_MODE" = voted-before ]; then
+# voted-before: OLD is an EVM build too — it must answer with exactly one
+# address line, and the SAME 32-byte address NEW derived for node 1
+old_ea_hits=0; old_ea_hex=""
+while IFS= read -r line; do
+    if [[ "$line" =~ ^0x([0-9a-f]{64})$ ]]; then old_ea_hex="${BASH_REMATCH[1]}"; old_ea_hits=$(( old_ea_hits + 1 )); fi
+done <<< "$old_ea"
+[ "$old_ea_rc" = 0 ] && [ "$old_ea_hits" = 1 ] && [ "$old_ea_hex" = "$ADDR1" ] || {
+    printf '%s\n' "$old_ea" >&2
+    die "voted-before: the OLD CLI's 'evm address' (rc $old_ea_rc, $old_ea_hits address line(s), '0x$old_ea_hex') is not node1's 0x$ADDR1 as NEW derives it"; }
+echo "[ok] both CLIs know 'evm' and derive the same address (node1 0x$ADDR1, node2 0x$ADDR2, offline)"
+else
 [ "$old_ea_rc" != 0 ] && [ "$old_ea_addr" = 0 ] || {
     printf '%s\n' "$old_ea" >&2
     die "the OLD CLI answered 'evm address' (rc $old_ea_rc) — OLD is not a pre-Nodus-EVM build"; }
 echo "[ok] NEW CLI knows 'evm' (node1 0x$ADDR1, node2 0x$ADDR2, offline); OLD CLI does not (rc $old_ea_rc)"
+fi
 # Nodus EVM: the ticket system address (design §5; nodus_witness_rt_evm.c
 # TICKET_ADDR_PREIMAGE "NDS.EVMWITHDRAW.v1", nodus_rt_evm_ticket_addr:
 # SHA3-512 of the 18 bytes, first 32)
@@ -1171,8 +1334,125 @@ GEN2_SYS_V="$RI_SYS_V"; GEN2_CORE_V="$RI_CORE_V"; GEN2_SYS_H="$RI_SYS_H"; GEN2_C
 stagef_cmt_diff_at_floor "OLD-past-gen2" || exit 2
 echo "[ok] rule-set generation 2 on the OLD fleet from H4=$H4 (row committed at $R_V4): SYSTEM v$GEN2_SYS_V / CORE v$GEN2_CORE_V"
 
+# evm_vote CLI — step 5's vote, unchanged but for the CLI it votes with
+# (NEW at step 5 in voted-after; OLD right below in voted-before) and
+# ROLL_MARGIN in H (0 in voted-after). Sets T_VOTE, H, R_VOTE, T_2ND, H_2ND.
+evm_vote() {
+    local cli="$1"
+    cc_guard 1
+    T_VOTE="$CCG_TIP"
+    H=$(( T_VOTE + 1 + STAGEF_CC_GRACE_SAFETY + H_MARGIN + ROLL_MARGIN ))    # param 14: SAFETY grace
+    # Nodus EVM red-team 1 F5, rule (g): the first EVM block's BLOCKHASH window
+    # [H-256, H-1] must lie on the chain — H >= initial_height + 256, the
+    # initial height read from the ceremony's genesis config (completed 0 -> 1
+    # as the node completes it, nodus_witness_v2_chain_initial_height). Every
+    # seat refuses an earlier H ("stateful rules rejected"), so H moves up to
+    # that floor + WINDOW_MARGIN; the pumping below carries the chain there.
+    INIT_H=$(sed -n 's/^initial_height *= *\([0-9][0-9]*\) *$/\1/p' "$CONF")
+    [ -n "$INIT_H" ] || die "no initial_height in $CONF"
+    [ "$INIT_H" = 0 ] && INIT_H=1
+    H_WIN=$(( INIT_H + 256 + WINDOW_MARGIN ))
+    [ "$H" -ge "$H_WIN" ] || H="$H_WIN"
+    while [ $(( (H - 1) % E_REQ )) = 0 ]; do H=$(( H + 1 )); done   # rule (f)
+    echo "[ok] F5 window floor: initial_height $INIT_H -> H >= $(( INIT_H + 256 )) (H $H)"
+    echo "[ok] tip $T_VOTE — node1 proposes EVM_ACTIVE=$D_DEC effective H=$H (H-1=$(( H - 1 )), $(( (H - 1) % E_REQ )) past a boundary of E=$E_REQ)"
+    propose "$cli" EVM_ACTIVE "$D_DEC" "$H" "$LOGD/propose_evm.log"
+    wait_cc_row "$PARAM_EVM" "$H" "$D_DEC" 20
+    R_VOTE="$CC_CB"
+    [ "$R_VOTE" -lt "$H" ] || die "the EVM_ACTIVE row committed at $R_VOTE, not before its effective height $H"
+    stagef_cmt_diff_at_floor "post-evm-vote" || exit 2
+
+    cc_guard 2                 # node 2's seat proposes, on node 2's own port
+    T_2ND="$CCG_TIP"
+    [ $(( T_2ND + 1 )) -lt "$H" ] || die "node2's tip $T_2ND reached H-1 before the second proposal (widen H_MARGIN)"
+    H_2ND=$(( H + 2 ))
+    [ "$H_2ND" -ge $(( T_2ND + 1 + STAGEF_CC_GRACE_SAFETY )) ] || H_2ND=$(( T_2ND + 1 + STAGEF_CC_GRACE_SAFETY ))
+    while [ $(( (H_2ND - 1) % E_REQ )) = 0 ]; do H_2ND=$(( H_2ND + 1 )); done
+    [ "$H_2ND" -ge $(( T_2ND + 1 + STAGEF_CC_GRACE_SAFETY )) ] \
+        || die "the second proposal's effective $H_2ND is below its grace floor at tip $T_2ND — the layout broke (widen H_MARGIN)"
+    second_proposal "$cli" EVM_ACTIVE "$D_DEC" "$H_2ND" "$LOGD/propose_evm_second.log"
+    t=$(tip_of 1)
+    pump_to 1 $(( t + 3 ))
+    wait_all $(( t + 3 ))
+    for n in $(seq 1 "$N"); do
+        c=$(sqlite3 "$(db_of "$n")" "SELECT COUNT(*) FROM chain_config_history WHERE param_id = $PARAM_EVM;" 2>/dev/null || echo ERR)
+        [ "$c" = 1 ] || die "node$n holds $c param-14 rows at tip >= $(( t + 3 )) — expected exactly the one effective at $H"
+    done
+    echo "[ok] the second EVM_ACTIVE proposal (effective $H_2ND) was REFUSED by the seats; param 14 has ONE row on 7/7"
+}
+
+# ── voted-before helpers (defined in every mode, called only in voted-before) ──
+ceil_of() {                # NODE... -> the maximum tip (no node past it)
+    local top=-1 n h
+    for n in "$@"; do
+        h=$(tip_of "$n"); [ -n "$h" ] || h=-1
+        [ "$h" -le "$top" ] || top="$h"
+    done
+    echo "$top"
+}
+
+# vb_state WHAT — the param-14 row is still EVM_ROW on 7/7, still ONE row,
+# and 7/7 still report generation 2 (each node asked with the CLI of the
+# binary it runs, cli_for — the mixed window's rule)
+vb_state() {
+    local what="$1" n r c
+    for n in $(seq 1 "$N"); do
+        r=$(cc_row "$n" "$PARAM_EVM" "$H")
+        [ "$r" = "$EVM_ROW" ] || die "$what: node$n's param-14 row is '$r', not the voted '$EVM_ROW'"
+        c=$(sqlite3 "$(db_of "$n")" "SELECT COUNT(*) FROM chain_config_history WHERE param_id = $PARAM_EVM;" 2>/dev/null || echo ERR)
+        [ "$c" = 1 ] || die "$what: node$n holds $c param-14 rows, expected exactly one"
+        require_gen "$(cli_for "$n")" "$n" "$GEN_BASE" "$H4"
+    done
+    echo "[ok] $what: the param-14 row (value $D_DEC, effective $H) identical on 7/7, ONE row; 7/7 still generation $GEN_BASE"
+}
+
+# vb_roll_guard K — before node K's rolling step: the steps left, each
+# charged max(ROLL_STEP_BLOCKS, the largest step measured so far), must
+# still end with H-1 uncommitted on every node; else FAIL with that reason.
+VB_STEP_MAX=0; VB_STEP_BASE=0
+vb_roll_guard() {
+    local k="$1" top left per
+    top=$(ceil_of $(seq 1 "$N"))
+    left=$(( N - k + 1 ))
+    per="$ROLL_STEP_BLOCKS"
+    [ "$VB_STEP_MAX" -le "$per" ] || per="$VB_STEP_MAX"
+    [ $(( top + left * per + 1 )) -lt "$H" ] || die \
+        "voted-before: the rolling upgrade cannot finish before H-1=$(( H - 1 )): highest tip $top, $left step(s) left x $per blocks (max of ROLL_STEP_BLOCKS=$ROLL_STEP_BLOCKS and the largest step measured, $VB_STEP_MAX) reaches $(( top + left * per )) — widen ROLL_STEP_BLOCKS"
+    VB_STEP_BASE="$top"
+}
+
+# vb_after_step K — node K's step measured in blocks; H-1 still uncommitted
+# on every node; the row and generation 2 unchanged on 7/7
+vb_after_step() {
+    local k="$1" top used
+    top=$(ceil_of $(seq 1 "$N"))
+    used=$(( top - VB_STEP_BASE ))
+    [ "$used" -le "$VB_STEP_MAX" ] || VB_STEP_MAX="$used"
+    [ $(( top + 1 )) -lt "$H" ] || die \
+        "voted-before: a node committed H-1=$(( H - 1 )) during the rolling upgrade (after node$k's step, highest tip $top) — the roll did not finish before H-1"
+    echo "[ok] node$k's rolling step consumed $used block(s) (largest so far $VB_STEP_MAX); highest tip $top, H-1=$(( H - 1 )) still ahead"
+    vb_state "after node$k's rolling step"
+}
+
+# ── 2b. voted-before: EVM_ACTIVE voted on the 7/7 OLD fleet, BEFORE the roll ──
+# (the live order: nodus 0.24.1 voted HF-5, the fleet then rolls to a later
+# build of the same D before H — decision 2026-10-06-hf5-evm-activation.md)
+WHEN_LBL="before the vote"
+if [ "$UPG_MODE" = voted-before ]; then
+    evm_vote "$OLD_CLI"
+    EVM_ROW=$(cc_row 1 "$PARAM_EVM" "$H")
+    [ $(( $(ceil_of $(seq 1 "$N")) + 1 )) -lt "$H" ] || die "voted-before: H-1 was reached before the roll began (widen H_MARGIN)"
+    vb_state "voted-before, OLD fleet after the vote"
+    echo "[ok] voted-before: EVM_ACTIVE=$D_DEC voted by the OLD fleet with the OLD CLI at tip $T_VOTE, row committed at $R_VOTE, H=$H"
+    WHEN_LBL="between the vote and H (rolled)"
+fi
+
 # ── 3. rolling upgrade, 7/7 after every step ────────────────────────
-for k in $(seq 1 "$N"); do upgrade_node "$k"; done
+for k in $(seq 1 "$N"); do
+    if [ "$UPG_MODE" = voted-before ]; then vb_roll_guard "$k"; fi
+    upgrade_node "$k"
+    if [ "$UPG_MODE" = voted-before ]; then vb_after_step "$k"; fi
+done
 for n in $(seq 1 "$N"); do node_runs "$n" "$NEW_SRV" || die "node$n is not on NEW after the rolling upgrade"; done
 D2_LINE=$(d2_line_of 1)
 [ -n "$D2_LINE" ] || die "node1 logged no D2 / git-commit line"
@@ -1185,66 +1465,33 @@ echo "[ok] all 7 nodes upgraded one at a time with no wipe; 7/7 agreed after eve
 echo "[ok] 7/7 logged: $D2_LINE"
 
 # ── 4. before the EVM vote: generation 2, the EVM closed ────────────
+# (voted-before: the same checks, run after the roll and before H —
+# WHEN_LBL names the phase; the S17 migration ran on OLD's first open)
 for n in $(seq 1 "$N"); do
     require_gen "$NEW_CLI" "$n" "$GEN_BASE" "$H4"
     [ "$RI_SYS_H" = "$GEN2_SYS_H" ] && [ "$RI_CORE_H" = "$GEN2_CORE_H" ] \
         || die "node$n's generation-2 hashes on NEW differ from the OLD fleet's"
     m=$(sqlite3 "$(db_of "$n")" "SELECT COUNT(*) FROM evm_meta;" 2>/dev/null || echo ERR)
     r=$(sqlite3 "$(db_of "$n")" "SELECT reserve_raw FROM v2_evm_reserve WHERE id = 1;" 2>/dev/null || echo ERR)
-    [ "$m" = 0 ] && [ "$r" = 0 ] || die "node$n before the vote: evm_meta rows '$m', reserve '$r' (expected 0 / 0 — the S17 migration's empty state)"
+    [ "$m" = 0 ] && [ "$r" = 0 ] || die "node$n $WHEN_LBL: evm_meta rows '$m', reserve '$r' (expected 0 / 0 — the S17 migration's empty state)"
 done
 evm_q 1 balance "$ADDR1"
 [ "$EQ_RC" != 0 ] && [[ "$EQ_OUT" == *"evm_account failed (rc=2)"* ]] || {
-    printf '%s\n' "$EQ_OUT" >&2; die "evm balance before the vote was not refused with evm_account rc 2 (rc $EQ_RC)"; }
-echo "[ok] REFUSED before the vote: $EQ_OUT"
+    printf '%s\n' "$EQ_OUT" >&2; die "evm balance $WHEN_LBL was not refused with evm_account rc 2 (rc $EQ_RC)"; }
+echo "[ok] REFUSED $WHEN_LBL: $EQ_OUT"
 evm_tx 1 1 "$LOGD/deploy_pre_vote.log" deploy "$COUNTER_HEX" --gas "$GAS_DEPLOY"
 [ "$EV_RC" != 0 ] && grep -q "smart contracts open with the EVM generation" "$LOGD/deploy_pre_vote.log" \
-    || die "evm deploy before the vote was not refused by the generation check (see $LOGD/deploy_pre_vote.log)"
-[ -z "$EV_INTENT" ] || die "evm deploy before the vote built an envelope"
-echo "[ok] REFUSED before the vote (CLI generation check): $(grep 'smart contracts open' "$LOGD/deploy_pre_vote.log")"
+    || die "evm deploy $WHEN_LBL was not refused by the generation check (see $LOGD/deploy_pre_vote.log)"
+[ -z "$EV_INTENT" ] || die "evm deploy $WHEN_LBL built an envelope"
+echo "[ok] REFUSED $WHEN_LBL (CLI generation check): $(grep 'smart contracts open' "$LOGD/deploy_pre_vote.log")"
 stagef_cmt_diff_at_floor "pre-evm-vote" || exit 2
 
-# ── 5. the EVM_ACTIVE vote on 7/7 NEW ───────────────────────────────
-cc_guard 1
-T_VOTE="$CCG_TIP"
-H=$(( T_VOTE + 1 + STAGEF_CC_GRACE_SAFETY + H_MARGIN ))    # param 14: SAFETY grace
-# Nodus EVM red-team 1 F5, rule (g): the first EVM block's BLOCKHASH window
-# [H-256, H-1] must lie on the chain — H >= initial_height + 256, the
-# initial height read from the ceremony's genesis config (completed 0 -> 1
-# as the node completes it, nodus_witness_v2_chain_initial_height). Every
-# seat refuses an earlier H ("stateful rules rejected"), so H moves up to
-# that floor + WINDOW_MARGIN; the pumping below carries the chain there.
-INIT_H=$(sed -n 's/^initial_height *= *\([0-9][0-9]*\) *$/\1/p' "$CONF")
-[ -n "$INIT_H" ] || die "no initial_height in $CONF"
-[ "$INIT_H" = 0 ] && INIT_H=1
-H_WIN=$(( INIT_H + 256 + WINDOW_MARGIN ))
-[ "$H" -ge "$H_WIN" ] || H="$H_WIN"
-while [ $(( (H - 1) % E_REQ )) = 0 ]; do H=$(( H + 1 )); done   # rule (f)
-echo "[ok] F5 window floor: initial_height $INIT_H -> H >= $(( INIT_H + 256 )) (H $H)"
-echo "[ok] tip $T_VOTE — node1 proposes EVM_ACTIVE=$D_DEC effective H=$H (H-1=$(( H - 1 )), $(( (H - 1) % E_REQ )) past a boundary of E=$E_REQ)"
-propose "$NEW_CLI" EVM_ACTIVE "$D_DEC" "$H" "$LOGD/propose_evm.log"
-wait_cc_row "$PARAM_EVM" "$H" "$D_DEC" 20
-R_VOTE="$CC_CB"
-[ "$R_VOTE" -lt "$H" ] || die "the EVM_ACTIVE row committed at $R_VOTE, not before its effective height $H"
-stagef_cmt_diff_at_floor "post-evm-vote" || exit 2
-
-cc_guard 2                 # node 2's seat proposes, on node 2's own port
-T_2ND="$CCG_TIP"
-[ $(( T_2ND + 1 )) -lt "$H" ] || die "node2's tip $T_2ND reached H-1 before the second proposal (widen H_MARGIN)"
-H_2ND=$(( H + 2 ))
-[ "$H_2ND" -ge $(( T_2ND + 1 + STAGEF_CC_GRACE_SAFETY )) ] || H_2ND=$(( T_2ND + 1 + STAGEF_CC_GRACE_SAFETY ))
-while [ $(( (H_2ND - 1) % E_REQ )) = 0 ]; do H_2ND=$(( H_2ND + 1 )); done
-[ "$H_2ND" -ge $(( T_2ND + 1 + STAGEF_CC_GRACE_SAFETY )) ] \
-    || die "the second proposal's effective $H_2ND is below its grace floor at tip $T_2ND — the layout broke (widen H_MARGIN)"
-second_proposal "$NEW_CLI" EVM_ACTIVE "$D_DEC" "$H_2ND" "$LOGD/propose_evm_second.log"
-t=$(tip_of 1)
-pump_to 1 $(( t + 3 ))
-wait_all $(( t + 3 ))
-for n in $(seq 1 "$N"); do
-    c=$(sqlite3 "$(db_of "$n")" "SELECT COUNT(*) FROM chain_config_history WHERE param_id = $PARAM_EVM;" 2>/dev/null || echo ERR)
-    [ "$c" = 1 ] || die "node$n holds $c param-14 rows at tip >= $(( t + 3 )) — expected exactly the one effective at $H"
-done
-echo "[ok] the second EVM_ACTIVE proposal (effective $H_2ND) was REFUSED by the seats; param 14 has ONE row on 7/7"
+# ── 5. the EVM_ACTIVE vote on 7/7 NEW (voted-after; voted-before voted at 2b) ──
+if [ "$UPG_MODE" = voted-after ]; then
+    evm_vote "$NEW_CLI"
+else
+    vb_state "voted-before, 7/7 NEW before H"
+fi
 
 [ $(( $(tip_of 1) + 1 )) -lt "$H" ] || die "node1's tip reached H-1 before the between-vote-and-H checks (widen H_MARGIN)"
 for n in $(seq 1 "$N"); do require_gen "$NEW_CLI" "$n" "$GEN_BASE" "$H4"; done
@@ -1574,9 +1821,21 @@ echo ""
 echo "[info] HEIGHTS: HF2 H2=$H2 (row $R_V2) | HF3 H3=$H3 (row $R_V3) | GEN2 H4=$H4 (row $R_V4) | upgraded-by $H_UPGRADED"
 echo "       | EVM vote tip $T_VOTE, row commit $R_VOTE, H=$H (second proposal effective $H_2ND refused) | D 0x$D_HEX"
 echo "       | Counter 0x$COUNTER, Ticketer 0x$TICKETER, GASLIMIT $GASLIMIT"
+if [ "$UPG_MODE" = voted-before ]; then
+echo "       | mode voted-before: roll steps measured <= $VB_STEP_MAX block(s) each (charged >= $ROLL_STEP_BLOCKS)"
+echo "[PASS] Nodus EVM (STAGEF_EVM_UPGRADE_MODE=voted-before): HF-2 + HF-3 + generation 2 on OLD ($OLD_VER);"
+echo "       EVM_ACTIVE (D 0x$D_HEX, the same literal in both CLIs) voted by the OLD fleet at H=$H (a second"
+echo "       vote refused); 7 nodes rolled OLD -> NEW ($NEW_VER) one at a time BEFORE H-1 with the row identical"
+echo "       and generation $GEN_BASE on 7/7 after every step; the NEW fleet switched to generation $GEN_EVM at the"
+echo "       end of H-1 with 7/7 identical blocks AT H-1/H/H+1; deposit, deploy, calls, an applied revert, two"
+echo "       senders, withdraw, a contract ticket and its redeem identical on 7/7 with the supply invariant;"
+echo "       kill -9 and wipe + pin replay (through the OLD-voted block) converge."
+echo "       E=15 / grace 15 — the LOGIC only; the CheckTx block-gas refusal is NOT exercised (header)."
+else
 echo "[PASS] Nodus EVM: HF-2 + HF-3 + generation 2 on OLD ($OLD_VER), 7 nodes rolled OLD -> NEW ($NEW_VER)"
 echo "       one at a time; EVM_ACTIVE voted at H=$H (a second vote refused), the fleet switched to"
 echo "       generation $GEN_EVM at the end of H-1 with 7/7 identical blocks AT H-1/H/H+1; deposit, deploy,"
 echo "       calls, an applied revert, two senders, withdraw, a contract ticket and its redeem identical"
 echo "       on 7/7 with the supply invariant; kill -9 and wipe + pin replay converge."
 echo "       E=15 / grace 15 — the LOGIC only; the CheckTx block-gas refusal is NOT exercised (header)."
+fi
