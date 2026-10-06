@@ -596,7 +596,9 @@
     { fork: 'HF-3', param: 8, name: t('Consensus-only block bounds', 'Yalnız konsensüs blok sınırları'),
       rule: t('Blocks are bounded by the consensus engine’s limits only (the 2 MiB / 2 097 152-unit bound is removed); proposals are checked for gas price, committed replay and units ≤ INT64_MAX.', 'Bloklar yalnız konsensüs motorunun sınırlarıyla sınırlanır (2 MiB / 2 097 152 birim sınırı kalkar); öneriler gas fiyatı, işlenmiş tekrar ve birim ≤ INT64_MAX için denetlenir.') },
     { fork: 'HF-4', param: 9, name: t('Rule-set generation 2 + on-chain names', 'Kural seti nesil 2 + zincir üstü isimler'),
-      rule: t('The rule registry switches to generation 2 at the end of the block before activation; on-chain name registration and the name-price parameters 10–13 are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 2. nesle geçer; zincir üstü isim kaydı ve 10–13 isim fiyatı parametreleri etkinleşmeden itibaren geçerlidir.') }
+      rule: t('The rule registry switches to generation 2 at the end of the block before activation; on-chain name registration and the name-price parameters 10–13 are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 2. nesle geçer; zincir üstü isim kaydı ve 10–13 isim fiyatı parametreleri etkinleşmeden itibaren geçerlidir.') },
+    { fork: 'HF-5', param: 14, name: t('Rule-set generation 3 + Nodus EVM', 'Kural seti nesil 3 + Nodus EVM'),
+      rule: t('The rule registry switches to generation 3 at the end of the block before activation and the EVM domain becomes active; smart contracts, the NODUS bridge to EVM accounts and the EVM block gas limit (parameter 15) are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 3. nesle geçer ve EVM alanı etkin olur; akıllı kontratlar, EVM hesaplarına NODUS köprüsü ve EVM blok gas sınırı (15. parametre) etkinleşmeden itibaren geçerlidir.') }
   ];
   const idleBlockSeconds = 60;
   function duration(seconds) {

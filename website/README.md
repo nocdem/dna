@@ -659,3 +659,15 @@ bul. her birini yaz o zaman roadmap'e. bundan sonra da ekleyelim"): the single
 2,431 2026-10-02 05:34, 3,151 2026-10-02 19:56) and naming the vote and
 effective blocks from `nodus/docs/DEPLOY_RUNBOOK.md` §2.2. The runbook now
 requires a roadmap item with every future fork.
+
+2026-10-06, HF-5 voted (operator: "tamam hf5 i aktive edelim", "evet gonder";
+decision `docs/plans/decisions/2026-10-06-hf5-evm-activation.md`): param 14
+`EVM_ACTIVE` voted in block 62,425, effective block 79,757, row identical on
+7/7 (`nodus/docs/DEPLOY_RUNBOOK.md` §2.2). The roadmap's `history.evm.*` item
+becomes the dated in-progress fork item "6 OCTOBER 2026 · HF-5" (key names kept;
+it moves to "implemented" once block 79,757 is committed, dated by that block's
+time); the Wiki fork list gains HF-5 ("voted, switches on at block 79,757") and
+drops it from "Planned, not live"; Scan's hard-coded fork table
+(`scan/app.js` `hardForks`) gains HF-5 / param 14 and its static "Planned hard
+forks" list (`build-portals.mjs`) drops HF-5, so the live table shows it as
+pending until the effective block.

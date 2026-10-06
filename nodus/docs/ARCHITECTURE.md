@@ -5622,9 +5622,11 @@ rule (a) is proven at the approval responder only, rules (b) and (c) not as refu
 cap is not asserted; it runs at the short-epoch / short-grace build (15 / 15) — the LOGIC only,
 nothing about the production 720-block grace.
 
-### Nodus EVM (HF-5, v0.24.0) — smart contracts as a third domain, rule-set generation 3 (nodus 0.24.0 / dnac 0.20.0 — no EVM_ACTIVE vote yet)
+### Nodus EVM (HF-5, v0.24.0) — smart contracts as a third domain, rule-set generation 3 (live binary nodus 0.24.1 / dnac 0.20.1 — EVM_ACTIVE voted 2026-10-06, effective block 79 757)
 
-**0.24.1 / dnac 0.20.1 (2026-10-06, Kurultay #9):** EVM ruleset v1 → v2 — the bridge sender-code refusal and the address width in D (both described below); new EVM ruleset hash and D. Still no EVM_ACTIVE vote.
+**0.24.1 / dnac 0.20.1 (2026-10-06, Kurultay #9):** EVM ruleset v1 → v2 — the bridge sender-code refusal and the address width in D (both described below); new EVM ruleset hash and D. 0.24.0 was never deployed.
+
+**Testnet vote (2026-10-06):** `EVM_ACTIVE` = 188948158701949959 (D 0x029f47596864d407) voted in block 62 425, effective block 79 757 (the generation switches at the end of 79 756), row identical on 7/7 (`DEPLOY_RUNBOOK.md` §2.2 "Live hard forks").
 
 **Governing records** (all local, `docs/plans/`): design `2026-10-04-nodus-evm-engine-design.md`
 (the engine) and `2026-10-04-nodus-evm-chain-integration-design.md` rev 3 + the rev 4-6 notes (the
