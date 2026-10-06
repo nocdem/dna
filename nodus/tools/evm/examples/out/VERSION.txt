@@ -1,0 +1,4 @@
+Version: 0.8.30+nodus.addr256.commit.73712a01.Linux.g++
+sources: NodusToken.sol
+default: --bin --bin-runtime --abi
+optimize: --optimize --bin --bin-runtime --abi

@@ -61,7 +61,8 @@ make lib            # build/libevm.a
 make deps           # build/libevm_deps.a (blst, c-kzg-4844, mcl, secp256k1 + the
                     # embedded KZG trusted setup) and build/gmp/install/lib/libgmp.a
 make test           # addr32-vectors-check, then run test_u256, test_u256_portable,
-                    # test_addr32, test_nodus_profile, test_solc_exec, test_trie
+                    # test_addr32, test_nodus_profile, test_solc_exec,
+                    # test_example_token (nodus/tools/evm/examples/out/), test_trie
 make statetest      # link the state-test runner, test_rlp_mpt, test_precompile
 make conformance FIXTURES=<extracted fixtures/state_tests dir>
                     # test_rlp_mpt + statetest --fork Prague over the fixtures

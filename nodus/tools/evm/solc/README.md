@@ -22,6 +22,7 @@ turns the ones it cannot support into compile errors.
 |---|---|
 | `0001-nodus-address-256.patch` | the change, `git format-patch` against v0.8.30 |
 | `build.sh` | clone v0.8.30, verify the commit hash, apply the patch, build `solc`, print `solc --version` |
+| `package.sh` | package a built `solc` as the downloadable `nodus-solc-0.8.30-nodus.addr256-linux-x86_64.tar.gz` + `.sha256` (see "Packaging") |
 | `tests/*.sol`, `tests/check.sh` | output checks (bytecode, IR, storage layout, ABI, diagnostics) — no execution |
 | `tests/exec/*.sol`, `tests/exec/build.sh`, `tests/exec/out/` | execution evidence: sources, the 4-configuration compile script, the committed bytecode run by `shared/evm/tests/test_solc_exec.c` (see "Execution evidence") |
 
@@ -43,6 +44,42 @@ linked statically by default (`:27`); network access at configure time (the `fmt
 
 GCC 12 prints `-Wrestrict` warnings in upstream string code (GCC bug 105651); upstream
 already downgrades them from errors for GCC 12 (`cmake/EthCompilerSettings.cmake:97-101`).
+
+## Packaging (the developer download)
+
+Governing record: `docs/plans/decisions/2026-10-06-evm-dev-tooling.md` item 1 — the compiler
+is distributed from our own site as a ready Linux x86-64 binary with its sha256, next to this
+build-it-yourself recipe; the guide is the Wiki developers page "Smart contracts (Nodus EVM)"
+and the example token is `nodus/tools/evm/examples/`.
+
+```
+./package.sh /path/to/work/solidity/build/solc/solc /path/to/work/solidity <out-dir>
+```
+
+writes `<out-dir>/nodus-solc-0.8.30-nodus.addr256-linux-x86_64.tar.gz` and its `.sha256`
+(`sha256sum -c` format). The archive holds one directory of the same name with `solc-nodus`
+(the binary under the name `nodus-cli` looks for, `EVM_SOLC_DEFAULT` =
+`/usr/local/bin/solc-nodus`), `README.md` (install, verify, the measured run-time floor),
+`NOTICE` (GPL-3.0 notice and the source offer: upstream commit, this patch, `build.sh`),
+`LICENSE.txt` (upstream's GPL-3.0 text) and `LICENSES-solc.txt` (`solc --license`: GPL-3.0
+plus the bundled dependencies' notices).
+
+It refuses (exit 2) a binary whose `--version` lacks `nodus.addr256` or `commit.73712a01`, a
+non-x86-64 binary, and a source root that is not commit `73712a01…` with exactly this patch
+applied (its `git diff` and the patch must have the same `git patch-id --stable`) — so the
+source offer names the code the binary was built from. The run-time floor is measured from the
+binary at packaging time (the highest `GLIBC_` / `GLIBCXX_` / `CXXABI_` symbol version in
+`objdump -T`, the `NEEDED` libraries), never typed in. The archive is reproducible: sorted
+names, owner 0, fixed modes, mtime = the upstream commit time, `gzip -n`; two runs on one host
+gave the same sha256.
+
+Measured (2026-10-06, the binary `0.8.30+nodus.addr256.commit.73712a01.Linux.g++` built by
+`build.sh` on Debian 12, glibc 2.36, GCC 12; sha256 of the binary
+`6c981f36ee790a46fa2310c4eb925e35909b020a58a19654a063517947ceffb4`): needs **glibc ≥ 2.34**
+(`GLIBC_2.34`), a libstdc++ with `GLIBCXX_3.4.29` and `CXXABI_1.3.13`, and loads only
+`libc.so.6 libgcc_s.so.1 libm.so.6 libstdc++.so.6` (Boost is static). The archive's sha256 is
+in its `.sha256` file and on the Wiki page; this README does not repeat it. That binary
+re-compiles the committed `tests/exec/out/viair-opt/*.creation.hex` byte for byte.
 
 ## Version string
 
