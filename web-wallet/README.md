@@ -1697,8 +1697,9 @@ known (kept in `state.chainNames` or found this session — a name is
 permanent, so one confirmed name is enough and is never asked again);
 `none` = a lookup ANSWERED "no name" (never final: asked again on the next
 check); `unknown` = no answer yet (never asked, or the lookup failed — a
-failed lookup changes nothing). A found name of this ID or a contact is kept
-as before; a non-contact member's found name is held for the session only.
+failed lookup changes nothing). A name found by a group lookup is kept in
+`state.chainNames` whoever it belongs to (a group member need not be a
+contact), so a group's history shows at the next local open.
 - create: refused without this ID's own confirmed name (`New group` says
   why; the dialog does not open); invite and join need it too.
 - invite: only contacts whose name is confirmed; the New group list and the

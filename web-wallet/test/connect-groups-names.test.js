@@ -221,7 +221,11 @@ test('(a) no own chain name: a group cannot be created, nothing is published; a 
   await assert.rejects(A.engine.create('Team'), /You need a chain name before you can create a group/);
   assert.deepEqual(net.log, [], 'nothing published');
   assert.deepEqual(A.engine.list(), []);
+  // a failed lookup after that answer keeps the answer ("no name")
   net.names.set(FA, 'fail');
+  await assert.rejects(A.engine.create('Team'), /You need a chain name/);
+  // with no earlier answer, a failed lookup refuses as "could not check"
+  A.known.delete(FA);
   await assert.rejects(A.engine.create('Team'), /could not be checked right now/);
   assert.deepEqual(net.log, []);
   net.names.set(FA, 'found');

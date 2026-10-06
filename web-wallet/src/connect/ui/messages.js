@@ -489,12 +489,15 @@ function groupNameStatus(fp) {
 // A lookup for the groups engine when no name is known: asked again even
 // after an earlier "no name" (that answer is never final), but never twice
 // for one ID within CHAIN_LOOKUP_SPACING_MS (ensureChainName, `opened`).
-// A found name of this ID or a contact is kept, as in the sync round.
+// A found name is kept (state.chainNames) for every ID a group asks about —
+// a group member need not be a contact, and one confirmed name per identity
+// is enough (decision 17) — so a group's history shows at the next local
+// open without waiting for the network.
 async function groupNameLookup(fp) {
   if (!isOpen()) return;
   const gen = generation;
   let moved;
-  try { moved = await ensureChainName(fp, fp === ownFp || !!contactOf(fp), true); } catch { return; }
+  try { moved = await ensureChainName(fp, true, true); } catch { return; }
   if (moved && gen === generation && isOpen()) { try { await persist(); } catch { /* shown this session; the next save keeps it */ } }
 }
 // Opening a contact's conversation: a contact without a known chain name is
