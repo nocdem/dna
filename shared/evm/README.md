@@ -86,6 +86,18 @@ mode: **PASS 17 265, FAIL 0, FAULT 0, ERROR 0, PENDING 0, DEVIATION 9,
 EXCLUDED 1 595** (985 type-3 blob + 610 type-4 set-code), identical under
 ASan + UBSan + LSan — measured at commit `165c2f73` (its commit message).
 
+**The 17 265 figure is 20-byte mode only.** The production Nodus
+configuration is **32-byte** mode (`nodus/src/witness/nodus_witness_rt_evm.h`
+`NODUS_RT_EVM_ADDR_BYTES`), and the official suite does not cover it: its
+expected roots, addresses and logs are 20-byte Ethereum values. 32-byte mode
+is covered by this project's own tests only — `tests/test_addr32.c` (full-word
+address opcodes, CREATE / CREATE2 over the 32-byte sender, against vectors
+from `tests/addr32_oracle.py`), `tests/test_nodus_profile.c` (the Nodus
+profile: budget, tickets, `evm_tx_prevalidate`), and on the chain side
+`nodus/tests/test_v2_evm.c` and the Genesis Protocol scenario
+`test_cmt_evm.sh`. Those are Nodus-derived, self-consistent checks, not an
+external conformance result (Kurultay #9, 2026-10-06).
+
 - **DEVIATION 9:** Prague modexp cases whose expected result differs only by
   the EIP-7823 input bound (lengths ≤ 1 024), which this engine adopts to
   bound modexp work; each is matched by exact name and never counted as a pass

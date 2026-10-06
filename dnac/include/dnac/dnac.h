@@ -987,7 +987,9 @@ static inline uint64_t dnac_name_price_for_len(const uint64_t p[4],
  *  (shared/dnac/domain_wire.h) over the EVM generation (number and base),
  *  its SYSTEM / CORE / EVM ruleset hashes, the EVM manifest hash, this
  *  spec version and the compiled EVM constants
- *  (nodus_witness_runtime.c evm_act_consts), top bit cleared.
+ *  (nodus_witness_runtime.c EVM_ACT_CONSTS — since Kurultay #9 its last
+ *  entry is the EVM address width, NODUS_RT_EVM_ADDR_BYTES = 32), top bit
+ *  cleared. Derived for EVM ruleset v2 (2026-10-06).
  *
  *  ⚠ SELF-DERIVED BY THE IMPLEMENTING AGENT (shared/dnac/tests/
  *  nodus_evm_activation_oracle.py, built on ruleset_desc_oracle.py's helpers
@@ -997,7 +999,7 @@ static inline uint64_t dnac_name_price_for_len(const uint64_t p[4],
  *  through the C encoder on every start of an EVM-enabled build (a node
  *  whose tables disagree refuses to start). The same literal is the client
  *  mirror's (dnac/src/transaction/verify.c). */
-#define DNAC_CFG_EVM_ACTIVE_D               0x5a10af78d85302e6ULL /* E7 of shared/dnac/tests/nodus_evm_activation_oracle.py (6489879996601139942) — SELF-DERIVED */
+#define DNAC_CFG_EVM_ACTIVE_D               0x029f47596864d407ULL /* E7 of shared/dnac/tests/nodus_evm_activation_oracle.py (188948158701949959) — SELF-DERIVED */
 
 /** EVM_BLOCK_GAS_LIMIT (Nodus EVM, param_id 15): the no-row value and the
  *  votable range, both inclusive. VALUES PENDING THE MEASUREMENT GATE

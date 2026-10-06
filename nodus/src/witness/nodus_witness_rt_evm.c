@@ -1061,7 +1061,7 @@ static int rtevm_vm_pre(const nodus_rt_exec_ctx_t *ctx,
 
     evm_config_t *cfg = &vm->cfg;
     cfg->fork = EVM_FORK_PRAGUE;
-    cfg->addr_bytes = 32;
+    cfg->addr_bytes = NODUS_RT_EVM_ADDR_BYTES;   /* committed by D */
     evm_u256_from_be(&cfg->chain_id, ctx->chain_id);  /* 32 bytes, never cut */
     cfg->precompile_mask = EVM_PRECOMPILES_PRAGUE;
     cfg->nodus_profile = 1;
@@ -1237,8 +1237,9 @@ typedef struct {
 /**
  * THE shared pre-validation of a bridge op (design §4: "köprü op'ları
  * kod yürütmez: hepsi ön doğrulamadır"): non-zero amount; REDEEM: the
- * ticket exists and the call names it EXACTLY; DEPOSIT / WITHDRAW: nonce
- * == the committed nonce, WITHDRAW amount <= balance; the META move fits
+ * ticket exists and the call names it EXACTLY; DEPOSIT / WITHDRAW: the
+ * sender carries no code (EIP-3607), nonce == the committed nonce,
+ * WITHDRAW amount <= balance; the META move fits
  * its checked arithmetic. Fills *b with the post state.
  * @return 0 / -1 refused / -2 fault.
  */
@@ -1277,6 +1278,23 @@ static int rtevm_bridge_pre(const nodus_rt_exec_ctx_t *ctx,
     rc = read_acct(be, sender, &b->pre);
     if (rc == EVM_BUDGET) return -1;
     if (rc != 0) return -2;
+    /* EIP-3607 on the bridge (Kurultay #9, docs/plans/decisions/
+     * 2026-10-06-kurultay-9-evm-address-width-summary.md item 1): a
+     * DEPOSIT / WITHDRAW acts with the signer's account-owner authority,
+     * so a sender account that carries code is refused — the rule CALL /
+     * CREATE already get from the engine (shared/evm/evm_tx.c:244-248,
+     * EVM_TXERR_SENDER_NOT_EOA). Without it a key whose derived address
+     * equals a contract's could move that contract's balance past its
+     * code. Its delegation-designator exception does not arise here: every
+     * Nodus EVM tx is type 1 (rtevm_vm_pre, tx->type = 1), so no set-code
+     * tx can write a designator. Contract withdrawals take the ticket path
+     * (REDEEM, above). One function serves CheckTx (prevalidate) and
+     * execution, so both refuse identically. */
+    if (b->pre.exists) {
+        uint8_t kec[32];
+        if (empty_code_hashes(kec, NULL) != 0) return -2;
+        if (memcmp(b->pre.code_hash, kec, 32) != 0) return -1;
+    }
     /* nonce discipline of every nonce'd op (design §2) */
     if ((b->pre.exists ? b->pre.nonce : 0) != k->nonce) return -1;
     if (k->nonce == UINT64_MAX) return -1;
@@ -2804,13 +2822,13 @@ int nodus_rt_evm_runtime_build(nodus_domain_runtime_t *out) {
     out->domain_id = DNA_DOMAIN_EVM;
     out->runtime_kind = DNA_RUNTIME_NATIVE_BUILTIN;
     out->runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V2;
-    out->ruleset_version = 1;
+    out->ruleset_version = NODUS_RT_EVM_RULESET_VERSION_GEVM;
     out->generation = 0;               /* not a compiled generation yet   */
     out->descriptor.descriptor_version = DNA_RULESET_DESC_VERSION;
     out->descriptor.domain_id = DNA_DOMAIN_EVM;
     memcpy(out->descriptor.name, "EVM", 3);
     out->descriptor.runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V2;
-    out->descriptor.ruleset_version = 1;
+    out->descriptor.ruleset_version = NODUS_RT_EVM_RULESET_VERSION_GEVM;
     out->descriptor.rule_count = NODUS_RT_EVM_N_RULES;
     out->descriptor.rule_ids = NODUS_RT_EVM_RULES;
     out->descriptor.tx_type_count = 0;

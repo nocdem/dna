@@ -136,9 +136,12 @@ Default EVM version: **prague** — unchanged from v0.8.30 (`liblangutil/EVMVers
    pipeline already used a 32-byte immutable).
 8. **SMTChecker.** Addresses are modelled as `uint256` (was `uint160`).
 9. **`ecrecover`** stays typed `address`. Its value is the 20-byte Ethereum address recovered
-   by the precompile, left-padded with zeros to 32 bytes. It never equals a Nodus 32-byte
-   account address (Nodus accounts are ML-DSA-derived 32-byte values); do not use it to
-   authenticate Nodus accounts.
+   by the precompile, left-padded with zeros to 32 bytes: 12 zero bytes ‖ 20 bytes. The
+   disjointness from Nodus 32-byte account addresses (ML-DSA-derived, `SHA3-512(pk)[0..32]`)
+   is **probabilistic, not structural** — nothing in the 32-byte mode excludes an address
+   whose top 12 bytes are zero, so a Nodus account equals an `ecrecover` result only by a
+   ~2^-96 accident or a ~2^96 search (Kurultay #9, 2026-10-06). **Never use `ecrecover` for
+   Nodus account authorization.**
 10. **ABI JSON** still names the type `"address"`, and function selectors / event topics are
     computed from the same signatures as upstream (`f(address)`), but an address value now
     occupies the full 32-byte word — a 20-byte, zero-left-padded value is a *different*
@@ -212,4 +215,5 @@ operate on 20-byte placeholders this compiler never emits).
   such masks.
 - Off-chain tooling (ethers/viem/web3, hardhat/foundry) assumes 20-byte addresses in ABI
   coding, checksums and linking; it needs the Nodus SDK/ABI adaptation (separate work).
-- `ecrecover` cannot authenticate Nodus accounts (rule 9).
+- `ecrecover` must never be used to authorize Nodus accounts (rule 9: its disjointness from
+  them is probabilistic, not structural).

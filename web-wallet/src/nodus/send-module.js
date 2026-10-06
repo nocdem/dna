@@ -119,8 +119,10 @@ export const NODUS_CLAIM_DATA = {
 // SMART CONTRACTS (the EVM domain, design docs/plans/2026-10-04-nodus-evm-chain-
 // integration-design.md rev 3 §2) — the EVM leg's ruleset identity, which
 // every envelope's call commitment binds (shared/dnac/env_wire.h
-// "ruleset_hash is CONTEXTUAL"): the EVM generation's EVM runtime, version 1
-// and the digest the node's compiled table pins
+// "ruleset_hash is CONTEXTUAL"): the EVM generation's EVM runtime, version 2
+// (Kurultay #9: the bridge refuses a sender with code; the address width is
+// committed in the EVM_ACTIVE digest) and the digest the node's compiled
+// table pins
 // (nodus/src/witness/nodus_witness_runtime.h NODUS_RT_EVM_RULESET_VERSION_GEVM
 // / NODUS_RT_EVM_RULESET_HASH_GEVM_INIT). The module refuses any other value
 // (nsw_evm_net_set compares it with the bytes it was compiled with), so a
@@ -136,8 +138,8 @@ export const NODUS_CLAIM_DATA = {
 // policy weighs CORE op 9 — nodus_ruleset_pins.h G3); ./client.js asks the
 // node at unlock and offers nothing on a node that has not voted it in.
 export const NODUS_EVM_NETWORK = Object.freeze({
-  evmRulesetVersion: 1,
-  evmRulesetHash: '415e6f97f58143f436bb3eae73582eff45078dcc23cb0497008838e494065533c2ff1acf271db7aa71a47c6c9a36fc22ce8b0c6e5e3585922c5919e4349f11ae'
+  evmRulesetVersion: 2,
+  evmRulesetHash: '6af8346d10c9ce5ced25b68e1ddd201be205e0d7d465e90412f78962206e775bf85f6c1d71d4cf3833148893977dc8126dfa01fcae2c83ca6a06d74c1bf4465f'
 });
 
 export function validateNodusEvmNetwork(evm) {

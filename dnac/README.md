@@ -1,6 +1,6 @@
 # DNAC — Nodus Chain Client Library
 
-**Version:** v0.20.0 (`dnac/include/dnac/version.h`)
+**Version:** v0.20.1 (`dnac/include/dnac/version.h`)
 
 DNAC is the **client side** of **Nodus Chain** (formerly "DNA Chain") — the
 post-quantum UTXO blockchain whose coin is NODUS, a public testnet since
@@ -129,11 +129,12 @@ The chain is implemented in three layers of the monorepo:
   (`DNAC_CFG_EVM_ACTIVE`) — the vote that registers the EVM domain and
   switches SYSTEM / CORE to rule-set generation 3 at the end of block
   H−1; its value domain is EXACTLY `DNAC_CFG_EVM_ACTIVE_D`
-  (`0x5a10af78d85302e6` = 6489879996601139942 — the first 8 bytes of a
+  (`0x029f47596864d407` = 188948158701949959 — the first 8 bytes of a
   SHA3-512 over the tag `NDS.EVMACT.v1`, the EVM generation and its base,
-  the generation-3 SYSTEM / CORE / EVM ruleset hashes, the EVM manifest
-  hash, `DNAC_EVM_ACTIVATION_SPEC_VERSION` = 1 and the compiled EVM
-  constants, top bit cleared). ⚠ That literal is SELF-DERIVED by the
+  the generation-3 SYSTEM / CORE / EVM (ruleset v2) ruleset hashes, the
+  EVM manifest hash, `DNAC_EVM_ACTIVATION_SPEC_VERSION` = 1 and the
+  compiled EVM constants — since Kurultay #9 (2026-10-06) the last one is
+  the EVM address width, 32 — top bit cleared). ⚠ That literal is SELF-DERIVED by the
   implementing agent (`shared/dnac/tests/nodus_evm_activation_oracle.py`), not an
   independent pin (`dnac.h` comment above the define); the validator
   re-derives it on every start of an EVM build. SAFETY grace. Id 15
