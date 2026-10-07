@@ -317,11 +317,13 @@ body[data-overlay="about"] :is(#start-screen, #wallet-open) { display: none; }
 
 /* Wallet tab: the wallet's own sections, framed by the app bar. */
 html body.connect-app #tab-wallet.wallet-card { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-.connect-app .wallet-navigation { display: flex; flex-wrap: nowrap; gap: 8px; margin: 0 -16px 16px; padding: 0 16px 2px; overflow-x: auto; }
-.connect-app .wallet-navigation a { flex-shrink: 0; padding: 6px 12px; border: 0; border-radius: 20px; background: #232b1d; color: var(--text); font-size: 13px; text-align: left; }
-.connect-app .wallet-navigation a:hover { background: #2b3523; color: var(--lime); }
+/* The wallet's sections (Portfolio, Send / Receive and the wallet pages) use
+   the wallet site's tiles and page headers (src/style.css), so both sites
+   look the same. The page header's sticky log toolbar sits under the app bar. */
 .connect-app .portfolio-card { border-radius: 16px; }
-.connect-app .dashboard-panel { border-radius: 16px; }
+.connect-app #wallet-home .dashboard-panel { border-radius: 16px; }
+.connect-app .log-toolbar { top: 56px; }
+.connect-app .wallet-page > .page-back { margin-top: 0; }
 .connect-app :is(.wallet-card, .dashboard-panel, .receive-panel, .send-block, .stake-block, #device-panel, #storage-guide, #privacy) { scroll-margin-top: 72px; }
 
 /* More (more_screen.dart): the profile header, then a list. */
@@ -369,7 +371,7 @@ body:has(#wallet-open:not([hidden])) .app-toast { bottom: calc(var(--nav-h) + 12
   .app-screen { min-height: 100dvh; }
   .app-body { padding: 24px; }
   #tab-home .app-body, #tab-more .app-body { max-width: 720px; }
-  .connect-app .wallet-navigation { margin-inline: -24px; padding-inline: 24px; }
+  #tab-wallet .app-body { max-width: 1120px; }
   body:has(#wallet-open:not([hidden])) .app-toast { bottom: 16px; }
 }
 @media (max-width: 380px) {

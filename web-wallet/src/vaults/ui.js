@@ -493,8 +493,8 @@ function render() {
   // Each new status line shown also goes to the session log.
   if (status && status !== loggedStatus) sessionLog.log('vault', status);
   loggedStatus = status;
-  const items = [el('p', { className: 'hint', text: 'A shared vault holds NODUS that can only be spent when enough of its members approve. Each member approves from their own wallet.' })];
-  const line = el('p', { className: 'hint', text: status });
+  const items = [el('p', { className: 'hint page-note', text: 'A shared vault holds NODUS that can only be spent when enough of its members approve. Each member approves from their own wallet.' })];
+  const line = el('p', { className: 'hint vault-status', text: status });
   line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
   items.push(line);
   if (view === 'vault' && current && vaults.has(current)) items.push(renderVault(vaults.get(current)));
@@ -525,7 +525,7 @@ function renderList() {
   const actions = el('div', { className: 'stake-actions' },
     btn('Create a shared vault', () => { view = 'create'; status = ''; createInfo = null; render(); }),
     btn('Watch a vault', () => { view = 'watch'; status = ''; render(); }));
-  return el('div', {}, list, actions);
+  return el('div', { className: 'stake-block vault-list' }, el('h4', { text: 'Your shared vaults' }), list, actions);
 }
 
 function field(labelText, control) {
@@ -625,7 +625,7 @@ function renderVault(record) {
   box.append(el('p', { className: 'hint', text: 'Vault address (receive NODUS here):' }), el('code', { className: 'vault-address', text: record.address }));
   const found = foundTotal(record);
   if (bal) {
-    box.append(el('p', { className: 'hint', text: `Balance ${nodus(bal.total)} (${nodus(bal.spendable)} spendable now).` }));
+    box.append(el('p', { className: 'vault-balance', text: `Balance ${nodus(bal.total)} (${nodus(bal.spendable)} spendable now).` }));
     if (found < BigInt(bal.spendable)) box.append(el('p', { className: 'notice', text: `This page has found ${nodus(found)} of it in the vault’s history so far. Payments can use only the part found. Refresh to read more of its history.` }));
   }
   const top = el('div', { className: 'stake-actions' },

@@ -210,7 +210,7 @@ async function lookTicket(id) {
 }
 
 function renderAccount() {
-  const box = el('div', { className: 'stake-block' });
+  const box = el('div', { className: 'stake-block evm-card evm-overview' });
   const address = account.displayAddress;
   const copy = btn('Copy', () => { void navigator.clipboard?.writeText(address); });
   copy.dataset.always = '1';
@@ -219,37 +219,39 @@ function renderAccount() {
     el('p', { className: 'hint', text: 'This address belongs to your wallet: it is made from your Nodus address, so only your wallet can act for it. It is not an Ethereum address; do not send coins from other networks to it.' }));
   const line = !client.evmReadable ? 'Balance not shown: this wallet version cannot read smart-contract balances yet.'
     : balance ? `Balance: ${formatWei(balance.wei)} NODUS (at block ${balance.height})` : 'Balance: loading…';
-  box.append(el('p', { text: line }), btn('Refresh', () => void act(() => refreshBalance())));
+  box.append(el('div', { className: 'evm-balance-row' }, el('p', { className: 'evm-balance', text: line }), btn('Refresh', () => void act(() => refreshBalance()))));
   if (account.waiting()) box.append(el('p', { className: 'hint', text: 'A transaction of this account is still waiting to be included (see Activity). The next one is prepared after it.' }));
   return box;
 }
 
 function renderBridge() {
-  const box = el('div', { className: 'stake-block' });
+  const box = el('div', { className: 'stake-block evm-card evm-bridge' });
   const inAmount = input({ placeholder: '0.0' });
   const outAmount = input({ placeholder: '0.0' });
   const outTo = input({ value: client.fingerprint, mono: true });
   box.append(
-    el('h4', { text: 'Move NODUS to smart contracts' }),
-    el('p', { className: 'hint', text: 'Moves NODUS from your Nodus address into your smart-contract balance, where contracts can use it.' }),
-    ...field('Amount (NODUS)', inAmount),
-    btn('Review', () => void prepareAndShow(() => account.deposit(parseRaw(inAmount.value)), 'Move NODUS to smart contracts'), ''),
-    el('h4', { text: 'Move NODUS back' }),
-    el('p', { className: 'hint', text: 'Moves NODUS from your smart-contract balance to a Nodus address — your own unless you change it. Only whole units of 0.00000001 NODUS can move back; anything smaller stays in your smart-contract balance.' }),
-    ...field('Amount (NODUS)', outAmount),
-    ...field('Pay to (Nodus address, 128 characters)', outTo),
-    btn('Review', () => void prepareAndShow(() => {
-      const to = outTo.value.trim().toLowerCase();
-      if (!HEX128.test(to)) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
-      const raw = parseRaw(outAmount.value);
-      if (balance && raw * 10n ** 10n > balance.wei) throw new Error(`Your smart-contract balance is ${formatWei(balance.wei)} NODUS; at most ${formatRaw(weiToRaw(balance.wei).raw)} NODUS can move back.`);
-      return account.withdraw(raw, to);
-    }, 'Move NODUS back'), ''));
+    el('div', { className: 'evm-bridge-side' },
+      el('h4', { text: 'Move NODUS to smart contracts' }),
+      el('p', { className: 'hint', text: 'Moves NODUS from your Nodus address into your smart-contract balance, where contracts can use it.' }),
+      ...field('Amount (NODUS)', inAmount),
+      btn('Review', () => void prepareAndShow(() => account.deposit(parseRaw(inAmount.value)), 'Move NODUS to smart contracts'), '')),
+    el('div', { className: 'evm-bridge-side' },
+      el('h4', { text: 'Move NODUS back' }),
+      el('p', { className: 'hint', text: 'Moves NODUS from your smart-contract balance to a Nodus address — your own unless you change it. Only whole units of 0.00000001 NODUS can move back; anything smaller stays in your smart-contract balance.' }),
+      ...field('Amount (NODUS)', outAmount),
+      ...field('Pay to (Nodus address, 128 characters)', outTo),
+      btn('Review', () => void prepareAndShow(() => {
+        const to = outTo.value.trim().toLowerCase();
+        if (!HEX128.test(to)) throw new Error('Enter a Nodus address: 128 characters, 0-9 and a-f.');
+        const raw = parseRaw(outAmount.value);
+        if (balance && raw * 10n ** 10n > balance.wei) throw new Error(`Your smart-contract balance is ${formatWei(balance.wei)} NODUS; at most ${formatRaw(weiToRaw(balance.wei).raw)} NODUS can move back.`);
+        return account.withdraw(raw, to);
+      }, 'Move NODUS back'), '')));
   return box;
 }
 
 function renderTickets() {
-  const box = el('div', { className: 'stake-block' });
+  const box = el('div', { className: 'stake-block evm-card' });
   box.append(el('h4', { text: 'Withdrawal tickets' }),
     el('p', { className: 'hint', text: 'A contract can pay NODUS out to a Nodus address by writing a withdrawal ticket. Collecting a ticket pays it to that address. Tickets your transactions created appear here; you can also add one by its number.' }));
   const list = el('div', { className: 'stake-list' });
@@ -257,10 +259,11 @@ function renderTickets() {
   for (const [id, t] of tickets) {
     const row = el('div', { className: 'stake-row' });
     if (t.error) {
-      row.append(el('span', { text: `Ticket ${short(id)}` }), el('span', { className: 'hint', text: t.error }));
+      row.append(el('span', { className: 'evm-mono', text: `Ticket ${short(id)}` }), el('span', { className: 'hint', text: t.error }));
     } else {
-      row.append(el('span', { text: `Ticket ${short(id)} · ${nodus(t.amountRaw)}` }),
-        el('span', { className: 'hint', text: t.pending ? (t.dest === client.fingerprint ? 'pays you' : `pays ${short(t.dest)}`) : 'collected' }));
+      const state = el('span', { className: 'status-badge', text: t.pending ? (t.dest === client.fingerprint ? 'pays you' : `pays ${short(t.dest)}`) : 'collected' });
+      state.dataset.status = t.pending ? 'pending' : 'confirmed';
+      row.append(el('span', { className: 'evm-mono', text: `Ticket ${short(id)} · ${nodus(t.amountRaw)}` }), state);
       if (t.pending && client.evmBuildable) {
         const actions = el('div', { className: 'stake-actions' });
         actions.append(btn('Collect', () => void prepareAndShow(() => account.redeem(id, t.dest), 'Collect a withdrawal ticket')));
@@ -270,11 +273,11 @@ function renderTickets() {
     list.append(row);
   }
   const add = input({ placeholder: 'Ticket number (128 characters)', mono: true });
-  box.append(list, ...field('Add a ticket', add), btn('Look up', () => void act(async () => {
+  box.append(list, el('div', { className: 'evm-inline-form' }, ...field('Add a ticket', add), btn('Look up', () => void act(async () => {
     const id = add.value.trim().toLowerCase();
     if (!HEX128.test(id)) throw new Error('A ticket number has 128 characters, 0-9 and a-f.');
     await lookTicket(id);
-  })));
+  }))));
   return box;
 }
 
@@ -301,15 +304,15 @@ function argValue({ node, input: box }) {
 const show = v => (typeof v === 'bigint' ? v.toString() : Array.isArray(v) ? `[${v.map(show).join(', ')}]` : String(v));
 
 function renderContractLoad() {
-  const box = el('div', { className: 'stake-block' });
+  const box = el('div', { className: 'stake-block evm-card' });
   const addr = input({ placeholder: '0x… (64 hex characters)', mono: true });
   const abi = area('Contract ABI (JSON)');
   const code = area('Contract bytecode (0x…), only to deploy a new contract');
   box.append(el('h4', { text: 'Use a contract' }),
     el('p', { className: 'hint', text: 'Paste the contract’s address and its ABI (the description of its functions, given by whoever wrote it). To put a new contract on the network, paste its bytecode and ABI instead and choose “Deploy”.' }),
     ...field('Contract address', addr), ...field('ABI', abi), ...field('Bytecode', code));
-  if (contractError) box.append(el('p', { className: 'hint', text: contractError }));
-  box.append(btn('Open contract', () => {
+  if (contractError) box.append(el('p', { className: 'notice evm-error', text: contractError }));
+  box.append(el('div', { className: 'evm-actions' }, btn('Open contract', () => {
     contractError = ''; readResults.clear();
     try { contract = new Contract({ account, address: addr.value, abi: abi.value }); } catch (error) { contract = null; contractError = error?.message || 'This contract could not be opened.'; }
     render();
@@ -322,31 +325,33 @@ function renderContractLoad() {
       deployDraft = { iface, bytecode: hex, args: (iface.constructorEntry?.inputs || []).map((n, i) => argField(iface.constructorEntry.inputNames[i], n)) };
     } catch (error) { contractError = error?.message || 'This contract could not be prepared.'; }
     render();
-  }));
+  })));
   return box;
 }
 
 function renderDeploy() {
-  const box = el('div', { className: 'stake-block' });
+  const box = el('div', { className: 'stake-block evm-card' });
   box.append(el('h4', { text: 'Deploy a new contract' }));
   for (const a of deployDraft.args) box.append(...field(a.label, a.input));
   const value = deployDraft.iface.constructorEntry?.payable ? input({ placeholder: '0.0' }) : null;
   if (value) box.append(...field('Send with it (NODUS)', value));
-  box.append(btn('Review deployment', () => void prepareAndShow(() => Contract.prepareDeploy({
+  box.append(el('div', { className: 'evm-actions' }, btn('Review deployment', () => void prepareAndShow(() => Contract.prepareDeploy({
     account, bytecode: deployDraft.bytecode, abi: deployDraft.iface, args: deployDraft.args.map(argValue), valueWei: value && value.value.trim() ? parseWei(value.value) : 0n
-  }), 'Deploy a contract', { iface: deployDraft.iface }), ''), btn('Close', () => { deployDraft = null; render(); }));
+  }), 'Deploy a contract', { iface: deployDraft.iface }), ''), btn('Close', () => { deployDraft = null; render(); })));
   return box;
 }
 
 function renderContract() {
-  const box = el('div', { className: 'stake-block' });
-  box.append(el('h4', { text: `Contract ${toChecksumAddress(contract.address)}` }), btn('Close contract', () => { contract = null; readResults.clear(); render(); }));
+  const box = el('div', { className: 'stake-block evm-card' });
+  box.append(el('div', { className: 'evm-card-head' }, el('h4', { className: 'evm-mono', text: `Contract ${toChecksumAddress(contract.address)}` }), btn('Close contract', () => { contract = null; readResults.clear(); render(); })));
   const list = el('div', { className: 'stake-list' });
   for (const fn of contract.iface.functions) {
     const row = el('div', { className: 'stake-row evm-fn' });
     const args = fn.inputs.map((n, i) => argField(fn.inputNames[i], n));
-    row.append(el('span', { text: fn.signature }), el('span', { className: 'hint', text: fn.readOnly ? 'read' : fn.payable ? 'write, accepts NODUS' : 'write' }));
-    const form = el('div', { className: 'stake-actions' });
+    const kind = el('span', { className: 'status-badge evm-kind', text: fn.readOnly ? 'read' : fn.payable ? 'write, accepts NODUS' : 'write' });
+    kind.dataset.kind = fn.readOnly ? 'read' : 'write';
+    row.append(el('span', { className: 'evm-fn-sig', text: fn.signature }), kind);
+    const form = el('div', { className: 'stake-actions evm-fn-form' });
     for (const a of args) form.append(...field(a.label, a.input));
     const value = fn.payable ? input({ placeholder: '0.0' }) : null;
     if (value) form.append(...field('Send with it (NODUS)', value));
@@ -360,7 +365,7 @@ function renderContract() {
       form.append(btn('Review', () => void prepareAndShow(() => contract.prepareSend(fn, args.map(argValue), { valueWei: value && value.value.trim() ? parseWei(value.value) : 0n }), `Call ${fn.name}`, { iface: contract.iface }), ''));
     }
     row.append(form);
-    if (readResults.has(fn.signature)) row.append(el('p', { className: 'hint', text: readResults.get(fn.signature) }));
+    if (readResults.has(fn.signature)) row.append(el('p', { className: 'evm-result', text: readResults.get(fn.signature) }));
     list.append(row);
   }
   if (!contract.iface.functions.length) list.append(el('p', { className: 'stake-empty', text: 'This ABI has no functions.' }));
@@ -378,12 +383,14 @@ const STATE_TEXT = {
   unknown: 'No answer yet'
 };
 function renderRecent() {
-  const box = el('div', { className: 'stake-block' });
+  const box = el('div', { className: 'stake-block evm-card' });
   box.append(el('h4', { text: 'Recent smart-contract transactions' }));
   const list = el('div', { className: 'activity-list' });
   for (const row of recent) {
     const item = el('div', { className: 'activity-row' });
-    item.append(el('span', { text: row.title }), el('span', { className: 'hint', text: STATE_TEXT[row.state] || row.state }));
+    const state = el('span', { className: 'status-badge', text: STATE_TEXT[row.state] || row.state });
+    state.dataset.status = row.state;
+    item.append(el('strong', { className: 'evm-recent-title', text: row.title }), state);
     const details = [];
     const r = row.result;
     if (row.warning) details.push(row.warning);
@@ -407,7 +414,9 @@ function renderRecent() {
     }
     if (row.error) details.push(row.error);
     details.push(`Transaction ${short(row.intentId)}`);
-    for (const d of details) item.append(el('p', { className: 'hint', text: d }));
+    const receipt = el('div', { className: 'evm-receipt' });
+    for (const d of details) receipt.append(el('p', { className: 'hint', text: d }));
+    item.append(receipt);
     list.append(item);
   }
   if (!recent.length) list.append(el('p', { className: 'stake-empty', text: 'None in this session.' }));
@@ -432,9 +441,9 @@ function render() {
   showPanel();
   if (!root) return;
   if (!client || !account) { root.replaceChildren(); return; }
-  const line = el('p', { className: 'hint', text: status });
+  const line = el('p', { className: 'hint evm-status', text: status });
   line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
-  const items = [el('p', { className: 'hint', text: 'Smart contracts are programs that run on the Nodus network. Your wallet signs every transaction after you check it; the network fee shown is the most a transaction can cost.' }), line, renderAccount()];
+  const items = [el('p', { className: 'hint page-note', text: 'Smart contracts are programs that run on the Nodus network. Your wallet signs every transaction after you check it; the network fee shown is the most a transaction can cost.' }), line, renderAccount()];
   if (client.evmBuildable) items.push(renderBridge());
   if (client.evmReadable) items.push(renderTickets());
   items.push(deployDraft ? renderDeploy() : contract ? renderContract() : renderContractLoad(), renderRecent());
