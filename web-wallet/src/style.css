@@ -651,8 +651,26 @@ details.danger-zone.danger-zone > summary { color: #f6c2bd; }
 .log-filter select { width: auto; min-width: 150px; min-height: 40px; padding: 8px 12px; }
 .log-actions { margin: 0; gap: 8px; }
 .log-actions button { min-height: 40px; }
-#session-log-text { display: block; min-height: 52vh; margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 0 0 12px 12px; background: #0b0f09; color: #d8ddcf; font-family: var(--mono); font-size: 12.5px; line-height: 1.75; tab-size: 2; resize: vertical; }
-#session-log-text:focus { outline-offset: -2px; }
+/* The line viewer (src/session-log.js mountSessionLogView): one line per
+   entry — time, a coloured category chip, "! error" on a failure (red AND
+   the marker text), the text wrapping under itself. */
+#session-log-text { display: block; min-height: 52vh; max-height: 70vh; margin: 0; padding: 10px 0; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 0 0 12px 12px; background: #0b0f09; color: #d8ddcf; font-family: var(--mono); font-size: 12.5px; line-height: 1.7; }
+#session-log-text:focus-visible { outline: 2px solid var(--lime); outline-offset: -2px; }
+.log-line { padding: 3px 16px 3px 18px; border-left: 3px solid transparent; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-line + .log-line, .log-running > .log-line:first-child { border-top: 1px solid #ffffff08; }
+.log-time { color: #7d8475; font-variant-numeric: tabular-nums; }
+.log-chip { display: inline-block; min-width: 9ch; padding: 0 6px; border-radius: 5px; background: #ffffff0d; color: var(--muted); font-size: 11.5px; line-height: 1.6; text-align: center; vertical-align: 1px; }
+.log-line[data-category="net"] .log-chip { background: #7cc7ff1f; color: #9fd6ff; }
+.log-line[data-category="messages"] .log-chip { background: #c7a2ff1f; color: #d6bcff; }
+.log-line[data-category="wallet"] .log-chip { background: #d5f9981c; color: var(--lime); }
+.log-line:is([data-category="send"], [data-category="stake"], [data-category="names"], [data-category="evm"], [data-category="vault"]) .log-chip { background: #f2c8961c; color: var(--amber); }
+.log-line[data-category="ui-error"] .log-chip { background: #f28b8224; color: #f8c4bf; }
+.log-flag { padding: 0 5px; border-radius: 5px; background: #f28b822e; color: #ffd0cb; font-weight: 700; font-size: 11.5px; }
+.log-line.is-error { border-left-color: var(--red); background: #f28b820f; }
+.log-line.is-error .log-msg { color: #f8c4bf; }
+.log-line.is-running .log-msg { color: var(--muted); font-style: italic; }
+.log-empty { margin: 0; padding: 6px 18px; color: var(--muted); }
+.log-empty[hidden] { display: none; }
 #session-log-status { margin: 10px 0 0; }
 
 /* Shared vaults. */
@@ -727,7 +745,8 @@ details.danger-zone.danger-zone > summary { color: #f6c2bd; }
   .log-filter, .log-filter select { flex: 1 1 auto; }
   .log-actions { flex: 1 1 100%; }
   .log-actions button { flex: 1; }
-  #session-log-text { min-height: 56vh; padding: 12px; font-size: 12px; }
+  #session-log-text { min-height: 56vh; padding: 8px 0; font-size: 12px; }
+  .log-line { padding: 3px 12px 3px 12px; }
   .stake-detail .stake-actions input { max-width: none; }
 }
 @media (prefers-reduced-motion: reduce) {

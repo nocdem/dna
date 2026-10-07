@@ -5,7 +5,7 @@ import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, s
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
-import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus } from './activity.js';
+import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus, evmActivityText } from './activity.js';
 import { CHAINS, CELLFRAME } from './config.js';
 import { CPUNK_ASSET, displayAmount } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
@@ -267,10 +267,12 @@ function renderActivity(save = true) {
       : row.kind === 'undelegate' ? ['Undelegation', `back from witness ${row.to} (returned locked)`]
       : row.kind === 'stake' ? ['Witness bond']
       : row.kind === 'name' ? ['Chain name registration', row.name ? `"${row.name}"` : 'for your address']
-      : row.kind === 'evm' ? ['Smart contracts', row.evmTitle || 'transaction']
       : [`→ ${row.to}`];
+    // A smart-contract row: the NODUS moved and the fee on their own
+    // (src/activity.js evmActivityText), not the stored amount + fee sum.
+    const evm = row.kind === 'evm' ? evmActivityText(row) : null;
     const main = el('span', 'activity-main');
-    main.append(el('strong', '', `${row.amount} ${row.symbol}`), el('small', '', what.join(' · ')));
+    main.append(el('strong', '', evm ? evm.amount : `${row.amount} ${row.symbol}`), el('small', '', evm ? evm.what : what.join(' · ')));
     const side = el('span', 'activity-side'), badge = el('span', 'status-badge', row.status);
     badge.dataset.status = row.status;
     const when = el('time', '', new Date(row.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
@@ -888,9 +890,12 @@ async function connectNodus(source, address, client, markReady) {
 // this wallet's own address: the EVM account is bound to it, and it is the
 // marker evmPendingRows reads after a reload (src/activity-storage.js does
 // not keep `kind`; a reloaded row reads as a NODUS transfer to this wallet's
-// own address, like a staking or name row). `what`: { title, amount } —
-// the panel's action and the NODUS leaving the coins (amount + fee).
-async function recordEvmActivity(source, details, { title, amount } = {}) {
+// own address, like a staking or name row — its text, op, moved amount and
+// fee are not kept either). `what`: { title, amount, op, moved, fee, to } —
+// the panel's action, the NODUS leaving the coins (amount + fee: the stored
+// `amount`), and for the row's text (src/activity.js evmActivityText) the
+// op, the NODUS it moves, the fee and a withdraw / redeem's payee.
+async function recordEvmActivity(source, details, { title, amount, op, moved, fee, to } = {}) {
   if (wallet !== source || source.locked) throw new Error('The wallet was locked. Nothing was sent.');
   // An unsaved wallet keeps no Activity (persistActivity saves nothing
   // without activitySession), so the record could not be durable: refuse
@@ -902,6 +907,7 @@ async function recordEvmActivity(source, details, { title, amount } = {}) {
   const own = source.addresses.nodus;
   const record = recordActivity({ chain: NODUS_ASSET.chain, from: own, to: own, symbol: NODUS_ASSET.symbol, amount }, details);
   record.kind = 'evm'; record.evmTitle = typeof title === 'string' ? title : '';
+  Object.assign(record, { evmOp: op, evmMoved: moved, evmFee: fee, evmTo: typeof to === 'string' ? to : '' });
   record.note = 'Smart-contract transaction signed; sending.';
   history.push(record); renderActivity(false);
   // The signed hash must be durable before the first network submission.

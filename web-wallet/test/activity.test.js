@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkActivity, watchActivity, terminal, submissionStatus } from '../src/activity.js';
+import { checkActivity, watchActivity, terminal, submissionStatus, evmActivityText } from '../src/activity.js';
 import { endpointUrl } from '../src/core.js';
 const hash = '0x' + 'a'.repeat(64), blockHash = '0x' + 'b'.repeat(64);
 const row = { chain: 'ethereum', hash, endpoint: 'https://rpc.example', status: 'pending' };
@@ -119,4 +119,34 @@ test('submission status line: unresolved stays, every resolution is said plainly
   assert.equal(say({ ...row, status: 'confirmed', note: 'Receipt is in a finalized canonical block.' }, { what: 'Transfer', idLabel: null }), 'Transfer confirmed. Receipt is in a finalized canonical block.');
   assert.equal(say({ ...row, status: 'failed', note: 'Receipt is in a finalized canonical block.' }, { what: 'Transfer', idLabel: null }), 'Transfer failed. Receipt is in a finalized canonical block.');
   assert.match(say({ ...row, status: 'replaced', note: 'x.' }, { what: 'Transfer' }), /^Transfer was replaced\. x\.$/);
+});
+// Operator report 2026-10-08 (scan /api/tx, blocks 81322 / 81693): a move of
+// 100 NODUS into smart contracts showed "100.01939388 NODUS" (value + fee),
+// and the move back showed only its fee "0.01999525 NODUS". A smart-contract
+// row shows the NODUS moved and the fee on their own.
+test('smart-contract Activity rows: the moved amount and the fee separately, in plain words', () => {
+  const own = 'ab'.repeat(64), other = 'cd'.repeat(64);
+  const base = { kind: 'evm', symbol: 'NODUS', address: own, evmTitle: 'Move NODUS to smart contracts' };
+  assert.deepEqual(evmActivityText({ ...base, amount: '100.01939388', evmOp: 'deposit', evmMoved: '100', evmFee: '0.01939388', evmTo: '' }),
+    { amount: '100 NODUS', what: 'Smart contracts · Moved to smart contracts · fee 0.01939388 NODUS' });
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.01999525', evmOp: 'withdraw', evmMoved: '100', evmFee: '0.01999525', evmTo: own }),
+    { amount: '100 NODUS', what: 'Smart contracts · Moved back · fee 0.01999525 NODUS' });
+  // paid to another Nodus address: the payee is named
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.02', evmOp: 'withdraw', evmMoved: '5', evmFee: '0.02', evmTo: other }),
+    { amount: '5 NODUS', what: `Smart contracts · Moved back to ${other} · fee 0.02 NODUS` });
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.02', evmOp: 'redeem', evmMoved: '7.5', evmFee: '0.02', evmTo: own }),
+    { amount: '7.5 NODUS', what: 'Smart contracts · Ticket collected · fee 0.02 NODUS' });
+  // a call / deployment with a value shows the value; without one, the fee only
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.03', evmOp: 'call', evmMoved: '1.000000000000000001', evmFee: '0.03' }),
+    { amount: '1.000000000000000001 NODUS', what: 'Smart contracts · Contract call · fee 0.03 NODUS' });
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.03', evmOp: 'call', evmMoved: '0', evmFee: '0.03' }),
+    { amount: '0.03 NODUS', what: 'Smart contracts · Contract call · network fee only' });
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.04', evmOp: 'create', evmMoved: '0', evmFee: '0.04' }),
+    { amount: '0.04 NODUS', what: 'Smart contracts · Contract deployment · network fee only' });
+  // a call's own address field never names a payee
+  assert.equal(evmActivityText({ ...base, amount: '0.03', evmOp: 'call', evmMoved: '2', evmFee: '0.03', evmTo: other }).what, 'Smart contracts · Contract call · fee 0.03 NODUS');
+  // without the op / moved / fee fields: the old text (title + stored amount), nothing invented
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.5' }), { amount: '0.5 NODUS', what: 'Smart contracts · Move NODUS to smart contracts' });
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.5', evmOp: 'deposit', evmMoved: '1e5', evmFee: '0.01' }).what, 'Smart contracts · Move NODUS to smart contracts');
+  assert.deepEqual(evmActivityText({ ...base, amount: '0.5', evmOp: 'bogus', evmMoved: '1', evmFee: '0.01' }).what, 'Smart contracts · Move NODUS to smart contracts');
 });
