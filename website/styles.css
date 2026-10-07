@@ -1462,6 +1462,111 @@ h2 {
   border-bottom: 0
 }
 
+/* Tokenomics "Who receives what": one card per reward stream or allocation. */
+.docs-content .tok-streams {
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 8px;
+  display: grid;
+  gap: 12px
+}
+
+.docs-content .tok-stream {
+  margin: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  background: #1a1f15
+}
+
+.docs-content .tok-stream-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  margin-bottom: 10px
+}
+
+.docs-content .tok-stream h4 {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -.2px;
+  margin: 0;
+  color: var(--text)
+}
+
+.docs-content .tok-badge {
+  display: inline-block;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 10px;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap
+}
+
+.docs-content .tok-badge-active {
+  border-color: var(--lime);
+  color: var(--lime)
+}
+
+.docs-content .tok-badge-built {
+  border-color: #8fae5e;
+  color: #c8e698
+}
+
+.docs-content .tok-badge-planned {
+  border-style: dashed
+}
+
+.docs-content .tok-badge-foundation {
+  border-color: #4a5a38;
+  color: #b4c99b
+}
+
+.docs-content .tok-stream dl {
+  display: grid;
+  gap: 6px;
+  margin: 0
+}
+
+.docs-content .tok-stream dl>div {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px
+}
+
+.docs-content .tok-stream dt {
+  font-size: 11px;
+  line-height: 1.9;
+  color: var(--muted);
+  opacity: .75
+}
+
+.docs-content .tok-stream dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted)
+}
+
+@media (max-width: 520px) {
+  .docs-content .tok-stream {
+    padding: 15px 14px
+  }
+
+  .docs-content .tok-badge {
+    white-space: normal
+  }
+
+  .docs-content .tok-stream dl>div {
+    grid-template-columns: 1fr;
+    gap: 0
+  }
+}
+
 .architecture-stack {
   display: grid;
   gap: 9px;
