@@ -102,6 +102,17 @@
 //     at once (nc_core.h nc_read_owner_many), not batched. `day` is
 //     required (decimal); skipBlob as outboxFetchDay's. A day that
 //     outboxFetchDay would reject rejects the whole call.
+//   core.contactReads([{ fp, salt, days: [{ day, skipBlob? }] }]) ->
+//     { contacts: [{ ack, days } | { error }, ...] } in the order asked;
+//     the READ phase of 1..4 contacts' message checks in one call (web
+//     0.1.74, connect/nc_wasm.c nc_contact_reads): per contact `ack` is
+//     the ackGet answer and `days` the outboxFetchDays answer for the same
+//     arguments — every key read with the same strict request and checks,
+//     the requests of all the contacts pipelined in the module, 4 in flight
+//     at once (never more). `error` (a string): that contact only, what its
+//     outboxFetchDays call would have rejected with (no verified profile
+//     loaded, or a day that could not be processed). Needs profileGet(fp)
+//     of every contact first. No write.
 //   core.ackPublish(fp, saltHex, ackTs)  ONLY after the store transaction's
 //     oncomplete (G11) and only when that contact's fetch dropped nothing.
 //     ackTs (decimal, > 0): the NEWEST sender timestamp stored from that
@@ -162,7 +173,10 @@
 // profileUpdate, saltReconcile and contactsAdd: a read then at most one
 // write (at most two request timeouts; the write must not be split from
 // the read it is based on, F4). The history calls and unlock do no network
-// I/O. A caller that syncs many contacts / days must await each step before
+// I/O. outboxFetchDays (one contact, up to 8 days) and contactReads (up to
+// 4 contacts, up to 36 keys, 9 waves of 4) read several keys in one slot;
+// their worst-case bounds are in connect/nc_wasm.c's header. A caller that
+// syncs many contacts / days must await each step before
 // enqueueing the next, so a wallet operation enqueued meanwhile runs between
 // two steps and waits at most the step in flight.
 
@@ -207,6 +221,20 @@ function hexToText(hex) {
 // Day buckets one outboxFetchDays call reads at most (connect/nc_core.h
 // NC_READ_MANY_MAX).
 const OUTBOX_DAYS_MAX = 8;
+// Contacts one contactReads call reads at most (connect/nc_core.h
+// NC_CONTACT_READS_MAX).
+export const CONTACT_READS_MAX = 4;
+// A day list of outboxFetchDays / contactReads -> the module's
+// [{ day, skip }] (connect/nc_wasm.c nc_outbox_get_days days_json).
+function dayList(items) {
+  if (!Array.isArray(items) || items.length === 0 || items.length > OUTBOX_DAYS_MAX) throw new Error('Invalid day list.');
+  return items.map(item => {
+    const day = String(item?.day ?? ''), skip = item?.skipBlob ?? '';
+    if (!U64.test(day)) throw new Error('Invalid day.');
+    if (typeof skip !== 'string' || (skip !== '' && !HEX64.test(skip))) throw new Error('Invalid blob.');
+    return { day, skip };
+  });
+}
 // One day bucket's answer of nc_outbox_get / nc_outbox_get_days, as
 // outboxFetchDay returns it.
 function dayResult(r) {
@@ -411,13 +439,7 @@ export function createNodusConnectCore({ nodus } = {}) {
       return dayResult(b.result());
     }),
     outboxFetchDays: op(async (b, who, saltHex, items) => {
-      if (!Array.isArray(items) || items.length === 0 || items.length > OUTBOX_DAYS_MAX) throw new Error('Invalid day list.');
-      const list = items.map(item => {
-        const day = String(item?.day ?? ''), skip = item?.skipBlob ?? '';
-        if (!U64.test(day)) throw new Error('Invalid day.');
-        if (typeof skip !== 'string' || (skip !== '' && !HEX64.test(skip))) throw new Error('Invalid blob.');
-        return { day, skip };
-      });
+      const list = dayList(items);
       b.check(await b.call('nc_outbox_get_days', ['string', 'string', 'string'], [fp(who), salt(saltHex), JSON.stringify(list)]));
       const days = b.result().days;
       if (!Array.isArray(days) || days.length !== list.length) throw new Error('The Messages module returned an invalid answer.');
@@ -431,6 +453,20 @@ export function createNodusConnectCore({ nodus } = {}) {
       return {};
     }),
     ackGet: op(async (b, who, saltHex) => { b.check(await b.call('nc_ack_get', ['string', 'string'], [fp(who), salt(saltHex)])); return b.result(); }),
+    contactReads: op(async (b, items) => {
+      if (!Array.isArray(items) || items.length === 0 || items.length > CONTACT_READS_MAX) throw new Error('Invalid contact list.');
+      const list = items.map(item => ({ fp: fp(item?.fp), salt: salt(item?.salt), days: dayList(item?.days) }));
+      b.check(await b.call('nc_contact_reads', ['string'], [JSON.stringify(list)]));
+      const contacts = b.result().contacts;
+      if (!Array.isArray(contacts) || contacts.length !== list.length) throw new Error('The Messages module returned an invalid answer.');
+      return {
+        contacts: contacts.map((c, i) => {
+          if (c && typeof c.error === 'string') return { error: c.error };
+          if (!c || !c.ack || !Array.isArray(c.days) || c.days.length !== list[i].days.length) throw new Error('The Messages module returned an invalid answer.');
+          return { ack: c.ack, days: c.days.map(dayResult) };
+        })
+      };
+    }),
     historyKey: localOp(async (b, vaultIdHex) => {
       if (typeof vaultIdHex !== 'string' || !HEX32.test(vaultIdHex)) throw new Error('Invalid vault id.');
       b.check(b.num('nc_hist_key', ['string'], [vaultIdHex]));

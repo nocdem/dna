@@ -194,9 +194,16 @@ export async function deleteVaultHistory(vaultId, storage) {
 // timestamp, transport_offline.c smart sync). `chainNames`: fp -> { name,
 // at } — the chain name (HF-4, dnac_name_of) the node reported for that ID
 // at `at` (unix seconds), kept like a profile (text.js profileFresh, 7
-// days); only a found name is kept (a name is permanent — decision
+// days); only a found name is kept here (a name is permanent — decision
 // 2026-10-02-onchain-names.md item 4 — while "no name" can change any
-// block). `removed`: IDs the user removed from the contacts on THIS device
+// block). `chainNoName` (web 0.1.74): fp -> unix seconds of a CONTACT's
+// last ANSWERED "no name" lookup (never a failed one, never the own ID):
+// the sync round does not ask that contact again before it is a day old
+// (ui/chain-names.js CHAIN_NO_NAME_RECHECK_SECONDS, chainNoNameFresh). A
+// map of its own, not a '' name inside `chainNames`: an older version's
+// checkState refuses a chainNames entry without a valid name (the whole
+// state would read as damaged after a rollback) and ignores a key it does
+// not know. `removed`: IDs the user removed from the contacts on THIS device
 // (text.js removeContact); the own list on the network is merge-only
 // (nc_core.h nc_contactlist_add), so it still lists them and they must not
 // be added back from it (text.js mergeListedContacts). Adding the person
@@ -212,7 +219,7 @@ export async function deleteVaultHistory(vaultId, storage) {
 // the 'messages' store with a `group` field (openHistoryStore returns them
 // apart from the 1:1 messages).
 export function emptyState() {
-  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], removed: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {}, vaults: {}, groups: {} };
+  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], removed: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {}, chainNoName: {}, vaults: {}, groups: {} };
 }
 const isMap = value => value && typeof value === 'object' && !Array.isArray(value);
 const HEX128_KEY = /^[0-9a-f]{128}$/;
@@ -229,20 +236,22 @@ export const GROUP_RECORD_ID = /^[gkx]\d{20}$/;
 const HEX64_KEY = /^[0-9a-f]{64}$/;
 export function checkState(value) {
   // A state saved before `ackSent`, `profileCache`, `dmSync`, `chainNames`,
-  // `vaults` or `groups` existed gets the default (same version).
-  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync', 'chainNames', 'vaults', 'groups']) if (value[key] === undefined) value[key] = {};
+  // `chainNoName`, `vaults` or `groups` existed gets the default (same
+  // version).
+  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync', 'chainNames', 'chainNoName', 'vaults', 'groups']) if (value[key] === undefined) value[key] = {};
   // … and before `removed` existed, likewise (an empty list).
   if (value && value.version === 1 && value.removed === undefined) value.removed = [];
   if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
       !Array.isArray(value.outgoing) || !Array.isArray(value.declined) ||
       !Array.isArray(value.removed) || value.removed.some(fp => typeof fp !== 'string' || !HEX128_KEY.test(fp)) ||
       !value.acks || typeof value.acks !== 'object' ||
-      !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) || !isMap(value.chainNames) || !isMap(value.vaults) || !isMap(value.groups) ||
+      !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) || !isMap(value.chainNames) || !isMap(value.chainNoName) || !isMap(value.vaults) || !isMap(value.groups) ||
       Object.entries(value.groups).some(([gid, e]) => !HEX64_KEY.test(gid) || !isMap(e) || typeof e.id !== 'string' || !/^g\d{20}$/.test(e.id) || !U64.test(String(e.at))) ||
       Object.values(value.profileCache).some(e => !isMap(e) || typeof e.id !== 'string' || !PROFILE_RECORD_ID.test(e.id) ||
         !U64.test(String(e.at)) || typeof e.name !== 'string') ||
       Object.values(value.dmSync).some(t => !U64.test(String(t))) ||
       Object.entries(value.chainNames).some(([fp, e]) => !HEX128_KEY.test(fp) || !isMap(e) || !chainNameOk(e.name) || !U64.test(String(e.at))) ||
+      Object.entries(value.chainNoName).some(([fp, at]) => !HEX128_KEY.test(fp) || !U64.test(String(at))) ||
       Object.entries(value.vaults).some(([addr, e]) => !HEX128_KEY.test(addr) || !isMap(e) || typeof e.id !== 'string' || !VAULT_RECORD_ID.test(e.id) || !U64.test(String(e.at)))) throw new StorageError('The stored contact list is damaged.');
   return value;
 }

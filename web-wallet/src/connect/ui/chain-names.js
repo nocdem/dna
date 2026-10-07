@@ -18,11 +18,22 @@
 // contact without a known name is asked again when its conversation is
 // opened; a failed lookup is tried again on a later round; no ID is asked
 // twice within CHAIN_LOOKUP_SPACING_MS.
+// Since web 0.1.74 a CONTACT's answered "no name" is kept too, in
+// state.chainNoName[fp] = at (the same state record, the same
+// saved-wallet-only rule; src/connect/store.js says why it is not a ''
+// name in chainNames), so the sync round does not ask that contact again
+// in every session: not before CHAIN_NO_NAME_RECHECK_SECONDS have passed
+// (chainNoNameFresh).
+// Only an ANSWER is kept — never a failed lookup — and never for this
+// wallet's own ID (asked once per session as before). Opening the
+// conversation still asks at once (chainLookupNeeded `opened`).
 //
 // One exception to "no network": resolveContactName (end of this file), the
 // add-contact-by-name lookup, which calls the client it is handed.
 import { chainNameOk } from '../../nodus/names.js';
 import { resolveChainName, NAME_CHECK_ROW } from '../../adapters/nodus.js';
+
+const U64 = /^(0|[1-9]\d{0,19})$/;
 
 // The kept name of an entry, or '' (anything malformed counts as none).
 export function keptChainName(entry) {
@@ -44,6 +55,45 @@ export function chainLookupSpaced(lastTry, now) {
   if (typeof lastTry !== 'number' || !Number.isFinite(lastTry)) return true;
   if (typeof now !== 'number' || !Number.isFinite(now)) return false;
   return now < lastTry || now - lastTry >= CHAIN_LOOKUP_SPACING_MS;
+}
+
+// How long a contact's answered "no name" stands before the sync round asks
+// again (seconds): one day. A contact who registers a name later shows it
+// within a day without anything being done; the user sees it at once by
+// opening the conversation (recheckChainNameOnOpen asks then, whatever is
+// kept). Before web 0.1.74 every session asked every contact without a
+// name (one lookup of 1-2 s each, one after another, before the message
+// check: 17.9 s for 17 contacts on the operator's phone, 2026-10-07).
+export const CHAIN_NO_NAME_RECHECK_SECONDS = 86400;
+
+// Whether a kept "no name" answer (state.chainNoName[fp]: unix seconds of
+// the answer, decimal string, or undefined) is younger than
+// CHAIN_NO_NAME_RECHECK_SECONDS at `now` (unix seconds, decimal string).
+// Anything malformed is not kept. A clock that went back (now < at) does
+// not keep the answer: it is asked again, as chainLookupSpaced does not
+// block an ID for good.
+export function chainNoNameFresh(at, now) {
+  if (!U64.test(String(at)) || !U64.test(String(now))) return false;
+  const a = BigInt(String(at)), t = BigInt(String(now));
+  return t >= a && t - a < BigInt(CHAIN_NO_NAME_RECHECK_SECONDS);
+}
+
+// What a confirmed lookup answer does to a contact's kept "no name"
+// (state.chainNoName[fp], `before` = its value or undefined):
+//   keep  the answer may be kept: a CONTACT (never the own ID, never a
+//         stranger — the found-name rule, chainNameAfterLookup, keeps a
+//         name of either; a "no name" is kept for contacts only)
+//   now   unix seconds as a decimal string
+// @return { at, changed }: at = the value to keep (null = none); changed =
+// the kept state moved (the caller saves once). Not an answer: nothing
+// moves. A found name: the "no name" goes. An answered "no name": kept
+// with this answer's time (keep), else removed. A failed lookup never
+// reaches here (src/nodus/names.js parseNameOf throws first).
+export function chainNoNameAfterLookup(before, found, { keep, now }) {
+  const kept = U64.test(String(before)) ? String(before) : null;
+  if (!found || (found.found !== true && found.found !== false) || (found.found === true && !chainNameOk(found.name))) return { at: kept, changed: false };
+  if (found.found === false && keep && U64.test(String(now))) return { at: String(now), changed: kept !== String(now) };
+  return { at: null, changed: before !== undefined };
 }
 
 // Whether `fp` is looked up now. asked: answered this session (a confirmed

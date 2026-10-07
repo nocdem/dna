@@ -386,7 +386,7 @@ exports_common=(
   nc_salt_get nc_salt_pick nc_salt_reconcile
   nc_contacts_get nc_contacts_add
   nc_day_today nc_outbox_send nc_outbox_get nc_outbox_get_days
-  nc_ack_send nc_ack_get
+  nc_ack_send nc_ack_get nc_contact_reads
   nc_hist_key nc_hist_encrypt nc_hist_decrypt
   # groups codec (G2, connect/nc_wasm.c "groups codec"): every one of THESE
   # is synchronous and pure — no network, never reaches emscripten_sleep. The
