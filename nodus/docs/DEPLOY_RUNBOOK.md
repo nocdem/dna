@@ -740,9 +740,9 @@ The storage row is a PLACEHOLDER (storage reward v1, package B1 — decision
 `docs/plans/decisions/2026-10-04-storage-reward-approved.md`, design
 `docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §6): nothing is voted, no binary
 is released. Its numbers were assigned in main merge order after Nodus EVM (HF-5) merged
-first: generation 4 on the EVM generation, param 16, SYSTEM v9 / CORE v7. Its fork number
-follows the order the forks land (decision `2026-10-05-hf-numbering-evm-hf5.md`; the
-role-stake package is named HF-6). Its vote follows the HF-4 procedure below with param 16
+first: generation 4 on the EVM generation, param 16, SYSTEM v9 / CORE v7. Its fork number is
+**HF-7** (operator, 2026-10-07; the role-stake package is HF-6, and the planned "delegation
+requires an on-chain name" rule is HF-8 — decision `2026-10-05-hf-numbering-evm-hf5.md`). Its vote follows the HF-4 procedure below with param 16
 in place of param 9 and one more stateful rule: the vote is refused unless EXACTLY the EVM
 generation judges it, because the switch it schedules is generation 3 → 4 — so HF-5's
 EVM_ACTIVE edge must have passed first, and the storage edge can never fall in the EVM edge's
