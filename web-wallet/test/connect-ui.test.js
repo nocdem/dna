@@ -22,8 +22,11 @@ import {
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
-  needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, profileFresh, PROFILE_CACHE_SECONDS
+  needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, profileFresh, PROFILE_CACHE_SECONDS,
+  CHECK_STAGES, updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
+  saltShortText, daysRead, contactLine, roundDoneLine
 } from '../src/connect/ui/text.js';
+import { scrubLogText } from '../src/session-log.js';
 import {
   keptChainName, chainLookupNeeded, chainLookupSpaced, CHAIN_LOOKUP_SPACING_MS, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT,
   resolveContactName, NAME_NOT_READY_TEXT, NAME_UNREGISTERED_TEXT, NAME_LOOKUP_FAILED_TEXT, NAME_CHECK_TEXT
@@ -725,4 +728,97 @@ test('history open: an aborted bound rejects with the plain text; a database tha
   } finally {
     if (before === undefined) delete globalThis.indexedDB; else globalThis.indexedDB = before;
   }
+});
+
+// Message check progress (web 0.1.71, operator 2026-10-07: "Updating…" for
+// minutes on a phone with nothing to show which step ran).
+const PROGRESS_FP = `1a2b3c4d${'0'.repeat(116)}9f0e`;
+const PROGRESS_ID = shortId(PROGRESS_FP);
+
+test('progress status line: the first round names its step; every round counts its contacts', () => {
+  assert.equal(PROGRESS_ID, 'ID 1a2b3c4d…9f0e');
+  assert.equal(updatingStageText('account'), 'Updating: your account…');
+  assert.equal(updatingStageText('contacts'), 'Updating: contact list…');
+  assert.equal(updatingStageText('requests'), 'Updating: contact requests…');
+  assert.equal(updatingStageText('publish'), 'Updating: contact list…');
+  assert.equal(updatingStageText('names'), 'Updating: names…');
+  assert.equal(updatingStageText('nope'), 'Updating: messages…');
+  assert.deepEqual(Object.keys(CHECK_STAGES), ['account', 'contacts', 'requests', 'publish', 'names']);
+  assert.equal(checkingContactsText(5, 31), 'Checking messages: 5 of 31 contacts…');
+  assert.equal(checkingContactsText(1, 1), 'Checking messages: 1 of 1 contact…');
+  assert.equal(checkingContactsText(7, 3), 'Checking messages: 3 of 3 contacts…', 'never more than the total');
+  assert.equal(checkingContactsText(undefined, undefined), 'Checking messages: 0 of 0 contacts…');
+});
+
+test('progress log: round, stage and per-step lines are exact', () => {
+  assert.equal(roundStartLine(3, { first: false, contacts: 31, days: 3 }), 'check round 3 started (regular): 31 contacts, 3 days');
+  assert.equal(roundStartLine(1, { first: true, contacts: 12, days: 8 }), 'check round 1 started (first): 12 contacts, 8 days');
+  assert.equal(stageStartLine(1, 'names'), 'check round 1 stage names started');
+  assert.equal(stageLine(1, 'account', 812.4), 'check round 1 stage account: 812 ms');
+  assert.equal(stageLine(1, 'contacts', 0), 'check round 1 stage contact list: 0 ms');
+  assert.equal(stageLine(1, 'requests', 7), 'check round 1 stage requests: 7 ms');
+  assert.equal(stageLine(1, 'publish', 5), 'check round 1 stage publish contacts: 5 ms');
+  assert.equal(stageLine(2, 'nope', -4), 'check round 2 stage unknown: 0 ms');
+  assert.equal(contactStartLine(PROGRESS_ID), 'contact ID 1a2b3c4d…9f0e check started');
+  assert.equal(contactStepLine(PROGRESS_ID, 'profile'), 'contact ID 1a2b3c4d…9f0e: profile');
+  assert.equal(contactStepLine(PROGRESS_ID, 'salt'), 'contact ID 1a2b3c4d…9f0e: salt');
+  assert.equal(contactStepLine(PROGRESS_ID, 'ack'), 'contact ID 1a2b3c4d…9f0e: ack');
+  assert.equal(contactStepLine(PROGRESS_ID, 'publish'), 'contact ID 1a2b3c4d…9f0e: outbox publish');
+  assert.equal(contactStepLine(PROGRESS_ID, 'day', '20368'), 'contact ID 1a2b3c4d…9f0e: outbox day 20368');
+  assert.equal(contactStepLine(PROGRESS_ID, 'day', 'x'), 'contact ID 1a2b3c4d…9f0e: outbox day ?');
+  assert.equal(contactStepLine(PROGRESS_ID, 'ack publish'), 'contact ID 1a2b3c4d…9f0e: ack publish');
+  assert.equal(contactStepLine(PROGRESS_ID, 'name'), 'contact ID 1a2b3c4d…9f0e: chain name');
+  assert.equal(contactStepLine(undefined, 'nope'), 'contact ID ?: unknown step');
+});
+
+test('progress log: a contact line carries counts, the profile and salt words and the days read — never more', () => {
+  assert.equal(saltShortText(null), 'salt not checked');
+  assert.equal(saltShortText({ salt: diagSalt({ earlier: true }) }), 'salt ok (earlier)');
+  assert.equal(saltShortText({ salt: diagSalt({ result: { status: 'nothing_to_write', outcome: 'found', why: 'none' } }) }), 'salt ok');
+  assert.equal(saltShortText({ salt: diagSalt({ result: { status: 'published', outcome: 'empty', why: 'none' }, changed: true }) }), 'salt ok (changed)');
+  assert.equal(saltShortText({ salt: diagSalt({ result: { status: 'wait', outcome: 'unreadable', why: 'timeout' } }), noSalt: true }), 'salt wait, no salt');
+  assert.equal(saltShortText({ salt: { status: 'Not A Word' } }), 'salt unknown');
+
+  const diag = newDiag(0);
+  diag.profile = 'ok';
+  diag.salt = diagSalt({ earlier: true });
+  diag.days.push(diagDay('20367', { outcome: 'found', why: 'none', messages: [{}] }));
+  diag.days.push(diagDay('20368', { outcome: 'empty', why: 'none' }));
+  diag.days.push(diagDay('20369', { outcome: 'unreadable', why: 'timeout' }));
+  assert.equal(daysRead(diag), 2, "an 'unreadable' day is not read");
+  assert.equal(daysRead(undefined), 0);
+  assert.equal(contactLine(PROGRESS_ID, { ms: 1834, fresh: 2, diag, days: 3 }),
+    'contact ID 1a2b3c4d…9f0e checked in 1834 ms: 2 new, profile ok, salt ok (earlier), 2/3');
+  // An exception before the profile step finished: no diagnostics yet.
+  assert.equal(contactLine(PROGRESS_ID, { ms: 40, diag: undefined, days: 8, failed: true }),
+    'contact ID 1a2b3c4d…9f0e checked in 40 ms: 0 new, profile failed, salt not checked, 0/8, check failed');
+  const noProfile = newDiag(0);
+  noProfile.profile = 'failed';
+  assert.equal(contactLine(PROGRESS_ID, { ms: 20500, diag: noProfile, days: 3 }),
+    'contact ID 1a2b3c4d…9f0e checked in 20500 ms: 0 new, profile failed, salt not checked, 0/3');
+});
+
+test('progress log: the round end is in whole seconds (the log scrub turns a fraction into "#")', () => {
+  assert.equal(roundDoneLine(3, { ms: 12345, fresh: 1, failed: 0 }), 'check round 3 done in 12 s: 1 new message, 0 failed');
+  assert.equal(roundDoneLine(4, { ms: 1500, fresh: 0, failed: 2 }), 'check round 4 done in 2 s: 0 new messages, 2 failed');
+  assert.equal(roundDoneLine(5, { ms: 400 }), 'check round 5 done in 0 s: 0 new messages, 0 failed');
+});
+
+test('progress log lines pass the session log scrub unchanged (short ID, counts, day numbers)', () => {
+  const diag = newDiag(0);
+  diag.profile = 'ok';
+  diag.salt = diagSalt({ result: { status: 'published', outcome: 'found', why: 'none' }, changed: true });
+  for (const day of ['20362', '20363', '20364', '20365', '20366', '20367', '20368', '20369']) diag.days.push(diagDay(day, { outcome: 'empty', why: 'none' }));
+  const lines = [
+    roundStartLine(12, { first: true, contacts: 15, days: 8 }),
+    stageStartLine(12, 'account'), stageLine(12, 'account', 98765),
+    stageStartLine(12, 'publish'), stageLine(12, 'publish', 3),
+    contactStartLine(PROGRESS_ID),
+    contactStepLine(PROGRESS_ID, 'profile'), contactStepLine(PROGRESS_ID, 'day', '20368'), contactStepLine(PROGRESS_ID, 'ack publish'),
+    contactLine(PROGRESS_ID, { ms: 61234, fresh: 3, diag, days: 8 }),
+    contactLine(PROGRESS_ID, { ms: 5, diag: undefined, days: 3, failed: true }),
+    roundDoneLine(12, { ms: 1234567, fresh: 3, failed: 1 })
+  ];
+  for (const line of lines) assert.equal(scrubLogText(line), line);
+  assert.ok(!lines.some(line => line.includes(PROGRESS_FP)), 'never the full ID');
 });

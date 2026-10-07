@@ -395,3 +395,108 @@ export function removeContact(state, fp) {
 export function unremoveContact(state, fp) {
   state.removed = state.removed.filter(r => r !== fp);
 }
+
+// ── message check progress (web 0.1.71) ─────────────────────────────────
+// Operator 2026-10-07: on a phone the Chats status line said "Updating…"
+// for minutes with nothing to show which step ran. The status line now
+// names the step of the first round and counts the contacts of every
+// round; the session log (src/session-log.js, memory only) gets one line
+// per round, per first-round stage and per contact. Every log line here
+// is plain ASCII words and whole numbers: the log's scrub (scrubLogText)
+// turns a decimal fraction into "#", so no fractions are written.
+
+// A whole, non-negative number of a count or a duration.
+const whole = value => (Number.isFinite(Number(value)) && Number(value) > 0 ? Math.round(Number(value)) : 0);
+
+// The first round's steps before the contacts are checked (messages.js sync).
+export const CHECK_STAGES = Object.freeze({
+  account: 'your account',
+  contacts: 'contact list',
+  requests: 'contact requests',
+  publish: 'contact list',
+  names: 'names'
+});
+// The log's name of each step (the status line's words, but the two
+// contact list steps kept apart).
+const STAGE_LOG = Object.freeze({
+  account: 'account', contacts: 'contact list', requests: 'requests', publish: 'publish contacts', names: 'names'
+});
+
+// Status line during a first-round step: "Updating: your account…".
+export function updatingStageText(stage) {
+  return `Updating: ${CHECK_STAGES[stage] || 'messages'}…`;
+}
+
+// Status line while the contacts are checked: "Checking messages: 5 of 31 contacts…".
+export function checkingContactsText(done, total) {
+  const n = whole(total);
+  return `Checking messages: ${Math.min(whole(done), n)} of ${n} contact${n === 1 ? '' : 's'}…`;
+}
+
+// Log: "check round 3 started (regular): 31 contacts, 3 days".
+export function roundStartLine(round, { first = false, contacts = 0, days = 0 } = {}) {
+  return `check round ${whole(round)} started (${first ? 'first' : 'regular'}): ${whole(contacts)} contacts, ${whole(days)} days`;
+}
+
+// Log: "check round 1 stage account: 812 ms".
+export function stageLine(round, stage, ms) {
+  return `check round ${whole(round)} stage ${STAGE_LOG[stage] || 'unknown'}: ${whole(ms)} ms`;
+}
+
+// Log, when a first-round step begins: "check round 1 stage names started".
+// With the end line above, a step that never ends is the last line before
+// silence.
+export function stageStartLine(round, stage) {
+  return `check round ${whole(round)} stage ${STAGE_LOG[stage] || 'unknown'} started`;
+}
+
+// Log, when a contact's check begins: "contact ID 1a2b3c4d…9f0e check started".
+export function contactStartLine(id) {
+  return `contact ${typeof id === 'string' ? id : 'ID ?'} check started`;
+}
+
+// Log, before each network step of a contact's check (messages.js
+// syncContact / publishOutbox): "contact ID 1a2b3c4d…9f0e: outbox day 20368".
+// `step`: 'profile' | 'salt' | 'ack' | 'publish' | 'day' | 'ack publish',
+// or 'name' (the first round's chain-name lookup of one ID, sync);
+// `day`: the bucket's day number for 'day'.
+const CONTACT_STEPS = Object.freeze({ profile: 'profile', salt: 'salt', ack: 'ack', publish: 'outbox publish', day: 'outbox day', 'ack publish': 'ack publish', name: 'chain name' });
+export function contactStepLine(id, step, day) {
+  const name = CONTACT_STEPS[step] || 'unknown step';
+  const which = step === 'day' ? ` ${U64.test(String(day)) ? String(day) : '?'}` : '';
+  return `contact ${typeof id === 'string' ? id : 'ID ?'}: ${name}${which}`;
+}
+
+// The salt step of a contact's diagnostics record (diag.js diagSalt), in
+// a few words: "salt ok", "salt ok (changed)", "salt ok (earlier)",
+// "salt wait", "salt failed", "salt not checked"; "no salt" when the
+// contact has no salt after the step (diag.noSalt).
+export function saltShortText(diag) {
+  const salt = diag?.salt;
+  let text;
+  if (!salt) text = 'salt not checked';
+  else if (salt.status === 'earlier') text = 'salt ok (earlier)';
+  else if (salt.status === 'nothing_to_write' || salt.status === 'published') text = `salt ok${salt.changed ? ' (changed)' : ''}`;
+  else text = `salt ${typeof salt.status === 'string' && /^[a-z_]{1,32}$/.test(salt.status) ? salt.status : 'unknown'}`;
+  return diag?.noSalt ? `${text}, no salt` : text;
+}
+
+// Day buckets of a diagnostics record that were read (any outcome but
+// 'unreadable', the one that keeps a contact's check time back).
+export function daysRead(diag) {
+  return Array.isArray(diag?.days) ? diag.days.filter(d => d?.outcome !== 'unreadable').length : 0;
+}
+
+// Log: "contact ID 1a2b3c4d…9f0e checked in 1834 ms: 2 new, profile ok,
+// salt ok (earlier), 3/3" — `id` is shortId(fp) (never the full ID),
+// `diag` the contact's diagnostics record of this check (diag.js),
+// `failed` true when the check ended with an error.
+export function contactLine(id, { ms = 0, fresh = 0, diag, days = 0, failed = false } = {}) {
+  const profile = diag?.profile === 'ok' ? 'profile ok' : 'profile failed';
+  return `contact ${typeof id === 'string' ? id : 'ID ?'} checked in ${whole(ms)} ms: ${whole(fresh)} new, ${profile}, ${saltShortText(diag)}, ${daysRead(diag)}/${whole(days)}${failed ? ', check failed' : ''}`;
+}
+
+// Log: "check round 3 done in 12 s: 2 new messages, 0 failed".
+export function roundDoneLine(round, { ms = 0, fresh = 0, failed = 0 } = {}) {
+  return `check round ${whole(round)} done in ${whole(whole(ms) / 1000)} s: ${whole(fresh)} new message${whole(fresh) === 1 ? '' : 's'}, ${whole(failed)} failed`;
+}

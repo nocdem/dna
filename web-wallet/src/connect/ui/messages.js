@@ -49,7 +49,9 @@ import {
   recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   needFullSync, fullDays, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
-  shortId, inspectUntrusted
+  shortId, inspectUntrusted,
+  updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
+  contactLine, roundDoneLine
 } from './text.js';
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
 import { parseNameOf } from '../../nodus/names.js';
@@ -60,6 +62,10 @@ import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
 // text, a key or a full ID (src/session-log.js scrubs every line too).
 import { sessionLog } from '../../session-log.js';
 const logFailure = (text, error) => sessionLog.log('messages', error === undefined ? text : `${text} (${errorText(error)})`, { error: true });
+// The message check's progress (web 0.1.71): rounds, first-round stages and
+// one line per contact (text.js roundStartLine … roundDoneLine) — counts,
+// durations and the short ID only.
+const logCheck = (text, failed = false) => sessionLog.log('messages', text, { error: failed });
 // Groups (package G3): the state machine and its screens. Group invites,
 // accepts, welcomes and leaves travel as 1:1 messages (bytes item 7,
 // decision 13); they are routed to the groups module and never shown as
@@ -88,6 +94,7 @@ const ADD_SUBMIT_TEXT = 'Send request';  // the add dialog's button while no cha
 // ── session state (all dropped by close / reset) ───────────────────────
 let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
 let generation = 0, syncTimer, syncing = false;
+let checkRound = 0;                      // message check rounds started this session (session log only)
 let sending = false;                     // a composer send is being kept on this device (send)
 let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
 let removeArmed;                         // the contact whose "Remove" was pressed once (asks to confirm)
@@ -141,7 +148,7 @@ function isOpen() { return !!core && !!state && phase === 'open'; }
 // touches the NODUS client (the host locks it afterwards).
 function wipe() {
   generation++;
-  clearInterval(syncTimer); syncTimer = undefined; syncing = false; sending = false;
+  clearInterval(syncTimer); syncTimer = undefined; syncing = false; sending = false; checkRound = 0;
   const c = core; core = undefined;
   try { c?.lock(); } catch { /* the rest must still run */ }
   try { store?.close(); } catch { /* same */ }
@@ -532,33 +539,58 @@ async function sync() {
   if (syncing || !isOpen() || !netStarted) return;
   syncing = true;
   const gen = generation;
+  // Progress (web 0.1.71): the first round names each step before the
+  // contacts in the status line and logs its start and duration; every
+  // round counts its contacts in the status line and logs one line per
+  // contact (session log, memory only). A later round leaves the status
+  // line as it was until its contacts are checked, so it does not flicker
+  // every 30 seconds. Nothing here changes what is called or in what order.
+  const round = ++checkRound, first = !online, roundAt = Date.now();
+  const stageBegin = name => {
+    if (!first) return 0;
+    ui.sync.textContent = updatingStageText(name);
+    logCheck(stageStartLine(round, name));
+    return Date.now();
+  };
+  const stageEnd = (name, at) => { if (first && gen === generation) logCheck(stageLine(round, name, Date.now() - at)); };
   try {
     // The first round of the network phase (goOnline): the own account,
     // then the own contact list; only then may anything be sent.
     if (!online) {
-      ui.sync.textContent = UPDATING_TEXT;
+      const accountAt = stageBegin('account');
       if (!await checkOwnAccount(gen) || gen !== generation) return;
+      stageEnd('account', accountAt);
+      const listAt = stageBegin('contacts');
       await mergeContactList(gen);
       if (gen !== generation) return;
+      stageEnd('contacts', listAt);
       online = true;
       render();
     }
+    const requestsAt = stageBegin('requests');
     await syncRequests(gen);
     if (gen !== generation) return;
+    stageEnd('requests', requestsAt);
+    const publishAt = stageBegin('publish');
     await publishContacts(gen);
     if (gen !== generation) return;
+    stageEnd('publish', publishAt);
     // Chain names (HF-4) of this ID, the contacts and the request screens,
     // BEFORE the message check so they are in place on the first check:
     // at most one answered read per ID per session (a failed read is tried
     // again on a later round, no sooner than CHAIN_LOOKUP_SPACING_MS), none
     // for a contact whose name is kept (ensureChainName).
+    const namesAt = stageBegin('names');
     let namesMoved = false;
     for (const fp of new Set([ownFp, ...state.contacts.map(c => c.fp), ...state.outgoing.map(o => o.fp), ...requests.map(r => r.sender)])) {
       if (gen !== generation) return;
+      // First round: one line per ID, so a lookup that never ends is named.
+      if (first) logCheck(contactStepLine(shortId(fp), 'name'));
       if (await ensureChainName(fp, fp === ownFp || !!contactOf(fp))) namesMoved = true;
     }
     if (namesMoved && gen === generation) await persist();
     if (gen !== generation) return;
+    stageEnd('names', namesAt);
     fillOwnAvatar(); fillNameLine(); render();
     // Smart sync (text.js needFullSync): 8 day buckets when any contact was
     // never checked or the oldest check is over 3 days old, else 3. The
@@ -571,11 +603,16 @@ async function sync() {
     // (diags) and the check goes on with the next contact: a failure must
     // not leave every contact after it in the list unchecked, round after
     // round. A close / reset meanwhile still ends the check.
-    let syncMoved = false, failed = 0, storageFailure;
-    for (const contact of [...state.contacts]) {
+    let syncMoved = false, failed = 0, storageFailure, arrivedTotal = 0;
+    const contacts = [...state.contacts];
+    logCheck(roundStartLine(round, { first, contacts: contacts.length, days: days.length }));
+    for (const [index, contact] of contacts.entries()) {
       if (gen !== generation) return;
       // Removed by the user while this check ran: not checked any more.
       if (!contactOf(contact.fp)) continue;
+      ui.sync.textContent = checkingContactsText(index + 1, contacts.length);
+      const id = shortId(contact.fp), contactAt = Date.now(), before = incomingCount(contact.fp);
+      logCheck(contactStartLine(id));
       let complete;
       try { complete = await syncContact(contact, gen, days); }
       catch (error) {
@@ -585,7 +622,15 @@ async function sync() {
         const diag = diags.get(contact.fp);
         if (diag) diag.error = errorText(error);
         logFailure(`A contact (${shortId(contact.fp)}) could not be checked`, error);
+        const got = incomingCount(contact.fp) - before;
+        arrivedTotal += got;
+        logCheck(contactLine(id, { ms: Date.now() - contactAt, fresh: got, diag, days: days.length, failed: true }), true);
         continue;
+      }
+      if (gen === generation) {
+        const got = incomingCount(contact.fp) - before;
+        arrivedTotal += got;
+        logCheck(contactLine(id, { ms: Date.now() - contactAt, fresh: got, diag: diags.get(contact.fp), days: days.length }));
       }
       if (complete && gen === generation && contactOf(contact.fp)) {
         const last = state.dmSync[contact.fp];
@@ -617,6 +662,7 @@ async function sync() {
       ui.sync.textContent = storageFailure
         ? `${storageFailure.message}${notChecked}`
         : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
+      logCheck(roundDoneLine(round, { ms: Date.now() - roundAt, fresh: arrivedTotal, failed }));
       render();
     }
   } catch (error) {
@@ -660,11 +706,16 @@ async function syncContact(contact, gen, days) {
   const fp = contact.fp;
   const previous = diags.get(fp), diag = newDiag(Date.now());
   diags.set(fp, diag);
+  // One session log line before each network step (web 0.1.71): a check
+  // that never ends leaves its last step as the last line of the log.
+  const id = shortId(fp), step = (name, day) => logCheck(contactStepLine(id, name, day));
+  step('profile');
   const profileOk = await ensureProfile(fp, true);
   if (gen !== generation) return false;
   diag.profile = profileOk ? 'ok' : 'failed';
   if (!profileOk) return false;
   if (!saltChecked.has(fp)) {
+    step('salt');
     const result = await core.saltReconcile(fp, contact.salt || null);
     if (gen !== generation) return;
     const changed = !!result.salt && result.salt !== contact.salt;
@@ -684,6 +735,7 @@ async function syncContact(contact, gen, days) {
   // published is taken BEFORE the ACK read is issued; a publish finishing
   // meanwhile (send()) does not count for this read.
   const publishedBefore = publishedSeqs(messages, fp);
+  step('ack');
   const ack = await core.ackGet(fp, salt);
   if (gen !== generation) return;
   const ackValue = ack.outcome === 'found' && ack.ack_ts !== undefined && ack.ack_ts !== null ? String(ack.ack_ts) : null;
@@ -697,7 +749,7 @@ async function syncContact(contact, gen, days) {
     }
   }
 
-  if (unpublished.has(fp)) await publishOutbox(contact, gen);
+  if (unpublished.has(fp)) { step('publish'); await publishOutbox(contact, gen); }
   if (gen !== generation) return;
 
   // Each bucket is passed the hash of the same bucket this session already
@@ -709,6 +761,7 @@ async function syncContact(contact, gen, days) {
   const arrived = [], seen = []; let lost = 0, other = 0, complete = true;
   for (const day of days) {
     const key = `${fp}|${day}`, before = blobs.get(key);
+    step('day', day);
     const result = await core.outboxFetchDay(fp, salt, day, before?.blob || '');
     if (gen !== generation) return false;
     diag.days.push(diagDay(day, result));
@@ -762,6 +815,7 @@ async function syncContact(contact, gen, days) {
   if (store.persistent && !lost) {
     const value = ackToSend(messages, fp, state.ackSent[fp]);
     if (value) {
+      step('ack publish');
       await core.ackPublish(fp, salt, value);
       if (gen !== generation) return false;
       state.ackSent[fp] = value;
@@ -791,6 +845,10 @@ async function publishOutbox(contact, gen) {
 // kept; the text test also covers a record kept before the flag existed):
 // published, acknowledged and deduplicated like any message, never shown.
 const isControl = m => m.control === true || !!controlType(m.text);
+// Stored incoming chat messages of one contact (group control records not
+// counted): the difference across a contact's check is its "new" count in
+// the session log (sync). Own messages sent meanwhile are not counted.
+const incomingCount = fp => messages.reduce((n, m) => (m.fp === fp && m.dir === 'in' && !isControl(m) ? n + 1 : n), 0);
 
 // ── read marks (UI only, this session; nothing is stored) ──────────────
 function newestSeq(fp) {
