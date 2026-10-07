@@ -7,7 +7,12 @@
 // What it proves: the page is the app shell (a start screen before unlock;
 // after ONE unlock the Home, Chats, Wallet and More screens with a bottom
 // bar on a narrow screen and a left rail on a wide one), with no second
-// unlock screen; the Wallet screen holds the wallet's sections and the
+// unlock screen; the Wallet screen shows Portfolio and Send / Receive only,
+// and every other section is a page of its own (src/app.js wallet pages:
+// Device & settings from the navigation, Logs from Device & settings,
+// Address book from More; the browser's Back, the page's Back control and
+// the lock each return to the wallet view, the lock clearing the hash; no
+// Smart contracts row in More without the EVM generation); the
 // "Delete saved wallet" control moves into Device & settings while open and
 // back after lock; Chats is Messages, open LOCALLY with no node (local
 // first: the own ID, the empty list and the add button at once, the status
@@ -114,11 +119,44 @@ try {
   const rail = await page.locator('.app-nav').boundingBox();
   assert.ok(rail.height > rail.width, `rail ${JSON.stringify(rail)}`);
 
-  // Wallet: the wallet's own sections; deleting the saved wallet sits in Device & settings.
+  // Wallet: the wallet view is Portfolio and Send / Receive only; every
+  // other section is its own page (src/app.js wallet pages, 0.1.75), named
+  // by the URL hash, with a "Back to wallet" control; deleting the saved
+  // wallet sits in Device & settings.
   await page.locator('.app-nav-item[data-tab="wallet"]').click();
-  for (const id of ['assets-panel', 'send-form', 'activity-panel', 'device-panel']) assert.equal(await page.locator(`#${id}`).isVisible(), true, id);
+  for (const id of ['assets-panel', 'send-form']) assert.equal(await page.locator(`#${id}`).isVisible(), true, id);
+  for (const id of ['activity-panel', 'address-book-panel', 'device-panel', 'session-logs', 'stake-panel', 'vault-panel', 'evm-panel']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
   assert.equal(await page.locator('#tab-home').isVisible(), false);
+  await page.locator('.wallet-navigation a[href="#settings"]').click();
+  assert.equal(await page.locator('#device-panel').isVisible(), true);
+  assert.equal(await page.locator('#wallet-home').isVisible(), false);
+  assert.equal(await page.evaluate(() => location.hash), '#settings');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'device-title');
   assert.equal(await page.locator('#vault-delete-details').evaluate(node => node.parentElement.id), 'device-panel');
+  // Logs is a page of its own, reached from Device & settings.
+  await page.locator('#device-panel a[href="#logs"]').click();
+  assert.equal(await page.locator('#session-logs').isVisible(), true);
+  assert.equal(await page.locator('#session-logs').evaluate(node => node.open), true);
+  assert.equal(await page.locator('#device-panel').isVisible(), false);
+  // The browser's Back returns to Device & settings, the page's Back control to the wallet view.
+  await page.goBack();
+  await page.waitForFunction(() => location.hash === '#settings');
+  assert.equal(await page.locator('#device-panel').isVisible(), true);
+  assert.equal(await page.locator('#session-logs').evaluate(node => node.open), false);
+  await page.locator('#page-settings .page-back').click();
+  await page.waitForFunction(() => location.hash === '');
+  assert.equal(await page.locator('#wallet-home').isVisible(), true);
+  assert.equal(await page.locator('#device-panel').isVisible(), false);
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('href')), '#settings');
+  // More → Address book opens that page in the Wallet tab.
+  await page.locator('.app-nav-item[data-tab="more"]').click();
+  assert.equal(await page.locator('#more-contracts').isVisible(), false, 'no Smart contracts row without the EVM generation');
+  await page.locator('#more-address-book').click();
+  assert.equal(await page.locator('#tab-wallet').isVisible(), true);
+  assert.equal(await page.locator('#address-book-panel').isVisible(), true);
+  assert.equal(await page.evaluate(() => location.hash), '#address-book');
+  await page.locator('#page-address-book .page-back').click();
+  await page.waitForFunction(() => location.hash === '');
 
   // Chats: Messages, open LOCALLY with no node (local first): the own ID,
   // the (empty) list and the add button are there at once; the status line
@@ -192,7 +230,8 @@ try {
   await page.setViewportSize({ width: 1280, height: 960 });
 
   // The Connect copy of the save UI follows the same real storage states.
-  await page.locator('.app-nav-item[data-tab="wallet"]').click();
+  await page.locator('.app-nav-item[data-tab="more"]').click();
+  await page.locator('#more-device').click();
   await page.locator('#vault-storage-title').click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
   assert.equal(await page.locator('#vault-change').isVisible(), false);
@@ -230,6 +269,10 @@ try {
   assert.equal(await page.locator('#wallet-open').isVisible(), false);
   assert.equal(await page.locator('#start-screen').isVisible(), true);
   assert.match(await page.locator('#wallet-status').innerText(), /Wallet locked/);
+  // The lock closes the open page (Device & settings) and clears its hash.
+  assert.equal(await page.evaluate(() => location.hash), '');
+  assert.equal(await page.locator('#page-settings').evaluate(node => node.hidden), true);
+  assert.equal(await page.locator('#wallet-home').evaluate(node => node.hidden), false);
   assert.equal(await page.locator('.messenger-state h3').textContent(), 'Messages');
   assert.equal(await page.locator('#nc-own-id').textContent(), '');
   assert.equal(await page.locator('#vault-delete-details').evaluate(node => node.parentElement.id), 'vault-delete-home');

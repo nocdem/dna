@@ -9,8 +9,12 @@
 // connect-site/index.html carries #evm-panel, #evm-root and the #nav-evm link,
 // the panel and the link hidden in the markup (src/evm/ui.js showPanel only
 // un-hides them once the node reports the EVM generation), and the #chain
-// select showPanel reads; the two pages' Content-Security-Policy is the same
-// string, so the EVM path loads under the same policy on both sites.
+// select showPanel reads; since 0.1.75 the panel is a page of its own
+// (#page-contracts, opened by #nav-evm's #contracts link) and not part of the
+// wallet view (#wallet-home), and Nodus Connect's More menu has a Smart
+// contracts row that follows #nav-evm and opens that page; the two pages'
+// Content-Security-Policy is the same string, so the EVM path loads under the
+// same policy on both sites.
 //
 // What it requires: nothing beyond the sources (no build, no browser, no
 // node, no send.wasm). What it leaves behind: nothing.
@@ -61,10 +65,26 @@ for (const [site, html] of [['connect-site/index.html', connectHtml], ['index.ht
     assert.ok(tagWithId(html, 'evm-root'), '#evm-root exists');
     const nav = tagWithId(html, 'nav-evm');
     assert.ok(nav, '#nav-evm exists');
-    assert.ok(/href="#evm-panel"/.test(nav) && /\shidden(?=[\s>])/.test(nav), '#nav-evm points at the panel and is hidden');
+    assert.ok(/href="#contracts"/.test(nav) && /\shidden(?=[\s>])/.test(nav), '#nav-evm opens the Smart contracts page (#contracts) and is hidden');
     assert.ok(tagWithId(html, 'chain'), '#chain (read by showPanel) exists');
+    // The panel is the Smart contracts page of its own (0.1.75), not a
+    // section of the wallet view.
+    const page = html.match(/<div id="page-contracts" class="wallet-page" data-page="contracts" hidden>([\s\S]*?)<\/section><\/div>/);
+    assert.ok(page, '#page-contracts is a hidden wallet page');
+    assert.ok(page[1].includes('id="evm-panel"') && page[1].includes('class="secondary small page-back"'), 'it holds #evm-panel and a Back control');
+    const home = html.match(/<div id="wallet-home">([\s\S]*?)<div id="page-earn"/);
+    assert.ok(home && !home[1].includes('id="evm-panel"'), '#evm-panel is not in the wallet view');
   });
 }
+
+test('Nodus Connect lists Smart contracts in More only while the wallet\'s link is shown, and opens the page', () => {
+  const item = tagWithId(connectHtml, 'more-contracts-item');
+  assert.ok(item && /\shidden(?=[\s>])/.test(item), '#more-contracts-item exists, hidden in the markup');
+  assert.ok(tagWithId(connectHtml, 'more-contracts'), '#more-contracts exists');
+  assert.ok(/\$\('more-contracts-item'\)\.hidden = \$\('nav-evm'\)\.hidden/.test(connectMain), 'the row follows #nav-evm');
+  assert.ok(/observe\(\$\('nav-evm'\), \{ attributes: true, attributeFilter: \['hidden'\] \}\)/.test(connectMain), 'and is kept in step with it');
+  assert.ok(/\$\('more-contracts'\)\.onclick = \(\) => \{ if \(!\$\('nav-evm'\)\.hidden\) openWalletPage\('contracts'\); \};/.test(connectMain), 'the row opens the contracts page');
+});
 
 test('the wallet and Nodus Connect pages have the same Content-Security-Policy', () => {
   assert.ok(csp(walletHtml), 'wallet CSP found');

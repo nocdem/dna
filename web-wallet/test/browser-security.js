@@ -42,8 +42,13 @@ await context.route('**/*', async route => {
 async function fresh() { const p = await context.newPage(); await p.routeWebSocket(() => true, ws => ws.close()); p.setDefaultTimeout(10000); p.on('pageerror', error => errors.push(error.message)); await p.goto(url); await p.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function'); return p; }
 async function restore(p) { await p.locator('#restore').click(); await pastePhrase(p, phrase); await p.locator('#backup-confirm').check(); await p.locator('#phrase-submit').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
 async function unlock(p) { await p.locator('#unlock-password').fill(password); await p.locator('#unlock-wallet').click(); await p.locator('#wallet-open').waitFor({ state: 'visible' }); }
+// Wallet pages (src/app.js, 0.1.75): Device & settings, Activity, … are pages
+// of their own, opened from the wallet's navigation; the page's Back control
+// returns to the wallet view (Portfolio and Send / Receive).
+async function openPage(p, name) { await p.locator(`.wallet-navigation a[href="#${name}"]`).click(); await p.locator(`#page-${name}`).waitFor({ state: 'visible' }); }
+async function walletView(p) { const back = p.locator('.wallet-page:not([hidden]) .page-back'); if (await back.count()) await back.click(); await p.locator('#wallet-home').waitFor({ state: 'visible' }); }
 // Nodus (receive-only) is the network selected on page load; sends here are on Ethereum.
-async function review(p) { await p.selectOption('#chain', 'ethereum'); await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
+async function review(p) { await walletView(p); await p.selectOption('#chain', 'ethereum'); await p.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await p.locator('#amount').fill('0.01'); await p.locator('#review-button').click(); await p.locator('#review-dialog').waitFor({ state: 'visible' }); }
 try {
   page = await fresh(); await page.clock.install();
   for (const stage of ['create', 'verify', 'restore']) {
@@ -59,7 +64,7 @@ try {
   assert.equal(await readPhrase(page), ''); await page.close();
   console.log('RT-01: create, verify, restore and suspended-tab expiry clear secrets.');
 
-  page = await fresh(); await restore(page); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
+  page = await fresh(); await restore(page); await openPage(page, 'settings'); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-risk-confirm').isChecked(), false);
   await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password); await page.locator('#vault-save').click();
   assert.match(await page.locator('#vault-status').innerText(), /read and accept the risks/);
@@ -161,7 +166,7 @@ try {
   const vaultId = JSON.parse(preserved.vault).id, activityKey = await activityKeyFor(phrase, vaultId);
   const savedRows = await parseActivity(preserved.activity, vaultId, addresses, activityKey);
   assert.deepEqual(savedRows.map(row => row.amount), ['0.01']);
-  await restore(page);
+  await restore(page); await openPage(page, 'settings');
   for (const id of ['vault-password', 'vault-confirm-password', 'vault-old-password', 'vault-save', 'vault-change']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
   assert.match(await page.locator('#vault-save-explain').innerText(), /Lock this temporary session, then unlock the saved wallet/);
   // Deliberately bypass hidden controls to exercise the backend guard too:
@@ -234,7 +239,7 @@ try {
   // E-2/B-1/E-3: a fresh saved wallet exercises the review dialog's focus/timing
   // guard, the same-network double-send lock and its abandon escape hatch, and
   // the lower-case-address review warning, in one continuous session.
-  page = await fresh(); await restore(page); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
+  page = await fresh(); await restore(page); await openPage(page, 'settings'); await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('Encrypted wallet saved'));
 
@@ -256,9 +261,11 @@ try {
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01'); await page.locator('#review-button').click();
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('no final result yet'));
   assert.equal(await page.locator('#review-dialog').isVisible(), false);
+  await openPage(page, 'wallet-activity');
   await page.locator('#activity').getByRole('button', { name: 'Mark as abandoned' }).click();
   await page.locator('#activity').getByRole('button', { name: 'Confirm abandon' }).click();
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('abandoned'));
+  await walletView(page);
   console.log('B-1: a second review on the same network is blocked while the first send has no final result.');
 
   await page.locator('#recipient').fill(addresses.ethereum.toLowerCase()); await page.locator('#amount').fill('0.01'); await page.locator('#review-button').click();

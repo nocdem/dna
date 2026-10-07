@@ -1,4 +1,6 @@
-// Smart contracts — the panel in the NODUS area of the wallet.
+// Smart contracts — the panel of the wallet's Smart contracts page (#contracts;
+// src/app.js wallet pages show the page, this module only fills the panel and
+// says whether it is available through the panel's `hidden`).
 //
 // Design docs/plans/2026-10-04-nodus-evm-chain-integration-design.md rev 3 §16
 // (wallet: the real destination, value, fee ceiling and chain are shown and

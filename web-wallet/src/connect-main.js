@@ -99,12 +99,40 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     if ($('vault-delete-details').parentElement !== place) place.append($('vault-delete-details'));
     origin = null;
     for (const name of TABS) scrollByTab[name] = 0;
-    setTab('home');
+    // A wallet page the URL names (src/app.js wallet pages: a reload on
+    // #contracts, …) opened with the wallet: show it in the Wallet tab.
+    const page = open && shownWalletPage();
+    setTab(page ? 'wallet' : 'home');
     scrollTo(0, 0);
-    if (open) $('home-title').focus({ preventScroll: true });
+    if (page) focusWalletPage(page);
+    else if (open) $('home-title').focus({ preventScroll: true });
     syncNameRegistration();
   }
   new MutationObserver(syncOpen).observe($('wallet-open'), { attributes: true, attributeFilter: ['hidden'] });
+
+  // Wallet pages (src/app.js, 0.1.75): Earn, Shared vaults, Smart contracts,
+  // Activity, Address book, Device & settings and Logs are pages of the
+  // Wallet tab, named by the URL hash. A page that opens while another tab
+  // is shown (the browser's Back or Forward, a page that became available)
+  // brings the Wallet tab forward. The More rows open their page through the
+  // wallet's own link to it, the path the Wallet tab's navigation takes.
+  function shownWalletPage() { return document.querySelector('.wallet-page:not([hidden])'); }
+  function focusWalletPage(page) {
+    $(page.querySelector('.dashboard-panel').getAttribute('aria-labelledby'))?.focus({ preventScroll: true });
+  }
+  // Only a page wrapper that has just been un-hidden counts: other `hidden`
+  // changes in the Wallet tab (balances, panels) never move the user.
+  new MutationObserver(records => {
+    const opened = records.some(record => record.target.classList.contains('wallet-page') && !record.target.hidden);
+    const page = shownWalletPage();
+    if (!opened || !page || $('wallet-open').hidden || tab === 'wallet') return;
+    origin = null; setTab('wallet'); scrollTo(0, 0);
+    focusWalletPage(page);
+  }).observe($('tab-wallet'), { subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  function openWalletPage(name) {
+    origin = null; setTab('wallet');
+    document.querySelector(`a[href="#${name}"]`).click();
+  }
 
   // In-page links (the wallet's section links, "How storage and protection
   // work", Privacy & safety): show the screen holding the target first, in
@@ -177,25 +205,17 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
   $('more-profile').onclick = () => openFromMore('profile');
   $('more-contacts').onclick = () => openFromMore('contacts');
   $('more-requests').onclick = () => openFromMore('requests');
-  // The address book is part of the wallet (src/app.js, #address-book-panel).
-  $('more-address-book').onclick = () => {
-    setTab('wallet');
-    $('address-book-panel').scrollIntoView({ block: 'start' });
-    $('address-book-title').focus({ preventScroll: true });
-  };
-  $('more-device').onclick = () => {
-    setTab('wallet');
-    $('device-panel').scrollIntoView({ block: 'start' });
-    $('device-title').focus({ preventScroll: true });
-  };
-  // Logs: this session's log (src/session-log.js), a section of Device &
-  // settings, opened (src/app.js mountSessionLogView fills it).
-  $('more-logs').onclick = () => {
-    setTab('wallet');
-    $('session-logs').open = true;
-    $('session-logs').scrollIntoView({ block: 'start' });
-    $('session-logs-title').focus({ preventScroll: true });
-  };
+  // The address book, Device & settings, Logs (this session's log,
+  // src/session-log.js) and Smart contracts are wallet pages (src/app.js).
+  $('more-address-book').onclick = () => openWalletPage('address-book');
+  $('more-device').onclick = () => openWalletPage('settings');
+  $('more-logs').onclick = () => openWalletPage('logs');
+  // Smart contracts: listed only while the wallet's own link is (src/evm/ui.js
+  // showPanel — the node reports the EVM generation and NODUS is selected).
+  const syncContractsRow = () => { $('more-contracts-item').hidden = $('nav-evm').hidden; };
+  new MutationObserver(syncContractsRow).observe($('nav-evm'), { attributes: true, attributeFilter: ['hidden'] });
+  syncContractsRow();
+  $('more-contracts').onclick = () => { if (!$('nav-evm').hidden) openWalletPage('contracts'); };
 
   // Status line: shown again whenever src/app.js writes a new message, and
   // hidden again after a few seconds like an app snackbar — it sits over
@@ -266,14 +286,14 @@ try {
   mountMessages($('nc-root'), host);
   registerExtension(walletExtension);
   registerExtension(nameExtension);
-  // Shared vaults (src/vaults/ui.js) in the Wallet tab's NODUS area; they
+  // Shared vaults (src/vaults/ui.js): a page of the Wallet tab (#vaults); they
   // tell members and keep vaults through Messages (vaultHost).
   mountVaults({ panelNode: $('vault-panel'), rootNode: $('vaults-root'), messagesHost: vaultHost });
   registerExtension(vaultExtension);
-  // Smart contracts (src/evm/ui.js) in the Wallet tab's NODUS area, as on
-  // the wallet page (src/main.js): hidden unless the connected node reports
-  // the EVM generation (client.evmBuildable / evmReadable) and NODUS is the
-  // selected network.
+  // Smart contracts (src/evm/ui.js): a page of the Wallet tab (#contracts,
+  // src/app.js wallet pages), as on the wallet page (src/main.js): hidden
+  // unless the connected node reports the EVM generation
+  // (client.evmBuildable / evmReadable) and NODUS is the selected network.
   mountSmartContracts({ panelNode: $('evm-panel'), rootNode: $('evm-root') });
   registerExtension(smartContractExtension);
   await import('./app.js');
