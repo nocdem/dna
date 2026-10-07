@@ -311,12 +311,30 @@
     $('bucket-compute').textContent = money(pools[1]);
     $('bucket-bandwidth').textContent = money(pools[2]);
     $('bucket-future').textContent = money(pools[3]);
+    displayStaking(stats.staking);
+  }
+  // Staking (explorer /api/stats "staking", explorer/README.md): the bonded validators — status
+  // ACTIVE or ELIGIBLE — of the explorer's last node read. self_stake / delegated are raw-unit
+  // strings; delegations counts (delegator, validator) pairs and is null when the node sent no
+  // count. A null object (no read yet / the read failed) renders "—". Each element is optional,
+  // so a page without the staking cards is left alone.
+  const stakeIds = ['validators', 'self', 'delegated', 'delegations'];
+  function displayStaking(s) {
+    const set = (id, value) => { if ($('stake-' + id)) $('stake-' + id).textContent = value; };
+    const count = n => Number.isSafeInteger(n) && n >= 0 ? String(n) : '—';
+    if (!s || typeof s !== 'object') { for (const id of stakeIds) set(id, '—'); return; }
+    const validators = count(s.validators), active = count(s.active_validators);
+    set('validators', validators === '—' ? '—' : active === '—' ? validators : t(`${validators} (${active} active)`, `${validators} (${active} aktif)`));
+    set('self', money(s.self_stake));
+    set('delegated', money(s.delegated));
+    set('delegations', count(s.delegations));
   }
   function statsUnavailable() {
     $('api-status').textContent = t('Index unavailable', 'İndekse erişilemiyor');
     $('staleness-banner').classList.add('hidden');
     for (const id of ['height', 'total', 'circulating']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
     for (const id of ['reward', 'storage', 'compute', 'bandwidth', 'future']) if ($('bucket-' + id)) $('bucket-' + id).textContent = '—';
+    displayStaking(null);
   }
   // Throughput (explorer /api/tps): applied transactions per second by block time, "now" being the
   // newest indexed block. tps is a decimal string with two decimals; history is 24 UTC hours,

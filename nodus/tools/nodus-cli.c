@@ -3907,8 +3907,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     }
     if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
         fprintf(stderr, "warning: the coin listing is capped at %d rows and "
-                "came back full — the server applies no ordering before its "
-                "cap, so coins beyond it are invisible to this selection\n",
+                "came back full — a node >= 0.25.2 lists the largest coins "
+                "first (an older node in no order); smaller coins beyond the "
+                "cap are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
     /* The listed coins, as the builder takes them; it applies the filter
@@ -4576,7 +4577,8 @@ done:
  * property of the COIN, not of its position in a listing: a coin belongs
  * to shard (first 8 nullifier bytes as a big-endian u64) mod M. A rank
  * in the selection order would NOT do — the listing is capped at 100 rows
- * with no ORDER BY (nodus_witness_db.c nodus_witness_utxo_by_owner), each
+ * (largest first since node 0.25.2, unordered before —
+ * nodus_witness_db.c nodus_witness_utxo_by_owner), each
  * session lists at a different moment and from a different node, and
  * every committed spend replaces a coin with a smaller one under a fresh
  * nullifier, so the same rank names different coins in two listings. A
@@ -4911,8 +4913,9 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     }
     if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
         fprintf(stderr, "warning: the coin listing is capped at %d rows and "
-                "came back full — the server applies no ordering before its "
-                "cap, so coins beyond it are invisible to this selection\n",
+                "came back full — a node >= 0.25.2 lists the largest coins "
+                "first (an older node in no order); smaller coins beyond the "
+                "cap are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
     /* ── the spendable coin set, in the deterministic selection order ── */
@@ -5557,8 +5560,9 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
     }
     if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
         fprintf(stderr, "warning: the coin listing is capped at %d rows and "
-                "came back full — the server applies no ordering before its "
-                "cap, so coins beyond it are invisible to this selection\n",
+                "came back full — a node >= 0.25.2 lists the largest coins "
+                "first (an older node in no order); smaller coins beyond the "
+                "cap are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
     /* ── the spendable NATIVE coin set, in the selection order ───────── */

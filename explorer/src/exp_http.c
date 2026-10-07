@@ -493,6 +493,43 @@ static void route_stats(exp_db_t *db, exp_json_t *j, int *status) {
     if (have_buckets) exp_json_u64_str(j, bk.unclaimed); else exp_json_raw(j, "null");
     exp_json_raw(j, ",\"circulating\":");
     if (have_circulating) exp_json_u64_str(j, circulating); else exp_json_raw(j, "null");
+
+    /* Staking (exp_chain.h, the active-stake blob): the BONDED validators —
+     * status ACTIVE or ELIGIBLE — of the last accepted node observation.
+     *   validators         bonded rows
+     *   active_validators  of those, ACTIVE (the /api/tps APY's count)
+     *   self_stake         Σ self_stake, raw units (string)
+     *   delegated          Σ total_delegated, raw units (string) —
+     *                      self-delegations included
+     *   delegations        Σ delegator_count = delegation positions
+     *                      ((delegator, validator) pairs), null when a row's
+     *                      count was not sent
+     *   at_tip             the tip height the read was made at
+     * The whole object is null when no read is stored or the last failed;
+     * the number of distinct delegating addresses has no source here. */
+    uint8_t sblob[EXP_ACTIVE_STAKE_BLOB_LEN];
+    size_t slen = 0;
+    exp_active_stake_t st;
+    int have_stake = exp_db_get_meta_blob(db, EXP_META_ACTIVE_STAKE, sblob, sizeof(sblob), &slen) == 0 &&
+                     exp_active_stake_unpack(sblob, slen, &st) == 0 && st.has;
+    exp_json_raw(j, ",\"staking\":");
+    if (have_stake) {
+        exp_json_raw(j, "{\"validators\":");
+        exp_json_u64(j, st.bonded_validators);
+        exp_json_raw(j, ",\"active_validators\":");
+        exp_json_u64(j, st.validators);
+        exp_json_raw(j, ",\"self_stake\":");
+        exp_json_u64_str(j, st.bonded_self_stake);
+        exp_json_raw(j, ",\"delegated\":");
+        exp_json_u64_str(j, st.bonded_delegated);
+        exp_json_raw(j, ",\"delegations\":");
+        if (st.has_delegations) exp_json_u64(j, st.bonded_delegations); else exp_json_raw(j, "null");
+        exp_json_raw(j, ",\"at_tip\":");
+        exp_json_u64(j, st.at_tip);
+        exp_json_raw(j, "}");
+    } else {
+        exp_json_raw(j, "null");
+    }
     exp_json_raw(j, "}");
 
     *status = 200;

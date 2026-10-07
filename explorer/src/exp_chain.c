@@ -431,16 +431,26 @@ void exp_active_stake_pack(const exp_active_stake_t *s,
     put_u64_le(out + 1, s->stake);
     put_u64_le(out + 9, s->validators);
     put_u64_le(out + 17, s->at_tip);
+    out[25] = s->has_delegations ? 1 : 0;
+    put_u64_le(out + 26, s->bonded_validators);
+    put_u64_le(out + 34, s->bonded_self_stake);
+    put_u64_le(out + 42, s->bonded_delegated);
+    put_u64_le(out + 50, s->has_delegations ? s->bonded_delegations : 0);
 }
 
 int exp_active_stake_unpack(const uint8_t *buf, size_t len, exp_active_stake_t *out) {
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
-    if (!buf || len != EXP_ACTIVE_STAKE_BLOB_LEN || buf[0] > 1) return -1;
+    if (!buf || len != EXP_ACTIVE_STAKE_BLOB_LEN || buf[0] > 1 || buf[25] > 1) return -1;
     if (buf[0] == 0) return 0;
     out->stake = get_u64_le(buf + 1);
     out->validators = get_u64_le(buf + 9);
     out->at_tip = get_u64_le(buf + 17);
+    out->has_delegations = buf[25];
+    out->bonded_validators = get_u64_le(buf + 26);
+    out->bonded_self_stake = get_u64_le(buf + 34);
+    out->bonded_delegated = get_u64_le(buf + 42);
+    out->bonded_delegations = get_u64_le(buf + 50);
     out->has = 1;
     return 0;
 }
@@ -448,37 +458,60 @@ int exp_active_stake_unpack(const uint8_t *buf, size_t len, exp_active_stake_t *
 int exp_active_stake_add(exp_active_stake_t *acc,
                          const nodus_dnac_validator_list_entry_t *e) {
     if (!acc || !e) return -1;
-    if (e->status != (uint8_t)DNAC_VALIDATOR_ACTIVE) return 0;
-    uint64_t power_stake = e->self_stake + e->external_delegated;
-    if (power_stake < e->self_stake) return -1;
-    if (acc->stake + power_stake < acc->stake) return -1;
-    acc->stake += power_stake;
-    acc->validators++;
+    const int active = e->status == (uint8_t)DNAC_VALIDATOR_ACTIVE;
+    if (!active && e->status != (uint8_t)DNAC_VALIDATOR_ELIGIBLE) return 0;
+
+    /* Every sum is checked before any is written: -1 leaves acc unchanged. */
+    uint64_t power_stake = 0;
+    if (active) {
+        power_stake = e->self_stake + e->external_delegated;
+        if (power_stake < e->self_stake) return -1;
+        if (acc->stake + power_stake < acc->stake) return -1;
+    }
+    if (acc->bonded_self_stake + e->self_stake < acc->bonded_self_stake) return -1;
+    if (acc->bonded_delegated + e->total_delegated < acc->bonded_delegated) return -1;
+    const int count_known = acc->has_delegations && e->has_delegator_count;
+    if (count_known &&
+        acc->bonded_delegations + e->delegator_count < acc->bonded_delegations) return -1;
+
+    if (active) {
+        acc->stake += power_stake;
+        acc->validators++;
+    }
+    acc->bonded_validators++;
+    acc->bonded_self_stake += e->self_stake;
+    acc->bonded_delegated += e->total_delegated;
+    if (count_known) {
+        acc->bonded_delegations += e->delegator_count;
+    } else {
+        acc->has_delegations = 0;      /* unknown is not 0 (nodus_types.h) */
+        acc->bonded_delegations = 0;
+    }
     return 0;
 }
 
-int exp_chain_active_stake(exp_chain_t *c, exp_active_stake_t *out) {
-    if (!c || !c->nc || !out) return -1;
-    memset(out, 0, sizeof(*out));
-    if (!nodus_client_is_ready(c->nc)) return -1;
-
-    exp_active_stake_t acc;
-    memset(&acc, 0, sizeof(acc));
+/* Page every row of one status into `acc` (exp_chain_active_stake).
+ * @return 0; -1 / the NODUS_ERR_* code on failure. */
+static int active_stake_read_status(exp_chain_t *c, int status, exp_active_stake_t *acc) {
     int offset = 0;
     for (int page = 0; page < EXP_ACTIVE_STAKE_MAX_PAGES; page++) {
         nodus_dnac_validator_list_result_t res;
         memset(&res, 0, sizeof(res));
-        int rc = nodus_client_dnac_validator_list(c->nc, (int)DNAC_VALIDATOR_ACTIVE, offset,
+        int rc = nodus_client_dnac_validator_list(c->nc, status, offset,
                                                   DNAC_MAX_VALIDATORS, &res);
         if (rc != 0) {
             nodus_client_free_validator_list_result(&res);
-            QGP_LOG_WARN(LOG_TAG, "dnac_validator_list on %s:%u failed (rc=%d)",
-                         c->servers[c->current].host, (unsigned)c->servers[c->current].port, rc);
+            QGP_LOG_WARN(LOG_TAG, "dnac_validator_list (status %d) on %s:%u failed (rc=%d)",
+                         status, c->servers[c->current].host,
+                         (unsigned)c->servers[c->current].port, rc);
             return rc;
         }
         int bad = (res.count > 0 && !res.entries);
         for (int i = 0; !bad && i < res.count; i++) {
-            if (exp_active_stake_add(&acc, &res.entries[i]) != 0) bad = 1;
+            /* the node filters by status; a row of another status here is
+             * a reply that does not answer the request */
+            if (res.entries[i].status != (uint8_t)status ||
+                exp_active_stake_add(acc, &res.entries[i]) != 0) bad = 1;
         }
         const int count = res.count, total = res.total;
         nodus_client_free_validator_list_result(&res);
@@ -491,14 +524,31 @@ int exp_chain_active_stake(exp_chain_t *c, exp_active_stake_t *out) {
                 QGP_LOG_WARN(LOG_TAG, "%s", "dnac_validator_list: empty page before the end");
                 return -1;
             }
-            acc.has = 1;
-            *out = acc;
             return 0;
         }
         offset += count;
     }
     QGP_LOG_WARN(LOG_TAG, "%s", "dnac_validator_list: page bound exceeded");
     return -1;
+}
+
+int exp_chain_active_stake(exp_chain_t *c, exp_active_stake_t *out) {
+    if (!c || !c->nc || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!nodus_client_is_ready(c->nc)) return -1;
+
+    exp_active_stake_t acc;
+    memset(&acc, 0, sizeof(acc));
+    acc.has_delegations = 1;
+    /* The bonded statuses, ACTIVE first (exp_chain.h). */
+    static const int bonded[] = { (int)DNAC_VALIDATOR_ACTIVE, (int)DNAC_VALIDATOR_ELIGIBLE };
+    for (size_t s = 0; s < sizeof(bonded) / sizeof(bonded[0]); s++) {
+        int rc = active_stake_read_status(c, bonded[s], &acc);
+        if (rc != 0) return rc;
+    }
+    acc.has = 1;
+    *out = acc;
+    return 0;
 }
 
 int exp_supply_circulating(const nodus_dnac_supply_buckets_t *b,

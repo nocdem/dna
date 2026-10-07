@@ -7,6 +7,12 @@ JSON API. The Nodus Scan frontend (`scan.nodusnetwork.io`) lives in
 `website/scan/` (see `website/deploy/README.md`); the legacy
 `scan.cpunk.io` frontend is no longer in this repository.
 
+**Version 0.2.5** adds the `staking` object to `/api/stats` (bonded
+validators, their self-stake, the NODUS delegated to them and the number of
+delegation positions — definitions below) and, with HF-8, names chain-config
+param 17 `DELEGATE_NAME_REQUIRED`. The `active_stake` meta blob grows from 25
+to 58 bytes: an older blob reads as unknown until the next tip observation.
+
 **Version 0.2.4** names chain-config params 14 `EVM_ACTIVE` and 15
 `EVM_BLOCK_GAS_LIMIT` in `/api/governance` (shown by id before; the HF-5 vote
 of 2026-10-06 is param 14), and is the first deployed build carrying the
@@ -55,10 +61,14 @@ first, then the explorer.
   `evm_account` query and, for a contract, its recent logs through
   `evm_logs` on the SAME server — trying every server) and
   `exp_chain_active_stake` (the active validators' stake for the APY
-  estimate: `dnac_validator_list_query` with status 0 = ACTIVE, paged by
-  offset, at most 64 pages of 128, summing `self_stake +
-  external_delegated` — the stake voting power is built from,
-  `dnac/include/dnac/validator.h`; one attempt on the current connection,
+  estimate and the bonded totals for `/api/stats` `staking`:
+  `dnac_validator_list_query` with status 0 = ACTIVE, then with status
+  4 = ELIGIBLE, each paged by offset, at most 64 pages of 128; the APY
+  stake sums `self_stake + external_delegated` of the ACTIVE rows — the
+  stake voting power is built from, `dnac/include/dnac/validator.h`; the
+  bonded totals sum `self_stake`, `total_delegated` and the node's
+  per-validator delegation count over both; a row of another status in a
+  filtered reply fails the read; one attempt on the current connection,
   no rotation).
   Also hosts the F4 chain-reset FSM (`exp_reset_fsm_feed`) that gates
   destructive index wipes behind multi-witness, multi-poll confirmation.
@@ -107,8 +117,8 @@ One tick every `EXP_SYNC_POLL_SECONDS` (30 s):
    A matching observation is followed by the active-stake read
    (`exp_chain_active_stake`, same server); its result is stored as the
    `active_stake` meta blob stamped with the observation's tip, and a
-   failed read stores "unknown" (the APY estimate is then `null`) — it
-   never stops the height walk.
+   failed read stores "unknown" (the APY estimate and `/api/stats`
+   `staking` are then `null`) — it never stops the height walk.
 2. **Walk heights** `last_indexed_height + 1 .. tip`, at most 256 per tick
    (a tick that stops at that bound is followed immediately by the next,
    without the poll sleep). Per height: every `dnac_v3_block` page is
@@ -140,7 +150,7 @@ half a height.
 | `item_records` | `(height, idx)` | the SYSTEM record an applied item wrote: `kind`, `validator`, `delegator`, `dest`, `amount`, `commission_bps`, `param_id`, `new_value`, `effective` |
 | `item_names` | `(height, idx)` | HF-4: the chain name an applied NAME_REGISTER item registered (`dnac_v3_block` keys `"nm"`/`"pr"`): `name`, `price` (paid into the reward pool — not a burn), `owner` (the resolved address of the item's first consumed coin — every input is the one signer's; NULL when that coin's creating item is not indexed). Created `IF NOT EXISTS` on every open, so a v2 index gains it without a rebuild; an index advanced past the HF-4 switch by a binary without it lacks those names until rebuilt |
 | `item_evm` | `(height, idx)` | Nodus EVM: the EVM facts of an APPLIED EVM item (`dnac_v3_block` OPTIONAL keys `"ev"`, `"ri"`, `"ro"` — wire in `nodus/include/nodus/nodus.h`): `status` (1 success / 0 a paid failure), `gas_used` (EVM gas), `sender` (32 B), `target` (CALL), `created` (successful CREATE), `value_wei` (32 B big-endian, CALL / CREATE), `dest` (WITHDRAW / REDEEM recipient fingerprint), `n_logs`, `tickets` (the ids the item opened, at most 32 × 64 B) + `tickets_more`, `wei_destroyed`, `digest` (the receipt digest = the item's committed `ExecTxResult.Data`), `reserve_in` / `reserve_out` (raw units into / out of the CORE EVM reserve). Copied as the node sent them — the node read them from its stored receipt. Indexes on `sender`, `target`, `created`. Created `IF NOT EXISTS` on every open (the `item_names` rule, no schema bump) |
-| `meta` | `key` | `schema_version` (2), `last_indexed_height`, `chain_id32`, `tip_height`, `supply_current`/`_burned`/`_genesis`, `supply_buckets` (one 97-byte blob: a has-flag byte, then 12 little-endian u64 — `current`, `reward_pool`, `treasury` pool 1..9, `unclaimed` — all from ONE `dnac_supply` reply; rewritten on every accepted observation, has = 0 for an older node; `exp_chain.h`), `active_stake` (one 25-byte blob: a has-flag byte, then 3 little-endian u64 — `stake`, `validators`, `at_tip`; rewritten on every accepted observation, has = 0 when the read failed; `exp_chain.h`) |
+| `meta` | `key` | `schema_version` (2), `last_indexed_height`, `chain_id32`, `tip_height`, `supply_current`/`_burned`/`_genesis`, `supply_buckets` (one 97-byte blob: a has-flag byte, then 12 little-endian u64 — `current`, `reward_pool`, `treasury` pool 1..9, `unclaimed` — all from ONE `dnac_supply` reply; rewritten on every accepted observation, has = 0 for an older node; `exp_chain.h`), `active_stake` (one 58-byte blob: a has-flag byte, 3 little-endian u64 — `stake`, `validators`, `at_tip` —, a has-delegations flag byte, then 4 little-endian u64 — `bonded_validators`, `bonded_self_stake`, `bonded_delegated`, `bonded_delegations`; rewritten on every accepted observation, has = 0 when the read failed; a blob of another length — the earlier 25-byte layout included — reads as unknown until the next observation rewrites it; `exp_chain.h`) |
 
 Records are a typed table, not a JSON column: the address history looks
 items up by a record's validator/delegator/destination fingerprint (an
@@ -326,7 +336,7 @@ addressed by its **position** `"<height>:<index>"`; send the `:` as it is
 
 | Endpoint | Description |
 |---|---|
-| `/api/stats` | `{indexed_height, tip_height, chain_id, supply_current, supply_burned, supply_genesis, reward_pool, treasury, unclaimed, circulating}` — any field not yet known is `null`. `chain_id` is the 32-byte `chain_id32`. `supply_genesis` is the fixed total supply. The supply buckets (decision `2026-09-30-scan-supply-buckets`): `reward_pool` (validator reward reserve left), `treasury` (array of 9 decimal strings, pool 1..9 in order: 1 Storage, 2 Compute, 3 Bandwidth, 4 Future services; 5-9 hold 0 on the live chain), `unclaimed` (genesis allocation not yet claimed) and `circulating` = `current − reward_pool − Σ treasury − unclaimed`, computed here from the SAME stored reply as the buckets (staked and Foundation coins count as circulating). All four are `null` when the node sends no buckets (an older node); `circulating` alone is `null` when a subtraction would go below zero — never a wrapped number. |
+| `/api/stats` | `{indexed_height, tip_height, chain_id, supply_current, supply_burned, supply_genesis, reward_pool, treasury, unclaimed, circulating, staking}` — any field not yet known is `null`. **`staking`** = `{validators, active_validators, self_stake, delegated, delegations, at_tip}` over the **bonded** validators — rows with status ACTIVE (0) or ELIGIBLE (4), the two states whose self-bond stays locked and that are candidates for the next boundary's selection (`dnac/include/dnac/validator.h`). RETIRING (1) and AUTO_RETIRED (3) rows are not counted: they have left the set and their bond and delegations are returned at their graduation boundary, which zeroes the row (UNSTAKED, 2). `validators` = the number of bonded rows; `active_validators` = of those, ACTIVE (the same count as `/api/tps` `apy.active_validators`); `self_stake` = Σ `self_stake` (the validators' own bonds) and `delegated` = Σ `total_delegated` (every delegation to the row, a validator's self-delegation included — decision `2026-09-28-treasury-pools-and-exact-self-stake` item 6), both raw units (10^8 per NODUS) as decimal strings; `delegations` = Σ the node's per-validator delegation count (`COUNT(*)` of the node's `delegations` rows for the validator — delegation **positions**, one per (delegator, validator) pair: an address delegating to two validators is two), `null` when the node sent no count for a summed row; `at_tip` = the tip height the read was made at. Source: the last accepted `dnac_validator_list_query` read (status ACTIVE, then ELIGIBLE — two paged queries, so a boundary between them can count a row that moved in neither or both until the next observation); the node's current table, not an epoch snapshot. The whole object is `null` when no read is stored or the last one failed. The number of **distinct delegating addresses** is not served: no query the explorer can make answers it (`dnac_delegations` answers only the authenticated caller's own delegations). Example: `"staking":{"validators":7,"active_validators":7,"self_stake":"7000000000000000","delegated":"150025000000","delegations":4,"at_tip":17281}`. `chain_id` is the 32-byte `chain_id32`. `supply_genesis` is the fixed total supply. The supply buckets (decision `2026-09-30-scan-supply-buckets`): `reward_pool` (validator reward reserve left), `treasury` (array of 9 decimal strings, pool 1..9 in order: 1 Storage, 2 Compute, 3 Bandwidth, 4 Future services; 5-9 hold 0 on the live chain), `unclaimed` (genesis allocation not yet claimed) and `circulating` = `current − reward_pool − Σ treasury − unclaimed`, computed here from the SAME stored reply as the buckets (staked and Foundation coins count as circulating). All four are `null` when the node sends no buckets (an older node); `circulating` alone is `null` when a subtraction would go below zero — never a wrapped number. |
 | `/api/blocks?before=<height>&limit=<n>` | `{blocks:[{height, block_id, time, proposer, applied_count, n_items}]}`, newest first (`limit` 1-100, default 25). |
 | `/api/block/<height\|block_id>?from=<index>&limit=<n>` | `{block:{…, prev_id, global_root}, items:[item], next_from}` — one page of the block's items, index-ascending from `from` (default 0; `limit` default and max 100); `next_from` is the next page's first index, `null` on the last page. |
 | `/api/tx/<wire_id\|intent_id\|height:index>` | `{tx:{item…, record}, inputs:[{coin_id, address, token_id, amount}], outputs:[{coin_id, address, token_id, amount, unlock_block}], evm}`. An input's `address`/`token_id`/`amount` are `null` when the coin's creating item is not in the index. A refused envelope has no ids — its position is its only address. `evm` (Nodus EVM) is `null` unless the item is an applied EVM item: `{status:"success"\|"failed", gas_used, from, to, created, value_wei, recipient, reserve_in, reserve_out, logs, tickets:[hex128], tickets_more, wei_destroyed, receipt_digest}` — `from`/`to`/`created` 64-hex EVM addresses (`to` CALL only, `created` a successful CREATE only, else `null`), `value_wei` decimal wei string (CALL / CREATE, else `null`), `recipient` the WITHDRAW / REDEEM fingerprint (else `null`), `reserve_in`/`reserve_out` raw-unit decimal strings or `null`, `logs` the receipt's log count, `tickets` the ticket ids it opened (at most 32; `tickets_more:true` = more), `wei_destroyed` decimal wei string, `receipt_digest` 128-hex. A `failed` item is APPLIED (its fee is paid, its nonce used); a refused one is listed with `refused:true` and `evm:null`. |
@@ -501,7 +511,8 @@ buggy witness):**
   and a reply byte budget per request, all charged to its per-block work
   budget). The sync thread's reads are
   `dnac_supply`, `dnac_v3_block` and `dnac_validator_list_query` (status
-  ACTIVE, for the APY estimate) — all read-only.
+  ACTIVE and status ELIGIBLE, for the APY estimate and the staking
+  totals) — all read-only.
 - **G3** — no single server drives a destructive action: an index reset
   needs the same new `chain_id32` from ≥ 2 distinct configured servers over
   ≥ 2 polls (F4 FSM in `exp_chain.c`). A server's block is taken only

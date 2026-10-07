@@ -175,30 +175,74 @@ int exp_supply_circulating(const nodus_dnac_supply_buckets_t *b,
                            uint64_t *out);
 
 /* ── Active stake (the /api/tps APY estimate's denominator) ───────────
+ *    and the bonded-set staking totals (/api/stats "staking")
  *
- * The stake of the validators the node lists with status ACTIVE (0 — "in
- * the active set of the current epoch", dnac/include/dnac/validator.h),
- * summed as self_stake + external_delegated — the stake voting power is
- * built from (validator.h, external_delegated). Read through the node's
- * existing dnac_validator_list_query, status filter 0, paged. It is an
- * observation of the node's current table (like the supply), not the
- * frozen snapshot the epoch reward is computed from — display only.
+ * stake / validators: the stake of the validators the node lists with
+ * status ACTIVE (0 — "in the active set of the current epoch",
+ * dnac/include/dnac/validator.h), summed as self_stake +
+ * external_delegated — the stake voting power is built from (validator.h,
+ * external_delegated).
+ *
+ * bonded_*: the same table over the BONDED rows — status ACTIVE or
+ * ELIGIBLE (4). validator.h's status comment: "Both ACTIVE and ELIGIBLE
+ * are BONDED states: the self-bond stays locked … both remain candidates
+ * for the next boundary's selection". RETIRING (1) and AUTO_RETIRED (3)
+ * rows are NOT counted: they have left the set (an UNSTAKE, or Rule N)
+ * and their bond and delegations are returned at their graduation
+ * boundary (nodus_witness_v2_epoch.c graduate), which then zeroes the
+ * row's self_stake / total_delegated and marks it UNSTAKED (2) — an
+ * UNSTAKED row holds nothing.
+ *   bonded_validators   the number of bonded rows
+ *   bonded_self_stake   Σ self_stake (the validators' own bonds)
+ *   bonded_delegated    Σ total_delegated — every delegation to the row,
+ *                       a validator's self-delegation included
+ *                       (validator.h total_delegated; decision
+ *                       2026-09-28-treasury-pools-and-exact-self-stake.md
+ *                       item 6). The supply invariant counts the same
+ *                       field as the delegated bucket.
+ *   bonded_delegations  Σ delegator_count — the node's
+ *                       COUNT(*) of `delegations` rows per validator, i.e.
+ *                       delegation POSITIONS ((delegator, validator)
+ *                       pairs; one address delegating to two validators
+ *                       is two). Valid only when has_delegations is 1: a
+ *                       node that sends no "dlg" for a summed row makes
+ *                       it unknown (nodus_types.h: unknown is not 0).
+ * The number of DISTINCT delegating addresses is not here: no query the
+ * explorer can make answers it (dnac_delegations answers only the
+ * caller's own delegations).
+ *
+ * Read through the node's existing dnac_validator_list_query, one paged
+ * read with status filter ACTIVE, then one with ELIGIBLE (an UNSTAKED row
+ * is never read). It is an observation of the node's current table (like
+ * the supply), not the frozen snapshot the epoch reward is computed from —
+ * display only. The pages are separate queries: a boundary that moves a
+ * row between ACTIVE and ELIGIBLE during the read can count it in neither
+ * or both, until the next observation.
  *
  * Stored in db meta as ONE blob (key EXP_META_ACTIVE_STAKE), rewritten on
- * every accepted tip observation; a failed read stores has = 0, so the
- * estimate is absent rather than stale. Layout,
+ * every accepted tip observation; a failed read stores has = 0, so every
+ * figure is absent rather than stale. Layout,
  * EXP_ACTIVE_STAKE_BLOB_LEN bytes:
- *   [0]      has (0 or 1)
- *   [1..]    3 × u64 little-endian: stake, validators, at_tip
- * has == 0 stores every u64 as 0. */
+ *   [0]       has (0 or 1)
+ *   [1..24]   3 × u64 little-endian: stake, validators, at_tip
+ *   [25]      has_delegations (0 or 1)
+ *   [26..57]  4 × u64 little-endian: bonded_validators,
+ *             bonded_self_stake, bonded_delegated, bonded_delegations
+ * has == 0 stores every other byte as 0. A blob of any other length (the
+ * earlier 25-byte layout included) does not unpack — read as unknown. */
 #define EXP_META_ACTIVE_STAKE     "active_stake"
-#define EXP_ACTIVE_STAKE_BLOB_LEN (1 + 8 * 3)
+#define EXP_ACTIVE_STAKE_BLOB_LEN (1 + 8 * 3 + 1 + 8 * 4)
 
 typedef struct {
     int      has;          /* 0: not read (failure / older source) */
     uint64_t stake;        /* raw units (10^-8 NODUS) */
     uint64_t validators;   /* ACTIVE rows summed */
     uint64_t at_tip;       /* the tip height of the observation it was read with */
+    uint64_t bonded_validators;   /* ACTIVE + ELIGIBLE rows */
+    uint64_t bonded_self_stake;   /* raw units */
+    uint64_t bonded_delegated;    /* raw units */
+    int      has_delegations;     /* 1: bonded_delegations is known */
+    uint64_t bonded_delegations;  /* delegation positions */
 } exp_active_stake_t;
 
 void exp_active_stake_pack(const exp_active_stake_t *s,
@@ -207,17 +251,23 @@ void exp_active_stake_pack(const exp_active_stake_t *s,
  *         0 / 1 (*out zeroed, has 0). */
 int exp_active_stake_unpack(const uint8_t *buf, size_t len, exp_active_stake_t *out);
 
-/* Adds one validator-list entry to `acc` when its status is ACTIVE
- * (pure; the network read's summation). @return 0; -1 on a u64 overflow
- * (acc then unchanged). */
+/* Adds one validator-list entry to `acc` (pure; the network read's
+ * summation): an ACTIVE row to stake / validators and to the bonded_*
+ * figures, an ELIGIBLE row to the bonded_* figures only, any other status
+ * to nothing. The caller starts the summation with has_delegations = 1;
+ * a bonded row without a delegator count (has_delegator_count 0) clears
+ * it, and bonded_delegations stops being summed. @return 0; -1 on a u64
+ * overflow (acc then unchanged). */
 int exp_active_stake_add(exp_active_stake_t *acc,
                          const nodus_dnac_validator_list_entry_t *e);
 
-/* Read the active stake on the CURRENT connection — one attempt, no
- * rotation (a failure must not move the sync's server between the tip
- * observation and the height walk). Pages by offset until `total` is
- * reached, at most EXP_ACTIVE_STAKE_MAX_PAGES pages. out->has = 1 on
- * success; out->at_tip is left 0 (the caller sets it).
+/* Read the active stake and the bonded totals on the CURRENT connection —
+ * one attempt, no rotation (a failure must not move the sync's server
+ * between the tip observation and the height walk). For each status read
+ * (ACTIVE, then ELIGIBLE) pages by offset until `total` is reached, at
+ * most EXP_ACTIVE_STAKE_MAX_PAGES pages each; any failure fails the whole
+ * read. out->has = 1 on success; out->at_tip is left 0 (the caller sets
+ * it).
  * @return 0; -1 / the NODUS_ERR_* code on failure (out zeroed). */
 #define EXP_ACTIVE_STAKE_MAX_PAGES 64
 int exp_chain_active_stake(exp_chain_t *c, exp_active_stake_t *out);
