@@ -99,11 +99,14 @@ typedef enum {
     NODUS_V2_SPEND_ERR_DUP_OUTPUT   = -23  /* two outputs derived one id    */
 } nodus_v2_spend_rc_t;
 
-/** Coin-selection direction. Only today's nodus-cli rule exists: largest
- *  amount first, equal amounts by nullifier ascending. Smallest-first is a
- *  PROPOSAL (docs/plans/decisions/2026-09-25-spend-inputs-64-smallest-
- *  first.md item 1; design §5 item 13 — the operator's decision) and is
- *  refused until that decision is taken. */
+/** Coin-selection direction for the COVERING pick. Only today's nodus-cli
+ *  rule exists: largest amount first, equal amounts by nullifier ascending.
+ *  Smallest-first as the covering order is a PROPOSAL (docs/plans/
+ *  decisions/2026-09-25-spend-inputs-64-smallest-first.md item 1; design §5
+ *  item 13 — the operator's decision) and is refused until that decision
+ *  is taken. The dust sweep (nodus_v2_spend_plan, operator 2026-10-07,
+ *  nodus/BUGS.md) walks coins smallest first AFTER the covering pick; it
+ *  is not a selectable order. */
 typedef enum {
     NODUS_V2_SPEND_ORDER_LARGEST_FIRST = 0
 } nodus_v2_spend_order_t;
@@ -256,6 +259,9 @@ typedef struct {
     uint64_t gas_price;      /* 0 = the rule is off                         */
     long     count;          /* spends to plan (ignored under count_all)    */
     int      count_all;      /* one spend per eligible coin (amount_all)    */
+    int      no_dust_sweep;  /* 0 (the zero-initialised default) = the dust
+                              * sweep AND the change absorption below are
+                              * ON; 1 = off, the exact pre-2026-10-07 shape */
 } nodus_v2_spend_plan_req_t;
 
 /**
@@ -265,6 +271,33 @@ typedef struct {
  * the largest shape, raise the fee and re-plan from scratch if needed (at
  * most 8 passes). gas_price 0: one pass. `coins[].kind` must be set by the
  * caller; `used` is overwritten.
+ *
+ * DUST (operator 2026-10-07, nodus/BUGS.md "dnac_utxo 100'den fazla…").
+ * Only when exactly ONE spend is planned (!count_all && count == 1) and
+ * req->no_dust_sweep == 0, inside every fixed-point pass, before pricing:
+ *  - SWEEP: after the covering pick, every unused native coin (kind 0) is
+ *    visited SMALLEST amount first, equal amounts by nullifier ascending (a
+ *    total order — independent of the listing order), and added while the
+ *    plan has fewer than NODUS_V2_SPEND_MAX_IN inputs and the coin's amount
+ *    is STRICTLY greater than the marginal fee of one more input:
+ *      (units(n_in + 1, n_out') − units(n_in, n_out)) × gas_price
+ *    (nodus_v2_spend_units_for_shape; n_out' = n_out + 1 when the coin
+ *    creates the native change output, else n_out; amount_all keeps its
+ *    single output). gas_price 0: the marginal fee is 0, so every coin
+ *    above 0 qualifies. The swept value goes to the native change (normal
+ *    spend) or to the single output (amount_all). A coin at or below the
+ *    marginal fee is skipped, the walk continues.
+ *  - ABSORB (not under fee_fixed, not under amount_all): a native change
+ *    above 0 but NOT above the cost of spending it later — the marginal
+ *    per-input fee of the plan's shape, or max(DNAC_MIN_FEE_RAW,
+ *    NODUS_W_BASE_TX_FEE) at gas_price 0 — is dropped: no change output,
+ *    its value joins the fee (*fee_out = native_in − amount for a native
+ *    spend, native_in for a token spend). The fee only rises; the reduced
+ *    shape is the one priced.
+ * With count > 1 neither runs: the input sets must stay disjoint, later
+ * spends must not be starved, and the batch shares ONE fee. Under fee_fixed
+ * the sweep still runs and a swept shape the fixed fee cannot pay is
+ * refused (NODUS_V2_SPEND_ERR_FEE_BELOW_GAS) — the fee is never lowered.
  * @param plans_out  heap array (caller frees) of *count_out plans
  * @param fee_out    the ONE fee every planned spend pays
  * @return NODUS_V2_SPEND_OK, NODUS_V2_SPEND_NONE_ELIGIBLE (count_all and no
