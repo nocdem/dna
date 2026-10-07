@@ -185,7 +185,18 @@ typedef struct {
 /* ── Batch forward limits ────────────────────────────────────────── */
 
 #define NODUS_BF_MAX_FORWARDS   8    /* Max concurrent forwards per batch */
-#define NODUS_BF_MAX_BATCHES    4    /* Max concurrent batch requests with forwards */
+/* Max concurrent batch requests with forwards — for the WHOLE node, every
+ * client together. A read that finds no free slot is answered from the
+ * local row only (handle_t2_get_all / the single-GET forward path, the
+ * weak answer), so this bounds how many readers get the full forwarded
+ * lookup at once. 4 -> 16 (2026-10-07, web 0.1.73): Nodus Connect pipelines
+ * up to 4 strict reads per user (nodus_client_get_all_page_strict_many).
+ * Cost: 16 x sizeof(dht_bf_batch_t) static in nodus_dht_t, and up to
+ * 16 x NODUS_BF_MAX_FORWARDS = 128 forward sockets, each with a
+ * RESP_BUF_SIZE receive buffer (nodus_dht_server.c bf_start_forward); every
+ * forward socket's fd NUMBER must stay below NODUS_BF_FD_TABLE_SIZE or that
+ * forward does not start. Not consensus, no wire change. */
+#define NODUS_BF_MAX_BATCHES    16
 #define NODUS_BF_TIMEOUT_MS     5000 /* Per-forward timeout */
 
 /* ── DHT Package A: forwarded-read candidate sets (S1/S3, rev 2) ─── */

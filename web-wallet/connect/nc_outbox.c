@@ -205,6 +205,21 @@ void nc_inbox_clear(nc_inbox_t *in) {
     in->count = 0;
 }
 
+/* The key of one day bucket of `peer`'s outbox to this identity and its
+ * owner (the peer is the sender, this identity the recipient —
+ * dht_dm_outbox_sync_day). 0 / -1. */
+static int outbox_day_key(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                          const uint8_t salt[NC_SALT_LEN], uint64_t day,
+                          nodus_key_t *key, nodus_key_t *owner) {
+    if (outbox_key(peer->fp, ctx->keys->fp, day, salt, key) != 0 ||
+        nc_fp_parse(peer->fp, owner) != 0)
+        return -1;
+    return 0;
+}
+
+static int outbox_day_finish(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                             const uint8_t *skip_blob, nc_inbox_t *out);
+
 int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
                         const uint8_t salt[NC_SALT_LEN], uint64_t day,
                         const uint8_t *skip_blob, nc_inbox_t *out) {
@@ -213,12 +228,49 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
     if (!ctx || !ctx->keys || !peer || !salt) return NC_ERR_ARG;
 
     nodus_key_t key, owner;
-    /* the peer is the sender, this identity the recipient
-     * (dht_dm_outbox_sync_day) */
-    if (outbox_key(peer->fp, ctx->keys->fp, day, salt, &key) != 0 ||
-        nc_fp_parse(peer->fp, &owner) != 0)
+    if (outbox_day_key(ctx, peer, salt, day, &key, &owner) != 0)
         return NC_ERR_ARG;
     nc_read_one(ctx, &key, &owner, &out->read);
+    return outbox_day_finish(ctx, peer, skip_blob, out);
+}
+
+int nc_outbox_fetch_days(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                         const uint8_t salt[NC_SALT_LEN],
+                         const nc_outbox_day_req_t *days, size_t n,
+                         nc_inbox_t *outs, int *rcs) {
+    if (!outs || !rcs || !days || n == 0 || n > NC_READ_MANY_MAX)
+        return NC_ERR_ARG;
+    memset(outs, 0, n * sizeof(*outs));
+    for (size_t i = 0; i < n; i++) rcs[i] = NC_ERR_ARG;
+    if (!ctx || !ctx->keys || !peer || !salt) return NC_ERR_ARG;
+
+    /* The days whose key derives (the single call answers NC_ERR_ARG for
+     * the others without reading), compacted for one pipelined read. */
+    nodus_key_t keys[NC_READ_MANY_MAX], owners[NC_READ_MANY_MAX];
+    nc_read_t reads[NC_READ_MANY_MAX];
+    size_t at[NC_READ_MANY_MAX], m = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (outbox_day_key(ctx, peer, salt, days[i].day, &keys[m],
+                           &owners[m]) != 0)
+            continue;
+        at[m++] = i;
+    }
+    if (m > 0 && nc_read_owner_many(ctx, keys, owners, m, reads) != NC_OK)
+        return NC_ERR_INTERNAL;           /* m is within 1..NC_READ_MANY_MAX */
+    for (size_t j = 0; j < m; j++) {
+        nc_inbox_t *out = &outs[at[j]];
+        out->read = reads[j];
+        rcs[at[j]] = outbox_day_finish(ctx, peer, days[at[j]].skip_blob, out);
+    }
+    return NC_OK;
+}
+
+/* Everything nc_outbox_fetch_day does after its read (out->read set): the
+ * blob hash, the skip, the codec, and per message the decrypt, the
+ * authorship gate and the chat / other / dropped split. Shared by
+ * nc_outbox_fetch_day and nc_outbox_fetch_days. */
+static int outbox_day_finish(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                             const uint8_t *skip_blob, nc_inbox_t *out) {
     if (out->read.outcome != NC_FOUND) return NC_OK;
 
     dht_offline_message_t *msgs = NULL;

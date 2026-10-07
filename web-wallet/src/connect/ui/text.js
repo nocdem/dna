@@ -502,14 +502,15 @@ export function contactStartLine(id) {
 }
 
 // Log, before each network step of a contact's check (messages.js
-// syncContact / publishOutbox): "contact ID 1a2b3c4d…9f0e: outbox day 20368".
-// `step`: 'profile' | 'salt' | 'ack' | 'publish' | 'day' | 'ack publish',
+// syncContact / publishOutbox): "contact ID 1a2b3c4d…9f0e: outbox days 8".
+// `step`: 'profile' | 'salt' | 'ack' | 'publish' | 'days' | 'ack publish',
 // or 'name' (the first round's chain-name lookup of one ID, sync);
-// `day`: the bucket's day number for 'day'.
-const CONTACT_STEPS = Object.freeze({ profile: 'profile', salt: 'salt', ack: 'ack', publish: 'outbox publish', day: 'outbox day', 'ack publish': 'ack publish', name: 'chain name' });
-export function contactStepLine(id, step, day) {
+// `count`: for 'days', how many day buckets the one pipelined read asks
+// for (core.outboxFetchDays, web 0.1.73; one line per day before).
+const CONTACT_STEPS = Object.freeze({ profile: 'profile', salt: 'salt', ack: 'ack', publish: 'outbox publish', days: 'outbox days', 'ack publish': 'ack publish', name: 'chain name' });
+export function contactStepLine(id, step, count) {
   const name = CONTACT_STEPS[step] || 'unknown step';
-  const which = step === 'day' ? ` ${U64.test(String(day)) ? String(day) : '?'}` : '';
+  const which = step === 'days' ? ` ${Number.isSafeInteger(count) && count >= 0 ? String(count) : '?'}` : '';
   return `contact ${typeof id === 'string' ? id : 'ID ?'}: ${name}${which}`;
 }
 

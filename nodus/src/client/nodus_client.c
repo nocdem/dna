@@ -1862,29 +1862,17 @@ int nodus_client_get_owner(nodus_client_t *client,
     return rc;
 }
 
-/* Shared by nodus_client_get_all_page and nodus_client_get_all_page_strict:
- * one request, one reply handler (client_page_result_impl). `undecodable_out`
- * NULL = the non-strict path. */
-static int client_get_all_page_impl(nodus_client_t *client,
-                                    const nodus_key_t *key,
-                                    const nodus_key_t *owner_fp,
-                                    const nodus_dht_page_cursor_t *after,
-                                    nodus_value_t ***vals_out,
-                                    size_t *count_out,
-                                    bool *more_out,
-                                    nodus_dht_page_cursor_t *cursor_out,
-                                    bool *legacy_out,
-                                    size_t *undecodable_out) {
-    if (!nodus_client_is_ready(client) || !key || !vals_out || !count_out ||
-        !more_out || !cursor_out || !legacy_out)
-        return -1;
-    *vals_out = NULL;
-    *count_out = 0;
-    *more_out = false;
-    *legacy_out = false;
-    memset(cursor_out, 0, sizeof(*cursor_out));
-    if (undecodable_out) *undecodable_out = 0;
-
+/* The request half of one paged GET_ALL ("pg", plus "after" / "own"): a
+ * pending slot, the frame, the send. Shared by client_get_all_page_impl and
+ * nodus_client_get_all_page_strict_many, so both send the same frame.
+ * Returns 0 with *req_out set (the caller waits on it and frees it), or -1
+ * with nothing held (no slot, encode failure, send failure). */
+static int client_page_send(nodus_client_t *client,
+                            const nodus_key_t *key,
+                            const nodus_key_t *owner_fp,
+                            const nodus_dht_page_cursor_t *after,
+                            nodus_pending_t **req_out) {
+    *req_out = NULL;
     nodus_t2_cursor_t t2_after;
     nodus_t2_read_opts_t opts;
     memset(&opts, 0, sizeof(opts));
@@ -1909,9 +1897,27 @@ static int client_get_all_page_impl(nodus_client_t *client,
     }
     if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
     free(buf);
+    *req_out = req;
+    return 0;
+}
 
+/* The reply half: wait for `req` at most `timeout_ms`, then the one reply
+ * handler (client_page_result_impl) on the decoded reply and the raw bytes
+ * client_on_frame kept. Always frees `req`. Outputs initialised by the
+ * caller. */
+static int client_page_reply(nodus_client_t *client, nodus_pending_t *req,
+                             int timeout_ms,
+                             const nodus_key_t *key,
+                             const nodus_key_t *owner_fp,
+                             const nodus_dht_page_cursor_t *after,
+                             nodus_value_t ***vals_out,
+                             size_t *count_out,
+                             bool *more_out,
+                             nodus_dht_page_cursor_t *cursor_out,
+                             bool *legacy_out,
+                             size_t *undecodable_out) {
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (!wait_response(client, req, timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     int rc = client_page_result_impl(resp, key, owner_fp, after,
                                      undecodable_out != NULL,
                                      req->raw_response, req->raw_response_len,
@@ -1919,6 +1925,37 @@ static int client_get_all_page_impl(nodus_client_t *client,
                                      legacy_out, undecodable_out);
     free_pending(client, req);
     return rc;
+}
+
+/* Shared by nodus_client_get_all_page and nodus_client_get_all_page_strict:
+ * one request (client_page_send), one reply handler (client_page_reply ->
+ * client_page_result_impl). `undecodable_out` NULL = the non-strict path. */
+static int client_get_all_page_impl(nodus_client_t *client,
+                                    const nodus_key_t *key,
+                                    const nodus_key_t *owner_fp,
+                                    const nodus_dht_page_cursor_t *after,
+                                    nodus_value_t ***vals_out,
+                                    size_t *count_out,
+                                    bool *more_out,
+                                    nodus_dht_page_cursor_t *cursor_out,
+                                    bool *legacy_out,
+                                    size_t *undecodable_out) {
+    if (!nodus_client_is_ready(client) || !key || !vals_out || !count_out ||
+        !more_out || !cursor_out || !legacy_out)
+        return -1;
+    *vals_out = NULL;
+    *count_out = 0;
+    *more_out = false;
+    *legacy_out = false;
+    memset(cursor_out, 0, sizeof(*cursor_out));
+    if (undecodable_out) *undecodable_out = 0;
+
+    nodus_pending_t *req = NULL;
+    if (client_page_send(client, key, owner_fp, after, &req) != 0) return -1;
+    return client_page_reply(client, req, client->config.request_timeout_ms,
+                             key, owner_fp, after, vals_out, count_out,
+                             more_out, cursor_out, legacy_out,
+                             undecodable_out);
 }
 
 int nodus_client_get_all_page(nodus_client_t *client,
@@ -1949,6 +1986,60 @@ int nodus_client_get_all_page_strict(nodus_client_t *client,
     return client_get_all_page_impl(client, key, owner_fp, after, vals_out,
                                     count_out, more_out, cursor_out,
                                     legacy_out, undecodable_out);
+}
+
+/* Up to NODUS_CLIENT_PAGE_PIPELINE_MAX strict page requests in flight on the
+ * one session: every frame is sent first (client_page_send — the frame
+ * nodus_client_get_all_page_strict sends), then each reply is awaited and
+ * handled in request order (client_page_reply — the same wait and the same
+ * client_page_result_impl, strict). Replies are matched by txn only
+ * (client_on_frame -> nodus_client_pending_find), so a reply that arrives
+ * while an earlier request is awaited is stored in its own pending slot:
+ * by the read thread natively, by the transport poll inside wait_response
+ * in the browser build (no read thread). Each request keeps the single
+ * call's limit measured from its own send, so the whole call is bounded by
+ * about one request timeout. */
+int nodus_client_get_all_page_strict_many(nodus_client_t *client,
+                                          nodus_page_req_t *reqs, size_t n) {
+    if (!reqs || n == 0 || n > NODUS_CLIENT_PAGE_PIPELINE_MAX) return -1;
+    for (size_t i = 0; i < n; i++) {
+        nodus_page_req_t *r = &reqs[i];
+        r->rc = -1;
+        r->vals = NULL;
+        r->count = 0;
+        r->more = false;
+        memset(&r->cursor, 0, sizeof(r->cursor));
+        r->legacy = false;
+        r->undecodable = 0;
+    }
+    for (size_t i = 0; i < n; i++)
+        if (!reqs[i].key) return -1;
+    /* Not ready: every item answers -1, as the single call does. */
+    if (!nodus_client_is_ready(client)) return 0;
+
+    nodus_pending_t *pend[NODUS_CLIENT_PAGE_PIPELINE_MAX];
+    uint64_t sent_at[NODUS_CLIENT_PAGE_PIPELINE_MAX];
+    for (size_t i = 0; i < n; i++) {
+        /* A send that fails leaves that item at -1 (the single call's
+         * answer); the others go on. */
+        if (client_page_send(client, reqs[i].key, reqs[i].owner_fp,
+                             reqs[i].after, &pend[i]) != 0)
+            pend[i] = NULL;
+        sent_at[i] = now_ms();
+    }
+
+    int limit = client->config.request_timeout_ms;
+    for (size_t i = 0; i < n; i++) {
+        if (!pend[i]) continue;
+        uint64_t spent = elapsed_since(sent_at[i]);
+        int left = (limit <= 0 || spent >= (uint64_t)limit)
+                       ? 0 : limit - (int)spent;
+        nodus_page_req_t *r = &reqs[i];
+        r->rc = client_page_reply(client, pend[i], left, r->key, r->owner_fp,
+                                  r->after, &r->vals, &r->count, &r->more,
+                                  &r->cursor, &r->legacy, &r->undecodable);
+    }
+    return 0;
 }
 
 /* get_batch reply with the per-key could-not-look marker "u" (rev 2 items

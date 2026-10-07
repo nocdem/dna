@@ -813,8 +813,13 @@ test('progress log: round, stage and per-step lines are exact', () => {
   assert.equal(contactStepLine(PROGRESS_ID, 'salt'), 'contact ID 1a2b3c4d…9f0e: salt');
   assert.equal(contactStepLine(PROGRESS_ID, 'ack'), 'contact ID 1a2b3c4d…9f0e: ack');
   assert.equal(contactStepLine(PROGRESS_ID, 'publish'), 'contact ID 1a2b3c4d…9f0e: outbox publish');
-  assert.equal(contactStepLine(PROGRESS_ID, 'day', '20368'), 'contact ID 1a2b3c4d…9f0e: outbox day 20368');
-  assert.equal(contactStepLine(PROGRESS_ID, 'day', 'x'), 'contact ID 1a2b3c4d…9f0e: outbox day ?');
+  // One line for the contact's whole pipelined bucket read (web 0.1.73).
+  assert.equal(contactStepLine(PROGRESS_ID, 'days', 8), 'contact ID 1a2b3c4d…9f0e: outbox days 8');
+  assert.equal(contactStepLine(PROGRESS_ID, 'days', 3), 'contact ID 1a2b3c4d…9f0e: outbox days 3');
+  assert.equal(contactStepLine(PROGRESS_ID, 'days', 'x'), 'contact ID 1a2b3c4d…9f0e: outbox days ?');
+  assert.equal(contactStepLine(PROGRESS_ID, 'days', -1), 'contact ID 1a2b3c4d…9f0e: outbox days ?');
+  // The per-day step is gone: an unknown step, not a day line.
+  assert.equal(contactStepLine(PROGRESS_ID, 'day', '20368'), 'contact ID 1a2b3c4d…9f0e: unknown step');
   assert.equal(contactStepLine(PROGRESS_ID, 'ack publish'), 'contact ID 1a2b3c4d…9f0e: ack publish');
   assert.equal(contactStepLine(PROGRESS_ID, 'name'), 'contact ID 1a2b3c4d…9f0e: chain name');
   assert.equal(contactStepLine(undefined, 'nope'), 'contact ID ?: unknown step');
@@ -863,7 +868,7 @@ test('progress log lines pass the session log scrub unchanged (short ID, counts,
     stageStartLine(12, 'account'), stageLine(12, 'account', 98765),
     stageStartLine(12, 'publish'), stageLine(12, 'publish', 3),
     contactStartLine(PROGRESS_ID),
-    contactStepLine(PROGRESS_ID, 'profile'), contactStepLine(PROGRESS_ID, 'day', '20368'), contactStepLine(PROGRESS_ID, 'ack publish'),
+    contactStepLine(PROGRESS_ID, 'profile'), contactStepLine(PROGRESS_ID, 'days', 8), contactStepLine(PROGRESS_ID, 'ack publish'),
     contactLine(PROGRESS_ID, { ms: 61234, fresh: 3, diag, days: 8 }),
     contactLine(PROGRESS_ID, { ms: 5, diag: undefined, days: 3, failed: true }),
     roundDoneLine(12, { ms: 1234567, fresh: 3, failed: 1 })
