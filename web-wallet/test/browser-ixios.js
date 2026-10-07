@@ -197,7 +197,9 @@ try {
   assert.equal(await page.locator('#ixios-address-status').isVisible(), true);
   assert.match(await page.locator('#ixios-address-status').innerText(), /Derived locally/);
   assert.equal(await page.locator('#cellframe-address-status').isVisible(), false);
-  assert.equal(await page.locator('#account-explorer').isVisible(), false);
+  // (#account-explorer sits on the Activity page since 0.1.75: its own
+  // `hidden` says whether the network has an explorer.)
+  assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
   assert.match(await page.locator('#receive-title').innerText(), /Receive on Ixios/);
   assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Ixios');
   // The QR encodes exactly the checksummed Ixios address shown.

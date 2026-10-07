@@ -48,6 +48,12 @@ await page.route('**/*', async route => {
 // "released" is waited for (the 10 s page timeout fails it if it never happens).
 const sessionHeld = () => page.evaluate(async () => (await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
 const sessionReleased = () => page.waitForFunction(async () => !(await navigator.locks.query()).held.some(lock => lock.name === 'nodus.wallet.session'));
+// Wallet pages (src/app.js, 0.1.75): everything but Portfolio and Send /
+// Receive is a page of its own, opened from the wallet's navigation; the
+// page's Back control returns to the wallet view.
+const WALLET_PAGES = ['earn', 'vaults', 'contracts', 'wallet-activity', 'address-book', 'settings', 'logs'];
+const openPage = async name => { await page.locator(`.wallet-navigation a[href="#${name}"]`).click(); await page.locator(`#page-${name}`).waitFor({ state: 'visible' }); };
+const walletView = async () => { const back = page.locator('.wallet-page:not([hidden]) .page-back'); if (await back.count()) await back.click(); await page.locator('#wallet-home').waitFor({ state: 'visible' }); };
 // Serializes the receive QR <svg>, draws it through an <img> (data: URL, allowed
 // by img-src) onto a white canvas at 4 px per module, and decodes the pixels
 // with jsQR. Returns the decoded text, or undefined when nothing decodes.
@@ -92,9 +98,13 @@ try {
   // The build carries the send module, so until a node connection is ready
   // (never, here: no node is reachable) NODUS says it is connecting.
   assert.equal(await page.locator('#send-disabled-note').innerText(), 'Connecting to the Nodus network… Sending NODUS becomes available as soon as the connection is ready.');
-  assert.equal(await page.locator('#account-explorer').isVisible(), false);
-  assert.equal(await page.locator('#rpc-settings').isVisible(), false);
-  assert.equal(await page.locator('#activity').innerText(), '');
+  assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
+  assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), true);
+  assert.equal(await page.locator('#activity').textContent(), '');
+  // The wallet view is Portfolio and Send / Receive; every other section is
+  // a page, not shown until opened.
+  assert.equal(await page.locator('#wallet-home').isVisible(), true);
+  for (const name of WALLET_PAGES) assert.equal(await page.locator(`#page-${name}`).isVisible(), false, name);
   // Portfolio: NODUS is the first asset group, badge and network filter; its row
   // has only Receive and shows no balance (no amount, no zero, no read state).
   assert.equal(await page.locator('#balances .asset-group').first().getAttribute('data-symbol'), 'NODUS');
@@ -149,7 +159,44 @@ try {
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await nodusGroup.locator('summary').click(); await solGroup.locator('summary').click();
   assert.match(await page.locator('#portfolio-scope').innerText(), /NODUS is shown, but its balance is not shown yet/);
+  // Device & settings is its own page: it replaces the wallet view, its title
+  // takes focus and the URL names it; Back returns to the wallet view where
+  // it was, with focus on the link that opened the page; the browser's Back
+  // does the same.
+  // (The link is clicked in the page: Playwright's own click would first
+  // scroll it into view and move the position being checked.)
+  await page.evaluate(() => scrollTo(0, 200)); const walletScrolled = await page.evaluate(() => scrollY);
+  await page.evaluate(() => document.querySelector('.wallet-navigation a[href="#settings"]').click());
+  await page.locator('#page-settings').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#wallet-home').isVisible(), false);
+  assert.equal(await page.evaluate(() => location.hash), '#settings');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'device-title');
   assert.match(await page.locator('#wallet-storage-state').innerText(), /Temporary session/);
+  await page.locator('#page-settings .page-back').click();
+  await page.waitForFunction(() => location.hash === '');
+  assert.equal(await page.locator('#wallet-home').isVisible(), true);
+  assert.equal(await page.locator('#page-settings').isVisible(), false);
+  assert.equal(await page.evaluate(() => scrollY), walletScrolled);
+  assert.equal(await page.evaluate(() => document.activeElement.getAttribute('href')), '#settings');
+  await openPage('wallet-activity');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'activity-title');
+  await page.goBack(); await page.waitForFunction(() => location.hash === '');
+  assert.equal(await page.locator('#wallet-home').isVisible(), true);
+  assert.equal(await page.locator('#page-wallet-activity').isVisible(), false);
+  // Logs: a page of its own, linked from Device & settings; open only there.
+  await openPage('settings'); await page.locator('#device-panel a[href="#logs"]').click();
+  await page.locator('#page-logs').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#session-logs').evaluate(node => node.open), true);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'logs-title');
+  await page.locator('#page-logs .page-back').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#session-logs').evaluate(node => node.open), false);
+  // Earn, Shared vaults and Smart contracts need the NODUS node: no link, and
+  // their hashes show the wallet view.
+  for (const id of ['nav-earn', 'nav-vaults', 'nav-evm']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
+  await page.evaluate(() => { location.hash = 'contracts'; }); await page.waitForFunction(() => location.hash === '#contracts');
+  assert.equal(await page.locator('#wallet-home').isVisible(), true);
+  assert.equal(await page.locator('#page-contracts').isVisible(), false);
+  await walletView(); await page.evaluate(() => history.replaceState(null, '', location.pathname));
   // Both shortcuts lead to the same Send / Receive panel: send block below, receive block on top.
   assert.equal(await page.locator('.wallet-navigation a[href="#send-form"]').innerText(), 'Send / Receive');
   await page.locator('#quick-send').click();
@@ -176,15 +223,19 @@ try {
   // its sender and an explorer link; a second selection within 30 minutes
   // does not read again (the provider limits requests).
   await page.waitForFunction(() => /\+1\.5 ETH/.test(document.querySelector('#history').textContent));
+  await openPage('wallet-activity');
   assert.match(await page.locator('#history').innerText(), /from 0x121212…121212/);
   assert.equal(await page.locator('#history a').getAttribute('href'), 'https://etherscan.io/tx/0x' + 'ab'.repeat(32));
   assert.deepEqual(historySeen.filter(s => s.startsWith('ethereum')), ['ethereum:txlist', 'ethereum:tokentx', 'ethereum:tokentx', 'ethereum:tokentx']);
+  await walletView();
   await page.selectOption('#chain', 'bsc'); await page.selectOption('#chain', 'ethereum');
   assert.equal(historySeen.filter(s => s.startsWith('ethereum')).length, 4);
+  await openPage('wallet-activity');
   assert.match(await page.locator('#history-status').innerText(), /as reported by Blockscout/);
   await page.locator('#history-refresh').click();
   assert.match(await page.locator('#history-status').innerText(), /Try again in a minute/);
-  assert.equal(await page.locator('#rpc-settings').isVisible(), true);
+  await walletView();
+  assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), false);
   // Cellframe/CPUNK now lives inside the wallet like any other asset: its
   // address is derived automatically (started right after the wallet opened,
   // same as Nodus), and there is no separate panel or manual derive button.
@@ -195,7 +246,7 @@ try {
   assert.equal(await decodeQr(), await page.locator('#receive-address').innerText(), 'cellframe QR decodes to the shown address');
   assert.equal(await page.locator('#send-fields').isVisible(), false);
   assert.match(await page.locator('#send-disabled-note').innerText(), /Sending CPUNK is not available/);
-  assert.equal(await page.locator('#account-explorer').isVisible(), false);
+  assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
   assert.equal(broadcasts.length, 0);
   for (const [chain, expected] of [['bsc','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb'],['solana','3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx'],['tron','TEfhiqsW1SdN44DeHrAWVmbyr8ZbvChrtS'],['ethereum','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb']]) {
     await page.selectOption('#chain', chain); assert.equal(await page.locator('#receive-address').innerText(), expected);
@@ -208,18 +259,22 @@ try {
   // option, and picking "Custom HTTPS endpoint..." reveals the free-text box.
   // Open the settings disclosure first, as a user must: inside a closed
   // <details> Chromium reports option innerText as '' and every control as
-  // not visible, so the visibility checks below would pass vacuously.
+  // not visible, so the visibility checks below would pass vacuously. The
+  // settings are on the Device & settings page and follow the network
+  // selected in Send / Receive on the wallet view.
+  const rpcFor = async chain => { await walletView(); await page.selectOption('#chain', chain); await openPage('settings'); };
+  await openPage('settings');
   await page.locator('#rpc-settings summary').click();
   assert.equal(await page.locator('#rpc-choice').isVisible(), true);
-  await page.selectOption('#chain', 'tron');
+  await rpcFor('tron');
   assert.deepEqual(await page.locator('#rpc-choice option').allTextContents(), ['TronGrid']);
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
-  await page.selectOption('#chain', 'bsc');
+  await rpcFor('bsc');
   assert.equal(await page.locator('#rpc-choice option').count(), 9);
   assert.equal(await page.locator('#rpc-choice option').last().innerText(), 'Custom HTTPS endpoint…');
-  await page.selectOption('#chain', 'solana');
+  await rpcFor('solana');
   assert.equal(await page.locator('#rpc-choice option').count(), 2);
-  await page.selectOption('#chain', 'ethereum');
+  await rpcFor('ethereum');
   assert.equal(await page.locator('#rpc-choice option').count(), 5);
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
   await page.selectOption('#rpc-choice', 'custom');
@@ -227,6 +282,7 @@ try {
   assert.equal(await page.locator('#rpc-endpoint').inputValue(), '');
   await page.selectOption('#rpc-choice', '0');
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
+  await walletView();
   await page.locator('#refresh').click(); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10 ETH')); // 0.1.28 display form (was '10.0')
   await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value strong'); return strong && strong.textContent.includes('CPUNK'); });
   assert.equal(await page.locator('.asset-group[data-symbol="CPUNK"] .asset-value small').innerText(), '—');
@@ -239,7 +295,9 @@ try {
   // B-1: the first send has no final result yet, so it must be marked abandoned
   // before a second same-network review can open; E-2 also clears the recipient
   // after a successful broadcast, so it is re-filled here too.
+  await openPage('wallet-activity');
   await page.locator('#activity').getByRole('button', { name: 'Mark as abandoned' }).click(); await page.locator('#activity').getByRole('button', { name: 'Confirm abandon' }).click(); await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('abandoned'));
+  await walletView();
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001');
   await page.selectOption('#asset','USDC'); await page.locator('#amount').fill('1.000001'); await page.locator('#review-button').click(); await page.locator('#review-dialog').waitFor({ state: 'visible' }); await page.locator('#confirm-send').click();
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
@@ -265,6 +323,7 @@ try {
   cellframeFail = false;
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   networkId = '0x1';
+  await openPage('settings');
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
   assert.equal(await page.locator('#vault-change').isVisible(), false);
@@ -295,6 +354,7 @@ try {
   // 0.1.41: the balances read while the wallet was NOT saved were not written
   // (localStorage was empty above); once saved they are, encrypted (decision
   // 2026-10-02-device-cache-only-when-saved).
+  await walletView();
   await page.locator('#portfolio-refresh').click();
   await page.waitForFunction(() => !document.querySelector('#portfolio-refresh').disabled);
   await page.waitForFunction(() => localStorage.getItem('nodus.balances.v1') !== null);
@@ -309,6 +369,7 @@ try {
   await page.locator('#restore').click(); await pastePhrase(page, phrase);
   await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  await openPage('settings');
   assert.equal(await page.locator('#vault-storage-title').innerText(), 'Unlock saved wallet to change password');
   assert.match(await page.locator('#vault-save-explain').innerText(), /Lock this temporary session, then unlock the saved wallet/);
   for (const id of ['vault-password', 'vault-confirm-password', 'vault-old-password', 'vault-risk-confirm', 'vault-save', 'vault-change']) assert.equal(await page.locator(`#${id}`).isVisible(), false, id);
@@ -322,6 +383,7 @@ try {
   assert.equal(await sessionHeld(), true); assert.equal(await page.locator('#session-conflict').isVisible(), false);
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
+  await openPage('settings');
   assert.equal(await page.locator('#vault-save').isVisible(), false);
   assert.equal(await page.locator('#vault-change').isVisible(), true);
   assert.equal(await page.locator('#vault-old-password').isVisible(), true);
@@ -344,6 +406,16 @@ try {
   assert.equal(await page.locator('#vault-change').isVisible(), true);
   await page.reload(); await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
   await page.locator('#unlock-password').fill('changed-test-password-123'); await page.locator('#unlock-wallet').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  // The reload happened on Device & settings: the pagehide lock kept the
+  // hash, so the unlock opens that page again. Its Back control does not step
+  // back into the entries of the page before the reload (that would load the
+  // page again and lock the wallet): it opens the wallet view in place.
+  assert.equal(await page.evaluate(() => location.hash), '#settings');
+  assert.equal(await page.locator('#page-settings').isVisible(), true);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'device-title');
+  await walletView();
+  assert.equal(await page.locator('#wallet-open').isVisible(), true);
+  assert.equal(await page.evaluate(() => location.hash), '');
   await page.selectOption('#chain', 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
@@ -355,6 +427,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('deleted from this device'));
   assert.equal(await page.locator('#vault-status').innerText(), 'Saved wallet, saved activity and message history deleted from this device.');
   assert.equal(await page.evaluate(() => localStorage.length), 0);
+  await openPage('settings');
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
   assert.equal(await page.locator('#vault-change').isVisible(), false);

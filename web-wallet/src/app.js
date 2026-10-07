@@ -16,7 +16,7 @@ import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
 import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient, NODUS_CONNECT_BOUND_MS } from './nodus/client.js';
 import { netLevelFor, netStatusView } from './net-status.js';
-// The session log (memory only, cleared on lock; Device & settings → Logs).
+// The session log (memory only, cleared on lock; the Logs page).
 import { sessionLog, stepLog, logPageErrors, mountSessionLogView } from './session-log.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
@@ -359,7 +359,7 @@ const portfolio = createPortfolio({
   // panel below the asset list: SINGLE_COLUMN_DASHBOARD) scrolls it into view.
   selectAsset(chain, symbol, action) {
     if (!wallet) return;
-    if (action !== 'earn') showEarn(false);
+    if (action !== 'earn') navigateWalletPage(null);
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
     if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
     $(action === 'send' ? 'quick-send' : action === 'earn' ? 'quick-earn' : 'quick-receive').click();
@@ -580,7 +580,7 @@ $('save-recipient').onclick = () => {
   $('address-book-address').value = lastSentRecipient.address;
   $('address-book-label').value = lastSentRecipient.suggested;
   addressBookStatus('Give this address a name, then press Save address.');
-  $('address-book-panel').scrollIntoView({ block: 'start' });
+  navigateWalletPage('address-book', { focus: false });
   $('address-book-label').focus({ preventScroll: true });
 };
 function clearAddressBook() {
@@ -980,23 +980,16 @@ const CONFIRM_TEXT = { claim: 'Confirm & claim', delegate: 'Confirm & delegate',
 const nodusAmountText = units => groupDigits(formatUnits(units, NODUS_ASSET.decimals));
 // Earn (0.1.31): the staking panel is reached from an "Earn" button beside
 // Send / Receive, a navigation link and the NODUS portfolio row. All three
-// exist only while the panel does.
+// exist only while the panel does. Since 0.1.75 the panel is its own page
+// (#earn, the wallet pages below); #stake-panel's `hidden` says only whether
+// staking is available, and the page closes by itself when it is not.
 function setEarnAvailable(available) {
-  $('quick-earn').hidden = !available; $('nav-earn').hidden = !available;
+  $('quick-earn').hidden = !available; $('nav-earn').hidden = !available; $('stake-panel').hidden = !available;
   portfolio.setEarn(NODUS_ASSET.chain, available);
-}
-// The right-hand column shows EITHER the Send / Receive panel OR the Earn
-// (staking) panel (operator, 2026-10-01): Earn swaps Send / Receive out,
-// Send or Receive swaps it back. Earn mode needs staking to be available.
-let earnMode = false;
-function showEarn(on) {
-  earnMode = !!on && !$('quick-earn').hidden;
-  $('send-form').hidden = earnMode; $('stake-panel').hidden = !earnMode;
-  $('quick-earn').setAttribute('aria-pressed', String(earnMode));
 }
 function hideStaking() {
   stakeCheck++; stakeView = undefined; expandedValidator = undefined; setEarnAvailable(false);
-  showEarn(false); $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('unlisted-delegations').hidden = true;
+  $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('unlisted-delegations').hidden = true;
   $('stake-status').textContent = '';
 }
 async function refreshStaking() {
@@ -1296,7 +1289,9 @@ $('name-input').addEventListener('input', clearNameQuote);
 $('name-input').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void checkName(); } });
 $('name-check').onclick = () => void checkName();
 $('name-review').onclick = () => void startName();
-function lock() {
+// event: the DOM event when lock is a listener; the pagehide lock keeps the
+// URL's page hash so a reload opens that page again (wallet pages, below).
+function lock(event) {
   // Extensions close before the NODUS client (stopNodusSend raises
   // nodusClosing first), then the cross-site mark is dropped.
   stopNodusSend({ reselect: false }); nodusRetries = 0;
@@ -1315,13 +1310,14 @@ function lock() {
   releaseSession(); $('session-conflict').hidden = true;
   $('discard-activity').hidden = true;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
+  resetWalletPages({ keepHash: event?.type === 'pagehide' });
   history.length = 0; $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
   raise('locked');
-  // The session log ends with the session (Device & settings → Logs);
+  // The session log ends with the session (the Logs page);
   // `pagehide` runs this lock too.
   sessionLog.clear(); netLevelLogged = undefined;
 }
@@ -1521,27 +1517,165 @@ function selectChain() {
   renderHistory(); void loadHistory(chain);
 }
 $('chain').onchange = selectChain;
+
+// ── wallet pages (0.1.75) ───────────────────────────────────────────────
+// The open wallet shows its own view (#wallet-home: Portfolio and Send /
+// Receive) OR one of its pages (operator, 2026-10-08: everything else is a
+// separate page): Earn, Shared vaults, Smart contracts, Activity, Address
+// book, Device & settings and Logs — each a `.wallet-page` wrapper
+// (data-page = its name, index.html and connect-site/index.html) holding one
+// panel and a "Back to wallet" control. A page replaces #wallet-home in the
+// same document, so the open wallet (keys, NODUS client) is untouched.
+//
+// The URL hash names the page (#contracts, #settings, …): the wallet's links
+// set it, the browser's Back and Forward follow it, and a reload opens the
+// page again after the next unlock (the pagehide lock keeps the hash; every
+// other lock clears it). A panel's own `hidden` says only whether it is
+// available (src/evm/ui.js, src/vaults/ui.js, setEarnAvailable); the router
+// writes only the wrappers' `hidden`. A page whose panel is not available is
+// not shown — the wallet view is — and it opens once the panel becomes
+// available (Earn, Shared vaults and Smart contracts appear only after the
+// NODUS client connects), unless the user has done anything in the wallet
+// meanwhile.
+const WALLET_PAGES = [...document.querySelectorAll('.wallet-page')];
+const pageNode = name => WALLET_PAGES.find(node => node.dataset.page === name) || null;
+const pagePanel = node => node.querySelector('.dashboard-panel');
+const pageAvailable = node => !!node && !pagePanel(node).hidden;
+const pageTitle = node => $(pagePanel(node).getAttribute('aria-labelledby'));
+function hashName() { try { return decodeURIComponent(location.hash.slice(1)); } catch { return ''; } }
+// The page the hash names: a page's own name, or the id of an element on a
+// page (an in-page link into a page, such as Messages' "Open vault" card →
+// #vault-panel, src/vaults/ui.js openLink).
+function hashPage() {
+  const name = hashName();
+  if (!name) return null;
+  if (pageNode(name)) return name;
+  return document.getElementById(name)?.closest('.wallet-page')?.dataset.page || null;
+}
+const pageUrl = name => `${location.pathname}${location.search}${name ? `#${encodeURIComponent(name)}` : ''}`;
+// The wallet view's container is on screen (Nodus Connect: the Wallet tab).
+const walletViewShown = () => !$('wallet-home').parentElement.closest('[hidden]');
+// shownPage: the page on screen (null: the wallet view). waitingPage: the
+// page the hash asks for while its panel is not available. walletScroll:
+// where the wallet view was scrolled when a page replaced it.
+// (`history` in this file is the account-history list: the browser's is
+// window.history.)
+let shownPage = null, waitingPage = null, walletScroll = 0;
+if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual';
+
+function showWalletPage(name, { focus = true } = {}) {
+  const node = pageNode(name);
+  const next = pageAvailable(node) ? name : null;
+  if (next === shownPage) { if (next && focus) pageTitle(node)?.focus({ preventScroll: true }); return; }
+  const previous = shownPage;
+  if (!previous && walletViewShown()) walletScroll = scrollY;
+  shownPage = next;
+  $('wallet-home').hidden = !!next;
+  for (const page of WALLET_PAGES) page.hidden = !next || page !== node;
+  // The Logs view (src/session-log.js) fills and refreshes only while its
+  // <details> is open: open on the Logs page, closed everywhere else.
+  $('session-logs').open = next === 'logs';
+  if (next) {
+    document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
+    if (focus) pageTitle(node)?.focus({ preventScroll: true });
+    return;
+  }
+  if (walletViewShown()) scrollTo(0, walletScroll);
+  if (!focus) return;
+  const link = document.querySelector(`.wallet-navigation a[href="#${previous}"]`);
+  (link && !link.hidden ? link : $('wallet-title'))?.focus({ preventScroll: true });
+}
+// Show what the hash asks for (the open wallet only; a locked wallet keeps
+// the hash for the next unlock).
+function routeFromHash({ focus = true } = {}) {
+  waitingPage = null;
+  if (!wallet) return;
+  const name = hashPage(), previous = shownPage;
+  showWalletPage(name, { focus });
+  if (name && shownPage !== name) waitingPage = name;
+  // A link to an element (Portfolio, Send / Receive, How storage and
+  // protection work, or an element on a page) lands on it once the view
+  // holding it is shown; one that stayed on screen was already scrolled to
+  // by the browser.
+  const target = hashName() && !pageNode(hashName()) ? document.getElementById(hashName()) : null;
+  if (target && (name || previous) && !target.closest('.wallet-page[hidden]') && walletViewShown()) target.scrollIntoView({ block: 'start' });
+}
+// Open a page (name) or the wallet view (null) as a new history entry. The
+// entry records whether the one before it is the wallet view of THIS
+// document (pageDocument: after a reload the entries before it belong to the
+// old document, and stepping back to them would load the page again and lock
+// the wallet), so the page's Back control can step back to it instead of
+// adding another entry.
+const pageDocument = String(performance.timeOrigin);
+function navigateWalletPage(name, { focus = true } = {}) {
+  const target = pageNode(name) ? name : null;
+  if (target !== hashPage()) window.history.pushState({ walletPage: target, fromWallet: !hashPage(), document: pageDocument }, '', pageUrl(target));
+  routeFromHash({ focus });
+}
+// Close any page and forget the request (lock). keepHash: the pagehide lock,
+// so a reload opens the same page after the next unlock.
+function resetWalletPages({ keepHash = false } = {}) {
+  showWalletPage(null, { focus: false });
+  waitingPage = null; walletScroll = 0;
+  if (!keepHash && hashPage()) window.history.replaceState(null, '', pageUrl(null));
+}
+window.addEventListener('hashchange', () => routeFromHash());
+// The wallet's links to a page (navigation, "Logs" in Device & settings)
+// open it through navigateWalletPage; a handler that already took the click
+// (Earn: #nav-earn below) and a modified click are left alone.
+document.addEventListener('click', event => {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  const link = event.target.closest?.('a[href^="#"]');
+  if (!link) return;
+  let name; try { name = decodeURIComponent(link.hash.slice(1)); } catch { return; }
+  if (!pageNode(name)) return;
+  event.preventDefault();
+  navigateWalletPage(name);
+});
+for (const button of document.querySelectorAll('.page-back')) {
+  button.onclick = () => {
+    const state = window.history.state;
+    if (state && state.fromWallet === true && state.document === pageDocument && state.walletPage === hashPage()) window.history.back();
+    else navigateWalletPage(null);
+  };
+}
+// A panel becoming available opens the page the hash is waiting for; a shown
+// page whose panel is no longer available gives way to the wallet view and
+// waits for it again.
+new MutationObserver(() => {
+  if (!wallet) return;
+  if (shownPage && !pageAvailable(pageNode(shownPage))) {
+    const name = shownPage, node = pageNode(name);
+    showWalletPage(null, { focus: node.contains(document.activeElement) || document.activeElement === document.body });
+    waitingPage = hashPage() === name ? name : null;
+    return;
+  }
+  if (waitingPage && hashPage() === waitingPage && pageAvailable(pageNode(waitingPage))) {
+    const name = waitingPage; waitingPage = null;
+    showWalletPage(name);
+  }
+}).observe($('wallet-open'), { subtree: true, attributes: true, attributeFilter: ['hidden'] });
+// Anything the user does in the open wallet ends the wait.
+for (const type of ['pointerdown', 'keydown']) $('wallet-open').addEventListener(type, () => { waitingPage = null; }, true);
+
 // Both shortcuts lead to the same Send / Receive panel: receive block on top,
 // send block below it.
 $('quick-send').onclick = () => {
-  showEarn(false);
+  navigateWalletPage(null, { focus: false });
   $('send-block-title').focus({ preventScroll: true });
   $('send-block').scrollIntoView({ block: 'start' });
 };
 $('quick-receive').onclick = () => {
-  showEarn(false);
+  navigateWalletPage(null, { focus: false });
   $('receive-title').focus({ preventScroll: true });
   $('receive-panel').scrollIntoView({ block: 'start' });
 };
-// Earn replaces the Send / Receive panel with the NODUS staking panel; the
-// selected network moves to NODUS so Activity shows where a delegation is
-// tracked.
+// Earn opens the NODUS staking page; the selected network moves to NODUS
+// so Activity shows where a delegation is tracked.
 $('quick-earn').onclick = () => {
   if ($('quick-earn').hidden) return;
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
-  showEarn(true);
-  $('stake-title').focus({ preventScroll: true });
-  $('stake-panel').scrollIntoView({ block: 'start' });
+  navigateWalletPage('earn');
 };
 $('nav-earn').onclick = event => { event.preventDefault(); $('quick-earn').click(); };
 // "Register a name" (HF-4): the NODUS receive block's "Chain name" part,
@@ -1549,12 +1683,11 @@ $('nav-earn').onclick = event => { event.preventDefault(); $('quick-earn').click
 $('quick-name').onclick = () => {
   if ($('quick-name').hidden) return;
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
-  showEarn(false);
+  navigateWalletPage(null, { focus: false });
   $('name-block').scrollIntoView({ block: 'start' });
   if (!$('name-fields').hidden) $('name-input').focus({ preventScroll: true });
   else $('name-title').focus({ preventScroll: true });
 };
-document.querySelector('.wallet-navigation a[href="#send-form"]').onclick = () => showEarn(false);
 $('lock').onclick = lock;
 $('copy-address').onclick = async () => {
   // Nodus/Cellframe/Ixios addresses are absent until their local derivation settles.
@@ -1731,6 +1864,9 @@ function focusOpenWallet(kept = {}) {
   portfolio.open(wallet.addresses, endpoints, { kept });
   $('wallet-title').focus({ preventScroll: true });
   document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
+  // A page named in the URL (a reload on it, or a link) opens now, or once
+  // its panel becomes available (wallet pages).
+  routeFromHash();
 }
 updateVaultUI();
 $('unlock-form').onsubmit = async event => {
@@ -1934,7 +2070,8 @@ window.addEventListener('storage', event => { if (event.key === VAULT_KEY || eve
 // Extensions get the wallet's one lock (src/wallet-extensions.js).
 raise('attach', { lock: reason => { lock(); if (reason) message(reason); } });
 // The session log: uncaught page errors (message only), and the Logs view
-// in Device & settings (index.html, connect-site/index.html #session-logs).
+// on the Logs page (index.html, connect-site/index.html #session-logs; the
+// wallet pages open it on that page only).
 // __APP_VERSION__: vite.config.js / vite.connect.config.js define.
 logPageErrors(window);
 mountSessionLogView({ panel: $('session-logs'), filter: $('session-log-filter'), output: $('session-log-text'), copy: $('session-log-copy'), download: $('session-log-download'), status: $('session-log-status') }, {
