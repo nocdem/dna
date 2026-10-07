@@ -257,7 +257,7 @@
   // Stake releases (explorer /api/releases/<height>): the validator bonds and delegations the
   // chain returned at an epoch boundary (a multiple of 720 blocks). The node records both under
   // one kind, so the two are not told apart here. Returned stake, not a reward.
-  const releaseNote = () => el('p', t('A stake release returns a validator bond or a delegation to its owner at an epoch boundary. It is the owner’s own stake coming back, not a reward, and is not counted in payouts.', 'Stake serbest bırakma, bir validator teminatını veya bir delegasyonu bir epoch sınırında sahibine geri verir. Sahibin kendi stake’inin geri dönüşüdür; ödül değildir ve ödemelere sayılmaz.'), 'scan-explanation');
+  const releaseNote = () => el('p', t('A stake release returns a witness bond or a delegation to its owner at an epoch boundary. It is the owner’s own stake coming back, not a reward, and is not counted in payouts.', 'Stake serbest bırakma, bir witness teminatını veya bir delegasyonu bir epoch sınırında sahibine geri verir. Sahibin kendi stake’inin geri dönüşüdür; ödül değildir ve ödemelere sayılmaz.'), 'scan-explanation');
   function loadBlockReleases(height, content) {
     const view = payoutSection('block-releases', t('Stake released', 'Serbest bırakılan stake'), [t('Owner address', 'Sahip adresi'), t('Amount', 'Tutar')], releaseTexts);
     view.section.append(releaseNote());
@@ -338,8 +338,12 @@
     const pools = Array.isArray(stats.treasury) && stats.treasury.length === 9 ? stats.treasury : [];
     const raw = { circulating: stats.circulating, reward: stats.reward_pool, storage: pools[0], compute: pools[1], bandwidth: pools[2], future: pools[3] };
     const total = rawUnits(stats.supply_genesis);
-    bigAmount($('stat-total'), stats.supply_genesis);
-    bigAmount($('stat-circulating'), stats.circulating);
+    // Key card: circulating / total, a thin bar and the circulating share of the total.
+    if ($('stat-total')) bigAmount($('stat-total'), stats.supply_genesis);
+    if ($('stat-circulating')) bigAmount($('stat-circulating'), stats.circulating);
+    const circulating = rawUnits(stats.circulating);
+    if ($('stat-supply-bar')) shareBar($('stat-supply-bar'), [['sw-circulating', circulating]], total);
+    if ($('stat-supply-share')) $('stat-supply-share').textContent = percent(share(circulating, total));
     for (const id of supplyIds) {
       $('bucket-' + id).textContent = groupedAmount(raw[id]);
       $('share-' + id).textContent = percent(share(rawUnits(raw[id]), total));
@@ -360,7 +364,6 @@
     banner.textContent = behind ? t(`Index catching up: ${indexed} of ${tip} blocks indexed.`, `İndeks güncelleniyor: ${tip} bloğun ${indexed} adedi indekslendi.`) : '';
     $('api-status').textContent = known ? (behind ? t('Index catching up', 'İndeks güncelleniyor') : t('Index matches the last reported tip', 'İndeks son bildirilen blokla eşleşiyor')) : t('Index connected · synchronization status unknown', 'İndekse bağlandı · eşitleme durumu bilinmiyor');
     if (!$('stats-cards')) return;
-    $('stat-height').textContent = indexed ?? '—';
     displaySupply(stats);
     displayStaking(stats.staking);
   }
@@ -395,7 +398,6 @@
     $('api-status').textContent = t('Index unavailable', 'İndekse erişilemiyor');
     $('staleness-banner').classList.add('hidden');
     if ($('stats-cards')) displaySupply({});
-    if ($('stat-height')) $('stat-height').textContent = '—';
     displayStaking(null);
   }
   // Throughput (explorer /api/tps): applied transactions per second by block time, "now" being the
@@ -433,6 +435,7 @@
     $('tps-minute').textContent = '—'; $('tps-hour').textContent = '—';
     $('tps-chart').replaceChildren(el('div', message, 'muted'));
     $('payday-next').textContent = '—'; $('apy-value').textContent = '—';
+    paydayCard(null, 0);
   }
   // Next payday (explorer next_payday): a multiple of 17 280 blocks; the date is an estimate at the
   // current block pace, counted from the newest indexed block's time.
@@ -442,6 +445,19 @@
     const date = new Date(p.est_ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
     const left = duration((p.est_ms - nowMs) / 1000);
     return t(`block ${p.height} — est. ${date} (≈ ${left})`, `blok ${p.height} — tahmini ${date} (≈ ${left})`);
+  }
+  // Key card (#payday-blocks / #payday-eta): blocks left to the next payday (explorer
+  // next_payday.blocks_left) and the same estimate as the Rewards panel. Optional elements.
+  function paydayCard(p, nowMs) {
+    const value = $('payday-blocks'), eta = $('payday-eta');
+    if (!value || !eta) return;
+    const known = p && Number.isSafeInteger(p.height) && Number.isSafeInteger(p.blocks_left) && p.blocks_left >= 0;
+    if (!known) { value.textContent = '—'; eta.textContent = '—'; return; }
+    const left = groupDigits(String(p.blocks_left));
+    value.textContent = t(`${left} ${p.blocks_left === 1 ? 'block' : 'blocks'}`, `${left} blok`);
+    if (!Number.isSafeInteger(p.est_ms) || p.est_ms < nowMs) { eta.textContent = t('No block pace yet', 'Henüz blok hızı yok'); return; }
+    const date = new Date(p.est_ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+    eta.textContent = t(`est. ${date} (≈ ${duration((p.est_ms - nowMs) / 1000)})`, `tahmini ${date} (≈ ${duration((p.est_ms - nowMs) / 1000)})`);
   }
   // APY (explorer apy): the explorer's own figure, shown only when every input was known.
   const apyText = a => a && tpsText(a.apy) !== null ? a.apy + ' %' : '—';
@@ -473,6 +489,7 @@
       $('tps-hour').textContent = hour + ' TPS';
       $('tps-chart').replaceChildren(tpsChart(data.history));
       $('payday-next').textContent = paydayText(data.next_payday, data.now_ms);
+      paydayCard(data.next_payday, data.now_ms);
       $('apy-value').textContent = apyText(data.apy);
     } catch (error) { tpsUnavailable(error.message); }
   }
@@ -536,11 +553,11 @@
     content.append(...moreButton(() => loadMore('/block/' + apiValue(identifier) + '?from=', 'block-items-tbody', 'items', itemRow, d => Number.isSafeInteger(d.next_from) ? d.next_from : null)));
     return Promise.all([payouts, releases]);
   }
-  const recordNames = { stake: t('Stake','Stake'), delegate: t('Delegation','Delegasyon'), unstake: t('Unstake','Stake çözme'), undelegate: t('Undelegation','Delegasyon çözme'), validator_update: t('Validator update','Doğrulayıcı güncellemesi'), chain_config: t('Chain configuration','Zincir yapılandırması') };
+  const recordNames = { stake: t('Stake','Stake'), delegate: t('Delegation','Delegasyon'), unstake: t('Unstake','Stake çözme'), undelegate: t('Undelegation','Delegasyon çözme'), validator_update: t('Witness update','Witness güncellemesi'), chain_config: t('Chain configuration','Zincir yapılandırması') };
   function renderRecord(record) {
     const entries = [[t('Record','Kayıt'), recordNames[record.kind] ?? String(record.kind)]];
     const fp = (label, value) => { if (typeof value === 'string') entries.push([label, hash(value, 'address.html?fp=' + encodeURIComponent(value))]); };
-    fp(t('Validator','Doğrulayıcı'), record.validator); fp(t('Delegator','Delege eden'), record.delegator); fp(t('Destination','Hedef'), record.destination);
+    fp(t('Witness','Witness'), record.validator); fp(t('Delegator','Delege eden'), record.delegator); fp(t('Destination','Hedef'), record.destination);
     if (record.kind === 'chain_config') entries.push([t('Parameter','Parametre'), record.param_id], [t('New value','Yeni değer'), record.new_value], [t('Effective height','Geçerlilik yüksekliği'), record.effective_height]);
     else { entries.push([t('Amount','Tutar'), money(record.amount)]); if (record.kind === 'validator_update' || record.kind === 'stake') entries.push([t('Commission','Komisyon'), (Number(record.commission_bps) / 100) + ' %']); }
     return fields(entries);
@@ -676,7 +693,7 @@
     { fork: 'HF-1', param: 5, genesisValue: '121', name: t('Gas price', 'Gas fiyatı'),
       rule: t('A transaction with a non-system part pays at least its declared gas units × the gas price, never less than the flat minimum fee.', 'Sistem dışı bir bölümü olan işlem, en az bildirdiği gas birimi × gas fiyatı öder; sabit asgari ücretin altına inmez.') },
     { fork: 'HF-2', param: 7, name: t('Governance by stake weight', 'Stake ağırlıklı yönetişim'),
-      rule: t('Governance approvals are weighed by validator voting power (more than 2/3), not by seat count; a block that leaves a touched domain unchanged still applies.', 'Yönetişim onayları koltuk sayısıyla değil validator oy gücüyle (2/3’ten fazla) tartılır; dokunduğu alanı değiştirmeyen bir blok yine uygulanır.') },
+      rule: t('Governance approvals are weighed by witness voting power (more than 2/3), not by seat count; a block that leaves a touched domain unchanged still applies.', 'Yönetişim onayları koltuk sayısıyla değil witness oy gücüyle (2/3’ten fazla) tartılır; dokunduğu alanı değiştirmeyen bir blok yine uygulanır.') },
     { fork: 'HF-3', param: 8, name: t('Consensus-only block bounds', 'Yalnız konsensüs blok sınırları'),
       rule: t('Blocks are bounded by the consensus engine’s limits only (the 2 MiB / 2 097 152-unit bound is removed); proposals are checked for gas price, committed replay and units ≤ INT64_MAX.', 'Bloklar yalnız konsensüs motorunun sınırlarıyla sınırlanır (2 MiB / 2 097 152 birim sınırı kalkar); öneriler gas fiyatı, işlenmiş tekrar ve birim ≤ INT64_MAX için denetlenir.') },
     { fork: 'HF-4', param: 9, name: t('Rule-set generation 2 + on-chain names', 'Kural seti nesil 2 + zincir üstü isimler'),
@@ -722,7 +739,7 @@
     }
     const other = records.filter(r => !forkParams.has(r.param_id)).map(r => row([recordParam(r), recordValue(r), voteCell(r), time(r.time), Number.isSafeInteger(r.effective_height) ? r.effective_height : '—', forkStatus(r.effective_height, tip)]));
     content.replaceChildren(
-      el('p', t('Hard forks on Nodus Chain activate at a block height after a validator vote; every node switches at the same block.', 'Nodus Chain’deki hard fork’lar bir validator oylamasından sonra belirli bir blok yüksekliğinde etkinleşir; her düğüm aynı blokta geçiş yapar.'), 'scan-explanation'),
+      el('p', t('Hard forks on Nodus Chain activate at a block height after a witness vote; every node switches at the same block.', 'Nodus Chain’deki hard fork’lar bir witness oylamasından sonra belirli bir blok yüksekliğinde etkinleşir; her düğüm aynı blokta geçiş yapar.'), 'scan-explanation'),
       el('p', t('Last reported tip: ', 'Son bildirilen blok: ') + (Number.isSafeInteger(tip) ? tip : '—'), 'muted'),
       el('h2', t('Hard forks', 'Hard fork’lar')),
       table([t('Fork', 'Fork'), t('What it changes', 'Neyi değiştirir'), t('Parameter', 'Parametre'), t('Voted in block', 'Oylandığı blok'), t('Effective block', 'Geçerlilik bloğu'), t('Status', 'Durum')], forkRows, t('None', 'Yok')),
