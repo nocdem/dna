@@ -714,3 +714,5 @@ lines of this README, whose texts come from `build-portals.mjs` /
 `scan/app.js` and are changed separately. `npm run check` and
 `npm run build:portals` were run; browser validation has not been run for
 this change.
+
+2026-10-07, tokenomics "Who receives what" (`tokenomics.html#pools`, `app.js` `tok.*`, page-scoped `.tok-*` styles): the old "How the genesis holds it" list became three card groups — rewards paid by the protocol, programmes distributed by the Foundation, other allocations — each with source, status badge and how it starts; the storage reward text now says block archive, proportional, HF-7.
