@@ -46,9 +46,9 @@ import { createNodusConnectCore, acceptanceMayAutoApprove } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
   parseContactInput, requestRefusal, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
-  recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
+  pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
-  needFullSync, fullDays, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
+  checkOrder, contactDays, contactNeedsFullSync, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
   shortId, inspectUntrusted,
   updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
   contactLine, roundDoneLine
@@ -592,26 +592,32 @@ async function sync() {
     if (gen !== generation) return;
     stageEnd('names', namesAt);
     fillOwnAvatar(); fillNameLine(); render();
-    // Smart sync (text.js needFullSync): 8 day buckets when any contact was
-    // never checked or the oldest check is over 3 days old, else 3. The
-    // check time of each contact whose buckets were all read is kept
-    // (state.dmSync) — saved only when it moved by an hour or more, so a
-    // 30-second check does not rewrite the state every time.
+    // Smart sync, per contact (web 0.1.72, text.js contactDays): a contact
+    // never checked, or last checked over 3 days ago, reads the 8 day
+    // buckets; every other contact the 3 recent ones. The check time of
+    // each contact whose buckets were all read is kept (state.dmSync) —
+    // saved only when it moved by an hour or more, so a 30-second check
+    // does not rewrite the state every time.
     const startedAt = nowSeconds(), today = core.dayToday();
-    const days = needFullSync(state.contacts.map(c => c.fp), state.dmSync, startedAt) ? fullDays(today) : recentDays(today);
     // One contact's failure is kept in that contact's Details line
     // (diags) and the check goes on with the next contact: a failure must
     // not leave every contact after it in the list unchecked, round after
     // round. A close / reset meanwhile still ends the check.
     let syncMoved = false, failed = 0, storageFailure, arrivedTotal = 0;
-    const contacts = [...state.contacts];
-    logCheck(roundStartLine(round, { first, contacts: contacts.length, days: days.length }));
+    // Check order (web 0.1.72, text.js checkOrder): never-checked contacts
+    // first, then the ones with the newest message on this device, then
+    // the rest — a copy; state.contacts keeps its order.
+    const contacts = checkOrder(state.contacts, state.dmSync, messages);
+    const daysOf = new Map(contacts.map(c => [c.fp, contactDays(c.fp, state.dmSync, startedAt, today)]));
+    const full = contacts.filter(c => contactNeedsFullSync(c.fp, state.dmSync, startedAt)).length;
+    logCheck(roundStartLine(round, { first, contacts: contacts.length, full, recent: contacts.length - full }));
     for (const [index, contact] of contacts.entries()) {
       if (gen !== generation) return;
       // Removed by the user while this check ran: not checked any more.
       if (!contactOf(contact.fp)) continue;
       ui.sync.textContent = checkingContactsText(index + 1, contacts.length);
       const id = shortId(contact.fp), contactAt = Date.now(), before = incomingCount(contact.fp);
+      const days = daysOf.get(contact.fp);
       logCheck(contactStartLine(id));
       let complete;
       try { complete = await syncContact(contact, gen, days); }

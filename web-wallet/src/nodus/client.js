@@ -234,7 +234,11 @@ function evmArgs(method, args) {
 //        -> 'connecting' (connectNetwork) -> 'ready'
 //                                         -> 'identified' (failed: retry)
 //                                         -> 'error' + locked (final)
-//   'ready' -> 'error' (a keepalive failed; the caller locks it)
+//   'ready' -> 'error' (a keepalive or a resume check failed, or the
+//              module said its session is gone — NODUS_SESSION_LOST_TEXT
+//              below; the caller locks it)
+//   'ready' -> 'locked' (a resume check did not settle within
+//              NODUS_CONNECT_BOUND_MS — checkLiveness)
 //   any -> 'locked' (lock(); a failed unlock / identify locks too)
 // Once the identity is known (identified, 'connecting' after it, 'ready')
 // connectLocal runs the Messages exports that need only the identity;
@@ -265,24 +269,52 @@ const lockedError = () => new Error('Wallet is locked.');
 // no clock decides anything but this one wait.
 export const NODUS_CONNECT_BOUND_MS = 30000;
 
+// SESSION LOST (web 0.1.72; operator's phone log 2026-10-07: after the screen
+// was off for minutes every read failed at once, the next round said "Nodus
+// connection is not ready", and the wallet never reconnected — the bar
+// still said connected). The module reconnects inside its keepalive
+// (nodus-send-wasm.c nsw_tick -> nodus_client_tick -> try_reconnect) and
+// its tick SUCCEEDS while the session is down and being retried
+// (nsw_tick returns 0 for NODUS_CLIENT_RECONNECTING), so a failed keepalive
+// never reported it. What the module does report: every network export
+// refuses with exactly this text when its session is not open
+// (nodus-send-wasm.c nsw_session_ok: unlocked, but nodus_client_is_ready()
+// false; the Messages exports through connect/nc_wasm.c session_ok, the
+// same check and the same text). A 'ready' client that sees it from the
+// module is no longer ready: it goes to 'error' (the caller makes a new
+// client, src/app.js RECONNECT). The text WITHOUT " Try again shortly." is
+// a different case (never connected, or this client's own ready() guard)
+// and is not matched.
+export const NODUS_SESSION_LOST_TEXT = 'Nodus connection is not ready. Try again shortly.';
+
 // `steps` (optional): { begin(name) -> { end(outcome, error) } } — told when
 // each connection step starts and how it ended ('ok' / 'failed' /
 // 'timed out'), for the session log (src/session-log.js stepLog). Step
-// names: 'load', 'identify', 'unlock', 'connect', 'ruleset', 'first tick'.
+// names: 'load', 'identify', 'unlock', 'connect', 'ruleset', 'first tick',
+// 'resume check' (checkLiveness).
 // A throwing logger never changes what the client does.
+//
+// `onState(next, why)`: every state change. `why` is given for a change to
+// 'error' out of 'ready': { reason: 'keepalive' | 'resume check' |
+// 'session lost', error } — for the session log only.
 export function createNodusClient({ factory, onState, steps, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval, setTimeout: after = globalThis.setTimeout, clearTimeout: stopAfter = globalThis.clearTimeout } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
   let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false;
   // The connection step running now ({ name, handle }) and whether the first
   // keepalive after 'ready' is still to be logged.
   let currentStep, firstTick = false;
+  // The keepalive queued or running now (its promise), and the resume check
+  // running now (checkLiveness).
+  let pendingTick, probing;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
   // export entered while the first is suspended corrupts the first. `tail`
   // settles only when the module call itself has returned, never merely when
   // its caller gave up waiting.
   let tail = Promise.resolve();
   const waiting = new Set();
-  function setState(next) { if (state === next) return; state = next; onState?.(next); }
+  function setState(next, why) { if (state === next) return; state = next; onState?.(next, why); }
+  // A 'ready' client that has lost its session (see the callers).
+  function failReady(reason, error) { if (!stopped && state === 'ready') setState('error', { reason, error }); }
   function enqueue(op, args, { signal } = {}) {
     if (stopped || !module) return Promise.reject(lockedError());
     if (signal?.aborted) return Promise.reject(new Error('Request cancelled.'));
@@ -300,7 +332,11 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
         const value = await module[op](args);
         if (stopped) throw lockedError();
         entry.resolve(value);
-      } catch (error) { entry.reject(stopped ? lockedError() : error); }
+      } catch (error) {
+        // The module's own "session not open" refusal (NODUS_SESSION_LOST_TEXT).
+        if (error?.message === NODUS_SESSION_LOST_TEXT) failReady('session lost', error);
+        entry.reject(stopped ? lockedError() : error);
+      }
       finally { if (inFlight === entry) inFlight = undefined; }
     };
     tail = tail.then(run);
@@ -312,7 +348,39 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     if (tickQueued || state !== 'ready') return;
     tickQueued = true;
     const first = firstTick; firstTick = false;
-    (first ? runStep('first tick', () => enqueue('tick')) : enqueue('tick')).catch(() => { if (!stopped) setState('error'); }).finally(() => { tickQueued = false; });
+    const op = first ? runStep('first tick', () => enqueue('tick')) : enqueue('tick');
+    pendingTick = op;
+    op.catch(error => { if (!stopped) setState('error', state === 'ready' ? { reason: 'keepalive', error } : undefined); })
+      .finally(() => { tickQueued = false; if (pendingTick === op) pendingTick = undefined; });
+  }
+  // RESUME CHECK (web 0.1.72; the caller runs it when the page is shown
+  // again or the browser is back online — src/app.js). While a phone's
+  // screen was off one read held the one queue 5.5 minutes (operator's log
+  // 2026-10-07), so no keepalive ran either (the tick waits in the same
+  // queue) and the server may drop a session idle for 180 s. The check runs the keepalive at once — the one already
+  // queued, if any, so there is never a second — under the CONNECT
+  // WATCHDOG (NODUS_CONNECT_BOUND_MS, bounded): the module's tick also
+  // runs its reconnect when one is due (nsw_tick -> nodus_client_tick).
+  //   failed    -> 'error' (the caller makes a new client)
+  //   timed out -> the client locked itself (bounded), 'locked'
+  //   ok        -> stays 'ready'. NOT a proof that the session is open: the
+  //                module's tick succeeds while it is still reconnecting
+  //                (NODUS_SESSION_LOST_TEXT above); the next network call
+  //                then reports it.
+  // Only from 'ready'; called again while one runs, the same promise.
+  // Resolves 'ok' | 'failed' | 'timed out' | 'skipped', never rejects.
+  function checkLiveness() {
+    if (stopped || !module || state !== 'ready') return Promise.resolve('skipped');
+    if (probing) return probing;
+    const run = bounded(() => runStep('resume check', () => pendingTick || enqueue('tick')))
+      .then(() => 'ok', error => {
+        if (error?.timedOut === true) return 'timed out';
+        failReady('resume check', error);
+        return 'failed';
+      })
+      .finally(() => { if (probing === run) probing = undefined; });
+    probing = run;
+    return run;
   }
   // One connection step, told to `steps`: its start, then its outcome ONCE
   // (a step the watchdog ended 'timed out' is not ended again by the lock's
@@ -528,6 +596,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     unlock,
     identify,
     connectNetwork,
+    checkLiveness,
     balance: (options) => call('balance')(undefined, options),
     list: (options) => call('list')(undefined, options),
     buildAndSign: call('buildAndSign'),

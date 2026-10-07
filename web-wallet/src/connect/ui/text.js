@@ -195,12 +195,56 @@ export function senderClockLabel(senderTs) {
 // DNA_DM_OUTBOX_TTL); otherwise the 3 recent ones.
 export const SMART_SYNC_FULL_SECONDS = 3 * 86400;
 export function needFullSync(contactFps, dmSync, now) {
+  if (u64OrNull(now) === null) throw new Error('Invalid time.');
+  return contactFps.some(fp => contactNeedsFullSync(fp, dmSync, now));
+}
+// The same rule for ONE contact (web 0.1.72, operator's phone log
+// 2026-10-07): one contact never checked used to send EVERY contact through
+// the 8 buckets, and a round that did not finish for every contact kept it
+// so in the next session too. Now each contact reads the 8 buckets only
+// when its OWN check time (state.dmSync) is missing, 0 or more than 3 days
+// old, else the 3 recent ones.
+export function contactNeedsFullSync(fp, dmSync, now) {
   const t = u64OrNull(now);
   if (t === null) throw new Error('Invalid time.');
-  return contactFps.some(fp => {
-    const last = u64OrNull(dmSync?.[fp]);
-    return last === null || last === 0n || t - last > BigInt(SMART_SYNC_FULL_SECONDS);
-  });
+  const last = u64OrNull(dmSync?.[fp]);
+  return last === null || last === 0n || t - last > BigInt(SMART_SYNC_FULL_SECONDS);
+}
+// The day buckets one contact's check reads (contactNeedsFullSync above).
+export function contactDays(fp, dmSync, now, today) {
+  return contactNeedsFullSync(fp, dmSync, now) ? fullDays(today) : recentDays(today);
+}
+// The order in which one round checks the contacts (web 0.1.72; operator's
+// phone 2026-10-07: 17 contacts at ~12 s each, and the contact that had
+// sent a new message, last in the list, was reached at minute 11):
+//   1. contacts never checked (no valid state.dmSync entry, or 0),
+//   2. then contacts with a message on this device (in or out), the one
+//      with the newest message first — newest by the LOCAL sequence
+//      (`seq`, compareLocal), never by anyone's clock,
+//   3. then the rest.
+// Ties keep the order of `contacts`. Returns a new array; `contacts` itself
+// (state.contacts) is neither reordered nor saved differently. A function
+// of its arguments only, so the same state gives the same order.
+export function checkOrder(contacts, dmSync, messages) {
+  const newest = new Map();
+  for (const m of messages || []) {
+    if (!m || typeof m.fp !== 'string' || !U64.test(String(m.seq))) continue;
+    const seq = BigInt(String(m.seq));
+    const seen = newest.get(m.fp);
+    if (seen === undefined || seq > seen) newest.set(m.fp, seq);
+  }
+  const rank = contact => {
+    const last = u64OrNull(dmSync?.[contact.fp]);
+    if (last === null || last === 0n) return 0;
+    return newest.has(contact.fp) ? 1 : 2;
+  };
+  return contacts.map((contact, index) => ({ contact, index, rank: rank(contact), seq: newest.get(contact.fp) }))
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      if (a.rank === 1 && a.seq !== b.seq) return a.seq > b.seq ? -1 : 1;
+      return a.index - b.index;
+    })
+    .map(entry => entry.contact);
 }
 export function fullDays(today) {
   if (typeof today !== 'string' || !U64.test(today)) throw new Error('Invalid day.');
@@ -433,9 +477,11 @@ export function checkingContactsText(done, total) {
   return `Checking messages: ${Math.min(whole(done), n)} of ${n} contact${n === 1 ? '' : 's'}…`;
 }
 
-// Log: "check round 3 started (regular): 31 contacts, 3 days".
-export function roundStartLine(round, { first = false, contacts = 0, days = 0 } = {}) {
-  return `check round ${whole(round)} started (${first ? 'first' : 'regular'}): ${whole(contacts)} contacts, ${whole(days)} days`;
+// Log: "check round 3 started (regular): 31 contacts, 2 full (8 days), 29
+// recent (3 days)" — how many contacts read the 8 day buckets and how many
+// the 3 recent ones (contactDays, per contact since web 0.1.72).
+export function roundStartLine(round, { first = false, contacts = 0, full = 0, recent = 0 } = {}) {
+  return `check round ${whole(round)} started (${first ? 'first' : 'regular'}): ${whole(contacts)} contacts, ${whole(full)} full (8 days), ${whole(recent)} recent (3 days)`;
 }
 
 // Log: "check round 1 stage account: 812 ms".
