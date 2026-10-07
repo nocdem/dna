@@ -24,6 +24,9 @@ import { Interface, typeString } from './abi.js';
 import { toChecksumAddress } from './address.js';
 import { formatRaw, formatWei, parseRaw, parseWei, weiToRaw } from './units.js';
 import { NODUS_ASSET } from '../nodus/network.js';
+// The session log (src/session-log.js, memory only, scrubbed): the panel's
+// failures and its transactions' outcomes.
+import { sessionLog } from '../session-log.js';
 
 const HEX128 = /^[0-9a-f]{128}$/;
 
@@ -105,7 +108,7 @@ async function act(work) {
   if (busy) return;
   busy = true; status = ''; render();
   const gen = generation;
-  try { await work(gen); } catch (error) { if (gen === generation) status = error?.message || 'Something went wrong.'; }
+  try { await work(gen); } catch (error) { if (gen === generation) { status = error?.message || 'Something went wrong.'; sessionLog.log('evm', status, { error: true }); } }
   finally { if (gen === generation) { busy = false; render(); } }
 }
 
@@ -115,7 +118,7 @@ async function refreshBalance() {
   try {
     const a = await account.account();
     if (gen === generation) balance = { wei: a.balanceWei, nonce: a.nonce, height: a.height };
-  } catch (error) { if (gen === generation) { balance = null; status = error?.message || 'Balance unavailable.'; } }
+  } catch (error) { if (gen === generation) { balance = null; status = error?.message || 'Balance unavailable.'; sessionLog.log('evm', status, { error: true }); } }
   if (gen === generation) render();
 }
 
@@ -167,10 +170,12 @@ function track(sent, title, extra = {}, warning = '') {
   if (recent.length > 20) recent.pop();
   const gen = generation;
   if (warning) status = warning;
+  sessionLog.log('evm', `${title}: submitted${warning ? ` — ${warning}` : ''}`, { error: !!warning });
   render();
   sent.receipt.then(result => {
     if (gen !== generation) return;
     row.state = result.status; row.result = result.receipt || null;
+    sessionLog.log('evm', `${title}: ${result.status}`);
     row.createdCheck = result.createdCheck; row.createdExpected = result.createdExpected;
     for (const id of result.receipt?.tickets || []) void lookTicket(id);
     void refreshBalance();
@@ -178,6 +183,7 @@ function track(sent, title, extra = {}, warning = '') {
   }, error => {
     if (gen !== generation) return;
     row.state = 'unknown'; row.error = `${error?.message || 'No answer yet.'} It stays pending in Activity until it is included or its expiry block passes.`;
+    sessionLog.log('evm', `${title}: ${row.error}`, { error: true });
     render();
   });
 }
