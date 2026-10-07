@@ -636,7 +636,9 @@ function activity() {
   if (sensitive) { idleDeadline = Date.now() + 10 * 60 * 1000; lockTimer = setTimeout(lock, 10 * 60 * 1000); }
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) expireIdle(); });
+// Shown again: an idle wallet locks; otherwise the connection is checked
+// (resumeCheck, RESUME CHECK below).
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !expireIdle()) resumeCheck('page visible again'); });
 window.addEventListener('focus', expireIdle);
 function closeReview() { clearTimeout(confirmEnableTimer); pending?.cancel(); pending = undefined; $('review-dialog').close(); $('review-details').replaceChildren(); $('review-error').textContent = ''; }
 $('review-dialog').addEventListener('keydown', event => { if (event.key === 'Enter' && $('confirm-send').disabled) event.preventDefault(); });
@@ -696,6 +698,40 @@ function scheduleNodusRetry(source, address, again) {
   }, wait);
   return wait / 1000;
 }
+// The session log's line for one client state change ("client state ready →
+// error"), and for a ready client that failed, why: "keepalive failed (…)",
+// "resume check failed (…)" or "connection lost (…)" (src/nodus/client.js
+// onState). Error texts are scrubbed by the log.
+const CLIENT_FAILURE_TEXT = { keepalive: 'keepalive failed', 'resume check': 'resume check failed', 'session lost': 'connection lost' };
+function logClientState(from, to, why) {
+  sessionLog.log('net', `client state ${from} → ${to}`, { error: to === 'error' });
+  const what = CLIENT_FAILURE_TEXT[why?.reason];
+  if (what) sessionLog.log('net', `${what} (${why.error?.message || 'unknown error'})`, { error: true });
+}
+// RESUME CHECK (web 0.1.72; operator's phone log 2026-10-07: with the screen
+// off one Messages read held the client's queue 5.5 minutes, and after the
+// screen came back on every read failed while the bar still said
+// connected). When the page is shown again or the browser is back online,
+// a ready client runs its keepalive at once under the CONNECT WATCHDOG
+// (src/nodus/client.js checkLiveness): a failure ends in 'error' and a
+// timeout locks the client — both reach onState above, which closes
+// Messages and tries a NEW client after the RECONNECT wait; Messages opens
+// again on nodusReady. One check at a time. Its outcome is the client's
+// 'resume check' step line ("attempt 1 · resume check 40 ms ok" / "failed
+// (…)" / "timed out after 30 000 ms", stepLog); 'ok' means the keepalive
+// ran, not that the session is open (client.js checkLiveness).
+let resumeChecking = false;
+function resumeCheck(text) {
+  const client = nodusClient;
+  if (resumeChecking || !client || client.state !== 'ready') return;
+  resumeChecking = true;
+  sessionLog.log('net', `${text}: checking the connection`);
+  client.checkLiveness().finally(() => { resumeChecking = false; });
+}
+// expireIdle first (an idle wallet locks instead; lock() clears the client).
+// 'visibilitychange' is wired with the idle lock above.
+window.addEventListener('pageshow', () => { if (!document.hidden && !expireIdle()) resumeCheck('page shown again'); });
+window.addEventListener('online', () => { if (!expireIdle()) resumeCheck('network back online'); });
 // Started once the Nodus address is derived, so the module's own identity can
 // be checked against it (client.identify). Never runs while no module exists.
 //
@@ -713,7 +749,13 @@ async function startNodusSend(source, address) {
   // Each connection step of this client goes to the session log as
   // "attempt N · <step> <ms> ok|failed|timed out" (N = retries since the
   // last success + 1), "stuck" past the CONNECT WATCHDOG bound.
-  const client = createNodusClient({ factory: nodusSendModuleFactory, steps: stepLog(sessionLog, 'net', () => nodusRetries + 1, NODUS_CONNECT_BOUND_MS), onState: state => {
+  let previousState = 'idle';
+  const client = createNodusClient({ factory: nodusSendModuleFactory, steps: stepLog(sessionLog, 'net', () => nodusRetries + 1, NODUS_CONNECT_BOUND_MS), onState: (state, why) => {
+    // Every state change of this client goes to the session log (web
+    // 0.1.72: the phone log of 2026-10-07 showed no [net] line at all while
+    // the connection was gone), with the reason a ready client failed.
+    logClientState(previousState, state, why);
+    previousState = state;
     // The bar follows this client's progress (amber while connecting, green
     // when ready). 'error' / 'locked' are not shown here: the code that
     // decides whether the connection is tried again (below, startNodusSend,

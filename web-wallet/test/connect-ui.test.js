@@ -22,7 +22,7 @@ import {
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
-  needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, profileFresh, PROFILE_CACHE_SECONDS,
+  needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, contactNeedsFullSync, contactDays, checkOrder, profileFresh, PROFILE_CACHE_SECONDS,
   CHECK_STAGES, updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
   saltShortText, daysRead, contactLine, roundDoneLine
 } from '../src/connect/ui/text.js';
@@ -516,6 +516,54 @@ test('smart sync: 8 buckets when a contact was never checked or the oldest check
   assert.throws(() => fullDays('x'));
 });
 
+test('smart sync per contact (0.1.72): only a contact never checked, or checked over 3 days ago, reads 8 buckets', () => {
+  const a = 'a'.repeat(128), b = 'b'.repeat(128), c = 'c'.repeat(128), now = '1790000000', today = '20000';
+  const dmSync = { [a]: now, [b]: String(1790000000 - SMART_SYNC_FULL_SECONDS - 1), [c]: '0' };
+  assert.equal(contactNeedsFullSync(a, dmSync, now), false);
+  assert.equal(contactNeedsFullSync(a, { [a]: String(1790000000 - SMART_SYNC_FULL_SECONDS) }, now), false, 'exactly 3 days: recent');
+  assert.equal(contactNeedsFullSync(b, dmSync, now), true, 'over 3 days: full');
+  assert.equal(contactNeedsFullSync(c, dmSync, now), true, '0 counts as never checked');
+  assert.equal(contactNeedsFullSync('d'.repeat(128), dmSync, now), true, 'no entry: full');
+  assert.equal(contactNeedsFullSync(a, undefined, now), true);
+  assert.throws(() => contactNeedsFullSync(a, dmSync, 'x'), /Invalid time/);
+  // One unchecked contact no longer sends the others through 8 buckets.
+  assert.deepEqual(contactDays(a, dmSync, now, today), recentDays(today));
+  assert.deepEqual(contactDays(b, dmSync, now, today), fullDays(today));
+  assert.equal(needFullSync([a, b], dmSync, now), true, 'the list-wide answer stays as before');
+  assert.equal(needFullSync([a], dmSync, now), false);
+  assert.throws(() => needFullSync([], {}, 'x'), /Invalid time/);
+});
+
+test('check order (0.1.72): never checked first, then the newest message on this device, then the rest; ties keep the list order', () => {
+  const fp = ch => ch.repeat(128), now = '1790000000';
+  const contacts = ['1', '2', '3', '4', '5', '6'].map(ch => ({ fp: fp(ch) }));
+  const dmSync = { [fp('1')]: now, [fp('2')]: now, [fp('3')]: now, [fp('5')]: '0', [fp('6')]: now };
+  // 4: no entry, 5: '0' — never checked. 3 has the newest message (in), 1 an
+  // older one (out), 6 a message with an unreadable seq (ignored), 2 none.
+  const messages = [
+    { fp: fp('1'), dir: 'out', seq: '7' },
+    { fp: fp('3'), dir: 'in', seq: '9' },
+    { fp: fp('1'), dir: 'in', seq: '8' },
+    { fp: fp('6'), dir: 'in', seq: 'x' },
+    { fp: fp('9'), dir: 'in', seq: '99' }   // not a contact
+  ];
+  const before = contacts.map(c => c.fp);
+  const order = checkOrder(contacts, dmSync, messages).map(c => c.fp);
+  assert.deepEqual(order, [fp('4'), fp('5'), fp('3'), fp('1'), fp('2'), fp('6')]);
+  assert.deepEqual(contacts.map(c => c.fp), before, 'the list itself is not reordered');
+  assert.notEqual(checkOrder(contacts, dmSync, messages), contacts, 'a new array');
+  // Same newest seq (cannot happen for one device, but the order stays total): list order.
+  const tie = checkOrder([{ fp: fp('2') }, { fp: fp('1') }], { [fp('1')]: now, [fp('2')]: now }, [{ fp: fp('1'), seq: '5' }, { fp: fp('2'), seq: '5' }]);
+  assert.deepEqual(tie.map(c => c.fp), [fp('2'), fp('1')]);
+  // seq compared as integers, not text ('10' after '9')
+  const big = checkOrder([{ fp: fp('1') }, { fp: fp('2') }], { [fp('1')]: now, [fp('2')]: now }, [{ fp: fp('1'), seq: '9' }, { fp: fp('2'), seq: '10' }]);
+  assert.deepEqual(big.map(c => c.fp), [fp('2'), fp('1')]);
+  // Nothing checked yet, no messages: the list order.
+  assert.deepEqual(checkOrder(contacts, {}, []).map(c => c.fp), before);
+  assert.deepEqual(checkOrder(contacts, undefined, undefined).map(c => c.fp), before);
+  assert.deepEqual(checkOrder([], {}, messages), []);
+});
+
 test('profile cache: a kept profile is used for 7 days', () => {
   const at = 1790000000;
   assert.equal(profileFresh({ at: String(at) }, String(at)), true);
@@ -751,8 +799,9 @@ test('progress status line: the first round names its step; every round counts i
 });
 
 test('progress log: round, stage and per-step lines are exact', () => {
-  assert.equal(roundStartLine(3, { first: false, contacts: 31, days: 3 }), 'check round 3 started (regular): 31 contacts, 3 days');
-  assert.equal(roundStartLine(1, { first: true, contacts: 12, days: 8 }), 'check round 1 started (first): 12 contacts, 8 days');
+  assert.equal(roundStartLine(3, { first: false, contacts: 31, full: 2, recent: 29 }), 'check round 3 started (regular): 31 contacts, 2 full (8 days), 29 recent (3 days)');
+  assert.equal(roundStartLine(1, { first: true, contacts: 12, full: 12, recent: 0 }), 'check round 1 started (first): 12 contacts, 12 full (8 days), 0 recent (3 days)');
+  assert.equal(roundStartLine(2, {}), 'check round 2 started (regular): 0 contacts, 0 full (8 days), 0 recent (3 days)');
   assert.equal(stageStartLine(1, 'names'), 'check round 1 stage names started');
   assert.equal(stageLine(1, 'account', 812.4), 'check round 1 stage account: 812 ms');
   assert.equal(stageLine(1, 'contacts', 0), 'check round 1 stage contact list: 0 ms');
@@ -810,7 +859,7 @@ test('progress log lines pass the session log scrub unchanged (short ID, counts,
   diag.salt = diagSalt({ result: { status: 'published', outcome: 'found', why: 'none' }, changed: true });
   for (const day of ['20362', '20363', '20364', '20365', '20366', '20367', '20368', '20369']) diag.days.push(diagDay(day, { outcome: 'empty', why: 'none' }));
   const lines = [
-    roundStartLine(12, { first: true, contacts: 15, days: 8 }),
+    roundStartLine(12, { first: true, contacts: 15, full: 4, recent: 11 }),
     stageStartLine(12, 'account'), stageLine(12, 'account', 98765),
     stageStartLine(12, 'publish'), stageLine(12, 'publish', 3),
     contactStartLine(PROGRESS_ID),

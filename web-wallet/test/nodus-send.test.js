@@ -3,7 +3,7 @@
 // the real (c3) module, the chain, or the browser UI wiring in src/app.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createNodusClient, NODUS_TICK_MS, NODUS_CONNECT_BOUND_MS } from '../src/nodus/client.js';
+import { createNodusClient, NODUS_TICK_MS, NODUS_CONNECT_BOUND_MS, NODUS_SESSION_LOST_TEXT } from '../src/nodus/client.js';
 import { nodusSendModuleFactory } from '../src/nodus/send-module.js';
 import { NODUS_NETWORK, nodusNetworkFor } from '../src/nodus/network.js';
 import { prepareTransfer } from '../src/wallet.js';
@@ -846,4 +846,102 @@ test('connect watchdog: a module load that never finishes times out identify; th
   deliver(mock.module); await settle(); await settle();
   assert.deepEqual(mock.log, ['cancel', 'lock', 'release'], 'the late module is wiped and released, never identified');
   assert.deepEqual(states, statesAtTimeout);
+});
+
+// RESUME CHECK and SESSION LOST (web 0.1.72, src/nodus/client.js
+// checkLiveness / NODUS_SESSION_LOST_TEXT; operator's phone log 2026-10-07:
+// after the screen was off the wallet never noticed its dead session).
+async function resumeClient() {
+  const mock = createMockNodusModule();
+  const why = [], parts = { timeouts: [], cleared: [], intervals: [], states: [], steps: [] };
+  const client = createNodusClient({
+    factory: mock.factory, onState: (state, reason) => { parts.states.push(state); why.push(reason); },
+    setInterval: (fn, ms) => { parts.intervals.push({ fn, ms }); return 70 + parts.intervals.length; }, clearInterval: () => {},
+    setTimeout: (fn, ms) => { parts.timeouts.push({ fn, ms }); return parts.timeouts.length; }, clearTimeout: id => parts.cleared.push(id),
+    steps: { begin: name => { const step = { name, outcomes: [] }; parts.steps.push(step); return { end: (outcome, error) => step.outcomes.push(error?.timedOut ? `${outcome}:timedOut` : outcome) }; } }
+  });
+  await client.unlock({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  assert.equal(client.state, 'ready');
+  assert.equal(parts.timeouts.length, 1, 'unlock ran under its own bound');
+  return { mock, client, why, ...parts };
+}
+
+test('resume check: a keepalive that answers keeps the client ready, the bound is cleared, the step is logged ok', async () => {
+  const { mock, client, timeouts, cleared, steps, states } = await resumeClient();
+  const before = mock.log.length;
+  assert.equal(await client.checkLiveness(), 'ok');
+  assert.deepEqual(mock.log.slice(before), ['tick:start', 'tick:end'], 'one keepalive ran at once');
+  assert.equal(timeouts.length, 2); assert.equal(timeouts[1].ms, NODUS_CONNECT_BOUND_MS);
+  assert.ok(cleared.includes(2), 'the resume check cleared its bound');
+  assert.deepEqual(steps.find(s => s.name === 'resume check').outcomes, ['ok']);
+  assert.equal(client.state, 'ready'); assert.deepEqual(states, ['connecting', 'ready']);
+  client.lock();
+  assert.equal(await client.checkLiveness(), 'skipped', 'nothing to check on a locked client');
+});
+
+test('resume check: a failing keepalive ends ready in error (the caller reconnects), with the reason', async () => {
+  const { mock, client, why, states } = await resumeClient();
+  mock.state.tickFails = true;
+  assert.equal(await client.checkLiveness(), 'failed');
+  assert.equal(client.state, 'error');
+  assert.deepEqual(states, ['connecting', 'ready', 'error']);
+  assert.equal(why.at(-1).reason, 'resume check'); assert.match(why.at(-1).error.message, /session closed/);
+  assert.equal(await client.checkLiveness(), 'skipped', 'only a ready client is checked');
+  client.lock();
+});
+
+test('resume check: a queue held by a hung call times out after 30 s and locks the client (new client path)', async () => {
+  const { mock, client, timeouts, steps, states } = await resumeClient();
+  const open = mock.gate('balance');
+  const hung = client.balance();
+  await settle();
+  const check = client.checkLiveness();
+  assert.equal(client.checkLiveness(), check, 'a second call while one runs is the same check');
+  await settle();
+  assert.ok(!mock.log.includes('tick:start'), 'the keepalive waits behind the hung call');
+  assert.equal(timeouts.length, 2); assert.equal(timeouts[1].ms, NODUS_CONNECT_BOUND_MS);
+  timeouts[1].fn(); // 30 s passed
+  assert.equal(await check, 'timed out');
+  await assert.rejects(hung, /locked/);
+  assert.equal(client.state, 'locked');
+  assert.deepEqual(states, ['connecting', 'ready', 'locked']);
+  assert.deepEqual(steps.find(s => s.name === 'resume check').outcomes, ['timed out:timedOut']);
+  open(); await settle(); await settle();
+  assert.deepEqual(states, ['connecting', 'ready', 'locked'], 'the late answer changes nothing');
+});
+
+test('resume check: a keepalive already queued is reused, never a second one', async () => {
+  const { mock, client, intervals } = await resumeClient();
+  const open = mock.gate('balance');
+  const hung = client.balance();
+  await settle();
+  intervals[0].fn(); // the 60 s keepalive, queued behind the hung call
+  const check = client.checkLiveness();
+  open();
+  await hung;
+  assert.equal(await check, 'ok');
+  assert.equal(mock.log.filter(entry => entry === 'tick:start').length, 1);
+  client.lock();
+});
+
+test('session lost: the module saying its session is not open moves a ready client to error; other failures do not', async () => {
+  assert.equal(NODUS_SESSION_LOST_TEXT, 'Nodus connection is not ready. Try again shortly.');
+  const { client, why, states } = await resumeClient();
+  await assert.rejects(client.connect(() => { throw new Error('Messages could not be read (-3).'); }), /could not be read/);
+  await assert.rejects(client.connect(() => { throw new Error('Nodus connection is not ready.'); }), /not ready/);
+  assert.equal(client.state, 'ready', 'an ordinary failure (and the text without "Try again shortly.") keeps the client');
+  await assert.rejects(client.connect(() => { throw new Error(NODUS_SESSION_LOST_TEXT); }), /Try again shortly/);
+  assert.equal(client.state, 'error');
+  assert.deepEqual(states, ['connecting', 'ready', 'error']);
+  assert.equal(why.at(-1).reason, 'session lost');
+  client.lock();
+});
+
+test('keepalive failure: the reason is passed with the error state', async () => {
+  const { mock, client, intervals, why } = await resumeClient();
+  mock.state.tickFails = true;
+  intervals[0].fn(); await settle(); await settle();
+  assert.equal(client.state, 'error');
+  assert.equal(why.at(-1).reason, 'keepalive');
+  client.lock();
 });
