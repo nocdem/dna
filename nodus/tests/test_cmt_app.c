@@ -5068,9 +5068,9 @@ static int t_prepare_entry_invalid_only(void)
 
 /** CheckTx over one request of `type`; `*code` receives the answer's
  *  code (0 admitted). @return 0 served / -1 the row did not answer OK. */
-static int ckt_check(nodus_cmt_app_ledger_t *app, const uint8_t *bytes,
-                     size_t len, cmt_mem_check_tx_type_t type,
-                     uint32_t *code)
+static int ckt_check_log(nodus_cmt_app_ledger_t *app, const uint8_t *bytes,
+                         size_t len, cmt_mem_check_tx_type_t type,
+                         uint32_t *code, char log[CMT_MEM_CHECK_TX_LOG_MAX])
 {
     cmt_mem_request_check_tx_t  req;
     cmt_mem_response_check_tx_t res;
@@ -5084,7 +5084,17 @@ static int ckt_check(nodus_cmt_app_ledger_t *app, const uint8_t *bytes,
         return -1;
     }
     *code = res.code;
+    if (log) {
+        memcpy(log, res.log, CMT_MEM_CHECK_TX_LOG_MAX);
+    }
     return 0;
+}
+
+static int ckt_check(nodus_cmt_app_ledger_t *app, const uint8_t *bytes,
+                     size_t len, cmt_mem_check_tx_type_t type,
+                     uint32_t *code)
+{
+    return ckt_check_log(app, bytes, len, type, code, NULL);
 }
 
 /** One committed CORE `utxo_set` row keyed by 64 bytes of `tag` — the
@@ -6133,6 +6143,7 @@ static int t_check_tx_expiry(void)
     uint8_t         k1[64], k2[64], zero8[8];
     uint64_t        tip;
     uint32_t        code = 0;
+    char            log[CMT_MEM_CHECK_TX_LOG_MAX];
 
     CHECK(gfx_open(&g, "ckt_expiry") == 0, "version-3 fixture");
     CHECK(v2x_table_init(g.w) == 0, "the scripted runtime table");
@@ -6183,12 +6194,16 @@ static int t_check_tx_expiry(void)
     CHECK(ckt_check(x.ledger, e[0].bytes, e[0].len,
                     CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
           code != CMT_MEM_CODE_TYPE_OK, "expiry 0 (\"never\") is refused");
-    CHECK(ckt_check(x.ledger, e[1].bytes, e[1].len,
-                    CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+    CHECK(ckt_check_log(x.ledger, e[1].bytes, e[1].len,
+                        CMT_MEM_CHECK_TX_TYPE_NEW, &code, log) == 0 &&
           code != CMT_MEM_CODE_TYPE_OK, "expiry tip + 101 is refused");
-    CHECK(ckt_check(x.ledger, e[2].bytes, e[2].len,
-                    CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
+    CHECK(log[CMT_MEM_CHECK_TX_LOG_MAX - 1] == '\0' && log[0] != '\0' &&
+          strstr(log, "expiry_height") != NULL,
+          "the refusal carries its reason in ResponseCheckTx.log");
+    CHECK(ckt_check_log(x.ledger, e[2].bytes, e[2].len,
+                        CMT_MEM_CHECK_TX_TYPE_NEW, &code, log) == 0 &&
           code == CMT_MEM_CODE_TYPE_OK, "expiry tip + 100 is admitted");
+    CHECK(log[0] == '\0', "an admitted entry carries no log text");
     CHECK(ckt_check(x.ledger, e[3].bytes, e[3].len,
                     CMT_MEM_CHECK_TX_TYPE_NEW, &code) == 0 &&
           code == CMT_MEM_CODE_TYPE_OK, "expiry tip + 1 is admitted");
