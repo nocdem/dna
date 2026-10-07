@@ -41,7 +41,14 @@
  *     nc_salt_reconcile, nc_contacts_add, nc_group_put,
  *     nc_group_bucket_send: a read then at most one write (at most two
  *     request timeouts) — the PUT must not be split from the read it is
- *     based on (§6.4 F4). No export loops over contacts, groups or days.
+ *     based on (§6.4 F4). No export loops over contacts or groups, and
+ *     only nc_outbox_get_days (web 0.1.73) over days: up to
+ *     NC_READ_MANY_MAX (8) day buckets of ONE contact, read with the same
+ *     strict request per day, first pages pipelined NC_READ_PIPELINE (4)
+ *     at a time — about one request timeout per wave of 4 (two waves at
+ *     most), plus the sequential later pages of a day that has more (as
+ *     nc_outbox_get), the cancel flag checked before every wave and every
+ *     later page. One request per day would cost a round trip per day.
  *   - results are one JSON object (json-c), read with nc_result(); u64
  *     values cross as decimal strings, bytes as lowercase hex.
  *
@@ -753,6 +760,37 @@ int nc_outbox_send(const char *fp, const char *salt_hex, const char *msgs_json) 
     return nc_end(set_result(o));
 }
 
+/* Wipes the plaintexts of one day's answer, then frees it. */
+static void inbox_wipe_clear(nc_inbox_t *in) {
+    for (size_t i = 0; i < in->count; i++)
+        nc_wipe(in->items[i].plaintext, in->items[i].plaintext_len);
+    nc_inbox_clear(in);
+}
+
+/* One day's answer as nc_outbox_get returns it; consumes `in` (wiped and
+ * cleared). Shared by nc_outbox_get and nc_outbox_get_days. */
+static json_object *inbox_json(uint64_t day, nc_inbox_t *in) {
+    json_object *o = json_object_new_object();
+    add_read(o, in->read.outcome, in->read.why);
+    json_object_object_add(o, "day", jstr_u64(day));
+    if (in->read.outcome == NC_FOUND) json_object_object_add(o, "blob", jhex(in->blob, sizeof(in->blob)));
+    json_object_object_add(o, "unchanged", json_object_new_boolean(in->unchanged));
+    json_object_object_add(o, "dropped", jstr_u64(in->dropped));
+    /* authentic non-chat payloads: counted, never returned as text */
+    json_object_object_add(o, "other", jstr_u64(in->other));
+    json_object *a = json_object_new_array();
+    for (size_t i = 0; i < in->count; i++) {
+        json_object *e = json_object_new_object();
+        json_object_object_add(e, "seq", jstr_u64(in->items[i].seq));
+        json_object_object_add(e, "sender_ts", jstr_u64(in->items[i].sender_timestamp));
+        json_object_object_add(e, "text_hex", jhex(in->items[i].plaintext, in->items[i].plaintext_len));
+        json_object_array_add(a, e);
+    }
+    json_object_object_add(o, "messages", a);
+    inbox_wipe_clear(in);
+    return o;
+}
+
 /* skip_hex: "" or the 64-hex "blob" of an earlier answer for this day whose
  * messages the page has stored (nc_core.h nc_outbox_fetch_day). */
 int nc_outbox_get(const char *fp, const char *salt_hex, const char *day_dec,
@@ -772,26 +810,81 @@ int nc_outbox_get(const char *fp, const char *salt_hex, const char *day_dec,
                                  has_skip ? skip : NULL, &in);
     nc_wipe(salt, sizeof(salt));
     if (rc != NC_OK) return nc_end(fail("Messages could not be read (%d).", rc));
-    json_object *o = json_object_new_object();
-    add_read(o, in.read.outcome, in.read.why);
-    json_object_object_add(o, "day", jstr_u64(day));
-    if (in.read.outcome == NC_FOUND) json_object_object_add(o, "blob", jhex(in.blob, sizeof(in.blob)));
-    json_object_object_add(o, "unchanged", json_object_new_boolean(in.unchanged));
-    json_object_object_add(o, "dropped", jstr_u64(in.dropped));
-    /* authentic non-chat payloads: counted, never returned as text */
-    json_object_object_add(o, "other", jstr_u64(in.other));
-    json_object *a = json_object_new_array();
-    for (size_t i = 0; i < in.count; i++) {
-        json_object *e = json_object_new_object();
-        json_object_object_add(e, "seq", jstr_u64(in.items[i].seq));
-        json_object_object_add(e, "sender_ts", jstr_u64(in.items[i].sender_timestamp));
-        json_object_object_add(e, "text_hex", jhex(in.items[i].plaintext, in.items[i].plaintext_len));
-        json_object_array_add(a, e);
+    return nc_end(set_result(inbox_json(day, &in)));
+}
+
+/* Up to NC_READ_MANY_MAX day buckets of ONE contact's outbox in one call
+ * (nc_core.h nc_outbox_fetch_days: the first pages pipelined,
+ * NC_READ_PIPELINE at once; each day read and processed exactly as
+ * nc_outbox_get does). days_json: [{"day":"<u64>","skip":"" | "<64 hex>"},
+ * ...], 1..NC_READ_MANY_MAX entries, "skip" as nc_outbox_get's skip_hex.
+ * Result: {"days":[<nc_outbox_get's object>, ...]} in the order asked.
+ * A day that could not be processed (nc_outbox_get would fail) fails the
+ * whole call, nothing returned. */
+int nc_outbox_get_days(const char *fp, const char *salt_hex, const char *days_json) {
+    if (nc_begin() != 0) return -1;
+    if (session_ok() != 0) return nc_end(-1);
+    const nc_peer_t *peer = peer_need(fp);
+    if (!peer) return nc_end(-1);
+    uint8_t salt[NC_SALT_LEN];
+    if (parse_salt(salt_hex, salt) != 0) return nc_end(fail("Invalid salt, day or blob."));
+    json_object *arr = days_json ? json_tokener_parse(days_json) : NULL;
+    size_t n = arr && json_object_is_type(arr, json_type_array) ? json_object_array_length(arr) : 0;
+    if (n == 0 || n > NC_READ_MANY_MAX) {
+        if (arr) json_object_put(arr);
+        nc_wipe(salt, sizeof(salt));
+        return nc_end(fail("Invalid salt, day or blob."));
     }
-    json_object_object_add(o, "messages", a);
-    for (size_t i = 0; i < in.count; i++)
-        nc_wipe(in.items[i].plaintext, in.items[i].plaintext_len);
-    nc_inbox_clear(&in);
+    nc_outbox_day_req_t req[NC_READ_MANY_MAX];
+    uint8_t skip[NC_READ_MANY_MAX][32];
+    for (size_t i = 0; i < n; i++) {
+        json_object *e = json_object_array_get_idx(arr, i), *jd, *js;
+        const char *skip_hex = NULL;
+        if (!e || !json_object_object_get_ex(e, "day", &jd) ||
+            !json_object_is_type(jd, json_type_string) ||
+            parse_u64(json_object_get_string(jd), &req[i].day) != 0 ||
+            (json_object_object_get_ex(e, "skip", &js) &&
+             !json_object_is_type(js, json_type_string))) {
+            json_object_put(arr);
+            nc_wipe(salt, sizeof(salt));
+            return nc_end(fail("Invalid salt, day or blob."));
+        }
+        if (json_object_object_get_ex(e, "skip", &js)) skip_hex = json_object_get_string(js);
+        req[i].skip_blob = NULL;
+        if (skip_hex && skip_hex[0]) {
+            if (parse_hex_fixed(skip_hex, skip[i], sizeof(skip[i])) != 0) {
+                json_object_put(arr);
+                nc_wipe(salt, sizeof(salt));
+                return nc_end(fail("Invalid salt, day or blob."));
+            }
+            req[i].skip_blob = skip[i];
+        }
+    }
+    json_object_put(arr);
+    nc_inbox_t *in = calloc(n, sizeof(*in));
+    int *rcs = calloc(n, sizeof(*rcs));
+    if (!in || !rcs) {
+        free(in); free(rcs);
+        nc_wipe(salt, sizeof(salt));
+        return nc_end(fail("Out of memory."));
+    }
+    int rc = nc_outbox_fetch_days(&g_ctx, peer, salt, req, n, in, rcs);
+    nc_wipe(salt, sizeof(salt));
+    for (size_t i = 0; rc == NC_OK && i < n; i++)
+        if (rcs[i] != NC_OK) rc = rcs[i];
+    json_object *o = NULL, *a = NULL;
+    if (rc == NC_OK) {
+        o = json_object_new_object();
+        a = json_object_new_array();
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (a) json_object_array_add(a, inbox_json(req[i].day, &in[i]));
+        else inbox_wipe_clear(&in[i]);
+    }
+    free(in);
+    free(rcs);
+    if (!o) return nc_end(fail("Messages could not be read (%d).", rc));
+    json_object_object_add(o, "days", a);
     return nc_end(set_result(o));
 }
 

@@ -137,12 +137,19 @@ bool nc_row_before(const nodus_value_t *a, const nodus_value_t *b) {
     return a->value_id < b->value_id;
 }
 
+static void read_all_impl(const nc_ctx_t *ctx, const nodus_key_t *key,
+                          const nodus_key_t *owners, size_t n_owners,
+                          nodus_page_req_t *first, nc_read_all_t *out);
+
 /* R0 for one owner's value (nc_core.h nc_read_one, expect_owner set): the
- * owner-filtered get-all, then one row of it. */
+ * owner-filtered get-all, then one row of it. `first` (nullable): that
+ * get-all's first page, already requested (nc_read_owner_many); NULL = the
+ * read requests it itself. Ownership of first->vals moves here. */
 static void read_owner_one(const nc_ctx_t *ctx, const nodus_key_t *key,
-                           const nodus_key_t *owner, nc_read_t *out) {
+                           const nodus_key_t *owner, nodus_page_req_t *first,
+                           nc_read_t *out) {
     nc_read_all_t all;
-    nc_read_all(ctx, key, owner, 1, &all);
+    read_all_impl(ctx, key, owner, 1, first, &all);
     memset(out, 0, sizeof(*out));
     out->outcome = all.outcome;
     out->why = all.why;
@@ -177,7 +184,7 @@ static void read_owner_one(const nc_ctx_t *ctx, const nodus_key_t *key,
 void nc_read_one(const nc_ctx_t *ctx, const nodus_key_t *key,
                  const nodus_key_t *expect_owner, nc_read_t *out) {
     if (expect_owner) {
-        read_owner_one(ctx, key, expect_owner, out);
+        read_owner_one(ctx, key, expect_owner, NULL, out);
         return;
     }
     if (!ctx || !ctx->client || !key) {
@@ -276,27 +283,59 @@ static int acc_append(page_acc_t *acc, nodus_value_t **vals, size_t n) {
     return 0;
 }
 
+/* Frees the rows a pipelined first page still holds (a read that ended
+ * before taking them). */
+static void first_page_free(nodus_page_req_t *first) {
+    if (!first) return;
+    for (size_t i = 0; i < first->count; i++) nodus_value_free(first->vals[i]);
+    free(first->vals);
+    first->vals = NULL;
+    first->count = 0;
+}
+
 /* One paging loop (owner NULL = every owner): reads while the node says
  * "more", at most NC_READ_MAX_PAGES pages, cancel checked before every
  * page. Returns 0 or the first page's error (the rows read so far stay in
- * acc; the caller frees them). *more_left = pages remained after the cap. */
+ * acc; the caller frees them). *more_left = pages remained after the cap.
+ * `first` (nullable): page 0's answer, already requested with this key and
+ * owner and no cursor (nodus_client_get_all_page_strict_many) — it takes
+ * the place of page 0's request only; every check below runs on it
+ * unchanged. Its rows move into acc (or are freed). */
 static int read_pages(const nc_ctx_t *ctx, const nodus_key_t *key,
                       const nodus_key_t *owner, page_acc_t *acc,
-                      bool *more_left) {
+                      bool *more_left, nodus_page_req_t *first) {
     nodus_dht_page_cursor_t cursor;
     bool have_cursor = false;
     *more_left = false;
     for (int page = 0; page < NC_READ_MAX_PAGES; page++) {
-        if (ctx->cancel && *ctx->cancel) return NC_ERR_CANCELLED;
         nodus_value_t **vals = NULL;
         size_t n = 0, undecodable = 0;
         bool more = false, legacy = false;
         nodus_dht_page_cursor_t next;
-        int rc = nodus_client_get_all_page_strict(ctx->client, key, owner,
+        int rc;
+        if (page == 0 && first) {
+            rc = first->rc;
+            vals = first->vals;
+            n = first->count;
+            more = first->more;
+            next = first->cursor;
+            legacy = first->legacy;
+            undecodable = first->undecodable;
+            first->vals = NULL;
+            first->count = 0;
+        } else {
+            if (ctx->cancel && *ctx->cancel) return NC_ERR_CANCELLED;
+            rc = nodus_client_get_all_page_strict(ctx->client, key, owner,
                                                   have_cursor ? &cursor : NULL,
                                                   &vals, &n, &more, &next,
                                                   &legacy, &undecodable);
-        if (rc != 0) return rc;
+        }
+        if (rc != 0) {
+            /* The client returns no row with an error; freed in case. */
+            for (size_t i = 0; i < n; i++) nodus_value_free(vals[i]);
+            free(vals);
+            return rc;
+        }
         acc->undecodable += undecodable;
         if (acc_append(acc, vals, n) != 0) {
             for (size_t i = 0; i < n; i++) nodus_value_free(vals[i]);
@@ -319,14 +358,19 @@ static int read_pages(const nc_ctx_t *ctx, const nodus_key_t *key,
     return 0;
 }
 
-void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
-                 const nodus_key_t *owners, size_t n_owners,
-                 nc_read_all_t *out) {
+/* nc_read_all, with an optional pipelined first page for the FIRST loop
+ * (first != NULL only with n_owners == 1: nc_read_owner_many). Every path
+ * frees first's rows if it does not take them. */
+static void read_all_impl(const nc_ctx_t *ctx, const nodus_key_t *key,
+                          const nodus_key_t *owners, size_t n_owners,
+                          nodus_page_req_t *first, nc_read_all_t *out) {
     if (!ctx || !ctx->client || !key) {
+        first_page_free(first);
         nc_classify_all(-1, NULL, 0, 0, key, owners, n_owners, out);
         return;
     }
     if (ctx->cancel && *ctx->cancel) {
+        first_page_free(first);
         nc_classify_all(NC_ERR_CANCELLED, NULL, 0, 0, key, owners, n_owners,
                         out);
         return;
@@ -339,9 +383,10 @@ void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
     for (size_t i = 0; i < loops && rc == 0; i++) {
         bool left = false;
         rc = read_pages(ctx, key, n_owners > 0 ? &owners[i] : NULL, &acc,
-                        &left);
+                        &left, i == 0 ? first : NULL);
         more_left = more_left || left;
     }
+    first_page_free(first);              /* read_pages took it: a no-op    */
     if (rc == 0 && more_left && n_owners > 0) rc = NC_RC_TOO_LARGE;
     if (rc != 0) {
         /* Never through nc_classify_all's rc path: its NOT_FOUND -> EMPTY
@@ -376,6 +421,40 @@ void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
     if (out->outcome == NC_UNREADABLE)
         QGP_LOG_INFO(LOG_TAG, "GET_ALL unreadable: %s",
                      nc_why_str(out->why));
+}
+
+void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
+                 const nodus_key_t *owners, size_t n_owners,
+                 nc_read_all_t *out) {
+    read_all_impl(ctx, key, owners, n_owners, NULL, out);
+}
+
+int nc_read_owner_many(const nc_ctx_t *ctx, const nodus_key_t *keys,
+                       const nodus_key_t *owners, size_t n, nc_read_t *outs) {
+    if (!keys || !owners || !outs || n == 0 || n > NC_READ_MANY_MAX)
+        return NC_ERR_ARG;
+    memset(outs, 0, n * sizeof(*outs));
+    for (size_t w = 0; w < n; w += NC_READ_PIPELINE) {
+        size_t m = n - w < NC_READ_PIPELINE ? n - w : NC_READ_PIPELINE;
+        nodus_page_req_t reqs[NC_READ_PIPELINE];
+        memset(reqs, 0, sizeof(reqs));
+        bool sent = false;
+        /* No client / cancelled: nothing is sent; read_owner_one answers
+         * each key as nc_read_one would (-1 / CANCELLED, no network). */
+        if (ctx && ctx->client && !(ctx->cancel && *ctx->cancel)) {
+            for (size_t j = 0; j < m; j++) {
+                reqs[j].key = &keys[w + j];
+                reqs[j].owner_fp = &owners[w + j];
+                reqs[j].after = NULL;
+            }
+            sent = nodus_client_get_all_page_strict_many(ctx->client, reqs,
+                                                         m) == 0;
+        }
+        for (size_t j = 0; j < m; j++)
+            read_owner_one(ctx, &keys[w + j], &owners[w + j],
+                           sent ? &reqs[j] : NULL, &outs[w + j]);
+    }
+    return NC_OK;
 }
 
 int nc_put(const nc_ctx_t *ctx, const nodus_key_t *key,

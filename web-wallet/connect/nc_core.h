@@ -254,6 +254,33 @@ void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
                  const nodus_key_t *owners, size_t n_owners,
                  nc_read_all_t *out);
 
+/* Keys one nc_read_owner_many call reads at most, and how many of their
+ * first pages are in flight at once. The node's forwarded-lookup slots
+ * (NODUS_BF_MAX_BATCHES, 16) are shared by every user of that node: one
+ * reader takes at most 4 of them. */
+#define NC_READ_MANY_MAX  8
+#define NC_READ_PIPELINE  4
+
+/**
+ * nc_read_one(ctx, &keys[i], &owners[i], &outs[i]) for i < n (n <=
+ * NC_READ_MANY_MAX), every key with its own owner — the SAME read per key
+ * (the owner-filtered paged nc_read_all and one row of it, every rule of
+ * nc_read_one above, fail closed), with the first pages PIPELINED: in waves
+ * of NC_READ_PIPELINE keys, the first page request of every key of the
+ * wave is sent before the first reply is awaited
+ * (nodus_client_get_all_page_strict_many: one strict request per key,
+ * never a batch request). A key whose answer has more pages continues
+ * with its own sequential page requests, up to NC_READ_MAX_PAGES. The
+ * cancel flag is checked before every wave and before every later page;
+ * a key whose read ends cancelled is UNREADABLE(CANCELLED) as in
+ * nc_read_one. outs[i] is exactly what nc_read_one would return for that
+ * key; free each with nc_read_clear.
+ * @return NC_OK, or NC_ERR_ARG (NULL arrays, n == 0, n > NC_READ_MANY_MAX)
+ *         with nothing read.
+ */
+int nc_read_owner_many(const nc_ctx_t *ctx, const nodus_key_t *keys,
+                       const nodus_key_t *owners, size_t n, nc_read_t *outs);
+
 /**
  * One signed PUT under the own identity (the nodus_ops.c do_put shape,
  * :75-112): nodus_value_create + nodus_value_sign + nodus_client_put_ex,
@@ -747,6 +774,33 @@ int nc_plaintext_is_chat(const uint8_t *pt, size_t len);
 int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
                         const uint8_t salt[NC_SALT_LEN], uint64_t day,
                         const uint8_t *skip_blob, nc_inbox_t *out);
+
+/** One day of nc_outbox_fetch_days: nc_outbox_fetch_day's `day` and
+ *  `skip_blob` (nullable, 32 bytes). */
+typedef struct {
+    uint64_t       day;
+    const uint8_t *skip_blob;
+} nc_outbox_day_req_t;
+
+/**
+ * nc_outbox_fetch_day for up to NC_READ_MANY_MAX days of ONE peer's outbox
+ * (same peer, same salt). The bucket reads go through nc_read_owner_many
+ * (first pages pipelined, NC_READ_PIPELINE at once; each key read exactly
+ * as nc_read_one reads it); every day's answer is then processed by the
+ * SAME code as nc_outbox_fetch_day's (blob hash, skip_blob, codec,
+ * decrypt, authorship gate, chat / other / dropped). outs[i] / rcs[i] are
+ * what nc_outbox_fetch_day(ctx, peer, salt, days[i].day,
+ * days[i].skip_blob, &outs[i]) would return (NC_ERR_ARG for a day whose key
+ * does not derive, NC_ERR_INTERNAL on allocation failure). Free each
+ * outs[i] with nc_inbox_clear.
+ * @return NC_OK, or NC_ERR_ARG (bad arguments, n == 0,
+ *         n > NC_READ_MANY_MAX; every rcs[i] NC_ERR_ARG when rcs is given)
+ *         or NC_ERR_INTERNAL with nothing read.
+ */
+int nc_outbox_fetch_days(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                         const uint8_t salt[NC_SALT_LEN],
+                         const nc_outbox_day_req_t *days, size_t n,
+                         nc_inbox_t *outs, int *rcs);
 
 /** ACK that this identity has STORED `peer`'s messages (G11: the caller
  *  calls this only after its store transaction completed). Key =

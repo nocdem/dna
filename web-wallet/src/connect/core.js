@@ -94,6 +94,14 @@
 //     clock; messages are chat text only — the app's control payloads and
 //     card payloads are counted in `other` and never returned
 //     (nc_core.h nc_plaintext_is_chat)
+//   core.outboxFetchDays(fp, saltHex, [{ day, skipBlob? }]) -> { days: [
+//     <the outboxFetchDay answer of each day>, ... ] } in the order asked;
+//     1..8 days of ONE contact in one call (web 0.1.73): each day is read
+//     with the same strict request and checked by the same code as
+//     outboxFetchDay; the requests are pipelined in the module, 4 in flight
+//     at once (nc_core.h nc_read_owner_many), not batched. `day` is
+//     required (decimal); skipBlob as outboxFetchDay's. A day that
+//     outboxFetchDay would reject rejects the whole call.
 //   core.ackPublish(fp, saltHex, ackTs)  ONLY after the store transaction's
 //     oncomplete (G11) and only when that contact's fetch dropped nothing.
 //     ackTs (decimal, > 0): the NEWEST sender timestamp stored from that
@@ -195,6 +203,15 @@ function bytesToHex(bytes) {
 function hexToText(hex) {
   const bytes = hexToBytes(hex);
   try { return new TextDecoder('utf-8', { fatal: false }).decode(bytes); } finally { bytes.fill(0); }
+}
+// Day buckets one outboxFetchDays call reads at most (connect/nc_core.h
+// NC_READ_MANY_MAX).
+const OUTBOX_DAYS_MAX = 8;
+// One day bucket's answer of nc_outbox_get / nc_outbox_get_days, as
+// outboxFetchDay returns it.
+function dayResult(r) {
+  const messages = (r.messages || []).map(m => ({ seq: m.seq, senderTs: m.sender_ts, text: hexToText(m.text_hex) }));
+  return { outcome: r.outcome, why: r.why, day: r.day, blob: r.blob, unchanged: r.unchanged === true, dropped: r.dropped, other: r.other, messages };
 }
 // The AAD names cross into C as NUL-terminated strings (strlen): a NUL
 // inside one would silently shorten the AAD, so it is refused here.
@@ -391,9 +408,22 @@ export function createNodusConnectCore({ nodus } = {}) {
       if (day !== '' && !U64.test(String(day))) throw new Error('Invalid day.');
       if (skipBlob !== '' && !HEX64.test(skipBlob)) throw new Error('Invalid blob.');
       b.check(await b.call('nc_outbox_get', ['string', 'string', 'string', 'string'], [fp(who), salt(saltHex), String(day), skipBlob]));
-      const r = b.result();
-      const messages = (r.messages || []).map(m => ({ seq: m.seq, senderTs: m.sender_ts, text: hexToText(m.text_hex) }));
-      return { outcome: r.outcome, why: r.why, day: r.day, blob: r.blob, unchanged: r.unchanged === true, dropped: r.dropped, other: r.other, messages };
+      return dayResult(b.result());
+    }),
+    outboxFetchDays: op(async (b, who, saltHex, items) => {
+      if (!Array.isArray(items) || items.length === 0 || items.length > OUTBOX_DAYS_MAX) throw new Error('Invalid day list.');
+      const list = items.map(item => {
+        const day = String(item?.day ?? ''), skip = item?.skipBlob ?? '';
+        if (!U64.test(day)) throw new Error('Invalid day.');
+        if (typeof skip !== 'string' || (skip !== '' && !HEX64.test(skip))) throw new Error('Invalid blob.');
+        return { day, skip };
+      });
+      b.check(await b.call('nc_outbox_get_days', ['string', 'string', 'string'], [fp(who), salt(saltHex), JSON.stringify(list)]));
+      const days = b.result().days;
+      if (!Array.isArray(days) || days.length !== list.length) throw new Error('The Messages module returned an invalid answer.');
+      // An object, not the array itself: enqueue spreads the result into
+      // the stamped answer ({ ...value, generation, requestId }).
+      return { days: days.map(dayResult) };
     }),
     ackPublish: op(async (b, who, saltHex, ackTs) => {
       if (!U64.test(String(ackTs)) || String(ackTs) === '0') throw new Error('Invalid delivery confirmation.');

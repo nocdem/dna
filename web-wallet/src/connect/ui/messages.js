@@ -764,12 +764,20 @@ async function syncContact(contact, gen, days) {
   // A hash is remembered only after the bucket's messages were stored, and
   // never for a bucket with a message that did not verify (it stays
   // counted in `dropped` and keeps the ACK back).
+  // All of the contact's buckets in ONE call (web 0.1.73): the module reads
+  // each day with the same strict request and checks, the requests
+  // pipelined (4 in flight), instead of one round trip per day. The answers
+  // come back in the order of `days` and are handled below exactly as one
+  // call per day was. (blobs changes only after this loop, and only for
+  // the keys of `days`, so taking every skip hash up front reads what the
+  // per-day loop read.)
   const arrived = [], seen = []; let lost = 0, other = 0, complete = true;
-  for (const day of days) {
+  step('days', days.length);
+  const { days: results } = await core.outboxFetchDays(fp, salt, days.map(day => ({ day, skipBlob: blobs.get(`${fp}|${day}`)?.blob || '' })));
+  if (gen !== generation) return false;
+  for (let i = 0; i < days.length; i++) {
+    const day = days[i], result = results[i];
     const key = `${fp}|${day}`, before = blobs.get(key);
-    step('day', day);
-    const result = await core.outboxFetchDay(fp, salt, day, before?.blob || '');
-    if (gen !== generation) return false;
     diag.days.push(diagDay(day, result));
     if (result.outcome === 'unreadable') complete = false;
     if (result.unchanged && before) { other += before.other; continue; }
