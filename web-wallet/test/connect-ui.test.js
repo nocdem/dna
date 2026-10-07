@@ -24,11 +24,12 @@ import {
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, contactNeedsFullSync, contactDays, checkOrder, profileFresh, PROFILE_CACHE_SECONDS,
   CHECK_STAGES, updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
-  saltShortText, daysRead, contactLine, roundDoneLine
+  saltShortText, daysRead, contactLine, roundDoneLine, removeContact
 } from '../src/connect/ui/text.js';
 import { scrubLogText } from '../src/session-log.js';
 import {
   keptChainName, chainLookupNeeded, chainLookupSpaced, CHAIN_LOOKUP_SPACING_MS, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT,
+  CHAIN_NO_NAME_RECHECK_SECONDS, chainNoNameFresh, chainNoNameAfterLookup,
   resolveContactName, NAME_NOT_READY_TEXT, NAME_UNREGISTERED_TEXT, NAME_LOOKUP_FAILED_TEXT, NAME_CHECK_TEXT
 } from '../src/connect/ui/chain-names.js';
 import { NAME_CHECK_ROW } from '../src/adapters/nodus.js';
@@ -649,6 +650,61 @@ test('chain names: a confirmed answer replaces, keeps or removes the kept entry'
   assert.deepEqual(chainNameAfterLookup(before, undefined, { keep: true, now }), { name: 'jarvis', entry: before, changed: false });
 });
 
+// web 0.1.74: a contact's ANSWERED "no name" is kept (state.chainNoName) and
+// holds the sync round back for a day; a failed lookup is never kept.
+test('chain names: a kept "no name" answer stands for one day, then the contact is asked again', () => {
+  const at = '1790000000', day = CHAIN_NO_NAME_RECHECK_SECONDS;
+  assert.equal(day, 86400);
+  assert.equal(chainNoNameFresh(at, at), true);
+  assert.equal(chainNoNameFresh(at, String(1790000000 + day - 1)), true);
+  assert.equal(chainNoNameFresh(at, String(1790000000 + day)), false, 'a day old: asked again');
+  assert.equal(chainNoNameFresh(at, '1789999999'), false, 'the clock went back: asked again, never blocked for good');
+  assert.equal(chainNoNameFresh(undefined, at), false, 'nothing kept');
+  assert.equal(chainNoNameFresh('x', at), false);
+  assert.equal(chainNoNameFresh('01', at), false);
+  assert.equal(chainNoNameFresh(at, undefined), false);
+  // wired into chainLookupNeeded as `asked` (messages.js ensureChainName):
+  // the sync round does not ask; opening the conversation still does
+  assert.equal(chainLookupNeeded({ asked: chainNoNameFresh(at, at), known: false, recheck: false }), false);
+  assert.equal(chainLookupNeeded({ asked: chainNoNameFresh(at, String(1790000000 + day)), known: false, recheck: false }), true);
+  assert.equal(chainLookupNeeded({ asked: chainNoNameFresh(at, at), known: false, recheck: false, opened: true }), true);
+});
+
+test('chain names: what an answer does to a kept "no name" — kept for a contact, dropped by a found name, untouched by a non-answer', () => {
+  const now = '1790000000', before = '1789000000';
+  // answered "no name", a contact: kept with this answer's time
+  assert.deepEqual(chainNoNameAfterLookup(undefined, { found: false }, { keep: true, now }), { at: now, changed: true });
+  assert.deepEqual(chainNoNameAfterLookup(before, { found: false }, { keep: true, now }), { at: now, changed: true });
+  assert.deepEqual(chainNoNameAfterLookup(now, { found: false }, { keep: true, now }), { at: now, changed: false });
+  // answered "no name", not kept (the own ID, a stranger): nothing kept
+  assert.deepEqual(chainNoNameAfterLookup(undefined, { found: false }, { keep: false, now }), { at: null, changed: false });
+  assert.deepEqual(chainNoNameAfterLookup(before, { found: false }, { keep: false, now }), { at: null, changed: true });
+  // a found name: the kept "no name" goes (the name itself is kept by chainNameAfterLookup)
+  assert.deepEqual(chainNoNameAfterLookup(before, { found: true, name: 'jarvis' }, { keep: true, now }), { at: null, changed: true });
+  assert.deepEqual(chainNoNameAfterLookup(undefined, { found: true, name: 'jarvis' }, { keep: true, now }), { at: null, changed: false });
+  // not an answer (malformed): nothing moves
+  assert.deepEqual(chainNoNameAfterLookup(before, undefined, { keep: true, now }), { at: before, changed: false });
+  assert.deepEqual(chainNoNameAfterLookup(before, { found: true, name: 'BAD NAME' }, { keep: true, now }), { at: before, changed: false });
+  assert.deepEqual(chainNoNameAfterLookup(undefined, { found: 'maybe' }, { keep: true, now }), { at: null, changed: false });
+});
+
+test('state: chainNoName is its own map — a state without it gets {}, a bad entry is damage, chainNames still refuses a nameless entry', () => {
+  assert.deepEqual(emptyState().chainNoName, {});
+  const old = emptyState(); delete old.chainNoName;
+  assert.deepEqual(checkState(old).chainNoName, {});
+  assert.doesNotThrow(() => checkState({ ...emptyState(), chainNoName: { [FP]: '1790000000' } }));
+  assert.throws(() => checkState({ ...emptyState(), chainNoName: { [FP]: 'x' } }));
+  assert.throws(() => checkState({ ...emptyState(), chainNoName: { abc: '1' } }));
+  assert.throws(() => checkState({ ...emptyState(), chainNoName: [] }));
+  // An older version's checkState refuses this shape (a '' name), which is why
+  // a "no name" is not kept inside chainNames (store.js).
+  assert.throws(() => checkState({ ...emptyState(), chainNames: { [FP]: { name: '', at: '1' } } }));
+  // Removing the contact drops its kept "no name" too (text.js removeContact).
+  const s = { ...emptyState(), contacts: [{ fp: FP }], chainNoName: { [FP]: '1790000000' } };
+  assert.equal(removeContact(s, FP), true);
+  assert.deepEqual(s.chainNoName, {});
+});
+
 test('own name: the wallet\'s answered lookup wins; until then the name Messages knows; More entry text', () => {
   assert.equal(shownOwnName(null, ''), '');
   assert.equal(shownOwnName(null, 'jarvis'), 'jarvis');                    // kept on this device, before the wallet's lookup answered
@@ -820,6 +876,12 @@ test('progress log: round, stage and per-step lines are exact', () => {
   assert.equal(contactStepLine(PROGRESS_ID, 'days', -1), 'contact ID 1a2b3c4d…9f0e: outbox days ?');
   // The per-day step is gone: an unknown step, not a day line.
   assert.equal(contactStepLine(PROGRESS_ID, 'day', '20368'), 'contact ID 1a2b3c4d…9f0e: unknown step');
+  // One line per contact for its group's one pipelined read of the ACK and
+  // the day buckets (web 0.1.74, core.contactReads): the group's size.
+  assert.equal(contactStepLine(PROGRESS_ID, 'reads', 4), 'contact ID 1a2b3c4d…9f0e: reads (group of 4)');
+  assert.equal(contactStepLine(PROGRESS_ID, 'reads', 1), 'contact ID 1a2b3c4d…9f0e: reads (group of 1)');
+  assert.equal(contactStepLine(PROGRESS_ID, 'reads', 'x'), 'contact ID 1a2b3c4d…9f0e: reads (group of ?)');
+  assert.equal(contactStepLine(PROGRESS_ID, 'reads'), 'contact ID 1a2b3c4d…9f0e: reads (group of ?)');
   assert.equal(contactStepLine(PROGRESS_ID, 'ack publish'), 'contact ID 1a2b3c4d…9f0e: ack publish');
   assert.equal(contactStepLine(PROGRESS_ID, 'name'), 'contact ID 1a2b3c4d…9f0e: chain name');
   assert.equal(contactStepLine(undefined, 'nope'), 'contact ID ?: unknown step');
@@ -868,7 +930,7 @@ test('progress log lines pass the session log scrub unchanged (short ID, counts,
     stageStartLine(12, 'account'), stageLine(12, 'account', 98765),
     stageStartLine(12, 'publish'), stageLine(12, 'publish', 3),
     contactStartLine(PROGRESS_ID),
-    contactStepLine(PROGRESS_ID, 'profile'), contactStepLine(PROGRESS_ID, 'days', 8), contactStepLine(PROGRESS_ID, 'ack publish'),
+    contactStepLine(PROGRESS_ID, 'profile'), contactStepLine(PROGRESS_ID, 'days', 8), contactStepLine(PROGRESS_ID, 'reads', 4), contactStepLine(PROGRESS_ID, 'ack publish'),
     contactLine(PROGRESS_ID, { ms: 61234, fresh: 3, diag, days: 8 }),
     contactLine(PROGRESS_ID, { ms: 5, diag: undefined, days: 3, failed: true }),
     roundDoneLine(12, { ms: 1234567, fresh: 3, failed: 1 })

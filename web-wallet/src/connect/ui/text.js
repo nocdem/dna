@@ -275,7 +275,8 @@ export function recentDays(today) {
 //   1. it was in a blob that was successfully published (its `published`
 //      flag, set after core.outboxPublish resolved), and that flag was set
 //      BEFORE the ACK read was issued (publishedSeqs is the snapshot taken
-//      just before core.ackGet), and
+//      just before the ACK read — core.contactReads since web 0.1.74,
+//      core.ackGet before), and
 //   2. its timestamp is STRICTLY below the ACK value read (RT2 L2 F1: the
 //      ACK is in seconds, so a message sent in the ACK's own second may not
 //      have been fetched yet).
@@ -418,7 +419,7 @@ export function mergeListedContacts(state, entries, ownFp) {
 // Removes a contact on THIS device (the user's "Remove contact"): it leaves
 // the contact list, its ID goes on state.removed (so the network list does
 // not bring it back), and what was kept to check its messages goes too —
-// the check time, the kept profile row index and chain name (the app drops
+// the check time, the kept profile row index, chain name and "no name" answer (the app drops
 // its key cache on removal too, dna_engine_contacts.c:253). The messages
 // themselves stay on this device (shown again if the person is added again),
 // and so do the ACK values (no second ACK of messages already ACKed).
@@ -431,6 +432,7 @@ export function removeContact(state, fp) {
   delete state.dmSync[fp];
   delete state.profileCache[fp];
   delete state.chainNames[fp];
+  if (state.chainNoName) delete state.chainNoName[fp];      // its kept "no name" (web 0.1.74)
   return true;
 }
 
@@ -502,15 +504,20 @@ export function contactStartLine(id) {
 }
 
 // Log, before each network step of a contact's check (messages.js
-// syncContact / publishOutbox): "contact ID 1a2b3c4d…9f0e: outbox days 8".
-// `step`: 'profile' | 'salt' | 'ack' | 'publish' | 'days' | 'ack publish',
-// or 'name' (the first round's chain-name lookup of one ID, sync);
-// `count`: for 'days', how many day buckets the one pipelined read asks
-// for (core.outboxFetchDays, web 0.1.73; one line per day before).
-const CONTACT_STEPS = Object.freeze({ profile: 'profile', salt: 'salt', ack: 'ack', publish: 'outbox publish', days: 'outbox days', 'ack publish': 'ack publish', name: 'chain name' });
+// startContactCheck / finishContactCheck / publishOutbox): "contact ID
+// 1a2b3c4d…9f0e: reads (group of 4)".
+// `step`: 'profile' | 'salt' | 'ack' | 'publish' | 'days' | 'reads' |
+// 'ack publish', or 'name' (the first round's chain-name lookup of one ID,
+// sync); `count`: for 'days', how many day buckets the one pipelined read
+// asks for (core.outboxFetchDays, web 0.1.73); for 'reads', how many
+// contacts' ACK and day buckets the one pipelined call reads together
+// (core.contactReads, web 0.1.74 — it replaced the 'ack' and 'days' steps
+// of the message check).
+const CONTACT_STEPS = Object.freeze({ profile: 'profile', salt: 'salt', ack: 'ack', publish: 'outbox publish', days: 'outbox days', reads: 'reads', 'ack publish': 'ack publish', name: 'chain name' });
 export function contactStepLine(id, step, count) {
   const name = CONTACT_STEPS[step] || 'unknown step';
-  const which = step === 'days' ? ` ${Number.isSafeInteger(count) && count >= 0 ? String(count) : '?'}` : '';
+  const n = Number.isSafeInteger(count) && count >= 0 ? String(count) : '?';
+  const which = step === 'days' ? ` ${n}` : step === 'reads' ? ` (group of ${n})` : '';
   return `contact ${typeof id === 'string' ? id : 'ID ?'}: ${name}${which}`;
 }
 

@@ -123,6 +123,83 @@ test('core: outboxFetchDays sends every day in one call and maps each answer as 
   assert.deepEqual(r.days[1], singleDay);
 });
 
+// contactReads (web 0.1.74): ONE network export (nc_contact_reads) for the
+// ACK and the day buckets of up to 4 contacts; per contact the ack answer
+// passes through as ackGet returns it and each day is mapped exactly as
+// outboxFetchDays maps it; a per-contact { error } stays that contact's.
+// Against the same fake module — proves the JS argument shape, the mapping
+// and the refusals, nothing about the module's reads.
+test('core: contactReads sends every contact in one call; ack as ackGet, days as outboxFetchDays, an error stays its contact\'s', async () => {
+  const hello = Buffer.from('hello').toString('hex');
+  const THIRD = 'ef'.repeat(64), SALT2 = '33'.repeat(32);
+  const one = dayAnswer('20368', { outcome: 'found', blob: BLOB, messages: [{ seq: '7', sender_ts: '1700000000', text_hex: hello }] });
+  const ackFound = { outcome: 'found', why: 'none', ack_ts: '1700000001' };
+  const ackEmpty = { outcome: 'empty', why: 'none', ack_ts: null };
+  const { nodus, calls } = fakeDaysNodus({
+    nc_unlock: { fingerprint: FP, fresh: false },
+    nc_contact_reads: { contacts: [
+      { ack: ackFound, days: [dayAnswer('20367'), one] },
+      { error: 'Load this contact\'s profile first.' },
+      { ack: ackEmpty, days: [dayAnswer('20369', { outcome: 'unreadable', why: 'timeout' })] }
+    ] },
+    nc_outbox_get_days: { days: [dayAnswer('20367'), one] },
+    nc_ack_get: ackFound
+  });
+  const core = createNodusConnectCore({ nodus });
+  await core.unlock({ words: new TextEncoder().encode('alpha beta gamma') });
+  const r = await core.contactReads([
+    { fp: OTHER, salt: SALT, days: [{ day: '20367' }, { day: '20368', skipBlob: BLOB }] },
+    { fp: THIRD, salt: SALT2, days: [{ day: 20368 }] },
+    { fp: FP, salt: SALT, days: [{ day: '20369', skipBlob: '' }] }
+  ]);
+  const sent = calls.filter(c => c.name === 'nc_contact_reads');
+  assert.equal(sent.length, 1, 'one export for every contact');
+  assert.deepEqual(sent[0].types, ['string']);
+  assert.deepEqual(JSON.parse(sent[0].args[0]), [
+    { fp: OTHER, salt: SALT, days: [{ day: '20367', skip: '' }, { day: '20368', skip: BLOB }] },
+    { fp: THIRD, salt: SALT2, days: [{ day: '20368', skip: '' }] },
+    { fp: FP, salt: SALT, days: [{ day: '20369', skip: '' }] }
+  ]);
+  assert.equal(r.contacts.length, 3);
+  assert.deepEqual(r.contacts[1], { error: 'Load this contact\'s profile first.' });
+  assert.deepEqual(r.contacts[2].ack, ackEmpty);
+  assert.equal(r.contacts[2].days[0].why, 'timeout');
+  // The same answers through the single calls map to the same objects.
+  const { generation: g1, requestId: q1, ...ack } = await core.ackGet(OTHER, SALT);
+  assert.deepEqual(r.contacts[0].ack, ack);
+  const { generation: g2, requestId: q2, ...days } = await core.outboxFetchDays(OTHER, SALT, [{ day: '20367' }, { day: '20368', skipBlob: BLOB }]);
+  assert.deepEqual({ days: r.contacts[0].days }, days);
+  assert.deepEqual(r.contacts[0].days[1].messages, [{ seq: '7', senderTs: '1700000000', text: 'hello' }]);
+  for (const v of [g1, q1, g2, q2]) assert.equal(typeof v, 'number');
+});
+
+test('core: contactReads refuses a bad contact list before the module, and an answer of the wrong shape', async () => {
+  const answers = { nc_unlock: { fingerprint: FP, fresh: false }, nc_contact_reads: { contacts: [{ ack: { outcome: 'empty', why: 'none', ack_ts: null }, days: [dayAnswer('1')] }] } };
+  const { nodus, calls } = fakeDaysNodus(answers);
+  const core = createNodusConnectCore({ nodus });
+  await core.unlock({ words: new TextEncoder().encode('alpha beta gamma') });
+  const ok = { fp: OTHER, salt: SALT, days: [{ day: '1' }] };
+  const nine = Array.from({ length: 9 }, (_, i) => ({ day: String(i) }));
+  await assert.rejects(core.contactReads([]), /contact list/);
+  await assert.rejects(core.contactReads([ok, ok, ok, ok, ok]), /contact list/, 'at most 4 contacts');
+  await assert.rejects(core.contactReads('x'), /contact list/);
+  await assert.rejects(core.contactReads([{ ...ok, fp: 'nope' }]), /Invalid Nodus address/);
+  await assert.rejects(core.contactReads([{ ...ok, salt: '' }]), /Invalid salt/, 'a contact without a salt is never read');
+  await assert.rejects(core.contactReads([{ ...ok, days: [] }]), /day list/);
+  await assert.rejects(core.contactReads([{ ...ok, days: nine }]), /day list/);
+  await assert.rejects(core.contactReads([{ ...ok, days: [{ day: 'x' }] }]), /Invalid day/);
+  await assert.rejects(core.contactReads([{ ...ok, days: [{ day: '1', skipBlob: 'zz' }] }]), /Invalid blob/);
+  await assert.rejects(core.contactReads([null]), /Invalid Nodus address/);
+  assert.equal(calls.filter(c => c.name === 'nc_contact_reads').length, 0, 'nothing reached the module');
+  // the answer must match the request: as many contacts, as many days each
+  await assert.rejects(core.contactReads([ok, ok]), /invalid answer/);
+  await assert.rejects(core.contactReads([{ ...ok, days: [{ day: '1' }, { day: '2' }] }]), /invalid answer/);
+  answers.nc_contact_reads = { contacts: [{ days: [dayAnswer('1')] }] };
+  await assert.rejects(core.contactReads([ok]), /invalid answer/, 'no ack and no error');
+  answers.nc_contact_reads = { nope: true };
+  await assert.rejects(core.contactReads([ok]), /invalid answer/);
+});
+
 test('core: outboxFetchDays refuses a bad day list before the module, and an answer of the wrong length', async () => {
   const { nodus, calls } = fakeDaysNodus({ nc_unlock: { fingerprint: FP, fresh: false }, nc_outbox_get_days: { days: [dayAnswer('1')] } });
   const core = createNodusConnectCore({ nodus });
