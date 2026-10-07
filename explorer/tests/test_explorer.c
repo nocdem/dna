@@ -2403,7 +2403,12 @@ static void test_tps_paydays_and_apy(void) {
     genesis_day_buckets(&bk);                       /* reward_pool 200M NODUS */
     uint8_t blob[EXP_SUPPLY_BUCKETS_BLOB_LEN];
     exp_supply_buckets_pack(&bk, blob);
-    exp_active_stake_t st = { 1, NODUS_RAW(70000000), 7, 17281 };
+    exp_active_stake_t st;
+    memset(&st, 0, sizeof(st));
+    st.has = 1;
+    st.stake = NODUS_RAW(70000000);
+    st.validators = 7;
+    st.at_tip = 17281;
     uint8_t sblob[EXP_ACTIVE_STAKE_BLOB_LEN];
     exp_active_stake_pack(&st, sblob);
     if (exp_db_set_meta_blob(db, EXP_META_SUPPLY_BUCKETS, blob, sizeof(blob)) != 0 ||
@@ -2490,13 +2495,16 @@ static void test_sync_stores_active_stake(void) {
     PASS();
 }
 
-/* Summation: only status ACTIVE rows count, as self + external_delegated;
- * an overflow is refused with the accumulator unchanged. */
+/* Summation: only status ACTIVE rows count toward the APY stake, as
+ * self + external_delegated; ACTIVE and ELIGIBLE (the bonded states) count
+ * toward the bonded totals, RETIRING / UNSTAKED / AUTO_RETIRED toward
+ * nothing; an overflow is refused with the accumulator unchanged. */
 static void test_active_stake_add(void) {
     TEST("exp_chain: active stake sums ACTIVE rows only, refuses overflow");
 
     exp_active_stake_t acc;
     memset(&acc, 0, sizeof(acc));
+    acc.has_delegations = 1;
     nodus_dnac_validator_list_entry_t *e = calloc(1, sizeof(*e));
     if (!e) { FAIL("alloc"); return; }
 
@@ -2504,15 +2512,39 @@ static void test_active_stake_add(void) {
     e->self_stake = 10;
     e->external_delegated = 5;
     e->total_delegated = 5;
+    e->has_delegator_count = 1;
+    e->delegator_count = 3;
     int ok = exp_active_stake_add(&acc, e) == 0;
-    e->status = 4;          /* DNAC_VALIDATOR_ELIGIBLE: not in the active set */
+    e->status = 4;          /* DNAC_VALIDATOR_ELIGIBLE: bonded, not in the active set */
     ok = ok && exp_active_stake_add(&acc, e) == 0;
     ok = ok && acc.stake == 15 && acc.validators == 1;
+    ok = ok && acc.bonded_validators == 2 && acc.bonded_self_stake == 20 &&
+         acc.bonded_delegated == 10 && acc.has_delegations && acc.bonded_delegations == 6;
+
+    /* RETIRING (1), UNSTAKED (2), AUTO_RETIRED (3): left the set — nothing */
+    for (uint8_t s = 1; s <= 3; s++) {
+        e->status = s;
+        ok = ok && exp_active_stake_add(&acc, e) == 0;
+    }
+    ok = ok && acc.stake == 15 && acc.validators == 1 && acc.bonded_validators == 2 &&
+         acc.bonded_self_stake == 20 && acc.bonded_delegated == 10 && acc.bonded_delegations == 6;
 
     e->status = 0;
     e->self_stake = UINT64_MAX;
     e->external_delegated = 0;
     ok = ok && exp_active_stake_add(&acc, e) == -1 && acc.stake == 15 && acc.validators == 1;
+    /* an ELIGIBLE row overflowing the bonded self-stake sum: refused, unchanged */
+    e->status = 4;
+    ok = ok && exp_active_stake_add(&acc, e) == -1 && acc.bonded_validators == 2 &&
+         acc.bonded_self_stake == 20 && acc.bonded_delegations == 6;
+
+    /* a bonded row with no delegator count: positions become unknown */
+    e->self_stake = 10;
+    e->has_delegator_count = 0;
+    e->delegator_count = 0;
+    ok = ok && exp_active_stake_add(&acc, e) == 0 && acc.bonded_validators == 3 &&
+         acc.bonded_self_stake == 30 && acc.bonded_delegated == 15 && !acc.has_delegations &&
+         acc.bonded_delegations == 0;
 
     exp_active_stake_t round;
     uint8_t blob[EXP_ACTIVE_STAKE_BLOB_LEN];
@@ -2521,10 +2553,71 @@ static void test_active_stake_add(void) {
     exp_active_stake_pack(&acc, blob);
     ok = ok && exp_active_stake_unpack(blob, sizeof(blob), &round) == 0 && round.has &&
          round.stake == 15 && round.validators == 1 && round.at_tip == 99 &&
-         exp_active_stake_unpack(blob, sizeof(blob) - 1, &round) == -1;
+         round.bonded_validators == 3 && round.bonded_self_stake == 30 &&
+         round.bonded_delegated == 15 && !round.has_delegations &&
+         exp_active_stake_unpack(blob, sizeof(blob) - 1, &round) == -1 &&
+         /* the earlier 25-byte layout: refused, read as unknown */
+         exp_active_stake_unpack(blob, 25, &round) == -1 && !round.has;
+
+    acc.has_delegations = 1;
+    acc.bonded_delegations = 6;
+    exp_active_stake_pack(&acc, blob);
+    ok = ok && exp_active_stake_unpack(blob, sizeof(blob), &round) == 0 &&
+         round.has_delegations && round.bonded_delegations == 6;
+    blob[25] = 2;            /* a has_delegations byte other than 0 / 1 */
+    ok = ok && exp_active_stake_unpack(blob, sizeof(blob), &round) == -1 && !round.has;
 
     free(e);
     if (!ok) { FAIL("summation / blob wrong"); return; }
+    PASS();
+}
+
+/* /api/stats "staking": null until a stake read is stored; then the
+ * bonded totals (amounts as strings, counts as numbers) with the tip they
+ * were read at; delegations null when a row's count was unknown; a failed
+ * read (has 0) answers null again. */
+static void test_route_stats_staking(void) {
+    TEST("route: /api/stats staking (bonded totals, null when unknown)");
+
+    exp_db_t *db = NULL;
+    if (exp_db_open(":memory:", &db) != 0) { FAIL("open failed"); return; }
+
+    static const char *const absent[] = { "\"staking\":null", NULL };
+    if (route_expect(db, "/api/stats", 200, absent) != 0) { FAIL("absent must be null"); exp_db_close(db); return; }
+
+    exp_active_stake_t st;
+    memset(&st, 0, sizeof(st));
+    st.has = 1;
+    st.stake = NODUS_RAW(70000000) + NODUS_RAW(1500);
+    st.validators = 7;
+    st.at_tip = 17281;
+    st.bonded_validators = 8;
+    st.bonded_self_stake = NODUS_RAW(80000000);
+    st.bonded_delegated = NODUS_RAW(1500) + 25000000;   /* 1500.25 NODUS */
+    st.has_delegations = 1;
+    st.bonded_delegations = 4;
+    uint8_t sblob[EXP_ACTIVE_STAKE_BLOB_LEN];
+    exp_active_stake_pack(&st, sblob);
+    exp_db_set_meta_blob(db, EXP_META_ACTIVE_STAKE, sblob, sizeof(sblob));
+    static const char *const known[] = {
+        "\"staking\":{\"validators\":8,\"active_validators\":7,"
+        "\"self_stake\":\"8000000000000000\",\"delegated\":\"150025000000\","
+        "\"delegations\":4,\"at_tip\":17281}", NULL };
+    if (route_expect(db, "/api/stats", 200, known) != 0) { FAIL("bonded totals"); exp_db_close(db); return; }
+
+    st.has_delegations = 0;
+    st.bonded_delegations = 0;
+    exp_active_stake_pack(&st, sblob);
+    exp_db_set_meta_blob(db, EXP_META_ACTIVE_STAKE, sblob, sizeof(sblob));
+    static const char *const no_count[] = { "\"delegated\":\"150025000000\",\"delegations\":null,\"at_tip\":17281}", NULL };
+    if (route_expect(db, "/api/stats", 200, no_count) != 0) { FAIL("unknown positions must be null"); exp_db_close(db); return; }
+
+    memset(&st, 0, sizeof(st));
+    exp_active_stake_pack(&st, sblob);
+    exp_db_set_meta_blob(db, EXP_META_ACTIVE_STAKE, sblob, sizeof(sblob));
+    if (route_expect(db, "/api/stats", 200, absent) != 0) { FAIL("failed read must be null"); exp_db_close(db); return; }
+
+    exp_db_close(db);
     PASS();
 }
 
@@ -2602,6 +2695,7 @@ int main(void) {
     test_json_hex_emit();
     test_route_stats_and_blocks();
     test_route_stats_buckets();
+    test_route_stats_staking();
     test_route_block_tx_address();
     test_route_search();
     test_name_register_indexed();

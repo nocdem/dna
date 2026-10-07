@@ -14,6 +14,8 @@
 
 #include "witness/nodus_witness_cmt_app.h"
 
+#include <stdarg.h>                    /* app_refuse_log                 */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>                  /* PRId64 in the apply log line   */
@@ -833,6 +835,26 @@ static void app_key_row(app_key_t *k, const nodus_v2_dry_run_row_t *r)
     k->len = (uint16_t)(11u + r->key_len);
 }
 
+/** CheckTx's refusal reason — abci types.proto:265 `ResponseCheckTx.log`
+ *  ("nondeterministic"): human-readable text for the submitting client
+ *  only (the reference's BroadcastTxSync returns it, rpc/core/
+ *  mempool.go:52). The mempool never reads it and no hash covers it, so
+ *  it decides nothing. Truncation to CMT_MEM_CHECK_TX_LOG_MAX is silent;
+ *  the verdict is `code`, never this text. */
+__attribute__((format(printf, 2, 3)))
+static void app_refuse_log(cmt_mem_response_check_tx_t *res,
+                           const char *fmt, ...)
+{
+    va_list ap;
+
+    if (!res) {
+        return;
+    }
+    va_start(ap, fmt);
+    (void)vsnprintf(res->log, sizeof(res->log), fmt, ap);
+    va_end(ap);
+}
+
 /** Red-team 1 F1 — the NON-MUTATING probe the dry run calls for an ABI-2
  *  leg's synthetic keys after authorization, before anything executes
  *  (nodus_v2_conflict_probe_fn). Exactly pend_admit's verdict step 1: a
@@ -877,7 +899,8 @@ static int app_pend_probe(void *pctx, const nodus_v2_dry_run_row_t *rows,
  *  conflict or a full set, CMT_FAULT on an allocation failure. */
 static int app_pend_admit(nodus_cmt_app_ledger_t *ctx,
                           const uint8_t owner[64], const app_key_t *keys,
-                          size_t n, bool *refused)
+                          size_t n, bool *refused,
+                          cmt_mem_response_check_tx_t *res)
 {
     int prc = pend_admit(ctx, owner, keys, n);
 
@@ -889,10 +912,14 @@ static int app_pend_admit(nodus_cmt_app_ledger_t *ctx,
     if (prc == 1) {
         QGP_LOG_DEBUG(LOG_TAG, "%s", "check_tx refused: a pending mempool "
                       "entry already claims this intent / nullifier / row");
+        app_refuse_log(res, "%s", "a pending mempool entry already claims "
+                       "this intent / nullifier / row");
         *refused = true;
     } else if (prc == 2) {
         QGP_LOG_WARN(LOG_TAG, "check_tx refused: the pending conflict set "
                      "is at its bound (%zu keys)", ctx->pend_max);
+        app_refuse_log(res, "the pending conflict set is at its bound "
+                       "(%zu keys)", ctx->pend_max);
         *refused = true;
     }
     return CMT_OK;
@@ -913,7 +940,8 @@ static int app_pend_admit(nodus_cmt_app_ledger_t *ctx,
 static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
                               const uint8_t *tx, size_t tx_len,
                               const uint8_t id[64], bool is_recheck,
-                              bool *refused)
+                              bool *refused,
+                              cmt_mem_response_check_tx_t *res)
 {
     nodus_v2_env_dry_run_t *dry  = NULL;
     app_key_t              *keys = NULL;
@@ -939,6 +967,7 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
 
         memset(&view, 0, sizeof(view));
         if (dna_env_decode(tx, tx_len, &view) != 0) {
+            app_refuse_log(res, "%s", "the envelope does not decode");
             *refused = true;                 /* entry_identity decoded it;
                                               * unreachable, fail closed  */
             return CMT_OK;
@@ -955,6 +984,9 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
                           " is 0 or beyond tip %" PRIu64 " + %u",
                           view.expiry_height, tip,
                           (unsigned)NODUS_CMT_APP_MAX_EXPIRY_AHEAD);
+            app_refuse_log(res, "expiry_height %" PRIu64 " is 0 or beyond "
+                           "tip %" PRIu64 " + %u", view.expiry_height, tip,
+                           (unsigned)NODUS_CMT_APP_MAX_EXPIRY_AHEAD);
             *refused = true;
             return CMT_OK;
         }
@@ -992,6 +1024,8 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
                     QGP_LOG_DEBUG(LOG_TAG, "check_tx refused: EVM gas %"
                                   PRIu64 " exceeds the block gas limit %"
                                   PRIu64, share, lim);
+                    app_refuse_log(res, "EVM gas %" PRIu64 " exceeds the "
+                                   "block gas limit %" PRIu64, share, lim);
                     *refused = true;
                     return CMT_OK;
                 }
@@ -1050,6 +1084,8 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
     if (drc != 0) {
         QGP_LOG_DEBUG(LOG_TAG, "check_tx refused by the dry run (item code "
                       "%u): %s", (unsigned)dry->code, reason);
+        app_refuse_log(res, "dry run item code %u: %s",
+                       (unsigned)dry->code, reason);
         *refused = true;
         rc = CMT_OK;
         goto done;
@@ -1066,7 +1102,7 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
     for (i = 0; i < dry->n_rows; i++) {
         app_key_row(&keys[1 + i], &dry->rows[i]);
     }
-    rc = app_pend_admit(ctx, id, keys, nkeys, refused);
+    rc = app_pend_admit(ctx, id, keys, nkeys, refused, res);
     if (rc == CMT_OK && !*refused) {
         acache_store(ctx, dry);          /* NEW, or a RECHECK miss      */
     }
@@ -1087,7 +1123,8 @@ done:
  */
 static int app_check_claim(nodus_cmt_app_ledger_t *ctx,
                            const uint8_t *tx, size_t tx_len,
-                           const uint8_t id[64], bool *refused)
+                           const uint8_t id[64], bool *refused,
+                           cmt_mem_response_check_tx_t *res)
 {
     app_key_t key;
     uint8_t   nul[64];
@@ -1102,11 +1139,13 @@ static int app_check_claim(nodus_cmt_app_ledger_t *ctx,
     if (nrc != 0) {
         QGP_LOG_DEBUG(LOG_TAG, "%s", "check_tx refused: the claim's "
                       "nullifier derivation refused it");
+        app_refuse_log(res, "%s", "the claim's nullifier derivation "
+                       "refused it");
         *refused = true;
         return CMT_OK;
     }
     app_key_id(&key, CMT_APP_PKEY_TAG_NULLIFIER, nul);
-    return app_pend_admit(ctx, id, &key, 1, refused);
+    return app_pend_admit(ctx, id, &key, 1, refused, res);
 }
 
 int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
@@ -1125,6 +1164,7 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
     memset(res, 0, sizeof(*res));
     if (!req->tx || req->tx_len == 0) {
         res->code = NODUS_CMT_APP_CODE_REJECTED;
+        app_refuse_log(res, "%s", "empty transaction");
         return CMT_OK;                          /* the request was served  */
     }
     /* `gas_wanted` stays 0: `PostCheckMaxGas` is nil while MaxGas is −1
@@ -1139,6 +1179,8 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
     }
     if (rc != CMT_OK) {
         res->code = NODUS_CMT_APP_CODE_REJECTED;
+        app_refuse_log(res, "%s", "no entry identity: the envelope fails "
+                       "preflight, or SYSTEM is not active");
         return CMT_OK;
     }
     reason[0] = '\0';
@@ -1160,6 +1202,11 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
                                                  req->tx_len))
                         ? NODUS_CMT_APP_CODE_GENERATION
                         : NODUS_CMT_APP_CODE_REJECTED;
+        app_refuse_log(res, "%s%s", res->code ==
+                                      NODUS_CMT_APP_CODE_GENERATION
+                                  ? "generation not in force: " : "",
+                       reason[0] ? reason
+                                 : (rc == -2 ? "double spend" : "invalid"));
         return CMT_OK;
     }
     /* ── AND THE SIGNATURES, AND EVERYTHING ELSE THE ITEM WOULD MEET ──
@@ -1190,15 +1237,23 @@ int nodus_cmt_app_check_tx(void *vctx, const cmt_mem_request_check_tx_t *req,
     if (cls == NODUS_W_TX_V2_ENVELOPE) {
         rc = app_check_envelope(ctx, req->tx, req->tx_len, id,
                                 req->type == CMT_MEM_CHECK_TX_TYPE_RECHECK,
-                                &refused);
+                                &refused, res);
     } else {
-        rc = app_check_claim(ctx, req->tx, req->tx_len, id, &refused);
+        rc = app_check_claim(ctx, req->tx, req->tx_len, id, &refused, res);
     }
     if (rc != CMT_OK) {
+        res->log[0] = '\0';              /* a fault answers no text     */
         return CMT_FAULT;                /* node-local: never a verdict  */
     }
     if (refused) {
         res->code = NODUS_CMT_APP_CODE_REJECTED;
+        if (res->log[0] == '\0') {       /* every refusal site above
+                                          * writes one; fail closed on
+                                          * text, never on the verdict  */
+            app_refuse_log(res, "%s", "refused");
+        }
+    } else {
+        res->log[0] = '\0';              /* OK carries no text          */
     }
     return CMT_OK;
 }

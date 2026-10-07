@@ -132,7 +132,11 @@
  *      DIVERGENCE from the legacy unlock 0; rtn_sysfund_exec). LABELED
  *      NARROWING: native-token-only on both sides (the legacy staking
  *      applies summed only native DNAC and silently ignored any other
- *      token riding along).
+ *      token riding along). HF-8 (chain_config param 17, inert until
+ *      voted): while it is active, the funding leg of a non-self
+ *      DELEGATE also reads the delegator's v2_names row by owner (CORE
+ *      NAMEOWN) and refuses a nameless delegator; its inputs are then
+ *      1..14 (rtn_sysfund_name_gate).
  *
  *   7. SYSTEM / DNA_SYSRULE_DELEGATE (2) · DNA_SYSRULE_UNSTAKE (3) ·
  *      DNA_SYSRULE_UNDELEGATE (4) (legacy tx 5/6/7 — O11 S2+S3): the
@@ -217,6 +221,15 @@
  * the SPEND transfer section, in_count 1..15, out_count 0..16 (a bond
  * that consumes the whole input set creates no change — the BURN
  * precedent), every output NATIVE. No amount field of its own.
+ * HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md rev
+ * 2 §1): from the chain_config param-17 activation height on, the
+ * funding leg of a DELEGATE whose delegator is not the validator itself
+ * (rtn_sysfund_name_gate) takes in_count 1..14 — the read budget funds 14
+ * input reads + 1 pool read + 1 NAMEOWN read of the delegator — and is
+ * refused unless the delegator owns a v2_names row. The framing bound
+ * stays 1..15 (a gated 15-input leg is refused by the hooks, not by the
+ * decoder); every other sibling, a self-delegation and every block below
+ * the activation height keep 1..15.
  *
  * SYSTEM stake-lifecycle calls v1 (O11 — all BE, all exact-length; the
  * shared decoder block below the auth section holds the parsers, since
@@ -422,6 +435,17 @@ static uint16_t rtn_get16(const uint8_t *p) {
  * 0..16, every output native. */
 #define RTN_NAME_MAX_IN       13u
 #define RTN_NAME_MAX_OUT      16u
+/* HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md rev
+ * 2 §1): under the name gate (rtn_sysfund_name_gate) the SYSFUND funding
+ * leg of a DELEGATE reads in_count inputs + the reward pool + the
+ * delegator's NAMEOWN row = NODUS_RT_MAX_READS (16), so its input ceiling
+ * is 14 (the TOKEN_CREATE 14-of-16 precedent). Without the gate — before
+ * the activation height, a self-delegation, every other SYSFUND sibling —
+ * it stays RTN_SPEND_MAX_IN (15). The call's FRAMING bound is unchanged
+ * (rtn_sysfund_parse still admits 15): the narrowing is a state-dependent
+ * refusal of the hooks, so the capacity derivations below keep their
+ * 15-input worst case. */
+#define RTN_SYSFUND_DLG_MAX_IN 14u
 #define RTN_NAME_REC_LEN      72u  /* owner 64 ‖ registered_height u64 BE */
 
 /* Capacity-derivation pins (header block above). Every participating
@@ -467,6 +491,9 @@ _Static_assert((1u + DNAC_NAME_MAX_LEN + 8u + 1u + RTN_NAME_MAX_IN * 64u +
                "TOKEN_CREATE capacity derivation");
 _Static_assert(RTN_NAME_MAX_IN + 3u == NODUS_RT_MAX_READS,
                "NAME_REGISTER reads: inputs + pool + NAME + OWNER");
+_Static_assert(RTN_SYSFUND_DLG_MAX_IN + 2u == NODUS_RT_MAX_READS &&
+                   RTN_SYSFUND_DLG_MAX_IN < RTN_SPEND_MAX_IN,
+               "HF-8 gated SYSFUND reads: inputs + pool + NAMEOWN");
 /* "Worst case" means worst FRAMING-AND-ALLOWLIST-legal: an envelope the
  * pre-BEGIN admission scan and the authorization stage accept and the
  * block therefore RESERVES AND PAYS FOR, whether or not exec later
@@ -1659,6 +1686,8 @@ static int rtn_name_owner(const dna_env_view_t *env, uint16_t leg,
  * call v1 = EXACTLY the SPEND transfer section, and nothing else:
  *   in_count u8 1..15 ‖ nullifiers (strictly ascending)
  *   ‖ out_count u8 0..16 ‖ change outputs
+ * (HF-8: 1..14 inputs under the name gate — a hook rule, not this
+ * decoder's; see rtn_sysfund_name_gate.)
  * out_count 0 is legal (a bond that consumes the whole input set creates
  * no change — the BURN precedent). There are NO amount fields: what this
  * leg locks or releases comes from the SIBLING SYSTEM leg's call bytes
@@ -1713,6 +1742,56 @@ static int rtn_sysfund_shape(const dna_env_view_t *env, uint16_t leg_index,
     if (allow_storage && rtn_sys_is_storage_op(env->leg[0].runtime_op))
         return 0;
     return -1;
+}
+
+/* HF-8 — THE ONE NAME-GATE PREDICATE of the SYSFUND funding leg (design
+ * docs/plans/2026-10-07-delegate-name-required-design.md rev 2 §1;
+ * Kurultay #11 change 5). Is this funding leg's DELEGATE required to name
+ * a delegator that owns a v2_names row?
+ *
+ *   gated  ⇔  ctx->delegate_name_required (the engine fact, chain_config
+ *             param 17 at the block's height)
+ *           ∧ leg 0 is SYSTEM DELEGATE (op 2 — never UNDELEGATE, STAKE,
+ *             UNSTAKE, VALIDATOR_UPDATE or a storage op)
+ *           ∧ the call's delegator_pubkey != its validator_pubkey (byte
+ *             compare — a self-delegation is exempt).
+ *
+ * The delegator is the SIBLING SYSTEM call's call-carried identity (the
+ * key the SYSTEM leg's own auth gate binds to its one verified signer,
+ * rtn_sys_stake_auth) — NEVER this leg's signers: third-party funding is
+ * legal (rtn_sysfund_exec's input loop), so keying on the funder would
+ * judge the wrong address.
+ *
+ * BOTH hooks decide through this one function — the read plan (append
+ * ONE NAMEOWN request) and the exec (expect that read, judge it) — so the
+ * planned read count and the exec's expected count can never disagree
+ * (a disagreement would be rtn_sysfund_exec's n_reads FAULT on every
+ * node). Pure over (env bytes, ctx fact): no read, no clock, no cache.
+ *
+ * `owner_out` (may be NULL — the exec does not re-derive the key; the
+ * read plan fixed it): receives SHA3-512(delegator_pubkey), the raw
+ * fingerprint v2_names.owner stores (rtn_name_owner's derivation).
+ * Caller contract: rtn_sysfund_shape accepted the envelope.
+ * @return 1 gated / 0 not gated / -1 verdict (a DELEGATE sibling whose
+ *         call does not parse) / -2 hash-backend NODE fault. */
+static int rtn_sysfund_name_gate(const dna_env_view_t *env,
+                                 const nodus_rt_exec_ctx_t *ctx,
+                                 uint8_t owner_out[64]) {
+    rtn_deleg_call_t d;
+    if (!ctx->delegate_name_required) return 0;
+    if (env->leg_count != 2 || env->leg[0].domain_id != DNA_DOMAIN_SYSTEM)
+        return -1;                       /* rtn_sysfund_shape's contract */
+    if (env->leg[0].runtime_op != DNA_SYSRULE_DELEGATE) return 0;
+    if (rtn_deleg_parse(env->buf + env->call_off[0], env->leg[0].call_len,
+                        &d) != 0)
+        return -1;                       /* malformed record call        */
+    if (memcmp(d.delegator_pubkey, d.validator_pubkey,
+               DNAC_PUBKEY_SIZE) == 0)
+        return 0;                        /* self-delegation: exempt      */
+    if (owner_out &&
+        qgp_sha3_512(d.delegator_pubkey, DNAC_PUBKEY_SIZE, owner_out) != 0)
+        return -2;
+    return 1;
 }
 
 /* ── DNA_CORERULE_EVMFUND (Nodus EVM) — the CORE half of an EVM envelope ────
@@ -1870,12 +1949,28 @@ int nodus_rt_core_read_plan(const nodus_domain_runtime_t *rt,
         if (rtn_sysfund_shape(env, leg_index, rtn_gen_storage(rt)) != 0)
             return -1;
         if (rtn_sysfund_parse(env, leg_index, &c) != 0) return -1;
+        /* HF-8: the name gate (the ONE predicate rtn_sysfund_exec
+         * consults too) — decided before anything is written */
+        uint8_t dlg_fp[64];
+        int gate = rtn_sysfund_name_gate(env, ctx, dlg_fp);
+        if (gate < 0) return gate;
+        if (gate && c.in_count > RTN_SYSFUND_DLG_MAX_IN)
+            return -1;                   /* the gated read budget (14)   */
         /* the SPEND read shape exactly: one UTXO read per input plus the
          * ONE reward-pool read (tokenomics-v3 P2 — the fee's
-         * destination; the release UTXO is CREATED, never read) */
-        uint16_t need = (uint16_t)(c.in_count + 1);
+         * destination; the release UTXO is CREATED, never read) — and,
+         * under the HF-8 gate, the delegator's NAMEOWN row LAST (op 6 >
+         * op 3: ascending (op_id, key), the canonical order) */
+        uint16_t need = (uint16_t)(c.in_count + 1 + (gate ? 1 : 0));
         if (need > max_reqs) return -1;
         (void)rtn_xfer_reads(&c, 0, reqs_out);
+        if (gate) {
+            nodus_rt_read_req_t *ro = &reqs_out[c.in_count + 1];
+            memset(ro, 0, sizeof(*ro));
+            ro->op_id = RTN_CORE_OP_NAMEOWN;
+            ro->key_len = 64;
+            memcpy(ro->key, dlg_fp, 64);
+        }
         *n_out = need;
         return 0;
     }
@@ -2809,7 +2904,30 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
                             uint16_t n_reads,
                             uint8_t *res_out, size_t res_cap,
                             size_t *res_len_out) {
-    if (!reads || n_reads != (uint16_t)(c->in_count + 1)) return -2;
+    /* HF-8: the same predicate the read plan used decides how many reads
+     * the plan made — inputs + pool, + the delegator's NAMEOWN row under
+     * the gate. A count that disagrees is this node's engine/plan
+     * invariant broken: a FAULT, never a verdict. */
+    int gate = rtn_sysfund_name_gate(env, ctx, NULL);
+    if (gate < 0) return gate;
+    if (!reads ||
+        n_reads != (uint16_t)(c->in_count + 1 + (gate ? 1 : 0)))
+        return -2;
+    if (gate) {
+        /* the gated input ceiling, restated where the value moves (the
+         * plan refused a 15-input gated leg before any read) */
+        if (c->in_count > RTN_SYSFUND_DLG_MAX_IN) return -1;
+        /* G1: the delegator must own a v2_names row. ABSENT is the
+         * deterministic verdict (every node reads the same committed row,
+         * earlier items of this block included); a PRESENT answer outside
+         * the adapter's contract (3..36 name bytes, rtn_core_nameown_fetch)
+         * is this node's adapter broken — a FAULT. */
+        const nodus_rt_read_res_t *r_name = &reads[c->in_count + 1];
+        if (!r_name->present) return -1;         /* nameless delegator   */
+        if (r_name->value_len < (uint32_t)DNAC_NAME_MIN_LEN ||
+            r_name->value_len > (uint32_t)DNAC_NAME_MAX_LEN)
+            return -2;
+    }
 
     /* ── the SIBLING SYSTEM leg decides the flow, from CALL BYTES ───── */
     const uint8_t *spc = env->buf + env->call_off[0];

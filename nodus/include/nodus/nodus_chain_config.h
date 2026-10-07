@@ -72,12 +72,13 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 16 —
- * storage reward v1's RULESET_GEN_STORAGE = 16, after Nodus EVM's
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 17 —
+ * HF-8's DELEGATE_NAME_REQUIRED = 17, after storage reward v1's
+ * RULESET_GEN_STORAGE = 16 and Nodus EVM's
  * EVM_ACTIVE = 14 / EVM_BLOCK_GAS_LIMIT = 15, HF-4's
  * RULESET_GEN2 = 9 and NAME_PRICE_3P..6P = 10-13, HF-3's
  * HF3_ACTIVE = 8, HF-2's HF2_ACTIVE = 7, W-C's TOKEN_CREATE_FEE_RAW = 6
- * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 185 free
+ * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 182 free
  * governance ids; a future allocation that reaches
  * this band collides with THIS COMMENT rather than silently overwriting a
  * committed economic parameter. The ids fit uint8_t, which is what the
@@ -345,7 +346,11 @@ typedef struct {
  *     generation — the switch it schedules is GEN_EVM -> GEN_STORAGE, so
  *     a storage vote can never be judged before the EVM edge has passed,
  *     and the two edges never fall in the same block), then (a)-(c)
- *     exactly as param 9, (a) over `ruleset_gen_storage_voted`.
+ *     exactly as param 9, (a) over `ruleset_gen_storage_voted`;
+ *   - param 17 DELEGATE_NAME_REQUIRED (HF-8, design 2026-10-07-delegate-
+ *     name-required-design.md rev 2 §1): refused unless
+ *     `judging_generation` >= 2 (the NAME_PRICE rule — names must exist).
+ *     No single-use rule (the value domain {1} is one-way already).
  * The 5-argument function above is this with hf3 / gas price / EVM-voted
  * all 0 and both upgrade single-use facts set from its 4th argument (so it
  * refuses every EVM_ACTIVE vote). Pure. @return 0 / -1.

@@ -53,6 +53,25 @@
  *      own units × 200 fit that fee, and the engine admits it.
  *  S6  Refusals: tip 0, expiry past tip + 100, expiry at tip, an unknown
  *      selection order, and an amount the coins cannot cover.
+ *      S2-S6 run with req.no_dust_sweep = 1: they pin the pre-2026-10-07
+ *      1-in/2-out shape (the default would also sweep coins B and C).
+ *  S7  The dust sweep (operator 2026-10-07, nodus/BUGS.md), plan-level on
+ *      synthetic coins: (a) after the covering pick, dust above the
+ *      marginal fee is added smallest first, equal amounts by nullifier
+ *      ascending, up to 15 inputs; change = in − amount − fee exactly and
+ *      the fee is priced on the swept shape; (b) a coin at exactly the
+ *      marginal fee (units(n+1)−units(n))×gas price is NOT added, one raw
+ *      above is; at gas price 0 any coin above 0 is; (c) count 2 plans are
+ *      the flag-off plans (no sweep); (d) --amount all sweeps into the one
+ *      output; (e) no_dust_sweep = 1 gives the old shape, the default the
+ *      swept one; (f) four permutations of one listing give the identical
+ *      plan. Engine: a swept 3-input envelope of the seeded coins is
+ *      admitted by CheckTx.
+ *  S8  The change absorption: a native change at or below the threshold
+ *      (the floor at gas price 0; the marginal per-input fee otherwise)
+ *      becomes fee — no change output, fee = in − amount — and one raw
+ *      above stays a change output; never under fee_fixed or the flag.
+ *      Engine: the absorbed 1-output envelope of seeded coin D is admitted.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build (one empty block at height 1;
@@ -81,6 +100,13 @@
  *     synthetic validators); it says nothing about mempool gossip or
  *     PrepareProposal's unit reservation — no block carrying the envelope
  *     is applied here.
+ *  4c. S7 (a)/(b)/(d)/(f) and S8 at gas price 1 are PLAN-level only (no
+ *     build, no engine); the marginal fees they compare against are derived
+ *     from nodus_v2_spend_units_for_shape — the same function the planner
+ *     prices with, so a wrong units function would not be caught here (S5
+ *     and S2 pin units against the metering module). The S8 gas-price-1
+ *     case assumes every shape prices under the floor at price 1 and CHECKs
+ *     that assumption rather than skipping.
  *  5. Written, compiled, NOT RUN by its author (the BUILDER rule).
  *
  * Copyright (c) 2026 nocdem
@@ -133,6 +159,11 @@ static int g_checks = 0;
 #define SB_COIN_B 3000000ULL
 #define SB_COIN_C 2000000ULL
 #define SB_AMOUNT 1234567ULL
+/* coin D: SB_AMOUNT + the floor fee + a change of SB_D_CHANGE, which is
+ * NOT above the floor — at gas price 0 the default plan folds it into the
+ * fee (S8) */
+#define SB_D_CHANGE 400000ULL
+#define SB_COIN_D (SB_AMOUNT + SB_FLOOR + SB_D_CHANGE)
 
 /* ══ fixed key + fixed randomness ════════════════════════════════════ */
 
@@ -197,7 +228,7 @@ typedef struct {
     uint8_t          file16[16];
     uint8_t          chain32[32];
     uint64_t         tip;
-    uint8_t          nul[3][64];      /* the three seeded coins: A, B, C */
+    uint8_t          nul[4][64];      /* the seeded coins: A, B, C, D    */
 } sb_chain_t;
 
 static void rmrf(const char *path) {
@@ -263,7 +294,8 @@ static int chain_open(sb_chain_t *c) {
     if (v2x_seed_prepare(c->w, c->file16, 0) != 0) return -1;
     if (seed_coin(c, SB_COIN_A, 0xA1, c->nul[0]) != 0 ||
         seed_coin(c, SB_COIN_B, 0xA2, c->nul[1]) != 0 ||
-        seed_coin(c, SB_COIN_C, 0xA3, c->nul[2]) != 0)
+        seed_coin(c, SB_COIN_C, 0xA3, c->nul[2]) != 0 ||
+        seed_coin(c, SB_COIN_D, 0xA4, c->nul[3]) != 0)
         return -1;
     v2x_seed_not_real(V2X_SEED_NOT_REAL_UTXOS);
     if (v2x_seed_genesis(c->w, c->file16, 0, NULL, 0, NULL) != 0) return -1;
@@ -335,19 +367,22 @@ static void table_ruleset(nodus_v2_ruleset_id_t *rs) {
     }
 }
 
-/* plan ONE native spend of `amount` at `gas_price`; 0 / rc */
+/* plan ONE native spend of `amount` at `gas_price`; `no_sweep` = 1 turns
+ * the dust sweep and the change absorption off (the pre-2026-10-07 shape);
+ * 0 / rc */
 static int plan_one(const nodus_v2_ruleset_id_t *rs, nodus_v2_coin_t *coins,
-                    int n, uint64_t amount, uint64_t gas_price,
+                    int n, uint64_t amount, uint64_t gas_price, int no_sweep,
                     nodus_v2_spend_plan_t **plans, uint64_t *fee) {
     nodus_v2_spend_plan_req_t q;
     memset(&q, 0, sizeof(q));
-    q.rs        = rs;
-    q.order     = NODUS_V2_SPEND_ORDER_LARGEST_FIRST;
-    q.is_native = 1;
-    q.amount    = amount;
-    q.fee       = SB_FLOOR;
-    q.gas_price = gas_price;
-    q.count     = 1;
+    q.rs            = rs;
+    q.order         = NODUS_V2_SPEND_ORDER_LARGEST_FIRST;
+    q.is_native     = 1;
+    q.amount        = amount;
+    q.fee           = SB_FLOOR;
+    q.gas_price     = gas_price;
+    q.count         = 1;
+    q.no_dust_sweep = no_sweep;
     long cnt = 0;
     nodus_v2_spend_err_t e;
     return nodus_v2_spend_plan(&q, coins, n, plans, &cnt, fee, &e);
@@ -412,7 +447,10 @@ static int t_build_admitted_and_read_back(sb_chain_t *c) {
     int n = coins_of(c, coins);
     nodus_v2_spend_plan_t *plans = NULL;
     uint64_t fee = 0;
-    CHECK(plan_one(&rs, coins, n, SB_AMOUNT, 0, &plans, &fee) == 0,
+    /* no_sweep = 1: S2-S4 pin the PRE-2026-10-07 1-in/2-out layout (the
+     * restated nodus-cli call bytes below). With the default sweep the
+     * plan would also take B and C (S7 covers that shape). */
+    CHECK(plan_one(&rs, coins, n, SB_AMOUNT, 0, 1, &plans, &fee) == 0,
           "plan one native spend");
     /* largest first: coin A (5 000 000) alone covers amount + fee */
     CHECK(fee == SB_FLOOR, "gas price 0: the fee is the floor");
@@ -574,7 +612,10 @@ static int t_gas_price(sb_chain_t *c) {
     int n = coins_of(c, coins);
     nodus_v2_spend_plan_t *plans = NULL;
     uint64_t fee = 0;
-    CHECK(plan_one(&tab, coins, n, SB_AMOUNT, gp, &plans, &fee) == 0,
+    /* no_sweep = 1: S5 pins the fixed point on the 1-in/2-out shape; the
+     * default sweep would add B and C and price a 3-in shape (S7 (a)
+     * prices a swept shape). */
+    CHECK(plan_one(&tab, coins, n, SB_AMOUNT, gp, 1, &plans, &fee) == 0,
           "plan at gas price 200");
     uint64_t u = 0;
     CHECK(nodus_v2_spend_units_for_shape(tab.core_ruleset_version,
@@ -614,7 +655,10 @@ static int t_refusals(sb_chain_t *c) {
     int n = coins_of(c, coins);
     nodus_v2_spend_plan_t *plans = NULL;
     uint64_t fee = 0;
-    CHECK(plan_one(&tab, coins, n, SB_AMOUNT, 0, &plans, &fee) == 0, "plan");
+    /* no_sweep = 1: the refusals below do not depend on the shape; the
+     * flag keeps this plan the one S2 built */
+    CHECK(plan_one(&tab, coins, n, SB_AMOUNT, 0, 1, &plans, &fee) == 0,
+          "plan");
 
     sb_stream_t s;
     nodus_v2_spend_build_req_t r;
@@ -644,9 +688,464 @@ static int t_refusals(sb_chain_t *c) {
 
     nodus_v2_spend_plan_t *p2 = NULL;
     uint64_t f2 = 0;
-    CHECK(plan_one(&tab, coins, n, SB_COIN_A + SB_COIN_B + SB_COIN_C, 0,
+    /* sweep ON (the default): an uncovered need is refused before any
+     * sweep runs */
+    CHECK(plan_one(&tab, coins, n, SB_COIN_A + SB_COIN_B + SB_COIN_C, 0, 0,
                    &p2, &f2) == NODUS_V2_SPEND_ERR_INSUFFICIENT && !p2,
           "an amount the coins cannot cover (plus the fee) is refused");
+    free(plans);
+    return 0;
+}
+
+/* ══ S7 + S8 — the dust sweep and the change absorption ══════════════ */
+
+#define SB_GP     200ULL
+#define SB_BIG    1000000000ULL
+#define SB_AMT10  10000000ULL
+#define SB_ALEN   (1u + NODUS_RT_AUTH_SIGNER_LEN)
+
+/* a synthetic native coin (plan-only sections): nullifier = 64 × `b` */
+static void syn_coin(nodus_v2_coin_t *c, uint64_t amount, uint8_t b) {
+    memset(c, 0, sizeof(*c));
+    memset(c->nul, b, 64);
+    c->amount = amount;
+    c->kind   = 0;
+}
+
+static int units_of(const nodus_v2_ruleset_id_t *rs, int n_in, int n_out,
+                    uint64_t *u) {
+    return nodus_v2_spend_units_for_shape(rs->core_ruleset_version,
+                                          rs->meter_policy, SB_ALEN, n_in,
+                                          n_out, u);
+}
+
+static uint64_t u64_max(uint64_t a, uint64_t b) { return a > b ? a : b; }
+
+/* The largest marginal fee any sweep step can face at gas price `gp`: one
+ * more input on every shape, and one more input that also creates the
+ * change output. Restated here from units_of, not from the planner.
+ * 0 / -1 */
+static int max_marginal(const nodus_v2_ruleset_id_t *rs, uint64_t gp,
+                        uint64_t *out) {
+    uint64_t m = 0;
+    for (int n = 1; n < (int)NODUS_V2_SPEND_MAX_IN; n++)
+        for (int o = 1; o <= (int)NODUS_V2_SPEND_MAX_OUTS; o++) {
+            uint64_t a = 0, b = 0;
+            if (units_of(rs, n, o, &a) != 0 || units_of(rs, n + 1, o, &b) != 0)
+                return -1;
+            if (b > a && (b - a) * gp > m) m = (b - a) * gp;
+            if (o < (int)NODUS_V2_SPEND_MAX_OUTS) {
+                if (units_of(rs, n + 1, o + 1, &b) != 0) return -1;
+                if (b > a && (b - a) * gp > m) m = (b - a) * gp;
+            }
+        }
+    *out = m;
+    return 0;
+}
+
+/* the general request; *plans heap (caller frees). 0 / rc */
+static int plan_q(const nodus_v2_ruleset_id_t *rs, nodus_v2_coin_t *coins,
+                  int n, uint64_t amount, int amount_all, long count,
+                  uint64_t gp, int no_sweep, int fee_fixed,
+                  nodus_v2_spend_plan_t **plans, long *cnt, uint64_t *fee) {
+    nodus_v2_spend_plan_req_t q;
+    memset(&q, 0, sizeof(q));
+    q.rs            = rs;
+    q.order         = NODUS_V2_SPEND_ORDER_LARGEST_FIRST;
+    q.is_native     = 1;
+    q.amount        = amount;
+    q.amount_all    = amount_all;
+    q.fee           = SB_FLOOR;
+    q.fee_fixed     = fee_fixed;
+    q.gas_price     = gp;
+    q.count         = count;
+    q.no_dust_sweep = no_sweep;
+    nodus_v2_spend_err_t e;
+    *plans = NULL;
+    return nodus_v2_spend_plan(&q, coins, n, plans, cnt, fee, &e);
+}
+
+/* (a)/(f) fixture: one big coin + 17 dust coins worth more than any
+ * marginal fee at SB_GP. Amounts come in equal PAIRS, and inside a pair the
+ * later coin has the SMALLER nullifier byte, so the listing order is not
+ * the sweep order. Returns the coin count (18). */
+#define SB_N_DUST 17
+static int dust_fixture(nodus_v2_coin_t *coins, uint64_t d_base) {
+    syn_coin(&coins[0], SB_BIG, 0xF0);
+    for (int i = 0; i < SB_N_DUST; i++)
+        syn_coin(&coins[1 + i], d_base + (uint64_t)(i / 2),
+                 (uint8_t)(0x80 - i));
+    return 1 + SB_N_DUST;
+}
+
+/* (a) the sweep: smallest first (ties by nullifier ascending) up to the
+ * 15-input cap, the change exact, the fee re-priced for the 15-in shape */
+static int t_sweep_cap(void) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    uint64_t maxm = 0;
+    CHECK(max_marginal(&tab, SB_GP, &maxm) == 0 && maxm > 0,
+          "the marginal fees at gas price 200");
+    nodus_v2_coin_t coins[1 + SB_N_DUST];
+    const int n = dust_fixture(coins, maxm + 1);
+
+    /* the expected sweep order, restated: (amount asc, nullifier asc) */
+    uint64_t ea[SB_N_DUST];
+    uint8_t  eb[SB_N_DUST];
+    for (int i = 0; i < SB_N_DUST; i++) {
+        ea[i] = coins[1 + i].amount;
+        eb[i] = coins[1 + i].nul[0];
+    }
+    for (int i = 1; i < SB_N_DUST; i++)
+        for (int j = i; j > 0 && (ea[j - 1] > ea[j] ||
+                                  (ea[j - 1] == ea[j] && eb[j - 1] > eb[j]));
+             j--) {
+            uint64_t ta = ea[j]; ea[j] = ea[j - 1]; ea[j - 1] = ta;
+            uint8_t tb = eb[j]; eb[j] = eb[j - 1]; eb[j - 1] = tb;
+        }
+
+    nodus_v2_spend_plan_t *plans = NULL;
+    long cnt = 0;
+    uint64_t fee = 0;
+    CHECK(plan_q(&tab, coins, n, SB_AMT10, 0, 1, SB_GP, 0, 0, &plans, &cnt,
+                 &fee) == NODUS_V2_SPEND_OK && cnt == 1,
+          "(a) plan one native spend with dust");
+    const nodus_v2_spend_plan_t *p = &plans[0];
+    CHECK(p->n_in == (int)NODUS_V2_SPEND_MAX_IN,
+          "(a) the sweep stops at the 15-input cap");
+    CHECK(coins[p->idx[0]].amount == SB_BIG,
+          "(a) the covering pick is the big coin alone");
+    uint64_t in = SB_BIG;
+    for (int j = 1; j < p->n_in; j++) {
+        CHECK(coins[p->idx[j]].amount == ea[j - 1] &&
+              coins[p->idx[j]].nul[0] == eb[j - 1],
+              "(a) dust swept smallest first, ties by nullifier ascending");
+        in += ea[j - 1];
+    }
+    uint64_t u15 = 0;
+    CHECK(units_of(&tab, (int)NODUS_V2_SPEND_MAX_IN, 2, &u15) == 0,
+          "(a) units of the 15-in/2-out shape");
+    CHECK(fee == u64_max(SB_FLOOR, u15 * SB_GP),
+          "(a) the fee is priced on the SWEPT shape");
+    CHECK(p->native_in == in, "(a) native_in = big + the swept dust");
+    CHECK(p->native_change > 0 &&
+          p->native_change == in - SB_AMT10 - fee,
+          "(a) change = in - amount - fee exactly");
+    free(plans);
+    return 0;
+}
+
+/* (b) a coin at exactly the marginal fee is NOT swept; one raw above is */
+static int t_sweep_threshold(void) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    uint64_t u12 = 0, u22 = 0;
+    CHECK(units_of(&tab, 1, 2, &u12) == 0 && units_of(&tab, 2, 2, &u22) == 0 &&
+          u22 > u12, "(b) units of 1-in/2-out and 2-in/2-out");
+    const uint64_t m = (u22 - u12) * SB_GP;
+
+    nodus_v2_coin_t coins[2];
+    nodus_v2_spend_plan_t *plans = NULL;
+    long cnt = 0;
+    uint64_t fee = 0;
+
+    syn_coin(&coins[0], SB_BIG, 0xF0);
+    syn_coin(&coins[1], m, 0x11);
+    CHECK(plan_q(&tab, coins, 2, SB_AMT10, 0, 1, SB_GP, 0, 0, &plans, &cnt,
+                 &fee) == 0 && plans[0].n_in == 1,
+          "(b) a coin worth exactly the marginal fee is not swept");
+    CHECK(plans[0].native_change == SB_BIG - SB_AMT10 - fee,
+          "(b) change of the big coin alone");
+    free(plans);
+
+    syn_coin(&coins[0], SB_BIG, 0xF0);
+    syn_coin(&coins[1], m + 1, 0x11);
+    CHECK(plan_q(&tab, coins, 2, SB_AMT10, 0, 1, SB_GP, 0, 0, &plans, &cnt,
+                 &fee) == 0 && plans[0].n_in == 2,
+          "(b) a coin one raw above the marginal fee is swept");
+    CHECK(plans[0].native_change == SB_BIG + m + 1 - SB_AMT10 - fee,
+          "(b) its value joins the change");
+    free(plans);
+
+    /* gas price 0: the marginal fee is 0, a 1-raw coin is swept */
+    syn_coin(&coins[0], SB_BIG, 0xF0);
+    syn_coin(&coins[1], 1, 0x11);
+    CHECK(plan_q(&tab, coins, 2, SB_AMT10, 0, 1, 0, 0, 0, &plans, &cnt,
+                 &fee) == 0 && plans[0].n_in == 2 && fee == SB_FLOOR,
+          "(b) gas price 0: any coin above 0 is swept");
+    free(plans);
+    return 0;
+}
+
+/* (c) count > 1: no sweep — each spend keeps its covering input only */
+static int t_sweep_count2(void) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    nodus_v2_coin_t c1[5], c2[5];
+    syn_coin(&c1[0], SB_BIG, 0xF1);
+    syn_coin(&c1[1], SB_BIG - 1, 0xF2);
+    syn_coin(&c1[2], 5000000, 0x21);
+    syn_coin(&c1[3], 4000000, 0x22);
+    syn_coin(&c1[4], 3000000, 0x23);
+    memcpy(c2, c1, sizeof(c1));
+
+    nodus_v2_spend_plan_t *pa = NULL, *pb = NULL;
+    long na = 0, nb = 0;
+    uint64_t fa = 0, fb = 0;
+    CHECK(plan_q(&tab, c1, 5, SB_AMT10, 0, 2, 0, 0, 0, &pa, &na, &fa) == 0 &&
+          na == 2, "(c) plan two spends, sweep flag left ON");
+    CHECK(plan_q(&tab, c2, 5, SB_AMT10, 0, 2, 0, 1, 0, &pb, &nb, &fb) == 0 &&
+          nb == 2, "(c) plan two spends, sweep flag OFF");
+    CHECK(pa[0].n_in == 1 && c1[pa[0].idx[0]].amount == SB_BIG &&
+          pa[1].n_in == 1 && c1[pa[1].idx[0]].amount == SB_BIG - 1,
+          "(c) count 2: each spend has its one covering coin, no dust");
+    CHECK(fa == fb && fa == SB_FLOOR &&
+          pa[0].native_change == pb[0].native_change &&
+          pa[1].native_change == pb[1].native_change &&
+          pb[0].n_in == 1 && pb[1].n_in == 1,
+          "(c) count 2 plans are the flag-off plans");
+    free(pa);
+    free(pb);
+    return 0;
+}
+
+/* (d) amount_all: dust is swept into the single output */
+static int t_sweep_amount_all(void) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    uint64_t maxm = 0;
+    CHECK(max_marginal(&tab, SB_GP, &maxm) == 0, "(d) marginal fees");
+    nodus_v2_coin_t coins[4];
+    syn_coin(&coins[0], SB_BIG, 0xF0);
+    syn_coin(&coins[1], maxm + 1, 0x31);
+    syn_coin(&coins[2], maxm + 2, 0x32);
+    syn_coin(&coins[3], maxm + 3, 0x33);
+    nodus_v2_spend_plan_t *plans = NULL;
+    long cnt = 0;
+    uint64_t fee = 0;
+    CHECK(plan_q(&tab, coins, 4, 0, 1, 1, SB_GP, 0, 0, &plans, &cnt,
+                 &fee) == 0 && cnt == 1, "(d) plan --amount all");
+    const nodus_v2_spend_plan_t *p = &plans[0];
+    uint64_t u41 = 0;
+    CHECK(units_of(&tab, 4, 1, &u41) == 0, "(d) units of 4-in/1-out");
+    CHECK(p->n_in == 4 && coins[p->idx[0]].amount == SB_BIG,
+          "(d) the big coin + every dust coin");
+    CHECK(p->native_in == SB_BIG + 3 * maxm + 6 && p->native_change == 0,
+          "(d) all value goes to the single output, no change");
+    CHECK(fee == u64_max(SB_FLOOR, u41 * SB_GP) && p->native_in > fee,
+          "(d) the fee is priced on the 4-in/1-out shape; output > 0");
+    free(plans);
+    return 0;
+}
+
+/* (e) the disable flag gives the pre-2026-10-07 shape; the default sweeps */
+static int t_sweep_flag(void) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    nodus_v2_coin_t coins[3];
+    nodus_v2_spend_plan_t *plans = NULL;
+    uint64_t fee = 0;
+
+    syn_coin(&coins[0], SB_COIN_A, 0x0A);
+    syn_coin(&coins[1], SB_COIN_B, 0x0B);
+    syn_coin(&coins[2], SB_COIN_C, 0x0C);
+    CHECK(plan_one(&tab, coins, 3, SB_AMOUNT, 0, 1, &plans, &fee) == 0 &&
+          plans[0].n_in == 1 && coins[plans[0].idx[0]].amount == SB_COIN_A &&
+          plans[0].native_change == SB_COIN_A - SB_AMOUNT - SB_FLOOR &&
+          fee == SB_FLOOR,
+          "(e) no_dust_sweep = 1: coin A alone, the old change");
+    free(plans);
+
+    syn_coin(&coins[0], SB_COIN_A, 0x0A);
+    syn_coin(&coins[1], SB_COIN_B, 0x0B);
+    syn_coin(&coins[2], SB_COIN_C, 0x0C);
+    CHECK(plan_one(&tab, coins, 3, SB_AMOUNT, 0, 0, &plans, &fee) == 0 &&
+          plans[0].n_in == 3 &&
+          coins[plans[0].idx[0]].amount == SB_COIN_A &&
+          coins[plans[0].idx[1]].amount == SB_COIN_C &&
+          coins[plans[0].idx[2]].amount == SB_COIN_B &&
+          plans[0].native_change ==
+              SB_COIN_A + SB_COIN_B + SB_COIN_C - SB_AMOUNT - SB_FLOOR &&
+          fee == SB_FLOOR,
+          "(e) default: A covers, then C, then B (smallest first)");
+    free(plans);
+    return 0;
+}
+
+/* (f) determinism: any listing order of the same coins → the same plan */
+static int t_sweep_determinism(void) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    uint64_t maxm = 0;
+    CHECK(max_marginal(&tab, SB_GP, &maxm) == 0, "(f) marginal fees");
+    nodus_v2_coin_t base[1 + SB_N_DUST];
+    const int n = dust_fixture(base, maxm + 1);
+
+    uint8_t  ref_nul[NODUS_V2_SPEND_MAX_IN];
+    int      ref_n = 0;
+    uint64_t ref_fee = 0, ref_in = 0, ref_ch = 0;
+    for (int perm = 0; perm < 4; perm++) {
+        nodus_v2_coin_t coins[1 + SB_N_DUST];
+        for (int i = 0; i < n; i++) {
+            int src;
+            switch (perm) {
+            case 0:  src = i; break;                       /* as listed   */
+            case 1:  src = n - 1 - i; break;               /* reversed    */
+            case 2:  src = (i + 7) % n; break;             /* rotated     */
+            default: src = i < (n + 1) / 2 ? 2 * i         /* evens, odds */
+                                           : 2 * (i - (n + 1) / 2) + 1;
+            }
+            coins[i] = base[src];
+        }
+        nodus_v2_spend_plan_t *plans = NULL;
+        long cnt = 0;
+        uint64_t fee = 0;
+        CHECK(plan_q(&tab, coins, n, SB_AMT10, 0, 1, SB_GP, 0, 0, &plans,
+                     &cnt, &fee) == 0, "(f) plan a permuted listing");
+        const nodus_v2_spend_plan_t *p = &plans[0];
+        int same = 1;
+        if (perm == 0) {
+            ref_n = p->n_in;
+            for (int j = 0; j < p->n_in; j++)
+                ref_nul[j] = coins[p->idx[j]].nul[0];
+            ref_fee = fee;
+            ref_in  = p->native_in;
+            ref_ch  = p->native_change;
+        } else {
+            same = p->n_in == ref_n && fee == ref_fee &&
+                   p->native_in == ref_in && p->native_change == ref_ch;
+            for (int j = 0; same && j < p->n_in; j++)
+                if (coins[p->idx[j]].nul[0] != ref_nul[j]) same = 0;
+        }
+        free(plans);
+        CHECK(same, "(f) a permuted listing gives the identical plan");
+    }
+    CHECK(ref_n == (int)NODUS_V2_SPEND_MAX_IN,
+          "(f) the reference plan is the swept 15-input plan");
+    return 0;
+}
+
+/* (g) the change absorption: a change not above the threshold becomes fee;
+ * one raw above stays a change output; never under fee_fixed or the flag */
+static int t_absorb(void) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    nodus_v2_coin_t coin;
+    nodus_v2_spend_plan_t *plans = NULL;
+    long cnt = 0;
+    uint64_t fee = 0;
+
+    /* gas price 0: the threshold is the floor */
+    syn_coin(&coin, SB_AMOUNT + SB_FLOOR + SB_D_CHANGE, 0x44);
+    CHECK(plan_one(&tab, &coin, 1, SB_AMOUNT, 0, 0, &plans, &fee) == 0 &&
+          plans[0].n_in == 1 && plans[0].native_change == 0 &&
+          fee == SB_FLOOR + SB_D_CHANGE &&
+          fee == plans[0].native_in - SB_AMOUNT,
+          "(g) gp 0: a change below the floor is absorbed into the fee");
+    free(plans);
+
+    syn_coin(&coin, SB_AMOUNT + 2 * SB_FLOOR, 0x44);
+    CHECK(plan_one(&tab, &coin, 1, SB_AMOUNT, 0, 0, &plans, &fee) == 0 &&
+          plans[0].native_change == 0 && fee == 2 * SB_FLOOR,
+          "(g) gp 0: a change of exactly the floor is absorbed");
+    free(plans);
+
+    syn_coin(&coin, SB_AMOUNT + 2 * SB_FLOOR + 1, 0x44);
+    CHECK(plan_one(&tab, &coin, 1, SB_AMOUNT, 0, 0, &plans, &fee) == 0 &&
+          plans[0].native_change == SB_FLOOR + 1 && fee == SB_FLOOR,
+          "(g) gp 0: a change one raw above the floor is kept");
+    free(plans);
+
+    /* gas price 1: every shape prices under the floor (checked), so the
+     * fee stays the floor and the threshold is the marginal per-input fee
+     * of the 1-in/2-out shape */
+    uint64_t u12 = 0, u22 = 0, u_top = 0;
+    CHECK(units_of(&tab, 1, 2, &u12) == 0 && units_of(&tab, 2, 2, &u22) == 0 &&
+          units_of(&tab, (int)NODUS_V2_SPEND_MAX_IN,
+                   (int)NODUS_V2_SPEND_MAX_OUTS, &u_top) == 0 &&
+          u22 > u12 && u_top < SB_FLOOR,
+          "(g) gp 1: units below the floor, a positive marginal");
+    const uint64_t thr = u22 - u12;
+    syn_coin(&coin, SB_AMOUNT + SB_FLOOR + thr, 0x44);
+    CHECK(plan_q(&tab, &coin, 1, SB_AMOUNT, 0, 1, 1, 0, 0, &plans, &cnt,
+                 &fee) == 0 && plans[0].native_change == 0 &&
+          fee == SB_FLOOR + thr,
+          "(g) gp 1: a change of exactly the marginal fee is absorbed");
+    free(plans);
+    syn_coin(&coin, SB_AMOUNT + SB_FLOOR + thr + 1, 0x44);
+    CHECK(plan_q(&tab, &coin, 1, SB_AMOUNT, 0, 1, 1, 0, 0, &plans, &cnt,
+                 &fee) == 0 && plans[0].native_change == thr + 1 &&
+          fee == SB_FLOOR,
+          "(g) gp 1: a change one raw above the marginal fee is kept");
+    free(plans);
+
+    /* a fixed fee is never changed; the flag keeps the old shape */
+    syn_coin(&coin, SB_AMOUNT + SB_FLOOR + SB_D_CHANGE, 0x44);
+    CHECK(plan_q(&tab, &coin, 1, SB_AMOUNT, 0, 1, 0, 0, 1, &plans, &cnt,
+                 &fee) == 0 && plans[0].native_change == SB_D_CHANGE &&
+          fee == SB_FLOOR,
+          "(g) fee_fixed: the change is kept, the fee unchanged");
+    free(plans);
+    syn_coin(&coin, SB_AMOUNT + SB_FLOOR + SB_D_CHANGE, 0x44);
+    CHECK(plan_one(&tab, &coin, 1, SB_AMOUNT, 0, 1, &plans, &fee) == 0 &&
+          plans[0].native_change == SB_D_CHANGE && fee == SB_FLOOR,
+          "(g) no_dust_sweep = 1: the change is kept");
+    free(plans);
+    return 0;
+}
+
+/* S7/S8 against the engine: a swept 3-in envelope and an absorbed 1-out
+ * envelope, both built from the seeded coins, are admitted by CheckTx */
+static int t_dust_admitted(sb_chain_t *c) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    nodus_v2_spend_plan_t *plans = NULL;
+    uint64_t fee = 0;
+    nodus_v2_spend_build_req_t r;
+    nodus_v2_spend_built_t b;
+    nodus_v2_spend_err_t e;
+    sb_stream_t s;
+    uint32_t code = 99;
+    uint8_t wid[64], iid[64];
+
+    /* swept: A covers, C and B are swept (gas price 0) */
+    nodus_v2_coin_t coins[3];
+    int n = coins_of(c, coins);
+    CHECK(plan_one(&tab, coins, n, SB_AMOUNT, 0, 0, &plans, &fee) == 0 &&
+          plans[0].n_in == 3 && fee == SB_FLOOR, "S7 plan the swept spend");
+    stream_init(&s, 0x44);
+    build_req(&r, &tab, c, coins, &plans[0], fee, 0, &s);
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == 0, "S7 build the swept spend");
+    CHECK(b.dec.n_in == 3 && b.dec.n_out == 2 && b.dec.fee == SB_FLOOR &&
+          b.dec.out_amount[0] == SB_AMOUNT &&
+          b.dec.out_amount[1] ==
+              SB_COIN_A + SB_COIN_B + SB_COIN_C - SB_AMOUNT - SB_FLOOR,
+          "S7 read-back: 3 inputs, recipient + the swept change");
+    CHECK(dry(c->w, b.env, b.env_len, &code, wid, iid) == 0 &&
+          code == NODUS_V2_TX_OK, "S7 the engine admits the swept spend");
+    nodus_v2_spend_built_free(&b);
+    free(plans);
+
+    /* absorbed: coin D alone, its change folds into the fee */
+    nodus_v2_coin_t d;
+    memset(&d, 0, sizeof(d));
+    memcpy(d.nul, c->nul[3], 64);
+    d.amount = SB_COIN_D;
+    d.kind   = 0;
+    CHECK(plan_one(&tab, &d, 1, SB_AMOUNT, 0, 0, &plans, &fee) == 0 &&
+          plans[0].native_change == 0 && fee == SB_FLOOR + SB_D_CHANGE,
+          "S8 plan the absorbed spend");
+    stream_init(&s, 0x55);
+    build_req(&r, &tab, c, &d, &plans[0], fee, 0, &s);
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == 0, "S8 build the absorbed spend");
+    CHECK(b.dec.n_in == 1 && b.dec.n_out == 1 &&
+          b.dec.out_amount[0] == SB_AMOUNT &&
+          b.dec.fee == SB_FLOOR + SB_D_CHANGE &&
+          b.dec.fee + b.dec.out_amount[0] == SB_COIN_D,
+          "S8 read-back: one output, in = amount + fee exactly");
+    CHECK(dry(c->w, b.env, b.env_len, &code, wid, iid) == 0 &&
+          code == NODUS_V2_TX_OK, "S8 the engine admits the absorbed spend");
+    nodus_v2_spend_built_free(&b);
     free(plans);
     return 0;
 }
@@ -669,6 +1168,14 @@ int main(void) {
     fails += t_build_admitted_and_read_back(&c);
     fails += t_gas_price(&c);
     fails += t_refusals(&c);
+    fails += t_sweep_cap();
+    fails += t_sweep_threshold();
+    fails += t_sweep_count2();
+    fails += t_sweep_amount_all();
+    fails += t_sweep_flag();
+    fails += t_sweep_determinism();
+    fails += t_absorb();
+    fails += t_dust_admitted(&c);
     chain_close(&c);
 
     printf("=== %s: %d checks, %d failed section(s) ===\n",

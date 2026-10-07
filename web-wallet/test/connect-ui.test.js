@@ -18,15 +18,17 @@ import {
   openHistoryStore, StorageError, HISTORY_SLOW_TEXT
 } from '../src/connect/store.js';
 import {
-  parseContactId, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
+  parseContactId, parseContactInput, requestRefusal, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, profileFresh, PROFILE_CACHE_SECONDS
 } from '../src/connect/ui/text.js';
 import {
-  keptChainName, chainLookupNeeded, chainLookupSpaced, CHAIN_LOOKUP_SPACING_MS, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT
+  keptChainName, chainLookupNeeded, chainLookupSpaced, CHAIN_LOOKUP_SPACING_MS, chainNameAfterLookup, shownOwnName, profileEntryText, PROFILE_ENTRY_TEXT,
+  resolveContactName, NAME_NOT_READY_TEXT, NAME_UNREGISTERED_TEXT, NAME_LOOKUP_FAILED_TEXT, NAME_CHECK_TEXT
 } from '../src/connect/ui/chain-names.js';
+import { NAME_CHECK_ROW } from '../src/adapters/nodus.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from '../src/connect/ui/diag.js';
 import { ownIdText, OWN_ID_WAITING_TEXT, OWN_ID_CLOSED_TEXT } from '../src/connect/ui/messages.js';
 
@@ -139,6 +141,78 @@ test('contact IDs are 128 hex; shown shortened', () => {
   assert.throws(() => parseContactId('zz'.repeat(64)));
   assert.equal(shortId(FP), 'ID abababab…abab');
   assert.equal(shortId('nope'), 'ID ?');
+});
+
+// Add contact by chain name (2026-10-07): the box takes an ID or a chain
+// name, read with the wallet's own name rule (src/nodus/names.js chainName).
+test('add-contact input: an ID stays an ID; a chain name is a name; anything else is one plain error', () => {
+  // An ID — whitespace and case as parseContactId — is never read as a name.
+  assert.deepEqual(parseContactInput(` ${FP.toUpperCase().slice(0, 64)}\n${FP.slice(64)} `), { fp: FP });
+  // A name: trimmed, A-Z lowered (the wallet's send rule).
+  assert.deepEqual(parseContactInput('  Punk '), { name: 'punk' });
+  assert.deepEqual(parseContactInput('jarvis2'), { name: 'jarvis2' });
+  assert.deepEqual(parseContactInput('dead'), { name: 'dead' });          // all-hex but shorter than 8: a name
+  assert.deepEqual(parseContactInput('z'.repeat(36)), { name: 'z'.repeat(36) });
+  // Neither (an all-hex name of 8+ — at any length up to 36 — reads as an ID prefix).
+  for (const bad of ['', 'ab', 'pu-nk', 'pu nk', 'z'.repeat(37), 'a'.repeat(36), 'deadbeef', FP.slice(1), 'zz'.repeat(64), 'ünal', null]) {
+    assert.throws(() => parseContactInput(bad), /not a valid ID or chain name/, String(bad));
+  }
+});
+
+test('add-contact refusals: own ID, existing contact, already requested — the same words for a typed ID and a name owner', () => {
+  assert.equal(requestRefusal(FP, { ownFp: FP }), 'That is your own ID.');
+  assert.equal(requestRefusal(OTHER, { ownFp: FP, isContact: true }), 'This person is already a contact.');
+  assert.equal(requestRefusal(OTHER, { ownFp: FP, isRequested: true }), 'You already sent this person a request.');
+  assert.equal(requestRefusal(OTHER, { ownFp: FP }), '');
+});
+
+// A stand-in for the wallet's NODUS client (src/nodus/client.js): only what
+// resolveChainName reads. Answers are shaped as test/nodus-mock-module.js
+// nameLookup (decimal-string heights).
+function nameClient(names, { state = 'ready', nameable = true, error } = {}) {
+  const asked = [];
+  return {
+    state, nameable, asked,
+    async nameLookup({ name }) {
+      asked.push(name);
+      if (error) throw error;
+      return names[name] ? { found: true, committedHeight: '1000', owner: names[name], registeredHeight: '900' } : { found: false, committedHeight: '1000' };
+    }
+  };
+}
+
+test('add-contact by name: resolved through the wallet lookup to the owner ID', async () => {
+  const client = nameClient({ punk: OTHER });
+  assert.deepEqual(await resolveContactName(client, 'punk'), { name: 'punk', owner: OTHER, committedHeight: 1000n });
+  assert.deepEqual(client.asked, ['punk']);
+  // The caution shown under a resolved name is the wallet's own text.
+  assert.equal(NAME_CHECK_TEXT, NAME_CHECK_ROW[1]);
+  assert.match(NAME_CHECK_TEXT, /look alike/);
+});
+
+test('add-contact by name: unregistered, network not ready and a failed lookup are plain errors; nothing falls back', async () => {
+  // Unregistered: mapped from the real resolveChainName error (src/adapters/nodus.js).
+  await assert.rejects(resolveContactName(nameClient({ punk: OTHER }), 'nobody'), new Error(NAME_UNREGISTERED_TEXT));
+  assert.equal(NAME_UNREGISTERED_TEXT, 'No one has registered that name.');
+  // Not ready: no client, a client that is not ready, a module without names — nothing is asked.
+  for (const client of [undefined, nameClient({ punk: OTHER }, { state: 'connecting' }), nameClient({ punk: OTHER }, { nameable: false })]) {
+    await assert.rejects(resolveContactName(client, 'punk'), new Error(NAME_NOT_READY_TEXT));
+    if (client) assert.deepEqual(client.asked, []);
+  }
+  // The node failed, or answered something malformed.
+  await assert.rejects(resolveContactName(nameClient({}, { error: new Error('rc=7') }), 'punk'), new Error(NAME_LOOKUP_FAILED_TEXT));
+  const malformed = nameClient({ punk: 'xyz' });
+  await assert.rejects(resolveContactName(malformed, 'punk'), new Error(NAME_LOOKUP_FAILED_TEXT));
+});
+
+test('add-contact by name: an owner that is this wallet, a contact or already requested gets the ID refusals', async () => {
+  // 'mine', not 'me': a chain name is 3..36 characters, so 'me' never reaches the owner check.
+  const client = nameClient({ mine: FP, friend: OTHER });
+  const own = await resolveContactName(client, 'mine');
+  assert.equal(requestRefusal(own.owner, { ownFp: FP }), 'That is your own ID.');
+  const friend = await resolveContactName(client, 'friend');
+  assert.equal(requestRefusal(friend.owner, { ownFp: FP, isContact: true }), 'This person is already a contact.');
+  assert.equal(requestRefusal(friend.owner, { ownFp: FP, isRequested: true }), 'You already sent this person a request.');
 });
 
 test('untrusted text: direction controls and invisible characters removed and flagged; mixed look-alike scripts flagged', () => {

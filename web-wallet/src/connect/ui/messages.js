@@ -45,7 +45,7 @@
 import { createNodusConnectCore, acceptanceMayAutoApprove } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
-  parseContactId, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
+  parseContactInput, requestRefusal, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
   recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   needFullSync, fullDays, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
@@ -53,7 +53,7 @@ import {
 } from './text.js';
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
 import { parseNameOf } from '../../nodus/names.js';
-import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup } from './chain-names.js';
+import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
 // Groups (package G3): the state machine and its screens. Group invites,
 // accepts, welcomes and leaves travel as 1:1 messages (bytes item 7,
@@ -78,6 +78,7 @@ const LOCAL_FAILED_TEXT = 'Your messages on this device could not be opened righ
 const CONNECTING_TEXT = 'Connecting to the network… Your messages on this device are shown; sending opens once connected.';
 const UPDATING_TEXT = 'Updating…';
 const OFFLINE_SEND_TEXT = 'Sending opens once Messages is connected to the network.';
+const ADD_SUBMIT_TEXT = 'Send request';  // the add dialog's button while no chain name is shown (showAddResolved)
 
 // ── session state (all dropped by close / reset) ───────────────────────
 let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
@@ -85,6 +86,7 @@ let generation = 0, syncTimer, syncing = false;
 let sending = false;                     // a composer send is being kept on this device (send)
 let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
 let removeArmed;                         // the contact whose "Remove" was pressed once (asks to confirm)
+let addResolved;                         // { name, owner }: the add box's chain name, looked up and shown, awaiting confirmation
 const profiles = new Map();              // fp -> verified profile, this session
 const kept = new Map();                  // fp -> { id, record }: kept profile rows (saved wallet, state.profileCache)
 const blobs = new Map();                 // 'fp|day' -> { blob, other }: day buckets already stored, this session
@@ -140,7 +142,7 @@ function wipe() {
   try { store?.close(); } catch { /* same */ }
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
-  eraseArmed = false; profileTaken = false; ownNameConfirmed = false; removeArmed = undefined;
+  eraseArmed = false; profileTaken = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
   netStarted = false; online = false; groups = undefined;
   for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
   notifyVaultHost();
@@ -154,6 +156,7 @@ function wipe() {
   ui.convDiagText.textContent = ''; ui.convDiag.open = false; ui.convDiag.hidden = true;
   ui.erase.textContent = 'Delete message history on this device';
   ui.avatarChange.disabled = ui.avatarRemove.disabled = false;
+  showAddResolved();
   if (ui.addDialog.open) ui.addDialog.close();
   screen = 'list'; hubTab = 'contacts'; filter = 'all';
 }
@@ -1060,13 +1063,20 @@ export function mountMessages(root, options = {}) {
   u.addId = input('input', { id: 'nc-add-id', type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', maxlength: '256', required: '' });
   u.addNote = input('input', { id: 'nc-add-note', type: 'text', maxlength: '200', autocomplete: 'off' });
   u.addStatus = statusLine();
-  const addSubmit = el('button', { text: 'Send request' }); addSubmit.type = 'submit';
+  u.addSubmit = el('button', { text: ADD_SUBMIT_TEXT }); u.addSubmit.type = 'submit';
+  // A chain name's lookup result, shown before the request may be sent
+  // (addContact): the name, the ID it belongs to, and the wallet's caution.
+  u.addResolvedText = el('span', { className: 'own-id-label' });
+  u.addResolvedId = el('code', { className: 'own-id' });
+  u.addResolved = el('div', { className: 'own-id-box' }, u.addResolvedText, u.addResolvedId, el('p', { className: 'hint', text: NAME_CHECK_TEXT }));
+  u.addResolved.hidden = true;
   u.addForm = el('form', { className: 'messenger-form' },
-    ...field('nc-add-id', 'Their ID', u.addId),
-    el('p', { className: 'hint', text: 'An ID is 128 characters, letters a–f and digits. Ask them to copy it from “Your ID & profile”.' }),
+    ...field('nc-add-id', 'Their ID or chain name', u.addId),
+    el('p', { className: 'hint', text: 'An ID is 128 characters, letters a–f and digits. Ask them to copy it from “Your ID & profile”. A chain name is 3 to 36 letters a–z and digits; it is looked up and shown to you before the request is sent.' }),
+    u.addResolved,
     ...field('nc-add-note', 'Note (optional, they see it with your request)', u.addNote),
     u.addStatus,
-    el('div', { className: 'nc-dialog-actions' }, button('Close', () => u.addDialog.close(), 'secondary'), addSubmit));
+    el('div', { className: 'nc-dialog-actions' }, button('Close', () => u.addDialog.close(), 'secondary'), u.addSubmit));
   u.addForm.id = 'nc-add-form';
   u.addDialog = setAttrs(el('dialog', { className: 'nc-dialog' }, u.addHeading, u.addForm), { 'aria-labelledby': 'nc-add-title' });
   u.addDialog.id = 'nc-add-dialog';
@@ -1139,6 +1149,9 @@ export function mountMessages(root, options = {}) {
   ui = u;
 
   u.addForm.onsubmit = event => void addContact(event);
+  // Any change to what is typed drops a shown lookup result: the request
+  // goes only to the name that was looked up and shown.
+  u.addId.addEventListener('input', () => { if (addResolved) { addResolved = undefined; showAddResolved(); ui.addStatus.textContent = ''; } });
   u.sendForm.onsubmit = event => void send(event);
   u.profileForm.onsubmit = event => void saveProfile(event);
   u.avatarFile.onchange = () => {
@@ -1201,6 +1214,7 @@ function openAdd() {
   if (!ui) return;
   if (!isOpen()) { show('list'); return; }
   ui.addStatus.textContent = '';
+  addResolved = undefined; showAddResolved();
   if (!ui.addDialog.open) ui.addDialog.showModal();
   ui.addId.focus();
 }
@@ -1298,7 +1312,7 @@ function renderChats() {
   groupsView.renderBlock({ unreadOnly: filter === 'unread' });
   if (filter === 'chats') groupsView.block.hidden = true;
   if (!state.contacts.length) {
-    ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID using the add-contact button.' }));
+    ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID or chain name using the add-contact button.' }));
     return;
   }
   // Most recent conversation first (local order), then contacts without
@@ -1352,7 +1366,7 @@ function renderContacts() {
     const actions = el('div', { className: 'contact-actions' }, remove);
     if (armed) actions.append(button('Keep', () => { removeArmed = undefined; ui.contactsStatus.textContent = ''; render(); }, 'secondary small'));
     return el('li', { className: 'contact-item' }, row, actions);
-  }) : [el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID.' })]));
+  }) : [el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID or chain name.' })]));
 }
 
 function renderEmpty(open) {
@@ -1542,14 +1556,51 @@ async function removeContactAction(fp) {
   }
 }
 
+// The add dialog's chain-name result (addResolved): shown, with the button
+// naming who the request goes to, or hidden with the plain button.
+function showAddResolved() {
+  if (!ui) return;
+  const r = addResolved;
+  ui.addResolved.hidden = !r;
+  ui.addResolvedText.textContent = r ? `${r.name} belongs to ${shortId(r.owner)}. Full ID:` : '';
+  ui.addResolvedId.textContent = r ? r.owner : '';
+  ui.addSubmit.textContent = r ? `Send request to ${r.name}` : ADD_SUBMIT_TEXT;
+}
+
+// Add a contact by ID, or by chain name in two presses: the first only looks
+// the name up (chain-names.js resolveContactName — the wallet's NODUS-send
+// lookup) and shows the name, the ID it belongs to and the wallet's
+// look-alike caution; the button then reads "Send request to <name>" and the
+// next press sends to that ID. A request never goes to a name the user has
+// not seen resolved; editing the box drops the shown result. The owner ID
+// is checked like a typed ID (own ID, already a contact, already requested)
+// before it is shown and again before sending.
 async function addContact(event) {
   event.preventDefault();
   const gen = generation;
   try {
-    const fp = parseContactId(ui.addId.value);
-    if (fp === ownFp) throw new Error('That is your own ID.');
-    if (contactOf(fp)) throw new Error('This person is already a contact.');
-    if (state.outgoing.some(o => o.fp === fp)) throw new Error('You already sent this person a request.');
+    const typed = parseContactInput(ui.addId.value);
+    let fp = typed.fp;
+    if (typed.name) {
+      if (!addResolved || addResolved.name !== typed.name) {
+        addResolved = undefined; showAddResolved();
+        const asked = ui.addId.value;
+        ui.addStatus.textContent = 'Looking up the name…';
+        const found = await resolveContactName(nodusClient, typed.name);
+        if (gen !== generation) return;
+        // The box changed while the lookup ran: this answer is not for it.
+        if (ui.addId.value !== asked) { ui.addStatus.textContent = ''; return; }
+        const refusal = requestRefusal(found.owner, { ownFp, isContact: !!contactOf(found.owner), isRequested: state.outgoing.some(o => o.fp === found.owner) });
+        if (refusal) throw new Error(refusal);
+        addResolved = { name: found.name, owner: found.owner };
+        showAddResolved();
+        ui.addStatus.textContent = `Check the name and the ID above, then press “Send request to ${found.name}”.`;
+        return;
+      }
+      fp = addResolved.owner;
+    }
+    const refusal = requestRefusal(fp, { ownFp, isContact: !!contactOf(fp), isRequested: state.outgoing.some(o => o.fp === fp) });
+    if (refusal) throw new Error(refusal);
     if (!online) throw new Error('Requests can be sent once Messages is connected to the network.');
     const note = ui.addNote.value;
     ui.addStatus.textContent = 'Sending request…';
@@ -1562,6 +1613,7 @@ async function addContact(event) {
     await persist();
     if (gen !== generation) return;
     ui.addId.value = ''; ui.addNote.value = '';
+    addResolved = undefined; showAddResolved();
     ui.addStatus.textContent = 'Request sent. They appear in your contacts once they accept.';
     render();
   } catch (error) { if (gen === generation) ui.addStatus.textContent = error.message; }

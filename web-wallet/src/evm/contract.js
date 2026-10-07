@@ -57,8 +57,11 @@ export const EVM_TX_GAS_CAP = 30000000n;
 // for review. 50 NODUS = 5 × 10^9 raw — a full-cap call (30 000 000 gas ×
 // w_gas 1 + EVM_READS_BASE 16 334 reads × w_read 1 + FAIL_RESERVE 4 096 +
 // the static units) costs ≈ 36 NODUS at the genesis gas price of 121 raw /
-// unit (decision 2026-09-25-gas-price.md). A LOCAL placeholder, not a
-// chain rule; the same value as nodus-cli's EVM_FEE_CONFIRM_RAW. Above
+// unit (decision 2026-09-25-gas-price.md). A LOCAL bound, not a chain
+// rule — kept at 50 NODUS by the operator after the gas measurement
+// (2026-10-07: the costliest valid call ≈ 36.3 NODUS at 121, so the bound
+// stops only an abnormal fee); the same value as nodus-cli's
+// EVM_FEE_CONFIRM_RAW. Above
 // ≈ 166 raw / unit an honest full-cap call is refused here.
 export const EVM_MAX_FEE_RAW = 5000000000n;
 

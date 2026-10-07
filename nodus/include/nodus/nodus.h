@@ -902,6 +902,30 @@ int nodus_client_dnac_spend(nodus_client_t *client,
                               nodus_dnac_spend_result_t *result_out);
 
 /**
+ * nodus_client_dnac_spend, plus the node's refusal text.
+ *
+ * Identical request, wait and return value. When the node answers with
+ * an error frame, its message (the tier-2 "msg" field, at most 127 bytes
+ * — nodus_tier2_msg_t.error_msg) is copied NUL-terminated into err_msg,
+ * truncated to err_cap - 1 bytes; on a CheckTx refusal it reads
+ * "CheckTx code N". err_msg is set to "" on entry and stays "" for every
+ * other outcome (success, timeout, local failure). err_msg NULL or
+ * err_cap 0 = the text is not wanted (nodus_client_dnac_spend's form).
+ *
+ * @param err_msg  Out: the node's error text, or "" (may be NULL)
+ * @param err_cap  Size of err_msg in bytes
+ * @return 0 on success, error code on failure (as nodus_client_dnac_spend)
+ */
+int nodus_client_dnac_spend_ex(nodus_client_t *client,
+                                 const uint8_t *tx_hash,
+                                 const uint8_t *tx_data, uint32_t tx_len,
+                                 const nodus_pubkey_t *sender_pk,
+                                 const nodus_sig_t *sender_sig,
+                                 uint64_t fee,
+                                 nodus_dnac_spend_result_t *result_out,
+                                 char *err_msg, size_t err_cap);
+
+/**
  * Check if a nullifier has been spent.
  *
  * @param nullifier  64-byte nullifier to check

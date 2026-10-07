@@ -45,8 +45,9 @@
  * nodus_chain_config_get_u64 of DNAC_CFG_GAS_PRICE_RAW_PER_UNIT
  * (env_gas_price_check), — final pre-testnet wipe W-C — of
  * DNAC_CFG_TOKEN_CREATE_FEE_RAW (env_token_create_fee), — HF-2 — of
- * DNAC_CFG_HF2_ACTIVE (env_hf2_active) and — HF-3 — of
- * DNAC_CFG_HF3_ACTIVE (env_hf3_active). */
+ * DNAC_CFG_HF2_ACTIVE (env_hf2_active), — HF-3 — of
+ * DNAC_CFG_HF3_ACTIVE (env_hf3_active) and — HF-8 — of
+ * DNAC_CFG_DELEGATE_NAME_REQUIRED (env_delegate_name_required). */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE,
                                         * NODUS_W_TOKEN_CREATE_FEE       */
@@ -847,6 +848,45 @@ static int env_hf2_active(nodus_witness_t *w, uint64_t height,
         return -2;
     }
     *on = (v == DNAC_CFG_HF2_ACTIVE_ON) ? 1u : 0u;
+    return 0;
+}
+
+/* HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md rev
+ * 2 §1; Kurultay #11): does "delegation requires an on-chain name" hold
+ * at `height`? The env_hf2_active shape above, statement for statement,
+ * over chain_config param 17 (DELEGATE_NAME_REQUIRED): the one
+ * three-valued accessor over committed rows, an unanswerable read is a
+ * node FAULT, never a default; no active row = OFF (keeps a chain
+ * without the vote byte-identical to the pre-HF-8 binary — the CORE
+ * SYSFUND hooks plan and charge no extra read); a stored value other
+ * than 0/1 is this node's storage disagreeing with every writer (the
+ * scalar rules admit only DNAC_CFG_DELEGATE_NAME_REQUIRED_ON), a FAULT
+ * too. `height` is the block being applied — tip + 1 on the CheckTx dry
+ * run — so CheckTx and FinalizeBlock read the same row. UNMETERED (no
+ * mediated read). Filled into every ctx the engine builds (exec_one_env
+ * and env_authorize_legs). @return 0 (*on = 0/1) / -2 fault. */
+static int env_delegate_name_required(nodus_witness_t *w, uint64_t height,
+                                      uint8_t *on, char *reason,
+                                      size_t reason_size)
+{
+    uint64_t v = 0;
+
+    if (nodus_chain_config_get_u64(w,
+                                   (uint8_t)DNAC_CFG_DELEGATE_NAME_REQUIRED,
+                                   height, 0ULL, &v) < 0) {
+        V2AP_ENV_FAULT("HF-8: DELEGATE_NAME_REQUIRED at height %llu is "
+                       "unreadable on this node - refusing to judge under "
+                       "a guessed rule set", (unsigned long long)height);
+        return -2;
+    }
+    if (v != 0ULL && v != DNAC_CFG_DELEGATE_NAME_REQUIRED_ON) {
+        V2AP_ENV_FAULT("HF-8: DELEGATE_NAME_REQUIRED at height %llu reads "
+                       "%llu, a value no committed row can hold - this "
+                       "node's chain_config storage is inconsistent",
+                       (unsigned long long)height, (unsigned long long)v);
+        return -2;
+    }
+    *on = (v == DNAC_CFG_DELEGATE_NAME_REQUIRED_ON) ? 1u : 0u;
     return 0;
 }
 
@@ -2318,6 +2358,13 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     if (env_hf2_active(w, blk->global_height, &hf2, reason,
                        reason_size) != 0)
         return -2;
+    /* HF-8: the delegation name rule at this block's height, read ONCE
+     * per envelope with the same discipline (fault = abort, never
+     * default) */
+    uint8_t dlg_name = 0;
+    if (env_delegate_name_required(w, blk->global_height, &dlg_name, reason,
+                                   reason_size) != 0)
+        return -2;
     /* HF-4: "any param-9 row", read ONCE per envelope (= per item: one
      * item is live at a time), so a vote an earlier item of this block
      * committed counts — fault = abort, never default */
@@ -2386,6 +2433,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.hf2_active          = hf2;
         ctx.ruleset_gen2_voted  = gen2_voted;
         ctx.ruleset_gen_storage_voted = gen_storage_voted;
+        ctx.delegate_name_required = dlg_name;
         memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
         /* Nodus EVM (design §10): the block environment an ABI-2 runtime
          * reads — the Comet header seconds and the EVM block gas limit
@@ -2397,6 +2445,12 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.gas_price_on        = evm_facts.gas_price_on;
         ctx.evm_active_voted    = evm_facts.evm_active_voted;
         ctx.chain_initial_height = evm_facts.chain_initial_height; /* F5 */
+        /* Nodus EVM pairing rule: every leg's verified verdict (the item's
+         * auth stage verified and filled `auths` for all legs before this
+         * envelope executes), so the EVM runtime can bind
+         * its sender to the CORE EVMFUND leg's signers (runtime.h) */
+        ctx.env_auths           = auths;
+        ctx.env_auth_count      = v->leg_count;
 
         /* ── Nodus EVM: a runtime-ABI-2 leg reads at RUN TIME through the
          * engine's reader and returns an effect STREAM (design §3/§4) —
@@ -3240,6 +3294,7 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint16_t l;
     uint64_t tc_fee = 0;
     uint8_t  hf2 = 0;
+    uint8_t  dlg_name = 0;
     uint8_t  gen2_voted = 0;
     uint8_t  gen_storage_voted = 0;
     uint64_t name_price[4];
@@ -3251,10 +3306,14 @@ static int env_authorize_legs(nodus_witness_t *w,
      * switch rides along for the same reason (the auth hook computes the
      * power sums unconditionally and does not read it), and so do
      * HF-4's and the storage vote's single-use facts (no auth hook reads
-     * either). */
+     * either), and HF-8's name rule (read_plan/exec only — no auth hook
+     * reads it). */
     if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
         return -2;
     if (env_hf2_active(w, height, &hf2, reason, reason_size) != 0)
+        return -2;
+    if (env_delegate_name_required(w, height, &dlg_name, reason,
+                                   reason_size) != 0)
         return -2;
     if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
         return -2;
@@ -3315,6 +3374,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.leg_auth_digest     = p->auth_digest[l];
         actx.token_create_fee    = tc_fee;
         actx.hf2_active          = hf2;
+        actx.delegate_name_required = dlg_name;
         actx.ruleset_gen2_voted  = gen2_voted;
         actx.ruleset_gen_storage_voted = gen_storage_voted;
         memcpy(actx.name_price, name_price, sizeof(actx.name_price));

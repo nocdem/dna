@@ -153,10 +153,12 @@ const skipParity = !PARITY_OUT || !VECTOR_BIN
 
 const hex = bytes => Buffer.from(bytes).toString('hex');
 const fill = (length, start) => Uint8Array.from({ length }, (_, i) => (start + i * 7) & 0xff);
-// SYNTHETIC inputs. Largest-first selection takes the two 1-NODUS coins for
-// 1.5 NODUS + fee, so the envelope has 2 inputs and 2 outputs (recipient +
-// change): 64 bytes of output seeds, and one hedged signature = 32 bytes of
-// signing randomness.
+// SYNTHETIC inputs. Largest-first selection covers 1.5 NODUS + fee with the
+// two 1-NODUS coins; then (planner dust sweep, nodus 0.25.2 / web 0.1.66) the
+// 0.5-NODUS coin, worth far more than one more input's marginal fee, is swept
+// in too. So the envelope has 3 inputs and 2 outputs (recipient + change):
+// 64 bytes of output seeds, and one hedged signature = 32 bytes of signing
+// randomness.
 const INPUT = {
   seed: fill(32, 1), chain: '11'.repeat(32), tip: '1000', gas: '121', to: 'cd'.repeat(64), amount: '150000000',
   expiry: '1090', coins: [['a1'.repeat(64), '100000000'], ['b2'.repeat(64), '100000000'], ['c3'.repeat(64), '50000000']],
@@ -213,8 +215,8 @@ test('parity: TEST wasm (fixed randomness) and the native vector build the same 
   assert.equal(native.amount, INPUT.amount);
   assert.equal(native.expiry, INPUT.expiry);
   assert.equal(native.chain_id, INPUT.chain);
-  assert.deepEqual(native.input, [INPUT.coins[0][0], INPUT.coins[1][0]]);
-  assert.equal(BigInt(native.amount) + BigInt(native.fee) + BigInt(native.change), 200000000n);
+  assert.deepEqual(native.input, [INPUT.coins[0][0], INPUT.coins[1][0], INPUT.coins[2][0]]);
+  assert.equal(BigInt(native.amount) + BigInt(native.fee) + BigInt(native.change), 250000000n);
 });
 
 test('parity: the shipped wasm (hedged signature) has the same intent_id, a different wire_id', { skip: skipParity }, async () => {

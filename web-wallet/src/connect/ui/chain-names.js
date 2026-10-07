@@ -18,7 +18,11 @@
 // contact without a known name is asked again when its conversation is
 // opened; a failed lookup is tried again on a later round; no ID is asked
 // twice within CHAIN_LOOKUP_SPACING_MS.
+//
+// One exception to "no network": resolveContactName (end of this file), the
+// add-contact-by-name lookup, which calls the client it is handed.
 import { chainNameOk } from '../../nodus/names.js';
+import { resolveChainName, NAME_CHECK_ROW } from '../../adapters/nodus.js';
 
 // The kept name of an entry, or '' (anything malformed counts as none).
 export function keptChainName(entry) {
@@ -88,4 +92,36 @@ export function shownOwnName(walletAnswer, messagesName) {
 export const PROFILE_ENTRY_TEXT = 'Your ID & profile';
 export function profileEntryText(name) {
   return chainNameOk(name) ? `${name} — ID & profile` : PROFILE_ENTRY_TEXT;
+}
+
+// ── Adding a contact by chain name ──────────────────────────────────────
+// The one function here that reaches the network — only through the client
+// it is handed. `name` (already a valid name, text.js parseContactInput) ->
+// its owner's Nodus ID, resolved by the wallet's own NODUS-send lookup
+// (src/adapters/nodus.js resolveChainName: the module's nameLookup, ONE
+// node's committed state — decision 2026-10-02-onchain-names.md item 9,
+// accepted risk). The owner ID is the contact ID (the reverse lookup,
+// nameOf, reads names by the same ID). Every failure is a plain-words error
+// and never falls back to anything else:
+//   - no ready client with names: the network is not ready;
+//   - the lookup answered "nobody holds it": not registered;
+//   - anything else (rejected call, malformed answer): the lookup failed.
+export const NAME_NOT_READY_TEXT = 'Adding a contact by chain name needs the network connection, which is not ready yet. Try again once Messages is connected, or use their ID.';
+export const NAME_UNREGISTERED_TEXT = 'No one has registered that name.';
+export const NAME_LOOKUP_FAILED_TEXT = 'The name could not be looked up right now. Try again in a minute, or use their ID.';
+// The wallet's caution (src/adapters/nodus.js NAME_CHECK_ROW), shown under
+// a resolved name before the request may be sent.
+export const NAME_CHECK_TEXT = NAME_CHECK_ROW[1];
+export async function resolveContactName(client, name) {
+  if (!client || client.state !== 'ready' || !client.nameable) throw new Error(NAME_NOT_READY_TEXT);
+  let found;
+  try { found = await resolveChainName(client, name); }
+  catch (error) {
+    // resolveChainName's own words for "nobody holds it" (the NODUS send's
+    // error, test/hf4-client.test.js); test/connect-ui.test.js pins the
+    // mapping against the real function.
+    if (/^No one has registered the chain name /.test(error?.message || '')) throw new Error(NAME_UNREGISTERED_TEXT);
+    throw new Error(NAME_LOOKUP_FAILED_TEXT);
+  }
+  return { name, owner: found.owner, committedHeight: found.committedHeight };
 }

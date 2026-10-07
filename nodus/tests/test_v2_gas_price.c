@@ -439,15 +439,19 @@ static int t_scalar_rule_matrix(void)
           "id 8 is followed by HF-4's ids 9-13");
     /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md §9) appends
      * EVM_ACTIVE 14 and EVM_BLOCK_GAS_LIMIT 15; storage reward v1 appends
-     * RULESET_GEN_STORAGE 16 (main merge order), the last id. */
+     * RULESET_GEN_STORAGE 16; HF-8 appends DELEGATE_NAME_REQUIRED 17 (main
+     * merge order), the last id. */
     CHECK(DNAC_CFG_NAME_PRICE_6P + 1 == DNAC_CFG_EVM_ACTIVE &&
               DNAC_CFG_EVM_ACTIVE + 1 == DNAC_CFG_EVM_BLOCK_GAS_LIMIT,
           "id 13 is followed by Nodus EVM's ids 14-15");
     CHECK(DNAC_CFG_EVM_BLOCK_GAS_LIMIT + 1 == DNAC_CFG_RULESET_GEN_STORAGE &&
-              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_RULESET_GEN_STORAGE &&
               DNAC_CFG_RULESET_GEN_STORAGE == 16,
-          "id 15 is followed by the storage vote's id 16; 16 is the last "
-          "id");
+          "id 15 is followed by the storage vote's id 16");
+    CHECK(DNAC_CFG_RULESET_GEN_STORAGE + 1 ==
+                  DNAC_CFG_DELEGATE_NAME_REQUIRED &&
+              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_DELEGATE_NAME_REQUIRED &&
+              DNAC_CFG_DELEGATE_NAME_REQUIRED == 17,
+          "id 16 is followed by HF-8's id 17; 17 is the last id");
     return 0;
 }
 

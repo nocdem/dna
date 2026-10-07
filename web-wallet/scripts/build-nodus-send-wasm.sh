@@ -368,6 +368,9 @@ exports_common=(
   # the CREATE address of the signed deployment (red-team 1 F11): the
   # receipt's "cr" is compared with it
   nsw_evm_built_created
+  # the OFFLINE EVM build (0.1.64): no node, every network fact given; the
+  # EVM leg's identity must equal the compiled one. Never waits.
+  nsw_evm_offline_build
   # Messages (NC-4b, connect/nc_wasm.c), all run through the wallet's one
   # queue by src/connect/core.js. The ones that wait on the network (every
   # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,

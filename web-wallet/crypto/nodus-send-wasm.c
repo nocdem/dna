@@ -120,8 +120,10 @@
 #include "dnac/dnac.h"                      /* DNAC_MIN_FEE_RAW              */
 #include "dnac/manifest_wire.h"             /* genesis claim codec           */
 #include "dnac/evm_call_wire.h"             /* EVM leg + EVMFUND call bytes  */
-#include "client/nodus_v2_evm.h"           /* the shared EVM builder
-                                             * (networked builds only — see
+#include "client/nodus_v2_evm.h"           /* the shared EVM builder (every
+                                             * build since 0.1.64; the
+                                             * networked EVM ops and reads
+                                             * stay networked-only — see
                                              * "SMART CONTRACTS")            */
 #include "witness/nodus_witness_rt_evm.h"   /* NODUS_RT_EVM_* — header
                                              * constants only, no witness
@@ -4091,6 +4093,7 @@ int nsw_test_msig_review(const char *now_dec) {
     return nsw_ms_review_now(now);
 }
 #endif
+#endif /* !NODUS_SEND_OFFLINE_ONLY — the EVM BUILD below is in every build */
 
 /* ═══ SMART CONTRACTS — the EVM domain (Nodus EVM) ════════════════════════
  *
@@ -4126,7 +4129,14 @@ int nsw_test_msig_review(const char *now_dec) {
  * plan refuses (DNA_METER_ERR_OP_WEIGHT) — fail closed, no default weight.
  * READS (design §18): nsw_evm_query — one evm_* request on this session,
  * the reply map as JSON (nodus_client_dnac_query_raw).
- * Networked builds only (not in the native vector). */
+ *
+ * IN EVERY BUILD (0.1.64), the native vector included: the request
+ * (nsw_evm_data_alloc / _access_* / _set_decl / _set_estimate), the build
+ * nsw_evm_core, its read-back (nsw_evm_built_*) and the OFFLINE build
+ * nsw_evm_offline_build (no node: every network fact given, the EVM leg's
+ * identity checked against the compiled one). Networked builds only: the
+ * network setting (nsw_evm_net_set / _available / _generation), the five
+ * networked builds (nsw_evm_call ... _redeem) and the reads. */
 
 /* EVM op ids and widths: the shared codec restates the node's constants
  * (nodus_witness_rt_evm.h) — pinned equal here, where both are visible. */
@@ -4147,14 +4157,9 @@ _Static_assert(DNA_EVMFUND_OUT_LEN == NODUS_V2_SPEND_OUT_LEN &&
 #define NSW_EVM_ACCESS_MAX        16384u
 #define NSW_EVM_DATA_MAX          ((uint32_t)DNA_ENV_MAX_TOTAL_LEN)
 
-/* the EVM leg's ruleset identity (a network setting — see above; it must
- * equal the compiled EVM generation's) */
-static struct {
-    int      has;
-    uint32_t version;
-    uint8_t  hash[64];
-} g_evm_rs;
-
+/* the compiled EVM generation's EVM-leg ruleset hash: the network setting
+ * (nsw_evm_net_set) and an offline build's (nsw_evm_offline_build) must
+ * equal it */
 static const uint8_t NSW_EVM_RS_HASH[64] = NODUS_RT_EVM_RULESET_HASH_GEVM_INIT;
 
 /* the request: contract data / initcode, access list, declaration, and
@@ -4211,6 +4216,15 @@ const char *nsw_evm_built_created(void) {
 
 /* ── settings and request ── */
 
+#ifndef NODUS_SEND_OFFLINE_ONLY
+/* the EVM leg's ruleset identity (a network setting — see above; it must
+ * equal the compiled EVM generation's) */
+static struct {
+    int      has;
+    uint32_t version;
+    uint8_t  hash[64];
+} g_evm_rs;
+
 /* The EVM leg's ruleset identity: version (decimal) and its 64-byte hash
  * (128 lowercase hex). Set once, before unlock (like the network
  * settings). It must equal the compiled EVM generation's identity
@@ -4240,6 +4254,7 @@ int nsw_evm_available(void) { return g_evm_rs.has; }
  * NODUS_RT_GEN_EVM): a node whose dnac_ruleset_info names an older one has
  * not voted the EVM in (src/nodus/client.js hides the panel then). */
 int nsw_evm_generation(void) { return (int)NODUS_RT_GEN_EVM; }
+#endif /* !NODUS_SEND_OFFLINE_ONLY */
 
 /* The node's evm_estimate answer for the NEXT CALL / CREATE build: its
  * `ue` and `ge` (decimal; "0", "0" = none). The build adds the read units
@@ -4558,6 +4573,127 @@ static int nsw_evm_core(const uint8_t *pk, const uint8_t *sk,
     free(b);
     return 0;
 }
+
+/* One field of an offline EVM request: what an op does not carry must be
+ * absent ("" for hex, "0" for decimal) — never silently ignored. */
+static int nsw_evm_absent_hex(const char *s) { return s && s[0] == '\0'; }
+static int nsw_evm_absent_dec(const char *s) { return s && strcmp(s, "0") == 0; }
+
+/*
+ * OFFLINE EVM build (0.1.64; like nsw_stake_offline_build and
+ * nsw_name_offline_build): no node. The identity from nsw_seed_buf (wiped
+ * here on every path), the candidate coins (nsw_req_*), the contract data /
+ * access list / effect ceilings / estimate (nsw_evm_*), and every network
+ * fact given EXPLICITLY: the pinned rule-set generation `gen` (>= the EVM
+ * generation, NODUS_RT_GEN_EVM — its pinned SYSTEM policy weighs CORE op 9),
+ * the chain id, the tip, the gas price, and the EVM leg's ruleset version /
+ * hash, which must equal the compiled EVM generation's (the same check as
+ * nsw_evm_net_set: nothing is signed for other rules). No vote height, so
+ * the expiry must be tip + 90 (nsw_expiry_check). The build is nsw_evm_core
+ * — the shared builder nodus_v2_evm_build, as the networked builds and
+ * nodus-cli `evm` — and its read-back lands in nsw_built_* /
+ * nsw_evm_built_* exactly as theirs.
+ *
+ * `op` 1..5 (CALL, CREATE, DEPOSIT, WITHDRAW, REDEEM — DNA_EVM_OP_*). Each
+ * op takes only its own fields, as the networked builds do; every other
+ * field must be absent ("" / "0"):
+ *   CALL      to (64 hex), value (64 hex), gas, nonce
+ *   CREATE    value, gas, nonce            (initcode = nsw_evm_data_alloc)
+ *   DEPOSIT   amount, nonce
+ *   WITHDRAW  amount, nonce, dest (128 hex)
+ *   REDEEM    ticket (128 hex), amount, dest
+ * `units`: the declared resource ceiling ("0" = the minimum, plus the read
+ * units of an estimate given with nsw_evm_set_estimate for CALL / CREATE).
+ * The signature is hedged in the shipped module (browser CSPRNG), so two
+ * builds of one request share the intent id, never the wire id.
+ */
+int nsw_evm_offline_build(int gen, int op, const char *chain_hex,
+                          const char *tip_dec, const char *gas_price_dec,
+                          const char *evm_ver_dec, const char *evm_hash_hex,
+                          const char *to_hex, const char *value_hex,
+                          const char *gas_dec, const char *nonce_dec,
+                          const char *amount_dec, const char *dest_hex,
+                          const char *ticket_hex, const char *units_dec,
+                          const char *expiry_dec) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN], evm_hash[64];
+    uint64_t tip = 0, gp = 0, ev = 0, units = 0, expiry = 0;
+    uint8_t *pk = NULL, *sk = NULL;
+    dna_meter_policy_t *pol = NULL;
+    nodus_v2_ruleset_id_t rs;
+    dna_evm_call_t c;
+    int rc = -1;
+    nsw_built_clear();
+    memset(&g_evm_built, 0, sizeof(g_evm_built));
+    memset(&c, 0, sizeof(c));
+    c.op = (uint32_t)op;
+    const int is_call = op == (int)DNA_EVM_OP_CALL,
+              is_create = op == (int)DNA_EVM_OP_CREATE,
+              is_vm = is_call || is_create,
+              has_dest = op == (int)DNA_EVM_OP_WITHDRAW ||
+                         op == (int)DNA_EVM_OP_REDEEM,
+              is_redeem = op == (int)DNA_EVM_OP_REDEEM;
+    if (op < (int)DNA_EVM_OP_CALL || op > (int)DNA_EVM_OP_REDEEM) {
+        rc = nsw_fail("Unknown smart-contract action.");
+        goto done;
+    }
+    if (gen < (int)NODUS_RT_GEN_EVM ||
+        (uint32_t)gen > nodus_v2_pins_generation_count() ||
+        nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
+        nsw_parse_u64(tip_dec, &tip) != 0 ||
+        nsw_parse_u64(gas_price_dec, &gp) != 0 ||
+        nsw_parse_u64(evm_ver_dec, &ev) != 0 ||
+        nsw_parse_hex(evm_hash_hex, evm_hash, sizeof(evm_hash)) != 0 ||
+        nsw_parse_u64(units_dec, &units) != 0 ||
+        nsw_parse_u64(expiry_dec, &expiry) != 0 ||
+        /* the op's own fields */
+        (is_call ? nsw_parse_hex(to_hex, c.to, 32) != 0
+                 : !nsw_evm_absent_hex(to_hex)) ||
+        (is_vm ? nsw_parse_hex(value_hex, c.value_wei, 32) != 0 ||
+                 nsw_parse_u64(gas_dec, &c.gas_limit) != 0
+               : !nsw_evm_absent_hex(value_hex) ||
+                 !nsw_evm_absent_dec(gas_dec)) ||
+        (is_redeem ? !nsw_evm_absent_dec(nonce_dec)
+                   : nsw_parse_u64(nonce_dec, &c.nonce) != 0) ||
+        (is_vm ? !nsw_evm_absent_dec(amount_dec)
+               : nsw_parse_u64(amount_dec, &c.amount_raw) != 0) ||
+        (has_dest ? qgp_fp_hex_to_raw(dest_hex, c.dest_fp) != 0
+                  : !nsw_evm_absent_hex(dest_hex)) ||
+        (is_redeem ? nsw_parse_hex(ticket_hex, c.ticket_id, 64) != 0
+                   : !nsw_evm_absent_hex(ticket_hex))) {
+        rc = nsw_fail("Invalid offline smart-contract input.");
+        goto done;
+    }
+    if (ev != NODUS_RT_EVM_RULESET_VERSION_GEVM ||
+        memcmp(evm_hash, NSW_EVM_RS_HASH, 64) != 0) {
+        rc = nsw_fail("The smart-contract setting does not match the rules "
+                      "this page was built with.");
+        goto done;
+    }
+    {
+        const nsw_gen_t g = { (uint32_t)gen, 0u, 0u };
+        if (nsw_expiry_check(tip, &g, expiry) != 0) goto done;
+    }
+    pol = calloc(1, sizeof(*pol));
+    if (!pol) { rc = nsw_fail("Out of memory."); goto done; }
+    if (nsw_ruleset((uint32_t)gen, &rs, pol) != 0) goto done;
+    pk = malloc(NSW_PK_LEN);
+    sk = malloc(NSW_SK_LEN);
+    if (!pk || !sk)
+        rc = nsw_fail("Out of memory.");
+    else if (qgp_dsa87_keypair_derand(pk, sk, g_seed) != 0)
+        rc = nsw_fail("Key derivation failed.");
+    else
+        rc = nsw_evm_core(pk, sk, chain32, tip, gp, &rs, (uint32_t)ev,
+                          evm_hash, &c, units, expiry);
+done:
+    nsw_wipe(g_seed, sizeof(g_seed));
+    if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
+    free(pk);
+    free(pol);
+    return rc;
+}
+
+#ifndef NODUS_SEND_OFFLINE_ONLY
 /* The networked build of every EVM op: the candidates must come from the
  * LAST listing; chain id, rule-set generation and gas price are read on
  * this session (as nsw_build_and_sign). */

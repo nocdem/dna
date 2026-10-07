@@ -291,6 +291,67 @@
       }
     }).load();
   }
+  // Statistics page presentation. Amounts are the same raw-unit figures as everywhere else, shown
+  // with digit groups (a narrow no-break space, as the page's own texts write "17 280"). A share is
+  // part × 10 000 / whole in BigInt, floored, shown with two decimals — never a float.
+  const rawUnits = value => (typeof value === 'string' && /^\d+$/.test(value)) || (Number.isSafeInteger(value) && value >= 0) ? BigInt(value) : null;
+  const groupDigits = text => text.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  function groupedAmount(raw) {
+    const text = amount(raw);
+    if (text === '—') return text;
+    const [whole, fraction] = text.split('.');
+    return groupDigits(whole) + (fraction ? '.' + fraction : '');
+  }
+  const groupedMoney = raw => groupedAmount(raw) === '—' ? '—' : groupedAmount(raw) + ' NODUS';
+  const share = (part, whole) => part === null || whole === null || whole <= 0n ? null : part * 10000n / whole;
+  const percent = basis => basis === null ? '—' : (basis / 100n) + '.' + String(basis % 100n).padStart(2, '0') + ' %';
+  // A key figure: the whole part large, the fraction (if any) smaller beside it.
+  function bigAmount(node, raw) {
+    const text = groupedAmount(raw), [whole, fraction] = text.split('.');
+    node.replaceChildren(whole);
+    if (fraction) node.append(el('span', '.' + fraction, 'frac'));
+  }
+  // A proportion bar: one rect per known part, x/width in basis points of the whole (SVG geometry,
+  // so the page's style-src 'self' policy is untouched). Decorative — the shares are written out
+  // beside every bar. Unknown parts are left out; an unknown whole leaves the empty track.
+  function shareBar(container, parts, whole) {
+    const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 10000 10'); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('focusable', 'false');
+    let start = 0n;
+    if (whole !== null && whole > 0n) for (const [className, value] of parts) {
+      if (value === null) continue;
+      const x = start * 10000n / whole, end = (start + value) * 10000n / whole;
+      start += value;
+      if (end <= x) continue;
+      const rect = document.createElementNS(ns, 'rect');
+      for (const [k, v] of Object.entries({ x, y: 0, width: (end > 10000n ? 10000n : end) - x, height: 10 })) rect.setAttribute(k, String(v));
+      rect.setAttribute('class', 'bar-seg ' + className);
+      svg.append(rect);
+    }
+    container.replaceChildren(svg);
+  }
+  const supplyIds = ['circulating', 'reward', 'storage', 'compute', 'bandwidth', 'future'];
+  function displaySupply(stats) {
+    // Supply buckets (explorer /api/stats; decision 2026-09-30-scan-supply-buckets.md): the
+    // total is supply_genesis (fixed), circulating is the explorer's own figure. treasury is
+    // pool 1..9; Scan shows the four service pools. A null (older node) renders "—".
+    const pools = Array.isArray(stats.treasury) && stats.treasury.length === 9 ? stats.treasury : [];
+    const raw = { circulating: stats.circulating, reward: stats.reward_pool, storage: pools[0], compute: pools[1], bandwidth: pools[2], future: pools[3] };
+    const total = rawUnits(stats.supply_genesis);
+    bigAmount($('stat-total'), stats.supply_genesis);
+    bigAmount($('stat-circulating'), stats.circulating);
+    for (const id of supplyIds) {
+      $('bucket-' + id).textContent = groupedAmount(raw[id]);
+      $('share-' + id).textContent = percent(share(rawUnits(raw[id]), total));
+    }
+    const parts = supplyIds.map(id => ['sw-' + id, rawUnits(raw[id])]);
+    shareBar($('supply-bar'), parts, total);
+    // The buckets above do not cover the whole total (the unclaimed allocation, the other pools
+    // and burned coins are not itemised here): the rest is stated, not named.
+    const listed = parts.every(([, v]) => v !== null) ? parts.reduce((sum, [, v]) => sum + v, 0n) : null;
+    const rest = listed !== null && total !== null && total > listed ? share(total - listed, total) : null;
+    $('supply-rest').textContent = rest === null || rest === 0n ? '' : t(`The other ${percent(rest)} of the total supply is not itemised on this page.`, `Toplam arzın kalan ${percent(rest)} kadarı bu sayfada ayrıca gösterilmez.`);
+  }
   function displayStats(stats) {
     const indexed = stats.indexed_height, tip = stats.tip_height;
     const known = Number.isSafeInteger(indexed) && Number.isSafeInteger(tip);
@@ -300,23 +361,42 @@
     $('api-status').textContent = known ? (behind ? t('Index catching up', 'İndeks güncelleniyor') : t('Index matches the last reported tip', 'İndeks son bildirilen blokla eşleşiyor')) : t('Index connected · synchronization status unknown', 'İndekse bağlandı · eşitleme durumu bilinmiyor');
     if (!$('stats-cards')) return;
     $('stat-height').textContent = indexed ?? '—';
-    // Supply buckets (explorer /api/stats; decision 2026-09-30-scan-supply-buckets.md): the
-    // total is supply_genesis (fixed), circulating is the explorer's own figure. treasury is
-    // pool 1..9; Scan shows the four service pools. A null (older node) renders "—".
-    $('stat-total').textContent = amount(stats.supply_genesis);
-    $('stat-circulating').textContent = amount(stats.circulating);
-    const pools = Array.isArray(stats.treasury) && stats.treasury.length === 9 ? stats.treasury : [];
-    $('bucket-reward').textContent = money(stats.reward_pool);
-    $('bucket-storage').textContent = money(pools[0]);
-    $('bucket-compute').textContent = money(pools[1]);
-    $('bucket-bandwidth').textContent = money(pools[2]);
-    $('bucket-future').textContent = money(pools[3]);
+    displaySupply(stats);
+    displayStaking(stats.staking);
+  }
+  // Staking (explorer /api/stats "staking", explorer/README.md): the bonded validators — status
+  // ACTIVE or ELIGIBLE — of the explorer's last node read. self_stake / delegated are raw-unit
+  // strings; delegations counts (delegator, validator) pairs and is null when the node sent no
+  // count. A null object (no read yet / the read failed) renders "—". Each element is optional,
+  // so a page without the staking cards is left alone.
+  // The bar splits self_stake against delegated (two separate sums); each share is of their sum.
+  const stakeIds = ['validators', 'active', 'self', 'delegated', 'delegations', 'self-share', 'delegated-share'];
+  function displayStaking(s) {
+    const set = (id, value) => { if ($('stake-' + id)) $('stake-' + id).textContent = value; };
+    const count = n => Number.isSafeInteger(n) && n >= 0 ? String(n) : '—';
+    if (!s || typeof s !== 'object') {
+      for (const id of stakeIds) set(id, '—');
+      if ($('stake-bar')) shareBar($('stake-bar'), [], null);
+      return;
+    }
+    const validators = count(s.validators), active = count(s.active_validators);
+    set('validators', validators);
+    set('active', validators === '—' || active === '—' ? '—' : t(`${active} active`, `${active} aktif`));
+    set('self', groupedMoney(s.self_stake));
+    set('delegated', groupedMoney(s.delegated));
+    set('delegations', count(s.delegations));
+    const self = rawUnits(s.self_stake), delegated = rawUnits(s.delegated);
+    const both = self !== null && delegated !== null ? self + delegated : null;
+    set('self-share', percent(share(self, both)));
+    set('delegated-share', percent(share(delegated, both)));
+    if ($('stake-bar')) shareBar($('stake-bar'), [['sw-self', self], ['sw-delegated', delegated]], both);
   }
   function statsUnavailable() {
     $('api-status').textContent = t('Index unavailable', 'İndekse erişilemiyor');
     $('staleness-banner').classList.add('hidden');
-    for (const id of ['height', 'total', 'circulating']) if ($('stat-' + id)) $('stat-' + id).textContent = '—';
-    for (const id of ['reward', 'storage', 'compute', 'bandwidth', 'future']) if ($('bucket-' + id)) $('bucket-' + id).textContent = '—';
+    if ($('stats-cards')) displaySupply({});
+    if ($('stat-height')) $('stat-height').textContent = '—';
+    displayStaking(null);
   }
   // Throughput (explorer /api/tps): applied transactions per second by block time, "now" being the
   // newest indexed block. tps is a decimal string with two decimals; history is 24 UTC hours,
@@ -327,7 +407,7 @@
   const cssColor = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
   const hourLabel = ms => new Date(ms).toISOString().slice(11, 16) + ' UTC';
   function tpsChart(history) {
-    const ns = 'http://www.w3.org/2000/svg', barWidth = 10, height = 64;
+    const ns = 'http://www.w3.org/2000/svg', barWidth = 10, height = 96;
     const values = history.map(b => Number(b.tps)), peak = Math.max(0, ...values);
     const peakBucket = history[values.indexOf(peak)];
     const svg = document.createElementNS(ns, 'svg');
@@ -343,7 +423,11 @@
       title.textContent = hourLabel(b.start_ms) + ' — ' + b.tps + ' TPS · ' + b.tx + t(' transactions', ' işlem');
       bar.append(title); svg.append(bar);
     });
-    return svg;
+    // Visible scale under the bars: the first and the newest hour, and the peak.
+    const axis = el('div', undefined, 'tps-axis');
+    axis.append(el('span', hourLabel(history[0].start_ms)), el('span', t(`Peak ${peakBucket.tps} TPS`, `En yüksek ${peakBucket.tps} TPS`), 'tps-peak'), el('span', hourLabel(history[history.length - 1].start_ms)));
+    const wrap = el('div'); wrap.append(svg, axis);
+    return wrap;
   }
   function tpsUnavailable(message) {
     $('tps-minute').textContent = '—'; $('tps-hour').textContent = '—';
@@ -361,7 +445,7 @@
   }
   // APY (explorer apy): the explorer's own figure, shown only when every input was known.
   const apyText = a => a && tpsText(a.apy) !== null ? a.apy + ' %' : '—';
-  const paydayRow = p => row([link('block.html?h=' + encodeURIComponent(p.height), p.height), time(p.time), p.available ? money(p.total) : t('Unavailable', 'Alınamıyor'), p.available ? p.recipients : '—']);
+  const paydayRow = p => row([link('block.html?h=' + encodeURIComponent(p.height), p.height), time(p.time), p.available ? groupedMoney(p.total) : t('Unavailable', 'Alınamıyor'), p.available ? p.recipients : '—']);
   function loadPaydays(automatic) {
     if (!paydayPager) {
       paydayPager = payoutPager({ body: $('paydays-tbody'), button: $('paydays-more'), status: $('paydays-error'), columns: 4,
@@ -685,10 +769,6 @@
   });
   $('search-input').addEventListener('input',()=>{searchRequest++;$('search-results').replaceChildren();});
   $('refresh-data').addEventListener('click',()=>refresh());
-  if(page==='stats'){
-    // Circulating supply "Details": shows / hides the bucket table below the cards.
-    $('supply-details-toggle').addEventListener('click',event=>{const open=$('supply-details').hidden;$('supply-details').hidden=!open;event.currentTarget.setAttribute('aria-expanded',String(open));});
-  }
   if(page==='index'){
     $('pg-first').addEventListener('click',()=>loadBlocks(1,true));$('pg-prev').addEventListener('click',()=>loadBlocks(pageNumber-1));$('pg-next').addEventListener('click',()=>loadBlocks(pageNumber+1));$('pg-last').addEventListener('click',()=>loadBlocks(lastPage));
     $('pg-input').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();if(/^\d+$/.test(event.target.value))loadBlocks(Number(event.target.value));}});

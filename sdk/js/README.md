@@ -165,6 +165,42 @@ receipt promise keeps polling.
 `reviewAndSend(prepare, { confirm, maxFee, onBroadcast })` is the gate
 itself, for a caller that drives `evm.contract(...)` directly.
 
+### Offline build (no network)
+
+`NodusEvm.buildOffline(options)` builds and signs **one** EVM envelope with
+no connection and **sends nothing**: the release module's
+`nsw_evm_offline_build` (web wallet 0.1.64, through `send-module.js`
+`evmBuildOffline`) — the same shared C builder as the writes above, so the
+result's `decoded` is read back from the signed bytes the same way. The
+module is loaded for this one build and locked, zeroed and released before
+the promise settles. You supply what a node would have told you; carrying
+the envelope to a node is yours (there is no review, `confirm` or one-pending
+record on this path — it only signs).
+
+| Option | |
+|---|---|
+| `phrase` | required |
+| `tip`, `gasPrice` | required: the chain tip and the gas price a node reported (`BigInt` / decimal) |
+| `expiryHeight` | default `tip + 90n` — the only value the module accepts |
+| `generation` | default: the EVM generation the module was built with; a lower one refuses |
+| `chainId` | default: the network's |
+| `op` | `'deposit'` \| `'withdraw'` \| `'call'` \| `'create'` \| `'redeem'` |
+| `amount` | `BigInt` raw units (deposit / withdraw / redeem) |
+| `nonce` | this identity's EVM nonce (every op but redeem; default `0n`) |
+| `to`, `data`, `valueWei`, `gasLimit`, `accessList` | call (`to` = the contract) / create (`data` = initcode) |
+| `dest` | withdraw / redeem: 128-hex Nodus address (default this identity) |
+| `ticketId` | redeem: 128 hex |
+| `units` | the declared resource ceiling (default `0n` = the minimum of this shape; give the node's estimate yourself for a call that reads storage) |
+| `coins` | required: this identity's spendable NODUS coins `[{ nullifier, amount }]` — the funding inputs (ascending by nullifier until lock + fee) |
+| `network`, `evm`, `wasmDir`, `moduleFactory` | as for `open()`; `evm: null` refuses |
+
+Resolves `{ envelope: Uint8Array, intentId, decoded: { op, to, valueWei,
+gasLimit, nonce, units, amount, dest, ticketId, dataLength, created,
+recipient, fee, change, expiryHeight, chainId, inputs } }`. The signature is
+hedged: two builds of one request share `intentId`, not the bytes. The EVM
+leg's ruleset identity is the `evm` setting, which the module refuses unless
+it is the one it was compiled with.
+
 ### One pending transaction
 
 The node accepts only the account's current nonce, so the SDK sends one EVM
@@ -259,10 +295,14 @@ send only when you type `yes`; without a terminal nothing is sent.
   pinned upstream constants; `test/module.test.js` loads the real release
   module but never connects. None of them shows that a node accepts
   anything.
-- **The offline envelope build is not covered.** The release module has no
-  offline EVM builder (the only one, `nsw_test_evm_build`, exists only in the
-  fixed-randomness TEST build); that test is a **skip**, and a skip is not a
-  pass.
+- **The offline build test uses synthetic coins, tip and gas price.**
+  `test/module.test.js` builds an offline DEPOSIT and CALL through the
+  release module and checks the fields read back from the signed bytes and
+  the signer (the CALL's key is found by scanning the envelope for a
+  2592-byte window whose SHA3-512 is the identity's address — it does not
+  parse the authorization section). Byte-for-byte parity of this build
+  with the native C vector is the web wallet's test
+  (`web-wallet/test/evm-call-wire-wasm.test.js`), not this one.
 - **The module tests skip** when `wasm/send-node.mjs` is not built.
 - **The live path** — WebSocket over TLS to an IP address, the pinned
   handshake, estimate, build, submit, receipt, logs — is exercised **only**

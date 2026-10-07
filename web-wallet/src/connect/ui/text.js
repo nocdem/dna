@@ -2,6 +2,8 @@
 // No DOM, no network, no storage: everything here is a function of its
 // arguments, so test/connect-ui.test.js pins it under node --test.
 
+import { chainName } from '../../nodus/names.js';
+
 const HEX128 = /^[0-9a-f]{128}$/;
 const U64 = /^(0|[1-9]\d{0,19})$/;
 
@@ -11,6 +13,27 @@ export function parseContactId(value) {
   const id = typeof value === 'string' ? value.replace(/\s+/g, '').toLowerCase() : '';
   if (!HEX128.test(id)) throw new Error('That is not a valid ID. An ID is 128 characters, letters a–f and digits.');
   return id;
+}
+
+// What the add-contact box accepts: an ID (parseContactId — tried first, so
+// a pasted ID never becomes a name) or an HF-4 chain name, read with the
+// wallet's own name rule (src/nodus/names.js chainName: trimmed, A-Z
+// lowered, 3..36 of a-z0-9, no ID-like all-hex name of 8+). -> { fp } or
+// { name }; anything else throws one plain-words error.
+export function parseContactInput(value) {
+  try { return { fp: parseContactId(value) }; } catch { /* not an ID: try a name */ }
+  const name = chainName(value);
+  if (name) return { name };
+  throw new Error('That is not a valid ID or chain name. An ID is 128 characters, letters a–f and digits; a chain name is 3 to 36 letters a–z and digits.');
+}
+
+// Why a request cannot go to `fp` (the typed ID or a name's owner), or ''
+// when it can — the same three answers for both.
+export function requestRefusal(fp, { ownFp, isContact = false, isRequested = false } = {}) {
+  if (fp === ownFp) return 'That is your own ID.';
+  if (isContact) return 'This person is already a contact.';
+  if (isRequested) return 'You already sent this person a request.';
+  return '';
 }
 
 // "ID 1a2b3c4d…9f0e" — the only name-like label an unverified identity gets.

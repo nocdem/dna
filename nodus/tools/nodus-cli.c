@@ -520,6 +520,89 @@ bad_before:
     return 0;
 }
 
+/* `coins` — THIS identity's unspent coins as the node lists them
+ * (dnac_utxo, the same query `v2-envelope spend` selects from), plus the
+ * node's committed tip. Read-only. The node answers only the
+ * authenticated session's own owner (C11, handle_dnac_utxo). `id` is the
+ * coin's utxo_set key: the output id SHA3-512(owner_hex ‖ seed)
+ * (rtn_out_ids, nodus_witness_rt_native.c) — the value `v2-envelope
+ * spend` prints as `out[k] id=` — and `bh` is the height of the block
+ * that created it (rtn_utxo_create_eff writes the applying height). One
+ * header line, then one line per coin:
+ *   coins: owner=<fp16>... tip=<H> count=<n> native_total=<raw>
+ *   coin id=<128hex> amount=<raw> bh=<H> ub=<H> token=native|<16hex>... */
+static int cmd_coins(const char *server_ip, uint16_t server_port) {
+    nodus_client_t client;
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", server_ip);
+    cfg.servers[0].port = server_port;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+
+    if (nodus_client_init(&client, &cfg, &identity) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        return 1;
+    }
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", server_ip,
+                (unsigned)server_port);
+        nodus_client_close(&client);
+        return 1;
+    }
+
+    nodus_dnac_utxo_result_t r;
+    memset(&r, 0, sizeof(r));
+    int qrc = nodus_client_dnac_utxo(&client, identity.fingerprint,
+                                     NODUS_DNAC_MAX_UTXO_RESULTS, &r);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_utxo query failed (rc=%d)\n", qrc);
+        nodus_client_close(&client);
+        return 1;
+    }
+
+    uint64_t native_total = 0;
+    bool     total_ok = true;
+    for (int i = 0; i < r.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &r.entries[i];
+        bool native = true;
+        for (int b = 0; b < 64; b++)
+            if (e->token_id[b]) { native = false; break; }
+        if (!native) continue;
+        if (e->amount > UINT64_MAX - native_total) { total_ok = false; break; }
+        native_total += e->amount;
+    }
+    printf("coins: owner=%.16s... tip=%llu count=%d native_total=",
+           identity.fingerprint, (unsigned long long)r.block_height, r.count);
+    if (total_ok) printf("%llu\n", (unsigned long long)native_total);
+    else          printf("overflow\n");
+    for (int i = 0; i < r.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &r.entries[i];
+        bool native = true;
+        for (int b = 0; b < 64; b++)
+            if (e->token_id[b]) { native = false; break; }
+        printf("coin id=");
+        for (int b = 0; b < 64; b++) printf("%02x", e->nullifier[b]);
+        printf(" amount=%llu bh=%llu ub=%llu token=",
+               (unsigned long long)e->amount,
+               (unsigned long long)e->block_height,
+               (unsigned long long)e->unlock_block);
+        if (native) {
+            printf("native\n");
+        } else {
+            for (int b = 0; b < 8; b++) printf("%02x", e->token_id[b]);
+            printf("...\n");
+        }
+    }
+    if (r.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
+        fprintf(stderr, "warning: the coin listing is capped at %d rows and "
+                "came back full — coins beyond it are not shown\n",
+                (int)NODUS_DNAC_MAX_UTXO_RESULTS);
+    nodus_client_free_utxo_result(&r);
+    nodus_client_close(&client);
+    return 0;
+}
+
 static int cmd_listen(const char *key_str) {
     nodus_key_t key;
     nodus_hash((const uint8_t *)key_str, strlen(key_str), &key);
@@ -1398,6 +1481,11 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
          * while the EVM generation judges the vote */
         { "RULESET_GEN_STORAGE",  DNAC_CFG_RULESET_GEN_STORAGE },
         { "ruleset_gen_storage",  DNAC_CFG_RULESET_GEN_STORAGE },
+        /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-
+         * design.md rev 2 §1) — param id 17, value exactly 1; votable
+         * only while generation 2 or later judges the vote */
+        { "DELEGATE_NAME_REQUIRED", DNAC_CFG_DELEGATE_NAME_REQUIRED },
+        { "delegate_name_required", DNAC_CFG_DELEGATE_NAME_REQUIRED },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1644,6 +1732,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "(storage-reward rule-set generation from --effective on; "
             "once only; the EVM generation must be in force; HF-2 must "
             "be active; --effective - 1 not an epoch boundary)\n"
+            "  DELEGATE_NAME_REQUIRED exactly %llu   "
+            "(HF-8 switch: from --effective on a delegation needs the "
+            "delegator's on-chain name, self-delegation exempt; one-way; "
+            "generation 2 must be in force)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -1659,7 +1751,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
             (unsigned long long)DNAC_CFG_MIN_EVM_BLOCK_GAS,
             (unsigned long long)DNAC_CFG_MAX_EVM_BLOCK_GAS,
-            (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D);
+            (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
+            (unsigned long long)DNAC_CFG_DELEGATE_NAME_REQUIRED_ON);
         return 1;
     }
     uint8_t param_id = 0;
@@ -1669,7 +1762,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE | "
                 "RULESET_GEN2 | NAME_PRICE_3P | NAME_PRICE_4P | "
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
-                "EVM_BLOCK_GAS_LIMIT | RULESET_GEN_STORAGE "
+                "EVM_BLOCK_GAS_LIMIT | RULESET_GEN_STORAGE | "
+                "DELEGATE_NAME_REQUIRED "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -2707,6 +2801,45 @@ static int t6_resolve_target(const char *submit, const char *def_ip,
  * RPC/session-level fault (return -1: something is wrong with the
  * connection, the caller should stop). @return 0 accepted / 1 refused
  * / -1 fault. */
+/* The name of a CheckTx response code, as the node's application answers
+ * it. THIS IS NOT nodus_v2_tx_code_t (the FinalizeBlock per-item space,
+ * nodus_witness_v2_apply.h, where 1 = DECODE): the CheckTx space is its
+ * own, defined in a .c the CLI does not link — copied here from
+ * nodus_witness_cmt_app.c:748 (NODUS_CMT_APP_CODE_REJECTED = 1, "every
+ * other refusal") and :771 (NODUS_CMT_APP_CODE_GENERATION = 100, the
+ * envelope names a ruleset generation not in force), code space listed at
+ * :774-781. Any other number is printed as code-N. */
+static const char *cli_checktx_code_name(unsigned code, char *buf,
+                                         size_t cap) {
+    if (code == 1u)   return "REJECTED";
+    if (code == 100u) return "GENERATION";
+    snprintf(buf, cap, "code-%u", code);
+    return buf;
+}
+
+/* One machine-greppable stderr line for a dnac_spend the node did not
+ * take: the old "dnac_spend RPC failed (rc=N)" text stays as the prefix
+ * (scripts grep it), then either
+ *   refused: rc=N node="<node text>"[ checktx=<name>]
+ * — the node answered with an error frame (its text; ` checktx=` when the
+ * text is "CheckTx code N", nodus_witness_handlers.c handle_dnac_spend) —
+ * or
+ *   failed: rc=N node=""
+ * — no error frame: no reply in time (rc 6 = NODUS_ERR_TIMEOUT), a reply
+ * that could not be read, or a local failure. The node may still have
+ * taken the transaction in that case; "failed" never means refused. */
+static void cli_print_spend_refusal(int rc, const char *node_msg) {
+    char nbuf[24];
+    unsigned code = 0;
+    const char *m = node_msg ? node_msg : "";
+    fprintf(stderr, "dnac_spend RPC failed (rc=%d) %s: rc=%d node=\"%s\"",
+            rc, m[0] ? "refused" : "failed", rc, m);
+    if (sscanf(m, "CheckTx code %u", &code) == 1)
+        fprintf(stderr, " checktx=%s",
+                cli_checktx_code_name(code, nbuf, sizeof(nbuf)));
+    fprintf(stderr, "\n");
+}
+
 static int t6_submit_on(nodus_client_t *client, nodus_identity_t *id,
                         const uint8_t tx_hash[64], const uint8_t *bytes,
                         uint32_t len) {
@@ -2716,10 +2849,15 @@ static int t6_submit_on(nodus_client_t *client, nodus_identity_t *id,
     nodus_sign(&ssig, tx_hash, 64, &id->sk);
     nodus_dnac_spend_result_t sres;
     memset(&sres, 0, sizeof(sres));
-    int rc = nodus_client_dnac_spend(client, tx_hash, bytes, len, &spk,
-                                     &ssig, 0, &sres);
+    char node_msg[128];
+    int rc = nodus_client_dnac_spend_ex(client, tx_hash, bytes, len, &spk,
+                                        &ssig, 0, &sres, node_msg,
+                                        sizeof(node_msg));
     if (rc != 0) {
-        fprintf(stderr, "dnac_spend RPC failed (rc=%d)\n", rc);
+        /* A CheckTx refusal arrives HERE (an error frame, rc 7), not as a
+         * non-APPROVED status below — the -1 classification is unchanged
+         * (v2-claim's batch loop reads it). */
+        cli_print_spend_refusal(rc, node_msg);
         return -1;
     }
     if (sres.status != NODUS_DNAC_APPROVED) {
@@ -3432,6 +3570,15 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  * the per-validator delegator cap) is the chain's, decided at CheckTx —
  * the builder checks only what the call bytes alone decide
  * (1 <= amount <= total supply, rtn_delegate_exec's scalar rule).
+ * HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md rev
+ * 2 §1; chain_config param 17, inert until voted): from the activation
+ * height on, a DELEGATE whose delegator is not the validator is refused
+ * at CheckTx unless the delegator owns an on-chain name (CORE SYSFUND,
+ * nodus_witness_rt_native.c rtn_sysfund_name_gate) — new delegations and
+ * top-ups alike; CheckTx sees committed state only, so a `name register`
+ * still in the mempool does not count yet. Such a funding leg carries at
+ * most 14 inputs; the shared builder (nodus_v2_stake.c) caps every
+ * non-self DELEGATE at 14 whether or not the rule is active.
  *
  * `v2-envelope undelegate` is the DELEGATE layout under runtime_op 4
  * (DNA_SYSRULE_UNDELEGATE, rtn_deleg_parse): the --keys identity withdraws
@@ -3528,6 +3675,14 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "nothing.\n"
             "  delegate: --validator may be the --keys identity's own key "
             "(self-delegation).\n"
+            "  delegate: once the chain votes DELEGATE_NAME_REQUIRED (HF-8), "
+            "the --keys\n"
+            "  identity must own an on-chain name (`name register`, and wait "
+            "until it is in\n"
+            "  a block) to delegate or add more; self-delegation is exempt. "
+            "A delegation to\n"
+            "  another validator is funded by at most 14 coins (the chain "
+            "reads the name too).\n"
             "  unstake: the --keys identity retires as a validator; its "
             "delegations are\n"
             "  returned to their delegators when it graduates (locked %d "
@@ -3752,8 +3907,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     }
     if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
         fprintf(stderr, "warning: the coin listing is capped at %d rows and "
-                "came back full — the server applies no ordering before its "
-                "cap, so coins beyond it are invisible to this selection\n",
+                "came back full — a node >= 0.25.2 lists the largest coins "
+                "first (an older node in no order); smaller coins beyond the "
+                "cap are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
     /* The listed coins, as the builder takes them; it applies the filter
@@ -4421,7 +4577,8 @@ done:
  * property of the COIN, not of its position in a listing: a coin belongs
  * to shard (first 8 nullifier bytes as a big-endian u64) mod M. A rank
  * in the selection order would NOT do — the listing is capped at 100 rows
- * with no ORDER BY (nodus_witness_db.c nodus_witness_utxo_by_owner), each
+ * (largest first since node 0.25.2, unordered before —
+ * nodus_witness_db.c nodus_witness_utxo_by_owner), each
  * session lists at a different moment and from a different node, and
  * every committed spend replaces a coin with a smaller one under a fresh
  * nullifier, so the same rank names different coins in two listings. A
@@ -4756,8 +4913,9 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     }
     if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
         fprintf(stderr, "warning: the coin listing is capped at %d rows and "
-                "came back full — the server applies no ordering before its "
-                "cap, so coins beyond it are invisible to this selection\n",
+                "came back full — a node >= 0.25.2 lists the largest coins "
+                "first (an older node in no order); smaller coins beyond the "
+                "cap are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
     /* ── the spendable coin set, in the deterministic selection order ── */
@@ -5402,8 +5560,9 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
     }
     if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
         fprintf(stderr, "warning: the coin listing is capped at %d rows and "
-                "came back full — the server applies no ordering before its "
-                "cap, so coins beyond it are invisible to this selection\n",
+                "came back full — a node >= 0.25.2 lists the largest coins "
+                "first (an older node in no order); smaller coins beyond the "
+                "cap are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
     /* ── the spendable NATIVE coin set, in the selection order ───────── */
@@ -6890,8 +7049,9 @@ done:
  * (EVM_TX_GAS_CAP 30 000 000 gas × w_gas 1 + EVM_READS_BASE 16 334 reads
  * × w_read 1 + FAIL_RESERVE 4 096 + the static units) costs ≈ 3.63 × 10^9
  * raw ≈ 36 NODUS at the genesis price of 121 raw / unit (decision
- * 2026-09-25-gas-price.md). A LOCAL placeholder value, not a chain rule —
- * the operator sets the final one; at prices above ≈ 166 raw / unit an
+ * 2026-09-25-gas-price.md). A LOCAL bound, not a chain rule — kept at
+ * 50 NODUS by the operator after the gas measurement (2026-10-07: the
+ * costliest valid call ≈ 36.3 NODUS at 121); at prices above ≈ 166 raw / unit an
  * honest full-cap call needs --yes or --max-fee. */
 #define EVM_FEE_CONFIRM_RAW  5000000000ull
 
@@ -8622,6 +8782,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  witness          Show the committee for the next block\n");
     fprintf(stderr, "  addr-history [--before H[:I:Q]] [--limit N]\n");
     fprintf(stderr, "                   This identity's history from the node's local index\n");
+    fprintf(stderr, "  coins            This identity's unspent coins (id, amount, bh, ub) and the tip\n");
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 #ifdef NODUS_CLI_HAS_DNAC
     fprintf(stderr, "  ruleset-info     The rule-set generation the node runs (and if this CLI carries it)\n");
@@ -8637,7 +8798,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        HF3_ACTIVE | RULESET_GEN2 |\n");
     fprintf(stderr, "                        NAME_PRICE_3P | NAME_PRICE_4P |\n");
     fprintf(stderr, "                        NAME_PRICE_5P | NAME_PRICE_6P |\n");
-    fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT\n");
+    fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT |\n");
+    fprintf(stderr, "                        RULESET_GEN_STORAGE | DELEGATE_NAME_REQUIRED\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  storage register (--dry-run | --submit ip:port)   Register THIS node (-i) as a storage node\n");
@@ -8653,6 +8815,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  v2-envelope delegate --keys <dir> --validator <hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   two-leg DELEGATE (own key = self-delegation)\n");
+    fprintf(stderr, "                                   after HF-8: needs an on-chain name (self exempt)\n");
     fprintf(stderr, "  v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   two-leg UNDELEGATE (returned coin locked %d epochs)\n",
@@ -8809,6 +8972,14 @@ int main(int argc, char **argv) {
     if (strcmp(command, "addr-history") == 0) {
         int rc = cmd_addr_history(server_ip, server_port, argc, argv,
                                   optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* coins: its own nodus_client_t session (dnac_utxo), as THIS
+     * identity — the node answers only the session's own owner. */
+    if (strcmp(command, "coins") == 0) {
+        int rc = cmd_coins(server_ip, server_port);
         nodus_identity_clear(&identity);
         return rc;
     }

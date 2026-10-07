@@ -8,6 +8,9 @@
 #                                    OpenSSL channel crypto, no sockets)
 #   -DNODUS_SEND_TEST_FIXED_RANDOM   every random byte is caller-supplied
 #                                    (--out-seeds, --sign-random)
+# The offline EVM build (0.1.64, `evm` mode) links the shared EVM builder
+# nodus/src/client/nodus_v2_evm.c with its call codec
+# shared/dnac/evm_call_wire.c and Keccak-256 (the CREATE address).
 # A test tool: it is never shipped and never run by this script.
 #
 # Requires: cc, the host OpenSSL (-lcrypto: shared/crypto/hash/qgp_sha3.c
@@ -26,9 +29,10 @@ out="${NODUS_SEND_VECTOR_BIN:-/tmp/nodus-send-native-vector}"
   crypto/nodus-send-native-vector.c crypto/nodus-send-wasm.c \
   $root/nodus/src/client/nodus_v2_spend.c \
   $root/nodus/src/client/nodus_v2_stake.c \
+  $root/nodus/src/client/nodus_v2_evm.c \
   $root/nodus/src/nodus_log_shim.c \
-  $root/shared/dnac/{env_wire,env_preflight,res_meter,effect_wire,manifest_wire,ledger_roots_v2}.c \
-  $root/shared/crypto/hash/qgp_sha3.c \
+  $root/shared/dnac/{env_wire,env_preflight,res_meter,effect_wire,manifest_wire,ledger_roots_v2,evm_call_wire}.c \
+  $root/shared/crypto/hash/{qgp_sha3,keccak256}.c \
   $root/shared/crypto/utils/{qgp_fingerprint,qgp_random}.c \
   $root/shared/crypto/sign/qgp_dilithium.c \
   "$dsa"/{sign,packing,polyvec,poly,ntt,rounding,reduce,fips202,symmetric-shake}.c \

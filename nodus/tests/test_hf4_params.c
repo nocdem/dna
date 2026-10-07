@@ -9,20 +9,22 @@
  * 6, 10, 16, 17.
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
- *  1. ids: RULESET_GEN2 = 9, NAME_PRICE_3P..6P = 10..13 (MAX_ID 16 since
- *     Nodus EVM 14-15 and storage reward v1 16), all on the read list;
+ *  1. ids: RULESET_GEN2 = 9, NAME_PRICE_3P..6P = 10..13 (MAX_ID 17 since
+ *     Nodus EVM 14-15, storage reward v1 16 and HF-8 17), all on the
+ *     read list;
  *     D2 <= INT64_MAX; SWITCH_SPEC_VERSION 1.
  *  2. scalar rules: param 9 accepts EXACTLY D2 (D2 ± 1, UINT64_MAX
  *     refused; the shared window and int64 rules still apply); params
  *     10-13 accept [10^8, 10^15] inclusive, refuse one past either end;
- *     (storage reward v1: param 16, below; id 17 refused).
+ *     (storage reward v1: param 16, below; HF-8: param 17, below; id 18
+ *     refused).
  *  3. grace: 9-13 ERGONOMIC (decision item 17), HF-3's class.
  *  4. nodus_chain_config_stateful_rules — the full matrix: param 9
  *     refused when a param-9 row exists (single use), when HF-2 is off,
  *     when effective-1 is a nonzero epoch-length multiple, when effective
  *     is 0; accepted otherwise (effective 1 included: height 0 is not a
  *     boundary). Params 10-13 refused under generation 0/1, accepted
- *     under 2. Ids 1-8 no stateful rule; 0, 17, 255 refused.
+ *     under 2. Ids 1-8 no stateful rule; 0, 18, 255 refused.
  *  5. the SYSTEM CHAIN_CONFIG exec hook (nodus_rt_system_exec) applies
  *     the SAME rules from the engine-filled ctx facts and its own
  *     runtime's generation: one accepted param-9 leg produces exactly one
@@ -42,11 +44,10 @@
  *  design.md rev 2.2 §6 — param 16 RULESET_GEN_STORAGE, "voted like
  *  RULESET_GEN2"; ids and generation in main merge order, Nodus EVM
  *  first), added to the sections above:
- *   1. id 16 = RULESET_GEN_STORAGE, MAX_ID = 16, on the read list; 17 not;
- *      its literal <= INT64_MAX and distinct from D2.
+ *   1. id 16 = RULESET_GEN_STORAGE, on the read list; its literal <=
+ *      INT64_MAX and distinct from D2.
  *   2. param 16 accepts EXACTLY its literal (±1, D2, UINT64_MAX refused;
- *      the window rule binds); param 9 refuses the storage literal; id 17
- *      refused.
+ *      the window rule binds); param 9 refuses the storage literal.
  *   3. grace 16 ERGONOMIC.
  *   4. stateful: param 16 refused unless EXACTLY the EVM generation
  *      (NODUS_RT_GEN_STORAGE_BASE) judges (rule d: 0/1/2 and GEN_STORAGE
@@ -63,6 +64,21 @@
  *      does NOT gate it, the param-16 fact does, and the param-16 fact
  *      does NOT gate a param-9 leg; the read plan is empty.
  *   6. slot 16 readable; a far-future param-16 row found at INT64_MAX.
+ *
+ *  HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md
+ *  rev 2 §1 — param 17 DELEGATE_NAME_REQUIRED, the HF-2/HF-3 switch
+ *  shape; Kurultay #11), added to the sections above:
+ *   1. id 17 = DELEGATE_NAME_REQUIRED, MAX_ID = 17, on the read list; 18
+ *      is the first unknown id; its value literal is 1.
+ *   2. param 17 accepts EXACTLY 1 (0, 2, UINT64_MAX refused; the window
+ *      rule binds); id 18 refused.
+ *   3. grace 17 ERGONOMIC (its own case — HF-2/HF-3's class).
+ *   4. stateful: param 17 refused under generation 0 / 1, accepted under
+ *      2 and every later generation, whatever the HF-2 / single-use /
+ *      boundary facts (NO single-use rule); the facts form agrees.
+ *   6. slot 17 readable; a param-17 row lands in its own slot.
+ *  (The CORE SYSFUND name gate it switches is test_v2_native.c §20.)
+ *
  *  HOW IT CAN LIE (storage): every "exactly the literal" check on
  *  DNAC_CFG_RULESET_GEN_STORAGE_D here holds for any literal value (the
  *  literal is S4 of shared/dnac/tests/storage_oracle.py, STORAGE-ORACLE);
@@ -285,14 +301,17 @@ int main(void) {
           DNAC_CFG_NAME_PRICE_5P == 12 && DNAC_CFG_NAME_PRICE_6P == 13);
     /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md §9) appends
      * params 14 EVM_ACTIVE and 15 EVM_BLOCK_GAS_LIMIT after HF-4's 9-13;
-     * storage reward v1 appends 16 RULESET_GEN_STORAGE (main merge
-     * order), now the last id; 17 is the first unknown id. HF-4's own
-     * ids are unchanged and still read by consensus. */
+     * storage reward v1 appends 16 RULESET_GEN_STORAGE and HF-8 17
+     * DELEGATE_NAME_REQUIRED (main merge order), now the last id; 18 is
+     * the first unknown id. HF-4's own ids are unchanged and still read
+     * by consensus. */
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE == 16);
-    CHECK(DNAC_CFG_PARAM_MAX_ID == 16);
-    for (unsigned id = 9; id <= 16; id++)
+    CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED == 17);
+    CHECK(DNAC_CFG_PARAM_MAX_ID == 17);
+    for (unsigned id = 9; id <= 17; id++)
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id));
-    CHECK(!dnac_cfg_param_read_by_consensus(17));
+    CHECK(!dnac_cfg_param_read_by_consensus(18));
+    CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED_ON == 1ULL);
     CHECK(DNAC_CFG_RULESET_GEN2_D2 <= (uint64_t)INT64_MAX);
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D <= (uint64_t)INT64_MAX);
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D != DNAC_CFG_RULESET_GEN2_D2);
@@ -354,7 +373,22 @@ int main(void) {
             CHECK(nodus_chain_config_scalar_rules(9, DS, 1, 5000, 4000, 7)
                   == -1);
         }
-        CHECK(nodus_chain_config_scalar_rules(17, DNAC_CFG_MIN_NAME_PRICE, 1,
+        /* HF-8: param 17 accepts EXACTLY 1 — a one-way switch, no "off"
+         * vote (the HF-2/HF-3 shape) */
+        CHECK(nodus_chain_config_scalar_rules(17, 1, 1, 5000, 4000, 7) == 0);
+        CHECK(nodus_chain_config_scalar_rules(17, 0, 1, 5000, 4000, 7)
+              == -1);
+        CHECK(nodus_chain_config_scalar_rules(17, 2, 1, 5000, 4000, 7)
+              == -1);
+        CHECK(nodus_chain_config_scalar_rules(17, UINT64_MAX, 1, 5000, 4000,
+                                              7) == -1);
+        CHECK(nodus_chain_config_scalar_rules(17, 1, 0, 5000, 4000, 7)
+              == -1);                   /* the shared window rule binds */
+        CHECK(nodus_chain_config_scalar_rules(17, 1, 1, 4000, 4000, 7)
+              == -1);
+        CHECK(nodus_chain_config_scalar_rules(18, 1, 1, 5000, 4000, 7)
+              == -1);                   /* the first unknown id         */
+        CHECK(nodus_chain_config_scalar_rules(18, DNAC_CFG_MIN_NAME_PRICE, 1,
                                               5000, 4000, 7) == -1);
     }
 
@@ -367,6 +401,10 @@ int main(void) {
         CHECK(nodus_chain_config_grace_for_param(id) ==
               nodus_chain_config_grace_for_param(DNAC_CFG_HF3_ACTIVE));
     }
+    /* HF-8: param 17 ERGONOMIC — the HF-2/HF-3 class */
+    CHECK(nodus_chain_config_grace_for_param(17) == GRACE_E);
+    CHECK(nodus_chain_config_grace_for_param(17) ==
+          nodus_chain_config_grace_for_param(DNAC_CFG_HF2_ACTIVE));
 
     /* ── 4. the stateful authority — full matrix ──────────────────── */
     {
@@ -467,8 +505,32 @@ int main(void) {
             CHECK(He + nodus_chain_config_grace_for_param(16) - 1u > He - 1u);
             CHECK(nodus_chain_config_grace_for_param(16) >= 1u);
         }
+        /* HF-8 — param 17: votable only while generation >= 2 judges the
+         * vote (names exist); NO single-use rule and no HF-2 / boundary
+         * rule — every other fact is ignored */
+        CHECK(nodus_chain_config_stateful_rules(17, ok_eff, 1, 0, 0) == -1);
+        CHECK(nodus_chain_config_stateful_rules(17, ok_eff, 1, 0, 1) == -1);
+        CHECK(nodus_chain_config_stateful_rules(17, ok_eff, 1, 0, 2) == 0);
+        CHECK(nodus_chain_config_stateful_rules(17, E_LEN + 1u, 0, 1, 2)
+              == 0);
+        {
+            nodus_cc_state_facts_t f;
+            memset(&f, 0, sizeof(f));
+            f.judging_generation = NODUS_RT_GEN_1;
+            CHECK(nodus_chain_config_stateful_rules_ex(17, ok_eff, &f)
+                  == -1);
+            f.judging_generation = NODUS_RT_GEN_2;
+            CHECK(nodus_chain_config_stateful_rules_ex(17, ok_eff, &f) == 0);
+            f.judging_generation = NODUS_RT_GEN_STORAGE_BASE;
+            CHECK(nodus_chain_config_stateful_rules_ex(17, ok_eff, &f) == 0);
+            f.judging_generation = NODUS_RT_GEN_STORAGE;
+            f.ruleset_gen2_voted = 1;
+            f.ruleset_gen_storage_voted = 1;
+            f.evm_active_voted = 1;
+            CHECK(nodus_chain_config_stateful_rules_ex(17, ok_eff, &f) == 0);
+        }
         CHECK(nodus_chain_config_stateful_rules(0, ok_eff, 1, 0, 2) == -1);
-        CHECK(nodus_chain_config_stateful_rules(17, ok_eff, 1, 0, 2) == -1);
+        CHECK(nodus_chain_config_stateful_rules(18, ok_eff, 1, 0, 2) == -1);
         CHECK(nodus_chain_config_stateful_rules(255, ok_eff, 1, 0, 2) == -1);
     }
 
@@ -597,7 +659,7 @@ int main(void) {
         uint64_t v = 0;
         /* no row anywhere: genuinely absent, never a missing-slot -1
          * (Nodus EVM: slots 14-15; storage reward v1: slot 16 too) */
-        for (uint8_t id = 9; id <= 16; id++) {
+        for (uint8_t id = 9; id <= 17; id++) {   /* HF-8: slot 17 too */
             CHECK(nodus_chain_config_get_u64(w, id, 1000, 77, &v) == 1);
             CHECK(v == 77);
         }
@@ -635,6 +697,15 @@ int main(void) {
         CHECK(w->chain_config_cache_count[16] == 1);
         CHECK(w->chain_config_cache_count[14] == 0);
         CHECK(w->chain_config_cache_count[9] == 1);
+        /* HF-8: a param-17 row lands in ITS slot; below its effective
+         * height the switch reads absent (the engine's OFF), from it on 1 */
+        CHECK(w->chain_config_cache_count[17] == 0);
+        direct_insert(w, 17, DNAC_CFG_DELEGATE_NAME_REQUIRED_ON, 900);
+        CHECK(nodus_chain_config_get_u64(w, 17, 899, 0, &v) == 1 && v == 0);
+        CHECK(nodus_chain_config_get_u64(w, 17, 900, 0, &v) == 0 &&
+              v == DNAC_CFG_DELEGATE_NAME_REQUIRED_ON);
+        CHECK(w->chain_config_cache_count[17] == 1);
+        CHECK(w->chain_config_cache_count[16] == 1);
 
         sqlite3_close(w->db);
         free(w);

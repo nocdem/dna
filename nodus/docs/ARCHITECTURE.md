@@ -5834,6 +5834,23 @@ stays there, locked, and counts in `wei_live`.
   `test_v2_evm` section 12b (`test_bridge_sender_code`) seeds code at a real test signer's
   derived address (a synthetic collision), proves WITHDRAW and DEPOSIT refused by CheckTx and by
   the block with the ledger byte-identical, then removes the code and lands the same WITHDRAW.
+- *The sender is bound to the funder (0.25.1, before activation; `nodus/BUGS.md` Claude Security
+  scan #4 F1).* A leg's auth digest commits every leg's call bytes and `auth_len` but not a
+  sibling's auth bytes (`shared/dnac/env_wire.c:497-533`), so before 0.25.1 the EVM leg's
+  signature could be replaced by another key's valid signature over the same digest and the
+  deposit / the call acted for that key while the EVMFUND leg's funder paid. `rtevm_prologue`
+  (`nodus_witness_rt_evm.c:1356`, the rule at `:1372-1404`) now requires the EVM leg's one
+  verified signer to be one of the verified signers of leg 0, for all five ops; otherwise -1.
+  The engine hands every leg's verdict on the exec ctx (`nodus_rt_exec_ctx_t.env_auths` /
+  `env_auth_count`, filled in `exec_one_env` only; absent on that path = FAULT -2). Honest
+  clients sign both legs with one key (`nodus_v2_env_sign_one_key`). Hook code only — no
+  descriptor, ruleset hash, meter policy or wire byte moved, so D is unchanged and the 62 425
+  vote stands; EVMFUND exists only in generation 3, so nothing executed under the old rule
+  (operator option A, `docs/plans/decisions/2026-10-06-hf5-evm-activation.md` "Ek — 2026-10-07").
+  Every node must run ≥ 0.25.1 before block 79 757. Regression: `test_v2_evm` section 14
+  (`test_sender_binding`, `nodus/tests/test_v2_evm.c:4760`) — a forged DEPOSIT and a forged CALL
+  (leg 1 re-signed by key B) refused by CheckTx (new + recheck) and by the block with the
+  ledger byte-identical, honest controls land; RED with the rule disabled (`:4753`).
 - *After execution starts there is no -1 for a CALL / CREATE*, only FAULT (-2). On success the
   WHOLE effect stream's count and canonical bytes are checked against the leg's declared
   ceilings, the stream caps and the unit budget BEFORE any page is applied, so page boundaries
@@ -6608,6 +6625,81 @@ set from store and file; a torn or on-disk-tampered set record cut at the commit
 without validators(17280) finished by fetching the set. Not covered: a set at the 128 cap, a non-checkpoint
 ValidatorsInfo row, the live 0x73 transport (rotation, timeouts), the tick and the retain_blocks warning,
 the message handler `nodus_witness_sthold_on_msg` itself.
+
+### HF-8 — delegation requires an on-chain name (2026-10-07, branch only — not versioned, not voted; INERT until a param-17 vote)
+
+**Governing records:** design `docs/plans/2026-10-07-delegate-name-required-design.md` (local; rev 2,
+Kurultay #11 folded — `docs/plans/kurultay/2026-10-07-11-delegate-name/summary.md`); HF number:
+`docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md` "Ek 2026-10-07" (operator: "onu da
+numarala"); names: `docs/plans/decisions/2026-10-02-onchain-names.md` (permanent, one per owner,
+kind-1 owner). The activation shape is HF-2's (above): a chain-config flag read into the exec ctx,
+not a new rule-set generation — the gate lives in the hooks, which are not in the ruleset descriptor
+(`nodus_witness_runtime.h` "hooks are not in the ruleset descriptor"), so no ruleset hash, no
+generation tuple, no meter policy and no EVM activation digest D moves (pinned by
+`test_v2_native` §20 K7). The activation procedure is HF-2's (`DEPLOY_RUNBOOK.md` §2.2, "HF-8"
+placeholder there).
+
+**The parameter.** Chain-config id 17, `DELEGATE_NAME_REQUIRED` (`DNAC_CFG_DELEGATE_NAME_REQUIRED`,
+`dnac/include/dnac/dnac.h`; `CC_PARAM_DELEGATE_NAME_REQUIRED`, `nodus_witness_chain_config.c`,
+pinned by `_Static_assert`). Value domain EXACTLY 1 (`DNAC_CFG_DELEGATE_NAME_REQUIRED_ON`) — the
+HF-2/HF-3 one-way switch, refused otherwise by the scalar rules on both sides (witness
+`nodus_chain_config_scalar_rules`, client mirror `dnac/src/transaction/verify.c`). NO single-use
+rule (the value domain already makes it one-way). Grace class ERGONOMIC (its own case, our choice —
+the HF-2/HF-3 class). ONE stateful rule (`nodus_chain_config_stateful_rules_ex`): votable only while
+the judging rule-set generation is ≥ 2 (`NODUS_RT_GEN_2` — the NAME_PRICE rule; names exist only
+there). `DNAC_CFG_PARAM_MAX_ID` / `CC_PARAM_MAX_ID` 16 → 17 (the `chain_config_cache` slots follow
+from it, `nodus_witness.h`); id 17 is on `dnac_cfg_param_read_by_consensus`; the economics band
+(200+, `nodus_chain_config.h`) is untouched. CLI: `nodus-cli chain-config propose --param
+DELEGATE_NAME_REQUIRED --value 1 --effective <H>`; Scan: `param_name` = `DELEGATE_NAME_REQUIRED`
+(`explorer/src/exp_http.c`).
+
+**The read.** `env_delegate_name_required` (`nodus_witness_v2_apply.c`) — `env_hf2_active`
+statement for statement over param 17: the three-valued `nodus_chain_config_get_u64` at the block's
+height, an unreadable row or a stored value outside {0, 1} is a node FAULT (-2), never "off"; no row
+= 0. Filled into `nodus_rt_exec_ctx_t.delegate_name_required` on EVERY ctx the engine builds for a
+leg — `env_authorize_legs` (the auth stage) and `exec_one_env` (read_plan / exec). UNMETERED (no
+mediated read). The CheckTx dry run reads it at tip + 1, so CheckTx and FinalizeBlock judge with the
+same row.
+
+**The gate.** ONE static predicate in `nodus_witness_rt_native.c`, `rtn_sysfund_name_gate(env, ctx,
+owner_out)`: gated ⇔ `ctx->delegate_name_required` ∧ leg 0 is SYSTEM DELEGATE (op 2) ∧ the call's
+`delegator_pubkey` ≠ its `validator_pubkey` (byte compare — a self-delegation is exempt). It returns
+1 / 0, −1 when a DELEGATE sibling's call does not parse (verdict), −2 on a hash-backend failure. The
+delegator is the SIBLING SYSTEM call's call-carried identity (the key the SYSTEM leg's own auth gate
+binds to its one verified signer) — never the SYSFUND leg's signers: third-party funding is legal.
+Both CORE SYSFUND hooks consult it, so the plan and the exec can never disagree about the read count
+(a disagreement would be `rtn_sysfund_exec`'s count FAULT on every node):
+
+| | gate 0 (before H, self-delegation, UNDELEGATE / STAKE / UNSTAKE / VALIDATOR_UPDATE / storage siblings) | gate 1 |
+|---|---|---|
+| inputs | 1..15 (`RTN_SPEND_MAX_IN`) | 1..14 (`RTN_SYSFUND_DLG_MAX_IN`, `_Static_assert`: 14 + pool + NAMEOWN = `NODUS_RT_MAX_READS`) — 15 is a −1 in both hooks |
+| read plan | inputs (op 1) + the reward pool (op 3) — byte-identical to before HF-8 | the same, then ONE `RTN_CORE_OP_NAMEOWN` (op 6) keyed by SHA3-512(delegator_pubkey), LAST (ascending (op, key)) |
+| exec | `n_reads == in + 1`, else −2 | `n_reads == in + 2`, else −2; NAMEOWN absent → −1 (the item is refused, its SYSTEM leg's writes roll back with it); present but not 3..36 bytes → −2 |
+
+The framing bound of a SYSFUND call stays 1..15 (`rtn_sysfund_parse`), so the worst-case envelope
+capacity derivations are unchanged. The NAMEOWN read is a mediated read, charged one `w_read` like
+every other. Same-block order is the block's item order: a NAME_REGISTER earlier in the block makes a
+later DELEGATE pass; after it, the DELEGATE is refused. CheckTx sees committed state only, so a client
+registers, waits for the name to land, then delegates.
+
+**Covered / not covered.** New delegations AND top-ups (CORE cannot read the delegation row, so it
+cannot tell them apart — covered by force). Not covered: UNDELEGATE, existing rows (no retroactive
+effect), payout shares, STAKE, UNSTAKE, VALIDATOR_UPDATE; a nameless validator delegating to ANOTHER
+validator is refused. A future name transfer can leave a live delegation nameless (allowed). HF-6
+(owner/key split) reshapes DELEGATE later and must carry this rule.
+
+**Clients.** The shared stake builder (`nodus/src/client/nodus_v2_stake.c`) caps the funding of
+every non-self DELEGATE at 14 coins whether or not the rule is active (it has no chain state), so an
+envelope it builds is valid on both sides of H. nodus-cli `v2-envelope delegate` help names the rule
+and the cap. The web wallet's pre-check / error text is not part of this change.
+
+**Tests.** `test_v2_native` §20 (hook level K1-K7: the plan / exec count contract on / off, verdict
+vs fault, self-delegation and UNDELEGATE exempt, the 14/15 ceiling, an unparseable call, pins and D
+unchanged; engine E1-E7 over real blocks: before / at / after H, rollback of refused items, exactly
+one `w_read` more, the CheckTx dry run, both same-block orders). `test_hf4_params` (param 17's id,
+scalar, grace, stateful rule, cache slot). Harness `test_cmt_hf8_delegate_name.sh` (standalone,
+short-epoch + short-grace build — `nodus/tests/integration/stagef/README.md`). All written, NOT yet
+run at the time of writing.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

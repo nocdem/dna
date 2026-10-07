@@ -30,6 +30,9 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
+- **Nodus network status in the open-wallet bar (0.1.68, 2026-10-07).** Next to "Wallet open in this browser" the wallet page now shows its connection to the Nodus network as a dot and one line (`#net-status` in `index.html`, styles `.session-network` in `src/style.css`): green "Connected to the Nodus network" while the wallet's NODUS client is `ready`; amber "Connecting to the Nodus network…" while it identifies or connects and while a failed or lost connection waits to be tried again by itself (the existing RECONNECT retry in `src/app.js`); red "Not connected to the Nodus network. Lock and reopen your wallet to retry." only where the wallet does not retry by itself (the node serves another chain, or the Nodus address could not be derived) — the same way back the receive panel already names. A build without the NODUS module shows no line. The mapping is pure (`src/net-status.js` `netLevelFor` client state → level, `netStatusView` level → text; unknown states show red, never green) and `src/app.js` `setNetStatus` is its only writer: driven by the client's `onState` (identifying / identified / connecting / ready) and by the retry / final decisions in `startNodusSend` / `connectNodus`; lock resets it. The text is in a polite live region and stays the same across retries (no countdown read out); the dot is hidden from screen readers. Below 760 px the line takes its own row. The node the wallet is connected to is not shown — the client does not expose it. Nodus Connect loads the same `src/app.js` but its page has no such line (the writer skips a missing element), so Connect is unchanged. `test/net-status.test.js` covers the mapping.
+- **Add a contact by chain name in Nodus Connect (0.1.67, 2026-10-07).** The Messages "Add a contact" box now takes an ID (128 hex, unchanged) or a chain name, read with the wallet's own name rule (`src/nodus/names.js` `chainName`: 3 to 36 letters a–z and digits, typed capitals lowered, ID-like all-hex names of 8+ refused; `src/connect/ui/text.js` `parseContactInput`). A name is resolved to its owner's Nodus ID by the same lookup the NODUS send uses (`src/adapters/nodus.js` `resolveChainName` on the wallet's client — one node's committed state, decision `2026-10-02-onchain-names.md` item 9; `src/connect/ui/chain-names.js` `resolveContactName`). The first press of "Send request" only looks the name up and shows "<name> belongs to ID 1a2b…9f0e", the full ID and the wallet's look-alike caution (`NAME_CHECK_ROW`); the button then reads "Send request to <name>" and only the next press sends. Editing the box drops the shown result. An owner that is this wallet, already a contact or already requested gets the same refusal as a typed ID (`requestRefusal`). Plain errors: "No one has registered that name.", the network not ready, or the lookup failed — never a fallback. The empty-contacts hints mention chain names. The found name is not stored in `state.chainNames` by this step; names shown for contacts still come only from the usual reverse lookup. `test/connect-ui.test.js` covers the parsing, the lookup (a stub client) and the refusals; the dialog itself has not been looked at in a browser.
+- **Offline smart-contract build in the shipped module (0.1.65, 2026-10-07).** `send.wasm` now exports `nsw_evm_offline_build`: one EVM envelope (CALL, CREATE, DEPOSIT, WITHDRAW, REDEEM) built and signed with NO node — the shape of `nsw_stake_offline_build` / `nsw_name_offline_build`: the identity from `nsw_seed_buf` (wiped on every path), the coins from `nsw_req_*`, the call data / access list / effect ceilings / estimate from the existing `nsw_evm_*` request buffers, and every network fact given (rule-set generation ≥ the EVM generation, chain id, tip, gas price, the EVM leg's ruleset version + hash — which must equal the compiled EVM generation's, the same check as `nsw_evm_net_set`; expiry exactly tip + 90). It calls `nsw_evm_core` — the shared builder `nodus/src/client/nodus_v2_evm.c` the networked builds and nodus-cli `evm` use; no new encoder, no envelope change, the networked builds unchanged. Each op takes only its own fields; a field it does not carry must be absent (`""` / `"0"`) or the build refuses. `send-module.js` exposes it as `evmBuildOffline({ seed, generation, chainId, tip, gasPrice, ...the evmBuild fields })` (same result shape as `evmBuild`; removed with `evmBuild` when the smart-contract settings are refused); `client.js` does not pass it through — no wallet screen calls it (the staking / name offline builders are not exposed in `send-module.js` at all; this one is, because the SDK's `NodusEvm.buildOffline` needs it). The EVM build part of `crypto/nodus-send-wasm.c` (request, `nsw_evm_core`, read-back, offline build) is now compiled into the native vector too (`scripts/build-nodus-send-native-vector.sh` links `nodus_v2_evm.c`, `evm_call_wire.c`, `keccak256.c`; new `evm` mode in `crypto/nodus-send-native-vector.c`). Tests: `test/evm-call-wire-wasm.test.js` (see "Smart contracts" below); `nsw_test_evm_build` (generation 2 + test op weights, synthetic EVM identity) is unchanged.
 - **Smart contracts in Nodus Connect too (0.1.63, 2026-10-06).** Nodus Connect's Wallet tab now has the same "Smart contracts · NODUS · Testnet" panel as the wallet page, mounted and registered as a wallet extension the way the shared vaults are (`src/connect-main.js`, before `src/app.js` loads; markup `#evm-panel`, `#evm-root` and the "Smart contracts" link `#nav-evm` in `connect-site/index.html`). Nothing about when it shows changed: it stays hidden exactly as on the wallet page until the connected node reports the EVM generation (`src/evm/ui.js` `showPanel`: `client.evmBuildable` / `evmReadable`, NODUS selected) — HF-5, `EVM_ACTIVE` voted to switch on at block 79,757 (decision `2026-10-06-hf5-evm-activation.md`). No new network request, polling or `src/evm/` change; both pages already had the same Content-Security-Policy. `test/connect-evm.test.js` checks the wiring and markup statically (source text, not a running page); the panel's placement in the Connect Wallet tab has not been looked at in a browser.
 - **Chain-name discovery and password controls (0.1.57, 2026-10-05).** Connect Home now puts **Register a chain name** directly below the identity, with an explanation of what the name is for. It stays visible but disabled until the wallet's existing name registration entry is ready, showing the name lookup's status or an availability note. Once ready, it opens Wallet and forwards to the existing registration shortcut, which selects NODUS and focuses the form. The entry disappears when the existing own-name display knows a name, and resets on lock/reopen. No new registration transaction path, name cache or polling was added.
   - Both sites show **Save current wallet** only without a saved copy. After saving or unlocking that copy, the section reads **Change saved password**, with current-password and new-password fields. A phrase-only session with a saved copy instead explains how to lock and unlock it; neither action nor password fields are offered. The result remains visible below the controls.
@@ -1432,6 +1435,12 @@ What the module does (every chain rule is the shared C code, not this wallet):
   sum = change), inputs from the candidates, inputs = amount + fee + change.
   The chain id is not a field of the envelope; it is the one the preflight bound
   into the envelope's ids (self-consistent, design §1.4).
+- **evmBuildOffline** (0.1.65) — one EVM envelope with no session: the
+  identity from the `seed` handed in (the module's copy wiped), every
+  network fact given (generation, chain id, tip, gas price), the EVM leg's
+  ruleset identity = the module's accepted smart-contract setting (checked
+  in C against the compiled one); `nsw_evm_offline_build` → `nsw_evm_core`
+  (see "Smart contracts" below). Not passed through `client.js`.
 - **submit** — only the envelope built last, byte for byte; `dnac_spend` with
   `wire_id` signed as nodus-cli does (`t6_submit_on`). The answer is mempool
   CheckTx only.
@@ -2350,6 +2359,16 @@ What exists:
   `EVM_MAX_FEE_RAW` (50 NODUS — a placeholder; ≈ 36 NODUS is a full-cap call
   at the genesis price of 121 raw / unit) is refused before review, because
   both the units and the gas price come from the node.
+  **Offline** (0.1.65): `nsw_evm_offline_build(gen, op, chain, tip,
+  gas_price, evm_ver, evm_hash, to, value, gas, nonce, amount, dest, ticket,
+  units, expiry)` — no node; the identity from `nsw_seed_buf`, every network
+  fact given, `gen` ≥ `NODUS_RT_GEN_EVM` (its pinned policy weighs CORE op
+  9; no test op weight in the shipped module), the EVM identity equal to the
+  compiled one or refused, expiry exactly tip + 90; the same `nsw_evm_core`
+  and read-back. Fields per op: CALL to / value / gas / nonce; CREATE value
+  / gas / nonce; DEPOSIT amount / nonce; WITHDRAW amount / nonce / dest;
+  REDEEM ticket / amount / dest — every other field absent (`""` / `"0"`).
+  JS: `send-module.js` `evmBuildOffline`.
   A deployment's address is computed from the SIGNED envelope's sender and
   nonce (`nsw_evm_built_created`, the shared rule
   `nodus/src/client/nodus_v2_evm.c nodus_v2_evm_create_address` = the
@@ -2425,5 +2444,15 @@ row, the malformed-estimate and fee-limit refusals, `createdCheck`
 vectors read from `shared/evm/tests/addr32_vectors.h`, an offline CREATE's
 `nsw_evm_built_created`, and the offline CALL estimate bounds
 (`evm-call-wire-wasm.test.js`, parity — skipped without
-`NODUS_SEND_PARITY_OUT`). Vectors: `test/fixtures/evm-solc-vectors.json` (generator line
+`NODUS_SEND_PARITY_OUT`). The shipped offline build (0.1.65,
+`evm-call-wire-wasm.test.js`, skipped without `NODUS_SEND_PARITY_OUT` and
+`NODUS_SEND_VECTOR_BIN`): at the real EVM generation and the compiled EVM
+identity, for DEPOSIT, WITHDRAW, CALL (data + an access-list entry), CREATE
+and REDEEM the TEST wasm and the native vector build the same envelope and
+read-back byte for byte, the shipped wasm the same intent_id with a
+different wire_id; `evmBuildOffline` on the shipped build gives the native
+intent_id and fields; the refusals (generation, EVM identity, expiry, a
+foreign field, unknown op, data on a transfer) build nothing and the seed
+buffer is wiped. Inputs synthetic: the builds agree with each other; no
+node accepts anything here. Vectors: `test/fixtures/evm-solc-vectors.json` (generator line
 inside).

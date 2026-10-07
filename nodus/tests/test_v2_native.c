@@ -100,6 +100,14 @@
  *      1/1, 1/2, 2/1, 15/1 and 15/3; one effect or one byte short
  *      rejects the block; the exact declaration commits with zero unit
  *      slack.
+ *  12. (§20, HF-8) DELEGATION REQUIRES AN ON-CHAIN NAME: the CORE
+ *      SYSFUND name gate at hook level (plan / exec read-count contract,
+ *      verdict vs fault, self-delegation and UNDELEGATE exempt, the
+ *      14/15 input ceiling, an unparseable record call, pins and D
+ *      unchanged) and through real blocks across the param-17 activation
+ *      height (before / at / after H, rollback of refused items, the
+ *      extra w_read, the CheckTx dry run, both same-block orders of
+ *      NAME_REGISTER and DELEGATE) — see the §20 header.
  *
  * @file test_v2_native.c
  */
@@ -127,6 +135,8 @@
 #include "witness/nodus_witness_v2_epoch.h"    /* tokenomics-v3 P2-10:
                                         * nodus_v2_power_exit_boundary */
 #include "nodus/nodus_chain_config.h"
+#include "nodus/nodus_ruleset_pins.h"   /* §20: the generation-1/2 pins
+                                         * HF-8 must leave untouched     */
 
 #include "dnac/dnac.h"
 #include "dnac/env_wire.h"
@@ -607,11 +617,26 @@ typedef struct {
  * this file builds derives its ruleset_version from the production
  * table, so a season that advances a ruleset (O11: both 2 → 3) does not
  * silently turn every envelope here into a five-axis lookup miss. */
-static uint32_t rsv_of(uint32_t domain_id) {
+/* HF-8 §20: the rule-set generation the envelope builders sign against.
+ * 0 = the compiled builtin table (every section before §20, unchanged);
+ * §20's engine case sets NODUS_RT_GEN_2 once its chain has switched, so
+ * the same builders produce generation-2 envelopes (the registry the
+ * engine admits against has moved to the generation-2 tuples). */
+static uint32_t g_build_gen = 0;
+
+static const nodus_domain_runtime_t *build_rt(uint32_t domain_id) {
+    if (g_build_gen != 0)
+        return nodus_runtime_for_generation(g_build_gen, domain_id);
     size_t n = 0;
     const nodus_domain_runtime_t *t = nodus_runtime_builtin_table(&n);
-    return domain_id == DNA_DOMAIN_SYSTEM ? t[0].ruleset_version
-                                          : t[1].ruleset_version;
+    if (!t || n != 2) return NULL;
+    return domain_id == DNA_DOMAIN_SYSTEM ? &t[0] : &t[1];
+}
+
+static uint32_t rsv_of(uint32_t domain_id) {
+    const nodus_domain_runtime_t *r = build_rt(domain_id);
+    return r ? r->ruleset_version : 0u;   /* 0: no such version — the
+                                           * envelope fails admission */
 }
 
 /* Build + sign a one-leg envelope. `signers` are key indices; pubkeys
@@ -688,11 +713,9 @@ static int env_build_signed(fixture_t *fx, env_t *e,
      * signature must fail) */
     dna_env_view_t v;
     if (dna_env_decode(e->bytes, e->len, &v) != 0) { free(auth); return -1; }
-    size_t n = 0;
-    const nodus_domain_runtime_t *t = nodus_runtime_builtin_table(&n);
-    const uint8_t *rs_hash =
-        domain_id == DNA_DOMAIN_SYSTEM ? t[0].ruleset_hash
-                                       : t[1].ruleset_hash;
+    const nodus_domain_runtime_t *brt = build_rt(domain_id);
+    if (!brt) { free(auth); return -1; }
+    const uint8_t *rs_hash = brt->ruleset_hash;
     if (o.ruleset_hash) rs_hash = o.ruleset_hash;
     const uint8_t *chain = o.chain_id ? o.chain_id : fx->chain_id;
 
@@ -5491,8 +5514,8 @@ static int two_leg_build(fixture_t *fx, env_t *e,
     dna_env_leg_in_t legs[2];
     dna_env_in_t in;
     dna_env_view_t v;
-    const nodus_domain_runtime_t *t;
-    size_t rn = 0;
+    const nodus_domain_runtime_t *t0 = build_rt(DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *t1 = build_rt(DNA_DOMAIN_CORE);
     uint8_t cc[2][64], acc[64];
     int ord[2][15];
     int nsg[2];
@@ -5547,10 +5570,9 @@ static int two_leg_build(fixture_t *fx, env_t *e,
     if (dna_env_encode(&in, e->bytes, sizeof(e->bytes), &e->len) != 0)
         goto done;
     if (dna_env_decode(e->bytes, e->len, &v) != 0) goto done;
-    t = nodus_runtime_builtin_table(&rn);
-    if (!t || rn != 2) goto done;
-    if (dna_env_call_commit(&v, 0, t[0].ruleset_hash, cc[0]) != 0 ||
-        dna_env_call_commit(&v, 1, t[1].ruleset_hash, cc[1]) != 0 ||
+    if (!t0 || !t1) goto done;
+    if (dna_env_call_commit(&v, 0, t0->ruleset_hash, cc[0]) != 0 ||
+        dna_env_call_commit(&v, 1, t1->ruleset_hash, cc[1]) != 0 ||
         dna_env_auth_context_commit(&v, fx->chain_id,
             (const uint8_t (*)[64])cc, acc) != 0)
         goto done;
@@ -12791,6 +12813,867 @@ static int test_hf2_netzero_block(void) {
     return 0;
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * §20 — HF-8: DELEGATION REQUIRES AN ON-CHAIN NAME
+ *
+ * Design docs/plans/2026-10-07-delegate-name-required-design.md rev 2 §1
+ * (Kurultay #11, docs/plans/kurultay/2026-10-07-11-delegate-name/); HF
+ * number: decision 2026-10-05-hf-numbering-evm-hf5.md "Ek 2026-10-07".
+ * chain_config param 17 DELEGATE_NAME_REQUIRED -> the engine fact
+ * ctx.delegate_name_required -> the CORE SYSFUND name gate
+ * (nodus_witness_rt_native.c rtn_sysfund_name_gate).
+ *
+ * ── WHAT IT PROVES ──────────────────────────────────────────────────────
+ *  HOOKS (test_hf8_name_gate_hooks — the production CORE runtime called
+ *  directly over a generation-1 genesis, ctx fact set by hand):
+ *   K1 flag 0: the SYSFUND plan of a DELEGATE is EXACTLY today's — inputs
+ *      (op 1) then the pool (op 3, selector 3), nothing else; the exec
+ *      accepts with that count and FAULTs (-2) on one read more.
+ *   K2 flag 1, non-self DELEGATE: ONE more request, LAST, op 6 (NAMEOWN)
+ *      keyed by SHA3-512(the call's delegator_pubkey); the first two
+ *      requests are byte-identical to K1's. Absent row -> exec -1 (the
+ *      verdict); the K1 count -> -2 (the count contract); a present row
+ *      -> 0; a present answer of 0, 2 or 37 bytes -> -2 (adapter out of
+ *      contract); a dropped v2_names (inside a rolled-back transaction)
+ *      -> the mediated read is a STORAGE FAULT (the engine's -2).
+ *   K3 flag 1, self-delegation (delegator == validator): the K1 plan, the
+ *      exec accepts with it — exempt.
+ *   K4 flag 1, UNDELEGATE sibling: the K1 plan (not gated).
+ *   K5 15 inputs: flag 0 plans 16 reads; flag 1 refuses the plan (-1);
+ *      14 inputs under flag 1 plan 16 reads with NAMEOWN at [15] and the
+ *      pool at [14], and the exec accepts once the delegator is named.
+ *   K6 a DELEGATE record call one byte short: flag 0 plans as today (the
+ *      SYSTEM leg refuses it); flag 1 refuses plan and exec (-1, the gate
+ *      cannot parse the delegator).
+ *   K7 the generation-1 / generation-2 SYSTEM and CORE ruleset hashes
+ *      equal the checked-in pins (nodus_ruleset_pins.h) and D2 / the EVM
+ *      D keep their literals — the gate lives in the hooks, which are not
+ *      in the ruleset descriptor, so no identity moves.
+ *  ENGINE (test_hf8_delegate_name_engine — real blocks through the
+ *  cometbft lane; HF-2 on from 1, param 9 (D2) effective 3, param 17
+ *  effective H = 4, all committed in the genesis state):
+ *   E1 block 1 (generation 1, flag off): a nameless DELEGATE lands, and
+ *      a nameless 15-input DELEGATE lands (the cap is the gate's only).
+ *   E2 block 3 (generation 2, flag still off): a nameless DELEGATE lands.
+ *   E3 the CheckTx dry run at tip 3 (judging 4 = H): a nameless DELEGATE
+ *      is refused (EXEC), a named one admitted.
+ *   E4 at H a named 15-input DELEGATE is refused (probe).
+ *   E5 block 4 = H, six items: a named new delegation (OK), a nameless
+ *      validator delegating to ANOTHER validator (EXEC), a nameless
+ *      validator's self-delegation (OK), a nameless TOP-UP of a
+ *      delegation made before H (EXEC), a named 14-input DELEGATE (OK),
+ *      a 15-input VALIDATOR_UPDATE funding leg (OK — not gated). The
+ *      refused items left NOTHING: no delegation row / amount change,
+ *      their funding coins live, validator 0's total moved by exactly the
+ *      two applied amounts, the pool by exactly four fees, the supply
+ *      identity holds. The named delegation consumed EXACTLY one w_read
+ *      more than E2's same-shape one (the NAMEOWN read, charged like
+ *      every mediated read).
+ *   E6 after H: a named top-up is admitted by the dry run; a DELEGATE of a
+ *      key whose NAME_REGISTER is still pending is refused (CheckTx
+ *      judges committed state only).
+ *   E7 block 5, same block: NAME_REGISTER then DELEGATE (both OK);
+ *      DELEGATE then NAME_REGISTER (the DELEGATE refused, the
+ *      registration OK) — item order decides.
+ *   E8 block 6, THIRD-PARTY funding (the SYSFUND leg signed and funded by
+ *      another key than the delegator): a NAMELESS delegator funded by a
+ *      NAMED key is refused with full rollback; a NAMED delegator funded
+ *      by a NAMELESS key lands — the gate keys on the call-carried
+ *      delegator, never the funder (a funder-keyed gate fails both).
+ *  K7 additionally (NODUS_EVM_ENABLED builds): the generation-3 (EVM) and
+ *  generation-4 (storage) SYSTEM / CORE tuples equal their pins. The EVM
+ *  domain's own tuple has no pin in nodus_ruleset_pins.h and is not
+ *  checked here (the EVM D literal binds it).
+ *
+ * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
+ * Compile flags: none beyond a default build; DNAC_EPOCH_LENGTH > 6 (no
+ * epoch boundary among heights 1..6 — checked; true for the production
+ * 720 and the harness 15). Environment: none.
+ *
+ * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
+ * Two /tmp/test_v2_native_h8* directories, removed at the end (left
+ * behind when a CHECK aborts).
+ *
+ * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
+ *  - Param 17 and the names of keys 10 / 14 are SEEDED rows (genesis
+ *    state), not a CHAIN_CONFIG vote or a NAME_REGISTER: the vote path's
+ *    scalar / grace / stateful rules are test_hf4_params.c's, the
+ *    registration path is test_hf4_names_engine.c's (block 5 here does
+ *    register two names for real).
+ *  - The hooks section sets ctx.delegate_name_required by hand; that the
+ *    ENGINE fills it from param 17 at the block's height is what the
+ *    engine section's E1/E2 (off) vs E5 (on) observe.
+ *  - The dry run is CheckTx's seam (nodus_witness_v2_env_dry_run), not
+ *    the cometbft CheckTx handler, so the refusal's log text is not
+ *    observed here (the harness scenario greps it).
+ *  - The genesis carries spendable UTXOs (V2X_SEED_NOT_REAL_UTXOS); one
+ *    process, not seven machines.
+ * ════════════════════════════════════════════════════════════════════ */
+
+#define H8_DUST       1000ULL   /* a small funding coin                   */
+#define H8_P6         ((uint64_t)DNAC_NAME_PRICE_6P_DEFAULT)
+#define H8_NAME_FUND  (H8_P6 + FEE_MIN + DLG_CHANGE)
+
+/* one v2_names row: `name` (bound as a BLOB) owned by key k's raw fp */
+static int h8_seed_name(nodus_witness_t *w, const char *name, int k,
+                        uint64_t h) {
+    uint8_t fp[64];
+    sqlite3_stmt *st = NULL;
+    if (key_fp_raw(k, fp) != 0) return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO v2_names (name, owner, registered_height) "
+            "VALUES (?1, ?2, ?3)", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, name, (int)strlen(name), SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, fp, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)h);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* 1 = the v2_names row `name` exists and is key k's, 0 = absent, -1 */
+static int h8_name_is(nodus_witness_t *w, const char *name, int k) {
+    uint8_t fp[64];
+    sqlite3_stmt *st = NULL;
+    int ret = -1;
+    if (key_fp_raw(k, fp) != 0) return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT owner FROM v2_names WHERE name = ?1", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, name, (int)strlen(name), SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_DONE) ret = 0;
+    else if (rc == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 64 &&
+             memcmp(sqlite3_column_blob(st, 0), fp, 64) == 0)
+        ret = 1;
+    sqlite3_finalize(st);
+    return ret;
+}
+
+/* one chain_config_history row, written straight (pre-genesis state) */
+static int h8_cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
+                     uint64_t effective, uint64_t nonce) {
+    char sql[320];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO chain_config_history (param_id, new_value, "
+             "effective_block, commit_block, tx_hash, proposal_nonce, "
+             "created_at_unix) VALUES (%u, %llu, %llu, 0, zeroblob(64), "
+             "%llu, 0)", param, (unsigned long long)value,
+             (unsigned long long)effective, (unsigned long long)nonce);
+    w->chain_config_cache_warm = false;
+    return run_sql(w->db, sql);
+}
+
+/* a SYSFUND transfer section: n_in inputs, one change output to `owner` */
+static uint32_t h8_fund_call_n(uint8_t *dst, size_t cap,
+                               const uint8_t (*ins)[64], int n_in,
+                               int owner, uint64_t change, uint8_t seed) {
+    out_spec_t o[1];
+    o[0].owner = owner;
+    o[0].amount = change;
+    o[0].seed_byte = seed;
+    o[0].token = NULL;
+    return spend_call_build(dst, cap, ins, n_in, o, 1);
+}
+
+/* the canonical two-leg DELEGATE / UNDELEGATE (op) envelope, both legs
+ * signed by the delegator, funded by `ins` with one change output */
+static int h8_deleg_env(fixture_t *fx, env_t *e, uint32_t op,
+                        int delegator, int validator, uint64_t amount,
+                        const uint8_t (*ins)[64], int n_in, uint64_t change,
+                        uint8_t seed, int short_call) {
+    static uint8_t scall[8192], fcall[8192];
+    int sg[1] = { delegator };
+    uint32_t sl = deleg_call_build(scall, sizeof(scall), delegator,
+                                   validator, amount);
+    uint32_t fl = h8_fund_call_n(fcall, sizeof(fcall), ins, n_in,
+                                 delegator, change, seed);
+    if (!sl || !fl) return -1;
+    if (short_call) sl--;                /* K6: one byte short           */
+    return two_leg_build(fx, e, op, scall, sl, DNA_CORERULE_SYSFUND,
+                         fcall, fl, FEE_MIN, sg, 1, sg, 1, NULL);
+}
+
+/* a single-leg CORE NAME_REGISTER of a 6+ character `name` by key k:
+ * name_len ‖ name ‖ price u64 BE ‖ the transfer section (one input, one
+ * change output) — rtn_name_parse's layout */
+static int h8_name_env(fixture_t *fx, env_t *e, int k, const char *name,
+                       const uint8_t in[64], uint64_t change, uint8_t seed) {
+    static uint8_t call[1 + DNAC_NAME_MAX_LEN + 8 + 2 + 64 + 232];
+    const size_t nl = strlen(name);
+    uint8_t ins[1][64];
+    out_spec_t o[1];
+    int sg[1] = { k };
+    size_t off = 0;
+    if (nl < 6 || nl > DNAC_NAME_MAX_LEN) return -1;
+    call[off++] = (uint8_t)nl;
+    memcpy(call + off, name, nl);
+    off += nl;
+    for (int i = 0; i < 8; i++)
+        call[off + i] = (uint8_t)(H8_P6 >> (56 - 8 * i));
+    off += 8;
+    memcpy(ins[0], in, 64);
+    o[0].owner = k;
+    o[0].amount = change;
+    o[0].seed_byte = seed;
+    o[0].token = NULL;
+    uint32_t xl = spend_call_build(call + off, sizeof(call) - off, ins, 1,
+                                   o, 1);
+    if (!xl) return -1;
+    off += xl;
+    return env_build_signed(fx, e, DNA_DOMAIN_CORE,
+                            DNA_CORERULE_NAME_REGISTER, call, (uint32_t)off,
+                            FEE_MIN, 0, 8, 16384, sg, 1, NULL);
+}
+
+/* plan + honest mediated reads of one CORE leg; 0 / -1 (plan rc in *prc) */
+static int h8_plan_read(fixture_t *fx, const nodus_domain_runtime_t *core,
+                        const dna_env_view_t *v,
+                        const nodus_rt_exec_ctx_t *ctx,
+                        nodus_rt_read_req_t *reqs, nodus_rt_read_res_t *rds,
+                        uint16_t *nr, int *prc) {
+    *nr = 0;
+    memset(reqs, 0, sizeof(*reqs) * NODUS_RT_MAX_READS);
+    memset(rds, 0, sizeof(*rds) * NODUS_RT_MAX_READS);
+    *prc = nodus_rt_core_read_plan(core, v, 1, ctx, reqs,
+                                   NODUS_RT_MAX_READS, nr);
+    if (*prc != 0) return 0;
+    for (uint16_t r = 0; r < *nr; r++)
+        if (nodus_witness_v2_read_one(fx->w, core, &reqs[r], &rds[r])
+            != NODUS_ADAPTER_OK)
+            return -1;
+    return 0;
+}
+
+static int test_hf8_name_gate_hooks(void) {
+    fixture_t fx;
+    CHECK(fx_genesis(&fx, "h8hk") == 0, "genesis");
+    const nodus_domain_runtime_t *core = build_rt(DNA_DOMAIN_CORE);
+    CHECK(core != NULL, "the compiled CORE runtime");
+    static env_t e;
+    dna_env_view_t v;
+    nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS], reqs0[NODUS_RT_MAX_READS];
+    nodus_rt_read_res_t rds[NODUS_RT_MAX_READS], r2[NODUS_RT_MAX_READS];
+    static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
+    size_t rl = 0;
+    uint16_t nr = 0, nr0 = 0;
+    int prc = 0;
+    uint8_t fp9[64], fp10[64], fp1[64];
+    uint8_t f9[1][64], f1[1][64], f10[15][64];
+
+    CHECK(key_fp_raw(9, fp9) == 0 && key_fp_raw(10, fp10) == 0 &&
+          key_fp_raw(1, fp1) == 0, "fps");
+    CHECK(seed_funding(&fx, 9, DLG_FUND, 0x81, f9[0]) == 0, "fund 9");
+    CHECK(seed_funding(&fx, 1, DLG_FUND, 0x82, f1[0]) == 0, "fund 1");
+    CHECK(seed_funding(&fx, 10, DLG_FUND, 0x90, f10[0]) == 0, "fund 10");
+    for (int i = 1; i < 15; i++)
+        CHECK(seed_funding(&fx, 10, H8_DUST, (uint8_t)(0x90 + i), f10[i])
+                  == 0, "fund 10 (dust)");
+
+    nodus_rt_auth_verdict_t av;
+    memset(&av, 0, sizeof(av));
+    av.n_signers = 1;
+    memcpy(av.signer_fp[0], fp9, 64);
+    static uint8_t iid[64];
+    memset(iid, 0x48, 64);
+    nodus_rt_exec_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.chain_id = fx.chain_id;
+    ctx.global_height = 1;
+    ctx.intent_id = iid;
+    ctx.wire_id = iid;
+    ctx.auth = &av;
+
+    /* ── K1: flag 0 — today's plan, today's count ──────────────────── */
+    CHECK(h8_deleg_env(&fx, &e, DNA_SYSRULE_DELEGATE, 9, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f9, 1, DLG_CHANGE, 0x31, 0)
+              == 0, "build 9 -> 0");
+    CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+    ctx.delegate_name_required = 0;
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs0, rds, &nr0, &prc) == 0 &&
+          prc == 0 && nr0 == 2, "K1 flag 0: inputs + pool, as today");
+    CHECK(reqs0[0].op_id == 1u && reqs0[0].key_len == 64 &&
+          memcmp(reqs0[0].key, f9[0], 64) == 0 &&
+          reqs0[1].op_id == 3u && reqs0[1].key_len == 1 &&
+          reqs0[1].key[0] == 3u, "K1 the UTXO read, then the pool read");
+    OK();
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, nr0, res, sizeof(res),
+                             &rl) == 0, "K1 the exec accepts");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, (uint16_t)(nr0 + 1),
+                             res, sizeof(res), &rl) == -2,
+          "K1 a read the plan did not make is the count FAULT");
+    OK();
+
+    /* ── K2: flag 1, non-self — + NAMEOWN(SHA3(delegator)) last ────── */
+    ctx.delegate_name_required = 1;
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs, rds, &nr, &prc) == 0 &&
+          prc == 0 && nr == 3, "K2 flag 1: one read more");
+    CHECK(memcmp(&reqs[0], &reqs0[0], sizeof(reqs[0])) == 0 &&
+          memcmp(&reqs[1], &reqs0[1], sizeof(reqs[1])) == 0,
+          "K2 the first two requests are K1's, byte for byte");
+    CHECK(reqs[2].op_id == 6u && reqs[2].key_len == 64 &&
+          memcmp(reqs[2].key, fp9, 64) == 0,
+          "K2 the last request: NAMEOWN keyed by SHA3-512(delegator_pk)");
+    OK();
+    CHECK(rds[2].present == 0, "key 9 holds no name");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, nr, res, sizeof(res),
+                             &rl) == -1, "K2 a nameless delegator: -1");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, nr0, res, sizeof(res),
+                             &rl) == -2,
+          "K2 the ungated count under the gate: the count FAULT");
+    OK();
+    CHECK(h8_seed_name(fx.w, "keynine", 9, 1) == 0, "name key 9");
+    CHECK(nodus_witness_v2_read_one(fx.w, core, &reqs[2], &rds[2])
+              == NODUS_ADAPTER_OK && rds[2].present == 1 &&
+          rds[2].value_len == 7 && memcmp(rds[2].value, "keynine", 7) == 0,
+          "the adapter answers the held name");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, nr, res, sizeof(res),
+                             &rl) == 0, "K2 a named delegator: accepted");
+    OK();
+    {
+        static const uint32_t bad_len[3] = { 0u, 2u, 37u };
+        for (int i = 0; i < 3; i++) {
+            memcpy(r2, rds, sizeof(r2));
+            r2[2].present = 1;
+            r2[2].value_len = bad_len[i];
+            CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, r2, nr, res,
+                                     sizeof(res), &rl) == -2,
+                  "K2 a present name outside 3..36 bytes: adapter out of "
+                  "contract, FAULT");
+        }
+        OK();
+    }
+    {
+        nodus_rt_read_res_t rf;
+        CHECK(run_sql(fx.w->db, "BEGIN IMMEDIATE") == 0, "begin");
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_names") == 0, "drop");
+        CHECK(nodus_witness_v2_read_one(fx.w, core, &reqs[2], &rf)
+                  == NODUS_ADAPTER_ERR_STORAGE_FAULT,
+              "K2 an unreadable v2_names: the NAMEOWN read is a STORAGE "
+              "FAULT (the engine's -2), never 'absent'");
+        CHECK(run_sql(fx.w->db, "ROLLBACK") == 0, "rollback");
+        CHECK(nodus_witness_v2_read_one(fx.w, core, &reqs[2], &rf)
+                  == NODUS_ADAPTER_OK && rf.present == 1,
+              "the rollback restores the table");
+        OK();
+    }
+
+    /* ── K3: flag 1, self-delegation — exempt ──────────────────────── */
+    memcpy(av.signer_fp[0], fp1, 64);
+    CHECK(h8_deleg_env(&fx, &e, DNA_SYSRULE_DELEGATE, 1, 1, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f1, 1, DLG_CHANGE, 0x32, 0)
+              == 0, "build 1 -> 1");
+    CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs, rds, &nr, &prc) == 0 &&
+          prc == 0 && nr == 2 && reqs[1].op_id == 3u,
+          "K3 a self-delegation plans no name read");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, nr, res, sizeof(res),
+                             &rl) == 0,
+          "K3 a nameless validator's self-delegation is accepted");
+    OK();
+
+    /* ── K4: flag 1, UNDELEGATE — not gated ────────────────────────── */
+    memcpy(av.signer_fp[0], fp9, 64);
+    CHECK(h8_deleg_env(&fx, &e, DNA_SYSRULE_UNDELEGATE, 9, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f9, 1,
+                       DLG_FUND - FEE_MIN, 0x33, 0) == 0, "build undeleg");
+    CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs, rds, &nr, &prc) == 0 &&
+          prc == 0 && nr == 2, "K4 an UNDELEGATE funding leg reads no name");
+    OK();
+
+    /* ── K5: the 14 / 15 input ceiling ─────────────────────────────── */
+    memcpy(av.signer_fp[0], fp10, 64);
+    CHECK(h8_deleg_env(&fx, &e, DNA_SYSRULE_DELEGATE, 10, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f10, 15,
+                       DLG_CHANGE + 14u * H8_DUST, 0x34, 0) == 0,
+          "build 15-input 10 -> 0");
+    CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+    ctx.delegate_name_required = 0;
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs, rds, &nr, &prc) == 0 &&
+          prc == 0 && nr == 16, "K5 flag 0: 15 inputs + pool = 16 reads");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, nr, res, sizeof(res),
+                             &rl) == 0, "K5 flag 0: 15 inputs accepted");
+    ctx.delegate_name_required = 1;
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs, rds, &nr, &prc) == 0 &&
+          prc == -1, "K5 flag 1: a 15-input gated leg is refused (-1)");
+    OK();
+    CHECK(h8_deleg_env(&fx, &e, DNA_SYSRULE_DELEGATE, 10, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f10, 14,
+                       DLG_CHANGE + 13u * H8_DUST, 0x35, 0) == 0,
+          "build 14-input 10 -> 0");
+    CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs, rds, &nr, &prc) == 0 &&
+          prc == 0 && nr == 16 && reqs[14].op_id == 3u &&
+          reqs[15].op_id == 6u && memcmp(reqs[15].key, fp10, 64) == 0,
+          "K5 flag 1: 14 inputs + pool + NAMEOWN = 16, NAMEOWN last");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, nr, res, sizeof(res),
+                             &rl) == -1, "K5 nameless: -1");
+    CHECK(h8_seed_name(fx.w, "keytenname", 10, 1) == 0, "name key 10");
+    CHECK(nodus_witness_v2_read_one(fx.w, core, &reqs[15], &rds[15])
+              == NODUS_ADAPTER_OK && rds[15].present == 1, "re-read");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, nr, res, sizeof(res),
+                             &rl) == 0, "K5 named, 14 inputs: accepted");
+    OK();
+
+    /* ── K6: an unparseable DELEGATE record call ───────────────────── */
+    memcpy(av.signer_fp[0], fp9, 64);
+    CHECK(h8_deleg_env(&fx, &e, DNA_SYSRULE_DELEGATE, 9, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f9, 1, DLG_CHANGE, 0x36, 1)
+              == 0, "build short call");
+    CHECK(dna_env_decode(e.bytes, e.len, &v) == 0, "decode");
+    ctx.delegate_name_required = 0;
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs, rds, &nr, &prc) == 0 &&
+          prc == 0 && nr == 2,
+          "K6 flag 0: the funding plan is today's (SYSTEM refuses)");
+    ctx.delegate_name_required = 1;
+    CHECK(h8_plan_read(&fx, core, &v, &ctx, reqs, rds, &nr, &prc) == 0 &&
+          prc == -1, "K6 flag 1: the gate cannot parse — plan -1");
+    CHECK(nodus_rt_core_exec(core, &v, 1, &ctx, rds, 2, res, sizeof(res),
+                             &rl) == -1, "K6 flag 1: exec -1");
+    OK();
+
+    /* ── K7: no identity moved ─────────────────────────────────────── */
+    {
+        static const uint8_t c1[64] = NODUS_PIN_CORE_RULESET_HASH_INIT;
+        static const uint8_t s1[64] = NODUS_PIN_SYS_RULESET_HASH_INIT;
+        static const uint8_t c2[64] = NODUS_PIN_G2_CORE_RULESET_HASH_INIT;
+        static const uint8_t s2[64] = NODUS_PIN_G2_SYS_RULESET_HASH_INIT;
+        const nodus_domain_runtime_t *gc1 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_1, DNA_DOMAIN_CORE);
+        const nodus_domain_runtime_t *gs1 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_1, DNA_DOMAIN_SYSTEM);
+        const nodus_domain_runtime_t *gc2 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_CORE);
+        const nodus_domain_runtime_t *gs2 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_SYSTEM);
+        CHECK(gc1 && gs1 && gc2 && gs2, "generations 1 and 2 resolve");
+        CHECK(memcmp(gc1->ruleset_hash, c1, 64) == 0 &&
+              memcmp(gs1->ruleset_hash, s1, 64) == 0 &&
+              memcmp(gc2->ruleset_hash, c2, 64) == 0 &&
+              memcmp(gs2->ruleset_hash, s2, 64) == 0,
+              "K7 the generation-1/2 ruleset hashes are the pinned ones");
+        CHECK(gc1->ruleset_version == NODUS_PIN_CORE_RULESET_VERSION &&
+              gs1->ruleset_version == NODUS_PIN_SYS_RULESET_VERSION &&
+              gc2->ruleset_version == NODUS_PIN_G2_CORE_RULESET_VERSION &&
+              gs2->ruleset_version == NODUS_PIN_G2_SYS_RULESET_VERSION,
+              "K7 and so are their versions");
+#ifdef NODUS_EVM_ENABLED
+        /* the EVM generation (3) and GEN_STORAGE (4): their SYSTEM / CORE
+         * tuples against the checked-in pins. The EVM DOMAIN's own tuple
+         * (domain 2) has NO pin in nodus_ruleset_pins.h — not checked
+         * here; its identity is bound by the EVM D literal below, which
+         * nodus_witness_runtime_selfcheck re-derives on every start. */
+        {
+            static const uint8_t c3[64] = NODUS_PIN_G3_CORE_RULESET_HASH_INIT;
+            static const uint8_t s3[64] = NODUS_PIN_G3_SYS_RULESET_HASH_INIT;
+            static const uint8_t c4[64] = NODUS_PIN_G4_CORE_RULESET_HASH_INIT;
+            static const uint8_t s4[64] = NODUS_PIN_G4_SYS_RULESET_HASH_INIT;
+            const nodus_domain_runtime_t *gc3 =
+                nodus_runtime_for_generation(NODUS_RT_GEN_EVM,
+                                             DNA_DOMAIN_CORE);
+            const nodus_domain_runtime_t *gs3 =
+                nodus_runtime_for_generation(NODUS_RT_GEN_EVM,
+                                             DNA_DOMAIN_SYSTEM);
+            const nodus_domain_runtime_t *gc4 =
+                nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
+                                             DNA_DOMAIN_CORE);
+            const nodus_domain_runtime_t *gs4 =
+                nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
+                                             DNA_DOMAIN_SYSTEM);
+            CHECK(NODUS_RT_GEN_EVM == 3u && NODUS_RT_GEN_STORAGE == 4u,
+                  "K7 generation numbers 3 (EVM) and 4 (storage)");
+            CHECK(gc3 && gs3 && gc4 && gs4, "generations 3 and 4 resolve");
+            CHECK(memcmp(gc3->ruleset_hash, c3, 64) == 0 &&
+                  memcmp(gs3->ruleset_hash, s3, 64) == 0 &&
+                  memcmp(gc4->ruleset_hash, c4, 64) == 0 &&
+                  memcmp(gs4->ruleset_hash, s4, 64) == 0,
+                  "K7 the generation-3/4 SYSTEM and CORE ruleset hashes "
+                  "are the pinned ones");
+            CHECK(gc3->ruleset_version == NODUS_PIN_G3_CORE_RULESET_VERSION &&
+                  gs3->ruleset_version == NODUS_PIN_G3_SYS_RULESET_VERSION &&
+                  gc4->ruleset_version == NODUS_PIN_G4_CORE_RULESET_VERSION &&
+                  gs4->ruleset_version == NODUS_PIN_G4_SYS_RULESET_VERSION,
+                  "K7 and so are their versions");
+        }
+#endif
+        CHECK((uint64_t)DNAC_CFG_RULESET_GEN2_D2 == 0x44dfbe7ad3c75adfULL &&
+              (uint64_t)DNAC_CFG_EVM_ACTIVE_D == 0x029f47596864d407ULL &&
+              (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D ==
+                  0x0c6fd6f2484e6024ULL,
+              "K7 D2, the EVM D and the storage D keep their literals");
+        OK();
+    }
+    fx_close(&fx);
+    return 0;
+}
+
+static int test_hf8_delegate_name_engine(void) {
+    fixture_t fx;
+    static env_t ea, eb, ec, ed, ee, ef, eg, eh;
+    nodus_v2_block_t b;
+    const uint64_t H9 = 3, H17 = 4;
+    uint8_t f9a[1][64], f9b[1][64], f13[1][64], f10a[1][64], f10b[1][64];
+    uint8_t f1[1][64], f2[1][64], f11n[64], f11d[1][64], f12n[64];
+    uint8_t f12d[1][64], f10c[1][64], f13b[1][64];
+    uint8_t f15[15][64], f14[15][64], f3[15][64];
+    uint8_t vk0[64], vk4[64], dk[128], rec[TDEL_REC_LEN];
+
+    CHECK((uint64_t)DNAC_EPOCH_LENGTH > 6u,
+          "no epoch boundary among heights 1..6");
+    CHECK(fx_pre(&fx, "h8eng") == 0, "pre-genesis");
+    /* the switches and the two seeded names — genesis state */
+    CHECK(h8_cc_row(fx.w, DNAC_CFG_HF2_ACTIVE, DNAC_CFG_HF2_ACTIVE_ON, 1,
+                    81) == 0, "HF-2 on from 1");
+    CHECK(h8_cc_row(fx.w, DNAC_CFG_RULESET_GEN2,
+                    (uint64_t)DNAC_CFG_RULESET_GEN2_D2, H9, 82) == 0,
+          "generation 2 from 3");
+    CHECK(h8_cc_row(fx.w, DNAC_CFG_DELEGATE_NAME_REQUIRED,
+                    DNAC_CFG_DELEGATE_NAME_REQUIRED_ON, H17, 83) == 0,
+          "HF-8 from 4");
+    CHECK(h8_seed_name(fx.w, "keytenname", 10, 1) == 0, "name key 10");
+    CHECK(h8_seed_name(fx.w, "keyfourteen", 14, 1) == 0, "name key 14");
+    /* funding — genesis state too */
+    CHECK(seed_funding(&fx, 9, DLG_FUND, 0xA9, f9a[0]) == 0 &&
+          seed_funding(&fx, 9, DLG_FUND, 0xB9, f9b[0]) == 0 &&
+          seed_funding(&fx, 13, DLG_FUND, 0xAD, f13[0]) == 0 &&
+          seed_funding(&fx, 10, DLG_FUND, 0xAA, f10a[0]) == 0 &&
+          seed_funding(&fx, 10, DLG_FUND, 0xBA, f10b[0]) == 0 &&
+          seed_funding(&fx, 1, DLG_FUND, 0xA1, f1[0]) == 0 &&
+          seed_funding(&fx, 2, DLG_FUND, 0xA2, f2[0]) == 0 &&
+          seed_funding(&fx, 11, H8_NAME_FUND, 0x1B, f11n) == 0 &&
+          seed_funding(&fx, 11, DLG_FUND, 0x2B, f11d[0]) == 0 &&
+          seed_funding(&fx, 12, H8_NAME_FUND, 0x1C, f12n) == 0 &&
+          seed_funding(&fx, 12, DLG_FUND, 0x2C, f12d[0]) == 0 &&
+          /* E8: the third-party funders — key 10 NAMED, key 13 NAMELESS */
+          seed_funding(&fx, 10, DLG_FUND, 0xCA, f10c[0]) == 0 &&
+          seed_funding(&fx, 13, DLG_FUND, 0xBD, f13b[0]) == 0,
+          "funding");
+    CHECK(seed_funding(&fx, 15, DLG_FUND, 0xC0, f15[0]) == 0 &&
+          seed_funding(&fx, 14, DLG_FUND, 0xE0, f14[0]) == 0 &&
+          seed_funding(&fx, 3, NOLOCK_FUND, 0xF0, f3[0]) == 0,
+          "the big coins");
+    for (int i = 1; i < 15; i++)
+        CHECK(seed_funding(&fx, 15, H8_DUST, (uint8_t)(0xC0 + i), f15[i])
+                  == 0 &&
+              seed_funding(&fx, 14, H8_DUST, (uint8_t)(0xE0 + i), f14[i])
+                  == 0 &&
+              seed_funding(&fx, 3, H8_DUST, (uint8_t)(0xF0 + i), f3[i])
+                  == 0, "the dust coins");
+    CHECK(fx_seal(&fx) == 0, "genesis");
+    CHECK(val_key(0, vk0) == 0, "validator 0 key");
+
+    /* ── E1: block 1, generation 1, flag off ───────────────────────── */
+    g_build_gen = 0;
+    CHECK(h8_deleg_env(&fx, &ea, DNA_SYSRULE_DELEGATE, 9, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f9a, 1, DLG_CHANGE, 0x41, 0)
+              == 0, "9 -> 0");
+    CHECK(h8_deleg_env(&fx, &eb, DNA_SYSRULE_DELEGATE, 15, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f15, 15,
+                       DLG_CHANGE + 14u * H8_DUST, 0x42, 0) == 0,
+          "15 -> 0 (15 inputs)");
+    {
+        nodus_v2_envelope_t ve[2] = { { ea.bytes, ea.len },
+                                      { eb.bytes, eb.len } };
+        mk_block(&b, 1, ve, 2);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "E1 before H: a nameless DELEGATE and a nameless 15-input "
+              "DELEGATE both land");
+        OK();
+    }
+
+    /* block 2 = H9 - 1: the generation-2 switch, idle */
+    mk_block(&b, 2, NULL, 0);
+    CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "block 2 (the switch)");
+    g_build_gen = NODUS_RT_GEN_2;
+
+    /* ── E2: block 3, generation 2, flag still off ─────────────────── */
+    uint64_t gas_off = 0;
+    CHECK(h8_deleg_env(&fx, &ec, DNA_SYSRULE_DELEGATE, 13, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f13, 1, DLG_CHANGE, 0x43, 0)
+              == 0, "13 -> 0");
+    {
+        nodus_v2_envelope_t ve[1] = { { ec.bytes, ec.len } };
+        mk_block(&b, 3, ve, 1);
+        CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0,
+              "E2 generation 2, below H: a nameless DELEGATE lands");
+        gas_off = b.cmt.results[0].gas_used;
+        CHECK(gas_off > 0, "units consumed");
+        OK();
+    }
+
+    /* ── E3: the CheckTx dry run at tip 3 judges H = 4 ─────────────── */
+    CHECK(h8_deleg_env(&fx, &ed, DNA_SYSRULE_DELEGATE, 12, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f12d, 1, DLG_CHANGE, 0x44, 0)
+              == 0, "12 -> 0");
+    CHECK(h8_deleg_env(&fx, &ee, DNA_SYSRULE_DELEGATE, 10, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f10a, 1, DLG_CHANGE, 0x45, 0)
+              == 0, "10 -> 0");
+    {
+        char reason[256];
+        nodus_v2_env_dry_run_t *d = calloc(1, sizeof(*d));
+        CHECK(d != NULL, "alloc");
+        int rc = nodus_witness_v2_env_dry_run(fx.w, ed.bytes, ed.len, NULL,
+                                              d, reason, sizeof(reason));
+        uint32_t code = d->code;
+        nodus_witness_v2_env_dry_run_free(d);
+        memset(d, 0, sizeof(*d));
+        int rc2 = nodus_witness_v2_env_dry_run(fx.w, ee.bytes, ee.len, NULL,
+                                               d, reason, sizeof(reason));
+        uint32_t code2 = d->code;
+        nodus_witness_v2_env_dry_run_free(d);
+        free(d);
+        CHECK(rc == -1 && code == NODUS_V2_TX_ERR_EXEC,
+              "E3 at H the dry run refuses a nameless DELEGATE (EXEC)");
+        CHECK(rc2 == 0 && code2 == NODUS_V2_TX_OK,
+              "E3 and admits a named one");
+        OK();
+    }
+
+    /* ── E4: at H, a named 15-input DELEGATE is refused ────────────── */
+    CHECK(h8_deleg_env(&fx, &ef, DNA_SYSRULE_DELEGATE, 14, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f14, 15,
+                       DLG_CHANGE + 14u * H8_DUST, 0x46, 0) == 0,
+          "14 -> 0 (15 inputs)");
+    {
+        nodus_v2_envelope_t ve[1] = { { ef.bytes, ef.len } };
+        mk_block(&b, H17, ve, 1);
+        CHECK(item_refused(fx.w, &b) == 0,
+              "E4 at H: 15 inputs under the gate are refused, named or "
+              "not");
+        OK();
+    }
+
+    /* ── E5: block 4 = H, six items ────────────────────────────────── */
+    static env_t e_v2, e_self, e_top, e_14, e_vu;
+    CHECK(h8_deleg_env(&fx, &e_v2, DNA_SYSRULE_DELEGATE, 2, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f2, 1, DLG_CHANGE, 0x47, 0)
+              == 0, "2 -> 0");
+    CHECK(h8_deleg_env(&fx, &e_self, DNA_SYSRULE_DELEGATE, 1, 1, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f1, 1, DLG_CHANGE, 0x48, 0)
+              == 0, "1 -> 1");
+    CHECK(h8_deleg_env(&fx, &e_top, DNA_SYSRULE_DELEGATE, 9, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f9b, 1, DLG_CHANGE, 0x49, 0)
+              == 0, "9 -> 0 top-up");
+    CHECK(h8_deleg_env(&fx, &e_14, DNA_SYSRULE_DELEGATE, 14, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f14, 14,
+                       DLG_CHANGE + 13u * H8_DUST, 0x4A, 0) == 0,
+          "14 -> 0 (14 inputs)");
+    {
+        static uint8_t vcall[4096], fcall[8192];
+        int s3[1] = { 3 };
+        uint32_t vl = vupd_call_build(vcall, sizeof(vcall), 3, 0);
+        uint32_t fl = h8_fund_call_n(fcall, sizeof(fcall),
+                                     (const uint8_t (*)[64])f3, 15, 3,
+                                     DLG_CHANGE + 14u * H8_DUST, 0x4B);
+        CHECK(vl && fl, "vupd calls");
+        CHECK(two_leg_build(&fx, &e_vu, DNA_SYSRULE_VALIDATOR_UPDATE, vcall,
+                            vl, DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s3, 1, s3, 1, NULL) == 0, "vupd 3 (15 inputs)");
+    }
+    uint64_t pool0 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
+    uint64_t tot0 = val_col(fx.w, vk0, "total_delegated");
+    uint64_t n_dlg0 = q1(fx.w, "SELECT COUNT(*) FROM delegations");
+    CHECK(pool0 != UINT64_MAX && tot0 != UINT64_MAX && n_dlg0 == 3,
+          "before H: three delegations (9, 15, 13 -> 0)");
+    {
+        nodus_v2_envelope_t ve[6] = {
+            { ee.bytes, ee.len },          /* 0: 10 -> 0, named     OK   */
+            { e_v2.bytes, e_v2.len },      /* 1: 2 -> 0, nameless   EXEC */
+            { e_self.bytes, e_self.len },  /* 2: 1 -> 1, self       OK   */
+            { e_top.bytes, e_top.len },    /* 3: 9 -> 0 top-up      EXEC */
+            { e_14.bytes, e_14.len },      /* 4: 14 -> 0, 14 inputs OK   */
+            { e_vu.bytes, e_vu.len } };    /* 5: vupd, 15 inputs    OK   */
+        mk_block(&b, H17, ve, 6);
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0, "E5 block 4 commits");
+        const nodus_v2_tx_result_t *r = b.cmt.results;
+        CHECK(r[0].code == NODUS_V2_TX_OK,
+              "E5 a named new delegation lands");
+        CHECK(r[1].code == NODUS_V2_TX_ERR_EXEC,
+              "E5 a nameless validator delegating to ANOTHER validator is "
+              "refused");
+        CHECK(r[2].code == NODUS_V2_TX_OK,
+              "E5 a nameless validator's self-delegation lands");
+        CHECK(r[3].code == NODUS_V2_TX_ERR_EXEC,
+              "E5 a nameless TOP-UP is refused (CORE cannot tell new from "
+              "top-up — covered by force)");
+        CHECK(r[4].code == NODUS_V2_TX_OK,
+              "E5 a named 14-input DELEGATE lands");
+        CHECK(r[5].code == NODUS_V2_TX_OK,
+              "E5 a 15-input VALIDATOR_UPDATE funding leg lands (not "
+              "gated)");
+        CHECK(r[0].gas_used ==
+                  gas_off + (uint64_t)NODUS_PIN_G2_SYS_METER_W_READ,
+              "E5 the gated delegation consumed EXACTLY one w_read more "
+              "than E2's same-shape one (the NAMEOWN read)");
+        OK();
+    }
+    /* the refused items left nothing */
+    CHECK(deleg_key_of(2, 0, dk) == 0 &&
+          sysrow_read(fx.w, 5, dk, 128, NULL, TDEL_REC_LEN) == 0,
+          "E5 no 2 -> 0 delegation row (the SYSTEM leg's write rolled "
+          "back)");
+    CHECK(deleg_key_of(9, 0, dk) == 0 &&
+          sysrow_read(fx.w, 5, dk, 128, rec, TDEL_REC_LEN) == 1 &&
+          tbe64(rec + TDEL_AMT_OFF) == DLG_AMOUNT,
+          "E5 the 9 -> 0 delegation keeps its pre-H amount");
+    CHECK(utxo_amount_of(fx.w, f2[0]) == DLG_FUND &&
+          utxo_amount_of(fx.w, f9b[0]) == DLG_FUND,
+          "E5 the refused items' funding coins are live");
+    CHECK(utxo_amount_of(fx.w, f10a[0]) == UINT64_MAX,
+          "E5 the applied item's coin is spent");
+    CHECK(val_col(fx.w, vk0, "total_delegated") == tot0 + 2u * DLG_AMOUNT,
+          "E5 validator 0's total moved by exactly the two applied amounts");
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM delegations") == n_dlg0 + 3u,
+          "E5 three new rows: 10 -> 0, 1 -> 1, 14 -> 0");
+    CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
+              pool0 + 4u * FEE_MIN,
+          "E5 the pool moved by exactly the four applied fees");
+    CHECK(supply_identity_holds(fx.w), "E5 supply identity");
+    OK();
+
+    /* ── E6: the dry run at tip 4 (judging 5, flag on) ─────────────── */
+    CHECK(h8_deleg_env(&fx, &eg, DNA_SYSRULE_DELEGATE, 10, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f10b, 1, DLG_CHANGE, 0x4C, 0)
+              == 0, "10 -> 0 top-up");
+    CHECK(h8_deleg_env(&fx, &eh, DNA_SYSRULE_DELEGATE, 11, 0, DLG_AMOUNT,
+                       (const uint8_t (*)[64])f11d, 1, DLG_CHANGE, 0x4D, 0)
+              == 0, "11 -> 0");
+    {
+        char reason[256];
+        nodus_v2_env_dry_run_t *d = calloc(1, sizeof(*d));
+        CHECK(d != NULL, "alloc");
+        int rc = nodus_witness_v2_env_dry_run(fx.w, eg.bytes, eg.len, NULL,
+                                              d, reason, sizeof(reason));
+        uint32_t code = d->code;
+        nodus_witness_v2_env_dry_run_free(d);
+        memset(d, 0, sizeof(*d));
+        int rc2 = nodus_witness_v2_env_dry_run(fx.w, eh.bytes, eh.len, NULL,
+                                               d, reason, sizeof(reason));
+        uint32_t code2 = d->code;
+        nodus_witness_v2_env_dry_run_free(d);
+        free(d);
+        CHECK(rc == 0 && code == NODUS_V2_TX_OK,
+              "E6 a named top-up is admitted");
+        CHECK(rc2 == -1 && code2 == NODUS_V2_TX_ERR_EXEC,
+              "E6 a DELEGATE whose name is not committed yet is refused");
+        OK();
+    }
+
+    /* ── E7: block 5 — item order decides ──────────────────────────── */
+    {
+        static env_t n11, n12;
+        CHECK(h8_name_env(&fx, &n11, 11, "keyeleven", f11n, DLG_CHANGE,
+                          0x4E) == 0, "register keyeleven");
+        CHECK(h8_name_env(&fx, &n12, 12, "keytwelve", f12n, DLG_CHANGE,
+                          0x4F) == 0, "register keytwelve");
+        nodus_v2_envelope_t ve[4] = {
+            { n11.bytes, n11.len },   /* 0: 11 registers         OK   */
+            { eh.bytes, eh.len },     /* 1: 11 -> 0              OK   */
+            { ed.bytes, ed.len },     /* 2: 12 -> 0 (no name yet) EXEC */
+            { n12.bytes, n12.len } }; /* 3: 12 registers         OK   */
+        mk_block(&b, 5, ve, 4);
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0, "E7 block 5 commits");
+        const nodus_v2_tx_result_t *r = b.cmt.results;
+        CHECK(r[0].code == NODUS_V2_TX_OK && r[1].code == NODUS_V2_TX_OK,
+              "E7 NAME_REGISTER then DELEGATE in one block: both land");
+        CHECK(r[2].code == NODUS_V2_TX_ERR_EXEC && r[3].code == NODUS_V2_TX_OK,
+              "E7 DELEGATE then NAME_REGISTER: the DELEGATE is refused, the "
+              "registration lands");
+        OK();
+    }
+    CHECK(h8_name_is(fx.w, "keyeleven", 11) == 1 &&
+          h8_name_is(fx.w, "keytwelve", 12) == 1, "E7 both names exist");
+    CHECK(deleg_key_of(11, 0, dk) == 0 &&
+          sysrow_read(fx.w, 5, dk, 128, NULL, TDEL_REC_LEN) == 1,
+          "E7 the 11 -> 0 delegation exists");
+    CHECK(deleg_key_of(12, 0, dk) == 0 &&
+          sysrow_read(fx.w, 5, dk, 128, NULL, TDEL_REC_LEN) == 0,
+          "E7 no 12 -> 0 delegation");
+    CHECK(supply_identity_holds(fx.w), "E7 supply identity");
+    OK();
+
+    /* ── E8: block 6 — the gate keys on the CALL-CARRIED delegator,
+     *    never on the SYSFUND leg's signer / funder (third-party funding
+     *    is legal, rtn_sysfund_exec). The SYSTEM leg is signed by the
+     *    delegator; the CORE leg is signed by the funder and spends the
+     *    funder's coin, its change back to the funder.
+     *      T1: delegator 9 (NAMELESS) -> validator 4, funded and signed
+     *          by key 10 (NAMED)   — refused (EXEC), full rollback.
+     *      T2: delegator 14 (NAMED) -> validator 4, funded and signed by
+     *          key 13 (NAMELESS)   — lands.
+     *    A gate keyed on the funding leg's signer would invert BOTH:
+     *    T1 would land (funder 10 is named) and T2 would be refused
+     *    (funder 13 is nameless). ─────────────────────────────────── */
+    CHECK(val_key(4, vk4) == 0, "validator 4 key");
+    {
+        static env_t t1, t2;
+        static uint8_t scall[8192], fcall[8192];
+        int s9[1] = { 9 }, s10[1] = { 10 }, s14[1] = { 14 }, s13[1] = { 13 };
+        uint32_t sl = deleg_call_build(scall, sizeof(scall), 9, 4,
+                                       DLG_AMOUNT);
+        uint32_t fl = h8_fund_call_n(fcall, sizeof(fcall),
+                                     (const uint8_t (*)[64])f10c, 1, 10,
+                                     DLG_CHANGE, 0x50);
+        CHECK(sl && fl, "T1 calls");
+        CHECK(two_leg_build(&fx, &t1, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s9, 1, s10, 1, NULL) == 0,
+              "T1: 9 -> 4, funded + signed by 10");
+        sl = deleg_call_build(scall, sizeof(scall), 14, 4, DLG_AMOUNT);
+        fl = h8_fund_call_n(fcall, sizeof(fcall),
+                            (const uint8_t (*)[64])f13b, 1, 13, DLG_CHANGE,
+                            0x51);
+        CHECK(sl && fl, "T2 calls");
+        CHECK(two_leg_build(&fx, &t2, DNA_SYSRULE_DELEGATE, scall, sl,
+                            DNA_CORERULE_SYSFUND, fcall, fl, FEE_MIN,
+                            s14, 1, s13, 1, NULL) == 0,
+              "T2: 14 -> 4, funded + signed by 13");
+        CHECK(h8_name_is(fx.w, "keytenname", 10) == 1 &&
+              h8_name_is(fx.w, "keyfourteen", 14) == 1,
+              "E8 precondition: keys 10 and 14 are named");
+        uint64_t pool5 = q1(fx.w, "SELECT reward_pool FROM supply_tracking");
+        uint64_t tot4 = val_col(fx.w, vk4, "total_delegated");
+        CHECK(pool5 != UINT64_MAX && tot4 != UINT64_MAX, "before block 6");
+        nodus_v2_envelope_t ve[2] = { { t1.bytes, t1.len },    /* EXEC */
+                                      { t2.bytes, t2.len } };  /* OK   */
+        mk_block(&b, 6, ve, 2);
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0, "E8 block 6 commits");
+        const nodus_v2_tx_result_t *r = b.cmt.results;
+        CHECK(r[0].code == NODUS_V2_TX_ERR_EXEC,
+              "E8 T1 a NAMELESS delegator is refused although its NAMED "
+              "third party signs and funds the SYSFUND leg");
+        CHECK(r[1].code == NODUS_V2_TX_OK,
+              "E8 T2 a NAMED delegator lands although its NAMELESS third "
+              "party signs and funds the SYSFUND leg");
+        OK();
+        CHECK(deleg_key_of(9, 4, dk) == 0 &&
+              sysrow_read(fx.w, 5, dk, 128, NULL, TDEL_REC_LEN) == 0,
+              "E8 T1 left no 9 -> 4 delegation row");
+        CHECK(utxo_amount_of(fx.w, f10c[0]) == DLG_FUND,
+              "E8 T1's funding coin (key 10's) is live");
+        CHECK(deleg_key_of(14, 4, dk) == 0 &&
+              sysrow_read(fx.w, 5, dk, 128, rec, TDEL_REC_LEN) == 1 &&
+              tbe64(rec + TDEL_AMT_OFF) == DLG_AMOUNT,
+              "E8 T2's 14 -> 4 row holds the amount");
+        CHECK(utxo_amount_of(fx.w, f13b[0]) == UINT64_MAX,
+              "E8 T2's funding coin (key 13's) is spent");
+        CHECK(val_col(fx.w, vk4, "total_delegated") == tot4 + DLG_AMOUNT,
+              "E8 validator 4's total moved by exactly T2's amount");
+        CHECK(q1(fx.w, "SELECT reward_pool FROM supply_tracking") ==
+                  pool5 + FEE_MIN,
+              "E8 the pool moved by exactly T2's fee");
+        CHECK(supply_identity_holds(fx.w), "E8 supply identity");
+        OK();
+    }
+
+    g_build_gen = 0;
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     /* This file pins which domain roots a given runtime op moves: "op X
      * moves SYSTEM", "op X must NOT move CORE". The O15J per-block mint
@@ -12835,6 +13718,8 @@ int main(void) {
     if (test_hf2_power_engine() != 0) return 1;
     if (test_hf2_power_zero() != 0) return 1;
     if (test_hf2_netzero_block() != 0) return 1;
+    if (test_hf8_name_gate_hooks() != 0) return 1;
+    if (test_hf8_delegate_name_engine() != 0) return 1;
     printf("test_v2_native: ALL OK (%d checks)\n", g_checks);
     return 0;
 }

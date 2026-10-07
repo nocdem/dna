@@ -15,25 +15,33 @@
 //     evmBuild; a wrong EVM ruleset hash leaves smart contracts off;
 //   - send-node.wasm is byte-identical to the wallet's shipped
 //     src/nodus/send.wasm (same sources and flags, only the JS glue's
-//     ENVIRONMENT differs), and carries no test-only export;
-//   - BLOCKED (reported, SKIPPED — a skip is not a pass): an offline EVM
-//     DEPOSIT / CALL envelope through the release build. The only offline EVM
-//     builder, nsw_test_evm_build, is compiled only with
-//     -DNODUS_SEND_TEST_FIXED_RANDOM (web-wallet/crypto/nodus-send-wasm.c
-//     "#ifdef NODUS_SEND_TEST_FIXED_RANDOM" before nsw_test_evm_build;
-//     build-nodus-send-wasm.sh exports_test). The release build's EVM
-//     builders (nsw_evm_call / _create / _deposit / _withdraw / _redeem)
-//     need a connected node. The test below asserts that absence so a future
-//     release export is noticed.
+//     ENVIRONMENT differs), carries no test-only export, and exports the
+//     release offline EVM builder nsw_evm_offline_build (web wallet 0.1.64);
+//   - NodusEvm.buildOffline through the RELEASE build, no network: an
+//     offline DEPOSIT and an offline CALL (call data + one access-list
+//     entry) are signed, and every field read back from the signed bytes is
+//     the request's — op, amount / to / data length / gas limit / nonce,
+//     chain id, expiry tip + 90; the envelope's legs are [CORE op 9] + [EVM
+//     op] with the EVM leg's ruleset version = the pinned one
+//     (DEFAULT_EVM_NETWORK); the SENDER is this identity: the DEPOSIT's
+//     recipient (SHA3-512 of the signing key, computed by the module) is
+//     its Nodus address, and the CALL envelope carries a 2592-byte ML-DSA-87
+//     public key whose SHA3-512 is that address — so its EVM sender (the
+//     first 32 bytes) is the identity's EVM address; the inputs add up to
+//     lock + fee + change; two builds of one request share the intent id
+//     and differ in the hedged signature; a wrong expiry refuses.
 // Requires: `npm ci` in web-wallet/; for the module tests, scripts/build-wasm.sh
 // (else they SKIP). No network: nothing here opens a connection.
-// How it can lie: the fixture phrases are public test vectors; nothing here
-// shows that a node accepts anything the module builds.
+// How it can lie: the fixture phrases are public test vectors and the coins,
+// tip and gas price are SYNTHETIC; nothing here shows that a node accepts
+// anything the module builds. The CALL sender check finds the key anywhere
+// in the envelope (it does not parse the authorization section).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { NodusEvm, deriveIdentity, DEFAULT_WASM_DIR, DEFAULT_NETWORK, DEFAULT_EVM_NETWORK, evmAddressFromFingerprint } from '../src/index.js';
 import { createNodusSendModule } from '../../../web-wallet/src/nodus/send-module.js';
 
@@ -87,12 +95,69 @@ test('send-node.wasm = the shipped send.wasm, with no test-only export', { skip:
   assert.ok(built.equals(shipped), 'send-node.wasm differs from web-wallet/src/nodus/send.wasm — rebuild (wallet or SDK) from the same tree');
   const exports = WebAssembly.Module.exports(new WebAssembly.Module(built)).map(e => e.name);
   assert.ok(!exports.some(n => n.startsWith('nsw_test_')), 'a test-only export is in the release build');
-  // the BLOCKED sub-part's cause, pinned: no offline EVM builder in release
   assert.ok(!exports.includes('nsw_test_evm_build'));
-  assert.ok(!exports.some(n => /^nsw_evm_.*offline/.test(n)));
-  for (const n of ['nsw_evm_deposit', 'nsw_evm_call', 'nsw_evm_create', 'nsw_evm_withdraw', 'nsw_evm_query']) assert.ok(exports.includes(n), n);
+  for (const n of ['nsw_evm_deposit', 'nsw_evm_call', 'nsw_evm_create', 'nsw_evm_withdraw', 'nsw_evm_query', 'nsw_evm_offline_build']) assert.ok(exports.includes(n), n);
 });
 
-test('offline DEPOSIT / CALL envelope through the release build', {
-  skip: 'BLOCKED: the release build has no offline EVM builder (nsw_test_evm_build exists only under -DNODUS_SEND_TEST_FIXED_RANDOM); coverage ABSENT'
-}, () => {});
+// shared/dnac/env_wire.h "Canonical wire layout": the leg headers
+function legsOf(envelope) {
+  const b = Buffer.from(envelope), n = b.readUInt16BE(41);
+  return Array.from({ length: n }, (_, i) => { const h = 43 + 30 * i; return { domain: b.readUInt32BE(h), op: b.readUInt32BE(h + 4), ver: b.readUInt32BE(h + 8) }; });
+}
+// the 2592-byte windows of `bytes` whose SHA3-512 is `fingerprint`
+function carriesKeyOf(bytes, fingerprint) {
+  const b = Buffer.from(bytes);
+  for (let i = 0; i + 2592 <= b.length; i++) if (createHash('sha3-512').update(b.subarray(i, i + 2592)).digest('hex') === fingerprint) return true;
+  return false;
+}
+const OFFLINE = {
+  tip: 5000n, gasPrice: 7n,
+  coins: [{ nullifier: 'a1'.repeat(64), amount: '100000000' }, { nullifier: 'b2'.repeat(64), amount: '300000000' }, { nullifier: 'c3'.repeat(64), amount: '50000000' }]
+};
+
+test('NodusEvm.buildOffline: an offline DEPOSIT and CALL through the release build, read back from the signed bytes', { skip: BUILT ? false : NOT_BUILT }, async () => {
+  const { phrase, address } = vectors[0];
+  const id = await deriveIdentity(phrase);
+  const amounts = new Map(OFFLINE.coins.map(c => [c.nullifier, BigInt(c.amount)]));
+  const inSum = inputs => inputs.reduce((s, n) => s + amounts.get(n), 0n);
+
+  const dep = await NodusEvm.buildOffline({ phrase, ...OFFLINE, op: 'deposit', amount: 120000000n, nonce: 4n });
+  const d = dep.decoded;
+  assert.equal(d.op, 'deposit');
+  assert.equal(d.amount, '120000000');
+  assert.equal(d.nonce, '4');
+  assert.equal(d.chainId, DEFAULT_NETWORK.chainId);
+  assert.equal(d.expiryHeight, '5090');
+  assert.equal(d.recipient, address, 'the deposit credits this identity (SHA3-512 of the signing key)');
+  assert.equal(d.recipient.slice(0, 64), id.evmAddress, 'its EVM sender is the identity\'s EVM address');
+  assert.equal(inSum(d.inputs), 120000000n + BigInt(d.fee) + BigInt(d.change), 'inputs = amount + fee + change');
+  assert.deepEqual(legsOf(dep.envelope).map(l => [l.domain, l.op]), [[1, 9], [2, 3]]);
+  assert.equal(legsOf(dep.envelope)[1].ver, DEFAULT_EVM_NETWORK.evmRulesetVersion);
+  assert.match(dep.intentId, /^[0-9a-f]{128}$/);
+
+  const to = '0x' + 'ab'.repeat(32), data = '0xa9059cbb' + '00'.repeat(64);
+  const call = await NodusEvm.buildOffline({
+    phrase, ...OFFLINE, op: 'call', to, data, gasLimit: 60000n, nonce: 5n,
+    accessList: [{ address: '0x' + 'cd'.repeat(32), storageKeys: ['01'.repeat(32)] }]
+  });
+  const c = call.decoded;
+  assert.equal(c.op, 'call');
+  assert.equal(c.to, 'ab'.repeat(32));
+  assert.equal(c.dataLength, 68);
+  assert.equal(c.gasLimit, '60000');
+  assert.equal(c.nonce, '5');
+  assert.equal(c.valueWei, '00'.repeat(32));
+  assert.equal(c.amount, '', 'a call carries no bridge amount');
+  assert.equal(c.chainId, DEFAULT_NETWORK.chainId);
+  assert.deepEqual(legsOf(call.envelope).map(l => [l.domain, l.op]), [[1, 9], [2, 1]]);
+  assert.equal(legsOf(call.envelope)[1].ver, DEFAULT_EVM_NETWORK.evmRulesetVersion);
+  assert.ok(carriesKeyOf(call.envelope, address), 'the CALL is signed by this identity\'s key (EVM sender = its EVM address)');
+  assert.equal(inSum(c.inputs), BigInt(c.fee) + BigInt(c.change), 'inputs = fee + change (a call locks nothing)');
+
+  // hedged signature: the same request again, the same intent, other bytes
+  const again = await NodusEvm.buildOffline({ phrase, ...OFFLINE, op: 'deposit', amount: 120000000n, nonce: 4n });
+  assert.equal(again.intentId, dep.intentId);
+  assert.notDeepEqual(again.envelope, dep.envelope);
+  // the module checks the expiry rule (tip + 90)
+  await assert.rejects(NodusEvm.buildOffline({ phrase, ...OFFLINE, expiryHeight: 5091n, op: 'deposit', amount: 1n, nonce: 0n }), /validity must end at block 5090/);
+});
