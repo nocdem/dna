@@ -225,7 +225,13 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .wallet-card, .dashboard-panel, .receive-panel, .send-block { scroll-margin-top: 24px; }
 .wallet-session { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
 .wallet-session > div { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: #c6d7b4; }
-.session-indicator { width: 6px; height: 6px; background: var(--lime); border-radius: 50%; }
+.session-indicator { flex-shrink: 0; width: 6px; height: 6px; background: var(--lime); border-radius: 50%; }
+/* Network line (src/net-status.js): green = connected, amber = connecting or
+   retrying by itself, red = not connected. Amber is the page's warning colour. */
+.session-network { display: inline-flex; gap: 8px; align-items: center; min-width: 0; border-left: 1px solid var(--line); margin-left: 6px; padding-left: 14px; }
+.session-network[data-level="connecting"] .session-indicator { background: #f2c896; }
+.session-network[data-level="offline"] .session-indicator { background: #f28b82; }
+.session-network[data-level="offline"] { color: #f2c896; }
 .session-timeout { color: var(--muted); border-left: 1px solid var(--line); margin-left: 6px; padding-left: 14px; }
 .wallet-session button { flex-shrink: 0; }
 .wallet-navigation { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
@@ -389,6 +395,7 @@ dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 }
 @media (max-width: 760px) {
   .wallet-session { align-items: start; }
+  .session-network { flex-basis: 100%; border: 0; margin: 2px 0 0; padding: 0; }
   .session-timeout { flex-basis: 100%; border: 0; margin: 4px 0 0; padding: 0; font-size: 11px; }
   .wallet-navigation { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .wallet-navigation a { font-size: 11px; padding: 10px; text-align: center; }
