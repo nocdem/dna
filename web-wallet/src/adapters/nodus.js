@@ -370,7 +370,7 @@ export function parseStakingRules(rules) {
   return out;
 }
 export function parseValidators(result) {
-  const invalid = () => new Error('The Nodus module returned an invalid validator list.');
+  const invalid = () => new Error('The Nodus module returned an invalid witness list.');
   if (!result || typeof result.truncated !== 'boolean' || !Array.isArray(result.validators) || result.validators.length > 256) throw invalid();
   const seen = new Set();
   const validators = result.validators.map(v => {
@@ -382,7 +382,7 @@ export function parseValidators(result) {
     seen.add(v.fingerprint);
     const status = VALIDATOR_STATUS[v.status];
     const delegators = v.delegators === undefined || v.delegators === -1 ? null : v.delegators;
-    return { fingerprint: v.fingerprint, selfStake: rawUnits(v.selfStake, 'validator stake'), delegated: rawUnits(v.delegated, 'validator stake'), commissionBps: v.commissionBps, status, statusText: STATUS_TEXT[status], acceptsDelegation: status === 'active' || status === 'eligible', delegators };
+    return { fingerprint: v.fingerprint, selfStake: rawUnits(v.selfStake, 'witness stake'), delegated: rawUnits(v.delegated, 'witness stake'), commissionBps: v.commissionBps, status, statusText: STATUS_TEXT[status], acceptsDelegation: status === 'active' || status === 'eligible', delegators };
   });
   return { truncated: result.truncated, validators };
 }
@@ -449,7 +449,7 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
   const { rules } = view;
   let units, target, commission = 0n, existing;
   if (kind === 'stake') {
-    if (view.ownValidator) throw new Error('This wallet is already a validator.');
+    if (view.ownValidator) throw new Error('This wallet is already a witness.');
     units = rules.selfStake;
     if (typeof commissionBps !== 'string' || !/^(0|[1-9]\d{0,4})$/.test(commissionBps)) throw new Error('Enter a commission between 0% and 50%.');
     commission = BigInt(commissionBps);
@@ -457,23 +457,23 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
     target = from;
   } else {
     target = typeof validator === 'string' ? validator : '';
-    if (!HEX128.test(target)) throw new Error('Choose a validator.');
+    if (!HEX128.test(target)) throw new Error('Choose a witness.');
     units = nodusAmountUnits(amount);
     if (units === 0n) throw new Error('Enter an amount above zero.');
     existing = view.delegations.find(row => row.validator === target);
     const info = view.validators.find(v => v.fingerprint === target);
     if (kind === 'delegate') {
-      if (!info) throw new Error('This validator is not in the current validator list.');
-      if (!info.acceptsDelegation) throw new Error(`This validator does not accept delegations now (${info.statusText}).`);
+      if (!info) throw new Error('This witness is not in the current witness list.');
+      if (!info.acceptsDelegation) throw new Error(`This witness does not accept delegations now (${info.statusText}).`);
       if (!existing && units < rules.minDelegation) throw new Error(`A new delegation must be at least ${formatUnits(rules.minDelegation, DECIMALS)} NODUS.`);
       // The chain admits a NEW delegator only below the per-validator cap; a
       // top-up of an existing delegation is exempt (nodus_witness_rt_native.c
       // rtn_delegate_exec: `!dr->present && count >= cap` refuses). Checked
       // only when the node reported the count (null = unknown: the chain decides).
-      if (!existing && info.delegators !== null && BigInt(info.delegators) >= rules.maxDelegators) throw new Error(`This validator already has the most delegators it can take (${info.delegators}/${rules.maxDelegators}). Choose another validator.`);
+      if (!existing && info.delegators !== null && BigInt(info.delegators) >= rules.maxDelegators) throw new Error(`This witness already has the most delegators it can take (${info.delegators}/${rules.maxDelegators}). Choose another witness.`);
     } else {
-      if (!existing) throw new Error('You have no delegation with this validator.');
-      if (!info) throw new Error('This validator is not in the current validator list, so its delegation cannot be withdrawn from here.');
+      if (!existing) throw new Error('You have no delegation with this witness.');
+      if (!info) throw new Error('This witness is not in the current witness list, so its delegation cannot be withdrawn from here.');
       if (units > existing.amount) throw new Error(`You can withdraw at most ${nodusText(existing.amount)}.`);
       const rest = existing.amount - units;
       if (rest !== 0n && rest < rules.minDelegation) throw new Error(`Withdraw everything, or leave at least ${formatUnits(rules.minDelegation, DECIMALS)} NODUS delegated.`);
@@ -499,17 +499,17 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
   const info = view.validators.find(v => v.fingerprint === target);
   const review = [['Network', 'Nodus testnet']];
   if (kind === 'delegate') {
-    review.push(['Action', 'Delegate NODUS'], ['Validator', d.validator], ['Validator commission', info ? RATE(info.commissionBps) : '—'],
+    review.push(['Action', 'Delegate NODUS'], ['Witness', d.validator], ['Witness commission', info ? RATE(info.commissionBps) : '—'],
       ['Amount', nodusText(d.amount)], ['Network fee', nodusText(d.fee)], ['Change back to you', nodusText(d.change)],
-      ['Note', `The delegated NODUS stays yours but is held with this validator and cannot be sent while delegated. To get it back you undelegate; it then returns to you locked for ${view.lockText} after the validator set changes.`]);
+      ['Note', `The delegated NODUS stays yours but is held with this witness and cannot be sent while delegated. To get it back you undelegate; it then returns to you locked for ${view.lockText} after the witness set changes.`]);
   } else if (kind === 'undelegate') {
-    review.push(['Action', 'Undelegate NODUS'], ['Validator', d.validator], ['Amount returned to you', nodusText(d.amount)],
+    review.push(['Action', 'Undelegate NODUS'], ['Witness', d.validator], ['Amount returned to you', nodusText(d.amount)],
       ['Network fee', `${nodusText(d.fee)} (paid from your spendable NODUS)`], ['Change back to you', nodusText(d.change)],
-      ['Lock', `The returned NODUS arrives as a separate coin at your address. It stays locked for ${view.lockText} after the validator set next changes; until then it cannot be sent or delegated again.`]);
+      ['Lock', `The returned NODUS arrives as a separate coin at your address. It stays locked for ${view.lockText} after the witness set next changes; until then it cannot be sent or delegated again.`]);
   } else {
-    review.push(['Action', 'Become a validator'], ['Bond', nodusText(d.amount)], ['Commission', RATE(Number(d.commissionBps))],
+    review.push(['Action', 'Become a witness'], ['Bond', nodusText(d.amount)], ['Commission', RATE(Number(d.commissionBps))],
       ['Bond returns to', `${from} (your own address)`], ['Network fee', nodusText(d.fee)], ['Change back to you', nodusText(d.change)],
-      ['Important', 'The bond stays locked while you are a validator. This wallet has no way to unstake it: there is no leave-the-validator-set action here. An active validator is expected to take part in producing blocks; one that does not is retired automatically.']);
+      ['Important', 'The bond stays locked while you are a witness. This wallet has no way to unstake it: there is no leave-the-witness-set action here. An active witness is expected to take part in producing blocks; one that does not is retired automatically.']);
   }
   review.push(['Valid until block', d.expiryHeight.toString()], ...expiryCapRows(tip, d.expiryHeight, ruleset), ['Chain ID', d.chainId], ['Fee note', 'The network fee may be charged even if the transaction fails.']);
   if (listing.truncated === true) review.push(['Coin list', 'Your coin list may be incomplete; only the coins listed are used.']);
