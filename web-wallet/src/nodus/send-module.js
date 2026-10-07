@@ -626,7 +626,7 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     async stakeBuild({ op, validator = '', amount, commissionBps = '0', expiryHeight, coins } = {}) {
       const code = typeof op === 'string' && Object.hasOwn(STAKE_OPS, op) ? STAKE_OPS[op] : 0;
       if (!code) throw new Error('Unknown staking action.');
-      if (op === 'stake' ? validator !== '' : typeof validator !== 'string' || !HEX128.test(validator)) throw new Error('Invalid validator.');
+      if (op === 'stake' ? validator !== '' : typeof validator !== 'string' || !HEX128.test(validator)) throw new Error('Invalid witness.');
       raw(amount, 'amount'); raw(commissionBps, 'commission'); raw(expiryHeight, 'validity height');
       if (!Array.isArray(coins) || coins.length > MAX_COINS) throw new Error('Invalid coin list.');
       num('nsw_req_reset');

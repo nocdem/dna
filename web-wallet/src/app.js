@@ -258,9 +258,9 @@ function renderActivity(save = true) {
     // A staking row (0.1.29) carries its action in `kind` in this tab only
     // (src/activity.js recordActivity); reloaded, it reads as a transfer.
     const what = claim ? ['Allocation claim', '→ your address']
-      : row.kind === 'delegate' ? ['Delegation', `→ validator ${row.to}`]
-      : row.kind === 'undelegate' ? ['Undelegation', `back from validator ${row.to} (returned locked)`]
-      : row.kind === 'stake' ? ['Validator bond']
+      : row.kind === 'delegate' ? ['Delegation', `→ witness ${row.to}`]
+      : row.kind === 'undelegate' ? ['Undelegation', `back from witness ${row.to} (returned locked)`]
+      : row.kind === 'stake' ? ['Witness bond']
       : row.kind === 'name' ? ['Chain name registration', row.name ? `"${row.name}"` : 'for your address']
       : row.kind === 'evm' ? ['Smart contracts', row.evmTitle || 'transaction']
       : [`→ ${row.to}`];
@@ -924,15 +924,15 @@ async function refreshStaking() {
   const client = nodusClient, source = wallet, check = ++stakeCheck;
   if (!client || !source || source.locked || !client.stakeable) { hideStaking(); return; }
   const current = () => check === stakeCheck && client === nodusClient && source === wallet && !source.locked;
-  setEarnAvailable(true); $('stake-status').textContent = 'Reading validators and your delegations…';
+  setEarnAvailable(true); $('stake-status').textContent = 'Reading witnesses and your delegations…';
   try {
     const view = await adapters.nodus.stakingOverview({ client, from: source.addresses.nodus });
     if (!current()) return;
     stakeView = view; renderStaking(view);
-    $('stake-status').textContent = view.truncated ? 'The validator list is longer than this wallet shows; only the first validators are listed.' : '';
+    $('stake-status').textContent = view.truncated ? 'The witness list is longer than this wallet shows; only the first witnesses are listed.' : '';
   } catch (error) {
     if (!current()) return;
-    $('stake-status').textContent = `Could not read validators or delegations: ${error?.message || 'unknown error'} Use Refresh to try again.`;
+    $('stake-status').textContent = `Could not read witnesses or delegations: ${error?.message || 'unknown error'} Use Refresh to try again.`;
   }
 }
 function renderStaking(view) {
@@ -978,7 +978,7 @@ function renderStaking(view) {
     row.title = v.fingerprint;
     const toggle = el('button', 'stake-row-toggle'); toggle.type = 'button';
     toggle.setAttribute('aria-expanded', String(open));
-    toggle.setAttribute('aria-label', `Validator ${short}${d ? `, your delegation ${nodusAmountText(d.amount)} NODUS` : ''}. ${open ? 'Close' : 'Open'} delegation controls`);
+    toggle.setAttribute('aria-label', `Witness ${short}${d ? `, your delegation ${nodusAmountText(d.amount)} NODUS` : ''}. ${open ? 'Close' : 'Open'} delegation controls`);
     const name = el('span', 'stake-main');
     name.append(el('strong', '', short),
       el('small', '', `own stake ${nodusAmountText(v.selfStake)} NODUS · delegated ${nodusAmountText(v.delegated)} NODUS · commission ${rate(v.commissionBps)} · delegators ${slots}`));
@@ -996,21 +996,21 @@ function renderStaking(view) {
     const detail = el('div', 'stake-detail');
     detail.dataset.validator = v.fingerprint;
     if (d) {
-      detail.append(el('p', 'hint', `You have ${nodusAmountText(d.amount)} NODUS delegated to this validator.`));
+      detail.append(el('p', 'hint', `You have ${nodusAmountText(d.amount)} NODUS delegated to this witness.`));
       if (v.acceptsDelegation) {
         const more = amountInput(`Amount to add to your delegation with ${short}`, 'more');
         const add = el('span', 'stake-actions');
         add.append(more, actionButton('Review adding more', button => startStake('delegate', { validator: v.fingerprint, amount: more.value }, button)));
         detail.append(add, el('p', 'hint', 'Adding to your delegation can be any amount. A network fee is paid on top.'));
-      } else detail.append(el('p', 'hint', `This validator does not take more delegations now (${v.statusText}).`));
+      } else detail.append(el('p', 'hint', `This witness does not take more delegations now (${v.statusText}).`));
       const back = amountInput(`Amount to withdraw from ${short}`, 'withdraw', formatUnits(d.amount, NODUS_ASSET.decimals));
       const withdraw = el('span', 'stake-actions');
       withdraw.append(back, actionButton('Review withdrawal', button => startStake('undelegate', { validator: v.fingerprint, amount: back.value }, button)));
-      detail.append(withdraw, el('p', 'hint', `Withdrawing returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the validator set next changes. Until then it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`));
+      detail.append(withdraw, el('p', 'hint', `Withdrawing returns the NODUS to your address as a separate coin that stays locked for ${view.lockText} after the witness set next changes. Until then it cannot be sent or delegated again. Withdraw everything, or leave at least ${minText} NODUS delegated. The network fee is paid from your spendable NODUS.`));
     } else if (!v.acceptsDelegation) {
-      detail.append(el('p', 'hint', `This validator does not take delegations now (${v.statusText}).`));
+      detail.append(el('p', 'hint', `This witness does not take delegations now (${v.statusText}).`));
     } else if (full) {
-      detail.append(el('p', 'hint', `All ${rules.maxDelegators} delegator places of this validator are taken. Choose another validator.`));
+      detail.append(el('p', 'hint', `All ${rules.maxDelegators} delegator places of this witness are taken. Choose another witness.`));
     } else {
       const amount = amountInput(`Amount to delegate to ${short}`, 'amount');
       const actions = el('span', 'stake-actions');
@@ -1019,7 +1019,7 @@ function renderStaking(view) {
     }
     row.append(detail);
     return row;
-  }) : [el('p', 'stake-empty', 'No validators listed.')]));
+  }) : [el('p', 'stake-empty', 'No witnesses listed.')]));
   if (focused) {
     const input = $('validator-list').querySelector(`.stake-detail input[data-field="${focused.field}"]`);
     if (input) {
@@ -1039,7 +1039,7 @@ function renderStaking(view) {
     row.append(name);
     row.title = d.validator;
     const actions = el('span', 'stake-actions');
-    actions.append(el('small', 'stake-note', '(this validator is not in the list above, so it cannot be withdrawn from here)'));
+    actions.append(el('small', 'stake-note', '(this witness is not in the list above, so it cannot be withdrawn from here)'));
     row.append(actions);
     return row;
   }));
@@ -1071,7 +1071,7 @@ async function startStake(kind, params, button) {
     const locked = adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus));
     const transfer = await adapters.nodus.prepareStake({ client, from: wallet.addresses.nodus, kind, locked, ...params });
     if (current !== revision || !wallet || client !== nodusClient) { transfer.cancel(); return; }
-    const title = kind === 'delegate' ? 'Review delegation' : kind === 'undelegate' ? 'Review undelegation' : 'Review validator bond';
+    const title = kind === 'delegate' ? 'Review delegation' : kind === 'undelegate' ? 'Review undelegation' : 'Review witness bond';
     showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], title);
     message('Review every detail before confirming.');
   } catch (error) { if (current === revision) message(error.message); }
@@ -1563,7 +1563,7 @@ $('confirm-send').onclick = async () => {
   busy = true; const transfer = pending, current = revision; pending = undefined; let record;
   // The action's name in the status line, now and once its record resolves
   // (followSubmission); the ID label is null where an explorer link is shown.
-  const what = transfer.kind === 'delegate' ? 'Delegation' : transfer.kind === 'undelegate' ? 'Undelegation' : transfer.kind === 'stake' ? 'Validator bond'
+  const what = transfer.kind === 'delegate' ? 'Delegation' : transfer.kind === 'undelegate' ? 'Undelegation' : transfer.kind === 'stake' ? 'Witness bond'
     : transfer.kind === 'name' ? `Registration of the chain name "${transfer.name}"` : transfer.kind === 'claim' ? 'Claim' : 'Transfer';
   const idLabel = transfer.kind === 'claim' ? 'Claim ID' : transfer.kind ? 'Transaction ID' : CHAINS[transfer.chain] ? null : 'Transfer ID';
   const follow = () => { if (record) { submissionFollow = { record, what, idLabel, link: !idLabel, shown: null }; followSubmission(); } };

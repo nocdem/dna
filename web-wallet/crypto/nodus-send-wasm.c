@@ -809,7 +809,7 @@ static const char *nsw_stake_reason(int rc, int op) {
         return op == NODUS_V2_STAKE_OP_UNDELEGATE
             ? "Not enough spendable NODUS to pay the network fee."
             : "Insufficient NODUS balance for this amount plus the network fee (at most 15 coins are used).";
-    case NODUS_V2_STAKE_ERR_BOND:        return "A validator bond must be exactly 10,000,000 NODUS.";
+    case NODUS_V2_STAKE_ERR_BOND:        return "A witness bond must be exactly 10,000,000 NODUS.";
     case NODUS_V2_STAKE_ERR_COMMISSION:  return "The commission is above the maximum (50%).";
     case NODUS_V2_STAKE_ERR_AMOUNT:      return "Amount is out of range.";
     case NODUS_V2_STAKE_ERR_OP:          return "Unknown staking action.";
@@ -2231,7 +2231,7 @@ int nsw_validators(void) {
         if (rc != 0) {
             nodus_client_free_validator_list_result(&page);
             g_vals.n = 0;
-            return nsw_end(nsw_fail("The validator list could not be read (rc=%d).", rc));
+            return nsw_end(nsw_fail("The witness list could not be read (rc=%d).", rc));
         }
         int bad = page.count < 0 || page.count > NSW_VAL_PAGE ||
                   (page.count > 0 && !page.entries) || page.total < 0 ||
@@ -2264,13 +2264,13 @@ int nsw_validators(void) {
         nodus_client_free_validator_list_result(&page);
         if (bad) {
             g_vals.n = 0;
-            return nsw_end(nsw_fail("The Nodus node returned an invalid validator list."));
+            return nsw_end(nsw_fail("The Nodus node returned an invalid witness list."));
         }
         offset += got;
         if (g_vals.truncated || offset >= total) break;
         if (got == 0 || ++pages > NSW_MAX_VALIDATORS) {
             g_vals.n = 0;
-            return nsw_end(nsw_fail("The validator list could not be read completely."));
+            return nsw_end(nsw_fail("The witness list could not be read completely."));
         }
     }
     g_vals.valid = 1;
@@ -2354,17 +2354,17 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
             return nsw_end(nsw_fail("Invalid staking request."));
     } else {
         if (!g_vals.valid)
-            return nsw_end(nsw_fail("Load the validator list first."));
+            return nsw_end(nsw_fail("Load the witness list first."));
         for (int i = 0; i < g_vals.n && vi < 0; i++)
             if (strnlen(validator_fp_hex, 129) == 128 &&
                 memcmp(g_vals.fp_hex[i], validator_fp_hex, 128) == 0)
                 vi = i;
         if (vi < 0)
-            return nsw_end(nsw_fail("This validator is not in the current "
-                                    "validator list."));
+            return nsw_end(nsw_fail("This witness is not in the current "
+                                    "witness list."));
         if (op == NODUS_V2_STAKE_OP_DELEGATE &&
             g_vals.status[vi] != 0 && g_vals.status[vi] != 4)
-            return nsw_end(nsw_fail("This validator does not accept "
+            return nsw_end(nsw_fail("This witness does not accept "
                                     "delegations now."));
     }
     if (!g_list.valid || g_list.tip == 0)

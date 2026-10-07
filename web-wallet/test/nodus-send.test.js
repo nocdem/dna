@@ -626,7 +626,7 @@ test('staking overview: validators and delegations parsed strictly and joined; l
     { ...mock.state.validators[0], commissionBps: 10001 }, { ...mock.state.validators[0], selfStake: '-1' }
   ]) {
     mock.state.validators = [bad];
-    await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid validator (list|stake)/);
+    await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid witness (list|stake)/);
   }
   mock.state.validators = [{ fingerprint: VAL_A, selfStake: '1', delegated: '0', commissionBps: 0, status: 0 }];
   mock.state.delegations = [{ validator: VAL_A, amount: '0', block: '1' }];
@@ -651,7 +651,7 @@ test('staking overview: a validator\'s delegator slots — the count when the no
   assert.equal((await stakingOverview({ client, from: FINGERPRINT })).validators[0].delegators, 0);
   for (const bad of [-2, 1.5, '3']) {
     mock.state.validators = [{ fingerprint: VAL_A, selfStake: RULES.selfStake, delegated: '0', commissionBps: 0, status: 0, delegators: bad }];
-    await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid validator list/, String(bad));
+    await assert.rejects(stakingOverview({ client, from: FINGERPRINT }), /invalid witness list/, String(bad));
   }
   client.lock();
 });
@@ -677,8 +677,8 @@ test('delegate: the chain rules that need the listed state are checked first; th
   // below the minimum for a NEW delegation, a validator that is leaving, an unknown one
   await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '99.99999999' }), /at least 100\.0 NODUS/);
   await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_B, amount: '100' }), /does not accept delegations now \(Leaving\)/);
-  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: 'ee'.repeat(64), amount: '100' }), /not in the current validator list/);
-  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: 'x', amount: '100' }), /Choose a validator/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: 'ee'.repeat(64), amount: '100' }), /not in the current witness list/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: 'x', amount: '100' }), /Choose a witness/);
   assert.equal(mock.state.lastStake, undefined, 'nothing was built');
   // a top-up of an existing delegation may be any amount >= 1 raw
   mock.state.delegations = [{ validator: VAL_C, amount: '10000000000', block: '5' }];
@@ -690,8 +690,8 @@ test('delegate: the chain rules that need the listed state are checked first; th
   const t = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100', locked });
   assert.deepEqual(mock.state.lastStake, { op: 'delegate', validator: VAL_A, amount: '10000000000', commissionBps: '0', expiryHeight: '1090', coins: [coin(1, '20000000000')] });
   const review = Object.fromEntries(t.review);
-  assert.equal(review.Action, 'Delegate NODUS'); assert.equal(review.Validator, VAL_A);
-  assert.equal(review['Validator commission'], '5%'); assert.equal(review.Amount, '100.0 NODUS');
+  assert.equal(review.Action, 'Delegate NODUS'); assert.equal(review.Witness, VAL_A);
+  assert.equal(review['Witness commission'], '5%'); assert.equal(review.Amount, '100.0 NODUS');
   assert.equal(review['Change back to you'], '99.99999 NODUS'); assert.match(review.Note, /locked for 12 epochs/);
   assert.equal(review['Valid until block'], '1090'); assert.equal(review['Chain ID'], CHAIN_ID);
   // confirm: the record is durable before the envelope is submitted
@@ -722,7 +722,7 @@ test('delegate: the chain rules that need the listed state are checked first; th
 
 test('undelegate: only an existing delegation, at most its amount, never leaving dust; the funding pays the fee only', async () => {
   const { mock, client } = await stakingClient();
-  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '1' }), /no delegation with this validator/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '1' }), /no delegation with this witness/);
   mock.state.delegations = [{ validator: VAL_A, amount: '15000000000', block: '5' }, { validator: 'dd'.repeat(64), amount: '10000000000', block: '5' }];
   await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '150.00000001' }), /at most 150\.0 NODUS/);
   await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_A, amount: '100' }), /leave at least 100\.0 NODUS/);
@@ -749,14 +749,14 @@ test('stake (become a validator): exactly the self-bond, commission 0..50%, refu
   const t = await prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '1250', amount: '5' });
   assert.deepEqual({ ...mock.state.lastStake, coins: undefined }, { op: 'stake', validator: '', amount: RULES.selfStake, commissionBps: '1250', expiryHeight: '1090', coins: undefined });
   const review = Object.fromEntries(t.review);
-  assert.equal(review.Action, 'Become a validator'); assert.equal(review.Bond, '10000000.0 NODUS'); assert.equal(review.Commission, '12.5%');
+  assert.equal(review.Action, 'Become a witness'); assert.equal(review.Bond, '10000000.0 NODUS'); assert.equal(review.Commission, '12.5%');
   assert.match(review['Bond returns to'], /your own address/); assert.match(review.Important, /no way to unstake/);
   assert.equal(t.to, FINGERPRINT); assert.equal(t.kind, 'stake');
   t.cancel();
   // already a validator (any status but unstaked): refused before any build
   mock.state.lastStake = undefined;
   mock.state.validators.push({ fingerprint: FINGERPRINT, selfStake: RULES.selfStake, delegated: '0', commissionBps: 0, status: 4 });
-  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '0' }), /already a validator/);
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '0' }), /already a witness/);
   assert.equal(mock.state.lastStake, undefined);
   await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'unstake' }), /Unknown staking action/);
   client.lock();
