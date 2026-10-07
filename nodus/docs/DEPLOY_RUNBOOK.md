@@ -728,9 +728,12 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-7 storage reward, after HF-5 (**not voted** — placeholder) | rule-set generation 4 GEN_STORAGE (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT in force from H | 16 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6; Nodus EVM took generation 3 and params 14 / 15) | 896171186953543716 (S4 = 0x0c6fd6f2484e6024; `DNAC_CFG_RULESET_GEN_STORAGE_D`, re-derived by `shared/dnac/tests/storage_oracle.py` over EVM v2) | — | — | not released | — |
 | HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not the validator itself is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; self-delegation, UNDELEGATE, existing rows and payouts untouched); such a DELEGATE's funding leg takes at most 14 inputs. No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | not released | — |
 
+Read 2026-10-07: HF-5 ACTIVE on 7/7 — every node logged "Nodus EVM: rule-set generation
+2 -> 3 and the EVM domain registered ACTIVE at the end of height 79756 (D
+0x029f47596864d407)", no CMT_FAULT, state_root identical 7/7 at 79771; the seven nodes
+on 0.25.4 (rolled from 0.25.2 before H; EVM code unchanged between the two).
 Read 2026-10-06: the HF-5 row on 7/7 (identical; proposed from EU-5, 7/7 approvals; the
-seven nodes on 0.24.1 — 0.24.0 was never deployed). The EVM is not active until block
-79757: the generation switches at the end of block 79756.
+seven nodes on 0.24.1 — 0.24.0 was never deployed).
 Read 2026-10-02: the HF-4 row on 7/7 (identical; proposed from EU-5, 7/7 approvals; the
 seven nodes on 0.23.10 with identical D2/commit/consensus-constants startup lines, the web
 wallet, Connect, explorer and Scan released before the vote). The HF-3 row on 7/7 (identical; proposed from EU-5, 7/7 approvals); the
