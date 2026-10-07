@@ -638,6 +638,24 @@ typedef struct {
      * derived, which refuses the EVM_ACTIVE vote (fail closed). Read only
      * by the SYSTEM CHAIN_CONFIG exec. */
     uint64_t       chain_initial_height;
+    /* Nodus EVM pairing rule (nodus/BUGS.md, "EVM DEPOSIT/CALL ... imzasına
+     * bağlı değil"; operator option A, 2026-10-07): the ENGINE-owned
+     * VERIFIED verdicts of EVERY leg of this envelope, indexed by leg
+     * (env_auths[l]; env_auths[ctx-leg] == *auth), env_auth_count entries
+     * (= the envelope's leg_count). WHY: the EVM runtime binds the EVM
+     * sender (its own leg's signer) to a signer of the CORE EVMFUND leg
+     * that pays for it, and a leg's auth digest commits every leg's call
+     * bytes and auth_len but NOT a sibling leg's auth bytes
+     * (shared/dnac/env_wire.c), so without this view one leg's signature
+     * could be swapped for another key's. Filled by the engine on the
+     * read_plan/exec ctx only (nodus_witness_v2_apply.c exec_one_env); NULL
+     * / 0 where the engine does not fill it (the authorization stage, the
+     * §18 RPC simulation) — a runtime MUST treat NULL as "not available",
+     * never as "no siblings". Not part of any committed identity: hooks are
+     * not in the ruleset descriptor, so neither a ruleset hash nor the EVM
+     * activation digest D moves. A hook never chooses it. */
+    const nodus_rt_auth_verdict_t *env_auths;
+    uint16_t       env_auth_count;
 } nodus_rt_exec_ctx_t;
 
 /* ── Nodus EVM: the runtime-ABI-2 execution boundary (design §3, §4, §7) ────

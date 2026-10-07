@@ -5834,6 +5834,23 @@ stays there, locked, and counts in `wei_live`.
   `test_v2_evm` section 12b (`test_bridge_sender_code`) seeds code at a real test signer's
   derived address (a synthetic collision), proves WITHDRAW and DEPOSIT refused by CheckTx and by
   the block with the ledger byte-identical, then removes the code and lands the same WITHDRAW.
+- *The sender is bound to the funder (0.25.1, before activation; `nodus/BUGS.md` Claude Security
+  scan #4 F1).* A leg's auth digest commits every leg's call bytes and `auth_len` but not a
+  sibling's auth bytes (`shared/dnac/env_wire.c:497-533`), so before 0.25.1 the EVM leg's
+  signature could be replaced by another key's valid signature over the same digest and the
+  deposit / the call acted for that key while the EVMFUND leg's funder paid. `rtevm_prologue`
+  (`nodus_witness_rt_evm.c:1356`, the rule at `:1372-1404`) now requires the EVM leg's one
+  verified signer to be one of the verified signers of leg 0, for all five ops; otherwise -1.
+  The engine hands every leg's verdict on the exec ctx (`nodus_rt_exec_ctx_t.env_auths` /
+  `env_auth_count`, filled in `exec_one_env` only; absent on that path = FAULT -2). Honest
+  clients sign both legs with one key (`nodus_v2_env_sign_one_key`). Hook code only — no
+  descriptor, ruleset hash, meter policy or wire byte moved, so D is unchanged and the 62 425
+  vote stands; EVMFUND exists only in generation 3, so nothing executed under the old rule
+  (operator option A, `docs/plans/decisions/2026-10-06-hf5-evm-activation.md` "Ek — 2026-10-07").
+  Every node must run ≥ 0.25.1 before block 79 757. Regression: `test_v2_evm` section 14
+  (`test_sender_binding`, `nodus/tests/test_v2_evm.c:4760`) — a forged DEPOSIT and a forged CALL
+  (leg 1 re-signed by key B) refused by CheckTx (new + recheck) and by the block with the
+  ledger byte-identical, honest controls land; RED with the rule disabled (`:4753`).
 - *After execution starts there is no -1 for a CALL / CREATE*, only FAULT (-2). On success the
   WHOLE effect stream's count and canonical bytes are checked against the leg's declared
   ceilings, the stream caps and the unit budget BEFORE any page is applied, so page boundaries

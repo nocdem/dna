@@ -1369,6 +1369,39 @@ static int rtevm_prologue(const dna_env_view_t *env, uint16_t leg_index,
     /* design §2: exactly [CORE EVMFUND] + [EVM op], the role matching —
      * the SAME rule the CORE hook applies from its side */
     if (leg_index != 1 || nodus_rt_evm_pair_check(env) != 0) return -1;
+    /* The pairing rule's signer binding (nodus/BUGS.md "EVM DEPOSIT/CALL
+     * ... imzasına bağlı değil"; operator option A, 2026-10-07): the EVM
+     * sender — this leg's one verified signer — MUST be a verified signer
+     * of the CORE EVMFUND leg (leg 0) that pays the fee / locks the
+     * deposit. A leg's auth digest commits every leg's call bytes and
+     * auth_len but not a sibling's auth bytes (shared/dnac/env_wire.c), so
+     * without this rule leg 1's auth could be replaced by ANOTHER key's
+     * valid signature over the same digest and the call / the deposit
+     * would act for that key while leg 0's funder pays. Applies to all
+     * five EVM ops (CALL / CREATE / DEPOSIT / WITHDRAW / REDEEM) — one
+     * prologue serves exec and CheckTx's pre-validation alike. Honest
+     * clients sign both legs with one key (nodus/src/client/
+     * nodus_v2_spend.c nodus_v2_env_sign_one_key, used by
+     * nodus_v2_evm.c), so they always pass. Hook code only: no descriptor,
+     * ruleset hash, meter policy or wire changes, so the EVM activation
+     * digest D does not move. The engine always hands every leg's verdict
+     * on this path (nodus_witness_v2_apply.c exec_one_env); its absence is
+     * a node fault, never a verdict. */
+    if (!ctx->env_auths || ctx->env_auth_count != env->leg_count ||
+        env->leg_count < 2 || ctx->env_auths[0].n_signers < 1 ||
+        ctx->env_auths[0].n_signers > NODUS_RT_AUTH_MAX_SIGNERS)
+        return -2;
+    {
+        int bound = 0;
+        for (uint16_t i = 0; i < ctx->env_auths[0].n_signers; i++) {
+            if (memcmp(ctx->env_auths[0].signer_fp[i],
+                       ctx->auth->signer_fp[0], 64) == 0) {
+                bound = 1;
+                break;
+            }
+        }
+        if (!bound) return -1;
+    }
     return rtevm_decode(env->leg[leg_index].runtime_op,
                         env->buf + env->call_off[leg_index],
                         env->leg[leg_index].call_len, k, p);

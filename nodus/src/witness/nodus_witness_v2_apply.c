@@ -2397,6 +2397,12 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.gas_price_on        = evm_facts.gas_price_on;
         ctx.evm_active_voted    = evm_facts.evm_active_voted;
         ctx.chain_initial_height = evm_facts.chain_initial_height; /* F5 */
+        /* Nodus EVM pairing rule: every leg's verified verdict (the item's
+         * auth stage verified and filled `auths` for all legs before this
+         * envelope executes), so the EVM runtime can bind
+         * its sender to the CORE EVMFUND leg's signers (runtime.h) */
+        ctx.env_auths           = auths;
+        ctx.env_auth_count      = v->leg_count;
 
         /* ── Nodus EVM: a runtime-ABI-2 leg reads at RUN TIME through the
          * engine's reader and returns an effect STREAM (design §3/§4) —

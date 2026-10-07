@@ -168,6 +168,16 @@
  *     refusals a codeless sender's WITHDRAW (the other key) is admitted
  *     and lands, K untouched (the adapter refuses an ACCT SET that strips
  *     live code, so K's own codeless case is the control at the top).
+ * 14. the EVM sender is bound to the CORE funder (nodus/BUGS.md "EVM
+ *     DEPOSIT/CALL ... imzasına bağlı değil"; operator option A,
+ *     2026-10-07): an envelope whose leg 0 is signed by A and whose EVM
+ *     leg's auth is swapped for B's VALID kind-1 auth over the same leg
+ *     digest (same auth_len) — (a) a DEPOSIT, (b) a CALL — is refused by
+ *     CheckTx (new entry and recheck) and by the block with code EXEC (not
+ *     AUTH: every signature verifies), A's coin live, no EVM account, the
+ *     reserve and the pool unmoved; the same shapes signed by A on both
+ *     legs are then admitted and land (A credited, not B); (c) a swapped
+ *     DEPOSIT onto A's LIVE account funded by B is refused, A untouched.
  *  Section 1 also proves the address width is in D (Kurultay #9 item 2):
  *     a restatement of EVM_ACT_CONSTS re-derives the D literal, and the
  *     same vector with a width of 20 — or without the width entry — does
@@ -226,8 +236,18 @@
  *    over the dropped-then-recreated empty tables; byte-identity to the
  *    PREVIOUS binary (LastResultsHash / app hash of a non-EVM block) is
  *    the orchestrator's parent-vs-this comparison.
- *  - The CORE fee sponsor ≠ EVM sender case (design §2) is not built:
- *    every envelope here is signed by one key.
+ *  - The CORE fee sponsor ≠ EVM sender case (design §2) is built only as
+ *    section 14's REFUSAL (one key per leg, the EVM leg's auth swapped
+ *    after signing); a leg-0 MULTI-signer envelope {sponsor, sender} with
+ *    the sender on the EVM leg (the co-signed sponsorship the binding
+ *    still accepts — rtn_input_owned needs only SOME leg-0 signer to own
+ *    each input, rtn_owners_all_used iterates multisig descriptors only)
+ *    is not built: the shared signer (nodus_v2_env_sign_one_key) writes
+ *    one signer per leg and no helper here assembles a two-signer kind-1
+ *    auth. That accepted shape has no test.
+ *  - Section 14 drives the binding through DEPOSIT and CALL only; CREATE /
+ *    WITHDRAW / REDEEM reach the same prologue (rtevm_prologue) — the
+ *    code path, not a test, covers them.
  *  - Section 11 turns the address index on with a bare host (zeroed
  *    identity, only the flag set) on the engine fixture, not through the
  *    real host pipeline test_addr_index.c drives; a REDEEM's release row
@@ -617,6 +637,11 @@ typedef struct {
     uint32_t       evm_eff, evm_bytes;
     int            exact;            /* ceiling = static + gas + FAIL_RES */
     int64_t        delta;            /* added to the ceiling              */
+    int            evm_signer;       /* 0 = `key`; k + 1 = AFTER signing,
+                                      * the EVM leg's auth is REPLACED by
+                                      * key k's valid kind-1 auth over the
+                                      * same leg digest (same auth_len) —
+                                      * section 14's sibling swap         */
 } spec_t;
 
 static void put64(uint8_t *p, uint64_t v) {
@@ -790,7 +815,31 @@ static int build_tx(fixture_t *fx, const spec_t *s, tx_t *out) {
     int rc = nodus_v2_env_sign_one_key(&in, auths, lctx, fx->w->v2_chain32,
                                        fx->h - 1u, g_k[k].pk, g_k[k].sk,
                                        &out->bytes, &out->len, pf, &err);
+    /* Section 14: swap the EVM leg's auth for another key's. A leg's auth
+     * digest commits every leg's call bytes and auth_len but no sibling's
+     * auth bytes (shared/dnac/env_wire.c), so the pass-2 digest of the EVM
+     * leg is still the one the new signature must cover, every other leg's
+     * signature stays valid, and the intent id does not move. */
+    if (rc == NODUS_V2_SPEND_OK && s->evm_signer && evm_leg) {
+        const int fk = s->evm_signer - 1;
+        const uint16_t el = (uint16_t)(evm_leg - 1u);
+        size_t sl = 0;
+        if (fk < 0 || fk >= N_KEYS ||
+            pf->view.leg[el].auth_len != AUTH_LEN ||
+            (size_t)pf->view.auth_off[el] + AUTH_LEN > out->len) {
+            rc = -1;
+        } else {
+            uint8_t *ab = out->bytes + pf->view.auth_off[el];
+            ab[0] = 1;
+            memcpy(ab + 1, g_k[fk].pk, QGP_DSA87_PUBLICKEYBYTES);
+            if (qgp_dsa87_sign(ab + 1 + QGP_DSA87_PUBLICKEYBYTES, &sl,
+                               pf->auth_digest[el], 64, g_k[fk].sk) != 0 ||
+                sl != QGP_DSA87_SIGNATURE_BYTES)
+                rc = -1;
+        }
+    }
     if (rc == NODUS_V2_SPEND_OK) memcpy(out->intent, pf->intent_id, 64);
+    else { free(out->bytes); out->bytes = NULL; out->len = 0; }
     free(pf);
     return rc == NODUS_V2_SPEND_OK ? 0 : -1;
 }
@@ -4676,6 +4725,124 @@ static int test_block_position(void) {
     return 0;
 }
 
+/* ══ 14. the EVM sender is bound to the CORE funder (pairing rule) ════ */
+
+/* One forged envelope: leg 0 (CORE EVMFUND) signed by `funder`, the EVM
+ * leg's auth swapped for `evm_key`'s valid kind-1 auth (build_tx
+ * evm_signer). Refused by both dry-run forms — the executing one
+ * (dry_ex novm 0) and the no-VM pre-validation CheckTx runs for new
+ * entries and rechecks alike (novm 1) — and by the block
+ * with code EXEC — NOT AUTH: every leg's signature verifies, the refusal is
+ * the binding rule's (nodus_witness_rt_evm.c rtevm_prologue) — the
+ * funder's coin live, the ledger byte-identical (refused_one). */
+static int forged_refused(fixture_t *fx, spec_t *s, int evm_key,
+                          nodus_v2_env_dry_run_t *d, const char *what) {
+    tx_t t;
+    uint32_t code = 0;
+    s->evm_signer = evm_key + 1;
+    CHECK(build_tx(fx, s, &t) == 0, what);
+    int ok = dry_ex(fx->w, &t, 0, d) == -1 && d->code == NODUS_V2_TX_ERR_EXEC;
+    nodus_witness_v2_env_dry_run_free(d);
+    if (ok) {
+        ok = dry_ex(fx->w, &t, 1, d) == -1 &&
+             d->code == NODUS_V2_TX_ERR_EXEC;
+        nodus_witness_v2_env_dry_run_free(d);
+    }
+    if (ok)
+        ok = refused_one(fx, &t, &code) == 0 &&
+             code == NODUS_V2_TX_ERR_EXEC && coin_live(fx->w, t.coin) == 1;
+    tx_free(&t);
+    if (!ok) {
+        fprintf(stderr, "CHECK failed at %s:%d: %s (code %u)\n", __FILE__,
+                __LINE__, what, (unsigned)code);
+        return 1;
+    }
+    OK();
+    return 0;
+}
+
+static int test_sender_binding(void) {
+    fixture_t fx;
+    CHECK(fx_evm_ready(&fx, "bind") == 0, "EVM chain"); OK();
+    const int A = 0, B = 1;
+    const uint8_t *sa = sender_of(A), *sb = sender_of(B);
+    uint8_t call[256], to[32];
+    size_t cl;
+    spec_t s;
+    tx_t t;
+    memset(to, 0x44, sizeof(to));
+    nodus_v2_env_dry_run_t *d = calloc(1, sizeof(*d));
+    CHECK(d != NULL, "alloc");
+    const uint64_t p0 = pool_of(fx.w);
+
+    /* (a) DEPOSIT 10: A funds leg 0, B's signature on the EVM leg — the
+     * deposit would credit B's EVM account from A's coin */
+    cl = enc_deposit(call, 10, 0);
+    memset(&s, 0, sizeof(s));
+    s.key = A; s.with_core = 1; s.with_evm = 1; s.big = 1; s.lock = 10;
+    s.evm_op = NODUS_RT_EVM_DEPOSIT; s.call = call; s.call_len = (uint32_t)cl;
+    if (forged_refused(&fx, &s, B, d,
+                       "a DEPOSIT whose EVM signer is not the funder") != 0)
+        return 1;
+
+    /* (b) CALL (value 0) of B's, its fee paid from A's coin */
+    cl = enc_call(call, to, 0, 50000, 0, NULL, 0, NULL, NULL);
+    memset(&s, 0, sizeof(s));
+    s.key = A; s.with_core = 1; s.with_evm = 1;
+    s.evm_op = NODUS_RT_EVM_CALL; s.call = call; s.call_len = (uint32_t)cl;
+    if (forged_refused(&fx, &s, B, d,
+                       "a CALL whose EVM signer is not the fee payer") != 0)
+        return 1;
+
+    CHECK(q1(fx.w, "SELECT COUNT(*) FROM evm_accounts") == 0 &&
+          acct_balance_lo(fx.w, sb) == 0 && acct_nonce(fx.w, sb) == 0 &&
+          reserve_of(fx.w) == 0 && pool_of(fx.w) == p0,
+          "nothing moved: no EVM account, reserve 0, no fee pooled"); OK();
+
+    /* controls on the same chain: the SAME shapes signed by A on both
+     * legs are admitted and land — the refusals were the binding's */
+    CHECK(deposit_tx(&fx, A, 10, 0, &t) == 0, "honest DEPOSIT built");
+    CHECK(dry_ex(fx.w, &t, 0, d) == 0 && d->code == NODUS_V2_TX_OK,
+          "CheckTx admits the honest DEPOSIT"); OK();
+    nodus_witness_v2_env_dry_run_free(d);
+    CHECK(apply_one(&fx, &t, NULL) == NODUS_V2_TX_OK &&
+          coin_live(fx.w, t.coin) == 0 &&
+          acct_balance_lo(fx.w, sa) == 10ull * Q && acct_nonce(fx.w, sa) == 1
+          && acct_balance_lo(fx.w, sb) == 0 && reserve_of(fx.w) == 10 &&
+          pool_of(fx.w) == p0 + FEE,
+          "the honest DEPOSIT credits A (its signer), not B"); OK();
+    tx_free(&t);
+    cl = enc_call(call, to, 0, 50000, 1, NULL, 0, NULL, NULL);
+    CHECK(evm_tx(&fx, A, NODUS_RT_EVM_CALL, call, (uint32_t)cl, &t) == 0,
+          "honest CALL built");
+    CHECK(dry_ex(fx.w, &t, 0, d) == 0 && d->code == NODUS_V2_TX_OK,
+          "CheckTx admits the honest CALL"); OK();
+    nodus_witness_v2_env_dry_run_free(d);
+    CHECK(apply_one(&fx, &t, NULL) == NODUS_V2_TX_OK &&
+          acct_nonce(fx.w, sa) == 2 && pool_of(fx.w) == p0 + 2u * FEE,
+          "the honest CALL lands (A's nonce 2, its fee pooled)"); OK();
+    tx_free(&t);
+
+    /* (c) after the controls: a forged DEPOSIT whose EVM signer is A (a
+     * live account at nonce 2), funded by B — refused the same way */
+    cl = enc_deposit(call, 5, 2);
+    memset(&s, 0, sizeof(s));
+    s.key = B; s.with_core = 1; s.with_evm = 1; s.big = 1; s.lock = 5;
+    s.evm_op = NODUS_RT_EVM_DEPOSIT; s.call = call; s.call_len = (uint32_t)cl;
+    if (forged_refused(&fx, &s, A, d,
+                       "a DEPOSIT to a live account funded by another "
+                       "key") != 0)
+        return 1;
+    CHECK(acct_balance_lo(fx.w, sa) == 10ull * Q && acct_nonce(fx.w, sa) == 2
+          && reserve_of(fx.w) == 10 && pool_of(fx.w) == p0 + 2u * FEE,
+          "A's account, the reserve and the pool unchanged"); OK();
+    CHECK(invariants_ok(fx.w) && roots_ok(fx.w) == 0,
+          "invariants and roots at the end"); OK();
+    free(d);
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     if (E_LEN <= 64) {
         fprintf(stderr, "test_v2_evm: needs DNAC_EPOCH_LENGTH > 64 (this "
@@ -4705,6 +4872,7 @@ int main(void) {
     fails += test_trie_batch();
     fails += test_bridge_sender_code();
     fails += test_block_position();
+    fails += test_sender_binding();
     if (fails) {
         fprintf(stderr, "test_v2_evm: %d section(s) FAILED (%d checks "
                 "passed)\n", fails, g_checks);
