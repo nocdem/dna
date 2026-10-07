@@ -55,6 +55,11 @@ import { el, untrusted, button, website, fillAvatar } from './dom.js';
 import { parseNameOf } from '../../nodus/names.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
+// The session log (memory only, cleared on lock): Messages' failures as
+// shown, with the bounded error text (diag.js errorText) — never a message
+// text, a key or a full ID (src/session-log.js scrubs every line too).
+import { sessionLog } from '../../session-log.js';
+const logFailure = (text, error) => sessionLog.log('messages', error === undefined ? text : `${text} (${errorText(error)})`, { error: true });
 // Groups (package G3): the state machine and its screens. Group invites,
 // accepts, welcomes and leaves travel as 1:1 messages (bytes item 7,
 // decision 13); they are routed to the groups module and never shown as
@@ -164,6 +169,7 @@ function wipe() {
 // Messages is closed with a reason (an error, the connection, a deleted
 // history). `retry`: the identity is open and only reading failed.
 export function closeMessages(reason, { retry = false } = {}) {
+  if (reason) logFailure(`Messages closed: ${reason}`);
   if (!retry) wipe();
   phase = 'closed';
   showState('Messages is closed', reason, retry);
@@ -218,7 +224,11 @@ export async function openMessages({ client, phrase, vaultId: id = null, fresh: 
 
 // Our own plain-words errors (Closed, a storage failure) are shown as they
 // are; anything else gets the caller's plain-words fallback.
-function explain(error, fallback) { return error instanceof Closed || error instanceof StorageError ? error.message : fallback; }
+function explain(error, fallback) {
+  const shown = error instanceof Closed || error instanceof StorageError ? error.message : fallback;
+  logFailure(shown, error);
+  return shown;
+}
 
 // LOCAL phase: what this device keeps, before any network call — the
 // history store (a saved wallet's; typed words and a new account keep
@@ -574,6 +584,7 @@ async function sync() {
         if (error instanceof StorageError) storageFailure = error;
         const diag = diags.get(contact.fp);
         if (diag) diag.error = errorText(error);
+        logFailure(`A contact (${shortId(contact.fp)}) could not be checked`, error);
         continue;
       }
       if (complete && gen === generation && contactOf(contact.fp)) {
@@ -1616,7 +1627,7 @@ async function addContact(event) {
     addResolved = undefined; showAddResolved();
     ui.addStatus.textContent = 'Request sent. They appear in your contacts once they accept.';
     render();
-  } catch (error) { if (gen === generation) ui.addStatus.textContent = error.message; }
+  } catch (error) { if (gen === generation) { ui.addStatus.textContent = error.message; logFailure('A contact request was not sent', error); } }
 }
 
 async function send(event) {
@@ -1642,9 +1653,9 @@ async function send(event) {
     sending = false;
     render({ scroll: true });
     try { await publishOutbox(contact, gen); if (gen === generation) ui.sendStatus.textContent = ''; }
-    catch { if (gen === generation) ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; }
+    catch (error) { if (gen === generation) { ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; logFailure('A message was not sent yet; it is tried again automatically', error); } }
     if (gen === generation) render();
-  } catch (error) { if (gen === generation) ui.sendStatus.textContent = error.message; }
+  } catch (error) { if (gen === generation) { ui.sendStatus.textContent = error.message; logFailure('A message could not be kept on this device', error); } }
   finally { if (gen === generation && sending) { sending = false; ui.sendButton.disabled = !online; } }
 }
 
@@ -1661,7 +1672,7 @@ async function saveProfile(event) {
     ui.profileStatus.textContent = profileStatusText(result.status);
     if (result.status === 'published') { ownProfile = { ...(ownProfile || {}), ...patch }; fillProfile(); }
     if (result.status === 'taken') profileTaken = true;
-  } catch (error) { if (gen === generation) ui.profileStatus.textContent = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; }
+  } catch (error) { if (gen === generation) { ui.profileStatus.textContent = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; logFailure('Saving the profile failed', error); } }
 }
 
 // A chosen picture made the way the app makes one

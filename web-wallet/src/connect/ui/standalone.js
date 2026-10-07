@@ -25,7 +25,8 @@ import { Mnemonic, randomBytes } from 'ethers';
 import { VAULT_KEY, decryptVault } from '../../vault.js';
 import { normalizePhrase, validateNodusPhrase } from '../../recovery.js';
 import { nodusSendModuleFactory } from '../../nodus/send-module.js';
-import { createNodusClient } from '../../nodus/client.js';
+import { createNodusClient, NODUS_CONNECT_BOUND_MS } from '../../nodus/client.js';
+import { sessionLog, stepLog } from '../../session-log.js';
 import { deriveNodusAddress, nodusSigningSeed } from '../../nodus/derive.js';
 import { mountMessages, openMessages, resetMessages, walletExtension } from './messages.js';
 import { el } from './dom.js';
@@ -35,6 +36,8 @@ const IDLE_MS = 10 * 60 * 1000;          // src/app.js idle lock
 const SCREENS = ['nc-start', 'nc-unlock-form', 'nc-words-form', 'nc-create-form', 'nc-open'];
 
 let client, opening = 0, sessionRelease, idleTimer, idleDeadline = 0, newPhraseText;
+// The connection attempt the session log's step lines carry (connectLoop).
+let connectAttempt = 1;
 
 function status(text) { $('nc-status').textContent = text; }
 function show(id) { for (const screen of SCREENS) $(screen).hidden = screen !== id; }
@@ -69,6 +72,8 @@ function lock(reason = 'Messages locked.') {
   $('nc-new-words').replaceChildren();
   $('nc-lock').hidden = true;
   releaseSession();
+  // The session log (src/session-log.js) ends with the session.
+  sessionLog.clear();
   showStart();
   status(reason);
 }
@@ -116,12 +121,18 @@ async function open(getPhrase, { persistent, isFresh }) {
     // one (client.unlock refuses otherwise), as in src/app.js.
     const address = await deriveNodusAddress(phrase);
     if (superseded()) return;
+    connectAttempt = 1;
     built = createNodusClient({
       factory: nodusSendModuleFactory,
+      // Connection steps -> the session log ("attempt N · connect …").
+      steps: stepLog(sessionLog, 'net', () => connectAttempt, NODUS_CONNECT_BOUND_MS),
       // Once open, a client that fails ('error': its keepalive failed, or a
       // node of another chain) or locks from inside ends the page. A failed
       // connection attempt returns to 'identified' and is tried again
       // (connectLoop); before the page opened, the catch below reports.
+      // An attempt past the CONNECT WATCHDOG bound (src/nodus/client.js
+      // NODUS_CONNECT_BOUND_MS) locks the client too, so it ends the page as
+      // well: this page keeps no recovery words to make a new client from.
       onState: next => { if (built === client && (next === 'error' || next === 'locked')) lock('The connection to the network was lost. Unlock again to continue.'); }
     });
     seed = nodusSigningSeed(phrase);
@@ -153,6 +164,7 @@ async function open(getPhrase, { persistent, isFresh }) {
 const RETRY_MS = [5000, 10000, 20000, 40000, 60000];
 async function connectLoop(run, built) {
   for (let attempt = 0; run === opening && built === client; attempt++) {
+    connectAttempt = attempt + 1;
     try {
       await built.connectNetwork();
       if (run === opening && built === client) walletExtension.nodusReady({ client: built });
@@ -160,6 +172,7 @@ async function connectLoop(run, built) {
     } catch {
       if (run !== opening || built !== client || !built.identified) return;
       const wait = RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)];
+      sessionLog.log('net', `retry ${attempt + 1} in ${wait / 1000} s (same connection)`);
       walletExtension.nodusConnectFailed({ reason: `Not connected to the network right now; trying again in ${wait / 1000} seconds. Your messages on this device are shown.` });
       await new Promise(resolve => { setTimeout(resolve, wait); });
     }

@@ -3,7 +3,7 @@
 // the real (c3) module, the chain, or the browser UI wiring in src/app.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createNodusClient, NODUS_TICK_MS } from '../src/nodus/client.js';
+import { createNodusClient, NODUS_TICK_MS, NODUS_CONNECT_BOUND_MS } from '../src/nodus/client.js';
 import { nodusSendModuleFactory } from '../src/nodus/send-module.js';
 import { NODUS_NETWORK, nodusNetworkFor } from '../src/nodus/network.js';
 import { prepareTransfer } from '../src/wallet.js';
@@ -760,4 +760,90 @@ test('stake (become a validator): exactly the self-bond, commission 0..50%, refu
   assert.equal(mock.state.lastStake, undefined);
   await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'unstake' }), /Unknown staking action/);
   client.lock();
+});
+
+// CONNECT WATCHDOG (src/nodus/client.js NODUS_CONNECT_BOUND_MS, operator
+// 2026-10-07): an attempt that never settles must not leave the client in
+// 'connecting' forever. Fake timers: the bound fires when the test says so.
+function watchdogClient(factory) {
+  const timeouts = [], cleared = [], intervals = [], states = [], steps = [];
+  const client = createNodusClient({
+    factory, onState: state => states.push(state),
+    setInterval: (fn, ms) => { intervals.push({ fn, ms }); return 70 + intervals.length; }, clearInterval: () => {},
+    setTimeout: (fn, ms) => { timeouts.push({ fn, ms }); return timeouts.length; }, clearTimeout: id => cleared.push(id),
+    steps: { begin: name => { const step = { name, outcomes: [] }; steps.push(step); return { end: (outcome, error) => step.outcomes.push(error?.timedOut ? `${outcome}:timedOut` : outcome) }; } }
+  });
+  return { client, timeouts, cleared, intervals, states, steps };
+}
+
+test('connect watchdog: a hung connect step times out after 30 s, locks the client and rejects timedOut; a late answer is ignored', async () => {
+  assert.equal(NODUS_CONNECT_BOUND_MS, 30000);
+  const mock = createMockNodusModule();
+  const { client, timeouts, cleared, intervals, states, steps } = watchdogClient(mock.factory);
+  await client.identify({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  // identify ran under its own bound, cleared once it succeeded
+  assert.equal(timeouts.length, 1); assert.equal(timeouts[0].ms, NODUS_CONNECT_BOUND_MS); assert.deepEqual(cleared, [1]);
+  assert.deepEqual(steps.map(s => [s.name, s.outcomes]), [['load', ['ok']], ['identify', ['ok']]]);
+  const open = mock.gate('connectNetwork'); // the module call never answers until opened
+  const attempt = client.connectNetwork();
+  await settle();
+  assert.equal(client.state, 'connecting');
+  assert.equal(timeouts.length, 2); assert.equal(timeouts[1].ms, NODUS_CONNECT_BOUND_MS);
+  const before = mock.log.length;
+  timeouts[1].fn(); // 30 s passed
+  await assert.rejects(attempt, error => error.timedOut === true && error.step === 'connect' && /within 30 seconds \(step: connect\)/.test(error.message));
+  // the hung call was abandoned the only way the queue allows: the client locked itself
+  assert.deepEqual(mock.log.slice(before), ['cancel', 'lock', 'release']);
+  assert.equal(mock.state.zeroAtRelease, true);
+  assert.equal(client.state, 'locked'); assert.equal(client.identified, false);
+  // the step was logged once, as timed out (the lock's own rejection does not log it again)
+  assert.deepEqual(steps.find(s => s.name === 'connect').outcomes, ['timed out:timedOut']);
+  const statesAtTimeout = [...states];
+  assert.deepEqual(statesAtTimeout, ['identifying', 'identified', 'connecting', 'locked']);
+  // the late answer of the abandoned call changes nothing: no 'ready', no keepalive
+  open(); await settle(); await settle();
+  assert.deepEqual(states, statesAtTimeout);
+  assert.equal(client.state, 'locked'); assert.equal(intervals.length, 0);
+  await assert.rejects(client.connectNetwork(), /locked/);
+  // the timer firing again (it cannot, it was consumed) or late does nothing either
+  timeouts[1].fn(); assert.deepEqual(states, statesAtTimeout);
+});
+
+test('connect watchdog: success clears the bound; a failed attempt clears it and stays retryable; the first keepalive is logged once', async () => {
+  const mock = createMockNodusModule();
+  const { client, timeouts, cleared, intervals, steps } = watchdogClient(mock.factory);
+  await client.identify({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  mock.state.connectErrors.push(new Error('no node answered'));
+  await assert.rejects(client.connectNetwork(), /no node answered/);
+  assert.equal(client.state, 'identified', 'an ordinary failure keeps the client for the next try');
+  assert.deepEqual(cleared, [1, 2], 'the failed attempt cleared its bound');
+  await client.connectNetwork();
+  assert.equal(client.state, 'ready');
+  assert.deepEqual(cleared, [1, 2, 3], 'success cleared its bound');
+  // a bound that fires after its attempt settled does nothing
+  timeouts[2].fn(); assert.equal(client.state, 'ready');
+  assert.deepEqual(steps.filter(s => s.name === 'connect').map(s => s.outcomes), [['failed'], ['ok']]);
+  intervals[0].fn(); await settle();
+  intervals[0].fn(); await settle();
+  assert.deepEqual(steps.filter(s => s.name === 'first tick').map(s => s.outcomes), [['ok']], 'only the first keepalive is a logged step');
+  client.lock();
+});
+
+test('connect watchdog: a module load that never finishes times out identify; the late module is wiped, not used', async () => {
+  const mock = createMockNodusModule();
+  let deliver;
+  const { client, timeouts, states, steps } = watchdogClient(() => new Promise(resolve => { deliver = resolve; }));
+  const seed = new Uint8Array(32).fill(5);
+  const opening = client.identify({ seed, fingerprint: FINGERPRINT });
+  await settle();
+  assert.equal(client.state, 'identifying');
+  timeouts[0].fn();
+  await assert.rejects(opening, error => error.timedOut === true && error.step === 'load');
+  assert.ok(seed.every(b => b === 0), 'the JS seed is zeroed on a timeout too');
+  assert.equal(client.state, 'locked');
+  assert.deepEqual(steps.map(s => [s.name, s.outcomes]), [['load', ['timed out:timedOut']]]);
+  const statesAtTimeout = [...states];
+  deliver(mock.module); await settle(); await settle();
+  assert.deepEqual(mock.log, ['cancel', 'lock', 'release'], 'the late module is wiped and released, never identified');
+  assert.deepEqual(states, statesAtTimeout);
 });

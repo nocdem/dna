@@ -33,6 +33,8 @@ import {
 import { amountUnits, formatUnits } from '../core.js';
 import { chainName, parseNameOf } from '../nodus/names.js';
 import { NODUS_ASSET } from '../nodus/network.js';
+// The session log (src/session-log.js, memory only, scrubbed).
+import { sessionLog } from '../session-log.js';
 
 const HEX128 = /^[0-9a-f]{128}$/;
 // Blocks read per step and steps per Refresh (nodus-send-wasm.c
@@ -54,6 +56,7 @@ const sent = new Map();                  // rkey -> { intentId, at } submitted h
 const rkey = (address, digest) => `${address}|${digest}`;
 const shareStates = new Map();           // vault code -> { state, info?, error? }
 let status = '', draft = null, createInfo = null, foundationChecked = -1;
+let loggedStatus = '';                    // the status line last sent to the session log (render)
 
 const $ = id => document.getElementById(id);
 function el(tag, { className, text } = {}, ...children) {
@@ -464,9 +467,9 @@ async function sendPayment(record, request, items) {
     if (result.accepted) {
       sent.set(rkey(record.address, request.digest), { intentId: result.intentId, at: Date.now() });
       status = 'The payment was sent to the network. It shows in the vault history once it is in a block (Refresh).';
-    } else status = result.message || 'The network refused this payment.';
+    } else { status = result.message || 'The network refused this payment.'; sessionLog.log('vault', `Vault payment refused: ${status}`, { error: true }); loggedStatus = status; }
   } catch (error) {
-    if (gen === generation) status = error.message || 'The payment could not be sent.';
+    if (gen === generation) { status = error.message || 'The payment could not be sent.'; sessionLog.log('vault', status, { error: true }); loggedStatus = status; }
   } finally {
     if (gen === generation) { busy = false; render(); }
   }
@@ -487,6 +490,9 @@ function render() {
   showPanel();
   if (!root) return;
   if (!client) { root.replaceChildren(); return; }
+  // Each new status line shown also goes to the session log.
+  if (status && status !== loggedStatus) sessionLog.log('vault', status);
+  loggedStatus = status;
   const items = [el('p', { className: 'hint', text: 'A shared vault holds NODUS that can only be spent when enough of its members approve. Each member approves from their own wallet.' })];
   const line = el('p', { className: 'hint', text: status });
   line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
