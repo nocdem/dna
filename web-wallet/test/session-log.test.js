@@ -6,7 +6,7 @@
 // (mountSessionLogView) or about which app.js / messages.js call sites log.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSessionLog, scrubLogText, stepLog, logPageErrors, logFileName, groupedMs, SESSION_LOG_MAX, LOG_CATEGORIES } from '../src/session-log.js';
+import { createSessionLog, scrubLogText, stepLog, logPageErrors, logFileName, groupedMs, dateTimeText, SESSION_LOG_MAX, LOG_CATEGORIES } from '../src/session-log.js';
 
 const fixedClock = () => {
   const clock = { at: Date.UTC(2026, 9, 7, 16, 2, 11) };
@@ -113,6 +113,33 @@ test('connection steps: "attempt N · step <ms> ok|failed|timed out", once; runn
   ]);
   assert.deepEqual(log.runningLines(), []);
   assert.equal(groupedMs(1234567), '1 234 567');
+});
+
+// The Logs view (mountSessionLogView) draws its lines from entries() and
+// running(); the copied / downloaded text is text() / exportText(). This
+// pins that both are the same lines: the text form is exactly the data
+// form joined ("time [category] ! text", running steps last), per filter.
+test('the viewer data (entries + running) is exactly the text and export form', () => {
+  const clock = fixedClock();
+  const log = createSessionLog({ now: clock.now });
+  const clockOf = ms => `T${ms}`;
+  log.log('net', 'connected');
+  log.log('messages', 'inbox read failed', { error: true });
+  log.log('stake', 'delegation sent');
+  log.log('ui-error', 'Page error: boom', { error: true });
+  const steps = stepLog(log, 'net', () => 4, 1000);
+  steps.begin('identify');
+  clock.at += 5000;
+  steps.begin('connect');
+  clock.at += 500;
+  const asText = filter => [
+    ...log.entries(filter).map(line => `${clockOf(line.at)} [${line.category}]${line.error ? ' !' : ''} ${line.text}`),
+    ...log.running(filter).map(step => `${clockOf(step.at)} [${step.category}] ${step.text}`)
+  ].join('\n');
+  for (const filter of ['all', 'network', 'messages', 'wallet', 'errors']) assert.equal(log.text(filter, clockOf), asText(filter), filter);
+  assert.deepEqual(log.running('errors').map(step => [step.text, step.error]), [['attempt 4 · identify running 5 s — stuck', true]]);
+  assert.deepEqual(log.runningLines('all', clockOf), log.running('all').map(step => `${clockOf(step.at)} [${step.category}] ${step.text}`));
+  assert.ok(log.exportText({ version: '0.1.77' }).endsWith(`${log.text('all', dateTimeText)}\n`));
 });
 
 test('page errors: the message only; a throwing listener or a bad value never breaks the caller', () => {

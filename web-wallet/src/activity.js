@@ -35,6 +35,27 @@ export function recordActivity(transfer, details) {
   }
   return record;
 }
+// A smart-contract row's text (src/app.js renderActivity; the row is made by
+// recordEvmActivity, its fields come from src/evm/ui.js showReview): what
+// happened in plain words, the NODUS it moved and the network fee, each on
+// its own — never their sum. `evmOp`: deposit | withdraw | redeem | call |
+// create; `evmMoved` / `evmFee`: decimal NODUS texts; `evmTo`: the Nodus
+// address a withdraw / redeem pays ('' otherwise); `address`: this wallet's
+// own Nodus address. A row without `evmOp` (none is made today) falls back
+// to the panel's title and the stored amount, as before.
+// -> { amount: the bold amount text, what: the line below it }
+const EVM_ACTION = { deposit: 'Moved to smart contracts', withdraw: 'Moved back', redeem: 'Ticket collected', call: 'Contract call', create: 'Contract deployment' };
+const DECIMAL = /^\d{1,78}(\.\d{1,18})?$/;
+export function evmActivityText({ evmOp, evmMoved, evmFee, evmTo, evmTitle, amount, symbol = 'NODUS', address } = {}) {
+  if (!Object.hasOwn(EVM_ACTION, evmOp) || !DECIMAL.test(evmMoved ?? '') || !DECIMAL.test(evmFee ?? '')) {
+    return { amount: `${amount} ${symbol}`, what: `Smart contracts · ${evmTitle || 'transaction'}` };
+  }
+  const paysOther = (evmOp === 'withdraw' || evmOp === 'redeem') && typeof evmTo === 'string' && evmTo !== '' && evmTo !== address;
+  const action = `${EVM_ACTION[evmOp]}${paysOther ? ` to ${evmTo}` : ''}`;
+  // A call or deployment that sends no value costs only its fee.
+  if (/^0+(\.0+)?$/.test(evmMoved)) return { amount: `${evmFee} ${symbol}`, what: `Smart contracts · ${action} · network fee only` };
+  return { amount: `${evmMoved} ${symbol}`, what: `Smart contracts · ${action} · fee ${evmFee} ${symbol}` };
+}
 export async function checkActivity(row, { signal, call = rpc, post = request } = {}) {
   const c = CHAINS[row.chain], endpoint = row.endpoint;
   const rpcCall = (method, params) => call(endpoint, method, params, { signal });

@@ -136,10 +136,15 @@ function showReview(view, title, onDone) {
   // The Activity row (and with it the coins' hold and this account's
   // one-pending reservation) is written and saved by the wallet BEFORE the
   // envelope leaves the browser (F8). Coins leaving this wallet: the
-  // deposit's amount (DEPOSIT) plus the fee.
+  // deposit's amount (DEPOSIT) plus the fee. For the row's text: the op, the
+  // NODUS it moves (deposit / withdraw / redeem: the amount; call / create:
+  // the value sent) and the fee, each on its own (src/activity.js
+  // evmActivityText).
   const d = view.decoded;
   const amount = formatRaw((d.op === 'deposit' ? d.amount : 0n) + d.fee);
-  const record = recordPending ? details => recordPending(details, { title, amount }) : undefined;
+  const moved = d.op === 'call' || d.op === 'create' ? formatWei(d.valueWei) : formatRaw(d.amount);
+  const what = { title, amount, op: d.op, moved, fee: formatRaw(d.fee), to: d.op === 'withdraw' || d.op === 'redeem' ? d.dest : '' };
+  const record = recordPending ? details => recordPending(details, what) : undefined;
   const confirm = btn('Confirm & send', async () => {
     confirm.disabled = true; cancel.disabled = true;
     try {
@@ -443,7 +448,7 @@ function render() {
   if (!client || !account) { root.replaceChildren(); return; }
   const line = el('p', { className: 'hint evm-status', text: status });
   line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
-  const items = [el('p', { className: 'hint page-note', text: 'Smart contracts are programs that run on the Nodus network. Your wallet signs every transaction after you check it; the network fee shown is the most a transaction can cost.' }), line, renderAccount()];
+  const items = [el('p', { className: 'hint page-note', text: 'The network fee shown for a transaction is the most it can cost.' }), line, renderAccount()];
   if (client.evmBuildable) items.push(renderBridge());
   if (client.evmReadable) items.push(renderTickets());
   items.push(deployDraft ? renderDeploy() : contract ? renderContract() : renderContractLoad(), renderRecent());

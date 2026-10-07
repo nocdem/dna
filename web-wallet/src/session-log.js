@@ -99,15 +99,21 @@ export function createSessionLog({ now = () => Date.now(), max = SESSION_LOG_MAX
   }
   // The steps still running, one line each; a step past its bound is
   // "stuck" (and counts as an error for the Errors filter).
-  function runningLines(filter = 'all', clock = clockText) {
+  // running(): the same steps as data — { at, category, error (stuck),
+  // text } — for the Logs view (mountSessionLogView); runningLines() is
+  // their text form, so the two never differ.
+  function running(filter = 'all') {
     const keep = LOG_FILTERS[filter] || LOG_FILTERS.all, at = now();
     const out = [];
     for (const step of steps) {
       const stuck = step.boundMs > 0 && at - step.startedAt > step.boundMs;
       if (!keep({ category: step.category, error: stuck })) continue;
-      out.push(`${clock(step.startedAt)} [${step.category}] ${step.label ? `${step.label} · ` : ''}${step.name} running ${Math.floor((at - step.startedAt) / 1000)} s${stuck ? ' — stuck' : ''}`);
+      out.push({ at: step.startedAt, category: step.category, error: stuck, text: `${step.label ? `${step.label} · ` : ''}${step.name} running ${Math.floor((at - step.startedAt) / 1000)} s${stuck ? ' — stuck' : ''}` });
     }
     return out;
+  }
+  function runningLines(filter = 'all', clock = clockText) {
+    return running(filter).map(step => `${clock(step.at)} [${step.category}] ${step.text}`);
   }
   function entries(filter = 'all') {
     const keep = LOG_FILTERS[filter] || LOG_FILTERS.all;
@@ -137,7 +143,7 @@ export function createSessionLog({ now = () => Date.now(), max = SESSION_LOG_MAX
   }
   function clear() { lines = []; steps = new Set(); startedAt = now(); changed(); }
   function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
-  return { log, begin, entries, text, runningLines, exportText, clear, subscribe, get startedAt() { return startedAt; }, get size() { return lines.length; } };
+  return { log, begin, entries, text, running, runningLines, exportText, clear, subscribe, get startedAt() { return startedAt; }, get size() { return lines.length; } };
 }
 
 // The page's one log.
@@ -161,25 +167,86 @@ export function logPageErrors(target, log = sessionLog) {
   });
 }
 
-// The Logs view (Device & settings → Logs, in index.html and
-// connect-site/index.html): the filter, the text, Copy and Download. Shown
-// text is refreshed while the section is open (every second, for the
-// running-step lines) and whenever the log changes.
+// One line of the Logs view: its time, a category chip, an error marker
+// (text, not colour alone) and its text — every part set as textContent,
+// never as markup. Spaces between the parts keep a copied selection
+// readable. `running`: a step still running (log.running).
+function logLineNode({ at, category, error, text }, running = false) {
+  const part = (tag, className, value) => { const node = document.createElement(tag); node.className = className; node.textContent = value; return node; };
+  const row = document.createElement('div');
+  row.className = `log-line${error ? ' is-error' : ''}${running ? ' is-running' : ''}`;
+  row.dataset.category = category;
+  const time = part('time', 'log-time', clockText(at));
+  time.dateTime = new Date(at).toISOString();
+  row.append(time, ' ', part('span', 'log-chip', category), ' ');
+  if (error) row.append(part('span', 'log-flag', running ? '! stuck' : '! error'), ' ');
+  row.append(part('span', 'log-msg', text));
+  return row;
+}
+const lineKey = line => `${line.at}|${line.category}|${line.error ? 1 : 0}|${line.text}`;
+// How many lines from the front of `shown` are gone (the ring dropped them,
+// or the log was cleared) so that the rest is still the start of `keys`.
+function evictedFront(shown, keys) {
+  for (let drop = 0; drop <= shown.length; drop++) {
+    const rest = shown.length - drop;
+    if (rest > keys.length) continue;
+    let same = true;
+    for (let i = 0; i < rest && same; i++) same = shown[drop + i] === keys[i];
+    if (same) return drop;
+  }
+  return shown.length;
+}
+
+// The Logs view (the Logs page, in index.html and connect-site/index.html):
+// the filter, the lines, Copy and Download. `output` is the line viewer
+// (#session-log-text, role="log"): finished lines are appended as they come
+// (only new lines are added, so a screen reader hears only those), the
+// running-step lines below them are updated in place every second, and the
+// view follows the newest line only when it was already scrolled to the
+// bottom. The shown lines are refreshed while the section is open (every
+// second, for the running steps) and whenever the log changes. Copy and
+// Download take log.exportText — the plain text, unchanged by this view.
 export function mountSessionLogView({ panel, filter, output, copy, download, status }, { log = sessionLog, version = 'unknown', page = 'wallet' } = {}) {
   if (!panel || !filter || !output || !copy || !download || !status) return;
   let ticker;
-  const render = () => {
+  const finished = document.createElement('div'), running = document.createElement('div'), empty = document.createElement('p');
+  finished.className = 'log-entries'; running.className = 'log-running'; empty.className = 'log-empty';
+  empty.textContent = 'Nothing logged in this session yet.';
+  output.replaceChildren(finished, running, empty);
+  let shownFilter = null, shownKeys = [], runningKeys = [];
+  const render = ({ toBottom = false } = {}) => {
     if (!panel.open) return;
-    const text = log.text(filter.value) || 'Nothing logged in this session yet.';
-    if (output.value !== text) { output.value = text; output.scrollTop = output.scrollHeight; }
+    const chosen = filter.value, lines = log.entries(chosen), steps = log.running(chosen);
+    const atBottom = toBottom || output.scrollHeight - output.scrollTop - output.clientHeight <= 4;
+    const keys = lines.map(lineKey);
+    if (chosen !== shownFilter) {
+      // a new filter: the whole list once, not read out line by line (busy
+      // until the next task, so the change is not announced as additions)
+      output.setAttribute('aria-busy', 'true');
+      finished.replaceChildren(...lines.map(line => logLineNode(line)));
+      shownFilter = chosen; shownKeys = keys;
+      setTimeout(() => output.removeAttribute('aria-busy'), 0);
+    } else {
+      const drop = evictedFront(shownKeys, keys), kept = shownKeys.length - drop;
+      for (let i = 0; i < drop; i++) finished.firstChild?.remove();
+      if (keys.length > kept) finished.append(...lines.slice(kept).map(line => logLineNode(line)));
+      shownKeys = keys;
+    }
+    // Running steps: a line is replaced only when its step (or its stuck
+    // mark) changes; the seconds count is updated in place.
+    const stepKeys = steps.map(step => `${step.at}|${step.category}|${step.error ? 1 : 0}`);
+    if (stepKeys.join('\n') !== runningKeys.join('\n')) { running.replaceChildren(...steps.map(step => logLineNode(step, true))); runningKeys = stepKeys; }
+    else steps.forEach((step, i) => { const msg = running.children[i]?.querySelector('.log-msg'); if (msg && msg.textContent !== step.text) msg.textContent = step.text; });
+    empty.hidden = lines.length > 0 || steps.length > 0;
+    if (atBottom) output.scrollTop = output.scrollHeight;
   };
   const exported = () => log.exportText({ version, page, userAgent: globalThis.navigator?.userAgent || '' });
-  log.subscribe(render);
-  filter.addEventListener('change', render);
+  log.subscribe(() => render());
+  filter.addEventListener('change', () => render({ toBottom: true }));
   panel.addEventListener('toggle', () => {
     clearInterval(ticker); ticker = undefined;
     status.textContent = '';
-    if (panel.open) { render(); ticker = setInterval(render, 1000); }
+    if (panel.open) { render({ toBottom: true }); ticker = setInterval(() => render(), 1000); }
   });
   copy.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(exported()); status.textContent = 'Logs copied.'; }
