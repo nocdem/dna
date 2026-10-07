@@ -1535,6 +1535,17 @@ add_executable(test_client_spend_status tests/test_client_spend_status.c)
 target_link_libraries(test_client_spend_status nodus dsa kem nodus pthread)
 add_test(NAME test_client_spend_status COMMAND test_client_spend_status)
 
+# nodus_client_get_all_page_strict_many (web 0.1.73): every strict page
+# request in flight before the first reply is awaited; replies routed by
+# txn (the fake answers in reverse order, and only once it holds every
+# request of a case); per-item TIMEOUT / UNAVAILABLE / undecodable /
+# legacy kept apart. Real client vs a fake server on 127.0.0.1:0
+# (test_client_spend_status.c's fake pattern). Default build, no
+# environment.
+add_executable(test_client_pipeline tests/test_client_pipeline.c)
+target_link_libraries(test_client_pipeline nodus dsa kem nodus pthread)
+add_test(NAME test_client_pipeline COMMAND test_client_pipeline)
+
 # Strict GET / GET_ALL (Nodus Connect web design rev 5 §6.4 F1): a value
 # the node sent that does not decode is NODUS_ERR_PROTOCOL_ERROR / counted
 # as undecodable, never "not found"; the lenient calls are unchanged. Real

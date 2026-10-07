@@ -205,6 +205,21 @@ void nc_inbox_clear(nc_inbox_t *in) {
     in->count = 0;
 }
 
+/* The key of one day bucket of `peer`'s outbox to this identity and its
+ * owner (the peer is the sender, this identity the recipient —
+ * dht_dm_outbox_sync_day). 0 / -1. */
+static int outbox_day_key(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                          const uint8_t salt[NC_SALT_LEN], uint64_t day,
+                          nodus_key_t *key, nodus_key_t *owner) {
+    if (outbox_key(peer->fp, ctx->keys->fp, day, salt, key) != 0 ||
+        nc_fp_parse(peer->fp, owner) != 0)
+        return -1;
+    return 0;
+}
+
+static int outbox_day_finish(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                             const uint8_t *skip_blob, nc_inbox_t *out);
+
 int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
                         const uint8_t salt[NC_SALT_LEN], uint64_t day,
                         const uint8_t *skip_blob, nc_inbox_t *out) {
@@ -213,12 +228,49 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
     if (!ctx || !ctx->keys || !peer || !salt) return NC_ERR_ARG;
 
     nodus_key_t key, owner;
-    /* the peer is the sender, this identity the recipient
-     * (dht_dm_outbox_sync_day) */
-    if (outbox_key(peer->fp, ctx->keys->fp, day, salt, &key) != 0 ||
-        nc_fp_parse(peer->fp, &owner) != 0)
+    if (outbox_day_key(ctx, peer, salt, day, &key, &owner) != 0)
         return NC_ERR_ARG;
     nc_read_one(ctx, &key, &owner, &out->read);
+    return outbox_day_finish(ctx, peer, skip_blob, out);
+}
+
+int nc_outbox_fetch_days(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                         const uint8_t salt[NC_SALT_LEN],
+                         const nc_outbox_day_req_t *days, size_t n,
+                         nc_inbox_t *outs, int *rcs) {
+    if (!outs || !rcs || !days || n == 0 || n > NC_READ_MANY_MAX)
+        return NC_ERR_ARG;
+    memset(outs, 0, n * sizeof(*outs));
+    for (size_t i = 0; i < n; i++) rcs[i] = NC_ERR_ARG;
+    if (!ctx || !ctx->keys || !peer || !salt) return NC_ERR_ARG;
+
+    /* The days whose key derives (the single call answers NC_ERR_ARG for
+     * the others without reading), compacted for one pipelined read. */
+    nodus_key_t keys[NC_READ_MANY_MAX], owners[NC_READ_MANY_MAX];
+    nc_read_t reads[NC_READ_MANY_MAX];
+    size_t at[NC_READ_MANY_MAX], m = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (outbox_day_key(ctx, peer, salt, days[i].day, &keys[m],
+                           &owners[m]) != 0)
+            continue;
+        at[m++] = i;
+    }
+    if (m > 0 && nc_read_owner_many(ctx, keys, owners, m, reads) != NC_OK)
+        return NC_ERR_INTERNAL;           /* m is within 1..NC_READ_MANY_MAX */
+    for (size_t j = 0; j < m; j++) {
+        nc_inbox_t *out = &outs[at[j]];
+        out->read = reads[j];
+        rcs[at[j]] = outbox_day_finish(ctx, peer, days[at[j]].skip_blob, out);
+    }
+    return NC_OK;
+}
+
+/* Everything nc_outbox_fetch_day does after its read (out->read set): the
+ * blob hash, the skip, the codec, and per message the decrypt, the
+ * authorship gate and the chat / other / dropped split. Shared by
+ * nc_outbox_fetch_day and nc_outbox_fetch_days. */
+static int outbox_day_finish(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                             const uint8_t *skip_blob, nc_inbox_t *out) {
     if (out->read.outcome != NC_FOUND) return NC_OK;
 
     dht_offline_message_t *msgs = NULL;
@@ -333,6 +385,19 @@ int nc_ack_publish(const nc_ctx_t *ctx, const char *peer_fp,
                   DHT_ACK_TTL, 1 /* value_id 1, :160-163 */);
 }
 
+/* The key of `peer`'s ACK for this identity's messages and its owner (the
+ * peer: it is the recipient of those messages, :136-138). 0 / -1. */
+static int ack_read_key(const nc_ctx_t *ctx, const char *peer_fp,
+                        const uint8_t salt[NC_SALT_LEN],
+                        nodus_key_t *key, nodus_key_t *owner) {
+    if (!ctx || !ctx->keys || !salt || nc_fp_parse(peer_fp, owner) != 0 ||
+        ack_key(peer_fp, ctx->keys->fp, salt, key) != 0)
+        return -1;
+    return 0;
+}
+
+static void ack_finish(nc_read_t *raw, uint64_t *ack_ts);
+
 void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,
                  const uint8_t salt[NC_SALT_LEN], nc_read_t *raw,
                  uint64_t *ack_ts) {
@@ -340,13 +405,18 @@ void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,
     if (!raw) return;
     memset(raw, 0, sizeof(*raw));
     nodus_key_t owner, key;
-    if (!ctx || !ctx->keys || !salt || nc_fp_parse(peer_fp, &owner) != 0 ||
-        ack_key(peer_fp, ctx->keys->fp, salt, &key) != 0) {
+    if (ack_read_key(ctx, peer_fp, salt, &key, &owner) != 0) {
         raw->outcome = NC_UNREADABLE;
         raw->why = NC_WHY_BAD_RECORD;
         return;
     }
     nc_read_one(ctx, &key, &owner, raw);
+    ack_finish(raw, ack_ts);
+}
+
+/* Everything nc_ack_read does after its read (raw set): the 8-byte value
+ * and its decode. Shared by nc_ack_read and nc_contact_reads_many. */
+static void ack_finish(nc_read_t *raw, uint64_t *ack_ts) {
     if (raw->outcome != NC_FOUND) return;
     const nodus_value_t *v = raw->value;
     if (v->data_len != 8) {                     /* ack_listen_callback */
@@ -359,4 +429,98 @@ void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,
     uint64_t t = dht_ack_value_decode(v->data);
     if (ack_ts) *ack_ts = t;
     nc_read_clear(raw);
+}
+
+/* One read of an nc_contact_reads_many call: whose, and which (day < 0 =
+ * the ACK, else the index into that contact's days). */
+typedef struct {
+    size_t contact;
+    int    day;
+} reads_slot_t;
+
+int nc_contact_reads_many(const nc_ctx_t *ctx, nc_contact_reads_t *c,
+                          size_t n) {
+    if (!c || n == 0 || n > NC_CONTACT_READS_MAX) return NC_ERR_ARG;
+    for (size_t i = 0; i < n; i++)
+        if (!c[i].days || !c[i].outs || !c[i].rcs || c[i].n_days == 0 ||
+            c[i].n_days > NC_READ_MANY_MAX)
+            return NC_ERR_ARG;
+    for (size_t i = 0; i < n; i++) {
+        c[i].rc = NC_OK;
+        memset(&c[i].ack, 0, sizeof(c[i].ack));
+        c[i].ack_ts = 0;
+        memset(c[i].outs, 0, c[i].n_days * sizeof(*c[i].outs));
+        for (size_t d = 0; d < c[i].n_days; d++) c[i].rcs[d] = NC_ERR_ARG;
+    }
+    if (!ctx || !ctx->keys) return NC_ERR_ARG;
+
+    /* Every key of every contact, in order — [ACK, day 0, day 1, ...] per
+     * contact — each with its owner, the peer (the same key and owner
+     * nc_ack_read / nc_outbox_fetch_day derive). A key that does not
+     * derive is answered as the single call answers it, without a read:
+     * the ACK UNREADABLE(BAD_RECORD), a day NC_ERR_ARG. */
+    nodus_key_t  *keys   = calloc(NC_CONTACT_READS_KEYS, sizeof(*keys));
+    nodus_key_t  *owners = calloc(NC_CONTACT_READS_KEYS, sizeof(*owners));
+    nc_read_t    *reads  = calloc(NC_CONTACT_READS_KEYS, sizeof(*reads));
+    reads_slot_t *slots  = calloc(NC_CONTACT_READS_KEYS, sizeof(*slots));
+    if (!keys || !owners || !reads || !slots) {
+        free(keys); free(owners); free(reads); free(slots);
+        return NC_ERR_INTERNAL;
+    }
+    size_t m = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!c[i].peer || !c[i].salt) {
+            /* nc_outbox_fetch_days refuses the whole contact; nc_ack_read
+             * answers UNREADABLE(BAD_RECORD) without a read. */
+            c[i].rc = NC_ERR_ARG;
+            c[i].ack.outcome = NC_UNREADABLE;
+            c[i].ack.why = NC_WHY_BAD_RECORD;
+            continue;
+        }
+        if (ack_read_key(ctx, c[i].peer->fp, c[i].salt, &keys[m],
+                         &owners[m]) == 0) {
+            slots[m].contact = i;
+            slots[m].day = -1;
+            m++;
+        } else {
+            c[i].ack.outcome = NC_UNREADABLE;
+            c[i].ack.why = NC_WHY_BAD_RECORD;
+        }
+        for (size_t d = 0; d < c[i].n_days; d++) {
+            if (outbox_day_key(ctx, c[i].peer, c[i].salt, c[i].days[d].day,
+                               &keys[m], &owners[m]) != 0)
+                continue;
+            slots[m].contact = i;
+            slots[m].day = (int)d;
+            m++;
+        }
+    }
+
+    /* The reads, NC_READ_MANY_MAX keys per nc_read_owner_many call (its
+     * first pages pipelined NC_READ_PIPELINE at once, each key read exactly
+     * as nc_read_one reads it); each answer is finished at once by the code
+     * the single calls run, so at most one call's raw rows are held. */
+    int rc = NC_OK;
+    for (size_t w = 0; w < m; w += NC_READ_MANY_MAX) {
+        size_t k = m - w < NC_READ_MANY_MAX ? m - w : NC_READ_MANY_MAX;
+        if (nc_read_owner_many(ctx, &keys[w], &owners[w], k, &reads[w]) != NC_OK) {
+            rc = NC_ERR_INTERNAL;        /* k is within 1..NC_READ_MANY_MAX */
+            break;
+        }
+        for (size_t j = w; j < w + k; j++) {
+            nc_contact_reads_t *e = &c[slots[j].contact];
+            if (slots[j].day < 0) {
+                e->ack = reads[j];
+                ack_finish(&e->ack, &e->ack_ts);
+            } else {
+                size_t d = (size_t)slots[j].day;
+                e->outs[d].read = reads[j];
+                e->rcs[d] = outbox_day_finish(ctx, e->peer,
+                                              e->days[d].skip_blob,
+                                              &e->outs[d]);
+            }
+        }
+    }
+    free(keys); free(owners); free(reads); free(slots);
+    return rc;               /* every outs[d] is the caller's to clear     */
 }

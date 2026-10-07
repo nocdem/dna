@@ -14,8 +14,10 @@ import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
 import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
-import { createNodusClient } from './nodus/client.js';
+import { createNodusClient, NODUS_CONNECT_BOUND_MS } from './nodus/client.js';
 import { netLevelFor, netStatusView } from './net-status.js';
+// The session log (memory only, cleared on lock; Device & settings → Logs).
+import { sessionLog, stepLog, logPageErrors, mountSessionLogView } from './session-log.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl, formatUnits } from './core.js';
@@ -39,7 +41,10 @@ function setReceiveAddress(text) { $('receive-address').textContent = text; rend
 // src/net-status.js). Nodus Connect loads this file too and its page has no
 // such line (connect-site/index.html), so a missing element is skipped.
 const netStatus = $('net-status'), netStatusText = $('net-status-text');
+let netLevelLogged;
 function setNetStatus(level) {
+  // Each change of level goes to the session log, on both pages.
+  if (level !== netLevelLogged) { netLevelLogged = level; const shown = netStatusView(level); if (shown) sessionLog.log('net', `Network status: ${shown.text}`, { error: shown.level === 'offline' }); }
   if (!netStatus || !netStatusText) return;
   const view = netStatusView(level);
   netStatus.hidden = !view;
@@ -370,7 +375,15 @@ const portfolio = createPortfolio({
 // its text changes (Nodus Connect re-shows its toast on every write,
 // src/connect-main.js).
 let submissionFollow = null;
-const message = text => { submissionFollow = null; $('wallet-status').textContent = text; };
+// Every status text shown here also goes to the session log (scrubbed
+// there: no IDs, addresses, quoted names or amounts); `category` and
+// `error` only sort it in the Logs view.
+const message = (text, { category = 'wallet', error = false } = {}) => {
+  submissionFollow = null; $('wallet-status').textContent = text;
+  if (text) sessionLog.log(category, text, { error });
+};
+// The session-log category of a review's transaction (transfer.kind).
+const logCategoryFor = kind => (['delegate', 'undelegate', 'stake'].includes(kind) ? 'stake' : kind === 'name' ? 'names' : kind === 'claim' ? 'wallet' : 'send');
 function explorerLink(chain, hash) {
   const link = document.createElement('a'); link.href = CHAINS[chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer';
   return link;
@@ -582,6 +595,7 @@ function followSubmission() {
   const text = submissionStatus(follow.record, follow);
   if (text === null || text === follow.shown) return;
   follow.shown = text; $('wallet-status').textContent = follow.link ? `${text} ` : text;
+  sessionLog.log(logCategoryFor(follow.record.kind), text, { error: ['failed', 'expired', 'replaced'].includes(follow.record.status) });
   if (follow.link) $('wallet-status').append(explorerLink(follow.record.chain, follow.record.hash));
   if (terminal(follow.record.status)) submissionFollow = null;
 }
@@ -622,7 +636,9 @@ function activity() {
   if (sensitive) { idleDeadline = Date.now() + 10 * 60 * 1000; lockTimer = setTimeout(lock, 10 * 60 * 1000); }
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) expireIdle(); });
+// Shown again: an idle wallet locks; otherwise the connection is checked
+// (resumeCheck, RESUME CHECK below).
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !expireIdle()) resumeCheck('page visible again'); });
 window.addEventListener('focus', expireIdle);
 function closeReview() { clearTimeout(confirmEnableTimer); pending?.cancel(); pending = undefined; $('review-dialog').close(); $('review-details').replaceChildren(); $('review-error').textContent = ''; }
 $('review-dialog').addEventListener('keydown', event => { if (event.key === 'Enter' && $('confirm-send').disabled) event.preventDefault(); });
@@ -669,16 +685,53 @@ function clearNodusRetry() { clearTimeout(nodusRetryTimer); nodusRetryTimer = un
 // `again`: the step to retry (connectNodus on the same identified client);
 // none = a new client (startNodusSend).
 // @return the wait in seconds (for the status line).
-function scheduleNodusRetry(source, address, again = () => startNodusSend(source, address)) {
+function scheduleNodusRetry(source, address, again) {
+  const fresh = !again;
+  if (fresh) again = () => startNodusSend(source, address);
   clearNodusRetry();
   const wait = NODUS_RETRY_MS[Math.min(nodusRetries, NODUS_RETRY_MS.length - 1)];
   nodusRetries++;
+  sessionLog.log('net', `retry ${nodusRetries} in ${wait / 1000} s (${fresh ? 'new connection' : 'same connection'})`);
   nodusRetryTimer = setTimeout(() => {
     nodusRetryTimer = undefined;
     if (source === wallet && !source.locked && source.addresses.nodus === address) void again();
   }, wait);
   return wait / 1000;
 }
+// The session log's line for one client state change ("client state ready →
+// error"), and for a ready client that failed, why: "keepalive failed (…)",
+// "resume check failed (…)" or "connection lost (…)" (src/nodus/client.js
+// onState). Error texts are scrubbed by the log.
+const CLIENT_FAILURE_TEXT = { keepalive: 'keepalive failed', 'resume check': 'resume check failed', 'session lost': 'connection lost' };
+function logClientState(from, to, why) {
+  sessionLog.log('net', `client state ${from} → ${to}`, { error: to === 'error' });
+  const what = CLIENT_FAILURE_TEXT[why?.reason];
+  if (what) sessionLog.log('net', `${what} (${why.error?.message || 'unknown error'})`, { error: true });
+}
+// RESUME CHECK (web 0.1.72; operator's phone log 2026-10-07: with the screen
+// off one Messages read held the client's queue 5.5 minutes, and after the
+// screen came back on every read failed while the bar still said
+// connected). When the page is shown again or the browser is back online,
+// a ready client runs its keepalive at once under the CONNECT WATCHDOG
+// (src/nodus/client.js checkLiveness): a failure ends in 'error' and a
+// timeout locks the client — both reach onState above, which closes
+// Messages and tries a NEW client after the RECONNECT wait; Messages opens
+// again on nodusReady. One check at a time. Its outcome is the client's
+// 'resume check' step line ("attempt 1 · resume check 40 ms ok" / "failed
+// (…)" / "timed out after 30 000 ms", stepLog); 'ok' means the keepalive
+// ran, not that the session is open (client.js checkLiveness).
+let resumeChecking = false;
+function resumeCheck(text) {
+  const client = nodusClient;
+  if (resumeChecking || !client || client.state !== 'ready') return;
+  resumeChecking = true;
+  sessionLog.log('net', `${text}: checking the connection`);
+  client.checkLiveness().finally(() => { resumeChecking = false; });
+}
+// expireIdle first (an idle wallet locks instead; lock() clears the client).
+// 'visibilitychange' is wired with the idle lock above.
+window.addEventListener('pageshow', () => { if (!document.hidden && !expireIdle()) resumeCheck('page shown again'); });
+window.addEventListener('online', () => { if (!expireIdle()) resumeCheck('network back online'); });
 // Started once the Nodus address is derived, so the module's own identity can
 // be checked against it (client.identify). Never runs while no module exists.
 //
@@ -693,7 +746,16 @@ function scheduleNodusRetry(source, address, again = () => startNodusSend(source
 async function startNodusSend(source, address) {
   stopNodusSend();
   let wasReady = false;
-  const client = createNodusClient({ factory: nodusSendModuleFactory, onState: state => {
+  // Each connection step of this client goes to the session log as
+  // "attempt N · <step> <ms> ok|failed|timed out" (N = retries since the
+  // last success + 1), "stuck" past the CONNECT WATCHDOG bound.
+  let previousState = 'idle';
+  const client = createNodusClient({ factory: nodusSendModuleFactory, steps: stepLog(sessionLog, 'net', () => nodusRetries + 1, NODUS_CONNECT_BOUND_MS), onState: (state, why) => {
+    // Every state change of this client goes to the session log (web
+    // 0.1.72: the phone log of 2026-10-07 showed no [net] line at all while
+    // the connection was gone), with the reason a ready client failed.
+    logClientState(previousState, state, why);
+    previousState = state;
     // The bar follows this client's progress (amber while connecting, green
     // when ready). 'error' / 'locked' are not shown here: the code that
     // decides whether the connection is tried again (below, startNodusSend,
@@ -785,6 +847,23 @@ async function connectNodus(source, address, client, markReady) {
   } catch (error) {
     if (!current()) return;
     const why = error?.message ? ` (${error.message})` : '';
+    // CONNECT WATCHDOG (src/nodus/client.js NODUS_CONNECT_BOUND_MS): the
+    // attempt did not settle in time and the client locked itself — its
+    // queue was held by the hung call, so it cannot be tried again. The
+    // extensions on it close now and a NEW client is made after the
+    // RECONNECT wait (startNodusSend, which first locks this one again —
+    // a no-op — so there is never a second live client). This client is
+    // dropped here: its late results were already discarded by its lock,
+    // and the current() checks keep it away from the next one.
+    if (error?.timedOut === true) {
+      nodusClient = undefined;
+      raise('nodusClosing', { reason: 'The Nodus network did not answer in time. Reconnecting by itself…' });
+      setNodusReady(false);
+      const seconds = scheduleNodusRetry(source, address);
+      setNetStatus('connecting');
+      $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
+      return;
+    }
     if (client.identified) {
       const seconds = scheduleNodusRetry(source, address, () => connectNodus(source, address, client, markReady));
       raise('nodusConnectFailed', { reason: `Not connected to the network right now; trying again in ${seconds} seconds. Your messages on this device are shown.` });
@@ -1074,7 +1153,7 @@ async function startStake(kind, params, button) {
     const title = kind === 'delegate' ? 'Review delegation' : kind === 'undelegate' ? 'Review undelegation' : 'Review witness bond';
     showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], title);
     message('Review every detail before confirming.');
-  } catch (error) { if (current === revision) message(error.message); }
+  } catch (error) { if (current === revision) message(error.message, { category: 'stake', error: true }); }
   finally { busy = false; restore(); }
 }
 $('stake-refresh').onclick = () => void refreshStaking();
@@ -1118,7 +1197,7 @@ async function startClaim(button) {
     if (current !== revision || !wallet || client !== nodusClient) { transfer.cancel(); return; }
     showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], 'Review claim');
     message('Review the claim before confirming.');
-  } catch (error) { if (current === revision) message(error.message); }
+  } catch (error) { if (current === revision) message(error.message, { error: true }); }
   finally { busy = false; restore(); }
 }
 // CHAIN NAME (HF-4): the "Chain name" block of the NODUS receive panel and
@@ -1209,7 +1288,7 @@ async function startName() {
     if (current !== revision || !wallet || client !== nodusClient) { transfer.cancel(); return; }
     showReview(transfer, [...transfer.review, ['Review expires', new Date(transfer.expiresAt).toLocaleTimeString()]], 'Review name registration');
     message('Review every detail before confirming.');
-  } catch (error) { if (current === revision) message(error.message); }
+  } catch (error) { if (current === revision) message(error.message, { category: 'names', error: true }); }
   finally { busy = false; restore(); }
 }
 $('name-input').addEventListener('input', clearNameQuote);
@@ -1242,6 +1321,9 @@ function lock() {
   $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';
   updateVaultUI(); clearTimeout(lockTimer); message('Wallet locked. Restore your recovery phrase or unlock your saved wallet.');
   raise('locked');
+  // The session log ends with the session (Device & settings → Logs);
+  // `pagehide` runs this lock too.
+  sessionLog.clear(); netLevelLogged = undefined;
 }
 window.addEventListener('pagehide', lock);
 function phraseForm(create) {
@@ -1288,7 +1370,7 @@ $('phrase-form').onsubmit = async event => {
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
     walletFresh = fresh; siteLock.start();
     $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); focusOpenWallet();
-  } catch (error) { if (operation === vaultOperation) message(error.message); }
+  } catch (error) { if (operation === vaultOperation) message(error.message, { error: true }); }
   finally { if (claimed) unclaimSession(); }
 };
 // The Nodus address is shown in the receive panel when Nodus is the selected
@@ -1510,7 +1592,7 @@ $('rpc-choice').onchange = () => {
   const option = c.rpcOptions[Number(value)];
   setRpcCustomVisible(false); $('rpc-endpoint').value = option.url; setRpcNote(option.note);
 };
-$('save-rpc').onclick = () => { if (!networkFor($('chain').value).rpcOptions) return; try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message); } };
+$('save-rpc').onclick = () => { if (!networkFor($('chain').value).rpcOptions) return; try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message, { error: true }); } };
 $('send-form').onsubmit = async event => {
   event.preventDefault(); if (busy) return;
   // Belt-and-suspenders: the send fields are hidden/disabled for a receive-only
@@ -1553,7 +1635,7 @@ $('send-form').onsubmit = async event => {
       entries = Object.entries(details);
     }
     showReview(transfer, entries, 'Review transfer'); message('Review every transfer detail before confirming.');
-  } catch (error) { if (current === revision) message(error.message); }
+  } catch (error) { if (current === revision) message(error.message, { category: 'send', error: true }); }
   finally { busy = false; restore(); }
 };
 $('cancel-send').onclick = closeReview;
@@ -1586,9 +1668,9 @@ $('confirm-send').onclick = async () => {
     // A plain transfer: offer to save its recipient (a chain name it was
     // sent to is the suggested name).
     if (!transfer.kind) offerSaveRecipient(transfer.chain, transfer.to, transfer.named?.name || transfer.recipientName);
-    if (transfer.kind) message(`${what} submitted; confirmation is pending. ${idLabel} ${hash}. Its status is tracked in Activity.`);
+    if (transfer.kind) message(`${what} submitted; confirmation is pending. ${idLabel} ${hash}. Its status is tracked in Activity.`, { category: logCategoryFor(transfer.kind) });
     else {
-      message('Broadcast submitted; confirmation is pending. ');
+      message('Broadcast submitted; confirmation is pending. ', { category: 'send' });
       if (CHAINS[transfer.chain]) $('wallet-status').append(explorerLink(transfer.chain, hash));
       else $('wallet-status').append(`Transfer ID ${hash}. Its status is tracked in Activity.`);
     }
@@ -1606,7 +1688,7 @@ $('confirm-send').onclick = async () => {
       : transfer.chain === NODUS_ASSET.chain
       ? 'The outcome is tracked in Activity; its coins stay held until it is included or its expiry block passes.'
       : 'A broadcast failure can have an uncertain outcome. Check your address on the chain explorer before creating another transfer.';
-    if (current === revision) { message(record ? `${error.message} ${uncertain}` : error.message); follow(); }
+    if (current === revision) { message(record ? `${error.message} ${uncertain}` : error.message, { category: logCategoryFor(transfer.kind), error: true }); follow(); }
   } finally { busy = false; $('cancel-send').disabled = false; }
 };
 function updateVaultUI() {
@@ -1715,7 +1797,7 @@ $('session-takeover').onclick = async () => {
       phraseForm(false);
       message('This tab now has the wallet. Enter your recovery phrase again to open it here.');
     }
-  } catch (error) { if (operation === vaultOperation) message(error.message); }
+  } catch (error) { if (operation === vaultOperation) message(error.message, { error: true }); }
 };
 // The outcome of saving (or of changing the password) is written in two
 // places: #vault-status at the top of the wallet, and #vault-save-status
@@ -1851,3 +1933,10 @@ $('vault-delete').onclick = async () => {
 window.addEventListener('storage', event => { if (event.key === VAULT_KEY || event.key === null) { lock(); $('vault-status').textContent = 'Saved wallet changed in another tab. Unlock again to continue.'; } });
 // Extensions get the wallet's one lock (src/wallet-extensions.js).
 raise('attach', { lock: reason => { lock(); if (reason) message(reason); } });
+// The session log: uncaught page errors (message only), and the Logs view
+// in Device & settings (index.html, connect-site/index.html #session-logs).
+// __APP_VERSION__: vite.config.js / vite.connect.config.js define.
+logPageErrors(window);
+mountSessionLogView({ panel: $('session-logs'), filter: $('session-log-filter'), output: $('session-log-text'), copy: $('session-log-copy'), download: $('session-log-download'), status: $('session-log-status') }, {
+  version: typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'unknown', page: siteName() === 'connect' ? 'connect' : 'wallet'
+});

@@ -42,19 +42,30 @@
 // text written by someone else (names, notes, messages, profile fields) in a
 // <bdi> with the "unusual characters" marker (dom.js untrusted); a website
 // only as a checked https: link; no innerHTML, no inline style attribute.
-import { createNodusConnectCore, acceptanceMayAutoApprove } from '../core.js';
+import { createNodusConnectCore, acceptanceMayAutoApprove, CONTACT_READS_MAX } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
   parseContactInput, requestRefusal, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
-  recentDays, pendingOutbox, hasUndelivered, compareLocal, receivedKey,
+  pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
-  needFullSync, fullDays, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
-  shortId, inspectUntrusted
+  checkOrder, contactDays, contactNeedsFullSync, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
+  shortId, inspectUntrusted,
+  updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
+  contactLine, roundDoneLine
 } from './text.js';
 import { el, untrusted, button, website, fillAvatar } from './dom.js';
 import { parseNameOf } from '../../nodus/names.js';
-import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
+import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, chainNoNameFresh, chainNoNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
+// The session log (memory only, cleared on lock): Messages' failures as
+// shown, with the bounded error text (diag.js errorText) — never a message
+// text, a key or a full ID (src/session-log.js scrubs every line too).
+import { sessionLog } from '../../session-log.js';
+const logFailure = (text, error) => sessionLog.log('messages', error === undefined ? text : `${text} (${errorText(error)})`, { error: true });
+// The message check's progress (web 0.1.71): rounds, first-round stages and
+// one line per contact (text.js roundStartLine … roundDoneLine) — counts,
+// durations and the short ID only.
+const logCheck = (text, failed = false) => sessionLog.log('messages', text, { error: failed });
 // Groups (package G3): the state machine and its screens. Group invites,
 // accepts, welcomes and leaves travel as 1:1 messages (bytes item 7,
 // decision 13); they are routed to the groups module and never shown as
@@ -64,6 +75,9 @@ import { createGroupsView } from '../groups/ui.js';
 import { controlType } from '../groups/model.js';
 
 const SYNC_MS = 30000;                   // how often requests and messages are checked
+// Contacts whose ACK and day buckets one call reads together (web 0.1.74,
+// core.js CONTACT_READS_MAX = connect/nc_core.h NC_CONTACT_READS_MAX).
+const CHECK_GROUP_MAX = CONTACT_READS_MAX;
 const HISTORY_OPEN_MS = 15000;           // bound of the IndexedDB open + read (openLocal)
 const HEX128 = /^[0-9a-f]{128}$/;
 const TEXT_MAX = 4000;                   // one message, characters (the composer's maxlength)
@@ -83,6 +97,7 @@ const ADD_SUBMIT_TEXT = 'Send request';  // the add dialog's button while no cha
 // ── session state (all dropped by close / reset) ───────────────────────
 let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
 let generation = 0, syncTimer, syncing = false;
+let checkRound = 0;                      // message check rounds started this session (session log only)
 let sending = false;                     // a composer send is being kept on this device (send)
 let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
 let removeArmed;                         // the contact whose "Remove" was pressed once (asks to confirm)
@@ -136,7 +151,7 @@ function isOpen() { return !!core && !!state && phase === 'open'; }
 // touches the NODUS client (the host locks it afterwards).
 function wipe() {
   generation++;
-  clearInterval(syncTimer); syncTimer = undefined; syncing = false; sending = false;
+  clearInterval(syncTimer); syncTimer = undefined; syncing = false; sending = false; checkRound = 0;
   const c = core; core = undefined;
   try { c?.lock(); } catch { /* the rest must still run */ }
   try { store?.close(); } catch { /* same */ }
@@ -164,6 +179,7 @@ function wipe() {
 // Messages is closed with a reason (an error, the connection, a deleted
 // history). `retry`: the identity is open and only reading failed.
 export function closeMessages(reason, { retry = false } = {}) {
+  if (reason) logFailure(`Messages closed: ${reason}`);
   if (!retry) wipe();
   phase = 'closed';
   showState('Messages is closed', reason, retry);
@@ -218,7 +234,11 @@ export async function openMessages({ client, phrase, vaultId: id = null, fresh: 
 
 // Our own plain-words errors (Closed, a storage failure) are shown as they
 // are; anything else gets the caller's plain-words fallback.
-function explain(error, fallback) { return error instanceof Closed || error instanceof StorageError ? error.message : fallback; }
+function explain(error, fallback) {
+  const shown = error instanceof Closed || error instanceof StorageError ? error.message : fallback;
+  logFailure(shown, error);
+  return shown;
+}
 
 // LOCAL phase: what this device keeps, before any network call — the
 // history store (a saved wallet's; typed words and a new account keep
@@ -446,7 +466,9 @@ async function forgetProfile(fp) {
 // does not expire: a contact's kept name is shown at once and not asked
 // again; this wallet's own kept name is shown at once and asked again once
 // per session (chain-names.js). An ID without a kept name is asked once per
-// session by the sync round, and a contact without a known name again when
+// session by the sync round — a contact whose answered "no name" is kept
+// (state.chainNoName, same saved-wallet-only rule, web 0.1.74) only once
+// that answer is a day old — and a contact without a known name again when
 // its conversation is opened (recheckChainNameOnOpen). An older node, a
 // failed read or a module without names: nothing changes (a kept name stays)
 // and nothing new is kept; a failed read does not count as asked, so a later
@@ -463,18 +485,27 @@ function keptChainName(fp) {
 async function ensureChainName(fp, keep = false, opened = false) {
   keptChainName(fp);
   const own = fp === ownFp, gen = generation, at = Date.now();
-  if (!nodusClient?.nameable || !chainLookupNeeded({ asked: chainAsked.has(fp), known: !!chainNameOf(fp), recheck: own, opened, lastTry: chainTried.get(fp), now: at })) return false;
+  // A contact's answered "no name" kept less than a day ago (web 0.1.74,
+  // state.chainNoName, chain-names.js chainNoNameFresh) counts as asked for
+  // the sync round; `opened` still asks (chainLookupNeeded ignores `asked`
+  // then). Contacts only: the own ID is asked once per session as before.
+  const contact = !own && !!contactOf(fp);
+  const noNameKept = contact && chainNoNameFresh(state.chainNoName[fp], nowSeconds());
+  if (!nodusClient?.nameable || !chainLookupNeeded({ asked: chainAsked.has(fp) || noNameKept, known: !!chainNameOf(fp), recheck: own, opened, lastTry: chainTried.get(fp), now: at })) return false;
   chainTried.set(fp, at);
   let found;
   try { found = parseNameOf(await nodusClient.nameOf({ owner: fp })); }
   catch { if (gen === generation && !chainNames.has(fp)) chainNames.set(fp, ''); return false; }
   if (gen !== generation) return false;
   chainAsked.add(fp);
-  const after = chainNameAfterLookup(state.chainNames[fp], found, { keep, now: nowSeconds() });
+  const now = nowSeconds();
+  const after = chainNameAfterLookup(state.chainNames[fp], found, { keep, now });
   chainNames.set(fp, after.name);
   if (own) ownNameConfirmed = !!after.name;
   if (after.entry) state.chainNames[fp] = after.entry; else delete state.chainNames[fp];
-  return after.changed;
+  const none = chainNoNameAfterLookup(state.chainNoName[fp], found, { keep: keep && contact, now });
+  if (none.at !== null) state.chainNoName[fp] = none.at; else delete state.chainNoName[fp];
+  return after.changed || none.changed;
 }
 // Groups (decisions 2026-10-04-connect-groups.md items 17 + 18): only IDs
 // with a confirmed chain name may be in a group. The groups engine reads the
@@ -522,64 +553,166 @@ async function sync() {
   if (syncing || !isOpen() || !netStarted) return;
   syncing = true;
   const gen = generation;
+  // Progress (web 0.1.71): the first round names each step before the
+  // contacts in the status line and logs its start and duration; every
+  // round counts its contacts in the status line and logs one line per
+  // contact (session log, memory only). A later round leaves the status
+  // line as it was until its contacts are checked, so it does not flicker
+  // every 30 seconds. Nothing here changes what is called or in what order.
+  const round = ++checkRound, first = !online, roundAt = Date.now();
+  const stageBegin = name => {
+    if (!first) return 0;
+    ui.sync.textContent = updatingStageText(name);
+    logCheck(stageStartLine(round, name));
+    return Date.now();
+  };
+  const stageEnd = (name, at) => { if (first && gen === generation) logCheck(stageLine(round, name, Date.now() - at)); };
   try {
     // The first round of the network phase (goOnline): the own account,
     // then the own contact list; only then may anything be sent.
     if (!online) {
-      ui.sync.textContent = UPDATING_TEXT;
+      const accountAt = stageBegin('account');
       if (!await checkOwnAccount(gen) || gen !== generation) return;
+      stageEnd('account', accountAt);
+      const listAt = stageBegin('contacts');
       await mergeContactList(gen);
       if (gen !== generation) return;
+      stageEnd('contacts', listAt);
       online = true;
       render();
     }
+    const requestsAt = stageBegin('requests');
     await syncRequests(gen);
     if (gen !== generation) return;
+    stageEnd('requests', requestsAt);
+    const publishAt = stageBegin('publish');
     await publishContacts(gen);
     if (gen !== generation) return;
+    stageEnd('publish', publishAt);
     // Chain names (HF-4) of this ID, the contacts and the request screens,
     // BEFORE the message check so they are in place on the first check:
     // at most one answered read per ID per session (a failed read is tried
     // again on a later round, no sooner than CHAIN_LOOKUP_SPACING_MS), none
-    // for a contact whose name is kept (ensureChainName).
+    // for a contact whose name is kept, and none for a contact whose "no
+    // name" answer is kept and less than a day old (web 0.1.74,
+    // ensureChainName).
+    const namesAt = stageBegin('names');
     let namesMoved = false;
     for (const fp of new Set([ownFp, ...state.contacts.map(c => c.fp), ...state.outgoing.map(o => o.fp), ...requests.map(r => r.sender)])) {
       if (gen !== generation) return;
+      // First round: one line per ID, so a lookup that never ends is named.
+      if (first) logCheck(contactStepLine(shortId(fp), 'name'));
       if (await ensureChainName(fp, fp === ownFp || !!contactOf(fp))) namesMoved = true;
     }
     if (namesMoved && gen === generation) await persist();
     if (gen !== generation) return;
+    stageEnd('names', namesAt);
     fillOwnAvatar(); fillNameLine(); render();
-    // Smart sync (text.js needFullSync): 8 day buckets when any contact was
-    // never checked or the oldest check is over 3 days old, else 3. The
-    // check time of each contact whose buckets were all read is kept
-    // (state.dmSync) — saved only when it moved by an hour or more, so a
-    // 30-second check does not rewrite the state every time.
+    // Smart sync, per contact (web 0.1.72, text.js contactDays): a contact
+    // never checked, or last checked over 3 days ago, reads the 8 day
+    // buckets; every other contact the 3 recent ones. The check time of
+    // each contact whose buckets were all read is kept (state.dmSync) —
+    // saved only when it moved by an hour or more, so a 30-second check
+    // does not rewrite the state every time.
     const startedAt = nowSeconds(), today = core.dayToday();
-    const days = needFullSync(state.contacts.map(c => c.fp), state.dmSync, startedAt) ? fullDays(today) : recentDays(today);
     // One contact's failure is kept in that contact's Details line
     // (diags) and the check goes on with the next contact: a failure must
     // not leave every contact after it in the list unchecked, round after
     // round. A close / reset meanwhile still ends the check.
-    let syncMoved = false, failed = 0, storageFailure;
-    for (const contact of [...state.contacts]) {
+    let syncMoved = false, failed = 0, storageFailure, arrivedTotal = 0;
+    // Check order (web 0.1.72, text.js checkOrder): never-checked contacts
+    // first, then the ones with the newest message on this device, then
+    // the rest — a copy; state.contacts keeps its order.
+    const contacts = checkOrder(state.contacts, state.dmSync, messages);
+    const daysOf = new Map(contacts.map(c => [c.fp, contactDays(c.fp, state.dmSync, startedAt, today)]));
+    const full = contacts.filter(c => contactNeedsFullSync(c.fp, state.dmSync, startedAt)).length;
+    logCheck(roundStartLine(round, { first, contacts: contacts.length, full, recent: contacts.length - full }));
+    // Groups of contacts (web 0.1.74): up to CHECK_GROUP_MAX contacts, in
+    // the check order. First, per contact and one at a time as before, the
+    // profile and the salt (startContactCheck — a salt write stays in the
+    // call that read it, design §6.4 F4); then ONE call reads the ACK and
+    // the day buckets of every contact of the group that has a profile and
+    // a salt (core.contactReads: the same strict read per key, the requests
+    // pipelined in the module, 4 in flight at once — one call per contact
+    // and step cost a round trip each, ~4.5 s per contact on the operator's
+    // phone, 2026-10-07); then each contact's answers are handled in order
+    // exactly as before (finishContactCheck: delivery marks, publish,
+    // messages stored, ACK publish). A failure in a contact's own steps
+    // stays that contact's; a failed group call fails each contact it read.
+    for (let start = 0; start < contacts.length; start += CHECK_GROUP_MAX) {
       if (gen !== generation) return;
-      // Removed by the user while this check ran: not checked any more.
-      if (!contactOf(contact.fp)) continue;
-      let complete;
-      try { complete = await syncContact(contact, gen, days); }
-      catch (error) {
+      ui.sync.textContent = checkingContactsText(start + 1, contacts.length);
+      const group = [];
+      for (let index = start; index < Math.min(start + CHECK_GROUP_MAX, contacts.length); index++) {
         if (gen !== generation) return;
-        failed++;
-        if (error instanceof StorageError) storageFailure = error;
-        const diag = diags.get(contact.fp);
-        if (diag) diag.error = errorText(error);
-        continue;
+        const contact = contacts[index];
+        // Removed by the user while this check ran: not checked any more.
+        if (!contactOf(contact.fp)) continue;
+        const entry = { contact, index, id: shortId(contact.fp), at: Date.now(), before: incomingCount(contact.fp), days: daysOf.get(contact.fp) };
+        logCheck(contactStartLine(entry.id));
+        try { entry.ready = await startContactCheck(entry, gen); }
+        catch (error) { entry.error = error; }
+        if (gen !== generation) return;
+        group.push(entry);
       }
-      if (complete && gen === generation && contactOf(contact.fp)) {
-        const last = state.dmSync[contact.fp];
-        if (!last || BigInt(startedAt) - BigInt(last) >= 3600n) syncMoved = true;
-        state.dmSync[contact.fp] = startedAt;
+      const reading = group.filter(e => e.ready === true && e.error === undefined);
+      if (reading.length) {
+        for (const e of reading) {
+          // Delivery (NC-RT2 A, text.js markDelivered): which own messages
+          // were published is taken BEFORE the ACK read is issued; a publish
+          // finishing meanwhile (send()) does not count for this read.
+          e.salt = e.contact.salt;
+          e.publishedBefore = publishedSeqs(messages, e.contact.fp);
+          logCheck(contactStepLine(e.id, 'reads', reading.length));
+        }
+        // Each bucket is passed the hash of the same bucket this session
+        // already stored (blobs): an unchanged bucket is not decoded again
+        // (the app's blob cache, dht_dm_outbox.c:30-80). blobs changes only
+        // in finishContactCheck, and only for that contact's own keys, so
+        // taking every skip hash here reads what a call per contact read.
+        let answer;
+        try {
+          answer = await core.contactReads(reading.map(e => ({
+            fp: e.contact.fp, salt: e.salt,
+            days: e.days.map(day => ({ day, skipBlob: blobs.get(`${e.contact.fp}|${day}`)?.blob || '' }))
+          })));
+        } catch (error) { for (const e of reading) e.error = error; }
+        if (gen !== generation) return;
+        if (answer) reading.forEach((e, i) => { const r = answer.contacts[i]; if (r.error !== undefined) e.error = new Error(r.error); else e.reads = r; });
+      }
+      for (const e of group) {
+        if (gen !== generation) return;
+        const { contact, id, days } = e;
+        // Removed by the user while its group was read: not handled.
+        if (!contactOf(contact.fp)) continue;
+        ui.sync.textContent = checkingContactsText(e.index + 1, contacts.length);
+        let complete;
+        try {
+          if (e.error !== undefined) throw e.error;
+          // No profile, or no salt: nothing was read (diag says which).
+          complete = e.reads ? await finishContactCheck(e, gen) : false;
+        } catch (error) {
+          if (gen !== generation) return;
+          failed++;
+          if (error instanceof StorageError) storageFailure = error;
+          const diag = diags.get(contact.fp);
+          if (diag) diag.error = errorText(error);
+          logFailure(`A contact (${shortId(contact.fp)}) could not be checked`, error);
+          const got = incomingCount(contact.fp) - e.before;
+          arrivedTotal += got;
+          logCheck(contactLine(id, { ms: Date.now() - e.at, fresh: got, diag, days: days.length, failed: true }), true);
+          continue;
+        }
+        if (gen === generation) {
+          const got = incomingCount(contact.fp) - e.before;
+          arrivedTotal += got;
+          logCheck(contactLine(id, { ms: Date.now() - e.at, fresh: got, diag: diags.get(contact.fp), days: days.length }));
+        }
+        if (complete && gen === generation && contactOf(contact.fp)) {
+          const last = state.dmSync[contact.fp];
+          if (!last || BigInt(startedAt) - BigInt(last) >= 3600n) syncMoved = true;
+          state.dmSync[contact.fp] = startedAt;
+        }
       }
     }
     if (syncMoved && gen === generation) await persist();
@@ -606,6 +739,7 @@ async function sync() {
       ui.sync.textContent = storageFailure
         ? `${storageFailure.message}${notChecked}`
         : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
+      logCheck(roundDoneLine(round, { ms: Date.now() - roundAt, fresh: arrivedTotal, failed }));
       render();
     }
   } catch (error) {
@@ -642,20 +776,32 @@ async function completeOutgoing(request, gen) {
   try { await core.requestCancel(request.sender); } catch { /* the request expires on its own */ }
 }
 
-// True when every bucket of `days` was read (the contact's check time may
-// move, sync above). Each step's result is written to this contact's
-// diagnostics record (diag.js) as it comes; an exception is added by sync().
-async function syncContact(contact, gen, days) {
-  const fp = contact.fp;
+// A contact's message check, in two halves around its group's one read
+// call (sync above, web 0.1.74). Each step's result is written to this
+// contact's diagnostics record (diag.js) as it comes; an exception is added
+// by sync(). One session log line before each network step (web 0.1.71):
+// a check that never ends leaves its last step as the last line of the log.
+//
+// First half: the profile, then the salt (read, reconcile and the gated
+// write in ONE core call, design §6.4 F4). True when the contact has a
+// verified profile and a salt — its ACK and day buckets are then read in
+// its group's call (core.contactReads). `entry`: the contact's record in
+// its group (sync); its diagnostics record is kept there too.
+async function startContactCheck(entry, gen) {
+  const contact = entry.contact, fp = contact.fp;
   const previous = diags.get(fp), diag = newDiag(Date.now());
   diags.set(fp, diag);
+  entry.diag = diag;
+  const id = shortId(fp), step = name => logCheck(contactStepLine(id, name));
+  step('profile');
   const profileOk = await ensureProfile(fp, true);
   if (gen !== generation) return false;
   diag.profile = profileOk ? 'ok' : 'failed';
   if (!profileOk) return false;
   if (!saltChecked.has(fp)) {
+    step('salt');
     const result = await core.saltReconcile(fp, contact.salt || null);
-    if (gen !== generation) return;
+    if (gen !== generation) return false;
     const changed = !!result.salt && result.salt !== contact.salt;
     diag.salt = diagSalt({ result, changed: result.status !== 'wait' && changed });
     if (result.status !== 'wait') {
@@ -666,15 +812,21 @@ async function syncContact(contact, gen, days) {
   // is not retried): the status of that step is carried forward, so a
   // failed step is not shown as "salt ok".
   } else diag.salt = previous?.salt ?? diagSalt({ earlier: true });
-  if (!contact.salt) { diag.noSalt = true; return; }
-  const salt = contact.salt;
+  if (!contact.salt) { diag.noSalt = true; return false; }
+  return true;
+}
 
-  // Delivery (NC-RT2 A, text.js markDelivered): which own messages were
-  // published is taken BEFORE the ACK read is issued; a publish finishing
-  // meanwhile (send()) does not count for this read.
-  const publishedBefore = publishedSeqs(messages, fp);
-  const ack = await core.ackGet(fp, salt);
-  if (gen !== generation) return;
+// Second half: the answers of the group's read call for this contact
+// (`reads`: { ack, days } — what core.ackGet and core.outboxFetchDays
+// answer for the same arguments), handled exactly as when each was its own
+// call: delivery marks from the ACK, the pending publish, the day buckets'
+// messages stored, the ACK publish. `salt` / `publishedBefore` / `days`
+// were taken before the read call was issued (sync). True when every
+// bucket of `days` was read (the contact's check time may move, sync).
+async function finishContactCheck({ contact, id, salt, days, publishedBefore, reads, diag }, gen) {
+  const fp = contact.fp;
+  const step = name => logCheck(contactStepLine(id, name));
+  const ack = reads.ack;
   const ackValue = ack.outcome === 'found' && ack.ack_ts !== undefined && ack.ack_ts !== null ? String(ack.ack_ts) : null;
   if (ackValue !== null && /^(0|[1-9]\d{0,19})$/.test(ackValue)) {
     const delivered = markDelivered(messages, fp, ackValue, publishedBefore, nowSeconds());
@@ -686,20 +838,21 @@ async function syncContact(contact, gen, days) {
     }
   }
 
-  if (unpublished.has(fp)) await publishOutbox(contact, gen);
+  if (unpublished.has(fp)) { step('publish'); await publishOutbox(contact, gen); }
   if (gen !== generation) return;
 
-  // Each bucket is passed the hash of the same bucket this session already
-  // stored (blobs); an unchanged bucket is not decoded again (the app's
-  // blob cache, dht_dm_outbox.c:30-80) and its non-text count is reused.
-  // A hash is remembered only after the bucket's messages were stored, and
-  // never for a bucket with a message that did not verify (it stays
-  // counted in `dropped` and keeps the ACK back).
+  // An unchanged bucket (the skip hash passed by sync) was not decoded
+  // again (the app's blob cache, dht_dm_outbox.c:30-80): its non-text
+  // count is reused. A hash is remembered only after the bucket's messages
+  // were stored, and never for a bucket with a message that did not verify
+  // (it stays counted in `dropped` and keeps the ACK back). The answers come
+  // in the order of `days` (the group's read call, as core.outboxFetchDays
+  // before it, web 0.1.73) and are handled exactly as one call per day was.
   const arrived = [], seen = []; let lost = 0, other = 0, complete = true;
-  for (const day of days) {
+  const results = reads.days;
+  for (let i = 0; i < days.length; i++) {
+    const day = days[i], result = results[i];
     const key = `${fp}|${day}`, before = blobs.get(key);
-    const result = await core.outboxFetchDay(fp, salt, day, before?.blob || '');
-    if (gen !== generation) return false;
     diag.days.push(diagDay(day, result));
     if (result.outcome === 'unreadable') complete = false;
     if (result.unchanged && before) { other += before.other; continue; }
@@ -751,6 +904,7 @@ async function syncContact(contact, gen, days) {
   if (store.persistent && !lost) {
     const value = ackToSend(messages, fp, state.ackSent[fp]);
     if (value) {
+      step('ack publish');
       await core.ackPublish(fp, salt, value);
       if (gen !== generation) return false;
       state.ackSent[fp] = value;
@@ -780,6 +934,10 @@ async function publishOutbox(contact, gen) {
 // kept; the text test also covers a record kept before the flag existed):
 // published, acknowledged and deduplicated like any message, never shown.
 const isControl = m => m.control === true || !!controlType(m.text);
+// Stored incoming chat messages of one contact (group control records not
+// counted): the difference across a contact's check is its "new" count in
+// the session log (sync). Own messages sent meanwhile are not counted.
+const incomingCount = fp => messages.reduce((n, m) => (m.fp === fp && m.dir === 'in' && !isControl(m) ? n + 1 : n), 0);
 
 // ── read marks (UI only, this session; nothing is stored) ──────────────
 function newestSeq(fp) {
@@ -1616,7 +1774,7 @@ async function addContact(event) {
     addResolved = undefined; showAddResolved();
     ui.addStatus.textContent = 'Request sent. They appear in your contacts once they accept.';
     render();
-  } catch (error) { if (gen === generation) ui.addStatus.textContent = error.message; }
+  } catch (error) { if (gen === generation) { ui.addStatus.textContent = error.message; logFailure('A contact request was not sent', error); } }
 }
 
 async function send(event) {
@@ -1642,9 +1800,9 @@ async function send(event) {
     sending = false;
     render({ scroll: true });
     try { await publishOutbox(contact, gen); if (gen === generation) ui.sendStatus.textContent = ''; }
-    catch { if (gen === generation) ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; }
+    catch (error) { if (gen === generation) { ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; logFailure('A message was not sent yet; it is tried again automatically', error); } }
     if (gen === generation) render();
-  } catch (error) { if (gen === generation) ui.sendStatus.textContent = error.message; }
+  } catch (error) { if (gen === generation) { ui.sendStatus.textContent = error.message; logFailure('A message could not be kept on this device', error); } }
   finally { if (gen === generation && sending) { sending = false; ui.sendButton.disabled = !online; } }
 }
 
@@ -1661,7 +1819,7 @@ async function saveProfile(event) {
     ui.profileStatus.textContent = profileStatusText(result.status);
     if (result.status === 'published') { ownProfile = { ...(ownProfile || {}), ...patch }; fillProfile(); }
     if (result.status === 'taken') profileTaken = true;
-  } catch (error) { if (gen === generation) ui.profileStatus.textContent = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; }
+  } catch (error) { if (gen === generation) { ui.profileStatus.textContent = /https|Invalid profile/.test(error.message) ? error.message : 'Saving failed. Try again later.'; logFailure('Saving the profile failed', error); } }
 }
 
 // A chosen picture made the way the app makes one

@@ -188,6 +188,14 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     $('device-panel').scrollIntoView({ block: 'start' });
     $('device-title').focus({ preventScroll: true });
   };
+  // Logs: this session's log (src/session-log.js), a section of Device &
+  // settings, opened (src/app.js mountSessionLogView fills it).
+  $('more-logs').onclick = () => {
+    setTab('wallet');
+    $('session-logs').open = true;
+    $('session-logs').scrollIntoView({ block: 'start' });
+    $('session-logs-title').focus({ preventScroll: true });
+  };
 
   // Status line: shown again whenever src/app.js writes a new message, and
   // hidden again after a few seconds like an app snackbar — it sits over

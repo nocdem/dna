@@ -195,12 +195,56 @@ export function senderClockLabel(senderTs) {
 // DNA_DM_OUTBOX_TTL); otherwise the 3 recent ones.
 export const SMART_SYNC_FULL_SECONDS = 3 * 86400;
 export function needFullSync(contactFps, dmSync, now) {
+  if (u64OrNull(now) === null) throw new Error('Invalid time.');
+  return contactFps.some(fp => contactNeedsFullSync(fp, dmSync, now));
+}
+// The same rule for ONE contact (web 0.1.72, operator's phone log
+// 2026-10-07): one contact never checked used to send EVERY contact through
+// the 8 buckets, and a round that did not finish for every contact kept it
+// so in the next session too. Now each contact reads the 8 buckets only
+// when its OWN check time (state.dmSync) is missing, 0 or more than 3 days
+// old, else the 3 recent ones.
+export function contactNeedsFullSync(fp, dmSync, now) {
   const t = u64OrNull(now);
   if (t === null) throw new Error('Invalid time.');
-  return contactFps.some(fp => {
-    const last = u64OrNull(dmSync?.[fp]);
-    return last === null || last === 0n || t - last > BigInt(SMART_SYNC_FULL_SECONDS);
-  });
+  const last = u64OrNull(dmSync?.[fp]);
+  return last === null || last === 0n || t - last > BigInt(SMART_SYNC_FULL_SECONDS);
+}
+// The day buckets one contact's check reads (contactNeedsFullSync above).
+export function contactDays(fp, dmSync, now, today) {
+  return contactNeedsFullSync(fp, dmSync, now) ? fullDays(today) : recentDays(today);
+}
+// The order in which one round checks the contacts (web 0.1.72; operator's
+// phone 2026-10-07: 17 contacts at ~12 s each, and the contact that had
+// sent a new message, last in the list, was reached at minute 11):
+//   1. contacts never checked (no valid state.dmSync entry, or 0),
+//   2. then contacts with a message on this device (in or out), the one
+//      with the newest message first — newest by the LOCAL sequence
+//      (`seq`, compareLocal), never by anyone's clock,
+//   3. then the rest.
+// Ties keep the order of `contacts`. Returns a new array; `contacts` itself
+// (state.contacts) is neither reordered nor saved differently. A function
+// of its arguments only, so the same state gives the same order.
+export function checkOrder(contacts, dmSync, messages) {
+  const newest = new Map();
+  for (const m of messages || []) {
+    if (!m || typeof m.fp !== 'string' || !U64.test(String(m.seq))) continue;
+    const seq = BigInt(String(m.seq));
+    const seen = newest.get(m.fp);
+    if (seen === undefined || seq > seen) newest.set(m.fp, seq);
+  }
+  const rank = contact => {
+    const last = u64OrNull(dmSync?.[contact.fp]);
+    if (last === null || last === 0n) return 0;
+    return newest.has(contact.fp) ? 1 : 2;
+  };
+  return contacts.map((contact, index) => ({ contact, index, rank: rank(contact), seq: newest.get(contact.fp) }))
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      if (a.rank === 1 && a.seq !== b.seq) return a.seq > b.seq ? -1 : 1;
+      return a.index - b.index;
+    })
+    .map(entry => entry.contact);
 }
 export function fullDays(today) {
   if (typeof today !== 'string' || !U64.test(today)) throw new Error('Invalid day.');
@@ -231,7 +275,8 @@ export function recentDays(today) {
 //   1. it was in a blob that was successfully published (its `published`
 //      flag, set after core.outboxPublish resolved), and that flag was set
 //      BEFORE the ACK read was issued (publishedSeqs is the snapshot taken
-//      just before core.ackGet), and
+//      just before the ACK read — core.contactReads since web 0.1.74,
+//      core.ackGet before), and
 //   2. its timestamp is STRICTLY below the ACK value read (RT2 L2 F1: the
 //      ACK is in seconds, so a message sent in the ACK's own second may not
 //      have been fetched yet).
@@ -374,7 +419,7 @@ export function mergeListedContacts(state, entries, ownFp) {
 // Removes a contact on THIS device (the user's "Remove contact"): it leaves
 // the contact list, its ID goes on state.removed (so the network list does
 // not bring it back), and what was kept to check its messages goes too —
-// the check time, the kept profile row index and chain name (the app drops
+// the check time, the kept profile row index, chain name and "no name" answer (the app drops
 // its key cache on removal too, dna_engine_contacts.c:253). The messages
 // themselves stay on this device (shown again if the person is added again),
 // and so do the ACK values (no second ACK of messages already ACKed).
@@ -387,6 +432,7 @@ export function removeContact(state, fp) {
   delete state.dmSync[fp];
   delete state.profileCache[fp];
   delete state.chainNames[fp];
+  if (state.chainNoName) delete state.chainNoName[fp];      // its kept "no name" (web 0.1.74)
   return true;
 }
 
@@ -394,4 +440,117 @@ export function removeContact(state, fp) {
 // leaves state.removed.
 export function unremoveContact(state, fp) {
   state.removed = state.removed.filter(r => r !== fp);
+}
+
+// ── message check progress (web 0.1.71) ─────────────────────────────────
+// Operator 2026-10-07: on a phone the Chats status line said "Updating…"
+// for minutes with nothing to show which step ran. The status line now
+// names the step of the first round and counts the contacts of every
+// round; the session log (src/session-log.js, memory only) gets one line
+// per round, per first-round stage and per contact. Every log line here
+// is plain ASCII words and whole numbers: the log's scrub (scrubLogText)
+// turns a decimal fraction into "#", so no fractions are written.
+
+// A whole, non-negative number of a count or a duration.
+const whole = value => (Number.isFinite(Number(value)) && Number(value) > 0 ? Math.round(Number(value)) : 0);
+
+// The first round's steps before the contacts are checked (messages.js sync).
+export const CHECK_STAGES = Object.freeze({
+  account: 'your account',
+  contacts: 'contact list',
+  requests: 'contact requests',
+  publish: 'contact list',
+  names: 'names'
+});
+// The log's name of each step (the status line's words, but the two
+// contact list steps kept apart).
+const STAGE_LOG = Object.freeze({
+  account: 'account', contacts: 'contact list', requests: 'requests', publish: 'publish contacts', names: 'names'
+});
+
+// Status line during a first-round step: "Updating: your account…".
+export function updatingStageText(stage) {
+  return `Updating: ${CHECK_STAGES[stage] || 'messages'}…`;
+}
+
+// Status line while the contacts are checked: "Checking messages: 5 of 31 contacts…".
+export function checkingContactsText(done, total) {
+  const n = whole(total);
+  return `Checking messages: ${Math.min(whole(done), n)} of ${n} contact${n === 1 ? '' : 's'}…`;
+}
+
+// Log: "check round 3 started (regular): 31 contacts, 2 full (8 days), 29
+// recent (3 days)" — how many contacts read the 8 day buckets and how many
+// the 3 recent ones (contactDays, per contact since web 0.1.72).
+export function roundStartLine(round, { first = false, contacts = 0, full = 0, recent = 0 } = {}) {
+  return `check round ${whole(round)} started (${first ? 'first' : 'regular'}): ${whole(contacts)} contacts, ${whole(full)} full (8 days), ${whole(recent)} recent (3 days)`;
+}
+
+// Log: "check round 1 stage account: 812 ms".
+export function stageLine(round, stage, ms) {
+  return `check round ${whole(round)} stage ${STAGE_LOG[stage] || 'unknown'}: ${whole(ms)} ms`;
+}
+
+// Log, when a first-round step begins: "check round 1 stage names started".
+// With the end line above, a step that never ends is the last line before
+// silence.
+export function stageStartLine(round, stage) {
+  return `check round ${whole(round)} stage ${STAGE_LOG[stage] || 'unknown'} started`;
+}
+
+// Log, when a contact's check begins: "contact ID 1a2b3c4d…9f0e check started".
+export function contactStartLine(id) {
+  return `contact ${typeof id === 'string' ? id : 'ID ?'} check started`;
+}
+
+// Log, before each network step of a contact's check (messages.js
+// startContactCheck / finishContactCheck / publishOutbox): "contact ID
+// 1a2b3c4d…9f0e: reads (group of 4)".
+// `step`: 'profile' | 'salt' | 'ack' | 'publish' | 'days' | 'reads' |
+// 'ack publish', or 'name' (the first round's chain-name lookup of one ID,
+// sync); `count`: for 'days', how many day buckets the one pipelined read
+// asks for (core.outboxFetchDays, web 0.1.73); for 'reads', how many
+// contacts' ACK and day buckets the one pipelined call reads together
+// (core.contactReads, web 0.1.74 — it replaced the 'ack' and 'days' steps
+// of the message check).
+const CONTACT_STEPS = Object.freeze({ profile: 'profile', salt: 'salt', ack: 'ack', publish: 'outbox publish', days: 'outbox days', reads: 'reads', 'ack publish': 'ack publish', name: 'chain name' });
+export function contactStepLine(id, step, count) {
+  const name = CONTACT_STEPS[step] || 'unknown step';
+  const n = Number.isSafeInteger(count) && count >= 0 ? String(count) : '?';
+  const which = step === 'days' ? ` ${n}` : step === 'reads' ? ` (group of ${n})` : '';
+  return `contact ${typeof id === 'string' ? id : 'ID ?'}: ${name}${which}`;
+}
+
+// The salt step of a contact's diagnostics record (diag.js diagSalt), in
+// a few words: "salt ok", "salt ok (changed)", "salt ok (earlier)",
+// "salt wait", "salt failed", "salt not checked"; "no salt" when the
+// contact has no salt after the step (diag.noSalt).
+export function saltShortText(diag) {
+  const salt = diag?.salt;
+  let text;
+  if (!salt) text = 'salt not checked';
+  else if (salt.status === 'earlier') text = 'salt ok (earlier)';
+  else if (salt.status === 'nothing_to_write' || salt.status === 'published') text = `salt ok${salt.changed ? ' (changed)' : ''}`;
+  else text = `salt ${typeof salt.status === 'string' && /^[a-z_]{1,32}$/.test(salt.status) ? salt.status : 'unknown'}`;
+  return diag?.noSalt ? `${text}, no salt` : text;
+}
+
+// Day buckets of a diagnostics record that were read (any outcome but
+// 'unreadable', the one that keeps a contact's check time back).
+export function daysRead(diag) {
+  return Array.isArray(diag?.days) ? diag.days.filter(d => d?.outcome !== 'unreadable').length : 0;
+}
+
+// Log: "contact ID 1a2b3c4d…9f0e checked in 1834 ms: 2 new, profile ok,
+// salt ok (earlier), 3/3" — `id` is shortId(fp) (never the full ID),
+// `diag` the contact's diagnostics record of this check (diag.js),
+// `failed` true when the check ended with an error.
+export function contactLine(id, { ms = 0, fresh = 0, diag, days = 0, failed = false } = {}) {
+  const profile = diag?.profile === 'ok' ? 'profile ok' : 'profile failed';
+  return `contact ${typeof id === 'string' ? id : 'ID ?'} checked in ${whole(ms)} ms: ${whole(fresh)} new, ${profile}, ${saltShortText(diag)}, ${daysRead(diag)}/${whole(days)}${failed ? ', check failed' : ''}`;
+}
+
+// Log: "check round 3 done in 12 s: 2 new messages, 0 failed".
+export function roundDoneLine(round, { ms = 0, fresh = 0, failed = 0 } = {}) {
+  return `check round ${whole(round)} done in ${whole(whole(ms) / 1000)} s: ${whole(fresh)} new message${whole(fresh) === 1 ? '' : 's'}, ${whole(failed)} failed`;
 }

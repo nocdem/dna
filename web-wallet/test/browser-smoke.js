@@ -209,7 +209,7 @@ try {
   // Open the settings disclosure first, as a user must: inside a closed
   // <details> Chromium reports option innerText as '' and every control as
   // not visible, so the visibility checks below would pass vacuously.
-  await page.locator('.rpc-settings summary').click();
+  await page.locator('#rpc-settings summary').click();
   assert.equal(await page.locator('#rpc-choice').isVisible(), true);
   await page.selectOption('#chain', 'tron');
   assert.deepEqual(await page.locator('#rpc-choice option').allTextContents(), ['TronGrid']);

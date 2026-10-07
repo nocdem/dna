@@ -511,6 +511,55 @@ int nodus_client_get_all_page_strict(nodus_client_t *client,
                                      bool *legacy_out,
                                      size_t *undecodable_out);
 
+/** Most requests one nodus_client_get_all_page_strict_many call carries. */
+#define NODUS_CLIENT_PAGE_PIPELINE_MAX 8
+
+/** One request of nodus_client_get_all_page_strict_many: the arguments of
+ *  nodus_client_get_all_page_strict (in) and its answer (out). The pointers
+ *  in the request half must stay valid for the whole call. */
+typedef struct {
+    /* in */
+    const nodus_key_t             *key;          /**< required              */
+    const nodus_key_t             *owner_fp;     /**< NULL = every owner    */
+    const nodus_dht_page_cursor_t *after;        /**< NULL = first page     */
+    /* out — exactly what nodus_client_get_all_page_strict returns */
+    int                            rc;
+    nodus_value_t                **vals;         /**< caller frees          */
+    size_t                         count;
+    bool                           more;
+    nodus_dht_page_cursor_t        cursor;
+    bool                           legacy;
+    size_t                         undecodable;
+} nodus_page_req_t;
+
+/**
+ * nodus_client_get_all_page_strict for up to NODUS_CLIENT_PAGE_PIPELINE_MAX
+ * keys at once, PIPELINED on the one session: every request is sent before
+ * the first reply is awaited. NOT a batch request — each key gets its own
+ * strict paged GET_ALL frame (the same frame, the same reply checks, the
+ * same undecodable count), so each node-side read keeps its own forwarded
+ * lookup (the node's get_batch does not: it forwards only keys with no
+ * local row, to one peer).
+ *
+ * Per item, reqs[i].rc and the answer fields are what
+ * nodus_client_get_all_page_strict(key, owner_fp, after, ...) would have
+ * returned: 0, NODUS_ERR_UNAVAILABLE, NODUS_ERR_PROTOCOL_ERROR,
+ * NODUS_ERR_TIMEOUT (that request's own reply did not come within the
+ * client's request timeout, measured from its own send), another node
+ * error code, or -1 (not connected / no pending slot / local allocation /
+ * send failure). An item's failure does not affect the others. Replies are
+ * matched by transaction id, never by position.
+ *
+ * Caller frees each reqs[i].vals[j] with nodus_value_free() and each
+ * reqs[i].vals with free(), on every rc.
+ *
+ * @return 0 (every reqs[i].rc set, -1 for all when the client is not
+ *         ready), or -1 with nothing sent: reqs NULL, n == 0,
+ *         n > NODUS_CLIENT_PAGE_PIPELINE_MAX, or a key NULL.
+ */
+int nodus_client_get_all_page_strict_many(nodus_client_t *client,
+                                          nodus_page_req_t *reqs, size_t n);
+
 /* ── Batch DHT Operations ───────────────────────────────────────── */
 
 /** Result for one key in a get_batch response */

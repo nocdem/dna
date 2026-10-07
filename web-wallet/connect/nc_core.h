@@ -254,6 +254,33 @@ void nc_read_all(const nc_ctx_t *ctx, const nodus_key_t *key,
                  const nodus_key_t *owners, size_t n_owners,
                  nc_read_all_t *out);
 
+/* Keys one nc_read_owner_many call reads at most, and how many of their
+ * first pages are in flight at once. The node's forwarded-lookup slots
+ * (NODUS_BF_MAX_BATCHES, 16) are shared by every user of that node: one
+ * reader takes at most 4 of them. */
+#define NC_READ_MANY_MAX  8
+#define NC_READ_PIPELINE  4
+
+/**
+ * nc_read_one(ctx, &keys[i], &owners[i], &outs[i]) for i < n (n <=
+ * NC_READ_MANY_MAX), every key with its own owner — the SAME read per key
+ * (the owner-filtered paged nc_read_all and one row of it, every rule of
+ * nc_read_one above, fail closed), with the first pages PIPELINED: in waves
+ * of NC_READ_PIPELINE keys, the first page request of every key of the
+ * wave is sent before the first reply is awaited
+ * (nodus_client_get_all_page_strict_many: one strict request per key,
+ * never a batch request). A key whose answer has more pages continues
+ * with its own sequential page requests, up to NC_READ_MAX_PAGES. The
+ * cancel flag is checked before every wave and before every later page;
+ * a key whose read ends cancelled is UNREADABLE(CANCELLED) as in
+ * nc_read_one. outs[i] is exactly what nc_read_one would return for that
+ * key; free each with nc_read_clear.
+ * @return NC_OK, or NC_ERR_ARG (NULL arrays, n == 0, n > NC_READ_MANY_MAX)
+ *         with nothing read.
+ */
+int nc_read_owner_many(const nc_ctx_t *ctx, const nodus_key_t *keys,
+                       const nodus_key_t *owners, size_t n, nc_read_t *outs);
+
 /**
  * One signed PUT under the own identity (the nodus_ops.c do_put shape,
  * :75-112): nodus_value_create + nodus_value_sign + nodus_client_put_ex,
@@ -748,6 +775,33 @@ int nc_outbox_fetch_day(const nc_ctx_t *ctx, const nc_peer_t *peer,
                         const uint8_t salt[NC_SALT_LEN], uint64_t day,
                         const uint8_t *skip_blob, nc_inbox_t *out);
 
+/** One day of nc_outbox_fetch_days: nc_outbox_fetch_day's `day` and
+ *  `skip_blob` (nullable, 32 bytes). */
+typedef struct {
+    uint64_t       day;
+    const uint8_t *skip_blob;
+} nc_outbox_day_req_t;
+
+/**
+ * nc_outbox_fetch_day for up to NC_READ_MANY_MAX days of ONE peer's outbox
+ * (same peer, same salt). The bucket reads go through nc_read_owner_many
+ * (first pages pipelined, NC_READ_PIPELINE at once; each key read exactly
+ * as nc_read_one reads it); every day's answer is then processed by the
+ * SAME code as nc_outbox_fetch_day's (blob hash, skip_blob, codec,
+ * decrypt, authorship gate, chat / other / dropped). outs[i] / rcs[i] are
+ * what nc_outbox_fetch_day(ctx, peer, salt, days[i].day,
+ * days[i].skip_blob, &outs[i]) would return (NC_ERR_ARG for a day whose key
+ * does not derive, NC_ERR_INTERNAL on allocation failure). Free each
+ * outs[i] with nc_inbox_clear.
+ * @return NC_OK, or NC_ERR_ARG (bad arguments, n == 0,
+ *         n > NC_READ_MANY_MAX; every rcs[i] NC_ERR_ARG when rcs is given)
+ *         or NC_ERR_INTERNAL with nothing read.
+ */
+int nc_outbox_fetch_days(const nc_ctx_t *ctx, const nc_peer_t *peer,
+                         const uint8_t salt[NC_SALT_LEN],
+                         const nc_outbox_day_req_t *days, size_t n,
+                         nc_inbox_t *outs, int *rcs);
+
 /** ACK that this identity has STORED `peer`'s messages (G11: the caller
  *  calls this only after its store transaction completed). Key =
  *  SHA3-512(dht_generate_ack_key(me, peer, salt)), value =
@@ -770,6 +824,53 @@ int nc_ack_publish(const nc_ctx_t *ctx, const char *peer_fp,
 void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,
                  const uint8_t salt[NC_SALT_LEN], nc_read_t *raw,
                  uint64_t *ack_ts);
+
+/* Contacts one nc_contact_reads_many call reads at most, and the most keys
+ * it reads (per contact the ACK and up to NC_READ_MANY_MAX day buckets). */
+#define NC_CONTACT_READS_MAX  4
+#define NC_CONTACT_READS_KEYS (NC_CONTACT_READS_MAX * (1 + NC_READ_MANY_MAX))
+
+/** One contact of nc_contact_reads_many: nc_ack_read's and
+ *  nc_outbox_fetch_days' arguments (in) and their answers (out). */
+typedef struct {
+    /* in */
+    const nc_peer_t           *peer;     /* verified profile keys           */
+    const uint8_t             *salt;     /* NC_SALT_LEN                      */
+    const nc_outbox_day_req_t *days;
+    size_t                     n_days;   /* 1..NC_READ_MANY_MAX              */
+    nc_inbox_t                *outs;     /* n_days, caller-allocated         */
+    int                       *rcs;      /* n_days, caller-allocated         */
+    /* out */
+    int                        rc;       /* NC_OK, or NC_ERR_ARG (peer or
+                                          * salt NULL: nothing read, as
+                                          * nc_outbox_fetch_days)            */
+    nc_read_t                  ack;      /* nc_ack_read's raw (value freed) */
+    uint64_t                   ack_ts;   /* nc_ack_read's *ack_ts            */
+} nc_contact_reads_t;
+
+/**
+ * The read phase of up to NC_CONTACT_READS_MAX contacts' message checks in
+ * one call (web 0.1.74): for each contact c[i], exactly
+ *   nc_ack_read(ctx, c[i].peer->fp, c[i].salt, &c[i].ack, &c[i].ack_ts) and
+ *   nc_outbox_fetch_days(ctx, c[i].peer, c[i].salt, c[i].days, c[i].n_days,
+ *                        c[i].outs, c[i].rcs)
+ * would answer — the same keys, owners (the peer) and per-key read
+ * (nc_read_one with an owner: the owner-filtered paged read, every rule of
+ * nc_read_one, fail closed), and after it the same code (the ACK's 8-byte
+ * value; a day's blob hash, skip_blob, codec, decrypt, authorship gate).
+ * Only the scheduling differs: the keys of ALL the contacts go through
+ * nc_read_owner_many, NC_READ_MANY_MAX keys per call (first pages
+ * pipelined, NC_READ_PIPELINE in flight at once — never more), each call's
+ * answers finished before the next call. At most NC_CONTACT_READS_KEYS keys:
+ * NC_CONTACT_READS_KEYS / NC_READ_PIPELINE waves. No write.
+ * Free every c[i].outs[d] with nc_inbox_clear (on every return) and
+ * c[i].ack with nc_read_clear.
+ * @return NC_OK; NC_ERR_ARG (c NULL, n == 0, n > NC_CONTACT_READS_MAX, a
+ *         contact without days / outs / rcs or with n_days out of
+ *         1..NC_READ_MANY_MAX — nothing read) or NC_ERR_INTERNAL.
+ */
+int nc_contact_reads_many(const nc_ctx_t *ctx, nc_contact_reads_t *c,
+                          size_t n);
 
 /* ── Embedded server list (design §1.6 S9) ─────────────────────────── */
 
