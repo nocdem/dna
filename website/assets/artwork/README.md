@@ -158,3 +158,21 @@ Prompt:
 ```text
 Use case: stylized-concept. Asset type: Nodus Network product illustration for a dark olive and lime website. Create a landscape 3:2 cinematic 3D editorial artwork, 1536x1024. Subject: three freestanding precision-machined titanium network servers, each with a smoked jade-glass inner archive, positioned on separate dark stone plinths at different depths. Thin physical pale-lime fiber-optic cables sweep between the three peers in graceful visible paths. The servers have finely layered components, subtle etched grooves and softly glowing inner surfaces. This is a metaphor for independent peers sharing storage and resources, not a diagram or actual hardware. The full three-peer arrangement occupies the central 70 percent of the frame with comfortable margin on all four sides. Low three-quarter camera, beautiful depth, realistic glass refraction, brushed metal microtexture, soft reflection on black stone, restrained warm rim light. Background is a quiet midnight olive architectural space with no busy detail. Premium tangible material photography style, palette charcoal, graphite, muted jade and soft lime, coherent and readable as a website product image. No text, numbers, logos, watermark, charts, interface, lock, coin, globe, outer space, people, holographic screens, or floating symbolic network nodes. Keep the complete subjects within the frame; do not crop the hardware.
 ```
+
+## Hand-drawn SVG — 7 October 2026
+
+### evm
+
+- Workspace: `assets/artwork/evm-v1.svg`
+- Used on: `evm.html` and the Nodus EVM entry in `ecosystem.html`
+- Origin: written by hand as SVG source in this repository at the operator's
+  request ("the card image is a simple SVG drawn by us"). No image_gen, no
+  prompt, no reference image and no retained original: the SVG file is the
+  original.
+- Format: `viewBox="0 0 1536 1024"` (the same 3:2 frame as the WebP artwork),
+  no text, no external references, no scripts, no `<style>` element; colours
+  from the site palette (`#10150e` background, `#d5f998` lime, olive/graphite
+  mid-tones from `styles.css`).
+- Idea: a small stack of rounded slabs with abstract code bars (a contract)
+  at the centre of a six-node ring (the validators that run it). The bars are
+  shapes, not letters or numbers.
