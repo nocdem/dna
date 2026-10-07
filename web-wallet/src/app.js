@@ -15,6 +15,7 @@ import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient } from './nodus/client.js';
+import { netLevelFor, netStatusView } from './net-status.js';
 import { deriveWallet, disposeWallet, newPhrase, normalizePhrase } from './keys.js';
 import { adapters, prepareTransfer } from './wallet.js';
 import { endpointUrl, formatUnits } from './core.js';
@@ -34,6 +35,19 @@ const SINGLE_COLUMN_DASHBOARD = '(max-width: 900px)';
 // the text shown (empty text, e.g. after lock or before a derivation settles,
 // clears the QR).
 function setReceiveAddress(text) { $('receive-address').textContent = text; renderQr($('receive-qr'), text); }
+// The only writer of the network line in the open-wallet bar (#net-status,
+// src/net-status.js). Nodus Connect loads this file too and its page has no
+// such line (connect-site/index.html), so a missing element is skipped.
+const netStatus = $('net-status'), netStatusText = $('net-status-text');
+function setNetStatus(level) {
+  if (!netStatus || !netStatusText) return;
+  const view = netStatusView(level);
+  netStatus.hidden = !view;
+  if (!view) return;
+  netStatus.dataset.level = view.level;
+  // Same text: no write, so the live region is not read out again.
+  if (netStatusText.textContent !== view.text) netStatusText.textContent = view.text;
+}
 const phraseFields = createPhraseFields($('phrase-grid'), $('phrase-error'));
 // Build-time flag: whether Cellframe/CPUNK appears in the network list, the
 // endpoint map and the portfolio at all. This is a plain boolean used only for
@@ -680,6 +694,11 @@ async function startNodusSend(source, address) {
   stopNodusSend();
   let wasReady = false;
   const client = createNodusClient({ factory: nodusSendModuleFactory, onState: state => {
+    // The bar follows this client's progress (amber while connecting, green
+    // when ready). 'error' / 'locked' are not shown here: the code that
+    // decides whether the connection is tried again (below, startNodusSend,
+    // connectNodus) sets amber or red right after them.
+    if (client === nodusClient && state !== 'error' && state !== 'locked') setNetStatus(netLevelFor(state));
     if (client !== nodusClient || state === 'ready') return;
     // A failed identify or connection attempt is handled where it is made
     // (startNodusSend, connectNodus); only a client that was ready and then
@@ -692,6 +711,7 @@ async function startNodusSend(source, address) {
       setNodusReady(false);
       if (source === wallet && !source.locked) {
         const seconds = scheduleNodusRetry(source, address);
+        setNetStatus('connecting');
         $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. The connection to the Nodus network was lost; trying again in ${seconds} seconds.`;
       }
       return;
@@ -713,6 +733,7 @@ async function startNodusSend(source, address) {
       raise('nodusUnavailable');
       if (source === wallet && !source.locked) {
         const seconds = scheduleNodusRetry(source, address);
+        setNetStatus('connecting');
         $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
       }
     }
@@ -743,6 +764,7 @@ async function connectNodus(source, address, client, markReady) {
     if (!current()) return;
     markReady(); nodusRetries = 0;
     source.nodusClient = client;
+    setNetStatus('connected');
     $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
     setNodusReady(true);
     portfolio.setAddress(NODUS_ASSET.chain, address);
@@ -766,6 +788,7 @@ async function connectNodus(source, address, client, markReady) {
     if (client.identified) {
       const seconds = scheduleNodusRetry(source, address, () => connectNodus(source, address, client, markReady));
       raise('nodusConnectFailed', { reason: `Not connected to the network right now; trying again in ${seconds} seconds. Your messages on this device are shown.` });
+      setNetStatus('connecting');
       $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable right now${why}; trying again in ${seconds} seconds.`;
       return;
     }
@@ -773,6 +796,7 @@ async function connectNodus(source, address, client, markReady) {
     nodusClient = undefined;
     raise('nodusClosing', { reason: 'The Nodus network could not be verified. Lock and open your wallet again to retry.' });
     setNodusReady(false);
+    setNetStatus('offline');
     $('nodus-address-status').textContent = `Derived locally from this wallet’s recovery phrase. Nodus balance and sending are unavailable${why}. Lock and reopen your wallet to retry.`;
   }
 }
@@ -1202,6 +1226,9 @@ function lock() {
   phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
   $('nodus-address-status').textContent = '';
+  // stopNodusSend dropped the client before locking it, so its 'locked' never
+  // reaches the bar: reset it here to the page's initial state.
+  setNetStatus('connecting');
   cellframeDerivation?.abort(); cellframeDerivation = undefined;
   $('cellframe-address-status').textContent = '';
   stopIxiosAddress();
@@ -1273,6 +1300,8 @@ async function showNodusAddress() {
   const operation = new AbortController(), source = wallet;
   nodusDerivation = operation;
   $('nodus-address-status').textContent = 'Calculating your Nodus address locally…';
+  // A build without the NODUS module never connects: no network line at all.
+  setNetStatus(nodusSendModuleFactory ? 'connecting' : 'off');
   const current = () => nodusDerivation === operation && source === wallet && !source.locked && !operation.signal.aborted;
   try {
     const { deriveNodusAddress } = await import('./nodus/derive.js');
@@ -1285,7 +1314,7 @@ async function showNodusAddress() {
     if (nodusSendModuleFactory) void startNodusSend(source, address);
     else raise('nodusUnavailable');
   } catch {
-    if (current()) { $('nodus-address-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.'; raise('nodusUnavailable'); }
+    if (current()) { $('nodus-address-status').textContent = 'Nodus address unavailable. Lock and reopen your wallet to retry.'; setNetStatus(nodusSendModuleFactory ? 'offline' : 'off'); raise('nodusUnavailable'); }
   }
 }
 // Same pattern as showNodusAddress(): AbortController, current() guard, aborted
