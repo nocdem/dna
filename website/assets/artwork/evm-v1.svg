@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 1024" width="1536" height="1024">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#d5f998" stop-opacity=".16"/>
+      <stop offset=".55" stop-color="#465c30" stop-opacity=".1"/>
+      <stop offset="1" stop-color="#10150e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="slab" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a3523"/>
+      <stop offset="1" stop-color="#161d13"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#33422a"/>
+      <stop offset="1" stop-color="#1b2417"/>
+    </linearGradient>
+  </defs>
+  <rect width="1536" height="1024" fill="#10150e"/>
+  <ellipse cx="768" cy="512" rx="640" ry="460" fill="url(#glow)"/>
+  <g fill="none" stroke="#a3bc77" stroke-opacity=".35" stroke-width="2">
+    <path d="M768 182 1054 347 1054 677 768 842 482 677 482 347Z"/>
+  </g>
+  <g stroke="#d5f998" stroke-opacity=".22" stroke-width="2" stroke-dasharray="6 12">
+    <path d="M768 182V362M1054 347 900 436M1054 677 900 588M768 842V662M482 677 636 588M482 347 636 436"/>
+  </g>
+  <g fill="#141b0e" stroke="#d5f998" stroke-width="3">
+    <circle cx="768" cy="182" r="20"/>
+    <circle cx="1054" cy="347" r="20"/>
+    <circle cx="1054" cy="677" r="20"/>
+    <circle cx="768" cy="842" r="20"/>
+    <circle cx="482" cy="677" r="20"/>
+    <circle cx="482" cy="347" r="20"/>
+  </g>
+  <g fill="#d5f998">
+    <circle cx="768" cy="182" r="7"/>
+    <circle cx="1054" cy="677" r="7"/>
+    <circle cx="482" cy="677" r="7"/>
+  </g>
+  <rect x="652" y="420" width="232" height="232" rx="22" fill="#141b0e" stroke="#46513b" stroke-width="2"/>
+  <rect x="644" y="400" width="232" height="232" rx="22" fill="url(#slab)" stroke="#5b6d48" stroke-width="2"/>
+  <rect x="636" y="380" width="232" height="232" rx="22" fill="url(#face)" stroke="#93ab71" stroke-width="2"/>
+  <g fill="#d5f998">
+    <rect x="672" y="420" width="96" height="12" rx="6"/>
+    <rect x="696" y="452" width="128" height="12" rx="6" fill-opacity=".55"/>
+    <rect x="696" y="484" width="84" height="12" rx="6" fill-opacity=".55"/>
+    <rect x="720" y="516" width="112" height="12" rx="6" fill-opacity=".35"/>
+    <rect x="696" y="548" width="60" height="12" rx="6" fill-opacity=".55"/>
+    <rect x="672" y="580" width="40" height="12" rx="6"/>
+  </g>
+</svg>

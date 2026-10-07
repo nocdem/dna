@@ -163,18 +163,20 @@ files outside that allowlist. This server is for local previews.
 
 - `index.html`: a short introduction with routes to the products, resource
   network, manifesto, and roadmap.
-- `ecosystem.html`: the product directory and FAQ. Six image-led product cards
+- `ecosystem.html`: the product directory and FAQ. Seven image-led product cards
   link to the individual pages. Connect and Scan have wider featured layouts.
   Each image represents its own product, and links work without JavaScript.
-- `connect.html`, `wallet.html`, `identity.html`, `chain.html`, `scan.html`:
-  individual product pages; Connect also hosts features and downloads.
+- `connect.html`, `wallet.html`, `identity.html`, `chain.html`, `evm.html`,
+  `scan.html`: individual product pages; Connect also hosts features and
+  downloads. `evm.html` (Nodus EVM, added 2026-10-07) waits for the EVM
+  activation before publication — see the change record.
 - `connect-soon.html`: the Nodus Connect coming-soon page (first to the web,
   inside the Nodus web wallet; same 24-word recovery phrase; DNA Connect apps no
   longer distributed), with a button to the web wallet. Reached from the
   Products menu.
 - Header: the top navigation is grouped into four menus — Products (Web wallet
   at `https://wallet.nodusnetwork.io/`, Nodus Connect "preview" → `https://connect.nodusnetwork.io/`,
-  All products → `ecosystem.html`), Network (`network.html`, `tokenomics.html`,
+  Nodus EVM "testnet" → `evm.html`, All products → `ecosystem.html`), Network (`network.html`, `tokenomics.html`,
   `airdrop.html`, Scan), About (`manifesto.html`, `roadmap.html`) and Developers (`docs.html`,
   Wiki). Each menu is a button with `aria-expanded`; it opens on hover with a
   desktop mouse, on click/tap and with Enter/Space, and closes with Escape, on
@@ -182,7 +184,7 @@ files outside that allowlist. This server is for local previews.
   inline. Without JavaScript the desktop menus open on hover and keyboard focus.
   The header button is "Open Wallet" → the web wallet (hidden at 1100 px and
   below, where the Products menu carries the same link). Every footer also has
-  a Web wallet link. All 16 pages carry the same header; only the current
+  a Web wallet link. All 17 pages carry the same header; only the current
   page's link (`aria-current`) and group (`current-section`) differ.
 - `network.html`: Storage, Bandwidth, Compute, and shared architecture.
 - `manifesto.html`: privacy, identity ownership, and why Nodus is being built,
@@ -220,7 +222,8 @@ files outside that allowlist. This server is for local previews.
 - `visuals.js`: one-time scroll reveals, pointer lighting/depth, reading progress,
   and reduced-motion handling.
 - `assets/artwork/`: twelve original WebP artworks: two homepage compositions,
-  six product illustrations, three network services and one manifesto scene.
+  six product illustrations, three network services and one manifesto scene;
+  plus one hand-drawn SVG, `evm-v1.svg`, for the Nodus EVM product (2026-10-07).
   Product artwork appears in the directory and its matching detail page;
   unrelated products do not share images. Prompts and provenance are in its README.
 - `assets/nodus-mark.svg`: a provisional website mark for the new Nodus identity.
@@ -290,7 +293,7 @@ npm run check
 
 This checks JavaScript syntax only. Browser verification additionally covers:
 
-1. All 16 marketing pages at 320, 390, 768, 1024, and 1440 pixels, in both
+1. All 17 marketing pages at 320, 390, 768, 1024, and 1440 pixels, in both
    languages: no page overflow, missing assets, or browser errors.
 2. Product cards navigate to dedicated pages; browser Back returns to the
    directory. Every local page/fragment target resolves. Direct page loads work
@@ -308,8 +311,8 @@ This checks JavaScript syntax only. Browser verification additionally covers:
    tokenomics page (re-added 30 September) is reachable from the navigation,
    every footer and the Scan supply details, and its allocation table sums to
    1,000,000,000 NODUS / 100%.
-8. Artwork loads with correct MIME types; the directory contains six distinct
-   pictures matched to the six products. Pointer depth resets on
+8. Artwork loads with correct MIME types; the directory contains seven distinct
+   pictures matched to the seven products. Pointer depth resets on
    leave, scroll reveals remain keyboard accessible, and reduced motion disables
    decorative movement.
 9. Every translated text has a Turkish entry; local links and documentation
@@ -671,3 +674,22 @@ drops it from "Planned, not live"; Scan's hard-coded fork table
 (`scan/app.js` `hardForks`) gains HF-5 / param 14 and its static "Planned hard
 forks" list (`build-portals.mjs`) drops HF-5, so the live table shows it as
 pending until the effective block.
+
+2026-10-07, Nodus EVM in Products (operator: the Products area is updated for
+Nodus EVM, published together with the EVM activation; the card picture is a
+simple SVG drawn by us). Added `evm.html` (built on `chain.html`'s layout: what
+Nodus EVM is, what differs from Ethereum, which tools to use, how to start, and
+its testnet status), a seventh card "Nodus EVM · TESTNET" in `ecosystem.html`
+after Nodus Chain, the hand-drawn `assets/artwork/evm-v1.svg` (provenance in
+`assets/artwork/README.md`), a "Nodus EVM · testnet" link in the Products menu
+of every page (after Nodus Connect; keys `nav.evm`, `nav.testnet`), `/evm.html`
+in `sitemap.xml` and in `app.js` `sitePages`, and the Turkish `evm.*` keys.
+Every fact on the page is taken from the Wiki guide (`wiki/content.mjs`,
+section `evm`), `sdk/js/README.md`, `web-wallet/README.md` and the decision
+records `2026-10-04-nodus-evm-domain.md` / `2026-10-06-hf5-evm-activation.md`.
+**Publication waits for the activation (block 79,757).** Before publishing,
+the literal placeholder `EVM_LIVE_DATE` must be replaced with the date of block
+79,757 in `evm.html` (`evm.note`) and in `app.js` (`evm.note`, Turkish) — it
+appears once in each. `public-files.mjs` must also list `/evm.html` and
+`/assets/artwork/evm-v1.svg`, or the preview server returns 404 for them and
+`npm run package` leaves them out.

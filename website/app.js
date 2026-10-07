@@ -293,7 +293,10 @@ const turkish = {
   "history.roles.date": "DAHA SONRA · HF-6",
   "history.roles.title": "Daha düşük validator stake’i ve düğüm rolleri",
   "history.roles.body": "Validator’ün kendi bağı tam 10 milyon NODUS yerine en az 2 milyon olur; fazlası kendine delege edilebilir. Depolama (1 milyon), hesaplama (1 milyon) ve bant genişliği (500.000) rolleri kendi stake’lerini alır ve bu miktarlar oylamayla değiştirilebilir. Aynı yükseltme tek bir validator için sayılan oy gücüne %10’dan başlayan bir tavan koyar ve sahibin anahtarını düğümün anahtarından ayırır. Yalnızca doğrulayıcıların oyladığı bir hard fork ile devreye girer.",
-  "history.storage_reward.date": "SIRADAKİ",
+  "history.delegate_name.date": "DAHA SONRA · HF-8",
+  "history.delegate_name.title": "Delege etmek için zincir adı gerekir",
+  "history.delegate_name.body": "Yeni bir delegasyon ya da mevcut birine ekleme için, delege eden adresin bir zincir adı olması gerekecek. Mevcut delegasyonlar ve ödülleri etkilenmez; kendine delege eden bir validator'ün adı olması gerekmez. Yalnızca doğrulayıcıların oyladığı bir hard fork ile devreye girer.",
+  "history.storage_reward.date": "SIRADAKİ · HF-7",
   "history.storage_reward.title": "Depolama rolü ödülü",
   "history.storage_reward.body": "Depolama rolüne 1 milyon NODUS stake ile kayıt olan düğümler, doğrulayıcılar sakladıkları veriyi sunduklarını onayladığında Storage havuzundan eşit pay kazanır. Doğrulayıcılar depolama ödülü almaz; bir depolama düğümü ile bir doğrulayıcı aynı makine olabilir. Tasarım 4 Ekim 2026’da onaylandı ve geliştiriliyor; daha sonra doğrulayıcıların oyladığı bir hard fork ile devreye girer.",
   "history.storage_market.date": "SIRADAKİ",
@@ -762,10 +765,35 @@ const turkish = {
   "nav.openWallet": "Cüzdanı aç",
   "soonPage.crumb": "Önizleme",
   "soonPage.openWallet": "Nodus Connect’i aç (önizleme)",
-  "soonPage.about": "Nodus Connect hakkında"
+  "soonPage.about": "Nodus Connect hakkında",
+  "nav.evm": "Nodus EVM",
+  "nav.testnet": "testnet",
+  "evm.category": "ZİNCİRİMİZDE KONTRATLAR",
+  "evm.description": "Solidity ile yazılan, Nodus Chain üzerinde çalışan ve kuantum sonrası anahtarlarla imzalanan akıllı kontratlar.",
+  "evm.tag": "Akıllı kontratlar",
+  "evm.pageCategory": "AKILLI KONTRATLAR / TESTNET",
+  "evm.pageDescription": "Nodus Chain üzerinde akıllı kontratlar. Kendi EVM motorumuz Ethereum’un Prague kurallarını çalıştırır; kontratlar Solidity ile yazılır.",
+  "evm.artLabel": "KUANTUM SONRASI ANAHTARLARLA KONTRATLAR",
+  "evm.feature0": "Kuantum sonrası imzalar. Her kontrat işlemi secp256k1 ile değil, Nodus kimliğinin ML-DSA-87 anahtarıyla imzalanır.",
+  "evm.feature1": "32 baytlık adresler. Bir adres, ABI’de de 64 onaltılık karakterdir. Sıfırlarla doldurulmuş 20 baytlık bir Ethereum adresi başka bir hesaptır.",
+  "evm.feature2": "Ücretler NODUS ile. Her kontrat işlemi ücretini coin’lerinden NODUS olarak öder; başarısız olan bir çağrı da bloğa girer ve yine ücret öder.",
+  "evm.note": "EVM_LIVE_DATE tarihinden, 79.757. bloktan beri testnet’te canlı. Doğrulayıcılar onu oyla açtı: 62.425. blokta oylanan HF-5 hard fork’u. Bu bir testnet ve çevresindeki araçlar henüz erken aşamada: cüzdan paneli önizlemedir.",
+  "evm.toolsHeading": "Kullanacağın araçlar.",
+  "evm.toolsBody": "MetaMask, ethers, viem ve eth_* JSON-RPC 20 baytlık adres bekler; bu yüzden Nodus EVM ile çalışmaz. Bunların yerine şunlardan birini kullan:",
+  "evm.tools.wallet": "Web cüzdandaki ve Nodus Connect’teki akıllı kontrat paneli (önizleme). EVM adresini ve bakiyeni gösterir, bytecode ve ABI’den kontrat yayınlar, kontratları okur ve yazar. Her işlem imzalanmadan önce gözden geçirilir.",
+  "evm.tools.cli": "Komut satırı aracı nodus-cli: makbuzlar ve olaylarla birlikte yayınlama, çağırma ve gönderme. Bir çağrıyı göndermeden önce dener ve başarısız olacaksa durur.",
+  "evm.tools.sdk": "Node.js betikleri için bir JavaScript SDK’sı. Kaynak depoda tutulur ve npm’de yayınlanmaz; web cüzdanın kendi kodunu kullanır.",
+  "evm.startHeading": "Başlamak için.",
+  "evm.startBody": "Standart bir Solidity derleyicisi adresleri 20 bayta keser; bu yüzden kontratlar Nodus solc gerektirir: 32 baytlık adreslerle Solidity 0.8.30.",
+  "evm.start.guide": "Wiki’deki <a href=\"https://wiki.nodusnetwork.io/developers.html#evm\">akıllı kontrat rehberini</a> oku: derleyicinin kurulumu, yayınlama, çağırma, makbuzlar ve olaylar.",
+  "evm.start.compiler": "<a href=\"https://nodusnetwork.io/downloads/nodus-solc-0.8.30-nodus.addr256-linux-x86_64.tar.gz\">Linux x86-64 için Nodus solc’yi</a> indir ve sha256 değeriyle doğrula: <code>a09d6486c944a795<wbr>009f08dbc8210ce2<wbr>eee2785248f9f5f7<wbr>edc2aaa9c6934649</code>",
+  "evm.start.example": "Depodaki örnek token ile başla: <a href=\"https://github.com/nocdem/dna/tree/main/nodus/tools/evm/examples\" target=\"_blank\" rel=\"noopener noreferrer\">NodusToken.sol</a>, kontratı yayınlayana 1.000.000 token veren küçük, ERC-20 tarzı bir token.",
+  "evm.callout": "Nodus EVM, Ethereum’un Prague kurallarını blob ve set-code işlemleri olmadan izler. EVM içinde 1 NODUS = 10<sup>18</sup> wei.",
+  "evm.guideButton": "Akıllı kontrat rehberini oku ↗",
+  "detail.next.evm": "Nodus Chain"
 };
 
-const sitePages = new Set(["/","/index.html","/ecosystem.html","/network.html","/manifesto.html","/roadmap.html","/docs.html","/connect.html","/connect-soon.html","/wallet.html","/identity.html","/chain.html","/scan.html","/terms.html","/privacy.html","/tokenomics.html","/airdrop.html"]);
+const sitePages = new Set(["/","/index.html","/ecosystem.html","/network.html","/manifesto.html","/roadmap.html","/docs.html","/connect.html","/connect-soon.html","/wallet.html","/identity.html","/chain.html","/evm.html","/scan.html","/terms.html","/privacy.html","/tokenomics.html","/airdrop.html"]);
 
 // Keep bookmarks shared from the earlier homepage working after the split.
 const legacyPages={
