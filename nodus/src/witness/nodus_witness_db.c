@@ -322,6 +322,20 @@ static int utxo_domain_col_present(sqlite3 *db) {
     return found;
 }
 
+/* The dnac_utxo listing of one owner's CORE coins, at most max_entries
+ * rows (the handler caps it at DNAC_MAX_UTXO_RESULTS). Sorted by amount
+ * DESCENDING, equal amounts by nullifier ASCENDING (operator 2026-10-07,
+ * nodus/BUGS.md "dnac_utxo 100'den fazla…"): an owner with more coins than
+ * the cap used to receive an arbitrary subset (no ORDER BY before LIMIT),
+ * so a freshly received large coin could be missing and the client
+ * reported "insufficient coins". The cap now always keeps the LARGEST
+ * coins, and the answer is the same rows in the same order on every call.
+ * Node-local RPC answer only: no apply / consensus path calls this (its
+ * callers are nodus_witness_handlers.c handle_dnac_utxo and
+ * tests/test_v2_gate.c). The only index on utxo_set(owner) is
+ * idx_utxo_owner (nodus_witness.c), so SQLite reads the owner's rows by
+ * that index and sorts them before the LIMIT — linear in that owner's
+ * coin count. */
 int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
                                    nodus_witness_utxo_entry_t *out,
                                    int max_entries, int *count_out) {
@@ -351,10 +365,12 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
         has_dom
         ? "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
           "block_height, unlock_block "
-          "FROM utxo_set WHERE owner = ? AND domain_id = ? LIMIT ?"
+          "FROM utxo_set WHERE owner = ? AND domain_id = ? "
+          "ORDER BY amount DESC, nullifier ASC LIMIT ?"
         : "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, "
           "block_height, unlock_block "
-          "FROM utxo_set WHERE owner = ? LIMIT ?", -1, &stmt, NULL);
+          "FROM utxo_set WHERE owner = ? "
+          "ORDER BY amount DESC, nullifier ASC LIMIT ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
     sqlite3_bind_text(stmt, 1, owner, -1, SQLITE_STATIC);

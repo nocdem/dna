@@ -12,6 +12,10 @@
  * CLI's, unchanged; what changed is the surface: no printing (every refusal
  * is a code plus the numbers in nodus_v2_spend_err_t, the CLI prints), no
  * network, and the randomness source and the ruleset identity are inputs.
+ * Since 2026-10-07 (operator, nodus/BUGS.md) a single-spend plan also
+ * sweeps dust coins smallest first and folds a change not worth a later
+ * input into the fee (nodus_v2_spend.h, nodus_v2_spend_plan;
+ * req->no_dust_sweep restores the CLI's original shape).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -24,6 +28,7 @@
                                             * DNA_CORERULE_SPEND — header
                                             * constants only, no witness link */
 #include "dnac/effect_wire.h"
+#include "dnac/dnac.h"                     /* DNAC_MIN_FEE_RAW              */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_fingerprint.h"
@@ -492,6 +497,99 @@ int nodus_v2_ruleset_from_pins(nodus_v2_ruleset_id_t *out,
 
 /* ── plan ───────────────────────────────────────────────────────────── */
 
+/* The chain's fee floor (the same expression nodus-cli cmd_v2_spend's
+ * fee_floor and the web wallet's NSW_FEE_FLOOR use): the change-absorption
+ * threshold at gas price 0, where no shape is priced. */
+#define V2S_FEE_FLOOR (DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE \
+                       ? DNAC_MIN_FEE_RAW : NODUS_W_BASE_TX_FEE)
+
+/* Units of a single-signer CORE SPEND shape, priced on first use and kept
+ * for the rest of one nodus_v2_spend_plan call (the ruleset, the policy and
+ * the auth length are fixed there; nodus_v2_spend_units_for_shape encodes
+ * a whole envelope per call). */
+typedef struct {
+    const nodus_v2_ruleset_id_t *rs;
+    uint64_t u[NODUS_V2_SPEND_MAX_IN + 1][NODUS_V2_SPEND_MAX_OUTS + 1];
+    uint8_t  have[NODUS_V2_SPEND_MAX_IN + 1][NODUS_V2_SPEND_MAX_OUTS + 1];
+} v2s_shape_units_t;
+
+static int shape_units(v2s_shape_units_t *su, int n_in, int n_out,
+                       uint64_t *units_out) {
+    if (n_in < 1 || n_in > (int)NODUS_V2_SPEND_MAX_IN ||
+        n_out < 1 || n_out > (int)NODUS_V2_SPEND_MAX_OUTS)
+        return -1;
+    if (!su->have[n_in][n_out]) {
+        if (nodus_v2_spend_units_for_shape(su->rs->core_ruleset_version,
+                                           su->rs->meter_policy, V2S_AUTH_LEN,
+                                           n_in, n_out,
+                                           &su->u[n_in][n_out]) != 0)
+            return -1;
+        su->have[n_in][n_out] = 1;
+    }
+    *units_out = su->u[n_in][n_out];
+    return 0;
+}
+
+/* The marginal fee of growing a shape from (n_in, n_out) to
+ * (n_in + 1, n_out_after): (units(after) − units(before)) × gas_price.
+ * gas_price 0 → 0 (nothing is priced). A product past u64 saturates to
+ * UINT64_MAX (no coin is strictly above it). 0 / -1 (the meter refused). */
+static int marginal_fee(v2s_shape_units_t *su, uint64_t gas_price, int n_in,
+                        int n_out, int n_out_after, uint64_t *fee_out) {
+    *fee_out = 0;
+    if (gas_price == 0) return 0;
+    uint64_t before = 0, after = 0;
+    if (shape_units(su, n_in, n_out, &before) != 0 ||
+        shape_units(su, n_in + 1, n_out_after, &after) != 0)
+        return -1;
+    const uint64_t d = after > before ? after - before : 0;
+    *fee_out = d > UINT64_MAX / gas_price ? UINT64_MAX : d * gas_price;
+    return 0;
+}
+
+/* The dust sweep (contract: nodus_v2_spend.h, nodus_v2_spend_plan). The
+ * array is sorted largest first, equal amounts by nullifier ascending, so
+ * it is walked from the END one equal-amount run at a time, each run
+ * FORWARD: amount ascending, equal amounts by nullifier ascending — a
+ * total order. `n_out` is the plan's current output count. The swept value
+ * goes to native_change, or under amount_all only to native_in (the single
+ * output is native_in − fee). A coin whose addition would overflow
+ * native_in is skipped. 0 / -1 (the meter refused; *bad_* set). */
+static int dust_sweep(nodus_v2_coin_t *coins, int n_coins,
+                      nodus_v2_spend_plan_t *p, int amount_all, int n_out,
+                      uint64_t gas_price, v2s_shape_units_t *su,
+                      int *bad_n_in, int *bad_n_out) {
+    for (int hi = n_coins - 1; hi >= 0; ) {
+        int lo = hi;
+        while (lo > 0 && coins[lo - 1].amount == coins[hi].amount) lo--;
+        for (int i = lo; i <= hi; i++) {
+            if (p->n_in >= (int)NODUS_V2_SPEND_MAX_IN) return 0;
+            if (coins[i].used || coins[i].kind != 0) continue;
+            /* the first swept coin of a change-less plan creates the native
+             * change output; amount_all never has one */
+            const int n_out_after =
+                n_out + ((!amount_all && p->native_change == 0) ? 1 : 0);
+            if (n_out_after > (int)NODUS_V2_SPEND_MAX_OUTS) return 0;
+            uint64_t m = 0;
+            if (marginal_fee(su, gas_price, p->n_in, n_out, n_out_after,
+                             &m) != 0) {
+                *bad_n_in = p->n_in + 1;
+                *bad_n_out = n_out_after;
+                return -1;
+            }
+            if (coins[i].amount <= m) continue;   /* not worth an input */
+            if (p->native_in > UINT64_MAX - coins[i].amount) continue;
+            p->idx[p->n_in++] = i;
+            coins[i].used = 1;
+            p->native_in += coins[i].amount;
+            if (!amount_all) p->native_change += coins[i].amount;
+            n_out = n_out_after;
+        }
+        hi = lo - 1;
+    }
+    return 0;
+}
+
 int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
                         nodus_v2_coin_t *coins, int n_coins,
                         nodus_v2_spend_plan_t **plans_out, long *count_out,
@@ -518,6 +616,18 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
     long count = req->count;
     nodus_v2_spend_plan_t *plans = NULL;
     int rc;
+    /* the dust sweep + change absorption (nodus_v2_spend.h): ONE planned
+     * spend only — with count > 1 the input sets must stay disjoint, later
+     * spends must not be starved, and the batch shares one fee */
+    const int dust = !req->no_dust_sweep && !req->count_all && count == 1;
+    v2s_shape_units_t *su = NULL;
+    if (dust) {
+        su = calloc(1, sizeof(*su));
+        if (!su) return NODUS_V2_SPEND_ERR_ALLOC;
+        su->rs = req->rs;
+    }
+    /* the change folded into the fee by the absorption, this pass */
+    uint64_t absorbed = 0;
 
     /* The chain requires fee >= max(floor, units × gas_price) for a
      * non-SYSTEM envelope (nodus_witness_v2_apply.c env_gas_price_check).
@@ -527,8 +637,11 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
      * shape the batch uses, and if that needs more, raise the fee to it
      * and plan again from scratch. One fee for the whole batch.
      * gas_price 0 (the rule is off): ONE pass, nothing is priced. A fixed
-     * fee is never raised: below what the plan needs, it is refused. */
+     * fee is never raised: below what the plan needs, it is refused.
+     * The dust sweep and the change absorption run INSIDE each pass,
+     * before pricing, so the priced shape is the one that will be built. */
     for (int pass = 0; ; pass++) {
+        absorbed = 0;
         uint64_t native_need = fee;
         if (is_native) {
             if (amount > UINT64_MAX - fee) {
@@ -576,26 +689,61 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
                 p->native_in      = coins[pick].amount;
                 p->native_change  = 0;
                 coins[pick].used  = 1;
-                continue;
+            } else {
+                if (!is_native) {
+                    prc = nodus_v2_spend_pick(coins, n_coins, 1, amount, p,
+                                              &p->token_in);
+                    if (prc == 0) p->token_change = p->token_in - amount;
+                }
+                if (prc == 0) {
+                    prc = nodus_v2_spend_pick(coins, n_coins, 0, native_need,
+                                              p, &p->native_in);
+                    if (prc == 0)
+                        p->native_change = p->native_in - native_need;
+                }
+                if (prc != 0) {
+                    if (err) { err->k = k; err->fee = fee; }
+                    rc = prc == -2 ? NODUS_V2_SPEND_ERR_MAX_INPUTS
+                       : prc == -3 ? NODUS_V2_SPEND_ERR_INPUT_SUM
+                                   : NODUS_V2_SPEND_ERR_INSUFFICIENT;
+                    goto fail;
+                }
+                for (int j = 0; j < p->n_in; j++) coins[p->idx[j]].used = 1;
             }
-            if (!is_native) {
-                prc = nodus_v2_spend_pick(coins, n_coins, 1, amount, p,
-                                          &p->token_in);
-                if (prc == 0) p->token_change = p->token_in - amount;
-            }
-            if (prc == 0) {
-                prc = nodus_v2_spend_pick(coins, n_coins, 0, native_need, p,
-                                          &p->native_in);
-                if (prc == 0) p->native_change = p->native_in - native_need;
-            }
-            if (prc != 0) {
-                if (err) { err->k = k; err->fee = fee; }
-                rc = prc == -2 ? NODUS_V2_SPEND_ERR_MAX_INPUTS
-                   : prc == -3 ? NODUS_V2_SPEND_ERR_INPUT_SUM
-                               : NODUS_V2_SPEND_ERR_INSUFFICIENT;
+            if (!dust) continue;
+
+            /* the plan covers its need; sweep the dust into it */
+            const int tok_out = (!is_native && p->token_change > 0) ? 1 : 0;
+            int n_out = amount_all ? 1
+                      : 1 + tok_out + (p->native_change > 0 ? 1 : 0);
+            int bad_in = 0, bad_out = 0;
+            if (dust_sweep(coins, n_coins, p, amount_all, n_out, gas_price,
+                           su, &bad_in, &bad_out) != 0) {
+                if (err) { err->k = k; err->n_in = bad_in; err->n_out = bad_out; }
+                rc = NODUS_V2_SPEND_ERR_METER;
                 goto fail;
             }
-            for (int j = 0; j < p->n_in; j++) coins[p->idx[j]].used = 1;
+
+            /* a native change not worth a later input becomes fee: drop the
+             * change output, the fee rises by exactly its value (native_in
+             * = outputs + fee stays exact) */
+            if (req->fee_fixed || amount_all || p->native_change == 0)
+                continue;
+            n_out = 1 + tok_out + 1;
+            uint64_t thr = V2S_FEE_FLOOR;
+            if (gas_price != 0) {
+                const int a = p->n_in < (int)NODUS_V2_SPEND_MAX_IN
+                            ? p->n_in : p->n_in - 1;
+                if (marginal_fee(su, gas_price, a, n_out, n_out, &thr) != 0) {
+                    if (err) { err->k = k; err->n_in = a + 1; err->n_out = n_out; }
+                    rc = NODUS_V2_SPEND_ERR_METER;
+                    goto fail;
+                }
+            }
+            if (p->native_change <= thr) {
+                absorbed = p->native_change;
+                p->native_change = 0;
+            }
         }
 
         if (gas_price == 0) break;          /* rule off: one pass */
@@ -623,7 +771,9 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
             goto fail;
         }
         const uint64_t required = max_units * gas_price;
-        if (required <= fee) break;         /* the plan's fee covers it */
+        /* absorbed > 0 only for the one plan of a count-1 request, whose
+         * fee is fee + absorbed (<= native_in, no overflow) */
+        if (required <= fee + absorbed) break;  /* the plan's fee covers it */
         if (err) {
             err->units = max_units;
             err->required = required;
@@ -636,11 +786,13 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
     }
 
     err_reset(err);
+    free(su);
     *plans_out = plans;
-    *fee_out = fee;
+    *fee_out = fee + absorbed;
     return NODUS_V2_SPEND_OK;
 
 fail:
+    free(su);
     free(plans);
     return rc;
 }

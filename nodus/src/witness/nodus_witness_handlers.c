@@ -2543,9 +2543,24 @@ static void handle_dnac_spend(nodus_witness_t *w,
          * (nodus_witness_cmt_app.c's check_tx row), never a mempool
          * error — both are answered here, at once. */
         if (res.code != CMT_MEM_CODE_TYPE_OK) {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "CheckTx code %u",
-                     (unsigned)res.code);
+            /* "CheckTx code N" stays the prefix (a client that reads
+             * "CheckTx code %u" still parses); ": <log>" follows when the
+             * application wrote a reason — abci types.proto:265
+             * ResponseCheckTx.log, which the reference returns to the
+             * submitter (rpc/core/mempool.go:52). Node-local text, never
+             * a verdict. 25 + (CMT_MEM_CHECK_TX_LOG_MAX - 1) bytes at
+             * most: the receiver keeps 127 (nodus_tier2.h error_msg). */
+            char msg[25 + CMT_MEM_CHECK_TX_LOG_MAX];
+            _Static_assert(sizeof(msg) <= 128,
+                           "the CheckTx answer must fit error_msg[128]");
+            res.log[sizeof(res.log) - 1] = '\0';
+            if (res.log[0] != '\0') {
+                snprintf(msg, sizeof(msg), "CheckTx code %u: %s",
+                         (unsigned)res.code, res.log);
+            } else {
+                snprintf(msg, sizeof(msg), "CheckTx code %u",
+                         (unsigned)res.code);
+            }
             send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, msg);
             return;
         }

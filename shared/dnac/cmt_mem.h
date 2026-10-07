@@ -306,18 +306,35 @@ typedef struct {
 #define CMT_MEM_CODE_TYPE_OK ((uint32_t)0)
 
 /**
+ * Bound of `cmt_mem_response_check_tx_t.log`, NUL included. Sized so the
+ * client answer "CheckTx code <uint32>: <log>" (25 bytes of prefix at
+ * most) fits a Tier-2 error message whole: the receiving side keeps 127
+ * bytes of it (nodus_tier2.h `nodus_tier2_msg_t.error_msg[128]`).
+ */
+#define CMT_MEM_CHECK_TX_LOG_MAX 96
+
+/**
  * abci/types.proto:262-277 — `ResponseCheckTx`, RESTRICTED to the fields
  * the mempool reads — `code` (:263, at clist_mempool.go:412, :492) and
  * `gas_wanted` (:267, at :441 and mempool.go:135-139) — plus `gas_used`
- * (:268). `data`, `log`, `info`, `events` and `codespace` (:264-266,
- * :269-271) are not carried: no consumer in this wave reads them, and
- * the RPC that would render them to a client is a later wave's
- * (reported as a QUESTION, not decided here).
+ * (:268) and `log` (:265, "nondeterministic"). The mempool never reads
+ * `log`; the reference returns it to the submitting client only
+ * (rpc/core/mempool.go:52, BroadcastTxSync), and so does this port
+ * (nodus_witness_handlers.c handle_dnac_spend). It is node-local and
+ * never hashed: LastResultsHash is built from FinalizeBlock's
+ * ExecTxResult (cmt_results.c, deterministicExecTxResult copies code /
+ * data / gas only), never from a CheckTx response. `data`, `info`,
+ * `events` and `codespace` (:264, :266, :269-271) are not carried: no
+ * consumer reads them.
  */
 typedef struct {
     uint32_t code;         /* :263 */
     int64_t  gas_wanted;   /* :267 */
     int64_t  gas_used;     /* :268 */
+    char     log[CMT_MEM_CHECK_TX_LOG_MAX]; /* :265 — human-readable
+                                             * refusal reason, NUL-
+                                             * terminated, "" on OK;
+                                             * truncated to the bound */
 } cmt_mem_response_check_tx_t;
 
 /* ══ proxy/app_conn.go:29-36 — AppConnMempool, as a callback table ════ */
