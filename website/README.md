@@ -221,9 +221,10 @@ files outside that allowlist. This server is for local previews.
   with Canvas 2D.
 - `visuals.js`: one-time scroll reveals, pointer lighting/depth, reading progress,
   and reduced-motion handling.
-- `assets/artwork/`: twelve original WebP artworks: two homepage compositions,
-  six product illustrations, three network services and one manifesto scene;
-  plus one hand-drawn SVG, `evm-v1.svg`, for the Nodus EVM product (2026-10-07).
+- `assets/artwork/`: thirteen original WebP artworks: two homepage compositions,
+  seven product illustrations, three network services and one manifesto scene.
+  Nodus EVM uses `evm-v2.webp`, matching the other products' glass/metal style;
+  its earlier hand-drawn `evm-v1.svg` is retained as source history only.
   Product artwork appears in the directory and its matching detail page;
   unrelated products do not share images. Prompts and provenance are in its README.
 - `assets/nodus-mark.svg`: a provisional website mark for the new Nodus identity.
@@ -335,6 +336,28 @@ were visually reviewed. A comparison with the pre-refresh snapshot also verified
 that authored page copy was preserved, excluding replaced decorative illustrations.
 
 ## Change record
+
+2026-10-08: Replaced the flat Nodus EVM drawing with a generated jade-glass
+and brushed-titanium contract sculpture to match the other product illustrations,
+following the user's report that EVM's picture looked different. Both
+`ecosystem.html` and `evm.html` use `assets/artwork/evm-v2.webp` (1536 × 1024).
+The preview/package manifest serves it as `image/webp`. The original PNG,
+generation prompt and encoding details are recorded in the artwork README.
+Validation: `npm run check` and `npm run package` passed. Headless Chromium
+checked Products and EVM in EN/TR at 320, 390, 768, 1024 and 1440 px (20
+combinations): artwork decoded, no horizontal overflow or browser/request
+errors, seven distinct product images, and EVM navigation/Back retained Turkish.
+Desktop/mobile screenshots were visually reviewed. The packaged WebP matches
+the source bytes and the preview returns `image/webp`.
+
+Published on 2026-10-08 after the user's explicit deploy request: only the two
+HTML pages and the new WebP were uploaded from the verified public package.
+All three public HTTPS responses returned 200 with the expected MIME types and
+matched the local SHA-256 hashes. Live headless Chromium checks passed in EN/TR
+at 390 and 1440 px for both pages (eight combinations), including decoded
+artwork, no overflow or browser/request errors, and EVM navigation/Back retaining
+Turkish. Live desktop/mobile screenshots were visually reviewed. Previous HTML
+is backed up on the host; its path is recorded in the local deployment ledger.
 
 2026-09-10: Created a local, independent Nodus website at the user's request,
 with bilingual content and the confirmed devnet/testnet naming transition.

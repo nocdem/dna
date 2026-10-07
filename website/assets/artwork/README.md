@@ -1,6 +1,7 @@
 # Nodus artwork
 
-Generated on 2026-09-11 with the built-in image_gen tool.
+Initial WebP artwork generated on 2026-09-11 with the built-in image_gen tool;
+the matching EVM replacement was generated on 2026-10-08.
 These are decorative metaphors for Nodus products, services and values, not hardware or product screenshots.
 Original PNGs are retained; WebP copies are used by the website for efficient loading.
 
@@ -164,7 +165,9 @@ Use case: stylized-concept. Asset type: Nodus Network product illustration for a
 ### evm
 
 - Workspace: `assets/artwork/evm-v1.svg`
-- Used on: `evm.html` and the Nodus EVM entry in `ecosystem.html`
+- Previously used on: `evm.html` and the Nodus EVM entry in `ecosystem.html`.
+  Replaced by `evm-v2.webp` on 2026-10-08; retained as source history, excluded
+  from the public manifest.
 - Origin: written by hand as SVG source in this repository at the operator's
   request ("the card image is a simple SVG drawn by us"). No image_gen, no
   prompt, no reference image and no retained original: the SVG file is the
@@ -176,3 +179,33 @@ Use case: stylized-concept. Asset type: Nodus Network product illustration for a
 - Idea: a small stack of rounded slabs with abstract code bars (a contract)
   at the centre of a six-node ring (the validators that run it). The bars are
   shapes, not letters or numbers.
+
+## Matching EVM artwork — 8 October 2026
+
+### evm-v2
+
+- Workspace: `assets/artwork/evm-v2.webp`
+- Used on: `evm.html` and the Nodus EVM entry in `ecosystem.html`
+- Retained original: `/home/nocdem/.codex/generated_images/01a11892-8b5e-7d32-b821-19c96ef3e840/exec-6931b31c-9752-4e39-b71f-35a31d75767a.png`
+- Mode: built-in image_gen, new generation, no reference image supplied. Existing
+  Chain and Wallet artwork was inspected to match the established materials,
+  lighting and palette.
+- Encoded with ImageMagick at WebP quality 84, 1536 × 1024, without cropping or
+  content edits. The original PNG remains at its generated location.
+- Reason: the user reported that the EVM picture did not match the other products.
+  This replaces the flat SVG with a dimensional contract sculpture in the site's
+  smoked-jade glass and brushed-titanium style. It remains a decorative metaphor,
+  not an image of deployed hardware or a product screenshot.
+
+Prompt:
+
+```text
+Use case: stylized-concept.
+Asset type: original bespoke editorial 3D artwork for the Nodus EVM product card and its detail page on nodusnetwork.io.
+Primary request: match the existing Nodus product illustration family: luxurious tactile CGI, photographed physical sculpture in a dark olive studio, brushed graphite titanium, smoked jade glass, restrained pale lime illumination (#d5f998). Landscape 3:2, 1536 x 1024.
+Subject: a smart-contract execution sculpture, a single thick smoked jade-glass contract tablet held upright at a slight backward angle inside an open, precision-machined dark titanium frame. Inside the translucent tablet, neat short horizontal luminous engraved bars arranged in indented rows suggest executable instructions, with no actual letters, code or numbers. The lower edge of the tablet slots into a beautifully machined stepped titanium engine base with subtle fine grooves and a narrow lime-lit seam. A delicate transparent glass layer floats just behind the tablet, aligned with it. The sculpture is compact, dimensional and recognizable as one coherent contract engine, not a computer monitor or UI.
+Scene/backdrop: quiet midnight olive-black studio (#10150e), low basalt plinth, subtle realistic reflection and contact shadow; soft background gradient with no extra objects.
+Composition: low three-quarter camera view, centered sculpture occupying approximately 65% of the landscape frame, complete silhouette visible with generous breathing room on all four sides and extra space below for a website caption. Keep all essential forms inside the center so it also reads in a wide product card.
+Materials and lighting: exquisite brushed-metal microtexture, weighty beveled edges, convincing dark glass refraction, natural studio key light grazing the top left, soft olive rim light, restrained lime light within the tablet engravings and seams, deep soft shadows. The image must feel as real and materially rich as premium photographed industrial design, not flat vector art.
+Constraints: decorative metaphor for smart contracts, not actual hardware. No typography, letters, digits, logos, Ethereum diamonds, watermarks, coins, padlocks, people, diagrams, symbolic network nodes, planets, neon cyberpunk, UI screenshot, or border. Muted graphite and olive palette, avoid large bright white surfaces or oversaturated green.
+```

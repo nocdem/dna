@@ -17,7 +17,7 @@ export const files = new Map([
   ['/identity.html', ['identity.html', 'text/html; charset=utf-8']],
   ['/chain.html', ['chain.html', 'text/html; charset=utf-8']],
   ['/evm.html', ['evm.html', 'text/html; charset=utf-8']],
-  ['/assets/artwork/evm-v1.svg', ['assets/artwork/evm-v1.svg', 'image/svg+xml']],
+  ['/assets/artwork/evm-v2.webp', ['assets/artwork/evm-v2.webp', 'image/webp']],
   ['/scan.html', ['scan.html', 'text/html; charset=utf-8']],
   ['/terms.html', ['terms.html', 'text/html; charset=utf-8']],
   ['/privacy.html', ['privacy.html', 'text/html; charset=utf-8']],
