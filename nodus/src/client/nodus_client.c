@@ -3066,6 +3066,20 @@ int nodus_client_dnac_spend(nodus_client_t *client,
                               const nodus_sig_t *sender_sig,
                               uint64_t fee,
                               nodus_dnac_spend_result_t *result_out) {
+    return nodus_client_dnac_spend_ex(client, tx_hash, tx_data, tx_len,
+                                      sender_pk, sender_sig, fee,
+                                      result_out, NULL, 0);
+}
+
+int nodus_client_dnac_spend_ex(nodus_client_t *client,
+                                 const uint8_t *tx_hash,
+                                 const uint8_t *tx_data, uint32_t tx_len,
+                                 const nodus_pubkey_t *sender_pk,
+                                 const nodus_sig_t *sender_sig,
+                                 uint64_t fee,
+                                 nodus_dnac_spend_result_t *result_out,
+                                 char *err_msg, size_t err_cap) {
+    if (err_msg && err_cap > 0) err_msg[0] = '\0';
     if (!nodus_client_is_ready(client) || !tx_hash || !tx_data ||
         !sender_pk || !sender_sig || !result_out)
         return -1;
@@ -3101,7 +3115,16 @@ int nodus_client_dnac_spend(nodus_client_t *client,
     /* Mempool block timer (5s) + BFT round + mesh stabilization */
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, 60000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') {
+        /* the node's own text (a CheckTx refusal reads "CheckTx code N",
+         * nodus_witness_handlers.c handle_dnac_spend) — copied before the
+         * pending slot that owns `resp` is freed */
+        if (err_msg && err_cap > 0)
+            snprintf(err_msg, err_cap, "%s", resp->error_msg);
+        int rc = resp->error_code;
+        free_pending(client, req);
+        return rc;
+    }
 
     /* Decode spend result from raw response */
     cbor_decoder_t dec;

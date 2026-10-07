@@ -520,6 +520,89 @@ bad_before:
     return 0;
 }
 
+/* `coins` — THIS identity's unspent coins as the node lists them
+ * (dnac_utxo, the same query `v2-envelope spend` selects from), plus the
+ * node's committed tip. Read-only. The node answers only the
+ * authenticated session's own owner (C11, handle_dnac_utxo). `id` is the
+ * coin's utxo_set key: the output id SHA3-512(owner_hex ‖ seed)
+ * (rtn_out_ids, nodus_witness_rt_native.c) — the value `v2-envelope
+ * spend` prints as `out[k] id=` — and `bh` is the height of the block
+ * that created it (rtn_utxo_create_eff writes the applying height). One
+ * header line, then one line per coin:
+ *   coins: owner=<fp16>... tip=<H> count=<n> native_total=<raw>
+ *   coin id=<128hex> amount=<raw> bh=<H> ub=<H> token=native|<16hex>... */
+static int cmd_coins(const char *server_ip, uint16_t server_port) {
+    nodus_client_t client;
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", server_ip);
+    cfg.servers[0].port = server_port;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+
+    if (nodus_client_init(&client, &cfg, &identity) != 0) {
+        fprintf(stderr, "client_init failed\n");
+        return 1;
+    }
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "client connect failed (%s:%u)\n", server_ip,
+                (unsigned)server_port);
+        nodus_client_close(&client);
+        return 1;
+    }
+
+    nodus_dnac_utxo_result_t r;
+    memset(&r, 0, sizeof(r));
+    int qrc = nodus_client_dnac_utxo(&client, identity.fingerprint,
+                                     NODUS_DNAC_MAX_UTXO_RESULTS, &r);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_utxo query failed (rc=%d)\n", qrc);
+        nodus_client_close(&client);
+        return 1;
+    }
+
+    uint64_t native_total = 0;
+    bool     total_ok = true;
+    for (int i = 0; i < r.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &r.entries[i];
+        bool native = true;
+        for (int b = 0; b < 64; b++)
+            if (e->token_id[b]) { native = false; break; }
+        if (!native) continue;
+        if (e->amount > UINT64_MAX - native_total) { total_ok = false; break; }
+        native_total += e->amount;
+    }
+    printf("coins: owner=%.16s... tip=%llu count=%d native_total=",
+           identity.fingerprint, (unsigned long long)r.block_height, r.count);
+    if (total_ok) printf("%llu\n", (unsigned long long)native_total);
+    else          printf("overflow\n");
+    for (int i = 0; i < r.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &r.entries[i];
+        bool native = true;
+        for (int b = 0; b < 64; b++)
+            if (e->token_id[b]) { native = false; break; }
+        printf("coin id=");
+        for (int b = 0; b < 64; b++) printf("%02x", e->nullifier[b]);
+        printf(" amount=%llu bh=%llu ub=%llu token=",
+               (unsigned long long)e->amount,
+               (unsigned long long)e->block_height,
+               (unsigned long long)e->unlock_block);
+        if (native) {
+            printf("native\n");
+        } else {
+            for (int b = 0; b < 8; b++) printf("%02x", e->token_id[b]);
+            printf("...\n");
+        }
+    }
+    if (r.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
+        fprintf(stderr, "warning: the coin listing is capped at %d rows and "
+                "came back full — coins beyond it are not shown\n",
+                (int)NODUS_DNAC_MAX_UTXO_RESULTS);
+    nodus_client_free_utxo_result(&r);
+    nodus_client_close(&client);
+    return 0;
+}
+
 static int cmd_listen(const char *key_str) {
     nodus_key_t key;
     nodus_hash((const uint8_t *)key_str, strlen(key_str), &key);
@@ -2707,6 +2790,45 @@ static int t6_resolve_target(const char *submit, const char *def_ip,
  * RPC/session-level fault (return -1: something is wrong with the
  * connection, the caller should stop). @return 0 accepted / 1 refused
  * / -1 fault. */
+/* The name of a CheckTx response code, as the node's application answers
+ * it. THIS IS NOT nodus_v2_tx_code_t (the FinalizeBlock per-item space,
+ * nodus_witness_v2_apply.h, where 1 = DECODE): the CheckTx space is its
+ * own, defined in a .c the CLI does not link — copied here from
+ * nodus_witness_cmt_app.c:748 (NODUS_CMT_APP_CODE_REJECTED = 1, "every
+ * other refusal") and :771 (NODUS_CMT_APP_CODE_GENERATION = 100, the
+ * envelope names a ruleset generation not in force), code space listed at
+ * :774-781. Any other number is printed as code-N. */
+static const char *cli_checktx_code_name(unsigned code, char *buf,
+                                         size_t cap) {
+    if (code == 1u)   return "REJECTED";
+    if (code == 100u) return "GENERATION";
+    snprintf(buf, cap, "code-%u", code);
+    return buf;
+}
+
+/* One machine-greppable stderr line for a dnac_spend the node did not
+ * take: the old "dnac_spend RPC failed (rc=N)" text stays as the prefix
+ * (scripts grep it), then either
+ *   refused: rc=N node="<node text>"[ checktx=<name>]
+ * — the node answered with an error frame (its text; ` checktx=` when the
+ * text is "CheckTx code N", nodus_witness_handlers.c handle_dnac_spend) —
+ * or
+ *   failed: rc=N node=""
+ * — no error frame: no reply in time (rc 6 = NODUS_ERR_TIMEOUT), a reply
+ * that could not be read, or a local failure. The node may still have
+ * taken the transaction in that case; "failed" never means refused. */
+static void cli_print_spend_refusal(int rc, const char *node_msg) {
+    char nbuf[24];
+    unsigned code = 0;
+    const char *m = node_msg ? node_msg : "";
+    fprintf(stderr, "dnac_spend RPC failed (rc=%d) %s: rc=%d node=\"%s\"",
+            rc, m[0] ? "refused" : "failed", rc, m);
+    if (sscanf(m, "CheckTx code %u", &code) == 1)
+        fprintf(stderr, " checktx=%s",
+                cli_checktx_code_name(code, nbuf, sizeof(nbuf)));
+    fprintf(stderr, "\n");
+}
+
 static int t6_submit_on(nodus_client_t *client, nodus_identity_t *id,
                         const uint8_t tx_hash[64], const uint8_t *bytes,
                         uint32_t len) {
@@ -2716,10 +2838,15 @@ static int t6_submit_on(nodus_client_t *client, nodus_identity_t *id,
     nodus_sign(&ssig, tx_hash, 64, &id->sk);
     nodus_dnac_spend_result_t sres;
     memset(&sres, 0, sizeof(sres));
-    int rc = nodus_client_dnac_spend(client, tx_hash, bytes, len, &spk,
-                                     &ssig, 0, &sres);
+    char node_msg[128];
+    int rc = nodus_client_dnac_spend_ex(client, tx_hash, bytes, len, &spk,
+                                        &ssig, 0, &sres, node_msg,
+                                        sizeof(node_msg));
     if (rc != 0) {
-        fprintf(stderr, "dnac_spend RPC failed (rc=%d)\n", rc);
+        /* A CheckTx refusal arrives HERE (an error frame, rc 7), not as a
+         * non-APPROVED status below — the -1 classification is unchanged
+         * (v2-claim's batch loop reads it). */
+        cli_print_spend_refusal(rc, node_msg);
         return -1;
     }
     if (sres.status != NODUS_DNAC_APPROVED) {
@@ -8623,6 +8750,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  witness          Show the committee for the next block\n");
     fprintf(stderr, "  addr-history [--before H[:I:Q]] [--limit N]\n");
     fprintf(stderr, "                   This identity's history from the node's local index\n");
+    fprintf(stderr, "  coins            This identity's unspent coins (id, amount, bh, ub) and the tip\n");
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 #ifdef NODUS_CLI_HAS_DNAC
     fprintf(stderr, "  ruleset-info     The rule-set generation the node runs (and if this CLI carries it)\n");
@@ -8810,6 +8938,14 @@ int main(int argc, char **argv) {
     if (strcmp(command, "addr-history") == 0) {
         int rc = cmd_addr_history(server_ip, server_port, argc, argv,
                                   optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* coins: its own nodus_client_t session (dnac_utxo), as THIS
+     * identity — the node answers only the session's own owner. */
+    if (strcmp(command, "coins") == 0) {
+        int rc = cmd_coins(server_ip, server_port);
         nodus_identity_clear(&identity);
         return rc;
     }
