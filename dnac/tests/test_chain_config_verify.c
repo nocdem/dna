@@ -113,9 +113,9 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 17 (Nodus EVM 14-15, storage reward v1 16) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 18 (Nodus EVM 14-15, storage reward v1 16, HF-8 17) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 17);
+    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 18);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
@@ -261,7 +261,9 @@ int main(void) {
                            id == DNAC_CFG_EVM_BLOCK_GAS_LIMIT ||
                            /* storage reward v1: 16 read by phase 6b'
                             * and env_ruleset_gen_storage_voted */
-                           id == DNAC_CFG_RULESET_GEN_STORAGE);
+                           id == DNAC_CFG_RULESET_GEN_STORAGE ||
+                           /* HF-8: 17 read by env_delegate_name_required */
+                           id == DNAC_CFG_DELEGATE_NAME_REQUIRED);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
 

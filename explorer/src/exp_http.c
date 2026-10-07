@@ -248,6 +248,7 @@ static const char *param_name(uint32_t id) {
     case DNAC_CFG_EVM_ACTIVE:             return "EVM_ACTIVE";
     case DNAC_CFG_EVM_BLOCK_GAS_LIMIT:    return "EVM_BLOCK_GAS_LIMIT";
     case DNAC_CFG_RULESET_GEN_STORAGE:    return "RULESET_GEN_STORAGE";
+    case DNAC_CFG_DELEGATE_NAME_REQUIRED: return "DELEGATE_NAME_REQUIRED";
     default:                              return NULL;
     }
 }

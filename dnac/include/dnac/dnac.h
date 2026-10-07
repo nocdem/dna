@@ -760,7 +760,49 @@ typedef enum {
                                           *   class). Id assigned in main
                                           *   merge order (QEVM took 14
                                           *   and 15). */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_RULESET_GEN_STORAGE
+    DNAC_CFG_DELEGATE_NAME_REQUIRED = 17, /**< HF-8 (design docs/plans/
+                                          *   2026-10-07-delegate-name-
+                                          *   required-design.md rev 2 §1;
+                                          *   Kurultay #11; number:
+                                          *   decision 2026-10-05-hf-
+                                          *   numbering-evm-hf5.md "Ek
+                                          *   2026-10-07"): the one-way
+                                          *   switch of "delegation
+                                          *   requires an on-chain name".
+                                          *   From the row's
+                                          *   effective_block on, the
+                                          *   CORE SYSFUND leg of a
+                                          *   DELEGATE envelope whose
+                                          *   delegator is not the
+                                          *   validator itself reads the
+                                          *   delegator's v2_names row by
+                                          *   owner (CORE NAMEOWN) and
+                                          *   refuses the envelope when
+                                          *   there is none; that funding
+                                          *   leg then takes at most 14
+                                          *   inputs (the read budget).
+                                          *   New delegations AND top-ups;
+                                          *   self-delegation exempt;
+                                          *   UNDELEGATE, existing rows
+                                          *   and payouts untouched. No
+                                          *   row = OFF (byte-identical:
+                                          *   no read, no unit). Value
+                                          *   domain EXACTLY
+                                          *   DNAC_CFG_DELEGATE_NAME_
+                                          *   REQUIRED_ON (1) — no "off"
+                                          *   vote, no single-use rule
+                                          *   (the HF-2/HF-3 shape);
+                                          *   votable only while the
+                                          *   judging rule-set generation
+                                          *   is >= 2 (names exist) — a
+                                          *   witness-side stateful rule
+                                          *   the client mirror cannot
+                                          *   apply. Grace class
+                                          *   ERGONOMIC (our choice, the
+                                          *   HF-2/HF-3 class). Id
+                                          *   assigned in main merge
+                                          *   order (16 = storage). */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_DELEGATE_NAME_REQUIRED
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -813,7 +855,11 @@ typedef enum {
  *      apply.c phase 6b' (the second edge trigger — the EVM generation ->
  *      GEN_STORAGE at the end of block H-1) and env_ruleset_gen_storage_
  *      voted (nodus_rt_exec_ctx_t.ruleset_gen_storage_voted — the
- *      single-use vote rule).
+ *      single-use vote rule);
+ *    - DELEGATE_NAME_REQUIRED (17, HF-8): nodus_witness_v2_apply.c
+ *      env_delegate_name_required (the engine reads it into
+ *      nodus_rt_exec_ctx_t.delegate_name_required — the CORE SYSFUND
+ *      leg's name gate, nodus_witness_rt_native.c rtn_sysfund_name_gate).
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -840,7 +886,8 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_6P ||
            param_id == (uint8_t)DNAC_CFG_EVM_ACTIVE ||
            param_id == (uint8_t)DNAC_CFG_EVM_BLOCK_GAS_LIMIT ||
-           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE;
+           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE ||
+           param_id == (uint8_t)DNAC_CFG_DELEGATE_NAME_REQUIRED;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -946,6 +993,16 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  config.c, dnac/src/transaction/verify.c); a later vote for 1 at a
  *  higher height changes nothing. */
 #define DNAC_CFG_HF3_ACTIVE_ON              1ULL
+
+/** DELEGATE_NAME_REQUIRED value domain (HF-8, param_id 17): EXACTLY 1.
+ *
+ *  The HF-2/HF-3 one-way switch (design docs/plans/2026-10-07-delegate-
+ *  name-required-design.md rev 2 §1): voted 1 at a future height H, the
+ *  name rule holds from H on. 0 and every other value are refused by the
+ *  scalar rules on both sides (nodus_witness_chain_config.c,
+ *  dnac/src/transaction/verify.c); a later vote for 1 at a higher height
+ *  changes nothing (the earlier row stays in force). */
+#define DNAC_CFG_DELEGATE_NAME_REQUIRED_ON  1ULL
 
 /** HF-4 — the switch procedure version (design docs/plans/2026-10-02-
  *  onchain-names-design.md rev 4 §1.2-§1.4). It names the procedure the

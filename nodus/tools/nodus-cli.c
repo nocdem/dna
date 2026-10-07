@@ -1481,6 +1481,11 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
          * while the EVM generation judges the vote */
         { "RULESET_GEN_STORAGE",  DNAC_CFG_RULESET_GEN_STORAGE },
         { "ruleset_gen_storage",  DNAC_CFG_RULESET_GEN_STORAGE },
+        /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-
+         * design.md rev 2 §1) — param id 17, value exactly 1; votable
+         * only while generation 2 or later judges the vote */
+        { "DELEGATE_NAME_REQUIRED", DNAC_CFG_DELEGATE_NAME_REQUIRED },
+        { "delegate_name_required", DNAC_CFG_DELEGATE_NAME_REQUIRED },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1727,6 +1732,10 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "(storage-reward rule-set generation from --effective on; "
             "once only; the EVM generation must be in force; HF-2 must "
             "be active; --effective - 1 not an epoch boundary)\n"
+            "  DELEGATE_NAME_REQUIRED exactly %llu   "
+            "(HF-8 switch: from --effective on a delegation needs the "
+            "delegator's on-chain name, self-delegation exempt; one-way; "
+            "generation 2 must be in force)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -1742,7 +1751,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
             (unsigned long long)DNAC_CFG_MIN_EVM_BLOCK_GAS,
             (unsigned long long)DNAC_CFG_MAX_EVM_BLOCK_GAS,
-            (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D);
+            (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
+            (unsigned long long)DNAC_CFG_DELEGATE_NAME_REQUIRED_ON);
         return 1;
     }
     uint8_t param_id = 0;
@@ -1752,7 +1762,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE | "
                 "RULESET_GEN2 | NAME_PRICE_3P | NAME_PRICE_4P | "
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
-                "EVM_BLOCK_GAS_LIMIT | RULESET_GEN_STORAGE "
+                "EVM_BLOCK_GAS_LIMIT | RULESET_GEN_STORAGE | "
+                "DELEGATE_NAME_REQUIRED "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -3559,6 +3570,15 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  * the per-validator delegator cap) is the chain's, decided at CheckTx —
  * the builder checks only what the call bytes alone decide
  * (1 <= amount <= total supply, rtn_delegate_exec's scalar rule).
+ * HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md rev
+ * 2 §1; chain_config param 17, inert until voted): from the activation
+ * height on, a DELEGATE whose delegator is not the validator is refused
+ * at CheckTx unless the delegator owns an on-chain name (CORE SYSFUND,
+ * nodus_witness_rt_native.c rtn_sysfund_name_gate) — new delegations and
+ * top-ups alike; CheckTx sees committed state only, so a `name register`
+ * still in the mempool does not count yet. Such a funding leg carries at
+ * most 14 inputs; the shared builder (nodus_v2_stake.c) caps every
+ * non-self DELEGATE at 14 whether or not the rule is active.
  *
  * `v2-envelope undelegate` is the DELEGATE layout under runtime_op 4
  * (DNA_SYSRULE_UNDELEGATE, rtn_deleg_parse): the --keys identity withdraws
@@ -3655,6 +3675,14 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "nothing.\n"
             "  delegate: --validator may be the --keys identity's own key "
             "(self-delegation).\n"
+            "  delegate: once the chain votes DELEGATE_NAME_REQUIRED (HF-8), "
+            "the --keys\n"
+            "  identity must own an on-chain name (`name register`, and wait "
+            "until it is in\n"
+            "  a block) to delegate or add more; self-delegation is exempt. "
+            "A delegation to\n"
+            "  another validator is funded by at most 14 coins (the chain "
+            "reads the name too).\n"
             "  unstake: the --keys identity retires as a validator; its "
             "delegations are\n"
             "  returned to their delegators when it graduates (locked %d "
@@ -8766,7 +8794,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        HF3_ACTIVE | RULESET_GEN2 |\n");
     fprintf(stderr, "                        NAME_PRICE_3P | NAME_PRICE_4P |\n");
     fprintf(stderr, "                        NAME_PRICE_5P | NAME_PRICE_6P |\n");
-    fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT\n");
+    fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT |\n");
+    fprintf(stderr, "                        RULESET_GEN_STORAGE | DELEGATE_NAME_REQUIRED\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  storage register (--dry-run | --submit ip:port)   Register THIS node (-i) as a storage node\n");
@@ -8782,6 +8811,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  v2-envelope delegate --keys <dir> --validator <hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   two-leg DELEGATE (own key = self-delegation)\n");
+    fprintf(stderr, "                                   after HF-8: needs an on-chain name (self exempt)\n");
     fprintf(stderr, "  v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   two-leg UNDELEGATE (returned coin locked %d epochs)\n",

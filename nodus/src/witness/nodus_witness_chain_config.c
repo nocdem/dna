@@ -67,7 +67,7 @@
 #define CC_MAX_ACTIVE               DNA_MAX_ACTIVE_VALIDATORS
 
 #define CC_PURPOSE_TAG_LEN          16
-#define CC_PARAM_MAX_ID            16
+#define CC_PARAM_MAX_ID            17
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -85,14 +85,16 @@
 #define CC_PARAM_EVM_BLOCK_GAS      DNAC_CFG_EVM_BLOCK_GAS_LIMIT /* Nodus EVM */
 #define CC_PARAM_RULESET_GEN_STORAGE 16   /* storage reward v1 —
                                            * DNAC_CFG_RULESET_GEN_STORAGE */
+#define CC_PARAM_DELEGATE_NAME_REQUIRED 17 /* HF-8 —
+                                           * DNAC_CFG_DELEGATE_NAME_REQUIRED */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide.
  * HF-4 grew it 9 -> 14 (design 2026-10-02-onchain-names-design.md rev 4
  * §1.1): without the slots nodus_chain_config_get_u64 answers -1 for ids
  * 9-13 and every read of them would FAULT on every node. Nodus EVM grew it
  * 14 -> 16 for the same reason (ids 14 EVM_ACTIVE, 15 EVM_BLOCK_GAS);
- * storage reward v1 grows it 16 -> 17 (id 16) through the same
- * derivation. */
+ * storage reward v1 grows it 16 -> 17 (id 16) and HF-8 17 -> 18 (id 17,
+ * DELEGATE_NAME_REQUIRED) through the same derivation. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
 /* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
@@ -120,6 +122,10 @@
 /* HF-3 HF3_ACTIVE value domain (design 2026-10-01-hf3-comet-block-bounds-
  * design.md rev 3 §0): exactly 1 — the HF-2 one-way switch shape. */
 #define CC_HF3_ACTIVE_ON            1ULL
+/* HF-8 DELEGATE_NAME_REQUIRED value domain (design 2026-10-07-delegate-
+ * name-required-design.md rev 2 §1): exactly 1 — the HF-2 one-way switch
+ * shape, no "off" vote. */
+#define CC_DELEGATE_NAME_REQUIRED_ON 1ULL
 /* HF-4 NAME_REGISTER price range (params 10-13; design 2026-10-02-
  * onchain-names-design.md rev 4 §2 Price): [1 NODUS, 10M NODUS]. */
 #define CC_MIN_NAME_PRICE           100000000ULL
@@ -173,6 +179,12 @@ _Static_assert(CC_MIN_NAME_PRICE == DNAC_CFG_MIN_NAME_PRICE &&
                "NAME_PRICE range drift vs dnac");
 _Static_assert(CC_PARAM_RULESET_GEN_STORAGE == DNAC_CFG_RULESET_GEN_STORAGE,
                "CC_PARAM_RULESET_GEN_STORAGE drift vs dnac param id");
+_Static_assert(CC_PARAM_DELEGATE_NAME_REQUIRED ==
+                   DNAC_CFG_DELEGATE_NAME_REQUIRED,
+               "CC_PARAM_DELEGATE_NAME_REQUIRED drift vs dnac param id");
+_Static_assert(CC_DELEGATE_NAME_REQUIRED_ON ==
+                   DNAC_CFG_DELEGATE_NAME_REQUIRED_ON,
+               "DELEGATE_NAME_REQUIRED value drift vs dnac");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -657,6 +669,14 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
              * design.md §0). */
             if (new_value != CC_HF3_ACTIVE_ON) return -1;
             break;
+        case CC_PARAM_DELEGATE_NAME_REQUIRED:
+            /* HF-8: EXACTLY 1, the HF-2 shape above — a one-way switch,
+             * no "off" vote (design 2026-10-07-delegate-name-required-
+             * design.md rev 2 §1). "Votable only while generation >= 2
+             * judges the vote" needs chain state: nodus_chain_config_
+             * stateful_rules. */
+            if (new_value != CC_DELEGATE_NAME_REQUIRED_ON) return -1;
+            break;
         case CC_PARAM_RULESET_GEN2:
             /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4
              * §1.2): EXACTLY the compiled vote literal D2 — the vote names
@@ -766,6 +786,12 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * default: branch"). Its OWN return, not a fall-through into
              * default:, so a later change to the default class cannot
              * move this switch's grace. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_DELEGATE_NAME_REQUIRED:
+            /* HF-8 — ERGONOMIC, the HF-2/HF-3 class (design 2026-10-07-
+             * delegate-name-required-design.md rev 2 §1, Kurultay #11:
+             * "ERGONOMIC grace … our choice"). Its own return, never the
+             * default: branch. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_RULESET_GEN2:
             /* HF-4 — ERGONOMIC (decision 2026-10-02-onchain-names.md item
@@ -945,6 +971,15 @@ int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
             /* votable only once generation 2 judges the vote (design
              * §1.2 / §2: "refused unless the judging runtime is
              * gen >= 2"); a synthetic or unresolved runtime reads 0 here */
+            if (judging_generation < NODUS_RT_GEN_2) return -1;
+            return 0;
+        case CC_PARAM_DELEGATE_NAME_REQUIRED:
+            /* HF-8 (design 2026-10-07-delegate-name-required-design.md
+             * rev 2 §1, Kurultay #11 change 3): votable only while a
+             * generation that HAS names (>= 2) judges the vote — the
+             * NAME_PRICE rule above. No single-use rule: the value domain
+             * {1} already makes the switch one-way (the HF-2/HF-3 shape).
+             * A synthetic or unresolved runtime reads 0 here. */
             if (judging_generation < NODUS_RT_GEN_2) return -1;
             return 0;
         case CC_PARAM_MAX_TXS:

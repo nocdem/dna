@@ -66,6 +66,20 @@ _Static_assert((uint32_t)NODUS_V2_STAKE_OP_STAKE == DNA_SYSRULE_STAKE &&
                    DNA_SYSRULE_STORAGE_EXIT,
                "the op enum is the wire runtime_op");
 
+/* HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md rev
+ * 2 §1): once chain_config param 17 is active, the CORE SYSFUND leg of a
+ * DELEGATE whose delegator is not the validator reads the delegator's
+ * name too, so its input ceiling is 14, not NODUS_V2_SPEND_MAX_IN (15)
+ * (nodus_witness_rt_native.c RTN_SYSFUND_DLG_MAX_IN, rtn_sysfund_name_
+ * gate). The builder has no chain state, so it applies the 14 to EVERY
+ * non-self DELEGATE — the same predicate minus the activation fact: an
+ * envelope it builds is valid on both sides of the activation height. A
+ * self-delegation and every other op keep 15. */
+#define V2K_DLG_GATED_MAX_IN 14
+_Static_assert(V2K_DLG_GATED_MAX_IN + 1 == (int)NODUS_V2_SPEND_MAX_IN,
+               "HF-8: the gated DELEGATE funding ceiling is one input "
+               "below the SPEND ceiling (the NAMEOWN read)");
+
 static void err_reset(nodus_v2_stake_err_t *err) {
     if (err) memset(err, 0, sizeof(*err));
 }
@@ -336,6 +350,11 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     uint8_t nulls[NODUS_V2_SPEND_MAX_IN][64];
     int n_in = 0;
     uint64_t sum_in = 0;
+    /* HF-8: a non-self DELEGATE funds from at most 14 coins (above) */
+    const int max_in =
+        (op == NODUS_V2_STAKE_OP_DELEGATE &&
+         memcmp(req->pk, req->validator_pk, V2K_PK_LEN) != 0)
+            ? V2K_DLG_GATED_MAX_IN : (int)NODUS_V2_SPEND_MAX_IN;
     {
         static const uint8_t native_tok[64] = {0};
         int n_coins = 0;
@@ -353,7 +372,7 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         }
         qsort(coins, (size_t)n_coins, sizeof(*coins), nodus_v2_nul_cmp);
         for (int i = 0; i < n_coins && sum_in < need &&
-                        n_in < (int)NODUS_V2_SPEND_MAX_IN; i++) {
+                        n_in < max_in; i++) {
             if (sum_in > UINT64_MAX - coins[i].amount) {
                 rc = NODUS_V2_SPEND_ERR_INPUT_SUM;
                 goto done;

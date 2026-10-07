@@ -414,7 +414,7 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
  *   - dnac_cfg_param_read_by_consensus(param_id) (0.20.3) — the running
  *     consensus reads the parameter; today {4, 5, 6, 7, 8, 9, 10, 11,
- *     12, 13}
+ *     12, 13, 14, 15, 16, 17}
  *   - chain_config_fields.new_value in per-param range (§5.2):
  *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
  *                                "kaldır" 2026-09-18;
@@ -569,6 +569,23 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               "a legal value",
                               (unsigned long long)cc->new_value,
                               (unsigned long long)DNAC_CFG_HF3_ACTIVE_ON);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_DELEGATE_NAME_REQUIRED:
+            /* HF-8 (design 2026-10-07-delegate-name-required-design.md
+             * rev 2 §1), mirroring nodus_witness_chain_config.c's
+             * scalar_rules: EXACTLY 1 — the HF-2 one-way switch shape.
+             * "Votable only while generation >= 2 judges the vote" is a
+             * witness-side stateful rule this mirror cannot apply (the
+             * NAME_PRICE divergence). */
+            if (cc->new_value != DNAC_CFG_DELEGATE_NAME_REQUIRED_ON) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: DELEGATE_NAME_REQUIRED=%llu, "
+                              "only %llu is a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)
+                                  DNAC_CFG_DELEGATE_NAME_REQUIRED_ON);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

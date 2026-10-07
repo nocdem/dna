@@ -595,6 +595,21 @@ typedef struct {
      * CHAIN_CONFIG exec, which hands the fact MATCHING the voted param
      * to the single-use rule (nodus_chain_config_stateful_rules). */
     uint8_t        ruleset_gen_storage_voted;
+    /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md
+     * rev 2 §1): 1 when the COMMITTED chain_config param 17
+     * (DELEGATE_NAME_REQUIRED) is active at `global_height`, else 0. Read
+     * by the ENGINE with the hf2_active discipline above
+     * (nodus_witness_v2_apply.c env_delegate_name_required: an unreadable
+     * row or a stored value outside {0, 1} is a node FAULT, never a
+     * default) and filled on every ctx it builds (the authorization stage
+     * and read_plan/exec). UNMETERED like hf2_active — the fact itself is
+     * no mediated read. One consumer: the CORE SYSFUND hooks' name gate
+     * (nodus_witness_rt_native.c rtn_sysfund_name_gate), which — while it
+     * is 1, the sibling is SYSTEM DELEGATE and the delegator is not the
+     * validator — adds ONE mediated, charged CORE NAMEOWN read. Not part
+     * of any committed identity (hooks are not in the ruleset descriptor).
+     * A hook never chooses it. */
+    uint8_t        delegate_name_required;
     /* HF-4 (design §2 Price): the four NAME_REGISTER price tiers at
      * `global_height` — [0] = chain_config param 10 (NAME_PRICE_3P) …
      * [3] = param 13 (NAME_PRICE_6P), each the committed row active at
