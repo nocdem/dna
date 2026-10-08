@@ -21,9 +21,14 @@
 // Playwright's own is not installed; SCREENSHOT_DIR = where the PNGs go —
 // without it nothing is written). Shots, at 1280 and 390 px wide:
 // vaults-list, vaults-vault (members, a request waiting 1 of 2 and one
-// ready 2 of 2, history), vaults-create (members checked, address shown).
-// Asserted: no horizontal scroll at 390 and 320 px on each of the three,
-// no page error, no refused (CSP) load, no unexpected request.
+// ready 2 of 2, the opened "Finished requests" section with a request the
+// module refused, history), vaults-create (members checked, address shown).
+// Asserted: the requests are read on Open with no Review pressed (0.1.85);
+// the refused one (the fake throws NSW_MS_NOT_OWNED's text) sits in the
+// collapsed Finished section with that text on its own card, pill "Not
+// valid", only "Check again", and the top status line empty; no horizontal
+// scroll at 390 and 320 px on each of the three, no page error, no refused
+// (CSP) load, no unexpected request.
 //
 // What it does NOT prove: anything about the module (send.wasm) or the
 // node — every answer is the fake's; the page's behaviour is covered by
@@ -108,17 +113,23 @@ try {
       ]
     });
     const infoFor = descriptor => descriptor === FOUNDATION_VAULT.descriptor ? foundationInfo : descriptor === familyInfo.descriptor ? familyInfo : null;
-    // Two requests on the family vault: WAITING (1 of 2 checked: Alice) and
-    // READY (2 of 2: Bob and this wallet).
+    // Three requests on the family vault: WAITING (1 of 2 checked: Alice),
+    // READY (2 of 2: Bob and this wallet), and one the module REFUSES with
+    // its "coins this vault does not hold" text (crypto/nodus-send-wasm.c
+    // NSW_MS_NOT_OWNED — an older request already spent them).
     const request = byte => ({ chain: 'c0'.repeat(32), tip: '5012', signers: '2', digest: id(byte), env: '00ff00ff' });
     const reviewOf = {
       [id('d1')]: { verifiedSigners: [ALICE], to: DAVE, amount: '2500000000', change: '4999000000', inputs: [id('c2')] },
       [id('d2')]: { verifiedSigners: [BOB, OWN], to: CAROL, amount: '1000000000', change: '6499000000', inputs: [id('c1')] }
     };
-    // newest first (core.js collectVaultItems): the waiting one is drawn first
+    const NOT_OWNED = 'This request spends coins this vault does not hold — do not approve it. Refresh the vault if you think this is wrong.';
+    const refuse = new Set([id('d3')]);
+    // `at` in ms (Messages' Date.now()); drawn newest first: the waiting one
+    // on top, the refused one (oldest) in "Finished requests"
     const messages = [
-      { fp: ALICE, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d1') }), at: 2000 },
-      { fp: BOB, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d2') }), at: 1000 }
+      { fp: ALICE, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d1') }), at: 1759990000000 },
+      { fp: BOB, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d2') }), at: 1759980000000 },
+      { fp: ALICE, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d3') }), at: 1759970000000 }
     ];
     const client = {
       state: 'ready', vaultable: true, nameable: true, fingerprint: OWN,
@@ -129,6 +140,7 @@ try {
       async nameOf({ owner }) { const name = chainNames.get(owner); return name ? { found: true, name, committedHeight: '5012' } : { found: false, committedHeight: '5012' }; },
       async nameLookup({ name }) { const owner = [...chainNames].find(([, n]) => n === name)?.[0]; return owner ? { found: true, owner } : { found: false }; },
       async vaultReview({ request: r }) {
+        if (refuse.has(r.digest)) throw new Error(NOT_OWNED);
         const x = reviewOf[r.digest];
         return {
           vault: FAMILY, approvals: 2, verifiedSigners: x.verifiedSigners, refused: 0, member: true, expired: false, tip: '5012', expiryHeight: '5102',
@@ -188,11 +200,29 @@ try {
   assert.equal(await page.locator('.vault-tile .vault-amount').count(), 2);
   await shoot('vaults-list');
 
-  // A vault: members, two reviewed requests, history.
-  await open('Family savings');
-  for (let i = 0; i < 2; i++) { await page.getByRole('button', { name: 'Review', exact: true }).first().click(); await settled(); }
-  assert.deepEqual(await page.locator('.vault-request .vault-state').allInnerTexts(), ['Waiting for approvals', 'Ready to send']);
-  assert.deepEqual(await page.locator('.vault-approvals-text').allInnerTexts(), ['1 of 2 approvals checked', '2 of 2 approvals checked']);
+  // A vault: members, the requests read on Open (no Review pressed), history.
+  // The Open pass yields between its calls, so settled() alone could pass
+  // in a gap: first wait until every request card has its final state.
+  await page.getByRole('button', { name: 'Open Family savings' }).click();
+  await page.locator('.vault-history').waitFor();
+  await page.waitForFunction(() => document.querySelectorAll('#vaults-root .vault-request[data-state]').length === 3);
+  await settled();
+  assert.equal(await page.getByRole('button', { name: 'Review', exact: true }).count(), 0);
+  assert.deepEqual(await page.locator('.vault-open-requests .vault-request .vault-state').allInnerTexts(), ['Waiting for approvals', 'Ready to send']);
+  assert.deepEqual(await page.locator('.vault-open-requests .vault-approvals-text').allInnerTexts(), ['1 of 2 approvals checked', '2 of 2 approvals checked']);
+  assert.equal(await page.locator('.vault-open-requests .vault-received').count(), 2);
+  // the refused one: in the collapsed Finished section, the module's text on
+  // its own card, no approve / send, the top status line empty
+  assert.equal(await page.locator('details.vault-finished > summary').textContent(), 'Finished requests (1)');
+  assert.equal(await page.locator('details.vault-finished').evaluate(node => node.open), false);
+  const refused = page.locator('details.vault-finished .vault-request[data-state="refused"]');
+  assert.equal(await refused.count(), 1);
+  assert.equal(await refused.locator('.vault-refusal').textContent(), 'This request spends coins this vault does not hold — do not approve it. Refresh the vault if you think this is wrong.');
+  assert.equal(await refused.locator('.vault-state').textContent(), 'Not valid');
+  assert.deepEqual(await refused.locator('button').allTextContents(), ['Check again']);
+  assert.equal(await page.locator('#vaults-root .vault-status').textContent(), '');
+  await page.locator('details.vault-finished > summary').click();
+  await refused.locator('.vault-refusal').waitFor();
   assert.equal(await page.locator('.vault-member').count(), 3);
   assert.equal(await page.locator('.vault-member .vault-you').count(), 1);
   assert.equal(await page.locator('.vault-history .activity-row').count(), 3);

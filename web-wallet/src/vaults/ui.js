@@ -61,6 +61,12 @@ const entered = new Map();               // ID -> the chain name this user typed
 // Keyed by (vault address, digest) — rkey: a digest is only meaningful for
 // the vault it was reviewed under (F1).
 const reviews = new Map();               // rkey -> module read-back
+// rkey -> the module's own text for the last review it REFUSED (0.1.85):
+// shown on that request's card, as it is, never in the panel's status line
+// (the user may have scrolled away from it). A later review that passes
+// removes it.
+const refusals = new Map();
+const finishedOpen = new Set();          // vault addresses whose "Finished requests" the user opened
 const ownApprovals = new Map();          // rkey -> signature text (this session)
 const sent = new Map();                  // rkey -> { intentId, wireId, at } submitted here
 const rkey = (address, digest) => `${address}|${digest}`;
@@ -119,7 +125,7 @@ const messagesOpen = () => !!host && host.isOpen();
 function reset() {
   generation++;
   client = undefined; ownFp = undefined; busy = false; current = null; view = 'list';
-  for (const map of [vaults, balances, reads, names, entered, reviews, ownApprovals, sent, shareStates]) map.clear();
+  for (const map of [vaults, balances, reads, names, entered, reviews, refusals, finishedOpen, ownApprovals, sent, shareStates]) map.clear();
   status = ''; draft = null; createInfo = null;
   render();
 }
@@ -203,12 +209,17 @@ const latest = record => vaults.get(record.address) ?? record;
 // wallet is not a member) gets the balance only: the node answers its
 // coins and history to members alone. The redraws keep what was typed in
 // the payment form (keepTyped).
-async function refresh(address) {
+// reviewRequests (Open, 0.1.85): once the coins were read in THIS call,
+// the vault's unreviewed payment requests are read too (reviewUnread) —
+// never against coins that were not read (a watched vault, a node without
+// the member query, a failed coin read): the module would refuse them.
+async function refresh(address, { reviewRequests = false } = {}) {
   const record = vaults.get(address);
   if (!record || busy || !client) return;
   const gen = generation;
   busy = true; status = 'Reading the vault balance…'; render({ keepTyped: true });
   const problems = [];
+  let coinsRead = false;
   try {
     const balance = await client.vaultBalance({ descriptor: record.code });
     if (gen !== generation) return;
@@ -226,6 +237,7 @@ async function refresh(address) {
       read.truncated = applied.truncated;
       await keep(applied.record);
       if (gen !== generation) return;
+      coinsRead = true;
     } catch (error) {
       if (gen !== generation) return;
       if (error?.code === VAULT_UNSUPPORTED) {
@@ -251,7 +263,34 @@ async function refresh(address) {
   } catch (error) {
     if (gen === generation) status = error.message || 'The vault could not be read right now.';
   } finally {
-    if (gen === generation) { busy = false; render({ keepTyped: true }); }
+    if (gen === generation) {
+      busy = false; render({ keepTyped: true });
+      if (reviewRequests && coinsRead && view === 'vault' && current === address) void reviewUnread(address, gen);
+    }
+  }
+}
+
+// Reading the requests on Open (0.1.85): every payment request of the vault
+// with no review yet (and no refusal) is reviewed, newest first, ONE module
+// call at a time through review() — `busy` is held for that one call only,
+// and the event loop gets a turn between calls so a button can be pressed.
+// It stops when the vault leaves the screen, the session changes
+// (`generation`) or another action holds `busy`; at most
+// VAULT_AUTO_REVIEWS per Open — the rest keep their "Review" button.
+const VAULT_AUTO_REVIEWS = 16;
+async function reviewUnread(address, gen) {
+  const record = vaults.get(address);
+  if (!record || record.watch) return;
+  const unread = [...itemsFor(record).requests]
+    .filter(([digest]) => !reviews.has(rkey(address, digest)) && !refusals.has(rkey(address, digest)))
+    .sort((a, b) => b[1].at - a[1].at);
+  if (unread.length > VAULT_AUTO_REVIEWS) sessionLog.log('vault', `${unread.length - VAULT_AUTO_REVIEWS} more payment request(s) were left to review by hand.`);
+  for (const [digest, item] of unread.slice(0, VAULT_AUTO_REVIEWS)) {
+    if (gen !== generation || view !== 'vault' || current !== address || busy || !client || !vaults.has(address)) return;
+    const key = rkey(address, digest);
+    if (reviews.has(key) || refusals.has(key)) continue;
+    await review(latest(record), item.request);
+    await new Promise(resolve => setTimeout(resolve, 0));
   }
 }
 
@@ -483,18 +522,33 @@ async function approve(record, request, { isNew }) {
   }
 }
 
+// Review / Check again, and each step of reviewUnread. A refusal is kept
+// for the request's own card (`refusals`, the module's text as it is) and
+// its earlier read-back is dropped: only the module's latest word about a
+// request is shown or acted on (F1). The status line carries the progress
+// only. Redraws keep what was typed in the payment form (the Open pass runs
+// while the user may type).
 async function review(record, request) {
   if (busy || !client) return;
   const gen = generation;
-  busy = true; status = 'Reading the payment request…'; render();
+  const key = rkey(record.address, request.digest);
+  busy = true; status = 'Reading the payment request…'; render({ keepTyped: true });
   try {
     const approvals = approvalsFor(record.address, request.digest, itemsFor(record));
-    reviews.set(rkey(record.address, request.digest), await client.vaultReview({ descriptor: record.code, coins: latest(record).coins, request, approvals }));
-    if (gen === generation) status = '';
+    const answer = await client.vaultReview({ descriptor: record.code, coins: latest(record).coins, request, approvals });
+    if (gen !== generation) return;
+    reviews.set(key, answer);
+    refusals.delete(key);
+    status = '';
   } catch (error) {
-    if (gen === generation) status = error.message || 'This payment request could not be read.';
+    if (gen !== generation) return;
+    const text = error?.message || 'This payment request could not be read.';
+    reviews.delete(key);
+    refusals.set(key, text);
+    status = '';
+    sessionLog.log('vault', `Payment request not valid: ${text}`, { error: true });
   } finally {
-    if (gen === generation) { busy = false; render(); }
+    if (gen === generation) { busy = false; render({ keepTyped: true }); }
   }
 }
 
@@ -656,7 +710,7 @@ function renderList() {
   for (const record of rows) {
     const title = el('h5', { text: labelOf(record) });
     const chips = el('div', { className: 'vault-chips' }, approvalsChip(record), record.watch ? chip('Watching only', 'watch') : null);
-    const open = btn('Open', () => { current = record.address; view = 'vault'; status = ''; render(); void refresh(record.address); }, 'small');
+    const open = btn('Open', () => { current = record.address; view = 'vault'; status = ''; render(); void refresh(record.address, { reviewRequests: true }); }, 'small');
     open.setAttribute('aria-label', `Open ${labelOf(record)}`);
     grid.append(el('article', { className: 'vault-tile' },
       el('div', { className: 'vault-tile-head' }, title, chips),
@@ -789,9 +843,28 @@ function renderVault(record) {
   // payment requests
   const items = itemsFor(record);
   if (draft && draft.address === record.address && !items.requests.has(draft.request.digest)) items.requests.set(draft.request.digest, { request: draft.request, from: '', at: Date.now(), draft: true });
+  // open ones on top, newest first; paid / spent / expired / not valid in a
+  // collapsed "Finished requests" section below them (0.1.85)
   if (items.requests.size) {
     const box = el('section', { className: 'stake-block' }, el('h4', { text: 'Payment requests' }));
-    for (const [digest, item] of items.requests) box.append(renderRequest(record, digest, item, items));
+    const all = [...items.requests]
+      .map(([digest, item]) => ({ digest, item, state: requestStateOf(record, digest) }))
+      .sort((a, b) => b.item.at - a.item.at);
+    const open = all.filter(r => !FINISHED.has(r.state));
+    const finished = all.filter(r => FINISHED.has(r.state));
+    const openList = el('div', { className: 'vault-open-requests' });
+    for (const r of open) openList.append(renderRequest(record, r.digest, r.item, items, r.state));
+    if (!open.length) openList.append(el('p', { className: 'hint', text: 'No open payment requests.' }));
+    box.append(openList);
+    if (finished.length) {
+      const details = el('details', { className: 'vault-finished' }, el('summary', { text: `Finished requests (${finished.length})` }));
+      // the panel is drawn again during every action: the section stays as
+      // the user left it
+      details.open = finishedOpen.has(record.address);
+      details.addEventListener('toggle', () => { if (details.open) finishedOpen.add(record.address); else finishedOpen.delete(record.address); });
+      for (const r of finished) details.append(renderRequest(record, r.digest, r.item, items, r.state));
+      box.append(details);
+    }
     page.append(box);
   }
 
@@ -850,33 +923,69 @@ function renderHistory(page) {
 
 // The pill text of each request state (core.js requestState, plus 'sent'
 // below), and what it means when the pill alone does not say it.
-const STATE_PILL = { paid: 'Paid', spent: 'Coins spent', expired: 'Expired', ready: 'Ready to send', waiting: 'Waiting for approvals', sent: 'Sent' };
+const STATE_PILL = { paid: 'Paid', spent: 'Coins spent', expired: 'Expired', ready: 'Ready to send', waiting: 'Waiting for approvals', sent: 'Sent', refused: 'Not valid' };
 const STATE_NOTE = {
   paid: 'Paid.', spent: 'Its coins are spent — it was paid, or another payment used them.', expired: 'Expired — propose again.',
   ready: 'Approved — ready to send.', waiting: '', sent: 'Sent to the network.'
 };
+// The states shown in "Finished requests": nothing more can be done with
+// them. 'refused' is a request the module's last review refused (its text
+// is on the card); "Check again" stays on it.
+const FINISHED = new Set(['paid', 'spent', 'expired', 'refused']);
 
-function renderRequest(record, digest, item, items) {
+// A request's state on the page: 'refused' (the last review was refused),
+// 'unreviewed', or stateOf's answer — 'sent' when this wallet sent it and
+// it is neither paid nor spent yet.
+function requestStateOf(record, digest) {
   const key = rkey(record.address, digest);
+  if (refusals.has(key)) return 'refused';
   const rv = reviews.get(key);
+  if (!rv) return 'unreviewed';
+  // F2: only the approvals the module verified at the last check count
+  const verified = Array.isArray(rv.verifiedSigners) ? rv.verifiedSigners : [];
+  const plain = stateOf(record, key, rv, verified.length);
+  return sent.has(key) && plain !== 'paid' && plain !== 'spent' ? 'sent' : plain;
+}
+
+// When the request's message arrived (its `at`, this device's clock, shown
+// in local time); this wallet's own unsent draft says it was prepared here.
+function arrivedLine(item) {
+  const text = item.draft ? 'Prepared here'
+    : Number.isFinite(item.at) ? `Received ${new Date(item.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : '';
+  return text ? el('p', { className: 'hint vault-received', text }) : null;
+}
+
+function renderRequest(record, digest, item, items, state) {
+  const key = rkey(record.address, digest);
   const card = el('article', { className: 'vault-request' });
   const from = item.from ? who(item.from) : 'you';
+  const title = el('h5', { text: `Payment request from ${from}` });
+  if (state === 'refused') {
+    // the module's own words, as they are; nothing to approve or send
+    const pill = el('span', { className: 'status-badge vault-state', text: STATE_PILL.refused });
+    pill.dataset.status = 'refused';
+    card.dataset.state = 'refused';
+    const actions = el('div', { className: 'vault-actions' }, btn('Check again', () => void review(record, item.request)));
+    if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); render(); }));
+    card.append(el('div', { className: 'vault-request-head' }, title, pill), arrivedLine(item),
+      el('p', { className: 'notice vault-notice vault-refusal', text: refusals.get(key) }), actions);
+    return card;
+  }
+  const rv = reviews.get(key);
   if (!rv) {
     const pill = el('span', { className: 'status-badge vault-state', text: 'Not reviewed yet' });
     pill.dataset.status = 'unreviewed';
-    card.append(el('div', { className: 'vault-request-head' }, el('h5', { text: `Payment request from ${from}` }), pill),
+    card.append(el('div', { className: 'vault-request-head' }, title, pill), arrivedLine(item),
       el('p', { className: 'hint', text: 'Review it to see what it pays: the page shows only what the request itself says.' }),
       el('div', { className: 'vault-actions' }, btn('Review', () => void review(record, item.request), '')));
     return card;
   }
   // F2: only the approvals the module verified at the last check count
   const verified = Array.isArray(rv.verifiedSigners) ? rv.verifiedSigners : [];
-  const plain = stateOf(record, key, rv, verified.length);
-  const state = sent.has(key) && plain !== 'paid' && plain !== 'spent' ? 'sent' : plain;
   const pill = el('span', { className: 'status-badge vault-state', text: STATE_PILL[state] });
   pill.dataset.status = state;
   card.dataset.state = state;
-  card.append(el('div', { className: 'vault-request-head' }, el('h5', { text: `Payment request from ${from}` }), pill));
+  card.append(el('div', { className: 'vault-request-head' }, title, pill), arrivedLine(item));
   if (STATE_NOTE[state]) card.append(el('p', { className: 'vault-state-note', text: STATE_NOTE[state] }));
   const counted = Math.min(verified.length, rv.approvals);
   const progressText = `${counted} of ${rv.approvals} approvals checked`;
@@ -894,7 +1003,7 @@ function renderRequest(record, digest, item, items) {
     if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
     actions.append(btn('Check again', () => void review(record, item.request)));
   }
-  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); render(); }));
+  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); render(); }));
   if (actions.childElementCount) card.append(actions);
   return card;
 }
@@ -913,7 +1022,7 @@ function openLink(address) {
     if (select && select.value !== NODUS_ASSET.chain) { select.value = NODUS_ASSET.chain; select.dispatchEvent(new Event('change')); }
     current = address; view = 'vault'; status = '';
     render();
-    void refresh(address);
+    void refresh(address, { reviewRequests: true });
   };
   return link;
 }

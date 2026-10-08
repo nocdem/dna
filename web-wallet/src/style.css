@@ -748,6 +748,17 @@ details.danger-zone.danger-zone > summary { color: #f6c2bd; }
 .vault-state:is([data-status="ready"], [data-status="paid"]) { color: var(--lime); border-color: #d5f99840; background: #d5f99806; }
 .vault-state:is([data-status="ready"], [data-status="paid"])::before { background: var(--lime); }
 .vault-state[data-status="spent"]::before { background: #8e9a82; }
+/* A request the module refused: its own text on the card (0.1.85). */
+.vault-request[data-state="refused"] { border-color: #f28b8240; }
+.vault-state[data-status="refused"] { color: #f6c2bd; border-color: #f28b8255; background: #f28b8210; }
+.vault-state[data-status="refused"]::before { background: #f28b82; }
+.wallet-page .vault-panel .vault-request p.vault-refusal { margin: 0; border-left-color: #f28b82; background: #f28b8210; overflow-wrap: anywhere; }
+.wallet-page .vault-panel .vault-request p.vault-received { font-size: 11px; }
+/* Open requests on top; the finished ones collapsed below them. */
+.vault-open-requests { min-width: 0; }
+.wallet-page .vault-panel details.vault-finished { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--line-soft); font-size: inherit; color: inherit; }
+.vault-finished > summary { color: var(--text); font-size: 13px; font-weight: 500; }
+.vault-finished .vault-request:first-of-type { margin-top: 12px; }
 .vault-approvals { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .vault-approvals-text { color: var(--text); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .vault-progress { appearance: none; -webkit-appearance: none; width: 100%; height: 8px; border: 0; border-radius: 999px; background: #2a3223; overflow: hidden; }
