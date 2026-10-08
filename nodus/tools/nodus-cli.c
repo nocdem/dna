@@ -4656,7 +4656,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
     long count = 1;
     unsigned long shard_i = 0, shard_m = 1;          /* 1 = no sharding    */
     int dry_run = 0, have_amount = 0, have_fee = 0, bad_arg = 0;
-    int amount_all = 0, count_all = 0;
+    int amount_all = 0, count_all = 0, no_dust_sweep = 0;
 
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the "spend" word */
         const char *a = argv[i];
@@ -4688,6 +4688,8 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
             if (!e2 || *e2 != '\0') { bad_arg = 1; break; }
         } else if (!strcmp(a, "--dry-run")) {
             dry_run = 1;
+        } else if (!strcmp(a, "--no-dust-sweep")) {
+            no_dust_sweep = 1;
         } else { bad_arg = 1; break; }
     }
     if (bad_arg || !keys_csv || !to_hex || !have_amount) {
@@ -4696,7 +4698,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
             "--amount <raw|all>\n"
             "       [--fee <raw>] [--token <hex128>] [--count <N|all>] "
             "[--shard <I>/<M>]\n"
-            "       [--submit ip:port] [--dry-run]\n"
+            "       [--no-dust-sweep] [--submit ip:port] [--dry-run]\n"
             "  The whole flow (chain id, coin listing, submission) runs on "
             "ONE session\n"
             "  to --submit, or to the outer -s server when --submit is "
@@ -4719,6 +4721,13 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
             "sessions of one\n"
             "                 identity with distinct I never share a coin "
             "(0 <= I < M <= %d).\n"
+            "  --no-dust-sweep  a single spend adds NO extra small native "
+            "coins and keeps\n"
+            "                 a small change output (default: both on — the "
+            "plan sweeps\n"
+            "                 the smallest native coins in and drops change "
+            "not worth\n"
+            "                 spending; nodus_v2_spend_plan).\n"
             "  Every envelope declares the EXACT effects its SPEND leg "
             "emits: res_max_effects\n"
             "  = inputs + outputs + 1 (the reward-pool fee SET), "
@@ -4960,6 +4969,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         preq.gas_price  = gas_price;
         preq.count      = count;
         preq.count_all  = count_all;
+        preq.no_dust_sweep = no_dust_sweep;
         nodus_v2_spend_err_t pe;
         long pcount = 0;
         int prc = nodus_v2_spend_plan(&preq, coins, n_coins, &plans, &pcount,
@@ -8828,7 +8838,7 @@ static void usage(const char *prog) {
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
     fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
     fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
-    fprintf(stderr, "           [--shard <I>/<M>]\n");
+    fprintf(stderr, "           [--shard <I>/<M>] [--no-dust-sweep]\n");
     fprintf(stderr, "           [--submit ip:port] [--dry-run]   CORE SPEND (coin transfer)\n");
     fprintf(stderr, "  v2-envelope token-create --keys <dir> --name <n> --symbol <s>\n");
     fprintf(stderr, "           --decimals <0..18> --supply <raw> [--to <fp128hex>]\n");
