@@ -75,6 +75,11 @@ const unchecked = new Map();
 const finishedOpen = new Set();          // vault addresses whose "Finished requests" the user opened
 const ownApprovals = new Map();          // rkey -> signature text (this session)
 const sent = new Map();                  // rkey -> { intentId, wireId, at } submitted here
+// rkey -> { kind: 'ok' | 'error', text }: the outcome of this wallet's last
+// Approve / Send payment on that request, shown inside its card (0.1.86) —
+// the panel's status line is above the fold on a phone and carries progress
+// only ("Approving…", "Sending the payment…").
+const notes = new Map();
 const rkey = (address, digest) => `${address}|${digest}`;
 const shareStates = new Map();           // vault code -> { state, info?, error? }
 let status = '', draft = null, createInfo = null, foundationChecked = -1;
@@ -130,8 +135,9 @@ const messagesOpen = () => !!host && host.isOpen();
 
 function reset() {
   generation++;
+  stopPoll(); polling = false;
   client = undefined; ownFp = undefined; busy = false; current = null; view = 'list';
-  for (const map of [vaults, balances, reads, names, entered, reviews, refusals, unchecked, finishedOpen, ownApprovals, sent, shareStates]) map.clear();
+  for (const map of [vaults, balances, reads, names, entered, reviews, refusals, unchecked, finishedOpen, ownApprovals, sent, notes, shareStates]) map.clear();
   status = ''; draft = null; createInfo = null;
   render();
 }
@@ -219,67 +225,195 @@ const latest = record => vaults.get(record.address) ?? record;
 // the vault's unreviewed payment requests are read too (reviewUnread) —
 // never against coins that were not read (a watched vault, a node without
 // the member query, a failed coin read): the module would refuse them.
-async function refresh(address, { reviewRequests = false } = {}) {
+// quiet (the background read, pollTick, 0.1.86): the same three calls, but
+// the status line is left as it is and a problem goes to the session log
+// only. Returns whether the coins were read in this call.
+async function refresh(address, { reviewRequests = false, quiet = false } = {}) {
   const record = vaults.get(address);
-  if (!record || busy || !client) return;
+  if (!record || busy || !client) return false;
   const gen = generation;
+  const say = text => { if (!quiet) status = text; };
   // Open: the reviews that could not be done last time are forgotten and
   // tried again by the Open pass (a verdict in `refusals` is kept)
   const retry = new Set();
   if (reviewRequests) {
     for (const key of [...unchecked.keys()]) if (key.startsWith(`${address}|`)) { unchecked.delete(key); retry.add(key); }
   }
-  busy = true; status = 'Reading the vault balance…'; render({ keepTyped: true });
+  busy = true; say('Reading the vault balance…'); render({ keepTyped: true });
   const problems = [];
   let coinsRead = false;
   try {
     const balance = await client.vaultBalance({ descriptor: record.code });
-    if (gen !== generation) return;
+    if (gen !== generation) return false;
     balances.set(address, balance);
-    if (record.watch) { status = ''; return; }
-    status = 'Reading the vault coins…'; render({ keepTyped: true });
+    if (record.watch) { say(''); return false; }
+    say('Reading the vault coins…'); render({ keepTyped: true });
     const read = { truncated: false, history: null, unsupported: false };
     try {
       const before = vaults.get(address);
       const answer = await client.vaultCoins({ descriptor: record.code });
-      if (gen !== generation) return;
+      if (gen !== generation) return false;
       // removed (or added again) while the read ran: nothing is kept
-      if (!before || vaults.get(address) !== before) { status = ''; return; }
+      if (!before || vaults.get(address) !== before) { say(''); return false; }
       const applied = applyCoins(before, answer);
       read.truncated = applied.truncated;
-      await keep(applied.record);
-      if (gen !== generation) return;
+      // the background read keeps (saves) the record only when its coins
+      // changed: no device write every 30 s for nothing
+      if (!quiet || !sameCoins(before.coins, applied.record.coins)) await keep(applied.record);
+      if (gen !== generation) return false;
       coinsRead = true;
     } catch (error) {
-      if (gen !== generation) return;
+      if (gen !== generation) return false;
       if (error?.code === VAULT_UNSUPPORTED) {
         // no fallback: the page says so and reads nothing else
         read.unsupported = true;
         reads.set(address, read);
-        status = '';
+        say('');
         sessionLog.log('vault', 'The Nodus node does not have the vault member query yet.', { error: true });
-        return;
+        return false;
       }
       problems.push(error.message || 'The vault coins could not be read.');
+      // the background read keeps what it knew about the coins it still has
+      if (quiet) read.truncated = !!reads.get(address)?.truncated;
     }
-    status = 'Reading the vault history…'; render({ keepTyped: true });
+    say('Reading the vault history…'); render({ keepTyped: true });
     try {
       read.history = await client.vaultHistory({ descriptor: record.code, limit: NODUS_HISTORY_LIMIT });
-      if (gen !== generation) return;
+      if (gen !== generation) return false;
     } catch (error) {
-      if (gen !== generation) return;
+      if (gen !== generation) return false;
+      // the background read keeps the history page it had
+      if (quiet) read.history = reads.get(address)?.history ?? null;
       problems.push(error.message || 'The vault history could not be read.');
     }
     reads.set(address, read);
-    status = problems.join(' ');
+    if (!quiet) status = problems.join(' ');
+    else if (problems.length) sessionLog.log('vault', `The vault could not be read again: ${problems.join(' ')}`, { error: true });
   } catch (error) {
-    if (gen === generation) status = error.message || 'The vault could not be read right now.';
+    if (gen === generation) {
+      const text = error.message || 'The vault could not be read right now.';
+      if (!quiet) status = text;
+      else sessionLog.log('vault', `The vault could not be read again: ${text}`, { error: true });
+    }
   } finally {
     if (gen === generation) {
       busy = false; render({ keepTyped: true });
       if (reviewRequests && coinsRead && view === 'vault' && current === address) void reviewUnread(address, gen, retry);
     }
   }
+  return coinsRead;
+}
+
+const sameCoins = (a, b) => a.length === b.length && a.every((c, i) => c.id === b[i].id && c.amount === b[i].amount && c.unlock === b[i].unlock && c.height === b[i].height);
+
+// ── keeping an open vault current (0.1.86) ──────────────────────────────
+// Operator report (web 0.1.84 / 0.1.85): two members approved a payment,
+// one sent it, and the other member's card kept "Approve" / "Send payment"
+// until the vault was opened again — a card's state comes from the coins,
+// the history page and the last review, and those were read only by Open /
+// Refresh. Now, while a vault is ON SCREEN with at least one OPEN request
+// (not reviewed, waiting, ready, sent, not checked), the page reads it again
+// every VAULT_POLL_MS through the same Open / Refresh path (refresh, quiet)
+// and, only when that read got the coins, reviews again the requests that
+// are still open after it (reviewUnread, at most VAULT_AUTO_REVIEWS, one
+// module call at a time). A request whose coins left the vault then reads
+// "Coins spent" (core.js requestState) and moves to Finished; one this
+// wallet sent reads "Paid" once the history page has its wire id. What is
+// shown is still only the node's answer and the module's read-back (design
+// docs/plans/2026-09-29-general-multisig-design.md §8.6: no block reading,
+// no fallback).
+// Bounds: ONE timer (pollTimer) for the panel; a pass never overlaps
+// another (polling) nor an action (busy: the tick is put off by
+// VAULT_CHANGE_MS); nothing is armed for a watched vault, a node without the
+// member query (reads.unsupported), a vault not on screen, or one with no
+// open request — render() (syncPoll) stops the timer when any of those
+// becomes true, reset() (lock, close) stops it and moves `generation`.
+const VAULT_POLL_MS = 30000;   // the same 30 s as Messages' check (src/connect/ui/messages.js SYNC_MS)
+const VAULT_CHANGE_MS = 5000;  // new vault messages: one pass at most this soon (debounce)
+const VAULT_SENT_MS = 15000;   // after this wallet's own send: one extra read, so 'sent' turns 'paid' sooner
+// The states a background pass reviews again: what a review can still
+// change. 'sent' is decided by the coins and the history alone; a finished
+// request is not reviewed again (its coins are gone: the module would call
+// it "not valid" instead of spent / paid).
+const REVIEW_AGAIN = new Set(['unreviewed', 'waiting', 'ready', 'unchecked']);
+let pollTimer = null, pollAt = 0, pollAddress = null, polling = false;
+
+// The vault's requests that are not finished, newest first (this wallet's
+// own unsent draft included, as renderVault lists it).
+function openRequests(record) {
+  const requests = itemsFor(record).requests;
+  if (draft && draft.address === record.address && !requests.has(draft.request.digest)) requests.set(draft.request.digest, { request: draft.request, from: '', at: Date.now(), draft: true });
+  return [...requests]
+    .filter(([digest]) => !FINISHED.has(requestStateOf(record, digest)))
+    .sort((a, b) => b[1].at - a[1].at);
+}
+
+function pollWanted(address) {
+  if (!address || !client || client.state !== 'ready' || view !== 'vault' || current !== address) return false;
+  const record = vaults.get(address);
+  if (!record || record.watch || reads.get(address)?.unsupported) return false;
+  return openRequests(record).length > 0;
+}
+
+function stopPoll() {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = null; pollAddress = null; pollAt = 0;
+}
+
+// Arms the one timer for `address` in `delay` ms; an earlier deadline
+// already set is kept (several reasons in a row give one pass).
+function armPoll(address, delay) {
+  if (pollHeld || !pollWanted(address)) return;
+  const at = Date.now() + delay;
+  if (pollTimer && pollAddress === address && pollAt <= at) return;
+  stopPoll();
+  pollAddress = address; pollAt = at;
+  pollTimer = setTimeout(() => { pollTimer = null; pollAddress = null; pollAt = 0; void pollTick(address); }, delay);
+}
+
+// From render(): stop the timer when its vault no longer wants it, start it
+// when the vault on screen does. A running pass arms the next one itself.
+function syncPoll() {
+  if (polling) return;
+  if (pollTimer && !pollWanted(pollAddress)) stopPoll();
+  if (!pollTimer && view === 'vault' && current) armPoll(current, VAULT_POLL_MS);
+}
+
+// One background pass. Returns whether it ran.
+async function pollTick(address) {
+  if (!pollWanted(address)) return false;
+  if (busy || polling) { armPoll(address, VAULT_CHANGE_MS); return false; }
+  const gen = generation;
+  polling = true;
+  try {
+    const coinsRead = await refresh(address, { quiet: true });
+    if (gen !== generation || !coinsRead || view !== 'vault' || current !== address) return true;
+    const record = vaults.get(address);
+    if (!record) return true;
+    const again = new Set();
+    for (const [digest] of openRequests(record)) if (REVIEW_AGAIN.has(requestStateOf(record, digest))) again.add(rkey(address, digest));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await reviewUnread(address, gen, again, { quiet: true });
+    return true;
+  } finally {
+    if (gen === generation) { polling = false; armPoll(address, VAULT_POLL_MS); }
+  }
+}
+
+// TEST HOOKS (test/browser-vaults.js; nothing in the product calls them):
+// holdVaultPoll(true) arms no timer from then on (a pass starting on its own
+// in the middle of the test's clicks would make it timing-dependent), and
+// pollVaultNow() runs one pass now for the vault on screen — the same tick
+// the timer runs, with the same guards; it resolves when the pass ended, to
+// whether it ran. Neither reads or shows anything a tick does not.
+let pollHeld = false;
+export function holdVaultPoll(held) {
+  pollHeld = !!held;
+  if (pollHeld) stopPoll();
+}
+export function pollVaultNow() {
+  if (view !== 'vault' || !current) return Promise.resolve(false);
+  return pollTick(current);
 }
 
 // Reading the requests on Open (0.1.85): every payment request of the vault
@@ -291,22 +425,27 @@ async function refresh(address, { reviewRequests = false } = {}) {
 // the screen, the session changes (`generation`) or another action holds
 // `busy`; at most VAULT_AUTO_REVIEWS per Open — the rest keep their
 // "Review" / "Check again" button.
+// The background pass (pollTick, 0.1.86) uses the same loop: `retry` is then
+// every request still open after the coins were read again (a "Not checked"
+// one included), and `quiet` leaves the status line as it is.
 const VAULT_AUTO_REVIEWS = 16;
-async function reviewUnread(address, gen, retry = new Set()) {
+async function reviewUnread(address, gen, retry = new Set(), { quiet = false } = {}) {
   const record = vaults.get(address);
   if (!record || record.watch) return;
   const due = key => retry.has(key) || (!reviews.has(key) && !refusals.has(key) && !unchecked.has(key));
   const unread = [...itemsFor(record).requests]
     .filter(([digest]) => due(rkey(address, digest)))
     .sort((a, b) => b[1].at - a[1].at);
-  if (unread.length > VAULT_AUTO_REVIEWS) sessionLog.log('vault', `${unread.length - VAULT_AUTO_REVIEWS} more payment request(s) were left to review by hand.`);
+  if (unread.length > VAULT_AUTO_REVIEWS && !quiet) sessionLog.log('vault', `${unread.length - VAULT_AUTO_REVIEWS} more payment request(s) were left to review by hand.`);
   for (const [digest, item] of unread.slice(0, VAULT_AUTO_REVIEWS)) {
     if (gen !== generation || view !== 'vault' || current !== address || busy || !client || !vaults.has(address)) return;
     const key = rkey(address, digest);
-    // reviewed by hand meanwhile ("Check again" between two steps)
-    if (!due(key) || refusals.has(key) || unchecked.has(key)) continue;
+    // reviewed by hand meanwhile ("Check again" between two steps): a
+    // verdict stands; a "Not checked" is passed over, except by the
+    // background pass that was asked to try it again
+    if (!due(key) || refusals.has(key) || (unchecked.has(key) && !(quiet && retry.has(key)))) continue;
     retry.delete(key);
-    await review(latest(record), item.request);
+    await review(latest(record), item.request, { quiet });
     await new Promise(resolve => setTimeout(resolve, 0));
   }
 }
@@ -515,9 +654,12 @@ async function sendToMembers(record, texts) {
 
 // Approve a request this wallet reviewed (its own draft, or one received),
 // and tell the other members: the request (for a new one) and the approval.
+// The outcome goes on the request's own card (`notes`, 0.1.86).
 async function approve(record, request, { isNew }) {
   if (busy || !client) return;
   const gen = generation;
+  const key = rkey(record.address, request.digest);
+  notes.delete(key);
   busy = true; status = 'Approving…'; render();
   try {
     const { signature } = await client.vaultApprove({ descriptor: record.code, coins: latest(record).coins, request, digest: request.digest });
@@ -530,10 +672,13 @@ async function approve(record, request, { isNew }) {
     const texts = [];
     if (isNew) texts.push(encodeRequest({ vault: record.address, request }));
     texts.push(encodeApproval({ vault: record.address, digest: request.digest, signature }));
-    status = messagesOpen() ? `Approved. ${await sendToMembers(record, texts)}` : 'Approved for this session only: open Nodus Connect to send approvals to the members.';
+    const text = messagesOpen() ? `Approved. ${await sendToMembers(record, texts)}` : 'Approved for this session only: open Nodus Connect to send approvals to the members.';
+    if (gen !== generation) return;
+    noteOn(key, 'ok', text);
+    status = '';
     if (isNew) draft = null;
   } catch (error) {
-    if (gen === generation) status = error.message || 'The payment could not be approved.';
+    if (gen === generation) { noteOn(key, 'error', error.message || 'The payment could not be approved.'); status = ''; }
   } finally {
     if (gen === generation) { busy = false; render(); }
   }
@@ -589,11 +734,13 @@ export const isRequestVerdict = text => typeof text === 'string' && REQUEST_VERD
 // until a review passes). The status line carries the progress only.
 // Redraws keep what was typed in the payment form (the Open pass runs while
 // the user may type).
-async function review(record, request) {
+// quiet (the background pass, 0.1.86): the status line is left as it is.
+async function review(record, request, { quiet = false } = {}) {
   if (busy || !client) return;
   const gen = generation;
   const key = rkey(record.address, request.digest);
-  busy = true; status = 'Reading the payment request…'; render({ keepTyped: true });
+  const say = text => { if (!quiet) status = text; };
+  busy = true; say('Reading the payment request…'); render({ keepTyped: true });
   try {
     const approvals = approvalsFor(record.address, request.digest, itemsFor(record));
     const answer = await client.vaultReview({ descriptor: record.code, coins: latest(record).coins, request, approvals });
@@ -601,11 +748,11 @@ async function review(record, request) {
     reviews.set(key, answer);
     refusals.delete(key);
     unchecked.delete(key);
-    status = '';
+    say('');
   } catch (error) {
     if (gen !== generation) return;
     const text = error?.message || 'This payment request could not be read.';
-    status = '';
+    say('');
     if (isRequestVerdict(text)) {
       reviews.delete(key);
       unchecked.delete(key);
@@ -634,23 +781,39 @@ function itemsFor(record) {
   return collectVaultItems(messagesOpen() ? host.messages() : [], record.address, record.members, ownFp);
 }
 
+// The outcome goes on the request's own card (`notes`, 0.1.86); an accepted
+// send arms one read VAULT_SENT_MS later, so the card turns "Paid" without
+// waiting for the next 30-second read.
 async function sendPayment(record, request, items) {
   if (busy || !client) return;
   const gen = generation;
+  const key = rkey(record.address, request.digest);
+  notes.delete(key);
   busy = true; status = 'Sending the payment…'; render();
   try {
     const result = await client.vaultSubmit({ descriptor: record.code, coins: latest(record).coins, request, digest: request.digest, approvals: approvalsFor(record.address, request.digest, items) });
     if (gen !== generation) return;
-    reviews.set(rkey(record.address, request.digest), result.review);
+    reviews.set(key, result.review);
+    status = '';
     if (result.accepted) {
-      sent.set(rkey(record.address, request.digest), { intentId: result.intentId, wireId: result.wireId, at: Date.now() });
-      status = 'The payment was sent to the network. It shows in the vault history once it is in a block (Refresh).';
-    } else { status = result.message || 'The network refused this payment.'; sessionLog.log('vault', `Vault payment refused: ${status}`, { error: true }); loggedStatus = status; }
+      sent.set(key, { intentId: result.intentId, wireId: result.wireId, at: Date.now() });
+      noteOn(key, 'ok', 'Sent to the network — it shows as paid once it is in a block.');
+      armPoll(record.address, VAULT_SENT_MS);
+    } else {
+      noteOn(key, 'error', result.message || 'The network refused this payment.');
+    }
   } catch (error) {
-    if (gen === generation) { status = error.message || 'The payment could not be sent.'; sessionLog.log('vault', status, { error: true }); loggedStatus = status; }
+    if (gen === generation) { status = ''; noteOn(key, 'error', error.message || 'The payment could not be sent.'); }
   } finally {
     if (gen === generation) { busy = false; render(); }
   }
+}
+
+// An action's outcome on its request's card, and in the session log (the
+// status line used to carry it there through render()).
+function noteOn(key, kind, text) {
+  notes.set(key, { kind, text });
+  sessionLog.log('vault', text, kind === 'error' ? { error: true } : undefined);
 }
 
 // ── rendering: the panel ─────────────────────────────────────────────────
@@ -666,6 +829,9 @@ function showPanel() {
 
 function render({ keepTyped = false } = {}) {
   showPanel();
+  // every screen change comes through here: the background read starts or
+  // stops with it (0.1.86)
+  syncPoll();
   if (!root) return;
   if (!client) { root.replaceChildren(); return; }
   // Each new status line shown also goes to the session log.
@@ -1027,6 +1193,16 @@ function arrivedLine(item) {
   return text ? el('p', { className: 'hint vault-received', text }) : null;
 }
 
+// The outcome of this wallet's last Approve / Send payment on the request
+// (`notes`), or nothing.
+function noteLine(key) {
+  const note = notes.get(key);
+  if (!note) return null;
+  const line = el('p', { className: 'notice vault-notice vault-note', text: note.text });
+  line.dataset.kind = note.kind;
+  return line;
+}
+
 function renderRequest(record, digest, item, items, state) {
   const key = rkey(record.address, digest);
   const card = el('article', { className: 'vault-request' });
@@ -1039,11 +1215,11 @@ function renderRequest(record, digest, item, items, state) {
     pill.dataset.status = state;
     card.dataset.state = state;
     const actions = el('div', { className: 'vault-actions' }, btn('Check again', () => void review(record, item.request)));
-    if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); unchecked.delete(key); render(); }));
+    if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); unchecked.delete(key); notes.delete(key); render(); }));
     const notice = refused
       ? el('p', { className: 'notice vault-notice vault-refusal', text: refusals.get(key) })
       : el('p', { className: 'notice vault-notice vault-unchecked', text: `This request could not be checked right now: ${unchecked.get(key)}` });
-    card.append(el('div', { className: 'vault-request-head' }, title, pill), arrivedLine(item), notice, actions);
+    card.append(el('div', { className: 'vault-request-head' }, title, pill), arrivedLine(item), notice, noteLine(key), actions);
     return card;
   }
   const rv = reviews.get(key);
@@ -1051,7 +1227,7 @@ function renderRequest(record, digest, item, items, state) {
     const pill = el('span', { className: 'status-badge vault-state', text: 'Not reviewed yet' });
     pill.dataset.status = 'unreviewed';
     card.append(el('div', { className: 'vault-request-head' }, title, pill), arrivedLine(item),
-      el('p', { className: 'hint', text: 'Review it to see what it pays: the page shows only what the request itself says.' }),
+      el('p', { className: 'hint', text: 'Review it to see what it pays: the page shows only what the request itself says.' }), noteLine(key),
       el('div', { className: 'vault-actions' }, btn('Review', () => void review(record, item.request), '')));
     return card;
   }
@@ -1078,7 +1254,9 @@ function renderRequest(record, digest, item, items, state) {
     if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
     actions.append(btn('Check again', () => void review(record, item.request)));
   }
-  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); unchecked.delete(key); render(); }));
+  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); unchecked.delete(key); notes.delete(key); render(); }));
+  const note = noteLine(key);
+  if (note) card.append(note);
   if (actions.childElementCount) card.append(actions);
   return card;
 }
@@ -1159,11 +1337,18 @@ export function mountVaults({ panelNode, rootNode, messagesHost = null }) {
   if (host) {
     host.setPayloadView(payloadView);
     // Messages opened (its kept vaults load) or new items arrived (the
-    // panel's requests and approvals are drawn again).
+    // panel's requests and approvals are drawn again). The vault on screen
+    // is also read again and its open requests reviewed again soon (0.1.86):
+    // armPoll keeps an earlier deadline, so a burst of messages gives one
+    // pass, at most VAULT_CHANGE_MS after them.
     host.onChange(() => {
       if (!client) return;
       const gen = generation;
-      void loadVaults(gen).then(() => { if (gen === generation) render(); });
+      void loadVaults(gen).then(() => {
+        if (gen !== generation) return;
+        render();
+        if (view === 'vault' && current) armPoll(current, VAULT_CHANGE_MS);
+      });
     });
   }
   render();

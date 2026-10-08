@@ -29,11 +29,21 @@
 // valid", only "Check again", and the top status line empty; one whose
 // review cannot be done (the fake throws "The current Nodus block height
 // is unknown (rc=-1).") stays among the OPEN requests, pill "Not checked",
-// a neutral notice and only "Check again"; no horizontal
+// a neutral notice and only "Check again"; (0.1.86) "Send payment" on the
+// ready one, refused by the fake network, puts the refusal on THAT card
+// (.vault-note, data-kind "error") with the status line empty; after the
+// fake's coins drop that request's coin, ONE background pass (driven by
+// pollVaultNow(); the panel's own timer is held with holdVaultPoll(true) so
+// no pass starts in the middle of a click) moves the card to Finished as
+// "Coins spent" with no Approve / Send payment; no horizontal
 // scroll at 390 and 320 px on each of the three, no page error, no refused
 // (CSP) load, no unexpected request.
 //
-// What it does NOT prove: anything about the module (send.wasm) or the
+// What it does NOT prove: that the 30-second timer itself starts and stops
+// (held here; only the pass it runs is driven), the 5-second pass after new
+// vault messages (the fake host never calls onChange) or the 15-second read
+// after an accepted send (the fake refuses every send); anything about the
+// module (send.wasm) or the
 // node — every answer is the fake's; the page's behaviour is covered by
 // test/vaults.test.js (core) and the Connect smoke test.
 import assert from 'node:assert/strict';
@@ -140,23 +150,34 @@ try {
       { fp: ALICE, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d3') }), at: 1759970000000 },
       { fp: BOB, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d4') }), at: 1759960000000 }
     ];
+    const readBack = digest => {
+      const x = reviewOf[digest];
+      return {
+        vault: FAMILY, approvals: 2, verifiedSigners: x.verifiedSigners, refused: 0, member: true, expired: false, tip: '5012', expiryHeight: '5102',
+        fee: '1000000', inputs: x.inputs, outputs: [{ owner: x.to, amount: x.amount, change: false }, { owner: FAMILY, amount: x.change, change: true }]
+      };
+    };
+    // "Send payment" on the ready request: the network refuses it (another
+    // member's payment already spent its coins; the text is the fake's)
+    const SEND_REFUSED = 'The network refused this payment: its coins are already spent.';
+    // the other member's payment lands (window.__vaultsSpendReady, called by
+    // the test before it drives one background pass): from then on the
+    // family vault's coins no longer hold c1, the ready request's input
+    window.__vaultsSpendReady = () => { coins[FAMILY] = coins[FAMILY].filter(c => c.id !== id('c1')); };
     const client = {
       state: 'ready', vaultable: true, nameable: true, fingerprint: OWN,
       async vaultOpen({ descriptor }) { const info = infoFor(descriptor); if (!info) throw new Error('This is not a vault code.'); return { ...info, members: [...info.members] }; },
       async vaultBalance({ descriptor }) { return balances[infoFor(descriptor).address]; },
-      async vaultCoins({ descriptor }) { return { coins: coins[infoFor(descriptor).address], truncated: false }; },
+      async vaultCoins({ descriptor }) { return { coins: [...coins[infoFor(descriptor).address]], truncated: false }; },
       async vaultHistory({ descriptor }) { return history(infoFor(descriptor).address); },
       async nameOf({ owner }) { const name = chainNames.get(owner); return name ? { found: true, name, committedHeight: '5012' } : { found: false, committedHeight: '5012' }; },
       async nameLookup({ name }) { const owner = [...chainNames].find(([, n]) => n === name)?.[0]; return owner ? { found: true, owner } : { found: false }; },
       async vaultReview({ request: r }) {
         if (refuse.has(r.digest)) throw new Error(NOT_OWNED);
         if (cannot.has(r.digest)) throw new Error(TIP_UNKNOWN);
-        const x = reviewOf[r.digest];
-        return {
-          vault: FAMILY, approvals: 2, verifiedSigners: x.verifiedSigners, refused: 0, member: true, expired: false, tip: '5012', expiryHeight: '5102',
-          fee: '1000000', inputs: x.inputs, outputs: [{ owner: x.to, amount: x.amount, change: false }, { owner: FAMILY, amount: x.change, change: true }]
-        };
+        return readBack(r.digest);
       },
+      async vaultSubmit({ request: r }) { return { accepted: false, message: SEND_REFUSED, review: readBack(r.digest) }; },
       async vaultCreate({ members, m }) {
         const all = [OWN, ...members];
         return { descriptor: code(m, all.map((_, i) => ['a1', 'b2', 'c3', 'd4', 'e5', 'f6', '07'][i])), address: id('7a'), m, n: all.length, members: all };
@@ -173,6 +194,10 @@ try {
       async send() {},
       setPayloadView() {}, onChange() {}
     };
+    // no background pass on its own timer during the test (it would run in
+    // the middle of the clicks below); the test drives one with
+    // pollVaultNow()
+    ui.holdVaultPoll(true);
     ui.mountVaults({ panelNode: document.getElementById('vault-panel'), rootNode: document.getElementById('vaults-root'), messagesHost: host });
     ui.vaultExtension.nodusReady({ client });
   });
@@ -244,6 +269,34 @@ try {
   assert.equal(await page.locator('.vault-member .vault-you').count(), 1);
   assert.equal(await page.locator('.vault-history .activity-row').count(), 3);
   await shoot('vaults-vault');
+
+  // Send payment on the ready request, refused by the network: the refusal
+  // is on THAT card (red), the top status line stays empty (0.1.86).
+  const readyCard = page.locator('.vault-open-requests .vault-request[data-state="ready"]');
+  await readyCard.getByRole('button', { name: 'Send payment' }).click();
+  await settled();
+  const sendNote = page.locator('.vault-request .vault-note[data-kind="error"]');
+  assert.equal(await sendNote.count(), 1);
+  assert.equal(await sendNote.textContent(), 'The network refused this payment: its coins are already spent.');
+  assert.equal(await readyCard.locator('.vault-note').count(), 1);
+  assert.equal(await page.locator('#vaults-root .vault-status').textContent(), '');
+
+  // Another member's payment spent the ready request's coin: one background
+  // pass (the 30-second read, driven here) reads the coins again, and that
+  // card moves to Finished as "Coins spent" with no Approve / Send payment;
+  // the waiting one is reviewed again and stays open.
+  await page.evaluate(() => window.__vaultsSpendReady());
+  assert.equal(await page.evaluate(async () => (await import('/src/vaults/ui.js')).pollVaultNow()), true);
+  await settled();
+  assert.deepEqual(await page.locator('.vault-open-requests .vault-request .vault-state').allInnerTexts(), ['Waiting for approvals', 'Not checked']);
+  assert.equal(await page.locator('details.vault-finished > summary').textContent(), 'Finished requests (2)');
+  const spentCard = page.locator('details.vault-finished .vault-request[data-state="spent"]');
+  assert.equal(await spentCard.count(), 1);
+  assert.equal(await spentCard.locator('.vault-state').textContent(), 'Coins spent');
+  assert.equal(await spentCard.getByRole('button', { name: 'Send payment' }).count(), 0);
+  assert.equal(await spentCard.getByRole('button', { name: 'Approve' }).count(), 0);
+  assert.equal(await page.locator('.vault-open-requests').getByRole('button', { name: 'Send payment' }).count(), 0);
+  assert.equal(await page.locator('#vaults-root .vault-status').textContent(), '');
   await back();
 
   // Create: a typed chain name and a picked contact, members checked.
