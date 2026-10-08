@@ -141,6 +141,64 @@ const messagesOpen = () => !!host && host.isOpen();
 
 // ── lifecycle (wallet extension events) ─────────────────────────────────
 
+// ── a dropped connection (0.1.87, operator report 2026-10-09) ───────────
+// A vault was open, the node the page was connected to restarted, and the
+// wallet raised nodusClosing WITH a reason (src/app.js: "The connection to
+// the Nodus network was lost…" when a ready client failed, "…did not answer
+// in time…" when a connection attempt timed out); reset() threw the user
+// back to the vault list, and the reconnect (nodusReady, seconds later)
+// started from the list. Now such a closing remembers WHICH SCREEN was open
+// (`resume`: the wallet identity, the view, the vault address, what was
+// typed in that vault's payment form) and the panel shows "Reconnecting to
+// the Nodus network…" instead of the list; the next nodusReady for the SAME
+// identity (detail.client.fingerprint === resume.fp) loads the vaults and
+// opens that vault again the way its Open button does (refresh with
+// reviewRequests) — if it is still listed — and puts the typed text back.
+// Nothing else is carried: reset() still drops every coin, balance, review,
+// approval and note; all of it is read again from the node and the module.
+// A different identity drops `resume` (never any state across identities).
+// The wallet's reconnect itself raises a closing WITHOUT a reason first
+// (src/app.js startNodusSend -> stopNodusSend raises nodusClosing({}) for
+// the failed client it still holds), so a reasonless closing keeps a
+// pending `resume`; with none pending it is a lock / wallet change as
+// before. locked(), vaultDeleting() and nodusUnavailable() always drop it
+// (src/app.js lock() raises the reasonless closing, then locked()).
+let resume = null;
+const RECONNECTING = 'Reconnecting to the Nodus network…';
+
+function closing(reason) {
+  if (reason && client && ownFp && !resume) {
+    const address = view === 'vault' ? current : null;
+    const typed = address && root
+      ? [...root.querySelectorAll('input[data-keep]')].filter(n => n.dataset.keep.startsWith(`${address}|`) && n.value).map(n => ({ key: n.dataset.keep, value: n.value }))
+      : [];
+    resume = { fp: ownFp, view, address, typed };
+    sessionLog.log('vault', 'The connection was lost; the vault screen is opened again after the reconnect.');
+  } else if (!reason && client) resume = null;
+  reset();
+}
+
+function dropResume() {
+  resume = null;
+  reset();
+}
+
+// After the reconnect's loadVaults: the remembered screen, if the vault is
+// still listed for this identity.
+function resumeScreen(memo) {
+  if (memo.view === 'vault' && memo.address && vaults.has(memo.address)) {
+    openVault(memo.address);
+    // openVault drew the form (empty); later keepTyped redraws carry these
+    for (const t of memo.typed) {
+      const node = root && [...root.querySelectorAll('input[data-keep]')].find(n => n.dataset.keep === t.key);
+      if (node && !node.value) node.value = t.value;
+    }
+    return;
+  }
+  if (memo.view === 'create' || memo.view === 'watch') view = memo.view;
+  render();
+}
+
 function reset() {
   generation++;
   stopPoll(); polling = false; openPass = 0; foundationAsking = false;
@@ -151,12 +209,18 @@ function reset() {
 }
 
 async function start(detail) {
-  reset();
   const c = detail?.client;
+  // a remembered screen is kept only for the same identity (`resume` above)
+  if (resume && (!c || !c.vaultable || c.fingerprint !== resume.fp)) resume = null;
+  reset();
   if (!c || !c.vaultable) return;
   const gen = generation;
   client = c; ownFp = c.fingerprint;
   await loadVaults(gen);
+  if (gen !== generation || !resume) return;
+  const memo = resume;
+  resume = null;
+  resumeScreen(memo);
 }
 
 // The listed vaults: the kept ones (Messages, saved wallet), the Foundation
@@ -947,7 +1011,8 @@ function noteOn(key, kind, text) {
 
 function showPanel() {
   if (!panel) return;
-  const ready = !!client && client.state === 'ready' && client.vaultable;
+  // while reconnecting (`resume`) the panel stays, with its one line
+  const ready = (!!client && client.state === 'ready' && client.vaultable) || !!resume;
   const nodusSelected = $('chain')?.value === NODUS_ASSET.chain;
   panel.hidden = !(ready && nodusSelected);
   const nav = $('nav-vaults');
@@ -960,6 +1025,14 @@ function render({ keepTyped = false } = {}) {
   // stops with it (0.1.86)
   syncPoll();
   if (!root) return;
+  // a dropped connection: one plain line until the remembered screen is
+  // opened again (start) or dropped
+  if (resume) {
+    const line = el('p', { className: 'hint vault-status', text: RECONNECTING });
+    line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
+    root.replaceChildren(line);
+    return;
+  }
   if (!client) { root.replaceChildren(); return; }
   // Each new status line shown also goes to the session log.
   if (status && status !== loggedStatus) sessionLog.log('vault', status);
@@ -1506,8 +1579,11 @@ export function mountVaults({ panelNode, rootNode, messagesHost = null }) {
 
 export const vaultExtension = {
   nodusReady(detail) { void start(detail); },
-  nodusClosing() { reset(); },
-  nodusUnavailable() { reset(); },
-  vaultDeleting() { reset(); },
-  locked() { reset(); }
+  // reason: the connection was lost and the wallet reconnects by itself —
+  // the open vault is opened again then (`resume`); none: a lock or a wallet
+  // change, or the reconnect's own closing of the failed client
+  nodusClosing({ reason } = {}) { closing(reason); },
+  nodusUnavailable() { dropResume(); },
+  vaultDeleting() { dropResume(); },
+  locked() { dropResume(); }
 };

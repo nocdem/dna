@@ -40,7 +40,12 @@
 // empty; a create whose fake vaultCreate gives the family vault's address
 // says "This vault is already in your list as “Family savings”." with
 // "Open it" and no "Create vault", and the listed vault keeps its name
-// (BUGS W-06); no horizontal
+// (BUGS W-06); (0.1.87) a dropped connection — nodusClosing with a reason,
+// then the reconnect's reasonless closing, then nodusReady with the same
+// fake client — keeps the panel shown with "Reconnecting to the Nodus
+// network…" and then opens the same vault again with the typed "Pay to" /
+// amount back; a reasonless closing with nothing remembered (a lock), and a
+// reconnect as another identity, give the list; no horizontal
 // scroll at 390 and 320 px on each of the three, no page error, no refused
 // (CSP) load, no unexpected request.
 //
@@ -50,7 +55,11 @@
 // after an accepted send (the fake refuses every send); the background
 // pass dropping its answer when an action starts or the record changes
 // mid-pass; Watch / a share card finding an already listed vault; the
-// W-05 loading log lines (the fake's kept record always loads); anything about the
+// W-05 loading log lines (the fake's kept record always loads); the
+// reconnect events in src/app.js's real order and timing (the test raises
+// them itself), and on Nodus Connect whether Messages is open again when
+// the new client's nodusReady arrives (the fake host is always open);
+// anything about the
 // module (send.wasm) or the
 // node — every answer is the fake's; the page's behaviour is covered by
 // test/vaults.test.js (core) and the Connect smoke test.
@@ -223,6 +232,8 @@ try {
     // the middle of the clicks below); the test drives one with
     // pollVaultNow()
     ui.holdVaultPoll(true);
+    // the same fake client again for the reconnect case at the end
+    window.__vaultsClient = client;
     ui.mountVaults({ panelNode: document.getElementById('vault-panel'), rootNode: document.getElementById('vaults-root'), messagesHost: host });
     ui.vaultExtension.nodusReady({ client });
   });
@@ -378,6 +389,58 @@ try {
   assert.equal(await page.locator('.vault-hero h4').textContent(), 'Family savings');
   await settled();
   await back();
+  assert.deepEqual(await page.locator('.vault-tile h5').allInnerTexts(), ['Family savings', 'Foundation vault']);
+
+  // A dropped connection (0.1.87): with a vault open and a payment typed,
+  // the wallet raises nodusClosing WITH a reason (a ready client failed),
+  // then — as src/app.js's reconnect does (startNodusSend -> stopNodusSend)
+  // — a closing WITHOUT a reason, then nodusReady with the same identity.
+  // Meanwhile the panel stays shown with one line "Reconnecting to the
+  // Nodus network…" (no list); after it the same vault is open again with
+  // what was typed. A closing without a reason and nothing remembered (a
+  // lock), then nodusReady, gives the list; so does a reconnect as another
+  // identity.
+  const raise = (event, detail) => page.evaluate(async ([name, d]) => {
+    const ui = await import('/src/vaults/ui.js');
+    const fake = window.__vaultsClient;
+    const arg = d === 'client' ? { client: fake } : d === 'other' ? { client: { ...fake, fingerprint: '7b'.repeat(64) } } : d;
+    ui.vaultExtension[name](arg);
+  }, [event, detail]);
+  await open('Family savings');
+  await page.getByLabel('Pay to').fill('dave');
+  await page.getByLabel('Amount (NODUS)').fill('1.5');
+  await raise('nodusClosing', { reason: 'The connection to the Nodus network was lost. Reconnecting by itself…' });
+  await raise('nodusClosing', {});
+  assert.equal(await page.locator('#vault-panel').evaluate(node => node.hidden), false, 'panel hidden while reconnecting');
+  assert.equal(await page.locator('#vaults-root .vault-status').textContent(), 'Reconnecting to the Nodus network…');
+  assert.equal(await page.locator('.vault-grid').count(), 0);
+  assert.equal(await page.locator('.vault-hero').count(), 0);
+  await raise('nodusReady', 'client');
+  await page.locator('.vault-history').waitFor();
+  await settled();
+  assert.equal(await page.locator('.vault-hero h4').textContent(), 'Family savings');
+  assert.equal(await page.getByLabel('Pay to').inputValue(), 'dave');
+  assert.equal(await page.getByLabel('Amount (NODUS)').inputValue(), '1.5');
+  // a closing without a reason (lock / wallet change): back to the list
+  await raise('nodusClosing', {});
+  await raise('nodusReady', 'client');
+  await page.locator('.vault-grid').waitFor();
+  await settled();
+  assert.equal(await page.locator('.vault-hero').count(), 0);
+  // another identity after a dropped connection: nothing is carried over
+  await open('Family savings');
+  await raise('nodusClosing', { reason: 'The connection to the Nodus network was lost. Reconnecting by itself…' });
+  await raise('nodusReady', 'other');
+  await page.locator('.vault-grid').waitFor();
+  await settled();
+  assert.equal(await page.locator('.vault-hero').count(), 0);
+  // the kept family record is not listed for that identity (listedFor); the
+  // Foundation tile stays only because the fake vaultOpen always answers
+  // isMember: true
+  assert.deepEqual(await page.locator('.vault-tile h5').allInnerTexts(), ['Foundation vault']);
+  await raise('nodusReady', 'client');
+  await page.locator('.vault-grid').waitFor();
+  await settled();
   assert.deepEqual(await page.locator('.vault-tile h5').allInnerTexts(), ['Family savings', 'Foundation vault']);
 
   assert.deepEqual(errors, [], 'page errors');
