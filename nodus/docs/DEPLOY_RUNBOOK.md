@@ -744,9 +744,10 @@ The storage row is a PLACEHOLDER (storage reward v1, package B1 — decision
 `docs/plans/decisions/2026-10-04-storage-reward-approved.md`, design
 `docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §6): nothing is voted; the code has
 been in every node binary since 0.25.0 (release fd89dfbe), so param 16 IS votable on the live chain
-today — a vote is cast only on the operator's word. Order (operator 2026-10-08, Kurultay #14
-summary K10): storage is voted BEFORE the validator-role fork HF-6, which becomes generation 5
-on top of it. Its numbers were assigned in main merge order after Nodus EVM (HF-5) merged
+today — **do NOT propose it**. Order (operator 2026-10-08, Kurultay #14 summary K12): storage
+opens TOGETHER with the validator-role fork HF-6 (owner/node split for both roles, joining from
+Connect), never on its own with today's node-key registration; whether that is one rule-set
+generation or two is open in the HF-6 design. Its numbers were assigned in main merge order after Nodus EVM (HF-5) merged
 first: generation 4 on the EVM generation, param 16, SYSTEM v9 / CORE v7. Its fork number is
 **HF-7** (operator, 2026-10-07; the role-stake package is HF-6, and the planned "delegation
 requires an on-chain name" rule is HF-8 — decision `2026-10-05-hf-numbering-evm-hf5.md`). Its vote follows the HF-4 procedure below with param 16
