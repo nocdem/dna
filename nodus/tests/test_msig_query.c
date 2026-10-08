@@ -58,6 +58,15 @@
  *                    its decoder still accepts it; the msig decoder
  *                    REFUSES it (no "trunc"); dnac_utxo for another owner
  *                    is still NOT_AUTHENTICATED (C11).
+ *  t_dnac_utxo_strict BUGS.md Z-11: dnac_utxo's owner must be exactly 128
+ *                    lowercase hex — uppercase / 127 / 129 / 400 chars /
+ *                    a non-hex char / empty / a byte string →
+ *                    PROTOCOL_ERROR (no truncation); a canonical foreign
+ *                    owner is still NOT_AUTHENTICATED (C11); the coin
+ *                    store unreadable (w->db NULL) → INTERNAL_ERROR; the
+ *                    chain height unreadable (`blocks` dropped) →
+ *                    INTERNAL_ERROR for dnac_utxo and dnac_msig_utxo (the
+ *                    shared encoder), never block_height 0.
  *  t_error_mapping   the dispatcher's answer to an unknown dnac_* method
  *                    maps to NODUS_CLIENT_ERR_METHOD_UNSUPPORTED; a
  *                    PROTOCOL_ERROR with other text stays 7; a
@@ -950,6 +959,102 @@ static void t_dnac_utxo_same(void)
     fx_close(&f);
 }
 
+/* BUGS.md Z-11: dnac_utxo's owner is strict (exactly 128 lowercase hex,
+ * the shape nodus_witness_owner_hex_to_raw accepts), a coin-store fault
+ * and a chain-height fault are INTERNAL_ERROR, never an empty success. */
+static reply_t *dnac_utxo_owner(fx_t *f, const char *owner, size_t len)
+{
+    arg_t a[1] = { ARG_T("owner", owner, len) };
+    return call(f, "dnac_utxo", build_req("dnac_utxo", a, 1, false));
+}
+
+static void t_dnac_utxo_strict(void)
+{
+    fx_t f;
+    char me[129];
+    char own[400];
+    uint8_t raw[64];
+    fx_open(&f, "dnacutxostrict");
+    fx_session(&f, true, 2);            /* peer_id 0xA2.. → "a2a2…" */
+    memcpy(raw, f.conn->peer_id.bytes, 64);
+    hex64(raw, me);
+    plant_coin(&f, me, 0x72, 43);
+
+    /* the success path still answers the session's own coins */
+    reply_t *r = dnac_utxo_owner(&f, me, 128);
+    CHECK(r->type == 'r' && r->rkeys == 3 && !r->has_trunc,
+          "strict: a canonical owner == session still answers");
+
+    /* uppercase: the session's own address, one letter raised */
+    memcpy(own, me, 129);
+    for (int i = 0; i < 128; i++)
+        if (own[i] >= 'a' && own[i] <= 'f') { own[i] = (char)(own[i] - 32); break; }
+    CHECK(strcmp(own, me) != 0, "an uppercase letter was made");
+    expect_err(dnac_utxo_owner(&f, own, 128), NODUS_ERR_PROTOCOL_ERROR,
+               "dnac_utxo: uppercase owner");
+
+    /* 127 / 129 characters (both used to reach C11 as NOT_AUTHENTICATED) */
+    expect_err(dnac_utxo_owner(&f, me, 127), NODUS_ERR_PROTOCOL_ERROR,
+               "dnac_utxo: 127-character owner");
+    memcpy(own, me, 128); own[128] = '0'; own[129] = '\0';
+    expect_err(dnac_utxo_owner(&f, own, 129), NODUS_ERR_PROTOCOL_ERROR,
+               "dnac_utxo: 129-character owner");
+
+    /* longer than the old char[256] copy: no truncation, a refusal */
+    memset(own, '0', sizeof(own));
+    memcpy(own, me, 128);
+    expect_err(dnac_utxo_owner(&f, own, sizeof(own)),
+               NODUS_ERR_PROTOCOL_ERROR, "dnac_utxo: 400-character owner");
+
+    /* 128 characters, one not hex */
+    memcpy(own, me, 129);
+    own[5] = 'g';
+    expect_err(dnac_utxo_owner(&f, own, 128), NODUS_ERR_PROTOCOL_ERROR,
+               "dnac_utxo: non-hex owner");
+
+    /* empty text and a byte string */
+    expect_err(dnac_utxo_owner(&f, "", 0), NODUS_ERR_PROTOCOL_ERROR,
+               "dnac_utxo: empty owner");
+    {
+        arg_t a[1] = { ARG_B("owner", me, 128) };
+        expect_err(call(&f, "dnac_utxo", build_req("dnac_utxo", a, 1, false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "dnac_utxo: owner as bytes");
+    }
+
+    /* C11 still refuses a canonical owner that is not the session */
+    memset(own, 'b', 128); own[128] = '\0';
+    expect_err(dnac_utxo_owner(&f, own, 128), NODUS_ERR_NOT_AUTHENTICATED,
+               "dnac_utxo: canonical but foreign owner keeps C11");
+
+    /* the coin store unreadable → INTERNAL_ERROR, not count 0 */
+    {
+        sqlite3 *db = f.w->db;
+        f.w->db = NULL;
+        expect_err(dnac_utxo_owner(&f, me, 128), NODUS_ERR_INTERNAL_ERROR,
+                   "dnac_utxo: a store fault is INTERNAL_ERROR, never an "
+                   "empty list");
+        f.w->db = db;
+    }
+
+    /* the chain height unreadable (the legacy `blocks` table this
+     * non-successor fixture reads its height from is gone) while the coin
+     * read still works → INTERNAL_ERROR, not block_height 0 */
+    CHECK(!f.w->v2_successor, "fixture reads its height from `blocks`");
+    CHECK(sqlite3_exec(f.w->db, "DROP TABLE blocks", NULL, NULL, NULL) ==
+          SQLITE_OK, "drop the height table");
+    expect_err(dnac_utxo_owner(&f, me, 128), NODUS_ERR_INTERNAL_ERROR,
+               "dnac_utxo: a height fault is INTERNAL_ERROR, never "
+               "block_height 0");
+    {   /* the shared encoder: dnac_msig_utxo fails closed the same way */
+        desc_t d;
+        desc_make(&d, K012, 3);
+        expect_err(msig_utxo(&f, d.owner, &d, false, 0),
+                   NODUS_ERR_INTERNAL_ERROR,
+                   "dnac_msig_utxo: a height fault is INTERNAL_ERROR");
+    }
+    fx_close(&f);
+}
+
 static void t_error_mapping(void)
 {
     fx_t f;
@@ -1014,6 +1119,7 @@ int main(void)
     t_history();
     t_builder_gate();
     t_dnac_utxo_same();
+    t_dnac_utxo_strict();
     t_error_mapping();
     printf("test_msig_query: ALL %d checks passed\n", g_checks);
     return 0;

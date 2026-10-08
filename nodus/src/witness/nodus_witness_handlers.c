@@ -615,6 +615,11 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
  *
  * Request:  "a": {"owner": cstr, "max": uint}
  * Response: "r": {"count":N, "utxos":[{...},...]}
+ *
+ * owner: exactly 128 lowercase hex, == the session fingerprint (C11,
+ * d40b89d1), else PROTOCOL_ERROR / NOT_AUTHENTICATED. A coin-store or
+ * chain-height read fault is INTERNAL_ERROR, never an empty success
+ * (BUGS.md Z-11).
  * ════════════════════════════════════════════════════════════════════ */
 
 static void dnac_utxo_answer_send(nodus_witness_t *w,
@@ -635,19 +640,29 @@ static void handle_dnac_utxo(nodus_witness_t *w,
         return;
     }
 
-    char owner[256] = {0};
+    char owner[NODUS_KEY_HEX_LEN] = {0};
     int max_results = DNAC_MAX_UTXO_RESULTS;
 
     for (size_t i = 0; i < args_count; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
         if (key_match(&key, "owner")) {
             cbor_item_t val = cbor_decode_next(&dec);
-            if (val.type == CBOR_ITEM_TSTR && val.tstr.len > 0) {
-                size_t clen = val.tstr.len < sizeof(owner) - 1
-                              ? val.tstr.len : sizeof(owner) - 1;
-                memcpy(owner, val.tstr.ptr, clen);
-                owner[clen] = '\0';
+            /* BUGS.md Z-11: the owner is the canonical utxo_set owner text
+             * or it is refused — exactly 128 lowercase hex, the shape
+             * dnac_msig_utxo and dnac_addr_history already demand. It used
+             * to be copied unchecked and cut at 255 bytes. */
+            uint8_t owner_raw[NODUS_KEY_BYTES];
+            if (val.type != CBOR_ITEM_TSTR ||
+                val.tstr.len != NODUS_KEY_HEX_LEN - 1 ||
+                nodus_witness_owner_hex_to_raw(val.tstr.ptr, val.tstr.len,
+                                               owner_raw) != 0) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                            "owner must be one 128-character lowercase "
+                            "hex string");
+                return;
             }
+            memcpy(owner, val.tstr.ptr, NODUS_KEY_HEX_LEN - 1);
+            owner[NODUS_KEY_HEX_LEN - 1] = '\0';
         } else if (key_match(&key, "max")) {
             cbor_item_t val = cbor_decode_next(&dec);
             if (val.type == CBOR_ITEM_UINT) {
@@ -694,9 +709,18 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     }
 
     int count = 0;
-    int utxo_rc = nodus_witness_utxo_by_owner(w, owner, utxos, max_results, &count);
-    QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: owner=%.16s... db=%p rc=%d count=%d",
-                  owner, (void*)w->db, utxo_rc, count);
+    if (nodus_witness_utxo_by_owner(w, owner, utxos, max_results,
+                                    &count) != 0) {
+        /* BUGS.md Z-11: a store fault is never an empty list (it used to
+         * be logged and answered as success, count 0) — the same answer
+         * dnac_msig_utxo gives. */
+        QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: owner=%.16s... coin list "
+                      "unreadable", owner);
+        free(utxos);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "coin list unreadable");
+        return;
+    }
 
     dnac_utxo_answer_send(w, conn, txn_id, "dnac_utxo", utxos, count,
                           false, false);
@@ -724,8 +748,19 @@ static void dnac_utxo_answer_send(nodus_witness_t *w,
      *   sr   : bstr — 64-byte root
      * but since the root-layout round (K3) they always carry depth 0, an
      * empty pr_s and an all-zero sr — see the loop below. The top-level
-     * response still carries the latest committed block_height. */
-    uint64_t latest_height = nodus_witness_block_height(w);
+     * response still carries the latest committed block_height.
+     *
+     * BUGS.md Z-11: read on the CHECKED accessor. The fail-open
+     * nodus_witness_block_height answers 0 on a fault, and a wallet takes
+     * this block_height as the tip it compares each coin's "ub" against
+     * and derives a spend's expiry from — a fault answers INTERNAL_ERROR
+     * instead, for both callers (dnac_utxo and dnac_msig_utxo). */
+    uint64_t latest_height = 0;
+    if (nodus_witness_block_height_checked(w, &latest_height) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "chain height unreadable");
+        return;
+    }
 
     /* Per UTXO we encode at worst:
      *   8 base fields  ≈ 256 B (O15B §7 added "ub", a u64 ⇒ ≤ 12 B more;

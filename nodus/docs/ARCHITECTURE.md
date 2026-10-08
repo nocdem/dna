@@ -3428,7 +3428,7 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 | `dnac_spend` | Client→Witness | Submit spend TX for BFT consensus |
 | `dnac_nullifier` | Client→Witness | Check if nullifier is spent |
 | `dnac_supply` | Client→Witness | Query supply state (version 3 adds `chain_id32`, `tip` and the supply buckets `reward_pool` / `treasury` / `unclaimed` — see "Supply buckets for Nodus Scan") |
-| `dnac_utxo` | Client→Witness | Query UTXOs by owner |
+| `dnac_utxo` | Client→Witness | Query UTXOs by owner. `owner` = exactly 128 lowercase hex (else `PROTOCOL_ERROR`, never truncated) and == the session fingerprint (C11, else `NOT_AUTHENTICATED`); a coin-store or chain-height read fault is `INTERNAL_ERROR` ("coin list unreadable" / "chain height unreadable"), never an empty list or `block_height` 0 (BUGS.md Z-11). At most 100 coins (`max` 1..100, by design) |
 | `dnac_msig_utxo` | Client→Witness | A multisig vault MEMBER's query of the vault address's coins: `dnac_utxo`'s answer plus `trunc` (see "Vault-member queries") |
 | `dnac_msig_addr_history` | Client→Witness | A multisig vault MEMBER's query of the vault address's history: `dnac_addr_history`'s answer (see "Vault-member queries") |
 | `dnac_utxo_proof` | Client→Witness | Query UTXO existence proof |
@@ -4739,8 +4739,10 @@ inputs exist, are unspent and are the sender's at admission.
    stake` — the local read-only database's `nodus_witness_v2_tip_height`
    (a checked read; refused when 0 — a lagging copy only makes the
    expiry earlier); `v2-envelope spend` — the UTXO query's
-   `block_height` (server: the fail-open accessor,
-   `handle_dnac_utxo`; refused when 0, where round 2 only warned).
+   `block_height` (server: the checked accessor in
+   `dnac_utxo_answer_send`, behind `handle_dnac_utxo` — a read fault is
+   `INTERNAL_ERROR`, no longer 0, BUGS.md Z-11; still refused when 0,
+   where round 2 only warned).
    Claims carry NO expiry field
    (`dna_claim_t`, `shared/dnac/manifest_wire.h:459-473`); their only
    window is the manifest's `claim_start_height`/`claim_end_height`
@@ -6935,8 +6937,9 @@ had to scan every block from the vault's first one, which block pruning breaks.
 - **Answers:** `dnac_msig_utxo` = `dnac_utxo`'s three keys and per-coin encoding
   (one shared encoder, `dnac_utxo_answer_send`) plus `trunc` (bool, LAST): the
   node reads `max + 1` coins and `trunc` is true when there were more than `max`.
-  A store fault is `INTERNAL_ERROR` (unlike `dnac_utxo`, which still answers an
-  empty list — BUGS.md Z-11). `dnac_msig_addr_history` = the `dnac_addr_history`
+  A store fault is `INTERNAL_ERROR` ("coin list unreadable"), and so is a
+  chain-height read fault in the shared encoder ("chain height unreadable") —
+  the same as `dnac_utxo` since the BUGS.md Z-11 fix. `dnac_msig_addr_history` = the `dnac_addr_history`
   builder itself (`ai_history_build` behind `nodus_witness_addr_history_build`
   and `nodus_witness_msig_addr_history_build`), `q` = `dnac_msig_addr_history`,
   same node-local caveats (`enabled`, `from_height`).
@@ -6952,7 +6955,9 @@ had to scan every block from the vault's first one, which block pruning breaks.
 - Tests: `test_msig_query` — the gate through the real dispatcher over a
   socketpair (member / non-member / wrong descriptor / malformed descriptor /
   strict args / unauthenticated before any parse), `trunc`, the store fault,
-  `dnac_utxo` unchanged, the client decoders and the "node too old" mapping.
+  `dnac_utxo` unchanged on success, `dnac_utxo`'s strict owner and its
+  store / height faults (Z-11), the client decoders and the "node too old"
+  mapping.
 
 ### Chain-config accepts only parameters the consensus reads (0.20.3)
 
