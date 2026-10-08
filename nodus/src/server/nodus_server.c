@@ -108,16 +108,15 @@ static void session_clear(nodus_session_t *sess) {
     nodus_circuit_table_init(&sess->circuits);
 }
 
-/* Find an authenticated session by client fingerprint (for local circuit bridge) */
+/* Find the session a circuit to identity `fp` lands on (local circuit
+ * bridge, inbound ri_open). An identity may hold up to
+ * NODUS_MAX_SESSIONS_PER_IDENTITY sessions here; a circuit is one
+ * point-to-point bridge (one bridge_peer_sess, one circuit-table entry), so
+ * it cannot go to all of them. It goes to the identity's most recently
+ * authenticated session — the device that connected last — never to
+ * whichever slot happens to come first in the array. */
 static nodus_session_t *find_session_by_fp(nodus_server_t *srv, const nodus_key_t *fp) {
-    for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
-        nodus_session_t *s = &srv->sessions[i];
-        if (s->authenticated && s->conn != NULL &&
-            nodus_key_cmp(&s->client_fp, fp) == 0) {
-            return s;
-        }
-    }
-    return NULL;
+    return nodus_sessions_newest_fp(srv->sessions, NODUS_MAX_SESSIONS, fp);
 }
 
 /* Find a cluster peer by IP-hash peer_idx (inverse of p_sync peer_idx formula).
@@ -2122,7 +2121,12 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
             if (conn->fd >= 0) getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, &err, &elen);
             if (err) fprintf(stderr, "socket_error(%d)\n", err);
             else fprintf(stderr, "clean_close_or_sweep\n");
-            nodus_presence_remove_local(srv, &sess->client_fp);
+            /* The identity stays online while another of its sessions
+             * (NODUS_MAX_SESSIONS_PER_IDENTITY) is still live here; the
+             * last one to go takes it offline. */
+            if (nodus_sessions_count_fp(srv->sessions, NODUS_MAX_SESSIONS,
+                                        &sess->client_fp, sess) == 0)
+                nodus_presence_remove_local(srv, &sess->client_fp);
         } else {
             fprintf(stderr, "CLIENT_DISCONNECT: unauth slot=%d ip=%s idle=%lus\n",
                     conn->slot, conn->ip,
