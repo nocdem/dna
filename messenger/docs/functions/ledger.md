@@ -114,6 +114,25 @@ pool 8 any more.)
 
 ---
 
+## 5b. HF-6 slice 1 — validator consent, validator_id, vset v2 (INERT; design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` §6)
+
+No live path calls anything in this section yet; the bytes are pinned by `shared/dnac/tests/valbind_oracle.py` (independent oracle) in `nodus/tests/test_valbind_wire.c` and `test_vset_wire.c`.
+
+| Item | Description |
+|------|-------------|
+| `int dna_valbind_consent_msg(uint8_t out[2765], const uint8_t chain32[32], uint8_t op, const uint8_t subject[64], const uint8_t owner_fp[64], const uint8_t consensus_pk[2592], uint64_t expiry_height)` (`shared/dnac/valbind_wire.h`) | **NEW.** Builds the 2765-byte node-consent message: version u32 = 1 ‖ chain 32 ‖ op u8 ‖ subject 64 ‖ owner_fp 64 ‖ consensus_pk 2592 ‖ expiry u64 (BE). op 1 = STAKE (subject must be all-zero), 2 = ROTATE (subject must not be all-zero); anything else -1, `out` untouched. |
+| `int dna_valbind_expiry_ok(uint64_t h, uint64_t expiry)` | **NEW.** 1 iff `expiry >= h && expiry - h <= 720` (`DNA_VALBIND_MAX_EXPIRY_BLOCKS`, a fixed number, not the epoch length); never forms `h + 720`. |
+| `int dna_valbind_consent_sign(uint8_t sig[4627], size_t *siglen, const uint8_t msg[2765], const uint8_t sk[4896])` | **NEW.** Refuses a malformed message (version/op/subject); signs with ML-DSA-87 ctx `"nodus.valbind.v1"` (16 B, no NUL). |
+| `int dna_valbind_consent_verify(const uint8_t *sig, size_t siglen, const uint8_t msg[2765])` | **NEW.** Parses version/op/subject, then verifies with the consensus_pk EMBEDDED at offset 165 (no caller key — signer binding). Does NOT check chain, owner or expiry: the caller does (design §2 reconstruction, `dna_valbind_expiry_ok`). |
+| `int dna_validator_id_new(uint8_t out[64], const uint8_t chain32[32], const uint8_t intent_id[64])` | **NEW.** `SHA3-512("NDS.VALID.v1"+4×0 ‖ chain32 ‖ intent_id)` (112-byte preimage). |
+| `int dna_validator_id_migrated(uint8_t out[64], const uint8_t chain32[32], const uint8_t old_pubkey[2592])` | **NEW.** `SHA3-512("NDS.VALMIG.v1"+3×0 ‖ chain32 ‖ SHA3-512(old_pubkey))` (112-byte preimage). |
+| `dna_vset_entry_t` (`shared/dnac/vset_wire.h`) | **CHANGED:** two fields appended, `validator_id[64]`, `owner_fp[64]`. Under ruleset 1 both must be zero (encode rejects nonzero — fail closed; decode leaves them zero). |
+| `size_t dna_vset_encoded_len_ex(snap, uint32_t max_ruleset)`, `int dna_vset_encode_ex(snap, max_ruleset, dst, cap, written)`, `int dna_vset_decode_ex(src, len, max_ruleset, out)`, `int dna_vset_hash_ex(snap, max_ruleset, out)`, `int dna_vset_hash_bytes_ex(buf, len, max_ruleset, out)` | **NEW.** Accept rulesets 1..`max_ruleset` (1 or 2; else -1). Ruleset 2 (`DNA_VSET_RULESET_TOPN_V2`): entry 2770 B = voter_id 32 ‖ validator_id 64 ‖ owner_fp 64 ‖ consensus_pk 2592 ‖ total u64 ‖ self u64 ‖ commission u16; tag `"NDS.VSET.v2"`; seed all-zero; duplicate voter_id / validator_id / pk, all-zero validator_id / owner_fp, and voter_id ≠ SHA3-512(pk)[0..31] rejected in encode AND decode. `hash_bytes_ex` reads the ruleset at header offset 10 to pick the tag. Max v2 encoding 354638 (`DNA_VSET_MAX_ENC_LEN_V2`). |
+| `dna_vset_encoded_len / encode / decode / hash` | **CHANGED (implementation only):** now `_ex(…, 1)` wrappers — behaviour byte-identical, still ruleset 1 only. |
+| `int dna_vset_hash_bytes(const uint8_t *buf, size_t len, uint8_t out[64])` | **UNCHANGED** body: any 1..338254 bytes under the v1 tag, header not read (kept so no input's result changes). The live store/load path (`nodus_witness_vset.c`) must move to the `_ex` forms together when v2 is switched on. |
+
+---
+
 ## 6. Package W-B — exact self-stake, self-delegation (`docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md` items 5, 6)
 
 | Item | Description |

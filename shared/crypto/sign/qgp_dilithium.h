@@ -50,4 +50,32 @@ int qgp_dsa87_verify(const uint8_t *sig, size_t siglen,
                      const uint8_t *m, size_t mlen,
                      const uint8_t *pk);
 
+// Largest FIPS 204 context string (ctx is length-prefixed by one byte)
+#define QGP_DSA87_CTX_MAX_BYTES 255
+
+// Signing with a FIPS 204 context string (detached signature)
+// The library forms pre = 0 || ctxlen || ctx and passes it alongside m
+// (shared/crypto/sign/dsa/sign.c:279-295; verify :439-458). ctx is NOT
+// part of the message and must never be prepended to it by the caller.
+// ctx: context string, may be NULL only when ctxlen == 0
+// ctxlen: context length, at most QGP_DSA87_CTX_MAX_BYTES
+// Other arguments as qgp_dsa87_sign.
+// Returns 0 on success, -1 on failure (NULL argument, ctx too long)
+int qgp_dsa87_sign_ctx(uint8_t *sig, size_t *siglen,
+                       const uint8_t *m, size_t mlen,
+                       const uint8_t *ctx, size_t ctxlen,
+                       const uint8_t *sk);
+
+// Verification with a FIPS 204 context string (detached signature)
+// A signature made under one ctx never verifies under another ctx, nor
+// under qgp_dsa87_verify (which is ctx = empty). There is no fallback.
+// ctx: context string, may be NULL only when ctxlen == 0
+// ctxlen: context length, at most QGP_DSA87_CTX_MAX_BYTES
+// Other arguments as qgp_dsa87_verify.
+// Returns 0 if signature is valid, -1 if invalid or arguments rejected
+int qgp_dsa87_verify_ctx(const uint8_t *sig, size_t siglen,
+                         const uint8_t *m, size_t mlen,
+                         const uint8_t *ctx, size_t ctxlen,
+                         const uint8_t *pk);
+
 #endif

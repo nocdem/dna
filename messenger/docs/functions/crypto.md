@@ -61,6 +61,8 @@ this is Faz 0 of (port only — no caller uses this API yet).
 | `int qgp_dsa87_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed)` | Generate keypair from seed |
 | `int qgp_dsa87_sign(uint8_t *sig, size_t *siglen, ...)` | Sign message (detached signature) |
 | `int qgp_dsa87_verify(const uint8_t *sig, size_t siglen, ...)` | Verify signature |
+| `int qgp_dsa87_sign_ctx(uint8_t *sig, size_t *siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *sk)` | **NEW (HF-6 slice 1).** ML-DSA-87 sign with a FIPS 204 context: ctx/ctxlen go straight to the library, which forms `0 ‖ ctxlen ‖ ctx` (`dsa/sign.c:279-284`); ctx is never prepended to `m`. Rejects NULL args, `ctx == NULL && ctxlen > 0`, `ctxlen > QGP_DSA87_CTX_MAX_BYTES` (255). Hedged (randomized) signing, like `qgp_dsa87_sign`. |
+| `int qgp_dsa87_verify_ctx(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *pk)` | **NEW (HF-6 slice 1).** Verify under exactly that ctx; no fallback to the empty-ctx verify. Same argument rejects. 0 = valid. |
 
 ### 5.4b secp256k1 ECDSA (`crypto/sign/secp256k1_sign.h`)
 

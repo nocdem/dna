@@ -402,6 +402,10 @@ set(NODUS_SOURCES
     # cometbft per-vote signature model instead of a compact cert.
     # Same ownership pattern as ledger_roots_v2.c.
     ${SHARED_DIR}/dnac/vset_wire.c
+    # HF-6 slice 1 — INERT validator consent message / ctx signature /
+    # validator_id codec (design 2026-10-03-hf5-validator-owner-stake §6.1,
+    # §6.2). No consensus path calls it.
+    ${SHARED_DIR}/dnac/valbind_wire.c
     ${SHARED_DIR}/dnac/qc_v2.c
 
     # (The T3 wave-1 codecs tm_vote.c / tm_commit.c and the T1 core under
@@ -1736,6 +1740,12 @@ add_test(NAME test_block_v2 COMMAND test_block_v2)
 add_executable(test_vset_wire tests/test_vset_wire.c)
 target_link_libraries(test_vset_wire nodus dsa nodus crypto)
 add_test(NAME test_vset_wire COMMAND test_vset_wire)
+
+# HF-6 slice 1 — validator consent message layout, expiry rule, FIPS 204
+# ctx signatures (cross-ctx / plain-verify negatives), validator_id.
+add_executable(test_valbind_wire tests/test_valbind_wire.c)
+target_link_libraries(test_valbind_wire nodus dsa nodus crypto)
+add_test(NAME test_valbind_wire COMMAND test_valbind_wire)
 
 # Ledger V2 S3 — QC V2: preimage KAT, quorum table, and a REAL-KEY
 # adversarial suite (non-member, duplicate, unsorted, wrong-context,
