@@ -22,6 +22,7 @@
 #include "nodus/nodus.h"                        /* NODUS_DNAC_ADDR_HISTORY_* */
 #include "nodus/nodus_types.h"                  /* NODUS_ERR_*              */
 #include "dnac/ledger_ids.h"                    /* DNA_DOMAIN_*             */
+#include "dnac/msig_wire.h"                     /* the vault-member test    */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -845,9 +846,15 @@ static void ai_enc_response(cbor_encoder_t *enc, uint32_t txn_id,
  * history member gate in nodus_witness_handlers.c) and `session_fp` is
  * not read. Everything after the authorization step is shared, so the
  * two methods answer the same shape from the same rows. */
+/* `c11` true: the dnac_addr_history rule (session_fp == owner).
+ * `c11` false: the vault-member rule (nodus_witness_msig_member_ok over
+ * peer_pk / msig) — there is no third mode, so no path reaches the store
+ * without one of the two. */
 static int ai_history_build(nodus_witness_t *w, uint32_t txn_id,
                             const char *method, bool c11,
                             const uint8_t *session_fp,
+                            const uint8_t *peer_pk,
+                            const uint8_t *msig, size_t msig_len,
                             const char *owner,
                             const nodus_witness_addr_cursor_t *before,
                             uint32_t limit,
@@ -888,6 +895,14 @@ static int ai_history_build(nodus_witness_t *w, uint32_t txn_id,
     if (c11 && memcmp(session_fp, owner_raw, 64) != 0) {
         ai_err(err_code, err_msg, err_cap, NODUS_ERR_NOT_AUTHENTICATED,
                "owner must match authenticated session fingerprint");
+        return -1;
+    }
+    /* G8.1 (multisig design §8.6 rev 2): only a vault member may read the
+     * vault's history */
+    if (!c11 &&
+        !nodus_witness_msig_member_ok(peer_pk, owner_raw, msig, msig_len)) {
+        ai_err(err_code, err_msg, err_cap, NODUS_ERR_NOT_AUTHENTICATED,
+               NODUS_WITNESS_MSIG_NOT_MEMBER);
         return -1;
     }
     if (limit < 1 || limit > NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT) {
@@ -1055,12 +1070,15 @@ int nodus_witness_addr_history_build(nodus_witness_t *w, uint32_t txn_id,
                                      size_t err_cap)
 {
     return ai_history_build(w, txn_id, "dnac_addr_history", true,
-                            session_fp, owner, before, limit, out, out_len,
-                            err_code, err_msg, err_cap);
+                            session_fp, NULL, NULL, 0, owner, before, limit,
+                            out, out_len, err_code, err_msg, err_cap);
 }
 
 int nodus_witness_msig_addr_history_build(nodus_witness_t *w,
                                           uint32_t txn_id,
+                                          const uint8_t *peer_pk,
+                                          const uint8_t *msig,
+                                          size_t msig_len,
                                           const char *owner,
                                           const nodus_witness_addr_cursor_t *before,
                                           uint32_t limit,
@@ -1069,6 +1087,33 @@ int nodus_witness_msig_addr_history_build(nodus_witness_t *w,
                                           size_t err_cap)
 {
     return ai_history_build(w, txn_id, "dnac_msig_addr_history", false,
-                            NULL, owner, before, limit, out, out_len,
-                            err_code, err_msg, err_cap);
+                            NULL, peer_pk, msig, msig_len, owner, before,
+                            limit, out, out_len, err_code, err_msg, err_cap);
+}
+
+_Static_assert(NODUS_PK_BYTES == DNA_MSIG_PUBKEY_LEN,
+               "a session public key and a multisig descriptor key must "
+               "be the same ML-DSA-87 width");
+_Static_assert(DNA_MSIG_ADDR_LEN == 64,
+               "a multisig address is a 64-byte owner fingerprint");
+
+bool nodus_witness_msig_member_ok(const uint8_t *peer_pk,
+                                  const uint8_t *owner_raw,
+                                  const uint8_t *msig, size_t msig_len)
+{
+    uint8_t        m = 0, n = 0;
+    const uint8_t *keys = NULL;
+    uint8_t        addr[DNA_MSIG_ADDR_LEN];
+
+    if (!peer_pk || !owner_raw || !msig || msig_len == 0) return false;
+    if (dna_msig_desc_parse(msig, msig_len, &m, &n, &keys) != 0)
+        return false;
+    if (dna_msig_address(msig, msig_len, addr) != 0) return false;
+    if (memcmp(addr, owner_raw, DNA_MSIG_ADDR_LEN) != 0) return false;
+    for (uint8_t k = 0; k < n; k++) {
+        if (memcmp(peer_pk, keys + (size_t)k * DNA_MSIG_PUBKEY_LEN,
+                   DNA_MSIG_PUBKEY_LEN) == 0)
+            return true;
+    }
+    return false;
 }

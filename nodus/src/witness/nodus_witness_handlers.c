@@ -855,19 +855,17 @@ static void dnac_utxo_answer_send(nodus_witness_t *w,
  *     authenticated public key (conn->peer_pk: nodus_auth.c on the
  *     client port, nodus_witness_ipc.c's ipc_hello in a split node) is
  *     byte-equal to one of the descriptor's N keys → else
- *     NOT_AUTHENTICATED with ONE message whichever step failed;
+ *     NOT_AUTHENTICATED with ONE message whichever step failed. Step c
+ *     is nodus_witness_msig_member_ok (nodus_witness_addr_index.c), the
+ *     same function nodus_witness_msig_addr_history_build runs itself,
+ *     so the history store cannot be reached without it;
  *  d. only then the store is read, for the canonical owner text.
  * Bounded work: ≤ 18162 B parsed, one SHA3-512, ≤ 7 memcmp of 2592 B.
  * Read-only, committed state only; no consensus path calls this (D8.1).
  * ════════════════════════════════════════════════════════════════════ */
 
-_Static_assert(NODUS_PK_BYTES == DNA_MSIG_PUBKEY_LEN,
-               "a session public key and a multisig descriptor key must "
-               "be the same ML-DSA-87 width");
 _Static_assert(NODUS_DNAC_MSIG_MAX_DESC_LEN == DNA_MSIG_MAX_DESC_LEN,
                "nodus.h restates the longest multisig descriptor");
-
-#define MSIG_QUERY_NOT_MEMBER  "not authorized for this owner"
 
 typedef struct {
     char           owner[NODUS_KEY_HEX_LEN];   /* 128 lowercase hex + NUL */
@@ -877,30 +875,6 @@ typedef struct {
     bool           have_max, have_limit, have_before, have_bi, have_bq;
     uint64_t       max, limit, before, bi, bq;
 } msig_query_args_t;
-
-/* Step c: `msig` is a valid descriptor, its address is `owner_raw`, and
- * the session's authenticated public key is one of its keys. @return 0
- * member / -1 anything else (the caller says nothing about which). A
- * session whose peer_pk was never filled holds zeros, and a descriptor
- * refuses a zero-prefixed key (msig_wire.h), so it never matches. */
-static int msig_member_check(const struct nodus_tcp_conn *conn,
-                             const uint8_t owner_raw[64],
-                             const uint8_t *msig, size_t msig_len) {
-    uint8_t        m = 0, n = 0;
-    const uint8_t *keys = NULL;
-    uint8_t        addr[DNA_MSIG_ADDR_LEN];
-
-    if (dna_msig_desc_parse(msig, msig_len, &m, &n, &keys) != 0) return -1;
-    if (dna_msig_address(msig, msig_len, addr) != 0) return -1;
-    if (memcmp(addr, owner_raw, DNA_MSIG_ADDR_LEN) != 0) return -1;
-    for (uint8_t k = 0; k < n; k++) {
-        if (memcmp(conn->peer_pk.bytes,
-                   keys + (size_t)k * DNA_MSIG_PUBKEY_LEN,
-                   DNA_MSIG_PUBKEY_LEN) == 0)
-            return 0;
-    }
-    return -1;
-}
 
 /* THE GATE (a → b → c above). `history` selects the method's own keys:
  * false = dnac_msig_utxo ("max"), true = dnac_msig_addr_history
@@ -1014,9 +988,11 @@ static int msig_query_open(struct nodus_tcp_conn *conn,
         return -1;
     }
 
-    if (msig_member_check(conn, a->owner_raw, a->msig, a->msig_len) != 0) {
+    /* step c — the same test the history builder runs itself */
+    if (!nodus_witness_msig_member_ok(conn->peer_pk.bytes, a->owner_raw,
+                                      a->msig, a->msig_len)) {
         send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
-                   MSIG_QUERY_NOT_MEMBER);
+                   NODUS_WITNESS_MSIG_NOT_MEMBER);
         return -1;
     }
     return 0;
@@ -1079,7 +1055,8 @@ static void handle_dnac_msig_addr_history(nodus_witness_t *w,
     int      ecode = 0;
     char     emsg[128];
     if (nodus_witness_msig_addr_history_build(
-            w, txn_id, a.owner, a.have_before ? &cur : NULL,
+            w, txn_id, conn->peer_pk.bytes, a.msig, a.msig_len, a.owner,
+            a.have_before ? &cur : NULL,
             (uint32_t)a.limit, &frame, &frame_len, &ecode, emsg,
             sizeof(emsg)) != 0) {
         send_error(conn, txn_id, ecode ? ecode : NODUS_ERR_INTERNAL_ERROR,

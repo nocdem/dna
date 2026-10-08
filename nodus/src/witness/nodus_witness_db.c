@@ -332,7 +332,7 @@ static int utxo_domain_col_present(sqlite3 *db) {
  * coins, and the answer is the same rows in the same order on every call.
  * Node-local RPC answer only: no apply / consensus path calls this (its
  * callers are nodus_witness_handlers.c handle_dnac_utxo and
- * tests/test_v2_gate.c). The only index on utxo_set(owner) is
+ * handle_dnac_msig_utxo, and tests/test_v2_gate.c). The only index on utxo_set(owner) is
  * idx_utxo_owner (nodus_witness.c), so SQLite reads the owner's rows by
  * that index and sorts them before the LIMIT — linear in that owner's
  * coin count. */

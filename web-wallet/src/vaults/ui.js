@@ -396,6 +396,8 @@ async function watchVault(form) {
 
 async function removeVault(record) {
   vaults.delete(record.address);
+  // its last read goes with it: a vault added again starts with no history
+  reads.delete(record.address);
   if (messagesOpen()) { try { await host.dropVault(record.address); } catch { /* listed again after the next unlock */ } }
   current = null; view = 'list'; status = 'The vault was removed from this list. Its coins are not affected.';
   render();

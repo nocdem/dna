@@ -246,7 +246,8 @@ typedef struct {
  * nodus_client_dnac_addr_history.
  *
  * (nodus_witness_msig_addr_history_build below is the same builder for
- * the vault-member method; this entry point keeps the C11 check.)
+ * the vault-member method, with the member test in place of C11; this
+ * entry point keeps the C11 check.)
  *
  * Order of refusals: owner not 128 lowercase hex → PROTOCOL_ERROR;
  * `session_fp` NULL or not the owner (C11, the dnac_history rule) →
@@ -269,29 +270,65 @@ int nodus_witness_addr_history_build(nodus_witness_t *w, uint32_t txn_id,
                                      int *err_code, char *err_msg,
                                      size_t err_cap);
 
+/** The ONE message every vault-member refusal carries (the handlers'
+ *  gate and the builder below), whichever step failed — the answer never
+ *  says which. */
+#define NODUS_WITNESS_MSIG_NOT_MEMBER  "not authorized for this owner"
+
+/**
+ * THE vault-member test (design docs/plans/2026-09-29-general-multisig-
+ * design.md §8.6 rev 2, G8.1; approved 2026-10-08): `msig` is a valid
+ * multisig descriptor (dna_msig_desc_parse), its address
+ * (dna_msig_address = SHA3-512 of the descriptor) is `owner_raw`, and
+ * `peer_pk` — the session's AUTHENTICATED public key — is byte-equal to
+ * one of the descriptor's keys. Used by the dnac_msig_utxo /
+ * dnac_msig_addr_history gate (nodus_witness_handlers.c) and inside
+ * nodus_witness_msig_addr_history_build, so no caller can reach the
+ * vault's history without it.
+ *
+ * Any NULL input or msig_len 0 → false (plain pointers, not array
+ * parameters, so a NULL is a defined refusal). A session whose peer_pk was
+ * never filled holds zeros, and a descriptor refuses a zero-prefixed key
+ * (msig_wire.h), so it never matches. Bounded work: ≤ 18162 B parsed, one
+ * SHA3-512, ≤ 7 compares of 2592 B. Read-only; no consensus path calls it.
+ * @param peer_pk    NODUS_PK_BYTES (2592) bytes: the session's public key
+ * @param owner_raw  64 bytes: the raw owner fingerprint asked about
+ * @return true member / false anything else (the caller says nothing
+ *         about which step failed).
+ */
+bool nodus_witness_msig_member_ok(const uint8_t *peer_pk,
+                                  const uint8_t *owner_raw,
+                                  const uint8_t *msig, size_t msig_len);
+
 /**
  * The `dnac_msig_addr_history` answer WITHOUT its send — the SAME builder
  * as nodus_witness_addr_history_build (same rows, same keys, same
- * refusals after authorization) with "q" = "dnac_msig_addr_history" and
- * NO owner == session check.
+ * refusals after authorization) with "q" = "dnac_msig_addr_history".
  *
- * AUTHORIZATION IS THE CALLER'S. The only caller is the
- * dnac_msig_addr_history handler (nodus_witness_handlers.c), which runs
- * its vault-member gate first: the session is authenticated, `owner` is
- * SHA3-512 of a valid multisig descriptor the request carried, and the
- * session's authenticated public key is one of that descriptor's keys
- * (design docs/plans/2026-09-29-general-multisig-design.md §8.6 rev 2,
- * approved 2026-10-08). Calling this without that gate would hand any
- * owner's history to anyone.
+ * AUTHORIZATION IS PART OF THE BUILDER: in place of the owner == session
+ * check (C11) it runs nodus_witness_msig_member_ok(peer_pk, owner, msig,
+ * msig_len) and refuses unless the caller presents a member key of a
+ * descriptor whose address is `owner`. The dnac_msig_addr_history handler
+ * (nodus_witness_handlers.c) runs the same test first, so through the
+ * handler it always passes; a caller that skips the handler cannot skip
+ * it. `peer_pk` must be the session's AUTHENTICATED public key — never a
+ * key the request carried.
  *
  * Order of refusals: owner not 128 lowercase hex → PROTOCOL_ERROR;
- * limit outside 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT → PROTOCOL_ERROR;
- * no version-3 chain → NOT_FOUND; any store fault or malformed row →
- * INTERNAL_ERROR (never a partial list).
+ * not a member (including NULL peer_pk / msig) → NOT_AUTHENTICATED,
+ * message NODUS_WITNESS_MSIG_NOT_MEMBER; limit outside
+ * 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT → PROTOCOL_ERROR; no version-3
+ * chain → NOT_FOUND; any store fault or malformed row → INTERNAL_ERROR
+ * (never a partial list).
+ * @param peer_pk   the session's authenticated public key (2592 B)
+ * @param msig      the multisig descriptor the request carried
  * @return 0; -1 with *err_code / err_msg set.
  */
 int nodus_witness_msig_addr_history_build(nodus_witness_t *w,
                                           uint32_t txn_id,
+                                          const uint8_t *peer_pk,
+                                          const uint8_t *msig,
+                                          size_t msig_len,
                                           const char *owner,
                                           const nodus_witness_addr_cursor_t *before,
                                           uint32_t limit,

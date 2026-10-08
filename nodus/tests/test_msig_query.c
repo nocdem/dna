@@ -41,6 +41,18 @@
  *                    repeated limit, limit 0 / 101, bi without before →
  *                    PROTOCOL_ERROR; a crafted dnac_msig_addr_history
  *                    reply decodes with nodus_dnac_addr_history_decode.
+ *  t_builder_gate    the gate cannot be skipped by calling the history
+ *                    builder directly: nodus_witness_msig_member_ok is
+ *                    true for each member key and false for a non-member
+ *                    key, an address that is not the descriptor's, a
+ *                    disordered descriptor and every NULL input;
+ *                    nodus_witness_msig_addr_history_build with a
+ *                    non-member key, with NULL key or NULL descriptor →
+ *                    NOT_AUTHENTICATED carrying the handler's exact text
+ *                    (NODUS_WITNESS_MSIG_NOT_MEMBER) and no frame; a
+ *                    malformed owner → PROTOCOL_ERROR before the gate; a
+ *                    member key → NOT_FOUND (the gate passed; this
+ *                    fixture serves no version-3 chain).
  *  t_dnac_utxo_same  REGRESSION: dnac_utxo with owner == session still
  *                    answers exactly 3 keys (no "trunc"), q = dnac_utxo;
  *                    its decoder still accepts it; the msig decoder
@@ -105,6 +117,7 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_handlers.h"
+#include "witness/nodus_witness_addr_index.h"   /* the builder + member gate */
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
@@ -787,6 +800,117 @@ static void t_history(void)
     fx_close(&f);
 }
 
+/* The member gate lives in the builder itself: a caller that skips the
+ * handler still has to present a member key. */
+static void t_builder_gate(void)
+{
+    fx_t f; desc_t d, d_other;
+    uint8_t owner_raw[64], other_raw[64], pk[PK];
+    fx_open(&f, "buildergate");
+    desc_make(&d, K012, 3);
+    static const int K03[2] = {0, 3};
+    desc_make(&d_other, K03, 2);
+    CHECK(nodus_witness_owner_hex_to_raw(d.owner, 128, owner_raw) == 0,
+          "owner raw");
+    CHECK(nodus_witness_owner_hex_to_raw(d_other.owner, 128, other_raw) == 0,
+          "other owner raw");
+
+    /* nodus_witness_msig_member_ok */
+    for (int k = 0; k < 3; k++) {
+        key_fill(k, pk);
+        CHECK(nodus_witness_msig_member_ok(pk, owner_raw, d.d, d.len),
+              "each descriptor key is a member");
+    }
+    key_fill(3, pk);
+    CHECK(!nodus_witness_msig_member_ok(pk, owner_raw, d.d, d.len),
+          "key 3 is not a member of d");
+    CHECK(nodus_witness_msig_member_ok(pk, other_raw, d_other.d,
+                                       d_other.len),
+          "key 3 is a member of d_other at d_other's address");
+    CHECK(!nodus_witness_msig_member_ok(pk, owner_raw, d_other.d,
+                                        d_other.len),
+          "d_other's address is not owner");
+    {
+        desc_t bad = d;
+        memcpy(bad.d + DNA_MSIG_HDR_LEN, d.d + DNA_MSIG_HDR_LEN + PK, PK);
+        memcpy(bad.d + DNA_MSIG_HDR_LEN + PK, d.d + DNA_MSIG_HDR_LEN, PK);
+        key_fill(0, pk);
+        CHECK(!nodus_witness_msig_member_ok(pk, owner_raw, bad.d, bad.len),
+              "a disordered descriptor admits nobody");
+    }
+    key_fill(0, pk);
+    CHECK(!nodus_witness_msig_member_ok(NULL, owner_raw, d.d, d.len),
+          "NULL key");
+    CHECK(!nodus_witness_msig_member_ok(pk, NULL, d.d, d.len),
+          "NULL owner");
+    CHECK(!nodus_witness_msig_member_ok(pk, owner_raw, NULL, d.len),
+          "NULL descriptor");
+    CHECK(!nodus_witness_msig_member_ok(pk, owner_raw, d.d, 0),
+          "empty descriptor");
+
+    /* nodus_witness_msig_addr_history_build called directly */
+    uint8_t *frame = NULL;
+    size_t   frame_len = 0;
+    int      ecode = 0;
+    char     emsg[128];
+
+    key_fill(3, pk);
+    CHECK(nodus_witness_msig_addr_history_build(
+              f.w, 7, pk, d.d, d.len, d.owner, NULL, 10, &frame,
+              &frame_len, &ecode, emsg, sizeof(emsg)) == -1 &&
+          ecode == NODUS_ERR_NOT_AUTHENTICATED && frame == NULL &&
+          frame_len == 0 &&
+          strcmp(emsg, NODUS_WITNESS_MSIG_NOT_MEMBER) == 0,
+          "builder: non-member key refused with the handler's text");
+
+    CHECK(nodus_witness_msig_addr_history_build(
+              f.w, 7, NULL, d.d, d.len, d.owner, NULL, 10, &frame,
+              &frame_len, &ecode, emsg, sizeof(emsg)) == -1 &&
+          ecode == NODUS_ERR_NOT_AUTHENTICATED && frame == NULL &&
+          strcmp(emsg, NODUS_WITNESS_MSIG_NOT_MEMBER) == 0,
+          "builder: no key refused");
+
+    key_fill(0, pk);
+    CHECK(nodus_witness_msig_addr_history_build(
+              f.w, 7, pk, NULL, 0, d.owner, NULL, 10, &frame,
+              &frame_len, &ecode, emsg, sizeof(emsg)) == -1 &&
+          ecode == NODUS_ERR_NOT_AUTHENTICATED && frame == NULL &&
+          strcmp(emsg, NODUS_WITNESS_MSIG_NOT_MEMBER) == 0,
+          "builder: no descriptor refused");
+
+    CHECK(nodus_witness_msig_addr_history_build(
+              f.w, 7, pk, d_other.d, d_other.len, d.owner, NULL, 10,
+              &frame, &frame_len, &ecode, emsg, sizeof(emsg)) == -1 &&
+          ecode == NODUS_ERR_NOT_AUTHENTICATED && frame == NULL &&
+          strcmp(emsg, NODUS_WITNESS_MSIG_NOT_MEMBER) == 0,
+          "builder: a member of another descriptor refused");
+
+    {
+        char upper[129];
+        snprintf(upper, sizeof(upper), "%s", d.owner);
+        for (int i = 0; i < 128; i++) {
+            if (upper[i] >= 'a' && upper[i] <= 'f') {
+                upper[i] = (char)(upper[i] - 'a' + 'A');
+                break;
+            }
+        }
+        CHECK(strcmp(upper, d.owner) != 0, "an uppercase letter was made");
+        CHECK(nodus_witness_msig_addr_history_build(
+                  f.w, 7, pk, d.d, d.len, upper, NULL, 10, &frame,
+                  &frame_len, &ecode, emsg, sizeof(emsg)) == -1 &&
+              ecode == NODUS_ERR_PROTOCOL_ERROR && frame == NULL,
+              "builder: malformed owner is a PROTOCOL_ERROR");
+    }
+
+    CHECK(nodus_witness_msig_addr_history_build(
+              f.w, 7, pk, d.d, d.len, d.owner, NULL, 10, &frame,
+              &frame_len, &ecode, emsg, sizeof(emsg)) == -1 &&
+          ecode == NODUS_ERR_NOT_FOUND && frame == NULL,
+          "builder: a member passes the gate (NOT_FOUND: no version-3 "
+          "chain in this fixture)");
+    fx_close(&f);
+}
+
 static void t_dnac_utxo_same(void)
 {
     fx_t f;
@@ -888,6 +1012,7 @@ int main(void)
     t_unauth();
     t_db_fault();
     t_history();
+    t_builder_gate();
     t_dnac_utxo_same();
     t_error_mapping();
     printf("test_msig_query: ALL %d checks passed\n", g_checks);
