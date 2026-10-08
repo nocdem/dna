@@ -34,7 +34,7 @@ import {
 } from '../src/connect/ui/chain-names.js';
 import { NAME_CHECK_ROW } from '../src/adapters/nodus.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from '../src/connect/ui/diag.js';
-import { ownIdText, OWN_ID_WAITING_TEXT, OWN_ID_CLOSED_TEXT } from '../src/connect/ui/messages.js';
+import { ownIdText, OWN_ID_WAITING_TEXT, OWN_ID_CLOSED_TEXT, profileNeedsMlkem } from '../src/connect/ui/messages.js';
 
 // A localStorage stand-in (getItem / setItem / removeItem).
 function memoryStorage() {
@@ -737,6 +737,19 @@ test('own ID line: name and short ID while open; closed and waiting placeholders
   assert.equal(ownIdText({ id: null, name: '', closed: true }), OWN_ID_CLOSED_TEXT);
   // Only a literal true counts as closed.
   assert.equal(ownIdText({ id: null, closed: 'yes' }), OWN_ID_WAITING_TEXT);
+});
+
+// The own profile is republished with the ML-KEM key on open only when a
+// found profile lacks it (src/connect/ui/messages.js profileNeedsMlkem; the
+// core's profile JSON carries has_mlkem, connect/nc_wasm.c profile_json).
+test('own profile: republished with the ML-KEM key only when a profile lacks it', () => {
+  assert.equal(profileNeedsMlkem({ has_mlkem: false }), true);
+  assert.equal(profileNeedsMlkem({ bio: 'x' }), true);            // field missing
+  assert.equal(profileNeedsMlkem({ has_mlkem: 'true' }), true);   // only a literal true counts
+  assert.equal(profileNeedsMlkem({ has_mlkem: true }), false);
+  // No profile (an empty or failed read) never asks for a write (Q1).
+  assert.equal(profileNeedsMlkem(undefined), false);
+  assert.equal(profileNeedsMlkem(null), false);
 });
 
 // The conversation's "Details" line (src/connect/ui/diag.js): the last

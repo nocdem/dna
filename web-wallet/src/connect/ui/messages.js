@@ -100,6 +100,7 @@ let generation = 0, syncTimer, syncing = false;
 let checkRound = 0;                      // message check rounds started this session (session log only)
 let sending = false;                     // a composer send is being kept on this device (send)
 let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
+let mlkemRepublishTried = false;         // the own profile was republished with the ML-KEM key this open (checkOwnAccount)
 let removeArmed;                         // the contact whose "Remove" was pressed once (asks to confirm)
 let addResolved;                         // { name, owner }: the add box's chain name, looked up and shown, awaiting confirmation
 const profiles = new Map();              // fp -> verified profile, this session
@@ -157,7 +158,7 @@ function wipe() {
   try { store?.close(); } catch { /* same */ }
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
-  eraseArmed = false; profileTaken = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
+  eraseArmed = false; profileTaken = false; mlkemRepublishTried = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
   netStarted = false; online = false; groups = undefined;
   for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
   notifyVaultHost();
@@ -336,10 +337,15 @@ function goOnline(gen) {
 // read (nothing is written then — Q1) or a fresh account's could not be
 // published.
 async function checkOwnAccount(gen) {
-  const own = await core.profileGet(ownFp);
+  let own = await core.profileGet(ownFp);
   if (gen !== generation) return false;
   const before = ownProfile;
   if (own.outcome === 'found') {
+    if (profileNeedsMlkem(own.profile) && !mlkemRepublishTried) {
+      mlkemRepublishTried = true;
+      own = await republishWithMlkem(gen, own);
+      if (gen !== generation) return false;
+    }
     ownProfile = own.profile;
     await keepProfile(ownFp, own);
     if (gen !== generation) return false;
@@ -355,6 +361,45 @@ async function checkOwnAccount(gen) {
   if (ui.bio.value === (was.bio || '') && ui.location.value === (was.location || '') && ui.website.value === (was.website || '')) fillProfile();
   else { fillOwnAvatar(); fillNameLine(); }
   return true;
+}
+
+// A found own profile without the ML-KEM key (written by an older DNA
+// Connect app): groups refuse such a member (groups/engine.js) and 1:1
+// messages to it fall back to round-3 Kyber. The record carries the key
+// outside its signed part (decision 2026-09-23-kem-mlkem-migration.md, K1
+// rev 2 / K4). Exported for the unit test.
+export function profileNeedsMlkem(profile) {
+  return !!profile && typeof profile === 'object' && profile.has_mlkem !== true;
+}
+
+// Republishes the own profile once per open with the ML-KEM key added: an
+// empty patch keeps every field; the core reads the profile again inside the
+// same call and writes only on a FOUND read (nc_profile.c nc_profile_publish;
+// decision 2026-09-30-nodus-connect-thin-core.md S3 / Q1). Returns the read
+// to show and keep: the new one when it was published and reads back with
+// the key, otherwise the earlier `own`. A failure never closes Messages; it
+// is logged and tried again on a later open.
+async function republishWithMlkem(gen, own) {
+  try {
+    const made = await core.profileUpdate({});
+    if (gen !== generation) return own;
+    if (made.status !== 'published') {
+      if (made.status === 'taken') { profileTaken = true; logCheck('Own profile: adding the ML-KEM key was not written (the profile address is taken)', true); }
+      else logCheck(`Own profile: adding the ML-KEM key was not written (${made.status}); tried again on a later open`, true);
+      return own;
+    }
+    const again = await core.profileGet(ownFp);
+    if (gen !== generation) return own;
+    if (again.outcome === 'found' && !profileNeedsMlkem(again.profile)) {
+      logCheck('Own profile: republished with the ML-KEM key');
+      return again;
+    }
+    logCheck(`Own profile: republished with the ML-KEM key; the read back did not show it yet (${again.outcome})`);
+    return own;
+  } catch (error) {
+    if (gen === generation) logFailure('Own profile: adding the ML-KEM key failed; tried again on a later open', error);
+    return own;
+  }
 }
 
 // ── state helpers ──────────────────────────────────────────────────────
