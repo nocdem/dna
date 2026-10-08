@@ -725,8 +725,8 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       return { total: str('nsw_msig_bal_total'), spendable: str('nsw_msig_bal_spendable') };
     },
     // vaultScan({ descriptor, from, coins }) -> { next, tip, full, coins,
-    // events }: reads blocks from..min(tip, from + 199) (vault-scan.js
-    // drives the loop). coins: the set an earlier scan returned.
+    // events }: reads blocks from..min(tip, from + 19) (src/vaults/ui.js
+    // refresh drives the loop). coins: the set an earlier scan returned.
     async vaultScan({ descriptor, from, coins = [] } = {}) {
       vaultLoad(descriptor);
       vaultCoinsLoad(coins);

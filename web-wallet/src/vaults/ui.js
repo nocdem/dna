@@ -37,13 +37,20 @@ import { NODUS_ASSET } from '../nodus/network.js';
 import { sessionLog } from '../session-log.js';
 
 const HEX128 = /^[0-9a-f]{128}$/;
-// Blocks read per step and steps per Refresh (nodus-send-wasm.c
-// NSW_MS_SCAN_BLOCKS = 200 per step): a Refresh reads at most 10 000 blocks
-// and offers to continue.
-const SCAN_STEPS_PER_REFRESH = 50;
+// Reading a vault's history: one module call reads at most 20 blocks
+// (nodus-send-wasm.c NSW_MS_SCAN_BLOCKS), so the wallet's one NODUS queue
+// (src/nodus/client.js) is never held long and the connection check gets
+// its turn between steps. Steps follow each other while the vault is open
+// on screen, each one saved as it lands (keep), so a closed connection
+// loses at most one step and the next Open goes on from there.
 
 let client, ownFp, host = null, root, panel;
 let generation = 0, busy = false, current = null, view = 'list';
+// Vault history being read: address -> { block, tip } (the next block, the
+// tip the last step saw; '' before the first step). At most one reader per
+// vault; it does NOT hold `busy`, so the panel's buttons stay usable.
+const reading = new Map();
+let progressLine = null;                  // the panel's reading line (render)
 const vaults = new Map();                // address -> record (core.js)
 const balances = new Map();              // address -> { total, spendable }
 const names = new Map();                 // ID -> chain name confirmed by nameOf ('' none)
@@ -109,7 +116,7 @@ const messagesOpen = () => !!host && host.isOpen();
 function reset() {
   generation++;
   client = undefined; ownFp = undefined; busy = false; current = null; view = 'list';
-  for (const map of [vaults, balances, names, entered, reviews, ownApprovals, sent, shareStates]) map.clear();
+  for (const map of [vaults, balances, names, entered, reviews, ownApprovals, sent, shareStates, reading]) map.clear();
   status = ''; draft = null; createInfo = null;
   render();
 }
@@ -184,32 +191,75 @@ async function keep(record) {
 
 // ── reading a vault ──────────────────────────────────────────────────────
 
+// Is this vault the one on screen?
+const showing = address => view === 'vault' && current === address;
+// The record as it is now: a reading step may have replaced it since a
+// button was drawn (its coins grow as blocks are read).
+const latest = record => vaults.get(record.address) ?? record;
+
+// The balance first (shown at once), then the history read step by step.
 async function refresh(address) {
   const record = vaults.get(address);
   if (!record || busy || !client) return;
   const gen = generation;
   busy = true; status = 'Reading the vault balance…'; render();
   try {
-    balances.set(address, await client.vaultBalance({ descriptor: record.code }));
+    const balance = await client.vaultBalance({ descriptor: record.code });
     if (gen !== generation) return;
-    let r = vaults.get(address), steps = 0, tip = 0n;
-    for (; steps < SCAN_STEPS_PER_REFRESH; steps++) {
-      const result = await client.vaultScan({ descriptor: r.code, from: r.cursor, coins: r.coins });
-      if (gen !== generation) return;
-      r = applyScan(r, result);
-      tip = BigInt(result.tip);
-      status = `Reading the vault history: block ${r.cursor} of ${result.tip}…`;
-      render();
-      if (result.full) { status = 'This vault has more coins than this page can hold; payments can use only part of them.'; break; }
-      if (BigInt(r.cursor) > tip) break;
-    }
-    await keep(r);
-    if (gen !== generation) return;
-    status = BigInt(r.cursor) > tip ? '' : `The vault history is read up to block ${BigInt(r.cursor) - 1n}. Refresh again to continue.`;
+    balances.set(address, balance);
+    status = '';
   } catch (error) {
     if (gen === generation) status = error.message || 'The vault could not be read right now.';
+    return;
   } finally {
     if (gen === generation) { busy = false; render(); }
+  }
+  // a reader already running for this vault goes on by itself
+  if (!reading.has(address)) void readHistory(address, gen);
+}
+
+// Reads the history one step (one module call) at a time until the cursor
+// passes the tip; stops at a step boundary as soon as this vault is not the
+// one on screen any more (Back, another vault), it was removed, or the
+// wallet closed (generation). Every step is saved before the next one.
+async function readHistory(address, gen) {
+  const go = () => gen === generation && !!client && showing(address) && vaults.has(address);
+  if (!go()) return;
+  const mine = { block: vaults.get(address).cursor, tip: '' };
+  reading.set(address, mine);
+  sessionLog.log('vault', `Reading the vault history from block ${mine.block}.`);
+  let end = 'stopped';
+  render({ keepTyped: true });
+  try {
+    while (go()) {
+      const before = vaults.get(address);
+      const result = await client.vaultScan({ descriptor: before.code, from: before.cursor, coins: before.coins });
+      if (gen !== generation) return;
+      // removed (or added again) while the step ran: the step is not kept
+      if (vaults.get(address) !== before) break;
+      const r = applyScan(before, result);
+      await keep(r);
+      if (gen !== generation) return;
+      mine.block = r.cursor; mine.tip = result.tip;
+      if (result.full) {
+        if (showing(address)) status = 'This vault has more coins than this page can hold; payments can use only part of them.';
+        end = 'full'; break;
+      }
+      if (BigInt(r.cursor) > BigInt(result.tip)) { end = 'done'; break; }
+      // the whole panel is drawn again only when the step found something
+      // (history, coins); otherwise only the reading line moves
+      if (result.events.length || r.coins.length !== before.coins.length || foundTotal(r) !== foundTotal(before)) render({ keepTyped: true });
+      else showProgress();
+    }
+  } catch (error) {
+    if (gen === generation && showing(address)) status = error.message || 'The vault could not be read right now.';
+    end = 'error';
+  } finally {
+    if (gen === generation && reading.get(address) === mine) {
+      reading.delete(address);
+      sessionLog.log('vault', end === 'done' ? 'The vault history is read up to the tip.' : `Stopped reading the vault history at block ${mine.block} (${end}).`);
+      render({ keepTyped: true });
+    }
   }
 }
 
@@ -380,7 +430,7 @@ async function prepareRequest(record, form) {
     const typed = form.to.trim();
     const to = HEX128.test(typed.toLowerCase()) ? typed.toLowerCase() : await resolveMember(typed);
     const amount = amountUnits(form.amount.trim(), NODUS_ASSET.decimals).toString();
-    const built = await client.vaultPropose({ descriptor: record.code, coins: freeCoins(record), to, amount });
+    const built = await client.vaultPropose({ descriptor: record.code, coins: freeCoins(latest(record)), to, amount });
     if (gen !== generation) return;
     reviews.set(rkey(record.address, built.request.digest), built.review);
     draft = { address: record.address, request: built.request, review: built.review, to };
@@ -409,11 +459,11 @@ async function approve(record, request, { isNew }) {
   const gen = generation;
   busy = true; status = 'Approving…'; render();
   try {
-    const { signature } = await client.vaultApprove({ descriptor: record.code, coins: record.coins, request, digest: request.digest });
+    const { signature } = await client.vaultApprove({ descriptor: record.code, coins: latest(record).coins, request, digest: request.digest });
     if (gen !== generation) return;
     ownApprovals.set(rkey(record.address, request.digest), signature);
     // the count shown is the module's verified one, own approval included
-    const review = await client.vaultReview({ descriptor: record.code, coins: record.coins, request, approvals: approvalsFor(record.address, request.digest, itemsFor(record)) });
+    const review = await client.vaultReview({ descriptor: record.code, coins: latest(record).coins, request, approvals: approvalsFor(record.address, request.digest, itemsFor(record)) });
     if (gen !== generation) return;
     reviews.set(rkey(record.address, request.digest), review);
     const texts = [];
@@ -434,7 +484,7 @@ async function review(record, request) {
   busy = true; status = 'Reading the payment request…'; render();
   try {
     const approvals = approvalsFor(record.address, request.digest, itemsFor(record));
-    reviews.set(rkey(record.address, request.digest), await client.vaultReview({ descriptor: record.code, coins: record.coins, request, approvals }));
+    reviews.set(rkey(record.address, request.digest), await client.vaultReview({ descriptor: record.code, coins: latest(record).coins, request, approvals }));
     if (gen === generation) status = '';
   } catch (error) {
     if (gen === generation) status = error.message || 'This payment request could not be read.';
@@ -461,7 +511,7 @@ async function sendPayment(record, request, items) {
   const gen = generation;
   busy = true; status = 'Sending the payment…'; render();
   try {
-    const result = await client.vaultSubmit({ descriptor: record.code, coins: record.coins, request, digest: request.digest, approvals: approvalsFor(record.address, request.digest, items) });
+    const result = await client.vaultSubmit({ descriptor: record.code, coins: latest(record).coins, request, digest: request.digest, approvals: approvalsFor(record.address, request.digest, items) });
     if (gen !== generation) return;
     reviews.set(rkey(record.address, request.digest), result.review);
     if (result.accepted) {
@@ -486,7 +536,19 @@ function showPanel() {
   if (nav) nav.hidden = panel.hidden;
 }
 
-function render() {
+// The history reading line's text for the vault on screen ('' none).
+function progressText() {
+  const r = view === 'vault' && current ? reading.get(current) : null;
+  if (!r) return '';
+  return r.tip ? `Reading the vault history: block ${r.block} of ${r.tip}…` : 'Reading the vault history…';
+}
+// Moves only the reading line (the rest of the panel, and what is being
+// typed in it, stays as it is).
+function showProgress() {
+  if (progressLine && root?.contains(progressLine)) progressLine.textContent = progressText();
+}
+
+function render({ keepTyped = false } = {}) {
   showPanel();
   if (!root) return;
   if (!client) { root.replaceChildren(); return; }
@@ -497,11 +559,25 @@ function render() {
   const line = el('p', { className: 'hint vault-status', text: status });
   line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
   items.push(line);
+  // the history reading has its own line (not logged per step: it moves
+  // every few seconds), so an action's result above stays readable
+  progressLine = el('p', { className: 'hint vault-status', text: progressText() });
+  items.push(progressLine);
+  // keepTyped (the history reader's redraws): what was typed in the payment
+  // form, and where the cursor was, survive the panel being drawn again;
+  // the keys carry the vault address, so nothing moves to another vault.
+  const typed = keepTyped ? [...root.querySelectorAll('input[data-keep]')].map(n => ({ key: n.dataset.keep, value: n.value, focused: n === document.activeElement })) : [];
   if (view === 'vault' && current && vaults.has(current)) items.push(renderVault(vaults.get(current)));
   else if (view === 'create') items.push(renderCreate());
   else if (view === 'watch') items.push(renderWatch());
   else items.push(renderList());
   root.replaceChildren(...items);
+  for (const t of typed) {
+    const node = [...root.querySelectorAll('input[data-keep]')].find(n => n.dataset.keep === t.key);
+    if (!node) continue;
+    if (!node.value) node.value = t.value;
+    if (t.focused) node.focus();
+  }
   const buttons = root.querySelectorAll('button');
   for (const b of buttons) if (busy && !b.dataset.always) b.disabled = true;
   if (!busy) { pressed = null; return; }
@@ -626,7 +702,7 @@ function renderVault(record) {
   const found = foundTotal(record);
   if (bal) {
     box.append(el('p', { className: 'vault-balance', text: `Balance ${nodus(bal.total)} (${nodus(bal.spendable)} spendable now).` }));
-    if (found < BigInt(bal.spendable)) box.append(el('p', { className: 'notice', text: `This page has found ${nodus(found)} of it in the vault’s history so far. Payments can use only the part found. Refresh to read more of its history.` }));
+    if (found < BigInt(bal.spendable)) box.append(el('p', { className: 'notice', text: `This page has found ${nodus(found)} of it in the vault’s history so far. Payments can use only the part found. ${reading.has(record.address) ? 'More of its history is being read.' : 'Refresh to read more of its history.'}` }));
   }
   const top = el('div', { className: 'stake-actions' },
     btn('Back', () => { view = 'list'; current = null; draft = null; status = ''; render(); }),
@@ -655,8 +731,8 @@ function renderVault(record) {
     const form = el('div', { className: 'stake-block' }, el('h4', { text: 'Propose a payment' }));
     if (!messagesOpen()) form.append(el('p', { className: 'hint', text: 'Proposing and approving vault payments works in Nodus Connect, where the members are told by message.' }));
     else {
-      const to = input('', { placeholder: 'chain name or Nodus address' });
-      const amount = input('', { inputmode: 'decimal', placeholder: '0.00' });
+      const to = input('', { placeholder: 'chain name or Nodus address', 'data-keep': `${record.address}|to` });
+      const amount = input('', { inputmode: 'decimal', placeholder: '0.00', 'data-keep': `${record.address}|amount` });
       form.append(...field('Pay to', to), ...field('Amount (NODUS)', amount),
         el('p', { className: 'hint', text: `You approve it first; then ${Math.max(record.m - 1, 0)} more member(s) must approve before it can be sent. It must be completed within about 90 blocks.` }),
         el('div', { className: 'stake-actions' }, btn('Prepare', () => void prepareRequest(record, { to: to.value, amount: amount.value }), '')));

@@ -3008,7 +3008,7 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
 
 #define NSW_MS_MAX_COINS   64
 #define NSW_MS_MAX_EVENTS  32
-#define NSW_MS_SCAN_BLOCKS 200u
+#define NSW_MS_SCAN_BLOCKS 20u
 #define NSW_MS_SCAN_PAGES  64u             /* pages of ONE block per read  */
 #define NSW_MS_SCAN_ITEMS  4096u           /* items per scan call (F6)     */
 #define NSW_MS_MAX_SIGS    ((int)NODUS_RT_AUTH_MAX_SIGNERS)
