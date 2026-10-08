@@ -1,5 +1,6 @@
 // Shared vaults — the pure part: the vault message kinds, the kept vault
-// record, the block-reading bookkeeping and a payment request's status.
+// record, the node's coin answer applied to it and a payment request's
+// status.
 // No DOM, no module: src/vaults/ui.js drives the module (src/nodus/
 // send-module.js "SHARED VAULTS") and Messages (src/connect/ui/messages.js
 // vaultHost); test/vaults.test.js exercises this file.
@@ -19,7 +20,9 @@
 // acknowledges it like any text; the DNA Connect app shows it raw):
 //   share     { kind, label, code, created }
 //             code = the vault code (the descriptor as lowercase hex);
-//             created = the block height to start reading its history at.
+//             created = the block height the vault was made at (kept in
+//             the record; since 0.1.82 nothing reads blocks from it — the
+//             key stays because every client decodes exactly these keys).
 //             The receiver derives the address and the member IDs FROM the
 //             code in the module — nothing in the message names them.
 //   request   { kind, vault, chain, tip, signers, digest, env }
@@ -42,7 +45,13 @@ export const VAULT_MAX_MEMBERS = 7;            // DNA_MSIG_MAX_N (decision: "mak
 export const VAULT_MAX_APPROVALS = 15;         // NODUS_RT_AUTH_MAX_SIGNERS
 export const VAULT_LABEL_MAX = 48;             // characters
 export const VAULT_MAX_COINS = 64;             // nodus-send-wasm.c NSW_MS_MAX_COINS
-export const VAULT_MAX_EVENTS = 32;            // NSW_MS_MAX_EVENTS
+// The `events` a record kept by 0.1.80 / 0.1.81 may still carry (the block
+// reading's history, at most 32): still accepted when such a record is read
+// back, never shown and never written again (see "the kept vault record").
+export const VAULT_MAX_EVENTS = 32;
+// The Error.code of vaultCoins / vaultHistory when the node does not have
+// the member query (src/nodus/send-module.js).
+export const VAULT_UNSUPPORTED = 'unsupported';
 export const VAULT_ENV_HEX_MAX = 2 * 65536;    // NSW_MS_PREFIX_MAX
 export const VAULT_SIG_TEXT_MAX = 32768;       // NODUS_V2_MSIG_SIG_TEXT_MAX
 export const VAULT_PAYLOAD_MAX = 60000;        // messages.js PAYLOAD_TEXT_MAX
@@ -150,26 +159,31 @@ export function decodeVaultMessage(text) {
 
 // ── the kept vault record ────────────────────────────────────────────────
 // { v: 1, label, code, address, m, n, members: [ID], created, cursor, coins:
-//   [{ id, amount, unlock, height }], events: [{ height, received, amount,
-//   id }], watch, from, foundation }
+//   [{ id, amount, unlock, height }], events: [], watch, from, foundation }
 // address / m / n / members come from the module (vaultOpen) — a record is
 // made only from its answer.
-
-// `genesisCoins` (the Foundation preset's, src/vaults/foundation.js): coins
-// the vault holds from genesis — in no block, so they are the starting set
-// the block reading continues from (a block that consumes one removes it,
-// nodus-send-wasm.c nsw_ms_apply_item). The record is marked `genesis:
-// true` so a record kept before they existed is seeded again.
-export function makeVaultRecord({ info, label = '', created, watch = false, from = '', foundation = false, genesisCoins = [] }) {
+//
+// coins = the node's LAST answer to the member query (vaultCoins), replaced
+// on every Open / Refresh; actions hand them back to the module (F1: a
+// request may spend only these). Between answers they are the last ones
+// seen — the next Open replaces them.
+//
+// RECORD COMPATIBILITY (0.1.82): the shape is the one 0.1.80 / 0.1.81 kept,
+// so every record already in a browser loads unchanged. Their block-reading
+// fields are still accepted and ignored: `cursor` (the next block to read —
+// now always written as `created`, never read), `events` (that reading's
+// history — accepted up to VAULT_MAX_EVENTS, dropped when read back: the
+// history comes from the node's page now) and the Foundation preset's
+// `genesis` flag (whether its genesis coins were seeded — the member query
+// returns those coins itself; dropped when read back). New records carry
+// the same keys, so the checker never needs two shapes.
+export function makeVaultRecord({ info, label = '', created, watch = false, from = '', foundation = false }) {
   if (!info || !HEX128.test(info.address ?? '') || !vaultCodeShape(info.descriptor) || !Array.isArray(info.members) || !info.members.every(fp => HEX128.test(fp))) throw new Error('This is not a valid vault.');
   if (!u64ok(created, { min: 1n })) throw new Error('Invalid block height.');
-  if (!Array.isArray(genesisCoins) || genesisCoins.length > VAULT_MAX_COINS ||
-      !genesisCoins.every(c => c && HEX128.test(c.id ?? '') && u64ok(c.amount, { min: 1n }) && u64ok(c.unlock) && c.height === '0') ||
-      new Set(genesisCoins.map(c => c.id)).size !== genesisCoins.length) throw new Error('Invalid genesis coins.');
   return {
     v: 1, label: vaultLabel(label, { reservedOk: foundation === true }), code: info.descriptor, address: info.address, m: info.m, n: info.n, members: [...info.members],
-    created, cursor: created, coins: genesisCoins.map(c => ({ id: c.id, amount: c.amount, unlock: c.unlock, height: c.height })), events: [],
-    watch: watch === true, from: HEX128.test(from) ? from : '', foundation: foundation === true, genesis: genesisCoins.length > 0
+    created, cursor: created, coins: [], events: [],
+    watch: watch === true, from: HEX128.test(from) ? from : '', foundation: foundation === true
   };
 }
 
@@ -177,7 +191,9 @@ export function makeVaultRecord({ info, label = '', created, watch = false, from
 // broken one is refused (the caller drops it). The address and member IDs
 // are NOT re-derived here (no second copy of the derivation in JS):
 // src/vaults/ui.js loadVaults asks the module (vaultOpen) for the kept code
-// and drops a record whose address, M, N or members differ.
+// and drops a record whose address, M, N or members differ. A 0.1.80 /
+// 0.1.81 record (cursor past `created`, block-reading `events`, `genesis`)
+// is accepted; its `events` and `genesis` are dropped (see above).
 export function checkVaultRecord(value) {
   const r = value || {};
   const shape = vaultCodeShape(r.code);
@@ -189,42 +205,31 @@ export function checkVaultRecord(value) {
       !r.events.every(e => e && u64ok(e.height) && typeof e.received === 'boolean' && u64ok(e.amount) && (e.id === '' || HEX128.test(e.id ?? ''))) ||
       typeof r.watch !== 'boolean' || typeof r.from !== 'string' || (r.from !== '' && !HEX128.test(r.from)) || typeof r.foundation !== 'boolean' ||
       (r.genesis !== undefined && typeof r.genesis !== 'boolean')) throw new Error('A kept vault is damaged.');
-  return { ...r, label: vaultLabel(r.label ?? '', { reservedOk: r.foundation === true }), genesis: r.genesis === true };
+  const out = { ...r, label: vaultLabel(r.label ?? '', { reservedOk: r.foundation === true }), events: [] };
+  delete out.genesis;
+  return out;
 }
 
-// What is written to the store: within VAULT_RECORD_MAX bytes. The history
-// goes first, then the found coins (the next reading starts again at the
-// vault's first block).
+// What is written to the store: within VAULT_RECORD_MAX bytes. If the
+// coins do not fit, they are left out (the next Open asks the node again).
 export function recordForStorage(record) {
   const size = r => new TextEncoder().encode(JSON.stringify(r)).length;
-  let r = { ...record };
+  const r = { ...record, events: [] };
   if (size(r) <= VAULT_RECORD_MAX) return r;
-  r = { ...r, events: [] };
-  if (size(r) <= VAULT_RECORD_MAX) return r;
-  // a vault seeded with genesis coins must not lose them: mark it unseeded,
-  // it is seeded again from the preset when it is loaded (src/vaults/ui.js)
-  return { ...r, coins: [], cursor: r.created, genesis: false };
+  return { ...r, coins: [] };
 }
 
-// One block-reading step (the module's vaultScan answer) applied: the found
-// coins replace the old set, the cursor moves, new history items are added
-// (newest kept, at most VAULT_MAX_EVENTS).
-export function applyScan(record, result) {
-  if (!result || !u64ok(result.next, { min: 1n }) || !u64ok(result.tip) || !Array.isArray(result.coins) || !Array.isArray(result.events)) throw new Error('The vault history could not be read.');
-  if (BigInt(result.next) < BigInt(record.cursor)) throw new Error('The vault history could not be read.');
-  const seen = new Set(record.events.map(e => `${e.height}|${e.id}|${e.received}`));
-  const events = [...record.events];
-  for (const e of result.events) {
-    const key = `${e.height}|${e.id}|${e.received}`;
-    if (!seen.has(key)) { seen.add(key); events.push({ height: e.height, received: e.received, amount: e.amount, id: e.id }); }
-  }
-  events.sort((a, b) => (BigInt(a.height) < BigInt(b.height) ? -1 : BigInt(a.height) > BigInt(b.height) ? 1 : 0));
-  return { ...record, cursor: result.next, coins: result.coins.map(c => ({ id: c.id, amount: c.amount, unlock: c.unlock, height: c.height })), events: events.slice(-VAULT_MAX_EVENTS) };
-}
-
-// The total of the found coins (raw units, BigInt).
-export function foundTotal(record) {
-  return record.coins.reduce((sum, c) => sum + BigInt(c.amount), 0n);
+// The node's coin answer (vaultCoins: { coins, truncated }) applied: the
+// coins REPLACE the record's (the node's unspent set is the whole truth, a
+// coin it no longer lists was spent). Each coin's shape is checked, at most
+// VAULT_MAX_COINS, no coin twice; anything else throws and the record is
+// kept as it was. -> { record, truncated }
+export function applyCoins(record, result) {
+  const bad = () => new Error('The Nodus node returned an invalid vault coin list.');
+  if (!result || !Array.isArray(result.coins) || typeof result.truncated !== 'boolean' || result.coins.length > VAULT_MAX_COINS) throw bad();
+  if (!result.coins.every(c => c && HEX128.test(c.id ?? '') && u64ok(c.amount, { min: 1n }) && u64ok(c.unlock) && u64ok(c.height)) ||
+      new Set(result.coins.map(c => c.id)).size !== result.coins.length) throw bad();
+  return { record: { ...record, coins: result.coins.map(c => ({ id: c.id, amount: c.amount, unlock: c.unlock, height: c.height })) }, truncated: result.truncated };
 }
 
 // At most this many approval texts per sender are handed to the module for
@@ -279,13 +284,28 @@ export function collectVaultItems(messages, address, members = [], ownFp = '') {
 }
 
 // A request's state for the page, from the module's read-back (`review`),
-// the approvals the module accepted (`accepted`) and the vault's history:
-//   'paid'     the vault history holds its transaction (review.intentId)
+// the approvals the module accepted (`accepted`), the vault's record (its
+// coins: the node's last answer), whether that answer was cut short
+// (`truncated`), the full-wire id THIS wallet submitted it under (`wireId`,
+// '' when another member sent it or it was not sent from here) and the
+// vault's history page (`history`, parseAddrHistory's answer or null):
+//   'paid'     the history holds a row of the envelope this wallet sent
+//              (its wire id — history rows carry the wire id, not the
+//              intent id, nodus_witness_addr_index.h "wire")
+//   'spent'    a coin it spends is no longer among the vault's coins (and
+//              the node's answer was complete): it was paid — by whichever
+//              member sent it — or another payment used that coin; either
+//              way it can never be sent now. (Its review was made against
+//              coins that held it, so the coin left the vault since.)
 //   'expired'  the network passed its last valid block: propose again
 //   'ready'    enough approvals: it can be sent
 //   'waiting'  more approvals are needed
-export function requestState({ review, accepted, record }) {
-  if (review?.intentId && record?.events?.some(e => e.id === review.intentId)) return 'paid';
+export function requestState({ review, accepted, record, truncated = false, wireId = '', history = null }) {
+  if (HEX128.test(wireId ?? '') && history?.entries?.some(e => e.wire === wireId)) return 'paid';
+  if (!truncated && Array.isArray(review?.inputs) && review.inputs.length && Array.isArray(record?.coins)) {
+    const held = new Set(record.coins.map(c => c.id));
+    if (review.inputs.some(id => !held.has(id))) return 'spent';
+  }
   if (review?.expired) return 'expired';
   if (accepted >= (review?.approvals ?? Infinity)) return 'ready';
   return 'waiting';

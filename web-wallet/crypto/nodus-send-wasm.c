@@ -2957,21 +2957,34 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
  *              (SHA3-512 of each key), never taken from a message.
  *   balance    dnac_balance of the vault address (public, decision
  *              2026-09-28-scan-v3-query.md 3a).
- *   coins      NO node answers a coin list for an address without its
- *              session key (dnac_utxo is gated to the session's own
- *              fingerprint, C11; nodus-cli's `--msig` takes coins by
- *              hand for the same reason). The vault's coins are FOUND
- *              here by reading committed blocks (dnac_v3_block, public):
- *              a created coin whose owner is the vault, minus every coin
- *              a later item consumed — nsw_msig_scan, at most
- *              NSW_MS_SCAN_BLOCKS blocks per call, resumed by JS from the
- *              height it returns. Genesis outputs are not in any block:
- *              a vault funded at genesis (the Foundation vault) has coins
- *              this scan cannot find — the balance shows them, the build
- *              cannot use them (the page says so).
- *   build      nsw_msig_build(to, amount): the shared builder on coins of
- *              the scan (largest first, the fewest that cover amount +
- *              fee), K = M, expiry = nsw_expiry_for (tip + 90, the
+ *   coins      nsw_msig_coins: the node's MEMBER query dnac_msig_utxo
+ *              (design docs/plans/2026-09-29-general-multisig-design.md
+ *              §8 + §8.6 rev 2; Kurultay #15, operator 2026-10-08): the
+ *              session sends the vault's descriptor, the node checks that
+ *              it hashes to the address and that the session's key is one
+ *              of its keys, then answers the address's unspent coins
+ *              exactly as dnac_utxo does (at most 100, amount descending,
+ *              genesis outputs included — they are in utxo_set). This
+ *              module keeps the native ones, at most NSW_MS_MAX_COINS;
+ *              "full" when the node said more exist or more than that
+ *              came. JS keeps them in the vault's record and hands them
+ *              back (nsw_msig_coin_add) before every build / review /
+ *              approve / submit. dnac_utxo's own gate (C11) is unchanged.
+ *              There is NO fallback: the block reading this module did
+ *              before (every block from the vault's first one) is deleted
+ *              (§8.6 item 8 — node pruning breaks it, and it took hours).
+ *   history    nsw_msig_history: dnac_msig_addr_history, the same member
+ *              gate, one page of the vault address's history as JSON in
+ *              nsw_addr_history's shape (NODE-LOCAL index, "enabled" +
+ *              "from_height" as for the wallet's own history).
+ *   older node A node without these methods answers "unknown DNAC method";
+ *              the client turns that into NODUS_CLIENT_ERR_METHOD_
+ *              UNSUPPORTED and both exports return NSW_MS_UNSUPPORTED (2)
+ *              with a fixed text, so the page tells "this node is not
+ *              updated yet" apart from every other failure.
+ *   build      nsw_msig_build(to, amount): the shared builder on the coins
+ *              JS handed back (largest first, the fewest that cover amount
+ *              + fee), K = M, expiry = nsw_expiry_for (tip + 90, the
  *              decision's window), the generation the node runs.
  *   transport  a proposal travels by Messages as the export's parts with
  *              the UNSIGNED auth blob left out (nsw_msig_prop_*): that
@@ -3007,25 +3020,19 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
  */
 
 #define NSW_MS_MAX_COINS   64
-#define NSW_MS_MAX_EVENTS  32
-#define NSW_MS_SCAN_BLOCKS 20u
-#define NSW_MS_SCAN_PAGES  64u             /* pages of ONE block per read  */
-#define NSW_MS_SCAN_ITEMS  4096u           /* items per scan call (F6)     */
 #define NSW_MS_MAX_SIGS    ((int)NODUS_RT_AUTH_MAX_SIGNERS)
 /* the auth-less envelope a proposal message carries (see "transport") */
 #define NSW_MS_PREFIX_MAX  65536u
+/* nsw_msig_coins / nsw_msig_history: the node does not have the member
+ * query (see "older node") — a positive rc, never 0 and never -1 */
+#define NSW_MS_UNSUPPORTED 2
+#define NSW_MS_UNSUPPORTED_TEXT "This Nodus node is not updated yet for " \
+    "shared vaults. Try again later."
 
 typedef struct {
     uint8_t  id[64];
     uint64_t amount, unlock, height;
 } nsw_ms_coin_t;
-
-typedef struct {
-    uint64_t height;
-    int      dir;                         /* 1 received, -1 sent (+ fee)  */
-    uint64_t amount;
-    char     id_hex[129];
-} nsw_ms_event_t;
 
 static struct {
     /* members collected for a new vault */
@@ -3041,12 +3048,9 @@ static struct {
     uint8_t  m, n;
     char     member_fp[DNA_MSIG_MAX_N][129];
     char     bal_total[NSW_U64_DEC], bal_spendable[NSW_U64_DEC];
-    /* its coins and the items of the last scan */
+    /* its coins: the node's last answer, or what JS handed back */
     int      n_coins, coins_full;
     nsw_ms_coin_t coins[NSW_MS_MAX_COINS];
-    int      n_events;
-    nsw_ms_event_t events[NSW_MS_MAX_EVENTS];
-    char     scan_next[NSW_U64_DEC], scan_tip[NSW_U64_DEC];
     /* the payment request in use */
     int      has_export;
     nodus_v2_msig_export_t x;
@@ -3095,7 +3099,7 @@ static void nsw_msig_wipe(void) {
 }
 
 /* The vault in use := `desc` (validated). Everything tied to the previous
- * vault (coins, items, balance, request, signatures) is dropped. */
+ * vault (coins, balance, request, signatures) is dropped. */
 static int nsw_ms_set_desc(const uint8_t *desc, size_t len) {
     uint8_t m = 0, n = 0, addr[64];
     const uint8_t *keys = NULL;
@@ -3122,8 +3126,6 @@ static int nsw_ms_set_desc(const uint8_t *desc, size_t len) {
     }
     g_ms.bal_total[0] = g_ms.bal_spendable[0] = '\0';
     g_ms.n_coins = g_ms.coins_full = 0;
-    g_ms.n_events = 0;
-    g_ms.scan_next[0] = g_ms.scan_tip[0] = '\0';
     g_ms.has_desc = 1;
     return 0;
 }
@@ -3277,11 +3279,91 @@ int nsw_msig_balance(void) {
 const char *nsw_msig_bal_total(void)     { return g_ms.bal_total; }
 const char *nsw_msig_bal_spendable(void) { return g_ms.bal_spendable; }
 
-/* ── the vault's coins: JS hands back what an earlier scan found ── */
+/* ── the vault's coins: the node's member query (see "coins") ──
+ * nsw_msig_coins asks; JS keeps the answer in the vault's record and hands
+ * it back (nsw_msig_coins_reset + nsw_msig_coin_add) before a build or a
+ * review, so a request is always judged against the coins the page shows. */
+
+/* The NODUS_CLIENT_ERR_METHOD_UNSUPPORTED / NODUS_ERR_* of a dnac_msig_*
+ * call -> nsw_fail text; NSW_MS_UNSUPPORTED for a node without the method,
+ * -1 otherwise. `what` names the read ("coins", "history"). */
+static int nsw_ms_query_fail(int rc, const char *what) {
+    if (rc == NODUS_CLIENT_ERR_METHOD_UNSUPPORTED) {
+        nsw_fail(NSW_MS_UNSUPPORTED_TEXT);
+        return NSW_MS_UNSUPPORTED;
+    }
+    if (rc == NODUS_ERR_NOT_AUTHENTICATED)
+        return nsw_fail("Only a member of this vault can read its %s from "
+                        "the Nodus node.", what);
+    if (rc == NODUS_ERR_NOT_FOUND)
+        return nsw_fail("This Nodus node serves no vault %s for this chain.",
+                        what);
+    if (rc == NODUS_ERR_RATE_LIMITED)
+        return nsw_fail("The Nodus node is busy; try again in a moment.");
+    return nsw_fail("The vault %s could not be read from the Nodus node "
+                    "(rc=%d).", what, rc);
+}
+
+/* dnac_msig_utxo for the vault in use: its native coins with an amount,
+ * amount descending (the node's order), at most NSW_MS_MAX_COINS; the
+ * unlock height kept (nsw_msig_build drops a coin still locked at its tip).
+ * A row owned by another address, or a repeated coin, makes the whole
+ * answer invalid (nsw_list's rule).
+ * @return 0 (nsw_msig_coin_* / nsw_msig_coins_full), NSW_MS_UNSUPPORTED,
+ *         or -1 (reason in nsw_error). The coins held before are dropped
+ *         either way. */
+int nsw_msig_coins(void) {
+    if (nsw_begin() != 0) return -1;
+    g_ms.n_coins = g_ms.coins_full = 0;
+    if (!g_ms.has_desc) return nsw_end(nsw_fail("No vault is open."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_utxo_result_t res;
+    memset(&res, 0, sizeof(res));
+    bool trunc = false;
+    int rc = nodus_client_dnac_msig_utxo(&g_client, g_ms.addr_hex, g_ms.desc,
+                                         g_ms.desc_len,
+                                         NODUS_DNAC_MAX_UTXO_RESULTS, &res,
+                                         &trunc);
+    if (g_cancel) {
+        nodus_client_free_utxo_result(&res);
+        return nsw_end(-1);
+    }
+    if (rc != 0) {
+        nodus_client_free_utxo_result(&res);
+        return nsw_end(nsw_ms_query_fail(rc, "coins"));
+    }
+    static const uint8_t zero64[64] = {0};
+    int bad = res.count < 0 || res.count > (int)NODUS_DNAC_MAX_UTXO_RESULTS ||
+              (res.count > 0 && !res.entries);
+    int native = 0;
+    for (int i = 0; !bad && i < res.count; i++) {
+        const nodus_dnac_utxo_entry_t *e = &res.entries[i];
+        if (strncmp(e->owner, g_ms.addr_hex, 128) != 0) { bad = 1; break; }
+        for (int k = 0; k < i; k++)
+            if (memcmp(res.entries[k].nullifier, e->nullifier, 64) == 0) bad = 1;
+        if (bad) break;
+        if (e->amount == 0 || memcmp(e->token_id, zero64, 64) != 0) continue;
+        native++;
+        if (g_ms.n_coins >= NSW_MS_MAX_COINS) continue;
+        nsw_ms_coin_t *c = &g_ms.coins[g_ms.n_coins++];
+        memset(c, 0, sizeof(*c));
+        memcpy(c->id, e->nullifier, 64);
+        c->amount = e->amount;
+        c->unlock = e->unlock_block;
+        c->height = e->block_height;
+    }
+    nodus_client_free_utxo_result(&res);
+    if (bad) {
+        g_ms.n_coins = g_ms.coins_full = 0;
+        return nsw_end(nsw_fail("The Nodus node returned an invalid vault "
+                                "coin list."));
+    }
+    g_ms.coins_full = trunc || native > NSW_MS_MAX_COINS;
+    return nsw_end(0);
+}
 
 void nsw_msig_coins_reset(void) {
     g_ms.n_coins = g_ms.coins_full = 0;
-    g_ms.n_events = 0;
 }
 
 int nsw_msig_coin_add(const char *id_hex, const char *amount_dec,
@@ -3304,127 +3386,6 @@ int nsw_msig_coin_add(const char *id_hex, const char *amount_dec,
     return 0;
 }
 
-static void nsw_ms_event(uint64_t h, const nodus_dnac_v3_item_t *it,
-                         uint64_t in_sum, uint64_t out_sum) {
-    if (g_ms.n_events >= NSW_MS_MAX_EVENTS) {
-        memmove(&g_ms.events[0], &g_ms.events[1],
-                sizeof(g_ms.events[0]) * (NSW_MS_MAX_EVENTS - 1));
-        g_ms.n_events = NSW_MS_MAX_EVENTS - 1;
-    }
-    nsw_ms_event_t *e = &g_ms.events[g_ms.n_events++];
-    memset(e, 0, sizeof(*e));
-    e->height = h;
-    e->dir = in_sum >= out_sum ? 1 : -1;
-    e->amount = in_sum >= out_sum ? in_sum - out_sum : out_sum - in_sum;
-    if (it->has_intent_id)          nsw_fmt_hex(it->intent_id, 64, e->id_hex);
-    else if (it->has_wire_id)       nsw_fmt_hex(it->wire_id, 64, e->id_hex);
-    else if (it->n_created > 0)     nsw_fmt_hex(it->created[0].id, 64, e->id_hex);
-}
-
-/* One applied item: coins it consumed leave the set, native coins it
- * created for the vault join it. */
-static void nsw_ms_apply_item(uint64_t h, const nodus_dnac_v3_item_t *it) {
-    static const uint8_t zero64[64] = {0};
-    uint64_t in_sum = 0, out_sum = 0;
-    int touched = 0;
-    for (uint8_t k = 0; k < it->n_consumed && k < NODUS_DNAC_V3_ITEM_MAX_IN; k++)
-        for (int c = 0; c < g_ms.n_coins; c++)
-            if (memcmp(g_ms.coins[c].id, it->consumed[k], 64) == 0) {
-                if (out_sum <= UINT64_MAX - g_ms.coins[c].amount)
-                    out_sum += g_ms.coins[c].amount;
-                g_ms.coins[c] = g_ms.coins[--g_ms.n_coins];
-                touched = 1;
-                break;
-            }
-    for (uint8_t k = 0; k < it->n_created && k < NODUS_DNAC_V3_ITEM_MAX_OUT; k++) {
-        const nodus_dnac_v3_coin_t *cr = &it->created[k];
-        if (strncmp(cr->owner, g_ms.addr_hex, 128) != 0) continue;
-        touched = 1;
-        if (memcmp(cr->token_id, zero64, 64) != 0 || cr->amount == 0) continue;
-        /* F6: a coin id already held (a node repeating an item, or a page
-         * read twice) is not added twice */
-        int dup = 0;
-        for (int c = 0; c < g_ms.n_coins && !dup; c++)
-            if (memcmp(g_ms.coins[c].id, cr->id, 64) == 0) dup = 1;
-        if (dup) continue;
-        if (in_sum <= UINT64_MAX - cr->amount) in_sum += cr->amount;
-        if (g_ms.n_coins >= NSW_MS_MAX_COINS) { g_ms.coins_full = 1; continue; }
-        nsw_ms_coin_t *c = &g_ms.coins[g_ms.n_coins++];
-        memcpy(c->id, cr->id, 64);
-        c->amount = cr->amount;
-        c->unlock = cr->unlock_block;
-        c->height = h;
-    }
-    if (touched) nsw_ms_event(h, it, in_sum, out_sum);
-}
-
-/* Read committed blocks `from` .. min(tip, from + NSW_MS_SCAN_BLOCKS - 1)
- * completely (every page); nsw_msig_scan_next is the height to resume at.
- * A partial read fails: nothing past the last complete block counts. */
-int nsw_msig_scan(const char *from_dec) {
-    if (nsw_begin() != 0) return -1;
-    uint64_t from = 0;
-    if (!g_ms.has_desc) return nsw_end(nsw_fail("No vault is open."));
-    if (nsw_parse_u64(from_dec, &from) != 0 || from == 0)
-        return nsw_end(nsw_fail("Invalid block height."));
-    if (nsw_session_ok() != 0) return nsw_end(-1);
-    bool has_tip = false;
-    uint64_t tip = 0;
-    int rc = nodus_client_dnac_supply_tip(&g_client, &has_tip, &tip);
-    if (rc != 0 || !has_tip || tip == 0)
-        return nsw_end(nsw_fail("The current Nodus block height is unknown "
-                                "(rc=%d).", rc));
-    g_ms.n_events = 0;
-    uint64_t last = from - 1;
-    if (from <= tip) {
-        last = tip;
-        if (tip - from >= NSW_MS_SCAN_BLOCKS) last = from + NSW_MS_SCAN_BLOCKS - 1u;
-    }
-    /* F6: bounded work per call — at most NSW_MS_SCAN_PAGES pages of one
-     * block (a node whose paging never ends is refused) and, across the
-     * call, a stop after the block in which NSW_MS_SCAN_ITEMS items were
-     * passed (the next call resumes after it) */
-    uint64_t items = 0;
-    for (uint64_t h = from; h <= last; h++) {
-        uint32_t idx = 0, pages = 0;
-        for (;;) {
-            if (g_cancel) return nsw_end(-1);
-            if (++pages > NSW_MS_SCAN_PAGES)
-                return nsw_end(nsw_fail("Block %llu has more pages than this "
-                                        "page reads.", (unsigned long long)h));
-            nodus_dnac_v3_block_result_t page;
-            memset(&page, 0, sizeof(page));
-            rc = nodus_client_dnac_v3_block(&g_client, h, idx, 0, &page);
-            if (rc != 0)
-                return nsw_end(nsw_fail("Block %llu could not be read "
-                                        "(rc=%d).", (unsigned long long)h, rc));
-            int bad = page.height != h;
-            items += page.count;
-            for (size_t i = 0; !bad && i < page.count; i++) {
-                const nodus_dnac_v3_item_t *it = &page.items[i];
-                if (it->code == 0 && it->has_effects) nsw_ms_apply_item(h, it);
-            }
-            int more = !bad && page.has_next;
-            uint32_t nidx = page.next_index;
-            nodus_client_free_v3_block_result(&page);
-            if (bad)
-                return nsw_end(nsw_fail("Block %llu: the node answered "
-                                        "another height.", (unsigned long long)h));
-            if (!more) break;
-            if (nidx <= idx)
-                return nsw_end(nsw_fail("Block %llu: the node's paging does "
-                                        "not advance.", (unsigned long long)h));
-            idx = nidx;
-        }
-        if (items >= NSW_MS_SCAN_ITEMS) { last = h; break; }
-    }
-    nsw_fmt_u64(last + 1, g_ms.scan_next);
-    nsw_fmt_u64(tip, g_ms.scan_tip);
-    return nsw_end(0);
-}
-
-const char *nsw_msig_scan_next(void) { return g_ms.scan_next; }
-const char *nsw_msig_scan_tip(void)  { return g_ms.scan_tip; }
 int nsw_msig_coins_full(void)        { return g_ms.coins_full; }
 int nsw_msig_coin_count(void)        { return g_ms.n_coins; }
 static int nsw_ms_coin_ok(int i)     { return i >= 0 && i < g_ms.n_coins; }
@@ -3437,12 +3398,9 @@ const char *nsw_msig_coin_id(int i) {
 const char *nsw_msig_coin_amount(int i) { return nsw_ms_coin_ok(i) ? nsw_ms_u64(g_ms.coins[i].amount) : ""; }
 const char *nsw_msig_coin_unlock(int i) { return nsw_ms_coin_ok(i) ? nsw_ms_u64(g_ms.coins[i].unlock) : ""; }
 const char *nsw_msig_coin_height(int i) { return nsw_ms_coin_ok(i) ? nsw_ms_u64(g_ms.coins[i].height) : ""; }
-int nsw_msig_event_count(void)        { return g_ms.n_events; }
-static int nsw_ms_ev_ok(int i)        { return i >= 0 && i < g_ms.n_events; }
-const char *nsw_msig_event_height(int i) { return nsw_ms_ev_ok(i) ? nsw_ms_u64(g_ms.events[i].height) : ""; }
-int nsw_msig_event_dir(int i)         { return nsw_ms_ev_ok(i) ? g_ms.events[i].dir : 0; }
-const char *nsw_msig_event_amount(int i) { return nsw_ms_ev_ok(i) ? nsw_ms_u64(g_ms.events[i].amount) : ""; }
-const char *nsw_msig_event_id(int i)  { return nsw_ms_ev_ok(i) ? g_ms.events[i].id_hex : ""; }
+
+/* ── the vault's history: nsw_msig_history, in "ACCOUNT HISTORY" below
+ *    (it shares that section's JSON page builder) ── */
 
 /* ── the payment request in use: its parts, its review ── */
 
@@ -3497,8 +3455,9 @@ static int nsw_ms_core_tuple(uint32_t *cv_out, uint8_t ch_out[64]) {
 }
 
 /* F1: every coin a request spends must be one of the vault's OWN coins —
- * the set this module holds for the vault in use (found in its blocks, or
- * its genesis coins), loaded by JS from the vault's record before a review.
+ * the set this module holds for the vault in use (the node's last
+ * dnac_msig_utxo answer, nsw_msig_coins), loaded by JS from the vault's
+ * record before a review.
  * The request's descriptor cannot tell (the receiver rebuilds it from its
  * own vault code, and the digest does not cover it), so this is what binds
  * a request to the vault it is signed for. */
@@ -3639,7 +3598,7 @@ const char *nsw_msig_prop_env(void)     { return (g_ms.has_export && g_ms.prefix
  * the last nsw_msig_sign. */
 const char *nsw_msig_text(void)         { return g_ms.text ? g_ms.text : ""; }
 
-/* ── build: a new request from the vault's found coins ── */
+/* ── build: a new request from the vault's coins ── */
 
 int nsw_msig_build(const char *to_hex, const char *amount_dec) {
     if (nsw_begin() != 0) return -1;
@@ -3677,7 +3636,7 @@ int nsw_msig_build(const char *to_hex, const char *amount_dec) {
     dna_meter_policy_t pol;
     if (nsw_ruleset(gen.gen, &rs, &pol) != 0) return nsw_end(-1);
 
-    /* candidates: the found coins spendable in the next block (unlock <=
+    /* candidates: the vault's coins spendable in the next block (unlock <=
      * tip, the nsw_list filter), largest first (nodus-cli's only order) */
     nodus_v2_coin_t cand[NSW_MS_MAX_COINS];
     int n_cand = 0;
@@ -4022,28 +3981,6 @@ int nsw_test_msig_build(const char *chain_hex, const char *tip_dec,
     b.env = NULL;
     nodus_v2_msig_built_free(&b);
     if (nsw_ms_export_fill() != 0) { nsw_ms_proposal_clear(); return -1; }
-    return 0;
-}
-
-/* One applied block item that consumed coin `id_hex` (and created nothing),
- * through the SAME bookkeeping a block read uses (nsw_ms_apply_item): a
- * genesis coin handed in by nsw_msig_coin_add leaves the set exactly like
- * a coin found in a block. */
-int nsw_test_msig_consume(const char *id_hex, const char *height_dec) {
-    static nodus_dnac_v3_item_t it;
-    uint64_t h = 0;
-    memset(&it, 0, sizeof(it));
-    if (!g_ms.has_desc || nsw_parse_hex(id_hex, it.consumed[0], 64) != 0 ||
-        nsw_parse_u64(height_dec, &h) != 0)
-        return nsw_fail("Invalid test item.");
-    it.kind = NODUS_DNAC_V3_KIND_ENVELOPE;
-    it.code = 0;
-    it.has_effects = true;
-    it.has_intent_id = true;
-    memset(it.intent_id, 0x77, 64);
-    it.n_consumed = 1;
-    g_ms.n_events = 0;
-    nsw_ms_apply_item(h, &it);
     return 0;
 }
 
@@ -5143,70 +5080,45 @@ static void nsw_jb_hex(nsw_jb_t *b, const char *key, const uint8_t *raw,
     nsw_jb_put(b, "\"", 1);
 }
 
-/* ONE page of this wallet's history, newest first. `before_dec` "" = the
- * newest page; otherwise the cursor (before, bi, bq) of nodus.h — rows
- * strictly older than it; `bi_dec` / `bq_dec` decimal u32 ("0" for a
- * height-only cursor). `limit` 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT. Waits
- * on the network (ccall { async: true }).
- * @return 0 (nsw_addr_history_json) / -1 (reason in nsw_error). */
-int nsw_addr_history(const char *before_dec, const char *bi_dec,
-                     const char *bq_dec, int limit) {
-    if (nsw_begin() != 0) return -1;
-    free(g_ah_json);
-    g_ah_json = NULL;
-    if (limit < 1 || limit > (int)NSW_AH_MAX_LIMIT)
-        return nsw_end(nsw_fail("Invalid account history request."));
-    nodus_dnac_addr_history_cursor_t cur;
-    memset(&cur, 0, sizeof(cur));
-    const int has_before = before_dec && before_dec[0] != '\0';
-    if (has_before) {
-        uint64_t bi = 0, bq = 0;
-        if (nsw_parse_u64(before_dec, &cur.h) != 0 ||
-            nsw_parse_u64(bi_dec, &bi) != 0 || bi > UINT32_MAX ||
-            nsw_parse_u64(bq_dec, &bq) != 0 || bq > UINT32_MAX)
-            return nsw_end(nsw_fail("Invalid account history request."));
-        cur.i = (uint32_t)bi;
-        cur.q = (uint32_t)bq;
-    }
-    if (nsw_session_ok() != 0) return nsw_end(-1);
-    nodus_dnac_addr_history_result_t res;
-    memset(&res, 0, sizeof(res));
-    int rc = nodus_client_dnac_addr_history(&g_client, g_fp_hex,
-                                            has_before ? &cur : NULL,
-                                            (uint32_t)limit, &res);
-    if (g_cancel) {
-        nodus_client_free_addr_history_result(&res);
-        return nsw_end(-1);
-    }
-    if (rc != 0) {
-        nodus_client_free_addr_history_result(&res);
-        if (rc == NODUS_ERR_NOT_FOUND)
-            return nsw_end(nsw_fail("This Nodus node serves no account "
-                                    "history for this chain."));
-        if (rc == NODUS_ERR_RATE_LIMITED)
-            return nsw_end(nsw_fail("The Nodus node is busy; try again in a "
-                                    "moment."));
-        /* an older node answers "unknown DNAC method" as PROTOCOL_ERROR,
-         * the same code the client returns for a reply its decoder
-         * refuses (an unknown row kind included) */
-        return nsw_end(nsw_fail("This Nodus node did not return an account "
-                                "history (an older node, or an unreadable "
-                                "answer; rc=%d).", rc));
-    }
-    if (res.count > NSW_AH_MAX_LIMIT || res.count > (size_t)limit ||
-        (res.count > 0 && !res.entries)) {
-        nodus_client_free_addr_history_result(&res);
-        return nsw_end(nsw_fail("The Nodus node returned an invalid account "
-                                "history."));
-    }
+/* The page request's cursor: `before_dec` "" = the newest page (*has_out
+ * 0); otherwise (before, bi, bq) of nodus.h, `bi_dec` / `bq_dec` decimal
+ * u32. `limit` 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT. @return 0 / -1. */
+static int nsw_ah_request(const char *before_dec, const char *bi_dec,
+                          const char *bq_dec, int limit,
+                          nodus_dnac_addr_history_cursor_t *cur,
+                          int *has_out) {
+    memset(cur, 0, sizeof(*cur));
+    *has_out = 0;
+    if (limit < 1 || limit > (int)NSW_AH_MAX_LIMIT) return -1;
+    if (!before_dec || before_dec[0] == '\0') return 0;
+    uint64_t bi = 0, bq = 0;
+    if (nsw_parse_u64(before_dec, &cur->h) != 0 ||
+        nsw_parse_u64(bi_dec, &bi) != 0 || bi > UINT32_MAX ||
+        nsw_parse_u64(bq_dec, &bq) != 0 || bq > UINT32_MAX)
+        return -1;
+    cur->i = (uint32_t)bi;
+    cur->q = (uint32_t)bq;
+    *has_out = 1;
+    return 0;
+}
+
+/* One decoded page (`res`, asked with `limit`) -> the JSON above in a new
+ * heap string (*out, the caller frees). `res` is NOT freed here.
+ * @return 0 / -1 (no reason set: the caller words it). */
+static int nsw_ah_page_json(const nodus_dnac_addr_history_result_t *res,
+                            int limit, char **out) {
+    *out = NULL;
+    if (res->count > NSW_AH_MAX_LIMIT || res->count > (size_t)limit ||
+        (res->count > 0 && !res->entries))
+        return -1;
     nsw_jb_t jb;
     memset(&jb, 0, sizeof(jb));
     nsw_jb_put(&jb, "{\"enabled\":", 11);
-    nsw_jb_put(&jb, res.enabled ? "true," : "false,", res.enabled ? 5 : 6);
-    nsw_jb_u64(&jb, "from_height", res.from_height);
+    nsw_jb_put(&jb, res->enabled ? "true," : "false,", res->enabled ? 5 : 6);
+    nsw_jb_u64(&jb, "from_height", res->from_height);
     nsw_jb_put(&jb, ",\"entries\":[", 12);
-    for (size_t k = 0; k < res.count; k++) {
-        const nodus_dnac_addr_history_entry_t *e = &res.entries[k];
+    for (size_t k = 0; k < res->count; k++) {
+        const nodus_dnac_addr_history_entry_t *e = &res->entries[k];
         const size_t kl = strnlen(e->kind, sizeof(e->kind));
         const size_t pl = strnlen(e->peer, sizeof(e->peer));
         if (kl == 0 || kl >= sizeof(e->kind) || (pl != 0 && pl != 128)) {
@@ -5237,13 +5149,108 @@ int nsw_addr_history(const char *before_dec, const char *bi_dec,
         nsw_jb_put(&jb, "}", 1);
     }
     nsw_jb_put(&jb, "]}", 2);
-    nodus_client_free_addr_history_result(&res);
     if (jb.bad || !jb.p) {
         free(jb.p);
-        return nsw_end(nsw_fail("The Nodus node's account history could not "
-                                "be read."));
+        return -1;
     }
-    g_ah_json = jb.p;
+    *out = jb.p;
+    return 0;
+}
+
+/* ONE page of this wallet's history, newest first. `before_dec` "" = the
+ * newest page; otherwise the cursor (before, bi, bq) of nodus.h — rows
+ * strictly older than it; `bi_dec` / `bq_dec` decimal u32 ("0" for a
+ * height-only cursor). `limit` 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT. Waits
+ * on the network (ccall { async: true }).
+ * @return 0 (nsw_addr_history_json) / -1 (reason in nsw_error). */
+int nsw_addr_history(const char *before_dec, const char *bi_dec,
+                     const char *bq_dec, int limit) {
+    if (nsw_begin() != 0) return -1;
+    free(g_ah_json);
+    g_ah_json = NULL;
+    nodus_dnac_addr_history_cursor_t cur;
+    int has_before = 0;
+    if (nsw_ah_request(before_dec, bi_dec, bq_dec, limit, &cur,
+                       &has_before) != 0)
+        return nsw_end(nsw_fail("Invalid account history request."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_addr_history_result_t res;
+    memset(&res, 0, sizeof(res));
+    int rc = nodus_client_dnac_addr_history(&g_client, g_fp_hex,
+                                            has_before ? &cur : NULL,
+                                            (uint32_t)limit, &res);
+    if (g_cancel) {
+        nodus_client_free_addr_history_result(&res);
+        return nsw_end(-1);
+    }
+    if (rc != 0) {
+        nodus_client_free_addr_history_result(&res);
+        if (rc == NODUS_ERR_NOT_FOUND)
+            return nsw_end(nsw_fail("This Nodus node serves no account "
+                                    "history for this chain."));
+        if (rc == NODUS_ERR_RATE_LIMITED)
+            return nsw_end(nsw_fail("The Nodus node is busy; try again in a "
+                                    "moment."));
+        /* an older node answers "unknown DNAC method" as PROTOCOL_ERROR,
+         * the same code the client returns for a reply its decoder
+         * refuses (an unknown row kind included) */
+        return nsw_end(nsw_fail("This Nodus node did not return an account "
+                                "history (an older node, or an unreadable "
+                                "answer; rc=%d).", rc));
+    }
+    int jrc = nsw_ah_page_json(&res, limit, &g_ah_json);
+    nodus_client_free_addr_history_result(&res);
+    if (jrc != 0)
+        return nsw_end(nsw_fail("The Nodus node returned an invalid account "
+                                "history."));
+    return nsw_end(0);
+}
+
+/* ── a shared vault's history (VAULTS "history"): dnac_msig_addr_history
+ *    for the vault in use — the member gate of nsw_msig_coins, the page in
+ *    the JSON shape above (src/nodus/history.js parseAddrHistory checks
+ *    it). The owner is the vault's own address, derived here from its
+ *    descriptor (g_ms.addr_hex) — never a caller's argument. ── */
+
+static char *g_mh_json;
+
+/* The JSON of the last successful nsw_msig_history ("" otherwise). */
+const char *nsw_msig_history_json(void) { return g_mh_json ? g_mh_json : ""; }
+
+/* Arguments as nsw_addr_history. Waits on the network (ccall { async:
+ * true }). @return 0 (nsw_msig_history_json), NSW_MS_UNSUPPORTED (the node
+ * does not have the member query), or -1 (reason in nsw_error). */
+int nsw_msig_history(const char *before_dec, const char *bi_dec,
+                     const char *bq_dec, int limit) {
+    if (nsw_begin() != 0) return -1;
+    free(g_mh_json);
+    g_mh_json = NULL;
+    if (!g_ms.has_desc) return nsw_end(nsw_fail("No vault is open."));
+    nodus_dnac_addr_history_cursor_t cur;
+    int has_before = 0;
+    if (nsw_ah_request(before_dec, bi_dec, bq_dec, limit, &cur,
+                       &has_before) != 0)
+        return nsw_end(nsw_fail("Invalid vault history request."));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_addr_history_result_t res;
+    memset(&res, 0, sizeof(res));
+    int rc = nodus_client_dnac_msig_addr_history(&g_client, g_ms.addr_hex,
+                                                 g_ms.desc, g_ms.desc_len,
+                                                 has_before ? &cur : NULL,
+                                                 (uint32_t)limit, &res);
+    if (g_cancel) {
+        nodus_client_free_addr_history_result(&res);
+        return nsw_end(-1);
+    }
+    if (rc != 0) {
+        nodus_client_free_addr_history_result(&res);
+        return nsw_end(nsw_ms_query_fail(rc, "history"));
+    }
+    int jrc = nsw_ah_page_json(&res, limit, &g_mh_json);
+    nodus_client_free_addr_history_result(&res);
+    if (jrc != 0)
+        return nsw_end(nsw_fail("The Nodus node returned an invalid vault "
+                                "history."));
     return nsw_end(0);
 }
 
@@ -5567,6 +5574,8 @@ void nsw_lock(void) {
         g_eq_json = NULL;
         free(g_ah_json);                    /* the account history page     */
         g_ah_json = NULL;
+        free(g_mh_json);                    /* a vault's history page       */
+        g_mh_json = NULL;
     }
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;

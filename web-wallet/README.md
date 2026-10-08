@@ -30,6 +30,7 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
+- **Shared vaults: coins and history from the node's member query; the block reading is removed (0.1.82, 2026-10-08).** BUGS.md W-04: a vault's coins were found by reading every block since the vault was made (hours for the Foundation vault, from block 1) and node pruning breaks that reading. The node now answers a vault MEMBER its vault's coins and history (`dnac_msig_utxo` / `dnac_msig_addr_history`, node commit `6e41ddb4`: the session sends the vault's descriptor; the node checks it hashes to the address and that the session's key is one of its keys) — design `docs/plans/2026-09-29-general-multisig-design.md` §8 + §8.6 rev 2, Kurultay #15 (ORCHESTRATOR, Fable, Astra: no fallback to block reading, history included), operator approval 2026-10-08 ("evet"). The page: Open / Refresh = balance, then coins, then the newest history page, one module call each; no reading steps, no cursor, no reading line. A node without the query: "This Nodus node is not updated yet for shared vaults. Try again later." and nothing else is read. More coins than the page holds: "payments can use only part of them". History rows in the words of the wallet's own NODUS history; "History from block N" / "This Nodus node does not keep address history" from the node's index state. The Foundation preset's 5 genesis coins (data) are removed: the node's answer includes them. Records kept by 0.1.80 / 0.1.81 still load (same shape; `cursor` / `events` / `genesis` accepted, the last two dropped on load). Request state: "Paid" now by the wire id this wallet sent the request under (history rows carry wire ids), plus a new "Its coins are spent" when a coin it spends left the vault. Watched (non-member) vaults show their balance only. Deleted: `nsw_msig_scan`, `nsw_msig_scan_next` / `_scan_tip`, `nsw_msig_event_*`, `nsw_ms_apply_item`, `nsw_ms_event`, `NSW_MS_SCAN_*`, `NSW_MS_MAX_EVENTS`, TEST `nsw_test_msig_consume`; JS `vaultScan`, `applyScan`, `foundTotal`, `readHistory`, `FOUNDATION_VAULT.genesisCoins`; the Watch form's "Read its history from block". Added: `nsw_msig_coins`, `nsw_msig_history` / `_history_json` (sharing `nsw_addr_history`'s page builder), `vaultCoins`, `vaultHistory`, `vaultSubmit`'s `wireId`, core `applyCoins`. Code: `crypto/nodus-send-wasm.c` "VAULTS" + "ACCOUNT HISTORY", `scripts/build-nodus-send-wasm.sh`, `src/nodus/send.wasm` + `send.js`, `src/nodus/send-module.js`, `src/nodus/client.js`, `src/vaults/core.js`, `src/vaults/ui.js`, `src/vaults/foundation.js`. Tests (written, not run by the author): `test/vaults.test.js` — 0.1.81 record compatibility, the coin answer, the new request states, the shipped exports (member query in, block reading out), parity refusals of the member-query exports before the network.
 - **Shared vaults: the background reader stays on its own screen (0.1.81, 2026-10-08).** Three edge cases an independent review of 0.1.80 found, all reachable only because the history reader no longer holds the panel's buttons: (1) a vault removed while a reading step was being saved could come back after the next unlock if that save failed — `keepVault` (`src/connect/ui/messages.js`) now rolls back only the pointer it set itself, never one a `dropVault` changed meanwhile; (2) a step finishing while the user typed in "Create a shared vault" or "Watch a vault" redrew that screen and wiped the form — the reader now redraws only while its own vault is on screen (and its first redraw is inside its `try`, so a throw cannot leave it marked as running); (3) a background step's failed save no longer writes its message on another screen. Code: `src/vaults/ui.js`, `src/connect/ui/messages.js`.
 - **Shared vaults: balance at once, history in small steps (0.1.80, 2026-10-08).** BUGS.md W-04, operator's session log of 2026-10-08 (nocdem, Foundation vault): the page fetched the vault balance but drew it only after the first history step, and one step (`nsw_msig_scan`, 200 blocks, ≈ 20 s, one network read per block) held the NODUS client's one queue long enough for the 30-second connection check behind it to lock the client — Messages closed, the vault panel was reset and, since progress was saved only at the end of a Refresh, the next Open started again from block 1 (Foundation: ~93 000 blocks). Now the balance is drawn as soon as it arrives; one module call reads at most 20 blocks (`NSW_MS_SCAN_BLOCKS`, `crypto/nodus-send-wasm.c`); steps follow each other while the vault is on screen and each is saved (`keep`) before the next; the reading has its own line and does not disable the panel's buttons (Back, Share, Propose stay usable); actions build from the latest record. The 5 Foundation genesis coins are in the record from the start, so a payment can be proposed before the reading finishes. This is the interim fix; the full reading still takes hours on a vault that starts at block 1 — a member-only coin-list query on the node is the planned fix. Code: `src/vaults/ui.js`, `crypto/nodus-send-wasm.c`, `src/nodus/send.wasm`, `src/nodus/send-module.js` (comment).
 - **Random start node (0.1.79, 2026-10-08).** The Nodus connection no longer always starts at the first node of the built-in list. Each time the Nodus module is created (page load / unlock) it picks a start node uniformly at random (`Math.random` — load spreading only, nothing depends on it being unpredictable) and tries the list round-robin from there: `rotateNodusEndpoints` / `randomNodusEndpointStart` in `src/nodus/send-module.js` rotate the list before it is handed to the module (`nsw_net_add_endpoint`), so the C client, which always starts at its index 0, needs no change. The pins and the chain check are unchanged. Why: with a fixed order every page landed on the same node, and two devices of one account (phone + PC) then evicted each other there (the node kept one session per identity through 0.25.4). Code: `src/nodus/send-module.js`; test `test/nodus-endpoint-rotation.test.js` (new).
@@ -1054,28 +1055,41 @@ only for its members — watching any other vault is the user's own choice).
   name / short ID resolved for each key, never by a name written in this
   file (operator note 2026-10-03: one key is not the person its directory
   name suggests).
-- **Balance and history.** Balance = `dnac_balance` of the vault address
-  (public). Coins: no node lists an address's coins without its key
-  (`dnac_utxo` is gated to the session's own ID, C11 — nodus-cli's `--msig`
-  takes them by hand for the same reason), so the module FINDS them by
-  reading committed blocks (`dnac_v3_block`, public) from the vault's first
-  block: coins created for the vault, minus coins a later item consumed;
-  20 blocks per module call (0.1.80, was 200), one step after another while
-  the vault is open on screen, every step saved to the kept record, so the
-  next Open goes on from the kept cursor. **Cost:** the first reading of a vault reads every block since it
-  was created. **Genesis coins:** genesis outputs are in no block, so the
-  Foundation vault's 5 starting coins are carried as DATA in
-  `src/vaults/foundation.js` (`genesisCoins`: id = nullifier, amount; read
-  by the ORCHESTRATOR from the live `utxo_set` on EU-1 and US-1, identical,
-  2026-10-03). The vault's record starts from them (`genesis: true`) and
-  block reading from height 1 drops one when a block consumes it, exactly
-  like a found coin (`nsw_ms_apply_item`). They are NOT re-derived here:
-  the id is SHA3-512("NDS.GENOUT.v1" ‖ source_commit ‖ index) and no RPC or
-  build data carries `source_commit`; the chain checks each coin when it is
-  spent. The `dnac_utxo` owner gate (C11) is unchanged.
+- **Balance and history (0.1.82).** Open / Refresh asks the node three
+  things, one module call each (one slot of the NODUS queue, so the
+  connection check gets its turn between them), the balance drawn as soon
+  as it arrives: the balance (`dnac_balance` of the vault address, public),
+  the coins and the newest history page. Coins and history are the node's
+  MEMBER query (design `docs/plans/2026-09-29-general-multisig-design.md`
+  §8 + §8.6 rev 2, Kurultay #15, operator approval 2026-10-08):
+  `dnac_msig_utxo` / `dnac_msig_addr_history` carry the vault's descriptor;
+  the node checks that it hashes to the address and that the session's own
+  key is one of its keys, then answers exactly what `dnac_utxo` /
+  `dnac_addr_history` answer for an address's owner. Coins
+  (`nsw_msig_coins`): the native ones, largest first, at most 64; the node
+  sends at most 100 and says when more exist — then the page says
+  "payments can use only part of them". Genesis outputs are in the coin
+  set, so the Foundation vault's 5 genesis coins come in the same answer
+  (the preset carries no coin data any more). The coins REPLACE the
+  record's (a coin the node no longer lists was spent) and are handed back
+  to the module before every build / review / approve / send (F1).
+  History (`nsw_msig_history`): one page of the vault address, in the
+  words of the wallet's own NODUS history (`src/nodus/history.js`
+  `parseAddrHistory`, `nodusHistoryRow`); it is ONE node's local index —
+  "History from block N" when the node keeps nothing older, "This Nodus
+  node does not keep address history" when its index is off. A vault
+  payment is written on the vault's address (the payer), so it shows here,
+  not in a member's own history. **Older node:** a node without the member
+  query answers "unknown DNAC method"; the page says "This Nodus node is
+  not updated yet for shared vaults. Try again later." and reads nothing
+  else — there is NO fallback to reading blocks (the block reading of
+  0.1.80 / 0.1.81 is deleted: it took hours from block 1 and node pruning
+  breaks it). **Watching:** a vault this wallet is not a member of shows
+  its balance only — the node answers coins and history to members alone.
+  The `dnac_utxo` owner gate (C11) is unchanged.
 - **Propose (Connect).** Pay to (address or chain name) + amount → the
   module builds nodus-cli's UNSIGNED vault spend (`nodus_v2_msig_build`:
-  found coins largest first, the fewest that cover amount + fee; change to
+  the vault's coins largest first, the fewest that cover amount + fee; change to
   the vault; K = M; expiry tip + 90 via `nsw_expiry_for`; the generation the
   node runs) and reads it back. "Approve and send to members" signs and
   sends two items to every member contact: kind `request` (nodus-cli's
@@ -1088,8 +1102,8 @@ only for its members — watching any other vault is the user's own choice).
   bytes at the node's current tip (`nodus_v2_msig_review`: shape,
   membership, the digest re-derived and EQUAL, call lengths, expiry not 0
   and not past the export's tip + 90; then **every coin it spends must be
-  one of this vault's own coins** — the record's found + genesis coins,
-  handed to the module before every review, approve and send; otherwise it
+  one of this vault's own coins** — the record's coins (the node's last
+  answer), handed to the module before every review, approve and send; otherwise it
   is REFUSED, "this request spends coins this vault does not hold" (F1:
   the descriptor a request carries is rebuilt from the receiver's own
   vault code, so the coins are what binds it to the vault) —, every output
@@ -1119,11 +1133,24 @@ only for its members — watching any other vault is the user's own choice).
   cannot link (nodus-cli runs it locally); the node judges the
   authorization on arrival. **Expired:** after the last valid block the
   request shows "Expired — propose again"; nothing can sign or send it.
+  **Paid / spent (0.1.82):** history rows carry the envelope's full-wire id,
+  not the intent id, and a member who did not send a payment cannot know
+  its wire id (the approvals' signatures are in it). So "Paid" is shown
+  when the history page holds the wire id THIS wallet sent the request
+  under; and "Its coins are spent — it was paid, or another payment used
+  them" when a coin the request spends is no longer among the vault's coins
+  in the node's complete answer (the request can never be sent then). Until
+  0.1.81 "Paid" came from the block reading's intent ids.
 - **Kept.** In Connect with a saved wallet, one encrypted record per vault
   in the Messages history (`src/connect/store.js` `state.vaults` →
   record id `v` + 20 digits); otherwise for the session only. The wallet
   page has no Messages: vaults there live for the session and proposing /
-  approving says to use Nodus Connect.
+  approving says to use Nodus Connect. **Record shape (0.1.82):** unchanged,
+  so every record kept by 0.1.80 / 0.1.81 loads: `cursor` is still written
+  (= `created`) and never read; `events` (the block reading's history) is
+  still accepted up to 32 and dropped on load; the Foundation's `genesis`
+  flag is accepted and dropped; `coins` is the node's last answer, replaced
+  at every Open.
 - **Same C code as nodus-cli.** `nodus/src/client/nodus_v2_msig.{c,h}` is
   the body of `msig address`, `v2-envelope spend --msig`, `msig sign` and
   `msig combine`, moved out (nodus-cli calls it); `send.wasm` links it with
@@ -1135,12 +1162,16 @@ Tests (written, not run by the change author): nodus ctest
 `test_v2_msig` (the library vs the pre-move nodus-cli code byte for byte,
 refusals, the read-back refusing changed fields, the combine through the
 chain's auth hook) and `test/vaults.test.js` (message kinds and refusals,
-the Foundation bytes against the documented address, kept record, states,
-expiry, exports; with `NODUS_SEND_PARITY_OUT`: address / member parity with
-the C and the read-back refusals — else SKIP). **How they can lie:** the
-inputs are synthetic; no test talks to a node, reads blocks, or drives the
-browser UI (`src/vaults/ui.js` wiring is untested); nothing proves a node
-accepts a combined vault payment except `test_v2_msig`'s auth-hook check.
+the Foundation bytes against the documented address, kept record and its
+0.1.81 compatibility, the coin answer, states, expiry, exports; with
+`NODUS_SEND_PARITY_OUT`: address / member parity with the C, the read-back
+refusals and the member-query exports' refusals before the network — else
+SKIP); the node side of the member query: nodus ctest `test_msig_query`.
+**How they can lie:** the inputs are synthetic; no test talks to a node,
+so the page's handling of a real member-query answer (coins, page, "not
+updated yet") is untested here, and nothing drives the browser UI
+(`src/vaults/ui.js` wiring is untested); nothing proves a node accepts a
+combined vault payment except `test_v2_msig`'s auth-hook check.
 
 ## Register a chain name (unreleased)
 

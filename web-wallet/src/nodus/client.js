@@ -93,11 +93,18 @@
 //                                client then answers "registering is not
 //                                available". The registration envelope is
 //                                submitted with submit().
-//     vaultCreate / vaultOpen / vaultBalance / vaultScan / vaultPropose /
-//     vaultReview / vaultApprove / vaultSubmit
+//     vaultCreate / vaultOpen / vaultBalance / vaultCoins / vaultHistory /
+//     vaultPropose / vaultReview / vaultApprove / vaultSubmit
 //                                OPTIONAL (shared vaults, general multisig —
 //                                shapes in src/nodus/send-module.js), its own
 //                                group, same rule as the claim operations.
+//                                vaultCoins / vaultHistory are the node's
+//                                MEMBER query (dnac_msig_utxo /
+//                                dnac_msig_addr_history, 0.1.82); a node
+//                                without it rejects with an Error whose
+//                                `code` is 'unsupported'. This client checks
+//                                the history page like addrHistory's
+//                                (parseAddrHistory).
 //     evmBuild({ op, ... })      OPTIONAL (smart contracts, the EVM domain —
 //                                shapes in src/nodus/send-module.js "SMART
 //                                CONTRACTS"), its own group: builds and signs
@@ -191,7 +198,10 @@ const NAME_REG_OPS = ['namePrices', 'nameBuild'];
 // OPTIONAL (shared vaults, general multisig — shapes in
 // src/nodus/send-module.js "SHARED VAULTS"): a module without all of them
 // still unlocks; this client then answers "Shared vaults are not available".
-const VAULT_OPS = ['vaultCreate', 'vaultOpen', 'vaultBalance', 'vaultScan', 'vaultPropose', 'vaultReview', 'vaultApprove', 'vaultSubmit'];
+// (0.1.82: vaultScan, the block reading, is gone — vaultCoins and
+// vaultHistory read the node's member query instead; a module still
+// offering vaultScan and not these is a module without shared vaults.)
+const VAULT_OPS = ['vaultCreate', 'vaultOpen', 'vaultBalance', 'vaultCoins', 'vaultHistory', 'vaultPropose', 'vaultReview', 'vaultApprove', 'vaultSubmit'];
 // OPTIONAL (smart contracts): building / signing, and the §18 reads, each a
 // group of its own — a module that can build but not read (or the reverse)
 // offers only what it has.
@@ -653,7 +663,15 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     vaultCreate: vaultCall('vaultCreate'),
     vaultOpen: vaultCall('vaultOpen'),
     vaultBalance: vaultCall('vaultBalance'),
-    vaultScan: vaultCall('vaultScan'),
+    vaultCoins: vaultCall('vaultCoins'),
+    // { descriptor, before?, limit } -> the vault address's page, checked by
+    // parseAddrHistory ({ enabled, fromHeight, entries }); ONE node's local
+    // index, not consensus (src/nodus/history.js).
+    vaultHistory: async ({ descriptor, ...page } = {}, options) => {
+      if (!vaultable) throw new Error('Shared vaults are not available in this wallet version.');
+      const request = addrHistoryArgs(page);
+      return parseAddrHistory(await call('vaultHistory')({ descriptor, ...request }, options), { limit: request.limit });
+    },
     vaultPropose: vaultCall('vaultPropose'),
     vaultReview: vaultCall('vaultReview'),
     vaultApprove: vaultCall('vaultApprove'),

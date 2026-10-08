@@ -26,40 +26,43 @@
 // chain; no innerHTML.
 import { FOUNDATION_VAULT } from './foundation.js';
 import {
-  VAULT_MAX_MEMBERS, encodeShare, encodeRequest, encodeApproval, decodeVaultMessage, vaultCodeShape, vaultLabel,
-  makeVaultRecord, checkVaultRecord, recordForStorage, applyScan, foundTotal, collectVaultItems,
+  VAULT_MAX_MEMBERS, VAULT_UNSUPPORTED, encodeShare, encodeRequest, encodeApproval, decodeVaultMessage, vaultCodeShape, vaultLabel,
+  makeVaultRecord, checkVaultRecord, recordForStorage, applyCoins, collectVaultItems,
   requestState, blocksLeft, listedFor
 } from './core.js';
 import { amountUnits, formatUnits } from '../core.js';
 import { chainName, parseNameOf } from '../nodus/names.js';
 import { NODUS_ASSET } from '../nodus/network.js';
+import { nodusHistoryRow, NODUS_HISTORY_LIMIT } from '../nodus/history.js';
 // The session log (src/session-log.js, memory only, scrubbed).
 import { sessionLog } from '../session-log.js';
 
 const HEX128 = /^[0-9a-f]{128}$/;
-// Reading a vault's history: one module call reads at most 20 blocks
-// (nodus-send-wasm.c NSW_MS_SCAN_BLOCKS), so the wallet's one NODUS queue
-// (src/nodus/client.js) is never held long and the connection check gets
-// its turn between steps. Steps follow each other while the vault is open
-// on screen, each one saved as it lands (keep), so a closed connection
-// loses at most one step and the next Open goes on from there.
+// Reading a vault (0.1.82): Open / Refresh asks the node three things, each
+// ONE module call (one slot of the wallet's one NODUS queue, src/nodus/
+// client.js, so the connection check gets its turn between them): the
+// balance (dnac_balance, public), the coins (vaultCoins) and the newest
+// history page (vaultHistory) — the last two the node's MEMBER query
+// (design docs/plans/2026-09-29-general-multisig-design.md §8.6 rev 2). No
+// block is read; a node without the member query gets the plain "not
+// updated yet" text and nothing else is tried (Kurultay #15: no fallback).
 
 let client, ownFp, host = null, root, panel;
 let generation = 0, busy = false, current = null, view = 'list';
-// Vault history being read: address -> { block, tip } (the next block, the
-// tip the last step saw; '' before the first step). At most one reader per
-// vault; it does NOT hold `busy`, so the panel's buttons stay usable.
-const reading = new Map();
-let progressLine = null;                  // the panel's reading line (render)
 const vaults = new Map();                // address -> record (core.js)
 const balances = new Map();              // address -> { total, spendable }
+// address -> what the last Open / Refresh read besides the balance:
+// { truncated (the node has more coins than the page holds), history
+// (parseAddrHistory's page or null), unsupported (the node has no member
+// query) }. Session memory only; the coins themselves are in the record.
+const reads = new Map();
 const names = new Map();                 // ID -> chain name confirmed by nameOf ('' none)
 const entered = new Map();               // ID -> the chain name this user typed (forward lookup only)
 // Keyed by (vault address, digest) — rkey: a digest is only meaningful for
 // the vault it was reviewed under (F1).
 const reviews = new Map();               // rkey -> module read-back
 const ownApprovals = new Map();          // rkey -> signature text (this session)
-const sent = new Map();                  // rkey -> { intentId, at } submitted here
+const sent = new Map();                  // rkey -> { intentId, wireId, at } submitted here
 const rkey = (address, digest) => `${address}|${digest}`;
 const shareStates = new Map();           // vault code -> { state, info?, error? }
 let status = '', draft = null, createInfo = null, foundationChecked = -1;
@@ -116,7 +119,7 @@ const messagesOpen = () => !!host && host.isOpen();
 function reset() {
   generation++;
   client = undefined; ownFp = undefined; busy = false; current = null; view = 'list';
-  for (const map of [vaults, balances, names, entered, reviews, ownApprovals, sent, shareStates, reading]) map.clear();
+  for (const map of [vaults, balances, reads, names, entered, reviews, ownApprovals, sent, shareStates]) map.clear();
   status = ''; draft = null; createInfo = null;
   render();
 }
@@ -138,11 +141,10 @@ async function loadVaults(gen) {
   for (const kept of messagesOpen() ? host.vaults() : []) {
     if (vaults.has(kept.address)) continue;
     try {
+      // a record kept by 0.1.80 / 0.1.81 (block-reading cursor, events, the
+      // Foundation's `genesis` flag) loads as it is (core.js "RECORD
+      // COMPATIBILITY"); its coins are replaced at the next Open
       const record = checkVaultRecord(kept.value);
-      // the Foundation preset kept without its genesis coins (kept before
-      // they were carried, or trimmed by recordForStorage) is made again
-      // below from the preset, with them, and read from block 1
-      if (record.foundation && !record.genesis) continue;
       if (record.address !== kept.address || !listedFor(record, ownFp)) continue;
       // the address and members are derived again from the kept code by the
       // module; a record whose stored fields disagree is not listed
@@ -160,8 +162,8 @@ async function loadVaults(gen) {
       if (gen !== generation) return;
       // the module's own derivation must give the documented address
       if (info.address === FOUNDATION_VAULT.address && info.isMember) {
-        // its genesis coins (src/vaults/foundation.js) are the starting set
-        await keep(makeVaultRecord({ info, label: FOUNDATION_VAULT.label, created: FOUNDATION_VAULT.created, foundation: true, genesisCoins: FOUNDATION_VAULT.genesisCoins }));
+        // its coins (genesis outputs included) come from the node at Open
+        await keep(makeVaultRecord({ info, label: FOUNDATION_VAULT.label, created: FOUNDATION_VAULT.created, foundation: true }));
       }
     } catch { /* not listed */ }
   }
@@ -185,88 +187,71 @@ async function keep(record) {
   vaults.set(record.address, record);
   if (messagesOpen()) {
     try { await host.keepVault(record.address, recordForStorage(record)); }
-    catch {
-      // a background history reader's failed save is shown only on its own
-      // vault's screen; foreground callers (create, add, watch) always show it
-      if (showing(record.address) || !reading.has(record.address)) status = 'This vault could not be saved on this device; it stays listed until you lock.';
-    }
+    catch { status = 'This vault could not be saved on this device; it stays listed until you lock.'; }
   }
 }
 
 // ── reading a vault ──────────────────────────────────────────────────────
 
-// Is this vault the one on screen?
-const showing = address => view === 'vault' && current === address;
-// The record as it is now: a reading step may have replaced it since a
-// button was drawn (its coins grow as blocks are read).
+// The record as it is now: an Open / Refresh may have replaced its coins
+// since a button was drawn.
 const latest = record => vaults.get(record.address) ?? record;
 
-// The balance first (shown at once), then the history read step by step.
+// Open / Refresh: the balance first (drawn at once), then the coins, then
+// the newest history page — one module call each, while `busy` (an action
+// never builds on coins that are being replaced). A watched vault (this
+// wallet is not a member) gets the balance only: the node answers its
+// coins and history to members alone. The redraws keep what was typed in
+// the payment form (keepTyped).
 async function refresh(address) {
   const record = vaults.get(address);
   if (!record || busy || !client) return;
   const gen = generation;
-  busy = true; status = 'Reading the vault balance…'; render();
+  busy = true; status = 'Reading the vault balance…'; render({ keepTyped: true });
+  const problems = [];
   try {
     const balance = await client.vaultBalance({ descriptor: record.code });
     if (gen !== generation) return;
     balances.set(address, balance);
-    status = '';
+    if (record.watch) { status = ''; return; }
+    status = 'Reading the vault coins…'; render({ keepTyped: true });
+    const read = { truncated: false, history: null, unsupported: false };
+    try {
+      const before = vaults.get(address);
+      const answer = await client.vaultCoins({ descriptor: record.code });
+      if (gen !== generation) return;
+      // removed (or added again) while the read ran: nothing is kept
+      if (!before || vaults.get(address) !== before) { status = ''; return; }
+      const applied = applyCoins(before, answer);
+      read.truncated = applied.truncated;
+      await keep(applied.record);
+      if (gen !== generation) return;
+    } catch (error) {
+      if (gen !== generation) return;
+      if (error?.code === VAULT_UNSUPPORTED) {
+        // no fallback: the page says so and reads nothing else
+        read.unsupported = true;
+        reads.set(address, read);
+        status = '';
+        sessionLog.log('vault', 'The Nodus node does not have the vault member query yet.', { error: true });
+        return;
+      }
+      problems.push(error.message || 'The vault coins could not be read.');
+    }
+    status = 'Reading the vault history…'; render({ keepTyped: true });
+    try {
+      read.history = await client.vaultHistory({ descriptor: record.code, limit: NODUS_HISTORY_LIMIT });
+      if (gen !== generation) return;
+    } catch (error) {
+      if (gen !== generation) return;
+      problems.push(error.message || 'The vault history could not be read.');
+    }
+    reads.set(address, read);
+    status = problems.join(' ');
   } catch (error) {
     if (gen === generation) status = error.message || 'The vault could not be read right now.';
-    return;
   } finally {
-    if (gen === generation) { busy = false; render(); }
-  }
-  // a reader already running for this vault goes on by itself
-  if (!reading.has(address)) void readHistory(address, gen);
-}
-
-// Reads the history one step (one module call) at a time until the cursor
-// passes the tip; stops at a step boundary as soon as this vault is not the
-// one on screen any more (Back, another vault), it was removed, or the
-// wallet closed (generation). Every step is saved before the next one.
-async function readHistory(address, gen) {
-  const go = () => gen === generation && !!client && showing(address) && vaults.has(address);
-  if (!go()) return;
-  const mine = { block: vaults.get(address).cursor, tip: '' };
-  reading.set(address, mine);
-  sessionLog.log('vault', `Reading the vault history from block ${mine.block}.`);
-  let end = 'stopped';
-  // the redraws below happen only while this vault is on screen: another
-  // screen (Create, Watch, the list) is never drawn again under the user
-  try {
-    render({ keepTyped: true });
-    while (go()) {
-      const before = vaults.get(address);
-      const result = await client.vaultScan({ descriptor: before.code, from: before.cursor, coins: before.coins });
-      if (gen !== generation) return;
-      // removed (or added again) while the step ran: the step is not kept
-      if (vaults.get(address) !== before) break;
-      const r = applyScan(before, result);
-      await keep(r);
-      if (gen !== generation) return;
-      mine.block = r.cursor; mine.tip = result.tip;
-      if (result.full) {
-        if (showing(address)) status = 'This vault has more coins than this page can hold; payments can use only part of them.';
-        end = 'full'; break;
-      }
-      if (BigInt(r.cursor) > BigInt(result.tip)) { end = 'done'; break; }
-      if (!showing(address)) continue;   // not on screen: no redraw; go() stops the loop
-      // the whole panel is drawn again only when the step found something
-      // (history, coins); otherwise only the reading line moves
-      if (result.events.length || r.coins.length !== before.coins.length || foundTotal(r) !== foundTotal(before)) render({ keepTyped: true });
-      else showProgress();
-    }
-  } catch (error) {
-    if (gen === generation && showing(address)) status = error.message || 'The vault could not be read right now.';
-    end = 'error';
-  } finally {
-    if (gen === generation && reading.get(address) === mine) {
-      reading.delete(address);
-      sessionLog.log('vault', end === 'done' ? 'The vault history is read up to the tip.' : `Stopped reading the vault history at block ${mine.block} (${end}).`);
-      if (showing(address)) render({ keepTyped: true });
-    }
+    if (gen === generation) { busy = false; render({ keepTyped: true }); }
   }
 }
 
@@ -320,7 +305,8 @@ async function createVault() {
   try {
     const ri = await client.rulesetInfo();
     if (gen !== generation) return;
-    // history starts at the block it was created in: nothing older can pay it
+    // the block it was created in (kept as the record's `created`, and sent
+    // in the share message)
     const created = ri?.tip && /^[1-9]\d*$/.test(ri.tip) ? ri.tip : '1';
     const record = makeVaultRecord({ info: createInfo.info, label: createInfo.label, created });
     await keep(record);
@@ -371,8 +357,8 @@ async function addShared(code) {
   shareStates.set(code, { ...s, state: 'adding' });
   host?.setPayloadView(payloadView);
   try {
-    // F6: the block a share says its history starts at is never past the
-    // node's tip (a later one would skip nothing real but stall the reading)
+    // F6: the block a share says the vault was created at is never kept
+    // past the node's tip
     const ri = await client.rulesetInfo();
     const tip = ri?.tip && /^[1-9]\d{0,19}$/.test(ri.tip) ? BigInt(ri.tip) : null;
     if (tip === null) throw new Error('The current Nodus block height is unknown. Try again in a minute.');
@@ -393,11 +379,11 @@ async function watchVault(form) {
   try {
     const code = form.code.replace(/\s+/g, '').toLowerCase();
     if (!vaultCodeShape(code)) throw new Error('This is not a vault code.');
-    const from = form.from.trim() || '1';
-    if (!/^[1-9]\d{0,19}$/.test(from)) throw new Error('Enter the block to start reading from (1 for the beginning).');
     const info = await client.vaultOpen({ descriptor: code });
     if (gen !== generation) return;
-    const record = makeVaultRecord({ info, label: form.label, created: from, watch: !info.isMember });
+    // `created` unknown for a code pasted by hand: block 1 (nothing reads
+    // blocks from it since 0.1.82; a share message from here carries it)
+    const record = makeVaultRecord({ info, label: form.label, created: '1', watch: !info.isMember });
     await keep(record);
     current = record.address; view = 'vault'; status = info.isMember ? 'Vault added.' : 'Vault added to watch. You cannot approve its payments.';
     await nameMembers(record, gen);
@@ -417,13 +403,23 @@ async function removeVault(record) {
 
 // ── propose / review / approve / send ───────────────────────────────────
 
+// A request's state (core.js requestState) from what this session holds for
+// its vault: the record's coins (the node's last answer), whether that
+// answer was cut short, the history page, and the wire id this wallet sent
+// it under (if it did).
+function stateOf(record, key, review, accepted) {
+  const read = reads.get(record.address);
+  return requestState({ review, accepted, record: latest(record), truncated: !!read?.truncated, wireId: sent.get(key)?.wireId ?? '', history: read?.history ?? null });
+}
+
 // Coins already used by a request of this session that is neither paid nor
-// expired are not offered to a new one.
+// spent nor expired are not offered to a new one.
 function freeCoins(record) {
   const held = new Set();
   for (const [key, review] of reviews) {
     if (review.vault !== record.address || review.expired) continue;
-    if (requestState({ review, accepted: 0, record }) === 'paid') continue;
+    const state = stateOf(record, key, review, 0);
+    if (state === 'paid' || state === 'spent') continue;
     if (sent.has(key) || ownApprovals.has(key)) for (const id of review.inputs) held.add(id);
   }
   return record.coins.filter(c => !held.has(c.id));
@@ -522,7 +518,7 @@ async function sendPayment(record, request, items) {
     if (gen !== generation) return;
     reviews.set(rkey(record.address, request.digest), result.review);
     if (result.accepted) {
-      sent.set(rkey(record.address, request.digest), { intentId: result.intentId, at: Date.now() });
+      sent.set(rkey(record.address, request.digest), { intentId: result.intentId, wireId: result.wireId, at: Date.now() });
       status = 'The payment was sent to the network. It shows in the vault history once it is in a block (Refresh).';
     } else { status = result.message || 'The network refused this payment.'; sessionLog.log('vault', `Vault payment refused: ${status}`, { error: true }); loggedStatus = status; }
   } catch (error) {
@@ -543,18 +539,6 @@ function showPanel() {
   if (nav) nav.hidden = panel.hidden;
 }
 
-// The history reading line's text for the vault on screen ('' none).
-function progressText() {
-  const r = view === 'vault' && current ? reading.get(current) : null;
-  if (!r) return '';
-  return r.tip ? `Reading the vault history: block ${r.block} of ${r.tip}…` : 'Reading the vault history…';
-}
-// Moves only the reading line (the rest of the panel, and what is being
-// typed in it, stays as it is).
-function showProgress() {
-  if (progressLine && root?.contains(progressLine)) progressLine.textContent = progressText();
-}
-
 function render({ keepTyped = false } = {}) {
   showPanel();
   if (!root) return;
@@ -566,11 +550,7 @@ function render({ keepTyped = false } = {}) {
   const line = el('p', { className: 'hint vault-status', text: status });
   line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite');
   items.push(line);
-  // the history reading has its own line (not logged per step: it moves
-  // every few seconds), so an action's result above stays readable
-  progressLine = el('p', { className: 'hint vault-status', text: progressText() });
-  items.push(progressLine);
-  // keepTyped (the history reader's redraws): what was typed in the payment
+  // keepTyped (an Open / Refresh's redraws): what was typed in the payment
   // form, and which field had the focus, survive the panel being drawn again
   // (the cursor position inside the field is not kept);
   // the keys carry the vault address, so nothing moves to another vault.
@@ -671,14 +651,13 @@ function renderCreate() {
 
 function renderWatch() {
   const box = el('div', { className: 'stake-block' }, el('h4', { text: 'Watch a vault' }));
-  box.append(el('p', { className: 'hint', text: 'Paste a vault code a member gave you to see its balance and history. If you are not a member you can only watch it.' }));
+  box.append(el('p', { className: 'hint', text: 'Paste a vault code a member gave you to see its balance. Its coins and history are shown only to its members; if you are not one you can only watch its balance.' }));
   const code = document.createElement('textarea'); code.rows = 3; code.spellcheck = false;
   const label = input('', { maxlength: '48' });
-  const from = input('1', { inputmode: 'numeric' });
-  box.append(...field('Vault code', code), ...field('Name (optional)', label), ...field('Read its history from block', from));
+  box.append(...field('Vault code', code), ...field('Name (optional)', label));
   box.append(el('div', { className: 'stake-actions' },
     btn('Back', () => { view = 'list'; status = ''; render(); }),
-    btn('Add', () => void watchVault({ code: code.value, label: label.value, from: from.value }), '')));
+    btn('Add', () => void watchVault({ code: code.value, label: label.value }), '')));
   return box;
 }
 
@@ -707,11 +686,11 @@ function renderVault(record) {
   for (const fp of record.members) members.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: who(fp) }), el('small', { text: fp }))));
   box.append(members);
   box.append(el('p', { className: 'hint', text: 'Vault address (receive NODUS here):' }), el('code', { className: 'vault-address', text: record.address }));
-  const found = foundTotal(record);
-  if (bal) {
-    box.append(el('p', { className: 'vault-balance', text: `Balance ${nodus(bal.total)} (${nodus(bal.spendable)} spendable now).` }));
-    if (found < BigInt(bal.spendable)) box.append(el('p', { className: 'notice', text: `This page has found ${nodus(found)} of it in the vault’s history so far. Payments can use only the part found. ${reading.has(record.address) ? 'More of its history is being read.' : 'Refresh to read more of its history.'}` }));
-  }
+  if (bal) box.append(el('p', { className: 'vault-balance', text: `Balance ${nodus(bal.total)} (${nodus(bal.spendable)} spendable now).` }));
+  const read = reads.get(record.address);
+  if (record.watch) box.append(el('p', { className: 'hint', text: 'Only the vault’s members can see its coins and history.' }));
+  else if (read?.unsupported) box.append(el('p', { className: 'notice', text: 'This Nodus node is not updated yet for shared vaults. Try again later.' }));
+  else if (read?.truncated) box.append(el('p', { className: 'notice', text: 'This vault has more coins than this page can hold; payments can use only part of them.' }));
   const top = el('div', { className: 'stake-actions' },
     btn('Back', () => { view = 'list'; current = null; draft = null; status = ''; render(); }),
     btn('Refresh', () => void refresh(record.address)));
@@ -719,12 +698,10 @@ function renderVault(record) {
   if (!record.foundation) top.append(btn('Remove from this list', () => void removeVault(record)));
   box.append(top);
 
-  // history
-  if (record.events.length) {
-    const hist = el('div', { className: 'stake-list' });
-    for (const e of [...record.events].reverse()) hist.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: `${e.received ? 'Received' : 'Sent'} ${nodus(e.amount)}` }), el('small', { text: `block ${e.height}` }))));
-    box.append(el('h4', { text: 'History' }), hist);
-  }
+  // history: the node's page of the vault address (one node's own index,
+  // not consensus — src/nodus/history.js), each row in the words the
+  // wallet's own NODUS history uses (nodusHistoryRow)
+  if (read?.history) box.append(renderHistory(read.history));
 
   // payment requests
   const items = itemsFor(record);
@@ -750,6 +727,32 @@ function renderVault(record) {
   return box;
 }
 
+// The vault's history page (parseAddrHistory's answer): what the node keeps
+// first ("History from block N" when it keeps nothing older, or that it
+// keeps no address history), then the rows, newest first.
+function renderHistory(page) {
+  const box = el('div', {}, el('h4', { text: 'History' }));
+  const notes = [];
+  if (!page.enabled && page.fromHeight === 0n) notes.push('This Nodus node does not keep address history.');
+  else {
+    if (page.fromHeight === 0n) notes.push('This Nodus node keeps no address history yet.');
+    if (!page.enabled) notes.push('This Nodus node does not keep address history right now, so the newest entries may be missing.');
+    if (page.fromHeight > 1n) notes.push(`History from block ${page.fromHeight}: this node keeps nothing older.`);
+    if (page.entries.length >= NODUS_HISTORY_LIMIT) notes.push(`The newest ${NODUS_HISTORY_LIMIT} entries, as reported by one Nodus node.`);
+  }
+  if (notes.length) box.append(el('p', { className: 'hint', text: notes.join(' ') }));
+  const list = el('div', { className: 'stake-list' });
+  if (!page.entries.length) list.append(el('p', { className: 'stake-empty', text: 'Nothing in this vault’s history on this node.' }));
+  for (const entry of page.entries) {
+    const row = nodusHistoryRow(entry, { names });
+    const head = row.amount ? `${row.title} ${row.sign}${row.amount}` : row.title;
+    const detail = [row.detail, `block ${row.height}`].filter(Boolean).join(' · ');
+    list.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: head }), el('small', { text: detail }))));
+  }
+  box.append(list);
+  return box;
+}
+
 function renderRequest(record, digest, item, items) {
   const key = rkey(record.address, digest);
   const rv = reviews.get(key);
@@ -761,15 +764,18 @@ function renderRequest(record, digest, item, items) {
   }
   // F2: only the approvals the module verified at the last check count
   const verified = Array.isArray(rv.verifiedSigners) ? rv.verifiedSigners : [];
-  const plain = requestState({ review: rv, accepted: verified.length, record });
-  const state = sent.has(key) && plain !== 'paid' ? 'sent' : plain;
-  const title = { paid: 'Paid', expired: 'Expired — propose again', ready: 'Approved — ready to send', waiting: 'Waiting for approvals', sent: 'Sent to the network' }[state];
+  const plain = stateOf(record, key, rv, verified.length);
+  const state = sent.has(key) && plain !== 'paid' && plain !== 'spent' ? 'sent' : plain;
+  const title = {
+    paid: 'Paid', spent: 'Its coins are spent — it was paid, or another payment used them', expired: 'Expired — propose again',
+    ready: 'Approved — ready to send', waiting: 'Waiting for approvals', sent: 'Sent to the network'
+  }[state];
   const refused = rv.refused ? ` · ${rv.refused} approval item(s) did not check out and are not counted` : '';
   row.append(el('p', { text: `${title} · request from ${from} · ${Math.min(verified.length, rv.approvals)} of ${rv.approvals} approvals checked${refused}` }),
     el('p', { className: 'hint', text: verified.length ? `Approved by ${verified.map(who).join(', ')}. “Check again” counts approvals that arrived since.` : '“Check again” counts approvals that arrived since.' }),
     renderReviewRows(record, rv));
   const actions = el('div', { className: 'stake-actions' });
-  if (state !== 'paid' && state !== 'expired' && state !== 'sent') {
+  if (state !== 'paid' && state !== 'spent' && state !== 'expired' && state !== 'sent') {
     if (!ownApprovals.has(key) && !items.approvedHere.has(digest) && !verified.includes(ownFp) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
     if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
     actions.append(btn('Check again', () => void review(record, item.request)));

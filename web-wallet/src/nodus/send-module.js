@@ -41,12 +41,16 @@ const ADDR_HISTORY_MAX_LIMIT = 100;          // nodus/include/nodus/nodus.h NODU
 const STAKE_OPS = Object.freeze({ stake: 1, delegate: 2, undelegate: 4 });
 // Shared vaults (nodus-send-wasm.c "VAULTS"): at most 7 members
 // (shared/dnac/msig_wire.h DNA_MSIG_MAX_N), a vault code is 18 + N × 2592
-// bytes, 64 found coins (NSW_MS_MAX_COINS), 15 approvals
+// bytes, 64 coins of the node's member query (NSW_MS_MAX_COINS), 15 approvals
 // (NODUS_RT_AUTH_MAX_SIGNERS), a request's envelope part at most 64 KiB
 // (NSW_MS_PREFIX_MAX).
 // VAULT_MAX_APPROVAL_ATTEMPTS: approval texts handed in for one check (src/
 // vaults/core.js: at most 8 per member, newest first, 7 members + own).
 const VAULT_MAX_MEMBERS = 7, VAULT_MAX_COINS = 64, VAULT_MAX_APPROVAL_ATTEMPTS = 64, VAULT_ENV_MAX = 65536;
+// nsw_msig_coins / nsw_msig_history: the node does not have the member query
+// (nodus-send-wasm.c NSW_MS_UNSUPPORTED) — thrown as an Error with
+// code 'unsupported' (src/vaults/core.js VAULT_UNSUPPORTED reads it).
+const VAULT_RC_UNSUPPORTED = 2;
 const VAULT_CODE = /^4e44532e4d5349472e7631(00){5}[0-9a-f]{4}([0-9a-f]{5184}){2,7}$/;
 
 // Nodus testnet (chain born 2026-09-30, the final pre-testnet genesis). The
@@ -343,7 +347,7 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     heap: () => M.HEAPU8
   });
   const WINDOW = ['open', 'not-open', 'closed'], CLAIMED = ['no-evidence', 'yes', 'unknown'];
-  // SHARED VAULTS: the vault in use, its found coins, a payment request's
+  // SHARED VAULTS: the vault in use, its coins, a payment request's
   // parts, the read-back (shapes in src/vaults/core.js).
   const vaultLoad = descriptor => {
     if (typeof descriptor !== 'string' || !VAULT_CODE.test(descriptor)) throw new Error('This is not a valid vault.');
@@ -361,6 +365,13 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       if (!c || typeof c.id !== 'string' || !HEX128.test(c.id)) throw new Error('Invalid vault coins.');
       check(num('nsw_msig_coin_add', ['string', 'string', 'string', 'string'], [c.id, raw(c.amount, 'coin amount'), raw(c.unlock, 'coin lock height'), raw(c.height, 'block height')]));
     }
+  };
+  // The rc of nsw_msig_coins / nsw_msig_history: 0 passes; the node without
+  // the member query -> an Error with code 'unsupported' (its text the
+  // module's fixed one); anything else -> the module's reason.
+  const vaultQueryCheck = rc => {
+    if (rc === VAULT_RC_UNSUPPORTED) throw Object.assign(new Error(str('nsw_error') || 'This Nodus node is not updated yet for shared vaults. Try again later.'), { code: 'unsupported' });
+    check(rc);
   };
   const vaultRequest = () => ({ chain: str('nsw_msig_prop_chain'), tip: str('nsw_msig_prop_tip'), signers: str('nsw_msig_prop_signers'), digest: str('nsw_msig_prop_digest'), env: str('nsw_msig_prop_env') });
   const vaultRequestLoad = request => {
@@ -724,22 +735,38 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       check(await call('nsw_msig_balance'));
       return { total: str('nsw_msig_bal_total'), spendable: str('nsw_msig_bal_spendable') };
     },
-    // vaultScan({ descriptor, from, coins }) -> { next, tip, full, coins,
-    // events }: reads blocks from..min(tip, from + 19) (src/vaults/ui.js
-    // refresh drives the loop). coins: the set an earlier scan returned.
-    async vaultScan({ descriptor, from, coins = [] } = {}) {
+    // vaultCoins({ descriptor }) -> { coins: [{ id, amount, unlock, height }],
+    // truncated }: ONE member query (dnac_msig_utxo, design 2026-09-29-
+    // general-multisig §8.6 rev 2): the vault's native coins, largest first,
+    // at most 64; `truncated` = the node has more, or more than 64 came.
+    // Only a member's session gets an answer. A node without the query
+    // throws an Error with code 'unsupported' (no block reading is done
+    // instead — the decision of Kurultay #15).
+    async vaultCoins({ descriptor } = {}) {
       vaultLoad(descriptor);
-      vaultCoinsLoad(coins);
-      check(await call('nsw_msig_scan', ['string'], [raw(from, 'block height')]));
-      const out = [];
+      vaultQueryCheck(await call('nsw_msig_coins'));
+      const coins = [];
       for (let i = 0, n = num('nsw_msig_coin_count'); i < n; i++) {
-        out.push({ id: str('nsw_msig_coin_id', ['number'], [i]), amount: str('nsw_msig_coin_amount', ['number'], [i]), unlock: str('nsw_msig_coin_unlock', ['number'], [i]), height: str('nsw_msig_coin_height', ['number'], [i]) });
+        coins.push({ id: str('nsw_msig_coin_id', ['number'], [i]), amount: str('nsw_msig_coin_amount', ['number'], [i]), unlock: str('nsw_msig_coin_unlock', ['number'], [i]), height: str('nsw_msig_coin_height', ['number'], [i]) });
       }
-      const events = [];
-      for (let i = 0, n = num('nsw_msig_event_count'); i < n; i++) {
-        events.push({ height: str('nsw_msig_event_height', ['number'], [i]), received: num('nsw_msig_event_dir', ['number'], [i]) > 0, amount: str('nsw_msig_event_amount', ['number'], [i]), id: str('nsw_msig_event_id', ['number'], [i]) });
+      return { coins, truncated: num('nsw_msig_coins_full') === 1 };
+    },
+    // vaultHistory({ descriptor, before?: { h, i, q }, limit }) -> one
+    // dnac_msig_addr_history page of the VAULT's address, the same shape as
+    // addrHistory ({ enabled, from_height, entries }); ./client.js checks it
+    // (src/nodus/history.js parseAddrHistory). Member gate and 'unsupported'
+    // as vaultCoins.
+    async vaultHistory({ descriptor, before, limit } = {}) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > ADDR_HISTORY_MAX_LIMIT) throw new Error('Invalid vault history request.');
+      let at = ['', '0', '0'];
+      if (before !== undefined) {
+        if (!before || typeof before !== 'object') throw new Error('Invalid vault history request.');
+        at = [raw(before.h, 'block height'), raw(before.i, 'history position'), raw(before.q, 'history position')];
+        if (BigInt(at[1]) > 0xffffffffn || BigInt(at[2]) > 0xffffffffn) throw new Error('Invalid vault history request.');
       }
-      return { next: str('nsw_msig_scan_next'), tip: str('nsw_msig_scan_tip'), full: num('nsw_msig_coins_full') === 1, coins: out, events };
+      vaultLoad(descriptor);
+      vaultQueryCheck(await call('nsw_msig_history', ['string', 'string', 'string', 'number'], [...at, limit]));
+      return JSON.parse(str('nsw_msig_history_json'));
     },
     // vaultPropose({ descriptor, coins, to, amount }) -> { request, exportText,
     // review }: request = the parts a message carries ({ chain, tip, signers,
@@ -781,8 +808,10 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       return { signature: str('nsw_msig_text'), review };
     },
     // vaultSubmit({ descriptor, coins, request, digest, approvals: [{ text,
-    // sender }] }) -> { accepted, message?, intentId, review (with
+    // sender }] }) -> { accepted, message?, intentId, wireId, review (with
     // verifiedSigners / refused) }: only verified approvals are combined.
+    // wireId: the combined envelope's full-wire id — what the vault's
+    // history rows carry ("wire"), so the page can tell this payment landed.
     async vaultSubmit({ descriptor, coins = [], request, digest, approvals = [] } = {}) {
       if (typeof digest !== 'string' || !HEX128.test(digest)) throw new Error('Invalid payment request.');
       vaultLoad(descriptor);
@@ -792,9 +821,9 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       if (str('nsw_msig_prop_digest') !== digest) throw new Error('This payment request changed after it was shown. Nothing was sent.');
       const review = { ...vaultReviewRead(), ...vaultApprovalsLoad(approvals) };
       const rc = await call('nsw_msig_submit');
-      const intentId = str('nsw_msig_intent');
-      if (rc === 0) return { accepted: true, intentId, review };
-      if (rc === 1) return { accepted: false, message: str('nsw_error'), intentId, review };
+      const intentId = str('nsw_msig_intent'), wireId = str('nsw_msig_wire');
+      if (rc === 0) return { accepted: true, intentId, wireId, review };
+      if (rc === 1) return { accepted: false, message: str('nsw_error'), intentId, wireId, review };
       throw failure();
     },
     // SMART CONTRACTS — the EVM domain (nodus-send-wasm.c "SMART

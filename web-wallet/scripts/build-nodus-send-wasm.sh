@@ -115,8 +115,9 @@ mode="${1:-release}"
 # stack, not the unwind buffer), and the builder's large structs are
 # heap-allocated in nsw_name_core, which runs only after the last wait.
 # Expected to hold, not measured.
-# The vault exports (nsw_msig_member_add, _balance, _scan, _build, _review,
-# _submit) have the same shape: every wait runs in the export's own frame;
+# The vault exports (nsw_msig_member_add, _balance, _coins, _history,
+# _build, _review, _submit) have the same shape: every wait runs in the
+# export's own frame;
 # the profile read's nc_read_t and the answer structs have their address
 # taken (C stack), the vault state is static, and the builder / review /
 # combine structs are heap-allocated after the last wait. Expected to hold,
@@ -338,17 +339,19 @@ exports_common=(
   nsw_np_sched_value nsw_np_sched_effective nsw_name_build
   # VAULTS — general multisig (nodus-send-wasm.c "VAULTS"). Waiting on the
   # network (ccall { async: true }): nsw_msig_member_add, nsw_msig_balance,
-  # nsw_msig_scan, nsw_msig_build, nsw_msig_review, nsw_msig_submit. Every
-  # other one below never reaches emscripten_sleep.
+  # nsw_msig_coins, nsw_msig_history, nsw_msig_build, nsw_msig_review,
+  # nsw_msig_submit. Every other one below never reaches emscripten_sleep.
+  # (0.1.82: the block reading nsw_msig_scan and its nsw_msig_scan_* /
+  # nsw_msig_event_* getters are gone — the coins and the history come from
+  # the node's member query, design 2026-09-29-general-multisig §8.6.)
   nsw_msig_member_reset nsw_msig_member_count nsw_msig_member_add_self
   nsw_msig_member_add nsw_msig_create nsw_msig_load nsw_msig_addr
   nsw_msig_desc_hex nsw_msig_m nsw_msig_n nsw_msig_member nsw_msig_is_member
   nsw_msig_balance nsw_msig_bal_total nsw_msig_bal_spendable
-  nsw_msig_coins_reset nsw_msig_coin_add nsw_msig_scan nsw_msig_scan_next
-  nsw_msig_scan_tip nsw_msig_coins_full nsw_msig_coin_count nsw_msig_coin_id
-  nsw_msig_coin_amount nsw_msig_coin_unlock nsw_msig_coin_height
-  nsw_msig_event_count nsw_msig_event_height nsw_msig_event_dir
-  nsw_msig_event_amount nsw_msig_event_id
+  nsw_msig_coins nsw_msig_coins_reset nsw_msig_coin_add nsw_msig_coins_full
+  nsw_msig_coin_count nsw_msig_coin_id nsw_msig_coin_amount
+  nsw_msig_coin_unlock nsw_msig_coin_height
+  nsw_msig_history nsw_msig_history_json
   nsw_msig_prop_in nsw_msig_prop_chain nsw_msig_prop_tip nsw_msig_prop_signers
   nsw_msig_prop_digest nsw_msig_prop_env nsw_msig_text nsw_msig_build
   nsw_msig_review nsw_msig_rv_ok nsw_msig_rv_expired nsw_msig_rv_member
@@ -420,7 +423,7 @@ exports_common=(
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match
   nsw_test_msig_member_add_pk nsw_test_msig_build nsw_test_msig_review
-  nsw_test_msig_consume nsw_test_msig_seed_pk nsw_test_msig_seed_sign
+  nsw_test_msig_seed_pk nsw_test_msig_seed_sign
   nsw_test_evm_call_hex nsw_test_evm_call_roundtrip nsw_test_evmfund_roundtrip
   nsw_test_evm_op_weight nsw_test_evm_build nsw_test_evm_create_address
   nsw_test_evm_args_hex)

@@ -22,37 +22,21 @@
 //
 // What it holds: genesis outputs — written into the coin set at genesis
 // (nodus_witness_v2_gen.c nodus_witness_v2_gen_seed_outputs), never inside
-// a block — so the block reading that finds a vault's coins
-// (nodus-send-wasm.c "VAULTS") cannot find them, and no node lists an
-// address's coins without its key (dnac_utxo is gated to the session's own
-// ID — C11, kept). They are therefore carried here as DATA: `genesisCoins`
-// is the vault's starting coin set; block reading starts at height 1 from
-// it, so a genesis coin a later block consumes drops out exactly like a
-// coin found in a block (nsw_ms_apply_item).
-//
-// genesisCoins: FROM GENESIS, VERIFIED AGAINST TWO NODES 2026-10-03 — read
-// by the ORCHESTRATOR from the live testnet's utxo_set (owner = the address
-// below) on EU-1 and US-1, identical on both; for each: nullifier (= coin
-// id = tx_hash), amount (raw, 10^8 per NODUS), output_index 0, block 0,
-// unlock 0, native token. NOT re-derivable on this page: the id is
-// SHA3-512("NDS.GENOUT.v1" ‖ source_commit ‖ index), and source_commit (the
-// genesis document with chain_id and app_hash zeroed) is served by no RPC
-// and not carried by this build. The chain checks each one when spent
-// (present, unlocked, owned by the vault).
+// a block. Until 0.1.81 the page found a vault's coins by reading blocks,
+// could not see these, and carried the five of them here as data. Since
+// 0.1.82 the coins come from the node's member query (dnac_msig_utxo, design
+// docs/plans/2026-09-29-general-multisig-design.md §8.6), which answers from
+// the coin set itself — genesis outputs included — so nothing about the
+// coins is written in this file any more. A Foundation record kept by an
+// older version (with its `genesis` flag and seeded coins) still loads;
+// its coins are replaced by the node's answer at the next Open
+// (src/vaults/core.js "RECORD COMPATIBILITY").
 
 export const FOUNDATION_VAULT = Object.freeze({
   label: 'Foundation vault',
   address: '9885748173dadcb9b82def1811ff2b4ffbc27f621d1e1d86719649e9955f20c587733a98321b15b07baf36a5ab080ed5657ead25f655a979fae1a84de24a30c6',
-  // The chain was born with the genesisCoins in the coin set: start
-  // reading blocks at height 1.
+  // The vault existed from the chain's first block (its record's `created`).
   created: '1',
-  genesisCoins: Object.freeze([
-    Object.freeze({ id: '57abe83b720341b8d8cf2c55caa788034c4ca756b0df7dc123b32f14137a18c7d1c1a38c09a655e302fa2ed0034db52b168f987d002a3f1db692e1601e18916f', amount: '5000000000000000', unlock: '0', height: '0' }),
-    Object.freeze({ id: '8d49668c2248ee00c37c37c1ac77913a9812056d93d92bafa74bab5772533b1e7ad84a69f1dca7f6659b4a214cde5a30fa73954e8033c8f7e4f9b587a8f461d1', amount: '3000000000000000', unlock: '0', height: '0' }),
-    Object.freeze({ id: 'b07f81742dbca98d5217aa76d8a4abdd66d9f62ca153bbdbb86b24ba8b352680955bfebcc09d712f91db6deba96721fe559aa1604ae0498b28ffc3845ac476d7', amount: '5000000000000000', unlock: '0', height: '0' }),
-    Object.freeze({ id: 'b46c9d5699fe156cde82a5cd608533f7a1b67cf543cee3ecd75673bed3b8643d7d268d8d665ec1a5904882d9d7f8ba7ee9142d6e2db9fb3da83134b10b8f701c', amount: '15000000000000000', unlock: '0', height: '0' }),
-    Object.freeze({ id: 'dcf4d387d346677d05350a52798cfee35a2447c8c4c32b09af6d332e08ac2e263d3922531f33bfee3b67f5c989caa2a198c1873a0d0e089e741cc6a1da424090', amount: '10000000000000000', unlock: '0', height: '0' })
-  ]),
   descriptor: [
     '4e44532e4d5349472e7631000000000002031351673488ce4e0f78eaf41160f4b010943e41b04f9d86a54ae1fdd1b69a3d5c6158c8464d61bb2ce5202856daa0',
     '6b4342c9de3cb3a41bfc625d2d7db5470c56a4e8d6d2f20735256e343df17b6bb4dada5e35169e3e0510314fa4757fd8b03876857e13daa24dd2d8e6aa61d8c4',
