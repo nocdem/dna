@@ -11,6 +11,9 @@ tasks/
 *security_audit*
 **/*AUDIT*
 *audit*.md
+# Audit reports filed under an audits/ directory whose basename matches none of
+# the patterns above (dnac/docs/audits/2026-04-20-testnet-red-team.md leaked so).
+**/audits/
 # ...except agent definitions: .claude/agents/ holds subagent prompts (e.g.
 # zk-auditor.md), never audit OUTPUT. Audit reports remain ignored everywhere.
 !.claude/agents/*.md
