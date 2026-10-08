@@ -1345,7 +1345,9 @@ function arrivedLine(item) {
 // (`notes`), or nothing.
 function noteLine(key) {
   const note = notes.get(key);
-  if (!note) return null;
+  // '' (not null): two callers pass this straight to append(), which writes
+  // null as the text "null"
+  if (!note) return '';
   const line = el('p', { className: 'notice vault-notice vault-note', text: note.text });
   line.dataset.kind = note.kind;
   return line;

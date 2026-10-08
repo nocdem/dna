@@ -293,6 +293,14 @@ try {
   assert.equal(await page.locator('.vault-member').count(), 3);
   assert.equal(await page.locator('.vault-member .vault-you').count(), 1);
   assert.equal(await page.locator('.vault-history .activity-row').count(), 3);
+  // no card prints a missing value as text ("null" / "undefined")
+  // (a text node whose whole value is the word: textContent glues it to the
+  // next button's text, so a word-boundary match on textContent misses it)
+  assert.equal(await page.locator('#vaults-root').evaluate(root => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (/^\s*(null|undefined)\s*$/.test(n.nodeValue)) return true;
+    return false;
+  }), false, 'a card prints "null" or "undefined"');
   await shoot('vaults-vault');
 
   // Send payment on the ready request, refused by the network: the refusal
