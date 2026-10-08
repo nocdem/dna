@@ -71,7 +71,9 @@ const ENTRY_POINTS = [
   'nsw_profile_address', 'nsw_profile_addr',
   // HF-4: chain-name registration (nodus-cli name register, shared builder nodus_v2_name.c)
   'nsw_built_name', 'nsw_built_price', 'nsw_name_offline_build', 'nsw_name_prices', 'nsw_np_price', 'nsw_np_sched_count',
-  'nsw_np_sched_param', 'nsw_np_sched_value', 'nsw_np_sched_effective', 'nsw_name_build'
+  'nsw_np_sched_param', 'nsw_np_sched_value', 'nsw_np_sched_effective', 'nsw_name_build',
+  // account history (0.1.78): one dnac_addr_history page of this wallet's address
+  'nsw_addr_history', 'nsw_addr_history_json'
 ];
 
 test('the shipped send.wasm exports the module entry points and no test-only one', () => {

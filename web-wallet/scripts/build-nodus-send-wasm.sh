@@ -128,6 +128,11 @@ mode="${1:-release}"
 # the meter policy, the builder's buffers and structs are heap-allocated
 # in nsw_evm_core, which runs only after the last wait. Expected to hold,
 # not measured.
+# The account-history export of 0.1.78 (nsw_addr_history) has the shape
+# export -> nsw_session_ok / nodus_client_dnac_addr_history ->
+# wait_response -> emscripten_sleep: the cursor and the result struct have
+# their address taken (C stack), the entries are heap, and the JSON is
+# built after the last wait. Expected to hold, not measured.
 # There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
 # instruments every function that can reach emscripten_sleep (directly or,
 # with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
@@ -371,6 +376,11 @@ exports_common=(
   # the OFFLINE EVM build (0.1.64): no node, every network fact given; the
   # EVM leg's identity must equal the compiled one. Never waits.
   nsw_evm_offline_build
+  # ACCOUNT HISTORY (0.1.78, nodus-send-wasm.c "ACCOUNT HISTORY"): one
+  # dnac_addr_history page of this wallet's own address. nsw_addr_history
+  # waits on the network (ccall { async: true }); nsw_addr_history_json
+  # does not.
+  nsw_addr_history nsw_addr_history_json
   # Messages (NC-4b, connect/nc_wasm.c), all run through the wallet's one
   # queue by src/connect/core.js. The ones that wait on the network (every
   # one below except nc_error, nc_result, nc_words_alloc, nc_salt_pick,

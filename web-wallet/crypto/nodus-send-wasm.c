@@ -5092,6 +5092,161 @@ int nsw_evm_query(const char *method, int len) {
     return nsw_end(0);
 }
 
+/* ── ACCOUNT HISTORY: dnac_addr_history for this wallet's own address ───
+ *
+ * Decision docs/plans/decisions/2026-10-01-node-address-history-index.md
+ * item 6 ("Cüzdan Activity (NODUS) geçmişi düğümden doldurur") over rev 2
+ * item 4 (the RPC). The wire is nodus/include/nodus/nodus.h beside
+ * nodus_client_dnac_addr_history; the per-operation rows are
+ * nodus/src/witness/nodus_witness_addr_index.h. NODE-LOCAL, NOT CONSENSUS:
+ * one node's index, only from its `from_height` (no backfill). C11: the
+ * node answers only the session owner's history, so the owner is always
+ * this session's own fingerprint (g_fp_hex) — never a caller's argument.
+ *
+ * The page goes to JS as JSON (the same convention as nsw_evm_query: every
+ * u64 a decimal string, every byte string lowercase hex):
+ *   {"enabled":bool,"from_height":"N","entries":[{"h","i","q","kind",
+ *    "amount","token","fee","peer","wire","ts"}...]}
+ * "token" is 128 hex (all zero = native), "peer" 128 hex or "", "wire" 128
+ * hex or "" (boundary rows). The client's own decoder already refused any
+ * malformed reply (nodus_dnac_addr_history_decode: known kinds only, peer
+ * 128 lowercase hex or empty, (h, i, q) strictly descending); JS checks the
+ * JSON again (src/nodus/history.js). */
+
+#define NSW_AH_MAX_LIMIT  NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT
+
+static char *g_ah_json;
+
+/* The JSON of the last successful nsw_addr_history ("" otherwise). */
+const char *nsw_addr_history_json(void) { return g_ah_json ? g_ah_json : ""; }
+
+static void nsw_jb_u64(nsw_jb_t *b, const char *key, uint64_t v) {
+    char n[NSW_U64_DEC];
+    nsw_fmt_u64(v, n);
+    nsw_jb_put(b, "\"", 1);
+    nsw_jb_put(b, key, strlen(key));
+    nsw_jb_put(b, "\":\"", 3);
+    nsw_jb_put(b, n, strlen(n));
+    nsw_jb_put(b, "\"", 1);
+}
+
+static void nsw_jb_hex(nsw_jb_t *b, const char *key, const uint8_t *raw,
+                       size_t n) {
+    char hex[129];
+    nsw_jb_put(b, "\"", 1);
+    nsw_jb_put(b, key, strlen(key));
+    nsw_jb_put(b, "\":\"", 3);
+    if (raw && n <= 64) {
+        nsw_fmt_hex(raw, n, hex);
+        nsw_jb_put(b, hex, 2 * n);
+    }
+    nsw_jb_put(b, "\"", 1);
+}
+
+/* ONE page of this wallet's history, newest first. `before_dec` "" = the
+ * newest page; otherwise the cursor (before, bi, bq) of nodus.h — rows
+ * strictly older than it; `bi_dec` / `bq_dec` decimal u32 ("0" for a
+ * height-only cursor). `limit` 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT. Waits
+ * on the network (ccall { async: true }).
+ * @return 0 (nsw_addr_history_json) / -1 (reason in nsw_error). */
+int nsw_addr_history(const char *before_dec, const char *bi_dec,
+                     const char *bq_dec, int limit) {
+    if (nsw_begin() != 0) return -1;
+    free(g_ah_json);
+    g_ah_json = NULL;
+    if (limit < 1 || limit > (int)NSW_AH_MAX_LIMIT)
+        return nsw_end(nsw_fail("Invalid account history request."));
+    nodus_dnac_addr_history_cursor_t cur;
+    memset(&cur, 0, sizeof(cur));
+    const int has_before = before_dec && before_dec[0] != '\0';
+    if (has_before) {
+        uint64_t bi = 0, bq = 0;
+        if (nsw_parse_u64(before_dec, &cur.h) != 0 ||
+            nsw_parse_u64(bi_dec, &bi) != 0 || bi > UINT32_MAX ||
+            nsw_parse_u64(bq_dec, &bq) != 0 || bq > UINT32_MAX)
+            return nsw_end(nsw_fail("Invalid account history request."));
+        cur.i = (uint32_t)bi;
+        cur.q = (uint32_t)bq;
+    }
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_addr_history_result_t res;
+    memset(&res, 0, sizeof(res));
+    int rc = nodus_client_dnac_addr_history(&g_client, g_fp_hex,
+                                            has_before ? &cur : NULL,
+                                            (uint32_t)limit, &res);
+    if (g_cancel) {
+        nodus_client_free_addr_history_result(&res);
+        return nsw_end(-1);
+    }
+    if (rc != 0) {
+        nodus_client_free_addr_history_result(&res);
+        if (rc == NODUS_ERR_NOT_FOUND)
+            return nsw_end(nsw_fail("This Nodus node serves no account "
+                                    "history for this chain."));
+        if (rc == NODUS_ERR_RATE_LIMITED)
+            return nsw_end(nsw_fail("The Nodus node is busy; try again in a "
+                                    "moment."));
+        /* an older node answers "unknown DNAC method" as PROTOCOL_ERROR,
+         * the same code the client returns for a reply its decoder
+         * refuses (an unknown row kind included) */
+        return nsw_end(nsw_fail("This Nodus node did not return an account "
+                                "history (an older node, or an unreadable "
+                                "answer; rc=%d).", rc));
+    }
+    if (res.count > NSW_AH_MAX_LIMIT || res.count > (size_t)limit ||
+        (res.count > 0 && !res.entries)) {
+        nodus_client_free_addr_history_result(&res);
+        return nsw_end(nsw_fail("The Nodus node returned an invalid account "
+                                "history."));
+    }
+    nsw_jb_t jb;
+    memset(&jb, 0, sizeof(jb));
+    nsw_jb_put(&jb, "{\"enabled\":", 11);
+    nsw_jb_put(&jb, res.enabled ? "true," : "false,", res.enabled ? 5 : 6);
+    nsw_jb_u64(&jb, "from_height", res.from_height);
+    nsw_jb_put(&jb, ",\"entries\":[", 12);
+    for (size_t k = 0; k < res.count; k++) {
+        const nodus_dnac_addr_history_entry_t *e = &res.entries[k];
+        const size_t kl = strnlen(e->kind, sizeof(e->kind));
+        const size_t pl = strnlen(e->peer, sizeof(e->peer));
+        if (kl == 0 || kl >= sizeof(e->kind) || (pl != 0 && pl != 128)) {
+            jb.bad = 1;
+            break;
+        }
+        nsw_jb_put(&jb, k ? ",{" : "{", k ? 2 : 1);
+        nsw_jb_u64(&jb, "h", e->h);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "i", e->i);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "q", e->q);
+        nsw_jb_put(&jb, ",\"kind\":", 8);
+        nsw_jb_str(&jb, e->kind, kl);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "amount", e->amount);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_hex(&jb, "token", e->token_id, 64);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "fee", e->fee);
+        nsw_jb_put(&jb, ",\"peer\":", 8);
+        nsw_jb_str(&jb, e->peer, pl);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_hex(&jb, "wire", e->has_wire ? e->wire_id : NULL,
+                   e->has_wire ? 64 : 0);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "ts", e->ts);
+        nsw_jb_put(&jb, "}", 1);
+    }
+    nsw_jb_put(&jb, "]}", 2);
+    nodus_client_free_addr_history_result(&res);
+    if (jb.bad || !jb.p) {
+        free(jb.p);
+        return nsw_end(nsw_fail("The Nodus node's account history could not "
+                                "be read."));
+    }
+    g_ah_json = jb.p;
+    return nsw_end(0);
+}
+
 #ifdef NODUS_SEND_TEST_FIXED_RANDOM
 /* TEST-only (parity build, exports_test): the codec through the module,
  * and an offline EVM build. */
@@ -5410,6 +5565,8 @@ void nsw_lock(void) {
     if (!g_busy) {                          /* smart contracts: the reads   */
         free(g_eq_json);
         g_eq_json = NULL;
+        free(g_ah_json);                    /* the account history page     */
+        g_ah_json = NULL;
     }
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;
