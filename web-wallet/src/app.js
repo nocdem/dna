@@ -15,6 +15,8 @@ import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient, NODUS_CONNECT_BOUND_MS } from './nodus/client.js';
+import { nodusHistoryRow, nodusHistoryStatus, localRowsToShow, NODUS_HISTORY_LIMIT } from './nodus/history.js';
+import { parseNameOf } from './nodus/names.js';
 import { netLevelFor, netStatusView } from './net-status.js';
 // The session log (memory only, cleared on lock; the Logs page).
 import { sessionLog, stepLog, logPageErrors, mountSessionLogView } from './session-log.js';
@@ -189,6 +191,7 @@ const shortPeer = peer => peer.length > 18 ? `${peer.slice(0, 8)}…${peer.slice
 function renderHistory() {
   const list = $('history'), status = $('history-status'), button = $('history-refresh');
   if (!wallet) { list.replaceChildren(); status.textContent = ''; button.hidden = true; return; }
+  if ($('chain').value === NODUS_ASSET.chain) { renderNodusHistory(list, status, button); return; }
   const chain = $('chain').value, h = historyFor(chain), supported = historySupported(chain);
   button.hidden = !supported; button.disabled = !!historyJob || !wallet.addresses[chain];
   status.textContent = !supported ? `Account history for ${networkFor(chain)?.name ?? chain} is not read here. Use the account explorer.`
@@ -214,6 +217,7 @@ function renderHistory() {
   }));
 }
 async function loadHistory(chain, { manual = false } = {}) {
+  if (chain === NODUS_ASSET.chain) return loadNodusHistory({ manual });
   if (!wallet || !historySupported(chain) || historyJob?.chain === chain) return;
   // Another network's read is cancelled: only the shown network is read.
   if (historyJob) { historyJob.controller.abort(); historyJob = null; }
@@ -247,15 +251,108 @@ function persistHistory() {
     localStorage.setItem(HISTORY_KEY, encrypted);
   }).catch(() => { /* read again next time */ });
 }
-function clearHistory() { historyJob?.controller.abort(); historyJob = null; historyByChain = {}; historyNote = {}; renderHistory(); }
+function clearHistory() {
+  historyJob?.controller.abort(); historyJob = null; historyByChain = {}; historyNote = {};
+  nodusHistoryJob?.controller.abort(); nodusHistoryJob = null; nodusHistory = null; nodusHistoryError = ''; nodusPeerNames.clear();
+  renderHistory();
+}
+// ── NODUS account history (src/nodus/history.js) ────────────────────────
+// Decision 2026-10-01-node-address-history-index.md item 6: NODUS Activity
+// from the node's address history — sends from other devices, coins
+// received, claims, staking, reward payouts, releases and fees. ONE node's
+// local index (not consensus), from its from_height; kept in memory only,
+// never saved (persistHistory has no NODUS entry: re-read from the node).
+// Read when the connection opens (connectNodus), when the Activity page
+// opens (showWalletPage), after a transaction of this wallet is confirmed
+// (checkRow), on "Refresh history", and on selecting Nodus (at most once per
+// HISTORY_MANUAL_MS by itself). No timer of its own. A failed read shows a
+// plain note; "Sent from here" then lists every record of this tab.
+let nodusHistory = null, nodusHistoryJob = null, nodusHistoryError = '';
+// Chain names of the counterparties (nameOf, one node), fingerprint -> name
+// ('' = none); at most NODUS_NAME_LOOKUPS new lookups per read.
+const nodusPeerNames = new Map(), NODUS_NAME_LOOKUPS = 20;
+const nodusHistoryFor = () => (nodusHistory && wallet && nodusHistory.address === wallet.addresses.nodus ? nodusHistory : null);
+function renderNodusHistory(list, status, button) {
+  const client = nodusClient, readable = !!client?.historyReadable, kept = nodusHistoryFor();
+  button.hidden = false; button.disabled = !!nodusHistoryJob || !readable;
+  status.textContent = !readable && !kept && !nodusHistoryError
+    ? (client?.state === 'ready' ? 'Account history is not available in this wallet version. Your sends from this wallet are listed above.' : 'Account history is read from a Nodus node once the wallet is connected.')
+    : nodusHistoryStatus({ page: kept?.page ?? null, error: nodusHistoryError, reading: !!nodusHistoryJob, readAt: kept ? historyTime(kept.readAt) : '', limit: NODUS_HISTORY_LIMIT });
+  const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
+  list.replaceChildren(...(kept ? kept.page.entries : []).map(entry => {
+    const r = nodusHistoryRow(entry, { names: nodusPeerNames });
+    const div = el('div', `activity-row nodus-history-row${r.dir ? ` history-dir-${r.dir}` : ''}`), main = el('span', 'activity-main');
+    main.append(el('strong', '', r.amount ? `${r.sign}${r.amount}` : r.title), el('small', '', [r.amount ? r.title : '', r.detail].filter(Boolean).join(' · ')));
+    const side = el('span', 'activity-side'), badge = el('span', 'status-badge', 'confirmed');
+    badge.dataset.status = 'confirmed';
+    const where = el('small', '', `Block ${r.height}`);
+    if (r.time !== null) { const when = el('time', '', historyTime(r.time)); when.dateTime = new Date(r.time).toISOString(); where.append(' · ', when); }
+    side.append(badge, where);
+    const footer = el('div', 'activity-footer');
+    // The node lists a transaction by its full-wire id, not by the Transfer
+    // ID "Sent from here" shows (the intent id): a different number for the
+    // same transaction, so it is named differently.
+    if (r.wire) footer.append(el('span', 'activity-id', `Network record ID ${r.wire}`));
+    div.append(main, side, footer);
+    return div;
+  }));
+}
+// `manual`: "Refresh history"; `force`: the connection opened, the Activity
+// page opened, or a transaction was confirmed. Otherwise (selecting Nodus)
+// a page read less than HISTORY_MANUAL_MS ago is kept.
+async function loadNodusHistory({ manual = false, force = false } = {}) {
+  const client = nodusClient, source = wallet;
+  if (!source || !client?.historyReadable || nodusHistoryJob) { renderHistory(); return; }
+  const address = source.addresses.nodus;
+  if (!address || address !== client.fingerprint) return;
+  const kept = nodusHistoryFor();
+  if (!manual && !force && kept && Date.now() - kept.readAt < HISTORY_MANUAL_MS) return;
+  const job = { controller: new AbortController() };
+  nodusHistoryJob = job; nodusHistoryError = ''; renderHistory();
+  try {
+    const page = await client.addrHistory({ limit: NODUS_HISTORY_LIMIT }, { signal: job.controller.signal });
+    if (nodusHistoryJob !== job || wallet !== source) return;
+    nodusHistory = { address, page, readAt: Date.now() };
+    void nameNodusPeers(page, source, client);
+  } catch (error) {
+    // No error wall: the note says it, and "Sent from here" lists every
+    // record of this tab again (no node page to show them as).
+    if (nodusHistoryJob === job) { nodusHistory = null; nodusHistoryError = String(error?.message || 'the read failed.'); }
+  } finally {
+    if (nodusHistoryJob === job) { nodusHistoryJob = null; renderHistory(); renderActivity(false); }
+  }
+}
+async function nameNodusPeers(page, source, client) {
+  if (!client.nameable) return;
+  const peers = [...new Set(page.entries.map(e => e.peer).filter(peer => peer && !nodusPeerNames.has(peer)))].slice(0, NODUS_NAME_LOOKUPS);
+  for (const peer of peers) {
+    try {
+      const found = parseNameOf(await client.nameOf({ owner: peer }));
+      if (wallet !== source || client !== nodusClient) return;
+      nodusPeerNames.set(peer, found.found ? found.name : '');
+    } catch { if (wallet !== source || client !== nodusClient) return; /* not an answer: asked again next read */ }
+  }
+  if (peers.length && wallet === source && $('chain').value === NODUS_ASSET.chain) renderHistory();
+}
 $('history-refresh').onclick = () => void loadHistory($('chain').value, { manual: true });
+// The markup's "Sent from here" empty line (index.html), restored whenever
+// no record is hidden behind the NODUS account history.
+const ACTIVITY_EMPTY_TEXT = document.querySelector('#activity + .activity-empty')?.textContent ?? '';
 function renderActivity(save = true) {
   if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   // A row is laid out like a portfolio holding row (src/portfolio-view.js):
   // amount and what it did on the left, status and when on the right, the
   // network's note below, then the transaction link and any row action.
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
-  $('activity').replaceChildren(...visibleActivity().map(row => {
+  // NODUS: a record the node's account history already lists is shown there
+  // only, once (src/nodus/history.js localRowsToShow — the wire id, or the
+  // confirmed block). Display only: the tracker still follows every record
+  // (trackActivity reads visibleActivity, not this list).
+  const all = visibleActivity(), nodus = $('chain').value === NODUS_ASSET.chain;
+  const rows = nodus ? localRowsToShow(all, nodusHistoryFor()?.page ?? null, { limit: NODUS_HISTORY_LIMIT }) : all;
+  const empty = document.querySelector('#activity + .activity-empty');
+  if (empty) empty.textContent = rows.length < all.length ? 'Nothing waiting here: your confirmed transactions are listed under Account history below.' : ACTIVITY_EMPTY_TEXT;
+  $('activity').replaceChildren(...rows.map(row => {
     const div = el('div', 'activity-row');
     // A claim of this wallet's allocation (src/adapters/nodus.js isClaimRow)
     // pays the wallet itself.
@@ -319,6 +416,9 @@ const checkRow = async (row, options) => {
   // delegation or the validator list, or registered this wallet's chain
   // name (a reloaded row no longer says which): re-read both once.
   else if (terminal(update.status) && !terminal(row.status)) setTimeout(() => { if (wallet && nodusClient) { void refreshStaking(); void refreshName(); } }, 0);
+  // A transaction of this wallet now confirmed: the node's account history
+  // lists it — read it again once (it then shows it there, once).
+  if (update.status === 'confirmed' && row.status !== 'confirmed') setTimeout(() => { if (wallet && nodusClient) void loadNodusHistory({ force: true }); }, 0);
   return update;
 };
 function trackActivity() { stopTracking(); renderActivity(); if (wallet) stopTracking = watchActivity(visibleActivity, () => { renderActivity(); followSubmission(); }, { check: checkRow }); }
@@ -835,6 +935,7 @@ async function connectNodus(source, address, client, markReady) {
     void refreshClaim();
     void refreshStaking();
     void refreshName();
+    void loadNodusHistory({ force: true });
     // lockedInputs(): coins of this wallet's pending NODUS transactions
     // (src/adapters/nodus.js lockedInputs) — an extension that builds from
     // the wallet's coins (smart contracts, src/evm/ui.js) never offers them.
@@ -1582,6 +1683,9 @@ function showWalletPage(name, { focus = true } = {}) {
   // <details> is open: open on the Logs page, closed everywhere else.
   $('session-logs').open = next === 'logs';
   if (next) {
+    // The Activity page on Nodus: the node's account history is read again
+    // (loadNodusHistory; one read at a time).
+    if (next === 'wallet-activity' && $('chain').value === NODUS_ASSET.chain) void loadNodusHistory({ force: true });
     document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });
     if (focus) pageTitle(node)?.focus({ preventScroll: true });
     return;

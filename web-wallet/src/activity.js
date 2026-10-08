@@ -24,6 +24,12 @@ export function recordActivity(transfer, details) {
   if (transfer.chain === NODUS_CHAIN) {
     if (!validNodusPending(details)) throw new Error('Invalid pending transfer record.');
     Object.assign(record, { expiryHeight: details.expiryHeight, fromHeight: details.fromHeight, inputs: [...details.inputs] });
+    // The signed envelope's full-wire id (0.1.78, src/adapters/nodus.js
+    // builtWire), when the module gave one: this tab only — the saved
+    // Activity format is unchanged (src/activity-storage.js does not write
+    // it). It lets the node's account history show this send once
+    // (src/nodus/history.js localRowsToShow).
+    if (typeof details.wire === 'string' && HEX128.test(details.wire)) record.wire = details.wire;
     // Staking (0.1.29): which action, for this tab's Activity text only —
     // src/activity-storage.js does not keep it, so a reloaded row reads as
     // a plain NODUS transfer to the validator's address.

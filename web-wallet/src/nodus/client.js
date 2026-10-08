@@ -116,6 +116,17 @@
 //                                checks it (src/evm/rpc.js). The module's
 //                                nsw_evm_query over the nodus client's
 //                                nodus_client_dnac_query_raw (Nodus EVM Faz 4).
+//     addrHistory({ before?, limit })
+//                                OPTIONAL (0.1.78, account history — shape
+//                                in src/nodus/send-module.js), its own group:
+//                                one dnac_addr_history page of THIS wallet's
+//                                address (the module asks for its own
+//                                session's fingerprint; the node answers
+//                                nobody else's). This client checks the page
+//                                (src/nodus/history.js parseAddrHistory) and
+//                                resolves { enabled, fromHeight, entries }.
+//                                A module without it still unlocks; Activity
+//                                then shows this tab's records only.
 //     evmGeneration              number — REQUIRED beside evmBuild /
 //                                evmQuery: the rule-set generation that
 //                                carries the EVM (nodus_witness_runtime.h
@@ -149,6 +160,7 @@
 // -> release(). Each step runs even if an earlier one throws, so a failing
 // export can never skip the wipe.
 import { parseAccount, parseCode, parseStorage, parseCall, parseEstimate, parseReceipt, parseLogs, parseTicket } from '../evm/rpc.js';
+import { parseAddrHistory, NODUS_HISTORY_LIMIT, NODUS_HISTORY_MAX_LIMIT } from './history.js';
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/;
 export const NODUS_TICK_MS = 60000;
@@ -185,6 +197,21 @@ const VAULT_OPS = ['vaultCreate', 'vaultOpen', 'vaultBalance', 'vaultScan', 'vau
 // offers only what it has.
 const EVM_BUILD_OPS = ['evmBuild'];
 const EVM_QUERY_OPS = ['evmQuery'];
+// OPTIONAL (0.1.78, account history — shape in src/nodus/send-module.js): a
+// module without it still unlocks; this client then answers "not available"
+// and Activity shows this tab's own records only.
+const ADDR_HISTORY_OPS = ['addrHistory'];
+const U32_DEC = /^(0|[1-9]\d{0,9})$/;
+// A page request, checked: `limit` 1..NODUS_HISTORY_MAX_LIMIT (default
+// NODUS_HISTORY_LIMIT); `before` (optional) the cursor { h, i, q } of
+// nodus.h — decimal strings, i and q within u32.
+function addrHistoryArgs({ before, limit = NODUS_HISTORY_LIMIT } = {}) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > NODUS_HISTORY_MAX_LIMIT) throw new Error('Invalid account history request.');
+  if (before === undefined) return { limit };
+  if (!before || typeof before !== 'object' || typeof before.h !== 'string' || !U64DEC.test(before.h) || BigInt(before.h) >= 2n ** 64n ||
+      ![before.i, before.q].every(v => typeof v === 'string' && U32_DEC.test(v) && BigInt(v) < 2n ** 32n)) throw new Error('Invalid account history request.');
+  return { before: { h: before.h, i: before.i, q: before.q }, limit };
+}
 export const EVM_QUERY_METHODS = Object.freeze(['evm_account', 'evm_code', 'evm_storage', 'evm_call', 'evm_estimate', 'evm_receipt', 'evm_logs', 'evm_ticket']);
 const HEX32B = /^[0-9a-f]{64}$/, EVEN_HEX = /^([0-9a-f]{2})*$/, U64DEC = /^(0|[1-9]\d{0,19})$/;
 function evmArgs(method, args) {
@@ -299,7 +326,7 @@ export const NODUS_SESSION_LOST_TEXT = 'Nodus connection is not ready. Try again
 // 'session lost', error } — for the session log only.
 export function createNodusClient({ factory, onState, steps, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval, setTimeout: after = globalThis.setTimeout, clearTimeout: stopAfter = globalThis.clearTimeout } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false, historyReadable = false;
   // The connection step running now ({ name, handle }) and whether the first
   // keepalive after 'ready' is still to be logged.
   let currentStep, firstTick = false;
@@ -478,6 +505,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     evmGen = Number.isSafeInteger(loaded.evmGeneration) && loaded.evmGeneration > 0 ? loaded.evmGeneration : 0;
     evmBuildable = evmGen > 0 && EVM_BUILD_OPS.every(name => typeof loaded[name] === 'function');
     evmReadable = evmGen > 0 && EVM_QUERY_OPS.every(name => typeof loaded[name] === 'function');
+    historyReadable = ADDR_HISTORY_OPS.every(name => typeof loaded[name] === 'function');
   }
   // Smart contracts only where the node runs the EVM generation: a node
   // that has not voted the EVM in (or does not say) offers neither group
@@ -636,6 +664,16 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     // answer is ONE node's committed tip state.
     get evmBuildable() { return evmBuildable && state === 'ready'; },
     get evmReadable() { return evmReadable && state === 'ready'; },
+    // Account history (ADDR_HISTORY_OPS): whether the loaded module reads it,
+    // and one page of this wallet's address — { before?, limit } -> the page
+    // checked by parseAddrHistory ({ enabled, fromHeight, entries }). ONE
+    // node's local index, not consensus (src/nodus/history.js).
+    get historyReadable() { return historyReadable && state === 'ready'; },
+    addrHistory: async (args, options) => {
+      if (!historyReadable) throw new Error('Account history is not available in this wallet version.');
+      const request = addrHistoryArgs(args);
+      return parseAddrHistory(await call('addrHistory')(request, options), { limit: request.limit });
+    },
     evmBuild: evmBuildCall('evmBuild'),
     evmAccount: evmRead('evm_account', parseAccount),       // { address }
     evmCode: evmRead('evm_code', parseCode),                // { address }

@@ -39,6 +39,16 @@ export const NODUS_MAX_INPUTS = 15;
 // sanity cap so a hostile node cannot make the wallet hold an unbounded array.
 const MAX_LISTED_COINS = 1000;
 const DECIMALS = NODUS_ASSET.decimals;
+// The signed envelope's full-wire id (0.1.78): the module's nsw_built_wire,
+// the builder's copy of the preflight wire_id (nodus/src/client/
+// nodus_v2_spend.c, nodus_v2_stake.c, nodus_v2_name.c: `memcpy(out->wire_id,
+// pf->wire_id, 64)`) — the id the node's address history stores as "wire"
+// (nodus/src/witness/nodus_witness_addr_index.h). It differs from the intent
+// id the Activity record is keyed by (the hedged signature is inside it), so
+// it is kept only in this tab's record (src/activity.js recordActivity) to
+// show a send once when the node's history lists it (src/nodus/history.js).
+// A module without it (older build, test mock): absent — never invented.
+const builtWire = built => (typeof built?.wireId === 'string' && HEX128.test(built.wireId) ? { wire: built.wireId } : {});
 
 // A raw-unit decimal integer string from the module -> BigInt within uint64.
 export function rawUnits(value, what) {
@@ -226,7 +236,7 @@ export function decodeBuilt(built) {
   return {
     envelope: built.envelope, intentId: built.intentId, recipient: d.recipient, chainId: d.chainId, inputs: [...d.inputs],
     amount: rawUnits(d.amount, 'transaction amount'), fee: rawUnits(d.fee, 'network fee'), change: rawUnits(d.change, 'change amount'),
-    expiryHeight: rawUnits(d.expiryHeight, 'expiry height')
+    expiryHeight: rawUnits(d.expiryHeight, 'expiry height'), ...builtWire(built)
   };
 }
 const nodusText = units => `${formatUnits(units, DECIMALS)} ${NODUS_ASSET.symbol}`;
@@ -299,7 +309,7 @@ export async function prepare({ client, from, to, amount, locked = new Set(), in
     async send(onBroadcast) {
       if (used) throw new Error('This review is already closed.');
       used = true;
-      await onBroadcast({ hash: decoded.intentId, expiryHeight: decoded.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...decoded.inputs] });
+      await onBroadcast({ hash: decoded.intentId, expiryHeight: decoded.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...decoded.inputs], ...(decoded.wire ? { wire: decoded.wire } : {}) });
       const result = await client.submit({ envelope: decoded.envelope });
       if (!result || result.accepted !== true) throw new Error('The Nodus network did not accept this transfer. Its coins stay held until the transfer expires.');
       return decoded.intentId;
@@ -430,7 +440,7 @@ function decodeStake(built) {
   return {
     envelope: built.envelope, intentId: built.intentId, op: d.op, validator: d.validator, chainId: d.chainId, inputs: [...d.inputs],
     amount: rawUnits(d.amount, 'transaction amount'), commissionBps: rawUnits(d.commissionBps, 'commission'), fee: rawUnits(d.fee, 'network fee'),
-    change: rawUnits(d.change, 'change amount'), expiryHeight: rawUnits(d.expiryHeight, 'expiry height')
+    change: rawUnits(d.change, 'change amount'), expiryHeight: rawUnits(d.expiryHeight, 'expiry height'), ...builtWire(built)
   };
 }
 // Builds and signs one staking envelope for review, in the shape of
@@ -525,7 +535,7 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
       if (Date.now() >= expiresAt) throw new Error('Review expired. Prepare it again.');
       // The record is durable before the envelope leaves the browser; its
       // inputs are held like a send's (lockedInputs) until it resolves.
-      await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs] });
+      await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs], ...(d.wire ? { wire: d.wire } : {}) });
       const result = await client.submit({ envelope: d.envelope });
       if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this transaction. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
       return d.intentId;
@@ -609,7 +619,7 @@ function decodeName(built) {
   return {
     envelope: built.envelope, intentId: built.intentId, name: d.name, owner: d.owner, chainId: d.chainId, inputs: [...d.inputs],
     price: rawUnits(d.price, 'name price'), fee: rawUnits(d.fee, 'network fee'), change: rawUnits(d.change, 'change amount'),
-    expiryHeight: rawUnits(d.expiryHeight, 'expiry height')
+    expiryHeight: rawUnits(d.expiryHeight, 'expiry height'), ...builtWire(built)
   };
 }
 // Builds and signs one registration of `name` for review, in the shape of
@@ -667,7 +677,7 @@ export async function prepareName({ client, from, name: typed, locked = new Set(
       if (Date.now() >= expiresAt) throw new Error('Review expired. Prepare it again.');
       // The record is durable before the envelope leaves the browser; its
       // inputs are held like a send's (lockedInputs) until it resolves.
-      await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs] });
+      await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs], ...(d.wire ? { wire: d.wire } : {}) });
       const result = await client.submit({ envelope: d.envelope });
       if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this registration. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
       return d.intentId;

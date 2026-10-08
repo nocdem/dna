@@ -34,6 +34,7 @@ const IPV4 = new RegExp(`^${OCTET}(\\.${OCTET}){3}$`);
 export const NODUS_SEND_MAX_ENDPOINTS = 8;   // nodus/include/nodus/nodus.h NODUS_CLIENT_MAX_SERVERS
 export const NODUS_SEND_MAX_PINS = 64;       // crypto/nodus-send-wasm.c NSW_MAX_PINS
 const MAX_COINS = 100;                       // nodus_types.h NODUS_DNAC_MAX_UTXO_RESULTS
+const ADDR_HISTORY_MAX_LIMIT = 100;          // nodus/include/nodus/nodus.h NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT
 // The staking ops and their SYSTEM runtime_op (nodus_witness_runtime.h
 // DNA_SYSRULE_STAKE / _DELEGATE / _UNDELEGATE).
 const STAKE_OPS = Object.freeze({ stake: 1, delegate: 2, undelegate: 4 });
@@ -428,6 +429,9 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       return {
         envelope: M.HEAPU8.slice(at, at + length),
         intentId: str('nsw_built_intent'),
+        // the full-wire id (preflight wire_id) — what the node's address
+        // history lists the transaction by (src/adapters/nodus.js builtWire)
+        wireId: str('nsw_built_wire'),
         // Read back from the envelope bytes by the C side (nodus_v2_spend_build's
         // decode, checked in nsw_build_core) — never echoed from the request.
         decoded: {
@@ -465,6 +469,25 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     async rulesetInfo() {
       check(await call('nsw_ruleset_info'));
       return { tip: str('nsw_ri_tip'), generation: String(num('nsw_ri_gen')), gen2Height: str('nsw_ri_h') };
+    },
+    // ACCOUNT HISTORY (0.1.78; nodus-send-wasm.c "ACCOUNT HISTORY", decision
+    // 2026-10-01-node-address-history-index.md item 6): one dnac_addr_history
+    // page of THIS wallet's own address (the module always asks for its
+    // session's fingerprint — the node answers nobody else's, C11).
+    // addrHistory({ before?: { h, i, q }, limit }) -> the page as plain JS
+    // ({ enabled, from_height, entries: [{ h, i, q, kind, amount, token, fee,
+    // peer, wire, ts }] }, every u64 a decimal string, bytes lowercase hex);
+    // ./client.js checks it (src/nodus/history.js parseAddrHistory).
+    async addrHistory({ before, limit } = {}) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > ADDR_HISTORY_MAX_LIMIT) throw new Error('Invalid account history request.');
+      let at = ['', '0', '0'];
+      if (before !== undefined) {
+        if (!before || typeof before !== 'object') throw new Error('Invalid account history request.');
+        at = [raw(before.h, 'block height'), raw(before.i, 'history position'), raw(before.q, 'history position')];
+        if (BigInt(at[1]) > 0xffffffffn || BigInt(at[2]) > 0xffffffffn) throw new Error('Invalid account history request.');
+      }
+      check(await call('nsw_addr_history', ['string', 'string', 'string', 'number'], [...at, limit]));
+      return JSON.parse(str('nsw_addr_history_json'));
     },
     // Chain names: ONE node's committed state (decision
     // 2026-10-02-onchain-names.md item 9). nameLookup({ name }) -> { found,
@@ -531,6 +554,7 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       return {
         envelope: M.HEAPU8.slice(at, at + length),
         intentId: str('nsw_built_intent'),
+        wireId: str('nsw_built_wire'),
         decoded: {
           name: str('nsw_built_name'), price: str('nsw_built_price'), owner: str('nsw_built_recipient'), fee: str('nsw_built_fee'),
           change: str('nsw_built_change'), expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
@@ -642,6 +666,7 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       return {
         envelope: M.HEAPU8.slice(at, at + length),
         intentId: str('nsw_built_intent'),
+        wireId: str('nsw_built_wire'),
         decoded: {
           op: opName, validator: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
           commissionBps: op === 'stake' ? str('nsw_built_commission') : '0', fee: str('nsw_built_fee'),

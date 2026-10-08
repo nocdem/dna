@@ -39,7 +39,12 @@ export function createMockNodusModule() {
     // The split unlock (identify / connectNetwork): the errors the next
     // connectNetwork calls raise, one per call (an Error with `final: true`
     // models a node of another chain); empty = connected.
-    connectErrors: [], connected: false
+    connectErrors: [], connected: false,
+    // Account history (0.1.78): the page addrHistory answers (the module's
+    // JSON form, send-module.js addrHistory), or an Error the module would
+    // raise; the last request; a wire id the builds return (null = none,
+    // like a module without nsw_built_wire).
+    history: { enabled: true, from_height: '1', entries: [] }, historyError: null, lastHistory: null, wireId: null
   };
   const bytes = () => new Uint8Array(memory.buffer);
   async function op(name, fn) {
@@ -77,7 +82,12 @@ export function createMockNodusModule() {
       }
       if (sum < need) throw new Error('Insufficient NODUS balance.');
       const decoded = { recipient: request.to, amount: request.amount, fee: FEE, change: (sum - need).toString(), expiryHeight: request.expiryHeight, chainId: state.chainId, inputs };
-      return { envelope: Uint8Array.of(1, 2, 3), intentId: INTENT_ID, decoded: { ...decoded, ...(state.tamper || {}) } };
+      return { envelope: Uint8Array.of(1, 2, 3), intentId: INTENT_ID, ...(state.wireId ? { wireId: state.wireId } : {}), decoded: { ...decoded, ...(state.tamper || {}) } };
+    }),
+    addrHistory: request => op('addrHistory', async () => {
+      state.lastHistory = request;
+      if (state.historyError) throw state.historyError;
+      return JSON.parse(JSON.stringify(state.history));
     }),
     submit: ({ envelope }) => op('submit', async () => { state.submitted = envelope; return { accepted: state.accepted }; }),
     scanConfirm: request => op('scanConfirm', async () => { state.lastScan = request; return state.scan; }),
