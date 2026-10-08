@@ -31,13 +31,11 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
+    // The committed "shared" debug keystore (public password) was removed:
+    // its key is public, so nothing may be signed with it. Debug builds use
+    // the Android SDK's local default debug key; release builds are signed
+    // ONLY with ~/keys/keystore.properties and are left unsigned without it.
     signingConfigs {
-        create("shared") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
-        }
         if (keystorePropertiesFile.exists()) {
             create("release") {
                 storeFile = file(keystoreProperties.getProperty("storeFile", ""))
@@ -76,14 +74,12 @@ android {
     // CI and any release build scripts must include this flag.
 
     buildTypes {
-        debug {
-            signingConfig = signingConfigs.getByName("shared")
-        }
         release {
-            signingConfig = if (keystorePropertiesFile.exists())
-                signingConfigs.getByName("release")
-            else
-                signingConfigs.getByName("shared")  // CI fallback: debug keystore
+            // No fallback: without the release keystore the output stays unsigned
+            // and `flutter build apk/appbundle --release` fails to produce an artifact.
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             // Enable R8 minification with ProGuard rules
             isMinifyEnabled = true
             isShrinkResources = true
