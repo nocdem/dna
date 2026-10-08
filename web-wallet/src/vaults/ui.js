@@ -575,23 +575,96 @@ function render({ keepTyped = false } = {}) {
   if (shown && shown.textContent === pressed.label) { shown.textContent = 'Preparing…'; shown.setAttribute('aria-busy', 'true'); }
 }
 
+// ── rendering: small parts (0.1.83 design) ──────────────────────────────
+// Every text below is set through textContent (el); no inline style (the
+// pages' CSP is style-src 'self'): the approvals bar is a <progress>.
+
+// A chip beside a title: "2 of 3 approvals", "Watching only".
+function chip(text, kind = '') {
+  const node = el('span', { className: 'vault-chip', text });
+  if (kind) node.dataset.kind = kind;
+  return node;
+}
+// The round mark of a member: the first letters of the chain name the
+// reverse lookup CONFIRMED (F5 — never a name only typed here), otherwise
+// the first two characters of the ID. Decoration only (aria-hidden).
+function avatar(fp) {
+  const chain = names.get(fp);
+  const letters = chain ? [...chain.replace(/[^\p{L}\p{N}]/gu, '')].slice(0, 2).join('') : '';
+  const node = el('span', { className: 'vault-avatar', text: (letters || fp.slice(0, 2)).toUpperCase() });
+  node.setAttribute('aria-hidden', 'true');
+  return node;
+}
+// One member: mark, name (who — F5 wording kept; this wallet's own row shows
+// its confirmed chain name or short ID with a "you" badge), the full ID.
+function memberRow(fp) {
+  const own = fp === ownFp;
+  const chain = names.get(fp);
+  const title = own ? (chain ? `${chain} · ${shortId(fp)}` : shortId(fp)) : who(fp);
+  const row = el('div', { className: 'vault-member' }, avatar(fp),
+    el('span', { className: 'vault-member-main' }, el('strong', { text: title }), el('small', { className: 'vault-mono', text: fp })));
+  if (own) row.append(el('span', { className: 'vault-you', text: 'you' }));
+  return row;
+}
+// An address in a monospace box with a Copy button. Copy is not an action of
+// the panel (btn: it does not mark the pressed button), and its result is
+// said beside it.
+function addressBox(address, labelText) {
+  const note = el('span', { className: 'vault-copy-note' });
+  note.setAttribute('aria-live', 'polite');
+  const copy = el('button', { className: 'secondary small', text: 'Copy' });
+  copy.type = 'button';
+  copy.setAttribute('aria-label', 'Copy the vault address');
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(address); note.textContent = 'Copied.'; }
+    catch { note.textContent = 'Could not copy. Select the address and copy it by hand.'; }
+  };
+  return el('div', { className: 'vault-address-box' },
+    el('span', { className: 'vault-label', text: labelText }),
+    el('code', { className: 'vault-address', text: address }),
+    el('span', { className: 'vault-copy-row' }, copy, note));
+}
+// A label / value row of a reviewed payment (renderReviewRows).
+function fact(label, value, note = '', mono = false) {
+  const dd = el('dd', {}, el('span', { text: value }));
+  if (note) dd.append(el('small', { className: mono ? 'vault-mono' : 'vault-fact-note', text: note }));
+  return el('div', { className: 'vault-fact' }, el('dt', { text: label }), dd);
+}
+// The balance: large, then what can be spent now.
+function balanceBlock(bal, { compact = false } = {}) {
+  const box = el('div', { className: compact ? 'vault-money vault-money-compact' : 'vault-money' });
+  if (!compact) box.append(el('span', { className: 'vault-label', text: 'Balance' }));
+  if (bal) box.append(el('strong', { className: 'vault-amount', text: nodus(bal.total) }), el('span', { className: 'vault-spendable', text: `${nodus(bal.spendable)} spendable now` }));
+  else box.append(el('strong', { className: 'vault-amount vault-amount-unknown', text: 'Not read yet' }), el('span', { className: 'vault-spendable', text: compact ? 'Open the vault to read its balance.' : 'Refresh to read it from the Nodus node.' }));
+  return box;
+}
+const approvalsChip = record => chip(`${record.m} of ${record.n} approvals`);
+
 function renderList() {
-  const list = el('div', { className: 'stake-list' });
   const rows = [...vaults.values()];
-  if (!rows.length) list.append(el('p', { className: 'stake-empty', text: 'You are not a member of any shared vault yet.' }));
-  for (const record of rows) {
-    const row = el('div', { className: 'stake-row' });
-    const main = el('span', { className: 'stake-main' });
-    const bal = balances.get(record.address);
-    main.append(el('strong', { text: labelOf(record) }),
-      el('small', { text: `${record.m} of ${record.n} members must approve${record.watch ? ' · watching only' : ''}${bal ? ` · ${nodus(bal.total)}` : ''}` }));
-    row.append(main, el('span', { className: 'stake-actions' }, btn('Open', () => { current = record.address; view = 'vault'; status = ''; render(); void refresh(record.address); })));
-    list.append(row);
-  }
-  const actions = el('div', { className: 'stake-actions' },
-    btn('Create a shared vault', () => { view = 'create'; status = ''; createInfo = null; render(); }),
+  const actions = el('div', { className: 'vault-actions' },
+    btn('Create a shared vault', () => { view = 'create'; status = ''; createInfo = null; render(); }, ''),
     btn('Watch a vault', () => { view = 'watch'; status = ''; render(); }));
-  return el('div', { className: 'stake-block vault-list' }, el('h4', { text: 'Your shared vaults' }), list, actions);
+  if (!rows.length) {
+    return el('div', { className: 'stake-block vault-list vault-empty' },
+      el('h4', { text: 'Your shared vaults' }),
+      el('p', { className: 'vault-empty-lead', text: 'You are not a member of any shared vault yet.' }),
+      el('p', { className: 'hint', text: 'A shared vault holds NODUS together with other people. A payment leaves it only when enough of its members approve it, each from their own wallet. Create one with the people you choose, or watch one whose vault code a member gave you.' }),
+      actions);
+  }
+  const grid = el('div', { className: 'vault-grid' });
+  for (const record of rows) {
+    const title = el('h5', { text: labelOf(record) });
+    const chips = el('div', { className: 'vault-chips' }, approvalsChip(record), record.watch ? chip('Watching only', 'watch') : null);
+    const open = btn('Open', () => { current = record.address; view = 'vault'; status = ''; render(); void refresh(record.address); }, 'small');
+    open.setAttribute('aria-label', `Open ${labelOf(record)}`);
+    grid.append(el('article', { className: 'vault-tile' },
+      el('div', { className: 'vault-tile-head' }, title, chips),
+      el('p', { className: 'vault-tile-rule', text: `${record.m} of ${record.n} members must approve a payment.` }),
+      balanceBlock(balances.get(record.address), { compact: true }),
+      el('div', { className: 'vault-tile-foot' }, open)));
+  }
+  return el('div', { className: 'stake-block vault-list' }, el('h4', { text: 'Your shared vaults' }), grid, actions);
 }
 
 function field(labelText, control) {
@@ -609,13 +682,14 @@ function input(value = '', attrs = {}) {
 }
 
 function renderCreate() {
-  const box = el('div', { className: 'stake-block' }, el('h4', { text: 'Create a shared vault' }));
+  const box = el('div', { className: 'stake-block vault-form' }, el('h4', { text: 'Create a shared vault' }),
+    el('p', { className: 'hint', text: 'Choose the members and how many of them must approve a payment. The vault address is computed on this device from the members’ keys.' }));
   const label = input('', { maxlength: '48', placeholder: 'Family savings' });
   const members = document.createElement('textarea');
   members.rows = 3; members.spellcheck = false; members.placeholder = 'one per line: a chain name, or an ID';
   box.append(...field('Vault name (only for you and the members)', label));
-  box.append(el('p', { className: 'hint', text: `You are a member. Add up to ${VAULT_MAX_MEMBERS - 1} others by their chain name or their ID.` }));
   box.append(...field('Other members', members));
+  box.append(el('p', { className: 'hint vault-field-hint', text: `You are a member. Add up to ${VAULT_MAX_MEMBERS - 1} others by their chain name or their ID.` }));
   const picked = new Set();
   if (messagesOpen()) {
     const contacts = host.contacts();
@@ -624,116 +698,132 @@ function renderCreate() {
       for (const c of contacts) {
         const check = document.createElement('input'); check.type = 'checkbox';
         check.onchange = () => { if (check.checked) picked.add(c.fp); else picked.delete(c.fp); };
-        const row = el('label', { className: 'check' }, check, document.createTextNode(` ${c.name}`));
+        const row = el('label', { className: 'check vault-contact' }, check, el('span', { text: c.name }));
         list.append(row);
       }
-      box.append(el('p', { className: 'hint', text: 'Or pick from your contacts:' }), list);
+      box.append(el('p', { className: 'vault-subhead', text: 'Or pick from your contacts:' }), list);
     }
   }
   const approvals = document.createElement('select');
   for (let i = 1; i <= VAULT_MAX_MEMBERS; i++) approvals.append(new Option(String(i), String(i)));
   approvals.value = '2';
   box.append(...field('Approvals needed to spend', approvals));
-  box.append(el('p', { className: 'hint', text: 'For example, 2 means any two members together can spend. It cannot be changed later: a new vault would be needed.' }));
-  const actions = el('div', { className: 'stake-actions' },
-    btn('Back', () => { view = 'list'; createInfo = null; status = ''; render(); }),
-    btn('Check members', () => void checkMembers({ label: label.value, members: members.value, contacts: [...picked], m: approvals.value }), ''));
+  box.append(el('p', { className: 'hint vault-field-hint', text: 'For example, 2 means any two members together can spend. It cannot be changed later: a new vault would be needed.' }));
+  const actions = el('div', { className: 'vault-actions' },
+    btn('Check members', () => void checkMembers({ label: label.value, members: members.value, contacts: [...picked], m: approvals.value }), ''),
+    btn('Back', () => { view = 'list'; createInfo = null; status = ''; render(); }));
   box.append(actions);
   if (createInfo) {
     const { info } = createInfo;
-    const preview = el('div', { className: 'stake-list' });
-    for (const fp of info.members) preview.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: who(fp) }), el('small', { text: fp }))));
-    box.append(el('h4', { text: `${info.m} of ${info.n} members must approve` }), preview,
-      el('p', { className: 'hint', text: 'Vault address (computed on this device from the members’ keys):' }),
-      el('code', { className: 'vault-address', text: info.address }),
-      el('div', { className: 'stake-actions' }, btn('Create vault', () => void createVault(), '')));
+    const preview = el('div', { className: 'vault-members' });
+    for (const fp of info.members) preview.append(memberRow(fp));
+    box.append(el('div', { className: 'vault-preview' },
+      el('div', { className: 'vault-tile-head' }, el('h5', { text: 'The new vault' }), chip(`${info.m} of ${info.n} approvals`)),
+      el('p', { className: 'hint', text: `${info.m} of ${info.n} members must approve a payment.` }),
+      preview,
+      addressBox(info.address, 'Vault address (computed on this device from the members’ keys)'),
+      el('div', { className: 'vault-actions' }, btn('Create vault', () => void createVault(), ''))));
   }
   return box;
 }
 
 function renderWatch() {
-  const box = el('div', { className: 'stake-block' }, el('h4', { text: 'Watch a vault' }));
+  const box = el('div', { className: 'stake-block vault-form' }, el('h4', { text: 'Watch a vault' }));
   box.append(el('p', { className: 'hint', text: 'Paste a vault code a member gave you to see its balance. Its coins and history are shown only to its members; if you are not one you can only watch its balance.' }));
-  const code = document.createElement('textarea'); code.rows = 3; code.spellcheck = false;
+  const code = document.createElement('textarea'); code.rows = 3; code.spellcheck = false; code.className = 'vault-mono';
   const label = input('', { maxlength: '48' });
   box.append(...field('Vault code', code), ...field('Name (optional)', label));
-  box.append(el('div', { className: 'stake-actions' },
-    btn('Back', () => { view = 'list'; status = ''; render(); }),
-    btn('Add', () => void watchVault({ code: code.value, label: label.value }), '')));
+  box.append(el('div', { className: 'vault-actions' },
+    btn('Add', () => void watchVault({ code: code.value, label: label.value }), ''),
+    btn('Back', () => { view = 'list'; status = ''; render(); })));
   return box;
 }
 
 function renderReviewRows(record, review) {
-  const list = el('div', { className: 'stake-list' });
-  const row = (title, text) => list.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: title }), el('small', { text }))));
+  const list = el('dl', { className: 'vault-facts' });
   for (const out of review.outputs) {
-    if (out.change) row(`${nodus(out.amount)} back to this vault`, 'change');
-    else row(`Pay ${nodus(out.amount)}`, `to ${HEX128.test(out.owner) ? who(out.owner) : out.owner} (${out.owner})`);
+    if (out.change) list.append(fact('Change back to this vault', nodus(out.amount)));
+    else {
+      list.append(fact('Pay to', HEX128.test(out.owner) ? who(out.owner) : out.owner, out.owner, true));
+      list.append(fact('Amount', nodus(out.amount)));
+    }
   }
-  row(`Network fee ${nodus(review.fee)}`, 'paid from the vault');
+  list.append(fact('Network fee', nodus(review.fee), 'paid from the vault'));
   const left = blocksLeft(review);
-  row(review.expired ? 'Expired' : `Valid until block ${review.expiryHeight}`, review.expired ? `The network passed block ${review.expiryHeight}. Propose it again.` : `${left} blocks from now; after that it must be proposed again.`);
+  list.append(review.expired
+    ? fact('Valid until', `Expired at block ${review.expiryHeight}`, `The network passed block ${review.expiryHeight}. Propose it again.`)
+    : fact('Valid until', `Block ${review.expiryHeight}`, `${left} blocks from now; after that it must be proposed again.`));
   // F1: the module refused the review unless every coin it spends is one of
   // this vault's own coins (nodus-send-wasm.c nsw_ms_inputs_owned)
-  row('Coins checked', `All ${review.inputs.length} coins it spends belong to this vault.`);
+  list.append(fact('Coins checked', `All ${review.inputs.length} coins it spends belong to this vault.`));
   return list;
 }
 
 function renderVault(record) {
-  const box = el('div', { className: 'stake-block' });
+  const page = el('div', { className: 'vault-view' });
   const bal = balances.get(record.address);
-  box.append(el('h4', { text: labelOf(record) }),
-    el('p', { className: 'hint', text: `${record.m} of ${record.n} members must approve a payment.${record.watch ? ' You are watching this vault; you cannot approve its payments.' : ''}` }));
-  const members = el('div', { className: 'stake-list' });
-  for (const fp of record.members) members.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: who(fp) }), el('small', { text: fp }))));
-  box.append(members);
-  box.append(el('p', { className: 'hint', text: 'Vault address (receive NODUS here):' }), el('code', { className: 'vault-address', text: record.address }));
-  if (bal) box.append(el('p', { className: 'vault-balance', text: `Balance ${nodus(bal.total)} (${nodus(bal.spendable)} spendable now).` }));
   const read = reads.get(record.address);
-  if (record.watch) box.append(el('p', { className: 'hint', text: 'Only the vault’s members can see its coins and history.' }));
-  else if (read?.unsupported) box.append(el('p', { className: 'notice', text: 'This Nodus node is not updated yet for shared vaults. Try again later.' }));
-  else if (read?.truncated) box.append(el('p', { className: 'notice', text: 'This vault has more coins than this page can hold; payments can use only part of them.' }));
-  const top = el('div', { className: 'stake-actions' },
-    btn('Back', () => { view = 'list'; current = null; draft = null; status = ''; render(); }),
-    btn('Refresh', () => void refresh(record.address)));
-  if (messagesOpen() && !record.watch) top.append(btn('Share with members', () => void shareVault(record)));
-  if (!record.foundation) top.append(btn('Remove from this list', () => void removeVault(record)));
-  box.append(top);
+  page.append(btn('← All shared vaults', () => { view = 'list'; current = null; draft = null; status = ''; render(); }, 'secondary small vault-back'));
 
-  // history: the node's page of the vault address (one node's own index,
-  // not consensus — src/nodus/history.js), each row in the words the
-  // wallet's own NODUS history uses (nodusHistoryRow)
-  if (read?.history) box.append(renderHistory(read.history));
+  // the header card: name, rule, balance, address, actions
+  const hero = el('section', { className: 'stake-block vault-hero' });
+  hero.append(el('div', { className: 'vault-hero-head' },
+    el('h4', { text: labelOf(record) }),
+    el('div', { className: 'vault-chips' }, approvalsChip(record), record.watch ? chip('Watching only', 'watch') : null)));
+  hero.append(el('p', { className: 'hint vault-rule', text: `${record.m} of ${record.n} members must approve a payment.${record.watch ? ' You are watching this vault; you cannot approve its payments.' : ''}` }));
+  hero.append(el('div', { className: 'vault-hero-body' }, balanceBlock(bal), addressBox(record.address, 'Vault address (receive NODUS here)')));
+  const top = el('div', { className: 'vault-actions vault-toolbar' }, btn('Refresh', () => void refresh(record.address)));
+  if (messagesOpen() && !record.watch) top.append(btn('Share with members', () => void shareVault(record)));
+  if (!record.foundation) top.append(btn('Remove from this list', () => void removeVault(record), 'secondary small vault-remove'));
+  hero.append(top);
+  if (record.watch) hero.append(el('p', { className: 'notice vault-notice', text: 'Only the vault’s members can see its coins and history.' }));
+  else if (read?.unsupported) hero.append(el('p', { className: 'notice vault-notice', text: 'This Nodus node is not updated yet for shared vaults. Try again later.' }));
+  else if (read?.truncated) hero.append(el('p', { className: 'notice vault-notice', text: 'This vault has more coins than this page can hold; payments can use only part of them.' }));
+  page.append(hero);
+
+  // members
+  const members = el('div', { className: 'vault-members' });
+  for (const fp of record.members) members.append(memberRow(fp));
+  page.append(el('section', { className: 'stake-block' }, el('h4', { text: `Members (${record.members.length})` }), members));
 
   // payment requests
   const items = itemsFor(record);
   if (draft && draft.address === record.address && !items.requests.has(draft.request.digest)) items.requests.set(draft.request.digest, { request: draft.request, from: '', at: Date.now(), draft: true });
   if (items.requests.size) {
-    box.append(el('h4', { text: 'Payment requests' }));
+    const box = el('section', { className: 'stake-block' }, el('h4', { text: 'Payment requests' }));
     for (const [digest, item] of items.requests) box.append(renderRequest(record, digest, item, items));
+    page.append(box);
   }
 
   // propose
   if (!record.watch) {
-    const form = el('div', { className: 'stake-block' }, el('h4', { text: 'Propose a payment' }));
+    const form = el('section', { className: 'stake-block vault-form' }, el('h4', { text: 'Propose a payment' }));
     if (!messagesOpen()) form.append(el('p', { className: 'hint', text: 'Proposing and approving vault payments works in Nodus Connect, where the members are told by message.' }));
     else {
       const to = input('', { placeholder: 'chain name or Nodus address', 'data-keep': `${record.address}|to` });
       const amount = input('', { inputmode: 'decimal', placeholder: '0.00', 'data-keep': `${record.address}|amount` });
-      form.append(...field('Pay to', to), ...field('Amount (NODUS)', amount),
-        el('p', { className: 'hint', text: `You approve it first; then ${Math.max(record.m - 1, 0)} more member(s) must approve before it can be sent. It must be completed within about 90 blocks.` }),
-        el('div', { className: 'stake-actions' }, btn('Prepare', () => void prepareRequest(record, { to: to.value, amount: amount.value }), '')));
+      form.append(el('div', { className: 'vault-form-grid' },
+        el('div', { className: 'vault-form-cell' }, ...field('Pay to', to)),
+        el('div', { className: 'vault-form-cell' }, ...field('Amount (NODUS)', amount))),
+      el('p', { className: 'hint vault-field-hint', text: `You approve it first; then ${Math.max(record.m - 1, 0)} more member(s) must approve before it can be sent. It must be completed within about 90 blocks.` }),
+      el('div', { className: 'vault-actions' }, btn('Prepare', () => void prepareRequest(record, { to: to.value, amount: amount.value }), '')));
     }
-    box.append(form);
+    page.append(form);
   }
-  return box;
+
+  // history: the node's page of the vault address (one node's own index,
+  // not consensus — src/nodus/history.js), each row in the words the
+  // wallet's own NODUS history uses (nodusHistoryRow)
+  if (read?.history) page.append(renderHistory(read.history));
+  return page;
 }
 
 // The vault's history page (parseAddrHistory's answer): what the node keeps
 // first ("History from block N" when it keeps nothing older, or that it
-// keeps no address history), then the rows, newest first.
+// keeps no address history), then the rows, newest first — laid out like
+// the wallet's Activity rows.
 function renderHistory(page) {
-  const box = el('div', {}, el('h4', { text: 'History' }));
+  const box = el('section', { className: 'stake-block vault-history' }, el('h4', { text: 'History' }));
   const notes = [];
   if (!page.enabled && page.fromHeight === 0n) notes.push('This Nodus node does not keep address history.');
   else {
@@ -742,49 +832,71 @@ function renderHistory(page) {
     if (page.fromHeight > 1n) notes.push(`History from block ${page.fromHeight}: this node keeps nothing older.`);
     if (page.entries.length >= NODUS_HISTORY_LIMIT) notes.push(`The newest ${NODUS_HISTORY_LIMIT} entries, as reported by one Nodus node.`);
   }
-  if (notes.length) box.append(el('p', { className: 'hint', text: notes.join(' ') }));
-  const list = el('div', { className: 'stake-list' });
-  if (!page.entries.length) list.append(el('p', { className: 'stake-empty', text: 'Nothing in this vault’s history on this node.' }));
+  if (notes.length) box.append(el('p', { className: 'hint vault-history-note', text: notes.join(' ') }));
+  if (!page.entries.length) { box.append(el('p', { className: 'stake-empty', text: 'Nothing in this vault’s history on this node.' })); return box; }
+  const list = el('div', { className: 'activity-list' });
   for (const entry of page.entries) {
     const row = nodusHistoryRow(entry, { names });
-    const head = row.amount ? `${row.title} ${row.sign}${row.amount}` : row.title;
-    const detail = [row.detail, `block ${row.height}`].filter(Boolean).join(' · ');
-    list.append(el('div', { className: 'stake-row' }, el('span', { className: 'stake-main' }, el('strong', { text: head }), el('small', { text: detail }))));
+    const main = el('span', { className: 'activity-main' }, el('strong', { text: row.title }));
+    if (row.detail) main.append(el('small', { text: row.detail }));
+    const side = el('span', { className: 'activity-side' });
+    if (row.amount) side.append(el('strong', { className: 'vault-history-amount', text: `${row.sign}${row.amount}` }));
+    side.append(el('small', { text: `block ${row.height}` }));
+    list.append(el('div', { className: `activity-row${row.dir ? ` history-dir-${row.dir}` : ''}` }, main, side));
   }
   box.append(list);
   return box;
 }
 
+// The pill text of each request state (core.js requestState, plus 'sent'
+// below), and what it means when the pill alone does not say it.
+const STATE_PILL = { paid: 'Paid', spent: 'Coins spent', expired: 'Expired', ready: 'Ready to send', waiting: 'Waiting for approvals', sent: 'Sent' };
+const STATE_NOTE = {
+  paid: 'Paid.', spent: 'Its coins are spent — it was paid, or another payment used them.', expired: 'Expired — propose again.',
+  ready: 'Approved — ready to send.', waiting: '', sent: 'Sent to the network.'
+};
+
 function renderRequest(record, digest, item, items) {
   const key = rkey(record.address, digest);
   const rv = reviews.get(key);
-  const row = el('div', { className: 'stake-block vault-request' });
+  const card = el('article', { className: 'vault-request' });
   const from = item.from ? who(item.from) : 'you';
   if (!rv) {
-    row.append(el('p', { text: `Payment request from ${from}.` }), el('div', { className: 'stake-actions' }, btn('Review', () => void review(record, item.request), '')));
-    return row;
+    const pill = el('span', { className: 'status-badge vault-state', text: 'Not reviewed yet' });
+    pill.dataset.status = 'unreviewed';
+    card.append(el('div', { className: 'vault-request-head' }, el('h5', { text: `Payment request from ${from}` }), pill),
+      el('p', { className: 'hint', text: 'Review it to see what it pays: the page shows only what the request itself says.' }),
+      el('div', { className: 'vault-actions' }, btn('Review', () => void review(record, item.request), '')));
+    return card;
   }
   // F2: only the approvals the module verified at the last check count
   const verified = Array.isArray(rv.verifiedSigners) ? rv.verifiedSigners : [];
   const plain = stateOf(record, key, rv, verified.length);
   const state = sent.has(key) && plain !== 'paid' && plain !== 'spent' ? 'sent' : plain;
-  const title = {
-    paid: 'Paid', spent: 'Its coins are spent — it was paid, or another payment used them', expired: 'Expired — propose again',
-    ready: 'Approved — ready to send', waiting: 'Waiting for approvals', sent: 'Sent to the network'
-  }[state];
-  const refused = rv.refused ? ` · ${rv.refused} approval item(s) did not check out and are not counted` : '';
-  row.append(el('p', { text: `${title} · request from ${from} · ${Math.min(verified.length, rv.approvals)} of ${rv.approvals} approvals checked${refused}` }),
-    el('p', { className: 'hint', text: verified.length ? `Approved by ${verified.map(who).join(', ')}. “Check again” counts approvals that arrived since.` : '“Check again” counts approvals that arrived since.' }),
+  const pill = el('span', { className: 'status-badge vault-state', text: STATE_PILL[state] });
+  pill.dataset.status = state;
+  card.dataset.state = state;
+  card.append(el('div', { className: 'vault-request-head' }, el('h5', { text: `Payment request from ${from}` }), pill));
+  if (STATE_NOTE[state]) card.append(el('p', { className: 'vault-state-note', text: STATE_NOTE[state] }));
+  const counted = Math.min(verified.length, rv.approvals);
+  const progressText = `${counted} of ${rv.approvals} approvals checked`;
+  const bar = document.createElement('progress');
+  bar.className = 'vault-progress';
+  bar.max = Math.max(Number(rv.approvals) || 1, 1); bar.value = counted;
+  bar.setAttribute('aria-label', progressText);
+  card.append(el('div', { className: 'vault-approvals' }, el('span', { className: 'vault-approvals-text', text: progressText }), bar));
+  if (rv.refused) card.append(el('p', { className: 'notice vault-notice', text: `${rv.refused} approval item(s) did not check out and are not counted.` }));
+  card.append(el('p', { className: 'hint vault-approved-by', text: verified.length ? `Approved by ${verified.map(who).join(', ')}. “Check again” counts approvals that arrived since.` : '“Check again” counts approvals that arrived since.' }),
     renderReviewRows(record, rv));
-  const actions = el('div', { className: 'stake-actions' });
+  const actions = el('div', { className: 'vault-actions' });
   if (state !== 'paid' && state !== 'spent' && state !== 'expired' && state !== 'sent') {
     if (!ownApprovals.has(key) && !items.approvedHere.has(digest) && !verified.includes(ownFp) && rv.member && !record.watch && messagesOpen()) actions.append(btn(item.draft ? 'Approve and send to members' : 'Approve', () => void approve(record, item.request, { isNew: !!item.draft }), ''));
     if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
     actions.append(btn('Check again', () => void review(record, item.request)));
   }
   if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); render(); }));
-  row.append(actions);
-  return row;
+  if (actions.childElementCount) card.append(actions);
+  return card;
 }
 
 // ── rendering: the cards in Messages ────────────────────────────────────

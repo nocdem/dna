@@ -364,12 +364,10 @@ details.stake-block > summary { color: var(--text); }
 .evm-mono { font-family: ui-monospace, monospace; font-size: 12px; }
 dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 .vault-address { display: block; overflow-wrap: anywhere; font-size: 11px; line-height: 1.5; }
-.vault-contacts { display: flex; flex-direction: column; gap: 4px; }
 /* The result of saving the wallet, right under the save buttons (src/app.js saveVault). */
 .vault-save-status:empty { display: none; }
 .vault-save-status { margin: 14px 0 0; border-left-color: #f2c896; }
 .vault-save-status.vault-save-ok { border-left-color: var(--lime); }
-.vault-request > p { margin: 0 0 8px; }
 .vault-card { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .vault-card p, .vault-card ul { margin: 0; }
 /* HF-4 chain-name registration, inside the NODUS receive block */
@@ -673,12 +671,125 @@ details.danger-zone.danger-zone > summary { color: #f6c2bd; }
 .log-empty[hidden] { display: none; }
 #session-log-status { margin: 10px 0 0; }
 
-/* Shared vaults. */
-.vault-list > h4 { margin-bottom: 12px; }
-.vault-list .stake-actions { justify-content: flex-start; margin-top: 14px; }
-.vault-balance { margin: 14px 0 0; padding: 12px 14px; border-radius: 10px; background: #d5f99808; color: var(--text); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.vault-address { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); font-family: var(--mono); }
-.wallet-page .vault-panel .stake-actions { justify-content: flex-start; }
+/* Shared vaults (0.1.83, src/vaults/ui.js): vault tiles in the list; in a
+   vault, a header card (name, rule chip, large balance, address with Copy,
+   actions), member rows with a round mark, payment-request cards with a
+   status pill, an approvals bar and label / value rows; history rows are
+   the Activity rows. Long IDs wrap; nothing is wider than the screen. */
+.vault-panel :is(h4, h5, p, dd, strong, small, code, label) { overflow-wrap: anywhere; }
+.vault-panel h5 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.015em; line-height: 1.35; color: var(--text); }
+.vault-mono { font-family: var(--mono); font-size: 11px; line-height: 1.55; color: #b9c4ad; overflow-wrap: anywhere; }
+.vault-label { display: block; color: var(--muted); font-size: 11px; font-weight: 500; letter-spacing: .04em; }
+.vault-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+.vault-actions button { margin: 0; }
+.vault-actions button:not(.small) { min-height: 42px; padding: 10px 18px; }
+.vault-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.vault-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border: 1px solid var(--line-tint); border-radius: 999px; background: #d5f99808; color: #cfe3b6; font-size: 11px; font-weight: 500; white-space: nowrap; }
+.vault-chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--lime); flex-shrink: 0; }
+.vault-chip[data-kind="watch"] { border-color: #f2c89640; background: #f2c89608; color: var(--amber); }
+.vault-chip[data-kind="watch"]::before { background: var(--amber); }
+.vault-notice { margin: 14px 0 0; border-left-color: var(--amber); background: #f2c89608; color: var(--text); }
+/* List: one tile per vault; the empty state explains what a vault is. */
+.vault-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 12px; }
+.vault-tile { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 18px; border: 1px solid var(--line-soft); border-radius: 14px; background: radial-gradient(ellipse at top right, #6c92311c, transparent 70%), var(--card-raised); }
+.vault-tile:hover { border-color: #d5f99833; }
+.vault-tile-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; min-width: 0; }
+.vault-tile-head h5 { flex: 1 1 160px; min-width: 0; }
+.wallet-page .vault-panel p.vault-tile-rule { margin: 0; font-size: 12px; line-height: 1.55; }
+.vault-tile-foot { display: flex; justify-content: flex-end; margin-top: auto; padding-top: 4px; }
+.vault-tile-foot button { margin: 0; min-width: 96px; }
+.vault-money { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.vault-amount { color: var(--text); font-size: clamp(24px, 3vw, 32px); font-weight: 600; letter-spacing: -.04em; line-height: 1.15; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.vault-money-compact .vault-amount { font-size: 22px; }
+.vault-amount-unknown, .vault-money-compact .vault-amount-unknown { color: #8e9a82; font-size: 16px; font-weight: 500; letter-spacing: -.01em; }
+.vault-spendable { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.vault-empty { text-align: left; }
+.wallet-page .vault-panel p.vault-empty-lead { margin: 4px 0 6px; color: var(--text); font-size: 14px; font-weight: 500; }
+.vault-empty .hint { max-width: 640px; }
+/* A vault: Back, then the header card. */
+.wallet-page .vault-panel button.vault-back { display: inline-flex; align-items: center; min-height: 36px; margin: 16px 0 0; border-radius: 999px; }
+.vault-hero { background: radial-gradient(ellipse at top right, #6c923126, transparent 70%), var(--card) !important; border-color: #d5f99838 !important; }
+.vault-hero-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; }
+.wallet-page .vault-panel .vault-hero-head h4 { flex: 1 1 200px; min-width: 0; margin: 0; font-size: 20px; letter-spacing: -.03em; }
+.wallet-page .vault-panel .vault-rule { margin: 6px 0 0; }
+.vault-hero-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; gap: 16px 24px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
+.vault-address-box { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.vault-address-box .vault-address, .vault-address { padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); color: #d8ddcf; font-family: var(--mono); font-size: 11.5px; line-height: 1.6; }
+.vault-copy-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.vault-copy-row button { margin: 0; }
+.vault-copy-note { color: var(--muted); font-size: 11px; }
+.vault-copy-note:empty { display: none; }
+.vault-toolbar { padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.wallet-page .vault-panel button.vault-remove { margin-left: auto; border-color: #f28b8255; color: #f6c2bd; }
+.wallet-page .vault-panel button.vault-remove:hover { background: #f28b8214; filter: none; }
+/* Members. */
+.vault-members { display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: 12px; background: #11170f; overflow: hidden; }
+.vault-member { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 14px; }
+.vault-member + .vault-member { border-top: 1px solid var(--line-soft); }
+.vault-avatar { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--line-tint); border-radius: 50%; background: radial-gradient(circle at 30% 20%, #d5f99826, transparent 70%), #d5f99808; color: var(--lime); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+.vault-member-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.vault-member-main strong { color: var(--text); font-size: 13px; font-weight: 500; }
+.vault-member-main .vault-mono { font-size: 10px; color: var(--muted); }
+.vault-you { padding: 2px 9px; border: 1px solid #d5f99840; border-radius: 999px; background: #d5f99810; color: var(--lime); font-size: 10px; font-weight: 600; letter-spacing: .04em; }
+.vault-preview { margin-top: 20px; padding: 16px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--card-raised); }
+.vault-preview .vault-members { margin-top: 12px; }
+.vault-preview .vault-address-box { margin-top: 14px; }
+/* Payment requests. */
+.vault-request { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin-top: 12px; padding: 16px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--card-raised); }
+.vault-request:first-of-type { margin-top: 4px; }
+.vault-request[data-state="ready"] { border-color: #d5f99840; box-shadow: inset 2px 0 0 var(--lime); }
+.vault-request[data-state="expired"], .vault-request[data-state="spent"] { opacity: .85; }
+.vault-request-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.vault-request-head h5 { flex: 1 1 200px; min-width: 0; font-size: 14px; }
+.wallet-page .vault-panel .vault-request p { margin: 0; }
+.vault-state-note { color: var(--text); font-size: 12px; }
+.vault-state[data-status="waiting"]::before, .vault-state[data-status="sent"]::before { background: var(--amber); }
+.vault-state[data-status="sent"] { color: var(--amber); border-color: #f2c89640; }
+.vault-state:is([data-status="ready"], [data-status="paid"]) { color: var(--lime); border-color: #d5f99840; background: #d5f99806; }
+.vault-state:is([data-status="ready"], [data-status="paid"])::before { background: var(--lime); }
+.vault-state[data-status="spent"]::before { background: #8e9a82; }
+.vault-approvals { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.vault-approvals-text { color: var(--text); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.vault-progress { appearance: none; -webkit-appearance: none; width: 100%; height: 8px; border: 0; border-radius: 999px; background: #2a3223; overflow: hidden; }
+.vault-progress::-webkit-progress-bar { background: #2a3223; border-radius: 999px; }
+.vault-progress::-webkit-progress-value { background: var(--lime); border-radius: 999px; }
+.vault-progress::-moz-progress-bar { background: var(--lime); border-radius: 999px; }
+.vault-approved-by { font-size: 11px; }
+.vault-facts { display: grid; margin: 0; border: 1px solid var(--line-soft); border-radius: 10px; background: #11170f; overflow: hidden; }
+.vault-fact { display: grid; grid-template-columns: minmax(110px, 0.36fr) minmax(0, 1fr); gap: 4px 14px; padding: 10px 14px; }
+.vault-fact + .vault-fact { border-top: 1px solid var(--line-soft); }
+.vault-facts dt { margin: 0; color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.6; }
+.vault-facts dd { display: flex; flex-direction: column; gap: 3px; min-width: 0; margin: 0; color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.vault-facts dd small { color: var(--muted); font-size: 11px; line-height: 1.55; }
+.vault-facts dd small.vault-mono { font-size: 10px; }
+/* Forms: Create, Watch, Propose. */
+.wallet-page .vault-panel .vault-form label { margin-top: 16px; }
+.vault-form-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 0 14px; }
+.vault-form-cell { min-width: 0; }
+.wallet-page .vault-panel .vault-field-hint { margin: 8px 0 0; }
+.wallet-page .vault-panel p.vault-subhead { margin: 16px 0 8px; color: #dde2d3; font-size: 12px; font-weight: 500; }
+.vault-contacts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr)); gap: 8px; }
+.wallet-page .vault-panel label.vault-contact { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #11170f; cursor: pointer; }
+.vault-contact:has(input:checked) { border-color: #d5f99860; background: #d5f9980d; }
+.vault-contact input { margin: 0; }
+.vault-contact span { min-width: 0; overflow-wrap: anywhere; }
+.vault-panel textarea.vault-mono { font-size: 12px; }
+/* History: the Activity rows. */
+.vault-history .activity-list { margin-top: 4px; }
+.vault-history-amount { color: var(--text); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vault-history .history-dir-in .vault-history-amount { color: var(--lime); }
+.wallet-page .vault-panel .vault-history-note { margin: 0 0 12px; }
+@media (max-width: 760px) {
+  .vault-hero-body { grid-template-columns: minmax(0, 1fr); }
+  .vault-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .vault-fact { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .vault-actions button, .vault-tile-foot button { flex: 1 1 auto; min-height: 44px; }
+  .wallet-page .vault-panel button.vault-remove { margin-left: 0; }
+  .vault-member { gap: 10px; padding: 12px; }
+  .vault-avatar { width: 34px; height: 34px; }
+  .vault-amount { font-size: 26px; }
+  .vault-history-amount { white-space: normal; }
+}
 
 /* Smart contracts: overview, two-sided bridge, function rows, receipts. */
 .evm-overview { background: radial-gradient(ellipse at top right, #6c923124, transparent 70%), var(--card) !important; border-color: #d5f99838 !important; }

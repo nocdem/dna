@@ -747,14 +747,20 @@ async function sync() {
   } finally { if (gen === generation) syncing = false; }
 }
 
+// What this step changed on screen (an outgoing request completed, or the
+// incoming list differs) is drawn at once (web 0.1.83): the round's own
+// render() comes only after every contact's message check, up to a minute
+// later, and until then an accepted request stayed under "Sent by you".
 async function syncRequests(gen) {
   const result = await core.requestsFetch();
   if (gen !== generation) return;
   const pending = new Set(state.outgoing.map(o => o.fp));
   const latest = new Map();
+  const shownBefore = requests.map(r => `${r.sender}|${r.timestamp}`).join();
+  let completed = false;
   for (const request of result.requests || []) {
     if (!request || !HEX128.test(request.sender) || request.sender === ownFp) continue;
-    if (acceptanceMayAutoApprove(request, pending)) { await completeOutgoing(request, gen); if (gen !== generation) return; continue; }
+    if (acceptanceMayAutoApprove(request, pending)) { await completeOutgoing(request, gen); if (gen !== generation) return; completed = true; continue; }
     // An acceptance without our own pending request is ignored (the app's
     // HIGH-7 rule, dna_engine_contacts.c:555-562).
     if (request.acceptance === true) continue;
@@ -763,6 +769,7 @@ async function syncRequests(gen) {
     if (!seen || u64(request.timestamp) > u64(seen.timestamp)) latest.set(request.sender, request);
   }
   requests = [...latest.values()];
+  if (gen === generation && (completed || requests.map(r => `${r.sender}|${r.timestamp}`).join() !== shownBefore)) render();
 }
 
 // They accepted our request: the contact uses the salt WE offered, and our
