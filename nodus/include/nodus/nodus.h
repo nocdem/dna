@@ -1895,7 +1895,10 @@ void nodus_client_free_balance_result(nodus_dnac_balance_result_t *result);
  *                   validator_update | payout | release | fee |
  *                   name (HF-4: a NAME_REGISTER on its owner, amount =
  *                   the price; an older CLI refuses this kind — it fails
- *                   closed on the whole page)
+ *                   closed on the whole page) |
+ *                   evm_deposit (Nodus EVM: an EVM DEPOSIT, on the payer,
+ *                   amount = the amount locked into the EVM reserve; an
+ *                   older CLI or wallet refuses this kind the same way)
  *     "amount" u64
  *     "token" bstr64  all zero = native
  *     "fee" u64     the envelope fee, on the payer's first row only

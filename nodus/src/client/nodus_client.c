@@ -6860,7 +6860,8 @@ static const char *const AHD_KINDS[] = {
     "spend_out", "spend_in", "burn", "token_create", "claim", "stake",
     "delegate", "undelegate", "unstake", "validator_update", "payout",
     "release", "fee",
-    "name"          /* HF-4: a NAME_REGISTER, amount = the price */
+    "name",         /* HF-4: a NAME_REGISTER, amount = the price */
+    "evm_deposit"   /* Nodus EVM DEPOSIT, amount = the reserve lock */
 };
 
 /* (a) strictly after (b) in the newest-first order, i.e. a < b. */

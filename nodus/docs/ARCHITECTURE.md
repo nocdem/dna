@@ -6866,8 +6866,10 @@ writes, so a wallet had no history of its own address from a node.
   envelope's CORE EVMFUND leg follows the coin rules (change: nothing); its
   WITHDRAW / REDEEM release coin gives the recipient a `release` row (even when
   the recipient is the signer — it comes from the EVM reserve, not the payer);
-  a DEPOSIT's locked amount has no row (only the fee row); the EVM leg gives
-  none. (Before this the index refused domain 2 and the node FAULTed at its
+  a DEPOSIT gives the payer an `evm_deposit` row, amount = `reserve_in` (the raw
+  units it locks into the CORE EVM reserve; with only change outputs it is the
+  payer's first row, so the fee rides on it — until this row existed a deposit
+  showed only as a `fee` row); the EVM leg gives none. (Before this the index refused domain 2 and the node FAULTed at its
   first applied EVM envelope.) Claims (CORE target)
   give the claimant a `claim` row; paydays `payout`; graduations `release`. No
   sender is invented for claims, payouts or releases. The PAYER (first satisfied

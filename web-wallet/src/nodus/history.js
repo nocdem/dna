@@ -18,15 +18,19 @@
 //     may answer differently. Every text below says "one Nodus node".
 //   - kinds: spend_out | spend_in | burn | token_create | claim | stake |
 //     delegate | undelegate | unstake | validator_update | payout | release |
-//     fee | name (HF-4; defined in nodus_witness_addr_index.c, accepted by the
-//     client's decoder nodus_client.c AHD_KINDS). An unknown kind makes the
-//     client refuse the whole page (nodus_dnac_addr_history_decode): the
-//     wallet then shows its own records only — never an empty history.
-//   - smart contracts: an EVM leg writes no row; a DEPOSIT writes no amount
-//     row — only the payer's "fee" row; a contract call without a value the
-//     same; a WITHDRAW / REDEEM writes a "release" row on the recipient,
-//     carrying the item's wire id. So a deposit is shown as "Fee", never as
-//     a deposit (nothing on the row says so).
+//     fee | name (HF-4) | evm_deposit (Nodus EVM) — the last two defined in
+//     nodus_witness_addr_index.c, accepted by the client's decoder
+//     nodus_client.c AHD_KINDS, which is compiled into src/nodus/send.wasm.
+//     An unknown kind makes the client refuse the whole page
+//     (nodus_dnac_addr_history_decode): the wallet then shows its own
+//     records only — never an empty history.
+//   - smart contracts: an EVM leg writes no row; a DEPOSIT writes an
+//     "evm_deposit" row on the payer, amount = what it locks into the
+//     smart-contract reserve (the fee rides on it); a contract call without
+//     a value writes only the payer's "fee" row; a WITHDRAW / REDEEM writes
+//     a "release" row on the recipient, carrying the item's wire id. A
+//     deposit indexed by a node older than the evm_deposit row shows as
+//     "Fee" only.
 //   - "release" with NO wire id is a block-boundary row (i = 4294967295):
 //     a stake or delegation released at graduation; WITH a wire id it is the
 //     smart-contract release above. "payout" is always a boundary row.
@@ -42,7 +46,7 @@
 export const NODUS_HISTORY_LIMIT = 50;           // rows per read: src/history.js HISTORY_LIMIT
 export const NODUS_HISTORY_MAX_LIMIT = 100;      // nodus.h NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT
 export const BOUNDARY_POS = 4294967295n;         // nodus.h: "i" of a block-boundary row
-export const NODUS_HISTORY_KINDS = Object.freeze(['spend_out', 'spend_in', 'burn', 'token_create', 'claim', 'stake', 'delegate', 'undelegate', 'unstake', 'validator_update', 'payout', 'release', 'fee', 'name']);
+export const NODUS_HISTORY_KINDS = Object.freeze(['spend_out', 'spend_in', 'burn', 'token_create', 'claim', 'stake', 'delegate', 'undelegate', 'unstake', 'validator_update', 'payout', 'release', 'fee', 'name', 'evm_deposit']);
 const U64 = /^(0|[1-9]\d{0,19})$/, HEX128 = /^[0-9a-f]{128}$/, NATIVE = '0'.repeat(128);
 const U64_MAX = 2n ** 64n - 1n, U32_MAX = 2n ** 32n - 1n;
 const DECIMALS = 8;                               // src/nodus/network.js NODUS_ASSET.decimals
@@ -109,7 +113,8 @@ const KIND_TEXT = Object.freeze({
   payout: ['Reward payout', 'in', ''],
   release: ['Stake released', 'in', ''],
   fee: ['Fee', 'out', ''],
-  name: ['Chain name registered', 'out', '']
+  name: ['Chain name registered', 'out', ''],
+  evm_deposit: ['Moved to smart contracts', 'out', '']
 });
 // A "release" carrying a wire id is the smart-contract release (EVM
 // WITHDRAW / REDEEM), not a graduation release (see the top of this file).
