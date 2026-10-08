@@ -61,11 +61,17 @@ const entered = new Map();               // ID -> the chain name this user typed
 // Keyed by (vault address, digest) — rkey: a digest is only meaningful for
 // the vault it was reviewed under (F1).
 const reviews = new Map();               // rkey -> module read-back
-// rkey -> the module's own text for the last review it REFUSED (0.1.85):
-// shown on that request's card, as it is, never in the panel's status line
-// (the user may have scrolled away from it). A later review that passes
-// removes it.
+// rkey -> the module's own text for the last review it REFUSED with a
+// verdict about the request itself (isRequestVerdict, 0.1.85): shown on
+// that request's card, as it is, never in the panel's status line (the
+// user may have scrolled away from it). A later review that passes removes
+// it.
 const refusals = new Map();
+// rkey -> the text of a review that could not be done (no verdict: the
+// node, the connection, this page — anything not in REQUEST_VERDICTS). The
+// request stays among the open ones; cleared for the vault at every Open,
+// so the Open pass tries it again.
+const unchecked = new Map();
 const finishedOpen = new Set();          // vault addresses whose "Finished requests" the user opened
 const ownApprovals = new Map();          // rkey -> signature text (this session)
 const sent = new Map();                  // rkey -> { intentId, wireId, at } submitted here
@@ -125,7 +131,7 @@ const messagesOpen = () => !!host && host.isOpen();
 function reset() {
   generation++;
   client = undefined; ownFp = undefined; busy = false; current = null; view = 'list';
-  for (const map of [vaults, balances, reads, names, entered, reviews, refusals, finishedOpen, ownApprovals, sent, shareStates]) map.clear();
+  for (const map of [vaults, balances, reads, names, entered, reviews, refusals, unchecked, finishedOpen, ownApprovals, sent, shareStates]) map.clear();
   status = ''; draft = null; createInfo = null;
   render();
 }
@@ -217,6 +223,12 @@ async function refresh(address, { reviewRequests = false } = {}) {
   const record = vaults.get(address);
   if (!record || busy || !client) return;
   const gen = generation;
+  // Open: the reviews that could not be done last time are forgotten and
+  // tried again by the Open pass (a verdict in `refusals` is kept)
+  const retry = new Set();
+  if (reviewRequests) {
+    for (const key of [...unchecked.keys()]) if (key.startsWith(`${address}|`)) { unchecked.delete(key); retry.add(key); }
+  }
   busy = true; status = 'Reading the vault balance…'; render({ keepTyped: true });
   const problems = [];
   let coinsRead = false;
@@ -265,30 +277,35 @@ async function refresh(address, { reviewRequests = false } = {}) {
   } finally {
     if (gen === generation) {
       busy = false; render({ keepTyped: true });
-      if (reviewRequests && coinsRead && view === 'vault' && current === address) void reviewUnread(address, gen);
+      if (reviewRequests && coinsRead && view === 'vault' && current === address) void reviewUnread(address, gen, retry);
     }
   }
 }
 
 // Reading the requests on Open (0.1.85): every payment request of the vault
-// with no review yet (and no refusal) is reviewed, newest first, ONE module
-// call at a time through review() — `busy` is held for that one call only,
-// and the event loop gets a turn between calls so a button can be pressed.
-// It stops when the vault leaves the screen, the session changes
-// (`generation`) or another action holds `busy`; at most
-// VAULT_AUTO_REVIEWS per Open — the rest keep their "Review" button.
+// with no review yet and no verdict — plus those whose last review could
+// not be done (`retry`, taken out of `unchecked` by this Open) — is
+// reviewed, newest first, ONE module call at a time through review():
+// `busy` is held for that one call only, and the event loop gets a turn
+// between calls so a button can be pressed. It stops when the vault leaves
+// the screen, the session changes (`generation`) or another action holds
+// `busy`; at most VAULT_AUTO_REVIEWS per Open — the rest keep their
+// "Review" / "Check again" button.
 const VAULT_AUTO_REVIEWS = 16;
-async function reviewUnread(address, gen) {
+async function reviewUnread(address, gen, retry = new Set()) {
   const record = vaults.get(address);
   if (!record || record.watch) return;
+  const due = key => retry.has(key) || (!reviews.has(key) && !refusals.has(key) && !unchecked.has(key));
   const unread = [...itemsFor(record).requests]
-    .filter(([digest]) => !reviews.has(rkey(address, digest)) && !refusals.has(rkey(address, digest)))
+    .filter(([digest]) => due(rkey(address, digest)))
     .sort((a, b) => b[1].at - a[1].at);
   if (unread.length > VAULT_AUTO_REVIEWS) sessionLog.log('vault', `${unread.length - VAULT_AUTO_REVIEWS} more payment request(s) were left to review by hand.`);
   for (const [digest, item] of unread.slice(0, VAULT_AUTO_REVIEWS)) {
     if (gen !== generation || view !== 'vault' || current !== address || busy || !client || !vaults.has(address)) return;
     const key = rkey(address, digest);
-    if (reviews.has(key) || refusals.has(key)) continue;
+    // reviewed by hand meanwhile ("Check again" between two steps)
+    if (!due(key) || refusals.has(key) || unchecked.has(key)) continue;
+    retry.delete(key);
     await review(latest(record), item.request);
     await new Promise(resolve => setTimeout(resolve, 0));
   }
@@ -522,12 +539,56 @@ async function approve(record, request, { isNew }) {
   }
 }
 
-// Review / Check again, and each step of reviewUnread. A refusal is kept
-// for the request's own card (`refusals`, the module's text as it is) and
-// its earlier read-back is dropped: only the module's latest word about a
-// request is shown or acted on (F1). The status line carries the progress
-// only. Redraws keep what was typed in the payment form (the Open pass runs
-// while the user may type).
+// The module's DEFINITE verdicts about a request's own bytes (checked in
+// this order by vaultReview: src/nodus/send-module.js vaultRequestLoad ->
+// nsw_msig_prop_in, then nsw_msig_review -> nsw_ms_review_now, in
+// crypto/nodus-send-wasm.c "VAULTS"). Matched by exact text prefix; any
+// other failure is NOT a verdict (the node, the connection, this page:
+// "The current Nodus block height is unknown" :3716, "Nodus connection is
+// not ready" nsw_session_ok :1545-1547, "Out of memory." :3411/:3486/:3560,
+// "There is no payment request to review." :3481/:3710, "No vault is open."
+// :3544, "…transaction rules this page does not know. Reload the page."
+// :3453, and the preflight text :3496 "…is for another network, has
+// expired, or uses transaction rules this page does not know." — that one
+// mixes a verdict with this page's own rules, so it is not treated as
+// final). Keep this list in step with those C lines.
+export const REQUEST_VERDICTS = Object.freeze([
+  // :3418 :3441 :3553 :3567 (nsw_ms_export_fill / nsw_ms_core_tuple /
+  // nsw_msig_prop_in), :3500 (NODUS_V2_MSIG_ERR_CALL, "… Do not approve
+  // it."), and send-module.js:380 (vaultRequestLoad)
+  'This payment request is damaged.',
+  // :3555 nsw_msig_prop_in: its chain id is not this network's (exact
+  // text; the :3496 preflight text starts "…another network," instead)
+  'This payment request is for another network.',
+  // :3587 nsw_msig_prop_in: its auth blob does not open for this vault
+  'This payment request is not for this vault.',
+  // :3493 NODUS_V2_MSIG_ERR_DIGEST
+  'This payment request does not match its own contents.',
+  // :3502 NODUS_V2_MSIG_ERR_EXPIRY
+  'This payment request never expires',
+  // :3505 nodus_v2_msig_review's other refusals ("(rc=%d)")
+  'This payment request is not a vault payment this page can read',
+  // :3510 the read-back's vault address is not this vault's
+  'This payment request spends from a different vault',
+  // :3474 / :3515 NSW_MS_NOT_OWNED (F1: a coin it spends is not among this
+  // vault's coins — read by this Open before the pass, refresh coinsRead)
+  'This request spends coins this vault does not hold',
+  // :3521 an output that is not native NODUS
+  'This payment request moves a token this page cannot show.',
+  // :3529 F3: the window judged at the node's tip
+  'This payment request stays valid longer than any wallet makes one.'
+]);
+export const isRequestVerdict = text => typeof text === 'string' && REQUEST_VERDICTS.some(v => text.startsWith(v));
+
+// Review / Check again, and each step of reviewUnread. A VERDICT about the
+// request (isRequestVerdict) is kept for the request's own card
+// (`refusals`, the module's text as it is) and its earlier read-back is
+// dropped: only the module's latest word about a request is shown or acted
+// on (F1). Any other failure is kept in `unchecked` (the card stays open,
+// "Not checked"; the read-back, if any, is kept but not shown or acted on
+// until a review passes). The status line carries the progress only.
+// Redraws keep what was typed in the payment form (the Open pass runs while
+// the user may type).
 async function review(record, request) {
   if (busy || !client) return;
   const gen = generation;
@@ -539,14 +600,22 @@ async function review(record, request) {
     if (gen !== generation) return;
     reviews.set(key, answer);
     refusals.delete(key);
+    unchecked.delete(key);
     status = '';
   } catch (error) {
     if (gen !== generation) return;
     const text = error?.message || 'This payment request could not be read.';
-    reviews.delete(key);
-    refusals.set(key, text);
     status = '';
-    sessionLog.log('vault', `Payment request not valid: ${text}`, { error: true });
+    if (isRequestVerdict(text)) {
+      reviews.delete(key);
+      unchecked.delete(key);
+      refusals.set(key, text);
+      sessionLog.log('vault', `Payment request not valid: ${text}`, { error: true });
+    } else {
+      refusals.delete(key);
+      unchecked.set(key, text);
+      sessionLog.log('vault', `Payment request not checked: ${text}`, { error: true });
+    }
   } finally {
     if (gen === generation) { busy = false; render({ keepTyped: true }); }
   }
@@ -923,22 +992,25 @@ function renderHistory(page) {
 
 // The pill text of each request state (core.js requestState, plus 'sent'
 // below), and what it means when the pill alone does not say it.
-const STATE_PILL = { paid: 'Paid', spent: 'Coins spent', expired: 'Expired', ready: 'Ready to send', waiting: 'Waiting for approvals', sent: 'Sent', refused: 'Not valid' };
+const STATE_PILL = { paid: 'Paid', spent: 'Coins spent', expired: 'Expired', ready: 'Ready to send', waiting: 'Waiting for approvals', sent: 'Sent', refused: 'Not valid', unchecked: 'Not checked' };
 const STATE_NOTE = {
   paid: 'Paid.', spent: 'Its coins are spent — it was paid, or another payment used them.', expired: 'Expired — propose again.',
   ready: 'Approved — ready to send.', waiting: '', sent: 'Sent to the network.'
 };
 // The states shown in "Finished requests": nothing more can be done with
-// them. 'refused' is a request the module's last review refused (its text
-// is on the card); "Check again" stays on it.
+// them. 'refused' is a request the module's last review refused with a
+// verdict about the request (its text is on the card); "Check again" stays
+// on it. 'unchecked' (the review could not be done) stays OPEN.
 const FINISHED = new Set(['paid', 'spent', 'expired', 'refused']);
 
-// A request's state on the page: 'refused' (the last review was refused),
+// A request's state on the page: 'refused' (the last review gave a verdict
+// against it), 'unchecked' (the last review could not be done),
 // 'unreviewed', or stateOf's answer — 'sent' when this wallet sent it and
 // it is neither paid nor spent yet.
 function requestStateOf(record, digest) {
   const key = rkey(record.address, digest);
   if (refusals.has(key)) return 'refused';
+  if (unchecked.has(key)) return 'unchecked';
   const rv = reviews.get(key);
   if (!rv) return 'unreviewed';
   // F2: only the approvals the module verified at the last check count
@@ -960,15 +1032,18 @@ function renderRequest(record, digest, item, items, state) {
   const card = el('article', { className: 'vault-request' });
   const from = item.from ? who(item.from) : 'you';
   const title = el('h5', { text: `Payment request from ${from}` });
-  if (state === 'refused') {
+  if (state === 'refused' || state === 'unchecked') {
     // the module's own words, as they are; nothing to approve or send
-    const pill = el('span', { className: 'status-badge vault-state', text: STATE_PILL.refused });
-    pill.dataset.status = 'refused';
-    card.dataset.state = 'refused';
+    const refused = state === 'refused';
+    const pill = el('span', { className: 'status-badge vault-state', text: STATE_PILL[state] });
+    pill.dataset.status = state;
+    card.dataset.state = state;
     const actions = el('div', { className: 'vault-actions' }, btn('Check again', () => void review(record, item.request)));
-    if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); render(); }));
-    card.append(el('div', { className: 'vault-request-head' }, title, pill), arrivedLine(item),
-      el('p', { className: 'notice vault-notice vault-refusal', text: refusals.get(key) }), actions);
+    if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); unchecked.delete(key); render(); }));
+    const notice = refused
+      ? el('p', { className: 'notice vault-notice vault-refusal', text: refusals.get(key) })
+      : el('p', { className: 'notice vault-notice vault-unchecked', text: `This request could not be checked right now: ${unchecked.get(key)}` });
+    card.append(el('div', { className: 'vault-request-head' }, title, pill), arrivedLine(item), notice, actions);
     return card;
   }
   const rv = reviews.get(key);
@@ -1003,7 +1078,7 @@ function renderRequest(record, digest, item, items, state) {
     if (state === 'ready') actions.append(btn('Send payment', () => void sendPayment(record, item.request, items), ''));
     actions.append(btn('Check again', () => void review(record, item.request)));
   }
-  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); render(); }));
+  if (item.draft) actions.append(btn('Discard', () => { draft = null; reviews.delete(key); refusals.delete(key); unchecked.delete(key); render(); }));
   if (actions.childElementCount) card.append(actions);
   return card;
 }

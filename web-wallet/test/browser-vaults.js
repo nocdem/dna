@@ -26,7 +26,10 @@
 // Asserted: the requests are read on Open with no Review pressed (0.1.85);
 // the refused one (the fake throws NSW_MS_NOT_OWNED's text) sits in the
 // collapsed Finished section with that text on its own card, pill "Not
-// valid", only "Check again", and the top status line empty; no horizontal
+// valid", only "Check again", and the top status line empty; one whose
+// review cannot be done (the fake throws "The current Nodus block height
+// is unknown (rc=-1).") stays among the OPEN requests, pill "Not checked",
+// a neutral notice and only "Check again"; no horizontal
 // scroll at 390 and 320 px on each of the three, no page error, no refused
 // (CSP) load, no unexpected request.
 //
@@ -124,12 +127,18 @@ try {
     };
     const NOT_OWNED = 'This request spends coins this vault does not hold — do not approve it. Refresh the vault if you think this is wrong.';
     const refuse = new Set([id('d3')]);
+    // and one whose review cannot be done right now (nsw_msig_review's tip
+    // query failed, crypto/nodus-send-wasm.c :3716): not a verdict
+    const TIP_UNKNOWN = 'The current Nodus block height is unknown (rc=-1).';
+    const cannot = new Set([id('d4')]);
     // `at` in ms (Messages' Date.now()); drawn newest first: the waiting one
-    // on top, the refused one (oldest) in "Finished requests"
+    // on top, then ready, then the unchecked one (still open); the refused
+    // one in "Finished requests"
     const messages = [
       { fp: ALICE, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d1') }), at: 1759990000000 },
       { fp: BOB, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d2') }), at: 1759980000000 },
-      { fp: ALICE, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d3') }), at: 1759970000000 }
+      { fp: ALICE, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d3') }), at: 1759970000000 },
+      { fp: BOB, dir: 'in', text: core.encodeRequest({ vault: FAMILY, request: request('d4') }), at: 1759960000000 }
     ];
     const client = {
       state: 'ready', vaultable: true, nameable: true, fingerprint: OWN,
@@ -141,6 +150,7 @@ try {
       async nameLookup({ name }) { const owner = [...chainNames].find(([, n]) => n === name)?.[0]; return owner ? { found: true, owner } : { found: false }; },
       async vaultReview({ request: r }) {
         if (refuse.has(r.digest)) throw new Error(NOT_OWNED);
+        if (cannot.has(r.digest)) throw new Error(TIP_UNKNOWN);
         const x = reviewOf[r.digest];
         return {
           vault: FAMILY, approvals: 2, verifiedSigners: x.verifiedSigners, refused: 0, member: true, expired: false, tip: '5012', expiryHeight: '5102',
@@ -205,12 +215,18 @@ try {
   // in a gap: first wait until every request card has its final state.
   await page.getByRole('button', { name: 'Open Family savings' }).click();
   await page.locator('.vault-history').waitFor();
-  await page.waitForFunction(() => document.querySelectorAll('#vaults-root .vault-request[data-state]').length === 3);
+  await page.waitForFunction(() => document.querySelectorAll('#vaults-root .vault-request[data-state]').length === 4);
   await settled();
   assert.equal(await page.getByRole('button', { name: 'Review', exact: true }).count(), 0);
-  assert.deepEqual(await page.locator('.vault-open-requests .vault-request .vault-state').allInnerTexts(), ['Waiting for approvals', 'Ready to send']);
+  assert.deepEqual(await page.locator('.vault-open-requests .vault-request .vault-state').allInnerTexts(), ['Waiting for approvals', 'Ready to send', 'Not checked']);
   assert.deepEqual(await page.locator('.vault-open-requests .vault-approvals-text').allInnerTexts(), ['1 of 2 approvals checked', '2 of 2 approvals checked']);
-  assert.equal(await page.locator('.vault-open-requests .vault-received').count(), 2);
+  assert.equal(await page.locator('.vault-open-requests .vault-received').count(), 3);
+  // the one that could not be checked (not a verdict): OPEN, a neutral
+  // notice with the module's text, only "Check again"
+  const notChecked = page.locator('.vault-open-requests .vault-request[data-state="unchecked"]');
+  assert.equal(await notChecked.count(), 1);
+  assert.equal(await notChecked.locator('.vault-unchecked').textContent(), 'This request could not be checked right now: The current Nodus block height is unknown (rc=-1).');
+  assert.deepEqual(await notChecked.locator('button').allTextContents(), ['Check again']);
   // the refused one: in the collapsed Finished section, the module's text on
   // its own card, no approve / send, the top status line empty
   assert.equal(await page.locator('details.vault-finished > summary').textContent(), 'Finished requests (1)');
