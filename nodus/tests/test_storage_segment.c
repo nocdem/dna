@@ -1181,6 +1181,28 @@ static int t_fetch_wire(void) {
         CHECK(nodus_stfetch_ans_decode(l, sizeof(l), &a) != 0,
               "a refusal carries nothing more");
     }
+    {
+        /* only the defined refusal codes decode; 5 is retired (K6a) and
+         * 7..255 are undefined */
+        const uint8_t good[5] = {
+            NODUS_STFETCH_REF_NOT_MEMBER, NODUS_STFETCH_REF_UNKNOWN_SET,
+            NODUS_STFETCH_REF_NOT_PUBLISHED, NODUS_STFETCH_REF_NOT_HELD,
+            NODUS_STFETCH_REF_FAULT };
+        const uint8_t bad[3] = { 5, 7, 0xFF };
+        uint8_t m[NODUS_STFETCH_REFUSAL_LEN];
+        memcpy(m, ref, sizeof(ref));
+        for (size_t i = 0; i < sizeof(good); i++) {
+            m[65] = good[i];
+            CHECK(nodus_stfetch_ans_decode(m, sizeof(m), &a) == 0 &&
+                  a.code == good[i] && memcmp(a.rq, rq, 64) == 0,
+                  "a defined refusal decodes with its code");
+        }
+        for (size_t i = 0; i < sizeof(bad); i++) {
+            m[65] = bad[i];
+            CHECK(nodus_stfetch_ans_decode(m, sizeof(m), &a) != 0,
+                  "a retired or undefined code is a malformed answer");
+        }
+    }
     uint8_t *out = malloc(NODUS_STFETCH_MSG_MAX + 1);
     uint8_t hdr[100], body[300], proof[80];
     size_t len = 0;
@@ -1725,6 +1747,25 @@ static int t_serve_refusals(void) {
     CHECK(w_registry(w, me, 2) == 0, "EXITING");
     CHECK(SERVE(G.export_dir) == NODUS_STFETCH_REF_NOT_MEMBER,
           "an EXITING member is not served");
+    {
+        /* a malformed committed row (status not an INTEGER) is a FAULT,
+         * never NOT_MEMBER; the CHECK constraint is lifted only to plant
+         * the corruption (w_exec always binds ?1 and ?3: both 0 here) */
+        CHECK(sqlite3_exec(w->db, "PRAGMA ignore_check_constraints = ON",
+                           NULL, NULL, NULL) == SQLITE_OK, "lift CHECKs");
+        CHECK(w_exec(w, "UPDATE v2_storage_nodes SET status = 'ACTIVE' "
+                     "WHERE node_fp = ?2 AND ?1 = ?3", 0, me, 64, 0) == 0 &&
+              sqlite3_changes(w->db) == 1, "status as TEXT");
+        CHECK(SERVE(G.export_dir) == NODUS_STFETCH_REF_FAULT,
+              "a TEXT status is a FAULT");
+        CHECK(w_exec(w, "UPDATE v2_storage_nodes SET status = X'01' "
+                     "WHERE node_fp = ?2 AND ?1 = ?3", 0, me, 64, 0) == 0 &&
+              sqlite3_changes(w->db) == 1, "status as BLOB");
+        CHECK(SERVE(G.export_dir) == NODUS_STFETCH_REF_FAULT,
+              "a BLOB status is a FAULT");
+        CHECK(sqlite3_exec(w->db, "PRAGMA ignore_check_constraints = OFF",
+                           NULL, NULL, NULL) == SQLITE_OK, "restore CHECKs");
+    }
     CHECK(w_registry(w, me, 1) == 0, "ACTIVE");
     CHECK(SERVE(G.export_dir) == NODUS_STFETCH_REF_NOT_PUBLISHED,
           "segment 1 not published");
