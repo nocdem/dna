@@ -83,6 +83,14 @@ const notes = new Map();
 const rkey = (address, digest) => `${address}|${digest}`;
 const shareStates = new Map();           // vault code -> { state, info?, error? }
 let status = '', draft = null, createInfo = null, foundationChecked = -1;
+// loadVaults (BUGS W-05, 0.1.86): a Foundation vaultOpen in flight; the
+// generation whose Foundation failure was logged; the "not listed" lines
+// already written this session.
+let foundationAsking = false, foundationLogged = -1;
+const unlistedLogged = new Set();
+// The vault already in the list that "Watch a vault" found (BUGS W-06): its
+// address, shown on the watch screen with "Open it"; never re-kept.
+let alreadyListed = null;
 let loggedStatus = '';                    // the status line last sent to the session log (render)
 
 const $ = id => document.getElementById(id);
@@ -135,10 +143,10 @@ const messagesOpen = () => !!host && host.isOpen();
 
 function reset() {
   generation++;
-  stopPoll(); polling = false;
+  stopPoll(); polling = false; openPass = 0; foundationAsking = false;
   client = undefined; ownFp = undefined; busy = false; current = null; view = 'list';
-  for (const map of [vaults, balances, reads, names, entered, reviews, refusals, unchecked, finishedOpen, ownApprovals, sent, notes, shareStates]) map.clear();
-  status = ''; draft = null; createInfo = null;
+  for (const map of [vaults, balances, reads, names, entered, reviews, refusals, unchecked, finishedOpen, ownApprovals, sent, notes, shareStates, unlistedLogged]) map.clear();
+  status = ''; draft = null; createInfo = null; alreadyListed = null;
   render();
 }
 
@@ -154,36 +162,74 @@ async function start(detail) {
 // The listed vaults: the kept ones (Messages, saved wallet), the Foundation
 // preset when this wallet is one of its members, and those of this
 // session.
+// A kept vault that is not listed is never dropped in silence (BUGS W-05,
+// 0.1.86): one session-log line names its address prefix and the reason
+// (no key, no code). A record that fails its checks stays unlisted, as
+// before (a record whose stored fields disagree with the module's
+// derivation must never be shown); a vaultOpen that THREW (the module or the
+// node) is tried again at the next loadVaults. The same reason is not logged
+// twice in a session.
+function notListed(address, reason) {
+  const tag = typeof address === 'string' ? address.slice(0, 8) : '?';
+  const line = `A saved vault (${tag}…) is not listed: ${reason}`;
+  if (unlistedLogged.has(line)) return;
+  unlistedLogged.add(line);
+  sessionLog.log('vault', line, { error: true });
+}
+
 async function loadVaults(gen) {
   if (gen !== generation || !client || client.state !== 'ready') return;
   for (const kept of messagesOpen() ? host.vaults() : []) {
     if (vaults.has(kept.address)) continue;
-    try {
-      // a record kept by 0.1.80 / 0.1.81 (block-reading cursor, events, the
-      // Foundation's `genesis` flag) loads as it is (core.js "RECORD
-      // COMPATIBILITY"); its coins are replaced at the next Open
-      const record = checkVaultRecord(kept.value);
-      if (record.address !== kept.address || !listedFor(record, ownFp)) continue;
-      // the address and members are derived again from the kept code by the
-      // module; a record whose stored fields disagree is not listed
-      const info = await client.vaultOpen({ descriptor: record.code });
+    // a record kept by 0.1.80 / 0.1.81 (block-reading cursor, events, the
+    // Foundation's `genesis` flag) loads as it is (core.js "RECORD
+    // COMPATIBILITY"); its coins are replaced at the next Open
+    let record;
+    try { record = checkVaultRecord(kept.value); }
+    catch (error) { notListed(kept.address, `its saved record is damaged (${error?.message || 'unreadable'}). Add it again from its message.`); continue; }
+    if (record.address !== kept.address) { notListed(kept.address, 'its saved record names another address.'); continue; }
+    if (!listedFor(record, ownFp)) { notListed(kept.address, 'this wallet is not one of its members.'); continue; }
+    // the address and members are derived again from the kept code by the
+    // module; a record whose stored fields disagree is not listed
+    let info;
+    try { info = await client.vaultOpen({ descriptor: record.code }); }
+    catch (error) {
       if (gen !== generation) return;
-      if (info.address !== record.address || info.m !== record.m || info.n !== record.n ||
-          info.members.length !== record.members.length || info.members.some((fp, i) => fp !== record.members[i])) continue;
-      vaults.set(record.address, record);
-    } catch { /* a damaged record is not listed; it can be added again from its message */ }
+      notListed(kept.address, `its code could not be read right now (${error?.message || 'unknown error'}); it is tried again.`);
+      continue;
+    }
+    if (gen !== generation) return;
+    if (info.address !== record.address || info.m !== record.m || info.n !== record.n ||
+        info.members.length !== record.members.length || info.members.some((fp, i) => fp !== record.members[i])) {
+      notListed(kept.address, 'its saved address or members do not match what its code gives.');
+      continue;
+    }
+    // added meanwhile (another loadVaults, Add / Create): the listed one stays
+    if (!vaults.has(record.address)) vaults.set(record.address, record);
   }
-  if (!vaults.has(FOUNDATION_VAULT.address) && foundationChecked !== gen) {
-    foundationChecked = gen;
+  // The Foundation preset: asked until one vaultOpen ANSWERED in this
+  // session (foundationChecked is set after it, not before — a failed first
+  // attempt is tried again at the next loadVaults); one call at a time.
+  if (!vaults.has(FOUNDATION_VAULT.address) && foundationChecked !== gen && !foundationAsking) {
+    foundationAsking = true;
     try {
       const info = await client.vaultOpen({ descriptor: FOUNDATION_VAULT.descriptor });
       if (gen !== generation) return;
+      foundationChecked = gen;
       // the module's own derivation must give the documented address
-      if (info.address === FOUNDATION_VAULT.address && info.isMember) {
+      if (info.address !== FOUNDATION_VAULT.address) notListed(FOUNDATION_VAULT.address, 'the Foundation vault code does not give its documented address.');
+      else if (info.isMember && !vaults.has(FOUNDATION_VAULT.address)) {
         // its coins (genesis outputs included) come from the node at Open
         await keep(makeVaultRecord({ info, label: FOUNDATION_VAULT.label, created: FOUNDATION_VAULT.created, foundation: true }));
       }
-    } catch { /* not listed */ }
+    } catch (error) {
+      if (gen === generation && foundationLogged !== gen) {
+        foundationLogged = gen;
+        sessionLog.log('vault', `The Foundation vault could not be checked right now (${error?.message || 'unknown error'}); it is tried again.`, { error: true });
+      }
+    } finally {
+      if (gen === generation) foundationAsking = false;
+    }
   }
   render();
   for (const record of vaults.values()) await nameMembers(record, gen);
@@ -225,83 +271,67 @@ const latest = record => vaults.get(record.address) ?? record;
 // the vault's unreviewed payment requests are read too (reviewUnread) —
 // never against coins that were not read (a watched vault, a node without
 // the member query, a failed coin read): the module would refuse them.
-// quiet (the background read, pollTick, 0.1.86): the same three calls, but
-// the status line is left as it is and a problem goes to the session log
-// only. Returns whether the coins were read in this call.
-async function refresh(address, { reviewRequests = false, quiet = false } = {}) {
+async function refresh(address, { reviewRequests = false } = {}) {
   const record = vaults.get(address);
-  if (!record || busy || !client) return false;
+  if (!record || busy || !client) return;
   const gen = generation;
-  const say = text => { if (!quiet) status = text; };
   // Open: the reviews that could not be done last time are forgotten and
   // tried again by the Open pass (a verdict in `refusals` is kept)
   const retry = new Set();
   if (reviewRequests) {
     for (const key of [...unchecked.keys()]) if (key.startsWith(`${address}|`)) { unchecked.delete(key); retry.add(key); }
   }
-  busy = true; say('Reading the vault balance…'); render({ keepTyped: true });
+  busy = true; status = 'Reading the vault balance…'; render({ keepTyped: true });
   const problems = [];
   let coinsRead = false;
   try {
     const balance = await client.vaultBalance({ descriptor: record.code });
-    if (gen !== generation) return false;
+    if (gen !== generation) return;
     balances.set(address, balance);
-    if (record.watch) { say(''); return false; }
-    say('Reading the vault coins…'); render({ keepTyped: true });
+    if (record.watch) { status = ''; return; }
+    status = 'Reading the vault coins…'; render({ keepTyped: true });
     const read = { truncated: false, history: null, unsupported: false };
     try {
       const before = vaults.get(address);
       const answer = await client.vaultCoins({ descriptor: record.code });
-      if (gen !== generation) return false;
+      if (gen !== generation) return;
       // removed (or added again) while the read ran: nothing is kept
-      if (!before || vaults.get(address) !== before) { say(''); return false; }
+      if (!before || vaults.get(address) !== before) { status = ''; return; }
       const applied = applyCoins(before, answer);
       read.truncated = applied.truncated;
-      // the background read keeps (saves) the record only when its coins
-      // changed: no device write every 30 s for nothing
-      if (!quiet || !sameCoins(before.coins, applied.record.coins)) await keep(applied.record);
-      if (gen !== generation) return false;
+      await keep(applied.record);
+      if (gen !== generation) return;
       coinsRead = true;
     } catch (error) {
-      if (gen !== generation) return false;
+      if (gen !== generation) return;
       if (error?.code === VAULT_UNSUPPORTED) {
         // no fallback: the page says so and reads nothing else
         read.unsupported = true;
         reads.set(address, read);
-        say('');
+        status = '';
         sessionLog.log('vault', 'The Nodus node does not have the vault member query yet.', { error: true });
-        return false;
+        return;
       }
       problems.push(error.message || 'The vault coins could not be read.');
-      // the background read keeps what it knew about the coins it still has
-      if (quiet) read.truncated = !!reads.get(address)?.truncated;
     }
-    say('Reading the vault history…'); render({ keepTyped: true });
+    status = 'Reading the vault history…'; render({ keepTyped: true });
     try {
       read.history = await client.vaultHistory({ descriptor: record.code, limit: NODUS_HISTORY_LIMIT });
-      if (gen !== generation) return false;
+      if (gen !== generation) return;
     } catch (error) {
-      if (gen !== generation) return false;
-      // the background read keeps the history page it had
-      if (quiet) read.history = reads.get(address)?.history ?? null;
+      if (gen !== generation) return;
       problems.push(error.message || 'The vault history could not be read.');
     }
     reads.set(address, read);
-    if (!quiet) status = problems.join(' ');
-    else if (problems.length) sessionLog.log('vault', `The vault could not be read again: ${problems.join(' ')}`, { error: true });
+    status = problems.join(' ');
   } catch (error) {
-    if (gen === generation) {
-      const text = error.message || 'The vault could not be read right now.';
-      if (!quiet) status = text;
-      else sessionLog.log('vault', `The vault could not be read again: ${text}`, { error: true });
-    }
+    if (gen === generation) status = error.message || 'The vault could not be read right now.';
   } finally {
     if (gen === generation) {
       busy = false; render({ keepTyped: true });
       if (reviewRequests && coinsRead && view === 'vault' && current === address) void reviewUnread(address, gen, retry);
     }
   }
-  return coinsRead;
 }
 
 const sameCoins = (a, b) => a.length === b.length && a.every((c, i) => c.id === b[i].id && c.amount === b[i].amount && c.unlock === b[i].unlock && c.height === b[i].height);
@@ -313,21 +343,29 @@ const sameCoins = (a, b) => a.length === b.length && a.every((c, i) => c.id === 
 // the history page and the last review, and those were read only by Open /
 // Refresh. Now, while a vault is ON SCREEN with at least one OPEN request
 // (not reviewed, waiting, ready, sent, not checked), the page reads it again
-// every VAULT_POLL_MS through the same Open / Refresh path (refresh, quiet)
-// and, only when that read got the coins, reviews again the requests that
-// are still open after it (reviewUnread, at most VAULT_AUTO_REVIEWS, one
-// module call at a time). A request whose coins left the vault then reads
-// "Coins spent" (core.js requestState) and moves to Finished; one this
-// wallet sent reads "Paid" once the history page has its wire id. What is
-// shown is still only the node's answer and the module's read-back (design
-// docs/plans/2026-09-29-general-multisig-design.md §8.6: no block reading,
-// no fallback).
+// every VAULT_POLL_MS (backgroundPass: the same three module calls as Open
+// — balance, coins, newest history page) and, only when that read got the
+// coins, reviews again the requests that are still open after it (at most
+// VAULT_AUTO_REVIEWS, one module call at a time). A request whose coins
+// left the vault then reads "Coins spent" (core.js requestState) and moves
+// to Finished; one this wallet sent reads "Paid" once the history page has
+// its wire id. What is shown is still only the node's answer and the
+// module's read-back (design docs/plans/2026-09-29-general-multisig-
+// design.md §8.6: no block reading, no fallback).
+// The pass NEVER holds `busy` (no button is greyed by it): it reads first
+// and applies an answer only while nothing moved under it — the same
+// session (`generation`, the same client), the vault still on screen, the
+// same record object (vaults.get(address) === the one it read from) and no
+// action running (`busy`); otherwise the answer is dropped and the pass
+// ends. An action started meanwhile keeps its own behaviour (it holds
+// `busy` for its call and builds on latest(record) at click time).
 // Bounds: ONE timer (pollTimer) for the panel; a pass never overlaps
-// another (polling) nor an action (busy: the tick is put off by
-// VAULT_CHANGE_MS); nothing is armed for a watched vault, a node without the
-// member query (reads.unsupported), a vault not on screen, or one with no
-// open request — render() (syncPoll) stops the timer when any of those
-// becomes true, reset() (lock, close) stops it and moves `generation`.
+// another (polling), the Open pass (openPass) or an action (busy) — the tick
+// is then put off by VAULT_CHANGE_MS; nothing is armed for a watched vault,
+// a node without the member query (reads.unsupported), a vault not on
+// screen, or one with no open request — render() (syncPoll) stops the timer
+// when any of those becomes true, reset() (lock, close) stops it and moves
+// `generation`.
 const VAULT_POLL_MS = 30000;   // the same 30 s as Messages' check (src/connect/ui/messages.js SYNC_MS)
 const VAULT_CHANGE_MS = 5000;  // new vault messages: one pass at most this soon (debounce)
 const VAULT_SENT_MS = 15000;   // after this wallet's own send: one extra read, so 'sent' turns 'paid' sooner
@@ -382,21 +420,71 @@ function syncPoll() {
 // One background pass. Returns whether it ran.
 async function pollTick(address) {
   if (!pollWanted(address)) return false;
-  if (busy || polling) { armPoll(address, VAULT_CHANGE_MS); return false; }
+  if (busy || polling || openPass) { armPoll(address, VAULT_CHANGE_MS); return false; }
   const gen = generation;
   polling = true;
   try {
-    const coinsRead = await refresh(address, { quiet: true });
-    if (gen !== generation || !coinsRead || view !== 'vault' || current !== address) return true;
-    const record = vaults.get(address);
-    if (!record) return true;
-    const again = new Set();
-    for (const [digest] of openRequests(record)) if (REVIEW_AGAIN.has(requestStateOf(record, digest))) again.add(rkey(address, digest));
-    await new Promise(resolve => setTimeout(resolve, 0));
-    await reviewUnread(address, gen, again, { quiet: true });
+    await backgroundPass(address, gen);
     return true;
   } finally {
     if (gen === generation) { polling = false; armPoll(address, VAULT_POLL_MS); }
+  }
+}
+
+// The pass itself: read, then apply only while steady() — see the block
+// comment above. The status line is never touched; a problem is one
+// session-log line.
+async function backgroundPass(address, gen) {
+  const c = client;
+  let record = vaults.get(address);
+  if (!c || !record || record.watch) return;
+  const steady = () => gen === generation && client === c && view === 'vault' && current === address && vaults.get(address) === record && !busy;
+  const failed = text => sessionLog.log('vault', `The vault could not be read again: ${text}`, { error: true });
+  let balance = null, page = null, applied;
+  try { balance = await c.vaultBalance({ descriptor: record.code }); }
+  catch (error) { if (!steady()) return; failed(error?.message || 'its balance could not be read.'); }
+  if (!steady()) return;
+  try {
+    const answer = await c.vaultCoins({ descriptor: record.code });
+    if (!steady()) return;
+    applied = applyCoins(record, answer);
+  } catch (error) {
+    if (!steady()) return;
+    if (error?.code === VAULT_UNSUPPORTED) {
+      // no fallback: the page says so (renderVault) and the timer stops
+      reads.set(address, { ...(reads.get(address) ?? { truncated: false, history: null }), unsupported: true });
+      sessionLog.log('vault', 'The Nodus node does not have the vault member query yet.', { error: true });
+      render({ keepTyped: true });
+      return;
+    }
+    // coins not read: nothing is applied and nothing is reviewed
+    failed(error?.message || 'its coins could not be read.');
+    return;
+  }
+  try { page = await c.vaultHistory({ descriptor: record.code, limit: NODUS_HISTORY_LIMIT }); }
+  catch (error) { if (!steady()) return; failed(error?.message || 'its history could not be read.'); }
+  if (!steady()) return;
+  // applied together; the history page it had is kept when this one failed
+  if (balance) balances.set(address, balance);
+  reads.set(address, { truncated: applied.truncated, history: page ?? reads.get(address)?.history ?? null, unsupported: false });
+  // the record is saved only when its coins changed: no device write every
+  // 30 s for nothing
+  if (!sameCoins(record.coins, applied.record.coins)) {
+    await keep(applied.record);
+    if (gen !== generation || vaults.get(address) !== applied.record) return;
+    record = applied.record;
+  }
+  render({ keepTyped: true });
+  // the requests still open against the coins just read
+  const again = openRequests(record).filter(([digest]) => REVIEW_AGAIN.has(requestStateOf(record, digest))).slice(0, VAULT_AUTO_REVIEWS);
+  for (const [digest, item] of again) {
+    if (!steady()) return;
+    let answer = null, failure = null;
+    try { answer = await c.vaultReview({ descriptor: record.code, coins: record.coins, request: item.request, approvals: approvalsFor(address, digest, itemsFor(record)) }); }
+    catch (error) { failure = error; }
+    if (!steady()) return;
+    applyReview(rkey(address, digest), answer, failure, { background: true });
+    render({ keepTyped: true });
   }
 }
 
@@ -425,28 +513,30 @@ export function pollVaultNow() {
 // the screen, the session changes (`generation`) or another action holds
 // `busy`; at most VAULT_AUTO_REVIEWS per Open — the rest keep their
 // "Review" / "Check again" button.
-// The background pass (pollTick, 0.1.86) uses the same loop: `retry` is then
-// every request still open after the coins were read again (a "Not checked"
-// one included), and `quiet` leaves the status line as it is.
+// While it runs (`openPass`), the background pass waits (pollTick).
 const VAULT_AUTO_REVIEWS = 16;
-async function reviewUnread(address, gen, retry = new Set(), { quiet = false } = {}) {
+let openPass = 0;
+async function reviewUnread(address, gen, retry = new Set()) {
   const record = vaults.get(address);
   if (!record || record.watch) return;
   const due = key => retry.has(key) || (!reviews.has(key) && !refusals.has(key) && !unchecked.has(key));
   const unread = [...itemsFor(record).requests]
     .filter(([digest]) => due(rkey(address, digest)))
     .sort((a, b) => b[1].at - a[1].at);
-  if (unread.length > VAULT_AUTO_REVIEWS && !quiet) sessionLog.log('vault', `${unread.length - VAULT_AUTO_REVIEWS} more payment request(s) were left to review by hand.`);
-  for (const [digest, item] of unread.slice(0, VAULT_AUTO_REVIEWS)) {
-    if (gen !== generation || view !== 'vault' || current !== address || busy || !client || !vaults.has(address)) return;
-    const key = rkey(address, digest);
-    // reviewed by hand meanwhile ("Check again" between two steps): a
-    // verdict stands; a "Not checked" is passed over, except by the
-    // background pass that was asked to try it again
-    if (!due(key) || refusals.has(key) || (unchecked.has(key) && !(quiet && retry.has(key)))) continue;
-    retry.delete(key);
-    await review(latest(record), item.request, { quiet });
-    await new Promise(resolve => setTimeout(resolve, 0));
+  if (unread.length > VAULT_AUTO_REVIEWS) sessionLog.log('vault', `${unread.length - VAULT_AUTO_REVIEWS} more payment request(s) were left to review by hand.`);
+  openPass++;
+  try {
+    for (const [digest, item] of unread.slice(0, VAULT_AUTO_REVIEWS)) {
+      if (gen !== generation || view !== 'vault' || current !== address || busy || !client || !vaults.has(address)) return;
+      const key = rkey(address, digest);
+      // reviewed by hand meanwhile ("Check again" between two steps)
+      if (!due(key) || refusals.has(key) || unchecked.has(key)) continue;
+      retry.delete(key);
+      await review(latest(record), item.request);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  } finally {
+    if (gen === generation) openPass--;
   }
 }
 
@@ -493,8 +583,14 @@ async function checkMembers(form) {
   }
 }
 
+// BUGS W-06 (0.1.86): the same members and the same approvals give the same
+// address (the address is a hash of the vault code), so "create" can name a
+// vault already in the list. That one is never replaced — its name,
+// created block, coins and who shared it stay — and the create / watch
+// screen says so with "Open it" (renderCreate, renderWatch).
 async function createVault() {
   if (!createInfo || busy || !client) return;
+  if (vaults.has(createInfo.info.address)) { render(); return; }
   const gen = generation;
   busy = true; render();
   try {
@@ -503,6 +599,9 @@ async function createVault() {
     // the block it was created in (kept as the record's `created`, and sent
     // in the share message)
     const created = ri?.tip && /^[1-9]\d*$/.test(ri.tip) ? ri.tip : '1';
+    // listed meanwhile (loadVaults, a share message): it stays as it is and
+    // the create screen shows it (renderCreate)
+    if (vaults.has(createInfo.info.address)) return;
     const record = makeVaultRecord({ info: createInfo.info, label: createInfo.label, created });
     await keep(record);
     createInfo = null; draft = null; current = record.address; view = 'vault';
@@ -551,6 +650,14 @@ async function addShared(code) {
   // the card shows "Adding the vault…" instead of its button until this ends
   shareStates.set(code, { ...s, state: 'adding' });
   host?.setPayloadView(payloadView);
+  // BUGS W-06: already in the list (the same address) — it is not replaced;
+  // the card says "This vault is in your list."
+  if (vaults.has(s.info.address)) {
+    shareStates.set(code, { state: 'added' });
+    host?.setPayloadView(payloadView);
+    render();
+    return;
+  }
   try {
     // F6: the block a share says the vault was created at is never kept
     // past the node's tip
@@ -558,10 +665,14 @@ async function addShared(code) {
     const tip = ri?.tip && /^[1-9]\d{0,19}$/.test(ri.tip) ? BigInt(ri.tip) : null;
     if (tip === null) throw new Error('The current Nodus block height is unknown. Try again in a minute.');
     const created = BigInt(s.item.created) > tip ? tip.toString() : s.item.created;
-    const record = makeVaultRecord({ info: s.info, label: s.item.label, created, from: s.item.from });
-    await keep(record);
-    shareStates.set(code, { state: 'added' });
-    await nameMembers(record, generation);
+    // listed while the height was read: the listed one stays
+    if (vaults.has(s.info.address)) shareStates.set(code, { state: 'added' });
+    else {
+      const record = makeVaultRecord({ info: s.info, label: s.item.label, created, from: s.item.from });
+      await keep(record);
+      shareStates.set(code, { state: 'added' });
+      await nameMembers(record, generation);
+    }
   } catch (error) { shareStates.set(code, { state: 'error', error: error.message || 'The vault could not be added.' }); }
   host?.setPayloadView(payloadView);
   render();
@@ -570,12 +681,15 @@ async function addShared(code) {
 async function watchVault(form) {
   if (busy || !client) return;
   const gen = generation;
-  busy = true; render();
+  busy = true; alreadyListed = null; render();
   try {
     const code = form.code.replace(/\s+/g, '').toLowerCase();
     if (!vaultCodeShape(code)) throw new Error('This is not a vault code.');
     const info = await client.vaultOpen({ descriptor: code });
     if (gen !== generation) return;
+    // BUGS W-06: already in the list — not replaced (its name, created
+    // block, coins and who shared it stay); the watch screen says so
+    if (vaults.has(info.address)) { alreadyListed = info.address; status = ''; return; }
     // `created` unknown for a code pasted by hand: block 1 (nothing reads
     // blocks from it since 0.1.82; a share message from here carries it)
     const record = makeVaultRecord({ info, label: form.label, created: '1', watch: !info.isMember });
@@ -734,37 +848,50 @@ export const isRequestVerdict = text => typeof text === 'string' && REQUEST_VERD
 // until a review passes). The status line carries the progress only.
 // Redraws keep what was typed in the payment form (the Open pass runs while
 // the user may type).
-// quiet (the background pass, 0.1.86): the status line is left as it is.
-async function review(record, request, { quiet = false } = {}) {
+async function review(record, request) {
   if (busy || !client) return;
   const gen = generation;
   const key = rkey(record.address, request.digest);
-  const say = text => { if (!quiet) status = text; };
-  busy = true; say('Reading the payment request…'); render({ keepTyped: true });
+  busy = true; status = 'Reading the payment request…'; render({ keepTyped: true });
   try {
     const approvals = approvalsFor(record.address, request.digest, itemsFor(record));
     const answer = await client.vaultReview({ descriptor: record.code, coins: latest(record).coins, request, approvals });
     if (gen !== generation) return;
+    applyReview(key, answer, null);
+    status = '';
+  } catch (error) {
+    if (gen !== generation) return;
+    status = '';
+    applyReview(key, null, error);
+  } finally {
+    if (gen === generation) { busy = false; render({ keepTyped: true }); }
+  }
+}
+
+// The module's answer to one review — review() and the background pass
+// (0.1.86) alike: a read-back is kept; a VERDICT replaces it (`refusals`);
+// any other failure leaves the request open as "Not checked". `background`:
+// the same text as last time is not logged again (one line, not one every
+// 30 s).
+function applyReview(key, answer, error, { background = false } = {}) {
+  if (!error) {
     reviews.set(key, answer);
     refusals.delete(key);
     unchecked.delete(key);
-    say('');
-  } catch (error) {
-    if (gen !== generation) return;
-    const text = error?.message || 'This payment request could not be read.';
-    say('');
-    if (isRequestVerdict(text)) {
-      reviews.delete(key);
-      unchecked.delete(key);
-      refusals.set(key, text);
-      sessionLog.log('vault', `Payment request not valid: ${text}`, { error: true });
-    } else {
-      refusals.delete(key);
-      unchecked.set(key, text);
-      sessionLog.log('vault', `Payment request not checked: ${text}`, { error: true });
-    }
-  } finally {
-    if (gen === generation) { busy = false; render({ keepTyped: true }); }
+    return;
+  }
+  const text = error?.message || 'This payment request could not be read.';
+  if (isRequestVerdict(text)) {
+    const again = refusals.get(key) === text;
+    reviews.delete(key);
+    unchecked.delete(key);
+    refusals.set(key, text);
+    if (!(background && again)) sessionLog.log('vault', `Payment request not valid: ${text}`, { error: true });
+  } else {
+    const again = unchecked.get(key) === text;
+    refusals.delete(key);
+    unchecked.set(key, text);
+    if (!(background && again)) sessionLog.log('vault', `Payment request not checked: ${text}`, { error: true });
   }
 }
 
@@ -929,11 +1056,29 @@ function balanceBlock(bal, { compact = false } = {}) {
 }
 const approvalsChip = record => chip(`${record.m} of ${record.n} approvals`);
 
+// Open a listed vault (the list's Open, and "Open it" on the create / watch
+// screen when the vault is already listed — BUGS W-06).
+function openVault(address) {
+  current = address; view = 'vault'; status = ''; createInfo = null; alreadyListed = null;
+  render();
+  void refresh(address, { reviewRequests: true });
+}
+
+// "This vault is already in your list as “…”." with "Open it" (BUGS W-06).
+function alreadyBlock(address) {
+  const record = vaults.get(address);
+  if (!record) return null;
+  const box = el('div', { className: 'vault-already' },
+    el('p', { className: 'notice vault-notice', text: `This vault is already in your list as “${labelOf(record)}”.` }),
+    el('div', { className: 'vault-actions' }, btn('Open it', () => openVault(address), '')));
+  return box;
+}
+
 function renderList() {
   const rows = [...vaults.values()];
   const actions = el('div', { className: 'vault-actions' },
     btn('Create a shared vault', () => { view = 'create'; status = ''; createInfo = null; render(); }, ''),
-    btn('Watch a vault', () => { view = 'watch'; status = ''; render(); }));
+    btn('Watch a vault', () => { view = 'watch'; status = ''; alreadyListed = null; render(); }));
   if (!rows.length) {
     return el('div', { className: 'stake-block vault-list vault-empty' },
       el('h4', { text: 'Your shared vaults' }),
@@ -945,7 +1090,7 @@ function renderList() {
   for (const record of rows) {
     const title = el('h5', { text: labelOf(record) });
     const chips = el('div', { className: 'vault-chips' }, approvalsChip(record), record.watch ? chip('Watching only', 'watch') : null);
-    const open = btn('Open', () => { current = record.address; view = 'vault'; status = ''; render(); void refresh(record.address, { reviewRequests: true }); }, 'small');
+    const open = btn('Open', () => openVault(record.address), 'small');
     open.setAttribute('aria-label', `Open ${labelOf(record)}`);
     grid.append(el('article', { className: 'vault-tile' },
       el('div', { className: 'vault-tile-head' }, title, chips),
@@ -1011,7 +1156,9 @@ function renderCreate() {
       el('p', { className: 'hint', text: `${info.m} of ${info.n} members must approve a payment.` }),
       preview,
       addressBox(info.address, 'Vault address (computed on this device from the members’ keys)'),
-      el('div', { className: 'vault-actions' }, btn('Create vault', () => void createVault(), ''))));
+      // BUGS W-06: the same members and approvals as a listed vault give its
+      // address — no "Create vault", the listed one is offered instead
+      alreadyBlock(info.address) ?? el('div', { className: 'vault-actions' }, btn('Create vault', () => void createVault(), ''))));
   }
   return box;
 }
@@ -1024,7 +1171,8 @@ function renderWatch() {
   box.append(...field('Vault code', code), ...field('Name (optional)', label));
   box.append(el('div', { className: 'vault-actions' },
     btn('Add', () => void watchVault({ code: code.value, label: label.value }), ''),
-    btn('Back', () => { view = 'list'; status = ''; render(); })));
+    btn('Back', () => { view = 'list'; status = ''; alreadyListed = null; render(); })));
+  if (alreadyListed) { const already = alreadyBlock(alreadyListed); if (already) box.append(already); }
   return box;
 }
 

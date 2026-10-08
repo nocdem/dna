@@ -35,14 +35,22 @@
 // fake's coins drop that request's coin, ONE background pass (driven by
 // pollVaultNow(); the panel's own timer is held with holdVaultPoll(true) so
 // no pass starts in the middle of a click) moves the card to Finished as
-// "Coins spent" with no Approve / Send payment; no horizontal
+// "Coins spent" with no Approve / Send payment, and while that pass waits on
+// its (held) coin read no panel button is disabled and the status line is
+// empty; a create whose fake vaultCreate gives the family vault's address
+// says "This vault is already in your list as “Family savings”." with
+// "Open it" and no "Create vault", and the listed vault keeps its name
+// (BUGS W-06); no horizontal
 // scroll at 390 and 320 px on each of the three, no page error, no refused
 // (CSP) load, no unexpected request.
 //
 // What it does NOT prove: that the 30-second timer itself starts and stops
 // (held here; only the pass it runs is driven), the 5-second pass after new
 // vault messages (the fake host never calls onChange) or the 15-second read
-// after an accepted send (the fake refuses every send); anything about the
+// after an accepted send (the fake refuses every send); the background
+// pass dropping its answer when an action starts or the record changes
+// mid-pass; Watch / a share card finding an already listed vault; the
+// W-05 loading log lines (the fake's kept record always loads); anything about the
 // module (send.wasm) or the
 // node — every answer is the fake's; the page's behaviour is covered by
 // test/vaults.test.js (core) and the Connect smoke test.
@@ -164,11 +172,25 @@ try {
     // the test before it drives one background pass): from then on the
     // family vault's coins no longer hold c1, the ready request's input
     window.__vaultsSpendReady = () => { coins[FAMILY] = coins[FAMILY].filter(c => c.id !== id('c1')); };
+    // the coin read can be held open (window.__vaultsHoldCoins / __vaultsReleaseCoins)
+    // so the test can look at the panel WHILE a background pass is reading;
+    // __vaultsCoinsAsked counts the coin reads asked for
+    let coinsGate = null;
+    window.__vaultsCoinsAsked = 0;
+    window.__vaultsHoldCoins = () => {
+      let release;
+      coinsGate = new Promise(resolve => { release = resolve; });
+      window.__vaultsReleaseCoins = () => { coinsGate = null; release(); };
+    };
     const client = {
       state: 'ready', vaultable: true, nameable: true, fingerprint: OWN,
       async vaultOpen({ descriptor }) { const info = infoFor(descriptor); if (!info) throw new Error('This is not a vault code.'); return { ...info, members: [...info.members] }; },
       async vaultBalance({ descriptor }) { return balances[infoFor(descriptor).address]; },
-      async vaultCoins({ descriptor }) { return { coins: [...coins[infoFor(descriptor).address]], truncated: false }; },
+      async vaultCoins({ descriptor }) {
+        window.__vaultsCoinsAsked++;
+        if (coinsGate) await coinsGate;
+        return { coins: [...coins[infoFor(descriptor).address]], truncated: false };
+      },
       async vaultHistory({ descriptor }) { return history(infoFor(descriptor).address); },
       async nameOf({ owner }) { const name = chainNames.get(owner); return name ? { found: true, name, committedHeight: '5012' } : { found: false, committedHeight: '5012' }; },
       async nameLookup({ name }) { const owner = [...chainNames].find(([, n]) => n === name)?.[0]; return owner ? { found: true, owner } : { found: false }; },
@@ -179,6 +201,9 @@ try {
       },
       async vaultSubmit({ request: r }) { return { accepted: false, message: SEND_REFUSED, review: readBack(r.digest) }; },
       async vaultCreate({ members, m }) {
+        // BUGS W-06: the family vault's members and approvals give the family
+        // vault's address again (the address is a hash of the code)
+        if (m === 2 && members.length === 2 && members.includes(ALICE) && members.includes(BOB)) return { ...familyInfo, members: [...familyInfo.members] };
         const all = [OWN, ...members];
         return { descriptor: code(m, all.map((_, i) => ['a1', 'b2', 'c3', 'd4', 'e5', 'f6', '07'][i])), address: id('7a'), m, n: all.length, members: all };
       }
@@ -285,8 +310,23 @@ try {
   // pass (the 30-second read, driven here) reads the coins again, and that
   // card moves to Finished as "Coins spent" with no Approve / Send payment;
   // the waiting one is reviewed again and stays open.
-  await page.evaluate(() => window.__vaultsSpendReady());
-  assert.equal(await page.evaluate(async () => (await import('/src/vaults/ui.js')).pollVaultNow()), true);
+  // The pass never greys the buttons: its coin read is held open, and while
+  // it waits no button of the panel is disabled and the status line is
+  // empty; then the read is let go and the pass ends.
+  await page.evaluate(() => { window.__vaultsSpendReady(); window.__vaultsHoldCoins(); });
+  const during = await page.evaluate(async () => {
+    const ui = await import('/src/vaults/ui.js');
+    const asked = window.__vaultsCoinsAsked;
+    window.__vaultsPass = ui.pollVaultNow();
+    for (let i = 0; window.__vaultsCoinsAsked === asked; i++) {
+      if (i > 500) throw new Error('the background pass never asked for the coins');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    const root = document.getElementById('vaults-root');
+    return { disabled: [...root.querySelectorAll('button')].filter(b => b.disabled).length, status: root.querySelector('.vault-status').textContent };
+  });
+  assert.deepEqual(during, { disabled: 0, status: '' }, 'buttons greyed or status set while a background pass reads');
+  assert.equal(await page.evaluate(() => { window.__vaultsReleaseCoins(); return window.__vaultsPass; }), true);
   await settled();
   assert.deepEqual(await page.locator('.vault-open-requests .vault-request .vault-state').allInnerTexts(), ['Waiting for approvals', 'Not checked']);
   assert.equal(await page.locator('details.vault-finished > summary').textContent(), 'Finished requests (2)');
@@ -309,6 +349,28 @@ try {
   await settled();
   assert.equal(await page.locator('.vault-preview .vault-member').count(), 3);
   await shoot('vaults-create');
+
+  // BUGS W-06: the family vault's members (alice, Bob) with 2 approvals give
+  // the family vault's address — the create screen says it is already in
+  // the list under its own name, offers "Open it" and no "Create vault";
+  // the listed vault keeps its name.
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.locator('.vault-grid').waitFor();
+  await page.getByRole('button', { name: 'Create a shared vault' }).click();
+  await page.getByLabel('Vault name (only for you and the members)').fill('Copy of family');
+  await page.getByLabel('Other members').fill('alice');
+  await page.locator('.vault-contact', { hasText: 'Bob' }).locator('input').check();
+  await page.getByRole('button', { name: 'Check members' }).click();
+  await page.locator('.vault-preview').waitFor();
+  await settled();
+  assert.equal(await page.locator('.vault-preview .vault-already .vault-notice').textContent(), 'This vault is already in your list as “Family savings”.');
+  assert.equal(await page.getByRole('button', { name: 'Create vault' }).count(), 0);
+  await page.getByRole('button', { name: 'Open it' }).click();
+  await page.locator('.vault-hero').waitFor();
+  assert.equal(await page.locator('.vault-hero h4').textContent(), 'Family savings');
+  await settled();
+  await back();
+  assert.deepEqual(await page.locator('.vault-tile h5').allInnerTexts(), ['Family savings', 'Foundation vault']);
 
   assert.deepEqual(errors, [], 'page errors');
   assert.deepEqual(refused, [], 'loads refused by the Content-Security-Policy');

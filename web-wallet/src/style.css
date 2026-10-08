@@ -760,6 +760,9 @@ details.danger-zone.danger-zone > summary { color: #f6c2bd; }
 /* The outcome of this wallet's Approve / Send payment, on its card (0.1.86). */
 .wallet-page .vault-panel .vault-request p.vault-note { margin: 0; border-left-color: #8e9a82; background: #8e9a8210; overflow-wrap: anywhere; }
 .wallet-page .vault-panel .vault-request p.vault-note[data-kind="error"] { border-left-color: #f28b82; background: #f28b8210; }
+/* Create / Watch found a vault already in the list (0.1.86, BUGS W-06). */
+.vault-already { display: grid; gap: 10px; min-width: 0; }
+.wallet-page .vault-panel .vault-already p.vault-notice { margin: 0; overflow-wrap: anywhere; }
 /* Open requests on top; the finished ones collapsed below them. */
 .vault-open-requests { min-width: 0; }
 .wallet-page .vault-panel details.vault-finished { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--line-soft); font-size: inherit; color: inherit; }
