@@ -21,7 +21,8 @@
 //     scheme:    'wss' (production: Caddy TLS on each node, design §1.1) or
 //                'ws' (ONLY with every host 127.0.0.1: the localhost harness)
 //     endpoints: [{ host: IPv4 dotted quad, port: 1..65535 }], 1..8
-//                (nodus.h NODUS_CLIENT_MAX_SERVERS); tried in order
+//                (nodus.h NODUS_CLIENT_MAX_SERVERS); tried round-robin from
+//                a random start (rotateNodusEndpoints below)
 //     pins:      [128 lowercase hex] — SHA3-512 of each accepted server's
 //                ML-DSA-87 public key; 1..64 (nodus-send-wasm.c NSW_MAX_PINS)
 //   }
@@ -57,7 +58,8 @@ const VAULT_CODE = /^4e44532e4d5349472e7631(00){5}[0-9a-f]{4}([0-9a-f]{5184}){2,
 export const NODUS_SEND_NETWORK = {
   chainId: 'a48d1a785500a1cdecd739ecd53ef0e95b1dc4a7a300f49176a7fa25ae176114',
   scheme: 'wss',
-  // Tried in order (nodus_client). Each runs Caddy TLS on 443 -> the node's
+  // Tried round-robin from a random start each time the module is created
+  // (rotateNodusEndpoints; nodus_client then goes in list order). Each runs Caddy TLS on 443 -> the node's
   // WebSocket entry (runbook §2.4). EU-6 has none: its 443 serves the
   // websites and this wallet (nginx).
   endpoints: [
@@ -198,6 +200,25 @@ export function validateNodusSendNetwork(network) {
   return Object.freeze({ chainId, scheme, endpoints: Object.freeze(list), pins: Object.freeze([...pins]) });
 }
 
+// The endpoint list starting at `start` and wrapping around: [e[s], e[s+1],
+// …, e[n-1], e[0], …, e[s-1]]. The C client (nodus_client.c) always starts
+// at its list's index 0, so the page rotates the list it hands over instead.
+// Why: with a fixed order every page landed on the first node, and two
+// devices of one account then shared a node (through node 0.25.4 the node
+// kept one session per identity and the two evicted each other). A random
+// start spreads page loads over the nodes; it is load spreading only —
+// Math.random is enough, nothing here needs unpredictability.
+export function rotateNodusEndpoints(endpoints, start) {
+  const n = endpoints.length;
+  if (!Number.isInteger(start) || start < 0 || start >= n) throw new Error('Invalid Nodus endpoint start index.');
+  return [...endpoints.slice(start), ...endpoints.slice(0, start)];
+}
+
+export function randomNodusEndpointStart(count, random = Math.random) {
+  if (!Number.isInteger(count) || count < 1) throw new Error('Invalid Nodus endpoint count.');
+  return Math.min(count - 1, Math.floor(random() * count));
+}
+
 function raw(value, what) {
   if (typeof value !== 'string' || !RAW.test(value)) throw new Error(`Invalid ${what}.`);
   return value;
@@ -206,8 +227,11 @@ function raw(value, what) {
 // Instantiates the module and returns the object ./client.js expects.
 // `loadGlue` exists for tests (a node build of the same C, see
 // test/nodus-send-wasm.test.js); the wallet always uses ./send.js.
-export async function createNodusSendModule(network, { claim = null, evm = null, loadGlue = () => import('./send.js') } = {}) {
+// `startIndex` too: the endpoint the rotated list starts at (default: a
+// random one, randomNodusEndpointStart).
+export async function createNodusSendModule(network, { claim = null, evm = null, loadGlue = () => import('./send.js'), startIndex = null } = {}) {
   const net = validateNodusSendNetwork(network);
+  const endpoints = rotateNodusEndpoints(net.endpoints, startIndex === null ? randomNodusEndpointStart(net.endpoints.length) : startIndex);
   // Smart-contract settings refused by the shape check leave smart
   // contracts off (evmError) and change nothing else.
   let evmNet = null, evmError = evm ? null : 'Smart contracts are not available on this network yet.';
@@ -230,7 +254,7 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
 
   check(num('nsw_net_reset'));
   check(num('nsw_net_set_chain', ['string'], [net.chainId]));
-  for (const endpoint of net.endpoints) check(num('nsw_net_add_endpoint', ['string', 'number'], [endpoint.host, endpoint.port]));
+  for (const endpoint of endpoints) check(num('nsw_net_add_endpoint', ['string', 'number'], [endpoint.host, endpoint.port]));
   for (const pin of net.pins) check(num('nsw_net_add_pin', ['string'], [pin]));
   if (claimData) {
     try {
