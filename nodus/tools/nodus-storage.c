@@ -14,7 +14,8 @@
  *     network port;
  *   - identity files are only READ here and a missing one refuses the
  *     start (item 10); the 4002 handshake signs with the identity's key;
- *   - the partial-wipe gate stays in core (item 9) — and this process runs
+ *   - the partial-wipe gate runs in core (item 9), in nodus-witness
+ *     (operator ruling 2026-10-08) and here — this process runs
  *     the SAME check (server/nodus_partial_wipe.c) before it opens
  *     nodus.db / channels.db, which would otherwise recreate a wiped file
  *     before core's gate looks (nodus_dht_ipc_open_storage).

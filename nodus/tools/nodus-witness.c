@@ -25,6 +25,11 @@
  * combined binary does not take that lock: doing so would change what it
  * does today — e.g. two of them on one data_path would newly refuse.)
  *
+ * Right after that lock it runs the H-10 partial-wipe gate core and
+ * nodus-storage run (server/nodus_partial_wipe.h) and exits 1 on a
+ * half-wiped data directory (operator ruling 2026-10-08 in the decision
+ * above).
+ *
  * The p2p address-record sequence file (nodus.addr_seq) is written in
  * the DATA directory here, never in the identity directory: only core
  * writes the identity directory (item 10). Moving an existing host's
@@ -44,6 +49,8 @@
 #include "nodus_node_config.h"
 #include "server/nodus_server.h"            /* nodus_server_config_t, the
                                                witness config subset (inline) */
+#include "server/nodus_partial_wipe.h"      /* the H-10 boot gate (decision 9,
+                                               2026-10-08 witness ruling) */
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_host.h"
 #include "witness/nodus_witness_ipc.h"
@@ -92,7 +99,10 @@ static void sighandler(int sig) {
  * has created them; so it writes the marker only when the chain is open
  * AND both core databases are already present — the same "all three are
  * real" condition. Otherwise core arms it (nodus_server_run, external
- * mode). The gate itself stays in core (decision item 9). */
+ * mode). The gate itself runs in core AND here (main, right after the
+ * data-directory lock): decision 2026-10-01-nodus-component-split.md,
+ * operator ruling 2026-10-08 — the witness refuses a half-wiped data
+ * directory too, instead of opening the surviving chain database. */
 static bool core_dbs_present(const char *data_path) {
     static const char *const names[] = { "nodus.db", "channels.db" };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
@@ -233,6 +243,29 @@ int main(int argc, char **argv) {
     /* Held, never closed: the kernel releases it with the process. */
     if (take_data_lock(config.data_path) < 0)
         return 1;
+
+    /* The H-10 partial-wipe gate — the SAME check core (nodus_server_init)
+     * and nodus-storage (nodus_dht_ipc_open_storage) run, skipped on the
+     * same condition (no persistent data_path). Decision 2026-10-01-
+     * nodus-component-split.md, operator ruling 2026-10-08: on a half-wiped
+     * data directory the witness refuses too, fail closed, instead of
+     * opening the surviving chain database and voting alone while core and
+     * storage sit in their restart loops. After the lock (whose file,
+     * NODUS_WITNESS_LOCK_NAME, matches none of the gate's three names);
+     * before the pin check below, so the gate's message wins on a
+     * half-wiped directory (core's order); before anything opens or creates
+     * a database or a socket. The gate prints its own
+     * "PARTIAL WIPE DETECTED … REFUSING START" line on stderr. */
+    if (config.data_path[0] != '\0' &&
+        nodus_server_check_partial_wipe(config.data_path) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "PARTIAL WIPE DETECTED at %s — the partial-"
+                      "wipe gate refused the data directory; not starting",
+                      config.data_path);
+        fprintf(stderr, "NODUS_WITNESS: PARTIAL WIPE DETECTED — the partial-"
+                "wipe gate refused the data directory (the line above says "
+                "why) — not starting; no database was opened or created\n");
+        return 1;
+    }
 
     /* The network file's pin-at-start check, against the chain this
      * process is about to open (nodus_server_init runs the same check in
