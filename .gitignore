@@ -76,6 +76,8 @@ CLAUDE.md
 # Internal docs (bugs, missing features, infra details)
 BUGS.md
 **/BUGS.md
+FIXED.md
+**/FIXED.md
 **/MISSING_FEATURES.md
 dnac/docs/WITNESS_NODES.md
 dnac/tools/check_witness_announce.c
