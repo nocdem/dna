@@ -245,6 +245,9 @@ typedef struct {
  * specified once, in include/nodus/nodus.h beside
  * nodus_client_dnac_addr_history.
  *
+ * (nodus_witness_msig_addr_history_build below is the same builder for
+ * the vault-member method; this entry point keeps the C11 check.)
+ *
  * Order of refusals: owner not 128 lowercase hex → PROTOCOL_ERROR;
  * `session_fp` NULL or not the owner (C11, the dnac_history rule) →
  * NOT_AUTHENTICATED; limit outside 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT
@@ -265,6 +268,45 @@ int nodus_witness_addr_history_build(nodus_witness_t *w, uint32_t txn_id,
                                      uint8_t **out, size_t *out_len,
                                      int *err_code, char *err_msg,
                                      size_t err_cap);
+
+/**
+ * The `dnac_msig_addr_history` answer WITHOUT its send — the SAME builder
+ * as nodus_witness_addr_history_build (same rows, same keys, same
+ * refusals after authorization) with "q" = "dnac_msig_addr_history" and
+ * NO owner == session check.
+ *
+ * AUTHORIZATION IS THE CALLER'S. The only caller is the
+ * dnac_msig_addr_history handler (nodus_witness_handlers.c), which runs
+ * its vault-member gate first: the session is authenticated, `owner` is
+ * SHA3-512 of a valid multisig descriptor the request carried, and the
+ * session's authenticated public key is one of that descriptor's keys
+ * (design docs/plans/2026-09-29-general-multisig-design.md §8.6 rev 2,
+ * approved 2026-10-08). Calling this without that gate would hand any
+ * owner's history to anyone.
+ *
+ * Order of refusals: owner not 128 lowercase hex → PROTOCOL_ERROR;
+ * limit outside 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT → PROTOCOL_ERROR;
+ * no version-3 chain → NOT_FOUND; any store fault or malformed row →
+ * INTERNAL_ERROR (never a partial list).
+ * @return 0; -1 with *err_code / err_msg set.
+ */
+int nodus_witness_msig_addr_history_build(nodus_witness_t *w,
+                                          uint32_t txn_id,
+                                          const char *owner,
+                                          const nodus_witness_addr_cursor_t *before,
+                                          uint32_t limit,
+                                          uint8_t **out, size_t *out_len,
+                                          int *err_code, char *err_msg,
+                                          size_t err_cap);
+
+/**
+ * STRICT owner text → raw fingerprint: exactly 128 characters (hex_len,
+ * no NUL needed), lowercase hex only ('0'-'9', 'a'-'f'); anything else is
+ * refused. The decoder the index writers use for utxo_set owner text.
+ * @return 0 and `raw` filled; -1 not that shape (raw is then unspecified).
+ */
+int nodus_witness_owner_hex_to_raw(const char *hex, size_t hex_len,
+                                   uint8_t raw[64]);
 
 #ifdef __cplusplus
 }

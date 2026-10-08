@@ -3609,7 +3609,8 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
  * fed a crafted reply without a network (test_client_dup_array.c, through
  * the NODUS_CLIENT_TEST_SEAM wrappers at the end of the DNAC section). */
 static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
-                           nodus_dnac_utxo_result_t *result_out);
+                           nodus_dnac_utxo_result_t *result_out,
+                           bool *trunc_out);
 static int dnac_ledger_range_parse(const uint8_t *raw, size_t raw_len,
                                    nodus_dnac_range_result_t *result_out);
 static int dnac_block_parse(const uint8_t *raw, size_t raw_len,
@@ -3664,7 +3665,7 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
     QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: got response raw_len=%zu", req->raw_response_len);
 
     int prc = dnac_utxo_parse(req->raw_response, req->raw_response_len,
-                              result_out);
+                              result_out, NULL);
     free_pending(client, req);
     return prc;
 }
@@ -3677,11 +3678,18 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
  * entries without resetting count and write at entries[count] — a heap
  * overflow driven by any server the client talks to. Every key of the
  * response map is now accepted once, and each entry write is bounded by the
- * capacity actually allocated. */
+ * capacity actually allocated.
+ *
+ * `trunc_out` NULL = the dnac_utxo reply: a "trunc" key is an unknown key
+ * (skipped), exactly as before. Non-NULL = the dnac_msig_utxo reply (the
+ * same keys plus "trunc"): "trunc" is REQUIRED and must be a bool, else
+ * NODUS_ERR_PROTOCOL_ERROR. */
 static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
-                           nodus_dnac_utxo_result_t *result_out) {
+                           nodus_dnac_utxo_result_t *result_out,
+                           bool *trunc_out) {
     cbor_decoder_t dec;
     size_t mc;
+    bool have_trunc = false;
     if (find_response_map(raw, raw_len, &dec, &mc) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: find_response_map failed");
         return NODUS_ERR_PROTOCOL_ERROR;
@@ -3827,9 +3835,25 @@ static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
                 }
                 result_out->count++;
             }
+        } else if (trunc_out && key.tstr.len == 5 &&
+                   memcmp(key.tstr.ptr, "trunc", 5) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type != CBOR_ITEM_BOOL) {
+                nodus_client_free_utxo_result(result_out);
+                return NODUS_ERR_PROTOCOL_ERROR;
+            }
+            *trunc_out = v.bool_val;
+            have_trunc = true;
         } else {
             cbor_decode_skip(&dec);
         }
+    }
+
+    if (trunc_out && (!have_trunc || dec.error)) {
+        QGP_LOG_WARN(LOG_TAG, "dnac_msig_utxo: reply without a valid "
+                     "\"trunc\" — refused");
+        nodus_client_free_utxo_result(result_out);
+        return NODUS_ERR_PROTOCOL_ERROR;
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: parsed server_count=%d result_count=%d",
@@ -3837,6 +3861,150 @@ static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
 
     (void)count;  /* Server count for cross-check, not used */
     return 0;
+}
+
+/* The reply to a dnac_msig_* request was an error: the node's code, or
+ * NODUS_CLIENT_ERR_METHOD_UNSUPPORTED when the node does not have the
+ * method (PROTOCOL_ERROR + NODUS_DNAC_UNKNOWN_METHOD_MSG, nodus.h). A
+ * code that is not a positive NODUS_ERR_* is PROTOCOL_ERROR, never 0. */
+static int dnac_msig_error_rc(const nodus_tier2_msg_t *resp) {
+    if (resp->error_code == NODUS_ERR_PROTOCOL_ERROR &&
+        strcmp(resp->error_msg, NODUS_DNAC_UNKNOWN_METHOD_MSG) == 0)
+        return NODUS_CLIENT_ERR_METHOD_UNSUPPORTED;
+    return resp->error_code > 0 ? resp->error_code : NODUS_ERR_PROTOCOL_ERROR;
+}
+
+/* The two dnac_msig_* calls refuse before a round trip what the node
+ * refuses: an owner that is not 128 lowercase hex, a descriptor outside
+ * 1..NODUS_DNAC_MSIG_MAX_DESC_LEN. @return true = sendable. */
+static bool dnac_msig_args_ok(const char *owner_hex, const uint8_t *msig,
+                              size_t msig_len) {
+    if (!owner_hex || !msig || msig_len < 1 ||
+        msig_len > NODUS_DNAC_MSIG_MAX_DESC_LEN)
+        return false;
+    if (strnlen(owner_hex, 129) != 128) return false;
+    for (size_t i = 0; i < 128; i++) {
+        char ch = owner_hex[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+int nodus_client_dnac_msig_utxo(nodus_client_t *client,
+                                const char *owner_hex,
+                                const uint8_t *msig, size_t msig_len,
+                                int max_results,
+                                nodus_dnac_utxo_result_t *result_out,
+                                bool *trunc_out) {
+    bool trunc = false;
+
+    if (!nodus_client_is_ready(client) || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+    if (trunc_out) *trunc_out = false;
+    if (!dnac_msig_args_ok(owner_hex, msig, msig_len)) return -1;
+    if (max_results <= 0 || max_results > NODUS_DNAC_MAX_UTXO_RESULTS)
+        max_results = NODUS_DNAC_MAX_UTXO_RESULTS;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_msig_utxo", 3);
+    cbor_encode_cstr(&enc, "owner");
+    cbor_encode_tstr(&enc, owner_hex, 128);
+    cbor_encode_cstr(&enc, "msig");
+    cbor_encode_bstr(&enc, msig, msig_len);
+    cbor_encode_cstr(&enc, "max");
+    cbor_encode_uint(&enc, (uint64_t)max_results);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = dnac_msig_error_rc(resp);
+        QGP_LOG_WARN(LOG_TAG, "dnac_msig_utxo: error response code=%d "
+                     "(rc %d)", resp->error_code, rc);
+        free_pending(client, req);
+        return rc;
+    }
+    int prc = dnac_utxo_parse(req->raw_response, req->raw_response_len,
+                              result_out, &trunc);
+    free_pending(client, req);
+    if (prc == 0 && trunc_out) *trunc_out = trunc;
+    return prc;
+}
+
+int nodus_client_dnac_msig_addr_history(nodus_client_t *client,
+                                        const char *owner_hex,
+                                        const uint8_t *msig, size_t msig_len,
+                                        const nodus_dnac_addr_history_cursor_t *before,
+                                        uint32_t limit,
+                                        nodus_dnac_addr_history_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+    if (!dnac_msig_args_ok(owner_hex, msig, msig_len)) return -1;
+    if (limit < 1 || limit > NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT) return -1;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_msig_addr_history",
+                   before ? 6 : 3);
+    cbor_encode_cstr(&enc, "owner");
+    cbor_encode_tstr(&enc, owner_hex, 128);
+    cbor_encode_cstr(&enc, "msig");
+    cbor_encode_bstr(&enc, msig, msig_len);
+    cbor_encode_cstr(&enc, "limit");
+    cbor_encode_uint(&enc, limit);
+    if (before) {
+        cbor_encode_cstr(&enc, "before");
+        cbor_encode_uint(&enc, before->h);
+        cbor_encode_cstr(&enc, "bi");
+        cbor_encode_uint(&enc, before->i);
+        cbor_encode_cstr(&enc, "bq");
+        cbor_encode_uint(&enc, before->q);
+    }
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = dnac_msig_error_rc(resp);
+        free_pending(client, req);
+        return rc;
+    }
+    /* the dnac_addr_history decoder: it reads only "r", never "q" */
+    int drc = nodus_dnac_addr_history_decode(req->raw_response,
+                                             req->raw_response_len,
+                                             result_out);
+    free_pending(client, req);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
 }
 
 int nodus_client_dnac_ledger_range(nodus_client_t *client,
@@ -7293,7 +7461,39 @@ int nodus_client_test_parse_block(const uint8_t *raw, size_t raw_len,
 int nodus_client_test_parse_utxo(const uint8_t *raw, size_t raw_len,
                                  nodus_dnac_utxo_result_t *out) {
     memset(out, 0, sizeof(*out));
-    return dnac_utxo_parse(raw, raw_len, out);
+    return dnac_utxo_parse(raw, raw_len, out, NULL);
+}
+
+/* tests/test_msig_query.c — the dnac_msig_utxo reply decode (the
+ * dnac_utxo decoder with "trunc" required) and the dnac_msig_* error
+ * mapping, over raw reply bytes as client_on_frame receives them. */
+int nodus_client_test_parse_msig_utxo(const uint8_t *raw, size_t raw_len,
+                                      nodus_dnac_utxo_result_t *out,
+                                      bool *trunc_out);
+int nodus_client_test_msig_error_rc(const uint8_t *raw, size_t raw_len);
+
+int nodus_client_test_parse_msig_utxo(const uint8_t *raw, size_t raw_len,
+                                      nodus_dnac_utxo_result_t *out,
+                                      bool *trunc_out) {
+    memset(out, 0, sizeof(*out));
+    *trunc_out = false;
+    return dnac_utxo_parse(raw, raw_len, out, trunc_out);
+}
+
+/* @return the mapped code of an error reply; NODUS_ERR_PROTOCOL_ERROR
+ * when the bytes do not decode or are not an error reply. */
+int nodus_client_test_msig_error_rc(const uint8_t *raw, size_t raw_len) {
+    nodus_tier2_msg_t msg;
+    int rc;
+
+    memset(&msg, 0, sizeof(msg));
+    if (nodus_t2_decode(raw, raw_len, &msg) != 0 || msg.type != 'e') {
+        nodus_t2_msg_free(&msg);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    rc = dnac_msig_error_rc(&msg);
+    nodus_t2_msg_free(&msg);
+    return rc;
 }
 
 int nodus_client_test_parse_ledger_range(const uint8_t *raw, size_t raw_len,

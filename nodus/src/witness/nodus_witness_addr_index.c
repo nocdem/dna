@@ -153,6 +153,13 @@ static int ai_hex_to_raw(const uint8_t *hex, uint8_t raw[64])
     return 0;
 }
 
+int nodus_witness_owner_hex_to_raw(const char *hex, size_t hex_len,
+                                   uint8_t raw[64])
+{
+    if (!hex || !raw || hex_len != 128) return -1;
+    return ai_hex_to_raw((const uint8_t *)hex, raw);
+}
+
 /* The next free seq of (h, i). @return 0 / -1. */
 static int ai_next_seq(nodus_witness_t *w, uint64_t h, uint32_t pos,
                        uint32_t *out)
@@ -820,26 +827,32 @@ static void ai_hex(const uint8_t raw[64], char out[129])
 
 /* The T2 response head — the shape of nodus_witness_handlers.c's static
  * enc_dnac_response, copied (7 lines) so the builder lives beside the
- * table it reads. */
+ * table it reads. `method` is the answered method's name ("q"). */
 static void ai_enc_response(cbor_encoder_t *enc, uint32_t txn_id,
-                            size_t r_map_count)
+                            const char *method, size_t r_map_count)
 {
     cbor_encode_map(enc, 4);
     cbor_encode_cstr(enc, "t");  cbor_encode_uint(enc, txn_id);
     cbor_encode_cstr(enc, "y");  cbor_encode_cstr(enc, "r");
-    cbor_encode_cstr(enc, "q");  cbor_encode_cstr(enc, "dnac_addr_history");
+    cbor_encode_cstr(enc, "q");  cbor_encode_cstr(enc, method);
     cbor_encode_cstr(enc, "r");
     cbor_encode_map(enc, r_map_count);
 }
 
-int nodus_witness_addr_history_build(nodus_witness_t *w, uint32_t txn_id,
-                                     const uint8_t *session_fp,
-                                     const char *owner,
-                                     const nodus_witness_addr_cursor_t *before,
-                                     uint32_t limit,
-                                     uint8_t **out, size_t *out_len,
-                                     int *err_code, char *err_msg,
-                                     size_t err_cap)
+/* The one answer builder behind both exported entry points. `c11` true =
+ * the dnac_addr_history rule (owner == session_fp); false = the caller
+ * has ALREADY authorized the session for `owner` (the dnac_msig_addr_
+ * history member gate in nodus_witness_handlers.c) and `session_fp` is
+ * not read. Everything after the authorization step is shared, so the
+ * two methods answer the same shape from the same rows. */
+static int ai_history_build(nodus_witness_t *w, uint32_t txn_id,
+                            const char *method, bool c11,
+                            const uint8_t *session_fp,
+                            const char *owner,
+                            const nodus_witness_addr_cursor_t *before,
+                            uint32_t limit,
+                            uint8_t **out, size_t *out_len,
+                            int *err_code, char *err_msg, size_t err_cap)
 {
     uint8_t       owner_raw[64];
     uint64_t      tip = 0, from_h = 0;
@@ -867,12 +880,12 @@ int nodus_witness_addr_history_build(nodus_witness_t *w, uint32_t txn_id,
     }
     /* C11 (the dnac_history rule): only the authenticated owner may read
      * its own history */
-    if (!session_fp) {
+    if (c11 && !session_fp) {
         ai_err(err_code, err_msg, err_cap, NODUS_ERR_NOT_AUTHENTICATED,
                "session not authenticated");
         return -1;
     }
-    if (memcmp(session_fp, owner_raw, 64) != 0) {
+    if (c11 && memcmp(session_fp, owner_raw, 64) != 0) {
         ai_err(err_code, err_msg, err_cap, NODUS_ERR_NOT_AUTHENTICATED,
                "owner must match authenticated session fingerprint");
         return -1;
@@ -975,7 +988,7 @@ int nodus_witness_addr_history_build(nodus_witness_t *w, uint32_t txn_id,
         buf = malloc(cap);
         if (!buf) goto internal;
         cbor_encoder_init(&enc, buf, cap);
-        ai_enc_response(&enc, txn_id, 4);
+        ai_enc_response(&enc, txn_id, method, 4);
         cbor_encode_cstr(&enc, "count");
         cbor_encode_uint(&enc, (uint64_t)n);
         cbor_encode_cstr(&enc, "enabled");
@@ -1022,12 +1035,40 @@ int nodus_witness_addr_history_build(nodus_witness_t *w, uint32_t txn_id,
     return 0;
 
 bad_row:
-    QGP_LOG_WARN(LOG_TAG, "dnac_addr_history owner=%.16s...: malformed "
-                 "stored row", owner);
+    QGP_LOG_WARN(LOG_TAG, "%s owner=%.16s...: malformed stored row",
+                 method, owner);
 internal:
     if (st) sqlite3_finalize(st);
     free(ent);
     ai_err(err_code, err_msg, err_cap, NODUS_ERR_INTERNAL_ERROR,
            "address history unreadable");
     return -1;
+}
+
+int nodus_witness_addr_history_build(nodus_witness_t *w, uint32_t txn_id,
+                                     const uint8_t *session_fp,
+                                     const char *owner,
+                                     const nodus_witness_addr_cursor_t *before,
+                                     uint32_t limit,
+                                     uint8_t **out, size_t *out_len,
+                                     int *err_code, char *err_msg,
+                                     size_t err_cap)
+{
+    return ai_history_build(w, txn_id, "dnac_addr_history", true,
+                            session_fp, owner, before, limit, out, out_len,
+                            err_code, err_msg, err_cap);
+}
+
+int nodus_witness_msig_addr_history_build(nodus_witness_t *w,
+                                          uint32_t txn_id,
+                                          const char *owner,
+                                          const nodus_witness_addr_cursor_t *before,
+                                          uint32_t limit,
+                                          uint8_t **out, size_t *out_len,
+                                          int *err_code, char *err_msg,
+                                          size_t err_cap)
+{
+    return ai_history_build(w, txn_id, "dnac_msig_addr_history", false,
+                            NULL, owner, before, limit, out, out_len,
+                            err_code, err_msg, err_cap);
 }

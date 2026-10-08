@@ -1051,6 +1051,8 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
                              const char *owner,
                              int max_results,
                              nodus_dnac_utxo_result_t *result_out);
+/* A vault member reading a multisig address's coins:
+ * nodus_client_dnac_msig_utxo (beside dnac_addr_history below). */
 
 /**
  * Query ledger entries in a sequence range.
@@ -1982,6 +1984,107 @@ int nodus_dnac_addr_history_decode(const uint8_t *raw, size_t raw_len,
 
 /** Free a `dnac_addr_history` result's entries (NULL-safe; zeroed). */
 void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *result);
+
+/* ── dnac_msig_utxo / dnac_msig_addr_history — a multisig VAULT MEMBER
+ * reads the vault address's coins and history (design docs/plans/2026-
+ * 09-29-general-multisig-design.md §8 + §8.6 rev 2; Kurultay #15,
+ * approved by the operator 2026-10-08). The node: nodus_witness_
+ * handlers.c "dnac_msig_utxo / dnac_msig_addr_history".
+ *
+ * dnac_utxo and dnac_addr_history keep C11 (owner == session) unchanged;
+ * these two are SEPARATE methods. A member is a session whose
+ * authenticated public key is one of the descriptor's N keys.
+ *
+ * Request  "a" (both methods):
+ *   "owner" tstr  exactly 128 lowercase hex — the multisig address
+ *   "msig"  bstr  the address's descriptor bytes, 1..NODUS_DNAC_MSIG_
+ *                 MAX_DESC_LEN (shared/dnac/msig_wire.h layout:
+ *                 tag ‖ M ‖ N ‖ N × pubkey, address = SHA3-512(it))
+ *   dnac_msig_utxo:          "max" uint 1..NODUS_DNAC_MAX_UTXO_RESULTS
+ *                            (optional; absent = 100)
+ *   dnac_msig_addr_history:  "limit", "before", "bi", "bq" exactly as
+ *                            dnac_addr_history above
+ *   Each key at most once; a known key of the wrong type or out of
+ *   bounds is refused (a bad "msig" is never read as "absent"); unknown
+ *   keys are skipped.
+ * Node order: session not authenticated → NOT_AUTHENTICATED (before any
+ *   argument is read); arguments → PROTOCOL_ERROR; then ONCE: the
+ *   descriptor parses, its address == owner, and the session key is one
+ *   of its keys — else NOT_AUTHENTICATED "not authorized for this owner"
+ *   (the same text whichever step failed); then the store.
+ * Response "r":
+ *   dnac_msig_utxo — EXACTLY dnac_utxo's "count", "block_height",
+ *     "utxos" (same per-entry keys and encoding, CORE-domain coins,
+ *     ordered amount DESC then nullifier ASC), then one more key LAST:
+ *     "trunc" bool  true = the owner holds more coins than were returned
+ *                   (no paging yet: the page is the first "max")
+ *     "q" = "dnac_msig_utxo".
+ *   dnac_msig_addr_history — EXACTLY dnac_addr_history's answer (same
+ *     four keys, same entries, same node-local caveats: "enabled",
+ *     "from_height"), "q" = "dnac_msig_addr_history".
+ * Errors (never a partial or an empty-on-fault answer):
+ *   NODUS_ERR_NOT_AUTHENTICATED  no session, or not a member of `owner`
+ *   NODUS_ERR_PROTOCOL_ERROR     an argument missing, repeated or bad
+ *   NODUS_ERR_NOT_FOUND          (history) no version-3 chain
+ *   NODUS_ERR_INTERNAL_ERROR     a store fault (coin list or history)
+ *   A node WITHOUT these methods answers NODUS_ERR_PROTOCOL_ERROR with
+ *   the text NODUS_DNAC_UNKNOWN_METHOD_MSG; the two client calls below
+ *   turn exactly that into NODUS_CLIENT_ERR_METHOD_UNSUPPORTED ("this node
+ *   is not updated yet"). */
+
+/** The longest descriptor a dnac_msig_* request carries: 18 + 7 × 2592
+ *  (DNA_MSIG_MAX_DESC_LEN, shared/dnac/msig_wire.h; the node
+ *  _Static_asserts the equality). */
+#define NODUS_DNAC_MSIG_MAX_DESC_LEN  18162u
+
+/** The error text a node answers (with NODUS_ERR_PROTOCOL_ERROR) for a
+ *  `dnac_*` method it does not have (nodus_witness_handlers.c dispatch).
+ *  THE CONTRACT the client relies on to tell "node too old" apart. */
+#define NODUS_DNAC_UNKNOWN_METHOD_MSG  "unknown DNAC method"
+
+/** Client-side return code: the node does not serve the method (it
+ *  answered PROTOCOL_ERROR NODUS_DNAC_UNKNOWN_METHOD_MSG) — a node not
+ *  updated yet, NOT a refusal of this session. Negative, so it never
+ *  collides with a NODUS_ERR_* code a node sends. */
+#define NODUS_CLIENT_ERR_METHOD_UNSUPPORTED  (-2)
+
+/**
+ * A vault member's coin list of the multisig address `owner_hex`
+ * (dnac_msig_utxo, above). Caller frees with nodus_client_free_utxo_result.
+ * @param owner_hex    exactly 128 lowercase hex (checked before sending)
+ * @param msig         the address's descriptor, 1..NODUS_DNAC_MSIG_MAX_
+ *                     DESC_LEN bytes
+ * @param max_results  page size; <= 0 or > 100 → 100 (as dnac_utxo)
+ * @param trunc_out    receives "trunc" (may be NULL)
+ * @return 0 and `result_out` filled; the NODUS_ERR_* code the node
+ *         answered; NODUS_CLIENT_ERR_METHOD_UNSUPPORTED for a node
+ *         without the method; NODUS_ERR_PROTOCOL_ERROR for a reply the
+ *         decoder refuses (incl. a missing / non-bool "trunc");
+ *         NODUS_ERR_TIMEOUT; -1 on invalid arguments / encode / transport
+ *         failure.
+ */
+int nodus_client_dnac_msig_utxo(nodus_client_t *client,
+                                const char *owner_hex,
+                                const uint8_t *msig, size_t msig_len,
+                                int max_results,
+                                nodus_dnac_utxo_result_t *result_out,
+                                bool *trunc_out);
+
+/**
+ * A vault member's history of the multisig address `owner_hex`
+ * (dnac_msig_addr_history, above). The reply is decoded by
+ * nodus_dnac_addr_history_decode (it reads only "r", never "q").
+ * @param before  NULL = the newest page
+ * @param limit   1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT
+ * @return as nodus_client_dnac_msig_utxo; free the result with
+ *         nodus_client_free_addr_history_result.
+ */
+int nodus_client_dnac_msig_addr_history(nodus_client_t *client,
+                                        const char *owner_hex,
+                                        const uint8_t *msig, size_t msig_len,
+                                        const nodus_dnac_addr_history_cursor_t *before,
+                                        uint32_t limit,
+                                        nodus_dnac_addr_history_result_t *result_out);
 
 /* ── Nodus EVM §18 — the EVM read RPC (design docs/plans/2026-10-04-nodus-evm-
  *    chain-integration-design.md rev 3 §18; the node side and its exact

@@ -2273,6 +2273,22 @@ target_link_libraries(test_addr_index nodus dsa kem nodus crypto pthread)
 target_compile_definitions(test_addr_index PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_addr_index COMMAND test_addr_index)
 
+# Vault-member queries dnac_msig_utxo / dnac_msig_addr_history (design
+# 2026-09-29-general-multisig-design.md §8.6 rev 2, Kurultay #15): the
+# member gate (session first, strict args, descriptor → address → session
+# key) through the REAL dispatcher over a socketpair, "trunc", the store
+# fault, dnac_utxo unchanged, and the client decoders / "node too old"
+# mapping. Compiles nodus_client.c itself with NODUS_CLIENT_TEST_SEAM=1
+# (the test_client_dup_array arrangement). Default build, no environment.
+# See the file's own "HOW IT CAN LIE".
+add_executable(test_msig_query tests/test_msig_query.c
+               src/client/nodus_client.c)
+target_link_libraries(test_msig_query nodus dsa kem nodus crypto pthread)
+target_compile_definitions(test_msig_query PRIVATE
+                           NODUS_WITNESS_INTERNAL_API
+                           NODUS_CLIENT_TEST_SEAM=1)
+add_test(NAME test_msig_query COMMAND test_msig_query)
+
 # FLEET-TM-R3 W2 (R3-C1c) — THE STARTUP TABLE over a REAL version-3
 # chain: the genesis document loader (stored row, provider, refusals),
 # InitChain called exactly once and never again, the Handshaker's height

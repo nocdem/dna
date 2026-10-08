@@ -3429,6 +3429,8 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 | `dnac_nullifier` | Client→Witness | Check if nullifier is spent |
 | `dnac_supply` | Client→Witness | Query supply state (version 3 adds `chain_id32`, `tip` and the supply buckets `reward_pool` / `treasury` / `unclaimed` — see "Supply buckets for Nodus Scan") |
 | `dnac_utxo` | Client→Witness | Query UTXOs by owner |
+| `dnac_msig_utxo` | Client→Witness | A multisig vault MEMBER's query of the vault address's coins: `dnac_utxo`'s answer plus `trunc` (see "Vault-member queries") |
+| `dnac_msig_addr_history` | Client→Witness | A multisig vault MEMBER's query of the vault address's history: `dnac_addr_history`'s answer (see "Vault-member queries") |
 | `dnac_utxo_proof` | Client→Witness | Query UTXO existence proof |
 | `dnac_ledger` | Client→Witness | Query ledger entry by hash |
 | `dnac_ledger_range` | Client→Witness | Query ledger entries by range |
@@ -6901,6 +6903,56 @@ writes, so a wallet had no history of its own address from a node.
   derived chain, none for refused items, none after a faulted block, none with
   the flag off; the builder's C11 refusals, limits, paging and byte-identical
   answers; hostile client replies.
+
+### Vault-member queries — `dnac_msig_utxo` / `dnac_msig_addr_history` (2026-10-08, code only — not versioned, not deployed)
+
+**Record:** design `docs/plans/2026-09-29-general-multisig-design.md` §8 + §8.6
+rev 2; Kurultay #15 summary `docs/plans/decisions/2026-10-08-kurultay-15-vault-
+member-query-summary.md` (approved by the operator 2026-10-08). Why: a vault
+(multisig address) has no session of its own, so C11 (`dnac_utxo` /
+`dnac_addr_history`: owner == session) gave its members nothing; the vault page
+had to scan every block from the vault's first one, which block pruning breaks.
+
+- **Separate methods.** `dnac_utxo` and `dnac_addr_history` are unchanged (C11,
+  `d40b89d1`). A node without the new methods answers `PROTOCOL_ERROR`
+  `"unknown DNAC method"` (`NODUS_DNAC_UNKNOWN_METHOD_MSG`, `nodus.h`); the client
+  SDK turns exactly that into `NODUS_CLIENT_ERR_METHOD_UNSUPPORTED` ("node not
+  updated yet"), distinct from a refusal (`NOT_AUTHENTICATED`).
+- **Request:** `owner` (exactly 128 lowercase hex — the vault address), `msig`
+  (bstr, the descriptor, 1..18 162 B = `DNA_MSIG_MAX_DESC_LEN`), plus `max`
+  (1..100, optional) for coins or `limit` / `before` / `bi` / `bq` (as
+  `dnac_addr_history`) for history.
+- **The gate** (`msig_query_open`, `nodus_witness_handlers.c`, one function for
+  both): (a) the session is authenticated — checked before any argument is read;
+  (b) every argument decoded strictly (each key once, typed, in bounds; unknown
+  keys skipped; a bad `msig` is refused, never read as absent) →
+  `PROTOCOL_ERROR`; (c) once: `dna_msig_desc_parse(msig) == 0`,
+  `dna_msig_address(msig) == owner`, and the session's authenticated public key
+  `conn->peer_pk` (set by `nodus_auth.c` on the client port, by the IPC
+  `ipc_hello` in a split node) is byte-equal to one of the descriptor's keys →
+  else `NOT_AUTHENTICATED` with one message whichever step failed; (d) then the
+  store. Work: ≤ 18 162 B parsed, one SHA3-512, ≤ 7 compares of 2 592 B.
+- **Answers:** `dnac_msig_utxo` = `dnac_utxo`'s three keys and per-coin encoding
+  (one shared encoder, `dnac_utxo_answer_send`) plus `trunc` (bool, LAST): the
+  node reads `max + 1` coins and `trunc` is true when there were more than `max`.
+  A store fault is `INTERNAL_ERROR` (unlike `dnac_utxo`, which still answers an
+  empty list — BUGS.md Z-11). `dnac_msig_addr_history` = the `dnac_addr_history`
+  builder itself (`ai_history_build` behind `nodus_witness_addr_history_build`
+  and `nodus_witness_msig_addr_history_build`), `q` = `dnac_msig_addr_history`,
+  same node-local caveats (`enabled`, `from_height`).
+- **What it does not protect:** `dnac_v3_block` is ungated, so on a node that
+  keeps old blocks anyone can still rebuild an address's coins from the blocks
+  (§8.6 item 5): the gate keeps the FAST path for members, not the data secret.
+- **Determinism:** read-only, committed state only; no consensus path calls it;
+  the gate is a function of the request bytes and the session key.
+- **Client:** `nodus_client_dnac_msig_utxo` (reuses the `dnac_utxo` decoder with
+  `trunc` required) and `nodus_client_dnac_msig_addr_history` (reuses
+  `nodus_dnac_addr_history_decode`, which reads only `r`). Wire spec: `nodus.h`
+  beside them.
+- Tests: `test_msig_query` — the gate through the real dispatcher over a
+  socketpair (member / non-member / wrong descriptor / malformed descriptor /
+  strict args / unauthenticated before any parse), `trunc`, the store fault,
+  `dnac_utxo` unchanged, the client decoders and the "node too old" mapping.
 
 ### Chain-config accepts only parameters the consensus reads (0.20.3)
 

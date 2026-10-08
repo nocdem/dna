@@ -51,6 +51,7 @@
 #include "witness/nodus_witness_v2_storage.h"   /* dnac_storage_status   */
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
+#include "dnac/msig_wire.h"                 /* dnac_msig_* member gate */
 #include "dnac/ledger_ids.h"
 /* Nodus EVM P4-C — dnac_v3_block's "ev": the shared call / receipt codec
  * (always compiled, nodus/CMakeLists.txt — no EVM engine needed) */
@@ -616,6 +617,12 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
  * Response: "r": {"count":N, "utxos":[{...},...]}
  * ════════════════════════════════════════════════════════════════════ */
 
+static void dnac_utxo_answer_send(nodus_witness_t *w,
+                                  struct nodus_tcp_conn *conn,
+                                  uint32_t txn_id, const char *method,
+                                  const nodus_witness_utxo_entry_t *utxos,
+                                  int count, bool with_trunc, bool trunc);
+
 static void handle_dnac_utxo(nodus_witness_t *w,
                                struct nodus_tcp_conn *conn,
                                const uint8_t *payload, size_t len,
@@ -691,6 +698,23 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: owner=%.16s... db=%p rc=%d count=%d",
                   owner, (void*)w->db, utxo_rc, count);
 
+    dnac_utxo_answer_send(w, conn, txn_id, "dnac_utxo", utxos, count,
+                          false, false);
+    free(utxos);
+}
+
+/* The dnac_utxo answer body, shared by dnac_utxo and dnac_msig_utxo so
+ * the two answer the same keys with the same per-entry encoding. Encodes
+ * the T2 response for `count` entries of `utxos` under method name
+ * `method` and sends it (or an INTERNAL_ERROR). `with_trunc` false =
+ * exactly the three top-level keys dnac_utxo has always sent; true = the
+ * same three, then a fourth, "trunc" (bool) = `trunc`, LAST, so the first
+ * three are positionally identical. Does not free `utxos`. */
+static void dnac_utxo_answer_send(nodus_witness_t *w,
+                                  struct nodus_tcp_conn *conn,
+                                  uint32_t txn_id, const char *method,
+                                  const nodus_witness_utxo_entry_t *utxos,
+                                  int count, bool with_trunc, bool trunc) {
     /* Phase 2 / Task 38 defined a per-UTXO proof block. Its wire keys
      * STAY (short CBOR keys to match existing conventions "n", "tid",
      * "bh"):
@@ -716,7 +740,6 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     size_t buf_size = 512 + ((size_t)count * 2560);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
-        free(utxos);
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "allocation failed");
         return;
@@ -724,7 +747,7 @@ static void handle_dnac_utxo(nodus_witness_t *w,
 
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, buf_size);
-    enc_dnac_response(&enc, txn_id, "dnac_utxo", 3);
+    enc_dnac_response(&enc, txn_id, method, with_trunc ? 4 : 3);
 
     cbor_encode_cstr(&enc, "count");
     cbor_encode_uint(&enc, (uint64_t)count);
@@ -790,6 +813,11 @@ static void handle_dnac_utxo(nodus_witness_t *w,
         cbor_encode_bstr(&enc, state_root, NODUS_MERKLE_HASH_LEN);
     }
 
+    if (with_trunc) {
+        cbor_encode_cstr(&enc, "trunc");
+        cbor_encode_bool(&enc, trunc);
+    }
+
     size_t rlen = cbor_encoder_len(&enc);
     if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
@@ -799,7 +827,267 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     }
 
     free(buf);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_msig_utxo / dnac_msig_addr_history — a multisig VAULT MEMBER
+ * reads the vault address's coins and history.
+ *
+ * Design docs/plans/2026-09-29-general-multisig-design.md §8 + §8.6 rev 2
+ * (Kurultay #15, approved by the operator 2026-10-08:
+ * docs/plans/decisions/2026-10-08-kurultay-15-vault-member-query-
+ * summary.md). The wire is specified ONCE, in include/nodus/nodus.h
+ * beside nodus_client_dnac_msig_utxo / nodus_client_dnac_msig_addr_
+ * history. dnac_utxo and dnac_addr_history are NOT changed (C11,
+ * d40b89d1): separate methods, so a node without them answers
+ * PROTOCOL_ERROR "unknown DNAC method" — distinguishable from "not a
+ * member" (NOT_AUTHENTICATED).
+ *
+ * THE GATE (msig_query_open, shared by both), in this order:
+ *  a. the session is authenticated (conn->peer_id_set) — before any
+ *     argument is decoded or anything is hashed;
+ *  b. every argument decoded STRICTLY: each known key at most once, the
+ *     right type, in bounds; unknown keys skipped; `owner` exactly 128
+ *     lowercase hex; `msig` a bstr of 1..DNA_MSIG_MAX_DESC_LEN bytes —
+ *     a bad `msig` is refused, never treated as absent → PROTOCOL_ERROR;
+ *  c. ONCE, after the loop: dna_msig_desc_parse(msig) == 0,
+ *     dna_msig_address(msig) == owner (64 raw bytes), and the session's
+ *     authenticated public key (conn->peer_pk: nodus_auth.c on the
+ *     client port, nodus_witness_ipc.c's ipc_hello in a split node) is
+ *     byte-equal to one of the descriptor's N keys → else
+ *     NOT_AUTHENTICATED with ONE message whichever step failed;
+ *  d. only then the store is read, for the canonical owner text.
+ * Bounded work: ≤ 18162 B parsed, one SHA3-512, ≤ 7 memcmp of 2592 B.
+ * Read-only, committed state only; no consensus path calls this (D8.1).
+ * ════════════════════════════════════════════════════════════════════ */
+
+_Static_assert(NODUS_PK_BYTES == DNA_MSIG_PUBKEY_LEN,
+               "a session public key and a multisig descriptor key must "
+               "be the same ML-DSA-87 width");
+_Static_assert(NODUS_DNAC_MSIG_MAX_DESC_LEN == DNA_MSIG_MAX_DESC_LEN,
+               "nodus.h restates the longest multisig descriptor");
+
+#define MSIG_QUERY_NOT_MEMBER  "not authorized for this owner"
+
+typedef struct {
+    char           owner[NODUS_KEY_HEX_LEN];   /* 128 lowercase hex + NUL */
+    uint8_t        owner_raw[64];
+    const uint8_t *msig;                       /* points into the payload */
+    size_t         msig_len;
+    bool           have_max, have_limit, have_before, have_bi, have_bq;
+    uint64_t       max, limit, before, bi, bq;
+} msig_query_args_t;
+
+/* Step c: `msig` is a valid descriptor, its address is `owner_raw`, and
+ * the session's authenticated public key is one of its keys. @return 0
+ * member / -1 anything else (the caller says nothing about which). A
+ * session whose peer_pk was never filled holds zeros, and a descriptor
+ * refuses a zero-prefixed key (msig_wire.h), so it never matches. */
+static int msig_member_check(const struct nodus_tcp_conn *conn,
+                             const uint8_t owner_raw[64],
+                             const uint8_t *msig, size_t msig_len) {
+    uint8_t        m = 0, n = 0;
+    const uint8_t *keys = NULL;
+    uint8_t        addr[DNA_MSIG_ADDR_LEN];
+
+    if (dna_msig_desc_parse(msig, msig_len, &m, &n, &keys) != 0) return -1;
+    if (dna_msig_address(msig, msig_len, addr) != 0) return -1;
+    if (memcmp(addr, owner_raw, DNA_MSIG_ADDR_LEN) != 0) return -1;
+    for (uint8_t k = 0; k < n; k++) {
+        if (memcmp(conn->peer_pk.bytes,
+                   keys + (size_t)k * DNA_MSIG_PUBKEY_LEN,
+                   DNA_MSIG_PUBKEY_LEN) == 0)
+            return 0;
+    }
+    return -1;
+}
+
+/* THE GATE (a → b → c above). `history` selects the method's own keys:
+ * false = dnac_msig_utxo ("max"), true = dnac_msig_addr_history
+ * ("limit", "before", "bi", "bq"); a key of the other method is an
+ * unknown key (skipped). @return 0 = `a` filled and the session is a
+ * member; -1 = the error was SENT. */
+static int msig_query_open(struct nodus_tcp_conn *conn,
+                           const uint8_t *payload, size_t len,
+                           uint32_t txn_id, bool history,
+                           msig_query_args_t *a) {
+    cbor_decoder_t dec;
+    size_t         args_count;
+    bool           have_owner = false, have_msig = false;
+
+    memset(a, 0, sizeof(*a));
+    if (!conn->peer_id_set) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                   "session not authenticated");
+        return -1;
+    }
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing args map");
+        return -1;
+    }
+    for (size_t k = 0; k < args_count; k++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        cbor_item_t val;
+        bool       *seen = NULL;
+        uint64_t   *slot = NULL;
+
+        if (key.type != CBOR_ITEM_TSTR) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "truncated or malformed args map");
+            return -1;
+        }
+        if (key_match(&key, "owner")) {
+            val = cbor_decode_next(&dec);
+            if (have_owner || val.type != CBOR_ITEM_TSTR ||
+                val.tstr.len != 128 ||
+                nodus_witness_owner_hex_to_raw(val.tstr.ptr, val.tstr.len,
+                                               a->owner_raw) != 0) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "owner must be one 128-character lowercase "
+                           "hex string");
+                return -1;
+            }
+            memcpy(a->owner, val.tstr.ptr, 128);
+            a->owner[128] = '\0';
+            have_owner = true;
+            continue;
+        }
+        if (key_match(&key, "msig")) {
+            val = cbor_decode_next(&dec);
+            if (have_msig || val.type != CBOR_ITEM_BSTR ||
+                val.bstr.len < 1 || val.bstr.len > DNA_MSIG_MAX_DESC_LEN) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "msig must be one byte string of 1..18162 "
+                           "bytes");   /* DNA_MSIG_MAX_DESC_LEN */
+                return -1;
+            }
+            a->msig     = val.bstr.ptr;
+            a->msig_len = val.bstr.len;
+            have_msig = true;
+            continue;
+        }
+        if (!history && key_match(&key, "max")) {
+            seen = &a->have_max;    slot = &a->max;
+        } else if (history && key_match(&key, "limit")) {
+            seen = &a->have_limit;  slot = &a->limit;
+        } else if (history && key_match(&key, "before")) {
+            seen = &a->have_before; slot = &a->before;
+        } else if (history && key_match(&key, "bi")) {
+            seen = &a->have_bi;     slot = &a->bi;
+        } else if (history && key_match(&key, "bq")) {
+            seen = &a->have_bq;     slot = &a->bq;
+        }
+        if (!seen) {
+            cbor_decode_skip(&dec);
+            continue;
+        }
+        val = cbor_decode_next(&dec);
+        if (*seen || val.type != CBOR_ITEM_UINT) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       history ? "limit / before / bi / bq must each be "
+                                 "one uint"
+                               : "max must be one uint");
+            return -1;
+        }
+        *seen = true;
+        *slot = val.uint_val;
+    }
+    if (dec.error || !have_owner || !have_msig) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid owner / msig");
+        return -1;
+    }
+    if (history) {
+        if (!a->have_limit || a->limit < 1 ||
+            a->limit > NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT ||
+            ((a->have_bi || a->have_bq) && !a->have_before) ||
+            a->bi > UINT32_MAX || a->bq > UINT32_MAX) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                       "invalid cursor or limit");
+            return -1;
+        }
+    } else if (a->have_max &&
+               (a->max < 1 || a->max > DNAC_MAX_UTXO_RESULTS)) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "max must be 1..100");
+        return -1;
+    }
+
+    if (msig_member_check(conn, a->owner_raw, a->msig, a->msig_len) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                   MSIG_QUERY_NOT_MEMBER);
+        return -1;
+    }
+    return 0;
+}
+
+static void handle_dnac_msig_utxo(nodus_witness_t *w,
+                                  struct nodus_tcp_conn *conn,
+                                  const uint8_t *payload, size_t len,
+                                  uint32_t txn_id) {
+    msig_query_args_t a;
+    if (msig_query_open(conn, payload, len, txn_id, false, &a) != 0)
+        return;
+
+    int max_results = a.have_max ? (int)a.max : DNAC_MAX_UTXO_RESULTS;
+
+    /* One more than the page: a (max + 1)-th row is what "trunc" means.
+     * nodus_witness_utxo_by_owner orders by (amount DESC, nullifier ASC),
+     * a total order, so the first `max` rows are the ones dnac_utxo would
+     * have answered with the same max. */
+    nodus_witness_utxo_entry_t *utxos =
+        calloc((size_t)max_results + 1u, sizeof(nodus_witness_utxo_entry_t));
+    if (!utxos) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "allocation failed");
+        return;
+    }
+
+    int count = 0;
+    if (nodus_witness_utxo_by_owner(w, a.owner, utxos, max_results + 1,
+                                    &count) != 0) {
+        /* §8.6 item 7: a store fault is never an empty list here */
+        free(utxos);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "coin list unreadable");
+        return;
+    }
+    bool trunc = count > max_results;
+    if (trunc) count = max_results;
+
+    dnac_utxo_answer_send(w, conn, txn_id, "dnac_msig_utxo", utxos, count,
+                          true, trunc);
     free(utxos);
+}
+
+static void handle_dnac_msig_addr_history(nodus_witness_t *w,
+                                          struct nodus_tcp_conn *conn,
+                                          const uint8_t *payload,
+                                          size_t len, uint32_t txn_id) {
+    msig_query_args_t a;
+    if (msig_query_open(conn, payload, len, txn_id, true, &a) != 0)
+        return;
+
+    nodus_witness_addr_cursor_t cur;
+    cur.h = a.before;
+    cur.i = (uint32_t)a.bi;
+    cur.q = (uint32_t)a.bq;
+
+    uint8_t *frame = NULL;
+    size_t   frame_len = 0;
+    int      ecode = 0;
+    char     emsg[128];
+    if (nodus_witness_msig_addr_history_build(
+            w, txn_id, a.owner, a.have_before ? &cur : NULL,
+            (uint32_t)a.limit, &frame, &frame_len, &ecode, emsg,
+            sizeof(emsg)) != 0) {
+        send_error(conn, txn_id, ecode ? ecode : NODUS_ERR_INTERNAL_ERROR,
+                   emsg);
+        return;
+    }
+    nodus_tcp_send(conn, frame, frame_len);
+    free(frame);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -5789,6 +6077,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_supply(w, conn, txn_id);
     } else if (strcmp(method, "dnac_utxo") == 0) {
         handle_dnac_utxo(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_msig_utxo") == 0) {
+        handle_dnac_msig_utxo(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_balance") == 0) {
         handle_dnac_balance(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_ledger_range") == 0) {
@@ -5811,6 +6101,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_history(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_addr_history") == 0) {
         handle_dnac_addr_history(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_msig_addr_history") == 0) {
+        handle_dnac_msig_addr_history(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_delegations") == 0) {
         handle_dnac_delegations(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_token_list") == 0) {
@@ -5842,7 +6134,9 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
                    "the EVM is not compiled into this build");
 #endif
     } else {
+        /* the text is a client contract (nodus.h): it is how a newer
+         * client tells "this node lacks the method" from a refusal */
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                    "unknown DNAC method");
+                    NODUS_DNAC_UNKNOWN_METHOD_MSG);
     }
 }
