@@ -171,8 +171,21 @@ int nodus_stfetch_ans_decode(const uint8_t *msg, size_t len,
     if (msg[0] != NODUS_STFETCH_KIND_ANS) return -1;
     memcpy(out->rq, msg + 1, 64);
     out->code = msg[65];
-    if (out->code != NODUS_STFETCH_OK)
+    if (out->code != NODUS_STFETCH_OK) {
+        /* Only a defined refusal is an answer; 5 is retired (K6a) and
+         * 7..255 are undefined — both are a malformed answer. */
+        switch (out->code) {
+        case NODUS_STFETCH_REF_NOT_MEMBER:
+        case NODUS_STFETCH_REF_UNKNOWN_SET:
+        case NODUS_STFETCH_REF_NOT_PUBLISHED:
+        case NODUS_STFETCH_REF_NOT_HELD:
+        case NODUS_STFETCH_REF_FAULT:
+            break;
+        default:
+            return -1;
+        }
         return len == NODUS_STFETCH_REFUSAL_LEN ? 0 : -1;
+    }
     const uint32_t bounds[3] = { NODUS_SEG_HEADER_MAX, NODUS_STFETCH_BODY_MAX,
                                  NODUS_STPROBE_PROOF_MAX };
     const uint8_t *ptr[3] = { NULL, NULL, NULL };
@@ -409,7 +422,9 @@ nodus_stfetch_code_t nodus_stfetch_answer_build(
  * Admission
  * ════════════════════════════════════════════════════════════════════ */
 
-/* The live registry row of `fp` is ACTIVE. @return 1 / 0 / -1 */
+/* The live registry row of `fp` is ACTIVE. @return 1 / 0 / -1
+ * A row whose status is not an INTEGER is a malformed committed row —
+ * a FAULT (-1), never a value. */
 static int registry_active(nodus_witness_t *w, const uint8_t fp[64]) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
@@ -420,9 +435,11 @@ static int registry_active(nodus_witness_t *w, const uint8_t fp[64]) {
     int ret = 0;
     int rc = sqlite3_step(st);
     if (rc == SQLITE_ROW) {
-        ret = (sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
-               sqlite3_column_int64(st, 0) == (sqlite3_int64)
-                                              DNA_V2_STORAGE_ACTIVE) ? 1 : 0;
+        if (sqlite3_column_type(st, 0) != SQLITE_INTEGER)
+            ret = -1;
+        else
+            ret = sqlite3_column_int64(st, 0) == (sqlite3_int64)
+                                                 DNA_V2_STORAGE_ACTIVE ? 1 : 0;
     } else if (rc != SQLITE_DONE) {
         ret = -1;
     }

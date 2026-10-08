@@ -725,8 +725,8 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
 | HF-5 | rule-set generation 3: SYSTEM v8 / CORE v6 / EVM v2 — the EVM domain (domain 2) registered ACTIVE at the end of H−1; CORE op 9 EVMFUND; id 15 EVM_BLOCK_GAS_LIMIT in force | 14 `EVM_ACTIVE` | 188948158701949959 (D = 0x029f47596864d407) | 62425 | 79757 | 0.24.1 | `1D6A68F08EC42ED0` |
-| HF-7 storage reward, after HF-5 (**not voted** — placeholder) | rule-set generation 4 GEN_STORAGE (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT in force from H | 16 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6; Nodus EVM took generation 3 and params 14 / 15) | 896171186953543716 (S4 = 0x0c6fd6f2484e6024; `DNAC_CFG_RULESET_GEN_STORAGE_D`, re-derived by `shared/dnac/tests/storage_oracle.py` over EVM v2) | — | — | not released | — |
-| HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not the validator itself is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; self-delegation, UNDELEGATE, existing rows and payouts untouched); such a DELEGATE's funding leg takes at most 14 inputs. No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | not released | — |
+| HF-7 storage reward, after HF-5 (**not voted** — placeholder) | rule-set generation 4 GEN_STORAGE (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT in force from H | 16 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6; Nodus EVM took generation 3 and params 14 / 15) | 896171186953543716 (S4 = 0x0c6fd6f2484e6024; `DNAC_CFG_RULESET_GEN_STORAGE_D`, re-derived by `shared/dnac/tests/storage_oracle.py` over EVM v2) | — | — | 0.25.0 (code released, vote not cast) | — |
+| HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not the validator itself is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; self-delegation, UNDELEGATE, existing rows and payouts untouched); such a DELEGATE's funding leg takes at most 14 inputs. No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | 0.25.3 (code released, inert, vote not cast) | — |
 
 Read 2026-10-07: HF-5 ACTIVE on 7/7 — every node logged "Nodus EVM: rule-set generation
 2 -> 3 and the EVM domain registered ACTIVE at the end of height 79756 (D
@@ -742,8 +742,12 @@ diverges at that block — recovery at the end of this section.
 
 The storage row is a PLACEHOLDER (storage reward v1, package B1 — decision
 `docs/plans/decisions/2026-10-04-storage-reward-approved.md`, design
-`docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §6): nothing is voted, no binary
-is released. Its numbers were assigned in main merge order after Nodus EVM (HF-5) merged
+`docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §6): nothing is voted; the code has
+been in every node binary since 0.25.0 (release fd89dfbe), so param 16 IS votable on the live chain
+today — **do NOT propose it**. Order (operator 2026-10-08, Kurultay #14 summary K12): storage
+opens TOGETHER with the validator-role fork HF-6 (owner/node split for both roles, joining from
+Connect), never on its own with today's node-key registration; whether that is one rule-set
+generation or two is open in the HF-6 design. Its numbers were assigned in main merge order after Nodus EVM (HF-5) merged
 first: generation 4 on the EVM generation, param 16, SYSTEM v9 / CORE v7. Its fork number is
 **HF-7** (operator, 2026-10-07; the role-stake package is HF-6, and the planned "delegation
 requires an on-chain name" rule is HF-8 — decision `2026-10-05-hf-numbering-evm-hf5.md`). Its vote follows the HF-4 procedure below with param 16
@@ -761,7 +765,7 @@ client that builds storage envelopes.
 
 The HF-8 row is a PLACEHOLDER (design `docs/plans/2026-10-07-delegate-name-required-design.md`
 rev 2 §1, Kurultay #11; number: decision `2026-10-05-hf-numbering-evm-hf5.md` "Ek 2026-10-07"):
-nothing is voted, no binary is released, the code is INERT until a param-17 row exists (the
+nothing is voted; the code is in every node binary since 0.25.3 (135d1b2e) and INERT until a param-17 row exists (the
 CORE SYSFUND hooks plan, read and charge exactly as before). It is the HF-2 / HF-3 shape — a
 one-way flag (value exactly 1, no single-use rule, grace ERGONOMIC), NOT a rule-set generation,
 so there is no switch at H−1, no new startup line and no literal to compare; one stateful rule:

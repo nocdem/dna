@@ -2803,6 +2803,20 @@ if(JSONC_FOUND)
 endif()
 endif()
 
+# Archive reward — the behaviours no other test drives, gating the param 16
+# vote (decision docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md
+# K10): twin GEN_STORAGE chains with ZERO storage members across 25 boundaries
+# (empty frozen sets, a report against the empty set, settlement over it, a
+# payday), the first registration after empty boundaries on both K9a branches
+# (a segment the chain publishes at the entry boundary counts 0; pre-existing
+# segments count 1 each), a payday with one member holding storage credit,
+# and the 0x73 serving side's code 6 (FAULT) over a corrupted database. Same
+# fixture as test_storage_b2 (the runtime selfcheck over the filled
+# STORAGE-ORACLE pins), so built only with NODUS_EVM_ENABLED. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_storage_empty)
+endif()
+
 # Archive reward, package B2b-1 — the archive probe's node side
 # (src/witness/nodus_witness_storage_probe.c / _reporter.c): the channel
 # 0x72 request (the approved bytes doc §6 layout) and answer codecs, the

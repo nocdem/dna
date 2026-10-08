@@ -154,8 +154,10 @@
 #     A segment is 360 blocks here and 17 280 in production; the segment
 #     file, the 0x72 samples and the 0x73 fetch run over 360 heights. The
 #     production segment length is held only by the compile-time assert
-#     (ledger_roots_v2.c) and the unit KATs (test_storage_*, production E
-#     only — they FAIL at E = 15 and are not meant to run there).
+#     (ledger_roots_v2.c) and the unit tests run at the default E = 720
+#     (test_storage_*; their own headers say most of them run at any
+#     E >= 8 — test_storage_b2.c:144-147 — and test_storage_probe.c loops
+#     E = 720 and 15; whether every one passes at E = 15 is NOT verified).
 #   - **Both storage nodes are also validators** (the runbook §2.6
 #     "both-roles node"). A storage node that is NOT a validator (serving
 #     0x72 to validators over a persistent peer, earning only the storage
@@ -208,8 +210,9 @@
 #     (≈ 390), idle across the GEN2, EVM and storage edges (≈ 8 blocks
 #     each) and across the last ≈ 30 blocks (probing epoch, report
 #     window, settlement) — on the order of 1.5-2 h.
-#   - Written against the source; NOT yet run (the first run is the
-#     ORCHESTRATOR's).
+#   - Run results: PASS on 2026-10-06 at bf1c4c1f (104 [ok]) and at
+#     49c7218f (103 [ok]), both E=15 / BPY 20 / grace 15/15, P=360,
+#     pool 1 = 10^15 (orchestration ledger, the two HARNESS BİTTİ lines).
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
