@@ -66,6 +66,8 @@
 //           joining --packet N (welcome's digest) + record N read--> active
 //           active --a packet without our entry (HEAD-announced)--> removed
 //           invited --ignore--> (record deleted)
+//           accepting --a new invite_id from the pinned owner (the join was
+//           refused, never welcomed)--> invited
 //           accepting | joining | active --leave--> left (hidden; the owner
 //           is told, decision 13)
 //   owner:  active from creation (hw empty until version 1's HEAD is out);
@@ -270,9 +272,26 @@ export function createGroupsEngine(deps) {
   // An invite: only from a contact who names ITSELF the owner (decision 8,
   // design §2: the owner is pinned from the authenticated invite). A group
   // this device already knows keeps its pinned owner.
+  // A NEW invitation from that same pinned owner also reopens a group this
+  // device accepted but was never welcomed into ('accepting'): the owner
+  // consumes an accept once and sends a welcome only for the invite_id it
+  // honoured (R2-7); when the owner refused the join (no ML-KEM-1024 key,
+  // design §4, or the member limit) nothing reaches this device, and the
+  // owner's way forward is a new invite (a new one-use invite_id). Ignoring
+  // it would leave both sides waiting for each other. The record becomes a
+  // fresh invitation with the new invite_id, so a late welcome for the old
+  // one no longer matches (onWelcome requires status 'accepting' and the
+  // held invite_id) and the member accepts again (design §7: invite ->
+  // accept -> welcome). Only 'accepting': a welcomed member ('joining',
+  // 'active') keeps its address secret and versions; another sender for a
+  // known group is still refused (decision 8, design §2: the owner pin).
   async function onInvite(from, r, g) {
     if (r.owner !== from || !isContact(from)) return;
-    if (g && (g.owner !== from || !['invited', 'left', 'removed'].includes(g.status))) return;
+    if (g) {
+      if (g.owner !== from) return;
+      const unwelcomed = g.role === 'member' && g.status === 'accepting' && g.invite?.id !== r.invite_id;
+      if (!unwelcomed && !['invited', 'left', 'removed'].includes(g.status)) return;
+    }
     if (g?.status === 'invited' && g.invite?.id === r.invite_id) return;
     const next = newGroup({ gid: r.group_id, owner: from, name: r.name, role: 'member', status: 'invited', invite: { id: r.invite_id, at: seconds() } });
     next.keys = new Map();

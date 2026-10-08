@@ -30,6 +30,10 @@
 //     owner is not its sender, from a non-contact, a welcome from someone
 //     other than the pinned owner, an accept with another invite_id — all
 //     ignored;
+//   - a join the owner refused (no ML-KEM key) leaves the member 'accepting';
+//     the same owner's NEW invite reopens it as 'invited', a welcome for the
+//     old invite_id and invites from other senders stay ignored (R2-7,
+//     decision 8);
 //   - the device keeps everything: a fresh engine loaded from what was saved
 //     shows the same group, versions and messages;
 //   - the store's `groups` index and the split of group messages from 1:1.
@@ -507,6 +511,62 @@ test('a joiner without the key type groups need is refused in plain words; the o
   assert.deepEqual(A.engine.view(gid).members, [FA, FB].sort());
   assert.deepEqual(A.engine.view(gid).refused, [FC]);
   assert.equal(A.outbox.filter(m => controlType(m.text) === 'welcome').map(m => m.to).join(), FB);
+});
+
+test('a refused joiner is reopened by the same owner\'s new invite; a welcome for the old invite and another sender stay ignored', async () => {
+  const net = world();
+  let cHasKey = false;
+  const C = party(net, FC, { contacts: [FA, FB, FD] });
+  const A = party(net, FA, { contacts: [FC], kem: fp => fp !== FC || cHasKey });
+  const { gid } = await A.engine.create('Team', [FC]);
+  await deliver(A, C);
+  const first = C.engine.group(gid).invite.id;
+  await C.engine.acceptInvite(gid);
+  await deliver(C, A);
+  await A.engine.syncAll();
+  assert.deepEqual(A.engine.view(gid).refused, [FC], 'the owner refused the join');
+  assert.deepEqual(A.engine.view(gid).joining, []);
+  assert.equal(A.outbox.filter(m => m.to === FC).length, 0, 'nothing is sent to the refused joiner');
+  assert.equal(C.engine.group(gid).status, 'accepting', 'the member still waits');
+
+  // the same invite delivered again changes nothing
+  const firstJson = JSON.stringify({ type: 'nodus_group_invite', v: 1, group_id: gid, owner: FA, name: 'Team', invite_id: first });
+  await C.engine.onDirect(FA, firstJson);
+  assert.equal(C.engine.group(gid).status, 'accepting');
+
+  // another sender for this group, in its own name or forwarding A's: ignored
+  await C.engine.onDirect(FD, JSON.stringify({ type: 'nodus_group_invite', v: 1, group_id: gid, owner: FD, name: 'Team', invite_id: 'dd'.repeat(16) }));
+  await C.engine.onDirect(FB, JSON.stringify({ type: 'nodus_group_invite', v: 1, group_id: gid, owner: FA, name: 'Team', invite_id: 'bb'.repeat(16) }));
+  assert.equal(C.engine.group(gid).status, 'accepting');
+  assert.equal(C.engine.group(gid).owner, FA);
+
+  // the owner invites again: a new invite_id; the member is invited again
+  cHasKey = true;
+  await A.engine.invite(gid, FC);
+  await deliver(A, C);
+  const g = C.engine.group(gid);
+  assert.equal(g.status, 'invited');
+  assert.equal(g.owner, FA, 'the pinned owner is kept');
+  assert.notEqual(g.invite.id, first);
+  assert.deepEqual(C.engine.invitations().map(i => i.gid), [gid]);
+  assert.equal(C.engine.list().length, 0, 'shown as an invitation, not as "Joining…"');
+
+  // a welcome for the old invite is not honoured
+  const stale = JSON.stringify({ type: 'nodus_group_welcome', v: 1, group_id: gid, owner: FA, addr_secret: A.engine.group(gid).addr, key_version: 1, kp_digest: A.engine.group(gid).hw.digest, invite_id: first });
+  await C.engine.onDirect(FA, stale);
+  assert.equal(C.engine.group(gid).status, 'invited');
+  assert.equal(C.engine.group(gid).addr, null);
+
+  // accept the new invite: the owner adds the member and welcomes it
+  await C.engine.acceptInvite(gid);
+  await deliver(C, A);
+  assert.deepEqual(A.engine.view(gid).joining, [FC]);
+  await A.engine.syncAll();
+  assert.deepEqual(A.engine.view(gid).members, [FA, FC]);
+  await deliver(A, C);
+  assert.equal(C.engine.group(gid).status, 'joining');
+  await C.engine.syncAll();
+  assert.equal(C.engine.group(gid).status, 'active');
 });
 
 test('everything is kept on the device: a fresh engine loaded from the saved records shows the same group', async () => {
