@@ -44,7 +44,8 @@
  *     owner  RAW 64-byte fingerprint (SHA3-512 of a pubkey, or a 64-byte
  *            multisig address) — raw, not the 128-hex text utxo_set
  *            stores, to halve the row
- *     kind   text, one of the NODUS_ADDR_KIND_* strings below
+ *     kind   text, one of the NODUS_ADDR_KIND_* strings below, or "name"
+ *            / "evm_deposit" (defined in nodus_witness_addr_index.c)
  *     amount u64 (stored int64; > INT64_MAX is refused as a FAULT — the
  *            native exec already bounds every stored amount there)
  *     token  64 bytes, all zero = native
@@ -96,9 +97,13 @@
  *                                  amount, native), even when the
  *                                  recipient is a signer — its value
  *                                  leaves the EVM reserve, not the payer.
- *                                  DEPOSIT's locked amount writes NO row
- *                                  (no kind names a reserve lock; only
- *                                  the fee row shows the item)
+ *                                  DEPOSIT: (payer, evm_deposit,
+ *                                  reserve_in, native) — the amount the
+ *                                  item locks into the EVM reserve
+ *                                  (kind defined in the .c beside
+ *                                  "name"); with only change outputs it
+ *                                  is the payer's first row, so the fee
+ *                                  rides on it
  *   EVM leg (domain 2)             → no row (no native coin moves)
  *   SYSTEM STAKE                  → (validator, stake, bond)
  *          DELEGATE / UNDELEGATE   → (delegator, delegate|undelegate,

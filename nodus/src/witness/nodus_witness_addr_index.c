@@ -38,7 +38,11 @@
  * standalone fee row. */
 #define AI_MAX_ROWS  (2u * NODUS_RT_DESC_MAX_OUT + 3u)
 /* HF-4: a NAME_REGISTER has no BURN row and no SYSTEM record, so its
- * "name" row takes one of those slots — the bound above still holds. */
+ * "name" row takes one of those slots — the bound above still holds.
+ * Nodus EVM: an EVMFUND DEPOSIT has no BURN row, no "name" row and no
+ * SYSTEM record (the envelope is exactly [CORE EVMFUND] + [EVM op],
+ * nodus_rt_evm_pair_check), so its "evm_deposit" row takes one of those
+ * slots too. */
 
 /* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.7):
  * the "name" row kind — a registration, on its owner, amount = the price.
@@ -46,6 +50,13 @@
  * the other kinds live) was outside the HF-4 file set; the client's
  * AHD_KINDS (nodus_client.c) and the nodus.h list name the same string. */
 #define NODUS_ADDR_KIND_NAME              "name"
+/* Nodus EVM (design docs/plans/2026-10-04-nodus-evm-chain-integration-
+ * design.md §2, §5): the "evm_deposit" row kind — a CORE EVMFUND DEPOSIT,
+ * on the payer, amount = the raw units the item locks into the CORE EVM
+ * reserve (nodus_rt_leg_desc_t.reserve_in). Defined beside "name" for the
+ * same reason; the client's AHD_KINDS (nodus_client.c) and the nodus.h
+ * list name the same string. */
+#define NODUS_ADDR_KIND_EVM_DEPOSIT       "evm_deposit"
 
 typedef struct {
     uint8_t     owner[64];
@@ -419,6 +430,16 @@ repeated:
             ai_row(&rows[n++], payer, NODUS_ADDR_KIND_NAME,
                    core->name_price, AI_NATIVE, NULL);
         }
+        /* Nodus EVM EVMFUND DEPOSIT: the locked amount leaves the payer
+         * into the CORE EVM reserve — no created coin carries it (the
+         * coins are change), so it is its own (payer, evm_deposit,
+         * reserve_in, native) row */
+        if (core->evm_role == NODUS_RT_EVMFUND_ROLE_DEPOSIT &&
+            core->reserve_in > 0) {
+            if (!payer) goto no_payer;
+            ai_row(&rows[n++], payer, NODUS_ADDR_KIND_EVM_DEPOSIT,
+                   core->reserve_in, AI_NATIVE, NULL);
+        }
     }
 
     /* ── SYSTEM record ────────────────────────────────────────────── */
@@ -726,7 +747,7 @@ static const char *const AI_KINDS[] = {
     NODUS_ADDR_KIND_DELEGATE, NODUS_ADDR_KIND_UNDELEGATE,
     NODUS_ADDR_KIND_UNSTAKE, NODUS_ADDR_KIND_VALIDATOR_UPDATE,
     NODUS_ADDR_KIND_PAYOUT, NODUS_ADDR_KIND_RELEASE, NODUS_ADDR_KIND_FEE,
-    NODUS_ADDR_KIND_NAME
+    NODUS_ADDR_KIND_NAME, NODUS_ADDR_KIND_EVM_DEPOSIT
 };
 
 /* @return the canonical kind string for a stored value, NULL when the
