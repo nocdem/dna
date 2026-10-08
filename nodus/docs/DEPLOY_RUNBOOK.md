@@ -164,20 +164,20 @@ wire are unchanged, so no hard fork is involved):
 nodus-witness && systemctl enable --now nodus`. Same config, same data directory; no
 data migration in either direction (the `addr_seq` caveat above aside).
 
-**OPEN — decide before declaring this layout deployable:**
-- **nodus-witness runs no partial-wipe gate.** Core and nodus-storage both refuse a
-  half-wiped data directory; nodus-witness does not check (it takes its lock, checks the
-  network-file pin, loads the identity, then opens the chain). Under systemd, on a
-  half-wiped host core and storage would sit in their restart loops while the witness
-  opens the surviving chain database and keeps voting alone. Decision item 9 gives the
-  check to core; it does not say the witness may proceed when core refuses. Operator
-  decision pending; nothing was added in S6. Until it is decided, a host whose data
-  directory may have lost files must have **all three** units stopped by hand.
-- **Restart order on a live validator.** Restarting the witness first opens a consensus
-  gap for this validator; restarting core first drops its clients. The units order only
-  starts (`After=`); `nodus-update.sh` and `build-nodus.sh` stop the enabled split units
-  together and start them together, and claim no order beyond that. Decision item 22 is the rollout order of the SPLIT itself (witness seam
-  before storage), not a restart rule.
+**DECIDED (operator 2026-10-08, "1 a 2 a" — decision `2026-10-01-nodus-component-split.md`):**
+- **nodus-witness runs the partial-wipe gate.** Like core and nodus-storage it refuses a
+  half-wiped data directory (fail closed): right after its data-directory lock and before
+  the network-file pin check, the identity load or any database open, it runs
+  `nodus_server_check_partial_wipe` and exits 1 with `PARTIAL WIPE DETECTED` on a half-wiped
+  directory (`nodus/tools/nodus-witness.c`, `main`). Under systemd all three units then sit
+  in their restart loops; none votes alone on the surviving chain database. Recovery is the
+  §-partial-wipe procedure for the whole node.
+- **Restart order on a live validator: the three units stop together and start together**
+  — what `nodus-update.sh` and `build-nodus.sh` already do; the same outage as a combined
+  node, nothing new. The units order only starts (`After=`). Decision item 22 is the rollout
+  order of the SPLIT itself (witness seam before storage), not a restart rule.
+
+**OPEN:**
 - `ReadOnlyPaths=/var/lib/nodus/identity` for storage / witness (item 10 enforced by the
   OS) is NOT in the units: only the witness's `addr_seq` / lock / marker writes were
   checked, not every write (`cs.wal`, address book, `priv_validator_state`); a blocked

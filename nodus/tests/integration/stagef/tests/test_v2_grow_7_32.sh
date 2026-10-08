@@ -781,7 +781,7 @@ amt=$(stagef_pump_largest "$SDB")
 # stagef_cmt_pump_to), submitted WITHOUT waiting — its inclusion is the
 # subject.
 out=$("$CLI" -s 127.0.0.1 -p "$PORT1" v2-envelope spend --keys "$keys" --to "$pfp" \
-        --amount "$(( amt - STAGEF_PUMP_FEE_RAW ))" --fee "$STAGEF_PUMP_FEE_RAW" \
+        --amount "$(( amt - STAGEF_PUMP_FEE_RAW ))" --fee "$STAGEF_PUMP_FEE_RAW" --no-dust-sweep \
         --submit "127.0.0.1:$PORT1" 2>&1) || { printf '%s\n' "$out" >&2; step_fail "STEP 4 (21 halt)" "the probe spend was not admitted by node 1's CheckTx; a halt would be untested"; }
 intent=$(awk -F= '/^  intent_id=/ && !d {print $2; d=1}' <<< "$out")
 [ "${#intent}" = 128 ] || { printf '%s\n' "$out" >&2; step_fail "STEP 4 (21 halt)" "the probe spend printed no intent_id"; }

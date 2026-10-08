@@ -1380,10 +1380,12 @@ stagef_cmt_pump_to() {
             fi
             continue                # the claim itself may have reached TARGET
         fi
+        # --no-dust-sweep: the step is 1-in/1-out at the fixed fee; since
+        # 0.25.2 the planner would otherwise sweep the funder's small coins in.
         if ! out=$("$STAGEF_NODUSCLI_BIN" -s 127.0.0.1 -p "$port" \
                    v2-envelope spend --keys "$keys" --to "$fp" \
                    --amount "$(( amt - STAGEF_PUMP_FEE_RAW ))" \
-                   --fee "$STAGEF_PUMP_FEE_RAW" \
+                   --fee "$STAGEF_PUMP_FEE_RAW" --no-dust-sweep \
                    --submit "127.0.0.1:$port" 2>&1); then
             echo "[pump] v2-envelope spend failed at tip $h:" >&2
             printf '%s\n' "$out" >&2

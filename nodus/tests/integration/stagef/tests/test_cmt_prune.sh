@@ -594,7 +594,7 @@ port4=$(stagef_tcp_port "$RESTART")
 srcl=0
 sout=$("$STAGEF_NODUSCLI_BIN" -s 127.0.0.1 -p "$port4" \
           v2-envelope spend --keys "$fkeys" --to "$ffp" \
-          --amount "$(( amt - STAGEF_PUMP_FEE_RAW ))" --fee "$STAGEF_PUMP_FEE_RAW" \
+          --amount "$(( amt - STAGEF_PUMP_FEE_RAW ))" --fee "$STAGEF_PUMP_FEE_RAW" --no-dust-sweep \
           --submit "127.0.0.1:$port4" 2>&1) || srcl=$?
 if [ "$srcl" != 0 ]; then
     printf '%s\n' "$sout" >&2
