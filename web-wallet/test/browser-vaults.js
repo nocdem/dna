@@ -231,14 +231,15 @@ try {
   // its own card, no approve / send, the top status line empty
   assert.equal(await page.locator('details.vault-finished > summary').textContent(), 'Finished requests (1)');
   assert.equal(await page.locator('details.vault-finished').evaluate(node => node.open), false);
-  const refused = page.locator('details.vault-finished .vault-request[data-state="refused"]');
-  assert.equal(await refused.count(), 1);
-  assert.equal(await refused.locator('.vault-refusal').textContent(), 'This request spends coins this vault does not hold — do not approve it. Refresh the vault if you think this is wrong.');
-  assert.equal(await refused.locator('.vault-state').textContent(), 'Not valid');
-  assert.deepEqual(await refused.locator('button').allTextContents(), ['Check again']);
+  // (named refusedCard: `refused` is the CSP-refusal list checked at the end)
+  const refusedCard = page.locator('details.vault-finished .vault-request[data-state="refused"]');
+  assert.equal(await refusedCard.count(), 1);
+  assert.equal(await refusedCard.locator('.vault-refusal').textContent(), 'This request spends coins this vault does not hold — do not approve it. Refresh the vault if you think this is wrong.');
+  assert.equal(await refusedCard.locator('.vault-state').textContent(), 'Not valid');
+  assert.deepEqual(await refusedCard.locator('button').allTextContents(), ['Check again']);
   assert.equal(await page.locator('#vaults-root .vault-status').textContent(), '');
   await page.locator('details.vault-finished > summary').click();
-  await refused.locator('.vault-refusal').waitFor();
+  await refusedCard.locator('.vault-refusal').waitFor();
   assert.equal(await page.locator('.vault-member').count(), 3);
   assert.equal(await page.locator('.vault-member .vault-you').count(), 1);
   assert.equal(await page.locator('.vault-history .activity-row').count(), 3);
