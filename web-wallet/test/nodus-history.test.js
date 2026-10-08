@@ -23,12 +23,13 @@ const entry = (h, i, q, kind, more = {}) => ({ h: String(h), i: String(i), q: St
 const page = (entries, more = {}) => ({ enabled: true, from_height: '100', entries, ...more });
 
 // Every kind the node writes (nodus_witness_addr_index.h :147-159, "name"
-// nodus_witness_addr_index.c :48), newest first.
+// and "evm_deposit" nodus_witness_addr_index.c), newest first.
 const ALL_KINDS = [
+  entry(131, 0, 0, 'evm_deposit', { amount: '10000000000', fee: '19388' }),  // EVM deposit, fee on it
   entry(130, BOUNDARY, 1, 'release', { amount: '1000000000000' }),           // graduation
   entry(130, BOUNDARY, 0, 'payout', { amount: '250000000' }),
   entry(129, 0, 0, 'release', { amount: '500000000' }),                      // EVM withdraw / redeem
-  entry(128, 0, 0, 'fee', { fee: '19388' }),                                 // e.g. an EVM deposit
+  entry(128, 0, 0, 'fee', { fee: '19388' }),                                 // e.g. an EVM call
   entry(127, 0, 0, 'name', { amount: '10000000000', fee: '10000' }),
   entry(126, 0, 0, 'validator_update', { fee: '10000' }),
   entry(125, 0, 0, 'unstake', { fee: '10000' }),
@@ -99,11 +100,15 @@ test('every kind reads as plain words, with amount, counterparty, fee, block and
   assert.deepEqual(text(by['125:0:0']), ['Unstaked', '', 'fee 0.0001 NODUS']);
   assert.deepEqual(text(by['126:0:0']), ['Witness update', '', 'fee 0.0001 NODUS']);
   assert.deepEqual(text(by['127:0:0']), ['Chain name registered', '−100.0 NODUS', 'fee 0.0001 NODUS']);
-  // a fee-only row (e.g. a smart-contract deposit: the index writes no
-  // amount row for it) shows the fee as its amount, and says nothing more
+  // a fee-only row (e.g. a contract call without a value, or a deposit
+  // indexed by an older node) shows the fee as its amount, and says nothing
+  // more
   assert.deepEqual(text(by['128:0:0']), ['Fee', '−0.00019388 NODUS', 'network fee']);
   // a release WITH a wire id is the smart-contract release, not a stake
   assert.deepEqual(text(by['129:0:0']), ['Moved back from smart contracts', '+5.0 NODUS', '']);
+  // a smart-contract deposit: the amount locked into the reserve leaves
+  // this address, the fee rides on the same row
+  assert.deepEqual(text(by['131:0:0']), ['Moved to smart contracts','−100.0 NODUS', 'fee 0.00019388 NODUS']);
   assert.deepEqual(text(by[`130:${BOUNDARY}:0`]), ['Reward payout', '+2.5 NODUS', '']);
   assert.deepEqual(text(by[`130:${BOUNDARY}:1`]), ['Stake released', '+10000.0 NODUS', '']);
   // height and block time (ms) from the row; boundary rows carry no id
@@ -159,7 +164,7 @@ test('client.addrHistory: queued like every call, request checked, page checked'
   const p = await client.addrHistory();
   assert.deepEqual(mock.state.lastHistory, { limit: NODUS_HISTORY_LIMIT });
   assert.equal(p.entries.length, ALL_KINDS.length); assert.equal(p.fromHeight, 100n);
-  // the mock still answers the 14-row page: ask for at least that many (a
+  // the mock still answers the 16-row page: ask for at least that many (a
   // page longer than the request is refused — tested just below)
   await client.addrHistory({ before: { h: '118', i: '0', q: '1' }, limit: 20 });
   assert.deepEqual(mock.state.lastHistory, { before: { h: '118', i: '0', q: '1' }, limit: 20 });

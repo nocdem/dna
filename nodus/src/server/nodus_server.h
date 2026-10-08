@@ -207,6 +207,12 @@ typedef struct {
     uint8_t             token[NODUS_SESSION_TOKEN_LEN];
     bool                authenticated;
     bool                is_nodus;
+    /* Order of this session's authentication on this server: a fresh value
+     * from srv->next_auth_seq when the AUTH signature verifies; 0 = never
+     * authenticated (session_clear zeroes it). Names "oldest" for the
+     * per-identity session limit and "newest" for the circuit target —
+     * a counter, not a clock, so two auths in one tick never tie. */
+    uint64_t            auth_seq;
 
     /* Pending auth challenge */
     uint8_t             nonce[NODUS_NONCE_LEN];
@@ -283,6 +289,9 @@ typedef struct nodus_server {
      * it; only increases — the first is 1). Decision
      * 2026-10-01-nodus-component-split.md item 29. */
     uint64_t                next_session_gen;
+    /* Last client auth_seq handed out (nodus_session_t.auth_seq; only
+     * increases — the first is 1). */
+    uint64_t                next_auth_seq;
 
     /* CRIT-4: TCP idle connection sweep (every 30s) */
     uint64_t                last_idle_sweep;
@@ -574,6 +583,43 @@ int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
  */
 int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
                             const nodus_sig_t *sig, uint32_t txn_id);
+
+/* ── Sessions of one identity (client port 4001) ────────────────────
+ *
+ * One identity may hold up to NODUS_MAX_SESSIONS_PER_IDENTITY live
+ * authenticated sessions on one node. Through 0.25.4 an authentication
+ * disconnected EVERY other session of the same fingerprint (a ghost-socket
+ * cleanup for mobile reconnects); two devices of one account — the
+ * operator's phone and PC with Nodus Connect open — that landed on the
+ * same node then evicted each other in a loop (dropped connections,
+ * failed reads, missed messages), and that rule also blocked the
+ * multi-device design. 4 = the operator's per-account device limit. A
+ * mobile client's ghost is still cleared: it is the oldest session of its
+ * identity, so it goes first once the limit is reached (below it, the
+ * 30 s idle sweep closes it). A session is "live" when authenticated and
+ * conn != NULL; sessions[i] is slot i. Inter-node sessions (4002/4004)
+ * are a different table and are not affected. */
+#define NODUS_MAX_SESSIONS_PER_IDENTITY 4
+
+/** Number of live sessions in sessions[0..n) authenticated as `fp`, not
+ *  counting `exclude` (NULL = count all). */
+int nodus_sessions_count_fp(const nodus_session_t *sessions, int n,
+                            const nodus_key_t *fp,
+                            const nodus_session_t *exclude);
+
+/** The live session authenticated as `fp` with the highest auth_seq (the
+ *  identity's most recent authentication), or NULL. */
+nodus_session_t *nodus_sessions_newest_fp(nodus_session_t *sessions, int n,
+                                          const nodus_key_t *fp);
+
+/** The slots to disconnect so that `keep` (just authenticated) and at most
+ *  max_per_identity - 1 other live sessions of keep's fingerprint remain:
+ *  the others with the LOWEST auth_seq first, oldest first in slots_out.
+ *  `keep` is never chosen. Returns the number written (<= cap). */
+int nodus_sessions_evict_plan(const nodus_session_t *sessions, int n,
+                              const nodus_session_t *keep,
+                              int max_per_identity,
+                              int *slots_out, int cap);
 
 /**
  * Handle KEY_INIT message (Kyber ciphertext + client nonce).

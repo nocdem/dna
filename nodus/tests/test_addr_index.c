@@ -39,9 +39,17 @@
  *        the marker still says last 2.
  *  t_flag_off — the same height 1 with the flag OFF: no row, no marker;
  *    the builder answers enabled = false, from_height = 0, count = 0.
- *  t_decoder_hostile — the client decoder refuses: entries not strictly
- *    descending, a count that disagrees with the array, an unknown kind,
- *    a 63-byte wire, and truncation at every length of a valid reply.
+ *  t_kind_evm_deposit — height 1 = [a REAL claim]; then one Nodus EVM
+ *    `evm_deposit` row (the shape the writer gives an EVMFUND DEPOSIT:
+ *    payer, amount = reserve_in, fee on it, no peer) stored at (1, 2, 0)
+ *    by hand: the builder answers it (the kind is in AI_KINDS — a stored
+ *    kind missing there turns the owner's WHOLE history into an
+ *    INTERNAL_ERROR) and the client decodes it (AHD_KINDS), newest first
+ *    with its amount and fee.
+ *  t_decoder_hostile — the client decoder accepts the evm_deposit kind
+ *    and refuses: entries not strictly descending, a count that disagrees
+ *    with the array, an unknown kind, a 63-byte wire, and truncation at
+ *    every length of a valid reply.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build. Environment: none. SQLite
@@ -75,6 +83,11 @@
  *     rollback of rows that WERE written.
  *  6. Nothing here was RUN by its author (BUILDER: compile only). Every
  *     expectation is an expectation.
+ *  7. t_kind_evm_deposit stores its evm_deposit row BY HAND (this fixture
+ *     builds no EVM chain): it pins the reader and the client decoder,
+ *     NOT the writer. The writer's DEPOSIT row is driven on a real
+ *     applied deposit only by test_v2_evm.c section 11 (built only with
+ *     NODUS_EVM_ENABLED).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -1135,6 +1148,59 @@ static int t_flag_off(void)
     return 0;
 }
 
+/* ══ the evm_deposit kind round-trips the reader and the client ══════ */
+
+static int t_kind_evm_deposit(void)
+{
+    gfx_t         g;
+    exec_t        x;
+    uint8_t       cbytes[DNA_CLAIM_MAX_WIRE];
+    size_t        clen = 0;
+    uint64_t      ts1;
+    sqlite3_stmt *st = NULL;
+    int           rc;
+    nodus_dnac_addr_history_result_t p;
+
+    CHECK(gfx_open(&g, "evmdep", true) == 0, "version-3 fixture, flag ON");
+    CHECK(exec_init(&x, &g) == 0, "blockexec");
+    CHECK(build_claim(&g, cbytes, sizeof(cbytes), &clen) == 0, "claim");
+    x.txs[0].data = cbytes; x.txs[0].len = clen;
+    CHECK(commit_height(&x, 1, 1) == 0, "height 1 commits");
+    ts1 = (uint64_t)x.blk->header.time.seconds;
+    CHECK(rows_at(g.w, 1) == 1, "height 1: the claim row");
+
+    /* the row nodus_witness_addr_index_env writes for an EVMFUND DEPOSIT
+     * (payer, evm_deposit, reserve_in, native, fee on it, no peer) —
+     * stored by hand: this fixture has no EVM chain (test_v2_evm.c
+     * section 11 drives the writer on a REAL deposit) */
+    CHECK(sqlite3_prepare_v2(g.w->db,
+              "INSERT INTO addr_history (h, i, seq, owner, kind, amount, "
+              "token, fee, peer, wire, ts) "
+              "VALUES (1, 2, 0, ?1, 'evm_deposit', 10, ?2, 7, NULL, ?3, ?4)",
+              -1, &st, NULL) == SQLITE_OK, "prepare the evm_deposit row");
+    sqlite3_bind_blob(st, 1, g_ks[0].fpraw, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, ZERO64, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 3, ZERO64, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)ts1);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    CHECK(rc == SQLITE_DONE, "the evm_deposit row is stored");
+
+    CHECK(page(&g, g_ks[0].fpraw, g_ks[0].fp, NULL, 100, &p, NULL) == 0,
+          "the builder answers (evm_deposit is a known stored kind) and "
+          "the client decodes it (evm_deposit is in AHD_KINDS)");
+    CHECK(p.count == 2 && p.entries[0].h == 1 && p.entries[0].i == 2 &&
+          strcmp(p.entries[0].kind, "evm_deposit") == 0 &&
+          p.entries[0].amount == 10 && p.entries[0].fee == 7 &&
+          strcmp(p.entries[1].kind, NODUS_ADDR_KIND_CLAIM) == 0,
+          "newest first: the evm_deposit row (amount, fee), then the claim");
+    nodus_client_free_addr_history_result(&p);
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
 /* ══ the client decoder over hostile replies ═════════════════════════ */
 
 typedef struct {
@@ -1192,6 +1258,13 @@ static int t_decoder_hostile(void)
           !r.entries[0].has_wire,
           "a valid reply decodes (the control)");
     nodus_client_free_addr_history_result(&r);
+    hs = ok; hs.kind = "evm_deposit";
+    len = build_reply(&hs, buf, sizeof(buf));
+    CHECK(nodus_dnac_addr_history_decode(buf, len, &r) == 0 &&
+          r.count == 2 && strcmp(r.entries[0].kind, "evm_deposit") == 0,
+          "the evm_deposit kind decodes");
+    nodus_client_free_addr_history_result(&r);
+    len = build_reply(&ok, buf, sizeof(buf));
     for (size_t cut = 0; cut < len; cut++)
         CHECK(nodus_dnac_addr_history_decode(buf, cut, &r) == -1 &&
               r.entries == NULL, "every truncation is refused");
@@ -1227,6 +1300,7 @@ int main(void)
     } cases[] = {
         { "rows",             t_rows },
         { "flag_off",         t_flag_off },
+        { "kind_evm_deposit", t_kind_evm_deposit },
         { "decoder_hostile",  t_decoder_hostile },
     };
     size_t i, failed = 0, ncases = sizeof(cases) / sizeof(cases[0]);

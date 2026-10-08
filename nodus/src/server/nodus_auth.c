@@ -22,6 +22,76 @@
 
 extern void qgp_secure_memzero(void *ptr, size_t len);
 
+/* ── Sessions of one identity (nodus_server.h) ───────────────────── */
+
+static bool session_live_as(const nodus_session_t *s, const nodus_key_t *fp) {
+    return s->authenticated && s->conn != NULL &&
+           nodus_key_cmp(&s->client_fp, fp) == 0;
+}
+
+int nodus_sessions_count_fp(const nodus_session_t *sessions, int n,
+                            const nodus_key_t *fp,
+                            const nodus_session_t *exclude) {
+    if (!sessions || !fp) return 0;
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        if (&sessions[i] == exclude) continue;
+        if (session_live_as(&sessions[i], fp)) count++;
+    }
+    return count;
+}
+
+nodus_session_t *nodus_sessions_newest_fp(nodus_session_t *sessions, int n,
+                                          const nodus_key_t *fp) {
+    if (!sessions || !fp) return NULL;
+    nodus_session_t *best = NULL;
+    for (int i = 0; i < n; i++) {
+        nodus_session_t *s = &sessions[i];
+        if (!session_live_as(s, fp)) continue;
+        if (!best || s->auth_seq > best->auth_seq) best = s;
+    }
+    return best;
+}
+
+int nodus_sessions_evict_plan(const nodus_session_t *sessions, int n,
+                              const nodus_session_t *keep,
+                              int max_per_identity,
+                              int *slots_out, int cap) {
+    if (!sessions || !keep || !slots_out || cap <= 0 || max_per_identity < 1)
+        return 0;
+    const nodus_key_t *fp = &keep->client_fp;
+    /* keep counts as one of the max_per_identity, whatever its state */
+    int excess = nodus_sessions_count_fp(sessions, n, fp, keep) -
+                 (max_per_identity - 1);
+    int out = 0;
+    /* Pick the oldest remaining one each round: at most `excess` rounds of
+     * one pass each. auth_seq values are unique (one counter), so the
+     * order is total; the slot index breaks a tie that cannot occur. */
+    uint64_t floor_seq = 0;
+    int floor_slot = -1;
+    while (excess > 0 && out < cap) {
+        int pick = -1;
+        for (int i = 0; i < n; i++) {
+            const nodus_session_t *s = &sessions[i];
+            if (s == keep || !session_live_as(s, fp)) continue;
+            /* strictly after the previous pick in (auth_seq, slot) order */
+            if (floor_slot >= 0 &&
+                (s->auth_seq < floor_seq ||
+                 (s->auth_seq == floor_seq && i <= floor_slot)))
+                continue;
+            if (pick < 0 || s->auth_seq < sessions[pick].auth_seq ||
+                (s->auth_seq == sessions[pick].auth_seq && i < pick))
+                pick = i;
+        }
+        if (pick < 0) break;
+        slots_out[out++] = pick;
+        floor_seq = sessions[pick].auth_seq;
+        floor_slot = pick;
+        excess--;
+    }
+    return out;
+}
+
 int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
                              const nodus_pubkey_t *pk, const nodus_key_t *fp,
                              uint32_t txn_id) {
@@ -92,27 +162,37 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
     sess->conn->peer_pk = sess->client_pk;
     sess->conn->peer_id_set = true;
 
-    /* Evict stale sessions for same identity (ghost connections from dead sockets).
-     * When a mobile client reconnects, the old session may still be alive because
-     * the server hasn't detected the dead socket yet (idle sweep runs every 30s).
-     * Without eviction, stale responses can leak into the new connection's slot. */
-    for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
-        nodus_session_t *old = &srv->sessions[i];
-        if (old == sess) continue;  /* Skip ourselves */
-        if (!old->conn || !old->authenticated) continue;
-        if (nodus_key_cmp(&old->client_fp, &sess->client_fp) != 0) continue;
-        /* Same identity on a different slot — evict */
-        {
+    sess->auth_seq = ++srv->next_auth_seq;
+
+    /* Per-identity session limit (NODUS_MAX_SESSIONS_PER_IDENTITY, see
+     * nodus_server.h): keep this session and the 3 most recently
+     * authenticated others of the same identity; disconnect the older
+     * ones. Ghost connections of dead mobile sockets (alive until the 30 s
+     * idle sweep notices) are the oldest sessions of their identity, so a
+     * reconnecting device still clears its own ghost once the limit is
+     * reached. The plan is taken first: each disconnect runs
+     * on_tcp_disconnect, which clears only that session. */
+    {
+        int victims[NODUS_MAX_SESSIONS];
+        int nv = nodus_sessions_evict_plan(srv->sessions, NODUS_MAX_SESSIONS,
+                                           sess, NODUS_MAX_SESSIONS_PER_IDENTITY,
+                                           victims, NODUS_MAX_SESSIONS);
+        for (int v = 0; v < nv; v++) {
+            nodus_session_t *old = &srv->sessions[victims[v]];
+            if (!old->conn) continue;
             char old_fp[33];
             for (int k = 0; k < 16; k++)
                 snprintf(old_fp + k*2, sizeof(old_fp) - k*2, "%02x", old->client_fp.bytes[k]);
             old_fp[32] = '\0';
-            fprintf(stderr, "SESSION_EVICT: old slot=%d ip=%s fp=%s... (replaced by new slot=%d)\n",
-                    old->conn->slot, old->conn->ip, old_fp, sess->conn->slot);
+            fprintf(stderr, "SESSION_EVICT: old slot=%d ip=%s fp=%s... auth_seq=%llu "
+                    "(rule: max %d sessions per identity, oldest out; new slot=%d)\n",
+                    old->conn->slot, old->conn->ip, old_fp,
+                    (unsigned long long)old->auth_seq,
+                    NODUS_MAX_SESSIONS_PER_IDENTITY, sess->conn->slot);
+            nodus_tcp_disconnect(&srv->tcp, old->conn);
+            old->conn = NULL;
+            old->authenticated = false;
         }
-        nodus_tcp_disconnect(&srv->tcp, old->conn);
-        old->conn = NULL;
-        old->authenticated = false;
     }
 
     /* Track presence */

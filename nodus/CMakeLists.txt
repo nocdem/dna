@@ -1366,6 +1366,13 @@ add_executable(test_origin_gen tests/test_origin_gen.c)
 target_link_libraries(test_origin_gen nodus dsa kem nodus)
 add_test(NAME test_origin_gen COMMAND test_origin_gen)
 
+# Per-identity client session limit (NODUS_MAX_SESSIONS_PER_IDENTITY = 4):
+# the 5th authentication evicts the oldest; circuit target = newest; the
+# presence guard. In-process, no sockets.
+add_executable(test_session_limit tests/test_session_limit.c)
+target_link_libraries(test_session_limit nodus dsa kem nodus)
+add_test(NAME test_session_limit COMMAND test_session_limit)
+
 # Split S5a item 30: core's outbound 4002 dials (presence p_sync, circuits,
 # the DHT's inter_send) pin the expected peer identity; the routing
 # snapshot carries node_id. One loopback listener, no event loop run.

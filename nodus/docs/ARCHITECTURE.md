@@ -1173,9 +1173,9 @@ Known open (not in this package): read rate limit; legacy unpaged `get_all` stil
 ### Session Management
 
 Each TCP 4001 connection is assigned a **session** (`nodus_session_t`,
-`nodus_server.h:186-210`) with:
+`nodus_server.h:199-233`) with:
 
-- Authentication state (nonce, public key, fingerprint, token)
+- Authentication state (nonce, public key, fingerprint, token, `auth_seq`)
 - Circuit table, protocol version
 
 Since split S4 the DHT keeps its own **shadow** of the same slot
@@ -1187,6 +1187,29 @@ empties it where it clears the session ("Component split", S4).
 
 Sessions are cleared on disconnect. The server supports up to `NODUS_MAX_SESSIONS`
 (= `NODUS_TCP_MAX_CONNS`, `dht/nodus_dht.h:49`) concurrent clients.
+
+**Sessions per identity.** One identity (client fingerprint) may hold up to
+`NODUS_MAX_SESSIONS_PER_IDENTITY` = 4 live authenticated sessions on one node
+(`server/nodus_server.h`; 4 = the operator's per-account device limit). Through
+0.25.4 every authentication disconnected all other sessions of the same fingerprint
+(a ghost-socket cleanup for mobile reconnects), so two devices of one account on the
+same node evicted each other in a loop. Now each successful AUTH takes a fresh
+`auth_seq` from `srv->next_auth_seq` (a counter, never a clock) and, when the identity
+would exceed 4, disconnects its OLDEST other sessions (lowest `auth_seq`; the session
+just authenticating is never chosen) — `nodus_sessions_evict_plan`, logged as
+`SESSION_EVICT ... (rule: max 4 sessions per identity, oldest out ...)`. A dead mobile
+socket's ghost is its identity's oldest session, so it still goes first at the limit;
+below it the 30 s idle sweep closes it. What reads "the session of an identity":
+- circuits (`circ_open` local bridge, inbound `ri_open`): a circuit is one bridge, so it
+  lands on the identity's NEWEST session (`nodus_sessions_newest_fp`);
+- presence: the identity stays online until its LAST session here closes
+  (`on_tcp_disconnect` checks `nodus_sessions_count_fp`);
+- DHT LISTEN pushes (`value_changed`) go to every session listening on the key, so
+  each device gets its own;
+- the put-rate window (`NODUS_RATE_PUTS_PER_MIN` = 60 / 60 s) stays per SESSION: one
+  identity can put up to 4 × 60 per minute on one node.
+Inter-node sessions (4002/4004) are a separate table and are not affected. Test:
+`test_session_limit`.
 
 **Session generation.** A DHT reply that is sent LATER (iterative lookup
 completions, the GET lookup context, every batch-forward batch) goes only to the
@@ -6843,8 +6866,10 @@ writes, so a wallet had no history of its own address from a node.
   envelope's CORE EVMFUND leg follows the coin rules (change: nothing); its
   WITHDRAW / REDEEM release coin gives the recipient a `release` row (even when
   the recipient is the signer — it comes from the EVM reserve, not the payer);
-  a DEPOSIT's locked amount has no row (only the fee row); the EVM leg gives
-  none. (Before this the index refused domain 2 and the node FAULTed at its
+  a DEPOSIT gives the payer an `evm_deposit` row, amount = `reserve_in` (the raw
+  units it locks into the CORE EVM reserve; with only change outputs it is the
+  payer's first row, so the fee rides on it — until this row existed a deposit
+  showed only as a `fee` row); the EVM leg gives none. (Before this the index refused domain 2 and the node FAULTed at its
   first applied EVM envelope.) Claims (CORE target)
   give the claimant a `claim` row; paydays `payout`; graduations `release`. No
   sender is invented for claims, payouts or releases. The PAYER (first satisfied

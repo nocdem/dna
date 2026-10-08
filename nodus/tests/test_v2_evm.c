@@ -134,7 +134,8 @@
  *     exec's; the EVM leg describes with no native effect),
  *     nodus_rt_native_committed_signer_fp (the EVM sender), and the
  *     node-local address index with its flag ON writing the EVMFUND rows
- *     (fee row; (recipient, release, amount) — also to the signer itself)
+ *     ((payer, evm_deposit, amount) carrying the fee; (recipient, release,
+ *     amount) — also to the signer itself)
  *     instead of failing the block.
  * 12. the per-leg trie batch (red-team-1 F6): (a) ROOT IDENTITY — one
  *     fixed two-leg effect list (ACCT CREATE/SET/DELETE, SLOT
@@ -3870,7 +3871,7 @@ static int describe_both(const tx_t *t, uint64_t h, dna_env_view_t *v,
  *    consumed, the 990 change created; the EVM leg describes with no
  *    native effect; the committed signer fp of the EVM leg is the key's
  *    (the EVM sender = its first 32 bytes); the index holds ONE row, the
- *    payer's fee row (no kind names a reserve lock).
+ *    payer's (evm_deposit, 10) row carrying the fee.
  *  - WITHDRAW 3 to R: role RELEASE, reserve_out 3, the release coin LAST
  *    with owner R and amount 3 — its id is a LIVE utxo_set key (the
  *    describer and the exec share rtn_evmfund_release_coin); the index
@@ -3937,8 +3938,10 @@ static int test_describe_addr_index(void) {
     }
     CHECK(ai_rows_at(fx.w, h) == 1 && ai_row_at(fx.w, h, 0, &r) == 1 &&
           memcmp(r.owner, g_k[B].fp, 64) == 0 &&
-          strcmp(r.kind, "fee") == 0 && r.fee == FEE && r.amount == 0,
-          "deposit indexed: the payer's fee row only"); OK();
+          strcmp(r.kind, "evm_deposit") == 0 && r.amount == 10 &&
+          r.fee == FEE && !r.has_peer,
+          "deposit indexed: ONE row, the payer's evm_deposit row (10) "
+          "carrying the fee"); OK();
     tx_free(&t);
 
     /* WITHDRAW 3 to R */
