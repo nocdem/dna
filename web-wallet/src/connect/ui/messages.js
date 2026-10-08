@@ -1965,11 +1965,16 @@ async function keepVault(address, value) {
   if (typeof address !== 'string' || !VAULT_ADDRESS.test(address) || !value || typeof value !== 'object') throw new Error('Invalid vault.');
   const before = state.vaults[address];
   const id = before?.id || `v${takeSeq().padStart(20, '0')}`;
-  state.vaults[address] = { id, at: nowSeconds() };
+  const entry = { id, at: nowSeconds() };
+  state.vaults[address] = entry;
   try {
     await store.save(state, [], [], [{ id, address, value }]);
   } catch (error) {
-    if (before) state.vaults[address] = before; else delete state.vaults[address];
+    // roll back only this call's own entry: a dropVault (or another
+    // keepVault) that ran during the save stands as it left it
+    if (state.vaults[address] === entry) {
+      if (before) state.vaults[address] = before; else delete state.vaults[address];
+    }
     throw error;
   }
   vaultRecs.set(address, { id, value });

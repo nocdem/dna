@@ -185,7 +185,11 @@ async function keep(record) {
   vaults.set(record.address, record);
   if (messagesOpen()) {
     try { await host.keepVault(record.address, recordForStorage(record)); }
-    catch { status = 'This vault could not be saved on this device; it stays listed until you lock.'; }
+    catch {
+      // a background history reader's failed save is shown only on its own
+      // vault's screen; foreground callers (create, add, watch) always show it
+      if (showing(record.address) || !reading.has(record.address)) status = 'This vault could not be saved on this device; it stays listed until you lock.';
+    }
   }
 }
 
@@ -229,8 +233,10 @@ async function readHistory(address, gen) {
   reading.set(address, mine);
   sessionLog.log('vault', `Reading the vault history from block ${mine.block}.`);
   let end = 'stopped';
-  render({ keepTyped: true });
+  // the redraws below happen only while this vault is on screen: another
+  // screen (Create, Watch, the list) is never drawn again under the user
   try {
+    render({ keepTyped: true });
     while (go()) {
       const before = vaults.get(address);
       const result = await client.vaultScan({ descriptor: before.code, from: before.cursor, coins: before.coins });
@@ -246,6 +252,7 @@ async function readHistory(address, gen) {
         end = 'full'; break;
       }
       if (BigInt(r.cursor) > BigInt(result.tip)) { end = 'done'; break; }
+      if (!showing(address)) continue;   // not on screen: no redraw; go() stops the loop
       // the whole panel is drawn again only when the step found something
       // (history, coins); otherwise only the reading line moves
       if (result.events.length || r.coins.length !== before.coins.length || foundTotal(r) !== foundTotal(before)) render({ keepTyped: true });
@@ -258,7 +265,7 @@ async function readHistory(address, gen) {
     if (gen === generation && reading.get(address) === mine) {
       reading.delete(address);
       sessionLog.log('vault', end === 'done' ? 'The vault history is read up to the tip.' : `Stopped reading the vault history at block ${mine.block} (${end}).`);
-      render({ keepTyped: true });
+      if (showing(address)) render({ keepTyped: true });
     }
   }
 }
@@ -564,7 +571,8 @@ function render({ keepTyped = false } = {}) {
   progressLine = el('p', { className: 'hint vault-status', text: progressText() });
   items.push(progressLine);
   // keepTyped (the history reader's redraws): what was typed in the payment
-  // form, and where the cursor was, survive the panel being drawn again;
+  // form, and which field had the focus, survive the panel being drawn again
+  // (the cursor position inside the field is not kept);
   // the keys carry the vault address, so nothing moves to another vault.
   const typed = keepTyped ? [...root.querySelectorAll('input[data-keep]')].map(n => ({ key: n.dataset.keep, value: n.value, focused: n === document.activeElement })) : [];
   if (view === 'vault' && current && vaults.has(current)) items.push(renderVault(vaults.get(current)));
