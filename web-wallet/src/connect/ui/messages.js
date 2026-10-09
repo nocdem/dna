@@ -825,9 +825,9 @@ async function syncRequests(gen) {
   for (const request of result.requests || []) {
     if (!request || !HEX128.test(request.sender) || request.sender === ownFp) continue;
     if (acceptanceMayAutoApprove(request, pending)) { await completeOutgoing(request, gen); if (gen !== generation) return; completed = true; continue; }
-    // An acceptance without our own pending request is ignored (the app's
-    // HIGH-7 rule, dna_engine_contacts.c:555-562).
-    if (request.acceptance === true) continue;
+    // Without a pending outgoing request (e.g. after an unsaved session
+    // ends), show the acceptance for explicit consent, as the app does.
+    // HIGH-7 forbids auto-approval here, not the normal Accept / Decline flow.
     if (contactOf(request.sender) || state.declined.includes(request.sender)) continue;
     const seen = latest.get(request.sender);
     if (!seen || u64(request.timestamp) > u64(seen.timestamp)) latest.set(request.sender, request);
