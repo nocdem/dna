@@ -76,14 +76,19 @@ in NodeInfo (`CompatibleWith`) — so a 0.19.x node cannot join a 0.20.x mesh �
 nodes on mixed versions is therefore **silently permitted**. The discipline is yours,
 not the binary's.
 
-### Three-process node (`nodus-core` + `nodus-storage` + `nodus-witness`) — NOT declared deployable yet
+### Three-process node (`nodus-core` + `nodus-storage` + `nodus-witness`) — the LIVE layout since 2026-10-09
 
 Component split S6 (decision `2026-10-01-nodus-component-split.md`; `docs/ARCHITECTURE.md`
 §10 "Component split", S6) ships the pieces of a three-process node: the binaries
 `nodus-core`, `nodus-storage`, `nodus-witness` (beside the combined `nodus-server`, which
-stays — item 8) and three systemd units in `nodus/deploy/`. **Keep production nodes on
-the combined `nodus.service` until the two OPEN items below are decided.** This section
-describes what exists so a test host can be switched and switched back.
+stays — item 8) and three systemd units in `nodus/deploy/`. **All seven live nodes run
+this layout since 2026-10-09 (nodus 0.25.8; EU-5 since 2026-10-03, the other six switched
+one at a time with the steps below; operator "evet", 2026-10-08).** `nodus.service` is
+disabled on every live node: an update stops the three units together, installs the
+five binaries and starts the three together (the DECIDED restart rule below) — a
+`systemctl restart nodus` on such a host would start the COMBINED server instead. The two
+OPEN items at the end of this section stayed open; the operator chose to switch with them
+open. The rollback to the combined unit stays available per host.
 
 **What runs.** `nodus-core.service` (`nodus-core -c /etc/nodus.conf --storage-external
 --witness-external`): UDP 4000, TCP 4001 (+ the WebSocket entry), the 4002 listener,

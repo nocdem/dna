@@ -16,10 +16,10 @@
 # it); Conflicts=nodus.service + After=nodus.service as in
 # nodus-core.service (the combined server is stopped BEFORE this starts).
 #
-# OPEN (operator decision pending, not a property of this unit): this
-# process runs no partial-wipe gate of its own — on a half-wiped host core
-# and storage refuse while the witness would open the surviving chain
-# database. See docs/DEPLOY_RUNBOOK.md "Three-process node".
+# Partial-wipe gate (DECIDED 2026-10-08, nodus 0.25.8): like core and
+# storage, nodus-witness refuses a half-wiped data directory and exits 1
+# ("PARTIAL WIPE DETECTED"); this unit then sits in its restart loop. See
+# docs/DEPLOY_RUNBOOK.md "Three-process node".
 [Unit]
 Description=Nodus witness (split: 4004 p2p, consensus)
 Documentation=https://github.com/nocdem/dna
