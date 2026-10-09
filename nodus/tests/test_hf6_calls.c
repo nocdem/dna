@@ -2,16 +2,18 @@
  * @file nodus/tests/test_hf6_calls.c
  * @brief HF-6 sub-slice 3c — owner authority and the generation-4 call
  *        layouts of the SYSTEM validator-record ops 2..5; STAKE refused
- *        under generation 4 until slice 4.
+ *        under generation 4 until slice 4; sub-slice 3e — the HF-8 name
+ *        rule and its self-delegation exemption on the SYSTEM DELEGATE.
  *
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
  * §1.3 (owner rule, kind-3 address equality), §2 (call layouts: DELEGATE /
  * UNDELEGATE delegator_fp[64] ‖ validator_id[64] ‖ amount u64 = 136,
  * UNSTAKE validator_id[64] = 64, VALIDATOR_UPDATE validator_id[64] ‖
  * commission u16 = 66), §6.3/§6.4 (the row values); plan
- * tasks/hf6-slice3-plan.md §2 "3c" + §3; decisions D3 (Kurultay #16
- * summary — the HF-8 exemption moves to the SYSTEM side in 3e, a gated
- * generation-4 DELEGATE is refused meanwhile) and D6 (the kind-3 "every
+ * tasks/hf6-slice3-plan.md §2 "3c" / "3e" + §3; decisions D3 (Kurultay #16
+ * summary — the HF-8 self-delegation exemption under generation 4 is
+ * delegator_fp == owner_fp(validator_id), judged on the SYSTEM side, sub-
+ * slice 3e) and D6 (the kind-3 "every
  * verified signer is a key of the descriptor" verdict fact); K3 (Kurultay
  * #14: no TRANSFER_OWNER).
  *
@@ -40,9 +42,21 @@
  *   A4 the CORE SYSFUND leg: a STAKE sibling refused by the generation-4
  *      CORE read plan and planned by generation 3; a generation-4
  *      DELEGATE sibling planned (inputs + pool); with the HF-8 gate on
- *      (param 17) a generation-4 DELEGATE is REFUSED (-1) by plan and exec
- *      alike while the generation-3 legacy gate still plans its NAMEOWN
- *      read.
+ *      (param 17) the generation-4 CORE leg STILL plans inputs + pool only
+ *      — no CORE NAMEOWN, and its input ceiling stays 15 (sub-slice 3e,
+ *      decision D3: the name rule lives on the SYSTEM leg) — while the
+ *      generation-3 legacy gate still plans its NAMEOWN read.
+ *   A7 D3 (sub-slice 3e) — the HF-8 name rule on the generation-4 SYSTEM
+ *      DELEGATE: gate off → the 3c plan (3 reads); gate on → + ONE read,
+ *      op 16 (SYSTEM NAMEOWN2) keyed by the call's delegator_fp, last;
+ *      UNDELEGATE never reads a name. Exec with the gate on: a non-owner
+ *      delegator without a name refused (-1), with a name applied; the
+ *      validator's OWNER (delegator_fp == the observed row's owner_fp)
+ *      applied without a name, kind 1 AND kind 3; a kind-3 non-owner
+ *      refused / applied by name; a present name outside 3..36 bytes and
+ *      a read count that disagrees with the gate are node faults (-2);
+ *      gate off → a nameless non-owner applies (unchanged). The
+ *      generation-3 SYSTEM plan is unchanged with the gate on.
  *   A5 the read-only describer: an applied generation-4 DELEGATE /
  *      UNSTAKE / VALIDATOR_UPDATE is described from its call (the
  *      delegator_fp and the validator_id), and the UNDELEGATE release coin
@@ -73,6 +87,9 @@
  *      draining the multisig row with the release coin owned by the
  *      multisig address and locked (block 10); an UNSTAKE by the owner
  *      (block 11).
+ *   B5 the SYSTEM adapter's read-only op 16 serves the committed v2_names
+ *      row by owner (present with the name bytes / absent / a 63-byte key
+ *      refused as ERR_SHAPE) through the engine's mediated-read entry.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 exists only there; the
@@ -97,8 +114,13 @@
  *  - Refusals in B are asserted by item code and the ledger-table digest,
  *    not by a whole-database digest (a refused item still writes its
  *    block's receipts).
- *  - HF-8 (param 17) stays off in B; its generation-4 refusal is proven at
- *    hook level only (A4).
+ *  - HF-8 (param 17) stays off in B; its generation-4 rule (D3) is proven
+ *    at hook level (A4, A7) over fabricated reads, and op 16's storage
+ *    read in B5 — no block in B applies a DELEGATE with the gate on, so
+ *    the engine's plan → read → exec wiring of the gated 4-read DELEGATE
+ *    is not exercised end to end here.
+ *  - B5 writes its v2_names row by direct SQL after the last block; it
+ *    proves the adapter read, not a NAME_REGISTER.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -113,6 +135,7 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_rt_native.h"
+#include "witness/nodus_witness_v2_adapter.h"  /* B5: read_one (op 16) */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_v2_spend.h"
 
@@ -162,6 +185,7 @@ static int g_checks = 0;
 #define OP_VAL2       13u
 #define OP_DELEG2     14u
 #define OP_DELEGCNT2  15u
+#define OP_NAMEOWN2   16u
 #define V2_REC_LEN    5389u
 #define V2_OWNER_OFF  64u
 #define V2_CPK_OFF    128u
@@ -460,7 +484,7 @@ static void av_k3(const uint8_t addr[64], int sat, int allin, int nd) {
     }
 }
 
-static nodus_rt_read_res_t g_reads[3];
+static nodus_rt_read_res_t g_reads[4];
 static uint8_t g_res[DNA_EFFECT_MAX_TOTAL_LEN];
 
 /* a fabricated generation-4 validator record */
@@ -509,6 +533,15 @@ static void rd_cnt(int slot, uint64_t n) {
     g_reads[slot].present = 1;
     g_reads[slot].value_len = 8;
     put64(g_reads[slot].value, n);
+}
+/* the SYSTEM NAMEOWN2 answer (op 16): `name` NULL = absent, else the
+ * name bytes (len may be out of contract on purpose) */
+static void rd_name(int slot, const char *name, uint32_t len) {
+    memset(&g_reads[slot], 0, sizeof(g_reads[slot]));
+    if (!name) return;                    /* absent                      */
+    g_reads[slot].present = 1;
+    g_reads[slot].value_len = len;
+    memcpy(g_reads[slot].value, name, len);
 }
 
 static int sys_exec(const nodus_domain_runtime_t *rt, const hk_env_t *e,
@@ -897,19 +930,152 @@ static int t_hooks(void) {
               cn == 2, "gen-4 CORE: a gen-4 DELEGATE sibling plans");
         g_ctx.delegate_name_required = 1;
         CHECK(nodus_rt_core_read_plan(c4, &e.view, 1, &g_ctx, cr,
-                                      NODUS_RT_MAX_READS, &cn) == -1,
-              "D3: HF-8 on, a gen-4 DELEGATE refused (plan) until 3e");
+                                      NODUS_RT_MAX_READS, &cn) == 0 &&
+              cn == 2 && cr[1].op_id != 6u,
+              "D3 (3e): HF-8 on, the gen-4 CORE leg plans inputs + pool "
+              "only — no CORE NAMEOWN (the SYSTEM leg judges the name)");
         {
-            size_t rl = 0;
-            CHECK(nodus_rt_core_exec(c4, &e.view, 1, &g_ctx, g_reads, 2,
-                                     g_res, sizeof(g_res), &rl) == -1,
-                  "D3: and refused by the exec, never a fault");
+            /* the gen-4 CORE leg under the gate keeps the 15-input
+             * ceiling (the gated 14 is the generation-3 CORE budget) */
+            static hk_env_t e15;
+            static uint8_t f15[2 + 15 * 64 + 1];
+            uint8_t nul[64];
+            size_t off = 0;
+            f15[off++] = 15;
+            for (int i = 0; i < 15; i++) {
+                memset(nul, 0x10 + i, sizeof(nul));
+                memcpy(f15 + off, nul, 64);
+                off += 64;
+            }
+            f15[off++] = 0;
+            CHECK(hk_build(&e15, DNA_SYSRULE_DELEGATE, call, cl, 1) == 0,
+                  "env");
+            /* swap the funding call for the 15-input one: rebuild by
+             * hand (hk_build's funding call has one input) */
+            dna_env_leg_in_t legs[2];
+            memset(legs, 0, sizeof(legs));
+            legs[0].hdr = e15.view.leg[0];
+            legs[0].call_data = call;
+            legs[0].auth_data = e15.auth[0];
+            legs[1].hdr = e15.view.leg[1];
+            legs[1].hdr.call_len = (uint32_t)off;
+            legs[1].call_data = f15;
+            legs[1].auth_data = e15.auth[1];
+            dna_env_in_t in;
+            memset(&in, 0, sizeof(in));
+            in.fee_amount = FEE;
+            in.res_max_total_units = 400000;
+            in.leg_count = 2;
+            in.legs = legs;
+            CHECK(dna_env_encode(&in, e15.bytes, sizeof(e15.bytes),
+                                 &e15.len) == 0 &&
+                  dna_env_decode(e15.bytes, e15.len, &e15.view) == 0,
+                  "env (15 inputs)");
+            CHECK(nodus_rt_core_read_plan(c4, &e15.view, 1, &g_ctx, cr,
+                                          NODUS_RT_MAX_READS, &cn) == 0 &&
+                  cn == 16,
+                  "D3 (3e): a gen-4 DELEGATE's CORE leg with 15 inputs "
+                  "plans under the gate (15 + pool)");
         }
         cl = deleg1_call(call, g_k[KD].pk, g_k[KX].pk, DLG);
         CHECK(hk_build(&e, DNA_SYSRULE_DELEGATE, call, cl, 1) == 0, "env");
         CHECK(nodus_rt_core_read_plan(c3, &e.view, 1, &g_ctx, cr,
                                       NODUS_RT_MAX_READS, &cn) == 0 &&
               cn == 3, "gen 3: the legacy gate still plans NAMEOWN");
+        g_ctx.delegate_name_required = 0;
+    }
+
+    /* ── A7. D3 (3e): the HF-8 name rule on the SYSTEM DELEGATE ──── */
+    {
+        uint8_t dk[128];
+        uint32_t cl = deleg2_call(call, g_k[KD].fp, vid, DLG);
+        CHECK(hk_build(&e, DNA_SYSRULE_DELEGATE, call, cl, 1) == 0, "env");
+        /* gate OFF: the 3c plan, byte for byte */
+        g_ctx.delegate_name_required = 0;
+        CHECK(sys_plan(s4, &e, rq, &n) == 0 && n == 3,
+              "gate off: 3 reads, no NAMEOWN2");
+        /* gate ON: + ONE read, op 16 keyed by the call's delegator_fp,
+         * LAST (16 > 15: ascending (op, key) by construction) */
+        g_ctx.delegate_name_required = 1;
+        memcpy(dk, g_k[KD].fp, 64);
+        memcpy(dk + 64, vid, 64);
+        CHECK(sys_plan(s4, &e, rq, &n) == 0 && n == 4 &&
+              rq[0].op_id == OP_VAL2 && rq[1].op_id == OP_DELEG2 &&
+              memcmp(rq[1].key, dk, 128) == 0 &&
+              rq[2].op_id == OP_DELEGCNT2 &&
+              rq[3].op_id == OP_NAMEOWN2 && rq[3].key_len == 64 &&
+              memcmp(rq[3].key, g_k[KD].fp, 64) == 0,
+              "gate on: [13, 14, 15, 16(delegator_fp)]");
+        CHECK(hk_build(&e, DNA_SYSRULE_UNDELEGATE, call, cl, 1) == 0, "env");
+        CHECK(sys_plan(s4, &e, rq, &n) == 0 && n == 2,
+              "gate on: UNDELEGATE plans no name read");
+        CHECK(hk_build(&e, DNA_SYSRULE_DELEGATE, call, cl, 1) == 0, "env");
+
+        /* a NON-owner delegator (owner KO, delegator KD) */
+        av_k1(KD);
+        rd_val2(0, vid, g_k[KO].fp, DNAC_VALIDATOR_ACTIVE, 8 * DLG, 500);
+        rd_del2(1, g_k[KD].fp, vid, 0);
+        rd_cnt(2, 0);
+        rd_name(3, NULL, 0);
+        CHECK(sys_exec(s4, &e, 4, NULL) == -1,
+              "gate on: a nameless non-owner delegator refused (-1)");
+        rd_name(3, "alice", 5);
+        CHECK(sys_exec(s4, &e, 4, &ev) == 0 && ev.effect_count == 2 &&
+              only_new_ops(&ev),
+              "gate on: a non-owner WITH a name applies (ops 13/14 only)");
+        rd_name(3, "al", 2);
+        CHECK(sys_exec(s4, &e, 4, NULL) == -2,
+              "a present name below DNAC_NAME_MIN_LEN: adapter fault");
+        rd_name(3, "abcdefghijklmnopqrstuvwxyz0123456789x", 37);
+        CHECK(sys_exec(s4, &e, 4, NULL) == -2,
+              "a present name above DNAC_NAME_MAX_LEN: adapter fault");
+        rd_name(3, NULL, 0);
+        CHECK(sys_exec(s4, &e, 3, NULL) == -2,
+              "gate on, 3 reads: the n_reads contract (fault)");
+        g_ctx.delegate_name_required = 0;
+        CHECK(sys_exec(s4, &e, 4, NULL) == -2,
+              "gate off, 4 reads: the n_reads contract (fault)");
+        CHECK(sys_exec(s4, &e, 3, &ev) == 0,
+              "gate off: a nameless non-owner applies (unchanged)");
+        g_ctx.delegate_name_required = 1;
+
+        /* the OWNER self-delegates, kind 1: exempt (no name) */
+        cl = deleg2_call(call, g_k[KO].fp, vid, DLG);
+        CHECK(hk_build(&e, DNA_SYSRULE_DELEGATE, call, cl, 1) == 0, "env");
+        av_k1(KO);
+        rd_del2(1, g_k[KO].fp, vid, 0);
+        rd_name(3, NULL, 0);
+        CHECK(sys_exec(s4, &e, 4, &ev) == 0 && only_new_ops(&ev),
+              "gate on: the owner (kind 1) without a name applies");
+        /* the OWNER is a multisig address, kind 3: exempt (no name) */
+        cl = deleg2_call(call, g_am, vid, DLG);
+        CHECK(hk_build(&e, DNA_SYSRULE_DELEGATE, call, cl,
+                       NODUS_RT_AUTHKIND_DSA87_MSIG_V1) == 0, "env");
+        av_k3(g_am, 1, 1, 1);
+        rd_val2(0, vid, g_am, DNAC_VALIDATOR_ACTIVE, 8 * DLG, 500);
+        rd_del2(1, g_am, vid, 0);
+        CHECK(sys_exec(s4, &e, 4, &ev) == 0 && only_new_ops(&ev),
+              "gate on: the owner (kind 3) without a name applies");
+        /* the same multisig delegator to a validator it does NOT own */
+        rd_val2(0, vid, g_k[KO].fp, DNAC_VALIDATOR_ACTIVE, 8 * DLG, 500);
+        CHECK(sys_exec(s4, &e, 4, NULL) == -1,
+              "gate on: a nameless kind-3 non-owner refused");
+        rd_name(3, "vault", 5);
+        CHECK(sys_exec(s4, &e, 4, &ev) == 0,
+              "gate on: a named kind-3 non-owner applies");
+        /* the exemption is decided by the OBSERVED owner, never before
+         * the validator row is judged: an unknown validator stays -1 */
+        g_reads[0].present = 0;
+        g_reads[0].value_len = 0;
+        CHECK(sys_exec(s4, &e, 4, NULL) == -1,
+              "gate on: unknown validator (-1)");
+
+        /* generation 3 is untouched by the gate on the SYSTEM side */
+        cl = deleg1_call(call, g_k[KD].pk, g_k[KX].pk, DLG);
+        CHECK(hk_build(&e, DNA_SYSRULE_DELEGATE, call, cl, 1) == 0, "env");
+        CHECK(sys_plan(s3, &e, rq, &n) == 0 && n == 3 &&
+              rq[2].op_id == OP_DELEGCNT,
+              "gen 3 SYSTEM: gate on, the same 3 reads (ops 4 / 5 / 6)");
         g_ctx.delegate_name_required = 0;
     }
 
@@ -1580,6 +1746,45 @@ static int t_engine(void) {
               q_u64(F.w, "SELECT unstake_commit_block FROM validators WHERE "
                     "pubkey_hash = ?1", vids, 64, NULL, 0, &y) == 0 &&
               y == 11, "RETIRING at 11");
+    }
+
+    /* ── B5. D3 (3e): the SYSTEM adapter's READ-ONLY NAMEOWN2 (op 16)
+     * serves the committed v2_names row by owner — the same row the
+     * CORE NAMEOWN (op 6) serves. The row is written by direct SQL AFTER
+     * the last applied block (no block follows, so no root is judged
+     * against it). */
+    {
+        const nodus_domain_runtime_t *sys = NULL;
+        nodus_rt_read_req_t rq;
+        nodus_rt_read_res_t rr;
+        sqlite3_stmt *st = NULL;
+        CHECK(nodus_witness_v2_runtime_for(F.w, DNA_DOMAIN_SYSTEM, 1, &sys)
+              == 0 && sys, "the generation-4 SYSTEM runtime");
+        CHECK(sqlite3_prepare_v2(F.w->db, "INSERT INTO v2_names (name, "
+                                 "owner, registered_height) VALUES "
+                                 "(?1, ?2, 11)", -1, &st, NULL) ==
+              SQLITE_OK, "prepare");
+        sqlite3_bind_blob(st, 1, "alice", 5, SQLITE_STATIC);
+        sqlite3_bind_blob(st, 2, g_k[KD].fp, 64, SQLITE_STATIC);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        CHECK(rc == SQLITE_DONE, "a v2_names row for KD");
+        memset(&rq, 0, sizeof(rq));
+        rq.op_id = OP_NAMEOWN2;
+        rq.key_len = 64;
+        memcpy(rq.key, g_k[KD].fp, 64);
+        CHECK(nodus_witness_v2_read_one(F.w, sys, &rq, &rr) ==
+                  NODUS_ADAPTER_OK && rr.present == 1 &&
+              rr.value_len == 5 && memcmp(rr.value, "alice", 5) == 0,
+              "op 16: KD's name, served by the SYSTEM adapter");
+        memcpy(rq.key, g_k[KX].fp, 64);
+        CHECK(nodus_witness_v2_read_one(F.w, sys, &rq, &rr) ==
+                  NODUS_ADAPTER_OK && rr.present == 0 && rr.value_len == 0,
+              "op 16: a nameless owner reads ABSENT (never a fault)");
+        rq.key_len = 63;
+        CHECK(nodus_witness_v2_read_one(F.w, sys, &rq, &rr) ==
+                  NODUS_ADAPTER_ERR_SHAPE,
+              "op 16: a 63-byte key is out of the op's shape");
     }
     fx_close(&F);
     return 0;

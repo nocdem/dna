@@ -3437,7 +3437,7 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 | `dnac_tx` | Client→Witness | Query full TX data by hash |
 | `dnac_block` | Client→Witness | Query block by height |
 | `dnac_block_range` | Client→Witness | Query block range |
-| `dnac_validator_list_query` | Client→Witness | Paged validator table {status, limit ≤ 256, offset}; per entry `pk`, `self`, `total`, `ext`, `comm`, `status`, `since` and (added after 0.23.12) `dlg` — the validator's delegator count, i.e. how many of its `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/include/nodus/nodus_types.h`) slots are filled. `dlg` is `nodus_delegation_count_by_validator`, the same `COUNT(*) FROM delegations WHERE validator_hash = ?` the DELEGATE cap is decided from (`nodus_witness_rt_native.c` `rtn_sys_delegcnt_fetch`); a count that cannot be read fails the reply (never a 0). Old clients skip the unknown entry key; the client SDK reports an older node's reply as `has_delegator_count = 0` (unknown, not 0). Node-local read; no consensus path reads it. |
+| `dnac_validator_list_query` | Client→Witness | Paged validator table {status, limit ≤ 256, offset}; per entry `pk`, `self`, `total`, `ext`, `comm`, `status`, `since` and (added after 0.23.12) `dlg` — the validator's delegator count, i.e. how many of its `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/include/nodus/nodus_types.h`) slots are filled. `dlg` is `nodus_delegation_count_by_validator`, the same `COUNT(*) FROM delegations WHERE validator_hash = ?` the DELEGATE cap is decided from (`nodus_witness_rt_native.c` `rtn_sys_delegcnt_fetch`); a count that cannot be read fails the reply (never a 0). Old clients skip the unknown entry key; the client SDK reports an older node's reply as `has_delegator_count = 0` (unknown, not 0). Node-local read; no consensus path reads it. HF-6 generation 4 (sub-slice 3e): + `vid` / `owner` bstr(64) per entry, `dlg` counted by validator_id (see "HF-6 sub-slice 3e"). |
 
 ### cometbft envelope verbs 35-39 and the transport glue (R3 W3 C2b, 2026-09-16 — protocol version 7)
 
@@ -6934,6 +6934,8 @@ by the call's delegator_fp directly — no hashing). **HF-8 name gate** (`rtn_sy
 under generation 4 with param 17 on, a DELEGATE sibling is parsed with the 136-byte decoder and then
 REFUSED (-1) in plan and exec alike (D3: the exemption `delegator_fp == owner_fp(validator_id)` needs
 the SYSTEM row, 3e) — never a fault, never silently ungated. Generation 3 keeps the legacy gate.
+(Replaced by sub-slice 3e below: the generation-4 CORE leg is ungated and the SYSTEM DELEGATE
+judges the name and the owner exemption.)
 
 **Read-only describer** (`nodus_rt_native_describe_leg`, no runtime): an applied leg's generation is
 proven by its call length (`rtn_sys_call_gen_of`; 136 / 64 / 66 are disjoint from every legacy
@@ -7059,6 +7061,73 @@ source-scan inventory of every `validators` / `delegations` reader in eight boun
 `test_hf6_migrate` B1 also pins the committed H−1 SYSTEM root to `nodus_witness_system_root_v5`.
 `test_storage_b2` / `test_storage_empty`: no assertion changed (the validators stay excluded from
 their per-row accrual checks); a b2 comment updated. Written, NOT run by the author.
+
+### HF-6 sub-slice 3e — the HF-8 name rule on the SYSTEM DELEGATE (D3) + generation-4 RPC fields (2026-10-09, branch `hf6` only — not versioned, not voted)
+
+Decision `docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` D3 (operator "a"):
+with param 17 (`DELEGATE_NAME_REQUIRED`) on, under generation 4 the validator's own delegation
+stays exempt from the name rule, "own" meaning `delegator_fp == owner_fp(validator_id)`; owner_fp
+is only in the SYSTEM row, so the check moves from the CORE funding leg to the SYSTEM DELEGATE exec
+and the name read is added there. Rule itself: HF-8 design
+`docs/plans/2026-10-07-delegate-name-required-design.md` rev 2 §1. Design rev 6 §7.9, §9; plan
+`tasks/hf6-slice3-plan.md` §2 "3e".
+
+**SYSTEM side** (`nodus_witness_rt_native.c`). New READ-ONLY SYSTEM adapter op **16
+`RTN_SYS_OP_NAMEOWN2`** (key = 64-byte owner fp, value 0..`DNAC_NAME_MAX_LEN` name bytes — the CORE
+NAMEOWN op 6 shape; `RTN_SYS_OPS` 13 → 14 entries). It serves the committed `v2_names` row through
+the SAME fetch as CORE op 6 (`rtn_core_nameown_fetch`). ⚠ Scope change, labeled: `v2_names` is
+CORE state (written only by NAME_REGISTER, committed in the CORE name root); it is now bound by two
+compiled adapters — read-only on the SYSTEM side (no kind, no precondition: no SYSTEM effect can
+name it). One predicate, `rtn_deleg2_name_gate(ctx)` = `ctx->delegate_name_required` (the engine
+fact — the committed param-17 row at the block's height, the same fact the CORE gate reads),
+decides both the read plan and the exec's expected read count:
+
+| | gate off | gate on |
+|---|---|---|
+| DELEGATE plan | [13 vid, 14 dfp ‖ vid, 15 vid] (3c, unchanged) | the same + [16 delegator_fp] LAST (16 > 15) |
+| DELEGATE exec | `n_reads == 3`, else −2 | `n_reads == 4`, else −2; after the row is judged (present, BONDED, writable): delegator_fp == the observed row's owner_fp → exempt (kind 1 or kind 3 alike — `rtn_sys_owner_auth` already bound delegator_fp to the verdict); otherwise name absent → −1, present but not 3..36 bytes → −2 |
+| UNDELEGATE | [13, 14] | [13, 14] — never a name |
+
+The plan cannot know owner_fp (it is the VAL2 row's, read by the same plan), so under the gate an
+owner's self-delegation is charged the one unused name read — the price of a plan that is a pure
+function of the envelope and the ctx fact.
+
+**CORE side.** `rtn_sysfund_name_gate` under generation 4 returns 0 (still −1 for a DELEGATE
+sibling whose 136-B call does not parse): no CORE NAMEOWN read, the funding leg's input ceiling
+stays 15. The 3c stopgap (every gated generation-4 DELEGATE refused) is gone. Generations 1-3:
+byte-identical (the arm is under `rtn_gen_roles`; the SYSTEM gen 1-3 plans never name op 16).
+
+**RPC — minimal arms** (design §9 "validator_id, owner_fp, consensus key (bir sürüm boyunca pk
+da)"; full client work is slice 7). Generation = the registry's SYSTEM runtime
+(`hf6_registry_roles`, `nodus_witness_handlers.c`; no version-3 chain → legacy; a chain whose
+registry does not resolve → error reply). Owner lookup: `nodus_rt_native_validator_owner`
+(`nodus_witness_rt_native.h` — a node-local DB read, NOT part of the describer, no consensus caller).
+- `dnac_validator_list_query`, generation 4: each entry + `"vid"` bstr(64) validator_id and
+  `"owner"` bstr(64) owner_fp (`vl_v2_ids`: the `validators ⋈ v2_validator_roles` row holding the
+  entry's consensus pubkey — exactly one, else error); `"pk"` stays (the consensus key); `"dlg"` =
+  `nodus_delegation_v2_count_by_validator(validator_id)`.
+- `dnac_delegations`, generation 4 (`dlg_v2_reply`): rows by delegator_fp = the authenticated
+  session fingerprint (untagged — the 3a key), `ORDER BY validator_hash`; each entry `"validator"`
+  (kept key, value now hex(validator_id)), `"amount"`, `"block"`, + `"vid"` hex(validator_id),
+  `"owner"` hex(owner_fp); a missing roles row / malformed row → error reply.
+- `dnac_v3_block` record map (`v3b_enc_record`): a generation-4 record (`nodus_rt_leg_desc_t.rec_v2`
+  = 1, new describer field) + `"vid"` hex(validator_id) and `"ow"` hex(owner_fp); `"v"` kept
+  (under generation 4 it already carried the validator_id). An applied gen-4 record whose validator
+  has no roles row → error.
+- Address-history index (`nodus_witness_addr_index_env`): for a generation-4 record the validator
+  side is its owner_fp — the UNSTAKE / VALIDATOR_UPDATE row's owner and the DELEGATE / UNDELEGATE
+  row's peer; the delegator side is the call's delegator_fp. An unreadable owner row is a FAULT.
+Client decoders (`nodus_client.c`) skip unknown keys in all three replies, so no client change in
+this slice; old clients see `"validator"` / `"v"` = the validator_id under generation 4.
+
+**Tests** (`test_hf6_calls`, EVM builds): A4 now asserts the generation-4 CORE plan under the gate
+is inputs + pool (also with 15 inputs); new A7 — plan 3 / 4 reads with op 16 keyed by delegator_fp
+last, UNDELEGATE never; non-owner nameless −1 / named applies; owner kind 1 and kind 3 nameless
+apply; kind-3 non-owner −1 / named applies; out-of-contract name and read-count mismatch −2; gate
+off unchanged; gen-3 SYSTEM plan unchanged with the gate on. B5 — op 16 through the engine's
+mediated read (present / absent / 63-byte key ERR_SHAPE). Not covered: a gated DELEGATE applied
+end to end through blocks, the RPC arms and the address-index arm (no handler / indexed-host
+fixture in this test). Written, NOT run by the author.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

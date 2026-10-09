@@ -1403,6 +1403,12 @@ int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
  *                   "ds" tstr128 unstake destination fp, "a" u64 amount,
  *                   "cm" u16 commission bps, "p" u8 param id,
  *                   "nv" u64 new value, "ef" u64 effective height}
+ *                  HF-6 generation 4 (sub-slice 3e, OPTIONAL — present
+ *                  exactly for a generation-4 STAKE-family record; this
+ *                  SDK's decoder skips them): "vid" tstr128 validator_id
+ *                  (the value "v" also carries under generation 4 — "v"
+ *                  names the validator's id there, not an address),
+ *                  "ow" tstr128 the validator's owner_fp (its address)
  * An error reply (NODUS_ERR_NOT_FOUND: not committed / not held;
  * NODUS_ERR_INTERNAL_ERROR: a store/decode fault on the node) is never a
  * partial page. */
@@ -2282,6 +2288,9 @@ int nodus_client_evm_ticket(nodus_client_t *client, const uint8_t id[64],
  * has_delegator_count is 1; a node that predates the reply's "dlg" key
  * leaves it 0 = unknown (not "0 delegators"). A malformed or repeated
  * "dlg" refuses the whole reply (NODUS_ERR_PROTOCOL_ERROR).
+ * HF-6 generation 4 (sub-slice 3e): each entry also carries OPTIONAL
+ * "vid" / "owner" bstr(64) (validator_id / owner_fp) — skipped by this
+ * decoder; "pk" is the consensus key.
  *
  * @param filter_status  -1 = all statuses, 0..3 = filter by status
  * @param offset         Page offset (0-based)
@@ -2306,6 +2315,9 @@ void nodus_client_free_validator_list_result(nodus_dnac_validator_list_result_t 
  * the authenticated session fingerprint — mismatch yields
  * NODUS_ERR_NOT_AUTHENTICATED. Response entries carry validator_fp
  * rendered server-side so the client never sees raw validator pubkeys.
+ * HF-6 generation 4 (sub-slice 3e): validator_fp then holds the
+ * validator_id (the identifier a generation-4 DELEGATE names), and the
+ * reply carries OPTIONAL "vid" / "owner" (hex) keys this decoder skips.
  *
  * Caller must free result_out with nodus_client_free_delegations_result().
  *
