@@ -50,9 +50,11 @@
 #      a boundary — rule (c) — and the first storage boundary is E - 2
 #      blocks after it); round 1 7/7; the row identical 7/7, committed
 #      < H_s. Crossing H_s (pumped to H_s - 7, then idle): 7/7 identical
-#      blocks AT H_s - 1, H_s, H_s + 1; every node logged "storage reward:
-#      rule-set generation 3 -> 4 at the end of height H_s - 1 (storage
-#      vote literal 0x<DS>)"; `ruleset-info` 7/7 = generation 4.
+#      blocks AT H_s - 1, H_s, H_s + 1; every node logged "HF-6:
+#      rule-set generation 3 -> 4 and the validator migration at the end
+#      of height H_s - 1 (dev trigger: storage vote literal 0x<DS>)" (since
+#      HF-6 3b the param-16 vote also runs the validator migration);
+#      `ruleset-info` 7/7 = generation 4.
 #   5. Nodes 4 and 5 `storage register --submit` with their NODE keys:
 #      each v2_storage_nodes row lands (ACTIVE, bond 10^14, payee = the
 #      node's own fingerprint, fail_streak 0, grace_until 0) and the
@@ -698,7 +700,10 @@ wait_cc_row "$PARAM_STOR" "$HS" "$DS_DEC" 20
 [ "$CC_CB" -lt "$HS" ] || die "the RULESET_GEN_STORAGE row committed at $CC_CB, not before its effective height $HS"
 for n in $(seq 1 "$N"); do require_gen "$n" "$GEN_EVM" "$H4"; done
 cross_edge storage "$HS"
-STOR_LINE="storage reward: rule-set generation $GEN_EVM -> $GEN_STOR at the end of height $(( HS - 1 )) (storage vote literal 0x$DS_HEX)"
+# HF-6 3b: the param-16 RULESET_EDGES row is gone; the generation-4 edge
+# (switch + validator migration) logs its own "HF-6:" line
+# (nodus_witness_v2_apply.c phase_6b_gen4_edge).
+STOR_LINE="HF-6: rule-set generation $GEN_EVM -> $GEN_STOR and the validator migration at the end of height $(( HS - 1 )) (dev trigger: storage vote literal 0x$DS_HEX)"
 for n in $(seq 1 "$N"); do
     grep -qF "$STOR_LINE" "$(node_log "$n")" || die "node$n logged no '$STOR_LINE' line"
     require_gen "$n" "$GEN_STOR" "$H4"
