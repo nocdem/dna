@@ -2239,6 +2239,22 @@ if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_migrate)
 endif()
 
+# HF-6 sub-slice 3c — owner authority and the generation-4 call layouts of
+# the SYSTEM validator-record ops 2..5, STAKE refused under generation 4
+# (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.3/§2; plan
+# tasks/hf6-slice3-plan.md §2 "3c"): the hook matrix (each op × kind 1 /
+# kind 3, kind-3 wrong address / unsatisfied / foreign signer / two
+# descriptors, kind 2 refused, exact length ± 1, the legacy calls refused
+# by generation 4 and planned by 3, the CORE SYSFUND pairing, the HF-8
+# gate's generation-4 refusal, the describer), the D6 verdict bit through
+# the real auth hook, and the generation 3 → 4 path through the engine
+# (legacy calls applied at 3 and refused at 4 with the ledger tables
+# byte-identical; kind-1 and kind-3 generation-4 calls applied). Generation
+# 4 is compiled only with the EVM runtime. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_calls)
+endif()
+
 # cometbft @709fd12b → C port, wave R3-B — the host, the stores, the
 # consensus WAL storage, the privval last-sign-state file and the stored
 # value codecs: schema S14, the ported store/state-store/execution/

@@ -1008,9 +1008,19 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .admit = rt_admit_common,
         .tx_cost = sys_cost,
         .auth      = nodus_rt_auth_dsa87_v1,
+        /* HF-6 sub-slice 3c (design rev 6 §1.3): + kind 3, general
+         * multisig — a validator / delegation OWNER may be an M-of-N
+         * address (the Foundation is one, K8). Only the generation-4
+         * owner rule (nodus_witness_rt_native.c rtn_sys_owner_auth)
+         * accepts it; every other SYSTEM op refuses a kind-3 leg (storage
+         * ops and STORAGE_REPORT require kind 1, CHAIN_CONFIG a kind-2
+         * committee count). The allowlist is NOT part of the ruleset
+         * descriptor (shared/dnac/domain_wire.h dna_ruleset_desc_t), so
+         * the pinned SYS_RULESET_HASH_GST does not move. */
         .allowed_auth_kinds =
             NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
-            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1),
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1),
         .read_plan = nodus_rt_system_read_plan,
         .exec      = nodus_rt_system_exec,
         .state_root   = nodus_rt_system_state_root,
@@ -1484,12 +1494,23 @@ int nodus_witness_runtime_selfcheck(void) {
             return -1;
         if (!is_sys && rt->meter_policy) return -1;
         /* the exact configured auth-kind shape (header contract):
-         * SYSTEM {1,2} — submitter + committee carrier; CORE {1,3} —
-         * submitter + general multisig (CORE v4). SYSTEM never carries
-         * kind 3: its ops decide authority on exactly one signer. */
+         * SYSTEM {1,2} — submitter + committee carrier — in generations
+         * 1-3, where its ops decide authority on exactly one signer;
+         * SYSTEM {1,2,3} from the HF-6 generation on (HF-6 sub-slice 3c,
+         * design rev 6 §1.3: the validator-record owner may be a general
+         * multisig address); CORE {1,3} — submitter + general multisig
+         * (CORE v4). */
         if (is_sys && rt->allowed_auth_kinds !=
-                (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
-                 NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1)))
+                (rt->generation >= NODUS_RT_GEN_STORAGE
+                     ? (NODUS_RT_AUTHKIND_BIT(
+                            NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+                        NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1) |
+                        NODUS_RT_AUTHKIND_BIT(
+                            NODUS_RT_AUTHKIND_DSA87_MSIG_V1))
+                     : (NODUS_RT_AUTHKIND_BIT(
+                            NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+                        NODUS_RT_AUTHKIND_BIT(
+                            NODUS_RT_AUTHKIND_DSA87_CC_V1))))
             return -1;
         if (rt->domain_id == DNA_DOMAIN_CORE && rt->allowed_auth_kinds !=
                 (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
