@@ -21,7 +21,9 @@
  * derived. It does NOT re-judge the leg (no ownership, balance, lock or
  * quorum check): it is meaningful ONLY for a leg of an envelope the chain
  * APPLIED (result code 0), which the caller must establish from the
- * stored FinalizeBlock response.
+ * stored FinalizeBlock response. (One labeled exception in this header:
+ * nodus_rt_native_validator_owner reads the database — it is not part of
+ * the describer.)
  *
  * @file nodus_witness_rt_native.h
  */

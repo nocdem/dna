@@ -7098,9 +7098,9 @@ stays 15. The 3c stopgap (every gated generation-4 DELEGATE refused) is gone. Ge
 byte-identical (the arm is under `rtn_gen_roles`; the SYSTEM gen 1-3 plans never name op 16).
 
 **RPC — minimal arms** (design §9 "validator_id, owner_fp, consensus key (bir sürüm boyunca pk
-da)"; full client work is slice 7). Generation = the registry's SYSTEM runtime
-(`hf6_registry_roles`, `nodus_witness_handlers.c`; no version-3 chain → legacy; a chain whose
-registry does not resolve → error reply). Owner lookup: `nodus_rt_native_validator_owner`
+da)"; full client work is slice 7). Generation = `nodus_witness_v2_key_generation` (3d — the
+boundary's own reader), via `hf6_registry_roles` (`nodus_witness_handlers.c`): no version-3 chain
+or no SYSTEM registry row → legacy; an unreadable / unresolved registry row → error reply. Owner lookup: `nodus_rt_native_validator_owner`
 (`nodus_witness_rt_native.h` — a node-local DB read, NOT part of the describer, no consensus caller).
 - `dnac_validator_list_query`, generation 4: each entry + `"vid"` bstr(64) validator_id and
   `"owner"` bstr(64) owner_fp (`vl_v2_ids`: the `validators ⋈ v2_validator_roles` row holding the

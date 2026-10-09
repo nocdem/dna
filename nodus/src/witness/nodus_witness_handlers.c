@@ -49,6 +49,7 @@
 #include "witness/nodus_witness_v2_claims.h"    /* HF-4: runtime_for     */
 #include "witness/nodus_witness_runtime.h"      /* HF-4: generation      */
 #include "witness/nodus_witness_v2_storage.h"   /* dnac_storage_status   */
+#include "witness/nodus_witness_v2_epoch.h"     /* HF-6 3e: key generation */
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
 #include "dnac/msig_wire.h"                 /* dnac_msig_* member gate */
@@ -2561,20 +2562,21 @@ static void handle_dnac_addr_history(nodus_witness_t *w,
  * reads this reply.
  * ════════════════════════════════════════════════════════════════════ */
 
-/* HF-6 sub-slice 3e: does the REGISTRY judge the HF-6 generation (the
- * SYSTEM runtime the committed manifest resolves — the dnac_ruleset_info
- * source)? No version-3 chain on this node = the legacy layout (*out 0).
- * @return 0 with *out set / -1 the chain is open but its registry does not
+/* HF-6 sub-slice 3e: do the committed rows carry the HF-6 generation's
+ * keys? The ONE key-generation reader the boundary uses
+ * (nodus_witness_v2_key_generation, sub-slice 3d: the SYSTEM registry
+ * runtime's generation; NO registry row — a chain that never crossed an
+ * edge — is generation 1, not an error). No version-3 chain on this node
+ * = the legacy layout (*out 0).
+ * @return 0 with *out set / -1 the registry row is unreadable or does not
  *         resolve a compiled generation (an error reply, never a guess). */
 static int hf6_registry_roles(nodus_witness_t *w, int *out) {
     uint64_t tip = 0;
-    const nodus_domain_runtime_t *rs = NULL;
+    uint32_t gen = 0;
     *out = 0;
     if (!w->db || nodus_witness_v2_tip_height(w, &tip) != 0) return 0;
-    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 1, &rs) != 0 ||
-        !rs || rs->generation == 0)
-        return -1;
-    *out = rs->generation >= NODUS_RT_GEN_STORAGE ? 1 : 0;
+    if (nodus_witness_v2_key_generation(w, &gen) != 0) return -1;
+    *out = gen >= NODUS_RT_GEN_STORAGE ? 1 : 0;
     return 0;
 }
 
