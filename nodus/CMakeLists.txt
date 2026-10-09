@@ -302,6 +302,11 @@ set(NODUS_SOURCES
     # (the O15J red-team's L2-F5). The spec is the shipped V1
     # implementation, cited line by line in the source.
     src/witness/nodus_witness_v2_econ.c
+    # HF-6 sub-slice 3b — the one-shot generation-4 validator migration
+    # (validator_id re-key, owner roles, 2M bond + 8M self-delegation,
+    # balance-copy re-key, Foundation accrual merge), called only by the
+    # engine's generation-4 edge phase (nodus_witness_v2_apply.c).
+    src/witness/nodus_witness_v2_migrate.c
     # Storage reward v1 rev 4 (the archive reward), package B2a — frozen
     # storage sets, segment roots + publication, assignment, the storage
     # boundary (settlement, fail_streak, exit release), the storage leg's
@@ -2220,6 +2225,19 @@ register_witness_test(test_v2_schema)
 # (delegator_fp, validator_id)-keyed delegation get / delete / count /
 # list. Real temp witness DB, default build, no environment.
 register_witness_test(test_v2_valrow)
+
+# HF-6 sub-slice 3b — the generation-4 edge + the validator migration
+# (design 2026-10-03-hf5-validator-owner-stake rev 6 §7/§8; plan
+# tasks/hf6-slice3-plan.md §2 "3b"): the migration called directly on a
+# hand-built DB (expected rows, supply, three copy epochs, K4 merge, both
+# self-delegation owner cases, every fault with the DB unchanged) and the
+# edge through the engine on the seeded fixture (param 16 dev trigger,
+# registry at generation 4 after H-1, the migration committed, a twin
+# replay byte-identical). Generation 4 is compiled only with the EVM
+# runtime, so built only with NODUS_EVM_ENABLED. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_migrate)
+endif()
 
 # cometbft @709fd12b → C port, wave R3-B — the host, the stores, the
 # consensus WAL storage, the privval last-sign-state file and the stored
