@@ -1417,10 +1417,15 @@ static int gen_seed_state(nodus_witness_t *w2,
      * Root-layout round (K2, 2026-09-25): `epoch_state` is OFF this list
      * because the table no longer exists — the schema stopped creating
      * it (nodus_witness.c), so a COUNT over it would fail the prepare
-     * and abort every derivation. */
+     * and abort every derivation.
+     *
+     * HF-6 sub-slice 3a: `v2_validator_roles` joins the list — its only
+     * writer is the HF-6 activation edge (3b), never a genesis; a row
+     * here would be a validator role no committed rule produced. */
     {
         static const char *const must_be_empty[] = {
-            "delegations", "v2_reward_accrual", "v2_balance_copy"
+            "delegations", "v2_reward_accrual", "v2_balance_copy",
+            "v2_validator_roles"
         };
         for (size_t i = 0; i < sizeof(must_be_empty) /
                                sizeof(must_be_empty[0]); i++) {
@@ -2950,8 +2955,11 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * way. Nodus EVM moves it S16 -> S17 (the EVM tables, empty, and the
          * CORE EVM reserve row at 0 — nothing a generation-1 genesis
          * root reads, so the genesis is byte-identical); the S17 rung
-         * cascades through S16. */
-        if (nodus_witness_db_migrate_v2s17(w2) != 0) break;
+         * cascades through S16. HF-6 3a moves it S17 -> S18 (the empty
+         * v2_validator_roles; no genesis step writes or reads it — it is
+         * on the must_be_empty list of gen_seed_state); the S18 rung
+         * cascades through S17. */
+        if (nodus_witness_db_migrate_v2s18(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. SYSTEM state, from the config — the SAME seeder. ────── */

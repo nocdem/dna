@@ -129,9 +129,12 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
      * tokenomics-v3 P2 moves it S15 -> S16. */
     /* Nodus EVM: the live rung is S17 (every builder and the at-open rung
      * migrate there); S16 — S17 minus the empty EVM tables — stays
-     * accepted for a database this build did not open itself. */
+     * accepted for a database this build did not open itself.
+     * HF-6 3a: the live rung is S18 (S17 + the empty v2_validator_roles);
+     * S16 and S17 stay accepted for the same reason. */
     if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S17)
+        ver != NODUS_V2_SCHEMA_VERSION_S17 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S18)
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */

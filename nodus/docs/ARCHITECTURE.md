@@ -5949,7 +5949,9 @@ generation-1/2 root, invariant or hook reads it), `evm_trie_nodes`, and the node
 no root moves. The two `evm_logs` scan indexes (`evm_receipts_by_pos`, `evm_logs_by_addr`) are
 in the S17 DDL and added at open to a database that reached S17 without them, indexes only
 (`nodus_witness_db_ensure_v2s17_indexes`, `nodus_witness.c:937`; `v2_schema.h:801-820`).
-Version 18+ fails closed. **The previous binary (0.23.18) cannot open an S17 database:** its
+Version 18+ failed closed in this build; the HF-6 branch adds S18 (one empty table, "HF-6
+sub-slice 3a" below), moves the at-open rung to S18 and widens the index ensure step to S17 or
+S18. **The previous binary (0.23.18) cannot open an S17 database:** its
 S16 rung treats any version other than 16 as "migrate from below" and hands it to the S15 rung
 (`git show main:nodus/src/witness/nodus_witness_v2_schema.c`, `migrate_v2s16_ex`), whose rungs
 refuse an unknown version — so for this rollout a binary swap DOES touch the database and a
@@ -6731,6 +6733,61 @@ one `w_read` more, the CheckTx dry run, both same-block orders). `test_hf4_param
 scalar, grace, stateful rule, cache slot). Harness `test_cmt_hf8_delegate_name.sh` (standalone,
 short-epoch + short-grace build — `nodus/tests/integration/stagef/README.md`). All written, NOT yet
 run at the time of writing.
+
+### HF-6 sub-slice 3a — schema S18 (`v2_validator_roles`) and v2 row access (2026-10-09, branch `hf6` only — not versioned, not voted; INERT)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.2, §6.3, §6.4, §7;
+plan `tasks/hf6-slice3-plan.md` §1 and §2 "3a"; decision D1 option (i) (ORCHESTRATOR, 2026-10-09):
+under the HF-6 generation the rows stay in `validators` / `delegations` / `v2_balance_copy` and
+their KEYS are re-valued in place at the activation edge (sub-slice 3b, not in the tree):
+`validators.pubkey_hash` holds the `validator_id`, `delegations.(delegator_hash, validator_hash)`
+holds `(delegator_fp = SHA3-512(dpk) untagged, validator_id)`. The three new validator fields live
+in a NEW side table.
+
+**Schema S18** (`nodus_witness_v2_schema.h`, `NODUS_V2_SCHEMA_VERSION_S18`): one table, created
+empty — `v2_validator_roles (validator_id BLOB PRIMARY KEY, owner_fp BLOB NOT NULL,
+pending_consensus_pubkey BLOB NOT NULL, consensus_key_effective_epoch INTEGER NOT NULL)`, also in
+the base schema (`nodus_witness.c`, next to `v2_balance_copy`). Five fault stages like S17; shape
+verified by column sequence; `user_version` 18; 19+ fails closed. **Why not a column on
+`validators`:** `validators`, `delegations`, `supply_tracking`, `chain_config_history`,
+`validator_stats` and `v2_treasury` are the genesis-bundle tables (`nodus_witness_v2_bundle.c`
+`apply_table`), and a joiner refuses the stored bundle on a column-count mismatch — a new column
+would make every future joiner refuse the live testnet's genesis bundle. `v2_validator_roles` is
+not a bundle table. No root, invariant or verdict reads it and nothing writes it before the HF-6
+edge, so no root moves. It is on the genesis `must_be_empty` list (`nodus_witness_v2_gen.c`).
+
+**Gates moved.** Every builder migrates to S18 (`nodus_witness_v2_join.c`,
+`nodus_witness_v2_bundle.c`, `nodus_witness_v2_gen.c`); the at-open rung
+(`witness_open_migrate_s18`, `nodus_witness.c`) climbs a version-3 chain at S16 or S17 to S18;
+the index ensure step (`nodus_witness_db_ensure_v2s17_indexes`) runs at S17 or S18; the
+block-apply and Comet-genesis gates (`nodus_witness_v2_apply.c`) and preflight accept 16, 17 or 18;
+the pool startup check and core state init (`nodus_witness_v2_pools.c`) gain 18 (without it an S18
+database would SKIP the S7 startup check); the EVM edge (phase 6b″) accepts S17 or S18.
+**Consequence for a rollout:** the first binary carrying this opens every live database into S18,
+and the previous binary's block-apply gate does not accept 18 — a rollback needs the pre-S18 copy
+of the data directory (the S17 precedent, `DEPLOY_RUNBOOK.md` §4.1; that runbook is not updated by
+this sub-slice).
+
+**Row access** (no production caller yet; 3b/3d consume it; every existing function unchanged):
+`nodus_v2_validator_row_t` (`nodus_witness_validator.h`) = `dnac_validator_record_t` + `validator_id`
++ `owner_fp` + `pending_consensus_pubkey` + `consensus_key_effective_epoch` (witness-local — the
+client header `dnac/include/dnac/validator.h` is not extended). `nodus_validator_v2_get`,
+`nodus_validator_v2_get_by_pubkey` (a second row with the pubkey is a fault),
+`nodus_validator_v2_update` (both tables, inside the caller's transaction; validator_id, consensus
+pubkey and owner_fp are immutable and checked; the single "no pending key" encoding is enforced),
+`nodus_validator_v2_bonded_tenured` (the gen-4 arm: the v1 filters and pubkey ASC order, each
+candidate's `pubkey_hash` returned as its validator_id); `nodus_v2_delegation_row_t` and
+`nodus_delegation_v2_{get,delete,count_by_validator,list_by_validator}`
+(`nodus_witness_delegation.h`; keys bound as given; list ordered by `delegator_hash` ASC, more rows
+than the cap is a fault). Absent (1) and fault (-1) are distinct everywhere: a validators row
+without its roles row, an orphan roles row, a malformed row and a missing table are faults.
+
+**Tests.** `test_v2_schema` `run_s18_rung` (0 → 18 cascade, every fault stage rolls back a
+byte-identical S17 database, shape drift refused, version 19 refused, the S17 rung refuses an S18
+database, the index ensure step at S18); new `test_v2_valrow` (round trip, absent vs fault, update
+refusals, bonded_tenured after a manual re-key, v2 delegations); `test_v2_evm` (at-open rung S16 →
+S18, a previous-build S17 database climbed to S18 with its scan indexes created) and `test_v2_gen`
+(derived chain at S18, no role rows) updated. Written, NOT run by the author.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
@@ -8000,6 +8057,7 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_reward_accrual` | tokenomics-v3 P2: rewards credited at each boundary, one row per recipient fp, paid out and emptied at each payday; a leg of `core_state_root` |
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
+| `v2_validator_roles` | HF-6 sub-slice 3a (schema S18, branch `hf6` only): `validator_id` BLOB PK 64, `owner_fp` 64, `pending_consensus_pubkey` 2592 (all-zero = none), `consensus_key_effective_epoch` (0 = none); joined on `validators.pubkey_hash` = validator_id under the HF-6 generation; in the BASE schema; EMPTY until the HF-6 edge (3b); no root reads it yet; NOT a genesis-bundle table |
 | `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
 | `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`, `fail_streak` 0..2^32−1 (B2a); typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT and the storage epoch boundary (B2a: exit release, fail_streak); its registry root (leaf `NDS.STLEAF.v2`) is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
 | `v2_storage_sets` / `v2_storage_set_members` | archive reward (package B2a, branch only): the frozen storage sets S(H) — header (`epoch_start` PK, `set_hash`, `member_count` 0..256) and members (`epoch_start`, `node_fp`; `fail_streak` as frozen at H, not hashed by S(H)); written by the storage boundary (freeze at every storage boundary, prune below B−2E); `sets_root` leg of `storage_root` |

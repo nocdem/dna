@@ -2153,7 +2153,10 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
-    if (ver != NODUS_V2_SCHEMA_VERSION_S17) return 0;   /* not this rung */
+    /* S17 or S18 (HF-6 3a: S18 = S17 + v2_validator_roles; the at-open
+     * rung reaches S18 before this step runs — header) */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S18) return 0;   /* not this rung */
     int have = s17_log_indexes_ok(w);
     if (have < 0) return -1;
     if (have == 1) return 0;                            /* idempotent    */
@@ -2165,7 +2168,7 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w) {
          * pre-BEGIN read decided nothing) */
         uint32_t v2 = 0;
         if (nodus_witness_db_schema_version(w, &v2) != 0 ||
-            v2 != NODUS_V2_SCHEMA_VERSION_S17)
+            v2 != ver)
             break;
         if (exec_sql(w, S17_LOG_INDEXES_DDL) != 0) break;
         /* an index of the same name and another shape is not ours:
@@ -2189,6 +2192,89 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w) {
                  "S17: the EVM log scan indexes were created (node-local; "
                  "no root reads them)");
     return 0;
+}
+
+/* ── S18 migration: HF-6 sub-slice 3a, the validator-role side table ─────
+ * Contract: nodus_witness_v2_schema.h. The table is created EMPTY; its
+ * only writer is the HF-6 activation edge (sub-slice 3b). The column
+ * definitions are byte-identical to the base schema's (nodus_witness.c). */
+
+static const char *V2_S18_ROLES_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_validator_roles ("
+    "  validator_id BLOB PRIMARY KEY,"
+    "  owner_fp BLOB NOT NULL,"
+    "  pending_consensus_pubkey BLOB NOT NULL,"
+    "  consensus_key_effective_epoch INTEGER NOT NULL"
+    ")";
+
+int nodus_witness_db_migrate_v2s18_ex(nodus_witness_t *w,
+                                      nodus_v2s18_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S18) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S17) {
+        /* the S9…S17 chain; an unknown version (19+) fails closed there */
+        if (nodus_witness_db_migrate_v2s17(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S17;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S18MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S17,
+                                        NODUS_V2_SCHEMA_VERSION_S18, "S18");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S18MIG_FAIL_AFTER_REVALIDATE) break;
+
+        if (exec_sql(w, V2_S18_ROLES_DDL) != 0) break;
+        if (fail_at == V2S18MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify: the table exists with its exact column sequence — a
+         * DDL that silently did nothing, or a pre-existing table of
+         * another shape, is not a migrated schema. */
+        static const char *const roles_cols[] = {
+            "validator_id", "owner_fp", "pending_consensus_pubkey",
+            "consensus_key_effective_epoch" };
+        if (table_cols_exact(w, "v2_validator_roles", roles_cols,
+                sizeof(roles_cols) / sizeof(roles_cols[0])) != 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s",
+                          "S18 validator-role schema shape drift — "
+                          "refusing");
+            break;
+        }
+        if (fail_at == V2S18MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 18") != 0) break;
+        if (fail_at == V2S18MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s18(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s18_ex(w, V2S18MIG_FAIL_NONE);
 }
 
 /* ── the §18 evm_logs cursor scan (red-team 1 F4) ──────────────────────

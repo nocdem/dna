@@ -2202,6 +2202,15 @@ register_witness_test(test_domreg)
 # ownership backfill, unknown-version fail-close, no CPUNK.
 register_witness_test(test_v2_schema)
 
+# HF-6 sub-slice 3a — the v2 validator / delegation row access over the
+# S18 side table v2_validator_roles (INERT, no production caller yet):
+# v2 get / get_by_pubkey / update round trip, absent (1) vs fault (-1)
+# (half-migrated rows, duplicate consensus pubkey, missing table), the
+# gen-4 bonded_tenured arm returning pubkey_hash as validator_id, and the
+# (delegator_fp, validator_id)-keyed delegation get / delete / count /
+# list. Real temp witness DB, default build, no environment.
+register_witness_test(test_v2_valrow)
+
 # cometbft @709fd12b → C port, wave R3-B — the host, the stores, the
 # consensus WAL storage, the privval last-sign-state file and the stored
 # value codecs: schema S14, the ported store/state-store/execution/

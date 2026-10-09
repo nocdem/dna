@@ -4363,8 +4363,9 @@ static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk,
  *   1. the row's value must be this build's DNAC_CFG_EVM_ACTIVE_D (the
  *      scalar rules admit nothing else; another value is this node's
  *      storage) and this build must carry the EVM generation — else FAULT;
- *   2. the schema must be S17 (the EVM tables, the CORE reserve row) —
- *      a node-local shape, so FAULT, never a verdict;
+ *   2. the schema must be S17 or S18 (the EVM tables, the CORE reserve
+ *      row; S18 = S17 + HF-6's empty v2_validator_roles, the live rung
+ *      since HF-6 3a) — a node-local shape, so FAULT, never a verdict;
  *   3. SYSTEM and CORE switch from NODUS_RT_GEN_EVM_BASE to
  *      NODUS_RT_GEN_EVM (nodus_witness_domreg_generation_switch — the
  *      HF-4 procedure); "not at the base" is a FAULT (the vote's stateful
@@ -4427,10 +4428,13 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
+        /* S17 or S18: a node replaying from genesis on this build is at
+         * S18 (the at-open rung) when it reaches the EVM edge */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S17) {
-            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17; this "
-                       "node's database is at %u", (unsigned)ver);
+            (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S18)) {
+            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17 or S18; "
+                       "this node's database is at %u", (unsigned)ver);
             return -2;
         }
     }
@@ -4552,16 +4556,20 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * (nodus_witness_v2_schema.h), so the lane writes the same rows
          * at either rung; S17 is the live rung (every builder and the
          * at-open rung, nodus_witness.c, migrate to it). The EVM edge
-         * itself (phase 6b'') FAULTs below S17. */
+         * itself (phase 6b'') FAULTs below S17. HF-6 3a: S18 = S17 + the
+         * empty v2_validator_roles is the live rung; the lane writes the
+         * same rows at 16, 17 or 18. */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S17)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S17 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S18)) {
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
-                       "not %u or %u - the Comet block row cannot be "
+                       "not %u, %u or %u - the Comet block row cannot be "
                        "written here; nothing about the block was judged",
                        (unsigned)ver,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S16,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S17);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S17,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S18);
             return -2;
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
@@ -6703,13 +6711,17 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
      * gate accepts S17; S16 stays accepted because S17 is a pure
      * superset whose additions no genesis step touches (the S16 test
      * fixtures and an S16 scratch database produce the identical
-     * genesis). */
+     * genesis). HF-6 3a: every live builder migrates to S18 first (S17 +
+     * the empty v2_validator_roles, which no genesis step touches), so
+     * the gate accepts S18 too. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S17)) {
-        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16 or S17, "
-                      "the database is at %u — refusing", (unsigned)ver);
+         ver != NODUS_V2_SCHEMA_VERSION_S17 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S18)) {
+        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, S17 or "
+                      "S18, the database is at %u — refusing",
+                      (unsigned)ver);
         return -1;
     }
 

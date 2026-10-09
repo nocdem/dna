@@ -146,6 +146,128 @@ int nodus_validator_list_paged(nodus_witness_t *w,
                                 int *count_out,
                                 int *total_out);
 
+/* ══ HF-6 sub-slice 3a — the v2 validator row (INERT) ═══════════════════
+ *
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §1.1-§1.2 (validator_id, owner_fp, the consensus-key fields), §6.3 (the
+ * row's fields; "no pending key" has ONE encoding — 2592 × 0x00 AND
+ * effective epoch 0 — enforced at write), §7 (keys re-valued in place at
+ * the activation edge); plan tasks/hf6-slice3-plan.md §1, decision D1
+ * option (i).
+ *
+ * Under the HF-6 generation a validator row is TWO table rows joined on
+ * one key:
+ *   validators.pubkey_hash          = validator_id (re-keyed at the edge;
+ *                                     the column name is historical)
+ *   validators.pubkey               = consensus_pubkey
+ *   v2_validator_roles.validator_id = validator_id
+ *   v2_validator_roles.{owner_fp, pending_consensus_pubkey,
+ *                       consensus_key_effective_epoch}
+ * A validators row with no roles row (or the reverse) is a half-migrated
+ * state: every function below reports it as a FAULT (-1), never as
+ * "absent" (1) — a DB failure or an inconsistency is never a value.
+ *
+ * NO PRODUCTION CALLER YET: the HF-6 boundary readers (sub-slice 3d) and
+ * the migration (3b) consume these. Every function above is unchanged.
+ * `dnac/include/dnac/validator.h` (a client header) is NOT extended — the
+ * row type is witness-local. ~5.4 KB per row: callers heap-allocate
+ * arrays. */
+
+#define NODUS_V2_VALIDATOR_ID_LEN  64u
+#define NODUS_V2_OWNER_FP_LEN      64u
+
+typedef struct {
+    /** Today's 13 mutable columns + the pubkey, exactly as the v1 functions
+     *  read them; `rec.pubkey` IS the consensus_pubkey. */
+    dnac_validator_record_t rec;
+    /** validators.pubkey_hash = v2_validator_roles.validator_id. */
+    uint8_t  validator_id[NODUS_V2_VALIDATOR_ID_LEN];
+    /** SHA3-512 of one key, or a dna_msig_address (§1.2). Immutable: HF-6
+     *  has no TRANSFER_OWNER (design K3, goal G10). */
+    uint8_t  owner_fp[NODUS_V2_OWNER_FP_LEN];
+    /** 2592 × 0x00 iff no rotation is pending. */
+    uint8_t  pending_consensus_pubkey[DNAC_PUBKEY_SIZE];
+    /** 0 iff no rotation is pending. */
+    uint64_t consensus_key_effective_epoch;
+} nodus_v2_validator_row_t;
+
+/**
+ * Fetch the v2 row whose key (validators.pubkey_hash) is `validator_id`.
+ * The row read must be well formed: blob lengths exact, validator_id and
+ * owner_fp not all-zero, the one "no pending key" encoding, the effective
+ * epoch within INT64.
+ *
+ * @return 0 found (*out set); 1 neither table holds the key;
+ *         -1 fault — SQLite error, a malformed row, or only ONE of the two
+ *         tables holds the key.
+ */
+int nodus_validator_v2_get(nodus_witness_t *w,
+                           const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                           nodus_v2_validator_row_t *out);
+
+/**
+ * Fetch the v2 row whose consensus pubkey (validators.pubkey) is `pubkey`
+ * (DNAC_PUBKEY_SIZE bytes). `pubkey` carries no UNIQUE constraint, so the
+ * scan continues past the first hit: a SECOND matching row is a fault.
+ *
+ * @return 0 found (*out set); 1 no validators row holds the pubkey;
+ *         -1 fault — SQLite error, two rows with the pubkey, a malformed
+ *         row, or a validators row without its roles row.
+ */
+int nodus_validator_v2_get_by_pubkey(nodus_witness_t *w,
+                                     const uint8_t *pubkey,
+                                     nodus_v2_validator_row_t *out);
+
+/**
+ * Write a v2 row back: the 13 mutable `validators` columns (the
+ * bind_validator_mutable_fields set) and the roles row's
+ * pending_consensus_pubkey + consensus_key_effective_epoch.
+ *
+ * IMMUTABLE and checked, never written: validator_id (the key), the
+ * consensus pubkey (validators.pubkey — rotation is slice 6's), owner_fp
+ * (no TRANSFER_OWNER in HF-6). The UPDATEs are keyed by
+ * (validator_id, pubkey) and (validator_id, owner_fp): a row whose stored
+ * pubkey or owner differs is NOT updated and the call is a fault.
+ *
+ * Runs INSIDE THE CALLER'S TRANSACTION — called in autocommit mode it
+ * refuses (-1) before writing anything. On -1 one table may already have
+ * been written; the caller rolls the transaction back (the host does so on
+ * every block fault).
+ *
+ * Refused before any write (-1): an all-zero validator_id or owner_fp, a
+ * mixed "pending" encoding (a nonzero key with epoch 0, or a zero key with
+ * a nonzero epoch — design §6.3), an effective epoch above INT64_MAX.
+ *
+ * @return 0 both rows updated; 1 neither table holds validator_id;
+ *         -1 fault (above, an SQLite error, only one table holding the
+ *         key, or a pubkey / owner mismatch).
+ */
+int nodus_validator_v2_update(nodus_witness_t *w,
+                              const nodus_v2_validator_row_t *row);
+
+/**
+ * The HF-6 generation's arm of nodus_validator_bonded_tenured — a NEW
+ * function (the existing one stays byte-identical, so generations 1-3
+ * read exactly what they read today). SAME WHERE (status IN (ACTIVE,
+ * ELIGIBLE), Rule R tenure at `tenure_anchor` or the genesis carve-out
+ * active_since_block <= 1), SAME collect order (pubkey ASC — slice 3 keeps
+ * the pubkey tiebreak), no LIMIT; each candidate is returned as a full v2
+ * row whose validator_id is the row's pubkey_hash value (after the HF-6
+ * edge that value IS the validator_id — `dna_validator_id_migrated` would
+ * be wrong for rows a v2 STAKE creates later).
+ *
+ * @param out  heap array of capacity `cap` (~5.4 KB per row).
+ * @return 0 (*count_out set, may be 0); -1 fault — SQLite error, a
+ *         malformed row, a candidate with no roles row, or more matching
+ *         rows than `cap` (never a truncation: two nodes must rank the
+ *         same set).
+ */
+int nodus_validator_v2_bonded_tenured(nodus_witness_t *w,
+                                      uint64_t tenure_anchor,
+                                      nodus_v2_validator_row_t *out,
+                                      int cap,
+                                      int *count_out);
+
 #ifdef __cplusplus
 }
 #endif
