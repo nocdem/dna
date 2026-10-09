@@ -151,6 +151,14 @@ No production caller yet (sub-slices 3b/3d consume these). Every existing valida
 | `int nodus_delegation_v2_count_by_validator(nodus_witness_t *w, const uint8_t validator_id[64], int *count_out)` | **NEW.** `COUNT(*) WHERE validator_hash = ?`; -1 on error or a count outside [0, INT_MAX]. |
 | `int nodus_delegation_v2_list_by_validator(nodus_witness_t *w, const uint8_t validator_id[64], nodus_v2_delegation_row_t *out, int cap, int *count_out)` | **NEW.** Every row of the validator `ORDER BY delegator_hash ASC` (a total order — PK); more rows than `cap` → -1, never a truncation; a malformed row → -1. |
 
+### 5b.2 HF-6 slice 5a — water-fill power cap (INERT; design rev 6 §5; Kurultay #14 K1, K2, K5)
+
+`shared/dnac/power_cap.c` is compiled into BOTH `libnodus` (nodus build) and `libdna.so` (messenger build, shared and static lists, next to `vset_wire.c`). No live path calls it yet; every consumer listed in design §5 switches to it in a later slice. Vectors are pinned by the independent oracle `shared/dnac/tests/power_cap_oracle.py` (output `power_cap_oracle_out.txt`) in `nodus/tests/test_power_cap.c`.
+
+| Item | Description |
+|------|-------------|
+| `int dna_power_cap_counted(const uint64_t *p, const uint8_t (*validator_id)[64], uint32_t n, uint32_t ratio_bps, uint64_t *counted_out)` (`shared/dnac/power_cap.h`) | **NEW.** Counted power per validator. `p_i` = whole coins (`total_stake_i / DNAC_DECIMAL_UNIT`, the caller divides), each ≥ 1. Walk order p DESC, ties `validator_id` ASC (memcmp) on an internal index array — the caller's arrays are never reordered; `counted_out` is in the caller's order. `r′ = max(ratio_bps, ⌈10000/n⌉)`; for k = 0, 1, … over the sorted `q[0..n-1]`: `S_k = q[k] + … + q[n-1]` (§5's 1-based `Σ_{i>k} p_i`, the uncapped tail including the entry under test), `c_k = ⌊r′·S_k / (10000 − r′·k)⌋`, stop at the first k with `q[k] ≤ c_k`; `counted_i = min(p_i, c_k)`. §5 examples at ratio 3000: `[88,2×6]` → `[5,2×6]`, `[45,45,10]` → `[10,10,10]`, `[10]×7` unchanged. Guarantees (proved in the header): stops at some k < n with a positive denominator, every counted ≥ 1, no counted share exceeds r′ (for n ≤ 3 r′ is 100% / 50% / 33.34%). Integer only, every sum/product checked (`dna_ck_*_u64`). Returns 0, or -1 with `counted_out` untouched on: a NULL argument, n == 0, n > `DNA_MAX_ACTIVE_VALIDATORS` (128), ratio outside [`DNA_POWER_CAP_BPS_MIN` 500, `DNA_POWER_CAP_BPS_MAX` 3000], any `p_i == 0`, u64 overflow, a denominator ≤ 0. |
+
 ---
 
 ## 6. Package W-B — exact self-stake, self-delegation (`docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md` items 5, 6)

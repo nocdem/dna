@@ -406,6 +406,9 @@ set(NODUS_SOURCES
     # validator_id codec (design 2026-10-03-hf5-validator-owner-stake §6.1,
     # §6.2). No consensus path calls it.
     ${SHARED_DIR}/dnac/valbind_wire.c
+    # HF-6 slice 5a — INERT water-fill power cap, one pure function
+    # (design 2026-10-03-hf5-validator-owner-stake §5). No caller yet.
+    ${SHARED_DIR}/dnac/power_cap.c
     ${SHARED_DIR}/dnac/qc_v2.c
 
     # (The T3 wave-1 codecs tm_vote.c / tm_commit.c and the T1 core under
@@ -1746,6 +1749,13 @@ add_test(NAME test_vset_wire COMMAND test_vset_wire)
 add_executable(test_valbind_wire tests/test_valbind_wire.c)
 target_link_libraries(test_valbind_wire nodus dsa nodus crypto)
 add_test(NAME test_valbind_wire COMMAND test_valbind_wire)
+
+# HF-6 slice 5a — water-fill power cap: the independent oracle's vectors
+# (shared/dnac/tests/power_cap_oracle.py), fail-closed cases, input-order
+# preservation, permutation determinism, "no share exceeds r′".
+add_executable(test_power_cap tests/test_power_cap.c)
+target_link_libraries(test_power_cap nodus dsa nodus crypto)
+add_test(NAME test_power_cap COMMAND test_power_cap)
 
 # Ledger V2 S3 — QC V2: preimage KAT, quorum table, and a REAL-KEY
 # adversarial suite (non-member, duplicate, unsorted, wrong-context,

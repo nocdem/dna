@@ -290,6 +290,9 @@ if(BUILD_SHARED_LIB)
         # (certificate codec + historical verification), owned by libdna
         # the same way as ledger_roots_v2.c. No consensus caller.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/vset_wire.c
+        # HF-6 slice 5a — INERT water-fill power cap, one pure function
+        # (design 2026-10-03-hf5-validator-owner-stake §5). No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/power_cap.c
         ${CMAKE_SOURCE_DIR}/../shared/dnac/qc_v2.c
         # Ledger V2 S4 — INACTIVE domain manifest/registry/readiness codec,
         # owned by libdna the same way as ledger_roots_v2.c. No consensus caller.
@@ -468,6 +471,9 @@ else()
         # (certificate codec + historical verification), owned by libdna
         # the same way as ledger_roots_v2.c. No consensus caller.
         ${CMAKE_SOURCE_DIR}/../shared/dnac/vset_wire.c
+        # HF-6 slice 5a — INERT water-fill power cap, one pure function
+        # (design 2026-10-03-hf5-validator-owner-stake §5). No caller yet.
+        ${CMAKE_SOURCE_DIR}/../shared/dnac/power_cap.c
         ${CMAKE_SOURCE_DIR}/../shared/dnac/qc_v2.c
         # Ledger V2 S4 — INACTIVE domain manifest/registry/readiness codec,
         # owned by libdna the same way as ledger_roots_v2.c. No consensus caller.
