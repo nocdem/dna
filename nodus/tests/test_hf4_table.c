@@ -278,7 +278,12 @@ int main(void) {
         CHECK(gS[k].runtime_abi == gE[k].runtime_abi);
         CHECK(memcmp(gS[k].descriptor.name, gE[k].descriptor.name,
                      DNA_DOM_NAME_LEN) == 0);
-        CHECK(gS[k].allowed_auth_kinds == gE[k].allowed_auth_kinds);
+        /* HF-6 3c: generation 4's SYSTEM also admits kind 3 (an owner may be
+         * a multisig address, design §1.3); CORE's allowlist is unchanged */
+        CHECK(gS[k].allowed_auth_kinds ==
+              (k == 0 ? (gE[k].allowed_auth_kinds |
+                         NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1))
+                      : gE[k].allowed_auth_kinds));
         CHECK(gS[k].auth == gE[k].auth && gS[k].read_plan == gE[k].read_plan &&
               gS[k].exec == gE[k].exec && gS[k].adapter == gE[k].adapter &&
               gS[k].state_root == gE[k].state_root &&
