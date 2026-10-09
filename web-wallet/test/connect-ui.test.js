@@ -18,7 +18,7 @@ import {
   openHistoryStore, StorageError, HISTORY_SLOW_TEXT
 } from '../src/connect/store.js';
 import {
-  parseContactId, parseContactInput, requestRefusal, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
+  parseContactId, parseContactInput, requestRefusal, shortId, inspectUntrusted, httpsLink, linkSegments, profilePatch, profileStatusText, senderClockLabel,
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
@@ -993,4 +993,21 @@ test('first records: the saved state keeps seenOwn and refuses a damaged one', (
     const v = emptyState(); v.seenOwn = bad;
     assert.throws(() => checkState(v), StorageError, JSON.stringify(bad));
   }
+});
+
+// Web 0.1.89: only https links become clickable; trailing punctuation stays
+// text; the href is the parsed URL (punycode for an international host).
+test('links: https only, punctuation outside, the parsed href shown', () => {
+  assert.deepEqual(linkSegments('no links here'), [{ text: 'no links here' }]);
+  assert.deepEqual(linkSegments('see https://nodusnetwork.io/wiki, ok'), [
+    { text: 'see ' }, { text: 'https://nodusnetwork.io/wiki', href: 'https://nodusnetwork.io/wiki' }, { text: ', ok' }]);
+  assert.deepEqual(linkSegments('(https://a.example/x)'), [{ text: '(' }, { text: 'https://a.example/x', href: 'https://a.example/x' }, { text: ')' }]);
+  for (const bad of ['http://a.example', 'javascript:alert(1)', 'https://user:pass@a.example/', 'ftp://a.example']) {
+    assert.ok(linkSegments(bad).every(s => !s.href), bad);
+  }
+  const idn = linkSegments('https://exаmple.com/');            // Cyrillic "а"
+  assert.equal(idn.length, 1);
+  assert.match(idn[0].href, /^https:\/\/xn--/, 'a look-alike host shows as punycode');
+  assert.deepEqual(linkSegments('a https://x.example b https://y.example'), [
+    { text: 'a ' }, { text: 'https://x.example/', href: 'https://x.example/' }, { text: ' b ' }, { text: 'https://y.example/', href: 'https://y.example/' }]);
 });

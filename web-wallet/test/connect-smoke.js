@@ -134,6 +134,15 @@ try {
   assert.equal(await page.evaluate(() => location.hash), '#settings');
   assert.equal(await page.evaluate(() => document.activeElement?.id), 'device-title');
   assert.equal(await page.locator('#vault-delete-details').evaluate(node => node.parentElement.id), 'device-panel');
+  // Automatic lock (web 0.1.89): 15 minutes by default; "Never" warns and
+  // is kept in this browser; the default comes back after choosing it.
+  assert.equal(await page.locator('#auto-lock-minutes').inputValue(), '15');
+  assert.match(await page.locator('#auto-lock-note').textContent(), /after 15 minutes without use/);
+  await page.locator('#auto-lock-minutes').selectOption('0');
+  assert.match(await page.locator('#auto-lock-note').textContent(), /shared or public device/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.autoLockMinutes')), '0');
+  await page.locator('#auto-lock-minutes').selectOption('15');
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.autoLockMinutes')), '15');
   // Logs is a page of its own, reached from Device & settings.
   await page.locator('#device-panel a[href="#logs"]').click();
   assert.equal(await page.locator('#session-logs').isVisible(), true);

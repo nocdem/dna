@@ -30,6 +30,7 @@ import { renderQr } from './qr.js';
 // Nodus Connect page registers Messages (src/connect-main.js).
 import { raise, gather, siteName } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
+import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote } from './auto-lock.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
 // column (`@media (max-width: 900px)`): below it the Send / Receive panel sits
@@ -735,7 +736,30 @@ function activity() {
   // A tab that took the session over holds it before the wallet is reopened;
   // the same idle lock gives it back if nobody reopens it here.
   const sensitive = wallet || sessionRelease || !$('phrase-form').hidden || $('unlock-wallet').disabled || $('vault-save').disabled || ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password'].some(id => $(id).value);
-  if (sensitive) { idleDeadline = Date.now() + 10 * 60 * 1000; lockTimer = setTimeout(lock, 10 * 60 * 1000); }
+  // The open wallet's time comes from Device & settings (src/auto-lock.js;
+  // default 15 minutes, 0 = never — until 0.1.89 a fixed 10 minutes). The
+  // recovery words on screen, or a typed password, always clear after a
+  // fixed 10 minutes, whatever is chosen there.
+  const entry = !$('phrase-form').hidden || ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password'].some(id => $(id).value);
+  const minutes = entry ? ENTRY_IDLE_MINUTES : autoLockMinutes;
+  if (sensitive) {
+    if (minutes > 0) { const ms = minutes * 60 * 1000; idleDeadline = Date.now() + ms; lockTimer = setTimeout(lock, ms); }
+    else idleDeadline = 0;
+  }
+}
+const ENTRY_IDLE_MINUTES = 10;
+let autoLockMinutes = readAutoLock(globalThis.localStorage);
+{
+  const choice = $('auto-lock-minutes'), note = $('auto-lock-note');
+  choice.value = String(autoLockMinutes);
+  note.textContent = autoLockNote(autoLockMinutes);
+  choice.addEventListener('change', () => {
+    autoLockMinutes = parseAutoLock(choice.value);
+    choice.value = String(autoLockMinutes);
+    const kept = writeAutoLock(globalThis.localStorage, autoLockMinutes);
+    note.textContent = autoLockNote(autoLockMinutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
+    activity();                                  // the new time counts from now
+  });
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
 // Shown again: an idle wallet locks; otherwise the connection is checked

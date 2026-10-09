@@ -826,6 +826,11 @@ static json_object *inbox_json(uint64_t day, nc_inbox_t *in) {
         json_object_object_add(e, "seq", jstr_u64(in->items[i].seq));
         json_object_object_add(e, "sender_ts", jstr_u64(in->items[i].sender_timestamp));
         json_object_object_add(e, "text_hex", jhex(in->items[i].plaintext, in->items[i].plaintext_len));
+        /* web 0.1.89: chat text, or a reaction / delete notice the page
+         * applies to an earlier message (nc_plaintext_kind) */
+        json_object_object_add(e, "kind", json_object_new_string(
+            in->items[i].kind == NC_MSG_REACTION ? "reaction" :
+            in->items[i].kind == NC_MSG_DELETE ? "delete" : "chat"));
         json_object_array_add(a, e);
     }
     json_object_object_add(o, "messages", a);

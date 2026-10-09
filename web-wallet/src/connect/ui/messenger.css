@@ -144,6 +144,82 @@
 .message-out .message-delivered { opacity: 1; font-weight: 600; }
 .message-day { align-self: center; margin: 12px 0 6px; padding: 3px 10px; border: 1px solid #d5f99814; border-radius: 20px; font-size: 10px; color: var(--muted); }
 .message-none { margin: auto; padding: 24px; font-size: 13px; color: var(--muted); text-align: center; }
+
+/* Web 0.1.89 — message actions and the polished conversation. */
+.message-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.message-wrap .message-list { flex: 1; }
+/* The date stays at the top while its day scrolls by. */
+.message-day { position: sticky; top: 6px; z-index: 1; background: #141a11e6; backdrop-filter: blur(4px); }
+/* A run (same side, within 3 minutes): tight, no tail, foot on hover/focus. */
+.message { flex-direction: column; }
+.message-in { align-items: flex-start; }
+.message-out { align-items: flex-end; }
+.message-row { display: flex; align-items: center; max-width: 100%; min-width: 0; }
+.message-row .message-bubble { flex-shrink: 1; }
+/* The 48 px gap of the other side moves to the row, so the "…" trigger
+   sits inside it next to the bubble. */
+.message-in .message-row { padding-right: 48px; }
+.message-out .message-row { padding-left: 48px; }
+.message-in .message-row .message-bubble { margin-right: 0; }
+.message-out .message-row .message-bubble { margin-left: 0; }
+.message-run .message-bubble { margin-bottom: 1px; }
+.message-run + .message .message-bubble { margin-top: 1px; }
+.message-in.message-run .message-bubble { border-bottom-left-radius: 16px; }
+.message-out.message-run .message-bubble { border-bottom-right-radius: 16px; }
+.message-run .message-meta { display: none; }
+.message-run:is(:hover, :focus-within) .message-meta { display: flex; }
+.message-status { font-size: 11px; letter-spacing: -.08em; }
+.message-bubble { -webkit-touch-callout: none; }
+.message-bubble:focus-visible { outline: 2px solid #d5f99899; outline-offset: 2px; }
+.message-text a { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.message-in .message-text a { color: var(--lime); }
+.message-gone .message-text { font-style: italic; opacity: .7; }
+/* A reply's quote (the app's "↩ Re:" form): who, then one line. */
+.message-quote { display: flex; flex-direction: column; gap: 1px; max-width: 100%; margin: 0 0 6px; padding: 4px 8px; border-left: 3px solid currentColor; border-radius: 4px; background: #00000022; font-size: 12px; opacity: .85; }
+.message-quote-who { font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.message-bubble:has(.message-quote) { min-width: min(240px, 100%); }
+.message-quote { align-self: stretch; }
+.message-quote-text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* Reactions under the bubble. */
+.message-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin: -2px 0 6px; }
+.message-in .message-reactions { margin-right: 48px; }
+.message-out .message-reactions { justify-content: flex-end; margin-left: 48px; }
+.reaction-chip { margin: 0; padding: 2px 8px; min-height: 24px; border: 1px solid #d5f99826; border-radius: 12px; background: #1b2217; color: var(--text); font-size: 12px; line-height: 1.4; cursor: pointer; }
+.reaction-chip.reaction-mine { border-color: var(--lime); background: #d5f9981f; }
+/* The "…" trigger: shown on hover / focus on pointer devices; on touch the long press opens the menu. */
+.message-more { display: none; place-items: center; width: 28px; height: 28px; margin: 0 4px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); }
+.message-in .message-more { order: 2; }
+.message-out .message-more { order: -1; }
+.message-more .nc-icon { width: 18px; height: 18px; stroke-width: 3; }
+@media (hover: hover) { .message:is(:hover, :focus-within) .message-more { display: grid; } }
+.message-more:focus-visible { display: grid; }
+/* New bubbles slide in once (never on reduced motion). */
+@keyframes nc-message-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.message-new .message-bubble { animation: nc-message-in .18s ease-out; }
+@media (prefers-reduced-motion: reduce) { .message-new .message-bubble { animation: none; } }
+/* Jump to the newest, with the count that arrived meanwhile. */
+.message-jump { position: absolute; right: 16px; bottom: 12px; z-index: 2; display: grid; place-items: center; width: 40px; height: 40px; margin: 0; padding: 0; border: 1px solid #d5f99833; border-radius: 50%; background: var(--panel); color: var(--text); box-shadow: 0 4px 14px #0008; }
+.message-jump-count { position: absolute; top: -6px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--lime); color: var(--dark); font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; }
+.message-jump-count:empty { display: none; }
+/* The message menu (chat_screen.dart overlay: emoji pill, then actions). */
+.message-menu-layer { position: absolute; inset: 0; z-index: 3; background: #00000059; }
+.message-menu { position: absolute; display: flex; flex-direction: column; gap: 8px; width: min(320px, calc(100% - 16px)); }
+.message-menu-emojis { display: flex; justify-content: space-between; gap: 2px; padding: 6px 8px; border-radius: 28px; background: #232b1d; box-shadow: 0 6px 20px #0009; }
+.menu-emoji { margin: 0; padding: 4px; min-width: 32px; min-height: 32px; border: 0; border-radius: 50%; background: transparent; font-size: 20px; line-height: 1; }
+.menu-emoji:hover, .menu-emoji:focus-visible { background: #d5f9981f; }
+.menu-emoji-on { background: #d5f99833; }
+.message-menu-items { display: flex; flex-direction: column; padding: 4px; border-radius: 14px; background: #232b1d; box-shadow: 0 6px 20px #0009; }
+.menu-item { display: flex; align-items: center; gap: 12px; margin: 0; padding: 10px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--text); font-size: 14px; text-align: left; }
+.menu-item:hover, .menu-item:focus-visible { background: #d5f99814; }
+.menu-item .nc-icon { width: 18px; height: 18px; }
+.menu-danger { color: #f2c896; }
+.message-menu-details { margin: 0; padding: 0 8px; font-size: 11px; color: #c6d0b8; text-shadow: 0 1px 2px #000; }
+/* Replying: one line above the composer, with a cancel. */
+.composer-reply { display: flex; align-items: center; gap: 8px; margin: 0 4px 8px; padding: 6px 10px; border-left: 3px solid var(--lime); border-radius: 6px; background: #d5f99810; font-size: 12px; color: var(--muted); }
+.composer-reply .nc-icon { width: 16px; height: 16px; flex-shrink: 0; }
+.composer-reply-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.composer-reply-text strong { color: var(--text); }
+.composer-reply-cancel { margin: 0; padding: 0 6px; min-height: 24px; border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; }
 /* "contains unusual characters" (dom.js untrusted). */
 .nc-unusual { color: #f2c896; font-size: 11px; }
 .message-out .nc-unusual { color: #6f4a0c; font-weight: 600; }

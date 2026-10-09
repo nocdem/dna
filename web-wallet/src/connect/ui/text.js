@@ -121,6 +121,27 @@ export function httpsLink(value) {
   return url.href;
 }
 
+// Message text split into plain runs and https links (web 0.1.89): a link
+// is `https://` up to whitespace or a quote/angle bracket, without trailing
+// punctuation, accepted by httpsLink (no other scheme, no user:pass). It is
+// shown as the parsed href (an international domain appears as punycode, so
+// a look-alike host is visible). Nothing is fetched: no preview.
+const LINK = /https:\/\/[^\s<>"'`]+/g;
+const LINK_TAIL = /[.,!?;:)\]}]+$/;
+export function linkSegments(text) {
+  const s = String(text), out = [];
+  let last = 0;
+  for (const match of s.matchAll(LINK)) {
+    const raw = match[0].replace(LINK_TAIL, ''), href = httpsLink(raw);
+    if (!href) continue;
+    if (match.index > last) out.push({ text: s.slice(last, match.index) });
+    out.push({ text: href, href });
+    last = match.index + raw.length;
+  }
+  if (last < s.length) out.push({ text: s.slice(last) });
+  return out;
+}
+
 // A profile picture as an <img> source, or null. The app stores a 128x128
 // JPEG (quality 80) as plain base64 (profile_editor_screen.dart:507-513) in
 // avatar_base64 (dna_engine.h:377: 20484 bytes with the NUL). Shown only

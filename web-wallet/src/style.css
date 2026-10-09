@@ -619,6 +619,11 @@ body:has(#wallet-open:not([hidden])) .site-check > p:last-child { display: none;
 /* Device & settings. */
 .storage-state { display: flex; align-items: center; gap: 10px; margin: 0; padding: 14px 16px; border: 1px solid var(--line-tint); border-radius: 12px; background: #d5f99808; color: var(--text); font-size: 13px; font-weight: 500; }
 .storage-state::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 4px #d5f99814; flex-shrink: 0; }
+/* Automatic lock (web 0.1.89, src/auto-lock.js). */
+.auto-lock { margin-top: 18px; }
+.auto-lock label { display: block; margin-bottom: 6px; color: var(--text); font-size: 14px; font-weight: 600; }
+.auto-lock select { max-width: 320px; }
+.auto-lock .hint { margin: 8px 0 0; }
 .wallet-page .device-panel > details > summary, .wallet-page .log-viewer > summary, .danger-zone > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; list-style: none; color: var(--text); font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
 .wallet-page .device-panel > details > summary::-webkit-details-marker, .wallet-page .log-viewer > summary::-webkit-details-marker, .danger-zone > summary::-webkit-details-marker { display: none; }
 .wallet-page .device-panel > details > summary::after, .wallet-page .log-viewer > summary::after, .danger-zone > summary::after { content: ''; width: 8px; height: 8px; margin-right: 4px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(45deg) translateY(-2px); color: var(--muted); transition: transform .15s ease; flex-shrink: 0; }

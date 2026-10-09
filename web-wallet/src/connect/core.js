@@ -90,14 +90,15 @@
 //     one 1:1 message send: the WHOLE pending set for that contact for today
 //     (the blob replaces the previous one); needs profileGet(fp) first.
 //   core.outboxFetchDay(fp, saltHex, day?, skipBlob?) -> { outcome, why, day,
-//     blob, unchanged, dropped, other, messages: [{ seq, senderTs, text }] }
+//     blob, unchanged, dropped, other, messages: [{ seq, senderTs, text, kind }] }
+//     kind (web 0.1.89): 'chat' | 'reaction' | 'delete' (nc_plaintext_kind)
 //     blob (found only): 64 hex of the bucket value; pass it back as
 //     skipBlob ONLY once that answer's messages are stored — an equal
 //     bucket is then not decoded (unchanged: true, no messages; the app's
 //     blob cache, dht_dm_outbox.c:30-80). senderTs = sender's
-//     clock; messages are chat text only — the app's control payloads and
-//     card payloads are counted in `other` and never returned
-//     (nc_core.h nc_plaintext_is_chat)
+//     clock; messages are chat text, reactions and delete notices — the
+//     app's other control payloads and its card payloads are counted in
+//     `other` and never returned (nc_core.h nc_plaintext_kind)
 //   core.outboxFetchDays(fp, saltHex, [{ day, skipBlob? }]) -> { days: [
 //     <the outboxFetchDay answer of each day>, ... ] } in the order asked;
 //     1..8 days of ONE contact in one call (web 0.1.73): each day is read
@@ -242,7 +243,8 @@ function dayList(items) {
 // One day bucket's answer of nc_outbox_get / nc_outbox_get_days, as
 // outboxFetchDay returns it.
 function dayResult(r) {
-  const messages = (r.messages || []).map(m => ({ seq: m.seq, senderTs: m.sender_ts, text: hexToText(m.text_hex) }));
+  const messages = (r.messages || []).map(m => ({ seq: m.seq, senderTs: m.sender_ts, text: hexToText(m.text_hex),
+    kind: m.kind === 'reaction' || m.kind === 'delete' ? m.kind : 'chat' }));
   return { outcome: r.outcome, why: r.why, day: r.day, blob: r.blob, unchanged: r.unchanged === true, dropped: r.dropped, other: r.other, messages };
 }
 // The AAD names cross into C as NUL-terminated strings (strlen): a NUL

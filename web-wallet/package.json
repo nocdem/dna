@@ -20,6 +20,7 @@
     "test:portfolio": "node test/browser-portfolio.js",
     "test:ixios": "node test/browser-ixios.js",
     "test:vaults": "node test/browser-vaults.js",
+    "test:messages": "node test/browser-messages.js",
     "build:nodus-send": "bash scripts/build-nodus-send-wasm.sh",
     "build:connect-core": "bash scripts/build-connect-wasm.sh"
   },

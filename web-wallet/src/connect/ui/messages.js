@@ -54,7 +54,10 @@ import {
   updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
   contactLine, roundDoneLine
 } from './text.js';
-import { el, untrusted, button, website, fillAvatar } from './dom.js';
+import { el, untrusted, untrustedLinked, button, website, fillAvatar } from './dom.js';
+import {
+  REACTION_EMOJIS, messageHash, buildReaction, reactionSummary, ownReactionOn, buildDelete, deletions, buildReply, parseReply
+} from './actions.js';
 import { parseNameOf } from '../../nodus/names.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, chainNoNameFresh, chainNoNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
@@ -105,6 +108,12 @@ let requests = [], selectedFp, eraseArmed = false, profileTaken = false;
 let mlkemRepublishTried = false;         // the own profile was republished with the ML-KEM key this open (checkOwnAccount)
 let removeArmed;                         // the contact whose "Remove" was pressed once (asks to confirm)
 let addResolved;                         // { name, owner }: the add box's chain name, looked up and shown, awaiting confirmation
+// Web 0.1.89 (message actions): the message the composer replies to, the
+// message whose menu is open, how many messages arrived while scrolled up,
+// and the highest local seq drawn per contact (only newer bubbles animate).
+let replyTo, menuFor, jumpNew = 0;
+const drawnUpTo = new Map();             // fp -> highest local seq drawn (BigInt)
+const hashCache = new Map();             // `fp|seq` -> content hash (actions.js messageHash)
 const profiles = new Map();              // fp -> verified profile, this session
 const kept = new Map();                  // fp -> { id, record }: kept profile rows (saved wallet, state.profileCache)
 const blobs = new Map();                 // 'fp|day' -> { blob, other }: day buckets already stored, this session
@@ -161,8 +170,9 @@ function wipe() {
   store = undefined; state = undefined; messages = []; ownFp = undefined; ownProfile = undefined;
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false; mlkemRepublishTried = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
+  replyTo = undefined; menuFor = undefined; jumpNew = 0;
   netStarted = false; online = false; groups = undefined;
-  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs]) set.clear();
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs, drawnUpTo, hashCache]) set.clear();
   notifyVaultHost();
   if (!ui) return;
   groupsView?.reset();
@@ -174,6 +184,7 @@ function wipe() {
   ui.convDiagText.textContent = ''; ui.convDiag.open = false; ui.convDiag.hidden = true;
   ui.erase.textContent = 'Delete message history on this device';
   ui.avatarChange.disabled = ui.avatarRemove.disabled = false;
+  ui.menu.replaceChildren(); ui.menuLayer.hidden = true; ui.replyBar.hidden = true; ui.replyText.textContent = ''; ui.jumpButton.hidden = true;
   showAddResolved();
   if (ui.addDialog.open) ui.addDialog.close();
   screen = 'list'; hubTab = 'contacts'; filter = 'all';
@@ -936,7 +947,9 @@ async function finishContactCheck({ contact, id, salt, days, publishedBefore, re
       const k = receivedKey(fp, m);
       if (received.has(k)) continue;
       received.add(k);
-      arrived.push({ fp, dir: 'in', text: String(m.text), senderTs: String(m.senderTs), remoteSeq: String(m.seq), at: Date.now() });
+      const rec = { fp, dir: 'in', text: String(m.text), senderTs: String(m.senderTs), remoteSeq: String(m.seq), at: Date.now() };
+      if (m.kind === 'reaction' || m.kind === 'delete') rec.kind = m.kind;     // web 0.1.89
+      arrived.push(rec);
     }
   }
   if (lost) dropped.set(fp, lost);
@@ -1004,7 +1017,10 @@ async function publishOutbox(contact, gen) {
 // A 1:1 record that carries a group control message (flagged when it was
 // kept; the text test also covers a record kept before the flag existed):
 // published, acknowledged and deduplicated like any message, never shown.
-const isControl = m => m.control === true || !!controlType(m.text);
+// Web 0.1.89: a reaction, a delete notice (the app's own forms, actions.js)
+// and a "hidden on this device" mark are records of their own `kind`,
+// applied to the message they name and never drawn as a bubble.
+const isControl = m => m.control === true || (m.kind !== undefined && m.kind !== 'chat') || !!controlType(m.text);
 // Stored incoming chat messages of one contact (group control records not
 // counted): the difference across a contact's check is its "new" count in
 // the session log (sync). Own messages sent meanwhile are not counted.
@@ -1021,10 +1037,14 @@ function unreadCount(fp) {
   const seen = lastRead.get(fp) ?? -1n;
   return messages.filter(m => m.fp === fp && m.dir === 'in' && !isControl(m) && BigInt(m.seq) > seen).length;
 }
+// The newest chat record of a contact that is not hidden on this device;
+// `gone` when its sender deleted it (web 0.1.89, actions.js deletions).
 function lastMessage(fp) {
+  const conv = messages.filter(m => m.fp === fp);
+  const { deleted, hidden } = deletions(conv, ownFp, hashOf);
   let last;
-  for (const m of messages) if (m.fp === fp && !isControl(m) && (!last || compareLocal(m, last) > 0)) last = m;
-  return last;
+  for (const m of conv) if (!isControl(m) && !hidden.has(hashOf(m)) && (!last || compareLocal(m, last) > 0)) last = m;
+  return last && deleted.has(hashOf(last)) ? { ...last, gone: true } : last;
 }
 
 // ── view: building blocks ──────────────────────────────────────────────
@@ -1110,7 +1130,13 @@ const ICONS = {
   send: ['M4 12L20 4l-5 16-3-7z', 'M12 13l8-9'],
   userPlus: ['M3 19c0-3 2.5-5 6-5s6 2 6 5', 'M9 11a3.5 3.5 0 1 0 0-7a3.5 3.5 0 1 0 0 7z', 'M19 8v6', 'M16 11h6'],
   requests: ['M4 8h13', 'M14 5l3 3-3 3', 'M20 16H7', 'M10 13l-3 3 3 3'],
-  id: ['M4 6h16v12H4z', 'M9 12a2 2 0 1 0 0-4a2 2 0 1 0 0 4z', 'M6 16c.5-1.5 1.5-2.2 3-2.2s2.5.7 3 2.2', 'M14 10h3', 'M14 13h3']
+  id: ['M4 6h16v12H4z', 'M9 12a2 2 0 1 0 0-4a2 2 0 1 0 0 4z', 'M6 16c.5-1.5 1.5-2.2 3-2.2s2.5.7 3 2.2', 'M14 10h3', 'M14 13h3'],
+  // web 0.1.89: the message menu and its trigger
+  reply: ['M10 8L5 12l5 4', 'M5 12h9a5 5 0 0 1 5 5v1'],
+  copy: ['M9 9h10v11H9z', 'M5 15V4h10'],
+  trash: ['M5 7h14', 'M10 7V4h4v3', 'M7 7l1 13h8l1-13'],
+  more: ['M6 12h.01', 'M12 12h.01', 'M18 12h.01'],
+  down: ['M6 9l6 6 6-6']
 };
 function icon(name) {
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -1271,6 +1297,23 @@ export function mountMessages(root, options = {}) {
   u.convDiag = el('details', { className: 'hint conversation-diag' }, el('summary', { text: 'Details' }), u.convDiagText);
   u.convDiag.hidden = true;
   u.messageList = setAttrs(el('ol', { className: 'message-list' }), { 'aria-label': 'Messages', 'aria-live': 'polite' });
+  // Web 0.1.89: "jump to the newest" with the count of messages that
+  // arrived while scrolled up, and the message menu (react / reply / copy /
+  // delete) over the conversation.
+  u.jumpCount = el('span', { className: 'message-jump-count' });
+  u.jumpButton = setAttrs(el('button', { className: 'message-jump' }, icon('down'), u.jumpCount), { type: 'button', 'aria-label': 'Jump to the newest message', title: 'Jump to the newest message' });
+  u.jumpButton.hidden = true;
+  u.jumpButton.onclick = () => { ui.messageList.scrollTo({ top: ui.messageList.scrollHeight, behavior: reducedMotion() ? 'auto' : 'smooth' }); };
+  u.messageList.addEventListener('scroll', () => { if (nearBottom()) { jumpNew = 0; updateJump(); } else updateJump(); }, { passive: true });
+  u.menu = setAttrs(el('div', { className: 'message-menu' }), { role: 'menu', 'aria-label': 'Message actions' });
+  u.menuLayer = el('div', { className: 'message-menu-layer' }, u.menu);
+  u.menuLayer.hidden = true;
+  u.menuLayer.addEventListener('pointerdown', event => { if (event.target === u.menuLayer) closeMenu(); });
+  u.messageWrap = el('div', { className: 'message-wrap' }, u.messageList, u.jumpButton, u.menuLayer);
+  u.replyText = el('span', { className: 'composer-reply-text' });
+  u.replyBar = el('div', { className: 'composer-reply' }, icon('reply'), u.replyText,
+    setAttrs(button('×', () => setReply(undefined), 'composer-reply-cancel'), { 'aria-label': 'Cancel the reply', title: 'Cancel the reply' }));
+  u.replyBar.hidden = true;
   u.composer = input('textarea', { id: 'nc-send-text', rows: '1', maxlength: String(TEXT_MAX), placeholder: 'Write a message', 'aria-label': 'Message', autocomplete: 'off' });
   u.sendButton = el('button', { className: 'composer-send' }); u.sendButton.type = 'submit';
   u.sendButton.setAttribute('aria-label', 'Send'); u.sendButton.title = 'Send';
@@ -1280,10 +1323,10 @@ export function mountMessages(root, options = {}) {
   // While the network phase has not finished (online): the composer keeps
   // what is typed, Send waits.
   u.offlineNote = el('p', { className: 'hint composer-status', text: OFFLINE_SEND_TEXT });
-  u.sendForm = el('form', { className: 'composer' }, el('div', { className: 'composer-row' }, u.composer, u.sendButton), el('div', { className: 'composer-foot' }, el('small', { className: 'composer-hint', text: 'Enter to send · Shift+Enter for a new line' }), u.counter), u.offlineNote, u.sendStatus);
+  u.sendForm = el('form', { className: 'composer' }, u.replyBar, el('div', { className: 'composer-row' }, u.composer, u.sendButton), el('div', { className: 'composer-foot' }, el('small', { className: 'composer-hint', text: 'Enter to send · Shift+Enter for a new line' }), u.counter), u.offlineNote, u.sendStatus);
   u.sendForm.id = 'nc-send-form';
   u.notReady = el('p', { className: 'hint composer-closed', text: 'Messaging with this contact is not ready yet. It is checked again automatically.' });
-  u.conversationView = el('div', { className: 'messenger-view messenger-conversation' }, u.convHead, u.convNote, u.convDiag, u.messageList, u.sendForm, u.notReady);
+  u.conversationView = el('div', { className: 'messenger-view messenger-conversation' }, u.convHead, u.convNote, u.convDiag, u.messageWrap, u.sendForm, u.notReady);
   u.pane = el('div', { className: 'messenger-pane' }, u.emptyView, u.conversationView, groupsView.view);
 
   // Add contact (add_contact_dialog.dart): a modal dialog.
@@ -1389,6 +1432,12 @@ export function mountMessages(root, options = {}) {
     if (file) void pickAvatar(file);
   };
   u.composer.addEventListener('input', growComposer);
+  // Esc closes the message menu, then a pending reply.
+  u.conversationView.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if (!u.menuLayer.hidden) { event.preventDefault(); closeMenu(); }
+    else if (replyTo && event.target === u.composer) { event.preventDefault(); setReply(undefined); }
+  });
   u.composer.addEventListener('keydown', event => {
     // Enter sends, Shift+Enter is a new line; never while an IME composes.
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
@@ -1568,9 +1617,11 @@ function renderChats() {
     row.dataset.fp = c.fp;
     row.setAttribute('aria-current', String(screen === 'conversation' && c.fp === selectedFp));
     const preview = el('span', { className: 'contact-preview' });
-    const label = last ? payloadPreview(last.text) : null;
-    if (last && label) preview.append(last.dir === 'out' ? 'You: ' : '', label);
-    else if (last) preview.append(last.dir === 'out' ? 'You: ' : '', untrusted(last.text));
+    const label = last && !last.gone ? payloadPreview(last.text) : null;
+    const reply = last && !last.gone && !label ? parseReply(last.text) : null;
+    if (last?.gone) preview.append(last.dir === 'out' ? 'You: ' : '', el('em', { text: 'Message deleted' }));
+    else if (last && label) preview.append(last.dir === 'out' ? 'You: ' : '', label);
+    else if (last) preview.append(last.dir === 'out' ? 'You: ' : '', untrusted(reply ? reply.text : last.text));
     else preview.textContent = c.salt ? 'No messages yet' : 'Messaging is not ready yet';
     const side = el('span', { className: 'contact-side' });
     if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
@@ -1648,7 +1699,7 @@ function renderConversation(scroll) {
   const lost = dropped.get(contact.fp), other = others.get(contact.fp);
   ui.convNote.textContent = [
     lost ? 'Some messages from this contact could not be checked and are not shown.' : '',
-    other ? 'This contact also sent items this page cannot show yet (for example reactions, pictures or calls).' : ''
+    other ? 'This contact also sent items this page cannot show yet (for example pictures, payments or calls).' : ''
   ].filter(Boolean).join(' ');
   ui.convNote.hidden = !ui.convNote.textContent;
   ui.convDiagText.textContent = diagText(diags.get(contact.fp));
@@ -1658,30 +1709,225 @@ function renderConversation(scroll) {
   ui.sendButton.disabled = !online || sending;
   ui.offlineNote.hidden = online;
 
+  if (replyTo && replyTo.fp !== contact.fp) setReply(undefined);
+  if (menuFor && menuFor.fp !== contact.fp) closeMenu();
+  const conv = messages.filter(x => x.fp === contact.fp);
+  // Web 0.1.89: reactions, deletions and hides apply to the message whose
+  // content hash they name (actions.js); a hidden message is not drawn.
+  const summary = reactionSummary(conv, ownFp);
+  const { deleted, hidden } = deletions(conv, ownFp, hashOf);
+  const shown = conv.filter(x => !isControl(x) && !hidden.has(hashOf(x))).sort(compareLocal);
+  const drawn = drawnUpTo.get(contact.fp);
   const items = [];
-  let day;
-  for (const m of messages.filter(x => x.fp === contact.fp && !isControl(x)).sort(compareLocal)) {
+  let day, newIncoming = 0;
+  for (let i = 0; i < shown.length; i++) {
+    const m = shown[i], next = shown[i + 1];
     const at = new Date(m.at);
     if (!day || !sameDay(day, at)) { day = at; items.push(el('li', { className: 'message-day', text: dayLabel(at) })); }
     const mine = m.dir === 'out';
+    const hash = hashOf(m);
+    const gone = !!hash && deleted.has(hash);
+    // A run: the next bubble is from the same side, the same day and within
+    // 3 minutes — this one then drops its tail and its foot (shown on hover
+    // or focus), so a run reads as one block.
+    const run = !!next && next.dir === m.dir && sameDay(at, new Date(next.at)) && Math.abs(next.at - m.at) < 180000;
     const when = el('time', { text: at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
     when.dateTime = at.toISOString();
     const meta = el('div', { className: 'message-meta' }, when);
-    if (mine) {
+    if (mine && !gone) {
       const status = messageStatus(m);
-      meta.append(el('span', { className: `message-status message-${status.replace(/ /g, '-')}`, text: `${STATUS_MARK[status] || ''} ${status}` }));
-    } else meta.append(el('span', { className: 'message-clock', text: senderClockLabel(m.senderTs) }));
-    // The message body lives only inside the bubble (§1.9); time and status
-    // sit small at the bubble's foot (chat_screen.dart message bubble).
-    // A shared-vault item (src/vaults/ui.js) is drawn as its card; any
-    // other text as text.
-    const card = payloadCard(m);
-    items.push(el('li', { className: mine ? 'message message-out' : 'message message-in' },
-      el('div', { className: 'message-bubble' }, card || el('div', { className: 'message-text' }, untrusted(m.text)), meta)));
+      meta.append(setAttrs(el('span', { className: `message-status message-${status.replace(/ /g, '-')}`, text: STATUS_MARK[status] || '' }), { title: status, 'aria-label': status }));
+    }
+    // The sender's own clock is no longer a line under every bubble: it is
+    // in the bubble's title and the menu's details.
+    const bubble = el('div', { className: `message-bubble${gone ? ' message-gone' : ''}` });
+    if (!mine && !gone) bubble.title = senderClockLabel(m.senderTs);
+    const card = gone ? null : payloadCard(m);
+    if (gone) bubble.append(el('div', { className: 'message-text', text: mine ? 'You deleted this message.' : 'This message was deleted by the sender.' }));
+    else if (card) bubble.append(card);
+    else {
+      const reply = parseReply(m.text);
+      if (reply) bubble.append(el('div', { className: 'message-quote' }, el('span', { className: 'message-quote-who' }, untrusted(reply.sender === 'me' ? (mine ? 'You' : displayName(contact.fp)) : reply.sender)), el('span', { className: 'message-quote-text' }, untrusted(reply.quoted))));
+      bubble.append(el('div', { className: 'message-text' }, untrustedLinked(reply ? reply.text : m.text)));
+    }
+    bubble.append(meta);
+    const row = el('div', { className: 'message-row' }, bubble);
+    const li = el('li', { className: `message ${mine ? 'message-out' : 'message-in'}${run ? ' message-run' : ''}` }, row);
+    const chips = !gone && hash ? summary.get(hash) : null;
+    if (chips) li.append(el('div', { className: 'message-reactions' }, ...chips.map(r => {
+      const chip = setAttrs(el('button', { className: `reaction-chip${r.mine ? ' reaction-mine' : ''}`, text: r.count > 1 ? `${r.emoji} ${r.count}` : r.emoji }), { type: 'button', 'aria-pressed': String(r.mine), 'aria-label': `${r.emoji} ${r.count}${r.mine ? ', including you' : ''}` });
+      chip.onclick = () => void react(m, r.emoji);
+      return chip;
+    })));
+    if (!gone && !card && hash) wireMenu(row, bubble, m);
+    if (drawn !== undefined && BigInt(m.seq) > drawn) { li.classList.add('message-new'); if (!mine) newIncoming++; }
+    items.push(li);
   }
   if (!items.length) items.push(el('li', { className: 'message-none', text: contact.salt ? 'No messages yet. Say hello.' : 'No messages yet.' }));
   list.replaceChildren(...items);
-  if (scroll || atBottom) list.scrollTop = list.scrollHeight;
+  drawnUpTo.set(contact.fp, shown.reduce((mx, x) => (BigInt(x.seq) > mx ? BigInt(x.seq) : mx), drawn ?? -1n));
+  if (scroll || atBottom) { list.scrollTop = list.scrollHeight; jumpNew = 0; }
+  else jumpNew += newIncoming;
+  updateJump();
+}
+
+// ── message actions (web 0.1.89) ───────────────────────────────────────
+// The content hash of a 1:1 chat record (actions.js), cached per record.
+function hashOf(m) {
+  if (!m || (m.kind !== undefined && m.kind !== 'chat') || (m.dir !== 'in' && m.dir !== 'out')) return null;
+  const key = `${m.fp}|${m.seq}`;
+  if (!hashCache.has(key)) hashCache.set(key, messageHash(m, ownFp));
+  return hashCache.get(key);
+}
+const reducedMotion = () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+function nearBottom() { const l = ui.messageList; return l.scrollHeight - l.scrollTop - l.clientHeight < 40; }
+function updateJump() {
+  if (!ui) return;
+  const away = !nearBottom();
+  ui.jumpButton.hidden = !away;
+  ui.jumpCount.textContent = away && jumpNew > 0 ? String(jumpNew) : '';
+}
+
+// Long press (a touch held 450 ms without moving), right click, the
+// keyboard's menu key / Enter on a focused bubble, or the "…" button open
+// the menu. iOS Safari sends no contextmenu on a long press, hence the timer.
+const LONG_PRESS_MS = 450;
+function wireMenu(row, bubble, m) {
+  bubble.tabIndex = 0;
+  bubble.setAttribute('aria-haspopup', 'menu');
+  const more = setAttrs(button('', () => openMenu(m, bubble), 'message-more'), { 'aria-label': 'Message actions', title: 'Message actions' });
+  more.append(icon('more'));
+  row.append(more);
+  bubble.addEventListener('contextmenu', event => { event.preventDefault(); openMenu(m, bubble); });
+  bubble.addEventListener('keydown', event => {
+    if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey) || event.key === 'Enter') { event.preventDefault(); openMenu(m, bubble); }
+  });
+  let timer, x0 = 0, y0 = 0;
+  const cancel = () => { clearTimeout(timer); timer = undefined; };
+  bubble.addEventListener('pointerdown', event => {
+    if (event.pointerType !== 'touch' || event.target.closest('a')) return;
+    x0 = event.clientX; y0 = event.clientY;
+    cancel();
+    timer = setTimeout(() => { timer = undefined; openMenu(m, bubble); }, LONG_PRESS_MS);
+  });
+  bubble.addEventListener('pointermove', event => { if (timer && Math.hypot(event.clientX - x0, event.clientY - y0) > 10) cancel(); });
+  for (const type of ['pointerup', 'pointercancel', 'pointerleave']) bubble.addEventListener(type, cancel);
+}
+
+let menuAnchor;                          // the bubble the open menu belongs to (focus goes back to it)
+function openMenu(m, anchor) {
+  if (!ui || !isOpen()) return;
+  menuFor = m; menuAnchor = anchor;
+  const hash = hashOf(m), mine = m.dir === 'out';
+  const summary = reactionSummary(messages.filter(x => x.fp === m.fp), ownFp);
+  const at = new Date(m.at);
+  const details = mine
+    ? `Sent ${at.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · ${messageStatus(m)}`
+    : `Received ${at.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · ${senderClockLabel(m.senderTs)}`;
+  const emojis = el('div', { className: 'message-menu-emojis' }, ...REACTION_EMOJIS.map(e => {
+    const on = ownReactionOn(summary, hash, e);
+    const b = setAttrs(el('button', { className: `menu-emoji${on ? ' menu-emoji-on' : ''}`, text: e }), { type: 'button', role: 'menuitemcheckbox', 'aria-checked': String(on), 'aria-label': on ? `Remove ${e}` : `React ${e}` });
+    b.disabled = !online;
+    b.onclick = () => { closeMenu(); void react(m, e); };
+    return b;
+  }));
+  const item = (iconName, label, onClick, className = '') => {
+    const b = setAttrs(button('', () => { closeMenu(); onClick(); }, `menu-item ${className}`.trim()), { role: 'menuitem' });
+    b.append(icon(iconName), el('span', { text: label }));
+    return b;
+  };
+  const rows = [item('reply', 'Reply', () => setReply(m)), item('copy', 'Copy', () => void copyMessage(m))];
+  if (mine) rows.push(item('trash', 'Delete for everyone', () => void deleteMessage(m, true), 'menu-danger'));
+  rows.push(item('trash', 'Delete on this device', () => void deleteMessage(m, false), 'menu-danger'));
+  if (mine && !online) rows[2].disabled = true;     // sending waits for the network
+  ui.menu.replaceChildren(emojis, el('div', { className: 'message-menu-items' }, ...rows), el('p', { className: 'message-menu-details', text: details }));
+  ui.menuLayer.hidden = false;
+  // Above the bubble when there is room, else below it; kept inside the
+  // conversation horizontally.
+  const wrap = ui.messageWrap.getBoundingClientRect(), box = anchor.getBoundingClientRect(), menu = ui.menu.getBoundingClientRect();
+  const above = box.top - wrap.top - menu.height - 8;
+  const top = above >= 8 ? above : Math.min(box.bottom - wrap.top + 8, wrap.height - menu.height - 8);
+  const left = Math.max(8, Math.min(m.dir === 'out' ? box.right - wrap.left - menu.width : box.left - wrap.left, wrap.width - menu.width - 8));
+  ui.menu.style.top = `${Math.max(8, top)}px`;
+  ui.menu.style.left = `${left}px`;
+  (ui.menu.querySelector('button:not([disabled])') || ui.menu).focus();
+}
+function closeMenu() {
+  if (!ui) return;
+  const back = menuAnchor;
+  const wasOpen = !ui.menuLayer.hidden;
+  menuFor = undefined; menuAnchor = undefined;
+  ui.menuLayer.hidden = true;
+  ui.menu.replaceChildren();
+  if (wasOpen && back?.isConnected) back.focus();
+}
+
+function setReply(m) {
+  replyTo = m;
+  if (!ui) return;
+  ui.replyBar.hidden = !m;
+  if (!m) { ui.replyText.textContent = ''; return; }
+  const reply = parseReply(m.text);
+  const body = reply ? reply.text : m.text;
+  ui.replyText.replaceChildren(el('strong', { text: m.dir === 'out' ? 'You' : displayName(m.fp) }), ' ', untrusted([...body].slice(0, 80).join('')));
+  ui.composer.focus();
+}
+
+async function copyMessage(m) {
+  const reply = parseReply(m.text);
+  try { await navigator.clipboard.writeText(reply ? reply.text : m.text); ui.sendStatus.textContent = 'Copied.'; }
+  catch { ui.sendStatus.textContent = 'This browser did not allow copying.'; }
+  setTimeout(() => { if (ui?.sendStatus.textContent === 'Copied.') ui.sendStatus.textContent = ''; }, 2000);
+}
+
+// A reaction or a delete notice to this contact: a record of its `kind`,
+// published with the contact's pending set like any message (sendControl's
+// path), applied here at once.
+async function sendAction(fp, text, kind) {
+  if (!isOpen()) throw new Error('Messages is not open.');
+  if (!online) throw new Error(OFFLINE_SEND_TEXT);
+  const gen = generation, contact = contactOf(fp);
+  if (!contact?.salt) throw new Error('Messaging with this contact is not ready yet.');
+  const message = { seq: takeSeq(), fp, dir: 'out', text, ts: nowSeconds(), at: Date.now(), kind };
+  await persist([message]);
+  if (gen !== generation) throw new Error('Messages is not open.');
+  messages.push(message); unpublished.add(fp);
+  render();
+  try { await publishOutbox(contact, gen); } catch { /* retried by sync */ }
+  if (gen === generation) render();
+}
+
+async function react(m, emoji) {
+  const hash = hashOf(m);
+  if (!hash || !online) { if (!online) ui.sendStatus.textContent = OFFLINE_SEND_TEXT; return; }
+  const summary = reactionSummary(messages.filter(x => x.fp === m.fp), ownFp);
+  const op = ownReactionOn(summary, hash, emoji) ? 'remove' : 'add';
+  try { await sendAction(m.fp, buildReaction(hash, emoji, op), 'reaction'); }
+  catch (error) { if (ui) ui.sendStatus.textContent = error.message; logFailure('A reaction was not sent', error); }
+}
+
+// Own message, "for everyone": the app's delete notice to the contact (their
+// app shows "deleted by the sender"; a copy they already made is theirs).
+// Any message, "on this device": a local mark only, never sent.
+async function deleteMessage(m, everyone) {
+  const hash = hashOf(m);
+  if (!hash) return;
+  try {
+    if (everyone) {
+      if (m.dir !== 'out') return;
+      await sendAction(m.fp, buildDelete([hash]), 'delete');
+      ui.sendStatus.textContent = 'Deleted. Their app hides it too; a copy they already made cannot be taken back.';
+    } else {
+      const gen = generation;
+      const mark = { seq: takeSeq(), fp: m.fp, dir: 'local', kind: 'hide', target: hash, at: Date.now() };
+      await persist([mark]);
+      if (gen !== generation) return;
+      messages.push(mark);
+      if (replyTo === m) setReply(undefined);
+      render();
+      ui.sendStatus.textContent = 'Deleted on this device.';
+    }
+  } catch (error) { if (ui) ui.sendStatus.textContent = error.message; logFailure('A message was not deleted', error); }
 }
 
 function fillOwnAvatar() {
@@ -1862,10 +2108,15 @@ async function send(event) {
   // Enter or click meanwhile would take the same text again and send it twice.
   if (sending) return;
   const gen = generation, contact = selectedFp && contactOf(selectedFp);
-  const text = ui.composer.value;
-  if (!contact || !contact.salt || !text.trim()) return;
+  const typed = ui.composer.value;
+  if (!contact || !contact.salt || !typed.trim()) return;
   if (!online) { ui.sendStatus.textContent = OFFLINE_SEND_TEXT; return; }
-  if (text.length > TEXT_MAX) { ui.sendStatus.textContent = `A message can be at most ${TEXT_MAX} characters.`; return; }
+  if (typed.length > TEXT_MAX) { ui.sendStatus.textContent = `A message can be at most ${TEXT_MAX} characters.`; return; }
+  // A reply carries the app's quote prefix (actions.js buildReply): "me"
+  // when quoting an own message, else the contact's name.
+  const quoting = replyTo && replyTo.fp === contact.fp ? replyTo : undefined;
+  const quotedReply = quoting ? parseReply(quoting.text) : null;
+  const text = quoting ? buildReply(quoting.dir === 'out' ? 'me' : displayName(contact.fp), quotedReply ? quotedReply.text : quoting.text, typed) : typed;
   sending = true; ui.sendButton.disabled = true;
   try {
     const message = { seq: takeSeq(), fp: contact.fp, dir: 'out', text, ts: nowSeconds(), at: Date.now() };
@@ -1873,6 +2124,7 @@ async function send(event) {
     if (gen !== generation) return;
     messages.push(message); unpublished.add(contact.fp);
     ui.composer.value = ''; growComposer();
+    if (quoting) setReply(undefined);
     // Kept and the composer is empty: the next message may be written and
     // sent while this one is published (retried by sync if it fails).
     sending = false;

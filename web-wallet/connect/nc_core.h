@@ -714,23 +714,31 @@ int nc_outbox_publish(const nc_ctx_t *ctx, const nc_peer_t *peer,
                       const uint8_t salt[NC_SALT_LEN], uint64_t day,
                       const nc_outmsg_t *msgs, size_t n, uint8_t *alg_out);
 
+/* The kinds of an authentic 1:1 plaintext the page handles
+ * (nc_plaintext_kind). Web 0.1.89 returns reactions and delete notices
+ * too (message actions); every other class stays counted in `other`. */
+#define NC_MSG_CHAT      1
+#define NC_MSG_REACTION  2
+#define NC_MSG_DELETE    3
+
 typedef struct {
     uint64_t seq;
     uint64_t sender_timestamp;  /* the Seal's timestamp = sender's clock   */
     uint8_t *plaintext;         /* not NUL-terminated                       */
     size_t   plaintext_len;
+    int      kind;              /* NC_MSG_CHAT / _REACTION / _DELETE        */
 } nc_inmsg_t;
 
 typedef struct {
     nc_read_t   read;           /* value freed                              */
-    nc_inmsg_t *items;          /* chat text only (nc_plaintext_is_chat)    */
+    nc_inmsg_t *items;          /* chat text, reactions and delete notices
+                                 * (nc_plaintext_kind), each with its kind  */
     size_t      count;
     size_t      dropped;        /* not decryptable / not authored by peer   */
-    size_t      other;          /* authentic, but not chat text: the app's
-                                 * control payloads (reaction, call signal,
-                                 * group invite, delete) and the payloads
-                                 * its chat screen draws as cards; never
-                                 * returned, never shown as text            */
+    size_t      other;          /* authentic, but none of the kinds above:
+                                 * call signal, group invite and the
+                                 * payloads the app's chat screen draws as
+                                 * cards; never returned, never shown        */
     uint8_t     blob[32];       /* SHA3-256 of the bucket value (FOUND)     */
     bool        unchanged;      /* blob == skip_blob: nothing was decoded   */
 } nc_inbox_t;
@@ -759,6 +767,15 @@ void nc_inbox_clear(nc_inbox_t *in);
  * acknowledged without being shown (Connect RT2 L2 F3).
  */
 int nc_plaintext_is_chat(const uint8_t *pt, size_t len);
+
+/**
+ * The same classification, naming the two non-chat classes the page now
+ * handles: NC_MSG_CHAT, NC_MSG_REACTION (the reaction sniff above),
+ * NC_MSG_DELETE (a JSON object with "type" "delete"); 0 for every other
+ * non-chat class; -1 could not classify (as nc_plaintext_is_chat).
+ * nc_plaintext_is_chat(pt, len) == (kind == NC_MSG_CHAT ? 1 : kind < 0 ? -1 : 0).
+ */
+int nc_plaintext_kind(const uint8_t *pt, size_t len);
 
 /**
  * ONE day bucket of `peer`'s outbox to this identity (dht_dm_outbox_sync_day
