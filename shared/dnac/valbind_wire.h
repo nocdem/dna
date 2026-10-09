@@ -18,11 +18,18 @@
  *   off    field          len
  *      0   version u32 BE   4   = DNA_VALBIND_VERSION (1)
  *      4   chain_id        32   = v2_chain32
- *     36   op u8            1   1 = STAKE, 2 = ROTATE
- *     37   subject         64   STAKE → 64 × 0x00; ROTATE → validator_id
+ *     36   op u8            1   1 = STAKE, 2 = ROTATE, 3 = STORAGE_REGISTER
+ *     37   subject         64   STAKE / STORAGE_REGISTER → 64 × 0x00;
+ *                               ROTATE → validator_id
  *    101   owner_fp        64
- *    165   consensus_pk  2592   the key that signs (and verifies) consent
+ *    165   consensus_pk  2592   the key that signs (and verifies) consent;
+ *                               for STORAGE_REGISTER it is the storage
+ *                               node_pk (design rev 6 §11.3)
  *   2757   expiry u64 BE    8
+ *
+ * Op 3 (STORAGE_REGISTER) was added in design rev 6 §6.1 / §11.3
+ * (Kurultay #16, operator 2026-10-09 "approved"): same layout, same ctx,
+ * same expiry rule; only the set of legal op values grew.
  *
  * Signer binding: consent_verify takes no key argument — it verifies
  * under the consensus_pk at offset 165 of the message itself.
@@ -77,6 +84,7 @@ extern "C" {
 #define DNA_VALBIND_VERSION        ((uint32_t)1)
 #define DNA_VALBIND_OP_STAKE       ((uint8_t)1)
 #define DNA_VALBIND_OP_ROTATE      ((uint8_t)2)
+#define DNA_VALBIND_OP_STORAGE_REGISTER ((uint8_t)3)   /* rev 6 §11.3 */
 
 #define DNA_VALBIND_OFF_VERSION     0
 #define DNA_VALBIND_OFF_CHAIN       4
@@ -96,9 +104,9 @@ extern "C" {
 /**
  * Build the 2765-byte consent message (layout above).
  *
- * Rejects (-1, out untouched): any NULL argument; op ∉ {STAKE, ROTATE};
- * op STAKE with a subject that is not all-zero; op ROTATE with an
- * all-zero subject. expiry_height is written as given (the expiry rule is
+ * Rejects (-1, out untouched): any NULL argument; op ∉ {STAKE, ROTATE,
+ * STORAGE_REGISTER}; op STAKE or STORAGE_REGISTER with a subject that is
+ * not all-zero; op ROTATE with an all-zero subject. expiry_height is written as given (the expiry rule is
  * dna_valbind_expiry_ok, applied by the caller at its height).
  */
 int dna_valbind_consent_msg(uint8_t out[DNA_VALBIND_MSG_LEN],
@@ -117,8 +125,9 @@ int dna_valbind_expiry_ok(uint64_t h, uint64_t expiry);
 
 /**
  * Sign a consent message with ctx DNA_VALBIND_CTX.
- * Refuses (-1) a malformed message: version != 1, op ∉ {STAKE, ROTATE},
- * or a subject that breaks the op rule (same parse as verify).
+ * Refuses (-1) a malformed message: version != 1, op ∉ {STAKE, ROTATE,
+ * STORAGE_REGISTER}, or a subject that breaks the op rule (same parse as
+ * verify).
  * Does NOT check that sk belongs to the embedded consensus_pk; a
  * mismatched key yields a signature that consent_verify rejects.
  * @param sig    [out] DNA_VALBIND_SIG_LEN bytes
@@ -136,7 +145,9 @@ int dna_valbind_consent_sign(uint8_t sig[DNA_VALBIND_SIG_LEN], size_t *siglen,
  * ctx DNA_VALBIND_CTX. The verifying key is the consensus_pk EMBEDDED at
  * DNA_VALBIND_OFF_PUBKEY (signer binding, §6.1) — no separate key is
  * accepted. The message is parsed first: version == 1, op ∈ {STAKE,
- * ROTATE}, and the op/subject rule; a malformed message is rejected.
+ * ROTATE, STORAGE_REGISTER}, and the op/subject rule; a malformed message
+ * is rejected. The op byte is signed, so a consent for one op never
+ * verifies as a consent for another.
  * @return 0 if valid, -1 otherwise.
  */
 int dna_valbind_consent_verify(const uint8_t *sig, size_t siglen,

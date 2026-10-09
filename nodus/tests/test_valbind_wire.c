@@ -9,7 +9,9 @@
  * Sections:
  *   1. Consent message layout: every offset and length of §6.1, written
  *      byte-for-byte from the fixture inputs.
- *   2. op / subject rejects (with no partial output) and NULL guards.
+ *   2. op / subject rejects (with no partial output) and NULL guards —
+ *      ops 0, 4, 0x80, 0xFF; STAKE or STORAGE_REGISTER with a nonzero
+ *      subject; ROTATE with a zero subject.
  *   3. Expiry rule edges: h, h+720, h+721, expiry < h, and values next to
  *      UINT64_MAX (a wrapped `h + 720` formula would accept some of them).
  *   4. validator_id: both derivations re-computed in-test from an
@@ -23,7 +25,13 @@
  *      the consensus_pk embedded at offset 165. Key B signing a message
  *      that embeds key A fails; a malformed message (version, op,
  *      op/subject rule) is refused by both consent_sign and
- *      consent_verify.
+ *      consent_verify; a STORAGE_REGISTER (op 3) consent and a STAKE
+ *      (op 1) consent for the same owner/key/expiry do not verify as
+ *      each other (cross-role replay).
+ *
+ * Op 3 = STORAGE_REGISTER (design rev 6 §6.1 / §11.3, operator
+ * 2026-10-09 "approved"): subject 64 × 0x00 like STAKE; op 4 is the
+ * first unknown op and is refused.
  *
  * Deterministic test bytes: fill(label, n) = SHA3-512(label ‖ u32 BE 0) ‖
  * SHA3-512(label ‖ u32 BE 1) ‖ … truncated to n bytes (label is the ASCII
@@ -87,6 +95,12 @@ static const char *PIN_CONSENT_ROTATE_SHA3 =
 static const char *PIN_CONSENT_STAKE_SHA3 =
     "4d1c9e26243a03fe751e87e2d5752d6cf516e9dab23c892c576887d3f89e88a7"
     "6508fe09f008a16a8e6da43921794fafe5f8647b778bda5c76d1e61e9bab4d92";
+/* valbind_oracle_out.txt line "consent_storage_register.sha3_512" (op 3,
+ * design rev 6 §6.1 / §11.3) — the SHA3-512 of the full 2765-byte oracle
+ * message "consent_storage_register.msg", so a match pins every byte. */
+static const char *PIN_CONSENT_STORAGE_REGISTER_SHA3 =
+    "6272275ce84e3c90ccc9958ff928cf50ce22983a16df93ad0fb558c80c1dd37a"
+    "02870c159b8a99df93cd36b36f46d145326df7637934590bb50c0725a5f5a9ec";
 /* valbind_oracle_out.txt line "vid_new" */
 static const char *PIN_VID_NEW =
     "fc3114bfcf5e7eae33dda49544978f1db32fb8cf50d71500e4d963b1b360557f"
@@ -188,6 +202,29 @@ static int test_layout(void) {
         CHECK(hex_eq(h, PIN_CONSENT_STAKE_SHA3, "consent_stake.sha3_512"),
               "STAKE consent message != oracle"); OK();
     }
+
+    /* STORAGE_REGISTER (op 3, rev 6 §11.3): subject 64 × 0x00, the key
+     * field carries the storage node_pk (here the same fixture pk). */
+    static uint8_t mg[DNA_VALBIND_MSG_LEN];
+    CHECK(DNA_VALBIND_OP_STORAGE_REGISTER == 3, "STORAGE_REGISTER op value");
+    OK();
+    CHECK(dna_valbind_consent_msg(mg, g_chain, DNA_VALBIND_OP_STORAGE_REGISTER,
+                                  zero, g_owner, g_pk, 1000) == 0,
+          "consent_msg STORAGE_REGISTER"); OK();
+    CHECK(mg[36] == 3, "STORAGE_REGISTER op byte at 36"); OK();
+    for (size_t i = 0; i < 64; i++)
+        CHECK(mg[37 + i] == 0, "STORAGE_REGISTER subject zero");
+    OK();
+    CHECK(memcmp(mg, ms, 36) == 0 &&
+          memcmp(mg + 37, ms + 37, DNA_VALBIND_MSG_LEN - 37) == 0,
+          "STORAGE_REGISTER differs from STAKE only in the op byte"); OK();
+    {
+        uint8_t h[64];
+        CHECK(qgp_sha3_512(mg, DNA_VALBIND_MSG_LEN, h) == 0, "sha3");
+        CHECK(hex_eq(h, PIN_CONSENT_STORAGE_REGISTER_SHA3,
+                     "consent_storage_register.sha3_512"),
+              "STORAGE_REGISTER consent message != oracle"); OK();
+    }
     return 0;
 }
 
@@ -198,7 +235,8 @@ static int test_rejects(void) {
     uint8_t zero[64] = {0};
     memset(guard, 0xAA, sizeof(guard));
 
-    const uint8_t bad_ops[] = { 0, 3, 0x80, 0xFF };
+    /* 3 is STORAGE_REGISTER since rev 6; 4 is the first unknown op. */
+    const uint8_t bad_ops[] = { 0, 4, 0x80, 0xFF };
     for (size_t k = 0; k < sizeof(bad_ops); k++) {
         memcpy(m, guard, sizeof(m));
         CHECK(dna_valbind_consent_msg(m, g_chain, bad_ops[k], g_subject,
@@ -218,6 +256,23 @@ static int test_rejects(void) {
               "STAKE accepted a nonzero subject"); OK();
         CHECK(memcmp(m, guard, sizeof(m)) == 0,
               "rejected STAKE wrote output"); OK();
+    }
+    /* STORAGE_REGISTER with a nonzero subject: last byte only, first byte
+     * only, and a full validator_id-like subject — all refused. */
+    {
+        uint8_t s_last[64] = {0}, s_first[64] = {0};
+        s_last[63] = 1;
+        s_first[0] = 1;
+        const uint8_t *subs[] = { s_last, s_first, g_subject };
+        for (size_t k = 0; k < sizeof(subs) / sizeof(subs[0]); k++) {
+            memcpy(m, guard, sizeof(m));
+            CHECK(dna_valbind_consent_msg(m, g_chain,
+                                          DNA_VALBIND_OP_STORAGE_REGISTER,
+                                          subs[k], g_owner, g_pk, 1000) != 0,
+                  "STORAGE_REGISTER accepted a nonzero subject"); OK();
+            CHECK(memcmp(m, guard, sizeof(m)) == 0,
+                  "rejected STORAGE_REGISTER wrote output"); OK();
+        }
     }
     /* ROTATE with an all-zero subject. */
     memcpy(m, guard, sizeof(m));
@@ -414,20 +469,48 @@ static int test_signatures(void) {
         CHECK(dna_valbind_consent_verify(sb, lb, mr) == 0, "verify ROTATE");
         OK();
 
+        /* STORAGE_REGISTER consent (op 3) signs and verifies, and is NOT
+         * interchangeable with a STAKE consent (op 1) for the same owner,
+         * key and expiry: the op byte is inside the signed bytes, so a
+         * consent given for one role never verifies as the other. `m` is
+         * the valid STAKE message signed by `sig` above. */
+        static uint8_t mg[DNA_VALBIND_MSG_LEN];
+        static uint8_t sg[QGP_DSA87_SIGNATURE_BYTES];
+        size_t lg = 0;
+        CHECK(dna_valbind_consent_msg(mg, g_chain,
+                                      DNA_VALBIND_OP_STORAGE_REGISTER, zero,
+                                      g_owner, pk, 1000) == 0,
+              "msg STORAGE_REGISTER");
+        CHECK(memcmp(mg, m, 36) == 0 &&
+              memcmp(mg + 37, m + 37, DNA_VALBIND_MSG_LEN - 37) == 0,
+              "STORAGE_REGISTER / STAKE pair differs only in op"); OK();
+        CHECK(dna_valbind_consent_sign(sg, &lg, mg, sk) == 0,
+              "sign STORAGE_REGISTER"); OK();
+        CHECK(dna_valbind_consent_verify(sg, lg, mg) == 0,
+              "verify STORAGE_REGISTER"); OK();
+        CHECK(dna_valbind_consent_verify(sg, lg, m) != 0,
+              "STORAGE_REGISTER consent accepted as a STAKE consent"); OK();
+        CHECK(dna_valbind_consent_verify(sig, siglen, mg) != 0,
+              "STAKE consent accepted as a STORAGE_REGISTER consent"); OK();
+        CHECK(dna_valbind_consent_verify(sig, siglen, m) == 0,
+              "STAKE consent still verifies as STAKE"); OK();
+
         /* Malformed messages: refused by sign AND by verify, even when the
          * signature itself is valid for the bytes (signed via the generic
          * ctx wrapper to prove the parse is what rejects). */
         static uint8_t bad[DNA_VALBIND_MSG_LEN];
         static uint8_t bs[QGP_DSA87_SIGNATURE_BYTES];
         size_t bl = 0;
-        for (int c = 0; c < 6; c++) {
+        for (int c = 0; c < 7; c++) {
             memcpy(bad, m, sizeof(bad));                  /* valid STAKE */
             switch (c) {
             case 0: bad[3] = 0x02; break;                 /* version 2   */
             case 1: bad[0] = 0x01; break;                 /* version 2^24+1 */
             case 2: bad[36] = 0x00; break;                /* op 0        */
-            case 3: bad[36] = 0x03; break;                /* op 3        */
+            case 3: bad[36] = 0x04; break;                /* op 4        */
             case 4: bad[37 + 63] = 0x01; break;           /* STAKE, subject≠0 */
+            case 5: bad[36] = DNA_VALBIND_OP_STORAGE_REGISTER;
+                    bad[37] = 0x01; break;                /* op 3, subject≠0 */
             default: bad[36] = DNA_VALBIND_OP_ROTATE;     /* ROTATE, subject=0 */
                      break;
             }

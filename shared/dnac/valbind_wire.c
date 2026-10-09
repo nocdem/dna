@@ -2,7 +2,8 @@
  * @file shared/dnac/valbind_wire.c
  * @brief HF-6 slice 1 — consent message, consent signature, validator_id
  *        (contract: valbind_wire.h; design 2026-10-03-hf5-validator-owner
- *        -stake §6.1, §6.2). INERT: no consensus path calls anything here.
+ *        -stake §6.1, §6.2, rev 6 §11.3 for consent op 3). INERT: no
+ *        consensus path calls anything here.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -96,8 +97,10 @@ int dna_valbind_consent_msg(uint8_t out[DNA_VALBIND_MSG_LEN],
 
     /* Every rule runs BEFORE the first byte of `out` is written. */
     const int zero_subject = all_zero(subject, DNA_VALBIND_SUBJECT_LEN);
-    if (op == DNA_VALBIND_OP_STAKE) {
-        if (!zero_subject) return -1;   /* STAKE subject is 64 × 0x00 */
+    if (op == DNA_VALBIND_OP_STAKE ||
+        op == DNA_VALBIND_OP_STORAGE_REGISTER) {
+        if (!zero_subject) return -1;   /* STAKE / STORAGE_REGISTER subject
+                                         * is 64 × 0x00 (§6.1, §11.3) */
     } else if (op == DNA_VALBIND_OP_ROTATE) {
         if (zero_subject) return -1;    /* ROTATE names a validator_id */
     } else {
@@ -123,8 +126,9 @@ int dna_valbind_expiry_ok(uint64_t h, uint64_t expiry) {
 
 /**
  * The structural rules dna_valbind_consent_msg enforces, re-applied to a
- * received 2765-byte message: version == 1, op ∈ {STAKE, ROTATE}, STAKE
- * subject all-zero, ROTATE subject not all-zero.
+ * received 2765-byte message: version == 1, op ∈ {STAKE, ROTATE,
+ * STORAGE_REGISTER}, STAKE / STORAGE_REGISTER subject all-zero, ROTATE
+ * subject not all-zero.
  * @return 0 if well-formed, -1 otherwise.
  */
 static int consent_parse_ok(const uint8_t msg[DNA_VALBIND_MSG_LEN]) {
@@ -139,6 +143,8 @@ static int consent_parse_ok(const uint8_t msg[DNA_VALBIND_MSG_LEN]) {
     const int zero_subject =
         all_zero(msg + DNA_VALBIND_OFF_SUBJECT, DNA_VALBIND_SUBJECT_LEN);
     if (op == DNA_VALBIND_OP_STAKE)  return zero_subject ? 0 : -1;
+    if (op == DNA_VALBIND_OP_STORAGE_REGISTER)
+                                     return zero_subject ? 0 : -1;
     if (op == DNA_VALBIND_OP_ROTATE) return zero_subject ? -1 : 0;
     return -1;
 }

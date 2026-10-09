@@ -10,7 +10,9 @@ the WRITTEN specification only:
 
   * design   docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
              (rev 5) §6 "Baytlar" (operator-approved 2026-10-08):
-               §6.1 node consent message (2765 B)
+               §6.1 node consent message (2765 B); rev 6 §6.1 / §11.3
+                    adds op 3 = STORAGE_REGISTER (subject 64 x 0x00),
+                    operator 2026-10-09 "approved"
                §6.2 validator_id (new / migrated, 112-byte preimages)
                §6.3 validator leaf v2 (5390 B)      -- lengths only
                §6.4 delegation leaf v2 (145 B)      -- lengths only
@@ -115,7 +117,7 @@ def main():
     owner = fill("owner", 64)
     pk = fill("pk", PK_LEN)
 
-    print("# HF-6 slice 1 valbind oracle (spec: hf5-validator-owner-stake-design rev5 §6, K6)")
+    print("# HF-6 slice 1 valbind oracle (spec: hf5-validator-owner-stake-design rev5 §6, K6; rev6 §6.1/§11.3 op 3)")
     print("# inputs")
     line("chain32", chain)
     line("owner_fp", owner)
@@ -131,6 +133,18 @@ def main():
     check("consent_stake_len", len(m_stk), 2765)
     line("consent_stake.msg", m_stk)
     line("consent_stake.sha3_512", sha3(m_stk))
+    # rev 6 §6.1 / §11.3: op 3 = STORAGE_REGISTER, subject 64 x 0x00, the
+    # 2592-byte key field = the storage node_pk (here: the same fixture pk)
+    m_sto = consent_msg(chain, 3, b"\x00" * 64, owner, pk, 1000)
+    check("consent_storage_register_len", len(m_sto), 2765)
+    line("consent_storage_register.msg", m_sto)
+    line("consent_storage_register.sha3_512", sha3(m_sto))
+    check("consent_storage_register_off_op", m_sto[36], 3)
+    check("consent_storage_register_subject_zero",
+          m_sto[37:101] == b"\x00" * 64, True)
+    check("consent_storage_register_vs_stake_only_op",
+          m_sto[:36] == m_stk[:36] and m_sto[37:] == m_stk[37:]
+          and m_sto[36] != m_stk[36], True)
     # field offsets per §6.1 table
     check("consent_off_op", m_rot[36], 2)
     check("consent_off_owner", m_rot[101:165] == owner, True)
