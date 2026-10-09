@@ -3112,8 +3112,9 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
 
         /* ── 10. Post-conditions ─────────────────────────────────────
          *
-         * ALL OF THEM RUN AT THE LIVE RUNG (S16 since tokenomics-v3 P2),
-         * and that is checked, not assumed. A grep for
+         * ALL OF THEM RUN AT THE LIVE RUNG (S18 since HF-6 sub-slice 3a;
+         * S16 from tokenomics-v3 P2, S17 from the Nodus EVM), and that is
+         * checked, not assumed. A grep for
          * `nodus_witness_db_schema_version(` over nodus/src/witness finds
          * every schema-version GATE in the tree (re-derived for
          * tokenomics-v3 P4; the W3 list that stood here named the
@@ -3124,9 +3125,9 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * version-2 engine genesis and the legacy-lane block apply, the
          * two S9-S12 gates this list used to carry):
          *   v2_apply_block_body                 (Comet-lane block apply,
-         *                                        S16 only)
-         *   nodus_witness_v2_genesis_cmt        (this lane's genesis, S16
-         *                                        only)
+         *                                        S16, S17 or S18)
+         *   nodus_witness_v2_genesis_cmt        (this lane's genesis, S16,
+         *                                        S17 or S18)
          *   nodus_witness_v2_pools_startup_check
          *   nodus_rt_core_state_init            (nodus_witness_v2_pools.c)
          *   nodus_witness_v2_preflight          (the equality gate)
