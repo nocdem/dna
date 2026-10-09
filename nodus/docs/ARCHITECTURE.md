@@ -6868,6 +6868,97 @@ autocommit — each leaving the DB unchanged) and the edge through the engine (r
 generation 4 after H−1, seven Foundation-owned rows, committed root == recomputation, no second
 migration at H; a faulted H−1 attempt rolled back and replayed equals a twin's single apply).
 `test_hf4_switch` `t_storage_switch` rewritten for the merged edge (its pre-edge v5 probe dropped).
+
+### HF-6 sub-slice 3c — owner authority + generation-4 calls for ops 2-5; STAKE refused (2026-10-09, branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.3 (owner rule), §2 (call
+layouts, approved K7), §6.3/§6.4 (row values); plan `tasks/hf6-slice3-plan.md` §2 "3c", §3; decisions
+`docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md` (K3: no TRANSFER_OWNER — owner_fp is
+never written), `docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` (D3 (a): the
+HF-8 self-delegation exemption stays under generation 4 and moves to the SYSTEM side in 3e), the
+ORCHESTRATOR's D6 (the kind-3 verdict fact). All in `nodus_witness_rt_native.c` unless named.
+
+**Generation split.** "Generation 4" below is `rt->generation >= NODUS_RT_GEN_STORAGE` — the one
+HF-6 generation (design §8). Generations 1-3 are untouched: the same legacy calls, ops 4/5/6, the
+one-signer `rtn_sys_stake_auth` rule; every legacy exec / plan now receives the generation and its
+`rtn_sys_call_identity` refuses ops 1-5 under generation 4 (defence in depth — the dispatch never
+reaches them there).
+
+**Calls under generation 4** (BE, exact length; a legacy length is refused, and vice versa):
+
+| op | call | len |
+|---|---|---|
+| DELEGATE (2) / UNDELEGATE (4) | `delegator_fp[64] ‖ validator_id[64] ‖ amount u64` | 136 |
+| UNSTAKE (3) | `validator_id[64]` | 64 |
+| VALIDATOR_UPDATE (5) | `validator_id[64] ‖ commission u16` (≤ `DNAC_COMMISSION_BPS_MAX`, non-zero id) | 66 |
+| STAKE (1) | — refused (-1) on the SYSTEM plan and exec AND by the CORE SYSFUND pairing (`rtn_sysfund_shape`, `rtn_sys_call_flow`) until slice 4 | — |
+
+**Owner authority** (`rtn_sys_owner_auth`, design §1.3), against `want_fp`: kind 1 — exactly one
+verified signer, no descriptor, SHA3-512(signer pk) == want_fp; kind 3 — exactly ONE carried
+descriptor, satisfied, its address == want_fp (mandatory: the verifier only records satisfaction),
+and every verified signer one of its keys; kind 2 and any other kind refused. DELEGATE / UNDELEGATE:
+want_fp = the call's delegator_fp, decided before the reads are judged. UNSTAKE / VALIDATOR_UPDATE:
+want_fp = the observed row's owner_fp, decided AFTER the mediated read (an absent row is -1 first).
+The rules themselves are the legacy execs' (minimum delegation, delegator cap, BONDED targeting, no
+status gate on UNDELEGATE, the two-epoch commission deferral, underflow and writable-shape verdicts),
+on the generation-4 rows; owner_fp and the pending consensus-key fields are carried byte for byte.
+
+**SYSTEM adapter ops** (appended after the last used id 12; 1 and 3 stay retired; `RTN_SYS_OPS`
+10 → 13 entries; `n_ops` is now `sizeof`-derived):
+
+| id | name | kinds / preconds | key | value |
+|---|---|---|---|---|
+| 13 | `RTN_SYS_OP_VAL2` | SET / EXISTS_VHASH only (no gen-4 writer creates a validator before slice 4) | validator_id 64 | 5389 B = the §6.3 leaf without its tag: validator_id ‖ owner_fp ‖ consensus_pubkey ‖ pending_consensus_pubkey ‖ key_effective_epoch ‖ self ‖ total_delegated ‖ external_delegated ‖ commission ‖ pending_commission ‖ pending_effective ‖ status ‖ active_since ‖ unstake_commit ‖ last_update ‖ missed |
+| 14 | `RTN_SYS_OP_DELEG2` | CREATE / SET / DELETE, ABSENT / EXISTS_VHASH | delegator_fp ‖ validator_id 128 | 144 B = delegator_fp ‖ validator_id ‖ amount ‖ delegated_at_block |
+| 15 | `RTN_SYS_OP_DELEGCNT2` | read-only | validator_id 64 | count u64 |
+
+The VAL2 read is a LEFT JOIN of `validators` (keyed by `pubkey_hash` = validator_id) and
+`v2_validator_roles` — a row without its roles row, or an orphan roles row, is a FAULT. The VAL2 SET
+writes the eleven record columns of `validators` (`WHERE pubkey_hash = ? AND pubkey = ?`) and the two
+roles key fields (`WHERE validator_id = ? AND owner_fp = ?`), each exactly one row, else FAULT; it
+never writes `pubkey`, `owner_fp` or `unstake_destination_*` (D4). DELEG2 / DELEGCNT2 use the 3a
+accessors `nodus_delegation_v2_get` / `_count_by_validator`. **A DELEG2 CREATE writes the
+`*_pubkey` columns full-length** — validator_pubkey = the validator's consensus key (same
+statement), delegator_pubkey = 2592 × 0x00 — the 3b precedent, because until 3d the SYSTEM root is
+composed by the v1 delegation loader, which refuses any other length. ⚠ Two such rows under one
+validator tie in that loader's `ORDER BY validator_pubkey, delegator_pubkey` (and tie with a
+migrated Foundation self-delegation row); the order is SQLite's tie order until 3d replaces the
+loader — 3c must not ship without 3d.
+
+**The CORE SYSFUND leg** passes its runtime's generation: `rtn_sysfund_shape` (STAKE sibling refused
+under generation 4; storage pairing from GEN_STORAGE as before), `rtn_sys_call_flow` (gen-4 layouts,
+same lock / release per op), `rtn_sysfund_release_coin` (gen 4: the UNDELEGATE release coin is owned
+by the call's delegator_fp directly — no hashing). **HF-8 name gate** (`rtn_sysfund_name_gate`):
+under generation 4 with param 17 on, a DELEGATE sibling is parsed with the 136-byte decoder and then
+REFUSED (-1) in plan and exec alike (D3: the exemption `delegator_fp == owner_fp(validator_id)` needs
+the SYSTEM row, 3e) — never a fault, never silently ungated. Generation 3 keeps the legacy gate.
+
+**Read-only describer** (`nodus_rt_native_describe_leg`, no runtime): an applied leg's generation is
+proven by its call length (`rtn_sys_call_gen_of`; 136 / 64 / 66 are disjoint from every legacy
+length); a generation-4 DELEGATE / UNDELEGATE is described with `rec_delegator_fp` = the delegator_fp
+and `rec_validator_fp` = the validator_id (⚠ the latter is not an address — the address index and
+scan-v3 consumers see the validator_id there until the RPC slice, §9).
+
+**Auth.** The generation-4 SYSTEM descriptor's `allowed_auth_kinds` gains `MSIG_V1` ({1,2,3};
+generations 1-3 keep {1,2}); the selfcheck pin is generation-conditional. The allowlist is not in
+`dna_ruleset_desc_t`, so `SYS_RULESET_HASH_GST` is unchanged. Capacity: a kind-3 SYSTEM leg is
+dominated by the kind-2 blob the same leg already admits (147,307 < 700,800 — pinned), so the
+858,119-byte governing envelope and `DNA_ENV_MAX_TOTAL_LEN` are unchanged. **D6:**
+`nodus_rt_auth_verdict_t.msig_signers_in_desc` (engine-internal, never hashed/stored/wired; shared
+by every domain) — bit i set iff every verified signer is one of descriptor i's keys; recorded by
+`rtn_auth_msig`, read only by `rtn_sys_owner_auth`; CORE's kind-3 behaviour is byte-identical. It
+occupies the pad byte after `msig_addr`, so `sizeof` stays 1 440 (the `nodus_witness_v2_apply.h` pin).
+
+**Tests.** New `test_hf6_calls` (EVM builds): the hook matrix (each op × kind 1 / kind 3 positive
+with effects naming ops 13/14 only; kind-3 wrong address / unsatisfied / foreign signer / two
+descriptors; kind 2; non-delegator / non-owner; exact length ± 1; legacy calls refused by
+generation 4 and planned by 3; the CORE pairing and the HF-8 generation-4 refusal; the describer and
+the release owner), the D6 bit through the real auth hook, and the generation 3 → 4 path through the
+engine (legacy STAKE / DELEGATE applied at 3 and refused at 4 with the ledger tables byte-identical;
+a kind-1 top-up, a kind-3 multisig delegator's DELEGATE and UNDELEGATE with the release owned by the
+address, an owner VALIDATOR_UPDATE and a refused non-owner one, an owner UNSTAKE).
+`test_hf4_table` asserts the generation-4 SYSTEM allowlist equals the EVM generation's — it now
+differs by kind 3 (expected break, to be updated by the ORCHESTRATOR).
 Written, NOT run by the author.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)

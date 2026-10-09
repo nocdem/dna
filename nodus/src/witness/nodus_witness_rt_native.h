@@ -98,7 +98,12 @@ typedef struct {
 
     /* SYSTEM record — only the fields its kind names are meaningful.
      * Fingerprints are the RAW SHA3-512 of the call-carried pubkey (the
-     * identity the exec hook binds the row to). */
+     * identity the exec hook binds the row to). HF-6 sub-slice 3c: for a
+     * generation-4 call of ops 2..5 (design rev 6 §2 — recognised by its
+     * length) they are the 64-byte values the call CARRIES instead:
+     * rec_delegator_fp = delegator_fp (still an address) and
+     * rec_validator_fp = validator_id (NOT an address — a semantic shift
+     * for the consumers until the RPC slice exposes owner_fp, §9). */
     nodus_rt_desc_rec_t rec;
     uint8_t  rec_validator_fp[64];   /* STAKE, DELEGATE, UNSTAKE,
                                       * UNDELEGATE, VALIDATOR_UPDATE     */

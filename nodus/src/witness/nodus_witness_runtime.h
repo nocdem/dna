@@ -396,8 +396,10 @@ typedef struct {
  *   intent-identity season inherits, not a soundness hole.
  *
  *   auth_kind 3 — NODUS_RT_AUTHKIND_DSA87_MSIG_V1 (general multisig,
- *   decision 2026-09-29-general-multisig.md, design §7 rev 2 — CORE
- *   only): auth_data =
+ *   decision 2026-09-29-general-multisig.md, design §7 rev 2 — CORE,
+ *   and — HF-6 sub-slice 3c, design 2026-10-03-hf5-validator-owner-stake
+ *   rev 6 §1.3 — the HF-6 generation's SYSTEM, where only the owner
+ *   rule of the validator-record ops 2..5 accepts it): auth_data =
  *     the ENTIRE kind-1 body (the signer section, same rules, same
  *     signatures over the SAME leg auth_digest — there is NO new
  *     signature preimage)
@@ -418,7 +420,10 @@ typedef struct {
  *   uses" rule, are EXEC decisions (design F1.2; the CORE exec's one
  *   ownership predicate, nodus_witness_rt_native.c rtn_input_owned), so
  *   the descriptor bytes are always priced (w_authbyte) before any exec
- *   verdict. The descriptor bytes do NOT enter intent_id (they are
+ *   verdict. HF-6 3c (decision D6) adds one more RECORDED fact per
+ *   descriptor — whether every verified signer is one of its keys
+ *   (verdict msig_signers_in_desc) — which only the SYSTEM owner rule
+ *   reads. The descriptor bytes do NOT enter intent_id (they are
  *   authorization bytes) — auth_kind does (F1.4): the kind-1 and kind-3
  *   spellings of one transfer are two intents.
  *
@@ -500,6 +505,18 @@ typedef struct {
     uint8_t  msig_satisfied[NODUS_RT_MSIG_MAX_DESC];  /* 1 = >= M of its
                                           * keys are verified signers    */
     uint8_t  msig_addr[NODUS_RT_MSIG_MAX_DESC][64];   /* SHA3-512(desc)  */
+    /* HF-6 sub-slice 3c (design docs/plans/2026-10-03-hf5-validator-owner-
+     * stake-design.md rev 6 §1.3; ORCHESTRATOR decision D6), kind 3 only:
+     * bit i set iff EVERY verified signer of this leg is one of descriptor
+     * i's keys (no foreign signer rode along). ENGINE-INTERNAL — never
+     * hashed, stored or put on a wire; shared by every domain's verdict,
+     * read today only by the SYSTEM owner-authority rule
+     * (nodus_witness_rt_native.c rtn_sys_owner_auth). It is only RECORDED
+     * here, like msig_satisfied: CORE kind-3 ownership never reads it, so
+     * its behaviour is byte-identical. 0 for kinds 1 and 2. It occupies
+     * the one pad byte that followed msig_addr (members end at 1 423 B),
+     * so sizeof stays 1 440 — the nodus_witness_v2_apply.h pin proves it. */
+    uint8_t  msig_signers_in_desc;
     /* HF-2 (GW-1), kind 2 only — checked u64 sums over the committee
      * view's `powers`: the VERIFIED approving seats, and every seat (both
      * 0 when the sum is unweighable). 0 for kinds 1 and 3. Never hashed,
