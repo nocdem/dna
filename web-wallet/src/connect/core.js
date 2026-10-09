@@ -53,7 +53,10 @@
 //     fingerprint) and its keys are held as after a read; `name` (the
 //     verified name of that read, or '') is kept only if it is still the
 //     record's registered name. Rejects when the record fails.
-//   core.profileUpdate(patch) -> { status, read, created, putRc, version }
+//   core.profileUpdate(patch, { firstOk }?) -> { status, read, created, putRc, version }
+//     firstOk (default false): an EMPTY read may create the FIRST profile —
+//     the page passes it when this device never saw the own profile on the
+//     network (ui/text.js firstRecordAllowed; W-04, nc_wasm.c first_begin).
 //     status 'published' | 'wait' (nothing written: retry later) |
 //     'taken' (the key is owned by someone else: terminal, show "profile
 //     address taken", never retry) | 'failed' | 'bad_patch'.
@@ -72,15 +75,16 @@
 //     choice, salt, putRc }   read + reconcile + gated publish (packet v1,
 //     the app's builder): status 'nothing_to_write' | 'published' |
 //     'wait' (nothing written; keep the local salt, retry later) | 'failed'.
+//     An EMPTY read publishes the local salt for every identity (W-04).
 //     Store `salt` unless status is 'wait'. Needs profileGet(fp) first.
 //   core.contactsGet() -> { outcome, why, invalid, timestamp,
 //     contacts: [{ fp, salt | null }] }   the own list; 'empty' is NOT proof
 //     of absence
-//   core.contactsAdd([{ fp, salt? }]) -> { status, outcome, why, created,
+//   core.contactsAdd([{ fp, salt? }], { firstOk }?) -> { status, outcome, why, created,
 //     countBefore, countAfter, saltKept, putRc }   MERGE ONLY into the list
 //     read in the same call: status 'published' | 'unchanged' | 'wait'
-//     (unreadable, or empty for a restored identity — Q1) | 'taken'
-//     (terminal) | 'failed' | 'refused'.
+//     (unreadable, or empty without firstOk) | 'taken' (terminal) |
+//     'failed' | 'refused'. firstOk: as profileUpdate, for the own list.
 //   core.dayToday() -> '<unix day>'             synchronous
 //   core.outboxPublish(fp, saltHex, [{ seq, ts, text }]) -> { day, alg, count }
 //     one 1:1 message send: the WHOLE pending set for that contact for today
@@ -384,9 +388,9 @@ export function createNodusConnectCore({ nodus } = {}) {
       b.check(b.num('nc_profile_load', ['string', 'string', 'string'], [fp(who), record, name]));
       return b.result();
     }),
-    profileUpdate: op(async (b, patch) => {
+    profileUpdate: op(async (b, patch, { firstOk = false } = {}) => {
       if (!patch || typeof patch !== 'object') throw new Error('Invalid profile edit.');
-      b.check(await b.call('nc_profile_update', ['string'], [JSON.stringify(patch)]));
+      b.check(await b.call('nc_profile_update', ['string', 'number'], [JSON.stringify(patch), firstOk === true ? 1 : 0]));
       const r = b.result();
       return { status: r.status, read: r.read, created: r.created, putRc: r.put_rc, version: r.version };
     }),
@@ -405,13 +409,13 @@ export function createNodusConnectCore({ nodus } = {}) {
       return { status: r.status, outcome: r.outcome, why: r.why, choice: r.choice, salt: r.salt, putRc: r.put_rc };
     }),
     contactsGet: op(async b => { b.check(await b.call('nc_contacts_get')); return b.result(); }),
-    contactsAdd: op(async (b, entries) => {
+    contactsAdd: op(async (b, entries, { firstOk = false } = {}) => {
       if (!Array.isArray(entries) || entries.length === 0 || entries.length > 4096) throw new Error('Invalid contact list.');
       const list = entries.map(e => {
         if (!e) throw new Error('Invalid contact list.');
         return { fp: fp(e.fp), salt: salt(e.salt, { optional: true }) || null };
       });
-      b.check(await b.call('nc_contacts_add', ['string'], [JSON.stringify(list)]));
+      b.check(await b.call('nc_contacts_add', ['string', 'number'], [JSON.stringify(list), firstOk === true ? 1 : 0]));
       const r = b.result();
       return { status: r.status, outcome: r.outcome, why: r.why, created: r.created,
         countBefore: r.count_before, countAfter: r.count_after, saltKept: r.salt_kept, putRc: r.put_rc };

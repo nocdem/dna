@@ -217,10 +217,15 @@ export async function deleteVaultHistory(vaultId, storage) {
 // ('x' + 20 digits — R2-2: the owner keeps the exact bytes, 107,795 B at
 // 64 members, more than one record holds). Group messages are records of
 // the 'messages' store with a `group` field (openHistoryStore returns them
-// apart from the 1:1 messages).
+// apart from the 1:1 messages). `seenOwn` (web 0.1.88, W-04): kind -> unix
+// seconds this device first read this account's own record of that kind on
+// the network ('profile', 'list') — the device memory of ui/text.js
+// firstRecordAllowed: once seen, an EMPTY answer never creates that record
+// again from this device. An older version ignores the key.
 export function emptyState() {
-  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], removed: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {}, chainNoName: {}, vaults: {}, groups: {} };
+  return { version: 1, nextSeq: '1', contacts: [], outgoing: [], declined: [], removed: [], acks: {}, ackSent: {}, profileCache: {}, dmSync: {}, chainNames: {}, chainNoName: {}, vaults: {}, groups: {}, seenOwn: {} };
 }
+export const SEEN_OWN_KINDS = Object.freeze(['profile', 'list']);
 const isMap = value => value && typeof value === 'object' && !Array.isArray(value);
 const HEX128_KEY = /^[0-9a-f]{128}$/;
 export const PROFILE_RECORD_ID = /^p\d{20}$/;
@@ -238,7 +243,7 @@ export function checkState(value) {
   // A state saved before `ackSent`, `profileCache`, `dmSync`, `chainNames`,
   // `chainNoName`, `vaults` or `groups` existed gets the default (same
   // version).
-  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync', 'chainNames', 'chainNoName', 'vaults', 'groups']) if (value[key] === undefined) value[key] = {};
+  if (value && value.version === 1) for (const key of ['ackSent', 'profileCache', 'dmSync', 'chainNames', 'chainNoName', 'vaults', 'groups', 'seenOwn']) if (value[key] === undefined) value[key] = {};
   // … and before `removed` existed, likewise (an empty list).
   if (value && value.version === 1 && value.removed === undefined) value.removed = [];
   if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
@@ -246,6 +251,7 @@ export function checkState(value) {
       !Array.isArray(value.removed) || value.removed.some(fp => typeof fp !== 'string' || !HEX128_KEY.test(fp)) ||
       !value.acks || typeof value.acks !== 'object' ||
       !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) || !isMap(value.chainNames) || !isMap(value.chainNoName) || !isMap(value.vaults) || !isMap(value.groups) ||
+      !isMap(value.seenOwn) || Object.entries(value.seenOwn).some(([kind, at]) => !SEEN_OWN_KINDS.includes(kind) || !U64.test(String(at))) ||
       Object.entries(value.groups).some(([gid, e]) => !HEX64_KEY.test(gid) || !isMap(e) || typeof e.id !== 'string' || !/^g\d{20}$/.test(e.id) || !U64.test(String(e.at))) ||
       Object.values(value.profileCache).some(e => !isMap(e) || typeof e.id !== 'string' || !PROFILE_RECORD_ID.test(e.id) ||
         !U64.test(String(e.at)) || typeof e.name !== 'string') ||

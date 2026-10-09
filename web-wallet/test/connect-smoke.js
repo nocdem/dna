@@ -16,8 +16,9 @@
 // "Delete saved wallet" control moves into Device & settings while open and
 // back after lock; Chats is Messages, open LOCALLY with no node (local
 // first: the own ID, the empty list and the add button at once, the status
-// line connecting / not connected, sending a contact request and saving the
-// profile refused offline); the Lock in More is the wallet's lock and
+// line connecting / not connected, the contact request's send button
+// disabled under the connecting text and saving the profile refused
+// offline); the Lock in More is the wallet's lock and
 // closes Messages too; Home shows the unavailable chain-name entry offline;
 // saving changes the device controls from Save to Change password, and deleting
 // the saved copy restores the initial Save controls;
@@ -178,13 +179,17 @@ try {
   assert.match(await page.locator('.messenger-sync').textContent(), /^(Connecting to the network… Your messages on this device are shown; sending opens once connected\.|Not connected to the network right now; trying again in \d+ seconds\. Your messages on this device are shown\.)$/);
   // Navigation is local and stays enabled.
   for (const label of ['Contact requests', 'Your ID & profile']) assert.equal(await page.locator(`.messenger-chats .nc-icon-button[title="${label}"]`).isDisabled(), false, label);
-  // Add contact: the dialog opens; sending the request is refused offline.
+  // Add contact: the dialog opens; offline its send button waits, disabled,
+  // under the connecting text (web 0.1.88, W-04 — it used to refuse every
+  // press; a user pressed it 30+ times). Enter cannot submit either: a
+  // form whose default button is disabled has no implicit submission.
   await page.locator('.nc-fab').click();
   await page.locator('#nc-add-dialog').waitFor({ state: 'visible' });
   await page.locator('#nc-add-id').fill(vectors[1].address);
-  await page.locator('#nc-add-form button[type="submit"]').click();
-  await page.waitForFunction(() => document.querySelector('#nc-add-form [role="status"]')?.textContent.length > 0);
-  assert.equal(await page.locator('#nc-add-form [role="status"]').textContent(), 'Requests can be sent once Messages is connected to the network.');
+  assert.equal(await page.locator('#nc-add-form button[type="submit"]').isDisabled(), true, 'send waits offline');
+  assert.equal(await page.locator('#nc-add-form [role="status"]').textContent(), 'Messages is still connecting to the network. You can send the request once it is connected.');
+  await page.locator('#nc-add-id').press('Enter');
+  assert.equal(await page.locator('#nc-add-form [role="status"]').textContent(), 'Messages is still connecting to the network. You can send the request once it is connected.', 'Enter did not submit');
   await page.locator('#nc-add-form button', { hasText: 'Close' }).click();
   // Your ID & profile: the own ID; saving the profile is refused offline.
   await page.locator('.messenger-chats .nc-icon-button[title="Your ID & profile"]').click();

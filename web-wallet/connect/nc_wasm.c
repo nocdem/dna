@@ -373,6 +373,23 @@ int nc_unlock(int fresh) {
     return nc_end(set_result(o));
 }
 
+/* First-time records (W-04; thin-core decision Q1, addendum 2026-10-09).
+ * The core writes a FIRST record of a gated kind only when ctx->fresh is
+ * set for the call (nc_profile.c, nc_contactlist.c, nc_salt.c). Until
+ * 0.1.88 that was the session's "words generated in this tab" flag only,
+ * because a node answered "could not look" as "empty"; since DHT package A
+ * (0c814d70) an EMPTY strict answer means at least one replica answered
+ * (nodus_dht_server.c nodus_dht_read_outcome) and "could not look" is
+ * UNREADABLE. The page now decides per call: `first_ok` 1 = this device
+ * never saw the record on the network (its own memory, src/connect/ui/
+ * text.js firstRecordAllowed), so an EMPTY may create it. The session flag
+ * is restored after the call. */
+static bool first_begin(int first_ok) {
+    bool was = g_ctx.fresh;
+    if (first_ok) g_ctx.fresh = true;
+    return was;
+}
+
 /* ── R1 ─────────────────────────────────────────────────────────────── */
 
 static json_object *profile_json(const dna_unified_identity_t *id) {
@@ -472,11 +489,14 @@ int nc_profile_load(const char *fp, const char *record, const char *name) {
     return nc_end(set_result(o));
 }
 
-int nc_profile_update(const char *patch_json) {
+/* `first_ok`: first_begin above. */
+int nc_profile_update(const char *patch_json, int first_ok) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
     nc_profile_result_t r;
+    bool was = first_begin(first_ok);
     int rc = nc_profile_publish(&g_ctx, patch_json, &r);
+    g_ctx.fresh = was;
     if (rc != NC_OK) return nc_end(fail("Profile update did not run (%d).", rc));
     static const char *const ST[] = { "published", "wait", "taken", "failed", "bad_patch" };
     json_object *o = json_object_new_object();
@@ -611,7 +631,11 @@ int nc_salt_pick(const char *local_hex, const char *dht_hex) {
 }
 
 /* Read + reconcile + (gated) publish; local_hex "" = no local salt. The
- * page stores "salt" unless status is "wait". */
+ * page stores "salt" unless status is "wait". An EMPTY read publishes the
+ * local salt for every identity (first_begin(1), W-04): the record is this
+ * identity's own EPHEMERAL row (30-day TTL, dht_salt_agreement.h:45) that
+ * expires on its own, and the salt it carries is the one this device
+ * already uses — the app republishes it the same way. */
 int nc_salt_reconcile(const char *fp, const char *local_hex) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
@@ -624,7 +648,9 @@ int nc_salt_reconcile(const char *fp, const char *local_hex) {
         lp = l;
     }
     nc_salt_sync_t s;
+    bool was = first_begin(1);
     int rc = nc_salt_sync(&g_ctx, peer, lp, &s);
+    g_ctx.fresh = was;
     nc_wipe(l, sizeof(l));
     if (rc != NC_OK) { nc_salt_sync_clear(&s); return nc_end(fail("Salt could not be reconciled (%d).", rc)); }
     static const char *const ST[] = { "nothing_to_write", "published", "wait", "failed" };
@@ -665,8 +691,8 @@ int nc_contacts_get(void) {
 }
 
 /* add_json: [{"fp":"<128 hex>","salt":"<64 hex>"|null}, ...] — merged into
- * the list read in the same call (merge only). */
-int nc_contacts_add(const char *add_json) {
+ * the list read in the same call (merge only). `first_ok`: first_begin. */
+int nc_contacts_add(const char *add_json, int first_ok) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
     json_object *arr = add_json ? json_tokener_parse(add_json) : NULL;
@@ -700,7 +726,9 @@ int nc_contacts_add(const char *add_json) {
     }
     json_object_put(arr);
     nc_list_result_t r;
+    bool was = first_begin(first_ok);
     int rc = nc_contactlist_add(&g_ctx, c, n, &r);
+    g_ctx.fresh = was;
     nc_wipe(c, n * sizeof(*c));
     free(c);
     if (rc != NC_OK) return nc_end(fail("Contact list update did not run (%d).", rc));

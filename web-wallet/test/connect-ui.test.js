@@ -24,7 +24,8 @@ import {
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, contactNeedsFullSync, contactDays, checkOrder, profileFresh, PROFILE_CACHE_SECONDS,
   CHECK_STAGES, updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
-  saltShortText, daysRead, contactLine, roundDoneLine, removeContact
+  saltShortText, daysRead, contactLine, roundDoneLine, removeContact,
+  ownRecordSeen, firstRecordAllowed, markOwnRecordSeen
 } from '../src/connect/ui/text.js';
 import { scrubLogText } from '../src/session-log.js';
 import {
@@ -950,4 +951,46 @@ test('progress log lines pass the session log scrub unchanged (short ID, counts,
   ];
   for (const line of lines) assert.equal(scrubLogText(line), line);
   assert.ok(!lines.some(line => line.includes(PROGRESS_FP)), 'never the full ID');
+});
+
+// W-04 (web 0.1.88): the device memory that decides whether an EMPTY read
+// may create the own profile / own contact list (text.js firstRecordAllowed)
+// and its place in the saved state (store.js seenOwn).
+test('first records: allowed until this device has seen the own record on the network', () => {
+  const own = 'ab'.repeat(64), other = 'cd'.repeat(64);
+  const s = emptyState();
+  assert.equal(firstRecordAllowed(s, own, 'profile'), true, 'a new device, nothing seen: the first profile may be written');
+  assert.equal(firstRecordAllowed(s, own, 'list'), true);
+  assert.equal(markOwnRecordSeen(s, 'profile', '1791500000'), true);
+  assert.equal(markOwnRecordSeen(s, 'profile', '1791600000'), false, 'the first sighting is kept');
+  assert.equal(s.seenOwn.profile, '1791500000');
+  assert.equal(firstRecordAllowed(s, own, 'profile'), false, 'seen: an EMPTY answer never creates it again');
+  assert.equal(firstRecordAllowed(s, own, 'list'), true, 'each kind has its own memory');
+  // A state saved before 0.1.88: a kept own profile, or a listed contact,
+  // counts as seen (an existing user is protected from the first upgrade).
+  const old = emptyState(); delete old.seenOwn;
+  old.profileCache[own] = { id: 'p' + '1'.padStart(20, '0'), at: '1', name: '' };
+  assert.equal(ownRecordSeen(old, own, 'profile'), true);
+  assert.equal(ownRecordSeen(old, other, 'profile'), false, 'only the own ID counts');
+  old.contacts.push({ fp: other, salt: null, listed: false });
+  assert.equal(ownRecordSeen(old, own, 'list'), false, 'an unlisted contact is no proof the list exists');
+  old.contacts[0].listed = true;
+  assert.equal(ownRecordSeen(old, own, 'list'), true);
+  // Unknown kind or no state: never create.
+  assert.equal(firstRecordAllowed(s, own, 'salt'), false);
+  assert.equal(firstRecordAllowed(null, own, 'profile'), false);
+  assert.equal(markOwnRecordSeen(s, 'salt', '1'), false);
+});
+
+test('first records: the saved state keeps seenOwn and refuses a damaged one', () => {
+  const s = emptyState();
+  assert.deepEqual(s.seenOwn, {});
+  const old = emptyState(); delete old.seenOwn;
+  assert.deepEqual(checkState(old).seenOwn, {}, 'a state saved before 0.1.88 gets the default');
+  const ok = emptyState(); ok.seenOwn = { profile: '1791500000', list: '1791500001' };
+  assert.deepEqual(checkState(ok).seenOwn, { profile: '1791500000', list: '1791500001' });
+  for (const bad of [{ salt: '1' }, { profile: 'yesterday' }, { profile: '-1' }, []]) {
+    const v = emptyState(); v.seenOwn = bad;
+    assert.throws(() => checkState(v), StorageError, JSON.stringify(bad));
+  }
 });

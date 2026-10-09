@@ -442,6 +442,38 @@ export function unremoveContact(state, fp) {
   state.removed = state.removed.filter(r => r !== fp);
 }
 
+// ── first-time records (web 0.1.88, W-04) ───────────────────────────────
+// The own profile and the own contact list are EXCLUSIVE records: writing
+// one over an existing record loses what it held. Until 0.1.88 the page
+// created them only for words generated in this tab (thin-core decision Q1,
+// 2026-09-30), because a node then answered "could not look" as "empty";
+// an account whose words came from elsewhere and that had no profile yet
+// stayed offline in Messages for good. Since DHT package A a strict EMPTY
+// means a replica answered (nodus_dht_server.c nodus_dht_read_outcome), so
+// an EMPTY may create the record — unless THIS device has already seen it
+// on the network (its memory, state.seenOwn), in which case an EMPTY is a
+// wrong answer to wait out, never a reason to write. Older states: a kept
+// own profile (profileCache) or a contact marked listed counts as seen.
+export function ownRecordSeen(state, ownFp, kind) {
+  if (!state) return true;
+  if (state.seenOwn && state.seenOwn[kind] !== undefined) return true;
+  if (kind === 'profile') return !!(state.profileCache && ownFp && state.profileCache[ownFp]);
+  if (kind === 'list') return Array.isArray(state.contacts) && state.contacts.some(c => c && c.listed === true);
+  return true;                                   // an unknown kind: never create
+}
+export function firstRecordAllowed(state, ownFp, kind) {
+  return !ownRecordSeen(state, ownFp, kind);
+}
+// Remembers that the own record of `kind` exists on the network (read
+// found, or written). True when the state changed (the caller saves it).
+export function markOwnRecordSeen(state, kind, nowSec) {
+  if (!state || (kind !== 'profile' && kind !== 'list')) return false;
+  if (!state.seenOwn) state.seenOwn = {};
+  if (state.seenOwn[kind] !== undefined) return false;
+  state.seenOwn[kind] = String(nowSec);
+  return true;
+}
+
 // ── message check progress (web 0.1.71) ─────────────────────────────────
 // Operator 2026-10-07: on a phone the Chats status line said "Updating…"
 // for minutes with nothing to show which step ran. The status line now

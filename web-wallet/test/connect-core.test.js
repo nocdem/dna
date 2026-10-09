@@ -214,3 +214,29 @@ test('core: outboxFetchDays refuses a bad day list before the module, and an ans
   assert.equal(calls.filter(c => c.name === 'nc_outbox_get_days').length, 0, 'nothing reached the module');
   await assert.rejects(core.outboxFetchDays(OTHER, SALT, [{ day: '1' }, { day: '2' }]), /invalid answer/);
 });
+
+// W-04 (web 0.1.88): the first-time record permission crosses into the
+// module as one number per gated write — 1 only when the page passes
+// firstOk: true (nc_wasm.c first_begin). The default is 0: a caller that
+// does not ask never lets an EMPTY read create the own profile or list.
+test('core: profileUpdate and contactsAdd pass firstOk to the module as 0 / 1', async () => {
+  const { nodus, calls } = fakeDaysNodus({
+    nc_unlock: { fingerprint: FP, fresh: false },
+    nc_profile_update: { status: 'published', read: { outcome: 'empty', why: 'none' }, created: true, put_rc: 0, version: '1' },
+    nc_contacts_add: { status: 'published', outcome: 'empty', why: 'none', created: true, count_before: '0', count_after: '1', salt_kept: '0', put_rc: 0 }
+  });
+  const core = createNodusConnectCore({ nodus });
+  await core.unlock({ words: new TextEncoder().encode('alpha beta gamma') });
+  await core.profileUpdate({});
+  await core.profileUpdate({}, { firstOk: true });
+  await core.profileUpdate({ bio: 'x' }, { firstOk: 'yes' });
+  await core.contactsAdd([{ fp: OTHER }]);
+  await core.contactsAdd([{ fp: OTHER, salt: SALT }], { firstOk: true });
+  const prof = calls.filter(c => c.name === 'nc_profile_update');
+  assert.deepEqual(prof.map(c => c.types), [['string', 'number'], ['string', 'number'], ['string', 'number']]);
+  assert.deepEqual(prof.map(c => c.args[1]), [0, 1, 0], 'only a literal true allows the first record');
+  const list = calls.filter(c => c.name === 'nc_contacts_add');
+  assert.deepEqual(list.map(c => c.types), [['string', 'number'], ['string', 'number']]);
+  assert.deepEqual(list.map(c => c.args[1]), [0, 1]);
+  assert.equal(JSON.parse(list[1].args[0])[0].salt, SALT);
+});

@@ -49,6 +49,7 @@ import {
   pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   checkOrder, contactDays, contactNeedsFullSync, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
+  firstRecordAllowed, markOwnRecordSeen,
   shortId, inspectUntrusted,
   updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
   contactLine, roundDoneLine
@@ -93,6 +94,7 @@ const CONNECTING_TEXT = 'Connecting to the network… Your messages on this devi
 const UPDATING_TEXT = 'Updating…';
 const OFFLINE_SEND_TEXT = 'Sending opens once Messages is connected to the network.';
 const ADD_SUBMIT_TEXT = 'Send request';  // the add dialog's button while no chain name is shown (showAddResolved)
+const ADD_OFFLINE_TEXT = 'Messages is still connecting to the network. You can send the request once it is connected.';
 
 // ── session state (all dropped by close / reset) ───────────────────────
 let core, store, state, messages = [], ownFp, ownProfile, fresh = false, vaultId = null;
@@ -333,9 +335,13 @@ function goOnline(gen) {
 }
 
 // The own profile on the network (was the gate of opening Messages; now
-// the gate of sending). Throws Closed with plain words when it cannot be
-// read (nothing is written then — Q1) or a fresh account's could not be
-// published.
+// the gate of sending). An account with no profile yet gets its first one
+// here — whatever tab made its words — unless this device has already
+// seen the profile on the network (W-04, text.js firstRecordAllowed; until
+// 0.1.88 only words generated in this tab, and every other account without
+// a profile stayed offline). Throws Closed with plain words when it cannot
+// be read (nothing is written then), when an EMPTY answer contradicts what
+// this device has seen, or when the first profile could not be published.
 async function checkOwnAccount(gen) {
   let own = await core.profileGet(ownFp);
   if (gen !== generation) return false;
@@ -347,12 +353,17 @@ async function checkOwnAccount(gen) {
       if (gen !== generation) return false;
     }
     ownProfile = own.profile;
+    if (markOwnRecordSeen(state, 'profile', nowSeconds())) await persist();
+    if (gen !== generation) return false;
     await keepProfile(ownFp, own);
     if (gen !== generation) return false;
-  } else if (own.outcome === 'empty' && fresh) {
-    const made = await core.profileUpdate({});
+  } else if (own.outcome === 'empty' && firstRecordAllowed(state, ownFp, 'profile')) {
+    const made = await core.profileUpdate({}, { firstOk: true });
     if (gen !== generation) return false;
     if (made.status !== 'published') throw new Closed(profileStatusText(made.status));
+    logCheck('Own profile: none on the network yet; the first one was published');
+    if (markOwnRecordSeen(state, 'profile', nowSeconds())) await persist();
+    if (gen !== generation) return false;
     ownProfile = null;
   } else throw new Closed('Your account could not be read from the network right now. Nothing was changed. Checking again automatically.');
   // The edit fields are refilled only if the user has not typed in them
@@ -434,18 +445,26 @@ function addContactLocal(fp, salt) {
 async function mergeContactList(gen) {
   const list = await core.contactsGet();
   if (gen !== generation || list.outcome !== 'found') return;
-  if (mergeListedContacts(state, list.contacts, ownFp)) await persist();
+  const seen = markOwnRecordSeen(state, 'list', nowSeconds());
+  if (mergeListedContacts(state, list.contacts, ownFp) || seen) await persist();
 }
 
 // Contacts this device has that the network list may lack: merge-only add
 // (core.contactsAdd). 'wait' is retried on the next check; 'taken' stops.
+// The FIRST list is created only while this device has never seen the own
+// list on the network (W-04, text.js firstRecordAllowed).
 async function publishContacts(gen) {
   if (state.listTaken) return;
   const missing = state.contacts.filter(c => !c.listed);
   if (!missing.length) return;
-  const result = await core.contactsAdd(missing.map(c => ({ fp: c.fp, salt: c.salt || undefined })));
+  const result = await core.contactsAdd(missing.map(c => ({ fp: c.fp, salt: c.salt || undefined })),
+    { firstOk: firstRecordAllowed(state, ownFp, 'list') });
   if (gen !== generation) return;
-  if (result.status === 'published' || result.status === 'unchanged') { for (const c of missing) c.listed = true; await persist(); }
+  if (result.status === 'published' || result.status === 'unchanged') {
+    for (const c of missing) c.listed = true;
+    markOwnRecordSeen(state, 'list', nowSeconds());
+    await persist();
+  }
   else if (result.status === 'taken') { state.listTaken = true; await persist(); }
   const note = contactListStatusText(result.status);
   if (note && gen === generation) ui.addStatus.textContent = note;
@@ -1423,7 +1442,8 @@ export function messagesNavigate(target) {
 function openAdd() {
   if (!ui) return;
   if (!isOpen()) { show('list'); return; }
-  ui.addStatus.textContent = '';
+  ui.addStatus.textContent = online ? '' : ADD_OFFLINE_TEXT;
+  ui.addSubmit.disabled = !online;
   addResolved = undefined; showAddResolved();
   if (!ui.addDialog.open) ui.addDialog.showModal();
   ui.addId.focus();
@@ -1467,6 +1487,12 @@ function render({ scroll = false } = {}) {
   // data-screen drives the layout (messenger.css); data-open the closed state.
   ui.layout.dataset.screen = screen;
   ui.layout.dataset.open = String(open);
+  // Nothing can be sent before the first check round reached the network
+  // (`online`): the add dialog's button waits instead of refusing each press
+  // (W-04: a user pressed it 30+ times while the account check failed).
+  ui.addSubmit.disabled = !online;
+  if (!online && ui.addDialog.open && !ui.addStatus.textContent) ui.addStatus.textContent = ADD_OFFLINE_TEXT;
+  if (online && ui.addStatus.textContent === ADD_OFFLINE_TEXT) ui.addStatus.textContent = '';
   ui.stateView.hidden = open;
   ui.chatsBody.hidden = !open;
   ui.fab.hidden = !open;

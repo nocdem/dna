@@ -94,8 +94,12 @@ void nc_keys_wipe(nc_keys_t *k);
 typedef struct {
     nodus_client_t     *client;     /* READY tier-2 session (caller owns)   */
     const nc_keys_t    *keys;
-    /* Q1 (thin-core decision, "peki kaydet"): true ONLY for words this
-     * session generated. A restored identity never creates a record. */
+    /* true: an EMPTY read may create the FIRST record of a gated kind
+     * (profile, contact list, salt agreement) in this call. Q1 (thin-core
+     * decision, 2026-09-30) set it only for words the session generated;
+     * since web 0.1.88 (W-04, Q1 addendum 2026-10-09) the browser entry
+     * sets it per call (nc_wasm.c first_begin) from the page's device
+     * memory, because a strict EMPTY now means a replica answered. */
     bool                fresh;
     /* Checked before every network call; set by the caller's cancel/lock
      * (a synchronous export). A set flag makes the call return NC_ERR_CANCELLED

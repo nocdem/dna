@@ -162,14 +162,17 @@ int dht_serialize_contact_request(
     memcpy(ptr, &exp_low, sizeof(uint32_t));
     ptr += sizeof(uint32_t);
 
-    /* Write sender_fingerprint (fixed 129 bytes) */
+    /* Write sender_fingerprint (fixed 129 bytes). The fixed text fields are
+     * zeroed, then the text up to its NUL (at most N bytes) is copied — the
+     * bytes strncpy(dst, src, N) wrote, without its -O2 truncation warning
+     * (web 0.1.88). */
     memset(ptr, 0, 129);
-    strncpy((char *)ptr, request->sender_fingerprint, 128);
+    memcpy(ptr, request->sender_fingerprint, strnlen(request->sender_fingerprint, 128));
     ptr += 129;
 
     /* Write sender_name (fixed 64 bytes) */
     memset(ptr, 0, 64);
-    strncpy((char *)ptr, request->sender_name, 63);
+    memcpy(ptr, request->sender_name, strnlen(request->sender_name, 63));
     ptr += 64;
 
     /* Write sender_dilithium_pubkey (fixed 2592 bytes) */
@@ -178,7 +181,7 @@ int dht_serialize_contact_request(
 
     /* Write message (fixed 256 bytes) */
     memset(ptr, 0, 256);
-    strncpy((char *)ptr, request->message, 255);
+    memcpy(ptr, request->message, strnlen(request->message, 255));
     ptr += 256;
 
     /* Write dht_salt (v2 only: 32 bytes) */
@@ -392,19 +395,21 @@ int dht_contact_request_signing_preimage(const dht_contact_request_t *request,
     memcpy(ptr, &exp_low, sizeof(uint32_t));
     ptr += sizeof(uint32_t);
 
+    /* The same fixed text fields as the serializer above (memset + memcpy of
+     * strnlen bytes = strncpy's bytes). */
     memset(ptr, 0, 129);
-    strncpy((char *)ptr, request->sender_fingerprint, 128);
+    memcpy(ptr, request->sender_fingerprint, strnlen(request->sender_fingerprint, 128));
     ptr += 129;
 
     memset(ptr, 0, 64);
-    strncpy((char *)ptr, request->sender_name, 63);
+    memcpy(ptr, request->sender_name, strnlen(request->sender_name, 63));
     ptr += 64;
 
     memcpy(ptr, request->sender_dilithium_pubkey, DHT_DILITHIUM5_PUBKEY_SIZE);
     ptr += DHT_DILITHIUM5_PUBKEY_SIZE;
 
     memset(ptr, 0, 256);
-    strncpy((char *)ptr, request->message, 255);
+    memcpy(ptr, request->message, strnlen(request->message, 255));
     ptr += 256;
 
     /* v2: include salt in signed data */
