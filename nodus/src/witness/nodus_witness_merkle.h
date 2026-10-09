@@ -291,6 +291,32 @@ int nodus_witness_merkle_compute_validator_root(nodus_witness_t *w,
 int nodus_witness_merkle_compute_delegation_root(nodus_witness_t *w,
                                                   uint8_t *root_out);
 
+/**
+ * HF-6 sub-slice 3d — the validator subtree root over the generation-4
+ * rows: leaf value = SHA3-512(0x02 ‖ the §6.3 body,
+ * nodus_validator_v2_leaf_encode) per validators row in pubkey_hash
+ * (= validator_id) ASC order, joined with its v2_validator_roles row; then
+ * the RFC 6962 leaf prefix and root, the empty table = the 0x02 sentinel.
+ * A validators row without its roles row, an orphan roles row or a
+ * malformed row FAILS (-1). Design docs/plans/2026-10-03-hf5-validator-
+ * owner-stake-design.md rev 6 §6.3. Called only by
+ * nodus_witness_system_root_v5 (the HF-6 generation's composition).
+ * @return 0 / -1.
+ */
+int nodus_witness_merkle_compute_validator_root_v2(nodus_witness_t *w,
+                                                   uint8_t *root_out);
+
+/**
+ * HF-6 sub-slice 3d — the delegation subtree root over the generation-4
+ * rows: leaf value = SHA3-512(0x03 ‖ delegator_fp ‖ validator_id ‖
+ * amount u64 BE ‖ delegated_at_block u64 BE) (§6.4, 145-byte preimage) in
+ * (validator_id, delegator_fp) ASC order; RFC 6962 as above; the empty
+ * table = the 0x03 sentinel. A malformed row FAILS (-1). Called only by
+ * nodus_witness_system_root_v5. @return 0 / -1.
+ */
+int nodus_witness_merkle_compute_delegation_root_v2(nodus_witness_t *w,
+                                                    uint8_t *root_out);
+
 /* Root-layout round (K2/K3, 2026-09-25):
  * nodus_witness_merkle_compute_epoch_state_root (the `epoch_state`
  * subtree — the table is dropped from the schema) and

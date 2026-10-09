@@ -606,3 +606,55 @@ int nodus_delegation_v2_list_by_validator(nodus_witness_t *w,
     *count_out = n;
     return 0;
 }
+
+/* ══ HF-6 sub-slice 3d — the §6.4 leaf body and the full scan ══════════
+ * Contract: nodus_witness_delegation.h. */
+
+static void delegation_v2_put64(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
+}
+
+int nodus_delegation_v2_leaf_encode(const nodus_v2_delegation_row_t *row,
+                                    uint8_t out[NODUS_V2_DELEGATION_LEAF_BODY_LEN]) {
+    if (!row || !out) return -1;
+    if (row->amount == 0 || row->amount > (uint64_t)INT64_MAX ||
+        row->delegated_at_block > (uint64_t)INT64_MAX)
+        return -1;
+    memcpy(out, row->delegator_fp, NODUS_V2_DELEGATION_KEY_LEN);
+    memcpy(out + 64, row->validator_id, NODUS_V2_DELEGATION_KEY_LEN);
+    delegation_v2_put64(out + 128, row->amount);
+    delegation_v2_put64(out + 136, row->delegated_at_block);
+    return 0;
+}
+
+int nodus_delegation_v2_scan(nodus_witness_t *w,
+                             nodus_v2_delegation_visit_fn fn, void *ud) {
+    if (!w || !w->db || !fn) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT delegator_hash, validator_hash, amount, "
+            "       delegated_at_block "
+            "FROM delegations "
+            "ORDER BY validator_hash ASC, delegator_hash ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    nodus_v2_delegation_row_t row;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (delegation_v2_row_read(st, &row) != 0 || fn(&row, ud) != 0) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 scan aborted mid-stream (rc=%d) — a scan "
+                      "fault is never a shorter set", rc);
+        return -1;
+    }
+    return 0;
+}

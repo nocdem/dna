@@ -2254,6 +2254,23 @@ endif()
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_calls)
 endif()
+# HF-6 sub-slice 3d — the boundary and root readers under the generation-4
+# keys (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.6, §6.3/§6.4,
+# §7.2, §7.5; plan tasks/hf6-slice3-plan.md §2 "3d"): the §6.3 / §6.4 leaf
+# bytes and roots on a hand-built migrated DB, twin seeded chains through
+# the gen-4 edge and four boundaries (the gate holding on the pre-H and the
+# first post-H copy, base + commission and the 8M self-delegation share to
+# owner_fp, the RETIRING graduation to owner_fp, the same seven
+# re-selected, a byte-identical twin), an own-owner (active_since 2) chain,
+# and a source-scan inventory of every SQL reader of validators /
+# delegations in the boundary / root files (it reads the witness sources
+# through NODUS_HF6_READERS_SRC_DIR). EVM builds only (generation 4).
+# No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_readers)
+target_compile_definitions(test_hf6_readers PRIVATE
+    NODUS_HF6_READERS_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/witness")
+endif()
 
 # cometbft @709fd12b → C port, wave R3-B — the host, the stores, the
 # consensus WAL storage, the privval last-sign-state file and the stored

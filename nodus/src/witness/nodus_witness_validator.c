@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sqlite3.h>
 
@@ -930,5 +931,112 @@ int nodus_validator_v2_bonded_tenured(nodus_witness_t *w,
         return -1;
     }
     *count_out = count;
+    return 0;
+}
+
+/* ══ HF-6 sub-slice 3d — the §6.3 leaf body and the full scan ══════════
+ * Contract: nodus_witness_validator.h. */
+
+static void v2_put64(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
+}
+
+static void v2_put16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+int nodus_validator_v2_leaf_encode(const nodus_v2_validator_row_t *row,
+                                   uint8_t out[NODUS_V2_VALIDATOR_LEAF_BODY_LEN]) {
+    if (!row || !out) return -1;
+    const dnac_validator_record_t *v = &row->rec;
+    const uint64_t u64s[] = {
+        row->consensus_key_effective_epoch, v->self_stake,
+        v->total_delegated, v->external_delegated, v->pending_effective_block,
+        v->active_since_block, v->unstake_commit_block,
+        v->last_validator_update_block, v->consecutive_missed_epochs
+    };
+    for (size_t i = 0; i < sizeof(u64s) / sizeof(u64s[0]); i++) {
+        if (u64s[i] > (uint64_t)INT64_MAX) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "v2 leaf: a u64 field is above "
+                          "INT64_MAX (a negative stored integer) — refusing "
+                          "to hash it");
+            return -1;
+        }
+    }
+    size_t off = 0;
+    memcpy(out + off, row->validator_id, NODUS_V2_VALIDATOR_ID_LEN); off += 64;
+    memcpy(out + off, row->owner_fp, NODUS_V2_OWNER_FP_LEN);         off += 64;
+    memcpy(out + off, v->pubkey, DNAC_PUBKEY_SIZE);       off += DNAC_PUBKEY_SIZE;
+    memcpy(out + off, row->pending_consensus_pubkey, DNAC_PUBKEY_SIZE);
+    off += DNAC_PUBKEY_SIZE;
+    v2_put64(out + off, row->consensus_key_effective_epoch);         off += 8;
+    v2_put64(out + off, v->self_stake);                              off += 8;
+    v2_put64(out + off, v->total_delegated);                         off += 8;
+    v2_put64(out + off, v->external_delegated);                      off += 8;
+    v2_put16(out + off, v->commission_bps);                          off += 2;
+    v2_put16(out + off, v->pending_commission_bps);                  off += 2;
+    v2_put64(out + off, v->pending_effective_block);                 off += 8;
+    out[off] = v->status;                                            off += 1;
+    v2_put64(out + off, v->active_since_block);                      off += 8;
+    v2_put64(out + off, v->unstake_commit_block);                    off += 8;
+    v2_put64(out + off, v->last_validator_update_block);             off += 8;
+    v2_put64(out + off, v->consecutive_missed_epochs);               off += 8;
+    return off == NODUS_V2_VALIDATOR_LEAF_BODY_LEN ? 0 : -1;
+}
+
+int nodus_validator_v2_scan(nodus_witness_t *w,
+                            nodus_v2_validator_visit_fn fn, void *ud) {
+    if (!w || !w->db || !fn) return -1;
+
+    nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));   /* ~5.4 KB */
+    if (!row) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            V2_VAL_SELECT "ORDER BY v.pubkey_hash ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        free(row);
+        return -1;
+    }
+    int64_t visited = 0;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (v2_row_from_stmt(st, row) != 0 || fn(row, ud) != 0) {
+            sqlite3_finalize(st);
+            free(row);
+            return -1;
+        }
+        visited++;
+    }
+    sqlite3_finalize(st);
+    free(row);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_scan aborted mid-stream (rc=%d) — a scan "
+                      "fault is never a shorter set", rc);
+        return -1;
+    }
+
+    /* Every visited validators row had its roles row (v2_row_from_stmt);
+     * the roles PK is validator_id, so equal counts leave no orphan. */
+    st = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT COUNT(*) FROM v2_validator_roles",
+                           -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_scan roles count prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    rc = sqlite3_step(st);
+    sqlite3_int64 n_roles = rc == SQLITE_ROW ? sqlite3_column_int64(st, 0) : -1;
+    sqlite3_finalize(st);
+    if (rc != SQLITE_ROW || n_roles != visited) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_scan: %lld v2_validator_roles rows for "
+                      "%lld validators rows — an orphan roles row (or an "
+                      "unreadable count); fault", (long long)n_roles,
+                      (long long)visited);
+        return -1;
+    }
     return 0;
 }
