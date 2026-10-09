@@ -5687,20 +5687,25 @@ cmt_claim_failed:
     if (phase_6b_ruleset_switch(w, blk, doms, n_dom) != 0)
         goto fail_fault;               /* the helper wrote the reason     */
 
+    /* 6b'''. HF-6 — the GENERATION-4 EDGE, at the end of block H-1 of the
+     * (development) param-16 vote only (phase_6b_gen4_edge above): the
+     * registry 3 -> 4, then the validator migration, SYSTEM + CORE
+     * touched. BEFORE 6b'' — the slot the param-16 RULESET_EDGES row held
+     * (6b') — so an EVM edge and a generation-4 edge in the SAME block
+     * still FAULT here (the registry is not at generation 3 yet) instead
+     * of switching 2 -> 3 -> 4 in one block (test_hf4_switch F3; the
+     * vote's stateful rule (d) keeps them apart, this is the second
+     * line). BEFORE 6c, so the re-scan reloads the generation-4 runtimes
+     * and the roots below commit the migration. */
+    if (phase_6b_gen4_edge(w, blk, doms, n_dom) != 0)
+        goto fail_fault;               /* the helper wrote the reason     */
+
     /* 6b''. Nodus EVM — the EVM ACTIVATION EDGE, at the end of block H-1 of the
      * EVM_ACTIVE vote only (phase_6b_evm_activation above): SYSTEM / CORE
      * to the EVM generation, the EVM record ACTIVE with no head. After 6b'
      * and BEFORE 6c, so the re-scan activates the EVM domain through
      * head_activate in this same block. */
     if (phase_6b_evm_activation(w, blk, doms, n_dom) != 0)
-        goto fail_fault;               /* the helper wrote the reason     */
-
-    /* 6b'''. HF-6 — the GENERATION-4 EDGE, at the end of block H-1 of the
-     * (development) param-16 vote only (phase_6b_gen4_edge above): the
-     * registry 3 -> 4, then the validator migration, SYSTEM + CORE
-     * touched. After 6b'' and BEFORE 6c, so the re-scan reloads the
-     * generation-4 runtimes and the roots below commit the migration. */
-    if (phase_6b_gen4_edge(w, blk, doms, n_dom) != 0)
         goto fail_fault;               /* the helper wrote the reason     */
 
     /* 6c. LIFECYCLE re-scan (unchanged from S5/S6: canonical DomainHead

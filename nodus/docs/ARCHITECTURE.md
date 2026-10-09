@@ -6799,8 +6799,10 @@ ORCHESTRATOR's D1 (i), D4 (unstake_destination untouched), D7 (development trigg
 
 **The edge is its own phase.** The param-16 row of `RULESET_EDGES` (EVM generation → GEN_STORAGE,
 `nodus_witness_v2_apply.c`) is REMOVED; the table holds only HF-4's param-9 row. Generation 4 is
-switched by `phase_6b_gen4_edge` (phase 6b‴), run after 6b′ and 6b″ and before the 6c re-scan,
-inside the block's transaction, at the end of block H−1:
+switched by `phase_6b_gen4_edge` (phase 6b‴), run after 6b′ and BEFORE 6b″ (the slot the param-16
+edge row held — an EVM edge and a generation-4 edge in the same block therefore still FAULT, the
+registry not yet at generation 3; `test_hf4_switch` F3) and before the 6c re-scan, inside the block's
+transaction, at the end of block H−1:
 1. trigger — during development the existing param-16 row with `DNAC_CFG_RULESET_GEN_STORAGE_D`,
    present at H and absent at H−1 (design §10 item 2; slice 8 moves it to param 18 / D4); another
    value is a FAULT; a build without `NODUS_EVM_ENABLED` FAULTs (the 6b″ rule);
