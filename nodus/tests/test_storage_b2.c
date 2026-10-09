@@ -187,9 +187,16 @@
  *    9·P + 2E = 155,520 + 2E blocks, ≈ 12× the run. The engine's half —
  *    st_member_walk handing each segment's published_height to the
  *    predicate — is exercised in D with published_height 1 only.
- *  - D's accrual row also receives its validator distribution (the
- *    merged-accrual design rev 2.2 §5.4), so D's storage credit is proven
- *    only through the pool-1 debit, never per row.
+ *  - D's storage credit is proven only through the pool-1 debit, never
+ *    per row (validators are excluded from the per-row check). Before
+ *    HF-6 that was forced: D's accrual row also received its validator
+ *    distribution (the merged-accrual design rev 2.2 §5.4). Since the
+ *    merged generation-4 edge (block H14 − 1 here, HF-6 sub-slice 3b/3d)
+ *    a validator's base + commission accrue to its row's OWNER — the
+ *    Foundation address for these active_since-1 seats (design 2026-10-03-
+ *    hf5-validator-owner-stake rev 6 §1.6, decision D2) — so D's own row
+ *    now carries only its storage credit; the per-row exclusion is kept
+ *    unchanged.
  *  - "Twin" is two fixtures in one process, not a 7-machine run.
  *
  * Copyright (c) 2026 nocdem
@@ -2649,8 +2656,10 @@ static int t_engine(void) {
               "resets to 0");
         CHECK(s1.streak[gainer] == s0.streak[gainer],
               "the gainer in grace: fail_streak unchanged");
-        if (gainer >= N_VAL)              /* D's row also takes its
-                                           * validator distribution */
+        if (gainer >= N_VAL)              /* validators stay excluded
+                                           * (pre-HF-6: D's row also took
+                                           * its validator distribution;
+                                           * see HOW IT CAN LIE) */
             CHECK(s1.acc[gainer] == s0.acc[gainer],
                   "the gainer in grace: no storage credit");
         const uint64_t j6 = (T + 6 * E_LEN) / E_LEN;

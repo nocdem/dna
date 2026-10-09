@@ -154,7 +154,15 @@ int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  nodus_witness_system_root_v2 in the same order + storage_root. The
  *  SYSTEM state-root hook selects it when the resolved runtime is
  *  GEN_STORAGE or later (nodus_rt_system_state_root) — before the
- *  storage activation the v4 composition above, unchanged. */
+ *  storage activation the v4 composition above, unchanged.
+ *  HF-6 sub-slice 3d: the validator and delegation legs of v5 are the
+ *  generation-4 leaves (nodus_witness_merkle_compute_validator_root_v2 /
+ *  _delegation_root_v2, design 2026-10-03-hf5-validator-owner-stake rev 6
+ *  §6.3 / §6.4), UNCONDITIONALLY — the leaf version is tied to the
+ *  composition, which the hook already ties to the generation. So v5 is
+ *  computable only over migrated tables (after the generation-4 edge, or
+ *  inside its own block): on a pre-edge database the validators rows have
+ *  no v2_validator_roles rows and this returns -1. */
 int nodus_witness_system_root_v5(nodus_witness_t *w, uint8_t out[64]);
 
 /** attendance_root (tokenomics-v3 P1, D-4 / S-2) over `v2_attendance_epoch`
@@ -200,7 +208,14 @@ int nodus_witness_core_root_v2_evm(nodus_witness_t *w, uint8_t out[64]);
  *  validator_set ‖ treasury, WITHOUT the container-lifetime legs
  *  domain_registry_root / manifest_root / attendance_root. The
  *  genesis-cycle break: DomainManifest.genesis_state_root is THIS value
- *  for SYSTEM (dna_v2_system_payload_root in shared/dnac). */
+ *  for SYSTEM (dna_v2_system_payload_root in shared/dnac).
+ *  HF-6 sub-slice 3d: the v1 leaves, deliberately — this payload is
+ *  evaluated only when a SYSTEM head is ACTIVATED: the registry genesis
+ *  (nodus_witness_domreg_init_genesis, generation 1 pinned) and
+ *  head_activate (nodus_witness_v2_apply.c), which runs for a domain with
+ *  no committed head — SYSTEM gets its head at genesis and is never
+ *  re-activated, so no generation-4 SYSTEM runtime ever reaches the
+ *  payload_root hook (nodus_rt_system_payload_root). */
 int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
                                          uint8_t out[64]);
 
@@ -211,7 +226,12 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
  *  registry's generation. On a chain past the storage activation it is
  *  therefore NOT the committed SYSTEM root; the committed one comes from
  *  the runtime hook (nodus_rt_system_state_root). No consensus path calls
- *  this function (tests compare it on pre-activation chains). */
+ *  this function (tests compare it on pre-activation chains). Past the
+ *  HF-6 edge the v4 composition still COMPUTES (the v1 loaders read the
+ *  re-keyed rows' stored pubkeys — every migrated and every
+ *  migration-created delegation row carries 2592-byte *_pubkey columns),
+ *  so a caller using the committed heads (the have_heads branch) keeps
+ *  working; out_system is then a value of no consensus meaning. */
 int nodus_witness_global_root_v2(nodus_witness_t *w,
                                  uint8_t out_global[64],
                                  uint8_t out_domains[64],

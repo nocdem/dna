@@ -76,10 +76,15 @@
  *  - B's genesis has no delegations, no accrual and one copy epoch; the
  *    three-epoch copy, K4 and the top-up are proven in A only.
  *  - The H-1 roots in B are pinned by SELF-CONSISTENCY (committed ==
- *    recomputed), and in sub-slice 3b they are computed by the v1 leaf
- *    loaders (the gen-4 loaders are 3d). Nothing here crosses an epoch
- *    boundary after H: the boundary readers of the re-keyed tables are
- *    3d's, and their absence is NOT tested here.
+ *    recomputed). Since sub-slice 3d the committed H-1 SYSTEM root is the
+ *    v5 composition over the generation-4 leaves (§6.3 / §6.4 —
+ *    nodus_witness_system_root_v5, checked in B1); the leaf bytes
+ *    themselves are pinned in test_hf6_readers. The new self-delegation
+ *    rows still carry 2592-byte *_pubkey columns: no generation-4 reader
+ *    reads them, but nodus_witness_global_root_v2 still composes the v4
+ *    SYSTEM root through the v1 loaders, which refuse any other length.
+ *    Nothing here crosses an epoch boundary after H: the boundary readers
+ *    of the re-keyed tables are tested in test_hf6_readers.
  *  - The "crash" in B2 is a fault the engine rolls back, not a killed
  *    process; it proves the edge is all-or-nothing inside the block's
  *    transaction.
@@ -811,6 +816,26 @@ static int t_engine_edge(void) {
               nodus_witness_global_root_v2(fx.w, fresh, NULL, NULL, NULL)
                   == 0 && memcmp(committed, fresh, 64) == 0,
               "committed H-1 global root == recomputation");
+    }
+    {
+        /* sub-slice 3d: the H-1 SYSTEM head is the v5 composition over the
+         * generation-4 leaves (nodus_witness_system_root_v5) */
+        sqlite3_stmt *st = NULL;
+        uint8_t head[64], v5[64];
+        int ok = 0;
+        CHECK(sqlite3_prepare_v2(fx.w->db, "SELECT head FROM v2_domain_heads "
+                                 "WHERE domain_id = ?1", -1, &st, NULL)
+              == SQLITE_OK, "prepare");
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)DNA_DOMAIN_SYSTEM);
+        if (sqlite3_step(st) == SQLITE_ROW &&
+            sqlite3_column_bytes(st, 0) == DNA_V2_DOMHEAD_ENC_LEN) {
+            memcpy(head, (const uint8_t *)sqlite3_column_blob(st, 0) + 4, 64);
+            ok = 1;
+        }
+        sqlite3_finalize(st);
+        CHECK(ok && nodus_witness_system_root_v5(fx.w, v5) == 0 &&
+              memcmp(head, v5, 64) == 0,
+              "committed H-1 SYSTEM root == v5 over the gen-4 leaves");
     }
 
     /* block HS: generation 4, no second migration */

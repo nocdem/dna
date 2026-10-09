@@ -206,10 +206,42 @@ int nodus_witness_v2_econ_params_load(nodus_witness_t *w,
  * boundary (nodus_witness_v2_epoch_boundary_apply, after the graduation
  * so the copy reflects the bonded state the next epoch starts from).
  *
+ * THIS ENTRY IS THE PRE-HF-6 KEY DERIVATION (generations 1-3) — exactly
+ * nodus_witness_v2_balance_copy_write_gen(w, epoch_start, NODUS_RT_GEN_1).
+ * Its callers are the engine genesis (always generation 1 — no edge has
+ * run) and tests on pre-edge databases; the boundary calls the _gen entry
+ * with the generation it resolved. Calling this on a database past the
+ * generation-4 edge would key the copy by SHA3-512(pubkey) against
+ * validator_id-keyed rows — never do it.
+ *
  * @return 0 / -2.
  */
 int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
                                         uint64_t epoch_start);
+
+/**
+ * HF-6 sub-slice 3d — the frozen balance copy under the KEY GENERATION
+ * `generation` (nodus_witness_v2_key_generation, read once by the
+ * boundary). Below NODUS_RT_GEN_STORAGE: the rows above, byte-identical.
+ * At NODUS_RT_GEN_STORAGE or later (design 2026-10-03-hf5-validator-owner-
+ * stake rev 6 §1.1, §7.4; plan tasks/hf6-slice3-plan.md §1):
+ *   - one row per `validators` row with self_stake != 0:
+ *       (epoch_start, pubkey_hash, pubkey_hash, kind 0, self_stake)
+ *     — pubkey_hash IS the validator_id after the edge, and the kind-0
+ *     owner = validator_id keeps the reader's "a bond row is owned by its
+ *     validator" invariant;
+ *   - one row per `delegations` row:
+ *       (epoch_start, validator_hash, delegator_hash, kind 1, amount)
+ *     — (validator_id, delegator_fp), the stored values, never hashed;
+ *   - the same STRICT INSERT and the same prune.
+ * These are the keys the edge re-keyed every retained copy to, so the
+ * readers (distribution gate, committee frozen totals) use one key for
+ * copies written before and after H.
+ * @return 0 / -2.
+ */
+int nodus_witness_v2_balance_copy_write_gen(nodus_witness_t *w,
+                                            uint64_t epoch_start,
+                                            uint32_t generation);
 
 /**
  * tokenomics-v3 P3-1 — one validator's FROZEN totals in copy(epoch_start):
@@ -236,6 +268,19 @@ int nodus_witness_v2_balance_copy_frozen(nodus_witness_t *w,
                                          const uint8_t *pubkey,
                                          uint64_t *self_out,
                                          uint64_t *total_out);
+
+/**
+ * HF-6 sub-slice 3d — the same frozen totals, by the copy's own 64-byte
+ * key `vfp` (no hashing): the generation-4 committee passes the
+ * candidate's validator_id (nodus_committee_compute_for_epoch); the
+ * pubkey entry above is exactly this with vfp = SHA3-512(pubkey).
+ * Same return convention (0 read, absent = 0/0; -1 fault).
+ */
+int nodus_witness_v2_balance_copy_frozen_key(nodus_witness_t *w,
+                                             uint64_t epoch_start,
+                                             const uint8_t vfp[64],
+                                             uint64_t *self_out,
+                                             uint64_t *total_out);
 
 /**
  * The chain's payout interval, in epochs (tokenomics-v3 P2, P2-7):
@@ -328,7 +373,24 @@ int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out);
  * copy(src)). Fault stages NODUS_V2_EPST_DIST_ACCRUED /
  * NODUS_V2_EPST_DIST_APPLIED.
  *
+ * HF-6 sub-slice 3d — at `key_generation` >= NODUS_RT_GEN_STORAGE
+ * (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.6, §7.5): every
+ * member is a ruleset-1 entry (slice 3 keeps commit_next at ruleset 1),
+ * resolved by the v1-SNAPSHOT BRIDGE — its copy key is
+ * dna_validator_id_migrated(chain id, entry pubkey) (the key the edge
+ * re-keyed the retained copies to and the boundary writes new copies
+ * under), its row is the validators row holding the entry's pubkey
+ * (has_row; a row whose validator_id is not that migrated id is a FAULT),
+ * and "accrue base + commission to fp(v)" becomes "to the row's
+ * owner_fp" — the Foundation owner for a genesis row, SHA3-512(old
+ * pubkey) for any other migrated row. Everything else above — the gate,
+ * the power, the split, x_d to each copy row's owner (an 8M
+ * self-delegation's owner IS owner_fp) — is unchanged. Below generation 4
+ * the function is byte-identical to before.
+ *
  * @param boundary_height  H — a positive multiple of DNAC_EPOCH_LENGTH.
+ * @param key_generation   the boundary's key generation
+ *                         (nodus_witness_v2_key_generation).
  * @param accrued_out      required; Σ credited this boundary.
  * @return 0 (including "nothing to pay": an empty pool, a zero payout,
  *         a zero total power); -2 NODE-LOCAL FAULT (a DB or allocation
@@ -336,6 +398,7 @@ int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out);
  */
 int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
                                       uint64_t boundary_height,
+                                      uint32_t key_generation,
                                       nodus_v2_epoch_fault_fn fault,
                                       void *fault_ud,
                                       uint64_t *accrued_out);

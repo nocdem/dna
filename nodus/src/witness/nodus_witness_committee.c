@@ -18,6 +18,8 @@
 #include "witness/nodus_witness_vset.h"   /* S3: snapshot-as-authority */
 #include "witness/nodus_witness_v2_econ.h" /* tokenomics-v3 P3-1: the frozen
                                             * copy the selection ranks by */
+#include "witness/nodus_witness_v2_epoch.h" /* HF-6 3d: key generation   */
+#include "witness/nodus_witness_runtime.h"  /* NODUS_RT_GEN_STORAGE      */
 
 #include "nodus/nodus_types.h"       /* NODUS_TREE_TAG_VALIDATOR */
 #include "nodus/nodus_chain_config.h" /* nodus_chain_config_get_u64 */
@@ -392,9 +394,38 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
     const uint64_t copy_epoch = (lookback_block / (uint64_t)DNAC_EPOCH_LENGTH)
                                 * (uint64_t)DNAC_EPOCH_LENGTH;
 
-    dnac_validator_record_t *candidates =
-        calloc((size_t)DNAC_MAX_VALIDATORS, sizeof(*candidates));
-    if (!candidates) return -1;
+    /* ── HF-6 sub-slice 3d: THE KEY GENERATION ────────────────────────
+     * (nodus_witness_v2_key_generation — the committed registry; read
+     * here because this core has callers outside the boundary.) At
+     * generation >= NODUS_RT_GEN_STORAGE the candidate set comes from
+     * nodus_validator_v2_bonded_tenured (the SAME status / tenure filters
+     * and pubkey ASC collect order, each candidate a v2 row whose
+     * validator_id is its pubkey_hash) and the frozen totals are read
+     * from the copy by that validator_id (nodus_witness_v2_balance_copy_
+     * frozen_key) — the key the generation-4 edge re-keyed copy(B − E)
+     * to and the boundary writes every later copy under. The tiebreak
+     * stays SHA3-512(0x02 ‖ pubkey ‖ state_seed) in slice 3 (the
+     * validator_id tiebreak is the ruleset-2 snapshot's, design §7.8,
+     * slice 5), so an unchanged frozen ranking re-selects the same set.
+     * Below generation 4 everything is exactly as before. */
+    uint32_t key_gen = 0;
+    if (nodus_witness_v2_key_generation(w, &key_gen) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: the key generation is unreadable "
+                      "— failing closed", (unsigned long long)e_start);
+        return -1;
+    }
+    const int g4 = key_gen >= NODUS_RT_GEN_STORAGE;
+
+    dnac_validator_record_t *candidates = NULL;
+    nodus_v2_validator_row_t *cand_v2 = NULL;          /* ~5.4 KB each   */
+    if (g4) {
+        cand_v2 = calloc((size_t)DNAC_MAX_VALIDATORS, sizeof(*cand_v2));
+        if (!cand_v2) return -1;
+    } else {
+        candidates = calloc((size_t)DNAC_MAX_VALIDATORS,
+                            sizeof(*candidates));
+        if (!candidates) return -1;
+    }
 
     /* ── S3 tenure anchor fix (found by the 7→9→7 harness) ──────────────
      * The tenure gate used to compare against LOOKBACK_BLOCK
@@ -417,30 +448,40 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
      * even the anchor fix leaves epoch 2E empty (1 + 2E ≤ 2E fails by
      * exactly the one block genesis occupies). */
     int cand_count = 0;
-    if (nodus_validator_bonded_tenured(w, e_start, candidates,
-                                       DNAC_MAX_VALIDATORS,
-                                       &cand_count) != 0) {
+    int crc = g4
+        ? nodus_validator_v2_bonded_tenured(w, e_start, cand_v2,
+                                            DNAC_MAX_VALIDATORS, &cand_count)
+        : nodus_validator_bonded_tenured(w, e_start, candidates,
+                                         DNAC_MAX_VALIDATORS, &cand_count);
+    if (crc != 0) {
         free(candidates);
+        free(cand_v2);
         return -1;
     }
 
     if (cand_count == 0) {
         free(candidates);
+        free(cand_v2);
         return 0;   /* empty committee — count_out already 0 */
     }
 
     /* Build the work table: frozen totals + pre-computed tiebreaks. */
     committee_work_t *work =
         calloc((size_t)cand_count, sizeof(*work));
-    if (!work) { free(candidates); return -1; }
+    if (!work) { free(candidates); free(cand_v2); return -1; }
 
     int n_work = 0;
     for (int i = 0; i < cand_count; i++) {
+        const dnac_validator_record_t *rec =
+            g4 ? &cand_v2[i].rec : &candidates[i];
         uint64_t frozen_self = 0, frozen_total = 0;
-        if (nodus_witness_v2_balance_copy_frozen(w, copy_epoch,
-                                                 candidates[i].pubkey,
-                                                 &frozen_self,
-                                                 &frozen_total) != 0) {
+        int frc = g4
+            ? nodus_witness_v2_balance_copy_frozen_key(
+                  w, copy_epoch, cand_v2[i].validator_id, &frozen_self,
+                  &frozen_total)
+            : nodus_witness_v2_balance_copy_frozen(
+                  w, copy_epoch, rec->pubkey, &frozen_self, &frozen_total);
+        if (frc != 0) {
             /* A copy that cannot be read is never "absent, rank at 0". */
             QGP_LOG_ERROR(LOG_TAG, "epoch %llu: frozen copy %llu unreadable "
                           "for a candidate — failing closed",
@@ -448,6 +489,7 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                           (unsigned long long)copy_epoch);
             free(work);
             free(candidates);
+            free(cand_v2);
             return -1;
         }
         if (frozen_total == 0) {
@@ -458,11 +500,11 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                           (unsigned long long)copy_epoch);
             continue;
         }
-        work[n_work].rec         = &candidates[i];
+        work[n_work].rec         = rec;
         work[n_work].total_stake = frozen_total;
         work[n_work].self_stake  = frozen_self;   /* <= total: own row is
                                                    * one of the summands  */
-        compute_tiebreak_hash(candidates[i].pubkey, state_seed,
+        compute_tiebreak_hash(rec->pubkey, state_seed,
                               work[n_work].tiebreak);
         n_work++;
     }
@@ -480,6 +522,7 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
 
     free(work);
     free(candidates);
+    free(cand_v2);
     return 0;
 }
 

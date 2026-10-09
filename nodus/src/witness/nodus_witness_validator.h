@@ -167,8 +167,12 @@ int nodus_validator_list_paged(nodus_witness_t *w,
  * state: every function below reports it as a FAULT (-1), never as
  * "absent" (1) — a DB failure or an inconsistency is never a value.
  *
- * NO PRODUCTION CALLER YET: the HF-6 boundary readers (sub-slice 3d) and
- * the migration (3b) consume these. Every function above is unchanged.
+ * CALLERS (sub-slice 3d, every one behind a generation-4 test): the
+ * distribution's v1-snapshot bridge (get_by_pubkey, nodus_witness_v2_
+ * econ.c), the graduation (get + update, nodus_witness_v2_epoch.c), the
+ * committee (bonded_tenured, nodus_witness_committee.c) and the v5 root's
+ * validator leaves (scan + leaf_encode below, nodus_witness_merkle.c).
+ * Every function above is unchanged.
  * `dnac/include/dnac/validator.h` (a client header) is NOT extended — the
  * row type is witness-local. ~5.4 KB per row: callers heap-allocate
  * arrays. */
@@ -267,6 +271,75 @@ int nodus_validator_v2_bonded_tenured(nodus_witness_t *w,
                                       nodus_v2_validator_row_t *out,
                                       int cap,
                                       int *count_out);
+
+/* ══ HF-6 sub-slice 3d — the v2 validator leaf and the full scan ════════
+ *
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §6.3 (APPROVED bytes, operator 2026-10-08 "hepsi onaylı"): the
+ * validator leaf v2 is 5390 bytes — the tree tag 0x02 (unchanged,
+ * NODUS_TREE_TAG_VALIDATOR) followed by the BODY below, all integers
+ * big-endian:
+ *
+ *   off  field                              len
+ *      0 validator_id                         64
+ *     64 owner_fp                             64
+ *    128 consensus_pubkey                   2592
+ *   2720 pending_consensus_pubkey           2592
+ *   5312 consensus_key_effective_epoch u64     8
+ *   5320 self_stake u64                        8
+ *   5328 total_delegated u64                   8
+ *   5336 external_delegated u64                8
+ *   5344 commission_bps u16                    2
+ *   5346 pending_commission_bps u16            2
+ *   5348 pending_effective_block u64           8
+ *   5356 status u8                             1
+ *   5357 active_since_block u64                8
+ *   5365 unstake_commit_block u64              8
+ *   5373 last_validator_update_block u64       8
+ *   5381 consecutive_missed_epochs u64         8
+ *   5389 (end)
+ *
+ * unstake_destination_fp / unstake_destination_pubkey are NOT in it
+ * (§6.3 "v1'den çıkan"). The body is also the value plan
+ * tasks/hf6-slice3-plan.md §2 "3c" names for the gen-4 SYSTEM adapter op
+ * (leaf minus tag) — ONE encoder for both. */
+
+#define NODUS_V2_VALIDATOR_LEAF_BODY_LEN  5389u
+
+/**
+ * Encode `row` as the §6.3 leaf body. Every u64 field must be within
+ * [0, INT64_MAX] — the stored SQLite INTEGER range; a value above it can
+ * only come from a negative stored integer cast through uint64_t, i.e.
+ * local corruption — and is refused rather than hashed.
+ * @return 0 / -1.
+ */
+int nodus_validator_v2_leaf_encode(const nodus_v2_validator_row_t *row,
+                                   uint8_t out[NODUS_V2_VALIDATOR_LEAF_BODY_LEN]);
+
+/** Visitor of nodus_validator_v2_scan: nonzero stops the scan (fault). */
+typedef int (*nodus_v2_validator_visit_fn)(const nodus_v2_validator_row_t *row,
+                                           void *ud);
+
+/**
+ * EVERY v2 validator row, in validators.pubkey_hash (= validator_id) ASC
+ * order — the §6.3 leaf order — each decoded by the same strict reader as
+ * nodus_validator_v2_get (blob lengths exact, the one "no pending key"
+ * encoding, a validators row without its roles row is a FAULT). After
+ * the scan the v2_validator_roles row count must equal the number of
+ * validators rows visited: a roles row with no validators row (an
+ * orphan) is a FAULT too, so neither table can hold state the other —
+ * and therefore the root — does not see.
+ *
+ * Read-only; one statement open at a time (the visitor must not write
+ * either table). `row` passed to the visitor is a scratch buffer reused
+ * per row (~5.4 KB, heap).
+ *
+ * @return 0 every row visited (none is fine); -1 fault (SQLite error, a
+ *         malformed / half-migrated row, an orphan roles row, an
+ *         allocation failure, or a visitor returning nonzero).
+ */
+int nodus_validator_v2_scan(nodus_witness_t *w,
+                            nodus_v2_validator_visit_fn fn, void *ud);
 
 #ifdef __cplusplus
 }

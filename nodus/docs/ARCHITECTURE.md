@@ -6842,8 +6842,10 @@ fault. Order:
   only when a source existed). Every statement's rc and row count is checked.
 
 **The new self-delegation row's `*_pubkey` columns** are written full-length, although no gen-4
-reader reads them (plan §1): until sub-slice 3d the H−1 SYSTEM root is still composed by the v1
-delegation leaf loader (`nodus_witness_merkle.c`), which refuses any other length. validator_pubkey =
+reader reads them (plan §1): in 3b the H−1 SYSTEM root was still composed by the v1 delegation leaf
+loader (`nodus_witness_merkle.c`), which refuses any other length. Sub-slice 3d moved the v5 root to
+the v2 leaves and KEPT the full-length write: `nodus_witness_global_root_v2` still composes the v4
+SYSTEM root through the v1 loaders after the edge (see "HF-6 sub-slice 3d"). validator_pubkey =
 the consensus key; delegator_pubkey = that key when the owner IS SHA3-512(key), else 2592 × 0x00 (a
 Foundation owner is a 2-of-3 address with no single key; zeros never tie with a real key in the v1
 loader's order).
@@ -6869,6 +6871,103 @@ generation 4 after H−1, seven Foundation-owned rows, committed root == recompu
 migration at H; a faulted H−1 attempt rolled back and replayed equals a twin's single apply).
 `test_hf4_switch` `t_storage_switch` rewritten for the merged edge (its pre-edge v5 probe dropped).
 Written, NOT run by the author.
+
+### HF-6 sub-slice 3d — the boundary and root readers under the generation-4 keys (2026-10-09, branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.6 (base + commission to
+owner_fp), §6.3 / §6.4 (leaf v2 bytes, approved), §7.2 (RETIRING graduates to owner_fp, Q4 = a),
+§7.4, §7.5 (v1-snapshot bridge), §7.8 (the validator_id tiebreak is slice 5's); plan
+`tasks/hf6-slice3-plan.md` §2 "3d", §3, §4; decisions Kurultay #14 (K2, K4) and Kurultay #16 (D2).
+Before 3d the first epoch boundary after H faulted on every node (the distribution read the copy by
+SHA3-512(entry pubkey) against validator_id-keyed rows — `test_storage_b2` / `test_storage_empty`).
+
+**The key generation.** `nodus_witness_v2_key_generation(w, &gen)` (`nodus_witness_v2_epoch.{h,c}`):
+the committed registry's SYSTEM runtime generation (`nodus_witness_v2_runtime_for`, the payday
+precedent); no SYSTEM registry row → generation 1 (a DB that never crossed an edge); a row that does
+not resolve, or any read fault → -2. The generation-4 edge switches the registry and re-keys the rows
+in one transaction, so the resolved generation and the rows' keys agree in every observable state.
+`nodus_witness_v2_epoch_boundary_apply` reads it ONCE (right after the height gate) and passes it to
+the distribution, the graduation and the copy write; `nodus_committee_compute_for_epoch` reads it
+itself (it has callers outside the boundary — `vset.c`, the committee cache). Every check below is
+`gen >= NODUS_RT_GEN_STORAGE`; below it every reader is byte-identical to before.
+
+**Root side.** The SYSTEM composition dispatcher is unchanged (`nodus_rt_system_state_root`,
+`nodus_witness_v2_claims.c`: generation ≥ GEN_STORAGE → `nodus_witness_system_root_v5`). The leaf
+version is tied to the composition: `system_legs_v4(w, l, v2_leaves)` (`nodus_witness_roots_v2.c`) —
+v4 passes 0 (the v1 loaders, untouched), v5 passes 1: `nodus_witness_merkle_compute_validator_root_v2`
+/ `_delegation_root_v2` (`nodus_witness_merkle.c`). Same tags (0x02 / 0x03) and two-stage shape as
+v1: leaf value = SHA3-512(tag ‖ body), RFC 6962 leaf prefix, RFC 6962 root, empty table = the tagged
+sentinel. Bodies (one encoder each, shared with sub-slice 3c's adapter value):
+
+| §6.3 validator body, 5389 B (+ tag = 5390) | off | len |
+|---|---|---|
+| validator_id | 0 | 64 |
+| owner_fp | 64 | 64 |
+| consensus_pubkey (`validators.pubkey`) | 128 | 2592 |
+| pending_consensus_pubkey | 2720 | 2592 |
+| consensus_key_effective_epoch u64 | 5312 | 8 |
+| self_stake, total_delegated, external_delegated u64 | 5320 / 5328 / 5336 | 8 each |
+| commission_bps, pending_commission_bps u16 | 5344 / 5346 | 2 each |
+| pending_effective_block u64 | 5348 | 8 |
+| status u8 | 5356 | 1 |
+| active_since_block, unstake_commit_block, last_validator_update_block, consecutive_missed_epochs u64 | 5357 / 5365 / 5373 / 5381 | 8 each |
+
+All big-endian; `unstake_destination_*` are not in it. Order: `validators.pubkey_hash` (= validator_id)
+ASC over `validators LEFT JOIN v2_validator_roles`; a validators row without its roles row, an orphan
+roles row (count check), a malformed row or a u64 above INT64_MAX FAILS the root. §6.4 body, 144 B (+
+tag = 145): `delegator_fp ‖ validator_id ‖ amount u64 ‖ delegated_at_block u64`, ORDER BY
+`validator_hash, delegator_hash`. Consequence: v5 is computable only over migrated tables (before the
+edge it returns -1); its one production caller is generation-gated. The payload root
+(`nodus_witness_system_payload_root_v2`, dispatcher `nodus_rt_system_payload_root`) is unchanged: it
+runs only when a SYSTEM head is activated — the registry genesis (generation 1) — and SYSTEM is never
+re-activated (`head_activate` runs for a domain with no committed head), so no generation-4 runtime
+reaches it. `nodus_witness_global_root_v2` still composes v4 (no generation input; no consensus
+caller) — it keeps computing after the edge because every delegation row, re-keyed or created by the
+migration, keeps 2592-byte `*_pubkey` columns.
+
+**Boundary side.**
+- Balance copy: `nodus_witness_v2_balance_copy_write_gen(w, epoch, gen)` (`nodus_witness_v2_econ.c`).
+  Gen 4: kind-0 rows `(pubkey_hash, pubkey_hash, self_stake)` and kind-1 rows `(validator_hash,
+  delegator_hash, amount)` — the stored keys, never hashed; the same keys the edge re-keyed older
+  copies to. `nodus_witness_v2_balance_copy_write(w, epoch)` stays the pre-HF-6 derivation (= `_gen`
+  with generation 1) for the engine genesis and pre-edge tests.
+- Frozen totals: `nodus_witness_v2_balance_copy_frozen_key(w, epoch, vfp64, …)`; the pubkey entry is
+  `_key(SHA3-512(pubkey))`.
+- Distribution (`nodus_witness_v2_settlement_apply(w, H, key_generation, …)`), gen 4, the v1-snapshot
+  BRIDGE (§7.5): the governing snapshot must be ruleset 1 (else -2 — ruleset 2 is slice 5's); per
+  entry `vfp = dna_validator_id_migrated(chain_id, entry.pubkey)` (chain id from
+  `nodus_witness_v2_chain_id`, the migration's own input), `has_row` and `owner_fp` from
+  `nodus_validator_v2_get_by_pubkey` (a found row whose validator_id is not that migrated id → -2);
+  base + commission accrue to `owner_fp` (§1.6) — gens 1-3 accrue to the node key's fp as before
+  (`owner_fp = vfp`). The x_d split is unchanged and pays each copy row's owner, so the 8M
+  self-delegation's share lands on owner_fp too. Attendance stays by entry pubkey.
+- Committee (`nodus_committee_compute_for_epoch`), gen 4: candidates from
+  `nodus_validator_v2_bonded_tenured`, frozen totals by validator_id; tiebreak stays
+  SHA3-512(0x02 ‖ pubkey ‖ seed) in slice 3, so an unchanged frozen ranking re-selects the same set.
+  The genesis bootstrap path (`top_n`, by value) is unchanged.
+- Graduation (`v2ep_graduate`, `nodus_witness_v2_epoch.c`), gen 4: the candidate scan also collects
+  `pubkey_hash`; the row is read by `nodus_validator_v2_get` (its pubkey must be the scanned one),
+  checked by a v2 shape predicate (every numeric condition, no destination-fp check — the column is
+  out of the leaf and never read, plan D4), the bond released to hex(owner_fp), the delegations
+  (`v2ep_release_delegations` gen-4 arm: count + list by validator_id through the 3a reader) each
+  released to hex(delegator_fp), the row written back by `nodus_validator_v2_update`. grad_id and the
+  R5-3 deferral stay pubkey-based.
+- Unchanged by design (value / pubkey scans): commission activation, Rule N, attendance, the boundary
+  flips (`vset.c`), the supply equation (`v2_claims.c`), the p2p bonded set (`p2p.c`).
+
+**Tests.** New `test_hf6_readers` (EVM builds): the §6.3 / §6.4 bytes and roots against a hand
+restatement on a migrated DB (with the missing / orphan roles row and pre-migration faults and the
+empty sentinels); twin seeded chains through the edge and boundaries E..4E — the gate holding on the
+pre-H copy(0) (self_bond 10M) and the first post-H copy(E) (2M + an 8M Foundation-owned
+self-delegation), every accrual moving by exactly the restated split (base + commission and the 8M
+share to the Foundation owner, KD's share to KD, no node-key accrual row), a RETIRING row graduating
+its 10M to hex(Foundation) and its 3M delegation to the delegator, the same seven re-selected, twin
+databases byte-identical; an own-owner chain (V6 `active_since_block` 2 — its own fp paid); and a
+source-scan inventory of every `validators` / `delegations` reader in eight boundary / root files
+(pinned per function and count; ARMED functions must test `NODUS_RT_GEN_STORAGE`).
+`test_hf6_migrate` B1 also pins the committed H−1 SYSTEM root to `nodus_witness_system_root_v5`.
+`test_storage_b2` / `test_storage_empty`: no assertion changed (the validators stay excluded from
+their per-row accrual checks); a b2 comment updated. Written, NOT run by the author.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
@@ -8138,7 +8237,7 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_reward_accrual` | tokenomics-v3 P2: rewards credited at each boundary, one row per recipient fp, paid out and emptied at each payday; a leg of `core_state_root` |
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
-| `v2_validator_roles` | HF-6 sub-slice 3a (schema S18, branch `hf6` only): `validator_id` BLOB PK 64, `owner_fp` 64, `pending_consensus_pubkey` 2592 (all-zero = none), `consensus_key_effective_epoch` (0 = none); joined on `validators.pubkey_hash` = validator_id under the HF-6 generation; in the BASE schema; EMPTY until the HF-6 edge, where `nodus_witness_v2_roles_migrate` (3b) writes one row per validator; no root reads it yet (3d); NOT a genesis-bundle table |
+| `v2_validator_roles` | HF-6 sub-slice 3a (schema S18, branch `hf6` only): `validator_id` BLOB PK 64, `owner_fp` 64, `pending_consensus_pubkey` 2592 (all-zero = none), `consensus_key_effective_epoch` (0 = none); joined on `validators.pubkey_hash` = validator_id under the HF-6 generation; in the BASE schema; EMPTY until the HF-6 edge, where `nodus_witness_v2_roles_migrate` (3b) writes one row per validator; the generation-4 validator leaf (§6.3, the "NDS.SYS.v5" root since 3d) joins it; NOT a genesis-bundle table |
 | `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
 | `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`, `fail_streak` 0..2^32−1 (B2a); typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT and the storage epoch boundary (B2a: exit release, fail_streak); its registry root (leaf `NDS.STLEAF.v2`) is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
 | `v2_storage_sets` / `v2_storage_set_members` | archive reward (package B2a, branch only): the frozen storage sets S(H) — header (`epoch_start` PK, `set_hash`, `member_count` 0..256) and members (`epoch_start`, `node_fp`; `fail_streak` as frozen at H, not hashed by S(H)); written by the storage boundary (freeze at every storage boundary, prune below B−2E); `sets_root` leg of `storage_root` |

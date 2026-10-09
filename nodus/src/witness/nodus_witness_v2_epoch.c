@@ -16,6 +16,10 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_addr_index.h"  /* node-local release rows */
 #include "witness/nodus_witness_v2_storage.h"  /* archive reward: step 1b' */
+#include "witness/nodus_witness_delegation.h"  /* HF-6 3d: v2 delegations */
+#include "witness/nodus_witness_domreg.h"      /* HF-6 3d: key generation  */
+#include "witness/nodus_witness_v2_claims.h"   /* v2_runtime_for           */
+#include "witness/nodus_witness_runtime.h"     /* NODUS_RT_GEN_*           */
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (Rule N
                                                 weight floor, round 6)   */
 
@@ -135,6 +139,57 @@ int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v) {
         return 0;
     if (v->status > (uint8_t)DNAC_VALIDATOR_ELIGIBLE) return 0;
     return v2ep_fp_ok(v->unstake_destination_fp);
+}
+
+/* HF-6 sub-slice 3d — the graduation's writable-shape check on a
+ * generation-4 row: every numeric condition of
+ * nodus_witness_v2_epoch_val_rec_ok, WITHOUT the 128-hex
+ * unstake_destination_fp check — under the HF-6 generation the bond is
+ * released to the row's owner_fp (design 2026-10-03-hf5-validator-owner-
+ * stake rev 6 §7.2, Q4 = a), the destination column is out of the leaf
+ * (§6.3) and is never read (plan decision D4). The owner itself is
+ * checked by the v2 row reader (64 bytes, not all-zero). @return 1/0. */
+static int v2ep_val_rec_ok_v2(const dnac_validator_record_t *v) {
+    if (!v) return 0;
+    const uint64_t u64s[] = {
+        v->self_stake, v->total_delegated, v->external_delegated,
+        v->pending_effective_block, v->active_since_block,
+        v->unstake_commit_block, v->last_validator_update_block,
+        v->consecutive_missed_epochs
+    };
+    for (size_t i = 0; i < sizeof(u64s) / sizeof(u64s[0]); i++)
+        if (u64s[i] > V2EP_STORE_MAX) return 0;
+    if (v->commission_bps > DNAC_COMMISSION_BPS_MAX ||
+        v->pending_commission_bps > DNAC_COMMISSION_BPS_MAX)
+        return 0;
+    return v->status <= (uint8_t)DNAC_VALIDATOR_ELIGIBLE;
+}
+
+/* HF-6 sub-slice 3d — contract: nodus_witness_v2_epoch.h. */
+int nodus_witness_v2_key_generation(nodus_witness_t *w, uint32_t *gen_out) {
+    if (!w || !w->db || !gen_out) return -2;
+    dna_domreg_record_t rec;
+    int rc = nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, &rec, NULL, NULL);
+    if (rc == 1) {                 /* no registry row: never past an edge */
+        *gen_out = NODUS_RT_GEN_1;
+        return 0;
+    }
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "key generation: the SYSTEM registry row is "
+                      "unreadable (rc=%d) — a fault is never generation 1",
+                      rc);
+        return -2;
+    }
+    const nodus_domain_runtime_t *rt = NULL;
+    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 1, &rt) != 0 ||
+        !rt) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "key generation: the SYSTEM registry "
+                      "row does not resolve to an ACTIVE runtime this build "
+                      "carries — refusing to guess the key derivation");
+        return -2;
+    }
+    *gen_out = rt->generation;
+    return 0;
 }
 
 /* ── stage 1: pending commission activation ────────────────────────── */
@@ -405,76 +460,126 @@ static int v2ep_pubkey_in_snapshot(const dna_vset_snapshot_t *snap,
  * rank that would leave the index band, a DB error. There is no verdict
  * class at a boundary.
  *
+ * HF-6 sub-slice 3d (`gen` >= NODUS_RT_GEN_STORAGE — the key generation
+ * the boundary resolved once, nodus_witness_v2_key_generation): the rows
+ * are selected by validator_hash = `key` = the graduate's validator_id,
+ * in delegator_hash (= delegator_fp) ASC order through the 3a v2 reader
+ * (count, then the whole list — never a truncation), and the owner IS the
+ * row's delegator_fp, hex-encoded directly (design 2026-10-03-hf5-
+ * validator-owner-stake rev 6 §1.1, §6.4: the delegations key is the
+ * untagged SHA3-512(dpk) — the same value the gens-1-3 arm derives from
+ * the pubkey, so the release owner of a re-keyed row is unchanged). The
+ * *_pubkey columns are not read. Below generation 4 `key` is the
+ * graduate's consensus pubkey and the arm is the code above, unchanged.
+ *
+ * @param key           gens 1-3: the validator pubkey (DNAC_PUBKEY_SIZE);
+ *                      gen 4: its validator_id (64).
  * @param rank_io       the boundary's running rank; advanced by the
  *                      number of rows released.
  * @param released_out  Σ released amounts (checked).
  * @return 0 / -2. */
 static int v2ep_release_delegations(nodus_witness_t *w, uint64_t h,
+                                    uint32_t gen,
                                     const uint8_t tx_hash[64],
-                                    const uint8_t vpk[DNAC_PUBKEY_SIZE],
+                                    const uint8_t *key,
                                     uint64_t unlock,
                                     uint32_t *rank_io,
                                     uint64_t *released_out) {
     *released_out = 0;
 
-    uint8_t pre[1 + DNAC_PUBKEY_SIZE];
-    pre[0] = (uint8_t)NODUS_TREE_TAG_DELEGATION;
-    memcpy(pre + 1, vpk, DNAC_PUBKEY_SIZE);
-    uint8_t vhash[64];
-    if (qgp_sha3_512(pre, sizeof(pre), vhash) != 0) return -2;
-
     typedef struct {
-        uint8_t  dpk[DNAC_PUBKEY_SIZE];
+        uint8_t  dpk[DNAC_PUBKEY_SIZE];   /* gens 1-3                     */
+        uint8_t  dfp[64];                 /* gen 4: delegator_fp          */
         uint64_t amount;
     } v2ep_deleg_row_t;
     v2ep_deleg_row_t *rows = NULL;
     size_t n = 0, cap = 0;
     uint64_t released = 0;
     int ret = -2;
-    int rc;
-
+    int rc = SQLITE_DONE;
+    uint8_t vhash[64];
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT delegator_pubkey, amount FROM delegations "
-            "WHERE validator_hash = ?1 ORDER BY delegator_hash ASC",
-            -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "delegation release prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -2;
-    }
-    if (sqlite3_bind_blob(st, 1, vhash, 64, SQLITE_TRANSIENT) != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -2;
-    }
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        const void *dpk = sqlite3_column_blob(st, 0);
-        int dpk_len = sqlite3_column_bytes(st, 0);
-        sqlite3_int64 a = sqlite3_column_int64(st, 1);
-        if (!dpk || dpk_len != DNAC_PUBKEY_SIZE || a <= 0) {
-            /* amount 0 is malformed too: UNDELEGATE deletes a drained
-             * row (rtn_undelegate_exec), so no committed row holds 0. */
-            QGP_LOG_ERROR(LOG_TAG, "delegation release: malformed "
-                          "delegation row (pubkey %d bytes, amount %lld)",
-                          dpk_len, (long long)a);
-            sqlite3_finalize(st);
+
+    if (gen >= NODUS_RT_GEN_STORAGE) {
+        /* ── generation 4: (delegator_fp, validator_id) rows ─────────── */
+        memcpy(vhash, key, 64);
+        int cnt = 0;
+        if (nodus_delegation_v2_count_by_validator(w, vhash, &cnt) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "delegation release: the v2 count "
+                          "is unreadable");
+            return -2;
+        }
+        if (cnt == 0) return 0;
+        nodus_v2_delegation_row_t *v2 = calloc((size_t)cnt, sizeof(*v2));
+        rows = calloc((size_t)cnt, sizeof(*rows));
+        int got = 0;
+        if (!v2 || !rows ||
+            nodus_delegation_v2_list_by_validator(w, vhash, v2, cnt,
+                                                  &got) != 0 ||
+            got != cnt) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "delegation release: the v2 list is "
+                          "unreadable or disagrees with its count");
+            free(v2);
             goto done;
         }
-        if (n == cap) {
-            size_t nc = cap ? cap * 2 : 16;
-            v2ep_deleg_row_t *nr = realloc(rows, nc * sizeof(*nr));
-            if (!nr) { sqlite3_finalize(st); goto done; }
-            rows = nr;
-            cap = nc;
+        for (int i = 0; i < got; i++) {
+            /* the v2 reader proved amount in [1, INT64_MAX] */
+            memcpy(rows[i].dfp, v2[i].delegator_fp, 64);
+            rows[i].amount = v2[i].amount;
         }
-        memcpy(rows[n].dpk, dpk, DNAC_PUBKEY_SIZE);
-        rows[n].amount = (uint64_t)a;
-        n++;
-    }
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "delegation release scan failed (rc=%d): %s",
-                      rc, sqlite3_errmsg(w->db));
-        goto done;
+        free(v2);
+        n = (size_t)got;
+    } else {
+        /* ── generations 1-3: the tagged pubkey keys (unchanged) ────── */
+        uint8_t pre[1 + DNAC_PUBKEY_SIZE];
+        pre[0] = (uint8_t)NODUS_TREE_TAG_DELEGATION;
+        memcpy(pre + 1, key, DNAC_PUBKEY_SIZE);
+        if (qgp_sha3_512(pre, sizeof(pre), vhash) != 0) return -2;
+
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT delegator_pubkey, amount FROM delegations "
+                "WHERE validator_hash = ?1 ORDER BY delegator_hash ASC",
+                -1, &st, NULL) != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "delegation release prepare failed: %s",
+                          sqlite3_errmsg(w->db));
+            return -2;
+        }
+        if (sqlite3_bind_blob(st, 1, vhash, 64, SQLITE_TRANSIENT)
+            != SQLITE_OK) {
+            sqlite3_finalize(st);
+            return -2;
+        }
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            const void *dpk = sqlite3_column_blob(st, 0);
+            int dpk_len = sqlite3_column_bytes(st, 0);
+            sqlite3_int64 a = sqlite3_column_int64(st, 1);
+            if (!dpk || dpk_len != DNAC_PUBKEY_SIZE || a <= 0) {
+                /* amount 0 is malformed too: UNDELEGATE deletes a drained
+                 * row (rtn_undelegate_exec), so no committed row holds 0. */
+                QGP_LOG_ERROR(LOG_TAG, "delegation release: malformed "
+                              "delegation row (pubkey %d bytes, amount "
+                              "%lld)", dpk_len, (long long)a);
+                sqlite3_finalize(st);
+                goto done;
+            }
+            if (n == cap) {
+                size_t nc = cap ? cap * 2 : 16;
+                v2ep_deleg_row_t *nr = realloc(rows, nc * sizeof(*nr));
+                if (!nr) { sqlite3_finalize(st); goto done; }
+                rows = nr;
+                cap = nc;
+            }
+            memcpy(rows[n].dpk, dpk, DNAC_PUBKEY_SIZE);
+            rows[n].amount = (uint64_t)a;
+            n++;
+        }
+        sqlite3_finalize(st);
+        st = NULL;
+        if (rc != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "delegation release scan failed (rc=%d): "
+                          "%s", rc, sqlite3_errmsg(w->db));
+            goto done;
+        }
     }
     if (n == 0) { ret = 0; goto done; }
 
@@ -502,7 +607,10 @@ static int v2ep_release_delegations(nodus_witness_t *w, uint64_t h,
         }
 
         uint8_t ofp[64];
-        if (qgp_sha3_512(rows[i].dpk, DNAC_PUBKEY_SIZE, ofp) != 0) goto done;
+        if (gen >= NODUS_RT_GEN_STORAGE)
+            memcpy(ofp, rows[i].dfp, 64);       /* the key IS the owner   */
+        else if (qgp_sha3_512(rows[i].dpk, DNAC_PUBKEY_SIZE, ofp) != 0)
+            goto done;
         char ofp_hex[QGP_FP_HEX_BUFFER];
         qgp_fp_raw_to_hex(ofp, ofp_hex);
 
@@ -540,10 +648,32 @@ done:
 
 /* ── stage 2: RETIRING → UNSTAKED graduation ───────────────────────── */
 
-static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
+/* HF-6 sub-slice 3d — `gen` is the key generation the boundary resolved
+ * once (nodus_witness_v2_key_generation). At generation >=
+ * NODUS_RT_GEN_STORAGE (design 2026-10-03-hf5-validator-owner-stake rev 6
+ * §7.2, Q4 = a; plan tasks/hf6-slice3-plan.md §2 "3d"):
+ *   - the candidate scan also collects each row's key (pubkey_hash =
+ *     validator_id) — same WHERE, same pubkey ASC order;
+ *   - the row is read as a v2 row by validator_id
+ *     (nodus_validator_v2_get; its consensus pubkey must be the scanned
+ *     one) and checked by v2ep_val_rec_ok_v2 (no destination-fp check);
+ *   - the bond is released to the row's OWNER (hex of owner_fp) — never
+ *     unstake_destination_fp, never the consensus key — a Foundation
+ *     owner for a genesis row (migration, decision D2 (a));
+ *   - the delegations are released by validator_id, each to its
+ *     delegator_fp (v2ep_release_delegations' generation-4 arm), and the
+ *     equality released == total_delegated == external_delegated is
+ *     unchanged (the migration added the 8M self-delegation to both
+ *     totals of a bonded row; a RETIRING row's totals are untouched);
+ *   - the row is written back through nodus_validator_v2_update.
+ * The grad_id / nullifier derivation (pubkey-based, a pure function, not a
+ * DB key) and the R5-3 deferral (by pubkey against the ruleset-1 snapshot)
+ * are unchanged. */
+static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
                          const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                          nodus_v2_epoch_fault_fn fault, void *ud,
                          uint32_t *n_out) {
+    const int g4 = gen >= NODUS_RT_GEN_STORAGE;
     /* tokenomics-v3 P1 round 5 (decision file §3 2026-09-23, "ayrılan
      * validatorun MEZUNİYETİ … ertelenir"; O6 red-team L1-1): a
      * RETIRING/AUTO_RETIRED candidate graduates at H only if it is NOT
@@ -591,7 +721,17 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
      * fail closed. */
     uint8_t (*cand)[DNAC_PUBKEY_SIZE] =
         calloc(2u * (size_t)DNAC_MAX_VALIDATORS, DNAC_PUBKEY_SIZE);
-    if (!cand) { dna_vset_free(&effective); return -2; }
+    /* HF-6 3d: each candidate's validators.pubkey_hash (= validator_id at
+     * generation 4; collected, unused, below it) */
+    uint8_t (*cand_key)[64] = calloc(2u * (size_t)DNAC_MAX_VALIDATORS, 64);
+    nodus_v2_validator_row_t *row2 = g4 ? calloc(1, sizeof(*row2)) : NULL;
+    if (!cand || !cand_key || (g4 && !row2)) {
+        free(cand);
+        free(cand_key);
+        free(row2);
+        dna_vset_free(&effective);
+        return -2;
+    }
     size_t n = 0;
     size_t n_graduated = 0;
     int ret = -2;
@@ -608,7 +748,8 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
             /* tokenomics-v3 P1 (D-11): AUTO_RETIRED graduates the same
              * way RETIRING does — its bond is RETURNED, never cut
              * (decision §3, 2026-09-23). */
-            "SELECT pubkey FROM validators WHERE status IN (?1, ?2) "
+            "SELECT pubkey, pubkey_hash FROM validators "
+            "WHERE status IN (?1, ?2) "
             "ORDER BY pubkey ASC", -1, &sel, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "RETIRING/AUTO_RETIRED prepare failed: %s",
                       sqlite3_errmsg(w->db));
@@ -619,9 +760,12 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
     while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
         const void *pk = sqlite3_column_blob(sel, 0);
         int pk_len = sqlite3_column_bytes(sel, 0);
-        if (!pk || pk_len != DNAC_PUBKEY_SIZE) {
-            QGP_LOG_ERROR(LOG_TAG, "RETIRING/AUTO_RETIRED pubkey wrong "
-                          "size (%d)", pk_len);
+        const void *pkh = sqlite3_column_blob(sel, 1);
+        int pkh_len = sqlite3_column_bytes(sel, 1);
+        if (!pk || pk_len != DNAC_PUBKEY_SIZE ||
+            (g4 && (!pkh || pkh_len != 64))) {
+            QGP_LOG_ERROR(LOG_TAG, "RETIRING/AUTO_RETIRED pubkey / key wrong "
+                          "size (%d / %d)", pk_len, pkh_len);
             sqlite3_finalize(sel);
             goto done;
         }
@@ -634,6 +778,7 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
             sqlite3_finalize(sel);
             goto done;
         }
+        if (g4) memcpy(cand_key[n], pkh, 64);
         memcpy(cand[n++], pk, DNAC_PUBKEY_SIZE);
     }
     sqlite3_finalize(sel);
@@ -657,17 +802,43 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
         }
 
         dnac_validator_record_t v;
-        if (nodus_validator_get(w, cand[i], &v) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "graduate row unreadable");
-            goto done;
-        }
-        /* ACTIVATION OBLIGATION 1 (header): a legacy-malformed row is
-         * refused, never paid out to and never rewritten. */
-        if (!nodus_witness_v2_epoch_val_rec_ok(&v)) {
-            QGP_LOG_ERROR(LOG_TAG, "%s",
-                          "graduate row is legacy-malformed: refusing "
-                          "the boundary (activation obligation 1)");
-            goto done;
+        /* The bond's destination: the 128-hex text the release UTXO is
+         * owned by. Gens 1-3: the row's unstake_destination_fp (checked
+         * by val_rec_ok). Gen 4: hex(owner_fp) (§7.2). */
+        char bond_owner_hex[QGP_FP_HEX_BUFFER];
+        if (g4) {
+            if (nodus_validator_v2_get(w, cand_key[i], row2) != 0 ||
+                memcmp(row2->rec.pubkey, cand[i], DNAC_PUBKEY_SIZE) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "graduate v2 row unreadable, "
+                              "half-migrated, or not the scanned row");
+                goto done;
+            }
+            v = row2->rec;
+            /* ACTIVATION OBLIGATION 1, generation 4: every numeric
+             * condition, no destination-fp condition (never read). */
+            if (!v2ep_val_rec_ok_v2(&v)) {
+                QGP_LOG_ERROR(LOG_TAG, "%s",
+                              "graduate v2 row is malformed: refusing the "
+                              "boundary (activation obligation 1)");
+                goto done;
+            }
+            qgp_fp_raw_to_hex(row2->owner_fp, bond_owner_hex);
+        } else {
+            if (nodus_validator_get(w, cand[i], &v) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "graduate row unreadable");
+                goto done;
+            }
+            /* ACTIVATION OBLIGATION 1 (header): a legacy-malformed row is
+             * refused, never paid out to and never rewritten. */
+            if (!nodus_witness_v2_epoch_val_rec_ok(&v)) {
+                QGP_LOG_ERROR(LOG_TAG, "%s",
+                              "graduate row is legacy-malformed: refusing "
+                              "the boundary (activation obligation 1)");
+                goto done;
+            }
+            /* val_rec_ok proved 128 lowercase hex + NUL */
+            memcpy(bond_owner_hex, v.unstake_destination_fp,
+                   QGP_FP_HEX_BUFFER);
         }
         /* tokenomics-v3 P1 (D-11): captured BEFORE the row is overwritten
          * below — decides whether active_count is decremented for THIS
@@ -740,10 +911,13 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
          * an address-SHAPE check, nodus_witness_v2_gen.c), and the
          * released coin is spent like any multisig coin (auth_kind 3).
          * The destination is a 64-byte address either way — the release
-         * never needs to know whether one key or M-of-N opens it. */
+         * never needs to know whether one key or M-of-N opens it.
+         * HF-6 (generation 4, design §7.2): the destination is the row's
+         * owner_fp instead (bond_owner_hex above) — for a genesis seat the
+         * migration made that the same Foundation address. */
         if (v2ep_release_utxo(w, nul, grad_id, NODUS_V2_EPGRAD_OUT_IDX,
-                              v.unstake_destination_fp, v.self_stake, h,
-                              self_unlock) != 0)
+                              (const uint8_t *)bond_owner_hex, v.self_stake,
+                              h, self_unlock) != 0)
             goto done;
         if (fault && fault(ud, NODUS_V2_EPST_GRAD_RELEASE, (uint32_t)i))
             goto done;
@@ -778,7 +952,8 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
                 nodus_witness_v2_settlement_tx_hash(h, deleg_tx_hash) != 0)
                 goto done;
             uint64_t released = 0;
-            if (v2ep_release_delegations(w, h, deleg_tx_hash, v.pubkey,
+            if (v2ep_release_delegations(w, h, gen, deleg_tx_hash,
+                                         g4 ? cand_key[i] : v.pubkey,
                                          deleg_unlock, &deleg_rank,
                                          &released) != 0)
                 goto done;
@@ -807,7 +982,15 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
         v.self_stake = 0;
         v.total_delegated = 0;
         v.external_delegated = 0;
-        if (nodus_validator_update(w, &v) != 0) {
+        if (g4) {
+            /* the v2 writer: keyed by (validator_id, consensus pubkey) and
+             * (validator_id, owner_fp), both unchanged; 0 = both rows */
+            row2->rec = v;
+            if (nodus_validator_v2_update(w, row2) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "graduate v2 row update failed");
+                goto done;
+            }
+        } else if (nodus_validator_update(w, &v) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "%s", "graduate row update failed");
             goto done;
         }
@@ -828,6 +1011,8 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h,
     ret = 0;
 done:
     free(cand);
+    free(cand_key);
+    free(row2);
     dna_vset_free(&effective);
     return ret;
 }
@@ -1577,6 +1762,17 @@ int nodus_witness_v2_epoch_boundary_apply(
         return 0;
     out->fired = 1;
 
+    /* HF-6 sub-slice 3d: the KEY GENERATION of every keyed reader below,
+     * read ONCE from the committed registry and passed down (contract:
+     * nodus_witness_v2_key_generation). No step of this boundary moves the
+     * registry, so one read is the whole boundary's answer. */
+    uint32_t key_gen = 0;
+    if (nodus_witness_v2_key_generation(w, &key_gen) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "boundary %llu: the key generation is "
+                      "unreadable", (unsigned long long)global_height);
+        return -2;
+    }
+
     if (v2ep_activate_commissions(w, global_height) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_COMMISSIONS, UINT32_MAX))
         return -2;
@@ -1590,8 +1786,9 @@ int nodus_witness_v2_epoch_boundary_apply(
      * prunes. It deliberately
      * does NOT reset attendance itself: step 3c does, inside this same
      * transaction. */
-    if (nodus_witness_v2_settlement_apply(w, global_height, fault, fault_ud,
-                                          &out->dist_accrued) != 0) {
+    if (nodus_witness_v2_settlement_apply(w, global_height, key_gen, fault,
+                                          fault_ud, &out->dist_accrued)
+        != 0) {
         QGP_LOG_ERROR(LOG_TAG, "reward distribution failed at boundary "
                       "%llu", (unsigned long long)global_height);
         return -2;
@@ -1638,7 +1835,7 @@ int nodus_witness_v2_epoch_boundary_apply(
         }
     }
 
-    if (v2ep_graduate(w, global_height, chain_id, fault, fault_ud,
+    if (v2ep_graduate(w, global_height, key_gen, chain_id, fault, fault_ud,
                       &out->n_graduates) != 0)
         return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_GRAD_BATCH, UINT32_MAX))
@@ -1730,7 +1927,8 @@ int nodus_witness_v2_epoch_boundary_apply(
      * stake). The commit_next of boundary H+E ranks by it (P3-1 "okuma
      * B") and the distribution at H+3E splits by it (P3-2). Out of every
      * root. */
-    if (nodus_witness_v2_balance_copy_write(w, global_height) != 0) {
+    if (nodus_witness_v2_balance_copy_write_gen(w, global_height, key_gen)
+        != 0) {
         QGP_LOG_ERROR(LOG_TAG, "balance copy failed at boundary %llu",
                       (unsigned long long)global_height);
         return -2;

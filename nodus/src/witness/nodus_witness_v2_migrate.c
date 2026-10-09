@@ -687,11 +687,16 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
         mg_del_t *d = &m.d[m.nd - 1];
         memcpy(d->dfp, v->owner, MG_KEY);
         memcpy(d->vid, v->vid, MG_KEY);
-        /* The *_pubkey columns are never read under generation 4 (plan
-         * §1). They are still written FULL-LENGTH, because until the
-         * gen-4 leaf loaders land (sub-slice 3d) the H−1 SYSTEM root is
-         * composed by the v1 delegation loader, which refuses any other
-         * length (nodus_witness_merkle.c load_delegation_leaves).
+        /* The *_pubkey columns are never read by a generation-4 reader
+         * (plan §1; the §6.4 leaf, nodus_witness_merkle.c
+         * nodus_witness_merkle_compute_delegation_root_v2, leaves them
+         * out). They are still written FULL-LENGTH (sub-slice 3d kept
+         * this deliberately): the v4 SYSTEM composition — still reached
+         * after the edge through nodus_witness_global_root_v2
+         * (nodus_witness_roots_v2.c), which has no generation input —
+         * composes the v1 delegation loader, which refuses any other
+         * length (load_delegation_leaves); a zero-length column would
+         * turn that helper into a fault on every migrated chain.
          * validator_pubkey = the consensus key (true). delegator_pubkey =
          * that same key when the owner IS SHA3-512(key) (true: the node
          * key is the owner); for a Foundation-owned row there is no

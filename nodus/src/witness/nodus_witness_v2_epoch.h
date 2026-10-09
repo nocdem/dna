@@ -418,6 +418,41 @@ extern "C" {
  */
 int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v);
 
+/**
+ * HF-6 sub-slice 3d — THE KEY GENERATION of the boundary and committee
+ * readers: which key derivation the committed `validators` /
+ * `delegations` / `v2_balance_copy` rows carry right now.
+ *
+ *   generation < NODUS_RT_GEN_STORAGE: the tagged pubkey hashes
+ *     (validators.pubkey_hash = SHA3-512(0x02 ‖ pk), delegations PK =
+ *     (SHA3-512(0x03 ‖ dpk), SHA3-512(0x03 ‖ vpk)), copy rows keyed by the
+ *     untagged SHA3-512(pk)) — every reader exactly as before;
+ *   generation >= NODUS_RT_GEN_STORAGE: the HF-6 keys (design 2026-10-03-
+ *     hf5-validator-owner-stake rev 6 §1.1, §7; plan tasks/hf6-slice3-
+ *     plan.md §1) — validators.pubkey_hash = validator_id, delegations
+ *     = (delegator_fp = SHA3-512(dpk) untagged, validator_id), copy rows
+ *     keyed by validator_id (kind-0 owner = validator_id).
+ *
+ * Read from the COMMITTED registry through nodus_witness_v2_runtime_for
+ * (the payday precedent, nodus_witness_v2_econ.c): the generation-4 edge
+ * switches the registry and re-keys the rows in ONE transaction at the end
+ * of block H−1 (nodus_witness_v2_apply.c phase 6b'''), so in every state a
+ * reader can observe — the edge block's own later phases included — the
+ * resolved generation and the rows' keys agree. A pure function of
+ * committed state: no clock, no node-local input.
+ *
+ * A database with NO SYSTEM registry row (domreg_get → 1) answers
+ * NODUS_RT_GEN_1: such a database (a pre-V2 test fixture, a legacy chain)
+ * has never been through any rule-set edge, so its rows carry the
+ * pre-HF-6 keys. A version-3 chain always has the row (the engine genesis
+ * writes it). A registry row whose tuple does not resolve to an ACTIVE
+ * runtime, or any read fault, is a FAULT — never "generation 1".
+ *
+ * @param gen_out  required; written only on 0.
+ * @return 0 / -2 (node-local fault, the boundary convention).
+ */
+int nodus_witness_v2_key_generation(nodus_witness_t *w, uint32_t *gen_out);
+
 /** The 16-byte graduation-identity tag (zero-padded, exactly 16 B). */
 #define NODUS_V2_EPGRAD_TAG      "NDS.EPGRAD.v1"
 #define NODUS_V2_EPGRAD_TAG_LEN  16u

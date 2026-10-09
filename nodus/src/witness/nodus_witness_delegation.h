@@ -138,8 +138,10 @@ int nodus_delegation_list_by_delegator(nodus_witness_t *w,
  * holds 0 — or a negative delegated_at_block) is a FAULT (-1), never a
  * zero-filled value.
  *
- * NO PRODUCTION CALLER YET (the HF-6 boundary readers, sub-slice 3d). The
- * v1 functions above are unchanged. */
+ * CALLERS (sub-slice 3d, behind a generation-4 test): the graduation's
+ * delegation release (count + list, nodus_witness_v2_epoch.c) and the v5
+ * root's delegation leaves (scan + leaf_encode below,
+ * nodus_witness_merkle.c). The v1 functions above are unchanged. */
 
 #define NODUS_V2_DELEGATION_KEY_LEN  64u
 
@@ -193,6 +195,42 @@ int nodus_delegation_v2_list_by_validator(nodus_witness_t *w,
                                           nodus_v2_delegation_row_t *out,
                                           int cap,
                                           int *count_out);
+
+/* ══ HF-6 sub-slice 3d — the v2 delegation leaf and the full scan ═══════
+ *
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §6.4 (APPROVED bytes): the delegation leaf v2 is 145 bytes — the tree
+ * tag 0x03 (unchanged, NODUS_TREE_TAG_DELEGATION) followed by the BODY
+ *   delegator_fp[64] ‖ validator_id[64] ‖ amount u64 BE ‖
+ *   delegated_at_block u64 BE                              (144 bytes)
+ * in (validator_id ASC, delegator_fp ASC) order. The *_pubkey columns are
+ * not in it. */
+
+#define NODUS_V2_DELEGATION_LEAF_BODY_LEN  144u
+
+/**
+ * Encode `row` as the §6.4 leaf body. amount must be in [1, INT64_MAX]
+ * and delegated_at_block within INT64 (the committed-row rule above).
+ * @return 0 / -1.
+ */
+int nodus_delegation_v2_leaf_encode(const nodus_v2_delegation_row_t *row,
+                                    uint8_t out[NODUS_V2_DELEGATION_LEAF_BODY_LEN]);
+
+/** Visitor of nodus_delegation_v2_scan: nonzero stops the scan (fault). */
+typedef int (*nodus_v2_delegation_visit_fn)(const nodus_v2_delegation_row_t *row,
+                                            void *ud);
+
+/**
+ * EVERY delegation row, ORDER BY validator_hash ASC, delegator_hash ASC
+ * (= validator_id ASC, delegator_fp ASC — the §6.4 leaf order; a TOTAL
+ * order, the pair is the PRIMARY KEY), each decoded by the strict v2 row
+ * reader (a malformed row is a FAULT). Read-only; the visitor must not
+ * write the table.
+ * @return 0 (none is fine); -1 fault (SQLite error, a malformed row, a
+ *         visitor returning nonzero).
+ */
+int nodus_delegation_v2_scan(nodus_witness_t *w,
+                             nodus_v2_delegation_visit_fn fn, void *ud);
 
 #ifdef __cplusplus
 }
