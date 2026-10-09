@@ -223,8 +223,10 @@ static void test_kinds(void) {
     CHECK(kind_of("{\"type\":\"delete\",\"action\":0,\"hashes\":[]}") == NC_MSG_DELETE, "K5 delete notice: delete");
     CHECK(kind_of("{\"type\":\"call_signal\"}") == 0, "K6 call signal: other");
     CHECK(kind_of("{\"type\":\"group_invite\"}") == 0 && kind_of("{\"type\":\"groupinvite\"}") == 0, "K7 group invite: other");
-    CHECK(kind_of("{\"type\":\"token_transfer\"}") == 0 && kind_of("{\"type\":\"media_ref\"}") == 0 &&
-          kind_of("{\"type\":\"image_attachment\"}") == 0, "K8 card payloads: other");
+    CHECK(kind_of("{\"type\":\"media_ref\"}") == 0 &&
+          kind_of("{\"type\":\"image_attachment\"}") == 0, "K8 media card payloads: other");
+    CHECK(kind_of("{\"type\":\"token_transfer\",\"amount\":\"1\"}") == NC_MSG_TRANSFER &&
+          kind_of("{\"type\":7}") == NC_MSG_CHAT, "K13 token_transfer (string type): payment card");
     CHECK(kind_of("{\"type\":\"something\"}") == NC_MSG_CHAT, "K9 unknown JSON type: chat");
     CHECK(nc_plaintext_kind((const uint8_t *)"", 0) == -1 && nc_plaintext_kind(NULL, 3) == -1, "K10 empty / NULL: unknown");
     const uint8_t nul_cut[] = { 'h', 'i', 0, '{', '}' };

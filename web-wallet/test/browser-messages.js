@@ -77,7 +77,17 @@ try {
     const hex = s => Array.from(new TextEncoder().encode(s), b => b.toString(16).padStart(2, '0')).join('');
     const T = n => String(1791500000 + n);
     const first = 'hello see https://nodusnetwork.io/wiki.', gone = 'this will be deleted';
+    // Payment cards (0.1.90): one B really paid (the fake history has the
+    // matching spend_in), one forged (its wire's row says 1 raw unit).
+    const { buildTransfer } = await import('/src/connect/ui/actions.js');
+    const WIRE_OK = 'e1'.repeat(64), WIRE_FAKE = 'e2'.repeat(64), NATIVE = '0'.repeat(128);
+    window.__history = [
+      { h: 900n, i: 0n, q: 0n, kind: 'spend_in', amount: 250000000n, token: NATIVE, fee: 0n, peer: B, wire: WIRE_OK, ts: 1n },
+      { h: 901n, i: 0n, q: 0n, kind: 'spend_in', amount: 1n, token: NATIVE, fee: 0n, peer: B, wire: WIRE_FAKE, ts: 1n }
+    ];
     const inbox = [
+      { seq: '6', sender_ts: T(0), text_hex: hex(buildTransfer({ amount: '2.5', wire: WIRE_OK, to: OWN, name: 'me' })), kind: 'transfer' },
+      { seq: '7', sender_ts: T(0), text_hex: hex(buildTransfer({ amount: '1000', wire: WIRE_FAKE, to: OWN, name: 'me' })), kind: 'transfer' },
       { seq: '1', sender_ts: T(1), text_hex: hex(first), kind: 'chat' },
       { seq: '2', sender_ts: T(2), text_hex: hex('↩ Re: me\n> my first message\nyes indeed'), kind: 'chat' },
       { seq: '3', sender_ts: T(3), text_hex: hex(gone), kind: 'chat' },
@@ -110,9 +120,13 @@ try {
     const client = {
       state: 'identified', fingerprint: OWN, localConnectable: true,
       connect: async run => run(api), connectLocal: async run => run(api), connectSync: run => run(api),
-      nameOf: async () => { throw new Error('no names here'); }
+      nameOf: async () => { throw new Error('no names here'); },
+      historyReadable: true,
+      addrHistory: async () => ({ enabled: true, fromHeight: 1n, entries: window.__history })
     };
-    mountMessages(document.getElementById('nc-root'), {});
+    window.__paid = [];
+    window.__walletExtension = walletExtension;
+    mountMessages(document.getElementById('nc-root'), { payContact: fp => window.__paid.push(fp) });
     await Promise.all(walletExtension.nodusIdentified({ client, phrase: 'alpha beta gamma', vaultId: null, fresh: false }));
     client.state = 'ready';
     walletExtension.nodusReady({ client });
@@ -136,7 +150,7 @@ try {
   if (shots) await page.screenshot({ path: `${shots}/messages-conversation.png` });
 
   // Right click: the menu; no "for everyone" on a received message; Esc closes.
-  const firstBubble = page.locator('.message-in .message-bubble').first();
+  const firstBubble = page.locator('.message-in .message-bubble', { hasText: 'hello see' });
   await firstBubble.click({ button: 'right' });
   await page.locator('.message-menu-layer:not([hidden])').waitFor();
   assert.equal(await page.locator('.menu-emoji').count(), 8);
@@ -157,7 +171,7 @@ try {
 
   // A touch held 450 ms opens the menu (no contextmenu needed: iOS sends none).
   await page.evaluate(() => {
-    const b = document.querySelector('.message-in .message-bubble');
+    const b = [...document.querySelectorAll('.message-in .message-bubble')].find(x => x.textContent.includes('hello see'));
     const r = b.getBoundingClientRect();
     b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', clientX: r.left + 5, clientY: r.top + 5 }));
   });
@@ -188,12 +202,39 @@ try {
 
   // Delete on this device: B's first text disappears, nothing published.
   const before = (await page.evaluate(() => window.__published.flat())).length;
-  await page.locator('.message-in .message-bubble').first().click({ button: 'right' });
+  await page.locator('.message-in .message-bubble', { hasText: 'hello see' }).click({ button: 'right' });
   await page.locator('.menu-item', { hasText: 'Delete on this device' }).click();
   await page.waitForFunction(() => ![...document.querySelectorAll('.message-text')].some(n => n.textContent.includes('hello see')));
   const after = (await page.evaluate(() => window.__published.flat())).length;
   assert.ok(after <= before + 3, 'a local delete adds no new item (sets republish the same items)');
   assert.ok(!(await page.evaluate(() => window.__published.flat())).some(m => m.text.includes('"hide"')), 'the local mark is never sent');
+
+  // Payment cards: the real one is "Received · block 900" (own history:
+  // spend_in, that wire, from B, 2.5 NODUS); the forged one says it does not
+  // match. The chat list never takes the card's word.
+  await page.waitForFunction(() => [...document.querySelectorAll('.transfer-state')].some(n => n.textContent === 'Received · block 900'));
+  const states = await page.locator('.transfer-card').evaluateAll(cards => cards.map(c => [c.querySelector('.transfer-amount').textContent, c.querySelector('.transfer-state').textContent, c.className]));
+  assert.deepEqual(states.map(s => s[1]), ['Received · block 900', 'Does not match the chain — do not rely on this card']);
+  assert.match(states[1][2], /transfer-mismatch/);
+  if (shots) await page.screenshot({ path: `${shots}/messages-payments.png` });
+
+  // "Send NODUS": the host opens the wallet's form for this contact; the
+  // wallet's accepted transfer to THAT contact posts one card in the app's form.
+  await page.locator('.conversation-pay').click();
+  assert.deepEqual(await page.evaluate(() => window.__paid), ['2b'.repeat(64)]);
+  const WIRE_NEW = 'e3'.repeat(64);
+  await page.evaluate(w => window.__walletExtension.nodusSent({ to: '9f'.repeat(64), amount: '1', wire: w }), WIRE_NEW);
+  await page.waitForTimeout(300);
+  assert.ok(!(await page.evaluate(() => window.__published.flat())).some(m => m.text.includes('token_transfer') && m.text.includes('9f9f')), 'a transfer to someone else posts no card');
+  await page.evaluate(w => window.__walletExtension.nodusSent({ to: '2b'.repeat(64), amount: '1.25', wire: w }), WIRE_NEW);
+  await page.waitForFunction(() => window.__published.flat().some(m => m.text.includes('"type":"token_transfer"')));
+  const card = JSON.parse((await page.evaluate(() => window.__published.flat())).find(m => m.text.includes('"type":"token_transfer"')).text);
+  assert.deepEqual({ ...card, recipientName: undefined }, { type: 'token_transfer', amount: '1.25', token: 'NODUS', network: 'Nodus', chain: 'nodus', txHash: WIRE_NEW, recipientAddress: '2b'.repeat(64), recipientName: undefined });
+  await page.waitForFunction(() => [...document.querySelectorAll('.message-out .transfer-state')].some(n => n.textContent === 'Waiting for the chain'));
+  await page.evaluate(w => window.__walletExtension.nodusSent({ to: '2b'.repeat(64), amount: '1.25', wire: w }), 'e4'.repeat(64));
+  await page.waitForTimeout(300);
+  assert.equal((await page.evaluate(() => window.__published.flat())).filter(m => m.text.includes('"type":"token_transfer"')).length >= 1, true);
+  assert.ok(!(await page.evaluate(() => window.__published.flat())).some(m => m.text.includes('e4e4')), 'one card per "Send NODUS"');
 
   assert.deepEqual(errors, [], 'no page error');
   assert.deepEqual(refused, [], 'no CSP refusal');

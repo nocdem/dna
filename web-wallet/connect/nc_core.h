@@ -720,6 +720,7 @@ int nc_outbox_publish(const nc_ctx_t *ctx, const nc_peer_t *peer,
 #define NC_MSG_CHAT      1
 #define NC_MSG_REACTION  2
 #define NC_MSG_DELETE    3
+#define NC_MSG_TRANSFER  4   /* the app's "token_transfer" card (web 0.1.90) */
 
 typedef struct {
     uint64_t seq;
@@ -769,10 +770,11 @@ void nc_inbox_clear(nc_inbox_t *in);
 int nc_plaintext_is_chat(const uint8_t *pt, size_t len);
 
 /**
- * The same classification, naming the two non-chat classes the page now
+ * The same classification, naming the non-chat classes the page now
  * handles: NC_MSG_CHAT, NC_MSG_REACTION (the reaction sniff above),
- * NC_MSG_DELETE (a JSON object with "type" "delete"); 0 for every other
- * non-chat class; -1 could not classify (as nc_plaintext_is_chat).
+ * NC_MSG_DELETE (a JSON object with "type" "delete"), NC_MSG_TRANSFER (an
+ * object whose "type" is exactly the string "token_transfer"); 0 for every
+ * other non-chat class; -1 could not classify (as nc_plaintext_is_chat).
  * nc_plaintext_is_chat(pt, len) == (kind == NC_MSG_CHAT ? 1 : kind < 0 ? -1 : 0).
  */
 int nc_plaintext_kind(const uint8_t *pt, size_t len);

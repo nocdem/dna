@@ -266,6 +266,21 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
       $('wallet-open').dataset.pushed = String(screen !== 'list');
       if (screen === 'list' && origin) { origin = null; if (tab === 'chats') setTab('chats'); }
     },
+    // "Send NODUS" in a conversation (web 0.1.90): the wallet's own Send form
+    // on NODUS with the contact's ID (a contact's ID is its NODUS address) —
+    // the amount, the review and the signing stay the wallet's.
+    payContact(fp) {
+      if (typeof fp !== 'string' || !/^[0-9a-f]{128}$/.test(fp)) return;
+      setTab('wallet');
+      const chain = $('chain');
+      if (chain.value !== 'nodus') { chain.value = 'nodus'; chain.dispatchEvent(new Event('change')); }
+      const recipient = $('recipient');
+      recipient.value = fp;
+      recipient.dispatchEvent(new Event('input', { bubbles: true }));
+      if (location.hash !== '#send-form') location.hash = 'send-form';
+      else $('send-form').scrollIntoView({ block: 'start' });
+      $('amount').focus({ preventScroll: true });
+    },
     onBack() {
       if (origin !== 'more') return false;
       origin = null;

@@ -155,6 +155,59 @@ export function deletions(records, ownFp, hashOf) {
   return { deleted, hidden };
 }
 
+// ── payment cards (web 0.1.90; design docs/plans/2026-10-09-connect-nodus-in-chat-design.md) ──
+// The app's card (chat_screen.dart :2623-2631). A card is a CLAIM: what it
+// says is never shown as fact — transferVerdict decides from this device's
+// own address history.
+const NATIVE_TOKEN = '0'.repeat(128);
+const NODUS_DECIMALS = 8;
+const AMOUNT = /^(0|[1-9]\d{0,11})(\.\d{1,8})?$/;
+// A NODUS amount as the wallet formats it ("1.5") -> raw units, or null.
+export function nodusUnits(amount) {
+  if (typeof amount !== 'string' || !AMOUNT.test(amount)) return null;
+  const [whole, frac = ''] = amount.split('.');
+  return BigInt(whole) * 10n ** BigInt(NODUS_DECIMALS) + BigInt(frac.padEnd(NODUS_DECIMALS, '0'));
+}
+export function buildTransfer({ amount, wire, to, name = '' }) {
+  if (nodusUnits(amount) === null || nodusUnits(amount) === 0n || !HEX128.test(wire) || !HEX128.test(to)) throw new Error('Invalid payment card.');
+  return JSON.stringify({ type: 'token_transfer', amount, token: 'NODUS', network: 'Nodus', chain: 'nodus', txHash: wire, recipientAddress: to, recipientName: String(name).slice(0, 64) });
+}
+// -> { chain, amount, token, wire, to, name } | null (not a card). A card of
+// another chain keeps its chain and amount for "cannot be checked here".
+export function parseTransfer(text) {
+  let j;
+  try { j = JSON.parse(cString(text)); } catch { return null; }
+  if (!j || typeof j !== 'object' || Array.isArray(j) || j.type !== 'token_transfer') return null;
+  const str = v => (typeof v === 'string' ? v : '');
+  return { chain: str(j.chain).toLowerCase(), amount: str(j.amount), token: str(j.token), wire: str(j.txHash).toLowerCase(), to: str(j.recipientAddress).toLowerCase(), name: str(j.recipientName) };
+}
+// The verdict on a card from THIS device's own address history entries
+// (src/nodus/history.js parseAddrHistory rows: { h, kind, amount, token,
+// peer, wire }). `incoming`: the card arrived from `counterparty` (who must
+// have paid this device); else this device sent it to `counterparty`.
+//   { state: 'confirmed', height }  the entry matches wire, kind, peer, token, amount
+//   { state: 'mismatch' }           an entry with that wire says something else
+//   { state: 'pending' }            no entry with that wire (yet)
+//   { state: 'unverifiable', chain } not a NODUS card / malformed
+export function transferVerdict(card, entries, { incoming, counterparty, ownFp }) {
+  if (!card || card.chain !== 'nodus' || card.token !== 'NODUS' || !HEX128.test(card.wire) || nodusUnits(card.amount) === null) return { state: 'unverifiable', chain: card?.chain || '' };
+  // The card must name the right recipient: this device when it came in,
+  // the contact when this device sent it.
+  if (card.to !== (incoming ? ownFp : counterparty)) return { state: 'mismatch' };
+  const want = nodusUnits(card.amount);
+  const rows = (entries || []).filter(e => e && e.wire === card.wire);
+  if (!rows.length) return { state: 'pending' };
+  // One row per created coin (change excluded; nodus_witness_addr_index.h
+  // ROW DERIVATION): the coins of this item between the two must add up to
+  // the card's amount, all in the native token (rows of the same item to
+  // someone else are not this card's business).
+  const kind = incoming ? 'spend_in' : 'spend_out';
+  const own = rows.filter(e => e.kind === kind && e.peer === counterparty);
+  if (!own.length || own.some(e => e.token !== NATIVE_TOKEN)) return { state: 'mismatch' };
+  const total = own.reduce((s, e) => s + BigInt(e.amount), 0n);
+  return total === want ? { state: 'confirmed', height: String(own[0].h) } : { state: 'mismatch' };
+}
+
 // ── replies ─────────────────────────────────────────────────────────────
 export const QUOTE_MAX = 100;
 // The quote is one line (the app's reader stops it at the first newline):

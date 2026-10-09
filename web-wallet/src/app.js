@@ -1917,13 +1917,19 @@ $('confirm-send').onclick = async () => {
   const idLabel = transfer.kind === 'claim' ? 'Claim ID' : transfer.kind ? 'Transaction ID' : CHAINS[transfer.chain] ? null : 'Transfer ID';
   const follow = () => { if (record) { submissionFollow = { record, what, idLabel, link: !idLabel, shown: null }; followSubmission(); } };
   $('confirm-send').disabled = true; $('cancel-send').disabled = true; $('review-error').textContent = 'Signing locally and broadcasting…';
+  let sentWire;
   try {
     const hash = await transfer.confirm(async details => {
+      sentWire = typeof details?.wire === 'string' ? details.wire : undefined;
       record = recordActivity(transfer, details); history.push(record); if (current === revision) renderActivity(false);
       // The signed hash must be durable before the first network submission.
       await persistActivity({ required: true });
     });
     if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
+    // A plain NODUS transfer the network accepted: Nodus Connect's Messages
+    // may post its payment card in the chat it was started from (web
+    // 0.1.90, src/connect/ui/messages.js walletExtension.nodusSent).
+    if (!transfer.kind && transfer.chain === NODUS_ASSET.chain && sentWire) raise('nodusSent', { to: transfer.to, amount: transfer.amount, wire: sentWire, intentId: hash });
     closeReview();
     // A submitted claim withdraws the offer while its record is unresolved.
     if (transfer.kind === 'claim') void refreshClaim();

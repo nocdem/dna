@@ -56,7 +56,8 @@ import {
 } from './text.js';
 import { el, untrusted, untrustedLinked, button, website, fillAvatar } from './dom.js';
 import {
-  REACTION_EMOJIS, messageHash, buildReaction, reactionSummary, ownReactionOn, buildDelete, deletions, buildReply, parseReply
+  REACTION_EMOJIS, messageHash, buildReaction, reactionSummary, ownReactionOn, buildDelete, deletions, buildReply, parseReply,
+  buildTransfer, parseTransfer, transferVerdict
 } from './actions.js';
 import { parseNameOf } from '../../nodus/names.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, chainNoNameFresh, chainNoNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
@@ -112,6 +113,13 @@ let addResolved;                         // { name, owner }: the add box's chain
 // message whose menu is open, how many messages arrived while scrolled up,
 // and the highest local seq drawn per contact (only newer bubbles animate).
 let replyTo, menuFor, jumpNew = 0;
+// Web 0.1.90: the chat a "Send NODUS" was started from ({ fp, at }, this
+// session); verdicts on payment cards by wire id; when history was last read.
+let payFor, transferCheckAt = 0, transferChecking = false;
+const transferVerdicts = new Map();      // wire -> { state, height? } (actions.js transferVerdict)
+const PAY_WINDOW_MS = 30 * 60 * 1000;    // a send counts for the chat it was started from this long
+const TRANSFER_CHECK_MS = 60 * 1000;     // history is read for pending cards at most this often
+const TRANSFER_HISTORY_PAGES = 3;        // pages of 100 rows read per check
 const drawnUpTo = new Map();             // fp -> highest local seq drawn (BigInt)
 const hashCache = new Map();             // `fp|seq` -> content hash (actions.js messageHash)
 const profiles = new Map();              // fp -> verified profile, this session
@@ -171,8 +179,9 @@ function wipe() {
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false; mlkemRepublishTried = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
   replyTo = undefined; menuFor = undefined; jumpNew = 0;
+  payFor = undefined; transferCheckAt = 0; transferChecking = false;
   netStarted = false; online = false; groups = undefined;
-  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs, drawnUpTo, hashCache]) set.clear();
+  for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs, drawnUpTo, hashCache, transferVerdicts]) set.clear();
   notifyVaultHost();
   if (!ui) return;
   groupsView?.reset();
@@ -816,6 +825,8 @@ async function sync() {
         : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
       logCheck(roundDoneLine(round, { ms: Date.now() - roundAt, fresh: arrivedTotal, failed }));
       render();
+      // Payment cards not settled yet (web 0.1.90): this device's history.
+      void checkTransfers(gen);
     }
   } catch (error) {
     if (gen === generation) ui.sync.textContent = explain(error, 'The network could not be reached. Checking again automatically.');
@@ -948,7 +959,7 @@ async function finishContactCheck({ contact, id, salt, days, publishedBefore, re
       if (received.has(k)) continue;
       received.add(k);
       const rec = { fp, dir: 'in', text: String(m.text), senderTs: String(m.senderTs), remoteSeq: String(m.seq), at: Date.now() };
-      if (m.kind === 'reaction' || m.kind === 'delete') rec.kind = m.kind;     // web 0.1.89
+      if (m.kind === 'reaction' || m.kind === 'delete' || m.kind === 'transfer') rec.kind = m.kind;     // web 0.1.89 / 0.1.90
       arrived.push(rec);
     }
   }
@@ -1020,7 +1031,9 @@ async function publishOutbox(contact, gen) {
 // Web 0.1.89: a reaction, a delete notice (the app's own forms, actions.js)
 // and a "hidden on this device" mark are records of their own `kind`,
 // applied to the message they name and never drawn as a bubble.
-const isControl = m => m.control === true || (m.kind !== undefined && m.kind !== 'chat') || !!controlType(m.text);
+// A payment card (`kind: 'transfer'`, 0.1.90) IS drawn: as a card whose
+// verdict comes from this device's own history (transferCard).
+const isControl = m => m.control === true || (m.kind !== undefined && m.kind !== 'chat' && m.kind !== 'transfer') || !!controlType(m.text);
 // Stored incoming chat messages of one contact (group control records not
 // counted): the difference across a contact's check is its "new" count in
 // the session log (sync). Own messages sent meanwhile are not counted.
@@ -1136,6 +1149,7 @@ const ICONS = {
   copy: ['M9 9h10v11H9z', 'M5 15V4h10'],
   trash: ['M5 7h14', 'M10 7V4h4v3', 'M7 7l1 13h8l1-13'],
   more: ['M6 12h.01', 'M12 12h.01', 'M18 12h.01'],
+  pay: ['M4 7h16v11H4z', 'M4 10h16', 'M8 15h3'],
   down: ['M6 9l6 6 6-6']
 };
 function icon(name) {
@@ -1223,6 +1237,8 @@ export function ownIdText({ id = null, name = '', closed = false } = {}) {
 //   onBack(from)     Back was pressed on a screen opened on its own (called
 //                    before Messages returns to Chats); a truthy return
 //                    means the host moved the user elsewhere (focus is its).
+//   payContact(fp)   (web 0.1.90) open the wallet's Send form on NODUS for
+//                    this contact; without it there is no "Send NODUS".
 export function mountMessages(root, options = {}) {
   host = options;
   const u = {};
@@ -1290,7 +1306,12 @@ export function mountMessages(root, options = {}) {
   u.convTitle = el('h2', { className: 'nc-bar-title' });
   u.convTitle.tabIndex = -1;
   u.convClaim = el('span', { className: 'contact-claim' });
-  u.convHead = el('div', { className: 'nc-bar conversation-head' }, backButton(), u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim));
+  // Web 0.1.90: "Send NODUS" opens the WALLET's own Send form for this
+  // contact (host.payContact); the wallet's review and signing are the only
+  // way the transfer is made.
+  u.convPay = iconButton('pay', 'Send NODUS', () => payFromChat(), 'conversation-pay');
+  u.convPay.hidden = typeof options.payContact !== 'function';
+  u.convHead = el('div', { className: 'nc-bar conversation-head' }, backButton(), u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim), u.convPay);
   u.convNote = el('p', { className: 'notice conversation-note' });
   // The last message check of this contact (diag.js), collapsed; plain text.
   u.convDiagText = el('p', { className: 'conversation-diag-text' });
@@ -1617,7 +1638,7 @@ function renderChats() {
     row.dataset.fp = c.fp;
     row.setAttribute('aria-current', String(screen === 'conversation' && c.fp === selectedFp));
     const preview = el('span', { className: 'contact-preview' });
-    const label = last && !last.gone ? payloadPreview(last.text) : null;
+    const label = last && !last.gone ? (last.kind === 'transfer' ? transferPreview(last) : payloadPreview(last.text)) : null;
     const reply = last && !last.gone && !label ? parseReply(last.text) : null;
     if (last?.gone) preview.append(last.dir === 'out' ? 'You: ' : '', el('em', { text: 'Message deleted' }));
     else if (last && label) preview.append(last.dir === 'out' ? 'You: ' : '', label);
@@ -1742,7 +1763,7 @@ function renderConversation(scroll) {
     // in the bubble's title and the menu's details.
     const bubble = el('div', { className: `message-bubble${gone ? ' message-gone' : ''}` });
     if (!mine && !gone) bubble.title = senderClockLabel(m.senderTs);
-    const card = gone ? null : payloadCard(m);
+    const card = gone ? null : m.kind === 'transfer' ? transferCard(m) : payloadCard(m);
     if (gone) bubble.append(el('div', { className: 'message-text', text: mine ? 'You deleted this message.' : 'This message was deleted by the sender.' }));
     else if (card) bubble.append(card);
     else {
@@ -1904,6 +1925,90 @@ async function react(m, emoji) {
   const op = ownReactionOn(summary, hash, emoji) ? 'remove' : 'add';
   try { await sendAction(m.fp, buildReaction(hash, emoji, op), 'reaction'); }
   catch (error) { if (ui) ui.sendStatus.textContent = error.message; logFailure('A reaction was not sent', error); }
+}
+
+// ── payment cards (web 0.1.90; design 2026-10-09-connect-nodus-in-chat) ──
+// A card is a CLAIM: its words come from this device's own history
+// (transferVerdict), never from the card. The amount is shown only next to
+// that verdict.
+const TRANSFER_TEXT = {
+  confirmed: (m, v) => (m.dir === 'in' ? `Received · block ${v.height}` : `Sent · block ${v.height}`),
+  pending: m => (m.dir === 'in' ? 'Not on the chain yet — not received until this says so' : 'Waiting for the chain'),
+  mismatch: () => 'Does not match the chain — do not rely on this card',
+  unverifiable: (m, v) => (v.chain && v.chain !== 'nodus' ? `A payment on ${v.chain} — it cannot be checked here` : 'This payment card cannot be checked')
+};
+function transferVerdictOf(m) {
+  const card = parseTransfer(m.text);
+  if (!card || card.chain !== 'nodus') return { card, verdict: { state: 'unverifiable', chain: card?.chain || '' } };
+  return { card, verdict: transferVerdicts.get(card.wire) || { state: 'pending' } };
+}
+function transferCard(m) {
+  const { card, verdict } = transferVerdictOf(m);
+  const amount = card && /^[0-9.]{1,24}$/.test(card.amount) ? card.amount : '?';
+  const node = el('div', { className: `transfer-card transfer-${verdict.state}` },
+    el('span', { className: 'transfer-title', text: m.dir === 'in' ? 'Payment to you' : 'Payment' }),
+    el('span', { className: 'transfer-amount', text: `${amount} ${card?.chain === 'nodus' || !card ? 'NODUS' : String(card.token || '').slice(0, 12)}` }),
+    el('span', { className: 'transfer-state', text: TRANSFER_TEXT[verdict.state](m, verdict) }));
+  if (verdict.state !== 'confirmed') node.setAttribute('title', 'The card was written by the sender. Only "Received · block …" means it reached your address.');
+  return node;
+}
+
+// The cards whose verdict is not final yet are checked against ONE page
+// set of this device's own address history (owner-gated, one node — the
+// wallet balance's trust), at most once a minute, after a check round.
+async function checkTransfers(gen, { force = false } = {}) {
+  if (transferChecking || !isOpen() || !nodusClient?.historyReadable) return;
+  const open = messages.filter(m => m.kind === 'transfer' && (m.dir === 'in' || m.dir === 'out'))
+    .map(m => ({ m, card: parseTransfer(m.text) }))
+    .filter(({ card }) => card && card.chain === 'nodus' && /^[0-9a-f]{128}$/.test(card.wire) && !['confirmed', 'mismatch'].includes(transferVerdicts.get(card.wire)?.state));
+  if (!open.length || (!force && Date.now() - transferCheckAt < TRANSFER_CHECK_MS)) return;
+  transferChecking = true; transferCheckAt = Date.now();
+  try {
+    const entries = [];
+    let before;
+    for (let page = 0; page < TRANSFER_HISTORY_PAGES; page++) {
+      const answer = await nodusClient.addrHistory(before ? { before, limit: 100 } : { limit: 100 });
+      if (gen !== generation) return;
+      entries.push(...answer.entries);
+      const wanted = new Set(open.map(o => o.card.wire).filter(w => !entries.some(e => e.wire === w)));
+      if (!wanted.size || answer.entries.length < 100) break;
+      const last = answer.entries[answer.entries.length - 1];
+      before = { h: String(last.h), i: String(last.i), q: String(last.q) };
+    }
+    let moved = false;
+    for (const { m, card } of open) {
+      const v = transferVerdict(card, entries, { incoming: m.dir === 'in', counterparty: m.fp, ownFp });
+      if (v.state !== transferVerdicts.get(card.wire)?.state) { transferVerdicts.set(card.wire, v); moved = true; }
+    }
+    if (moved && gen === generation) render();
+  } catch (error) { logCheck(`Payment cards: the account history could not be read (${errorText(error)})`, true); }
+  finally { transferChecking = false; }
+}
+
+// The chat list line for a payment card: the verdict, never the card's word.
+function transferPreview(m) {
+  const { verdict } = transferVerdictOf(m);
+  return verdict.state === 'confirmed' ? (m.dir === 'in' ? 'Payment received' : 'Payment sent') : verdict.state === 'mismatch' ? 'Payment card that does not match the chain' : 'Payment card (not confirmed)';
+}
+
+function payFromChat() {
+  if (!isOpen() || !selectedFp || !contactOf(selectedFp) || typeof host.payContact !== 'function') return;
+  payFor = { fp: selectedFp, at: Date.now() };
+  host.payContact(selectedFp);
+}
+
+// The wallet's NODUS transfer was accepted by the network (src/app.js
+// confirm-send): if it was started from a chat with that recipient (this
+// session, within PAY_WINDOW_MS), its card goes into that chat once.
+async function onNodusSent(detail) {
+  const pending = payFor;
+  if (!pending || !isOpen() || !detail || detail.to !== pending.fp || Date.now() - pending.at > PAY_WINDOW_MS) return;
+  payFor = undefined;
+  let text;
+  try { text = buildTransfer({ amount: String(detail.amount), wire: String(detail.wire), to: pending.fp, name: displayName(pending.fp) }); }
+  catch (error) { logFailure('The payment card could not be written', error); return; }
+  try { await sendAction(pending.fp, text, 'transfer'); void checkTransfers(generation, { force: true }); }
+  catch (error) { logFailure('The payment card was not sent', error); }
 }
 
 // Own message, "for everyone": the app's delete notice to the contact (their
@@ -2358,6 +2463,9 @@ export const walletExtension = {
   // again by itself on the same client. The view stays; the reason is shown
   // in the status line (plain words from the wallet).
   nodusConnectFailed({ reason } = {}) { if (ui && isOpen() && !netStarted && typeof reason === 'string' && reason) ui.sync.textContent = reason; },
+  // A NODUS transfer the network accepted (src/app.js confirm-send, web
+  // 0.1.90): its payment card goes into the chat it was started from.
+  nodusSent(detail) { void onNodusSent(detail); },
   // reason: the connection was lost (Messages stays closed until the
   // wallet's reconnect raises nodusReady again); none: the wallet is
   // locking or reconnecting.

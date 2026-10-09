@@ -190,9 +190,11 @@ int nc_plaintext_kind(const uint8_t *pt, size_t len) {
             /* the chat screen's cards (chat_screen.dart:2012-2046): an
              * object whose "type" is exactly that string */
             if (json_object_is_type(jt, json_type_string) &&
-                (strcmp(t, "token_transfer") == 0 ||
-                 strcmp(t, "media_ref") == 0 ||
-                 strcmp(t, "image_attachment") == 0))
+                strcmp(t, "token_transfer") == 0)
+                kind = NC_MSG_TRANSFER;          /* web 0.1.90: a payment card */
+            else if (json_object_is_type(jt, json_type_string) &&
+                     (strcmp(t, "media_ref") == 0 ||
+                      strcmp(t, "image_attachment") == 0))
                 kind = 0;
         }
         if (j) json_object_put(j);
@@ -344,7 +346,8 @@ static int outbox_day_finish(const nc_ctx_t *ctx, const nc_peer_t *peer,
             out->other++;
             qgp_secure_memzero(pt, pt_len);
         } else if (kind > 0) {
-            /* chat text, a reaction or a delete notice (web 0.1.89) */
+            /* chat text, a reaction, a delete notice (web 0.1.89) or a
+             * payment card (0.1.90) */
             nc_inmsg_t *m = &out->items[out->count++];
             m->seq = msgs[i].seq_num;
             m->sender_timestamp = ts;

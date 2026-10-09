@@ -96,3 +96,42 @@ test('actions: replies in the app\'s form; the quote stays one line', () => {
   assert.equal(parseReply('↩ Re: me\nno quote'), null);
   assert.equal([...parseReply(buildReply('a', '👋'.repeat(150), 'b')).quoted].length, QUOTE_MAX + 3, 'counted in characters, never a split emoji');
 });
+
+// Web 0.1.90: payment cards are claims — the verdict comes from this
+// device's own address history (design 2026-10-09-connect-nodus-in-chat).
+import { nodusUnits, buildTransfer, parseTransfer, transferVerdict } from '../src/connect/ui/actions.js';
+test('payment cards: the app\'s form, amounts exact, the verdict from own history only', () => {
+  const W = 'ee'.repeat(64), N = '0'.repeat(128), TOK = 'ab'.repeat(64);
+  assert.equal(nodusUnits('1'), 100000000n);
+  assert.equal(nodusUnits('1.5'), 150000000n);
+  assert.equal(nodusUnits('0.00000001'), 1n);
+  for (const bad of ['', '1.', '.5', '01', '1.123456789', '-1', '1e3', ' 1', 7]) assert.equal(nodusUnits(bad), null, String(bad));
+  const text = buildTransfer({ amount: '2.5', wire: W, to: B, name: 'bob' });
+  assert.deepEqual(JSON.parse(text), { type: 'token_transfer', amount: '2.5', token: 'NODUS', network: 'Nodus', chain: 'nodus', txHash: W, recipientAddress: B, recipientName: 'bob' });
+  assert.throws(() => buildTransfer({ amount: '0', wire: W, to: B }), /Invalid payment card/);
+  assert.throws(() => buildTransfer({ amount: '1', wire: 'xx', to: B }), /Invalid payment card/);
+  const card = parseTransfer(text);
+  assert.equal(parseTransfer('hello'), null);
+  assert.equal(parseTransfer('{"type":"other"}'), null);
+  const row = (kind, peer, amount, extra = {}) => ({ h: 900n, kind, peer, amount: BigInt(amount), token: N, wire: W, ...extra });
+  // I (A) sent 2.5 to B: my spend_out to B confirms; B's card to me must name ME as recipient.
+  assert.deepEqual(transferVerdict(card, [row('spend_out', B, 250000000)], { incoming: false, counterparty: B, ownFp: A }), { state: 'confirmed', height: '900' });
+  // B receives it: its spend_in from A
+  const inCard = parseTransfer(buildTransfer({ amount: '2.5', wire: W, to: B }));
+  assert.deepEqual(transferVerdict(inCard, [row('spend_in', A, 250000000)], { incoming: true, counterparty: A, ownFp: B }).state, 'confirmed');
+  // two coins to the same person in one item add up
+  assert.equal(transferVerdict(inCard, [row('spend_in', A, 200000000), row('spend_in', A, 50000000)], { incoming: true, counterparty: A, ownFp: B }).state, 'confirmed');
+  // nothing on the chain yet
+  assert.equal(transferVerdict(inCard, [], { incoming: true, counterparty: A, ownFp: B }).state, 'pending');
+  assert.equal(transferVerdict(inCard, [row('spend_in', A, 1, { wire: 'dd'.repeat(64) })], { incoming: true, counterparty: A, ownFp: B }).state, 'pending');
+  // forged: a smaller real payment under the same wire, another payer, another token, another recipient named
+  assert.equal(transferVerdict(inCard, [row('spend_in', A, 1)], { incoming: true, counterparty: A, ownFp: B }).state, 'mismatch');
+  assert.equal(transferVerdict(inCard, [row('spend_in', '3c'.repeat(64), 250000000)], { incoming: true, counterparty: A, ownFp: B }).state, 'mismatch');
+  assert.equal(transferVerdict(inCard, [row('spend_in', A, 250000000, { token: TOK })], { incoming: true, counterparty: A, ownFp: B }).state, 'mismatch');
+  assert.equal(transferVerdict(inCard, [row('spend_out', A, 250000000)], { incoming: true, counterparty: A, ownFp: B }).state, 'mismatch', 'an outgoing row is no receipt');
+  const toSomeoneElse = parseTransfer(buildTransfer({ amount: '2.5', wire: W, to: '3c'.repeat(64) }));
+  assert.equal(transferVerdict(toSomeoneElse, [row('spend_in', A, 250000000)], { incoming: true, counterparty: A, ownFp: B }).state, 'mismatch');
+  // another chain or a malformed card: cannot be checked here
+  assert.deepEqual(transferVerdict({ ...card, chain: 'cellframe' }, [], { incoming: true, counterparty: A, ownFp: B }), { state: 'unverifiable', chain: 'cellframe' });
+  assert.equal(transferVerdict({ ...card, amount: 'lots' }, [], { incoming: true, counterparty: A, ownFp: B }).state, 'unverifiable');
+});

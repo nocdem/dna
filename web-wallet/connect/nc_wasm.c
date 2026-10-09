@@ -830,7 +830,8 @@ static json_object *inbox_json(uint64_t day, nc_inbox_t *in) {
          * applies to an earlier message (nc_plaintext_kind) */
         json_object_object_add(e, "kind", json_object_new_string(
             in->items[i].kind == NC_MSG_REACTION ? "reaction" :
-            in->items[i].kind == NC_MSG_DELETE ? "delete" : "chat"));
+            in->items[i].kind == NC_MSG_DELETE ? "delete" :
+            in->items[i].kind == NC_MSG_TRANSFER ? "transfer" : "chat"));
         json_object_array_add(a, e);
     }
     json_object_object_add(o, "messages", a);

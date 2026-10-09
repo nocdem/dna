@@ -91,7 +91,7 @@
 //     (the blob replaces the previous one); needs profileGet(fp) first.
 //   core.outboxFetchDay(fp, saltHex, day?, skipBlob?) -> { outcome, why, day,
 //     blob, unchanged, dropped, other, messages: [{ seq, senderTs, text, kind }] }
-//     kind (web 0.1.89): 'chat' | 'reaction' | 'delete' (nc_plaintext_kind)
+//     kind (web 0.1.89): 'chat' | 'reaction' | 'delete' | 'transfer' (0.1.90) (nc_plaintext_kind)
 //     blob (found only): 64 hex of the bucket value; pass it back as
 //     skipBlob ONLY once that answer's messages are stored — an equal
 //     bucket is then not decoded (unchanged: true, no messages; the app's
@@ -244,7 +244,7 @@ function dayList(items) {
 // outboxFetchDay returns it.
 function dayResult(r) {
   const messages = (r.messages || []).map(m => ({ seq: m.seq, senderTs: m.sender_ts, text: hexToText(m.text_hex),
-    kind: m.kind === 'reaction' || m.kind === 'delete' ? m.kind : 'chat' }));
+    kind: m.kind === 'reaction' || m.kind === 'delete' || m.kind === 'transfer' ? m.kind : 'chat' }));
   return { outcome: r.outcome, why: r.why, day: r.day, blob: r.blob, unchanged: r.unchanged === true, dropped: r.dropped, other: r.other, messages };
 }
 // The AAD names cross into C as NUL-terminated strings (strlen): a NUL
