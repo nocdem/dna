@@ -136,7 +136,11 @@
  *      voted): while it is active, the funding leg of a non-self
  *      DELEGATE also reads the delegator's v2_names row by owner (CORE
  *      NAMEOWN) and refuses a nameless delegator; its inputs are then
- *      1..14 (rtn_sysfund_name_gate).
+ *      1..14 (rtn_sysfund_name_gate). Generations 1-3 only: under the
+ *      HF-6 generation (sub-slice 3e, decision D3) the rule — exemption
+ *      delegator_fp == owner_fp(validator_id) — is the SYSTEM DELEGATE
+ *      leg's (op 16 NAMEOWN2, rtn_delegate2_exec) and this leg is
+ *      ungated.
  *
  *   7. SYSTEM / DNA_SYSRULE_DELEGATE (2) · DNA_SYSRULE_UNSTAKE (3) ·
  *      DNA_SYSRULE_UNDELEGATE (4) (legacy tx 5/6/7 — O11 S2+S3): the
@@ -229,7 +233,9 @@
  * refused unless the delegator owns a v2_names row. The framing bound
  * stays 1..15 (a gated 15-input leg is refused by the hooks, not by the
  * decoder); every other sibling, a self-delegation and every block below
- * the activation height keep 1..15.
+ * the activation height keep 1..15. Under the HF-6 generation (sub-slice
+ * 3e, decision D3) the funding leg of a DELEGATE is never gated (1..15):
+ * the name read is the SYSTEM leg's (op 16), see rtn_deleg2_name_gate.
  *
  * SYSTEM stake-lifecycle calls v1 (O11 — all BE, all exact-length; the
  * shared decoder block below the auth section holds the parsers, since
@@ -2029,19 +2035,20 @@ static uint32_t rtn_sys_call_gen_of(uint32_t op, uint32_t len) {
  * fingerprint v2_names.owner stores (rtn_name_owner's derivation).
  * Caller contract: rtn_sysfund_shape accepted the envelope.
  *
- * HF-6 sub-slice 3c (`generation` = the CORE runtime's): under the HF-6
- * generation the sibling DELEGATE carries the generation-4 layout (design
- * §2), parsed with ITS decoder. The self-delegation exemption is KEPT
- * under generation 4 but means delegator_fp == owner_fp(validator_id)
- * (decision D3, Kurultay #16 summary, operator "a"), and owner_fp lives
- * only in the SYSTEM row — the check moves to the SYSTEM DELEGATE exec in
- * sub-slice 3e. Until then a gated generation-4 DELEGATE is REFUSED here
- * (-1), deterministically, in the read plan and the exec alike (both call
- * this function, so the planned and expected read counts can never
- * disagree): never a fault, never silently ungated.
+ * HF-6 (`generation` = the CORE runtime's): under the HF-6 generation the
+ * sibling DELEGATE carries the generation-4 layout (design §2), parsed
+ * with ITS decoder (a malformed call is still -1 here). The
+ * self-delegation exemption is KEPT under generation 4 but means
+ * delegator_fp == owner_fp(validator_id) (decision D3, Kurultay #16
+ * summary, operator "a"), and owner_fp lives only in the SYSTEM row — so
+ * from sub-slice 3e the WHOLE generation-4 rule (the name read, the
+ * refusal, the exemption) is the SYSTEM DELEGATE exec's
+ * (rtn_deleg2_name_gate / rtn_delegate2_exec, op 16 NAMEOWN2) and this
+ * CORE leg is NOT gated under generation 4: no CORE NAMEOWN read, the
+ * input ceiling stays 15. Generations 1-3 are unchanged (the arm sits
+ * under rtn_gen_roles).
  * @return 1 gated / 0 not gated / -1 verdict (a DELEGATE sibling whose
- *         call does not parse; a gated generation-4 DELEGATE) / -2
- *         hash-backend NODE fault. */
+ *         call does not parse) / -2 hash-backend NODE fault. */
 static int rtn_sysfund_name_gate(const dna_env_view_t *env,
                                  const nodus_rt_exec_ctx_t *ctx,
                                  uint32_t generation,
@@ -2056,9 +2063,10 @@ static int rtn_sysfund_name_gate(const dna_env_view_t *env,
         if (rtn_deleg_parse_v2(env->buf + env->call_off[0],
                                env->leg[0].call_len, &d2) != 0)
             return -1;                   /* malformed record call        */
-        return -1;                       /* D3: exemption is 3e's — until
-                                          * then a gated gen-4 DELEGATE
-                                          * is refused                   */
+        return 0;                        /* D3 (3e): the SYSTEM leg
+                                          * judges the name and the
+                                          * owner exemption
+                                          * (rtn_delegate2_exec)         */
     }
     if (rtn_deleg_parse(env->buf + env->call_off[0], env->leg[0].call_len,
                         &d) != 0)
@@ -4367,6 +4375,21 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
 #define RTN_SYS_OP_DELEG2   14u  /* CREATE|SET|DELETE + read: delegation,
                                   * by (delegator_fp, validator_id)       */
 #define RTN_SYS_OP_DELEGCNT2 15u /* READ-ONLY: delegations by validator_id */
+/* HF-6 sub-slice 3e (decision D3, Kurultay #16 summary, operator "a"): the
+ * HF-8 name rule of a generation-4 DELEGATE is judged on the SYSTEM leg,
+ * where the validator row (and so owner_fp) is read. Its name read is a
+ * READ-ONLY view of the v2_names row by owner — the SAME row, through the
+ * SAME fetch (rtn_core_nameown_fetch), the CORE NAMEOWN (op 6) serves.
+ * ⚠ LABELED SCOPE CHANGE: v2_names is CORE state (written only by the
+ * CORE NAME_REGISTER, committed in the CORE name root); until 3e only the
+ * CORE adapter bound it. This op makes it the first table bound by TWO
+ * compiled adapters — READ-ONLY on the SYSTEM side (allowed_kinds 0: no
+ * SYSTEM effect can ever name it, the adapter selfcheck's read-only
+ * rule). The read is a pure function of committed state at the item (the
+ * engine's same-block observation rule: earlier items of the block
+ * included), so every node answers it alike. Appended after the last
+ * used id (15); ids 1 and 3 stay frozen. */
+#define RTN_SYS_OP_NAMEOWN2  16u /* READ-ONLY: v2_names row by owner fp  */
 
 /* The canonical validator record (exact 5381 bytes — RTN_VAL_REC_LEN,
  * pinned by the static assert below; O11 shipped it at 5397, see the
@@ -4874,8 +4897,9 @@ static int rtn_vupd_read_plan(const dna_env_view_t *env,
  * — with three differences:
  *   - the rows are keyed by validator_id / (delegator_fp, validator_id)
  *     (re-valued at the generation-4 edge, sub-slice 3b) and read through
- *     the NEW adapter ops 13 / 14 / 15 only: a generation-4 effect never
- *     names op 4, 5 or 6;
+ *     the NEW adapter ops 13 / 14 / 15 only (+ the read-only op 16 of a
+ *     DELEGATE under the HF-8 gate, sub-slice 3e): a generation-4 effect
+ *     never names op 4, 5 or 6;
  *   - authority is rtn_sys_owner_auth: DELEGATE / UNDELEGATE by the call's
  *     delegator_fp, decided BEFORE the reads are judged; UNSTAKE /
  *     VALIDATOR_UPDATE by the observed row's owner_fp, decided AFTER the
@@ -4896,11 +4920,37 @@ static void rtn_req_set(nodus_rt_read_req_t *r, uint32_t op,
     memcpy(r->key, key, key_len);
 }
 
+/* HF-6 sub-slice 3e — THE ONE NAME-GATE PREDICATE of the generation-4
+ * SYSTEM DELEGATE (decision D3, Kurultay #16 summary, operator "a"; HF-8
+ * design docs/plans/2026-10-07-delegate-name-required-design.md rev 2 §1
+ * for the rule itself). Does this DELEGATE leg read the delegator's name?
+ *
+ *   reads  ⇔  ctx->delegate_name_required (the engine fact: the
+ *             COMMITTED chain_config param 17 active at the block's
+ *             height — nodus_witness_v2_apply.c env_delegate_name_required,
+ *             filled on every ctx; the CORE leg's rtn_sysfund_name_gate
+ *             reads the same fact)
+ *
+ * The self-delegation exemption (delegator_fp == the validator row's
+ * owner_fp) CANNOT shape the plan: owner_fp is the row's, observed only
+ * by the VAL2 read the same plan makes. So under the gate EVERY
+ * generation-4 DELEGATE plans the one name read, and the exec decides
+ * exemption from the observed row (the read is then charged and unused —
+ * the price of a plan that is a pure function of the envelope and the
+ * ctx fact). The plan and the exec both decide through this function, so
+ * the planned and expected read counts never disagree (a disagreement is
+ * the exec's n_reads FAULT on every node). Pure: no read, no clock. */
+static int rtn_deleg2_name_gate(const nodus_rt_exec_ctx_t *ctx) {
+    return ctx && ctx->delegate_name_required ? 1 : 0;
+}
+
 /* DELEGATE (gen 4): [VAL2(vid)] [DELEG2(dfp ‖ vid)] [DELEGCNT2(vid)] —
- * ascending (op_id, key) by construction (13 < 14 < 15).
- * UNDELEGATE (gen 4): the first two. */
+ * ascending (op_id, key) by construction (13 < 14 < 15) — and, under the
+ * HF-8 gate (rtn_deleg2_name_gate, `with_name`), [NAMEOWN2(dfp)] LAST
+ * (16 > 15). UNDELEGATE (gen 4): the first two, never a name. */
 static int rtn_deleg2_read_plan(const dna_env_view_t *env,
                                 uint16_t leg_index, int with_count,
+                                int with_name,
                                 nodus_rt_read_req_t *reqs_out,
                                 uint16_t max_reqs, uint16_t *n_out) {
     rtn_deleg2_call_t c;
@@ -4908,7 +4958,8 @@ static int rtn_deleg2_read_plan(const dna_env_view_t *env,
     if (rtn_deleg_parse_v2(env->buf + env->call_off[leg_index],
                            env->leg[leg_index].call_len, &c) != 0)
         return -1;
-    const uint16_t need = with_count ? 3u : 2u;
+    const uint16_t need = (uint16_t)((with_count ? 3u : 2u) +
+                                     (with_name ? 1u : 0u));
     if (max_reqs < need) return -1;
     rtn_req_set(&reqs_out[0], RTN_SYS_OP_VAL2, c.validator_id,
                 (uint16_t)RTN_VAL2_KEY_LEN);
@@ -4920,6 +4971,9 @@ static int rtn_deleg2_read_plan(const dna_env_view_t *env,
     if (with_count)
         rtn_req_set(&reqs_out[2], RTN_SYS_OP_DELEGCNT2, c.validator_id,
                     (uint16_t)RTN_VAL2_KEY_LEN);
+    if (with_name)
+        rtn_req_set(&reqs_out[need - 1u], RTN_SYS_OP_NAMEOWN2,
+                    c.delegator_fp, 64u);
     *n_out = need;
     return 0;
 }
@@ -4981,7 +5035,12 @@ static int rtn_delegate2_exec(const dna_env_view_t *env, uint16_t leg_index,
     if (c.amount < 1 || c.amount > DNAC_DEFAULT_TOTAL_SUPPLY)
         return -1;
 
-    if (n_reads != 3 || !reads) return -2;
+    /* HF-6 3e (D3): the same predicate the read plan used decides how
+     * many reads the plan made — 3, + the delegator's NAMEOWN2 row under
+     * the HF-8 gate. A count that disagrees is this node's engine/plan
+     * invariant broken: a FAULT, never a verdict. */
+    const int name_gate = rtn_deleg2_name_gate(ctx);
+    if (!reads || n_reads != (uint16_t)(name_gate ? 4u : 3u)) return -2;
     const nodus_rt_read_res_t *vr = &reads[0], *dr = &reads[1],
                               *cr = &reads[2];
     {
@@ -5004,6 +5063,24 @@ static int rtn_delegate2_exec(const dna_env_view_t *env, uint16_t leg_index,
     memcpy(dkey, c.delegator_fp, 64);
     memcpy(dkey + 64, c.validator_id, 64);
     if (!rtn_val2_rec_ok(vr->value, c.validator_id)) return -1;
+
+    /* HF-8 under generation 4 (decision D3): a delegator that is NOT the
+     * validator's owner must own a v2_names row; the OWNER's
+     * self-delegation (delegator_fp == the OBSERVED row's owner_fp — kind
+     * 1 or kind 3 alike, rtn_sys_owner_auth already bound delegator_fp to
+     * the verdict) is exempt. Judged here, after the row is known to be
+     * this validator's and writable, from committed state only: ABSENT
+     * is the deterministic verdict (the CORE rule, rtn_sysfund_exec);
+     * a PRESENT answer outside the adapter's contract (3..36 name bytes,
+     * rtn_core_nameown_fetch) is this node's adapter broken — a FAULT. */
+    if (name_gate &&
+        memcmp(c.delegator_fp, vr->value + RTN_VAL2_OWNER_OFF, 64) != 0) {
+        const nodus_rt_read_res_t *nr = &reads[3];
+        if (!nr->present) return -1;     /* nameless non-owner delegator */
+        if (nr->value_len < (uint32_t)DNAC_NAME_MIN_LEN ||
+            nr->value_len > (uint32_t)DNAC_NAME_MAX_LEN)
+            return -2;
+    }
     if (dr->present) {
         if (dr->value_len != RTN_DEL2_REC_LEN) return -2;
         if (memcmp(dr->value, dkey, RTN_DEL2_KEY_LEN) != 0) return -2;
@@ -5733,10 +5810,11 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
         case DNA_SYSRULE_STAKE:
             return -1;
         case DNA_SYSRULE_DELEGATE:
-            return rtn_deleg2_read_plan(env, leg_index, 1, reqs_out,
+            return rtn_deleg2_read_plan(env, leg_index, 1,
+                                        rtn_deleg2_name_gate(ctx), reqs_out,
                                         max_reqs, n_out);
         case DNA_SYSRULE_UNDELEGATE:
-            return rtn_deleg2_read_plan(env, leg_index, 0, reqs_out,
+            return rtn_deleg2_read_plan(env, leg_index, 0, 0, reqs_out,
                                         max_reqs, n_out);
         case DNA_SYSRULE_UNSTAKE:
         case DNA_SYSRULE_VALIDATOR_UPDATE:
@@ -7995,6 +8073,20 @@ static nodus_adapter_status_t rtn_sys_read(
         *vlen = 8;
         return NODUS_ADAPTER_OK;
     }
+    /* HF-6 3e (D3): the READ-ONLY name-by-owner view — the CORE NAMEOWN
+     * arm (rtn_core_read) byte for byte, through the SAME fetch */
+    if (op->op_id == RTN_SYS_OP_NAMEOWN2) {
+        uint8_t nm[DNAC_NAME_MAX_LEN];
+        uint32_t nl = 0;
+        int rc = rtn_core_nameown_fetch(w, key, key_len, nm, &nl);
+        if (rc < 0) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        if (rc == 1) return NODUS_ADAPTER_OK;        /* no name held     */
+        if (cap < nl) return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+        memcpy(value, nm, nl);
+        *present = 1;
+        *vlen = nl;
+        return NODUS_ADAPTER_OK;
+    }
     return NODUS_ADAPTER_ERR_STORAGE_FAULT;
 }
 
@@ -8355,7 +8447,7 @@ static nodus_adapter_status_t rtn_sys_mutate(
     return NODUS_ADAPTER_OK;
 }
 
-static const nodus_adapter_op_t RTN_SYS_OPS[13] = {
+static const nodus_adapter_op_t RTN_SYS_OPS[14] = {
     { RTN_SYS_OP_CC,
       NODUS_ADAPTER_KIND_BIT(DNA_EFFECT_CREATE),
       NODUS_ADAPTER_PRECOND_BIT(DNA_EFFECT_PRE_ABSENT),
@@ -8433,7 +8525,11 @@ static const nodus_adapter_op_t RTN_SYS_OPS[13] = {
       (uint16_t)RTN_DEL2_KEY_LEN, (uint16_t)RTN_DEL2_KEY_LEN,
       0, RTN_DEL2_REC_LEN },
     { RTN_SYS_OP_DELEGCNT2, 0, 0, (uint16_t)RTN_VAL2_KEY_LEN,
-      (uint16_t)RTN_VAL2_KEY_LEN, 0, 8 }
+      (uint16_t)RTN_VAL2_KEY_LEN, 0, 8 },
+    /* HF-6 sub-slice 3e (D3) — READ-ONLY: the CORE NAMEOWN row shape
+     * (key = the 64-byte owner fp, value = the 0..DNAC_NAME_MAX_LEN name
+     * bytes; the absent row answers value_len 0) */
+    { RTN_SYS_OP_NAMEOWN2,  0, 0, 64, 64, 0, DNAC_NAME_MAX_LEN }
 };
 
 const nodus_domain_adapter_t NODUS_RT_SYSTEM_ADAPTER = {
@@ -8640,6 +8736,7 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
             if (rtn_deleg_parse_v2(p, len, &c) != 0) return -1;
             memcpy(out->rec_delegator_fp, c.delegator_fp, 64);
             memcpy(out->rec_validator_fp, c.validator_id, 64);
+            out->rec_v2 = 1;             /* 3e: rec_validator_fp = vid    */
             out->rec_amount = c.amount;
             out->rec = env->leg[leg].runtime_op == DNA_SYSRULE_DELEGATE
                            ? NODUS_RT_DESC_REC_DELEGATE
@@ -8651,6 +8748,7 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
             if (rtn_sys_stake_shape(env, leg) != 0) return -1;
             if (rtn_unstake_parse_v2(p, len, &vid) != 0) return -1;
             memcpy(out->rec_validator_fp, vid, 64);
+            out->rec_v2 = 1;
             out->rec = NODUS_RT_DESC_REC_UNSTAKE;
             return 0;
         }
@@ -8659,6 +8757,7 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
             if (rtn_sys_stake_shape(env, leg) != 0) return -1;
             if (rtn_vupd_parse_v2(p, len, &c) != 0) return -1;
             memcpy(out->rec_validator_fp, c.validator_id, 64);
+            out->rec_v2 = 1;
             out->rec_commission_bps = c.new_commission_bps;
             out->rec = NODUS_RT_DESC_REC_VALIDATOR_UPDATE;
             return 0;
@@ -8824,4 +8923,38 @@ int nodus_rt_native_committed_signer_fp(const dna_env_view_t *env,
     memcpy(fp_out, v.signer_fp[0], 64);
     if (n_signers_out) *n_signers_out = v.n_signers;
     return 0;
+}
+
+/* HF-6 sub-slice 3e — the owner_fp of a generation-4 validator, for the
+ * node-local displays only (contract: nodus_witness_rt_native.h). The
+ * SAME column rtn_sys_val2_fetch joins (v2_validator_roles.owner_fp,
+ * keyed by validator_id), read alone: no consensus path calls this. */
+int nodus_rt_native_validator_owner(struct nodus_witness *wns,
+                                    const uint8_t validator_id[64],
+                                    uint8_t owner_out[64]) {
+    nodus_witness_t *w = (nodus_witness_t *)wns;
+    sqlite3_stmt *st = NULL;
+    if (!w || !w->db || !validator_id || !owner_out) return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT owner_fp FROM v2_validator_roles WHERE validator_id = ?1",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    if (sqlite3_bind_blob(st, 1, validator_id, 64,
+                          SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    int out = -1;
+    if (rc == SQLITE_DONE) {
+        out = 1;
+    } else if (rc == SQLITE_ROW) {
+        const uint8_t *own = sqlite3_column_blob(st, 0);
+        if (own && sqlite3_column_bytes(st, 0) == 64) {
+            memcpy(owner_out, own, 64);
+            out = 0;
+        }
+    }
+    sqlite3_finalize(st);                /* validator_id is the PK: 1 row */
+    return out;
 }

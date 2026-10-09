@@ -452,27 +452,48 @@ repeated:
 
     /* ── SYSTEM record ────────────────────────────────────────────── */
     if (sys) {
+        /* HF-6 sub-slice 3e (design rev 6 §9): a generation-4 record leg
+         * carries validator_id in rec_validator_fp (rec_v2) — an id, NOT
+         * an address. Every row (and every peer) names the validator's
+         * ADDRESS = its owner_fp, read from the committed
+         * v2_validator_roles row in this block's transaction (the item
+         * just read or wrote that row; owner_fp is immutable, K3). A
+         * missing row or a read failure is a FAULT that fails the block
+         * — never an id indexed as an address. Generations 1-3:
+         * rec_validator_fp IS the address, unchanged. */
+        uint8_t v_addr[64];
+        memcpy(v_addr, sys->rec_validator_fp, 64);
+        if (sys->rec_v2 && sys->rec != NODUS_RT_DESC_REC_NONE &&
+            sys->rec != NODUS_RT_DESC_REC_CHAIN_CONFIG &&
+            nodus_rt_native_validator_owner(w, sys->rec_validator_fp,
+                                            v_addr) != 0) {
+            ai_reason(reason, reason_size, "addr index: applied item %u at "
+                      "height %llu names a generation-4 validator whose "
+                      "owner row cannot be read", (unsigned)item_pos,
+                      (unsigned long long)height);
+            goto done;
+        }
         switch (sys->rec) {
         case NODUS_RT_DESC_REC_STAKE:
-            ai_row(&rows[n++], sys->rec_validator_fp, NODUS_ADDR_KIND_STAKE,
+            ai_row(&rows[n++], v_addr, NODUS_ADDR_KIND_STAKE,
                    sys->rec_amount, AI_NATIVE, NULL);
             break;
         case NODUS_RT_DESC_REC_DELEGATE:
             ai_row(&rows[n++], sys->rec_delegator_fp,
                    NODUS_ADDR_KIND_DELEGATE, sys->rec_amount, AI_NATIVE,
-                   sys->rec_validator_fp);
+                   v_addr);
             break;
         case NODUS_RT_DESC_REC_UNDELEGATE:
             ai_row(&rows[n++], sys->rec_delegator_fp,
                    NODUS_ADDR_KIND_UNDELEGATE, sys->rec_amount, AI_NATIVE,
-                   sys->rec_validator_fp);
+                   v_addr);
             break;
         case NODUS_RT_DESC_REC_UNSTAKE:
-            ai_row(&rows[n++], sys->rec_validator_fp,
+            ai_row(&rows[n++], v_addr,
                    NODUS_ADDR_KIND_UNSTAKE, 0, AI_NATIVE, NULL);
             break;
         case NODUS_RT_DESC_REC_VALIDATOR_UPDATE:
-            ai_row(&rows[n++], sys->rec_validator_fp,
+            ai_row(&rows[n++], v_addr,
                    NODUS_ADDR_KIND_VALIDATOR_UPDATE, 0, AI_NATIVE, NULL);
             break;
         case NODUS_RT_DESC_REC_CHAIN_CONFIG:

@@ -859,7 +859,9 @@ typedef enum {
  *    - DELEGATE_NAME_REQUIRED (17, HF-8): nodus_witness_v2_apply.c
  *      env_delegate_name_required (the engine reads it into
  *      nodus_rt_exec_ctx_t.delegate_name_required — the CORE SYSFUND
- *      leg's name gate, nodus_witness_rt_native.c rtn_sysfund_name_gate).
+ *      leg's name gate, nodus_witness_rt_native.c rtn_sysfund_name_gate,
+ *      under generations 1-3; under generation 4 the SYSTEM DELEGATE's
+ *      own gate, rtn_deleg2_name_gate — HF-6 sub-slice 3e, decision D3).
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *

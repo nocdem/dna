@@ -21,7 +21,9 @@
  * derived. It does NOT re-judge the leg (no ownership, balance, lock or
  * quorum check): it is meaningful ONLY for a leg of an envelope the chain
  * APPLIED (result code 0), which the caller must establish from the
- * stored FinalizeBlock response.
+ * stored FinalizeBlock response. (One labeled exception in this header:
+ * nodus_rt_native_validator_owner reads the database — it is not part of
+ * the describer.)
  *
  * @file nodus_witness_rt_native.h
  */
@@ -103,7 +105,13 @@ typedef struct {
      * length) they are the 64-byte values the call CARRIES instead:
      * rec_delegator_fp = delegator_fp (still an address) and
      * rec_validator_fp = validator_id (NOT an address — a semantic shift
-     * for the consumers until the RPC slice exposes owner_fp, §9). */
+     * for the consumers until the RPC slice exposes owner_fp, §9).
+     * HF-6 sub-slice 3e: `rec_v2` = 1 marks exactly that case (the record
+     * leg is the generation-4 layout, so rec_validator_fp holds the
+     * validator_id), 0 otherwise — a consumer that needs the validator's
+     * ADDRESS resolves owner_fp through nodus_rt_native_validator_owner
+     * (state, so not here). */
+    uint8_t  rec_v2;
     nodus_rt_desc_rec_t rec;
     uint8_t  rec_validator_fp[64];   /* STAKE, DELEGATE, UNSTAKE,
                                       * UNDELEGATE, VALIDATOR_UPDATE     */
@@ -199,6 +207,27 @@ int nodus_rt_core_name_owner_key(const dna_env_view_t *env,
                                  const nodus_rt_auth_verdict_t *verdict,
                                  uint32_t *op_id_out,
                                  uint8_t key_out[64]);
+
+struct nodus_witness;
+
+/**
+ * HF-6 sub-slice 3e (design docs/plans/2026-10-03-hf5-validator-owner-
+ * stake-design.md rev 6 §9 — minimal RPC arm): the owner_fp of the
+ * generation-4 validator `validator_id`, read from its
+ * v2_validator_roles row (owner_fp is immutable, K3 — the current row
+ * answers for every height the row has existed).
+ *
+ * NOT part of the describer and NOT a consensus read: it touches the
+ * database (unlike everything else in this header) and serves only
+ * node-local displays — the RPC handlers (validator list, delegations,
+ * scan-v3 record) and the address-history index. No root, vote or
+ * validity path calls it. A row whose owner_fp is not exactly 64 bytes
+ * is a fault, never a value.
+ * @return 0 found (*owner_out set); 1 no row; -1 fault / bad arguments.
+ */
+int nodus_rt_native_validator_owner(struct nodus_witness *w,
+                                    const uint8_t validator_id[64],
+                                    uint8_t owner_out[64]);
 
 #ifdef __cplusplus
 }
