@@ -1182,26 +1182,32 @@ int nodus_validator_v2_key_release(nodus_witness_t *w,
                       "%d rows) — fault", rc, sqlite3_changes(w->db));
         return -1;
     }
-    /* 2. every other row the validator holds, any count: a pending key
-     *    (role 2, a ROTATE not yet swapped) or — from a swap at U to the
-     *    sweep at U+E — the previous key kept at role 1 (khan A2) */
+    /* 2. every role-2 row the validator holds, any count: a pending key (a
+     *    ROTATE never swapped). A previous key kept at role 1 (a swap at
+     *    U, this graduation at U+E — khan A2) is NOT taken here: the sweep
+     *    of this same boundary (nodus_witness_v2_epoch.c
+     *    v2ep_rotate_sweep, step 3d) releases it together with the
+     *    previous voter's attendance row, AFTER the attendance digest —
+     *    one release site for every previous key (design rev 6 §3). */
     st = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "DELETE FROM v2_consensus_keys WHERE validator_id = ?1",
-            -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "key_release (other roles) prepare failed: "
+            "DELETE FROM v2_consensus_keys WHERE validator_id = ?1 "
+            "AND role = ?2", -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "key_release (pending role) prepare failed: "
                       "%s", sqlite3_errmsg(w->db));
         return -1;
     }
     if (sqlite3_bind_blob(st, 1, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK) {
+                          SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)NODUS_V2_KEY_ROLE_PENDING)
+            != SQLITE_OK) {
         sqlite3_finalize(st);
         return -1;
     }
     rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "key_release (other roles) step failed "
+        QGP_LOG_ERROR(LOG_TAG, "key_release (pending role) step failed "
                       "(rc=%d): %s", rc, sqlite3_errmsg(w->db));
         return -1;
     }
@@ -1218,16 +1224,26 @@ int nodus_validator_v2_key_rotated_ids(nodus_witness_t *w,
     *ids_out = NULL;
     *n_out = 0;
     sqlite3_stmt *st = NULL;
+    /* a bonded / exiting row's two role-1 keys, or — HF-6 6e — the one
+     * role-1 key an UNSTAKED row still holds: the previous key of a
+     * validator that graduated at this boundary (key_release keeps it for
+     * the sweep). UNION: one id per validator; one ordered result. */
     if (sqlite3_prepare_v2(w->db,
             "SELECT validator_id FROM v2_consensus_keys WHERE role = ?1 "
             "GROUP BY validator_id HAVING COUNT(*) > 1 "
-            "ORDER BY validator_id ASC", -1, &st, NULL) != SQLITE_OK) {
+            "UNION "
+            "SELECT k.validator_id FROM v2_consensus_keys k "
+            "JOIN validators v ON v.pubkey_hash = k.validator_id "
+            "WHERE k.role = ?1 AND v.status = ?2 "
+            "ORDER BY 1 ASC", -1, &st, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "key_rotated_ids prepare failed: %s",
                       sqlite3_errmsg(w->db));
         return -1;
     }
     if (sqlite3_bind_int64(st, 1, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
-        != SQLITE_OK) {
+            != SQLITE_OK ||
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)DNAC_VALIDATOR_UNSTAKED)
+            != SQLITE_OK) {
         sqlite3_finalize(st);
         return -1;
     }
@@ -1268,6 +1284,7 @@ int nodus_validator_v2_key_rotated_ids(nodus_witness_t *w,
 int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
                                           const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
                                           const uint8_t *consensus_pubkey,
+                                          int graduated,
                                           uint8_t prev_hash_out[NODUS_V2_KEY_HASH_LEN]) {
     if (!w || !w->db || !validator_id || !consensus_pubkey || !prev_hash_out)
         return -1;
@@ -1283,8 +1300,10 @@ int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
         return -1;
     }
     /* 1. the role-1 rows naming the validator: EXACTLY two, one of them
-     *    the current key's — any other shape is not "a swapped row
-     *    between U and U+E" and is refused before anything is written */
+     *    the current key's — or, for a validator that graduated at this
+     *    boundary (key_release took its current key's row), EXACTLY one
+     *    and NOT the current key's. Any other shape is not "a swapped row
+     *    between U and U+E" and is refused before anything is written. */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT consensus_pk_hash FROM v2_consensus_keys "
@@ -1314,21 +1333,38 @@ int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
         n++;
     }
     sqlite3_finalize(st);
-    if (rc != SQLITE_DONE || n != 2) {
+    const int want = graduated ? 1 : 2;
+    if (rc != SQLITE_DONE || n != want) {
         QGP_LOG_ERROR(LOG_TAG, "key_sweep_previous: %d role-1 row(s) (rc=%d) "
-                      "where a swapped validator holds two — fault", n, rc);
+                      "where a swapped %s validator holds %d — fault", n, rc,
+                      graduated ? "graduated" : "bonded / exiting", want);
         return -1;
     }
-    const int c0 = memcmp(rows[0], cur, sizeof(cur)) == 0;
-    const int c1 = memcmp(rows[1], cur, sizeof(cur)) == 0;
-    if (c0 == c1) {
-        /* neither (the current key is unreserved) or both (impossible
-         * under the primary key) — never guess which row is "previous" */
-        QGP_LOG_ERROR(LOG_TAG, "%s", "key_sweep_previous: the current key's "
-                      "role-1 row is not exactly one of the two — fault");
-        return -1;
+    const uint8_t *prev;
+    if (graduated) {
+        if (memcmp(rows[0], cur, sizeof(cur)) == 0) {
+            /* the graduation released the current key; a row under it is
+             * not a previous key */
+            QGP_LOG_ERROR(LOG_TAG, "%s", "key_sweep_previous: a graduated "
+                          "validator's only role-1 row is its current key — "
+                          "fault");
+            return -1;
+        }
+        prev = rows[0];
+    } else {
+        const int c0 = memcmp(rows[0], cur, sizeof(cur)) == 0;
+        const int c1 = memcmp(rows[1], cur, sizeof(cur)) == 0;
+        if (c0 == c1) {
+            /* neither (the current key is unreserved) or both (impossible
+             * under the primary key) — never guess which row is
+             * "previous" */
+            QGP_LOG_ERROR(LOG_TAG, "%s", "key_sweep_previous: the current "
+                          "key's role-1 row is not exactly one of the two — "
+                          "fault");
+            return -1;
+        }
+        prev = c0 ? rows[1] : rows[0];
     }
-    const uint8_t *prev = c0 ? rows[1] : rows[0];
 
     /* 2. delete exactly that row */
     st = NULL;

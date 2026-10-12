@@ -7661,14 +7661,10 @@ whose S(U = H−E) entry (by id, ruleset-1 bridge) carries the row's current key
 exactly one the current key's, else fault) and the previous voter's `v2_attendance` row (voter_id =
 the first 32 bytes of that same untagged SHA3-512 — 0 or 1 row) is deleted; otherwise it must be this
 boundary's swap (S(H) seats it under the current key) and is kept until H+E; any other shape faults. A
-graduated validator is never a candidate (`key_release` already took every row naming it). Known gap
-(deterministic, design-text level): a validator swapped at U that graduates at U+E keeps its previous
-voter's attendance row (the graduation never deleted attendance rows).
+validator swapped at U that graduates at U+E is a candidate too since slice 6e (see "HF-6 slice 6e":
+`key_release` keeps its previous key for this step).
 
-**No fault-injection stage** for the swap or the sweep: the engine's `epoch_stage_fault`
-(`nodus_witness_v2_apply.c`) returns 1 for any stage it does not name, so firing a new stage would halt
-every generation-4 boundary; the stages (19, 20) are added together with their engine ids
-(`V2AP_FAIL_AFTER_*`) in a slice that may edit the engine.
+The two steps' fault-injection stages (19 / 20, engine ids F61 / F62) were added by slice 6e.
 
 **Byte-identical**: every path below generation 4; every generation-4 freeze, swap and sweep on a chain
 with no pending row and no second role-1 row (each step reads its candidates first and returns).
@@ -7686,6 +7682,94 @@ the owner at U and U+E, the sweep deleting the previous attendance and role-1 ro
 third's at 6E), twin digests. `test_cmt_app` `t_val_updates_rotation`: a snapshot(E) differing in one
 entry's key is announced as exactly [new key at its power, old key at 0] and Comet's set for E+2 holds
 the new address only (hand-written snapshot; priority not pinned).
+
+### HF-6 slice 6e — the p2p pending set; the rotation stages; the graduate's previous key (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 ("p2p bonded set
+`pending_consensus_pubkey`'i de kapsar — yeni node ilk görevinden önce gossip yapabilsin"; the previous
+voter's attendance row deleted at U+E after that epoch's settlement and digest consumers) and khan A2
+(the previous key's reservation released at U+E with it). Plan `tasks/hf6-slice6-plan.md` §0.6 #14,
+§2 "6e", §5 B2.
+
+**The p2p pending set** (`bonded_add_pending`, `nodus_witness_p2p.c`, called by
+`nodus_witness_p2p_refresh_bonded` between the validators read and the two committee reads, before the
+sort). One ordered statement: `SELECT r.pending_consensus_pubkey FROM v2_validator_roles r JOIN
+validators v ON v.pubkey_hash = r.validator_id WHERE v.status IN (ACTIVE, ELIGIBLE) AND
+r.pending_consensus_pubkey != zeroblob(2592) ORDER BY r.validator_id`. From the ROTATE's commit on, the
+node that will sign under the pending key from U + 2 is bonded: its connections bypass the inbound cap,
+it is dialed without being abandoned, its signed ADDR record is verified against that key
+(`h_bonded_pubkey`) and an unsigned one is refused. Below generation 4 the roles table is empty — no
+change. A RETIRING / AUTO_RETIRED / UNSTAKED row's pending key is not added. At the swap (U) the key
+becomes the row's own and stays bonded through the validators read. A failure of the statement is
+logged and the set is built from the other three sources (the validators read's rule). Node-local: the
+set decides connections only. The inbound job queue (`inbound_depth`) follows the listener limit,
+which grows by the pending keys (`cmt_p2p_transport_max_incoming` = cap + unconditional + bonded).
+
+*The old key's exit.* At tip U + 1 neither the validators row (swapped at U) nor committee(U ± 1)
+(both S(U)) names the old key, while it signed U + 1's precommit. No consumer disconnects a peer that
+leaves the set: the switch tests "unconditional" only when it ACCEPTS an inbound connection
+(`cmt_p2p_switch.c` the inbound-peer cap) and when it COUNTS peers (`cmt_p2p_switch_num_peers` — the
+old ID now counts toward the inbound / outbound numbers — an outbound one leaves PEX one dial fewer to
+make); the mempool reactor's
+unconditional flag is fixed when the peer is added; the transport's `n_inbound` keeps the job queue
+deep enough for a limit that shrank. What the old ID loses: the inbound-cap bypass on a RECONNECT, the
+never-ban rule (`cmt_p2p_addrbook_mark_bad`), the never-abandon dial rule (PEX `dial_peer`), the
+signed-record-only rule (an unsigned address for it is admitted again), the 0x71 approval gate
+(`nodus_witness_handle_cc_appr_req` drops its requests — it is no longer a seat for governance from
+U + 1 either, plan §0.6 #13) and the 4001 roster listing. Consequence for the runbook (khan A8: the old
+node stays up through U + E for its S(F) storage duty): from U + 2 it reaches the network as an ordinary
+peer.
+
+**Tests** (written, NOT run by the author). `test_witness_p2p` (2a''): on a derived version-3 chain,
+inside a rolled-back transaction — two keys in no committee and no row are not bonded; a roles row
+with pending K_R under ACTIVE row 2 makes K_R bonded; a pending K_S under row 3 is not bonded while row
+3 is RETIRING or UNSTAKED and is bonded when row 3 is ACTIVE again (the control); after
+`nodus_validator_v2_rotate_apply` switches row 2 to K_R (no pending key left) K_R is bonded as the row's
+key; rolled back, the set is the chain's again. `test_hf6_readers` D pins the new `JOIN validators`
+reader (`bonded_add_pending`, VALUE_SCAN, ×1).
+
+**The rotation stages** (plan §5 B2). `NODUS_V2_EPST_ROTATE_SWAP = 19` and `NODUS_V2_EPST_ROTATE_SWEEP =
+20` (`nodus_witness_v2_epoch.h`, appended after 18) fire right after boundary steps 1d and 3d, at key
+generation ≥ 4 only (below it the steps do not exist), whether or not the step had a candidate (the
+neighbouring stages' convention). The engine maps them BY NAME in `epoch_stage_fault`
+(`nodus_witness_v2_apply.c`) onto the appended fault ids `V2AP_FAIL_AFTER_ROTATE_SWAP = 61` and
+`V2AP_FAIL_AFTER_ROTATE_SWEEP = 62` (`nodus_witness_v2_apply.h`, after 60). Proof obligations: an
+interrupt after 1d leaves every accepted row on its old key with its pending key and role-2 reservation;
+after 3d it leaves the previous keys' role-1 rows and attendance rows in place. Not in the test
+fixture's lane-class table (`tests/v2_genesis_fixture.h` `v2x_cmt_fail_class`, outside this slice's
+files): a test that routes 61 / 62 through `v2x_cmt_injected` gets "never fires"; the slice's tests call
+`v2x_cmt_fault` directly.
+
+**The graduate's previous key** (design §3 + khan A2). A validator swapped at U that leaves S(U+E) —
+it UNSTAKEd, or Rule N retired it, before U's freeze — graduates at U+E (at U its graduation is
+deferred: S(U) seats it). Before 6e the graduation's `nodus_validator_v2_key_release` deleted every
+reservation naming it, the previous key's kept role-1 row included, so the sweep (which finds its
+candidates in the reservation table) never saw it and the previous voter's `v2_attendance` row stayed
+for ever. Now: `key_release`'s second DELETE takes role-2 rows only; `nodus_validator_v2_key_rotated_ids`
+also returns every UNSTAKED row that still holds a role-1 reservation (`UNION`, one ordered result);
+`v2ep_rotate_sweep` accepts such a candidate only if S(U) seats it under its current key (swapped at
+U) and releases through `nodus_validator_v2_key_sweep_previous(…, graduated = 1, …)` (exactly one
+role-1 row, not the current key's) — then deletes the previous voter's attendance row exactly as for a
+bonded row. ONE release site for every previous key and its attendance row, AFTER the digest of
+(U, U+E], which still counts the previous voter's U+1 / U+2 credits (design: "silme … o epoch'un
+settlement'ı ve digest tüketicileri bittikten sonra, sınır U+E'de"); deleting inside the graduation
+(step 2) would have removed them from that digest. Between step 2 and step 3d of that one boundary the
+UNSTAKED row holds its previous key at role 1; nothing between reads `v2_consensus_keys`. A graduation
+at any other boundary cannot hold a previous key (deferred at U; released by the sweep of U+E after
+it), so a graduated candidate that S(U) does not seat under its current key is a fault. Deterministic:
+the candidates are committed rows in validator_id order; voter_id = the first 32 bytes of the untagged
+SHA3-512 of the key both derivations take (`nodus_chain_config_derive_witness_id`, OpenSSL; the
+reservation hash, `qgp_sha3_512`). Not changed: the CURRENT key's attendance row of any graduate stays
+(graduation has never deleted attendance rows).
+
+**Tests** (written, NOT run by the author). `test_hf6_rotate` case D: F61 at 4E and F62 at 5E on twin
+A — node FAULT, whole database byte-identical, the rows the step writes found unchanged; the clean
+boundary then applies on both twins and A == B right after it. Case E (new): one validator rotated
+(F = 3E), UNSTAKEd at 3E+3, swapped at 4E while RETIRING, graduation deferred at 4E, not in S(5E), its
+previous key KC1 signs into an attendance row; F62 at 5E rolls the graduation and the sweep back
+together; the clean 5E leaves it UNSTAKED with no attendance row for KC1 and no reservation naming it;
+A == B. Case C's V_B (swapped at 3E, graduated at 4E) now has its kept KC2 released by the sweep's
+graduated arm.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

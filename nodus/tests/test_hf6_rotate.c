@@ -3,7 +3,8 @@
  * @brief HF-6 slice 6 — ROTATE_CONSENSUS_KEY (runtime_op 10): owned and
  *        priced by generation 4 only (sub-slice 6a), its exec (6b), the
  *        by-validator_id readers and the swap writer (6c), the freeze's
- *        budget pass, the boundary swap and the sweep (6d).
+ *        budget pass, the boundary swap and the sweep (6d), their fault
+ *        stages and the graduate's previous key (6e).
  *
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
  * §2 (ROTATE = runtime_op 10, call validator_id[64] ‖ new_pk[2592] ‖
@@ -128,7 +129,8 @@
  *      boundary 4E FAULT; restored, A equals B. C7c: a THIRD role-1 row
  *      naming V_A makes the sweep at 4E FAULT; removed, A equals B.
  *   C8 boundary 4E: applies on both twins; V_B graduates (key_release
- *      takes KN2 and the kept KC2); the SWEEP releases KC1 and KC3 — keys
+ *      takes KN2; the sweep's graduated arm the kept KC2 — 6e); the SWEEP
+ *      releases KC1 and KC3 — keys
  *      no committed snapshot names; Rule N on duty S(3E): V_A counter 1
  *      (KN never signed), V_C 0; the twins agree.
  *  D. SLICE 6d — the budget and one full rotation (F / U / U+E) of
@@ -149,6 +151,29 @@
  *      rows; Rule N 0 on the new keys; the third swapped, its old key kept
  *      (swapped at this boundary). D6 boundary 6E: the third's old key
  *      and attendance row released. (i) the twins agree.
+ *   D-F (slice 6e, plan §5 B2) the two rotation fault stages, on twin A
+ *      alone: boundary 4E with F61 (V2AP_FAIL_AFTER_ROTATE_SWAP) and
+ *      boundary 5E with F62 (V2AP_FAIL_AFTER_ROTATE_SWEEP) are node FAULTS
+ *      (phase 6e) with the whole database byte-identical; the rows the
+ *      step would have written are named and found unchanged (o0 / o1
+ *      still pending with role-2 reservations; the old voters' attendance
+ *      and role-1 rows present, o2 not swapped); the clean boundary then
+ *      applies on both twins and A == B, byte for byte, right after it.
+ *      Placed here, not in test_v2_epoch / test_v2_apply (where F39-F60
+ *      live): their fixtures have no generation 4 and no ROTATE path, and
+ *      the stages act only at a generation-4 boundary with a rotation in
+ *      flight.
+ *  E. SLICE 6e — a validator swapped at U that graduates at U+E (design
+ *     rev 6 §3: the previous voter's attendance row is deleted at U+E,
+ *     after that epoch's digest; khan A2). One 12M STAKE (KC1) at 4,
+ *     ROTATE to KN at 2E+1 (F = 3E, accepted: S(4E) seats KN), KC1 signs
+ *     from 3E+3, UNSTAKE at 3E+3 (RETIRING before U's freeze); boundary
+ *     4E swaps it (RETIRING), defers its graduation, S(5E) does not seat
+ *     it; KC1 signs 4E / 4E+1, KN from 4E+3; before 5E KC1's attendance
+ *     row exists. Boundary 5E with F62 on A rolls the graduation and the
+ *     sweep back together; the clean 5E: UNSTAKED under KN, KC1's
+ *     attendance row gone, no reservation naming the validator (KN by the
+ *     graduation, KC1 by the sweep's graduated arm), A == B.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 exists only there; the
@@ -157,7 +182,7 @@
  * harness 15). Environment: none.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
- * Two /tmp/test_hf6_rotate_* directories per engine case (B, C, D),
+ * Two /tmp/test_hf6_rotate_* directories per engine case (B, C, D, E),
  * removed at the end of the case (left behind when a CHECK aborts).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
@@ -183,15 +208,22 @@
  *  - The B4 arm of the distribution (entry key == the row's PENDING key)
  *    is no longer reached on any path here: with the 6d swap placed after
  *    the distribution, strict equality holds at U and at U+E.
- *  - The swap and the sweep have NO fault-injection stage (the engine's
- *    stage mapper fails closed on an unnamed stage, and it is outside this
- *    slice's files), so no test proves a rollback between them and the
- *    next step.
+ *  - F61 / F62 (D-F, E): that the stage fires AFTER the step's writes is
+ *    read from the source (nodus_witness_v2_epoch.c, steps 1d / 3d), not
+ *    observed — the test proves that the injected block faults (so the
+ *    stage fired: the clean block with the same inputs commits) and that
+ *    nothing it wrote survives. The faulted apply runs on A's witness
+ *    handle; in-memory state it may leave there is not compared (the C7b
+ *    caveat). They go around v2x_cmt_injected (v2_genesis_fixture.h),
+ *    whose class table does not list 61 / 62.
+ *  - E covers the graduation at U+E of a validator that UNSTAKEd; one
+ *    AUTO_RETIRED by Rule N at U (the other way to miss S(U+E)) takes the
+ *    same graduation and sweep path but is not driven here.
  *  - The Comet side of a rotation is test_cmt_app's
  *    t_val_updates_rotation (a hand-written S(E)), not driven from here:
  *    this fixture has no host pipeline.
- *  - C runs ~4E blocks per twin, D ~6E (2880 / 4320 at the production
- *    E = 720).
+ *  - C runs ~4E blocks per twin, D ~6E, E ~5E (2880 / 4320 / 3600 at the
+ *    production E = 720).
  *  - C7b applies a FAULTING boundary on twin A and then continues on A:
  *    the digest check after it covers the database only. In-memory
  *    state the aborted apply may have left in A's witness handle is not
@@ -2293,7 +2325,8 @@ static int t_swap(void) {
      * The distribution pays S(3E) against the swapped rows (strict key
      * equality holds — the B4 {pubkey, pending} relaxation is not needed
      * on this path any more). V_B graduates: key_release takes KN2 (its
-     * current key) and the kept KC2. The sweep releases KC1 / KC3 —
+     * current key); since 6e the kept KC2 is left to the sweep of the
+     * same boundary (the graduated arm). The sweep releases KC1 / KC3 —
      * validators S(2E) never seated, whose previous key is in no
      * committed snapshot (khan A3 accepted them with 0 in S(F)); the
      * reservation table is its only record. KC1 / KC3 never signed: no
@@ -2310,7 +2343,8 @@ static int t_swap(void) {
           key_of(A.w, g_k[KN2].pk, got, &role) == 1 &&
           keys_naming(A.w, g_rid[RB], NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
           keys_naming(A.w, g_rid[RB], NODUS_V2_KEY_ROLE_PENDING) == 0,
-          "both of V_B's keys released by the graduation");
+          "both of V_B's keys released at 4E (KN2 by the graduation, KC2 "
+          "by the sweep)");
     CHECK(key_of(A.w, g_k[KC1].pk, got, &role) == 1 &&
           key_of(A.w, g_k[KC3].pk, got, &role) == 1 &&
           keys_naming(A.w, g_rid[RA], NODUS_V2_KEY_ROLE_ACTIVE) == 1 &&
@@ -2384,6 +2418,27 @@ static int64_t ko_value(nodus_witness_t *w) {
     if (st) sqlite3_finalize(st);
     if (!ok || acc > (uint64_t)INT64_MAX - utx) return -1;
     return (int64_t)(acc + utx);
+}
+
+/* HF-6 6e — the boundary block `h` on twin A alone with fault point `pt`
+ * injected: the engine returns a node FAULT labelled by phase 6e (the
+ * boundary), and the WHOLE database is byte-identical afterwards
+ * (v2x_cmt_fault). Routed around v2x_cmt_injected: its class table
+ * (v2_genesis_fixture.h) does not list F61 / F62. 0 / -1. */
+static int inject_boundary(fixture_t *A, uint64_t h, nodus_v2_apply_fail_t pt) {
+    nodus_v2_block_t bk;
+    mk_block(&bk, h, NULL, 0);
+    bk.fail_at = pt;
+    if (v2x_cmt_fault(A->w, &bk) != 0) return -1;
+    return v2x_reason_is(&bk, V2X_FAULT, "phase 6e");
+}
+
+/* the twins' whole databases byte-identical: 0 / -1 */
+static int twins_equal(fixture_t *A, fixture_t *B) {
+    uint8_t da[64], db[64];
+    if (v2x_db_digest(A->w, da) != 0 || v2x_db_digest(B->w, db) != 0)
+        return -1;
+    return memcmp(da, db, 64) == 0 ? 0 : -1;
 }
 
 static int t_budget(void) {
@@ -2498,8 +2553,23 @@ static int t_budget(void) {
     CHECK(run_to(&A, &B, &h, 4 * E_LEN - 1) == 0, "to block 4E-1");
 
     /* ── D4. boundary 4E (U of o0, o1; F again for o2) ─────────────────
-     * the distribution at 4E pays S(3E) (old keys, rows not yet swapped
-     * at 1b) — KO, the owner of the three, is credited */
+     * F61 first (HF-6 6e): on A alone, boundary 4E with a fault injected
+     * after the swap step — a node FAULT, the whole database rolled back
+     * (o0 / o1 still on their old keys with their pending keys and
+     * role-2 reservations); the clean 4E then applies on both twins and A
+     * equals B byte for byte. Then the distribution at 4E pays S(3E) (old
+     * keys, rows not yet swapped at 1b) — KO, the owner of the three, is
+     * credited */
+    CHECK(inject_boundary(&A, 4 * E_LEN, V2AP_FAIL_AFTER_ROTATE_SWAP) == 0,
+          "F61: boundary 4E faults after the swap and rolls back whole");
+    for (int s = 0; s < 2; s++) {
+        const int k = o[s];
+        CHECK(row_view(A.w, g_rid[k], g_ck[k], g_tk[k], &rv) == 0 &&
+              rv.cur_is && rv.pend_is && rv.epoch == 3 * E_LEN &&
+              keys_naming(A.w, g_rid[k], NODUS_V2_KEY_ROLE_ACTIVE) == 1 &&
+              keys_naming(A.w, g_rid[k], NODUS_V2_KEY_ROLE_PENDING) == 1,
+              "F61: the swap's writes did not survive the rollback");
+    }
     {
         int64_t v0 = ko_value(A.w);
         CHECK(v0 >= 0, "KO's value before 4E");
@@ -2508,6 +2578,8 @@ static int t_budget(void) {
         int64_t v1 = ko_value(A.w);
         CHECK(v1 > v0, "(a) the distribution at U paid the owner");
     }
+    CHECK(twins_equal(&A, &B) == 0,
+          "F61: the replayed 4E is byte-identical to the unfaulted twin's");
     for (int s = 0; s < 2; s++) {
         const int k = o[s];
         CHECK(row_view(A.w, g_rid[k], g_tk[k], -1, &rv) == 0 && rv.cur_is &&
@@ -2549,7 +2621,20 @@ static int t_budget(void) {
     CHECK(att_rows(A.w, g_ck[o[0]]) == 1 && att_rows(A.w, g_ck[o[1]]) == 1,
           "the old voters' attendance rows exist before U+E");
 
-    /* ── D5. boundary 5E (U+E of o0, o1; U of o2) ────────────────────── */
+    /* ── D5. boundary 5E (U+E of o0, o1; U of o2) ──────────────────────
+     * F62 first (HF-6 6e): on A alone, boundary 5E with a fault injected
+     * after the sweep step — rolled back whole (the old voters' attendance
+     * rows and role-1 rows still there, o2 not swapped); the clean 5E then
+     * applies on both twins and A equals B. */
+    CHECK(inject_boundary(&A, 5 * E_LEN, V2AP_FAIL_AFTER_ROTATE_SWEEP) == 0,
+          "F62: boundary 5E faults after the sweep and rolls back whole");
+    CHECK(att_rows(A.w, g_ck[o[0]]) == 1 && att_rows(A.w, g_ck[o[1]]) == 1 &&
+          keys_naming(A.w, g_rid[o[0]], NODUS_V2_KEY_ROLE_ACTIVE) == 2 &&
+          keys_naming(A.w, g_rid[o[1]], NODUS_V2_KEY_ROLE_ACTIVE) == 2,
+          "F62: the sweep's deletes did not survive the rollback");
+    CHECK(row_view(A.w, g_rid[o[2]], g_ck[o[2]], g_tk[o[2]], &rv) == 0 &&
+          rv.cur_is && rv.pend_is,
+          "F62: o2's swap at 5E rolled back with the block");
     {
         int64_t v0 = ko_value(A.w);
         CHECK(v0 >= 0, "KO's value before 5E");
@@ -2558,6 +2643,8 @@ static int t_budget(void) {
         int64_t v1 = ko_value(A.w);
         CHECK(v1 > v0, "(a) the distribution at U+E paid the owner");
     }
+    CHECK(twins_equal(&A, &B) == 0,
+          "F62: the replayed 5E is byte-identical to the unfaulted twin's");
     for (int s = 0; s < 2; s++) {
         const int k = o[s];
         CHECK(att_rows(A.w, g_ck[k]) == 0,
@@ -2594,6 +2681,123 @@ static int t_budget(void) {
     return 0;
 }
 
+/* ══ E. slice 6e — a validator swapped at U that graduates at U+E ═════
+ *
+ * Design rev 6 §3 (the previous voter's attendance row is deleted at U+E,
+ * after that epoch's digest) + khan A2 (the previous key's reservation
+ * released at the same boundary). One 12M STAKE (owner KO, key KC1) at
+ * block 4, seated from S(3E); ROTATE to KN at 2E+1 (F = 3E) — accepted at
+ * 3E (S(3E) = S(4E) = [12M, 10M x 7], P = 82M: 70M > 54666666); KC1
+ * signs from 3E+3; UNSTAKE at 3E+3, i.e. RETIRING before U's freeze, so
+ * S(5E) does not seat it: swapped at U = 4E (status is not a condition),
+ * its graduation deferred at 4E (seated in S(4E)), it graduates at
+ * U+E = 5E. KC1 signs 4E and 4E+1 (credited 4E+1, 4E+2), KN from 4E+3.
+ * Before 6e the graduation's key_release took KC1's kept role-1 row and
+ * the sweep never saw the validator: KC1's attendance row stayed for ever.
+ * Now the sweep at 5E releases both, after the digest. F62 is injected at
+ * 5E on A first (the graduation and the sweep roll back together). */
+static int t_grad_sweep(void) {
+    fixture_t A, B;
+    static uint8_t call[STK_LEN];
+    uint8_t chain32[DNA_CHAIN_ID_LEN], vid[64], intent[64], got[64];
+    uint8_t role = 0;
+    const uint64_t BIG = 12000000ULL * (uint64_t)DNAC_DECIMAL_UNIT;
+    uint64_t h = 0;
+    rowv_t rv;
+
+    CHECK(E_LEN >= 12, "the fixture's edge precedes the first boundary");
+    for (int c = 0; c < N_COINS; c++) g_amt[c] = FEE;
+    g_amt[S1] = BIG + FEE;
+    for (int c = 0; c < N_COINS; c++)
+        CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
+    CHECK(fx_open(&A, "ea") == 0 && fx_open(&B, "eb") == 0,
+          "twin seeded chains (edge in block H14 - 1)");
+    CHECK(nodus_witness_v2_chain_id(A.w, chain32) == 0, "chain id");
+
+    /* ── E1. block 4: the 12M STAKE (KC1); block 2E+1: ROTATE to KN ─── */
+    CHECK(run_to(&A, &B, &h, H14 - 1) == 0, "blocks 1..3 (the edge)");
+    CHECK(stake2_call(call, chain32, KC1, H14 + 100, BIG) == STK_LEN,
+          "STAKE call");
+    CHECK(env_ok(&A, &B, H14, DNA_SYSRULE_STAKE, call, STK_LEN, S1,
+                 intent) == 0, "the 12M STAKE applies");
+    CHECK(vid_expect(chain32, intent, vid) == 0, "validator_id");
+    h = H14;
+    CHECK(run_to(&A, &B, &h, 2 * E_LEN) == 0, "to boundary 2E");
+    CHECK(rot_call(call, chain32, vid, g_k[KO].fp, KN, KC1,
+                   2 * E_LEN + 1 + 100, CS_OK) == ROT_LEN, "ROTATE call");
+    CHECK(env_ok(&A, &B, 2 * E_LEN + 1, DNA_SYSRULE_ROTATE_CONSENSUS_KEY,
+                 call, ROT_LEN, R1, NULL) == 0, "the ROTATE applies");
+    h = 2 * E_LEN + 1;
+
+    /* ── E2. boundary 3E (F): accepted ──────────────────────────────── */
+    CHECK(run_to(&A, &B, &h, 3 * E_LEN) == 0, "boundary 3E");
+    CHECK(seats_under(A.w, 3 * E_LEN, vid, KC1) == 1,
+          "FIXTURE GUARD: S(F) = S(3E) seats it under KC1 (it will sign)");
+    CHECK(seats_under(A.w, 4 * E_LEN, vid, KN) == 1,
+          "the freeze at 3E accepted the rotation: S(4E) seats KN");
+
+    /* ── E3. KC1 signs from 3E+3; UNSTAKE at 3E+3 (before U's freeze) ─ */
+    CHECK(run_to(&A, &B, &h, 3 * E_LEN + 2) == 0, "blocks 3E+1, 3E+2");
+    CHECK(vote_slot(0, KC1, (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT) == 0,
+          "KC1 signs");
+    g_nvote = N_VAL + 1;
+    memcpy(call, vid, 64);
+    CHECK(env_ok(&A, &B, 3 * E_LEN + 3, DNA_SYSRULE_UNSTAKE, call, 64, R2,
+                 NULL) == 0, "block 3E+3: the UNSTAKE applies");
+    h = 3 * E_LEN + 3;
+    CHECK(row_view(A.w, vid, KC1, KN, &rv) == 0 && rv.cur_is && rv.pend_is &&
+          rv.status == DNAC_VALIDATOR_RETIRING,
+          "RETIRING before U's freeze, its pending key kept");
+
+    /* ── E4. boundary 4E (U): swapped, graduation deferred, not in S(5E) */
+    CHECK(run_to(&A, &B, &h, 4 * E_LEN) == 0, "boundary 4E");
+    CHECK(row_view(A.w, vid, KN, -1, &rv) == 0 && rv.cur_is && rv.pend_is &&
+          rv.epoch == 0 && rv.status == DNAC_VALIDATOR_RETIRING,
+          "swapped at U while RETIRING; its graduation deferred (seated in "
+          "S(4E))");
+    CHECK(keys_naming(A.w, vid, NODUS_V2_KEY_ROLE_ACTIVE) == 2,
+          "KN role 1, KC1 kept role 1 (khan A2)");
+    CHECK(seats_under(A.w, 5 * E_LEN, vid, KN) == 0 &&
+          seats_under(A.w, 5 * E_LEN, vid, KC1) == 0,
+          "S(5E) does not seat it: it graduates at U+E = 5E");
+
+    /* ── KC1 signs 4E, 4E+1 (credited 4E+1, 4E+2); KN from 4E+3 ──────── */
+    CHECK(run_to(&A, &B, &h, 4 * E_LEN + 2) == 0, "blocks 4E+1, 4E+2");
+    CHECK(vote_slot(0, KN, (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT) == 0,
+          "KN signs from 4E+3");
+    CHECK(run_to(&A, &B, &h, 5 * E_LEN - 1) == 0, "to block 5E-1");
+    CHECK(att_rows(A.w, KC1) == 1,
+          "FIXTURE GUARD: the previous voter's attendance row exists before "
+          "U+E");
+
+    /* ── E5. boundary 5E (U+E): F62 on A, then the graduation + sweep ── */
+    CHECK(inject_boundary(&A, 5 * E_LEN, V2AP_FAIL_AFTER_ROTATE_SWEEP) == 0,
+          "F62: boundary 5E faults after the sweep and rolls back whole");
+    CHECK(att_rows(A.w, KC1) == 1 &&
+          keys_naming(A.w, vid, NODUS_V2_KEY_ROLE_ACTIVE) == 2 &&
+          row_view(A.w, vid, KN, -1, &rv) == 0 &&
+          rv.status == DNAC_VALIDATOR_RETIRING,
+          "F62: the graduation and the sweep rolled back together");
+    CHECK(run_to(&A, &B, &h, 5 * E_LEN) == 0,
+          "boundary 5E applies on both twins (no -2)");
+    CHECK(row_view(A.w, vid, KN, -1, &rv) == 0 && rv.cur_is && rv.pend_is &&
+          rv.status == DNAC_VALIDATOR_UNSTAKED,
+          "it graduated at U+E: UNSTAKED under KN, no pending key");
+    CHECK(att_rows(A.w, KC1) == 0,
+          "the previous voter's attendance row is deleted at U+E");
+    CHECK(keys_naming(A.w, vid, NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
+          keys_naming(A.w, vid, NODUS_V2_KEY_ROLE_PENDING) == 0 &&
+          key_of(A.w, g_k[KC1].pk, got, &role) == 1 &&
+          key_of(A.w, g_k[KN].pk, got, &role) == 1,
+          "no reservation survives: KN by the graduation, KC1 by the sweep");
+    CHECK(twins_equal(&A, &B) == 0,
+          "twin databases byte-identical (the faulted 5E replayed on A)");
+    votes_reset();
+    fx_close(&A);
+    fx_close(&B);
+    return 0;
+}
+
 int main(void) {
     static const struct {
         const char *name;
@@ -2604,6 +2808,7 @@ int main(void) {
         { "engine_gen4_rotate",    t_engine },
         { "swap_by_validator_id",  t_swap },
         { "freeze_budget_sweep",   t_budget },
+        { "graduate_prev_key",     t_grad_sweep },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     if (keys_make() != 0 || desc_make() != 0) {

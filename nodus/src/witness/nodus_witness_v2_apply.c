@@ -1246,6 +1246,12 @@ static int epoch_stage_fault(void *ud, nodus_v2_epoch_stage_t s,
         case NODUS_V2_EPST_GRAD_DELEG_RELEASED:
             return graduate_index == 0 &&
                    blk->fail_at == V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE;
+        /* HF-6 slice 6e — the generation-4 rotation steps 1d / 3d, mapped
+         * BY NAME onto the appended engine ids F61 / F62. */
+        case NODUS_V2_EPST_ROTATE_SWAP:
+            return blk->fail_at == V2AP_FAIL_AFTER_ROTATE_SWAP;
+        case NODUS_V2_EPST_ROTATE_SWEEP:
+            return blk->fail_at == V2AP_FAIL_AFTER_ROTATE_SWEEP;
         default:
             return 1;                    /* unknown stage: fail closed   */
     }

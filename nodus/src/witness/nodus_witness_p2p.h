@@ -59,9 +59,12 @@
  *     of an older build does not list 0x40; nothing is ever sent to it on
  *     that channel (cmt_p2p_peer.c peer_has_channel, peer.go:309-325).
  *   · the BONDED SET (K2 / N5): the local chain's `validators` rows with
- *     status ACTIVE (0) or ELIGIBLE (4), plus the members of the committees
- *     for tip + 1 and tip − 1 (the two committees the deleted B1 IDENT gate
- *     consulted) — recomputed whenever the local tip moves. It is the
+ *     status ACTIVE (0) or ELIGIBLE (4), plus — HF-6 slice 6e — the pending
+ *     consensus key of each such row (`v2_validator_roles`, so a rotating
+ *     validator's new node can gossip before its first duty), plus the
+ *     members of the committees for tip + 1 and tip − 1 (the two committees
+ *     the deleted B1 IDENT gate consulted) — recomputed whenever the local
+ *     tip moves. It is the
  *     switch's `is_bonded` (unconditional, R-P2P-7), the transport's
  *     `bonded_count` (the listener limit, R-P2P-27) and the address book's
  *     `bonded_pubkey` (R-P2P-4).

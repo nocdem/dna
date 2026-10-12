@@ -67,8 +67,8 @@
  *      pending row ⇒ nothing else is read. AFTER 1b (the distribution
  *      compares snapshot(H−E)'s old keys with the rows), BEFORE 2, 3 and 5
  *      (they must see the row as snapshot(H) names it; commit_next copies
- *      the new key into snapshot(H+E)). No fault stage yet (the engine's
- *      mapper fails closed on an unnamed stage).
+ *      the new key into snapshot(H+E)). Fault stage
+ *      NODUS_V2_EPST_ROTATE_SWAP after the step (HF-6 slice 6e).
  *   2. GRADUATION — tokenomics-v3 P1 (D-11): candidates are every row
  *      whose status is RETIRING **or AUTO_RETIRED** (widened from
  *      RETIRING-only; an AUTO_RETIRED member's bond is RETURNED, never
@@ -108,8 +108,10 @@
  *      seats the row's PENDING key in snapshot(H); below it, by pubkey
  *      (unchanged). A membership test that cannot be decided is -2. The
  *      graduate's row is written back with no pending key (pending
- *      2592 × 0x00, effective epoch 0) and every reservation naming it is
- *      released (nodus_validator_v2_key_release).
+ *      2592 × 0x00, effective epoch 0) and its current key's and pending
+ *      key's reservations are released (nodus_validator_v2_key_release);
+ *      a previous key kept from a swap at H−E is released by 3d (HF-6
+ *      slice 6e).
  *
  *      Per graduate, in the legacy order (bft.c:2465-2560): release UTXO
  *      (locked DNAC_VALIDATOR_UNBOND_EPOCHS · E past H — P3-3) → every
@@ -142,13 +144,16 @@
  *      catch.
  *   3d. ROTATION SWEEP (HF-6 slice 6d; design rev 6 §3, khan A2) —
  *      generation 4 only: for every validator swapped at H−E (it holds
- *      two role-1 reservations and snapshot(H−E) seats it under its
- *      current key) the previous key's role-1 reservation and its
- *      attendance row are deleted. Candidates come from the reservation
- *      table (the only committed record of the previous key of a
- *      validator snapshot(H−2E) did not seat — khan A3); none ⇒ no
+ *      two role-1 reservations — or, graduated at step 2 of this
+ *      boundary, only the previous one (HF-6 slice 6e) — and
+ *      snapshot(H−E) seats it under its current key) the previous key's
+ *      role-1 reservation and its attendance row are deleted: the ONE
+ *      release site of a previous key. Candidates come from the
+ *      reservation table (the only committed record of the previous key
+ *      of a validator snapshot(H−2E) did not seat — khan A3); none ⇒ no
  *      snapshot is read. AFTER 3b/3c, BEFORE 4 and 5; writes only
- *      v2_consensus_keys and v2_attendance.
+ *      v2_consensus_keys and v2_attendance. Fault stage
+ *      NODUS_V2_EPST_ROTATE_SWEEP after the step (HF-6 slice 6e).
  *   4. BOUNDARY FLIPS — nodus_witness_vset_apply_boundary_flips(w, H).
  *   5. NEXT SNAPSHOT — nodus_witness_vset_commit_next(w, H).
  *   6. BALANCE COPY (tokenomics-v3 P2, P2-5) —
@@ -616,7 +621,17 @@ typedef enum {
      * delegation it held has been released as a locked UTXO and its
      * delegation rows deleted, BEFORE its validators row is rewritten
      * (3). The engine maps it BY NAME. */
-    NODUS_V2_EPST_GRAD_DELEG_RELEASED = 18
+    NODUS_V2_EPST_GRAD_DELEG_RELEASED = 18,
+    /* HF-6 slice 6e (plan tasks/hf6-slice6-plan.md §5 B2) — APPENDED.
+     * Generation >= 4 boundaries only. 19 fires after step 1d, the
+     * rotation swap (every accepted row switched to the key S(H) seats;
+     * BEFORE the graduation); 20 after step 3d, the rotation sweep (the
+     * previous keys of the validators swapped at H−E released with their
+     * attendance rows; BEFORE the flips). Both fire whether or not the
+     * step had a candidate — the neighbouring stages' convention. The
+     * engine maps them BY NAME. */
+    NODUS_V2_EPST_ROTATE_SWAP     = 19, /* rotation swap applied         */
+    NODUS_V2_EPST_ROTATE_SWEEP    = 20  /* rotation sweep applied        */
     /* The numbers are append-only and NOT in firing order any more
      * (13-16 fire before 2); they are module-internal: the engine maps
      * them onto its own frozen fault ids BY NAME
