@@ -10,14 +10,17 @@
 //   - 101 unresolved rows: refused as "too large", never silently cut to 100
 //     (parseActivity reads at most 100 rows);
 //   - right after unlock (every parsed row's live status reset to 'pending'):
-//     100 rows saved as confirmed plus one new pending row save fine — the
-//     new row is kept, the oldest confirmed one left out — because a parsed
+//     100 rows saved as expired plus one new pending row save fine — the
+//     new row is kept, the oldest expired one left out — because a parsed
 //     row's retention follows the status it was SAVED with (savedStatus);
 //   - a parsed row saved as pending still counts as unresolved after the
 //     re-parse and survives 100 newer resolved rows;
-//   - a re-save right after parse writes the confirmed rows as confirmed,
-//     not as the reset 'pending' (parse again: savedStatus 'confirmed'),
+//   - a re-save right after parse writes the resolved rows with their saved
+//     status, not as the reset 'pending' (parse again: savedStatus kept),
 //     while the visible status stays 'pending' / 'abandoned' as before;
+//   - (0.1.91) a confirmed send of a network whose account history is read
+//     from the chain (NODUS, Ethereum, TRON, Solana, Cellframe) is not saved
+//     — live or saved-earlier — and BNB Smart Chain (no such list) keeps it;
 //   - requireSavedForEvm refuses an unsaved wallet in plain words and lets a
 //     saved one through.
 // Requires nothing beyond `npm ci`. How it can lie: rows are synthetic NODUS
@@ -26,7 +29,7 @@
 // status is read from savedStatus, never from the returned status.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activityKeyFor, serializeActivity, parseActivity, requireSavedForEvm } from '../src/activity-storage.js';
+import { activityKeyFor, serializeActivity, parseActivity, requireSavedForEvm, confirmedOnChainList } from '../src/activity-storage.js';
 
 const phrase = 'abandon '.repeat(23) + 'art';
 const id = Buffer.alloc(16, 5).toString('base64');
@@ -46,7 +49,7 @@ async function roundTrip(rows) {
 }
 
 test('an old pending row survives 101 newer resolved rows; the oldest resolved row is left out', async () => {
-  const rows = [row(0, 'pending'), ...Array.from({ length: 101 }, (_, i) => row(i + 1, 'confirmed'))];
+  const rows = [row(0, 'pending'), ...Array.from({ length: 101 }, (_, i) => row(i + 1, 'failed'))];
   const back = await roundTrip(rows);
   assert.equal(back.length, 100);
   assert.equal(back[0].hash, rows[0].hash, 'the pending row is kept, first as saved');
@@ -57,7 +60,7 @@ test('an old pending row survives 101 newer resolved rows; the oldest resolved r
 });
 
 test('the 100-row cap still applies to resolved rows', async () => {
-  const rows = Array.from({ length: 101 }, (_, i) => row(i, 'confirmed'));
+  const rows = Array.from({ length: 101 }, (_, i) => row(i, 'expired'));
   const back = await roundTrip(rows);
   assert.deepEqual(back.map(r => r.hash), rows.slice(1).map(r => r.hash));
 });
@@ -75,43 +78,62 @@ test('more unresolved rows than can be saved are refused, never dropped', async 
   const rows = Array.from({ length: 101 }, (_, i) => row(i, 'pending'));
   await assert.rejects(serializeActivity(id, rows, key), /Saved activity is too large/);
   // exactly 100 unresolved rows are saved, with every resolved row left out
-  const back = await roundTrip([...rows.slice(1), row(500, 'confirmed')]);
+  const back = await roundTrip([...rows.slice(1), row(500, 'expired')]);
   assert.deepEqual(back.map(r => r.hash), rows.slice(1).map(r => r.hash));
 });
 
-test('right after unlock: 100 saved confirmed rows + 1 new pending row save; the oldest confirmed row is left out', async () => {
-  const saved = Array.from({ length: 100 }, (_, i) => row(i, 'confirmed'));
+test('right after unlock: 100 saved resolved rows + 1 new pending row save; the oldest resolved row is left out', async () => {
+  const saved = Array.from({ length: 100 }, (_, i) => row(i, 'expired'));
   const parsed = await roundTrip(saved);
-  assert.ok(parsed.every(r => r.status === 'pending' && r.savedStatus === 'confirmed'), 'live status reset, saved status kept');
+  assert.ok(parsed.every(r => r.status === 'pending' && r.savedStatus === 'expired'), 'live status reset, saved status kept');
   const fresh = row(200, 'pending');
   const back = await roundTrip([...parsed, fresh]);
   assert.equal(back.length, 100);
   assert.equal(back[99].hash, fresh.hash, 'the new row is kept, last');
   assert.equal(back[99].savedStatus, 'pending');
-  assert.ok(!back.some(r => r.hash === saved[0].hash), 'the oldest confirmed row is left out');
+  assert.ok(!back.some(r => r.hash === saved[0].hash), 'the oldest resolved row is left out');
   assert.deepEqual(back.slice(0, 99).map(r => r.hash), saved.slice(1).map(r => r.hash));
-  assert.ok(back.slice(0, 99).every(r => r.savedStatus === 'confirmed'));
+  assert.ok(back.slice(0, 99).every(r => r.savedStatus === 'expired'));
 });
 
 test('a row saved as pending stays unresolved after a re-parse and survives 100 newer resolved rows', async () => {
-  const parsed = await roundTrip([row(0, 'pending'), ...Array.from({ length: 99 }, (_, i) => row(i + 1, 'confirmed'))]);
-  const back = await roundTrip([...parsed, row(300, 'confirmed')]);
+  const parsed = await roundTrip([row(0, 'pending'), ...Array.from({ length: 99 }, (_, i) => row(i + 1, 'failed'))]);
+  const back = await roundTrip([...parsed, row(300, 'failed')]);
   assert.equal(back.length, 100);
   assert.equal(back[0].hash, row(0).hash);
   assert.equal(back[0].savedStatus, 'pending');
-  assert.ok(!back.some(r => r.hash === row(1).hash), 'the oldest confirmed row is left out instead');
+  assert.ok(!back.some(r => r.hash === row(1).hash), 'the oldest resolved row is left out instead');
 });
 
-test('a re-save right after parse keeps the confirmed rows saved as confirmed', async () => {
-  const rows = [row(0, 'confirmed'), row(1, 'abandoned'), row(2, 'pending'), row(3, 'expired')];
+test('a re-save right after parse keeps the resolved rows saved as resolved', async () => {
+  const rows = [row(0, 'failed'), row(1, 'abandoned'), row(2, 'pending'), row(3, 'expired')];
   const parsed = await roundTrip(rows);
   assert.deepEqual(parsed.map(r => r.status), ['pending', 'abandoned', 'pending', 'pending'], 'the visible status is as before');
   const again = await roundTrip(parsed);
-  assert.deepEqual(again.map(r => r.savedStatus), ['confirmed', 'abandoned', 'pending', 'expired']);
+  assert.deepEqual(again.map(r => r.savedStatus), ['failed', 'abandoned', 'pending', 'expired']);
   // a parsed row the tracker has re-verified is written with its live status
   const tracked = parsed.map(r => ({ ...r }));
-  tracked[2].status = 'confirmed';
-  assert.deepEqual((await roundTrip(tracked)).map(r => r.savedStatus), ['confirmed', 'abandoned', 'confirmed', 'expired']);
+  tracked[2].status = 'expired';
+  assert.deepEqual((await roundTrip(tracked)).map(r => r.savedStatus), ['failed', 'abandoned', 'expired', 'expired']);
+});
+
+// 0.1.91 (operator 2026-10-12: "İkisi de aynı şeyi gösteriyor … cihazdan
+// gösterenin bir anlamı yok"): a CONFIRMED send of a network whose account
+// history is read from the chain is that list's — it is not saved here (so
+// not verified again at every unlock); a network without such a list keeps it.
+test('a confirmed send is not kept where the chain lists history; elsewhere it is', async () => {
+  const live = row(1, 'pending'); live.status = 'confirmed';
+  const back = await roundTrip([row(0, 'pending'), live, row(2, 'expired')]);
+  assert.deepEqual(back.map(r => r.hash), [row(0).hash, row(2).hash]);
+  // saved earlier as confirmed, reset to pending by the parse: still dropped
+  const old = await roundTrip([row(3, 'pending')]);
+  old[0].savedStatus = 'confirmed';
+  assert.deepEqual(await roundTrip(old), []);
+  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'confirmed' }), true);
+  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'pending', savedStatus: 'confirmed' }), true);
+  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'pending' }), false);
+  assert.equal(confirmedOnChainList({ chain: 'ethereum', status: 'confirmed' }), true);
+  assert.equal(confirmedOnChainList({ chain: 'bsc', status: 'confirmed' }), false, 'no account history read for BNB Smart Chain');
 });
 
 test('requireSavedForEvm: an unsaved wallet is refused in plain words, a saved one passes', () => {

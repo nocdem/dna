@@ -305,12 +305,17 @@ try {
   const erc = new Interface(['function transfer(address,uint256)']); assert.equal(erc.decodeFunctionData('transfer', broadcasts[1].data)[1], 1000001n);
   assert.match(await page.locator('#activity').innerText(), /pending/);
   finalized = true; await page.selectOption('#chain', 'bsc'); assert.equal(await page.locator('#activity').innerText(), ''); await page.selectOption('#chain', 'ethereum');
-  await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
+  // 0.1.91: Ethereum's account history is read from the chain, so the send
+  // once confirmed leaves "Sent from here" (src/activity-storage.js
+  // confirmedOnChainList); the abandoned first send, never on the chain list, stays.
+  const confirmedLeft = () => { const t = document.querySelector('#activity').textContent; return t.includes('abandoned') && !t.includes('pending') && !t.includes('confirmed') && document.querySelector('#activity').children.length === 1; };
+  await page.waitForFunction(confirmedLeft);
+  assert.match(await page.locator('#activity + .activity-empty').innerText(), /listed under Account history/);
   // The Nodus address is unchanged after sends on other networks, and Nodus has no activity.
   await page.selectOption('#chain', 'nodus');
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress); assert.equal(await page.locator('#activity').innerText(), '');
   await page.selectOption('#chain', 'ethereum');
-  await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
+  await page.waitForFunction(confirmedLeft);
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
   networkId = '0x38'; await page.locator('#review-button').click(); await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('wrong network')); assert.equal(broadcasts.length, 2);
   // A CPUNK read failure is shown on its own row ("Read failed · last read"
@@ -420,7 +425,8 @@ try {
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
   await page.selectOption('#chain', 'ethereum');
-  await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('confirmed'));
+  // reopened from the saved copy: the confirmed send was not saved
+  await page.waitForFunction(confirmedLeft);
   await page.getByText('Delete saved wallet from this device', { exact: true }).click(); await page.locator('#vault-delete-confirm').check(); await page.locator('#vault-delete').click();
   // The saved wallet has a readable id, so its Messages history goes in the
   // same step (app.js vault-delete, the 'deleted' outcome).

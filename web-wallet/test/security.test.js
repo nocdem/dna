@@ -32,7 +32,7 @@ test('RT-03 weak new passwords fail while legacy weak-password vaults still unlo
 });
 test('RT-04 encrypted activity rejects tampering, different wallet keys and forged v1 history', async () => {
   const id = btoa('0123456789abcdef'), key = await activityKeyFor(phrase, id), wallet = deriveWallet(phrase);
-  const row = { chain: 'ethereum', address: wallet.addresses.ethereum, to: '0x' + '1'.repeat(40), symbol: 'ETH', amount: '1', hash: '0x' + '2'.repeat(64), status: 'confirmed', createdAt: new Date().toISOString(), endpoint: 'https://rpc.example?apikey=secret' };
+  const row = { chain: 'ethereum', address: wallet.addresses.ethereum, to: '0x' + '1'.repeat(40), symbol: 'ETH', amount: '1', hash: '0x' + '2'.repeat(64), status: 'failed', createdAt: new Date().toISOString(), endpoint: 'https://rpc.example?apikey=secret' };
   const a = await serializeActivity(id, [row], key), b = await serializeActivity(id, [row], key);
   assert.notEqual(a, b); for (const plain of [row.address, row.to, row.hash, 'apikey', phrase]) assert.ok(!a.includes(plain));
   assert.equal((await parseActivity(a, id, wallet.addresses, key))[0].status, 'pending');

@@ -1,7 +1,7 @@
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor } from './activity-storage.js';
+import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, confirmedOnChainList, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor } from './activity-storage.js';
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
@@ -349,8 +349,12 @@ function renderActivity(save = true) {
   // only, once (src/nodus/history.js localRowsToShow — the wire id, or the
   // confirmed block). Display only: the tracker still follows every record
   // (trackActivity reads visibleActivity, not this list).
+  // Where the chain's account history is read, a confirmed send is listed
+  // there only (src/activity-storage.js confirmedOnChainList, 0.1.91): this
+  // list keeps what the chain list does not show.
   const all = visibleActivity(), nodus = $('chain').value === NODUS_ASSET.chain;
-  const rows = nodus ? localRowsToShow(all, nodusHistoryFor()?.page ?? null, { limit: NODUS_HISTORY_LIMIT }) : all;
+  const open = all.filter(row => !confirmedOnChainList(row));
+  const rows = nodus ? localRowsToShow(open, nodusHistoryFor()?.page ?? null, { limit: NODUS_HISTORY_LIMIT }) : open;
   const empty = document.querySelector('#activity + .activity-empty');
   if (empty) empty.textContent = rows.length < all.length ? 'Nothing waiting here: your confirmed transactions are listed under Account history below.' : ACTIVITY_EMPTY_TEXT;
   $('activity').replaceChildren(...rows.map(row => {

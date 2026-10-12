@@ -145,13 +145,25 @@ const ACTIVITY_MAX_ROWS = 100;
 // the live status only; neither rule changes it.
 const unresolvedForRetention = row => !terminal(row.status) && (row.savedStatus === undefined || !terminal(row.savedStatus));
 const savedForm = row => (row.status === 'pending' && row.savedStatus !== undefined && terminal(row.savedStatus) ? row.savedStatus : row.status);
+// A network whose account history this wallet reads from the chain (NODUS,
+// and src/history.js HISTORY_SOURCES). There a CONFIRMED send is the chain
+// list's, not this device's (0.1.91, operator 2026-10-12: "İkisi de aynı
+// şeyi gösteriyor … cihazdan gösterenin bir anlamı yok"): it is not shown
+// under "Sent from here" (src/app.js renderActivity) and not kept (below),
+// so it is not verified again on every unlock. A send still waiting, or one
+// that never made it (failed / expired / replaced / abandoned), is not in
+// the chain list and stays here.
+export const chainListsHistory = chain => chain === NODUS_ASSET.chain || historySupported(chain);
+export const confirmedOnChainList = row => chainListsHistory(row.chain) && savedForm(row) === 'confirmed';
 // The rows kept in the saved Activity, in their given (time) order: EVERY
 // unresolved row (a pending NODUS send or EVM reservation holds coins and
 // must survive any number of newer rows), then the newest resolved rows up
 // to ACTIVITY_MAX_ROWS in total. More unresolved rows than that cannot be
 // saved (parseActivity reads at most ACTIVITY_MAX_ROWS) and are refused as
-// too large, never dropped.
+// too large, never dropped. A confirmed send of a network with a chain list
+// (confirmedOnChainList above) is not kept.
 function keptActivity(rows) {
+  rows = rows.filter(row => !confirmedOnChainList(row));
   const open = rows.filter(unresolvedForRetention).length;
   if (open > ACTIVITY_MAX_ROWS) throw new Error('Saved activity is too large.');
   let room = ACTIVITY_MAX_ROWS - open;
