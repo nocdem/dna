@@ -143,10 +143,40 @@ int main(void) {
         CHECK(dlg_two_k3 == 858119u,
               "worst-case DELEGATE(kind 2)+TOKEN_CREATE(kind 3) drifted");
         CHECK(dlg_two_k3 > dlg_two_tc,
-              "the kind-3 CORE shape must now dominate");
-        CHECK(dlg_two_k3 <= DNA_ENV_MAX_TOTAL_LEN,
+              "the kind-3 CORE shape must dominate the kind-1 pairs");
+        /* HF-6 slice 4 (design rev 6 §2, K7): the generation-4 STAKE call
+         * — owner_fp 64 ‖ consensus_pk 2592 ‖ consent_sig 4627 ‖ expiry
+         * 8 ‖ commission 2 ‖ bond 8 = 7301 — is now the LONGEST SYSTEM
+         * call, 2109 bytes over DELEGATE, so it replaces the DELEGATE leg
+         * in every shape above; the DELEGATE shapes stay as dominated
+         * controls. Written from the raw widths (third derivation:
+         * rt_native.c "O11 capacity derivation"; second:
+         * env_wire_oracle.py). */
+        uint64_t stk_call = 64u + 2592u + 4627u + 8u + 2u + 8u;
+        uint64_t stk_single = 43u + 30u + stk_call + (1u + 15u * signer) +
+                              (2u + (uint64_t)DNA_MAX_ACTIVE_VALIDATORS *
+                                        appr);
+        uint64_t stk_two = stk_single + 30u +
+                           (2u + 15u * 64u + 16u * 232u) +
+                           (1u + 15u * signer);
+        uint64_t stk_two_tc = stk_single + 30u + tc_call +
+                              (1u + 15u * signer);
+        uint64_t stk_two_k3 = stk_single + 30u + tc_call + k3_max;
+        CHECK(stk_call == 7301u, "generation-4 STAKE call drifted");
+        CHECK(stk_call > dlg_call, "STAKE must be the longest SYSTEM call");
+        CHECK(stk_single == 708174u,
+              "single-leg worst case (gen-4 STAKE, kind 2) drifted");
+        CHECK(stk_two == 821164u,
+              "two-leg STAKE+SYSFUND shape drifted (dominated)");
+        CHECK(stk_two_tc == 821207u,
+              "two-leg STAKE+TOKEN_CREATE (kind 1) drifted");
+        CHECK(stk_two_k3 == 860228u,
+              "worst-case STAKE(kind 2)+TOKEN_CREATE(kind 3) drifted");
+        CHECK(stk_two_k3 > stk_two_tc && stk_two_k3 > dlg_two_k3,
+              "the STAKE kind-3 pair must govern");
+        CHECK(stk_two_k3 <= DNA_ENV_MAX_TOTAL_LEN,
               "ceiling no longer contains the worst case");
-        CHECK(dlg_two_k3 > (DNA_ENV_MAX_TOTAL_LEN / 2u),
+        CHECK(stk_two_k3 > (DNA_ENV_MAX_TOTAL_LEN / 2u),
               "2^19 would already contain the worst case — the ceiling "
               "is no longer the SMALLEST containing power of two");
     }

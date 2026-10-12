@@ -30,6 +30,11 @@
  *                                 h_next (= H)
  *   RETIRING / AUTO_RETIRED /     amounts untouched (re-keyed + roles row)
  *   UNSTAKED rows
+ *   v2_consensus_keys (slice 4,   one role-1 row (SHA3-512(pk) untagged,
+ *   design §4)                    validator_id, 1) per validator whose
+ *                                 status is NOT UNSTAKED (an UNSTAKED row
+ *                                 has graduated — §4: graduation releases
+ *                                 the key), in SHA3-512(pk) ASC
  *   delegations                   (SHA3-512(0x03‖dpk), SHA3-512(0x03‖vpk))
  *                                 → (SHA3-512(dpk), validator_id(vpk));
  *                                 amount, delegated_at_block and both
@@ -77,7 +82,8 @@ extern "C" {
  * host does so on every block fault), which is what makes the edge
  * atomic and a replay of H−1 identical.
  *
- * Preconditions, each a FAULT when false: v2_validator_roles is empty;
+ * Preconditions, each a FAULT when false: v2_validator_roles and
+ * v2_consensus_keys are empty;
  * every validators / delegations key equals the tagged hash of its stored
  * pubkey (a re-keyed or foreign row means the migration already ran or
  * the table is corrupt); every bonded row holds exactly

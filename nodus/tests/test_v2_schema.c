@@ -1007,7 +1007,9 @@ static int run_s17_log_scan(void) {
  * The base schema (nodus_witness.c) creates v2_validator_roles on every
  * open, so a fresh fixture already HAS the table at version 0: the
  * rollback and drift cases drop it first, to stand for a database an
- * older build created. */
+ * older build created. HF-6 slice 4 added the second S18 table
+ * v2_consensus_keys (same rung, unreleased): every case checks / drops it
+ * alongside, and (c) also refuses a keys table of another shape. */
 static int s18_table_shape_ok(sqlite3 *db) {
     static const char *const cols[] = {
         "validator_id", "owner_fp", "pending_consensus_pubkey",
@@ -1032,6 +1034,31 @@ static int s18_table_shape_ok(sqlite3 *db) {
     return (ok && i == 4) ? 1 : 0;
 }
 
+/* HF-6 slice 4 — the second S18 table, v2_consensus_keys
+ * (consensus_pk_hash PK, validator_id NOT NULL, role NOT NULL). */
+static int s18_keys_shape_ok(sqlite3 *db) {
+    static const char *const cols[] = {
+        "consensus_pk_hash", "validator_id", "role" };
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(\"v2_consensus_keys\")",
+                           -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    size_t i = 0;
+    int ok = 1, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        int notnull = sqlite3_column_int(st, 3);
+        int pk = sqlite3_column_int(st, 5);
+        if (i >= 3 || !nm || strcmp((const char *)nm, cols[i]) != 0 ||
+            pk != (i == 0 ? 1 : 0) || (i > 0 && notnull != 1))
+            ok = 0;
+        i++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return (ok && i == 3) ? 1 : 0;
+}
+
 static int run_s18_rung(void) {
     uint32_t ver = 0;
     int n = -1;
@@ -1048,6 +1075,11 @@ static int run_s18_rung(void) {
               "other three NOT NULL"); OK();
         CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_validator_roles",
                       &n) == 0 && n == 0, "the table is created empty"); OK();
+        CHECK(s18_keys_shape_ok(fx.w->db) == 1,
+              "v2_consensus_keys (slice 4): three columns, "
+              "consensus_pk_hash the PK, the other two NOT NULL"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_consensus_keys",
+                      &n) == 0 && n == 0, "the keys table is empty"); OK();
         CHECK(has_table(fx.w->db, "evm_logs") == 1 &&
               has_table(fx.w->db, "v2_evm_reserve") == 1,
               "the cascade ran the S17 rung (EVM tables present)"); OK();
@@ -1083,8 +1115,9 @@ static int run_s18_rung(void) {
         fixture_t fx;
         CHECK(fx_open(&fx) == 0, "s18 cascade fixture");
         CHECK(nodus_witness_db_migrate_v2s17(fx.w) == 0, "0->17"); OK();
-        CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles") == 0,
-              "the previous binary's S17: no roles table");
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles;"
+                                "DROP TABLE v2_consensus_keys") == 0,
+              "the previous binary's S17: no roles / keys table");
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
               ver == NODUS_V2_SCHEMA_VERSION_S17, "base at 17"); OK();
         uint8_t d17[64];
@@ -1098,8 +1131,9 @@ static int run_s18_rung(void) {
             CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
                   ver == NODUS_V2_SCHEMA_VERSION_S17,
                   "failed S18 stage moved the version");
-            CHECK(has_table(fx.w->db, "v2_validator_roles") == 0,
-                  "failed S18 stage left the table");
+            CHECK(has_table(fx.w->db, "v2_validator_roles") == 0 &&
+                  has_table(fx.w->db, "v2_consensus_keys") == 0,
+                  "failed S18 stage left a table");
             uint8_t dnow[64];
             CHECK(v2x_db_digest(fx.w, dnow) == 0, "post-stage digest");
             CHECK(memcmp(d17, dnow, 64) == 0,
@@ -1111,8 +1145,9 @@ static int run_s18_rung(void) {
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
               ver == NODUS_V2_SCHEMA_VERSION_S18,
               "post-fault version != 18"); OK();
-        CHECK(s18_table_shape_ok(fx.w->db) == 1,
-              "post-fault table shape"); OK();
+        CHECK(s18_table_shape_ok(fx.w->db) == 1 &&
+              s18_keys_shape_ok(fx.w->db) == 1,
+              "post-fault table shapes"); OK();
         fx_close(&fx);
     }
 
@@ -1140,6 +1175,18 @@ static int run_s18_rung(void) {
               == 0, "the four columns, two swapped");
         CHECK(nodus_witness_db_migrate_v2s18(fx.w) == -1,
               "a reordered shape is refused"); OK();
+        /* slice 4: a v2_consensus_keys of another shape is refused too */
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles;"
+                      "DROP TABLE v2_consensus_keys;"
+                      "CREATE TABLE v2_consensus_keys ("
+                      "  consensus_pk_hash BLOB PRIMARY KEY,"
+                      "  validator_id BLOB NOT NULL)") == 0,
+              "a two-column keys table of the same name");
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == -1,
+              "another keys-table shape is refused"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S17,
+              "a refused rung leaves 17 (keys)"); OK();
         fx_close(&fx);
     }
 
@@ -1148,12 +1195,14 @@ static int run_s18_rung(void) {
         fixture_t fx;
         CHECK(fx_open(&fx) == 0, "s18 v19 fixture");
         CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles;"
+                                "DROP TABLE v2_consensus_keys;"
                                 "PRAGMA user_version = 19") == 0, "set 19");
         CHECK(nodus_witness_db_migrate_v2s18(fx.w) == -1,
               "version 19 migrated"); OK();
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 19,
               "version 19 mutated"); OK();
         CHECK(has_table(fx.w->db, "v2_validator_roles") == 0 &&
+              has_table(fx.w->db, "v2_consensus_keys") == 0 &&
               has_table(fx.w->db, "evm_logs") == 0,
               "version 19 got a table"); OK();
         fx_close(&fx);

@@ -394,6 +394,17 @@ static const char *WITNESS_DB_SCHEMA =
     "  pending_consensus_pubkey BLOB NOT NULL,"
     "  consensus_key_effective_epoch INTEGER NOT NULL"
     ");"
+    /* HF-6 slice 4 (design rev 6 §4): the consensus-key reservation table
+     * — one unique key column, consensus_pk_hash = SHA3-512(consensus
+     * pubkey); role 1 active, role 2 pending (slice 6). EMPTY until the
+     * HF-6 edge; no root reads it (a pure function of validators and
+     * v2_validator_roles, both rooted). Byte-identical to the S18 rung's
+     * statement (nodus_witness_v2_schema.c), which verifies the shape. */
+    "CREATE TABLE IF NOT EXISTS v2_consensus_keys ("
+    "  consensus_pk_hash BLOB PRIMARY KEY,"
+    "  validator_id BLOB NOT NULL,"
+    "  role INTEGER NOT NULL"
+    ");"
     /* Final pre-testnet wipe, W-A (decision
      * 2026-09-28-treasury-pools-and-exact-self-stake.md): the keyless,
      * locked treasury pools — one balance per pool id 1..9 (tokenomics §1

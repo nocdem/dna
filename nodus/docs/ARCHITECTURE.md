@@ -6893,7 +6893,7 @@ reaches them there).
 | DELEGATE (2) / UNDELEGATE (4) | `delegator_fp[64] ‖ validator_id[64] ‖ amount u64` | 136 |
 | UNSTAKE (3) | `validator_id[64]` | 64 |
 | VALIDATOR_UPDATE (5) | `validator_id[64] ‖ commission u16` (≤ `DNAC_COMMISSION_BPS_MAX`, non-zero id) | 66 |
-| STAKE (1) | — refused (-1) on the SYSTEM plan and exec AND by the CORE SYSFUND pairing (`rtn_sysfund_shape`, `rtn_sys_call_flow`) until slice 4 | — |
+| STAKE (1) | — refused (-1) on the SYSTEM plan and exec AND by the CORE SYSFUND pairing (`rtn_sysfund_shape`, `rtn_sys_call_flow`) in 3c; since slice 4 the 7301-B owner + consent call ("HF-6 slice 4" below) | — |
 
 **Owner authority** (`rtn_sys_owner_auth`, design §1.3), against `want_fp`: kind 1 — exactly one
 verified signer, no descriptor, SHA3-512(signer pk) == want_fp; kind 3 — exactly ONE carried
@@ -6910,7 +6910,7 @@ on the generation-4 rows; owner_fp and the pending consensus-key fields are carr
 
 | id | name | kinds / preconds | key | value |
 |---|---|---|---|---|
-| 13 | `RTN_SYS_OP_VAL2` | SET / EXISTS_VHASH only (no gen-4 writer creates a validator before slice 4) | validator_id 64 | 5389 B = the §6.3 leaf without its tag: validator_id ‖ owner_fp ‖ consensus_pubkey ‖ pending_consensus_pubkey ‖ key_effective_epoch ‖ self ‖ total_delegated ‖ external_delegated ‖ commission ‖ pending_commission ‖ pending_effective ‖ status ‖ active_since ‖ unstake_commit ‖ last_update ‖ missed |
+| 13 | `RTN_SYS_OP_VAL2` | SET / EXISTS_VHASH (3c); + CREATE / ABSENT since slice 4 (the generation-4 STAKE's row) | validator_id 64 | 5389 B = the §6.3 leaf without its tag: validator_id ‖ owner_fp ‖ consensus_pubkey ‖ pending_consensus_pubkey ‖ key_effective_epoch ‖ self ‖ total_delegated ‖ external_delegated ‖ commission ‖ pending_commission ‖ pending_effective ‖ status ‖ active_since ‖ unstake_commit ‖ last_update ‖ missed |
 | 14 | `RTN_SYS_OP_DELEG2` | CREATE / SET / DELETE, ABSENT / EXISTS_VHASH | delegator_fp ‖ validator_id 128 | 144 B = delegator_fp ‖ validator_id ‖ amount ‖ delegated_at_block |
 | 15 | `RTN_SYS_OP_DELEGCNT2` | read-only | validator_id 64 | count u64 |
 
@@ -7128,6 +7128,92 @@ off unchanged; gen-3 SYSTEM plan unchanged with the gate on. B5 — op 16 throug
 mediated read (present / absent / 63-byte key ERR_SHAPE). Not covered: a gated DELEGATE applied
 end to end through blocks, the RPC arms and the address-index arm (no handler / indexed-host
 fixture in this test). Written, NOT run by the author.
+
+### HF-6 slice 4 — STAKE under generation 4: owner + node consent, STAKE_MIN, the consensus-key reservation (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.3 (owner rule), §1.5
+(bond), §2 (call, approved K7, + the consent re-construction contract), §4 (key uniqueness), §6.1
+(consent bytes, ctx `nodus.valbind.v1`, expiry rule), §6.2 (validator_id), §6.3 (row); decisions
+`docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md` (K7, K9) and
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md`. Generations 1-3 are byte-
+identical (the legacy 2666-B STAKE, ops 4 / 7). All in `nodus_witness_rt_native.c` unless named.
+
+**Call** (exact 7301 B, BE): `owner_fp[64] ‖ consensus_pk[2592] ‖ consent_sig[4627] ‖
+consent_expiry u64 ‖ commission u16 ‖ bond u64` (`rtn_stake2_parse`, shared by the SYSTEM plan /
+exec, the CORE flow and the describer). The legacy 2666-B call is refused under generation 4.
+
+**Exec** (`rtn_stake2_exec`), in order: the owner rule `rtn_sys_owner_auth` against the CALL's
+owner_fp (kind 1 one signer whose fp is owner_fp; kind 3 one satisfied descriptor whose address is
+owner_fp, no foreign signer; kind 2 refused); commission ≤ `DNAC_COMMISSION_BPS_MAX`;
+`STAKE_MIN ≤ bond ≤ INT64_MAX` (both verdicts — §1.5); `dna_valbind_expiry_ok(h, expiry)`
+(`expiry ≥ h && expiry − h ≤ 720`); the consent message rebuilt — version 1, chain id =
+`ctx->chain_id` (the engine's `nodus_witness_v2_chain_id`, never `w->chain_id`), op 1 (STAKE),
+subject 64 × 0x00, owner_fp / consensus_pk / expiry from the call — and `dna_valbind_consent_verify`
+(the verifying key is the consensus_pk embedded in the message: the node's own consent; another
+ctx, op 2 / op 3, another chain or owner is a verdict). Then the three reads (below); the
+validator_id present or the key reserved → -1; no active_count row → -1; Rule M (count + 1 ≤
+`DNAC_MAX_VALIDATORS`). The sibling SYSFUND call must parse. Effects, canonical order: CREATE op 13
+(validator_id; the §6.3 row: owner_fp, consensus_pk, no pending key, self = bond, ACTIVE,
+active_since = h, commission, everything else 0), CREATE op 17 (SHA3-512(consensus_pk) →
+validator_id ‖ role 1), SET op 7 (active_count + 1, EXISTS_VERSION of the observed value). The CORE
+SYSFUND leg locks `bond` (`rtn_sys_call_flow`; the 3c refusals in it and in `rtn_sysfund_shape` are
+removed). **By design, not a port of the legacy STAKE:** validator_id =
+`dna_validator_id_new(ctx->chain_id, ctx->intent_id)` is fresh per intent, so the legacy P3-9
+"revive an UNSTAKED row" has no analogue — a re-stake after graduation opens a new validator_id
+(§4); no unstake destination (the bond resolves to owner_fp, §1.5).
+
+**STAKE_MIN.** `rtn_stake_min_at(ctx)` is THE ONE read: today the compiled
+`DNAC_HF6_STAKE_MIN_DEFAULT` (2M NODUS — param 19 does not exist yet); slice 8 replaces its body with
+the committed param-19 value at the block height (an engine fact on the ctx) and nothing else.
+
+**Read plan** (`rtn_stake2_read_plan`): `[op 7 active_count] [op 13 validator_id] [op 17
+SHA3-512(consensus_pk)]` — ascending (op, key).
+
+**The consensus-key reservation** (design §4). New table `v2_consensus_keys (consensus_pk_hash
+BLOB PRIMARY KEY, validator_id BLOB NOT NULL, role INTEGER NOT NULL)` — role 1 active, role 2
+pending (ROTATE, slice 6; no writer yet). Added to the **S18 rung** (unreleased, branch hf6 only —
+no S19): DDL, shape verification (`table_cols_exact`) and the base schema (`nodus_witness.c`). A
+database already at 18 gets it only from the base schema's `CREATE TABLE IF NOT EXISTS` at open
+(the rung is a no-op at 18). Not a bundle table. Writers: the generation-4 edge
+(`nodus_witness_v2_roles_migrate` — the table must be empty; one role-1 row per migrated row whose
+status is NOT UNSTAKED, in SHA3-512(pk) order), the STAKE (op 17 CREATE), the graduation
+(`nodus_validator_v2_key_release` in `v2ep_graduate`'s generation-4 arm — the role-1 row must exist,
+else FAULT — then any other row of the validator). Accessors in `nodus_witness_validator.{h,c}`
+(`nodus_validator_v2_key_get / _insert / _release`). It is a pure function of committed state
+(role 1 = every validators row not UNSTAKED, key = SHA3-512(validators.pubkey); role 2 = every
+non-zero pending key), both inputs already in the SYSTEM root — so NO root leg was added (the
+question whether to add one is left to the ORCHESTRATOR).
+
+**SYSTEM adapter ops**: **17 `RTN_SYS_OP_KEYRES`** (CREATE / ABSENT, key 64, value 65 =
+validator_id ‖ role; probe / read / mutate arms); op 13 gains CREATE / ABSENT (`rtn_sys_val2_create`:
+strict INSERT into `validators` — `unstake_destination_fp` = hex(owner_fp), `unstake_destination_
+pubkey` = 2592 × 0x00, full-length for the v1 validator loader, never read under generation 4 —
+and into `v2_validator_roles`, each exactly one row). `RTN_SYS_OPS` 14 → 15 entries.
+
+**Describer.** An applied 7301-B STAKE is described by ADDRESS: `rec_v2` = 0, `rec_validator_fp` =
+`rec_dest_fp` = owner_fp, `rec_amount` = bond. ⚠ The describer receives no chain id, so it cannot
+derive the validator_id; the address index files the STAKE under the owner and scan-v3 `"v"` /
+`"ds"` carry hex(owner_fp). A `"vid"` for STAKE waits for the RPC slice (§9).
+
+**Capacity.** The 7301-B STAKE is the longest SYSTEM call (2109 B over DELEGATE's 5192), so it
+governs: worst single leg (STAKE under the maximal kind-2 blob) 706,065 → **708,174**; + SYSFUND
+819,055 → 821,164 (dominated); + TOKEN_CREATE kind 1 819,098 → **821,207**; + TOKEN_CREATE under the
+maximal kind-3 blob 858,119 → **860,228**. 2^19 < 860,228 ≤ 2^20 — `DNA_ENV_MAX_TOTAL_LEN`
+unchanged. Pinned three times: the asserts in `nodus_witness_rt_native.c` (the DELEGATE shapes kept
+as dominated controls), `test_v2_capacity.c`, `shared/dnac/tests/env_wire_oracle.py`.
+
+**Tests.** New `test_hf6_stake` (EVM builds): the hook matrix (plan; validator_id against an
+independent recomputation; kind 1 / kind 3 positives with the effect bytes; non-owner / wrong
+address / kind 2; consent with another ctx, empty ctx, op 2, op 3, another chain, owner or key;
+expiry h − 1 and h + 721 refused, h and h + 720 accepted; bond STAKE_MIN − 1 / INT64_MAX + 1
+refused, STAKE_MIN / 10M / INT64_MAX accepted; reserved key, existing id, Rule M, read count;
+length ± 1; the CORE pairing; the describer) and twin seeded chains through the edge (eight
+reservations; kind-1 and kind-3 STAKEs applied with Σutxo + Σstake + pool conserved and the CORE
+invariant; reserved keys refused with the ledger byte-identical; a RETIRING row's key released at
+its graduation and STAKEd again under a new validator_id; twins byte-identical). `test_hf6_calls`
+A1 / A4 updated (the legacy STAKE still refused; the generation-4 CORE now pairs with a STAKE
+sibling). `test_hf6_migrate` checks the reservations (A1, B1) and a stray-row fault (A3).
+`test_v2_schema` `run_s18_rung` covers the second table. Written, NOT run by the author.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

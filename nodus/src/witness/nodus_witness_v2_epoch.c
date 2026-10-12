@@ -665,7 +665,10 @@ done:
  *     equality released == total_delegated == external_delegated is
  *     unchanged (the migration added the 8M self-delegation to both
  *     totals of a bonded row; a RETIRING row's totals are untouched);
- *   - the row is written back through nodus_validator_v2_update.
+ *   - the row is written back through nodus_validator_v2_update;
+ *   - HF-6 slice 4 (design §4): its consensus-key reservation
+ *     (v2_consensus_keys) is released — nodus_validator_v2_key_release,
+ *     the role-1 row must exist — so the key can be STAKEd again.
  * The grad_id / nullifier derivation (pubkey-based, a pure function, not a
  * DB key) and the R5-3 deferral (by pubkey against the ruleset-1 snapshot)
  * are unchanged. */
@@ -988,6 +991,16 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
             row2->rec = v;
             if (nodus_validator_v2_update(w, row2) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "%s", "graduate v2 row update failed");
+                goto done;
+            }
+            /* HF-6 slice 4 (design rev 6 §4, last sentence): the graduate
+             * releases its consensus-key reservation in the same step, so
+             * the key may be STAKEd again under a NEW validator_id. The
+             * role-1 row must exist and name this row (else FAULT). */
+            if (nodus_validator_v2_key_release(w, cand_key[i], v.pubkey)
+                != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "graduate: the consensus-key "
+                              "reservation could not be released");
                 goto done;
             }
         } else if (nodus_validator_update(w, &v) != 0) {
