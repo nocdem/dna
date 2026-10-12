@@ -204,6 +204,7 @@ sources=(
   # nc_rule_test (exports_test below).
   connect/nc_jsjson.c
   connect/nc_payload.c
+  connect/nc_rules.c
   connect/nc_rules_json.c
   # message codecs, verbatim (NC-1, NC-1b)
   $root/messenger/codec/contact_request_codec.c

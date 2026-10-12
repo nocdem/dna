@@ -39,6 +39,16 @@ export function addDeclined(list, fp, nowSeconds) {
 }
 export function undecline(list, fp) { return (Array.isArray(list) ? list : []).filter(d => declinedFp(d) !== fp); }
 
+// The salt a contact keeps when they accepted OUR request (messages.js
+// completeOutgoing): the salt WE offered with the request (`mine`, our
+// state.outgoing entry), else the one in their acceptance, else none.
+// Deliberately not the app's choice: the frozen app stores the accepter's
+// salt (messenger/src/api/engine/dna_engine_contacts.c:570-574); Kurultay
+// #17 item 5 keeps the web's rule and pins it with shared vectors.
+export function acceptedSalt(mine, request) {
+  return mine?.salt || request.salt || null;
+}
+
 export function parseContactId(value) {
   const id = typeof value === 'string' ? value.replace(/\s+/g, '').toLowerCase() : '';
   if (!HEX128.test(id)) throw new Error('That is not a valid ID. An ID is 128 characters, letters a–f and digits.');

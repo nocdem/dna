@@ -2,8 +2,9 @@
  * (docs/plans/2026-10-12-connect-core-p1-rules-design.md rev 2, §2).
  *
  * WHAT IT PROVES: for every vector in every .json file of
- * test/vectors/connect-rules/
- * (generated FROM the JavaScript of src/connect/ui/actions.js by
+ * test/vectors/connect-rules/ (payload.json generated FROM the JavaScript
+ * of src/connect/ui/actions.js, rules.json FROM src/connect/ui/text.js and
+ * src/connect/core.js acceptanceMayAutoApprove, both by
  * test/tools/gen-connect-rule-vectors.mjs), nc_rule_call(rule, args)
  * returns byte-for-byte the JSON the JS function's result encodes to
  * (nc_rules_json.h). A vector is
@@ -20,7 +21,14 @@
  * what JSON.parse keeps that a C JSON library would not (lone surrogates,
  * integer literals of any size, NUL and repeats in keys), unknown rule,
  * NULL arguments, and Number::toString cases — no crash, the documented
- * result.
+ * result. Then direct P1a cases (p1a_cases): the argument contract of the
+ * text.js rules (nested records, non-scalar Set elements, a non-flat
+ * dmSync, an array state, a bad state.removed / map), and how an echoed
+ * JS object is written back — array-index keys first, a repeated key at
+ * its first place with its last value, an own "__proto__" key, an
+ * undefined field left out, a deleted repeated key (each checked against
+ * node 22 when written) — plus BigInt of a 2^64 double, u64 edges and
+ * V8's sort error order.
  *
  * WHAT IT REQUIRES: the vector files (the ORCHESTRATOR runs the generator;
  * no vector file = FAIL, never a skip). Built with
@@ -367,10 +375,127 @@ static void malformed_cases(void) {
     }
 }
 
+/* P1a direct cases. '@' in a template stands for the 128-hex ID "ab…ab". */
+static char *with_fp(const char *tmpl) {
+    nc_sb_t b;
+    nc_sb_init(&b);
+    for (const char *p = tmpl; *p; p++) {
+        if (*p != '@') { nc_sb_putc(&b, *p); continue; }
+        for (int i = 0; i < 64; i++) nc_sb_puts(&b, "ab");
+    }
+    size_t len;
+    return nc_sb_take(&b, &len);
+}
+static void checkfp(const char *what, const char *name, const char *args_tmpl, const char *want_tmpl) {
+    char *args = with_fp(args_tmpl), *want = with_fp(want_tmpl);
+    if (args && want) checks(what, name, args, want);
+    else { printf("FAIL %s: out of memory\n", what); g_fail++; }
+    free(args);
+    free(want);
+}
+
+static void p1a_cases(void) {
+    /* the argument contract (nc_rules_json.h) */
+    checks("record with a nested field", "pendingOutbox",
+           "{\"messages\":[{\"dir\":{\"x\":1}}],\"fp\":\"a\",\"nowSeconds\":\"1\"}", E_BAD);
+    checks("Set element not a scalar", "acceptanceMayAutoApprove",
+           "{\"request\":{},\"pendingOutgoing\":[[\"x\"]]}", E_BAD);
+    checks("Set element not a scalar (publishedBefore)", "markDelivered",
+           "{\"messages\":[],\"fp\":\"a\",\"ackTs\":\"5\",\"publishedBefore\":[{\"a\":1}],\"nowSeconds\":\"1\"}", E_BAD);
+    checks("dmSync a string", "contactNeedsFullSync", "{\"fp\":\"a\",\"dmSync\":\"abc\",\"now\":\"1\"}", E_BAD);
+    checks("dmSync an array", "contactNeedsFullSync", "{\"fp\":\"a\",\"dmSync\":[1],\"now\":\"1\"}", E_BAD);
+    checks("dmSync not flat", "contactNeedsFullSync", "{\"fp\":\"a\",\"dmSync\":{\"a\":{\"b\":1}},\"now\":\"1\"}", E_BAD);
+    checks("dmSync null", "contactNeedsFullSync", "{\"fp\":\"a\",\"dmSync\":null,\"now\":\"1\"}", "true");
+    checks("contactFps element not a scalar", "needFullSync", "{\"contactFps\":[{\"a\":1}],\"now\":\"1\"}", E_BAD);
+    checks("state an array", "removeContact", "{\"state\":[],\"fp\":\"a\"}", E_BAD);
+    checks("state.removed a string", "removeContact", "{\"state\":{\"removed\":\"x\"},\"fp\":\"a\"}", E_BAD);
+    checks("state.removed with an object", "unremoveContact", "{\"state\":{\"removed\":[{}]},\"fp\":\"a\"}", E_BAD);
+    checks("state.dmSync a number", "removeContact", "{\"state\":{\"dmSync\":5},\"fp\":\"a\"}", E_BAD);
+    checks("state.seenOwn an array", "markOwnRecordSeen", "{\"state\":{\"seenOwn\":[]},\"kind\":\"list\"}", E_BAD);
+    checks("state contact not flat", "removeContact", "{\"state\":{\"contacts\":[{\"fp\":{\"a\":1}}]},\"fp\":\"a\"}", E_BAD);
+    checks("a state map with nested values is fine", "removeContact",
+           "{\"state\":{\"contacts\":[],\"profileCache\":{\"a\":{\"id\":\"x\"}}},\"fp\":\"a\"}",
+           "{\"result\":false,\"state\":{\"contacts\":[],\"profileCache\":{\"a\":{\"id\":\"x\"}}}}");
+
+    /* echoed objects: { ...m, published: true } in JavaScript key order */
+    checkfp("array-index keys first, an existing key keeps its place", "markPublished",
+            "{\"messages\":[{\"fp\":\"@\",\"10\":\"x\",\"dir\":\"out\",\"2\":\"y\",\"seq\":\"1\",\"published\":false}],"
+            "\"fp\":\"@\",\"set\":[{\"seq\":\"1\"}]}",
+            "[{\"2\":\"y\",\"10\":\"x\",\"fp\":\"@\",\"dir\":\"out\",\"seq\":\"1\",\"published\":true}]");
+    checkfp("4294967295 is not an array index", "markPublished",
+            "{\"messages\":[{\"4294967295\":1,\"4294967294\":2,\"dir\":\"out\",\"fp\":\"@\",\"seq\":\"1\"}],"
+            "\"fp\":\"@\",\"set\":[{\"seq\":\"1\"}]}",
+            "[{\"4294967294\":2,\"4294967295\":1,\"dir\":\"out\",\"fp\":\"@\",\"seq\":\"1\",\"published\":true}]");
+    checkfp("a repeated key: first place, last value", "markPublished",
+            "{\"messages\":[{\"dir\":\"in\",\"fp\":\"@\",\"seq\":\"1\",\"dir\":\"out\"}],\"fp\":\"@\",\"set\":[{\"seq\":\"1\"}]}",
+            "[{\"dir\":\"out\",\"fp\":\"@\",\"seq\":\"1\",\"published\":true}]");
+    checkfp("an own __proto__ key is echoed", "markPublished",
+            "{\"messages\":[{\"__proto__\":\"p\",\"dir\":\"out\",\"fp\":\"@\",\"seq\":\"1\"}],\"fp\":\"@\",\"set\":[{\"seq\":\"1\"}]}",
+            "[{\"__proto__\":\"p\",\"dir\":\"out\",\"fp\":\"@\",\"seq\":\"1\",\"published\":true}]");
+    checkfp("delivered and deliveredAt appended in that order", "markDelivered",
+            "{\"messages\":[{\"dir\":\"out\",\"fp\":\"@\",\"seq\":\"1\",\"ts\":\"5\"}],\"fp\":\"@\",\"ackTs\":\"6\","
+            "\"publishedBefore\":[\"1\"],\"nowSeconds\":\"9\"}",
+            "[{\"dir\":\"out\",\"fp\":\"@\",\"seq\":\"1\",\"ts\":\"5\",\"delivered\":true,\"deliveredAt\":\"9\"}]");
+    checkfp("an undefined field is left out", "pendingOutbox",
+            "{\"messages\":[{\"seq\":\"1\",\"fp\":\"@\",\"dir\":\"out\",\"ts\":\"5\"}],\"fp\":\"@\",\"nowSeconds\":\"10\"}",
+            "[{\"seq\":\"1\",\"ts\":\"5\"}]");
+
+    /* mutators: { result, state } */
+    checks("delete removes a repeated key", "removeContact",
+           "{\"state\":{\"contacts\":[{\"fp\":\"k\"}],\"removed\":[],\"dmSync\":{\"k\":\"1\",\"x\":\"2\",\"k\":\"3\"},"
+           "\"profileCache\":{},\"chainNames\":{}},\"fp\":\"k\"}",
+           "{\"result\":true,\"state\":{\"contacts\":[],\"removed\":[\"k\"],\"dmSync\":{\"x\":\"2\"},"
+           "\"profileCache\":{},\"chainNames\":{}}}");
+    checks("a repeated state key: the last value at the first place", "removeContact",
+           "{\"state\":{\"contacts\":[{\"fp\":\"z\"}],\"removed\":[],\"dmSync\":{},\"profileCache\":{},\"chainNames\":{},"
+           "\"contacts\":[{\"fp\":\"k\"}]},\"fp\":\"k\"}",
+           "{\"result\":true,\"state\":{\"contacts\":[],\"removed\":[\"k\"],\"dmSync\":{},\"profileCache\":{},\"chainNames\":{}}}");
+    checks("seenOwn null replaced in place", "markOwnRecordSeen",
+           "{\"state\":{\"a\":1,\"seenOwn\":null},\"kind\":\"profile\",\"nowSec\":\"5\"}",
+           "{\"result\":true,\"state\":{\"a\":1,\"seenOwn\":{\"profile\":\"5\"}}}");
+    checks("no state: the state is left out", "markOwnRecordSeen", "{\"kind\":\"profile\",\"nowSec\":\"5\"}",
+           "{\"result\":false}");
+    checkfp("a pushed contact", "mergeListedContacts",
+            "{\"state\":{\"contacts\":[],\"removed\":[]},\"entries\":[{\"fp\":\"@\",\"salt\":\"s\"}],\"ownFp\":\"x\"}",
+            "{\"result\":true,\"state\":{\"contacts\":[{\"fp\":\"@\",\"salt\":\"s\",\"listed\":true}],\"removed\":[]}}");
+    checks("unremoveContact returns undefined", "unremoveContact",
+           "{\"state\":{\"removed\":[\"a\",\"b\",\"a\"]},\"fp\":\"a\"}", "{\"state\":{\"removed\":[\"b\"]}}");
+
+    /* numbers */
+    checks("compareLocal >", "compareLocal", "{\"a\":{\"seq\":\"10\"},\"b\":{\"seq\":\"9\"}}", "1");
+    checks("compareLocal =", "compareLocal", "{\"a\":{\"seq\":\"0x10\"},\"b\":{\"seq\":16}}", "0");
+    checks("compareLocal <", "compareLocal", "{\"a\":{\"seq\":\"-1\"},\"b\":{\"seq\":\"99999999999999999999999\"}}", "-1");
+    checks("BigInt of the double 2^64", "ackToSend",
+           "{\"messages\":[{\"dir\":\"in\",\"fp\":\"f\",\"senderTs\":18446744073709551616}],\"fp\":\"f\"}",
+           "\"18446744073709551616\"");
+    checks("fullDays at 10^20 - 1", "fullDays", "{\"today\":\"99999999999999999999\"}",
+           "[\"99999999999999999993\",\"99999999999999999994\",\"99999999999999999995\",\"99999999999999999996\","
+           "\"99999999999999999997\",\"99999999999999999998\",\"99999999999999999999\",\"100000000000000000000\"]");
+    checks("recentDays at 0", "recentDays", "{\"today\":\"0\"}", "[\"0\",\"1\"]");
+    checks("fullDays at 3", "fullDays", "{\"today\":\"3\"}", "[\"0\",\"1\",\"2\",\"3\",\"4\"]");
+
+    /* NUL is data in these strings */
+    checkfp("HIGH-7: a message with a NUL is not the accepted one", "acceptanceMayAutoApprove",
+            "{\"request\":{\"sender\":\"@\",\"acceptance\":true,\"message\":\"Contact request accepted\\u0000x\"},"
+            "\"pendingOutgoing\":[\"@\"]}", "false");
+    checkfp("HIGH-7: honoured with our pending request", "acceptanceMayAutoApprove",
+            "{\"request\":{\"sender\":\"@\",\"acceptance\":true,\"message\":\"Contact request accepted\"},"
+            "\"pendingOutgoing\":[\"@\"]}", "true");
+    checks("parseContactId: NUL is not whitespace", "parseContactId", "{\"value\":\"ab\\u0000\"}",
+           "{\"error\":\"That is not a valid ID. An ID is 128 characters, letters a\xE2\x80\x93" "f and digits.\"}");
+
+    /* V8's sort: compare(a[1], a[0]) first, so a[1]'s RangeError wins */
+    checkfp("sort error order", "pendingOutbox",
+            "{\"messages\":[{\"seq\":\"abc\",\"fp\":\"@\",\"dir\":\"out\",\"text\":\"a\",\"ts\":\"5\"},"
+            "{\"seq\":1.5,\"fp\":\"@\",\"dir\":\"out\",\"text\":\"b\",\"ts\":\"5\"}],\"fp\":\"@\",\"nowSeconds\":\"9\"}",
+            "{\"error\":\"RangeError\"}");
+}
+
 int main(void) {
     run_vectors();
     number_cases();
     malformed_cases();
+    p1a_cases();
     printf("test_nc_rules: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

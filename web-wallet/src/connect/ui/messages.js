@@ -49,7 +49,7 @@ import {
   pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, ackAllowed, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   checkOrder, contactDays, contactNeedsFullSync, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
-  firstRecordAllowed, markOwnRecordSeen, declinedNow, isDeclined, addDeclined, undecline,
+  firstRecordAllowed, markOwnRecordSeen, declinedNow, isDeclined, addDeclined, undecline, acceptedSalt,
   shortId, inspectUntrusted,
   updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
   contactLine, roundDoneLine
@@ -937,7 +937,7 @@ async function syncRequests(gen) {
 // nc_request_cancel, dna_engine_contacts.c:580).
 async function completeOutgoing(request, gen) {
   const mine = state.outgoing.find(o => o.fp === request.sender);
-  addContactLocal(request.sender, mine?.salt || request.salt || null);
+  addContactLocal(request.sender, acceptedSalt(mine, request));
   await persist();
   if (gen !== generation) return;
   try { await core.requestCancel(request.sender); } catch { /* the request expires on its own */ }

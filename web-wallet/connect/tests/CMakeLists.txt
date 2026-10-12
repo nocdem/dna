@@ -31,8 +31,9 @@
 #                        groups_kat.json byte-compared, signatures verified,
 #                        KEM round trip, every reject case refused
 #   test_nc_rules        P1 rules: every shared vector (generated from the
-#                        JS of src/connect/ui/actions.js) byte-equal through
-#                        nc_rule_call; malformed JSON inputs; ASan + UBSan
+#                        JS of src/connect/ui/actions.js, text.js and
+#                        core.js) byte-equal through nc_rule_call;
+#                        malformed JSON inputs; ASan + UBSan
 cmake_minimum_required(VERSION 3.16)
 project(nodus_connect_tests C)
 
@@ -109,6 +110,7 @@ set(NC_SOURCES
   # P1 rules (design 2026-10-12-connect-core-p1-rules-design.md rev 2)
   ${CONNECT_DIR}/nc_jsjson.c
   ${CONNECT_DIR}/nc_payload.c
+  ${CONNECT_DIR}/nc_rules.c
   ${CONNECT_DIR}/nc_rules_json.c
   ${ROOT}/messenger/codec/contact_request_codec.c
   ${ROOT}/messenger/codec/contactlist_codec.c
@@ -225,6 +227,7 @@ add_test(NAME test_nc_group COMMAND test_nc_group)
 set(NC_RULES_SOURCES
   ${CONNECT_DIR}/nc_jsjson.c
   ${CONNECT_DIR}/nc_payload.c
+  ${CONNECT_DIR}/nc_rules.c
   ${CONNECT_DIR}/nc_rules_json.c)
 add_executable(test_nc_rules test_nc_rules.c ${NC_RULES_SOURCES})
 target_link_libraries(test_nc_rules nc_core)
