@@ -1478,7 +1478,8 @@ static int cc_appr_verdict(nodus_witness_t *w,
      * committee seat may make this node sign (decision
      * 2026-09-26-cc-approval-via-own-node.md (5)), and every seat of the
      * committee at the tip is in the p2p host's in-memory bonded set
-     * (ACTIVE ∪ ELIGIBLE ∪ the committees at tip ± 1,
+     * (ACTIVE ∪ ELIGIBLE ∪ their pending keys (HF-6 6e) ∪ the committees
+     * at tip ± 1,
      * nodus_witness_p2p_refresh_bonded). A requester outside it is
      * DROPPED: no reply, no committee resolution, nothing recorded, and
      * NOT stopped — the set is refreshed once per poll and can be one
