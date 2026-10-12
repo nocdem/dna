@@ -4,7 +4,8 @@
  *        migration. Contract: nodus_witness_v2_migrate.h.
  *
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
- * §7 steps 1-4, 6, 10; plan tasks/hf6-slice3-plan.md §2 "3b" steps 1-3;
+ * §7 steps 1-4, 6, 10 (+ §4: the consensus-key reservations, slice 4);
+ * plan tasks/hf6-slice3-plan.md §2 "3b" steps 1-3;
  * decisions docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md
  * (K4 accrual merge, K8 Foundation address) and
  * docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md (D2:
@@ -18,6 +19,7 @@
  */
 
 #include "witness/nodus_witness_v2_migrate.h"
+#include "witness/nodus_witness_validator.h" /* slice 4: key reservation */
 
 #include "nodus/nodus_types.h"         /* NODUS_TREE_TAG_VALIDATOR / _DELEGATION */
 #include "dnac/dnac.h"                 /* DNAC_SELF_STAKE_AMOUNT,
@@ -58,6 +60,7 @@ typedef struct {
     uint8_t *pk;               /* MG_PK bytes, owned                    */
     int      foundation;       /* active_since_block <= 1 (D2 (a))      */
     int      bonded;           /* ACTIVE or ELIGIBLE                    */
+    int      unstaked;         /* UNSTAKED: graduated, no reservation   */
     uint64_t self_stake, total_delegated, external_delegated;  /* to write */
     uint64_t read_self_stake, read_total_delegated;            /* as read  */
 } mg_val_t;
@@ -274,6 +277,7 @@ static int mg_read_validators(nodus_witness_t *w, mg_t *m,
         memcpy(v.owner, v.foundation ? foundation_fp : v.fp, MG_KEY);
         v.bonded = (status == DNAC_VALIDATOR_ACTIVE ||
                     status == DNAC_VALIDATOR_ELIGIBLE);
+        v.unstaked = (status == DNAC_VALIDATOR_UNSTAKED);
         if (v.bonded) {
             /* design §7.2: 10M → 2M bond + 8M self-delegation; the exact
              * 10M is what every STAKE and the genesis wrote
@@ -569,7 +573,7 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
     int ret = -2, ch = 0, target_present = 0;
     uint64_t acc_target = 0, acc_sum = 0;
     uint64_t sup_before = 0, sup_after = 0;
-    size_t n_src = 0, n_found = 0;
+    size_t n_src = 0, n_found = 0, n_keys = 0;
     memset(&m, 0, sizeof(m));
 
     /* ══ READ ════════════════════════════════════════════════════════ */
@@ -588,6 +592,24 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
         st = NULL;
         if (n != 0) {
             QGP_LOG_ERROR(LOG_TAG, "v2_validator_roles already holds %lld "
+                          "rows — the migration runs once, on an empty "
+                          "table", (long long)n);
+            goto done;
+        }
+        /* HF-6 slice 4: the consensus-key reservation table too */
+        if (sqlite3_prepare_v2(w->db, "SELECT COUNT(*) FROM "
+                               "v2_consensus_keys", -1, &st, NULL)
+            != SQLITE_OK ||
+            sqlite3_step(st) != SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_consensus_keys unreadable: %s",
+                          sqlite3_errmsg(w->db));
+            goto done;
+        }
+        n = sqlite3_column_int64(st, 0);
+        sqlite3_finalize(st);
+        st = NULL;
+        if (n != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_consensus_keys already holds %lld "
                           "rows — the migration runs once, on an empty "
                           "table", (long long)n);
             goto done;
@@ -775,6 +797,27 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
     sqlite3_finalize(st);
     st = NULL;
 
+    /* HF-6 slice 4 (design rev 6 §4) — v2_consensus_keys: one role-1
+     * reservation (SHA3-512(pk), validator_id) per migrated row that has
+     * NOT graduated. An UNSTAKED row already left the bonded/exiting
+     * lifecycle (its graduation would have released the key, §4 last
+     * sentence), so it holds none: the table stays the pure function
+     * "role 1 = every validators row whose status is not UNSTAKED" that
+     * the generation-4 STAKE and graduation maintain afterwards. Visited
+     * in SHA3-512(pk) ASC (m.by_fp — the table's own key order); the keys
+     * are distinct (checked in mg_read_validators). */
+    for (size_t k = 0; k < m.nv; k++) {
+        const mg_val_t *v = &m.v[m.by_fp[k].idx];
+        if (v->unstaked) continue;
+        if (nodus_validator_v2_key_insert(w, v->fp, v->vid,
+                                          (uint8_t)NODUS_V2_KEY_ROLE_ACTIVE)
+            != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "v2_consensus_keys insert failed");
+            goto done;
+        }
+        n_keys++;
+    }
+
     /* delegations: delete every row, re-insert the computed set in its
      * new primary-key order (no lookup against a half-re-keyed table) */
     if (mg_exec(w, "DELETE FROM delegations", &ch) != 0) goto done;
@@ -891,10 +934,10 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
     }
 
     QGP_LOG_INFO(LOG_TAG, "HF-6 migration: %zu validators re-keyed (%zu "
-                 "Foundation-owned), %zu delegations (%zu before), %zu "
-                 "balance-copy rows, %zu accrual rows merged into the "
-                 "Foundation owner", m.nv, n_found, m.nd, m.nd_old, m.nc,
-                 n_src);
+                 "Foundation-owned), %zu consensus keys reserved, %zu "
+                 "delegations (%zu before), %zu balance-copy rows, %zu "
+                 "accrual rows merged into the Foundation owner", m.nv,
+                 n_found, n_keys, m.nd, m.nd_old, m.nc, n_src);
     ret = 0;
 done:
     sqlite3_finalize(st);

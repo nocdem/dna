@@ -1,8 +1,9 @@
 /**
  * @file nodus/tests/test_hf6_calls.c
  * @brief HF-6 sub-slice 3c — owner authority and the generation-4 call
- *        layouts of the SYSTEM validator-record ops 2..5; STAKE refused
- *        under generation 4 until slice 4; sub-slice 3e — the HF-8 name
+ *        layouts of the SYSTEM validator-record ops 2..5 (the legacy
+ *        2666-B STAKE refused under generation 4; the generation-4 STAKE
+ *        of slice 4 is test_hf6_stake's); sub-slice 3e — the HF-8 name
  *        rule and its self-delegation exemption on the SYSTEM DELEGATE.
  *
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
@@ -39,8 +40,9 @@
  *      (kind 1); kind 3 with a satisfied descriptor of the WRONG address,
  *      an UNSATISFIED one, an extra foreign signer (D6 bit clear), TWO
  *      descriptors; a kind-2 leg; a missing verdict.
- *   A4 the CORE SYSFUND leg: a STAKE sibling refused by the generation-4
- *      CORE read plan and planned by generation 3; a generation-4
+ *   A4 the CORE SYSFUND leg: a STAKE sibling planned by the generation-4
+ *      CORE read plan since slice 4 (refused by it in 3c) and by
+ *      generation 3; a generation-4
  *      DELEGATE sibling planned (inputs + pool); with the HF-8 gate on
  *      (param 17) the generation-4 CORE leg STILL plans inputs + pool only
  *      — no CORE NAMEOWN, and its input ceiling stays 15 (sub-slice 3e,
@@ -670,9 +672,12 @@ static int t_hooks(void) {
         cl = stake1_call(call, KD, 500, TEN_M);
         CHECK(cl == 2666u, "legacy STAKE is 2666 bytes");
         CHECK(hk_build(&e, DNA_SYSRULE_STAKE, call, cl, 1) == 0, "env");
-        CHECK(sys_plan(s4, &e, rq, &n) == -1, "gen 4: STAKE refused (plan)");
+        CHECK(sys_plan(s4, &e, rq, &n) == -1,
+              "gen 4: the legacy 2666-B STAKE refused (plan — slice 4's "
+              "STAKE is 7301 B, test_hf6_stake)");
         av_k1(KD);
-        CHECK(sys_exec(s4, &e, 2, NULL) == -1, "gen 4: STAKE refused (exec)");
+        CHECK(sys_exec(s4, &e, 3, NULL) == -1,
+              "gen 4: the legacy 2666-B STAKE refused (exec)");
         CHECK(sys_plan(s3, &e, rq, &n) == 0 && n == 2 &&
               rq[0].op_id == OP_VAL && rq[1].op_id == OP_STATS,
               "gen 3: the same STAKE plans ops 4 / 7");
@@ -917,9 +922,13 @@ static int t_hooks(void) {
         uint32_t cl = stake1_call(call, KD, 500, TEN_M);
         CHECK(hk_build(&e, DNA_SYSRULE_STAKE, call, cl, 1) == 0, "env");
         av_k1(KD);
+        /* slice 4: the generation-4 CORE leg pairs with a STAKE sibling
+         * like ops 2..5 — the shape is the op id; a legacy-length STAKE
+         * call is refused where the value moves (rtn_sys_call_flow at
+         * exec), the legacy-UNSTAKE-sibling precedent */
         CHECK(nodus_rt_core_read_plan(c4, &e.view, 1, &g_ctx, cr,
-                                      NODUS_RT_MAX_READS, &cn) == -1,
-              "gen-4 CORE: a STAKE sibling refused");
+                                      NODUS_RT_MAX_READS, &cn) == 0 &&
+              cn == 2, "gen-4 CORE: a STAKE sibling plans (slice 4)");
         CHECK(nodus_rt_core_read_plan(c3, &e.view, 1, &g_ctx, cr,
                                       NODUS_RT_MAX_READS, &cn) == 0 &&
               cn == 2, "gen-3 CORE: the same STAKE sibling plans");

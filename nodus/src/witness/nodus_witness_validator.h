@@ -341,6 +341,63 @@ typedef int (*nodus_v2_validator_visit_fn)(const nodus_v2_validator_row_t *row,
 int nodus_validator_v2_scan(nodus_witness_t *w,
                             nodus_v2_validator_visit_fn fn, void *ud);
 
+/* ══ HF-6 slice 4 — the consensus-key reservation (design rev 6 §4) ════
+ *
+ * `v2_consensus_keys (consensus_pk_hash PK, validator_id, role)` — the ONE
+ * table with a unique key column that makes "a consensus key appears at
+ * most once (active + pending)" a primary-key fact (§4: a composite UNIQUE
+ * over two columns would not catch current(A) = pending(B)).
+ * consensus_pk_hash = SHA3-512(consensus pubkey), UNTAGGED. Role 1 = the
+ * validator's active consensus key; role 2 = a pending key (ROTATE, slice
+ * 6 — no writer yet). The rows are a pure function of committed state:
+ * role 1 for every validators row not UNSTAKED, role 2 for every non-zero
+ * pending_consensus_pubkey. Writers: the generation-4 edge
+ * (nodus_witness_v2_migrate.c), the generation-4 STAKE (SYSTEM adapter op
+ * 17, nodus_witness_rt_native.c) and the generation-4 graduation
+ * (nodus_validator_v2_key_release, nodus_witness_v2_epoch.c). */
+
+#define NODUS_V2_KEY_HASH_LEN      64u
+#define NODUS_V2_KEY_ROLE_ACTIVE   1u
+#define NODUS_V2_KEY_ROLE_PENDING  2u
+
+/**
+ * The reservation of `key_hash`.
+ * @return 0 found (*validator_id_out, *role_out set); 1 absent; -1 fault
+ *         (SQLite error, a validator_id not exactly 64 bytes or all-zero,
+ *         a role outside {1, 2}).
+ */
+int nodus_validator_v2_key_get(nodus_witness_t *w,
+                               const uint8_t key_hash[NODUS_V2_KEY_HASH_LEN],
+                               uint8_t validator_id_out[NODUS_V2_VALIDATOR_ID_LEN],
+                               uint8_t *role_out);
+
+/**
+ * STRICT insert of one reservation, INSIDE THE CALLER'S TRANSACTION
+ * (autocommit → -1, nothing written). Refused (-1) before writing: a role
+ * outside {1, 2}, an all-zero key_hash or validator_id. A held key is a
+ * PRIMARY KEY conflict → -1 (the caller proved it absent first).
+ * @return 0 one row inserted / -1.
+ */
+int nodus_validator_v2_key_insert(nodus_witness_t *w,
+                                  const uint8_t key_hash[NODUS_V2_KEY_HASH_LEN],
+                                  const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                                  uint8_t role);
+
+/**
+ * Release every reservation of a graduating validator (design §4 last
+ * sentence: a released key can be STAKEd again under a new validator_id).
+ * INSIDE THE CALLER'S TRANSACTION. Deletes the role-1 row keyed by
+ * SHA3-512(`consensus_pubkey`) and naming `validator_id` — EXACTLY one
+ * row, else -1 (missing or foreign: a bonded-or-exiting row without its
+ * reservation is corruption, never "nothing to release") — then every
+ * other row naming `validator_id` (a pending key; any count).
+ * @param consensus_pubkey DNAC_PUBKEY_SIZE bytes (validators.pubkey).
+ * @return 0 / -1.
+ */
+int nodus_validator_v2_key_release(nodus_witness_t *w,
+                                   const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                                   const uint8_t *consensus_pubkey);
+
 #ifdef __cplusplus
 }
 #endif

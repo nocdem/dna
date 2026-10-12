@@ -65,7 +65,32 @@ def capacity_derivation():
     assert dlg_two_tc == 819098, dlg_two_tc    # the governing worst case
     assert dlg_two_tc > dlg_two > two_leg_tc
     assert 2 ** 19 < dlg_two_tc <= 2 ** 20 == MAX_TOTAL_LEN
-    return cc_single, dlg_two_tc
+    # General multisig: CORE admits auth_kind 3; its maximal blob is the
+    # 15-signer kind-1 body + dcount + 7 x (2 + 18) + 15 x 2592 = 147,307
+    # (multisig_oracle.py "MAX blob"), so a TOKEN_CREATE leg under it
+    # beside the kind-2 SYSTEM leg governs.
+    k3_max = (1 + 15 * signer) + 1 + 7 * (2 + 16 + 1 + 1) + 15 * 2592
+    assert k3_max == 147307, k3_max
+    dlg_two_k3 = dlg_single + 30 + tc_call + k3_max
+    assert dlg_two_k3 == 858119, dlg_two_k3     # dominated since HF-6
+    # HF-6 slice 4 (design rev 6 §2, K7): the generation-4 STAKE call
+    # owner_fp 64 + consensus_pk 2592 + consent_sig 4627 + expiry 8 +
+    # commission 2 + bond 8 = 7301 is the LONGEST SYSTEM call — it
+    # replaces the DELEGATE leg in every shape (DELEGATE stays a
+    # dominated control).
+    stk_call = 64 + 2592 + 4627 + 8 + 2 + 8
+    stk_single = 43 + 30 + stk_call + (1 + 15 * signer) + (2 + 128 * appr)
+    stk_two = stk_single + 30 + (2 + 15 * 64 + 16 * 232) + (1 + 15 * signer)
+    stk_two_tc = stk_single + 30 + tc_call + (1 + 15 * signer)
+    stk_two_k3 = stk_single + 30 + tc_call + k3_max
+    assert stk_call == 7301, stk_call
+    assert stk_single == 708174, stk_single
+    assert stk_two == 821164, stk_two          # dominated shape, pinned
+    assert stk_two_tc == 821207, stk_two_tc
+    assert stk_two_k3 == 860228, stk_two_k3    # the governing worst case
+    assert stk_two_k3 > dlg_two_k3 > stk_two_tc > stk_two > dlg_two_tc
+    assert 2 ** 19 < stk_two_k3 <= 2 ** 20 == MAX_TOTAL_LEN
+    return cc_single, stk_two_k3
 
 
 capacity_derivation()

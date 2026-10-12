@@ -2254,6 +2254,21 @@ endif()
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_calls)
 endif()
+# HF-6 slice 4 — STAKE under generation 4 (design 2026-10-03-hf5-
+# validator-owner-stake rev 6 §1.3, §1.5, §2, §4, §6.1-§6.3; K7, K9): the
+# hook matrix (plan ops 7 / 13 / 17 with the validator_id independently
+# recomputed, kind 1 / kind 3 owners, real ML-DSA-87 node-consent
+# negatives — ctx, op 2 / op 3, chain, owner, key, expiry h-1 / h+721 —
+# the STAKE_MIN .. INT64_MAX bond window, a reserved key, Rule M, length
+# ± 1, the CORE pairing, the describer) and twin seeded chains through the
+# generation-4 edge: the migration's reservations, kind-1 and kind-3
+# STAKEs applied with the supply conserved, reserved keys refused, a
+# RETIRING row's key released at its graduation and STAKEd again under a
+# new validator_id. Generation 4 is compiled only with the EVM runtime.
+# No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_stake)
+endif()
 # HF-6 sub-slice 3d — the boundary and root readers under the generation-4
 # keys (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.6, §6.3/§6.4,
 # §7.2, §7.5; plan tasks/hf6-slice3-plan.md §2 "3d"): the §6.3 / §6.4 leaf

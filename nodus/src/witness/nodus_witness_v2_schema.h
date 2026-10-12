@@ -854,6 +854,28 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w);
  * CREATE TABLE IF NOT EXISTS is its own statement of the shape, verified
  * unconditionally.
  *
+ * HF-6 slice 4 (design rev 6 §4) adds a SECOND table to this same
+ * unreleased rung (S18 exists on branch hf6 only — no S19):
+ *
+ *   v2_consensus_keys (consensus_pk_hash BLOB PRIMARY KEY [64],
+ *                      validator_id BLOB NOT NULL [64],
+ *                      role INTEGER NOT NULL)
+ *
+ * the ONE consensus-key reservation table: consensus_pk_hash =
+ * SHA3-512(consensus pubkey), untagged; role 1 = the validator's active
+ * consensus key, role 2 = a pending (rotating-in) key (ROTATE, slice 6 —
+ * no writer yet). A key appears at most once, whatever its role. It is a
+ * pure function of committed state: role 1 = every validators row whose
+ * status is not UNSTAKED (key = SHA3-512(validators.pubkey), value = its
+ * pubkey_hash = validator_id); role 2 = every non-zero
+ * v2_validator_roles.pending_consensus_pubkey. Writers: the generation-4
+ * edge (nodus_witness_v2_migrate.c), the generation-4 STAKE (SYSTEM
+ * adapter op 17) and the generation-4 graduation (delete). No root reads
+ * it (both inputs are already rooted). Not a bundle table. A database
+ * already at 18 before this change gets the table from the base schema's
+ * CREATE TABLE IF NOT EXISTS at open (this rung is a no-op at 18 and does
+ * not re-verify its shape there).
+ *
  * REACHABILITY: S18 is THE LIVE RUNG. Every builder migrates to it (join,
  * bundle, the genesis derivation) and an S16 or S17 version-3 chain DB is
  * migrated in place at OPEN (nodus_witness.c). Every gate that accepted
@@ -868,7 +890,8 @@ typedef enum {
     V2S18MIG_FAIL_NONE = 0,
     V2S18MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
     V2S18MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
-    V2S18MIG_FAIL_AFTER_TABLES,     /* v2_validator_roles created         */
+    V2S18MIG_FAIL_AFTER_TABLES,     /* v2_validator_roles and
+                                     * v2_consensus_keys created         */
     V2S18MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
     V2S18MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
 } nodus_v2s18_mig_fail_t;

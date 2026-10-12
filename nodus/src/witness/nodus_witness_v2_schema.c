@@ -2196,8 +2196,9 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w) {
 
 /* ── S18 migration: HF-6 sub-slice 3a, the validator-role side table ─────
  * Contract: nodus_witness_v2_schema.h. The table is created EMPTY; its
- * only writer is the HF-6 activation edge (sub-slice 3b). The column
- * definitions are byte-identical to the base schema's (nodus_witness.c). */
+ * writers are the HF-6 activation edge (sub-slice 3b) and the
+ * generation-4 STAKE (slice 4). The column definitions are byte-identical
+ * to the base schema's (nodus_witness.c). */
 
 static const char *V2_S18_ROLES_DDL =
     "CREATE TABLE IF NOT EXISTS v2_validator_roles ("
@@ -2205,6 +2206,19 @@ static const char *V2_S18_ROLES_DDL =
     "  owner_fp BLOB NOT NULL,"
     "  pending_consensus_pubkey BLOB NOT NULL,"
     "  consensus_key_effective_epoch INTEGER NOT NULL"
+    ")";
+
+/* HF-6 slice 4 (design rev 6 §4) — the consensus-key reservation table,
+ * added to the SAME unreleased rung (S18 exists on branch hf6 only). One
+ * unique key column: a consensus key appears at most once, whatever its
+ * role. Created EMPTY; writers: the generation-4 edge (one role-1 row per
+ * migrated, not-UNSTAKED validator), the generation-4 STAKE (role 1) and
+ * the generation-4 graduation (delete). */
+static const char *V2_S18_KEYS_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_consensus_keys ("
+    "  consensus_pk_hash BLOB PRIMARY KEY,"
+    "  validator_id BLOB NOT NULL,"
+    "  role INTEGER NOT NULL"
     ")";
 
 int nodus_witness_db_migrate_v2s18_ex(nodus_witness_t *w,
@@ -2235,19 +2249,24 @@ int nodus_witness_db_migrate_v2s18_ex(nodus_witness_t *w,
         if (fail_at == V2S18MIG_FAIL_AFTER_REVALIDATE) break;
 
         if (exec_sql(w, V2_S18_ROLES_DDL) != 0) break;
+        if (exec_sql(w, V2_S18_KEYS_DDL) != 0) break;
         if (fail_at == V2S18MIG_FAIL_AFTER_TABLES) break;
 
-        /* Verify: the table exists with its exact column sequence — a
+        /* Verify: each table exists with its exact column sequence — a
          * DDL that silently did nothing, or a pre-existing table of
          * another shape, is not a migrated schema. */
         static const char *const roles_cols[] = {
             "validator_id", "owner_fp", "pending_consensus_pubkey",
             "consensus_key_effective_epoch" };
+        static const char *const keys_cols[] = {
+            "consensus_pk_hash", "validator_id", "role" };
         if (table_cols_exact(w, "v2_validator_roles", roles_cols,
-                sizeof(roles_cols) / sizeof(roles_cols[0])) != 1) {
+                sizeof(roles_cols) / sizeof(roles_cols[0])) != 1 ||
+            table_cols_exact(w, "v2_consensus_keys", keys_cols,
+                sizeof(keys_cols) / sizeof(keys_cols[0])) != 1) {
             QGP_LOG_ERROR(LOG_TAG, "%s",
-                          "S18 validator-role schema shape drift — "
-                          "refusing");
+                          "S18 validator-role / consensus-key schema shape "
+                          "drift — refusing");
             break;
         }
         if (fail_at == V2S18MIG_FAIL_AFTER_VERIFY) break;

@@ -32,14 +32,18 @@
  *       epochs re-keyed (kind 0 owner = validator_id, kind 1 owner kept),
  *       every amount equal, the row count equal; K4: the Foundation rows'
  *       accruals added to an EXISTING Foundation row, the sources deleted,
- *       every other accrual untouched, Σaccrual equal.
+ *       every other accrual untouched, Σaccrual equal. Slice 4 (design
+ *       §4): one role-1 v2_consensus_keys row SHA3-512(pk) ->
+ *       validator_id per row that is NOT UNSTAKED (four of five; the
+ *       UNSTAKED key is free).
  *   A2. K4 with NO Foundation accrual row: it is created with the source's
  *       amount; a second migration on the migrated DB is a fault with the
  *       DB unchanged; a call in autocommit mode is a fault.
  *   A3. faults (-2, the DB unchanged after the rollback): a bonded row
  *       holding 9M instead of 10M; a balance-copy row whose validator_fp
  *       names no validator; a delegation to a pubkey with no validator
- *       row.
+ *       row; a stray v2_consensus_keys row (slice 4: the table must be
+ *       empty).
  *  B. ENGINE (the seeded fixture of test_hf4_switch, EVM-enabled build,
  *     param 9 at 3, param 14 at 5, param 16 (storage vote literal) at 8 —
  *     every row before the engine genesis, idle blocks):
@@ -48,7 +52,8 @@
  *       GEN_STORAGE) AND migrates the seven genesis validators (all
  *       active_since_block 1 -> all Foundation-owned, the compiled
  *       DNAC_HF6_FOUNDATION_OWNER), seven (Foundation, validator_id)
- *       self-delegations of 8M at H, copy(0) re-keyed with equal amounts,
+ *       self-delegations of 8M at H, seven role-1 key reservations (slice
+ *       4), copy(0) re-keyed with equal amounts,
  *       the staked supply equal; the committed H-1 global root equals a
  *       recomputation; block 8 (= H) applies and does not migrate again.
  *       In the default build the compiled owner IS the K8 address.
@@ -468,6 +473,26 @@ static int t_direct_expected(void) {
         CHECK(count_q(w, "SELECT COUNT(*) FROM validators", &n) == 0 &&
               n == 5, "five validators rows");
     }
+    /* slice 4 (design §4): one role-1 reservation SHA3-512(pk) ->
+     * validator_id per row that is NOT UNSTAKED (0x44 has graduated) */
+    {
+        sqlite3_int64 n = -1;
+        uint8_t got[64], role = 0;
+        CHECK(count_q(w, "SELECT COUNT(*) FROM v2_consensus_keys", &n) == 0
+              && n == 4, "four reservations (UNSTAKED 0x44 holds none)");
+        CHECK(nodus_validator_v2_key_get(w, fp11, got, &role) == 0 &&
+              memcmp(got, v11, 64) == 0 && role == 1 &&
+              nodus_validator_v2_key_get(w, fp22, got, &role) == 0 &&
+              memcmp(got, v22, 64) == 0 && role == 1 &&
+              nodus_validator_v2_key_get(w, fp33, got, &role) == 0 &&
+              memcmp(got, v33, 64) == 0 && role == 1 &&
+              nodus_validator_v2_key_get(w, fp55, got, &role) == 0 &&
+              memcmp(got, v55, 64) == 0 && role == 1,
+              "ACTIVE / ELIGIBLE / RETIRING keys reserved, role 1, to "
+              "their validator_ids");
+        CHECK(nodus_validator_v2_key_get(w, fp44, got, &role) == 1,
+              "the UNSTAKED row's key is free");
+    }
 
     /* delegations */
     CHECK(chk_del(w, fpD1, v22, 3 * MIL, 100) == 0,
@@ -612,9 +637,15 @@ static int fault_case(const char *tag, int which) {
               put_copy(fx.w, 0, fp11, fp11, 0, TEN_M) == 0 &&
               put_copy(fx.w, E_LEN, fp99, fp99, 0, TEN_M) == 0,
               "a copy row naming no validator");
-    } else {
+    } else if (which == 2) {
         CHECK(put_del(fx.w, 0xD1, 0x99, MIL, 10) == 0,
               "a delegation to a pubkey with no validator row");
+    } else {
+        /* slice 4: the reservation table must be empty too */
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_consensus_keys "
+                      "(consensus_pk_hash, validator_id, role) VALUES "
+                      "(zeroblob(64), zeroblob(64), 1)") == 0,
+              "a stray v2_consensus_keys row");
     }
     CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before");
     CHECK(migrate_tx(fx.w, 77, chain32, F) == -2, "a node FAULT (-2)");
@@ -628,6 +659,7 @@ static int t_direct_faults(void) {
     if (fault_case("bond9m", 0) != 0) return 1;
     if (fault_case("unmapped", 1) != 0) return 1;
     if (fault_case("delnov", 2) != 0) return 1;
+    if (fault_case("strayk", 3) != 0) return 1;
     return 0;
 }
 
@@ -785,12 +817,17 @@ static int t_engine_edge(void) {
           && n == 7, "seven roles rows");
     CHECK(count_q(fx.w, "SELECT COUNT(*) FROM delegations", &n) == 0 &&
           n == 7, "seven self-delegations");
+    CHECK(count_q(fx.w, "SELECT COUNT(*) FROM v2_consensus_keys", &n) == 0
+          && n == 7, "seven consensus-key reservations (slice 4)");
     for (size_t i = 0; i < nv; i++) {
         nodus_v2_validator_row_t *r = calloc(1, sizeof(*r));
-        uint8_t vid[64];
+        uint8_t vid[64], kh[64], kv[64], role = 0;
         uint64_t a = 0;
         int ok = r != NULL &&
             dna_validator_id_migrated(vid, chain32, pks + i * PKLEN) == 0 &&
+            qgp_sha3_512(pks + i * PKLEN, PKLEN, kh) == 0 &&
+            nodus_validator_v2_key_get(fx.w, kh, kv, &role) == 0 &&
+            memcmp(kv, vid, 64) == 0 && role == 1 &&
             nodus_validator_v2_get(fx.w, vid, r) == 0 &&
             memcmp(r->owner_fp, k_found_compiled, 64) == 0 &&
             r->rec.self_stake == TWO_M &&
@@ -800,7 +837,7 @@ static int t_engine_edge(void) {
             get_copy(fx.w, 0, vid, vid, 0, &a) == 0 && a == TEN_M;
         free(r);
         CHECK(ok, "row i: Foundation owner, 2M + 8M at H, copy(0) re-keyed "
-              "with 10M");
+              "with 10M, key reserved (role 1) to its validator_id");
     }
     free(pks);
     {
