@@ -360,6 +360,15 @@ Generation ≥ 4 only; each step reads its candidates first and returns before a
 | `int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w, const uint8_t validator_id[64], const uint8_t *consensus_pubkey, uint8_t prev_hash_out[64])` (`nodus_witness_validator.h`) | **NEW.** Inside the caller's transaction (autocommit → -1, nothing written). The validator's role-1 rows must be exactly two with exactly one keyed by SHA3-512(`consensus_pubkey`); the other is deleted (one row, else -1) and its hash written to `prev_hash_out`. Role-2 rows untouched. 0 / -1. |
 | `int nodus_witness_v2_epoch_boundary_apply(...)` (`nodus_witness_v2_epoch.c`) | **CHANGED (behaviour), signature unchanged:** steps 1d (swap) and 3d (sweep) at key generation ≥ 4. |
 
+### 5b.10 HF-6 slice 6e — the p2p pending set; the rotation stages; the graduate's previous key (design rev 6 §3 + khan A2; plan `tasks/hf6-slice6-plan.md` §0.6 #14, §2 "6e", §5 B2)
+
+Tests: `nodus/tests/test_witness_p2p.c` (2a''), `nodus/tests/test_hf6_readers.c` D (pin). Architecture: `nodus/docs/ARCHITECTURE.md` "HF-6 slice 6e".
+
+| Item | Description |
+|------|-------------|
+| `static void bonded_add_pending(nodus_witness_p2p_t *p, p2p_bonded_t **set, int *n, int *cap)` (`nodus_witness_p2p.c`) | **NEW (internal).** Adds the pending consensus key of every ACTIVE / ELIGIBLE row to the bonded set being built: `SELECT r.pending_consensus_pubkey FROM v2_validator_roles r JOIN validators v ON v.pubkey_hash = r.validator_id WHERE v.status IN (ACTIVE, ELIGIBLE) AND r.pending_consensus_pubkey != zeroblob(2592) ORDER BY r.validator_id`. A prepare / bind / step failure is logged (WARN) and adds nothing more. Empty below generation 4. |
+| `void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)` (`nodus_witness_p2p.h`) | **CHANGED (behaviour), signature unchanged:** the set is ACTIVE / ELIGIBLE rows' keys ∪ their pending keys (`bonded_add_pending`) ∪ committee(tip + 1) ∪ committee(tip − 1). |
+
 ---
 
 ## 6. Package W-B — exact self-stake, self-delegation (`docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md` items 5, 6)

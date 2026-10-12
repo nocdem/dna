@@ -7687,6 +7687,51 @@ third's at 6E), twin digests. `test_cmt_app` `t_val_updates_rotation`: a snapsho
 entry's key is announced as exactly [new key at its power, old key at 0] and Comet's set for E+2 holds
 the new address only (hand-written snapshot; priority not pinned).
 
+### HF-6 slice 6e — the p2p pending set; the rotation stages; the graduate's previous key (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 ("p2p bonded set
+`pending_consensus_pubkey`'i de kapsar — yeni node ilk görevinden önce gossip yapabilsin"; the previous
+voter's attendance row deleted at U+E after that epoch's settlement and digest consumers) and khan A2
+(the previous key's reservation released at U+E with it). Plan `tasks/hf6-slice6-plan.md` §0.6 #14,
+§2 "6e", §5 B2.
+
+**The p2p pending set** (`bonded_add_pending`, `nodus_witness_p2p.c`, called by
+`nodus_witness_p2p_refresh_bonded` between the validators read and the two committee reads, before the
+sort). One ordered statement: `SELECT r.pending_consensus_pubkey FROM v2_validator_roles r JOIN
+validators v ON v.pubkey_hash = r.validator_id WHERE v.status IN (ACTIVE, ELIGIBLE) AND
+r.pending_consensus_pubkey != zeroblob(2592) ORDER BY r.validator_id`. From the ROTATE's commit on, the
+node that will sign under the pending key from U + 2 is bonded: its connections bypass the inbound cap,
+it is dialed without being abandoned, its signed ADDR record is verified against that key
+(`h_bonded_pubkey`) and an unsigned one is refused. Below generation 4 the roles table is empty — no
+change. A RETIRING / AUTO_RETIRED / UNSTAKED row's pending key is not added. At the swap (U) the key
+becomes the row's own and stays bonded through the validators read. A failure of the statement is
+logged and the set is built from the other three sources (the validators read's rule). Node-local: the
+set decides connections only. The inbound job queue (`inbound_depth`) follows the listener limit,
+which grows by the pending keys (`cmt_p2p_transport_max_incoming` = cap + unconditional + bonded).
+
+*The old key's exit.* At tip U + 1 neither the validators row (swapped at U) nor committee(U ± 1)
+(both S(U)) names the old key, while it signed U + 1's precommit. No consumer disconnects a peer that
+leaves the set: the switch tests "unconditional" only when it ACCEPTS an inbound connection
+(`cmt_p2p_switch.c` the inbound-peer cap) and when it COUNTS peers (`cmt_p2p_switch_num_peers` — the
+old ID now counts toward the inbound / outbound numbers — an outbound one leaves PEX one dial fewer to
+make); the mempool reactor's
+unconditional flag is fixed when the peer is added; the transport's `n_inbound` keeps the job queue
+deep enough for a limit that shrank. What the old ID loses: the inbound-cap bypass on a RECONNECT, the
+never-ban rule (`cmt_p2p_addrbook_mark_bad`), the never-abandon dial rule (PEX `dial_peer`), the
+signed-record-only rule (an unsigned address for it is admitted again), the 0x71 approval gate
+(`nodus_witness_handle_cc_appr_req` drops its requests — it is no longer a seat for governance from
+U + 1 either, plan §0.6 #13) and the 4001 roster listing. Consequence for the runbook (khan A8: the old
+node stays up through U + E for its S(F) storage duty): from U + 2 it reaches the network as an ordinary
+peer.
+
+**Tests** (written, NOT run by the author). `test_witness_p2p` (2a''): on a derived version-3 chain,
+inside a rolled-back transaction — two keys in no committee and no row are not bonded; a roles row
+with pending K_R under ACTIVE row 2 makes K_R bonded; a pending K_S under row 3 is not bonded while row
+3 is RETIRING or UNSTAKED and is bonded when row 3 is ACTIVE again (the control); after
+`nodus_validator_v2_rotate_apply` switches row 2 to K_R (no pending key left) K_R is bonded as the row's
+key; rolled back, the set is the chain's again. `test_hf6_readers` D pins the new `JOIN validators`
+reader (`bonded_add_pending`, VALUE_SCAN, ×1).
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision
