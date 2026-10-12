@@ -97,6 +97,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>                           /* nc_begin: g_ctx.now           */
 
 #define LOG_TAG "NC_WASM"
 
@@ -265,6 +266,10 @@ static int nc_begin(void) {
     g_inside = 1;
     g_error[0] = '\0';
     result_drop();
+    // The library reads no clock (nc_ctx_t now): the browser entry gives it
+    // the page's time once per export, as the library's own time(NULL) calls
+    // read it before (Kurultay #17 item 5).
+    g_ctx.now = (uint64_t)time(NULL);
     return 0;
 }
 
