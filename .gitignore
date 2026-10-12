@@ -99,3 +99,6 @@ CLAUDE.md
 # Nodus EVM SDK (sdk/js): the built send module and installed packages
 sdk/js/wasm/
 sdk/js/node_modules/
+
+# Python bytecode left by the shared/dnac/tests oracles
+__pycache__/
