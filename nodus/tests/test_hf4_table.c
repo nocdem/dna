@@ -48,6 +48,11 @@
  *       REGISTER / EXIT / REPORT, owned by no earlier generation), CORE v6
  *       (rules {1..8}), types unchanged, same kind / abi / names / hooks /
  *       adapters / allowlists; policy v2 pricing ops 1..9 with weight 1.
+ *       HF-6 slice 6a (design 2026-10-03-hf5-validator-owner-stake-
+ *       design.md rev 6 §2, K7; khan A6): the generation-4 SYSTEM (still
+ *       v9) also owns op 10 ROTATE_CONSENSUS_KEY — rules {1..10} — and
+ *       its policy prices ops 1..10, i.e. exactly the EVM generation's op
+ *       set plus 10 (owned by no earlier generation); CORE v7 unchanged.
  *   6'. the storage vote literal re-derives from the GEN_STORAGE pins.
  *   8.  the storage ops are refused (-1, never -2) by the generation-1,
  *       generation-2 and NULL SYSTEM hooks (read_plan and exec); with no
@@ -262,11 +267,12 @@ int main(void) {
      *        shape v2, ops 1..9 weight 1 ─ */
     CHECK(DNA_SYSRULE_STORAGE_REGISTER == 7 && DNA_SYSRULE_STORAGE_EXIT == 8 &&
           DNA_SYSRULE_STORAGE_REPORT == 9);
+    CHECK(DNA_SYSRULE_ROTATE_CONSENSUS_KEY == 10);   /* design §2, K7 */
 #ifdef NODUS_EVM_ENABLED
     CHECK(gE[0].ruleset_version == 8 && gE[1].ruleset_version == 6);
     CHECK(gS[0].ruleset_version == 9 && gS[1].ruleset_version == 7);
     CHECK(rules_are(&gE[0].descriptor, 6));
-    CHECK(rules_are(&gS[0].descriptor, 9));
+    CHECK(rules_are(&gS[0].descriptor, 10));        /* HF-6 6a: + op 10 */
     CHECK(rules_are(&gE[1].descriptor, 9));
     CHECK(rules_are(&gS[1].descriptor, 9));
     CHECK(gS[1].descriptor.rule_ids[8] == DNA_CORERULE_EVMFUND);
@@ -290,9 +296,10 @@ int main(void) {
               gS[k].invariant == gE[k].invariant &&
               gS[k].claim_apply == gE[k].claim_apply);
     }
-    /* the storage ops are owned by GEN_STORAGE's SYSTEM only */
+    /* the storage ops and (HF-6 6a) ROTATE_CONSENSUS_KEY are owned by
+     * GEN_STORAGE's SYSTEM only */
     for (uint32_t op = DNA_SYSRULE_STORAGE_REGISTER;
-         op <= DNA_SYSRULE_STORAGE_REPORT; op++) {
+         op <= DNA_SYSRULE_ROTATE_CONSENSUS_KEY; op++) {
         int o1 = 0, o2 = 0, oE = 0, oS = 0;
         for (size_t i = 0; i < g1[0].descriptor.rule_count; i++)
             if (g1[0].descriptor.rule_ids[i] == op) o1 = 1;
@@ -319,9 +326,11 @@ int main(void) {
             uint64_t w = 0, wE = 0;
             int has = dna_meter_op_weight(pS, op, &w) == 0;
             int hasE = dna_meter_op_weight(pE, op, &wE) == 0;
-            CHECK(has == (op >= 1u && op <= 9u));
-            CHECK(has == hasE);          /* the EVM generation's op set */
-            if (has) CHECK(w == 1u && wE == 1u);
+            CHECK(has == (op >= 1u && op <= 10u));
+            /* the EVM generation's op set plus op 10 (HF-6 6a) */
+            CHECK(has == (hasE || op == DNA_SYSRULE_ROTATE_CONSENSUS_KEY));
+            if (has) CHECK(w == 1u);
+            if (hasE) CHECK(wE == 1u);
         }
     }
 #endif

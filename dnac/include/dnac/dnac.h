@@ -1061,8 +1061,14 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  (generation 4, base GEN_EVM 3), whose control legs reproduced the
  *  generation-1/2 pins, D2, the EVM generation's pins and
  *  DNAC_CFG_EVM_ACTIVE_D first (the earlier generation-3 value
- *  0x14bb86ad… is dead). */
-#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x0c6fd6f2484e6024ULL /* STORAGE-ORACLE: S4 of shared/dnac/tests/storage_oracle.py (896171186953543716) */
+ *  0x14bb86ad… is dead).
+ *  HF-6 slice 6a (design docs/plans/2026-10-03-hf5-validator-owner-
+ *  stake-design.md rev 6 §2, §10 item 2): the generation-4 SYSTEM v9
+ *  descriptor owns and prices ROTATE_CONSENSUS_KEY (10), so its hash and
+ *  this literal were re-derived by the same oracle (the storage-only value
+ *  0x0c6fd6f2484e6024 is dead). Still the DEVELOPMENT trigger only: slice
+ *  8 replaces it with the D4 construction of design §8.1 (param 18). */
+#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x329b0ea92c8b8c58ULL /* STORAGE-ORACLE: S4 of shared/dnac/tests/storage_oracle.py (3646524443046153304) */
 
 /** HF-6 — the Foundation owner address (design docs/plans/2026-10-03-
  *  hf5-validator-owner-stake-design.md rev 6 §7.1; decision

@@ -6143,7 +6143,8 @@ root was still `NDS.SYS.v4` (Nodus EVM changed only CORE's supply leg, `NDS.SUPP
 `NDS.SYS.v5` with the `NDS.STOR.v2` leg appended last stands. The renumbering zeroed every storage
 pin; they are FILLED since `4fedbbdc` from the independent oracle `shared/dnac/tests/storage_oracle.py`
 (the GEN_STORAGE SYSTEM / CORE ruleset hashes, its meter-policy digest, `DNAC_CFG_RULESET_GEN_STORAGE_D`
-= S4 = 0x0c6fd6f2484e6024) and `nodus_ruleset_pins.h` is regenerated. The oracle's controls were
+= S4 = 0x0c6fd6f2484e6024 then; HF-6 slice 6a re-derived the SYSTEM pins and S4 = 0x329b0ea92c8b8c58
+when op 10 joined generation 4 — see "HF-6 slice 6a") and `nodus_ruleset_pins.h` is regenerated. The oracle's controls were
 moved to EVM ruleset v2 on 2026-10-06 (main `f7aa7984`): S4 is unchanged, because it commits only the
 generation-4 SYSTEM and CORE hashes; the generation-4 EVM tuple is the EVM generation's own
 (`NODUS_RT_EVM_RULESET_VERSION_GEVM`) and follows v2.
@@ -7439,6 +7440,100 @@ ruleset-2 rows; case G: no ruleset-1-only codec call in `nodus_witness_vset.c`. 
 `test_hf6_edge.sh` 2b, 8a-8c: a 50M pre-edge delegation to node 2; at B1 (= B₀) every stored
 snapshot ≤ B1 is ruleset 1 and snapshot(B1 + E) ruleset 2, node 2 raw 60M in both; at B1 + E every
 node logs `n_power_changed=1`.
+
+### HF-6 slice 6a — ROTATE_CONSENSUS_KEY (op 10) owned and priced; the generation-4 pins re-derived (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §2 (ROTATE = runtime_op
+10; the generation-4 SYSTEM descriptor `{1..10}`; "SYSTEM meter politikası 10'u fiyatlar"), §3 (khan
+decisions of 2026-10-12, A6: the descriptor VERSIONS stay SYSTEM 9 / CORE 7, only the hashes are
+re-pinned — nothing shipped under them), §8, §10 item 2 (every slice that changes the generation-4
+descriptors re-derives the pins and the development literal from the oracle); decision
+`2026-10-08-kurultay-14-hf6-summary.md` K7; plan `tasks/hf6-slice6-plan.md` §2 "6a".
+
+**What moved** (`nodus_witness_runtime.{h,c}`, `dnac.h`): `DNA_SYSRULE_ROTATE_CONSENSUS_KEY = 10`;
+`SYS_RULES_GST` = {1..10} (`rule_count` 10) at ruleset_version 9; `SYS_POLICY_MAX_OP_GST` = 10 (op 10
+had no row in any policy — an unpriced op is unreservable); the GEN_STORAGE pins, all from S1-S4 of the
+independent oracle `shared/dnac/tests/storage_oracle.py` (rules {1..10}, ops 1..10):
+
+| Pin | Before (storage-only generation 4, `4fedbbdc`) | After (6a) |
+|---|---|---|
+| `SYS_METER_POLICY_DIGEST_GST` (S1) | `0aa4c690…25922766` (= the EVM policy) | `e5d96b4a…6e06e9b8` (≠ the EVM policy; the oracle asserts it) |
+| `SYS_RULESET_HASH_GST` (S2, SYSTEM v9) | `b37f489d…9a8976ac` | `c347ddd7…1f924b00` |
+| `CORE_RULESET_HASH_GST` (S3, CORE v7) | `fb25e5c4…1437f060` | unchanged (the oracle asserts it — CORE's list, types and version did not move) |
+| `DNAC_CFG_RULESET_GEN_STORAGE_D` (S4) | `0x0c6fd6f2484e6024` | `0x329b0ea92c8b8c58` (3646524443046153304) |
+
+Generations 1-3 and every pin of theirs are byte-identical (the oracle's control legs C1-C12 reproduce
+them before it emits). `nodus_witness_runtime_selfcheck` re-derives the new pins and literal on every
+start, so a build whose table and literal disagree refuses to start. S4 is still the DEVELOPMENT
+trigger (param 16); slice 8 replaces it with the D4 construction (§8.1). Op 10 is owned and priced but
+NOT executable in 6a — the SYSTEM read plan and exec refuse it (−1, the un-migrated-op default) until
+6b. **Admission:** the live gate for a V2 leg is `rt_owns_runtime_op` in `env_admit_legs`
+(`nodus_witness_v2_apply.c`, the committed descriptor's rule list); `rt_admit_common` judges only
+(tx_type, pool) and is reached solely through `nodus_witness_domreg_admit_v2`, which has no production
+caller — so no `SYS_TYPES` change is involved.
+
+**Follow-ups outside the 6a file set** (left to the ORCHESTRATOR): the generated
+`nodus/include/nodus/nodus_ruleset_pins.h` (its `NODUS_PIN_G4_SYS_RULESET_HASH_INIT` and the G4 op list
+1..9) must be regenerated (`regen_ruleset_pins`; `test_ruleset_pins` byte-compares it, and
+`test_v2_native` K7 compares the G4 hashes against it); `test_v2_native` K7 and `nodus/README.md` quote
+the old S4.
+
+**Tests** (written, NOT run by the author). `test_hf6_rotate` (new): op 10 owned and priced by the
+generation-4 SYSTEM only (generations 1-3 and every CORE refuse), versions 9 / 7, the literal re-derives;
+every generation's SYSTEM read plan / exec refuses op 10 (6a); twin seeded chains: an op-10 envelope is
+refused at ADMISSION at block 3 (generation 3) and passes admission + reservation at block 4
+(generation 4), refused at exec with the ledger tables byte-identical. `test_hf4_table` 3b: GEN_STORAGE
+SYSTEM rules {1..10}, op 10 owned by generation 4 only, the policy = the EVM generation's op set plus 10.
+
+### HF-6 slice 6b — the ROTATE_CONSENSUS_KEY exec (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §2 (call, consent re-construction
+contract), §3 (khan decisions of 2026-10-12: A1, A4, A5), §4, §6.1, §6.3; K7; plan
+`tasks/hf6-slice6-plan.md` §1.1, §2 "6b". Generation 4 only; the pending key it writes changes nothing
+else on the chain until the freeze / switch / sweep of slices 6c-6d.
+
+**Call** (`nodus_witness_rt_native.c`): `validator_id[64] ‖ new_pk[2592] ‖ consent_sig[4627] ‖
+consent_expiry u64` = 7291 B (`RTN_SYS_ROTATE_V2_CALL_LEN`, `_Static_assert` == 7291 and < the
+generation-4 STAKE's 7301 — the capacity derivation does not move), exact length (`rtn_rotate2_parse`).
+`rtn_sys_is_stake_op` is now an explicit set {1, 2, 3, 4, 5, 10}. The CORE SYSFUND sibling is FEE-ONLY
+(`rtn_sys_call_flow`: lock 0 / release 0 at generation 4, A4; −1 below); `rtn_sysfund_shape` refuses
+the pairing below generation 4; `rtn_sys_call_identity` refuses op 10 (no pubkey identity at
+generation 4); the describer's `rtn_sys_call_gen_of` reads op 10 as generation 4.
+
+**Read plan** `[VAL2(13, validator_id)] [KEYRES(17, SHA3-512(new_pk))]`.
+
+**Exec** (`rtn_rotate2_exec`), in order — every refusal −1 unless noted: shape; exact length; h ≤ INT64_MAX;
+two reads (else −2); the row exists and is well formed; **authority = the COMMITTED row's owner_fp**
+(`rtn_sys_owner_auth`, kind 1 or kind 3, kind 2 refused); status ACTIVE or ELIGIBLE (A5 — RETIRING /
+UNSTAKED / AUTO_RETIRED refused); no pending key (a second ROTATE is refused, §3); `new_pk` ≠ the row's
+current key; `new_pk` not reserved by any validator in any role (role 1 active, role 2 pending — §4; a
+reservation answer of the wrong length −2); consent expiry `expiry ≥ h ∧ expiry − h ≤ 720`
+(`dna_valbind_expiry_ok`, the STAKE rule); the §6.1 message rebuilt — version 1, chain = the engine's
+chain id, **op 2** (`DNA_VALBIND_OP_ROTATE`, not runtime_op 10), subject = the call's validator_id,
+owner_fp = the committed row's, key = `new_pk`, expiry from the call — verified under `new_pk` with ctx
+`nodus.valbind.v1`; the SYSFUND sibling call well formed.
+
+**Effects**, canonical (kind-major, then op id): `CREATE op 17` behind ABSENT — key SHA3-512(`new_pk`),
+value `validator_id ‖ 0x02` (role 2 = pending, `NODUS_V2_KEY_ROLE_PENDING`); then `SET op 13` behind
+EXISTS_VHASH of the observed row — the row with ONLY `pending_consensus_pubkey := new_pk` and
+`consensus_key_effective_epoch := F` changed, F = the first epoch boundary ≥ the commit height (h itself
+at a boundary; A1). "Zero key ⇔ epoch 0" is unchanged (`rtn_val2_rec_ok`, `v2_pending_consistent`):
+F ≥ E > 0 for every h ≥ 1. No Rule K stamp. The adapter needed no new arm: `rtn_sys_probe` already
+answers op 13 (value hash for EXISTS_VHASH) and op 17 (existence for ABSENT); the op-13 SET writer
+(`rtn_sys_val2_set`) already writes the two roles fields and never `validators.pubkey`; the op-17
+CREATE writer accepts role 2. **Describer**: an applied ROTATE is described with no record kind
+(`NODUS_RT_DESC_REC_NONE`, the storage-op precedent) — without the arm the address index would fail
+the block on the first applied ROTATE; its SYSFUND sibling is described like any fee-only sibling.
+
+**Tests** (written, NOT run by the author). `test_hf6_rotate`: hooks — plan order and keys, length
+± 1, kind-1 (ACTIVE, ELIGIBLE) and kind-3 positives with the two effects byte-checked (F = E at h = 9,
+F = E at h = E, F = 2E at h = E + 1), every refusal above plus consents with op 1, an all-zero subject,
+another validator's id, another owner, another chain, the OLD key signing and ctx `nodus.valbind.v2`,
+a malformed and a non-SYSFUND sibling; the CORE pairing at generation 4 and its refusal at 3; the
+describer. Engine (twin seeded chains): op 10 refused at ADMISSION under generation 3; a STAKE then a
+ROTATE applying (row pending = new key, epoch E, KEYRES role 2 for the new key and role 1 kept for the
+current one, value conserved); a second ROTATE, a ROTATE to a role-2 key and one to a migrated role-1
+key refused with the ledger tables byte-identical; twins byte-identical.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
