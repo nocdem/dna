@@ -247,7 +247,11 @@
  *       — status 1 ACTIVE, 2 EXITING, 3 RELEASED (0 and > 3 invalid:
  *       refused, never hashed); 16 + 165 = 181 B (archive bytes item 4;
  *       grace_until appended by K9 before any activation, the tag
- *       stays "NDS.STLEAF.v2").
+ *       stays "NDS.STLEAF.v2"). payee_fp = the OWNER since HF-6 (design
+ *       docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ *       §11.2: the STORAGE_REGISTER call's owner_fp; the reward and the
+ *       exit release go to it) — a meaning change only, the bytes and the
+ *       field name are unchanged.
  *   ── archive reward (bytes doc 2026-10-05 items 1-3, §6) ──
  *   Root(k) = SHA3-512("NDS.STSEG.v1" ‖ k(8 BE) ‖ count(4 BE) = 17280
  *       ‖ hash[(k−1)·17280 + 1] ‖ … ‖ hash[k·17280])  — hash[h] the
@@ -605,7 +609,7 @@ int dna_v2_attendance_root(const uint64_t *epoch_starts,
 /** One storage registry row; canonical order = node_fp ASC. */
 typedef struct {
     uint8_t  node_fp[DNA_V2_ROOT_LEN];   /* SHA3-512(node_pk)           */
-    uint8_t  payee_fp[DNA_V2_ROOT_LEN];
+    uint8_t  payee_fp[DNA_V2_ROOT_LEN];  /* the OWNER since HF-6 (§11.2) */
     uint64_t bond;
     uint8_t  status;                     /* DNA_V2_STORAGE_ACTIVE..     */
     uint64_t registered_height;
