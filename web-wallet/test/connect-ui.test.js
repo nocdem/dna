@@ -882,6 +882,10 @@ test('progress status line: the first round names its step; every round counts i
   assert.equal(checkingContactsText(1, 1), 'Checking messages: 1 of 1 contact…');
   assert.equal(checkingContactsText(7, 3), 'Checking messages: 3 of 3 contacts…', 'never more than the total');
   assert.equal(checkingContactsText(undefined, undefined), 'Checking messages: 0 of 0 contacts…');
+  // 0.1.92: with the contact being checked (chain name or short ID)
+  assert.equal(checkingContactsText(2, 13, 'cenk'), 'Checking messages: cenk · 2 of 13…');
+  assert.equal(checkingContactsText(20, 13, 'ID 72b656d2…2fd9'), 'Checking messages: ID 72b656d2…2fd9 · 13 of 13…');
+  assert.equal(checkingContactsText(1, 1, ''), 'Checking messages: 1 of 1 contact…', 'no name: the old line');
 });
 
 test('progress log: round, stage and per-step lines are exact', () => {

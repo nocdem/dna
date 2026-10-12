@@ -731,7 +731,7 @@ async function sync() {
     // stays that contact's; a failed group call fails each contact it read.
     for (let start = 0; start < contacts.length; start += CHECK_GROUP_MAX) {
       if (gen !== generation) return;
-      ui.sync.textContent = checkingContactsText(start + 1, contacts.length);
+      ui.sync.textContent = checkingContactsText(start + 1, contacts.length, displayName(contacts[start].fp));
       const group = [];
       for (let index = start; index < Math.min(start + CHECK_GROUP_MAX, contacts.length); index++) {
         if (gen !== generation) return;
@@ -775,7 +775,7 @@ async function sync() {
         const { contact, id, days } = e;
         // Removed by the user while its group was read: not handled.
         if (!contactOf(contact.fp)) continue;
-        ui.sync.textContent = checkingContactsText(e.index + 1, contacts.length);
+        ui.sync.textContent = checkingContactsText(e.index + 1, contacts.length, displayName(contact.fp));
         let complete;
         try {
           if (e.error !== undefined) throw e.error;

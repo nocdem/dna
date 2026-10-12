@@ -56,6 +56,10 @@
 //                               found, or '' = confirmed no name); absent
 //                               for a failed lookup, names unavailable or
 //                               the wallet closing.
+//   nodusAddress({ address })   the open wallet's NODUS address (128 hex),
+//                               derived on this device (src/app.js
+//                               showNodusAddress) — before any connection;
+//                               the own ID of Nodus Connect (0.1.92).
 //   vaultDeleting()             the saved wallet is about to be deleted
 //                               from this device (its Messages history goes
 //                               with it, src/app.js vault-delete).

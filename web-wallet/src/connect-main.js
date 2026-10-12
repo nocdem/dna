@@ -34,6 +34,14 @@ const TABS = ['home', 'chats', 'wallet', 'more'];
 // ID because Messages closed with a reason while the wallet is open
 // (messages.js onIdentity, 4th argument); the lock clears it.
 let tab = 'home', origin = null, ownId = null, ownName = '', ownAvatar = '', messagesScreen = 'list', messagesClosed = false;
+// walletId: this wallet's NODUS address from the wallet itself (src/app.js
+// raises nodusAddress once it is derived on this device — no network); the
+// own ID IS that address. It is shown before Messages has opened and while
+// Messages is closed or reconnecting (0.1.92, operator 2026-10-12: the ID
+// went away whenever the connection did, and came only after it). lastName /
+// lastAvatar: the last own name and picture shown in this unlock, kept while
+// the connection is gone (a chain name is permanent). The lock clears all.
+let walletId = null, lastName = '', lastAvatar = '';
 const scrollByTab = {};
 
 function setTab(next, { highlight = next } = {}) {
@@ -46,6 +54,16 @@ function setTab(next, { highlight = next } = {}) {
     else item.removeAttribute('aria-current');
   }
   if (changed) scrollTo(0, scrollByTab[next] || 0);
+  syncPushed();
+}
+
+// A conversation, Contacts or Your ID & profile covers the bottom bar on a
+// narrow screen (a pushed screen in the app) — only while Chats is the tab
+// shown: "Send NODUS" from a conversation opens the Wallet tab with the
+// conversation still open behind it, and the bar must come back there
+// (0.1.92, operator 2026-10-12).
+function syncPushed() {
+  $('wallet-open').dataset.pushed = String(tab === 'chats' && messagesScreen !== 'list');
 }
 
 function badge(id, count) {
@@ -164,9 +182,22 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     ($('wallet-open').hidden ? $('start-title') : $(`${tab}-title`))?.focus({ preventScroll: true });
   };
 
+  // The own ID, name and picture shown: Messages' while it is open, else the
+  // wallet's own address with the last name and picture shown (walletId above).
+  // A confirmed lookup (also "no name") or a name Messages knows replaces the
+  // kept name; an open Messages' picture (also none) replaces the kept one.
+  function identity() {
+    const id = ownId || walletId;
+    if (!id) return { id: null, name: '', avatar: '' };
+    const answer = shownOwnName(walletNameAnswer, ownId ? ownName : '');
+    if (walletNameAnswer || answer) lastName = answer;
+    if (ownId) lastAvatar = ownAvatar;
+    return { id, name: lastName, avatar: lastAvatar };
+  }
+
   // Home.
   function syncNameRegistration() {
-    const knownName = shownOwnName(walletNameAnswer, ownId ? ownName : '');
+    const knownName = identity().name;
     const open = !$('wallet-open').hidden;
     const ready = open && !knownName && !$('quick-name').hidden && !$('quick-name').disabled;
     $('home-name-registration').hidden = !open || !!knownName;
@@ -188,8 +219,9 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
   $('home-receive').onclick = () => { setTab('wallet'); $('quick-receive').click(); };
   $('home-open-wallet').onclick = () => { setTab('wallet'); $('wallet-title').focus({ preventScroll: true }); };
   $('home-copy-id').onclick = async () => {
-    if (!ownId) return;
-    try { await navigator.clipboard.writeText(ownId); $('home-id-status').textContent = 'Your ID was copied.'; }
+    const { id } = identity();
+    if (!id) return;
+    try { await navigator.clipboard.writeText(id); $('home-id-status').textContent = 'Your ID was copied.'; }
     catch { $('home-id-status').textContent = 'Copy is unavailable. Open Your ID & profile in More and copy it there.'; }
   };
   // The wallet's own numbers, shown again on Home (read only).
@@ -230,19 +262,19 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
   $('toast-dismiss').onclick = () => { clearTimeout(toastTimer); toast.dataset.dismissed = 'true'; };
 
   function showIdentity() {
-    const name = shownOwnName(walletNameAnswer, ownId ? ownName : '');
+    const { id, name, avatar } = identity();
     $('home-name').textContent = name || YOUR_ID_TEXT;
     $('more-name').textContent = profileEntryText(name);
     for (const [markId, textId] of [['home-avatar', 'home-id'], ['more-avatar', 'more-id']]) {
       const mark = $(markId);
       // The own profile picture (messages.js onIdentity), else the initials.
-      fillAvatar(mark, ownId ? initials(ownId, name) : '··', ownId ? ownAvatar : '');
-      mark.className = `contact-avatar avatar-large ${ownId ? `avatar-${parseInt(ownId[0], 16) % 6}` : 'home-avatar-empty'}`;
+      fillAvatar(mark, id ? initials(id, name) : '··', id ? avatar : '');
+      mark.className = `contact-avatar avatar-large ${id ? `avatar-${parseInt(id[0], 16) % 6}` : 'home-avatar-empty'}`;
       // The chain name (HF-4) first, then the short ID; with no ID, why
       // (locked or opening, or Messages could not open — messages.js ownIdText).
-      $(textId).textContent = ownIdText({ id: ownId, name, closed: messagesClosed });
+      $(textId).textContent = ownIdText({ id, name, closed: messagesClosed });
     }
-    $('home-copy-id').disabled = !ownId;
+    $('home-copy-id').disabled = !id;
     $('home-id-status').textContent = '';
     syncNameRegistration();
   }
@@ -251,7 +283,10 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
   // lookup, and the lock that clears it.
   const nameExtension = {
     ownName({ name, confirmed } = {}) { walletNameAnswer = confirmed === true ? { name: typeof name === 'string' ? name : '' } : null; showIdentity(); },
-    locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; messagesClosed = false; showIdentity(); }
+    // This wallet's NODUS address, derived on this device (src/app.js
+    // showNodusAddress): the own ID before / without Messages.
+    nodusAddress({ address } = {}) { walletId = typeof address === 'string' && /^[0-9a-f]{128}$/.test(address) ? address : null; showIdentity(); },
+    locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; messagesClosed = false; walletId = null; lastName = ''; lastAvatar = ''; showIdentity(); }
   };
 
   // Messages' host callbacks (src/connect/ui/messages.js mountMessages).
@@ -263,7 +298,7 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
       messagesScreen = screen;
       // A conversation, Contacts or Your ID & profile covers the bottom bar
       // on a narrow screen (a pushed screen in the app).
-      $('wallet-open').dataset.pushed = String(screen !== 'list');
+      syncPushed();
       if (screen === 'list' && origin) { origin = null; if (tab === 'chats') setTab('chats'); }
     },
     // "Send NODUS" in a conversation (web 0.1.90): the wallet's own Send form

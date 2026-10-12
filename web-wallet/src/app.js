@@ -1526,6 +1526,7 @@ async function showNodusAddress() {
     const address = await deriveNodusAddress(source.recoveryPhrase, { signal: operation.signal });
     if (!current()) return;
     source.addresses.nodus = address;
+    raise('nodusAddress', { address });
     if ($('chain').value === NODUS_ASSET.chain) setReceiveAddress(address);
     $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
     if (nodusSendModuleFactory) void startNodusSend(source, address);

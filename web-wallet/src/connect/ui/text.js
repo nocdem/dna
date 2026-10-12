@@ -552,10 +552,15 @@ export function updatingStageText(stage) {
   return `Updating: ${CHECK_STAGES[stage] || 'messages'}…`;
 }
 
-// Status line while the contacts are checked: "Checking messages: 5 of 31 contacts…".
-export function checkingContactsText(done, total) {
-  const n = whole(total);
-  return `Checking messages: ${Math.min(whole(done), n)} of ${n} contact${n === 1 ? '' : 's'}…`;
+// Status line while the contacts are checked: "Checking messages: 5 of 31
+// contacts…", and with the contact being checked (0.1.92, operator
+// 2026-10-12: "hangi ID'yi kontrol ettiğini de yazsa"): "Checking messages:
+// cenk · 5 of 31…". `who` is the contact's chain name or short ID
+// (messages.js displayName — never a profile's claimed name).
+export function checkingContactsText(done, total, who = '') {
+  const n = whole(total), at = Math.min(whole(done), n);
+  if (typeof who === 'string' && who) return `Checking messages: ${who} · ${at} of ${n}…`;
+  return `Checking messages: ${at} of ${n} contact${n === 1 ? '' : 's'}…`;
 }
 
 // Log: "check round 3 started (regular): 31 contacts, 2 full (8 days), 29
