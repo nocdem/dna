@@ -185,8 +185,9 @@ function cardName(name) {
 }
 // Lower case for A-Z only (0.1.102, operator 2026-10-12): the shared C core
 // does the same (connect/nc_jsjson.c), and the result no longer depends on
-// the browser's Unicode tables. Only the shown chain name of a card of
-// another network can differ from a full-Unicode lower case.
+// the browser's Unicode tables. Nothing on screen changes: a card's chain
+// text is never shown (messages.js KNOWN_CHAINS names it from a fixed list,
+// else "another network"), and no other letter lowers into a-z.
 export const asciiLower = s => String(s).replace(/[A-Z]/g, c => String.fromCharCode(c.charCodeAt(0) + 32));
 // -> { chain, amount, token, wire, to, name } | null (not a card). A card of
 // another chain keeps its chain and amount for "cannot be checked here".
