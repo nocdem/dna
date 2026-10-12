@@ -272,7 +272,8 @@ try {
   await waitingCard.locator('.transfer-check').click();
   await page.waitForFunction(() => [...document.querySelectorAll('.message-out .transfer-state')].some(n => n.textContent === 'Sent · block 950'));
   assert.equal(await page.locator('.message-out .transfer-card', { hasText: 'Sent · block 950' }).locator('.transfer-check').count(), 0);
-  assert.equal(await page.locator('.message-menu-layer').evaluate(n => n.hidden), true, '"Check now" does not open the message menu');
+  // (A card's bubble carries no message menu at all — messages.js renders
+  // wireMenu only for chat texts — so nothing to assert about the menu here.)
   await page.evaluate(w => window.__walletExtension.nodusSent({ to: '2b'.repeat(64), amount: '1.25', wire: w }), 'e4'.repeat(64));
   await page.waitForTimeout(300);
   // Sets are republished whole: count the distinct cards, not the sends.

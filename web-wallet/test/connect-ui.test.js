@@ -1034,3 +1034,25 @@ test('links: https only, punctuation outside, the parsed href shown', () => {
   assert.deepEqual(linkSegments('a https://x.example b https://y.example'), [
     { text: 'a ' }, { text: 'https://x.example/', href: 'https://x.example/' }, { text: ' b ' }, { text: 'https://y.example/', href: 'https://y.example/' }]);
 });
+
+// 0.1.96 (BUGS W-07): declined senders are kept once, for 7 days (as the
+// app), at most DECLINE_MAX — the one 64 KiB state record can never fill up
+// with them; an entry saved before 0.1.96 (a bare ID) counts from now.
+test('declined senders: one entry each, forgotten after 7 days, capped', async () => {
+  const { declinedNow, isDeclined, addDeclined, undecline, DECLINE_KEEP_SECONDS, DECLINE_MAX } = await import('../src/connect/ui/text.js');
+  const A = 'a1'.repeat(64), B = 'b2'.repeat(64), now = '2000000000';
+  let list = addDeclined([], A, now);
+  list = addDeclined(list, A, now);
+  assert.deepEqual(list, [{ fp: A, at: now }], 'the same sender twice is one entry');
+  assert.equal(isDeclined(list, A), true);
+  assert.equal(isDeclined(list, B), false);
+  assert.deepEqual(declinedNow([A, 'nonsense', { fp: B, at: '1' }], now), [{ fp: A, at: now }], 'a bare old ID counts from now; garbage and expired entries go');
+  const later = String(BigInt(now) + DECLINE_KEEP_SECONDS + 1n);
+  assert.deepEqual(declinedNow(list, later), [], 'forgotten after 7 days');
+  assert.deepEqual(undecline(list, A), []);
+  let many = [];
+  for (let i = 0; i < DECLINE_MAX + 50; i++) many = addDeclined(many, i.toString(16).padStart(128, '0'), String(BigInt(now) + BigInt(i)));
+  assert.equal(many.length, DECLINE_MAX, 'at most DECLINE_MAX, the newest');
+  assert.equal(many[0].fp, (50).toString(16).padStart(128, '0'));
+  assert.ok(JSON.stringify(many).length < 40000, 'well inside the 64 KiB state record');
+});

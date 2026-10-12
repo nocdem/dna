@@ -220,7 +220,7 @@
 /* Payment cards (web 0.1.90): the verdict from this device's own history. */
 .transfer-card { display: flex; flex-direction: column; gap: 2px; min-width: 200px; padding: 4px 2px; }
 .transfer-title { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; opacity: .75; }
-.transfer-amount { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.transfer-amount { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .transfer-state { font-size: 12px; }
 .transfer-state::before { margin-right: 4px; }
 .transfer-confirmed .transfer-state::before { content: '✓'; font-weight: 700; }

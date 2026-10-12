@@ -148,13 +148,17 @@ const savedForm = row => (row.status === 'pending' && row.savedStatus !== undefi
 // A network whose account history this wallet reads from the chain (NODUS,
 // and src/history.js HISTORY_SOURCES). There a CONFIRMED send is the chain
 // list's, not this device's (0.1.91, operator 2026-10-12: "İkisi de aynı
-// şeyi gösteriyor … cihazdan gösterenin bir anlamı yok"): it is not shown
-// under "Sent from here" (src/app.js renderActivity) and not kept (below),
-// so it is not verified again on every unlock. A send still waiting, or one
-// that never made it (failed / expired / replaced / abandoned), is not in
-// the chain list and stays here.
+// şeyi gösteriyor … cihazdan gösterenin bir anlamı yok") — once that list
+// has SHOWN it (`listed`, set by src/app.js renderActivity when the chain
+// list holds its hash / wire / block; 0.1.96, BUGS W-05): then it is not
+// shown under "Sent from here" and not kept (below), so it is not verified
+// again on every unlock. Until then it stays, shown and saved. A send still
+// waiting, or one that never made it (failed / expired / replaced /
+// abandoned), is not in the chain list and stays here. The LIVE status
+// decides (0.1.96, W-08): a row saved confirmed and not re-checked yet stays
+// visible, so a guard that reads the live status always has a row to act on.
 export const chainListsHistory = chain => chain === NODUS_ASSET.chain || historySupported(chain);
-export const confirmedOnChainList = row => chainListsHistory(row.chain) && savedForm(row) === 'confirmed';
+export const confirmedOnChainList = row => chainListsHistory(row.chain) && row.status === 'confirmed' && row.listed === true;
 // The rows kept in the saved Activity, in their given (time) order: EVERY
 // unresolved row (a pending NODUS send or EVM reservation holds coins and
 // must survive any number of newer rows), then the newest resolved rows up

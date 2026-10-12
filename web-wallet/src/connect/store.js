@@ -248,6 +248,8 @@ export function checkState(value) {
   if (value && value.version === 1 && value.removed === undefined) value.removed = [];
   if (!value || value.version !== 1 || !U64.test(String(value.nextSeq)) || !Array.isArray(value.contacts) ||
       !Array.isArray(value.outgoing) || !Array.isArray(value.declined) ||
+      // a bare ID (before 0.1.96) or { fp, at } (text.js declinedNow)
+      value.declined.some(d => !(typeof d === 'string' ? HEX128_KEY.test(d) : isMap(d) && typeof d.fp === 'string' && HEX128_KEY.test(d.fp) && U64.test(String(d.at)))) ||
       !Array.isArray(value.removed) || value.removed.some(fp => typeof fp !== 'string' || !HEX128_KEY.test(fp)) ||
       !value.acks || typeof value.acks !== 'object' ||
       !isMap(value.ackSent) || !isMap(value.profileCache) || !isMap(value.dmSync) || !isMap(value.chainNames) || !isMap(value.chainNoName) || !isMap(value.vaults) || !isMap(value.groups) ||

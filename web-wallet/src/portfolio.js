@@ -73,7 +73,15 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
     // An asset with no balance source yet (NODUS, flagged by portfolio-view.js)
     // is always 'unsupported', whatever `balances` holds: never read, never an
     // amount, a zero or an error, and never priced.
-    if (asset.balanceUnavailable) return { ...asset, state: 'unsupported', balance: null, usd: null, positive: false, priceMissing: false };
+    // While it is unavailable only for a moment (NODUS while the connection is
+    // made again), the last balance read for this address is shown as last
+    // read (0.1.96, operator 2026-10-12: "disconnect olduktan sonra reconnect
+    // olana kadar en son balansları yüklese") — never priced, never in the total.
+    if (asset.balanceUnavailable) {
+      const last = typeof kept[asset.key]?.units === 'bigint' ? kept[asset.key] : undefined;
+      return { ...asset, state: 'unsupported', balance: last ? formatUnits(last.units, asset.decimals) : null,
+        ...(last ? { units: last.units, keptAt: last.observedAt } : {}), usd: null, positive: false, priceMissing: false };
+    }
     const balance = balances[asset.key] || { state: 'idle' }, quote = quotes[asset.key];
     const priced = asset.priceId !== undefined;
     const freshBalance = balance.state === 'ready' && now - balance.observedAt <= maxAge && balance.observedAt <= now;

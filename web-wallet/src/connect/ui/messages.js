@@ -49,7 +49,7 @@ import {
   pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   checkOrder, contactDays, contactNeedsFullSync, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
-  firstRecordAllowed, markOwnRecordSeen,
+  firstRecordAllowed, markOwnRecordSeen, declinedNow, isDeclined, addDeclined, undecline,
   shortId, inspectUntrusted,
   updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
   contactLine, roundDoneLine
@@ -115,7 +115,7 @@ let addResolved;                         // { name, owner }: the add box's chain
 let replyTo, menuFor, jumpNew = 0;
 // Web 0.1.90: the chat a "Send NODUS" was started from ({ fp, at }, this
 // session); verdicts on payment cards by wire id; when history was last read.
-let payFor, transferCheckAt = 0, transferChecking = false;
+let payFor, transferCheckAt = 0, transferChecking = false, transferAgain = false;
 // `fp|seq` of the card RECORD -> { state, height? } (actions.js transferVerdict).
 // Per card, never per wire: a forged card naming the wire of someone
 // else's real payment must not inherit that payment's verdict.
@@ -199,7 +199,7 @@ function wipe() {
   fresh = false; vaultId = null; requests = []; selectedFp = undefined; nodusClient = undefined;
   eraseArmed = false; profileTaken = false; mlkemRepublishTried = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
   replyTo = undefined; menuFor = undefined; jumpNew = 0;
-  payFor = undefined; transferCheckAt = 0; transferChecking = false;
+  payFor = undefined; transferCheckAt = 0; transferChecking = false; transferAgain = false;
   netStarted = false; online = false; groups = undefined;
   for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs, drawnUpTo, hashCache, transferVerdicts]) set.clear();
   notifyVaultHost();
@@ -464,8 +464,14 @@ async function persist(newMessages = []) { await store.save(state, newMessages);
 // first, then put in place of the in-page ones (by local seq).
 async function saveUpdated(updated) {
   if (!updated.length) return;
-  await persist(updated);
-  for (const u of updated) { const i = messages.findIndex(m => m.seq === u.seq); if (i >= 0) messages[i] = u; }
+  // A payment card's verdict set in the page after this copy was taken
+  // (saveVerdicts) is carried over, never dropped (0.1.96, W-06).
+  const merged = updated.map(u => {
+    const cur = messages.find(m => m.seq === u.seq);
+    return cur?.verdict && !u.verdict ? { ...u, verdict: cur.verdict } : u;
+  });
+  await persist(merged);
+  for (const u of merged) { const i = messages.findIndex(m => m.seq === u.seq); if (i >= 0) messages[i] = u; }
 }
 
 function addContactLocal(fp, salt) {
@@ -474,7 +480,7 @@ function addContactLocal(fp, salt) {
   else if (!contact.salt && salt) contact.salt = salt;
   unremoveContact(state, fp);
   state.outgoing = state.outgoing.filter(o => o.fp !== fp);
-  state.declined = state.declined.filter(d => d !== fp);
+  state.declined = undecline(state.declined, fp);
   return contact;
 }
 
@@ -860,6 +866,8 @@ async function sync() {
 async function syncRequests(gen) {
   const result = await core.requestsFetch();
   if (gen !== generation) return;
+  // Declines older than 7 days are forgotten (saved with the next change).
+  state.declined = declinedNow(state.declined, nowSeconds());
   const pending = new Set(state.outgoing.map(o => o.fp));
   const latest = new Map();
   const shownBefore = requests.map(r => `${r.sender}|${r.timestamp}`).join();
@@ -870,7 +878,7 @@ async function syncRequests(gen) {
     // Without a pending outgoing request (e.g. after an unsaved session
     // ends), show the acceptance for explicit consent, as the app does.
     // HIGH-7 forbids auto-approval here, not the normal Accept / Decline flow.
-    if (contactOf(request.sender) || state.declined.includes(request.sender)) continue;
+    if (contactOf(request.sender) || isDeclined(state.declined, request.sender)) continue;
     const seen = latest.get(request.sender);
     if (!seen || u64(request.timestamp) > u64(seen.timestamp)) latest.set(request.sender, request);
   }
@@ -1247,7 +1255,9 @@ export function ownIdText({ id = null, name = '', closed = false } = {}) {
 // root: an empty element of the host page. Every host callback is optional:
 //   onUnread(n)      the total of unread messages (a navigation badge);
 //   onRequests(n)    contact requests waiting for an answer;
-//   onIdentity(fp, name, avatarBase64, closed)   the own ID while Messages is
+//   onIdentity(fp, name, avatarBase64, closed, answered)   (answered, 0.1.96:
+//                    this session's own name lookup answered — '' is then a
+//                    confirmed "no name") the own ID while Messages is
 //                    open, else null; with the own verified name and picture
 //                    ('' if none); closed: true while fp is null because
 //                    Messages is closed with a reason (closeMessages: the
@@ -1619,8 +1629,11 @@ function render({ scroll = false } = {}) {
   // or closed since) is told apart from waiting / opening, so the host can
   // say so instead of "appears when your wallet is open" (ownIdText).
   const closed = !id && phase === 'closed';
-  const idKey = id ? `${id}|${ownName}|${ownAvatar}` : (closed ? 'closed' : null);
-  if (idKey !== notifiedId) { notifiedId = idKey; host.onIdentity?.(id, ownName, ownAvatar, closed); }
+  // answered: this session's own lookup ANSWERED (a name, or "no name") —
+  // the host may then drop a name it kept (web 0.1.96, BUGS W-07 note).
+  const answered = !!id && chainAsked.has(ownFp);
+  const idKey = id ? `${id}|${ownName}|${ownAvatar}|${answered}` : (closed ? 'closed' : null);
+  if (idKey !== notifiedId) { notifiedId = idKey; host.onIdentity?.(id, ownName, ownAvatar, closed, answered); }
   if (screen !== notifiedScreen) { notifiedScreen = screen; host.onScreen?.(screen); }
 }
 
@@ -1844,9 +1857,9 @@ function wireMenu(row, bubble, m) {
   more.append(icon('more'));
   row.append(more);
   // A link inside the bubble keeps its own Enter and context menu (0.1.90).
-  bubble.addEventListener('contextmenu', event => { if (event.target.closest('a')) return; event.preventDefault(); openMenu(m, bubble); });
+  bubble.addEventListener('contextmenu', event => { if (event.target.closest('a, button')) return; event.preventDefault(); openMenu(m, bubble); });
   bubble.addEventListener('keydown', event => {
-    if (event.target.closest('a, button')) return;   // a link or the card's "Check now" keeps its own keys
+    if (event.target.closest('a, button')) return;   // a link (or a control, should a menu bubble hold one) keeps its own keys
     if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey) || event.key === 'Enter') { event.preventDefault(); openMenu(m, bubble); }
   });
   let timer, x0 = 0, y0 = 0;
@@ -2011,20 +2024,23 @@ function transferCard(m) {
 // set of this device's own address history (owner-gated, one node — the
 // wallet balance's trust), at most once a minute, after a check round.
 async function checkTransfers(gen, { force = false } = {}) {
-  if (transferChecking || !isOpen() || !nodusClient?.historyReadable) return;
+  if (!isOpen() || !nodusClient?.historyReadable) return;
+  // "Check now" while a check runs: one more, forced, right after it (0.1.96).
+  if (transferChecking) { if (force) transferAgain = true; return; }
   const open = messages.filter(m => m.kind === 'transfer' && (m.dir === 'in' || m.dir === 'out'))
     .map(m => ({ m, card: parseTransfer(m.text) }))
     .filter(({ m, card }) => validNodusCard(card) && !TRANSFER_FINAL.includes(cardVerdict(m)?.state))
-    .sort((a, b) => compareLocal(a.m, b.m));      // earlier cards settle first (copies, below)
+    .sort((a, b) => compareLocal(a.m, b.m));
   if (!open.length || (!force && Date.now() < transferCheckAt)) return;
   transferChecking = true; transferCheckAt = Date.now() + TRANSFER_CHECK_MS;
+  const entries = [];
+  let enabled = true, more = false, read = false;
   try {
-    const entries = [];
-    let before, enabled = true, more = false;
+    let before;
     const wireOf = new Set(open.map(o => o.card.wire));
     for (let page = 0; page < TRANSFER_HISTORY_PAGES; page++) {
       const answer = await nodusClient.addrHistory(before ? { before, limit: 100 } : { limit: 100 });
-      if (gen !== generation) return;
+      if (gen !== generation) break;          // closed meanwhile: nothing is judged (read stays false)
       entries.push(...answer.entries);
       // A node with its index off still answers the rows it holds
       // (history.js): those are judged; nothing more will come.
@@ -2038,10 +2054,23 @@ async function checkTransfers(gen, { force = false } = {}) {
       if (!missing && !wireOf.has(last.wire)) { more = false; break; }
       before = { h: String(last.h), i: String(last.i), q: String(last.q) };
     }
+    read = gen === generation;
+  } catch (error) {
+    if (gen === generation) {
+      logCheck(`Payment cards: the account history could not be read (${errorText(error)})`, true);
+      // A history that keeps failing ends the wait too, after the same hour
+      // (only cards not settled: a settled one is never in `open`).
+      let moved = false;
+      for (const { m } of open) if (Date.now() - Number(m.at || 0) > TRANSFER_PENDING_MAX_MS) { transferVerdicts.set(cardKey(m), { state: 'unchecked' }); moved = true; }
+      if (moved) render();
+    }
+  }
+  try {
+    if (!read || gen !== generation) return;
     // A wire whose rows may continue past what was read cannot be judged.
     const cut = more && entries.length ? entries[entries.length - 1].wire : null;
     let moved = false;
-    const settled = [], waiting = [];
+    const waiting = [];
     for (const { m, card } of open) {
       let v;
       if (card.wire === cut) v = { state: 'unchecked' };
@@ -2050,30 +2079,48 @@ async function checkTransfers(gen, { force = false } = {}) {
       // the chain an hour after the card arrived (the index starts later, or
       // it is past what is read): stop asking.
       if (v.state === 'pending' && (!enabled || Date.now() - Number(m.at || 0) > TRANSFER_PENDING_MAX_MS)) v = { state: 'unchecked' };
-      // One payment, one card: a later card of the same direction naming a
-      // wire an earlier card already confirmed is a copy, never a second
-      // payment.
-      if (v.state === 'confirmed') {
-        const earlier = messages.some(x => x !== m && x.kind === 'transfer' && x.dir === m.dir && compareLocal(x, m) < 0 &&
-          parseTransfer(x.text)?.wire === card.wire && cardVerdict(x)?.state === 'confirmed');
-        if (earlier) v = { state: 'duplicate' };
-      }
       if (v.state !== transferVerdicts.get(cardKey(m))?.state) { transferVerdicts.set(cardKey(m), v); moved = true; }
-      if (TRANSFER_KEPT.includes(v.state)) settled.push({ ...m, verdict: v.state === 'confirmed' ? { state: v.state, height: v.height } : { state: v.state } });
-      else if (v.state === 'pending') waiting.push(card.wire.slice(0, 8));
+      if (v.state === 'pending') waiting.push(card.wire.slice(0, 8));
     }
+    // One payment, one card (0.1.96, BUGS W-06): among the confirmed cards of
+    // one direction naming one wire, the EARLIEST is the payment and every
+    // other is a copy — whatever order they were confirmed in, kept or not.
+    const firstOf = new Map(), copies = [];
+    const confirmedCards = messages.filter(m => m.kind === 'transfer' && cardVerdict(m)?.state === 'confirmed').sort(compareLocal);
+    for (const m of confirmedCards) {
+      const key = `${m.dir}|${parseTransfer(m.text)?.wire}`;
+      if (!firstOf.has(key)) firstOf.set(key, m); else copies.push(m);
+    }
+    for (const m of copies) { transferVerdicts.set(cardKey(m), { state: 'duplicate' }); moved = true; }
+    // Every card whose verdict is now final and differs from what is stored.
+    const toKeep = messages.filter(m => m.kind === 'transfer' && TRANSFER_KEPT.includes(transferVerdicts.get(cardKey(m))?.state) &&
+      transferVerdicts.get(cardKey(m)).state !== keptVerdict(m)?.state);
     // What this check read, for the session log (a card that stays
     // "waiting" can be traced: was its wire among the rows read?).
-    logCheck(`Payment cards: ${open.length} checked against ${entries.length} history rows${enabled ? '' : ' (the node keeps no history index)'}${more ? ', more rows not read' : ''}; settled ${settled.length}${waiting.length ? `; not found yet: ${waiting.join(', ')}` : ''}`);
-    if (settled.length && gen === generation) await saveUpdated(settled);
-    if (moved && gen === generation) render();
-  } catch (error) {
-    logCheck(`Payment cards: the account history could not be read (${errorText(error)})`, true);
-    // A history that keeps failing ends the wait too, after the same hour.
-    let moved = false;
-    for (const { m } of open) if (Date.now() - Number(m.at || 0) > TRANSFER_PENDING_MAX_MS) { transferVerdicts.set(cardKey(m), { state: 'unchecked' }); moved = true; }
-    if (moved && gen === generation) render();
-  } finally { transferChecking = false; }
+    logCheck(`Payment cards: ${open.length} checked against ${entries.length} history rows${enabled ? '' : ' (the node keeps no history index)'}${more ? ', more rows not read' : ''}; settled ${toKeep.length}${waiting.length ? `; not found yet: ${waiting.join(', ')}` : ''}`);
+    if (moved) render();
+    // Saving is not reading: its own failure, its own log line; the verdicts
+    // shown stay (they are this session's) and are saved by a later check.
+    try { await saveVerdicts(toKeep); }
+    catch (error) { logCheck(`Payment cards: a verdict could not be saved on this device (${errorText(error)})`, true); }
+  } finally {
+    transferChecking = false;
+    if (transferAgain && gen === generation) { transferAgain = false; void checkTransfers(gen, { force: true }); }
+  }
+}
+// The final verdicts onto the CURRENT stored records (never a copy taken
+// before a network wait), set in the page first so a copy made meanwhile
+// (markDelivered / markPublished) carries them, then saved (0.1.96, W-06).
+async function saveVerdicts(list) {
+  const updated = [];
+  for (const m of list) {
+    const i = messages.findIndex(x => x.seq === m.seq && x.fp === m.fp);
+    const v = transferVerdicts.get(cardKey(m));
+    if (i < 0 || !v || !TRANSFER_KEPT.includes(v.state)) continue;
+    messages[i] = { ...messages[i], verdict: v.state === 'confirmed' ? { state: 'confirmed', height: v.height } : { state: v.state } };
+    updated.push(messages[i]);
+  }
+  if (updated.length) await persist(updated);
 }
 
 // The chat list line for a payment card: the verdict, never the card's word.
@@ -2183,8 +2230,9 @@ async function accept(request) {
 }
 
 async function decline(request) {
-  // Local only: the request is hidden on this device and expires on the network.
-  state.declined.push(request.sender);
+  // Local only: the request is hidden on this device for 7 days (as the app)
+  // and expires on the network; once per sender (text.js addDeclined, W-07).
+  state.declined = addDeclined(state.declined, request.sender, nowSeconds());
   requests = requests.filter(r => r.sender !== request.sender);
   render();
   try { await persist(); } catch (error) { ui.requestsStatus.textContent = error.message; }

@@ -18,9 +18,11 @@
 //   - a re-save right after parse writes the resolved rows with their saved
 //     status, not as the reset 'pending' (parse again: savedStatus kept),
 //     while the visible status stays 'pending' / 'abandoned' as before;
-//   - (0.1.91) a confirmed send of a network whose account history is read
-//     from the chain (NODUS, Ethereum, TRON, Solana, Cellframe) is not saved
-//     — live or saved-earlier — and BNB Smart Chain (no such list) keeps it;
+//   - (0.1.91, 0.1.96) a confirmed send of a network whose account history is
+//     read from the chain (NODUS, Ethereum, TRON, Solana, Cellframe) is not
+//     saved once that list has shown it (`listed`); before that, and while
+//     its live status is still open after a reload, it is; BNB Smart Chain
+//     (no such list) always keeps it;
 //   - requireSavedForEvm refuses an unsaved wallet in plain words and lets a
 //     saved one through.
 // Requires nothing beyond `npm ci`. How it can lie: rows are synthetic NODUS
@@ -121,19 +123,25 @@ test('a re-save right after parse keeps the resolved rows saved as resolved', as
 // gösterenin bir anlamı yok"): a CONFIRMED send of a network whose account
 // history is read from the chain is that list's — it is not saved here (so
 // not verified again at every unlock); a network without such a list keeps it.
-test('a confirmed send is not kept where the chain lists history; elsewhere it is', async () => {
+test('a confirmed send is not kept once the chain list showed it; until then, and elsewhere, it is', async () => {
+  // 0.1.96 (BUGS W-05): confirmed but not yet seen in the chain's list — kept
   const live = row(1, 'pending'); live.status = 'confirmed';
-  const back = await roundTrip([row(0, 'pending'), live, row(2, 'expired')]);
+  let back = await roundTrip([row(0, 'pending'), live, row(2, 'expired')]);
+  assert.deepEqual(back.map(r => r.hash), [row(0).hash, row(1).hash, row(2).hash]);
+  // the chain list showed it (`listed`, src/app.js renderActivity): dropped
+  live.listed = true;
+  back = await roundTrip([row(0, 'pending'), live, row(2, 'expired')]);
   assert.deepEqual(back.map(r => r.hash), [row(0).hash, row(2).hash]);
-  // saved earlier as confirmed, reset to pending by the parse: still dropped
+  // saved earlier as confirmed, reset to pending by the parse: the LIVE status
+  // decides (W-08) — kept and shown until re-checked
   const old = await roundTrip([row(3, 'pending')]);
   old[0].savedStatus = 'confirmed';
-  assert.deepEqual(await roundTrip(old), []);
-  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'confirmed' }), true);
-  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'pending', savedStatus: 'confirmed' }), true);
-  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'pending' }), false);
-  assert.equal(confirmedOnChainList({ chain: 'ethereum', status: 'confirmed' }), true);
-  assert.equal(confirmedOnChainList({ chain: 'bsc', status: 'confirmed' }), false, 'no account history read for BNB Smart Chain');
+  assert.deepEqual((await roundTrip(old)).map(r => r.hash), [row(3).hash]);
+  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'confirmed', listed: true }), true);
+  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'confirmed' }), false, 'not seen in the chain list yet');
+  assert.equal(confirmedOnChainList({ chain: 'nodus', status: 'pending', savedStatus: 'confirmed', listed: true }), false, 'live status still open');
+  assert.equal(confirmedOnChainList({ chain: 'ethereum', status: 'confirmed', listed: true }), true);
+  assert.equal(confirmedOnChainList({ chain: 'bsc', status: 'confirmed', listed: true }), false, 'no account history read for BNB Smart Chain');
 });
 
 test('requireSavedForEvm: an unsaved wallet is refused in plain words, a saved one passes', () => {

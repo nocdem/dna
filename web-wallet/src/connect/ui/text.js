@@ -10,6 +10,35 @@ const U64 = /^(0|[1-9]\d{0,19})$/;
 
 // An ID the user typed or pasted: whitespace removed, lowercased; returns
 // the 128-hex ID or throws a plain-words error.
+// Declined senders (web 0.1.96, BUGS W-07): `{ fp, at }` entries (unix
+// seconds), one per sender, forgotten after DECLINE_KEEP_SECONDS — the app
+// removes denied requests after 7 days (messenger/src/api/engine/
+// dna_engine_contacts.c:786-787) — and at most DECLINE_MAX (the newest), so
+// the list stays well inside the one 64 KiB state record (store.js
+// PLAINTEXT_MAX; ~150 bytes an entry). An entry saved before 0.1.96 is a
+// bare ID: it counts from now.
+export const DECLINE_KEEP_SECONDS = 7n * 86400n;
+export const DECLINE_MAX = 200;
+const declinedFp = d => (typeof d === 'string' ? d : d?.fp);
+export function declinedNow(list, nowSeconds) {
+  if (typeof nowSeconds !== 'string' || !U64.test(nowSeconds)) throw new Error('Invalid time.');
+  const now = BigInt(nowSeconds), byFp = new Map();
+  for (const d of Array.isArray(list) ? list : []) {
+    const fp = declinedFp(d);
+    if (typeof fp !== 'string' || !/^[0-9a-f]{128}$/.test(fp)) continue;
+    const at = typeof d === 'string' ? nowSeconds : String(d.at);
+    if (!U64.test(at) || now - BigInt(at) > DECLINE_KEEP_SECONDS) continue;
+    const seen = byFp.get(fp);
+    if (!seen || BigInt(at) > BigInt(seen.at)) byFp.set(fp, { fp, at });
+  }
+  return [...byFp.values()].sort((a, b) => (BigInt(a.at) < BigInt(b.at) ? -1 : BigInt(a.at) > BigInt(b.at) ? 1 : 0)).slice(-DECLINE_MAX);
+}
+export function isDeclined(list, fp) { return (Array.isArray(list) ? list : []).some(d => declinedFp(d) === fp); }
+export function addDeclined(list, fp, nowSeconds) {
+  return declinedNow([...(Array.isArray(list) ? list : []).filter(d => declinedFp(d) !== fp), { fp, at: nowSeconds }], nowSeconds);
+}
+export function undecline(list, fp) { return (Array.isArray(list) ? list : []).filter(d => declinedFp(d) !== fp); }
+
 export function parseContactId(value) {
   const id = typeof value === 'string' ? value.replace(/\s+/g, '').toLowerCase() : '';
   if (!HEX128.test(id)) throw new Error('That is not a valid ID. An ID is 128 characters, letters a–f and digits.');

@@ -42,6 +42,9 @@ let tab = 'home', origin = null, ownId = null, ownName = '', ownAvatar = '', mes
 // lastAvatar: the last own name and picture shown in this unlock, kept while
 // the connection is gone (a chain name is permanent). The lock clears all.
 let walletId = null, lastName = '', lastAvatar = '';
+// ownNameAnswered: Messages' own lookup answered this session (onIdentity 5th
+// argument, 0.1.96) — its '' is then a confirmed "no name" and clears lastName.
+let ownNameAnswered = false;
 const scrollByTab = {};
 
 function setTab(next, { highlight = next } = {}) {
@@ -184,13 +187,14 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
 
   // The own ID, name and picture shown: Messages' while it is open, else the
   // wallet's own address with the last name and picture shown (walletId above).
-  // A confirmed lookup (also "no name") or a name Messages knows replaces the
-  // kept name; an open Messages' picture (also none) replaces the kept one.
+  // A confirmed lookup — the wallet's, or Messages' own this session (also
+  // "no name") — or a name Messages knows replaces the kept name; an open
+  // Messages' picture (also none) replaces the kept one.
   function identity() {
     const id = ownId || walletId;
     if (!id) return { id: null, name: '', avatar: '' };
     const answer = shownOwnName(walletNameAnswer, ownId ? ownName : '');
-    if (walletNameAnswer || answer) lastName = answer;
+    if (walletNameAnswer || answer || (ownId && ownNameAnswered)) lastName = answer;
     if (ownId) lastAvatar = ownAvatar;
     return { id, name: lastName, avatar: lastAvatar };
   }
@@ -286,14 +290,14 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     // This wallet's NODUS address, derived on this device (src/app.js
     // showNodusAddress): the own ID before / without Messages.
     nodusAddress({ address } = {}) { walletId = typeof address === 'string' && /^[0-9a-f]{128}$/.test(address) ? address : null; showIdentity(); },
-    locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; messagesClosed = false; walletId = null; lastName = ''; lastAvatar = ''; showIdentity(); }
+    locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; messagesClosed = false; walletId = null; lastName = ''; lastAvatar = ''; ownNameAnswered = false; showIdentity(); }
   };
 
   // Messages' host callbacks (src/connect/ui/messages.js mountMessages).
   const host = {
     onUnread(count) { badge('nav-chats-count', count); },
     onRequests(count) { for (const id of ['nav-more-count', 'more-contacts-count', 'more-requests-count']) badge(id, count); },
-    onIdentity(fp, name = '', avatarBase64 = '', closed = false) { ownId = fp; ownName = fp ? name : ''; ownAvatar = fp ? avatarBase64 : ''; messagesClosed = !fp && closed === true; showIdentity(); },
+    onIdentity(fp, name = '', avatarBase64 = '', closed = false, answered = false) { ownId = fp; ownName = fp ? name : ''; ownAvatar = fp ? avatarBase64 : ''; messagesClosed = !fp && closed === true; if (fp) ownNameAnswered = answered === true; showIdentity(); },
     onScreen(screen) {
       messagesScreen = screen;
       // A conversation, Contacts or Your ID & profile covers the bottom bar

@@ -52,3 +52,19 @@ test('portfolio: with automatic reads a balance counts until two minutes past th
   assert.equal(row({ balanceMaxAge: (2 + 2) * 60000 }).state, 'ready', 'never shorter than the 5-minute default');
   assert.equal(BALANCE_MAX_AGE, 5 * 60000);
 });
+
+// 0.1.96 (operator: "disconnect olduktan sonra reconnect olana kadar en son
+// balansları yüklese"): a network with no balance source for the moment
+// (NODUS while connecting) shows the last balance read for its address, as
+// last read — never priced, never in the total.
+test('portfolio: an unavailable network shows its last read balance', () => {
+  const asset = { chain: 'nodus', symbol: 'NODUS', decimals: 8, key: 'nodus:NODUS', balanceUnavailable: true };
+  const now = 1_800_000_000_000;
+  const none = portfolioSnapshot({}, {}, now, [asset], {}).rows[0];
+  assert.equal(none.balance, null);
+  const row = portfolioSnapshot({}, {}, now, [asset], { 'nodus:NODUS': { units: 150000000n, observedAt: now - 60000 } }).rows[0];
+  assert.equal(row.balance, '1.5');
+  assert.equal(row.keptAt, now - 60000);
+  assert.equal(row.usd, null);
+  assert.equal(row.state, 'unsupported');
+});

@@ -76,6 +76,9 @@ let claimCheck = 0;
 // Set only inside the VITE_ENABLE_IXIOS blocks below; undefined/no-ops in a
 // disabled build (so no Ixios string literal is needed outside those blocks).
 let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
+// Settles once the open wallet's NODUS address derivation has ended (either
+// way); the other receive-only addresses are derived after it (0.1.96).
+let nodusAddressFirst = Promise.resolve();
 // Receive-panel derivation status line per receive-only network, shown only
 // while that network is selected. The Ixios entry is added by its flag block.
 const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellframe-address-status') };
@@ -241,7 +244,7 @@ async function loadHistory(chain, { manual = false } = {}) {
     historyByChain[chain] = { address, readAt: Date.now(), rows: mergeHistory(kept?.rows, rows) };
     persistHistory();
   } catch (error) { if (historyJob === job) historyNote[chain] = error.message; }
-  finally { if (historyJob === job) { historyJob = null; renderHistory(); } }
+  finally { if (historyJob === job) { historyJob = null; renderHistory(); renderActivity(); } }   // a send this read lists leaves "Sent from here" (0.1.96)
 }
 function persistHistory() {
   const session = activitySession, source = wallet;
@@ -341,7 +344,6 @@ $('history-refresh').onclick = () => void loadHistory($('chain').value, { manual
 // no record is hidden behind the NODUS account history.
 const ACTIVITY_EMPTY_TEXT = document.querySelector('#activity + .activity-empty')?.textContent ?? '';
 function renderActivity(save = true) {
-  if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   // A row is laid out like a portfolio holding row (src/portfolio-view.js):
   // amount and what it did on the left, status and when on the right, the
   // network's note below, then the transaction link and any row action.
@@ -350,12 +352,25 @@ function renderActivity(save = true) {
   // only, once (src/nodus/history.js localRowsToShow — the wire id, or the
   // confirmed block). Display only: the tracker still follows every record
   // (trackActivity reads visibleActivity, not this list).
-  // Where the chain's account history is read, a confirmed send is listed
-  // there only (src/activity-storage.js confirmedOnChainList, 0.1.91): this
-  // list keeps what the chain list does not show.
-  const all = visibleActivity(), nodus = $('chain').value === NODUS_ASSET.chain;
-  const open = all.filter(row => !confirmedOnChainList(row));
-  const rows = nodus ? localRowsToShow(open, nodusHistoryFor()?.page ?? null, { limit: NODUS_HISTORY_LIMIT }) : open;
+  // Where the chain's account history is read, a confirmed send leaves this
+  // list (and the saved Activity) only once that list SHOWS it — its wire or
+  // block (NODUS, localRowsToShow) or its hash (the other networks) — and is
+  // marked `listed`; until then it stays here (0.1.96, BUGS W-05: since
+  // 0.1.91 it left at confirmation, before the history was read again, and
+  // could be in neither list).
+  const all = visibleActivity(), chain = $('chain').value, nodus = chain === NODUS_ASSET.chain;
+  let rows;
+  if (nodus) {
+    rows = localRowsToShow(all, nodusHistoryFor()?.page ?? null, { limit: NODUS_HISTORY_LIMIT });
+    const shown = new Set(rows);
+    for (const row of all) if (row.status === 'confirmed' && !shown.has(row)) row.listed = true;
+  } else {
+    const norm = h => (typeof h === 'string' && /^(0x)?[0-9a-fA-F]+$/.test(h) ? h.toLowerCase() : h);
+    const hashes = new Set((historyFor(chain)?.rows || []).map(r => norm(r.hash)));
+    for (const row of all) if (row.status === 'confirmed' && hashes.has(norm(row.hash))) row.listed = true;
+    rows = all.filter(row => !confirmedOnChainList(row));
+  }
+  if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   const empty = document.querySelector('#activity + .activity-empty');
   if (empty) empty.textContent = rows.length < all.length ? 'Nothing waiting here: your confirmed transactions are listed under Account history below.' : ACTIVITY_EMPTY_TEXT;
   $('activity').replaceChildren(...rows.map(row => {
@@ -411,7 +426,17 @@ function renderActivity(save = true) {
 // final state re-reads the NODUS balance and the claim offer once the
 // tracker has stored that state on the row (it does so after this returns).
 const checkRow = async (row, options) => {
-  if (row.chain !== NODUS_ASSET.chain) return checkActivity(row, options);
+  if (row.chain !== NODUS_ASSET.chain) {
+    const update = await checkActivity(row, options);
+    // Confirmed now: read the account history once (at most every
+    // HISTORY_MANUAL_MS) while its network is shown, so the send can move
+    // to that list (renderActivity `listed`, 0.1.96 W-05).
+    if (update.status === 'confirmed' && row.status !== 'confirmed' && historySupported(row.chain)) setTimeout(() => {
+      const kept = historyFor(row.chain);
+      if (wallet && $('chain').value === row.chain && (!kept || Date.now() - kept.readAt >= HISTORY_MANUAL_MS)) void loadHistory(row.chain, { manual: true });
+    }, 0);
+    return update;
+  }
   const update = await adapters.nodus.checkNodusActivity(row, { ...options, client: nodusClient });
   if (adapters.nodus.isClaimRow(row) && terminal(update.status) && !terminal(row.status)) setTimeout(() => {
     if (!wallet || !nodusClient) return;
@@ -1517,7 +1542,14 @@ $('phrase-form').onsubmit = async event => {
     if (session !== sessionRelease) return;
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
     walletFresh = fresh; siteLock.start();
-    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); focusOpenWallet();
+    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity();
+    // The NODUS address (the own ID of Connect) first; Cellframe and Ixios
+    // after it, so they do not compete with it for the main thread (0.1.96,
+    // operator: "risksiz" — measured: three derivations side by side).
+    const opened = wallet;
+    nodusAddressFirst = showNodusAddress().catch(() => {});
+    void nodusAddressFirst.then(() => { if (wallet === opened && !opened.locked) { void showCellframeAddress(); showIxiosAddress(); } });
+    focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) message(error.message, { error: true }); }
   finally { if (claimed) unclaimSession(); }
 };
@@ -1540,6 +1572,9 @@ async function showNodusAddress() {
     if (!current()) return;
     source.addresses.nodus = address;
     raise('nodusAddress', { address });
+    // Known before the connection: the portfolio shows the NODUS balance last
+    // read for it (a saved wallet's kept one too) until it is read again (0.1.96).
+    portfolio.setAddress(NODUS_ASSET.chain, address);
     if ($('chain').value === NODUS_ASSET.chain) setReceiveAddress(address);
     $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
     if (nodusSendModuleFactory) void startNodusSend(source, address);
@@ -1591,7 +1626,7 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
     // reopen raced ahead of it); start derivation for whichever wallet is
     // current once it is ready, exactly as a direct showCellframeAddress()
     // call would have.
-    if (wallet && !wallet.locked) void doShowCellframeAddress();
+    if (wallet && !wallet.locked) void nodusAddressFirst.then(() => { if (wallet && !wallet.locked) void doShowCellframeAddress(); });
   }).catch(() => { if (wallet && !wallet.locked) $('cellframe-address-status').textContent = 'Cellframe address unavailable. Lock and reopen your wallet to retry.'; });
 }
 function showCellframeAddress() { void doShowCellframeAddress?.(); }
@@ -1641,7 +1676,7 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
     };
     // The modules can resolve after a wallet is already open; start derivation
     // for whichever wallet is current, as a direct showIxiosAddress() would.
-    if (wallet && !wallet.locked) void doShowIxiosAddress();
+    if (wallet && !wallet.locked) void nodusAddressFirst.then(() => { if (wallet && !wallet.locked) void doShowIxiosAddress(); });
   }).catch(() => { if (wallet && !wallet.locked) status.textContent = unavailable; });
 }
 function showIxiosAddress() { void doShowIxiosAddress?.(); }

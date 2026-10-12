@@ -305,12 +305,14 @@ try {
   const erc = new Interface(['function transfer(address,uint256)']); assert.equal(erc.decodeFunctionData('transfer', broadcasts[1].data)[1], 1000001n);
   assert.match(await page.locator('#activity').innerText(), /pending/);
   finalized = true; await page.selectOption('#chain', 'bsc'); assert.equal(await page.locator('#activity').innerText(), ''); await page.selectOption('#chain', 'ethereum');
-  // 0.1.91: Ethereum's account history is read from the chain, so the send
-  // once confirmed leaves "Sent from here" (src/activity-storage.js
-  // confirmedOnChainList); the abandoned first send, never on the chain list, stays.
-  const confirmedLeft = () => { const t = document.querySelector('#activity').textContent; return t.includes('abandoned') && !t.includes('pending') && !t.includes('confirmed') && document.querySelector('#activity').children.length === 1; };
+  // 0.1.96 (BUGS W-05): a confirmed send leaves "Sent from here" only once
+  // the account history SHOWS it; this test's Blockscout lists only an
+  // unrelated incoming transfer, so the confirmed send stays here (since
+  // 0.1.91 it vanished at confirmation and was in neither list), next to the
+  // abandoned first send, and the page does not claim it is listed below.
+  const confirmedLeft = () => { const t = document.querySelector('#activity').textContent; return t.includes('abandoned') && !t.includes('pending') && t.includes('confirmed') && document.querySelector('#activity').children.length === 2; };
   await page.waitForFunction(confirmedLeft);
-  assert.match(await page.locator('#activity + .activity-empty').innerText(), /listed under Account history/);
+  assert.doesNotMatch(await page.locator('#activity + .activity-empty').innerText(), /listed under Account history/);
   // The Nodus address is unchanged after sends on other networks, and Nodus has no activity.
   await page.selectOption('#chain', 'nodus');
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress); assert.equal(await page.locator('#activity').innerText(), '');
@@ -425,7 +427,8 @@ try {
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   assert.equal(await page.locator('#receive-address').innerText(), nodusAddress);
   await page.selectOption('#chain', 'ethereum');
-  // reopened from the saved copy: the confirmed send was not saved
+  // reopened from the saved copy: the confirmed send, never shown by the
+  // account history, was saved and is back (re-checked to "confirmed")
   await page.waitForFunction(confirmedLeft);
   await page.getByText('Delete saved wallet from this device', { exact: true }).click(); await page.locator('#vault-delete-confirm').check(); await page.locator('#vault-delete').click();
   // The saved wallet has a readable id, so its Messages history goes in the
