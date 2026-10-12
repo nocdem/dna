@@ -111,7 +111,9 @@ try {
   // Portfolio: NODUS is the first asset group, badge and network filter; its row
   // has only Receive and shows no balance (no amount, no zero, no read state).
   assert.equal(await page.locator('#balances .asset-group').first().getAttribute('data-symbol'), 'NODUS');
-  assert.equal(await page.locator('#portfolio-networks .network-health').first().innerText(), 'Nodus · Balance not shown yet');
+  // 0.1.103: a light, the words in the title / accessible name
+  assert.equal(await page.locator('#portfolio-networks .network-health').first().getAttribute('title'), 'Nodus · Balance not shown yet');
+  assert.equal(await page.locator('#portfolio-networks .network-health').first().getAttribute('data-health'), 'none');
   assert.deepEqual((await page.locator('#portfolio-filters button').allTextContents()).slice(0, 2), ['All networks', 'Nodus']);
   const nodusGroup = page.locator('.asset-group[data-symbol="NODUS"]');
   // 0.1.102: icons are built in — inlined (data:) or under a content-hashed

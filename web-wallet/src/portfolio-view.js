@@ -123,7 +123,17 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       const lastRead = rows.filter(r => r.keptAt !== undefined).map(r => r.keptAt);
       const status = c.balanceUnavailable ? (lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : 'Balance not shown yet') : rows.some(r => r.state === 'loading') || jobs.has(chain) ? 'Reading' : ready ? 'Balances read'
         : lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
-      const badge = el('span', 'network-health'); badge.append(networkIcon(c), el('span', '', `${c.name} · ${status}`)); return badge;
+      // A light instead of the words (0.1.103, operator: "yeşil … stale
+      // olanlar … sarı … bağlanamayanlar kırmızı"): green = every balance
+      // read and current, amber = shown as last read (out of date, or no
+      // source yet), red = the last read failed, grey = not read yet; it
+      // pulses while a read runs. The words stay as the badge's title and
+      // accessible name.
+      const reading = status === 'Reading';
+      const health = rows.some(r => r.state === 'error') ? 'failed' : ready && rows.length && !c.balanceUnavailable ? 'current' : lastRead.length ? 'old' : 'none';
+      const badge = el('span', 'network-health'); badge.dataset.health = health; badge.dataset.reading = String(reading);
+      badge.title = `${c.name} · ${status}`; badge.setAttribute('role', 'img'); badge.setAttribute('aria-label', badge.title);
+      badge.append(el('span', 'health-light'), networkIcon(c), el('span', '', c.name)); return badge;
     }));
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));

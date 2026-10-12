@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { ASSETS, PRICE_URL } from '../src/portfolio.js';
+import { CHAINS } from '../src/config.js';
 import { priceFixture, portfolioRead, cellframeRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase } from './browser-phrase.js';
 import { IXIOS_NETWORK } from '../src/ixios/network.js';
@@ -29,6 +30,9 @@ const server = process.env.WALLET_URL ? null : await startPreview(['node_modules
 const phrase = Array(23).fill('abandon').concat('art').join(' ');
 const holdings = Object.fromEntries(ASSETS.map(a => [a.key, String(10n ** BigInt(a.decimals))]));
 let browser, priceMode = 'valid', failures = [], wrongNetwork, gate, requested, completed, cellframeFail = false;
+// Holds Ethereum's balance read while set (0.1.103): a "Reading" badge is
+// checked while that read is really in flight, not raced against it.
+let ethHold, ethHeld;
 const unexpected = [], errors = [], reads = new Set();
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(url)).ok) break; } catch {} await delay(50); }
@@ -50,6 +54,8 @@ try {
       return mode === 'failed' ? route.fulfill({ status: 503, body: 'Unavailable' })
         : route.fulfill({ json: priceFixture(2, Math.floor(Date.now() / 1000) - (mode === 'stale' ? 901 : 0)) });
     }
+    const hold = ethHold;
+    if (hold && req.url().startsWith(CHAINS.ethereum.endpoint)) { ethHeld.resolve(); await hold.promise; }
     if (await historyRead(route)) return;
     if (await cellframeRead(route, { balance: '10', fail: cellframeFail })) { reads.add(new URL(req.url()).origin); return; }
     if (await portfolioRead(route, { holdings, failures, wrongNetwork })) { reads.add(new URL(req.url()).origin); return; }
@@ -184,13 +190,18 @@ try {
   priceMode = 'valid'; await refresh();
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   priceMode = 'late'; gate = Promise.withResolvers(); requested = Promise.withResolvers(); completed = Promise.withResolvers();
-  await page.locator('#portfolio-refresh').click(); await requested.promise;
+  ethHold = Promise.withResolvers(); ethHeld = Promise.withResolvers();
+  await page.locator('#portfolio-refresh').click(); await requested.promise; await ethHeld.promise;
   // 0.1.102 (operator: "refresh ettiği anda hepsi boş oluyor"): while Refresh
   // reads, what was shown stays — the amount and the total — and the
   // network badges say "Reading".
   assert.equal(await usdt.locator('.asset-value strong').innerText(), '4');
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
-  assert.match(await page.locator('#portfolio-networks').innerText(), /Ethereum · Reading/);
+  const ethBadge = page.locator('#portfolio-networks .network-health', { hasText: 'Ethereum' });
+  assert.equal(await ethBadge.getAttribute('title'), 'Ethereum · Reading');
+  assert.equal(await ethBadge.getAttribute('data-reading'), 'true', 'the light pulses while reading (0.1.103)');
+  assert.equal(await ethBadge.getAttribute('data-health'), 'current', 'and keeps its colour: the shown balances are current');
+  const release = ethHold; ethHold = undefined; release.resolve();
   await usdt.locator('summary').focus(); gate.resolve(); await completed.promise; await done();
   assert.equal(await usdt.locator('summary').evaluate(node => document.activeElement === node), true);
   priceMode = 'valid'; await refresh();
@@ -200,6 +211,7 @@ try {
   await page.clock.setFixedTime(new Date(Date.now() + 421000));
   await page.locator('#portfolio-hide').click(); await page.locator('#portfolio-hide').click();
   assert.equal(await page.locator('#portfolio-total').innerText(), '—');
+  assert.equal(await page.locator('#portfolio-networks .network-health', { hasText: 'Ethereum' }).getAttribute('data-health'), 'old', 'amber light once out of date (0.1.103)');
   assert.match(await page.locator('#portfolio-status').innerText(), /14 balances/);
   await page.clock.setFixedTime(new Date());
   priceMode = 'late'; gate = Promise.withResolvers(); requested = Promise.withResolvers(); completed = Promise.withResolvers();
