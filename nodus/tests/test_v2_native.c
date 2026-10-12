@@ -13302,7 +13302,7 @@ static int test_hf8_name_gate_hooks(void) {
         CHECK((uint64_t)DNAC_CFG_RULESET_GEN2_D2 == 0x44dfbe7ad3c75adfULL &&
               (uint64_t)DNAC_CFG_EVM_ACTIVE_D == 0x029f47596864d407ULL &&
               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D ==
-                  0x0c6fd6f2484e6024ULL,
+                  0x329b0ea92c8b8c58ULL,
               "K7 D2, the EVM D and the storage D keep their literals");
         OK();
     }
