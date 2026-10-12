@@ -25,6 +25,7 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT */
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -201,6 +202,12 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
          * bootstrap epoch. */
         w->cached_committee_self_stakes[i]    = boot[i].self_stake;
         w->cached_committee_commission_bps[i] = boot[i].commission_bps;
+        /* HF-6 5b: the seat's voting power, so a hit on this seeded
+         * epoch-0 cache equals the miss path's below-generation-4
+         * recompute (nodus_committee_get_for_block: total /
+         * DNAC_DECIMAL_UNIT). */
+        w->cached_committee_powers[i]         = boot[i].total_stake /
+                                                DNAC_DECIMAL_UNIT;
     }
     free(boot);
     w->cached_committee_count       = boot_count;
