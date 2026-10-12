@@ -20,7 +20,7 @@ import {
 import {
   parseContactId, parseContactInput, requestRefusal, shortId, inspectUntrusted, httpsLink, linkSegments, profilePatch, profileStatusText, senderClockLabel,
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
-  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
+  publishedSeqs, markPublished, markDelivered, ackToSend, ackAllowed, messageStatus,
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, contactNeedsFullSync, contactDays, checkOrder, profileFresh, PROFILE_CACHE_SECONDS,
   CHECK_STAGES, updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
@@ -405,6 +405,14 @@ test('the status shown for an own message follows its flags', () => {
   assert.equal(messageStatus({}), 'waiting to send');
   assert.equal(messageStatus({ published: true }), 'sent');
   assert.equal(messageStatus({ published: true, delivered: true }), 'delivered');
+});
+
+test('an ACK is published only from a saved store, with every message verified and every day bucket read (W-11)', () => {
+  assert.equal(ackAllowed({ persistent: true, complete: true, lost: 0 }), true);
+  assert.equal(ackAllowed({ persistent: false, complete: true, lost: 0 }), false, 'an unsaved wallet keeps nothing, so it never ACKs');
+  assert.equal(ackAllowed({ persistent: true, complete: true, lost: 1 }), false, 'a message that did not verify would be covered without being stored');
+  assert.equal(ackAllowed({ persistent: true, complete: false, lost: 0 }), false, 'an unreadable bucket may hold older messages the value would cover');
+  assert.equal(ackAllowed({ persistent: 'yes', complete: 1, lost: 0 }), false, 'only true counts');
 });
 
 test('the ACK value is the newest stored sender timestamp of that contact, sent only when it is new', () => {

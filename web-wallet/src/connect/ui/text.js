@@ -404,6 +404,15 @@ export function ackToSend(messages, fp, lastSent) {
   return newest.toString();
 }
 
+// Whether a contact's check may publish an ACK at all (G11): only from a
+// store that keeps messages (an unsaved wallet never ACKs), only when every
+// message of the check verified (`lost` 0), and only when every day bucket
+// was read (`complete`; 0.1.100, BUGS W-11, Kurultay #17) — an unreadable
+// bucket may hold older messages the newest stored timestamp would cover.
+export function ackAllowed({ persistent, complete, lost }) {
+  return persistent === true && complete === true && !lost;
+}
+
 // The WHOLE pending set of own messages to one contact (the blob replaces
 // today's previous one, core.outboxPublish): outgoing, not yet delivered
 // (isDelivered above) or delivered less than DELIVERED_GRACE_SECONDS ago,

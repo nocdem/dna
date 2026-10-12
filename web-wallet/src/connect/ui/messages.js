@@ -47,7 +47,7 @@ import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js'
 import {
   parseContactInput, requestRefusal, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
   pendingOutbox, hasUndelivered, compareLocal, receivedKey,
-  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
+  publishedSeqs, markPublished, markDelivered, ackToSend, ackAllowed, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   checkOrder, contactDays, contactNeedsFullSync, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
   firstRecordAllowed, markOwnRecordSeen, declinedNow, isDeclined, addDeclined, undecline,
   shortId, inspectUntrusted,
@@ -75,7 +75,7 @@ const logCheck = (text, failed = false) => sessionLog.log('messages', text, { er
 // accepts, welcomes and leaves travel as 1:1 messages (bytes item 7,
 // decision 13); they are routed to the groups module and never shown as
 // chat text (isControl below).
-import { createGroupsEngine } from '../groups/engine.js';
+import { createGroupsEngine, needsProfile } from '../groups/engine.js';
 import { createGroupsView } from '../groups/ui.js';
 import { controlType } from '../groups/model.js';
 
@@ -808,6 +808,26 @@ async function sync() {
         } catch (error) { for (const e of reading) e.error = error; }
         if (gen !== generation) return;
         if (answer) reading.forEach((e, i) => { const r = answer.contacts[i]; if (r.error !== undefined) e.error = new Error(r.error); else e.reads = r; });
+        // A contact whose keys fell out of the module's 64-entry cache
+        // (withPeer, BUGS W-10): its profile is read again and its buckets
+        // are read once more in one call; the snapshot above still holds.
+        const again = [];
+        for (const e of reading) {
+          if (gen !== generation) return;
+          if (e.error === undefined || !needsProfile(e.error) || !await reloadProfile(e.contact.fp)) continue;
+          e.error = undefined; again.push(e);
+        }
+        if (gen !== generation) return;
+        if (again.length) {
+          try {
+            const retry = await core.contactReads(again.map(e => ({
+              fp: e.contact.fp, salt: e.salt,
+              days: e.days.map(day => ({ day, skipBlob: blobs.get(`${e.contact.fp}|${day}`)?.blob || '' }))
+            })));
+            again.forEach((e, i) => { const r = retry.contacts[i]; if (r.error !== undefined) e.error = new Error(r.error); else e.reads = r; });
+          } catch (error) { for (const e of again) e.error = error; }
+          if (gen !== generation) return;
+        }
       }
       for (const e of group) {
         if (gen !== generation) return;
@@ -947,7 +967,7 @@ async function startContactCheck(entry, gen) {
   if (!profileOk) return false;
   if (!saltChecked.has(fp)) {
     step('salt');
-    const result = await core.saltReconcile(fp, contact.salt || null);
+    const result = await withPeer(fp, () => core.saltReconcile(fp, contact.salt || null));
     if (gen !== generation) return false;
     const changed = !!result.salt && result.salt !== contact.salt;
     diag.salt = diagSalt({ result, changed: result.status !== 'wait' && changed });
@@ -1049,8 +1069,11 @@ async function finishContactCheck({ contact, id, salt, days, publishedBefore, re
   // stored than the value last published (state.ackSent, kept across
   // sessions). An unsaved wallet keeps nothing, so it never ACKs: the sender
   // keeps the messages for next time. Items that are not text (`other`) are
-  // not stored and never raise the value.
-  if (store.persistent && !lost) {
+  // not stored and never raise the value. Nor when a day bucket could not be
+  // read (0.1.100, BUGS W-11, Kurultay #17): the value would cover older
+  // messages that bucket may hold; the next check reads the 8 buckets again
+  // (`complete` keeps dmSync back) and the ACK follows then (text.js ackAllowed).
+  if (ackAllowed({ persistent: store.persistent, complete, lost })) {
     const value = ackToSend(messages, fp, state.ackSent[fp]);
     if (value) {
       step('ack publish');
@@ -1066,6 +1089,21 @@ async function finishContactCheck({ contact, id, salt, days, publishedBefore, re
   return complete;
 }
 
+// A module call that needs a contact's verified keys (W-10, 0.1.100): the
+// module keeps at most 64 (connect/nc_wasm.c NC_PEERS_MAX) and overwrites the
+// oldest when full, while `profiles` here still has the contact, so
+// ensureProfile does not load it again and the call answers "Load this
+// contact's profile first." — then the profile is read again (its keys go
+// back into the module) and the call is tried once more, as the groups do
+// (groups/engine.js withPeers).
+async function withPeer(fp, run) {
+  try { return await run(); }
+  catch (error) {
+    if (!needsProfile(error) || !await reloadProfile(fp)) throw error;
+    return run();
+  }
+}
+
 // Publishes the whole pending set; after the PUT succeeded, the messages in
 // it are flagged `published` (saved) — only those can later count as
 // delivered (text.js markDelivered).
@@ -1073,7 +1111,7 @@ async function publishOutbox(contact, gen) {
   const set = pendingOutbox(messages, contact.fp, nowSeconds());
   if (!set.length) { unpublished.delete(contact.fp); return; }
   if (!contact.salt || !await ensureProfile(contact.fp, true) || gen !== generation) return;
-  await core.outboxPublish(contact.fp, contact.salt, set);
+  await withPeer(contact.fp, () => core.outboxPublish(contact.fp, contact.salt, set));
   if (gen !== generation) return;
   unpublished.delete(contact.fp);
   await saveUpdated(markPublished(messages, contact.fp, set));

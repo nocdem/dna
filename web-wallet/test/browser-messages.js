@@ -27,6 +27,10 @@
 // delete notice with its hash and draws "You deleted this message.";
 // "Delete on this device" hides B's first text with no publish; no page
 // error, no CSP refusal, no other request.
+// W-10 (0.1.100): the first bucket read answers "Load this contact's profile
+// first." (B's keys gone from the module's 64-entry cache) until B's profile
+// is read again; the round must read it again and recover — on 0.1.99 the
+// messages never arrive and the test times out.
 //
 // How it can lie: every answer is the fake's — nothing proves a real node
 // stores or returns these records (the C side is the native tests'
@@ -117,12 +121,19 @@ try {
     const day = (d, messages = []) => ({ outcome: messages.length ? 'found' : 'empty', why: 'none', day: d, blob: messages.length ? 'ab'.repeat(32) : undefined, unchanged: false, dropped: '0', other: '0', messages });
     const answers = {
       nc_unlock: () => ({ fingerprint: OWN, fresh: false }),
-      nc_profile_get: args => profile(args[0]),
+      nc_profile_get: args => { if (window.__evicted && args[0] === B) window.__evicted = false; return profile(args[0]); },
       nc_contacts_get: () => ({ outcome: 'found', why: 'none', invalid: '0', timestamp: '1', contacts: [{ fp: B, salt: SALT }] }),
       nc_contacts_add: () => ({ status: 'unchanged', outcome: 'found', why: 'none', created: false, count_before: '1', count_after: '1', salt_kept: '0', put_rc: 0 }),
       nc_requests_get: () => ({ outcome: 'empty', why: 'none', partial: true, truncated: false, dropped: {}, requests: [] }),
       nc_salt_reconcile: () => ({ status: 'nothing_to_write', outcome: 'found', why: 'none', wrong_pair: '0', choice: 'keep_local', salt: SALT, put_rc: 0 }),
-      nc_contact_reads: args => ({ contacts: JSON.parse(args[0]).map(c => ({ ack: { outcome: 'empty', why: 'none' }, days: c.days.map(x => day(x.day, x.day === TODAY ? inbox : [])) })) }),
+      // W-10 (0.1.100): the first read finds B's keys gone from the module's
+      // 64-entry cache, as nc_wasm.c answers then; they come back only when
+      // B's profile is read again (nc_profile_get), and not before.
+      nc_contact_reads: args => {
+        if (window.__evicted === undefined) window.__evicted = true;
+        if (window.__evicted) { window.__evictedReads = (window.__evictedReads || 0) + 1; return { contacts: JSON.parse(args[0]).map(() => ({ error: "Load this contact's profile first." })) }; }
+        return { contacts: JSON.parse(args[0]).map(c => ({ ack: { outcome: 'empty', why: 'none' }, days: c.days.map(x => day(x.day, x.day === TODAY ? inbox : [])) })) };
+      },
       nc_outbox_send: args => ({ day: TODAY, alg: 1, count: String(JSON.parse(args[2]).length) }),
       nc_ack_send: () => ({})
     };
@@ -153,6 +164,10 @@ try {
   await page.waitForFunction(() => document.querySelector('.contact-row .contact-preview')?.textContent.includes('yes indeed') || document.querySelector('.contact-row'));
   await page.locator('.contact-row').first().click();
   await page.waitForFunction(() => document.querySelectorAll('.message-list .message').length >= 3);
+  // W-10 (0.1.100): B's keys were gone from the module at the first read;
+  // the same round read B's profile again and read again — one failed read.
+  assert.equal(await page.evaluate(() => window.__evictedReads), 1, 'one read without keys, then recovered in the same round');
+  assert.doesNotMatch(await page.locator('.messenger-sync').innerText(), /could not be checked/);
 
   // The link, the reply's quote, the deleted text, the reaction chip.
   const link = page.locator('.message-text a').first();
