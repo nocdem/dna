@@ -1572,6 +1572,65 @@ int nodus_client_dnac_storage_status(nodus_client_t *client,
 int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
                                      nodus_dnac_storage_status_t *out);
 
+/* ── HF-6 slice 7a — dnac_storage_by_owner (design docs/plans/2026-10-03-
+ *    hf5-validator-owner-stake-design.md rev 6 §9 / §11) ──
+ *
+ * READ-ONLY, committed tables only: the storage registry rows an OWNER
+ * registered (v2_storage_nodes.payee_fp = owner_fp since HF-6 6b).
+ * Request "a": {"owner": tstr, exactly 128 lowercase hex}. Response "r":
+ *   "ch"    u64   the node's committed tip
+ *   "total" u64   the owner's rows, every status (ACTIVE / EXITING /
+ *                 RELEASED)
+ *   "nodes" array of the first min(total, NODUS_DNAC_STORAGE_SET_MAX)
+ *                 rows, node_fp strictly ASCENDING; each a map of "fp"
+ *                 tstr128 (the node_fp) plus exactly the keys
+ *                 dnac_storage_status answers for that node (above), all
+ *                 against ONE storage_set(H).
+ * The live rows are capped at NODUS_DNAC_STORAGE_SET_MAX on chain;
+ * RELEASED rows never vanish, so total may exceed the list — total >
+ * count means the list stops at the cap (no paging). An owner without
+ * rows answers total 0 and an empty list (not an error).
+ * Rules the decoder enforces, besides every per-node rule of
+ * nodus_dnac_storage_status_decode: "ch", "total", "nodes" each exactly
+ * once; |nodes| = min(total, SET_MAX); every entry carries "fp" (128
+ * lowercase hex), found = true, the reply's "ch", and the same "es" /
+ * "set" / "sc" as the first entry; fp strictly ascending; when the caller
+ * names the owner, every entry's "payee" equals it. An older node answers
+ * "unknown DNAC method". One node is trusted for the answer. */
+
+/** One node of a dnac_storage_by_owner answer. */
+typedef struct {
+    char                         node_fp[129];   /* "fp": 128 hex + NUL  */
+    nodus_dnac_storage_status_t  st;             /* its status answer    */
+} nodus_dnac_storage_node_t;
+
+/** A dnac_storage_by_owner answer. nodes is heap (count entries, NULL
+ *  when count is 0); free with nodus_dnac_storage_by_owner_free(). */
+typedef struct {
+    uint64_t                   committed_height; /* "ch"                 */
+    uint64_t                   total;            /* "total"              */
+    size_t                     count;            /* entries of nodes[]   */
+    nodus_dnac_storage_node_t *nodes;
+} nodus_dnac_storage_by_owner_t;
+
+/** dnac_storage_by_owner for `owner_hex` (128 lowercase hex). @return 0;
+ *  a NODUS_ERR_* the node answered (an older node: "unknown DNAC
+ *  method"); NODUS_ERR_PROTOCOL_ERROR for a reply the decoder refuses
+ *  (incl. an entry whose owner is not `owner_hex`); NODUS_ERR_TIMEOUT;
+ *  -1 on invalid args / transport failure. On success the caller frees
+ *  `out` with nodus_dnac_storage_by_owner_free(). */
+int nodus_client_dnac_storage_by_owner(nodus_client_t *client,
+                                       const char *owner_hex,
+                                       nodus_dnac_storage_by_owner_t *out);
+/** Its raw-reply decoder, exported for tests (no network). `owner_hex`
+ *  NULL skips the per-entry owner check. On -1 `out` is freed and zeroed.
+ *  @return 0 / -1 malformed (the rules above). */
+int nodus_dnac_storage_by_owner_decode(const uint8_t *raw, size_t raw_len,
+                                       const char *owner_hex,
+                                       nodus_dnac_storage_by_owner_t *out);
+/** Free a dnac_storage_by_owner answer (nodes) and zero it. NULL-safe. */
+void nodus_dnac_storage_by_owner_free(nodus_dnac_storage_by_owner_t *r);
+
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MIN      1024u
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MAX      (1024u * 1024u)
 /** Items one page may carry — bounds the client's allocation. */
@@ -2289,8 +2348,12 @@ int nodus_client_evm_ticket(nodus_client_t *client, const uint8_t id[64],
  * leaves it 0 = unknown (not "0 delegators"). A malformed or repeated
  * "dlg" refuses the whole reply (NODUS_ERR_PROTOCOL_ERROR).
  * HF-6 generation 4 (sub-slice 3e): each entry also carries OPTIONAL
- * "vid" / "owner" bstr(64) (validator_id / owner_fp) — skipped by this
- * decoder; "pk" is the consensus key.
+ * "vid" / "owner" bstr(64) (validator_id / owner_fp); "pk" is the
+ * consensus key. Since slice 7a this decoder fills the entry's
+ * validator_id / owner_fp with has_v2 = 1 when both are present; an older
+ * node (neither) leaves has_v2 0 and both zero. A non-64-byte value, a
+ * repeated key or one key without the other refuses the whole reply
+ * (NODUS_ERR_PROTOCOL_ERROR).
  *
  * @param filter_status  -1 = all statuses, 0..3 = filter by status
  * @param offset         Page offset (0-based)

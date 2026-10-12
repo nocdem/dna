@@ -17,6 +17,13 @@
  *   - An entry key the decoder does not know is skipped (the rule that
  *     lets an OLD client read a NEW node's reply), and a repeated
  *     top-level key is still refused (P0-B).
+ *   - HF-6 slice 7a: entries carrying "vid" and "owner" (bstr(64) each,
+ *     the generation-4 shape) decode has_v2 = 1 with the exact
+ *     validator_id / owner_fp bytes and every other field unchanged; an
+ *     entry without them (older node) decodes has_v2 = 0 with both
+ *     fields zero; a 63- or 65-byte "vid", a text-string "owner", a
+ *     repeated "vid" and a "vid" without "owner" each refuse the whole
+ *     reply (NODUS_ERR_PROTOCOL_ERROR, result freed).
  *
  * Seam: the decoder is static in nodus_client.c. This target compiles
  * nodus_client.c itself with NODUS_CLIENT_TEST_SEAM=1, which adds
@@ -35,6 +42,9 @@
  *   - "An old client skips the unknown key" is shown with THIS decoder's
  *     generic skip branch (an entry key "zzz"); the pre-change binary is
  *     not run.
+ *   - The "vid" / "owner" entries are hand-built in the order
+ *     handle_dnac_validator_list_query writes them under generation 4;
+ *     a real generation-4 node's reply is not decoded here.
  *   - Nothing here was RUN by its author (BUILDER: compile only).
  */
 
@@ -203,6 +213,128 @@ static void refused(int dlg_mode, uint64_t dlg, const char *name) {
     nodus_client_free_validator_list_result(&res);
 }
 
+/* HF-6 slice 7a — the generation-4 entry keys "vid" / "owner" (bstr(64)
+ * each, handle_dnac_validator_list_query under generation 4, written
+ * BEFORE "pk" as the handler writes them). */
+enum { V2_BOTH, V2_VID_ONLY, V2_VID_63, V2_VID_65, V2_OWNER_TSTR,
+       V2_VID_TWICE };
+
+static void enc_entry_v2(cbor_encoder_t *e, uint8_t pk_fill, uint64_t self,
+                         int mode) {
+    uint8_t pk[NODUS_PK_BYTES], vid[65], own[64];
+    memset(pk, pk_fill, sizeof(pk));
+    memset(vid, pk_fill ^ 0x5a, sizeof(vid));
+    memset(own, pk_fill ^ 0xa5, sizeof(own));
+    size_t n = 8 + 1;                    /* 7 + "dlg" + "vid"            */
+    if (mode != V2_VID_ONLY) n++;        /* + "owner"                    */
+    if (mode == V2_VID_TWICE) n++;       /* + a second "vid"             */
+    cbor_encode_map(e, n);
+    cbor_encode_cstr(e, "vid");
+    cbor_encode_bstr(e, vid, mode == V2_VID_63 ? 63 :
+                             mode == V2_VID_65 ? 65 : 64);
+    if (mode == V2_VID_TWICE) {
+        cbor_encode_cstr(e, "vid"); cbor_encode_bstr(e, vid, 64);
+    }
+    if (mode == V2_OWNER_TSTR) {
+        cbor_encode_cstr(e, "owner"); cbor_encode_cstr(e, "a5a5");
+    } else if (mode != V2_VID_ONLY) {
+        cbor_encode_cstr(e, "owner"); cbor_encode_bstr(e, own, 64);
+    }
+    cbor_encode_cstr(e, "pk");     cbor_encode_bstr(e, pk, sizeof(pk));
+    cbor_encode_cstr(e, "self");   cbor_encode_uint(e, self);
+    cbor_encode_cstr(e, "total");  cbor_encode_uint(e, 500);
+    cbor_encode_cstr(e, "ext");    cbor_encode_uint(e, 400);
+    cbor_encode_cstr(e, "comm");   cbor_encode_uint(e, 1000);
+    cbor_encode_cstr(e, "status"); cbor_encode_uint(e, 0);
+    cbor_encode_cstr(e, "since");  cbor_encode_uint(e, 7);
+    cbor_encode_cstr(e, "dlg");    cbor_encode_uint(e, 3);
+}
+
+static void test_v2_keys(void) {
+    cbor_encoder_t e;
+    nodus_dnac_validator_list_result_t res;
+
+    /* a generation-4 reply: every entry carries both keys */
+    reply_head(&e, 3);
+    cbor_encode_cstr(&e, "count"); cbor_encode_uint(&e, 2);
+    cbor_encode_cstr(&e, "total"); cbor_encode_uint(&e, 2);
+    cbor_encode_cstr(&e, "validators");
+    cbor_encode_array(&e, 2);
+    enc_entry_v2(&e, 0x11, 1000, V2_BOTH);
+    enc_entry_v2(&e, 0x22, 2000, V2_BOTH);
+    int rc = nodus_client_test_parse_validator_list(g_frame,
+                                                    cbor_encoder_len(&e), &res);
+    CHECK(rc == 0 && res.count == 2 && res.entries,
+          "with vid/owner: reply decodes");
+    if (rc == 0 && res.count == 2 && res.entries) {
+        uint8_t vid[64], own[64];
+        memset(vid, 0x11 ^ 0x5a, sizeof(vid));
+        memset(own, 0x11 ^ 0xa5, sizeof(own));
+        CHECK(res.entries[0].has_v2 == 1 &&
+              memcmp(res.entries[0].validator_id, vid, 64) == 0 &&
+              memcmp(res.entries[0].owner_fp, own, 64) == 0,
+              "with vid/owner: entry 0 validator_id and owner_fp exact");
+        memset(vid, 0x22 ^ 0x5a, sizeof(vid));
+        memset(own, 0x22 ^ 0xa5, sizeof(own));
+        CHECK(res.entries[1].has_v2 == 1 &&
+              memcmp(res.entries[1].validator_id, vid, 64) == 0 &&
+              memcmp(res.entries[1].owner_fp, own, 64) == 0,
+              "with vid/owner: entry 1 validator_id and owner_fp exact");
+        CHECK(res.entries[0].pubkey[0] == 0x11 &&
+              res.entries[0].self_stake == 1000 &&
+              res.entries[0].has_delegator_count == 1 &&
+              res.entries[0].delegator_count == 3,
+              "with vid/owner: pk (the consensus key) and the other "
+              "fields unchanged");
+    }
+    nodus_client_free_validator_list_result(&res);
+
+    /* an older node: neither key → has_v2 0, both fields zero */
+    reply_head(&e, 2);
+    cbor_encode_cstr(&e, "total"); cbor_encode_uint(&e, 1);
+    cbor_encode_cstr(&e, "validators");
+    cbor_encode_array(&e, 1);
+    enc_entry(&e, 0x33, 3000, DLG_UINT, 1);
+    rc = nodus_client_test_parse_validator_list(g_frame,
+                                                cbor_encoder_len(&e), &res);
+    CHECK(rc == 0 && res.count == 1 && res.entries,
+          "without vid/owner (older node): reply decodes");
+    if (rc == 0 && res.count == 1 && res.entries) {
+        uint8_t zero[64];
+        memset(zero, 0, sizeof(zero));
+        CHECK(res.entries[0].has_v2 == 0 &&
+              memcmp(res.entries[0].validator_id, zero, 64) == 0 &&
+              memcmp(res.entries[0].owner_fp, zero, 64) == 0,
+              "without vid/owner: has_v2 0, both fields zero");
+    }
+    nodus_client_free_validator_list_result(&res);
+}
+
+static void refused_v2(int mode, const char *name) {
+    cbor_encoder_t e;
+    nodus_dnac_validator_list_result_t res;
+
+    reply_head(&e, 2);
+    cbor_encode_cstr(&e, "total"); cbor_encode_uint(&e, 2);
+    cbor_encode_cstr(&e, "validators");
+    cbor_encode_array(&e, 2);
+    enc_entry_v2(&e, 0x11, 1000, V2_BOTH);
+    enc_entry_v2(&e, 0x22, 2000, mode);
+    int rc = nodus_client_test_parse_validator_list(g_frame,
+                                                    cbor_encoder_len(&e), &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0, name);
+    nodus_client_free_validator_list_result(&res);
+}
+
+static void test_v2_refusals(void) {
+    refused_v2(V2_VID_63, "vid of 63 bytes refused, result freed");
+    refused_v2(V2_VID_65, "vid of 65 bytes refused, result freed");
+    refused_v2(V2_OWNER_TSTR, "owner as a text string refused, result freed");
+    refused_v2(V2_VID_TWICE, "vid repeated in one entry refused, result freed");
+    refused_v2(V2_VID_ONLY, "vid without owner refused, result freed");
+}
+
 static void test_refusals(void) {
     refused(DLG_TSTR, 0, "dlg as a text string refused, result freed");
     refused(DLG_TWICE, 3, "dlg repeated in one entry refused, result freed");
@@ -235,6 +367,8 @@ int main(void) {
     test_without_key();
     test_unknown_entry_key_skipped();
     test_refusals();
+    test_v2_keys();
+    test_v2_refusals();
 
     QGP_LOG_INFO(LOG_TAG, "=== Results: %d passed, %d failed ===", passed, failed);
     return failed > 0 ? 1 : 0;
