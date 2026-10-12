@@ -88,7 +88,12 @@
  *  - B stops at E + 1: the first boundary after a generation-4 STAKE is
  *    not crossed with a new validator inside a governing snapshot (that
  *    needs the vset v2 of slice 5 — the v1-snapshot bridge resolves an
- *    entry by its MIGRATED id).
+ *    entry by its MIGRATED id). Boundary E itself is crossed with the two
+ *    block-4/5 validators present; they are not seated there by
+ *    construction, not by luck: Rule R tenure (active_since + 2E <=
+ *    e_start, nodus_witness_committee.c nodus_committee_compute_for_epoch)
+ *    excludes them, and a candidate absent from the frozen copy ranks 0
+ *    and is skipped, never a fault (same function).
  *  - STAKE_MIN is the compiled DNAC_HF6_STAKE_MIN_DEFAULT (param 19 is
  *    slice 8's).
  *
