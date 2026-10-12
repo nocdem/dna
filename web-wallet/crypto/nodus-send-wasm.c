@@ -395,7 +395,11 @@ typedef struct {
      * address (the owner), `amount` the bond (0 for ROTATE / STORAGE_EXIT).
      * node_fp: SHA3-512 of the consenting node key read from the call
      * (STORAGE_EXIT: the call's node_fp); validator_id: ROTATE's target;
-     * consent_expiry: the consent expiry the call carries. */
+     * consent_expiry: the consent expiry the call carries.
+     * HF-6 slice 7b (nsw_stake_core): a generation-4 DELEGATE /
+     * UNDELEGATE sets gen4 = 1 and validator_id = the call's target too;
+     * its `op` (2 / 4), `recipient` (the validator's fingerprint) and
+     * `amount` keep their staking meaning above, node_fp stays "". */
     int      gen4;
     char     node_fp[129], validator_id[129];
     char     consent_expiry[NSW_U64_DEC];
@@ -837,9 +841,10 @@ static const char *nsw_stake_reason(int rc, int op) {
     case NODUS_V2_STAKE_ERR_COMMISSION:  return "The commission is above the maximum (50%).";
     case NODUS_V2_STAKE_ERR_AMOUNT:      return "Amount is out of range.";
     case NODUS_V2_STAKE_ERR_OP:          return "Unknown staking action.";
-    /* generation 4 (HF-6): the shared builder refuses DELEGATE /
-     * UNDELEGATE / UNSTAKE (nodus_v2_stake.h, "HF-6 6f-1 —
-     * GENERATION-AWARE") until their generation-4 layouts exist */
+    /* the shared builder's "no layout at this generation" (nodus_v2_
+     * stake.h ERR_GEN): since HF-6 slice 7b it builds DELEGATE /
+     * UNDELEGATE at every generation, and nsw_stake_core refuses a
+     * generation-4 STAKE itself, so this is not expected from Earn */
     case NODUS_V2_STAKE_ERR_GEN:
         return "This action is not available under the network's new rules yet. Nothing was built.";
     case NODUS_V2_SPEND_ERR_OVERFLOW:
@@ -850,30 +855,67 @@ static const char *nsw_stake_reason(int rc, int op) {
     }
 }
 
+/* Earn's own STAKE under generation 4: the generation-4 STAKE is the
+ * owner + node-consent layout (nodus_v2_stake.h "HF-6 6f-1"), built only
+ * by nsw_hf6_build — the Nodus Connect "Nodus" page (design 2026-10-12-
+ * connect-hf6-screens §3). src/adapters/nodus.js prepareStake shows the
+ * same text (HF6_STAKE_CONSENT_TEXT). */
+#define NSW_STAKE_NEEDS_CONSENT \
+    "Becoming a witness now needs your node's consent. Open Nodus " \
+    "Connect \xe2\x86\x92 More \xe2\x86\x92 Nodus."
+
 /*
- * Build + sign + read back ONE staking envelope from g_req_coins.
- * `validator_pk` (2592 B): the DELEGATE / UNDELEGATE target, NULL for
- * STAKE (whose unstake destination is this wallet's own address). On
- * success g_built holds the envelope and the fields DECODED FROM ITS BYTES
- * (nodus_v2_stake_built_t.dec), each checked here against the request:
- * the op, the record identity = this key, the validator key / the bond,
- * commission and destination, every input from the request, and
- * Σinputs = lock + fee + change (lock = the amount for STAKE / DELEGATE,
- * 0 for UNDELEGATE — rtn_sys_call_flow), the change to this wallet.
- * Large structs are heap: this runs after every network wait of the
- * networked caller, never across one. `g`: as for nsw_build_core.
+ * Build + sign + read back ONE staking envelope from g_req_coins, for the
+ * rule-set generation `g` names (HF-6 slice 7b: req.generation — the
+ * envelope is built only in the layout of the generation the node runs,
+ * design 2026-10-12-connect-hf6-screens §3).
+ * `validator_pk` (2592 B): the DELEGATE / UNDELEGATE target's key, NULL
+ * for STAKE (whose unstake destination is this wallet's own address).
+ * `validator_id` (64 raw B): the SAME target's validator_id — required for
+ * DELEGATE / UNDELEGATE at generation >= NODUS_RT_GEN_STORAGE, where the
+ * call is delegator_fp ‖ validator_id ‖ amount (136 B, nodus_v2_stake.h
+ * "HF-6 slice 7b"); NULL below it, where the call stays the legacy
+ * delegator_pk ‖ validator_pk ‖ amount (5192 B), byte-identical. Both come
+ * from one validator-list row in the networked caller (nsw_stake_build).
+ * A generation-4 STAKE is refused here (NSW_STAKE_NEEDS_CONSENT): nothing
+ * is built. On success g_built holds the envelope and the fields DECODED
+ * FROM ITS BYTES (nodus_v2_stake_built_t.dec), each checked here against
+ * the request: the layout's generation, the op, the record identity = this
+ * key, the validator key (legacy) or the validator_id and delegator_fp =
+ * SHA3-512(this key) (generation 4), the bond, commission and destination
+ * (STAKE), every input from the request, and Σinputs = lock + fee + change
+ * (lock = the amount for STAKE / DELEGATE, 0 for UNDELEGATE —
+ * rtn_sys_call_flow, the same in both generations), the change to this
+ * wallet. g_built.recipient is the validator's fingerprint SHA3-512(
+ * validator_pk) in both generations (the generation-4 call carries no key:
+ * it is hashed from the request's key, the list row's). Large structs are
+ * heap: this runs after every network wait of the networked caller, never
+ * across one. `g`: as for nsw_build_core.
  */
 static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
                           const uint8_t chain32[DNA_CHAIN_ID_LEN],
                           uint64_t tip, uint64_t gas_price, int op,
-                          const uint8_t *validator_pk, uint64_t amount,
+                          const uint8_t *validator_pk,
+                          const uint8_t *validator_id, uint64_t amount,
                           uint32_t commission, uint64_t expiry,
                           const nsw_gen_t *g) {
     nsw_built_clear();
+    static const uint8_t zero64[64];
+    const int gen4 = g->gen >= NODUS_RT_GEN_STORAGE;
     if (op != NODUS_V2_STAKE_OP_STAKE && op != NODUS_V2_STAKE_OP_DELEGATE &&
         op != NODUS_V2_STAKE_OP_UNDELEGATE)
         return nsw_fail("Unknown staking action.");
     if ((op == NODUS_V2_STAKE_OP_STAKE) != (validator_pk == NULL))
+        return nsw_fail("Invalid staking request.");
+    if (op == NODUS_V2_STAKE_OP_STAKE && gen4)
+        return nsw_fail("%s Nothing was built.", NSW_STAKE_NEEDS_CONSENT);
+    if (op != NODUS_V2_STAKE_OP_STAKE && gen4 &&
+        (!validator_id || memcmp(validator_id, zero64, 64) == 0))
+        return nsw_fail("This witness's entry in the witness list does not "
+                        "carry its identity under the network's new rules. "
+                        "Refresh the witness list and try again. Nothing "
+                        "was built.");
+    if (!gen4 && validator_id != NULL)
         return nsw_fail("Invalid staking request.");
     if (nsw_expiry_check(tip, g, expiry) != 0) return -1;
     if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
@@ -917,7 +959,12 @@ static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
     req.amount         = amount;
     req.commission_bps = commission;
     req.dest_fp        = op == NODUS_V2_STAKE_OP_STAKE ? own_raw : NULL;
-    req.validator_pk   = validator_pk;
+    /* the generation decides the layout (nodus_v2_stake.h "HF-6 slice
+     * 7b"): generation 4 names the target by validator_id, below it by
+     * its key */
+    req.generation     = g->gen;
+    req.validator_pk   = gen4 ? NULL : validator_pk;
+    req.validator_id   = gen4 ? validator_id : NULL;
     req.gas_price      = gas_price;
     req.coins          = coins;
     req.n_coins        = g_req_n;
@@ -931,7 +978,7 @@ static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
     /* ── check the read-back against the request (G1) ── */
     const nodus_v2_stake_decoded_t *d = &built->dec;
     const uint64_t lock = op == NODUS_V2_STAKE_OP_UNDELEGATE ? 0 : amount;
-    int ok = d->op == (uint32_t)op &&
+    int ok = d->op == (uint32_t)op && d->gen4 == gen4 &&
              memcmp(d->identity_pk, pk, NSW_PK_LEN) == 0 &&
              d->amount == amount && d->expiry_height == expiry &&
              d->fee == built->fee && d->n_in >= 1 &&
@@ -939,6 +986,12 @@ static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
     if (ok && op == NODUS_V2_STAKE_OP_STAKE)
         ok = d->commission_bps == commission &&
              memcmp(d->dest_fp, own_raw, 64) == 0;
+    else if (ok && gen4)
+        /* delegator_fp ‖ validator_id ‖ amount: the call's delegator is
+         * this key, its target the requested id (the decoded legacy
+         * validator_pk is all zero in this layout) */
+        ok = memcmp(d->validator_id, validator_id, 64) == 0 &&
+             memcmp(d->owner_fp, own_raw, 64) == 0;
     else if (ok)
         ok = memcmp(d->validator_pk, validator_pk, NSW_PK_LEN) == 0;
     uint64_t change = 0;
@@ -979,13 +1032,21 @@ static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
         memcpy(g_built.recipient, own_hex, 129);
         nsw_fmt_u64(d->commission_bps, g_built.commission);
     } else {
+        /* the validator's fingerprint: legacy — of the key the call
+         * carries; generation 4 — of the request's key (the call carries
+         * none; the networked caller's key and id are one list row's) */
         uint8_t vfp[64];
-        if (qgp_sha3_512(d->validator_pk, NSW_PK_LEN, vfp) != 0) {
+        if (qgp_sha3_512(gen4 ? validator_pk : d->validator_pk, NSW_PK_LEN,
+                         vfp) != 0) {
             nsw_built_clear();
             rc = nsw_fail("The staking transaction could not be built (hash).");
             goto done;
         }
         nsw_fmt_hex(vfp, 64, g_built.recipient);
+        if (gen4) {
+            g_built.gen4 = 1;
+            nsw_fmt_hex(d->validator_id, 64, g_built.validator_id);
+        }
     }
     nsw_fmt_u64(d->amount, g_built.amount);
     nsw_fmt_u64(d->fee, g_built.fee);
@@ -1008,26 +1069,35 @@ done:
 
 /* OFFLINE staking build (parity, like nsw_offline_build): the identity
  * from nsw_seed_buf (wiped here), the candidate coins (nsw_req_*), the
- * chain id, tip and gas price as a node would report them, the validator's
- * public key as 5184 lowercase hex ("" for STAKE). No output seeds: the
- * builder draws none. */
-int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
-                            const char *gas_dec, const char *validator_hex,
+ * rule-set generation `gen` (>= 1; HF-6 slice 7b), the chain id, tip and
+ * gas price as a node would report them, the validator's public key as
+ * 5184 lowercase hex ("" for STAKE) and its validator_id as 128 lowercase
+ * hex — DELEGATE / UNDELEGATE at generation >= NODUS_RT_GEN_STORAGE only,
+ * "" otherwise (nsw_stake_core's rule; an all-zero id is refused there).
+ * No output seeds: the builder draws none. */
+int nsw_stake_offline_build(int gen, int op, const char *chain_hex,
+                            const char *tip_dec, const char *gas_dec,
+                            const char *validator_hex,
+                            const char *validator_id_hex,
                             const char *amount_dec, const char *commission_dec,
                             const char *expiry_dec) {
-    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    uint8_t chain32[DNA_CHAIN_ID_LEN], vid[64];
     uint64_t tip = 0, gas = 0, amount = 0, commission = 0, expiry = 0;
     uint8_t *vpk = NULL, *pk = NULL, *sk = NULL;
     int rc = -1;
     const int is_stake = op == NODUS_V2_STAKE_OP_STAKE;
-    if (nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
+    const int has_vid = validator_id_hex && validator_id_hex[0] != '\0';
+    if (gen < 1 ||
+        nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
         nsw_parse_u64(tip_dec, &tip) != 0 ||
         nsw_parse_u64(gas_dec, &gas) != 0 ||
         nsw_parse_u64(amount_dec, &amount) != 0 ||
         nsw_parse_u64(commission_dec, &commission) != 0 ||
         commission > 0xffffu ||
         nsw_parse_u64(expiry_dec, &expiry) != 0 ||
-        !validator_hex || (is_stake && validator_hex[0] != '\0')) {
+        !validator_hex || (is_stake && validator_hex[0] != '\0') ||
+        !validator_id_hex || (is_stake && has_vid) ||
+        (has_vid && nsw_parse_hex(validator_id_hex, vid, sizeof(vid)) != 0)) {
         rc = nsw_fail("Invalid offline staking input.");
         goto done;
     }
@@ -1045,9 +1115,12 @@ int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
         rc = nsw_fail("Out of memory.");
     else if (qgp_dsa87_keypair_derand(pk, sk, g_seed) != 0)
         rc = nsw_fail("Key derivation failed.");
-    else
-        rc = nsw_stake_core(pk, sk, chain32, tip, gas, op, vpk, amount,
-                            (uint32_t)commission, expiry, &NSW_GEN_OFFLINE);
+    else {
+        const nsw_gen_t g = { (uint32_t)gen, 0u, 0u };
+        rc = nsw_stake_core(pk, sk, chain32, tip, gas, op, vpk,
+                            has_vid ? vid : NULL, amount,
+                            (uint32_t)commission, expiry, &g);
+    }
 done:
     nsw_wipe(g_seed, sizeof(g_seed));
     if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
@@ -2994,8 +3067,15 @@ int nsw_validators(void) {
 }
 
 /* dnac_delegations for this wallet's own key (the node checks it against
- * the session). A row whose validator fingerprint is not 128 lowercase hex,
- * a zero amount or a repeated validator makes the answer invalid. */
+ * the session). A row whose validator is not 128 lowercase hex, a zero
+ * amount or a repeated validator makes the answer invalid. The row's
+ * validator is the node's "validator" key: below the HF-6 generation the
+ * validator's fingerprint SHA3-512(key); under it the validator_id
+ * (nodus/src/witness/nodus_witness_handlers.c dlg_v2_reply — the key name
+ * kept, its value the id; the extra "vid" / "owner" keys are skipped by the
+ * client decoder, nodus_client.c nodus_client_dnac_delegations). Which of
+ * the two it is, src/adapters/nodus.js stakingOverview resolves against
+ * the validator list. */
 int nsw_delegations(void) {
     if (nsw_begin() != 0) return -1;
     g_dels.valid = 0;
@@ -3038,7 +3118,11 @@ int nsw_delegations(void) {
 
 /* Build one staking envelope for review. `op`: 1 STAKE, 2 DELEGATE,
  * 4 UNDELEGATE. `validator_fp_hex`: the target, resolved to its key from
- * the last nsw_validators listing ("" for STAKE). The candidate coins must
+ * the last nsw_validators listing ("" for STAKE) — and, when the node runs
+ * generation >= NODUS_RT_GEN_STORAGE (HF-6 slice 7b), to that SAME row's
+ * validator_id; a row without one (has_v2 0: a listing read before the
+ * switch) builds nothing. A generation-4 STAKE builds nothing either
+ * (nsw_stake_core). The candidate coins must
  * come from the LAST nsw_list, and expiry must be nsw_expiry_for's value
  * for its tip — the same gates as nsw_build_and_sign, including the
  * rule-set generation chosen from the node's answer on this call. A DELEGATE target must be bonded and
@@ -3100,6 +3184,22 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     if (nsw_check_chain() != 0) return nsw_end(-1);
     nsw_gen_t gen;                           /* HF-4, as nsw_build_and_sign */
     if (nsw_select_generation(&gen) != 0) return nsw_end(-1);
+    /* HF-6 slice 7b: under generation 4 the target is named by the
+     * validator_id of the row whose key was found above (ONE row: key and
+     * id never come from two places) */
+    uint8_t vid[64];
+    const int gen4 = gen.gen >= NODUS_RT_GEN_STORAGE;
+    if (gen4 && op != NODUS_V2_STAKE_OP_STAKE) {
+        if (!g_vals.has_v2[vi])
+            return nsw_end(nsw_fail("This witness's entry in the witness "
+                                    "list does not carry its identity under "
+                                    "the network's new rules. Refresh the "
+                                    "witness list and try again. Nothing "
+                                    "was built."));
+        if (nsw_parse_hex(g_vals.vid_hex[vi], vid, sizeof(vid)) != 0)
+            return nsw_end(nsw_fail("The witness list is invalid. Nothing "
+                                    "was built."));
+    }
     nodus_dnac_fee_info_t fi;
     memset(&fi, 0, sizeof(fi));
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
@@ -3112,6 +3212,7 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     rc = nsw_stake_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
                         fi.gas_price, op,
                         op == NODUS_V2_STAKE_OP_STAKE ? NULL : g_vals.pk[vi],
+                        (gen4 && op != NODUS_V2_STAKE_OP_STAKE) ? vid : NULL,
                         amount, (uint32_t)commission, expiry, &gen);
     return nsw_end(rc);
 }

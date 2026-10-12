@@ -688,7 +688,12 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       }
       return { truncated: num('nsw_val_truncated') === 1, validators };
     },
-    // delegations() -> [{ validator: 128 hex fingerprint, amount, block }]
+    // delegations() -> [{ validator: 128 hex, amount, block }] — `validator`
+    // is the node's value: the validator's key fingerprint below the HF-6
+    // generation, its validator_id under it (nodus-send-wasm.c
+    // nsw_delegations; src/adapters/nodus.js stakingOverview joins both).
+    // stakeBuild below takes the FINGERPRINT in both generations; the
+    // module takes the generation-4 validator_id from the same list row.
     async delegations() {
       check(await call('nsw_delegations'));
       const rows = [];

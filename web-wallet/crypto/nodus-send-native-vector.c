@@ -58,17 +58,24 @@
  * STAKING (0.1.29) — one more mode:
  *
  *   nodus-send-native-vector stake --op stake|delegate|undelegate
- *     --seed <64hex> --chain <64hex> --tip <dec> --gas <dec>
- *     [--validator <5184hex pubkey>] --amount <dec> [--commission <bps>]
+ *     [--gen <dec>] --seed <64hex> --chain <64hex> --tip <dec> --gas <dec>
+ *     [--validator <5184hex pubkey>] [--validator-id <128hex>]
+ *     --amount <dec> [--commission <bps>]
  *     --expiry <dec> --coin <128hex>:<dec> [--coin ...]
  *     --sign-random <hex, the bytes qgp_platform_random returns in order>
  *   Builds with nsw_stake_offline_build (the shared builder
  *   nodus/src/client/nodus_v2_stake.c, the function every wasm build
- *   runs). No --out-seeds: the builder draws none (its change seed is
- *   SHA3-512 of the inputs). Output, in this order: envelope, wire_id,
- *   intent_id, chain_id, op, recipient (the validator's fingerprint, or
- *   the staker's own for stake), amount, commission, fee, change, expiry,
- *   then one `input=` per input. Compared like the spend.
+ *   runs) for rule-set generation --gen (default 1). HF-6 slice 7b: at
+ *   --gen 4 a delegate / undelegate takes the generation-4 layout and
+ *   needs --validator-id (the target) besides --validator (its key, the
+ *   recipient fingerprint); below 4 --validator-id is refused, and stake at
+ *   --gen 4 is refused (it needs a node consent: the hf6 mode). No
+ *   --out-seeds: the builder draws none (its change seed is SHA3-512 of the
+ *   inputs). Output, in this order: envelope, wire_id, intent_id, chain_id,
+ *   op, gen4 (1 = the generation-4 layout), validator_id ("" below it),
+ *   recipient (the validator's fingerprint, or the staker's own for stake),
+ *   amount, commission, fee, change, expiry, then one `input=` per input.
+ *   Compared like the spend.
  *
  * SMART CONTRACTS (0.1.64) — one more mode:
  *
@@ -173,8 +180,10 @@ const char *nsw_claim_built_recipient(void);
 const char *nsw_claim_built_chain(void);
 const char *nsw_claim_built_amount(void);
 const char *nsw_claim_built_leaf(void);
-int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
-                            const char *gas_dec, const char *validator_hex,
+int nsw_stake_offline_build(int gen, int op, const char *chain_hex,
+                            const char *tip_dec, const char *gas_dec,
+                            const char *validator_hex,
+                            const char *validator_id_hex,
                             const char *amount_dec, const char *commission_dec,
                             const char *expiry_dec);
 int nsw_built_op(void);
@@ -453,19 +462,22 @@ static int print_env(void) {
 }
 
 static int main_stake(int argc, char **argv) {
-    const char *op_s = NULL, *seed = NULL, *chain = NULL, *tip = NULL,
-               *gas = NULL, *validator = "", *amount = NULL,
-               *commission = "0", *expiry = NULL, *sign_random = NULL;
+    const char *op_s = NULL, *gen_s = "1", *seed = NULL, *chain = NULL,
+               *tip = NULL, *gas = NULL, *validator = "", *validator_id = "",
+               *amount = NULL, *commission = "0", *expiry = NULL,
+               *sign_random = NULL;
     nsw_req_reset();
     for (int i = 2; i < argc; i += 2) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!v) return fail("every option takes a value");
         if      (!strcmp(a, "--op"))          op_s = v;
+        else if (!strcmp(a, "--gen"))         gen_s = v;
         else if (!strcmp(a, "--seed"))        seed = v;
         else if (!strcmp(a, "--chain"))       chain = v;
         else if (!strcmp(a, "--tip"))         tip = v;
         else if (!strcmp(a, "--gas"))         gas = v;
         else if (!strcmp(a, "--validator"))   validator = v;
+        else if (!strcmp(a, "--validator-id")) validator_id = v;
         else if (!strcmp(a, "--amount"))      amount = v;
         else if (!strcmp(a, "--commission"))  commission = v;
         else if (!strcmp(a, "--expiry"))      expiry = v;
@@ -481,18 +493,21 @@ static int main_stake(int argc, char **argv) {
     }
     int op = !op_s ? 0 : !strcmp(op_s, "stake") ? 1 : !strcmp(op_s, "delegate") ? 2
            : !strcmp(op_s, "undelegate") ? 4 : 0;
-    if (!op || !seed || !chain || !tip || !gas || !amount || !expiry || !sign_random)
+    uint64_t gen = 0;
+    if (!op || !seed || !chain || !tip || !gas || !amount || !expiry || !sign_random ||
+        parse_dec(gen_s, &gen) != 0 || gen < 1 || gen > 255)
         return fail("stake needs --op stake|delegate|undelegate --seed --chain --tip "
                     "--gas --amount --expiry --coin --sign-random (--validator for "
-                    "delegate / undelegate, --commission for stake)");
+                    "delegate / undelegate, --validator-id for them at --gen 4, "
+                    "--commission for stake; --gen 1..255, default 1)");
     size_t n = 0;
     if (unhex(seed, nsw_seed_buf(), 32, &n) != 0 || n != 32)
         return fail("--seed is 32 bytes of lowercase hex");
     if (unhex(sign_random, nsw_test_random_buf(), 4096, &n) != 0 ||
         nsw_test_random_load((int)n) != 0)
         return fail("--sign-random is at most 4096 bytes of lowercase hex");
-    if (nsw_stake_offline_build(op, chain, tip, gas, validator, amount, commission,
-                                expiry) != 0)
+    if (nsw_stake_offline_build((int)gen, op, chain, tip, gas, validator,
+                                validator_id, amount, commission, expiry) != 0)
         return fail(nsw_error());
     if (print_env()) return 1;
     line("wire_id", nsw_built_wire());
@@ -501,6 +516,8 @@ static int main_stake(int argc, char **argv) {
     char op_dec[4];
     snprintf(op_dec, sizeof(op_dec), "%d", nsw_built_op());
     line("op", op_dec);
+    line("gen4", nsw_built_gen4() ? "1" : "0");
+    line("validator_id", nsw_built_validator_id());
     line("recipient", nsw_built_recipient());
     line("amount", nsw_built_amount());
     line("commission", nsw_built_commission());

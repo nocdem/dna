@@ -423,18 +423,35 @@ function stakeReady(client, from) {
 export const shortKey = fp => `${fp.slice(0, 8)}…${fp.slice(-8)}`;
 // The validator list, this wallet's delegations (joined with the list: a
 // delegation whose validator is not listed cannot be undelegated from here —
-// the module needs the validator's key) and whether this wallet is itself a
-// validator (its own fingerprint listed with any status but 'unstaked').
+// the module needs the validator's list row) and whether this wallet is
+// itself a validator (its own fingerprint listed with any status but
+// 'unstaked').
+// HF-6 slice 7b: under generation 4 the node names a delegation's validator
+// by its validator_id, not its key fingerprint (nodus_witness_handlers.c
+// dlg_v2_reply: "validator" = hex(validator_id)); a generation-4 list row
+// carries that id (validatorId, hasV2). A row is joined by the id first,
+// then by the fingerprint (the legacy reply), and a joined row's
+// `validator` becomes the list row's FINGERPRINT — the one name the page
+// and prepareStake use for a witness — with the node's own value kept in
+// `listedAs`. An unjoined row keeps the node's value in both.
 export async function stakingOverview({ client, from, signal } = {}) {
   stakeReady(client, from);
   const rules = parseStakingRules(client.stakingRules);
   const { truncated, validators } = parseValidators(await client.validators({ signal }));
   const delegations = parseDelegations(await client.delegations({ signal }));
   const byKey = new Map(validators.map(v => [v.fingerprint, v]));
+  const byId = new Map(validators.filter(v => v.hasV2).map(v => [v.validatorId, v]));
   const own = byKey.get(from);
+  const joined = delegations.map(row => {
+    const info = byId.get(row.validator) ?? byKey.get(row.validator);
+    return { ...row, validator: info ? info.fingerprint : row.validator, listedAs: row.validator, validatorInfo: info, canUndelegate: info !== undefined };
+  });
+  // two delegations joined to one witness (an id and a key naming the same
+  // row) would make "your delegation" ambiguous: refused, never merged
+  if (new Set(joined.map(row => row.validator)).size !== joined.length) throw new Error('The Nodus module returned an invalid delegation list.');
   return {
     rules, truncated, validators,
-    delegations: delegations.map(row => ({ ...row, validatorInfo: byKey.get(row.validator), canUndelegate: byKey.has(row.validator) })),
+    delegations: joined,
     ownValidator: own && own.status !== 'unstaked' ? own : undefined,
     lockText: `${rules.undelegateLockEpochs} epochs (${rules.undelegateLockEpochs} × ${rules.epochLength} = ${rules.undelegateLockEpochs * rules.epochLength} blocks)`
   };
@@ -451,9 +468,17 @@ function decodeStake(built) {
     change: rawUnits(d.change, 'change amount'), expiryHeight: rawUnits(d.expiryHeight, 'expiry height'), ...builtWire(built)
   };
 }
+// A STAKE from Earn under the HF-6 generation: its layout needs the node's
+// consent, built only on the Nodus Connect "Nodus" page (prepareHf6). The
+// module refuses it with the same text (nodus-send-wasm.c
+// NSW_STAKE_NEEDS_CONSENT).
+export const HF6_STAKE_CONSENT_TEXT = 'Becoming a witness now needs your node\'s consent. Open Nodus Connect → More → Nodus.';
 // Builds and signs one staking envelope for review, in the shape of
 // prepareClaim (cancel(), confirm(onBroadcast) usable once, refused after
-// expiresAt). kind: 'delegate' | 'undelegate' | 'stake'. `validator`: 128
+// expiresAt). kind: 'delegate' | 'undelegate' | 'stake'. Under the HF-6
+// generation a delegate / undelegate is built in its generation-4 layout
+// by the module (the validator's id taken from the same list row as its
+// key); a 'stake' is refused (HF6_STAKE_CONSENT_TEXT). `validator`: 128
 // hex (delegate / undelegate). `amount`: NODUS text (delegate /
 // undelegate; stake always bonds exactly the self-bond). `commissionBps`:
 // integer text (stake). `locked`: coins of pending NODUS transactions
@@ -503,6 +528,10 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
   if (coins.length === 0 && spendable > 0n) throw new Error('Your coin list could not be read. Nothing was sent; try again later.');
   // HF-4: which rules the node runs, then the expiry they allow.
   const ruleset = parseRulesetInfo(await client.rulesetInfo());
+  // The module refuses this too (it is the authority: it asks the node again
+  // when it builds); a module without hf6Rules leaves it to the module.
+  const hf6Generation = client.hf6Rules && Number.isSafeInteger(client.hf6Rules.generation) && client.hf6Rules.generation >= 1 ? BigInt(client.hf6Rules.generation) : null;
+  if (kind === 'stake' && hf6Generation !== null && ruleset.generation >= hf6Generation) throw new Error(HF6_STAKE_CONSENT_TEXT);
   const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip, ruleset);
   const candidates = coins.filter(coin => !locked.has(coin.nullifier));
   if (candidates.length === 0) throw new Error(locked.size ? 'Your coins are held by a pending transaction. Wait for it to be included or to expire.' : 'Insufficient NODUS balance.');
