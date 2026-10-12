@@ -6990,8 +6990,9 @@ precedent); no SYSTEM registry row → generation 1 (a DB that never crossed an 
 not resolve, or any read fault → -2. The generation-4 edge switches the registry and re-keys the rows
 in one transaction, so the resolved generation and the rows' keys agree in every observable state.
 `nodus_witness_v2_epoch_boundary_apply` reads it ONCE (right after the height gate) and passes it to
-the distribution, the graduation and the copy write; `nodus_committee_compute_for_epoch` reads it
-itself (it has callers outside the boundary — `vset.c`, the committee cache). Every check below is
+the distribution, the graduation and the copy write; `nodus_committee_compute_for_epoch` read it
+itself in 3d (it has callers outside the boundary — `vset.c`, the committee cache) — since slice 5d
+it takes it as a parameter and the boundary passes the same one read (see "HF-6 slice 5d"). Every check below is
 `gen >= NODUS_RT_GEN_STORAGE`; below it every reader is byte-identical to before.
 
 **Root side.** The SYSTEM composition dispatcher is unchanged (`nodus_rt_system_state_root`,
@@ -7048,7 +7049,8 @@ migration, keeps 2592-byte `*_pubkey` columns.
   slice 5c".)
 - Committee (`nodus_committee_compute_for_epoch`), gen 4: candidates from
   `nodus_validator_v2_bonded_tenured`, frozen totals by validator_id; tiebreak stays
-  SHA3-512(0x02 ‖ pubkey ‖ seed) in slice 3, so an unchanged frozen ranking re-selects the same set.
+  SHA3-512(0x02 ‖ pubkey ‖ seed) in slice 3, so an unchanged frozen ranking re-selects the same set
+  (slice 5d moves it to SHA3-512(0x02 ‖ validator_id ‖ seed) at gen 4).
   The genesis bootstrap path (`top_n`, by value) is unchanged.
 - Graduation (`v2ep_graduate`, `nodus_witness_v2_epoch.c`), gen 4: the candidate scan also collects
   `pubkey_hash`; the row is read by `nodus_validator_v2_get` (its pubkey must be the scanned one),
@@ -7318,8 +7320,8 @@ pubkey / totals / commission from the member; under ruleset 2 the member's `vali
 **Committee member ids (D6).** `nodus_committee_member_t` gains `validator_id[64]` / `owner_fp[64]`
 (member 2752 B). `emit_member` copies them from the candidate's v2 row (`committee_work_t.v2`, the
 same `cand_v2` row the candidate was ranked from) when the core runs at key generation ≥
-`NODUS_RT_GEN_STORAGE` (the generation the gen-4 arm already reads, once, inside
-`nodus_committee_compute_for_epoch`), zeros below it and on the bootstrap path, and now writes
+`NODUS_RT_GEN_STORAGE` (the generation the gen-4 arm uses — read inside
+`nodus_committee_compute_for_epoch` until 5d, its `key_gen` parameter since), zeros below it and on the bootstrap path, and now writes
 `power = 0` explicitly. They are NOT cached: `nodus_committee_get_for_block` zeroes both on the hit
 (the caller's buffer may hold anything) and, on the miss, in the cache-fill loop that both arms pass
 through — so the snapshot-served miss returns zero even when the stored ruleset-2 entries carry ids,
@@ -7341,16 +7343,10 @@ broken invariant (-2). Attendance stays keyed by the entry pubkey; shares by cou
 Σcounted, inner split on raw amounts (5b, K2). `nodus_validator_v2_get_by_pubkey` has no production
 caller after this (only tests) — not removed here (outside 5c's files).
 
-**Known 5d blockers / limits, outside 5c's files (found while writing the tests):**
-- `nodus_witness_v2_apply.c` phase 0a hashes the GOVERNING snapshot of every block with the
-  ruleset-1-only `dna_vset_hash`; a block governed by a ruleset-2 snapshot would fault on every
-  node (the first one at B₀ + E). The value is overwritten later by the block's Comet
-  ValidatorsHash, so switching that call to `dna_vset_hash_ex(…, DNA_VSET_RULESET_TOPN_V2, …)` is
-  byte-identical for ruleset 1 — slice 5d must carry it. (Genesis-only `dna_vset_hash` calls in
-  `nodus_witness_v2_apply.c`, `nodus_witness_v2_bundle.c` and `nodus_witness_v2_gen.c` hash
-  snapshot(0), always ruleset 1.)
-- Hence no 5c test lets a ruleset-2 snapshot GOVERN a block: each rewrites a stored row only after
-  every block it governs.
+**5d blocker found in 5c — CLOSED in slice 5d** (phase 0a now hashes the governing snapshot with
+`dna_vset_hash_ex(…, DNA_VSET_RULESET_TOPN_V2, …)`; see "HF-6 slice 5d"). The 5c tests never let a
+ruleset-2 snapshot govern a block; since 5d the engine's own ruleset-2 rows do (`test_hf6_readers`
+cases E and F).
 
 **Tests** (written, NOT run by the author). `test_vset_persist` §5: a ruleset-2 round trip (every
 field incl. the ids; the hash == SHA3-512(`NDS.VSET.v2` ‖ blob) computed in the test, ≠ the v1-tag

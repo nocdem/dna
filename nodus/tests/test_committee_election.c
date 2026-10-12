@@ -18,8 +18,10 @@
  *       the tiebreak (design rev 6 §7.7 item 8, the khan's decision
  *       2026-10-12). One fresh database, a 2000 validator C plus two
  *       equal 1000 validators A / B, each with a v2_validator_roles row
- *       (validator_id = validators.pubkey_hash = SHA3-512(pubkey), owner
- *       0x0F × 64). A lookback seed is chosen by scanning fills 0..255
+ *       (validator_id = the row's stored validators.pubkey_hash, read
+ *       from the DB; owner 0x0F × 64) and a kind-0 copy row keyed by that
+ *       id beside the legacy SHA3-512(pubkey)-keyed copy rows (each arm
+ *       reads its own keying). A lookback seed is chosen by scanning fills 0..255
  *       for the first under which the two INDEPENDENTLY computed
  *       preimages order A / B differently:
  *         gen 4  SHA3-512(0x02 ‖ validator_id[64] ‖ seed[64])  129 B
@@ -679,15 +681,16 @@ int main(void) {
         CHECK_EQ(nodus_validator_insert(&wd, &vb), 0);
         CHECK_EQ(nodus_validator_insert(&wd, &vc), 0);
 
-        /* the v2 roles rows: validator_id = SHA3-512(pubkey), which must
-         * be the validators row's own pubkey_hash (the v2 reader faults on
-         * a mismatch) — checked, not assumed */
+        /* the v2 roles rows. The generation-4 reader joins a validators
+         * row to its roles row by validators.pubkey_hash (= validator_id,
+         * nodus_witness_validator.c V2_VAL_SELECT) — so each id IS the
+         * row's stored pubkey_hash, read from the DB (whatever the CRUD
+         * writer derives it as: today the tagged leaf key, not a value
+         * this test restates). */
         const dnac_validator_record_t *vr[3] = { &va, &vb, &vc };
         uint8_t vid[3][64], own[64];
         memset(own, 0x0F, sizeof(own));
         for (int i = 0; i < 3; i++) {
-            CHECK_EQ(qgp_sha3_512(vr[i]->pubkey, DNAC_PUBKEY_SIZE, vid[i]),
-                     0);
             sqlite3_stmt *st = NULL;
             CHECK_EQ(sqlite3_prepare_v2(wd.db, "SELECT pubkey_hash FROM "
                          "validators WHERE pubkey = ?", -1, &st, NULL),
@@ -696,7 +699,7 @@ int main(void) {
                               SQLITE_STATIC);
             CHECK_EQ(sqlite3_step(st), SQLITE_ROW);
             CHECK_EQ(sqlite3_column_bytes(st, 0), 64);
-            CHECK(memcmp(sqlite3_column_blob(st, 0), vid[i], 64) == 0);
+            memcpy(vid[i], sqlite3_column_blob(st, 0), 64);
             sqlite3_finalize(st);
             st = NULL;
             CHECK_EQ(sqlite3_prepare_v2(wd.db, "INSERT INTO "
@@ -709,10 +712,27 @@ int main(void) {
             CHECK_EQ(sqlite3_step(st), SQLITE_DONE);
             sqlite3_finalize(st);
         }
-        /* copy(es − 2E) from the live rows: the legacy writer keys it by
-         * SHA3-512(pubkey) — the validator_id bytes the gen-4 arm reads
-         * it by (nodus_witness_v2_balance_copy_frozen_key) */
+        CHECK(memcmp(vid[0], vid[1], 64) != 0);
+        /* copy(es − 2E), both keyings on one table: the legacy writer's
+         * rows keyed by SHA3-512(pubkey) (what the generation-3 arm reads,
+         * nodus_witness_v2_balance_copy_frozen), then one kind-0 row per
+         * candidate keyed by its validator_id (validator_fp = owner_fp =
+         * the id — the kind-0 rule v2ec_member_copy enforces), what the
+         * generation-4 arm reads (nodus_witness_v2_balance_copy_frozen_
+         * key). Amounts = the live bonds. */
         refresh_copy(&wd, ce);
+        for (int i = 0; i < 3; i++) {
+            sqlite3_stmt *st = NULL;
+            CHECK_EQ(sqlite3_prepare_v2(wd.db, "INSERT INTO v2_balance_copy "
+                         "(epoch_start, validator_fp, owner_fp, kind, amount) "
+                         "VALUES (?, ?, ?, 0, ?)", -1, &st, NULL), SQLITE_OK);
+            sqlite3_bind_int64(st, 1, (int64_t)ce);
+            sqlite3_bind_blob (st, 2, vid[i], 64, SQLITE_STATIC);
+            sqlite3_bind_blob (st, 3, vid[i], 64, SQLITE_STATIC);
+            sqlite3_bind_int64(st, 4, (int64_t)vr[i]->self_stake);
+            CHECK_EQ(sqlite3_step(st), SQLITE_DONE);
+            sqlite3_finalize(st);
+        }
 
         /* the first seed fill under which the two preimages disagree on
          * A / B — so the two arms below are told apart, not equal by
