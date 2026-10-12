@@ -2085,11 +2085,14 @@ async function sendAction(fp, text, kind, stored) {
   const gen = generation, contact = chatPeerOf(fp);     // a pending request's chat too (0.1.99)
   if (!contact?.salt) throw new Error('Messaging with this contact is not ready yet.');
   const message = { seq: takeSeq(), fp, dir: 'out', text, ts: nowSeconds(), at: Date.now(), kind };
-  await persist([message]);
-  if (gen !== generation) throw new Error('Messages is not open.');
-  messages.push(message); unpublished.add(fp);
+  // Drawn at once, then kept (0.1.105, see send below).
+  messages.push(message);
   stored?.();
   render();
+  try { await persist([message]); }
+  catch (error) { if (gen === generation) { unshow(message); render(); } throw error; }
+  if (gen !== generation) throw new Error('Messages is not open.');
+  unpublished.add(fp);
   try { await publishOutbox(contact, gen); } catch { /* retried by sync */ }
   if (gen === generation) render();
 }
@@ -2490,11 +2493,23 @@ async function addContact(event) {
   }
 }
 
+// A message or action is drawn at once, and kept on this device right after
+// (0.1.105, operator: "ben gönderdiğim halde benim ekranıma bile geç
+// düşüyor"): keeping a saved wallet's history seals each record in the
+// module, through the wallet's ONE operation queue (src/connect/core.js
+// historyEncrypt, src/nodus/client.js), so it waited behind a contact's
+// network read — seconds, twice per message (the record and the state).
+// It is published only once kept (`unpublished` is set after persist). If
+// keeping fails it leaves the conversation again (unshow) and the error is
+// said; a check round could have published it meanwhile only if the same
+// contact had other unpublished messages — rare, and then it is sent but
+// not kept here.
+function unshow(message) { messages = messages.filter(x => x !== message); }
 async function send(event) {
   event.preventDefault();
   // One send at a time: the text is taken from the composer, which is
-  // cleared only once the message is kept on this device (persist). A second
-  // Enter or click meanwhile would take the same text again and send it twice.
+  // cleared as soon as the message is drawn; a second Enter or click before
+  // that would take the same text again and send it twice.
   if (sending) return;
   const gen = generation, contact = selectedFp && chatPeerOf(selectedFp);   // a pending request's chat too (0.1.99)
   const typed = ui.composer.value;
@@ -2507,22 +2522,28 @@ async function send(event) {
   const quotedReply = quoting ? parseReply(quoting.text) : null;
   const text = quoting ? buildReply(quoting.dir === 'out' ? 'me' : displayName(contact.fp), quotedReply ? quotedReply.text : quoting.text, typed) : typed;
   sending = true; ui.sendButton.disabled = true;
-  try {
-    const message = { seq: takeSeq(), fp: contact.fp, dir: 'out', text, ts: nowSeconds(), at: Date.now() };
-    await persist([message]);
-    if (gen !== generation) return;
-    messages.push(message); unpublished.add(contact.fp);
-    ui.composer.value = ''; growComposer();
-    if (quoting) setReply(undefined);
-    // Kept and the composer is empty: the next message may be written and
-    // sent while this one is published (retried by sync if it fails).
-    sending = false;
-    render({ scroll: true });
-    try { await publishOutbox(contact, gen); if (gen === generation) ui.sendStatus.textContent = ''; }
-    catch (error) { if (gen === generation) { ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; logFailure('A message was not sent yet; it is tried again automatically', error); } }
-    if (gen === generation) render();
-  } catch (error) { if (gen === generation) { ui.sendStatus.textContent = error.message; logFailure('A message could not be kept on this device', error); } }
-  finally { if (gen === generation && sending) { sending = false; ui.sendButton.disabled = !online; } }
+  const message = { seq: takeSeq(), fp: contact.fp, dir: 'out', text, ts: nowSeconds(), at: Date.now() };
+  // Drawn now, the composer empty: the next message may be written at once.
+  messages.push(message);
+  ui.composer.value = ''; growComposer();
+  if (quoting) setReply(undefined);
+  sending = false; ui.sendButton.disabled = !online;
+  render({ scroll: true });
+  try { await persist([message]); }
+  catch (error) {
+    if (gen === generation) {
+      unshow(message);
+      if (!ui.composer.value) { ui.composer.value = typed; growComposer(); }
+      ui.sendStatus.textContent = error.message; logFailure('A message could not be kept on this device', error);
+      render();
+    }
+    return;
+  }
+  if (gen !== generation) return;
+  unpublished.add(contact.fp);
+  try { await publishOutbox(contact, gen); if (gen === generation) ui.sendStatus.textContent = ''; }
+  catch (error) { if (gen === generation) { ui.sendStatus.textContent = 'Not sent yet. It is tried again automatically.'; logFailure('A message was not sent yet; it is tried again automatically', error); } }
+  if (gen === generation) render();
 }
 
 async function saveProfile(event) {
