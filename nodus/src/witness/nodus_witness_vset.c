@@ -401,6 +401,11 @@ int nodus_witness_vset_entry_from_member(const nodus_committee_member_t *m,
  * committed IN block F is a candidate at F ("F'de commit edilen ROTATE
  * dahildir"). They are read by ONE statement in validator_id ASC (the
  * table's primary key — B1: the committee member struct is not widened).
+ * A pending row with an effective epoch above F cannot exist at the
+ * freeze of F (it would need a ROTATE committed after block F, whose
+ * items precede this boundary step), so the filter only states the rule;
+ * an epoch of 0 beside a pending key is the mixed encoding every row
+ * reader refuses, and is refused here too.
  *
  * NO CANDIDATE ⇒ return before anything else is read: no power helper,
  * no S(F). The no-rotation build is then byte-identical AND
