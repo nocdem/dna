@@ -15,6 +15,9 @@
 # This script builds the one module: every argument is passed through.
 #   build-connect-wasm.sh           the shipped module -> src/nodus/send.{js,wasm}
 #   build-connect-wasm.sh parity    the node builds for the parity tests
+# The source list (including the P1 rules connect/nc_jsjson.c,
+# nc_payload.c, nc_rules_json.c) and the export lists (the parity build's
+# nc_rule_in_alloc / nc_rule_test) live in build-nodus-send-wasm.sh.
 # Native unit tests of the library: connect/tests/ (CMake).
 set -euo pipefail
 exec bash "$(dirname "$0")/build-nodus-send-wasm.sh" "$@"

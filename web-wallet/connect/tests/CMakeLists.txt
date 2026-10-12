@@ -30,6 +30,9 @@
 #                        KEK / wrapped key / record / bucket of the oracle's
 #                        groups_kat.json byte-compared, signatures verified,
 #                        KEM round trip, every reject case refused
+#   test_nc_rules        P1 rules: every shared vector (generated from the
+#                        JS of src/connect/ui/actions.js) byte-equal through
+#                        nc_rule_call; malformed JSON inputs; ASan + UBSan
 cmake_minimum_required(VERSION 3.16)
 project(nodus_connect_tests C)
 
@@ -41,9 +44,56 @@ set(CONNECT_DIR "${ROOT}/web-wallet/connect")
 
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(JSONC REQUIRED json-c)
 find_path(SQLITE3_INCLUDE sqlite3.h REQUIRED)
+
+# json-c: the SAME version and source as the wasm module (design P1 rev 2
+# §3, red-team R6 — native ctest used the host's json-c 0.16 while the wasm
+# links 0.17). scripts/build-jsonc-wasm.sh downloads tag json-c-0.17-20230812
+# once and pins it by SHA-256; that verified tarball is built here, natively
+# and statically, with the wasm build's options (BUILD_SHARED_LIBS=OFF,
+# BUILD_STATIC_LIBS=ON, BUILD_APPS=OFF, BUILD_TESTING=OFF, Release; json-c's
+# default -Werror kept). CMake extracts the local file; nothing is
+# downloaded. Without the tarball the host json-c (pkg-config) is used and
+# the configure step says so — then native and wasm json-c differ.
+set(JSONC_TARBALL "$ENV{HOME}/wasm-deps/src/json-c-0.17-20230812.tar.gz"
+    CACHE FILEPATH "json-c 0.17 tarball fetched by scripts/build-jsonc-wasm.sh")
+set(JSONC_SHA256 "024d302a3aadcbf9f78735320a6d5aedf8b77876c8ac8bbb95081ca55054c7eb")
+if(EXISTS "${JSONC_TARBALL}")
+  include(ExternalProject)
+  ExternalProject_Add(jsonc017
+    URL "${JSONC_TARBALL}"
+    URL_HASH SHA256=${JSONC_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP ON
+    CMAKE_ARGS
+      -DCMAKE_BUILD_TYPE=Release
+      -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+      -DCMAKE_INSTALL_LIBDIR=lib
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      -DBUILD_SHARED_LIBS=OFF
+      -DBUILD_STATIC_LIBS=ON
+      -DBUILD_APPS=OFF
+      -DBUILD_TESTING=OFF
+    BUILD_BYPRODUCTS <INSTALL_DIR>/lib/libjson-c.a)
+  ExternalProject_Get_Property(jsonc017 INSTALL_DIR)
+  file(MAKE_DIRECTORY "${INSTALL_DIR}/include")
+  add_library(jsonc_static STATIC IMPORTED)
+  set_target_properties(jsonc_static PROPERTIES
+    IMPORTED_LOCATION "${INSTALL_DIR}/lib/libjson-c.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${INSTALL_DIR}/include")
+  add_dependencies(jsonc_static jsonc017)
+  set(NC_JSONC_INCLUDE "${INSTALL_DIR}/include")
+  set(NC_JSONC_LIBS jsonc_static)
+  set(NC_JSONC_LIBDIRS "")
+  message(STATUS "json-c: 0.17 from ${JSONC_TARBALL} (same tag as the wasm)")
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(JSONC REQUIRED json-c)
+  set(NC_JSONC_INCLUDE ${JSONC_INCLUDE_DIRS})
+  set(NC_JSONC_LIBS ${JSONC_LIBRARIES})
+  set(NC_JSONC_LIBDIRS ${JSONC_LIBRARY_DIRS})
+  message(WARNING "json-c: ${JSONC_TARBALL} not found (scripts/build-jsonc-wasm.sh fetches it); "
+                  "using the host json-c ${JSONC_VERSION} — NOT the wasm's 0.17")
+endif()
 
 set(NC_SOURCES
   ${CONNECT_DIR}/nc_keys.c
@@ -56,6 +106,10 @@ set(NC_SOURCES
   ${CONNECT_DIR}/nc_history.c
   ${CONNECT_DIR}/nc_contactlist.c
   ${CONNECT_DIR}/nc_group.c
+  # P1 rules (design 2026-10-12-connect-core-p1-rules-design.md rev 2)
+  ${CONNECT_DIR}/nc_jsjson.c
+  ${CONNECT_DIR}/nc_payload.c
+  ${CONNECT_DIR}/nc_rules_json.c
   ${ROOT}/messenger/codec/contact_request_codec.c
   ${ROOT}/messenger/codec/contactlist_codec.c
   ${ROOT}/messenger/codec/dm_outbox_codec.c
@@ -128,13 +182,13 @@ target_include_directories(nc_core PUBLIC
   # has -I$root/dnac/include (scripts/build-nodus-send-wasm.sh)
   ${ROOT}/dnac/include
   ${ROOT}/messenger ${ROOT}/messenger/include
-  ${OPENSSL_INCLUDE_DIR} ${JSONC_INCLUDE_DIRS} ${SQLITE3_INCLUDE})
+  ${NC_JSONC_INCLUDE} ${OPENSSL_INCLUDE_DIR} ${SQLITE3_INCLUDE})
 target_compile_options(nc_core PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
 set_source_files_properties(${ROOT}/shared/crypto/utils/qgp_fingerprint.c
   PROPERTIES COMPILE_OPTIONS "-Wno-unknown-warning-option;-Wno-unterminated-string-initialization")
-target_link_libraries(nc_core PUBLIC OpenSSL::Crypto ${JSONC_LIBRARIES}
+target_link_libraries(nc_core PUBLIC OpenSSL::Crypto ${NC_JSONC_LIBS}
   Threads::Threads m)
-target_link_directories(nc_core PUBLIC ${JSONC_LIBRARY_DIRS})
+target_link_directories(nc_core PUBLIC ${NC_JSONC_LIBDIRS})
 
 enable_testing()
 foreach(t test_nc_classify test_nc_wire test_nc_fault_matrix)
@@ -161,6 +215,25 @@ target_compile_options(test_nc_group PRIVATE -Wall -Wextra -Wno-unused-parameter
 target_compile_definitions(test_nc_group PRIVATE
   GROUPS_KAT="${ROOT}/web-wallet/test/fixtures/groups_kat.json")
 add_test(NAME test_nc_group COMMAND test_nc_group)
+
+# P1: the shared rule vectors (web-wallet/test/vectors/connect-rules/*.json,
+# read at run time) through nc_rule_call, plus malformed inputs. The rule
+# sources are compiled INTO the test with AddressSanitizer + UBSan (any
+# finding aborts: -fno-sanitize-recover=all), so the code under test is
+# instrumented; their uninstrumented copies in nc_core are not pulled in
+# (every symbol is already defined by the test's own objects).
+set(NC_RULES_SOURCES
+  ${CONNECT_DIR}/nc_jsjson.c
+  ${CONNECT_DIR}/nc_payload.c
+  ${CONNECT_DIR}/nc_rules_json.c)
+add_executable(test_nc_rules test_nc_rules.c ${NC_RULES_SOURCES})
+target_link_libraries(test_nc_rules nc_core)
+target_compile_options(test_nc_rules PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror
+  -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+target_link_options(test_nc_rules PRIVATE -fsanitize=address,undefined)
+target_compile_definitions(test_nc_rules PRIVATE
+  VECTORS_DIR="${ROOT}/web-wallet/test/vectors/connect-rules")
+add_test(NAME test_nc_rules COMMAND test_nc_rules)
 
 # NC-3a: live READ-ONLY probe against a real node (not a ctest: it needs a
 # words file and a live server; see its file header).

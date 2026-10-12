@@ -843,7 +843,7 @@ int nc_ack_publish(const nc_ctx_t *ctx, const char *peer_fp,
  *  its own clock there, the web the newest of OUR timestamps it stored. It
  *  is a watermark, not a list: the caller treats a message as delivered
  *  only if it was in a blob published BEFORE this read and its timestamp
- *  is <= *ack_ts. */
+ *  is < *ack_ts (strictly: src/connect/ui/text.js markDelivered). */
 void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,
                  const uint8_t salt[NC_SALT_LEN], nc_read_t *raw,
                  uint64_t *ack_ts);

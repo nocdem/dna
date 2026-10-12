@@ -197,6 +197,14 @@ sources=(
   connect/nc_contactlist.c
   # groups codec (G1 nc_group.h; exports nc_group_* in nc_wasm.c, G2)
   connect/nc_group.c
+  # P1 rules (design docs/plans/2026-10-12-connect-core-p1-rules-design.md
+  # rev 2): the JS-compatible JSON layer, the payload forms and their JSON
+  # dispatcher. Library code: in the shipped module nothing calls them yet
+  # (the web is not switched in P1); the parity TEST build exports
+  # nc_rule_test (exports_test below).
+  connect/nc_jsjson.c
+  connect/nc_payload.c
+  connect/nc_rules_json.c
   # message codecs, verbatim (NC-1, NC-1b)
   $root/messenger/codec/contact_request_codec.c
   $root/messenger/codec/contactlist_codec.c
@@ -426,7 +434,11 @@ exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_t
   nsw_test_msig_seed_pk nsw_test_msig_seed_sign
   nsw_test_evm_call_hex nsw_test_evm_call_roundtrip nsw_test_evmfund_roundtrip
   nsw_test_evm_op_weight nsw_test_evm_build nsw_test_evm_create_address
-  nsw_test_evm_args_hex)
+  nsw_test_evm_args_hex
+  # P1 rules' vector entry (connect/nc_wasm.c, compiled only with
+  # NODUS_SEND_TEST_FIXED_RANDOM; test/connect-rules-vectors.test.js).
+  # Synchronous, no network, no session.
+  nc_rule_in_alloc nc_rule_test)
 
 join_exports() {
   local out="" name

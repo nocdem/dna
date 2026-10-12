@@ -2390,6 +2390,56 @@ int nc_group_bucket_fetch(const char *group_id_hex, const char *salt_hex, const 
     return nc_end(set_result(o));
 }
 
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* ── P1 rules: the parity build's vector entry (TEST ONLY) ─────────────
+ * Design docs/plans/2026-10-12-connect-core-p1-rules-design.md rev 2: the
+ * shared vectors (test/vectors/connect-rules/) run through the SAME
+ * dispatcher as native ctest (nc_rules_json.h nc_rule_call), here in wasm
+ * (test/connect-rules-vectors.test.js). Compiled only with
+ * NODUS_SEND_TEST_FIXED_RANDOM — never in the shipped NODUS_SEND_RELEASE
+ * module (the web is not switched to C in P1) — and exported only by the
+ * parity build (scripts/build-nodus-send-wasm.sh exports_test).
+ *
+ * Synchronous and pure: no network (never reaches emscripten_sleep), no
+ * session material, no op bracket, no g_result. The input does not cross
+ * as a ccall string (copied onto the 1 MiB C stack, design §R R1): the page
+ * asks for `len` bytes (nc_rule_in_alloc, up to NC_RULE_IN_MAX + 1 so the
+ * dispatcher's own cap check is reachable), fills them through HEAPU8 and
+ * calls nc_rule_test(name), which takes and frees the buffer. The result is
+ * this entry's OWN buffer (valid until the next nc_rule_test): a JSON text
+ * without a raw NUL (the writer escapes it), so the page reads it up to the
+ * NUL as bytes. */
+#include "nc_rules_json.h"
+
+static char  *g_rule_in;
+static size_t g_rule_in_len;
+static char  *g_rule_out;
+
+char *nc_rule_in_alloc(int len) {
+    free(g_rule_in);
+    g_rule_in = NULL;
+    g_rule_in_len = 0;
+    if (len < 0 || (size_t)len > NC_RULE_IN_MAX + 1u) return NULL;
+    g_rule_in = malloc(len ? (size_t)len : 1u);
+    if (g_rule_in) g_rule_in_len = (size_t)len;
+    return g_rule_in;
+}
+
+/* The result JSON (nc_rules_json.h), or NULL when out of memory. Without a
+ * prior nc_rule_in_alloc the input is empty (-> "invalid JSON"). */
+const char *nc_rule_test(const char *name) {
+    char  *in = g_rule_in;
+    size_t len = g_rule_in_len;
+    g_rule_in = NULL;
+    g_rule_in_len = 0;
+    free(g_rule_out);
+    g_rule_out = NULL;
+    if (nc_rule_call(name, in, len, &g_rule_out) != 0) g_rule_out = NULL;
+    free(in);
+    return g_rule_out;
+}
+#endif /* NODUS_SEND_TEST_FIXED_RANDOM */
+
 /* ── lock: synchronous, never reaches emscripten_sleep ───────────────── */
 
 /* Every Messages secret and cache. Called by the host's lock (nsw_lock,
