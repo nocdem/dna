@@ -9,7 +9,7 @@ import { NODUS_NETWORK, nodusNetworkFor } from '../src/nodus/network.js';
 import { prepareTransfer } from '../src/wallet.js';
 import { recordActivity, watchActivity, submissionStatus, terminal } from '../src/activity.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
-import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD, claimStatus, prepareClaim, isClaimRow, stakingOverview, prepareStake } from '../src/adapters/nodus.js';
+import { expiryHeightFor, lockedInputs, resendInputs, balances, checkNodusActivity, nodusRecipient, nodusAmountUnits, NODUS_EXPIRY_AHEAD, claimStatus, prepareClaim, isClaimRow, stakingOverview, prepareStake, networkStake } from '../src/adapters/nodus.js';
 import { createMockNodusModule, FINGERPRINT, RECIPIENT, CHAIN_ID, INTENT_ID, FEE, coin } from './nodus-mock-module.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -605,6 +605,14 @@ test('staking: a module without the staking operations still connects; every sta
   client.lock(); odd.lock();
 });
 
+test('network stake: bonded witnesses only (active, eligible), bonds and delegations summed exactly, a truncated list is a lower bound', () => {
+  const row = (status, selfStake, delegated) => ({ status, selfStake, delegated });
+  const rows = [row('active', 10000000000000000n, 300000000n), row('eligible', 10000000000000000n, 0n), row('retiring', 5n, 5n), row('unstaked', 7n, 7n), row('auto-retired', 9n, 9n)];
+  assert.deepEqual(networkStake(rows, false), { witnesses: 2, selfStake: 20000000000000000n, delegated: 300000000n, total: 20000000300000000n, partial: false });
+  assert.equal(networkStake(rows, true).partial, true);
+  assert.deepEqual(networkStake([], false), { witnesses: 0, selfStake: 0n, delegated: 0n, total: 0n, partial: false });
+});
+
 test('staking overview: validators and delegations parsed strictly and joined; lock period from the module rules', async () => {
   const { mock, client } = await stakingClient();
   assert.equal(client.stakeable, true); assert.deepEqual(client.stakingRules, RULES);
@@ -615,6 +623,9 @@ test('staking overview: validators and delegations parsed strictly and joined; l
   assert.equal(view.delegations[0].canUndelegate, true); assert.equal(view.delegations[1].canUndelegate, false);
   assert.equal(view.ownValidator, undefined);
   assert.equal(view.lockText, '12 epochs (12 × 720 = 8640 blocks)');
+  // Network total (Scan's rule): bonded witnesses only — active A and
+  // eligible C, not retiring B.
+  assert.deepEqual(view.network, { witnesses: 2, selfStake: 2n * BigInt(RULES.selfStake), delegated: 0n, total: 2n * BigInt(RULES.selfStake), partial: false });
   // This wallet listed as a bonded validator -> ownValidator; UNSTAKED -> not.
   mock.state.validators = [...mock.state.validators, { fingerprint: FINGERPRINT, selfStake: RULES.selfStake, delegated: '0', commissionBps: 0, status: 0 }];
   assert.equal((await stakingOverview({ client, from: FINGERPRINT })).ownValidator.fingerprint, FINGERPRINT);

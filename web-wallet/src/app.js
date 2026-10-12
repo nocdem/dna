@@ -1217,6 +1217,19 @@ function hideStaking() {
   stakeCheck++; stakeView = undefined; expandedValidator = undefined; setEarnAvailable(false);
   $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('unlisted-delegations').hidden = true;
   $('stake-status').textContent = '';
+  $('stake-network').replaceChildren(); $('stake-network').hidden = true;
+}
+// The network's total stake above the witness list (adapters/nodus.js
+// networkStake: bonded witnesses only, Scan's rule). A failed or older read
+// keeps the last figure shown rather than blanking it (as the portfolio
+// does on Refresh); hideStaking clears it.
+function renderNetworkStake(network) {
+  const box = $('stake-network');
+  const label = document.createElement('span'); label.className = 'stake-network-label'; label.textContent = 'Staked on the network';
+  const total = document.createElement('strong'); total.textContent = `${network.partial ? 'at least ' : ''}${nodusAmountText(network.total)} NODUS`;
+  const detail = document.createElement('small');
+  detail.textContent = `${nodusAmountText(network.selfStake)} NODUS in witness bonds and ${nodusAmountText(network.delegated)} NODUS delegated, across ${network.witnesses} witness${network.witnesses === 1 ? '' : 'es'}${network.partial ? ' (only the first witnesses are listed)' : ''}.`;
+  box.replaceChildren(label, total, detail); box.hidden = false;
 }
 async function refreshStaking() {
   const client = nodusClient, source = wallet, check = ++stakeCheck;
@@ -1226,7 +1239,7 @@ async function refreshStaking() {
   try {
     const view = await adapters.nodus.stakingOverview({ client, from: source.addresses.nodus });
     if (!current()) return;
-    stakeView = view; renderStaking(view);
+    stakeView = view; renderStaking(view); renderNetworkStake(view.network);
     $('stake-status').textContent = view.truncated ? 'The witness list is longer than this wallet shows; only the first witnesses are listed.' : '';
   } catch (error) {
     if (!current()) return;

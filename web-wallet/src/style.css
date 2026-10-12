@@ -341,6 +341,10 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .stake-panel { display: flex; flex-direction: column; }
 .stake-panel > .hint { margin-bottom: 0; }
 #stake-status:empty { margin: 0; }
+.stake-network { display: flex; flex-direction: column; gap: 4px; margin: 16px 0 0; padding: 16px 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.stake-network-label { font-size: 12px; color: var(--muted); }
+.stake-network strong { font-size: 20px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.stake-network small { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .stake-block { margin: 24px 0 0; padding-top: 20px; border-top: 1px solid var(--line); scroll-margin-top: 24px; }
 .stake-block h4 { font-size: 12px; font-weight: 500; margin: 0 0 12px; color: var(--text); }
 /* A validator row's header is one button that opens the row's own
