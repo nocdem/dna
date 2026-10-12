@@ -1182,8 +1182,7 @@
  {
   "rule": "parseTransfer",
   "args": "{\"text\":\"{\\\"type\\\":\\\"token_transfer\\\",\\\"chain\\\":\\\"NÖDUS\\\"}\"}",
-  "expect": "{\"chain\":\"nödus\",\"amount\":\"\",\"token\":\"\",\"wire\":\"\",\"to\":\"\",\"name\":\"\"}",
-  "gap": "full-Unicode toLowerCase (C lowercases ASCII only)"
+  "expect": "{\"chain\":\"nÖdus\",\"amount\":\"\",\"token\":\"\",\"wire\":\"\",\"to\":\"\",\"name\":\"\"}"
  },
  {
   "rule": "validNodusCard",

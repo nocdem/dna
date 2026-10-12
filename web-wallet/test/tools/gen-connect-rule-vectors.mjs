@@ -28,10 +28,11 @@
 // a wrong expectation (JSON.stringify would turn a Set into {} silently).
 //
 // "gap": a behaviour the C port knowingly does not reproduce, marked by
-// hand on the case that shows it. Today one: full-Unicode toLowerCase (C
-// lowercases ASCII only; whether the JS changes is the operator's call). It
-// is written and run like every vector; on the C side it FAILS — a failure
-// like any other. The mark only names the reason. Lone surrogates, integer
+// hand on the case that shows it. Today none (the one there was, the
+// full-Unicode lower case, closed when the JS changed to A–Z only, web
+// 0.1.102). A marked vector is written and run like every vector; on the
+// C side it FAILS — a failure like any other. The mark only names the
+// reason. Lone surrogates, integer
 // literals of any size and NUL / repeated keys are NOT gaps: the C JSON
 // front-end (connect/nc_jsjson.h) keeps them as JSON.parse does.
 //
@@ -523,7 +524,9 @@ export function cases() {
   add('parseTransfer', { text: '{"type":"token_transfer","recipientName":"a\\u0000b\\/c"}' });
   add('parseTransfer', { text: '{"type":"token_transfer","recipientName":"\\ud83d\\ude00"}' });
   add('parseTransfer', { text: '{"type":"token_transfer","recipientName":"\\ud800"}' });            // lone surrogate in the payload
-  add('parseTransfer', { text: '{"type":"token_transfer","chain":"NÖDUS"}' }, 'full-Unicode toLowerCase (C lowercases ASCII only)');
+  // A–Z only are lowered, in the JS since web 0.1.102 (operator "uygun öyle
+  // yap") as in C: "NÖDUS" -> "nÖdus". Formerly the one known gap.
+  add('parseTransfer', { text: '{"type":"token_transfer","chain":"NÖDUS"}' });
 
   // validNodusCard (actions.js:197)
   const ok = A.parseTransfer(A.buildTransfer({ amount: '1', wire: W, to: FB }));
