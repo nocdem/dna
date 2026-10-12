@@ -1111,6 +1111,17 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  default and is bound into D4 (§8.1 consts[0]) in slice 8. */
 #define DNAC_HF6_STAKE_MIN_DEFAULT   (2000000ULL * 100000000ULL)    /* 2M × 10^8 raw */
 
+/** HF-6 — the POWER_CAP_BPS default, 3000 bps = 30 % (design rev 6 §5
+ *  "Oran", §8 param 20; Kurultay #14 K5: legal range [500, 3000]). The
+ *  ratio the water-fill cap (shared/dnac/power_cap.h) applies to a
+ *  ruleset-2 validator-set snapshot. Today the ONE read
+ *  (nodus_witness_power_cap_bps_for_epoch, nodus_witness_vset.c) returns
+ *  this compiled value; slice 8 makes it the param-20 no-row default of a
+ *  chain-config read and binds it into D4 (§8.1 consts[2]). Its range is
+ *  pinned against DNA_POWER_CAP_BPS_MIN / _MAX by a _Static_assert where
+ *  both headers are visible (nodus_witness_vset.c). */
+#define DNAC_HF6_POWER_CAP_BPS_DEFAULT   3000u
+
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
 #define DNAC_CFG_MIN_NAME_PRICE             100000000ULL

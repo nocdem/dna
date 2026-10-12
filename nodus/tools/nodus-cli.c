@@ -2525,8 +2525,11 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
      * never guesses). Off: the first `quorum` keys approve (seat count,
      * as before). On: the keys approve IN THE ORDER GIVEN until their
      * seats' voting power exceeds 2/3 of the committee's power — the
-     * engine's rule (nodus_rt_system_exec), power = floor(total_stake /
-     * DNAC_DECIMAL_UNIT) as the engine derives it. */
+     * engine's rule (nodus_rt_system_exec), each seat's power the
+     * member's `power` from the SAME committee lookup the engine reads
+     * (HF-6 slice 5b: nodus_witness_vset_powers over the epoch's
+     * snapshot — floor(total_stake / DNAC_DECIMAL_UNIT) for ruleset 1,
+     * the counted power for ruleset 2). */
     uint64_t hf2_raw = 0;
     if (nodus_chain_config_get_u64(wr, (uint8_t)DNAC_CFG_HF2_ACTIVE,
                                    tip + 1, 0ULL, &hf2_raw) < 0 ||
@@ -2542,7 +2545,7 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
         uint64_t total_power = 0, approved = 0, twice = 0;
         int ovf = 0;
         for (int s = 0; s < cm_count; s++) {
-            uint64_t p = committee[s].total_stake / DNAC_DECIMAL_UNIT;
+            uint64_t p = committee[s].power;
             if (p > UINT64_MAX - total_power) { ovf = 1; break; }
             total_power += p;
         }
@@ -2566,7 +2569,7 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
                 fprintf(stderr, "key %d is not a committee member\n", k);
                 goto done;
             }
-            uint64_t p = committee[seat].total_stake / DNAC_DECIMAL_UNIT;
+            uint64_t p = committee[seat].power;
             if (p > UINT64_MAX - approved) {
                 fprintf(stderr, "approver power sum overflows (a key "
                                 "given twice?)\n");

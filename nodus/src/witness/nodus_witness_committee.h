@@ -76,6 +76,17 @@ typedef struct {
     uint64_t self_stake;         /* the validator's own bond (frozen /
                                   * live, same rule)                   */
     uint16_t commission_bps;
+    uint64_t power;              /* HF-6 5b: the seat's VOTING POWER, from
+                                  * nodus_witness_vset_powers over the
+                                  * served snapshot (ruleset 1: total /
+                                  * DNAC_DECIMAL_UNIT; ruleset 2: the
+                                  * counted, capped power). Set ONLY by
+                                  * nodus_committee_get_for_block — on a
+                                  * cache hit and a cache miss alike
+                                  * (cached_committee_powers). Left 0 by
+                                  * compute_for_epoch / bootstrap_for_epoch
+                                  * (emit_member): the snapshot builder
+                                  * never reads it.                     */
 } nodus_committee_member_t;
 
 /**
@@ -149,6 +160,14 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
  * epoch; subsequent calls in the same epoch return the cached result.
  *
  * Task 53: cache consumer + populator.
+ *
+ * HF-6 slice 5b: every returned member carries `power` (hit and miss
+ * alike). An epoch served from its snapshot row gets
+ * nodus_witness_vset_powers over that row (-1 there is -1 here); an
+ * epoch WITHOUT a row is recomputed only below key generation
+ * NODUS_RT_GEN_STORAGE, with power = total_stake / DNAC_DECIMAL_UNIT —
+ * at generation >= 4 (or an unreadable generation) it is -1, the cache
+ * left invalid (ORCHESTRATOR decision D5, plan tasks/hf6-slice5-plan.md).
  *
  * @return 0 on success, -1 on error.
  */

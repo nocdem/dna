@@ -20,6 +20,7 @@
                                             * copy the selection ranks by */
 #include "witness/nodus_witness_v2_epoch.h" /* HF-6 3d: key generation   */
 #include "witness/nodus_witness_runtime.h"  /* NODUS_RT_GEN_STORAGE      */
+#include "witness/nodus_witness_emission.h" /* HF-6 5b: DNAC_DECIMAL_UNIT */
 
 #include "nodus/nodus_types.h"       /* NODUS_TREE_TAG_VALIDATOR */
 #include "nodus/nodus_chain_config.h" /* nodus_chain_config_get_u64 */
@@ -714,6 +715,9 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
              * cache. */
             out[i].self_stake     = w->cached_committee_self_stakes[i];
             out[i].commission_bps = w->cached_committee_commission_bps[i];
+            /* HF-6 5b — the voting power, from the parallel array the
+             * miss path below fills; a hit and a miss agree. */
+            out[i].power          = w->cached_committee_powers[i];
         }
         *count_out = n;
         return 0;
@@ -792,6 +796,24 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
             dna_vset_snapshot_t *snap = NULL;
             int g = nodus_witness_vset_get(w, e_start, &snap, NULL);
             if (g == 0) {
+                /* HF-6 5b — the seats' voting power from THE ONE helper
+                 * over the served snapshot (its own ruleset decides
+                 * capped or not). A power that cannot be computed is a
+                 * FAULT: the lookup fails closed, the cache stays
+                 * invalid. */
+                uint64_t pw[DNA_MAX_ACTIVE_VALIDATORS];
+                if (nodus_witness_vset_powers(w, snap, pw) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "epoch %llu: the served "
+                                  "snapshot's voting power cannot be "
+                                  "computed — no committee",
+                                  (unsigned long long)e_start);
+                    dna_vset_free(&snap);
+                    free(tmp);
+                    w->cached_committee_epoch_start = UINT64_MAX;
+                    w->cached_committee_count = 0;
+                    *count_out = 0;
+                    return -1;
+                }
                 /* decode caps active_count at DNA_MAX_ACTIVE_VALIDATORS,
                  * and the shared/dnac ceiling equals the dnac one
                  * (pinned in serialize.c), so this cannot overflow tmp. */
@@ -801,6 +823,7 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
                     tmp[i].total_stake    = snap->entries[i].total_stake;
                     tmp[i].self_stake     = snap->entries[i].self_bond;
                     tmp[i].commission_bps = snap->entries[i].commission_bps;
+                    tmp[i].power          = pw[i];
                 }
                 tmp_count = (int)snap->active_count;
                 dna_vset_free(&snap);
@@ -820,6 +843,30 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
     }
 
     if (!served_from_snapshot) {
+        /* HF-6 5b (ORCHESTRATOR decision D5, plan tasks/hf6-slice5-plan.md
+         * §5): at key generation >= NODUS_RT_GEN_STORAGE a recompute
+         * without a snapshot row is a FAULT, not a set. Every epoch of a
+         * version-3 chain has its row (stored one epoch ahead), so this
+         * arm is reached only by a corrupted table or a row-less
+         * fixture — and a set recomputed from live rows there would be
+         * the current-set substitution the snapshot authority above
+         * forbids, with no ruleset to derive a capped power from. Below
+         * generation 4 the recompute and its power (total /
+         * DNAC_DECIMAL_UNIT, the pre-slice-5 unit) are unchanged. */
+        uint32_t key_gen = 0;
+        if (nodus_witness_v2_key_generation(w, &key_gen) != 0 ||
+            key_gen >= NODUS_RT_GEN_STORAGE) {
+            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: no snapshot row and the key "
+                          "generation is %s — refusing to recompute a "
+                          "committee", (unsigned long long)e_start,
+                          key_gen >= NODUS_RT_GEN_STORAGE ? ">= 4"
+                                                          : "unreadable");
+            free(tmp);
+            w->cached_committee_epoch_start = UINT64_MAX;
+            w->cached_committee_count = 0;
+            *count_out = 0;
+            return -1;
+        }
         int rc = nodus_committee_compute_for_epoch(w, e_start, tmp,
                                                       DNAC_MAX_ACTIVE_VALIDATORS,
                                                       &tmp_count);
@@ -831,6 +878,8 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
             *count_out = 0;
             return rc;
         }
+        for (int i = 0; i < tmp_count && i < DNAC_MAX_ACTIVE_VALIDATORS; i++)
+            tmp[i].power = tmp[i].total_stake / DNAC_DECIMAL_UNIT;
     }
     if (tmp_count < 0 || tmp_count > DNAC_MAX_ACTIVE_VALIDATORS) {
         /* Cannot happen — compute_for_epoch clamps to max_entries. Fail
@@ -848,6 +897,7 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
         w->cached_committee_stakes[i]           = tmp[i].total_stake;
         w->cached_committee_self_stakes[i]      = tmp[i].self_stake;
         w->cached_committee_commission_bps[i]   = tmp[i].commission_bps;
+        w->cached_committee_powers[i]           = tmp[i].power;
     }
     w->cached_committee_count = tmp_count;
     w->cached_committee_epoch_start = e_start;

@@ -23,6 +23,7 @@
 #include "witness/nodus_witness_v2_gen.h"     /* REWARD_DIVISOR_LOG2       */
 #include "witness/nodus_witness_runtime.h"    /* NODUS_RT_GEN_STORAGE      */
 #include "witness/nodus_witness_emission.h"   /* DNAC_DECIMAL_UNIT         */
+#include "witness/nodus_witness_vset.h"       /* HF-6 5b: the power helper */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"
@@ -827,9 +828,20 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
     seat_fp = calloc(n_seat, sizeof(*seat_fp));
     by_seat = calloc(n_seat, sizeof(*by_seat));
     if (!power || !seat_fp || !by_seat) goto done;
+    /* HF-6 slice 5b (ORCHESTRATOR decision D3; design rev 6 §5 consumer
+     * list, §11.7): the seats' power from THE ONE helper, computed once
+     * over the whole snapshot (ruleset 1: total / DNAC_DECIMAL_UNIT as
+     * before; ruleset 2: the counted power at that snapshot's epoch
+     * ratio). A power that cannot be computed is a FAULT. The F2 owner
+     * exclusion and the payee move are slice 6b's. */
+    if (nodus_witness_vset_powers(w, snap, power) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "settlement at %llu: snapshot(%llu)'s voting "
+                      "power cannot be computed", (unsigned long long)B,
+                      (unsigned long long)H);
+        goto done;
+    }
     uint64_t P_total = 0;
     for (uint32_t s = 0; s < n_seat; s++) {
-        power[s] = snap->entries[s].total_stake / (uint64_t)DNAC_DECIMAL_UNIT;
         if (dna_ck_add_u64(P_total, power[s], &P_total) != 0) goto done;
         if (qgp_sha3_512(snap->entries[s].pubkey, DNAC_PUBKEY_SIZE,
                          seat_fp[s]) != 0)

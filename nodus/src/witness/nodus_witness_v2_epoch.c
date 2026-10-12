@@ -1213,24 +1213,32 @@ static int v2ep_rn_savepoint(nodus_witness_t *w, const char *verb) {
 
 /* tokenomics-v3 P1 round 6 — Rule N's weight floor verdict over the NEXT
  * epoch's snapshot (decision file §3 2026-09-23 "Rule N TABANI WEIGHT
- * ÜZERİNDEN"). Power per entry is `total_stake / DNAC_DECIMAL_UNIT` —
- * the exact unit the §A ValidatorUpdate diff reports to cometbft
- * (nodus_witness_cmt_app.c:1569). P = checked sum, m = max. Allowed iff
+ * ÜZERİNDEN"). Power per entry is the snapshot's voting power from THE
+ * ONE helper, nodus_witness_vset_powers (HF-6 slice 5b, design rev 6 §5
+ * "Rule N tabanı … counted güçlerle çalışır"): `total_stake /
+ * DNAC_DECIMAL_UNIT` for a ruleset-1 snapshot — the exact unit the §A
+ * ValidatorUpdate diff reports to cometbft — and the counted (capped)
+ * power for a ruleset-2 one, the same value that diff reports for it.
+ * P = checked sum, m = max. Allowed iff
  * P > 0 AND (P - m) > P * 2 / 3 — cometbft's own integer form
  * (shared/dnac/cmt_validation.c:298 `needed = total * 2 / 3`, a commit
  * needs tallied > needed): the set must still commit with its single
  * largest member gone.
  *
  * @param allowed_out [out] 1 allowed / 0 not allowed.
- * @return 0 computed, -1 fault (sum or doubling overflows uint64 —
- *         unreachable at real supply, refused visibly rather than
+ * @return 0 computed, -1 fault (the helper refuses — a power that cannot
+ *         be computed is never a value — or the sum or doubling overflows
+ *         uint64, unreachable at real supply, refused visibly rather than
  *         wrapped). */
-static int v2ep_rn_weight_verdict(const dna_vset_snapshot_t *s,
+static int v2ep_rn_weight_verdict(nodus_witness_t *w,
+                                  const dna_vset_snapshot_t *s,
                                   uint64_t *p_out, uint64_t *m_out,
                                   int *allowed_out) {
+    uint64_t pw[DNA_MAX_ACTIVE_VALIDATORS];
+    if (nodus_witness_vset_powers(w, s, pw) != 0) return -1;
     uint64_t P = 0, m = 0;
     for (uint16_t i = 0; i < s->active_count; i++) {
-        uint64_t p = s->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+        uint64_t p = pw[i];
         if (P > UINT64_MAX - p) return -1;
         P += p;
         if (p > m) m = p;
@@ -1553,11 +1561,11 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
                     break;
                 }
                 if (prc == 0 &&
-                    v2ep_rn_weight_verdict(next, &pw_total, &pw_max,
+                    v2ep_rn_weight_verdict(w, next, &pw_total, &pw_max,
                                            &allowed) != 0) {
-                    QGP_LOG_ERROR(LOG_TAG, "Rule N: next-set power "
-                                  "overflows at boundary %llu",
-                                  (unsigned long long)h);
+                    QGP_LOG_ERROR(LOG_TAG, "Rule N: next-set power cannot "
+                                  "be computed or overflows at boundary "
+                                  "%llu", (unsigned long long)h);
                     break;
                 }
                 /* prc == 1: the next set would be EMPTY — a verdict,

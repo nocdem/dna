@@ -2902,13 +2902,17 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
             memcpy(cm_pubkeys + (size_t)ci * NODUS_CC_PUBKEY_SIZE,
                    mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE);
             /* HF-2 (GW-1): the seat's VOTING POWER, copied out BEFORE
-             * `mem` is freed below — floor(total_stake / DNAC_DECIMAL_
-             * UNIT), the SAME derivation the block-commit validator set
+             * `mem` is freed below, in the same seat order the approvals
+             * index. HF-6 slice 5b: it is the member's `power`, which
+             * nodus_committee_get_for_block fills (cache hit and miss
+             * alike) from nodus_witness_vset_powers over the epoch's
+             * snapshot — the SAME helper the block-commit validator set
              * uses (nodus_witness_cmt_app.c's FinalizeBlock
-             * validator-update loop: `en->total_stake /
-             * DNAC_DECIMAL_UNIT`), in the same seat order the approvals
-             * index. */
-            cm_powers[ci] = mem[ci].total_stake / DNAC_DECIMAL_UNIT;
+             * validator-update loop). For a ruleset-1 snapshot that is
+             * floor(total_stake / DNAC_DECIMAL_UNIT), byte-identical to
+             * the pre-slice-5 derivation; for ruleset 2 the counted
+             * power (design rev 6 §5 "HF-2 yönetişim gücü"). */
+            cm_powers[ci] = mem[ci].power;
             if (qgp_sha3_512(mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE,
                              cm_fps[ci]) != 0) {
                 free(cm_pubkeys);

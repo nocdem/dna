@@ -2269,6 +2269,20 @@ endif()
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_stake)
 endif()
+# HF-6 slice 5b — THE ONE voting-power helper of a validator-set snapshot
+# (design 2026-10-03-hf5-validator-owner-stake rev 6 §5, §8; Kurultay #14
+# K1 / K2 / K5; plan tasks/hf6-slice5-plan.md §2 "5b"): the POWER_CAP_BPS
+# seam answers the compiled default 3000; the design's twin vectors
+# through nodus_witness_vset_powers on hand-built ruleset-2 snapshots
+# ([88,2×6] → [5,2×6], [45,45,10] → [10,10,10], [10]×7 unchanged; output
+# in the snapshot's order; sub-coin remainders floored); a ruleset-1
+# snapshot is the identity total / 10^8 (uncapped, zero allowed); a
+# ruleset-2 zero power, an unknown ruleset and NULL arguments refuse with
+# the output untouched. Registered with the other HF-6 tests; the helper
+# itself needs no EVM runtime. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_power)
+endif()
 # HF-6 sub-slice 3d — the boundary and root readers under the generation-4
 # keys (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.6, §6.3/§6.4,
 # §7.2, §7.5; plan tasks/hf6-slice3-plan.md §2 "3d"): the §6.3 / §6.4 leaf
@@ -3417,7 +3431,11 @@ register_witness_test(test_witness_state_root_failclose)
 # Task 51 — committee election (post-commit lookback + state_seed tiebreak)
 register_witness_test(test_committee_election)
 
-# Task 53 — per-epoch committee cache
+# Task 53 — per-epoch committee cache. HF-6 slice 5b: every member's
+# `power` is equal on a cache hit and a miss, on the recompute arm
+# (total / 10^8) and on the snapshot-served arm (nodus_witness_vset_powers);
+# under NODUS_EVM_ENABLED, a row-less epoch at key generation 4 FAULTS
+# (ORCHESTRATOR decision D5) while a snapshot-served epoch still answers.
 register_witness_test(test_committee_cache)
 
 # Tasks 55 + 57 integration/genesis-seed tests retired in v0.16 stage A.3

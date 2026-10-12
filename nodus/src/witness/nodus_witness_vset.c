@@ -13,8 +13,10 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_committee.h"
 #include "nodus/nodus_chain_config.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT        */
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
+#include "dnac/power_cap.h"                 /* HF-6 5b: the water-fill  */
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
@@ -33,6 +35,15 @@ _Static_assert(DNA_VSET_PUBKEY_LEN == DNAC_PUBKEY_SIZE,
                "snapshot pubkey width != validator pubkey width");
 _Static_assert(DNA_VSET_HASH_LEN == DNA_V2_ROOT_LEN,
                "snapshot hash width != V2 root width");
+/* HF-6 5b: the compiled POWER_CAP_BPS default lies in the K5 range the
+ * cap accepts (design rev 6 §5, §8) — a default outside it would make
+ * every ruleset-2 power computation refuse. */
+_Static_assert(DNAC_HF6_POWER_CAP_BPS_DEFAULT >= DNA_POWER_CAP_BPS_MIN &&
+               DNAC_HF6_POWER_CAP_BPS_DEFAULT <= DNA_POWER_CAP_BPS_MAX,
+               "DNAC_HF6_POWER_CAP_BPS_DEFAULT outside [500, 3000]");
+/* The snapshot's validator_id is the 64-byte id the cap tie-breaks on. */
+_Static_assert(DNA_VSET_VALIDATOR_ID_LEN == 64,
+               "snapshot validator_id width != power-cap id width");
 
 /* ── Insert ─────────────────────────────────────────────────────────── */
 
@@ -775,4 +786,88 @@ int nodus_witness_vset_commit_genesis(nodus_witness_t *w,
     QGP_LOG_INFO(LOG_TAG, "genesis: validator-set snapshots seeded for "
                  "epochs 0 and %d", (int)DNAC_EPOCH_LENGTH);
     return 0;
+}
+
+/* ── HF-6 slice 5b: the ratio seam and the ONE power helper ─────────── */
+
+int nodus_witness_power_cap_bps_for_epoch(nodus_witness_t *w,
+                                          uint64_t epoch_start,
+                                          uint32_t *ratio_out) {
+    if (!w || !ratio_out) return -1;
+    /* Slice 8 replaces this body with the fail-closed param-20 read at
+     * `epoch_start` (nodus_witness_committee.c committee_target_for_epoch
+     * pattern); until then the compiled default is the only value. */
+    (void)epoch_start;
+    *ratio_out = DNAC_HF6_POWER_CAP_BPS_DEFAULT;
+    return 0;
+}
+
+int nodus_witness_vset_powers(nodus_witness_t *w,
+                              const dna_vset_snapshot_t *snap,
+                              uint64_t out[]) {
+    if (!w || !snap || !out) return -1;
+    const uint16_t n = snap->active_count;
+    if (n > DNA_MAX_ACTIVE_VALIDATORS) return -1;
+    if (n > 0 && !snap->entries) return -1;
+
+    if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V1) {
+        /* Uncapped, the pre-slice-5 derivation byte for byte (zero
+         * allowed — each caller keeps its own zero rule). */
+        for (uint16_t i = 0; i < n; i++)
+            out[i] = snap->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+        return 0;
+    }
+    if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
+        QGP_LOG_ERROR(LOG_TAG, "powers: snapshot(%llu) carries ruleset %u — "
+                      "no power derivation for it",
+                      (unsigned long long)snap->epoch,
+                      (unsigned)snap->selection_ruleset);
+        return -1;
+    }
+
+    /* Ruleset 2: the water-fill cap over whole-coin powers at the ratio of
+     * the snapshot's own epoch start. */
+    uint32_t ratio = 0;
+    if (nodus_witness_power_cap_bps_for_epoch(w, snap->epoch, &ratio) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "powers: POWER_CAP_BPS for epoch %llu is "
+                      "unreadable", (unsigned long long)snap->epoch);
+        return -1;
+    }
+    if (n == 0) return -1;                /* the cap refuses an empty set */
+
+    /* The cap takes scalar arrays (design §5); the entries' ids are not
+     * contiguous, so copy them out. Heap: 128 × 64 B ids. */
+    uint64_t *p = calloc(n, sizeof(*p));
+    uint8_t (*ids)[DNA_VSET_VALIDATOR_ID_LEN] = calloc(n, sizeof(*ids));
+    uint64_t *counted = calloc(n, sizeof(*counted));
+    int ret = -1;
+    if (!p || !ids || !counted) goto done;
+    for (uint16_t i = 0; i < n; i++) {
+        p[i] = snap->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+        if (p[i] == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "powers: snapshot(%llu) ruleset-2 entry "
+                          "%u holds total_stake %llu — below one whole coin, "
+                          "a broken invariant", (unsigned long long)snap->epoch,
+                          (unsigned)i,
+                          (unsigned long long)snap->entries[i].total_stake);
+            goto done;
+        }
+        memcpy(ids[i], snap->entries[i].validator_id,
+               DNA_VSET_VALIDATOR_ID_LEN);
+    }
+    if (dna_power_cap_counted(p, (const uint8_t (*)[64])ids, n, ratio,
+                              counted) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "powers: the power cap refused snapshot(%llu) "
+                      "(n=%u, ratio %u bps)", (unsigned long long)snap->epoch,
+                      (unsigned)n, (unsigned)ratio);
+        goto done;
+    }
+    memcpy(out, counted, (size_t)n * sizeof(*counted));
+    ret = 0;
+
+done:
+    free(p);
+    free(ids);
+    free(counted);
+    return ret;
 }
