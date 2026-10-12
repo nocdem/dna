@@ -6505,9 +6505,11 @@ validator snapshot), the live channel, pacing and mempool submission (no harness
 **Owner split since HF-6 slice 6b-1** (section "HF-6 slice 6b-1" below): the builder's ops 7 / 8 now lay
 out only the generation-4 calls (REGISTER 7299 B, owner-signed, with the node's op-3 consent; EXIT the
 64-byte node_fp) and refuse below generation 4; the "payee = SHA3-512(node_pk)" builder / decoder rule
-and `NODUS_V2_STAKE_ERR_PAYEE` are gone. `nodus-cli storage register | exit` are refused with a message
-(no node contacted) until the owner-side commands of slice 6b-3; `storage status` and
-`dnac_storage_status` below are unchanged (their `payee` now names the owner).
+and `NODUS_V2_STAKE_ERR_PAYEE` are gone. Since slice 6b-3 (section "HF-6 slice 6b-3" below) the
+commands below are the owner-side ones: `storage consent` (the node's key, op 3), `storage register
+--keys <owner> --consent <file>`, `storage exit --keys <owner> --node-fp <hex128>`; `storage status`
+prints the RPC's `payee` (unchanged on the wire) as `owner:`. The node-key flow described in the rest of
+this section is history.
 
 Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (registration, the 1M bond and
 node-key authority stay), `2026-09-25-web-wallet-nodus-send-transport.md` ("İşlem kurucu": the CLI and the
@@ -7939,17 +7941,13 @@ state), lock = bond. EXIT: the new request field `node_fp` (plan §5 B4), fee-on
 `node_fp` decoded; a REGISTER whose owner_fp ≠ SHA3-512(signer) refused). `ERR_PAYEE` (−45) is
 removed. The consent container (`nodus_v2_consent_text_*`) accepts op 3 with a zero subject.
 
-**nodus-cli.** `storage register | exit` are REFUSED with a message (`cmd_storage_tx_refused`, no node
-contacted): the node-key envelope they built is refused by the chain, and the owner-side commands
-(`storage consent`, `storage register --keys <owner> --consent <file>`, `storage exit --keys <owner>
---node-fp <hex128>`) are slice 6b-3's. `storage status` is unchanged (it still prints the wire key
-`payee`, which now names the owner).
+**nodus-cli.** Between 6b-1 and 6b-3 `storage register | exit` were REFUSED with a message (a stub,
+no node contacted). 6b-3 deleted the stub and built the owner-side commands (section "HF-6 slice 6b-3"
+below).
 
-**Harness** — `tests/integration/stagef/tests/test_storage_archive.sh` is NOT updated by 6b-1 and
-breaks at its registration step: it builds `nodus-cli storage register` with the node identity
-(:715-724), which is now refused before anything is built; it names the retired constant (:36, the
-literal :250), asserts `payee == fp` (:573) and pays the node fps (:887-888, :914-915). Its rewrite to the
-owner + consent flow is 6b-3 (plan §2 "6b-3").
+**Harness** — `tests/integration/stagef/tests/test_storage_archive.sh` was not updated by 6b-1 and
+broke at its registration step (and at its step 3, whose generation-gate sentence the stub never
+printed); 6b-3 rewrote it to the owner + consent flow (section "HF-6 slice 6b-3").
 
 **Tests** (written, NOT run by the author). `test_storage_reg` (rewritten): the hook matrix — plans;
 kind-1 and kind-3 positives with the record byte-checked; every refusal above (lengths 7298 / 7300, the
@@ -8051,6 +8049,54 @@ check for a seated requester (NOT_HELD at the sample step) and refuses an unseat
 Foundation 2-of-3), written immediately before the boundary block that reads them; the A1 fault is
 observed at the storage step (`nodus_witness_storage_boundary_apply`), not through a whole block, so
 no earlier boundary step's reaction to the missing row can be mistaken for it.
+
+### HF-6 slice 6b-3 — the storage owner CLI and the archive scenario on the owner/node split (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §11.3-§11.6, §11.10 (with the
+khan decisions of 2026-10-12 under §11.7: A2 a released node may register again under another owner,
+A4 the both-roles rotation runbook note); decision `docs/plans/decisions/2026-10-09-kurultay-16-hf6-
+storage-summary.md` khan 1, 2, 3; plan `tasks/hf6-slice6b-plan.md` §2 "6b-3", §5 B5. No chain code, no
+wire, no byte, no pin moves; the client encoder (`nodus_v2_stake.c`) was already complete in 6b-1 and is
+unchanged.
+
+**`storage consent`** — `-i <node identity> storage consent --owner <hex128> --expiry <h> [--out <file>]`
+is `cmd_validator_consent` with its new `storage` argument set: op 3 (`DNA_VALBIND_OP_STORAGE_REGISTER`),
+subject 64 × 0x00, no `--op` / `--subject`; everything else is the 6f-1 path (chain id and tip from the
+node, the expiry judged at tip + 1, the message and its ctx signature from the codec only, verified once,
+the container written). Plan B5 gave two shapes — `validator consent --op storage` or a separate verb;
+the separate verb is the one built (`validator consent` keeps `--op stake|rotate`): the design names the
+command `storage consent` verbatim (§11.10), it groups with the other storage verbs, and it is one
+function and one container either way.
+
+**`storage register | exit`** — routed by `main` into `cmd_v2_stake` (the owner-signed two-leg flow
+`v2-envelope stake2 | rotate` already use; `argv[cmd_start]` = "storage"). One session as the `--keys`
+identity (the owner, kind 1 — the CLI builds no kind-3 owner), in this order: the consent file parsed
+before any I/O (register; the node fp = SHA3-512 of its consensus_pk) or `--node-fp` parsed (exit) →
+chain id → `cli_select_runtimes` → **the storage generation gate** (`storage registration exists only
+from generation 4` / `storage exit …`, BEFORE the consent re-check, so a valid request below generation 4
+is refused for the generation) → `cli_storage_row_check` (the `dnac_storage_status` row: register
+refuses ACTIVE / EXITING and a RELEASED row before h = (⌊(x−1)/E⌋ + 2)·E + 1, judged at committed + 1;
+exit refuses no row / not ACTIVE / a row owner ≠ SHA3-512(--keys pk); a failed query warns and the chain
+decides) → gas price → the owner's coins and the tip → `cli_consent_check` with op 3 (`cli_consent_op_name`
+now names op 3 in its mismatch message) → `nodus_v2_stake_build` (op 7: amount =
+`DNAC_HF6_STORAGE_BOND_DEFAULT`, the value of the chain's `rtn_storage_bond_at` seam until slice 8;
+op 8: `req.node_fp`, fee only) → printed: node, owner, bond and consequences, sizes, `wire_id`,
+`intent_id` → `--dry-run` self-check line (`SYSTEM STORAGE_REGISTER` / `STORAGE_EXIT`) or submit on the
+same session. `cmd_storage_tx_refused` (the 6b-1 stub) is deleted. `cli_storage_usage` is the one
+`storage` usage text (main's and the verbs'). `storage status` prints the row's `payee` (wire key
+unchanged — slice 7 may add `owner`) as `owner:`.
+
+**Harness — `test_storage_archive.sh`** (README scenario row; written, NOT run). Node 4 is owned by its
+own key (its own validator seat key-excluded for it, the other six count → OK, paid to SHA3-512(pk_4));
+node 5 by the test owner of `stagef_hf6_owner.sh` when `STAGEF_HF6_OWNER_KEYS` is set (that build
+compiles the same key as the Foundation owner, so every validator is owner-excluded for node 5 →
+NO_EVIDENCE: pool 1 debited by ONE share, node 5's owner gets the validator reward only, fail_streak 0),
+else by its own key ("NO_EVIDENCE: not run" in the PASS line — the default K8 build cannot reach it).
+New assertions: the validators' owner read from `v2_validator_roles` (names the build), the consent file's
+eight lines, the generation gate on a valid request (step 3 had lost its subject: the 6b-1 stub never
+printed the gate's sentence, so it FAILED), the CLI's owner checks on register and exit, the exact
+owner accrual steps, ⌊N/2⌋ + 2 reporters (node 4's independent power decidable), and the owner's EXIT —
+RELEASED row and one `output_index` 201 coin to the owner at B_rel, `unlock_block` B_rel + 12·E, 7/7.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

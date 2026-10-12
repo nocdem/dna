@@ -1307,9 +1307,25 @@ for a node on a chain where it is in force. **Deploying any of it needs the oper
 deploy.**
 
 **What a storage node is.** A node with a chain database (nodus-server with its in-process witness, or
-nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7 STORAGE_REGISTER, a
-bond of exactly 1 000 000 NODUS = 10^14 raw locked from coins owned by that same key, plus the fee).
-It may also be a validator (a both-roles node earns both rewards).
+nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7 STORAGE_REGISTER).
+**Since HF-6 (rule-set generation 4) a storage node has an OWNER** (design
+`docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §11; Kurultay #16, decision
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` khan 1 and 3): the owner is a
+wallet — any address whose key signs (kind 1), or a multisig address (kind 3, which the chain accepts
+but this nodus-cli cannot build yet). The owner signs the registration, pays a bond of **exactly**
+1 000 000 NODUS = 10^14 raw (the STORAGE_BOND in force — today the compiled default; a chain_config
+vote, range 100 000 – 1 000 000 NODUS, comes with HF-6 slice 8) plus the fee, and receives the storage
+reward and, after an exit, the bond. The NODE key never moves coins: it only signs a **consent** — "I
+agree to be registered under this owner, on this chain, until height X" (consent op 3). The node's
+identity (its key) is still the registry key, what the validators probe on 4004 and what fetches
+segments on 0x73; the owner never runs anything. One machine may be a validator and a storage node at
+once (a both-roles node; each role's earnings go to that role's owner). **Self-approval rule:** a
+validator's report about a storage node does not count when the validator's owner is the storage node's
+owner, or when it is the same machine (the same key) — so a storage node registered under the SAME
+owner as the validators reporting it gets **no evidence** while no other validators report enough
+power: it earns nothing (its fail_streak does not move either). Register storage nodes under a
+different owner than the validators that probe them (design §11.6; the operator's own choice for the
+Foundation: storage from a personal account, Kurultay #16 khan 2).
 
 **1. Keep the archive — until the node's segment files are complete.** A probe is answered from the
 node's own block store (the header of h+1, the sampled part and its proof) while the store has the
@@ -1400,47 +1416,92 @@ the storage node refuses a request whose deadline its own clock has passed (`LAT
 already an operational obligation (the 60 s block-time tolerance of block validation); for probes a
 skew of several seconds already starts costing answers.
 
-**4. Register / exit / status — `nodus-cli storage register|exit|status` (package B2b-CLI).** Both
-transactions are signed by the NODE key — the key the storage node runs with, not a wallet key: the
-registry row is the key's own (the chain accepts exactly one signer whose fingerprint is SHA3-512 of the
-node key in the call) and the bond is paid from coins that key owns. So, on the storage node:
+**4. Consent / register / exit / status — the node consents, the OWNER acts (HF-6 slice 6b-3;
+`nodus-cli storage consent|register|exit|status`).** Everything here exists only on branch `hf6`
+under rule-set generation 4, which is not voted on any live chain; its harness proof is
+`test_storage_archive.sh` (`nodus/tests/integration/stagef/README.md`) — **written, not yet run**.
+Two places are involved, and they may be one machine: the storage NODE (its identity directory) and the
+OWNER's key directory (`nodus.pk` + `nodus.sk` — a wallet identity; the CLI builds a single-key, kind-1
+owner only). The node's secret key never leaves the node; the owner's never leaves the owner.
 
 ```bash
-# 0. the node key's fingerprint (send it 1 000 000 NODUS + the fee first)
+# on the storage node — its fingerprint (the registry key) and its consent
 nodus-cli -i /var/lib/nodus/identity whoami
-# 1. what the chain says about this node (works for any node with --fp <hex128>)
-nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage status
-# 2. build and self-check without sending, then send
-nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --dry-run
-nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --submit 127.0.0.1:4001
+nodus-cli -s 127.0.0.1 -p 4001 -i /var/lib/nodus/identity storage consent \
+    --owner <owner fp, 128 hex> --expiry <height> --out storage-consent.txt
+# hand storage-consent.txt to the owner (it carries no secret)
+
+# where the owner's keys are — any node's client port; the node identity is not needed here
+nodus-cli -s <node> -p 4001 storage register --keys <owner key dir> \
+    --consent storage-consent.txt --dry-run
+nodus-cli -s <node> -p 4001 storage register --keys <owner key dir> \
+    --consent storage-consent.txt --submit <node>:4001
+
+# what the chain says about a node (its own -i, or any node with --fp <hex128>)
+nodus-cli -s 127.0.0.1 -p 4001 -i /var/lib/nodus/identity storage status
+
+# the owner takes the node out
+nodus-cli -s <node> -p 4001 storage exit --keys <owner key dir> --node-fp <node fp> --dry-run
+nodus-cli -s <node> -p 4001 storage exit --keys <owner key dir> --node-fp <node fp> --submit <node>:4001
 ```
 
-- **`-i` is required** for `register` / `exit` (without it the CLI would use a random key; it refuses).
-  The identity directory is the node's own (`identity_path` in its config; the path above is an
-  example — use the node's).
+- **The consent** (`storage consent`, `-i` = the node's own identity, `identity_path` in its config —
+  the path above is an example; without `-i` the CLI refuses). The node's key signs "register me under
+  this owner, on this chain, until height X" (design §6.1 message, op 3, zero subject). The CLI reads the
+  chain id and the tip from the node and refuses an expiry the next height would not accept: the chain
+  accepts the registration at height h only when `expiry ≥ h` and `expiry − h ≤ 720`
+  (`DNA_VALBIND_MAX_EXPIRY_BLOCKS`, a fixed number). Choose an expiry above the registration envelope's
+  own lifetime (tip + 90), e.g. tip + 150. Inside its window the same owner may use one consent again
+  (deliberate, design §11.3); at the shipped epoch length every re-registration is more than 720 blocks
+  after the exit, so it always needs a fresh consent.
+- **The owner pays.** The bond — **exactly** 10^14 raw = 1 000 000 NODUS today (the chain refuses any
+  other amount) — and the fee (≈ 0.48 NODUS at the current gas price) come from coins the `--keys`
+  identity owns. The storage reward accrues to the owner and pays out on paydays; after an exit the bond
+  comes back to the owner. There is no separate payee.
+- **What the CLI checks before it builds.** The node's rule-set generation (below 4: `storage
+  registration exists only from generation 4` — the storage vote has not taken effect; nothing built);
+  the consent against the session — op 3, this node's chain, owner = the `--keys` identity (a consent
+  naming another owner is refused: run `register` with the OWNER's keys, not the node's), the signature
+  under the node key, the window at the next height; the registry row (`dnac_storage_status`):
+  `register` refuses a node already ACTIVE or EXITING, and a RELEASED one before its re-registration
+  height (the message names the first accepted height); `exit` refuses a node not registered, not
+  ACTIVE, or owned by someone other than the `--keys` identity. If the row query fails it warns and
+  lets the chain decide.
 - **Explicit confirmation**, as every `v2-envelope` builder: `--dry-run` builds, self-checks and prints
-  everything without sending; only `--submit ip:port` sends. Before the wire id the CLI prints what is
-  sent: the node fingerprint, the bond (exactly 10^14 raw = 1 000 000 NODUS — the chain accepts no other
-  amount), the payee (the node's own fingerprint — the only payee the chain accepts before HF-5), the
-  fee, inputs and change.
-- **Generation gate.** The CLI builds for the rule-set generation the node names and refuses with a
-  plain message while it is below the storage generation (the vote has not taken effect).
-- **What it refuses on its own** (from the node's `dnac_storage_status` answer): `register` when the
-  node is already ACTIVE or EXITING; `exit` when it is not registered or not ACTIVE. If that query fails
-  it warns and lets the chain decide.
-- **Exit:** `storage exit (--dry-run | --submit ip:port)` pays only the fee. The node leaves the storage
-  set at the next epoch boundary and earns nothing after it; the bond comes back at that boundary as one
-  coin to the payee, locked 12 epochs (`DNAC_STORAGE_EXIT_LOCK_EPOCHS`). Re-registering is possible only
-  after the bond was released (row RELEASED).
-- **Status** prints the registry row (status, bond, fail_streak, registered / exit height, payee,
+  everything without sending; only `--submit ip:port` sends. Before the wire id the CLI prints the node
+  fingerprint, the owner, the bond and what follows, then the fee, inputs and change. "accepted" on
+  submit is mempool admission only; the registration is in when `storage status` shows the row.
+- **Exit** (`storage exit`, the owner, fee only). The node leaves the storage set at the first epoch
+  boundary at or after the exit's height (B_rel) and earns nothing after it; at B_rel the bond comes back
+  as one coin to the OWNER, locked 12 epochs (`DNAC_STORAGE_EXIT_LOCK_EPOCHS`). **Stopping the machine
+  is not an exit**: the bond stays locked, the node fails its probes, and at 3 failed epochs it is skipped
+  for placement (it returns by itself after 12, decision K2/K5).
+- **Registering again** (a RELEASED node — the same owner or a different one, with a new consent; khan
+  decision A2 of 2026-10-12): only from the first height after the epoch boundary that FOLLOWS its
+  release boundary. With x = the exit height and E = 720: allowed at h ≥ (⌊(x−1)/E⌋ + 2)·E + 1 — a node
+  that exits at 720 may register again at 1441 (design §11.4). Why: the node's last epoch in the old life
+  is settled at B_rel + E and paid to whoever owns the row at that moment; registering earlier would hand
+  that payment (and a reset fail counter) to the new life. The CLI and the chain both refuse earlier.
+- **Status** prints the registry row (status, bond, fail_streak, registered / exit height, **owner**,
   grace_until — and, while the epoch start is below it, `IN GRACE this epoch … N grace epoch(s) left`,
   see 1b), the frozen storage set for the current epoch (H, H+E] and whether this node is in it, and
   the segments that count for it this epoch (number and blocks = number × 17280; at most the first 64
-  are listed; 0 while in grace).
+  are listed; 0 while in grace). (The node RPC still names the field `payee`; since HF-6 it holds the
+  owner.)
   **The last settled outcome is not available**: the settlement records no per-node verdict on chain
-  (it writes only fail_streak and the payee's reward accrual, and deletes the epoch's reports), so
-  fail_streak is its only trace — 0 after a good epoch with segments, growing after failed ones;
-  at 3 or more the node is skipped for placement.
+  (it writes only fail_streak and the owner's reward accrual, and deletes the epoch's reports), so
+  fail_streak is its only trace — 0 after a good epoch with segments, growing after failed ones,
+  unchanged after an epoch with no evidence (the self-approval rule above); at 3 or more the node is
+  skipped for placement.
+- **A machine that is both a validator and a storage node and rotates its validator key (§2.7; khan
+  decision A4 of 2026-10-12).** The storage registration stays on the OLD key — there is no storage key
+  rotation (design §11.1): validators keep probing the old identity, and the old node, still seated in
+  the last pre-rotation validator set S(F), must file its storage reports for it inside
+  (U, U + ⌊E/2⌋] (§2.7's U). Either keep the OLD process running — through at least U + ⌊E/2⌋ for those
+  reports, and for as long as the old key is to stay a storage node, with its own data directory and the
+  archive (item 1) — or have the owner EXIT the old key and REGISTER the new key (a new consent signed by
+  the new node): the new key is a new row, joins the storage set only at the next boundary and takes
+  over its segments with a grace (1b), so expect at least one epoch without storage pay.
 
 **5. Validators need nothing.** A node seated in snapshot(H) probes every other storage member once per
 epoch and submits its STORAGE_REPORT in the report window (H+E, H+E+⌊E/2⌋] by itself — there is no
