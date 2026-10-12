@@ -477,9 +477,12 @@ typedef struct {
     const uint8_t *pubkeys;        /* count × 2592, contiguous           */
     const uint8_t (*fps)[64];      /* count × SHA3-512(pubkey)           */
     /* HF-2 (GW-1): count × the member's VOTING POWER, in seat order —
-     * floor(total_stake / DNAC_DECIMAL_UNIT), the SAME derivation the
-     * block-commit validator set uses (nodus_witness_cmt_app.c, the
-     * FinalizeBlock validator-update loop). Filled for every non-empty
+     * the committee member's `power` (nodus_committee_get_for_block,
+     * HF-6 5b: nodus_witness_vset_powers over the epoch's snapshot —
+     * floor(total_stake / DNAC_DECIMAL_UNIT) under ruleset 1, the counted
+     * power under ruleset 2), the SAME derivation the block-commit
+     * validator set uses (nodus_witness_cmt_app.c, the FinalizeBlock
+     * validator-update loop). Filled for every non-empty
      * view; the auth hook sums it into the verdict whether or not HF-2
      * is active, and the SYSTEM exec reads the sums only when it is. */
     const uint64_t *powers;

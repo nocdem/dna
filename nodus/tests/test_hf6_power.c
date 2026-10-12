@@ -31,17 +31,24 @@
  *     output untouched; ruleset 0 and ruleset 3 → -1; NULL witness /
  *     snapshot / output → -1.
  *
- * ── WHAT IT DOES NOT PROVE (deferred to slice 5c, stated, not faked) ───
- * Rule N's verdict, the reward shares (Σcounted denominator, raw inner
- * split — K2), the storage report weight and the Comet boundary diff on a
- * RULESET-2 snapshot: each of those consumers reads its snapshot through
- * nodus_witness_vset_get (Rule N through preview_next, which builds
- * ruleset 1 only until 5d), and the 5b store/read path is the legacy
- * ruleset-1 codec, so no ruleset-2 snapshot can reach a consumer before
- * 5c. In 5b each consumer is a one-line call of this helper; its
- * ruleset-1 identity is covered by that consumer's existing fixtures
- * (test_v2_epoch, test_v2_econ, test_storage_*, test_cmt_app) staying
- * byte-identical, and the committee cache's by test_committee_cache.
+ * ── WHAT IT DOES NOT PROVE (the consumers — where they are covered) ────
+ * The consumers on a STORED RULESET-2 snapshot (slice 5c made the store /
+ * read path accept both rulesets):
+ *   - the reward shares (Σcounted denominator, raw inner split — K2):
+ *     test_hf6_readers case E5 ([60M, 10M × 6] → [25714285, 10M × 6]
+ *     through nodus_witness_v2_settlement_apply);
+ *   - the storage report weight (F1 on counted powers): test_storage_b2
+ *     case E (engine_v2_power);
+ *   - the Comet boundary diff, OLD side only: test_cmt_app
+ *     val_updates_v2_old_side. The NEW side (snapshot(H) governs block H,
+ *     and the engine's per-block phase 0a still hashes the governing
+ *     snapshot with the ruleset-1-only codec) and Rule N's verdict (its
+ *     preview is built ruleset 1 until slice 5d, and the verdict function
+ *     is file-static) are NOT covered before slice 5d; stated, not faked.
+ * Each consumer is a one-line call of this helper; its ruleset-1 identity
+ * is covered by that consumer's existing fixtures (test_v2_epoch,
+ * test_v2_econ, test_storage_*, test_cmt_app) staying byte-identical, and
+ * the committee cache's by test_committee_cache.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default nodus build (registered with the

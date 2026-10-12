@@ -139,6 +139,12 @@
  *     (the first storage boundary) → 0; held at H − E, displaced, or not
  *     a holder → 0; H < E → 0; one member's n over a mixed schedule
  *     counts the old segments only, and only-new segments give no grace.
+ *  E. HF-6 slice 5c (engine_v2_power, twin fixtures, D's prologue): the
+ *     settlement's F1 reads snapshot(H)'s powers BY ITS RULESET — a
+ *     ruleset-2 snapshot(E) [60M, 10M × 6] (counted [25714285, 10M × 6])
+ *     with six of seven seats reporting settles (counted: 120M > 85.7M),
+ *     where the raw powers would not (120M > 120M is false). Full
+ *     statement at t_engine_v2_power. Cost: 3E blocks on each twin.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; json-c (JSONC_FOUND) for
@@ -215,6 +221,8 @@
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_vset.h"      /* HF-6 5c case E          */
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT       */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_v2_spend.h"
 
@@ -2753,6 +2761,158 @@ static int t_engine(void) {
     return 0;
 }
 
+/* E. HF-6 slice 5c — the settlement's F1 on a RULESET-2 snapshot(H).
+ *
+ * WHAT IT PROVES: the storage settlement weighs the seats of snapshot(H)
+ * by THE ONE power helper BY THAT SNAPSHOT'S RULESET (design rev 6 §5
+ * consumer list "storage rapor ağırlığı"; ORCHESTRATOR decision D3; plan
+ * tasks/hf6-slice5-plan.md §2 "5b"/"5c"). Twin chains as D's prologue:
+ * A, B, C, D register at 4; at 2E + 1 SIX seats report for H = E (every
+ * bit 1) — every seat but V3. Before boundary 3E, snapshot(E) (which
+ * governs only blocks E..2E−1, all applied) is rewritten on both twins
+ * as a RULESET-2 snapshot with V3 at 60M whole coins and the rest at 10M:
+ *   counted (3000 bps) [25714285 for V3, 10M × 6] — P_total 85714285,
+ *   P_rep 60M, 2·P_rep > P_total: F1 MET, the epoch settles (all OK,
+ *   weighted pay from pool 1, exactly check_settle's restatement);
+ *   raw it would be P_total 120M, 2·P_rep = 120M, not >: F1 NOT met,
+ *   nothing would move.
+ * The only reader of snapshot(E) at boundary 3E is the storage
+ * settlement (the distribution reads snapshot(2E), Rule N's duty
+ * snapshot(2E), phase 0a snapshot(3E)).
+ * REQUIRES: as D (the K9a model runs every boundary; prep_expect).
+ * LEAVES: two /tmp/test_storage_b2_* directories, removed at the end.
+ * HOW IT CAN LIE: the ruleset-2 snapshot(E) is a hand-written row (the
+ * builder writes ruleset 1 until slice 5d) whose stake does not match any
+ * copy — the storage settlement reads no copy, so nothing here checks
+ * that; ids are arbitrary distinct bytes. Cost: 3E blocks on each twin. */
+static int t_engine_v2_power(void) {
+    fixture_t A, B;
+    uint64_t h = 0;
+    uint32_t codes[8];
+    uint8_t *e[8] = { NULL };
+    size_t l[8] = { 0 };
+    static uint8_t call[4][STREG_LEN];
+    const int seats6[6] = { V0, V1, V2, V4, V5, V6 };      /* not V3 */
+    const uint64_t U = DNAC_DECIMAL_UNIT;
+
+    CHECK(E_LEN >= 8, "no epoch boundary among heights 1..7");
+    CHECK(DNAC_HF6_POWER_CAP_BPS_DEFAULT == 3000u,
+          "the expected vector is derived at 3000 bps");
+    for (int i = 0; i < N_VAL; i++) {
+        memcpy(g_vaddr[i], g_k[i].fp, 32);
+        g_vflag[i] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
+    }
+    for (int c = 0; c < N_COINS; c++)
+        CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
+    CHECK(fx_open(&A, "pa") == 0 && fx_open(&B, "pb") == 0,
+          "twin seeded chains");
+    memset(g_grace, 0, sizeof(g_grace));
+    memset(g_grace_at, 0, sizeof(g_grace_at));
+    memset(g_newn_at, 0, sizeof(g_newn_at));
+    g_model_on = 1;
+
+    CHECK(run_idle(&A, &B, &h, H14 - 1) == 0, "blocks 1..3");
+    {
+        const int who[4] = { KA, KB, KC, KD };
+        const int coin[4] = { CA, CB, CC, CD };
+        for (int i = 0; i < 4; i++) {
+            memcpy(call[i], g_k[who[i]].pk, PK_LEN);
+            put64(call[i] + PK_LEN, BOND);
+            memcpy(call[i] + PK_LEN + 8, g_k[who[i]].fp, 64);
+            CHECK(st_env(A.w, H14, DNA_SYSRULE_STORAGE_REGISTER, call[i],
+                         STREG_LEN, coin[i], who[i], &e[i], &l[i]) == 0,
+                  "registration envelope");
+        }
+        CHECK(submit(&A, &B, H14, e, l, 4, codes) == 0, "block 4");
+        for (int i = 0; i < 4; i++)
+            CHECK(codes[i] == NODUS_V2_TX_OK, "registration applies");
+        h = H14;
+    }
+    CHECK(run_idle(&A, &B, &h, 2 * E_LEN) == 0, "to 2E");
+    CHECK(nodus_witness_storage_set_get(A.w, E_LEN, &g_set_a) == 0 &&
+          g_set_a.count == 4, "set(E) = {A, B, C, D}");
+
+    CHECK(reports_for(&A, 2 * E_LEN + 1, E_LEN, seats6, 6, bit_all, e, l)
+              == 0, "six reports for H = E (every seat but V3)");
+    CHECK(submit(&A, &B, 2 * E_LEN + 1, e, l, 6, codes) == 0, "2E+1");
+    for (int i = 0; i < 6; i++)
+        CHECK(codes[i] == NODUS_V2_TX_OK, "report applies");
+    h = 2 * E_LEN + 1;
+
+    snap_t s0, s1;
+    CHECK(run_idle(&A, &B, &h, 3 * E_LEN - 1) == 0, "to 3E-1");
+
+    /* snapshot(E) → ruleset 2, V3 at 60M (both twins) */
+    for (int t = 0; t < 2; t++) {
+        nodus_witness_t *w = t == 0 ? A.w : B.w;
+        dna_vset_snapshot_t *s = NULL;
+        int i3 = -1;
+        CHECK(nodus_witness_vset_get(w, E_LEN, &s, NULL) == 0 &&
+              s->active_count == N_VAL &&
+              s->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+              "the engine's snapshot(E)");
+        s->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+        for (int i = 0; i < N_VAL; i++) {
+            memset(s->entries[i].validator_id, 0x40 + i, 64);
+            memset(s->entries[i].owner_fp, 0x80 + i, 64);
+            CHECK(s->entries[i].total_stake == DNAC_SELF_STAKE_AMOUNT,
+                  "FIXTURE GUARD: 10M seats");
+            if (memcmp(s->entries[i].pubkey, g_k[V3].pk, PK_LEN) == 0) {
+                s->entries[i].total_stake = 60000000ULL * U;
+                i3 = i;
+            }
+        }
+        CHECK(i3 >= 0, "V3 seated in snapshot(E)");
+        uint64_t pw[DNA_MAX_ACTIVE_VALIDATORS], P = 0, Prep = 0;
+        CHECK(nodus_witness_vset_powers(w, s, pw) == 0, "helper");
+        for (int i = 0; i < N_VAL; i++) {
+            CHECK(pw[i] == (i == i3 ? 25714285ULL : 10000000ULL),
+                  "counted [25714285, 10M x 6]");
+            P += pw[i];
+            if (i != i3) Prep += pw[i];
+        }
+        CHECK(2 * Prep > P && !(2 * (60000000ULL) > 120000000ULL),
+              "F1: met on the counted powers, NOT met on the raw ones");
+        size_t need = dna_vset_encoded_len_ex(s, DNA_VSET_RULESET_TOPN_V2);
+        uint8_t *b = need ? malloc(need) : NULL, hh[64];
+        sqlite3_stmt *st = NULL;
+        CHECK(b && dna_vset_encode_ex(s, DNA_VSET_RULESET_TOPN_V2, b, need,
+                                      NULL) == 0 &&
+              dna_vset_hash_bytes_ex(b, need, DNA_VSET_RULESET_TOPN_V2, hh)
+                  == 0, "encode v2");
+        CHECK(sqlite3_prepare_v2(w->db, "UPDATE validator_set_snapshots SET "
+                                 "snapshot_hash = ?1, snapshot_blob = ?2 "
+                                 "WHERE epoch_start = ?3", -1, &st, NULL)
+              == SQLITE_OK, "prepare");
+        sqlite3_bind_blob(st, 1, hh, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, b, (int)need, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)E_LEN);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        free(b);
+        CHECK(rc == SQLITE_DONE && sqlite3_changes(w->db) == 1,
+              "rewrite snapshot(E) (test-only; vset_insert would -2)");
+        dna_vset_free(&s);
+    }
+
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, E_LEN, &g_ex) == 0,
+          "before 3E (engine eligibility == the model's)");
+    CHECK(run_idle(&A, &B, &h, 3 * E_LEN) == 0, "boundary 3E (twin roots "
+          "equal)");
+    CHECK(take(A.w, &s1) == 0, "after 3E");
+    {
+        uint64_t W = 0;
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W > 0,
+              "F1 met on the counted powers: all OK, weighted pay, exact");
+        CHECK(s0.pool1 > s1.pool1, "pool 1 debited — the epoch SETTLED");
+    }
+
+    g_model_on = 0;
+    fx_close(&A);
+    fx_close(&B);
+    return 0;
+}
+
 int main(void) {
     static const struct {
         const char *name;
@@ -2764,6 +2924,7 @@ int main(void) {
         { "fail_streak_rule",     t_streak_rule },
         { "grace_count_k9a",      t_grace_count },
         { "engine_twins",         t_engine },
+        { "engine_v2_power",      t_engine_v2_power },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     if (keys_make() != 0) {

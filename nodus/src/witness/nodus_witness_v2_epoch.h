@@ -231,8 +231,10 @@
  * Rule N builds — without storing — the snapshot this same boundary's
  * `nodus_witness_vset_commit_next` will store for H+E
  * (`nodus_witness_vset_preview_next`, nodus_witness_vset.h). Power per
- * entry = `total_stake / DNAC_DECIMAL_UNIT` (the unit the §A
- * ValidatorUpdate diff reports, nodus_witness_cmt_app.c:1569); P = the
+ * entry = `nodus_witness_vset_powers` over the preview (HF-6 5b; the
+ * unit the §A ValidatorUpdate diff reports): `total_stake /
+ * DNAC_DECIMAL_UNIT` for a ruleset-1 preview, the counted (capped) power
+ * for a ruleset-2 one (built from slice 5d on); P = the
  * checked sum, max = the largest entry. The retirement stands iff
  * P > 0 AND (P − max) > P * 2 / 3 — cometbft's own integer commit form
  * (shared/dnac/cmt_validation.c:298): the next set must still commit

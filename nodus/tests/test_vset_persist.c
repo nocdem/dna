@@ -19,7 +19,11 @@
  *      by FROZEN stake (balance copy e_start − 2E, tokenomics-v3 P3-1),
  *      self_bond taken from the frozen own row (not
  *      total_stake), voter_id == SHA3-512(pubkey)[0..31], and the
- *      production derivation helper agreeing with that definition.
+ *      production derivation helper agreeing with that definition;
+ *      HF-6 5c: below key generation 4 the core emits zero ids and the
+ *      entry fill's ruleset-1 / ruleset-2 behaviour.
+ *   5. HF-6 slice 5c — both rulesets through the store (test_both_
+ *      rulesets: its own WHAT IT PROVES / HOW IT CAN LIE block).
  *
  * Pinned literals come from an INDEPENDENT python3 hashlib.sha3_512
  * oracle over the layouts in shared/dnac/vset_wire.h and
@@ -35,6 +39,8 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_v2_epoch.h"   /* key generation (5c)     */
+#include "witness/nodus_witness_runtime.h"    /* NODUS_RT_GEN_STORAGE    */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"
 
@@ -341,9 +347,15 @@ static int test_insert_get(void) {
           "NULL blob"); OK();
     CHECK(nodus_witness_vset_insert(fx.w, 5, blobA, 0, hashA, 1) == -1,
           "zero-length blob"); OK();
+    /* HF-6 5c: the outer cap is the ruleset-2 ceiling; a v1 header above
+     * the v1 ceiling is refused by the hash (before any byte past the
+     * header is read). Both refusals leave no row. */
+    CHECK(nodus_witness_vset_insert(fx.w, 5, blobA,
+                                    DNA_VSET_MAX_ENC_LEN_V2 + 1, hashA, 1)
+          == -1, "over-cap blob"); OK();
     CHECK(nodus_witness_vset_insert(fx.w, 5, blobA,
                                     DNA_VSET_MAX_ENC_LEN + 1, hashA, 1) == -1,
-          "over-cap blob"); OK();
+          "a v1 header above the v1 ceiling"); OK();
     CHECK(nodus_witness_vset_get(fx.w, 720, NULL, NULL) == -1,
           "NULL out"); OK();
 
@@ -495,6 +507,233 @@ static int test_root(void) {
               "insertion order changed the root"); OK();
         fx_close(&fy);
     }
+    return 0;
+}
+
+/* ── 5 (HF-6 slice 5c): both rulesets through the store ────────────── */
+
+/** A RULESET-2 fixture: voter_id = SHA3-512(pubkey)[0..31] (the v2 codec
+ *  recomputes and enforces it); pubkey 0xA0 bytes and validator_id 0x40
+ *  bytes with i (u16 BE) in their first two bytes, so 128 entries stay
+ *  distinct and no id is all-zero; owner_fp byte 0x80 + (i & 0x3F)
+ *  (owners need not be distinct). */
+static dna_vset_snapshot_t *make_fixture_v2(uint64_t epoch, uint16_t n) {
+    dna_vset_snapshot_t *s = dna_vset_alloc(n);
+    if (!s) return NULL;
+    s->epoch             = epoch;
+    s->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+    for (uint16_t i = 0; i < n; i++) {
+        dna_vset_entry_t *e = &s->entries[i];
+        memset(e->pubkey, 0xA0, DNA_VSET_PUBKEY_LEN);
+        e->pubkey[0] = (uint8_t)(i >> 8);
+        e->pubkey[1] = (uint8_t)i;
+        uint8_t d[64];
+        if (qgp_sha3_512(e->pubkey, DNA_VSET_PUBKEY_LEN, d) != 0) {
+            dna_vset_free(&s);
+            return NULL;
+        }
+        memcpy(e->voter_id, d, DNA_VSET_VOTER_ID_LEN);
+        memset(e->validator_id, 0x40, DNA_VSET_VALIDATOR_ID_LEN);
+        e->validator_id[0] = (uint8_t)(i >> 8);
+        e->validator_id[1] = (uint8_t)i;
+        memset(e->owner_fp, (uint8_t)(0x80 + (i & 0x3F)),
+               DNA_VSET_OWNER_FP_LEN);
+        e->total_stake    = 2000000000000000ULL - i;
+        e->self_bond      = 1000000000000000ULL;
+        e->commission_bps = (uint16_t)(500 + i);
+    }
+    return s;
+}
+
+/** Encode `s` (any ruleset) through the `_ex` family into a malloc'd blob
+ *  + its hash under the tag its header names. */
+static int blob_ex(const dna_vset_snapshot_t *s, uint8_t **blob_out,
+                   size_t *len_out, uint8_t hash_out[64]) {
+    size_t need = dna_vset_encoded_len_ex(s, DNA_VSET_RULESET_TOPN_V2);
+    if (need == 0) return -1;
+    uint8_t *b = malloc(need);
+    if (!b) return -1;
+    if (dna_vset_encode_ex(s, DNA_VSET_RULESET_TOPN_V2, b, need, NULL) != 0 ||
+        dna_vset_hash_bytes_ex(b, need, DNA_VSET_RULESET_TOPN_V2,
+                               hash_out) != 0) {
+        free(b);
+        return -1;
+    }
+    *blob_out = b;
+    *len_out  = need;
+    return 0;
+}
+
+/** SHA3-512(tag16 ‖ blob), computed HERE, not through the codec. */
+static int tagged_hash(const char *tag, const uint8_t *blob, size_t len,
+                       uint8_t out[64]) {
+    uint8_t *pre = calloc(1, 16 + len);
+    if (!pre) return -1;
+    memcpy(pre, tag, strlen(tag));        /* zero-padded to 16 by calloc */
+    memcpy(pre + 16, blob, len);
+    int rc = qgp_sha3_512(pre, 16 + len, out);
+    free(pre);
+    return rc == 0 ? 0 : -1;
+}
+
+/*
+ * WHAT IT PROVES (HF-6 slice 5c, design rev 6 §6.5 "Her okuyucu zincir
+ * ömrü boyunca iki sürümü de kabul eder. v1 çıktıları bayt bayt
+ * değişmez"; plan tasks/hf6-slice5-plan.md §2 "5c", §4 rows 1-2):
+ *   - a ruleset-2 snapshot is stored and read back through
+ *     nodus_witness_vset_insert / _get: ruleset 2, every entry field
+ *     including validator_id / owner_fp, and the stored hash ==
+ *     SHA3-512("NDS.VSET.v2" + 5×0x00 ‖ blob) computed here, != the same
+ *     bytes under the v1 tag;
+ *   - the ruleset-2 length ceiling: a 128-entry v2 blob of exactly
+ *     DNA_VSET_MAX_ENC_LEN_V2 (354638) bytes — above the v1 ceiling —
+ *     is stored and read; one byte more is refused before any read;
+ *   - a PRE-SWITCH row: a v1 blob written with direct SQL under the
+ *     hash the pre-5c code stored (the legacy v1-tag hash_bytes, which
+ *     never read the header) reads back through the `_ex` path with
+ *     exactly that hash, decodes field for field to the fixture, and
+ *     dna_vset_hash_bytes_ex(…, 2) re-derives the stored hash;
+ *   - a v2 blob offered for an epoch that holds a v1 row is the -2
+ *     conflict, and the stored v1 row is untouched.
+ * REQUIRES: a default build. LEAVES: one /tmp/test_vset_persist_* dir,
+ * removed at the end (left behind when a CHECK aborts).
+ * HOW IT CAN LIE: the fixtures are hand-built snapshots, not ones a
+ * chain's builder produced (the builder still builds ruleset 1 until
+ * slice 5d); the tag literal is the design's §6.5 text, not an
+ * independent oracle run.
+ */
+static int test_both_rulesets(void) {
+    fixture_t fx;
+    CHECK(fx_open(&fx, 0xC6) == 0, "open");
+
+    /* ── ruleset 2, 3 entries ── */
+    dna_vset_snapshot_t *s2 = make_fixture_v2(720, 3);
+    CHECK(s2 != NULL, "v2 fixture");
+    uint8_t *b2 = NULL, h2[64];
+    size_t l2 = 0;
+    CHECK(blob_ex(s2, &b2, &l2, h2) == 0, "encode v2");
+    CHECK(l2 == (size_t)DNA_VSET_HDR_LEN + 3u * DNA_VSET_ENTRY_LEN_V2,
+          "v2 length = 78 + 3 × 2770"); OK();
+    {
+        uint8_t want[64], v1tag[64];
+        CHECK(tagged_hash("NDS.VSET.v2", b2, l2, want) == 0, "v2 tag hash");
+        CHECK(memcmp(want, h2, 64) == 0,
+              "the v2 hash is SHA3-512(\"NDS.VSET.v2\" ‖ blob)"); OK();
+        CHECK(tagged_hash("NDS.VSET.v1", b2, l2, v1tag) == 0, "v1 tag hash");
+        CHECK(memcmp(v1tag, h2, 64) != 0,
+              "the v2 hash is not the v1-tag hash of the same bytes"); OK();
+    }
+    CHECK(nodus_witness_vset_insert(fx.w, 720, b2, l2, h2, 700) == 0,
+          "a ruleset-2 snapshot stores"); OK();
+    CHECK(nodus_witness_vset_insert(fx.w, 720, b2, l2, h2, 701) == 0,
+          "an identical v2 re-insert is idempotent"); OK();
+    {
+        dna_vset_snapshot_t *got = NULL;
+        uint8_t gh[64];
+        CHECK(nodus_witness_vset_get(fx.w, 720, &got, gh) == 0,
+              "a ruleset-2 snapshot reads back"); OK();
+        CHECK(memcmp(gh, h2, 64) == 0, "stored hash"); OK();
+        CHECK(got->selection_ruleset == DNA_VSET_RULESET_TOPN_V2 &&
+              got->epoch == 720 && got->active_count == 3, "v2 header");
+        OK();
+        for (int i = 0; i < 3; i++) {
+            const dna_vset_entry_t *a = &got->entries[i], *b = &s2->entries[i];
+            CHECK(memcmp(a->voter_id, b->voter_id, DNA_VSET_VOTER_ID_LEN) == 0
+                  && memcmp(a->pubkey, b->pubkey, DNA_VSET_PUBKEY_LEN) == 0 &&
+                  memcmp(a->validator_id, b->validator_id,
+                         DNA_VSET_VALIDATOR_ID_LEN) == 0 &&
+                  memcmp(a->owner_fp, b->owner_fp, DNA_VSET_OWNER_FP_LEN) == 0
+                  && a->total_stake == b->total_stake &&
+                  a->self_bond == b->self_bond &&
+                  a->commission_bps == b->commission_bps,
+                  "every v2 entry field round-trips"); OK();
+        }
+        dna_vset_free(&got);
+    }
+    free(b2);
+    dna_vset_free(&s2);
+
+    /* ── the ruleset-2 ceiling: 128 entries, exactly 354638 bytes ── */
+    {
+        dna_vset_snapshot_t *big = make_fixture_v2(1440, 128);
+        CHECK(big != NULL, "128-entry v2 fixture");
+        uint8_t *bb = NULL, hb[64];
+        size_t lb = 0;
+        CHECK(blob_ex(big, &bb, &lb, hb) == 0, "encode 128 v2");
+        CHECK(lb == (size_t)DNA_VSET_MAX_ENC_LEN_V2 && lb == 354638u &&
+              lb > (size_t)DNA_VSET_MAX_ENC_LEN,
+              "128 v2 entries = the v2 ceiling, above the v1 one"); OK();
+        CHECK(nodus_witness_vset_insert(fx.w, 1440, bb, lb, hb, 1) == 0,
+              "a v2 blob at the v2 ceiling stores"); OK();
+        dna_vset_snapshot_t *got = NULL;
+        CHECK(nodus_witness_vset_get(fx.w, 1440, &got, NULL) == 0 &&
+              got->active_count == 128 &&
+              got->selection_ruleset == DNA_VSET_RULESET_TOPN_V2 &&
+              memcmp(got->entries[127].validator_id,
+                     big->entries[127].validator_id, 64) == 0,
+              "...and reads back"); OK();
+        dna_vset_free(&got);
+        CHECK(nodus_witness_vset_insert(fx.w, 2160, bb, lb + 1, hb, 1) == -1,
+              "one byte past the v2 ceiling is refused"); OK();
+        free(bb);
+        dna_vset_free(&big);
+    }
+
+    /* ── a PRE-SWITCH ruleset-1 row (written the pre-5c way) ── */
+    {
+        uint8_t *b1 = NULL, h1_legacy[64];
+        size_t l1 = 0;
+        /* fixture_blob hashes with the legacy v1-tag dna_vset_hash_bytes —
+         * exactly the hash the pre-5c insert stored */
+        CHECK(fixture_blob(2880, 2, &b1, &l1, h1_legacy) == 0, "v1 fixture");
+        CHECK(insert_raw_row(fx.w, 2880, 2, h1_legacy, b1, (int)l1) == 0,
+              "a v1 row written as the pre-5c code wrote it");
+        uint8_t h1_ex[64];
+        CHECK(dna_vset_hash_bytes_ex(b1, l1, DNA_VSET_RULESET_TOPN_V2,
+                                     h1_ex) == 0 &&
+              memcmp(h1_ex, h1_legacy, 64) == 0,
+              "a v1 blob re-hashes through _ex to its stored hash"); OK();
+        dna_vset_snapshot_t *got = NULL, *ref = make_fixture(2880, 2);
+        uint8_t gh[64];
+        CHECK(ref != NULL, "ref");
+        CHECK(nodus_witness_vset_get(fx.w, 2880, &got, gh) == 0,
+              "the pre-switch row reads through the _ex path"); OK();
+        CHECK(memcmp(gh, h1_legacy, 64) == 0, "its stored hash"); OK();
+        CHECK(got->selection_ruleset == DNA_VSET_RULESET_TOPN_V1, "ruleset 1");
+        OK();
+        for (int i = 0; i < 2; i++) {
+            const dna_vset_entry_t *a = &got->entries[i], *b = &ref->entries[i];
+            static const uint8_t z[64] = { 0 };
+            CHECK(memcmp(a->voter_id, b->voter_id, DNA_VSET_VOTER_ID_LEN) == 0
+                  && memcmp(a->pubkey, b->pubkey, DNA_VSET_PUBKEY_LEN) == 0 &&
+                  a->total_stake == b->total_stake &&
+                  a->self_bond == b->self_bond &&
+                  a->commission_bps == b->commission_bps &&
+                  memcmp(a->validator_id, z, 64) == 0 &&
+                  memcmp(a->owner_fp, z, 64) == 0,
+                  "decodes identically, ids zero"); OK();
+        }
+        dna_vset_free(&got);
+        dna_vset_free(&ref);
+
+        /* a v2 blob for the epoch a v1 row holds: CONFLICT, row intact */
+        dna_vset_snapshot_t *s = make_fixture_v2(2880, 2);
+        uint8_t *bv = NULL, hv[64];
+        size_t lv = 0;
+        CHECK(s != NULL && blob_ex(s, &bv, &lv, hv) == 0, "v2 for 2880");
+        CHECK(nodus_witness_vset_insert(fx.w, 2880, bv, lv, hv, 1) == -2,
+              "a v2 blob over a stored v1 row is a conflict"); OK();
+        CHECK(nodus_witness_vset_get(fx.w, 2880, &got, gh) == 0 &&
+              memcmp(gh, h1_legacy, 64) == 0 &&
+              got->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+              "the v1 row is untouched"); OK();
+        dna_vset_free(&got);
+        free(bv);
+        dna_vset_free(&s);
+        free(b1);
+    }
+
+    fx_close(&fx);
     return 0;
 }
 
@@ -701,6 +940,72 @@ static int test_build(void) {
     free(blob);
     dna_vset_free(&snap);
 
+    /* HF-6 5c (ORCHESTRATOR decision D6): below key generation 4 the
+     * selection core emits ZERO validator_id / owner_fp (and power 0) —
+     * written, not inherited from the caller's buffer (pre-filled 0xEE
+     * here) — and the entry fill writes zero ids into a ruleset-1 entry
+     * whatever the member carries, copies them into a ruleset-2 one, and
+     * a ruleset-2 snapshot built from zero ids is refused by the v2
+     * encoder. (Generation 4's ids: test_hf6_readers.) */
+    {
+        uint32_t gen = 99;
+        CHECK(nodus_witness_v2_key_generation(fx.w, &gen) == 0 &&
+              gen < NODUS_RT_GEN_STORAGE, "this fixture is below gen 4");
+        nodus_committee_member_t *m = malloc(4 * sizeof(*m));
+        CHECK(m != NULL, "alloc");
+        memset(m, 0xEE, 4 * sizeof(*m));
+        int cnt = 0;
+        CHECK(nodus_committee_compute_for_epoch(fx.w, e_start, m, 4, &cnt)
+              == 0 && cnt == 3, "compute below gen 4"); OK();
+        static const uint8_t z[64] = { 0 };
+        for (int i = 0; i < cnt; i++) {
+            CHECK(memcmp(m[i].validator_id, z, 64) == 0 &&
+                  memcmp(m[i].owner_fp, z, 64) == 0 && m[i].power == 0,
+                  "gen < 4: ids zero, power 0"); OK();
+        }
+
+        dna_vset_entry_t e;
+        memset(m[0].validator_id, 0x11, sizeof(m[0].validator_id));
+        memset(m[0].owner_fp, 0x22, sizeof(m[0].owner_fp));
+        memset(&e, 0xEE, sizeof(e));
+        CHECK(nodus_witness_vset_entry_from_member(
+                  &m[0], DNA_VSET_RULESET_TOPN_V1, &e) == 0 &&
+              memcmp(e.validator_id, z, 64) == 0 &&
+              memcmp(e.owner_fp, z, 64) == 0 &&
+              memcmp(e.pubkey, m[0].pubkey, DNAC_PUBKEY_SIZE) == 0 &&
+              e.total_stake == m[0].total_stake &&
+              e.self_bond == m[0].self_stake &&
+              e.commission_bps == m[0].commission_bps,
+              "ruleset 1: the member's fields, ids written zero"); OK();
+        CHECK(nodus_witness_vset_entry_from_member(
+                  &m[0], DNA_VSET_RULESET_TOPN_V2, &e) == 0 &&
+              e.validator_id[0] == 0x11 && e.validator_id[63] == 0x11 &&
+              e.owner_fp[0] == 0x22 && e.owner_fp[63] == 0x22,
+              "ruleset 2: the member's ids copied"); OK();
+        CHECK(nodus_witness_vset_entry_from_member(&m[0], 3u, &e) == -1 &&
+              nodus_witness_vset_entry_from_member(
+                  &m[0], DNA_VSET_RULESET_INVALID, &e) == -1 &&
+              nodus_witness_vset_entry_from_member(
+                  NULL, DNA_VSET_RULESET_TOPN_V1, &e) == -1,
+              "ruleset 0 / 3 and NULL refused"); OK();
+
+        /* members 1, 2 still carry the zero ids gen < 4 emitted */
+        dna_vset_snapshot_t *z2 = dna_vset_alloc(2);
+        CHECK(z2 != NULL, "alloc");
+        z2->epoch = e_start;
+        z2->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+        CHECK(nodus_witness_vset_entry_from_member(
+                  &m[1], DNA_VSET_RULESET_TOPN_V2, &z2->entries[0]) == 0 &&
+              nodus_witness_vset_entry_from_member(
+                  &m[2], DNA_VSET_RULESET_TOPN_V2, &z2->entries[1]) == 0,
+              "fill");
+        CHECK(dna_vset_encoded_len_ex(z2, DNA_VSET_RULESET_TOPN_V2) == 0,
+              "a v2 snapshot from gen < 4 members (zero ids) does not "
+              "encode"); OK();
+        dna_vset_free(&z2);
+        free(m);
+    }
+
     /* An empty validator table has NO snapshot. */
     {
         fixture_t fe;
@@ -719,6 +1024,7 @@ static int test_build(void) {
 int main(void) {
     if (test_insert_get() != 0) return 1;
     if (test_root() != 0) return 1;
+    if (test_both_rulesets() != 0) return 1;
     if (test_build() != 0) return 1;
     printf("test_vset_persist: %d checks OK\n", g_checks);
     return 0;

@@ -51,9 +51,15 @@
  * tokenomics-v3 P3-1: `total_stake` and `self_stake` are the values the
  * member is RANKED by and EMITTED with — the FROZEN totals of the copy on
  * the post-bootstrap path ("okuma B"), the live row's on the bootstrap
- * path. `rec` still supplies the pubkey and the LIVE commission. */
+ * path. `rec` still supplies the pubkey and the LIVE commission.
+ *
+ * HF-6 slice 5c: `v2` is the candidate's v2 row at key generation >=
+ * NODUS_RT_GEN_STORAGE (`rec` then points INTO it), NULL below it and on
+ * the bootstrap path — emit_member copies the member's validator_id /
+ * owner_fp from it (ORCHESTRATOR decision D6). */
 typedef struct {
     const dnac_validator_record_t *rec;
+    const nodus_v2_validator_row_t *v2;
     uint64_t total_stake;
     uint64_t self_stake;
     uint8_t  tiebreak[64];
@@ -257,7 +263,9 @@ static int v2_seed_block_id(nodus_witness_t *w, uint64_t height,
     return 0;
 }
 
-/* Copy a work entry into the public member struct. */
+/* Copy a work entry into the public member struct. Every field is
+ * written (the caller's buffer may be reused): power 0 (set only by
+ * get_for_block), the v2 ids from the row at generation 4, else zero. */
 static void emit_member(const committee_work_t *w_in,
                          nodus_committee_member_t *out) {
     memcpy(out->pubkey, w_in->rec->pubkey, DNAC_PUBKEY_SIZE);
@@ -265,6 +273,17 @@ static void emit_member(const committee_work_t *w_in,
     out->self_stake     = w_in->self_stake;        /* S3: snapshot self_bond
                                                     * (P3-1: frozen)       */
     out->commission_bps = w_in->rec->commission_bps; /* LIVE, as before   */
+    out->power          = 0;
+    if (w_in->v2) {
+        /* HF-6 5c: immutable row fields (K3; validator.c v2_update keys
+         * by both), the same cand_v2 row the candidate was ranked from */
+        memcpy(out->validator_id, w_in->v2->validator_id,
+               NODUS_V2_VALIDATOR_ID_LEN);
+        memcpy(out->owner_fp, w_in->v2->owner_fp, NODUS_V2_OWNER_FP_LEN);
+    } else {
+        memset(out->validator_id, 0, NODUS_V2_VALIDATOR_ID_LEN);
+        memset(out->owner_fp, 0, NODUS_V2_OWNER_FP_LEN);
+    }
 }
 
 int nodus_committee_compute_for_epoch(nodus_witness_t *w,
@@ -408,7 +427,10 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
      * stays SHA3-512(0x02 ‖ pubkey ‖ state_seed) in slice 3 (the
      * validator_id tiebreak is the ruleset-2 snapshot's, design §7.8,
      * slice 5), so an unchanged frozen ranking re-selects the same set.
-     * Below generation 4 everything is exactly as before. */
+     * Below generation 4 everything is exactly as before.
+     * HF-6 slice 5c: under generation 4 every emitted member also
+     * carries its row's validator_id / owner_fp (emit_member, from this
+     * same `key_gen`) — what a ruleset-2 entry is filled from. */
     uint32_t key_gen = 0;
     if (nodus_witness_v2_key_generation(w, &key_gen) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: the key generation is unreadable "
@@ -502,6 +524,7 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
             continue;
         }
         work[n_work].rec         = rec;
+        work[n_work].v2          = g4 ? &cand_v2[i] : NULL;   /* HF-6 5c */
         work[n_work].total_stake = frozen_total;
         work[n_work].self_stake  = frozen_self;   /* <= total: own row is
                                                    * one of the summands  */
@@ -636,6 +659,7 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
 
     for (int i = 0; i < cand_count; i++) {
         work[i].rec = &candidates[i];
+        work[i].v2  = NULL;     /* HF-6 5c: no v2 row here — ids emit 0 */
         /* bootstrap = the genesis snapshots: the LIVE genesis rows (the
          * same rows copy(0) is later written from) */
         work[i].total_stake =
@@ -718,6 +742,11 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
             /* HF-6 5b — the voting power, from the parallel array the
              * miss path below fills; a hit and a miss agree. */
             out[i].power          = w->cached_committee_powers[i];
+            /* HF-6 5c (D6) — builder-only, never cached: zero, exactly
+             * what the miss path below returns. The caller's buffer may
+             * hold anything, so write them. */
+            memset(out[i].validator_id, 0, sizeof(out[i].validator_id));
+            memset(out[i].owner_fp, 0, sizeof(out[i].owner_fp));
         }
         *count_out = n;
         return 0;
@@ -725,7 +754,7 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
 
     /* Cache miss — compute and store.
      *
-     * S3: DNAC_MAX_ACTIVE_VALIDATORS members are ~334 KB, so the scratch
+     * S3: DNAC_MAX_ACTIVE_VALIDATORS members are ~344 KB, so the scratch
      * buffer is HEAP, never a stack array. It is requested at the release
      * ceiling; compute_for_epoch narrows the result to the epoch's
      * chain-derived target itself. */
@@ -892,6 +921,12 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
     }
 
     for (int i = 0; i < tmp_count; i++) {
+        /* HF-6 5c (D6): the ids are builder-only and NOT cached, so the
+         * miss returns them zero on BOTH arms — the snapshot-served one
+         * (whose entries may carry ids under ruleset 2) and the
+         * recompute — exactly what a later hit returns. */
+        memset(tmp[i].validator_id, 0, sizeof(tmp[i].validator_id));
+        memset(tmp[i].owner_fp, 0, sizeof(tmp[i].owner_fp));
         memcpy(w->cached_committee_pubkeys[i], tmp[i].pubkey,
                DNAC_PUBKEY_SIZE);
         w->cached_committee_stakes[i]           = tmp[i].total_stake;

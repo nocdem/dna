@@ -107,8 +107,10 @@
  *   two lines WITHOUT the grace gate — a member in grace still fetches.
  *
  * ── SETTLEMENT (rev 2.2 §5 + rev 4 §5) ────────────────────────────────
- *   P_total = Σ power of snapshot(H) (total_stake / DNAC_DECIMAL_UNIT —
- *   the distribution's power); P_rep = Σ power of the seats with a
+ *   P_total = Σ power of snapshot(H) (nodus_witness_vset_powers — the
+ *   distribution's power, HF-6 5b: total_stake / DNAC_DECIMAL_UNIT for a
+ *   ruleset-1 snapshot, the counted power for a ruleset-2 one); P_rep = Σ
+ *   power of the seats with a
  *   committed report for H. F1: nothing moves (no pay, no fail_streak)
  *   unless P_rep · 2 > P_total. For member m: if m's node key is a
  *   seated validator that reported, its power leaves P_rep (F2) and its

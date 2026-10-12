@@ -39,6 +39,7 @@
 #define NODUS_WITNESS_VSET_H
 
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_committee.h" /* nodus_committee_member_t */
 #include "dnac/vset_wire.h"
 #include "dnac/ledger_roots_v2.h"
 
@@ -65,9 +66,18 @@ extern "C" {
  *       HONEST LABEL in shared/dnac/vset_wire.h).
  *   - anything else (bad args, DB error) → -1.
  *
+ * HF-6 slice 5c: BOTH rulesets are stored (design rev 6 §6.5 — every
+ * reader accepts both versions for the chain's life). The hash is
+ * re-derived with dna_vset_hash_bytes_ex(…, DNA_VSET_RULESET_TOPN_V2, …):
+ * the blob's own header picks the tag ("NDS.VSET.v1" / "NDS.VSET.v2") and
+ * that ruleset's length ceiling, so a ruleset-1 blob hashes exactly as
+ * before 5c.
+ *
  * @param blob      canonical snapshot bytes (shared/dnac/vset_wire.h).
- * @param blob_len  1..DNA_VSET_MAX_ENC_LEN.
- * @param hash64    dna_vset_hash of `blob`; re-derived and checked here.
+ * @param blob_len  1..DNA_VSET_MAX_ENC_LEN_V2 (and within its own
+ *                  ruleset's ceiling — DNA_VSET_MAX_ENC_LEN for v1).
+ * @param hash64    the snapshot hash of `blob` under the tag its header
+ *                  names; re-derived and checked here.
  * @return 0 stored/idempotent, -2 conflict, -1 error.
  */
 int nodus_witness_vset_insert(nodus_witness_t *w,
@@ -80,8 +90,11 @@ int nodus_witness_vset_insert(nodus_witness_t *w,
  * Load and DECODE the snapshot for `epoch_start`.
  *
  * Integrity is re-checked on every read before the bytes are trusted:
- * the stored blob is re-hashed (dna_vset_hash_bytes) and must equal the
- * stored hash; the decode must succeed; the decoded epoch must equal
+ * the stored blob is re-hashed (dna_vset_hash_bytes_ex, max ruleset 2 —
+ * HF-6 5c: a stored ruleset-1 row re-derives its stored v1-tag hash
+ * byte for byte) and must equal the stored hash; the decode
+ * (dna_vset_decode_ex, max ruleset 2 — either layout) must succeed; the
+ * decoded epoch must equal
  * `epoch_start` and the decoded active_count must equal the stored
  * active_count column. Any mismatch is corruption and returns -1.
  *
@@ -147,7 +160,12 @@ int nodus_witness_vset_root(nodus_witness_t *w,
  * @param snapshot_out [out] optional; heap snapshot (dna_vset_free).
  * @param blob_out     [out] optional; heap canonical bytes (free()).
  * @param blob_len_out [out] required iff blob_out is non-NULL.
- * @param hash_out64   [out] optional; dna_vset_hash of the snapshot.
+ * HF-6 slice 5c: encoded and hashed through the `_ex` family at max
+ * ruleset 2 (the layout and tag follow the snapshot's own ruleset — still
+ * TOPN_V1 on every chain until slice 5d); each entry is filled by
+ * nodus_witness_vset_entry_from_member below.
+ *
+ * @param hash_out64   [out] optional; the snapshot hash (dna_vset_hash_ex).
  * @return 0 / -1. On failure NO output parameter is written.
  */
 int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
@@ -157,6 +175,28 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
                                        uint8_t **blob_out,
                                        size_t *blob_len_out,
                                        uint8_t hash_out64[DNA_VSET_HASH_LEN]);
+
+/**
+ * HF-6 slice 5c — fill ONE snapshot entry from ONE committee member, in
+ * the layout of `ruleset`. The builder's own fill (vset_build_snapshot
+ * calls it for every member), public so a ruleset-2 snapshot can be built
+ * from real members before slice 5d switches the builder's ruleset.
+ *
+ *   voter_id       = SHA3-512(pubkey)[0..31] (nodus_chain_config_derive_
+ *                    witness_id — the shipped derivation);
+ *   pubkey, total_stake, self_bond (= member self_stake), commission_bps;
+ *   TOPN_V2: validator_id / owner_fp copied from the member (emit_member
+ *            sets them at key generation >= NODUS_RT_GEN_STORAGE; a zero
+ *            id is not repaired — the v2 encoder refuses it);
+ *   TOPN_V1: validator_id / owner_fp written all zero, whatever the
+ *            member carries (the v1 encoder refuses a nonzero byte).
+ *
+ * @return 0; -1 on a NULL argument, a ruleset other than 1 / 2, or a
+ *         voter_id derivation failure (`e` may be partly written).
+ */
+int nodus_witness_vset_entry_from_member(const nodus_committee_member_t *m,
+                                         uint32_t ruleset,
+                                         dna_vset_entry_t *e);
 
 /* ════════════════════════════════════════════════════════════════════
  * S3 epoch lifecycle — ACTIVE. Called from finalize_block.

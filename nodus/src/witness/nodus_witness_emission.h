@@ -21,7 +21,9 @@
  * the chain_config_history econ band (nodus_chain_config.h,
  * NODUS_CC_ECON_*) and refuses a config whose values differ from these
  * (nodus_witness_v2_gen.c gen_plan_build), and DNAC_DECIMAL_UNIT is the
- * voting-power unit (power = total_stake / DNAC_DECIMAL_UNIT — the
+ * voting-power unit (whole coins p = total_stake / DNAC_DECIMAL_UNIT — a
+ * ruleset-1 snapshot entry's power, and the input of a ruleset-2 entry's
+ * counted, capped power: HF-6 5b, nodus_witness_vset_powers — for the
  * cometbft ValidatorUpdate, Rule N's weight floor, the reward
  * distribution). The file name is kept so the many includers do not
  * move in the same change.
