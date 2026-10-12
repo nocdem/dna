@@ -19,6 +19,8 @@
 #include "dnac/env_wire.h"            /* dna_env_view_t, DNA_ENV_MAX_TOTAL_LEN */
 #include "dnac/env_preflight.h"       /* dna_env_preflight_status_t           */
 #include "dnac/res_meter.h"           /* dna_ck_add_u64                       */
+#include "dnac/power_cap.h"           /* DNA_POWER_CAP_BPS_MIN / _MAX (param
+                                       * 20's range is the water-fill's)    */
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_committee.h"
@@ -67,7 +69,7 @@
 #define CC_MAX_ACTIVE               DNA_MAX_ACTIVE_VALIDATORS
 
 #define CC_PURPOSE_TAG_LEN          16
-#define CC_PARAM_MAX_ID            17
+#define CC_PARAM_MAX_ID            21
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -87,14 +89,21 @@
                                            * DNAC_CFG_RULESET_GEN_STORAGE */
 #define CC_PARAM_DELEGATE_NAME_REQUIRED 17 /* HF-8 —
                                            * DNAC_CFG_DELEGATE_NAME_REQUIRED */
+/* id 18 is not assigned in this tree (HF-6 slice 8c — dnac.h) */
+#define CC_PARAM_STAKE_MIN         19     /* HF-6 — DNAC_CFG_STAKE_MIN */
+#define CC_PARAM_POWER_CAP_BPS     20     /* HF-6 — DNAC_CFG_POWER_CAP_BPS */
+#define CC_PARAM_STORAGE_BOND      21     /* HF-6 — DNAC_CFG_STORAGE_BOND */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide.
  * HF-4 grew it 9 -> 14 (design 2026-10-02-onchain-names-design.md rev 4
  * §1.1): without the slots nodus_chain_config_get_u64 answers -1 for ids
  * 9-13 and every read of them would FAULT on every node. Nodus EVM grew it
  * 14 -> 16 for the same reason (ids 14 EVM_ACTIVE, 15 EVM_BLOCK_GAS);
- * storage reward v1 grows it 16 -> 17 (id 16) and HF-8 17 -> 18 (id 17,
- * DELEGATE_NAME_REQUIRED) through the same derivation. */
+ * storage reward v1 grows it 16 -> 17 (id 16), HF-8 17 -> 18 (id 17,
+ * DELEGATE_NAME_REQUIRED) and HF-6 18 -> 22 (ids 19 STAKE_MIN, 20
+ * POWER_CAP_BPS, 21 STORAGE_BOND; slot 18 exists but no row can be
+ * committed for it until slice 8c assigns the id) through the same
+ * derivation. */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
 /* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
@@ -130,6 +139,19 @@
  * onchain-names-design.md rev 4 §2 Price): [1 NODUS, 10M NODUS]. */
 #define CC_MIN_NAME_PRICE           100000000ULL
 #define CC_MAX_NAME_PRICE           1000000000000000ULL
+/* HF-6 STAKE_MIN range (param 19; design 2026-10-03-hf5-validator-owner-
+ * stake-design.md rev 6 §1.5, Kurultay #14 K9): [100k NODUS, INT64_MAX]
+ * raw. The upper end is the stored column's int64 ceiling. */
+#define CC_MIN_STAKE_MIN            10000000000000ULL
+#define CC_MAX_STAKE_MIN            ((uint64_t)INT64_MAX)
+/* HF-6 POWER_CAP_BPS range (param 20; design §5, Kurultay #14 K5):
+ * [500, 3000] bps — the water-fill's own legal range. */
+#define CC_MIN_POWER_CAP_BPS        500ULL
+#define CC_MAX_POWER_CAP_BPS        3000ULL
+/* HF-6 STORAGE_BOND range (param 21; design §11.3, Kurultay #16 khan
+ * decision 3, "100k 1m"): [100k NODUS, 1M NODUS] raw. */
+#define CC_MIN_STORAGE_BOND         10000000000000ULL
+#define CC_MAX_STORAGE_BOND         100000000000000ULL
 
 static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
@@ -185,6 +207,28 @@ _Static_assert(CC_PARAM_DELEGATE_NAME_REQUIRED ==
 _Static_assert(CC_DELEGATE_NAME_REQUIRED_ON ==
                    DNAC_CFG_DELEGATE_NAME_REQUIRED_ON,
                "DELEGATE_NAME_REQUIRED value drift vs dnac");
+/* HF-6 (design rev 6 §8): params 19-21. Each range is ONE constant pair
+ * shared by this scalar rule, the client mirror (verify.c) and the
+ * engine readers' range checks (nodus_witness_v2_apply.c env_stake_min /
+ * env_storage_bond, nodus_witness_vset.c), so a legal vote can never trip
+ * a reader into a FAULT. */
+_Static_assert(CC_PARAM_STAKE_MIN == DNAC_CFG_STAKE_MIN &&
+               CC_PARAM_POWER_CAP_BPS == DNAC_CFG_POWER_CAP_BPS &&
+               CC_PARAM_STORAGE_BOND == DNAC_CFG_STORAGE_BOND,
+               "CC_PARAM_{STAKE_MIN,POWER_CAP_BPS,STORAGE_BOND} drift vs "
+               "dnac param ids");
+_Static_assert(CC_MIN_STAKE_MIN == DNAC_HF6_STAKE_MIN_MIN &&
+               CC_MIN_STAKE_MIN <= DNAC_HF6_STAKE_MIN_DEFAULT &&
+               DNAC_HF6_STAKE_MIN_DEFAULT <= CC_MAX_STAKE_MIN,
+               "STAKE_MIN range drift vs dnac (K9)");
+_Static_assert(CC_MIN_POWER_CAP_BPS == DNAC_CFG_MIN_POWER_CAP_BPS &&
+               CC_MAX_POWER_CAP_BPS == DNAC_CFG_MAX_POWER_CAP_BPS &&
+               CC_MIN_POWER_CAP_BPS == DNA_POWER_CAP_BPS_MIN &&
+               CC_MAX_POWER_CAP_BPS == DNA_POWER_CAP_BPS_MAX,
+               "POWER_CAP_BPS range drift vs dnac / power_cap.h (K5)");
+_Static_assert(CC_MIN_STORAGE_BOND == DNAC_HF6_STORAGE_BOND_MIN &&
+               CC_MAX_STORAGE_BOND == DNAC_HF6_STORAGE_BOND_MAX,
+               "STORAGE_BOND range drift vs dnac (Kurultay #16 decision 3)");
 /* nodus_chain_config.h keeps this as a bare literal so it stays free of
  * shared/ includes — pin it here, the one TU that sees both. */
 _Static_assert(NODUS_CC_RATE_LIMIT_MAX_PROPOSERS == CC_MAX_ACTIVE,
@@ -722,6 +766,32 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
             if (new_value < DNAC_CFG_MIN_EVM_BLOCK_GAS ||
                 new_value > DNAC_CFG_MAX_EVM_BLOCK_GAS) return -1;
             break;
+        case CC_PARAM_STAKE_MIN:
+            /* HF-6 (design rev 6 §1.5, K9): [100k NODUS, INT64_MAX] raw.
+             * The upper check is THIS case's own, not the int64 tail
+             * below: that tail bounds the nonce and the three heights,
+             * never new_value, and every other case's range ends far
+             * below 2^63. Without it a value >= 2^63 would be stored
+             * NEGATIVE by the int64 cast (decision 2026-09-30-chain-
+             * config-int64-bounds.md) and env_stake_min would then FAULT
+             * on every node at the first STAKE after the row's effective
+             * height — a fleet halt any seat could schedule. Votable only
+             * while generation >= 4 judges the vote: a stateful rule. */
+            if (new_value < CC_MIN_STAKE_MIN ||
+                new_value > CC_MAX_STAKE_MIN) return -1;
+            break;
+        case CC_PARAM_POWER_CAP_BPS:
+            /* HF-6 (design rev 6 §5, K5): [500, 3000] bps. Stateful rule:
+             * generation >= 4. */
+            if (new_value < CC_MIN_POWER_CAP_BPS ||
+                new_value > CC_MAX_POWER_CAP_BPS) return -1;
+            break;
+        case CC_PARAM_STORAGE_BOND:
+            /* HF-6 (design rev 6 §11.3, Kurultay #16 khan decision 3):
+             * [100k NODUS, 1M NODUS] raw. Stateful rule: generation >= 4. */
+            if (new_value < CC_MIN_STORAGE_BOND ||
+                new_value > CC_MAX_STORAGE_BOND) return -1;
+            break;
         default:
             return -1;
     }
@@ -801,6 +871,22 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
         case CC_PARAM_RULESET_GEN_STORAGE:
             /* storage reward v1 — ERGONOMIC, param 9's class ("voted like
              * RULESET_GEN2", design rev 2.2 §6). Its own return. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_STAKE_MIN:
+            /* HF-6 — ERGONOMIC (Kurultay #16 khan "4 ok": 18-21
+             * ERGONOMIC). Its own return, never the default: branch. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_POWER_CAP_BPS:
+            /* HF-6 — ERGONOMIC (Kurultay #16 "4 ok"). Its own return.
+             * The grace is what freezes a snapshot's ratio: a row that
+             * governs epoch X is effective <= X and was committed at
+             * least this many blocks earlier — at or before boundary
+             * X - E when this grace >= DNAC_EPOCH_LENGTH (asserted in
+             * nodus_witness_vset.c) — so every consumer of snapshot(X)
+             * reads one ratio (design rev 6 §8). */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+        case CC_PARAM_STORAGE_BOND:
+            /* HF-6 — ERGONOMIC (Kurultay #16 "4 ok"). Its own return. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_NAME_PRICE_3P:
         case CC_PARAM_NAME_PRICE_4P:
@@ -981,6 +1067,17 @@ int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
              * {1} already makes the switch one-way (the HF-2/HF-3 shape).
              * A synthetic or unresolved runtime reads 0 here. */
             if (judging_generation < NODUS_RT_GEN_2) return -1;
+            return 0;
+        case CC_PARAM_STAKE_MIN:
+        case CC_PARAM_POWER_CAP_BPS:
+        case CC_PARAM_STORAGE_BOND:
+            /* HF-6 (design rev 6 §8: "19-21 generation 4'ten itibaren
+             * oylanır"): votable only while a generation that HAS the
+             * owner/node roles (NODUS_RT_GEN_STORAGE = 4) judges the vote
+             * — the NAME_PRICE shape above. No single-use rule: each is
+             * an ordinary re-votable value. No other fact gates them. A
+             * synthetic or unresolved runtime reads 0 here. */
+            if (judging_generation < NODUS_RT_GEN_STORAGE) return -1;
             return 0;
         case CC_PARAM_MAX_TXS:
         case CC_PARAM_BLOCK_INTERVAL:

@@ -3563,13 +3563,28 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
+    int drc = nodus_dnac_fee_info_decode(req->raw_response,
+                                         req->raw_response_len, result_out);
+    free_pending(client, req);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
+}
+
+/* The dnac_fee_info reply decoder (contract: nodus.h). Moved out of
+ * nodus_client_dnac_fee_info unchanged (HF-6 slice 8a) so a crafted reply
+ * can be decoded without a network; the three HF-6 keys are added. Lenient
+ * as before: a key whose value is not an unsigned integer leaves its field
+ * 0, an unknown key is skipped. One addition: a reply the CBOR decoder
+ * could not walk (truncated, malformed) is refused (-1) instead of being
+ * answered with partially zeroed fields — a 0 gas_price or bond would
+ * otherwise read as "rule off" / "not reported". */
+int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
+                               nodus_dnac_fee_info_t *result_out) {
+    if (!raw || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(req->raw_response, req->raw_response_len,
-                           &dec, &mc) != 0) {
-        free_pending(client, req);
-        return NODUS_ERR_PROTOCOL_ERROR;
-    }
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
 
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
@@ -3596,12 +3611,26 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type == CBOR_ITEM_UINT)
                 result_out->token_create_fee = v.uint_val;
+        } else if (key.tstr.len == 9 &&
+                   memcmp(key.tstr.ptr, "stake_min", 9) == 0) {
+            /* HF-6 slice 8a: absent on an older server -> stays 0 */
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->stake_min = v.uint_val;
+        } else if (key.tstr.len == 12 &&
+                   memcmp(key.tstr.ptr, "storage_bond", 12) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->storage_bond = v.uint_val;
+        } else if (key.tstr.len == 13 &&
+                   memcmp(key.tstr.ptr, "power_cap_bps", 13) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->power_cap_bps = v.uint_val;
         } else {
             cbor_decode_skip(&dec);
         }
     }
-
-    free_pending(client, req);
+    if (dec.error) return -1;
     return 0;
 }
 

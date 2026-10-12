@@ -440,7 +440,9 @@ static int t_scalar_rule_matrix(void)
     /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md §9) appends
      * EVM_ACTIVE 14 and EVM_BLOCK_GAS_LIMIT 15; storage reward v1 appends
      * RULESET_GEN_STORAGE 16; HF-8 appends DELEGATE_NAME_REQUIRED 17 (main
-     * merge order), the last id. */
+     * merge order); HF-6 slice 8a appends STAKE_MIN 19, POWER_CAP_BPS 20
+     * and STORAGE_BOND 21, leaving 18 unassigned until slice 8c (which
+     * finishes this adjacency with its id-18 vote). */
     CHECK(DNAC_CFG_NAME_PRICE_6P + 1 == DNAC_CFG_EVM_ACTIVE &&
               DNAC_CFG_EVM_ACTIVE + 1 == DNAC_CFG_EVM_BLOCK_GAS_LIMIT,
           "id 13 is followed by Nodus EVM's ids 14-15");
@@ -449,9 +451,19 @@ static int t_scalar_rule_matrix(void)
           "id 15 is followed by the storage vote's id 16");
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE + 1 ==
                   DNAC_CFG_DELEGATE_NAME_REQUIRED &&
-              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_DELEGATE_NAME_REQUIRED &&
               DNAC_CFG_DELEGATE_NAME_REQUIRED == 17,
-          "id 16 is followed by HF-8's id 17; 17 is the last id");
+          "id 16 is followed by HF-8's id 17");
+    CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED + 2 == DNAC_CFG_STAKE_MIN &&
+              !dnac_cfg_param_read_by_consensus(
+                  (uint8_t)(DNAC_CFG_DELEGATE_NAME_REQUIRED + 1)),
+          "id 17 is followed by the unassigned, refused id 18 (HF-6 8c)");
+    CHECK(DNAC_CFG_STAKE_MIN == 19 &&
+              DNAC_CFG_STAKE_MIN + 1 == DNAC_CFG_POWER_CAP_BPS &&
+              DNAC_CFG_POWER_CAP_BPS + 1 == DNAC_CFG_STORAGE_BOND,
+          "id 18 is followed by HF-6's ids 19-21");
+    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_STORAGE_BOND &&
+              DNAC_CFG_STORAGE_BOND == 21,
+          "21 is the last id");
     return 0;
 }
 

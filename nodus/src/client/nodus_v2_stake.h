@@ -410,8 +410,9 @@ typedef struct {
  *   gen-4 STAKE / ROTATE (generation >= NODUS_RT_GEN_STORAGE): owner_fp =
  *            SHA3-512(pk); the builder refuses only what the call bytes
  *            decide — STAKE: commission <= DNAC_COMMISSION_BPS_MAX, 1 <=
- *            bond <= INT64_MAX (ERR_BOND; STAKE_MIN is the chain's — a
- *            chain_config value from slice 8); ROTATE: a non-zero
+ *            bond <= INT64_MAX (ERR_BOND; STAKE_MIN is the chain's —
+ *            chain_config param 19, dnac_fee_info "stake_min"); ROTATE:
+ *            a non-zero
  *            validator_id; STAKE / ROTATE / STORAGE_REGISTER: consensus_pk
  *            and consent_sig present; STORAGE_REGISTER: 1 <= bond <=
  *            INT64_MAX (ERR_STORAGE_BOND; the exact STORAGE_BOND is the

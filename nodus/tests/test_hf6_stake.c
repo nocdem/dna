@@ -39,7 +39,10 @@
  *      and h + 720 accepted.
  *   A5 bond / scalar: STAKE_MIN - 1 refused, STAKE_MIN and INT64_MAX
  *      accepted, INT64_MAX + 1 refused, a commission above the bound
- *      refused.
+ *      refused. HF-6 slice 8a: the floor is the engine fact
+ *      ctx.stake_min — at 10^13 a bond of 10^13 (and one below the
+ *      compiled 2M) applies and 10^13 - 1 is refused; a ctx carrying 0
+ *      (never engine-filled) is a node fault (-2).
  *   A6 reads: the validator_id present (-1); the key reserved (-1; a
  *      malformed reservation answer -2); no active_count row (-1);
  *      active_count at DNAC_MAX_VALIDATORS (Rule M, -1); a read count
@@ -67,6 +70,17 @@
  *   B6 block E + 1: a STAKE re-using VR's key APPLIES under a NEW
  *      validator_id (≠ VR's migrated id) and re-reserves the key; the two
  *      twins' databases are byte-identical.
+ *   B7 (HF-6 slice 8a) a committed chain_config param-19 (STAKE_MIN) row
+ *      of 10^13 effective at E (written into both twins just before the
+ *      boundary block E): block E + 2's STAKE with bond 10^13 - 1 is
+ *      REFUSED with the ledger byte-identical, block E + 3's with bond
+ *      10^13 — below the compiled 2M default — APPLIES (self_stake
+ *      10^13); the engine reads the row, not the constant.
+ *   B8 (HF-6 slice 8a) an out-of-range param-19 row (10^13 - 1, which no
+ *      vote can commit) effective at E + 4 makes block E + 4 FAIL WHOLE
+ *      on twin A — a node fault whose reason is env_stake_min's range
+ *      check ("STAKE_MIN … no committed row can hold"), never a verdict
+ *      and never the default; the tip stays at E + 3.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 exists only there; the
@@ -94,8 +108,13 @@
  *    e_start, nodus_witness_committee.c nodus_committee_compute_for_epoch)
  *    excludes them, and a candidate absent from the frozen copy ranks 0
  *    and is skipped, never a fault (same function).
- *  - STAKE_MIN is the compiled DNAC_HF6_STAKE_MIN_DEFAULT (param 19 is
- *    slice 8's).
+ *  - B7 / B8's param-19 rows are written straight into
+ *    chain_config_history (cc_row), not voted: the vote's own rules
+ *    (range, grace, generation 4) are test_hf4_params.c's. B7's row is
+ *    planted right before a block that touches SYSTEM (the boundary E) so
+ *    the committed root absorbs it; B8's fault aborts its block before
+ *    phase 8, so the untouched-domain guard is never reached there. A B8
+ *    that faulted for another reason would fail its reason check.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -111,6 +130,7 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_rt_native.h"
+#include "witness/nodus_witness_v2_produce.h"   /* 8a: the tip after B8 */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"
@@ -201,9 +221,9 @@ typedef struct {
 
 /* V0..V6 the genesis committee, VR the RETIRING row; KO a single-key
  * owner, KD a funder, KX a foreign key, K1..K3 the multisig keys, KC1 /
- * KC2 consensus keys */
+ * KC2 consensus keys; KC3 the HF-6 slice 8a consensus key (B7) */
 enum { V0, V1, V2, V3, V4, V5, V6, VR, KO, KD, KX, K1, K2, K3, KC1, KC2,
-       N_KEYS };
+       KC3, N_KEYS };
 #define N_VAL 7
 static sk_key_t g_k[N_KEYS];
 static uint8_t  g_vaddr[N_VAL][32];
@@ -445,6 +465,11 @@ static void ctx_reset(uint64_t height) {
     g_ctx.auth_context_commit = g_dig;
     g_ctx.leg_auth_digest = g_dig;
     g_ctx.auth = &g_av;
+    /* HF-6 slice 8a: the engine facts every ctx carries — the param-19 /
+     * param-21 values with no row (the engine's env_stake_min /
+     * env_storage_bond answer these defaults) */
+    g_ctx.stake_min = SMIN;
+    g_ctx.storage_bond = (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
 }
 
 static void av_k1(int key) {
@@ -676,6 +701,28 @@ static int t_hooks(void) {
     CHECK(try_stake(s4, &e, call, g_k[KO].fp, KC1, EXP,
                     (uint16_t)(DNAC_COMMISSION_BPS_MAX + 1), SMIN, CS_OK, 1)
           == -1, "commission above the bound refused");
+    /* HF-6 slice 8a: the floor is the ENGINE FACT ctx.stake_min (param 19
+     * at the item's height), not a compiled constant: at the K9 lower end
+     * a bond of 100k NODUS applies and one raw unit less is refused; a
+     * ctx carrying 0 (never engine-filled) is a NODE fault, not "no
+     * floor" */
+    {
+        const uint64_t MN = (uint64_t)DNAC_HF6_STAKE_MIN_MIN;
+        g_ctx.stake_min = MN;
+        CHECK(try_stake(s4, &e, call, g_k[KO].fp, KC1, EXP, 500, MN, CS_OK,
+                        1) == 0, "stake_min fact 10^13: bond 10^13 accepted");
+        CHECK(try_stake(s4, &e, call, g_k[KO].fp, KC1, EXP, 500, MN - 1u,
+                      CS_OK, 1) == -1,
+              "stake_min fact 10^13: bond 10^13 - 1 refused");
+        CHECK(try_stake(s4, &e, call, g_k[KO].fp, KC1, EXP, 500, SMIN - 1u,
+                        CS_OK, 1) == 0,
+              "a bond below the compiled default applies under a lower "
+              "voted floor");
+        g_ctx.stake_min = 0;
+        CHECK(try_stake(s4, &e, call, g_k[KO].fp, KC1, EXP, 500, SMIN, CS_OK,
+                        1) == -2, "stake_min 0 (not engine-filled): -2");
+        g_ctx.stake_min = SMIN;
+    }
 
     /* ── A6. reads ─────────────────────────────────────────────────── */
     CHECK(stake2_call(call, g_chain, g_k[KO].fp, KC1, EXP, 500, SMIN, CS_OK)
@@ -732,13 +779,16 @@ typedef struct {
 } fixture_t;
 
 typedef struct { int key; uint8_t seed; uint64_t amount; } coin_def_t;
-enum { C1, C2, C3, C4, C5, N_COINS };
+enum { C1, C2, C3, C4, C5, C6, C7, C8, N_COINS };
 static const coin_def_t COINS[N_COINS] = {
     [C1] = { KO, 0x71, 0 },   /* kind-1 STAKE KC1, block 4              */
     [C2] = { KD, 0x72, 0 },   /* kind-3 STAKE KC2 (3M), block 5         */
     [C3] = { KO, 0x73, 0 },   /* KC1 again, block 6 — refused           */
     [C4] = { KO, 0x74, 0 },   /* VR's key before graduation — refused   */
     [C5] = { KO, 0x75, 0 },   /* VR's key after graduation, E + 1       */
+    [C6] = { KO, 0x76, 0 },   /* 8a: bond 10^13 - 1 at E + 2 — refused  */
+    [C7] = { KO, 0x77, 0 },   /* 8a: bond 10^13 at E + 3 — applies      */
+    [C8] = { KO, 0x78, 0 },   /* 8a: the fault probe at E + 4           */
 };
 static uint64_t g_amt[N_COINS];
 static uint8_t  g_nul[N_COINS][64];
@@ -1159,6 +1209,9 @@ static int t_engine(void) {
     g_amt[C3] = SMIN + FEE;
     g_amt[C4] = SMIN + FEE;
     g_amt[C5] = SMIN + FEE;
+    g_amt[C6] = (uint64_t)DNAC_HF6_STAKE_MIN_MIN - 1u + FEE;
+    g_amt[C7] = (uint64_t)DNAC_HF6_STAKE_MIN_MIN + FEE;
+    g_amt[C8] = SMIN + FEE;
     for (int c = 0; c < N_COINS; c++)
         CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
     CHECK(fx_open(&A, "a") == 0 && fx_open(&B, "b") == 0,
@@ -1258,6 +1311,18 @@ static int t_engine(void) {
           "the ledger tables are byte-identical across the block");
 
     /* ── B5. boundary E: VR graduates, its key is released ─────────── */
+    /* HF-6 slice 8a: a committed param-19 (STAKE_MIN) row of 10^13
+     * (100k NODUS, the K9 lower end) effective at E, written into BOTH
+     * twins immediately before the boundary block E — a block that
+     * touches SYSTEM (VR graduates), so the row enters the committed
+     * SYSTEM root there and no later untouched-SYSTEM block sees a root
+     * it did not commit (phase 8's untouched-domain guard). Read from E
+     * on; B7 shows it moving the floor. */
+    CHECK(run_to(&A, &B, &h, E_LEN - 1) == 0, "to the block before E");
+    CHECK(cc_row(A.w, DNAC_CFG_STAKE_MIN, (uint64_t)DNAC_HF6_STAKE_MIN_MIN,
+                 E_LEN, 19) == 0 &&
+          cc_row(B.w, DNAC_CFG_STAKE_MIN, (uint64_t)DNAC_HF6_STAKE_MIN_MIN,
+                 E_LEN, 19) == 0, "param-19 row 10^13 @ E on both twins");
     CHECK(run_to(&A, &B, &h, E_LEN) == 0, "to the boundary E");
     CHECK(q_u64(A.w, "SELECT status FROM validators WHERE pubkey_hash = ?1",
                 vidr, 64, &x) == 0 && x == DNAC_VALIDATOR_UNSTAKED,
@@ -1290,6 +1355,73 @@ static int t_engine(void) {
         uint8_t da[64], db[64];
         CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
               memcmp(da, db, 64) == 0, "twin databases byte-identical");
+    }
+
+    /* ── B7. HF-6 slice 8a: the committed param-19 row IS the floor ── */
+    {
+        const uint64_t MN = (uint64_t)DNAC_HF6_STAKE_MIN_MIN;
+        CHECK(MN < SMIN, "the voted floor is below the compiled default");
+        CHECK(stake2_call(call, chain32, g_k[KO].fp, KC3, E_LEN + 50, 300,
+                          MN - 1u, CS_OK) == CALL_LEN, "call");
+        CHECK(st_env(A.w, E_LEN + 2, call, C6, KO, &e, &l, intent) == 0,
+              "envelope");
+        CHECK(ledger_digest(A.w, d0) == 0, "ledger before");
+        CHECK(apply_both(&A, &B, E_LEN + 2, e, l, &code) == 0 &&
+              code != NODUS_V2_TX_OK,
+              "E + 2: bond 10^13 - 1 refused under the voted floor 10^13");
+        free(e); e = NULL;
+        h = E_LEN + 2;
+        CHECK(ledger_digest(A.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+              "the ledger tables are byte-identical across the block");
+        CHECK(stake2_call(call, chain32, g_k[KO].fp, KC3, E_LEN + 50, 300,
+                          MN, CS_OK) == CALL_LEN, "call");
+        CHECK(st_env(A.w, E_LEN + 3, call, C7, KO, &e, &l, intent) == 0,
+              "envelope");
+        CHECK(apply_both(&A, &B, E_LEN + 3, e, l, &code) == 0 &&
+              code == NODUS_V2_TX_OK,
+              "E + 3: bond 10^13 (below the compiled 2M) applies under the "
+              "voted floor");
+        free(e); e = NULL;
+        h = E_LEN + 3;
+        uint8_t vid3[64];
+        CHECK(vid_expect(chain32, intent, vid3) == 0 &&
+              q_u64(A.w, "SELECT self_stake FROM validators WHERE "
+                    "pubkey_hash = ?1", vid3, 64, &x) == 0 && x == MN,
+              "the new validator's bond is 10^13");
+        CHECK(core_invariant(A.w) == 0 && core_invariant(B.w) == 0,
+              "the CORE invariant holds on both twins");
+    }
+
+    /* ── B8. HF-6 slice 8a: a stored param-19 value no vote can produce
+     *       FAULTs the item's ctx fill on this node — never a default,
+     *       never a verdict. The row (10^13 - 1, below the K9 floor) is
+     *       written straight into twin A only; the block aborts whole at
+     *       the authorization stage's fill, before phase 8 runs, and its
+     *       reason names the param. ─────────────────────────────────── */
+    {
+        CHECK(cc_row(A.w, DNAC_CFG_STAKE_MIN,
+                     (uint64_t)DNAC_HF6_STAKE_MIN_MIN - 1u, E_LEN + 4, 20)
+              == 0, "an out-of-range param-19 row @ E + 4 on twin A");
+        CHECK(stake2_call(call, chain32, g_k[KO].fp, KX, E_LEN + 50, 300,
+                          SMIN, CS_OK) == CALL_LEN, "call");
+        CHECK(st_env(A.w, E_LEN + 4, call, C8, KO, &e, &l, intent) == 0,
+              "envelope");
+        nodus_v2_envelope_t v[1] = { { e, l } };
+        nodus_v2_tx_result_t ra[1];
+        nodus_v2_block_t ba;
+        memset(ra, 0, sizeof(ra));
+        mk_block(&ba, E_LEN + 4, v, 1);
+        ba.cmt.results = ra;
+        ba.cmt.results_cap = 1;
+        CHECK(v2x_cmt_apply(A.w, &ba) != 0,
+              "E + 4: the block does not apply (a node FAULT)");
+        CHECK(strstr(ba.out_reason, "FAULT") != NULL &&
+              strstr(ba.out_reason, "STAKE_MIN") != NULL &&
+              strstr(ba.out_reason, "no committed row can hold") != NULL,
+              "the fault reason is the param-19 range check");
+        free(e); e = NULL;
+        CHECK(nodus_witness_v2_tip_height(A.w, &x) == 0 && x == E_LEN + 3,
+              "twin A's tip did not move");
     }
     fx_close(&A);
     fx_close(&B);

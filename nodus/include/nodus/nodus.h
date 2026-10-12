@@ -1039,6 +1039,18 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
                                 nodus_dnac_fee_info_t *result_out);
 
 /**
+ * @brief The dnac_fee_info raw-reply decoder nodus_client_dnac_fee_info
+ *        uses, exported for tests (no network). Zeroes *result_out, then
+ *        fills each known key whose value is an unsigned integer
+ *        (base_fee, mempool, min_fee, gas_price, token_create_fee and —
+ *        HF-6 slice 8a — stake_min, storage_bond, power_cap_bps); unknown
+ *        keys are skipped, an absent key leaves its field 0.
+ * @return 0; -1 on NULL arguments or a reply the CBOR decoder cannot walk.
+ */
+int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
+                               nodus_dnac_fee_info_t *result_out);
+
+/**
  * Query UTXOs by owner fingerprint.
  * Caller must free result_out->entries when done.
  *

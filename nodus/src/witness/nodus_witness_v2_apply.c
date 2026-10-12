@@ -48,8 +48,10 @@
  * (env_gas_price_check), — final pre-testnet wipe W-C — of
  * DNAC_CFG_TOKEN_CREATE_FEE_RAW (env_token_create_fee), — HF-2 — of
  * DNAC_CFG_HF2_ACTIVE (env_hf2_active), — HF-3 — of
- * DNAC_CFG_HF3_ACTIVE (env_hf3_active) and — HF-8 — of
- * DNAC_CFG_DELEGATE_NAME_REQUIRED (env_delegate_name_required). */
+ * DNAC_CFG_HF3_ACTIVE (env_hf3_active), — HF-8 — of
+ * DNAC_CFG_DELEGATE_NAME_REQUIRED (env_delegate_name_required) and — HF-6
+ * slice 8a — of DNAC_CFG_STAKE_MIN (env_stake_min) and
+ * DNAC_CFG_STORAGE_BOND (env_storage_bond). */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE,
                                         * NODUS_W_TOKEN_CREATE_FEE       */
@@ -1020,6 +1022,73 @@ static int env_name_prices(nodus_witness_t *w, uint64_t height,
                            (unsigned long long)out[k]);
             return -2;
         }
+    }
+    return 0;
+}
+
+/* HF-6 slice 8a (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ * design.md rev 6 §1.5, §8; Kurultay #14 K9): the generation-4 STAKE bond
+ * floor at `height` — chain_config param 19 (STAKE_MIN), the committed row
+ * active at `height` or the compiled DNAC_HF6_STAKE_MIN_DEFAULT. The
+ * env_name_prices discipline: the one three-valued accessor; an
+ * unanswerable read is a node FAULT, never a default; a stored value
+ * outside the votable range [DNAC_HF6_STAKE_MIN_MIN, INT64_MAX] is this
+ * node's storage disagreeing with every writer (the scalar rule — the
+ * SAME constant pair — admits nothing else), a FAULT too. A value above
+ * INT64_MAX is what a NEGATIVE stored int64 reads back as. UNMETERED;
+ * filled into every ctx the engine builds (exec_one_env,
+ * env_authorize_legs) so the pure STAKE hook never touches the database.
+ * `height` is the block being applied — tip + 1 on the CheckTx dry run —
+ * so CheckTx and FinalizeBlock read the same row. @return 0 / -2. */
+static int env_stake_min(nodus_witness_t *w, uint64_t height,
+                         uint64_t *out, char *reason, size_t reason_size)
+{
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_STAKE_MIN, height,
+                                   (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT,
+                                   out) < 0) {
+        V2AP_ENV_FAULT("HF-6: STAKE_MIN at height %llu is unreadable on "
+                       "this node - refusing to judge a STAKE against a "
+                       "guessed bond floor", (unsigned long long)height);
+        return -2;
+    }
+    if (*out < (uint64_t)DNAC_HF6_STAKE_MIN_MIN ||
+        *out > (uint64_t)INT64_MAX) {
+        V2AP_ENV_FAULT("HF-6: STAKE_MIN at height %llu reads %llu, a value "
+                       "no committed row can hold - this node's "
+                       "chain_config storage is inconsistent",
+                       (unsigned long long)height,
+                       (unsigned long long)*out);
+        return -2;
+    }
+    return 0;
+}
+
+/* HF-6 slice 8a (design rev 6 §11.3, §8; Kurultay #16 khan decision 3):
+ * the EXACT storage registration bond at `height` — chain_config param 21
+ * (STORAGE_BOND), the committed row active at `height` or the compiled
+ * DNAC_HF6_STORAGE_BOND_DEFAULT. The env_stake_min contract above
+ * statement for statement, over the range [DNAC_HF6_STORAGE_BOND_MIN,
+ * DNAC_HF6_STORAGE_BOND_MAX] (the scalar rule's pair). @return 0 / -2. */
+static int env_storage_bond(nodus_witness_t *w, uint64_t height,
+                            uint64_t *out, char *reason, size_t reason_size)
+{
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_STORAGE_BOND, height,
+                                   (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT,
+                                   out) < 0) {
+        V2AP_ENV_FAULT("HF-6: STORAGE_BOND at height %llu is unreadable on "
+                       "this node - refusing to judge a STORAGE_REGISTER "
+                       "against a guessed bond",
+                       (unsigned long long)height);
+        return -2;
+    }
+    if (*out < (uint64_t)DNAC_HF6_STORAGE_BOND_MIN ||
+        *out > (uint64_t)DNAC_HF6_STORAGE_BOND_MAX) {
+        V2AP_ENV_FAULT("HF-6: STORAGE_BOND at height %llu reads %llu, a "
+                       "value no committed row can hold - this node's "
+                       "chain_config storage is inconsistent",
+                       (unsigned long long)height,
+                       (unsigned long long)*out);
+        return -2;
     }
     return 0;
 }
@@ -2389,6 +2458,16 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     if (env_name_prices(w, blk->global_height, name_price, reason,
                         reason_size) != 0)
         return -2;
+    /* HF-6 slice 8a: the STAKE bond floor (param 19) and the exact
+     * storage bond (param 21) at this block's height, once per item, the
+     * same discipline */
+    uint64_t stake_min = 0, storage_bond = 0;
+    if (env_stake_min(w, blk->global_height, &stake_min, reason,
+                      reason_size) != 0)
+        return -2;
+    if (env_storage_bond(w, blk->global_height, &storage_bond, reason,
+                         reason_size) != 0)
+        return -2;
     /* Nodus EVM: the EVM_ACTIVE vote facts and the EVM block gas limit, once
      * per item (an earlier item's vote row counts — the HF-4 rule) */
     nodus_rt_exec_ctx_t evm_facts;
@@ -2443,6 +2522,8 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.ruleset_gen_storage_voted = gen_storage_voted;
         ctx.delegate_name_required = dlg_name;
         memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
+        ctx.stake_min           = stake_min;
+        ctx.storage_bond        = storage_bond;
         /* Nodus EVM (design §10): the block environment an ABI-2 runtime
          * reads — the Comet header seconds and the EVM block gas limit
          * (chain_config param 15 at this height, the compiled default
@@ -3310,6 +3391,7 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint8_t  gen2_voted = 0;
     uint8_t  gen_storage_voted = 0;
     uint64_t name_price[4];
+    uint64_t stake_min = 0, storage_bond = 0;
 
     /* W-C: every ctx the engine builds carries the committed
      * token-creation fee (runtime.h contract); no auth hook reads it
@@ -3319,7 +3401,7 @@ static int env_authorize_legs(nodus_witness_t *w,
      * power sums unconditionally and does not read it), and so do
      * HF-4's and the storage vote's single-use facts (no auth hook reads
      * either), and HF-8's name rule (read_plan/exec only — no auth hook
-     * reads it). */
+     * reads it), and HF-6's STAKE floor and storage bond (exec only). */
     if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
         return -2;
     if (env_hf2_active(w, height, &hf2, reason, reason_size) != 0)
@@ -3333,6 +3415,10 @@ static int env_authorize_legs(nodus_witness_t *w,
                                       reason_size) != 0)
         return -2;
     if (env_name_prices(w, height, name_price, reason, reason_size) != 0)
+        return -2;
+    if (env_stake_min(w, height, &stake_min, reason, reason_size) != 0)
+        return -2;
+    if (env_storage_bond(w, height, &storage_bond, reason, reason_size) != 0)
         return -2;
     /* Nodus EVM: the EVM_ACTIVE facts and the EVM block gas limit ride along
      * like the facts above (no auth hook reads them) */
@@ -3390,6 +3476,8 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.ruleset_gen2_voted  = gen2_voted;
         actx.ruleset_gen_storage_voted = gen_storage_voted;
         memcpy(actx.name_price, name_price, sizeof(actx.name_price));
+        actx.stake_min           = stake_min;
+        actx.storage_bond        = storage_bond;
         /* Nodus EVM: the gas limit rides along like the facts above; the auth
          * stage has no block time (the dry run has no header) and no auth
          * hook reads either — block_time_s stays 0 here (runtime.h) */

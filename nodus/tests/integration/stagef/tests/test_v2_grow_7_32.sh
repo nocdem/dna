@@ -126,7 +126,9 @@
 #       Either the Quick-start four-flag line with 30 in place of 15:
 #         -DDNAC_EPOCH_LENGTH=30 -DDNAC_BLOCKS_PER_YEAR=20
 #         -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
-#         -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15
+#         -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=30
+#       (HF-6 8a: the ergonomic grace must be >= the epoch length —
+#       nodus_witness_vset.c _Static_assert; 15 with E=30 no longer builds)
 #       or -DDNAC_EPOCH_LENGTH=30 alone (this scenario proposes no
 #       governance change and reaches no halving, so the grace and year
 #       constants are irrelevant to it — but STAGEF_BLOCKS_PER_YEAR must

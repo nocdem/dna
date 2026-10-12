@@ -1486,6 +1486,15 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
          * only while generation 2 or later judges the vote */
         { "DELEGATE_NAME_REQUIRED", DNAC_CFG_DELEGATE_NAME_REQUIRED },
         { "delegate_name_required", DNAC_CFG_DELEGATE_NAME_REQUIRED },
+        /* HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+         * design.md rev 6 §8) — params 19-21, votable only while
+         * generation 4 judges the vote (id 18 is not assigned yet) */
+        { "STAKE_MIN",            DNAC_CFG_STAKE_MIN },
+        { "stake_min",            DNAC_CFG_STAKE_MIN },
+        { "POWER_CAP_BPS",        DNAC_CFG_POWER_CAP_BPS },
+        { "power_cap_bps",        DNAC_CFG_POWER_CAP_BPS },
+        { "STORAGE_BOND",         DNAC_CFG_STORAGE_BOND },
+        { "storage_bond",         DNAC_CFG_STORAGE_BOND },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1736,6 +1745,15 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "(HF-8 switch: from --effective on a delegation needs the "
             "delegator's on-chain name, self-delegation exempt; one-way; "
             "generation 2 must be in force)\n"
+            "  STAKE_MIN              [%llu, %llu]   "
+            "(HF-6: raw bond floor of a validator STAKE; generation 4 "
+            "must be in force)\n"
+            "  POWER_CAP_BPS          [%u, %u]   "
+            "(HF-6: largest share of counted voting power one validator "
+            "may hold, basis points; generation 4 must be in force)\n"
+            "  STORAGE_BOND           [%llu, %llu]   "
+            "(HF-6: exact raw bond of a storage registration; generation "
+            "4 must be in force)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -1752,7 +1770,13 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_MIN_EVM_BLOCK_GAS,
             (unsigned long long)DNAC_CFG_MAX_EVM_BLOCK_GAS,
             (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
-            (unsigned long long)DNAC_CFG_DELEGATE_NAME_REQUIRED_ON);
+            (unsigned long long)DNAC_CFG_DELEGATE_NAME_REQUIRED_ON,
+            (unsigned long long)DNAC_HF6_STAKE_MIN_MIN,
+            (unsigned long long)INT64_MAX,
+            (unsigned)DNAC_CFG_MIN_POWER_CAP_BPS,
+            (unsigned)DNAC_CFG_MAX_POWER_CAP_BPS,
+            (unsigned long long)DNAC_HF6_STORAGE_BOND_MIN,
+            (unsigned long long)DNAC_HF6_STORAGE_BOND_MAX);
         return 1;
     }
     uint8_t param_id = 0;
@@ -1763,7 +1787,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "RULESET_GEN2 | NAME_PRICE_3P | NAME_PRICE_4P | "
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
                 "EVM_BLOCK_GAS_LIMIT | RULESET_GEN_STORAGE | "
-                "DELEGATE_NAME_REQUIRED "
+                "DELEGATE_NAME_REQUIRED | STAKE_MIN | POWER_CAP_BPS | "
+                "STORAGE_BOND "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -3669,10 +3694,10 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  *   (op 7, 7299 B): owner_fp = SHA3-512 of the --keys identity (kind 1),
  *   the storage NODE's key, consent signature and expiry from the file
  *   (`storage consent`, op 3); the owner's coins fund the bond + fee. The
- *   bond is DNAC_HF6_STORAGE_BOND_DEFAULT — the value of the chain's
- *   STORAGE_BOND seam today (rtn_storage_bond_at; slice 8 makes it a
- *   chain_config value, then it is read from the node). The node identity
- *   is not needed on this host.
+ *   bond is the node's dnac_fee_info "storage_bond" — chain_config param
+ *   21 STORAGE_BOND at tip + 1 (HF-6 slice 8a; the compiled
+ *   DNAC_HF6_STORAGE_BOND_DEFAULT when the server predates the key). The
+ *   node identity is not needed on this host.
  *   `storage exit --keys <owner> --node-fp <hex128>` — STORAGE_EXIT (op 8,
  *   64 B): fee-only funding; the chain checks the signer against the ROW's
  *   owner.
@@ -3942,14 +3967,13 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         return 1;
     /* HF-6 6b-3: the storage node — register: SHA3-512 of the consent's
      * node key (the registry key the chain derives from the call,
-     * rtn_storage_read_plan); exit: --node-fp. The bond is the STORAGE_BOND
-     * seam's value (this function's header). */
+     * rtn_storage_read_plan); exit: --node-fp. The bond is the node's
+     * STORAGE_BOND (dnac_fee_info, read on the session below). */
     uint8_t st_node_fp[64] = {0};
     if (is_streg) {
         if (qgp_sha3_512(consent.consensus_pk, DNA_VALBIND_PUBKEY_LEN,
                          st_node_fp) != 0)
             return 1;
-        bond = (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
     }
     if (is_stexit && t6_hex_exact(node_fp_hex, st_node_fp, 64) != 0) {
         fprintf(stderr, "--node-fp must be exactly 128 lowercase hex chars "
@@ -3966,20 +3990,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                 (unsigned)DNAC_COMMISSION_BPS_MAX);
         return 1;
     }
-    /* design §1.5: STAKE_MIN <= bond <= INT64_MAX. The floor is the
-     * chain's (today the compiled DNAC_HF6_STAKE_MIN_DEFAULT, a chain_config
-     * value from slice 8), so below it is a warning, the integer bound a
-     * refusal (the builder's too) */
+    /* design §1.5: STAKE_MIN <= bond <= INT64_MAX. The integer bound is a
+     * refusal here (the builder's too); the floor is chain state
+     * (chain_config param 19), compared with the node's dnac_fee_info
+     * "stake_min" on the session below. */
     if (is_stake2 && (bond < 1 || bond > (uint64_t)INT64_MAX)) {
         fprintf(stderr, "--bond must be 1..%llu raw\n",
                 (unsigned long long)INT64_MAX);
         return 1;
     }
-    if (is_stake2 && bond < (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT)
-        fprintf(stderr, "warning: --bond %llu is below this build's STAKE_MIN "
-                "%llu — the chain refuses a bond below the STAKE_MIN in "
-                "force\n", (unsigned long long)bond,
-                (unsigned long long)DNAC_HF6_STAKE_MIN_DEFAULT);
     /* HF-6 slice 7b: --validator's FORM, read before any I/O — a
      * validator_id (128 hex, generation 4) or, for delegate / undelegate,
      * the validator's public key (5184 hex, below generation 4). Which form
@@ -4316,6 +4335,24 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             goto done;
         }
         gas_price = fi.gas_price;
+        /* HF-6 slice 8a: the STORAGE_BOND (param 21) and STAKE_MIN (param
+         * 19) the node reports at tip + 1. 0 = a server that predates the
+         * keys — and therefore the two params: the value in force there is
+         * the compiled default, which is what this build then uses. */
+        if (is_streg)
+            bond = fi.storage_bond != 0
+                       ? fi.storage_bond
+                       : (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+        if (is_stake2) {
+            const uint64_t smin = fi.stake_min != 0
+                                      ? fi.stake_min
+                                      : (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+            if (bond < smin)
+                fprintf(stderr, "warning: --bond %llu is below the node's "
+                        "STAKE_MIN %llu — the chain refuses a bond below the "
+                        "STAKE_MIN in force\n", (unsigned long long)bond,
+                        (unsigned long long)smin);
+        }
     }
 
     /* The staker's CORE coins and the committed tip (dnac_utxo answers
@@ -4636,7 +4673,9 @@ static void cli_storage_usage(void) {
         "            expiry - h <= %llu.\n"
         "  register: the --keys identity is the owner: it signs, pays the "
         "bond (exactly\n"
-        "            %llu raw today) and the fee, and receives the reward "
+        "            the chain's STORAGE_BOND, read from the node; %llu raw "
+        "until a vote\n"
+        "            changes it) and the fee, and receives the reward "
         "and, after an\n"
         "            exit, the bond. The node identity is not needed here.\n"
         "  exit:     the owner takes node --node-fp out (fee only); the bond "
@@ -9440,15 +9479,17 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        NAME_PRICE_3P | NAME_PRICE_4P |\n");
     fprintf(stderr, "                        NAME_PRICE_5P | NAME_PRICE_6P |\n");
     fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT |\n");
-    fprintf(stderr, "                        RULESET_GEN_STORAGE | DELEGATE_NAME_REQUIRED\n");
+    fprintf(stderr, "                        RULESET_GEN_STORAGE | DELEGATE_NAME_REQUIRED |\n");
+    fprintf(stderr, "                        STAKE_MIN | POWER_CAP_BPS | STORAGE_BOND\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  storage consent --owner <hex128> --expiry <h> [--out <f>]\n");
     fprintf(stderr, "                                   HF-6: the -i storage node key consents (needs -i)\n");
     fprintf(stderr, "  storage register --keys <owner dir> --consent <file>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   HF-6: the OWNER registers the node,\n");
-    fprintf(stderr, "                                   pays the bond (%llu raw) + fee, earns the reward\n",
+    fprintf(stderr, "                                   pays the bond (the chain's STORAGE_BOND, %llu raw\n",
             (unsigned long long)DNAC_HF6_STORAGE_BOND_DEFAULT);
+    fprintf(stderr, "                                   until voted) + fee, earns the reward\n");
     fprintf(stderr, "  storage exit --keys <owner dir> --node-fp <hex128>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   HF-6: the owner takes the node out\n");
     fprintf(stderr, "  storage status [--fp <hex128> | --owner <hex128>]   Registry row, storage-set membership, eligible segments (--owner: every node of that owner)\n");

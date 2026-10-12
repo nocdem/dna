@@ -153,7 +153,35 @@ The chain is implemented in three layers of the monorepo:
   not have. Nothing under `dnac/` builds an EVM transaction — it is a
   version-3 envelope (`nodus-cli evm`, `nodus/README.md`; the web wallet's
   smart-contract panel, `web-wallet/README.md` "Smart contracts").
-  The read list is therefore ids 4 through 15), GENESIS
+  Id 16 `RULESET_GEN_STORAGE` (storage reward v1: the rule-set generation-4
+  vote, EXACTLY `DNAC_CFG_RULESET_GEN_STORAGE_D`, ERGONOMIC grace — HF-6
+  slice 8c moves this vote to id 18 and retires 16) and id 17
+  `DELEGATE_NAME_REQUIRED` (HF-8: EXACTLY 1, ERGONOMIC grace; votable once
+  generation 2 judges the vote) are on the list too. **HF-6 slice 8a
+  (design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6
+  §8; decisions `docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md`
+  K5 / K9, `2026-10-09-kurultay-16-hf6-storage-summary.md` khan 3 and
+  "4 ok"):** id 19 `STAKE_MIN` (`DNAC_CFG_STAKE_MIN`) — the bond floor of
+  a generation-4 validator STAKE: range [`DNAC_HF6_STAKE_MIN_MIN`,
+  `INT64_MAX`] raw = [100 000 NODUS, the int64 ceiling], no-row default
+  `DNAC_HF6_STAKE_MIN_DEFAULT` = 2 000 000 NODUS; id 20 `POWER_CAP_BPS`
+  (`DNAC_CFG_POWER_CAP_BPS`) — the largest share of counted voting power
+  one validator of a generation-4 (ruleset-2) validator set may hold:
+  range [`DNAC_CFG_MIN_POWER_CAP_BPS`, `DNAC_CFG_MAX_POWER_CAP_BPS`] =
+  [500, 3000] basis points, no-row default 3000, read at each validator
+  set's epoch start; id 21 `STORAGE_BOND` (`DNAC_CFG_STORAGE_BOND`) — the
+  EXACT bond of a storage registration: range
+  [`DNAC_HF6_STORAGE_BOND_MIN`, `DNAC_HF6_STORAGE_BOND_MAX`] = [100 000,
+  1 000 000] NODUS, no-row default 1 000 000 NODUS (an existing
+  registration keeps the bond it paid). All three ERGONOMIC grace, no
+  single-use rule, votable only while rule-set generation 4 judges the
+  vote. Id 18 is not assigned yet (HF-6 slice 8c) and is refused like any
+  unknown id; `DNAC_CFG_PARAM_MAX_ID` 17 → 21. The `verify.c` mirror
+  applies the three ranges (id 19's upper end checked on the value
+  itself); "generation 4 judges the vote" is the witness's. With no
+  19 / 20 / 21 row every reader answers the compiled default, so a chain
+  without the votes behaves exactly as before.
+  The read list is therefore ids 4 through 17 and 19 through 21), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee
   gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
   POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid

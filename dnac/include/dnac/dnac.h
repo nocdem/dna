@@ -792,7 +792,84 @@ typedef enum {
                                           *   HF-2/HF-3 class). Id
                                           *   assigned in main merge
                                           *   order (16 = storage). */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_DELEGATE_NAME_REQUIRED
+    /* id 18 is NOT assigned in this tree: it is HF-6's generation-4 vote
+     * (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
+     * rev 6 §8, "param 18 RULESET_GEN_ROLES"), which lands together with
+     * its vote value D4 and param 16's retirement in HF-6 slice 8c. Until
+     * then dnac_cfg_param_read_by_consensus(18) is false, so both rule
+     * sides refuse it like any unknown id. */
+    DNAC_CFG_STAKE_MIN             = 19, /**< HF-6 (design rev 6 §1.5, §8;
+                                          *   decision docs/plans/
+                                          *   decisions/2026-10-08-
+                                          *   kurultay-14-hf6-summary.md
+                                          *   K9; 2026-10-03-role-stake-
+                                          *   amounts.md): the generation-4
+                                          *   validator BOND FLOOR — a
+                                          *   generation-4 STAKE whose
+                                          *   bond is below the value in
+                                          *   force at its block is
+                                          *   refused. Read at the item's
+                                          *   block height; no row =
+                                          *   DNAC_HF6_STAKE_MIN_DEFAULT
+                                          *   (2M NODUS). Range
+                                          *   [DNAC_HF6_STAKE_MIN_MIN
+                                          *   (100 000 NODUS), INT64_MAX
+                                          *   raw] — the upper end is
+                                          *   the SQLite int64 ceiling of
+                                          *   the stored value, bounded by
+                                          *   this param's own scalar
+                                          *   rule. Grace class ERGONOMIC
+                                          *   (Kurultay #16 "4 ok").
+                                          *   Votable only while rule-set
+                                          *   generation >= 4 judges the
+                                          *   vote — a witness-side
+                                          *   stateful rule the client
+                                          *   mirror cannot apply. */
+    DNAC_CFG_POWER_CAP_BPS         = 20, /**< HF-6 (design rev 6 §5 "Oran",
+                                          *   §8; Kurultay #14 K5): the
+                                          *   water-fill cap ratio, in
+                                          *   basis points, applied to a
+                                          *   ruleset-2 validator-set
+                                          *   snapshot. Read at the
+                                          *   snapshot's EPOCH START
+                                          *   (nodus_witness_power_cap_
+                                          *   bps_for_epoch), so every
+                                          *   consumer of one snapshot
+                                          *   reads one ratio; no row =
+                                          *   DNAC_HF6_POWER_CAP_BPS_
+                                          *   DEFAULT (3000). Range
+                                          *   [DNA_POWER_CAP_BPS_MIN 500,
+                                          *   DNA_POWER_CAP_BPS_MAX 3000]
+                                          *   (shared/dnac/power_cap.h,
+                                          *   restated here as
+                                          *   DNAC_CFG_MIN/MAX_POWER_CAP_
+                                          *   BPS). Grace ERGONOMIC.
+                                          *   Votable only while
+                                          *   generation >= 4 judges the
+                                          *   vote (witness-side). */
+    DNAC_CFG_STORAGE_BOND          = 21, /**< HF-6 (design rev 6 §11.3, §8;
+                                          *   Kurultay #16 khan decision
+                                          *   3): the EXACT storage-node
+                                          *   registration bond — a
+                                          *   STORAGE_REGISTER v2 whose
+                                          *   bond is not exactly the
+                                          *   value in force at its block
+                                          *   is refused. Read at the
+                                          *   item's block height; no row
+                                          *   = DNAC_HF6_STORAGE_BOND_
+                                          *   DEFAULT (1M NODUS). Range
+                                          *   [DNAC_HF6_STORAGE_BOND_MIN
+                                          *   (100 000 NODUS),
+                                          *   DNAC_HF6_STORAGE_BOND_MAX
+                                          *   (1 000 000 NODUS)]. Grace
+                                          *   ERGONOMIC. Votable only
+                                          *   while generation >= 4
+                                          *   judges the vote
+                                          *   (witness-side). A
+                                          *   registration keeps the bond
+                                          *   it paid: a later vote never
+                                          *   touches an existing row. */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_STORAGE_BOND
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -851,9 +928,22 @@ typedef enum {
  *      nodus_rt_exec_ctx_t.delegate_name_required — the CORE SYSFUND
  *      leg's name gate, nodus_witness_rt_native.c rtn_sysfund_name_gate,
  *      under generations 1-3; under generation 4 the SYSTEM DELEGATE's
- *      own gate, rtn_deleg2_name_gate — HF-6 sub-slice 3e, decision D3).
- *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
- *  (BLOCK_INTERVAL_SEC) is not read on this lane.
+ *      own gate, rtn_deleg2_name_gate — HF-6 sub-slice 3e, decision D3);
+ *    - STAKE_MIN (19, HF-6): nodus_witness_v2_apply.c env_stake_min (the
+ *      engine reads it into nodus_rt_exec_ctx_t.stake_min — the
+ *      generation-4 STAKE bond floor, nodus_witness_rt_native.c
+ *      rtn_stake_min_at);
+ *    - POWER_CAP_BPS (20, HF-6): nodus_witness_vset.c
+ *      nodus_witness_power_cap_bps_for_epoch (the ratio of a ruleset-2
+ *      snapshot, read at its epoch start), nodus_witness_handlers.c
+ *      (dnac_fee_info);
+ *    - STORAGE_BOND (21, HF-6): nodus_witness_v2_apply.c env_storage_bond
+ *      (into nodus_rt_exec_ctx_t.storage_bond — the exact STORAGE_REGISTER
+ *      bond, nodus_witness_rt_native.c rtn_storage_bond_at),
+ *      nodus_witness_handlers.c (dnac_fee_info).
+ *  No other governed id has a reader: 1 and 3 are RETIRED (above), 2
+ *  (BLOCK_INTERVAL_SEC) is not read on this lane, and 18 is not assigned
+ *  yet (HF-6 slice 8c).
  *
  *  Both sides of the rule consume THIS predicate — the witness-side
  *  nodus_chain_config_scalar_rules (the one authority for the 0x71
@@ -879,7 +969,10 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_EVM_ACTIVE ||
            param_id == (uint8_t)DNAC_CFG_EVM_BLOCK_GAS_LIMIT ||
            param_id == (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE ||
-           param_id == (uint8_t)DNAC_CFG_DELEGATE_NAME_REQUIRED;
+           param_id == (uint8_t)DNAC_CFG_DELEGATE_NAME_REQUIRED ||
+           param_id == (uint8_t)DNAC_CFG_STAKE_MIN ||
+           param_id == (uint8_t)DNAC_CFG_POWER_CAP_BPS ||
+           param_id == (uint8_t)DNAC_CFG_STORAGE_BOND;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -1103,9 +1196,21 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  §1.5, §7.2; decision 2026-10-03-role-stake-amounts.md item 5): the
  *  bond every bonded (ACTIVE / ELIGIBLE) row is reduced to by the
  *  generation-4 migration, the rest of its 10M (DNAC_SELF_STAKE_AMOUNT,
- *  unchanged) becoming a self-delegation. Becomes the param-19 no-row
- *  default and is bound into D4 (§8.1 consts[0]) in slice 8. */
+ *  unchanged) becoming a self-delegation. It is the no-row value of
+ *  chain_config param 19 (DNAC_CFG_STAKE_MIN — the generation-4 STAKE
+ *  bond floor the engine reads at each item's height, nodus_witness_
+ *  v2_apply.c env_stake_min) and is bound into D4 (§8.1 consts[0]) in
+ *  slice 8b. The migration keeps this compiled value (it runs once, at
+ *  the generation-4 edge, before any param-19 vote can be judged). */
 #define DNAC_HF6_STAKE_MIN_DEFAULT   (2000000ULL * 100000000ULL)    /* 2M × 10^8 raw */
+
+/** HF-6 — the lower end of param 19's vote range, 100 000 NODUS in raw
+ *  units (decision docs/plans/decisions/2026-10-08-kurultay-14-hf6-
+ *  summary.md K9, operator "yok 100k olsun"; 2026-10-03-role-stake-
+ *  amounts.md "alt sınır 100k NODUS, üst sınır yok"). The upper end is
+ *  INT64_MAX raw (the SQLite int64 ceiling of a stored value — design
+ *  rev 6 §1.5). Bound into D4 (§8.1 consts[1]) in slice 8b. */
+#define DNAC_HF6_STAKE_MIN_MIN       (100000ULL * 100000000ULL)     /* 100k × 10^8 raw */
 
 /** HF-6 — STORAGE_BOND, the storage-node registration bond (design rev 6
  *  §11.3; Kurultay #16 khan decision 3, decision docs/plans/decisions/
@@ -1115,12 +1220,14 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  2026-10-03-role-stake-amounts.md "storage 1M"). A STORAGE_REGISTER v2
  *  whose bond is not EXACTLY the value in force is refused, and so is a
  *  bond of 0 or above INT64_MAX (rtn_storage_register_exec, nodus/src/
- *  witness/nodus_witness_rt_native.c — all three VERDICTs, G13). Today the
- *  value in force is the compiled DEFAULT (rtn_storage_bond_at, the
- *  slice-8 seam); slice 8 makes it chain_config param 21 with this range
- *  as its scalar rule and binds all three numbers into D4 (design §8.1
- *  consts[5..7]). Replaces the storage-reward-v1 DNAC_STORAGE_STAKE_MIN
- *  (the same 10^14 raw, exact, not votable). */
+ *  witness/nodus_witness_rt_native.c — all three VERDICTs, G13). The value
+ *  in force is chain_config param 21 (DNAC_CFG_STORAGE_BOND) at the item's
+ *  height, read by the engine (nodus_witness_v2_apply.c env_storage_bond)
+ *  into the exec ctx (rtn_storage_bond_at); DEFAULT is its no-row value
+ *  and [MIN, MAX] its scalar rule — the SAME pair the reader range-checks
+ *  a stored value against. Slice 8b binds all three numbers into D4
+ *  (design §8.1 consts[5..7]). Replaces the storage-reward-v1
+ *  DNAC_STORAGE_STAKE_MIN (the same 10^14 raw, exact, not votable). */
 #define DNAC_HF6_STORAGE_BOND_DEFAULT (1000000ULL * 100000000ULL)   /* 1M × 10^8 raw */
 #define DNAC_HF6_STORAGE_BOND_MIN     (100000ULL * 100000000ULL)    /* 100k × 10^8 raw */
 #define DNAC_HF6_STORAGE_BOND_MAX     (1000000ULL * 100000000ULL)   /* 1M × 10^8 raw */
@@ -1128,13 +1235,22 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
 /** HF-6 — the POWER_CAP_BPS default, 3000 bps = 30 % (design rev 6 §5
  *  "Oran", §8 param 20; Kurultay #14 K5: legal range [500, 3000]). The
  *  ratio the water-fill cap (shared/dnac/power_cap.h) applies to a
- *  ruleset-2 validator-set snapshot. Today the ONE read
- *  (nodus_witness_power_cap_bps_for_epoch, nodus_witness_vset.c) returns
- *  this compiled value; slice 8 makes it the param-20 no-row default of a
- *  chain-config read and binds it into D4 (§8.1 consts[2]). Its range is
- *  pinned against DNA_POWER_CAP_BPS_MIN / _MAX by a _Static_assert where
- *  both headers are visible (nodus_witness_vset.c). */
+ *  ruleset-2 validator-set snapshot. The ONE read
+ *  (nodus_witness_power_cap_bps_for_epoch, nodus_witness_vset.c) is
+ *  chain_config param 20 (DNAC_CFG_POWER_CAP_BPS) at the snapshot's epoch
+ *  start, with this value as its no-row answer; slice 8b binds it into D4
+ *  (§8.1 consts[2]). */
 #define DNAC_HF6_POWER_CAP_BPS_DEFAULT   3000u
+
+/** HF-6 — param 20's vote range, both inclusive (Kurultay #14 K5,
+ *  operator "%5 - %30"): a restatement of shared/dnac/power_cap.h's
+ *  DNA_POWER_CAP_BPS_MIN / _MAX for the client mirror (verify.c), which
+ *  does not include that header. Pinned equal to them by _Static_asserts
+ *  where both headers are visible (nodus_witness_vset.c,
+ *  nodus_witness_chain_config.c), so the scalar rule, the reader's range
+ *  check and the water-fill's own refusal are one pair. */
+#define DNAC_CFG_MIN_POWER_CAP_BPS       500u
+#define DNAC_CFG_MAX_POWER_CAP_BPS       3000u
 
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
@@ -1259,6 +1375,21 @@ _Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT == 200000000000000ULL,
 _Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT < DNAC_SELF_STAKE_AMOUNT,
                "the HF-6 migration splits a 10M bond into a smaller bond "
                "plus a non-zero self-delegation (design §7.2)");
+_Static_assert(DNAC_HF6_STAKE_MIN_MIN == 10000000000000ULL,
+               "HF-6 STAKE_MIN lower bound = 100k NODUS = 10^13 raw (K9)");
+_Static_assert(0 < DNAC_HF6_STAKE_MIN_MIN &&
+               DNAC_HF6_STAKE_MIN_MIN <= DNAC_HF6_STAKE_MIN_DEFAULT &&
+               DNAC_HF6_STAKE_MIN_DEFAULT <= 0x7FFFFFFFFFFFFFFFULL,
+               "the STAKE_MIN default lies in its vote range "
+               "[DNAC_HF6_STAKE_MIN_MIN, INT64_MAX]");
+_Static_assert(DNAC_CFG_MIN_POWER_CAP_BPS == 500u &&
+               DNAC_CFG_MAX_POWER_CAP_BPS == 3000u &&
+               DNAC_CFG_MIN_POWER_CAP_BPS <= DNAC_HF6_POWER_CAP_BPS_DEFAULT &&
+               DNAC_HF6_POWER_CAP_BPS_DEFAULT <= DNAC_CFG_MAX_POWER_CAP_BPS,
+               "POWER_CAP_BPS range [500, 3000] (K5), default inside it");
+_Static_assert(DNAC_CFG_STAKE_MIN == 19 && DNAC_CFG_POWER_CAP_BPS == 20 &&
+               DNAC_CFG_STORAGE_BOND == 21,
+               "HF-6 param ids (design rev 6 §8; 18 is slice 8c's)");
 _Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
                DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
                DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&

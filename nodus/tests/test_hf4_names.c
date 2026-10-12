@@ -52,7 +52,11 @@
  *     uppercase name refused), the dnac_fee_info HF-4 keys (np exactly 4
  *     non-zero, ns ≤ NODUS_DNAC_NAME_SCHED_MAX maps of p/v/e; an older
  *     node's reply without "np" refused), and dnac_v3_block "nm"/"pr" (a
- *     pair, applied items only, a-z0-9).
+ *     pair, applied items only, a-z0-9). HF-6 slice 8a: the whole
+ *     dnac_fee_info reply through nodus_dnac_fee_info_decode — stake_min,
+ *     storage_bond and power_cap_bps decoded beside the older keys, 0
+ *     when an older server omits them, skipped by the name-price decoder;
+ *     a truncated reply and NULL arguments refused.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build. Environment: none. No
@@ -970,6 +974,36 @@ static size_t np_reply(int with_np, size_t np_n, size_t ns_n, int bad_map) {
     return cbor_encoder_len(&e);
 }
 
+/* HF-6 slice 8a: the WHOLE dnac_fee_info reply in the server's key order
+ * (nodus_witness_handlers.c handle_dnac_fee_info) — the five scalar keys,
+ * the three HF-6 keys when `with_hf6` (an older server sends none), "np"
+ * and an empty "ns". */
+static size_t fi_reply(int with_hf6) {
+    cbor_encoder_t e;
+    reply_head(&e, "dnac_fee_info", (size_t)(7 + (with_hf6 ? 3 : 0)));
+    cbor_encode_cstr(&e, "base_fee");  cbor_encode_uint(&e, 1000000);
+    cbor_encode_cstr(&e, "mempool");   cbor_encode_uint(&e, 0);
+    cbor_encode_cstr(&e, "min_fee");   cbor_encode_uint(&e, 1000000);
+    cbor_encode_cstr(&e, "gas_price"); cbor_encode_uint(&e, 7);
+    cbor_encode_cstr(&e, "token_create_fee");
+    cbor_encode_uint(&e, 100000000);
+    if (with_hf6) {
+        cbor_encode_cstr(&e, "stake_min");
+        cbor_encode_uint(&e, 10000000000000ULL);
+        cbor_encode_cstr(&e, "storage_bond");
+        cbor_encode_uint(&e, 20000000000000ULL);
+        cbor_encode_cstr(&e, "power_cap_bps");
+        cbor_encode_uint(&e, 500);
+    }
+    cbor_encode_cstr(&e, "np");
+    cbor_encode_array(&e, 4);
+    for (size_t j = 0; j < 4; j++)
+        cbor_encode_uint(&e, 100000000ULL * (4 - j));
+    cbor_encode_cstr(&e, "ns");
+    cbor_encode_array(&e, 0);
+    return cbor_encoder_len(&e);
+}
+
 /* a one-item dnac_v3_block page: item code `code`, with effects when
  * `eff`, "nm" when nm != NULL, "pr" when with_pr. */
 static size_t v3_reply(uint32_t code, int eff, const char *nm, int with_pr) {
@@ -1090,6 +1124,38 @@ static int t_decoders(void) {
         len = np_reply(1, 4, 1, 1);
         CHECK(nodus_dnac_name_prices_decode(g_buf, len, &np) == -1,
               "a row with a fourth key is refused");
+    }
+
+    /* HF-6 slice 8a: dnac_fee_info's stake_min / storage_bond /
+     * power_cap_bps — decoded by nodus_dnac_fee_info_decode beside the
+     * older keys; 0 when an older server omits them; skipped by the
+     * name-price decoder; a truncated reply refused */
+    {
+        static nodus_dnac_fee_info_t fi;
+        static nodus_dnac_name_prices_t np;
+        len = fi_reply(1);
+        CHECK(nodus_dnac_fee_info_decode(g_buf, len, &fi) == 0 &&
+              fi.base_fee == 1000000 && fi.min_fee == 1000000 &&
+              fi.gas_price == 7 && fi.token_create_fee == 100000000 &&
+              fi.stake_min == 10000000000000ULL &&
+              fi.storage_bond == 20000000000000ULL &&
+              fi.power_cap_bps == 500,
+              "fee_info: every key, the three HF-6 ones included");
+        CHECK(nodus_dnac_name_prices_decode(g_buf, len, &np) == 0 &&
+              np.price[0] == 400000000ULL && np.n_sched == 0,
+              "the name-price decoder skips the HF-6 keys");
+        len = fi_reply(0);
+        memset(&fi, 0xA5, sizeof(fi));
+        CHECK(nodus_dnac_fee_info_decode(g_buf, len, &fi) == 0 &&
+              fi.gas_price == 7 && fi.stake_min == 0 &&
+              fi.storage_bond == 0 && fi.power_cap_bps == 0,
+              "an older server: the HF-6 fields read 0 (not reported)");
+        len = fi_reply(1);
+        CHECK(nodus_dnac_fee_info_decode(g_buf, len - 3, &fi) == -1,
+              "a truncated reply is refused, never half-zeroed");
+        CHECK(nodus_dnac_fee_info_decode(NULL, len, &fi) == -1 &&
+              nodus_dnac_fee_info_decode(g_buf, len, NULL) == -1,
+              "NULL arguments refused");
     }
 
     /* dnac_v3_block "nm" / "pr" */
