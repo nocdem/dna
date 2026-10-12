@@ -115,9 +115,11 @@ extern "C" {
  *  do not own it, so admission refuses it there) and priced by its policy
  *  (no other domain names op 10). Its consent op byte is 2, NOT 10
  *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — design §2: the
- *  mapping is written explicitly in code). Owned and priced, NOT
- *  executable in sub-slice 6a: the SYSTEM read plan and exec refuse it
- *  (-1, the un-migrated-op default) until sub-slice 6b. */
+ *  mapping is written explicitly in code). Executes under generation 4
+ *  only (sub-slice 6b, nodus_witness_rt_native.c rtn_rotate2_exec: owner
+ *  authority, state, key reservation and node consent; writes the
+ *  pending key and its first evaluation boundary — the switch itself is
+ *  the boundary's, slices 6c/6d). */
 #define DNA_SYSRULE_ROTATE_CONSENSUS_KEY ((uint32_t)10)
 
 #define DNA_CORERULE_SPEND           ((uint32_t)1)

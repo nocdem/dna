@@ -315,6 +315,24 @@ No function signature moves. Tests: `nodus/tests/test_hf6_rotate.c` (EVM builds)
 | GEN_STORAGE SYSTEM descriptor (`nodus_witness_runtime.c` `SYS_RULES_GST`) | **CHANGED:** rules {1..10} at ruleset_version 9 (unchanged, khan A6); `SYS_POLICY_MAX_OP_GST` 10 (op 10 priced, weight 1). `SYS_METER_POLICY_DIGEST_GST` → `e5d96b4a…`, `SYS_RULESET_HASH_GST` → `c347ddd7…`; `CORE_RULESET_HASH_GST` unchanged. |
 | `DNAC_CFG_RULESET_GEN_STORAGE_D` (`dnac/include/dnac/dnac.h`) | **CHANGED (value):** `0x329b0ea92c8b8c58` (S4; was `0x0c6fd6f2484e6024`). The client mirror `dnac/src/transaction/verify.c` compares against the macro — no edit. Development trigger only (slice 8: D4, param 18). |
 
+### 5b.7 HF-6 slice 6b — the ROTATE_CONSENSUS_KEY exec (design rev 6 §2, §3 khan A1 / A4 / A5, §4, §6.1, §6.3; K7; plan `tasks/hf6-slice6-plan.md` §2 "6b")
+
+All internal to `nodus/src/witness/nodus_witness_rt_native.c`; no public signature moves. Tests: `nodus/tests/test_hf6_rotate.c` (EVM builds). Architecture: `nodus/docs/ARCHITECTURE.md` "HF-6 slice 6b".
+
+| Item | Description |
+|------|-------------|
+| `RTN_SYS_ROTATE_V2_CALL_LEN` (7291) | **NEW.** `validator_id[64] ‖ new_pk[2592] ‖ consent_sig[4627] ‖ consent_expiry u64`; asserted == 7291 and < `RTN_SYS_MAX_CALL_LEN` (7301). |
+| `static int rtn_rotate2_parse(const uint8_t *p, uint32_t len, rtn_rotate2_call_t *c)` | **NEW (internal).** Exact length only; 0 / -1. Shared by the SYSTEM hooks and the CORE funding leg. |
+| `static int rtn_sys_is_stake_op(uint32_t op)` | **CHANGED (behaviour):** an explicit set {1, 2, 3, 4, 5, 10} (was the range 1..5). |
+| `static int rtn_sys_call_flow(...)` | **CHANGED (behaviour):** op 10 under generation 4: lock 0 / release 0 (khan A4); below generation 4: -1. |
+| `static int rtn_sysfund_shape(...)` | **CHANGED (behaviour):** a SYSFUND leg pairs with op 10 only under generation 4. |
+| `static uint32_t rtn_sys_call_gen_of(uint32_t op, uint32_t len)` | **CHANGED (behaviour):** op 10 → `NODUS_RT_GEN_STORAGE`. |
+| `static uint64_t rtn_rotate2_first_boundary(uint64_t h)` | **NEW (internal).** F = the first epoch boundary ≥ h (h at a boundary, else ceil(h / E) · E). |
+| `static int rtn_rotate2_read_plan(const dna_env_view_t *env, uint16_t leg_index, nodus_rt_read_req_t *reqs_out, uint16_t max_reqs, uint16_t *n_out)` | **NEW (internal).** `[VAL2(13, validator_id)] [KEYRES(17, SHA3-512(new_pk))]`; 0 / -1 / -2. |
+| `static int rtn_rotate2_exec(const dna_env_view_t *env, uint16_t leg_index, const nodus_rt_exec_ctx_t *ctx, const nodus_rt_read_res_t *reads, uint16_t n_reads, uint8_t *res_out, size_t res_cap, size_t *res_len_out)` | **NEW (internal).** Owner of the committed row (kind 1 / 3), status ACTIVE / ELIGIBLE, no pending key, new_pk ≠ current, reservation absent (any role), expiry window, the op-2 consent rebuilt and verified under new_pk; effects CREATE op 17 (role 2) then SET op 13 (pending = new_pk, epoch = F). 0 / -1 / -2. |
+| `int nodus_rt_system_read_plan(...)` / `int nodus_rt_system_exec(...)` | **CHANGED (behaviour):** dispatch op 10 under generation 4 to the two functions above; below generation 4 op 10 stays the -1 default. Signatures unchanged. |
+| `int nodus_rt_native_describe_leg(...)` | **CHANGED (behaviour):** an applied ROTATE leg is described with `NODUS_RT_DESC_REC_NONE` (it was -1, which would fail the address index's block). Signature unchanged. |
+
 ---
 
 ## 6. Package W-B — exact self-stake, self-delegation (`docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md` items 5, 6)
