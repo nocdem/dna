@@ -7540,8 +7540,8 @@ key refused with the ledger tables byte-identical; twins byte-identical.
 Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 ("Satır değişimi"; "Görev ve
 devam aramaları (attendance, Rule N) blokları yöneten snapshot'ın anahtarını kullanır, canlı satırı
 değil"; khan decisions A1, A2, A5 of 2026-10-12), §4; plan `tasks/hf6-slice6-plan.md` §1.4, §1.5,
-§1.11, §2 "6c", B3 / B4 / B5 / B8. Inert on a chain with no pending row: nothing here is called from a
-boundary step that writes a key — the swap writer has no caller until slice 6d.
+§1.11, §2 "6c", B3 / B4 / B5 / B8. Inert on a chain with no pending row. The swap writer's caller is
+slice 6d's boundary swap step (next section).
 
 **The swap writer** `nodus_validator_v2_rotate_apply(w, validator_id, old_pk, new_pk)`
 (`nodus_witness_validator.c`): inside the caller's transaction (autocommit refused, nothing written);
@@ -7602,9 +7602,90 @@ inside a rolled-back transaction; at 3E the flips activate unswapped rows seated
 and a RETIRING row so seated is deferred with both reservations kept; at 4E a third key in S(3E) faults
 the boundary (on one twin, rolled back), the real boundary pays entries carrying the rows' pending keys,
 the graduate's pending key and both reservations are released, and Rule N finds the duty by validator_id
-(counter +1 where a pubkey match would reset) and reads the entry key's attendance. Deferred to 6d (not
-reachable before the swap step): Rule N on a swapped row against its S(F), ruleset 1 (the migrated-id
-bridge) or ruleset 2.
+(counter +1 where a pubkey match would reset) and reads the entry key's attendance. Slice 6d replaced
+the stand-in with the real freeze and swap and rewrote case C accordingly (next section).
+
+### HF-6 slice 6d — the freeze's rotation budget, the swap at U, the sweep at U+E (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 (the budget `P − R >
+floor(2P/3)` on BOTH S(F) and S(U) with each set's counted power, validator_id ASC; "kabul edilen
+rotasyon S(U)'ya YENİ anahtarla girer"; the row switch at U before U's freeze of S(U+E); Rule N's
+preview == stored) and the khan decisions of 2026-10-12 under it: A1 (exec writes F, the freeze writes
+NOTHING, acceptance is the stored S(U) bytes, the swap fires when S(U)'s entry carries the pending key,
+a deferred rotation keeps its F), A2 (the previous key's role-1 reservation released at U+E with the
+previous voter's attendance row), A3 (a candidate that does not fit is skipped and the walk continues;
+one with no seat in S(F) adds 0 there — operator: "3'te 2'yi kaybedersek patlarız"). Plan
+`tasks/hf6-slice6-plan.md` §1.2, §1.4, §1.8, §2 "6d". Heights: ROTATE at h, F = the first boundary ≥ h,
+U = F + E.
+
+**The freeze pass** (`vset_rotation_pass`, `nodus_witness_vset.c`, inside the ONE builder core
+`vset_build_snapshot`, after the entry fill; only at key generation ≥ 4). Candidates = the
+`v2_validator_roles` rows with a pending key and `consensus_key_effective_epoch ≤ F` (F = the snapshot's
+epoch − E), one statement in validator_id ASC (B1 — the member struct is not widened). **No candidate ⇒
+nothing else is read** (no power helper, no S(F)): the bytes and the fault set are the pre-6d builder's.
+With candidates: the counted powers of the provisional S(U) (current keys — a power reads only
+total_stake and validator_id) and of the stored S(F) (authority resolver; absent / unreadable ⇒ fault;
+ruleset 1 ⇒ raw powers), both through `nodus_witness_vset_powers`; P = 0 or a helper refusal ⇒ fault.
+The walk accepts candidate c iff `P − (R + p) > P * 2 / 3` holds in both sets with the party
+accumulated so far (`vset_rot_fits`; the quorum `total*2/3+1`, `shared/dnac/cmt_vote_set.c:509`; Rule
+N's floor form). c is located in S(U) by validator_id (absent ⇒ waits) and in S(F) by validator_id
+(ruleset 2) or `dna_validator_id_migrated(chain id, entry.pubkey)` (ruleset 1, the first generation-4
+freeze); absent from S(F) ⇒ p_F = 0 (A3). A refused c is skipped, the walk continues (A3). An accepted
+member takes the pending key and its entry is re-filled by `nodus_witness_vset_entry_from_member`
+(voter_id re-derived). Nothing is written. Rule N's preview and commit_next run the same core over the
+same inputs, so they accept the same rotations (the floor-argument list in `v2ep_rule_n` gains the
+pass's inputs and the two new boundary steps). Worked example (test D): S(3E) = S(4E) = [12M × 3,
+10M × 7], P = 106M, floor(2P/3) = 70666666 — parties of 12M and 24M fit (94M, 82M), 36M does not (70M),
+so the third waits and is accepted at the next freeze with its F kept. With seven equal members a
+boundary admits at most two rotations; with n ≤ 3 equal members none (design §3).
+
+**The swap** (`v2ep_rotate_swap`, boundary step 1d — after 1b distribution, 1b′ storage and 1c payday,
+before 2 graduation, 3 Rule N and 5 commit_next; generation ≥ 4 only). Candidates = every pending row,
+validator_id ASC, read first — none ⇒ S(U) is not read. S(U) ruleset 1 ⇒ no swap (a v1 snapshot can
+seat no pending key). For each row whose S(U) entry (by validator_id) carries its pending key:
+`nodus_validator_v2_rotate_apply` (the row's status is not a condition — a validator that UNSTAKEd
+after its rotation was accepted is seated in S(U) under the new key and is deferred by id). Why the
+position: the distribution at U pays S(F), whose entries name the old keys, against rows that still
+hold them (the ruleset-2 key check); every reader of S(U) after the swap sees the row as S(U) names it,
+and commit_next copies the NEW key into S(U+E) (design §3: left to U+1, Comet would fall back to the old
+key one epoch later).
+
+**The sweep** (`v2ep_rotate_sweep`, boundary step 3d — after 3b digest and 3c reset, before 4 flips;
+generation ≥ 4 only). **A deliberate departure from plan §1.8's derivation** (S(U) entries whose
+validator appears in S(F) under a different key): A3 accepts a validator S(F) does not seat, and its
+previous key is then in NO committed snapshot — that derivation would never release it. The one
+committed record is its kept role-1 reservation, so: candidates = validator_ids holding two role-1
+rows (`nodus_validator_v2_key_rotated_ids`, validator_id ASC) — none ⇒ no snapshot is read; a candidate
+whose S(U = H−E) entry (by id, ruleset-1 bridge) carries the row's current key was swapped at U ⇒
+`nodus_validator_v2_key_sweep_previous` deletes the previous key's role-1 row (exactly two role-1 rows,
+exactly one the current key's, else fault) and the previous voter's `v2_attendance` row (voter_id =
+the first 32 bytes of that same untagged SHA3-512 — 0 or 1 row) is deleted; otherwise it must be this
+boundary's swap (S(H) seats it under the current key) and is kept until H+E; any other shape faults. A
+graduated validator is never a candidate (`key_release` already took every row naming it). Known gap
+(deterministic, design-text level): a validator swapped at U that graduates at U+E keeps its previous
+voter's attendance row (the graduation never deleted attendance rows).
+
+**No fault-injection stage** for the swap or the sweep: the engine's `epoch_stage_fault`
+(`nodus_witness_v2_apply.c`) returns 1 for any stage it does not name, so firing a new stage would halt
+every generation-4 boundary; the stages (19, 20) are added together with their engine ids
+(`V2AP_FAIL_AFTER_*`) in a slice that may edit the engine.
+
+**Byte-identical**: every path below generation 4; every generation-4 freeze, swap and sweep on a chain
+with no pending row and no second role-1 row (each step reads its candidates first and returns).
+
+**Tests** (written, NOT run by the author). `test_hf6_rotate` case C (rewritten): STAKEd rotators not
+seated in S(F) — ROTATEs at 7..9 (F = E) wait at E (not seated in S(2E)), are accepted at 2E with 0 in
+S(F), S(3E) carries the keys and equals `preview_next(2E)` byte for byte; probes on S(2E) (rolled back):
+(d) S(F) at 1 coin per seat still accepts them; (f) S(F) absent faults with candidates and builds
+without them — then byte-equal to the stored S(3E) under the current keys; (h) a sub-coin S(F) seat
+faults with candidates only; (e) the v1 bridge on a genesis seat (preview, rolled back). Swap of all
+three at 3E (a RETIRING one included), sweep at 4E of KC1 / KC3 (keys no snapshot names), a third
+role-1 row faults the sweep. Case D: three 12M STAKEs rotating with F = 3E — the budget arithmetic
+above, the swap at 4E, Rule N at U on the OLD keys (signed → 0, absent → 1), the distribution paying
+the owner at U and U+E, the sweep deleting the previous attendance and role-1 rows at 5E (and the
+third's at 6E), twin digests. `test_cmt_app` `t_val_updates_rotation`: a snapshot(E) differing in one
+entry's key is announced as exactly [new key at its power, old key at 0] and Comet's set for E+2 holds
+the new address only (hand-written snapshot; priority not pinned).
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

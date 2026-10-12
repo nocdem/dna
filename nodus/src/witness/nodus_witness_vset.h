@@ -157,6 +157,21 @@ int nodus_witness_vset_root(nodus_witness_t *w,
  * tiebreak, the entries' ids and the ruleset come from ONE value
  * (ORCHESTRATOR decision D4 (i)).
  *
+ * HF-6 slice 6d (design 2026-10-03-hf5-validator-owner-stake rev 6 §3,
+ * khan A1/A3): at `key_gen >= NODUS_RT_GEN_STORAGE` the builder runs the
+ * ROTATION PASS of the freeze — every v2_validator_roles row with a
+ * pending key and consensus_key_effective_epoch <= epoch_start − E, in
+ * validator_id ASC, is accepted iff the accumulated party keeps
+ * P − R > floor(2P/3) in BOTH the snapshot being built (S(U)) and the
+ * stored S(epoch_start − E) (S(F)), each with its counted powers
+ * (nodus_witness_vset_powers); an accepted member's entry carries its
+ * pending key (voter_id re-derived), a refused one is skipped and the walk
+ * continues, a member absent from S(F) adds 0 there. With no such row the
+ * pass reads nothing else and the bytes are the pre-6d bytes; with one,
+ * an absent / unreadable S(F) or a power that cannot be computed (or sums
+ * to 0) is a FAULT (-1). Nothing is written. Contract and argument:
+ * vset_rotation_pass in nodus_witness_vset.c.
+ *
  * A chain with no eligible validators has NO snapshot: count == 0 returns
  * -1 rather than an empty set. (The selection itself is a static core
  * shared with nodus_witness_vset_preview_next below, which reports that
@@ -307,7 +322,9 @@ int nodus_witness_vset_commit_next(nodus_witness_t *w,
  * HF-6 slice 5d: `key_gen` must be the value the same boundary passes to
  * commit_next (Rule N passes the boundary's one read) — the preview's
  * ruleset, candidates and tiebreak follow it exactly as the stored
- * snapshot's do.
+ * snapshot's do. HF-6 slice 6d: the rotation pass of the freeze runs here
+ * too (the same core), so a pending rotation the stored snapshot accepts
+ * is accepted in the preview, with the same key.
  *
  * @param snapshot_out [out] heap snapshot on rc 0 (dna_vset_free);
  *        untouched otherwise.
@@ -316,7 +333,8 @@ int nodus_witness_vset_commit_next(nodus_witness_t *w,
  *           be seated) — a well-formed answer, not an error;
  *        -1 fault (bad args, height overflow, TARGET_ACTIVE_COUNT
  *           unreadable, committee compute failed, allocation, witness_id
- *           derivation). A DB failure is never a value.
+ *           derivation, the 6d rotation pass faulted). A DB failure is
+ *           never a value.
  */
 int nodus_witness_vset_preview_next(nodus_witness_t *w,
                                     uint64_t boundary_height,

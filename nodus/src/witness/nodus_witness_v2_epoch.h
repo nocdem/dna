@@ -57,6 +57,18 @@
  *      at (H / E) % payout_interval_epochs == 0 every accrual row
  *      becomes one CORE UTXO and is deleted; a no-op otherwise. Runs
  *      AFTER 1b so the epoch that just ended is included in the pay.
+ *   1d. ROTATION SWAP (HF-6 slice 6d; design 2026-10-03-hf5-validator-
+ *      owner-stake rev 6 §3, khan A1) — generation 4 only: every row whose
+ *      pending key is the key snapshot(H) seats for it (the rotation pass
+ *      of the freeze at H−E accepted it) switches to it through
+ *      nodus_validator_v2_rotate_apply (validators.pubkey := pending,
+ *      pending := 0, effective epoch := 0, the new key's reservation
+ *      role 2 → 1; the previous key stays role 1 until 3d at H+E). No
+ *      pending row ⇒ nothing else is read. AFTER 1b (the distribution
+ *      compares snapshot(H−E)'s old keys with the rows), BEFORE 2, 3 and 5
+ *      (they must see the row as snapshot(H) names it; commit_next copies
+ *      the new key into snapshot(H+E)). No fault stage yet (the engine's
+ *      mapper fails closed on an unnamed stage).
  *   2. GRADUATION — tokenomics-v3 P1 (D-11): candidates are every row
  *      whose status is RETIRING **or AUTO_RETIRED** (widened from
  *      RETIRING-only; an AUTO_RETIRED member's bond is RETURNED, never
@@ -128,6 +140,15 @@
  *      boundary needs). MUST run AFTER 3b: resetting before hashing would
  *      digest all zeros and hide every divergence the leg exists to
  *      catch.
+ *   3d. ROTATION SWEEP (HF-6 slice 6d; design rev 6 §3, khan A2) —
+ *      generation 4 only: for every validator swapped at H−E (it holds
+ *      two role-1 reservations and snapshot(H−E) seats it under its
+ *      current key) the previous key's role-1 reservation and its
+ *      attendance row are deleted. Candidates come from the reservation
+ *      table (the only committed record of the previous key of a
+ *      validator snapshot(H−2E) did not seat — khan A3); none ⇒ no
+ *      snapshot is read. AFTER 3b/3c, BEFORE 4 and 5; writes only
+ *      v2_consensus_keys and v2_attendance.
  *   4. BOUNDARY FLIPS — nodus_witness_vset_apply_boundary_flips(w, H).
  *   5. NEXT SNAPSHOT — nodus_witness_vset_commit_next(w, H).
  *   6. BALANCE COPY (tokenomics-v3 P2, P2-5) —

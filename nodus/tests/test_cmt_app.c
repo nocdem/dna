@@ -2921,6 +2921,142 @@ static int t_val_updates_v2_old_side(void)
 }
 
 /**
+ * HF-6 slice 6d — what Comet is told at boundary U when a rotation was
+ * accepted (design 2026-10-03-hf5-validator-owner-stake rev 6 §3
+ * "Kabul edilen rotasyon S(U)'ya YENİ anahtarla girer. Comet: FinalizeBlock
+ * U ilan eder"; plan tasks/hf6-slice6-plan.md §1.3, consumer #1).
+ *
+ * WHAT IT PROVES: a snapshot(U) that differs from snapshot(U−E) only in
+ * ONE entry's consensus key (same stake, voter_id re-derived) — the shape
+ * the 6d freeze stores for an accepted rotation — is announced by the §A
+ * diff as EXACTLY two updates: the new key at the entry's power, then the
+ * old key at power 0 (additions before removals); cometbft's
+ * update_with_change_set accepts it (the boundary block commits), and the
+ * validator set Comet saved for height U+2 holds the new address at that
+ * power and no longer the old one, with the set size unchanged. No port
+ * change: cometbft has no "key change", a rotation IS remove + add.
+ *
+ * WHAT IT CANNOT PROVE (stated, not faked): that the 6d builder produces
+ * this snapshot — this host fixture is not at key generation 4 and has no
+ * ROTATE (nodus/tests/test_hf6_rotate.c cases C and D prove the builder);
+ * the new address's proposer priority — cometbft sets −1.125·P on entry
+ * (cmt_validator_set.c compute_new_priorities) and the saved value is
+ * after the rescale/centre and one increment of the update, so pinning it
+ * would restate the port's own arithmetic (its unit tests cover it); and
+ * any height past E — exec_make_last_commit signs only with g_ks keys, and
+ * from E+2 the set holds a key this fixture did not generate as a member.
+ *
+ * REQUIRES: a default build; nothing in the environment. The rewrite
+ * happens at E-1 (the untouched-domain guard — see
+ * `t_val_updates_boundary_diff`).
+ *
+ * LEAVES BEHIND: its `/tmp/test_cmt_app_vu_rot_*` directory, removed at
+ * close (left when a CHECK aborts).
+ *
+ * HOW IT CAN LIE: the snapshot is a hand-written ruleset-1 row; the other
+ * readers of snapshot(E) at block E (the flips by pubkey: the replaced
+ * member's row simply stays ELIGIBLE; the reward distribution returns
+ * early on this fixture's empty pool) are not what is asserted.
+ */
+static int t_val_updates_rotation(void)
+{
+    gfx_t                              g;
+    exec_t                             x;
+    cmt_block_id_t                     bid;
+    cmt_pb_response_finalize_block_t   got;
+    cmt_pb_validator_update_t          vu_pool[16];
+    cmt_pb_arena_t                     arena;
+    uint8_t                            arena_buf[8192];
+    dna_vset_snapshot_t               *s = NULL;
+    uint8_t                            new_pk[QGP_DSA87_PUBLICKEYBYTES];
+    uint8_t                            new_sk[QGP_DSA87_SECRETKEYBYTES];
+    uint8_t                            seed[32];
+    uint8_t                            new_voter[32];
+    cmt_validator_t                   *storage = NULL;
+    cmt_validator_set_t                vals;
+    int64_t                            power = -1;
+    size_t                             i;
+    int                                j = -1, saw_new = 0, saw_old = 0;
+
+    CHECK(gfx_open_n(&g, "vu_rot", 1) == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    memset(&bid, 0, sizeof(bid));
+    CHECK(vu_host_drive_to(&x, &bid, 0, (int64_t)VU_EPOCH - 1) == 0,
+          "drive height 1..E-1 (snapshot(0) governs them, unmodified)");
+
+    /* snapshot(E) = snapshot(0)'s members with g_ks[3]'s key rotated */
+    memset(seed, 0x6D, sizeof(seed));
+    CHECK(qgp_dsa87_keypair_derand(new_pk, new_sk, seed) == 0,
+          "the rotation target key");
+    CHECK(nodus_chain_config_derive_witness_id(new_pk, new_voter) == 0,
+          "its voter_id (= Comet address)");
+    CHECK(nodus_witness_vset_get(g.w, VU_EPOCH, &s, NULL) == 0 &&
+          s->active_count == (uint16_t)N_KEYS &&
+          s->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+          "the genesis-seeded snapshot(E)");
+    for (i = 0; i < s->active_count; i++) {
+        if (memcmp(s->entries[i].pubkey, g_ks[3].pk, DNAC_PUBKEY_SIZE) == 0)
+            j = (int)i;
+    }
+    CHECK(j >= 0, "FIXTURE GUARD: g_ks[3] seated in snapshot(E)");
+    memcpy(s->entries[j].pubkey, new_pk, DNAC_PUBKEY_SIZE);
+    memcpy(s->entries[j].voter_id, new_voter, 32);
+    power = (int64_t)(s->entries[j].total_stake / DNAC_DECIMAL_UNIT);
+    CHECK(power > 0, "the rotated entry keeps its stake");
+    CHECK(vu_snap_overwrite(g.w, s) == 0,
+          "rewrite snapshot(E): one entry under a new key");
+    dna_vset_free(&s);
+
+    CHECK(vu_host_drive_to(&x, &bid, (int64_t)VU_EPOCH - 1,
+                           (int64_t)VU_EPOCH) == 0,
+          "apply the boundary block E: cometbft accepts the change set");
+
+    arena.buf = arena_buf;
+    arena.cap = sizeof(arena_buf);
+    arena.used = 0;
+    CHECK(vu_host_load_updates(&x, (int64_t)VU_EPOCH, &got, vu_pool, 16,
+                               &arena) == CMT_OK,
+          "load the boundary's stored FinalizeBlock response");
+    CHECK(got.validator_updates_len == 2,
+          "a rotation is EXACTLY two updates");
+    CHECK(got.validator_updates[0].pub_key.present &&
+          memcmp(got.validator_updates[0].pub_key.key, new_pk,
+                 DNAC_PUBKEY_SIZE) == 0 &&
+          got.validator_updates[0].power == power,
+          "first the new key, at the entry's power");
+    CHECK(got.validator_updates[1].pub_key.present &&
+          memcmp(got.validator_updates[1].pub_key.key, g_ks[3].pk,
+                 DNAC_PUBKEY_SIZE) == 0 &&
+          got.validator_updates[1].power == 0,
+          "then the old key, removed (power 0)");
+
+    storage = calloc(CMT_VALSET_MAX, sizeof(*storage));
+    CHECK(storage != NULL, "alloc");
+    CHECK(cmt_validator_set_init(&vals, storage, CMT_VALSET_MAX) == CMT_OK &&
+          nodus_cmt_ss_load_validators(x.store, (int64_t)VU_EPOCH + 2,
+                                       &vals) == CMT_OK,
+          "the validator set cometbft saved for height E+2");
+    CHECK(vals.validators_len == (size_t)N_KEYS, "the set size is unchanged");
+    for (i = 0; i < vals.validators_len; i++) {
+        if (memcmp(vals.validators[i].address, new_voter, 32) == 0) {
+            saw_new = 1;
+            CHECK(vals.validators[i].voting_power == power,
+                  "the new address carries the entry's power");
+        }
+        if (memcmp(vals.validators[i].address, g_ks[3].voter, 32) == 0)
+            saw_old = 1;
+    }
+    CHECK(saw_new && !saw_old,
+          "from E+2 cometbft's set holds the new address, not the old one");
+    free(storage);
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
  * ORCHESTRATOR delta 4, item A (D-4 rev 3's `create_empty_blocks_interval`,
  * 60 s) — AN EMPTY DECIDED BLOCK.
  *
@@ -7231,6 +7367,7 @@ int main(void)
         { "val_updates_missing_snapshot", t_val_updates_missing_snapshot },
         { "val_updates_boundary_diff",  t_val_updates_boundary_diff },
         { "val_updates_v2_old_side",    t_val_updates_v2_old_side },
+        { "val_updates_rotation",       t_val_updates_rotation },
         { "finalize_block_empty",       t_finalize_block_empty },
         { "d4_empty_blocks_root_stable", t_d4_empty_blocks_root_stable },
         { "attendance_mixed_flags",     t_attendance_mixed_flags },
