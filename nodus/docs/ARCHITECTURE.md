@@ -6781,7 +6781,8 @@ this sub-slice).
 `nodus_v2_validator_row_t` (`nodus_witness_validator.h`) = `dnac_validator_record_t` + `validator_id`
 + `owner_fp` + `pending_consensus_pubkey` + `consensus_key_effective_epoch` (witness-local — the
 client header `dnac/include/dnac/validator.h` is not extended). `nodus_validator_v2_get`,
-`nodus_validator_v2_get_by_pubkey` (a second row with the pubkey is a fault),
+`nodus_validator_v2_get_by_pubkey` (a second row with the pubkey is a fault; no production caller
+since slice 5c),
 `nodus_validator_v2_update` (both tables, inside the caller's transaction; validator_id, consensus
 pubkey and owner_fp are immutable and checked; the single "no pending key" encoding is enforced),
 `nodus_validator_v2_bonded_tenured` (the gen-4 arm: the v1 filters and pubkey ASC order, each
@@ -7042,7 +7043,9 @@ migration, keeps 2592-byte `*_pubkey` columns.
   `nodus_validator_v2_get_by_pubkey` (a found row whose validator_id is not that migrated id → -2);
   base + commission accrue to `owner_fp` (§1.6) — gens 1-3 accrue to the node key's fp as before
   (`owner_fp = vfp`). The x_d split is unchanged and pays each copy row's owner, so the 8M
-  self-delegation's share lands on owner_fp too. Attendance stays by entry pubkey.
+  self-delegation's share lands on owner_fp too. Attendance stays by entry pubkey. (Since slice 5c
+  the ruleset-2 refusal is gone and both arms resolve by `nodus_validator_v2_get` — see "HF-6
+  slice 5c".)
 - Committee (`nodus_committee_compute_for_epoch`), gen 4: candidates from
   `nodus_validator_v2_bonded_tenured`, frozen totals by validator_id; tiebreak stays
   SHA3-512(0x02 ‖ pubkey ‖ seed) in slice 3, so an unchanged frozen ranking re-selects the same set.
@@ -7232,7 +7235,8 @@ fonksiyon"; "Tüketiciler (hepsi bu fonksiyonu çağırır)"), §8 (param 20), �
 `docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md` (shares by power, inner split by
 raw self_bond / total_stake); plan `tasks/hf6-slice5-plan.md` §2 "5b" with ORCHESTRATOR decisions
 D2 (no RPC change), D3 (storage power here, F2 / payee in 6b), D5 (row-less recompute at
-generation 4 is a fault), D6 (no validator_id / owner_fp in the member or the cache).
+generation 4 is a fault), D6 (validator_id / owner_fp are builder-only on the member and never
+cached — added in slice 5c, below; 5b adds neither).
 
 **The helper** (`nodus_witness_vset.{h,c}`). `nodus_witness_vset_powers(w, snap, out)` — the voting
 power of every entry of a snapshot, in its entry order, by the snapshot's OWN ruleset: ruleset 1 →
@@ -7276,7 +7280,94 @@ power, rulesets 0 / 3, NULLs) leave the output untouched. `test_committee_cache`
 is switched to generation 4, while a snapshot-served epoch still answers. Rule N / distribution /
 storage / the Comet diff over a ruleset-2 snapshot cannot be driven before 5c (no ruleset-2
 snapshot can be stored or read); their ruleset-1 identity rests on their existing fixtures. Written,
-NOT run by the author.
+NOT run by the author. (Slice 5c below adds the ruleset-2 coverage that became reachable.)
+
+### HF-6 slice 5c — both snapshot versions stored and read, the v2-entry readers, the id-keyed econ bridge (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.6 (base + commission to
+the owner "from the vset v2 entry"), §6.5 ("every reader accepts both versions for the chain's life;
+v1 outputs byte for byte unchanged"), §7.5 (the v1-snapshot bridge, `pubkey → validator_id` by the
+§6.2 migration function); plan `tasks/hf6-slice5-plan.md` §0 fact 2, §1, §2 "5c"; ORCHESTRATOR
+decision D6. **Inert on a real chain:** the builder still writes ruleset 1 — the switch by key
+generation, the validator_id tiebreak (§7.8, preimage pinned 2026-10-12) and the generation
+plumbing are slice 5d's.
+
+**Store / read** (`nodus_witness_vset.c`). Every codec call is the `_ex` family at
+`max_ruleset = DNA_VSET_RULESET_TOPN_V2`, outer length cap `DNA_VSET_MAX_ENC_LEN_V2` (354638):
+
+| Site | Before | Now |
+|---|---|---|
+| `_insert` length cap | `DNA_VSET_MAX_ENC_LEN` (338254) | `DNA_VSET_MAX_ENC_LEN_V2`; each ruleset's own ceiling enforced by the hash |
+| `_insert` hash re-derivation | `dna_vset_hash_bytes` (v1 tag, header not read) | `dna_vset_hash_bytes_ex(…, 2, …)` (tag from the header's ruleset) |
+| `_get` length cap / hash / decode | v1 cap / `dna_vset_hash_bytes` / `dna_vset_decode` | v2 cap / `dna_vset_hash_bytes_ex` / `dna_vset_decode_ex` (both at max 2) |
+| `_build_for_epoch` encoded length / encode / hash | `dna_vset_encoded_len` / `dna_vset_encode` / `dna_vset_hash_bytes` | `dna_vset_encoded_len_ex` / `dna_vset_encode_ex` / `dna_vset_hash_bytes_ex` (max 2) |
+| builder ruleset (`vset_build_snapshot`) | TOPN_V1 | TOPN_V1 (unchanged — 5d) |
+
+A stored ruleset-1 row re-hashes through `dna_vset_hash_bytes_ex` to exactly its stored hash: a v1
+header selects the `NDS.VSET.v1` tag and the v1 ceiling (`shared/dnac/vset_wire.c`
+`dna_vset_hash_bytes_ex`) — pinned by `test_vset_persist` §5 over a row written the pre-5c way, not
+argued. The only input `_insert` newly refuses is a blob shorter than a header or naming ruleset
+0 / ≥ 3 — rows the pre-5c decode refused on every read anyway. No ruleset-1-only codec call remains
+in `nodus_witness_vset.c`.
+
+**The builder's entry fill** — `nodus_witness_vset_entry_from_member(m, ruleset, e)` (new, public so
+a ruleset-2 snapshot can be built from real members before 5d): voter_id from the shipped derivation,
+pubkey / totals / commission from the member; under ruleset 2 the member's `validator_id` /
+`owner_fp`, under ruleset 1 both written zero. `vset_build_snapshot` calls it for every member.
+
+**Committee member ids (D6).** `nodus_committee_member_t` gains `validator_id[64]` / `owner_fp[64]`
+(member 2752 B). `emit_member` copies them from the candidate's v2 row (`committee_work_t.v2`, the
+same `cand_v2` row the candidate was ranked from) when the core runs at key generation ≥
+`NODUS_RT_GEN_STORAGE` (the generation the gen-4 arm already reads, once, inside
+`nodus_committee_compute_for_epoch`), zeros below it and on the bootstrap path, and now writes
+`power = 0` explicitly. They are NOT cached: `nodus_committee_get_for_block` zeroes both on the hit
+(the caller's buffer may hold anything) and, on the miss, in the cache-fill loop that both arms pass
+through — so the snapshot-served miss returns zero even when the stored ruleset-2 entries carry ids,
+and a hit and a miss return identical members.
+
+**The econ bridge** (`nodus_witness_v2_settlement_apply`, static `v2ec_member_load` gains the
+snapshot's `ruleset`). Every generation-4 arm resolves by the PRIMARY KEY (`nodus_validator_v2_get`),
+never by the consensus pubkey, which is not unique across rows (slice-4 fault 2: a graduated
+UNSTAKED row may share it with a later STAKE of the same key):
+
+| Entry | Copy key | Row | Payee of base + commission | Refused (-2) |
+|---|---|---|---|---|
+| ruleset 2 | `entry.validator_id` | `v2_get(entry.validator_id)`; absent → unpaid (share stays in the pool) | `entry.owner_fp` | a found row whose `owner_fp` or consensus pubkey differs from the entry's (the pubkey check is slice 6's to replace with ROTATE's snapshot-key rule) |
+| ruleset 1, generation ≥ 4 | `dna_validator_id_migrated(chain id, entry.pubkey)` | `v2_get(that id)` — the 3d "row's validator_id == migrated id" check is structural now | the row's `owner_fp` | — |
+| ruleset 1, generation < 4 | SHA3-512(pubkey) | `nodus_validator_get(pubkey)` | SHA3-512(pubkey) | — (byte-identical) |
+
+The ruleset-2 refusal is removed; a ruleset-2 governing snapshot paid below generation 4 is a
+broken invariant (-2). Attendance stays keyed by the entry pubkey; shares by counted power over
+Σcounted, inner split on raw amounts (5b, K2). `nodus_validator_v2_get_by_pubkey` has no production
+caller after this (only tests) — not removed here (outside 5c's files).
+
+**Known 5d blockers / limits, outside 5c's files (found while writing the tests):**
+- `nodus_witness_v2_apply.c` phase 0a hashes the GOVERNING snapshot of every block with the
+  ruleset-1-only `dna_vset_hash`; a block governed by a ruleset-2 snapshot would fault on every
+  node (the first one at B₀ + E). The value is overwritten later by the block's Comet
+  ValidatorsHash, so switching that call to `dna_vset_hash_ex(…, DNA_VSET_RULESET_TOPN_V2, …)` is
+  byte-identical for ruleset 1 — slice 5d must carry it. (Genesis-only `dna_vset_hash` calls in
+  `nodus_witness_v2_apply.c`, `nodus_witness_v2_bundle.c` and `nodus_witness_v2_gen.c` hash
+  snapshot(0), always ruleset 1.)
+- Hence no 5c test lets a ruleset-2 snapshot GOVERN a block: each rewrites a stored row only after
+  every block it governs.
+
+**Tests** (written, NOT run by the author). `test_vset_persist` §5: a ruleset-2 round trip (every
+field incl. the ids; the hash == SHA3-512(`NDS.VSET.v2` ‖ blob) computed in the test, ≠ the v1-tag
+hash), the v2 ceiling (128 entries = 354638 B stored and read, +1 refused), a pre-switch v1 row
+written the pre-5c way reads back with its stored hash and decodes identically, a v2 blob over a v1
+row is the -2 conflict; §4: below generation 4 the core emits zero ids and power 0, the entry fill's
+ruleset-1 / ruleset-2 behaviour, a ruleset-2 snapshot from zero ids does not encode.
+`test_hf6_readers` case E (fixture B's shape, boundary 5E): the gen-4 core's members carry their
+rows' ids and fill a ruleset-2 snapshot the codec accepts; `get_for_block` returns zero ids on a miss
+and a hit; owner mismatch → -2; ruleset 2 at generation 3 → -2; a no-row entry is unpaid; K2 with
+`[60M, 10M × 6]` → counted `[25714285, 10M × 6]`; an UNSTAKED row sharing a bonded pubkey makes
+`get_by_pubkey` fault while the v1 bridge pays; and through the engine, block 5E pays a committed
+ruleset-2 snapshot(4E) by validator_id to `entry.owner_fp`. `test_storage_b2` case E: the storage
+F1 settles on counted powers (six of seven seats, `[60M, 10M × 6]`) where raw powers would not.
+`test_cmt_app` `val_updates_v2_old_side`: the boundary diff reads a ruleset-2 OLD side counted
+(exactly one update). Not reachable before 5d: the diff's NEW side and Rule N's weight verdict (its
+preview is built ruleset 1).
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

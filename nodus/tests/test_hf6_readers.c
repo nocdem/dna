@@ -70,6 +70,38 @@
  *     pinned count; every function classified ARMED contains a
  *     NODUS_RT_GEN_STORAGE test; every GEN4_ONLY function is called from
  *     an ARMED caller.
+ *  E. engine_v2_snapshot (HF-6 slice 5c; plan tasks/hf6-slice5-plan.md
+ *     §2 "5c"; design §1.6, §5 "Ödül", §7.5; decision 2026-10-08-
+ *     kurultay-14 K2; ORCHESTRATOR D6). One seeded chain of fixture B's
+ *     shape (no RETIRING row) driven to 5E − 1; the boundary is 5E, its
+ *     governing snapshot(4E) (built at 3E from the post-H copy(2E)):
+ *     E1 the gen-4 core re-selects for 5E exactly the stored snapshot(5E)
+ *        (still RULESET 1 — 5c builds no v2 blob) and every member
+ *        carries its row's validator_id / owner_fp; the entry fill turns
+ *        them into a ruleset-2 snapshot the v2 codec accepts (the stored
+ *        v1 entries plus the ids); get_for_block returns the ids ZERO on
+ *        a miss and on the following hit (hit == miss);
+ *     E2 a ruleset-2 twin of snapshot(4E) whose one entry's owner_fp is
+ *        not its row's → settlement_apply −2;
+ *     E3 the faithful twin paid with key generation 3 → −2 (a ruleset-2
+ *        snapshot below generation 4 is a broken invariant);
+ *     E4 a twin entry whose validator_id names NO row (its copy(2E) rows
+ *        re-keyed to it so the gate holds) → applied, that member unpaid
+ *        (its share stays in the pool), every other delta exact;
+ *     E5 K2: V0 raised to 60M whole coins (+ a 46M copy(2E) delegation),
+ *        the rest 10M → counted [25714285, 10M × 6] (dna_power_cap_
+ *        counted, and the witness helper over the stored row agrees);
+ *        shares by counted / Σcounted, V0's split on its raw 60M — every
+ *        delta exact;
+ *     E6 an UNSTAKED row holding V1's consensus pubkey under its own id:
+ *        nodus_validator_v2_get_by_pubkey FAULTS (slice-4 fault 2), the
+ *        ruleset-1 bridge (v2_get of the migrated id) pays exactly;
+ *     E7 THROUGH THE ENGINE: the twin committed as snapshot(4E) and the
+ *        UNSTAKED twin row committed, block 5E applies; base + commission
+ *        to entry.owner_fp (the Foundation owner) by validator_id, KD's
+ *        delegation share to KD, nobody else, no node-key accrual.
+ *     E2..E6 call nodus_witness_v2_settlement_apply directly inside a
+ *     transaction that is always rolled back.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 exists only there; the
@@ -80,7 +112,9 @@
  * empty the accrual table under the deltas). B/C assert the compiled
  * DNAC_HF6_FOUNDATION_OWNER whatever it is (a test-build override is
  * honoured). Environment: none. Cost: B applies 4E blocks to each of two
- * fixtures and C 4E to one — 8,640 block applications at E = 720.
+ * fixtures and C 4E to one, E 5E − 1 + 1 to one — 12,240 block
+ * applications at E = 720. E also needs a payout interval >= 6 epochs
+ * (checked).
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * One /tmp/test_hf6_readers_* directory per fixture, removed at its end
@@ -98,6 +132,16 @@
  *    RETIRING row (V2X_SEED_NOT_REAL_STATUSES).
  *  - A's leaf restatement is self-consistent with the approved §6.3 /
  *    §6.4 tables, not an independent oracle's vectors.
+ *  - E's ruleset-2 snapshots are HAND-BUILT twins written over a stored
+ *    row by direct SQL (the builder writes ruleset 1 until slice 5d), and
+ *    the restatement (expect_snap) is the test's own — like B/C's, it
+ *    proves the routing and the arithmetic against the design's rule, not
+ *    the economics. No block is ever GOVERNED by a v2 snapshot here: the
+ *    per-block phase 0a still hashes the governing snapshot with the
+ *    ruleset-1-only dna_vset_hash (nodus_witness_v2_apply.c, outside 5c),
+ *    so E rewrites snapshot(4E) only after every block it governs. E4's
+ *    "no row" entry and E6's UNSTAKED twin are states no chain reaches in
+ *    5c (states the resolution must survive, not ones it produced).
  *  - D is a source scan: a NEW reader added inside an already-classified
  *    function is not seen; readers outside the eight scanned files
  *    (nodus_witness_rt_native.c — sub-slice 3c's; handlers.c — 3e /
@@ -118,6 +162,8 @@
 #include "witness/nodus_witness_v2_epoch.h"
 #include "witness/nodus_witness_v2_migrate.h"
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_delegation.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
@@ -128,6 +174,7 @@
 #include "dnac/cmt_pb.h"
 #include "dnac/ledger_ids.h"
 #include "dnac/ledger_roots_v2.h"
+#include "dnac/power_cap.h"
 #include "dnac/validator.h"
 #include "dnac/valbind_wire.h"
 #include "dnac/vset_wire.h"
@@ -1144,6 +1191,512 @@ static int t_engine_own_owner(void) {
     return 0;
 }
 
+/* ══ E. HF-6 slice 5c — a RULESET-2 governing snapshot, by validator_id ═
+ *
+ * See the file header, case E. Helpers first. */
+
+/* Overwrite the stored row of snap->epoch with `s` (any ruleset), test-
+ * only: nodus_witness_vset_insert would CONFLICT (-2) on a differing hash
+ * for an existing row, by design — the same bypass test_cmt_app.c's
+ * t_val_updates_boundary_diff makes. */
+static int snap_overwrite(nodus_witness_t *w, const dna_vset_snapshot_t *s) {
+    size_t need = dna_vset_encoded_len_ex(s, DNA_VSET_RULESET_TOPN_V2);
+    if (need == 0) return -1;
+    uint8_t *b = malloc(need);
+    uint8_t h[64];
+    int ok = -1;
+    sqlite3_stmt *st = NULL;
+    if (!b) return -1;
+    if (dna_vset_encode_ex(s, DNA_VSET_RULESET_TOPN_V2, b, need, NULL) != 0 ||
+        dna_vset_hash_bytes_ex(b, need, DNA_VSET_RULESET_TOPN_V2, h) != 0)
+        goto out;
+    if (sqlite3_prepare_v2(w->db, "UPDATE validator_set_snapshots SET "
+                           "active_count = ?1, snapshot_hash = ?2, "
+                           "snapshot_blob = ?3 WHERE epoch_start = ?4", -1,
+                           &st, NULL) != SQLITE_OK)
+        goto out;
+    sqlite3_bind_int(st, 1, (int)s->active_count);
+    sqlite3_bind_blob(st, 2, h, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 3, b, (int)need, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)s->epoch);
+    if (sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(w->db) == 1)
+        ok = 0;
+out:
+    if (st) sqlite3_finalize(st);
+    free(b);
+    return ok;
+}
+
+/* The ruleset-2 twin of the STORED (ruleset-1) snapshot(e): the same
+ * entries in the same order, each entry's validator_id / owner_fp taken
+ * from the v2 row keyed by its migrated id (every row of fixture B is a
+ * migrated row). NULL on any failure. */
+static dna_vset_snapshot_t *v2_twin(nodus_witness_t *w, uint64_t e,
+                                    const uint8_t chain32[32]) {
+    dna_vset_snapshot_t *s = NULL;
+    nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
+    if (!row) return NULL;
+    if (nodus_witness_vset_get(w, e, &s, NULL) != 0 || !s ||
+        s->selection_ruleset != DNA_VSET_RULESET_TOPN_V1)
+        goto fail;
+    for (uint16_t i = 0; i < s->active_count; i++) {
+        uint8_t vid[64];
+        if (dna_validator_id_migrated(vid, chain32, s->entries[i].pubkey)
+                != 0 ||
+            nodus_validator_v2_get(w, vid, row) != 0)
+            goto fail;
+        memcpy(s->entries[i].validator_id, vid, 64);
+        memcpy(s->entries[i].owner_fp, row->owner_fp, 64);
+    }
+    s->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+    free(row);
+    return s;
+fail:
+    free(row);
+    dna_vset_free(&s);
+    return NULL;
+}
+
+/* The distribution at boundary B over the GIVEN snapshot (what the engine
+ * will read as snapshot(B − E)), restated per design §5 "Ödül" (K2: share
+ * by the counted power over Σcounted; the inner split on the raw entry
+ * amounts), §1.6 and §7.5:
+ *   power  ruleset 1: total / 10^8; ruleset 2: dna_power_cap_counted at
+ *          the compiled ratio over (total / 10^8, entry.validator_id) —
+ *          the shared/dnac oracle-pinned function, NOT the witness helper;
+ *   row    ruleset 2: keyed by entry.validator_id; ruleset 1: by the
+ *          migrated id of entry.pubkey (nodus_validator_v2_get — never by
+ *          pubkey); no row ⇒ unpaid;
+ *   payee  ruleset 2: entry.owner_fp; ruleset 1: the row's owner_fp.
+ * Every member is assumed to meet the attendance bar (all seven sign
+ * every block); `counted_out` (n entries) receives the powers used. */
+static int expect_snap(nodus_witness_t *w, const dna_vset_snapshot_t *snap,
+                       uint64_t B, const uint8_t chain32[32], owed_t *o,
+                       uint64_t *counted_out) {
+    memset(o, 0, sizeof(*o));
+    o->self_bond_min = UINT64_MAX;
+    if (q_u64(w, "SELECT reward_pool FROM supply_tracking WHERE id = 1",
+              &o->pool) != 0)
+        return -1;
+    const uint64_t payout = o->pool >> NODUS_V2_GEN_REWARD_DIVISOR_LOG2;
+    const uint64_t src = B >= 3 * E_LEN ? B - 3 * E_LEN : 0;
+    const uint16_t n = snap->active_count;
+    const int v2 = snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2;
+    if (n == 0 || n > DNA_MAX_ACTIVE_VALIDATORS) return -1;
+    uint64_t p[DNA_MAX_ACTIVE_VALIDATORS], c[DNA_MAX_ACTIVE_VALIDATORS];
+    uint8_t (*ids)[64] = calloc(n, 64);
+    nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
+    int ret = -1;
+    uint64_t sum = 0;
+    if (!ids || !row) goto out;
+    for (uint16_t i = 0; i < n; i++) {
+        p[i] = snap->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+        memcpy(ids[i], snap->entries[i].validator_id, 64);
+    }
+    if (v2) {
+        if (dna_power_cap_counted(p, (const uint8_t (*)[64])ids, n,
+                                  DNAC_HF6_POWER_CAP_BPS_DEFAULT, c) != 0)
+            goto out;
+    } else {
+        memcpy(c, p, (size_t)n * sizeof(*c));
+    }
+    for (uint16_t i = 0; i < n; i++) sum += c[i];
+    if (counted_out) memcpy(counted_out, c, (size_t)n * sizeof(*c));
+    o->members = n;
+    for (uint16_t i = 0; i < n; i++) {
+        const dna_vset_entry_t *e = &snap->entries[i];
+        if (e->self_bond < o->self_bond_min) o->self_bond_min = e->self_bond;
+        if (e->self_bond > o->self_bond_max) o->self_bond_max = e->self_bond;
+        uint8_t vid[64];
+        if (v2) memcpy(vid, e->validator_id, 64);
+        else if (dna_validator_id_migrated(vid, chain32, e->pubkey) != 0)
+            goto out;
+        int rrc = nodus_validator_v2_get(w, vid, row);
+        if (rrc < 0 || rrc > 1) goto out;
+        const uint64_t share = sum ? muldiv(payout, c[i], sum) : 0;
+        if (rrc == 1 || share == 0) continue;     /* unpaid: stays in pool */
+        const uint64_t base = muldiv(share, e->self_bond, e->total_stake);
+        const uint64_t gross = share - base;
+        const uint64_t comm = muldiv(gross, e->commission_bps, 10000);
+        const uint64_t net = gross - comm;
+        if (owed_add(o, v2 ? e->owner_fp : row->owner_fp, base + comm) != 0)
+            goto out;
+
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db, "SELECT owner_fp, amount FROM "
+                               "v2_balance_copy WHERE epoch_start = ?1 AND "
+                               "validator_fp = ?2 AND kind = 1 ORDER BY "
+                               "owner_fp ASC", -1, &st, NULL) != SQLITE_OK)
+            goto out;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)src);
+        sqlite3_bind_blob(st, 2, vid, 64, SQLITE_TRANSIENT);
+        uint8_t dfp[8][64];
+        uint64_t a[8], sum_d = 0;
+        int nd = 0, rc;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW && nd < 8) {
+            if (sqlite3_column_bytes(st, 0) != 64) break;
+            memcpy(dfp[nd], sqlite3_column_blob(st, 0), 64);
+            a[nd] = (uint64_t)sqlite3_column_int64(st, 1);
+            sum_d += a[nd];
+            nd++;
+        }
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) goto out;
+        if (sum_d != e->total_stake - e->self_bond) goto out;   /* gate */
+        if (net > 0 && sum_d > 0)
+            for (int d = 0; d < nd; d++)
+                if (owed_add(o, dfp[d], muldiv(net, a[d], sum_d)) != 0)
+                    goto out;
+    }
+    for (size_t i = 0; i < o->n; i++)
+        if (accrual_of(w, o->fp[i], &o->before[i], NULL) != 0) goto out;
+    ret = 0;
+out:
+    free(ids);
+    free(row);
+    return ret;
+}
+
+/* index of the entry holding key k's pubkey, or -1 */
+static int entry_of(const dna_vset_snapshot_t *s, int k) {
+    for (uint16_t i = 0; i < s->active_count; i++)
+        if (memcmp(s->entries[i].pubkey, g_k[k].pk, PKLEN) == 0) return i;
+    return -1;
+}
+
+/* An UNSTAKED v2 row (zero amounts) holding key k's consensus pubkey under
+ * its own validator_id — a graduated row whose key was STAKEd again (§4,
+ * slice-4 fault 2). The validators row through the CRUD writer (its key
+ * column is whatever that writer derives), its roles row by SQL. */
+static int put_unstaked_twin(nodus_witness_t *w, int k,
+                             const uint8_t owner[64], uint8_t id_out[64]) {
+    dnac_validator_record_t v;
+    memset(&v, 0, sizeof(v));
+    memcpy(v.pubkey, g_k[k].pk, PKLEN);
+    v.commission_bps = COMM_BPS;
+    v.status = DNAC_VALIDATOR_UNSTAKED;
+    v.active_since_block = 1;
+    memcpy(v.unstake_destination_fp, g_k[k].hex, 129);
+    if (nodus_validator_insert(w, &v) != 0) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT pubkey_hash FROM validators WHERE "
+                           "status = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, (int)DNAC_VALIDATOR_UNSTAKED);
+    int ok = sqlite3_step(st) == SQLITE_ROW &&
+             sqlite3_column_bytes(st, 0) == 64;
+    if (ok) memcpy(id_out, sqlite3_column_blob(st, 0), 64);
+    ok = ok && sqlite3_step(st) == SQLITE_DONE;      /* the only UNSTAKED */
+    sqlite3_finalize(st);
+    if (!ok) return -1;
+    st = NULL;
+    if (sqlite3_prepare_v2(w->db, "INSERT INTO v2_validator_roles "
+                           "(validator_id, owner_fp, pending_consensus_pubkey,"
+                           " consensus_key_effective_epoch) VALUES (?1, ?2, "
+                           "zeroblob(2592), 0)", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, id_out, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, owner, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* settlement_apply directly at boundary B inside a transaction that is
+ * ALWAYS rolled back; `o` (when non-NULL) is checked before the rollback. */
+static int settle_rolled_back(nodus_witness_t *w, uint64_t B, uint32_t gen,
+                              const owed_t *o, uint64_t *acc_out) {
+    uint64_t acc = 0;
+    int rc = nodus_witness_v2_settlement_apply(w, B, gen, NULL, NULL, &acc);
+    int chk = (rc == 0 && o) ? owed_check(w, o) : 0;
+    if (acc_out) *acc_out = acc;
+    if (run_sql(w->db, "ROLLBACK") != 0) return 99;
+    if (rc != 0) return rc;
+    if (o && acc != o->total) {
+        fprintf(stderr, "accrued %llu, restated %llu\n",
+                (unsigned long long)acc, (unsigned long long)o->total);
+        return 98;
+    }
+    return chk == 0 ? 0 : 97;
+}
+
+static int t_engine_v2_snapshot(void) {
+    fixture_t O;
+    uint64_t h = 0;
+    const uint64_t B = 5 * E_LEN;              /* governed by snapshot(4E) */
+    CHECK(keys_make() == 0, "keys");
+    CHECK(fx_open(&O, "v2s", 1, 0) == 0, "seeded chain (fixture B shape, "
+          "no RETIRING row)");
+    {
+        uint64_t iv = 0;
+        CHECK(nodus_witness_v2_payout_interval(O.w, &iv) == 0 && iv >= 6,
+              "no payday inside 1..5E");
+    }
+    CHECK(run_to(&O, NULL, &h, B - 1) == 0, "blocks 1..5E-1 (gen-4 edge in "
+          "block H14-1; every block governed by an engine-built ruleset-1 "
+          "snapshot)");
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    CHECK(nodus_witness_v2_chain_id(O.w, chain32) == 0, "chain id");
+    nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
+    CHECK(row != NULL, "alloc");
+
+    /* ── E1. the builder at generation 4 ─────────────────────────────── */
+    {
+        nodus_committee_member_t *m =
+            calloc(DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*m));
+        dna_vset_snapshot_t *st5 = NULL, *b2 = NULL;
+        int cnt = 0;
+        CHECK(m != NULL, "alloc");
+        CHECK(nodus_committee_compute_for_epoch(O.w, B, m,
+                                                DNAC_MAX_ACTIVE_VALIDATORS,
+                                                &cnt) == 0 && cnt == N_VAL,
+              "the gen-4 core re-selects the seven for 5E");
+        CHECK(nodus_witness_vset_get(O.w, B, &st5, NULL) == 0 &&
+              st5->active_count == N_VAL &&
+              st5->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+              "the stored snapshot(5E) is ruleset 1 (5c builds no v2 blob)");
+        b2 = dna_vset_alloc((uint16_t)cnt);
+        CHECK(b2 != NULL, "alloc");
+        b2->epoch = B;
+        b2->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+        for (int i = 0; i < cnt; i++) {
+            const dna_vset_entry_t *se = &st5->entries[i];
+            uint8_t vid[64];
+            CHECK(memcmp(m[i].pubkey, se->pubkey, PKLEN) == 0 &&
+                  m[i].total_stake == se->total_stake &&
+                  m[i].self_stake == se->self_bond,
+                  "the core's order and amounts are the stored snapshot's");
+            CHECK(dna_validator_id_migrated(vid, chain32, m[i].pubkey) == 0 &&
+                  nodus_validator_v2_get(O.w, vid, row) == 0, "the row");
+            CHECK(memcmp(m[i].validator_id, vid, 64) == 0 &&
+                  memcmp(m[i].owner_fp, row->owner_fp, 64) == 0,
+                  "gen 4: emit_member carries the row's validator_id and "
+                  "owner_fp");
+            CHECK(nodus_witness_vset_entry_from_member(
+                      &m[i], DNA_VSET_RULESET_TOPN_V2, &b2->entries[i]) == 0,
+                  "fill a ruleset-2 entry");
+            CHECK(memcmp(b2->entries[i].voter_id, se->voter_id, 32) == 0 &&
+                  memcmp(b2->entries[i].pubkey, se->pubkey, PKLEN) == 0 &&
+                  b2->entries[i].total_stake == se->total_stake &&
+                  b2->entries[i].self_bond == se->self_bond &&
+                  b2->entries[i].commission_bps == se->commission_bps,
+                  "the v2 entry is the stored v1 entry plus the ids");
+        }
+        CHECK(dna_vset_encoded_len_ex(b2, DNA_VSET_RULESET_TOPN_V2) ==
+                  (size_t)DNA_VSET_HDR_LEN +
+                  (size_t)N_VAL * DNA_VSET_ENTRY_LEN_V2,
+              "the v2 codec accepts the builder's ruleset-2 fill");
+        {
+            /* get_for_block returns the ids ZERO (D6), hit and miss */
+            nodus_committee_member_t *g = NULL;
+            int gn = 0;
+            static const uint8_t z[64] = { 0 };
+            O.w->cached_committee_epoch_start = UINT64_MAX;  /* force miss */
+            for (int pass = 0; pass < 2; pass++) {
+                CHECK(nodus_committee_get_for_block_alloc(O.w, B - 1, &g,
+                                                          &gn) == 0 &&
+                      gn == N_VAL, "get_for_block (miss, then hit)");
+                for (int i = 0; i < gn; i++)
+                    CHECK(memcmp(g[i].validator_id, z, 64) == 0 &&
+                          memcmp(g[i].owner_fp, z, 64) == 0,
+                          "get_for_block: ids zero on the miss and the hit");
+                free(g);
+                g = NULL;
+            }
+        }
+        dna_vset_free(&b2);
+        dna_vset_free(&st5);
+        free(m);
+        /* leave no warm committee cache behind the snapshot rewrites */
+        O.w->cached_committee_epoch_start = UINT64_MAX;
+    }
+
+    /* the ruleset-2 twin of the governing snapshot(4E) */
+    dna_vset_snapshot_t *T = v2_twin(O.w, 4 * E_LEN, chain32);
+    CHECK(T != NULL && T->active_count == N_VAL, "the v2 twin of snapshot(4E)");
+    const int i0 = entry_of(T, V0), i1 = entry_of(T, V1), i2 = entry_of(T, V2);
+    CHECK(i0 >= 0 && i1 >= 0 && i2 >= 0, "V0, V1, V2 seated in 4E");
+
+    /* ── E2. a v2 entry whose owner_fp is not its row's → -2 ─────────── */
+    {
+        dna_vset_snapshot_t *s = v2_twin(O.w, 4 * E_LEN, chain32);
+        CHECK(s != NULL, "twin");
+        s->entries[i1].owner_fp[0] ^= 0x01;
+        CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0 &&
+              snap_overwrite(O.w, s) == 0, "store the mismatched twin");
+        CHECK(settle_rolled_back(O.w, B, NODUS_RT_GEN_STORAGE, NULL, NULL)
+                  == -2, "an entry owner_fp differing from the row: FAULT");
+        dna_vset_free(&s);
+    }
+
+    /* ── E3. a ruleset-2 snapshot paid below generation 4 → -2 ───────── */
+    {
+        CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0 &&
+              snap_overwrite(O.w, T) == 0, "store the twin");
+        CHECK(settle_rolled_back(O.w, B, NODUS_RT_GEN_STORAGE - 1, NULL,
+                                 NULL) == -2,
+              "ruleset 2 with a key generation below 4: FAULT");
+    }
+
+    /* ── E4. a v2 entry with no row: unpaid, its share stays in the pool;
+     * its copy(2E) rows are re-keyed to the phantom id so the
+     * consistency gate holds (kind-0 owner column = the id, §7.4). ─── */
+    {
+        dna_vset_snapshot_t *s = v2_twin(O.w, 4 * E_LEN, chain32);
+        uint8_t phantom[64], real[64];
+        CHECK(s != NULL, "twin");
+        memcpy(real, s->entries[i2].validator_id, 64);
+        memset(phantom, 0x7E, sizeof(phantom));
+        CHECK(nodus_validator_v2_get(O.w, phantom, row) == 1,
+              "the phantom id names no row");
+        memcpy(s->entries[i2].validator_id, phantom, 64);
+        CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0 &&
+              snap_overwrite(O.w, s) == 0, "store");
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(O.w->db, "INSERT INTO v2_balance_copy "
+                      "(epoch_start, validator_fp, owner_fp, kind, amount) "
+                      "SELECT epoch_start, ?1, CASE WHEN kind = 0 THEN ?1 "
+                      "ELSE owner_fp END, kind, amount FROM v2_balance_copy "
+                      "WHERE epoch_start = ?2 AND validator_fp = ?3", -1, &st,
+                      NULL) == SQLITE_OK, "prepare");
+            sqlite3_bind_blob(st, 1, phantom, 64, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)(2 * E_LEN));
+            sqlite3_bind_blob(st, 3, real, 64, SQLITE_TRANSIENT);
+            int rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            CHECK(rc == SQLITE_DONE && sqlite3_changes(O.w->db) >= 2,
+                  "copy(2E) rows for the phantom id (bond + delegation)");
+        }
+        owed_t o;
+        uint64_t acc = 0;
+        CHECK(expect_snap(O.w, s, B, chain32, &o, NULL) == 0,
+              "restated split (the phantom unpaid)");
+        CHECK(settle_rolled_back(O.w, B, NODUS_RT_GEN_STORAGE, &o, &acc)
+                  == 0, "a v2 entry with no row: applied, exactly the "
+                  "restated deltas");
+        {
+            /* the phantom's share is NOT in Σ: the same snapshot with the
+             * real id pays strictly more */
+            owed_t full;
+            CHECK(expect_snap(O.w, T, B, chain32, &full, NULL) == 0 &&
+                  full.total > acc, "the phantom's share stayed in the pool");
+        }
+        dna_vset_free(&s);
+    }
+
+    /* ── E5. K2 through settlement_apply: V0 raised to 60M whole coins
+     * (a 46M delegation from a new owner in copy(2E)), the rest 10M —
+     * counted [25714285, 10M × 6] at 3000 bps (design §5 rule: k = 0
+     * S = 120M c = 36M < 60M; k = 1 S = 60M c = ⌊3000·60M / 7000⌋ =
+     * 25714285 ≥ 10M, stop). Shares by counted / Σcounted; V0's inner
+     * split on its RAW 60M. ──────────────────────────────────────── */
+    {
+        dna_vset_snapshot_t *s = v2_twin(O.w, 4 * E_LEN, chain32);
+        uint8_t nfp[64];
+        const uint64_t add = 46 * TEN_M / 10;              /* 46M raw  */
+        CHECK(s != NULL && fp_of(0x5A, nfp) == 0, "twin");
+        CHECK(s->entries[i0].total_stake == TWO_M + EIGHT_M + KD_AMT,
+              "FIXTURE GUARD: V0 holds 14M in snapshot(4E)");
+        s->entries[i0].total_stake += add;                 /* 60M      */
+        CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0 &&
+              snap_overwrite(O.w, s) == 0, "store");
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(O.w->db, "INSERT INTO v2_balance_copy "
+                      "(epoch_start, validator_fp, owner_fp, kind, amount) "
+                      "VALUES (?1, ?2, ?3, 1, ?4)", -1, &st, NULL)
+                  == SQLITE_OK, "prepare");
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)(2 * E_LEN));
+            sqlite3_bind_blob(st, 2, s->entries[i0].validator_id, 64,
+                              SQLITE_TRANSIENT);
+            sqlite3_bind_blob(st, 3, nfp, 64, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(st, 4, (sqlite3_int64)add);
+            int rc = sqlite3_step(st);
+            sqlite3_finalize(st);
+            CHECK(rc == SQLITE_DONE, "the 46M delegation row in copy(2E)");
+        }
+        owed_t o;
+        uint64_t counted[DNA_MAX_ACTIVE_VALIDATORS];
+        CHECK(expect_snap(O.w, s, B, chain32, &o, counted) == 0,
+              "restated split");
+        for (int i = 0; i < N_VAL; i++)
+            CHECK(counted[i] == (i == i0 ? 25714285ULL : 10000000ULL),
+                  "the counted vector [25714285, 10M × 6]");
+        {
+            uint64_t pw[DNA_MAX_ACTIVE_VALIDATORS];
+            CHECK(nodus_witness_vset_powers(O.w, s, pw) == 0 &&
+                  memcmp(pw, counted, N_VAL * sizeof(pw[0])) == 0,
+                  "the witness helper agrees on the stored snapshot");
+        }
+        uint64_t n_amt = 0;
+        CHECK(owed_of(&o, nfp, &n_amt) == 0 && n_amt > 0,
+              "the new delegator is owed a share of V0's net");
+        CHECK(settle_rolled_back(O.w, B, NODUS_RT_GEN_STORAGE, &o, NULL)
+                  == 0, "Σcounted denominator, raw inner split: exactly "
+                  "the restated deltas");
+        dna_vset_free(&s);
+    }
+
+    /* ── E6. an UNSTAKED row sharing V1's consensus pubkey: by-pubkey
+     * resolution faults (slice-4 fault 2); the ruleset-1 bridge and the
+     * ruleset-2 arm resolve by id and pay. ─────────────────────────── */
+    {
+        uint8_t uid[64];
+        owed_t o;
+        CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0 &&
+              put_unstaked_twin(O.w, V1, g_k[KD].fp, uid) == 0,
+              "the UNSTAKED twin row");
+        CHECK(nodus_validator_v2_get_by_pubkey(O.w, g_k[V1].pk, row) == -1,
+              "two rows hold V1's pubkey: the by-pubkey read faults");
+        dna_vset_snapshot_t *s1 = NULL;
+        CHECK(nodus_witness_vset_get(O.w, 4 * E_LEN, &s1, NULL) == 0 &&
+              s1->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+              "the engine's own (v1) snapshot(4E)");
+        CHECK(expect_snap(O.w, s1, B, chain32, &o, NULL) == 0, "restated");
+        dna_vset_free(&s1);
+        CHECK(settle_rolled_back(O.w, B, NODUS_RT_GEN_STORAGE, &o, NULL)
+                  == 0, "the v1 bridge (v2_get of the migrated id) pays "
+                  "despite the shared pubkey");
+    }
+
+    /* ── E7. THROUGH THE ENGINE: the v2 twin stored as snapshot(4E) and
+     * the UNSTAKED twin row committed before block 5E (snapshot(4E)
+     * governs no block from 5E on — block 5E is snapshot(5E)'s, so phase
+     * 0a never hashes the v2 blob), then block 5E applies: base +
+     * commission accrue to entry.owner_fp by validator_id. ─────────── */
+    {
+        uint8_t uid[64];
+        owed_t o;
+        CHECK(snap_overwrite(O.w, T) == 0, "store the v2 twin as snapshot(4E)");
+        CHECK(put_unstaked_twin(O.w, V1, g_k[KD].fp, uid) == 0,
+              "the UNSTAKED twin row, committed");
+        CHECK(expect_snap(O.w, T, B, chain32, &o, NULL) == 0, "restated");
+        CHECK(o.members == N_VAL && o.self_bond_min == TWO_M &&
+              o.self_bond_max == TWO_M, "seven members, post-H self_bond");
+        CHECK(run_to(&O, NULL, &h, B) == 0, "block 5E applies (no FAULT)");
+        CHECK(owed_check(O.w, &o) == 0,
+              "every accrual moved by exactly the restated amount");
+        uint64_t fa = 0, kd = 0;
+        CHECK(owed_of(&o, k_found, &fa) == 0 && fa > 0,
+              "base + commission (+ the 8M share) to entry.owner_fp — the "
+              "Foundation owner");
+        CHECK(owed_of(&o, g_k[KD].fp, &kd) == 0 && kd > 0, "KD's share");
+        CHECK(o.n == 2, "nobody else is owed anything");
+        for (int i = 0; i < N_VAL; i++) {
+            uint64_t a = 0;
+            int present = 1;
+            CHECK(accrual_of(O.w, g_k[i].fp, &a, &present) == 0 && !present,
+                  "no node-key accrual row");
+        }
+    }
+
+    dna_vset_free(&T);
+    free(row);
+    fx_close(&O);
+    return 0;
+}
+
 /* ══ D. the reader inventory (a source scan) ═══════════════════════════ */
 
 typedef struct {
@@ -1541,6 +2094,7 @@ int main(void) {
         { "reader_inventory",    t_reader_inventory },
         { "engine_foundation",   t_engine_foundation },
         { "engine_own_owner",    t_engine_own_owner },
+        { "engine_v2_snapshot",  t_engine_v2_snapshot },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     for (size_t i = 0; i < n; i++) {

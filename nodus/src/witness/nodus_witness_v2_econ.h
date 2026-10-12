@@ -102,12 +102,15 @@ extern "C" {
  *
  * tokenomics-v3 P2: blocks_per_year has NO consumer any more (its one
  * consumer was the deleted per-block mint); the band stays committed
- * build identity. decimal_unit is still the voting-power unit (power =
- * total_stake / DNAC_DECIMAL_UNIT — the cometbft ValidatorUpdate, Rule
- * N's weight floor). The refusals of epoch_length AND decimal_unit
- * (below) are enforced on EVERY block — the apply engine calls this
- * loader once per block (nodus_witness_v2_apply.c phase 6f, "per-block
- * build-identity check"), relocated from the deleted mint so the check
+ * build identity. decimal_unit is still the voting-power unit: whole
+ * coins p = total_stake / DNAC_DECIMAL_UNIT, which IS the power of a
+ * ruleset-1 snapshot entry and the input of a ruleset-2 entry's counted
+ * (capped) power — HF-6 5b, nodus_witness_vset_powers; the cometbft
+ * ValidatorUpdate, Rule N's weight floor. The refusals of epoch_length
+ * AND decimal_unit (below) are enforced on EVERY block — the apply
+ * engine calls this loader once per block (nodus_witness_v2_apply.c
+ * phase 6f, "per-block build-identity check"), relocated from the
+ * deleted mint so the check
  * did not vanish with it.
  *
  * `present == 0` is the honest answer for every chain built before
@@ -324,7 +327,11 @@ int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out);
  *                 FAULT -2 before anything is paid (the two structures
  *                 were built from one state — a mismatch is local
  *                 corruption or a broken external_delegated writer)
- *     power_v   = entry.total_stake / DNAC_DECIMAL_UNIT
+ *     power_v   = the entry's power from nodus_witness_vset_powers over
+ *                 the whole snapshot (HF-6 5b): ruleset 1 entry.total_
+ *                 stake / DNAC_DECIMAL_UNIT, ruleset 2 the counted
+ *                 (capped) power — K2's Σcounted denominator; the inner
+ *                 split below stays on the raw entry amounts
  *   Σpower over ALL members — including a member with no row and one
  *   that misses the bar below, so a forfeited share is never
  *   redistributed to the members that attended (§3 "P2 tasarım
@@ -373,20 +380,26 @@ int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out);
  * copy(src)). Fault stages NODUS_V2_EPST_DIST_ACCRUED /
  * NODUS_V2_EPST_DIST_APPLIED.
  *
- * HF-6 sub-slice 3d — at `key_generation` >= NODUS_RT_GEN_STORAGE
- * (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.6, §7.5): every
- * member is a ruleset-1 entry (slice 3 keeps commit_next at ruleset 1),
- * resolved by the v1-SNAPSHOT BRIDGE — its copy key is
- * dna_validator_id_migrated(chain id, entry pubkey) (the key the edge
- * re-keyed the retained copies to and the boundary writes new copies
- * under), its row is the validators row holding the entry's pubkey
- * (has_row; a row whose validator_id is not that migrated id is a FAULT),
- * and "accrue base + commission to fp(v)" becomes "to the row's
- * owner_fp" — the Foundation owner for a genesis row, SHA3-512(old
- * pubkey) for any other migrated row. Everything else above — the gate,
- * the power, the split, x_d to each copy row's owner (an 8M
- * self-delegation's owner IS owner_fp) — is unchanged. Below generation 4
- * the function is byte-identical to before.
+ * HF-6 — at `key_generation` >= NODUS_RT_GEN_STORAGE (design 2026-10-03-
+ * hf5-validator-owner-stake rev 6 §1.6, §7.5) every member is resolved by
+ * its row's PRIMARY KEY (nodus_validator_v2_get), never by the consensus
+ * pubkey (not unique across rows — a graduated UNSTAKED row may share it):
+ *   a RULESET-2 entry (slice 5c): copy key = entry.validator_id; has_row =
+ *     a row is keyed by it; "accrue base + commission to fp(v)" is "to
+ *     entry.owner_fp" (§1.6 "vset v2 girdisinden"); a found row whose
+ *     owner_fp or consensus pubkey differs from the entry's is a FAULT
+ *     (-2) — the pubkey check is slice 6's to replace (ROTATE);
+ *   a RULESET-1 entry (the v1-SNAPSHOT BRIDGE, sub-slice 3d, §7.5): copy
+ *     key = dna_validator_id_migrated(chain id, entry pubkey) (the key the
+ *     edge re-keyed the retained copies to and the boundary writes new
+ *     copies under); has_row = a row is keyed by that id; the payee is
+ *     that row's owner_fp — the Foundation owner for a genesis row,
+ *     SHA3-512(old pubkey) for any other migrated row.
+ * Everything else above — the gate, the power, the split, x_d to each
+ * copy row's owner (an 8M self-delegation's owner IS owner_fp) — is the
+ * same for both. A ruleset-2 governing snapshot below generation 4 is a
+ * broken invariant: -2. Below generation 4 a ruleset-1 snapshot is paid
+ * byte-identically to before.
  *
  * @param boundary_height  H — a positive multiple of DNAC_EPOCH_LENGTH.
  * @param key_generation   the boundary's key generation

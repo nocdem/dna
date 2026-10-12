@@ -1061,10 +1061,12 @@ typedef struct {
     int         has_row;   /* 1 a `validators` row exists at H          */
     uint8_t     vfp[64];   /* the member's copy key: gens 1-3 the raw
                             * SHA3-512(pubkey); HF-6 generation 4 its
-                            * validator_id (§7.5 bridge)                 */
+                            * validator_id — a ruleset-2 entry's own, a
+                            * ruleset-1 entry's migrated id (§7.5)      */
     uint8_t     owner_fp[64]; /* who base + commission accrue to: gens 1-3
                             * = vfp (the node key's fp, unchanged); gen 4
-                            * the committed row's owner_fp (§1.6)        */
+                            * a ruleset-2 entry's owner_fp, else the
+                            * committed row's owner_fp (§1.6)           */
     v2ec_row_t *copy;      /* its copy(src) rows, (owner_fp, kind) ASC   */
     size_t      n_copy;
     uint64_t    sum_d;     /* Σ a_d: every kind-1 (delegation) copy(src)
@@ -1151,56 +1153,92 @@ static uint64_t v2ec_source_copy(uint64_t boundary_height) {
  * paid in pass 2, its share stays in the pool). Every read is
  * three-valued: a fault is -2, never a value.
  *
- * HF-6 sub-slice 3d — the v1-SNAPSHOT BRIDGE (design 2026-10-03-hf5-
- * validator-owner-stake rev 6 §7.5, §1.6; plan tasks/hf6-slice3-plan.md
- * §2 "3d"). At key generation >= NODUS_RT_GEN_STORAGE the governing
- * snapshot is still ruleset 1 (entries carry a pubkey, no validator_id —
- * slice 3 keeps commit_next at ruleset 1), so the entry is resolved:
- *   m->vfp      = dna_validator_id_migrated(chain32, e->pubkey) — the copy
- *                 key the generation-4 edge re-keyed every retained copy
- *                 to, and the key every post-edge copy is written under;
- *   has_row     = a validators row holds the entry's consensus pubkey
- *                 (nodus_validator_v2_get_by_pubkey — a second row with
- *                 it, a malformed row or a row without its roles row is a
- *                 FAULT);
- *   m->owner_fp = that committed row's owner_fp — base + commission
- *                 accrue THERE (§1.6), never to a key derived from the
- *                 consensus key (else the node-key accrual row is reborn,
- *                 §7.5).
- * A found row whose validator_id is not the migrated id of the entry's
- * pubkey is a FAULT: in slice 3 every row is a migrated row (generation-4
- * STAKE is refused until slice 4), so a mismatch is a broken invariant,
- * and paying the bridged copy's share to a different row's owner is the
- * silent alternative this refuses. `chain32` is the committed chain id
- * (nodus_witness_v2_chain_id — the migration's own input). @return 0/-2. */
+ * HF-6 — the member's ROW, by the governing snapshot's ruleset and the
+ * key generation (design 2026-10-03-hf5-validator-owner-stake rev 6
+ * §1.6, §7.5; plans tasks/hf6-slice3-plan.md §2 "3d", tasks/hf6-slice5-
+ * plan.md §1, §2 "5c"). Every arm resolves by the PRIMARY KEY
+ * (nodus_validator_v2_get: a malformed row, or a validators row without
+ * its roles row, is a FAULT — never "absent"), never by the consensus
+ * pubkey, which is not unique across rows (a graduated, UNSTAKED row may
+ * share it with a later STAKE of the same key, §4) — slice-4 fault 2:
+ *
+ *   RULESET 2 (slice 5c; a ruleset-2 snapshot exists only at key
+ *   generation >= NODUS_RT_GEN_STORAGE — settlement_apply refuses one
+ *   below it before any member is loaded):
+ *     m->vfp      = entry.validator_id (the copy key);
+ *     has_row     = a row is keyed by it;
+ *     m->owner_fp = entry.owner_fp — base + commission accrue THERE
+ *                   (§1.6 "vset v2 girdisinden");
+ *     a found row must carry the entry's owner_fp AND the entry's
+ *     consensus pubkey, else FAULT. Both are immutable in slice 5 (K3:
+ *     no TRANSFER_OWNER; no rotation before slice 6), so a mismatch is
+ *     a broken invariant, and paying the share to a different row's
+ *     owner is the silent alternative this refuses. The pubkey-equality
+ *     check is SLICE 6's edit: ROTATE replaces it with its snapshot-key
+ *     rule (the frozen entry may then name the pre-rotation key).
+ *   RULESET 1 at generation >= NODUS_RT_GEN_STORAGE (the v1-SNAPSHOT
+ *   BRIDGE, §7.5 literally: "pubkey → validator_id (§6.2 migration
+ *   fonksiyonu)"):
+ *     m->vfp      = dna_validator_id_migrated(chain32, entry.pubkey) — the
+ *                   copy key the generation-4 edge re-keyed every retained
+ *                   copy to, and the key every post-edge copy is written
+ *                   under; `chain32` is the committed chain id
+ *                   (nodus_witness_v2_chain_id — the migration's own
+ *                   input);
+ *     has_row     = a row is keyed by that id;
+ *     m->owner_fp = that committed row's owner_fp (never a key derived
+ *                   from the consensus key — else the node-key accrual
+ *                   row is reborn, §7.5).
+ *     The row is found BY the migrated id, so "its validator_id is the
+ *     migrated id of the entry's pubkey" (3d's explicit check) holds by
+ *     construction. A v1 entry never names a row a generation-4 STAKE
+ *     created: such a row is a candidate only from e_start >= its STAKE
+ *     + 2E, built at a boundary that writes ruleset 2 (plan §1 "Slice-4
+ *     fault 1 removed by construction").
+ *   below generation 4: the pre-HF-6 read by pubkey (nodus_validator_
+ *   get), the copy key and the payee SHA3-512(pubkey) — unchanged.
+ * @return 0/-2. */
 static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
                             uint64_t boundary_height,
-                            const dna_vset_entry_t *e, uint32_t gen,
+                            const dna_vset_entry_t *e, uint32_t ruleset,
+                            uint32_t gen,
                             const uint8_t chain32[DNA_CHAIN_ID_LEN],
                             v2ec_member_t *m) {
-    if (gen >= NODUS_RT_GEN_STORAGE) {
+    if (ruleset == DNA_VSET_RULESET_TOPN_V2 ||
+        gen >= NODUS_RT_GEN_STORAGE) {
+        const int v2 = (ruleset == DNA_VSET_RULESET_TOPN_V2);
+        if (v2) {
+            memcpy(m->vfp, e->validator_id, 64);
+        } else if (dna_validator_id_migrated(m->vfp, chain32,
+                                             e->pubkey) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "distribution: a v1 entry's "
+                          "migrated validator_id did not derive — refusing");
+            return -2;
+        }
         nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
         if (!row) return -2;
-        int vrc = nodus_validator_v2_get_by_pubkey(w, e->pubkey, row);
-        if (vrc < 0 || vrc > 1 ||
-            dna_validator_id_migrated(m->vfp, chain32, e->pubkey) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "distribution: a member's v2 row "
-                          "is unreadable, half-migrated or duplicated, or "
-                          "its validator_id did not derive — refusing");
+        int vrc = nodus_validator_v2_get(w, m->vfp, row);
+        if (vrc < 0 || vrc > 1) {
+            QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: a member's v2 row "
+                          "is unreadable or half-migrated — refusing",
+                          (unsigned long long)boundary_height);
             free(row);
             return -2;
         }
         m->has_row = (vrc == 0);
-        if (m->has_row) {
-            if (memcmp(row->validator_id, m->vfp, 64) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: the row "
-                              "holding a v1 entry's pubkey is not that "
-                              "pubkey's migrated validator_id — refusing "
-                              "(§7.5 bridge)",
+        if (v2) {
+            memcpy(m->owner_fp, e->owner_fp, 64);
+            if (m->has_row &&
+                (memcmp(row->owner_fp, e->owner_fp, 64) != 0 ||
+                 memcmp(row->rec.pubkey, e->pubkey, DNAC_PUBKEY_SIZE) != 0)) {
+                QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: the row keyed "
+                              "by a v2 entry's validator_id carries another "
+                              "owner or consensus key — refusing",
                               (unsigned long long)boundary_height);
                 free(row);
                 return -2;
             }
+        } else if (m->has_row) {
             memcpy(m->owner_fp, row->owner_fp, 64);
         }
         free(row);
@@ -1323,8 +1361,9 @@ static int v2ec_pay_member(nodus_witness_t *w, uint64_t boundary_height,
 
     uint64_t credited = 0;
     /* the validator: its own-bond base + the commission, to its OWNER —
-     * the node key's fp below generation 4 (m->owner_fp == m->vfp), the
-     * committed row's owner_fp from generation 4 (HF-6 design §1.6,
+     * the node key's fp below generation 4 (m->owner_fp == m->vfp), from
+     * generation 4 the ruleset-2 entry's owner_fp (equal to its row's,
+     * checked in pass 1) or the bridged row's owner_fp (HF-6 design §1.6,
      * decision 2026-10-03-role-stake-amounts.md (4) "kazanç owner'a") */
     {
         uint64_t vx = 0;
@@ -1423,18 +1462,18 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
                           (unsigned long long)boundary_height);
             goto done;
         }
-        /* Slice 3 resolves ruleset-1 entries only (the bridge). A
-         * ruleset-2 snapshot cannot be stored before slice 5 switches
-         * commit_next; reaching one here is a broken invariant, refused
-         * rather than read through the ruleset-1 bridge. */
-        if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V1) {
-            QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: snapshot(%llu) is "
-                          "ruleset %u — this build pays ruleset-1 entries "
-                          "only", (unsigned long long)boundary_height,
-                          (unsigned long long)epoch_start,
-                          (unsigned)snap->selection_ruleset);
-            goto done;
-        }
+    } else if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
+        /* HF-6 5c: a ruleset-2 snapshot is built only at a boundary that
+         * reads generation >= NODUS_RT_GEN_STORAGE (plan tasks/hf6-
+         * slice5-plan.md §1 "Rule"), and the registry never moves back.
+         * Governing an epoch paid below generation 4 is a broken
+         * invariant — refused, never read through the pre-HF-6 arm. */
+        QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: snapshot(%llu) is "
+                      "ruleset 2 below key generation %u — refusing",
+                      (unsigned long long)boundary_height,
+                      (unsigned long long)epoch_start,
+                      (unsigned)NODUS_RT_GEN_STORAGE);
+        goto done;
     }
 
     /* ── HF-6 slice 5b: the governing set's voting power, computed ONCE
@@ -1464,8 +1503,8 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
      * pool and the accrual table untouched. ─────────────────────────── */
     for (uint16_t i = 0; i < n_mem; i++) {
         if (v2ec_member_load(w, src_epoch, boundary_height,
-                             &snap->entries[i], key_generation, chain32,
-                             &mem[i]) != 0)
+                             &snap->entries[i], snap->selection_ruleset,
+                             key_generation, chain32, &mem[i]) != 0)
             goto done;
         mem[i].power = powers[i];
         if (dna_ck_add_u64(sum_power, mem[i].power, &sum_power) != 0)

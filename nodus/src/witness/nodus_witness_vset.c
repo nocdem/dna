@@ -45,6 +45,27 @@ _Static_assert(DNAC_HF6_POWER_CAP_BPS_DEFAULT >= DNA_POWER_CAP_BPS_MIN &&
 _Static_assert(DNA_VSET_VALIDATOR_ID_LEN == 64,
                "snapshot validator_id width != power-cap id width");
 
+/* ── HF-6 slice 5c: BOTH snapshot versions, for the chain's life ────────
+ *
+ * Design rev 6 §6.5 ("Her okuyucu zincir ömrü boyunca iki sürümü de kabul
+ * eder. v1 çıktıları bayt bayt değişmez"); plan tasks/hf6-slice5-plan.md
+ * §0 fact 2, §2 "5c". Every codec call in this file is the `_ex` family
+ * at max_ruleset = DNA_VSET_RULESET_TOPN_V2 with the ruleset-2 length
+ * ceiling as the outer cap; the layout, the hash tag and the per-ruleset
+ * length ceiling are chosen by the blob's / snapshot's OWN header
+ * (shared/dnac/vset_wire.c dna_vset_hash_bytes_ex: a ruleset-1 header
+ * hashes under "NDS.VSET.v1" and is refused above the ruleset-1 ceiling,
+ * exactly the pre-5c bytes). A superset of the old acceptance for every
+ * well-formed ruleset-1 row; the one input it now refuses on insert — a
+ * blob shorter than a header or naming ruleset 0 / >= 3, which the
+ * pre-5c (max_ruleset 1) bytes-level hash accepted without reading a
+ * header — is a row the pre-5c decode already refused on every read.
+ * No ruleset-1-only (legacy) codec entry point remains in this file.
+ * Which ruleset is BUILT is the builder's (vset_build_snapshot); this
+ * file stores and reads both. */
+#define VSET_MAX_RULESET  DNA_VSET_RULESET_TOPN_V2
+#define VSET_MAX_ENC_LEN  DNA_VSET_MAX_ENC_LEN_V2
+
 /* ── Insert ─────────────────────────────────────────────────────────── */
 
 int nodus_witness_vset_insert(nodus_witness_t *w,
@@ -53,12 +74,13 @@ int nodus_witness_vset_insert(nodus_witness_t *w,
                               const uint8_t hash64[DNA_VSET_HASH_LEN],
                               uint64_t created_at_height) {
     if (!w || !w->db || !blob || !hash64) return -1;
-    if (blob_len == 0 || blob_len > DNA_VSET_MAX_ENC_LEN) return -1;
+    if (blob_len == 0 || blob_len > VSET_MAX_ENC_LEN) return -1;
 
     /* Never store a blob whose claimed hash is not its hash: that would
      * seed the table with a row every later read must reject. */
     uint8_t derived[DNA_VSET_HASH_LEN];
-    if (dna_vset_hash_bytes(blob, blob_len, derived) != 0) {
+    if (dna_vset_hash_bytes_ex(blob, blob_len, VSET_MAX_RULESET,
+                               derived) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: snapshot hash derivation failed",
                       (unsigned long long)epoch_start);
         return -1;
@@ -201,7 +223,7 @@ int nodus_witness_vset_get(nodus_witness_t *w,
 
     if (!st_hash || st_hash_len != DNA_VSET_HASH_LEN ||
         !st_blob || st_blob_len <= 0 ||
-        (size_t)st_blob_len > DNA_VSET_MAX_ENC_LEN) {
+        (size_t)st_blob_len > VSET_MAX_ENC_LEN) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: malformed snapshot row "
                       "(hash %d B, blob %d B)",
                       (unsigned long long)epoch_start, st_hash_len,
@@ -210,10 +232,12 @@ int nodus_witness_vset_get(nodus_witness_t *w,
         return -1;
     }
 
-    /* Integrity BEFORE trust: re-derive the hash over the stored bytes. */
+    /* Integrity BEFORE trust: re-derive the hash over the stored bytes
+     * (the tag the stored header names — a pre-5c ruleset-1 row
+     * re-derives exactly the hash it was stored under). */
     uint8_t derived[DNA_VSET_HASH_LEN];
-    if (dna_vset_hash_bytes((const uint8_t *)st_blob, (size_t)st_blob_len,
-                            derived) != 0 ||
+    if (dna_vset_hash_bytes_ex((const uint8_t *)st_blob, (size_t)st_blob_len,
+                               VSET_MAX_RULESET, derived) != 0 ||
         memcmp(derived, st_hash, DNA_VSET_HASH_LEN) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: stored snapshot blob does not "
                       "match its stored hash — corruption",
@@ -223,8 +247,8 @@ int nodus_witness_vset_get(nodus_witness_t *w,
     }
 
     dna_vset_snapshot_t *snap = NULL;
-    if (dna_vset_decode((const uint8_t *)st_blob, (size_t)st_blob_len,
-                        &snap) != 0) {
+    if (dna_vset_decode_ex((const uint8_t *)st_blob, (size_t)st_blob_len,
+                           VSET_MAX_RULESET, &snap) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: stored snapshot failed to decode",
                       (unsigned long long)epoch_start);
         sqlite3_finalize(st);
@@ -326,6 +350,39 @@ int nodus_witness_vset_root(nodus_witness_t *w,
 
 /* ── Builder ────────────────────────────────────────────────────────── */
 
+int nodus_witness_vset_entry_from_member(const nodus_committee_member_t *m,
+                                         uint32_t ruleset,
+                                         dna_vset_entry_t *e) {
+    if (!m || !e) return -1;
+    if (ruleset != DNA_VSET_RULESET_TOPN_V1 &&
+        ruleset != DNA_VSET_RULESET_TOPN_V2)
+        return -1;
+    /* Shipped derivation, reused: SHA3-512(pubkey)[0..31]
+     * (nodus_witness_chain_config.c:498) — under ruleset 2 the codec
+     * recomputes and enforces the same value (vset_wire.c vset_check). */
+    if (nodus_chain_config_derive_witness_id(m->pubkey, e->voter_id) != 0)
+        return -1;
+    memcpy(e->pubkey, m->pubkey, DNA_VSET_PUBKEY_LEN);
+    e->total_stake    = m->total_stake;
+    e->self_bond      = m->self_stake;
+    e->commission_bps = m->commission_bps;
+    if (ruleset == DNA_VSET_RULESET_TOPN_V2) {
+        /* HF-6 slice 5c (design rev 6 §6.5; ORCHESTRATOR decision D6):
+         * the member's ids, set by emit_member from its v2 row at key
+         * generation >= NODUS_RT_GEN_STORAGE. A zero id (a member emitted
+         * below generation 4) is not repaired here — the v2 encoder
+         * refuses an all-zero validator_id / owner_fp. */
+        memcpy(e->validator_id, m->validator_id, DNA_VSET_VALIDATOR_ID_LEN);
+        memcpy(e->owner_fp, m->owner_fp, DNA_VSET_OWNER_FP_LEN);
+    } else {
+        /* Ruleset 1 has no slot for them (the v1 encoder refuses a
+         * nonzero byte) — whatever the member carries. */
+        memset(e->validator_id, 0, DNA_VSET_VALIDATOR_ID_LEN);
+        memset(e->owner_fp, 0, DNA_VSET_OWNER_FP_LEN);
+    }
+    return 0;
+}
+
 /* The ONE selection core behind both public builders —
  * nodus_witness_vset_build_for_epoch (every stored snapshot: genesis and
  * commit_next) and nodus_witness_vset_preview_next (tokenomics-v3 P1
@@ -348,7 +405,7 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
     if (!w || !w->db || !snap_out) return -1;
     if (max_active < 1 || max_active > DNA_MAX_ACTIVE_VALIDATORS) return -1;
 
-    /* 128 members are ~335 KB — heap, never the stack. */
+    /* 128 members are ~344 KB — heap, never the stack. */
     nodus_committee_member_t *members =
         calloc((size_t)max_active, sizeof(*members));
     if (!members) return -1;
@@ -381,26 +438,22 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
     if (!snap) { free(members); return -1; }
 
     snap->epoch             = epoch_start;
+    /* HF-6 slice 5c: still ruleset 1 on every chain — the switch by key
+     * generation is slice 5d's (plan tasks/hf6-slice5-plan.md §1 "Rule").
+     * The entry fill below already writes either layout. */
     snap->selection_ruleset = DNA_VSET_RULESET_TOPN_V1;
     memset(snap->sortition_seed, 0, DNA_VSET_SEED_LEN);  /* reserved slot */
 
     for (int i = 0; i < count; i++) {
-        dna_vset_entry_t *e = &snap->entries[i];
-        /* Shipped derivation, reused: SHA3-512(pubkey)[0..31]
-         * (nodus_witness_chain_config.c:498). */
-        if (nodus_chain_config_derive_witness_id(members[i].pubkey,
-                                                 e->voter_id) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: witness_id derivation "
-                          "failed for member %d",
-                          (unsigned long long)epoch_start, i);
+        if (nodus_witness_vset_entry_from_member(&members[i],
+                                                 snap->selection_ruleset,
+                                                 &snap->entries[i]) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: entry fill failed for "
+                          "member %d", (unsigned long long)epoch_start, i);
             dna_vset_free(&snap);
             free(members);
             return -1;
         }
-        memcpy(e->pubkey, members[i].pubkey, DNA_VSET_PUBKEY_LEN);
-        e->total_stake    = members[i].total_stake;
-        e->self_bond      = members[i].self_stake;
-        e->commission_bps = members[i].commission_bps;
     }
     free(members);
 
@@ -435,21 +488,24 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
     if (brc != 0 || !snap) return -1;
 
     /* Encode once; every output is derived from the SAME bytes so the
-     * caller can never hold a hash that disagrees with its blob. */
-    size_t need = dna_vset_encoded_len(snap);
+     * caller can never hold a hash that disagrees with its blob. The
+     * layout and the hash tag follow the snapshot's own ruleset (HF-6
+     * 5c — VSET_MAX_RULESET above). */
+    size_t need = dna_vset_encoded_len_ex(snap, VSET_MAX_RULESET);
     if (need == 0) { dna_vset_free(&snap); return -1; }
 
     uint8_t *blob = malloc(need);
     if (!blob) { dna_vset_free(&snap); return -1; }
     size_t written = 0;
-    if (dna_vset_encode(snap, blob, need, &written) != 0 || written != need) {
+    if (dna_vset_encode_ex(snap, VSET_MAX_RULESET, blob, need,
+                           &written) != 0 || written != need) {
         free(blob);
         dna_vset_free(&snap);
         return -1;
     }
 
     uint8_t hash[DNA_VSET_HASH_LEN];
-    if (dna_vset_hash_bytes(blob, written, hash) != 0) {
+    if (dna_vset_hash_bytes_ex(blob, written, VSET_MAX_RULESET, hash) != 0) {
         free(blob);
         dna_vset_free(&snap);
         return -1;
