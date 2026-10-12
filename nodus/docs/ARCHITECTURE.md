@@ -4069,7 +4069,9 @@ per-epoch digest enters `system_state_root` through a NEW leg.
   with `nodus_witness_vset_build_for_epoch`); it returns 0 built / 1
   EMPTY (a verdict) / -1 fault. Power per entry =
   `total_stake / DNAC_DECIMAL_UNIT` (the §A unit,
-  `nodus_witness_cmt_app.c:1569`), P = checked sum, max = largest; the
+  `nodus_witness_cmt_app.c:1569`; since HF-6 slice 5b read through
+  `nodus_witness_vset_powers` — identical for a ruleset-1 snapshot, the
+  counted power for ruleset 2; see "HF-6 slice 5b"), P = checked sum, max = largest; the
   retirement stands iff `P > 0 && (P − max) > P * 2 / 3` — cometbft's
   integer commit form (`shared/dnac/cmt_validation.c:298`): the next set
   must still commit with its largest member gone. Refused (or EMPTY) →
@@ -4163,7 +4165,9 @@ per-epoch digest enters `system_state_root` through a NEW leg.
   effect at H, frozen at H-E) against `authority_for_epoch(H-E)` (what
   cometbft holds now, by induction from InitChain's snapshot(0)):
   additions and power changes in snapshot-H order, then removals with
-  power 0; power = `total_stake / DNAC_DECIMAL_UNIT`. Either snapshot
+  power 0; power = `total_stake / DNAC_DECIMAL_UNIT` (since HF-6 slice 5b:
+  `nodus_witness_vset_powers` per snapshot, each by its own ruleset — see
+  "HF-6 slice 5b"). Either snapshot
   absent or unreadable is `CMT_FAULT`, never an empty list. The array is
   owned by the app context (`ctx->val_updates` / `val_updates_cap`,
   `nodus_witness_cmt_app.h`) — it must outlive the call (the ABCI
@@ -4275,7 +4279,9 @@ recipient).
 - **P2-6 (rev 2, 2026-09-24) — the distribution, every boundary.**
   payout = `reward_pool >> 16`; the members and their weights are the
   GOVERNING snapshot(H−E): each gets `floor(payout × power / Σpower)`
-  (128-bit intermediates, power = `total_stake / DNAC_DECIMAL_UNIT`); a
+  (128-bit intermediates, power = `total_stake / DNAC_DECIMAL_UNIT`; since
+  HF-6 slice 5b `nodus_witness_vset_powers` — counted power over Σcounted
+  for a ruleset-2 snapshot, K2; see "HF-6 slice 5b"); a
   member that fails the shared participation predicate
   (`nodus_witness_v2_attendance_meets_bar`) or has no validators row
   forfeits the whole share to the pool (its power stays in Σpower). Inside
@@ -4938,7 +4944,10 @@ CheckTx and FinalizeBlock judge an approval set by the same rule.
 (`nodus_rt_committee_t`) gains `powers`: per seat, `total_stake /
 DNAC_DECIMAL_UNIT` — the derivation the block-commit validator set uses
 (`nodus_witness_cmt_app.c`, the FinalizeBlock validator-update loop) — filled by
-`committee_snapshot_for_height` before the member array is freed. The kind-2
+`committee_snapshot_for_height` before the member array is freed (since HF-6
+slice 5b it copies `nodus_committee_member_t.power`, which
+`nodus_committee_get_for_block` fills from `nodus_witness_vset_powers` — the
+same value for a ruleset-1 snapshot; see "HF-6 slice 5b"). The kind-2
 auth hook (`nodus_rt_auth_dsa87_v1`) sums, with checked u64 adds in seat
 order, the VERIFIED approving seats' powers (`approved_power`) and every
 seat's (`committee_power`) into the verdict; an overflowing sum leaves both 0
@@ -7214,6 +7223,60 @@ its graduation and STAKEd again under a new validator_id; twins byte-identical).
 A1 / A4 updated (the legacy STAKE still refused; the generation-4 CORE now pairs with a STAKE
 sibling). `test_hf6_migrate` checks the reservations (A1, B1) and a stray-row fault (A3).
 `test_v2_schema` `run_s18_rung` covers the second table. Written, NOT run by the author.
+
+### HF-6 slice 5b — the ONE voting-power helper and every consumer (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §5 ("Güç tavanı — tek
+fonksiyon"; "Tüketiciler (hepsi bu fonksiyonu çağırır)"), §8 (param 20), §11.7; decisions
+`docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md` K1 / K2 / K5 and
+`docs/plans/decisions/2026-09-22-nodus-tokenomics-v3-operator.md` (shares by power, inner split by
+raw self_bond / total_stake); plan `tasks/hf6-slice5-plan.md` §2 "5b" with ORCHESTRATOR decisions
+D2 (no RPC change), D3 (storage power here, F2 / payee in 6b), D5 (row-less recompute at
+generation 4 is a fault), D6 (no validator_id / owner_fp in the member or the cache).
+
+**The helper** (`nodus_witness_vset.{h,c}`). `nodus_witness_vset_powers(w, snap, out)` — the voting
+power of every entry of a snapshot, in its entry order, by the snapshot's OWN ruleset: ruleset 1 →
+`total_stake / DNAC_DECIMAL_UNIT` (the pre-slice-5 derivation, a zero kept as zero); ruleset 2 →
+`p_i = total_stake / DNAC_DECIMAL_UNIT`, any `p_i == 0` → -1, then `dna_power_cap_counted(p,
+validator_id, n, ratio)` (`shared/dnac/power_cap.h`, slice 5a); any other ruleset → -1. The ratio
+comes from the ONE seam `nodus_witness_power_cap_bps_for_epoch(w, snap->epoch)` — keyed on the
+snapshot's epoch start like the committee target — which today returns the compiled
+`DNAC_HF6_POWER_CAP_BPS_DEFAULT` (3000, `dnac/include/dnac/dnac.h`; range pinned by a
+`_Static_assert` against `DNA_POWER_CAP_BPS_MIN/_MAX`); slice 8 replaces only its body with the
+fail-closed param-20 read. Every caller treats -1 as a node fault. The snapshot is never modified;
+`entry.total_stake` stays raw.
+
+**Consumers** (each byte-identical for a ruleset-1 snapshot — the only ruleset the 5b store/read
+path carries; the ruleset-2 arm becomes reachable with 5c's `_ex` store and 5d's switch):
+
+| Consumer | Before | Now |
+|---|---|---|
+| InitChain (`nodus_witness_cmt_app.c`) | `total_stake / UNIT` vs the request | helper over snapshot(0); -1 → `CMT_FAULT` |
+| Boundary ValidatorUpdates diff (`cmt_app.c`) | raw on both sides | helper once per snapshot (each by its own ruleset) before the loops; matching by pubkey; power 0 on the new side still a fault; -1 → `CMT_FAULT` |
+| Rule N weight floor (`v2ep_rn_weight_verdict`, `nodus_witness_v2_epoch.c`) | raw over the preview | helper over the preview (+ `w` parameter); -1 → the boundary faults |
+| Distribution (`nodus_witness_v2_settlement_apply`, `nodus_witness_v2_econ.c`) | share by raw power over Σraw | helper once before pass 1: share by counted power over Σcounted (K2); the inner split stays on raw `self_bond / total_stake`; -1 → -2. Bridge and the ruleset-2 refusal unchanged (5c) |
+| Storage report weight (`st_settle`, `nodus_witness_v2_storage.c`) | raw | helper (D3); F2 / payee unchanged (6b) |
+| Committee cache (`nodus_committee_get_for_block`) | — | new `nodus_committee_member_t.power` + `cached_committee_powers[]`: the snapshot-served arm runs the helper over the served row (-1 → -1, cache invalid); the row-less recompute keeps `total / UNIT` below generation 4 and is -1 at generation ≥ 4 or an unreadable generation (D5); the hit copies the array — a hit and a miss return identical members. `emit_member` leaves `power` 0 (the builder never reads it) |
+| HF-2 governance powers (`committee_snapshot_for_height`, `nodus_witness_v2_apply.c`) | `mem.total_stake / UNIT` | `mem.power` |
+| `nodus-cli` local approval selection | `committee[].total_stake / UNIT` | `committee[].power` |
+| `nodus-cli` committee display (RPC `"stake"`) | raw | unchanged (D2 → 5e) |
+
+**Known gap (outside 5b's file whitelist):** `nodus_witness_genesis_seed_validators`
+(`nodus_witness_genesis_seed.c`) writes the committee cache arrays directly and does not fill
+`cached_committee_powers`; `git grep` finds no caller of that function, so no live cache is seeded
+by it.
+
+**Tests.** New `test_hf6_power` (EVM builds): the seam's value; the design's §5 vectors through the
+helper on hand-built ruleset-2 snapshots (`[88,2×6]` → `[5,2×6]`, `[45,45,10]` → `[10,10,10]`,
+`[10]×7` unchanged; snapshot order kept; sub-coin remainders floored; equal to a direct
+`dna_power_cap_counted` call); ruleset 1 = identity including a zero entry; refusals (ruleset-2 zero
+power, rulesets 0 / 3, NULLs) leave the output untouched. `test_committee_cache`: whole-coin stakes,
+`power` equal on hit and miss on the recompute arm and on a snapshot-served epoch (5); under
+`NODUS_EVM_ENABLED` (6), a row-less epoch recomputes at generation 1 and faults after the registry
+is switched to generation 4, while a snapshot-served epoch still answers. Rule N / distribution /
+storage / the Comet diff over a ruleset-2 snapshot cannot be driven before 5c (no ruleset-2
+snapshot can be stored or read); their ruleset-1 identity rests on their existing fixtures. Written,
+NOT run by the author.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

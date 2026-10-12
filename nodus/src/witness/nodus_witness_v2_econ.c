@@ -62,6 +62,7 @@
 #include "witness/nodus_witness_v2_adapter.h"/* effects_apply             */
 #include "witness/nodus_witness_v2_claims.h" /* v2_runtime_for            */
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_vset.h"      /* HF-6 5b: the power helper */
 #include "witness/nodus_witness_addr_index.h"  /* node-local payout rows */
 
 #include "nodus/nodus_chain_config.h"
@@ -1068,7 +1069,10 @@ typedef struct {
     size_t      n_copy;
     uint64_t    sum_d;     /* Σ a_d: every kind-1 (delegation) copy(src)
                             * row — a self-delegation included          */
-    uint64_t    power;     /* the entry's total_stake / DNAC_DECIMAL_UNIT */
+    uint64_t    power;     /* the entry's voting power from
+                            * nodus_witness_vset_powers (HF-6 5b): ruleset
+                            * 1 total_stake / DNAC_DECIMAL_UNIT, ruleset 2
+                            * the counted power (K2 share numerator)    */
 } v2ec_member_t;
 
 static void v2ec_member_release(v2ec_member_t *m) {
@@ -1139,8 +1143,10 @@ static uint64_t v2ec_source_copy(uint64_t boundary_height) {
  * wrong (design §7.1; threat G6: the chain stops at that boundary).
  * FAULT -2.
  *
- * `power` is the entry's own voting power, total_stake / DNAC_DECIMAL_UNIT
- * — the unit the ValidatorUpdate cometbft is told uses. `has_row` is
+ * `power` is NOT set here (HF-6 slice 5b): the settlement fills it from
+ * nodus_witness_vset_powers over the whole snapshot — the unit the
+ * ValidatorUpdate cometbft is told uses (raw / DNAC_DECIMAL_UNIT under
+ * ruleset 1, the counted power under ruleset 2). `has_row` is
  * whether a `validators` row exists at H (a member without one is NOT
  * paid in pass 2, its share stays in the pool). Every read is
  * three-valued: a fault is -2, never a value.
@@ -1247,7 +1253,6 @@ static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
         return -2;
     }
     m->sum_d = sum_d;
-    m->power = e->total_stake / (uint64_t)DNAC_DECIMAL_UNIT;
     return 0;
 }
 
@@ -1398,6 +1403,7 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
     const uint16_t n_mem = snap->active_count;
     const uint64_t src_epoch = v2ec_source_copy(boundary_height);
     v2ec_member_t *mem = NULL;
+    uint64_t *powers = NULL;              /* HF-6 5b: entry order        */
     uint64_t sum_power = 0, total = 0;
     /* HF-6 §7.5 bridge input: the committed chain id, read once — the
      * SAME source the generation-4 migration derived every validator_id
@@ -1406,7 +1412,8 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
     memset(chain32, 0, sizeof(chain32));
     if (n_mem > 0) {
         mem = calloc(n_mem, sizeof(*mem));
-        if (!mem) goto done;
+        powers = calloc(n_mem, sizeof(*powers));
+        if (!mem || !powers) goto done;
     }
     if (key_generation >= NODUS_RT_GEN_STORAGE) {
         if (nodus_witness_v2_chain_id(w, chain32) != 0) {
@@ -1430,6 +1437,22 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
         }
     }
 
+    /* ── HF-6 slice 5b: the governing set's voting power, computed ONCE
+     * from THE ONE helper (design rev 6 §5 "Ödül"; tokenomics K2 —
+     * Kurultay #14): each member's share is weighed by its COUNTED power
+     * over Σcounted (for a ruleset-1 snapshot counted == total_stake /
+     * DNAC_DECIMAL_UNIT, exactly as before); the validator's inner split
+     * (v2ec_pay_member: base by self_bond / total_stake, commission,
+     * a_d / Σa_d) stays on the uncapped amounts. A power that cannot be
+     * computed is a FAULT (-2), never a payout. ─────────────────────── */
+    if (n_mem > 0 && nodus_witness_vset_powers(w, snap, powers) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: snapshot(%llu)'s voting "
+                      "power cannot be computed — refusing",
+                      (unsigned long long)boundary_height,
+                      (unsigned long long)epoch_start);
+        goto done;
+    }
+
     /* ── PASS 1: load every member, CHECK it against copy(src) (the
      * consistency gate, v2ec_member_load — a mismatch is -2), and sum
      * the governing set's power. EVERY member is counted in Σpower,
@@ -1444,6 +1467,7 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
                              &snap->entries[i], key_generation, chain32,
                              &mem[i]) != 0)
             goto done;
+        mem[i].power = powers[i];
         if (dna_ck_add_u64(sum_power, mem[i].power, &sum_power) != 0)
             goto done;
     }
@@ -1514,6 +1538,7 @@ done:
         for (uint16_t i = 0; i < n_mem; i++) v2ec_member_release(&mem[i]);
         free(mem);
     }
+    free(powers);
     dna_vset_free(&snap);
     if (ret != 0) *accrued_out = 0;
     return ret;

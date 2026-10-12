@@ -615,13 +615,22 @@ typedef struct nodus_witness {
      * nodus_committee_member_t.self_stake as 0 while a cache MISS
      * reported the real bond. A cache hit must produce the same answer
      * as a cache miss (root CLAUDE.md, "Verify cache symmetry"), so the
-     * bond now has its own parallel array and both paths agree. */
+     * bond now has its own parallel array and both paths agree.
+     *
+     * HF-6 slice 5b: cached_committee_powers carries
+     * nodus_committee_member_t.power (+ 8 B per member, ≈ 334 KB total)
+     * for the same reason — filled on the miss path
+     * (nodus_witness_vset_powers over the served snapshot, or the raw
+     * total / DNAC_DECIMAL_UNIT on the below-generation-4 recompute),
+     * copied out on a hit, so HF-2 governance and the CLI approval
+     * selection weigh the same power whichever path served them. */
     uint64_t        cached_committee_epoch_start;
     int             cached_committee_count;
     uint8_t         cached_committee_pubkeys[DNAC_MAX_ACTIVE_VALIDATORS][DNAC_PUBKEY_SIZE];
     uint64_t        cached_committee_stakes[DNAC_MAX_ACTIVE_VALIDATORS];
     uint64_t        cached_committee_self_stakes[DNAC_MAX_ACTIVE_VALIDATORS];
     uint16_t        cached_committee_commission_bps[DNAC_MAX_ACTIVE_VALIDATORS];
+    uint64_t        cached_committee_powers[DNAC_MAX_ACTIVE_VALIDATORS];
 
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;

@@ -1366,12 +1366,21 @@ int nodus_cmt_app_init_chain(void *vctx,
          * by DNAC_COMMITTEE_SIZE (7), which is the genesis COUNT rule
          * (P.1), not a set-size ceiling. */
         bool used[NODUS_V2_ACTIVE_SET_MAX];
+        /* HF-6 5b: the committed entries' powers from THE ONE helper
+         * (design rev 6 §5 consumer list); snapshot(0) is ruleset 1, so
+         * this is total_stake / DNAC_DECIMAL_UNIT exactly as before. */
+        uint64_t whole_pw[DNA_MAX_ACTIVE_VALIDATORS];
 
         if ((size_t)snap->active_count > NODUS_V2_ACTIVE_SET_MAX) {
             QGP_LOG_ERROR(LOG_TAG, "InitChain: the committed snapshot holds "
                           "%u validators, above the version-3 active-set "
                           "ceiling %u", (unsigned)snap->active_count,
                           (unsigned)NODUS_V2_ACTIVE_SET_MAX);
+            goto done;
+        }
+        if (nodus_witness_vset_powers(ctx->w, snap, whole_pw) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "InitChain: the committed genesis "
+                          "snapshot's voting power cannot be computed");
             goto done;
         }
         memset(used, 0, sizeof(used));
@@ -1403,8 +1412,10 @@ int nodus_cmt_app_init_chain(void *vctx,
                  * nodus_witness_emission.h:42 = 100 000 000). Comparing
                  * against the RAW `total_stake` would refuse every real
                  * version-3 document by a factor of 10^8; `total_stake`
-                 * IS the self stake at genesis for the same reason. */
-                whole = snap->entries[j].total_stake / DNAC_DECIMAL_UNIT;
+                 * IS the self stake at genesis for the same reason.
+                 * HF-6 5b: the value comes from nodus_witness_vset_powers
+                 * (above) — identical for this ruleset-1 snapshot. */
+                whole = whole_pw[j];
                 if (v->power < 0 || (uint64_t)v->power != whole) {
                     QGP_LOG_ERROR(LOG_TAG, "InitChain: validator %zu's power "
                                   "%lld is not the committed stake %llu raw "
@@ -2489,6 +2500,11 @@ int nodus_cmt_app_finalize_block(void *vctx,
     dna_vset_snapshot_t             *vu_snap_new = NULL;
     dna_vset_snapshot_t             *vu_snap_old = NULL;
     cmt_pb_validator_update_t       *vu_scratch   = NULL;
+    /* HF-6 5b: each snapshot's voting power (nodus_witness_vset_powers),
+     * entry order. Stack, sized to the decoder's ceiling (2 × 1 KB) —
+     * nothing to free on any path. */
+    uint64_t                         vu_pw_new[DNA_MAX_ACTIVE_VALIDATORS];
+    uint64_t                         vu_pw_old[DNA_MAX_ACTIVE_VALIDATORS];
 
     if (resp) {
         memset(resp, 0, sizeof(*resp));
@@ -2868,6 +2884,27 @@ int nodus_cmt_app_finalize_block(void *vctx,
                 goto done;
             }
 
+            /* HF-6 5b (design rev 6 §5 "yeni VE eski güç"; plan
+             * tasks/hf6-slice5-plan.md §1 "Comet's update across the
+             * switch"): each side's powers come from THE ONE helper,
+             * each by its OWN snapshot's ruleset (ruleset 1 = total /
+             * DNAC_DECIMAL_UNIT, exactly as before; ruleset 2 = the
+             * counted power), computed once before the loops. Matching
+             * stays by pubkey. A power that cannot be computed is
+             * CMT_FAULT, like an unreadable snapshot. */
+            if (nodus_witness_vset_powers(ctx->w, vu_snap_new,
+                                          vu_pw_new) != 0 ||
+                nodus_witness_vset_powers(ctx->w, vu_snap_old,
+                                          vu_pw_old) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "FinalizeBlock: epoch boundary "
+                              "height %" PRIu64 " — validator-set voting "
+                              "power cannot be computed", H);
+                dna_vset_free(&vu_snap_new);
+                dna_vset_free(&vu_snap_old);
+                rc_out = CMT_FAULT;
+                goto done;
+            }
+
             /* Tight worst-case bound for THIS boundary: every new-side
              * entry could be an addition/power-change, every old-side
              * entry could be a removal. Both counts are individually
@@ -2892,7 +2929,7 @@ int nodus_cmt_app_finalize_block(void *vctx,
             for (jn = 0; jn < (size_t)vu_snap_new->active_count && !fault;
                  jn++) {
                 const dna_vset_entry_t *en = &vu_snap_new->entries[jn];
-                uint64_t power = en->total_stake / DNAC_DECIMAL_UNIT;
+                uint64_t power = vu_pw_new[jn];
                 uint64_t old_power = 0;
                 int      found = 0;
 
@@ -2901,8 +2938,7 @@ int nodus_cmt_app_finalize_block(void *vctx,
                     if (memcmp(en->pubkey, vu_snap_old->entries[jo].pubkey,
                                DNA_VSET_PUBKEY_LEN) == 0) {
                         found = 1;
-                        old_power = vu_snap_old->entries[jo].total_stake /
-                                    DNAC_DECIMAL_UNIT;
+                        old_power = vu_pw_old[jo];
                         break;
                     }
                 }

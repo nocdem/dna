@@ -276,6 +276,78 @@ int nodus_witness_vset_preview_next(nodus_witness_t *w,
 int nodus_witness_vset_commit_genesis(nodus_witness_t *w,
                                       uint64_t block_height);
 
+/* ════════════════════════════════════════════════════════════════════
+ * HF-6 slice 5b — THE ONE voting-power derivation of a snapshot.
+ *
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §5 ("Güç tavanı — tek fonksiyon"; "Tüketiciler (hepsi bu fonksiyonu
+ * çağırır)"), decision docs/plans/decisions/2026-10-08-kurultay-14-hf6-
+ * summary.md K1 / K2 / K5, plan tasks/hf6-slice5-plan.md §2 "5b". Every
+ * consumer of a snapshot's voting power — InitChain, the Comet boundary
+ * diff (both sides), Rule N's weight floor, the reward distribution, the
+ * storage report weight, the committee cache (and through it HF-2
+ * governance and the CLI approval selection) — calls
+ * nodus_witness_vset_powers and nothing else.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/**
+ * POWER_CAP_BPS in force for the snapshot whose EPOCH START is
+ * `epoch_start` — the key the committee target is read at
+ * (nodus_witness_committee.c committee_target_for_epoch), never the
+ * queried height, so every consumer of one snapshot reads one ratio
+ * (plan §1 (iii)).
+ *
+ * Today: the compiled DNAC_HF6_POWER_CAP_BPS_DEFAULT (param 20 does not
+ * exist yet). Slice 8 replaces the body — and nothing else — with the
+ * fail-closed chain-config read of param 20 at `epoch_start`
+ * (nodus_chain_config_get_u64 with the default as the no-row answer; a
+ * read fault is -1, never the default — the committee_target_for_epoch
+ * pattern).
+ *
+ * @param ratio_out required; written only on 0.
+ * @return 0 / -1 (bad args; from slice 8 also an unreadable param).
+ */
+int nodus_witness_power_cap_bps_for_epoch(nodus_witness_t *w,
+                                          uint64_t epoch_start,
+                                          uint32_t *ratio_out);
+
+/**
+ * The voting power of every entry of `snap`, in the snapshot's own entry
+ * order, by the snapshot's OWN ruleset (design §5: "v1 snapshot →
+ * tavansız; v2 → tavanlı"):
+ *
+ *   DNA_VSET_RULESET_TOPN_V1 → out[i] = total_stake_i / DNAC_DECIMAL_UNIT
+ *     — the derivation every consumer used before slice 5, byte for byte:
+ *     a zero power is allowed and returned exactly as before (each caller
+ *     keeps its own zero rule, e.g. the Comet diff's power-0 fault).
+ *   DNA_VSET_RULESET_TOPN_V2 → p_i = total_stake_i / DNAC_DECIMAL_UNIT;
+ *     any p_i == 0 is -1 (a v2 entry below one whole coin is a broken
+ *     invariant — every bond is >= STAKE_MIN); the ratio is
+ *     nodus_witness_power_cap_bps_for_epoch(w, snap->epoch); out =
+ *     dna_power_cap_counted(p, validator_id, n, ratio) (shared/dnac/
+ *     power_cap.h — integer only, total walk order p DESC / validator_id
+ *     ASC, out in the caller's order); its -1 is -1.
+ *   any other ruleset → -1.
+ *
+ * The snapshot itself is never modified; `entry.total_stake` stays the
+ * uncapped amount (design §5 "Ödül": the inner split reads it raw).
+ *
+ * EVERY CALLER TREATS -1 AS A NODE FAULT (the block / boundary / lookup
+ * fails closed): a power that cannot be computed is never a value, and
+ * substituting the raw power for a capped one would make this node vote,
+ * pay and weigh on a different set than its peers.
+ *
+ * @param out  receives snap->active_count values (written only on 0;
+ *             a caller may size it DNA_MAX_ACTIVE_VALIDATORS — larger
+ *             snapshots are refused).
+ * @return 0 / -1 (NULL argument, active_count > DNA_MAX_ACTIVE_VALIDATORS,
+ *         unknown ruleset, a ruleset-2 zero power, the ratio unreadable,
+ *         the cap refusing its input, allocation).
+ */
+int nodus_witness_vset_powers(nodus_witness_t *w,
+                              const dna_vset_snapshot_t *snap,
+                              uint64_t out[]);
+
 #ifdef __cplusplus
 }
 #endif
