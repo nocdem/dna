@@ -2284,15 +2284,15 @@ endif()
 # op 10 refused at ADMISSION under generation 3; a STAKE then a ROTATE
 # applied (pending key + F, reservation role 2); a second ROTATE and
 # ROTATEs to reserved keys refused with the ledger byte-identical.
-# 6c (case C, twin chains run to 3E; slice 6d's freeze/swap outputs
-# written directly): nodus_validator_v2_rotate_apply's exact-row checks
-# and the two role-1 rows after a swap (khan A2); at 2E Rule N judges a
-# swapped row against the ruleset-1 duty snapshot by validator_id on the
-# OLD key's attendance (counter 0 / +1), the flips activate an unswapped
-# row seated under its pending key, a RETIRING row seated under its
-# pending key is deferred; at 3E the distribution pays entries carrying
-# the rows' pending keys and faults on a third key, the graduate's
-# pending key and both reservations are released.
+# 6c (case C, twin chains run to 4E; real STAKE / ROTATE / UNSTAKE
+# envelopes, the one plant — 6d's re-keyed S(3E) — only before a boundary
+# block): nodus_validator_v2_rotate_apply's exact-row checks and the two
+# role-1 rows after a swap (khan A2, rolled back); at 3E the flips activate
+# unswapped rows seated under their pending keys and a RETIRING row so
+# seated is deferred; at 4E the distribution pays entries carrying the
+# rows' pending keys and faults on a third key, the graduate's pending key
+# and both reservations are released, Rule N judges duty by validator_id
+# on the entry key's attendance. Swapped-row Rule N cases: deferred to 6d.
 # Generation 4 is compiled only with the EVM runtime. No environment.
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_rotate)

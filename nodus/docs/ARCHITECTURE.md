@@ -7591,16 +7591,20 @@ so the econ check reduces to equality and the graduation's zeroing writes the va
 Cost: the ruleset-1 bridge derives one SHA3-512 id per (candidate, entry) pair — at most 256 × 128 —
 only at the generation-4 boundaries whose snapshot is still ruleset 1 (the first two).
 
-**Tests** (written, NOT run by the author) — `test_hf6_rotate` case C, twin chains to 3E with slice
-6d's outputs written directly (a re-keyed S(2E), the swap one block before boundary 2E): rotate_apply's
-exact-row checks (autocommit, wrong old key, new == old, no / another pending key, missing role-2 row,
-replay) and the two role-1 rows after a swap; at 2E Rule N on the ruleset-1 duty S(E) — rotated and
-signed every block → counter 0, rotated and signed nothing → 1 (not a reset); the flips activate a row
-seated under its pending key; a RETIRING row seated under its pending key is deferred with both
-reservations kept; at 3E a third key in S(2E) faults the boundary (on one twin, rolled back), the real
-boundary pays entries carrying the rows' pending keys, the graduate's pending key and both reservations
-are released, Rule N reads the new keys' attendance. Not reachable before 6d: Rule N against a
-ruleset-2 S(F) after a swap (a pre-swapped row would fault the distribution at U).
+**Tests** (written, NOT run by the author) — `test_hf6_rotate` case C, twin chains to 4E. Real STAKE,
+ROTATE and UNSTAKE envelopes on three generation-4 STAKEd rows (a genesis seat is Foundation-owned and
+cannot be signed for in a test); the ONE direct write is 6d's freeze stand-in (S(3E) re-keyed to the
+pending keys), made only immediately before a boundary block — a fired boundary declares SYSTEM touched
+(`nodus_witness_v2_apply.c` phase 6e, `dsys->touched = 1`), an ordinary block after a direct write is
+refused by phase 8's untouched-domain guard. rotate_apply's exact-row checks (autocommit, wrong old key,
+new == old, no / another pending key, missing role-2 row, replay) and the two role-1 rows after a swap,
+inside a rolled-back transaction; at 3E the flips activate unswapped rows seated under their pending keys
+and a RETIRING row so seated is deferred with both reservations kept; at 4E a third key in S(3E) faults
+the boundary (on one twin, rolled back), the real boundary pays entries carrying the rows' pending keys,
+the graduate's pending key and both reservations are released, and Rule N finds the duty by validator_id
+(counter +1 where a pubkey match would reset) and reads the entry key's attendance. Deferred to 6d (not
+reachable before the swap step): Rule N on a swapped row against its S(F), ruleset 1 (the migrated-id
+bridge) or ruleset 2.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
