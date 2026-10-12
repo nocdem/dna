@@ -1,6 +1,7 @@
 import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 import { AUTO_LOCK_KEY } from '../src/auto-lock.js';
+import { BALANCE_REFRESH_KEY } from '../src/balance-refresh.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -73,6 +74,10 @@ async function decodeQr() {
   return jsQR(Uint8ClampedArray.from(image.data), image.width, image.height)?.data;
 }
 const qrEmpty = () => page.locator('#receive-qr').evaluate(node => node.childElementCount === 0);
+// The Refresh buttons are hidden while balances update automatically
+// (0.1.108); pressed through the page once enabled (a read in flight disables
+// them), as a click on the visible button waited for before.
+const pressRefresh = id => page.waitForFunction(id => { const b = document.getElementById(id); if (b.disabled) return false; b.click(); return true; }, id);
 try {
   await page.goto(url);
   await page.waitForFunction(() => typeof document.querySelector('#restore').onclick === 'function');
@@ -100,6 +105,14 @@ try {
   assert.equal(await page.locator('#session-timeout').innerText(), 'Auto-lock off');
   await page.locator('#auto-lock-minutes').evaluate(select => { select.value = '15'; select.dispatchEvent(new Event('change')); });
   await page.evaluate(key => localStorage.removeItem(key), AUTO_LOCK_KEY);   // the choice was kept; this test expects no storage later
+  // 0.1.108 (operator: "refresh networks … Ona da gerek yok. Otomatik refresh
+  // ediyoruz zaten"): both Refresh buttons are hidden while balances update
+  // automatically (the default) and come back when that is turned Off.
+  for (const id of ['portfolio-refresh', 'refresh']) assert.equal(await page.locator(`#${id}`).isVisible(), false, `${id} hidden`);
+  await page.locator('#balance-refresh-minutes').evaluate(select => { select.value = '0'; select.dispatchEvent(new Event('change')); });
+  for (const id of ['portfolio-refresh', 'refresh']) assert.equal(await page.locator(`#${id}`).isHidden(), false, `${id} back with automatic updates Off`);
+  await page.locator('#balance-refresh-minutes').evaluate(select => { select.value = '5'; select.dispatchEvent(new Event('change')); });
+  await page.evaluate(key => localStorage.removeItem(key), BALANCE_REFRESH_KEY);
   // 0.1.102 (operator: "sol tarafına yapışık … ortalayalım"): centred in its panel
   const qrGap = await page.locator('#receive-qr svg').evaluate(svg => { const s = svg.getBoundingClientRect(), p = svg.parentElement.getBoundingClientRect(); return [s.left - p.left, p.right - s.right]; });
   assert.ok(Math.abs(qrGap[0] - qrGap[1]) <= 2, `QR centred (left ${qrGap[0]}, right ${qrGap[1]})`);
@@ -178,7 +191,7 @@ try {
   await nodusGroup.locator('.holding-select').click();
   assert.equal(await page.locator('#chain').inputValue(), 'nodus');
   await nodusGroup.locator('summary').click(); await solGroup.locator('summary').click();
-  assert.match(await page.locator('#portfolio-scope').innerText(), /NODUS is shown, but its balance is not shown yet/);
+  assert.equal(await page.locator('#portfolio-scope').count(), 0, 'the scope paragraph is gone (0.1.108)');
   // Device & settings is its own page: it replaces the wallet view, its title
   // takes focus and the URL names it; Back returns to the wallet view where
   // it was, with focus on the link that opened the page; the browser's Back
@@ -219,8 +232,14 @@ try {
   await walletView(); await page.evaluate(() => history.replaceState(null, '', location.pathname));
   // Both shortcuts lead to the same Send / Receive panel: send block below, receive block on top.
   assert.equal(await page.locator('.wallet-navigation a[href="#send-form"]').innerText(), 'Send / Receive');
+  // 0.1.108: Send follows the chosen network — disabled (with its reason) on
+  // NODUS while it is receive-only here; on Ethereum it leads to the send block.
+  assert.equal(await page.locator('#quick-send').isDisabled(), true);
+  assert.match(await page.locator('#quick-send').getAttribute('title'), /Sending NODUS/);
+  await page.locator('#chain').selectOption('ethereum');
   await page.locator('#quick-send').click();
   assert.equal(await page.locator('#send-block-title').evaluate(el => el === document.activeElement), true);
+  await page.locator('#chain').selectOption('nodus');
   await page.locator('#quick-receive').click();
   assert.equal(await page.locator('#receive-title').evaluate(el => el === document.activeElement), true);
   // 0.1.107 (operator: "swap getir. Ama swap disabled yap"): shown next to
@@ -314,7 +333,7 @@ try {
   await page.selectOption('#rpc-choice', '0');
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
   await walletView();
-  await page.locator('#refresh').click(); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10 ETH')); // 0.1.28 display form (was '10.0')
+  await pressRefresh('refresh'); await page.waitForFunction(() => document.querySelector('#balances').textContent.includes('10 ETH')); // 0.1.28 display form (was '10.0')
   await page.waitForFunction(() => { const strong = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value strong'); return strong && strong.textContent.includes('CPUNK'); });
   assert.equal(await page.locator('.asset-group[data-symbol="CPUNK"] .asset-value small').innerText(), '—');
   await page.locator('#recipient').fill('0x0000000000000000000000000000000000000001'); await page.locator('#amount').fill('0.01');
@@ -355,7 +374,7 @@ try {
   // with the amount read earlier, 0.1.41 — the app's stale-while-revalidate
   // wallet cache), never an inferred zero, and never blocks the rest of the
   // (unrelated) portfolio.
-  cellframeFail = true; await page.locator('#refresh').click();
+  cellframeFail = true; await pressRefresh('refresh');
   await page.waitForFunction(() => { const small = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value small'); return small && small.textContent.startsWith('Read failed · last read'); });
   assert.notEqual(await page.locator('.asset-group[data-symbol="CPUNK"] .holding-value strong').textContent(), '0 CPUNK');
   cellframeFail = false;
@@ -393,7 +412,7 @@ try {
   // (localStorage was empty above); once saved they are, encrypted (decision
   // 2026-10-02-device-cache-only-when-saved).
   await walletView();
-  await page.locator('#portfolio-refresh').click();
+  await pressRefresh('portfolio-refresh');
   await page.waitForFunction(() => !document.querySelector('#portfolio-refresh').disabled);
   await page.waitForFunction(() => localStorage.getItem('nodus.balances.v1') !== null);
   const balancesText = await page.evaluate(() => localStorage.getItem('nodus.balances.v1'));

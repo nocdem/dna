@@ -554,6 +554,9 @@ const portfolio = createPortfolio({
     if (action !== 'earn') navigateWalletPage(null);
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
     if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
+    // 'choose' (a network badge, 0.1.108): only the network changes — the
+    // TRANSFER NETWORK box below says it — nothing scrolls, nothing opens.
+    if (action === 'choose') return;
     $(action === 'send' ? 'quick-send' : action === 'earn' ? 'quick-earn' : 'quick-receive').click();
   },
   onKept: entries => persistBalances(entries),
@@ -794,27 +797,10 @@ function followSubmission() {
 for (const { network, asset } of leadingNetworks) $('chain').add(new Option(network.name, asset.chain));
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
 for (const { network, asset } of extraNetworks) $('chain').add(new Option(network.name, asset.chain));
-// The portfolio scope line. Its NODUS sentence follows the actual state: the
-// balance is read only while the send module is ready (setNodusReady), and
-// even then it is a testnet balance, never priced into the total. The default
-// (no CPUNK, no Ixios) is index.html's own text.
-const NODUS_SCOPE = {
-  false: 'NODUS is shown, but its balance is not shown yet.',
-  true: 'The NODUS balance is shown (Nodus testnet), but it does not count toward the estimated total.'
-};
-let portfolioScope = nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana and TRON. ${nodus} Only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.`;
-if (CPUNK_ENABLED) {
-  // With the CPUNK module enabled its balance IS shown here, just never
-  // priced into the total.
-  portfolioScope = nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. ${nodus} The CPUNK balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.`;
-}
-if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
-  portfolioScope = CPUNK_ENABLED
-    ? nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. ${nodus} CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.`
-    : nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. ${nodus} The IXIOS balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.`;
-}
-function showPortfolioScope(nodusReady) { $('portfolio-scope').textContent = portfolioScope(NODUS_SCOPE[nodusReady === true]); }
-showPortfolioScope(false);
+// (The portfolio scope paragraph — which networks are listed and which count
+// toward the total — was removed in 0.1.108, operator: "bir dolu bilgi
+// yazıyor … Gerek yok onlar artık … insanlara bastıkları zaman o network'te
+// ne yaptıklarını görüyorlar".)
 function expireIdle() {
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
   return false;
@@ -884,7 +870,6 @@ function setNodusReady(ready, { reselect = true } = {}) {
   if (!ready && wallet) wallet.nodusClient = undefined;
   if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); hideStaking(); hideName(); }
   portfolio.setNetwork(NODUS_ASSET.chain, network);
-  showPortfolioScope(ready);
   if (reselect && wallet && $('chain').value === NODUS_ASSET.chain) selectChain();
 }
 // Lock order lives in the client (src/nodus/client.js lock): stop the queue ->
@@ -1743,6 +1728,18 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
   }).catch(() => { if (wallet && !wallet.locked) status.textContent = unavailable; });
 }
 function showIxiosAddress() { void doShowIxiosAddress?.(); }
+// The TRANSFER NETWORK box's buttons follow what the chosen network can do
+// (0.1.108, operator: "Cellframe'e geldi. Send kapalı. Sadece receive var …
+// Swap yok … Earn yok … Ethereum'a geldi … send receive açık"): Send is
+// disabled on a receive-only network (its reason as the title); Earn and Swap
+// exist only for Nodus (Earn disabled until staking can be read,
+// setEarnAvailable; Swap not yet usable).
+function showTransferActions(chain, c) {
+  $('quick-send').disabled = !!c.receiveOnly;
+  $('quick-send').title = c.receiveOnly ? (c.sendNote || DEFAULT_SEND_DISABLED_NOTE) : '';
+  $('quick-earn').hidden = chain !== NODUS_ASSET.chain;
+  $('quick-swap').hidden = chain !== NODUS_ASSET.chain;
+}
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
@@ -1762,6 +1759,7 @@ function selectChain() {
   $('recipient').value = ''; $('amount').value = '';
   $('send-fields').hidden = !!c.receiveOnly; $('send-disabled-note').hidden = !c.receiveOnly;
   $('send-disabled-note').textContent = c.sendNote || DEFAULT_SEND_DISABLED_NOTE;
+  showTransferActions(chain, c);
   for (const [key, node] of Object.entries(addressStatus)) node.hidden = chain !== key;
   hideSaveRecipient(); renderRecipientBook();
   showNameBlock();

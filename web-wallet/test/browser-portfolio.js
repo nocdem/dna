@@ -69,7 +69,12 @@ try {
     await page.locator('#wallet-open').waitFor({ state: 'visible' });
   }
   async function done() { await page.waitForFunction(() => !document.querySelector('#portfolio-refresh').disabled && document.querySelector('#portfolio-updated').textContent.startsWith('Last refresh:')); }
-  async function refresh() { await page.locator('#portfolio-refresh').click(); await done(); }
+  // The Refresh button is hidden while balances update automatically (0.1.108,
+  // the default); the test still drives reads through its handler.
+  // Pressed once it is enabled (a read in flight disables it), as a click on
+  // the visible button waited for before.
+  const pressRefresh = () => page.waitForFunction(() => { const b = document.getElementById('portfolio-refresh'); if (b.disabled) return false; b.click(); return true; });
+  async function refresh() { await pressRefresh(); await done(); }
   // Cellframe's address (and so its balance read) arrives asynchronously, after
   // the other four networks' automatic refresh has already settled; wait for
   // its row to leave the "Reading…" placeholder before asserting on it.
@@ -191,7 +196,7 @@ try {
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   priceMode = 'late'; gate = Promise.withResolvers(); requested = Promise.withResolvers(); completed = Promise.withResolvers();
   ethHold = Promise.withResolvers(); ethHeld = Promise.withResolvers();
-  await page.locator('#portfolio-refresh').click(); await requested.promise; await ethHeld.promise;
+  await pressRefresh(); await requested.promise; await ethHeld.promise;
   // 0.1.102 (operator: "refresh ettiği anda hepsi boş oluyor"): while Refresh
   // reads, what was shown stays — the amount and the total — and the
   // network badges say "Reading".
@@ -205,6 +210,13 @@ try {
   await usdt.locator('summary').focus(); gate.resolve(); await completed.promise; await done();
   // 0.1.106 (operator: "tam ortalamak … sağa dayalı"): every badge's light is
   // its last item, right of the name, centred top to bottom — wide and narrow.
+  // 0.1.108 (operator: "yeşili kaldıralım. Sadece sarı ve kırmızı"): a
+  // current or not-yet-read network shows no light; amber and red do.
+  const lightShown = await page.locator('#portfolio-networks .network-health').evaluateAll(badges => badges.map(b => [b.dataset.health, getComputedStyle(b.lastElementChild).display !== 'none']));
+  assert.ok(lightShown.length > 0 && lightShown.every(([health, shown]) => shown === (health === 'old' || health === 'failed')), JSON.stringify(lightShown));
+  // The position is measured with every badge shown as amber for the moment
+  // (a layout check; the next redraw restores the real states).
+  const realHealth = await page.locator('#portfolio-networks .network-health').evaluateAll(badges => badges.map(b => { const h = b.dataset.health; b.dataset.health = 'old'; return h; }));
   for (const width of [1440, 360]) {
     await page.setViewportSize({ width, height: 1050 });
     const marks = await page.locator('#portfolio-networks .network-health').evaluateAll(badges => badges.map(b => {
@@ -216,6 +228,7 @@ try {
     assert.ok(marks.length > 0 && marks.every(m => m.last && m.right && m.edge && m.centred), `badge lights at ${width}px: ${JSON.stringify(marks)}`);
     if (process.env.BADGE_SHOT_DIR) await page.locator('#portfolio-networks').screenshot({ path: `${process.env.BADGE_SHOT_DIR}/badges-${width}.png` });
   }
+  await page.locator('#portfolio-networks .network-health').evaluateAll((badges, real) => badges.forEach((b, i) => { b.dataset.health = real[i]; }), realHealth);
   await page.setViewportSize({ width: 1440, height: 1050 });
   assert.equal(await usdt.locator('summary').evaluate(node => document.activeElement === node), true);
   // 0.1.107 (operator: "clickable yap … Ethereum'a bastı … send receive …
@@ -231,6 +244,37 @@ try {
   assert.equal(await page.locator('#chain').inputValue(), 'solana');
   assert.equal(await badgeOf('Solana').getAttribute('aria-pressed'), 'true');
   assert.equal(await badgeOf('Ethereum').getAttribute('aria-pressed'), 'false');
+  // 0.1.108 (operator: "QR kodunu oraya gönderiyorsun … istemiyorum … network
+  // nodus yazıyor. Onun değişmesini istiyorum … Cellframe'e geldi. Send kapalı.
+  // Sadece receive … Swap yok … Earn yok … Ethereum … send receive açık"):
+  // a badge changes only the TRANSFER NETWORK box — nothing scrolls, even
+  // on a narrow screen — and its buttons follow what the network can do.
+  const box = page.locator('.transfer-actions');
+  const actions = () => page.evaluate(() => Object.fromEntries(['quick-send', 'quick-receive', 'quick-earn', 'quick-swap'].map(id => {
+    const b = document.getElementById(id); return [id.slice(6), b.hidden || !b.offsetParent ? 'none' : b.disabled ? 'off' : 'on'];
+  })));
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const before = await page.evaluate(() => window.scrollY);
+    await badgeOf('Ethereum').click();
+    assert.equal(await page.evaluate(() => window.scrollY), before, `nothing scrolls at ${width}px`);
+    assert.equal(await box.locator('.selected-network-name').innerText(), 'Ethereum');
+    assert.deepEqual(await actions(), { send: 'on', receive: 'on', earn: 'none', swap: 'none' }, 'Ethereum: Send and Receive');
+    if (process.env.SHOT_DIR && width === 1440) await box.screenshot({ path: `${process.env.SHOT_DIR}/box-ethereum.png` });
+    await badgeOf('Cellframe').click();
+    assert.equal(await box.locator('.selected-network-name').innerText(), 'Cellframe');
+    assert.deepEqual(await actions(), { send: 'off', receive: 'on', earn: 'none', swap: 'none' }, 'Cellframe: receive only');
+    assert.match(await page.locator('#quick-send').getAttribute('title'), /./, 'a disabled Send says why');
+    if (process.env.SHOT_DIR && width === 1440) await box.screenshot({ path: `${process.env.SHOT_DIR}/box-cellframe.png` });
+    await badgeOf('Nodus').click();
+    assert.equal(await box.locator('.selected-network-name').innerText(), 'Nodus');
+    const nodus = await actions();
+    assert.equal(nodus.earn !== 'none' && nodus.swap !== 'none', true, `Nodus: Earn and Swap there (${JSON.stringify(nodus)})`);
+    assert.equal(nodus.swap, 'off', 'Swap not yet usable');
+    if (process.env.SHOT_DIR && width === 1440) await box.screenshot({ path: `${process.env.SHOT_DIR}/box-nodus.png` });
+  }
+  await page.setViewportSize({ width: 1440, height: 1050 });
   priceMode = 'valid'; await refresh();
   // A balance counts until two minutes past its next automatic read (0.1.93:
   // every 5 minutes by default, src/balance-refresh.js) — 7 minutes, not the
@@ -242,7 +286,7 @@ try {
   assert.match(await page.locator('#portfolio-status').innerText(), /14 balances/);
   await page.clock.setFixedTime(new Date());
   priceMode = 'late'; gate = Promise.withResolvers(); requested = Promise.withResolvers(); completed = Promise.withResolvers();
-  await page.locator('#portfolio-refresh').click(); await requested.promise;
+  await pressRefresh(); await requested.promise;
   await page.locator('#lock').click(); gate.resolve(); await completed.promise;
   assert.equal(await page.locator('#portfolio-total').textContent(), '—');
   assert.equal(await page.locator('#wallet-open').isVisible(), false);

@@ -243,7 +243,7 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .transfer-buttons button span { float: none; font-size: 18px; margin-right: 10px; line-height: 1; }
 /* Swap (0.1.107, operator: "swap getir. Ama swap disabled yap şu anda"):
    shown, not yet usable — "Soon" says why, the cursor says it cannot be pressed. */
-#quick-swap:disabled, #quick-earn:disabled { cursor: not-allowed; }
+#quick-swap:disabled, #quick-earn:disabled, #quick-send:disabled { cursor: not-allowed; }
 .transfer-buttons .soon { margin-left: 8px; padding: 1px 7px; border: 1px solid currentColor; border-radius: 999px; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; vertical-align: middle; }
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 22px; }
 .dashboard-panel { min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #1c2218; }
@@ -425,7 +425,6 @@ dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 #portfolio-status { font-size: 12px; line-height: 1.7; min-height: 40px; margin: 12px 0 20px; color: #c4d1b5; }
 .portfolio-card > button { padding: 11px 16px; font-size: 12px; }
 .portfolio-card > button span { margin-left: 20px; }
-.portfolio-scope { font-size: 10px; line-height: 1.8; margin: 18px 0 0; color: #aebba1; }
 .portfolio-networks { display: flex; flex-wrap: wrap; gap: 12px 20px; padding: 18px 0; border-bottom: 1px solid var(--line); }
 .network-health { display: inline-flex; gap: 7px; align-items: center; font-size: 10px; color: #b4bea9; }
 .network-health .coin-icon { width: 18px; height: 18px; }
@@ -433,7 +432,9 @@ dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 /* At the badge's right end, centred top to bottom even where the badge aligns its text to the top (narrow screens, below). */
 .health-light { flex: none; align-self: center; width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: #6b7064; }
 .network-health > span:not(.health-light) { margin-right: 2px; }
-.network-health[data-health="current"] .health-light { background: #6fd36a; box-shadow: 0 0 6px #6fd36a99; }
+/* Only a problem shows (0.1.108, operator: "yeşili kaldıralım. Sadece sarı ve kırmızı durumlar kalsın"):
+   a current or not-yet-read network has no light; amber = shown as last read, red = the last read failed. */
+.network-health:not([data-health="old"]):not([data-health="failed"]) .health-light { display: none; }
 .network-health[data-health="old"] .health-light { background: #f2c896; box-shadow: 0 0 6px #f2c89699; }
 .network-health[data-health="failed"] .health-light { background: #f06c5c; box-shadow: 0 0 6px #f06c5c99; }
 .network-health[data-reading="true"] .health-light { animation: health-pulse 1.2s ease-in-out infinite; }
@@ -529,7 +530,6 @@ body:has(#wallet-open:not([hidden])) .site-check > p:last-child { display: none;
 .portfolio-card > #portfolio-refresh { display: inline-flex; align-items: center; gap: 10px; min-height: 40px; padding: 9px 14px; border: 1px solid #d5f99845; background: #d5f99810; color: var(--lime); box-shadow: none; font-weight: 500; }
 .portfolio-card > #portfolio-refresh:hover { background: #d5f9981c; filter: none; }
 .portfolio-card > #portfolio-refresh span { float: none; margin: 0; }
-.portfolio-scope { padding-top: 14px; border-top: 1px solid #d5f9981c; }
 .portfolio-networks { gap: 8px; padding: 14px 0 0; border-bottom: 0; }
 .network-health { padding: 5px 10px 5px 6px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); line-height: 1.4; }
 /* A button since 0.1.107 (it chooses the network for Send / Receive): the

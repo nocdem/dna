@@ -150,9 +150,8 @@ try {
   // Network selector: Nodus first, Ixios after the sendable chains and Cellframe.
   assert.deepEqual(await page.locator('#chain option').evaluateAll(options => options.map(o => o.value)), ['nodus', 'ethereum', 'bsc', 'solana', 'tron', 'cellframe', 'ixios']);
   assert.equal(await page.locator('#chain option[value="ixios"]').textContent(), 'Ixios');
-  // Scope text: IXIOS mentioned exactly as CPUNK is (balance shown, not in the
-  // total); NODUS is shown with no balance yet.
-  assert.equal(await page.locator('#portfolio-scope').innerText(), 'Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. NODUS is shown, but its balance is not shown yet. CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.');
+  // The scope paragraph is gone (0.1.108, operator: "Gerek yok onlar artık").
+  assert.equal(await page.locator('#portfolio-scope').count(), 0);
   // Portfolio: filter, health badge, and an IXIOS row read like the CPUNK row.
   assert.equal(await page.locator('.network-filter[data-chain="ixios"]').innerText(), 'Ixios');
   const badge = page.locator('#portfolio-networks .network-health', { hasText: 'Ixios' });
@@ -228,7 +227,9 @@ try {
   // stale-while-revalidate wallet cache) — never an amount from the wrong
   // network, never a zero.
   ixiosCalls.length = 0; ixiosGenesis = ETHEREUM_GENESIS;
-  await page.locator('#portfolio-refresh').click(); await portfolioDone(page);
+  // Refresh is hidden while balances update automatically (0.1.108): it is
+  // pressed through the page once enabled (a read in flight disables it).
+  await page.waitForFunction(() => { const b = document.getElementById('portfolio-refresh'); if (b.disabled) return false; b.click(); return true; }); await portfolioDone(page);
   assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }], 'no eth_getBalance after a wrong genesis');
   assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
   assert.match(await row.locator('.holding-value small').innerText(), /^Read failed · last read /);
@@ -238,7 +239,7 @@ try {
   assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
   // The right network again: the balance comes back.
   ixiosCalls.length = 0; ixiosGenesis = IXIOS_GENESIS;
-  await page.locator('#portfolio-refresh').click(); await portfolioDone(page);
+  await page.waitForFunction(() => { const b = document.getElementById('portfolio-refresh'); if (b.disabled) return false; b.click(); return true; }); await portfolioDone(page);
   assert.deepEqual(ixiosCalls.map(call => call.method), ['eth_getBlockByNumber', 'eth_getBalance']);
   assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
   assert.equal(await badge.getAttribute('title'), 'Ixios · Balances read');
@@ -267,7 +268,7 @@ try {
   assert.equal(await off.page.locator('.asset-group[data-symbol="IXIOS"]').count(), 0);
   assert.equal(await off.page.locator('.network-filter[data-chain="ixios"]').count(), 0);
   assert.doesNotMatch(await off.page.locator('#portfolio-networks').innerText(), /ixios/i);
-  assert.doesNotMatch(await off.page.locator('#portfolio-scope').innerText(), /ixios/i);
+  assert.doesNotMatch(await off.page.locator('.portfolio-card').innerText(), /ixios/i);
   assert.equal(await off.page.locator('#ixios-address-status').count(), 0);
   assert.doesNotMatch(await off.page.locator('body').innerText(), /ixios/i);
   assert.ok(off.wasm.every(path => !/mldsa87-sign/.test(path)));

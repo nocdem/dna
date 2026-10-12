@@ -131,15 +131,17 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       // accessible name.
       const reading = status === 'Reading';
       const health = rows.some(r => r.state === 'error') ? 'failed' : ready && rows.length && !c.balanceUnavailable ? 'current' : lastRead.length ? 'old' : 'none';
-      // A button (0.1.107, operator: "clickable yap … Ethereum'a bastı …
-      // send receive … network seçebilirsin"): it chooses this network for
-      // the Send / Receive panel, as a click on a holding row does; the
-      // chosen network's badge is marked (aria-pressed, setSelected).
+      // A button (0.1.107, operator: "clickable yap … network
+      // seçebilirsin"): it chooses this network — the TRANSFER NETWORK box
+      // below names it and offers its actions — without scrolling or opening
+      // anything (0.1.108, 'choose': "QR kodunu oraya gönderiyorsun … ben
+      // oraya göndermeni istemiyorum"); the chosen network's badge is marked
+      // (aria-pressed, setSelected).
       const badge = el('button', 'network-health'); badge.type = 'button'; badge.dataset.chain = chain;
       badge.dataset.health = health; badge.dataset.reading = String(reading);
       badge.title = `${c.name} · ${status}`; badge.setAttribute('aria-label', `${badge.title}. Use ${c.name} for Send / Receive`);
       badge.setAttribute('aria-pressed', String(chain === selected));
-      badge.onclick = () => selectAsset(chain, c.symbol, 'select');
+      badge.onclick = () => selectAsset(chain, c.symbol, 'choose');
       // The light at the right end, centred top to bottom (0.1.106, operator:
       // "tam ortalamak … sağa dayalı olması lazım").
       badge.append(networkIcon(c), el('span', '', c.name), el('span', 'health-light')); return badge;
@@ -317,6 +319,11 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     autoMinutes = Number.isSafeInteger(minutes) && minutes > 0 ? minutes : 0;
     clearInterval(autoTimer); autoTimer = undefined;
     if (autoMinutes) autoTimer = setInterval(autoTick, 30000);
+    // The Refresh buttons only when balances are not read automatically
+    // (0.1.108, operator: "refresh networks var. Ona da gerek yok. Otomatik
+    // refresh ediyoruz zaten"); with automatic updates Off they are the only
+    // way to read again, so they come back.
+    for (const id of ['portfolio-refresh', 'refresh']) $(id).hidden = autoMinutes > 0;
     if (doneAt && addresses && !jobs.size && !priceJob) $('portfolio-updated').textContent = updatedText();
     render();
   }
