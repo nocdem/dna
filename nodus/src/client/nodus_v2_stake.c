@@ -17,15 +17,19 @@
  * (RTN_SYS_UNSTAKE_CALL_LEN) with a fee-only funding leg (rtn_sys_call_flow:
  * lock 0, release 0).
  * STORAGE_REGISTER (op 7) and STORAGE_EXIT (op 8), storage reward v1
- * package B2b-CLI: REGISTER = the STAKE class (call node_pk ‖ bond ‖
- * payee_fp, RTN_SYS_STREG_CALL_LEN; lock = bond), EXIT = the UNSTAKE class
- * (call = the node key, RTN_SYS_STEXIT_CALL_LEN; fee-only funding).
+ * package B2b-CLI: REGISTER = the STAKE class (lock = bond), EXIT = the
+ * UNSTAKE class (fee-only funding).
  * HF-6 6f-1: generation-aware (req->generation): at the HF-6 generation
  * STAKE takes the 7301-byte owner + node-consent layout and ROTATE (op 10,
  * 7291 bytes, fee-only) exists; DELEGATE / UNSTAKE / UNDELEGATE are
  * refused there (their generation-4 layouts are not built here). Plus the
  * node-consent text container (nodus_v2_consent_text_*). The consent
  * codec itself is NOT called from this file (see the header).
+ * HF-6 slice 6b: the storage ops exist only at the HF-6 generation and
+ * take its layouts only — REGISTER owner_fp ‖ node_pk ‖ consent_sig ‖
+ * expiry ‖ bond (7299 B, the owner signs, the node consents with op 3),
+ * EXIT node_fp (64 B, the owner signs); the storage-reward-v1 node-key
+ * layouts (2664 / 2592 B) are gone, and the container accepts op 3.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -57,11 +61,6 @@ _Static_assert(NODUS_V2_DELEG_CALL_LEN == 2u * DNAC_PUBKEY_SIZE + 8u,
                "DELEGATE / UNDELEGATE call = pk ‖ pk ‖ amount u64");
 _Static_assert(NODUS_V2_UNSTAKE_CALL_LEN == DNAC_PUBKEY_SIZE,
                "UNSTAKE call = the validator pk (RTN_SYS_UNSTAKE_CALL_LEN)");
-_Static_assert(NODUS_V2_STREG_CALL_LEN == DNAC_PUBKEY_SIZE + 8u + 64u,
-               "STORAGE_REGISTER call = node_pk ‖ bond u64 ‖ payee_fp "
-               "(RTN_SYS_STREG_CALL_LEN, bytes doc item 5)");
-_Static_assert(NODUS_V2_STEXIT_CALL_LEN == DNAC_PUBKEY_SIZE,
-               "STORAGE_EXIT call = the node pk (RTN_SYS_STEXIT_CALL_LEN)");
 /* HF-6 6f-1 — the generation-4 calls (design rev 6 §2, K7; the chain's
  * rtn_stake2_parse / rtn_rotate2_parse offsets) */
 _Static_assert(DNA_VALBIND_PUBKEY_LEN == DNAC_PUBKEY_SIZE &&
@@ -80,6 +79,9 @@ _Static_assert(NODUS_V2_STAKE2_CALL_LEN != NODUS_V2_STAKE_CALL_LEN,
 _Static_assert((uint32_t)NODUS_V2_STAKE_OP_ROTATE ==
                    DNA_SYSRULE_ROTATE_CONSENSUS_KEY,
                "ROTATE is runtime_op 10 (design §2)");
+_Static_assert(DNA_VALBIND_OP_STAKE == 1u && DNA_VALBIND_OP_ROTATE == 2u &&
+               DNA_VALBIND_OP_STORAGE_REGISTER == 3u,
+               "the consent op bytes (design §6.1)");
 #define V2K_S2_OWNER_OFF  0u
 #define V2K_S2_PK_OFF     64u
 #define V2K_S2_SIG_OFF    (V2K_S2_PK_OFF + V2K_PK_LEN)
@@ -90,8 +92,22 @@ _Static_assert((uint32_t)NODUS_V2_STAKE_OP_ROTATE ==
 #define V2K_R_PK_OFF      64u
 #define V2K_R_SIG_OFF     (V2K_R_PK_OFF + V2K_PK_LEN)
 #define V2K_R_EXP_OFF     (V2K_R_SIG_OFF + DNA_VALBIND_SIG_LEN)
+/* HF-6 slice 6b — the generation-4 storage calls (design rev 6 §2 /
+ * §11.3 / §11.5; the chain's rtn_streg2_parse / rtn_stexit2_parse) */
+_Static_assert(NODUS_V2_STREG_CALL_LEN ==
+                   64u + DNAC_PUBKEY_SIZE + DNA_VALBIND_SIG_LEN + 8u + 8u,
+               "STORAGE_REGISTER = owner_fp ‖ node_pk ‖ consent_sig ‖ "
+               "expiry u64 ‖ bond u64 (7299)");
+_Static_assert(NODUS_V2_STEXIT_CALL_LEN == 64u,
+               "STORAGE_EXIT = node_fp (64)");
+#define V2K_SR_OWNER_OFF  0u
+#define V2K_SR_PK_OFF     64u
+#define V2K_SR_SIG_OFF    (V2K_SR_PK_OFF + V2K_PK_LEN)
+#define V2K_SR_EXP_OFF    (V2K_SR_SIG_OFF + DNA_VALBIND_SIG_LEN)
+#define V2K_SR_BOND_OFF   (V2K_SR_EXP_OFF + 8u)
 _Static_assert(V2K_S2_BOND_OFF + 8u == NODUS_V2_STAKE2_CALL_LEN &&
-               V2K_R_EXP_OFF + 8u == NODUS_V2_ROTATE_CALL_LEN,
+               V2K_R_EXP_OFF + 8u == NODUS_V2_ROTATE_CALL_LEN &&
+               V2K_SR_BOND_OFF + 8u == NODUS_V2_STREG_CALL_LEN,
                "generation-4 field offsets sum to the calls");
 
 _Static_assert((uint32_t)NODUS_V2_STAKE_OP_STAKE == DNA_SYSRULE_STAKE &&
@@ -202,11 +218,14 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
     const uint8_t *s = v->buf + v->call_off[0];
     const size_t slen = v->leg[0].call_len;
     if ((op == DNA_SYSRULE_STAKE && slen == NODUS_V2_STAKE2_CALL_LEN) ||
-        op == DNA_SYSRULE_ROTATE_CONSENSUS_KEY) {
-        /* HF-6 6f-1 — the generation-4 layouts: the call carries no owner
-         * key, so the record identity is the leg-0 signer (the owner,
-         * rtn_sys_owner_auth kind 1); the loop below binds both legs to
-         * it. auth_len == V2K_AUTH_LEN was proved above. */
+        op == DNA_SYSRULE_ROTATE_CONSENSUS_KEY ||
+        op == DNA_SYSRULE_STORAGE_REGISTER ||
+        op == DNA_SYSRULE_STORAGE_EXIT) {
+        /* HF-6 6f-1 / 6b — the generation-4 layouts (the storage ops have
+         * no other): the call carries no owner key, so the record identity
+         * is the leg-0 signer (the owner, rtn_sys_owner_auth kind 1); the
+         * loop below binds both legs to it. auth_len == V2K_AUTH_LEN was
+         * proved above. */
         const uint8_t *a0 = v->buf + v->auth_off[0];
         if (a0[0] != 1) goto done;
         memcpy(out->identity_pk, a0 + 1, V2K_PK_LEN);
@@ -227,6 +246,28 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
             /* kind 1: the owner IS the signer — an envelope naming another
              * owner is not one this module builds */
             if (memcmp(out->owner_fp, signer_fp, 64) != 0) goto done;
+        } else if (op == DNA_SYSRULE_STORAGE_REGISTER) {
+            /* owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond
+             * (rtn_streg2_parse) */
+            if (slen != NODUS_V2_STREG_CALL_LEN) goto done;
+            memcpy(out->owner_fp, s + V2K_SR_OWNER_OFF, 64);
+            memcpy(out->consensus_pk, s + V2K_SR_PK_OFF, V2K_PK_LEN);
+            memcpy(out->consent_sig, s + V2K_SR_SIG_OFF, DNA_VALBIND_SIG_LEN);
+            out->consent_expiry = get_u64(s + V2K_SR_EXP_OFF);
+            out->amount = get_u64(s + V2K_SR_BOND_OFF);
+            if (qgp_sha3_512(out->consensus_pk, V2K_PK_LEN,
+                             out->node_fp) != 0) {
+                rc = NODUS_V2_SPEND_ERR_HASH;
+                goto done;
+            }
+            /* kind 1, as STAKE */
+            if (memcmp(out->owner_fp, signer_fp, 64) != 0) goto done;
+        } else if (op == DNA_SYSRULE_STORAGE_EXIT) {
+            /* node_fp (rtn_stexit2_parse); the chain binds the signer to
+             * the ROW's owner, which the bytes do not carry */
+            if (slen != NODUS_V2_STEXIT_CALL_LEN) goto done;
+            memcpy(out->node_fp, s, 64);
+            memcpy(out->owner_fp, signer_fp, 64);
         } else {
             if (slen != NODUS_V2_ROTATE_CALL_LEN) goto done;
             memcpy(out->validator_id, s + V2K_R_VID_OFF, 64);
@@ -245,25 +286,6 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
     } else if (op == DNA_SYSRULE_UNSTAKE) {
         /* the call IS the validator key (rtn_sys_call_identity) */
         if (slen != NODUS_V2_UNSTAKE_CALL_LEN) goto done;
-        memcpy(out->identity_pk, s, V2K_PK_LEN);
-    } else if (op == DNA_SYSRULE_STORAGE_REGISTER) {
-        /* node_pk ‖ bond u64 BE ‖ payee_fp (rtn_streg_parse) */
-        if (slen != NODUS_V2_STREG_CALL_LEN) goto done;
-        memcpy(out->identity_pk, s, V2K_PK_LEN);
-        out->amount = get_u64(s + V2K_PK_LEN);
-        memcpy(out->dest_fp, s + V2K_PK_LEN + 8, 64);
-        /* the pre-HF-5 exec rule (rtn_storage_register_exec): payee_fp ==
-         * SHA3-512(node_pk) — an envelope carrying any other payee is
-         * not one this module builds */
-        uint8_t node_fp[64];
-        if (qgp_sha3_512(out->identity_pk, V2K_PK_LEN, node_fp) != 0) {
-            rc = NODUS_V2_SPEND_ERR_HASH;
-            goto done;
-        }
-        if (memcmp(node_fp, out->dest_fp, 64) != 0) goto done;
-    } else if (op == DNA_SYSRULE_STORAGE_EXIT) {
-        /* the call IS the node key (rtn_sys_call_identity) */
-        if (slen != NODUS_V2_STEXIT_CALL_LEN) goto done;
         memcpy(out->identity_pk, s, V2K_PK_LEN);
     } else {
         if (slen != NODUS_V2_DELEG_CALL_LEN) goto done;
@@ -351,27 +373,35 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     const int is_stake = op == NODUS_V2_STAKE_OP_STAKE;
     const int is_streg = op == NODUS_V2_STAKE_OP_STORAGE_REGISTER;
     const int is_stexit = op == NODUS_V2_STAKE_OP_STORAGE_EXIT;
-    /* the call is the signer's own key alone (UNSTAKE / STORAGE_EXIT) */
-    const int is_unstake = op == NODUS_V2_STAKE_OP_UNSTAKE || is_stexit;
+    /* the call is the signer's own key alone (the legacy UNSTAKE) */
+    const int is_unstake = op == NODUS_V2_STAKE_OP_UNSTAKE;
     const int is_deleg = op == NODUS_V2_STAKE_OP_DELEGATE ||
                          op == NODUS_V2_STAKE_OP_UNDELEGATE;
     const int is_rotate = op == NODUS_V2_STAKE_OP_ROTATE;
-    if (!is_stake && !is_streg && !is_unstake && !is_deleg && !is_rotate)
+    if (!is_stake && !is_streg && !is_stexit && !is_unstake && !is_deleg &&
+        !is_rotate)
         return NODUS_V2_STAKE_ERR_OP;
     /* HF-6 6f-1 — the generation decides the layout (design rev 6 §2) */
     const int gen4 = req->generation >= NODUS_RT_GEN_STORAGE;
-    if (is_rotate && !gen4)
-        return NODUS_V2_STAKE_ERR_GEN;       /* op 10 exists from gen 4 */
-    if (gen4 && (is_deleg || op == NODUS_V2_STAKE_OP_UNSTAKE))
+    if ((is_rotate || is_streg || is_stexit) && !gen4)
+        return NODUS_V2_STAKE_ERR_GEN;       /* ops 10, 7, 8 exist from gen
+                                              * 4 only, in its layouts only
+                                              * (HF-6 slice 6b: the storage
+                                              * ops have no older layout) */
+    if (gen4 && (is_deleg || is_unstake))
         return NODUS_V2_STAKE_ERR_GEN;       /* their 136 / 64-byte gen-4
                                               * layouts are not built here */
     const int is_stake2 = is_stake && gen4;
-    if (is_stake2 || is_rotate) {
+    /* the owner-signed, node-consented calls (design §2, §11.3) */
+    const int is_consented = is_stake2 || is_rotate || is_streg;
+    if (is_consented) {
         if (!req->consensus_pk || !req->consent_sig ||
             (is_rotate && !req->validator_id))
             return NODUS_V2_SPEND_ERR_ARG;
-    } else if ((is_stake || is_streg) ? !req->dest_fp
-                                      : (is_deleg && !req->validator_pk)) {
+    } else if (is_stexit) {
+        if (!req->node_fp) return NODUS_V2_SPEND_ERR_ARG;
+    } else if (is_stake ? !req->dest_fp
+                        : (is_deleg && !req->validator_pk)) {
         return NODUS_V2_SPEND_ERR_ARG;
     }
 
@@ -390,16 +420,13 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
          * consent can name an all-zero validator_id */
         if (all_zero(req->validator_id, 64)) return NODUS_V2_SPEND_ERR_ARG;
     } else if (is_streg) {
-        /* storage reward v1 (rtn_storage_register_exec): EXACTLY the
-         * storage bond, and the payee is the node's own fingerprint until
-         * HF-5 re-keys it */
-        if (req->amount != DNAC_STORAGE_STAKE_MIN)
+        /* rtn_storage_register_exec's call-alone rules (design §11.3, G13):
+         * 0 < bond <= INT64_MAX. The EXACT value is chain state (the
+         * STORAGE_BOND in force, rtn_storage_bond_at — chain_config param
+         * 21 from slice 8), the consent and its expiry window the
+         * caller's. */
+        if (req->amount < 1 || req->amount > (uint64_t)INT64_MAX)
             return NODUS_V2_STAKE_ERR_STORAGE_BOND;
-        uint8_t node_fp[64];
-        if (qgp_sha3_512(req->pk, V2K_PK_LEN, node_fp) != 0)
-            return NODUS_V2_SPEND_ERR_HASH;
-        if (memcmp(node_fp, req->dest_fp, 64) != 0)
-            return NODUS_V2_STAKE_ERR_PAYEE;
     } else if (is_stake) {
         /* tokenomics-v3 P3-8 (rtn_stake_exec) — the u16 wire field alone
          * would admit values the chain refuses */
@@ -409,7 +436,7 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
          * self-bond */
         if (req->amount != DNAC_SELF_STAKE_AMOUNT)
             return NODUS_V2_STAKE_ERR_BOND;
-    } else if (!is_unstake &&
+    } else if (!is_unstake && !is_stexit &&
                (req->amount < 1 || req->amount > DNAC_DEFAULT_TOTAL_SUPPLY)) {
         return NODUS_V2_STAKE_ERR_AMOUNT;          /* rtn_delegate_exec's
                                                     * scalar rule */
@@ -435,7 +462,7 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
 
     /* ── need = lock + fee (rtn_sys_call_flow: UNSTAKE, UNDELEGATE and
      *    STORAGE_EXIT lock 0 — their funding leg pays the fee only) ──── */
-    const uint64_t lock = (is_unstake || is_rotate ||
+    const uint64_t lock = (is_unstake || is_stexit || is_rotate ||
                            op == NODUS_V2_STAKE_OP_UNDELEGATE)
                         ? 0 : req->amount;
     if (lock > UINT64_MAX - fee) {
@@ -543,19 +570,27 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         put_u64(scall + V2K_PK_LEN + 2, req->amount);
         memcpy(scall + V2K_PK_LEN + 10, req->dest_fp, 64);
     } else if (is_streg) {
-        /* node_pk ‖ bond u64 ‖ payee_fp[64 RAW] (rtn_streg_parse) */
+        /* owner_fp ‖ node_pk ‖ consent_sig ‖ expiry u64 ‖ bond u64
+         * (rtn_streg2_parse); owner_fp = SHA3-512 of the signer — the
+         * kind-1 owner rule (rtn_sys_owner_auth) */
         scall_len = NODUS_V2_STREG_CALL_LEN;
         scall = calloc(1, scall_len);
         if (!scall) goto done;
-        memcpy(scall, req->pk, V2K_PK_LEN);
-        put_u64(scall + V2K_PK_LEN, req->amount);
-        memcpy(scall + V2K_PK_LEN + 8, req->dest_fp, 64);
+        memcpy(scall + V2K_SR_OWNER_OFF, signer_raw, 64);
+        memcpy(scall + V2K_SR_PK_OFF, req->consensus_pk, V2K_PK_LEN);
+        memcpy(scall + V2K_SR_SIG_OFF, req->consent_sig, DNA_VALBIND_SIG_LEN);
+        put_u64(scall + V2K_SR_EXP_OFF, req->consent_expiry);
+        put_u64(scall + V2K_SR_BOND_OFF, req->amount);
+    } else if (is_stexit) {
+        /* node_fp (rtn_stexit2_parse) — the registry key; the chain binds
+         * the signer to the row's owner */
+        scall_len = NODUS_V2_STEXIT_CALL_LEN;
+        scall = calloc(1, scall_len);
+        if (!scall) goto done;
+        memcpy(scall, req->node_fp, 64);
     } else if (is_unstake) {
-        /* validator_pk / node_pk — the signer itself
-         * (RTN_SYS_UNSTAKE_CALL_LEN == RTN_SYS_STEXIT_CALL_LEN;
-         * rtn_sys_stake_auth binds SHA3-512(call) to the signer) */
-        _Static_assert(NODUS_V2_UNSTAKE_CALL_LEN == NODUS_V2_STEXIT_CALL_LEN,
-                       "UNSTAKE and STORAGE_EXIT share the key-only call");
+        /* validator_pk — the signer itself (rtn_sys_stake_auth binds
+         * SHA3-512(call) to the signer) */
         scall_len = NODUS_V2_UNSTAKE_CALL_LEN;
         scall = calloc(1, scall_len);
         if (!scall) goto done;
@@ -682,30 +717,35 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
             d->sys_ruleset_version != req->rs->sys_ruleset_version ||
             d->core_ruleset_version != req->rs->core_ruleset_version ||
             memcmp(d->identity_pk, req->pk, V2K_PK_LEN) != 0 ||
-            (!is_unstake && !is_rotate && d->amount != req->amount) ||
+            (!is_unstake && !is_stexit && !is_rotate &&
+             d->amount != req->amount) ||
             d->n_in != n_in ||
             memcmp(d->in_nul, nulls, (size_t)n_in * 64) != 0 ||
             d->n_out != (int)out_count ||
-            d->gen4 != (is_stake2 || is_rotate))
+            d->gen4 != (is_consented || is_stexit))
             goto done;
-        if (is_stake2 || is_rotate) {
+        if (is_consented) {
             if (memcmp(d->owner_fp, signer_raw, 64) != 0 ||
                 memcmp(d->consensus_pk, req->consensus_pk, V2K_PK_LEN) != 0 ||
                 memcmp(d->consent_sig, req->consent_sig,
                        DNA_VALBIND_SIG_LEN) != 0 ||
                 d->consent_expiry != req->consent_expiry)
                 goto done;
-            if (is_stake2 ? d->commission_bps != req->commission_bps
-                          : (d->amount != 0 ||
-                             memcmp(d->validator_id, req->validator_id,
-                                    64) != 0))
+            if (is_stake2 && d->commission_bps != req->commission_bps)
+                goto done;
+            if (is_rotate &&
+                (d->amount != 0 ||
+                 memcmp(d->validator_id, req->validator_id, 64) != 0))
+                goto done;
+        } else if (is_stexit) {
+            if (d->amount != 0 ||
+                memcmp(d->owner_fp, signer_raw, 64) != 0 ||
+                memcmp(d->node_fp, req->node_fp, 64) != 0)
                 goto done;
         } else if (is_stake) {
             if (d->commission_bps != req->commission_bps ||
                 memcmp(d->dest_fp, req->dest_fp, 64) != 0)
                 goto done;
-        } else if (is_streg) {
-            if (memcmp(d->dest_fp, req->dest_fp, 64) != 0) goto done;
         } else if (is_unstake) {
             if (d->amount != 0) goto done;   /* the call carries none */
         } else if (memcmp(d->validator_pk, req->validator_pk,
@@ -804,9 +844,9 @@ static int consent_op_ok(uint8_t op, const uint8_t subject[64]) {
     const int zero = all_zero(subject, DNA_VALBIND_SUBJECT_LEN);
     if (op == DNA_VALBIND_OP_STAKE)  return zero ? 0 : -1;
     if (op == DNA_VALBIND_OP_ROTATE) return zero ? -1 : 0;
-    return -1;                           /* STORAGE_REGISTER (3) is not in
-                                          * 6f-1's scope; any other value is
-                                          * no consent op */
+    if (op == DNA_VALBIND_OP_STORAGE_REGISTER)   /* HF-6 6b, design §11.3 */
+        return zero ? 0 : -1;
+    return -1;                           /* no consent op                */
 }
 
 int nodus_v2_consent_text_encode(const nodus_v2_consent_t *c,

@@ -25,7 +25,8 @@
  *  V2 The consent container (nodus_v2_consent_text_*) round-trips every
  *     field byte for byte; it refuses a wrong magic, an uppercase hex
  *     digit, a reordered line, trailing bytes, a missing final newline,
- *     op 3, a STAKE with a non-zero subject, a ROTATE with a zero subject,
+ *     op 3 or a STAKE with a non-zero subject, a ROTATE with a zero
+ *     subject, op 4,
  *     a leading-zero / overflowing expiry, a short signature.
  *  S1 Generation-4 STAKE built by nodus_v2_stake_build (GEN_STORAGE
  *     tuples, generation 4, the owner key signs, the consent from V2's
@@ -67,6 +68,29 @@
  *  D1 nodus_v2_stake_decode refuses a generation-4 STAKE whose owner_fp
  *     byte was flipped (owner != SHA3-512(signer)) and accepts the
  *     untouched bytes.
+ *  HF-6 slice 6b (design rev 6 §11.3 / §11.5, §6.1 op 3; Kurultay #16
+ *  khan decision 1):
+ *  V3 The op-3 (STORAGE_REGISTER) consent: dna_valbind_consent_msg with
+ *     op 3 and a zero subject equals the §6.1 restatement with op byte 3;
+ *     the container round-trips an op-3 consent byte for byte, and
+ *     refuses op 3 with a non-zero subject (encode and parse).
+ *  T1 STORAGE_REGISTER built by nodus_v2_stake_build at generation 4 (the
+ *     owner KO signs, the storage node KS consents with op 3 through the
+ *     container): the SYSTEM call equals the restated 7299-byte layout
+ *     owner_fp = SHA3-512(KO) ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond;
+ *     the read-back carries the owner, the node key, the node_fp =
+ *     SHA3-512(node_pk), the consent and the bond; the GEN_STORAGE SYSTEM
+ *     exec — the real consent verified under the node key — CREATEs the
+ *     row with the owner in the payee_fp column; the decoder refuses a
+ *     flipped owner_fp byte.
+ *  T2 STORAGE_EXIT built at generation 4: the call is exactly the 64-byte
+ *     node_fp; read-back amount 0, owner_fp = SHA3-512(signer), node_fp
+ *     = the request's; the exec against an ACTIVE row owned by KO
+ *     applies, and the node key itself as the signer is refused.
+ *  T3 Refusals: REGISTER and EXIT at generation 0 and GEN_EVM (ERR_GEN —
+ *     the storage ops have no other layout); REGISTER bond 0 and
+ *     INT64_MAX + 1 (ERR_STORAGE_BOND); REGISTER without the node key or
+ *     the consent, EXIT without node_fp (ERR_ARG).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 is compiled only with the
@@ -137,6 +161,9 @@ static int g_checks = 0;
 #define BPS      500u
 #define STK_LEN  7301u            /* design §2 (K7): 64+2592+4627+8+2+8   */
 #define ROT_LEN  7291u            /* design §2 (K7): 64+2592+4627+8       */
+#define SRG_LEN  7299u            /* design §2 / §11.3: 64+2592+4627+8+8  */
+#define SEX_LEN  64u              /* design §2 / §11.5: node_fp           */
+#define SBOND    ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 
 /* restated from nodus_witness_rt_native.c (static there) */
 #define OP_STATS      7u
@@ -154,6 +181,14 @@ static int g_checks = 0;
 #define UTXO_REC_LEN  284u
 #define UTXO_AMT_OFF  128u
 #define UTXO_UNL_OFF  276u
+#define OP_STOR       8u
+#define OP_STORCNT    9u
+#define STOR_REC_LEN  2693u
+#define STOR_OWNER_OFF 2592u      /* the payee_fp column (= the owner)    */
+#define STOR_BOND_OFF 2656u
+#define STOR_STAT_OFF 2664u
+#define STOR_REGH_OFF 2665u
+#define STOR_EXITH_OFF 2673u
 
 static void put64(uint8_t *p, uint64_t v) {
     for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
@@ -182,8 +217,8 @@ typedef struct {
 } cl_key_t;
 
 /* KO the owner (signs, pays), KC the node's consensus key at STAKE, KN the
- * rotation target, KX a foreign key */
-enum { KO, KC, KN, KX, N_KEYS };
+ * rotation target, KX a foreign key, KS a storage node key (HF-6 6b) */
+enum { KO, KC, KN, KX, KS, N_KEYS };
 static cl_key_t g_k[N_KEYS];
 
 static int keys_make(void) {
@@ -295,7 +330,38 @@ static int t_consent(void) {
     msg_restate(m_rest, 2, vid, g_k[KO].fp, g_k[KN].pk, EXP);
     CHECK(memcmp(m_codec, m_rest, sizeof(m_rest)) == 0,
           "codec ROTATE message == the §6.1 restatement");
+    /* V3 — op 3 (STORAGE_REGISTER, design §11.3): zero subject, the
+     * storage node key in the key field */
+    CHECK(dna_valbind_consent_msg(m_codec, g_chain32,
+                                  DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                                  g_k[KO].fp, g_k[KS].pk, EXP) == 0,
+          "STORAGE_REGISTER message builds");
+    msg_restate(m_rest, 3, zero64, g_k[KO].fp, g_k[KS].pk, EXP);
+    CHECK(memcmp(m_codec, m_rest, sizeof(m_rest)) == 0,
+          "codec STORAGE_REGISTER message == the §6.1 restatement, op 3");
+    CHECK(dna_valbind_consent_msg(m_codec, g_chain32,
+                                  DNA_VALBIND_OP_STORAGE_REGISTER, vid,
+                                  g_k[KO].fp, g_k[KS].pk, EXP) != 0,
+          "the codec refuses op 3 with a non-zero subject");
+    {
+        nodus_v2_consent_t s, sr;
+        char *st = NULL;
+        size_t stl = 0;
+        CHECK(consent_make(&s, DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                           g_k[KO].fp, KS, EXP) == 0,
+              "STORAGE_REGISTER consent signs");
+        CHECK(nodus_v2_consent_text_encode(&s, &st, &stl) ==
+                  NODUS_V2_SPEND_OK &&
+              strstr(st, "\nop 3\n") != NULL &&
+              nodus_v2_consent_text_parse(st, stl, &sr) ==
+                  NODUS_V2_SPEND_OK && consent_eq(&sr, &s),
+              "the container carries op 3 and round-trips every field");
+        free(st);
+    }
 
+    /* V3 above reused m_rest for the op-3 restatement: restate the
+     * ROTATE message again before verifying the ROTATE signature */
+    msg_restate(m_rest, 2, vid, g_k[KO].fp, g_k[KN].pk, EXP);
     nodus_v2_consent_t c;
     CHECK(consent_make(&c, DNA_VALBIND_OP_ROTATE, vid, g_k[KO].fp, KN, EXP)
           == 0, "ROTATE consent signs");
@@ -385,9 +451,13 @@ static int t_consent(void) {
         CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
               NODUS_V2_SPEND_ERR_ARG, "encode refuses a STAKE with a subject");
         z = c;
-        z.op = 3;
+        z.op = 3;                              /* op 3, non-zero subject */
         CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
-              NODUS_V2_SPEND_ERR_ARG, "encode refuses op 3 (not 6f-1)");
+              NODUS_V2_SPEND_ERR_ARG,
+              "encode refuses op 3 with a non-zero subject");
+        z.op = 4;
+        CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
+              NODUS_V2_SPEND_ERR_ARG, "encode refuses op 4 (no such op)");
     }
     /* the parser's own op / subject / expiry rules over hand-edited text */
     {
@@ -411,7 +481,8 @@ static int t_consent(void) {
             p[4] = '3';
         }
         CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
-              NODUS_V2_SPEND_ERR_DECODE, "parse refuses op 3");
+              NODUS_V2_SPEND_ERR_DECODE,
+              "parse refuses op 3 with the (non-zero) ROTATE subject");
         /* expiry with a leading zero */
         {
             char *p = strstr(t, "\nexpiry ");
@@ -908,6 +979,225 @@ static int t_generation(void) {
     return 0;
 }
 
+/* ══ T1-T3 — the generation-4 storage calls (HF-6 slice 6b) ═════════ */
+
+static int t_storage(void) {
+    static const uint8_t zero64[64] = { 0 };
+    const nodus_domain_runtime_t *s4 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *c4 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_CORE);
+    CHECK(s4 && c4, "generation 4 compiled");
+
+    /* the storage node KS consents (op 3) to KO owning it; KO reads it */
+    nodus_v2_consent_t c, cr;
+    CHECK(consent_make(&c, DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                       g_k[KO].fp, KS, EXP) == 0, "op-3 consent signs");
+    {
+        char *t = NULL;
+        size_t tl = 0;
+        CHECK(nodus_v2_consent_text_encode(&c, &t, &tl) == NODUS_V2_SPEND_OK &&
+              nodus_v2_consent_text_parse(t, tl, &cr) == NODUS_V2_SPEND_OK,
+              "through the container");
+        free(t);
+    }
+
+    /* ── T1. REGISTER ──────────────────────────────────────────────── */
+    const uint64_t coin = SBOND + 9000000000ULL;
+    coin_set(coin);
+    nodus_v2_stake_req_t r;
+    req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_REGISTER, &cr);
+    r.amount = SBOND;
+    nodus_v2_stake_built_t b;
+    nodus_v2_stake_err_t e;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "STORAGE_REGISTER builds at generation 4");
+    CHECK(b.dec.op == DNA_SYSRULE_STORAGE_REGISTER && b.dec.gen4 == 1 &&
+          b.dec.amount == SBOND &&
+          memcmp(b.dec.identity_pk, g_k[KO].pk, PK_LEN) == 0 &&
+          memcmp(b.dec.owner_fp, g_k[KO].fp, 64) == 0 &&
+          memcmp(b.dec.consensus_pk, g_k[KS].pk, PK_LEN) == 0 &&
+          memcmp(b.dec.node_fp, g_k[KS].fp, 64) == 0 &&
+          memcmp(b.dec.consent_sig, c.sig, SIG_LEN) == 0 &&
+          b.dec.consent_expiry == EXP && b.n_in == 1 &&
+          b.change == coin - SBOND - b.fee,
+          "read-back: op 7, the owner signs, node key + node_fp, consent, "
+          "bond, change");
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    CHECK(v != NULL, "view alloc");
+    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 && v->leg_count == 2 &&
+          v->leg[0].runtime_op == DNA_SYSRULE_STORAGE_REGISTER &&
+          v->leg[1].runtime_op == DNA_CORERULE_SYSFUND,
+          "two legs: SYSTEM op 7 + CORE SYSFUND");
+    {   /* design §2 / §11.3, restated */
+        static uint8_t want[SRG_LEN];
+        size_t off = 0;
+        memcpy(want, g_k[KO].fp, 64);                    off += 64;
+        memcpy(want + off, g_k[KS].pk, PK_LEN);          off += PK_LEN;
+        memcpy(want + off, c.sig, SIG_LEN);              off += SIG_LEN;
+        put64(want + off, EXP);                          off += 8;
+        put64(want + off, SBOND);                        off += 8;
+        CHECK(off == SRG_LEN && v->leg[0].call_len == SRG_LEN &&
+              memcmp(v->buf + v->call_off[0], want, SRG_LEN) == 0,
+              "call = owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond "
+              "(7299 bytes)");
+    }
+    ctx_set(KO, b.intent_id);
+    {
+        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+        uint16_t n = 0;
+        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == 0 &&
+              n == 2 && rq[0].op_id == OP_STOR && rq[0].key_len == 64 &&
+              memcmp(rq[0].key, g_k[KS].fp, 64) == 0 &&
+              rq[1].op_id == OP_STORCNT && rq[1].key_len == 1 &&
+              rq[1].key[0] == 1u,
+              "plan [op 8 SHA3-512(node_pk)][op 9 live count]");
+    }
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[1].present = 1;                     /* live count 0      */
+        g_reads[1].value_len = 8;
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 2, &ev) == 0 && ev.effect_count == 1,
+              "REGISTER exec applies: the op-3 consent verified under the "
+              "node key");
+        const uint8_t *rec = ev.buf + ev.val_off[0];
+        CHECK(ev.eff[0].op_id == OP_STOR &&
+              ev.eff[0].effect_kind == DNA_EFFECT_CREATE &&
+              ev.eff[0].value_len == STOR_REC_LEN &&
+              memcmp(ev.buf + ev.key_off[0], g_k[KS].fp, 64) == 0 &&
+              memcmp(rec, g_k[KS].pk, PK_LEN) == 0 &&
+              memcmp(rec + STOR_OWNER_OFF, g_k[KO].fp, 64) == 0 &&
+              get64(rec + STOR_BOND_OFF) == SBOND &&
+              rec[STOR_STAT_OFF] == 1u &&
+              get64(rec + STOR_REGH_OFF) == H_EXEC,
+              "CREATE op 8: node key, the OWNER in the payee_fp column, "
+              "bond, ACTIVE since h");
+        ctx_set(KS, b.intent_id);
+        CHECK(sys_exec(s4, v, 2, NULL) == -1,
+              "the node key as the signer is not the owner: refused");
+        ctx_set(KO, b.intent_id);
+    }
+    {
+        uint16_t nr = fund_reads(v, coin);
+        CHECK(core_exec(c4, v, nr) == 0, "funding balances, lock = bond");
+        nr = fund_reads(v, coin + 1u);
+        CHECK(core_exec(c4, v, nr) == -1, "+1 on the input refused");
+    }
+    {
+        nodus_v2_stake_decoded_t *d = calloc(1, sizeof(*d));
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(d && bad, "alloc");
+        memcpy(bad, b.env, b.env_len);
+        bad[v->call_off[0] + 0] ^= 0x01;           /* owner_fp byte 0   */
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "a REGISTER owner_fp that is not SHA3-512(signer) refused");
+        free(bad);
+        free(d);
+    }
+    free(v);
+    nodus_v2_stake_built_free(&b);
+
+    /* ── T2. EXIT ──────────────────────────────────────────────────── */
+    coin_set(5000000000ULL);
+    req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_EXIT, &cr);
+    r.consensus_pk = NULL;                         /* not part of EXIT   */
+    r.consent_sig = NULL;
+    r.node_fp = g_k[KS].fp;
+    r.amount = 777;                                /* must be ignored    */
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "STORAGE_EXIT builds at generation 4");
+    CHECK(b.dec.op == DNA_SYSRULE_STORAGE_EXIT && b.dec.gen4 == 1 &&
+          b.dec.amount == 0 &&
+          memcmp(b.dec.owner_fp, g_k[KO].fp, 64) == 0 &&
+          memcmp(b.dec.node_fp, g_k[KS].fp, 64) == 0 &&
+          b.change == 5000000000ULL - b.fee,
+          "read-back: op 8, node_fp, the signer as owner, fee only");
+    v = calloc(1, sizeof(*v));
+    CHECK(v != NULL, "view alloc");
+    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 &&
+          v->leg[0].call_len == SEX_LEN &&
+          memcmp(v->buf + v->call_off[0], g_k[KS].fp, SEX_LEN) == 0,
+          "call = node_fp (64 bytes)");
+    ctx_set(KO, b.intent_id);
+    {
+        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+        uint16_t n = 0;
+        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == 0 &&
+              n == 1 && rq[0].op_id == OP_STOR &&
+              memcmp(rq[0].key, g_k[KS].fp, 64) == 0,
+              "plan [op 8 keyed by the call]");
+    }
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;
+        g_reads[0].value_len = STOR_REC_LEN;
+        uint8_t *rec = g_reads[0].value;
+        memcpy(rec, g_k[KS].pk, PK_LEN);
+        memcpy(rec + STOR_OWNER_OFF, g_k[KO].fp, 64);
+        put64(rec + STOR_BOND_OFF, SBOND);
+        rec[STOR_STAT_OFF] = 1u;                    /* ACTIVE            */
+        put64(rec + STOR_REGH_OFF, 2);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 1, &ev) == 0 && ev.effect_count == 1 &&
+              ev.eff[0].effect_kind == DNA_EFFECT_SET &&
+              (ev.buf + ev.val_off[0])[STOR_STAT_OFF] == 2u &&
+              get64(ev.buf + ev.val_off[0] + STOR_EXITH_OFF) == H_EXEC,
+              "EXIT exec by the row's owner applies: EXITING since h");
+        ctx_set(KS, b.intent_id);
+        CHECK(sys_exec(s4, v, 1, NULL) == -1,
+              "the node key is not the owner: refused");
+        ctx_set(KO, b.intent_id);
+    }
+    {
+        uint16_t nr = fund_reads(v, 5000000000ULL);
+        CHECK(core_exec(c4, v, nr) == 0, "EXIT funding is fee-only");
+    }
+    free(v);
+    nodus_v2_stake_built_free(&b);
+
+    /* ── T3. refusals ──────────────────────────────────────────────── */
+    coin_set(SBOND + 9000000000ULL);
+    for (int g = 0; g < 2; g++) {
+        const uint32_t gen = g == 0 ? 0u : (uint32_t)NODUS_RT_GEN_EVM;
+        req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_REGISTER, &cr);
+        r.amount = SBOND;
+        r.generation = gen;
+        CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
+              "REGISTER below generation 4 (no other layout)");
+        req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_EXIT, &cr);
+        r.node_fp = g_k[KS].fp;
+        r.generation = gen;
+        CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
+              "EXIT below generation 4 (no other layout)");
+    }
+    req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_REGISTER, &cr);
+    r.amount = 0;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_STORAGE_BOND,
+          "REGISTER bond 0");
+    r.amount = (uint64_t)INT64_MAX + 1u;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_STORAGE_BOND,
+          "REGISTER bond INT64_MAX + 1");
+    r.amount = SBOND;
+    r.consensus_pk = NULL;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "REGISTER without the node key");
+    r.consensus_pk = cr.consensus_pk;
+    r.consent_sig = NULL;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "REGISTER without the consent");
+    req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_EXIT, &cr);
+    r.node_fp = NULL;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "EXIT without node_fp");
+    return 0;
+}
+
 int main(void) {
     if (keys_make() != 0) {
         fprintf(stderr, "key generation failed\n");
@@ -923,6 +1213,7 @@ int main(void) {
     if (t_stake2() != 0) return 1;
     if (t_rotate() != 0) return 1;
     if (t_generation() != 0) return 1;
+    if (t_storage() != 0) return 1;
     printf("test_v2_stake_client: %d checks passed\n", g_checks);
     return 0;
 }
