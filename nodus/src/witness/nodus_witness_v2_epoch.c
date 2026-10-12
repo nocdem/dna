@@ -30,6 +30,7 @@
 #include "dnac/ledger_roots_v2.h"      /* dna_v2_attendance_digest (S-2) */
 #include "nodus/nodus_types.h"         /* NODUS_TREE_TAG_VALIDATOR       */
 #include "nodus/nodus_chain_config.h"  /* nodus_chain_config_derive_witness_id */
+#include "dnac/valbind_wire.h"         /* HF-6 6c: dna_validator_id_migrated */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_fingerprint.h" /* qgp_fp_raw_to_hex (P3-4)    */
 #include "crypto/utils/qgp_log.h"
@@ -406,17 +407,81 @@ static int v2ep_active_count_dec(nodus_witness_t *w) {
     return 0;
 }
 
-/* ── shared: is `pubkey` an entry of `snap`? ───────────────────────────
+/* ── shared: is a validators row an entry of `snap`? ──────────────────
  * Linear scan — snap->active_count is bounded by DNA_MAX_ACTIVE_
  * VALIDATORS (128), a fixed, tiny cost. Used by v2ep_graduate (R5-3, the
  * snapshot TAKING EFFECT this boundary) and v2ep_rule_n below (R5-1, the
  * snapshot that GOVERNED the ending epoch) — one comparison, two
- * different snapshots. */
-static int v2ep_pubkey_in_snapshot(const dna_vset_snapshot_t *snap,
-                                   const uint8_t pubkey[DNAC_PUBKEY_SIZE]) {
-    for (size_t j = 0; j < (size_t)snap->active_count; j++) {
-        if (memcmp(pubkey, snap->entries[j].pubkey, DNAC_PUBKEY_SIZE) == 0)
+ * different snapshots.
+ *
+ * HF-6 slice 6c (design 2026-10-03-hf5-validator-owner-stake rev 6 §3
+ * "Görev ve devam aramaları … blokları yöneten snapshot'ın anahtarını
+ * kullanır, canlı satırı değil"; plan tasks/hf6-slice6-plan.md §1.5): a
+ * ROTATE swaps a row's consensus key at boundary U while the snapshots
+ * S(F) and S(U) name the old and the new key respectively, so the row is
+ * matched by its validator_id, never by its live key, at key generation
+ * >= NODUS_RT_GEN_STORAGE:
+ *   ruleset 2  — entry.validator_id == `validator_id`;
+ *   ruleset 1 with `chain32` (the caller is at generation >= 4) — the
+ *              v1-SNAPSHOT BRIDGE of the distribution (nodus_witness_v2_
+ *              econ.c v2ec_member_load; design §7.5): dna_validator_id_
+ *              migrated(chain32, entry.pubkey) == `validator_id`. Exact:
+ *              a v1 entry names only a pre-HF-6 row, whose validator_id
+ *              IS the migrated id of its pre-HF-6 key (a generation-4
+ *              STAKE's row is first seated in a ruleset-2 snapshot). It
+ *              equals the pubkey match on every row that never rotated,
+ *              and stays right for the one that did: the first gen-4
+ *              freeze F reads a ruleset-1 S(F), so Rule N at U = F + E
+ *              judges a swapped row against a v1 duty snapshot;
+ *   ruleset 1 without `chain32` (generations 1-3) — the pre-HF-6 pubkey
+ *              memcmp, byte-identical (`validator_id` is not read).
+ * `pubkey` is the row's live key (read by the generations-1-3 arm only).
+ * *idx_out (on 1) = the matching entry's index — the governing
+ * snapshot's entry, whose pubkey is the key a duty reads attendance by.
+ * @return 1 an entry, 0 not an entry, -1 fault (a ruleset-2 snapshot or
+ *         the bridge without a validator_id, a migrated id that does not
+ *         derive, an unknown ruleset) — a fault is never "not an entry",
+ *         which would graduate a seated row or reset a duty counter. */
+static int v2ep_member_in_snapshot(const dna_vset_snapshot_t *snap,
+                                   const uint8_t *validator_id,
+                                   const uint8_t pubkey[DNAC_PUBKEY_SIZE],
+                                   const uint8_t *chain32,
+                                   size_t *idx_out) {
+    const size_t n = (size_t)snap->active_count;
+    if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
+        if (!validator_id) return -1;
+        for (size_t j = 0; j < n; j++) {
+            if (memcmp(validator_id, snap->entries[j].validator_id,
+                       DNA_VSET_VALIDATOR_ID_LEN) == 0) {
+                *idx_out = j;
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V1) return -1;
+    if (chain32) {
+        if (!validator_id) return -1;
+        for (size_t j = 0; j < n; j++) {
+            uint8_t mid[DNA_VALBIND_ID_LEN];
+            if (dna_validator_id_migrated(mid, chain32,
+                                          snap->entries[j].pubkey) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "membership: a v1 entry's "
+                              "migrated validator_id did not derive");
+                return -1;
+            }
+            if (memcmp(validator_id, mid, DNA_VALBIND_ID_LEN) == 0) {
+                *idx_out = j;
+                return 1;
+            }
+        }
+        return 0;
+    }
+    for (size_t j = 0; j < n; j++) {
+        if (memcmp(pubkey, snap->entries[j].pubkey, DNAC_PUBKEY_SIZE) == 0) {
+            *idx_out = j;
             return 1;
+        }
     }
     return 0;
 }
@@ -670,8 +735,10 @@ done:
  *     (v2_consensus_keys) is released — nodus_validator_v2_key_release,
  *     the role-1 row must exist — so the key can be STAKEd again.
  * The grad_id / nullifier derivation (pubkey-based, a pure function, not a
- * DB key) and the R5-3 deferral (by pubkey against the ruleset-1 snapshot)
- * are unchanged. */
+ * DB key) is unchanged. HF-6 slice 6c: the R5-3 deferral matches the row
+ * by validator_id at generation 4 (v2ep_member_in_snapshot — ruleset 2 by
+ * the entry's id, ruleset 1 through the migrated-id bridge), by pubkey
+ * below it; the row written back carries no pending key. */
 static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
                          const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                          nodus_v2_epoch_fault_fn fault, void *ud,
@@ -795,8 +862,20 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
         /* R5-3: still an entry of the snapshot taking effect this
          * boundary -> leave it UNTOUCHED for a later boundary. No row
          * read, no counter, no status change, no fault() call — nothing
-         * about this candidate is decided yet. */
-        if (v2ep_pubkey_in_snapshot(effective, cand[i])) {
+         * about this candidate is decided yet. HF-6 6c: at generation 4
+         * by validator_id (an accepted rotation seats the row's PENDING
+         * key in snapshot(H) — design rev 6 §3), below it by pubkey. */
+        size_t eidx = 0;
+        int seated = v2ep_member_in_snapshot(effective,
+                                             g4 ? cand_key[i] : NULL,
+                                             cand[i], g4 ? chain_id : NULL,
+                                             &eidx);
+        if (seated < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "graduate: membership in the "
+                          "effective snapshot is undecidable — refusing");
+            goto done;
+        }
+        if (seated) {
             QGP_LOG_INFO(LOG_TAG,
                 "graduation of a RETIRING/AUTO_RETIRED validator "
                 "deferred at boundary %llu — still an entry of the "
@@ -987,8 +1066,17 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
         v.external_delegated = 0;
         if (g4) {
             /* the v2 writer: keyed by (validator_id, consensus pubkey) and
-             * (validator_id, owner_fp), both unchanged; 0 = both rows */
+             * (validator_id, owner_fp), both unchanged; 0 = both rows.
+             * HF-6 6c (plan tasks/hf6-slice6-plan.md §1.11, B8): an
+             * UNSTAKED row carries no pending key — a rotation never
+             * swapped (exec takes only ACTIVE / ELIGIBLE rows, khan A5;
+             * the row UNSTAKEd before its swap) is dropped here together
+             * with its role-2 reservation (key_release below). Inert on a
+             * row without one: both fields are already zero. */
             row2->rec = v;
+            memset(row2->pending_consensus_pubkey, 0,
+                   sizeof(row2->pending_consensus_pubkey));
+            row2->consensus_key_effective_epoch = 0;
             if (nodus_validator_v2_update(w, row2) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "%s", "graduate v2 row update failed");
                 goto done;
@@ -996,7 +1084,12 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
             /* HF-6 slice 4 (design rev 6 §4, last sentence): the graduate
              * releases its consensus-key reservation in the same step, so
              * the key may be STAKEd again under a NEW validator_id. The
-             * role-1 row must exist and name this row (else FAULT). */
+             * role-1 row must exist and name this row (else FAULT).
+             * HF-6 6c: key_release's second DELETE takes every OTHER row
+             * naming the validator — the pending key's role-2 row, or,
+             * after a swap and before the sweep at U+E, the previous
+             * key's kept role-1 row (khan A2) — so nothing it reserved
+             * survives the graduation. */
             if (nodus_validator_v2_key_release(w, cand_key[i], v.pubkey)
                 != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "%s", "graduate: the consensus-key "
@@ -1283,8 +1376,22 @@ static int v2ep_rn_weight_verdict(nodus_witness_t *w,
  * HF-6 slice 5d: `key_gen` is the boundary's one read of the key
  * generation; the weight floor's preview is built at it, exactly as
  * commit_next builds the stored snapshot (ORCHESTRATOR decision D4 (i)).
- * Nothing else in this pass reads it. */
-static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen) {
+ *
+ * HF-6 slice 6c (design rev 6 §3 "Görev ve devam aramaları (attendance,
+ * Rule N) blokları yöneten snapshot'ın anahtarını kullanır, canlı satırı
+ * değil"): at key_gen >= NODUS_RT_GEN_STORAGE the duty test matches the
+ * row by validator_id (v2ep_member_in_snapshot; `chain_id` — the derived
+ * V2 chain id, the migration's own input — feeds its ruleset-1 bridge) and
+ * the attendance is read by the DUTY ENTRY's pubkey, never the row's live
+ * key: a row swapped at this boundary is judged on the key that signed
+ * the epoch just ending. Without it a rotation would read as "no duty"
+ * and reset the counter — a free pass from AUTO_RETIRE. Below generation
+ * 4 the entry matched by pubkey IS the row's key, so both reads are
+ * byte-identical to before. The counter UPDATE stays keyed by the row's
+ * own pubkey — it addresses the row, it is not a duty lookup. */
+static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen,
+                       const uint8_t chain_id[DNA_CHAIN_ID_LEN]) {
+    const int g4 = key_gen >= NODUS_RT_GEN_STORAGE;
     /* R5-1: absent/unreadable duty snapshot -> the boundary has no
      * verdict class (fault, not an empty-set assumption). epoch_start
      * cannot underflow: the caller's gate already proved h is a positive
@@ -1309,8 +1416,12 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen) {
         calloc(DNAC_MAX_VALIDATORS, DNAC_PUBKEY_SIZE);
     uint8_t *cand_status = calloc(DNAC_MAX_VALIDATORS, sizeof(uint8_t));
     uint64_t *cand_missed = calloc(DNAC_MAX_VALIDATORS, sizeof(uint64_t));
-    if (!cand || !cand_status || !cand_missed) {
-        free(cand); free(cand_status); free(cand_missed);
+    /* HF-6 6c: each candidate's validators.pubkey_hash (= validator_id at
+     * generation 4; collected, unused, below it) — the 3d graduation
+     * shape */
+    uint8_t (*cand_key)[64] = calloc(DNAC_MAX_VALIDATORS, 64);
+    if (!cand || !cand_status || !cand_missed || !cand_key) {
+        free(cand); free(cand_status); free(cand_missed); free(cand_key);
         dna_vset_free(&duty);
         return -1;
     }
@@ -1320,8 +1431,8 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen) {
 
     sqlite3_stmt *sel = NULL;
     if (sqlite3_prepare_v2(w->db,
-            "SELECT pubkey, status, consecutive_missed_epochs FROM "
-            "validators WHERE status IN (?1, ?2) ORDER BY pubkey ASC",
+            "SELECT pubkey, status, consecutive_missed_epochs, pubkey_hash "
+            "FROM validators WHERE status IN (?1, ?2) ORDER BY pubkey ASC",
             -1, &sel, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Rule N: bonded prepare failed: %s",
                       sqlite3_errmsg(w->db));
@@ -1332,9 +1443,12 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen) {
     while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
         const void *pk = sqlite3_column_blob(sel, 0);
         int pk_len = sqlite3_column_bytes(sel, 0);
-        if (!pk || pk_len != DNAC_PUBKEY_SIZE) {
-            QGP_LOG_ERROR(LOG_TAG, "Rule N: bonded pubkey wrong size (%d)",
-                          pk_len);
+        const void *pkh = sqlite3_column_blob(sel, 3);
+        int pkh_len = sqlite3_column_bytes(sel, 3);
+        if (!pk || pk_len != DNAC_PUBKEY_SIZE ||
+            (g4 && (!pkh || pkh_len != 64))) {
+            QGP_LOG_ERROR(LOG_TAG, "Rule N: bonded pubkey / key wrong size "
+                          "(%d / %d)", pk_len, pkh_len);
             sqlite3_finalize(sel);
             goto done;
         }
@@ -1347,6 +1461,7 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen) {
             sqlite3_finalize(sel);
             goto done;
         }
+        if (g4) memcpy(cand_key[n], pkh, 64);
         memcpy(cand[n], pk, DNAC_PUBKEY_SIZE);
         cand_status[n] = (uint8_t)sqlite3_column_int(sel, 1);
         cand_missed[n] = (uint64_t)sqlite3_column_int64(sel, 2);
@@ -1370,17 +1485,30 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen) {
     {
         for (size_t i = 0; i < n; i++) {
             /* R5-1: duty membership — is cand[i] an entry of duty
-             * (snapshot(H-E))? Shared helper (v2ep_pubkey_in_snapshot,
+             * (snapshot(H-E))? Shared helper (v2ep_member_in_snapshot,
              * above v2ep_graduate) — same comparison R5-3 uses against a
-             * different snapshot. */
-            int in_duty = v2ep_pubkey_in_snapshot(duty, cand[i]);
+             * different snapshot; by validator_id at generation 4. */
+            size_t didx = 0;
+            int in_duty = v2ep_member_in_snapshot(duty,
+                                                  g4 ? cand_key[i] : NULL,
+                                                  cand[i],
+                                                  g4 ? chain_id : NULL,
+                                                  &didx);
+            if (in_duty < 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "Rule N: duty membership is "
+                              "undecidable — refusing the boundary");
+                goto done;
+            }
 
             int64_t new_missed;
             if (cand_status[i] == (uint8_t)DNAC_VALIDATOR_ACTIVE &&
                 in_duty) {
                 int present = 0;
+                /* HF-6 6c: the DUTY ENTRY's key — the one that signed the
+                 * ending epoch (design rev 6 §3); below generation 4 the
+                 * pubkey match makes it cand[i] byte for byte. */
                 int mrc = nodus_witness_v2_attendance_meets_bar(
-                    w, cand[i], h, &present);
+                    w, duty->entries[didx].pubkey, h, &present);
                 if (mrc != 0) {
                     QGP_LOG_ERROR(LOG_TAG, "%s",
                                   "Rule N: attendance lookup faulted");
@@ -1668,6 +1796,7 @@ done:
     free(cand);
     free(cand_status);
     free(cand_missed);
+    free(cand_key);
     dna_vset_free(&duty);
     dna_vset_free(&next);
     return ret;
@@ -1888,7 +2017,7 @@ int nodus_witness_v2_epoch_boundary_apply(
      * attendance digest/reset and the boundary flips (1 commissions →
      * 1b distribution → 1c payday → 2 graduation → 3 Rule N → 3b digest
      * → 3c reset → 4 flips → 5 snapshot → 6 balance copy). */
-    if (v2ep_rule_n(w, global_height, key_gen) != 0) return -2;
+    if (v2ep_rule_n(w, global_height, key_gen, chain_id) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_RULE_N, UINT32_MAX))
         return -2;
 

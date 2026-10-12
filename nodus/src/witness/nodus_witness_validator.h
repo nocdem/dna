@@ -228,7 +228,8 @@ int nodus_validator_v2_get_by_pubkey(nodus_witness_t *w,
  * pending_consensus_pubkey + consensus_key_effective_epoch.
  *
  * IMMUTABLE and checked, never written: validator_id (the key), the
- * consensus pubkey (validators.pubkey — rotation is slice 6's), owner_fp
+ * consensus pubkey (validators.pubkey — its ONE writer is
+ * nodus_validator_v2_rotate_apply, below), owner_fp
  * (no TRANSFER_OWNER in HF-6). The UPDATEs are keyed by
  * (validator_id, pubkey) and (validator_id, owner_fp): a row whose stored
  * pubkey or owner differs is NOT updated and the call is a fault.
@@ -347,14 +348,21 @@ int nodus_validator_v2_scan(nodus_witness_t *w,
  * table with a unique key column that makes "a consensus key appears at
  * most once (active + pending)" a primary-key fact (§4: a composite UNIQUE
  * over two columns would not catch current(A) = pending(B)).
- * consensus_pk_hash = SHA3-512(consensus pubkey), UNTAGGED. Role 1 = the
- * validator's active consensus key; role 2 = a pending key (ROTATE, slice
- * 6 — no writer yet). The rows are a pure function of committed state:
- * role 1 for every validators row not UNSTAKED, role 2 for every non-zero
- * pending_consensus_pubkey. Writers: the generation-4 edge
- * (nodus_witness_v2_migrate.c), the generation-4 STAKE (SYSTEM adapter op
- * 17, nodus_witness_rt_native.c) and the generation-4 graduation
- * (nodus_validator_v2_key_release, nodus_witness_v2_epoch.c). */
+ * consensus_pk_hash = SHA3-512(consensus pubkey), UNTAGGED. Role 1 = an
+ * active consensus key; role 2 = a pending key (ROTATE, slice 6). The rows
+ * are a pure function of committed state: role 1 for the CURRENT key of
+ * every validators row not UNSTAKED, PLUS the PREVIOUS key of a row
+ * swapped at boundary U, from U until the sweep at U+E (khan decision A2,
+ * 2026-10-12: the old key stays reserved while its snapshot S(F) is still
+ * read — so from U to U+E a rotated validator holds TWO role-1 rows);
+ * role 2 for every non-zero pending_consensus_pubkey. A count of role-1
+ * rows equals the count of non-UNSTAKED rows only outside every such
+ * window. Writers: the generation-4 edge (nodus_witness_v2_migrate.c),
+ * the generation-4 STAKE and ROTATE (SYSTEM adapter op 17,
+ * nodus_witness_rt_native.c — STAKE role 1, ROTATE role 2), the swap
+ * (nodus_validator_v2_rotate_apply: the new key role 2 → 1) and the
+ * generation-4 graduation (nodus_validator_v2_key_release,
+ * nodus_witness_v2_epoch.c). The sweep at U+E is slice 6d's. */
 
 #define NODUS_V2_KEY_HASH_LEN      64u
 #define NODUS_V2_KEY_ROLE_ACTIVE   1u
@@ -397,6 +405,47 @@ int nodus_validator_v2_key_insert(nodus_witness_t *w,
 int nodus_validator_v2_key_release(nodus_witness_t *w,
                                    const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
                                    const uint8_t *consensus_pubkey);
+
+/* ══ HF-6 slice 6c — the rotation swap writer (design rev 6 §3) ═══════ */
+
+/**
+ * The row switch of an accepted rotation (design §3 "Satır değişimi":
+ * consensus_pubkey := pending; pending := 0; effective_epoch := 0; plan
+ * tasks/hf6-slice6-plan.md §1.4, B3). Three UPDATEs, in this order, each
+ * required to change EXACTLY one row:
+ *   1. validators SET pubkey = new_pk
+ *      WHERE pubkey_hash = validator_id AND pubkey = old_pk;
+ *   2. v2_validator_roles SET pending_consensus_pubkey = 2592 × 0x00,
+ *      consensus_key_effective_epoch = 0
+ *      WHERE validator_id = validator_id AND pending_consensus_pubkey =
+ *      new_pk;
+ *   3. v2_consensus_keys SET role = 1
+ *      WHERE consensus_pk_hash = SHA3-512(new_pk) AND validator_id =
+ *      validator_id AND role = 2.
+ * The OLD key's role-1 reservation is NOT touched — it is released at U+E
+ * by the sweep (khan A2; slice 6d). This is the ONE writer allowed to
+ * change validators.pubkey (nodus_validator_v2_update and the SYSTEM
+ * adapter's op-13 SET never do).
+ *
+ * INSIDE THE CALLER'S TRANSACTION — autocommit → -1, nothing written.
+ * Refused before any write (-1): an all-zero validator_id or new_pk,
+ * new_pk == old_pk. A wrong old key fails step 1, so nothing is written;
+ * a failure at step 2 or 3 leaves the earlier steps written and the caller
+ * rolls the transaction back (the host does so on every block fault) — the
+ * nodus_validator_v2_update discipline.
+ *
+ * Caller: none yet — slice 6d's boundary swap step (stage
+ * NODUS_V2_EPST_ROTATE_SWAP) calls it when the snapshot S(U) carries the
+ * row's pending key; until then it is exercised by
+ * nodus/tests/test_hf6_rotate.c only.
+ *
+ * @param old_pk, new_pk DNAC_PUBKEY_SIZE bytes.
+ * @return 0 / -1.
+ */
+int nodus_validator_v2_rotate_apply(nodus_witness_t *w,
+                                    const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                                    const uint8_t *old_pk,
+                                    const uint8_t *new_pk);
 
 #ifdef __cplusplus
 }

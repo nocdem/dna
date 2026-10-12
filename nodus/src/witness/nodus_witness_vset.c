@@ -734,10 +734,23 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
         }
     }
     {
+        /* HF-6 slice 6c (design 2026-10-03-hf5-validator-owner-stake rev
+         * 6 §3; plan tasks/hf6-slice6-plan.md §1.5, B5): a ruleset-2
+         * member is matched by its validator_id (validators.pubkey_hash),
+         * never by its consensus key — an accepted ROTATE seats the row's
+         * PENDING key in this snapshot, so a pubkey match would leave the
+         * rotating validator ELIGIBLE for the epoch it is seated in unless
+         * the row swap had already run. A ruleset-1 snapshot keeps the
+         * pubkey match, byte-identical (no rotation precedes the first
+         * ruleset-2 snapshot's epoch). */
+        const int by_id =
+            snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2;
         sqlite3_stmt *st = NULL;
         int rc = sqlite3_prepare_v2(w->db,
-            "UPDATE validators SET status = ? "
-            "WHERE pubkey = ? AND status = ?", -1, &st, NULL);
+            by_id ? "UPDATE validators SET status = ? "
+                    "WHERE pubkey_hash = ? AND status = ?"
+                  : "UPDATE validators SET status = ? "
+                    "WHERE pubkey = ? AND status = ?", -1, &st, NULL);
         if (rc != SQLITE_OK) {
             QGP_LOG_ERROR(LOG_TAG, "epoch %llu: flip-to-active prepare "
                           "failed: %s", (unsigned long long)boundary_height,
@@ -749,8 +762,12 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
             sqlite3_reset(st);
             sqlite3_clear_bindings(st);
             sqlite3_bind_int (st, 1, (int)DNAC_VALIDATOR_ACTIVE);
-            sqlite3_bind_blob(st, 2, snap->entries[i].pubkey,
-                              DNA_VSET_PUBKEY_LEN, SQLITE_STATIC);
+            if (by_id)
+                sqlite3_bind_blob(st, 2, snap->entries[i].validator_id,
+                                  DNA_VSET_VALIDATOR_ID_LEN, SQLITE_STATIC);
+            else
+                sqlite3_bind_blob(st, 2, snap->entries[i].pubkey,
+                                  DNA_VSET_PUBKEY_LEN, SQLITE_STATIC);
             sqlite3_bind_int (st, 3, (int)DNAC_VALIDATOR_ELIGIBLE);
             rc = sqlite3_step(st);
             if (rc != SQLITE_DONE) {

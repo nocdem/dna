@@ -88,6 +88,16 @@
  *      ONE FULL EXTRA EPOCH past its own UNSTAKE; its unlock height
  *      starts counting from the boundary at which it actually graduates,
  *      not the one at which UNSTAKE was requested.
+ *      HF-6 slice 6c (design 2026-10-03-hf5-validator-owner-stake rev 6
+ *      §3): at key generation >= NODUS_RT_GEN_STORAGE "an entry" means an
+ *      entry naming the row's validator_id — by the entry's validator_id
+ *      in a ruleset-2 snapshot, by dna_validator_id_migrated(chain id,
+ *      entry pubkey) in a ruleset-1 one — because an accepted ROTATE
+ *      seats the row's PENDING key in snapshot(H); below it, by pubkey
+ *      (unchanged). A membership test that cannot be decided is -2. The
+ *      graduate's row is written back with no pending key (pending
+ *      2592 × 0x00, effective epoch 0) and every reservation naming it is
+ *      released (nodus_validator_v2_key_release).
  *
  *      Per graduate, in the legacy order (bft.c:2465-2560): release UTXO
  *      (locked DNAC_VALIDATOR_UNBOND_EPOCHS · E past H — P3-3) → every
@@ -211,6 +221,15 @@
  * survive into a later, unrelated one, turning two NON-consecutive
  * misses into a retirement — both measured (verifier V-1). Absent/
  * unreadable duty snapshot -> -2 (a boundary has no verdict class).
+ * HF-6 slice 6c (design rev 6 §3 "Görev ve devam aramaları … blokları
+ * yöneten snapshot'ın anahtarını kullanır, canlı satırı değil"): at key
+ * generation >= NODUS_RT_GEN_STORAGE the duty entry is found by the row's
+ * validator_id (the graduation's rule above) and the attendance is read
+ * by THAT ENTRY's pubkey — the key that signed the ending epoch — never
+ * by the row's live key, so a row whose key was swapped at this boundary
+ * is judged on its old key's record instead of reading as "no duty"
+ * (which would reset its counter). Below generation 4 both reads are the
+ * row's pubkey, unchanged.
  *
  * ── ROUND 6: THE WEIGHT FLOOR (decision file §3 2026-09-23 "Rule N
  * TABANI WEIGHT ÜZERİNDEN", replacing round 5's count floor "Rule N
