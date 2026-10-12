@@ -107,6 +107,18 @@ extern "C" {
 /** Owned and priced, NOT executable in this package: its read plan and
  *  exec refuse it (-1) until package B2 implements the report rule. */
 #define DNA_SYSRULE_STORAGE_REPORT   ((uint32_t)9)
+/** HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
+ *  rev 6 §2, §3; decision docs/plans/decisions/2026-10-08-kurultay-14-
+ *  hf6-summary.md K7): ROTATE_CONSENSUS_KEY — the next free SYSTEM rule
+ *  id after the storage ops (TRANSFER_OWNER keeps 11 reserved, K3).
+ *  Owned by the generation-4 SYSTEM descriptor only (earlier generations
+ *  do not own it, so admission refuses it there) and priced by its policy
+ *  (no other domain names op 10). Its consent op byte is 2, NOT 10
+ *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — design §2: the
+ *  mapping is written explicitly in code). Owned and priced, NOT
+ *  executable in sub-slice 6a: the SYSTEM read plan and exec refuse it
+ *  (-1, the un-migrated-op default) until sub-slice 6b. */
+#define DNA_SYSRULE_ROTATE_CONSENSUS_KEY ((uint32_t)10)
 
 #define DNA_CORERULE_SPEND           ((uint32_t)1)
 #define DNA_CORERULE_BURN            ((uint32_t)2)

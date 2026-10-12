@@ -82,6 +82,24 @@ reward-is-for-archive.md item K10, operator 2026-10-06 "ok"):
   Switch procedure = the HF-4 one; spec version 1 (dnac.h comment above
   DNAC_CFG_RULESET_GEN_STORAGE_D; DNAC_RULESET_SWITCH_SPEC_VERSION).
 
+  HF-6 rev 6 (ONE generation 4 carries storage AND the validator role —
+  design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+  §8; decision 2026-10-08-kurultay-14-hf6-summary.md K7, operator
+  2026-10-08 "1 evet": ROTATE_CONSENSUS_KEY = runtime_op 10; design §2:
+  "HF-6 (generation 4, §8) SYSTEM tanımlayıcısı {1..10}" and "SYSTEM meter
+  politikası 10'u fiyatlar → yeni policy digest + SYS ruleset hash,
+  BAĞIMSIZ oracle ile pinlenir"): the SYSTEM rule list becomes {1..10}
+  and the policy prices ops 1..10 at weight 1. The descriptor VERSIONS
+  stay SYSTEM 9 / CORE 7 (design §3, khan decision A6, operator
+  2026-10-12 "önerilerine devam edelim senin hepsinde": "Generation-4
+  descriptor sürümleri SYSTEM 9 / CORE 7 kalır, hash'leri yeni kuralla
+  yeniden pinlenir (bu sürümlerle hiçbir şey canlıya çıkmadı)"); CORE's
+  rule list, types and version are unchanged, so S3 does not move. The
+  storage-only generation-4 outputs this file printed before HF-6 slice
+  6a (S1 = the EVM policy 0aa4c690…, S2 b37f489d…, S4 0x0c6fd6f2484e6024)
+  are REPLACED, not kept as history (design §8: "hiçbir zincirde
+  etkinleşmedi, tarih olarak tutulmaz").
+
 NOT GROUNDED IN A RECORD (stated, not hidden):
   * SYSTEM tx_types unchanged {4,5,6,7,9,10} and CORE tx_types unchanged
     {1,2,3,11,12,13} for generation 4 — inferred: no record assigns the
@@ -112,8 +130,10 @@ Stages, fail-closed:
         and the EVM manifest hash, computed here)
                                               dnac.h DNAC_CFG_EVM_ACTIVE_D
   EMIT (GEN_STORAGE, generation 4):
-    S1 SYSTEM meter-policy digest, ops 1..9 (then compared with C8)
-    S2 SYSTEM v9 ruleset hash (rules {1..9}, types {4,5,6,7,9,10}, policy S1)
+    S1 SYSTEM meter-policy digest, ops 1..10 (must DIFFER from C8: op 10
+       is priced)
+    S2 SYSTEM v9 ruleset hash (rules {1..10}, types {4,5,6,7,9,10},
+       policy S1)
     S3 DNA_CORE v7 ruleset hash (rules {1..9}, types {1,2,3,11,12,13}, zero)
     S4 param-16 vote literal = gen_digest(4, S2, S3), switch spec 1
 
@@ -236,11 +256,22 @@ GEN_STORAGE = 4                        # K10: "generation 4"
 GEN_STORAGE_BASE = GEN_EVM             # K10: "built on GEN_EVM (3)"
 SYS_RULESET_VERSION_STORAGE = 9        # K10: "SYSTEM ruleset_version 9"
 CORE_RULESET_VERSION_STORAGE = 7       # K10: "CORE ruleset_version 7"
-SYS_RULES_STORAGE = SYS_RULES + [7, 8, 9]   # K10: "SYSTEM rules 7/8/9"
+SYS_RULES_STORAGE = SYS_RULES + [7, 8, 9, 10]   # K10: "SYSTEM rules
+                                       # 7/8/9"; HF-6 design rev 6 §2 / K7:
+                                       # + 10 ROTATE_CONSENSUS_KEY, {1..10}
 SYS_TYPES_STORAGE = SYS_TYPES          # unchanged (no record — see above)
 CORE_RULES_STORAGE = CORE_RULES_GEVM   # K10: "EVM's rules {1..9}"
 CORE_TYPES_STORAGE = CORE_TYPES        # unchanged (no record — see above)
-POLICY_MAX_OP_STORAGE = 9              # K10: "ops 1..9 weight 1"
+POLICY_MAX_OP_STORAGE = 10             # K10 "ops 1..9 weight 1" + design
+                                       # rev 6 §2 "SYSTEM meter politikası
+                                       # 10'u fiyatlar"
+# The CORE v7 hash this file emitted before op 10 (S3 of the storage-only
+# generation 4, pinned in nodus_witness_runtime.c CORE_RULESET_HASH_GST
+# since 4fedbbdc). Op 10 is a SYSTEM rule only and the CORE version stays
+# 7 (khan decision A6), so S3 must reproduce it byte-exactly.
+PRE_ROTATE_RS_CORE_V7 = (
+    "fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073"
+    "ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f060")
 
 
 def sha3(b: bytes) -> bytes:
@@ -402,9 +433,9 @@ def emit() -> None:
           % (2 * ENV_MAX_TOTAL_LEN, POLICY_MAX_OP_STORAGE))
     s1 = system_policy(POLICY_MAX_OP_STORAGE)
     print("  S1 = %s" % s1.hex())
-    print("  S1 == the EVM generation's policy (C8, %s…): %s"
-          % (SHIPPED_METPOL_GEVM[:16],
-             "CONFIRMED" if s1 == e_pol else "REFUTED"))
+    print("  S1 != the EVM generation's policy (C8, %s…; op 10 is priced "
+          "here): %s" % (SHIPPED_METPOL_GEVM[:16], s1 != e_pol))
+    assert s1 != e_pol
     print_c_bytes("SYS_METER_POLICY_DIGEST_GST", "DNA_DOM_HASH_LEN", s1)
 
     print()
@@ -427,6 +458,9 @@ def emit() -> None:
                       CORE_RULESET_VERSION_STORAGE, CORE_RULES_STORAGE,
                       CORE_TYPES_STORAGE, b"\x00" * 64)
     print("  S3 = %s" % s3.hex())
+    print("  S3 == the pre-HF-6-slice-6 CORE v7 pin (fb25e5c4…, CORE "
+          "unchanged by op 10): %s" % (s3.hex() == PRE_ROTATE_RS_CORE_V7))
+    assert s3.hex() == PRE_ROTATE_RS_CORE_V7
     print_c_bytes("CORE_RULESET_HASH_GST", "DNA_DOM_HASH_LEN", s3)
 
     print()
@@ -468,8 +502,8 @@ def main() -> int:
     print()
     print("control green — GEN_STORAGE (generation 4) values above derived "
           "from the written layouts by hashlib, not by the C encoders "
-          "(generation-4 inputs: decision K10; C-only inputs listed in the "
-          "docstring).")
+          "(generation-4 inputs: decision K10 + HF-6 design rev 6 §2 / K7 / "
+          "khan A6; C-only inputs listed in the docstring).")
     return 0
 
 

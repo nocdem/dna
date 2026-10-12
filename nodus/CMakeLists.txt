@@ -2269,6 +2269,18 @@ endif()
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_stake)
 endif()
+# HF-6 slice 6 — ROTATE_CONSENSUS_KEY (runtime_op 10; design 2026-10-03-
+# hf5-validator-owner-stake rev 6 §2, §3, §8; K7; khan decisions A1/A4/A5/
+# A6 of 2026-10-12; plan tasks/hf6-slice6-plan.md §2 "6a"): op 10 is owned
+# and priced by the generation-4 SYSTEM descriptor only (still v9, rules
+# {1..10}; the re-pinned hashes re-derive in the selfcheck), every
+# earlier generation refuses it; on twin seeded chains an op-10 envelope
+# is refused at ADMISSION under generation 3 and passes admission and
+# reservation under generation 4. Generation 4 is compiled only with the
+# EVM runtime. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_rotate)
+endif()
 # HF-6 slice 5b — THE ONE voting-power helper of a validator-set snapshot
 # (design 2026-10-03-hf5-validator-owner-stake rev 6 §5, §8; Kurultay #14
 # K1 / K2 / K5; plan tasks/hf6-slice5-plan.md §2 "5b"): the POWER_CAP_BPS

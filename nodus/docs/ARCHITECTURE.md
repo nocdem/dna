@@ -6143,7 +6143,8 @@ root was still `NDS.SYS.v4` (Nodus EVM changed only CORE's supply leg, `NDS.SUPP
 `NDS.SYS.v5` with the `NDS.STOR.v2` leg appended last stands. The renumbering zeroed every storage
 pin; they are FILLED since `4fedbbdc` from the independent oracle `shared/dnac/tests/storage_oracle.py`
 (the GEN_STORAGE SYSTEM / CORE ruleset hashes, its meter-policy digest, `DNAC_CFG_RULESET_GEN_STORAGE_D`
-= S4 = 0x0c6fd6f2484e6024) and `nodus_ruleset_pins.h` is regenerated. The oracle's controls were
+= S4 = 0x0c6fd6f2484e6024 then; HF-6 slice 6a re-derived the SYSTEM pins and S4 = 0x329b0ea92c8b8c58
+when op 10 joined generation 4 — see "HF-6 slice 6a") and `nodus_ruleset_pins.h` is regenerated. The oracle's controls were
 moved to EVM ruleset v2 on 2026-10-06 (main `f7aa7984`): S4 is unchanged, because it commits only the
 generation-4 SYSTEM and CORE hashes; the generation-4 EVM tuple is the EVM generation's own
 (`NODUS_RT_EVM_RULESET_VERSION_GEVM`) and follows v2.
@@ -7439,6 +7440,50 @@ ruleset-2 rows; case G: no ruleset-1-only codec call in `nodus_witness_vset.c`. 
 `test_hf6_edge.sh` 2b, 8a-8c: a 50M pre-edge delegation to node 2; at B1 (= B₀) every stored
 snapshot ≤ B1 is ruleset 1 and snapshot(B1 + E) ruleset 2, node 2 raw 60M in both; at B1 + E every
 node logs `n_power_changed=1`.
+
+### HF-6 slice 6a — ROTATE_CONSENSUS_KEY (op 10) owned and priced; the generation-4 pins re-derived (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §2 (ROTATE = runtime_op
+10; the generation-4 SYSTEM descriptor `{1..10}`; "SYSTEM meter politikası 10'u fiyatlar"), §3 (khan
+decisions of 2026-10-12, A6: the descriptor VERSIONS stay SYSTEM 9 / CORE 7, only the hashes are
+re-pinned — nothing shipped under them), §8, §10 item 2 (every slice that changes the generation-4
+descriptors re-derives the pins and the development literal from the oracle); decision
+`2026-10-08-kurultay-14-hf6-summary.md` K7; plan `tasks/hf6-slice6-plan.md` §2 "6a".
+
+**What moved** (`nodus_witness_runtime.{h,c}`, `dnac.h`): `DNA_SYSRULE_ROTATE_CONSENSUS_KEY = 10`;
+`SYS_RULES_GST` = {1..10} (`rule_count` 10) at ruleset_version 9; `SYS_POLICY_MAX_OP_GST` = 10 (op 10
+had no row in any policy — an unpriced op is unreservable); the GEN_STORAGE pins, all from S1-S4 of the
+independent oracle `shared/dnac/tests/storage_oracle.py` (rules {1..10}, ops 1..10):
+
+| Pin | Before (storage-only generation 4, `4fedbbdc`) | After (6a) |
+|---|---|---|
+| `SYS_METER_POLICY_DIGEST_GST` (S1) | `0aa4c690…25922766` (= the EVM policy) | `e5d96b4a…6e06e9b8` (≠ the EVM policy; the oracle asserts it) |
+| `SYS_RULESET_HASH_GST` (S2, SYSTEM v9) | `b37f489d…9a8976ac` | `c347ddd7…1f924b00` |
+| `CORE_RULESET_HASH_GST` (S3, CORE v7) | `fb25e5c4…1437f060` | unchanged (the oracle asserts it — CORE's list, types and version did not move) |
+| `DNAC_CFG_RULESET_GEN_STORAGE_D` (S4) | `0x0c6fd6f2484e6024` | `0x329b0ea92c8b8c58` (3646524443046153304) |
+
+Generations 1-3 and every pin of theirs are byte-identical (the oracle's control legs C1-C12 reproduce
+them before it emits). `nodus_witness_runtime_selfcheck` re-derives the new pins and literal on every
+start, so a build whose table and literal disagree refuses to start. S4 is still the DEVELOPMENT
+trigger (param 16); slice 8 replaces it with the D4 construction (§8.1). Op 10 is owned and priced but
+NOT executable in 6a — the SYSTEM read plan and exec refuse it (−1, the un-migrated-op default) until
+6b. **Admission:** the live gate for a V2 leg is `rt_owns_runtime_op` in `env_admit_legs`
+(`nodus_witness_v2_apply.c`, the committed descriptor's rule list); `rt_admit_common` judges only
+(tx_type, pool) and is reached solely through `nodus_witness_domreg_admit_v2`, which has no production
+caller — so no `SYS_TYPES` change is involved.
+
+**Follow-ups outside the 6a file set** (left to the ORCHESTRATOR): the generated
+`nodus/include/nodus/nodus_ruleset_pins.h` (its `NODUS_PIN_G4_SYS_RULESET_HASH_INIT` and the G4 op list
+1..9) must be regenerated (`regen_ruleset_pins`; `test_ruleset_pins` byte-compares it, and
+`test_v2_native` K7 compares the G4 hashes against it); `test_v2_native` K7 and `nodus/README.md` quote
+the old S4.
+
+**Tests** (written, NOT run by the author). `test_hf6_rotate` (new): op 10 owned and priced by the
+generation-4 SYSTEM only (generations 1-3 and every CORE refuse), versions 9 / 7, the literal re-derives;
+every generation's SYSTEM read plan / exec refuses op 10 (6a); twin seeded chains: an op-10 envelope is
+refused at ADMISSION at block 3 (generation 3) and passes admission + reservation at block 4
+(generation 4), refused at exec with the ledger tables byte-identical. `test_hf4_table` 3b: GEN_STORAGE
+SYSTEM rules {1..10}, op 10 owned by generation 4 only, the policy = the EVM generation's op set plus 10.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

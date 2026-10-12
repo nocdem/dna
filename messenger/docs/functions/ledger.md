@@ -305,6 +305,16 @@ The chain's behaviour changes here: the first boundary reading key generation �
 | `int nodus_witness_vset_commit_genesis(nodus_witness_t *w, uint64_t block_height)` | Signature unchanged; builds snapshots 0 and E at `NODUS_RT_GEN_1` (always ruleset 1). |
 | per-block phase 0a (`nodus_witness_v2_apply.c`, the governing snapshot's hash into `blk->out_vset_hash`) | **CHANGED:** `dna_vset_hash_ex(snap, DNA_VSET_RULESET_TOPN_V2, …)` instead of the ruleset-1-only `dna_vset_hash` — identical bytes for a ruleset-1 snapshot (its header selects the v1 layout and tag, `shared/dnac/vset_wire.c`); a ruleset-2 governing snapshot no longer faults every block. |
 
+### 5b.6 HF-6 slice 6a — ROTATE_CONSENSUS_KEY (op 10) owned and priced; the generation-4 pins re-derived (design rev 6 §2, §3 khan A6, §8, §10 item 2; Kurultay #14 K7; plan `tasks/hf6-slice6-plan.md` §2 "6a")
+
+No function signature moves. Tests: `nodus/tests/test_hf6_rotate.c` (EVM builds), `nodus/tests/test_hf4_table.c` 3b. Oracle: `shared/dnac/tests/storage_oracle.py` (S1-S4, output `storage_oracle_out.txt`). Architecture: `nodus/docs/ARCHITECTURE.md` "HF-6 slice 6a".
+
+| Item | Description |
+|------|-------------|
+| `DNA_SYSRULE_ROTATE_CONSENSUS_KEY` (10) (`nodus_witness_runtime.h`) | **NEW.** SYSTEM rule id owned by the generation-4 SYSTEM descriptor only; consent op byte 2 (`DNA_VALBIND_OP_ROTATE`), not 10. Not executable until 6b. |
+| GEN_STORAGE SYSTEM descriptor (`nodus_witness_runtime.c` `SYS_RULES_GST`) | **CHANGED:** rules {1..10} at ruleset_version 9 (unchanged, khan A6); `SYS_POLICY_MAX_OP_GST` 10 (op 10 priced, weight 1). `SYS_METER_POLICY_DIGEST_GST` → `e5d96b4a…`, `SYS_RULESET_HASH_GST` → `c347ddd7…`; `CORE_RULESET_HASH_GST` unchanged. |
+| `DNAC_CFG_RULESET_GEN_STORAGE_D` (`dnac/include/dnac/dnac.h`) | **CHANGED (value):** `0x329b0ea92c8b8c58` (S4; was `0x0c6fd6f2484e6024`). The client mirror `dnac/src/transaction/verify.c` compares against the macro — no edit. Development trigger only (slice 8: D4, param 18). |
+
 ---
 
 ## 6. Package W-B — exact self-stake, self-delegation (`docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md` items 5, 6)
@@ -894,7 +904,7 @@ SQLite fixtures only. No live-node or key prerequisite.
 
 ## 24. Storage reward v1, package B1 — storage registry, GEN_STORAGE, `NDS.SYS.v5` (decision `docs/plans/decisions/2026-10-04-storage-reward-approved.md`; design `docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §1, §6)
 
-Branch only — not versioned, not voted. Generation, op and param numbers assigned in main merge order (design §6; Nodus EVM merged first): generation 4 built on the EVM generation, param 16, SYSTEM v9 / CORE v7. EVM-only like the EVM generation (decision `2026-10-05-storage-reward-is-for-archive.md` K10): compiled only under `NODUS_EVM_ENABLED`. The GEN_STORAGE pins and `DNAC_CFG_RULESET_GEN_STORAGE_D` (S4 = 0x0c6fd6f2484e6024) are filled from the independent oracle `shared/dnac/tests/storage_oracle.py` (`4fedbbdc`; controls moved to EVM ruleset v2 on 2026-10-06, S4 unchanged); `nodus_witness_runtime_selfcheck` re-derives them at startup. Narrative: `nodus/docs/ARCHITECTURE.md` "Storage reward v1, package B1".
+Branch only — not versioned, not voted. Generation, op and param numbers assigned in main merge order (design §6; Nodus EVM merged first): generation 4 built on the EVM generation, param 16, SYSTEM v9 / CORE v7. EVM-only like the EVM generation (decision `2026-10-05-storage-reward-is-for-archive.md` K10): compiled only under `NODUS_EVM_ENABLED`. The GEN_STORAGE pins and `DNAC_CFG_RULESET_GEN_STORAGE_D` (S4 = 0x0c6fd6f2484e6024; re-derived to 0x329b0ea92c8b8c58 on branch `hf6` by slice 6a, §5b.6) are filled from the independent oracle `shared/dnac/tests/storage_oracle.py` (`4fedbbdc`; controls moved to EVM ruleset v2 on 2026-10-06, S4 unchanged); `nodus_witness_runtime_selfcheck` re-derives them at startup. Narrative: `nodus/docs/ARCHITECTURE.md` "Storage reward v1, package B1".
 
 ### 24.1 Constants and parameters (`dnac/include/dnac/dnac.h`, `nodus/src/witness/nodus_witness_runtime.h`, `nodus/src/witness/nodus_witness_roots_v2.h`)
 

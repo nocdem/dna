@@ -19,44 +19,45 @@
          got    fe4ac585fba570280b87ec10cea8195acafbe1624c38e1efe476afc97c88645745567d291796cbdb12a805ede476efc3378d3c22d1c7334b1823200ac740516b
   [PASS] C10 gen-3 DNA_CORE ruleset v6
          got    ddde5acbd811aad624cddbf6d6d0d3d4c1452e02ce83507b5edce94e6a43f9efe6d79b7b35c00a34f5889160b5a0992af67c699cd609bbe21864476ccf6d1fc8
-  [PASS] C11 gen-3 EVM ruleset v1
-         got    415e6f97f58143f436bb3eae73582eff45078dcc23cb0497008838e494065533c2ff1acf271db7aa71a47c6c9a36fc22ce8b0c6e5e3585922c5919e4349f11ae
+  [PASS] C11 gen-3 EVM ruleset v2
+         got    6af8346d10c9ce5ced25b68e1ddd201be205e0d7d465e90412f78962206e775bf85f6c1d71d4cf3833148893977dc8126dfa01fcae2c83ca6a06d74c1bf4465f
   [PASS] C12 gen-3 EVM_ACTIVE literal D (param 14)
-         got    0x5a10af78d85302e6
-  (C12 inputs computed here: empty EVM root eab4a1aa80537cb1…, EVM manifest hash 3814c58b26074100…)
+         got    0x029f47596864d407
+  (C12 inputs computed here: empty EVM root eab4a1aa80537cb1…, EVM manifest hash 3e6fbc42f2616eec…)
 
 ── S1 GEN_STORAGE SYSTEM meter-policy digest ─────────────────────
-  policy v2, scalars 1, max_block_env_bytes = 2097152, ops 1..9 w=1
-  S1 = 0aa4c690a05af8827a322912a402d87b2642c99edc1db83f2871af64da18c3f8b74a6e5c870edc3450ae0474a3c8d7279efb884df8b285c8848beffb25922766
-  S1 == the EVM generation's policy (C8, 0aa4c690a05af882…): CONFIRMED
+  policy v2, scalars 1, max_block_env_bytes = 2097152, ops 1..10 w=1
+  S1 = e5d96b4ae14df93629160133c57f98dcce98a187eebd91301d915766e694083b745c2a928db962d902c74e8f98767edca48f9c699a785c8716dc1d706e06e9b8
+  S1 != the EVM generation's policy (C8, 0aa4c690a05af882…; op 10 is priced here): True
   static const uint8_t SYS_METER_POLICY_DIGEST_GST[DNA_DOM_HASH_LEN] = {
-      0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
-      0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
-      0x26, 0x42, 0xc9, 0x9e, 0xdc, 0x1d, 0xb8, 0x3f,
-      0x28, 0x71, 0xaf, 0x64, 0xda, 0x18, 0xc3, 0xf8,
-      0xb7, 0x4a, 0x6e, 0x5c, 0x87, 0x0e, 0xdc, 0x34,
-      0x50, 0xae, 0x04, 0x74, 0xa3, 0xc8, 0xd7, 0x27,
-      0x9e, 0xfb, 0x88, 0x4d, 0xf8, 0xb2, 0x85, 0xc8,
-      0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
+      0xe5, 0xd9, 0x6b, 0x4a, 0xe1, 0x4d, 0xf9, 0x36,
+      0x29, 0x16, 0x01, 0x33, 0xc5, 0x7f, 0x98, 0xdc,
+      0xce, 0x98, 0xa1, 0x87, 0xee, 0xbd, 0x91, 0x30,
+      0x1d, 0x91, 0x57, 0x66, 0xe6, 0x94, 0x08, 0x3b,
+      0x74, 0x5c, 0x2a, 0x92, 0x8d, 0xb9, 0x62, 0xd9,
+      0x02, 0xc7, 0x4e, 0x8f, 0x98, 0x76, 0x7e, 0xdc,
+      0xa4, 0x8f, 0x9c, 0x69, 0x9a, 0x78, 0x5c, 0x87,
+      0x16, 0xdc, 0x1d, 0x70, 0x6e, 0x06, 0xe9, 0xb8
   };
 
 ── S2 SYSTEM ruleset v9 ──────────────────────────────────────────
-  domain 0 "SYSTEM" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8, 9] types [4, 5, 6, 7, 9, 10] policy S1
-  S2 = b37f489d474134eda056363c7d6d7648c17c16de30cca967cb6210c8f82b71513d2a6f494840a2f0259621ee466cac8d70a344a69193611df99bbe1d9a8976ac
+  domain 0 "SYSTEM" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] types [4, 5, 6, 7, 9, 10] policy S1
+  S2 = c347ddd7b30730b17fe62583a663356a303c548dd2fc0dab7fa8dfdfea63140b25c1f496590a66c8373c3e50d23cbaa5f5730097ee041eca50ed377a1f924b00
   static const uint8_t SYS_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
-      0xb3, 0x7f, 0x48, 0x9d, 0x47, 0x41, 0x34, 0xed,
-      0xa0, 0x56, 0x36, 0x3c, 0x7d, 0x6d, 0x76, 0x48,
-      0xc1, 0x7c, 0x16, 0xde, 0x30, 0xcc, 0xa9, 0x67,
-      0xcb, 0x62, 0x10, 0xc8, 0xf8, 0x2b, 0x71, 0x51,
-      0x3d, 0x2a, 0x6f, 0x49, 0x48, 0x40, 0xa2, 0xf0,
-      0x25, 0x96, 0x21, 0xee, 0x46, 0x6c, 0xac, 0x8d,
-      0x70, 0xa3, 0x44, 0xa6, 0x91, 0x93, 0x61, 0x1d,
-      0xf9, 0x9b, 0xbe, 0x1d, 0x9a, 0x89, 0x76, 0xac
+      0xc3, 0x47, 0xdd, 0xd7, 0xb3, 0x07, 0x30, 0xb1,
+      0x7f, 0xe6, 0x25, 0x83, 0xa6, 0x63, 0x35, 0x6a,
+      0x30, 0x3c, 0x54, 0x8d, 0xd2, 0xfc, 0x0d, 0xab,
+      0x7f, 0xa8, 0xdf, 0xdf, 0xea, 0x63, 0x14, 0x0b,
+      0x25, 0xc1, 0xf4, 0x96, 0x59, 0x0a, 0x66, 0xc8,
+      0x37, 0x3c, 0x3e, 0x50, 0xd2, 0x3c, 0xba, 0xa5,
+      0xf5, 0x73, 0x00, 0x97, 0xee, 0x04, 0x1e, 0xca,
+      0x50, 0xed, 0x37, 0x7a, 0x1f, 0x92, 0x4b, 0x00
   };
 
 ── S3 DNA_CORE ruleset v7 ────────────────────────────────────────
   domain 1 "DNA_CORE" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8, 9] types [1, 2, 3, 11, 12, 13] policy all-zero
   S3 = fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f060
+  S3 == the pre-HF-6-slice-6 CORE v7 pin (fb25e5c4…, CORE unchanged by op 10): True
   static const uint8_t CORE_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
       0xfb, 0x25, 0xe5, 0xc4, 0x1d, 0x60, 0x0f, 0x0e,
       0xd4, 0xe8, 0x97, 0x9f, 0xb4, 0x34, 0xd7, 0x35,
@@ -70,15 +71,15 @@
 
 ── S4 param-16 RULESET_GEN_STORAGE vote literal ──────────────────
   generation      = 4 (base 3), switch spec version = 1
-  preimage (152 B) = 4e44532e525347454e2e76310000000000000004b37f489d474134eda056363c7d6d7648c17c16de30cca967cb6210c8f82b71513d2a6f494840a2f0259621ee466cac8d70a344a69193611df99bbe1d9a8976acfb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f06000000001
-  SHA3-512        = 8c6fd6f2484e602469076637d071480f316e4ac0058f4633384e9d32f3c7a15bd0b92b99adf53e2f78718f550b549da810d21d1fe15a8bd5f2faa8a874314ded
-  first 8 BE      = 0x8c6fd6f2484e6024
-  top bit was     = SET (cleared)
-  S4              = 0x0c6fd6f2484e6024ULL
-  S4 (decimal)    = 896171186953543716
+  preimage (152 B) = 4e44532e525347454e2e76310000000000000004c347ddd7b30730b17fe62583a663356a303c548dd2fc0dab7fa8dfdfea63140b25c1f496590a66c8373c3e50d23cbaa5f5730097ee041eca50ed377a1f924b00fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f06000000001
+  SHA3-512        = 329b0ea92c8b8c58760659b57190e339f26d59f71b6e88be5c5bb11269d29cb094e4076a639a9f4f1ebbc943db5c10c88e099023121115db22123bf9f40b54ae
+  first 8 BE      = 0x329b0ea92c8b8c58
+  top bit was     = clear (unchanged)
+  S4              = 0x329b0ea92c8b8c58ULL
+  S4 (decimal)    = 3646524443046153304
 
   sanity: S2 != SYSTEM v8 (EVM): True
   sanity: S3 != CORE v6 (EVM, version field only): True
   sanity: S4 != D2, S4 != EVM_ACTIVE D: True
 
-control green — GEN_STORAGE (generation 4) values above derived from the written layouts by hashlib, not by the C encoders (generation-4 inputs: decision K10; C-only inputs listed in the docstring).
+control green — GEN_STORAGE (generation 4) values above derived from the written layouts by hashlib, not by the C encoders (generation-4 inputs: decision K10 + HF-6 design rev 6 §2 / K7 / khan A6; C-only inputs listed in the docstring).
