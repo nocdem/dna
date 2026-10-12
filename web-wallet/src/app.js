@@ -1221,8 +1221,11 @@ const nodusAmountText = units => groupDigits(formatUnits(units, NODUS_ASSET.deci
 // exist only while the panel does. Since 0.1.75 the panel is its own page
 // (#earn, the wallet pages below); #stake-panel's `hidden` says only whether
 // staking is available, and the page closes by itself when it is not.
+// The button beside Send / Receive is always shown since 0.1.107 (operator:
+// "bizde earn olması lazım"): disabled, saying why, until staking can be read.
 function setEarnAvailable(available) {
-  $('quick-earn').hidden = !available; $('nav-earn').hidden = !available; $('stake-panel').hidden = !available;
+  $('quick-earn').disabled = !available; $('nav-earn').hidden = !available; $('stake-panel').hidden = !available;
+  $('quick-earn').title = available ? '' : 'Earn opens once the wallet is connected to the Nodus network.';
   portfolio.setEarn(NODUS_ASSET.chain, available);
 }
 function hideStaking() {
@@ -1924,7 +1927,7 @@ $('quick-receive').onclick = () => {
 // Earn opens the NODUS staking page; the selected network moves to NODUS
 // so Activity shows where a delegation is tracked.
 $('quick-earn').onclick = () => {
-  if ($('quick-earn').hidden) return;
+  if ($('quick-earn').disabled) return;
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
   navigateWalletPage('earn');
 };

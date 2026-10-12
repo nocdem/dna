@@ -223,6 +223,17 @@ try {
   assert.equal(await page.locator('#send-block-title').evaluate(el => el === document.activeElement), true);
   await page.locator('#quick-receive').click();
   assert.equal(await page.locator('#receive-title').evaluate(el => el === document.activeElement), true);
+  // 0.1.107 (operator: "swap getir. Ama swap disabled yap"): shown next to
+  // Send / Receive, disabled, saying "Soon".
+  assert.equal(await page.locator('#quick-swap').isVisible(), true);
+  assert.equal(await page.locator('#quick-swap').isDisabled(), true);
+  assert.equal(await page.locator('#quick-swap').innerText(), '⇄ Swap SOON');
+  // Earn is always there (operator: "bizde earn olması lazım"); without a
+  // staking-ready connection (this test has none) it is disabled and says why.
+  assert.equal(await page.locator('#quick-earn').isVisible(), true);
+  assert.equal(await page.locator('#quick-earn').isDisabled(), true);
+  assert.match(await page.locator('#quick-earn').getAttribute('title'), /connected to the Nodus network/);
+  if (process.env.SHOT_DIR) await page.locator('.transfer-actions').screenshot({ path: `${process.env.SHOT_DIR}/transfer-actions.png` });
   assert.equal(await page.locator('#send-form #receive-panel + #send-block').count(), 1, 'receive block directly above the send block');
   for (const width of [320, 390, 820, 1280]) {
     await page.setViewportSize({ width, height: 960 });

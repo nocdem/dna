@@ -241,6 +241,10 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .transfer-buttons { display: flex; gap: 12px; }
 .transfer-buttons button { min-width: 130px; border-radius: 9px; }
 .transfer-buttons button span { float: none; font-size: 18px; margin-right: 10px; line-height: 1; }
+/* Swap (0.1.107, operator: "swap getir. Ama swap disabled yap şu anda"):
+   shown, not yet usable — "Soon" says why, the cursor says it cannot be pressed. */
+#quick-swap:disabled, #quick-earn:disabled { cursor: not-allowed; }
+.transfer-buttons .soon { margin-left: 8px; padding: 1px 7px; border: 1px solid currentColor; border-radius: 999px; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; vertical-align: middle; }
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 22px; }
 .dashboard-panel { min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #1c2218; }
 .panel-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -528,6 +532,14 @@ body:has(#wallet-open:not([hidden])) .site-check > p:last-child { display: none;
 .portfolio-scope { padding-top: 14px; border-top: 1px solid #d5f9981c; }
 .portfolio-networks { gap: 8px; padding: 14px 0 0; border-bottom: 0; }
 .network-health { padding: 5px 10px 5px 6px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); line-height: 1.4; }
+/* A button since 0.1.107 (it chooses the network for Send / Receive): the
+   global button look (lime fill, bold, shadow, floated spans) is undone; the
+   chosen network's badge has a lime edge. */
+button.network-health { margin: 0; color: #b4bea9; font-weight: 400; text-align: left; box-shadow: none; cursor: pointer; }
+button.network-health span { float: none; }
+button.network-health:hover { border-color: #d5f99840; filter: none; }
+button.network-health[aria-pressed="true"] { border-color: #d5f99899; color: var(--text); }
+button.network-health:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 .transfer-actions { margin: 18px 0 20px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
 .transfer-actions .eyebrow { margin-bottom: 4px; }
 .transfer-buttons { flex-wrap: wrap; justify-content: flex-end; gap: 10px; }

@@ -218,6 +218,19 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 1050 });
   assert.equal(await usdt.locator('summary').evaluate(node => document.activeElement === node), true);
+  // 0.1.107 (operator: "clickable yap … Ethereum'a bastı … send receive …
+  // network seçebilirsin"): a badge chooses its network for Send / Receive,
+  // marks itself, and works from the keyboard too.
+  const badgeOf = name => page.locator('#portfolio-networks .network-health', { hasText: name });
+  await badgeOf('Ethereum').click();
+  assert.equal(await page.locator('#chain').inputValue(), 'ethereum');
+  assert.equal(await badgeOf('Ethereum').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#portfolio-networks .network-health[aria-pressed="true"]').count(), 1);
+  assert.match(await page.locator('#receive-title').innerText(), /Ethereum/);
+  await badgeOf('Solana').focus(); await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#chain').inputValue(), 'solana');
+  assert.equal(await badgeOf('Solana').getAttribute('aria-pressed'), 'true');
+  assert.equal(await badgeOf('Ethereum').getAttribute('aria-pressed'), 'false');
   priceMode = 'valid'; await refresh();
   // A balance counts until two minutes past its next automatic read (0.1.93:
   // every 5 minutes by default, src/balance-refresh.js) — 7 minutes, not the

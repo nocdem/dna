@@ -131,8 +131,15 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       // accessible name.
       const reading = status === 'Reading';
       const health = rows.some(r => r.state === 'error') ? 'failed' : ready && rows.length && !c.balanceUnavailable ? 'current' : lastRead.length ? 'old' : 'none';
-      const badge = el('span', 'network-health'); badge.dataset.health = health; badge.dataset.reading = String(reading);
-      badge.title = `${c.name} · ${status}`; badge.setAttribute('role', 'img'); badge.setAttribute('aria-label', badge.title);
+      // A button (0.1.107, operator: "clickable yap … Ethereum'a bastı …
+      // send receive … network seçebilirsin"): it chooses this network for
+      // the Send / Receive panel, as a click on a holding row does; the
+      // chosen network's badge is marked (aria-pressed, setSelected).
+      const badge = el('button', 'network-health'); badge.type = 'button'; badge.dataset.chain = chain;
+      badge.dataset.health = health; badge.dataset.reading = String(reading);
+      badge.title = `${c.name} · ${status}`; badge.setAttribute('aria-label', `${badge.title}. Use ${c.name} for Send / Receive`);
+      badge.setAttribute('aria-pressed', String(chain === selected));
+      badge.onclick = () => selectAsset(chain, c.symbol, 'select');
       // The light at the right end, centred top to bottom (0.1.106, operator:
       // "tam ortalamak … sağa dayalı olması lazım").
       badge.append(networkIcon(c), el('span', '', c.name), el('span', 'health-light')); return badge;
@@ -376,6 +383,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   function setSelected(chain) {
     selected = chain;
     freshen(chain);                      // read it again if older than a minute (0.1.93)
+    for (const badge of $('portfolio-networks').querySelectorAll('.network-health')) badge.setAttribute('aria-pressed', String(badge.dataset.chain === chain));
     for (const entry of $('balances').querySelectorAll('.chain-holding')) {
       const current = entry.dataset.chain === chain, control = entry.querySelector('.holding-select');
       entry.classList.toggle('selected', current);
