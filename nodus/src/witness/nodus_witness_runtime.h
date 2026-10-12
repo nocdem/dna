@@ -658,6 +658,29 @@ typedef struct {
      * node FAULT, never a default). One consumer: the CORE NAME_REGISTER
      * exec. A hook never chooses it. */
     uint64_t       name_price[4];
+    /* HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+     * design.md rev 6 §1.5, §8; HF-6 slice 8a): the generation-4 STAKE
+     * bond FLOOR at `global_height` — the committed chain_config param 19
+     * (STAKE_MIN) active there, or the compiled DNAC_HF6_STAKE_MIN_DEFAULT
+     * with no row. Read by the ENGINE with the token_create_fee
+     * discipline (nodus_witness_v2_apply.c env_stake_min: an unreadable
+     * row, or a stored value outside [DNAC_HF6_STAKE_MIN_MIN, INT64_MAX],
+     * is a node FAULT, never a default) and filled on every ctx it builds.
+     * UNMETERED (no mediated read). One consumer: the SYSTEM STAKE
+     * generation-4 exec (nodus_witness_rt_native.c rtn_stake_min_at). A
+     * hook never chooses it. A ctx built by hand (tests) must set it: 0
+     * is never a legal floor, and the hook refuses a ctx carrying 0 as a
+     * node fault rather than reading it as "no floor". */
+    uint64_t       stake_min;
+    /* HF-6 (design rev 6 §11.3, §8): the EXACT storage registration bond
+     * at `global_height` — the committed chain_config param 21
+     * (STORAGE_BOND) active there, or the compiled
+     * DNAC_HF6_STORAGE_BOND_DEFAULT. The stake_min contract above
+     * (nodus_witness_v2_apply.c env_storage_bond; range [DNAC_HF6_
+     * STORAGE_BOND_MIN, _MAX]). One consumer: the SYSTEM STORAGE_REGISTER
+     * generation-4 exec (rtn_storage_bond_at). 0 is never legal: a hook
+     * seeing 0 refuses as a node fault. */
+    uint64_t       storage_bond;
     /* Nodus EVM (design §10): the block being applied's Comet header time in
      * SECONDS (`blk->timestamp`, nodus_witness_cmt_app.c FinalizeBlock)
      * and the EVM block gas limit in force at `global_height` (chain_config

@@ -7202,9 +7202,9 @@ removed). **By design, not a port of the legacy STAKE:** validator_id =
 "revive an UNSTAKED row" has no analogue — a re-stake after graduation opens a new validator_id
 (§4); no unstake destination (the bond resolves to owner_fp, §1.5).
 
-**STAKE_MIN.** `rtn_stake_min_at(ctx)` is THE ONE read: today the compiled
-`DNAC_HF6_STAKE_MIN_DEFAULT` (2M NODUS — param 19 does not exist yet); slice 8 replaces its body with
-the committed param-19 value at the block height (an engine fact on the ctx) and nothing else.
+**STAKE_MIN.** `rtn_stake_min_at(ctx)` is THE ONE read: at this slice the compiled
+`DNAC_HF6_STAKE_MIN_DEFAULT` (2M NODUS). Since slice 8a it is the committed param-19 value at the
+block height — the engine fact `ctx->stake_min` (section "HF-6 slice 8a").
 
 **Read plan** (`rtn_stake2_read_plan`): `[op 7 active_count] [op 13 validator_id] [op 17
 SHA3-512(consensus_pk)]` — ascending (op, key).
@@ -7272,10 +7272,10 @@ power of every entry of a snapshot, in its entry order, by the snapshot's OWN ru
 `p_i = total_stake / DNAC_DECIMAL_UNIT`, any `p_i == 0` → -1, then `dna_power_cap_counted(p,
 validator_id, n, ratio)` (`shared/dnac/power_cap.h`, slice 5a); any other ruleset → -1. The ratio
 comes from the ONE seam `nodus_witness_power_cap_bps_for_epoch(w, snap->epoch)` — keyed on the
-snapshot's epoch start like the committee target — which today returns the compiled
+snapshot's epoch start like the committee target — which at this slice returned the compiled
 `DNAC_HF6_POWER_CAP_BPS_DEFAULT` (3000, `dnac/include/dnac/dnac.h`; range pinned by a
-`_Static_assert` against `DNA_POWER_CAP_BPS_MIN/_MAX`); slice 8 replaces only its body with the
-fail-closed param-20 read. Every caller treats -1 as a node fault. The snapshot is never modified;
+`_Static_assert` against `DNA_POWER_CAP_BPS_MIN/_MAX`); slice 8a replaced only its body with the
+fail-closed param-20 read (section "HF-6 slice 8a"). Every caller treats -1 as a node fault. The snapshot is never modified;
 `entry.total_stake` stays raw.
 
 **Consumers** (each byte-identical for a ruleset-1 snapshot — the only ruleset the 5b store/read
@@ -7874,9 +7874,9 @@ the 3 → 4 edge holds zero rows (design §11.8).
 `_Static_assert` (the values, and 0 < MIN ≤ DEFAULT ≤ MAX ≤ INT64_MAX). `DNAC_STORAGE_STAKE_MIN` (the
 storage-reward-v1 exact bond, the same 10^14) is removed with its asserts; every consumer moved.
 
-**The seam.** `rtn_storage_bond_at(ctx)` is THE ONE read of STORAGE_BOND: today the compiled default;
-slice 8 replaces its body with the committed param-21 value active at `ctx->global_height`,
-fail-closed — the `rtn_stake_min_at` pattern.
+**The seam.** `rtn_storage_bond_at(ctx)` is THE ONE read of STORAGE_BOND: at this slice the compiled
+default; since slice 8a the committed param-21 value active at `ctx->global_height`, fail-closed —
+the engine fact `ctx->storage_bond` (section "HF-6 slice 8a").
 
 **Calls** (`nodus_witness_rt_native.c`, design §2). STORAGE_REGISTER (op 7) = `owner_fp[64] ‖
 node_pk[2592] ‖ consent_sig[4627] ‖ consent_expiry u64 ‖ bond u64` = 7299 B
@@ -8080,7 +8080,7 @@ refuses ACTIVE / EXITING and a RELEASED row before h = (⌊(x−1)/E⌋ + 2)·E 
 exit refuses no row / not ACTIVE / a row owner ≠ SHA3-512(--keys pk); a failed query warns and the chain
 decides) → gas price → the owner's coins and the tip → `cli_consent_check` with op 3 (`cli_consent_op_name`
 now names op 3 in its mismatch message) → `nodus_v2_stake_build` (op 7: amount =
-`DNAC_HF6_STORAGE_BOND_DEFAULT`, the value of the chain's `rtn_storage_bond_at` seam until slice 8;
+`DNAC_HF6_STORAGE_BOND_DEFAULT` at this slice — since slice 8a the node's `dnac_fee_info` "storage_bond";
 op 8: `req.node_fp`, fee only) → printed: node, owner, bond and consequences, sizes, `wire_id`,
 `intent_id` → `--dry-run` self-check line (`SYSTEM STORAGE_REGISTER` / `STORAGE_EXIT`) or submit on the
 same session. `cmd_storage_tx_refused` (the 6b-1 stub) is deleted. `cli_storage_usage` is the one
@@ -8191,6 +8191,73 @@ validator's owner as a DELEGATE signer); the CORE funding leg balances (lock = a
 refused) and an UNDELEGATE's carries the release coin to the delegator; the decoder refusals. G1: the
 legacy DELEGATE / UNDELEGATE / UNSTAKE equal the restated legacy calls and are byte-identical at
 generations 0 and 3 outside the hedged auth blobs; the generation-4 argument refusals.
+
+### HF-6 slice 8a — params 19 STAKE_MIN / 20 POWER_CAP_BPS / 21 STORAGE_BOND; the three seams become chain reads (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.5 (STAKE_MIN), §5
+(POWER_CAP_BPS, read at the snapshot's epoch start), §8 (the new params; 18-21 ERGONOMIC), §11.3
+(STORAGE_BOND exact); decisions `docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md` K5
+([500, 3000]) and K9 (STAKE_MIN [100k NODUS, INT64_MAX], default 2M — also
+`2026-10-03-role-stake-amounts.md`), `2026-10-09-kurultay-16-hf6-storage-summary.md` khan 3
+(STORAGE_BOND [100k, 1M] NODUS, default 1M) and "4 ok" (ERGONOMIC); plan `tasks/hf6-slice8-plan.md`
+§2 "8a". Param 18 (the generation-4 vote) is NOT assigned here — slice 8c; until then
+`dnac_cfg_param_read_by_consensus(18)` is false and both rule sides refuse it like any unknown id.
+
+| id | name | range (inclusive) | no-row value | grace | stateful rule | reader |
+|---|---|---|---|---|---|---|
+| 19 | `STAKE_MIN` | [`DNAC_HF6_STAKE_MIN_MIN` = 10^13, `INT64_MAX`] raw | `DNAC_HF6_STAKE_MIN_DEFAULT` = 2·10^14 | ERGONOMIC | judging generation ≥ 4 | `env_stake_min` → `ctx->stake_min` → `rtn_stake_min_at` (generation-4 STAKE: bond < floor → -1) |
+| 20 | `POWER_CAP_BPS` | [500, 3000] bps | 3000 | ERGONOMIC | judging generation ≥ 4 | `nodus_witness_power_cap_bps_for_epoch(w, epoch_start)` → every ruleset-2 power consumer |
+| 21 | `STORAGE_BOND` | [10^13, 10^14] raw | 10^14 | ERGONOMIC | judging generation ≥ 4 | `env_storage_bond` → `ctx->storage_bond` → `rtn_storage_bond_at` (REGISTER: bond ≠ value → -1) |
+
+**Scalar rules** (`nodus_chain_config_scalar_rules`, mirrored by `dnac/src/transaction/verify.c`).
+Each range is ONE constant pair shared with the readers (`_Static_assert`ed `CC_*` == `DNAC_*`, and
+param 20's == `DNA_POWER_CAP_BPS_MIN/_MAX`), so a value a vote can commit never trips a reader. Param
+19 is the first whose range reaches the int64 ceiling: its case bounds `new_value ≤ INT64_MAX` itself,
+because the shared int64 tail bounds the nonce and the three heights, never `new_value` — a 2^63 value
+would be stored negative by the int64 cast and every node's reader would FAULT at the next STAKE
+(decision `2026-09-30-chain-config-int64-bounds.md`). **Stateful:** votable only while generation 4
+judges the vote (the NAME_PRICE shape); no single-use rule; no other fact is read. **Exec:** a 19-21
+leg CREATEs exactly one history row (param ‖ effective); the read plan stays empty.
+
+**Readers.** 19 and 21 are per-item ENGINE FACTS (the hooks are pure): `env_stake_min` /
+`env_storage_bond` read the committed row active at the block's height (tip + 1 on the CheckTx dry
+run, so CheckTx and FinalizeBlock agree) through the three-valued `nodus_chain_config_get_u64`, once per
+item, and fill them on EVERY ctx the engine builds (`exec_one_env`, `env_authorize_legs`). An
+unreadable row, or a stored value outside the range (a corrupt or foreign DB — no vote can commit it),
+is a node FAULT (-2), never a default; the block aborts whole. The hooks refuse a ctx carrying 0 (never
+engine-filled) as a node fault, not as "no floor". UNMETERED: no committed block's `gas_used` moves.
+Param 20 is read directly at the snapshot's EPOCH START (the `committee_target_for_epoch` pattern): a
+read fault or a stored value outside [500, 3000] (checked on the u64 before narrowing) answers -1, which
+every consumer treats as a fault; a row effective at `epoch_start + 1` governs the next snapshot, not
+this one. `_Static_assert(DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS >= DNAC_EPOCH_LENGTH)`
+(`nodus_witness_vset.c`) pins the frozen-ratio premise: a row that governs snapshot(X) is effective ≤ X
+and was committed ≥ the grace earlier, i.e. at or before boundary X − E that builds snapshot(X), so the
+builder and every later consumer read one ratio for it. A storage registration keeps the bond it paid
+(the exit refunds the recorded bond, `nodus_witness_v2_storage.c`), so a later param-21 vote never
+touches an existing row.
+
+**`dnac_fee_info`** gains three additive keys — `stake_min`, `storage_bond`, `power_cap_bps` — the
+values in force at tip + 1 (power_cap_bps: the row active at tip + 1; consensus keys each snapshot on
+its own epoch start). An unreadable or out-of-range value answers `INTERNAL_ERROR`. The client decoder
+is now `nodus_dnac_fee_info_decode` (exported; `nodus_dnac_fee_info_t` grows three fields at its end, 0
+= an older server); `nodus-cli storage register` builds the bond from `storage_bond` and the `stake2`
+warning compares with `stake_min` (each the compiled default when the server predates the key);
+`chain-config propose` names the three params. The explorer labels ids 19-21.
+
+**Byte-identical.** Descriptors, pins, the pins header, D2, the EVM D and the storage dev literal are
+untouched; with no 19 / 20 / 21 row every reader answers the compiled default, so generations 1-4 run
+exactly as before until a vote takes effect.
+
+**Tests** (written, NOT run by the builder). `test_hf4_params` (ids, read list, the scalar bounds incl.
+INT64_MAX accepted and INT64_MAX + 1 / UINT64_MAX refused by param 19's own case, grace, stateful by
+generation, the exec hook at generations 1/2/3/NULL vs 4, slots 18-21, 18 still refused);
+`test_hf6_stake` (A5: the fact moves the floor, 0 → -2; B7: a committed 10^13 row lets a 10^13 bond
+apply and refuses 10^13 − 1; B8: an out-of-range row faults the block with the param-19 reason);
+`test_storage_reg` (A3: the fact is the exact bond, 0 → -2; 3E + 2: a committed 10^13 row refuses the
+1M bond and applies 10^13; 3E + 3: an out-of-range row faults); `test_hf6_power` case 5 (the epoch-start
+key, 499 / 3001 / a negative stored value → -1, no row → 3000); `test_v2_gas_price` (adjacency);
+`test_hf4_names` (the fee_info decoder); `test_explorer` (names); `dnac/tests/test_chain_config_verify`
+(the mirror's ranges, 18 refused).
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

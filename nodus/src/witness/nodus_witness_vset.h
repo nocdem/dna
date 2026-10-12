@@ -383,15 +383,18 @@ int nodus_witness_vset_commit_genesis(nodus_witness_t *w,
  * queried height, so every consumer of one snapshot reads one ratio
  * (plan §1 (iii)).
  *
- * Today: the compiled DNAC_HF6_POWER_CAP_BPS_DEFAULT (param 20 does not
- * exist yet). Slice 8 replaces the body — and nothing else — with the
- * fail-closed chain-config read of param 20 at `epoch_start`
- * (nodus_chain_config_get_u64 with the default as the no-row answer; a
- * read fault is -1, never the default — the committee_target_for_epoch
- * pattern).
+ * HF-6 slice 8a: chain_config param 20 (DNAC_CFG_POWER_CAP_BPS) active at
+ * `epoch_start` (nodus_chain_config_get_u64 with
+ * DNAC_HF6_POWER_CAP_BPS_DEFAULT as the no-row answer — the
+ * committee_target_for_epoch pattern). A read fault is -1, never the
+ * default; a stored value outside [DNAC_CFG_MIN_POWER_CAP_BPS,
+ * DNAC_CFG_MAX_POWER_CAP_BPS] (= power_cap.h's [500, 3000]; the scalar
+ * rule admits nothing else) is -1 too. A row effective at
+ * `epoch_start` + 1 or later does not count for this snapshot.
  *
  * @param ratio_out required; written only on 0.
- * @return 0 / -1 (bad args; from slice 8 also an unreadable param).
+ * @return 0 / -1 (bad args, an unreadable param, or an out-of-range
+ *         stored value — every consumer treats -1 as a fault).
  */
 int nodus_witness_power_cap_bps_for_epoch(nodus_witness_t *w,
                                           uint64_t epoch_start,

@@ -593,6 +593,20 @@ typedef struct {
                              *   row is active); 0 = an older server that
                              *   does not send the key — the caller falls
                              *   back to NODUS_W_TOKEN_CREATE_FEE. */
+    uint64_t stake_min;     /**< HF-6 slice 8a: committed chain_config
+                             *   param 19 STAKE_MIN at tip + 1 — the
+                             *   generation-4 STAKE bond floor (the server
+                             *   answers DNAC_HF6_STAKE_MIN_DEFAULT with
+                             *   no row); 0 = an older server that does
+                             *   not send the key. */
+    uint64_t storage_bond;  /**< HF-6 slice 8a: param 21 STORAGE_BOND at
+                             *   tip + 1 — the EXACT STORAGE_REGISTER bond
+                             *   (DNAC_HF6_STORAGE_BOND_DEFAULT with no
+                             *   row); 0 = not reported. */
+    uint64_t power_cap_bps; /**< HF-6 slice 8a: param 20 POWER_CAP_BPS
+                             *   active at tip + 1 (3000 with no row); a
+                             *   snapshot uses the value active at its
+                             *   own epoch start. 0 = not reported. */
 } nodus_dnac_fee_info_t;
 
 /** Maximum inclusion-proof depth for anchored UTXO / TX proofs.

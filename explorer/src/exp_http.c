@@ -249,6 +249,10 @@ static const char *param_name(uint32_t id) {
     case DNAC_CFG_EVM_BLOCK_GAS_LIMIT:    return "EVM_BLOCK_GAS_LIMIT";
     case DNAC_CFG_RULESET_GEN_STORAGE:    return "RULESET_GEN_STORAGE";
     case DNAC_CFG_DELEGATE_NAME_REQUIRED: return "DELEGATE_NAME_REQUIRED";
+    /* HF-6 (id 18 is not assigned until slice 8c) */
+    case DNAC_CFG_STAKE_MIN:              return "STAKE_MIN";
+    case DNAC_CFG_POWER_CAP_BPS:          return "POWER_CAP_BPS";
+    case DNAC_CFG_STORAGE_BOND:           return "STORAGE_BOND";
     default:                              return NULL;
     }
 }

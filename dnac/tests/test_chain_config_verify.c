@@ -113,9 +113,9 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 18 (Nodus EVM 14-15, storage reward v1 16, HF-8 17) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 22 (Nodus EVM 14-15, storage reward v1 16, HF-8 17, HF-6 19-21) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 18);
+    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 22);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
@@ -226,7 +226,7 @@ int main(void) {
         CHECK(DNAC_NAME_PRICE_6P_DEFAULT == 100000000ULL);
     }
 
-    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13, 14, 15, 16} of the governed
+    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13, 14, 15, 16, 17, 19, 20, 21} of the governed
      * id space are read by the running consensus (id 8 = HF3_ACTIVE, read
      * by the engine's env_hf3_active — HF-3, 2026-10-02; id 7 =
      * HF2_ACTIVE, read by the engine's env_hf2_active, 2026-09-30).
@@ -263,9 +263,67 @@ int main(void) {
                             * and env_ruleset_gen_storage_voted */
                            id == DNAC_CFG_RULESET_GEN_STORAGE ||
                            /* HF-8: 17 read by env_delegate_name_required */
-                           id == DNAC_CFG_DELEGATE_NAME_REQUIRED);
+                           id == DNAC_CFG_DELEGATE_NAME_REQUIRED ||
+                           /* HF-6 slice 8a: 19 env_stake_min, 20
+                            * nodus_witness_power_cap_bps_for_epoch, 21
+                            * env_storage_bond (18 stays off the list
+                            * until slice 8c assigns it) */
+                           id == DNAC_CFG_STAKE_MIN ||
+                           id == DNAC_CFG_POWER_CAP_BPS ||
+                           id == DNAC_CFG_STORAGE_BOND);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
+    CHECK(!dnac_cfg_param_read_by_consensus(18));
+
+    /* 5c. HF-6 slice 8a — params 19-21 on the client mirror (design
+     * 2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8; ranges
+     * Kurultay #14 K9 / K5, #16 khan decision 3). The "generation 4
+     * judges the vote" rule is witness-side only. The vehicle's window
+     * and nonce are valid, so STAKE_MIN's INT64_MAX + 1 / UINT64_MAX
+     * refusals can only come from the param-19 case's OWN upper check
+     * (the int64 tests bound the nonce and the heights, not new_value).
+     * MUTANT KILLED: a missing case (default refuses a legal value), an
+     * off-by-one bound, a 19 case with no upper bound. */
+    CHECK(DNAC_CFG_STAKE_MIN == 19 && DNAC_CFG_POWER_CAP_BPS == 20 &&
+          DNAC_CFG_STORAGE_BOND == 21);
+    build_valid_chain_config(&tx, 19, DNAC_HF6_STAKE_MIN_MIN - 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 19, DNAC_HF6_STAKE_MIN_MIN);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 19, DNAC_HF6_STAKE_MIN_DEFAULT);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 19, (uint64_t)INT64_MAX);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 19, (uint64_t)INT64_MAX + 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 19, UINT64_MAX);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 20, 499);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 20, 500);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 20, 3000);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 20, 3001);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 21, DNAC_HF6_STORAGE_BOND_MIN - 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 21, DNAC_HF6_STORAGE_BOND_MIN);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 21, DNAC_HF6_STORAGE_BOND_MAX);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 21, DNAC_HF6_STORAGE_BOND_MAX + 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    CHECK(DNAC_HF6_STAKE_MIN_MIN == 10000000000000ULL);
+    CHECK(DNAC_CFG_MIN_POWER_CAP_BPS == 500u &&
+          DNAC_CFG_MAX_POWER_CAP_BPS == 3000u);
+    CHECK(DNAC_HF6_STORAGE_BOND_MIN == 10000000000000ULL &&
+          DNAC_HF6_STORAGE_BOND_MAX == 100000000000000ULL);
+    /* 18 is refused for values its neighbours accept */
+    build_valid_chain_config(&tx, 18, 500);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, 18, DNAC_HF6_STAKE_MIN_DEFAULT);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
 
     /* 6. MAX_TXS_PER_BLOCK (id 1) is RETIRED: every value refuses, even
      * the shapes that used to be the valid [1,10] range — the hard cap

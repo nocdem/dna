@@ -490,8 +490,9 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     } else if (is_stake2) {
         /* rtn_stake2_exec's call-alone rules: the commission bound and the
          * INTEGER bound of the bond (design §1.5). The STAKE_MIN floor is
-         * chain state (rtn_stake_min_at — a chain_config value from slice
-         * 8), the consent and its expiry window the caller's. */
+         * chain state (rtn_stake_min_at — chain_config param 19, reported
+         * by dnac_fee_info "stake_min"), the consent and its expiry window
+         * the caller's. */
         if (req->commission_bps > (uint32_t)DNAC_COMMISSION_BPS_MAX)
             return NODUS_V2_STAKE_ERR_COMMISSION;
         if (req->amount < 1 || req->amount > (uint64_t)INT64_MAX)
@@ -504,8 +505,8 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         /* rtn_storage_register_exec's call-alone rules (design §11.3, G13):
          * 0 < bond <= INT64_MAX. The EXACT value is chain state (the
          * STORAGE_BOND in force, rtn_storage_bond_at — chain_config param
-         * 21 from slice 8), the consent and its expiry window the
-         * caller's. */
+         * 21, reported by dnac_fee_info "storage_bond"), the consent and
+         * its expiry window the caller's. */
         if (req->amount < 1 || req->amount > (uint64_t)INT64_MAX)
             return NODUS_V2_STAKE_ERR_STORAGE_BOND;
     } else if (is_stake) {

@@ -1849,7 +1849,10 @@ static void cc_item(nodus_dnac_v3_item_t *it, uint32_t index, uint8_t tag,
  *             item 2 refused envelope (no record)
  *   height 2: item 0 applied chain_config RULESET_GEN2 (9) =
  *             4962894749133920991 @ 3151 (above 2^53: a string),
- *             item 1 applied chain_config unknown id 200 = 5 @ 4000 */
+ *             item 1 applied chain_config unknown id 200 = 5 @ 4000,
+ *             items 2-4 applied chain_config HF-6 STAKE_MIN (19) =
+ *             10^13 @ 5000, POWER_CAP_BPS (20) = 500 @ 5000,
+ *             STORAGE_BOND (21) = 10^14 @ 5000 (HF-6 slice 8a names) */
 static int seed_governance(exp_db_t *db) {
     nodus_dnac_v3_block_result_t p;
     exp_block_batch_t b;
@@ -1882,11 +1885,14 @@ static int seed_governance(exp_db_t *db) {
     nodus_client_free_v3_block_result(&p);
     if (rc != 0) return rc;
 
-    page_header(&p, 2, 2, 2, 2);
-    p.count = 2;
-    p.items = calloc(2, sizeof(nodus_dnac_v3_item_t));
+    page_header(&p, 2, 5, 5, 2);
+    p.count = 5;
+    p.items = calloc(5, sizeof(nodus_dnac_v3_item_t));
     cc_item(&p.items[0], 0, 0x75, 9, 4962894749133920991ULL, 3151);
     cc_item(&p.items[1], 1, 0x77, 200, 5, 4000);
+    cc_item(&p.items[2], 2, 0x79, 19, 10000000000000ULL, 5000);
+    cc_item(&p.items[3], 3, 0x7B, 20, 500, 5000);
+    cc_item(&p.items[4], 4, 0x7D, 21, 100000000000000ULL, 5000);
     exp_block_batch_init(&b);
     rc = exp_extract_page(&p, &b);
     if (rc == 0) rc = exp_db_write_height(db, &b);
@@ -1931,6 +1937,12 @@ static void test_route_governance(void) {
         "\"param_id\":9,\"param_name\":\"RULESET_GEN2\",\"new_value\":\"4962894749133920991\","
         "\"effective_height\":3151,",
         "\"param_id\":200,\"param_name\":null,\"new_value\":\"5\",\"effective_height\":4000,",
+        "\"param_id\":19,\"param_name\":\"STAKE_MIN\",\"new_value\":\"10000000000000\","
+        "\"effective_height\":5000,",
+        "\"param_id\":20,\"param_name\":\"POWER_CAP_BPS\",\"new_value\":\"500\","
+        "\"effective_height\":5000,",
+        "\"param_id\":21,\"param_name\":\"STORAGE_BOND\",\"new_value\":\"100000000000000\","
+        "\"effective_height\":5000,",
         "],\"truncated\":false}",
         NULL };
 
@@ -1943,14 +1955,15 @@ static void test_route_governance(void) {
     if (exp_http_route(&ctx, "GET", "/api/governance", &body, &status) != 0) { FAIL("route"); exp_db_close(db); return; }
     int ok = (status == 200);
     for (int i = 0; ok && needles[i]; i++) if (!strstr(body.buf, needles[i])) ok = 0;
-    /* exactly three records — the delegate record and the refused item are not listed */
-    if (ok && count_substr(body.buf, "\"param_id\":") != 3) ok = 0;
+    /* exactly six records — the delegate record and the refused item are not listed */
+    if (ok && count_substr(body.buf, "\"param_id\":") != 6) ok = 0;
     /* (height, index) ascending */
     if (ok) {
         const char *a = strstr(body.buf, "\"position\":\"1:1\"");
         const char *c = strstr(body.buf, "\"position\":\"2:0\"");
         const char *d = strstr(body.buf, "\"position\":\"2:1\"");
-        if (!a || !c || !d || !(a < c && c < d)) ok = 0;
+        const char *e = strstr(body.buf, "\"position\":\"2:4\"");
+        if (!a || !c || !d || !e || !(a < c && c < d && d < e)) ok = 0;
     }
     if (!ok) printf("(%d: %s) ", status, body.buf ? body.buf : "(null)");
     exp_json_freebuf(&body);

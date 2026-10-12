@@ -45,6 +45,22 @@ _Static_assert(DNA_VSET_HASH_LEN == DNA_V2_ROOT_LEN,
 _Static_assert(DNAC_HF6_POWER_CAP_BPS_DEFAULT >= DNA_POWER_CAP_BPS_MIN &&
                DNAC_HF6_POWER_CAP_BPS_DEFAULT <= DNA_POWER_CAP_BPS_MAX,
                "DNAC_HF6_POWER_CAP_BPS_DEFAULT outside [500, 3000]");
+/* HF-6 slice 8a: param 20's vote range (dnac.h, the client mirror's and
+ * the scalar rule's pair) IS the water-fill's own legal range, so a legal
+ * vote can never make dna_power_cap_counted refuse. */
+_Static_assert(DNAC_CFG_MIN_POWER_CAP_BPS == DNA_POWER_CAP_BPS_MIN &&
+               DNAC_CFG_MAX_POWER_CAP_BPS == DNA_POWER_CAP_BPS_MAX,
+               "param 20's range drifted from power_cap.h");
+/* HF-6 slice 8a (plan §1.7): the frozen-ratio premise. A param-20 row
+ * that governs snapshot(X) has effective <= X and was committed at
+ * c <= effective - grace; with grace >= DNAC_EPOCH_LENGTH that is at or
+ * before boundary X - E, whose items run before that boundary builds
+ * snapshot(X) — so the builder and every later consumer of snapshot(X)
+ * (the Comet diffs, Rule N, the distribution, the storage settlement)
+ * read ONE ratio for it. A grace below E would let a row land between the
+ * build and a consumption. */
+_Static_assert(DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS >= DNAC_EPOCH_LENGTH,
+               "POWER_CAP_BPS's grace must cover an epoch (frozen ratio)");
 /* The snapshot's validator_id is the 64-byte id the cap tie-breaks on. */
 _Static_assert(DNA_VSET_VALIDATOR_ID_LEN == 64,
                "snapshot validator_id width != power-cap id width");
@@ -1197,11 +1213,33 @@ int nodus_witness_power_cap_bps_for_epoch(nodus_witness_t *w,
                                           uint64_t epoch_start,
                                           uint32_t *ratio_out) {
     if (!w || !ratio_out) return -1;
-    /* Slice 8 replaces this body with the fail-closed param-20 read at
-     * `epoch_start` (nodus_witness_committee.c committee_target_for_epoch
-     * pattern); until then the compiled default is the only value. */
-    (void)epoch_start;
-    *ratio_out = DNAC_HF6_POWER_CAP_BPS_DEFAULT;
+    /* HF-6 slice 8a: chain_config param 20 at the snapshot's EPOCH START
+     * (the committee_target_for_epoch pattern, nodus_witness_committee.c),
+     * the compiled default with no row. A read fault is -1, never the
+     * default. A stored value outside [500, 3000] is this node's storage
+     * disagreeing with every writer (the scalar rule admits nothing
+     * else) — -1 too, checked on the u64 BEFORE the narrowing to
+     * uint32_t, so no out-of-range value can wrap into the range. */
+    uint64_t v = 0;
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_POWER_CAP_BPS,
+                                   epoch_start,
+                                   (uint64_t)DNAC_HF6_POWER_CAP_BPS_DEFAULT,
+                                   &v) < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: POWER_CAP_BPS is unreadable — "
+                      "refusing to derive voting power from a guessed "
+                      "ratio", (unsigned long long)epoch_start);
+        return -1;
+    }
+    if (v < (uint64_t)DNAC_CFG_MIN_POWER_CAP_BPS ||
+        v > (uint64_t)DNAC_CFG_MAX_POWER_CAP_BPS) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: POWER_CAP_BPS reads %llu, a "
+                      "value no committed row can hold — this node's "
+                      "chain_config storage is inconsistent",
+                      (unsigned long long)epoch_start,
+                      (unsigned long long)v);
+        return -1;
+    }
+    *ratio_out = (uint32_t)v;
     return 0;
 }
 

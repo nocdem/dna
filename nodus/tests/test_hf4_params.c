@@ -9,9 +9,9 @@
  * 6, 10, 16, 17.
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
- *  1. ids: RULESET_GEN2 = 9, NAME_PRICE_3P..6P = 10..13 (MAX_ID 17 since
- *     Nodus EVM 14-15, storage reward v1 16 and HF-8 17), all on the
- *     read list;
+ *  1. ids: RULESET_GEN2 = 9, NAME_PRICE_3P..6P = 10..13 (MAX_ID 21 since
+ *     Nodus EVM 14-15, storage reward v1 16, HF-8 17 and HF-6 19-21; 18
+ *     unassigned), all on the read list;
  *     D2 <= INT64_MAX; SWITCH_SPEC_VERSION 1.
  *  2. scalar rules: param 9 accepts EXACTLY D2 (D2 ± 1, UINT64_MAX
  *     refused; the shared window and int64 rules still apply); params
@@ -68,8 +68,8 @@
  *  HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md
  *  rev 2 §1 — param 17 DELEGATE_NAME_REQUIRED, the HF-2/HF-3 switch
  *  shape; Kurultay #11), added to the sections above:
- *   1. id 17 = DELEGATE_NAME_REQUIRED, MAX_ID = 17, on the read list; 18
- *      is the first unknown id; its value literal is 1.
+ *   1. id 17 = DELEGATE_NAME_REQUIRED, on the read list (MAX_ID was 17
+ *      until HF-6 slice 8a); 18 is not assigned; its value literal is 1.
  *   2. param 17 accepts EXACTLY 1 (0, 2, UINT64_MAX refused; the window
  *      rule binds); id 18 refused.
  *   3. grace 17 ERGONOMIC (its own case — HF-2/HF-3's class).
@@ -78,6 +78,32 @@
  *      boundary facts (NO single-use rule); the facts form agrees.
  *   6. slot 17 readable; a param-17 row lands in its own slot.
  *  (The CORE SYSFUND name gate it switches is test_v2_native.c §20.)
+ *
+ *  HF-6 slice 8a (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ *  design.md rev 6 §8 — params 19 STAKE_MIN, 20 POWER_CAP_BPS, 21
+ *  STORAGE_BOND; ranges from Kurultay #14 K5 / K9 and #16 khan decision 3;
+ *  ERGONOMIC from #16 "4 ok"), added to the sections above:
+ *   1. ids 19 / 20 / 21, MAX_ID = 21, all three on the read list; 18 is
+ *      NOT (unassigned until slice 8c) and 22 is the first id past the
+ *      end; the named bounds are the records' numbers.
+ *   2. scalar: 19 refuses 10^13 - 1, accepts 10^13, 2·10^14 and
+ *      INT64_MAX, refuses INT64_MAX + 1 and UINT64_MAX — with a valid
+ *      window and nonce, so the refusal can only come from param 19's OWN
+ *      upper check (the shared int64 tail never bounds new_value): a 19
+ *      case written as "≥ MIN only" fails here. 20: 499 / 3001 refused,
+ *      500 / 3000 accepted. 21: 10^13 - 1 / 10^14 + 1 refused, 10^13 /
+ *      10^14 accepted. 18 refused for every probed value, 22 too.
+ *   3. grace 19-21 ERGONOMIC.
+ *   4. stateful: 19-21 refused under generations 0-3, accepted under 4
+ *      whatever the HF-2 / single-use / boundary facts; the facts form
+ *      agrees; 18 refused.
+ *   5. exec hook (EVM-enabled build): a 19 / 20 / 21 leg refused (-1) by
+ *      the generation-1, -2, -3 (EVM) and NULL runtimes, accepted by
+ *      generation 4 with exactly ONE CREATE keyed (param ‖ effective);
+ *      the read plan is empty; the HF-2 / single-use facts do not gate
+ *      them.
+ *   6. slots 18-21 readable (no missing-slot -1); a 19 / 20 / 21 row each
+ *      lands in its own slot (chain_config_cache_count[21] counted).
  *
  *  HOW IT CAN LIE (storage): every "exactly the literal" check on
  *  DNAC_CFG_RULESET_GEN_STORAGE_D here holds for any literal value (the
@@ -302,15 +328,32 @@ int main(void) {
     /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md §9) appends
      * params 14 EVM_ACTIVE and 15 EVM_BLOCK_GAS_LIMIT after HF-4's 9-13;
      * storage reward v1 appends 16 RULESET_GEN_STORAGE and HF-8 17
-     * DELEGATE_NAME_REQUIRED (main merge order), now the last id; 18 is
-     * the first unknown id. HF-4's own ids are unchanged and still read
-     * by consensus. */
+     * DELEGATE_NAME_REQUIRED (main merge order); HF-6 slice 8a appends
+     * 19-21 and leaves 18 unassigned until slice 8c. HF-4's own ids are
+     * unchanged and still read by consensus. */
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE == 16);
     CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED == 17);
-    CHECK(DNAC_CFG_PARAM_MAX_ID == 17);
+    /* HF-6 slice 8a: 19-21 appended; 18 stays unassigned until 8c */
+    CHECK(DNAC_CFG_STAKE_MIN == 19);
+    CHECK(DNAC_CFG_POWER_CAP_BPS == 20);
+    CHECK(DNAC_CFG_STORAGE_BOND == 21);
+    CHECK(DNAC_CFG_PARAM_MAX_ID == 21);
     for (unsigned id = 9; id <= 17; id++)
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id));
     CHECK(!dnac_cfg_param_read_by_consensus(18));
+    for (unsigned id = 19; id <= 21; id++)
+        CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id));
+    CHECK(!dnac_cfg_param_read_by_consensus(22));
+    /* the records' numbers (K9: 100k NODUS floor, default 2M; K5: [500,
+     * 3000], default 3000; Kurultay #16 decision 3: [100k, 1M], 1M) */
+    CHECK(DNAC_HF6_STAKE_MIN_MIN == 10000000000000ULL);
+    CHECK(DNAC_HF6_STAKE_MIN_DEFAULT == 200000000000000ULL);
+    CHECK(DNAC_CFG_MIN_POWER_CAP_BPS == 500u &&
+          DNAC_CFG_MAX_POWER_CAP_BPS == 3000u &&
+          DNAC_HF6_POWER_CAP_BPS_DEFAULT == 3000u);
+    CHECK(DNAC_HF6_STORAGE_BOND_MIN == 10000000000000ULL &&
+          DNAC_HF6_STORAGE_BOND_MAX == 100000000000000ULL &&
+          DNAC_HF6_STORAGE_BOND_DEFAULT == 100000000000000ULL);
     CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED_ON == 1ULL);
     CHECK(DNAC_CFG_RULESET_GEN2_D2 <= (uint64_t)INT64_MAX);
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D <= (uint64_t)INT64_MAX);
@@ -387,9 +430,78 @@ int main(void) {
         CHECK(nodus_chain_config_scalar_rules(17, 1, 1, 4000, 4000, 7)
               == -1);
         CHECK(nodus_chain_config_scalar_rules(18, 1, 1, 5000, 4000, 7)
-              == -1);                   /* the first unknown id         */
+              == -1);                   /* 18: not assigned (8c)        */
         CHECK(nodus_chain_config_scalar_rules(18, DNAC_CFG_MIN_NAME_PRICE, 1,
                                               5000, 4000, 7) == -1);
+
+        /* HF-6 slice 8a — param 19 STAKE_MIN [10^13, INT64_MAX]. The
+         * window (signed_at 1, valid_before 5000 > effective 4000) and
+         * the nonce (7) are valid in every probe, so a refusal of
+         * INT64_MAX + 1 / UINT64_MAX can come only from param 19's OWN
+         * upper check: the shared int64 tail bounds the nonce and the
+         * three heights, never new_value. */
+        {
+            const uint64_t MN = (uint64_t)DNAC_HF6_STAKE_MIN_MIN;
+            CHECK(nodus_chain_config_scalar_rules(19, MN - 1u, 1, 5000, 4000,
+                                                  7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(19, MN, 1, 5000, 4000, 7)
+                  == 0);
+            CHECK(nodus_chain_config_scalar_rules(
+                      19, (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT, 1, 5000, 4000,
+                      7) == 0);
+            CHECK(nodus_chain_config_scalar_rules(19, (uint64_t)INT64_MAX, 1,
+                                                  5000, 4000, 7) == 0);
+            CHECK(nodus_chain_config_scalar_rules(
+                      19, (uint64_t)INT64_MAX + 1u, 1, 5000, 4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(19, UINT64_MAX, 1, 5000,
+                                                  4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(19, 0, 1, 5000, 4000, 7)
+                  == -1);
+            CHECK(nodus_chain_config_scalar_rules(19, MN, 0, 5000, 4000, 7)
+                  == -1);               /* the shared window rule binds */
+        }
+        /* param 20 POWER_CAP_BPS [500, 3000] */
+        CHECK(nodus_chain_config_scalar_rules(20, 499, 1, 5000, 4000, 7)
+              == -1);
+        CHECK(nodus_chain_config_scalar_rules(20, 500, 1, 5000, 4000, 7) == 0);
+        CHECK(nodus_chain_config_scalar_rules(20, 1500, 1, 5000, 4000, 7)
+              == 0);
+        CHECK(nodus_chain_config_scalar_rules(20, 3000, 1, 5000, 4000, 7)
+              == 0);
+        CHECK(nodus_chain_config_scalar_rules(20, 3001, 1, 5000, 4000, 7)
+              == -1);
+        CHECK(nodus_chain_config_scalar_rules(20, 0, 1, 5000, 4000, 7) == -1);
+        CHECK(nodus_chain_config_scalar_rules(20, UINT64_MAX, 1, 5000, 4000,
+                                              7) == -1);
+        /* param 21 STORAGE_BOND [10^13, 10^14] */
+        {
+            const uint64_t BMIN = (uint64_t)DNAC_HF6_STORAGE_BOND_MIN;
+            const uint64_t BMAX = (uint64_t)DNAC_HF6_STORAGE_BOND_MAX;
+            CHECK(nodus_chain_config_scalar_rules(21, BMIN - 1u, 1, 5000,
+                                                  4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(21, BMIN, 1, 5000, 4000, 7)
+                  == 0);
+            CHECK(nodus_chain_config_scalar_rules(21, BMAX, 1, 5000, 4000, 7)
+                  == 0);
+            CHECK(nodus_chain_config_scalar_rules(21, BMAX + 1u, 1, 5000,
+                                                  4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(21, (uint64_t)INT64_MAX, 1,
+                                                  5000, 4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(21, 0, 1, 5000, 4000, 7)
+                  == -1);
+        }
+        /* 18 is still refused (unassigned until slice 8c) for every value
+         * one of its neighbours would accept; 22 is past the end */
+        CHECK(nodus_chain_config_scalar_rules(18, 500, 1, 5000, 4000, 7)
+              == -1);
+        CHECK(nodus_chain_config_scalar_rules(
+                  18, (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT, 1, 5000, 4000, 7)
+              == -1);
+        CHECK(nodus_chain_config_scalar_rules(
+                  18, (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, 1, 5000, 4000,
+                  7) == -1);
+        CHECK(nodus_chain_config_scalar_rules(22, 500, 1, 5000, 4000, 7)
+              == -1);
     }
 
     /* ── 3. grace: ERGONOMIC, HF-3's class (16: param 9's class; the
@@ -405,6 +517,9 @@ int main(void) {
     CHECK(nodus_chain_config_grace_for_param(17) == GRACE_E);
     CHECK(nodus_chain_config_grace_for_param(17) ==
           nodus_chain_config_grace_for_param(DNAC_CFG_HF2_ACTIVE));
+    /* HF-6 slice 8a: 19-21 ERGONOMIC (Kurultay #16 "4 ok") */
+    for (uint8_t id = 19; id <= 21; id++)
+        CHECK(nodus_chain_config_grace_for_param(id) == GRACE_E);
 
     /* ── 4. the stateful authority — full matrix ──────────────────── */
     {
@@ -529,8 +644,37 @@ int main(void) {
             f.evm_active_voted = 1;
             CHECK(nodus_chain_config_stateful_rules_ex(17, ok_eff, &f) == 0);
         }
+        /* HF-6 slice 8a — params 19-21: votable only while generation 4
+         * judges the vote; no other fact read (no single-use rule) */
+        for (uint8_t id = 19; id <= 21; id++) {
+            for (uint32_t g = 0; g < NODUS_RT_GEN_STORAGE; g++)
+                CHECK(nodus_chain_config_stateful_rules(id, ok_eff, 1, 0, g)
+                      == -1);
+            CHECK(nodus_chain_config_stateful_rules(id, ok_eff, 1, 0,
+                                                    NODUS_RT_GEN_STORAGE)
+                  == 0);
+            /* the other facts do not gate them: HF-2 off, the single-use
+             * fact set, H-1 an epoch boundary, effective 0 */
+            CHECK(nodus_chain_config_stateful_rules(id, E_LEN + 1u, 0, 1,
+                                                    NODUS_RT_GEN_STORAGE)
+                  == 0);
+            nodus_cc_state_facts_t f;
+            memset(&f, 0, sizeof(f));
+            f.judging_generation = NODUS_RT_GEN_STORAGE_BASE;
+            CHECK(nodus_chain_config_stateful_rules_ex(id, ok_eff, &f) == -1);
+            f.judging_generation = NODUS_RT_GEN_STORAGE;
+            CHECK(nodus_chain_config_stateful_rules_ex(id, ok_eff, &f) == 0);
+            f.ruleset_gen2_voted = 1;
+            f.ruleset_gen_storage_voted = 1;
+            f.evm_active_voted = 1;
+            CHECK(nodus_chain_config_stateful_rules_ex(id, 0, &f) == 0);
+        }
         CHECK(nodus_chain_config_stateful_rules(0, ok_eff, 1, 0, 2) == -1);
         CHECK(nodus_chain_config_stateful_rules(18, ok_eff, 1, 0, 2) == -1);
+        CHECK(nodus_chain_config_stateful_rules(18, ok_eff, 1, 0,
+                                                NODUS_RT_GEN_STORAGE) == -1);
+        CHECK(nodus_chain_config_stateful_rules(22, ok_eff, 1, 0,
+                                                NODUS_RT_GEN_STORAGE) == -1);
         CHECK(nodus_chain_config_stateful_rules(255, ok_eff, 1, 0, 2) == -1);
     }
 
@@ -639,6 +783,71 @@ int main(void) {
             free(e16.bytes);
             free(e16b.bytes);
         }
+        /* HF-6 slice 8a — params 19-21 through the same hook: refused by
+         * every generation below 4 and by a NULL runtime, accepted by the
+         * generation-4 SYSTEM runtime with exactly ONE CREATE keyed
+         * (param ‖ effective); the read plan stays empty; the HF-2 and
+         * single-use facts do not gate them. */
+        {
+            const nodus_domain_runtime_t *sysE =
+                nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE_BASE,
+                                             DNA_DOMAIN_SYSTEM);
+            const nodus_domain_runtime_t *sysS =
+                nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
+                                             DNA_DOMAIN_SYSTEM);
+            CHECK(sysE && sysS);
+            static const struct { uint8_t id; uint64_t v; } legs[3] = {
+                { 19, 10000000000000ULL },          /* STAKE_MIN = 100k  */
+                { 20, 500u },                       /* POWER_CAP_BPS     */
+                { 21, 10000000000000ULL },          /* STORAGE_BOND 100k */
+            };
+            for (int k = 0; k < 3; k++) {
+                cc_leg_t e;
+                cc_leg_build(&e, legs[k].id, legs[k].v, ok_eff,
+                             ok_eff + 1000u);
+                check_no_reads(sysS, &e);
+                g_svoted = 0;
+                CHECK(run_exec(sys1, &e, H, 1, 0, NULL) == -1);  /* gen 1 */
+                CHECK(run_exec(sys2, &e, H, 1, 0, NULL) == -1);  /* gen 2 */
+                CHECK(run_exec(sysE, &e, H, 1, 0, NULL) == -1);  /* gen 3 */
+                CHECK(run_exec(NULL, &e, H, 1, 0, NULL) == -1);  /* NULL  */
+                memset(&ev, 0, sizeof(ev));
+                CHECK(run_exec(sysS, &e, H, 1, 0, &ev) == 0);    /* gen 4 */
+                CHECK(ev.effect_count == 1);
+                CHECK(ev.eff[0].effect_kind == DNA_EFFECT_CREATE);
+                CHECK(ev.eff[0].precond_tag == DNA_EFFECT_PRE_ABSENT);
+                CHECK(ev.eff[0].key_len == 12);
+                {
+                    const uint8_t *kk = ev.buf + ev.key_off[0];
+                    uint8_t want[12] = { 0, 0, 0, legs[k].id };
+                    put64(want + 4, ok_eff);
+                    CHECK(memcmp(kk, want, 12) == 0);
+                }
+                /* the facts do not gate them */
+                g_svoted = 1;
+                CHECK(run_exec(sysS, &e, H, 0, 1, NULL) == 0);
+                g_svoted = 0;
+                free(e.bytes);
+            }
+            /* an out-of-range value never reaches the stateful rules */
+            {
+                cc_leg_t e;
+                cc_leg_build(&e, 19, (uint64_t)INT64_MAX + 1u, ok_eff,
+                             ok_eff + 1000u);
+                CHECK(run_exec(sysS, &e, H, 1, 0, NULL) == -1);
+                free(e.bytes);
+                cc_leg_build(&e, 20, 499u, ok_eff, ok_eff + 1000u);
+                CHECK(run_exec(sysS, &e, H, 1, 0, NULL) == -1);
+                free(e.bytes);
+                cc_leg_build(&e, 21, (uint64_t)DNAC_HF6_STORAGE_BOND_MAX + 1u,
+                             ok_eff, ok_eff + 1000u);
+                CHECK(run_exec(sysS, &e, H, 1, 0, NULL) == -1);
+                free(e.bytes);
+                cc_leg_build(&e, 18, 500u, ok_eff, ok_eff + 1000u);
+                CHECK(run_exec(sysS, &e, H, 1, 0, NULL) == -1);
+                free(e.bytes);
+            }
+        }
 #endif
         free(e9.bytes);
         free(e9b.bytes);
@@ -659,7 +868,8 @@ int main(void) {
         uint64_t v = 0;
         /* no row anywhere: genuinely absent, never a missing-slot -1
          * (Nodus EVM: slots 14-15; storage reward v1: slot 16 too) */
-        for (uint8_t id = 9; id <= 17; id++) {   /* HF-8: slot 17 too */
+        for (uint8_t id = 9; id <= 21; id++) {   /* HF-8: slot 17 too;
+                                                  * HF-6 8a: 18-21 */
             CHECK(nodus_chain_config_get_u64(w, id, 1000, 77, &v) == 1);
             CHECK(v == 77);
         }
@@ -706,6 +916,27 @@ int main(void) {
               v == DNAC_CFG_DELEGATE_NAME_REQUIRED_ON);
         CHECK(w->chain_config_cache_count[17] == 1);
         CHECK(w->chain_config_cache_count[16] == 1);
+        /* HF-6 slice 8a: a 19 / 20 / 21 row each lands in ITS slot and is
+         * read at and above its effective height; slot 18 stays empty */
+        direct_insert(w, 19, (uint64_t)DNAC_HF6_STAKE_MIN_MIN, 950);
+        direct_insert(w, 20, 500u, 960);
+        direct_insert(w, 21, (uint64_t)DNAC_HF6_STORAGE_BOND_MIN, 970);
+        CHECK(nodus_chain_config_get_u64(w, 19, 949,
+                                         DNAC_HF6_STAKE_MIN_DEFAULT, &v) == 1
+              && v == DNAC_HF6_STAKE_MIN_DEFAULT);
+        CHECK(nodus_chain_config_get_u64(w, 19, 950, 0, &v) == 0 &&
+              v == (uint64_t)DNAC_HF6_STAKE_MIN_MIN);
+        CHECK(nodus_chain_config_get_u64(w, 20, 960, 0, &v) == 0 &&
+              v == 500u);
+        CHECK(nodus_chain_config_get_u64(w, 21, 969, 0, &v) == 1);
+        CHECK(nodus_chain_config_get_u64(w, 21, 970, 0, &v) == 0 &&
+              v == (uint64_t)DNAC_HF6_STORAGE_BOND_MIN);
+        CHECK(w->chain_config_cache_warm);
+        CHECK(w->chain_config_cache_count[18] == 0);
+        CHECK(w->chain_config_cache_count[19] == 1);
+        CHECK(w->chain_config_cache_count[20] == 1);
+        CHECK(w->chain_config_cache_count[21] == 1);
+        CHECK(w->chain_config_cache_count[17] == 1);
 
         sqlite3_close(w->db);
         free(w);

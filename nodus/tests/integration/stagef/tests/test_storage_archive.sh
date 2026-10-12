@@ -387,8 +387,8 @@ DELAY=$(( 2 * E ))         # storage: DNAC_STORAGE_SEGMENT_DELAY_EPOCHS x E
 REPORT_CLOSE=$(( E / 2 ))  # storage: the report window (H+E, H+E+⌊E/2⌋]
 DIV_LOG2=16                # storage: NODUS_V2_GEN_REWARD_DIVISOR_LOG2 (v2_gen.h)
 BOND=100000000000000       # storage: DNAC_HF6_STORAGE_BOND_DEFAULT = 10^6 x 10^8 —
-                           # the STORAGE_BOND seam's value (rt_native.c
-                           # rtn_storage_bond_at; slice 8: chain_config param 21)
+                           # chain_config param 21's no-row value (this
+                           # scenario votes no param 21; slice 8a)
 ST_A=4                     # storage: the two storage nodes (both validators)
 ST_B=5
 # 6b-3: the owner/node split. The K8 Foundation address (dnac/include/dnac/

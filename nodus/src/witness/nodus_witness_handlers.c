@@ -444,8 +444,13 @@ static void handle_dnac_supply(nodus_witness_t *w,
 /* ══════════════════════���═════════════════════════════════════════════
  * dnac_fee_info — Return current dynamic fee parameters
  *
- * Response: { base_fee, mempool, min_fee, gas_price, token_create_fee }
+ * Response: { base_fee, mempool, min_fee, gas_price, token_create_fee,
+ *             stake_min, storage_bond, power_cap_bps, np, ns }
  * Client uses min_fee directly when building TX.
+ *
+ * stake_min / storage_bond / power_cap_bps (HF-6 slice 8a): chain_config
+ * params 19 / 21 / 20 active at tip + 1, compiled defaults with no row
+ * (see the read below).
  *
  * token_create_fee (final pre-testnet wipe W-C, decision 2026-09-28-
  * token-create-fee-governance.md) = the committed TOKEN_CREATE_FEE_RAW
@@ -570,15 +575,63 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
         }
     }
 
-    /* 7 keys: the 5 scalar keys (well inside 256 bytes) + "np" (4 × 9)
-     * + "ns" (up to NODUS_DNAC_NAME_SCHED_MAX × ~25 bytes); the rlen
-     * check below still refuses an overflow rather than sending a
-     * truncated map. */
+    /* HF-6 slice 8a: the three generation-4 role parameters at tip + 1 —
+     * stake_min (param 19, the STAKE bond floor), storage_bond (param 21,
+     * the EXACT STORAGE_REGISTER bond) and power_cap_bps (param 20) — each
+     * the committed row active at tip + 1 or its compiled default, so a
+     * client builds a bond the chain accepts after a vote instead of a
+     * compiled constant. Same fault rule as gas_price; in addition a
+     * stored value outside the param's vote range answers an error (the
+     * engine FAULTs on it — env_stake_min / env_storage_bond,
+     * nodus_witness_power_cap_bps_for_epoch), never a value. NOTE
+     * power_cap_bps: consensus keys the ratio on each SNAPSHOT's epoch
+     * start (nodus_witness_power_cap_bps_for_epoch); this key is the value
+     * in force at tip + 1, which governs from the first snapshot whose
+     * epoch start is at or above that row's effective height. Older
+     * clients skip the three unknown keys; an older server sends none
+     * (the client then reads 0 = "not reported"). */
+    uint64_t stake_min    = (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+    uint64_t storage_bond = (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+    uint64_t power_cap    = (uint64_t)DNAC_HF6_POWER_CAP_BPS_DEFAULT;
+    if (w->db) {
+        if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_STAKE_MIN,
+                                       tip + 1, stake_min, &stake_min) < 0 ||
+            stake_min < (uint64_t)DNAC_HF6_STAKE_MIN_MIN ||
+            stake_min > (uint64_t)INT64_MAX) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "stake minimum unreadable");
+            return;
+        }
+        if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_STORAGE_BOND,
+                                       tip + 1, storage_bond,
+                                       &storage_bond) < 0 ||
+            storage_bond < (uint64_t)DNAC_HF6_STORAGE_BOND_MIN ||
+            storage_bond > (uint64_t)DNAC_HF6_STORAGE_BOND_MAX) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "storage bond unreadable");
+            return;
+        }
+        if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_POWER_CAP_BPS,
+                                       tip + 1, power_cap, &power_cap) < 0 ||
+            power_cap < (uint64_t)DNAC_CFG_MIN_POWER_CAP_BPS ||
+            power_cap > (uint64_t)DNAC_CFG_MAX_POWER_CAP_BPS) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "power cap unreadable");
+            return;
+        }
+    }
+
+    /* 10 keys. Worst case: the response envelope 31 bytes + the 5 scalar
+     * keys (<= 97) + the 3 HF-6 keys (stake_min 19, storage_bond 22,
+     * power_cap_bps 17) = 186, inside the 256; "np" 3 + 1 + 4 × 9 = 40,
+     * inside the 64; "ns" 4 + NODUS_DNAC_NAME_SCHED_MAX × 26, inside
+     * the × 32. The rlen check below still refuses an overflow rather
+     * than sending a truncated map. */
     uint8_t buf[256 + 64 + NODUS_DNAC_NAME_SCHED_MAX * 32];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
 
-    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 7);
+    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 10);
     cbor_encode_cstr(&enc, "base_fee");
     cbor_encode_uint(&enc, base_fee);
     cbor_encode_cstr(&enc, "mempool");
@@ -589,6 +642,12 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
     cbor_encode_uint(&enc, gas_price);
     cbor_encode_cstr(&enc, "token_create_fee");
     cbor_encode_uint(&enc, token_create_fee);
+    cbor_encode_cstr(&enc, "stake_min");
+    cbor_encode_uint(&enc, stake_min);
+    cbor_encode_cstr(&enc, "storage_bond");
+    cbor_encode_uint(&enc, storage_bond);
+    cbor_encode_cstr(&enc, "power_cap_bps");
+    cbor_encode_uint(&enc, power_cap);
     cbor_encode_cstr(&enc, "np");
     cbor_encode_array(&enc, 4);
     for (size_t len_i = 3; len_i <= 6; len_i++)
