@@ -45,7 +45,7 @@
 import { createNodusConnectCore, acceptanceMayAutoApprove, CONTACT_READS_MAX } from '../core.js';
 import { openHistoryStore, memoryHistoryStore, StorageError } from '../store.js';
 import {
-  parseContactInput, requestRefusal, profilePatch, profileStatusText, contactListStatusText, senderClockLabel,
+  parseContactInput, requestRefusal, profilePatch, profileStatusText, contactListStatusText, senderClockLabel, shownAt,
   pendingOutbox, hasUndelivered, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, ackAllowed, messageStatus, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   checkOrder, contactDays, contactNeedsFullSync, profileFresh, contactNames, mergeListedContacts, removeContact, unremoveContact,
@@ -220,6 +220,8 @@ function wipe() {
   ui.menu.replaceChildren(); ui.menuLayer.hidden = true; ui.replyBar.hidden = true; ui.replyText.textContent = ''; ui.jumpButton.hidden = true;
   showAddResolved();
   if (ui.addDialog.open) ui.addDialog.close();
+  if (ui.peerDialog.open) ui.peerDialog.close();
+  ui.peerTitle.textContent = ''; ui.peerBody.replaceChildren();
   screen = 'list'; hubTab = 'contacts'; filter = 'all';
 }
 
@@ -1296,6 +1298,48 @@ function dayLabel(date) {
   return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
 }
 
+// Someone's profile, read-only (0.1.104): the picture, the chain name (the
+// verified name) or else the profile's own name — marked as someone else's
+// text, as everywhere (dom.js untrusted) — the full ID with Copy, and the
+// profile's bio, location and website. All of it from the signature-checked
+// profile this session holds (profiles); nothing is read for it.
+function showPeer(fp) {
+  if (!isOpen() || !HEX128.test(fp)) return;
+  const p = profiles.get(fp), n = namesOf(fp), chain = chainNameOf(fp);
+  // Head: the picture, the name, how it is known, and where they stand.
+  ui.peerTitle.replaceChildren(n.verified ? el('span', { className: 'chain-name', text: n.title }) : titleContent(n));
+  const known = chain
+    ? el('span', { className: 'peer-badge peer-verified', text: 'Chain name' })
+    : n.fromProfile ? el('span', { className: 'peer-badge peer-unverified', text: 'Profile name · not on the chain' })
+    : el('span', { className: 'peer-badge', text: 'No name' });
+  const standing = contactOf(fp) ? 'Contact' : pendingOf(fp) ? 'Request sent' : 'Not a contact';
+  const head = el('div', { className: 'peer-head' }, avatar(fp, ' peer-avatar'), ui.peerTitle,
+    el('div', { className: 'peer-badges' }, known, el('span', { className: `peer-badge peer-standing${contactOf(fp) ? ' peer-contact' : ''}`, text: standing })));
+  const parts = [head];
+  // The name a profile claims without its lookup record pointing to them.
+  if (!chain && !p?.name && p?.claimed_name) parts.push(el('p', { className: 'hint peer-claim' }, 'Claims the name ', untrusted(p.claimed_name, undefined, { name: true }), ' — not verified.'));
+  else if (chain && p?.name) parts.push(el('p', { className: 'hint peer-claim' }, 'Profile name: ', untrusted(p.name, undefined, { name: true })));
+  if (!p) parts.push(el('p', { className: 'hint peer-empty', text: 'Their profile could not be read yet. It is read with the next check.' }));
+  else {
+    if (p.bio) parts.push(el('section', { className: 'peer-section' }, el('h3', { text: 'About' }), el('p', { className: 'peer-bio' }, untrusted(p.bio))));
+    const facts = [];
+    if (p.location) facts.push(el('dt', { text: 'Location' }), el('dd', {}, untrusted(p.location)));
+    const link = p.website ? website(p.website) : null;
+    if (link) facts.push(el('dt', { text: 'Website' }), el('dd', {}, link));
+    if (facts.length) parts.push(el('dl', { className: 'peer-facts' }, ...facts));
+    if (!p.bio && !facts.length) parts.push(el('p', { className: 'hint peer-empty', text: 'No description, location or website on their profile.' }));
+  }
+  // Their full ID, to compare or share.
+  const copyStatus = statusLine();
+  parts.push(el('div', { className: 'own-id-box peer-id' }, el('span', { className: 'own-id-label', text: 'Their ID' }), el('code', { className: 'own-id', text: fp }),
+    button('Copy their ID', async () => {
+      try { await navigator.clipboard.writeText(fp); copyStatus.textContent = 'Their ID was copied.'; }
+      catch { copyStatus.textContent = 'Copy is unavailable. Select the ID and copy it.'; }
+    }, 'secondary small'), copyStatus));
+  ui.peerBody.replaceChildren(...parts);
+  if (!ui.peerDialog.open) ui.peerDialog.showModal();
+}
+
 async function copyOwnId(statusNode) {
   if (!ownFp) return;
   try { await navigator.clipboard.writeText(ownFp); statusNode.textContent = 'Your ID was copied.'; }
@@ -1409,7 +1453,18 @@ export function mountMessages(root, options = {}) {
   // way the transfer is made.
   u.convPay = iconButton('pay', 'Send NODUS', () => payFromChat(), 'conversation-pay');
   u.convPay.hidden = typeof options.payContact !== 'function';
-  u.convHead = el('div', { className: 'nc-bar conversation-head' }, backButton(), u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim), u.convPay);
+  // The picture and the name open their profile (0.1.104, operator: "karşıdaki
+  // user'ın ismine veya … resmine basınca profilini göstermesi lazım").
+  u.convWho = setAttrs(el('div', { className: 'conversation-who' }, u.convAvatar, el('div', { className: 'conversation-title' }, u.convTitle, u.convClaim)), { role: 'button', tabindex: '0' });
+  u.convWho.onclick = () => { if (selectedFp) showPeer(selectedFp); };
+  u.convWho.onkeydown = event => { if ((event.key === 'Enter' || event.key === ' ') && selectedFp) { event.preventDefault(); showPeer(selectedFp); } };
+  u.convHead = el('div', { className: 'nc-bar conversation-head' }, backButton(), u.convWho, u.convPay);
+  // Their profile, read-only (showPeer).
+  u.peerTitle = el('h2', { id: 'nc-peer-title' });
+  u.peerBody = el('div', { className: 'peer-profile' });
+  u.peerDialog = setAttrs(el('dialog', { className: 'nc-dialog peer-dialog' }, u.peerBody,
+    el('div', { className: 'nc-dialog-actions' }, button('Close', () => u.peerDialog.close(), 'secondary'))), { 'aria-labelledby': 'nc-peer-title' });
+  u.peerDialog.id = 'nc-peer-dialog';
   u.convNote = el('p', { className: 'notice conversation-note' });
   // The last message check of this contact (diag.js), collapsed; plain text.
   u.convDiagText = el('p', { className: 'conversation-diag-text' });
@@ -1535,7 +1590,7 @@ export function mountMessages(root, options = {}) {
 
   // One screen at a time on a narrow screen; on a wide one Chats stays next
   // to the open conversation (messenger.css, data-screen).
-  u.layout = el('div', { className: 'messenger' }, u.chats, u.pane, u.contactsView, u.profileView, u.addDialog, groupsView.dialog);
+  u.layout = el('div', { className: 'messenger' }, u.chats, u.pane, u.contactsView, u.profileView, u.addDialog, u.peerDialog, groupsView.dialog);
   root.replaceChildren(u.layout);
   ui = u;
 
@@ -1753,7 +1808,7 @@ function renderChats() {
     else if (last) preview.append(last.dir === 'out' ? 'You: ' : '', untrusted(reply ? reply.text : last.text));
     else preview.textContent = c.pending ? 'Request sent — you can write; they read it once they accept' : c.salt ? 'No messages yet' : 'Messaging is not ready yet';
     const side = el('span', { className: 'contact-side' });
-    if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
+    if (last) { const when = el('time', { text: shortWhen(shownAt(last)) }); when.dateTime = new Date(shownAt(last)).toISOString(); side.append(when); }
     if (unread) side.append(setAttrs(el('span', { className: 'count-badge', text: String(unread) }), { 'aria-label': `${unread} new` }));
     const waiting = c.pending ? el('span', { className: 'request-label', text: 'Request sent' }) : null;
     row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, waiting, nameTitle(c.fp)), nameHint(c.fp), preview), side, icon('chevron'));
@@ -1859,7 +1914,7 @@ function renderConversation(scroll) {
   let day, newIncoming = 0;
   for (let i = 0; i < shown.length; i++) {
     const m = shown[i], next = shown[i + 1];
-    const at = new Date(m.at);
+    const at = new Date(shownAt(m));          // the sender's time for an incoming message (0.1.104)
     if (!day || !sameDay(day, at)) { day = at; items.push(el('li', { className: 'message-day', text: dayLabel(at) })); }
     const mine = m.dir === 'out';
     const hash = hashOf(m);
@@ -1867,7 +1922,7 @@ function renderConversation(scroll) {
     // A run: the next bubble is from the same side, the same day and within
     // 3 minutes — this one then drops its tail and its foot (shown on hover
     // or focus), so a run reads as one block.
-    const run = !!next && next.dir === m.dir && sameDay(at, new Date(next.at)) && Math.abs(next.at - m.at) < 180000;
+    const run = !!next && next.dir === m.dir && sameDay(at, new Date(shownAt(next))) && Math.abs(shownAt(next) - shownAt(m)) < 180000;
     const when = el('time', { text: at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
     when.dateTime = at.toISOString();
     const meta = el('div', { className: 'message-meta' }, when);

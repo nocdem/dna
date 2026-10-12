@@ -23,6 +23,13 @@ export function autoLockNote(minutes) {
   return `This wallet and your messages lock after ${minutes === 60 ? '1 hour' : `${minutes} minutes`} without use. Closing the page always locks; recovery words on screen are always cleared after 10 minutes.`;
 }
 
+// The line in the open wallet's bar (0.1.104, operator: "auto lock … 10
+// minutes yazıyor … settings'ten okuması lazım"): it said a fixed "10 minutes"
+// since before the time became a setting (0.1.89, default 15).
+export function autoLockBarText(minutes) {
+  return minutes === 0 ? 'Auto-lock off' : `Auto-lock after ${minutes === 60 ? '1 hour' : `${minutes} minutes`} of inactivity`;
+}
+
 export function readAutoLock(storage) {
   try { return parseAutoLock(storage?.getItem(AUTO_LOCK_KEY) ?? undefined); }
   catch { return AUTO_LOCK_DEFAULT; }

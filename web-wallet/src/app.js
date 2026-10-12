@@ -30,7 +30,7 @@ import { renderQr } from './qr.js';
 // Nodus Connect page registers Messages (src/connect-main.js).
 import { raise, gather, siteName, onOwnIdentity } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
-import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote } from './auto-lock.js';
+import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote, autoLockBarText } from './auto-lock.js';
 import { readBalanceRefresh, writeBalanceRefresh, parseBalanceRefresh, balanceRefreshNote } from './balance-refresh.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
@@ -828,14 +828,16 @@ const ENTRY_IDLE_MINUTES = 10;
 function autoLockStorage() { try { return globalThis.localStorage; } catch { return undefined; } }
 let autoLockMinutes = readAutoLock(autoLockStorage());
 {
-  const choice = $('auto-lock-minutes'), note = $('auto-lock-note');
+  const choice = $('auto-lock-minutes'), note = $('auto-lock-note'), bar = $('session-timeout');
   choice.value = String(autoLockMinutes);
   note.textContent = autoLockNote(autoLockMinutes);
+  bar.textContent = autoLockBarText(autoLockMinutes);
   choice.addEventListener('change', () => {
     autoLockMinutes = parseAutoLock(choice.value);
     choice.value = String(autoLockMinutes);
     const kept = writeAutoLock(autoLockStorage(), autoLockMinutes);
     note.textContent = autoLockNote(autoLockMinutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
+    bar.textContent = autoLockBarText(autoLockMinutes);
     activity();                                  // the new time counts from now
   });
 }

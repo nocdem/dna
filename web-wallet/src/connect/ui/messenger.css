@@ -123,6 +123,30 @@
 
 /* Conversation. */
 .conversation-head { gap: 12px; }
+/* The picture and name open their profile (0.1.104). */
+.conversation-who { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; cursor: pointer; border-radius: 8px; }
+.conversation-who:focus-visible { outline: 2px solid #d5f998; outline-offset: 2px; }
+/* Their profile card (showPeer): centred head, an About card, label/value
+   facts, the ID last. The wallet's colours only. */
+.peer-dialog { width: min(440px, calc(100vw - 32px)); }
+.peer-profile { display: flex; flex-direction: column; gap: 16px; }
+.peer-head { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0 4px; text-align: center; }
+.peer-avatar { flex: none; width: 96px; height: 96px; font-size: 32px; box-shadow: 0 0 0 3px var(--panel), 0 0 0 4px #d5f99840; }
+.peer-head h2 { margin: 4px 0 0; font-size: 22px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.peer-badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.peer-badge { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
+.peer-verified { border-color: #d5f99866; background: #d5f99812; color: var(--lime); }
+.peer-unverified { border-color: #f2c89666; color: #f2c896; }
+.peer-contact { border-color: #d5f99840; color: var(--text); }
+.peer-claim, .peer-empty { margin: 0; text-align: center; }
+.peer-section { padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: #ffffff05; }
+.peer-section h3 { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.peer-bio { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.peer-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 8px 16px; margin: 0; padding: 0 4px; }
+.peer-facts dt { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.peer-facts dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }
+.peer-id { margin-top: 0; }
+.peer-id .own-id { display: block; margin: 6px 0 10px; overflow-wrap: anywhere; font-size: 12px; }
 .conversation-title { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .conversation-title .nc-bar-title { flex: none; font-size: 16px; font-variant-numeric: tabular-nums; }
 .conversation-title .contact-claim:empty { display: none; }

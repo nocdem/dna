@@ -117,7 +117,7 @@ try {
     ];
     window.__hashFirst = contentHash(B, OWN, first, T(1));
     const profile = fp => ({ outcome: 'found', why: 'none', foreign: '0', record: '{}',
-      profile: { fingerprint: fp, claimed_name: '', bio: '', location: '', website: '', avatar_base64: '', wallets: {}, socials: {}, has_mlkem: true, version: '3', timestamp: '1' } });
+      profile: { fingerprint: fp, claimed_name: '', bio: fp === B ? 'Building on Nodus.\nLikes quiet chains.' : '', location: fp === B ? 'Istanbul' : '', website: fp === B ? 'https://nodusnetwork.io' : '', avatar_base64: '', wallets: {}, socials: {}, has_mlkem: true, version: '3', timestamp: '1' } });
     const day = (d, messages = []) => ({ outcome: messages.length ? 'found' : 'empty', why: 'none', day: d, blob: messages.length ? 'ab'.repeat(32) : undefined, unchanged: false, dropped: '0', other: '0', messages });
     const answers = {
       nc_unlock: () => ({ fingerprint: OWN, fresh: false }),
@@ -168,6 +168,29 @@ try {
   // the same round read B's profile again and read again — one failed read.
   assert.equal(await page.evaluate(() => window.__evictedReads), 1, 'one read without keys, then recovered in the same round');
   assert.doesNotMatch(await page.locator('.messenger-sync').innerText(), /could not be checked/);
+  // 0.1.104 (operator: "mesajların tarihi chat'i açtığın tarihmiş"): an incoming
+  // bubble shows when B sent it (senderTs T(2) = 1791500002 s), not when this
+  // page first read it.
+  const replyTime = page.locator('.message-in', { hasText: 'yes indeed' }).locator('time');
+  assert.equal(await replyTime.getAttribute('datetime'), new Date(1791500002 * 1000).toISOString());
+  // 0.1.104 (operator: "ismine veya … resmine basınca profilini göstermesi
+  // lazım … Profil sayfası güzel olsun"): the picture and name open their
+  // profile card — read-only, from the checked profile; Esc closes it; the
+  // keyboard opens it too.
+  await page.locator('.conversation-who').click();
+  const peer = page.locator('#nc-peer-dialog');
+  assert.equal(await peer.isVisible(), true);
+  assert.equal(await peer.locator('.peer-standing').innerText(), 'Contact');
+  assert.equal(await peer.locator('.peer-bio').innerText(), 'Building on Nodus.\nLikes quiet chains.');
+  assert.deepEqual(await peer.locator('.peer-facts dt').allInnerTexts(), ['Location', 'Website']);
+  assert.equal(await peer.locator('.peer-facts a').getAttribute('href'), 'https://nodusnetwork.io/');
+  assert.equal(await peer.locator('.peer-id .own-id').innerText(), '2b'.repeat(64));
+  if (process.env.PEER_SHOT) await peer.screenshot({ path: process.env.PEER_SHOT });
+  await page.keyboard.press('Escape');
+  assert.equal(await peer.isVisible(), false);
+  await page.locator('.conversation-who').focus(); await page.keyboard.press('Enter');
+  assert.equal(await peer.isVisible(), true);
+  await page.keyboard.press('Escape');
 
   // The link, the reply's quote, the deleted text, the reaction chip.
   const link = page.locator('.message-text a').first();

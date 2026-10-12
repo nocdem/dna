@@ -1,5 +1,6 @@
 import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
+import { AUTO_LOCK_KEY } from '../src/auto-lock.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -90,6 +91,15 @@ try {
   assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Nodus');
   assert.equal(await page.locator('#receive-qr svg').getAttribute('role'), 'img');
   assert.equal(await page.locator('#receive-qr svg').getAttribute('aria-label'), 'QR code for the receive address');
+  // 0.1.104 (operator: "auto lock … 10 minutes yazıyor … settings'ten okuması
+  // lazım"): the bar says the chosen time and follows a change.
+  assert.equal(await page.locator('#session-timeout').innerText(), 'Auto-lock after 15 minutes of inactivity');
+  await page.locator('#auto-lock-minutes').evaluate(select => { select.value = '5'; select.dispatchEvent(new Event('change')); });
+  assert.equal(await page.locator('#session-timeout').innerText(), 'Auto-lock after 5 minutes of inactivity');
+  await page.locator('#auto-lock-minutes').evaluate(select => { select.value = '0'; select.dispatchEvent(new Event('change')); });
+  assert.equal(await page.locator('#session-timeout').innerText(), 'Auto-lock off');
+  await page.locator('#auto-lock-minutes').evaluate(select => { select.value = '15'; select.dispatchEvent(new Event('change')); });
+  await page.evaluate(key => localStorage.removeItem(key), AUTO_LOCK_KEY);   // the choice was kept; this test expects no storage later
   // 0.1.102 (operator: "sol tarafına yapışık … ortalayalım"): centred in its panel
   const qrGap = await page.locator('#receive-qr svg').evaluate(svg => { const s = svg.getBoundingClientRect(), p = svg.parentElement.getBoundingClientRect(); return [s.left - p.left, p.right - s.right]; });
   assert.ok(Math.abs(qrGap[0] - qrGap[1]) <= 2, `QR centred (left ${qrGap[0]}, right ${qrGap[1]})`);
