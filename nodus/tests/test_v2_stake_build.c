@@ -998,11 +998,16 @@ static int t_refusals(kb_chain_t *c) {
 
     base_req(&r, &rs, c, NODUS_V2_STAKE_OP_DELEGATE, DNAC_MIN_DELEGATION,
              coins, n);
-    /* VALIDATOR_UPDATE — a real SYSTEM op this builder does not build */
+    /* VALIDATOR_UPDATE — HF-6 7b builds it at generation 4 only; this
+     * legacy-generation request is refused as ERR_GEN (it never had a
+     * legacy builder) */
     r.op = (nodus_v2_stake_op_t)DNA_SYSRULE_VALIDATOR_UPDATE;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
+          "VALIDATOR_UPDATE below generation 4 is refused (ERR_GEN)");
+    /* an op id no SYSTEM rule names stays ERR_OP */
+    r.op = (nodus_v2_stake_op_t)11;
     CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_OP,
-          "an op other than STAKE / DELEGATE / UNSTAKE / UNDELEGATE is "
-          "refused");
+          "an op id no rule names is refused");
 
     base_req(&r, &rs, c, NODUS_V2_STAKE_OP_DELEGATE, DNAC_MIN_DELEGATION,
              coins, n);

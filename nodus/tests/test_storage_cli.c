@@ -581,9 +581,11 @@ static int t_refusals(void) {
     r.op = (nodus_v2_stake_op_t)DNA_SYSRULE_STORAGE_REPORT;
     CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_OP,
           "STORAGE_REPORT is not built here");
-    r.op = (nodus_v2_stake_op_t)DNA_SYSRULE_VALIDATOR_UPDATE;
+    /* HF-6 7b: VALIDATOR_UPDATE (op 5) is built at generation 4 now, so
+     * the "not built" probe uses an op id no SYSTEM rule names (11) */
+    r.op = (nodus_v2_stake_op_t)11;
     CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_OP,
-          "VALIDATOR_UPDATE is not built here");
+          "an op id no rule names is not built here");
     coin_set(BOND);                      /* bond, but not bond + fee      */
     req_base(&r, NODUS_V2_STAKE_OP_STORAGE_REGISTER);
     CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_INSUFFICIENT

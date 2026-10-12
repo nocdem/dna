@@ -7821,7 +7821,7 @@ the owner signs and pays).
   generation ≥ `NODUS_RT_GEN_STORAGE` op 1 takes the 7301-byte layout with owner_fp = SHA3-512(signer)
   (the kind-1 rule of `rtn_sys_owner_auth`), and DELEGATE / UNDELEGATE / UNSTAKE are `ERR_GEN` (their
   136 / 136 / 64-byte layouts are not built yet — never the legacy bytes the generation-4 chain refuses by
-  length); STORAGE ops keep their layouts (the generation-4 `rtn_sys_call_flow` still decodes them).
+  length) — until slice 7b, which builds them (section "HF-6 slice 7b"); STORAGE ops keep their layouts (the generation-4 `rtn_sys_call_flow` still decodes them).
   `nodus_v2_stake_decode` reads the generation-4 layouts with the record identity = the one signer of
   both legs, and refuses a STAKE whose owner_fp is not SHA3-512 of it. Before building, nodus-cli
   re-checks the consent on its session (op, chain id, owner = `--keys`, ROTATE subject = `--validator`,
@@ -7836,7 +7836,8 @@ the owner signs and pays).
   this CLI; the validator-list reply carries `vid` under generation 4 but the client SDK does not decode
   it yet.
 - **Not built:** a kind-3 (multisig) owner — the msig export path carries single-leg CORE SPENDs only
-  (`nodus_v2_msig_leg_open`); the generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE.
+  (`nodus_v2_msig_leg_open`); the generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE
+  (built since slice 7b — section "HF-6 slice 7b").
 
 **Tests** (written, NOT run by the author). `test_v2_stake_client` (EVM-enabled builds): the codec
 message equals an independent §6.1 restatement and the signature verifies with ctx
@@ -8130,6 +8131,66 @@ the caller names the owner — every `payee` equal to it. CLI: `nodus-cli storag
 <hex128>` prints each node as `--fp` does. Tests: `test_storage_by_owner` (the real dispatcher over a
 socketpair, planted rows), `test_client_validator_list` (`vid` / `owner` cases) — written, NOT run by
 the builder.
+
+### HF-6 slice 7b — the generation-4 client builders for DELEGATE, UNDELEGATE, UNSTAKE and VALIDATOR_UPDATE (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.3 (the owner rule: kind 1
+→ SHA3-512(signer) == owner_fp, for DELEGATE / UNDELEGATE == delegator_fp) and §2 (the layouts,
+APPROVED — Kurultay #14 K7). Before this slice the shared builder refused ops 2 / 3 / 4 at generation
+≥ 4 (`ERR_GEN`) and had no op 5 at all, so from the HF-6 activation height every delegate, undelegate
+and unstake built by nodus-cli or the web wallet would have been refused. No chain code, pin or
+decision moves: the chain side is sub-slice 3c's.
+
+**Builder** (`src/client/nodus_v2_stake.{h,c}`), at `generation >= NODUS_RT_GEN_STORAGE`:
+
+| op | call (BE, exact length) | funding (`rtn_sys_call_flow`, generation-4 arm) | authority (exec) |
+|---|---|---|---|
+| DELEGATE 2 | `delegator_fp ‖ validator_id ‖ amount` = 136 | lock = amount | delegator_fp (`rtn_delegate2_exec`) |
+| UNDELEGATE 4 | the same 136 | fee-only; the chain creates the release coin to delegator_fp (`rtn_sysfund_release_coin`) | delegator_fp (`rtn_undelegate2_exec`) |
+| UNSTAKE 3 | `validator_id` = 64 | fee-only | the row's owner_fp (`rtn_unstake2_exec`) |
+| VALIDATOR_UPDATE 5 | `validator_id ‖ commission u16` = 66 | fee-only | the row's owner_fp (`rtn_vupd2_exec`) |
+
+delegator_fp = SHA3-512 of the signing key (kind 1 — the delegator IS the signer). The request names
+the validator through the existing `validator_id` field (no struct grows); `commission_bps` carries the
+VALIDATOR_UPDATE commission. The builder refuses only what the call bytes decide: a NULL or all-zero
+validator_id (`ERR_ARG`; `rtn_val2_rec_ok` / `rtn_vupd_parse_v2`), an amount outside 1..total supply
+(`ERR_AMOUNT`), a commission above `DNAC_COMMISSION_BPS_MAX` (`ERR_COMMISSION`, the VALIDATOR_UPDATE
+decoder's rule). A generation-4 DELEGATE funds from up to 15 inputs: the CORE leg is never name-gated
+at generation 4 (`rtn_sysfund_name_gate`, decision D3 — the name read is the SYSTEM leg's op 16); the
+14-input HF-8 cap stays on the legacy non-self DELEGATE. Below generation 4 ops 2-4 keep their pubkey
+layouts byte for byte; op 5 is refused (`ERR_GEN`) — its legacy 2594-byte layout was never built here.
+`nodus_v2_stake_decode` tells the layouts of ops 2-4 apart by length (136 / 64 vs 5192 / 2592,
+disjoint — the chain's `rtn_sys_call_gen_of` does the same), reads op 5 only at 66 bytes, and refuses a
+delegator_fp that is not SHA3-512 of the signer, an all-zero validator_id and a commission above the
+bound. A kind-3 (multisig) owner or delegator is not built (the msig export path carries single-leg
+CORE SPENDs only).
+
+**nodus-cli.** `v2-envelope delegate | undelegate` take `--validator <validator_id hex128>` when the node
+names generation 4 and `<hex5184 pubkey>` below; `unstake` takes `--validator <validator_id hex128>` at
+generation 4 (required; the `--keys` identity is the owner) and none below; the new
+`v2-envelope validator-update --keys <owner> --validator <validator_id> --commission <bps>` exists at
+generation 4 only. The form is read before connecting and judged after `cli_select_runtimes`; the wrong
+form for the node's generation is refused, naming the generation. At generation 4 `unstake` and
+`validator-update` find the row by validator_id in the validator list (the 7a `vid` / `owner` keys —
+`cli_validator_row` gained a `vid` argument; at generation 4 the entry's `pubkey` is the consensus key)
+and refuse a status the chain refuses or an owner other than the `--keys` identity; `unstake` says the
+bond goes to the owner (`v2ep_graduate`, generation 4).
+
+**Web wallet** (`web-wallet/crypto/nodus-send-wasm.c` — not changed by this slice). `nsw_stake_core`
+never sets `req.generation`, so it builds the legacy layouts at every generation, which a generation-4
+chain refuses by length. To stake at generation 4 it must set `req.generation` from the selected
+generation and pass `validator_id` (the 7a list fields) instead of `validator_pk`, and its read-back of
+`d->validator_pk` becomes `d->validator_id`. No new request field, no struct growth, `valbind_wire.c`
+still not needed.
+
+**Tests** (written, NOT run by the builder). `test_v2_stake_client` W1-W5: each generation-4 call equals
+the restated layout; fed to the GEN_STORAGE SYSTEM hooks against the row S3 created (and, for
+UNDELEGATE, the rows W1's DELEGATE wrote) the exec APPLIES — CREATE op 14 + SET op 13 / SET op 13 +
+DELETE op 14 / RETIRING / immediate or pending commission — and refuses a foreign signer (and the
+validator's owner as a DELEGATE signer); the CORE funding leg balances (lock = amount / fee-only, +1
+refused) and an UNDELEGATE's carries the release coin to the delegator; the decoder refusals. G1: the
+legacy DELEGATE / UNDELEGATE / UNSTAKE equal the restated legacy calls and are byte-identical at
+generations 0 and 3 outside the hedged auth blobs; the generation-4 argument refusals.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
