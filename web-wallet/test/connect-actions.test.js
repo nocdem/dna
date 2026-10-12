@@ -40,6 +40,11 @@ test('actions: reactions — the app\'s exact form, toggles replayed in sender-t
   assert.throws(() => buildReaction('zz', REACTION_EMOJIS[0], 'add'), /Invalid reaction/);
   assert.equal(parseReaction('{"target":"short","emoji":"x","op":"add"}'), null);
   assert.equal(parseReaction(`{"target":"${t}","emoji":"x","op":"maybe"}`), null);
+  // the app's char[8]: up to 7 bytes kept, 8 and more dropped
+  assert.equal(parseReaction(`{"target":"${t}","emoji":"1234567","op":"add"}`).emoji, '1234567');
+  assert.equal(parseReaction(`{"target":"${t}","emoji":"12345678","op":"add"}`), null);
+  assert.equal(parseReaction(`{"target":"${t}","emoji":"PAID 100 NODUS","op":"add"}`), null);
+  assert.equal(parseReaction(`{"target":"${t}","emoji":"🎉🎉","op":"add"}`), null);
   const rec = (dir, fp, emoji, op, ts, seq) => ({ dir, fp, kind: 'reaction', text: buildReaction(t, emoji, op), ts, senderTs: ts, seq });
   const [heart, up] = REACTION_EMOJIS;
   const records = [
@@ -134,4 +139,13 @@ test('payment cards: the app\'s form, amounts exact, the verdict from own histor
   // another chain or a malformed card: cannot be checked here
   assert.deepEqual(transferVerdict({ ...card, chain: 'cellframe' }, [], { incoming: true, counterparty: A, ownFp: B }), { state: 'unverifiable', chain: 'cellframe' });
   assert.equal(transferVerdict({ ...card, amount: 'lots' }, [], { incoming: true, counterparty: A, ownFp: B }).state, 'unverifiable');
+});
+
+import { validNodusCard } from '../src/connect/ui/actions.js';
+test('payment cards: only a well-formed NODUS card is shown and checked', () => {
+  const W = 'ee'.repeat(64);
+  const ok = parseTransfer(buildTransfer({ amount: '1', wire: W, to: B }));
+  assert.equal(validNodusCard(ok), true);
+  for (const bad of [{ token: 'X' }, { wire: 'zz' }, { to: 'nope' }, { amount: '1..5' }, { chain: 'cellframe' }]) assert.equal(validNodusCard({ ...ok, ...bad }), false, JSON.stringify(bad));
+  assert.equal(validNodusCard(null), false);
 });

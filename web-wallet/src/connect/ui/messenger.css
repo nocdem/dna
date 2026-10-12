@@ -203,7 +203,8 @@
 .message-jump-count:empty { display: none; }
 /* The message menu (chat_screen.dart overlay: emoji pill, then actions). */
 .message-menu-layer { position: absolute; inset: 0; z-index: 3; background: #00000059; }
-.message-menu { position: absolute; display: flex; flex-direction: column; gap: 8px; width: min(320px, calc(100% - 16px)); }
+.message-menu { position: absolute; display: flex; flex-direction: column; gap: 8px; width: min(320px, calc(100% - 16px)); max-height: calc(100% - 16px); overflow-y: auto; }
+.message-menu > * { flex-shrink: 0; }
 .message-menu-emojis { display: flex; justify-content: space-between; gap: 2px; padding: 6px 8px; border-radius: 28px; background: #232b1d; box-shadow: 0 6px 20px #0009; }
 .menu-emoji { margin: 0; padding: 4px; min-width: 32px; min-height: 32px; border: 0; border-radius: 50%; background: transparent; font-size: 20px; line-height: 1; }
 .menu-emoji:hover, .menu-emoji:focus-visible { background: #d5f9981f; }

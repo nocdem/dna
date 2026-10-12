@@ -52,6 +52,21 @@ const HTML = `<!doctype html>
 <body><main id="nc-root" style="height:100vh"></main></body>
 </html>`.replace(' style="height:100vh"', '');
 
+// The middle of a bubble can be its link, whose right click stays the
+// browser's own (0.1.90): press on the bubble's first plain word instead.
+async function rightClickText(bubble) {
+  const position = await bubble.evaluate(b => {
+    const walk = document.createTreeWalker(b, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (n.parentElement.closest('a') || !n.textContent.trim()) continue;
+      const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, Math.min(3, n.length));
+      const t = r.getBoundingClientRect(), o = b.getBoundingClientRect();
+      return { x: t.left - o.left + t.width / 2, y: t.top - o.top + t.height / 2 };
+    }
+    throw new Error('no plain text in the bubble');
+  });
+  await bubble.click({ button: 'right', position });
+}
 const errors = [], refused = [], unexpected = [];
 let browser;
 try {
@@ -153,7 +168,10 @@ try {
 
   // Right click: the menu; no "for everyone" on a received message; Esc closes.
   const firstBubble = page.locator('.message-in .message-bubble', { hasText: 'hello see' });
-  await firstBubble.click({ button: 'right' });
+  // A right click on the link inside keeps the link's own menu (0.1.90).
+  await firstBubble.locator('a').click({ button: 'right' });
+  assert.equal(await page.evaluate(() => document.querySelector('.message-menu-layer').hidden), true);
+  await rightClickText(firstBubble);
   await page.locator('.message-menu-layer:not([hidden])').waitFor();
   assert.equal(await page.locator('.menu-emoji').count(), 8);
   const items = await page.locator('.menu-item').allTextContents();
@@ -163,7 +181,7 @@ try {
   await page.waitForFunction(() => document.querySelector('.message-menu-layer').hidden);
 
   // 👍 from the menu: the app's reaction form for that message's hash.
-  await firstBubble.click({ button: 'right' });
+  await rightClickText(firstBubble);
   await page.locator('.menu-emoji', { hasText: '👍' }).click();
   await page.waitForFunction(() => window.__published.some(set => set.some(m => m.text.includes('"op":"add"') && m.text.includes('👍'))));
   const hashFirst = await page.evaluate(() => window.__hashFirst);
@@ -204,7 +222,7 @@ try {
 
   // Delete on this device: B's first text disappears, nothing published.
   const before = (await page.evaluate(() => window.__published.flat())).length;
-  await page.locator('.message-in .message-bubble', { hasText: 'hello see' }).click({ button: 'right' });
+  await rightClickText(page.locator('.message-in .message-bubble', { hasText: 'hello see' }));
   await page.locator('.menu-item', { hasText: 'Delete on this device' }).click();
   await page.waitForFunction(() => ![...document.querySelectorAll('.message-text')].some(n => n.textContent.includes('hello see')));
   const after = (await page.evaluate(() => window.__published.flat())).length;

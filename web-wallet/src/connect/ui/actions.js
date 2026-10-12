@@ -67,7 +67,10 @@ const field = (s, name) => {
 export function parseReaction(text) {
   const s = cString(text);
   const target = field(s, 'target'), emoji = field(s, 'emoji'), op = field(s, 'op');
-  if (!target || !HEX64.test(target) || (op !== 'add' && op !== 'remove') || !emoji) return null;
+  // The app replays only an emoji that fits its char[8] (message_backup.c
+  // :771-773, reaction_json.c dna_reaction_parse_emoji): 1..7 bytes.
+  if (!target || !HEX64.test(target) || (op !== 'add' && op !== 'remove') || !emoji ||
+      new TextEncoder().encode(emoji).length > 7) return null;
   return { target, emoji, op };
 }
 
@@ -180,6 +183,11 @@ export function parseTransfer(text) {
   if (!j || typeof j !== 'object' || Array.isArray(j) || j.type !== 'token_transfer') return null;
   const str = v => (typeof v === 'string' ? v : '');
   return { chain: str(j.chain).toLowerCase(), amount: str(j.amount), token: str(j.token), wire: str(j.txHash).toLowerCase(), to: str(j.recipientAddress).toLowerCase(), name: str(j.recipientName) };
+}
+// A NODUS card this page can check: the token, a 128-hex wire and recipient,
+// a well-formed amount. A "nodus" card that is not one is not shown at all.
+export function validNodusCard(card) {
+  return !!card && card.chain === 'nodus' && card.token === 'NODUS' && HEX128.test(card.wire) && HEX128.test(card.to) && nodusUnits(card.amount) !== null;
 }
 // The verdict on a card from THIS device's own address history entries
 // (src/nodus/history.js parseAddrHistory rows: { h, kind, amount, token,

@@ -227,6 +227,14 @@ static void test_kinds(void) {
           kind_of("{\"type\":\"image_attachment\"}") == 0, "K8 media card payloads: other");
     CHECK(kind_of("{\"type\":\"token_transfer\",\"amount\":\"1\"}") == NC_MSG_TRANSFER &&
           kind_of("{\"type\":7}") == NC_MSG_CHAT, "K13 token_transfer (string type): payment card");
+    char r_del[320], r_call[320], r_inv[320], r_card[320];
+    snprintf(r_del, sizeof(r_del), "{\"type\":\"delete\",\"target\":\"%s\",\"op\":\"add\",\"hashes\":[]}", t64);
+    snprintf(r_call, sizeof(r_call), "{\"type\":\"call_signal\",\"target\":\"%s\",\"op\":\"add\"}", t64);
+    snprintf(r_inv, sizeof(r_inv), "{\"type\":\"group_invite\",\"target\":\"%s\",\"op\":\"add\"}", t64);
+    snprintf(r_card, sizeof(r_card), "{\"type\":\"token_transfer\",\"target\":\"%s\",\"op\":\"add\"}", t64);
+    CHECK(kind_of(r_del) == NC_MSG_DELETE && kind_of(r_call) == 0 && kind_of(r_inv) == 0 &&
+          kind_of(r_card) == NC_MSG_REACTION,
+          "K14 reaction fields + a type: delete / call / invite win, a card stays a reaction (app order)");
     CHECK(kind_of("{\"type\":\"something\"}") == NC_MSG_CHAT, "K9 unknown JSON type: chat");
     CHECK(nc_plaintext_kind((const uint8_t *)"", 0) == -1 && nc_plaintext_kind(NULL, 3) == -1, "K10 empty / NULL: unknown");
     const uint8_t nul_cut[] = { 'h', 'i', 0, '{', '}' };

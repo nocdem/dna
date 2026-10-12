@@ -57,7 +57,7 @@ import {
 import { el, untrusted, untrustedLinked, button, website, fillAvatar } from './dom.js';
 import {
   REACTION_EMOJIS, messageHash, buildReaction, reactionSummary, ownReactionOn, buildDelete, deletions, buildReply, parseReply,
-  buildTransfer, parseTransfer, transferVerdict, nodusUnits
+  buildTransfer, parseTransfer, transferVerdict, nodusUnits, validNodusCard
 } from './actions.js';
 import { parseNameOf } from '../../nodus/names.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, chainNoNameFresh, chainNoNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
@@ -1039,9 +1039,11 @@ async function publishOutbox(contact, gen) {
 // applied to the message they name and never drawn as a bubble.
 // A payment card (`kind: 'transfer'`, 0.1.90) IS drawn: as a card whose
 // verdict comes from this device's own history (transferCard).
-// A transfer record whose text is not a card is not drawn (design §4).
+// A transfer record whose text is not a card, or a "nodus" card this page
+// cannot check, is not drawn (design §4; verifier 2026-10-12 C5).
+const hiddenCard = m => { const c = parseTransfer(m.text); return !c || (c.chain === 'nodus' && !validNodusCard(c)); };
 const isControl = m => m.control === true || (m.kind !== undefined && m.kind !== 'chat' && m.kind !== 'transfer') ||
-  (m.kind === 'transfer' && !parseTransfer(m.text)) || !!controlType(m.text);
+  (m.kind === 'transfer' && hiddenCard(m)) || !!controlType(m.text);
 // Stored incoming chat messages of one contact (group control records not
 // counted): the difference across a contact's check is its "new" count in
 // the session log (sync). Own messages sent meanwhile are not counted.
@@ -1728,7 +1730,7 @@ function renderConversation(scroll) {
   const lost = dropped.get(contact.fp), other = others.get(contact.fp);
   ui.convNote.textContent = [
     lost ? 'Some messages from this contact could not be checked and are not shown.' : '',
-    other ? 'This contact also sent items this page cannot show yet (for example pictures, payments or calls).' : ''
+    other ? 'This contact also sent items this page cannot show yet (for example pictures or calls).' : ''
   ].filter(Boolean).join(' ');
   ui.convNote.hidden = !ui.convNote.textContent;
   ui.convDiagText.textContent = diagText(diags.get(contact.fp));
@@ -1827,8 +1829,10 @@ function wireMenu(row, bubble, m) {
   const more = setAttrs(button('', () => openMenu(m, bubble), 'message-more'), { 'aria-label': 'Message actions', title: 'Message actions' });
   more.append(icon('more'));
   row.append(more);
-  bubble.addEventListener('contextmenu', event => { event.preventDefault(); openMenu(m, bubble); });
+  // A link inside the bubble keeps its own Enter and context menu (0.1.90).
+  bubble.addEventListener('contextmenu', event => { if (event.target.closest('a')) return; event.preventDefault(); openMenu(m, bubble); });
   bubble.addEventListener('keydown', event => {
+    if (event.target.closest('a')) return;
     if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey) || event.key === 'Enter') { event.preventDefault(); openMenu(m, bubble); }
   });
   let timer, x0 = 0, y0 = 0;
@@ -1845,7 +1849,8 @@ function wireMenu(row, bubble, m) {
 
 let menuAnchor;                          // the bubble the open menu belongs to (focus goes back to it)
 function openMenu(m, anchor) {
-  if (!ui || !isOpen()) return;
+  // a press that outlived a redraw belongs to a bubble no longer shown
+  if (!ui || !isOpen() || !anchor?.isConnected) return;
   menuFor = m; menuAnchor = anchor;
   const hash = hashOf(m), mine = m.dir === 'out';
   const summary = reactionSummary(messages.filter(x => x.fp === m.fp), ownFp);
@@ -1912,7 +1917,8 @@ async function copyMessage(m) {
 // A reaction or a delete notice to this contact: a record of its `kind`,
 // published with the contact's pending set like any message (sendControl's
 // path), applied here at once.
-async function sendAction(fp, text, kind) {
+// `stored` is called once the record is in `messages` (before the publish).
+async function sendAction(fp, text, kind, stored) {
   if (!isOpen()) throw new Error('Messages is not open.');
   if (!online) throw new Error(OFFLINE_SEND_TEXT);
   const gen = generation, contact = contactOf(fp);
@@ -1921,18 +1927,27 @@ async function sendAction(fp, text, kind) {
   await persist([message]);
   if (gen !== generation) throw new Error('Messages is not open.');
   messages.push(message); unpublished.add(fp);
+  stored?.();
   render();
   try { await publishOutbox(contact, gen); } catch { /* retried by sync */ }
   if (gen === generation) render();
 }
 
+// A second tap on the same reaction before the first one is stored would
+// read the same on/off state and send the same op again: it waits (0.1.90).
+const reacting = new Set();
 async function react(m, emoji) {
   const hash = hashOf(m);
   if (!hash || !online) { if (!online) ui.sendStatus.textContent = OFFLINE_SEND_TEXT; return; }
-  const summary = reactionSummary(messages.filter(x => x.fp === m.fp), ownFp);
-  const op = ownReactionOn(summary, hash, emoji) ? 'remove' : 'add';
-  try { await sendAction(m.fp, buildReaction(hash, emoji, op), 'reaction'); }
-  catch (error) { if (ui) ui.sendStatus.textContent = error.message; logFailure('A reaction was not sent', error); }
+  const busy = `${hash} ${emoji}`;
+  if (reacting.has(busy)) return;
+  reacting.add(busy);
+  try {
+    const summary = reactionSummary(messages.filter(x => x.fp === m.fp), ownFp);
+    const op = ownReactionOn(summary, hash, emoji) ? 'remove' : 'add';
+    await sendAction(m.fp, buildReaction(hash, emoji, op), 'reaction', () => reacting.delete(busy));
+  } catch (error) { if (ui) ui.sendStatus.textContent = error.message; logFailure('A reaction was not sent', error); }
+  finally { reacting.delete(busy); }
 }
 
 // ── payment cards (web 0.1.90; design 2026-10-09-connect-nodus-in-chat) ──
@@ -1950,7 +1965,7 @@ const TRANSFER_TEXT = {
   mismatch: () => 'Not confirmed by your account history — do not rely on this card',
   duplicate: () => 'A copy of a payment card shown above — not a second payment',
   unchecked: () => 'Could not be found in what this Nodus node keeps — not confirmed',
-  unverifiable: (m, v) => `A payment on ${KNOWN_CHAINS[v.chain] || 'another network'} — it cannot be checked here`
+  unverifiable: (m, v) => `A payment on ${Object.hasOwn(KNOWN_CHAINS, v.chain) ? KNOWN_CHAINS[v.chain] : 'another network'} — it cannot be checked here`
 };
 function transferVerdictOf(m) {
   const card = parseTransfer(m.text);
@@ -1978,7 +1993,7 @@ async function checkTransfers(gen, { force = false } = {}) {
   if (transferChecking || !isOpen() || !nodusClient?.historyReadable) return;
   const open = messages.filter(m => m.kind === 'transfer' && (m.dir === 'in' || m.dir === 'out'))
     .map(m => ({ m, card: parseTransfer(m.text) }))
-    .filter(({ m, card }) => card && card.chain === 'nodus' && /^[0-9a-f]{128}$/.test(card.wire) && !TRANSFER_FINAL.includes(transferVerdicts.get(cardKey(m))?.state))
+    .filter(({ m, card }) => validNodusCard(card) && !TRANSFER_FINAL.includes(transferVerdicts.get(cardKey(m))?.state))
     .sort((a, b) => compareLocal(a.m, b.m));      // earlier cards settle first (copies, below)
   if (!open.length || (!force && Date.now() < transferCheckAt)) return;
   transferChecking = true; transferCheckAt = Date.now() + TRANSFER_CHECK_MS;
@@ -1989,8 +2004,10 @@ async function checkTransfers(gen, { force = false } = {}) {
     for (let page = 0; page < TRANSFER_HISTORY_PAGES; page++) {
       const answer = await nodusClient.addrHistory(before ? { before, limit: 100 } : { limit: 100 });
       if (gen !== generation) return;
-      if (answer.enabled === false) { enabled = false; break; }
       entries.push(...answer.entries);
+      // A node with its index off still answers the rows it holds
+      // (history.js): those are judged; nothing more will come.
+      if (answer.enabled === false) { enabled = false; more = false; break; }
       more = answer.entries.length === 100;
       if (!more) break;
       // Read on while a wanted wire is missing, or while one ends this page
@@ -2005,12 +2022,12 @@ async function checkTransfers(gen, { force = false } = {}) {
     let moved = false;
     for (const { m, card } of open) {
       let v;
-      if (!enabled) v = { state: 'unchecked' };                     // the node keeps no history (finding 3)
-      else if (card.wire === cut) v = { state: 'unchecked' };
+      if (card.wire === cut) v = { state: 'unchecked' };
       else v = transferVerdict(card, entries, { incoming: m.dir === 'in', counterparty: m.fp, ownFp });
-      // Still not on the chain an hour after the card arrived (or the node's
-      // index starts later, or it is past what is read): stop asking.
-      if (v.state === 'pending' && Date.now() - Number(m.at || 0) > TRANSFER_PENDING_MAX_MS) v = { state: 'unchecked' };
+      // Not found while the node's index is off (finding 3), or still not on
+      // the chain an hour after the card arrived (the index starts later, or
+      // it is past what is read): stop asking.
+      if (v.state === 'pending' && (!enabled || Date.now() - Number(m.at || 0) > TRANSFER_PENDING_MAX_MS)) v = { state: 'unchecked' };
       // One payment, one card: a later card of the same direction naming a
       // wire an earlier card already confirmed is a copy, never a second
       // payment.
@@ -2022,8 +2039,13 @@ async function checkTransfers(gen, { force = false } = {}) {
       if (v.state !== transferVerdicts.get(cardKey(m))?.state) { transferVerdicts.set(cardKey(m), v); moved = true; }
     }
     if (moved && gen === generation) render();
-  } catch (error) { logCheck(`Payment cards: the account history could not be read (${errorText(error)})`, true); }
-  finally { transferChecking = false; }
+  } catch (error) {
+    logCheck(`Payment cards: the account history could not be read (${errorText(error)})`, true);
+    // A history that keeps failing ends the wait too, after the same hour.
+    let moved = false;
+    for (const { m } of open) if (Date.now() - Number(m.at || 0) > TRANSFER_PENDING_MAX_MS) { transferVerdicts.set(cardKey(m), { state: 'unchecked' }); moved = true; }
+    if (moved && gen === generation) render();
+  } finally { transferChecking = false; }
 }
 
 // The chat list line for a payment card: the verdict, never the card's word.
@@ -2472,7 +2494,18 @@ export const vaultHost = {
   persistent: () => isOpen() && !!store?.persistent,
   contacts: () => (isOpen() ? state.contacts.map(c => ({ fp: c.fp, ready: !!c.salt, name: displayName(c.fp), verified: namesOf(c.fp).verified })) : []),
   name: fp => (isOpen() && typeof fp === 'string' && VAULT_ADDRESS.test(fp) ? displayName(fp) : ''),
-  messages: () => (isOpen() ? messages.filter(m => !isControl(m)).map(m => ({ fp: m.fp, dir: m.dir, text: m.text, at: m.at, seq: String(m.seq) })) : []),
+  // A message deleted by its sender or on this device is not handed on
+  // either (0.1.90): what the conversation no longer shows, a vault never reads.
+  messages: () => {
+    if (!isOpen()) return [];
+    const gone = new Map();
+    const removed = fp => {
+      if (!gone.has(fp)) { const { deleted, hidden } = deletions(messages.filter(x => x.fp === fp), ownFp, hashOf); gone.set(fp, new Set([...deleted, ...hidden])); }
+      return gone.get(fp);
+    };
+    return messages.filter(m => !isControl(m) && !removed(m.fp).has(hashOf(m)))
+      .map(m => ({ fp: m.fp, dir: m.dir, text: m.text, at: m.at, seq: String(m.seq) }));
+  },
   send: sendPayload,
   vaults: () => (isOpen() ? [...vaultRecs.entries()].map(([address, r]) => ({ address, value: r.value })) : []),
   keepVault,

@@ -739,8 +739,9 @@ function activity() {
   // The open wallet's time comes from Device & settings (src/auto-lock.js;
   // default 15 minutes, 0 = never — until 0.1.89 a fixed 10 minutes). The
   // recovery words on screen, or a typed password, always clear after a
-  // fixed 10 minutes, whatever is chosen there.
-  const entry = !$('phrase-form').hidden || ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password'].some(id => $(id).value);
+  // fixed 10 minutes, whatever is chosen there; so does a session this tab
+  // took over without opening a wallet (0.1.90: "never" must not hold it).
+  const entry = !$('phrase-form').hidden || ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password'].some(id => $(id).value) || (!wallet && !!sessionRelease);
   const minutes = entry ? ENTRY_IDLE_MINUTES : autoLockMinutes;
   if (sensitive) {
     if (minutes > 0) { const ms = minutes * 60 * 1000; idleDeadline = Date.now() + ms; lockTimer = setTimeout(lock, ms); }
@@ -748,7 +749,10 @@ function activity() {
   }
 }
 const ENTRY_IDLE_MINUTES = 10;
-let autoLockMinutes = readAutoLock(globalThis.localStorage);
+// Reading the localStorage property itself throws where the browser blocks
+// site data: asked for inside a try, like every other use here (0.1.90).
+function autoLockStorage() { try { return globalThis.localStorage; } catch { return undefined; } }
+let autoLockMinutes = readAutoLock(autoLockStorage());
 {
   const choice = $('auto-lock-minutes'), note = $('auto-lock-note');
   choice.value = String(autoLockMinutes);
@@ -756,7 +760,7 @@ let autoLockMinutes = readAutoLock(globalThis.localStorage);
   choice.addEventListener('change', () => {
     autoLockMinutes = parseAutoLock(choice.value);
     choice.value = String(autoLockMinutes);
-    const kept = writeAutoLock(globalThis.localStorage, autoLockMinutes);
+    const kept = writeAutoLock(autoLockStorage(), autoLockMinutes);
     note.textContent = autoLockNote(autoLockMinutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
     activity();                                  // the new time counts from now
   });

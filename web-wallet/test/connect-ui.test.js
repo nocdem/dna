@@ -322,6 +322,22 @@ test('pending set: own undelivered messages to that contact within 7 days, in lo
   const capped = pendingOutbox(many, FP, now);
   assert.equal(capped.length, OUTBOX_MAX);
   assert.equal(capped[0].seq, '6');
+  // 0.1.90: over the limit reactions give way before messages — first one a
+  // later reaction of the same target and emoji overrides, then the oldest
+  const T = 'ab'.repeat(32), R = (e, op) => `{"target":"${T}","emoji":"${e}","op":"${op}"}`;
+  const mixed = [
+    { seq: '1', fp: FP, dir: 'out', text: 'first chat', ts: now },
+    { seq: '2', fp: FP, dir: 'out', text: R('👍', 'add'), ts: now, kind: 'reaction' },
+    { seq: '3', fp: FP, dir: 'out', text: R('🔥', 'add'), ts: now, kind: 'reaction' },
+    ...Array.from({ length: OUTBOX_MAX - 3 }, (_, i) => ({ seq: String(i + 4), fp: FP, dir: 'out', text: 'm', ts: now })),
+    { seq: '100', fp: FP, dir: 'out', text: R('👍', 'remove'), ts: now, kind: 'reaction' },
+    { seq: '101', fp: FP, dir: 'out', text: R('🎉', 'add'), ts: now, kind: 'reaction' },
+  ];
+  const kept = pendingOutbox(mixed, FP, now).map(m => m.seq);
+  assert.equal(kept.length, OUTBOX_MAX);
+  assert.equal(kept[0], '1');                          // the oldest message stays
+  assert.ok(!kept.includes('2') && !kept.includes('3')); // moot 👍 add, then the oldest reaction
+  assert.ok(kept.includes('100') && kept.includes('101'));
   assert.equal(isDelivered({ ts: '5' }), false);
   assert.equal(isDelivered({ ts: '5', published: true }), false);
   assert.equal(isDelivered({ ts: '5', delivered: true }), true);
@@ -1002,6 +1018,9 @@ test('links: https only, punctuation outside, the parsed href shown', () => {
   assert.deepEqual(linkSegments('see https://nodusnetwork.io/wiki, ok'), [
     { text: 'see ' }, { text: 'https://nodusnetwork.io/wiki', href: 'https://nodusnetwork.io/wiki' }, { text: ', ok' }]);
   assert.deepEqual(linkSegments('(https://a.example/x)'), [{ text: '(' }, { text: 'https://a.example/x', href: 'https://a.example/x' }, { text: ')' }]);
+  const wiki = 'https://en.wikipedia.org/wiki/Foo_(bar)';
+  assert.deepEqual(linkSegments(`see ${wiki}.`), [{ text: 'see ' }, { text: wiki, href: wiki }, { text: '.' }]);
+  assert.deepEqual(linkSegments(`(${wiki})`), [{ text: '(' }, { text: wiki, href: wiki }, { text: ')' }]);
   for (const bad of ['http://a.example', 'javascript:alert(1)', 'https://user:pass@a.example/', 'ftp://a.example']) {
     assert.ok(linkSegments(bad).every(s => !s.href), bad);
   }

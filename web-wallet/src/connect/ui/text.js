@@ -3,6 +3,7 @@
 // arguments, so test/connect-ui.test.js pins it under node --test.
 
 import { chainName } from '../../nodus/names.js';
+import { parseReaction } from './actions.js';
 
 const HEX128 = /^[0-9a-f]{128}$/;
 const U64 = /^(0|[1-9]\d{0,19})$/;
@@ -128,11 +129,19 @@ export function httpsLink(value) {
 // a look-alike host is visible). Nothing is fetched: no preview.
 const LINK = /https:\/\/[^\s<>"'`]+/g;
 const LINK_TAIL = /[.,!?;:)\]}]+$/;
+// A ")" that closes a "(" inside the link stays part of it (0.1.90:
+// https://…/wiki/Foo_(bar)); one around the whole link does not.
+const parens = (s, c) => s.split(c).length - 1;
+function trimLink(found) {
+  let raw = found.replace(LINK_TAIL, '');
+  while (raw.length < found.length && found[raw.length] === ')' && parens(raw, '(') > parens(raw, ')')) raw += ')';
+  return raw;
+}
 export function linkSegments(text) {
   const s = String(text), out = [];
   let last = 0;
   for (const match of s.matchAll(LINK)) {
-    const raw = match[0].replace(LINK_TAIL, ''), href = httpsLink(raw);
+    const raw = trimLink(match[0]), href = httpsLink(raw);
     if (!href) continue;
     if (match.index > last) out.push({ text: s.slice(last, match.index) });
     out.push({ text: href, href });
@@ -389,10 +398,27 @@ export function pendingOutbox(messages, fp, nowSeconds) {
   const oldest = now - OUTBOX_LIFETIME_SECONDS;
   const list = messages
     .filter(m => m.dir === 'out' && m.fp === fp && BigInt(m.ts) > oldest && (!isDelivered(m) || inGrace(m, now)))
-    .sort(compareLocal)
-    .map(m => ({ seq: m.seq, ts: m.ts, text: m.text }));
-  // Beyond the limit only the newest are kept.
-  return list.length > OUTBOX_MAX ? list.slice(list.length - OUTBOX_MAX) : list;
+    .sort(compareLocal);
+  // Beyond the limit reactions give way first (0.1.90 — the app drops the
+  // oldest whatever it is, dht_dm_outbox.c:312, so a run of reactions could
+  // push a message out): a reaction a later one of the same target and emoji
+  // overrides (the last op wins, actions.js reactionSummary), then the oldest
+  // reactions; only then the oldest of the rest.
+  let kept = list;
+  if (kept.length > OUTBOX_MAX) {
+    const later = new Set(), moot = new Set();
+    for (let i = kept.length - 1; i >= 0; i--) {
+      const r = kept[i].kind === 'reaction' ? parseReaction(kept[i].text) : null;
+      if (!r) continue;
+      const key = `${r.target.toLowerCase()} ${r.emoji}`;
+      if (later.has(key)) moot.add(kept[i]); else later.add(key);
+    }
+    kept = kept.filter(m => !moot.has(m));
+    let extra = kept.length - OUTBOX_MAX;
+    if (extra > 0) kept = kept.filter(m => m.kind !== 'reaction' || extra-- <= 0);
+    if (kept.length > OUTBOX_MAX) kept = kept.slice(kept.length - OUTBOX_MAX);
+  }
+  return kept.map(m => ({ seq: m.seq, ts: m.ts, text: m.text }));
 }
 
 // Own messages to `fp` still waiting for delivery (what makes a contact's

@@ -174,31 +174,34 @@ int nc_plaintext_kind(const uint8_t *pt, size_t len) {
     if (!s) return -1;                         /* unknown: counted dropped */
     memcpy(s, pt, len);
     s[len] = '\0';
+    /* The app sniffs a reaction first (messenger_transport.c:741-748), then
+     * reads "type" anyway (:751): a delete returns early (:809), a call
+     * signal is routed away (:760) and a group invite overrides the type
+     * (:772) — so those win over the sniff, as here. */
     int kind = is_reaction(s) ? NC_MSG_REACTION : NC_MSG_CHAT;
-    if (kind == NC_MSG_CHAT) {
-        json_object *j = json_tokener_parse(s);           /* :751 */
-        json_object *jt = NULL;
-        if (j && json_object_object_get_ex(j, "type", &jt)) {
-            /* the receiver's classes (:753-808), read as it reads them */
-            const char *t = json_object_get_string(jt);
-            if (t && strcmp(t, "delete") == 0)
-                kind = NC_MSG_DELETE;
-            else if (t && (strcmp(t, "call_signal") == 0 ||
-                           strcmp(t, "group_invite") == 0 ||
-                           strcmp(t, "groupinvite") == 0))
-                kind = 0;
-            /* the chat screen's cards (chat_screen.dart:2012-2046): an
-             * object whose "type" is exactly that string */
-            if (json_object_is_type(jt, json_type_string) &&
-                strcmp(t, "token_transfer") == 0)
-                kind = NC_MSG_TRANSFER;          /* web 0.1.90: a payment card */
-            else if (json_object_is_type(jt, json_type_string) &&
-                     (strcmp(t, "media_ref") == 0 ||
-                      strcmp(t, "image_attachment") == 0))
-                kind = 0;
-        }
-        if (j) json_object_put(j);
+    json_object *j = json_tokener_parse(s);
+    json_object *jt = NULL;
+    if (j && json_object_object_get_ex(j, "type", &jt)) {
+        const char *t = json_object_get_string(jt);
+        if (t && strcmp(t, "delete") == 0)
+            kind = NC_MSG_DELETE;
+        else if (t && (strcmp(t, "call_signal") == 0 ||
+                       strcmp(t, "group_invite") == 0 ||
+                       strcmp(t, "groupinvite") == 0))
+            kind = 0;
+        /* the chat screen's cards (chat_screen.dart:2012-2046): an object
+         * whose "type" is exactly that string, on a chat message */
+        else if (kind == NC_MSG_CHAT &&
+                 json_object_is_type(jt, json_type_string) &&
+                 strcmp(t, "token_transfer") == 0)
+            kind = NC_MSG_TRANSFER;              /* web 0.1.90: a payment card */
+        else if (kind == NC_MSG_CHAT &&
+                 json_object_is_type(jt, json_type_string) &&
+                 (strcmp(t, "media_ref") == 0 ||
+                  strcmp(t, "image_attachment") == 0))
+            kind = 0;
     }
+    if (j) json_object_put(j);
     qgp_secure_memzero(s, len);
     free(s);
     return kind;
@@ -357,6 +360,7 @@ static int outbox_day_finish(const nc_ctx_t *ctx, const nc_peer_t *peer,
             pt = NULL;
         } else {
             out->dropped++;
+            if (pt) qgp_secure_memzero(pt, pt_len);
         }
         free(pt);
         free(claimed);
