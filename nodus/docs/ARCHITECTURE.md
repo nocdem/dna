@@ -7821,7 +7821,7 @@ the owner signs and pays).
   generation ≥ `NODUS_RT_GEN_STORAGE` op 1 takes the 7301-byte layout with owner_fp = SHA3-512(signer)
   (the kind-1 rule of `rtn_sys_owner_auth`), and DELEGATE / UNDELEGATE / UNSTAKE are `ERR_GEN` (their
   136 / 136 / 64-byte layouts are not built yet — never the legacy bytes the generation-4 chain refuses by
-  length); STORAGE ops keep their layouts (the generation-4 `rtn_sys_call_flow` still decodes them).
+  length) — until slice 7b, which builds them (section "HF-6 slice 7b"); STORAGE ops keep their layouts (the generation-4 `rtn_sys_call_flow` still decodes them).
   `nodus_v2_stake_decode` reads the generation-4 layouts with the record identity = the one signer of
   both legs, and refuses a STAKE whose owner_fp is not SHA3-512 of it. Before building, nodus-cli
   re-checks the consent on its session (op, chain id, owner = `--keys`, ROTATE subject = `--validator`,
