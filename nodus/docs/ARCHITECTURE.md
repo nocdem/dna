@@ -7559,7 +7559,9 @@ a later-step failure is rolled back by the caller (the `v2_update` discipline).
 (`nodus_witness_v2_epoch.c`, replaces `v2ep_pubkey_in_snapshot`): a ruleset-2 snapshot by
 `entry.validator_id`; a ruleset-1 snapshot at key generation ≥ 4 through the migrated-id bridge
 `dna_validator_id_migrated(chain id, entry.pubkey) == validator_id` (the distribution's §7.5 bridge —
-exact, a v1 entry only ever names a pre-HF-6 row); below generation 4 the old pubkey memcmp. The bridge
+exact, a v1 entry only ever names a pre-HF-6 row); below generation 4 the old pubkey memcmp whatever
+the snapshot's ruleset (byte-identical, including test fixtures that store a ruleset-2 row on a
+generation-1 chain). The bridge
 matters for the FIRST rotation cycle: the first generation-4 freeze F reads a ruleset-1 S(F), so Rule N
 at U = F + E judges a row whose key was just swapped against a v1 duty snapshot — a pubkey match would
 read "no duty" and reset its counter. A membership that cannot be decided is a boundary fault.

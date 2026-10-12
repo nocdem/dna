@@ -419,49 +419,49 @@ static int v2ep_active_count_dec(nodus_witness_t *w) {
  * kullanır, canlı satırı değil"; plan tasks/hf6-slice6-plan.md §1.5): a
  * ROTATE swaps a row's consensus key at boundary U while the snapshots
  * S(F) and S(U) name the old and the new key respectively, so the row is
- * matched by its validator_id, never by its live key, at key generation
- * >= NODUS_RT_GEN_STORAGE:
+ * matched by its validator_id, never by its live key, when the caller is
+ * at key generation >= NODUS_RT_GEN_STORAGE (it passes `chain32` and
+ * `validator_id`):
  *   ruleset 2  — entry.validator_id == `validator_id`;
- *   ruleset 1 with `chain32` (the caller is at generation >= 4) — the
- *              v1-SNAPSHOT BRIDGE of the distribution (nodus_witness_v2_
- *              econ.c v2ec_member_load; design §7.5): dna_validator_id_
- *              migrated(chain32, entry.pubkey) == `validator_id`. Exact:
- *              a v1 entry names only a pre-HF-6 row, whose validator_id
- *              IS the migrated id of its pre-HF-6 key (a generation-4
- *              STAKE's row is first seated in a ruleset-2 snapshot). It
- *              equals the pubkey match on every row that never rotated,
- *              and stays right for the one that did: the first gen-4
- *              freeze F reads a ruleset-1 S(F), so Rule N at U = F + E
- *              judges a swapped row against a v1 duty snapshot;
- *   ruleset 1 without `chain32` (generations 1-3) — the pre-HF-6 pubkey
- *              memcmp, byte-identical (`validator_id` is not read).
- * `pubkey` is the row's live key (read by the generations-1-3 arm only).
+ *   ruleset 1  — the v1-SNAPSHOT BRIDGE of the distribution (nodus_
+ *              witness_v2_econ.c v2ec_member_load; design §7.5):
+ *              dna_validator_id_migrated(chain32, entry.pubkey) ==
+ *              `validator_id`. Exact: a v1 entry names only a pre-HF-6
+ *              row, whose validator_id IS the migrated id of its pre-HF-6
+ *              key (a generation-4 STAKE's row is first seated in a
+ *              ruleset-2 snapshot). It equals the pubkey match on every
+ *              row that never rotated, and stays right for the one that
+ *              did: the first gen-4 freeze F reads a ruleset-1 S(F), so
+ *              Rule N at U = F + E judges a swapped row against a v1 duty
+ *              snapshot.
+ * Below generation 4 (`chain32` NULL) the pre-HF-6 pubkey memcmp, for any
+ * ruleset — byte-identical to before (`validator_id` is not read).
+ * `pubkey` is the row's live key (read by that arm only).
  * *idx_out (on 1) = the matching entry's index — the governing
  * snapshot's entry, whose pubkey is the key a duty reads attendance by.
- * @return 1 an entry, 0 not an entry, -1 fault (a ruleset-2 snapshot or
- *         the bridge without a validator_id, a migrated id that does not
- *         derive, an unknown ruleset) — a fault is never "not an entry",
- *         which would graduate a seated row or reset a duty counter. */
+ * @return 1 an entry, 0 not an entry, -1 fault (generation 4 without a
+ *         validator_id, a migrated id that does not derive, a ruleset
+ *         other than 1 / 2) — a fault is never "not an entry", which
+ *         would graduate a seated row or reset a duty counter. */
 static int v2ep_member_in_snapshot(const dna_vset_snapshot_t *snap,
                                    const uint8_t *validator_id,
                                    const uint8_t pubkey[DNAC_PUBKEY_SIZE],
                                    const uint8_t *chain32,
                                    size_t *idx_out) {
     const size_t n = (size_t)snap->active_count;
-    if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
-        if (!validator_id) return -1;
-        for (size_t j = 0; j < n; j++) {
-            if (memcmp(validator_id, snap->entries[j].validator_id,
-                       DNA_VSET_VALIDATOR_ID_LEN) == 0) {
-                *idx_out = j;
-                return 1;
-            }
-        }
-        return 0;
-    }
-    if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V1) return -1;
     if (chain32) {
         if (!validator_id) return -1;
+        if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
+            for (size_t j = 0; j < n; j++) {
+                if (memcmp(validator_id, snap->entries[j].validator_id,
+                           DNA_VSET_VALIDATOR_ID_LEN) == 0) {
+                    *idx_out = j;
+                    return 1;
+                }
+            }
+            return 0;
+        }
+        if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V1) return -1;
         for (size_t j = 0; j < n; j++) {
             uint8_t mid[DNA_VALBIND_ID_LEN];
             if (dna_validator_id_migrated(mid, chain32,
