@@ -108,6 +108,14 @@ typedef struct {
      * flag that is always set (nc_wasm.c nc_lock): either stop reaches a
      * suspended gated write before its PUT. */
     volatile const int *cancel;
+    /* The time, unix seconds, of this call — the library reads no clock
+     * (Kurultay #17 item 5, docs/plans/decisions/2026-10-12-kurultay-17-
+     * summary.md): every signed timestamp it writes (a contact request, a
+     * profile, a contact list) and every PUT's seq come from here, so a test
+     * or a native caller can pin them. The browser entry sets it from the
+     * page's clock at the start of every export (nc_wasm.c nc_begin). 0 is
+     * refused (NC_ERR_ARG) wherever a time is written: never a 0 stamp. */
+    uint64_t            now;
 } nc_ctx_t;
 
 /* Library return codes (negative) — distinct from the node's NODUS_ERR_*. */
@@ -424,7 +432,8 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
 /**
  * Build one signed contact request for `recipient_fp` exactly as
  * dht_send_contact_request (dht_contact_request.c:43-229) does: magic DNAR,
- * v2 when `salt` != NULL (v1 otherwise), timestamp = now, expiry = now +
+ * v2 when `salt` != NULL (v1 otherwise), timestamp = `now` (unix seconds,
+ * the caller's; 0 -> NC_ERR_ARG), expiry = now +
  * DHT_CONTACT_REQUEST_DEFAULT_TTL, sender_name empty (the web registers no
  * name), message (<= 255 bytes, NULL = empty), ML-DSA-87 over the signing
  * preimage. The serialised bytes are checked with the codec's own
@@ -433,7 +442,7 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
  * returned; a request that would not verify is never returned.
  */
 int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
-                     const char *message, const uint8_t *salt,
+                     const char *message, const uint8_t *salt, uint64_t now,
                      uint8_t **out, size_t *out_len);
 
 /** Build + PUT to SHA3-512(SHA3-512("<recipient>:requests")), EPHEMERAL,
