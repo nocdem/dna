@@ -41,10 +41,10 @@ const ADDR_HISTORY_MAX_LIMIT = 100;          // nodus/include/nodus/nodus.h NODU
 const STAKE_OPS = Object.freeze({ stake: 1, delegate: 2, undelegate: 4 });
 // HF-6 (design docs/plans/2026-10-12-connect-hf6-screens-design.md): the
 // generation-4 envelope ops and their SYSTEM runtime_op (nodus_v2_stake.h
-// NODUS_V2_STAKE_OP_STAKE / _ROTATE / _STORAGE_REGISTER / _STORAGE_EXIT),
-// and the node-consent op each screen expects (valbind_wire.h
-// DNA_VALBIND_OP_*; STORAGE_EXIT carries no consent).
-const HF6_OPS = Object.freeze({ stake: 1, rotate: 10, storageRegister: 7, storageExit: 8 });
+// NODUS_V2_STAKE_OP_STAKE / _ROTATE / _STORAGE_REGISTER / _STORAGE_EXIT /
+// _UNSTAKE), and the node-consent op each screen expects (valbind_wire.h
+// DNA_VALBIND_OP_*; STORAGE_EXIT and UNSTAKE carry no consent).
+const HF6_OPS = Object.freeze({ stake: 1, rotate: 10, storageRegister: 7, storageExit: 8, unstake: 3 });
 const HF6_CONSENT_OPS = Object.freeze({ stake: 1, rotate: 2, storageRegister: 3 });
 // The pasted consent: line ends made '\n', surrounding blank space dropped,
 // one final '\n' (nodus_v2_stake.h's container ends every line with '\n';
@@ -751,11 +751,14 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     // hf6Timing: the timing multipliers of the screens' Review lines (design
     // "Timing facts"), raw decimal from dnac.h — minTenureBlocks
     // (DNAC_MIN_TENURE_BLOCKS: a new witness is a candidate for an epoch
-    // start only this many blocks after its stake) and storageExitLockEpochs
-    // (DNAC_STORAGE_EXIT_LOCK_EPOCHS: a left storage bond's lock, in epochs).
-    // ./client.js adds them to its hf6Rules.
+    // start only this many blocks after its stake), storageExitLockEpochs
+    // (DNAC_STORAGE_EXIT_LOCK_EPOCHS: a left storage bond's lock, in epochs)
+    // and validatorUnbondEpochs (DNAC_VALIDATOR_UNBOND_EPOCHS: a witness
+    // bond left by UNSTAKE is locked this many epochs after the witness
+    // leaves the set). ./client.js adds them to its hf6Rules.
     hf6Timing: Object.freeze({
-      minTenureBlocks: str('nsw_const_min_tenure_blocks'), storageExitLockEpochs: str('nsw_const_storage_exit_lock_epochs')
+      minTenureBlocks: str('nsw_const_min_tenure_blocks'), storageExitLockEpochs: str('nsw_const_storage_exit_lock_epochs'),
+      validatorUnbondEpochs: str('nsw_const_validator_unbond_epochs')
     }),
     // storageByOwner() -> { tip, total, epochStart, set, setCount, nodes:
     // [{ fp, status (1 active, 2 leaving, 3 released), bond, failStreak,
@@ -803,9 +806,10 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       if (result.error) throw new Error(result.error);
       return { ok: result.ok === true, checks: result.checks, nodeFp: result.node_fp, expiry: result.expiry };
     },
-    // hf6Build({ op: 'stake' | 'rotate' | 'storageRegister' | 'storageExit',
-    // consent (the pasted text; not for storageExit), validatorId (128 hex,
-    // rotate), nodeFp (128 hex, storageExit), amount (raw: stake >=
+    // hf6Build({ op: 'stake' | 'rotate' | 'storageRegister' | 'storageExit' |
+    // 'unstake', consent (the pasted text; not for storageExit / unstake),
+    // validatorId (128 hex, not all zero: rotate, unstake — the witness),
+    // nodeFp (128 hex, storageExit), amount (raw: stake >=
     // stakeMin, storageRegister == storageBond, else '0'), commissionBps
     // (stake), expiryHeight, coins }) -> { envelope, intentId, wireId,
     // decoded: { op, owner, nodeFp, validatorId, bond, commissionBps,
@@ -819,14 +823,15 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     async hf6Build({ op, consent = '', validatorId = '', nodeFp = '', amount = '0', commissionBps = '0', expiryHeight, coins } = {}) {
       const code = typeof op === 'string' && Object.hasOwn(HF6_OPS, op) ? HF6_OPS[op] : 0;
       if (!code) throw new Error('Unknown witness or storage action.');
-      if (op === 'rotate' ? typeof validatorId !== 'string' || !HEX128.test(validatorId) : validatorId !== '') throw new Error('Invalid witness.');
+      const byWitness = op === 'rotate' || op === 'unstake', noConsent = op === 'storageExit' || op === 'unstake';
+      if (byWitness ? typeof validatorId !== 'string' || !HEX128.test(validatorId) || (op === 'unstake' && validatorId === '0'.repeat(128)) : validatorId !== '') throw new Error('Invalid witness.');
       if (op === 'storageExit' ? typeof nodeFp !== 'string' || !HEX128.test(nodeFp) : nodeFp !== '') throw new Error('Invalid storage node.');
-      if (op === 'storageExit' && consent !== '') throw new Error('Leaving storage takes no consent.');
-      const text = op === 'storageExit' ? '' : consentText(consent);
+      if (noConsent && consent !== '') throw new Error(op === 'unstake' ? 'Stopping a witness takes no consent.' : 'Leaving storage takes no consent.');
+      const text = noConsent ? '' : consentText(consent);
       raw(amount, 'amount'); raw(commissionBps, 'commission'); raw(expiryHeight, 'validity height');
       loadCoins(coins);
       check(await call('nsw_hf6_build', ['number', 'string', 'string', 'string', 'string', 'string'],
-        [code, text, op === 'rotate' ? validatorId : nodeFp, amount, commissionBps, expiryHeight]));
+        [code, text, byWitness ? validatorId : nodeFp, amount, commissionBps, expiryHeight]));
       if (num('nsw_built_gen4') !== 1 || num('nsw_built_op') !== code) throw new Error('The built transaction does not match the request.');
       const at = num('nsw_built_env'), length = num('nsw_built_env_len');
       const inputs = [];

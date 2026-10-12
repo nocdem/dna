@@ -391,10 +391,12 @@ typedef struct {
     char     price[NSW_U64_DEC];
     /* HF-6 (nsw_hf6_core): 1 for a generation-4 layout — then `op` is the
      * runtime_op 1 STAKE (owner + node consent), 10 ROTATE, 7
-     * STORAGE_REGISTER or 8 STORAGE_EXIT, `recipient` this wallet's own
-     * address (the owner), `amount` the bond (0 for ROTATE / STORAGE_EXIT).
-     * node_fp: SHA3-512 of the consenting node key read from the call
-     * (STORAGE_EXIT: the call's node_fp); validator_id: ROTATE's target;
+     * STORAGE_REGISTER, 8 STORAGE_EXIT or 3 UNSTAKE, `recipient` this
+     * wallet's own address (the owner), `amount` the bond (0 for ROTATE /
+     * STORAGE_EXIT / UNSTAKE). node_fp: SHA3-512 of the consenting node
+     * key read from the call (STORAGE_EXIT: the call's node_fp; UNSTAKE:
+     * "" — its call carries no key); validator_id: ROTATE's / UNSTAKE's
+     * target;
      * consent_expiry: the consent expiry the call carries.
      * HF-6 slice 7b (nsw_stake_core): a generation-4 DELEGATE /
      * UNDELEGATE sets gen4 = 1 and validator_id = the call's target too;
@@ -1176,6 +1178,21 @@ done:
  *   STORAGE_REGISTER (op 7)   bond == STORAGE_BOND exactly, the storage
  *                             node's consent (op 3); lock = bond
  *   STORAGE_EXIT (op 8)       the node's fingerprint, no consent; fee only
+ *   UNSTAKE (op 3)            the witness's validator_id (64 bytes), no
+ *                             consent; fee only (nodus_v2_stake.h "HF-6
+ *                             slice 7b"). The bytes do not carry the
+ *                             owner: the chain authorizes it by the ROW's
+ *                             owner_fp and refuses a row that is not ACTIVE
+ *                             or ELIGIBLE (rtn_unstake2_exec) — the page
+ *                             offers it only for this wallet's own active /
+ *                             eligible witnesses (src/adapters/nodus.js
+ *                             prepareHf6). The exec only marks the row
+ *                             RETIRING; the bond comes back at the
+ *                             graduating boundary, locked
+ *                             DNAC_VALIDATOR_UNBOND_EPOCHS epochs, to the
+ *                             row's owner (nodus_witness_v2_epoch.c
+ *                             v2ep_graduate) — this builder writes no
+ *                             release output
  * STAKE_MIN and STORAGE_BOND are the compiled defaults
  * DNAC_HF6_STAKE_MIN_DEFAULT / DNAC_HF6_STORAGE_BOND_DEFAULT (dnac.h), the
  * values of the chain's seams until HF-6 slice 8 makes them chain
@@ -1443,6 +1460,12 @@ const char *nsw_const_min_tenure_blocks(void) {
 const char *nsw_const_storage_exit_lock_epochs(void) {
     return nsw_const((uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
 }
+/* The third: a witness's bond left by UNSTAKE comes back as a coin locked
+ * DNAC_VALIDATOR_UNBOND_EPOCHS epochs past the boundary it graduates at
+ * (dnac.h; nodus_witness_v2_epoch.c v2ep_graduate). */
+const char *nsw_const_validator_unbond_epochs(void) {
+    return nsw_const((uint64_t)DNAC_VALIDATOR_UNBOND_EPOCHS);
+}
 
 static const char *nsw_hf6_reason(int rc, int op) {
     switch (rc) {
@@ -1464,8 +1487,8 @@ static const char *nsw_hf6_reason(int rc, int op) {
     }
 }
 
-/* The consent op of an HF-6 envelope op; 0 for STORAGE_EXIT (no consent)
- * and for anything else. */
+/* The consent op of an HF-6 envelope op; 0 for STORAGE_EXIT and UNSTAKE
+ * (no consent) and for anything else. */
 static uint8_t nsw_hf6_consent_op(int op) {
     return op == NODUS_V2_STAKE_OP_STAKE  ? DNA_VALBIND_OP_STAKE
          : op == NODUS_V2_STAKE_OP_ROTATE ? DNA_VALBIND_OP_ROTATE
@@ -1477,7 +1500,16 @@ static uint8_t nsw_hf6_consent_op(int op) {
 static int nsw_hf6_op_ok(int op) {
     return op == NODUS_V2_STAKE_OP_STAKE || op == NODUS_V2_STAKE_OP_ROTATE ||
            op == NODUS_V2_STAKE_OP_STORAGE_REGISTER ||
-           op == NODUS_V2_STAKE_OP_STORAGE_EXIT;
+           op == NODUS_V2_STAKE_OP_STORAGE_EXIT ||
+           op == NODUS_V2_STAKE_OP_UNSTAKE;
+}
+
+/* The ops whose call names a 64-byte target: ROTATE and UNSTAKE the
+ * witness's validator_id, STORAGE_EXIT the node's fingerprint. */
+static int nsw_hf6_targeted(int op) {
+    return op == NODUS_V2_STAKE_OP_ROTATE ||
+           op == NODUS_V2_STAKE_OP_STORAGE_EXIT ||
+           op == NODUS_V2_STAKE_OP_UNSTAKE;
 }
 
 /* The generation gate (design §3): an HF-6 envelope only for a generation
@@ -1494,11 +1526,12 @@ static int nsw_hf6_gen_ok(const nsw_gen_t *g) {
 /*
  * Build + sign + read back ONE generation-4 envelope from g_req_coins
  * (op: NODUS_V2_STAKE_OP_STAKE / _ROTATE / _STORAGE_REGISTER /
- * _STORAGE_EXIT). `consent_text`: the node's consent (NUL-terminated;
- * NULL for STORAGE_EXIT) — re-checked here against op, `chain32`, the
- * owner SHA3-512(pk), the subject and `tip` with the chain's window, and
- * nothing is built unless every check passes. `target`: ROTATE the
- * validator_id, STORAGE_EXIT the node_fp (64 raw bytes), NULL otherwise.
+ * _STORAGE_EXIT / _UNSTAKE). `consent_text`: the node's consent
+ * (NUL-terminated; NULL for STORAGE_EXIT and UNSTAKE) — re-checked here
+ * against op, `chain32`, the owner SHA3-512(pk), the subject and `tip`
+ * with the chain's window, and nothing is built unless every check
+ * passes. `target`: ROTATE and UNSTAKE the validator_id (never all zero),
+ * STORAGE_EXIT the node_fp (64 raw bytes), NULL otherwise.
  * `amount`: STAKE the bond (>= STAKE_MIN), STORAGE_REGISTER the bond
  * (== STORAGE_BOND), 0 otherwise; `commission`: STAKE only (else 0).
  * On success g_built holds the envelope and the fields DECODED FROM ITS
@@ -1507,9 +1540,10 @@ static int nsw_hf6_gen_ok(const nsw_gen_t *g) {
  * owner, the bond, the commission, the consent key / signature / expiry,
  * the validator_id / node_fp, every input from the request, and
  * Σinputs = lock + fee + change (lock = the bond for STAKE /
- * STORAGE_REGISTER, 0 for ROTATE / STORAGE_EXIT — rtn_sys_call_flow), the
- * change to this wallet. Large structs are heap: this runs after every
- * network wait of the networked caller, never across one.
+ * STORAGE_REGISTER, 0 for ROTATE / STORAGE_EXIT / UNSTAKE —
+ * rtn_sys_call_flow), the change to this wallet. UNSTAKE carries no node
+ * key: its node_fp stays "". Large structs are heap: this runs after
+ * every network wait of the networked caller, never across one.
  */
 static int nsw_hf6_core(const uint8_t *pk, const uint8_t *sk,
                         const uint8_t chain32[DNA_CHAIN_ID_LEN],
@@ -1523,14 +1557,22 @@ static int nsw_hf6_core(const uint8_t *pk, const uint8_t *sk,
     const int is_rotate = op == NODUS_V2_STAKE_OP_ROTATE;
     const int is_streg  = op == NODUS_V2_STAKE_OP_STORAGE_REGISTER;
     const int is_stexit = op == NODUS_V2_STAKE_OP_STORAGE_EXIT;
+    const int is_unstake = op == NODUS_V2_STAKE_OP_UNSTAKE;
     if (!nsw_hf6_op_ok(op))
         return nsw_fail("Unknown witness or storage action.");
-    if ((is_rotate || is_stexit) != (target != NULL) ||
+    if (nsw_hf6_targeted(op) != (target != NULL) ||
         (cop != 0) != (consent_text != NULL) ||
         (!is_stake && commission != 0) ||
-        ((is_rotate || is_stexit) && amount != 0))
+        (nsw_hf6_targeted(op) && amount != 0))
         return nsw_fail("Invalid witness or storage request.");
     if (nsw_hf6_gen_ok(g) != 0) return -1;
+    /* no legal validator_id is all zero (nodus_v2_stake.h: the builder
+     * refuses one with ERR_ARG; rtn_val2_rec_ok) — said plainly here */
+    if (is_unstake) {
+        static const uint8_t zero_id[64];
+        if (memcmp(target, zero_id, 64) == 0)
+            return nsw_fail("Invalid witness: choose one of your witnesses.");
+    }
     /* the bond rules the builder leaves to the chain (section header) */
     if (is_stake && (amount < DNAC_HF6_STAKE_MIN_DEFAULT ||
                      amount > (uint64_t)INT64_MAX))
@@ -1607,7 +1649,7 @@ static int nsw_hf6_core(const uint8_t *pk, const uint8_t *sk,
         req.consent_sig    = c->sig;
         req.consent_expiry = c->expiry;
     }
-    if (is_rotate) req.validator_id = target;
+    if (is_rotate || is_unstake) req.validator_id = target;
     if (is_stexit) req.node_fp = target;
     nodus_v2_stake_err_t err;
     int brc = nodus_v2_stake_build(&req, built, &err);
@@ -1632,10 +1674,14 @@ static int nsw_hf6_core(const uint8_t *pk, const uint8_t *sk,
              memcmp(d->consent_sig, c->sig, DNA_VALBIND_SIG_LEN) == 0 &&
              d->consent_expiry == c->expiry;
     if (ok && is_stake)  ok = d->commission_bps == commission;
-    if (ok && is_rotate) ok = memcmp(d->validator_id, target, 64) == 0;
+    if (ok && (is_rotate || is_unstake))
+        ok = memcmp(d->validator_id, target, 64) == 0;
     if (ok && is_stexit) {
         ok = memcmp(d->node_fp, target, 64) == 0;
         memcpy(node_fp, target, 64);
+    } else if (ok && is_unstake) {
+        /* the 64-byte call carries no key: no node fingerprint to give */
+        memset(node_fp, 0, sizeof(node_fp));
     } else if (ok) {
         /* the consenting key's fingerprint, from the signed call */
         ok = qgp_sha3_512(d->consensus_pk, NSW_PK_LEN, node_fp) == 0;
@@ -1686,8 +1732,9 @@ static int nsw_hf6_core(const uint8_t *pk, const uint8_t *sk,
         nsw_fmt_hex(d->in_nul[i], 64, g_built.in_hex[i]);
     g_built.op = op;
     g_built.gen4 = 1;
-    nsw_fmt_hex(node_fp, 64, g_built.node_fp);
-    if (is_rotate) nsw_fmt_hex(d->validator_id, 64, g_built.validator_id);
+    if (!is_unstake) nsw_fmt_hex(node_fp, 64, g_built.node_fp);
+    if (is_rotate || is_unstake)
+        nsw_fmt_hex(d->validator_id, 64, g_built.validator_id);
     if (cop != 0) nsw_fmt_u64(d->consent_expiry, g_built.consent_expiry);
     rc = 0;
 
@@ -1705,10 +1752,10 @@ done:
 /* OFFLINE HF-6 build (parity, like nsw_stake_offline_build): the identity
  * from nsw_seed_buf (wiped here), the candidate coins (nsw_req_*), the
  * rule-set generation, chain id, tip and gas price as a node would report
- * them. `consent_text` "" for STORAGE_EXIT, else the node's consent;
- * `target_hex` 128 hex — ROTATE the validator_id, STORAGE_EXIT the
- * node_fp — "" for STAKE and STORAGE_REGISTER. No output seeds: the
- * builder draws none. */
+ * them. `consent_text` "" for STORAGE_EXIT and UNSTAKE, else the node's
+ * consent; `target_hex` 128 hex — ROTATE and UNSTAKE the validator_id,
+ * STORAGE_EXIT the node_fp — "" for STAKE and STORAGE_REGISTER. No output
+ * seeds: the builder draws none. */
 int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
                           const char *tip_dec, const char *gas_dec,
                           const char *consent_text, const char *target_hex,
@@ -1718,8 +1765,7 @@ int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
     uint64_t tip = 0, gas = 0, amount = 0, commission = 0, expiry = 0;
     uint8_t *pk = NULL, *sk = NULL;
     int rc = -1;
-    const int targeted = op == NODUS_V2_STAKE_OP_ROTATE ||
-                         op == NODUS_V2_STAKE_OP_STORAGE_EXIT;
+    const int targeted = nsw_hf6_targeted(op);
     const int consented = nsw_hf6_consent_op(op) != 0;
     if (gen < 1 || !nsw_hf6_op_ok(op) ||
         nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
@@ -3218,12 +3264,13 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
 }
 
 /* ── HF-6: become a witness / a storage node, change a witness's node key,
- *    leave storage (section "HF-6: NODE CONSENT") ──
+ *    leave storage, stop being a witness (section "HF-6: NODE CONSENT") ──
  * nsw_hf6_build(op, consent, target, amount, commission, expiry): `op`
- * 1 STAKE, 10 ROTATE, 7 STORAGE_REGISTER, 8 STORAGE_EXIT (the runtime_op);
- * `consent` the node's consent text ("" for STORAGE_EXIT); `target` 128
- * lowercase hex — ROTATE the witness's validator_id, STORAGE_EXIT the
- * node's fingerprint — "" otherwise; `amount` the bond (STAKE >=
+ * 1 STAKE, 10 ROTATE, 7 STORAGE_REGISTER, 8 STORAGE_EXIT, 3 UNSTAKE (the
+ * runtime_op); `consent` the node's consent text ("" for STORAGE_EXIT and
+ * UNSTAKE); `target` 128 lowercase hex — ROTATE and UNSTAKE the witness's
+ * validator_id, STORAGE_EXIT the node's fingerprint — "" otherwise;
+ * `amount` the bond (STAKE >=
  * STAKE_MIN, STORAGE_REGISTER == STORAGE_BOND) or "0"; `commission` basis
  * points (STAKE) or "0"; `expiry` nsw_expiry_for's value. The same gates
  * as nsw_stake_build: the candidate coins come from the LAST nsw_list,
@@ -3244,8 +3291,7 @@ int nsw_hf6_build(int op, const char *consent_text, const char *target_hex,
     uint64_t amount = 0, commission = 0, expiry = 0;
     char *consent = NULL;
     int rc = -1;
-    const int targeted = op == NODUS_V2_STAKE_OP_ROTATE ||
-                         op == NODUS_V2_STAKE_OP_STORAGE_EXIT;
+    const int targeted = nsw_hf6_targeted(op);
     const int consented = nsw_hf6_consent_op(op) != 0;
     if (!nsw_hf6_op_ok(op)) {
         rc = nsw_fail("Unknown witness or storage action.");

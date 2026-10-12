@@ -70,7 +70,8 @@
 //     (+ hf6Timing, optional)
 //                                OPTIONAL (HF-6 screens: become a witness, a
 //                                storage node, change a node key, leave
-//                                storage — shapes in src/nodus/send-module.js;
+//                                storage, stop being a witness — shapes in
+//                                src/nodus/send-module.js;
 //                                design docs/plans/2026-10-12-connect-hf6-
 //                                screens-design.md), their own group, same
 //                                rule. consentCheck is SYNCHRONOUS and pure
@@ -316,9 +317,15 @@ function validHf6Rules(rules) {
 // The module's hf6Timing (minTenureBlocks, storageExitLockEpochs) is
 // optional: a module without it (or with a malformed one) makes the screens
 // state no height for those lines. Added to this client's hf6Rules.
+// validatorUnbondEpochs (the UNSTAKE bond lock) is checked on its own, so a
+// module without it keeps the other two: the "Stop being a witness" Review
+// then states no block count for the lock.
 function hf6TimingOf(timing) {
-  return !!timing && ['minTenureBlocks', 'storageExitLockEpochs'].every(key => rawRuleOk(timing[key]))
+  if (!timing) return {};
+  const out = ['minTenureBlocks', 'storageExitLockEpochs'].every(key => rawRuleOk(timing[key]))
     ? { minTenureBlocks: timing.minTenureBlocks, storageExitLockEpochs: timing.storageExitLockEpochs } : {};
+  if (rawRuleOk(timing.validatorUnbondEpochs)) out.validatorUnbondEpochs = timing.validatorUnbondEpochs;
+  return out;
 }
 const lockedError = () => new Error('Wallet is locked.');
 // CONNECT WATCHDOG (operator 2026-10-07: "sometimes when I open Connect it
@@ -743,8 +750,9 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     stakeBuild: stakeCall('stakeBuild'),
     // HF-6 screens (HF6_OPS): whether the loaded module offers them, its
     // values (stakeMin, storageBond, consentWindow, generation, and — when
-    // the module carries its hf6Timing — minTenureBlocks and
-    // storageExitLockEpochs; all from the module's own build), the consent check
+    // the module carries its hf6Timing — minTenureBlocks,
+    // storageExitLockEpochs and validatorUnbondEpochs; all from the module's
+    // own build), the consent check
     // (synchronous: run now, never queued — it needs the identity only),
     // the build and this wallet's storage nodes (queued).
     get hf6able() { return hf6able && state === 'ready'; },

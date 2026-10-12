@@ -112,15 +112,17 @@
  *   consent (the text, as lowercase hex of its bytes), node_fp, owner.
  *
  *   nodus-send-native-vector hf6 --gen <dec>
- *     --op stake|rotate|storage-register|storage-exit --seed <64hex>
+ *     --op stake|rotate|storage-register|storage-exit|unstake --seed <64hex>
  *     --chain <64hex> --tip <dec> --gas <dec> [--consent <hex of the text>]
  *     [--target <128hex>] [--amount <dec>] [--commission <bps>]
  *     --expiry <dec> --coin <128hex>:<dec> [--coin ...]
  *     --sign-random <hex, the bytes qgp_platform_random returns in order>
  *   Builds with nsw_hf6_offline_build (the shared builder at the given
  *   generation, the consent re-checked by the codec — the function every
- *   wasm build runs). --target: rotate the validator_id, storage-exit the
- *   node_fp. Two legs are signed: --sign-random needs 64 bytes. Output, in
+ *   wasm build runs). --target: rotate and unstake the validator_id,
+ *   storage-exit the node_fp; storage-exit and unstake take no --consent
+ *   (unstake = op 3, the 64-byte generation-4 call, fee only). Two legs
+ *   are signed: --sign-random needs 64 bytes. Output, in
  *   this order: envelope, wire_id, intent_id, chain_id, op, gen4,
  *   recipient, node_fp, validator_id, amount, commission, consent_expiry,
  *   fee, change, expiry, then one `input=` per input. Compared like the
@@ -634,11 +636,12 @@ static int main_hf6(int argc, char **argv) {
     }
     int op = !op_s ? 0 : !strcmp(op_s, "stake") ? 1 : !strcmp(op_s, "rotate") ? 10
            : !strcmp(op_s, "storage-register") ? 7
-           : !strcmp(op_s, "storage-exit") ? 8 : 0;
+           : !strcmp(op_s, "storage-exit") ? 8
+           : !strcmp(op_s, "unstake") ? 3 : 0;
     uint64_t gen = 0;
     if (!op || !gen_s || parse_dec(gen_s, &gen) != 0 || gen < 1 || gen > 255 ||
         !seed || !chain || !tip || !gas || !expiry || !sign_random)
-        return fail("hf6 needs --gen --op stake|rotate|storage-register|storage-exit "
+        return fail("hf6 needs --gen --op stake|rotate|storage-register|storage-exit|unstake "
                     "--seed --chain --tip --gas --expiry --coin --sign-random "
                     "(and the op's own fields)");
     /* the consent text, from its hex (16384 bytes at most, the CLI's bound) */

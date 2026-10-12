@@ -19,6 +19,14 @@
 //   this wallet;
 // - "Your storage nodes" lists this wallet's nodes, with Leave on an active
 //   one only, and Leave opens a Review that says what leaving means;
+// - "Your witnesses" lists this wallet's generation-4 witnesses, with "Stop
+//   being a witness" on an active or eligible one only (not on a leaving
+//   one, never on another wallet's); at generation 3 the amber note shows
+//   and the buttons are disabled; at generation 4 the button opens a Review
+//   that says the witness leaves at an epoch boundary (no date), the bond
+//   comes back locked for the unbond block count after it leaves, the
+//   delegations are returned, and that it cannot be undone — no node key
+//   block, no bond line; Confirm records "Leaving the witnesses";
 // - nothing scrolls sideways at 390 px and 320 px on any of these screens.
 // How it mounts: vite serves the real sources; a harness page holds the
 // panel and root and imports src/nodus-roles.js and the real adapter; the
@@ -72,7 +80,7 @@ try {
     const node = (fp, status) => ({ fp, status, bond: '100000000000000', failStreak: 0, graceUntil: '0', registered: '900', exit: status === 3 ? '950' : '0', member: status === 1, segments: '0' });
     const client = {
       state: 'ready', identified: true, hf6able: true, stakeable: true, fingerprint: OWN, chainId: CHAIN,
-      hf6Rules: { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4, minTenureBlocks: '1440', storageExitLockEpochs: '12' },
+      hf6Rules: { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4, minTenureBlocks: '1440', storageExitLockEpochs: '12', validatorUnbondEpochs: '84' },
       stakingRules: { minDelegation: '10000000000', selfStake: '1000000000000000', commissionMaxBps: '5000', undelegateLockEpochs: '1', epochLength: '720', maxDelegators: '2048' },
       consentCheck,
       rulesetInfo: async () => ({ tip: window.__t.tip, generation: window.__t.generation, gen2Height: '0' }),
@@ -80,16 +88,17 @@ try {
       list: async () => ({ tip: window.__t.tip, coins: [coin], truncated: false }),
       validators: async () => ({ truncated: false, validators: [
         witness('41'.repeat(64), '51'.repeat(64), OWN), witness('42'.repeat(64), '52'.repeat(64), OWN, 4),
-        witness('43'.repeat(64), '53'.repeat(64), OTHER), witness('44'.repeat(64), '', '')
+        witness('43'.repeat(64), '53'.repeat(64), OTHER), witness('44'.repeat(64), '', ''),
+        witness('45'.repeat(64), '55'.repeat(64), OWN, 1)   // this wallet's, already leaving
       ] }),
       storageByOwner: async () => ({ tip: window.__t.tip, total: '2', epochStart: '720', set: true, setCount: 3, nodes: [node('61'.repeat(64), 1), node('62'.repeat(64), 3)] }),
       hf6Build: async args => {
         window.__t.events.push(`build:${args.op}`);
         const fee = 1000000n, bond = BigInt(args.amount);
-        const check = args.op === 'storageExit' ? null : consentCheck({ text: args.consent });
+        const check = args.op === 'storageExit' || args.op === 'unstake' ? null : consentCheck({ text: args.consent });
         return {
           envelope: new Uint8Array([1, 2, 3]), intentId: 'cd'.repeat(64), wireId: 'ef'.repeat(64),
-          decoded: { op: args.op, owner: OWN, nodeFp: args.op === 'storageExit' ? args.nodeFp : NODE, validatorId: args.op === 'rotate' ? args.validatorId : '', bond: args.amount, commissionBps: args.commissionBps, consentExpiry: check ? check.expiry : '', fee: String(fee), change: String(BigInt(coin.amount) - bond - fee), expiryHeight: args.expiryHeight, chainId: CHAIN, inputs: [coin.nullifier] }
+          decoded: { op: args.op, owner: OWN, nodeFp: args.op === 'storageExit' ? args.nodeFp : args.op === 'unstake' ? '' : NODE, validatorId: args.op === 'rotate' || args.op === 'unstake' ? args.validatorId : '', bond: args.amount, commissionBps: args.commissionBps, consentExpiry: check ? check.expiry : '', fee: String(fee), change: String(BigInt(coin.amount) - bond - fee), expiryHeight: args.expiryHeight, chainId: CHAIN, inputs: [coin.nullifier] }
         };
       },
       submit: async () => { window.__t.events.push('submit'); return { accepted: true }; }
@@ -115,7 +124,7 @@ try {
 
   // The page and its three rows, the amber note at generation 3.
   await root.locator('.roles-row').first().waitFor();
-  assert.deepEqual(await root.locator('.roles-row strong').allInnerTexts(), ['Become a witness', 'Become a storage node', 'Change your node’s key']);
+  assert.deepEqual(await root.locator('.roles-row strong').allInnerTexts(), ['Become a witness', 'Become a storage node', 'Change your node’s key', 'Your witnesses']);
   assert.match(await root.locator('[data-role="witness"]').innerText(), /2,000,000\.0 NODUS/);
   assert.match(await root.locator('[data-role="storage"]').innerText(), /1,000,000\.0 NODUS/);
   await root.locator('.roles-amber').waitFor();
@@ -174,7 +183,7 @@ try {
   await root.locator('.roles-back').click();
   await root.locator('[data-role="rotate"]').click();
   await root.locator('label.roles-radio').first().waitFor();
-  assert.deepEqual(await root.locator('label.roles-radio').evaluateAll(nodes => nodes.map(n => n.dataset.witness)), ['51'.repeat(64), '52'.repeat(64)]);
+  assert.deepEqual(await root.locator('label.roles-radio').evaluateAll(nodes => nodes.map(n => n.dataset.witness)), ['51'.repeat(64), '52'.repeat(64), '55'.repeat(64)]);
   await root.locator('label.roles-radio').first().click();
   await root.locator('.roles-cmd').waitFor();
   assert.ok((await root.locator('.roles-cmd').innerText()).includes(`--op rotate --owner ${'1a'.repeat(64)} --subject ${'51'.repeat(64)}`));
@@ -197,9 +206,55 @@ try {
   assert.match(leave, /Turning the node off is not leaving/);
   await noSideways('leave review');
 
+  // Your witnesses at generation 3: this wallet's three witnesses listed,
+  // "Stop being a witness" on the active and the eligible one only, both
+  // disabled, the amber note shown.
+  await page.evaluate(() => { window.__t.generation = '3'; });
+  await root.locator('.roles-back').click();
+  await root.locator('[data-role="witnesses"]').click();
+  await root.locator('.roles-node[data-witness]').first().waitFor();
+  await root.locator('.roles-amber').waitFor();
+  assert.deepEqual(await root.locator('.roles-node[data-witness]').evaluateAll(nodes => nodes.map(n => n.dataset.witness)), ['51'.repeat(64), '52'.repeat(64), '55'.repeat(64)], 'only this wallet\'s witnesses');
+  const stopOn = vid => root.locator(`.roles-node[data-witness="${vid}"] [data-action="unstake"]`);
+  assert.equal(await stopOn('51'.repeat(64)).count(), 1, 'active: offered');
+  assert.equal(await stopOn('52'.repeat(64)).count(), 1, 'waiting for a seat: offered');
+  assert.equal(await stopOn('55'.repeat(64)).count(), 0, 'already leaving: not offered');
+  assert.equal(await stopOn('53'.repeat(64)).count(), 0, 'another wallet\'s: not offered');
+  assert.ok(await stopOn('51'.repeat(64)).isDisabled(), 'disabled before the HF-6 generation');
+  assert.match(await root.locator('.roles-amber').first().innerText(), /cannot send/);
+  await noSideways('your witnesses, generation 3');
+
+  // At generation 4: the button opens the Review; Confirm records it.
+  await page.evaluate(() => { window.__t.generation = '4'; window.__t.events = []; });
+  await root.locator('.roles-back').click();
+  await root.locator('[data-role="witnesses"]').click();
+  await page.waitForFunction(vid => { const b = document.querySelector(`.roles-node[data-witness="${vid}"] [data-action="unstake"]`); return !!b && !b.disabled; }, '51'.repeat(64));
+  assert.equal(await root.locator('.roles-amber').count(), 0, 'no amber note at generation 4');
+  await stopOn('51'.repeat(64)).click();
+  await root.locator('.roles-review').waitFor();
+  const stop = await root.locator('.roles-review').innerText();
+  assert.match(stop, /Stop being a witness/);
+  assert.ok(stop.includes(`Witness ${'51'.repeat(64)} leaves the witnesses at an epoch boundary`), stop);
+  assert.match(stop, /usually after one or two boundaries/);
+  assert.match(stop, /No date is promised/);
+  assert.match(stop, /comes back to this wallet as one coin, locked for 60,480 blocks after the witness leaves/);
+  assert.match(stop, /Delegations to this witness are returned to their delegators at the same boundary, each as a coin locked for 720 blocks/);
+  assert.match(stop, /This cannot be undone/);
+  assert.match(stop, /new bond and your node’s consent/);
+  assert.ok(!/\bdays?\b|\bhours?\b/.test(stop), 'block counts only, never hours or days');
+  assert.equal(await root.locator('.roles-review .roles-fp').count(), 0, 'no node key block');
+  assert.deepEqual(await root.locator('.roles-review .roles-kv dt').allInnerTexts(), ['Network fee', 'Balance after', 'Valid until block'], 'no bond, no consent line: fee only');
+  await noSideways('stop being a witness review');
+  await root.locator('[data-action="confirm"]').click();
+  await root.locator('.roles-status').waitFor();
+  assert.match(await root.locator('.roles-status').innerText(), /Leaving the witnesses submitted/);
+  const stopEvents = await page.evaluate(() => window.__t.events);
+  assert.ok(stopEvents.includes('build:unstake'), `${stopEvents}`);
+  assert.ok(stopEvents.indexOf(`record:Leaving the witnesses:${'cd'.repeat(64)}`) >= 0 && stopEvents.indexOf(`record:Leaving the witnesses:${'cd'.repeat(64)}`) < stopEvents.indexOf('submit'), `recorded before the submission: ${stopEvents}`);
+
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
-  console.log('Nodus roles test passed: three rows, the generation gate, failing and passing consent checks, the Review with the node key and the expiry warning, the record before the submission, the rotate list, the storage list with Leave, no sideways scroll at 390 / 320 px.');
+  console.log('Nodus roles test passed: four rows, the generation gate, failing and passing consent checks, the Review with the node key and the expiry warning, the record before the submission, the rotate list, the storage list with Leave, your witnesses with Stop being a witness (gate, offered rows, Review, record), no sideways scroll at 390 / 320 px.');
 } finally {
   await browser?.close();
   server.stop();

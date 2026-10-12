@@ -354,6 +354,10 @@ exports_common=(
   # no network), and this wallet's own storage nodes (nsw_storage_by_owner
   # waits on the network, ccall { async: true }; its JSON getter does not)
   nsw_const_min_tenure_blocks nsw_const_storage_exit_lock_epochs
+  # HF-6 UNSTAKE ("Stop being a witness"): the bond's unbond lock in epochs
+  # (dnac.h DNAC_VALIDATOR_UNBOND_EPOCHS); the build itself is nsw_hf6_build
+  # op 3, no new export
+  nsw_const_validator_unbond_epochs
   nsw_val_has_v2 nsw_val_vid nsw_val_owner
   nsw_storage_by_owner nsw_storage_by_owner_json
   # HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6,

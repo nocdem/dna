@@ -13,7 +13,13 @@
 // of the timing facts; the validator list keeps the generation-4 ids and
 // refuses all-zero ones; the storage list's shape rules; prepareHf6 refuses
 // below the HF-6 generation and refuses a signed transaction whose node key
-// is not the consent's.
+// is not the consent's. "Stop being a witness" (prepareHf6 kind 'unstake',
+// the generation-4 UNSTAKE): offered only for this wallet's own active /
+// eligible witnesses (canStopWitness; the adapter refuses another owner's,
+// a leaving one, an unknown or all-zero id, a module without the witness
+// list), built with no consent and no bond, its review names the witness
+// and has no node key line, and a signed witness id or node key that is not
+// the request's is refused; the lock block counts are epochs × E.
 // Requires: nothing beyond `npm ci` (node --test). Leaves nothing behind.
 // How it can lie: the client is a fake — the module's own consent checks,
 // signature verification and envelope bytes are NOT exercised here (that is
@@ -23,7 +29,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   suggestExpiry, EXPIRY_MARGIN, percentToBps, gateOpen, ownWitnesses, consentExpiresEarly, consentCommand,
-  epochStartAtOrAfter, witnessJoinFrom, rotationHeights, storageExitHeights
+  epochStartAtOrAfter, witnessJoinFrom, rotationHeights, storageExitHeights, canStopWitness, lockBlocks
 } from '../src/nodus-roles.js';
 import { parseValidators, parseStorageByOwner, checkConsent, prepareHf6, parseHf6Rules, HF6_NOT_YET_TEXT } from '../src/adapters/nodus.js';
 
@@ -130,20 +136,30 @@ test('roles: the storage list shape', () => {
 });
 
 // An in-memory client in the shape src/nodus/client.js gives the page.
-function fakeClient({ generation = '4', nodeFp = NODE, signedNodeFp = nodeFp, expiry = '1700' } = {}) {
+// witnesses: the validator list (send-module.js validators() rows) — given,
+// the client is stakeable; unstake builds read back signedVid (default: the
+// requested id) and signedUnstakeNodeFp (default '': the call has no key).
+function fakeClient({ generation = '4', nodeFp = NODE, signedNodeFp = nodeFp, expiry = '1700', witnesses, signedVid, signedUnstakeNodeFp = '' } = {}) {
   const coin = { nullifier: 'aa'.repeat(64), amount: '250000000000000' };
   const checks = ['format', 'op', 'chain', 'owner', 'subject', 'expiry', 'signature'].map(id => ({ id, ok: true, detail: `${id} ok` }));
+  const builds = [];
   return {
-    state: 'ready', identified: true, hf6able: true, stakeable: false, fingerprint: OWN, chainId: '77'.repeat(32),
-    hf6Rules: { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4, minTenureBlocks: '1440', storageExitLockEpochs: '12' },
+    state: 'ready', identified: true, hf6able: true, stakeable: !!witnesses, fingerprint: OWN, chainId: '77'.repeat(32),
+    hf6Rules: { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4, minTenureBlocks: '1440', storageExitLockEpochs: '12', validatorUnbondEpochs: '84' },
+    builds,
     consentCheck: () => ({ ok: true, checks: checks.map(c => ({ ...c })), nodeFp, expiry }),
     balance: async () => ({ total: coin.amount, spendable: coin.amount }),
     list: async () => ({ tip: '1000', coins: [coin], truncated: false }),
     rulesetInfo: async () => ({ tip: '1000', generation, gen2Height: '0' }),
-    hf6Build: async args => ({
-      envelope: new Uint8Array([1]), intentId: 'cd'.repeat(64), wireId: 'ef'.repeat(64),
-      decoded: { op: args.op, owner: OWN, nodeFp: signedNodeFp, validatorId: '', bond: args.amount, commissionBps: args.commissionBps, consentExpiry: expiry, fee: '1000000', change: String(BigInt(coin.amount) - BigInt(args.amount) - 1000000n), expiryHeight: args.expiryHeight, chainId: '77'.repeat(32), inputs: [coin.nullifier] }
-    }),
+    ...(witnesses ? { validators: async () => ({ truncated: false, validators: witnesses }) } : {}),
+    hf6Build: async args => {
+      builds.push(args);
+      const unstake = args.op === 'unstake';
+      return {
+        envelope: new Uint8Array([1]), intentId: 'cd'.repeat(64), wireId: 'ef'.repeat(64),
+        decoded: { op: args.op, owner: OWN, nodeFp: unstake ? signedUnstakeNodeFp : signedNodeFp, validatorId: unstake ? signedVid ?? args.validatorId : '', bond: args.amount, commissionBps: args.commissionBps, consentExpiry: unstake ? '' : expiry, fee: '1000000', change: String(BigInt(coin.amount) - BigInt(args.amount) - 1000000n), expiryHeight: args.expiryHeight, chainId: '77'.repeat(32), inputs: [coin.nullifier] }
+      };
+    },
     submit: async () => ({ accepted: true })
   };
 }
@@ -180,4 +196,66 @@ test('roles: the witness bond is a floor', async () => {
   const t = await prepareHf6({ client: fakeClient(), from: OWN, kind: 'stake', consent: 'x', bond: '2100000', commissionBps: '1000' });
   assert.equal(t.decoded.bond, 210000000000000n);
   assert.equal(t.decoded.commissionBps, 1000n);
+});
+
+// ── "Stop being a witness" (generation-4 UNSTAKE) ───────────────────────
+// send-module.js validators() rows: status 0 active, 1 retiring, 4 eligible.
+const VID3 = '7a'.repeat(64), VID4 = '8b'.repeat(64);
+const wrow = (fp, vid, owner, status) => ({ fingerprint: fp, selfStake: '200000000000000', delegated: '0', commissionBps: 500, status, delegators: 0, hasV2: true, validatorId: vid, ownerFp: owner });
+const WITNESSES = [
+  wrow(NODE, VID, OWN, 0),          // this wallet's, active
+  wrow(NODE2, VID2, OWN, 4),        // this wallet's, waiting for a seat
+  wrow('9c'.repeat(64), VID3, OWN, 1),   // this wallet's, already leaving
+  wrow('ad'.repeat(64), VID4, OTHER, 0)  // another wallet's
+];
+
+test('roles: "Stop being a witness" is offered for an active or eligible witness only; locks are epochs × E', () => {
+  const { validators } = parseValidators({ truncated: false, validators: WITNESSES });
+  assert.deepEqual(ownWitnesses(validators, OWN).filter(canStopWitness).map(v => v.validatorId), [VID, VID2]);
+  assert.equal(canStopWitness(undefined), false);
+  assert.equal(lockBlocks(84n, 720n), 60480n);
+  assert.equal(lockBlocks(12n, 720n), 8640n);
+  assert.equal(lockBlocks(null, 720n), null, 'the module does not carry the constant');
+  assert.equal(lockBlocks(84n, null), null, 'no epoch length known');
+  assert.equal(parseHf6Rules(fakeClient().hf6Rules).validatorUnbondEpochs, 84n);
+  const { validatorUnbondEpochs, ...older } = fakeClient().hf6Rules;
+  assert.equal(validatorUnbondEpochs, '84');
+  assert.equal(parseHf6Rules(older).validatorUnbondEpochs, null, 'a module without it: no block count');
+});
+
+test('roles: prepareHf6 unstake builds for this wallet\'s active / eligible witness, no consent, no bond', async () => {
+  for (const vid of [VID, VID2]) {
+    const client = fakeClient({ witnesses: WITNESSES });
+    const t = await prepareHf6({ client, from: OWN, kind: 'unstake', validatorId: vid });
+    assert.deepEqual(client.builds.map(b => [b.op, b.consent, b.validatorId, b.nodeFp, b.amount, b.commissionBps]), [['unstake', '', vid, '', '0', '0']]);
+    assert.equal(t.decoded.bond, 0n);
+    assert.equal(t.decoded.validatorId, vid);
+    assert.equal(t.decoded.nodeFp, '');
+    assert.equal(t.decoded.consentExpiry, null);
+    assert.equal(t.balanceAfter, 250000000000000n - 1000000n, 'fee only');
+    const rows = new Map(t.review);
+    assert.equal(rows.get('Action'), 'Stop being a witness');
+    assert.equal(rows.get('Witness'), vid);
+    assert.ok(rows.has('Network fee') && rows.has('Balance after'));
+    assert.ok(!rows.has('Node key fingerprint') && !rows.has('Bond') && !rows.has('Consent valid until block'), 'no node key, no bond, no consent');
+  }
+});
+
+test('roles: prepareHf6 unstake refuses before building what the chain would refuse', async () => {
+  const refuse = async (args, pattern, client = fakeClient({ witnesses: WITNESSES })) => {
+    await assert.rejects(prepareHf6({ client, from: OWN, kind: 'unstake', ...args }), pattern);
+    assert.equal(client.builds.length, 0, 'nothing was built');
+  };
+  await refuse({ validatorId: VID3 }, /cannot stop now \(Leaving\)/);
+  await refuse({ validatorId: VID4 }, /not one of this wallet's witnesses/);
+  await refuse({ validatorId: 'be'.repeat(64) }, /not one of this wallet's witnesses/);
+  await refuse({ validatorId: '0'.repeat(128) }, /Choose one of your witnesses/);
+  await refuse({ validatorId: '' }, /Choose one of your witnesses/);
+  await refuse({ validatorId: VID }, /witness list is not available/, fakeClient());
+  await refuse({ validatorId: VID }, { message: HF6_NOT_YET_TEXT }, fakeClient({ witnesses: WITNESSES, generation: '3' }));
+});
+
+test('roles: prepareHf6 unstake refuses a signed witness id or node key that is not the request\'s', async () => {
+  await assert.rejects(prepareHf6({ client: fakeClient({ witnesses: WITNESSES, signedVid: VID2 }), from: OWN, kind: 'unstake', validatorId: VID }), /does not match your request/);
+  await assert.rejects(prepareHf6({ client: fakeClient({ witnesses: WITNESSES, signedUnstakeNodeFp: NODE }), from: OWN, kind: 'unstake', validatorId: VID }), /invalid transaction/);
 });

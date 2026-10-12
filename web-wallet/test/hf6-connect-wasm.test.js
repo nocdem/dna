@@ -1,8 +1,9 @@
 // HF-6 in the NODUS send module (design docs/plans/2026-10-12-connect-hf6-
 // screens-design.md §2, §3; docs/plans/2026-10-03-hf5-validator-owner-stake-
-// design.md rev 6 §6.1, §11.3, §11.5): the node-consent check and the four
-// generation-4 envelopes (STAKE, ROTATE, STORAGE_REGISTER, STORAGE_EXIT) of
-// crypto/nodus-send-wasm.c "HF-6: NODE CONSENT".
+// design.md rev 6 §2, §6.1, §11.3, §11.5): the node-consent check and the
+// five generation-4 envelopes (STAKE, ROTATE, STORAGE_REGISTER,
+// STORAGE_EXIT, UNSTAKE — "Stop being a witness", op 3, the 64-byte call
+// validator_id, fee only) of crypto/nodus-send-wasm.c "HF-6: NODE CONSENT".
 //
 // Always run (no build needed beyond the committed src/nodus/send.*):
 //   - send.wasm exports the HF-6 entry points and no test-only one.
@@ -23,11 +24,15 @@
 //     arguments are an error, not a check result; the JS bridge normalises
 //     line ends and the missing final newline of a paste, nothing else.
 //   - ENVELOPES: TEST wasm (fixed randomness) == native vector byte for
-//     byte for all four ops; the shipped wasm (hedged signatures) has the
+//     byte for all five ops; the shipped wasm (hedged signatures) has the
 //     same intent_id and decoded fields, a different wire_id; the module's
 //     refusals (generation 3, a bond below STAKE_MIN, a storage bond that
-//     is not exact, a consent failing a check, a consent for STORAGE_EXIT)
-//     build nothing.
+//     is not exact, a consent failing a check, a consent for STORAGE_EXIT
+//     or UNSTAKE, an all-zero witness id for UNSTAKE) build nothing.
+//     UNSTAKE: the validator_id's 64 bytes are in the envelope, no amount,
+//     no node key (node_fp ""), the read-back names the witness. Its
+//     ownership and status (the witness row's owner_fp, ACTIVE / ELIGIBLE)
+//     are the CHAIN's (rtn_unstake2_exec) — not exercised here.
 // Inputs are SYNTHETIC (fixed seeds, made-up coins, chain id and
 // validator_id): they prove the builds agree with each other and with the
 // codec, not that a node accepts the result. The generation-4 pins are the
@@ -46,7 +51,8 @@ const wasmBytes = readFileSync(new URL('../src/nodus/send.wasm', import.meta.url
 const HF6_ENTRY_POINTS = [
   'nsw_hf6_consent_check', 'nsw_hf6_build', 'nsw_hf6_offline_build', 'nsw_built_gen4', 'nsw_built_node_fp',
   'nsw_built_validator_id', 'nsw_built_consent_expiry', 'nsw_const_hf6_stake_min', 'nsw_const_hf6_storage_bond',
-  'nsw_const_consent_window', 'nsw_hf6_generation'
+  'nsw_const_consent_window', 'nsw_hf6_generation', 'nsw_const_min_tenure_blocks', 'nsw_const_storage_exit_lock_epochs',
+  'nsw_const_validator_unbond_epochs'
 ];
 
 test('the shipped send.wasm exports the HF-6 entry points and no test-only one', () => {
@@ -243,8 +249,10 @@ test('consent check through the JS bridge: the pinned chain, the wallet\'s own o
 // ── envelope parity (generation 4) ──────────────────────────────────────
 // Selection is ascending by nullifier until lock + fee is covered; gas price
 // 3: 400 000 units × 3 = 1 200 000, above the 1 000 000 floor.
-const ENV_OPS = { stake: 1, rotate: 10, 'storage-register': 7, 'storage-exit': 8 };
+const ENV_OPS = { stake: 1, rotate: 10, 'storage-register': 7, 'storage-exit': 8, unstake: 3 };
 function envCase(op) {
+  // UNSTAKE: the witness's validator_id, no consent, fee only — one coin
+  if (op === 'unstake') return { consent: null, target: HF6.validatorId, amount: '0', commission: '0', coins: [['17'.repeat(64), '5000000']], lock: 0n, inputs: ['17'.repeat(64)] };
   const nodeFp = makeConsent({ op: 'storage' }).nodeFp;
   switch (op) {
     // the first coin covers bond + fee: one input
@@ -288,8 +296,9 @@ function wasmHf6({ M, num, str }, fixedRandom, op, c, gen = 4) {
   };
 }
 // The generation-4 SYSTEM call lengths (nodus_v2_stake.h NODUS_V2_STAKE2_
-// CALL_LEN / _ROTATE_ / _STREG_ / _STEXIT_; design screens doc "Hand-off").
-const CALL_LEN = { stake: 7301, rotate: 7291, 'storage-register': 7299, 'storage-exit': 64 };
+// CALL_LEN / _ROTATE_ / _STREG_ / _STEXIT_ / _UNSTAKE2_; design screens doc
+// "Hand-off"; hf5 design rev 6 §2: UNSTAKE = validator_id[64]).
+const CALL_LEN = { stake: 7301, rotate: 7291, 'storage-register': 7299, 'storage-exit': 64, unstake: 64 };
 
 for (const op of Object.keys(ENV_OPS)) {
   test(`hf6 parity (${op}): TEST wasm and the native vector build the same envelope byte for byte`, { skip: skipParity }, async () => {
@@ -302,8 +311,9 @@ for (const op of Object.keys(ENV_OPS)) {
     assert.equal(native.recipient, c.consent ? c.consent.owner : makeConsent({ op: 'stake' }).owner, 'the owner is the wallet');
     assert.equal(native.amount, c.lock.toString());
     assert.equal(native.fee, '1200000');
-    assert.equal(native.node_fp, c.consent ? c.consent.nodeFp : c.target);
-    assert.equal(native.validator_id, op === 'rotate' ? HF6.validatorId : '');
+    // UNSTAKE's call carries no node key: no node fingerprint
+    assert.equal(native.node_fp, op === 'unstake' ? '' : c.consent ? c.consent.nodeFp : c.target);
+    assert.equal(native.validator_id, op === 'rotate' || op === 'unstake' ? HF6.validatorId : '');
     assert.equal(native.consent_expiry, c.consent ? HF6.consentExpiry : '');
     assert.equal(native.commission, op === 'stake' ? c.commission : '');
     const inSum = native.input.reduce((sum, n) => sum + BigInt(c.coins.find(([nul]) => nul === n)[1]), 0n);
@@ -315,7 +325,8 @@ for (const op of Object.keys(ENV_OPS)) {
       const sig = c.consent.text.split('\n')[7].slice('sig '.length), pk = c.consent.text.split('\n')[5].slice('consensus_pk '.length);
       assert.ok(env.includes(Buffer.from(pk + sig, 'hex')), 'consensus_pk ‖ consent_sig in the call');
     } else {
-      assert.ok(env.includes(Buffer.from(c.target, 'hex')), 'node_fp in the call');
+      // STORAGE_EXIT: node_fp; UNSTAKE: the validator_id — the whole 64-byte call
+      assert.ok(env.includes(Buffer.from(c.target, 'hex')), op === 'unstake' ? 'validator_id in the call' : 'node_fp in the call');
     }
     assert.ok(env.length > CALL_LEN[op]);
   });
@@ -329,7 +340,7 @@ for (const op of Object.keys(ENV_OPS)) {
   });
 }
 
-test('hf6 refusals in the module: generation 3, the bonds, a failing consent, a consent for leaving storage', { skip: skipParity }, async () => {
+test('hf6 refusals in the module: generation 3, the bonds, a failing consent, a consent for leaving storage, the UNSTAKE arguments',{ skip: skipParity }, async () => {
   const mod = await loadParity('send-node.mjs', false);
   const refused = (r, pattern) => {
     assert.notEqual(r.rc, 0); assert.match(r.error, pattern); assert.equal(r.envLen, 0, 'nothing built after a refusal');
@@ -356,9 +367,19 @@ test('hf6 refusals in the module: generation 3, the bonds, a failing consent, a 
   refused(wasmHf6(mod, false, 'stake', { ...stake, consent: null }), /Invalid offline/);
   refused(wasmHf6(mod, false, 'stake', { ...stake, target: HF6.validatorId }), /Invalid offline/);
   refused(wasmHf6(mod, false, 'rotate', { ...rotate, amount: '1' }), /Invalid witness or storage request/);
+  // UNSTAKE: no consent, a non-zero witness id, no amount
+  const unstake = envCase('unstake');
+  refused(wasmHf6(mod, false, 'unstake', { ...unstake, consent: stake.consent }), /Invalid offline/);
+  refused(wasmHf6(mod, false, 'unstake', { ...unstake, target: '' }), /Invalid offline/);
+  refused(wasmHf6(mod, false, 'unstake', { ...unstake, target: '00'.repeat(64) }), /Invalid witness: choose one of your witnesses/);
+  refused(wasmHf6(mod, false, 'unstake', { ...unstake, amount: '1' }), /Invalid witness or storage request/);
+  // the native vector refuses the same all-zero id (the same C function)
+  assert.throws(() => nativeHf6('unstake', { ...unstake, target: '00'.repeat(64) }));
   // the screens' values (dnac.h, valbind_wire.h, nodus_witness_runtime.h)
   assert.equal(mod.str('nsw_const_hf6_stake_min'), '200000000000000');
   assert.equal(mod.str('nsw_const_hf6_storage_bond'), '100000000000000');
   assert.equal(mod.str('nsw_const_consent_window'), '720');
   assert.equal(mod.num('nsw_hf6_generation'), 4);
+  // the UNSTAKE bond lock, in epochs (dnac.h DNAC_VALIDATOR_UNBOND_EPOCHS)
+  assert.equal(mod.str('nsw_const_validator_unbond_epochs'), '84');
 });
