@@ -90,6 +90,9 @@ try {
   assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Nodus');
   assert.equal(await page.locator('#receive-qr svg').getAttribute('role'), 'img');
   assert.equal(await page.locator('#receive-qr svg').getAttribute('aria-label'), 'QR code for the receive address');
+  // 0.1.102 (operator: "sol tarafına yapışık … ortalayalım"): centred in its panel
+  const qrGap = await page.locator('#receive-qr svg').evaluate(svg => { const s = svg.getBoundingClientRect(), p = svg.parentElement.getBoundingClientRect(); return [s.left - p.left, p.right - s.right]; });
+  assert.ok(Math.abs(qrGap[0] - qrGap[1]) <= 2, `QR centred (left ${qrGap[0]}, right ${qrGap[1]})`);
   assert.equal(await decodeQr(), await page.locator('#receive-address').innerText());
   assert.equal(await page.locator('#nodus-address-status').isVisible(), true);
   assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
@@ -111,7 +114,12 @@ try {
   assert.equal(await page.locator('#portfolio-networks .network-health').first().innerText(), 'Nodus · Balance not shown yet');
   assert.deepEqual((await page.locator('#portfolio-filters button').allTextContents()).slice(0, 2), ['All networks', 'Nodus']);
   const nodusGroup = page.locator('.asset-group[data-symbol="NODUS"]');
-  assert.ok((await nodusGroup.locator('summary img.coin-icon').getAttribute('src')).endsWith('/assets/coins/nodus.svg'));
+  // 0.1.102: icons are built in — inlined (data:) or under a content-hashed
+  // name, the only form the sites let browsers cache (an icon fetched again
+  // on every redraw blinked out); `data-icon` names the file.
+  const nodusIcon = nodusGroup.locator('summary img.coin-icon');
+  assert.equal(await nodusIcon.getAttribute('data-icon'), 'nodus.svg');
+  assert.match(await nodusIcon.getAttribute('src'), /^data:image\/|\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.(svg|png)$/);
   assert.equal(await nodusGroup.locator('.asset-value strong').innerText(), '—');
   await nodusGroup.locator('summary').click();
   assert.equal(await nodusGroup.locator('.chain-holding').count(), 1);

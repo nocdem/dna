@@ -110,7 +110,13 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
     positive: known.some(row => row.positive), missingBalances: priced.filter(r => r.balance === null || r.keptAt !== undefined).length,
     missingPrices: priced.filter(r => r.priceMissing).length };
 }
-export function groupAssets(rows, filter = 'all') {
+// The listing order (0.1.102, operator 2026-10-12): NODUS first, then the
+// stablecoins in this order, then every other coin by its network's name
+// (`networkNames`: chain key -> shown name; "BNB Smart Chain", "Cellframe",
+// "Ethereum", "Ixios", "Solana", "TRON"), compared case-insensitively code
+// unit by code unit (no locale), so the order is the same on every device.
+const STABLECOINS = ['USDT', 'USDC', 'DAI', 'USDD'];
+export function groupAssets(rows, filter = 'all', networkNames = {}) {
   const groups = new Map();
   for (const row of rows.filter(r => filter === 'all' || r.chain === filter)) {
     if (!groups.has(row.symbol)) groups.set(row.symbol, []);
@@ -125,12 +131,10 @@ export function groupAssets(rows, filter = 'all') {
       partialBalance: known.length !== entries.length, partialValue: valued.length !== entries.length,
       usd: priced ? (valued.length === entries.length || usd > 0n ? usd : null) : null, positive: valued.some(row => row.positive) };
   }).sort((a, b) => {
-    // A symbol missing from this list (an optional network's asset, added by
-    // portfolio-view.js) sorts after every listed one instead of first (-1).
-    // NODUS, the wallet's native coin, is listed first.
-    const order = ['NODUS', 'USDT', 'USDC', 'ETH', 'BNB', 'SOL', 'TRX', 'DAI', 'USDD', 'CPUNK'];
-    const rank = symbol => { const index = order.indexOf(symbol); return index < 0 ? order.length : index; };
-    return rank(a.symbol) - rank(b.symbol);
+    const rank = g => g.symbol === 'NODUS' ? 0 : STABLECOINS.includes(g.symbol) ? 1 + STABLECOINS.indexOf(g.symbol) : 1 + STABLECOINS.length;
+    const name = g => String(networkNames[g.rows[0].chain] ?? g.rows[0].chain).toLowerCase();
+    const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+    return rank(a) - rank(b) || cmp(name(a), name(b)) || cmp(a.symbol, b.symbol);
   });
 }
 // Display form of a decimal balance string (formatUnits output, e.g.

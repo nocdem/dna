@@ -267,7 +267,7 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
    4-module quiet zone, so no extra padding is needed for scanners. */
 .receive-qr { margin: 0 0 12px; }
 .receive-qr:empty { display: none; }
-.receive-qr svg { display: block; width: 168px; height: 168px; max-width: 100%; border-radius: 6px; }
+.receive-qr svg { display: block; width: 168px; height: 168px; max-width: 100%; border-radius: 6px; margin: 0 auto; }   /* centred (0.1.102, operator) */
 /* Send block: below the receive block in the same Send / Receive panel. */
 .send-block { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
 .send-block-network { color: var(--muted); font-weight: 400; white-space: nowrap; }

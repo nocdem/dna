@@ -114,7 +114,7 @@ const order = e => { const i = REACTION_EMOJIS.indexOf(e); return i < 0 ? REACTI
 
 // Whether own reaction `emoji` is on for `target` (the menu toggles it).
 export function ownReactionOn(summary, target, emoji) {
-  return !!summary.get(String(target).toLowerCase())?.some(r => r.emoji === emoji && r.mine);
+  return !!summary.get(asciiLower(target))?.some(r => r.emoji === emoji && r.mine);
 }
 
 // ── delete notices ──────────────────────────────────────────────────────
@@ -183,6 +183,11 @@ function cardName(name) {
   const cut = String(name).slice(0, 64);
   return /[\ud800-\udbff]$/.test(cut) ? cut.slice(0, -1) : cut;
 }
+// Lower case for A-Z only (0.1.102, operator 2026-10-12): the shared C core
+// does the same (connect/nc_jsjson.c), and the result no longer depends on
+// the browser's Unicode tables. Only the shown chain name of a card of
+// another network can differ from a full-Unicode lower case.
+export const asciiLower = s => String(s).replace(/[A-Z]/g, c => String.fromCharCode(c.charCodeAt(0) + 32));
 // -> { chain, amount, token, wire, to, name } | null (not a card). A card of
 // another chain keeps its chain and amount for "cannot be checked here".
 export function parseTransfer(text) {
@@ -190,7 +195,7 @@ export function parseTransfer(text) {
   try { j = JSON.parse(cString(text)); } catch { return null; }
   if (!j || typeof j !== 'object' || Array.isArray(j) || j.type !== 'token_transfer') return null;
   const str = v => (typeof v === 'string' ? v : '');
-  return { chain: str(j.chain).toLowerCase(), amount: str(j.amount), token: str(j.token), wire: str(j.txHash).toLowerCase(), to: str(j.recipientAddress).toLowerCase(), name: str(j.recipientName) };
+  return { chain: asciiLower(str(j.chain)), amount: str(j.amount), token: str(j.token), wire: asciiLower(str(j.txHash)), to: asciiLower(str(j.recipientAddress)), name: str(j.recipientName) };
 }
 // A NODUS card this page can check: the token, a 128-hex wire and recipient,
 // a well-formed amount. A "nodus" card that is not one is not shown at all.

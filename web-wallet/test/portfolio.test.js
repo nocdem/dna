@@ -75,11 +75,12 @@ test('CPUNK is an unpriced, opt-in row: no priceId, no PRICE_URL entry, never co
   balances['cellframe:CPUNK'] = { state: 'error' };
   snap = portfolioSnapshot(balances, parsePrices({ coins: coins() }, now), now, withCpunk);
   assert.equal(snap.complete, true); assert.equal(snap.rows.find(r => r.key === 'cellframe:CPUNK').balance, null);
-  // Grouping sorts CPUNK after the other configured symbols.
-  const grouped = groupAssets(snap.rows);
-  assert.equal(grouped.at(-1).symbol, 'CPUNK'); assert.equal(grouped.find(g => g.symbol === 'CPUNK').usd, null);
+  // Grouping (0.1.102): CPUNK sorts by its network's name among the coins
+  // after the stablecoins — Cellframe after BNB Smart Chain, before Ethereum.
+  const grouped = groupAssets(snap.rows, 'all', { bsc: 'BNB Smart Chain', cellframe: 'Cellframe', ethereum: 'Ethereum' });
+  assert.deepEqual(grouped.slice(-5).map(g => g.symbol), ['BNB', 'CPUNK', 'ETH', 'SOL', 'TRX']); assert.equal(grouped.find(g => g.symbol === 'CPUNK').usd, null);
 });
-test('IXIOS is an unpriced, receive-only row like CPUNK: no priceId, no PRICE_URL entry, never counted in the USD total or completeness, sorts last', () => {
+test('IXIOS is an unpriced, receive-only row like CPUNK: no priceId, no PRICE_URL entry, never counted in the USD total or completeness, sorts by its network name', () => {
   assert.equal(IXIOS_ASSET.priceId, undefined);
   assert.equal(IXIOS_ASSET.chain, 'ixios'); assert.equal(IXIOS_ASSET.key, 'ixios:IXIOS'); assert.equal(IXIOS_ASSET.decimals, 18);
   assert.equal(IXIOS_NETWORK.symbol, IXIOS_ASSET.symbol); assert.equal(IXIOS_NETWORK.icon, 'ixios.png');
@@ -98,8 +99,8 @@ test('IXIOS is an unpriced, receive-only row like CPUNK: no priceId, no PRICE_UR
   assert.equal(snap.complete, true); assert.equal(snap.total, 0n); assert.equal(snap.state, 'complete');
   let row = snap.rows.find(r => r.key === 'ixios:IXIOS');
   assert.equal(row.balance, '7.25'); assert.equal(row.usd, null); assert.equal(row.priceMissing, false); assert.equal(usdText(row.usd), '—');
-  const grouped = groupAssets(snap.rows);
-  assert.deepEqual(grouped.slice(-2).map(g => g.symbol), ['CPUNK', 'IXIOS']);
+  const grouped = groupAssets(snap.rows, 'all', { bsc: 'BNB Smart Chain', cellframe: 'Cellframe', ethereum: 'Ethereum', ixios: 'Ixios', solana: 'Solana', tron: 'TRON' });
+  assert.deepEqual(grouped.slice(-6).map(g => g.symbol), ['BNB', 'CPUNK', 'ETH', 'IXIOS', 'SOL', 'TRX'], 'by network name (0.1.102)');
   const ixios = grouped.find(g => g.symbol === 'IXIOS');
   assert.equal(ixios.balance, '7.25'); assert.equal(ixios.usd, null); assert.equal(usdText(ixios.usd), '—');
   assert.deepEqual(groupAssets(snap.rows, 'ixios').map(g => g.symbol), ['IXIOS']);
@@ -145,6 +146,12 @@ test('NODUS is listed first but never read: an unsupported row takes no part in 
   // Grouping: NODUS first, no balance and no USD value ('—').
   const grouped = groupAssets(snap.rows);
   assert.equal(grouped[0].symbol, 'NODUS'); assert.equal(grouped[0].balance, null); assert.equal(grouped[0].usd, null); assert.equal(usdText(grouped[0].usd), '—');
+  // 0.1.102 (operator): NODUS, then the stablecoins, then the other coins by
+  // their network's name ("BNB Smart Chain", "Cellframe", "Ethereum", "Solana",
+  // "TRON"); without names, by chain key.
+  const names = { nodus: 'Nodus', ethereum: 'Ethereum', bsc: 'BNB Smart Chain', solana: 'Solana', tron: 'TRON', cellframe: 'Cellframe' };
+  assert.deepEqual(groupAssets(snap.rows, 'all', names).map(g => g.symbol), ['NODUS', 'USDT', 'USDC', 'DAI', 'USDD', 'BNB', 'CPUNK', 'ETH', 'SOL', 'TRX']);
+  assert.deepEqual(grouped.slice(0, 5).map(g => g.symbol), ['NODUS', 'USDT', 'USDC', 'DAI', 'USDD']);
   assert.deepEqual(groupAssets(snap.rows, 'nodus').map(g => g.symbol), ['NODUS']);
   // Registry unchanged: NODUS is not one of the 14 priced ASSETS.
   assert.equal(ASSETS.length, 14); assert.ok(!ASSETS.some(a => a.chain === 'nodus'));

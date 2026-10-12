@@ -80,9 +80,16 @@ try {
   // own logo (not the CPUNK asset icon) on its network badge, ETH unaffected,
   // and every rendered coin-icon actually decodes from the served file (a
   // missing/404'd icon still reports `complete: true, naturalWidth: 0`).
-  assert.ok((await cpunk.locator('summary img.coin-icon').getAttribute('src')).endsWith('/assets/coins/cpunk.png'));
-  assert.ok((await page.locator('#portfolio-networks .network-health', { hasText: 'Cellframe' }).locator('img.coin-icon').getAttribute('src')).endsWith('/assets/coins/cellframe.svg'));
-  assert.ok((await page.locator('#portfolio-networks .network-health', { hasText: 'Ethereum' }).locator('img.coin-icon').getAttribute('src')).endsWith('/assets/coins/eth.svg'));
+  // 0.1.102: built-in icons (data: or content-hashed, cacheable); data-icon names the file
+  const cacheable = /^data:image\/|\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.(svg|png)$/;
+  for (const [img, file] of [
+    [cpunk.locator('summary img.coin-icon'), 'cpunk.png'],
+    [page.locator('#portfolio-networks .network-health', { hasText: 'Cellframe' }).locator('img.coin-icon'), 'cellframe.svg'],
+    [page.locator('#portfolio-networks .network-health', { hasText: 'Ethereum' }).locator('img.coin-icon'), 'eth.svg']
+  ]) {
+    assert.equal(await img.getAttribute('data-icon'), file);
+    assert.match(await img.getAttribute('src'), cacheable);
+  }
   await page.waitForFunction(() => [...document.querySelectorAll('img.coin-icon')].every(i => i.complete));
   const iconState = await page.evaluate(() => [...document.querySelectorAll('img.coin-icon')].map(i => ({ src: i.getAttribute('src'), naturalWidth: i.naturalWidth })));
   assert.ok(iconState.length > 0);
@@ -98,13 +105,15 @@ try {
   assert.deepEqual(await cpunk.locator('.holding-actions button').allTextContents(), ['Receive']);
   await cpunk.locator('summary').click();
   const usdt = page.locator('.asset-group[data-symbol="USDT"]');
-  // A VITE_ENABLE_IXIOS=true dist adds one IXIOS group (last), shown like CPUNK:
+  // A VITE_ENABLE_IXIOS=true dist adds one IXIOS group (by its network name, 0.1.102), shown like CPUNK:
   // a read balance, no USD value. The default build has none. The NODUS group
   // (first, never read — 0.1.21) is counted in both.
   assert.equal(await page.locator('.asset-group').count(), ixiosShown ? 11 : 10);
   if (ixiosShown) {
     const ixios = page.locator('.asset-group[data-symbol="IXIOS"]');
-    assert.equal(await page.locator('.asset-group').last().getAttribute('data-symbol'), 'IXIOS');
+    // 0.1.102: after the stablecoins, coins by network name — Ixios between Ethereum and Solana
+    const symbols = await page.locator('.asset-group').evaluateAll(groups => groups.map(g => g.dataset.symbol));
+    assert.deepEqual(symbols.slice(symbols.indexOf('ETH'), symbols.indexOf('ETH') + 3), ['ETH', 'IXIOS', 'SOL']);
     assert.equal(await ixios.locator('.asset-value strong').innerText(), '1');
     assert.equal(await ixios.locator('.asset-value small').innerText(), '—');
     await ixios.locator('summary').click();
@@ -163,18 +172,32 @@ try {
   cellframeFail = false; await refresh(); await cpunkSettled();
   assert.match(await cpunk.innerText(), /\b10 CPUNK/);
   await cpunk.locator('summary').click();
-  for (const mode of ['failed', 'stale']) {
-    priceMode = mode; await refresh();
-    assert.equal(await page.locator('#portfolio-total').innerText(), '—');
-    assert.match(await page.locator('#portfolio-status').innerText(), /14 prices unavailable/);
-    assert.equal(await usdt.locator('.asset-value strong').innerText(), '4');
-  }
+  // 0.1.102: a Refresh whose price read fails keeps the prices shown — they
+  // still expire by their own age (PRICE_MAX_AGE), as after an automatic read;
+  // prices that arrive out of date are dropped at once.
+  priceMode = 'failed'; await refresh();
+  assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
+  priceMode = 'stale'; await refresh();
+  assert.equal(await page.locator('#portfolio-total').innerText(), '—');
+  assert.match(await page.locator('#portfolio-status').innerText(), /14 prices unavailable/);
+  assert.equal(await usdt.locator('.asset-value strong').innerText(), '4');
+  priceMode = 'valid'; await refresh();
+  assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
   priceMode = 'late'; gate = Promise.withResolvers(); requested = Promise.withResolvers(); completed = Promise.withResolvers();
   await page.locator('#portfolio-refresh').click(); await requested.promise;
+  // 0.1.102 (operator: "refresh ettiği anda hepsi boş oluyor"): while Refresh
+  // reads, what was shown stays — the amount and the total — and the
+  // network badges say "Reading".
+  assert.equal(await usdt.locator('.asset-value strong').innerText(), '4');
+  assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
+  assert.match(await page.locator('#portfolio-networks').innerText(), /Ethereum · Reading/);
   await usdt.locator('summary').focus(); gate.resolve(); await completed.promise; await done();
   assert.equal(await usdt.locator('summary').evaluate(node => document.activeElement === node), true);
   priceMode = 'valid'; await refresh();
-  await page.clock.setFixedTime(new Date(Date.now() + 301000));
+  // A balance counts until two minutes past its next automatic read (0.1.93:
+  // every 5 minutes by default, src/balance-refresh.js) — 7 minutes, not the
+  // bare BALANCE_MAX_AGE of 5 this check used before (it was never updated).
+  await page.clock.setFixedTime(new Date(Date.now() + 421000));
   await page.locator('#portfolio-hide').click(); await page.locator('#portfolio-hide').click();
   assert.equal(await page.locator('#portfolio-total').innerText(), '—');
   assert.match(await page.locator('#portfolio-status').innerText(), /14 balances/);

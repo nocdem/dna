@@ -156,7 +156,9 @@ try {
   // Portfolio: filter, health badge, and an IXIOS row read like the CPUNK row.
   assert.equal(await page.locator('.network-filter[data-chain="ixios"]').innerText(), 'Ixios');
   const badge = page.locator('#portfolio-networks .network-health', { hasText: 'Ixios' });
-  assert.ok((await badge.locator('img.coin-icon').getAttribute('src')).endsWith('/assets/coins/ixios.png'));
+  // 0.1.102: built-in icon (data: or content-hashed); data-icon names the file
+  assert.equal(await badge.locator('img.coin-icon').getAttribute('data-icon'), 'ixios.png');
+  assert.match(await badge.locator('img.coin-icon').getAttribute('src'), /^data:image\/|\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.png$/);
   await portfolioDone(page); await ixiosSettled(page);
   assert.equal(await badge.innerText(), 'Ixios · Balances read');
   // Network identity (block 1's parentHash = genesis hash) is checked before the
@@ -167,7 +169,7 @@ try {
   ]);
   const row = page.locator('.asset-group[data-symbol="IXIOS"]');
   assert.equal(await row.count(), 1);
-  assert.ok((await row.locator('summary img.coin-icon').getAttribute('src')).endsWith('/assets/coins/ixios.png'));
+  assert.equal(await row.locator('summary img.coin-icon').getAttribute('data-icon'), 'ixios.png');
   assert.equal(await row.locator('.asset-name small').innerText(), 'IXIOS · Ixios');
   assert.equal(await page.locator('.asset-group[data-symbol="ETH"] .asset-name small').innerText(), 'Ethereum · Ethereum', 'shared subtitle format unchanged for other coins');
   // Shown like the CPUNK row: the balance, and no USD value.

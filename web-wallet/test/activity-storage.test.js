@@ -186,7 +186,11 @@ test('identity record: round trip, wrong key or wallet refused, bad shapes refus
   const other = await identityKeyFor('legal winner thank year wave sausage worth useful legal winner thank yellow', id);
   await assert.rejects(parseIdentity(text, id, other));
   await assert.rejects(parseIdentity(text, Buffer.alloc(16, 9).toString('base64'), key));
-  for (const bad of [{ addresses: { nodus: 'xyz' } }, { addresses: { bitcoin: 'a' } }, { addresses: {}, name: 'x'.repeat(65) }, { addresses: {}, avatar: 'not base64!' }, { addresses: {}, extra: 1 }]) {
+  // 0.1.102: network keys are checked by form (a build without Ixios names no
+  // Ixios), so another network's address is kept, not refused.
+  assert.deepEqual(checkIdentity({ addresses: { bitcoin: 'a' } }), { addresses: { bitcoin: 'a' } });
+  const nine = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`net${i}`, 'a']));
+  for (const bad of [{ addresses: { nodus: 'xyz' } }, { addresses: { 'Bad-Key': 'a' } }, { addresses: { x: 'a' } }, { addresses: nine }, { addresses: {}, name: 'x'.repeat(65) }, { addresses: {}, avatar: 'not base64!' }, { addresses: {}, extra: 1 }]) {
     assert.throws(() => checkIdentity(bad), /Invalid saved identity/, JSON.stringify(bad));
   }
 });

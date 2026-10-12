@@ -129,7 +129,12 @@ export async function parseBalances(text, id, key, now = Date.now()) {
 // again; a derived address always wins and replaces a kept one. Sealed like
 // the balances under its own HKDF info (IDENTITY_CONTEXT).
 export const IDENTITY_CONTEXT = 'nodus.wallet.identity.v1';
-const IDENTITY_MAX_PLAIN = 24000, IDENTITY_CHAINS = ['nodus', 'cellframe', 'ixios'];
+// Network keys are checked by form, not listed by name (0.1.102): a build
+// without a network (Ixios off) must carry no mention of it
+// (test/browser-ixios.js), and still reads a record that a build with it
+// wrote — an address of a network this build lacks is ignored where shown
+// (portfolio-view.js setAddress).
+const IDENTITY_MAX_PLAIN = 24000, IDENTITY_CHAIN_KEY = /^[a-z][a-z0-9]{1,15}$/, IDENTITY_CHAINS_MAX = 8;
 const IDENTITY_AVATAR_MAX = 20480;              // base64 characters (connect/ui/text.js AVATAR_MAX_B64)
 export const identityKeyFor = (phrase, id) => activityKeyFor(phrase, id, IDENTITY_CONTEXT);
 // -> the checked identity, or throws. Shapes only: a name or picture is
@@ -138,7 +143,7 @@ export const identityKeyFor = (phrase, id) => activityKeyFor(phrase, id, IDENTIT
 export function checkIdentity(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !['addresses', 'name', 'avatar'].includes(k))) throw new Error('Invalid saved identity.');
   const addresses = value.addresses ?? {};
-  if (!addresses || typeof addresses !== 'object' || Array.isArray(addresses) || Object.keys(addresses).some(k => !IDENTITY_CHAINS.includes(k))) throw new Error('Invalid saved identity.');
+  if (!addresses || typeof addresses !== 'object' || Array.isArray(addresses) || Object.keys(addresses).length > IDENTITY_CHAINS_MAX || Object.keys(addresses).some(k => !IDENTITY_CHAIN_KEY.test(k))) throw new Error('Invalid saved identity.');
   for (const [chain, a] of Object.entries(addresses)) {
     if (typeof a !== 'string' || (chain === 'nodus' ? !/^[0-9a-f]{128}$/.test(a) : !/^[A-Za-z0-9]{1,128}$/.test(a))) throw new Error('Invalid saved identity.');
   }
