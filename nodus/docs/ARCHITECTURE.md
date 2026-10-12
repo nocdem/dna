@@ -7771,6 +7771,56 @@ together; the clean 5E leaves it UNSTAKED with no attendance row for KC1 and no 
 A == B. Case C's V_B (swapped at 3E, graduated at 4E) now has its kept KC2 released by the sweep's
 graduated arm.
 
+### HF-6 6f-1 client — `validator consent`, `v2-envelope stake2 | rotate` (branch `hf6` only — not versioned, not voted)
+
+The minimal client path the 6f harness needs (plan `tasks/hf6-slice6-plan.md` §2 "6f", §5 B6), brought
+forward from slice 7; storage consent (op 3) and the Connect screens stay in slice 7. Design rev 6 §2
+(call layouts, the consent re-construction contract, "STAKE/DELEGATE istemci kodlayıcısı generation'a
+duyarlı olur"), §6.1, §6.2, §9; decision `2026-10-03-role-stake-amounts.md` 1B (the node only consents;
+the owner signs and pays).
+
+- **The node consents** — `nodus-cli -i <node dir> validator consent --op stake|rotate --owner <fp>
+  [--subject <validator_id>] --expiry <h> [--out <file>]`. The -i identity is the consensus key (§1.4
+  coupled key). The chain id is `dnac_supply`'s `chain_id32` and the tip `dnac_ruleset_info`'s, both from
+  the -s node (one session; an operator-typed chain id would be an unverified second source of the
+  field that pins the consent). Refused unless `dna_valbind_expiry_ok(tip + 1, expiry)`. The message and
+  the signature come only from `dna_valbind_consent_msg` / `_sign` (`shared/dnac/valbind_wire.c`),
+  verified once before output. The output is a text CONTAINER (`nodus_v2_consent_text_encode` /
+  `_parse`, `src/client/nodus_v2_stake.c`; magic `nodus-valbind-consent v1`, then `op`, `chain_id`,
+  `subject`, `owner`, `consensus_pk`, `expiry`, `sig`, lowercase hex, fixed order) — not a wire format,
+  not signed; its reader re-checks everything.
+- **The owner builds** — `v2-envelope stake2` (7301-byte STAKE, lock = bond) and `v2-envelope rotate`
+  (7291-byte ROTATE, fee-only, khan A4) through the shared builder: `nodus_v2_stake_req_t` gained
+  `generation` (0 in every older caller → the legacy layouts, byte-identical) and the consent inputs
+  (`consensus_pk`, `consent_sig`, `consent_expiry`, `validator_id`); `NODUS_V2_STAKE_OP_ROTATE` = 10; at
+  generation ≥ `NODUS_RT_GEN_STORAGE` op 1 takes the 7301-byte layout with owner_fp = SHA3-512(signer)
+  (the kind-1 rule of `rtn_sys_owner_auth`), and DELEGATE / UNDELEGATE / UNSTAKE are `ERR_GEN` (their
+  136 / 136 / 64-byte layouts are not built yet — never the legacy bytes the generation-4 chain refuses by
+  length); STORAGE ops keep their layouts (the generation-4 `rtn_sys_call_flow` still decodes them).
+  `nodus_v2_stake_decode` reads the generation-4 layouts with the record identity = the one signer of
+  both legs, and refuses a STAKE whose owner_fp is not SHA3-512 of it. Before building, nodus-cli
+  re-checks the consent on its session (op, chain id, owner = `--keys`, ROTATE subject = `--validator`,
+  the signature over the message rebuilt by the codec, the window at tip + 1); the builder does NOT —
+  `nodus_v2_stake.c` is compiled into the web wallet's WASM module and native vector without
+  `valbind_wire.c`, so it uses the codec's widths only.
+- **validator_id** — derived client-side: `rtn_stake2_vid` is `dna_validator_id_new(ctx->chain_id,
+  ctx->intent_id)` with `ctx.intent_id = pf->intent_id` (`nodus_witness_v2_apply.c`), i.e. the
+  envelope's own intent_id, which the builder returns; `stake2` prints `dna_validator_id_new(chain id,
+  intent_id)`. A dry run's intent_id can differ from the submitted one's (tip-relative expiry). A
+  MIGRATED validator's id is `dna_validator_id_migrated(chain id, its pre-H pubkey)` — not printed by
+  this CLI; the validator-list reply carries `vid` under generation 4 but the client SDK does not decode
+  it yet.
+- **Not built:** a kind-3 (multisig) owner — the msig export path carries single-leg CORE SPENDs only
+  (`nodus_v2_msig_leg_open`); the generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE.
+
+**Tests** (written, NOT run by the author). `test_v2_stake_client` (EVM-enabled builds): the codec
+message equals an independent §6.1 restatement and the signature verifies with ctx
+`nodus.valbind.v1` (not with an empty ctx); the container round-trips and refuses malformed text; the
+builder's STAKE / ROTATE calls equal the restated 7301 / 7291-byte layouts; fed to the GEN_STORAGE
+SYSTEM hooks over fabricated reads the exec APPLIES (it verifies the real consent), the plan names the
+validator_id the CLI prints, the CORE funding leg balances (lock = bond / fee-only); the legacy STAKE
+is byte-identical at generations 0 and 3 outside the hedged auth blobs; the generation refusals.
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision
