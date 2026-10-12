@@ -471,7 +471,10 @@ test('staking parity, generation 3 (delegate): the legacy key layout, no validat
   assert.equal(native.recipient, createHash('sha3-512').update(Buffer.from(c.validator, 'hex')).digest('hex'));
   const env = Buffer.from(native.envelope, 'hex');
   assert.ok(env.includes(Buffer.concat([Buffer.from(c.validator, 'hex'), u64be(c.amount)])), 'validator_pk ‖ amount in the call');
-  assert.ok(!env.includes(Buffer.from(STAKE.validatorId, 'hex')));
+  // No generation-4 call (own fingerprint ‖ validator_id ‖ amount). Not "the
+  // id's 64 bytes are absent": fill(2592, 17) contains fill(64, 41) at offset
+  // 40 (17 + 7·40 ≡ 41 mod 256), so the id's bytes occur inside the key.
+  assert.ok(!env.includes(Buffer.concat([Buffer.from(ownFingerprint(), 'hex'), Buffer.from(STAKE.validatorId, 'hex'), u64be(c.amount)])), 'no generation-4 call');
   // against the generation-1 build of the same request: the same decoded
   // fields, inputs, fee and change, the same envelope length (the two are
   // signed under different rule-set tuples, so their bytes differ)

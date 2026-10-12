@@ -684,7 +684,7 @@ test('stake, generation 4: refused with the consent text before any build; a del
   await client.unlock({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
   assert.equal(client.hf6Rules.generation, 4);
   mock.state.ruleset = { ...mock.state.ruleset, generation: '4' };
-  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '0' }), new RegExp(`^${HF6_STAKE_CONSENT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '0' }), { message: HF6_STAKE_CONSENT_TEXT });
   assert.equal(mock.state.lastStake, undefined, 'nothing was built');
   assert.equal(HF6_STAKE_CONSENT_TEXT, 'Becoming a witness now needs your node\'s consent. Open Nodus Connect → More → Nodus.');
   const d = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' });
