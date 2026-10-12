@@ -51,6 +51,7 @@
 #define NODUS_WITNESS_COMMITTEE_H
 
 #include "witness/nodus_witness.h"
+#include "witness/nodus_witness_validator.h" /* NODUS_V2_*_LEN (HF-6 5c) */
 #include "dnac/validator.h"
 #include <stdint.h>
 
@@ -76,6 +77,30 @@ typedef struct {
     uint64_t self_stake;         /* the validator's own bond (frozen /
                                   * live, same rule)                   */
     uint16_t commission_bps;
+    uint64_t power;              /* HF-6 5b: the seat's VOTING POWER, from
+                                  * nodus_witness_vset_powers over the
+                                  * served snapshot (ruleset 1: total /
+                                  * DNAC_DECIMAL_UNIT; ruleset 2: the
+                                  * counted, capped power). Set ONLY by
+                                  * nodus_committee_get_for_block — on a
+                                  * cache hit and a cache miss alike
+                                  * (cached_committee_powers). Left 0 by
+                                  * compute_for_epoch / bootstrap_for_epoch
+                                  * (emit_member): the snapshot builder
+                                  * never reads it.                     */
+    /* HF-6 slice 5c (ORCHESTRATOR decision D6, plan tasks/hf6-slice5-
+     * plan.md §5): the member's v2 identity, for the SNAPSHOT BUILDER
+     * ONLY (nodus_witness_vset_entry_from_member writes them into a
+     * ruleset-2 entry). Set by compute_for_epoch (emit_member) from the
+     * candidate's v2 row at key generation >= NODUS_RT_GEN_STORAGE; all
+     * zero below it and on the bootstrap path (no v2 row exists there).
+     * NOT CACHED: nodus_committee_get_for_block returns them ALL ZERO on
+     * a cache hit and on a cache miss alike — the snapshot-served miss
+     * included, even when the snapshot's entries carry ids — so a hit and
+     * a miss produce the same member (the S3 symmetry above). A consumer
+     * that needs an id reads it from the snapshot entry. */
+    uint8_t  validator_id[NODUS_V2_VALIDATOR_ID_LEN];
+    uint8_t  owner_fp[NODUS_V2_OWNER_FP_LEN];
 } nodus_committee_member_t;
 
 /**
@@ -113,8 +138,28 @@ typedef struct {
  * max_entries remains a pure BUFFER capacity: it can only shrink the
  * result, never grow it past the chain-derived target.
  *
+ * HF-6 slice 5c: at key generation >= NODUS_RT_GEN_STORAGE each member
+ * carries its v2 row's validator_id and owner_fp; below it, and on the
+ * bootstrap path, both are all zero. `power` is left 0.
+ *
+ * HF-6 slice 5d (ORCHESTRATOR decision D4 (i)): the key generation is
+ * the CALLER's — this function no longer reads the registry. A boundary
+ * passes its one read (nodus_witness_v2_epoch_boundary_apply), so the
+ * candidates, the tiebreak, the emitted ids and the snapshot's
+ * selection_ruleset (nodus_witness_vset.c) all come from ONE value; a
+ * caller outside a boundary reads nodus_witness_v2_key_generation once
+ * and passes it. At `key_gen >= NODUS_RT_GEN_STORAGE` the tiebreak
+ * inside equal frozen totals is SHA3-512(0x02 ‖ validator_id[64] ‖
+ * state_seed[64]) (129 bytes, 0x02 = NODUS_TREE_TAG_VALIDATOR; design
+ * rev 6 §7.8, the khan's decision 2026-10-12); below it
+ * SHA3-512(0x02 ‖ pubkey[DNAC_PUBKEY_SIZE] ‖ state_seed[64]), byte for
+ * byte as before. The bootstrap path (e_start < EPOCH_LENGTH + 1) does
+ * not read `key_gen`.
+ *
  * @param w           Witness context (DB must be open)
  * @param e_start     Epoch start block height
+ * @param key_gen     The key generation the caller resolved
+ *                    (nodus_witness_v2_key_generation; NODUS_RT_GEN_*)
  * @param out         Caller-allocated array of >= max_entries members
  * @param max_entries out[] capacity (heap-size it to DNAC_MAX_ACTIVE_VALIDATORS)
  * @param count_out   [out] Number of members populated (may be < max_entries)
@@ -122,6 +167,7 @@ typedef struct {
  */
 int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                                         uint64_t e_start,
+                                        uint32_t key_gen,
                                         nodus_committee_member_t *out,
                                         int max_entries,
                                         int *count_out);
@@ -150,6 +196,18 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
  *
  * Task 53: cache consumer + populator.
  *
+ * HF-6 slice 5c: `validator_id` / `owner_fp` are ALWAYS returned all zero
+ * here (hit and miss alike — builder-only fields, ORCHESTRATOR decision
+ * D6).
+ *
+ * HF-6 slice 5b: every returned member carries `power` (hit and miss
+ * alike). An epoch served from its snapshot row gets
+ * nodus_witness_vset_powers over that row (-1 there is -1 here); an
+ * epoch WITHOUT a row is recomputed only below key generation
+ * NODUS_RT_GEN_STORAGE, with power = total_stake / DNAC_DECIMAL_UNIT —
+ * at generation >= 4 (or an unreadable generation) it is -1, the cache
+ * left invalid (ORCHESTRATOR decision D5, plan tasks/hf6-slice5-plan.md).
+ *
  * @return 0 on success, -1 on error.
  */
 int nodus_committee_get_for_block(nodus_witness_t *w,
@@ -161,8 +219,9 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
 /**
  * Heap-allocating wrapper around nodus_committee_get_for_block (S3).
  *
- * nodus_committee_member_t is 2608 B, so a DNAC_MAX_ACTIVE_VALIDATORS
- * array is ~334 KB — far past any stack budget in this tree. Every
+ * nodus_committee_member_t is 2752 B since HF-6 5c (power + the two
+ * 64-byte ids), so a DNAC_MAX_ACTIVE_VALIDATORS array is ~344 KB — far
+ * past any stack budget in this tree. Every
  * consumer that used to declare `nodus_committee_member_t x[DNAC_COMMITTEE_SIZE]`
  * on the stack calls this instead, so the ceiling lives in exactly one
  * place.

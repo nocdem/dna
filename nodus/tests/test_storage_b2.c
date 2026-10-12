@@ -61,7 +61,14 @@
  *     vote — GEN_STORAGE is built on the EVM generation, so this is an
  *     EVM-enabled-build test) at 4, eight segments PRE-SEEDED (k = 1..8,
  *     published_height 1 — see HOW IT CAN LIE). A, B, C and D (= validator
- *     0's key: the dual-role node) register at 4; X at E + 5.
+ *     0's key: the dual-role node) register at 4; X at E + 5. Since HF-6
+ *     slice 6b-1 every registration is the generation-4 STORAGE_REGISTER
+ *     (7299 bytes, design rev 6 §11.3) with each node its OWN owner (the
+ *     node key signs both legs and gives the op-3 consent), and B's exit
+ *     is the 64-byte node_fp call signed by that owner — so every row's
+ *     owner column is the node's fingerprint, the value the storage-
+ *     reward-v1 payee carried, and every payout / release check below
+ *     reads as before. Third-party owners are test_storage_reg's.
  *     THE K9a MODEL runs at EVERY boundary B (apply_both →
  *     model_boundary): n(m) = 0 without set(B−E), else |segments
  *     published <= B − E that m holds over set(B) \ those it held over
@@ -139,6 +146,54 @@
  *     (the first storage boundary) → 0; held at H − E, displaced, or not
  *     a holder → 0; H < E → 0; one member's n over a mixed schedule
  *     counts the old segments only, and only-new segments give no grace.
+ *  D, SINCE HF-6 6b-2 (the owner-OR-key exclusion, the three-state
+ *     verdict): D's first settlement (3E) reads the ruleset-1 snapshot(E)
+ *     and resolves every seat's owner through the §7.5 bridge (the
+ *     migrated row: the Foundation); the later ones read the snapshots
+ *     the engine builds after the edge — ruleset 2 (entry owner_fp) or,
+ *     were one ruleset 1, the same bridge — owner the Foundation for
+ *     these seven genesis seats either way (migration D2). A, B, C, D, X
+ *     are their own owners, so no seat is owner-excluded and the mask is
+ *     today's own-seat rule (D's seat V0); with 7 (or 6) of 7 equal seats
+ *     reporting, D's independent power is 6/7 (or 5/7) of P_total, above
+ *     the floor 1/2 — every verdict above is unchanged.
+ *  D2. F2 VERDICT, pure (f2_verdict_pure; nodus_storage_member_verdict
+ *     over owners nodus_witness_storage_seat_owners reads from a
+ *     hand-built RULESET-2 snapshot): seven equal seats (10M) all owned by
+ *     the compiled Foundation owner, every seat reporting (F1 asserted
+ *     first): a Foundation-owned member → NO_EVIDENCE (I = 0); an
+ *     independently owned one → OK on 7/7 (I = Y = 70M), NOT_OK with no
+ *     bit; owner-equal (seat 1) AND key-equal (seat 0) combined → I = 5/7
+ *     = 50M, OK on 5 yes (150M > 100M), NOT_OK on 3 counted yes (90M >
+ *     100M false — the excluded seats' bits ignored), OK on 4; a silent
+ *     seat counts in neither I nor Y; THE EXACT FLOOR: eight seats of
+ *     power 1, all reporting (F1 16 > 8 asserted), a member excluding 4
+ *     → I = 4, 2·4 = 8 <= 8 → NO_EVIDENCE; excluding 3 → I = 5, 10 > 8,
+ *     OK on 5 yes; excluding 5 → NO_EVIDENCE. Rulesets 0 / 3 refused,
+ *     ruleset 1 without a witness refused; I past UINT64_MAX → -1; NOT_OK
+ *     with weight advances the streak (+1, also at 3).
+ *  E. HF-6 slice 5c (engine_v2_power, twin fixtures, D's prologue): the
+ *     settlement's F1 reads snapshot(H)'s powers BY ITS RULESET — a
+ *     ruleset-2 snapshot(E) [60M, 10M × 6] (counted [25714285, 10M × 6])
+ *     with six of seven seats reporting settles (counted: 120M > 85.7M),
+ *     where the raw powers would not (120M > 120M is false). Full
+ *     statement at t_engine_v2_power. Since 6b-2 the entries' owners
+ *     (0x80 + i) are nobody's storage owner and D's independent power is
+ *     50M (100M > 85.7M): all OK as before. HF-6 6b-2 khan A3: over that
+ *     ruleset-2 snapshot the reporter's seat_of (reached through
+ *     nodus_witness_stprobe_serve's step 4) finds a seated requester
+ *     (NOT_HELD at step 5) and refuses an unseated one (NOT_SEATED). Cost:
+ *     3E blocks on each twin.
+ *  G. HF-6 6b-2 (engine_owner_f2, twin fixtures, D's prologue): the first
+ *     settlement after the generation-4 edge over the ruleset-1
+ *     snapshot(E) — the v1 owner bridge (seven Foundation owners, never
+ *     SHA3-512(pubkey)); khan A1: with one seat's migrated row deleted
+ *     the storage step FAULTS, with it present it settles; planted owners
+ *     (A, B the Foundation, B at fail_streak 3; C the third party KX):
+ *     A, B NO_EVIDENCE — unpaid, fail_streak frozen at 0 and at 3, their
+ *     weight still in W; C OK, paid to KX (not to its node fp); D NOT_OK
+ *     (no bit), 0 → 1; pool 1 debited by C's share alone. Full statement
+ *     at t_engine_owner_f2. Cost: 3E blocks on each twin.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; json-c (JSONC_FOUND) for
@@ -187,9 +242,23 @@
  *    9·P + 2E = 155,520 + 2E blocks, ≈ 12× the run. The engine's half —
  *    st_member_walk handing each segment's published_height to the
  *    predicate — is exercised in D with published_height 1 only.
- *  - D's accrual row also receives its validator distribution (the
- *    merged-accrual design rev 2.2 §5.4), so D's storage credit is proven
- *    only through the pool-1 debit, never per row.
+ *  - D's storage credit is proven only through the pool-1 debit, never
+ *    per row (validators are excluded from the per-row check). Before
+ *    HF-6 that was forced: D's accrual row also received its validator
+ *    distribution (the merged-accrual design rev 2.2 §5.4). Since the
+ *    merged generation-4 edge (block H14 − 1 here, HF-6 sub-slice 3b/3d)
+ *    a validator's base + commission accrue to its row's OWNER — the
+ *    Foundation address for these active_since-1 seats (design 2026-10-03-
+ *    hf5-validator-owner-stake rev 6 §1.6, decision D2) — so D's own row
+ *    now carries only its storage credit; the per-row exclusion is kept
+ *    unchanged.
+ *  - Section G's Foundation-owned members are PLANTED owner columns (no
+ *    test holds the Foundation's 2-of-3, so such a REGISTER cannot be
+ *    signed here), written immediately before the boundary block that
+ *    reads them; the A1 fault is observed at the storage step
+ *    (nodus_witness_storage_boundary_apply), not through a whole block.
+ *    Section D2 is pure: the verdict over arrays, not over committed
+ *    reports.
  *  - "Twin" is two fixtures in one process, not a 7-machine run.
  *
  * Copyright (c) 2026 nocdem
@@ -208,6 +277,10 @@
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_vset.h"      /* HF-6 5c case E          */
+#include "witness/nodus_witness_host.h"      /* HF-6 6b-2 A3 (case E)   */
+#include "witness/nodus_witness_storage_reporter.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT       */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_v2_spend.h"
 
@@ -220,6 +293,7 @@
 #include "dnac/ledger_ids.h"
 #include "dnac/ledger_roots_v2.h"
 #include "dnac/validator.h"
+#include "dnac/valbind_wire.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 
@@ -252,7 +326,7 @@ static int g_checks = 0;
 #define D2       ((uint64_t)DNAC_CFG_RULESET_GEN2_D2)
 #define DS       ((uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
 #define FEE      ((uint64_t)DNAC_MIN_FEE_RAW)
-#define BOND     ((uint64_t)DNAC_STORAGE_STAKE_MIN)
+#define BOND     ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 #define POOL1    10000000000000000ULL          /* 10^16 raw (pool 1)     */
 #define OUT_LEN  232u
 #define PK_LEN   ((size_t)QGP_DSA87_PUBLICKEYBYTES)
@@ -264,7 +338,7 @@ static int g_checks = 0;
 #define OP_STSET       10u
 #define OP_SNAPSEAT    11u
 #define OP_STREP       12u
-#define STREG_LEN      (2592u + 8u + 64u)
+#define STREG_LEN      7299u   /* HF-6 6b-1, design §2 / §11.3          */
 #define REP_FIXED      78u
 
 static void put64(uint8_t *p, uint64_t v) {
@@ -1586,8 +1660,39 @@ static uint32_t fund_call(uint8_t *dst, const uint8_t nul[64]) {
     return 66;
 }
 
+/* HF-6 slice 6b-1 — the generation-4 STORAGE_REGISTER call (design rev 6
+ * §2 / §11.3: owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond, 7299 B)
+ * for a node that is its OWN owner: owner_fp = SHA3-512(the node key),
+ * the node key gives the op-3 consent against the engine's chain id
+ * (expiry `height` + 10, inside the 720-block window). The registry row's
+ * owner column is then the node's fingerprint — the value the storage-
+ * reward-v1 payee carried — so every payout and release observation of
+ * this file reads as before. @return STREG_LEN / 0 on a setup failure. */
+static uint32_t streg_call(nodus_witness_t *w, uint8_t *dst, int key,
+                           uint64_t height) {
+    static const uint8_t zero64[64] = { 0 };
+    uint8_t chain32[DNA_CHAIN_ID_LEN], msg[DNA_VALBIND_MSG_LEN];
+    const uint64_t cexp = height + 10u;
+    size_t sl = 0, off = 0;
+    if (nodus_witness_v2_chain_id(w, chain32) != 0 ||
+        dna_valbind_consent_msg(msg, chain32,
+                                DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                                g_k[key].fp, g_k[key].pk, cexp) != 0)
+        return 0;
+    memcpy(dst, g_k[key].fp, 64);                    off += 64;
+    memcpy(dst + off, g_k[key].pk, PK_LEN);          off += PK_LEN;
+    if (dna_valbind_consent_sign(dst + off, &sl, msg, g_k[key].sk) != 0 ||
+        sl != (size_t)DNA_VALBIND_SIG_LEN)
+        return 0;
+    off += DNA_VALBIND_SIG_LEN;
+    put64(dst + off, cexp);                          off += 8;
+    put64(dst + off, BOND);                          off += 8;
+    return off == STREG_LEN ? STREG_LEN : 0;
+}
+
 /* A 2-leg storage envelope (REGISTER / EXIT), really signed by the
- * node's key on both legs (the coin's owner is the node). */
+ * node's key on both legs — since HF-6 6b-1 as the node's OWNER (the
+ * node is its own owner here, streg_call) and the coin's owner. */
 static int st_env(nodus_witness_t *w, uint64_t height, uint32_t op,
                   const uint8_t *sys_call, uint32_t sys_len, int c,
                   int signer, uint8_t **out, size_t *out_len) {
@@ -2253,6 +2358,187 @@ static int t_grace_count(void) {
     return 0;
 }
 
+/* D2. HF-6 6b-2 — the F2 owner-OR-key exclusion and the three-state
+ * verdict, pure (nodus_storage_member_verdict over the owners
+ * nodus_witness_storage_seat_owners reads from a hand-built RULESET-2
+ * snapshot; design rev 6 §11.6-§11.7, K16 item 8). */
+static const uint8_t k_found[] = DNAC_HF6_FOUNDATION_OWNER;
+_Static_assert(sizeof(k_found) == 64,
+               "DNAC_HF6_FOUNDATION_OWNER must be exactly 64 bytes");
+
+/* the verdict of member (owner, fp) over seats 0..n-1 of `s` (owners from
+ * the snapshot, keys SHA3-512 of the entry pubkeys) with power pw[],
+ * every seat reporting, the bit of seat j = yes[j] */
+static int f2_verdict(const dna_vset_snapshot_t *s, const uint64_t *pw,
+                      const uint8_t *yes, const uint8_t owner[64],
+                      const uint8_t fp[64], nodus_storage_verdict_t *v,
+                      uint64_t *I, uint64_t *Y) {
+    uint8_t own[DNA_MAX_ACTIVE_VALIDATORS][64];
+    uint8_t key[DNA_MAX_ACTIVE_VALIDATORS][64];
+    uint8_t rep[DNA_MAX_ACTIVE_VALIDATORS];
+    uint64_t P = 0;
+    if (nodus_witness_storage_seat_owners(NULL, s, NULL, own) != 0)
+        return -1;
+    for (uint32_t j = 0; j < s->active_count; j++) {
+        if (qgp_sha3_512(s->entries[j].pubkey, PK_LEN, key[j]) != 0)
+            return -1;
+        rep[j] = 1u;
+        P += pw[j];
+    }
+    return nodus_storage_member_verdict(
+               s->active_count, pw, (const uint8_t (*)[64])own,
+               (const uint8_t (*)[64])key, rep, yes, P, owner, fp, v, I, Y);
+}
+
+static int t_f2_verdict(void) {
+    const uint64_t TEN = 10000000ULL;
+    uint64_t pw[8], I = 0, Y = 0;
+    uint8_t yes[8], q[64], own[8][64];
+    nodus_storage_verdict_t v = NODUS_STORAGE_OK;
+    memset(q, 0x5C, sizeof(q));            /* an owner no seat has      */
+
+    /* seven equal seats V0..V6, every one owned by the compiled
+     * Foundation owner (the harness validators' owner after migration,
+     * decision D2) */
+    dna_vset_snapshot_t *s = dna_vset_alloc(N_VAL);
+    CHECK(s != NULL, "alloc");
+    s->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+    for (int j = 0; j < N_VAL; j++) {
+        memcpy(s->entries[j].pubkey, g_k[j].pk, PK_LEN);
+        memset(s->entries[j].validator_id, 0x40 + j, 64);
+        memcpy(s->entries[j].owner_fp, k_found, 64);
+        pw[j] = TEN;
+        yes[j] = 1u;
+    }
+    CHECK(nodus_witness_storage_seat_owners(NULL, s, NULL, own) == 0,
+          "ruleset 2: owners from the entries (no row read)");
+    for (int j = 0; j < N_VAL; j++)
+        CHECK(memcmp(own[j], k_found, 64) == 0 &&
+              memcmp(own[j], g_k[j].fp, 64) != 0,
+              "owner(s) = the entry's owner_fp, never SHA3-512(pubkey)");
+    /* F1 (asserted first, so no NO_EVIDENCE below is an F1 failure in
+     * disguise): P_rep = P_total = 70M, 2 · 70M > 70M */
+    CHECK(2 * (7 * TEN) > 7 * TEN, "F1 met: every seat reported");
+
+    /* a member owned by the Foundation: every seat owner-excluded,
+     * I = 0, 2·0 = 0 <= 70M → NO_EVIDENCE */
+    CHECK(f2_verdict(s, pw, yes, k_found, g_k[KA].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_NO_EVIDENCE && I == 0 && Y == 0,
+          "Foundation-owned member, Foundation reporters: NO_EVIDENCE");
+    /* a member owned by an independent key: nothing excluded, I = Y =
+     * 70M, 2·I = 140M > 70M, 3·Y = 210M > 140M → OK */
+    CHECK(f2_verdict(s, pw, yes, g_k[KB].fp, g_k[KA].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_OK && I == 7 * TEN && Y == 7 * TEN,
+          "independent owner: OK on 7/7");
+    /* ... and every bit 0: 0 > 140M false → NOT_OK */
+    memset(yes, 0, sizeof(yes));
+    CHECK(f2_verdict(s, pw, yes, g_k[KB].fp, g_k[KA].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_NOT_OK && I == 7 * TEN && Y == 0,
+          "independent owner, no bit set: NOT_OK");
+
+    /* owner-equal AND key-equal, combined: seat 1 owned by q (the rest
+     * Foundation), the member owned by q with node key = seat 0's key →
+     * seats {0, 1} excluded, I = 5 × 10M = 50M (2·I = 100M > 70M) */
+    memcpy(s->entries[1].owner_fp, q, 64);
+    memset(yes, 1, sizeof(yes));
+    CHECK(f2_verdict(s, pw, yes, q, g_k[V0].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_OK && I == 5 * TEN && Y == 5 * TEN,
+          "owner seat 1 + key seat 0 excluded: I = 5/7, OK on 5 yes "
+          "(150M > 100M)");
+    /* only the two EXCLUDED seats and three counted ones say yes:
+     * Y = 30M, 90M > 100M false → NOT_OK; the excluded bits are ignored */
+    memset(yes, 0, sizeof(yes));
+    yes[0] = yes[1] = yes[2] = yes[3] = yes[4] = 1u;
+    CHECK(f2_verdict(s, pw, yes, q, g_k[V0].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_NOT_OK && I == 5 * TEN && Y == 3 * TEN,
+          "3 counted yes of 5: NOT_OK (90M > 100M false); excluded seats' "
+          "bits do not count");
+    yes[5] = 1u;                              /* 4 counted yes: 120M > 100M */
+    CHECK(f2_verdict(s, pw, yes, q, g_k[V0].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_OK && Y == 4 * TEN, "4 counted yes of 5: OK");
+    /* a seat that did not report counts in neither I nor Y */
+    {
+        uint8_t rep[N_VAL], key[N_VAL][64];
+        memset(rep, 1, sizeof(rep));
+        rep[6] = 0;
+        for (int j = 0; j < N_VAL; j++) memcpy(key[j], g_k[j].fp, 64);
+        CHECK(nodus_witness_storage_seat_owners(NULL, s, NULL, own) == 0 &&
+              nodus_storage_member_verdict(N_VAL, pw,
+                  (const uint8_t (*)[64])own, (const uint8_t (*)[64])key,
+                  rep, yes, 7 * TEN, q, g_k[V0].fp, &v, &I, &Y) == 0 &&
+              I == 4 * TEN && Y == 4 * TEN && v == NODUS_STORAGE_OK,
+              "seat 6 silent (F1: 2·60M > 70M): counted seats 2..5, "
+              "I = 40M (80M > 70M), Y = 40M, 120M > 80M OK");
+    }
+    dna_vset_free(&s);
+
+    /* the exact floor 2·I == P_total: eight seats of power 1, all eight
+     * reporting (F1: 2·8 = 16 > 8, asserted first) */
+    s = dna_vset_alloc(8);
+    CHECK(s != NULL, "alloc 8");
+    s->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+    for (int j = 0; j < 8; j++) {
+        memcpy(s->entries[j].pubkey, g_k[j].pk, PK_LEN);  /* V0..V6, KA */
+        memset(s->entries[j].validator_id, 0x60 + j, 64);
+        memcpy(s->entries[j].owner_fp, j < 4 ? q : k_found, 64);
+        pw[j] = 1u;
+        yes[j] = 1u;
+    }
+    CHECK(2 * 8 > 8, "F1 met: 16 > 8");
+    /* owned by q: seats 0..3 excluded, I = 4, 2·4 = 8 <= 8 → NO_EVIDENCE
+     * (the `<=`: the exact split is no evidence) */
+    CHECK(f2_verdict(s, pw, yes, q, g_k[KB].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_NO_EVIDENCE && I == 4,
+          "2·I == P_total (8 == 8): NO_EVIDENCE");
+    /* seat 3 handed to the Foundation: a q-owned member excludes 3 seats,
+     * I = 5, 10 > 8 → evidence; Y = 5, 15 > 10 → OK */
+    memcpy(s->entries[3].owner_fp, k_found, 64);
+    CHECK(f2_verdict(s, pw, yes, q, g_k[KB].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_OK && I == 5 && Y == 5,
+          "2·I = 10 > 8: evidence, OK on 5 yes");
+    /* the Foundation-owned member over the same set: 5 excluded, I = 3,
+     * 6 <= 8 → NO_EVIDENCE */
+    CHECK(f2_verdict(s, pw, yes, k_found, g_k[KB].fp, &v, &I, &Y) == 0 &&
+          v == NODUS_STORAGE_NO_EVIDENCE && I == 3, "I = 3: NO_EVIDENCE");
+
+    /* the ruleset gate: 0 and 3 have no owner rule; ruleset 1 needs the
+     * witness (the bridge reads the committed rows) */
+    s->selection_ruleset = 0;
+    CHECK(nodus_witness_storage_seat_owners(NULL, s, NULL, own) == -1,
+          "ruleset 0 refused");
+    s->selection_ruleset = 3;
+    CHECK(nodus_witness_storage_seat_owners(NULL, s, NULL, own) == -1,
+          "ruleset 3 refused");
+    s->selection_ruleset = DNA_VSET_RULESET_TOPN_V1;
+    CHECK(nodus_witness_storage_seat_owners(NULL, s, NULL, own) == -1,
+          "ruleset 1 without a witness refused");
+    dna_vset_free(&s);
+
+    /* checked u64: two seats of UINT64_MAX power overflow I → -1 */
+    {
+        const uint64_t big[2] = { UINT64_MAX, 1u };
+        const uint8_t r2[2] = { 1u, 1u }, b2[2] = { 1u, 1u };
+        uint8_t o2[2][64], k2[2][64];
+        memset(o2, 0x11, sizeof(o2));
+        memset(k2, 0x22, sizeof(k2));
+        k2[1][0] = 0x23;
+        CHECK(nodus_storage_member_verdict(2, big,
+                  (const uint8_t (*)[64])o2, (const uint8_t (*)[64])k2,
+                  r2, b2, UINT64_MAX, q, g_k[KA].fp, &v, NULL, NULL) == -1,
+              "I past UINT64_MAX: -1, never a value");
+        CHECK(nodus_storage_member_verdict(2, big,
+                  (const uint8_t (*)[64])o2, (const uint8_t (*)[64])k2,
+                  r2, b2, UINT64_MAX, q, g_k[KA].fp, NULL, NULL, NULL) == -1,
+              "NULL out: -1");
+    }
+    /* NOT_OK advances the streak, NO_EVIDENCE is never fed to the rule
+     * (the settlement `continue`s): with weight, NOT OK → old + 1 */
+    CHECK(nodus_storage_fail_streak_next(0, 1, 0) == 1 &&
+          nodus_storage_fail_streak_next(3, 1, 0) == 4,
+          "NOT_OK with weight: +1 (and +1 at 3, K5)");
+    return 0;
+}
+
 static int t_engine(void) {
     fixture_t A, B;
     uint64_t h = 0, n = 0;
@@ -2279,14 +2565,13 @@ static int t_engine(void) {
     CHECK(run_idle(&A, &B, &h, H14 - 1) == 0,
           "blocks 1..3 (the gen-2, EVM and storage edges)");
 
-    /* block 4: A, B, C, D register */
+    /* block 4: A, B, C, D register (each its own owner, HF-6 6b-1) */
     {
         const int who[4] = { KA, KB, KC, KD };
         const int coin[4] = { CA, CB, CC, CD };
         for (int i = 0; i < 4; i++) {
-            memcpy(call[i], g_k[who[i]].pk, PK_LEN);
-            put64(call[i] + PK_LEN, BOND);
-            memcpy(call[i] + PK_LEN + 8, g_k[who[i]].fp, 64);
+            CHECK(streg_call(A.w, call[i], who[i], H14) == STREG_LEN,
+                  "generation-4 registration call (op-3 consent)");
             CHECK(st_env(A.w, H14, DNA_SYSRULE_STORAGE_REGISTER, call[i],
                          STREG_LEN, coin[i], who[i], &e[i], &l[i]) == 0,
                   "registration envelope");
@@ -2338,9 +2623,8 @@ static int t_engine(void) {
 
     /* E + 5: X registers */
     CHECK(run_idle(&A, &B, &h, E_LEN + 4) == 0, "to E+4");
-    memcpy(call[0], g_k[KX].pk, PK_LEN);
-    put64(call[0] + PK_LEN, BOND);
-    memcpy(call[0] + PK_LEN + 8, g_k[KX].fp, 64);
+    CHECK(streg_call(A.w, call[0], KX, E_LEN + 5) == STREG_LEN,
+          "X's generation-4 registration call");
     CHECK(st_env(A.w, E_LEN + 5, DNA_SYSRULE_STORAGE_REGISTER, call[0],
                  STREG_LEN, CX, KX, &e[0], &l[0]) == 0, "X envelope");
     CHECK(submit(&A, &B, E_LEN + 5, e, l, 1, codes) == 0 &&
@@ -2649,8 +2933,10 @@ static int t_engine(void) {
               "resets to 0");
         CHECK(s1.streak[gainer] == s0.streak[gainer],
               "the gainer in grace: fail_streak unchanged");
-        if (gainer >= N_VAL)              /* D's row also takes its
-                                           * validator distribution */
+        if (gainer >= N_VAL)              /* validators stay excluded
+                                           * (pre-HF-6: D's row also took
+                                           * its validator distribution;
+                                           * see HOW IT CAN LIE) */
             CHECK(s1.acc[gainer] == s0.acc[gainer],
                   "the gainer in grace: no storage credit");
         const uint64_t j6 = (T + 6 * E_LEN) / E_LEN;
@@ -2687,8 +2973,8 @@ static int t_engine(void) {
      * takes B's segments gets its grace — the model checks it) */
     CHECK(run_idle(&A, &B, &h, T + 7 * E_LEN + 2) == 0, "to T+7E+2");
     CHECK(st_env(A.w, T + 7 * E_LEN + 3, DNA_SYSRULE_STORAGE_EXIT,
-                 g_k[KB].pk, (uint32_t)PK_LEN, CBX, KB, &e[0], &l[0]) == 0,
-          "B exit");
+                 g_k[KB].fp, 64u, CBX, KB, &e[0], &l[0]) == 0,
+          "B exit (call = node_fp, signed by B as its own owner)");
     CHECK(submit(&A, &B, T + 7 * E_LEN + 3, e, l, 1, codes) == 0 &&
           codes[0] == NODUS_V2_TX_OK, "B exits at T+7E+3");
     h = T + 7 * E_LEN + 3;
@@ -2744,6 +3030,462 @@ static int t_engine(void) {
     return 0;
 }
 
+/* E. HF-6 slice 5c — the settlement's F1 on a RULESET-2 snapshot(H).
+ *
+ * WHAT IT PROVES: the storage settlement weighs the seats of snapshot(H)
+ * by THE ONE power helper BY THAT SNAPSHOT'S RULESET (design rev 6 §5
+ * consumer list "storage rapor ağırlığı"; ORCHESTRATOR decision D3; plan
+ * tasks/hf6-slice5-plan.md §2 "5b"/"5c"). Twin chains as D's prologue:
+ * A, B, C, D register at 4; at 2E + 1 SIX seats report for H = E (every
+ * bit 1) — every seat but V3. Before boundary 3E, snapshot(E) (which
+ * governs only blocks E..2E−1, all applied) is rewritten on both twins
+ * as a RULESET-2 snapshot with V3 at 60M whole coins and the rest at 10M:
+ *   counted (3000 bps) [25714285 for V3, 10M × 6] — P_total 85714285,
+ *   P_rep 60M, 2·P_rep > P_total: F1 MET, the epoch settles (all OK,
+ *   weighted pay from pool 1, exactly check_settle's restatement);
+ *   raw it would be P_total 120M, 2·P_rep = 120M, not >: F1 NOT met,
+ *   nothing would move.
+ * The only reader of snapshot(E) at boundary 3E is the storage
+ * settlement (the distribution reads snapshot(2E), Rule N's duty
+ * snapshot(2E), phase 0a snapshot(3E)).
+ * REQUIRES: as D (the K9a model runs every boundary; prep_expect).
+ * LEAVES: two /tmp/test_storage_b2_* directories, removed at the end.
+ * HOW IT CAN LIE: the ruleset-2 snapshot(E) is a hand-written row (the
+ * builder writes ruleset 1 until slice 5d) whose stake does not match any
+ * copy — the storage settlement reads no copy, so nothing here checks
+ * that; ids are arbitrary distinct bytes. Cost: 3E blocks on each twin. */
+static int t_engine_v2_power(void) {
+    fixture_t A, B;
+    uint64_t h = 0;
+    uint32_t codes[8];
+    uint8_t *e[8] = { NULL };
+    size_t l[8] = { 0 };
+    static uint8_t call[4][STREG_LEN];
+    const int seats6[6] = { V0, V1, V2, V4, V5, V6 };      /* not V3 */
+    const uint64_t U = DNAC_DECIMAL_UNIT;
+
+    CHECK(E_LEN >= 8, "no epoch boundary among heights 1..7");
+    CHECK(DNAC_HF6_POWER_CAP_BPS_DEFAULT == 3000u,
+          "the expected vector is derived at 3000 bps");
+    for (int i = 0; i < N_VAL; i++) {
+        memcpy(g_vaddr[i], g_k[i].fp, 32);
+        g_vflag[i] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
+    }
+    for (int c = 0; c < N_COINS; c++)
+        CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
+    CHECK(fx_open(&A, "pa") == 0 && fx_open(&B, "pb") == 0,
+          "twin seeded chains");
+    memset(g_grace, 0, sizeof(g_grace));
+    memset(g_grace_at, 0, sizeof(g_grace_at));
+    memset(g_newn_at, 0, sizeof(g_newn_at));
+    g_model_on = 1;
+
+    CHECK(run_idle(&A, &B, &h, H14 - 1) == 0, "blocks 1..3");
+    {
+        const int who[4] = { KA, KB, KC, KD };
+        const int coin[4] = { CA, CB, CC, CD };
+        for (int i = 0; i < 4; i++) {
+            CHECK(streg_call(A.w, call[i], who[i], H14) == STREG_LEN,
+                  "generation-4 registration call (op-3 consent)");
+            CHECK(st_env(A.w, H14, DNA_SYSRULE_STORAGE_REGISTER, call[i],
+                         STREG_LEN, coin[i], who[i], &e[i], &l[i]) == 0,
+                  "registration envelope");
+        }
+        CHECK(submit(&A, &B, H14, e, l, 4, codes) == 0, "block 4");
+        for (int i = 0; i < 4; i++)
+            CHECK(codes[i] == NODUS_V2_TX_OK, "registration applies");
+        h = H14;
+    }
+    CHECK(run_idle(&A, &B, &h, 2 * E_LEN) == 0, "to 2E");
+    CHECK(nodus_witness_storage_set_get(A.w, E_LEN, &g_set_a) == 0 &&
+          g_set_a.count == 4, "set(E) = {A, B, C, D}");
+
+    CHECK(reports_for(&A, 2 * E_LEN + 1, E_LEN, seats6, 6, bit_all, e, l)
+              == 0, "six reports for H = E (every seat but V3)");
+    CHECK(submit(&A, &B, 2 * E_LEN + 1, e, l, 6, codes) == 0, "2E+1");
+    for (int i = 0; i < 6; i++)
+        CHECK(codes[i] == NODUS_V2_TX_OK, "report applies");
+    h = 2 * E_LEN + 1;
+
+    snap_t s0, s1;
+    CHECK(run_idle(&A, &B, &h, 3 * E_LEN - 1) == 0, "to 3E-1");
+
+    /* snapshot(E) → ruleset 2, V3 at 60M (both twins) */
+    for (int t = 0; t < 2; t++) {
+        nodus_witness_t *w = t == 0 ? A.w : B.w;
+        dna_vset_snapshot_t *s = NULL;
+        int i3 = -1;
+        CHECK(nodus_witness_vset_get(w, E_LEN, &s, NULL) == 0 &&
+              s->active_count == N_VAL &&
+              s->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+              "the engine's snapshot(E)");
+        s->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+        for (int i = 0; i < N_VAL; i++) {
+            memset(s->entries[i].validator_id, 0x40 + i, 64);
+            memset(s->entries[i].owner_fp, 0x80 + i, 64);
+            CHECK(s->entries[i].total_stake == DNAC_SELF_STAKE_AMOUNT,
+                  "FIXTURE GUARD: 10M seats");
+            if (memcmp(s->entries[i].pubkey, g_k[V3].pk, PK_LEN) == 0) {
+                s->entries[i].total_stake = 60000000ULL * U;
+                i3 = i;
+            }
+        }
+        CHECK(i3 >= 0, "V3 seated in snapshot(E)");
+        uint64_t pw[DNA_MAX_ACTIVE_VALIDATORS], P = 0, Prep = 0;
+        CHECK(nodus_witness_vset_powers(w, s, pw) == 0, "helper");
+        for (int i = 0; i < N_VAL; i++) {
+            CHECK(pw[i] == (i == i3 ? 25714285ULL : 10000000ULL),
+                  "counted [25714285, 10M x 6]");
+            P += pw[i];
+            if (i != i3) Prep += pw[i];
+        }
+        CHECK(2 * Prep > P && !(2 * (60000000ULL) > 120000000ULL),
+              "F1: met on the counted powers, NOT met on the raw ones");
+        size_t need = dna_vset_encoded_len_ex(s, DNA_VSET_RULESET_TOPN_V2);
+        uint8_t *b = need ? malloc(need) : NULL, hh[64];
+        sqlite3_stmt *st = NULL;
+        CHECK(b && dna_vset_encode_ex(s, DNA_VSET_RULESET_TOPN_V2, b, need,
+                                      NULL) == 0 &&
+              dna_vset_hash_bytes_ex(b, need, DNA_VSET_RULESET_TOPN_V2, hh)
+                  == 0, "encode v2");
+        CHECK(sqlite3_prepare_v2(w->db, "UPDATE validator_set_snapshots SET "
+                                 "snapshot_hash = ?1, snapshot_blob = ?2 "
+                                 "WHERE epoch_start = ?3", -1, &st, NULL)
+              == SQLITE_OK, "prepare");
+        sqlite3_bind_blob(st, 1, hh, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, b, (int)need, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)E_LEN);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        free(b);
+        CHECK(rc == SQLITE_DONE && sqlite3_changes(w->db) == 1,
+              "rewrite snapshot(E) (test-only; vset_insert would -2)");
+        dna_vset_free(&s);
+    }
+
+    CHECK(take(A.w, &s0) == 0 && prep_expect(A.w, E_LEN, &g_ex) == 0,
+          "before 3E (engine eligibility == the model's)");
+
+    /* HF-6 6b-2, khan A3 (design rev 6 §11.7): the reporter side needs no
+     * code change — its seat_of matches SHA3-512(entry pubkey), a field
+     * both snapshot layouts carry. Proven over the RULESET-2 snapshot(E)
+     * just written, through the serving path (nodus_witness_stprobe_serve
+     * step 4, the static seat_of): A member with eligible blocks serves
+     * as "this node"; a SEATED requester (V1) passes step 4 and stops at
+     * step 5 with NOT_HELD (no block store, no segment file under the
+     * fixture's data_path); an UNSEATED one (KX) is NOT_SEATED. Twin A
+     * only, read-only; the host is detached again afterwards. */
+    {
+        dna_vset_snapshot_t *s2 = NULL;
+        CHECK(nodus_witness_vset_get(A.w, E_LEN, &s2, NULL) == 0 && s2 &&
+              s2->selection_ruleset == DNA_VSET_RULESET_TOPN_V2,
+              "snapshot(E) reads back as ruleset 2");
+        dna_vset_free(&s2);
+        int mk = -1;
+        for (uint32_t i = 0; i < g_ex.cur.count && mk < 0; i++)
+            if (g_ex.wt[i] > 0) mk = key_of_fp(g_ex.cur.fps[i]);
+        CHECK(mk >= 0, "a member with eligible blocks at H = E");
+        nodus_identity_t *id = calloc(1, sizeof(*id));
+        uint8_t *out = malloc(NODUS_STPROBE_MSG_MAX);
+        CHECK(id && out, "alloc");
+        memcpy(id->pk.bytes, g_k[mk].pk, PK_LEN);
+        static nodus_witness_host_t host;
+        memset(&host, 0, sizeof(host));
+        host.identity = id;
+        A.w->host = &host;
+        nodus_stprobe_req_t rq;
+        memset(&rq, 0, sizeof(rq));
+        CHECK(nodus_witness_v2_chain_id(A.w, rq.chain_id) == 0, "chain id");
+        rq.epoch_start = E_LEN;
+        memcpy(rq.set_hash, g_ex.cur.set_hash, 64);
+        memcpy(rq.target_fp, g_k[mk].fp, 64);
+        memset(rq.nonce, 0x4E, sizeof(rq.nonce));
+        rq.deadline_ms = 1000;
+        size_t ol = 0;
+        memcpy(rq.reporter_fp, g_k[V1].fp, 64);
+        const nodus_stprobe_code_t c_seated = nodus_witness_stprobe_serve(
+            A.w, NULL, g_k[V1].fp, &rq, E_LEN, 1000, out,
+            NODUS_STPROBE_MSG_MAX, &ol);
+        memcpy(rq.reporter_fp, g_k[KX].fp, 64);
+        const nodus_stprobe_code_t c_unseated = nodus_witness_stprobe_serve(
+            A.w, NULL, g_k[KX].fp, &rq, E_LEN, 1000, out,
+            NODUS_STPROBE_MSG_MAX, &ol);
+        A.w->host = NULL;
+        free(out);
+        free(id);
+        CHECK(c_seated == NODUS_STPROBE_REF_NOT_HELD,
+              "A3: a seated requester is found in the ruleset-2 snapshot "
+              "(past step 4; NOT_HELD at the sample step)");
+        CHECK(c_unseated == NODUS_STPROBE_REF_NOT_SEATED,
+              "A3: an unseated requester is NOT_SEATED");
+    }
+
+    CHECK(run_idle(&A, &B, &h, 3 * E_LEN) == 0, "boundary 3E (twin roots "
+          "equal)");
+    CHECK(take(A.w, &s1) == 0, "after 3E");
+    {
+        uint64_t W = 0;
+        CHECK(check_settle(&g_ex, &s0, &s1, ok_all, &W) == 0 && W > 0,
+              "F1 met on the counted powers: all OK, weighted pay, exact");
+        CHECK(s0.pool1 > s1.pool1, "pool 1 debited — the epoch SETTLED");
+    }
+
+    g_model_on = 0;
+    fx_close(&A);
+    fx_close(&B);
+    return 0;
+}
+
+/* G. HF-6 6b-2 (engine_owner_f2, twin fixtures, D's prologue): the FIRST
+ * settlement after the generation-4 edge reads snapshot(E) — RULESET 1,
+ * frozen before the edge — so every seat's owner comes through the §7.5
+ * bridge (the v2 row keyed dna_validator_id_migrated(chain, pubkey));
+ * those seven rows carry the compiled Foundation owner (migration D2).
+ * Registration is real (A, B, C, D their own owners, block 4); all seven
+ * seats report for H = E at 2E + 1 with every bit 1 except D's (0 from
+ * every seat). Then, at 3E − 1 (immediately before the boundary block,
+ * the one block whose SYSTEM root may move without an item — the
+ * phase-8 untouched-domain guard):
+ *   - the bridge read directly: seven owners == the Foundation, none ==
+ *     SHA3-512(pubkey);
+ *   - A1 (khan, 2026-10-12), on twin A in rolled-back transactions: with
+ *     V3's migrated row deleted (validators + v2_validator_roles) the
+ *     owner read fails and the storage boundary step FAULTS (-2); the
+ *     same call with the row present settles (0, settled) — so the fault
+ *     is the row's; afterwards A is byte-identical to B;
+ *   - a PLANT on both twins (no test holds the Foundation's 2-of-3, so a
+ *     Foundation-owned registration cannot be signed): A's owner := the
+ *     Foundation; B's owner := the Foundation and fail_streak := 3; C's
+ *     owner := KX's fp (a third party: the node's own fp must NOT be
+ *     paid); D unchanged.
+ * Boundary 3E settles H = E. Powers raw 10M × 7 (ruleset 1), P_rep =
+ * P_total = 70M, F1 140M > 70M:
+ *   A  owner = every seat's owner → I = 0, 0 <= 70M  → NO_EVIDENCE:
+ *      unpaid, fail_streak frozen at 0 (NOT_OK would make it 1);
+ *   B  the same → NO_EVIDENCE: frozen at 3 (K5 would make it 4);
+ *   C  owner KX, key unseated → I = Y = 70M, 210M > 140M → OK: KX is
+ *      credited floor(budget·w_C/W), C's own fp nothing;
+ *   D  owner D, key = seat V0 → I = 60M (120M > 70M), Y = 0 → NOT_OK:
+ *      unpaid, fail_streak 0 → 1;
+ *   W = w_A + w_B + w_C + w_D (the NO_EVIDENCE weights stay), pool 1
+ *   debited by exactly C's share — so neither A nor B was paid to
+ *   anyone (their owner's accrual also takes the validator distribution,
+ *   so it is not observed per row).
+ * Twin roots equal after every block; the databases byte-identical at
+ * the end.
+ * HOW IT CAN LIE: the owners of A, B and C are planted rows (a state no
+ * exec writes for A / B; C's is what a third-party REGISTER writes —
+ * test_storage_reg); the A1 fault is observed at
+ * nodus_witness_storage_boundary_apply (the step the engine calls at
+ * 1b'), not through a whole faulting block, so that no earlier boundary
+ * step's reaction to the missing row can be mistaken for it. Cost: 3E
+ * blocks on each twin. */
+static int sn_plant(nodus_witness_t *w, int key, const uint8_t owner[64],
+                    int set_streak, uint32_t streak) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, set_streak
+            ? "UPDATE v2_storage_nodes SET payee_fp = ?1, fail_streak = ?3 "
+              "WHERE node_fp = ?2"
+            : "UPDATE v2_storage_nodes SET payee_fp = ?1 WHERE node_fp = ?2",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, owner, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, g_k[key].fp, 64, SQLITE_TRANSIENT);
+    if (set_streak) sqlite3_bind_int64(st, 3, (sqlite3_int64)streak);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE && sqlite3_changes(w->db) == 1) ? 0 : -1;
+}
+
+static int del_by_id(nodus_witness_t *w, const char *sql,
+                     const uint8_t id[64]) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, id, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (rc == SQLITE_DONE && sqlite3_changes(w->db) == 1) ? 0 : -1;
+}
+
+/* 2E + 1 of case G: every bit 1 except D's */
+static int bit_all_but_d(int seat_key, int member) {
+    (void)seat_key;
+    return member != KD;
+}
+
+static int t_engine_owner_f2(void) {
+    fixture_t A, B;
+    uint64_t h = 0;
+    uint32_t codes[8];
+    uint8_t *e[8] = { NULL };
+    size_t l[8] = { 0 };
+    static uint8_t call[4][STREG_LEN];
+    static uint8_t own[DNA_MAX_ACTIVE_VALIDATORS][64];
+    const int all_seats[N_VAL] = { V0, V1, V2, V3, V4, V5, V6 };
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+
+    CHECK(E_LEN >= 8, "no epoch boundary among heights 1..7");
+    for (int i = 0; i < N_VAL; i++) {
+        memcpy(g_vaddr[i], g_k[i].fp, 32);
+        g_vflag[i] = CMT_PB_BLOCK_ID_FLAG_COMMIT;
+    }
+    for (int c = 0; c < N_COINS; c++)
+        CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
+    CHECK(fx_open(&A, "fa") == 0 && fx_open(&B, "fb") == 0,
+          "twin seeded chains");
+    memset(g_grace, 0, sizeof(g_grace));
+    memset(g_grace_at, 0, sizeof(g_grace_at));
+    memset(g_newn_at, 0, sizeof(g_newn_at));
+    g_model_on = 1;
+
+    CHECK(run_idle(&A, &B, &h, H14 - 1) == 0, "blocks 1..3");
+    {
+        const int who[4] = { KA, KB, KC, KD };
+        const int coin[4] = { CA, CB, CC, CD };
+        for (int i = 0; i < 4; i++) {
+            CHECK(streg_call(A.w, call[i], who[i], H14) == STREG_LEN,
+                  "generation-4 registration call (op-3 consent)");
+            CHECK(st_env(A.w, H14, DNA_SYSRULE_STORAGE_REGISTER, call[i],
+                         STREG_LEN, coin[i], who[i], &e[i], &l[i]) == 0,
+                  "registration envelope");
+        }
+        CHECK(submit(&A, &B, H14, e, l, 4, codes) == 0, "block 4");
+        for (int i = 0; i < 4; i++)
+            CHECK(codes[i] == NODUS_V2_TX_OK, "registration applies");
+        h = H14;
+    }
+    CHECK(run_idle(&A, &B, &h, 2 * E_LEN) == 0, "to 2E");
+    CHECK(nodus_witness_storage_set_get(A.w, E_LEN, &g_set_a) == 0 &&
+          g_set_a.count == 4, "set(E) = {A, B, C, D}");
+    CHECK(reports_for(&A, 2 * E_LEN + 1, E_LEN, all_seats, N_VAL,
+                      bit_all_but_d, e, l) == 0,
+          "seven reports for H = E, every bit 1 but D's");
+    CHECK(submit(&A, &B, 2 * E_LEN + 1, e, l, N_VAL, codes) == 0, "2E+1");
+    for (int i = 0; i < N_VAL; i++)
+        CHECK(codes[i] == NODUS_V2_TX_OK, "report applies");
+    h = 2 * E_LEN + 1;
+    CHECK(run_idle(&A, &B, &h, 3 * E_LEN - 1) == 0, "to 3E-1");
+    CHECK(nodus_witness_v2_chain_id(A.w, chain32) == 0, "chain id");
+
+    /* the bridge, read directly over the stored ruleset-1 snapshot(E) */
+    {
+        dna_vset_snapshot_t *se = NULL;
+        CHECK(nodus_witness_vset_get(A.w, E_LEN, &se, NULL) == 0 && se &&
+              se->selection_ruleset == DNA_VSET_RULESET_TOPN_V1 &&
+              se->active_count == N_VAL,
+              "FIXTURE GUARD: snapshot(E) is the genesis ruleset-1 set");
+        CHECK(nodus_witness_storage_seat_owners(A.w, se, chain32, own) == 0,
+              "the v1 bridge resolves every seat");
+        for (uint16_t j = 0; j < se->active_count; j++) {
+            uint8_t kf[64];
+            CHECK(qgp_sha3_512(se->entries[j].pubkey, PK_LEN, kf) == 0 &&
+                  memcmp(own[j], k_found, 64) == 0 &&
+                  memcmp(own[j], kf, 64) != 0,
+                  "owner(s) = the migrated row's owner_fp (the "
+                  "Foundation), never SHA3-512(pubkey)");
+        }
+
+        /* A1: V3's migrated row deleted → FAULT; present → settles */
+        uint8_t vid3[64], da[64], db[64];
+        nodus_storage_boundary_t sb;
+        CHECK(dna_validator_id_migrated(vid3, chain32, g_k[V3].pk) == 0,
+              "V3's migrated validator_id");
+        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0, "begin");
+        CHECK(del_by_id(A.w, "DELETE FROM v2_validator_roles WHERE "
+                        "validator_id = ?1", vid3) == 0 &&
+              del_by_id(A.w, "DELETE FROM validators WHERE "
+                        "pubkey_hash = ?1", vid3) == 0,
+              "V3's row deleted (probe, rolled back)");
+        CHECK(nodus_witness_storage_seat_owners(A.w, se, chain32, own) == -1,
+              "A1: a seat whose migrated row is absent — the bridge fails");
+        CHECK(nodus_witness_storage_boundary_apply(A.w, 3 * E_LEN, chain32,
+                                                   &sb) == -2,
+              "A1: the storage boundary FAULTS (that node stops at 3E)");
+        CHECK(v2x_sql(A.w->db, "ROLLBACK") == 0, "rollback");
+        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0, "begin");
+        CHECK(nodus_witness_storage_boundary_apply(A.w, 3 * E_LEN, chain32,
+                                                   &sb) == 0 &&
+              sb.active && sb.settled,
+              "control: the same step with the row present settles");
+        CHECK(v2x_sql(A.w->db, "ROLLBACK") == 0, "rollback");
+        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
+              memcmp(da, db, 64) == 0,
+              "after the rolled-back probes A is byte-identical to B");
+        dna_vset_free(&se);
+    }
+
+    /* the plant, both twins, immediately before boundary block 3E */
+    for (int t = 0; t < 2; t++) {
+        nodus_witness_t *w = t == 0 ? A.w : B.w;
+        CHECK(sn_plant(w, KA, k_found, 0, 0) == 0 &&
+              sn_plant(w, KB, k_found, 1, 3) == 0 &&
+              sn_plant(w, KC, g_k[KX].fp, 0, 0) == 0,
+              "plant: A, B owned by the Foundation (B at fail_streak 3), C "
+              "by KX");
+    }
+
+    snap_t s0, s1;
+    uint64_t kx0 = 0, kx1 = 0;
+    CHECK(take(A.w, &s0) == 0 && accrual_of(A.w, g_k[KX].fp, &kx0) == 0 &&
+          prep_expect(A.w, E_LEN, &g_ex) == 0,
+          "before 3E (engine eligibility == the model's)");
+    uint64_t W = 0, wkey[N_KEYS];
+    memset(wkey, 0, sizeof(wkey));
+    for (uint32_t i = 0; i < g_ex.cur.count; i++) {
+        const int k = key_of_fp(g_ex.cur.fps[i]);
+        CHECK(k >= 0 && !g_ex.in_grace[i], "H = E: no member in grace");
+        wkey[k] = g_ex.wt[i];
+        W += g_ex.wt[i];
+    }
+    CHECK(wkey[KA] > 0 && wkey[KB] > 0 && wkey[KC] > 0 && wkey[KD] > 0,
+          "every member holds a segment over set(E) (re-seed the fixture "
+          "keys otherwise)");
+    CHECK(s0.streak[KA] == 0 && s0.streak[KB] == 3 && s0.streak[KC] == 0 &&
+          s0.streak[KD] == 0, "live fail_streaks before 3E: 0, 3, 0, 0");
+
+    CHECK(run_idle(&A, &B, &h, 3 * E_LEN) == 0, "boundary 3E (twin roots "
+          "equal)");
+    CHECK(take(A.w, &s1) == 0 && accrual_of(A.w, g_k[KX].fp, &kx1) == 0,
+          "after 3E");
+    {
+        const uint64_t budget = s0.pool1 >> 16;
+        const uint64_t share_c = (uint64_t)(((unsigned __int128)budget *
+                                             wkey[KC]) / W);
+        const uint64_t w_wo = W - wkey[KA] - wkey[KB];
+        const uint64_t share_wo = (uint64_t)(((unsigned __int128)budget *
+                                              wkey[KC]) / w_wo);
+        CHECK(share_c > 0 && share_wo != share_c,
+              "the test discriminates: C's share moves if the NO_EVIDENCE "
+              "weights left W");
+        CHECK(kx1 - kx0 == share_c,
+              "C (OK) paid to its OWNER KX: floor(budget·w_C/W), W over "
+              "all four members");
+        CHECK(s1.acc[KC] == s0.acc[KC] && s1.acc[KA] == s0.acc[KA] &&
+              s1.acc[KB] == s0.acc[KB] && s1.acc[KD] == s0.acc[KD],
+              "no node-fp accrual moved (C's node fp is not its owner)");
+        CHECK(s0.pool1 - s1.pool1 == share_c,
+              "pool 1 debited by C's share alone: A and B (NO_EVIDENCE) "
+              "and D (NOT_OK) unpaid");
+        CHECK(s1.streak[KA] == 0,
+              "A NO_EVIDENCE: fail_streak frozen at 0");
+        CHECK(s1.streak[KB] == 3,
+              "B NO_EVIDENCE: fail_streak frozen at 3 (K5 return paused)");
+        CHECK(s1.streak[KC] == 0, "C OK: 0");
+        CHECK(s1.streak[KD] == 1, "D NOT_OK with weight: 0 → 1");
+    }
+    {
+        uint8_t da[64], db[64];
+        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
+              memcmp(da, db, 64) == 0, "twin databases byte-identical");
+    }
+
+    g_model_on = 0;
+    fx_close(&A);
+    fx_close(&B);
+    return 0;
+}
+
 int main(void) {
     static const struct {
         const char *name;
@@ -2754,7 +3496,10 @@ int main(void) {
         { "report_hooks",         t_report_hooks },
         { "fail_streak_rule",     t_streak_rule },
         { "grace_count_k9a",      t_grace_count },
+        { "f2_verdict_pure",      t_f2_verdict },
         { "engine_twins",         t_engine },
+        { "engine_v2_power",      t_engine_v2_power },
+        { "engine_owner_f2",      t_engine_owner_f2 },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     if (keys_make() != 0) {

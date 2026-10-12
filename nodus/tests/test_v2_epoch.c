@@ -63,6 +63,7 @@
 #include "witness/nodus_witness_v2_claims.h"   /* nodus_witness_v2_chain_id */
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_runtime.h"   /* HF-6 5d: NODUS_RT_GEN_1 */
 #include "witness/nodus_witness_roots_v2.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT (§12e-i) */
@@ -101,6 +102,11 @@
 
 static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
+
+/* HF-6 slice 5d: the preview / builder take the key generation from the
+ * caller; every chain in this file votes no ruleset generation —
+ * generation 1. */
+#define GEN1 NODUS_RT_GEN_1
 
 #define E   ((uint64_t)DNAC_EPOCH_LENGTH)
 /* The graduation lock, tokenomics-v3 P3-3 (decision §1 "Validator bekleme
@@ -2766,14 +2772,18 @@ static int test_authority_corrupt(void) {
         OK();
     }
 
-    /* (c) a blob that is hash-CONSISTENT but carries an unknown
-     * selection_ruleset. It passes the integrity check and dies in
-     * DECODE — the deeper gate. Ruleset 0 is INVALID by design (zeroed
-     * memory must not decode) and >= 2 is RESERVED for sortition. */
+    /* (c) a blob carrying an unknown selection_ruleset. Ruleset 0 is
+     * INVALID by design (zeroed memory must not decode), 1 and 2 are the
+     * two layouts (2 = HF-6 TOPN_V2), >= 3 is RESERVED for sortition.
+     * HF-6 slice 5c: the store reads the header (dna_vset_hash_bytes_ex),
+     * so _insert REFUSES such a blob; a row that is nonetheless on disk
+     * (written by raw SQL here — a pre-5c or corrupt row, its hash the
+     * v1-tag hash the pre-5c store accepted) must still never govern:
+     * the read fails closed with the outputs untouched. */
     {
         fixture_t fx;
         CHECK(fx_bare(&fx, "corrver") == 0, "fixture");
-        static const uint32_t bad_rs[] = { 0u, 2u, 0xFFFFFFFFu };
+        static const uint32_t bad_rs[] = { 0u, 3u, 0xFFFFFFFFu };
         for (size_t i = 0; i < sizeof(bad_rs) / sizeof(bad_rs[0]); i++) {
             uint64_t key = (uint64_t)(i + 1) * E;
             size_t len = 0;
@@ -2785,18 +2795,28 @@ static int test_authority_corrupt(void) {
             blob[11] = (uint8_t)(bad_rs[i] >> 16);
             blob[12] = (uint8_t)(bad_rs[i] >> 8);
             blob[13] = (uint8_t)bad_rs[i];
-            /* re-hash so the row is INTERNALLY consistent — the point is
-             * to reach decode, not to re-test the hash check */
+            /* re-hash under the v1 tag, as the pre-5c store accepted */
             uint8_t rehash[64];
             CHECK(dna_vset_hash_bytes(blob, len, rehash) == 0, "rehash");
             CHECK(nodus_witness_vset_insert(fx.w, key, blob, len, rehash,
-                                            0) == 0,
-                  "the storage layer stores it — it only checks the hash");
+                                            0) == -1,
+                  "the store refuses an unknown selection_ruleset");
+            sqlite3_stmt *ins = NULL;
+            CHECK(sqlite3_prepare_v2(fx.w->db,
+                      "INSERT INTO validator_set_snapshots (epoch_start, "
+                      "active_count, snapshot_hash, snapshot_blob, "
+                      "created_at_height) VALUES (?1, 7, ?2, ?3, 0)",
+                      -1, &ins, NULL) == SQLITE_OK, "raw insert prepare");
+            sqlite3_bind_int64(ins, 1, (sqlite3_int64)key);
+            sqlite3_bind_blob(ins, 2, rehash, 64, SQLITE_STATIC);
+            sqlite3_bind_blob(ins, 3, blob, (int)len, SQLITE_STATIC);
+            CHECK(sqlite3_step(ins) == SQLITE_DONE, "raw insert of the row");
+            sqlite3_finalize(ins);
             free(blob);
             uint32_t n = 0x77777777, q = 0x88888888;
             CHECK(nodus_witness_v2_epoch_authority_for_epoch(
                       fx.w, key, NULL, &n, &q) == -1,
-                  "an unknown selection_ruleset dies in decode");
+                  "an unknown selection_ruleset on disk never governs");
             CHECK(n == 0x77777777 && q == 0x88888888, "outputs untouched");
         }
         fx_close(&fx);
@@ -4206,7 +4226,7 @@ static int test_rule_n_weight_equal_survivors(void) {
                "Rule N judged\n");
         dna_vset_snapshot_t *pv = NULL, *st = NULL;
         uint8_t st_hash[64], pv_hash[64];
-        CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &pv) == 0 && pv,
+        CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, GEN1,&pv) == 0 && pv,
               "preview_next(2E) builds");
         CHECK(nodus_witness_vset_get(fx.w, 3 * E, &st, st_hash) == 0 && st,
               "snapshot(3E) stored by commit_next(2E)");
@@ -4396,19 +4416,19 @@ static int test_vset_preview_verdicts(void) {
     CHECK(fx_bare(&fx, "preview") == 0, "bare fixture");
 
     dna_vset_snapshot_t *s = NULL;
-    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == -1 && !s,
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, GEN1,&s) == -1 && !s,
           "no seed row at 2E-1: FAULT (-1), never an empty verdict");
-    CHECK(nodus_witness_vset_preview_next(fx.w, UINT64_MAX - 1, &s) == -1
+    CHECK(nodus_witness_vset_preview_next(fx.w, UINT64_MAX - 1, GEN1, &s) == -1
               && !s, "H + E overflow: FAULT");
-    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, NULL) == -1,
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, GEN1,NULL) == -1,
           "NULL out: FAULT");
 
     CHECK(seed_legacy_block(&fx, 2 * E - 1) == 0, "seed row at 2E-1");
-    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == 1 && !s,
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, GEN1,&s) == 1 && !s,
           "seed present, no validator: EMPTY verdict (1), out untouched");
     CHECK(nodus_witness_vset_build_for_epoch(fx.w, 3 * E,
-                                             DNAC_COMMITTEE_SIZE, NULL,
-                                             NULL, NULL, NULL) == -1,
+                                             DNAC_COMMITTEE_SIZE, GEN1,
+                                             NULL, NULL, NULL, NULL) == -1,
           "the public build_for_epoch still treats EMPTY as a failure "
           "(commit_next / commit_genesis semantics unchanged)");
 
@@ -4428,11 +4448,11 @@ static int test_vset_preview_verdicts(void) {
      * it exists the tenured validator holds no frozen stake — not seated,
      * so the preview is the EMPTY verdict. RED ON THE PRE-P3 TREE: the
      * live read seated it (0) with no copy. */
-    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == 1 && !s,
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, GEN1,&s) == 1 && !s,
           "P3-1: no frozen copy(E) -> nobody seatable -> EMPTY verdict");
     CHECK(nodus_witness_v2_balance_copy_write(fx.w, E) == 0,
           "write copy(E) from the live rows");
-    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, &s) == 0 && s,
+    CHECK(nodus_witness_vset_preview_next(fx.w, 2 * E, GEN1,&s) == 0 && s,
           "one tenured validator: built (0)");
     int ok = s->active_count == 1 && s->epoch == 3 * E &&
              memcmp(s->entries[0].pubkey, g_pk[0], DNAC_PUBKEY_SIZE) == 0 &&

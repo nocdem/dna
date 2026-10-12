@@ -731,8 +731,26 @@ typedef enum {
      * mapped BY NAME in epoch_stage_fault). The proof obligation: an
      * interrupt there leaves no release UTXO, every delegation row and
      * the row's delegated totals exactly as before the block. */
-    V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE = 60 /* graduate 0 delegations
-                                                   * released            */
+    V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE = 60, /* graduate 0 delegations
+                                                    * released           */
+
+    /* HF-6 slice 6e (plan tasks/hf6-slice6-plan.md §5 B2) — the two
+     * rotation steps of a generation-4 boundary. APPENDED; 39-60 are
+     * pinned by shipped tests and are never renumbered. Both fire INSIDE
+     * the transaction on a boundary height at key generation >= 4 only
+     * (NODUS_V2_EPST_ROTATE_SWAP / _SWEEP, mapped BY NAME in
+     * epoch_stage_fault):
+     *   61 after step 1d — every accepted rotation's row switched
+     *      (validators.pubkey, the roles row's pending fields, the new
+     *      key's reservation role 2 -> 1), the graduation NOT yet run: an
+     *      interrupt must leave every row on its old key with its pending
+     *      key and role-2 reservation;
+     *   62 after step 3d — the previous key of every validator swapped at
+     *      H−E released (its role-1 reservation and its attendance row
+     *      deleted), the flips NOT yet run: an interrupt must leave both
+     *      rows in place. */
+    V2AP_FAIL_AFTER_ROTATE_SWAP       = 61, /* rotation swap applied     */
+    V2AP_FAIL_AFTER_ROTATE_SWEEP      = 62  /* rotation sweep applied    */
 } nodus_v2_apply_fail_t;
 
 /*

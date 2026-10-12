@@ -256,8 +256,11 @@ static int join_adopt(nodus_witness_t *w) {
          * the chain_config table it plants IS needed before that branch
          * runs, so it stays here. Nodus EVM: the live rung is S17 (the EVM
          * tables, empty, and the CORE EVM reserve row at 0 — no root
-         * reads either before the EVM vote), cascading through S16. */
-        if (nodus_witness_db_migrate_v2s17(w2) != 0) break;
+         * reads either before the EVM vote), cascading through S16.
+         * HF-6 3a: the live rung is S18 (S17 + the empty
+         * v2_validator_roles — not a bundle table, so the bundle below
+         * applies unchanged), cascading through S17. */
+        if (nodus_witness_db_migrate_v2s18(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         if (nodus_witness_v2_bundle_apply(w2, bytes, len,

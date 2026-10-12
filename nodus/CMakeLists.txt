@@ -302,6 +302,11 @@ set(NODUS_SOURCES
     # (the O15J red-team's L2-F5). The spec is the shipped V1
     # implementation, cited line by line in the source.
     src/witness/nodus_witness_v2_econ.c
+    # HF-6 sub-slice 3b — the one-shot generation-4 validator migration
+    # (validator_id re-key, owner roles, 2M bond + 8M self-delegation,
+    # balance-copy re-key, Foundation accrual merge), called only by the
+    # engine's generation-4 edge phase (nodus_witness_v2_apply.c).
+    src/witness/nodus_witness_v2_migrate.c
     # Storage reward v1 rev 4 (the archive reward), package B2a — frozen
     # storage sets, segment roots + publication, assignment, the storage
     # boundary (settlement, fail_streak, exit release), the storage leg's
@@ -402,6 +407,13 @@ set(NODUS_SOURCES
     # cometbft per-vote signature model instead of a compact cert.
     # Same ownership pattern as ledger_roots_v2.c.
     ${SHARED_DIR}/dnac/vset_wire.c
+    # HF-6 slice 1 — INERT validator consent message / ctx signature /
+    # validator_id codec (design 2026-10-03-hf5-validator-owner-stake §6.1,
+    # §6.2). No consensus path calls it.
+    ${SHARED_DIR}/dnac/valbind_wire.c
+    # HF-6 slice 5a — INERT water-fill power cap, one pure function
+    # (design 2026-10-03-hf5-validator-owner-stake §5). No caller yet.
+    ${SHARED_DIR}/dnac/power_cap.c
     ${SHARED_DIR}/dnac/qc_v2.c
 
     # (The T3 wave-1 codecs tm_vote.c / tm_commit.c and the T1 core under
@@ -1737,6 +1749,19 @@ add_executable(test_vset_wire tests/test_vset_wire.c)
 target_link_libraries(test_vset_wire nodus dsa nodus crypto)
 add_test(NAME test_vset_wire COMMAND test_vset_wire)
 
+# HF-6 slice 1 — validator consent message layout, expiry rule, FIPS 204
+# ctx signatures (cross-ctx / plain-verify negatives), validator_id.
+add_executable(test_valbind_wire tests/test_valbind_wire.c)
+target_link_libraries(test_valbind_wire nodus dsa nodus crypto)
+add_test(NAME test_valbind_wire COMMAND test_valbind_wire)
+
+# HF-6 slice 5a — water-fill power cap: the independent oracle's vectors
+# (shared/dnac/tests/power_cap_oracle.py), fail-closed cases, input-order
+# preservation, permutation determinism, "no share exceeds r′".
+add_executable(test_power_cap tests/test_power_cap.c)
+target_link_libraries(test_power_cap nodus dsa nodus crypto)
+add_test(NAME test_power_cap COMMAND test_power_cap)
+
 # Ledger V2 S3 — QC V2: preimage KAT, quorum table, and a REAL-KEY
 # adversarial suite (non-member, duplicate, unsorted, wrong-context,
 # key-rotation) plus an informational N=30 verify benchmark.
@@ -2191,6 +2216,118 @@ register_witness_test(test_domreg)
 # paths, per-stage failure rollback, idempotency, restart, UTXO domain
 # ownership backfill, unknown-version fail-close, no CPUNK.
 register_witness_test(test_v2_schema)
+
+# HF-6 sub-slice 3a — the v2 validator / delegation row access over the
+# S18 side table v2_validator_roles (INERT, no production caller yet):
+# v2 get / get_by_pubkey / update round trip, absent (1) vs fault (-1)
+# (half-migrated rows, duplicate consensus pubkey, missing table), the
+# gen-4 bonded_tenured arm returning pubkey_hash as validator_id, and the
+# (delegator_fp, validator_id)-keyed delegation get / delete / count /
+# list. Real temp witness DB, default build, no environment.
+register_witness_test(test_v2_valrow)
+
+# HF-6 sub-slice 3b — the generation-4 edge + the validator migration
+# (design 2026-10-03-hf5-validator-owner-stake rev 6 §7/§8; plan
+# tasks/hf6-slice3-plan.md §2 "3b"): the migration called directly on a
+# hand-built DB (expected rows, supply, three copy epochs, K4 merge, both
+# self-delegation owner cases, every fault with the DB unchanged) and the
+# edge through the engine on the seeded fixture (param 16 dev trigger,
+# registry at generation 4 after H-1, the migration committed, a twin
+# replay byte-identical). Generation 4 is compiled only with the EVM
+# runtime, so built only with NODUS_EVM_ENABLED. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_migrate)
+endif()
+
+# HF-6 sub-slice 3c — owner authority and the generation-4 call layouts of
+# the SYSTEM validator-record ops 2..5, STAKE refused under generation 4
+# (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.3/§2; plan
+# tasks/hf6-slice3-plan.md §2 "3c"): the hook matrix (each op × kind 1 /
+# kind 3, kind-3 wrong address / unsatisfied / foreign signer / two
+# descriptors, kind 2 refused, exact length ± 1, the legacy calls refused
+# by generation 4 and planned by 3, the CORE SYSFUND pairing, the HF-8
+# gate's generation-4 refusal, the describer), the D6 verdict bit through
+# the real auth hook, and the generation 3 → 4 path through the engine
+# (legacy calls applied at 3 and refused at 4 with the ledger tables
+# byte-identical; kind-1 and kind-3 generation-4 calls applied). Generation
+# 4 is compiled only with the EVM runtime. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_calls)
+endif()
+# HF-6 slice 4 — STAKE under generation 4 (design 2026-10-03-hf5-
+# validator-owner-stake rev 6 §1.3, §1.5, §2, §4, §6.1-§6.3; K7, K9): the
+# hook matrix (plan ops 7 / 13 / 17 with the validator_id independently
+# recomputed, kind 1 / kind 3 owners, real ML-DSA-87 node-consent
+# negatives — ctx, op 2 / op 3, chain, owner, key, expiry h-1 / h+721 —
+# the STAKE_MIN .. INT64_MAX bond window, a reserved key, Rule M, length
+# ± 1, the CORE pairing, the describer) and twin seeded chains through the
+# generation-4 edge: the migration's reservations, kind-1 and kind-3
+# STAKEs applied with the supply conserved, reserved keys refused, a
+# RETIRING row's key released at its graduation and STAKEd again under a
+# new validator_id. Generation 4 is compiled only with the EVM runtime.
+# No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_stake)
+endif()
+# HF-6 slice 6 — ROTATE_CONSENSUS_KEY (runtime_op 10; design 2026-10-03-
+# hf5-validator-owner-stake rev 6 §2, §3, §8; K7; khan decisions A1/A4/A5/
+# A6 of 2026-10-12; plan tasks/hf6-slice6-plan.md §2 "6a"): op 10 is owned
+# and priced by the generation-4 SYSTEM descriptor only (still v9, rules
+# {1..10}; the re-pinned hashes re-derive in the selfcheck), every
+# earlier generation refuses it. 6b: the hook matrix (plan ops 13 / 17,
+# length ± 1, kind-1 / kind-3 owners of the COMMITTED row, ACTIVE /
+# ELIGIBLE only, no pending key, new key ≠ current and unreserved in any
+# role, real ML-DSA-87 op-2 consent negatives — op 1, zero subject,
+# another id / owner / chain, the old key, ctx v2 — expiry h-1 / h+721,
+# the SYSFUND sibling, the two effects byte-checked with F = the first
+# boundary >= h, the CORE pairing, the describer) and twin seeded chains:
+# op 10 refused at ADMISSION under generation 3; a STAKE then a ROTATE
+# applied (pending key + F, reservation role 2); a second ROTATE and
+# ROTATEs to reserved keys refused with the ledger byte-identical.
+# 6c (case C, twin chains run to 4E; real STAKE / ROTATE / UNSTAKE
+# envelopes, the one plant — 6d's re-keyed S(3E) — only before a boundary
+# block): nodus_validator_v2_rotate_apply's exact-row checks and the two
+# role-1 rows after a swap (khan A2, rolled back); at 3E the flips activate
+# unswapped rows seated under their pending keys and a RETIRING row so
+# seated is deferred; at 4E the distribution pays entries carrying the
+# rows' pending keys and faults on a third key, the graduate's pending key
+# and both reservations are released, Rule N judges duty by validator_id
+# on the entry key's attendance. Swapped-row Rule N cases: deferred to 6d.
+# Generation 4 is compiled only with the EVM runtime. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_rotate)
+endif()
+# HF-6 slice 5b — THE ONE voting-power helper of a validator-set snapshot
+# (design 2026-10-03-hf5-validator-owner-stake rev 6 §5, §8; Kurultay #14
+# K1 / K2 / K5; plan tasks/hf6-slice5-plan.md §2 "5b"): the POWER_CAP_BPS
+# seam answers the compiled default 3000; the design's twin vectors
+# through nodus_witness_vset_powers on hand-built ruleset-2 snapshots
+# ([88,2×6] → [5,2×6], [45,45,10] → [10,10,10], [10]×7 unchanged; output
+# in the snapshot's order; sub-coin remainders floored); a ruleset-1
+# snapshot is the identity total / 10^8 (uncapped, zero allowed); a
+# ruleset-2 zero power, an unknown ruleset and NULL arguments refuse with
+# the output untouched. Registered with the other HF-6 tests; the helper
+# itself needs no EVM runtime. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_power)
+endif()
+# HF-6 sub-slice 3d — the boundary and root readers under the generation-4
+# keys (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.6, §6.3/§6.4,
+# §7.2, §7.5; plan tasks/hf6-slice3-plan.md §2 "3d"): the §6.3 / §6.4 leaf
+# bytes and roots on a hand-built migrated DB, twin seeded chains through
+# the gen-4 edge and four boundaries (the gate holding on the pre-H and the
+# first post-H copy, base + commission and the 8M self-delegation share to
+# owner_fp, the RETIRING graduation to owner_fp, the same seven
+# re-selected, a byte-identical twin), an own-owner (active_since 2) chain,
+# and a source-scan inventory of every SQL reader of validators /
+# delegations in the boundary / root files (it reads the witness sources
+# through NODUS_HF6_READERS_SRC_DIR). EVM builds only (generation 4).
+# No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_readers)
+target_compile_definitions(test_hf6_readers PRIVATE
+    NODUS_HF6_READERS_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/witness")
+endif()
 
 # cometbft @709fd12b → C port, wave R3-B — the host, the stores, the
 # consensus WAL storage, the privval last-sign-state file and the stored
@@ -2765,11 +2902,15 @@ register_witness_test(test_hf4_names_engine)
 
 # Storage reward v1, package B1 (decision docs/plans/decisions/2026-10-04-
 # storage-reward-approved.md; design docs/plans/2026-10-04-storage-reward-
-# v1-design.md rev 2.2 §1, §6) — STORAGE_REGISTER / STORAGE_EXIT: the
-# hook-level rule matrix (read plans, happy path, every refusal, revive
-# from RELEASED, exit, the generation gate of SYSFUND's pairing) and
-# registrations applied end to end on a twin GEN_STORAGE chain (rows,
-# supply conservation, the v5 SYSTEM root, refusals). A new file: no
+# v1-design.md rev 2.2 §1, §6) — STORAGE_REGISTER / STORAGE_EXIT; since
+# HF-6 slice 6b-1 (design 2026-10-03-hf5-validator-owner-stake rev 6 §11,
+# Kurultay #16) the generation-4 owner/node split: the hook-level rule
+# matrix (read plans, kind-1 / kind-3 owners, every refusal incl. the
+# consent and bond variants, the re-registration rule and a different
+# owner's revive, exit by the row's owner, third-party funding) and twin
+# GEN_STORAGE chains with seven real-key validators through register,
+# exit, release to the owner, the old owner's last settlement and a
+# re-registration under a new owner. A new file: no
 # existing test owns a chain that crosses both rule-set edges with real
 # 2-leg storage envelopes. The generation switch GEN_EVM -> GEN_STORAGE and
 # the v4 -> v5 root edge live in test_hf4_switch (cases F / F2 / F3); param 16 in
@@ -2843,7 +2984,9 @@ register_witness_test(test_storage_segment)
 
 # Storage reward v1, package B2b-CLI — `nodus-cli storage register | exit
 # | status`: the shared builder's STORAGE_REGISTER / STORAGE_EXIT envelopes
-# (src/client/nodus_v2_stake.c ops 7 / 8, decision 2026-09-25-web-wallet-
+# (src/client/nodus_v2_stake.c ops 7 / 8 — since HF-6 slice 6b-1 the
+# owner-signed generation-4 layouts with the node's op-3 consent;
+# decision 2026-09-25-web-wallet-
 # nodus-send-transport.md "İşlem kurucu") fed to the GEN_STORAGE SYSTEM and
 # CORE hooks over fabricated engine facts (read plans, the CREATE / SET
 # records, the funding equation with lock = bond / fee only), the builder
@@ -2851,6 +2994,24 @@ register_witness_test(test_storage_segment)
 # rules. No database, no network, no environment.
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_cli)
+endif()
+
+# HF-6 6f-1 — the client path of a generation-4 STAKE and a ROTATE (design
+# 2026-10-03-hf5-validator-owner-stake rev 6 §2, §6.1, §6.2; K7): the node
+# consent formed with the codec calls nodus-cli `validator consent` makes
+# (message == an independent §6.1 restatement, ctx "nodus.valbind.v1"),
+# the consent container round trip and refusals, the shared builder's
+# 7301-byte STAKE and 7291-byte ROTATE (== the test_hf6_stake /
+# test_hf6_rotate layouts, restated) fed to the GEN_STORAGE SYSTEM and CORE
+# hooks over fabricated engine facts — the exec verifies the REAL consent
+# and applies; the read plan names the validator_id nodus-cli prints — the
+# legacy STAKE unchanged at generations 0 and 3, the generation refusals;
+# HF-6 slice 6b: the op-3 storage consent and the 7299 / 64-byte
+# STORAGE_REGISTER / STORAGE_EXIT encoders through the same hooks.
+# Generation 4 is compiled only with the EVM runtime. No database, no
+# network, no environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_v2_stake_client)
 endif()
 
 # Web wallet package (c2) — the shared CORE SPEND builder
@@ -3322,7 +3483,11 @@ register_witness_test(test_witness_state_root_failclose)
 # Task 51 — committee election (post-commit lookback + state_seed tiebreak)
 register_witness_test(test_committee_election)
 
-# Task 53 — per-epoch committee cache
+# Task 53 — per-epoch committee cache. HF-6 slice 5b: every member's
+# `power` is equal on a cache hit and a miss, on the recompute arm
+# (total / 10^8) and on the snapshot-served arm (nodus_witness_vset_powers);
+# under NODUS_EVM_ENABLED, a row-less epoch at key generation 4 FAULTS
+# (ORCHESTRATOR decision D5) while a snapshot-served epoch still answers.
 register_witness_test(test_committee_cache)
 
 # Tasks 55 + 57 integration/genesis-seed tests retired in v0.16 stage A.3

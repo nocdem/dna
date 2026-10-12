@@ -12,8 +12,8 @@
 #include "witness/nodus_witness_storage_holder.h"   /* segment files (B2b-2) */
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
-#include "witness/nodus_witness_v2_schema.h" /* Nodus EVM: the at-open S17
-                                              * rung                  */
+#include "witness/nodus_witness_v2_schema.h" /* the at-open S18 rung
+                                              * (HF-6 3a; was S17)    */
 #include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
 #include "witness/nodus_witness_v2_preflight.h" /* O15A readiness report */
 /* O15J Faz 3 — chain-role derivation is what makes a Ledger V2 database
@@ -374,6 +374,36 @@ static const char *WITNESS_DB_SCHEMA =
     "  kind INTEGER NOT NULL,"
     "  amount INTEGER NOT NULL,"
     "  PRIMARY KEY (epoch_start, validator_fp, owner_fp, kind)"
+    ");"
+    /* HF-6 sub-slice 3a (design 2026-10-03-hf5-validator-owner-stake
+     * rev 6 §1.2/§6.3; plan D1 option (i)): the three validator fields
+     * `validators` does not carry — owner_fp, pending_consensus_pubkey,
+     * consensus_key_effective_epoch — keyed by validator_id, which under
+     * the HF-6 generation is also the value of validators.pubkey_hash
+     * (re-keyed in place at the activation edge). A NEW table, never a
+     * new column: `validators` is a genesis-bundle table and a joiner
+     * refuses the bundle on a column-count mismatch
+     * (nodus_witness_v2_bundle.c apply_table). EMPTY until the HF-6 edge;
+     * no root reads it before then. In the base schema for the reason the
+     * reward tables above are; the S18 rung (nodus_witness_v2_schema.c)
+     * keeps a byte-identical CREATE TABLE IF NOT EXISTS and verifies the
+     * shape. */
+    "CREATE TABLE IF NOT EXISTS v2_validator_roles ("
+    "  validator_id BLOB PRIMARY KEY,"
+    "  owner_fp BLOB NOT NULL,"
+    "  pending_consensus_pubkey BLOB NOT NULL,"
+    "  consensus_key_effective_epoch INTEGER NOT NULL"
+    ");"
+    /* HF-6 slice 4 (design rev 6 §4): the consensus-key reservation table
+     * — one unique key column, consensus_pk_hash = SHA3-512(consensus
+     * pubkey); role 1 active, role 2 pending (slice 6). EMPTY until the
+     * HF-6 edge; no root reads it (a pure function of validators and
+     * v2_validator_roles, both rooted). Byte-identical to the S18 rung's
+     * statement (nodus_witness_v2_schema.c), which verifies the shape. */
+    "CREATE TABLE IF NOT EXISTS v2_consensus_keys ("
+    "  consensus_pk_hash BLOB PRIMARY KEY,"
+    "  validator_id BLOB NOT NULL,"
+    "  role INTEGER NOT NULL"
     ");"
     /* Final pre-testnet wipe, W-A (decision
      * 2026-09-28-treasury-pools-and-exact-self-stake.md): the keyless,
@@ -932,8 +962,15 @@ static int witness_gate_table_has_rows(sqlite3 *db, const char *count_sql) {
  * is the gates' to refuse). Outside every transaction (the rung opens
  * its own BEGIN IMMEDIATE), BEFORE the S7 startup check. A failed rung
  * rolls back whole and the database is refused (fail closed).
+ *
+ * HF-6 sub-slice 3a: the at-open rung is now S18 (S17 + the empty
+ * v2_validator_roles table, nodus_witness_v2_schema.h) and runs on a
+ * version-3 chain at S16 OR S17 — the S18 rung cascades through S17, so
+ * an S16 database still gets the EVM tables first. S18 is a no-op;
+ * anything else is the gates' to refuse. No root moves (no root, invariant
+ * or verdict reads the new table before the HF-6 edge).
  * @return 0 (migrated, or nothing to do) / -1 refuse the database. */
-static int witness_open_migrate_s17(nodus_witness_t *witness,
+static int witness_open_migrate_s18(nodus_witness_t *witness,
                                     const char *db_path) {
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(witness, &ver) != 0) {
@@ -941,7 +978,8 @@ static int witness_open_migrate_s17(nodus_witness_t *witness,
                 "the database (fail closed)\n", LOG_TAG, db_path);
         return -1;
     }
-    if (ver != NODUS_V2_SCHEMA_VERSION_S16) return 0;
+    if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S17) return 0;
     int st = witness_gate_table_exists(witness->db,
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
     int bs = witness_gate_table_exists(witness->db,
@@ -958,31 +996,34 @@ static int witness_open_migrate_s17(nodus_witness_t *witness,
     if (nodus_witness_v2_gen_stored_chain_id(witness, id) != 0)
         return 0;                       /* no stored document: the role
                                          * gate below refuses it         */
-    if (nodus_witness_db_migrate_v2s17(witness) != 0) {
-        fprintf(stderr, "%s: the S16 -> S17 migration (Nodus EVM, empty EVM "
-                "tables) FAILED for %s — rolled back, refusing the "
-                "database (fail closed)\n", LOG_TAG, db_path);
+    if (nodus_witness_db_migrate_v2s18(witness) != 0) {
+        fprintf(stderr, "%s: the S%u -> S18 migration (Nodus EVM empty EVM "
+                "tables when below S17; HF-6 empty v2_validator_roles) "
+                "FAILED for %s — rolled back, refusing the database (fail "
+                "closed)\n", LOG_TAG, (unsigned)ver, db_path);
         return -1;
     }
-    fprintf(stderr, "%s: schema S16 -> S17 (Nodus EVM: EVM tables created "
-            "empty, CORE EVM reserve 0; no root moves) for %s\n",
-            LOG_TAG, db_path);
+    fprintf(stderr, "%s: schema S%u -> S18 (empty tables only; no root "
+            "moves) for %s\n", LOG_TAG, (unsigned)ver, db_path);
     return 0;
 }
 
 static int witness_post_open_gate(nodus_witness_t *witness,
                                   const char *db_path) {
-    /* Nodus EVM: the at-open S16 -> S17 rung (witness_open_migrate_s17 above),
-     * FIRST — the S7 check and every later gate see the live rung. */
-    if (witness_open_migrate_s17(witness, db_path) != 0) {
+    /* The at-open rung (witness_open_migrate_s18 above; Nodus EVM added
+     * it for S16 -> S17, HF-6 3a moved it to S18), FIRST — the S7 check
+     * and every later gate see the live rung. */
+    if (witness_open_migrate_s18(witness, db_path) != 0) {
         sqlite3_close(witness->db);
         witness->db = NULL;
         return -1;
     }
     /* Nodus EVM red-team 1 F4: a database that reached S17 before the §18
      * evm_logs scan indexes existed gets them here — indexes only, no
-     * shape or version change, nothing a root reads (any other version:
-     * nothing). A failure refuses the database like the rung above. */
+     * shape or version change, nothing a root reads (any version but S17
+     * or S18: nothing; HF-6 3a added S18 because the rung above now
+     * climbs such a database to S18 first). A failure refuses the
+     * database like the rung above. */
     if (nodus_witness_db_ensure_v2s17_indexes(witness) != 0) {
         fprintf(stderr, "%s: the S17 EVM log scan indexes could not be "
                 "ensured for %s — refusing the database (fail closed)\n",

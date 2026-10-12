@@ -136,16 +136,6 @@ extern "C" {
  * — explicitly deferred, no unverified runtime fallback introduced. */
 #define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
 
-/** Storage reward v1 — the storage-node registration bond, EXACTLY this
- *  amount (design docs/plans/2026-10-04-storage-reward-v1-design.md rev
- *  2.2 §1 "bond = STORAGE_STAKE_MIN = 1M NODUS"; role ladder decision
- *  docs/plans/decisions/2026-10-03-role-stake-amounts.md "storage 1M";
- *  bytes doc clarification: 1,000,000 NODUS = 10^14 raw). The SYSTEM
- *  STORAGE_REGISTER exec refuses any other bond (rtn_storage_register_exec,
- *  nodus/src/witness/nodus_witness_rt_native.c) — the W-B exact-bond
- *  shape of DNAC_SELF_STAKE_AMOUNT. Not a chain_config parameter. */
-#define DNAC_STORAGE_STAKE_MIN       (1000000ULL * 100000000ULL)    /* 1M × 10^8 raw */
-
 /** Storage reward v1 — the exit lock: a STORAGE_EXIT's bond is released
  *  at the next epoch boundary B as ONE locked UTXO with unlock_block =
  *  B + DNAC_STORAGE_EXIT_LOCK_EPOCHS × DNAC_EPOCH_LENGTH (design
@@ -859,7 +849,9 @@ typedef enum {
  *    - DELEGATE_NAME_REQUIRED (17, HF-8): nodus_witness_v2_apply.c
  *      env_delegate_name_required (the engine reads it into
  *      nodus_rt_exec_ctx_t.delegate_name_required — the CORE SYSFUND
- *      leg's name gate, nodus_witness_rt_native.c rtn_sysfund_name_gate).
+ *      leg's name gate, nodus_witness_rt_native.c rtn_sysfund_name_gate,
+ *      under generations 1-3; under generation 4 the SYSTEM DELEGATE's
+ *      own gate, rtn_deleg2_name_gate — HF-6 sub-slice 3e, decision D3).
  *  No other governed id has a reader: 1 and 3 are RETIRED (above), and 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane.
  *
@@ -1059,8 +1051,90 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  (generation 4, base GEN_EVM 3), whose control legs reproduced the
  *  generation-1/2 pins, D2, the EVM generation's pins and
  *  DNAC_CFG_EVM_ACTIVE_D first (the earlier generation-3 value
- *  0x14bb86ad… is dead). */
-#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x0c6fd6f2484e6024ULL /* STORAGE-ORACLE: S4 of shared/dnac/tests/storage_oracle.py (896171186953543716) */
+ *  0x14bb86ad… is dead).
+ *  HF-6 slice 6a (design docs/plans/2026-10-03-hf5-validator-owner-
+ *  stake-design.md rev 6 §2, §10 item 2): the generation-4 SYSTEM v9
+ *  descriptor owns and prices ROTATE_CONSENSUS_KEY (10), so its hash and
+ *  this literal were re-derived by the same oracle (the storage-only value
+ *  0x0c6fd6f2484e6024 is dead). Still the DEVELOPMENT trigger only: slice
+ *  8 replaces it with the D4 construction of design §8.1 (param 18). */
+#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x329b0ea92c8b8c58ULL /* STORAGE-ORACLE: S4 of shared/dnac/tests/storage_oracle.py (3646524443046153304) */
+
+/** HF-6 — the Foundation owner address (design docs/plans/2026-10-03-
+ *  hf5-validator-owner-stake-design.md rev 6 §7.1; decision
+ *  docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md K8, verified
+ *  there as the dna_msig_address of the 2-of-3 descriptor nocdem / bios /
+ *  one): 64 RAW bytes, hex
+ *    8eff7f418ab7a4432118ff99e21f2c3d1baf186200c148a3bba7d274499386ac
+ *    970e267a9c9b3bbc05bfff1c62a72d63f72a555db780feeaaad4fb49ba9f7b89
+ *  The generation-4 migration (nodus_witness_v2_migrate.c) makes it the
+ *  owner_fp of exactly the validator rows with active_since_block <= 1
+ *  (decision docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-
+ *  summary.md D2 (a)); every other row's owner is SHA3-512(its old
+ *  pubkey). It is bound into the generation-4 vote value D4 (design §8.1,
+ *  slice 8), so two binaries with different owners cannot carry one D4.
+ *
+ *  A brace initializer, so consumers declare `static const uint8_t
+ *  x[] = DNAC_HF6_FOUNDATION_OWNER;` and _Static_assert sizeof(x) == 64
+ *  (a short list would otherwise be zero-padded silently).
+ *
+ *  TEST-BUILD OVERRIDE ONLY (the DNAC_EPOCH_LENGTH pattern above): the
+ *  harness's genesis validators also have active_since_block <= 1, so a
+ *  harness that must sign owner operations for them compiles its own
+ *  address in, e.g.
+ *    cmake -DCMAKE_C_FLAGS='-DDNAC_HF6_FOUNDATION_OWNER="{0x01,0x02,...}"'
+ *  (exactly 64 bytes). Production builds never define it.
+ *  DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT is defined only when the compiled
+ *  value is this K8 address (tests pin the bytes only then). */
+#ifndef DNAC_HF6_FOUNDATION_OWNER
+#define DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT 1
+#define DNAC_HF6_FOUNDATION_OWNER {                         \
+    0x8e, 0xff, 0x7f, 0x41, 0x8a, 0xb7, 0xa4, 0x43,         \
+    0x21, 0x18, 0xff, 0x99, 0xe2, 0x1f, 0x2c, 0x3d,         \
+    0x1b, 0xaf, 0x18, 0x62, 0x00, 0xc1, 0x48, 0xa3,         \
+    0xbb, 0xa7, 0xd2, 0x74, 0x49, 0x93, 0x86, 0xac,         \
+    0x97, 0x0e, 0x26, 0x7a, 0x9c, 0x9b, 0x3b, 0xbc,         \
+    0x05, 0xbf, 0xff, 0x1c, 0x62, 0xa7, 0x2d, 0x63,         \
+    0xf7, 0x2a, 0x55, 0x5d, 0xb7, 0x80, 0xfe, 0xea,         \
+    0xaa, 0xd4, 0xfb, 0x49, 0xba, 0x9f, 0x7b, 0x89 }
+#endif
+
+/** HF-6 — the STAKE_MIN default, 2M NODUS in raw units (design rev 6
+ *  §1.5, §7.2; decision 2026-10-03-role-stake-amounts.md item 5): the
+ *  bond every bonded (ACTIVE / ELIGIBLE) row is reduced to by the
+ *  generation-4 migration, the rest of its 10M (DNAC_SELF_STAKE_AMOUNT,
+ *  unchanged) becoming a self-delegation. Becomes the param-19 no-row
+ *  default and is bound into D4 (§8.1 consts[0]) in slice 8. */
+#define DNAC_HF6_STAKE_MIN_DEFAULT   (2000000ULL * 100000000ULL)    /* 2M × 10^8 raw */
+
+/** HF-6 — STORAGE_BOND, the storage-node registration bond (design rev 6
+ *  §11.3; Kurultay #16 khan decision 3, decision docs/plans/decisions/
+ *  2026-10-09-kurultay-16-hf6-storage-summary.md: "her storage düğümü TAM
+ *  olarak parametre değeri kadar bond yatırır", vote range [100,000 NODUS,
+ *  1,000,000 NODUS], default 1M — the top of the range; role ladder
+ *  2026-10-03-role-stake-amounts.md "storage 1M"). A STORAGE_REGISTER v2
+ *  whose bond is not EXACTLY the value in force is refused, and so is a
+ *  bond of 0 or above INT64_MAX (rtn_storage_register_exec, nodus/src/
+ *  witness/nodus_witness_rt_native.c — all three VERDICTs, G13). Today the
+ *  value in force is the compiled DEFAULT (rtn_storage_bond_at, the
+ *  slice-8 seam); slice 8 makes it chain_config param 21 with this range
+ *  as its scalar rule and binds all three numbers into D4 (design §8.1
+ *  consts[5..7]). Replaces the storage-reward-v1 DNAC_STORAGE_STAKE_MIN
+ *  (the same 10^14 raw, exact, not votable). */
+#define DNAC_HF6_STORAGE_BOND_DEFAULT (1000000ULL * 100000000ULL)   /* 1M × 10^8 raw */
+#define DNAC_HF6_STORAGE_BOND_MIN     (100000ULL * 100000000ULL)    /* 100k × 10^8 raw */
+#define DNAC_HF6_STORAGE_BOND_MAX     (1000000ULL * 100000000ULL)   /* 1M × 10^8 raw */
+
+/** HF-6 — the POWER_CAP_BPS default, 3000 bps = 30 % (design rev 6 §5
+ *  "Oran", §8 param 20; Kurultay #14 K5: legal range [500, 3000]). The
+ *  ratio the water-fill cap (shared/dnac/power_cap.h) applies to a
+ *  ruleset-2 validator-set snapshot. Today the ONE read
+ *  (nodus_witness_power_cap_bps_for_epoch, nodus_witness_vset.c) returns
+ *  this compiled value; slice 8 makes it the param-20 no-row default of a
+ *  chain-config read and binds it into D4 (§8.1 consts[2]). Its range is
+ *  pinned against DNA_POWER_CAP_BPS_MIN / _MAX by a _Static_assert where
+ *  both headers are visible (nodus_witness_vset.c). */
+#define DNAC_HF6_POWER_CAP_BPS_DEFAULT   3000u
 
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
@@ -1169,10 +1243,22 @@ _Static_assert(DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT >= DNAC_CFG_MIN_EVM_BLOCK_GAS &&
                "the EVM block gas default must be a votable value");
 _Static_assert(DNAC_CFG_RULESET_GEN_STORAGE_D <= 0x7FFFFFFFFFFFFFFFULL,
                "the storage vote literal must fit SQLite int64");
-_Static_assert(DNAC_STORAGE_STAKE_MIN == 100000000000000ULL,
-               "storage bond = 1M NODUS = 10^14 raw (design rev 2.2 §1)");
-_Static_assert(DNAC_STORAGE_STAKE_MIN <= 0x7FFFFFFFFFFFFFFFULL,
-               "the storage bond fits the SQLite INTEGER bond column");
+_Static_assert(DNAC_HF6_STORAGE_BOND_DEFAULT == 100000000000000ULL &&
+               DNAC_HF6_STORAGE_BOND_MIN == 10000000000000ULL &&
+               DNAC_HF6_STORAGE_BOND_MAX == 100000000000000ULL,
+               "STORAGE_BOND default 1M, range [100k, 1M] NODUS "
+               "(Kurultay #16 khan decision 3)");
+_Static_assert(0 < DNAC_HF6_STORAGE_BOND_MIN &&
+               DNAC_HF6_STORAGE_BOND_MIN <= DNAC_HF6_STORAGE_BOND_DEFAULT &&
+               DNAC_HF6_STORAGE_BOND_DEFAULT <= DNAC_HF6_STORAGE_BOND_MAX &&
+               DNAC_HF6_STORAGE_BOND_MAX <= 0x7FFFFFFFFFFFFFFFULL,
+               "the STORAGE_BOND default lies in its vote range, and the "
+               "range fits the SQLite INTEGER bond column");
+_Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT == 200000000000000ULL,
+               "HF-6 STAKE_MIN default = 2M NODUS = 2*10^14 raw (design §1.5)");
+_Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT < DNAC_SELF_STAKE_AMOUNT,
+               "the HF-6 migration splits a 10M bond into a smaller bond "
+               "plus a non-zero self-delegation (design §7.2)");
 _Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
                DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
                DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&

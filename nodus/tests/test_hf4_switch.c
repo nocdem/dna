@@ -56,9 +56,14 @@
  *     (the storage vote literal) at H14 = 8 committed at genesis, idle
  *     blocks: at blocks 1..6 (generation 1, 2 from the end of block 2,
  *     the EVM generation from the end of block 4) the committed SYSTEM
- *     root equals nodus_witness_system_root_v2 ("NDS.SYS.v4") and
- *     differs from the v5 composition — PRE-ACTIVATION the storage code
- *     adds nothing to the root; block 7 (= H14-1) switches the EVM
+ *     root equals nodus_witness_system_root_v2 ("NDS.SYS.v4") and no
+ *     validator is migrated — PRE-ACTIVATION the storage code adds
+ *     nothing to the root; block 7 (= H14-1) is the GENERATION-4 EDGE
+ *     (HF-6 sub-slice 3b: the param-16 RULESET_EDGES row moved into
+ *     phase_6b_gen4_edge, which switches AND runs the validator
+ *     migration — the seven genesis validators get roles rows and 8M
+ *     self-delegations, pinned row by row in test_hf6_migrate.c); it
+ *     switches the EVM
  *     generation -> GEN_STORAGE (SYSTEM v9 / CORE v7 with the compiled
  *     hashes, the registry root moved, both runtimes resolve GEN_STORAGE,
  *     the EVM domain's record still the EVM generation's v1) and its
@@ -969,19 +974,24 @@ static int t_storage_switch(void) {
     /* blocks 1..6: generation 1, generation 2 (end of 2), the EVM
      * generation (end of 4) — and at every one of them the committed
      * SYSTEM root IS the v4 composition: the storage machinery adds
-     * nothing before its edge (empty v2_storage_nodes, "NDS.SYS.v4") */
+     * nothing before its edge (empty v2_storage_nodes, "NDS.SYS.v4").
+     * HF-6 3b: the pre-edge "is NOT v5" probe is gone — the v5
+     * composition is defined over the migrated tables (v2_validator_roles
+     * rows, sub-slice 3d's loaders), so it is computed only after the
+     * edge (plan tasks/hf6-slice3-plan.md §2 "3b"). */
     for (uint64_t h = 1; h <= H14 - 2u; h++) {
-        uint8_t committed[64], v4[64], v5[64];
+        uint8_t committed[64], v4[64];
+        sqlite3_int64 n_roles = -1;
         mk_block(&b, h, NULL, 0);
         CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "idle block before H14-1");
         CHECK(head_root(fx.w, DNA_DOMAIN_SYSTEM, committed) == 0,
               "committed SYSTEM root");
-        CHECK(nodus_witness_system_root_v2(fx.w, v4) == 0 &&
-              nodus_witness_system_root_v5(fx.w, v5) == 0, "v4 / v5");
+        CHECK(nodus_witness_system_root_v2(fx.w, v4) == 0, "v4");
         CHECK(memcmp(committed, v4, 64) == 0,
               "pre-activation: the committed SYSTEM root is NDS.SYS.v4");
-        CHECK(memcmp(committed, v5, 64) != 0,
-              "pre-activation: NOT the v5 composition");
+        CHECK(count_q(fx.w, "SELECT COUNT(*) FROM v2_validator_roles",
+                      &n_roles) == 0 && n_roles == 0,
+              "pre-activation: no validator migrated");
     }
     {
         const nodus_domain_runtime_t *rs = NULL;
@@ -993,9 +1003,23 @@ static int t_storage_switch(void) {
     CHECK(nodus_witness_system_root_v2(fx.w, v4_before) == 0, "v4 at H14-2");
     CHECK(reg_digest(fx.w, dr0) == 0, "registry root before the edge");
 
-    /* block H14-1: THE STORAGE SWITCH */
+    /* block H14-1: THE GENERATION-4 EDGE (HF-6 3b: the storage switch
+     * and the validator migration in one phase, phase_6b_gen4_edge) */
     mk_block(&b, H14 - 1u, NULL, 0);
     CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "the H14-1 block commits");
+    {
+        /* the migration ran in the same block: the fixture's seven
+         * genesis validators (active_since_block 1) each got a roles row
+         * and an 8M self-delegation; Σself + Σdelegated is the phase-7
+         * gate's, which passed (the block committed). The rows themselves
+         * are pinned in test_hf6_migrate.c. */
+        sqlite3_int64 n_roles = -1, n_del = -1;
+        CHECK(count_q(fx.w, "SELECT COUNT(*) FROM v2_validator_roles",
+                      &n_roles) == 0 && n_roles == 7,
+              "seven validators migrated at H14-1");
+        CHECK(count_q(fx.w, "SELECT COUNT(*) FROM delegations", &n_del) == 0
+              && n_del == 7, "seven self-delegations at H14-1");
+    }
     {
         dna_domreg_record_t rs1, rc1;
         dna_domain_manifest_t ms1, mc1;
@@ -1045,7 +1069,9 @@ static int t_storage_switch(void) {
         CHECK(memcmp(us.post_root, v5, 64) == 0,
               "SYSTEM post_root = the v5 root");
         CHECK(memcmp(uc.pre_root, uc.post_root, 64) == 0,
-              "CORE's root did not move");
+              "CORE's root did not move (touched for K4's accrual merge; "
+              "this fixture has no accrual row before its first "
+              "boundary, so the accrual leg is unchanged)");
         CHECK(us.ruleset_version == 9 && uc.ruleset_version == 7,
               "the H14-1 updates name GEN_STORAGE");
         /* the v5 storage leg over the EMPTY registry: storage_root

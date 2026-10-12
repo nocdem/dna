@@ -228,9 +228,21 @@ typedef struct {
  * bytes.md item 1) — the storage registry, one row per node:
  *   node_fp            SHA3-512(node_pk), the row key (64 B)
  *   node_pk            the node's ML-DSA-87 key (DNAC_PUBKEY_SIZE B)
- *   payee_fp           where the storage reward accrues (64 B; equal to
- *                      node_fp until HF-5 re-keys it — the exec rule)
- *   bond               DNAC_STORAGE_STAKE_MIN while counted in supply
+ *   payee_fp           since HF-6 (slice 6b-1, design 2026-10-03-hf5-
+ *                      validator-owner-stake rev 6 §11.2) the OWNER: the
+ *                      address the STORAGE_REGISTER v2 call names, that
+ *                      authorizes STORAGE_EXIT, and to which the storage
+ *                      reward accrues and the released bond returns (64
+ *                      B); since 6b-2 the settlement also excludes every
+ *                      report from a seat with this owner (F2, design
+ *                      §11.6). The column keeps its name — the DDL text below
+ *                      is shape-checked on every open — a meaning
+ *                      change, no byte change
+ *   bond               the registration bond, EXACTLY the STORAGE_BOND in
+ *                      force at the registration (today the compiled
+ *                      DNAC_HF6_STORAGE_BOND_DEFAULT; refunded as stored
+ *                      even if the parameter later moves), counted in
+ *                      supply while ACTIVE or EXITING
  *   status             1 ACTIVE / 2 EXITING / 3 RELEASED
  *   registered_height  the height of the (re-)registration (>= 1)
  *   exit_height        the height of the STORAGE_EXIT (0 = none)
@@ -615,13 +627,22 @@ typedef struct nodus_witness {
      * nodus_committee_member_t.self_stake as 0 while a cache MISS
      * reported the real bond. A cache hit must produce the same answer
      * as a cache miss (root CLAUDE.md, "Verify cache symmetry"), so the
-     * bond now has its own parallel array and both paths agree. */
+     * bond now has its own parallel array and both paths agree.
+     *
+     * HF-6 slice 5b: cached_committee_powers carries
+     * nodus_committee_member_t.power (+ 8 B per member, ≈ 334 KB total)
+     * for the same reason — filled on the miss path
+     * (nodus_witness_vset_powers over the served snapshot, or the raw
+     * total / DNAC_DECIMAL_UNIT on the below-generation-4 recompute),
+     * copied out on a hit, so HF-2 governance and the CLI approval
+     * selection weigh the same power whichever path served them. */
     uint64_t        cached_committee_epoch_start;
     int             cached_committee_count;
     uint8_t         cached_committee_pubkeys[DNAC_MAX_ACTIVE_VALIDATORS][DNAC_PUBKEY_SIZE];
     uint64_t        cached_committee_stakes[DNAC_MAX_ACTIVE_VALIDATORS];
     uint64_t        cached_committee_self_stakes[DNAC_MAX_ACTIVE_VALIDATORS];
     uint16_t        cached_committee_commission_bps[DNAC_MAX_ACTIVE_VALIDATORS];
+    uint64_t        cached_committee_powers[DNAC_MAX_ACTIVE_VALIDATORS];
 
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;

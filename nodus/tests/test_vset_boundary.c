@@ -30,6 +30,7 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_runtime.h"   /* HF-6 5d: NODUS_RT_GEN_1 */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"
 
@@ -65,6 +66,9 @@ static int g_fails  = 0;
 /* Heights. B is the boundary under test; the committee rules need a
  * block row at B-1 (for the NEXT epoch's lookback) and at B-E-1 (for
  * THIS epoch's lookback). */
+/* HF-6 slice 5d: the builders take the key generation from the caller;
+ * these bare databases carry no domain registry — generation 1. */
+#define GEN1      NODUS_RT_GEN_1
 #define E_LEN     ((uint64_t)DNAC_EPOCH_LENGTH)
 #define B_HEIGHT  (E_LEN * 4ULL)
 #define LOOKBACK_THIS  (B_HEIGHT - E_LEN - 1ULL)
@@ -347,7 +351,7 @@ static int test_commit_next(void) {
      * is DNAC_TARGET_ACTIVE_DEFAULT (32), no longer DNAC_COMMITTEE_SIZE
      * (7), so all 9 candidates are seated (RED ON THE PRE-P3 TREE: 7
      * seats; KILLED BY: a default of 7 or any value < 9). */
-    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT) == 0, "commit_next");
+    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT, GEN1) == 0, "commit_next");
 
     dna_vset_snapshot_t *snap = NULL;
     CHECK(nodus_witness_vset_get(fx.w, B_HEIGHT + E_LEN, &snap, NULL) == 0,
@@ -372,7 +376,7 @@ static int test_commit_next(void) {
 
     /* Idempotent: same state → byte-identical snapshot → insert returns
      * 0 on the identity path, so the wrapper returns 0. */
-    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT) == 0,
+    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT, GEN1) == 0,
           "second commit_next is not idempotent");
 
     fx_close(&fx);
@@ -392,7 +396,7 @@ static int test_commit_next_conflict(void) {
     uint8_t *blob = NULL, hash[64];
     size_t blob_len = 0;
     CHECK(nodus_witness_vset_build_for_epoch(fx.w, B_HEIGHT + E_LEN, 2,
-                                             NULL, &blob, &blob_len,
+                                             GEN1, NULL, &blob, &blob_len,
                                              hash) == 0, "build 2-seat");
     CHECK(nodus_witness_vset_insert(fx.w, B_HEIGHT + E_LEN, blob, blob_len,
                                     hash, B_HEIGHT) == 0, "pre-insert");
@@ -402,7 +406,7 @@ static int test_commit_next_conflict(void) {
      * since P3-7) for the same epoch.
      * Two different validator sets claiming one epoch is a
      * validator_set_root divergence — fatal. */
-    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT) == -1,
+    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT, GEN1) == -1,
           "conflicting snapshot was not fatal");
 
     fx_close(&fx);
@@ -422,7 +426,7 @@ static int test_flips(void) {
     uint8_t *blob = NULL, hash[64];
     size_t blob_len = 0;
     CHECK(nodus_witness_vset_build_for_epoch(fx.w, B_HEIGHT,
-                                             DNAC_COMMITTEE_SIZE, NULL,
+                                             DNAC_COMMITTEE_SIZE, GEN1, NULL,
                                              &blob, &blob_len, hash) == 0,
           "build this-epoch snapshot");
     CHECK(nodus_witness_vset_insert(fx.w, B_HEIGHT, blob, blob_len, hash,
@@ -485,7 +489,7 @@ static int test_flips(void) {
             calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*m));
         CHECK(m != NULL, "alloc");
         int c = 0;
-        CHECK(nodus_committee_compute_for_epoch(fx.w, B_HEIGHT, m,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, B_HEIGHT, GEN1, m,
                                                 DNAC_MAX_ACTIVE_VALIDATORS,
                                                 &c) == 0, "recompute");
         CHECK(c == DNAC_COMMITTEE_SIZE, "recompute size");
@@ -538,7 +542,7 @@ static int test_flips_snapshot_is_authority(void) {
     uint8_t *blob = NULL, hash[64];
     size_t blob_len = 0;
     CHECK(nodus_witness_vset_build_for_epoch(fx.w, B_HEIGHT,
-                                             DNAC_COMMITTEE_SIZE, NULL,
+                                             DNAC_COMMITTEE_SIZE, GEN1, NULL,
                                              &blob, &blob_len, hash) == 0,
           "build");
     CHECK(nodus_witness_vset_insert(fx.w, B_HEIGHT, blob, blob_len, hash,
@@ -620,7 +624,7 @@ static int test_target_sizing(void) {
     /* GROW: a committed override effective at or before the NEXT epoch's
      * start height widens the set to 9. */
     CHECK(set_target_active(fx.w, 9, B_HEIGHT + E_LEN) == 0, "grow row");
-    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT) == 0, "commit 9");
+    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT, GEN1) == 0, "commit 9");
     {
         dna_vset_snapshot_t *snap = NULL;
         CHECK(nodus_witness_vset_get(fx.w, B_HEIGHT + E_LEN, &snap,
@@ -634,7 +638,7 @@ static int test_target_sizing(void) {
     uint64_t b2 = B_HEIGHT + E_LEN;             /* next boundary        */
     CHECK(insert_block_row(fx.w, b2 - 1ULL, 0xCC) == 0, "block b2");
     CHECK(set_target_active(fx.w, 7, b2 + E_LEN) == 0, "shrink row");
-    CHECK(nodus_witness_vset_commit_next(fx.w, b2) == 0, "commit 7");
+    CHECK(nodus_witness_vset_commit_next(fx.w, b2, GEN1) == 0, "commit 7");
     {
         dna_vset_snapshot_t *snap = NULL;
         CHECK(nodus_witness_vset_get(fx.w, b2 + E_LEN, &snap, NULL) == 0,
@@ -676,7 +680,7 @@ static int test_pending_and_extra_bond(void) {
         calloc((size_t)DNAC_MAX_ACTIVE_VALIDATORS, sizeof(*m));
     CHECK(m != NULL, "alloc");
     int c = 0;
-    CHECK(nodus_committee_compute_for_epoch(fx.w, B_HEIGHT, m,
+    CHECK(nodus_committee_compute_for_epoch(fx.w, B_HEIGHT, GEN1, m,
                                             DNAC_MAX_ACTIVE_VALIDATORS,
                                             &c) == 0, "compute");
     CHECK(c == 5, "tenure-unmet validator entered the set");
@@ -706,7 +710,7 @@ static int test_pending_and_extra_bond(void) {
         CHECK(sync_frozen(fx.w) == 0, "sync frozen copy");
     }
     c = 0;
-    CHECK(nodus_committee_compute_for_epoch(fx.w, B_HEIGHT, m,
+    CHECK(nodus_committee_compute_for_epoch(fx.w, B_HEIGHT, GEN1, m,
                                             DNAC_MAX_ACTIVE_VALIDATORS,
                                             &c) == 0, "recompute");
     CHECK(c == 5, "count after extra bond");
@@ -772,7 +776,7 @@ static int test_insertion_order_independence(void) {
         }
         CHECK(sync_frozen(fx.w) == 0, "sync frozen fwd");       /* P3-1 */
         CHECK(nodus_witness_vset_build_for_epoch(fx.w, B_HEIGHT,
-                                                 DNAC_COMMITTEE_SIZE, NULL,
+                                                 DNAC_COMMITTEE_SIZE, GEN1, NULL,
                                                  &blob_fwd, &len_fwd,
                                                  hash_fwd) == 0, "build fwd");
         fx_close(&fx);
@@ -791,7 +795,7 @@ static int test_insertion_order_independence(void) {
         }
         CHECK(sync_frozen(fx.w) == 0, "sync frozen rev");       /* P3-1 */
         CHECK(nodus_witness_vset_build_for_epoch(fx.w, B_HEIGHT,
-                                                 DNAC_COMMITTEE_SIZE, NULL,
+                                                 DNAC_COMMITTEE_SIZE, GEN1, NULL,
                                                  &blob_rev, &len_rev,
                                                  hash_rev) == 0, "build rev");
         fx_close(&fx);
@@ -826,7 +830,7 @@ static int test_db_fault_fails_closed(void) {
      * pre-S3 epoch at the flip site, so a swallowed persist error would
      * turn into a silent membership no-op one epoch later. */
     CHECK(exec_sql(fx.w, "DROP TABLE validator_set_snapshots") == 0, "drop");
-    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT) == -1,
+    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT, GEN1) == -1,
           "commit_next did not fail on a missing table");
 
     /* The read side fails closed too. */
@@ -845,7 +849,7 @@ static int test_empty_set_is_a_fault(void) {
     fixture_t fx;
     CHECK(fx_open(&fx, 0xBB) == 0, "open");
     CHECK(insert_block_row(fx.w, LOOKBACK_NEXT, 0xBB) == 0, "block next");
-    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT) == -1,
+    CHECK(nodus_witness_vset_commit_next(fx.w, B_HEIGHT, GEN1) == -1,
           "empty committee produced a snapshot");
     fx_close(&fx);
     return 0;

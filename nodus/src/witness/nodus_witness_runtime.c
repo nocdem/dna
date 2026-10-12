@@ -143,12 +143,19 @@ static const uint32_t CORE_RULES_GEVM[9] = {
  * unchanged: the version advances because SYSFUND (rule 7) now also pairs
  * with the two storage record ops (rtn_sysfund_shape) — a hook-side
  * semantics change, the W-C / general-multisig precedent
- * (CORE_RULESET_HASH block below). EVM-only like the EVM generation. */
-static const uint32_t SYS_RULES_GST[9] = {
+ * (CORE_RULESET_HASH block below). EVM-only like the EVM generation.
+ * HF-6 slice 6a (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ * design.md rev 6 §2, §8 — ONE generation 4 carries storage and the
+ * validator role; decision 2026-10-08-kurultay-14-hf6-summary.md K7):
+ * + ROTATE_CONSENSUS_KEY (10), so the list is {1..10}. The descriptor
+ * versions stay SYSTEM 9 / CORE 7 (khan decision A6, 2026-10-12 — nothing
+ * shipped under them); only the SYSTEM hash and its policy digest move. */
+static const uint32_t SYS_RULES_GST[10] = {
     DNA_SYSRULE_STAKE, DNA_SYSRULE_DELEGATE, DNA_SYSRULE_UNSTAKE,
     DNA_SYSRULE_UNDELEGATE, DNA_SYSRULE_VALIDATOR_UPDATE,
     DNA_SYSRULE_CHAIN_CONFIG, DNA_SYSRULE_STORAGE_REGISTER,
-    DNA_SYSRULE_STORAGE_EXIT, DNA_SYSRULE_STORAGE_REPORT
+    DNA_SYSRULE_STORAGE_EXIT, DNA_SYSRULE_STORAGE_REPORT,
+    DNA_SYSRULE_ROTATE_CONSENSUS_KEY
 };
 #endif
 /* ASCENDING is load-bearing twice over: rt_owns_type() stops at the first
@@ -259,35 +266,40 @@ static const uint8_t SYS_METER_POLICY_DIGEST_GEVM[DNA_DOM_HASH_LEN] = {
     0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
 };
 
-/* Storage reward v1 — the GEN_STORAGE SYSTEM (v9) metering policy: the
- * EVM generation's policy — the SAME shape v2 (seven scalar weights 1, the
- * 2 MiB max_block_env_bytes field kept) and the SAME authoritative op set
- * 1..9 at weight 1: SYSTEM 1..9 / CORE 1..9 / EVM 1..5. The three storage
- * ops 7..9 are priced by the rows CORE SYSFUND / NAME_REGISTER / EVMFUND
- * already own (w_op is keyed by runtime_op across domains), so no row is
- * added. The policy is built by the same sys_policy_build(p, 9) as the EVM
- * generation's; its identity digest is pinned separately (one literal per
- * generation) and filled by the INDEPENDENT oracle, never this build's
- * serializer — it is expected to EQUAL SYS_METER_POLICY_DIGEST_GEVM, and
- * the oracle confirms that. Selfcheck re-derives it on every start. */
-#define SYS_POLICY_MAX_OP_GST 9u
+/* Storage reward v1 + HF-6 — the GEN_STORAGE SYSTEM (v9) metering policy:
+ * the EVM generation's policy SHAPE — v2, seven scalar weights 1, the
+ * 2 MiB max_block_env_bytes field kept — over the authoritative op set
+ * 1..10 at weight 1: SYSTEM 1..10 / CORE 1..9 / EVM 1..5. The three
+ * storage ops 7..9 are priced by the rows CORE SYSFUND / NAME_REGISTER /
+ * EVMFUND already own (w_op is keyed by runtime_op across domains); HF-6
+ * slice 6a adds the row for op 10 (ROTATE_CONSENSUS_KEY — design rev 6
+ * §2: "SYSTEM meter politikası 10'u fiyatlar"), which no other domain
+ * names. An op with no committed weight is unreservable (sys_policy_build),
+ * so without that row every ROTATE would die at reservation. Built by
+ * sys_policy_build(p, 10); its identity digest is pinned separately (one
+ * literal per generation) and filled by the INDEPENDENT oracle, never this
+ * build's serializer. It no longer equals SYS_METER_POLICY_DIGEST_GEVM
+ * (the oracle asserts the difference). Selfcheck re-derives it on every
+ * start. */
+#define SYS_POLICY_MAX_OP_GST 10u
 static dna_meter_policy_t g_sys_policy_gst;
 static int g_sys_policy_gst_ready = 0;
 static const uint8_t SYS_METER_POLICY_DIGEST_GST[DNA_DOM_HASH_LEN] = {
     /* STORAGE-ORACLE: GEN_STORAGE SYSTEM meter-policy identity digest
-     * ("NDS.METPOLID.v1", ops 1..9 weight 1) — S1 of the INDEPENDENT
-     * oracle shared/dnac/tests/storage_oracle.py (generation 4), whose
-     * control legs reproduced every generation-1/2 pin, D2, the EVM
-     * generation's policy / SYSTEM v8 / CORE v6 / EVM v1 and the param-14
-     * literal first. CONFIRMED equal to SYS_METER_POLICY_DIGEST_GEVM. */
-    0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
-    0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
-    0x26, 0x42, 0xc9, 0x9e, 0xdc, 0x1d, 0xb8, 0x3f,
-    0x28, 0x71, 0xaf, 0x64, 0xda, 0x18, 0xc3, 0xf8,
-    0xb7, 0x4a, 0x6e, 0x5c, 0x87, 0x0e, 0xdc, 0x34,
-    0x50, 0xae, 0x04, 0x74, 0xa3, 0xc8, 0xd7, 0x27,
-    0x9e, 0xfb, 0x88, 0x4d, 0xf8, 0xb2, 0x85, 0xc8,
-    0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
+     * ("NDS.METPOLID.v1", ops 1..10 weight 1) — S1 of the INDEPENDENT
+     * oracle shared/dnac/tests/storage_oracle.py (generation 4, HF-6
+     * slice 6a), whose control legs reproduced every generation-1/2 pin,
+     * D2, the EVM generation's policy / SYSTEM v8 / CORE v6 / EVM v2 and
+     * the param-14 literal first. The storage-only ops-1..9 value
+     * (0aa4c690…, = the EVM policy) is dead. */
+    0xe5, 0xd9, 0x6b, 0x4a, 0xe1, 0x4d, 0xf9, 0x36,
+    0x29, 0x16, 0x01, 0x33, 0xc5, 0x7f, 0x98, 0xdc,
+    0xce, 0x98, 0xa1, 0x87, 0xee, 0xbd, 0x91, 0x30,
+    0x1d, 0x91, 0x57, 0x66, 0xe6, 0x94, 0x08, 0x3b,
+    0x74, 0x5c, 0x2a, 0x92, 0x8d, 0xb9, 0x62, 0xd9,
+    0x02, 0xc7, 0x4e, 0x8f, 0x98, 0x76, 0x7e, 0xdc,
+    0xa4, 0x8f, 0x9c, 0x69, 0x9a, 0x78, 0x5c, 0x87,
+    0x16, 0xdc, 0x1d, 0x70, 0x6e, 0x06, 0xe9, 0xb8
 };
 #endif
 
@@ -531,36 +543,43 @@ static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
  * first): generation 4 on the EVM generation. Preimages (the
  * RulesetDescriptor v2 layout, shared/dnac/domain_wire.h):
  *   SYSTEM v9: version 2, domain 0, "SYSTEM", abi 1, ruleset_version 9,
- *              rules {1,2,3,4,5,6,7,8,9}, types {4,5,6,7,9,10},
+ *              rules {1,2,3,4,5,6,7,8,9,10}, types {4,5,6,7,9,10},
  *              meter_policy_digest = SYS_METER_POLICY_DIGEST_GST
  *              (policy v2, seven scalar weights 1, max_block_env_bytes
- *              2 * DNA_ENV_MAX_TOTAL_LEN, ops 1..9 weight 1);
+ *              2 * DNA_ENV_MAX_TOTAL_LEN, ops 1..10 weight 1);
  *   CORE v7:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 7,
  *              rules {1..9}, types {1,2,3,11,12,13},
  *              meter_policy_digest = 64 zero bytes.
  * Vote literal (dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D) =
  *   dna_ruleset_gen_digest(4, SYSTEM v9 hash, CORE v7 hash, spec 1).
  * The EVM domain has no GEN_STORAGE entry (EVM v1 unchanged).
+ * HF-6 slice 6a re-pinned the SYSTEM hash (rule 10 + its price, design
+ * rev 6 §2) at the SAME version 9 (khan decision A6, 2026-10-12); the
+ * CORE hash did not move (its list, types and version are unchanged —
+ * the oracle asserts S3 equals the pre-6a value). The storage-only SYSTEM
+ * v9 hash b37f489d… is dead.
  *
  * Both are filled by the INDEPENDENT oracle over the preimages above
  * (shared/dnac/tests/storage_oracle.py S2 / S3), never from this build's
  * encoder; selfcheck re-derives them on every start, so a build whose
  * tables disagree with them refuses to start. */
 static const uint8_t SYS_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
-    /* STORAGE-ORACLE: GEN_STORAGE SYSTEM v9 ruleset_hash — S2 of
-     * shared/dnac/tests/storage_oracle.py (generation 4). */
-    0xb3, 0x7f, 0x48, 0x9d, 0x47, 0x41, 0x34, 0xed,
-    0xa0, 0x56, 0x36, 0x3c, 0x7d, 0x6d, 0x76, 0x48,
-    0xc1, 0x7c, 0x16, 0xde, 0x30, 0xcc, 0xa9, 0x67,
-    0xcb, 0x62, 0x10, 0xc8, 0xf8, 0x2b, 0x71, 0x51,
-    0x3d, 0x2a, 0x6f, 0x49, 0x48, 0x40, 0xa2, 0xf0,
-    0x25, 0x96, 0x21, 0xee, 0x46, 0x6c, 0xac, 0x8d,
-    0x70, 0xa3, 0x44, 0xa6, 0x91, 0x93, 0x61, 0x1d,
-    0xf9, 0x9b, 0xbe, 0x1d, 0x9a, 0x89, 0x76, 0xac
+    /* STORAGE-ORACLE: GEN_STORAGE SYSTEM v9 ruleset_hash (rules {1..10})
+     * — S2 of shared/dnac/tests/storage_oracle.py (generation 4, HF-6
+     * slice 6a). */
+    0xc3, 0x47, 0xdd, 0xd7, 0xb3, 0x07, 0x30, 0xb1,
+    0x7f, 0xe6, 0x25, 0x83, 0xa6, 0x63, 0x35, 0x6a,
+    0x30, 0x3c, 0x54, 0x8d, 0xd2, 0xfc, 0x0d, 0xab,
+    0x7f, 0xa8, 0xdf, 0xdf, 0xea, 0x63, 0x14, 0x0b,
+    0x25, 0xc1, 0xf4, 0x96, 0x59, 0x0a, 0x66, 0xc8,
+    0x37, 0x3c, 0x3e, 0x50, 0xd2, 0x3c, 0xba, 0xa5,
+    0xf5, 0x73, 0x00, 0x97, 0xee, 0x04, 0x1e, 0xca,
+    0x50, 0xed, 0x37, 0x7a, 0x1f, 0x92, 0x4b, 0x00
 };
 static const uint8_t CORE_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
     /* STORAGE-ORACLE: GEN_STORAGE CORE v7 ruleset_hash — S3 of
-     * shared/dnac/tests/storage_oracle.py (generation 4). */
+     * shared/dnac/tests/storage_oracle.py (generation 4; unchanged by
+     * HF-6 slice 6a). */
     0xfb, 0x25, 0xe5, 0xc4, 0x1d, 0x60, 0x0f, 0x0e,
     0xd4, 0xe8, 0x97, 0x9f, 0xb4, 0x34, 0xd7, 0x35,
     0xb6, 0x2f, 0xfe, 0x9a, 0xca, 0x03, 0x32, 0x77,
@@ -989,9 +1008,10 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_SYSTEM,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 9 — the rule list GREW (ops 7..9 appended) and
-         * the state root composition changed (v5); the policy is the EVM
-         * generation's (ops 1..9 already priced) */
+        /* ruleset_version 9 — the rule list GREW (ops 7..9 and, HF-6
+         * slice 6a, 10 appended) and the state root composition changed
+         * (v5); the policy prices ops 1..10 (SYS_POLICY_MAX_OP_GST). The
+         * version did not advance for op 10 (khan decision A6) */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
         .ruleset_version = 9,
         .generation      = NODUS_RT_GEN_STORAGE,
@@ -1002,15 +1022,28 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .name = "SYSTEM",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
             .ruleset_version = 9,
-            .rule_count = 9, .rule_ids = SYS_RULES_GST,
+            .rule_count = 10, .rule_ids = SYS_RULES_GST,
             .tx_type_count = 6, .tx_types = SYS_TYPES
         },
         .admit = rt_admit_common,
         .tx_cost = sys_cost,
         .auth      = nodus_rt_auth_dsa87_v1,
+        /* HF-6 sub-slice 3c (design rev 6 §1.3): + kind 3, general
+         * multisig — a validator / delegation OWNER may be an M-of-N
+         * address (the Foundation is one, K8). Only the generation-4
+         * owner rule (nodus_witness_rt_native.c rtn_sys_owner_auth)
+         * accepts it — since HF-6 slice 6b-1 that includes the storage
+         * record ops (STORAGE_REGISTER by the call's owner, STORAGE_EXIT
+         * by the row's owner; design rev 6 §11.3 / §11.5); every other
+         * SYSTEM op refuses a kind-3 leg (STORAGE_REPORT requires kind 1,
+         * CHAIN_CONFIG a kind-2 committee count). The allowlist is NOT
+         * part of the ruleset
+         * descriptor (shared/dnac/domain_wire.h dna_ruleset_desc_t), so
+         * the pinned SYS_RULESET_HASH_GST does not move. */
         .allowed_auth_kinds =
             NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
-            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1),
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1),
         .read_plan = nodus_rt_system_read_plan,
         .exec      = nodus_rt_system_exec,
         .state_root   = nodus_rt_system_state_root,
@@ -1484,12 +1517,23 @@ int nodus_witness_runtime_selfcheck(void) {
             return -1;
         if (!is_sys && rt->meter_policy) return -1;
         /* the exact configured auth-kind shape (header contract):
-         * SYSTEM {1,2} — submitter + committee carrier; CORE {1,3} —
-         * submitter + general multisig (CORE v4). SYSTEM never carries
-         * kind 3: its ops decide authority on exactly one signer. */
+         * SYSTEM {1,2} — submitter + committee carrier — in generations
+         * 1-3, where its ops decide authority on exactly one signer;
+         * SYSTEM {1,2,3} from the HF-6 generation on (HF-6 sub-slice 3c,
+         * design rev 6 §1.3: the validator-record owner may be a general
+         * multisig address); CORE {1,3} — submitter + general multisig
+         * (CORE v4). */
         if (is_sys && rt->allowed_auth_kinds !=
-                (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
-                 NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1)))
+                (rt->generation >= NODUS_RT_GEN_STORAGE
+                     ? (NODUS_RT_AUTHKIND_BIT(
+                            NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+                        NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1) |
+                        NODUS_RT_AUTHKIND_BIT(
+                            NODUS_RT_AUTHKIND_DSA87_MSIG_V1))
+                     : (NODUS_RT_AUTHKIND_BIT(
+                            NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+                        NODUS_RT_AUTHKIND_BIT(
+                            NODUS_RT_AUTHKIND_DSA87_CC_V1))))
             return -1;
         if (rt->domain_id == DNA_DOMAIN_CORE && rt->allowed_auth_kinds !=
                 (NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |

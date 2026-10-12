@@ -62,6 +62,7 @@
 #include "witness/nodus_witness_v2_adapter.h"/* effects_apply             */
 #include "witness/nodus_witness_v2_claims.h" /* v2_runtime_for            */
 #include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_vset.h"      /* HF-6 5b: the power helper */
 #include "witness/nodus_witness_addr_index.h"  /* node-local payout rows */
 
 #include "nodus/nodus_chain_config.h"
@@ -74,6 +75,7 @@
 #include "dnac/res_meter.h"      /* dna_ck_add_u64                      */
 #include "dnac/validator.h"
 #include "dnac/vset_wire.h"
+#include "dnac/valbind_wire.h"   /* HF-6 3d: dna_validator_id_migrated   */
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_fingerprint.h"
@@ -102,6 +104,11 @@ _Static_assert(NODUS_V2_EPGRAD_OUT_IDX < DNA_V2_STORAGE_EXIT_OUT_IDX &&
                    DNA_V2_STORAGE_EXIT_OUT_IDX < NODUS_V2_SETTLE_OUT_IDX_BASE,
                "the storage exit release index must sit between the bond "
                "release index and the payday base");
+
+/* HF-6 3d: the committed chain id IS the validator_id derivation's
+ * v2_chain32 (design §6.2) — one width. */
+_Static_assert(DNA_CHAIN_ID_LEN == DNA_VALBIND_CHAIN_LEN,
+               "chain id width must equal the validator_id chain input");
 
 /* The stored SQLite INTEGER bound. Anything above it round-trips
  * NEGATIVE and would poison every later read — the V2EP_STORE_MAX rule
@@ -318,9 +325,11 @@ typedef struct {
     size_t           n, cap;
 } v2ec_copy_set_t;
 
-static int v2ec_copy_push(v2ec_copy_set_t *s, const uint8_t vpk[],
-                          const uint8_t opk[], uint8_t kind,
-                          uint64_t amount) {
+/* Stage one copy row whose keys are GIVEN (HF-6 generation 4: the stored
+ * validator_id / delegator_fp values, never hashed). @return 0 / -2. */
+static int v2ec_copy_push_keys(v2ec_copy_set_t *s, const uint8_t vfp[64],
+                               const uint8_t ofp[64], uint8_t kind,
+                               uint64_t amount) {
     if (s->n == s->cap) {
         size_t nc = s->cap ? s->cap * 2 : 64;
         v2ec_copy_row_t *nr = realloc(s->rows, nc * sizeof(*nr));
@@ -329,20 +338,129 @@ static int v2ec_copy_push(v2ec_copy_set_t *s, const uint8_t vpk[],
         s->cap = nc;
     }
     v2ec_copy_row_t *r = &s->rows[s->n];
-    if (qgp_sha3_512(vpk, DNAC_PUBKEY_SIZE, r->vfp) != 0) return -2;
-    if (opk == vpk) {
-        memcpy(r->ofp, r->vfp, 64);
-    } else if (qgp_sha3_512(opk, DNAC_PUBKEY_SIZE, r->ofp) != 0) {
-        return -2;
-    }
+    memcpy(r->vfp, vfp, 64);
+    memcpy(r->ofp, ofp, 64);
     r->kind = kind;
     r->amount = amount;
     s->n++;
     return 0;
 }
 
+/* Stage one copy row keyed by the untagged SHA3-512 of the pubkeys
+ * (generations 1-3). @return 0 / -2. */
+static int v2ec_copy_push(v2ec_copy_set_t *s, const uint8_t vpk[],
+                          const uint8_t opk[], uint8_t kind,
+                          uint64_t amount) {
+    uint8_t vfp[64], ofp[64];
+    if (qgp_sha3_512(vpk, DNAC_PUBKEY_SIZE, vfp) != 0) return -2;
+    if (opk == vpk) {
+        memcpy(ofp, vfp, 64);
+    } else if (qgp_sha3_512(opk, DNAC_PUBKEY_SIZE, ofp) != 0) {
+        return -2;
+    }
+    return v2ec_copy_push_keys(s, vfp, ofp, kind, amount);
+}
+
+/* The generation-4 collect (HF-6 sub-slice 3d; design 2026-10-03-hf5-
+ * validator-owner-stake rev 6 §1.1, §7.4; plan tasks/hf6-slice3-plan.md §1
+ * "Key semantics by generation"): the validators row's pubkey_hash IS its
+ * validator_id and a delegation's (delegator_hash, validator_hash) ARE
+ * (delegator_fp, validator_id), so the copy keys are the stored values —
+ * the SAME keys the generation-4 migration re-keyed the older copies to
+ * (validator_fp = validator_id, kind-0 owner = validator_id, kind-1 owner
+ * = delegator_fp), so copy(B) written after the edge and copy(B − kE)
+ * re-keyed at the edge are read by one key. ORDER BY the key columns (the
+ * PK decides the set; the order fixes the INSERT sequence). Every key
+ * must be exactly 64 bytes and every amount non-negative — else FAULT.
+ * @return 0 / -2. */
+static int v2ec_copy_collect_g4(nodus_witness_t *w, uint64_t epoch_start,
+                                v2ec_copy_set_t *set) {
+    int rc;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT pubkey_hash, self_stake FROM validators "
+            "WHERE self_stake != 0 ORDER BY pubkey_hash ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: v2 validators prepare "
+                      "failed: %s", (unsigned long long)epoch_start,
+                      sqlite3_errmsg(w->db));
+        return -2;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const void *vid = sqlite3_column_blob(st, 0);
+        int vid_len = sqlite3_column_bytes(st, 0);
+        sqlite3_int64 s = sqlite3_column_int64(st, 1);
+        if (!vid || vid_len != 64 || s < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: malformed v2 "
+                          "validators row (key %d bytes, self_stake %lld)",
+                          (unsigned long long)epoch_start, vid_len,
+                          (long long)s);
+            sqlite3_finalize(st);
+            return -2;
+        }
+        if (v2ec_copy_push_keys(set, vid, vid, V2EC_KIND_SELF,
+                                (uint64_t)s) != 0) {
+            sqlite3_finalize(st);
+            return -2;
+        }
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: v2 validators scan failed "
+                      "(rc=%d) — a scan fault is never a shorter set",
+                      (unsigned long long)epoch_start, rc);
+        return -2;
+    }
+
+    st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT validator_hash, delegator_hash, amount "
+            "FROM delegations "
+            "ORDER BY validator_hash ASC, delegator_hash ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: v2 delegations prepare "
+                      "failed: %s", (unsigned long long)epoch_start,
+                      sqlite3_errmsg(w->db));
+        return -2;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const void *vid = sqlite3_column_blob(st, 0);
+        int vid_len = sqlite3_column_bytes(st, 0);
+        const void *dfp = sqlite3_column_blob(st, 1);
+        int dfp_len = sqlite3_column_bytes(st, 1);
+        sqlite3_int64 a = sqlite3_column_int64(st, 2);
+        if (!vid || vid_len != 64 || !dfp || dfp_len != 64 || a < 0) {
+            QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: malformed v2 "
+                          "delegations row", (unsigned long long)epoch_start);
+            sqlite3_finalize(st);
+            return -2;
+        }
+        if (v2ec_copy_push_keys(set, vid, dfp, V2EC_KIND_DELEG,
+                                (uint64_t)a) != 0) {
+            sqlite3_finalize(st);
+            return -2;
+        }
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "balance copy %llu: v2 delegations scan "
+                      "failed (rc=%d)", (unsigned long long)epoch_start, rc);
+        return -2;
+    }
+    return 0;
+}
+
+/* Generations 1-3, byte-identical to before HF-6 — contract:
+ * nodus_witness_v2_econ.h. */
 int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
                                         uint64_t epoch_start) {
+    return nodus_witness_v2_balance_copy_write_gen(w, epoch_start,
+                                                   NODUS_RT_GEN_1);
+}
+
+int nodus_witness_v2_balance_copy_write_gen(nodus_witness_t *w,
+                                            uint64_t epoch_start,
+                                            uint32_t generation) {
     if (!w || !w->db) return -2;
     if (epoch_start > V2EC_STORE_MAX) return -2;
 
@@ -351,6 +469,12 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
     int ret = -2;
     int rc;
     sqlite3_stmt *st = NULL;
+
+    if (generation >= NODUS_RT_GEN_STORAGE) {
+        /* HF-6: steps 1-2 over the stored keys */
+        if (v2ec_copy_collect_g4(w, epoch_start, &set) != 0) goto done;
+        goto write;
+    }
 
     /* ── 1. validators: every row with a bond, owner = the validator ───
      * `self_stake != 0` (not `> 0`) so a stored-NEGATIVE bond is read and
@@ -429,6 +553,7 @@ int nodus_witness_v2_balance_copy_write(nodus_witness_t *w,
         goto done;
     }
 
+write:
     /* ── 3. write — STRICT INSERT: an existing (epoch, validator, owner,
      * kind) row is a FAULT, never silently kept or replaced. The one way
      * it could arise is a local defect: a boundary writing the same
@@ -882,10 +1007,22 @@ int nodus_witness_v2_balance_copy_frozen(nodus_witness_t *w,
                                          uint64_t *self_out,
                                          uint64_t *total_out) {
     if (!w || !w->db || !pubkey || !self_out || !total_out) return -1;
-    if (epoch_start > V2EC_STORE_MAX) return -1;
-
     uint8_t vfp[64];
     if (qgp_sha3_512(pubkey, DNAC_PUBKEY_SIZE, vfp) != 0) return -1;
+    return nodus_witness_v2_balance_copy_frozen_key(w, epoch_start, vfp,
+                                                    self_out, total_out);
+}
+
+/* HF-6 sub-slice 3d — the frozen totals by the copy's own 64-byte key.
+ * Contract: nodus_witness_v2_econ.h. */
+int nodus_witness_v2_balance_copy_frozen_key(nodus_witness_t *w,
+                                             uint64_t epoch_start,
+                                             const uint8_t vfp[64],
+                                             uint64_t *self_out,
+                                             uint64_t *total_out) {
+    if (!w || !w->db || !vfp || !self_out || !total_out) return -1;
+    if (epoch_start > V2EC_STORE_MAX) return -1;
+
     v2ec_row_t *rows = NULL;
     size_t n = 0;
     if (v2ec_member_copy(w, epoch_start, vfp, &rows, &n) != 0) return -1;
@@ -922,12 +1059,22 @@ static uint64_t v2ec_muldiv(uint64_t a, uint64_t b, uint64_t d) {
  * v2ec_member_release on every path. */
 typedef struct {
     int         has_row;   /* 1 a `validators` row exists at H          */
-    uint8_t     vfp[64];   /* raw SHA3-512(pubkey) — the accrual key     */
+    uint8_t     vfp[64];   /* the member's copy key: gens 1-3 the raw
+                            * SHA3-512(pubkey); HF-6 generation 4 its
+                            * validator_id — a ruleset-2 entry's own, a
+                            * ruleset-1 entry's migrated id (§7.5)      */
+    uint8_t     owner_fp[64]; /* who base + commission accrue to: gens 1-3
+                            * = vfp (the node key's fp, unchanged); gen 4
+                            * a ruleset-2 entry's owner_fp, else the
+                            * committed row's owner_fp (§1.6)           */
     v2ec_row_t *copy;      /* its copy(src) rows, (owner_fp, kind) ASC   */
     size_t      n_copy;
     uint64_t    sum_d;     /* Σ a_d: every kind-1 (delegation) copy(src)
                             * row — a self-delegation included          */
-    uint64_t    power;     /* the entry's total_stake / DNAC_DECIMAL_UNIT */
+    uint64_t    power;     /* the entry's voting power from
+                            * nodus_witness_vset_powers (HF-6 5b): ruleset
+                            * 1 total_stake / DNAC_DECIMAL_UNIT, ruleset 2
+                            * the counted power (K2 share numerator)    */
 } v2ec_member_t;
 
 static void v2ec_member_release(v2ec_member_t *m) {
@@ -998,25 +1145,137 @@ static uint64_t v2ec_source_copy(uint64_t boundary_height) {
  * wrong (design §7.1; threat G6: the chain stops at that boundary).
  * FAULT -2.
  *
- * `power` is the entry's own voting power, total_stake / DNAC_DECIMAL_UNIT
- * — the unit the ValidatorUpdate cometbft is told uses. `has_row` is
+ * `power` is NOT set here (HF-6 slice 5b): the settlement fills it from
+ * nodus_witness_vset_powers over the whole snapshot — the unit the
+ * ValidatorUpdate cometbft is told uses (raw / DNAC_DECIMAL_UNIT under
+ * ruleset 1, the counted power under ruleset 2). `has_row` is
  * whether a `validators` row exists at H (a member without one is NOT
  * paid in pass 2, its share stays in the pool). Every read is
- * three-valued: a fault is -2, never a value. @return 0 / -2. */
+ * three-valued: a fault is -2, never a value.
+ *
+ * HF-6 — the member's ROW, by the governing snapshot's ruleset and the
+ * key generation (design 2026-10-03-hf5-validator-owner-stake rev 6
+ * §1.6, §7.5; plans tasks/hf6-slice3-plan.md §2 "3d", tasks/hf6-slice5-
+ * plan.md §1, §2 "5c"). Every arm resolves by the PRIMARY KEY
+ * (nodus_validator_v2_get: a malformed row, or a validators row without
+ * its roles row, is a FAULT — never "absent"), never by the consensus
+ * pubkey, which is not unique across rows (a graduated, UNSTAKED row may
+ * share it with a later STAKE of the same key, §4) — slice-4 fault 2:
+ *
+ *   RULESET 2 (slice 5c; a ruleset-2 snapshot exists only at key
+ *   generation >= NODUS_RT_GEN_STORAGE — settlement_apply refuses one
+ *   below it before any member is loaded):
+ *     m->vfp      = entry.validator_id (the copy key);
+ *     has_row     = a row is keyed by it;
+ *     m->owner_fp = entry.owner_fp — base + commission accrue THERE
+ *                   (§1.6 "vset v2 girdisinden");
+ *     a found row must carry the entry's owner_fp (immutable, K3: no
+ *     TRANSFER_OWNER), else FAULT — paying the share to a different
+ *     row's owner is the silent alternative this refuses. HF-6 slice 6c
+ *     (plan tasks/hf6-slice6-plan.md §1.5, B4): the entry's consensus
+ *     pubkey must be the row's CURRENT key or its PENDING key (a non-zero
+ *     pending_consensus_pubkey), else FAULT. A ROTATE seats the pending
+ *     key in S(U) and the row switches at boundary U after this step
+ *     (design rev 6 §3), so under that order strict equality holds at U
+ *     (S(F) old = row old) and at U+E (S(U) new = row new); the pending
+ *     arm makes a future ordering mistake pay the right owner instead of
+ *     halting every node with -2. Any third key is still a broken
+ *     invariant.
+ *   RULESET 1 at generation >= NODUS_RT_GEN_STORAGE (the v1-SNAPSHOT
+ *   BRIDGE, §7.5 literally: "pubkey → validator_id (§6.2 migration
+ *   fonksiyonu)"):
+ *     m->vfp      = dna_validator_id_migrated(chain32, entry.pubkey) — the
+ *                   copy key the generation-4 edge re-keyed every retained
+ *                   copy to, and the key every post-edge copy is written
+ *                   under; `chain32` is the committed chain id
+ *                   (nodus_witness_v2_chain_id — the migration's own
+ *                   input);
+ *     has_row     = a row is keyed by that id;
+ *     m->owner_fp = that committed row's owner_fp (never a key derived
+ *                   from the consensus key — else the node-key accrual
+ *                   row is reborn, §7.5).
+ *     The row is found BY the migrated id, so "its validator_id is the
+ *     migrated id of the entry's pubkey" (3d's explicit check) holds by
+ *     construction. A v1 entry never names a row a generation-4 STAKE
+ *     created: such a row is a candidate only from e_start >= its STAKE
+ *     + 2E, built at a boundary that writes ruleset 2 (plan §1 "Slice-4
+ *     fault 1 removed by construction").
+ *   below generation 4: the pre-HF-6 read by pubkey (nodus_validator_
+ *   get), the copy key and the payee SHA3-512(pubkey) — unchanged.
+ * @return 0/-2. */
 static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
                             uint64_t boundary_height,
-                            const dna_vset_entry_t *e, v2ec_member_t *m) {
-    dnac_validator_record_t cur;
-    memset(&cur, 0, sizeof(cur));
-    int vrc = nodus_validator_get(w, e->pubkey, &cur);
-    if (vrc < 0 || vrc > 1) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "distribution: a member's validators "
-                      "row is unreadable — refusing rather than guessing "
-                      "whether it exists");
-        return -2;
+                            const dna_vset_entry_t *e, uint32_t ruleset,
+                            uint32_t gen,
+                            const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                            v2ec_member_t *m) {
+    if (ruleset == DNA_VSET_RULESET_TOPN_V2 ||
+        gen >= NODUS_RT_GEN_STORAGE) {
+        const int v2 = (ruleset == DNA_VSET_RULESET_TOPN_V2);
+        if (v2) {
+            memcpy(m->vfp, e->validator_id, 64);
+        } else if (dna_validator_id_migrated(m->vfp, chain32,
+                                             e->pubkey) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "distribution: a v1 entry's "
+                          "migrated validator_id did not derive — refusing");
+            return -2;
+        }
+        nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
+        if (!row) return -2;
+        int vrc = nodus_validator_v2_get(w, m->vfp, row);
+        if (vrc < 0 || vrc > 1) {
+            QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: a member's v2 row "
+                          "is unreadable or half-migrated — refusing",
+                          (unsigned long long)boundary_height);
+            free(row);
+            return -2;
+        }
+        m->has_row = (vrc == 0);
+        if (v2) {
+            memcpy(m->owner_fp, e->owner_fp, 64);
+            /* B4: entry.pubkey ∈ {row.pubkey, row.pending}; the pending
+             * arm only for a SET pending key — the all-zero "none"
+             * encoding is never a key an entry may carry */
+            int key_ok = 0;
+            if (m->has_row) {
+                static const uint8_t no_pending[DNAC_PUBKEY_SIZE] = { 0 };
+                key_ok =
+                    memcmp(row->rec.pubkey, e->pubkey, DNAC_PUBKEY_SIZE)
+                        == 0 ||
+                    (memcmp(row->pending_consensus_pubkey, no_pending,
+                            DNAC_PUBKEY_SIZE) != 0 &&
+                     memcmp(row->pending_consensus_pubkey, e->pubkey,
+                            DNAC_PUBKEY_SIZE) == 0);
+            }
+            if (m->has_row &&
+                (memcmp(row->owner_fp, e->owner_fp, 64) != 0 || !key_ok)) {
+                QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: the row keyed "
+                              "by a v2 entry's validator_id carries another "
+                              "owner, or neither its consensus key nor its "
+                              "pending key is the entry's — refusing",
+                              (unsigned long long)boundary_height);
+                free(row);
+                return -2;
+            }
+        } else if (m->has_row) {
+            memcpy(m->owner_fp, row->owner_fp, 64);
+        }
+        free(row);
+    } else {
+        dnac_validator_record_t cur;
+        memset(&cur, 0, sizeof(cur));
+        int vrc = nodus_validator_get(w, e->pubkey, &cur);
+        if (vrc < 0 || vrc > 1) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "distribution: a member's "
+                          "validators row is unreadable — refusing rather "
+                          "than guessing whether it exists");
+            return -2;
+        }
+        m->has_row = (vrc == 0);
+        if (qgp_sha3_512(e->pubkey, DNAC_PUBKEY_SIZE, m->vfp) != 0)
+            return -2;
+        memcpy(m->owner_fp, m->vfp, 64);
     }
-    m->has_row = (vrc == 0);
-    if (qgp_sha3_512(e->pubkey, DNAC_PUBKEY_SIZE, m->vfp) != 0) return -2;
 
     if (e->self_bond > e->total_stake) {
         QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: snapshot entry "
@@ -1051,7 +1310,6 @@ static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
         return -2;
     }
     m->sum_d = sum_d;
-    m->power = e->total_stake / (uint64_t)DNAC_DECIMAL_UNIT;
     return 0;
 }
 
@@ -1121,11 +1379,15 @@ static int v2ec_pay_member(nodus_witness_t *w, uint64_t boundary_height,
     const uint64_t net = gross - commission;
 
     uint64_t credited = 0;
-    /* the validator: its own-bond base + the commission */
+    /* the validator: its own-bond base + the commission, to its OWNER —
+     * the node key's fp below generation 4 (m->owner_fp == m->vfp), from
+     * generation 4 the ruleset-2 entry's owner_fp (equal to its row's,
+     * checked in pass 1) or the bridged row's owner_fp (HF-6 design §1.6,
+     * decision 2026-10-03-role-stake-amounts.md (4) "kazanç owner'a") */
     {
         uint64_t vx = 0;
         if (dna_ck_add_u64(base, commission, &vx) != 0) return -2;
-        if (v2ec_accrue(w, m->vfp, vx) != 0) return -2;
+        if (v2ec_accrue(w, m->owner_fp, vx) != 0) return -2;
         credited = vx;
     }
     /* every delegation row of copy(src), (owner_fp, kind) ASC (the copy
@@ -1157,6 +1419,7 @@ static int v2ec_pay_member(nodus_witness_t *w, uint64_t boundary_height,
 
 int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
                                       uint64_t boundary_height,
+                                      uint32_t key_generation,
                                       nodus_v2_epoch_fault_fn fault,
                                       void *fault_ud,
                                       uint64_t *accrued_out) {
@@ -1198,10 +1461,54 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
     const uint16_t n_mem = snap->active_count;
     const uint64_t src_epoch = v2ec_source_copy(boundary_height);
     v2ec_member_t *mem = NULL;
+    uint64_t *powers = NULL;              /* HF-6 5b: entry order        */
     uint64_t sum_power = 0, total = 0;
+    /* HF-6 §7.5 bridge input: the committed chain id, read once — the
+     * SAME source the generation-4 migration derived every validator_id
+     * from (nodus_witness_v2_apply.c phase 6b'''). Unused below gen 4. */
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    memset(chain32, 0, sizeof(chain32));
     if (n_mem > 0) {
         mem = calloc(n_mem, sizeof(*mem));
-        if (!mem) goto done;
+        powers = calloc(n_mem, sizeof(*powers));
+        if (!mem || !powers) goto done;
+    }
+    if (key_generation >= NODUS_RT_GEN_STORAGE) {
+        if (nodus_witness_v2_chain_id(w, chain32) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: the chain id is "
+                          "unreadable — the v1-snapshot bridge cannot derive "
+                          "a validator_id",
+                          (unsigned long long)boundary_height);
+            goto done;
+        }
+    } else if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
+        /* HF-6 5c: a ruleset-2 snapshot is built only at a boundary that
+         * reads generation >= NODUS_RT_GEN_STORAGE (plan tasks/hf6-
+         * slice5-plan.md §1 "Rule"), and the registry never moves back.
+         * Governing an epoch paid below generation 4 is a broken
+         * invariant — refused, never read through the pre-HF-6 arm. */
+        QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: snapshot(%llu) is "
+                      "ruleset 2 below key generation %u — refusing",
+                      (unsigned long long)boundary_height,
+                      (unsigned long long)epoch_start,
+                      (unsigned)NODUS_RT_GEN_STORAGE);
+        goto done;
+    }
+
+    /* ── HF-6 slice 5b: the governing set's voting power, computed ONCE
+     * from THE ONE helper (design rev 6 §5 "Ödül"; tokenomics K2 —
+     * Kurultay #14): each member's share is weighed by its COUNTED power
+     * over Σcounted (for a ruleset-1 snapshot counted == total_stake /
+     * DNAC_DECIMAL_UNIT, exactly as before); the validator's inner split
+     * (v2ec_pay_member: base by self_bond / total_stake, commission,
+     * a_d / Σa_d) stays on the uncapped amounts. A power that cannot be
+     * computed is a FAULT (-2), never a payout. ─────────────────────── */
+    if (n_mem > 0 && nodus_witness_vset_powers(w, snap, powers) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: snapshot(%llu)'s voting "
+                      "power cannot be computed — refusing",
+                      (unsigned long long)boundary_height,
+                      (unsigned long long)epoch_start);
+        goto done;
     }
 
     /* ── PASS 1: load every member, CHECK it against copy(src) (the
@@ -1215,8 +1522,10 @@ int nodus_witness_v2_settlement_apply(nodus_witness_t *w,
      * pool and the accrual table untouched. ─────────────────────────── */
     for (uint16_t i = 0; i < n_mem; i++) {
         if (v2ec_member_load(w, src_epoch, boundary_height,
-                             &snap->entries[i], &mem[i]) != 0)
+                             &snap->entries[i], snap->selection_ruleset,
+                             key_generation, chain32, &mem[i]) != 0)
             goto done;
+        mem[i].power = powers[i];
         if (dna_ck_add_u64(sum_power, mem[i].power, &sum_power) != 0)
             goto done;
     }
@@ -1287,6 +1596,7 @@ done:
         for (uint16_t i = 0; i < n_mem; i++) v2ec_member_release(&mem[i]);
         free(mem);
     }
+    free(powers);
     dna_vset_free(&snap);
     if (ret != 0) *accrued_out = 0;
     return ret;

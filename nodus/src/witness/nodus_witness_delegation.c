@@ -22,6 +22,11 @@
 #include "witness/nodus_witness_merkle.h"   /* nodus_merkle_leaf_key */
 #include "nodus/nodus_types.h"               /* NODUS_TREE_TAG_DELEGATION */
 
+#include "crypto/utils/qgp_log.h"   /* the HF-6 3a v2 functions log through
+                                     * QGP_LOG_*, the project rule; the
+                                     * older functions keep fprintf */
+
+#include <limits.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
@@ -411,4 +416,245 @@ int nodus_delegation_list_by_delegator(nodus_witness_t *w,
      * varies across the result set and is therefore the total order. */
     return delegation_list_by_hash(w, "delegator_hash", "validator_pubkey",
                                    h, out, max_entries, count_out);
+}
+
+/* ══ HF-6 sub-slice 3a — v2 delegation access ═══════════════════════════
+ * Contract: nodus_witness_delegation.h. Keys are bound as given (never
+ * hashed); logging through QGP_LOG_*. The functions above are untouched. */
+
+/* Decode one "SELECT delegator_hash, validator_hash, amount,
+ * delegated_at_block" row. 0 = well formed, -1 = malformed. */
+static int delegation_v2_row_read(sqlite3_stmt *st,
+                                  nodus_v2_delegation_row_t *out) {
+    memset(out, 0, sizeof(*out));
+    const void *d = sqlite3_column_blob(st, 0);
+    int dl = sqlite3_column_bytes(st, 0);
+    const void *v = sqlite3_column_blob(st, 1);
+    int vl = sqlite3_column_bytes(st, 1);
+    sqlite3_int64 amount = sqlite3_column_int64(st, 2);
+    sqlite3_int64 at = sqlite3_column_int64(st, 3);
+    if (!d || dl != (int)NODUS_V2_DELEGATION_KEY_LEN ||
+        !v || vl != (int)NODUS_V2_DELEGATION_KEY_LEN ||
+        sqlite3_column_type(st, 2) != SQLITE_INTEGER || amount <= 0 ||
+        sqlite3_column_type(st, 3) != SQLITE_INTEGER || at < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 delegation row malformed (keys %d/%d "
+                      "bytes, amount %lld, at %lld)", dl, vl,
+                      (long long)amount, (long long)at);
+        return -1;
+    }
+    memcpy(out->delegator_fp, d, NODUS_V2_DELEGATION_KEY_LEN);
+    memcpy(out->validator_id, v, NODUS_V2_DELEGATION_KEY_LEN);
+    out->amount = (uint64_t)amount;
+    out->delegated_at_block = (uint64_t)at;
+    return 0;
+}
+
+int nodus_delegation_v2_get(nodus_witness_t *w,
+                            const uint8_t delegator_fp[NODUS_V2_DELEGATION_KEY_LEN],
+                            const uint8_t validator_id[NODUS_V2_DELEGATION_KEY_LEN],
+                            nodus_v2_delegation_row_t *out) {
+    if (!w || !w->db || !delegator_fp || !validator_id || !out) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT delegator_hash, validator_hash, amount, "
+            "       delegated_at_block "
+            "FROM delegations "
+            "WHERE delegator_hash = ? AND validator_hash = ?",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 get prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    if (sqlite3_bind_blob(st, 1, delegator_fp, NODUS_V2_DELEGATION_KEY_LEN,
+                          SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_DELEGATION_KEY_LEN,
+                          SQLITE_STATIC) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    int ret;
+    if (rc == SQLITE_ROW) {
+        ret = delegation_v2_row_read(st, out) == 0 ? 0 : -1;
+    } else if (rc == SQLITE_DONE) {
+        ret = 1;
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "v2 get step failed (rc=%d): %s", rc,
+                      sqlite3_errmsg(w->db));
+        ret = -1;
+    }
+    sqlite3_finalize(st);   /* (delegator_hash, validator_hash) is the PK */
+    return ret;
+}
+
+int nodus_delegation_v2_delete(nodus_witness_t *w,
+                               const uint8_t delegator_fp[NODUS_V2_DELEGATION_KEY_LEN],
+                               const uint8_t validator_id[NODUS_V2_DELEGATION_KEY_LEN]) {
+    if (!w || !w->db || !delegator_fp || !validator_id) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "DELETE FROM delegations "
+            "WHERE delegator_hash = ? AND validator_hash = ?",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 delete prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    if (sqlite3_bind_blob(st, 1, delegator_fp, NODUS_V2_DELEGATION_KEY_LEN,
+                          SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_DELEGATION_KEY_LEN,
+                          SQLITE_STATIC) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    int changes = sqlite3_changes(w->db);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 delete step failed (rc=%d): %s", rc,
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    return changes == 0 ? 1 : 0;
+}
+
+int nodus_delegation_v2_count_by_validator(nodus_witness_t *w,
+                                           const uint8_t validator_id[NODUS_V2_DELEGATION_KEY_LEN],
+                                           int *count_out) {
+    if (!w || !w->db || !validator_id || !count_out) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM delegations WHERE validator_hash = ?",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 count_by_validator prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    if (sqlite3_bind_blob(st, 1, validator_id, NODUS_V2_DELEGATION_KEY_LEN,
+                          SQLITE_STATIC) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    int ret = -1;
+    if (rc == SQLITE_ROW) {
+        sqlite3_int64 n = sqlite3_column_int64(st, 0);
+        if (n >= 0 && n <= INT_MAX) {
+            *count_out = (int)n;
+            ret = 0;
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "v2 count_by_validator: count %lld out "
+                          "of range", (long long)n);
+        }
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "v2 count_by_validator step failed (rc=%d): "
+                      "%s", rc, sqlite3_errmsg(w->db));
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+int nodus_delegation_v2_list_by_validator(nodus_witness_t *w,
+                                          const uint8_t validator_id[NODUS_V2_DELEGATION_KEY_LEN],
+                                          nodus_v2_delegation_row_t *out,
+                                          int cap,
+                                          int *count_out) {
+    if (!w || !w->db || !validator_id || !out || !count_out || cap <= 0)
+        return -1;
+    *count_out = 0;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT delegator_hash, validator_hash, amount, "
+            "       delegated_at_block "
+            "FROM delegations WHERE validator_hash = ? "
+            "ORDER BY delegator_hash ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 list_by_validator prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    if (sqlite3_bind_blob(st, 1, validator_id, NODUS_V2_DELEGATION_KEY_LEN,
+                          SQLITE_STATIC) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    int n = 0;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (n >= cap) {
+            QGP_LOG_ERROR(LOG_TAG, "v2 list_by_validator: more than %d rows "
+                          "— refusing a truncated set", cap);
+            sqlite3_finalize(st);
+            return -1;
+        }
+        if (delegation_v2_row_read(st, &out[n]) != 0) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+        n++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 list_by_validator step failed (rc=%d)",
+                      rc);
+        return -1;
+    }
+    *count_out = n;
+    return 0;
+}
+
+/* ══ HF-6 sub-slice 3d — the §6.4 leaf body and the full scan ══════════
+ * Contract: nodus_witness_delegation.h. */
+
+static void delegation_v2_put64(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
+}
+
+int nodus_delegation_v2_leaf_encode(const nodus_v2_delegation_row_t *row,
+                                    uint8_t out[NODUS_V2_DELEGATION_LEAF_BODY_LEN]) {
+    if (!row || !out) return -1;
+    if (row->amount == 0 || row->amount > (uint64_t)INT64_MAX ||
+        row->delegated_at_block > (uint64_t)INT64_MAX)
+        return -1;
+    memcpy(out, row->delegator_fp, NODUS_V2_DELEGATION_KEY_LEN);
+    memcpy(out + 64, row->validator_id, NODUS_V2_DELEGATION_KEY_LEN);
+    delegation_v2_put64(out + 128, row->amount);
+    delegation_v2_put64(out + 136, row->delegated_at_block);
+    return 0;
+}
+
+int nodus_delegation_v2_scan(nodus_witness_t *w,
+                             nodus_v2_delegation_visit_fn fn, void *ud) {
+    if (!w || !w->db || !fn) return -1;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT delegator_hash, validator_hash, amount, "
+            "       delegated_at_block "
+            "FROM delegations "
+            "ORDER BY validator_hash ASC, delegator_hash ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    nodus_v2_delegation_row_t row;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (delegation_v2_row_read(st, &row) != 0 || fn(&row, ud) != 0) {
+            sqlite3_finalize(st);
+            return -1;
+        }
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "v2 scan aborted mid-stream (rc=%d) — a scan "
+                      "fault is never a shorter set", rc);
+        return -1;
+    }
+    return 0;
 }

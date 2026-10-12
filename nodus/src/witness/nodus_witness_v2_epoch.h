@@ -57,6 +57,18 @@
  *      at (H / E) % payout_interval_epochs == 0 every accrual row
  *      becomes one CORE UTXO and is deleted; a no-op otherwise. Runs
  *      AFTER 1b so the epoch that just ended is included in the pay.
+ *   1d. ROTATION SWAP (HF-6 slice 6d; design 2026-10-03-hf5-validator-
+ *      owner-stake rev 6 §3, khan A1) — generation 4 only: every row whose
+ *      pending key is the key snapshot(H) seats for it (the rotation pass
+ *      of the freeze at H−E accepted it) switches to it through
+ *      nodus_validator_v2_rotate_apply (validators.pubkey := pending,
+ *      pending := 0, effective epoch := 0, the new key's reservation
+ *      role 2 → 1; the previous key stays role 1 until 3d at H+E). No
+ *      pending row ⇒ nothing else is read. AFTER 1b (the distribution
+ *      compares snapshot(H−E)'s old keys with the rows), BEFORE 2, 3 and 5
+ *      (they must see the row as snapshot(H) names it; commit_next copies
+ *      the new key into snapshot(H+E)). Fault stage
+ *      NODUS_V2_EPST_ROTATE_SWAP after the step (HF-6 slice 6e).
  *   2. GRADUATION — tokenomics-v3 P1 (D-11): candidates are every row
  *      whose status is RETIRING **or AUTO_RETIRED** (widened from
  *      RETIRING-only; an AUTO_RETIRED member's bond is RETURNED, never
@@ -88,6 +100,18 @@
  *      ONE FULL EXTRA EPOCH past its own UNSTAKE; its unlock height
  *      starts counting from the boundary at which it actually graduates,
  *      not the one at which UNSTAKE was requested.
+ *      HF-6 slice 6c (design 2026-10-03-hf5-validator-owner-stake rev 6
+ *      §3): at key generation >= NODUS_RT_GEN_STORAGE "an entry" means an
+ *      entry naming the row's validator_id — by the entry's validator_id
+ *      in a ruleset-2 snapshot, by dna_validator_id_migrated(chain id,
+ *      entry pubkey) in a ruleset-1 one — because an accepted ROTATE
+ *      seats the row's PENDING key in snapshot(H); below it, by pubkey
+ *      (unchanged). A membership test that cannot be decided is -2. The
+ *      graduate's row is written back with no pending key (pending
+ *      2592 × 0x00, effective epoch 0) and its current key's and pending
+ *      key's reservations are released (nodus_validator_v2_key_release);
+ *      a previous key kept from a swap at H−E is released by 3d (HF-6
+ *      slice 6e).
  *
  *      Per graduate, in the legacy order (bft.c:2465-2560): release UTXO
  *      (locked DNAC_VALIDATOR_UNBOND_EPOCHS · E past H — P3-3) → every
@@ -118,6 +142,18 @@
  *      boundary needs). MUST run AFTER 3b: resetting before hashing would
  *      digest all zeros and hide every divergence the leg exists to
  *      catch.
+ *   3d. ROTATION SWEEP (HF-6 slice 6d; design rev 6 §3, khan A2) —
+ *      generation 4 only: for every validator swapped at H−E (it holds
+ *      two role-1 reservations — or, graduated at step 2 of this
+ *      boundary, only the previous one (HF-6 slice 6e) — and
+ *      snapshot(H−E) seats it under its current key) the previous key's
+ *      role-1 reservation and its attendance row are deleted: the ONE
+ *      release site of a previous key. Candidates come from the
+ *      reservation table (the only committed record of the previous key
+ *      of a validator snapshot(H−2E) did not seat — khan A3); none ⇒ no
+ *      snapshot is read. AFTER 3b/3c, BEFORE 4 and 5; writes only
+ *      v2_consensus_keys and v2_attendance. Fault stage
+ *      NODUS_V2_EPST_ROTATE_SWEEP after the step (HF-6 slice 6e).
  *   4. BOUNDARY FLIPS — nodus_witness_vset_apply_boundary_flips(w, H).
  *   5. NEXT SNAPSHOT — nodus_witness_vset_commit_next(w, H).
  *   6. BALANCE COPY (tokenomics-v3 P2, P2-5) —
@@ -211,6 +247,15 @@
  * survive into a later, unrelated one, turning two NON-consecutive
  * misses into a retirement — both measured (verifier V-1). Absent/
  * unreadable duty snapshot -> -2 (a boundary has no verdict class).
+ * HF-6 slice 6c (design rev 6 §3 "Görev ve devam aramaları … blokları
+ * yöneten snapshot'ın anahtarını kullanır, canlı satırı değil"): at key
+ * generation >= NODUS_RT_GEN_STORAGE the duty entry is found by the row's
+ * validator_id (the graduation's rule above) and the attendance is read
+ * by THAT ENTRY's pubkey — the key that signed the ending epoch — never
+ * by the row's live key, so a row whose key was swapped at this boundary
+ * is judged on its old key's record instead of reading as "no duty"
+ * (which would reset its counter). Below generation 4 both reads are the
+ * row's pubkey, unchanged.
  *
  * ── ROUND 6: THE WEIGHT FLOOR (decision file §3 2026-09-23 "Rule N
  * TABANI WEIGHT ÜZERİNDEN", replacing round 5's count floor "Rule N
@@ -231,8 +276,10 @@
  * Rule N builds — without storing — the snapshot this same boundary's
  * `nodus_witness_vset_commit_next` will store for H+E
  * (`nodus_witness_vset_preview_next`, nodus_witness_vset.h). Power per
- * entry = `total_stake / DNAC_DECIMAL_UNIT` (the unit the §A
- * ValidatorUpdate diff reports, nodus_witness_cmt_app.c:1569); P = the
+ * entry = `nodus_witness_vset_powers` over the preview (HF-6 5b; the
+ * unit the §A ValidatorUpdate diff reports): `total_stake /
+ * DNAC_DECIMAL_UNIT` for a ruleset-1 preview, the counted (capped) power
+ * for a ruleset-2 one (built from slice 5d on); P = the
  * checked sum, max = the largest entry. The retirement stands iff
  * P > 0 AND (P − max) > P * 2 / 3 — cometbft's own integer commit form
  * (shared/dnac/cmt_validation.c:298): the next set must still commit
@@ -418,6 +465,41 @@ extern "C" {
  */
 int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v);
 
+/**
+ * HF-6 sub-slice 3d — THE KEY GENERATION of the boundary and committee
+ * readers: which key derivation the committed `validators` /
+ * `delegations` / `v2_balance_copy` rows carry right now.
+ *
+ *   generation < NODUS_RT_GEN_STORAGE: the tagged pubkey hashes
+ *     (validators.pubkey_hash = SHA3-512(0x02 ‖ pk), delegations PK =
+ *     (SHA3-512(0x03 ‖ dpk), SHA3-512(0x03 ‖ vpk)), copy rows keyed by the
+ *     untagged SHA3-512(pk)) — every reader exactly as before;
+ *   generation >= NODUS_RT_GEN_STORAGE: the HF-6 keys (design 2026-10-03-
+ *     hf5-validator-owner-stake rev 6 §1.1, §7; plan tasks/hf6-slice3-
+ *     plan.md §1) — validators.pubkey_hash = validator_id, delegations
+ *     = (delegator_fp = SHA3-512(dpk) untagged, validator_id), copy rows
+ *     keyed by validator_id (kind-0 owner = validator_id).
+ *
+ * Read from the COMMITTED registry through nodus_witness_v2_runtime_for
+ * (the payday precedent, nodus_witness_v2_econ.c): the generation-4 edge
+ * switches the registry and re-keys the rows in ONE transaction at the end
+ * of block H−1 (nodus_witness_v2_apply.c phase 6b'''), so in every state a
+ * reader can observe — the edge block's own later phases included — the
+ * resolved generation and the rows' keys agree. A pure function of
+ * committed state: no clock, no node-local input.
+ *
+ * A database with NO SYSTEM registry row (domreg_get → 1) answers
+ * NODUS_RT_GEN_1: such a database (a pre-V2 test fixture, a legacy chain)
+ * has never been through any rule-set edge, so its rows carry the
+ * pre-HF-6 keys. A version-3 chain always has the row (the engine genesis
+ * writes it). A registry row whose tuple does not resolve to an ACTIVE
+ * runtime, or any read fault, is a FAULT — never "generation 1".
+ *
+ * @param gen_out  required; written only on 0.
+ * @return 0 / -2 (node-local fault, the boundary convention).
+ */
+int nodus_witness_v2_key_generation(nodus_witness_t *w, uint32_t *gen_out);
+
 /** The 16-byte graduation-identity tag (zero-padded, exactly 16 B). */
 #define NODUS_V2_EPGRAD_TAG      "NDS.EPGRAD.v1"
 #define NODUS_V2_EPGRAD_TAG_LEN  16u
@@ -539,7 +621,17 @@ typedef enum {
      * delegation it held has been released as a locked UTXO and its
      * delegation rows deleted, BEFORE its validators row is rewritten
      * (3). The engine maps it BY NAME. */
-    NODUS_V2_EPST_GRAD_DELEG_RELEASED = 18
+    NODUS_V2_EPST_GRAD_DELEG_RELEASED = 18,
+    /* HF-6 slice 6e (plan tasks/hf6-slice6-plan.md §5 B2) — APPENDED.
+     * Generation >= 4 boundaries only. 19 fires after step 1d, the
+     * rotation swap (every accepted row switched to the key S(H) seats;
+     * BEFORE the graduation); 20 after step 3d, the rotation sweep (the
+     * previous keys of the validators swapped at H−E released with their
+     * attendance rows; BEFORE the flips). Both fire whether or not the
+     * step had a candidate — the neighbouring stages' convention. The
+     * engine maps them BY NAME. */
+    NODUS_V2_EPST_ROTATE_SWAP     = 19, /* rotation swap applied         */
+    NODUS_V2_EPST_ROTATE_SWEEP    = 20  /* rotation sweep applied        */
     /* The numbers are append-only and NOT in firing order any more
      * (13-16 fire before 2); they are module-internal: the engine maps
      * them onto its own frozen fault ids BY NAME

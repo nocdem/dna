@@ -2672,11 +2672,14 @@ static int test_v3_derive(void) {
 
     CHECK(memcmp(id16, chain32, 16) == 0,
           "the file name is the first 16 bytes of the chain id");
-    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S17,
-          "the chain is at schema S17 — the Comet stores, the "
+    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S18,
+          "the chain is at schema S18 — the Comet stores, the "
           "out-of-root attendance tables (tokenomics-v3 P1), the "
-          "reward tables (P2) and the empty EVM tables + the CORE EVM "
-          "reserve row (Nodus EVM, the live rung) exist");
+          "reward tables (P2), the empty EVM tables + the CORE EVM "
+          "reserve row (Nodus EVM) and the empty v2_validator_roles "
+          "(HF-6 3a, the live rung) exist");
+    CHECK(q1(db, "SELECT COUNT(*) FROM v2_validator_roles") == 0,
+          "a genesis writes no validator role (must_be_empty)");
     CHECK(q1(db, "SELECT COUNT(*) FROM v2_blocks") == 0,
           "there is NO genesis block row — of any height (D-19 rev 6)");
     /* ⚠ THE KEY COLUMN IS A BLOB (schema S14: `key BLOB PRIMARY KEY`)

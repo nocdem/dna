@@ -107,6 +107,20 @@ extern "C" {
 /** Owned and priced, NOT executable in this package: its read plan and
  *  exec refuse it (-1) until package B2 implements the report rule. */
 #define DNA_SYSRULE_STORAGE_REPORT   ((uint32_t)9)
+/** HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
+ *  rev 6 §2, §3; decision docs/plans/decisions/2026-10-08-kurultay-14-
+ *  hf6-summary.md K7): ROTATE_CONSENSUS_KEY — the next free SYSTEM rule
+ *  id after the storage ops (TRANSFER_OWNER keeps 11 reserved, K3).
+ *  Owned by the generation-4 SYSTEM descriptor only (earlier generations
+ *  do not own it, so admission refuses it there) and priced by its policy
+ *  (no other domain names op 10). Its consent op byte is 2, NOT 10
+ *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — design §2: the
+ *  mapping is written explicitly in code). Executes under generation 4
+ *  only (sub-slice 6b, nodus_witness_rt_native.c rtn_rotate2_exec: owner
+ *  authority, state, key reservation and node consent; writes the
+ *  pending key and its first evaluation boundary — the switch itself is
+ *  the boundary's, slices 6c/6d). */
+#define DNA_SYSRULE_ROTATE_CONSENSUS_KEY ((uint32_t)10)
 
 #define DNA_CORERULE_SPEND           ((uint32_t)1)
 #define DNA_CORERULE_BURN            ((uint32_t)2)
@@ -396,8 +410,10 @@ typedef struct {
  *   intent-identity season inherits, not a soundness hole.
  *
  *   auth_kind 3 — NODUS_RT_AUTHKIND_DSA87_MSIG_V1 (general multisig,
- *   decision 2026-09-29-general-multisig.md, design §7 rev 2 — CORE
- *   only): auth_data =
+ *   decision 2026-09-29-general-multisig.md, design §7 rev 2 — CORE,
+ *   and — HF-6 sub-slice 3c, design 2026-10-03-hf5-validator-owner-stake
+ *   rev 6 §1.3 — the HF-6 generation's SYSTEM, where only the owner
+ *   rule of the validator-record ops 2..5 accepts it): auth_data =
  *     the ENTIRE kind-1 body (the signer section, same rules, same
  *     signatures over the SAME leg auth_digest — there is NO new
  *     signature preimage)
@@ -418,7 +434,10 @@ typedef struct {
  *   uses" rule, are EXEC decisions (design F1.2; the CORE exec's one
  *   ownership predicate, nodus_witness_rt_native.c rtn_input_owned), so
  *   the descriptor bytes are always priced (w_authbyte) before any exec
- *   verdict. The descriptor bytes do NOT enter intent_id (they are
+ *   verdict. HF-6 3c (decision D6) adds one more RECORDED fact per
+ *   descriptor — whether every verified signer is one of its keys
+ *   (verdict msig_signers_in_desc) — which only the SYSTEM owner rule
+ *   reads. The descriptor bytes do NOT enter intent_id (they are
  *   authorization bytes) — auth_kind does (F1.4): the kind-1 and kind-3
  *   spellings of one transfer are two intents.
  *
@@ -472,9 +491,12 @@ typedef struct {
     const uint8_t *pubkeys;        /* count × 2592, contiguous           */
     const uint8_t (*fps)[64];      /* count × SHA3-512(pubkey)           */
     /* HF-2 (GW-1): count × the member's VOTING POWER, in seat order —
-     * floor(total_stake / DNAC_DECIMAL_UNIT), the SAME derivation the
-     * block-commit validator set uses (nodus_witness_cmt_app.c, the
-     * FinalizeBlock validator-update loop). Filled for every non-empty
+     * the committee member's `power` (nodus_committee_get_for_block,
+     * HF-6 5b: nodus_witness_vset_powers over the epoch's snapshot —
+     * floor(total_stake / DNAC_DECIMAL_UNIT) under ruleset 1, the counted
+     * power under ruleset 2), the SAME derivation the block-commit
+     * validator set uses (nodus_witness_cmt_app.c, the FinalizeBlock
+     * validator-update loop). Filled for every non-empty
      * view; the auth hook sums it into the verdict whether or not HF-2
      * is active, and the SYSTEM exec reads the sums only when it is. */
     const uint64_t *powers;
@@ -500,6 +522,18 @@ typedef struct {
     uint8_t  msig_satisfied[NODUS_RT_MSIG_MAX_DESC];  /* 1 = >= M of its
                                           * keys are verified signers    */
     uint8_t  msig_addr[NODUS_RT_MSIG_MAX_DESC][64];   /* SHA3-512(desc)  */
+    /* HF-6 sub-slice 3c (design docs/plans/2026-10-03-hf5-validator-owner-
+     * stake-design.md rev 6 §1.3; ORCHESTRATOR decision D6), kind 3 only:
+     * bit i set iff EVERY verified signer of this leg is one of descriptor
+     * i's keys (no foreign signer rode along). ENGINE-INTERNAL — never
+     * hashed, stored or put on a wire; shared by every domain's verdict,
+     * read today only by the SYSTEM owner-authority rule
+     * (nodus_witness_rt_native.c rtn_sys_owner_auth). It is only RECORDED
+     * here, like msig_satisfied: CORE kind-3 ownership never reads it, so
+     * its behaviour is byte-identical. 0 for kinds 1 and 2. It occupies
+     * the one pad byte that followed msig_addr (members end at 1 423 B),
+     * so sizeof stays 1 440 — the nodus_witness_v2_apply.h pin proves it. */
+    uint8_t  msig_signers_in_desc;
     /* HF-2 (GW-1), kind 2 only — checked u64 sums over the committee
      * view's `powers`: the VERIFIED approving seats, and every seat (both
      * 0 when the sum is unweighable). 0 for kinds 1 and 3. Never hashed,
@@ -603,10 +637,14 @@ typedef struct {
      * row or a stored value outside {0, 1} is a node FAULT, never a
      * default) and filled on every ctx it builds (the authorization stage
      * and read_plan/exec). UNMETERED like hf2_active — the fact itself is
-     * no mediated read. One consumer: the CORE SYSFUND hooks' name gate
-     * (nodus_witness_rt_native.c rtn_sysfund_name_gate), which — while it
-     * is 1, the sibling is SYSTEM DELEGATE and the delegator is not the
-     * validator — adds ONE mediated, charged CORE NAMEOWN read. Not part
+     * no mediated read. Two consumers: under generations 1-3 the CORE
+     * SYSFUND hooks' name gate (nodus_witness_rt_native.c
+     * rtn_sysfund_name_gate), which — while it is 1, the sibling is SYSTEM
+     * DELEGATE and the delegator is not the validator — adds ONE mediated,
+     * charged CORE NAMEOWN read; under generation 4 (HF-6 sub-slice 3e,
+     * decision D3) the SYSTEM DELEGATE's own plan/exec (rtn_deleg2_name_gate
+     * / rtn_delegate2_exec), which reads the name through SYSTEM op 16 and
+     * exempts delegator_fp == the validator's owner_fp. Not part
      * of any committed identity (hooks are not in the ruleset descriptor).
      * A hook never chooses it. */
     uint8_t        delegate_name_required;

@@ -774,8 +774,9 @@ int nodus_witness_db_migrate_v2s16_ex(nodus_witness_t *w,
  * EVM generation in moves. The cometbft apply gate keeps accepting 16 or
  * 17 (a node opened by an older build mid-upgrade is still S16 until its
  * next open); every other gate (preflight, pools, the genesis gate)
- * accepts 17 — the one-rung precedent of S15 -> S16. Version 18+ fails
- * closed. */
+ * accepts 17 — the one-rung precedent of S15 -> S16. (HF-6 sub-slice 3a:
+ * S18 below is now the live rung; S17 stays accepted wherever 17 was.)
+ * Version 19+ fails closed. */
 #define NODUS_V2_SCHEMA_VERSION_S17  17u
 
 typedef enum {
@@ -812,12 +813,99 @@ int nodus_witness_db_migrate_v2s17_ex(nodus_witness_t *w,
  * dropping it would be a shape change; the cursor scan does not read it.)
  */
 
-/** Create the two scan indexes on a database AT S17 when they are absent
- *  (one BEGIN IMMEDIATE, the version re-read inside it). Any other
- *  version: nothing (0). Called at open (nodus_witness.c, after the S17
- *  rung). @return 0 present / created / not S17; -1 fault, or an index of
+/** Create the two scan indexes on a database AT S17 OR S18 when they are
+ *  absent (one BEGIN IMMEDIATE, the version re-read inside it). Any other
+ *  version: nothing (0). Called at open (nodus_witness.c, after the
+ *  at-open rung). HF-6 sub-slice 3a widened the version check from S17
+ *  to {S17, S18}: the at-open rung now climbs every chain database to
+ *  S18 BEFORE this step runs, and S18 only adds v2_validator_roles — a
+ *  database that reached S17 before the indexes existed would otherwise
+ *  arrive here at S18 and never get them.
+ *  @return 0 present / created / not S17 or S18; -1 fault, or an index of
  *  the same name with other key columns (refused, rolled back). */
 int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w);
+
+/* ── S18 migration: HF-6 sub-slice 3a — the validator-role side table
+ *    (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
+ *    rev 6 §1.2, §6.3, §7; plan tasks/hf6-slice3-plan.md §1, decision D1
+ *    option (i)) ─────────────────────────────────────────────────────────
+ *
+ * One rung, one table CREATED EMPTY:
+ *
+ *   v2_validator_roles (validator_id BLOB PRIMARY KEY [64],
+ *                       owner_fp BLOB NOT NULL [64],
+ *                       pending_consensus_pubkey BLOB NOT NULL [2592],
+ *                       consensus_key_effective_epoch INTEGER NOT NULL)
+ *
+ * The three HF-6 validator fields that `validators` does not carry. Under
+ * the HF-6 generation `validators.pubkey_hash` holds the validator_id (the
+ * keys are re-valued in place at the activation edge, sub-slice 3b) and
+ * this table is joined on `validator_id = validators.pubkey_hash`.
+ * WHY A SIDE TABLE AND NOT NEW COLUMNS: `validators` is one of the six
+ * genesis-bundle tables (nodus_witness_v2_bundle.c), and a joiner refuses
+ * the stored bundle unless the table's column count equals the bundle's
+ * (`apply_table`). A column added there would make every future joiner
+ * refuse the live testnet's genesis bundle.
+ *
+ * INERT: no writer exists before the HF-6 activation edge (3b), and no
+ * root, invariant or verdict reads the table, so a chain's roots do not
+ * move. It is not a bundle table, so joins are unaffected. It also lives
+ * in the base schema (nodus_witness.c), byte-identical; this rung's
+ * CREATE TABLE IF NOT EXISTS is its own statement of the shape, verified
+ * unconditionally.
+ *
+ * HF-6 slice 4 (design rev 6 §4) adds a SECOND table to this same
+ * unreleased rung (S18 exists on branch hf6 only — no S19):
+ *
+ *   v2_consensus_keys (consensus_pk_hash BLOB PRIMARY KEY [64],
+ *                      validator_id BLOB NOT NULL [64],
+ *                      role INTEGER NOT NULL)
+ *
+ * the ONE consensus-key reservation table: consensus_pk_hash =
+ * SHA3-512(consensus pubkey), untagged; role 1 = the validator's active
+ * consensus key, role 2 = a pending (rotating-in) key (ROTATE, slice 6 —
+ * no writer yet). A key appears at most once, whatever its role. It is a
+ * pure function of committed state: role 1 = every validators row whose
+ * status is not UNSTAKED (key = SHA3-512(validators.pubkey), value = its
+ * pubkey_hash = validator_id); role 2 = every non-zero
+ * v2_validator_roles.pending_consensus_pubkey. Writers: the generation-4
+ * edge (nodus_witness_v2_migrate.c), the generation-4 STAKE (SYSTEM
+ * adapter op 17) and the generation-4 graduation (delete). No root reads
+ * it (both inputs are already rooted). Not a bundle table. A database
+ * already at 18 before this change gets the table from the base schema's
+ * CREATE TABLE IF NOT EXISTS at open (this rung is a no-op at 18 and does
+ * not re-verify its shape there).
+ *
+ * REACHABILITY: S18 is THE LIVE RUNG. Every builder migrates to it (join,
+ * bundle, the genesis derivation) and an S16 or S17 version-3 chain DB is
+ * migrated in place at OPEN (nodus_witness.c). Every gate that accepted
+ * 17 also accepts 18 (S18 = S17 + one empty table). The previous binary
+ * does not accept version 18 (its block-apply gate takes 16 or 17 only
+ * and FAULTs; its migration ladder fails closed above 17), so a rollback
+ * needs the pre-S18 copy of the data directory. Version 19+ fails
+ * closed. */
+#define NODUS_V2_SCHEMA_VERSION_S18  18u
+
+typedef enum {
+    V2S18MIG_FAIL_NONE = 0,
+    V2S18MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S18MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S18MIG_FAIL_AFTER_TABLES,     /* v2_validator_roles and
+                                     * v2_consensus_keys created         */
+    V2S18MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S18MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s18_mig_fail_t;
+
+/** Atomic S18 migration. Versions below 17 run the S9…S17 chain first,
+ *  then 17 → 18 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 18 (idempotent); -1 failure (full
+ *  rollback of the running stage) — including an UNKNOWN user_version
+ *  (19+): fail closed. */
+int nodus_witness_db_migrate_v2s18(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 17 → 18 transaction. */
+int nodus_witness_db_migrate_v2s18_ex(nodus_witness_t *w,
+                                      nodus_v2s18_mig_fail_t fail_at);
 
 /* ── the §18 evm_logs CURSOR SCAN (Nodus EVM red-team 1 F4) ─────────────────
  *

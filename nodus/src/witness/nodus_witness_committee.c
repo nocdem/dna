@@ -18,6 +18,9 @@
 #include "witness/nodus_witness_vset.h"   /* S3: snapshot-as-authority */
 #include "witness/nodus_witness_v2_econ.h" /* tokenomics-v3 P3-1: the frozen
                                             * copy the selection ranks by */
+#include "witness/nodus_witness_v2_epoch.h" /* HF-6 3d: key generation   */
+#include "witness/nodus_witness_runtime.h"  /* NODUS_RT_GEN_STORAGE      */
+#include "witness/nodus_witness_emission.h" /* HF-6 5b: DNAC_DECIMAL_UNIT */
 
 #include "nodus/nodus_types.h"       /* NODUS_TREE_TAG_VALIDATOR */
 #include "nodus/nodus_chain_config.h" /* nodus_chain_config_get_u64 */
@@ -48,16 +51,24 @@
  * tokenomics-v3 P3-1: `total_stake` and `self_stake` are the values the
  * member is RANKED by and EMITTED with — the FROZEN totals of the copy on
  * the post-bootstrap path ("okuma B"), the live row's on the bootstrap
- * path. `rec` still supplies the pubkey and the LIVE commission. */
+ * path. `rec` still supplies the pubkey and the LIVE commission.
+ *
+ * HF-6 slice 5c: `v2` is the candidate's v2 row at key generation >=
+ * NODUS_RT_GEN_STORAGE (`rec` then points INTO it), NULL below it and on
+ * the bootstrap path — emit_member copies the member's validator_id /
+ * owner_fp from it (ORCHESTRATOR decision D6). */
 typedef struct {
     const dnac_validator_record_t *rec;
+    const nodus_v2_validator_row_t *v2;
     uint64_t total_stake;
     uint64_t self_stake;
     uint8_t  tiebreak[64];
 } committee_work_t;
 
 /* SHA3-512(0x02 || pubkey || state_seed). state_seed is 64 bytes
- * (NODUS_T3_TX_HASH_LEN / the block's state_root column width). */
+ * (NODUS_T3_TX_HASH_LEN / the block's state_root column width). The
+ * tiebreak below key generation NODUS_RT_GEN_STORAGE and on the
+ * bootstrap path. */
 static void compute_tiebreak_hash(const uint8_t pubkey[DNAC_PUBKEY_SIZE],
                                     const uint8_t state_seed[64],
                                     uint8_t out[64]) {
@@ -67,6 +78,25 @@ static void compute_tiebreak_hash(const uint8_t pubkey[DNAC_PUBKEY_SIZE],
     memcpy(&buf[1 + DNAC_PUBKEY_SIZE], state_seed, 64);
     qgp_sha3_512(buf, sizeof(buf), out);
 }
+
+/* HF-6 slice 5d — the tiebreak at key generation >= NODUS_RT_GEN_STORAGE
+ * (design rev 6 §7.7 item 8, the khan's decision 2026-10-12 "A ile devam
+ * edebiliriz"): SHA3-512(0x02 || validator_id[64] || state_seed[64]), a
+ * 129-byte preimage — compute_tiebreak_hash above with ONLY the pubkey
+ * replaced by the row's 64-byte validator_id. Same tag
+ * (NODUS_TREE_TAG_VALIDATOR), same seed, no new tag string. */
+static void compute_tiebreak_hash_v2(
+        const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+        const uint8_t state_seed[64],
+        uint8_t out[64]) {
+    uint8_t buf[1 + NODUS_V2_VALIDATOR_ID_LEN + 64];
+    buf[0] = NODUS_TREE_TAG_VALIDATOR;   /* 0x02 */
+    memcpy(&buf[1], validator_id, NODUS_V2_VALIDATOR_ID_LEN);
+    memcpy(&buf[1 + NODUS_V2_VALIDATOR_ID_LEN], state_seed, 64);
+    qgp_sha3_512(buf, sizeof(buf), out);
+}
+_Static_assert(1 + NODUS_V2_VALIDATOR_ID_LEN + 64 == 129,
+               "the generation-4 tiebreak preimage is 129 bytes");
 
 /* qsort comparator: tiebreak ASC (byte-lex). Used within tied stake
  * groups only. The primary ordering (stake DESC) is imposed by the
@@ -83,8 +113,10 @@ static int cmp_tiebreak_asc(const void *pa, const void *pb) {
  * cmp_tiebreak_asc re-sort — the group re-sort erased the pubkey ASC
  * secondary), expressed as one comparator because the candidate list no
  * longer arrives pre-sorted by the stake it is ranked on. Two distinct
- * pubkeys have distinct tiebreak hashes (SHA3-512 over distinct inputs),
- * so the order is total and qsort's instability is unobservable. */
+ * pubkeys (below generation 4) or two distinct validator_ids (generation
+ * 4 — the v2_validator_roles primary key, so distinct per candidate) have
+ * distinct tiebreak hashes (SHA3-512 over distinct inputs), so the order
+ * is total and qsort's instability is unobservable. */
 static int cmp_frozen_desc_tiebreak_asc(const void *pa, const void *pb) {
     const committee_work_t *a = (const committee_work_t *)pa;
     const committee_work_t *b = (const committee_work_t *)pb;
@@ -254,7 +286,9 @@ static int v2_seed_block_id(nodus_witness_t *w, uint64_t height,
     return 0;
 }
 
-/* Copy a work entry into the public member struct. */
+/* Copy a work entry into the public member struct. Every field is
+ * written (the caller's buffer may be reused): power 0 (set only by
+ * get_for_block), the v2 ids from the row at generation 4, else zero. */
 static void emit_member(const committee_work_t *w_in,
                          nodus_committee_member_t *out) {
     memcpy(out->pubkey, w_in->rec->pubkey, DNAC_PUBKEY_SIZE);
@@ -262,17 +296,34 @@ static void emit_member(const committee_work_t *w_in,
     out->self_stake     = w_in->self_stake;        /* S3: snapshot self_bond
                                                     * (P3-1: frozen)       */
     out->commission_bps = w_in->rec->commission_bps; /* LIVE, as before   */
+    out->power          = 0;
+    if (w_in->v2) {
+        /* HF-6 5c: immutable row fields (K3; validator.c v2_update keys
+         * by both), the same cand_v2 row the candidate was ranked from */
+        memcpy(out->validator_id, w_in->v2->validator_id,
+               NODUS_V2_VALIDATOR_ID_LEN);
+        memcpy(out->owner_fp, w_in->v2->owner_fp, NODUS_V2_OWNER_FP_LEN);
+    } else {
+        memset(out->validator_id, 0, NODUS_V2_VALIDATOR_ID_LEN);
+        memset(out->owner_fp, 0, NODUS_V2_OWNER_FP_LEN);
+    }
 }
 
 int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                                         uint64_t e_start,
+                                        uint32_t key_gen,
                                         nodus_committee_member_t *out,
                                         int max_entries,
                                         int *count_out) {
     if (!w || !out || !count_out || max_entries <= 0) return -1;
     *count_out = 0;
 
-    /* Bootstrap path: lookback would underflow. Task 52 handles it. */
+    /* Bootstrap path: lookback would underflow. Task 52 handles it.
+     * It does not read `key_gen`: the bootstrap epochs (0 and E) are
+     * built by nodus_witness_vset_commit_genesis at NODUS_RT_GEN_1. Were
+     * a generation->=4 caller ever to reach it, its members would carry
+     * zero ids and the ruleset-2 encoder refuses an all-zero
+     * validator_id — a fault, never a snapshot (HF-6 5d). */
     if (e_start < (uint64_t)DNAC_EPOCH_LENGTH + 1ULL) {
         return nodus_committee_bootstrap_for_epoch(w, e_start, out,
                                                     max_entries, count_out);
@@ -376,8 +427,11 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
      * boundary later, from copy(E), instead of faulting every node on a
      * condition any staker could trigger.
      *
-     * THE TIEBREAK is unchanged: SHA3-512(0x02 ‖ pubkey ‖ state_seed),
-     * ASC, inside equal frozen totals (cmp_frozen_desc_tiebreak_asc).
+     * THE TIEBREAK, ASC, inside equal frozen totals
+     * (cmp_frozen_desc_tiebreak_asc): SHA3-512(0x02 ‖ pubkey ‖
+     * state_seed) below key generation NODUS_RT_GEN_STORAGE, unchanged;
+     * SHA3-512(0x02 ‖ validator_id ‖ state_seed) at generation >= 4
+     * (HF-6 slice 5d, compute_tiebreak_hash_v2 above).
      *
      * CALL SITES (both through ONE core, so the snapshot Rule N judges
      * and the snapshot commit_next stores are built by the same code):
@@ -392,9 +446,38 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
     const uint64_t copy_epoch = (lookback_block / (uint64_t)DNAC_EPOCH_LENGTH)
                                 * (uint64_t)DNAC_EPOCH_LENGTH;
 
-    dnac_validator_record_t *candidates =
-        calloc((size_t)DNAC_MAX_VALIDATORS, sizeof(*candidates));
-    if (!candidates) return -1;
+    /* ── HF-6 sub-slice 3d: THE KEY GENERATION ────────────────────────
+     * (`key_gen`, the caller's — HF-6 slice 5d, ORCHESTRATOR decision
+     * D4 (i): a boundary passes its ONE read of the committed registry,
+     * so this core, the snapshot's selection_ruleset and Rule N's
+     * preview cannot see two generations; the callers outside a
+     * boundary read nodus_witness_v2_key_generation once and pass it.)
+     * At generation >= NODUS_RT_GEN_STORAGE the candidate set comes from
+     * nodus_validator_v2_bonded_tenured (the SAME status / tenure filters
+     * and pubkey ASC collect order, each candidate a v2 row whose
+     * validator_id is its pubkey_hash) and the frozen totals are read
+     * from the copy by that validator_id (nodus_witness_v2_balance_copy_
+     * frozen_key) — the key the generation-4 edge re-keyed copy(B − E)
+     * to and the boundary writes every later copy under. HF-6 slice 5d:
+     * the tiebreak hashes the same row's validator_id instead of its
+     * pubkey (design §7.7 item 8 / §7.8) — the seven equal seats are
+     * re-ordered once, at the first ruleset-2 snapshot. Below generation
+     * 4 everything is exactly as before.
+     * HF-6 slice 5c: under generation 4 every emitted member also
+     * carries its row's validator_id / owner_fp (emit_member, from this
+     * same `key_gen`) — what a ruleset-2 entry is filled from. */
+    const int g4 = key_gen >= NODUS_RT_GEN_STORAGE;
+
+    dnac_validator_record_t *candidates = NULL;
+    nodus_v2_validator_row_t *cand_v2 = NULL;          /* ~5.4 KB each   */
+    if (g4) {
+        cand_v2 = calloc((size_t)DNAC_MAX_VALIDATORS, sizeof(*cand_v2));
+        if (!cand_v2) return -1;
+    } else {
+        candidates = calloc((size_t)DNAC_MAX_VALIDATORS,
+                            sizeof(*candidates));
+        if (!candidates) return -1;
+    }
 
     /* ── S3 tenure anchor fix (found by the 7→9→7 harness) ──────────────
      * The tenure gate used to compare against LOOKBACK_BLOCK
@@ -417,30 +500,40 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
      * even the anchor fix leaves epoch 2E empty (1 + 2E ≤ 2E fails by
      * exactly the one block genesis occupies). */
     int cand_count = 0;
-    if (nodus_validator_bonded_tenured(w, e_start, candidates,
-                                       DNAC_MAX_VALIDATORS,
-                                       &cand_count) != 0) {
+    int crc = g4
+        ? nodus_validator_v2_bonded_tenured(w, e_start, cand_v2,
+                                            DNAC_MAX_VALIDATORS, &cand_count)
+        : nodus_validator_bonded_tenured(w, e_start, candidates,
+                                         DNAC_MAX_VALIDATORS, &cand_count);
+    if (crc != 0) {
         free(candidates);
+        free(cand_v2);
         return -1;
     }
 
     if (cand_count == 0) {
         free(candidates);
+        free(cand_v2);
         return 0;   /* empty committee — count_out already 0 */
     }
 
     /* Build the work table: frozen totals + pre-computed tiebreaks. */
     committee_work_t *work =
         calloc((size_t)cand_count, sizeof(*work));
-    if (!work) { free(candidates); return -1; }
+    if (!work) { free(candidates); free(cand_v2); return -1; }
 
     int n_work = 0;
     for (int i = 0; i < cand_count; i++) {
+        const dnac_validator_record_t *rec =
+            g4 ? &cand_v2[i].rec : &candidates[i];
         uint64_t frozen_self = 0, frozen_total = 0;
-        if (nodus_witness_v2_balance_copy_frozen(w, copy_epoch,
-                                                 candidates[i].pubkey,
-                                                 &frozen_self,
-                                                 &frozen_total) != 0) {
+        int frc = g4
+            ? nodus_witness_v2_balance_copy_frozen_key(
+                  w, copy_epoch, cand_v2[i].validator_id, &frozen_self,
+                  &frozen_total)
+            : nodus_witness_v2_balance_copy_frozen(
+                  w, copy_epoch, rec->pubkey, &frozen_self, &frozen_total);
+        if (frc != 0) {
             /* A copy that cannot be read is never "absent, rank at 0". */
             QGP_LOG_ERROR(LOG_TAG, "epoch %llu: frozen copy %llu unreadable "
                           "for a candidate — failing closed",
@@ -448,6 +541,7 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                           (unsigned long long)copy_epoch);
             free(work);
             free(candidates);
+            free(cand_v2);
             return -1;
         }
         if (frozen_total == 0) {
@@ -458,12 +552,17 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                           (unsigned long long)copy_epoch);
             continue;
         }
-        work[n_work].rec         = &candidates[i];
+        work[n_work].rec         = rec;
+        work[n_work].v2          = g4 ? &cand_v2[i] : NULL;   /* HF-6 5c */
         work[n_work].total_stake = frozen_total;
         work[n_work].self_stake  = frozen_self;   /* <= total: own row is
                                                    * one of the summands  */
-        compute_tiebreak_hash(candidates[i].pubkey, state_seed,
-                              work[n_work].tiebreak);
+        if (g4)   /* HF-6 5d: the id of the row the total was read by */
+            compute_tiebreak_hash_v2(cand_v2[i].validator_id, state_seed,
+                                     work[n_work].tiebreak);
+        else
+            compute_tiebreak_hash(rec->pubkey, state_seed,
+                                  work[n_work].tiebreak);
         n_work++;
     }
 
@@ -480,6 +579,7 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
 
     free(work);
     free(candidates);
+    free(cand_v2);
     return 0;
 }
 
@@ -592,6 +692,7 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
 
     for (int i = 0; i < cand_count; i++) {
         work[i].rec = &candidates[i];
+        work[i].v2  = NULL;     /* HF-6 5c: no v2 row here — ids emit 0 */
         /* bootstrap = the genesis snapshots: the LIVE genesis rows (the
          * same rows copy(0) is later written from) */
         work[i].total_stake =
@@ -671,6 +772,14 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
              * cache. */
             out[i].self_stake     = w->cached_committee_self_stakes[i];
             out[i].commission_bps = w->cached_committee_commission_bps[i];
+            /* HF-6 5b — the voting power, from the parallel array the
+             * miss path below fills; a hit and a miss agree. */
+            out[i].power          = w->cached_committee_powers[i];
+            /* HF-6 5c (D6) — builder-only, never cached: zero, exactly
+             * what the miss path below returns. The caller's buffer may
+             * hold anything, so write them. */
+            memset(out[i].validator_id, 0, sizeof(out[i].validator_id));
+            memset(out[i].owner_fp, 0, sizeof(out[i].owner_fp));
         }
         *count_out = n;
         return 0;
@@ -678,7 +787,7 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
 
     /* Cache miss — compute and store.
      *
-     * S3: DNAC_MAX_ACTIVE_VALIDATORS members are ~334 KB, so the scratch
+     * S3: DNAC_MAX_ACTIVE_VALIDATORS members are ~344 KB, so the scratch
      * buffer is HEAP, never a stack array. It is requested at the release
      * ceiling; compute_for_epoch narrows the result to the epoch's
      * chain-derived target itself. */
@@ -749,6 +858,24 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
             dna_vset_snapshot_t *snap = NULL;
             int g = nodus_witness_vset_get(w, e_start, &snap, NULL);
             if (g == 0) {
+                /* HF-6 5b — the seats' voting power from THE ONE helper
+                 * over the served snapshot (its own ruleset decides
+                 * capped or not). A power that cannot be computed is a
+                 * FAULT: the lookup fails closed, the cache stays
+                 * invalid. */
+                uint64_t pw[DNA_MAX_ACTIVE_VALIDATORS];
+                if (nodus_witness_vset_powers(w, snap, pw) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "epoch %llu: the served "
+                                  "snapshot's voting power cannot be "
+                                  "computed — no committee",
+                                  (unsigned long long)e_start);
+                    dna_vset_free(&snap);
+                    free(tmp);
+                    w->cached_committee_epoch_start = UINT64_MAX;
+                    w->cached_committee_count = 0;
+                    *count_out = 0;
+                    return -1;
+                }
                 /* decode caps active_count at DNA_MAX_ACTIVE_VALIDATORS,
                  * and the shared/dnac ceiling equals the dnac one
                  * (pinned in serialize.c), so this cannot overflow tmp. */
@@ -758,6 +885,7 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
                     tmp[i].total_stake    = snap->entries[i].total_stake;
                     tmp[i].self_stake     = snap->entries[i].self_bond;
                     tmp[i].commission_bps = snap->entries[i].commission_bps;
+                    tmp[i].power          = pw[i];
                 }
                 tmp_count = (int)snap->active_count;
                 dna_vset_free(&snap);
@@ -777,7 +905,33 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
     }
 
     if (!served_from_snapshot) {
-        int rc = nodus_committee_compute_for_epoch(w, e_start, tmp,
+        /* HF-6 5b (ORCHESTRATOR decision D5, plan tasks/hf6-slice5-plan.md
+         * §5): at key generation >= NODUS_RT_GEN_STORAGE a recompute
+         * without a snapshot row is a FAULT, not a set. Every epoch of a
+         * version-3 chain has its row (stored one epoch ahead), so this
+         * arm is reached only by a corrupted table or a row-less
+         * fixture — and a set recomputed from live rows there would be
+         * the current-set substitution the snapshot authority above
+         * forbids, with no ruleset to derive a capped power from. Below
+         * generation 4 the recompute and its power (total /
+         * DNAC_DECIMAL_UNIT, the pre-slice-5 unit) are unchanged. */
+        uint32_t key_gen = 0;
+        if (nodus_witness_v2_key_generation(w, &key_gen) != 0 ||
+            key_gen >= NODUS_RT_GEN_STORAGE) {
+            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: no snapshot row and the key "
+                          "generation is %s — refusing to recompute a "
+                          "committee", (unsigned long long)e_start,
+                          key_gen >= NODUS_RT_GEN_STORAGE ? ">= 4"
+                                                          : "unreadable");
+            free(tmp);
+            w->cached_committee_epoch_start = UINT64_MAX;
+            w->cached_committee_count = 0;
+            *count_out = 0;
+            return -1;
+        }
+        /* HF-6 5d (D4): the generation read once above, passed down —
+         * always < NODUS_RT_GEN_STORAGE here. */
+        int rc = nodus_committee_compute_for_epoch(w, e_start, key_gen, tmp,
                                                       DNAC_MAX_ACTIVE_VALIDATORS,
                                                       &tmp_count);
         if (rc != 0) {
@@ -788,6 +942,8 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
             *count_out = 0;
             return rc;
         }
+        for (int i = 0; i < tmp_count && i < DNAC_MAX_ACTIVE_VALIDATORS; i++)
+            tmp[i].power = tmp[i].total_stake / DNAC_DECIMAL_UNIT;
     }
     if (tmp_count < 0 || tmp_count > DNAC_MAX_ACTIVE_VALIDATORS) {
         /* Cannot happen — compute_for_epoch clamps to max_entries. Fail
@@ -800,11 +956,18 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
     }
 
     for (int i = 0; i < tmp_count; i++) {
+        /* HF-6 5c (D6): the ids are builder-only and NOT cached, so the
+         * miss returns them zero on BOTH arms — the snapshot-served one
+         * (whose entries may carry ids under ruleset 2) and the
+         * recompute — exactly what a later hit returns. */
+        memset(tmp[i].validator_id, 0, sizeof(tmp[i].validator_id));
+        memset(tmp[i].owner_fp, 0, sizeof(tmp[i].owner_fp));
         memcpy(w->cached_committee_pubkeys[i], tmp[i].pubkey,
                DNAC_PUBKEY_SIZE);
         w->cached_committee_stakes[i]           = tmp[i].total_stake;
         w->cached_committee_self_stakes[i]      = tmp[i].self_stake;
         w->cached_committee_commission_bps[i]   = tmp[i].commission_bps;
+        w->cached_committee_powers[i]           = tmp[i].power;
     }
     w->cached_committee_count = tmp_count;
     w->cached_committee_epoch_start = e_start;

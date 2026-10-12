@@ -49,6 +49,7 @@
 #include "witness/nodus_witness_v2_claims.h"    /* HF-4: runtime_for     */
 #include "witness/nodus_witness_runtime.h"      /* HF-4: generation      */
 #include "witness/nodus_witness_v2_storage.h"   /* dnac_storage_status   */
+#include "witness/nodus_witness_v2_epoch.h"     /* HF-6 3e: key generation */
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
 #include "dnac/msig_wire.h"                 /* dnac_msig_* member gate */
@@ -2537,7 +2538,163 @@ static void handle_dnac_addr_history(nodus_witness_t *w,
  * 128 lowercase hex — the same fingerprint formula the validator_list /
  * committee query handlers use, so downstream UI can correlate against
  * validator list entries.
+ *
+ * HF-6 sub-slice 3e (design docs/plans/2026-10-03-hf5-validator-owner-
+ * stake-design.md rev 6 §9 — minimal arm; the full client work is slice
+ * 7): under the HF-6 generation (hf6_registry_roles) the rows are keyed
+ * by (delegator_fp = SHA3-512(pubkey) UNTAGGED, validator_id) — sub-slice
+ * 3a's contract, nodus_witness_delegation.h — and a gen-4-written row has
+ * no validator pubkey, so the legacy lookup cannot see them. The arm
+ * (dlg_v2_reply) lists by delegator_fp = the authenticated session
+ * fingerprint, ordered by validator_id (the PK's second column: a total,
+ * byte order — every node answers the same prefix), and every entry
+ * carries
+ *   "validator" = hex(validator_id) — the key kept one version for older
+ *                 decoders; its value is now the validator's id, the
+ *                 identifier a generation-4 DELEGATE / UNDELEGATE names
+ *   "vid"       = hex(validator_id)
+ *   "owner"     = hex(owner_fp), the validator's address (its
+ *                 v2_validator_roles row; a delegation whose validator has
+ *                 no row is an error reply — never an entry without it)
+ *   "amount", "block" unchanged.
+ * Older decoders skip "vid" / "owner" (nodus_client.c entry loop
+ * `else cbor_decode_skip`). Node-local display read; nothing in consensus
+ * reads this reply.
  * ════════════════════════════════════════════════════════════════════ */
+
+/* HF-6 sub-slice 3e: do the committed rows carry the HF-6 generation's
+ * keys? The ONE key-generation reader the boundary uses
+ * (nodus_witness_v2_key_generation, sub-slice 3d: the SYSTEM registry
+ * runtime's generation; NO registry row — a chain that never crossed an
+ * edge — is generation 1, not an error). No version-3 chain on this node
+ * = the legacy layout (*out 0).
+ * @return 0 with *out set / -1 the registry row is unreadable or does not
+ *         resolve a compiled generation (an error reply, never a guess). */
+static int hf6_registry_roles(nodus_witness_t *w, int *out) {
+    uint64_t tip = 0;
+    uint32_t gen = 0;
+    *out = 0;
+    if (!w->db || nodus_witness_v2_tip_height(w, &tip) != 0) return 0;
+    if (nodus_witness_v2_key_generation(w, &gen) != 0) return -1;
+    *out = gen >= NODUS_RT_GEN_STORAGE ? 1 : 0;
+    return 0;
+}
+
+static void hf6_hex64(const uint8_t raw[64], char out[129]) {
+    static const char hx[] = "0123456789abcdef";
+    for (int b = 0; b < 64; b++) {
+        out[2 * b]     = hx[raw[b] >> 4];
+        out[2 * b + 1] = hx[raw[b] & 0x0f];
+    }
+    out[128] = '\0';
+}
+
+/* The generation-4 dnac_delegations reply (block comment above). */
+static void dlg_v2_reply(nodus_witness_t *w, struct nodus_tcp_conn *conn,
+                         uint32_t txn_id, const uint8_t delegator_fp[64],
+                         int max_results) {
+    typedef struct {
+        uint8_t  vid[64];
+        uint8_t  owner[64];
+        uint64_t amount;
+        uint64_t block;
+    } dlg_v2_ent_t;
+    dlg_v2_ent_t *ents = calloc((size_t)max_results, sizeof(*ents));
+    sqlite3_stmt *st = NULL;
+    int count = 0, fault = 0;
+
+    if (!ents) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT validator_hash, amount, delegated_at_block "
+            "FROM delegations WHERE delegator_hash = ?1 "
+            "ORDER BY validator_hash ASC LIMIT ?2",
+            -1, &st, NULL) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 1, delegator_fp, 64,
+                          SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_bind_int(st, 2, max_results) != SQLITE_OK) {
+        fault = 1;
+    }
+    while (!fault) {
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW || count >= max_results) { fault = 1; break; }
+        const uint8_t *vid = sqlite3_column_blob(st, 0);
+        sqlite3_int64 amt = sqlite3_column_int64(st, 1);
+        sqlite3_int64 at = sqlite3_column_int64(st, 2);
+        /* the sub-slice-3a row shape: a malformed row is a fault, never
+         * a zero-filled value */
+        if (!vid || sqlite3_column_bytes(st, 0) != 64 ||
+            sqlite3_column_type(st, 1) != SQLITE_INTEGER || amt <= 0 ||
+            sqlite3_column_type(st, 2) != SQLITE_INTEGER || at < 0) {
+            fault = 1;
+            break;
+        }
+        memcpy(ents[count].vid, vid, 64);
+        ents[count].amount = (uint64_t)amt;
+        ents[count].block = (uint64_t)at;
+        count++;
+    }
+    if (st) sqlite3_finalize(st);
+    /* every owner read BEFORE a byte is encoded */
+    for (int i = 0; !fault && i < count; i++)
+        if (nodus_rt_native_validator_owner(w, ents[i].vid,
+                                            ents[i].owner) != 0)
+            fault = 1;
+    if (fault) {
+        QGP_LOG_ERROR(LOG_TAG, "dnac_delegations (generation 4): "
+                      "delegation / owner read failed");
+        free(ents);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "delegations query failed");
+        return;
+    }
+
+    /* per entry: three 128-char hex strings + two u64 + keys ≈ 430 B */
+    size_t buf_size = 1024 + ((size_t)count * 512);
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) {
+        free(ents);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_size);
+    enc_dnac_response(&enc, txn_id, "dnac_delegations", 2);
+    cbor_encode_cstr(&enc, "count");
+    cbor_encode_uint(&enc, (uint64_t)count);
+    cbor_encode_cstr(&enc, "entries");
+    cbor_encode_array(&enc, (size_t)count);
+    for (int i = 0; i < count; i++) {
+        char hx[129];
+        hf6_hex64(ents[i].vid, hx);
+        cbor_encode_map(&enc, 5);
+        cbor_encode_cstr(&enc, "validator");
+        cbor_encode_cstr(&enc, hx);
+        cbor_encode_cstr(&enc, "amount");
+        cbor_encode_uint(&enc, ents[i].amount);
+        cbor_encode_cstr(&enc, "block");
+        cbor_encode_uint(&enc, ents[i].block);
+        cbor_encode_cstr(&enc, "vid");
+        cbor_encode_cstr(&enc, hx);
+        hf6_hex64(ents[i].owner, hx);
+        cbor_encode_cstr(&enc, "owner");
+        cbor_encode_cstr(&enc, hx);
+    }
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) {
+        nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
+    free(buf);
+    free(ents);
+}
 
 static void handle_dnac_delegations(nodus_witness_t *w,
                                       struct nodus_tcp_conn *conn,
@@ -2600,6 +2757,19 @@ static void handle_dnac_delegations(nodus_witness_t *w,
                     NODUS_KEY_BYTES) != 0) {
             send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                         "pubkey does not match authenticated session fingerprint");
+            return;
+        }
+        /* HF-6 3e: under generation 4 the rows are keyed by this
+         * untagged fingerprint — the generation-4 arm (dlg_v2_reply) */
+        int gen4 = 0;
+        if (hf6_registry_roles(w, &gen4) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "the registry does not resolve one compiled "
+                        "generation");
+            return;
+        }
+        if (gen4) {
+            dlg_v2_reply(w, conn, txn_id, fp_from_pubkey, max_results);
             return;
         }
     }
@@ -3679,7 +3849,49 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
  * node-local read for display; nothing in consensus reads this reply.
  * Older clients skip the unknown entry key
  * (nodus_client.c entry loop `else cbor_decode_skip`).
+ *
+ * HF-6 sub-slice 3e (design docs/plans/2026-10-03-hf5-validator-owner-
+ * stake-design.md rev 6 §9 "validator_id, owner_fp, consensus key (bir
+ * sürüm boyunca pk da)" — minimal arm; the full client work is slice 7):
+ * under the HF-6 generation (hf6_registry_roles) every entry carries two
+ * more keys, "vid" bstr(64) = validator_id and "owner" bstr(64) = owner_fp
+ * (the validator's address), read from the row's v2_validator_roles JOIN
+ * (vl_v2_ids); "pk" stays (it is the consensus key — validators.pubkey —
+ * kept one version), and "dlg" counts the rows keyed by validator_id
+ * (nodus_delegation_v2_count_by_validator — the legacy count hashes the
+ * pubkey, which no generation-4 row is keyed by). A row without its roles
+ * row is an error reply (vl_v2_ids). Older clients skip both new keys.
  * ════════════════════════════════════════════════════════════════════ */
+
+/* HF-6 3e: the validator_id and owner_fp of the generation-4 validators
+ * row holding consensus pubkey `pk` — the roles JOIN rtn_sys_val2_fetch
+ * uses (r.validator_id = v.pubkey_hash). EXACTLY one row must answer; no
+ * row, two rows or a malformed column is -1 (the caller's error reply).
+ * Node-local display read. */
+static int vl_v2_ids(nodus_witness_t *w, const uint8_t *pk,
+                     uint8_t vid_out[64], uint8_t owner_out[64]) {
+    sqlite3_stmt *st = NULL;
+    int out = -1;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT r.validator_id, r.owner_fp FROM validators v "
+            "JOIN v2_validator_roles r ON r.validator_id = v.pubkey_hash "
+            "WHERE v.pubkey = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    if (sqlite3_bind_blob(st, 1, pk, DNAC_PUBKEY_SIZE,
+                          SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {
+        const uint8_t *vid = sqlite3_column_blob(st, 0);
+        const uint8_t *own = sqlite3_column_blob(st, 1);
+        if (vid && sqlite3_column_bytes(st, 0) == 64 &&
+            own && sqlite3_column_bytes(st, 1) == 64) {
+            memcpy(vid_out, vid, 64);
+            memcpy(owner_out, own, 64);
+            if (sqlite3_step(st) == SQLITE_DONE) out = 0;   /* exactly one */
+        }
+    }
+    sqlite3_finalize(st);
+    return out;
+}
 
 static void handle_dnac_validator_list_query(nodus_witness_t *w,
                                                 struct nodus_tcp_conn *conn,
@@ -3744,23 +3956,46 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
         return;
     }
 
-    /* Delegator counts, all read before a byte is encoded (see the block
-     * comment: a failed count is an error reply, never a 0). */
+    /* HF-6 3e: the generation-4 arm (block comment) */
+    int gen4 = 0;
+    if (hf6_registry_roles(w, &gen4) != 0) {
+        free(vals);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "the registry does not resolve one compiled generation");
+        return;
+    }
+
+    /* Delegator counts (and, under generation 4, each row's validator_id
+     * and owner_fp), all read before a byte is encoded (see the block
+     * comment: a failed read is an error reply, never a 0). */
     int *dlg = NULL;
+    uint8_t (*ids)[2][64] = NULL;        /* [i][0] validator_id, [1] owner */
     if (count > 0) {
         dlg = calloc((size_t)count, sizeof(*dlg));
-        if (!dlg) {
+        if (gen4) ids = calloc((size_t)count, sizeof(*ids));
+        if (!dlg || (gen4 && !ids)) {
+            free(ids);
+            free(dlg);
             free(vals);
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
             return;
         }
     }
     for (int i = 0; i < count; i++) {
-        if (nodus_delegation_count_by_validator(w, vals[i].pubkey,
-                                                &dlg[i]) != 0 ||
-            dlg[i] < 0) {
+        int rc;
+        if (gen4) {
+            rc = vl_v2_ids(w, vals[i].pubkey, ids[i][0], ids[i][1]);
+            if (rc == 0)
+                rc = nodus_delegation_v2_count_by_validator(w, ids[i][0],
+                                                            &dlg[i]);
+        } else {
+            rc = nodus_delegation_count_by_validator(w, vals[i].pubkey,
+                                                     &dlg[i]);
+        }
+        if (rc != 0 || dlg[i] < 0) {
             QGP_LOG_ERROR(LOG_TAG,
                           "validator_list: delegator count read failed");
+            free(ids);
             free(dlg);
             free(vals);
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
@@ -3769,10 +4004,12 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
         }
     }
 
-    /* Each entry ships pubkey (2592B) + 8 small ints. Budget 2800B. */
-    size_t buf_size = 256 + (size_t)count * 2800;
+    /* Each entry ships pubkey (2592B) + 8 small ints. Budget 2800B;
+     * + "vid"/"owner" (2 × (5 + 2 + 64) B) under generation 4. */
+    size_t buf_size = 256 + (size_t)count * (gen4 ? 2960u : 2800u);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
+        free(ids);
         free(dlg);
         free(vals);
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
@@ -3791,7 +4028,13 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
     cbor_encode_cstr(&enc, "validators");
     cbor_encode_array(&enc, (size_t)count);
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 8);
+        cbor_encode_map(&enc, gen4 ? 10 : 8);
+        if (gen4) {
+            cbor_encode_cstr(&enc, "vid");
+            cbor_encode_bstr(&enc, ids[i][0], 64);
+            cbor_encode_cstr(&enc, "owner");
+            cbor_encode_bstr(&enc, ids[i][1], 64);
+        }
         cbor_encode_cstr(&enc, "pk");
         cbor_encode_bstr(&enc, vals[i].pubkey, DNAC_PUBKEY_SIZE);
         cbor_encode_cstr(&enc, "self");
@@ -3819,6 +4062,7 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
     }
 
     free(buf);
+    free(ids);
     free(dlg);
     free(vals);
 }
@@ -4202,7 +4446,15 @@ static void v3b_enc_coin(cbor_encoder_t *e, const uint8_t id[64],
     cbor_encode_cstr(e, "u");  cbor_encode_uint(e, unlock);
 }
 
-static void v3b_enc_record(cbor_encoder_t *e, const nodus_rt_leg_desc_t *d)
+/* `owner` (HF-6 sub-slice 3e, design rev 6 §9): non-NULL exactly for a
+ * generation-4 record leg (d->rec_v2) — the validator's owner_fp, which
+ * the caller read (nodus_rt_native_validator_owner). Such a record carries
+ * two OPTIONAL keys beside the old ones: "vid" = hex(validator_id) (the
+ * value "v" also carries under generation 4 — "v" is kept one version for
+ * older decoders, which skip unknown keys) and "ow" = hex(owner_fp), the
+ * validator's ADDRESS. */
+static void v3b_enc_record(cbor_encoder_t *e, const nodus_rt_leg_desc_t *d,
+                           const uint8_t *owner)
 {
     char   fp[129];
     size_t n = 1;
@@ -4216,6 +4468,8 @@ static void v3b_enc_record(cbor_encoder_t *e, const nodus_rt_leg_desc_t *d)
     case NODUS_RT_DESC_REC_CHAIN_CONFIG:     n += 3; break; /* p nv ef    */
     default:                                 break;
     }
+    if (owner && d->rec != NODUS_RT_DESC_REC_CHAIN_CONFIG)
+        n += 2;                                             /* vid ow     */
     cbor_encode_map(e, n);
     cbor_encode_cstr(e, "k");
     cbor_encode_uint(e, (uint64_t)d->rec);
@@ -4227,6 +4481,11 @@ static void v3b_enc_record(cbor_encoder_t *e, const nodus_rt_leg_desc_t *d)
     }
     v3b_hex64(d->rec_validator_fp, fp);
     cbor_encode_cstr(e, "v"); cbor_encode_tstr(e, fp, 128);
+    if (owner) {
+        cbor_encode_cstr(e, "vid"); cbor_encode_tstr(e, fp, 128);
+        v3b_hex64(owner, fp);
+        cbor_encode_cstr(e, "ow"); cbor_encode_tstr(e, fp, 128);
+    }
     if (d->rec == NODUS_RT_DESC_REC_DELEGATE ||
         d->rec == NODUS_RT_DESC_REC_UNDELEGATE) {
         v3b_hex64(d->rec_delegator_fp, fp);
@@ -4425,6 +4684,8 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
     bool     cl_coin = false;
     static const uint8_t native_token[64] = {0};
     size_t   n_keys;
+    uint8_t  sys_owner[64];             /* HF-6 3e: a gen-4 record's     */
+    bool     has_sys_owner = false;     /* validator owner_fp ("ow")     */
 
     if (t->len > 0 && t->data) {
         kind = nodus_witness_v2_classify_entry(t->data, (uint32_t)t->len)
@@ -4476,6 +4737,23 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
                         return -1;
                     has_ev = true;
                 } else sys = d;
+            }
+            /* HF-6 3e (design rev 6 §9): a generation-4 record names a
+             * validator_id, not an address — answer its owner_fp too,
+             * from the committed v2_validator_roles row (owner_fp is
+             * immutable, K3, so the row answers for every height it has
+             * existed). An applied generation-4 record whose validator
+             * has no row is a stored row contradicting another: an
+             * ERROR, never a record without its owner. */
+            if (sys && sys->rec_v2 &&
+                sys->rec != NODUS_RT_DESC_REC_NONE &&
+                sys->rec != NODUS_RT_DESC_REC_CHAIN_CONFIG) {
+                if (nodus_rt_native_validator_owner(c->w,
+                        sys->rec_validator_fp, sys_owner) != 0)
+                    return v3b_fail(c, NODUS_ERR_INTERNAL_ERROR,
+                                    "an applied generation-4 record's "
+                                    "validator has no owner row");
+                has_sys_owner = true;
             }
             eff = true;
         }
@@ -4616,7 +4894,7 @@ static int v3b_item(v3b_ctx_t *c, uint32_t i, uint32_t *gidx,
         }
         if (sys && sys->rec != NODUS_RT_DESC_REC_NONE) {
             cbor_encode_cstr(e, "rc");
-            v3b_enc_record(e, sys);
+            v3b_enc_record(e, sys, has_sys_owner ? sys_owner : NULL);
         }
     }
     return 0;

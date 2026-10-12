@@ -644,8 +644,11 @@ int nodus_witness_v2_bundle_apply(nodus_witness_t *w2,
      * transaction; a failure leaves the scratch DB for the caller to
      * discard. */
     /* Nodus EVM: the live rung is S17 (cascades through S16; the EVM tables
-     * empty, the CORE EVM reserve row at 0 — the genesis is unchanged). */
-    if (nodus_witness_db_migrate_v2s17(w2) != 0) { free(doc); return -1; }
+     * empty, the CORE EVM reserve row at 0 — the genesis is unchanged).
+     * HF-6 3a: the live rung is S18 (cascades through S17; adds the empty
+     * v2_validator_roles, which is NOT one of this file's bundle tables,
+     * so apply_table's column-count check is unaffected). */
+    if (nodus_witness_db_migrate_v2s18(w2) != 0) { free(doc); return -1; }
     {
         nodus_cmt_store_t s;
         if (nodus_cmt_store_init(&s, w2->db, false) != CMT_OK) {

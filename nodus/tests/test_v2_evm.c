@@ -45,7 +45,8 @@
  *     ONLY by construction (the fixture writes the vote row — a
  *     chain_config leg — before genesis), so they are not compared
  *     equal. FAULTs: the edge
- *     with the registry not at the base generation; the edge below S17.
+ *     with the registry not at the base generation; the edge below S17
+ *     (the edge accepts S17 or S18 since HF-6 3a).
  *  3. vote rules: the stateful matrix of param 14 (each prerequisite
  *     alone refuses; red-team 1 F5: the first BLOCKHASH window on the
  *     chain — initial 1: 256 refused / 257 legal, initial 100: 355 / 356,
@@ -122,7 +123,8 @@
  * 10. upgrade: an S16 version-3 database (the EVM tables and the reserve
  *     dropped, user_version 16) reopened through the production open path
  *     is migrated to S17 (empty tables, reserve (1, 0), the evm_logs
- *     height index) with its
+ *     height index) and on to S18 (HF-6 3a: the at-open rung is S18, the
+ *     empty v2_validator_roles) with its
  *     committed and recomputed global roots and its CORE root unchanged,
  *     and keeps applying. A generation-2 chain applies byte-identically
  *     with the compiled table and with a table holding generations 1-2
@@ -1575,8 +1577,9 @@ static int test_edge(void) {
     {
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(A.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S17,
-              "the reopened seeded chain is S17 (the at-open rung)"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S18,
+              "the reopened seeded chain is S18 (the at-open rung since "
+              "HF-6 3a)"); OK();
     }
 
     /* heights 1..3: the twins agree on everything the vote row is not */
@@ -1739,7 +1742,8 @@ static int test_edge(void) {
               "the edge FAULTs, the database byte-unchanged"); OK();
         fx_close(&F);
     }
-    /* FAULT: the edge below S17 */
+    /* FAULT: the edge below S17 (S16 is still a rung the block-apply gate
+     * accepts, so the blocks before the edge apply) */
     {
         fixture_t F;
         CHECK(fx_open(&F, "edgeF2", 1, 1) == 0, "both votes");
@@ -3640,7 +3644,7 @@ static int test_twin(void) {
     return 0;
 }
 
-/* ══ 10. S16 → S17 at open; generation 2 unchanged ═══════════════════ */
+/* ══ 10. S16 → S17 → S18 at open; generation 2 unchanged ═════════════ */
 
 static int test_upgrade(void) {
     /* (a) an S16 version-3 database: the EVM tables and the reserve do
@@ -3660,6 +3664,8 @@ static int test_upgrade(void) {
             CHECK(sqlite3_exec(fx.w->db, sql, NULL, NULL, NULL) == SQLITE_OK,
                   "drop an S17 table");
         }
+        CHECK(sqlite3_exec(fx.w->db, "DROP TABLE v2_validator_roles", NULL,
+                           NULL, NULL) == SQLITE_OK, "drop the S18 table");
         CHECK(sqlite3_exec(fx.w->db, "PRAGMA user_version = 16", NULL, NULL,
                            NULL) == SQLITE_OK, "user_version 16");
         uint8_t g0[64], c0[64];
@@ -3668,7 +3674,10 @@ static int test_upgrade(void) {
         CHECK(fx_reopen(&fx) == 0, "the production open path"); OK();
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S17, "migrated to S17"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S18,
+              "migrated through S17 to S18"); OK();
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_validator_roles") == 0,
+              "v2_validator_roles exists, empty"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM evm_meta") == 0 &&
               q1(fx.w, "SELECT COUNT(*) FROM evm_accounts") == 0 &&
               q1(fx.w, "SELECT COUNT(*) FROM v2_evm_reserve") == 1 &&
@@ -3693,28 +3702,31 @@ static int test_upgrade(void) {
     }
     /* (a2) red-team 1 F4 — a database ALREADY at S17 built before the
      * cursor-scan indexes existed (the S17 migration returns early at 17,
-     * v2_schema.c): the at-open ensure step (nodus_witness.c, after the
-     * S17 rung) creates both with their exact key columns, the version
-     * stays 17, a receipt row and every root are untouched, the chain
-     * keeps applying; a second open is a no-op. An index of the SAME
-     * NAME and another shape refuses the database (fail closed). */
+     * v2_schema.c): the at-open rung climbs it to S18 (HF-6 3a) and the
+     * at-open ensure step (nodus_witness.c, after the rung — it runs at
+     * S17 or S18) creates both with their exact key columns, a receipt
+     * row and every root are untouched, the chain keeps applying; a
+     * second open is a no-op. An index of the SAME NAME and another shape
+     * refuses the database (fail closed). */
     {
         fixture_t fx;
         CHECK(fx_open(&fx, "s17ix", 1, 0) == 0, "a generation-2 chain");
         CHECK(fx_to(&fx, 4) == 0, "three blocks");
         CHECK(sqlite3_exec(fx.w->db,
                   "DROP INDEX evm_receipts_by_pos; DROP INDEX evm_logs_by_addr;"
+                  "DROP TABLE v2_validator_roles; PRAGMA user_version = 17;"
                   "INSERT INTO evm_receipts (intent_id, global_height, "
                   "item_index, receipt, digest) VALUES (zeroblob(64), 3, 0, "
                   "x'01', zeroblob(64))", NULL, NULL, NULL) == SQLITE_OK,
-              "the previous build's S17: no scan indexes, one receipt row");
+              "the previous build's S17: no scan indexes, no roles table, "
+              "one receipt row");
         uint8_t g0[64], c0[64];
         CHECK(nodus_witness_v2_committed_global_root(fx.w, g0) == 0 &&
               core_root_now(fx.w, c0) == 0, "S17 roots");
         CHECK(fx_reopen(&fx) == 0, "the production open path"); OK();
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S17, "still S17"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S18, "climbed to S18"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM pragma_index_info("
                        "'evm_receipts_by_pos')") == 2 &&
               q1(fx.w, "SELECT COUNT(*) FROM pragma_index_info("

@@ -1378,6 +1378,62 @@ static void bonded_add_committee(nodus_witness_p2p_t *p, p2p_bonded_t **set,
 }
 
 /*
+ * HF-6 slice 6e (design 2026-10-03-hf5-validator-owner-stake rev 6 §3:
+ * "p2p bonded set pending_consensus_pubkey'i de kapsar — yeni node ilk
+ * görevinden önce gossip yapabilsin"; plan tasks/hf6-slice6-plan.md §2
+ * "6e"): the PENDING consensus key of every bonded (ACTIVE / ELIGIBLE)
+ * row, from the ROTATE's commit on — so the node that will sign under it
+ * from U + 2 is connected, unconditional and its signed ADDR record is
+ * verifiable (h_bonded_pubkey) while it syncs, before any committee names
+ * it. Rows joined on validators.pubkey_hash = v2_validator_roles.
+ * validator_id (the generation-4 key); validator_id ASC. Below generation
+ * 4 the roles table is empty and the statement adds nothing. The swap at
+ * U zeroes the pending field and makes the key the row's own, so the
+ * validators query above keeps it bonded; a RETIRING / AUTO_RETIRED /
+ * UNSTAKED row's pending key is never added (exec refuses a ROTATE there,
+ * khan A5; a row that UNSTAKEs with a rotation pending drops out here).
+ * A failure is logged and leaves the rest of the set as built — the
+ * validators read's rule. Node-local: the set decides connections, never
+ * a consensus byte.
+ */
+static void bonded_add_pending(nodus_witness_p2p_t *p, p2p_bonded_t **set,
+                               int *n, int *cap)
+{
+    sqlite3_stmt *st = NULL;
+    int rc;
+
+    if (sqlite3_prepare_v2(p->w->db,
+                           "SELECT r.pending_consensus_pubkey "
+                           "FROM v2_validator_roles r "
+                           "JOIN validators v ON v.pubkey_hash = r.validator_id "
+                           "WHERE v.status IN (?1, ?2) "
+                           "AND r.pending_consensus_pubkey != zeroblob(?3) "
+                           "ORDER BY r.validator_id", -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_WARN(LOG_TAG, "pending consensus keys unreadable: %s",
+                     sqlite3_errmsg(p->w->db));
+        return;
+    }
+    if (sqlite3_bind_int(st, 1, (int)DNAC_VALIDATOR_ACTIVE) != SQLITE_OK ||
+        sqlite3_bind_int(st, 2, (int)DNAC_VALIDATOR_ELIGIBLE) != SQLITE_OK ||
+        sqlite3_bind_int(st, 3, (int)NODUS_PK_BYTES) != SQLITE_OK) {
+        QGP_LOG_WARN(LOG_TAG, "pending consensus keys: bind failed: %s",
+                     sqlite3_errmsg(p->w->db));
+        sqlite3_finalize(st);
+        return;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (sqlite3_column_bytes(st, 0) == NODUS_PK_BYTES) {
+            bonded_add(set, n, cap, (const uint8_t *)sqlite3_column_blob(st, 0));
+        }
+    }
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_WARN(LOG_TAG, "pending consensus keys: scan failed: %s",
+                     sqlite3_errmsg(p->w->db));
+    }
+    sqlite3_finalize(st);
+}
+
+/*
  * Z2-F11 — the IDs that are in the new bonded set `nb` and were not in
  * the old one keep only a signed record and no ban from their unbonded
  * days (cmt_p2p_addrbook_purge_bonded_ids); otherwise a stale unsigned
@@ -1469,6 +1525,7 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
         QGP_LOG_WARN(LOG_TAG, "validators table unreadable: %s",
                      sqlite3_errmsg(p->w->db));
     }
+    bonded_add_pending(p, &nb, &n_new, &cap_new);
     bonded_add_committee(p, &nb, &n_new, &cap_new, tip + 1);
     if (tip >= 1) {
         bonded_add_committee(p, &nb, &n_new, &cap_new, tip - 1);
