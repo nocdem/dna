@@ -57,7 +57,7 @@ import {
 import { el, untrusted, untrustedLinked, button, website, fillAvatar } from './dom.js';
 import {
   REACTION_EMOJIS, messageHash, buildReaction, reactionSummary, ownReactionOn, buildDelete, deletions, buildReply, parseReply,
-  buildTransfer, parseTransfer, transferVerdict
+  buildTransfer, parseTransfer, transferVerdict, nodusUnits
 } from './actions.js';
 import { parseNameOf } from '../../nodus/names.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, chainNoNameFresh, chainNoNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
@@ -116,10 +116,16 @@ let replyTo, menuFor, jumpNew = 0;
 // Web 0.1.90: the chat a "Send NODUS" was started from ({ fp, at }, this
 // session); verdicts on payment cards by wire id; when history was last read.
 let payFor, transferCheckAt = 0, transferChecking = false;
-const transferVerdicts = new Map();      // wire -> { state, height? } (actions.js transferVerdict)
-const PAY_WINDOW_MS = 30 * 60 * 1000;    // a send counts for the chat it was started from this long
+// `fp|seq` of the card RECORD -> { state, height? } (actions.js transferVerdict).
+// Per card, never per wire: a forged card naming the wire of someone
+// else's real payment must not inherit that payment's verdict.
+const transferVerdicts = new Map();
+const cardKey = m => `${m.fp}|${m.seq}`;
+const PAY_WINDOW_MS = 10 * 60 * 1000;    // a send counts for the chat it was started from this long
 const TRANSFER_CHECK_MS = 60 * 1000;     // history is read for pending cards at most this often
 const TRANSFER_HISTORY_PAGES = 3;        // pages of 100 rows read per check
+const TRANSFER_PENDING_MAX_MS = 60 * 60 * 1000;  // a card not found this long after it arrived is "not found"
+const TRANSFER_FINAL = ['confirmed', 'mismatch', 'duplicate', 'unchecked'];   // settled for this session
 const drawnUpTo = new Map();             // fp -> highest local seq drawn (BigInt)
 const hashCache = new Map();             // `fp|seq` -> content hash (actions.js messageHash)
 const profiles = new Map();              // fp -> verified profile, this session
@@ -1033,7 +1039,9 @@ async function publishOutbox(contact, gen) {
 // applied to the message they name and never drawn as a bubble.
 // A payment card (`kind: 'transfer'`, 0.1.90) IS drawn: as a card whose
 // verdict comes from this device's own history (transferCard).
-const isControl = m => m.control === true || (m.kind !== undefined && m.kind !== 'chat' && m.kind !== 'transfer') || !!controlType(m.text);
+// A transfer record whose text is not a card is not drawn (design §4).
+const isControl = m => m.control === true || (m.kind !== undefined && m.kind !== 'chat' && m.kind !== 'transfer') ||
+  (m.kind === 'transfer' && !parseTransfer(m.text)) || !!controlType(m.text);
 // Stored incoming chat messages of one contact (group control records not
 // counted): the difference across a contact's check is its "new" count in
 // the session log (sync). Own messages sent meanwhile are not counted.
@@ -1931,23 +1939,33 @@ async function react(m, emoji) {
 // A card is a CLAIM: its words come from this device's own history
 // (transferVerdict), never from the card. The amount is shown only next to
 // that verdict.
+// No word of the card reaches these lines: a chain is named only from this
+// fixed list (red-team 2026-10-09 finding 4), anything else is "another network".
+const KNOWN_CHAINS = { cellframe: 'Cellframe', ethereum: 'Ethereum', eth: 'Ethereum', bsc: 'BNB Smart Chain', solana: 'Solana', sol: 'Solana', tron: 'TRON', trx: 'TRON' };
 const TRANSFER_TEXT = {
   confirmed: (m, v) => (m.dir === 'in' ? `Received · block ${v.height}` : `Sent · block ${v.height}`),
   pending: m => (m.dir === 'in' ? 'Not on the chain yet — not received until this says so' : 'Waiting for the chain'),
-  mismatch: () => 'Does not match the chain — do not rely on this card',
-  unverifiable: (m, v) => (v.chain && v.chain !== 'nodus' ? `A payment on ${v.chain} — it cannot be checked here` : 'This payment card cannot be checked')
+  // Neutral words: a payment from a shared vault is honest but carries the
+  // vault as its payer (finding 6) — it is still not confirmed here.
+  mismatch: () => 'Not confirmed by your account history — do not rely on this card',
+  duplicate: () => 'A copy of a payment card shown above — not a second payment',
+  unchecked: () => 'Could not be found in what this Nodus node keeps — not confirmed',
+  unverifiable: (m, v) => `A payment on ${KNOWN_CHAINS[v.chain] || 'another network'} — it cannot be checked here`
 };
 function transferVerdictOf(m) {
   const card = parseTransfer(m.text);
   if (!card || card.chain !== 'nodus') return { card, verdict: { state: 'unverifiable', chain: card?.chain || '' } };
-  return { card, verdict: transferVerdicts.get(card.wire) || { state: 'pending' } };
+  return { card, verdict: transferVerdicts.get(cardKey(m)) || { state: 'pending' } };
 }
 function transferCard(m) {
   const { card, verdict } = transferVerdictOf(m);
-  const amount = card && /^[0-9.]{1,24}$/.test(card.amount) ? card.amount : '?';
+  // The amount only when it is a well-formed NODUS amount; another chain's
+  // card shows no amount at all (its token label is the sender's text).
+  const nodus = card?.chain === 'nodus';
+  const amount = nodus ? (nodusUnits(card.amount) !== null ? `${card.amount} NODUS` : '? NODUS') : '';
   const node = el('div', { className: `transfer-card transfer-${verdict.state}` },
     el('span', { className: 'transfer-title', text: m.dir === 'in' ? 'Payment to you' : 'Payment' }),
-    el('span', { className: 'transfer-amount', text: `${amount} ${card?.chain === 'nodus' || !card ? 'NODUS' : String(card.token || '').slice(0, 12)}` }),
+    amount ? el('span', { className: 'transfer-amount', text: amount }) : null,
     el('span', { className: 'transfer-state', text: TRANSFER_TEXT[verdict.state](m, verdict) }));
   if (verdict.state !== 'confirmed') node.setAttribute('title', 'The card was written by the sender. Only "Received · block …" means it reached your address.');
   return node;
@@ -1960,25 +1978,48 @@ async function checkTransfers(gen, { force = false } = {}) {
   if (transferChecking || !isOpen() || !nodusClient?.historyReadable) return;
   const open = messages.filter(m => m.kind === 'transfer' && (m.dir === 'in' || m.dir === 'out'))
     .map(m => ({ m, card: parseTransfer(m.text) }))
-    .filter(({ card }) => card && card.chain === 'nodus' && /^[0-9a-f]{128}$/.test(card.wire) && !['confirmed', 'mismatch'].includes(transferVerdicts.get(card.wire)?.state));
-  if (!open.length || (!force && Date.now() - transferCheckAt < TRANSFER_CHECK_MS)) return;
-  transferChecking = true; transferCheckAt = Date.now();
+    .filter(({ m, card }) => card && card.chain === 'nodus' && /^[0-9a-f]{128}$/.test(card.wire) && !TRANSFER_FINAL.includes(transferVerdicts.get(cardKey(m))?.state))
+    .sort((a, b) => compareLocal(a.m, b.m));      // earlier cards settle first (copies, below)
+  if (!open.length || (!force && Date.now() < transferCheckAt)) return;
+  transferChecking = true; transferCheckAt = Date.now() + TRANSFER_CHECK_MS;
   try {
     const entries = [];
-    let before;
+    let before, enabled = true, more = false;
+    const wireOf = new Set(open.map(o => o.card.wire));
     for (let page = 0; page < TRANSFER_HISTORY_PAGES; page++) {
       const answer = await nodusClient.addrHistory(before ? { before, limit: 100 } : { limit: 100 });
       if (gen !== generation) return;
+      if (answer.enabled === false) { enabled = false; break; }
       entries.push(...answer.entries);
-      const wanted = new Set(open.map(o => o.card.wire).filter(w => !entries.some(e => e.wire === w)));
-      if (!wanted.size || answer.entries.length < 100) break;
+      more = answer.entries.length === 100;
+      if (!more) break;
+      // Read on while a wanted wire is missing, or while one ends this page
+      // (its other coins may begin the next: finding 5).
       const last = answer.entries[answer.entries.length - 1];
+      const missing = [...wireOf].some(w => !entries.some(e => e.wire === w));
+      if (!missing && !wireOf.has(last.wire)) { more = false; break; }
       before = { h: String(last.h), i: String(last.i), q: String(last.q) };
     }
+    // A wire whose rows may continue past what was read cannot be judged.
+    const cut = more && entries.length ? entries[entries.length - 1].wire : null;
     let moved = false;
     for (const { m, card } of open) {
-      const v = transferVerdict(card, entries, { incoming: m.dir === 'in', counterparty: m.fp, ownFp });
-      if (v.state !== transferVerdicts.get(card.wire)?.state) { transferVerdicts.set(card.wire, v); moved = true; }
+      let v;
+      if (!enabled) v = { state: 'unchecked' };                     // the node keeps no history (finding 3)
+      else if (card.wire === cut) v = { state: 'unchecked' };
+      else v = transferVerdict(card, entries, { incoming: m.dir === 'in', counterparty: m.fp, ownFp });
+      // Still not on the chain an hour after the card arrived (or the node's
+      // index starts later, or it is past what is read): stop asking.
+      if (v.state === 'pending' && Date.now() - Number(m.at || 0) > TRANSFER_PENDING_MAX_MS) v = { state: 'unchecked' };
+      // One payment, one card: a later card of the same direction naming a
+      // wire an earlier card already confirmed is a copy, never a second
+      // payment.
+      if (v.state === 'confirmed') {
+        const earlier = messages.some(x => x !== m && x.kind === 'transfer' && x.dir === m.dir && compareLocal(x, m) < 0 &&
+          parseTransfer(x.text)?.wire === card.wire && transferVerdicts.get(cardKey(x))?.state === 'confirmed');
+        if (earlier) v = { state: 'duplicate' };
+      }
+      if (v.state !== transferVerdicts.get(cardKey(m))?.state) { transferVerdicts.set(cardKey(m), v); moved = true; }
     }
     if (moved && gen === generation) render();
   } catch (error) { logCheck(`Payment cards: the account history could not be read (${errorText(error)})`, true); }
@@ -1988,7 +2029,8 @@ async function checkTransfers(gen, { force = false } = {}) {
 // The chat list line for a payment card: the verdict, never the card's word.
 function transferPreview(m) {
   const { verdict } = transferVerdictOf(m);
-  return verdict.state === 'confirmed' ? (m.dir === 'in' ? 'Payment received' : 'Payment sent') : verdict.state === 'mismatch' ? 'Payment card that does not match the chain' : 'Payment card (not confirmed)';
+  return verdict.state === 'confirmed' ? (m.dir === 'in' ? 'Payment received' : 'Payment sent')
+    : verdict.state === 'duplicate' ? 'Copy of a payment card' : 'Payment card (not confirmed)';
 }
 
 function payFromChat() {

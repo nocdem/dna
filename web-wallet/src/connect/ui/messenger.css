@@ -227,6 +227,8 @@
 .transfer-mismatch .transfer-state { color: #f2c896; font-weight: 600; }
 .message-out .transfer-mismatch .transfer-state { color: #6f4a0c; }
 .transfer-mismatch .transfer-amount { text-decoration: line-through; opacity: .7; }
+.transfer-duplicate .transfer-amount { text-decoration: line-through; opacity: .6; }
+.transfer-duplicate .transfer-state, .transfer-unchecked .transfer-state, .transfer-unverifiable .transfer-state { opacity: .85; }
 .conversation-pay { margin-left: auto; }
 
 /* Replying: one line above the composer, with a cancel. */

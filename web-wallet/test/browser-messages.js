@@ -88,6 +88,8 @@ try {
     const inbox = [
       { seq: '6', sender_ts: T(0), text_hex: hex(buildTransfer({ amount: '2.5', wire: WIRE_OK, to: OWN, name: 'me' })), kind: 'transfer' },
       { seq: '7', sender_ts: T(0), text_hex: hex(buildTransfer({ amount: '1000', wire: WIRE_FAKE, to: OWN, name: 'me' })), kind: 'transfer' },
+      // the real card sent again: one payment, one "Received"
+      { seq: '8', sender_ts: T(0), text_hex: hex(buildTransfer({ amount: '2.5', wire: WIRE_OK, to: OWN, name: 'me again' })), kind: 'transfer' },
       { seq: '1', sender_ts: T(1), text_hex: hex(first), kind: 'chat' },
       { seq: '2', sender_ts: T(2), text_hex: hex('↩ Re: me\n> my first message\nyes indeed'), kind: 'chat' },
       { seq: '3', sender_ts: T(3), text_hex: hex(gone), kind: 'chat' },
@@ -214,7 +216,7 @@ try {
   // match. The chat list never takes the card's word.
   await page.waitForFunction(() => [...document.querySelectorAll('.transfer-state')].some(n => n.textContent === 'Received · block 900'));
   const states = await page.locator('.transfer-card').evaluateAll(cards => cards.map(c => [c.querySelector('.transfer-amount').textContent, c.querySelector('.transfer-state').textContent, c.className]));
-  assert.deepEqual(states.map(s => s[1]), ['Received · block 900', 'Does not match the chain — do not rely on this card']);
+  assert.deepEqual(states.map(s => s[1]), ['Received · block 900', 'Not confirmed by your account history — do not rely on this card', 'A copy of a payment card shown above — not a second payment']);
   assert.match(states[1][2], /transfer-mismatch/);
   if (shots) await page.screenshot({ path: `${shots}/messages-payments.png` });
 
@@ -233,7 +235,8 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll('.message-out .transfer-state')].some(n => n.textContent === 'Waiting for the chain'));
   await page.evaluate(w => window.__walletExtension.nodusSent({ to: '2b'.repeat(64), amount: '1.25', wire: w }), 'e4'.repeat(64));
   await page.waitForTimeout(300);
-  assert.equal((await page.evaluate(() => window.__published.flat())).filter(m => m.text.includes('"type":"token_transfer"')).length >= 1, true);
+  // Sets are republished whole: count the distinct cards, not the sends.
+  assert.equal(new Set((await page.evaluate(() => window.__published.flat())).filter(m => m.text.includes('"type":"token_transfer"')).map(m => m.text)).size, 1, 'exactly one card');
   assert.ok(!(await page.evaluate(() => window.__published.flat())).some(m => m.text.includes('e4e4')), 'one card per "Send NODUS"');
 
   assert.deepEqual(errors, [], 'no page error');
