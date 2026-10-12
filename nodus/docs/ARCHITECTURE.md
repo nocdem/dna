@@ -7661,14 +7661,10 @@ whose S(U = H−E) entry (by id, ruleset-1 bridge) carries the row's current key
 exactly one the current key's, else fault) and the previous voter's `v2_attendance` row (voter_id =
 the first 32 bytes of that same untagged SHA3-512 — 0 or 1 row) is deleted; otherwise it must be this
 boundary's swap (S(H) seats it under the current key) and is kept until H+E; any other shape faults. A
-graduated validator is never a candidate (`key_release` already took every row naming it). Known gap
-(deterministic, design-text level): a validator swapped at U that graduates at U+E keeps its previous
-voter's attendance row (the graduation never deleted attendance rows).
+validator swapped at U that graduates at U+E is a candidate too since slice 6e (see "HF-6 slice 6e":
+`key_release` keeps its previous key for this step).
 
-**No fault-injection stage** for the swap or the sweep: the engine's `epoch_stage_fault`
-(`nodus_witness_v2_apply.c`) returns 1 for any stage it does not name, so firing a new stage would halt
-every generation-4 boundary; the stages (19, 20) are added together with their engine ids
-(`V2AP_FAIL_AFTER_*`) in a slice that may edit the engine.
+The two steps' fault-injection stages (19 / 20, engine ids F61 / F62) were added by slice 6e.
 
 **Byte-identical**: every path below generation 4; every generation-4 freeze, swap and sweep on a chain
 with no pending row and no second role-1 row (each step reads its candidates first and returns).
@@ -7731,6 +7727,49 @@ with pending K_R under ACTIVE row 2 makes K_R bonded; a pending K_S under row 3 
 `nodus_validator_v2_rotate_apply` switches row 2 to K_R (no pending key left) K_R is bonded as the row's
 key; rolled back, the set is the chain's again. `test_hf6_readers` D pins the new `JOIN validators`
 reader (`bonded_add_pending`, VALUE_SCAN, ×1).
+
+**The rotation stages** (plan §5 B2). `NODUS_V2_EPST_ROTATE_SWAP = 19` and `NODUS_V2_EPST_ROTATE_SWEEP =
+20` (`nodus_witness_v2_epoch.h`, appended after 18) fire right after boundary steps 1d and 3d, at key
+generation ≥ 4 only (below it the steps do not exist), whether or not the step had a candidate (the
+neighbouring stages' convention). The engine maps them BY NAME in `epoch_stage_fault`
+(`nodus_witness_v2_apply.c`) onto the appended fault ids `V2AP_FAIL_AFTER_ROTATE_SWAP = 61` and
+`V2AP_FAIL_AFTER_ROTATE_SWEEP = 62` (`nodus_witness_v2_apply.h`, after 60). Proof obligations: an
+interrupt after 1d leaves every accepted row on its old key with its pending key and role-2 reservation;
+after 3d it leaves the previous keys' role-1 rows and attendance rows in place. Not in the test
+fixture's lane-class table (`tests/v2_genesis_fixture.h` `v2x_cmt_fail_class`, outside this slice's
+files): a test that routes 61 / 62 through `v2x_cmt_injected` gets "never fires"; the slice's tests call
+`v2x_cmt_fault` directly.
+
+**The graduate's previous key** (design §3 + khan A2). A validator swapped at U that leaves S(U+E) —
+it UNSTAKEd, or Rule N retired it, before U's freeze — graduates at U+E (at U its graduation is
+deferred: S(U) seats it). Before 6e the graduation's `nodus_validator_v2_key_release` deleted every
+reservation naming it, the previous key's kept role-1 row included, so the sweep (which finds its
+candidates in the reservation table) never saw it and the previous voter's `v2_attendance` row stayed
+for ever. Now: `key_release`'s second DELETE takes role-2 rows only; `nodus_validator_v2_key_rotated_ids`
+also returns every UNSTAKED row that still holds a role-1 reservation (`UNION`, one ordered result);
+`v2ep_rotate_sweep` accepts such a candidate only if S(U) seats it under its current key (swapped at
+U) and releases through `nodus_validator_v2_key_sweep_previous(…, graduated = 1, …)` (exactly one
+role-1 row, not the current key's) — then deletes the previous voter's attendance row exactly as for a
+bonded row. ONE release site for every previous key and its attendance row, AFTER the digest of
+(U, U+E], which still counts the previous voter's U+1 / U+2 credits (design: "silme … o epoch'un
+settlement'ı ve digest tüketicileri bittikten sonra, sınır U+E'de"); deleting inside the graduation
+(step 2) would have removed them from that digest. Between step 2 and step 3d of that one boundary the
+UNSTAKED row holds its previous key at role 1; nothing between reads `v2_consensus_keys`. A graduation
+at any other boundary cannot hold a previous key (deferred at U; released by the sweep of U+E after
+it), so a graduated candidate that S(U) does not seat under its current key is a fault. Deterministic:
+the candidates are committed rows in validator_id order; voter_id = the first 32 bytes of the untagged
+SHA3-512 of the key both derivations take (`nodus_chain_config_derive_witness_id`, OpenSSL; the
+reservation hash, `qgp_sha3_512`). Not changed: the CURRENT key's attendance row of any graduate stays
+(graduation has never deleted attendance rows).
+
+**Tests** (written, NOT run by the author). `test_hf6_rotate` case D: F61 at 4E and F62 at 5E on twin
+A — node FAULT, whole database byte-identical, the rows the step writes found unchanged; the clean
+boundary then applies on both twins and A == B right after it. Case E (new): one validator rotated
+(F = 3E), UNSTAKEd at 3E+3, swapped at 4E while RETIRING, graduation deferred at 4E, not in S(5E), its
+previous key KC1 signs into an attendance row; F62 at 5E rolls the graduation and the sweep back
+together; the clean 5E leaves it UNSTAKED with no attendance row for KC1 and no reservation naming it;
+A == B. Case C's V_B (swapped at 3E, graduated at 4E) now has its kept KC2 released by the sweep's
+graduated arm.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

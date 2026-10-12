@@ -1085,11 +1085,12 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
              * releases its consensus-key reservation in the same step, so
              * the key may be STAKEd again under a NEW validator_id. The
              * role-1 row must exist and name this row (else FAULT).
-             * HF-6 6c: key_release's second DELETE takes every OTHER row
-             * naming the validator — the pending key's role-2 row, or,
-             * after a swap and before the sweep at U+E, the previous
-             * key's kept role-1 row (khan A2) — so nothing it reserved
-             * survives the graduation. */
+             * HF-6 6c: key_release's second DELETE takes the pending
+             * key's role-2 row. HF-6 6e: a previous key kept at role 1 (a
+             * swap at U, this graduation at U+E — khan A2) is left for
+             * the sweep of this boundary (step 3d), which releases it
+             * with the previous voter's attendance row after the digest
+             * (v2ep_rotate_sweep: one release site). */
             if (nodus_validator_v2_key_release(w, cand_key[i], v.pubkey)
                 != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "%s", "graduate: the consensus-key "
@@ -2079,9 +2080,12 @@ done:
  * is in no committed snapshot at all: S(F) does not seat it, S(U) and the
  * row carry the new key. The ONE committed record of it is its kept
  * role-1 reservation (nodus_witness_validator.h, the A2 window). So:
- *   candidates = the validator_ids holding two role-1 rows
- *                (nodus_validator_v2_key_rotated_ids, validator_id ASC) —
- *                read FIRST; none ⇒ return 0 before any snapshot is read;
+ *   candidates = the validator_ids holding two role-1 rows, and the
+ *                UNSTAKED ones still holding one (HF-6 6e: graduated at
+ *                this boundary; key_release keeps a previous key for this
+ *                step) (nodus_validator_v2_key_rotated_ids, validator_id
+ *                ASC) — read FIRST; none ⇒ return 0 before any snapshot is
+ *                read;
  *   each candidate was swapped at U = h − E or at h itself (this
  *                boundary's swap ran before; one sweep per boundary keeps
  *                every older window closed). It was swapped at U iff
@@ -2090,16 +2094,31 @@ done:
  *                a validator swapped at h is seated in S(U), if at all,
  *                under the key it had before h. Swapped at h ⇒ kept for
  *                the sweep at h + E, and S(h) must seat it under the
- *                current key; any third shape is a FAULT;
+ *                current key; a GRADUATED candidate must have been swapped
+ *                at U (one swapped at h is seated in S(h), so its
+ *                graduation at h was deferred); any third shape is a
+ *                FAULT;
  *   a swapped-at-U candidate: nodus_validator_v2_key_sweep_previous
- *                deletes the previous key's role-1 row (exactly one) and
- *                names its hash; the previous voter's attendance row
+ *                deletes the previous key's role-1 row (exactly one; the
+ *                bonded / exiting shape is two role-1 rows with one the
+ *                current key's, the graduated shape one row that is not)
+ *                and names its hash; the previous voter's attendance row
  *                (voter_id = that hash's first 32 bytes — the untagged
  *                SHA3-512(pk) both derivations take, nodus_chain_config_
  *                derive_witness_id and v2_consensus_keys.consensus_pk_hash)
  *                is deleted: 0 or 1 row (a key that never signed has none).
- * A graduated validator is never a candidate: key_release (step 2, run
- * earlier in this boundary) already deleted every row naming it.
+ * ONE release site (HF-6 6e). A validator swapped at U that graduates at
+ * U + E (it UNSTAKEd or was AUTO_RETIRED before U's freeze, so S(U+E)
+ * does not seat it) used to lose its previous key's reservation in
+ * key_release (step 2) and keep the previous voter's attendance row for
+ * ever — the sweep never saw it. key_release now leaves the previous key
+ * at role 1 and this step releases it with the attendance row, for a
+ * graduate exactly as for a bonded / exiting row: after the digest of the
+ * epoch (U, U+E], which still counts the previous voter's U+1 / U+2
+ * credits (design rev 6 §3: "silme … o epoch'un settlement'ı ve digest
+ * tüketicileri bittikten sonra, sınır U+E'de"). Graduation at any other
+ * boundary cannot hold a previous key: at U it is deferred (seated in
+ * S(U)), after U+E the sweep of U+E has released it.
  *
  * POSITION: after the attendance digest (3b) and reset (3c) — the digest
  * of the epoch (U, U+E] still includes the previous voter's U+1 / U+2
@@ -2134,13 +2153,13 @@ static int v2ep_rotate_sweep(nodus_witness_t *w, uint64_t h,
         goto done;
     }
     for (size_t i = 0; i < n; i++) {
-        if (nodus_validator_v2_get(w, ids[i], row) != 0 ||
-            row->rec.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "sweep: a validator with two active "
-                          "reservations has no readable bonded / exiting "
-                          "row — fault");
+        if (nodus_validator_v2_get(w, ids[i], row) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "sweep: a validator holding a "
+                          "previous reservation has no readable row — fault");
             goto done;
         }
+        const int graduated =
+            row->rec.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED;
         size_t idx = 0;
         int in_u = v2ep_member_in_snapshot(su, ids[i], row->rec.pubkey,
                                            chain_id, &idx);
@@ -2151,7 +2170,7 @@ static int v2ep_rotate_sweep(nodus_witness_t *w, uint64_t h,
             uint8_t prev[NODUS_V2_KEY_HASH_LEN];
             if (nodus_validator_v2_key_sweep_previous(w, ids[i],
                                                       row->rec.pubkey,
-                                                      prev) != 0)
+                                                      graduated, prev) != 0)
                 goto done;
             sqlite3_stmt *st = NULL;
             if (sqlite3_prepare_v2(w->db,
@@ -2176,7 +2195,15 @@ static int v2ep_rotate_sweep(nodus_witness_t *w, uint64_t h,
             swept++;
             continue;
         }
-        /* not swapped at U: it must be this boundary's swap */
+        /* not swapped at U: it must be this boundary's swap — never a
+         * graduate (a row swapped at h is seated in S(h), so its
+         * graduation at h was deferred) */
+        if (graduated) {
+            QGP_LOG_ERROR(LOG_TAG, "sweep: a graduated validator keeps a "
+                          "reservation that no swap at %llu explains — fault",
+                          (unsigned long long)u);
+            goto done;
+        }
         if (!sh) {
             arc = nodus_witness_v2_epoch_authority_for_epoch(w, h, &sh, NULL,
                                                              NULL);
@@ -2307,15 +2334,17 @@ int nodus_witness_v2_epoch_boundary_apply(
      * old keys with the rows, which still hold them — and BEFORE the
      * graduation, Rule N and commit_next, every one of which must see the
      * row under the key S(U) seats (commit_next copies it into S(U+E)).
-     * Full argument: v2ep_rotate_swap above. No fault stage: the engine's
-     * stage mapper (nodus_witness_v2_apply.c epoch_stage_fault) fails
-     * closed on a stage it does not name, so a stage is added together
-     * with its engine id, not before. */
-    if (key_gen >= NODUS_RT_GEN_STORAGE &&
-        v2ep_rotate_swap(w, global_height) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation swap failed at boundary %llu",
-                      (unsigned long long)global_height);
-        return -2;
+     * Full argument: v2ep_rotate_swap above. Its fault stage (HF-6 6e,
+     * engine id F61) fires after the step's writes, at generation >= 4
+     * only — below it the step does not exist. */
+    if (key_gen >= NODUS_RT_GEN_STORAGE) {
+        if (v2ep_rotate_swap(w, global_height) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "rotation swap failed at boundary %llu",
+                          (unsigned long long)global_height);
+            return -2;
+        }
+        if (fault && fault(fault_ud, NODUS_V2_EPST_ROTATE_SWAP, UINT32_MAX))
+            return -2;
     }
 
     if (v2ep_graduate(w, global_height, key_gen, chain_id, fault, fault_ud,
@@ -2384,13 +2413,17 @@ int nodus_witness_v2_epoch_boundary_apply(
      * role-1 reservation and its attendance row. AFTER 3b/3c (the digest
      * of the epoch just ended still counts the previous voter's last
      * credits) and before the flips and commit_next (it writes neither a
-     * table the builder reads nor a status). Generation 4 only; no fault
-     * stage — the reason is at step 1d. Argument: v2ep_rotate_sweep. */
-    if (key_gen >= NODUS_RT_GEN_STORAGE &&
-        v2ep_rotate_sweep(w, global_height, chain_id) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation sweep failed at boundary %llu",
-                      (unsigned long long)global_height);
-        return -2;
+     * table the builder reads nor a status). Generation 4 only; its fault
+     * stage (HF-6 6e, engine id F62) fires after the step's writes.
+     * Argument: v2ep_rotate_sweep. */
+    if (key_gen >= NODUS_RT_GEN_STORAGE) {
+        if (v2ep_rotate_sweep(w, global_height, chain_id) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "rotation sweep failed at boundary %llu",
+                          (unsigned long long)global_height);
+            return -2;
+        }
+        if (fault && fault(fault_ud, NODUS_V2_EPST_ROTATE_SWEEP, UINT32_MAX))
+            return -2;
     }
 
     /* Boundary flips consume the snapshot frozen one epoch earlier; an

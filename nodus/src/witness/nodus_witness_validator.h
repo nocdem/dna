@@ -354,8 +354,10 @@ int nodus_validator_v2_scan(nodus_witness_t *w,
  * every validators row not UNSTAKED, PLUS the PREVIOUS key of a row
  * swapped at boundary U, from U until the sweep at U+E (khan decision A2,
  * 2026-10-12: the old key stays reserved while its snapshot S(F) is still
- * read — so from U to U+E a rotated validator holds TWO role-1 rows);
- * role 2 for every non-zero pending_consensus_pubkey. A count of role-1
+ * read — so from U to U+E a rotated validator holds TWO role-1 rows; one
+ * that graduates at U+E holds only the previous one between its
+ * graduation (step 2) and the sweep (step 3d) of that boundary, inside its
+ * transaction); role 2 for every non-zero pending_consensus_pubkey. A count of role-1
  * rows equals the count of non-UNSTAKED rows only outside every such
  * window. Writers: the generation-4 edge (nodus_witness_v2_migrate.c),
  * the generation-4 STAKE and ROTATE (SYSTEM adapter op 17,
@@ -399,7 +401,10 @@ int nodus_validator_v2_key_insert(nodus_witness_t *w,
  * SHA3-512(`consensus_pubkey`) and naming `validator_id` — EXACTLY one
  * row, else -1 (missing or foreign: a bonded-or-exiting row without its
  * reservation is corruption, never "nothing to release") — then every
- * other row naming `validator_id` (a pending key; any count).
+ * role-2 row naming `validator_id` (a pending key; any count). A previous
+ * key kept at role 1 (swapped at U, graduating at U+E) is NOT deleted: the
+ * sweep of the same boundary releases it with the previous voter's
+ * attendance row (HF-6 slice 6e; nodus_validator_v2_key_sweep_previous).
  * @param consensus_pubkey DNAC_PUBKEY_SIZE bytes (validators.pubkey).
  * @return 0 / -1.
  */
@@ -420,8 +425,11 @@ int nodus_validator_v2_key_release(nodus_witness_t *w,
  * Every validator_id holding MORE THAN ONE role-1 reservation — exactly
  * the validators swapped at this boundary or the previous one (a STAKE,
  * the migration and a swap's promotion each give a validator ONE role-1
- * key; only the swap's kept previous key makes a second). Read-only;
- * validator_id ASC (the GROUP BY key, ordered explicitly).
+ * key; only the swap's kept previous key makes a second) — and (HF-6 6e)
+ * every validator_id whose validators row is UNSTAKED and still holds a
+ * role-1 reservation: a validator swapped at the previous boundary that
+ * graduated at this one (key_release keeps the previous key). Read-only;
+ * one id per validator (UNION), validator_id ASC (ordered explicitly).
  * @param ids_out [out] heap array (free()) of *n_out ids; NULL when 0.
  * @return 0 / -1 (SQLite error, a malformed id, allocation).
  */
@@ -432,19 +440,24 @@ int nodus_validator_v2_key_rotated_ids(nodus_witness_t *w,
 /**
  * Release the PREVIOUS consensus key of a swapped validator. INSIDE THE
  * CALLER'S TRANSACTION (autocommit → -1, nothing written). Reads the
- * role-1 rows naming `validator_id`: there must be EXACTLY two and
- * EXACTLY one of them keyed by SHA3-512(`consensus_pubkey`) (the row's
- * current key); the other — the previous key — is deleted (one row, else
- * -1) and its consensus_pk_hash written to `prev_hash_out` (the caller
- * derives the previous key's voter_id from it: SHA3-512(pk)[0..31] is the
- * same untagged digest's prefix). Any other shape is refused before a
- * write. Role-2 rows (a NEW pending key) are not touched.
+ * role-1 rows naming `validator_id`: with `graduated` == 0 there must be
+ * EXACTLY two and EXACTLY one of them keyed by SHA3-512(`consensus_pubkey`)
+ * (the row's current key); with `graduated` != 0 (the row is UNSTAKED —
+ * it graduated at this boundary and key_release took its current key's
+ * row) EXACTLY one, NOT keyed by the current key. The previous key's row
+ * is deleted (one row, else -1) and its consensus_pk_hash written to
+ * `prev_hash_out` (the caller derives the previous key's voter_id from
+ * it: SHA3-512(pk)[0..31] is the same untagged digest's prefix). Any other
+ * shape is refused before a write. Role-2 rows (a NEW pending key) are
+ * not touched.
  * @param consensus_pubkey DNAC_PUBKEY_SIZE bytes (validators.pubkey).
+ * @param graduated        nonzero iff the validators row is UNSTAKED.
  * @return 0 / -1.
  */
 int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
                                           const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
                                           const uint8_t *consensus_pubkey,
+                                          int graduated,
                                           uint8_t prev_hash_out[NODUS_V2_KEY_HASH_LEN]);
 
 /* ══ HF-6 slice 6c — the rotation swap writer (design rev 6 §3) ═══════ */
