@@ -56,6 +56,12 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // `selected`: the network chosen in the Send / Receive panel, set by the app
   // through setSelected(). It is UI state, not wallet state, so clear() keeps it.
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob, selected;
+  // Automatic updates (src/balance-refresh.js, 0.1.93): every `autoMinutes`
+  // while the page is shown (0 = off); `readAt` the start of the last full
+  // read, `pricesAt` of the last price read, `doneAt` when the last full read
+  // finished (those three cleared with the wallet). `autoMinutes` is kept
+  // across open()/clear() (a device setting, like `selected`).
+  let autoMinutes = 0, autoTimer, readAt = 0, pricesAt = 0, doneAt = 0;
   // assetKey -> { units: bigint, observedAt, address }: the last balance read.
   let kept = {};
   function keepRead(chain, result) {
@@ -79,7 +85,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   }
   const readTime = ms => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   function render() {
-    const snap = portfolioSnapshot(balances, quotes, Date.now(), assets, visibleKept());
+    // Read again automatically: a balance counts until two minutes past its
+    // next scheduled read, so a value is never crossed out between reads.
+    const snap = portfolioSnapshot(balances, quotes, Date.now(), assets, visibleKept(), { balanceMaxAge: autoMinutes ? (autoMinutes + 2) * 60000 : 0 });
     $('portfolio-total').textContent = text(usdText(snap.total, snap.positive));
     $('portfolio-label').textContent = snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
     $('portfolio-status').textContent = snap.state === 'idle' ? 'Refresh all to read your balances and prices.'
@@ -160,12 +168,15 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       control?.focus({ preventScroll: true });
     }
   }
-  async function readChainBalances(chain, current) {
+  // `background`: an automatic read (setAutoRefresh, freshen) — the shown
+  // values stay until the answer replaces them, and a failed read keeps them
+  // (they go out of date by their own age, portfolioSnapshot).
+  async function readChainBalances(chain, current, { background = false } = {}) {
     // No address yet (Cellframe/Ixios derivation still pending): stay "Reading…"
     // rather than issuing a request or reporting a false error.
-    if (!addresses[chain]) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' }; render(); return; }
+    if (!addresses[chain]) { if (background) return; for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' }; render(); return; }
     const controller = new AbortController(); jobs.set(chain, controller);
-    for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' };
+    if (!background) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' };
     render();
     try {
       const rows = await readBalances(chain, addresses[chain], endpoints[chain], { signal: controller.signal });
@@ -175,27 +186,70 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         keepRead(chain, result);
       }
     } catch {
-      if (session === current && !controller.signal.aborted) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
+      if (session === current && !controller.signal.aborted && !background) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
     } finally { if (session === current) { if (jobs.get(chain) === controller) jobs.delete(chain); render(); } }
   }
-  async function refresh() {
+  // The market prices, read again (an automatic read keeps the old quotes
+  // when it fails).
+  function readQuotes(current, controller, background) {
+    return readPrices({ signal: controller.signal })
+      .then(value => { if (session === current) { quotes = background ? { ...quotes, ...value } : value; pricesAt = Date.now(); } })
+      .catch(() => {});
+  }
+  function updatedText() {
+    const auto = autoMinutes ? ` Read again every ${autoMinutes} minutes while this page is shown.` : ' After 5 minutes a balance is shown as last read and leaves the total; prices expire after 15 minutes.';
+    return `Last refresh: ${new Date(doneAt).toLocaleTimeString()}.${auto}`;
+  }
+  async function refresh({ background = false } = {}) {
     if (!addresses || jobs.size || priceJob) return;
     const current = session;
-    quotes = {};
-    for (const asset of assets) balances[asset.key] = { state: 'loading' };
+    readAt = Date.now();
+    if (!background) { quotes = {}; for (const asset of assets) balances[asset.key] = { state: 'loading' }; }
     const controller = new AbortController(); priceJob = controller;
-    $('portfolio-updated').textContent = 'Reading balances and market prices…'; render();
-    const priceRead = readPrices({ signal: controller.signal }).then(value => { if (session === current) quotes = value; }).catch(() => {});
-    const reads = chains.map(chain => readChainBalances(chain, current));
+    if (!background) $('portfolio-updated').textContent = 'Reading balances and market prices…';
+    render();
+    const priceRead = readQuotes(current, controller, background);
+    const reads = chains.map(chain => readChainBalances(chain, current, { background }));
     await Promise.allSettled([priceRead, ...reads]);
     if (session !== current) return;
     priceJob = undefined;
-    $('portfolio-updated').textContent = `Last refresh: ${new Date().toLocaleTimeString()}. After 5 minutes a balance is shown as last read and leaves the total; prices expire after 15 minutes.`;
+    doneAt = Date.now();
+    $('portfolio-updated').textContent = updatedText();
     render();
   }
+  // One network chosen (src/app.js, the Send / Receive network): its balance,
+  // and the prices, read again in the background when older than a minute.
+  const FRESHEN_MS = 60000;
+  function freshen(chain) {
+    if (!addresses || !chains.includes(chain) || !addresses[chain] || jobs.has(chain) || priceJob) return;
+    const current = session, now = Date.now();
+    const read = assets.filter(a => a.chain === chain).map(a => balances[a.key]).filter(b => b?.state === 'ready').map(b => b.observedAt);
+    if (read.length && now - Math.min(...read) < FRESHEN_MS) return;
+    void readChainBalances(chain, current, { background: true });
+    if (now - pricesAt >= FRESHEN_MS) {
+      const controller = new AbortController(); priceJob = controller;
+      void readQuotes(current, controller, true).finally(() => { if (session === current && priceJob === controller) { priceJob = undefined; render(); } });
+    }
+  }
+  // Automatic updates: every `minutes` while the page is shown (0 = off).
+  // A hidden page reads nothing; shown again after the interval, it reads at once.
+  function autoTick() {
+    if (!autoMinutes || !addresses || document.hidden) return;
+    if (Date.now() - readAt < autoMinutes * 60000 - 1000) return;
+    void refresh({ background: true });
+  }
+  function setAutoRefresh(minutes) {
+    autoMinutes = Number.isSafeInteger(minutes) && minutes > 0 ? minutes : 0;
+    clearInterval(autoTimer); autoTimer = undefined;
+    if (autoMinutes) autoTimer = setInterval(autoTick, 30000);
+    if (doneAt && addresses && !jobs.size && !priceJob) $('portfolio-updated').textContent = updatedText();
+    render();
+  }
+  document.addEventListener('visibilitychange', autoTick);
   function clear() {
     session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
     clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept = {};
+    readAt = 0; pricesAt = 0; doneAt = 0;
     $('portfolio-updated').textContent = ''; render();
   }
   // `kept`: entries saved with this wallet (src/activity-storage.js
@@ -242,6 +296,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // render() applies the same marks to rows it builds later.
   function setSelected(chain) {
     selected = chain;
+    freshen(chain);                      // read it again if older than a minute (0.1.93)
     for (const entry of $('balances').querySelectorAll('.chain-holding')) {
       const current = entry.dataset.chain === chain, control = entry.querySelector('.holding-select');
       entry.classList.toggle('selected', current);
@@ -271,5 +326,5 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn };
+  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh };
 }

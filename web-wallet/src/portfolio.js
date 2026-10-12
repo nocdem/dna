@@ -64,7 +64,11 @@ export async function readPrices({ signal, fetcher } = {}) {
 // shows it with its read time (`keptAt`), like the app's wallet cache
 // (messenger/database/wallet_cache.h: stale-while-revalidate); it is never
 // priced, never part of the total and still counts as a missing balance.
-export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = ASSETS, kept = {}) {
+// `balanceMaxAge`: how old a read balance may be and still count (default
+// BALANCE_MAX_AGE; longer while the balances are read again automatically,
+// src/portfolio-view.js setAutoRefresh — never shorter than the default).
+export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = ASSETS, kept = {}, { balanceMaxAge = BALANCE_MAX_AGE } = {}) {
+  const maxAge = Math.max(BALANCE_MAX_AGE, balanceMaxAge);
   const rows = assets.map(asset => {
     // An asset with no balance source yet (NODUS, flagged by portfolio-view.js)
     // is always 'unsupported', whatever `balances` holds: never read, never an
@@ -72,7 +76,7 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
     if (asset.balanceUnavailable) return { ...asset, state: 'unsupported', balance: null, usd: null, positive: false, priceMissing: false };
     const balance = balances[asset.key] || { state: 'idle' }, quote = quotes[asset.key];
     const priced = asset.priceId !== undefined;
-    const freshBalance = balance.state === 'ready' && now - balance.observedAt <= BALANCE_MAX_AGE && balance.observedAt <= now;
+    const freshBalance = balance.state === 'ready' && now - balance.observedAt <= maxAge && balance.observedAt <= now;
     const freshPrice = quote && now - quote.observedAt <= PRICE_MAX_AGE && quote.observedAt <= now + 60000;
     // Unpriced assets (e.g. CPUNK) never resolve a USD value, even at a known zero
     // balance: there is no price feed for them to be consistent against.

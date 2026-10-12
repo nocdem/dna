@@ -31,6 +31,7 @@ import { renderQr } from './qr.js';
 import { raise, gather, siteName } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
 import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote } from './auto-lock.js';
+import { readBalanceRefresh, writeBalanceRefresh, parseBalanceRefresh, balanceRefreshNote } from './balance-refresh.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
 // column (`@media (max-width: 900px)`): below it the Send / Receive panel sits
@@ -767,6 +768,18 @@ let autoLockMinutes = readAutoLock(autoLockStorage());
     const kept = writeAutoLock(autoLockStorage(), autoLockMinutes);
     note.textContent = autoLockNote(autoLockMinutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
     activity();                                  // the new time counts from now
+  });
+}
+// Automatic balance updates (src/balance-refresh.js, 0.1.93): the portfolio
+// reads balances and prices again every N minutes while the page is shown.
+{
+  const choice = $('balance-refresh-minutes'), note = $('balance-refresh-note');
+  const apply = minutes => { choice.value = String(minutes); portfolio.setAutoRefresh(minutes); return balanceRefreshNote(minutes); };
+  note.textContent = apply(readBalanceRefresh(autoLockStorage()));
+  choice.addEventListener('change', () => {
+    const minutes = parseBalanceRefresh(choice.value);
+    const kept = writeBalanceRefresh(autoLockStorage(), minutes);
+    note.textContent = apply(minutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
   });
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);

@@ -154,14 +154,16 @@
 .message { flex-direction: column; }
 .message-in { align-items: flex-start; }
 .message-out { align-items: flex-end; }
-.message-row { display: flex; align-items: center; max-width: 100%; min-width: 0; }
-.message-row .message-bubble { flex-shrink: 1; }
-/* The 48 px gap of the other side moves to the row, so the "…" trigger
-   sits inside it next to the bubble. */
-.message-in .message-row { padding-right: 48px; }
-.message-out .message-row { padding-left: 48px; }
-.message-in .message-row .message-bubble { margin-right: 0; }
-.message-out .message-row .message-bubble { margin-left: 0; }
+/* The 48 px gap of the other side is the row's max-width (a percentage of
+   .message, whose width is the list's), so the "…" trigger sits inside the
+   row next to the bubble. Not padding on the row, and no percentage on the
+   bubble: the row's width is its content's, and a browser that sized it
+   without its own padding (Samsung Internet, operator screenshot
+   2026-10-12: every bubble 48 px narrower than its text, "Yes" one letter
+   wide) or resolved the bubble's percentage against that content-sized row
+   squeezed the text (0.1.93). */
+.message-row { display: flex; align-items: center; min-width: 0; max-width: calc(100% - 48px); }
+.message-row .message-bubble { flex-shrink: 1; max-width: 560px; margin-left: 0; margin-right: 0; }
 .message-run .message-bubble { margin-bottom: 1px; }
 .message-run + .message .message-bubble { margin-top: 1px; }
 .message-in.message-run .message-bubble { border-bottom-left-radius: 16px; }

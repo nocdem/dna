@@ -161,6 +161,18 @@ try {
   assert.match(await link.getAttribute('rel'), /noreferrer/);
   assert.equal(await page.locator('.message-quote-text').first().textContent(), 'my first message');
   assert.ok((await page.locator('.message-text').allTextContents()).includes('yes indeed'), 'a reply shows only its own text');
+  // 0.1.93 (operator screenshot, Samsung Internet: "Yes" one letter wide):
+  // at phone width every short text is laid out on ONE line — its bubble is
+  // never narrower than the text it holds.
+  await page.setViewportSize({ width: 360, height: 800 });
+  const squeezed = await page.evaluate(() => [...document.querySelectorAll('.message-text')].filter(t => {
+    const text = t.textContent;
+    if (!text || text.length > 20 || text.includes('\n')) return false;
+    const lineHeight = parseFloat(getComputedStyle(t).lineHeight);
+    return t.getBoundingClientRect().height > lineHeight * 1.5;
+  }).map(t => t.textContent));
+  assert.deepEqual(squeezed, [], 'a short message wraps inside its own bubble');
+  await page.setViewportSize({ width: 1280, height: 900 });
   assert.ok((await page.locator('.message-gone .message-text').allTextContents()).includes('This message was deleted by the sender.'));
   assert.equal(await page.locator('.reaction-chip').first().textContent(), '❤️');
   const shots = process.env.SCREENSHOT_DIR || '';

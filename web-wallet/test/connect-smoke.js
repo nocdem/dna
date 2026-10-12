@@ -22,6 +22,9 @@
 // closes Messages too; Home shows the unavailable chain-name entry offline;
 // saving changes the device controls from Save to Change password, and deleting
 // the saved copy restores the initial Save controls;
+// Device & settings offers the automatic lock (15 minutes by default) and the
+// automatic balance update (every 5 minutes by default, 0.1.93), each kept
+// in this browser;
 // the other site's fresh cross-site mark refuses an unlock (src/site-lock.js,
 // through the real page wiring); no horizontal scroll at 390 px and 320 px;
 // the wallet build has no app shell, Messages navigation or Messages UI code.
@@ -143,6 +146,15 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.autoLockMinutes')), '0');
   await page.locator('#auto-lock-minutes').selectOption('15');
   assert.equal(await page.evaluate(() => localStorage.getItem('nodus.autoLockMinutes')), '15');
+  // Automatic balance updates (web 0.1.93): every 5 minutes by default; the
+  // choice is kept in this browser and the portfolio line says so.
+  assert.equal(await page.locator('#balance-refresh-minutes').inputValue(), '5');
+  assert.match(await page.locator('#balance-refresh-note').textContent(), /every 5 minutes/);
+  await page.locator('#balance-refresh-minutes').selectOption('0');
+  assert.match(await page.locator('#balance-refresh-note').textContent(), /when you press Refresh/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.balanceRefreshMinutes')), '0');
+  await page.locator('#balance-refresh-minutes').selectOption('5');
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.balanceRefreshMinutes')), '5');
   // Logs is a page of its own, reached from Device & settings.
   await page.locator('#device-panel a[href="#logs"]').click();
   assert.equal(await page.locator('#session-logs').isVisible(), true);
