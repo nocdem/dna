@@ -2,12 +2,21 @@
 r"""
 Independent oracle for the storage reward v1 rule-set generation
 (GEN_STORAGE = generation 4, built on the EVM generation 3) pinned values:
-the GEN_STORAGE SYSTEM meter-policy digest, the SYSTEM v9 and DNA_CORE v7
-ruleset hashes, and the param-16 RULESET_GEN_STORAGE vote literal.
+the GEN_STORAGE SYSTEM meter-policy digest and the SYSTEM v9 and DNA_CORE
+v7 ruleset hashes.
 
 This file REPLACES the generation-3 / param-14 version (written before
 Nodus EVM merged first and took generation 3 and params 14-15). Its old
 outputs (S4 0x14bb86ad…) are dead.
+
+HF-6 slice 8c (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+design.md rev 6 §8; decision 2026-10-09-kurultay-16-hf6-storage-summary.md,
+param 16 RETIRED): the S4 leg — the param-16 RULESET_GEN_STORAGE
+development vote literal gen_digest(4, S2, S3), last 0x329b0ea92c8b8c58 —
+is DELETED with the literal and the param. Generation 4 is voted by param
+18 RULESET_GEN_ROLES with the D4 value, whose independent oracle is
+shared/dnac/tests/hf6_vote_oracle.py (it imports this file's S2 / S3
+builders and parses its "S2 = " / "S3 = " lines).
 
 INDEPENDENCE DISCIPLINE (honest label)
 --------------------------------------
@@ -79,8 +88,8 @@ reward-is-for-archive.md item K10, operator 2026-10-06 "ok"):
    ruleset_version 9, CORE ruleset_version 7 (EVM's rules {1..9} + SYSFUND
    widened to the storage ops), EVM v1 unchanged; meter policy = the EVM
    policy (ops 1..9 weight 1)."
-  Switch procedure = the HF-4 one; spec version 1 (dnac.h comment above
-  DNAC_CFG_RULESET_GEN_STORAGE_D; DNAC_RULESET_SWITCH_SPEC_VERSION).
+  (The param-16 half of that record is superseded: HF-6 rev 6 votes
+  generation 4 with param 18 and retires 16 — see the header.)
 
   HF-6 rev 6 (ONE generation 4 carries storage AND the validator role —
   design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
@@ -96,8 +105,8 @@ reward-is-for-archive.md item K10, operator 2026-10-06 "ok"):
   yeniden pinlenir (bu sürümlerle hiçbir şey canlıya çıkmadı)"); CORE's
   rule list, types and version are unchanged, so S3 does not move. The
   storage-only generation-4 outputs this file printed before HF-6 slice
-  6a (S1 = the EVM policy 0aa4c690…, S2 b37f489d…, S4 0x0c6fd6f2484e6024)
-  are REPLACED, not kept as history (design §8: "hiçbir zincirde
+  6a (S1 = the EVM policy 0aa4c690…, S2 b37f489d…, the former S4
+  0x0c6fd6f2484e6024) are REPLACED, not kept as history (design §8: "hiçbir zincirde
   etkinleşmedi, tarih olarak tutulmaz").
 
 NOT GROUNDED IN A RECORD (stated, not hidden):
@@ -135,7 +144,7 @@ Stages, fail-closed:
     S2 SYSTEM v9 ruleset hash (rules {1..10}, types {4,5,6,7,9,10},
        policy S1)
     S3 DNA_CORE v7 ruleset hash (rules {1..9}, types {1,2,3,11,12,13}, zero)
-    S4 param-16 vote literal = gen_digest(4, S2, S3), switch spec 1
+  (no vote literal: generation 4's D4 is hf6_vote_oracle.py's)
 
 Run:  python3 shared/dnac/tests/storage_oracle.py
 
@@ -252,8 +261,6 @@ READINESS_POLICY_STAGED_V1 = 1
 
 # ── the storage generation (decision K10) ─────────────────────────────
 
-GEN_STORAGE = 4                        # K10: "generation 4"
-GEN_STORAGE_BASE = GEN_EVM             # K10: "built on GEN_EVM (3)"
 SYS_RULESET_VERSION_STORAGE = 9        # K10: "SYSTEM ruleset_version 9"
 CORE_RULESET_VERSION_STORAGE = 7       # K10: "CORE ruleset_version 7"
 SYS_RULES_STORAGE = SYS_RULES + [7, 8, 9, 10]   # K10: "SYSTEM rules
@@ -464,28 +471,12 @@ def emit() -> None:
     print_c_bytes("CORE_RULESET_HASH_GST", "DNA_DOM_HASH_LEN", s3)
 
     print()
-    print("── S4 param-16 RULESET_GEN_STORAGE vote literal " + "─" * 18)
-    lit, raw, dig, pre = gen_digest(GEN_STORAGE, s2, s3)
-    print("  generation      = %d (base %d), switch spec version = %d"
-          % (GEN_STORAGE, GEN_STORAGE_BASE, SWITCH_SPEC_VERSION))
-    print("  preimage (%d B) = %s" % (len(pre), pre.hex()))
-    print("  SHA3-512        = %s" % dig.hex())
-    print("  first 8 BE      = 0x%016x" % raw)
-    print("  top bit was     = %s" % ("SET (cleared)" if raw >> 63 else
-                                      "clear (unchanged)"))
-    print("  S4              = 0x%016xULL" % lit)
-    print("  S4 (decimal)    = %d" % lit)
-
-    print()
     print("  sanity: S2 != SYSTEM v8 (EVM): %s"
           % (s2.hex() != SHIPPED_RS_SYSTEM_V8))
     print("  sanity: S3 != CORE v6 (EVM, version field only): %s"
           % (s3.hex() != SHIPPED_RS_CORE_V6))
-    print("  sanity: S4 != D2, S4 != EVM_ACTIVE D: %s"
-          % (lit != SHIPPED_D2 and lit != SHIPPED_EVM_ACTIVE_D))
     assert s2.hex() != SHIPPED_RS_SYSTEM_V8
     assert s3.hex() != SHIPPED_RS_CORE_V6
-    assert lit != SHIPPED_D2 and lit != SHIPPED_EVM_ACTIVE_D
     # CORE v7 differs from CORE v6 ONLY in the ruleset_version field
     assert ruleset_hash(DOMAIN_CORE, "DNA_CORE", RUNTIME_ABI_V1,
                         CORE_RULESET_VERSION_GEVM, CORE_RULES_STORAGE,

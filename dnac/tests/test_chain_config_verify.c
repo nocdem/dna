@@ -113,7 +113,7 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 22 (Nodus EVM 14-15, storage reward v1 16, HF-8 17, HF-6 19-21) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 22 (Nodus EVM 14-15, storage reward v1 16 (retired), HF-8 17, HF-6 18-21) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 22);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
@@ -157,42 +157,56 @@ int main(void) {
     CHECK(DNAC_CFG_RULESET_GEN2_D2 <= (uint64_t)INT64_MAX);
     CHECK(DNAC_RULESET_SWITCH_SPEC_VERSION == 1u);
 
-    /* 5a'''. RULESET_GEN_STORAGE (id 16, storage reward v1 — "voted like
-     * RULESET_GEN2"; id assigned in main merge order after Nodus EVM's 14
-     * and 15): EXACTLY the dnac.h literal D — the 5a' shape. D ± 1, 0, D2
-     * (the other generation's literal) and UINT64_MAX refuse. The
-     * witness's stateful rules are NOT mirrored. MUTANT KILLED: dropping
-     * the case (default refuses D), comparing against D2. NOTE: while D is
-     * the unfilled oracle placeholder 0 (STORAGE-ORACLE: NOT FILLED), the
-     * "0 refuses" probe is skipped by its own guard and D - 1 wraps to
-     * UINT64_MAX (still refused) — the 5a' precedent. */
+    /* 5a'''. HF-6 slice 8c (design docs/plans/2026-10-03-hf5-validator-
+     * owner-stake-design.md rev 6 §8, §8.1). RULESET_GEN_STORAGE (id 16)
+     * is RETIRED — the 6 / 8 shape: every value refuses, D4 and the other
+     * literals included, so the client mirror refuses what the witness
+     * refuses. RULESET_GEN_ROLES (id 18) accepts EXACTLY the dnac.h
+     * literal D4 — the 5a' shape: D4 ± 1, 0, D2, the EVM D and UINT64_MAX
+     * refuse; param 9 refuses D4. The witness's stateful rules are NOT
+     * mirrored. MUTANT KILLED: keeping a 16 case or leaving 16 on the
+     * read list (D4 / any value accepted under 16), dropping the 18 case
+     * (default refuses D4), comparing 18 against D2. */
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE == 16);
-    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
-                             DNAC_CFG_RULESET_GEN_STORAGE_D);
-    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
-                             DNAC_CFG_RULESET_GEN_STORAGE_D + 1u);
-    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
-                             DNAC_CFG_RULESET_GEN_STORAGE_D - 1u);
-    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    if (DNAC_CFG_RULESET_GEN_STORAGE_D != 0u) {
-        build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
-                                 0);
-        CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    CHECK(DNAC_CFG_RULESET_GEN_ROLES == 18);
+    {
+        const uint64_t any16[] = { 0, 1, DNAC_CFG_RULESET_GEN2_D2,
+                                   DNAC_CFG_RULESET_GEN_ROLES_D,
+                                   DNAC_CFG_EVM_ACTIVE_D,
+                                   (uint64_t)INT64_MAX, UINT64_MAX };
+        for (size_t k = 0; k < sizeof(any16) / sizeof(any16[0]); k++) {
+            build_valid_chain_config(&tx,
+                                     (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                                     any16[k]);
+            CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+        }
     }
-    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                             DNAC_CFG_RULESET_GEN_ROLES_D);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                             DNAC_CFG_RULESET_GEN_ROLES_D + 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                             DNAC_CFG_RULESET_GEN_ROLES_D - 1u);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES, 0);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
                              DNAC_CFG_RULESET_GEN2_D2);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                             DNAC_CFG_EVM_ACTIVE_D);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
                              UINT64_MAX);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    /* and param 9 refuses the storage literal */
+    /* and param 9 refuses D4 */
     build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN2,
-                             DNAC_CFG_RULESET_GEN_STORAGE_D);
+                             DNAC_CFG_RULESET_GEN_ROLES_D);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D != DNAC_CFG_RULESET_GEN2_D2);
-    CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D <= (uint64_t)INT64_MAX);
+    CHECK(DNAC_CFG_RULESET_GEN_ROLES_D != DNAC_CFG_RULESET_GEN2_D2);
+    CHECK(DNAC_CFG_RULESET_GEN_ROLES_D <= (uint64_t)INT64_MAX);
 
     /* 5a''. NAME_PRICE_3P..6P (ids 10-13, HF-4): [10^8, 10^15] — both
      * ends inclusive, one past either end refuses; and the compiled
@@ -226,7 +240,7 @@ int main(void) {
         CHECK(DNAC_NAME_PRICE_6P_DEFAULT == 100000000ULL);
     }
 
-    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13, 14, 15, 16, 17, 19, 20, 21} of the governed
+    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13, 14, 15, 17, 18, 19, 20, 21} of the governed
      * id space are read by the running consensus (id 8 = HF3_ACTIVE, read
      * by the engine's env_hf3_active — HF-3, 2026-10-02; id 7 =
      * HF2_ACTIVE, read by the engine's env_hf2_active, 2026-09-30).
@@ -259,21 +273,23 @@ int main(void) {
                             * single-use read, 15 by block_ctx_from_doms */
                            id == DNAC_CFG_EVM_ACTIVE ||
                            id == DNAC_CFG_EVM_BLOCK_GAS_LIMIT ||
-                           /* storage reward v1: 16 read by phase 6b'
-                            * and env_ruleset_gen_storage_voted */
-                           id == DNAC_CFG_RULESET_GEN_STORAGE ||
                            /* HF-8: 17 read by env_delegate_name_required */
                            id == DNAC_CFG_DELEGATE_NAME_REQUIRED ||
+                           /* HF-6 slice 8c: 18 read by phase 6b''', the
+                            * storage boundary gate and
+                            * env_ruleset_gen_roles_voted (16 RETIRED —
+                            * off the list) */
+                           id == DNAC_CFG_RULESET_GEN_ROLES ||
                            /* HF-6 slice 8a: 19 env_stake_min, 20
                             * nodus_witness_power_cap_bps_for_epoch, 21
-                            * env_storage_bond (18 stays off the list
-                            * until slice 8c assigns it) */
+                            * env_storage_bond */
                            id == DNAC_CFG_STAKE_MIN ||
                            id == DNAC_CFG_POWER_CAP_BPS ||
                            id == DNAC_CFG_STORAGE_BOND);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
-    CHECK(!dnac_cfg_param_read_by_consensus(18));
+    CHECK(!dnac_cfg_param_read_by_consensus(16));
+    CHECK(dnac_cfg_param_read_by_consensus(18));
 
     /* 5c. HF-6 slice 8a — params 19-21 on the client mirror (design
      * 2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8; ranges
@@ -319,7 +335,7 @@ int main(void) {
           DNAC_CFG_MAX_POWER_CAP_BPS == 3000u);
     CHECK(DNAC_HF6_STORAGE_BOND_MIN == 10000000000000ULL &&
           DNAC_HF6_STORAGE_BOND_MAX == 100000000000000ULL);
-    /* 18 is refused for values its neighbours accept */
+    /* 18 (exactly D4) refuses values its neighbours accept */
     build_valid_chain_config(&tx, 18, 500);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
     build_valid_chain_config(&tx, 18, DNAC_HF6_STAKE_MIN_DEFAULT);

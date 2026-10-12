@@ -10,21 +10,20 @@
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
  *  1. ids: RULESET_GEN2 = 9, NAME_PRICE_3P..6P = 10..13 (MAX_ID 21 since
- *     Nodus EVM 14-15, storage reward v1 16, HF-8 17 and HF-6 19-21; 18
- *     unassigned), all on the read list;
+ *     Nodus EVM 14-15, storage reward v1 16 (RETIRED), HF-8 17 and HF-6
+ *     18-21), all on the read list;
  *     D2 <= INT64_MAX; SWITCH_SPEC_VERSION 1.
  *  2. scalar rules: param 9 accepts EXACTLY D2 (D2 ± 1, UINT64_MAX
  *     refused; the shared window and int64 rules still apply); params
  *     10-13 accept [10^8, 10^15] inclusive, refuse one past either end;
- *     (storage reward v1: param 16, below; HF-8: param 17, below; id 18
- *     refused).
+ *     (param 16 retired, HF-8 param 17, HF-6 param 18: below).
  *  3. grace: 9-13 ERGONOMIC (decision item 17), HF-3's class.
  *  4. nodus_chain_config_stateful_rules — the full matrix: param 9
  *     refused when a param-9 row exists (single use), when HF-2 is off,
  *     when effective-1 is a nonzero epoch-length multiple, when effective
  *     is 0; accepted otherwise (effective 1 included: height 0 is not a
  *     boundary). Params 10-13 refused under generation 0/1, accepted
- *     under 2. Ids 1-8 no stateful rule; 0, 18, 255 refused.
+ *     under 2. Ids 1-8 no stateful rule; 0, 16, 22, 255 refused.
  *  5. the SYSTEM CHAIN_CONFIG exec hook (nodus_rt_system_exec) applies
  *     the SAME rules from the engine-filled ctx facts and its own
  *     runtime's generation: one accepted param-9 leg produces exactly one
@@ -39,39 +38,44 @@
  *     far-future param-9 row (effective INT64_MAX - 1) is found by the
  *     engine's "any row" read at INT64_MAX.
  *
- *  STORAGE REWARD v1 (decision docs/plans/decisions/2026-10-04-storage-
- *  reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
- *  design.md rev 2.2 §6 — param 16 RULESET_GEN_STORAGE, "voted like
- *  RULESET_GEN2"; ids and generation in main merge order, Nodus EVM
- *  first), added to the sections above:
- *   1. id 16 = RULESET_GEN_STORAGE, on the read list; its literal <=
- *      INT64_MAX and distinct from D2.
- *   2. param 16 accepts EXACTLY its literal (±1, D2, UINT64_MAX refused;
- *      the window rule binds); param 9 refuses the storage literal.
- *   3. grace 16 ERGONOMIC.
- *   4. stateful: param 16 refused unless EXACTLY the EVM generation
- *      (NODUS_RT_GEN_STORAGE_BASE) judges (rule d: 0/1/2 and GEN_STORAGE
- *      refused), accepted there with no row / HF-2 on / non-boundary;
- *      refused with a param-16 row (a), HF-2 off (b), boundary (c),
- *      effective 0; the facts form reads the param-16 fact for param 16
- *      only. K10 (decision 2026-10-05-storage-reward-is-for-archive.md):
- *      rule (d) keeps the storage edge out of the EVM edge's block — a
- *      storage vote judged under the EVM base (every block up to the EVM
- *      edge block) is refused whatever its effective height.
- *   5. exec hook (EVM-enabled build): a param-16 leg refused by the
- *      generation-1, -2, GEN_STORAGE and NULL runtimes, accepted by the
- *      EVM generation (one CREATE keyed 16 ‖ effective); the param-9 fact
- *      does NOT gate it, the param-16 fact does, and the param-16 fact
- *      does NOT gate a param-9 leg; the read plan is empty.
- *   6. slot 16 readable; a far-future param-16 row found at INT64_MAX.
+ *  HF-6 slice 8c — param 16 RULESET_GEN_STORAGE RETIRED, param 18
+ *  RULESET_GEN_ROLES the generation-4 vote (design docs/plans/2026-10-03-
+ *  hf5-validator-owner-stake-design.md rev 6 §8, §8.1; decision docs/
+ *  plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md item 1;
+ *  name khan 2026-10-13), added to the sections above:
+ *   1. id 16 stays 16 and is OFF the read list (the id-1 treatment); id
+ *      18 = RULESET_GEN_ROLES is ON it; D4 <= INT64_MAX and distinct from
+ *      D2 and the EVM D.
+ *   2. param 16 refused by the scalar rules for EVERY probed value (0, 1,
+ *      D2, D4, the EVM D, INT64_MAX, UINT64_MAX); param 18 accepts
+ *      EXACTLY D4 (D4 ± 1, 0, D2, the EVM D, UINT64_MAX refused; the
+ *      window rule binds); param 9 refuses D4.
+ *   3. grace 16 UINT64_MAX (unsatisfiable, the id-1 shape), grace 18
+ *      ERGONOMIC.
+ *   4. stateful: 16 refused (-1, no case). 18 accepted ONLY with no
+ *      param-18 row (a) AND no param-16 row (a') AND HF-2 on (b) AND
+ *      judged under EXACTLY generation 3 (c: 0/1/2/4 refused) AND neither
+ *      H-1 (d) nor H (e) an epoch boundary: effective 0, E, E+1, 2E,
+ *      2E+1 refused, 1 and E+2 accepted. Each fact gates only its param:
+ *      the param-16 fact gates 18 and nothing else, the param-18 fact
+ *      does not gate 9 or 14, the param-9 fact does not gate 18. K10:
+ *      rule (c) keeps the generation-4 edge out of the EVM edge's block.
+ *   5. exec hook (EVM-enabled build): a param-18 leg refused (-1) by the
+ *      generation-1, -2, -4 and NULL runtimes, accepted by generation 3
+ *      (one CREATE keyed 18 ‖ effective); refused by either fact, by HF-2
+ *      off and by an H or H-1 boundary; the param-9 fact does NOT gate
+ *      it; the 18 fact does NOT gate a param-9 leg; a param-16 leg is
+ *      refused by every runtime; the read plan is empty.
+ *   6. slot 18 readable; a far-future param-18 row found at INT64_MAX;
+ *      slot 16 still readable (the retired id's history is read).
  *
  *  HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md
  *  rev 2 §1 — param 17 DELEGATE_NAME_REQUIRED, the HF-2/HF-3 switch
  *  shape; Kurultay #11), added to the sections above:
  *   1. id 17 = DELEGATE_NAME_REQUIRED, on the read list (MAX_ID was 17
- *      until HF-6 slice 8a); 18 is not assigned; its value literal is 1.
+ *      until HF-6 slice 8a); its value literal is 1.
  *   2. param 17 accepts EXACTLY 1 (0, 2, UINT64_MAX refused; the window
- *      rule binds); id 18 refused.
+ *      rule binds); id 18 refuses 1.
  *   3. grace 17 ERGONOMIC (its own case — HF-2/HF-3's class).
  *   4. stateful: param 17 refused under generation 0 / 1, accepted under
  *      2 and every later generation, whatever the HF-2 / single-use /
@@ -83,20 +87,20 @@
  *  design.md rev 6 §8 — params 19 STAKE_MIN, 20 POWER_CAP_BPS, 21
  *  STORAGE_BOND; ranges from Kurultay #14 K5 / K9 and #16 khan decision 3;
  *  ERGONOMIC from #16 "4 ok"), added to the sections above:
- *   1. ids 19 / 20 / 21, MAX_ID = 21, all three on the read list; 18 is
- *      NOT (unassigned until slice 8c) and 22 is the first id past the
- *      end; the named bounds are the records' numbers.
+ *   1. ids 19 / 20 / 21, MAX_ID = 21, all three on the read list; 22 is
+ *      the first id past the end; the named bounds are the records'
+ *      numbers.
  *   2. scalar: 19 refuses 10^13 - 1, accepts 10^13, 2·10^14 and
  *      INT64_MAX, refuses INT64_MAX + 1 and UINT64_MAX — with a valid
  *      window and nonce, so the refusal can only come from param 19's OWN
  *      upper check (the shared int64 tail never bounds new_value): a 19
  *      case written as "≥ MIN only" fails here. 20: 499 / 3001 refused,
  *      500 / 3000 accepted. 21: 10^13 - 1 / 10^14 + 1 refused, 10^13 /
- *      10^14 accepted. 18 refused for every probed value, 22 too.
+ *      10^14 accepted. 18 refuses each neighbour's value, 22 every value.
  *   3. grace 19-21 ERGONOMIC.
  *   4. stateful: 19-21 refused under generations 0-3, accepted under 4
  *      whatever the HF-2 / single-use / boundary facts; the facts form
- *      agrees; 18 refused.
+ *      agrees.
  *   5. exec hook (EVM-enabled build): a 19 / 20 / 21 leg refused (-1) by
  *      the generation-1, -2, -3 (EVM) and NULL runtimes, accepted by
  *      generation 4 with exactly ONE CREATE keyed (param ‖ effective);
@@ -105,14 +109,12 @@
  *   6. slots 18-21 readable (no missing-slot -1); a 19 / 20 / 21 row each
  *      lands in its own slot (chain_config_cache_count[21] counted).
  *
- *  HOW IT CAN LIE (storage): every "exactly the literal" check on
- *  DNAC_CFG_RULESET_GEN_STORAGE_D here holds for any literal value (the
- *  literal is S4 of shared/dnac/tests/storage_oracle.py, STORAGE-ORACLE);
- *  its correctness is
- *  test_hf4_table.c's selfcheck re-derivation. Section 5's storage half
- *  does not run in a build without NODUS_EVM_ENABLED. The same-block
- *  check is over the pure rule, not a block-level run (test_hf4_switch.c
- *  has the engine's edges).
+ *  HOW IT CAN LIE (HF-6 8c): every "exactly D4" check here holds for any
+ *  literal value (D4 is the hf6_vote_oracle.py literal); its correctness
+ *  is test_hf4_table.c's KAT and the runtime selfcheck. Section 5's
+ *  param-16 / param-18 half does not run in a build without
+ *  NODUS_EVM_ENABLED. The same-block check is over the pure rule, not a
+ *  block-level run (test_hf4_switch.c has the engine's edges).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build (the grace / epoch tests
@@ -226,9 +228,12 @@ static void cc_leg_build(cc_leg_t *e, uint8_t param, uint64_t value,
     CHECK(dna_env_decode(e->bytes, e->len, &e->view) == 0);
 }
 
-/* Storage reward v1: the param-14 single-use fact the next run_exec hands
- * the hook (ctx.ruleset_gen_storage_voted); 0 unless a section sets it. */
+/* HF-6 slice 8c: the two generation-4 vote facts the next run_exec hands
+ * the hook — "any param-16 row" (ctx.ruleset_gen_storage_voted, rule
+ * (a')) and "any param-18 row" (ctx.ruleset_gen_roles_voted, rule (a));
+ * 0 unless a section sets them. */
 static uint8_t g_svoted = 0;
+static uint8_t g_rvoted = 0;
 
 /* The engine facts the hook receives. The verdict meets BOTH approval
  * rules (7 of 7 seats; power 7 of 7) so only the rule under test can
@@ -261,6 +266,7 @@ static int run_exec(const nodus_domain_runtime_t *rt, const cc_leg_t *e,
     ctx.hf2_active         = hf2;
     ctx.ruleset_gen2_voted = voted;
     ctx.ruleset_gen_storage_voted = g_svoted;
+    ctx.ruleset_gen_roles_voted = g_rvoted;
 
     static uint8_t res[DNA_EFFECT_MAX_TOTAL_LEN];
     size_t rl = 0;
@@ -298,6 +304,19 @@ static uint64_t eff_boundary(uint64_t floor_h) {
     uint64_t k = (floor_h > 1u ? (floor_h - 1u) / E_LEN : 0u) + 1u;
     return k * E_LEN + 1u;               /* (k·E + 1) - 1 = k·E, k >= 1 */
 }
+/* HF-6 param 18: an effective height >= floor_h with NEITHER it NOR its
+ * predecessor a boundary (rules (d) and (e)), and one that IS a boundary
+ * itself (rule (e)) while its predecessor is not. */
+static uint64_t eff_roles_ok(uint64_t floor_h) {
+    uint64_t e = floor_h;
+    while ((((e - 1u) % E_LEN) == 0 && (e - 1u) != 0) || (e % E_LEN) == 0)
+        e++;
+    return e;
+}
+static uint64_t eff_h_boundary(uint64_t floor_h) {
+    uint64_t k = floor_h / E_LEN + 1u;
+    return k * E_LEN;                    /* k >= 1: k·E, (k·E) - 1 is not */
+}
 
 /* ── 6. a migrated chain DB for the read side ───────────────────────── */
 
@@ -327,22 +346,23 @@ int main(void) {
           DNAC_CFG_NAME_PRICE_5P == 12 && DNAC_CFG_NAME_PRICE_6P == 13);
     /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md §9) appends
      * params 14 EVM_ACTIVE and 15 EVM_BLOCK_GAS_LIMIT after HF-4's 9-13;
-     * storage reward v1 appends 16 RULESET_GEN_STORAGE and HF-8 17
-     * DELEGATE_NAME_REQUIRED (main merge order); HF-6 slice 8a appends
-     * 19-21 and leaves 18 unassigned until slice 8c. HF-4's own ids are
-     * unchanged and still read by consensus. */
+     * storage reward v1 appended 16 RULESET_GEN_STORAGE and HF-8 17
+     * DELEGATE_NAME_REQUIRED (main merge order); HF-6 appends 18-21 and
+     * RETIRES 16 (slice 8c — the id keeps its number and is never
+     * reused). HF-4's own ids are unchanged and still read by
+     * consensus. */
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE == 16);
     CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED == 17);
-    /* HF-6 slice 8a: 19-21 appended; 18 stays unassigned until 8c */
+    CHECK(DNAC_CFG_RULESET_GEN_ROLES == 18);
     CHECK(DNAC_CFG_STAKE_MIN == 19);
     CHECK(DNAC_CFG_POWER_CAP_BPS == 20);
     CHECK(DNAC_CFG_STORAGE_BOND == 21);
     CHECK(DNAC_CFG_PARAM_MAX_ID == 21);
-    for (unsigned id = 9; id <= 17; id++)
-        CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id));
-    CHECK(!dnac_cfg_param_read_by_consensus(18));
-    for (unsigned id = 19; id <= 21; id++)
-        CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id));
+    for (unsigned id = 9; id <= 21; id++)
+        CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) ==
+              (id != DNAC_CFG_RULESET_GEN_STORAGE));
+    CHECK(!dnac_cfg_param_read_by_consensus(16));
+    CHECK(dnac_cfg_param_read_by_consensus(18));
     CHECK(!dnac_cfg_param_read_by_consensus(22));
     /* the records' numbers (K9: 100k NODUS floor, default 2M; K5: [500,
      * 3000], default 3000; Kurultay #16 decision 3: [100k, 1M], 1M) */
@@ -356,8 +376,9 @@ int main(void) {
           DNAC_HF6_STORAGE_BOND_DEFAULT == 100000000000000ULL);
     CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED_ON == 1ULL);
     CHECK(DNAC_CFG_RULESET_GEN2_D2 <= (uint64_t)INT64_MAX);
-    CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D <= (uint64_t)INT64_MAX);
-    CHECK(DNAC_CFG_RULESET_GEN_STORAGE_D != DNAC_CFG_RULESET_GEN2_D2);
+    CHECK(DNAC_CFG_RULESET_GEN_ROLES_D <= (uint64_t)INT64_MAX);
+    CHECK(DNAC_CFG_RULESET_GEN_ROLES_D != DNAC_CFG_RULESET_GEN2_D2);
+    CHECK(DNAC_CFG_RULESET_GEN_ROLES_D != DNAC_CFG_EVM_ACTIVE_D);
     CHECK(DNAC_RULESET_SWITCH_SPEC_VERSION == 1u);
 
     /* ── 2. scalar rules (signed_at 1, valid_before 5000 > eff 4000) ─ */
@@ -393,27 +414,39 @@ int main(void) {
             CHECK(nodus_chain_config_scalar_rules(id, 0, 1, 5000, 4000, 7)
                   == -1);
         }
-        /* storage reward v1: param 16 accepts EXACTLY the storage vote
-         * literal (the param-9 shape), refuses its neighbours, D2 and
-         * UINT64_MAX; id 17 is unknown. (While the literal is the unfilled
-         * oracle placeholder 0, DS - 1 wraps to UINT64_MAX — still
-         * refused.) */
+        /* HF-6 slice 8c: param 16 RETIRED — refused for EVERY value, the
+         * id-1 treatment (the read-list gate refuses before any bound);
+         * param 18 accepts EXACTLY D4 (the param-9 shape), refuses its
+         * neighbours, 0, D2, the EVM D and UINT64_MAX; param 9 refuses
+         * D4. */
         {
-            const uint64_t DS = (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D;
-            CHECK(nodus_chain_config_scalar_rules(16, DS, 1, 5000, 4000, 7)
+            const uint64_t D4 = (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D;
+            const uint64_t ED = (uint64_t)DNAC_CFG_EVM_ACTIVE_D;
+            const uint64_t any16[] = { 0, 1, D2, D4, ED, (uint64_t)INT64_MAX,
+                                       UINT64_MAX };
+            for (size_t k = 0; k < sizeof(any16) / sizeof(any16[0]); k++)
+                CHECK(nodus_chain_config_scalar_rules(16, any16[k], 1, 5000,
+                                                      4000, 7) == -1);
+            CHECK(nodus_chain_config_scalar_rules(18, D4, 1, 5000, 4000, 7)
                   == 0);
-            CHECK(nodus_chain_config_scalar_rules(16, DS + 1u, 1, 5000,
+            CHECK(nodus_chain_config_scalar_rules(18, D4 + 1u, 1, 5000,
                                                   4000, 7) == -1);
-            CHECK(nodus_chain_config_scalar_rules(16, DS - 1u, 1, 5000,
+            CHECK(nodus_chain_config_scalar_rules(18, D4 - 1u, 1, 5000,
                                                   4000, 7) == -1);
-            CHECK(nodus_chain_config_scalar_rules(16, D2, 1, 5000, 4000, 7)
+            CHECK(nodus_chain_config_scalar_rules(18, 0, 1, 5000, 4000, 7)
                   == -1);
-            CHECK(nodus_chain_config_scalar_rules(16, UINT64_MAX, 1, 5000,
+            CHECK(nodus_chain_config_scalar_rules(18, D2, 1, 5000, 4000, 7)
+                  == -1);
+            CHECK(nodus_chain_config_scalar_rules(18, ED, 1, 5000, 4000, 7)
+                  == -1);
+            CHECK(nodus_chain_config_scalar_rules(18, UINT64_MAX, 1, 5000,
                                                   4000, 7) == -1);
-            CHECK(nodus_chain_config_scalar_rules(16, DS, 0, 5000, 4000, 7)
+            CHECK(nodus_chain_config_scalar_rules(18, D4, 0, 5000, 4000, 7)
                   == -1);               /* the shared window rule binds */
-            /* and param 9 does not accept the storage literal */
-            CHECK(nodus_chain_config_scalar_rules(9, DS, 1, 5000, 4000, 7)
+            CHECK(nodus_chain_config_scalar_rules(18, D4, 1, 4000, 4000, 7)
+                  == -1);
+            /* and param 9 does not accept D4 */
+            CHECK(nodus_chain_config_scalar_rules(9, D4, 1, 5000, 4000, 7)
                   == -1);
         }
         /* HF-8: param 17 accepts EXACTLY 1 — a one-way switch, no "off"
@@ -430,7 +463,7 @@ int main(void) {
         CHECK(nodus_chain_config_scalar_rules(17, 1, 1, 4000, 4000, 7)
               == -1);
         CHECK(nodus_chain_config_scalar_rules(18, 1, 1, 5000, 4000, 7)
-              == -1);                   /* 18: not assigned (8c)        */
+              == -1);                   /* 18: exactly D4               */
         CHECK(nodus_chain_config_scalar_rules(18, DNAC_CFG_MIN_NAME_PRICE, 1,
                                               5000, 4000, 7) == -1);
 
@@ -490,29 +523,36 @@ int main(void) {
             CHECK(nodus_chain_config_scalar_rules(21, 0, 1, 5000, 4000, 7)
                   == -1);
         }
-        /* 18 is still refused (unassigned until slice 8c) for every value
-         * one of its neighbours would accept; 22 is past the end */
+        /* 18 (exactly D4) refuses every value one of its neighbours
+         * would accept; 22 is past the end, whatever the value */
         CHECK(nodus_chain_config_scalar_rules(18, 500, 1, 5000, 4000, 7)
               == -1);
         CHECK(nodus_chain_config_scalar_rules(
                   18, (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT, 1, 5000, 4000, 7)
               == -1);
-        CHECK(nodus_chain_config_scalar_rules(
-                  18, (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, 1, 5000, 4000,
-                  7) == -1);
         CHECK(nodus_chain_config_scalar_rules(22, 500, 1, 5000, 4000, 7)
               == -1);
+        CHECK(nodus_chain_config_scalar_rules(
+                  22, (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, 1, 5000, 4000,
+                  7) == -1);
     }
 
-    /* ── 3. grace: ERGONOMIC, HF-3's class (16: param 9's class; the
-     *       EVM ids 14-15 between them are SAFETY, Nodus EVM's own) ──── */
-    for (uint8_t id = 9; id <= 16; id++) {
-        if (id == DNAC_CFG_EVM_ACTIVE || id == DNAC_CFG_EVM_BLOCK_GAS_LIMIT)
-            continue;
+    /* ── 3. grace: ERGONOMIC, HF-3's class (the EVM ids 14-15 are
+     *       SAFETY, Nodus EVM's own) ──────────────────────────────── */
+    for (uint8_t id = 9; id <= 13; id++) {
         CHECK(nodus_chain_config_grace_for_param(id) == GRACE_E);
         CHECK(nodus_chain_config_grace_for_param(id) ==
               nodus_chain_config_grace_for_param(DNAC_CFG_HF3_ACTIVE));
     }
+    /* HF-6 slice 8c: RETIRED 16 answers UINT64_MAX — the id-1 / id-3
+     * shape, an unsatisfiable gap — and 18 is ERGONOMIC (Kurultay #16
+     * "4 ok"), param 9's class */
+    CHECK(nodus_chain_config_grace_for_param(16) == UINT64_MAX);
+    CHECK(nodus_chain_config_grace_for_param(16) ==
+          nodus_chain_config_grace_for_param(DNAC_CFG_MAX_TXS_PER_BLOCK));
+    CHECK(nodus_chain_config_grace_for_param(18) == GRACE_E);
+    CHECK(nodus_chain_config_grace_for_param(18) ==
+          nodus_chain_config_grace_for_param(DNAC_CFG_RULESET_GEN2));
     /* HF-8: param 17 ERGONOMIC — the HF-2/HF-3 class */
     CHECK(nodus_chain_config_grace_for_param(17) == GRACE_E);
     CHECK(nodus_chain_config_grace_for_param(17) ==
@@ -554,71 +594,140 @@ int main(void) {
         for (uint8_t id = 1; id <= 8; id++)
             CHECK(nodus_chain_config_stateful_rules(id, E_LEN + 1u, 0, 1, 0)
                   == 0);
-        /* storage reward v1 — param 16: rule (d) EXACTLY the EVM
-         * generation (NODUS_RT_GEN_STORAGE_BASE) judges, then param 9's
-         * (a)-(c), (a) over the param-16 fact the caller hands in the same
-         * argument slot */
-        {
-            const uint32_t GB = NODUS_RT_GEN_STORAGE_BASE;
-            CHECK(GB == NODUS_RT_GEN_EVM);
-            CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 1, 0, 0)
-                  == -1);
-            CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 1, 0, 1)
-                  == -1);
-            CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 1, 0, 2)
-                  == -1);               /* (d) the EVM base, not the EVM
-                                         * generation                    */
-            CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 1, 0, GB)
-                  == 0);
-            CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 1, 0,
-                                                    NODUS_RT_GEN_STORAGE)
-                  == -1);               /* (d) already switched          */
-            CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 1, 1, GB)
-                  == -1);               /* (a) a param-16 row exists     */
-            CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 0, 0, GB)
-                  == -1);               /* (b) HF-2 off                  */
-            CHECK(nodus_chain_config_stateful_rules(16, E_LEN + 1u, 1, 0, GB)
-                  == -1);               /* (c) H-1 = E                   */
-            CHECK(nodus_chain_config_stateful_rules(16, 0, 1, 0, GB) == -1);
-        }
-        /* the facts form: the param-16 fact gates ONLY param 16, the
-         * param-9 fact ONLY param 9 */
+        /* HF-6 slice 8c — RETIRED param 16: no stateful case left, -1
+         * whatever the facts (the scalar rules refuse it first) */
         {
             nodus_cc_state_facts_t f;
             memset(&f, 0, sizeof(f));
             f.hf2_active = 1;
             f.judging_generation = NODUS_RT_GEN_STORAGE_BASE;
-            CHECK(nodus_chain_config_stateful_rules_ex(16, ok_eff, &f) == 0);
-            f.ruleset_gen2_voted = 1;
-            CHECK(nodus_chain_config_stateful_rules_ex(16, ok_eff, &f) == 0);
-            f.ruleset_gen_storage_voted = 1;
             CHECK(nodus_chain_config_stateful_rules_ex(16, ok_eff, &f) == -1);
-            f.ruleset_gen2_voted = 0;
-            f.judging_generation = NODUS_RT_GEN_1;
-            CHECK(nodus_chain_config_stateful_rules_ex(9, ok_eff, &f) == 0);
+            for (uint32_t g = 0; g <= NODUS_RT_GEN_STORAGE; g++)
+                CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 1, 0, g)
+                      == -1);
         }
-        /* K10 (decision 2026-10-05-storage-reward-is-for-archive.md): rule
-         * (d) keeps the storage edge out of the EVM edge's block. The EVM
-         * edge switches the registry at the END of block He-1 (He = the
-         * EVM_ACTIVE row's effective height), so every block up to and
-         * including He-1 is judged under the EVM BASE generation and every
-         * block from He on under the EVM generation. A storage vote whose
-         * edge block Hs-1 equals He-1 would have to be judged at or before
-         * He-1 — under the base — and is refused whatever its effective
-         * height (Hs = He included); a vote judged at the EVM generation
-         * sits at a height >= He and its effective is >= that height +
-         * the grace, so its edge block lies strictly above He-1. */
+        /* HF-6 slice 8c — param 18 RULESET_GEN_ROLES: accepted ONLY with
+         * no param-18 row (a), no param-16 row (a'), HF-2 on (b), judged
+         * under EXACTLY generation 3 (c), and neither H-1 (d) nor H (e)
+         * an epoch boundary. Each probe below breaks ONE clause of the
+         * accepted baseline. */
         {
-            const uint64_t He = eff_not_boundary(4u * E_LEN + 7u);
+            const uint32_t GB = NODUS_RT_GEN_STORAGE_BASE;
+            const uint64_t R = eff_roles_ok(E_LEN + 5u);
+            CHECK(GB == NODUS_RT_GEN_EVM && GB == 3u);
+            CHECK(((R - 1u) % E_LEN) != 0 && (R % E_LEN) != 0);
+            nodus_cc_state_facts_t f;
+            memset(&f, 0, sizeof(f));
+            f.hf2_active = 1;
+            f.judging_generation = GB;
+            CHECK(nodus_chain_config_stateful_rules_ex(18, R, &f) == 0);
+            /* (c) judged under exactly 3: 0 (synthetic), 1, 2, 4 refused */
+            for (uint32_t g = 0; g <= NODUS_RT_GEN_STORAGE; g++) {
+                f.judging_generation = g;
+                CHECK(nodus_chain_config_stateful_rules_ex(18, R, &f) ==
+                      (g == GB ? 0 : -1));
+            }
+            f.judging_generation = GB;
+            /* (a) a param-18 row exists */
+            f.ruleset_gen_roles_voted = 1;
+            CHECK(nodus_chain_config_stateful_rules_ex(18, R, &f) == -1);
+            f.ruleset_gen_roles_voted = 0;
+            /* (a') a param-16 row exists — the K16 precondition */
+            f.ruleset_gen_storage_voted = 1;
+            CHECK(nodus_chain_config_stateful_rules_ex(18, R, &f) == -1);
+            f.ruleset_gen_storage_voted = 0;
+            /* (b) HF-2 off */
+            f.hf2_active = 0;
+            CHECK(nodus_chain_config_stateful_rules_ex(18, R, &f) == -1);
+            f.hf2_active = 1;
+            /* (d)(e) the heights: 0 refused; 1 accepted (H-1 = genesis,
+             * not a boundary, and H = 1 is not one); E refused by (e);
+             * E+1 refused by (d); E+2 accepted; 2E by (e); 2E+1 by (d) */
+            CHECK(nodus_chain_config_stateful_rules_ex(18, 0, &f) == -1);
+            CHECK(nodus_chain_config_stateful_rules_ex(18, 1, &f) == 0);
+            CHECK(nodus_chain_config_stateful_rules_ex(18, E_LEN, &f) == -1);
+            CHECK(nodus_chain_config_stateful_rules_ex(18, E_LEN + 1u, &f)
+                  == -1);
+            CHECK(nodus_chain_config_stateful_rules_ex(18, E_LEN + 2u, &f)
+                  == 0);
+            CHECK(nodus_chain_config_stateful_rules_ex(18, 2u * E_LEN, &f)
+                  == -1);
+            CHECK(nodus_chain_config_stateful_rules_ex(18, 2u * E_LEN + 1u,
+                                                       &f) == -1);
+            {
+                const uint64_t hb = eff_h_boundary(R);  /* the next k·E */
+                CHECK((hb % E_LEN) == 0 && ((hb - 1u) % E_LEN) != 0);
+                CHECK(nodus_chain_config_stateful_rules_ex(18, hb, &f) == -1);
+                CHECK(nodus_chain_config_stateful_rules_ex(18, hb + 2u, &f)
+                      == 0);
+            }
+            /* the facts that are not 18's do not gate it */
+            f.ruleset_gen2_voted = 1;
+            f.evm_active_voted = 1;
+            f.hf3_active = 1;
+            f.gas_price_on = 1;
+            CHECK(nodus_chain_config_stateful_rules_ex(18, R, &f) == 0);
+            /* and 18's facts gate nothing but 18: param 9 (generation 1)
+             * and param 14 (its own full fact set, generation 2) still
+             * accept with both generation-4 vote facts set */
+            {
+                nodus_cc_state_facts_t g9;
+                memset(&g9, 0, sizeof(g9));
+                g9.hf2_active = 1;
+                g9.judging_generation = NODUS_RT_GEN_1;
+                g9.ruleset_gen_roles_voted = 1;
+                g9.ruleset_gen_storage_voted = 1;
+                CHECK(nodus_chain_config_stateful_rules_ex(9, ok_eff, &g9)
+                      == 0);
+                nodus_cc_state_facts_t g14;
+                memset(&g14, 0, sizeof(g14));
+                g14.hf2_active = 1;
+                g14.hf3_active = 1;
+                g14.gas_price_on = 1;
+                g14.judging_generation = NODUS_RT_GEN_EVM_BASE;
+                g14.chain_initial_height = 1;
+                g14.ruleset_gen_roles_voted = 1;
+                g14.ruleset_gen_storage_voted = 1;
+                const uint64_t e14 =
+                    eff_not_boundary(1u + NODUS_CC_EVM_BLOCKHASH_WINDOW +
+                                     E_LEN);
+                CHECK(nodus_chain_config_stateful_rules_ex(14, e14, &g14)
+                      == 0);
+            }
+            /* the 5-argument form: its 4th argument is 18's own fact */
+            CHECK(nodus_chain_config_stateful_rules(18, R, 1, 0, GB) == 0);
+            CHECK(nodus_chain_config_stateful_rules(18, R, 1, 1, GB) == -1);
+            CHECK(nodus_chain_config_stateful_rules(18, R, 0, 0, GB) == -1);
+            CHECK(nodus_chain_config_stateful_rules(18, R, 1, 0,
+                                                    NODUS_RT_GEN_STORAGE)
+                  == -1);
+        }
+        /* K10 (decision 2026-10-05-storage-reward-is-for-archive.md), kept
+         * for the param-18 vote: rule (c) keeps the generation-4 edge out
+         * of the EVM edge's block. The EVM edge switches the registry at
+         * the END of block He-1 (He = the EVM_ACTIVE row's effective
+         * height), so every block up to and including He-1 is judged under
+         * the EVM BASE generation and every block from He on under the EVM
+         * generation. A param-18 vote whose edge block H-1 equals He-1
+         * would have to be judged at or before He-1 — under the base — and
+         * is refused whatever its effective height (H = He included); a
+         * vote judged at the EVM generation sits at a height >= He and its
+         * effective is >= that height + the grace, so its edge block lies
+         * strictly above He-1. */
+        {
+            const uint64_t He = eff_roles_ok(4u * E_LEN + 7u);
+            nodus_cc_state_facts_t f;
+            memset(&f, 0, sizeof(f));
+            f.hf2_active = 1;
+            f.judging_generation = NODUS_RT_GEN_EVM_BASE;
             for (uint64_t hs = He - 1u; hs <= He + 1u; hs++) {
-                if (((hs - 1u) % E_LEN) == 0) continue;
-                CHECK(nodus_chain_config_stateful_rules(
-                          16, hs, 1, 0, NODUS_RT_GEN_EVM_BASE) == -1);
+                if (((hs - 1u) % E_LEN) == 0 || (hs % E_LEN) == 0) continue;
+                CHECK(nodus_chain_config_stateful_rules_ex(18, hs, &f) == -1);
             }
             /* the earliest vote the EVM generation judges is at He; its
              * edge block is at least He + grace - 1 > He - 1 */
-            CHECK(He + nodus_chain_config_grace_for_param(16) - 1u > He - 1u);
-            CHECK(nodus_chain_config_grace_for_param(16) >= 1u);
+            CHECK(He + nodus_chain_config_grace_for_param(18) - 1u > He - 1u);
+            CHECK(nodus_chain_config_grace_for_param(18) >= 1u);
         }
         /* HF-8 — param 17: votable only while generation >= 2 judges the
          * vote (names exist); NO single-use rule and no HF-2 / boundary
@@ -641,6 +750,7 @@ int main(void) {
             f.judging_generation = NODUS_RT_GEN_STORAGE;
             f.ruleset_gen2_voted = 1;
             f.ruleset_gen_storage_voted = 1;
+            f.ruleset_gen_roles_voted = 1;
             f.evm_active_voted = 1;
             CHECK(nodus_chain_config_stateful_rules_ex(17, ok_eff, &f) == 0);
         }
@@ -666,10 +776,12 @@ int main(void) {
             CHECK(nodus_chain_config_stateful_rules_ex(id, ok_eff, &f) == 0);
             f.ruleset_gen2_voted = 1;
             f.ruleset_gen_storage_voted = 1;
+            f.ruleset_gen_roles_voted = 1;
             f.evm_active_voted = 1;
             CHECK(nodus_chain_config_stateful_rules_ex(id, 0, &f) == 0);
         }
         CHECK(nodus_chain_config_stateful_rules(0, ok_eff, 1, 0, 2) == -1);
+        CHECK(nodus_chain_config_stateful_rules(16, ok_eff, 1, 0, 2) == -1);
         CHECK(nodus_chain_config_stateful_rules(18, ok_eff, 1, 0, 2) == -1);
         CHECK(nodus_chain_config_stateful_rules(18, ok_eff, 1, 0,
                                                 NODUS_RT_GEN_STORAGE) == -1);
@@ -732,12 +844,14 @@ int main(void) {
             free(p[k].bytes);
         }
 
-        /* storage reward v1 — a param-16 leg through the same hook: the
-         * hook hands the stateful rules the PARAM-16 fact (never the
-         * param-9 one) and its own generation; the read plan stays
-         * empty (the fact is unmetered). The EVM generation's SYSTEM
-         * runtime (the only one that accepts it) exists in an
-         * EVM-enabled build only (K10: GEN_STORAGE is EVM-only too). */
+        /* HF-6 slice 8c — a param-18 leg through the same hook: the hook
+         * hands the stateful rules the param-18 fact (rule (a)), the
+         * param-16 fact (rule (a')) — never the param-9 one — and its
+         * own generation; the read plan stays empty (both facts are
+         * unmetered). The generation-3 SYSTEM runtime (the only one that
+         * accepts it) and generation 4 exist in an EVM-enabled build only
+         * (K10). A param-16 leg is refused by every runtime (RETIRED: the
+         * scalar rules refuse it before any fact is read). */
 #ifdef NODUS_EVM_ENABLED
         {
             const nodus_domain_runtime_t *sysE =
@@ -748,40 +862,64 @@ int main(void) {
                                              DNA_DOMAIN_SYSTEM);
             CHECK(sysE && sysE->generation == NODUS_RT_GEN_EVM);
             CHECK(sysS && sysS->generation == NODUS_RT_GEN_STORAGE);
-            cc_leg_t e16, e16b;
-            cc_leg_build(&e16, 16,
-                         (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, ok_eff,
-                         ok_eff + 1000u);
-            cc_leg_build(&e16b, 16,
-                         (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, bd_eff,
-                         bd_eff + 1000u);
-            check_no_reads(sysE, &e16);
+            const uint64_t D4 = (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D;
+            const uint64_t r_eff = eff_roles_ok(H + GRACE_E);
+            const uint64_t rh_eff = eff_h_boundary(H + GRACE_E);
+            cc_leg_t e18, e18b, e18h, e16;
+            cc_leg_build(&e18, 18, D4, r_eff, r_eff + 1000u);
+            cc_leg_build(&e18b, 18, D4, bd_eff, bd_eff + 1000u);
+            cc_leg_build(&e18h, 18, D4, rh_eff, rh_eff + 1000u);
+            check_no_reads(sysE, &e18);
             g_svoted = 0;
-            CHECK(run_exec(sys1, &e16, H, 1, 0, NULL) == -1);  /* (d) gen 1 */
-            CHECK(run_exec(sys2, &e16, H, 1, 0, NULL) == -1);  /* (d) gen 2 */
-            CHECK(run_exec(sysS, &e16, H, 1, 0, NULL) == -1);  /* (d) gen 4 */
-            CHECK(run_exec(NULL, &e16, H, 1, 0, NULL) == -1);  /* (d) NULL  */
+            g_rvoted = 0;
+            CHECK(run_exec(sys1, &e18, H, 1, 0, NULL) == -1);  /* (c) gen 1 */
+            CHECK(run_exec(sys2, &e18, H, 1, 0, NULL) == -1);  /* (c) gen 2 */
+            CHECK(run_exec(sysS, &e18, H, 1, 0, NULL) == -1);  /* (c) gen 4 */
+            CHECK(run_exec(NULL, &e18, H, 1, 0, NULL) == -1);  /* (c) NULL  */
             memset(&ev, 0, sizeof(ev));
-            CHECK(run_exec(sysE, &e16, H, 1, 0, &ev) == 0);
+            CHECK(run_exec(sysE, &e18, H, 1, 0, &ev) == 0);    /* gen 3    */
             CHECK(ev.effect_count == 1);
             CHECK(ev.eff[0].effect_kind == DNA_EFFECT_CREATE);
+            CHECK(ev.eff[0].precond_tag == DNA_EFFECT_PRE_ABSENT);
+            CHECK(ev.eff[0].key_len == 12);
             {
                 const uint8_t *k = ev.buf + ev.key_off[0];
-                uint8_t want[12] = { 0, 0, 0, 16 };
-                put64(want + 4, ok_eff);
+                uint8_t want[12] = { 0, 0, 0, 18 };
+                put64(want + 4, r_eff);
                 CHECK(memcmp(k, want, 12) == 0);
             }
-            /* the param-9 fact does NOT gate param 16 … */
-            CHECK(run_exec(sysE, &e16, H, 1, 1, NULL) == 0);
-            CHECK(run_exec(sysE, &e16, H, 0, 0, NULL) == -1);  /* (b)      */
-            CHECK(run_exec(sysE, &e16b, H, 1, 0, NULL) == -1); /* (c)      */
+            /* the param-9 fact does NOT gate param 18 … */
+            CHECK(run_exec(sysE, &e18, H, 1, 1, NULL) == 0);
+            CHECK(run_exec(sysE, &e18, H, 0, 0, NULL) == -1);  /* (b)      */
+            CHECK(run_exec(sysE, &e18b, H, 1, 0, NULL) == -1); /* (d) H-1  */
+            CHECK(run_exec(sysE, &e18h, H, 1, 0, NULL) == -1); /* (e) H    */
+            g_rvoted = 1;
+            CHECK(run_exec(sysE, &e18, H, 1, 0, NULL) == -1);  /* (a)      */
+            /* … and the param-18 fact does NOT gate param 9 */
+            CHECK(run_exec(sys1, &e9, H, 1, 0, NULL) == 0);
+            g_rvoted = 0;
             g_svoted = 1;
-            CHECK(run_exec(sysE, &e16, H, 1, 0, NULL) == -1);  /* (a)      */
-            /* … and the param-16 fact does NOT gate param 9 */
+            CHECK(run_exec(sysE, &e18, H, 1, 0, NULL) == -1);  /* (a')     */
             CHECK(run_exec(sys1, &e9, H, 1, 0, NULL) == 0);
             g_svoted = 0;
+            /* a value other than D4 never reaches the stateful rules */
+            {
+                cc_leg_t ex;
+                cc_leg_build(&ex, 18, D4 + 1u, r_eff, r_eff + 1000u);
+                CHECK(run_exec(sysE, &ex, H, 1, 0, NULL) == -1);
+                free(ex.bytes);
+            }
+            /* RETIRED param 16: refused by every runtime, for D4 too */
+            cc_leg_build(&e16, 16, D4, ok_eff, ok_eff + 1000u);
+            CHECK(run_exec(sys1, &e16, H, 1, 0, NULL) == -1);
+            CHECK(run_exec(sys2, &e16, H, 1, 0, NULL) == -1);
+            CHECK(run_exec(sysE, &e16, H, 1, 0, NULL) == -1);
+            CHECK(run_exec(sysS, &e16, H, 1, 0, NULL) == -1);
+            CHECK(run_exec(NULL, &e16, H, 1, 0, NULL) == -1);
+            free(e18.bytes);
+            free(e18b.bytes);
+            free(e18h.bytes);
             free(e16.bytes);
-            free(e16b.bytes);
         }
         /* HF-6 slice 8a — params 19-21 through the same hook: refused by
          * every generation below 4 and by a NULL runtime, accepted by the
@@ -825,8 +963,10 @@ int main(void) {
                 }
                 /* the facts do not gate them */
                 g_svoted = 1;
+                g_rvoted = 1;
                 CHECK(run_exec(sysS, &e, H, 0, 1, NULL) == 0);
                 g_svoted = 0;
+                g_rvoted = 0;
                 free(e.bytes);
             }
             /* an out-of-range value never reaches the stateful rules */
@@ -867,9 +1007,10 @@ int main(void) {
 
         uint64_t v = 0;
         /* no row anywhere: genuinely absent, never a missing-slot -1
-         * (Nodus EVM: slots 14-15; storage reward v1: slot 16 too) */
+         * (Nodus EVM: slots 14-15; storage reward v1: slot 16 too —
+         * RETIRED, still read) */
         for (uint8_t id = 9; id <= 21; id++) {   /* HF-8: slot 17 too;
-                                                  * HF-6 8a: 18-21 */
+                                                  * HF-6: 18-21 */
             CHECK(nodus_chain_config_get_u64(w, id, 1000, 77, &v) == 1);
             CHECK(v == 77);
         }
@@ -895,18 +1036,28 @@ int main(void) {
         w->chain_config_cache_warm = false;
         CHECK(nodus_chain_config_get_u64(w, 9, (uint64_t)INT64_MAX, 0, &v)
               == 0);
-        /* storage reward v1: a param-16 row lands in ITS slot and the
+        /* HF-6 slice 8c: a param-18 row lands in ITS slot and the
          * single-use read finds it the same way */
-        CHECK(nodus_chain_config_get_u64(w, 16, (uint64_t)INT64_MAX, 0, &v)
+        CHECK(nodus_chain_config_get_u64(w, 18, (uint64_t)INT64_MAX, 0, &v)
               == 1);
-        direct_insert(w, 16, (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D,
+        direct_insert(w, 18, (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D,
                       (uint64_t)INT64_MAX - 2u);
-        CHECK(nodus_chain_config_get_u64(w, 16, 1000000, 0, &v) == 1);
-        CHECK(nodus_chain_config_get_u64(w, 16, (uint64_t)INT64_MAX, 0, &v)
-              == 0 && v == (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D);
-        CHECK(w->chain_config_cache_count[16] == 1);
+        CHECK(nodus_chain_config_get_u64(w, 18, 1000000, 0, &v) == 1);
+        CHECK(nodus_chain_config_get_u64(w, 18, (uint64_t)INT64_MAX, 0, &v)
+              == 0 && v == (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D);
+        CHECK(w->chain_config_cache_count[18] == 1);
         CHECK(w->chain_config_cache_count[14] == 0);
         CHECK(w->chain_config_cache_count[9] == 1);
+        /* RETIRED 16: its slot still exists — a row committed before the
+         * retirement is found by the engine's "any param-16 row" read
+         * (the param-18 rule (a')), in its own slot */
+        CHECK(nodus_chain_config_get_u64(w, 16, (uint64_t)INT64_MAX, 0, &v)
+              == 1);
+        direct_insert(w, 16, 7u, 800);
+        CHECK(nodus_chain_config_get_u64(w, 16, (uint64_t)INT64_MAX, 0, &v)
+              == 0 && v == 7u);
+        CHECK(w->chain_config_cache_count[16] == 1);
+        CHECK(w->chain_config_cache_count[18] == 1);
         /* HF-8: a param-17 row lands in ITS slot; below its effective
          * height the switch reads absent (the engine's OFF), from it on 1 */
         CHECK(w->chain_config_cache_count[17] == 0);
@@ -917,7 +1068,8 @@ int main(void) {
         CHECK(w->chain_config_cache_count[17] == 1);
         CHECK(w->chain_config_cache_count[16] == 1);
         /* HF-6 slice 8a: a 19 / 20 / 21 row each lands in ITS slot and is
-         * read at and above its effective height; slot 18 stays empty */
+         * read at and above its effective height; slot 18 keeps its one
+         * row */
         direct_insert(w, 19, (uint64_t)DNAC_HF6_STAKE_MIN_MIN, 950);
         direct_insert(w, 20, 500u, 960);
         direct_insert(w, 21, (uint64_t)DNAC_HF6_STORAGE_BOND_MIN, 970);
@@ -932,7 +1084,7 @@ int main(void) {
         CHECK(nodus_chain_config_get_u64(w, 21, 970, 0, &v) == 0 &&
               v == (uint64_t)DNAC_HF6_STORAGE_BOND_MIN);
         CHECK(w->chain_config_cache_warm);
-        CHECK(w->chain_config_cache_count[18] == 0);
+        CHECK(w->chain_config_cache_count[18] == 1);
         CHECK(w->chain_config_cache_count[19] == 1);
         CHECK(w->chain_config_cache_count[20] == 1);
         CHECK(w->chain_config_cache_count[21] == 1);

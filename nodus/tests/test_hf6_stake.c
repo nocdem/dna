@@ -53,8 +53,8 @@
  *      bond).
  *  B. ENGINE (twin seeded chains, EVM-enabled build: V0..V6 ACTIVE 10M
  *     since 1, VR RETIRING 10M since 1, every block from 2 carrying the
- *     seven COMMIT votes; param 9 at 2, param 14 at 3, param 16 — the
- *     generation-4 dev trigger — at 4, so the edge runs in block 3):
+ *     seven COMMIT votes; param 9 at 2, param 14 at 3, param 18 — the
+ *     generation-4 vote (D4) — at 4, so the edge runs in block 3):
  *   B1 after the edge: eight role-1 reservations (seven + VR).
  *   B2 block 4: a kind-1 STAKE (owner KO, key KC1, bond STAKE_MIN)
  *      applies: validators + v2_validator_roles + v2_consensus_keys rows
@@ -795,7 +795,7 @@ static uint8_t  g_nul[N_COINS][64];
 
 #define H9   2u
 #define HE   3u
-#define H14  4u       /* param 16: the gen-4 edge runs in block H14 − 1 */
+#define H14  4u       /* param 18: the gen-4 edge runs in block H14 − 1 */
 
 static int coin_nul(int c, uint8_t out[64]) {
     uint8_t pre[160];
@@ -872,8 +872,8 @@ static int fx_open(fixture_t *fx, const char *tag) {
                H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE,
-               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES,
+               (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, H14, 13) != 0)
         return -1;
     uint64_t total = 0;
     for (int i = 0; i < N_VAL; i++) {

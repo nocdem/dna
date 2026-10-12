@@ -1365,14 +1365,19 @@ int nodus_witness_storage_boundary_apply(
     const uint64_t B = boundary_height;
     if (B == 0 || (B % E) != 0) return 0;
 
-    /* ── 0. GATE: param 16 in effect at B, read FIRST ──────────────── */
+    /* ── 0. GATE: param 18 in effect at B, read FIRST ──────────────── */
+    /* HF-6 slice 8c (design docs/plans/2026-10-03-hf5-validator-owner-
+     * stake-design.md rev 6 §8 "Storage sınır kapısı param 18'i okur"):
+     * the generation-4 vote RULESET_GEN_ROLES — the SAME id the edge
+     * (nodus_witness_v2_apply.c phase_6b_gen4_edge) fires on, so the gate
+     * opens at the first boundary at or after the edge's H. */
     {
         uint64_t v = 0;
         int rc = nodus_chain_config_get_u64(
-                     w, (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE, B, 0ULL, &v);
+                     w, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES, B, 0ULL, &v);
         if (rc < 0) {
             QGP_LOG_ERROR(LOG_TAG, "storage boundary %llu: the "
-                          "RULESET_GEN_STORAGE history is unreadable",
+                          "RULESET_GEN_ROLES history is unreadable",
                           (unsigned long long)B);
             return -2;
         }
@@ -1386,7 +1391,7 @@ int nodus_witness_storage_boundary_apply(
             return -2;
         }
         if (rt->generation < NODUS_RT_GEN_STORAGE) {
-            QGP_LOG_ERROR(LOG_TAG, "storage boundary %llu: param 16 is in "
+            QGP_LOG_ERROR(LOG_TAG, "storage boundary %llu: param 18 is in "
                           "effect but the SYSTEM runtime is generation %u",
                           (unsigned long long)B, (unsigned)rt->generation);
             return -2;

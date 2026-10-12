@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════
 # test_storage_archive.sh — the archive storage reward on a 7-node chain:
-# the storage rule-set generation voted in (param 16, generation 3 -> 4
-# on top of the Nodus EVM generation), two storage nodes registered by
+# the storage rule-set generation voted in (param 18 RULESET_GEN_ROLES =
+# D4 since HF-6 slice 8c — param 16 RETIRED —, generation 3 -> 4 on top
+# of the Nodus EVM generation), two storage nodes registered by
 # their OWNERS (HF-6 owner/node split), the first archive segment
 # published, probed over channel 0x72, reported and SETTLED from treasury
 # pool 1, one node taken out by its owner and its bond released
@@ -12,7 +13,9 @@
 # Governing records: docs/plans/decisions/2026-10-05-storage-reward-is-
 # for-archive.md (K1 block count, K2/K5/K5a fail_streak, K3 samples, K4
 # R = 3, K6 channel 0x72, K7 report window, K9/K9a grace, K10 generation
-# 4 on GEN_EVM, param 16); 2026-10-05-archive-reward-bytes-approved.md
+# 4 on GEN_EVM — its param 16 superseded by param 18, design rev 6 §8 and
+# 2026-10-09-kurultay-16-hf6-storage-summary.md item 1);
+# 2026-10-05-archive-reward-bytes-approved.md
 # (segment root bytes item 1); 2026-10-04-storage-reward-approved.md (S(H),
 # register / report / exit); design docs/plans/2026-10-05-archive-reward-
 # design.md rev 4; nodus/docs/DEPLOY_RUNBOOK.md §2.2 (height-activated
@@ -39,8 +42,11 @@
 # WHAT IT PROVES — each item would be false if it failed
 #   0. Capability gate (FAIL): the server and the CLI print one version
 #      banner; the CLI's chain-config usage names "EVM_ACTIVE exactly <D>"
-#      and "RULESET_GEN_STORAGE exactly <DS>" (its compiled literals —
-#      never a script literal) and it has the `storage` command.
+#      and "RULESET_GEN_ROLES exactly <D4>" (its compiled literals —
+#      never a script literal) and it has the `storage` command; and
+#      (step 0) every node's newest start logged the startup banner "HF-6
+#      rule-set generation 4 vote D4 0x<D4> (param 18 RULESET_GEN_ROLES,
+#      switch spec v1)" with the CLI's D4 (nodus_witness.c).
 #      HF-6 6b-3: it also names "storage consent --owner" and
 #      "storage register --keys" (an older CLI FAILs here).
 #   1. The chain commits; node 3 (the pump) and the two storage nodes 4
@@ -53,11 +59,11 @@
 #      identical 7/7 and committed below its effective height: HF2_ACTIVE,
 #      HF3_ACTIVE, RULESET_GEN2 (generation 1 -> 2), EVM_ACTIVE
 #      (generation 2 -> 3 + the EVM domain; H >= initial_height + 256 + 5,
-#      red-team F5 rule (g)). A fresh chain is generation 1, and param 16
-#      is votable only while the EVM generation judges the vote
-#      (nodus_witness_chain_config.c, CC_PARAM_RULESET_GEN_STORAGE rule
-#      (d)), whose own vote needs HF-2, HF-3 and generation 2 (rules
-#      (b)/(c)/(e)) — so all five votes are needed, not two.
+#      red-team F5 rule (g)). A fresh chain is generation 1, and param 18
+#      is votable only while the EVM generation judges the vote, with
+#      HF-2 on (nodus_witness_chain_config.c, CC_PARAM_RULESET_GEN_ROLES
+#      rules (b), (c)), whose own vote needs HF-2, HF-3 and generation 2
+#      (rules (b)/(c)/(e)) — so all five votes are needed, not two.
 #   3. Before the storage vote (generation 3): node 4's key signs a VALID
 #      storage consent (`storage consent` warns about the generation and
 #      signs), and `storage register --keys <node 4> --consent <it>
@@ -66,14 +72,14 @@
 #      built — the gate runs before the consent re-check (nodus-cli.c
 #      cmd_v2_stake), so the generation is what refuses; `storage status`
 #      says "not registered".
-#   4. RULESET_GEN_STORAGE = DS voted at H_s (H_s % E == 2: H_s - 1 is off
-#      a boundary — rule (c) — and the first storage boundary is E - 2
-#      blocks after it); round 1 7/7; the row identical 7/7, committed
-#      < H_s. Crossing H_s (pumped to H_s - 7, then idle): 7/7 identical
-#      blocks AT H_s - 1, H_s, H_s + 1; every node logged "HF-6:
-#      rule-set generation 3 -> 4 and the validator migration at the end
-#      of height H_s - 1 (dev trigger: storage vote literal 0x<DS>)" (since
-#      HF-6 3b the param-16 vote also runs the validator migration);
+#   4. RULESET_GEN_ROLES = D4 voted at H_s (H_s % E == 2: neither H_s - 1
+#      nor H_s is a boundary — rules (d), (e) — and the first storage
+#      boundary is E - 2 blocks after it); round 1 7/7; the row identical
+#      7/7, committed < H_s. Crossing H_s (pumped to H_s - 7, then idle):
+#      7/7 identical blocks AT H_s - 1, H_s, H_s + 1; every node logged
+#      "HF-6: rule-set generation 3 -> 4 and the validator migration at
+#      the end of height H_s - 1 (param 18 RULESET_GEN_ROLES, D4 0x<D4>)"
+#      (the generation-4 vote also runs the validator migration);
 #      `ruleset-info` 7/7 = generation 4. 6b-3: the seven
 #      v2_validator_roles rows all carry owner_fp = the build's Foundation
 #      owner (the K8 address, or STAGEF_HF6_OWNER_FP_HEX), identical 7/7 —
@@ -180,7 +186,7 @@
 #     -DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
 #     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
 #     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15
-#   (params 7, 8, 9, 16 are ERGONOMIC; param 14 is SAFETY.)
+#   (params 7, 8, 9, 18 are ERGONOMIC; param 14 is SAFETY.)
 #   Environment, ALL exported BEFORE stagef_up_v2.sh (hashed into the
 #   genesis document) unless noted:
 #     STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN    that build
@@ -236,7 +242,7 @@
 #   + EVM domain and the storage generation 4 (and with it the HF-6
 #   validator migration: the seven validators owned by the build's
 #   Foundation owner) — all one-way; five chain_config_history rows
-#   (params 7, 8, 9, 14, 16). Node 4 a registered storage node (ACTIVE,
+#   (params 7, 8, 9, 14, 18). Node 4 a registered storage node (ACTIVE,
 #   bond 10^14 locked, owned by its own key); node 5 RELEASED (its bond
 #   back as one coin to its owner, locked 12 epochs, output_index 201);
 #   segment 1 published, segment files under node<4,5>/data/segments (if
@@ -247,7 +253,7 @@
 #   funding coin (≈ 1.03 NODUS after two fees) and node 5's released bond.
 #   Every pump fee in the reward pool. $BASE_DIR/storage/ (every CLI log
 #   and the consent files). Nothing restarted. Tear down with
-#   stagef_down.sh before re-running (leaves and params 9 / 14 / 16 are
+#   stagef_down.sh before re-running (leaves and params 9 / 14 / 18 are
 #   single-use).
 #
 # HOW IT CAN LIE
@@ -265,7 +271,8 @@
 #     the validators' owner: both nodes settle OK and NO_EVIDENCE (design
 #     §11.6, the three-state verdict's third state) is NOT exercised —
 #     the PASS line says "NO_EVIDENCE: not run". Only the TEST-OWNER
-#     build (stagef_hf6_owner.sh + -DDNAC_HF6_FOUNDATION_OWNER) proves it
+#     build (stagef_hf6_owner.sh + -DDNAC_HF6_FOUNDATION_OWNER and that
+#     owner's -DDNAC_CFG_RULESET_GEN_ROLES_D) proves it
 #     on 7/7; the PASS line names which build ran (the validators' owner
 #     read from v2_validator_roles at step 4, not taken from the env).
 #   - **NO_EVIDENCE vs NOT OK vs "unpaid"**: a NO_EVIDENCE node is merely
@@ -289,6 +296,13 @@
 #     first boundary after H_s). The first settlement after the edge may
 #     run the bridge at B0 + 2E with zero weights (no segment yet); a FAULT
 #     there would stall the chain (FAIL), its verdicts are not read.
+#   - **The generation-4 trigger is the real one** (param 18
+#     RULESET_GEN_ROLES = D4, HF-6 slice 8c), voted ONCE the legal way:
+#     its stateful refusals (a second vote, a param-16 row, HF-2 off,
+#     another judging generation, H or H − 1 on a boundary) are
+#     test_hf4_params.c's; a param-16 proposal and a mixed fleet (an old
+#     binary refusing param 18 / accepting 16) are not exercised — one
+#     build.
 #   - **Only the honest path otherwise.** No NOT OK verdict, no
 #     fail_streak + 1, no skip at 3, no K5 return, no grace > 0, no
 #     handoff of a segment to another holder, no 0x73 fetch (every holder
@@ -372,7 +386,8 @@ PARAM_HF2=7                # DNAC_CFG_HF2_ACTIVE (dnac.h), value exactly 1
 PARAM_HF3=8                # DNAC_CFG_HF3_ACTIVE (dnac.h), value exactly 1
 PARAM_GEN2=9               # DNAC_CFG_RULESET_GEN2 (dnac.h), value exactly D2
 PARAM_EVM=14               # DNAC_CFG_EVM_ACTIVE (dnac.h), value exactly D
-PARAM_STOR=16              # storage: DNAC_CFG_RULESET_GEN_STORAGE, value exactly DS
+PARAM_HF6=18               # storage: DNAC_CFG_RULESET_GEN_ROLES, value exactly D4
+PARAM_RET16=16             # DNAC_CFG_RULESET_GEN_STORAGE — RETIRED; a row refuses PARAM_HF6
 GEN_2=2                    # NODUS_RT_GEN_2
 GEN_EVM=3                  # NODUS_RT_GEN_EVM (= NODUS_RT_GEN_STORAGE_BASE)
 GEN_STOR=4                 # storage: NODUS_RT_GEN_STORAGE (nodus_witness_runtime.c)
@@ -520,17 +535,17 @@ done
 [ -n "$PROBE_PORT" ] || die "no free port in 14991..14999 for the usage probe"
 # the compiled vote literals, from the CLI's own usage text (nodus-cli.c
 # cmd_chain_config_propose: "  EVM_ACTIVE             exactly %llu",
-# "  RULESET_GEN_STORAGE    exactly %llu", printed before any connect)
+# "  RULESET_GEN_ROLES      exactly %llu", printed before any connect)
 usage_out=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" chain-config propose 2>&1 || true)
 D_DEC=$(sed -n 's/^  EVM_ACTIVE  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
 D_DEC="${D_DEC%%$'\n'*}"
-DS_DEC=$(sed -n 's/^  RULESET_GEN_STORAGE  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
-DS_DEC="${DS_DEC%%$'\n'*}"
-[ -n "$D_DEC" ] && [ -n "$DS_DEC" ] || {
+D4_DEC=$(sed -n 's/^  RULESET_GEN_ROLES  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
+D4_DEC="${D4_DEC%%$'\n'*}"
+[ -n "$D_DEC" ] && [ -n "$D4_DEC" ] || {
     printf '%s\n' "$usage_out" >&2
-    die "the CLI's chain-config usage does not name both 'EVM_ACTIVE exactly <D>' and 'RULESET_GEN_STORAGE exactly <DS>'"; }
-[ "$D_DEC" -gt 0 ] 2>/dev/null && [ "$DS_DEC" -gt 0 ] 2>/dev/null || die "a vote literal is not a positive int64 (D '$D_DEC', DS '$DS_DEC')"
-D_HEX=$(printf '%016x' "$D_DEC"); DS_HEX=$(printf '%016x' "$DS_DEC")
+    die "the CLI's chain-config usage does not name both 'EVM_ACTIVE exactly <D>' and 'RULESET_GEN_ROLES exactly <D4>'"; }
+[ "$D_DEC" -gt 0 ] 2>/dev/null && [ "$D4_DEC" -gt 0 ] 2>/dev/null || die "a vote literal is not a positive int64 (D '$D_DEC', D4 '$D4_DEC')"
+D_HEX=$(printf '%016x' "$D_DEC"); D4_HEX=$(printf '%016x' "$D4_DEC")
 st_usage=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" storage 2>&1 || true)
 [[ "$st_usage" == *"storage status [--fp <hex128>]"* ]] || {
     printf '%s\n' "$st_usage" >&2; die "the CLI has no 'storage' command (B2b-CLI)"; }
@@ -538,7 +553,7 @@ st_usage=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" storage 2>&1 || true)
 [[ "$st_usage" == *"storage consent --owner"* && "$st_usage" == *"storage register --keys"* && \
    "$st_usage" == *"storage exit --keys"* ]] || {
     printf '%s\n' "$st_usage" >&2; die "the CLI has no owner-side 'storage consent | register --keys | exit --keys' (HF-6 6b-3)"; }
-echo "[ok] capability gate: one build v$SRV_VER; EVM D = $D_DEC (0x$D_HEX), storage DS = $DS_DEC (0x$DS_HEX); 'storage' with the owner-side commands present"
+echo "[ok] capability gate: one build v$SRV_VER; EVM D = $D_DEC (0x$D_HEX), HF-6 D4 = $D4_DEC (0x$D4_HEX); 'storage' with the owner-side commands present"
 
 # ── script-local helpers (test_cmt_evm.sh's, unless "storage:") ─────
 db_of()  { stagef_node_chain_db "$1"; }
@@ -840,7 +855,16 @@ status_of() {
 for n in $(seq 1 "$N"); do
     node_runs_srv "$n" || die "node$n is not running STAGEF_NODUS_BIN ($(readlink -f "$SRV")) — bring the cluster up with it"
 done
-for p in "$PARAM_HF2" "$PARAM_HF3" "$PARAM_GEN2" "$PARAM_EVM" "$PARAM_STOR"; do
+# HF-6 8c: every node's newest start printed the CLI's D4 in its startup
+# banner (nodus_witness.c — the runbook's 7/7 pre-vote comparison)
+for n in $(seq 1 "$N"); do
+    bl=$(grep -o 'HF-6 rule-set generation 4 vote D4 0x[0-9a-f]* (param 18 RULESET_GEN_ROLES, switch spec v[0-9]*)' \
+            "$(node_log "$n")" | tail -1 || true)
+    [ "$bl" = "HF-6 rule-set generation 4 vote D4 0x$D4_HEX (param 18 RULESET_GEN_ROLES, switch spec v1)" ] || die \
+        "node$n's startup banner D4 line is '${bl:-none}', not the CLI's D4 0x$D4_HEX (param 18, switch spec v1)"
+done
+echo "[ok] 7/7 startup banners name param 18 and the CLI's D4 0x$D4_HEX"
+for p in "$PARAM_HF2" "$PARAM_HF3" "$PARAM_GEN2" "$PARAM_EVM" "$PARAM_RET16" "$PARAM_HF6"; do
     [ "$(sqlite3 "$ref_db0" "SELECT COUNT(*) FROM chain_config_history WHERE param_id = $p;" 2>/dev/null || echo ERR)" = 0 ] \
         || die "node1 already holds a param-$p row — this scenario needs a fresh bring-up"
 done
@@ -974,26 +998,26 @@ status_of "$ST_A" "$ST_A"
     printf '%s\n' "$ST_OUT" >&2; die "storage status before the vote did not say 'not registered' (rc $ST_RC)"; }
 echo "[ok] before the storage vote: a valid owner registration REFUSED by the generation gate; status 'not registered'"
 
-# ── 4. storage: the RULESET_GEN_STORAGE vote, H_s % E == 2 ──────────
+# ── 4. storage: the RULESET_GEN_ROLES vote, H_s % E == 2 ────────────
 cc_guard 1
 HS=$(( CCG_TIP + 1 + STAGEF_CC_GRACE_ERGONOMIC + GRACE_MARGIN ))
-while [ $(( HS % E )) != 2 ]; do HS=$(( HS + 1 )); done          # rule (c) + E-2 blocks to the boundary
-echo "[ok] tip $CCG_TIP — node1 proposes RULESET_GEN_STORAGE=$DS_DEC effective H_s=$HS (first storage boundary $(( HS - 2 + E )))"
-propose RULESET_GEN_STORAGE "$DS_DEC" "$HS" "$LOGD/propose_storage.log"
-wait_cc_row "$PARAM_STOR" "$HS" "$DS_DEC" 20
-[ "$CC_CB" -lt "$HS" ] || die "the RULESET_GEN_STORAGE row committed at $CC_CB, not before its effective height $HS"
+while [ $(( HS % E )) != 2 ]; do HS=$(( HS + 1 )); done          # rules (d)(e) + E-2 blocks to the boundary
+echo "[ok] tip $CCG_TIP — node1 proposes RULESET_GEN_ROLES=$D4_DEC effective H_s=$HS (first storage boundary $(( HS - 2 + E )))"
+propose RULESET_GEN_ROLES "$D4_DEC" "$HS" "$LOGD/propose_storage.log"
+wait_cc_row "$PARAM_HF6" "$HS" "$D4_DEC" 20
+[ "$CC_CB" -lt "$HS" ] || die "the RULESET_GEN_ROLES row committed at $CC_CB, not before its effective height $HS"
 for n in $(seq 1 "$N"); do require_gen "$n" "$GEN_EVM" "$H4"; done
 cross_edge storage "$HS"
-# HF-6 3b: the param-16 RULESET_EDGES row is gone; the generation-4 edge
-# (switch + validator migration) logs its own "HF-6:" line
-# (nodus_witness_v2_apply.c phase_6b_gen4_edge).
-STOR_LINE="HF-6: rule-set generation $GEN_EVM -> $GEN_STOR and the validator migration at the end of height $(( HS - 1 )) (dev trigger: storage vote literal 0x$DS_HEX)"
+# HF-6: the generation-4 edge (switch + validator migration) logs its own
+# "HF-6:" line (nodus_witness_v2_apply.c phase_6b_gen4_edge); the storage
+# boundary gate reads the same param 18 (nodus_witness_v2_storage.c).
+STOR_LINE="HF-6: rule-set generation $GEN_EVM -> $GEN_STOR and the validator migration at the end of height $(( HS - 1 )) (param $PARAM_HF6 RULESET_GEN_ROLES, D4 0x$D4_HEX); height $HS is judged under generation $GEN_STOR"
 for n in $(seq 1 "$N"); do
     grep -qF "$STOR_LINE" "$(node_log "$n")" || die "node$n logged no '$STOR_LINE' line"
     require_gen "$n" "$GEN_STOR" "$H4"
 done
 stagef_cmt_diff_at_floor "past-storage-edge" || exit 2
-echo "[ok] the storage generation $GEN_STOR on 7/7 from H_s=$HS (DS 0x$DS_HEX)"
+echo "[ok] the storage generation $GEN_STOR on 7/7 from H_s=$HS (D4 0x$D4_HEX)"
 # 6b-3: whom the migration made the validators' owner (D2 (a): every
 # genesis validator -> the compiled Foundation owner) — item 9's premise,
 # read from the chain, never taken from the environment

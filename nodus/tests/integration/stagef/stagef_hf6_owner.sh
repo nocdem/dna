@@ -76,6 +76,9 @@
 # independent oracle shared/dnac/tests/hf6_vote_oracle.py run with
 # `--owner <fp>` (python3 required; the oracle re-checks its own S2/S3
 # inputs against storage_oracle.py first and exits non-zero otherwise).
+# Since slice 8c this D4 is also the value such a build's harness run
+# VOTES: test_hf6_edge.sh proposes param 18 RULESET_GEN_ROLES with the D4
+# its CLI prints and checks every node's startup banner names the same D4.
 #
 # WHAT IT LEAVES BEHIND: DIR/identity and DIR/data (the spawn's scratch),
 # DIR/identity_gen.log. Nothing else; no process (the spawn is killed and

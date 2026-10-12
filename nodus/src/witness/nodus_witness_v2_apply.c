@@ -958,12 +958,15 @@ static int env_ruleset_gen2_voted(nodus_witness_t *w, uint8_t *voted,
     return 0;
 }
 
-/* Storage reward v1 (design docs/plans/2026-10-04-storage-reward-v1-
- * design.md rev 2.2 §6 — "voted like RULESET_GEN2"): has ANY chain_config
- * param-16 (RULESET_GEN_STORAGE) row been committed, at any effective
- * height? env_ruleset_gen2_voted's contract verbatim (the INT64_MAX
+/* Has ANY chain_config param-16 (RULESET_GEN_STORAGE — RETIRED by HF-6
+ * slice 8c) row been committed, at any effective height?
+ * env_ruleset_gen2_voted's contract verbatim (the INT64_MAX
  * current_block, the three-valued accessor, a read fault = node FAULT,
- * UNMETERED, once per item) — into ctx.ruleset_gen_storage_voted.
+ * UNMETERED, once per item) — into ctx.ruleset_gen_storage_voted. No new
+ * param-16 row can be committed since 8c (the scalar rules refuse the
+ * id); one committed before refuses every param-18 vote (design docs/
+ * plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8, the
+ * param-18 stateful rule (a') — "a read fault is distinct from absence").
  * @return 0 (*voted = 0/1) / -2. */
 static int env_ruleset_gen_storage_voted(nodus_witness_t *w, uint8_t *voted,
                                          char *reason, size_t reason_size)
@@ -974,9 +977,32 @@ static int env_ruleset_gen_storage_voted(nodus_witness_t *w, uint8_t *voted,
                                         (uint64_t)INT64_MAX, 0ULL, &v);
 
     if (rc < 0) {
-        V2AP_ENV_FAULT("%s", "storage reward: the RULESET_GEN_STORAGE "
-                       "history is unreadable on this node - refusing to "
-                       "judge a vote's single-use rule against a guess");
+        V2AP_ENV_FAULT("%s", "HF-6: the RULESET_GEN_STORAGE (retired param "
+                       "16) history is unreadable on this node - refusing "
+                       "to judge the generation-4 vote against a guess");
+        return -2;
+    }
+    *voted = (rc == 0) ? 1u : 0u;
+    return 0;
+}
+
+/* HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
+ * rev 6 §8): has ANY chain_config param-18 (RULESET_GEN_ROLES) row been
+ * committed, at any effective height? env_ruleset_gen2_voted's contract
+ * verbatim — into ctx.ruleset_gen_roles_voted, the param-18 single-use
+ * rule (a). @return 0 (*voted = 0/1) / -2. */
+static int env_ruleset_gen_roles_voted(nodus_witness_t *w, uint8_t *voted,
+                                       char *reason, size_t reason_size)
+{
+    uint64_t v = 0;
+    int rc = nodus_chain_config_get_u64(w,
+                                        (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                                        (uint64_t)INT64_MAX, 0ULL, &v);
+
+    if (rc < 0) {
+        V2AP_ENV_FAULT("%s", "HF-6: the RULESET_GEN_ROLES history is "
+                       "unreadable on this node - refusing to judge a "
+                       "vote's single-use rule against a guess");
         return -2;
     }
     *voted = (rc == 0) ? 1u : 0u;
@@ -2448,10 +2474,15 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     uint8_t gen2_voted = 0;
     if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
         return -2;
-    /* storage reward v1: "any param-16 row", the same discipline */
+    /* HF-6: "any param-16 row" (RETIRED id — the param-18 vote's rule
+     * (a')) and "any param-18 row" (its single use), the same discipline */
     uint8_t gen_storage_voted = 0;
     if (env_ruleset_gen_storage_voted(w, &gen_storage_voted, reason,
                                       reason_size) != 0)
+        return -2;
+    uint8_t gen_roles_voted = 0;
+    if (env_ruleset_gen_roles_voted(w, &gen_roles_voted, reason,
+                                    reason_size) != 0)
         return -2;
     /* HF-4: the name price tiers at this block's height, once per item */
     uint64_t name_price[4];
@@ -2520,6 +2551,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.hf2_active          = hf2;
         ctx.ruleset_gen2_voted  = gen2_voted;
         ctx.ruleset_gen_storage_voted = gen_storage_voted;
+        ctx.ruleset_gen_roles_voted = gen_roles_voted;
         ctx.delegate_name_required = dlg_name;
         memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
         ctx.stake_min           = stake_min;
@@ -3390,6 +3422,7 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint8_t  dlg_name = 0;
     uint8_t  gen2_voted = 0;
     uint8_t  gen_storage_voted = 0;
+    uint8_t  gen_roles_voted = 0;
     uint64_t name_price[4];
     uint64_t stake_min = 0, storage_bond = 0;
 
@@ -3399,8 +3432,8 @@ static int env_authorize_legs(nodus_witness_t *w,
      * partly zero. Same read, same fault rule as exec_one_env. HF-2's
      * switch rides along for the same reason (the auth hook computes the
      * power sums unconditionally and does not read it), and so do
-     * HF-4's and the storage vote's single-use facts (no auth hook reads
-     * either), and HF-8's name rule (read_plan/exec only — no auth hook
+     * HF-4's single-use fact and HF-6's two generation-4 vote facts (no
+     * auth hook reads any of them), and HF-8's name rule (read_plan/exec only — no auth hook
      * reads it), and HF-6's STAKE floor and storage bond (exec only). */
     if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
         return -2;
@@ -3413,6 +3446,9 @@ static int env_authorize_legs(nodus_witness_t *w,
         return -2;
     if (env_ruleset_gen_storage_voted(w, &gen_storage_voted, reason,
                                       reason_size) != 0)
+        return -2;
+    if (env_ruleset_gen_roles_voted(w, &gen_roles_voted, reason,
+                                    reason_size) != 0)
         return -2;
     if (env_name_prices(w, height, name_price, reason, reason_size) != 0)
         return -2;
@@ -3475,6 +3511,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.delegate_name_required = dlg_name;
         actx.ruleset_gen2_voted  = gen2_voted;
         actx.ruleset_gen_storage_voted = gen_storage_voted;
+        actx.ruleset_gen_roles_voted = gen_roles_voted;
         memcpy(actx.name_price, name_price, sizeof(actx.name_price));
         actx.stake_min           = stake_min;
         actx.storage_bond        = storage_bond;
@@ -4586,15 +4623,17 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
  * summary.md K4 / K8 and 2026-10-09-kurultay-16-hf6-storage-summary.md
  * D2).
  *
- * TRIGGER (DEVELOPMENT — design §10 item 2, decision D7): the param-16
- * (RULESET_GEN_STORAGE) row with this build's DNAC_CFG_RULESET_GEN_STORAGE_D
- * literal, effective at H = h+1 and absent at h — the phase-6b' shape.
- * Slice 8 swaps the trigger to param 18 and the D4 literal (§8, §8.1);
- * the storage boundary gate still reads param 16 until then.
+ * TRIGGER (design §8, §8.1; HF-6 slice 8c): the param-18
+ * (RULESET_GEN_ROLES) row with this build's DNAC_CFG_RULESET_GEN_ROLES_D
+ * (D4) literal, effective at H = h+1 and absent at h — the phase-6b'
+ * shape. The storage boundary gate (nodus_witness_v2_storage.c) reads the
+ * same param 18. RETIRED param 16 is not read here: a committed param-16
+ * row refuses the param-18 vote itself (stateful rule (a')), so no chain
+ * this binary judges carries both.
  *
  * Then, in this order, inside the block's transaction:
- *   1. the row's value must be this build's literal (the scalar rules
- *      admit nothing else; another value is this node's storage) and this
+ *   1. the row's value must be this build's D4 (the scalar rules admit
+ *      nothing else; another value is this node's storage) and this
  *      build must carry the EVM-based generation 4 (NODUS_EVM_ENABLED) —
  *      else FAULT;
  *   2. the schema must be EXACTLY S18 (v2_validator_roles exists) — a
@@ -4602,7 +4641,7 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
  *   3. SYSTEM and CORE switch from NODUS_RT_GEN_STORAGE_BASE (3) to
  *      NODUS_RT_GEN_STORAGE (4) through nodus_witness_domreg_generation_
  *      switch — the procedure the removed RULESET_EDGES row ran; "not at
- *      generation 3" is a FAULT (the vote's stateful rule (d) refused
+ *      generation 3" is a FAULT (the vote's stateful rule (c) refused
  *      every vote judged away from generation 3);
  *   4. nodus_witness_v2_roles_migrate (nodus_witness_v2_migrate.h): keys
  *      re-valued to validator_id, roles rows, 10M → 2M + 8M
@@ -4633,13 +4672,13 @@ static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
         return -2;
     }
     at_next = nodus_chain_config_get_u64(w,
-                                         (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                                         (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
                                          h_next, 0ULL, &v_next);
     at_h = nodus_chain_config_get_u64(w,
-                                      (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE,
+                                      (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
                                       h, 0ULL, &v_h);
     if (at_next < 0 || at_h < 0) {
-        V2AP_FAULT("phase 6b''': RULESET_GEN_STORAGE at heights %llu/%llu "
+        V2AP_FAULT("phase 6b''': RULESET_GEN_ROLES at heights %llu/%llu "
                    "is unreadable on this node - refusing to decide the "
                    "generation-4 edge on a guess", (unsigned long long)h_next,
                    (unsigned long long)h);
@@ -4647,13 +4686,12 @@ static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
     }
     if (!(at_next == 0 && at_h == 1))
         return 0;                       /* not the H-1 edge: nothing     */
-    if (v_next != (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D) {
-        V2AP_FAULT("phase 6b''': the RULESET_GEN_STORAGE row effective at "
-                   "%llu reads 0x%016llx, not this build's storage vote "
-                   "literal 0x%016llx - a value no committed row can hold "
-                   "here", (unsigned long long)h_next,
-                   (unsigned long long)v_next,
-                   (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D);
+    if (v_next != (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D) {
+        V2AP_FAULT("phase 6b''': the RULESET_GEN_ROLES row effective at "
+                   "%llu reads 0x%016llx, not this build's generation-4 vote "
+                   "D4 0x%016llx - a value no committed row can hold here",
+                   (unsigned long long)h_next, (unsigned long long)v_next,
+                   (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D);
         return -2;
     }
 #ifndef NODUS_EVM_ENABLED
@@ -4722,13 +4760,17 @@ static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
         dsys->touched = 1;
         dcore->touched = 1;
     }
+    /* The text is pinned by the harness (test_hf6_edge.sh HF6_LINE,
+     * test_storage_archive.sh STOR_LINE) and quoted by DEPLOY_RUNBOOK
+     * §2.2: change all of them together. */
     QGP_LOG_INFO(LOG_TAG, "HF-6: rule-set generation %u -> %u and the "
-                 "validator migration at the end of height %llu (dev "
-                 "trigger: storage vote literal 0x%016llx); height %llu is "
-                 "judged under generation %u",
+                 "validator migration at the end of height %llu (param %u "
+                 "RULESET_GEN_ROLES, D4 0x%016llx); height %llu is judged "
+                 "under generation %u",
                  (unsigned)NODUS_RT_GEN_STORAGE_BASE,
                  (unsigned)NODUS_RT_GEN_STORAGE, (unsigned long long)h,
-                 (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
+                 (unsigned)DNAC_CFG_RULESET_GEN_ROLES,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D,
                  (unsigned long long)h_next,
                  (unsigned)NODUS_RT_GEN_STORAGE);
     return 0;
@@ -5795,13 +5837,13 @@ cmt_claim_failed:
         goto fail_fault;               /* the helper wrote the reason     */
 
     /* 6b'''. HF-6 — the GENERATION-4 EDGE, at the end of block H-1 of the
-     * (development) param-16 vote only (phase_6b_gen4_edge above): the
-     * registry 3 -> 4, then the validator migration, SYSTEM + CORE
-     * touched. BEFORE 6b'' — the slot the param-16 RULESET_EDGES row held
-     * (6b') — so an EVM edge and a generation-4 edge in the SAME block
-     * still FAULT here (the registry is not at generation 3 yet) instead
-     * of switching 2 -> 3 -> 4 in one block (test_hf4_switch F3; the
-     * vote's stateful rule (d) keeps them apart, this is the second
+     * param-18 (RULESET_GEN_ROLES) vote only (phase_6b_gen4_edge above):
+     * the registry 3 -> 4, then the validator migration, SYSTEM + CORE
+     * touched. BEFORE 6b'' — the slot the removed param-16 RULESET_EDGES
+     * row held (6b') — so an EVM edge and a generation-4 edge in the SAME
+     * block still FAULT here (the registry is not at generation 3 yet)
+     * instead of switching 2 -> 3 -> 4 in one block (test_hf4_switch F3;
+     * the vote's stateful rule (c) keeps them apart, this is the second
      * line). BEFORE 6c, so the re-scan reloads the generation-4 runtimes
      * and the roots below commit the migration. */
     if (phase_6b_gen4_edge(w, blk, doms, n_dom) != 0)

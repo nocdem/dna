@@ -24,7 +24,7 @@
  * each committed SYSTEM head also equals its runtime's recomputation).
  * Seven seeded validators with REAL keys (every block carries their
  * COMMIT votes), treasury pool 1 = 10^16, param 9 at 2, param 14
- * (EVM_ACTIVE) at 3, param 16 (the storage vote) at 4. KM is the one
+ * (EVM_ACTIVE) at 3, param 18 (the generation-4 vote, D4) at 4. KM is the one
  * storage-only (non-validator) key. Since HF-6 slice 6b-1 KM registers
  * through the generation-4 STORAGE_REGISTER (7299 bytes, design rev 6
  * §11.3) as its OWN owner — KM signs both legs and gives the op-3 node
@@ -123,7 +123,7 @@
  *  - The SYSTEM-head recomputation runs at boundaries and at blocks with
  *    an envelope, not at every idle block (the global-root twin compare
  *    does run at every block).
- *  - The GEN_STORAGE pins and the storage vote literal are the
+ *  - The GEN_STORAGE pins and the generation-4 vote D4 are the
  *    independent-oracle literals the runtime selfcheck re-derives at the
  *    seeded genesis; if they stop re-deriving, both cases FAIL at genesis.
  *  - Case 2's eight segments are PRE-SEEDED rows (published_height 1, a
@@ -210,7 +210,7 @@ static int g_checks = 0;
 #define E_LEN    ((uint64_t)DNAC_EPOCH_LENGTH)
 #define P_LEN    ((uint64_t)DNA_V2_SEGMENT_BLOCKS)
 #define D2       ((uint64_t)DNAC_CFG_RULESET_GEN2_D2)
-#define DS       ((uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
+#define D4       ((uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D)
 #define FEE      ((uint64_t)DNAC_MIN_FEE_RAW)
 #define BOND     ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 #define POOL1    10000000000000000ULL          /* 10^16 raw (pool 1)     */
@@ -228,7 +228,7 @@ static int g_checks = 0;
 #define H9   2u
 #define HE   3u       /* EVM_ACTIVE (param 14): GEN_STORAGE is built on the
                        * EVM generation (K10) */
-#define H14  4u       /* RULESET_GEN_STORAGE (param 16): the storage edge */
+#define H14  4u       /* RULESET_GEN_ROLES (param 18): the gen-4 edge */
 
 static void put64(uint8_t *p, uint64_t v) {
     for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
@@ -384,7 +384,7 @@ static int fx_open(fixture_t *fx, const char *tag, uint64_t n_segs) {
         cc_row(w, DNAC_CFG_RULESET_GEN2, D2, H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE, DS, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES, D4, H14, 13) != 0)
         return -1;
     uint64_t bonds = 0;
     for (int i = 0; i < N_VAL; i++) {

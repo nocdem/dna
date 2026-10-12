@@ -254,9 +254,12 @@ extern "C" {
  *  pairs with the two storage record ops); the EVM domain is unchanged
  *  (its v1 entry stays the EVM generation's — the generation carries no
  *  EVM slot, since one exact tuple names ONE entry). Code names it
- *  GEN_STORAGE, never "4". The switch to it is phase 6b' of the engine
- *  at the end of block H-1 of the RULESET_GEN_STORAGE vote (chain_config
- *  param 16), from NODUS_RT_GEN_STORAGE_BASE.
+ *  GEN_STORAGE, never "4". Since HF-6 (design docs/plans/2026-10-03-hf5-
+ *  validator-owner-stake-design.md rev 6 §8) it also carries the
+ *  validator owner/node roles. The switch to it is phase 6b''' of the
+ *  engine at the end of block H-1 of the RULESET_GEN_ROLES vote
+ *  (chain_config param 18; param 16 RETIRED), from
+ *  NODUS_RT_GEN_STORAGE_BASE.
  *  EVM-ONLY like the EVM generation (decision 2026-10-05-storage-reward-
  *  is-for-archive.md K10): compiled only under NODUS_EVM_ENABLED; a build
  *  without it never passes the EVM edge, so it never reaches this one.
@@ -264,9 +267,10 @@ extern "C" {
  *  hooks' `generation >=` tests name it). */
 #define NODUS_RT_GEN_STORAGE         ((uint32_t)4)
 /** The generation the storage generation is built on and switches FROM.
- *  ONE definition; committed by the vote literal; a vote is refused unless
- *  the registry is at this generation (nodus_chain_config_stateful_rules
- *  rule (d)). */
+ *  ONE definition; committed by the vote literal (D4's base_generation
+ *  field); a param-18 vote is refused unless the registry is at this
+ *  generation (nodus_chain_config_stateful_rules_ex, param-18 rule
+ *  (c)). */
 #define NODUS_RT_GEN_STORAGE_BASE    NODUS_RT_GEN_EVM
 #ifdef NODUS_EVM_ENABLED
 #define NODUS_RT_GEN_MAX             NODUS_RT_GEN_STORAGE
@@ -620,15 +624,24 @@ typedef struct {
      * gas_used moves. One consumer: the SYSTEM CHAIN_CONFIG exec's
      * single-use rule (nodus_chain_config_stateful_rules). */
     uint8_t        ruleset_gen2_voted;
-    /* Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md
-     * rev 2.2 §6 — "voted like RULESET_GEN2"): 1 when ANY chain_config
-     * param-16 (RULESET_GEN_STORAGE) row exists, at any effective height,
-     * else 0 — the ruleset_gen2_voted contract above, verbatim, for the
-     * storage vote (nodus_witness_v2_apply.c env_ruleset_gen_storage_
-     * voted). UNMETERED for the same reason. One consumer: the SYSTEM
-     * CHAIN_CONFIG exec, which hands the fact MATCHING the voted param
-     * to the single-use rule (nodus_chain_config_stateful_rules). */
+    /* 1 when ANY chain_config param-16 (RULESET_GEN_STORAGE — RETIRED by
+     * HF-6 slice 8c) row exists, at any effective height, else 0 — the
+     * ruleset_gen2_voted contract above, verbatim
+     * (nodus_witness_v2_apply.c env_ruleset_gen_storage_voted). UNMETERED
+     * for the same reason. Since 8c no new param-16 row can be committed;
+     * the fact is read because one committed before the retirement
+     * refuses every param-18 vote (design docs/plans/2026-10-03-hf5-
+     * validator-owner-stake-design.md rev 6 §8, the param-18 stateful
+     * rule (a')). One consumer: the SYSTEM CHAIN_CONFIG exec
+     * (nodus_chain_config_stateful_rules_ex). */
     uint8_t        ruleset_gen_storage_voted;
+    /* HF-6 (design rev 6 §8): 1 when ANY chain_config param-18
+     * (RULESET_GEN_ROLES) row exists, at any effective height, else 0 —
+     * the ruleset_gen2_voted contract above, verbatim
+     * (nodus_witness_v2_apply.c env_ruleset_gen_roles_voted). UNMETERED
+     * for the same reason. One consumer: the SYSTEM CHAIN_CONFIG exec,
+     * the param-18 single-use rule (a). */
+    uint8_t        ruleset_gen_roles_voted;
     /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md
      * rev 2 §1): 1 when the COMMITTED chain_config param 17
      * (DELEGATE_NAME_REQUIRED) is active at `global_height`, else 0. Read
@@ -1190,8 +1203,6 @@ nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id);
  *     CORE descriptors;
  *   - the compiled vote literal DNAC_CFG_RULESET_GEN2_D2 re-derives from
  *     the generation-2 pins (dna_ruleset_gen_digest);
- *   - storage reward v1: the compiled vote literal
- *     DNAC_CFG_RULESET_GEN_STORAGE_D re-derives from the GEN_STORAGE pins;
  *   - HF-6 slice 8b (EVM-enabled build): the compiled generation-4 vote
  *     literal DNAC_CFG_RULESET_GEN_ROLES_D (D4) re-derives through
  *     nodus_runtime_gen4_vote_digest — so a build whose Foundation owner

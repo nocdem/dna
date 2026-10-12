@@ -49,8 +49,9 @@
  * design.md rev 2.2 §6): generation 4, GEN_STORAGE (SYSTEM v9 — ops
  * 7..9 STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT appended to the
  * EVM generation's, policy ops 1..9 — / CORE v7 / no EVM slot), reached
- * from the EVM generation by the phase-6b' switch on the chain_config
- * param-16 vote. Numbers assigned in main merge order (decision
+ * from the EVM generation by the phase-6b''' switch on the chain_config
+ * param-18 RULESET_GEN_ROLES vote (HF-6 slice 8c; param 16 RETIRED).
+ * Numbers assigned in main merge order (decision
  * 2026-10-04-storage-reward-approved.md; QEVM merged first). EVM-only
  * like the EVM generation (decision 2026-10-05-storage-reward-is-for-
  * archive.md K10). Its pins (and the vote literal in dnac.h) are
@@ -554,8 +555,10 @@ static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
  *   CORE v7:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 7,
  *              rules {1..9}, types {1,2,3,11,12,13},
  *              meter_policy_digest = 64 zero bytes.
- * Vote literal (dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D) =
- *   dna_ruleset_gen_digest(4, SYSTEM v9 hash, CORE v7 hash, spec 1).
+ * Vote literal: dnac.h DNAC_CFG_RULESET_GEN_ROLES_D (D4, param 18) =
+ *   dna_rolegen_vote_digest over these two hashes, the 3 -> 4 spec
+ *   version, the Foundation owner and GEN4_VOTE_CONSTS (HF-6 slice 8b/8c;
+ *   the param-16 RSGEN literal is deleted with the param).
  * The EVM domain has no GEN_STORAGE entry (EVM v1 unchanged).
  * HF-6 slice 6a re-pinned the SYSTEM hash (rule 10 + its price, design
  * rev 6 §2) at the SAME version 9 (khan decision A6, 2026-10-12); the
@@ -994,10 +997,10 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     },
     /* ── Storage reward v1 — GEN_STORAGE (design docs/plans/2026-10-04-
      * storage-reward-v1-design.md rev 2.2 §6). Never seeded at genesis;
-     * it starts judging blocks when the engine's phase 6b' rewrites the
+     * it starts judging blocks when the engine's phase 6b''' rewrites the
      * SYSTEM and CORE registry records FROM THE EVM GENERATION
      * (NODUS_RT_GEN_STORAGE_BASE) at the end of block H-1 (H = the
-     * committed chain_config param-16 row's effective height). Same hooks,
+     * committed chain_config param-18 row's effective height). Same hooks,
      * adapters, auth implementation and allowlists as the EVM generation —
      * the generation differs in the descriptor (versions, the SYSTEM rule
      * list, the SYSTEM policy digest) and in what the hooks do under it:
@@ -1630,17 +1633,14 @@ int nodus_witness_runtime_selfcheck(void) {
         }
     }
 
-    /* each compiled vote literal re-derives from its generation's pins
-     * (dnac.h DNAC_CFG_RULESET_GEN2_D2 and — storage reward v1 —
-     * DNAC_CFG_RULESET_GEN_STORAGE_D, compiled where GEN_STORAGE is — an
-     * EVM-enabled build; no hashing in the vote path) */
+    /* each RSGEN-built compiled vote literal re-derives from its
+     * generation's pins (dnac.h DNAC_CFG_RULESET_GEN2_D2; no hashing in
+     * the vote path). Generation 4's vote is not an RSGEN digest: its
+     * row (D4, the ROLEGEN constructor) is below; the param-16 RSGEN row
+     * left with the param (HF-6 slice 8c). */
     {
         static const struct { uint32_t gen; uint64_t lit; } VOTES[] = {
             { NODUS_RT_GEN_2,       (uint64_t)DNAC_CFG_RULESET_GEN2_D2 }
-#ifdef NODUS_EVM_ENABLED
-            , { NODUS_RT_GEN_STORAGE,
-                (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D }
-#endif
         };
         for (size_t v = 0; v < sizeof(VOTES) / sizeof(VOTES[0]); v++) {
             const nodus_domain_runtime_t *sg =
@@ -1686,8 +1686,9 @@ int nodus_witness_runtime_selfcheck(void) {
      * Foundation owner and GEN4_VOTE_CONSTS (design rev 6 §8.1) — dnac.h
      * DNAC_CFG_RULESET_GEN_ROLES_D. A test build that overrides
      * DNAC_HF6_FOUNDATION_OWNER without the matching literal (or the
-     * literal without the owner) stops HERE. The storage RSGEN row above
-     * stands until slice 8c retires the development trigger. */
+     * literal without the owner) stops HERE. Since slice 8c this is the
+     * only generation-4 vote row (the param-16 development trigger and its
+     * RSGEN row are deleted). */
     {
         uint64_t d = 0;
         if (nodus_runtime_gen4_vote_digest(&d) != 0)

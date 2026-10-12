@@ -59,6 +59,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
 | A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80; HF-2 param 7; HF-3 param 8; HF-4 param 9 — the rule-set generation switch, nodus 0.23.10) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
 | HF-5 Nodus EVM (nodus 0.24.1 — 0.24.0 was never deployed and votes a different D; param 14 `EVM_ACTIVE`, rule-set generation 3) — a release that also migrates the witness DB to schema **S17** at its first open | **Rolling**, one node at a time, but every node through **§4.1** (stop it, copy its data directory, only then start the new binary — the previous binary cannot open an S17 database). The `EVM_ACTIVE` vote is a §2.2 procedure, ONLY after 7/7 run the new binary |
+| HF-6 validator owner/node roles + storage (branch `hf6`, not released; param 18 `RULESET_GEN_ROLES`, rule-set generation 4) — a binary that carries witness schema **S18** (the `v2_validator_roles` table the generation-4 edge requires) | **Rolling**, one node at a time, every node through **§4.1** as for HF-5 (S18 is a schema migration). The `RULESET_GEN_ROLES` vote is a §2.2 procedure, ONLY after 7/7 run the new binary, their startup D4 lines are identical and `chain_config_history` on 7/7 holds no param-16 row; **param 16 is never proposed** (an old binary accepts it, a new one refuses it — a split; a committed one blocks HF-6 for good) |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -730,7 +731,7 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
 | HF-5 | rule-set generation 3: SYSTEM v8 / CORE v6 / EVM v2 — the EVM domain (domain 2) registered ACTIVE at the end of H−1; CORE op 9 EVMFUND; id 15 EVM_BLOCK_GAS_LIMIT in force | 14 `EVM_ACTIVE` | 188948158701949959 (D = 0x029f47596864d407) | 62425 | 79757 | 0.24.1 | `1D6A68F08EC42ED0` |
-| HF-7 storage reward, after HF-5 (**not voted** — placeholder) | rule-set generation 4 GEN_STORAGE (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT in force from H | 16 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6; Nodus EVM took generation 3 and params 14 / 15) | 896171186953543716 (S4 = 0x0c6fd6f2484e6024; `DNAC_CFG_RULESET_GEN_STORAGE_D`, re-derived by `shared/dnac/tests/storage_oracle.py` over EVM v2) — the 0.25.0 value; on branch `hf6` (HF-6 rev 6: storage and the validator role in ONE generation 4) slice 6a re-derived it with ROTATE (op 10) in the SYSTEM descriptor: 3646524443046153304 (0x329b0ea92c8b8c58), a development trigger that slice 8 replaces with D4 and param 18 | — | — | 0.25.0 (code released, vote not cast) | — |
+| HF-6 validator owner/node roles + archive storage, after HF-5 (**not voted**) | rule-set generation 4 (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): at the end of H−1 the registry switches 3 → 4 AND the validator migration runs (keys re-valued to validator_id, each 10M bond → 2M bond + 8M Foundation-owned self-delegation, the Foundation accrual merge), the SYSTEM root becomes `NDS.SYS.v5` in H−1's own app_hash; from H: SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT and 10 ROTATE_CONSENSUS_KEY, the owner/node split for both roles, params 19 `STAKE_MIN` / 20 `POWER_CAP_BPS` / 21 `STORAGE_BOND` votable; the storage boundary gate opens at the first boundary ≥ H | 18 `RULESET_GEN_ROLES` (khan 2026-10-13; param 16 `RULESET_GEN_STORAGE` RETIRED — the new binary refuses it) | 5604184871704996557 (D4 = 0x4dc61072d5982acd; `DNAC_CFG_RULESET_GEN_ROLES_D`, from `shared/dnac/tests/hf6_vote_oracle.py`, design rev 6 §8.1) | — | — | branch `hf6` (not released) | — |
 | HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not the validator itself is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; self-delegation, UNDELEGATE, existing rows and payouts untouched); such a DELEGATE's funding leg takes at most 14 inputs. No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | 0.25.3 (code released, inert, vote not cast) | — |
 
 Read 2026-10-07: HF-5 ACTIVE on 7/7 — every node logged "Nodus EVM: rule-set generation
@@ -745,41 +746,61 @@ wallet, Connect, explorer and Scan released before the vote). The HF-3 row on 7/
 HF-1 and HF-2 rows on EU-5 (the HF-2 row was read on 7/7 when it was voted, 2026-09-30). A node that was not on the introducing binary when a vote committed
 diverges at that block — recovery at the end of this section.
 
-The storage row is a PLACEHOLDER (storage reward v1, package B1 — decision
-`docs/plans/decisions/2026-10-04-storage-reward-approved.md`, design
-`docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §6): nothing is voted; the code has
-been in every node binary since 0.25.0 (release fd89dfbe), so param 16 IS votable on the live chain
-today — **do NOT propose it**. Order (operator 2026-10-08, Kurultay #14 summary K12): storage
-opens TOGETHER with the validator-role fork HF-6 (owner/node split for both roles, joining from
-Connect), never on its own with today's node-key registration; whether that is one rule-set
-generation or two is open in the HF-6 design. Its numbers were assigned in main merge order after Nodus EVM (HF-5) merged
-first: generation 4 on the EVM generation, param 16, SYSTEM v9 / CORE v7. Its fork number is
-**HF-7** (operator, 2026-10-07; the role-stake package is HF-6, and the planned "delegation
-requires an on-chain name" rule is HF-8 — decision `2026-10-05-hf-numbering-evm-hf5.md`). Its vote follows the HF-4 procedure below with param 16
-in place of param 9 and one more stateful rule: the vote is refused unless EXACTLY the EVM
-generation judges it, because the switch it schedules is generation 3 → 4 — so HF-5's
-EVM_ACTIVE edge must have passed first, and the storage edge can never fall in the EVM edge's
-block. EVM-only (decision `2026-10-05-storage-reward-is-for-archive.md` K10): a binary built
-without `NODUS_EVM_ENABLED` (the messenger tree, Windows) carries neither generation 3 nor 4
-and stops at the EVM edge. The binary's startup log carries a second line,
-`storage rule-set generation 4 vote 0x… (param 16, switch spec v1), built from git commit …`,
-compared on 7/7 before that vote exactly as the D2 line is before param 9. Before the vote:
-the oracle-filled pins and literal (filled in `4fedbbdc`, S4 = 0x0c6fd6f2484e6024, re-checked
-over EVM ruleset v2 on 2026-10-06; on branch `hf6` re-derived by slice 6a to 0x329b0ea92c8b8c58 — op
-10 ROTATE_CONSENSUS_KEY joined the SYSTEM descriptor, versions unchanged), the harness scenario (`test_storage_archive.sh`), and every
-client that builds storage envelopes.
+The HF-6 row is NOT VOTED (design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md`
+rev 6 §8, §8.1; decisions `docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md` and
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md`; code on branch `hf6`, HF-6
+slice 8c). Storage opens INSIDE HF-6's single vote (Kurultay #14 K12 / #16 item 1): ONE rule-set
+generation 4 carries the archive storage reward, the validator owner/node split and the storage
+owner/node split. **The former "HF-7 storage reward" placeholder row is retired** (khan
+2026-10-13): there is no separate storage fork any more; HF-8 keeps its number (decision
+`2026-10-05-hf-numbering-evm-hf5.md` "Ek 2026-10-07").
 
-**HF-6 vote value D4 (branch `hf6`, slice 8b — compiled, not yet votable).** The value the HF-6
-generation-4 vote will carry (param 18 `RULESET_GEN_ROLES`, wired in slice 8c) is the literal
-`DNAC_CFG_RULESET_GEN_ROLES_D` = `0x4dc61072d5982acd` (5604184871704996557) in `dnac.h`, from the
-independent oracle `shared/dnac/tests/hf6_vote_oracle.py` (design rev 6 §8.1: the generation-4 pins,
-the 3 → 4 spec version, the K8 Foundation owner and nine compiled constants). Every EVM-enabled node
-re-derives it at start (runtime selfcheck) and **refuses to start** if the compiled literal does not
-match its own pins, owner and constants. Production builds define neither override. **Test builds
-only:** a harness build that compiles its own owner (`-DDNAC_HF6_FOUNDATION_OWNER="{…}"`) must also
-pass that owner's D4 (`-DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL`); a build with one and not the other
-refuses to start on every node. `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both
-flags, the D4 taken from `hf6_vote_oracle.py --owner <fp>` (stagef README row).
+**Param 16 (`RULESET_GEN_STORAGE`) on the LIVE chain.** The storage-only generation 4 of release
+0.25.0 (fd89dfbe) made param 16 votable in every node binary since 0.25.0, so param 16 IS votable on
+the live chain today — **do NOT propose it**, before, during or after the HF-6 rollout. An HF-6 binary
+RETIRES it (scalar rules, client mirror and nodus-cli refuse id 16 — the id-1 treatment), so during
+a mixed rollout a param-16 proposal is accepted by the old binaries and refused by the new ones: a
+split at the block that commits it. And a param-16 row committed at ANY height makes every param-18
+vote refused forever (stateful rule (a') below) — HF-6 unreachable on that chain without a further
+fork. Read `chain_config_history` on 7/7 before the param-18 vote (the SQL at the top of this
+section): there must be no `param_id = 16` row.
+
+**The vote: param 18 `RULESET_GEN_ROLES`, value exactly D4.** It follows the HF-4 procedure below
+with param 18 in place of param 9 (`nodus-cli chain-config propose --param RULESET_GEN_ROLES --value
+5604184871704996557 --effective <H>`; the CLI prints D4 in its usage), class ERGONOMIC (H ≥ the
+committing block + 720), and the stateful rules (`nodus_witness_chain_config.c`,
+`nodus_chain_config_stateful_rules_ex`), each a verdict on every node: (a) single use — no param-18
+row at any height; (a′) no param-16 row at any height; (b) HF-2 in force; (c) judged under rule-set
+generation EXACTLY 3 — HF-5's EVM_ACTIVE edge must have passed, and the generation-4 edge can never
+fall in the EVM edge's block; (d) H−1 not an epoch boundary (H − 1 is the migration block); (e) H
+not an epoch boundary either (the first block under the new rules) — so choose H with
+`H % 720 ∉ {0, 1}`. EVM-only (decision `2026-10-05-storage-reward-is-for-archive.md` K10): a
+binary built without `NODUS_EVM_ENABLED` (the messenger tree, Windows) carries neither generation
+3 nor 4 and stops at the EVM edge.
+
+**D4 and the startup line.** D4 = `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x4dc61072d5982acd`
+(5604184871704996557) in `dnac.h`, from the independent oracle `shared/dnac/tests/hf6_vote_oracle.py`
+(design rev 6 §8.1: the generation-4 pins, the 3 → 4 spec version, the K8 Foundation owner and nine
+compiled constants). Every EVM-enabled node re-derives it at start (runtime selfcheck) and **refuses
+to start** if the compiled literal does not match its own pins, owner and constants. The startup log
+carries the line
+`HF-6 rule-set generation 4 vote D4 0x4dc61072d5982acd (param 18 RULESET_GEN_ROLES, switch spec v1), built from git commit …`,
+compared on 7/7 before the vote exactly as the D2 line is before param 9. At the edge every node logs
+`HF-6: rule-set generation 3 -> 4 and the validator migration at the end of height <H−1> (param 18 RULESET_GEN_ROLES, D4 0x4dc61072d5982acd); height <H> is judged under generation 4`.
+Production builds define neither override. **Test builds only:** a harness build that compiles its
+own owner (`-DDNAC_HF6_FOUNDATION_OWNER="{…}"`) must also pass that owner's D4
+(`-DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL`); a build with one and not the other refuses to start on
+every node. `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both flags, the D4 taken from
+`hf6_vote_oracle.py --owner <fp>` (stagef README row).
+
+**Rollout.** The HF-6 binary carries witness schema S18 (the roles table the edge requires), so every
+node goes through §4.1 (stop, copy the data directory, start the new binary) — the HF-5 row's shape —
+one node at a time; the vote only after 7/7 run it, their D4 startup lines are identical and the
+param-16 read above is empty. A node not on the HF-6 binary when the param-18 vote commits refuses
+the proposal (its scalar rules do not know id 18) and diverges at that block (recovery at the end of
+this section). Before the vote: the harness scenarios (`test_hf6_edge.sh`, `test_storage_archive.sh`
+— both vote param 18 with the CLI's D4), every client that builds generation-4 envelopes, and the
+roadmap / Wiki / Scan fork item.
 
 The HF-8 row is a PLACEHOLDER (design `docs/plans/2026-10-07-delegate-name-required-design.md`
 rev 2 §1, Kurultay #11; number: decision `2026-10-05-hf-numbering-evm-hf5.md` "Ek 2026-10-07"):
@@ -1313,8 +1334,9 @@ Storage reward v1 rev 4 (decision `docs/plans/decisions/2026-10-05-storage-rewar
 the reward pays registered storage nodes for holding the block ARCHIVE). Package B2b-1 (design
 `docs/plans/2026-10-05-archive-reward-design.md` rev 4 §4; `docs/ARCHITECTURE.md` "package B2b-1")
 makes validators probe storage nodes and storage nodes answer; package B2b-2 (rev 4 §3; "package
-B2b-2") keeps the assigned segments as files and fetches missing ones. Nothing here applies before the
-storage rule-set generation is voted (§2.2 table, the storage placeholder row) — every step below is
+B2b-2") keeps the assigned segments as files and fetches missing ones. Nothing here applies before
+rule-set generation 4 is voted (§2.2 table, the HF-6 row: param 18 `RULESET_GEN_ROLES`; the storage
+boundary gate reads param 18 since HF-6 slice 8c) — every step below is
 for a node on a chain where it is in force. **Deploying any of it needs the operator's word like every
 deploy.**
 
@@ -1325,8 +1347,9 @@ nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7
 `docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` khan 1 and 3): the owner is a
 wallet — any address whose key signs (kind 1), or a multisig address (kind 3, which the chain accepts
 but this nodus-cli cannot build yet). The owner signs the registration, pays a bond of **exactly**
-1 000 000 NODUS = 10^14 raw (the STORAGE_BOND in force — today the compiled default; a chain_config
-vote, range 100 000 – 1 000 000 NODUS, comes with HF-6 slice 8) plus the fee, and receives the storage
+1 000 000 NODUS = 10^14 raw (the STORAGE_BOND in force: chain_config param 21 `STORAGE_BOND` at the
+registration's height, no row = 1 000 000 NODUS; votable from generation 4, range 100 000 – 1 000 000
+NODUS — HF-6 slice 8a) plus the fee, and receives the storage
 reward and, after an exit, the bond. The NODE key never moves coins: it only signs a **consent** — "I
 agree to be registered under this owner, on this chain, until height X" (consent op 3). The node's
 identity (its key) is still the registry key, what the validators probe on 4004 and what fetches
@@ -1531,8 +1554,8 @@ lane exists for it (only CHAIN_CONFIG has one); adding one is an operator decisi
 
 Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.4 and §3 (with the khan
 decisions written under §3 on 2026-10-12: A1-A5); plan `tasks/hf6-slice6-plan.md` §1 and §5 A8.
-Everything here exists only on branch `hf6` and only under rule-set generation 4 (HF-6), which is not
-voted on any live chain. Its end-to-end harness proof is `test_hf6_edge.sh` step 10
+Everything here exists only on branch `hf6` and only under rule-set generation 4 (HF-6 — voted by
+chain_config param 18 `RULESET_GEN_ROLES` = D4, §2.2 HF-6 row), which is not voted on any live chain. Its end-to-end harness proof is `test_hf6_edge.sh` step 10
 (`nodus/tests/integration/stagef/README.md`) — **written, not yet run**. **Doing any of it on a live
 node needs the operator's word like every deploy.**
 
