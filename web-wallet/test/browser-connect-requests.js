@@ -14,6 +14,10 @@
 // Without the 0.1.95 change in messages.js syncRequests it fails at "the
 // acceptance must remain visible" (A never got B — the operator's report:
 // "A, B'ye istek gönderiyor … kabul ediyor … ekranında yok").
+// 0.1.99: the person a request was sent to is in Chats marked "Request
+// sent" (not a contact); a message written there is published to our
+// outbox under the salt offered in the request; after acceptance the same
+// conversation goes on unmarked. Fails on 0.1.98 at the "Request sent" row.
 // Requires: nothing beyond `npm ci` and a Chromium. Leaves nothing behind.
 // How it can lie: every answer is the in-memory fake's — nothing proves a
 // real node stores or returns these records. The page loads src/style.css
@@ -91,6 +95,10 @@ try {
                 result = { status: 'published', outcome: 'found' };
                 break;
               }
+              case 'nc_outbox_send':
+                network.writes.push({ owner, name, args });
+                result = { day: '20735', alg: 0, count: JSON.parse(args[2]).length };
+                break;
               case 'nc_salt_reconcile': result = { status: 'unchanged', salt }; break;
               case 'nc_contact_reads':
                 result = { contacts: JSON.parse(args[0]).map(c => ({ ack: { outcome: 'empty' }, days: c.days.map(d => ({ day: d.day, outcome: 'empty', messages: [] })) })) };
@@ -173,6 +181,25 @@ try {
   await page.locator('#nc-add-id').fill('22'.repeat(64));
   await page.locator('#nc-add-form button[type="submit"]').click();
   await page.waitForFunction(() => document.querySelector('#nc-add-form').textContent.includes('Request sent to'));
+  // 0.1.99 (operator: "kontak listemize eklese, pending olarak kalsa … chat
+  // şeyine bassak"): the person asked is in Chats marked "Request sent",
+  // not a contact, and the chat is open for writing; the message is
+  // published to our outbox under the salt offered in the request.
+  await page.evaluate(() => { document.querySelector('#nc-add-form').closest('dialog')?.close(); window.requestsTest.ui.messagesNavigate('list'); });
+  const pendingRow = page.locator(`.contact-list .contact-row[data-fp="${'22'.repeat(64)}"]`);
+  assert.equal(await pendingRow.locator('.request-label').innerText(), 'Request sent');
+  assert.deepEqual(await contacts(), [], 'a pending request is not a contact');
+  await pendingRow.click();
+  assert.match(await page.locator('.messenger').innerText(), /Waiting for .* to accept your contact request/);
+  await page.locator('#nc-send-text').fill('hello before acceptance');
+  await page.locator('#nc-send-text').press('Enter');
+  await page.waitForFunction(() => window.requestsTest.network.writes.some(w => w.name === 'nc_outbox_send'));
+  const sent = await page.evaluate(() => window.requestsTest.network.writes.filter(w => w.name === 'nc_outbox_send'));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].owner, '44'.repeat(64));
+  assert.equal(sent[0].args[0], '22'.repeat(64));
+  assert.equal(sent[0].args[1], '55'.repeat(32), 'published under the salt offered in the request');
+  assert.deepEqual(JSON.parse(sent[0].args[2]).map(m => m.text), ['hello before acceptance']);
   await page.evaluate(() => {
     const t = window.requestsTest;
     t.putRequest(t.ids.d, t.request(t.ids.b, true));
@@ -182,9 +209,13 @@ try {
   await settled();
   assert.deepEqual(await contacts(), ['22'.repeat(64)]);
   assert.equal(await page.evaluate(() => window.requestsTest.network.inbox[window.requestsTest.ids.b].some(r => r.sender === window.requestsTest.ids.d)), false);
+  // Accepted: the same conversation goes on as a contact's, no mark left.
+  await page.waitForFunction(() => !document.querySelector('.contact-list .request-label'));
+  assert.match(await page.locator('.messenger').innerText(), /hello before acceptance/);
+  assert.doesNotMatch(await page.locator('.messenger').innerText(), /Waiting for .* to accept/);
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
-  console.log('Connect requests passed: session-loss recovery, explicit consent, decline, no duplicate, and pending auto-approval.');
+  console.log('Connect requests passed: session-loss recovery, explicit consent, decline, no duplicate, writing to a pending request, and pending auto-approval.');
 } finally {
   await browser?.close();
   server.stop();

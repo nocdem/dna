@@ -332,7 +332,7 @@ async function openLocal(gen) {
     groups.load({ records: store.groupRecords || [], messages: store.groupMessages || [] });
     for (const m of messages) if (m.dir === 'in') received.add(receivedKey(m.fp, { seq: m.remoteSeq, senderTs: m.senderTs, text: m.text }));
     const now = nowSeconds();
-    for (const contact of state.contacts) if (hasUndelivered(messages, contact.fp, now)) unpublished.add(contact.fp);
+    for (const contact of [...state.contacts, ...state.outgoing]) if (hasUndelivered(messages, contact.fp, now)) unpublished.add(contact.fp);
     // History from earlier sessions is not "new".
     for (const contact of state.contacts) markRead(contact.fp);
   }
@@ -465,6 +465,18 @@ const nowSeconds = () => String(Math.floor(Date.now() / 1000));
 // A u64 from a core result (decimal string or small number); anything else is 0.
 const u64 = value => /^(0|[1-9]\d{0,19})$/.test(String(value)) ? BigInt(String(value)) : 0n;
 const contactOf = fp => state.contacts.find(c => c.fp === fp);
+// Someone this device sent a contact request to who has not answered yet
+// (0.1.99, operator 2026-10-12: "kontak listemize eklese, pending olarak
+// kalsa … chat şeyine bassak"; option 1, write before acceptance). Shown in
+// Chats and open for writing with the salt offered in the request: the
+// messages wait in our outbox and reach them once they accept (an outbox
+// value lives 7 days, text.js OUTBOX_LIFETIME_SECONDS). If both sides end
+// with different salts, the salt agreement settles on one (nc_salt.c
+// nc_salt_choose) and undelivered messages are published again under it.
+// Never a contact: the contact list, the request rules and the checks still
+// see only state.contacts.
+const pendingOf = fp => { const o = state.outgoing.find(x => x.fp === fp); return o && !contactOf(fp) ? { fp: o.fp, salt: o.salt || null, pending: true } : undefined; };
+const chatPeerOf = fp => contactOf(fp) || pendingOf(fp);
 function takeSeq() { const seq = state.nextSeq; state.nextSeq = String(BigInt(seq) + 1n); return seq; }
 async function persist(newMessages = []) { await store.save(state, newMessages); }
 // Changed copies of stored messages (published / delivered flags): saved
@@ -848,6 +860,13 @@ async function sync() {
     for (const fp of new Set([...state.outgoing.map(o => o.fp), ...requests.map(r => r.sender)])) {
       if (gen !== generation) return;
       await ensureProfile(fp);
+    }
+    // Messages written to someone who has not accepted yet (0.1.99,
+    // pendingOf) whose publish did not go through are published again here:
+    // they are not in the contact checks above.
+    for (const peer of state.outgoing.map(o => pendingOf(o.fp)).filter(p => p && unpublished.has(p.fp))) {
+      if (gen !== generation) return;
+      try { await publishOutbox(peer, gen); } catch (error) { logFailure(`Messages to ${shortId(peer.fp)} (request not accepted yet) were not published`, error); }
     }
     if (gen === generation) { fillOwnAvatar(); fillNameLine(); }
     if (gen === generation) {
@@ -1581,7 +1600,7 @@ function selectContact(fp) {
   ui.sendStatus.textContent = '';
   markRead(fp);
   render({ scroll: true });
-  (contactOf(fp)?.salt ? ui.composer : ui.convTitle).focus({ preventScroll: true });
+  (chatPeerOf(fp)?.salt ? ui.composer : ui.convTitle).focus({ preventScroll: true });
   void recheckChainNameOnOpen(fp);
 }
 
@@ -1598,7 +1617,7 @@ function render({ scroll = false } = {}) {
   const shownGroup = open && screen === 'conversation' && groupsView?.selected ? groups?.view(groupsView.selected) : null;
   const groupOpen = !!shownGroup && shownGroup.status !== 'left';
   // Closed: Chats only. A conversation whose contact is gone: back to Chats.
-  if ((!open && screen !== 'list') || (screen === 'conversation' && !groupOpen && !(selectedFp && contactOf(selectedFp)))) { screen = 'list'; selectedFp = undefined; groupsView?.close(); }
+  if ((!open && screen !== 'list') || (screen === 'conversation' && !groupOpen && !(selectedFp && chatPeerOf(selectedFp)))) { screen = 'list'; selectedFp = undefined; groupsView?.close(); }
   // data-screen drives the layout (messenger.css); data-open the closed state.
   ui.layout.dataset.screen = screen;
   ui.layout.dataset.open = String(open);
@@ -1665,13 +1684,16 @@ function renderChats() {
   // conversations only.
   groupsView.renderBlock({ unreadOnly: filter === 'unread' });
   if (filter === 'chats') groupsView.block.hidden = true;
-  if (!state.contacts.length) {
+  // The contacts, then the people a request was sent to and who have not
+  // answered yet (0.1.99, pendingOf): those are open for writing too.
+  const peers = [...state.contacts, ...state.outgoing.map(o => pendingOf(o.fp)).filter(Boolean)];
+  if (!peers.length) {
     ui.contactList.replaceChildren(el('li', { className: 'contact-empty', text: 'No contacts yet. Add one with their ID or chain name using the add-contact button.' }));
     return;
   }
   // Most recent conversation first (local order), then contacts without
   // messages in list order; ties keep the list order (stable sort).
-  const ordered = state.contacts.map((c, index) => ({ c, index, last: lastMessage(c.fp) }))
+  const ordered = peers.map((c, index) => ({ c, index, last: lastMessage(c.fp) }))
     .sort((a, b) => (a.last && b.last ? compareLocal(b.last, a.last) : a.last ? -1 : b.last ? 1 : 0) || a.index - b.index);
   // 'chats' shows the same conversations as 'all', without the groups.
   const shown = filter === 'unread' ? ordered.filter(({ c }) => unreadCount(c.fp) > 0) : ordered;
@@ -1691,11 +1713,12 @@ function renderChats() {
     if (last?.gone) preview.append(last.dir === 'out' ? 'You: ' : '', el('em', { text: 'Message deleted' }));
     else if (last && label) preview.append(last.dir === 'out' ? 'You: ' : '', label);
     else if (last) preview.append(last.dir === 'out' ? 'You: ' : '', untrusted(reply ? reply.text : last.text));
-    else preview.textContent = c.salt ? 'No messages yet' : 'Messaging is not ready yet';
+    else preview.textContent = c.pending ? 'Request sent — you can write; they read it once they accept' : c.salt ? 'No messages yet' : 'Messaging is not ready yet';
     const side = el('span', { className: 'contact-side' });
     if (last) { const when = el('time', { text: shortWhen(last.at) }); when.dateTime = new Date(last.at).toISOString(); side.append(when); }
     if (unread) side.append(setAttrs(el('span', { className: 'count-badge', text: String(unread) }), { 'aria-label': `${unread} new` }));
-    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, nameTitle(c.fp)), nameHint(c.fp), preview), side, icon('chevron'));
+    const waiting = c.pending ? el('span', { className: 'request-label', text: 'Request sent' }) : null;
+    row.append(avatar(c.fp), el('span', { className: 'contact-main' }, el('span', { className: 'contact-name' }, waiting, nameTitle(c.fp)), nameHint(c.fp), preview), side, icon('chevron'));
     row.onclick = () => selectContact(c.fp);
     return el('li', {}, row);
   }));
@@ -1762,7 +1785,7 @@ function renderRequests() {
 }
 
 function renderConversation(scroll) {
-  const contact = contactOf(selectedFp);
+  const contact = chatPeerOf(selectedFp);
   const list = ui.messageList;
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   ui.convAvatar.replaceWith(ui.convAvatar = avatar(contact.fp, ' conversation-avatar'));
@@ -1773,6 +1796,7 @@ function renderConversation(scroll) {
   ui.convClaim.replaceChildren(...(claim ? claim.childNodes : []));
   const lost = dropped.get(contact.fp), other = others.get(contact.fp);
   ui.convNote.textContent = [
+    contact.pending ? `Waiting for ${displayName(contact.fp)} to accept your contact request. They read what you write here once they accept; a message waits for them up to 7 days.` : '',
     lost ? 'Some messages from this contact could not be checked and are not shown.' : '',
     other ? 'This contact also sent items this page cannot show yet (for example pictures or calls).' : ''
   ].filter(Boolean).join(' ');
@@ -1965,7 +1989,7 @@ async function copyMessage(m) {
 async function sendAction(fp, text, kind, stored) {
   if (!isOpen()) throw new Error('Messages is not open.');
   if (!online) throw new Error(OFFLINE_SEND_TEXT);
-  const gen = generation, contact = contactOf(fp);
+  const gen = generation, contact = chatPeerOf(fp);     // a pending request's chat too (0.1.99)
   if (!contact?.salt) throw new Error('Messaging with this contact is not ready yet.');
   const message = { seq: takeSeq(), fp, dir: 'out', text, ts: nowSeconds(), at: Date.now(), kind };
   await persist([message]);
@@ -2144,7 +2168,7 @@ function transferPreview(m) {
 }
 
 function payFromChat() {
-  if (!isOpen() || !selectedFp || !contactOf(selectedFp) || typeof host.payContact !== 'function') return;
+  if (!isOpen() || !selectedFp || !chatPeerOf(selectedFp) || typeof host.payContact !== 'function') return;
   payFor = { fp: selectedFp, at: Date.now() };
   host.payContact(selectedFp);
 }
@@ -2361,7 +2385,7 @@ async function addContact(event) {
     const to = addResolved?.name || shortId(fp);
     ui.addId.value = ''; ui.addNote.value = '';
     addResolved = undefined; showAddResolved();
-    ui.addStatus.textContent = `✓ Request sent to ${to}. They appear in your contacts once they accept.`;
+    ui.addStatus.textContent = `✓ Request sent to ${to}. They are in your chats now: you can write to them, and they read it once they accept.`;
     ui.addStatus.dataset.state = 'done';
     logCheck(`Contact request sent to ${to}`);
     render();
@@ -2379,7 +2403,7 @@ async function send(event) {
   // cleared only once the message is kept on this device (persist). A second
   // Enter or click meanwhile would take the same text again and send it twice.
   if (sending) return;
-  const gen = generation, contact = selectedFp && contactOf(selectedFp);
+  const gen = generation, contact = selectedFp && chatPeerOf(selectedFp);   // a pending request's chat too (0.1.99)
   const typed = ui.composer.value;
   if (!contact || !contact.salt || !typed.trim()) return;
   if (!online) { ui.sendStatus.textContent = OFFLINE_SEND_TEXT; return; }
