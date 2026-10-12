@@ -1,7 +1,26 @@
 // Real Messages UI + core.js, with an in-memory substitute for the WASM
 // network exports. Reproduces losing an unsaved outgoing request between
 // sessions, then receiving its acceptance. No live account or node is used.
-// Run: node test/browser-connect-requests.js
+// Run: npm run test:requests (node test/browser-connect-requests.js;
+// CHROMIUM_PATH = a Chromium binary if Playwright's own is not installed).
+//
+// What it proves (web 0.1.95): A sends B a request from a memory-only
+// session; A's next session has lost its pending outgoing record; B accepts
+// — A is NOT made B's contact automatically (HIGH-7: auto-approval only with
+// our own pending request), but sees the acceptance as a request to accept or
+// decline; accepting makes both contacts with no duplicate on B; an
+// unsolicited acceptance needs the same explicit decision and a decline is
+// kept without any network write; a real pending request still auto-approves.
+// Without the 0.1.95 change in messages.js syncRequests it fails at "the
+// acceptance must remain visible" (A never got B — the operator's report:
+// "A, B'ye istek gönderiyor … kabul ediyor … ekranında yok").
+// Requires: nothing beyond `npm ci` and a Chromium. Leaves nothing behind.
+// How it can lie: every answer is the in-memory fake's — nothing proves a
+// real node stores or returns these records. The page loads src/style.css
+// with messenger.css as the sites do: without it `[hidden]` screens are not
+// hidden (style.css `[hidden] { display: none !important }`) and the hidden
+// profile screen covers the request buttons (the commit's first version of
+// this file timed out there).
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { startPreview } from './preview-server.js';
@@ -19,7 +38,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', route => {
     const request = route.request();
-    if (request.url() === harness) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><link rel="stylesheet" href="/src/connect/ui/messenger.css"><div id="messages"></div>' });
+    if (request.url() === harness) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><link rel="stylesheet" href="/src/style.css"><link rel="stylesheet" href="/src/connect/ui/messenger.css"><div id="messages"></div>' });
     if (request.url().startsWith(`${url}/`) && request.method() === 'GET') return route.continue();
     unexpected.push(request.url());
     return route.abort();
