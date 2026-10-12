@@ -3437,7 +3437,7 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 | `dnac_tx` | Client→Witness | Query full TX data by hash |
 | `dnac_block` | Client→Witness | Query block by height |
 | `dnac_block_range` | Client→Witness | Query block range |
-| `dnac_validator_list_query` | Client→Witness | Paged validator table {status, limit ≤ 256, offset}; per entry `pk`, `self`, `total`, `ext`, `comm`, `status`, `since` and (added after 0.23.12) `dlg` — the validator's delegator count, i.e. how many of its `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/include/nodus/nodus_types.h`) slots are filled. `dlg` is `nodus_delegation_count_by_validator`, the same `COUNT(*) FROM delegations WHERE validator_hash = ?` the DELEGATE cap is decided from (`nodus_witness_rt_native.c` `rtn_sys_delegcnt_fetch`); a count that cannot be read fails the reply (never a 0). Old clients skip the unknown entry key; the client SDK reports an older node's reply as `has_delegator_count = 0` (unknown, not 0). Node-local read; no consensus path reads it. HF-6 generation 4 (sub-slice 3e): + `vid` / `owner` bstr(64) per entry, `dlg` counted by validator_id (see "HF-6 sub-slice 3e"). |
+| `dnac_validator_list_query` | Client→Witness | Paged validator table {status, limit ≤ 256, offset}; per entry `pk`, `self`, `total`, `ext`, `comm`, `status`, `since` and (added after 0.23.12) `dlg` — the validator's delegator count, i.e. how many of its `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/include/nodus/nodus_types.h`) slots are filled. `dlg` is `nodus_delegation_count_by_validator`, the same `COUNT(*) FROM delegations WHERE validator_hash = ?` the DELEGATE cap is decided from (`nodus_witness_rt_native.c` `rtn_sys_delegcnt_fetch`); a count that cannot be read fails the reply (never a 0). Old clients skip the unknown entry key; the client SDK reports an older node's reply as `has_delegator_count = 0` (unknown, not 0). Node-local read; no consensus path reads it. HF-6 generation 4 (sub-slice 3e): + `vid` / `owner` bstr(64) per entry, `dlg` counted by validator_id (see "HF-6 sub-slice 3e"); since slice 7a the client SDK decodes them into `validator_id` / `owner_fp` with `has_v2` (see "HF-6 slice 7a"). |
 
 ### cometbft envelope verbs 35-39 and the transport glue (R3 W3 C2b, 2026-09-16 — protocol version 7)
 
@@ -8097,6 +8097,38 @@ eight lines, the generation gate on a valid request (step 3 had lost its subject
 printed the gate's sentence, so it FAILED), the CLI's owner checks on register and exit, the exact
 owner accrual steps, ⌊N/2⌋ + 2 reporters (node 4's independent power decidable), and the owner's EXIT —
 RELEASED row and one `output_index` 201 coin to the owner at B_rel, `unlock_block` B_rel + 12·E, 7/7.
+
+### HF-6 slice 7a — client reads for the Connect "Nodus" screens (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §9 ("validator-list RPC:
+validator_id, owner_fp, consensus key") and §11 (storage under the owner/node split). Two node-local
+READS the Connect screens (become a witness, become a storage node, change the node's key) need; no
+chain code, no consensus path, no byte or pin moves.
+
+**Validator list, client side.** `handle_dnac_validator_list_query` already sends `vid` / `owner`
+(bstr 64) per entry under generation 4 (sub-slice 3e). `nodus_dnac_validator_list_entry_t` gains
+`validator_id[64]`, `owner_fp[64]` and `has_v2`, APPENDED after `delegator_count` so no earlier field
+moves (the web wallet's WASM module compiles `nodus_client.c` against these headers). The decoder sets
+`has_v2` = 1 only when both keys are present; neither (an older node) leaves it 0 and the arrays zero;
+a value that is not a 64-byte bstr, a repeat, or one key without the other refuses the whole reply —
+a half answer is never shown as an owner.
+
+**`dnac_storage_by_owner` {owner: tstr128}.** The storage nodes one OWNER registered: since 6b the
+registry column `v2_storage_nodes.payee_fp` holds owner_fp. Reply `ch`, `total` (the owner's rows,
+every status), `nodes` = the first min(total, 256) rows in node_fp order (the primary key — a total
+byte order, `ORDER BY node_fp ASC LIMIT 256`), each entry `fp` + exactly the keys `dnac_storage_status`
+answers for that node. To share them, `handle_dnac_storage_status` was split into `st_fp_arg`,
+`st_epoch_set` (storage_set(H) read once per request), `st_status_fill` and `st_status_encode`; its own
+reply bytes are unchanged. Bound: live rows are capped at 256 by STORAGE_REGISTER, but RELEASED rows
+never vanish, so one owner can exceed the list over time — `total` > |nodes| says so (no paging); the
+reply buffer is sized 256 + n × 1280 bytes. An unknown owner answers total 0 and an empty list. Faults
+are error replies, never a partial list. The client decoder (`nodus_dnac_storage_by_owner_decode`)
+bounds the array by 256 before allocating, applies the single-node rules to every entry plus a
+required `fp`, strictly ascending fps, found = true, one `ch` / `es` / `set` / `sc` for all, and — when
+the caller names the owner — every `payee` equal to it. CLI: `nodus-cli storage status --owner
+<hex128>` prints each node as `--fp` does. Tests: `test_storage_by_owner` (the real dispatcher over a
+socketpair, planted rows), `test_client_validator_list` (`vid` / `owner` cases) — written, NOT run by
+the builder.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

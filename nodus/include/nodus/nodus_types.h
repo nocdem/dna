@@ -976,7 +976,15 @@ typedef struct {
  * slots are filled.
  * Valid ONLY when has_delegator_count is 1; a node that predates the key
  * leaves has_delegator_count 0 = "unknown", which is not the same as 0
- * delegators. */
+ * delegators.
+ *
+ * validator_id / owner_fp (HF-6 slice 7a; design 2026-10-03-hf5-
+ * validator-owner-stake rev 6 §9): the reply's "vid" / "owner" keys, each
+ * bstr(64), which a generation-4 node sends for every entry (pubkey is
+ * then the consensus key). Valid ONLY when has_v2 is 1 (both keys were
+ * present); a node that predates them leaves has_v2 0 and both zero.
+ * Appended at the END of the struct: the fields above keep their
+ * offsets. */
 typedef struct {
     uint8_t  pubkey[2592];
     uint64_t self_stake;
@@ -987,6 +995,9 @@ typedef struct {
     uint64_t active_since_block;
     uint8_t  has_delegator_count;   /* 1 = delegator_count is the node's answer */
     uint32_t delegator_count;
+    uint8_t  validator_id[64];      /* "vid", when has_v2                */
+    uint8_t  owner_fp[64];          /* "owner", when has_v2              */
+    uint8_t  has_v2;                /* 1 = both keys were in the entry   */
 } nodus_dnac_validator_list_entry_t;
 
 /** Validator list query result. entries is heap; caller frees via

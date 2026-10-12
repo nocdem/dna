@@ -2996,6 +2996,16 @@ if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_cli)
 endif()
 
+# HF-6 slice 7a — dnac_storage_by_owner (the storage nodes one OWNER
+# registered): the REAL dispatcher over a socketpair against planted
+# v2_storage_nodes rows — empty owner = empty list, every status listed
+# node_fp ascending, other owners excluded, the 256 cap with "total",
+# argument refusals, a registry fault = an error reply, each entry equal to
+# the dnac_storage_status answer (shared encoder; status regression) — and
+# the client decoder's refusals over crafted replies. Default build, no
+# environment; one /tmp chain dir per case. See the file's "HOW IT CAN LIE".
+register_witness_test(test_storage_by_owner)
+
 # HF-6 6f-1 — the client path of a generation-4 STAKE and a ROTATE (design
 # 2026-10-03-hf5-validator-owner-stake rev 6 §2, §6.1, §6.2; K7): the node
 # consent formed with the codec calls nodus-cli `validator consent` makes

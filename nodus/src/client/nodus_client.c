@@ -6494,26 +6494,32 @@ int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
 
 /* Storage reward v1, package B2b-CLI — dnac_storage_status (wire and
  * rules: nodus.h). The v3d_* discipline: duplicate keys, truncation and
- * wrong types refuse; unknown keys are skipped. */
-int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
-                                     nodus_dnac_storage_status_t *out)
+ * wrong types refuse; unknown keys are skipped.
+ *
+ * st_status_map decodes ONE status map of `mc` pairs (the reply's "r",
+ * or — HF-6 slice 7a — one dnac_storage_by_owner "nodes" entry) into
+ * `out` (zeroed by the caller). `fp_out` NULL = the single-node reply (an
+ * "fp" key is unknown and skipped); non-NULL = a list entry, whose "fp"
+ * (128 lowercase hex) is REQUIRED and written there. @return 0 / -1. */
+static int st_status_map(cbor_decoder_t *d, size_t mc,
+                         nodus_dnac_storage_status_t *out, char *fp_out)
 {
-    cbor_decoder_t dec;
-    size_t         mc;
+    cbor_decoder_t dec = *d;            /* walked here, written back      */
     v3d_keys_t     ks;
     cbor_item_t    k, it;
     uint64_t       v;
     unsigned       have = 0;            /* the 8 keys of every reply      */
     unsigned       row = 0;             /* the 7 keys of a found row      */
+    int            have_fp = 0;
 
-    if (!raw || !out) return -1;
-    memset(out, 0, sizeof(*out));
     memset(&ks, 0, sizeof(ks));
-    if (find_response_map(raw, raw_len, &dec, &mc) != 0) goto bad;
-    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) goto bad;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
     for (size_t i = 0; i < mc; i++) {
-        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
-        if (KEY_EQ(k, "ch")) {
+        if (v3d_key(&dec, &ks, &k) != 0) return -1;
+        if (fp_out && KEY_EQ(k, "fp")) {
+            if (v3d_hex128(&dec, fp_out) != 0) return -1;
+            have_fp = 1;
+        } else if (KEY_EQ(k, "ch")) {
             if (v3d_u64(&dec, UINT64_MAX, &out->committed_height) != 0)
                 goto bad;
             have |= 1u;
@@ -6585,6 +6591,7 @@ int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
         }
     }
     if (dec.error || have != 255u) goto bad;    /* every key is required */
+    if (fp_out && !have_fp) goto bad;           /* a list entry names it */
     /* found ⇔ the reply carries the whole row */
     if (out->found ? row != 127u : row != 0u) goto bad;
     if (out->epoch_start > out->committed_height) goto bad;
@@ -6595,9 +6602,107 @@ int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
                           ? (size_t)out->n_segments
                           : (size_t)NODUS_DNAC_STORAGE_SEG_MAX))
         goto bad;
+    *d = dec;
     return 0;
 bad:
+    return -1;
+}
+
+int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
+                                     nodus_dnac_storage_status_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+
+    if (!raw || !out) return -1;
     memset(out, 0, sizeof(*out));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0 ||
+        st_status_map(&dec, mc, out, NULL) != 0) {
+        memset(out, 0, sizeof(*out));
+        return -1;
+    }
+    return 0;
+}
+
+void nodus_dnac_storage_by_owner_free(nodus_dnac_storage_by_owner_t *r)
+{
+    if (!r) return;
+    free(r->nodes);
+    memset(r, 0, sizeof(*r));
+}
+
+/* HF-6 slice 7a — dnac_storage_by_owner (wire and rules: nodus.h). Each
+ * "nodes" entry goes through st_status_map — the dnac_storage_status
+ * rules — with its "fp" required; the list rules are checked here. */
+int nodus_dnac_storage_by_owner_decode(const uint8_t *raw, size_t raw_len,
+                                       const char *owner_hex,
+                                       nodus_dnac_storage_by_owner_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k, it;
+    unsigned       have = 0;            /* "ch" | "total" | "nodes"       */
+
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) goto bad;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) goto bad;
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "ch")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->committed_height) != 0)
+                goto bad;
+            have |= 1u;
+        } else if (KEY_EQ(k, "total")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->total) != 0) goto bad;
+            have |= 2u;
+        } else if (KEY_EQ(k, "nodes")) {
+            /* the count is bounded BEFORE anything is allocated */
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_ARRAY ||
+                it.count > NODUS_DNAC_STORAGE_SET_MAX)
+                goto bad;
+            if (it.count > 0) {
+                out->nodes = calloc(it.count, sizeof(*out->nodes));
+                if (!out->nodes) goto bad;
+            }
+            out->count = it.count;
+            for (size_t j = 0; j < out->count; j++) {
+                nodus_dnac_storage_node_t *n = &out->nodes[j];
+                cbor_item_t em;
+                if (v3d_next(&dec, &em) != 0 || em.type != CBOR_ITEM_MAP ||
+                    st_status_map(&dec, em.count, &n->st, n->node_fp) != 0)
+                    goto bad;
+                /* node_fp strictly ascending: lowercase hex orders as
+                 * the bytes do */
+                if (j > 0 && strcmp(out->nodes[j - 1].node_fp,
+                                    n->node_fp) >= 0)
+                    goto bad;
+            }
+            have |= 4u;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (dec.error || have != 7u) goto bad;      /* every key is required */
+    if ((uint64_t)out->count != (out->total < NODUS_DNAC_STORAGE_SET_MAX
+                                 ? out->total
+                                 : (uint64_t)NODUS_DNAC_STORAGE_SET_MAX))
+        goto bad;
+    for (size_t j = 0; j < out->count; j++) {
+        const nodus_dnac_storage_status_t *s = &out->nodes[j].st;
+        const nodus_dnac_storage_status_t *f = &out->nodes[0].st;
+        if (!s->found) goto bad;                /* a listed row exists   */
+        if (s->committed_height != out->committed_height) goto bad;
+        if (s->epoch_start != f->epoch_start ||
+            s->set_exists != f->set_exists || s->set_count != f->set_count)
+            goto bad;                           /* one storage_set(H)    */
+        if (owner_hex && strcmp(s->payee, owner_hex) != 0) goto bad;
+    }
+    return 0;
+bad:
+    nodus_dnac_storage_by_owner_free(out);
     return -1;
 }
 
@@ -6658,6 +6763,15 @@ static int st_dec_status(const uint8_t *r, size_t l, void *o) {
     return nodus_dnac_storage_status_decode(r, l,
                                             (nodus_dnac_storage_status_t *)o);
 }
+/* dnac_storage_by_owner: the decoder needs the requested owner too */
+typedef struct {
+    const char                    *owner_hex;
+    nodus_dnac_storage_by_owner_t *out;
+} st_by_owner_ctx_t;
+static int st_dec_by_owner(const uint8_t *r, size_t l, void *o) {
+    const st_by_owner_ctx_t *c = (const st_by_owner_ctx_t *)o;
+    return nodus_dnac_storage_by_owner_decode(r, l, c->owner_hex, c->out);
+}
 
 int nodus_client_dnac_ruleset_info(nodus_client_t *client,
                                    nodus_dnac_ruleset_info_t *out)
@@ -6710,6 +6824,22 @@ int nodus_client_dnac_storage_status(nodus_client_t *client,
     memset(out, 0, sizeof(*out));
     return hf4_query(client, "dnac_storage_status", "fp", node_fp_hex,
                      st_dec_status, out);
+}
+
+int nodus_client_dnac_storage_by_owner(nodus_client_t *client,
+                                       const char *owner_hex,
+                                       nodus_dnac_storage_by_owner_t *out)
+{
+    if (!nodus_client_is_ready(client) || !owner_hex || !out) return -1;
+    if (strlen(owner_hex) != 128) return -1;
+    for (size_t i = 0; i < 128; i++) {
+        const char c = owner_hex[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    st_by_owner_ctx_t ctx = { owner_hex, out };
+    return hf4_query(client, "dnac_storage_by_owner", "owner", owner_hex,
+                     st_dec_by_owner, &ctx);
 }
 
 int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
@@ -7328,8 +7458,14 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
  * predates the key) leaves has_delegator_count 0 = unknown. A "dlg" that
  * is not a uint, exceeds UINT32_MAX, or appears twice in one entry
  * refuses the whole reply — a malformed count is never shown as a count
- * and never silently folded into "unknown". Every other entry key keeps
- * its existing lenient handling.
+ * and never silently folded into "unknown".
+ * HF-6 slice 7a: the optional per-entry "vid" / "owner" (bstr(64) each,
+ * validator_id / owner_fp — handle_dnac_validator_list_query under
+ * generation 4) fill validator_id / owner_fp and set has_v2 = 1 when BOTH
+ * are present; neither (an older node) leaves has_v2 0. A value that is
+ * not a 64-byte bstr, a key repeated in one entry, or one key without the
+ * other refuses the whole reply. Every other entry key keeps its existing
+ * lenient handling.
  * @return 0 / NODUS_ERR_PROTOCOL_ERROR / NODUS_ERR_INTERNAL_ERROR. */
 static int dnac_validator_list_parse(const uint8_t *raw, size_t raw_len,
                                      nodus_dnac_validator_list_result_t *result_out) {
@@ -7378,6 +7514,7 @@ static int dnac_validator_list_parse(const uint8_t *raw, size_t raw_len,
                 nodus_dnac_validator_list_entry_t *e =
                     &result_out->entries[result_out->count];
                 memset(e, 0, sizeof(*e));
+                int seen_vid = 0, seen_owner = 0;
                 for (size_t k = 0; k < emap.count; k++) {
                     cbor_item_t ek = cbor_decode_next(&dec);
                     if (ek.type != CBOR_ITEM_TSTR) {
@@ -7420,10 +7557,33 @@ static int dnac_validator_list_parse(const uint8_t *raw, size_t raw_len,
                         }
                         e->delegator_count     = (uint32_t)v.uint_val;
                         e->has_delegator_count = 1;
+                    } else if (KEY_EQ(ek, "vid") || KEY_EQ(ek, "owner")) {
+                        const int is_vid = KEY_EQ(ek, "vid");
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if ((is_vid ? seen_vid : seen_owner) ||
+                            v.type != CBOR_ITEM_BSTR || v.bstr.len != 64) {
+                            QGP_LOG_WARN(LOG_TAG, "dnac_validator_list: "
+                                         "malformed or repeated \"%s\" — refused",
+                                         is_vid ? "vid" : "owner");
+                            nodus_client_free_validator_list_result(result_out);
+                            return NODUS_ERR_PROTOCOL_ERROR;
+                        }
+                        memcpy(is_vid ? e->validator_id : e->owner_fp,
+                               v.bstr.ptr, 64);
+                        if (is_vid) seen_vid = 1;
+                        else        seen_owner = 1;
                     } else {
                         cbor_decode_skip(&dec);
                     }
                 }
+                if (seen_vid != seen_owner) {
+                    /* a generation-4 node sends both or neither */
+                    QGP_LOG_WARN(LOG_TAG, "dnac_validator_list: \"vid\" "
+                                 "without \"owner\" (or the reverse) — refused");
+                    nodus_client_free_validator_list_result(result_out);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
+                e->has_v2 = (uint8_t)(seen_vid && seen_owner);
                 result_out->count++;
             }
         } else {

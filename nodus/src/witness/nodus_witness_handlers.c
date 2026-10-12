@@ -3476,28 +3476,137 @@ static int st_status_row(nodus_witness_t *w, const uint8_t fp[64],
     return ret;
 }
 
-static void handle_dnac_storage_status(nodus_witness_t *w,
-                                       struct nodus_tcp_conn *conn,
-                                       const uint8_t *payload, size_t len,
-                                       uint32_t txn_id) {
+/* The one text argument `key` of a storage query: exactly 128 lowercase
+ * hex = a 64-byte fingerprint. 0 / -1. */
+static int st_fp_arg(const uint8_t *payload, size_t len, const char *key,
+                     uint8_t out[64]) {
     const char *hex = NULL;
     size_t hl = 0;
-    uint8_t fp[64];
-    uint64_t tip = 0;
-    int bad = hf4_tstr_arg(payload, len, "fp", &hex, &hl) != 0 || hl != 128;
-    for (size_t i = 0; !bad && i < 64; i++) {
+    if (hf4_tstr_arg(payload, len, key, &hex, &hl) != 0 || hl != 128)
+        return -1;
+    for (size_t i = 0; i < 64; i++) {
         int v = 0;
         for (int j = 0; j < 2; j++) {
             char c = hex[2 * i + (size_t)j];
             int d;
             if (c >= '0' && c <= '9') d = c - '0';
             else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-            else { bad = 1; break; }
+            else return -1;
             v = (v << 4) | d;
         }
-        fp[i] = (uint8_t)v;
+        out[i] = (uint8_t)v;
     }
-    if (bad) {
+    return 0;
+}
+
+/* storage_set(H) for the epoch (H, H+E] the tip lies in, H = tip − tip
+ * mod E (0 = no boundary yet, no set). *exists = the set row is there.
+ * Read ONCE per request; every node's answer is made against it.
+ * @return 0 / -1 fault. */
+static int st_epoch_set(nodus_witness_t *w, uint64_t tip,
+                        nodus_storage_set_t *set, uint64_t *H_out,
+                        bool *exists) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    *H_out = tip - tip % E;
+    *exists = false;
+    if (*H_out == 0) return 0;
+    int sr = nodus_witness_storage_set_get(w, *H_out, set);
+    if (sr < 0) return -1;
+    *exists = (sr == 0);
+    return 0;
+}
+
+/* One node's dnac_storage_status answer `o` for `fp` at `tip`, against
+ * the storage_set(H) already read (`set` NULL = no set(H)).
+ * @return NULL / the fault text (o is then not an answer). */
+static const char *st_status_fill(nodus_witness_t *w, const uint8_t fp[64],
+                                  uint64_t tip, uint64_t H,
+                                  const nodus_storage_set_t *set,
+                                  nodus_dnac_storage_status_t *o) {
+    memset(o, 0, sizeof(*o));
+    o->committed_height = tip;
+    o->epoch_start = H;
+
+    /* ── the registry row ─────────────────────────────────────────── */
+    int rr = st_status_row(w, fp, o);
+    if (rr < 0) return "storage registry unreadable";
+    o->found = (rr == 1);
+
+    /* ── membership of storage_set(H) for the epoch (H, H+E] ─────── */
+    if (set) {
+        o->set_exists = true;
+        o->set_count = set->count;
+        for (uint32_t i = 0; i < set->count; i++)
+            if (memcmp(set->fps[i], fp, 64) == 0) o->member = true;
+    }
+    if (o->member && !o->found)          /* registry rows never vanish   */
+        return "a storage set member has no registry row";
+
+    /* ── its eligible segments in (H, H+E] — every published segment k
+     *    has k·P <= tip, so tip / P + 1 bounds the list ─────────────── */
+    if (o->member) {
+        const size_t cap = (size_t)(tip / (uint64_t)DNA_V2_SEGMENT_BLOCKS) + 1u;
+        size_t n = 0;
+        uint64_t *ks = calloc(cap, sizeof(*ks));
+        if (!ks) return "out of memory";
+        if (nodus_witness_storage_eligible_segments(w, H, fp, ks, cap,
+                                                    &n) != 0) {
+            free(ks);
+            return "eligible segments unreadable";
+        }
+        o->n_segments = n;
+        o->n_listed = n < NODUS_DNAC_STORAGE_SEG_MAX
+                    ? n : (size_t)NODUS_DNAC_STORAGE_SEG_MAX;
+        memcpy(o->segments, ks, o->n_listed * sizeof(*ks));
+        free(ks);
+    }
+    return NULL;
+}
+
+/* The keys of one status answer: 8, or 15 when the row was found. */
+static size_t st_status_nkeys(const nodus_dnac_storage_status_t *o) {
+    return o->found ? 15u : 8u;
+}
+
+/* Encode the st_status_nkeys(o) keys of one status answer — no map
+ * header: dnac_storage_status writes them as its "r" map, and
+ * dnac_storage_by_owner as each "nodes" entry after that entry's "fp". */
+static void st_status_encode(cbor_encoder_t *enc,
+                             const nodus_dnac_storage_status_t *o) {
+    cbor_encode_cstr(enc, "ch");    cbor_encode_uint(enc, o->committed_height);
+    cbor_encode_cstr(enc, "es");    cbor_encode_uint(enc, o->epoch_start);
+    cbor_encode_cstr(enc, "found"); cbor_encode_bool(enc, o->found);
+    if (o->found) {
+        cbor_encode_cstr(enc, "st");    cbor_encode_uint(enc, o->status);
+        cbor_encode_cstr(enc, "bond");  cbor_encode_uint(enc, o->bond);
+        cbor_encode_cstr(enc, "fs");
+        cbor_encode_uint(enc, o->fail_streak);
+        cbor_encode_cstr(enc, "gu");
+        cbor_encode_uint(enc, o->grace_until);
+        cbor_encode_cstr(enc, "rh");
+        cbor_encode_uint(enc, o->registered_height);
+        cbor_encode_cstr(enc, "xh");
+        cbor_encode_uint(enc, o->exit_height);
+        cbor_encode_cstr(enc, "payee");
+        cbor_encode_cstr(enc, o->payee);
+    }
+    cbor_encode_cstr(enc, "set");   cbor_encode_bool(enc, o->set_exists);
+    cbor_encode_cstr(enc, "sc");    cbor_encode_uint(enc, o->set_count);
+    cbor_encode_cstr(enc, "mem");   cbor_encode_bool(enc, o->member);
+    cbor_encode_cstr(enc, "ns");    cbor_encode_uint(enc, o->n_segments);
+    cbor_encode_cstr(enc, "segs");
+    cbor_encode_array(enc, o->n_listed);
+    for (size_t i = 0; i < o->n_listed; i++)
+        cbor_encode_uint(enc, o->segments[i]);
+}
+
+static void handle_dnac_storage_status(nodus_witness_t *w,
+                                       struct nodus_tcp_conn *conn,
+                                       const uint8_t *payload, size_t len,
+                                       uint32_t txn_id) {
+    uint8_t fp[64];
+    uint64_t tip = 0;
+    if (st_fp_arg(payload, len, "fp", fp) != 0) {
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                    "missing or invalid fp (128 lowercase hex)");
         return;
@@ -3510,54 +3619,17 @@ static void handle_dnac_storage_status(nodus_witness_t *w,
 
     nodus_dnac_storage_status_t *o = calloc(1, sizeof(*o));
     nodus_storage_set_t *set = calloc(1, sizeof(*set));
-    uint64_t *ks = NULL;
     uint8_t *buf = NULL;
     const char *fault = NULL;
+    uint64_t H = 0;
+    bool set_exists = false;
     if (!o || !set) { fault = "out of memory"; goto done; }
-    o->committed_height = tip;
-
-    /* ── the registry row ─────────────────────────────────────────── */
-    {
-        int rr = st_status_row(w, fp, o);
-        if (rr < 0) { fault = "storage registry unreadable"; goto done; }
-        o->found = (rr == 1);
-    }
-
-    /* ── storage_set(H) for the current epoch (H, H+E] ────────────── */
-    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    o->epoch_start = tip - tip % E;
-    if (o->epoch_start != 0) {
-        int sr = nodus_witness_storage_set_get(w, o->epoch_start, set);
-        if (sr < 0) { fault = "storage set unreadable"; goto done; }
-        if (sr == 0) {
-            o->set_exists = true;
-            o->set_count = set->count;
-            for (uint32_t i = 0; i < set->count; i++)
-                if (memcmp(set->fps[i], fp, 64) == 0) o->member = true;
-        }
-    }
-    if (o->member && !o->found) {        /* registry rows never vanish   */
-        fault = "a storage set member has no registry row";
+    if (st_epoch_set(w, tip, set, &H, &set_exists) != 0) {
+        fault = "storage set unreadable";
         goto done;
     }
-
-    /* ── its eligible segments in (H, H+E] — every published segment k
-     *    has k·P <= tip, so tip / P + 1 bounds the list ─────────────── */
-    if (o->member) {
-        const size_t cap = (size_t)(tip / (uint64_t)DNA_V2_SEGMENT_BLOCKS) + 1u;
-        size_t n = 0;
-        ks = calloc(cap, sizeof(*ks));
-        if (!ks) { fault = "out of memory"; goto done; }
-        if (nodus_witness_storage_eligible_segments(w, o->epoch_start, fp,
-                                                    ks, cap, &n) != 0) {
-            fault = "eligible segments unreadable";
-            goto done;
-        }
-        o->n_segments = n;
-        o->n_listed = n < NODUS_DNAC_STORAGE_SEG_MAX
-                    ? n : (size_t)NODUS_DNAC_STORAGE_SEG_MAX;
-        memcpy(o->segments, ks, o->n_listed * sizeof(*ks));
-    }
+    fault = st_status_fill(w, fp, tip, H, set_exists ? set : NULL, o);
+    if (fault) goto done;
 
     /* ── the reply ────────────────────────────────────────────────── */
     {
@@ -3567,32 +3639,8 @@ static void handle_dnac_storage_status(nodus_witness_t *w,
         cbor_encoder_t enc;
         cbor_encoder_init(&enc, buf, cap);
         enc_dnac_response(&enc, txn_id, "dnac_storage_status",
-                          o->found ? 15 : 8);
-        cbor_encode_cstr(&enc, "ch");    cbor_encode_uint(&enc, tip);
-        cbor_encode_cstr(&enc, "es");    cbor_encode_uint(&enc, o->epoch_start);
-        cbor_encode_cstr(&enc, "found"); cbor_encode_bool(&enc, o->found);
-        if (o->found) {
-            cbor_encode_cstr(&enc, "st");    cbor_encode_uint(&enc, o->status);
-            cbor_encode_cstr(&enc, "bond");  cbor_encode_uint(&enc, o->bond);
-            cbor_encode_cstr(&enc, "fs");
-            cbor_encode_uint(&enc, o->fail_streak);
-            cbor_encode_cstr(&enc, "gu");
-            cbor_encode_uint(&enc, o->grace_until);
-            cbor_encode_cstr(&enc, "rh");
-            cbor_encode_uint(&enc, o->registered_height);
-            cbor_encode_cstr(&enc, "xh");
-            cbor_encode_uint(&enc, o->exit_height);
-            cbor_encode_cstr(&enc, "payee");
-            cbor_encode_cstr(&enc, o->payee);
-        }
-        cbor_encode_cstr(&enc, "set");   cbor_encode_bool(&enc, o->set_exists);
-        cbor_encode_cstr(&enc, "sc");    cbor_encode_uint(&enc, o->set_count);
-        cbor_encode_cstr(&enc, "mem");   cbor_encode_bool(&enc, o->member);
-        cbor_encode_cstr(&enc, "ns");    cbor_encode_uint(&enc, o->n_segments);
-        cbor_encode_cstr(&enc, "segs");
-        cbor_encode_array(&enc, o->n_listed);
-        for (size_t i = 0; i < o->n_listed; i++)
-            cbor_encode_uint(&enc, o->segments[i]);
+                          st_status_nkeys(o));
+        st_status_encode(&enc, o);
         size_t rlen = cbor_encoder_len(&enc);
         if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
         else fault = "response buffer overflow";
@@ -3604,7 +3652,162 @@ done:
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, fault);
     }
     free(buf);
-    free(ks);
+    free(set);
+    free(o);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_storage_by_owner — HF-6 slice 7a (design docs/plans/2026-10-03-
+ * hf5-validator-owner-stake-design.md rev 6 §9 / §11: the Connect
+ * "Nodus" screens list an owner's storage nodes; wire: include/nodus/
+ * nodus.h beside nodus_client_dnac_storage_by_owner).
+ *
+ * Request "a": {"owner": tstr, exactly 128 lowercase hex = owner_fp}.
+ * Response "r" (READ-ONLY, committed tables only — the same reads as
+ * dnac_storage_status):
+ *   "ch"    u64   the committed tip
+ *   "total" u64   rows of v2_storage_nodes whose payee_fp (= owner_fp
+ *                 since HF-6 6b) is `owner`, every status
+ *   "nodes" array of the first min(total, NODUS_DNAC_STORAGE_SET_MAX)
+ *                 of them, node_fp ASC (the table's primary key — a
+ *                 total byte order), each a map: "fp" tstr128 node_fp,
+ *                 then exactly the keys dnac_storage_status answers for
+ *                 that node (st_status_fill / st_status_encode, against
+ *                 ONE storage_set(H) read for the whole reply).
+ * Bound: the live (ACTIVE + EXITING) rows are capped at
+ * NODUS_STORAGE_SET_MAX by STORAGE_REGISTER (nodus_witness_rt_native.c
+ * rtn_storage_register_exec), but RELEASED rows never vanish, so one
+ * owner can hold more rows over time; the list stops at the cap and
+ * "total" says so (total > |nodes|). An owner without rows answers
+ * total 0 and an empty list, not an error. A store fault is an error
+ * reply, never a partial answer.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Worst-case bytes of one "nodes" entry: "fp" + tstr128 (133), the 15
+ * status keys with full-width values incl. "payee" (≈ 260) and "segs"
+ * with NODUS_DNAC_STORAGE_SEG_MAX nine-byte uints (≈ 590) — rounded up. */
+#define ST_BY_OWNER_ENTRY_MAX  1280u
+
+static void handle_dnac_storage_by_owner(nodus_witness_t *w,
+                                         struct nodus_tcp_conn *conn,
+                                         const uint8_t *payload, size_t len,
+                                         uint32_t txn_id) {
+    uint8_t owner[64];
+    uint64_t tip = 0;
+    if (st_fp_arg(payload, len, "owner", owner) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "missing or invalid owner (128 lowercase hex)");
+        return;
+    }
+    if (hf4_tip(w, &tip) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "no version-3 chain on this node");
+        return;
+    }
+
+    nodus_dnac_storage_status_t *o = calloc(1, sizeof(*o));
+    nodus_storage_set_t *set = calloc(1, sizeof(*set));
+    uint8_t (*fps)[64] = calloc(NODUS_DNAC_STORAGE_SET_MAX, 64);
+    uint8_t *buf = NULL;
+    sqlite3_stmt *st = NULL;
+    const char *fault = NULL;
+    uint64_t total = 0, H = 0;
+    size_t n = 0;
+    bool set_exists = false;
+    if (!o || !set || !fps) { fault = "out of memory"; goto done; }
+
+    /* ── the owner's rows: how many, then the first SET_MAX node_fps ── */
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM v2_storage_nodes WHERE payee_fp = ?1",
+            -1, &st, NULL) != SQLITE_OK) {
+        fault = "storage registry unreadable";
+        goto done;
+    }
+    sqlite3_bind_blob(st, 1, owner, 64, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) != SQLITE_ROW ||
+        sqlite3_column_int64(st, 0) < 0) {
+        fault = "storage registry unreadable";
+        goto done;
+    }
+    total = (uint64_t)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    st = NULL;
+
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT node_fp FROM v2_storage_nodes WHERE payee_fp = ?1 "
+            "ORDER BY node_fp ASC LIMIT ?2",
+            -1, &st, NULL) != SQLITE_OK) {
+        fault = "storage registry unreadable";
+        goto done;
+    }
+    sqlite3_bind_blob(st, 1, owner, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)NODUS_DNAC_STORAGE_SET_MAX);
+    for (;;) {
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW || n >= NODUS_DNAC_STORAGE_SET_MAX ||
+            sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, 0) != 64 ||
+            sqlite3_column_blob(st, 0) == NULL) {
+            fault = "storage registry unreadable";
+            goto done;
+        }
+        memcpy(fps[n], sqlite3_column_blob(st, 0), 64);
+        n++;
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+    if ((uint64_t)n != (total < NODUS_DNAC_STORAGE_SET_MAX
+                        ? total : (uint64_t)NODUS_DNAC_STORAGE_SET_MAX)) {
+        fault = "storage registry count disagrees with its rows";
+        goto done;
+    }
+
+    if (st_epoch_set(w, tip, set, &H, &set_exists) != 0) {
+        fault = "storage set unreadable";
+        goto done;
+    }
+
+    /* ── the reply ────────────────────────────────────────────────── */
+    {
+        const size_t cap = 256u + n * (size_t)ST_BY_OWNER_ENTRY_MAX;
+        buf = malloc(cap);
+        if (!buf) { fault = "out of memory"; goto done; }
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, buf, cap);
+        enc_dnac_response(&enc, txn_id, "dnac_storage_by_owner", 3);
+        cbor_encode_cstr(&enc, "ch");    cbor_encode_uint(&enc, tip);
+        cbor_encode_cstr(&enc, "total"); cbor_encode_uint(&enc, total);
+        cbor_encode_cstr(&enc, "nodes");
+        cbor_encode_array(&enc, n);
+        for (size_t i = 0; i < n; i++) {
+            char hex[129];
+            fault = st_status_fill(w, fps[i], tip, H,
+                                   set_exists ? set : NULL, o);
+            if (fault) goto done;
+            if (!o->found) {             /* the SELECT above listed it   */
+                fault = "a listed storage row has no registry row";
+                goto done;
+            }
+            hf4_hex128(fps[i], hex);
+            cbor_encode_map(&enc, st_status_nkeys(o) + 1u);
+            cbor_encode_cstr(&enc, "fp");
+            cbor_encode_cstr(&enc, hex);
+            st_status_encode(&enc, o);
+        }
+        size_t rlen = cbor_encoder_len(&enc);
+        if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+        else fault = "response buffer overflow";
+    }
+
+done:
+    sqlite3_finalize(st);
+    if (fault) {
+        QGP_LOG_WARN(LOG_TAG, "dnac_storage_by_owner: %s", fault);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, fault);
+    }
+    free(buf);
+    free(fps);
     free(set);
     free(o);
 }
@@ -6409,6 +6612,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_name_of(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_storage_status") == 0) {
         handle_dnac_storage_status(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_storage_by_owner") == 0) {
+        handle_dnac_storage_by_owner(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_committee_query") == 0) {
         handle_dnac_committee_query(w, conn, txn_id);
     } else if (strcmp(method, "dnac_validator_list_query") == 0) {

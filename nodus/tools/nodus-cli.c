@@ -4436,7 +4436,9 @@ done:
  * node's fp (or --fp): the registry row (its owner — the RPC's "payee"
  * key, which since HF-6 holds the owner), the frozen-set membership for the
  * current epoch and the eligible segments. The last SETTLED outcome is not
- * recorded on chain (only its fail_streak trace) and is said so. */
+ * recorded on chain (only its fail_streak trace) and is said so.
+ * `status --owner <hex128>` (HF-6 slice 7a) prints the same per node for
+ * every storage node that owner registered (dnac_storage_by_owner). */
 
 /* The `storage` usage (main's dispatch and cmd_v2_stake's storage verbs). */
 static void cli_storage_usage(void) {
@@ -4448,7 +4450,7 @@ static void cli_storage_usage(void) {
         "(--dry-run | --submit ip:port)\n"
         "       storage exit --keys <owner keydir> --node-fp <hex128> "
         "(--dry-run | --submit ip:port)\n"
-        "       storage status [--fp <hex128>]\n"
+        "       storage status [--fp <hex128> | --owner <hex128>]\n"
         "  From rule-set generation %u (HF-6) a storage node is registered "
         "and taken out\n"
         "  by its OWNER; the node's key only consents.\n"
@@ -4468,7 +4470,9 @@ static void cli_storage_usage(void) {
         "The node may\n"
         "            register again only after the boundary that follows "
         "that release.\n"
-        "  status:   the registry row of this node (-i) or of --fp.\n"
+        "  status:   the registry row of this node (-i) or of --fp; with "
+        "--owner, every\n"
+        "            storage node that owner registered (every status).\n"
         "  --dry-run builds and self-checks, submits nothing.\n",
         (unsigned)NODUS_RT_GEN_STORAGE,
         (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS,
@@ -4673,17 +4677,79 @@ static void cli_storage_status_print(const char *fp_hex,
            "trace\n");
 }
 
+/* `storage status --owner <hex128>` (HF-6 slice 7a): every storage node
+ * the owner registered (dnac_storage_by_owner — every status, node_fp
+ * ascending), each printed as `storage status --fp` prints one node. */
+static int cmd_storage_status_owner(const char *server_ip,
+                                    uint16_t server_port,
+                                    const char *owner_arg) {
+    char owner_hex[129];
+    uint8_t raw[64];
+    if (strlen(owner_arg) != 128 || qgp_fp_hex_to_raw(owner_arg, raw) != 0) {
+        fprintf(stderr, "--owner must be exactly 128 lowercase hex chars\n");
+        return 1;
+    }
+    qgp_fp_raw_to_hex(raw, owner_hex);
+
+    int rc = 1, connected = 0;
+    nodus_client_t client;
+    nodus_dnac_storage_by_owner_t res;
+    memset(&client, 0, sizeof(client));
+    memset(&res, 0, sizeof(res));
+    if (cli_storage_session(&client, &connected, NULL, server_ip,
+                            server_port) != 0)
+        goto done;
+    {
+        nodus_dnac_ruleset_info_t ri;
+        memset(&ri, 0, sizeof(ri));
+        if (nodus_client_dnac_ruleset_info(&client, &ri) == 0)
+            printf("rule-set generation %u (storage ops from generation "
+                   "%u)\n", (unsigned)ri.generation,
+                   (unsigned)NODUS_RT_GEN_STORAGE);
+    }
+    int qrc = nodus_client_dnac_storage_by_owner(&client, owner_hex, &res);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_storage_by_owner failed (rc=%d) — an older "
+                "node does not answer it\n", qrc);
+        goto done;
+    }
+    printf("owner %s: %llu storage node(s) registered (every status), "
+           "committed height %llu\n", owner_hex,
+           (unsigned long long)res.total,
+           (unsigned long long)res.committed_height);
+    for (size_t i = 0; i < res.count; i++)
+        cli_storage_status_print(res.nodes[i].node_fp, &res.nodes[i].st);
+    if ((uint64_t)res.count < res.total)
+        printf("NOTE: the node lists the first %zu by node fingerprint; "
+               "%llu more are not shown\n", res.count,
+               (unsigned long long)(res.total - (uint64_t)res.count));
+    rc = 0;
+done:
+    nodus_dnac_storage_by_owner_free(&res);
+    if (connected) nodus_client_close(&client);
+    return rc;
+}
+
 static int cmd_storage_status(const char *server_ip, uint16_t server_port,
                               int argc, char **argv, int cmd_start,
                               int have_identity) {
-    const char *fp_arg = NULL;
+    const char *fp_arg = NULL, *owner_arg = NULL;
     for (int i = cmd_start + 2; i < argc; i++) {
         if (!strcmp(argv[i], "--fp") && i + 1 < argc) fp_arg = argv[++i];
+        else if (!strcmp(argv[i], "--owner") && i + 1 < argc)
+            owner_arg = argv[++i];
         else {
-            fprintf(stderr, "Usage: storage status [--fp <hex128>]\n");
+            fprintf(stderr, "Usage: storage status [--fp <hex128> | "
+                    "--owner <hex128>]\n");
             return 1;
         }
     }
+    if (fp_arg && owner_arg) {
+        fprintf(stderr, "storage status takes --fp or --owner, not both\n");
+        return 1;
+    }
+    if (owner_arg)
+        return cmd_storage_status_owner(server_ip, server_port, owner_arg);
     char fp_hex[129];
     if (fp_arg) {
         uint8_t raw[64];
@@ -9210,7 +9276,7 @@ static void usage(const char *prog) {
             (unsigned long long)DNAC_HF6_STORAGE_BOND_DEFAULT);
     fprintf(stderr, "  storage exit --keys <owner dir> --node-fp <hex128>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   HF-6: the owner takes the node out\n");
-    fprintf(stderr, "  storage status [--fp <hex128>]   Registry row, storage-set membership, eligible segments\n");
+    fprintf(stderr, "  storage status [--fp <hex128> | --owner <hex128>]   Registry row, storage-set membership, eligible segments (--owner: every node of that owner)\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");
     fprintf(stderr, "  v2-envelope stake --keys <dir> --bond <raw = exactly 10M NODUS>\n");
