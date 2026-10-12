@@ -88,6 +88,37 @@
  *   data_len, created, recipient, fee, change, expiry, then one `input=`
  *   per input. Compared like the spend.
  *
+ * HF-6 (design docs/plans/2026-10-12-connect-hf6-screens-design.md) — two
+ * more modes:
+ *
+ *   nodus-send-native-vector hf6-consent --op stake|rotate|storage
+ *     --node-seed <64hex> --chain <64hex> [--subject <128hex>]
+ *     (--owner <128hex> | --owner-seed <64hex>) --expiry <dec>
+ *     --sign-random <hex, the bytes qgp_platform_random returns in order>
+ *   The NODE's side, as nodus-cli `validator consent` / `storage consent`
+ *   makes it (cmd_validator_consent): the node key from --node-seed, the
+ *   §6.1 message (dna_valbind_consent_msg), its signature
+ *   (dna_valbind_consent_sign, ctx "nodus.valbind.v1", 32 bytes of
+ *   --sign-random) and the text container (nodus_v2_consent_text_encode).
+ *   --subject only for rotate (the validator_id); --owner-seed gives the
+ *   owner as SHA3-512 of that seed's ML-DSA-87 public key. Output:
+ *   consent (the text, as lowercase hex of its bytes), node_fp, owner.
+ *
+ *   nodus-send-native-vector hf6 --gen <dec>
+ *     --op stake|rotate|storage-register|storage-exit --seed <64hex>
+ *     --chain <64hex> --tip <dec> --gas <dec> [--consent <hex of the text>]
+ *     [--target <128hex>] [--amount <dec>] [--commission <bps>]
+ *     --expiry <dec> --coin <128hex>:<dec> [--coin ...]
+ *     --sign-random <hex, the bytes qgp_platform_random returns in order>
+ *   Builds with nsw_hf6_offline_build (the shared builder at the given
+ *   generation, the consent re-checked by the codec — the function every
+ *   wasm build runs). --target: rotate the validator_id, storage-exit the
+ *   node_fp. Two legs are signed: --sign-random needs 64 bytes. Output, in
+ *   this order: envelope, wire_id, intent_id, chain_id, op, gen4,
+ *   recipient, node_fp, validator_id, amount, commission, consent_expiry,
+ *   fee, change, expiry, then one `input=` per input. Compared like the
+ *   staking mode.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -97,6 +128,8 @@
 #include <string.h>
 
 #include "dnac/manifest_wire.h"
+#include "dnac/valbind_wire.h"
+#include "client/nodus_v2_stake.h"          /* the consent text container */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 
@@ -146,6 +179,15 @@ int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
                             const char *expiry_dec);
 int nsw_built_op(void);
 const char *nsw_built_commission(void);
+int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
+                          const char *tip_dec, const char *gas_dec,
+                          const char *consent_text, const char *target_hex,
+                          const char *amount_dec, const char *commission_dec,
+                          const char *expiry_dec);
+int nsw_built_gen4(void);
+const char *nsw_built_node_fp(void);
+const char *nsw_built_validator_id(void);
+const char *nsw_built_consent_expiry(void);
 uint8_t *nsw_evm_data_alloc(int len);
 void nsw_evm_access_reset(void);
 int nsw_evm_access_add(const char *addr_hex, const char *keys_hex);
@@ -469,6 +511,155 @@ static int main_stake(int argc, char **argv) {
     return 0;
 }
 
+/* The NODE's consent (see the usage above): what nodus-cli
+ * cmd_validator_consent makes, from explicit inputs. */
+static int main_hf6_consent(int argc, char **argv) {
+    const char *op_s = NULL, *node_seed = NULL, *chain = NULL, *subject = NULL,
+               *owner = NULL, *owner_seed = NULL, *expiry = NULL,
+               *sign_random = NULL;
+    for (int i = 2; i < argc; i += 2) {
+        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!v) return fail("every option takes a value");
+        if      (!strcmp(a, "--op"))          op_s = v;
+        else if (!strcmp(a, "--node-seed"))   node_seed = v;
+        else if (!strcmp(a, "--chain"))       chain = v;
+        else if (!strcmp(a, "--subject"))     subject = v;
+        else if (!strcmp(a, "--owner"))       owner = v;
+        else if (!strcmp(a, "--owner-seed"))  owner_seed = v;
+        else if (!strcmp(a, "--expiry"))      expiry = v;
+        else if (!strcmp(a, "--sign-random")) sign_random = v;
+        else return fail("unknown option (see the usage in nodus-send-native-vector.c)");
+    }
+    const uint8_t op = !op_s ? 0 : !strcmp(op_s, "stake") ? DNA_VALBIND_OP_STAKE
+                     : !strcmp(op_s, "rotate") ? DNA_VALBIND_OP_ROTATE
+                     : !strcmp(op_s, "storage") ? DNA_VALBIND_OP_STORAGE_REGISTER : 0;
+    if (!op || !node_seed || !chain || !expiry || !sign_random ||
+        (!owner == !owner_seed) || ((op == DNA_VALBIND_OP_ROTATE) != (subject != NULL)))
+        return fail("hf6-consent needs --op stake|rotate|storage --node-seed --chain "
+                    "(--owner | --owner-seed) --expiry --sign-random (--subject for rotate)");
+    static nodus_v2_consent_t c;
+    static uint8_t node_pk[QGP_DSA87_PUBLICKEYBYTES], node_sk[QGP_DSA87_SECRETKEYBYTES];
+    static uint8_t msg[DNA_VALBIND_MSG_LEN];
+    uint8_t seed32[32];
+    size_t n = 0;
+    memset(&c, 0, sizeof(c));
+    c.op = op;
+    if (unhex(node_seed, seed32, 32, &n) != 0 || n != 32 ||
+        qgp_dsa87_keypair_derand(node_pk, node_sk, seed32) != 0)
+        return fail("--node-seed is 32 bytes of lowercase hex");
+    memcpy(c.consensus_pk, node_pk, sizeof(node_pk));
+    if (unhex(chain, c.chain32, sizeof(c.chain32), &n) != 0 || n != sizeof(c.chain32))
+        return fail("--chain is 32 bytes of lowercase hex");
+    if (subject && (unhex(subject, c.subject, 64, &n) != 0 || n != 64))
+        return fail("--subject is 64 bytes of lowercase hex");
+    if (owner) {
+        if (unhex(owner, c.owner_fp, 64, &n) != 0 || n != 64)
+            return fail("--owner is 64 bytes of lowercase hex");
+    } else {
+        static uint8_t opk[QGP_DSA87_PUBLICKEYBYTES], osk[QGP_DSA87_SECRETKEYBYTES];
+        if (unhex(owner_seed, seed32, 32, &n) != 0 || n != 32 ||
+            qgp_dsa87_keypair_derand(opk, osk, seed32) != 0 ||
+            qgp_sha3_512(opk, sizeof(opk), c.owner_fp) != 0)
+            return fail("--owner-seed is 32 bytes of lowercase hex");
+    }
+    if (parse_dec(expiry, &c.expiry) != 0) return fail("--expiry is a decimal height");
+    if (unhex(sign_random, nsw_test_random_buf(), 4096, &n) != 0 ||
+        nsw_test_random_load((int)n) != 0)
+        return fail("--sign-random is at most 4096 bytes of lowercase hex");
+    size_t sl = 0;
+    if (dna_valbind_consent_msg(msg, c.chain32, c.op, c.subject, c.owner_fp,
+                                c.consensus_pk, c.expiry) != 0 ||
+        dna_valbind_consent_sign(c.sig, &sl, msg, node_sk) != 0 ||
+        sl != DNA_VALBIND_SIG_LEN)
+        return fail("the consent could not be signed");
+    char *text = NULL;
+    size_t tl = 0;
+    if (nodus_v2_consent_text_encode(&c, &text, &tl) != NODUS_V2_SPEND_OK)
+        return fail("the consent could not be encoded");
+    int rc = hex_line("consent", (const uint8_t *)text, tl);
+    free(text);
+    if (rc) return 1;
+    uint8_t fp[64];
+    if (qgp_sha3_512(node_pk, sizeof(node_pk), fp) != 0) return fail("hash failed");
+    if (hex_line("node_fp", fp, 64) || hex_line("owner", c.owner_fp, 64)) return 1;
+    return 0;
+}
+
+static int main_hf6(int argc, char **argv) {
+    const char *op_s = NULL, *gen_s = NULL, *seed = NULL, *chain = NULL,
+               *tip = NULL, *gas = NULL, *consent_hex = "", *target = "",
+               *amount = "0", *commission = "0", *expiry = NULL,
+               *sign_random = NULL;
+    nsw_req_reset();
+    for (int i = 2; i < argc; i += 2) {
+        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!v) return fail("every option takes a value");
+        if      (!strcmp(a, "--op"))          op_s = v;
+        else if (!strcmp(a, "--gen"))         gen_s = v;
+        else if (!strcmp(a, "--seed"))        seed = v;
+        else if (!strcmp(a, "--chain"))       chain = v;
+        else if (!strcmp(a, "--tip"))         tip = v;
+        else if (!strcmp(a, "--gas"))         gas = v;
+        else if (!strcmp(a, "--consent"))     consent_hex = v;
+        else if (!strcmp(a, "--target"))      target = v;
+        else if (!strcmp(a, "--amount"))      amount = v;
+        else if (!strcmp(a, "--commission"))  commission = v;
+        else if (!strcmp(a, "--expiry"))      expiry = v;
+        else if (!strcmp(a, "--sign-random")) sign_random = v;
+        else if (!strcmp(a, "--coin")) {
+            char nul[129];
+            const char *colon = strchr(v, ':');
+            if (!colon || colon - v != 128) return fail("--coin is <128hex>:<amount>");
+            memcpy(nul, v, 128);
+            nul[128] = '\0';
+            if (nsw_req_add_coin(nul, colon + 1) != 0) return fail(nsw_error());
+        } else return fail("unknown option (see the usage in nodus-send-native-vector.c)");
+    }
+    int op = !op_s ? 0 : !strcmp(op_s, "stake") ? 1 : !strcmp(op_s, "rotate") ? 10
+           : !strcmp(op_s, "storage-register") ? 7
+           : !strcmp(op_s, "storage-exit") ? 8 : 0;
+    uint64_t gen = 0;
+    if (!op || !gen_s || parse_dec(gen_s, &gen) != 0 || gen < 1 || gen > 255 ||
+        !seed || !chain || !tip || !gas || !expiry || !sign_random)
+        return fail("hf6 needs --gen --op stake|rotate|storage-register|storage-exit "
+                    "--seed --chain --tip --gas --expiry --coin --sign-random "
+                    "(and the op's own fields)");
+    /* the consent text, from its hex (16384 bytes at most, the CLI's bound) */
+    static char consent[16385];
+    size_t n = 0;
+    if (unhex(consent_hex, (uint8_t *)consent, sizeof(consent) - 1, &n) != 0)
+        return fail("--consent is the consent text as lowercase hex");
+    consent[n] = '\0';
+    if (unhex(seed, nsw_seed_buf(), 32, &n) != 0 || n != 32)
+        return fail("--seed is 32 bytes of lowercase hex");
+    if (unhex(sign_random, nsw_test_random_buf(), 4096, &n) != 0 ||
+        nsw_test_random_load((int)n) != 0)
+        return fail("--sign-random is at most 4096 bytes of lowercase hex");
+    if (nsw_hf6_offline_build((int)gen, op, chain, tip, gas, consent, target,
+                              amount, commission, expiry) != 0)
+        return fail(nsw_error());
+    if (print_env()) return 1;
+    line("wire_id", nsw_built_wire());
+    line("intent_id", nsw_built_intent());
+    line("chain_id", nsw_built_chain());
+    char dec[24];
+    snprintf(dec, sizeof(dec), "%d", nsw_built_op());
+    line("op", dec);
+    snprintf(dec, sizeof(dec), "%d", nsw_built_gen4());
+    line("gen4", dec);
+    line("recipient", nsw_built_recipient());
+    line("node_fp", nsw_built_node_fp());
+    line("validator_id", nsw_built_validator_id());
+    line("amount", nsw_built_amount());
+    line("commission", nsw_built_commission());
+    line("consent_expiry", nsw_built_consent_expiry());
+    line("fee", nsw_built_fee());
+    line("change", nsw_built_change());
+    line("expiry", nsw_built_expiry());
+    for (int i = 0; i < nsw_built_n_in(); i++) line("input", nsw_built_in(i));
+    return 0;
+}
+
 #define VEC_EVM_DATA_MAX 49152               /* evm_call_wire.h DNA_EVM_MAX_INITCODE */
 
 static int main_evm(int argc, char **argv) {
@@ -577,6 +768,8 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "claim-manifest")) return main_claim_manifest(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "claim")) return main_claim(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "stake")) return main_stake(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "hf6-consent")) return main_hf6_consent(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "hf6")) return main_hf6(argc, argv);
     const char *seed = NULL, *chain = NULL, *tip = NULL, *gas = NULL,
                *to = NULL, *amount = NULL, *expiry = NULL,
                *out_seeds = NULL, *sign_random = NULL;

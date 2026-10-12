@@ -134,6 +134,12 @@ mode="${1:-release}"
 # wait_response -> emscripten_sleep: the cursor and the result struct have
 # their address taken (C stack), the entries are heap, and the JSON is
 # built after the last wait. Expected to hold, not measured.
+# The HF-6 export nsw_hf6_build has the shape of nsw_stake_build: every
+# wait (chain id, dnac_ruleset_info, dnac_fee_info) runs in its own frame
+# with small scalar locals and address-taken answer structs (C stack); the
+# consent text is copied to the heap before the first wait, and the consent
+# structs, message and builder structs are heap-allocated in nsw_hf6_core
+# after the last wait. Expected to hold, not measured.
 # There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
 # instruments every function that can reach emscripten_sleep (directly or,
 # with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
@@ -231,6 +237,10 @@ sources=(
   # the shared staking builder (nodus-cli v2-envelope stake|delegate|
   # undelegate, 0.1.29)
   $root/nodus/src/client/nodus_v2_stake.c
+  # the HF-6 node-consent codec (dna_valbind_consent_msg / _verify, ctx
+  # "nodus.valbind.v1") the consent checks and the generation-4 builds use
+  # (nodus-send-wasm.c "HF-6: NODE CONSENT"); also in the native vector
+  $root/shared/dnac/valbind_wire.c
   # the shared chain-name registration builder (nodus-cli name register,
   # HF-4). NOT in the native vector (build-nodus-send-native-vector.sh):
   # its section of nodus-send-wasm.c is networked-build only.
@@ -321,6 +331,16 @@ exports_common=(
   nsw_val_delegators nsw_const_max_delegators
   nsw_delegations nsw_del_count nsw_del_fp nsw_del_amount nsw_del_block
   nsw_stake_build
+  # HF-6 (design docs/plans/2026-10-12-connect-hf6-screens-design.md): the
+  # consent check (synchronous, pure — never reaches emscripten_sleep), the
+  # generation-4 builds (nsw_hf6_build waits on the network, ccall
+  # { async: true }; nsw_hf6_offline_build does not), what the build read
+  # back, and the constants the screens show
+  nsw_hf6_consent_check nsw_hf6_build nsw_hf6_offline_build
+  nsw_built_gen4 nsw_built_node_fp nsw_built_validator_id
+  nsw_built_consent_expiry
+  nsw_const_hf6_stake_min nsw_const_hf6_storage_bond nsw_const_consent_window
+  nsw_hf6_generation
   # HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6,
   # §2 "Clients"): the rule-set generation the node runs, chain names and a
   # name owner's signed profile address. nsw_ruleset_info, nsw_name_lookup,
@@ -427,6 +447,9 @@ exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_t
   nsw_test_evm_call_hex nsw_test_evm_call_roundtrip nsw_test_evmfund_roundtrip
   nsw_test_evm_op_weight nsw_test_evm_build nsw_test_evm_create_address
   nsw_test_evm_args_hex
+  # HF-6: the consent message's SHA3-512, pinned against the oracle
+  # (shared/dnac/tests/valbind_oracle_out.txt). Synchronous, no network.
+  nsw_test_valbind_msg_sha3
   # P1 rules' vector entry (connect/nc_wasm.c, compiled only with
   # NODUS_SEND_TEST_FIXED_RANDOM; test/connect-rules-vectors.test.js).
   # Synchronous, no network, no session.

@@ -39,6 +39,21 @@ const ADDR_HISTORY_MAX_LIMIT = 100;          // nodus/include/nodus/nodus.h NODU
 // The staking ops and their SYSTEM runtime_op (nodus_witness_runtime.h
 // DNA_SYSRULE_STAKE / _DELEGATE / _UNDELEGATE).
 const STAKE_OPS = Object.freeze({ stake: 1, delegate: 2, undelegate: 4 });
+// HF-6 (design docs/plans/2026-10-12-connect-hf6-screens-design.md): the
+// generation-4 envelope ops and their SYSTEM runtime_op (nodus_v2_stake.h
+// NODUS_V2_STAKE_OP_STAKE / _ROTATE / _STORAGE_REGISTER / _STORAGE_EXIT),
+// and the node-consent op each screen expects (valbind_wire.h
+// DNA_VALBIND_OP_*; STORAGE_EXIT carries no consent).
+const HF6_OPS = Object.freeze({ stake: 1, rotate: 10, storageRegister: 7, storageExit: 8 });
+const HF6_CONSENT_OPS = Object.freeze({ stake: 1, rotate: 2, storageRegister: 3 });
+// The pasted consent: line ends made '\n', surrounding blank space dropped,
+// one final '\n' (nodus_v2_stake.h's container ends every line with '\n';
+// a pasted text often lacks the last one). Nothing else is changed: the
+// module parses the result strictly and verifies the node's signature.
+const consentText = text => {
+  if (typeof text !== 'string') throw new Error('Paste the consent the node printed.');
+  return `${text.replace(/\r\n?/g, '\n').trim()}\n`;
+};
 // Shared vaults (nodus-send-wasm.c "VAULTS"): at most 7 members
 // (shared/dnac/msig_wire.h DNA_MSIG_MAX_N), a vault code is 18 + N × 2592
 // bytes, 64 coins of the node's member query (NSW_MS_MAX_COINS), 15 approvals
@@ -706,6 +721,87 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
           op: opName, validator: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
           commissionBps: op === 'stake' ? str('nsw_built_commission') : '0', fee: str('nsw_built_fee'),
           change: str('nsw_built_change'), expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
+        }
+      };
+    },
+    // HF-6 — become a witness, become a storage node, change a witness's
+    // node key, leave storage (nodus-send-wasm.c "HF-6: NODE CONSENT";
+    // design docs/plans/2026-10-12-connect-hf6-screens-design.md). The
+    // values the screens show, read from the module, never restated:
+    // stakeMin (the witness bond floor) and storageBond (the exact storage
+    // bond) — raw decimal, the compiled defaults until HF-6 slice 8 makes
+    // them chain parameters; consentWindow — the most blocks ahead a
+    // consent may expire (720, fixed by the chain); generation — the
+    // rule-set generation that carries these calls: compare it with
+    // rulesetInfo().generation; below it the module builds nothing.
+    hf6Rules: Object.freeze({
+      stakeMin: str('nsw_const_hf6_stake_min'), storageBond: str('nsw_const_hf6_storage_bond'),
+      consentWindow: str('nsw_const_consent_window'), generation: num('nsw_hf6_generation')
+    }),
+    // consentCheck({ op: 'stake' | 'rotate' | 'storageRegister', text,
+    // validatorId (128 hex, rotate only), tip, window? }) -> { ok, checks:
+    // [{ id: 'format' | 'op' | 'chain' | 'owner' | 'subject' | 'expiry' |
+    // 'signature', ok, detail }], nodeFp (SHA3-512 of the node key, '' if
+    // the text did not parse), expiry ('' likewise) }. Synchronous and pure
+    // in the module (no network, no secret; safe while another operation
+    // waits): the chain is this build's pinned chain, the owner this
+    // wallet's own fingerprint (identify/unlock first), `tip` the block
+    // height the caller last read (decimal) and `window` (decimal, default
+    // consentWindow) can only narrow the chain's 720-block rule. `ok` is
+    // true only when every check passed. Does NOT check that a rotate's key
+    // differs from the witness's current one, or that a stake's key is not
+    // already a witness's (design §2 item 7) — the module has no
+    // generation-4 witness list yet; the chain refuses both.
+    consentCheck({ op, text, validatorId = '', tip, window } = {}) {
+      const code = typeof op === 'string' && Object.hasOwn(HF6_CONSENT_OPS, op) ? HF6_CONSENT_OPS[op] : 0;
+      if (!code) throw new Error('Unknown consent action.');
+      if (op === 'rotate' ? typeof validatorId !== 'string' || !HEX128.test(validatorId) || validatorId === '0'.repeat(128) : validatorId !== '') throw new Error('Invalid witness.');
+      const owner = str('nsw_fingerprint');
+      if (!HEX128.test(owner)) throw new Error('The wallet is not unlocked.');
+      raw(tip, 'block height');
+      const w = window === undefined ? str('nsw_const_consent_window') : raw(window, 'validity window');
+      const result = JSON.parse(str('nsw_hf6_consent_check', ['number', 'string', 'string', 'string', 'string', 'string', 'string'],
+        [code, consentText(text), op === 'rotate' ? validatorId : '0'.repeat(128), net.chainId, owner, tip, w]));
+      if (result.error) throw new Error(result.error);
+      return { ok: result.ok === true, checks: result.checks, nodeFp: result.node_fp, expiry: result.expiry };
+    },
+    // hf6Build({ op: 'stake' | 'rotate' | 'storageRegister' | 'storageExit',
+    // consent (the pasted text; not for storageExit), validatorId (128 hex,
+    // rotate), nodeFp (128 hex, storageExit), amount (raw: stake >=
+    // stakeMin, storageRegister == storageBond, else '0'), commissionBps
+    // (stake), expiryHeight, coins }) -> { envelope, intentId, wireId,
+    // decoded: { op, owner, nodeFp, validatorId, bond, commissionBps,
+    // consentExpiry, fee, change, expiryHeight, chainId, inputs } }.
+    // The module re-checks the consent (every consentCheck line, with this
+    // wallet's own fingerprint, the pinned chain and the coin listing's
+    // tip) and builds only for a generation >= hf6Rules.generation the node
+    // runs; `decoded` is read back from the signed bytes by the C side —
+    // show THAT to the user (bond, fee, node key fingerprint). Submitted
+    // with submit().
+    async hf6Build({ op, consent = '', validatorId = '', nodeFp = '', amount = '0', commissionBps = '0', expiryHeight, coins } = {}) {
+      const code = typeof op === 'string' && Object.hasOwn(HF6_OPS, op) ? HF6_OPS[op] : 0;
+      if (!code) throw new Error('Unknown witness or storage action.');
+      if (op === 'rotate' ? typeof validatorId !== 'string' || !HEX128.test(validatorId) : validatorId !== '') throw new Error('Invalid witness.');
+      if (op === 'storageExit' ? typeof nodeFp !== 'string' || !HEX128.test(nodeFp) : nodeFp !== '') throw new Error('Invalid storage node.');
+      if (op === 'storageExit' && consent !== '') throw new Error('Leaving storage takes no consent.');
+      const text = op === 'storageExit' ? '' : consentText(consent);
+      raw(amount, 'amount'); raw(commissionBps, 'commission'); raw(expiryHeight, 'validity height');
+      loadCoins(coins);
+      check(await call('nsw_hf6_build', ['number', 'string', 'string', 'string', 'string', 'string'],
+        [code, text, op === 'rotate' ? validatorId : nodeFp, amount, commissionBps, expiryHeight]));
+      if (num('nsw_built_gen4') !== 1 || num('nsw_built_op') !== code) throw new Error('The built transaction does not match the request.');
+      const at = num('nsw_built_env'), length = num('nsw_built_env_len');
+      const inputs = [];
+      for (let i = 0, n = num('nsw_built_n_in'); i < n; i++) inputs.push(str('nsw_built_in', ['number'], [i]));
+      return {
+        envelope: M.HEAPU8.slice(at, at + length),
+        intentId: str('nsw_built_intent'),
+        wireId: str('nsw_built_wire'),
+        decoded: {
+          op, owner: str('nsw_built_recipient'), nodeFp: str('nsw_built_node_fp'), validatorId: str('nsw_built_validator_id'),
+          bond: str('nsw_built_amount'), commissionBps: op === 'stake' ? str('nsw_built_commission') : '0',
+          consentExpiry: str('nsw_built_consent_expiry'), fee: str('nsw_built_fee'), change: str('nsw_built_change'),
+          expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
         }
       };
     },
