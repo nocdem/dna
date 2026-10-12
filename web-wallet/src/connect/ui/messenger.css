@@ -225,6 +225,8 @@
 .transfer-state::before { margin-right: 4px; }
 .transfer-confirmed .transfer-state::before { content: '✓'; font-weight: 700; }
 .transfer-pending .transfer-state { opacity: .8; }
+/* "Check now" on a card not settled yet (web 0.1.94). */
+.transfer-check { align-self: flex-start; margin: 6px 0 0; }
 .transfer-pending .transfer-state::before { content: '○'; }
 .transfer-mismatch { padding: 6px 8px; border: 1px solid #f2c896; border-radius: 10px; }
 .transfer-mismatch .transfer-state { color: #f2c896; font-weight: 600; }

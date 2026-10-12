@@ -263,6 +263,16 @@ try {
   const card = JSON.parse((await page.evaluate(() => window.__published.flat())).find(m => m.text.includes('"type":"token_transfer"')).text);
   assert.deepEqual({ ...card, recipientName: undefined }, { type: 'token_transfer', amount: '1.25', token: 'NODUS', network: 'Nodus', chain: 'nodus', txHash: WIRE_NEW, recipientAddress: '2b'.repeat(64), recipientName: undefined });
   await page.waitForFunction(() => [...document.querySelectorAll('.message-out .transfer-state')].some(n => n.textContent === 'Waiting for the chain'));
+  // 0.1.94: a card not settled yet offers "Check now"; once this device's
+  // history holds the payment, pressing it settles the card at once, and a
+  // settled card offers nothing more to check.
+  const waitingCard = page.locator('.message-out .transfer-card', { hasText: 'Waiting for the chain' });
+  assert.equal(await waitingCard.locator('.transfer-check').count(), 1);
+  await page.evaluate(w => window.__history.unshift({ h: 950n, i: 0n, q: 0n, kind: 'spend_out', amount: 125000000n, token: '0'.repeat(128), fee: 0n, peer: '2b'.repeat(64), wire: w, ts: 2n }), WIRE_NEW);
+  await waitingCard.locator('.transfer-check').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.message-out .transfer-state')].some(n => n.textContent === 'Sent · block 950'));
+  assert.equal(await page.locator('.message-out .transfer-card', { hasText: 'Sent · block 950' }).locator('.transfer-check').count(), 0);
+  assert.equal(await page.locator('.message-menu-layer').evaluate(n => n.hidden), true, '"Check now" does not open the message menu');
   await page.evaluate(w => window.__walletExtension.nodusSent({ to: '2b'.repeat(64), amount: '1.25', wire: w }), 'e4'.repeat(64));
   await page.waitForTimeout(300);
   // Sets are republished whole: count the distinct cards, not the sends.

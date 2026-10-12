@@ -121,6 +121,20 @@ let payFor, transferCheckAt = 0, transferChecking = false;
 // else's real payment must not inherit that payment's verdict.
 const transferVerdicts = new Map();
 const cardKey = m => `${m.fp}|${m.seq}`;
+// A card's verdict once it is final on the chain's evidence — "Sent /
+// Received · block H", "does not match", "a copy" — is kept on its stored
+// record (`verdict`) and never read again (0.1.94, operator 2026-10-12:
+// "bir kere valide edildiyse o şekilde kalması önemli … denied ise denied
+// olarak … kalmalı"). "Waiting" and "could not be found" are not kept: they
+// are checked again, and at once when the card's "Check now" is pressed.
+const TRANSFER_KEPT = ['confirmed', 'mismatch', 'duplicate'];
+function keptVerdict(m) {
+  const v = m.verdict;
+  if (!v || typeof v !== 'object' || !TRANSFER_KEPT.includes(v.state)) return undefined;
+  if (v.state === 'confirmed') return /^(0|[1-9]\d{0,19})$/.test(String(v.height)) ? { state: 'confirmed', height: String(v.height) } : undefined;
+  return { state: v.state };
+}
+const cardVerdict = m => transferVerdicts.get(cardKey(m)) || keptVerdict(m);
 const PAY_WINDOW_MS = 10 * 60 * 1000;    // a send counts for the chat it was started from this long
 const TRANSFER_CHECK_MS = 60 * 1000;     // history is read for pending cards at most this often
 const TRANSFER_HISTORY_PAGES = 3;        // pages of 100 rows read per check
@@ -1832,13 +1846,13 @@ function wireMenu(row, bubble, m) {
   // A link inside the bubble keeps its own Enter and context menu (0.1.90).
   bubble.addEventListener('contextmenu', event => { if (event.target.closest('a')) return; event.preventDefault(); openMenu(m, bubble); });
   bubble.addEventListener('keydown', event => {
-    if (event.target.closest('a')) return;
+    if (event.target.closest('a, button')) return;   // a link or the card's "Check now" keeps its own keys
     if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey) || event.key === 'Enter') { event.preventDefault(); openMenu(m, bubble); }
   });
   let timer, x0 = 0, y0 = 0;
   const cancel = () => { clearTimeout(timer); timer = undefined; };
   bubble.addEventListener('pointerdown', event => {
-    if (event.pointerType !== 'touch' || event.target.closest('a')) return;
+    if (event.pointerType !== 'touch' || event.target.closest('a, button')) return;
     x0 = event.clientX; y0 = event.clientY;
     cancel();
     timer = setTimeout(() => { timer = undefined; openMenu(m, bubble); }, LONG_PRESS_MS);
@@ -1970,7 +1984,7 @@ const TRANSFER_TEXT = {
 function transferVerdictOf(m) {
   const card = parseTransfer(m.text);
   if (!card || card.chain !== 'nodus') return { card, verdict: { state: 'unverifiable', chain: card?.chain || '' } };
-  return { card, verdict: transferVerdicts.get(cardKey(m)) || { state: 'pending' } };
+  return { card, verdict: cardVerdict(m) || { state: 'pending' } };
 }
 function transferCard(m) {
   const { card, verdict } = transferVerdictOf(m);
@@ -1983,6 +1997,13 @@ function transferCard(m) {
     amount ? el('span', { className: 'transfer-amount', text: amount }) : null,
     el('span', { className: 'transfer-state', text: TRANSFER_TEXT[verdict.state](m, verdict) }));
   if (verdict.state !== 'confirmed') node.setAttribute('title', 'The card was written by the sender. Only "Received · block …" means it reached your address.');
+  // Not settled yet: checked against this device's history at once.
+  if (nodus && (verdict.state === 'pending' || verdict.state === 'unchecked') && validNodusCard(card)) {
+    node.append(button('Check now', () => {
+      if (transferVerdicts.get(cardKey(m))?.state === 'unchecked') transferVerdicts.delete(cardKey(m));
+      void checkTransfers(generation, { force: true });
+    }, 'secondary small transfer-check'));
+  }
   return node;
 }
 
@@ -1993,7 +2014,7 @@ async function checkTransfers(gen, { force = false } = {}) {
   if (transferChecking || !isOpen() || !nodusClient?.historyReadable) return;
   const open = messages.filter(m => m.kind === 'transfer' && (m.dir === 'in' || m.dir === 'out'))
     .map(m => ({ m, card: parseTransfer(m.text) }))
-    .filter(({ m, card }) => validNodusCard(card) && !TRANSFER_FINAL.includes(transferVerdicts.get(cardKey(m))?.state))
+    .filter(({ m, card }) => validNodusCard(card) && !TRANSFER_FINAL.includes(cardVerdict(m)?.state))
     .sort((a, b) => compareLocal(a.m, b.m));      // earlier cards settle first (copies, below)
   if (!open.length || (!force && Date.now() < transferCheckAt)) return;
   transferChecking = true; transferCheckAt = Date.now() + TRANSFER_CHECK_MS;
@@ -2020,6 +2041,7 @@ async function checkTransfers(gen, { force = false } = {}) {
     // A wire whose rows may continue past what was read cannot be judged.
     const cut = more && entries.length ? entries[entries.length - 1].wire : null;
     let moved = false;
+    const settled = [], waiting = [];
     for (const { m, card } of open) {
       let v;
       if (card.wire === cut) v = { state: 'unchecked' };
@@ -2033,11 +2055,17 @@ async function checkTransfers(gen, { force = false } = {}) {
       // payment.
       if (v.state === 'confirmed') {
         const earlier = messages.some(x => x !== m && x.kind === 'transfer' && x.dir === m.dir && compareLocal(x, m) < 0 &&
-          parseTransfer(x.text)?.wire === card.wire && transferVerdicts.get(cardKey(x))?.state === 'confirmed');
+          parseTransfer(x.text)?.wire === card.wire && cardVerdict(x)?.state === 'confirmed');
         if (earlier) v = { state: 'duplicate' };
       }
       if (v.state !== transferVerdicts.get(cardKey(m))?.state) { transferVerdicts.set(cardKey(m), v); moved = true; }
+      if (TRANSFER_KEPT.includes(v.state)) settled.push({ ...m, verdict: v.state === 'confirmed' ? { state: v.state, height: v.height } : { state: v.state } });
+      else if (v.state === 'pending') waiting.push(card.wire.slice(0, 8));
     }
+    // What this check read, for the session log (a card that stays
+    // "waiting" can be traced: was its wire among the rows read?).
+    logCheck(`Payment cards: ${open.length} checked against ${entries.length} history rows${enabled ? '' : ' (the node keeps no history index)'}${more ? ', more rows not read' : ''}; settled ${settled.length}${waiting.length ? `; not found yet: ${waiting.join(', ')}` : ''}`);
+    if (settled.length && gen === generation) await saveUpdated(settled);
     if (moved && gen === generation) render();
   } catch (error) {
     logCheck(`Payment cards: the account history could not be read (${errorText(error)})`, true);
