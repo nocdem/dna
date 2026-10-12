@@ -3509,11 +3509,16 @@ static const char *cli_validator_status_name(uint8_t st) {
 #define CLI_VLIST_PAGE       DNAC_MAX_VALIDATORS
 #define CLI_VLIST_MAX_PAGES  64
 
-/* `v2-envelope unstake`: find `pk`'s row in the node's validator list
- * (dnac_validator_list_query, every status, paged by offset).
+/* `v2-envelope unstake | validator-update`: find a row in the node's
+ * validator list (dnac_validator_list_query, every status, paged by
+ * offset) — by `pk` (below generation 4: the validator key) or, when `vid`
+ * is given (HF-6 slice 7b, generation 4), by the entry's validator_id
+ * (only an entry that carries one, has_v2 — nodus_types.h; at generation 4
+ * `pubkey` is the consensus key, not an identity).
  * @return 1 found (*row filled) / 0 the listing ended without it /
  *         -1 the query failed or the walk did not end. */
 static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
+                             const uint8_t *vid,
                              nodus_dnac_validator_list_entry_t *row) {
     int offset = 0;
     for (int page = 0; page < CLI_VLIST_MAX_PAGES; page++) {
@@ -3524,7 +3529,11 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
             return -1;
         int found = 0;
         for (int i = 0; i < res.count && res.entries; i++) {
-            if (memcmp(res.entries[i].pubkey, pk, DNAC_PUBKEY_SIZE) == 0) {
+            const int hit = vid
+                ? (res.entries[i].has_v2 &&
+                   memcmp(res.entries[i].validator_id, vid, 64) == 0)
+                : memcmp(res.entries[i].pubkey, pk, DNAC_PUBKEY_SIZE) == 0;
+            if (hit) {
                 *row = res.entries[i];
                 found = 1;
                 break;
@@ -3632,9 +3641,26 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  * dna_valbind_expiry_ok(tip + 1, expiry). Only a kind-1 owner is built: a
  * multisig (kind-3) owner's two-leg envelope needs the msig export path,
  * which today carries single-leg CORE SPENDs only (nodus_v2_msig_leg_open).
- * Under generation 4 `stake`, `delegate`, `undelegate` and `unstake` are
- * refused here — their generation-4 layouts (§2: 7301 / 136 / 136 / 64
- * bytes) are not the legacy ones they build.
+ * Under generation 4 the legacy `stake` is refused (its generation-4 form
+ * is `stake2`).
+ *
+ * HF-6 slice 7b (design rev 6 §1.3, §2 — K7): under generation 4
+ * `delegate`, `undelegate`, `unstake` and the new `validator-update` name
+ * the validator by its validator_id (`--validator <validator_id hex128>`,
+ * the id `stake2` printed; the node's validator list carries it since
+ * slice 7a) and the shared builder lays
+ * out the generation-4 calls (136 / 136 / 64 / 66 bytes): DELEGATE and
+ * UNDELEGATE carry delegator_fp = SHA3-512 of the --keys identity (the
+ * delegator signs, kind 1); UNSTAKE and VALIDATOR_UPDATE are signed by the
+ * validator's OWNER (the chain compares the signer with the row's
+ * owner_fp). Below generation 4 `delegate` / `undelegate` keep the
+ * pubkey form (`--validator <hex5184 pubkey>`), `unstake` takes no
+ * --validator, and `validator-update` does not exist (this CLI never built
+ * the legacy op-5 layout). The wrong form for the node's generation is
+ * refused, naming the generation and the form it takes. `unstake` and
+ * `validator-update` at generation 4 read the validator's row by
+ * validator_id and refuse a status the chain refuses, or an owner that is
+ * not the --keys identity (a multisig owner is not built here).
  *
  * HF-6 6b-3 (design rev 6 §11.3-§11.5, §11.10; Kurultay #16 khan 1 and 3):
  * `storage register` and `storage exit` are this same flow (main's
@@ -3761,11 +3787,12 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     uint32_t commission = 0;
     int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
     /* "stake", "delegate", "unstake", "undelegate", and (HF-6 6f-1) the
-     * generation-4 "stake2" and "rotate" — the word after "v2-envelope";
-     * (HF-6 6b-3) "register" and "exit" — the word after "storage" (main's
-     * dispatch routes only those eight here). DELEGATE and UNDELEGATE share
-     * the call layout and so the arguments; UNSTAKE takes none beyond the
-     * key (its call is the key itself). */
+     * generation-4 "stake2" and "rotate", (HF-6 slice 7b) "validator-update"
+     * — the word after "v2-envelope"; (HF-6 6b-3) "register" and "exit" —
+     * the word after "storage" (main's dispatch routes only those nine
+     * here). DELEGATE and UNDELEGATE share the call layout and so the
+     * arguments; below generation 4 UNSTAKE takes none beyond the key (its
+     * call is the key itself), at generation 4 --validator. */
     const int is_storage = !strcmp(argv[cmd_start], "storage");
     const int is_streg  = is_storage &&
                           !strcmp(argv[cmd_start + 1], "register");
@@ -3776,7 +3803,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                          !strcmp(argv[cmd_start + 1], "delegate");
     const int is_stake2 = !strcmp(argv[cmd_start + 1], "stake2");
     const int is_rotate = !strcmp(argv[cmd_start + 1], "rotate");
-    const int is_gen4 = is_stake2 || is_rotate || is_storage;
+    /* HF-6 slice 7b: VALIDATOR_UPDATE (op 5), generation 4 only here */
+    const int is_vupd = !strcmp(argv[cmd_start + 1], "validator-update");
+    const int is_gen4 = is_stake2 || is_rotate || is_storage || is_vupd;
     /* the owner-signed calls that carry a node consent (design §2, §11.3) */
     const int is_consented = is_stake2 || is_rotate || is_streg;
     const int is_stake = !is_deleg && !is_unstake && !is_gen4;
@@ -3787,13 +3816,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                      : is_undeleg ? "undelegate"
                      : is_deleg   ? "delegate"
                      : is_stake2  ? "stake2"
-                     : is_rotate  ? "rotate" : "stake";
+                     : is_rotate  ? "rotate"
+                     : is_vupd    ? "validator-update" : "stake";
     const nodus_v2_stake_op_t op = is_streg ? NODUS_V2_STAKE_OP_STORAGE_REGISTER
                                  : is_stexit  ? NODUS_V2_STAKE_OP_STORAGE_EXIT
                                  : is_unstake ? NODUS_V2_STAKE_OP_UNSTAKE
                                  : is_undeleg ? NODUS_V2_STAKE_OP_UNDELEGATE
                                  : is_deleg   ? NODUS_V2_STAKE_OP_DELEGATE
                                  : is_rotate  ? NODUS_V2_STAKE_OP_ROTATE
+                                 : is_vupd    ? NODUS_V2_STAKE_OP_VALIDATOR_UPDATE
                                               : NODUS_V2_STAKE_OP_STAKE;
 
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the verb word */
@@ -3804,14 +3835,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
         } else if (is_deleg && !strcmp(a, "--amount") && i + 1 < argc) {
             bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
-        } else if ((is_stake || is_stake2) &&
+        } else if ((is_stake || is_stake2 || is_vupd) &&
                    !strcmp(a, "--commission") && i + 1 < argc) {
             commission = (uint32_t)strtoul(argv[++i], NULL, 10); have_comm = 1;
         } else if (is_stake && !strcmp(a, "--dest-fp") && i + 1 < argc)
             dest_fp_hex = argv[++i];
-        else if ((is_deleg || is_rotate) &&
+        else if ((is_deleg || is_rotate || is_unstake || is_vupd) &&
                  !strcmp(a, "--validator") && i + 1 < argc)
-            validator_hex = argv[++i];
+            validator_hex = argv[++i];   /* unstake: generation 4 only —
+                                          * judged once it is known     */
         else if (is_consented && !strcmp(a, "--consent") && i + 1 < argc)
             consent_path = argv[++i];
         else if (is_stexit && !strcmp(a, "--node-fp") && i + 1 < argc)
@@ -3827,10 +3859,12 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         return 1;
     }
     if (bad_arg || !keys_csv ||
-        (!is_unstake && !is_rotate && !is_storage && !have_bond) ||
+        (!is_unstake && !is_rotate && !is_storage && !is_vupd &&
+         !have_bond) ||
         (!submit && !dry_run) ||
         (is_stake && (!dest_fp_hex || !have_comm)) ||
-        ((is_deleg || is_rotate) && !validator_hex) ||
+        ((is_deleg || is_rotate || is_vupd) && !validator_hex) ||
+        (is_vupd && !have_comm) ||
         (is_consented && !consent_path)) {
         fprintf(stderr,
             "Usage: v2-envelope stake --keys <keydir> --bond <raw> "
@@ -3843,13 +3877,27 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "<validator_id hex128>\n"
             "       --consent <file> (--dry-run | --submit ip:port)\n"
             "       v2-envelope delegate --keys <keydir> --validator "
-            "<hex5184 pubkey> --amount <raw>\n"
-            "       (--dry-run | --submit ip:port)\n"
+            "<validator_id hex128 | hex5184 pubkey>\n"
+            "       --amount <raw> (--dry-run | --submit ip:port)\n"
             "       v2-envelope undelegate --keys <keydir> --validator "
-            "<hex5184 pubkey> --amount <raw>\n"
+            "<validator_id hex128 | hex5184 pubkey>\n"
+            "       --amount <raw> (--dry-run | --submit ip:port)\n"
+            "       v2-envelope unstake --keys <keydir> [--validator "
+            "<validator_id hex128>]\n"
             "       (--dry-run | --submit ip:port)\n"
-            "       v2-envelope unstake --keys <keydir> "
-            "(--dry-run | --submit ip:port)\n"
+            "       v2-envelope validator-update --keys <owner keydir> "
+            "--validator <validator_id hex128>\n"
+            "       --commission <bps> (--dry-run | --submit ip:port)\n"
+            "  --validator by rule-set generation (the node names it): "
+            "generation 4 (HF-6)\n"
+            "  takes the validator_id (128 hex) for delegate / undelegate / "
+            "unstake /\n"
+            "  validator-update, and unstake needs it; below generation 4 "
+            "delegate /\n"
+            "  undelegate take the validator's public key (5184 hex), unstake "
+            "takes no\n"
+            "  --validator (the --keys identity retires), and "
+            "validator-update does not exist.\n"
             "  Everything (chain id, coins, tip, gas price) is read from "
             "the node over ONE\n"
             "  session: --submit, or the outer -s server for --dry-run. No "
@@ -3866,19 +3914,21 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "A delegation to\n"
             "  another validator is funded by at most 14 coins (the chain "
             "reads the name too).\n"
-            "  unstake: the --keys identity retires as a validator; its "
-            "delegations are\n"
-            "  returned to their delegators when it graduates (locked %d "
-            "epochs), its bond\n"
-            "  to its recorded unstake destination (locked %d epochs).\n"
+            "  unstake: the validator retires; its delegations are returned "
+            "to their\n"
+            "  delegators when it graduates (locked %d epochs), its bond "
+            "(locked %d epochs)\n"
+            "  to its recorded unstake destination — at generation 4 to its "
+            "owner.\n"
             "  stake2 / rotate (rule-set generation 4, HF-6): the --keys "
             "identity is the OWNER\n"
             "  (it signs and pays); the node's consent comes from "
             "`validator consent`\n"
-            "  run with the node's identity. stake / delegate / undelegate / "
-            "unstake are\n"
-            "  refused under generation 4 (their generation-4 layouts are not "
-            "built yet).\n",
+            "  run with the node's identity. At generation 4 unstake and "
+            "validator-update\n"
+            "  are signed by the OWNER, delegate / undelegate by the "
+            "delegator; the legacy\n"
+            "  stake is refused there (use stake2).\n",
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS,
             (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
         return 1;
@@ -3930,14 +3980,38 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                 "%llu — the chain refuses a bond below the STAKE_MIN in "
                 "force\n", (unsigned long long)bond,
                 (unsigned long long)DNAC_HF6_STAKE_MIN_DEFAULT);
+    /* HF-6 slice 7b: --validator's FORM, read before any I/O — a
+     * validator_id (128 hex, generation 4) or, for delegate / undelegate,
+     * the validator's public key (5184 hex, below generation 4). Which form
+     * the node's generation takes is judged once cli_select_runtimes has
+     * named it (below). */
     uint8_t validator_pk[DNAC_PUBKEY_SIZE] = {0};
-    if (is_deleg) {
-        if (t6_hex_exact(validator_hex, validator_pk, DNAC_PUBKEY_SIZE) != 0) {
-            fprintf(stderr, "--validator must be exactly %d lowercase hex "
-                    "chars (the validator's public key)\n",
-                    2 * DNAC_PUBKEY_SIZE);
+    uint8_t role_vid[64] = {0};
+    int vid_form = 0;                     /* 1 = --validator is a validator_id */
+    if ((is_deleg || is_unstake || is_vupd) && validator_hex) {
+        if (strlen(validator_hex) == 128) {
+            if (t6_hex_exact(validator_hex, role_vid, 64) != 0) {
+                fprintf(stderr, "--validator: a validator_id is exactly 128 "
+                        "lowercase hex chars\n");
+                return 1;
+            }
+            vid_form = 1;
+        } else if (!is_deleg ||
+                   t6_hex_exact(validator_hex, validator_pk,
+                                DNAC_PUBKEY_SIZE) != 0) {
+            fprintf(stderr, "--validator must be exactly 128 lowercase hex "
+                    "chars (the validator_id, rule-set generation 4)%s\n",
+                    is_deleg ? " or exactly 5184 (the validator's public "
+                               "key, below generation 4)" : "");
             return 1;
         }
+    }
+    if (is_vupd && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr, "--commission must be 0..%u\n",
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return 1;
+    }
+    if (is_deleg) {
         /* the chain's scalar rule (rtn_delegate_exec) */
         if (bond < 1 || bond > DNAC_DEFAULT_TOTAL_SUPPLY) {
             fprintf(stderr, "--amount must be 1..%llu raw\n",
@@ -4072,24 +4146,59 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     if (is_storage &&
         cli_storage_row_check(&client, is_stexit, st_node_fp, staker_raw) != 0)
         goto done;
-    if (!is_gen4 && g_cli_sel_gen >= NODUS_RT_GEN_STORAGE) {
+    if (is_stake && g_cli_sel_gen >= NODUS_RT_GEN_STORAGE) {
         fprintf(stderr, "the node runs rule-set generation %u (HF-6): the "
-                "chain refuses the legacy `%s` layout; %s — nothing built\n",
-                (unsigned)g_cli_sel_gen, verb,
-                is_stake ? "use `v2-envelope stake2`"
-                         : "this CLI does not build its generation-4 layout "
-                           "yet");
+                "chain refuses the legacy `%s` layout; use `v2-envelope "
+                "stake2` — nothing built\n", (unsigned)g_cli_sel_gen, verb);
+        goto done;
+    }
+    /* HF-6 slice 7b: the --validator form the generation takes (design
+     * rev 6 §2 — K7: from generation 4 every identity of ops 2-5 is a
+     * 64-byte value) */
+    const int role2 = (is_deleg || is_unstake || is_vupd) &&
+                      g_cli_sel_gen >= NODUS_RT_GEN_STORAGE;
+    if (role2 && !vid_form) {
+        fprintf(stderr, "the node runs rule-set generation %u (HF-6): `%s` "
+                "names the validator by its validator_id — give --validator "
+                "<validator_id hex128> (`v2-envelope stake2` printed it)%s; "
+                "nothing "
+                "built\n", (unsigned)g_cli_sel_gen, verb,
+                is_deleg ? ", not the validator's public key" : "");
+        goto done;
+    }
+    if (role2) {
+        static const uint8_t zero_vid[64] = {0};
+        if (memcmp(role_vid, zero_vid, 64) == 0) {
+            fprintf(stderr, "--validator: no validator has an all-zero "
+                    "validator_id; nothing built\n");
+            goto done;
+        }
+    }
+    if ((is_deleg || is_unstake) && !role2 && validator_hex &&
+        (vid_form || is_unstake)) {
+        fprintf(stderr, "the node runs rule-set generation %u: %s — "
+                "nothing built\n", (unsigned)g_cli_sel_gen,
+                is_unstake ? "`unstake` takes no --validator below "
+                             "generation 4 (the --keys identity retires)"
+                           : "--validator is the validator's public key "
+                             "(5184 hex) below generation 4, not a "
+                             "validator_id");
         goto done;
     }
 
     /* `unstake`: the validator's own row, read on this session. The chain
      * decides (rtn_unstake_exec); the CLI refuses only a status the chain
      * would reject, and never on account of delegations — a validator
-     * with delegators may exit (tokenomics-v3 P3-4, Rule A removed). */
+     * with delegators may exit (tokenomics-v3 P3-4, Rule A removed).
+     * HF-6 slice 7b, generation 4: the row is found by validator_id, and
+     * an owner other than the --keys identity is refused too
+     * (rtn_unstake2_exec compares the signer with the row's owner_fp; a
+     * multisig owner is not built here). */
     if (is_unstake) {
         nodus_dnac_validator_list_entry_t vrow;
         memset(&vrow, 0, sizeof(vrow));
-        const int vr = cli_validator_row(&client, keys[0].pk.bytes, &vrow);
+        const int vr = cli_validator_row(&client, keys[0].pk.bytes,
+                                         role2 ? role_vid : NULL, &vrow);
         if (vr == 1 && vrow.status != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
             vrow.status != (uint8_t)DNAC_VALIDATOR_ELIGIBLE) {
             fprintf(stderr, "this validator is %s — the chain accepts an "
@@ -4098,14 +4207,23 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                     cli_validator_status_name(vrow.status));
             goto done;
         }
+        if (vr == 1 && role2 && memcmp(vrow.owner_fp, staker_raw, 64) != 0) {
+            fprintf(stderr, "the --keys identity is not this validator's "
+                    "owner — the chain accepts an unstake only from the "
+                    "owner; nothing built\n");
+            goto done;
+        }
         if (vr == 1)
             printf("validator %s, bond %llu raw\n",
                    cli_validator_status_name(vrow.status),
                    (unsigned long long)vrow.self_stake);
         else if (vr == 0)
-            fprintf(stderr, "warning: this key has no row in the node's "
-                    "validator list — the chain rejects an unstake from a "
-                    "key that is not a validator\n");
+            fprintf(stderr, "warning: %s — the chain rejects an unstake of "
+                    "a validator that does not exist\n",
+                    role2 ? "no validator with this validator_id in the "
+                            "node's validator list"
+                          : "this key has no row in the node's validator "
+                            "list");
         else
             fprintf(stderr, "warning: the node's validator list could not "
                     "be read — status and delegations not checked here; "
@@ -4122,13 +4240,62 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             printf("  - delegations: any delegation to this validator is "
                    "returned to its delegator when it graduates, locked %d "
                    "epochs\n", (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
-        printf("  - bond: returned to the unstake destination recorded "
-               "when it staked, locked %d epochs after it graduates\n",
-               (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
+        if (role2)                      /* v2ep_graduate, generation 4 */
+            printf("  - bond: returned to the validator's owner, locked %d "
+                   "epochs after it graduates\n",
+                   (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
+        else
+            printf("  - bond: returned to the unstake destination recorded "
+                   "when it staked, locked %d epochs after it graduates\n",
+                   (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
         printf("  - keep this node running until the exit takes effect: it "
                "stays in the validator set until the set change after it "
                "leaves, and graduates at the first epoch boundary whose "
                "new validator set no longer includes it\n");
+        fflush(stdout);
+    }
+
+    /* HF-6 slice 7b — `validator-update` (generation 4 only): the row by
+     * validator_id; the CLI refuses what rtn_vupd2_exec refuses on the
+     * row — a frozen status (UNSTAKED / AUTO_RETIRED) or an owner other
+     * than the --keys identity — and says how the commission moves. */
+    if (is_vupd) {
+        nodus_dnac_validator_list_entry_t vrow;
+        memset(&vrow, 0, sizeof(vrow));
+        const int vr = cli_validator_row(&client, NULL, role_vid, &vrow);
+        if (vr == 1 && vrow.status != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+            vrow.status != (uint8_t)DNAC_VALIDATOR_ELIGIBLE &&
+            vrow.status != (uint8_t)DNAC_VALIDATOR_RETIRING) {
+            fprintf(stderr, "this validator is %s — its commission is frozen "
+                    "(the chain accepts an update only from an ACTIVE, "
+                    "ELIGIBLE or RETIRING validator); nothing built\n",
+                    cli_validator_status_name(vrow.status));
+            goto done;
+        }
+        if (vr == 1 && memcmp(vrow.owner_fp, staker_raw, 64) != 0) {
+            fprintf(stderr, "the --keys identity is not this validator's "
+                    "owner — the chain accepts a commission update only "
+                    "from the owner; nothing built\n");
+            goto done;
+        }
+        if (vr == 1)
+            printf("validator %s, commission %u bps -> %u bps\n",
+                   cli_validator_status_name(vrow.status),
+                   (unsigned)vrow.commission_bps, (unsigned)commission);
+        else if (vr == 0)
+            fprintf(stderr, "warning: no validator with this validator_id in "
+                    "the node's validator list — the chain rejects the "
+                    "update\n");
+        else
+            fprintf(stderr, "warning: the node's validator list could not "
+                    "be read — status and owner not checked here; the chain "
+                    "decides\n");
+        /* rtn_vupd2_exec: an increase is pending until max(next boundary,
+         * h + 2E) = h + 2E; a decrease is immediate */
+        printf("  - a lower (or equal) commission takes effect at once; a "
+               "higher one is recorded as pending and takes effect %d "
+               "blocks (two epochs) after the update lands — the "
+               "delegators' notice\n", 2 * (int)DNAC_EPOCH_LENGTH);
         fflush(stdout);
     }
 
@@ -4228,7 +4395,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     sreq.amount         = bond;
     sreq.commission_bps = commission;
     sreq.dest_fp        = is_stake ? dest_fp : NULL;
-    sreq.validator_pk   = is_deleg ? validator_pk : NULL;
+    sreq.validator_pk   = (is_deleg && !role2) ? validator_pk : NULL;
+    /* HF-6 slice 7b: the generation-4 ops 2-5 name the validator by id */
+    sreq.validator_id   = role2 ? role_vid : NULL;
     sreq.gas_price      = gas_price;
     sreq.coins          = coins;
     sreq.n_coins        = utxos.count;
@@ -4258,9 +4427,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         memset(&se, 0, sizeof(se));
         int brc = nodus_v2_stake_build(&sreq, &built, &se);
         if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT &&
-            (is_undeleg || is_unstake || is_rotate || is_stexit)) {
-            /* UNDELEGATE's, UNSTAKE's, ROTATE's and STORAGE_EXIT's funding
-             * leg pays the fee only */
+            (is_undeleg || is_unstake || is_rotate || is_stexit || is_vupd)) {
+            /* UNDELEGATE's, UNSTAKE's, ROTATE's, STORAGE_EXIT's and
+             * VALIDATOR_UPDATE's funding leg pays the fee only */
             fprintf(stderr, "insufficient native funding for the fee: have "
                     "%llu, need %llu over %d input(s)\n",
                     (unsigned long long)se.sum_in,
@@ -4349,7 +4518,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                    "release boundary\n");
         }
     }
-    if (is_unstake || is_rotate || is_stexit)
+    if (is_unstake || is_rotate || is_stexit || is_vupd)
         printf("%s %s: %zu bytes, inputs=%d sum_in=%llu "
                "fee=%llu change=%llu tip=%llu\n", cmdw, verb, built.env_len,
                built.n_in, (unsigned long long)built.sum_in,
@@ -4379,6 +4548,11 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         for (int b = 0; b < DNA_VALBIND_ID_LEN; b++) printf("%02x", vid[b]);
         printf("\n  (the id of the validator THIS envelope creates; a dry "
                "run's can differ from the submitted one's)\n");
+    } else if (role2) {
+        /* HF-6 slice 7b: the validator the generation-4 call names */
+        printf("  validator_id=");
+        for (int b = 0; b < 64; b++) printf("%02x", role_vid[b]);
+        printf("\n");
     } else if (is_rotate) {
         printf("  validator_id=");
         for (int b = 0; b < 64; b++) printf("%02x", rot_vid[b]);
@@ -4395,6 +4569,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                is_unstake ? "UNSTAKE" : is_undeleg ? "UNDELEGATE"
              : is_deleg   ? "DELEGATE" : is_rotate ? "ROTATE_CONSENSUS_KEY"
              : is_streg   ? "STORAGE_REGISTER" : is_stexit ? "STORAGE_EXIT"
+             : is_vupd    ? "VALIDATOR_UPDATE"
              : is_stake2  ? "STAKE (generation 4)" : "STAKE");
     } else {
         /* on the session the gas price and the coins were read from */
@@ -9282,16 +9457,19 @@ static void usage(const char *prog) {
     fprintf(stderr, "  v2-envelope stake --keys <dir> --bond <raw = exactly 10M NODUS>\n");
     fprintf(stderr, "           --commission <bps> --dest-fp <hex128>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   O11 two-leg STAKE\n");
-    fprintf(stderr, "  v2-envelope delegate --keys <dir> --validator <hex5184 pubkey>\n");
+    fprintf(stderr, "  v2-envelope delegate --keys <dir> --validator <validator_id hex128 | hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
-    fprintf(stderr, "                                   two-leg DELEGATE (own key = self-delegation)\n");
+    fprintf(stderr, "                                   two-leg DELEGATE (own validator = self-delegation)\n");
     fprintf(stderr, "                                   after HF-8: needs an on-chain name (self exempt)\n");
-    fprintf(stderr, "  v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey>\n");
+    fprintf(stderr, "                                   --validator: validator_id at generation 4 (HF-6), pubkey below\n");
+    fprintf(stderr, "  v2-envelope undelegate --keys <dir> --validator <validator_id hex128 | hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   two-leg UNDELEGATE (returned coin locked %d epochs)\n",
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
-    fprintf(stderr, "  v2-envelope unstake --keys <dir> (--dry-run | --submit ip:port)\n");
-    fprintf(stderr, "                                   two-leg UNSTAKE: the --keys validator retires;\n");
+    fprintf(stderr, "  v2-envelope unstake --keys <dir> [--validator <validator_id hex128>]\n");
+    fprintf(stderr, "           (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   two-leg UNSTAKE: the validator retires (generation 4:\n");
+    fprintf(stderr, "                                   --validator required, --keys = its owner);\n");
     fprintf(stderr, "                                   bond back %d epochs after graduation,\n",
             (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
     fprintf(stderr, "                                   delegations back to delegators, locked %d epochs\n",
@@ -9305,6 +9483,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  v2-envelope rotate --keys <owner dir> --validator <validator_id hex128>\n");
     fprintf(stderr, "           --consent <file> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   HF-6 ROTATE_CONSENSUS_KEY (fee only)\n");
+    fprintf(stderr, "  v2-envelope validator-update --keys <owner dir> --validator <validator_id hex128>\n");
+    fprintf(stderr, "           --commission <bps> (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   HF-6 VALIDATOR_UPDATE (fee only; a rise waits 2 epochs)\n");
     fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
     fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
     fprintf(stderr, "           [--shard <I>/<M>] [--no-dust-sweep]\n");
@@ -9523,7 +9704,8 @@ int main(int argc, char **argv) {
      * adds `spend` (single-leg CORE SPEND, networked); `token-create`
      * builds a single-leg CORE TOKEN_CREATE the same way; W-B adds
      * `delegate` (two-leg DELEGATE, the stake builder's sibling);
-     * `undelegate` and `unstake` are the same builder's ops 4 and 3. */
+     * `undelegate` and `unstake` are the same builder's ops 4 and 3;
+     * HF-6 slice 7b adds `validator-update` (op 5, generation 4). */
     if (strcmp(command, "v2-envelope") == 0) {
         int rc;
         if (optind + 1 < argc &&
@@ -9532,7 +9714,8 @@ int main(int argc, char **argv) {
              strcmp(argv[optind + 1], "unstake") == 0 ||
              strcmp(argv[optind + 1], "undelegate") == 0 ||
              strcmp(argv[optind + 1], "stake2") == 0 ||
-             strcmp(argv[optind + 1], "rotate") == 0))
+             strcmp(argv[optind + 1], "rotate") == 0 ||
+             strcmp(argv[optind + 1], "validator-update") == 0))
             rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
         else if (optind + 1 < argc && strcmp(argv[optind + 1], "spend") == 0)
             rc = cmd_v2_spend(server_ip, server_port, argc, argv, optind);

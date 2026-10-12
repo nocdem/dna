@@ -30,6 +30,11 @@
  * expiry ‖ bond (7299 B, the owner signs, the node consents with op 3),
  * EXIT node_fp (64 B, the owner signs); the storage-reward-v1 node-key
  * layouts (2664 / 2592 B) are gone, and the container accepts op 3.
+ * HF-6 slice 7b: at the HF-6 generation DELEGATE / UNDELEGATE (136 B,
+ * delegator_fp = SHA3-512(signer) ‖ validator_id ‖ amount), UNSTAKE (64 B,
+ * validator_id) and VALIDATOR_UPDATE (op 5, 66 B, validator_id ‖
+ * commission) are built in their generation-4 layouts; below it ops 2-4
+ * keep the legacy layouts byte-identical and op 5 is refused (ERR_GEN).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -105,6 +110,27 @@ _Static_assert(NODUS_V2_STEXIT_CALL_LEN == 64u,
 #define V2K_SR_SIG_OFF    (V2K_SR_PK_OFF + V2K_PK_LEN)
 #define V2K_SR_EXP_OFF    (V2K_SR_SIG_OFF + DNA_VALBIND_SIG_LEN)
 #define V2K_SR_BOND_OFF   (V2K_SR_EXP_OFF + 8u)
+/* HF-6 slice 7b — the generation-4 calls of ops 2-5 (design rev 6 §2, K7;
+ * the chain's rtn_deleg_parse_v2 / rtn_unstake_parse_v2 /
+ * rtn_vupd_parse_v2) */
+_Static_assert(NODUS_V2_DELEG2_CALL_LEN == 64u + 64u + 8u,
+               "gen-4 DELEGATE / UNDELEGATE = delegator_fp ‖ validator_id ‖ "
+               "amount u64 (136)");
+_Static_assert(NODUS_V2_UNSTAKE2_CALL_LEN == 64u,
+               "gen-4 UNSTAKE = validator_id (64)");
+_Static_assert(NODUS_V2_VUPD2_CALL_LEN == 64u + 2u,
+               "gen-4 VALIDATOR_UPDATE = validator_id ‖ commission u16 (66)");
+_Static_assert(NODUS_V2_DELEG2_CALL_LEN != NODUS_V2_DELEG_CALL_LEN &&
+               NODUS_V2_UNSTAKE2_CALL_LEN != NODUS_V2_UNSTAKE_CALL_LEN,
+               "the decoder tells the two layouts of ops 2-4 apart by length");
+#define V2K_D2_DFP_OFF    0u
+#define V2K_D2_VID_OFF    64u
+#define V2K_D2_AMT_OFF    128u
+#define V2K_U2_VID_OFF    0u
+#define V2K_U2_COMM_OFF   64u
+_Static_assert(V2K_D2_AMT_OFF + 8u == NODUS_V2_DELEG2_CALL_LEN &&
+               V2K_U2_COMM_OFF + 2u == NODUS_V2_VUPD2_CALL_LEN,
+               "generation-4 ops 2-5 field offsets sum to the calls");
 _Static_assert(V2K_S2_BOND_OFF + 8u == NODUS_V2_STAKE2_CALL_LEN &&
                V2K_R_EXP_OFF + 8u == NODUS_V2_ROTATE_CALL_LEN &&
                V2K_SR_BOND_OFF + 8u == NODUS_V2_STREG_CALL_LEN,
@@ -114,6 +140,8 @@ _Static_assert((uint32_t)NODUS_V2_STAKE_OP_STAKE == DNA_SYSRULE_STAKE &&
                (uint32_t)NODUS_V2_STAKE_OP_DELEGATE == DNA_SYSRULE_DELEGATE &&
                (uint32_t)NODUS_V2_STAKE_OP_UNSTAKE == DNA_SYSRULE_UNSTAKE &&
                (uint32_t)NODUS_V2_STAKE_OP_UNDELEGATE == DNA_SYSRULE_UNDELEGATE &&
+               (uint32_t)NODUS_V2_STAKE_OP_VALIDATOR_UPDATE ==
+                   DNA_SYSRULE_VALIDATOR_UPDATE &&
                (uint32_t)NODUS_V2_STAKE_OP_STORAGE_REGISTER ==
                    DNA_SYSRULE_STORAGE_REGISTER &&
                (uint32_t)NODUS_V2_STAKE_OP_STORAGE_EXIT ==
@@ -128,7 +156,10 @@ _Static_assert((uint32_t)NODUS_V2_STAKE_OP_STAKE == DNA_SYSRULE_STAKE &&
  * gate). The builder has no chain state, so it applies the 14 to EVERY
  * non-self DELEGATE — the same predicate minus the activation fact: an
  * envelope it builds is valid on both sides of the activation height. A
- * self-delegation and every other op keep 15. */
+ * self-delegation and every other op keep 15. HF-6 slice 7b: so does a
+ * generation-4 DELEGATE — under the HF-6 generation the CORE funding leg is
+ * never name-gated (rtn_sysfund_name_gate's generation-4 arm, decision D3:
+ * the name read is the SYSTEM leg's op 16), so its ceiling is 15. */
 #define V2K_DLG_GATED_MAX_IN 14
 _Static_assert(V2K_DLG_GATED_MAX_IN + 1 == (int)NODUS_V2_SPEND_MAX_IN,
                "HF-8: the gated DELEGATE funding ceiling is one input "
@@ -196,6 +227,7 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
     const uint32_t op = v->leg[0].runtime_op;
     if (op != DNA_SYSRULE_STAKE && op != DNA_SYSRULE_DELEGATE &&
         op != DNA_SYSRULE_UNSTAKE && op != DNA_SYSRULE_UNDELEGATE &&
+        op != DNA_SYSRULE_VALIDATOR_UPDATE &&
         op != DNA_SYSRULE_STORAGE_REGISTER && op != DNA_SYSRULE_STORAGE_EXIT &&
         op != DNA_SYSRULE_ROTATE_CONSENSUS_KEY)
         goto done;
@@ -217,15 +249,25 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
     /* leg0 — the record call; its length is proved before any read */
     const uint8_t *s = v->buf + v->call_off[0];
     const size_t slen = v->leg[0].call_len;
+    /* HF-6 slice 7b: ops 2-4 are told apart from their legacy layouts by
+     * length (136 / 64 vs 5192 / 2592, disjoint — rtn_sys_call_gen_of);
+     * op 5 has no other layout in this module */
+    const int is_deleg2 = (op == DNA_SYSRULE_DELEGATE ||
+                           op == DNA_SYSRULE_UNDELEGATE) &&
+                          slen == NODUS_V2_DELEG2_CALL_LEN;
+    const int is_unstake2 = op == DNA_SYSRULE_UNSTAKE &&
+                            slen == NODUS_V2_UNSTAKE2_CALL_LEN;
     if ((op == DNA_SYSRULE_STAKE && slen == NODUS_V2_STAKE2_CALL_LEN) ||
         op == DNA_SYSRULE_ROTATE_CONSENSUS_KEY ||
         op == DNA_SYSRULE_STORAGE_REGISTER ||
-        op == DNA_SYSRULE_STORAGE_EXIT) {
-        /* HF-6 6f-1 / 6b — the generation-4 layouts (the storage ops have
-         * no other): the call carries no owner key, so the record identity
-         * is the leg-0 signer (the owner, rtn_sys_owner_auth kind 1); the
-         * loop below binds both legs to it. auth_len == V2K_AUTH_LEN was
-         * proved above. */
+        op == DNA_SYSRULE_STORAGE_EXIT ||
+        is_deleg2 || is_unstake2 ||
+        op == DNA_SYSRULE_VALIDATOR_UPDATE) {
+        /* HF-6 6f-1 / 6b / 7b — the generation-4 layouts (the storage ops
+         * and VALIDATOR_UPDATE have no other here): the call carries no
+         * key, so the record identity is the leg-0 signer (the owner /
+         * delegator, rtn_sys_owner_auth kind 1); the loop below binds both
+         * legs to it. auth_len == V2K_AUTH_LEN was proved above. */
         const uint8_t *a0 = v->buf + v->auth_off[0];
         if (a0[0] != 1) goto done;
         memcpy(out->identity_pk, a0 + 1, V2K_PK_LEN);
@@ -268,6 +310,32 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
             if (slen != NODUS_V2_STEXIT_CALL_LEN) goto done;
             memcpy(out->node_fp, s, 64);
             memcpy(out->owner_fp, signer_fp, 64);
+        } else if (is_deleg2) {
+            /* delegator_fp ‖ validator_id ‖ amount (rtn_deleg_parse_v2) */
+            memcpy(out->owner_fp, s + V2K_D2_DFP_OFF, 64);
+            memcpy(out->validator_id, s + V2K_D2_VID_OFF, 64);
+            out->amount = get_u64(s + V2K_D2_AMT_OFF);
+            /* kind 1: the delegator IS the signer (rtn_delegate2_exec /
+             * rtn_undelegate2_exec bind delegator_fp to the verdict) */
+            if (memcmp(out->owner_fp, signer_fp, 64) != 0) goto done;
+            if (all_zero(out->validator_id, 64)) goto done;
+        } else if (is_unstake2) {
+            /* validator_id (rtn_unstake_parse_v2); the chain binds the
+             * signer to the ROW's owner, which the bytes do not carry */
+            memcpy(out->validator_id, s + V2K_U2_VID_OFF, 64);
+            memcpy(out->owner_fp, signer_fp, 64);
+            if (all_zero(out->validator_id, 64)) goto done;
+        } else if (op == DNA_SYSRULE_VALIDATOR_UPDATE) {
+            /* validator_id ‖ commission u16 (rtn_vupd_parse_v2 — its two
+             * decoder rejects restated: a zero id, a bps above the bound) */
+            if (slen != NODUS_V2_VUPD2_CALL_LEN) goto done;
+            memcpy(out->validator_id, s + V2K_U2_VID_OFF, 64);
+            out->commission_bps = ((uint32_t)s[V2K_U2_COMM_OFF] << 8) |
+                                  s[V2K_U2_COMM_OFF + 1];
+            memcpy(out->owner_fp, signer_fp, 64);
+            if (all_zero(out->validator_id, 64) ||
+                out->commission_bps > (uint32_t)DNAC_COMMISSION_BPS_MAX)
+                goto done;
         } else {
             if (slen != NODUS_V2_ROTATE_CALL_LEN) goto done;
             memcpy(out->validator_id, s + V2K_R_VID_OFF, 64);
@@ -378,20 +446,24 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     const int is_deleg = op == NODUS_V2_STAKE_OP_DELEGATE ||
                          op == NODUS_V2_STAKE_OP_UNDELEGATE;
     const int is_rotate = op == NODUS_V2_STAKE_OP_ROTATE;
+    const int is_vupd = op == NODUS_V2_STAKE_OP_VALIDATOR_UPDATE;
     if (!is_stake && !is_streg && !is_stexit && !is_unstake && !is_deleg &&
-        !is_rotate)
+        !is_rotate && !is_vupd)
         return NODUS_V2_STAKE_ERR_OP;
     /* HF-6 6f-1 — the generation decides the layout (design rev 6 §2) */
     const int gen4 = req->generation >= NODUS_RT_GEN_STORAGE;
-    if ((is_rotate || is_streg || is_stexit) && !gen4)
+    if ((is_rotate || is_streg || is_stexit || is_vupd) && !gen4)
         return NODUS_V2_STAKE_ERR_GEN;       /* ops 10, 7, 8 exist from gen
                                               * 4 only, in its layouts only
                                               * (HF-6 slice 6b: the storage
-                                              * ops have no older layout) */
-    if (gen4 && (is_deleg || is_unstake))
-        return NODUS_V2_STAKE_ERR_GEN;       /* their 136 / 64-byte gen-4
-                                              * layouts are not built here */
+                                              * ops have no older layout);
+                                              * op 5's legacy 2594-byte
+                                              * layout was never built here
+                                              * (HF-6 slice 7b)           */
     const int is_stake2 = is_stake && gen4;
+    /* HF-6 slice 7b — the generation-4 calls of ops 2-5 (design §2): every
+     * identity a 64-byte value, the target / validator a validator_id */
+    const int is_role2 = gen4 && (is_deleg || is_unstake || is_vupd);
     /* the owner-signed, node-consented calls (design §2, §11.3) */
     const int is_consented = is_stake2 || is_rotate || is_streg;
     if (is_consented) {
@@ -400,13 +472,22 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
             return NODUS_V2_SPEND_ERR_ARG;
     } else if (is_stexit) {
         if (!req->node_fp) return NODUS_V2_SPEND_ERR_ARG;
+    } else if (is_role2) {
+        /* no legal validator_id is all zero (rtn_val2_rec_ok; the VUPD
+         * decoder rejects one, rtn_vupd_parse_v2) */
+        if (!req->validator_id || all_zero(req->validator_id, 64))
+            return NODUS_V2_SPEND_ERR_ARG;
     } else if (is_stake ? !req->dest_fp
                         : (is_deleg && !req->validator_pk)) {
         return NODUS_V2_SPEND_ERR_ARG;
     }
 
     /* what the call bytes alone decide (cmd_v2_stake's pre-I/O checks) */
-    if (is_stake2) {
+    if (is_vupd) {
+        /* rtn_vupd_parse_v2's bound — a decoder reject on the chain */
+        if (req->commission_bps > (uint32_t)DNAC_COMMISSION_BPS_MAX)
+            return NODUS_V2_STAKE_ERR_COMMISSION;
+    } else if (is_stake2) {
         /* rtn_stake2_exec's call-alone rules: the commission bound and the
          * INTEGER bound of the bond (design §1.5). The STAKE_MIN floor is
          * chain state (rtn_stake_min_at — a chain_config value from slice
@@ -460,9 +541,10 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         if (required > fee) fee = required;
     }
 
-    /* ── need = lock + fee (rtn_sys_call_flow: UNSTAKE, UNDELEGATE and
-     *    STORAGE_EXIT lock 0 — their funding leg pays the fee only) ──── */
-    const uint64_t lock = (is_unstake || is_stexit || is_rotate ||
+    /* ── need = lock + fee (rtn_sys_call_flow: UNSTAKE, UNDELEGATE,
+     *    STORAGE_EXIT, ROTATE and VALIDATOR_UPDATE lock 0 — their funding
+     *    leg pays the fee only; the same in both generations) ────────── */
+    const uint64_t lock = (is_unstake || is_stexit || is_rotate || is_vupd ||
                            op == NODUS_V2_STAKE_OP_UNDELEGATE)
                         ? 0 : req->amount;
     if (lock > UINT64_MAX - fee) {
@@ -484,9 +566,10 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     uint8_t nulls[NODUS_V2_SPEND_MAX_IN][64];
     int n_in = 0;
     uint64_t sum_in = 0;
-    /* HF-8: a non-self DELEGATE funds from at most 14 coins (above) */
+    /* HF-8: a non-self legacy DELEGATE funds from at most 14 coins; a
+     * generation-4 DELEGATE's funding leg is never gated (above) */
     const int max_in =
-        (op == NODUS_V2_STAKE_OP_DELEGATE &&
+        (op == NODUS_V2_STAKE_OP_DELEGATE && !is_role2 &&
          memcmp(req->pk, req->validator_pk, V2K_PK_LEN) != 0)
             ? V2K_DLG_GATED_MAX_IN : (int)NODUS_V2_SPEND_MAX_IN;
     {
@@ -588,6 +671,33 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         scall = calloc(1, scall_len);
         if (!scall) goto done;
         memcpy(scall, req->node_fp, 64);
+    } else if (is_role2 && is_deleg) {
+        /* delegator_fp ‖ validator_id ‖ amount u64 — one layout for
+         * DELEGATE and UNDELEGATE (rtn_deleg_parse_v2); delegator_fp =
+         * SHA3-512 of the signer, the kind-1 rule rtn_delegate2_exec /
+         * rtn_undelegate2_exec apply (rtn_sys_owner_auth) */
+        scall_len = NODUS_V2_DELEG2_CALL_LEN;
+        scall = calloc(1, scall_len);
+        if (!scall) goto done;
+        memcpy(scall + V2K_D2_DFP_OFF, signer_raw, 64);
+        memcpy(scall + V2K_D2_VID_OFF, req->validator_id, 64);
+        put_u64(scall + V2K_D2_AMT_OFF, req->amount);
+    } else if (is_role2 && is_unstake) {
+        /* validator_id (rtn_unstake_parse_v2); the chain binds the signer
+         * to the ROW's owner_fp (rtn_unstake2_exec) */
+        scall_len = NODUS_V2_UNSTAKE2_CALL_LEN;
+        scall = calloc(1, scall_len);
+        if (!scall) goto done;
+        memcpy(scall + V2K_U2_VID_OFF, req->validator_id, 64);
+    } else if (is_vupd) {
+        /* validator_id ‖ commission u16 (rtn_vupd_parse_v2); the chain
+         * binds the signer to the ROW's owner_fp (rtn_vupd2_exec) */
+        scall_len = NODUS_V2_VUPD2_CALL_LEN;
+        scall = calloc(1, scall_len);
+        if (!scall) goto done;
+        memcpy(scall + V2K_U2_VID_OFF, req->validator_id, 64);
+        scall[V2K_U2_COMM_OFF]     = (uint8_t)(req->commission_bps >> 8);
+        scall[V2K_U2_COMM_OFF + 1] = (uint8_t)req->commission_bps;
     } else if (is_unstake) {
         /* validator_pk — the signer itself (rtn_sys_stake_auth binds
          * SHA3-512(call) to the signer) */
@@ -717,14 +827,24 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
             d->sys_ruleset_version != req->rs->sys_ruleset_version ||
             d->core_ruleset_version != req->rs->core_ruleset_version ||
             memcmp(d->identity_pk, req->pk, V2K_PK_LEN) != 0 ||
-            (!is_unstake && !is_stexit && !is_rotate &&
+            (!is_unstake && !is_stexit && !is_rotate && !is_vupd &&
              d->amount != req->amount) ||
             d->n_in != n_in ||
             memcmp(d->in_nul, nulls, (size_t)n_in * 64) != 0 ||
             d->n_out != (int)out_count ||
-            d->gen4 != (is_consented || is_stexit))
+            d->gen4 != (is_consented || is_stexit || is_role2))
             goto done;
-        if (is_consented) {
+        if (is_role2) {
+            /* HF-6 slice 7b: the signer's fingerprint (DELEGATE /
+             * UNDELEGATE: the call's delegator_fp), the validator_id, and
+             * no amount (UNSTAKE / VALIDATOR_UPDATE) */
+            if (memcmp(d->owner_fp, signer_raw, 64) != 0 ||
+                memcmp(d->validator_id, req->validator_id, 64) != 0)
+                goto done;
+            if ((is_unstake || is_vupd) && d->amount != 0) goto done;
+            if (is_vupd && d->commission_bps != req->commission_bps)
+                goto done;
+        } else if (is_consented) {
             if (memcmp(d->owner_fp, signer_raw, 64) != 0 ||
                 memcmp(d->consensus_pk, req->consensus_pk, V2K_PK_LEN) != 0 ||
                 memcmp(d->consent_sig, req->consent_sig,

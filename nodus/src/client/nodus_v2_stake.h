@@ -1,8 +1,8 @@
 /**
  * @file nodus/src/client/nodus_v2_stake.h
  * @brief The shared version-3 staking envelope builder — STAKE, DELEGATE,
- *        UNSTAKE, UNDELEGATE, STORAGE_REGISTER, STORAGE_EXIT — build + read
- *        back, no I/O.
+ *        UNSTAKE, UNDELEGATE, VALIDATOR_UPDATE (generation 4), ROTATE,
+ *        STORAGE_REGISTER, STORAGE_EXIT — build + read back, no I/O.
  *
  * Governing records: docs/plans/decisions/2026-09-25-web-wallet-nodus-send-
  * transport.md ("İşlem kurucu": the wallet builds with the SAME C code
@@ -117,11 +117,29 @@
  *     The OWNER is the signer of both legs (kind 1: owner_fp = SHA3-512 of
  *     the signing key — rtn_sys_owner_auth) and owns the funding coins; the
  *     node's consent (signature + expiry) is an INPUT, produced by the
- *     node's key elsewhere (nodus-cli `validator consent`). DELEGATE,
- *     UNSTAKE and UNDELEGATE have generation-4 layouts (136 / 64 / 136
- *     bytes) this module does not build yet: refused (ERR_GEN), never
- *     emitted in the legacy layout the generation-4 chain refuses by
- *     length. The storage ops exist ONLY at generation 4 (the chain owns
+ *     node's key elsewhere (nodus-cli `validator consent`).
+ *   HF-6 slice 7b — ops 2-5 at generation 4 (design rev 6 §2, K7; the
+ *   chain's rtn_deleg_parse_v2 / rtn_unstake_parse_v2 / rtn_vupd_parse_v2,
+ *   flow rtn_sys_call_flow's generation-4 arms):
+ *     DELEGATE   (op 2) delegator_fp[64] ‖ validator_id[64] ‖ amount u64
+ *                       = 136 bytes; lock = amount
+ *     UNDELEGATE (op 4) the same 136 bytes; fee-only funding, the chain
+ *                       releases `amount` to delegator_fp
+ *                       (rtn_sysfund_release_coin, generation-4 arm)
+ *     UNSTAKE    (op 3) validator_id[64] = 64 bytes; fee-only
+ *     VALIDATOR_UPDATE (op 5) validator_id[64] ‖ commission u16 = 66
+ *                       bytes; fee-only. Op 5 exists in this module ONLY
+ *                       at generation 4: its legacy 2594-byte layout was
+ *                       never built here, so below generation 4 it is
+ *                       refused (ERR_GEN).
+ *     delegator_fp = SHA3-512 of the signing key (kind 1: the delegator IS
+ *     the signer — rtn_delegate2_exec / rtn_undelegate2_exec bind the
+ *     call's delegator_fp to the verdict); UNSTAKE and VALIDATOR_UPDATE are
+ *     authorized by the ROW's owner_fp (rtn_unstake2_exec / rtn_vupd2_exec),
+ *     which the bytes do not carry — the chain decides. Below generation 4
+ *     ops 2-4 keep the legacy pubkey layouts above, byte-identical. A
+ *     kind-3 (multisig) owner or delegator is NOT built by this module.
+ *     The storage ops exist ONLY at generation 4 (the chain owns
  *     them nowhere else) and have no other layout: below it they are
  *     refused (ERR_GEN). The builder refuses for STORAGE_REGISTER only
  *     what the call bytes decide — a bond outside [1, INT64_MAX]
@@ -171,6 +189,12 @@ extern "C" {
 #define NODUS_V2_ROTATE_CALL_LEN          7291u
 #define NODUS_V2_STREG_CALL_LEN           7299u
 #define NODUS_V2_STEXIT_CALL_LEN          64u
+/** HF-6 slice 7b — the generation-4 calls of ops 2-5 (design rev 6 §2,
+ *  K7; RTN_SYS_DELEGATE_V2_CALL_LEN / RTN_SYS_UNSTAKE_V2_CALL_LEN /
+ *  RTN_SYS_VUPD_V2_CALL_LEN). */
+#define NODUS_V2_DELEG2_CALL_LEN          136u
+#define NODUS_V2_UNSTAKE2_CALL_LEN        64u
+#define NODUS_V2_VUPD2_CALL_LEN           66u
 
 /** Refusals of this module beyond the shared nodus_v2_spend_rc_t values it
  *  also returns (ERR_ARG, ERR_ALLOC, ERR_OVERFLOW, ERR_INPUT_SUM,
@@ -181,8 +205,9 @@ typedef enum {
     NODUS_V2_STAKE_ERR_COMMISSION = -41,  /* > DNAC_COMMISSION_BPS_MAX     */
     NODUS_V2_STAKE_ERR_AMOUNT     = -42,  /* outside 1..total supply       */
     NODUS_V2_STAKE_ERR_OP         = -43,  /* not STAKE/DELEGATE/UNSTAKE/
-                                           * UNDELEGATE/STORAGE_REGISTER/
-                                           * STORAGE_EXIT                 */
+                                           * UNDELEGATE/VALIDATOR_UPDATE/
+                                           * STORAGE_REGISTER/
+                                           * STORAGE_EXIT/ROTATE          */
     NODUS_V2_STAKE_ERR_STORAGE_BOND = -44,  /* STORAGE_REGISTER bond
                                              * outside [1, INT64_MAX] (the
                                              * exact STORAGE_BOND is the
@@ -191,10 +216,12 @@ typedef enum {
      * node fp" rule), retired by HF-6 slice 6b: the value is not reused */
     NODUS_V2_STAKE_ERR_GEN        = -46   /* the op has no layout this
                                            * module builds at the request's
-                                           * generation: ROTATE and the
+                                           * generation: ROTATE,
+                                           * VALIDATOR_UPDATE and the
                                            * storage ops below the HF-6
-                                           * generation; DELEGATE /
-                                           * UNSTAKE / UNDELEGATE at it   */
+                                           * generation (HF-6 slice 7b:
+                                           * DELEGATE / UNSTAKE /
+                                           * UNDELEGATE are built at it)  */
 } nodus_v2_stake_rc_t;
 
 /** Which SYSTEM record leg — the value IS the runtime_op on the wire
@@ -204,6 +231,8 @@ typedef enum {
     NODUS_V2_STAKE_OP_DELEGATE         = 2,
     NODUS_V2_STAKE_OP_UNSTAKE          = 3,
     NODUS_V2_STAKE_OP_UNDELEGATE       = 4,
+    NODUS_V2_STAKE_OP_VALIDATOR_UPDATE = 5,  /* HF-6 generation 4 only
+                                              * (slice 7b)              */
     NODUS_V2_STAKE_OP_STORAGE_REGISTER = 7,
     NODUS_V2_STAKE_OP_STORAGE_EXIT     = 8,
     NODUS_V2_STAKE_OP_ROTATE           = 10  /* HF-6 generation 4 only */
@@ -243,12 +272,14 @@ typedef struct {
     const uint8_t *sk;               /* 4896 B                              */
     uint64_t       amount;           /* STAKE / STORAGE_REGISTER: the bond;
                                       * DELEGATE / UNDELEGATE: the amount;
-                                      * UNSTAKE / STORAGE_EXIT / ROTATE:
-                                      * ignored                             */
-    uint32_t       commission_bps;   /* STAKE only                          */
+                                      * UNSTAKE / STORAGE_EXIT / ROTATE /
+                                      * VALIDATOR_UPDATE: ignored           */
+    uint32_t       commission_bps;   /* STAKE; VALIDATOR_UPDATE (gen 4):
+                                      * the new commission                  */
     const uint8_t *dest_fp;          /* legacy STAKE: the unstake
                                       * destination; 64 raw B               */
-    const uint8_t *validator_pk;     /* DELEGATE / UNDELEGATE: 2592 B       */
+    const uint8_t *validator_pk;     /* DELEGATE / UNDELEGATE below gen 4:
+                                      * 2592 B (unused at gen 4)            */
     uint64_t       gas_price;        /* 0 = rule off (the flat floor)       */
     const nodus_v2_stake_coin_t *coins;
     int            n_coins;
@@ -266,7 +297,10 @@ typedef struct {
                                       * consent, DNA_VALBIND_SIG_LEN B      */
     uint64_t       consent_expiry;   /* gen-4 STAKE / ROTATE /
                                       * STORAGE_REGISTER                    */
-    const uint8_t *validator_id;     /* ROTATE: the validator (64 B)        */
+    const uint8_t *validator_id;     /* ROTATE; HF-6 slice 7b, gen 4:
+                                      * DELEGATE / UNDELEGATE (the target)
+                                      * and UNSTAKE / VALIDATOR_UPDATE (the
+                                      * validator) — 64 B, never all zero   */
     /* ── HF-6 slice 6b (zero in every older caller) ─────────────────── */
     const uint8_t *node_fp;          /* STORAGE_EXIT: the registry key
                                       * SHA3-512(node_pk) (64 raw B)        */
@@ -303,11 +337,12 @@ typedef struct {
                                           * retiring validator (UNSTAKE);
                                           * generation 4: the owner (the
                                           * one signer)                     */
-    uint8_t  validator_pk[2592];         /* DELEGATE / UNDELEGATE; zero
-                                          * for every other op              */
+    uint8_t  validator_pk[2592];         /* legacy DELEGATE / UNDELEGATE;
+                                          * zero for every other layout     */
     uint64_t amount;                     /* bond / amount; 0 for UNSTAKE,
-                                          * ROTATE and STORAGE_EXIT         */
-    uint32_t commission_bps;             /* STAKE                           */
+                                          * ROTATE, STORAGE_EXIT and
+                                          * VALIDATOR_UPDATE                */
+    uint32_t commission_bps;             /* STAKE; VALIDATOR_UPDATE         */
     uint8_t  dest_fp[64];                /* legacy STAKE: unstake
                                           * destination                     */
     int      n_in;
@@ -316,23 +351,30 @@ typedef struct {
     char     change_owner[129];
     uint64_t change_amount;
     uint8_t  change_id[64];              /* SHA3-512(owner ‖ seed)          */
-    /* ── HF-6 6f-1 / 6b: the generation-4 STAKE (7301 B) / ROTATE (7291
-     *    B) / STORAGE_REGISTER (7299 B) / STORAGE_EXIT (64 B) — all zero
-     *    for every other layout. identity_pk above is then the single
-     *    signer of both legs (the owner), read from the auth blob: those
-     *    calls carry no owner key. ───────────────────────────────────── */
+    /* ── HF-6 6f-1 / 6b / 7b: the generation-4 STAKE (7301 B) / ROTATE
+     *    (7291 B) / STORAGE_REGISTER (7299 B) / STORAGE_EXIT (64 B) /
+     *    DELEGATE and UNDELEGATE (136 B) / UNSTAKE (64 B) /
+     *    VALIDATOR_UPDATE (66 B) — all zero for every other layout.
+     *    identity_pk above is then the single signer of both legs (the
+     *    owner / delegator), read from the auth blob: those calls carry no
+     *    key. ────────────────────────────────────────────────────────── */
     int      gen4;                       /* 1 = a generation-4 layout       */
     uint8_t  owner_fp[64];               /* STAKE / STORAGE_REGISTER: the
-                                          * call's owner_fp (==
+                                          * call's owner_fp; DELEGATE /
+                                          * UNDELEGATE: the call's
+                                          * delegator_fp (both ==
                                           * SHA3-512(identity_pk), checked);
-                                          * ROTATE / STORAGE_EXIT:
+                                          * ROTATE / STORAGE_EXIT / UNSTAKE /
+                                          * VALIDATOR_UPDATE:
                                           * SHA3-512(identity_pk)           */
     uint8_t  consensus_pk[2592];         /* STAKE: consensus_pk; ROTATE:
                                           * new_pk; STORAGE_REGISTER:
                                           * node_pk                         */
     uint8_t  consent_sig[DNA_VALBIND_SIG_LEN];
     uint64_t consent_expiry;
-    uint8_t  validator_id[64];           /* ROTATE                          */
+    uint8_t  validator_id[64];           /* ROTATE; gen-4 DELEGATE /
+                                          * UNDELEGATE / UNSTAKE /
+                                          * VALIDATOR_UPDATE                */
     uint8_t  node_fp[64];                /* STORAGE_REGISTER: SHA3-512(
                                           * node_pk); STORAGE_EXIT: the
                                           * call                            */
@@ -355,7 +397,16 @@ typedef struct {
  *            NODUS_V2_STAKE_UNITS × gas_price when that is larger;
  *   need   = lock + fee (lock = amount for STAKE / DELEGATE /
  *            STORAGE_REGISTER, 0 for UNSTAKE / UNDELEGATE / STORAGE_EXIT /
- *            ROTATE);
+ *            ROTATE / VALIDATOR_UPDATE);
+ *   gen-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE (HF-6 slice
+ *            7b): validator_id present and not all zero (ERR_ARG — no
+ *            legal validator_id is, rtn_val2_rec_ok / rtn_vupd_parse_v2);
+ *            DELEGATE / UNDELEGATE 1 <= amount <= total supply
+ *            (ERR_AMOUNT); VALIDATOR_UPDATE commission <=
+ *            DNAC_COMMISSION_BPS_MAX (ERR_COMMISSION, rtn_vupd_parse_v2);
+ *            the funding of a gen-4 DELEGATE takes up to
+ *            NODUS_V2_SPEND_MAX_IN inputs (the CORE leg is never name-gated
+ *            at generation 4 — rtn_sysfund_name_gate, decision D3);
  *   gen-4 STAKE / ROTATE (generation >= NODUS_RT_GEN_STORAGE): owner_fp =
  *            SHA3-512(pk); the builder refuses only what the call bytes
  *            decide — STAKE: commission <= DNAC_COMMISSION_BPS_MAX, 1 <=
@@ -385,7 +436,12 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
  *  bytes) are the generation-4 layouts; their record identity is the one
  *  signer of both legs, and a STAKE or STORAGE_REGISTER whose owner_fp is
  *  not SHA3-512 of that signer is refused (kind 1: the owner IS the
- *  signer — the only shape this module builds).
+ *  signer — the only shape this module builds). HF-6 slice 7b: ops 2 / 4
+ *  with a 136-byte call, op 3 with a 64-byte call and op 5 (66 bytes — the
+ *  only op-5 layout this module reads) are the generation-4 layouts; a
+ *  DELEGATE / UNDELEGATE whose delegator_fp is not SHA3-512 of the signer
+ *  is refused, an all-zero validator_id or a VALIDATOR_UPDATE commission
+ *  above DNAC_COMMISSION_BPS_MAX too (the chain's decoder rules).
  *  @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / _ERR_DECODE /
  *  _ERR_HASH. */
 int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
