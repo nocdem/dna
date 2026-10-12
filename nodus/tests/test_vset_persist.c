@@ -70,6 +70,10 @@
 static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
 
+/* HF-6 slice 5d: the builder takes the key generation from the caller;
+ * these bare databases carry no domain registry — generation 1. */
+#define GEN1 NODUS_RT_GEN_1
+
 /* ── Pinned python3-oracle literals ─────────────────────────────────── */
 /* Snapshot hashes of fixtures A (epoch 720, 2 entries) and B (1440, 1).
  * ROOT_1..3 re-derived 2026-09-30 for the NDS. tag rename (decision
@@ -845,18 +849,19 @@ static int test_build(void) {
     }
 
     /* max_active bounds. */
-    CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 0, NULL, NULL,
+    CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 0, GEN1, NULL, NULL,
                                              NULL, NULL) == -1,
           "max_active 0 accepted"); OK();
-    CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 129, NULL, NULL,
+    CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 129, GEN1, NULL, NULL,
                                              NULL, NULL) == -1,
           "max_active 129 accepted"); OK();
 
     dna_vset_snapshot_t *snap = NULL;
     uint8_t *blob = NULL, hash[64];
     size_t blob_len = 0;
-    CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 2, &snap, &blob,
-                                             &blob_len, hash) == 0, "build");
+    CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 2, GEN1, &snap,
+                                             &blob, &blob_len, hash) == 0,
+          "build");
     OK();
     CHECK(snap->epoch == e_start, "snapshot epoch"); OK();
     CHECK(snap->active_count == 2, "top-2 not returned"); OK();
@@ -928,7 +933,7 @@ static int test_build(void) {
         /* Building twice must produce identical bytes — determinism. */
         uint8_t *blob2 = NULL, hash2[64];
         size_t len2 = 0;
-        CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 2, NULL,
+        CHECK(nodus_witness_vset_build_for_epoch(fx.w, e_start, 2, GEN1, NULL,
                                                  &blob2, &len2, hash2) == 0,
               "rebuild"); OK();
         CHECK(len2 == blob_len && memcmp(blob2, blob, blob_len) == 0,
@@ -955,7 +960,7 @@ static int test_build(void) {
         CHECK(m != NULL, "alloc");
         memset(m, 0xEE, 4 * sizeof(*m));
         int cnt = 0;
-        CHECK(nodus_committee_compute_for_epoch(fx.w, e_start, m, 4, &cnt)
+        CHECK(nodus_committee_compute_for_epoch(fx.w, e_start, gen, m, 4, &cnt)
               == 0 && cnt == 3, "compute below gen 4"); OK();
         static const uint8_t z[64] = { 0 };
         for (int i = 0; i < cnt; i++) {
@@ -1011,7 +1016,7 @@ static int test_build(void) {
         fixture_t fe;
         CHECK(fx_open(&fe, 0xC5) == 0, "open e");
         CHECK(insert_block_row(fe.w, lookback, seed) == 0, "block row e");
-        CHECK(nodus_witness_vset_build_for_epoch(fe.w, e_start, 2, NULL, NULL,
+        CHECK(nodus_witness_vset_build_for_epoch(fe.w, e_start, 2, GEN1, NULL, NULL,
                                                  NULL, NULL) == -1,
               "an empty validator set produced a snapshot"); OK();
         fx_close(&fe);

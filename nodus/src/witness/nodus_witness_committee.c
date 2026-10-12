@@ -66,7 +66,9 @@ typedef struct {
 } committee_work_t;
 
 /* SHA3-512(0x02 || pubkey || state_seed). state_seed is 64 bytes
- * (NODUS_T3_TX_HASH_LEN / the block's state_root column width). */
+ * (NODUS_T3_TX_HASH_LEN / the block's state_root column width). The
+ * tiebreak below key generation NODUS_RT_GEN_STORAGE and on the
+ * bootstrap path. */
 static void compute_tiebreak_hash(const uint8_t pubkey[DNAC_PUBKEY_SIZE],
                                     const uint8_t state_seed[64],
                                     uint8_t out[64]) {
@@ -76,6 +78,25 @@ static void compute_tiebreak_hash(const uint8_t pubkey[DNAC_PUBKEY_SIZE],
     memcpy(&buf[1 + DNAC_PUBKEY_SIZE], state_seed, 64);
     qgp_sha3_512(buf, sizeof(buf), out);
 }
+
+/* HF-6 slice 5d — the tiebreak at key generation >= NODUS_RT_GEN_STORAGE
+ * (design rev 6 §7.7 item 8, the khan's decision 2026-10-12 "A ile devam
+ * edebiliriz"): SHA3-512(0x02 || validator_id[64] || state_seed[64]), a
+ * 129-byte preimage — compute_tiebreak_hash above with ONLY the pubkey
+ * replaced by the row's 64-byte validator_id. Same tag
+ * (NODUS_TREE_TAG_VALIDATOR), same seed, no new tag string. */
+static void compute_tiebreak_hash_v2(
+        const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+        const uint8_t state_seed[64],
+        uint8_t out[64]) {
+    uint8_t buf[1 + NODUS_V2_VALIDATOR_ID_LEN + 64];
+    buf[0] = NODUS_TREE_TAG_VALIDATOR;   /* 0x02 */
+    memcpy(&buf[1], validator_id, NODUS_V2_VALIDATOR_ID_LEN);
+    memcpy(&buf[1 + NODUS_V2_VALIDATOR_ID_LEN], state_seed, 64);
+    qgp_sha3_512(buf, sizeof(buf), out);
+}
+_Static_assert(1 + NODUS_V2_VALIDATOR_ID_LEN + 64 == 129,
+               "the generation-4 tiebreak preimage is 129 bytes");
 
 /* qsort comparator: tiebreak ASC (byte-lex). Used within tied stake
  * groups only. The primary ordering (stake DESC) is imposed by the
@@ -92,8 +113,10 @@ static int cmp_tiebreak_asc(const void *pa, const void *pb) {
  * cmp_tiebreak_asc re-sort — the group re-sort erased the pubkey ASC
  * secondary), expressed as one comparator because the candidate list no
  * longer arrives pre-sorted by the stake it is ranked on. Two distinct
- * pubkeys have distinct tiebreak hashes (SHA3-512 over distinct inputs),
- * so the order is total and qsort's instability is unobservable. */
+ * pubkeys (below generation 4) or two distinct validator_ids (generation
+ * 4 — the v2_validator_roles primary key, so distinct per candidate) have
+ * distinct tiebreak hashes (SHA3-512 over distinct inputs), so the order
+ * is total and qsort's instability is unobservable. */
 static int cmp_frozen_desc_tiebreak_asc(const void *pa, const void *pb) {
     const committee_work_t *a = (const committee_work_t *)pa;
     const committee_work_t *b = (const committee_work_t *)pb;
@@ -288,13 +311,19 @@ static void emit_member(const committee_work_t *w_in,
 
 int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                                         uint64_t e_start,
+                                        uint32_t key_gen,
                                         nodus_committee_member_t *out,
                                         int max_entries,
                                         int *count_out) {
     if (!w || !out || !count_out || max_entries <= 0) return -1;
     *count_out = 0;
 
-    /* Bootstrap path: lookback would underflow. Task 52 handles it. */
+    /* Bootstrap path: lookback would underflow. Task 52 handles it.
+     * It does not read `key_gen`: the bootstrap epochs (0 and E) are
+     * built by nodus_witness_vset_commit_genesis at NODUS_RT_GEN_1. Were
+     * a generation->=4 caller ever to reach it, its members would carry
+     * zero ids and the ruleset-2 encoder refuses an all-zero
+     * validator_id — a fault, never a snapshot (HF-6 5d). */
     if (e_start < (uint64_t)DNAC_EPOCH_LENGTH + 1ULL) {
         return nodus_committee_bootstrap_for_epoch(w, e_start, out,
                                                     max_entries, count_out);
@@ -398,8 +427,11 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
      * boundary later, from copy(E), instead of faulting every node on a
      * condition any staker could trigger.
      *
-     * THE TIEBREAK is unchanged: SHA3-512(0x02 ‖ pubkey ‖ state_seed),
-     * ASC, inside equal frozen totals (cmp_frozen_desc_tiebreak_asc).
+     * THE TIEBREAK, ASC, inside equal frozen totals
+     * (cmp_frozen_desc_tiebreak_asc): SHA3-512(0x02 ‖ pubkey ‖
+     * state_seed) below key generation NODUS_RT_GEN_STORAGE, unchanged;
+     * SHA3-512(0x02 ‖ validator_id ‖ state_seed) at generation >= 4
+     * (HF-6 slice 5d, compute_tiebreak_hash_v2 above).
      *
      * CALL SITES (both through ONE core, so the snapshot Rule N judges
      * and the snapshot commit_next stores are built by the same code):
@@ -415,28 +447,25 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                                 * (uint64_t)DNAC_EPOCH_LENGTH;
 
     /* ── HF-6 sub-slice 3d: THE KEY GENERATION ────────────────────────
-     * (nodus_witness_v2_key_generation — the committed registry; read
-     * here because this core has callers outside the boundary.) At
-     * generation >= NODUS_RT_GEN_STORAGE the candidate set comes from
+     * (`key_gen`, the caller's — HF-6 slice 5d, ORCHESTRATOR decision
+     * D4 (i): a boundary passes its ONE read of the committed registry,
+     * so this core, the snapshot's selection_ruleset and Rule N's
+     * preview cannot see two generations; the callers outside a
+     * boundary read nodus_witness_v2_key_generation once and pass it.)
+     * At generation >= NODUS_RT_GEN_STORAGE the candidate set comes from
      * nodus_validator_v2_bonded_tenured (the SAME status / tenure filters
      * and pubkey ASC collect order, each candidate a v2 row whose
      * validator_id is its pubkey_hash) and the frozen totals are read
      * from the copy by that validator_id (nodus_witness_v2_balance_copy_
      * frozen_key) — the key the generation-4 edge re-keyed copy(B − E)
-     * to and the boundary writes every later copy under. The tiebreak
-     * stays SHA3-512(0x02 ‖ pubkey ‖ state_seed) in slice 3 (the
-     * validator_id tiebreak is the ruleset-2 snapshot's, design §7.8,
-     * slice 5), so an unchanged frozen ranking re-selects the same set.
-     * Below generation 4 everything is exactly as before.
+     * to and the boundary writes every later copy under. HF-6 slice 5d:
+     * the tiebreak hashes the same row's validator_id instead of its
+     * pubkey (design §7.7 item 8 / §7.8) — the seven equal seats are
+     * re-ordered once, at the first ruleset-2 snapshot. Below generation
+     * 4 everything is exactly as before.
      * HF-6 slice 5c: under generation 4 every emitted member also
      * carries its row's validator_id / owner_fp (emit_member, from this
      * same `key_gen`) — what a ruleset-2 entry is filled from. */
-    uint32_t key_gen = 0;
-    if (nodus_witness_v2_key_generation(w, &key_gen) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: the key generation is unreadable "
-                      "— failing closed", (unsigned long long)e_start);
-        return -1;
-    }
     const int g4 = key_gen >= NODUS_RT_GEN_STORAGE;
 
     dnac_validator_record_t *candidates = NULL;
@@ -528,8 +557,12 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
         work[n_work].total_stake = frozen_total;
         work[n_work].self_stake  = frozen_self;   /* <= total: own row is
                                                    * one of the summands  */
-        compute_tiebreak_hash(rec->pubkey, state_seed,
-                              work[n_work].tiebreak);
+        if (g4)   /* HF-6 5d: the id of the row the total was read by */
+            compute_tiebreak_hash_v2(cand_v2[i].validator_id, state_seed,
+                                     work[n_work].tiebreak);
+        else
+            compute_tiebreak_hash(rec->pubkey, state_seed,
+                                  work[n_work].tiebreak);
         n_work++;
     }
 
@@ -896,7 +929,9 @@ int nodus_committee_get_for_block(nodus_witness_t *w,
             *count_out = 0;
             return -1;
         }
-        int rc = nodus_committee_compute_for_epoch(w, e_start, tmp,
+        /* HF-6 5d (D4): the generation read once above, passed down —
+         * always < NODUS_RT_GEN_STORAGE here. */
+        int rc = nodus_committee_compute_for_epoch(w, e_start, key_gen, tmp,
                                                       DNAC_MAX_ACTIVE_VALIDATORS,
                                                       &tmp_count);
         if (rc != 0) {

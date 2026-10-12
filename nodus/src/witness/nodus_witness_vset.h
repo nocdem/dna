@@ -147,9 +147,15 @@ int nodus_witness_vset_root(nodus_witness_t *w,
  * re-implemented so the snapshot's voter_id is the same identifier the
  * chain-config vote path already uses.
  *
- * The produced snapshot always carries selection_ruleset =
- * DNA_VSET_RULESET_TOPN_V1, an all-zero sortition_seed, epoch =
- * epoch_start, and active_count = the committee size actually returned.
+ * The produced snapshot carries selection_ruleset =
+ * DNA_VSET_RULESET_TOPN_V2 when `key_gen >= NODUS_RT_GEN_STORAGE`, else
+ * DNA_VSET_RULESET_TOPN_V1 (HF-6 slice 5d, plan tasks/hf6-slice5-plan.md
+ * §1 "Rule"), an all-zero sortition_seed, epoch = epoch_start, and
+ * active_count = the committee size actually returned. `key_gen` is the
+ * caller's resolved key generation and is handed to
+ * nodus_committee_compute_for_epoch unchanged, so the candidates, the
+ * tiebreak, the entries' ids and the ruleset come from ONE value
+ * (ORCHESTRATOR decision D4 (i)).
  *
  * A chain with no eligible validators has NO snapshot: count == 0 returns
  * -1 rather than an empty set. (The selection itself is a static core
@@ -161,16 +167,17 @@ int nodus_witness_vset_root(nodus_witness_t *w,
  * @param blob_out     [out] optional; heap canonical bytes (free()).
  * @param blob_len_out [out] required iff blob_out is non-NULL.
  * HF-6 slice 5c: encoded and hashed through the `_ex` family at max
- * ruleset 2 (the layout and tag follow the snapshot's own ruleset — still
- * TOPN_V1 on every chain until slice 5d); each entry is filled by
- * nodus_witness_vset_entry_from_member below.
+ * ruleset 2 (the layout and tag follow the snapshot's own ruleset);
+ * each entry is filled by nodus_witness_vset_entry_from_member below.
  *
+ * @param key_gen      the key generation (NODUS_RT_GEN_*) — see above.
  * @param hash_out64   [out] optional; the snapshot hash (dna_vset_hash_ex).
  * @return 0 / -1. On failure NO output parameter is written.
  */
 int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
                                        uint64_t epoch_start,
                                        int max_active,
+                                       uint32_t key_gen,
                                        dna_vset_snapshot_t **snapshot_out,
                                        uint8_t **blob_out,
                                        size_t *blob_len_out,
@@ -179,8 +186,8 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
 /**
  * HF-6 slice 5c — fill ONE snapshot entry from ONE committee member, in
  * the layout of `ruleset`. The builder's own fill (vset_build_snapshot
- * calls it for every member), public so a ruleset-2 snapshot can be built
- * from real members before slice 5d switches the builder's ruleset.
+ * calls it for every member, in the ruleset its key generation selects —
+ * HF-6 5d), public so a test can fill an entry from a real member.
  *
  *   voter_id       = SHA3-512(pubkey)[0..31] (nodus_chain_config_derive_
  *                    witness_id — the shipped derivation);
@@ -261,10 +268,21 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
  * committee is a fault on a real chain, not an empty set: build returns
  * -1 and so does this.
  *
+ * HF-6 slice 5d: `key_gen` is the boundary's ONE read of the key
+ * generation (nodus_witness_v2_epoch_boundary_apply), passed through
+ * nodus_witness_vset_build_for_epoch — at `key_gen >=
+ * NODUS_RT_GEN_STORAGE` the stored blob is ruleset 2. On a chain that
+ * passes the generation-4 edge in block H − 1 the first boundary reading
+ * generation 4 is B₀ = the first multiple of DNAC_EPOCH_LENGTH above H,
+ * so snapshot(B₀ + E) is the first ruleset-2 row and every row <= B₀
+ * stays ruleset 1 byte for byte (plan §1 "Which boundary writes the
+ * first v2 snapshot") — a consequence of this rule, not a special case.
+ *
  * @return 0 stored/idempotent, -1 error (block MUST fail).
  */
 int nodus_witness_vset_commit_next(nodus_witness_t *w,
-                                   uint64_t boundary_height);
+                                   uint64_t boundary_height,
+                                   uint32_t key_gen);
 
 /**
  * Build — WITHOUT encoding, hashing or storing — the snapshot that
@@ -286,6 +304,11 @@ int nodus_witness_vset_commit_next(nodus_witness_t *w,
  * and commit_genesis, which keep "empty = fault"), this function tells a
  * VERDICT from a FAULT:
  *
+ * HF-6 slice 5d: `key_gen` must be the value the same boundary passes to
+ * commit_next (Rule N passes the boundary's one read) — the preview's
+ * ruleset, candidates and tiebreak follow it exactly as the stored
+ * snapshot's do.
+ *
  * @param snapshot_out [out] heap snapshot on rc 0 (dna_vset_free);
  *        untouched otherwise.
  * @return 0 built;
@@ -297,6 +320,7 @@ int nodus_witness_vset_commit_next(nodus_witness_t *w,
  */
 int nodus_witness_vset_preview_next(nodus_witness_t *w,
                                     uint64_t boundary_height,
+                                    uint32_t key_gen,
                                     dna_vset_snapshot_t **snapshot_out);
 
 /**
@@ -310,6 +334,10 @@ int nodus_witness_vset_preview_next(nodus_witness_t *w,
  *
  * No-op returning 0 when `block_height` is not the genesis height, so
  * the caller can call it unconditionally.
+ *
+ * HF-6 slice 5d: builds both at key generation NODUS_RT_GEN_1 (a chain
+ * born on this binary starts at generation 1 — design rev 6 §8), so
+ * snapshot(0) and snapshot(E) are always ruleset 1.
  *
  * @return 0 seeded or no-op, -1 error (block MUST fail).
  */

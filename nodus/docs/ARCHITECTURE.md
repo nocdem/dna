@@ -7369,6 +7369,81 @@ F1 settles on counted powers (six of seven seats, `[60M, 10M × 6]`) where raw p
 (exactly one update). Not reachable before 5d: the diff's NEW side and Rule N's weight verdict (its
 preview is built ruleset 1).
 
+### HF-6 slice 5d — the v1 → v2 snapshot switch, the validator_id tiebreak, the generation plumbing (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §7.7 ("vset snapshots keep
+their v1 blobs/hashes"), §7.7 item 8 (the tiebreak input becomes validator_id — preimage pinned by
+the khan 2026-10-12, "A ile devam edebiliriz"), §8; plan `tasks/hf6-slice5-plan.md` §1, §2 "5d";
+ORCHESTRATOR decision D4 (i). **This is the slice where the chain's behaviour changes** — on a chain
+that crosses the generation-4 edge.
+
+**The switch.** `vset_build_snapshot` (`nodus_witness_vset.c`) writes
+`selection_ruleset = key_gen ≥ NODUS_RT_GEN_STORAGE ? DNA_VSET_RULESET_TOPN_V2 : DNA_VSET_RULESET_TOPN_V1`,
+and `key_gen` reaches it from ONE place per path:
+
+| Path | `key_gen` |
+|---|---|
+| `nodus_witness_v2_epoch_boundary_apply` → `v2ep_rule_n` → `nodus_witness_vset_preview_next(w, B, key_gen, …)` | the boundary's one `nodus_witness_v2_key_generation` read (no step of a boundary moves the registry) |
+| the same boundary → `nodus_witness_vset_commit_next(w, B, key_gen)` → `vset_build_and_store` → `nodus_witness_vset_build_for_epoch(…, key_gen, …)` → `vset_build_snapshot` → `nodus_committee_compute_for_epoch(w, e, key_gen, …)` | the same read |
+| `nodus_witness_vset_commit_genesis` (snapshots 0 and E) | `NODUS_RT_GEN_1` (a chain born on this binary starts at generation 1 — design §8) |
+| `nodus_committee_get_for_block`'s miss-path recompute | its own one read (already there since 5b, D5 — it faults at ≥ 4 before reaching the core, so it always passes < 4) |
+| `nodus_witness_genesis_seed_validators` (e_start 0 — the bootstrap path, which reads no `key_gen`) | its own one read (the function has no caller in the tree) |
+
+The committee core no longer reads the registry itself: candidates, tiebreak, emitted ids and the
+ruleset are consequences of one value, so the preview Rule N judges and the snapshot `commit_next`
+stores cannot disagree structurally (D4 (i), replacing the 3d read inside the core).
+
+**Which boundary writes the first ruleset-2 blob.** The generation-4 edge flips the registry in
+block H − 1 (`phase_6b_gen4_edge`, H = the trigger row's `effective_block`; H − 1 and H are never
+boundaries). B₀ = the first multiple of E above H is the first boundary reading generation 4; it
+stores snapshot(B₀ + E) as ruleset 2. Every snapshot ≤ B₀ was built at ≤ B₀ − E < H and stays a v1
+blob byte for byte (its hash is in `validator_set_root`). snapshot(B₀) still governs (B₀, B₀ + E]
+through the 5c readers; snapshot(B₀ + E) takes effect at B₀ + E (the Comet diff there compares a
+counted new side with a raw old side — one power change per entry whose cap moves it) and is
+cometbft's set from B₀ + E + 2; the first distribution governed by a ruleset-2 snapshot is B₀ + 2E.
+Nothing here special-cases B₀: it falls out of "the boundary's generation decides".
+
+**The tiebreak** (`nodus_witness_committee.c`), ASC inside equal frozen totals:
+
+| Key generation | Preimage | Length |
+|---|---|---|
+| < `NODUS_RT_GEN_STORAGE` (unchanged) | `0x02 ‖ pubkey[2592] ‖ state_seed[64]` | 2657 B |
+| ≥ `NODUS_RT_GEN_STORAGE` | `0x02 ‖ validator_id[64] ‖ state_seed[64]` | 129 B |
+
+`0x02` = `NODUS_TREE_TAG_VALIDATOR`; SHA3-512 over the preimage; the seed is the same lookback block
+identity as before; no new tag string. `validator_id` is the candidate's v2 row's — the same row its
+frozen total is read by. The seven equal genesis seats are re-ordered once, at the first ruleset-2
+snapshot (seat indices and the set hash in later CC envelopes differ — expected, §7.7 item 8). The
+bootstrap path keeps the pubkey preimage (it is reached only at generation 1).
+
+**Phase 0a** (`nodus_witness_v2_apply.c`): the governing snapshot of every block is hashed with
+`dna_vset_hash_ex(snap, DNA_VSET_RULESET_TOPN_V2, …)`; for a ruleset-1 snapshot the bytes are
+those `dna_vset_hash` produced (the header picks the v1 layout and `NDS.VSET.v1` tag,
+`shared/dnac/vset_wire.c` `dna_vset_hash_ex` → `dna_vset_hash_bytes_ex`). The 5c blocker is closed.
+
+**Ruleset-1-only codec calls that remain** (grep of `nodus/src`, `nodus/tools`, `shared/dnac`,
+2026-10-12) — none can see a ruleset-2 snapshot:
+- `nodus_witness_v2_apply.c` (the genesis `vset_hash` cross-check), `nodus_witness_v2_bundle.c`,
+  `nodus_witness_v2_gen.c`: each hashes `authority_for_height(w, 0)` = snapshot(0), built by
+  `commit_genesis` at `NODUS_RT_GEN_1` — ruleset 1 by construction.
+- `shared/dnac/qc_v2.c` `dna_qc_v2_verify`: no caller in the tree.
+- `nodus_witness_vset.c`: none (pinned by `test_hf6_readers` case G).
+
+**Tests** (written, NOT run by the author). `test_committee_election` (7): on one database, two
+equal candidates under a seed where the two preimages (built byte by byte in the test) disagree —
+`key_gen` 3 orders them by the pubkey preimage with zero ids, `key_gen` 4 by the validator_id
+preimage with each row's ids. `test_hf6_readers` case F (twin chains, a 46M genesis delegation
+making V0 60M): snapshot(0) and snapshot(B₀) ruleset 1 and unchanged across B₀; snapshot(B₀ + E)
+ruleset 2 with seven ids naming their roles rows, the equal seats in validator_id-tiebreak order;
+`preview_next(B₀, 4)` encodes to the stored bytes (§12g under ruleset 2); the Comet diff at B₀ + E
+restated through `nodus_witness_vset_powers` — new `[25714285, 10M × 6]`, old raw
+`[60000000, 10M × 6]`, exactly one power change; the distributions at B₀ + E (v1, bridge) and
+B₀ + 2E (v2, by validator_id) exact; twins byte-identical. Case E re-based on the engine's own
+ruleset-2 rows; case G: no ruleset-1-only codec call in `nodus_witness_vset.c`. Harness
+`test_hf6_edge.sh` 2b, 8a-8c: a 50M pre-edge delegation to node 2; at B1 (= B₀) every stored
+snapshot ≤ B1 is ruleset 1 and snapshot(B1 + E) ruleset 2, node 2 raw 60M in both; at B1 + E every
+node logs `n_power_changed=1`.
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision

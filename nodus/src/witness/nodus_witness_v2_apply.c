@@ -4956,7 +4956,16 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                        (unsigned long long)blk->global_height);
             return -2;
         }
-        int hrc = dna_vset_hash(snap, blk->out_vset_hash);
+        /* HF-6 slice 5d: the governing snapshot may be ruleset 2 from the
+         * first generation-4 boundary's stored row on, so hash it through
+         * the `_ex` family at max ruleset 2. The layout and the tag follow
+         * the snapshot's own header (shared/dnac/vset_wire.c
+         * dna_vset_hash_ex → dna_vset_hash_bytes_ex): a ruleset-1
+         * snapshot hashes to exactly the bytes dna_vset_hash produced
+         * (v1 layout, NDS.VSET.v1 tag); the ruleset-1-only wrapper would
+         * refuse a ruleset-2 one and fault every block it governs. */
+        int hrc = dna_vset_hash_ex(snap, DNA_VSET_RULESET_TOPN_V2,
+                                   blk->out_vset_hash);
         dna_vset_free(&snap);
         if (hrc != 0) {
             doms_free(doms);

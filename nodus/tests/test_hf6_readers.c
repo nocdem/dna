@@ -70,22 +70,23 @@
  *     pinned count; every function classified ARMED contains a
  *     NODUS_RT_GEN_STORAGE test; every GEN4_ONLY function is called from
  *     an ARMED caller.
- *  E. engine_v2_snapshot (HF-6 slice 5c; plan tasks/hf6-slice5-plan.md
- *     §2 "5c"; design §1.6, §5 "Ödül", §7.5; decision 2026-10-08-
- *     kurultay-14 K2; ORCHESTRATOR D6). One seeded chain of fixture B's
- *     shape (no RETIRING row) driven to 5E − 1; the boundary is 5E, its
- *     governing snapshot(4E) (built at 3E from the post-H copy(2E)):
+ *  E. engine_v2_snapshot (HF-6 slice 5c, re-based on 5d; plan tasks/
+ *     hf6-slice5-plan.md §2 "5c"; design §1.6, §5 "Ödül", §7.5; decision
+ *     2026-10-08-kurultay-14 K2; ORCHESTRATOR D6). One seeded chain of
+ *     fixture B's shape (no RETIRING row) driven to 5E − 1; the boundary
+ *     is 5E, its governing snapshot(4E) (built at 3E from the post-H
+ *     copy(2E)). Since 5d every snapshot this chain builds after its edge
+ *     (B₀ = E, so snapshot(2E) on) is the engine's own RULESET 2:
  *     E1 the gen-4 core re-selects for 5E exactly the stored snapshot(5E)
- *        (still RULESET 1 — 5c builds no v2 blob) and every member
- *        carries its row's validator_id / owner_fp; the entry fill turns
- *        them into a ruleset-2 snapshot the v2 codec accepts (the stored
- *        v1 entries plus the ids); get_for_block returns the ids ZERO on
- *        a miss and on the following hit (hit == miss);
- *     E2 a ruleset-2 twin of snapshot(4E) whose one entry's owner_fp is
- *        not its row's → settlement_apply −2;
- *     E3 the faithful twin paid with key generation 3 → −2 (a ruleset-2
+ *        — RULESET 2 — and every member carries its row's validator_id /
+ *        owner_fp, which are the stored entries' too; the entry fill of
+ *        the members hashes to the stored hash; get_for_block returns
+ *        the ids ZERO on a miss and on the following hit (hit == miss);
+ *     E2 a copy of snapshot(4E) whose one entry's owner_fp is not its
+ *        row's → settlement_apply −2;
+ *     E3 the stored snapshot paid with key generation 3 → −2 (a ruleset-2
  *        snapshot below generation 4 is a broken invariant);
- *     E4 a twin entry whose validator_id names NO row (its copy(2E) rows
+ *     E4 an entry whose validator_id names NO row (its copy(2E) rows
  *        re-keyed to it so the gate holds) → applied, that member unpaid
  *        (its share stays in the pool), every other delta exact;
  *     E5 K2: V0 raised to 60M whole coins (+ a 46M copy(2E) delegation),
@@ -94,14 +95,54 @@
  *        shares by counted / Σcounted, V0's split on its raw 60M — every
  *        delta exact;
  *     E6 an UNSTAKED row holding V1's consensus pubkey under its own id:
- *        nodus_validator_v2_get_by_pubkey FAULTS (slice-4 fault 2), the
- *        ruleset-1 bridge (v2_get of the migrated id) pays exactly;
- *     E7 THROUGH THE ENGINE: the twin committed as snapshot(4E) and the
- *        UNSTAKED twin row committed, block 5E applies; base + commission
- *        to entry.owner_fp (the Foundation owner) by validator_id, KD's
- *        delegation share to KD, nobody else, no node-key accrual.
+ *        nodus_validator_v2_get_by_pubkey FAULTS (slice-4 fault 2); with
+ *        snapshot(4E) rewritten in its ruleset-1 shape (the v1 governing
+ *        snapshot a post-H boundary still reads — case F crosses the real
+ *        one) the ruleset-1 bridge (v2_get of the migrated id) pays
+ *        exactly;
+ *     E7 THROUGH THE ENGINE: the engine's own ruleset-2 snapshot(4E) and
+ *        the UNSTAKED twin row committed, block 5E applies; base +
+ *        commission to entry.owner_fp (the Foundation owner) by
+ *        validator_id, KD's delegation share to KD, nobody else, no
+ *        node-key accrual.
  *     E2..E6 call nodus_witness_v2_settlement_apply directly inside a
  *     transaction that is always rolled back.
+ *  F. engine_switch (HF-6 slice 5d; plan §1 "Which boundary writes the
+ *     first v2 snapshot", §2 "5d"; design §7.7 item 8 — the khan's
+ *     tiebreak decision 2026-10-12 —, §5, §8; ORCHESTRATOR D4). Twin
+ *     seeded chains of fixture B's shape without the RETIRING row, plus a
+ *     genesis delegation KB → V0 of 46M (V0 = 10M + KD 4M + KB 46M = 60M,
+ *     the others 10M); H = H14, B₀ = the first multiple of E above it = E;
+ *     driven to B₀ + 2E:
+ *     F1 snapshot(0) and snapshot(B₀) are ruleset 1 and boundary B₀ leaves
+ *        their hashes unchanged; generation 4 is in force before B₀;
+ *     F2 snapshot(B₀+E), stored by B₀, is RULESET 2 on both twins; its
+ *        seven ids are the migrated ids naming the roles rows (owner the
+ *        Foundation, same consensus key); V0 first at 60M; the six equal
+ *        10M seats in SHA3-512(0x02 ‖ validator_id ‖ seed) ASC, the
+ *        129-byte preimage built here, seed = the v2_blocks BlockID at
+ *        B₀ − 1;
+ *     F3 (§12g under ruleset 2) preview_next(B₀, generation 4) over the
+ *        post-boundary state encodes to exactly the stored blob and hash;
+ *     F4 the Comet update at B₀+E RESTATED (see HOW IT CAN LIE): both
+ *        sides' powers through nodus_witness_vset_powers, matched by
+ *        pubkey — new counted [25714285, 10M × 6] (= the shared/dnac cap
+ *        over the entries), old raw [60000000, 10M × 6]; exactly ONE
+ *        power change (V0), no addition, no removal;
+ *     F5 the distribution at B₀+E (governed by the v1 snapshot(B₀) via
+ *        the migrated-id bridge, raw power) and the FIRST v2-governed one
+ *        at B₀+2E (snapshot(B₀+E), by validator_id, counted / Σcounted,
+ *        base + commission to entry.owner_fp) each move every accrual by
+ *        exactly the restated amount on both twins (Foundation, KD, KB;
+ *        nobody else; no node-key row); snapshot(B₀+2E), (B₀+3E) are
+ *        ruleset 2;
+ *     the twins' global roots agree after every block and the databases
+ *     are byte-identical at the end.
+ *  G. codec_inventory (HF-6 5d): the identifiers of every function body
+ *     of nodus_witness_vset.c contain none of dna_vset_hash /
+ *     dna_vset_decode / dna_vset_encode / dna_vset_hash_bytes /
+ *     dna_vset_encoded_len (the ruleset-1-only entry points), and do
+ *     contain the `_ex` hash / decode / encode (positive control).
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 exists only there; the
@@ -112,9 +153,11 @@
  * empty the accrual table under the deltas). B/C assert the compiled
  * DNAC_HF6_FOUNDATION_OWNER whatever it is (a test-build override is
  * honoured). Environment: none. Cost: B applies 4E blocks to each of two
- * fixtures and C 4E to one, E 5E − 1 + 1 to one — 12,240 block
- * applications at E = 720. E also needs a payout interval >= 6 epochs
- * (checked).
+ * fixtures and C 4E to one, E 5E − 1 + 1 to one, F 3E to each of two —
+ * 16,560 block applications at E = 720. E also needs a payout interval
+ * >= 6 epochs, F >= 4 (checked). F and G read the sources' and the
+ * fixture's shape only through NODUS_HF6_READERS_SRC_DIR (G) and H14 < E
+ * (F, checked).
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * One /tmp/test_hf6_readers_* directory per fixture, removed at its end
@@ -132,16 +175,28 @@
  *    RETIRING row (V2X_SEED_NOT_REAL_STATUSES).
  *  - A's leaf restatement is self-consistent with the approved §6.3 /
  *    §6.4 tables, not an independent oracle's vectors.
- *  - E's ruleset-2 snapshots are HAND-BUILT twins written over a stored
- *    row by direct SQL (the builder writes ruleset 1 until slice 5d), and
+ *  - E2/E4/E5/E6's snapshots are decoded copies of the engine's stored
+ *    row, MUTATED and written back by direct SQL inside a rolled-back
+ *    transaction (E6's is the ruleset-1 shape of a ruleset-2 row), and
  *    the restatement (expect_snap) is the test's own — like B/C's, it
  *    proves the routing and the arithmetic against the design's rule, not
- *    the economics. No block is ever GOVERNED by a v2 snapshot here: the
- *    per-block phase 0a still hashes the governing snapshot with the
- *    ruleset-1-only dna_vset_hash (nodus_witness_v2_apply.c, outside 5c),
- *    so E rewrites snapshot(4E) only after every block it governs. E4's
- *    "no row" entry and E6's UNSTAKED twin are states no chain reaches in
- *    5c (states the resolution must survive, not ones it produced).
+ *    the economics. E4's "no row" entry and E6's UNSTAKED twin are states
+ *    no chain reaches (states the resolution must survive, not ones it
+ *    produced). Since 5d every block from 2E on is GOVERNED by a ruleset-2
+ *    snapshot in B, C, E and F — the per-block phase 0a hash
+ *    (nodus_witness_v2_apply.c, dna_vset_hash_ex) is exercised by every
+ *    one of them.
+ *  - F4 does NOT run nodus_witness_cmt_app.c's FinalizeBlock diff: the
+ *    host (v2x_cmt_apply) drives the engine only. It restates the diff —
+ *    the same helper on the same two stored snapshots, matched by pubkey
+ *    as that loop matches. A diff loop that stopped calling the helper
+ *    would stay green here (test_cmt_app.c pins the loop).
+ *  - F's 46M is a GENESIS delegation (a seeded row — V2X_SEED_NOT_REAL
+ *    shape, like KD's), not a DELEGATE transaction; it enters copy(0) and
+ *    the genesis snapshots like any genesis bond. F2's tiebreak check
+ *    proves the order IS the validator_id order; whether the pubkey
+ *    preimage would have ordered these six differently is not asserted
+ *    (test_committee_election (7) proves the two arms differ).
  *  - D is a source scan: a NEW reader added inside an already-classified
  *    function is not seen; readers outside the eight scanned files
  *    (nodus_witness_rt_native.c — sub-slice 3c's; handlers.c — 3e /
@@ -618,8 +673,9 @@ typedef struct {
     char    hex[129];
 } key_t_;
 
-/* V0..V6 the committee; VR the RETIRING row; KD delegates to V0; KR to VR */
-enum { V0, V1, V2, V3, V4, V5, V6, VR, KD, KR, N_KEYS };
+/* V0..V6 the committee; VR the RETIRING row; KD delegates to V0; KR to VR;
+ * KB the large genesis delegation to V0 of case F (HF-6 5d) */
+enum { V0, V1, V2, V3, V4, V5, V6, VR, KD, KR, KB, N_KEYS };
 #define N_VAL 7
 static key_t_ g_k[N_KEYS];
 static uint8_t g_vaddr[N_VAL][32];
@@ -692,9 +748,10 @@ static int seed_del(nodus_witness_t *w, int dk, int vk, uint64_t amount) {
 /* A seeded chain: param 9 at H9, param 14 at HE, param 16 at H14 (the
  * gen-4 edge in block H14 − 1); V0..V6 ACTIVE 10M (V6 active_since
  * `v6_since`, the rest 1); KD → V0 4M; with `retiring`, VR RETIRING 10M
- * since 1 with KR → VR 3M; reward pool RPOOL. */
+ * since 1 with KR → VR 3M; with `kb_amt` > 0 (case F) also KB → V0
+ * `kb_amt` at genesis; reward pool RPOOL. */
 static int fx_open(fixture_t *fx, const char *tag, uint64_t v6_since,
-                   int retiring) {
+                   int retiring, uint64_t kb_amt) {
     if (fx_dir(fx, tag) != 0) return -1;
     memset(fx->chain16, 0x6E, sizeof(fx->chain16));
     nodus_witness_t *w = fx->w;
@@ -710,12 +767,17 @@ static int fx_open(fixture_t *fx, const char *tag, uint64_t v6_since,
     uint64_t bonds = 0, deleg = 0;
     for (int i = 0; i < N_VAL; i++) {
         if (seed_val(w, i, (uint8_t)DNAC_VALIDATOR_ACTIVE,
-                     i == V6 ? v6_since : 1, i == V0 ? KD_AMT : 0) != 0)
+                     i == V6 ? v6_since : 1,
+                     i == V0 ? KD_AMT + kb_amt : 0) != 0)
             return -1;
         bonds += TEN_M;
     }
     if (seed_del(w, KD, V0, KD_AMT) != 0) return -1;
     deleg += KD_AMT;
+    if (kb_amt > 0) {
+        if (seed_del(w, KB, V0, kb_amt) != 0) return -1;
+        deleg += kb_amt;
+    }
     if (retiring) {
         if (seed_val(w, VR, (uint8_t)DNAC_VALIDATOR_RETIRING, 1, KR_AMT)
                 != 0 ||
@@ -1026,7 +1088,7 @@ static int t_engine_foundation(void) {
     uint64_t h = 0, iv = 0;
     CHECK(E_LEN >= 8, "no epoch boundary among heights 1..H14");
     CHECK(keys_make() == 0, "keys");
-    CHECK(fx_open(&A, "fa", 1, 1) == 0 && fx_open(&B, "fb", 1, 1) == 0,
+    CHECK(fx_open(&A, "fa", 1, 1, 0) == 0 && fx_open(&B, "fb", 1, 1, 0) == 0,
           "twin seeded chains (gen-4 edge in block H14-1)");
     CHECK(nodus_witness_v2_payout_interval(A.w, &iv) == 0 && iv >= 5,
           "no payday inside 1..4E");
@@ -1145,7 +1207,7 @@ static int t_engine_own_owner(void) {
     fixture_t O;
     uint64_t h = 0;
     CHECK(keys_make() == 0, "keys");
-    CHECK(fx_open(&O, "own", 2, 0) == 0, "seeded chain, V6 since 2");
+    CHECK(fx_open(&O, "own", 2, 0, 0) == 0, "seeded chain, V6 since 2");
     CHECK(run_to(&O, NULL, &h, H14 - 1) == 0, "blocks 1..H14-1");
     uint8_t chain32[DNA_CHAIN_ID_LEN];
     CHECK(nodus_witness_v2_chain_id(O.w, chain32) == 0, "chain id");
@@ -1227,34 +1289,44 @@ out:
     return ok;
 }
 
-/* The ruleset-2 twin of the STORED (ruleset-1) snapshot(e): the same
- * entries in the same order, each entry's validator_id / owner_fp taken
- * from the v2 row keyed by its migrated id (every row of fixture B is a
- * migrated row). NULL on any failure. */
-static dna_vset_snapshot_t *v2_twin(nodus_witness_t *w, uint64_t e,
-                                    const uint8_t chain32[32]) {
+/* HF-6 5d: the STORED snapshot(e), which the engine built at a
+ * generation-4 boundary — so it must be RULESET 2, and every entry's
+ * validator_id must be the migrated id of its pubkey (every row of
+ * fixture B is a migrated row) and its owner_fp that row's. A decoded
+ * copy the caller may mutate; NULL on any failure or mismatch. */
+static dna_vset_snapshot_t *stored_v2(nodus_witness_t *w, uint64_t e,
+                                      const uint8_t chain32[32]) {
     dna_vset_snapshot_t *s = NULL;
     nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
     if (!row) return NULL;
     if (nodus_witness_vset_get(w, e, &s, NULL) != 0 || !s ||
-        s->selection_ruleset != DNA_VSET_RULESET_TOPN_V1)
+        s->selection_ruleset != DNA_VSET_RULESET_TOPN_V2)
         goto fail;
     for (uint16_t i = 0; i < s->active_count; i++) {
         uint8_t vid[64];
         if (dna_validator_id_migrated(vid, chain32, s->entries[i].pubkey)
                 != 0 ||
-            nodus_validator_v2_get(w, vid, row) != 0)
+            nodus_validator_v2_get(w, vid, row) != 0 ||
+            memcmp(s->entries[i].validator_id, vid, 64) != 0 ||
+            memcmp(s->entries[i].owner_fp, row->owner_fp, 64) != 0)
             goto fail;
-        memcpy(s->entries[i].validator_id, vid, 64);
-        memcpy(s->entries[i].owner_fp, row->owner_fp, 64);
     }
-    s->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
     free(row);
     return s;
 fail:
     free(row);
     dna_vset_free(&s);
     return NULL;
+}
+
+/* The ruleset-1 shape of a snapshot: the same entries in the same order,
+ * ids zeroed (the v1 layout has no slot for them). In place. */
+static void to_v1(dna_vset_snapshot_t *s) {
+    for (uint16_t i = 0; i < s->active_count; i++) {
+        memset(s->entries[i].validator_id, 0, 64);
+        memset(s->entries[i].owner_fp, 0, 64);
+    }
+    s->selection_ruleset = DNA_VSET_RULESET_TOPN_V1;
 }
 
 /* The distribution at boundary B over the GIVEN snapshot (what the engine
@@ -1425,7 +1497,7 @@ static int t_engine_v2_snapshot(void) {
     uint64_t h = 0;
     const uint64_t B = 5 * E_LEN;              /* governed by snapshot(4E) */
     CHECK(keys_make() == 0, "keys");
-    CHECK(fx_open(&O, "v2s", 1, 0) == 0, "seeded chain (fixture B shape, "
+    CHECK(fx_open(&O, "v2s", 1, 0, 0) == 0, "seeded chain (fixture B shape, "
           "no RETIRING row)");
     {
         uint64_t iv = 0;
@@ -1447,14 +1519,16 @@ static int t_engine_v2_snapshot(void) {
         dna_vset_snapshot_t *st5 = NULL, *b2 = NULL;
         int cnt = 0;
         CHECK(m != NULL, "alloc");
-        CHECK(nodus_committee_compute_for_epoch(O.w, B, m,
+        CHECK(nodus_committee_compute_for_epoch(O.w, B, NODUS_RT_GEN_STORAGE,
+                                                m,
                                                 DNAC_MAX_ACTIVE_VALIDATORS,
                                                 &cnt) == 0 && cnt == N_VAL,
               "the gen-4 core re-selects the seven for 5E");
         CHECK(nodus_witness_vset_get(O.w, B, &st5, NULL) == 0 &&
               st5->active_count == N_VAL &&
-              st5->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
-              "the stored snapshot(5E) is ruleset 1 (5c builds no v2 blob)");
+              st5->selection_ruleset == DNA_VSET_RULESET_TOPN_V2,
+              "the stored snapshot(5E), built at the generation-4 boundary "
+              "4E, is ruleset 2 (HF-6 5d)");
         b2 = dna_vset_alloc((uint16_t)cnt);
         CHECK(b2 != NULL, "alloc");
         b2->epoch = B;
@@ -1472,6 +1546,9 @@ static int t_engine_v2_snapshot(void) {
                   memcmp(m[i].owner_fp, row->owner_fp, 64) == 0,
                   "gen 4: emit_member carries the row's validator_id and "
                   "owner_fp");
+            CHECK(memcmp(se->validator_id, vid, 64) == 0 &&
+                  memcmp(se->owner_fp, row->owner_fp, 64) == 0,
+                  "the stored entry carries the same ids");
             CHECK(nodus_witness_vset_entry_from_member(
                       &m[i], DNA_VSET_RULESET_TOPN_V2, &b2->entries[i]) == 0,
                   "fill a ruleset-2 entry");
@@ -1480,12 +1557,15 @@ static int t_engine_v2_snapshot(void) {
                   b2->entries[i].total_stake == se->total_stake &&
                   b2->entries[i].self_bond == se->self_bond &&
                   b2->entries[i].commission_bps == se->commission_bps,
-                  "the v2 entry is the stored v1 entry plus the ids");
+                  "the entry fill reproduces the stored entry");
         }
-        CHECK(dna_vset_encoded_len_ex(b2, DNA_VSET_RULESET_TOPN_V2) ==
-                  (size_t)DNA_VSET_HDR_LEN +
-                  (size_t)N_VAL * DNA_VSET_ENTRY_LEN_V2,
-              "the v2 codec accepts the builder's ruleset-2 fill");
+        {
+            uint8_t hb[64], hs[64];
+            CHECK(dna_vset_hash_ex(b2, DNA_VSET_RULESET_TOPN_V2, hb) == 0 &&
+                  dna_vset_hash_ex(st5, DNA_VSET_RULESET_TOPN_V2, hs) == 0 &&
+                  memcmp(hb, hs, 64) == 0,
+                  "the member fill hashes to the stored snapshot's hash");
+        }
         {
             /* get_for_block returns the ids ZERO (D6), hit and miss */
             nodus_committee_member_t *g = NULL;
@@ -1511,15 +1591,18 @@ static int t_engine_v2_snapshot(void) {
         O.w->cached_committee_epoch_start = UINT64_MAX;
     }
 
-    /* the ruleset-2 twin of the governing snapshot(4E) */
-    dna_vset_snapshot_t *T = v2_twin(O.w, 4 * E_LEN, chain32);
-    CHECK(T != NULL && T->active_count == N_VAL, "the v2 twin of snapshot(4E)");
+    /* the governing snapshot(4E) — built at the generation-4 boundary 3E,
+     * so the engine's own ruleset-2 row (HF-6 5d); E2/E4/E5 mutate
+     * decoded copies of it */
+    dna_vset_snapshot_t *T = stored_v2(O.w, 4 * E_LEN, chain32);
+    CHECK(T != NULL && T->active_count == N_VAL,
+          "the stored snapshot(4E) is ruleset 2 with the rows' ids");
     const int i0 = entry_of(T, V0), i1 = entry_of(T, V1), i2 = entry_of(T, V2);
     CHECK(i0 >= 0 && i1 >= 0 && i2 >= 0, "V0, V1, V2 seated in 4E");
 
     /* ── E2. a v2 entry whose owner_fp is not its row's → -2 ─────────── */
     {
-        dna_vset_snapshot_t *s = v2_twin(O.w, 4 * E_LEN, chain32);
+        dna_vset_snapshot_t *s = stored_v2(O.w, 4 * E_LEN, chain32);
         CHECK(s != NULL, "twin");
         s->entries[i1].owner_fp[0] ^= 0x01;
         CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0 &&
@@ -1531,8 +1614,8 @@ static int t_engine_v2_snapshot(void) {
 
     /* ── E3. a ruleset-2 snapshot paid below generation 4 → -2 ───────── */
     {
-        CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0 &&
-              snap_overwrite(O.w, T) == 0, "store the twin");
+        CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0,
+              "the stored ruleset-2 snapshot(4E) governs 5E");
         CHECK(settle_rolled_back(O.w, B, NODUS_RT_GEN_STORAGE - 1, NULL,
                                  NULL) == -2,
               "ruleset 2 with a key generation below 4: FAULT");
@@ -1542,7 +1625,7 @@ static int t_engine_v2_snapshot(void) {
      * its copy(2E) rows are re-keyed to the phantom id so the
      * consistency gate holds (kind-0 owner column = the id, §7.4). ─── */
     {
-        dna_vset_snapshot_t *s = v2_twin(O.w, 4 * E_LEN, chain32);
+        dna_vset_snapshot_t *s = stored_v2(O.w, 4 * E_LEN, chain32);
         uint8_t phantom[64], real[64];
         CHECK(s != NULL, "twin");
         memcpy(real, s->entries[i2].validator_id, 64);
@@ -1592,7 +1675,7 @@ static int t_engine_v2_snapshot(void) {
      * 25714285 ≥ 10M, stop). Shares by counted / Σcounted; V0's inner
      * split on its RAW 60M. ──────────────────────────────────────── */
     {
-        dna_vset_snapshot_t *s = v2_twin(O.w, 4 * E_LEN, chain32);
+        dna_vset_snapshot_t *s = stored_v2(O.w, 4 * E_LEN, chain32);
         uint8_t nfp[64];
         const uint64_t add = 46 * TEN_M / 10;              /* 46M raw  */
         CHECK(s != NULL && fp_of(0x5A, nfp) == 0, "twin");
@@ -1649,10 +1732,15 @@ static int t_engine_v2_snapshot(void) {
               "the UNSTAKED twin row");
         CHECK(nodus_validator_v2_get_by_pubkey(O.w, g_k[V1].pk, row) == -1,
               "two rows hold V1's pubkey: the by-pubkey read faults");
-        dna_vset_snapshot_t *s1 = NULL;
-        CHECK(nodus_witness_vset_get(O.w, 4 * E_LEN, &s1, NULL) == 0 &&
-              s1->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
-              "the engine's own (v1) snapshot(4E)");
+        /* HF-6 5d: every snapshot this chain built after its edge is
+         * ruleset 2, so the ruleset-1 governing snapshot a post-H
+         * boundary still reads (snapshot(B₀) at B₀ + E) is written here by
+         * hand: snapshot(4E) in the v1 layout, inside this rolled-back
+         * transaction. Case F crosses the real one. */
+        dna_vset_snapshot_t *s1 = stored_v2(O.w, 4 * E_LEN, chain32);
+        CHECK(s1 != NULL, "snapshot(4E)");
+        to_v1(s1);
+        CHECK(snap_overwrite(O.w, s1) == 0, "store its ruleset-1 shape");
         CHECK(expect_snap(O.w, s1, B, chain32, &o, NULL) == 0, "restated");
         dna_vset_free(&s1);
         CHECK(settle_rolled_back(O.w, B, NODUS_RT_GEN_STORAGE, &o, NULL)
@@ -1660,15 +1748,23 @@ static int t_engine_v2_snapshot(void) {
                   "despite the shared pubkey");
     }
 
-    /* ── E7. THROUGH THE ENGINE: the v2 twin stored as snapshot(4E) and
-     * the UNSTAKED twin row committed before block 5E (snapshot(4E)
-     * governs no block from 5E on — block 5E is snapshot(5E)'s, so phase
-     * 0a never hashes the v2 blob), then block 5E applies: base +
+    /* ── E7. THROUGH THE ENGINE: the engine's own ruleset-2 snapshot(4E)
+     * (every rewrite above was rolled back — re-checked) and the UNSTAKED
+     * twin row committed before block 5E, then block 5E applies: base +
      * commission accrue to entry.owner_fp by validator_id. ─────────── */
     {
         uint8_t uid[64];
         owed_t o;
-        CHECK(snap_overwrite(O.w, T) == 0, "store the v2 twin as snapshot(4E)");
+        {
+            dna_vset_snapshot_t *again = stored_v2(O.w, 4 * E_LEN, chain32);
+            uint8_t ha[64], ht[64];
+            CHECK(again != NULL &&
+                  dna_vset_hash_ex(again, DNA_VSET_RULESET_TOPN_V2, ha) == 0
+                  && dna_vset_hash_ex(T, DNA_VSET_RULESET_TOPN_V2, ht) == 0
+                  && memcmp(ha, ht, 64) == 0,
+                  "the stored snapshot(4E) is the engine's again");
+            dna_vset_free(&again);
+        }
         CHECK(put_unstaked_twin(O.w, V1, g_k[KD].fp, uid) == 0,
               "the UNSTAKED twin row, committed");
         CHECK(expect_snap(O.w, T, B, chain32, &o, NULL) == 0, "restated");
@@ -1694,6 +1790,299 @@ static int t_engine_v2_snapshot(void) {
     dna_vset_free(&T);
     free(row);
     fx_close(&O);
+    return 0;
+}
+
+/* ══ F. HF-6 slice 5d — the v1 → v2 switch through the engine ══════════
+ *
+ * See the file header, case F. Helpers first. */
+
+/* The stored row of epoch e: its blob (heap, caller frees) and hash. */
+static int snap_row(nodus_witness_t *w, uint64_t e, uint8_t **blob,
+                    size_t *len, uint8_t hash[64]) {
+    sqlite3_stmt *st = NULL;
+    int ok = -1;
+    *blob = NULL;
+    *len = 0;
+    if (sqlite3_prepare_v2(w->db, "SELECT snapshot_blob, snapshot_hash FROM "
+                           "validator_set_snapshots WHERE epoch_start = ?1",
+                           -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)e);
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_bytes(st, 0) > 0 &&
+        sqlite3_column_bytes(st, 1) == 64) {
+        const int n = sqlite3_column_bytes(st, 0);
+        *blob = malloc((size_t)n);
+        if (*blob) {
+            memcpy(*blob, sqlite3_column_blob(st, 0), (size_t)n);
+            memcpy(hash, sqlite3_column_blob(st, 1), 64);
+            *len = (size_t)n;
+            ok = 0;
+        }
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* The selection_ruleset field of the stored row of epoch e, read from
+ * the blob bytes 10..13 (big-endian u32 — shared/dnac/vset_wire.c, the
+ * header epoch u64 ‖ active_count u16 ‖ ruleset u32). 0 on any failure. */
+static uint32_t stored_ruleset(nodus_witness_t *w, uint64_t e) {
+    uint8_t *b = NULL, h[64];
+    size_t n = 0;
+    uint32_t r = 0;
+    if (snap_row(w, e, &b, &n, h) == 0 && n >= 14)
+        r = ((uint32_t)b[10] << 24) | ((uint32_t)b[11] << 16) |
+            ((uint32_t)b[12] << 8) | (uint32_t)b[13];
+    free(b);
+    return r;
+}
+
+/* the committed Comet BlockID at height h (the gen-4 tiebreak's seed for
+ * e_start = h + E + 1 — nodus_witness_committee.c v2_seed_block_id) */
+static int seed_at(nodus_witness_t *w, uint64_t h, uint8_t out[64]) {
+    sqlite3_stmt *st = NULL;
+    int ok = -1;
+    if (sqlite3_prepare_v2(w->db, "SELECT block_id FROM v2_blocks WHERE "
+                           "global_height = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 64) {
+        memcpy(out, sqlite3_column_blob(st, 0), 64);
+        ok = 0;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+#define KB_AMT  (46 * MIL)      /* V0: 10M + KD 4M + KB 46M = 60M raw */
+
+static int t_engine_switch(void) {
+    fixture_t A, Bf;
+    uint64_t h = 0, iv = 0;
+    /* B₀ = the first multiple of E strictly above H = H14 (the param-16
+     * row's effective block; the edge flips the registry in H14 − 1) */
+    const uint64_t B0 = (H14 / E_LEN + 1) * E_LEN;
+    CHECK(E_LEN >= 8 && B0 == E_LEN, "FIXTURE GUARD: H14 < E, so B₀ = E");
+    CHECK(keys_make() == 0, "keys");
+    CHECK(fx_open(&A, "swa", 1, 0, KB_AMT) == 0 &&
+          fx_open(&Bf, "swb", 1, 0, KB_AMT) == 0,
+          "twin seeded chains, V0 at 60M (KD 4M + KB 46M at genesis)");
+    CHECK(nodus_witness_v2_payout_interval(A.w, &iv) == 0 && iv >= 4,
+          "no payday inside 1..3E");
+    CHECK(A.w->v2_successor, "a version-3 chain (the Comet seed path)");
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    CHECK(nodus_witness_v2_chain_id(A.w, chain32) == 0, "chain id");
+
+    /* ── F1. every snapshot <= B₀ is ruleset 1, and B₀'s boundary leaves
+     * the rows it does not write byte for byte ──────────────────────── */
+    uint8_t h0[64], hB0[64];
+    {
+        uint8_t *b = NULL;
+        size_t n = 0;
+        CHECK(run_to(&A, &Bf, &h, B0 - 1) == 0, "blocks 1..B₀-1 (the edge "
+              "in block H14-1)");
+        uint32_t g = 0;
+        CHECK(nodus_witness_v2_key_generation(A.w, &g) == 0 &&
+              g == NODUS_RT_GEN_STORAGE, "generation 4 before B₀");
+        CHECK(snap_row(A.w, 0, &b, &n, h0) == 0, "snapshot(0)");
+        free(b);
+        CHECK(snap_row(A.w, B0, &b, &n, hB0) == 0, "snapshot(B₀)");
+        free(b);
+        CHECK(stored_ruleset(A.w, 0) == DNA_VSET_RULESET_TOPN_V1 &&
+              stored_ruleset(A.w, B0) == DNA_VSET_RULESET_TOPN_V1,
+              "snapshot(0) and snapshot(B₀) are ruleset 1");
+        CHECK(stored_ruleset(A.w, B0 + E_LEN) == 0,
+              "no snapshot(B₀+E) before boundary B₀");
+    }
+    CHECK(run_to(&A, &Bf, &h, B0) == 0, "boundary B₀ applies on both twins");
+    {
+        uint8_t *b = NULL, x[64];
+        size_t n = 0;
+        CHECK(snap_row(A.w, 0, &b, &n, x) == 0 && memcmp(x, h0, 64) == 0,
+              "snapshot(0) unchanged");
+        free(b);
+        CHECK(snap_row(A.w, B0, &b, &n, x) == 0 && memcmp(x, hB0, 64) == 0 &&
+              stored_ruleset(A.w, B0) == DNA_VSET_RULESET_TOPN_V1,
+              "snapshot(B₀) unchanged, still ruleset 1");
+        free(b);
+    }
+
+    /* ── F2. snapshot(B₀+E): the first ruleset-2 blob ────────────────── */
+    dna_vset_snapshot_t *sN = NULL, *sO = NULL;
+    CHECK(stored_ruleset(A.w, B0 + E_LEN) == DNA_VSET_RULESET_TOPN_V2 &&
+          stored_ruleset(Bf.w, B0 + E_LEN) == DNA_VSET_RULESET_TOPN_V2,
+          "snapshot(B₀+E) — stored by the first boundary reading "
+          "generation 4 — is ruleset 2 on both twins");
+    sN = stored_v2(A.w, B0 + E_LEN, chain32);
+    CHECK(sN != NULL && sN->active_count == N_VAL, "its seven entries carry "
+          "the migrated validator_id and the roles row's owner_fp");
+    {
+        nodus_v2_validator_row_t *r = calloc(1, sizeof(*r));
+        CHECK(r != NULL, "alloc");
+        for (uint16_t i = 0; i < sN->active_count; i++)
+            CHECK(nodus_validator_v2_get(A.w, sN->entries[i].validator_id, r)
+                      == 0 &&
+                  memcmp(r->owner_fp, k_found, 64) == 0 &&
+                  memcmp(r->rec.pubkey, sN->entries[i].pubkey, PKLEN) == 0,
+                  "each id names its roles row (Foundation-owned, same key)");
+        free(r);
+    }
+    CHECK(entry_of(sN, V0) == 0 &&
+          sN->entries[0].total_stake == TEN_M + KD_AMT + KB_AMT,
+          "V0 first, at 60M");
+    {
+        /* the six equal 10M seats in SHA3-512(0x02 ‖ validator_id ‖ seed)
+         * ASC, seed = the Comet BlockID at B₀ − 1 — the 129-byte
+         * preimage built here byte by byte */
+        uint8_t seed[64], pre[129], hc[64];
+        uint8_t hp[64] = { 0 };
+        CHECK(seed_at(A.w, B0 - 1, seed) == 0, "the lookback BlockID");
+        for (uint16_t i = 1; i < sN->active_count; i++) {
+            CHECK(sN->entries[i].total_stake == TEN_M, "10M seat");
+            pre[0] = 0x02;
+            memcpy(pre + 1, sN->entries[i].validator_id, 64);
+            memcpy(pre + 65, seed, 64);
+            CHECK(qgp_sha3_512(pre, sizeof(pre), hc) == 0, "sha3");
+            if (i > 1)
+                CHECK(memcmp(hp, hc, 64) < 0,
+                      "equal seats ordered by the validator_id tiebreak");
+            memcpy(hp, hc, 64);
+        }
+    }
+
+    /* ── F3. §12g under ruleset 2: the preview at the boundary's
+     * generation over the post-boundary state IS the stored blob ────── */
+    {
+        dna_vset_snapshot_t *pv = NULL;
+        uint8_t *b = NULL, x[64], hpv[64];
+        size_t n = 0;
+        CHECK(nodus_witness_vset_preview_next(A.w, B0, NODUS_RT_GEN_STORAGE,
+                                              &pv) == 0 && pv,
+              "preview_next(B₀) at generation 4 builds");
+        CHECK(pv->selection_ruleset == DNA_VSET_RULESET_TOPN_V2,
+              "the preview is ruleset 2");
+        const size_t need = dna_vset_encoded_len_ex(pv,
+                                                    DNA_VSET_RULESET_TOPN_V2);
+        uint8_t *enc = need ? malloc(need) : NULL;
+        CHECK(enc != NULL && dna_vset_encode_ex(pv, DNA_VSET_RULESET_TOPN_V2,
+                                                enc, need, NULL) == 0,
+              "encode the preview");
+        CHECK(snap_row(A.w, B0 + E_LEN, &b, &n, x) == 0 && n == need &&
+              memcmp(b, enc, n) == 0,
+              "preview bytes == stored snapshot(B₀+E) bytes");
+        CHECK(dna_vset_hash_ex(pv, DNA_VSET_RULESET_TOPN_V2, hpv) == 0 &&
+              memcmp(hpv, x, 64) == 0, "and its hash == the stored hash");
+        free(enc);
+        free(b);
+        dna_vset_free(&pv);
+    }
+
+    /* ── F4. the Comet update at B₀+E, RESTATED: FinalizeBlock's diff
+     * (nodus_witness_cmt_app.c) matches entries by pubkey and takes each
+     * side's power from nodus_witness_vset_powers by its own ruleset —
+     * the same two calls, the same match, here. ───────────────────────── */
+    {
+        uint64_t pN[DNA_MAX_ACTIVE_VALIDATORS], pO[DNA_MAX_ACTIVE_VALIDATORS];
+        uint64_t oracle[DNA_MAX_ACTIVE_VALIDATORS];
+        uint64_t raw[DNA_MAX_ACTIVE_VALIDATORS];
+        uint8_t ids[DNA_MAX_ACTIVE_VALIDATORS][64];
+        int changed = 0, added = 0, removed = 0, v0_new = -1;
+        CHECK(nodus_witness_vset_get(A.w, B0, &sO, NULL) == 0 && sO &&
+              sO->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+              "the old side snapshot(B₀), ruleset 1");
+        CHECK(nodus_witness_vset_powers(A.w, sN, pN) == 0 &&
+              nodus_witness_vset_powers(A.w, sO, pO) == 0, "both sides");
+        for (uint16_t i = 0; i < sN->active_count; i++) {
+            raw[i] = sN->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+            memcpy(ids[i], sN->entries[i].validator_id, 64);
+        }
+        CHECK(dna_power_cap_counted(raw, (const uint8_t (*)[64])ids,
+                                    sN->active_count,
+                                    DNAC_HF6_POWER_CAP_BPS_DEFAULT,
+                                    oracle) == 0 &&
+              memcmp(oracle, pN, sN->active_count * sizeof(pN[0])) == 0,
+              "the new side's helper output is the cap's (oracle-pinned) "
+              "counted vector");
+        /* design §5 at 3000 bps, [60M, 10M × 6] whole coins: k = 0
+         * S = 120M c = 36M < 60M; k = 1 S = 60M c = ⌊3000·60M / 7000⌋ =
+         * 25714285 ≥ 10M, stop (shared/dnac/power_cap.h rule) */
+        for (uint16_t i = 0; i < sN->active_count; i++)
+            CHECK(pN[i] == (i == 0 ? 25714285ULL : 10000000ULL),
+                  "counted [25714285, 10M × 6]");
+        for (uint16_t i = 0; i < sN->active_count; i++) {
+            int found = 0;
+            for (uint16_t j = 0; j < sO->active_count; j++)
+                if (memcmp(sN->entries[i].pubkey, sO->entries[j].pubkey,
+                           PKLEN) == 0) {
+                    found = 1;
+                    if (pO[j] != pN[i]) { changed++; v0_new = (int)i; }
+                }
+            if (!found) added++;
+        }
+        for (uint16_t j = 0; j < sO->active_count; j++) {
+            int found = 0;
+            for (uint16_t i = 0; i < sN->active_count; i++)
+                if (memcmp(sN->entries[i].pubkey, sO->entries[j].pubkey,
+                           PKLEN) == 0)
+                    found = 1;
+            if (!found) removed++;
+        }
+        CHECK(changed == 1 && added == 0 && removed == 0 && v0_new == 0,
+              "exactly one power change (V0: raw 60000000 → counted "
+              "25714285), no addition, no removal");
+        {
+            const int jo = entry_of(sO, V0);
+            CHECK(jo >= 0 && pO[jo] == 60000000ULL,
+                  "the old side is raw (ruleset 1 ⇒ identity)");
+        }
+    }
+
+    /* ── F5. the last v1-governed distribution (B₀+E, snapshot(B₀) via
+     * the migrated-id bridge) and the FIRST v2-governed one (B₀+2E,
+     * snapshot(B₀+E) by validator_id, counted / Σcounted, entry
+     * owner_fp) — each exactly the restated deltas on both twins ───── */
+    for (int step = 1; step <= 2; step++) {
+        const uint64_t Bh = B0 + (uint64_t)step * E_LEN;
+        owed_t o;
+        uint64_t counted[DNA_MAX_ACTIVE_VALIDATORS];
+        CHECK(run_to(&A, &Bf, &h, Bh - 1) == 0, "idle to B-1");
+        CHECK(expect_snap(A.w, step == 1 ? sO : sN, Bh, chain32, &o,
+                          counted) == 0, "restated split");
+        if (step == 2)
+            CHECK(counted[0] == 25714285ULL,
+                  "B₀+2E shares by the counted power");
+        else
+            CHECK(counted[entry_of(sO, V0)] == 60000000ULL,
+                  "B₀+E shares by the raw power");
+        CHECK(run_to(&A, &Bf, &h, Bh) == 0, "the boundary applies");
+        CHECK(owed_check(A.w, &o) == 0 && owed_check(Bf.w, &o) == 0,
+              "every accrual moved by exactly the restated amount");
+        uint64_t fa = 0, kd = 0, kb = 0;
+        CHECK(owed_of(&o, k_found, &fa) == 0 && fa > 0,
+              "base + commission to the Foundation owner");
+        CHECK(owed_of(&o, g_k[KD].fp, &kd) == 0 && kd > 0 &&
+              owed_of(&o, g_k[KB].fp, &kb) == 0 && kb > kd,
+              "KD's and KB's delegation shares (KB's larger)");
+        CHECK(o.n == 3, "nobody else is owed anything");
+        for (int i = 0; i < N_VAL; i++) {
+            uint64_t a = 0;
+            int present = 1;
+            CHECK(accrual_of(A.w, g_k[i].fp, &a, &present) == 0 && !present,
+                  "no node-key accrual row");
+        }
+        CHECK(stored_ruleset(A.w, Bh + E_LEN) == DNA_VSET_RULESET_TOPN_V2,
+              "every later snapshot is ruleset 2");
+    }
+    {
+        uint8_t da[64], db[64];
+        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(Bf.w, db) == 0 &&
+              memcmp(da, db, 64) == 0, "twin databases byte-identical");
+    }
+    dna_vset_free(&sN);
+    dna_vset_free(&sO);
+    fx_close(&A);
+    fx_close(&Bf);
     return 0;
 }
 
@@ -2085,6 +2474,53 @@ static int t_reader_inventory(void) {
     return 0;
 }
 
+/* G. HF-6 slice 5d — no ruleset-1-only codec entry point is called from
+ * nodus_witness_vset.c (the store, the read and the builder of every
+ * snapshot), counted over the identifiers of every function body by the
+ * same tokeniser as D (comments and string literals are not
+ * identifiers). The `_ex` family must be seen (a positive control — a
+ * scan that saw nothing would otherwise pass). */
+static int t_codec_inventory(void) {
+    static const char *legacy[] = {
+        "dna_vset_hash", "dna_vset_decode", "dna_vset_encode",
+        "dna_vset_hash_bytes", "dna_vset_encoded_len",
+    };
+    inv_scan_t *s = calloc(1, sizeof(*s));
+    CHECK(s != NULL, "alloc");
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", NODUS_HF6_READERS_SRC_DIR,
+             "nodus_witness_vset.c");
+    CHECK(inv_scan_file(s, path) == 0, "nodus_witness_vset.c tokenises");
+    int hits = 0, ex_seen = 0;
+    for (size_t f = 0; f < s->nf; f++) {
+        const inv_func_t *fn = &s->funcs[f];
+        if (!fn->idents) continue;
+        char *hay = malloc(fn->ilen + 2);
+        CHECK(hay != NULL, "alloc");
+        hay[0] = ' ';
+        memcpy(hay + 1, fn->idents, fn->ilen + 1);
+        for (size_t k = 0; k < sizeof(legacy) / sizeof(legacy[0]); k++) {
+            char needle[64];
+            snprintf(needle, sizeof(needle), " %s ", legacy[k]);
+            if (strstr(hay, needle)) {
+                fprintf(stderr, "codec inventory: %s calls %s\n", fn->name,
+                        legacy[k]);
+                hits++;
+            }
+        }
+        if (strstr(hay, " dna_vset_hash_bytes_ex ")) ex_seen |= 1;
+        if (strstr(hay, " dna_vset_decode_ex ")) ex_seen |= 2;
+        if (strstr(hay, " dna_vset_encode_ex ")) ex_seen |= 4;
+        free(hay);
+    }
+    inv_free(s);
+    free(s);
+    CHECK(ex_seen == 7, "the scan sees the _ex hash / decode / encode calls");
+    CHECK(hits == 0, "zero ruleset-1-only codec calls in "
+          "nodus_witness_vset.c");
+    return 0;
+}
+
 int main(void) {
     static const struct {
         const char *name;
@@ -2095,6 +2531,8 @@ int main(void) {
         { "engine_foundation",   t_engine_foundation },
         { "engine_own_owner",    t_engine_own_owner },
         { "engine_v2_snapshot",  t_engine_v2_snapshot },
+        { "engine_switch",       t_engine_switch },
+        { "codec_inventory",     t_codec_inventory },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     for (size_t i = 0; i < n; i++) {

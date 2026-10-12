@@ -1278,8 +1278,13 @@ static int v2ep_rn_weight_verdict(nodus_witness_t *w,
  * update writes and their fault-stage indices by wealth, which is neither
  * needed nor exercised by any existing fault-injection test); pubkey ASC
  * is the total, stable key every other pass in this file already commits
- * to. */
-static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
+ * to.
+ *
+ * HF-6 slice 5d: `key_gen` is the boundary's one read of the key
+ * generation; the weight floor's preview is built at it, exactly as
+ * commit_next builds the stored snapshot (ORCHESTRATOR decision D4 (i)).
+ * Nothing else in this pass reads it. */
+static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen) {
     /* R5-1: absent/unreadable duty snapshot -> the boundary has no
      * verdict class (fault, not an empty-set assumption). epoch_start
      * cannot underflow: the caller's gate already proved h is a positive
@@ -1494,9 +1499,13 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
      *     writes v2_balance_copy (this boundary's copy(H) is written at
      *     step 6, after commit_next, and prunes only below H−2E), so the
      *     frozen totals are unchanged too; the tiebreak hashes pubkey
+     *     (generation 4: the row's validator_id — immutable, HF-6 5d)
      *     with the seed; the emitted fields (emit_member — pubkey, frozen
-     *     total, frozen self row, live commission_bps) are not written by
-     *     any of them.
+     *     total, frozen self row, live commission_bps; at generation 4
+     *     also validator_id / owner_fp) are not written by any of them.
+     *   - key generation (HF-6 5d): the preview and commit_next receive
+     *     the SAME boundary read (`key_gen`, nodus_witness_v2_epoch_
+     *     boundary_apply), so they cannot build in two rulesets.
      * test_v2_epoch.c §12g checks the stored snapshot(H+E) hash equals
      * a preview built over the SAME post-boundary state — it proves the
      * builder is shared, NOT this input-by-input argument: a step later
@@ -1550,7 +1559,8 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h) {
                     break;
                 }
 
-                prc = nodus_witness_vset_preview_next(w, h, &next);
+                prc = nodus_witness_vset_preview_next(w, h, key_gen,
+                                                      &next);
                 if (prc < 0) {
                     /* FAULT, never a verdict: a node that cannot build
                      * the next set cannot judge it (and commit_next would
@@ -1878,7 +1888,7 @@ int nodus_witness_v2_epoch_boundary_apply(
      * attendance digest/reset and the boundary flips (1 commissions →
      * 1b distribution → 1c payday → 2 graduation → 3 Rule N → 3b digest
      * → 3c reset → 4 flips → 5 snapshot → 6 balance copy). */
-    if (v2ep_rule_n(w, global_height) != 0) return -2;
+    if (v2ep_rule_n(w, global_height, key_gen) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_RULE_N, UINT32_MAX))
         return -2;
 
@@ -1934,8 +1944,12 @@ int nodus_witness_v2_epoch_boundary_apply(
     /* Builds over the POST-flip POST-graduation state and keys the
      * target size on the NEXT epoch's start height; insert is
      * idempotent-or-conflict, so a diverging snapshot for the same epoch
-     * fails the block (nodus_witness_vset.h:203-221). */
-    if (nodus_witness_vset_commit_next(w, global_height) != 0) {
+     * fails the block (nodus_witness_vset.h:203-221).
+     * HF-6 slice 5d: at the boundary's ONE key-generation read — the
+     * value Rule N's preview above was built at — so a generation-4
+     * boundary stores a ruleset-2 snapshot (validator_id tiebreak, ids
+     * from the rows) and every earlier one stays ruleset 1. */
+    if (nodus_witness_vset_commit_next(w, global_height, key_gen) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "next-epoch snapshot commit failed");
         return -2;
     }

@@ -103,6 +103,7 @@
 #include "witness/nodus_witness_cmt_store.h"   /* the Comet blockstore */
 #include "witness/nodus_witness_cmt_host.h"    /* nodus_abci_* request/resp */
 #include "witness/nodus_witness_cmt_app.h"     /* the REAL FinalizeBlock/Commit */
+#include "witness/nodus_witness_runtime.h"     /* HF-6 5d: NODUS_RT_GEN_1 */
 #include "witness/nodus_witness_emission.h"    /* DNAC_BLOCKS_PER_YEAR,
                                                  * DNAC_DECIMAL_UNIT */
 #include "nodus/nodus_chain_config.h"
@@ -129,6 +130,11 @@
 
 static int g_checks = 0;
 #define OK() do { g_checks++; } while (0)
+
+/* HF-6 slice 5d: the committee core / commit_next take the key generation
+ * from the caller. Every chain here votes no ruleset generation —
+ * generation 1. */
+#define GEN1 NODUS_RT_GEN_1
 
 /* ══ THE VERSION-3 FIXTURE (duplicated locally from the pattern R3 W3
  * delta 8 used in test_v2_preflight.c — copied, not shared across test
@@ -829,7 +835,7 @@ int main(void) {
     {
         uint8_t d0[64], d1[64];
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == -1,
               "missing V2 seed row must fail closed"); OK();
         CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
@@ -895,7 +901,7 @@ int main(void) {
 
         uint8_t d0[64], d1[64];
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == 0,
               "compute with the committed Comet seed — RED before this "
               "delta's nodus_witness_committee.c fix (see file header)");
@@ -918,7 +924,7 @@ int main(void) {
         CHECK(run_sql(fx.w->db, "DELETE FROM v2_blocks WHERE global_height = 1")
                   == 0, "drop v2_blocks row"); OK();
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == -1,
               "v2_blocks row missing fails closed"); OK();
         CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
@@ -937,7 +943,7 @@ int main(void) {
             OK();
         }
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == -1,
               "short block_id fails closed"); OK();
         CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
@@ -954,7 +960,7 @@ int main(void) {
             nodus_cmt_store_release(&s);
         }
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == -1,
               "missing BlockMeta fails closed"); OK();
         CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
@@ -964,7 +970,7 @@ int main(void) {
         /* meta height != row height */
         CHECK(tamper_meta(fx.w, mutate_height) == 0, "tamper height"); OK();
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == -1,
               "meta height disagreeing with the row key fails closed");
         OK();
@@ -976,7 +982,7 @@ int main(void) {
         CHECK(tamper_meta(fx.w, mutate_chain) == 0, "tamper chain_id");
         OK();
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == -1,
               "wrong-chain BlockMeta fails closed"); OK();
         CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
@@ -987,7 +993,7 @@ int main(void) {
         CHECK(tamper_meta(fx.w, mutate_block_id_hash) == 0,
               "tamper block_id.hash"); OK();
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == -1,
               "block_id disagreeing with the BlockMeta's own hash fails "
               "closed"); OK();
@@ -996,7 +1002,7 @@ int main(void) {
         CHECK(restore_honest(&fx, &backup) == 0, "restore honest"); OK();
 
         /* honest state, one more time, proven by a successful compute */
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == 0,
               "restored honest state computes again"); OK();
     }
@@ -1012,7 +1018,7 @@ int main(void) {
     {
         uint8_t d0[64], d1[64];
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest before"); OK();
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E + 1, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E + 1, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == -1,
               "lookback height 0 is unreachable on a version-3 chain — "
               "fails closed, MISSING"); OK();
@@ -1036,13 +1042,13 @@ int main(void) {
         CHECK(run_sql(fx.w->db, "DELETE FROM v2_blocks WHERE global_height = 1")
                   == 0, "drop seed row"); OK();
         CHECK(v2x_db_digest(fx.w, d0) == 0, "digest"); OK();
-        CHECK(nodus_witness_vset_commit_next(fx.w, BOUNDARY_HEIGHT) == -1,
+        CHECK(nodus_witness_vset_commit_next(fx.w, BOUNDARY_HEIGHT, GEN1) == -1,
               "commit_next without a Comet seed fails closed"); OK();
         CHECK(v2x_db_digest(fx.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
               "failed commit_next wrote nothing"); OK();
 
         CHECK(restore_honest(&fx, &backup) == 0, "restore honest"); OK();
-        CHECK(nodus_witness_vset_commit_next(fx.w, BOUNDARY_HEIGHT) == 0,
+        CHECK(nodus_witness_vset_commit_next(fx.w, BOUNDARY_HEIGHT, GEN1) == 0,
               "commit_next with the Comet seed commits"); OK();
         {
             sqlite3_stmt *st = NULL;
@@ -1088,7 +1094,7 @@ int main(void) {
         fx.w->v2_successor = true;
         memcpy(fx.w->v2_chain32, chain32, 32);
 
-        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(fx.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == 0 &&
               committee_matches(&fx, out, count, ord),
               "reopen recomputes the identical committee"); OK();
@@ -1157,7 +1163,7 @@ int main(void) {
         }
         OK();
 
-        CHECK(nodus_committee_compute_for_epoch(lf.w, E_START, out,
+        CHECK(nodus_committee_compute_for_epoch(lf.w, E_START, GEN1, out,
                   DNAC_MAX_ACTIVE_VALIDATORS, &count) == 0,
               "legacy compute"); OK();
         CHECK(count == N_VAL, "every legacy validator seated (no vacuous "
