@@ -1,7 +1,7 @@
 import { getAddress } from 'ethers';
-import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
+import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, confirmedOnChainList, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor } from './activity-storage.js';
+import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, sentRowsToShow, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor, serializeIdentity, parseIdentity, identityKeyFor } from './activity-storage.js';
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
@@ -15,7 +15,7 @@ import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient, NODUS_CONNECT_BOUND_MS } from './nodus/client.js';
-import { nodusHistoryRow, nodusHistoryStatus, localRowsToShow, NODUS_HISTORY_LIMIT } from './nodus/history.js';
+import { nodusHistoryRow, nodusHistoryStatus, NODUS_HISTORY_LIMIT } from './nodus/history.js';
 import { parseNameOf } from './nodus/names.js';
 import { netLevelFor, netStatusView } from './net-status.js';
 // The session log (memory only, cleared on lock; the Logs page).
@@ -28,7 +28,7 @@ import { createPortfolio } from './portfolio-view.js';
 import { renderQr } from './qr.js';
 // Wallet-only page: no extension is registered and these are no-ops; the
 // Nodus Connect page registers Messages (src/connect-main.js).
-import { raise, gather, siteName } from './wallet-extensions.js';
+import { raise, gather, siteName, onOwnIdentity } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
 import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote } from './auto-lock.js';
 import { readBalanceRefresh, writeBalanceRefresh, parseBalanceRefresh, balanceRefreshNote } from './balance-refresh.js';
@@ -180,6 +180,52 @@ function persistBalances(entries) {
     if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return;
     localStorage.setItem(BALANCES_KEY, encrypted);
   }).catch(() => { /* the balances are read again next time */ });
+}
+// The own identity (0.1.97, src/activity-storage.js serializeIdentity): the
+// derived receive-only addresses and the own name / picture last shown,
+// saved encrypted only while a SAVED wallet is open, shown at once on the
+// next unlock. `ownIdentity` is this wallet's current one; a derived address
+// replaces a kept one.
+let ownIdentity = { addresses: {} }, identityWrites = Promise.resolve();
+function noteIdentity(change) {
+  const next = { ...ownIdentity, ...change, addresses: { ...ownIdentity.addresses, ...(change.addresses || {}) } };
+  for (const key of ['name', 'avatar']) if (!next[key]) delete next[key];
+  if (JSON.stringify(next) === JSON.stringify(ownIdentity)) return;
+  ownIdentity = next;
+  saveIdentity();
+}
+function saveIdentity() {
+  const session = activitySession, source = wallet, value = ownIdentity;
+  if (!session?.identityKey || !source) return;
+  identityWrites = identityWrites.catch(() => {}).then(async () => {
+    const encrypted = await serializeIdentity(session.id, value, session.identityKey);
+    if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return;
+    localStorage.setItem(IDENTITY_KEY, encrypted);
+  }).catch(() => { /* derived again next time */ });
+}
+// The own name and picture as the page shows them (Nodus Connect,
+// src/connect-main.js through wallet-extensions.js reportOwnIdentity).
+onOwnIdentity(({ name = '', avatar = '' } = {}) => { if (wallet && !wallet.locked) noteIdentity({ name, avatar }); });
+// Every receive-only address derived after unlock: the NODUS address (the
+// own ID of Nodus Connect) first, Cellframe and Ixios after it, so they do
+// not compete with it for the main thread (0.1.96 for typed words; 0.1.97 for
+// the saved-wallet unlock too, which still started all three at once).
+// A saved wallet's kept identity, shown before anything is derived: the
+// portfolio rows of those addresses (their kept balances, a read for the
+// networks that have a source) and, for Nodus Connect, the own ID, name and
+// picture. Nothing signs or receives with a kept address: `wallet.addresses`
+// is set only by derivation (showNodusAddress / Cellframe / Ixios).
+function showKeptIdentity(kept) {
+  const a = kept?.addresses || {}, opened = wallet;
+  if (a.nodus || kept?.name || kept?.avatar) raise('ownIdentityKept', { address: a.nodus, name: kept.name || '', avatar: kept.avatar || '' });
+  // The portfolio rows after the wallet view has been drawn (each one
+  // re-draws the portfolio; measured: opening ~0.2 s later when done inline).
+  setTimeout(() => { if (wallet === opened && !opened.locked) for (const [chain, address] of Object.entries(a)) portfolio.setAddress(chain, address); }, 0);
+}
+function deriveOwnAddresses() {
+  const opened = wallet;
+  nodusAddressFirst = showNodusAddress().catch(() => {});
+  void nodusAddressFirst.then(() => { if (wallet === opened && !opened.locked) { void showCellframeAddress(); showIxiosAddress(); } });
 }
 // ── Account history (src/history.js) ────────────────────────────────────
 // Read for the network selected in Send / Receive, at most once per
@@ -359,17 +405,7 @@ function renderActivity(save = true) {
   // 0.1.91 it left at confirmation, before the history was read again, and
   // could be in neither list).
   const all = visibleActivity(), chain = $('chain').value, nodus = chain === NODUS_ASSET.chain;
-  let rows;
-  if (nodus) {
-    rows = localRowsToShow(all, nodusHistoryFor()?.page ?? null, { limit: NODUS_HISTORY_LIMIT });
-    const shown = new Set(rows);
-    for (const row of all) if (row.status === 'confirmed' && !shown.has(row)) row.listed = true;
-  } else {
-    const norm = h => (typeof h === 'string' && /^(0x)?[0-9a-fA-F]+$/.test(h) ? h.toLowerCase() : h);
-    const hashes = new Set((historyFor(chain)?.rows || []).map(r => norm(r.hash)));
-    for (const row of all) if (row.status === 'confirmed' && hashes.has(norm(row.hash))) row.listed = true;
-    rows = all.filter(row => !confirmedOnChainList(row));
-  }
+  const rows = sentRowsToShow(all, nodus ? { nodus, nodusPage: nodusHistoryFor()?.page ?? null } : { historyRows: historyFor(chain)?.rows || [] });
   if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   const empty = document.querySelector('#activity + .activity-empty');
   if (empty) empty.textContent = rows.length < all.length ? 'Nothing waiting here: your confirmed transactions are listed under Account history below.' : ACTIVITY_EMPTY_TEXT;
@@ -1472,7 +1508,7 @@ function lock(event) {
   // Extensions close before the NODUS client (stopNodusSend raises
   // nodusClosing first), then the cross-site mark is dropped.
   stopNodusSend({ reselect: false }); nodusRetries = 0;
-  siteLock.stop(); walletFresh = false;
+  siteLock.stop(); walletFresh = false; ownIdentity = { addresses: {} };
   portfolio.clear();
   phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
@@ -1543,12 +1579,8 @@ $('phrase-form').onsubmit = async event => {
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
     walletFresh = fresh; siteLock.start();
     $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity();
-    // The NODUS address (the own ID of Connect) first; Cellframe and Ixios
-    // after it, so they do not compete with it for the main thread (0.1.96,
-    // operator: "risksiz" — measured: three derivations side by side).
-    const opened = wallet;
-    nodusAddressFirst = showNodusAddress().catch(() => {});
-    void nodusAddressFirst.then(() => { if (wallet === opened && !opened.locked) { void showCellframeAddress(); showIxiosAddress(); } });
+    ownIdentity = { addresses: {} };     // typed words: nothing kept to show first
+    deriveOwnAddresses();
     focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) message(error.message, { error: true }); }
   finally { if (claimed) unclaimSession(); }
@@ -1572,6 +1604,7 @@ async function showNodusAddress() {
     if (!current()) return;
     source.addresses.nodus = address;
     raise('nodusAddress', { address });
+    noteIdentity({ addresses: { nodus: address } });
     // Known before the connection: the portfolio shows the NODUS balance last
     // read for it (a saved wallet's kept one too) until it is read again (0.1.96).
     portfolio.setAddress(NODUS_ASSET.chain, address);
@@ -1612,6 +1645,7 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
         const address = await deriveCpunkAddress(source.recoveryPhrase, { signal: operation.signal });
         if (!current()) return;
         source.addresses.cellframe = address;
+        noteIdentity({ addresses: { cellframe: address } });
         if ($('chain').value === 'cellframe') { setReceiveAddress(address); renderHistory(); void loadHistory('cellframe'); }
         $('cellframe-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
         portfolio.setAddress('cellframe', address);
@@ -1667,6 +1701,7 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
         if (!current()) return;
         const address = ixiosChecksumAddress(bytes);
         source.addresses[chain] = address;
+        if (chain === 'ixios') noteIdentity({ addresses: { ixios: address } });
         if ($('chain').value === chain) setReceiveAddress(address);
         status.textContent = 'Derived locally from this wallet’s recovery phrase.';
         portfolio.setAddress(chain, address);
@@ -2082,12 +2117,16 @@ $('unlock-form').onsubmit = async event => {
     if (session !== sessionRelease) return;
     const saved = await decryptVault(text, password);
     if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) return;
-    const restored = deriveWallet(saved.phrase); let key, balancesKey, historyKey, addressBookKey, rows = [], kept = {}, keptHistory = {}, keptBook = [], bookProblem = '', problem = '';
+    const restored = deriveWallet(saved.phrase); let key, balancesKey, historyKey, addressBookKey, identityKey, rows = [], kept = {}, keptHistory = {}, keptBook = [], keptIdentity = { addresses: {} }, bookProblem = '', problem = '';
     try {
       key = await activityKeyFor(saved.phrase, saved.id);
       balancesKey = await balancesKeyFor(saved.phrase, saved.id);
       historyKey = await historyKeyFor(saved.phrase, saved.id);
       addressBookKey = await addressBookKeyFor(saved.phrase, saved.id);
+      identityKey = await identityKeyFor(saved.phrase, saved.id);
+      // A kept identity that does not authenticate is simply not shown (0.1.97).
+      try { keptIdentity = await parseIdentity(localStorage.getItem(IDENTITY_KEY), saved.id, identityKey); }
+      catch { keptIdentity = { addresses: {} }; }
       // A saved address book that does not authenticate or check out is not
       // shown; the next saved address replaces it (said in the panel).
       try { keptBook = await parseAddressBook(localStorage.getItem(ADDRESS_BOOK_KEY), saved.id, addressBookKey, ADDRESS_CHECKS); }
@@ -2102,13 +2141,16 @@ $('unlock-form').onsubmit = async event => {
       catch { kept = {}; }
       if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
     } catch (error) { disposeWallet(restored); throw error; }
-    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, addressBookKey, vault: text }; activityBlocked = !!problem;
+    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, addressBookKey, identityKey, vault: text }; activityBlocked = !!problem;
+    ownIdentity = keptIdentity;
     historyByChain = keptHistory;
     addressBook = keptBook; addressBookNote = bookProblem; addressBookUnreadable = !!bookProblem;
     walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
-    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet(kept);
+    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); message('Saved wallet unlocked locally.'); focusOpenWallet(kept);
+    showKeptIdentity(keptIdentity);      // at once, while the addresses are derived again (0.1.97)
+    deriveOwnAddresses();
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('unlock-wallet').disabled = false; if (claimed) unclaimSession(); }
 };
@@ -2178,11 +2220,11 @@ async function saveVault(change) {
     const encrypted = await encryptVault(source.recoveryPhrase, password, id);
     const newId = parseVault(encrypted).id, key = await activityKeyFor(source.recoveryPhrase, newId);
     const balancesKey = await balancesKeyFor(source.recoveryPhrase, newId), historyKey = await historyKeyFor(source.recoveryPhrase, newId);
-    const addressBookKey = await addressBookKeyFor(source.recoveryPhrase, newId);
+    const addressBookKey = await addressBookKeyFor(source.recoveryPhrase, newId), identityKey = await identityKeyFor(source.recoveryPhrase, newId);
     if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return;
     const stored = await withActivityLock(() => {
       if (operation !== vaultOperation || wallet !== source || source.locked || !$('vault-risk-confirm').checked || localStorage.getItem(VAULT_KEY) !== previous) return false;
-      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, historyKey, addressBookKey, vault: encrypted }; return true;
+      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, historyKey, addressBookKey, identityKey, vault: encrypted }; return true;
     });
     if (!stored) {
       if (operation === vaultOperation && wallet === source && !source.locked && !$('vault-risk-confirm').checked) saveResult('Save canceled. The storage risks were not accepted; no new copy was saved.');
@@ -2192,6 +2234,7 @@ async function saveVault(change) {
     await persistActivity();
     // Balances read before the save are kept from now on as well.
     if (latestKept) persistBalances(latestKept);
+    saveIdentity();                      // the identity derived / shown so far is kept from now on (0.1.97)
     persistHistory();
     // The address book of this session (kept in memory until now) is saved
     // with the wallet from now on — unless the saved one could not be read
@@ -2244,7 +2287,7 @@ $('vault-delete').onclick = async () => {
     if (previous) raise('vaultDeleting');
     const messages = await withActivityLock(async () => {
       if (localStorage.getItem(VAULT_KEY) !== previous) throw new Error('Saved wallet changed before deletion.');
-      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY); localStorage.removeItem(HISTORY_KEY); localStorage.removeItem(ADDRESS_BOOK_KEY);
+      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY); localStorage.removeItem(HISTORY_KEY); localStorage.removeItem(ADDRESS_BOOK_KEY); localStorage.removeItem(IDENTITY_KEY);
       if (!previous) return 'none';
       if (!vaultId) return 'unknown';
       try { await deleteVaultHistory(vaultId, localStorage); return 'deleted'; }

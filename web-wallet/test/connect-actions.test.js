@@ -149,3 +149,22 @@ test('payment cards: only a well-formed NODUS card is shown and checked', () => 
   for (const bad of [{ token: 'X' }, { wire: 'zz' }, { to: 'nope' }, { amount: '1..5' }, { chain: 'cellframe' }]) assert.equal(validNodusCard({ ...ok, ...bad }), false, JSON.stringify(bad));
   assert.equal(validNodusCard(null), false);
 });
+
+// 0.1.97 (the order 0.1.96 could not run in a browser): one payment, one
+// card — the earliest confirmed card of a direction and wire is the payment,
+// whatever order the cards were confirmed in.
+test('copyCards: the earliest confirmed card is the payment, in any confirmation order', async () => {
+  const { copyCards } = await import('../src/connect/ui/actions.js');
+  const W = 'e1'.repeat(64);
+  // the later card (seq 8) confirmed and kept first, the earlier (seq 6) only now
+  const cards = [
+    { key: 'b|8', dir: 'in', wire: W, order: 8n, state: 'confirmed' },
+    { key: 'b|6', dir: 'in', wire: W, order: 6n, state: 'confirmed' },
+    { key: 'b|7', dir: 'in', wire: 'e2'.repeat(64), order: 7n, state: 'confirmed' },
+    { key: 'b|9', dir: 'out', wire: W, order: 9n, state: 'confirmed' },
+    { key: 'b|10', dir: 'in', wire: W, order: 10n, state: 'pending' }
+  ];
+  assert.deepEqual(copyCards(cards), ['b|8'], 'seq 8 is the copy; another wire, the other direction and a pending card are not');
+  assert.deepEqual(copyCards(cards.slice(0, 1)), [], 'a single confirmed card is the payment');
+  assert.deepEqual(copyCards([]), []);
+});

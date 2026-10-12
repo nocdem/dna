@@ -149,3 +149,44 @@ test('requireSavedForEvm: an unsaved wallet is refused in plain words, a saved o
   assert.throws(() => requireSavedForEvm(undefined), /saved in this browser/);
   assert.doesNotThrow(() => requireSavedForEvm(true));
 });
+
+// 0.1.97 (the path 0.1.96 could not run in a browser): the "Sent from here"
+// rows of one network — a confirmed send leaves once the chain's list shows
+// it, and only then; a pending one stays; another network's hash is matched
+// without case for hex; the NODUS page matches by wire.
+test('sentRowsToShow: a confirmed send leaves only once the chain list shows it', async () => {
+  const { sentRowsToShow } = await import('../src/activity-storage.js');
+  const eth = (hash, status) => ({ chain: 'ethereum', hash, status });
+  const a = eth('0x' + 'aa'.repeat(32), 'confirmed'), b = eth('0x' + 'bb'.repeat(32), 'confirmed'), c = eth('0x' + 'cc'.repeat(32), 'pending');
+  let shown = sentRowsToShow([a, b, c], { historyRows: [] });
+  assert.deepEqual(shown, [a, b, c], 'nothing listed yet: every row stays');
+  shown = sentRowsToShow([a, b, c], { historyRows: [{ hash: '0x' + 'AA'.repeat(32) }, { hash: '0x' + 'cc'.repeat(32) }] });
+  assert.deepEqual(shown, [b, c], 'a (listed, any case) leaves; c is listed but still pending, so it stays');
+  assert.equal(a.listed, true); assert.equal(b.listed, undefined); assert.equal(c.listed, undefined);
+  // NODUS: the node's page lists the wire
+  const W = 'ab'.repeat(64), n1 = { chain: 'nodus', status: 'confirmed', wire: W, hash: '01'.repeat(64) }, n2 = { chain: 'nodus', status: 'confirmed', wire: 'cd'.repeat(64), hash: '02'.repeat(64) };
+  shown = sentRowsToShow([n1, n2], { nodus: true, nodusPage: { entries: [{ h: 10n, wire: W }] } });
+  assert.deepEqual(shown, [n2]);
+  assert.equal(n1.listed, true);
+  // no page read yet: nothing leaves
+  const n3 = { chain: 'nodus', status: 'confirmed', wire: W, hash: '03'.repeat(64) };
+  assert.deepEqual(sentRowsToShow([n3], { nodus: true, nodusPage: null }), [n3]);
+});
+
+// 0.1.97: a saved wallet's own identity (addresses, own name, picture) —
+// sealed under its own key, bound to the wallet id, shape-checked on read.
+test('identity record: round trip, wrong key or wallet refused, bad shapes refused', async () => {
+  const { identityKeyFor, serializeIdentity, parseIdentity, checkIdentity } = await import('../src/activity-storage.js');
+  const key = await identityKeyFor(phrase, id);
+  const value = { addresses: { nodus: OWN, cellframe: 'Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevkiKy1sv1RBGTonM83D3xPDwoyGasZ7', ixios: '0x' + '1a'.repeat(20) }, name: 'cenk', avatar: '/9j/AAAA' };
+  const text = await serializeIdentity(id, value, key);
+  assert.ok(!text.includes(OWN) && !text.includes('cenk'), 'nothing in clear text');
+  assert.deepEqual(await parseIdentity(text, id, key), value);
+  assert.deepEqual(await parseIdentity('', id, key), { addresses: {} });
+  const other = await identityKeyFor('legal winner thank year wave sausage worth useful legal winner thank yellow', id);
+  await assert.rejects(parseIdentity(text, id, other));
+  await assert.rejects(parseIdentity(text, Buffer.alloc(16, 9).toString('base64'), key));
+  for (const bad of [{ addresses: { nodus: 'xyz' } }, { addresses: { bitcoin: 'a' } }, { addresses: {}, name: 'x'.repeat(65) }, { addresses: {}, avatar: 'not base64!' }, { addresses: {}, extra: 1 }]) {
+    assert.throws(() => checkIdentity(bad), /Invalid saved identity/, JSON.stringify(bad));
+  }
+});

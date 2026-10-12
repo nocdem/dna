@@ -430,6 +430,9 @@ try {
   // reopened from the saved copy: the confirmed send, never shown by the
   // account history, was saved and is back (re-checked to "confirmed")
   await page.waitForFunction(confirmedLeft);
+  // 0.1.97: the saved wallet keeps its own identity (encrypted) for the next
+  // unlock; deleting the saved wallet removes it too (localStorage empty below)
+  await page.waitForFunction(() => { const t = localStorage.getItem('nodus.identity.v1'); return !!t && !t.includes('cellframe') && JSON.parse(t).cipher === 'AES-256-GCM'; });
   await page.getByText('Delete saved wallet from this device', { exact: true }).click(); await page.locator('#vault-delete-confirm').check(); await page.locator('#vault-delete').click();
   // The saved wallet has a readable id, so its Messages history goes in the
   // same step (app.js vault-delete, the 'deleted' outcome).

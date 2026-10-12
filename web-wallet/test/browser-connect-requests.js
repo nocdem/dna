@@ -130,6 +130,9 @@ try {
   await requests();
   assert.deepEqual(await contacts(), [], 'a lost pending request must never allow automatic approval');
   assert.equal(await requestRows.count(), 1, 'the acceptance must remain visible after losing the pending request');
+  // 0.1.97 (BUGS W-09): said in our words, not as their system-looking note
+  assert.match(await requestRows.first().locator('.request-orphan').innerText(), /no record of sending one/);
+  assert.equal(await requestRows.first().locator('.request-note').count(), 0);
   await requestRows.getByRole('button', { name: 'Accept', exact: true }).click();
   await page.waitForFunction(() => window.requestsTest.network.contacts[window.requestsTest.ids.a]?.length === 1);
   assert.deepEqual(await contacts(), ['22'.repeat(64)]);

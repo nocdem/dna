@@ -57,7 +57,7 @@ import {
 import { el, untrusted, untrustedLinked, button, website, fillAvatar } from './dom.js';
 import {
   REACTION_EMOJIS, messageHash, buildReaction, reactionSummary, ownReactionOn, buildDelete, deletions, buildReply, parseReply,
-  buildTransfer, parseTransfer, transferVerdict, nodusUnits, validNodusCard
+  buildTransfer, parseTransfer, transferVerdict, nodusUnits, validNodusCard, copyCards
 } from './actions.js';
 import { parseNameOf } from '../../nodus/names.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, chainNoNameFresh, chainNoNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
@@ -1730,7 +1730,13 @@ function renderRequests() {
     el('div', { className: 'request-main' },
       el('span', { className: 'contact-name' }, el('span', { className: 'request-label', text: 'Not a contact' }), nameTitle(request.sender)),
       nameHint(request.sender, { claimed: request.claimed_name, prefix: 'says their name is ' }),
-      request.message ? el('p', { className: 'request-note' }, untrusted(request.message)) : null,
+      // An acceptance with no pending request of ours here (an unsaved
+      // session ended, another device, or never sent; 0.1.95 shows it, BUGS
+      // W-09): said in our words, not as their note, which reads like a
+      // confirmation from the system (0.1.97).
+      request.acceptance === true
+        ? el('p', { className: 'request-orphan', text: 'Says they accepted a contact request from you. This device has no record of sending one — accept only if you know them.' })
+        : request.message ? el('p', { className: 'request-note' }, untrusted(request.message)) : null,
       el('div', { className: 'request-actions' }, button('Accept', () => void accept(request), 'small'), button('Decline', () => void decline(request), 'secondary small')))
   )) : [el('li', { className: 'contact-empty', text: 'No new requests.' })]));
 
@@ -2085,13 +2091,9 @@ async function checkTransfers(gen, { force = false } = {}) {
     // One payment, one card (0.1.96, BUGS W-06): among the confirmed cards of
     // one direction naming one wire, the EARLIEST is the payment and every
     // other is a copy — whatever order they were confirmed in, kept or not.
-    const firstOf = new Map(), copies = [];
-    const confirmedCards = messages.filter(m => m.kind === 'transfer' && cardVerdict(m)?.state === 'confirmed').sort(compareLocal);
-    for (const m of confirmedCards) {
-      const key = `${m.dir}|${parseTransfer(m.text)?.wire}`;
-      if (!firstOf.has(key)) firstOf.set(key, m); else copies.push(m);
-    }
-    for (const m of copies) { transferVerdicts.set(cardKey(m), { state: 'duplicate' }); moved = true; }
+    const cardsNow = messages.filter(m => m.kind === 'transfer' && (m.dir === 'in' || m.dir === 'out'))
+      .map(m => ({ key: cardKey(m), dir: m.dir, wire: parseTransfer(m.text)?.wire, order: BigInt(m.seq), state: cardVerdict(m)?.state }));
+    for (const key of copyCards(cardsNow)) { transferVerdicts.set(key, { state: 'duplicate' }); moved = true; }
     // Every card whose verdict is now final and differs from what is stored.
     const toKeep = messages.filter(m => m.kind === 'transfer' && TRANSFER_KEPT.includes(transferVerdicts.get(cardKey(m))?.state) &&
       transferVerdicts.get(cardKey(m)).state !== keptVerdict(m)?.state);

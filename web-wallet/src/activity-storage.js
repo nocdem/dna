@@ -3,6 +3,7 @@ import { validHash, validNodusPending, terminal } from './activity.js';
 import { NODUS_ASSET } from './nodus/network.js';
 import { historySupported, checkHistoryRows } from './history.js';
 import { checkAddressBook, ADDRESS_BOOK_MAX } from './address-book.js';
+import { localRowsToShow, NODUS_HISTORY_LIMIT } from './nodus/history.js';
 const encoder = new TextEncoder(), MAX_PLAIN = 150000;
 const context = 'nodus.wallet.activity.v2';
 function encode(bytes) {
@@ -119,6 +120,39 @@ export async function parseBalances(text, id, key, now = Date.now()) {
   }
   return out;
 }
+// This wallet's own identity, kept with a SAVED wallet only (0.1.97,
+// operator 2026-10-12: "id saklanabilir … başka saklanabilecek bir şey varsa
+// o da saklanabilir"; decision 2026-10-02-device-cache-only-when-saved): the
+// receive-only addresses derived after unlock (NODUS = Nodus Connect's own
+// ID, Cellframe, Ixios) and the own chain name and profile picture last
+// shown. Shown at once on the next unlock while the addresses are derived
+// again; a derived address always wins and replaces a kept one. Sealed like
+// the balances under its own HKDF info (IDENTITY_CONTEXT).
+export const IDENTITY_CONTEXT = 'nodus.wallet.identity.v1';
+const IDENTITY_MAX_PLAIN = 24000, IDENTITY_CHAINS = ['nodus', 'cellframe', 'ixios'];
+const IDENTITY_AVATAR_MAX = 20480;              // base64 characters (connect/ui/text.js AVATAR_MAX_B64)
+export const identityKeyFor = (phrase, id) => activityKeyFor(phrase, id, IDENTITY_CONTEXT);
+// -> the checked identity, or throws. Shapes only: a name or picture is
+// checked again where it is shown (connect/ui/chain-names.js chainNameOk,
+// connect/ui/text.js avatarSource).
+export function checkIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !['addresses', 'name', 'avatar'].includes(k))) throw new Error('Invalid saved identity.');
+  const addresses = value.addresses ?? {};
+  if (!addresses || typeof addresses !== 'object' || Array.isArray(addresses) || Object.keys(addresses).some(k => !IDENTITY_CHAINS.includes(k))) throw new Error('Invalid saved identity.');
+  for (const [chain, a] of Object.entries(addresses)) {
+    if (typeof a !== 'string' || (chain === 'nodus' ? !/^[0-9a-f]{128}$/.test(a) : !/^[A-Za-z0-9]{1,128}$/.test(a))) throw new Error('Invalid saved identity.');
+  }
+  if (value.name !== undefined && (typeof value.name !== 'string' || value.name.length > 64)) throw new Error('Invalid saved identity.');
+  if (value.avatar !== undefined && (typeof value.avatar !== 'string' || value.avatar.length > IDENTITY_AVATAR_MAX || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.avatar))) throw new Error('Invalid saved identity.');
+  return { addresses: { ...addresses }, ...(value.name ? { name: value.name } : {}), ...(value.avatar ? { avatar: value.avatar } : {}) };
+}
+export async function serializeIdentity(id, value, key) {
+  return sealRecord(IDENTITY_CONTEXT, id, checkIdentity(value), key, IDENTITY_MAX_PLAIN, 'identity');
+}
+export async function parseIdentity(text, id, key) {
+  if (!text) return { addresses: {} };
+  return checkIdentity(await openRecord(IDENTITY_CONTEXT, text, id, key, IDENTITY_MAX_PLAIN, 'identity'));
+}
 const header = data => ({ version: data.version, id: data.id, cipher: data.cipher, iv: data.iv });
 // A smart-contract transaction's Activity row must be DURABLE before its
 // envelope is sent (red-team 1 F8), and Activity is saved only for a wallet
@@ -159,6 +193,24 @@ const savedForm = row => (row.status === 'pending' && row.savedStatus !== undefi
 // visible, so a guard that reads the live status always has a row to act on.
 export const chainListsHistory = chain => chain === NODUS_ASSET.chain || historySupported(chain);
 export const confirmedOnChainList = row => chainListsHistory(row.chain) && row.status === 'confirmed' && row.listed === true;
+// The "Sent from here" rows of one network (src/app.js renderActivity; pure,
+// 0.1.97 so it is tested): marks `listed` on a confirmed row the chain's own
+// list shows — NODUS: its wire or block in the node's page
+// (nodus/history.js localRowsToShow, which also hides a pending row whose
+// wire is already listed); another network: its hash among `historyRows`
+// (hex compared without case) — and returns the rows still to show.
+export function sentRowsToShow(all, { nodus = false, nodusPage = null, historyRows = [] } = {}) {
+  if (nodus) {
+    const rows = localRowsToShow(all, nodusPage, { limit: NODUS_HISTORY_LIMIT });
+    const shown = new Set(rows);
+    for (const row of all) if (row.status === 'confirmed' && !shown.has(row)) row.listed = true;
+    return rows;
+  }
+  const norm = h => (typeof h === 'string' && /^(0x)?[0-9a-fA-F]+$/.test(h) ? h.toLowerCase() : h);
+  const hashes = new Set((historyRows || []).map(r => norm(r.hash)));
+  for (const row of all) if (row.status === 'confirmed' && hashes.has(norm(row.hash))) row.listed = true;
+  return all.filter(row => !confirmedOnChainList(row));
+}
 // The rows kept in the saved Activity, in their given (time) order: EVERY
 // unresolved row (a pending NODUS send or EVM reservation holds coins and
 // must survive any number of newer rows), then the newest resolved rows up

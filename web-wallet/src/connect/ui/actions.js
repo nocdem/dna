@@ -216,6 +216,21 @@ export function transferVerdict(card, entries, { incoming, counterparty, ownFp }
   return total === want ? { state: 'confirmed', height: String(own[0].h) } : { state: 'mismatch' };
 }
 
+// One payment, one card (web 0.1.96, BUGS W-06): among the CONFIRMED cards
+// of one direction naming one wire, the earliest (local order) is the payment
+// and every other is a copy — whatever order they were confirmed in.
+// `cards`: [{ key, dir, wire, order (comparable, e.g. BigInt seq), state }]
+// -> the keys to mark "duplicate".
+export function copyCards(cards) {
+  const first = new Map(), copies = [];
+  const confirmed = (cards || []).filter(c => c && c.state === 'confirmed').sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0));
+  for (const c of confirmed) {
+    const k = `${c.dir}|${c.wire}`;
+    if (!first.has(k)) first.set(k, c.key); else copies.push(c.key);
+  }
+  return copies;
+}
+
 // ── replies ─────────────────────────────────────────────────────────────
 export const QUOTE_MAX = 100;
 // The quote is one line (the app's reader stops it at the first newline):

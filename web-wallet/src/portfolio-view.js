@@ -303,6 +303,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     // ready): the address is only remembered, so the balance last read for it
     // (kept, a saved wallet's too) is shown as last read; nothing is read (0.1.96).
     if (!chains.includes(chain)) { if (address) { addresses[chain] = address; render(); } return; }
+    // The same address again (a kept one, then the derived one, 0.1.97) while
+    // its read runs: that read answers for both.
+    if (address && addresses[chain] === address && jobs.has(chain)) return;
     addresses[chain] = address;
     if (!address) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' }; render(); return; }
     void readChainBalances(chain, session);

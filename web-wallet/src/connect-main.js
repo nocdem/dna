@@ -90,7 +90,7 @@ function badge(id, count) {
 const YOUR_ID_TEXT = 'Your ID';
 let walletNameAnswer = null;             // { name } once the wallet's lookup answered, else null
 
-function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAvatar, shownOwnName, profileEntryText }) {
+function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAvatar, shownOwnName, profileEntryText, reportOwnIdentity = () => {} }) {
   const navigate = target => messagesNavigate(target);
 
   function openFromMore(target) {
@@ -281,6 +281,9 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     $('home-copy-id').disabled = !id;
     $('home-id-status').textContent = '';
     syncNameRegistration();
+    // What is shown is kept with a saved wallet for the next unlock (0.1.97,
+    // src/app.js noteIdentity — nothing is written for typed words).
+    if (id) reportOwnIdentity({ name, avatar });
   }
 
   // A wallet extension (src/wallet-extensions.js): the wallet's own name
@@ -289,7 +292,23 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
     ownName({ name, confirmed } = {}) { walletNameAnswer = confirmed === true ? { name: typeof name === 'string' ? name : '' } : null; showIdentity(); },
     // This wallet's NODUS address, derived on this device (src/app.js
     // showNodusAddress): the own ID before / without Messages.
-    nodusAddress({ address } = {}) { walletId = typeof address === 'string' && /^[0-9a-f]{128}$/.test(address) ? address : null; showIdentity(); },
+    nodusAddress({ address } = {}) {
+      const next = typeof address === 'string' && /^[0-9a-f]{128}$/.test(address) ? address : null;
+      // A derived address that differs from a kept one: the kept name and
+      // picture were not this ID's (never expected; the derived one wins).
+      if (walletId && next && walletId !== next) { lastName = ''; lastAvatar = ''; }
+      walletId = next; showIdentity();
+    },
+    // A saved wallet's identity kept at its last use (0.1.97): shown at once,
+    // replaced by the derived address and by a name read again. The name goes
+    // through the same check as any shown name (chain-names.js chainNameOk);
+    // the picture through avatarSource when drawn (dom.js fillAvatar).
+    ownIdentityKept({ address, name = '', avatar = '' } = {}) {
+      if (typeof address === 'string' && /^[0-9a-f]{128}$/.test(address) && !walletId) walletId = address;
+      if (!lastName) lastName = shownOwnName(null, typeof name === 'string' ? name : '');
+      if (!lastAvatar && typeof avatar === 'string') lastAvatar = avatar;
+      showIdentity();
+    },
     locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; messagesClosed = false; walletId = null; lastName = ''; lastAvatar = ''; ownNameAnswered = false; showIdentity(); }
   };
 
@@ -332,11 +351,11 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
 }
 
 try {
-  const [{ configureSite, registerExtension }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }, { mountSmartContracts, smartContractExtension }] = await Promise.all([
+  const [{ configureSite, registerExtension, reportOwnIdentity }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }, { mountSmartContracts, smartContractExtension }] = await Promise.all([
     import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js'), import('./evm/ui.js')
   ]);
   configureSite('connect');
-  const { host, nameExtension } = wireShell({ messagesNavigate, ownIdText, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar, shownOwnName, profileEntryText });
+  const { host, nameExtension } = wireShell({ messagesNavigate, ownIdText, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar, shownOwnName, profileEntryText, reportOwnIdentity });
   mountMessages($('nc-root'), host);
   registerExtension(walletExtension);
   registerExtension(nameExtension);
