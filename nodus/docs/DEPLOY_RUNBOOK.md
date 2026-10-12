@@ -1454,6 +1454,111 @@ orders by fee per unit (decision `2026-09-25-mempool-policy.md` item 2), so in a
 waits; the reporter resubmits after its expiry and the window is 360 blocks at E = 720. No priority
 lane exists for it (only CHAIN_CONFIG has one); adding one is an operator decision.
 
+## 2.7 Validator key rotation (HF-6 ROTATE_CONSENSUS_KEY) — branch only, NOT voted, NOT deployable yet
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.4 and §3 (with the khan
+decisions written under §3 on 2026-10-12: A1-A5); plan `tasks/hf6-slice6-plan.md` §1 and §5 A8.
+Everything here exists only on branch `hf6` and only under rule-set generation 4 (HF-6), which is not
+voted on any live chain. Its end-to-end harness proof is `test_hf6_edge.sh` step 10
+(`nodus/tests/integration/stagef/README.md`) — **written, not yet run**. **Doing any of it on a live
+node needs the operator's word like every deploy.**
+
+**What a rotation is.** A validator's consensus key IS its node's identity: the same key runs the
+consensus signer (privval), the 4004 p2p ID and the 4002 inter-node auth (design §1.4). So "a new
+key" means **a new node with a new identity**; the validator itself — its validator_id, owner,
+bond, delegations and the owner's earnings — does not change. The OWNER submits the rotation and
+pays a normal fee (khan A4: no bond moves); the NEW node's key consents to it first.
+
+**The heights.** The ROTATE is applied at height h. F = the first epoch boundary at or after h (the
+exec writes it into the validator's row as `consensus_key_effective_epoch` — khan A1). At F the
+chain decides whether the rotation fits the budget below; if it does, the validator set of
+U = F + E (E = the epoch length, 720 on the testnet) carries the NEW key. At U the validator's row
+switches to the new key and cometbft is told "old key out, new key in"; the old key still signs
+blocks U and U+1, the new key signs from **U + 2** (design §3). At U + E the old key's reservation
+and its attendance row are released (khan A2) — only then may that key be used again.
+
+**The budget — why a rotation can wait.** At F the rotations waiting there are taken in
+validator_id order, and each is accepted only if the set of keys changing at once still leaves
+MORE than two thirds of the counted voting power on unchanged keys — in BOTH the set governing at
+F and the one that starts at U (`P − R > ⌊2P/3⌋`, `nodus_witness_vset.c` `vset_rotation_pass`).
+One that does not fit is skipped and the walk continues (khan A3); it is judged again at every
+later boundary, its F unchanged. Consequences: with **three or fewer equal validators no rotation
+is ever accepted** (design §3 — rotating any one of three equal keys moves a full third); one
+validator holding more than a third of the counted power can never rotate while that holds;
+several validators rotating together wait for each other. The exec checks only who signed, the
+consent and key uniqueness — it promises no date.
+
+**Prerequisites.**
+- The owner's key: today's `nodus-cli v2-envelope rotate` builds a **kind-1 (single-key) owner
+  only** (the multisig export path carries plain CORE spends only — `nodus-cli.c` `cmd_v2_stake`
+  header). The Foundation's seven genesis validators are owned by the **kind-3 2-of-3 K8 address**
+  (decision `2026-10-08-kurultay-14-hf6-summary.md` K8; the HF-6 migration, decision
+  `2026-10-09-kurultay-16-hf6-storage-summary.md` D2 (a)): **their rotation cannot be built with
+  this CLI yet.** The chain itself accepts a kind-3 owner (`rtn_sys_owner_auth`).
+- The validator must be ACTIVE or ELIGIBLE (khan A5) and have no rotation already pending (a second
+  ROTATE is refused until the first has switched at U).
+- The new key must not be reserved by any validator in any role (current or pending) — never reuse a
+  key another validator holds; the old key of this validator is reserved until U + E.
+
+**Procedure.**
+1. **Prepare the new node — new identity, new data directory.** Give it its own `identity_path` and
+   its own data directory (the consensus signer's state lives in
+   `<data dir>/priv_validator_state.json`, `nodus_witness.c`). **Never copy the old node's identity
+   or data directory**: two processes with one consensus key is double signing. Its network file /
+   `persistent_peers` lists the existing validators like any node (§2.3). Its own 4004 p2p ID is
+   derived from its key: `nodus-cli -i <new identity dir> whoami` prints `P2P ID:`; once it is a
+   validator the published network file should carry its `<p2p id>@ip:4004` (the old node's entry
+   can stay while the old node runs).
+2. **Start it and let it catch up BEFORE the rotation.** It joins as a non-validator (by the
+   genesis pin of the network file, §1.5 "Joining a node"), block-syncs, and must be at the fleet's
+   tip and connected to the validators well before U + 2 — from the ROTATE's commit on, the pending
+   key already counts as bonded for 4004 peering (design §3; HF-6 6e). Check: its log shows
+   `cometbft lane LIVE` and its tip equals the fleet's.
+3. **The new node consents** (its own key signs; run where its identity is):
+   ```bash
+   nodus-cli -s 127.0.0.1 -p 4001 -i <new identity dir> validator consent --op rotate \
+       --owner <owner fp, 128 hex> --subject <validator_id, 128 hex> --expiry <height> --out consent.txt
+   ```
+   The chain accepts the consent at inclusion height h only when `expiry ≥ h` and
+   `expiry − h ≤ 720` (`DNA_VALBIND_MAX_EXPIRY_BLOCKS`, a fixed number); the CLI refuses an expiry
+   the next height would not accept. Choose an expiry above the envelope's own (tip + 90).
+4. **The owner submits** (its key signs and pays the fee; the consent file is re-verified first):
+   ```bash
+   nodus-cli -s <node> -p 4001 v2-envelope rotate --keys <owner key dir> \
+       --validator <validator_id> --consent consent.txt --dry-run
+   nodus-cli -s <node> -p 4001 v2-envelope rotate --keys <owner key dir> \
+       --validator <validator_id> --consent consent.txt --submit <node>:4001
+   ```
+   "accepted" on submit is mempool admission only (§1.5 / README "Submit returns" rule). The ROTATE
+   is applied when its `intent_id` (printed) appears in `v2_intent_index`; a refused one leaves no row.
+5. **Watch F.** Every node logs, at boundary F, `snapshot(<U>): <a> rotation(s) accepted, <w> waiting
+   (P_U … R_U …, P_F … R_F …)`. Accepted → go on. **Waiting = deferred by the budget:** the
+   validator's `v2_validator_roles` row keeps the pending key and its F; the stored snapshot(U)
+   carries the OLD key; nothing switches at U; it is judged again at the next boundary. There is no
+   CLI / RPC display of the pending key yet (slice 7); read it on a node:
+   ```bash
+   sqlite3 <witness db> "SELECT consensus_key_effective_epoch, pending_consensus_pubkey != zeroblob(2592)
+       FROM v2_validator_roles WHERE lower(hex(validator_id)) = '<validator_id>';"
+   ```
+6. **At U** every node logs `boundary <U>: <n> consensus key(s) switched to the key S(U) seats` and
+   `FinalizeBlock: epoch boundary height <U> — validator_updates n_added=1 … n_removed=1` (with other
+   set changes at the same boundary the counts are larger). The new node starts signing at U + 2 by
+   itself; the old node stops signing at U + 2 by itself (it is no longer in the set) — no restart,
+   no config change on either.
+7. **Keep the OLD node running** through **U + 1** at the very least — it signs blocks U and U + 1
+   (design §3; the CLI's own note after `rotate` says the same). The plan's runbook item (A8,
+   JUDGMENT) keeps it up **through U + E**: the snapshot of F, where the old key still holds the
+   seat, is still read at U + E, and a node seated in it files that epoch's STORAGE_REPORT in the
+   window (U, U + E/2] (§2.6 item 5); the old key and its attendance row are released at U + E
+   (`boundary <U+E>: 1 previous consensus key(s) released with their attendance rows`). After that
+   the old node may be stopped; its key is no longer reserved.
+8. **Governance from U + 1.** Chain-config approvals are counted against the set governing the
+   height (plan §0.6 #13): from U + 1 the NEW key approves for this validator, the old key's
+   approval no longer counts. Run governance from the new node.
+9. **4002.** The design's runbook line names "4002 pin/session change" for the new node (it
+   authenticates on 4002 with its new key). What, if anything, a peer must change on 4002 is not
+   specified anywhere in this tree — open item, ask before the first live rotation.
+
 ---
 
 ## 3. Post-deploy verification

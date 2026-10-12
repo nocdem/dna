@@ -7,8 +7,9 @@
 # Foundation owner across the epoch boundaries after H, 7/7 identical;
 # HF-6 slice 5d: the validator-set snapshot switching to ruleset 2 at the
 # first boundary after H and the power cap reaching cometbft's set one
-# epoch later, over a 50M pre-edge delegation (standalone — NOT in the
-# sweep)
+# epoch later, over a 50M pre-edge delegation; HF-6 slice 6f-2 (only with
+# STAGEF_HF6_OWNER_KEYS): a real consensus-key rotation of node 2 onto an
+# 8th node, end to end (standalone — NOT in the sweep)
 # ════════════════════════════════════════════════════════════════════
 #
 # Governing records: design docs/plans/2026-10-03-hf5-validator-owner-
@@ -58,6 +59,40 @@
 # counted 25714285 (design §5 at 3000 bps: k = 0 S = 120M c = 36M < 60M;
 # k = 1 S = 60M c = ⌊3000·60M / 7000⌋ = 25714285 >= 10M, stop) — exactly
 # ONE power change; raw on the new side would be ZERO changes.
+#
+# HF-6 SLICE 6f-2 — THE ROTATION (phase 10; plan tasks/hf6-slice6-plan.md
+# §1, §2 "6f"; design rev 6 §3 and the khan decisions written under it,
+# 2026-10-12: A1 the exec writes F, the freeze writes nothing; A2 the old
+# key's reservation and the old voter's attendance row released at U + E;
+# A3 a candidate that does not fit is skipped and the walk continues; A4
+# ROTATE pays the fee only; A5 ACTIVE / ELIGIBLE rows only). Runs ONLY when
+# STAGEF_HF6_OWNER_KEYS names the identity whose SHA3-512 the build
+# compiled in as DNAC_HF6_FOUNDATION_OWNER (stagef_hf6_owner.sh prints the
+# flag) — with the K8 default the owner of node 2 is a 2-of-3 the harness
+# holds no key of, and nodus-cli's `v2-envelope rotate` builds a kind-1
+# owner only (6f-1). Heights: the ROTATE applied at h_r; F = the first
+# boundary >= h_r (rtn_rotate2_first_boundary, nodus_witness_rt_native.c);
+# U = F + E. Comet: S(U) is frozen at F carrying the NEW key, FinalizeBlock
+# (U) announces old-key removal + new-key addition, the new key signs from
+# U + 2, U and U + 1 with the old (design §3).
+# THE BUDGET, from the source (nodus_witness_vset.c vset_rotation_pass /
+# vset_rot_fits: accept iff P − (R + p) > P * 2 / 3 in BOTH S(F) and S(U),
+# each with its counted powers from nodus_witness_vset_powers — ruleset 2
+# ⇒ the water-fill cap, shared/dnac/power_cap.c, ratio
+# DNAC_HF6_POWER_CAP_BPS_DEFAULT 3000, r′ = max(3000, ⌈10000/7⌉) = 3000):
+# phase 10 runs after step 8, so F >= B1 + 4E and S(F), S(U) are both
+# ruleset 2; their raw whole-coin powers are node 2 = 2M bond + 8M
+# self-delegation + 50M v2user = 60M and six × 10M (the step-7 rows,
+# unchanged — phase 10 checks the decoded totals of both snapshots
+# before it relies on them). Water-fill: k = 0 S_0 = 120M, c_0 = ⌊3000 ·
+# 120M / 10000⌋ = 36M < 60M; k = 1 S_1 = 60M, c_1 = ⌊3000 · 60M / 7000⌋ =
+# 25714285 >= 10M, stop. Counted: node 2 = 25714285, six × 10M. P =
+# 85714285, P * 2 / 3 = ⌊171428570 / 3⌋ = 57142856, R = p(node 2) =
+# 25714285: P − R = 60000000 > 57142856 — ADMITTED in both sets (S(F) and
+# S(U) hold the same powers), so the node's own line is exactly
+# "snapshot(U): 1 rotation(s) accepted, 0 waiting (P_U 85714285 R_U
+# 25714285, P_F 85714285 R_F 25714285)". (Under the RAW power of a
+# ruleset-1 S(F) it would NOT be: 120M − 60M = 60M ≤ 80M.)
 #
 # WHAT IT PROVES — each item would be false if it failed
 #   0. Capability gate (FAIL): the server and the CLI print one version
@@ -147,6 +182,66 @@
 #   9. After the last boundary: the step-7 dumps unchanged on 7/7 (four+
 #      boundaries do not disturb the migrated rows), and 7/7 identical
 #      global_root + block_id at the final floor.
+#  10. (6f-2, ONLY with STAGEF_HF6_OWNER_KEYS — otherwise the script says
+#      "rotation phase: NOT RUN" and the PASS line says "rotation: not
+#      run": coverage that did not happen, never a rotation pass.) Node 2's
+#      consensus key rotates onto a FRESH 8th node, cand1, on the same
+#      cluster; every check reads chain state, never CLI stdout:
+#      (a) v2user pays the owner 10 NODUS (`v2-envelope spend`), applied:
+#          the owner's coin with tx_hash = that envelope's intent_id;
+#      (b) cand1 derives the fleet's genesis locally (chain id CHECKED
+#          against $BASE_DIR/v2_chain_id), starts as a non-validator node
+#          (the grow scenario's start line, its own data dir and so its own
+#          priv_validator_state.json), runs STAGEF_NODUS_BIN, logs role /
+#          startup table / LIVE, and block-syncs to the fleet tip;
+#      (c) node 2's validator_id = its validators.pubkey_hash, the same on
+#          7/7 and = step 7's (nodus_witness_validator.h: pubkey_hash IS the
+#          validator_id from the generation-4 edge on), joined to its roles
+#          row; no pending key yet; cand1's key reserved by nobody;
+#      (d) cand1's key signs `validator consent --op rotate --owner <owner>
+#          --subject <node 2's validator_id> --expiry <tip + 150>`;
+#      (e) the owner submits `v2-envelope rotate`; APPLIED = its
+#          v2_intent_index row at h_r (a refused item leaves none —
+#          nodus_witness_v2_apply.c cmt_item_index);
+#      (f) 8/8 (7 + cand1), tip in [h_r, U − 1]: node 2's roles row holds
+#          pending = cand1's pubkey and consensus_key_effective_epoch = F;
+#          the reservation SHA3-512(cand1 pk) → node 2's id, role 2; the
+#          old key still role 1; the validators row still the old key;
+#      (g) crossing F, 8/8: snapshot(F) and snapshot(U) are ruleset 2 with
+#          raw totals [60M, 10M × 6] (the budget premise); snapshot(U)'s
+#          entry for node 2's validator_id carries cand1's pubkey and voter
+#          id, 60M, and no entry carries the old key; snapshot(F)'s entry
+#          still the old key; snapshot(U)'s hash identical 8/8; every node
+#          logged "snapshot(U): 1 rotation(s) accepted, 0 waiting (P_U
+#          85714285 R_U 25714285, P_F 85714285 R_F 25714285)" — the
+#          acceptance asserted EXPLICITLY, both as bytes and as the node's
+#          own budget numbers (header "THE BUDGET");
+#      (h) crossing U: blocks U − 1 / U / U + 1 identical 7/7; 8/8 logged
+#          "epoch boundary height U — validator_updates n_added=1
+#          n_power_changed=0 n_removed=1" (nodus_witness_cmt_app.c
+#          FinalizeBlock: the diff is by pubkey, the six others' powers do
+#          not move) and "boundary U: 1 consensus key(s) switched to the key
+#          S(U) seats" (v2_epoch.c v2ep_rotate_swap); 8/8 at tip in
+#          [U, U + E − 1]: the validators row holds cand1's pubkey, pending
+#          zero, epoch 0; cand1's reservation role 1 AND the old key's still
+#          role 1 (khan A2: kept until U + E); snapshot(U + E), frozen at U,
+#          carries cand1's key for node 2's id (Comet does not fall back);
+#      (i) attendance, 8/8, two reads >= 3 heights apart inside (U + 3,
+#          U + E): cand1's voter (stagef_voter_id) has last_signed_height
+#          >= U + 2, signed_count <= tip − U − 2 (it signed nothing before
+#          U + 2), and its last_signed_height ADVANCES between the reads;
+#          node 2's OLD voter has last_signed_height <= U + 1, signed_count
+#          <= 2, both unchanged between the reads; node 2's process is
+#          still running (A8: the old node is never stopped here);
+#      (j) crossing U + E: 8/8 the old key's reservation and the old
+#          voter's attendance row are GONE, cand1's reservation is the one
+#          row naming node 2's id (role 1); every node logged "boundary
+#          U+E: 1 previous consensus key(s) released with their attendance
+#          rows" (v2ep_rotate_sweep); block U + E identical 7/7; node 2
+#          and cand1 still running;
+#      (k) the final floor comparison 7/7 (stagef_cmt_diff_at_floor) AND
+#          cand1 at a floor over all eight (the helper loops 1..7 — the 8th
+#          compare is explicit).
 #
 # WHAT IT REQUIRES
 #   Compile flags — ONE short-epoch + short-grace build of THIS tree (an
@@ -162,14 +257,19 @@
 #   expects it by default. The harness's own 2-of-3 multisig
 #   ($BASE_DIR/msig_genesis_2of3.desc over nodes 2/3/4, stagef_up_v2.sh)
 #   CANNOT be compiled in: its keys are generated at bring-up, after the
-#   build. So the owner is an address whose keys the harness does not hold,
-#   and NO owner-side operation (UNSTAKE, VALIDATOR_UPDATE, the owner's
-#   UNDELEGATE) of a genesis validator can be signed here — that is not
-#   this scenario's subject (sub-slice 3c's unit test test_hf6_calls is).
-#   A build with -DDNAC_HF6_FOUNDATION_OWNER='{0x..,…}' (exactly 64 bytes,
-#   no spaces inside the -D) must export the same 64 bytes as hex in
-#   STAGEF_HF6_OWNER_FP_HEX (read by this script only); a mismatch FAILs
-#   at step 7 with the two values.
+#   build. So with the default the owner is an address whose keys the
+#   harness does not hold, and NO owner-side operation (UNSTAKE,
+#   VALIDATOR_UPDATE, the owner's UNDELEGATE, ROTATE) of a genesis
+#   validator can be signed (sub-slice 3c's unit test test_hf6_calls is
+#   their proof). (6f-2) The ONE way to sign one here: a single test key
+#   generated BEFORE the build (stagef_hf6_owner.sh) and compiled in — the
+#   rotation phase, below.
+#   A build with -DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}" (exactly 64 bytes,
+#   no spaces inside the -D; dnac.h's own form, checked by the 6f-2 author
+#   against flags.make and the compiled object — stagef_hf6_owner.sh
+#   header) must export the same 64 bytes as hex in STAGEF_HF6_OWNER_FP_HEX
+#   (read by this script only); a mismatch FAILs at step 7 with the two
+#   values.
 #   Environment, ALL exported BEFORE stagef_up_v2.sh unless noted:
 #     STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN    that build
 #     STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20
@@ -177,6 +277,9 @@
 #         script only)
 #     STAGEF_HF6_OWNER_FP_HEX   (optional, read by this script only — the
 #         default is the K8 hex 8eff7f41…9f7b89)
+#     STAGEF_HF6_OWNER_KEYS     (6f-2, optional, read by this script only —
+#         the owner identity directory; set = run the rotation phase)
+#     STAGEF_V2_CANDIDATES=1    (6f-2, with the rotation phase only)
 #   Leave STAGEF_PAYOUT_INTERVAL_EPOCHS unset (24): the script steps H − 8
 #   off a payday and handles a payday among the post-H boundaries; 1
 #   (every boundary a payday) is a SKIP. STAGEF_TREASURY_POOL1_RAW is not
@@ -187,8 +290,43 @@
 #   The tree must carry HF-6 slice 5d (the ruleset-2 switch, the
 #   validator_id tiebreak, the phase-0a `_ex` hash); an older HF-6 tree
 #   FAILs at step 8a (snapshot(B1 + E) still ruleset 1).
-#   Tools: sqlite3, xxd, ss.
-#   Exact command sequence (ORCHESTRATOR):
+#   Tools: sqlite3, xxd, ss; with the rotation phase also openssl.
+#   (6f-2) THE ROTATION PHASE needs, ALL together (any one missing while
+#   STAGEF_HF6_OWNER_KEYS is set FAILs at the gate, before step 1 — the
+#   operator asked for the rotation; unset = phase NOT RUN, reported):
+#     - a PRE-BUILD owner identity: `bash stagef_hf6_owner.sh <DIR>` (it
+#       spawns a short-lived nodus-server exactly like the bring-up's
+#       identity spawns, checks nodus.fp == SHA3-512(nodus.pk), and prints
+#       the flag and the exports below);
+#     - the build ALSO compiled with that identity as the owner:
+#       -DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}" inside CMAKE_C_FLAGS (64
+#       bytes, no spaces — the helper prints it; dnac.h's override);
+#     - STAGEF_HF6_OWNER_FP_HEX = SHA3-512 of that nodus.pk (checked here)
+#       and != the K8 address;
+#     - STAGEF_HF6_OWNER_KEYS = that identity directory (nodus.pk + .sk);
+#     - STAGEF_V2_CANDIDATES=1 exported BEFORE stagef_up_v2.sh (mints
+#       $BASE_DIR/cand1 with its own funded leaf, port block C + 3 + 1 =
+#       11 → 14100-14104, stagef_up_v2.sh section 1c; a different chain id,
+#       nothing else in steps 0-9 reads it) — cand1 must not have run yet
+#       (no witness_*.db under cand1/data).
+#   Exact command sequence WITH the rotation phase (ORCHESTRATOR):
+#     S=<TREE>/nodus/tests/integration/stagef
+#     bash $S/stagef_hf6_owner.sh /tmp/hf6-owner    # prints O=… and the FP
+#     F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
+#     O='-DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}"'    # the helper's exact line
+#     cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf6rot -DCMAKE_C_FLAGS="$F $O"
+#     make -C <TREE>/nodus/build-hf6rot -j"$(nproc)" nodus-server nodus-cli
+#     export STAGEF_NODUS_BIN=<TREE>/nodus/build-hf6rot/nodus-server
+#     export STAGEF_NODUSCLI_BIN=<TREE>/nodus/build-hf6rot/nodus-cli
+#     export STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20
+#     export STAGEF_CC_GRACE_SAFETY=15 STAGEF_CC_GRACE_ERGONOMIC=15
+#     export STAGEF_V2_CANDIDATES=1
+#     export STAGEF_HF6_OWNER_FP_HEX=<the helper's 128 hex>
+#     export STAGEF_HF6_OWNER_KEYS=/tmp/hf6-owner/identity
+#     bash $S/stagef_up_v2.sh
+#     bash $S/tests/test_hf6_edge.sh; echo "rc=$?"
+#     bash $S/stagef_down.sh
+#   Exact command sequence WITHOUT it (ORCHESTRATOR):
 #     F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
 #     cmake -S <TREE>/nodus -B <TREE>/nodus/build-shortepoch -DCMAKE_C_FLAGS="$F"
 #     make -C <TREE>/nodus/build-shortepoch -j"$(nproc)" nodus-server nodus-cli
@@ -208,6 +346,12 @@
 #   FAIL (rc 1) on the capability gate, on a chain that already holds a
 #   param 7 / 8 / 9 / 14 / 16 row, a delegation or a roles row (single-use
 #   — needs a fresh bring-up), and on STAGEF_HF6_OWNER_FP_HEX malformed.
+#   (6f-2) FAIL (rc 1) at the gate when STAGEF_HF6_OWNER_KEYS is set but:
+#   it holds no nodus.pk (2592 B) / nodus.sk, SHA3-512(nodus.pk) differs
+#   from STAGEF_HF6_OWNER_FP_HEX (or the latter is the K8 default), openssl
+#   is missing, $BASE_DIR/cand1/identity is missing (STAGEF_V2_CANDIDATES
+#   not exported before bring-up), cand1 already has a chain database, or
+#   cand1 / the owner shares a fingerprint with a harness node or v2user.
 #
 # WHAT IT LEAVES BEHIND
 #   HF-2 ACTIVE, HF-3 ACTIVE, rule-set generation 2, the EVM generation 3 +
@@ -225,6 +369,16 @@
 #   v2user's two fees) in the reward pool. $BASE_DIR/hf6/ (CLI logs).
 #   Nothing killed or restarted. Tear down with stagef_down.sh before
 #   re-running (params 9 / 14 / 16 and the v2user leaf are single-use).
+#   (6f-2, rotation phase only) An EIGHTH running process: cand1
+#   (nodus-server, $BASE_DIR/cand1/{data,nodus.log,derive.log}, ports
+#   14100-14104, its pid appended to pids.txt so stagef_down.sh stops it);
+#   node 2's validator ROTATED for good — its validators row carries
+#   cand1's key, cand1 signs for it from U + 2 (it holds 25714285 of
+#   85714285 counted power; node 2's process keeps running as a
+#   non-validator full node); the owner holds 10 NODUS minus the ROTATE
+#   fee; v2user's funding fee in the reward pool; $BASE_DIR/hf6/rot_*.log
+#   and the consent file $BASE_DIR/hf6/rot_consent.txt. Single-use: a
+#   second run needs a fresh bring-up (cand1's chain DB exists — refused).
 #
 # HOW IT CAN LIE
 #   - **E = 15, grace 15/15, BPY 20 prove the LOGIC**, nothing about the
@@ -240,13 +394,51 @@
 #     FAULTS (the chain stalls -> FAIL), accrual landing anywhere but the
 #     owner (step 8), and the exact pool -> accrual conservation. The
 #     reader inventory is test_hf6_readers' subject.
-#   - **Owner operations are NOT exercised** (the K8 default — see WHAT IT
-#     REQUIRES); nor STAKE (a generation-4 STAKE — test_hf6_stake), a
-#     non-genesis (own-owner) validator, a pre-H SELF-delegation (plan D5),
-#     a RETIRING row graduating to the owner, ROTATE: the harness genesis
-#     has only seven ACTIVE genesis rows, and the one pre-H delegation is
-#     an EXTERNAL one (v2user). Those are the unit tests'
-#     (test_hf6_migrate, test_hf6_calls, test_hf6_readers).
+#   - **Owner operations are NOT exercised** except ONE: the rotation
+#     phase's ROTATE, and only with STAGEF_HF6_OWNER_KEYS (a kind-1 test
+#     owner compiled in — the production Foundation owner is the kind-3
+#     K8 2-of-3, whose ROTATE the 6f-1 CLI cannot build: NOT exercised).
+#     Without the variable the phase does not run and the PASS line says
+#     "rotation: not run" — that is coverage that did not happen. Never
+#     exercised here: UNSTAKE / VALIDATOR_UPDATE / the owner's UNDELEGATE,
+#     STAKE (a generation-4 STAKE — test_hf6_stake), a non-genesis
+#     (own-owner) validator, a pre-H SELF-delegation (plan D5), a RETIRING
+#     row graduating to the owner: the harness genesis has only seven
+#     ACTIVE genesis rows, and the one pre-H delegation is an EXTERNAL one
+#     (v2user). Those are the unit tests' (test_hf6_migrate, test_hf6_calls,
+#     test_hf6_readers, test_hf6_rotate).
+#   - **(6f-2) A rotation the budget never accepts would look like "no
+#     switch"**, not like a failure, if only the row were read. So the
+#     acceptance is asserted EXPLICITLY at F, before U: snapshot(U)'s bytes
+#     carry the new key for node 2's id on 8/8 AND every node logged "1
+#     rotation(s) accepted, 0 waiting" with the budget numbers of the
+#     header's arithmetic; a "0 accepted, 1 waiting" line or old-key bytes
+#     FAIL at (g), never pass at (h).
+#   - **(6f-2) ONE rotation, of the validator with the largest counted
+#     power (30 %)**; the budget's refusal path (a party that would breach
+#     floor(2P/3)), a deferred rotation re-evaluated a boundary later, two
+#     rotations in one freeze, a candidate absent from S(F) (khan A3) and a
+#     rotating validator that graduates are NOT exercised — test_hf6_rotate
+#     and the 6d unit fixtures are their proof.
+#   - **(6f-2) The old node is NEVER stopped**, so a rotation that silently
+#     still needed node 2's old process after U + 1 cannot show here; the
+#     run proves only that the old key stops being credited after U + 1
+#     and the new one is credited from U + 2. What an operator must keep
+#     running, and until when, is the runbook's (A8). With the old node
+#     up, even a cand1 that never signs would NOT halt the chain (the other
+#     six hold 60000000 > 57142856 of 85714285) — which is why (i) asserts
+#     cand1's attendance directly instead of relying on liveness.
+#   - **(6f-2) Attendance credits come from each block's LastCommit**: a
+#     precommit that arrives after the proposer's commit is ABSENT there.
+#     (i) therefore asserts upper bounds for the old key (<= U + 1) and
+#     "credited at least once from U + 2 and advancing" for the new one —
+#     never an exact count; a cand1 whose precommits were never included
+#     at all FAILs (i).
+#   - **(6f-2) cand1's catch-up from genesis (≈ 450 blocks through five
+#     generation edges) is NOT measured** — waited with the grow
+#     scenario's wide 8-interval progress bound; a stall FAILs with that
+#     reason. That it replays every edge byte-identically is shown only by
+#     (k)'s 8th compare and its own log lines.
 #   - **(5d) The counted power value is NOT read from cometbft.** Comet's
 #     validator set lives in opaque protobuf blobs this harness cannot
 #     decode, and no RPC reports the counted power (slice 5e). What is
@@ -299,9 +491,12 @@
 #   - Duration: ≈ 350 blocks (JUDGMENT, not measured): pumped to the EVM
 #     edge's window floor (≈ 262) and on to H (≈ 300), idle across the
 #     GEN2, EVM and HF-6 edges (≈ 8 blocks each) and ≈ 4 blocks before
-#     each of four or five boundaries — on the order of 1-1.5 h.
+#     each of four or five boundaries — on the order of 1-1.5 h. (6f-2)
+#     The rotation phase adds cand1's catch-up (unmeasured) and ≈ 2E + 15
+#     pumped blocks (F, U, U + E) — JUDGMENT ≈ 20-30 min more.
 #   - Run results: none yet — written against the source, NOT run by its
-#     author (sub-slice 3f, and the slice-5d extension: 2b, 8a-8c).
+#     author (sub-slice 3f, the slice-5d extension: 2b, 8a-8c, and the
+#     slice-6f-2 rotation phase 10).
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -419,6 +614,37 @@ if [ "$INTERVAL" -le 1 ]; then
 fi
 [[ "$OWNER" =~ ^[0-9a-f]{128}$ ]] || die "STAGEF_HF6_OWNER_FP_HEX is not 128 hex characters ('$OWNER')"
 mkdir -p "$LOGD"
+
+# ── 6f-2: the rotation phase's gate (FAIL when asked for and impossible) ─
+# Set = the operator asked for the rotation, so every missing piece FAILs
+# here, before the ≈ 1-1.5 h of steps 1-9 (header "WHAT IT REQUIRES",
+# 6f-2). Unset = the phase is NOT RUN and says so (step 10, PASS line).
+ROT_KEYS="${STAGEF_HF6_OWNER_KEYS:-}"
+CAND_DIR="$BASE_DIR/cand1"
+CAND_PIDX=$(( N + 3 + 1 ))   # stagef_up_v2.sh section 1c: candidate i at C + 3 + i
+if [ -n "$ROT_KEYS" ]; then
+    command -v openssl >/dev/null 2>&1 || die "STAGEF_HF6_OWNER_KEYS is set but openssl is not installed (SHA3-512 checks)"
+    [ -s "$ROT_KEYS/nodus.pk" ] && [ -s "$ROT_KEYS/nodus.sk" ] || die \
+        "STAGEF_HF6_OWNER_KEYS=$ROT_KEYS holds no nodus.pk / nodus.sk — make it with stagef_hf6_owner.sh BEFORE the build"
+    [ "$(stat -c %s "$ROT_KEYS/nodus.pk")" = 2592 ] || die "$ROT_KEYS/nodus.pk is not 2592 bytes"
+    [ "$OWNER" != "$K8_OWNER" ] || die \
+        "STAGEF_HF6_OWNER_KEYS is set but STAGEF_HF6_OWNER_FP_HEX is the K8 default — a rotation needs the test owner compiled in (stagef_hf6_owner.sh prints the flag)"
+    rot_kfp=$(stagef_sha3_512_hex "$ROT_KEYS/nodus.pk")
+    [ "$rot_kfp" = "$OWNER" ] || die \
+        "SHA3-512($ROT_KEYS/nodus.pk) = ${rot_kfp:0:16}… is not STAGEF_HF6_OWNER_FP_HEX ${OWNER:0:16}… — the owner key and the compiled owner must be one identity"
+    [ -s "$CAND_DIR/identity/nodus.pk" ] && [ -s "$CAND_DIR/identity/nodus.fp" ] && \
+        [ -s "$CAND_DIR/identity/nodus.mlkem_sk" ] || die \
+        "no rotation target identity under $CAND_DIR — export STAGEF_V2_CANDIDATES=1 BEFORE stagef_up_v2.sh"
+    for f in "$CAND_DIR/data/"witness_*.db; do
+        if [ -e "$f" ]; then
+            die "cand1 already has a chain database ($f) — this bring-up already ran the rotation phase; bring up fresh"
+        fi
+    done
+    [ -s "$BASE_DIR/v2_chain_id" ] || die "the bring-up recorded no $BASE_DIR/v2_chain_id (cand1's derived genesis is checked against it)"
+    echo "[ok] 6f-2 rotation phase armed: owner keys $ROT_KEYS (SHA3-512 = the compiled owner), target cand1 (port block $CAND_PIDX)"
+else
+    echo "[info] 6f-2 rotation phase: NOT armed (STAGEF_HF6_OWNER_KEYS unset) — step 10 will not run"
+fi
 
 # ── CAPABILITY GATE (FAIL, not skip) ────────────────────────────────
 bin_version() {            # BIN KIND ("Server" | "CLI") -> X.Y.Z, "" if no banner
@@ -632,6 +858,15 @@ USER_FP=$(fp_lc "$USER_DIR/identity")
 DELEG_PK=$(xxd -p "$(node_keys "$DELEG_NODE")/nodus.pk" | tr -d '\n')
 # accrual owners a step-8 table may hold: the owner and v2user
 acc_owner_ok() { [ "$1" = "$OWNER" ] || [ "$1" = "$USER_FP" ]; }
+# 6f-2: the rotation's three identities must be distinct from every
+# harness payee, or a check below could pass on the wrong key
+if [ -n "$ROT_KEYS" ]; then
+    CAND_FP=$(fp_lc "$CAND_DIR/identity")
+    [ "${#CAND_FP}" = 128 ] || die "cand1's fingerprint is not 128 hex"
+    [ -z "${IS_NODE_FP[$CAND_FP]:-}" ] && [ "$CAND_FP" != "$OWNER" ] && [ "$CAND_FP" != "$USER_FP" ] \
+        || die "cand1's fingerprint equals a node key, the owner or v2user — the rotation checks would be vacuous"
+    [ "$OWNER" != "$USER_FP" ] || die "the owner equals v2user — the funding check would be vacuous"
+fi
 
 # hf6: stake_snap NODE — ONE statement: "tip Σself Σtotal_delegated
 # n_validators n_delegations n_roles Σaccrual n_accrual accrual_list"
@@ -1173,8 +1408,447 @@ DEL_END=$(same_on_all "delegations (end)" del_dump)
 [ "$DEL_END" = "$DEL_REF" ] || die "the delegation rows changed between H and $LAST_B"
 echo "[ok] the migrated rows are unchanged on 7/7 after $crossed boundaries"
 
+# ── 10. 6f-2: a real validator key rotation, node 2 → cand1 ─────────
+# Header "HF-6 SLICE 6f-2 — THE ROTATION" and WHAT IT PROVES item 10.
+# Every check reads chain state (or the node's own log line beside it);
+# no CLI stdout is ever the evidence. Node "c" below = cand1.
+ROT_RAN=0
+ROT_LINE="rotation: not run (STAGEF_HF6_OWNER_KEYS unset — coverage that did not happen)"
+ROT_FUND=1000000000           # 10 NODUS: ROTATE pays the fee only (khan
+                              # A4) = max(floor, NODUS_V2_STAKE_UNITS 400000
+                              # × gas price) — 48 400 000 raw at the harness
+                              # genesis price 121 (nodus_v2_stake.h; README
+                              # "W-C"); the CLI reads the price itself
+ROT_CONSENT_AHEAD=150         # > the envelope's own tip + 90
+                              # (nodus-cli.c CLI_ENV_EXPIRY_AHEAD), well
+                              # inside the fixed 720 (valbind_wire.h
+                              # DNA_VALBIND_MAX_EXPIRY_BLOCKS)
+ROT_P=85714285                # header "THE BUDGET": Σ counted powers
+ROT_R=25714285                # node 2's counted power (the party)
+ROT_DELEG_RAW=$(( SELF_OLD + DELEG_AMT ))   # node 2's raw total, 60M
+
+# cand_db — cand1's chain DB: the largest non-empty witness_*.db under its
+# data dir (stagef_node_chain_db's rule; a loop, never an early-exit pipe)
+cand_db() {
+    local f best="" bs=-1 s
+    for f in "$CAND_DIR/data/"witness_*.db; do
+        [ -s "$f" ] || continue
+        s=$(stat -c %s "$f")
+        if [ "$s" -gt "$bs" ]; then best="$f"; bs="$s"; fi
+    done
+    if [ -n "$best" ]; then echo "$best"; fi
+    return 0
+}
+rot_db()   { if [ "$1" = c ]; then cand_db; else db_of "$1"; fi; }
+rot_log()  { if [ "$1" = c ]; then echo "$CAND_DIR/nodus.log"; else node_log "$1"; fi; }
+rot_name() { if [ "$1" = c ]; then echo cand1; else echo "node$1"; fi; }
+ROT_ALL="$(seq -s ' ' 1 "$N") c"
+
+# cand_runs — 0 iff a process with cand1's data dir runs STAGEF_NODUS_BIN
+cand_runs() {
+    local pid
+    for pid in $(pgrep -f -- "-d $CAND_DIR/data" || true); do
+        [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)" = "$(readlink -f "$SRV")" ] && return 0
+    done
+    return 1
+}
+
+# wait_rot H — every node AND cand1 reach H (progress-bounded)
+wait_rot() {
+    local n db
+    for n in $ROT_ALL; do
+        db=$(rot_db "$n")
+        [ -n "$db" ] || die "$(rot_name "$n") has no chain database"
+        stagef_cmt_wait_height "$db" "$1" 3 >/dev/null \
+            || die "$(rot_name "$n") never reached height $1 (stuck at $(stagef_cmt_tip "$db"))"
+    done
+}
+
+# rot_state DB — ONE statement: "tip|ROW|CANDRES|OLDRES|NRES" where ROW =
+# "<validators.pubkey: old|cand|other>:<pending: zero|cand|other>:<epoch>"
+# for node 2's validator_id ('none' without the joined row), CANDRES /
+# OLDRES = "<validator_id>:<role>" of the reservation of SHA3-512(cand1 pk)
+# / SHA3-512(node 2's old pk) ('-' when absent), NRES = the reservation
+# rows naming node 2's id (v2_consensus_keys, nodus_witness_v2_schema.h
+# S18 note).
+rot_state() {
+    sqlite3 -separator '|' "$1" \
+      "SELECT (SELECT COALESCE(MAX(global_height),-1) FROM v2_blocks),
+              COALESCE((SELECT CASE WHEN lower(hex(v.pubkey)) = '$DELEG_PK' THEN 'old'
+                                    WHEN lower(hex(v.pubkey)) = '$CAND_PK' THEN 'cand'
+                                    ELSE 'other' END || ':' ||
+                               CASE WHEN r.pending_consensus_pubkey = zeroblob(2592) THEN 'zero'
+                                    WHEN lower(hex(r.pending_consensus_pubkey)) = '$CAND_PK' THEN 'cand'
+                                    ELSE 'other' END || ':' ||
+                               r.consensus_key_effective_epoch
+                          FROM validators v JOIN v2_validator_roles r ON r.validator_id = v.pubkey_hash
+                         WHERE lower(hex(v.pubkey_hash)) = '$VID'), 'none'),
+              COALESCE((SELECT lower(hex(validator_id)) || ':' || role FROM v2_consensus_keys
+                         WHERE lower(hex(consensus_pk_hash)) = '$CAND_PKH'), '-'),
+              COALESCE((SELECT lower(hex(validator_id)) || ':' || role FROM v2_consensus_keys
+                         WHERE lower(hex(consensus_pk_hash)) = '$OLD_PKH'), '-'),
+              (SELECT COUNT(*) FROM v2_consensus_keys WHERE lower(hex(validator_id)) = '$VID');" \
+        2>/dev/null || echo ERR
+}
+
+# check_rot_state LABEL LO HI WANT — on 8/8 the rot_state tip is in
+# [LO, HI] and the rest equals WANT ("layout broke" outside the window —
+# a false RED, never a false PASS)
+check_rot_state() {
+    local label="$1" lo="$2" hi="$3" want="$4" n s t rest
+    for n in $ROT_ALL; do
+        s=$(rot_state "$(rot_db "$n")")
+        t="${s%%|*}"; rest="${s#*|}"
+        case "$t" in ''|*[!0-9]*) die "$label: $(rot_name "$n")'s read failed ('$s')" ;; esac
+        [ "$t" -ge "$lo" ] && [ "$t" -le "$hi" ] || die \
+            "$label: $(rot_name "$n")'s read is at tip $t, outside [$lo, $hi] — the layout broke (false RED), re-run on a fresh bring-up"
+        [ "$rest" = "$want" ] || die "$label: $(rot_name "$n") reads '$rest', expected '$want'"
+    done
+}
+
+# att_state DB — ONE statement: "tip|NEW|OLD", each "signed_count:
+# last_signed_height" of the v2_attendance row of cand1's / node 2's OLD
+# voter_id ('-' when absent; schema S15 note, nodus_witness_v2_schema.h)
+att_state() {
+    sqlite3 -separator '|' "$1" \
+      "SELECT (SELECT COALESCE(MAX(global_height),-1) FROM v2_blocks),
+              COALESCE((SELECT signed_count || ':' || last_signed_height FROM v2_attendance
+                         WHERE lower(hex(voter_id)) = '$CAND_VOTER'), '-'),
+              COALESCE((SELECT signed_count || ':' || last_signed_height FROM v2_attendance
+                         WHERE lower(hex(voter_id)) = '$OLD_VOTER'), '-');" 2>/dev/null || echo ERR
+}
+
+# snap_v2_entries DB EPOCH — the ruleset-2 snapshot(EPOCH)'s entries at
+# the fixed vset_wire.h offsets (header 78 B; entry 2770 B: voter 0..31,
+# validator_id 32..95, owner 96..159, consensus_pk 160..2751, total_stake
+# 2752..2759 u64 BE), one line "voter|validator_id|pubkey|total" each, in
+# stored order; prints "ERR" when the row is absent or not ruleset 2.
+snap_v2_entries() {
+    local db="$1" ep="$2" row n_hex rs cnt i st out=""
+    row=$(sqlite3 -separator ' ' "$db" \
+        "SELECT lower(hex(substr(snapshot_blob, 9, 2))), lower(hex(substr(snapshot_blob, 11, 4)))
+           FROM validator_set_snapshots WHERE epoch_start = $ep;" 2>/dev/null || true)
+    read -r n_hex rs <<< "$row"
+    [ "$rs" = "$RS_V2" ] && [[ "$n_hex" =~ ^[0-9a-f]{4}$ ]] || { echo ERR; return 0; }
+    cnt=$(( 16#$n_hex ))
+    for (( i = 0; i < cnt; i++ )); do
+        st=$(( VSET_HDR + i * VSET_E2 + 1 ))        # 1-based substr
+        row=$(sqlite3 -separator '|' "$db" \
+            "SELECT lower(hex(substr(snapshot_blob, $st, 32))),
+                    lower(hex(substr(snapshot_blob, $(( st + 32 )), 64))),
+                    lower(hex(substr(snapshot_blob, $(( st + VSET_PK_OFF2 )), 2592))),
+                    lower(hex(substr(snapshot_blob, $(( st + VSET_PK_OFF2 + 2592 )), 8)))
+               FROM validator_set_snapshots WHERE epoch_start = $ep;" 2>/dev/null || true)
+        [[ "$row" =~ ^[0-9a-f]{64}\|[0-9a-f]{128}\|[0-9a-f]{5184}\|[0-9a-f]{16}$ ]] || { echo ERR; return 0; }
+        out="$out${row%|*}|$(( 16#${row##*|} ))"$'\n'
+    done
+    printf '%s' "$out"
+}
+
+# snap_hash_8 EPOCH — snapshot(EPOCH)'s stored hash, identical on 8/8
+snap_hash_8() {
+    local n h ref=""
+    for n in $ROT_ALL; do
+        h=$(sqlite3 "$(rot_db "$n")" \
+            "SELECT lower(hex(snapshot_hash)) FROM validator_set_snapshots WHERE epoch_start = $1;" 2>/dev/null || true)
+        [[ "$h" =~ ^[0-9a-f]{128}$ ]] || die "snapshot($1): $(rot_name "$n") holds no readable hash ('$h')"
+        if [ -z "$ref" ]; then ref="$h"
+        elif [ "$h" != "$ref" ]; then die "snapshot($1)'s hash differs: $(rot_name "$n") ${h:0:16}… vs node1 ${ref:0:16}…"; fi
+    done
+    echo "$ref"
+}
+
+# log_has_8 TEXT — every node's AND cand1's log carries TEXT (read whole,
+# then matched — no early-exit pipe reader under pipefail)
+log_has_8() {
+    local n
+    for n in $ROT_ALL; do
+        grep -qF -- "$1" "$(rot_log "$n")" || die "$(rot_name "$n") logged no '$1' line"
+    done
+}
+
+if [ -z "$ROT_KEYS" ]; then
+    echo "[info] (10) rotation phase: NOT RUN — STAGEF_HF6_OWNER_KEYS is unset. Coverage that did not"
+    echo "       happen, not a pass (header, 6f-2: it needs the pre-build owner identity and its build)."
+else
+    echo "══ (10) 6f-2: rotating node$DELEG_NODE's consensus key onto cand1 ══"
+    CAND_PK=$(xxd -p "$CAND_DIR/identity/nodus.pk" | tr -d '\n')
+    [ "${#CAND_PK}" = 5184 ] || die "cand1's nodus.pk is not 2592 bytes"
+    CAND_PKH=$(stagef_sha3_512_hex "$CAND_DIR/identity/nodus.pk")
+    OLD_PKH=$(stagef_sha3_512_hex "$(node_keys "$DELEG_NODE")/nodus.pk")
+    CAND_VOTER=$(stagef_voter_id "$CAND_DIR/identity/nodus.pk")
+    OLD_VOTER=$(stagef_voter_id "$(node_keys "$DELEG_NODE")/nodus.pk")
+    [[ "$CAND_PKH" =~ ^[0-9a-f]{128}$ ]] && [[ "$OLD_PKH" =~ ^[0-9a-f]{128}$ ]] \
+        && [[ "$CAND_VOTER" =~ ^[0-9a-f]{64}$ ]] && [[ "$OLD_VOTER" =~ ^[0-9a-f]{64}$ ]] \
+        || die "a SHA3-512 of cand1's / node$DELEG_NODE's pubkey could not be computed"
+    PORT1=$(stagef_tcp_port 1)
+
+    # ── (a) the owner is funded — by its coin's identity, not its count
+    # (a payday may already have paid the owner a coin at step 8)
+    flog="$LOGD/rot_fund.log"
+    "$CLI" -s 127.0.0.1 -p "$UPORT" v2-envelope spend --keys "$UKEYS" --to "$OWNER" \
+        --amount "$ROT_FUND" --submit "127.0.0.1:$UPORT" > "$flog" 2>&1 \
+        || { cat "$flog" >&2; die "(10a) v2user's funding spend to the owner was REJECTED — read the log above"; }
+    f_intent=$(awk -F= '/^  intent_id=/{print $2; exit}' "$flog")
+    [ "${#f_intent}" = 128 ] || { cat "$flog" >&2; die "(10a) no intent_id in the funding spend's output"; }
+    fh=$(stagef_cmt_wait_row "$(db_of 1)" \
+        "SELECT COUNT(*) FROM utxo_set WHERE lower(hex(tx_hash)) = '$f_intent'
+           AND lower(owner) = '$OWNER' AND amount = $ROT_FUND;" 4) && fwrc=0 || fwrc=$?
+    [ "$fwrc" = 1 ] && die "(10a) the owner's funding coin never appeared and the chain STALLED at $fh"
+    [ "$fwrc" = 2 ] && die "(10a) the owner's funding coin was not included within 20 heights (tip $fh) — dropped, not delayed"
+    echo "[ok] (10a) the owner holds a $ROT_FUND-raw coin from v2user (tip $fh)"
+
+    # ── (b) cand1: derive the fleet's genesis, start, catch up ───────
+    # test_v2_grow_7_20.sh STEP 1c: the genesis is a pure function of the
+    # config, derived locally and CHECKED against the fleet's chain id;
+    # then the grow scenario's start line (nodus.json → the network file,
+    # so cand1 dials the seven; the seven's DHT seeds). Its own data dir =
+    # its own priv_validator_state.json (nodus_witness.c, the privval
+    # path is <data>/priv_validator_state.json).
+    CHAIN_ID=$(cat "$BASE_DIR/v2_chain_id")
+    if ! "$SRV" --derive-v2-genesis "$CONF" -d "$CAND_DIR/data" \
+            > "$CAND_DIR/derive.log" 2> "$CAND_DIR/derive.err"; then
+        cat "$CAND_DIR/derive.log" "$CAND_DIR/derive.err" >&2
+        die "(10b) cand1's genesis derivation was refused"
+    fi
+    cid=$(awk '/^chain-id/{print $2}' "$CAND_DIR/derive.log")
+    [ "$cid" = "$CHAIN_ID" ] || die "(10b) cand1 derived chain '$cid', the fleet is $CHAIN_ID"
+    # shellcheck disable=SC2046
+    "$SRV" -c "$BASE_DIR/nodus.json" -b 127.0.0.1 \
+        -u "$(stagef_udp_port "$CAND_PIDX")" -t "$(stagef_tcp_port "$CAND_PIDX")" \
+        -p "$(stagef_peer_port "$CAND_PIDX")" -C "$(stagef_chan_port "$CAND_PIDX")" \
+        -W "$(stagef_witness_port "$CAND_PIDX")" \
+        -i "$CAND_DIR/identity" -d "$CAND_DIR/data" $(stagef_seed_args) \
+        >> "$CAND_DIR/nodus.log" 2>&1 &
+    CAND_PID=$!
+    echo "$CAND_PID" >> "$BASE_DIR/pids.txt"
+    # listening (the bring-up's 60 x 0.5 s), then role / startup table /
+    # LIVE in this boot's log (the grow scenario's wait_role_live, 90 x 1 s)
+    ctcp=$(stagef_tcp_port "$CAND_PIDX"); up=0
+    for _ in $(seq 1 60); do
+        lst=$(ss -lt 2>/dev/null || true)
+        if grep -Eq "[:.]${ctcp}\\b" <<< "$lst"; then up=1; break; fi
+        sleep 0.5
+    done
+    [ "$up" = 1 ] || { tail -20 "$CAND_DIR/nodus.log" >&2; die "(10b) cand1 (pid $CAND_PID) never listened on $ctcp"; }
+    flags=000
+    for _ in $(seq 1 90); do
+        flags=$(awk '/chain role: COMETBFT/ {r=1} /cometbft startup table built/ {s=1} /cometbft lane LIVE/ {l=1}
+                     END { printf "%d%d%d", r, s, l }' "$CAND_DIR/nodus.log" 2>/dev/null || echo 000)
+        [ "$flags" = 111 ] && break
+        sleep 1
+    done
+    [ "$flags" = 111 ] || { tail -20 "$CAND_DIR/nodus.log" >&2; die "(10b) cand1 incomplete after start: role/startup-table/lane-live = $flags"; }
+    [ "$(readlink -f "/proc/$CAND_PID/exe" 2>/dev/null || true)" = "$(readlink -f "$SRV")" ] \
+        || die "(10b) cand1 (pid $CAND_PID) is not running STAGEF_NODUS_BIN"
+    fleet=$(tip_of 1)
+    cdb=$(cand_db)
+    [ -n "$cdb" ] || die "(10b) cand1 has no chain database after its start"
+    ct=$(stagef_cmt_wait_height "$cdb" "$fleet" 8) \
+        || die "(10b) cand1 did not catch up to the fleet tip $fleet (stuck at $ct) — its from-genesis catch-up is unmeasured (header)"
+    r1=$(sqlite3 "$(db_of 1)" "SELECT hex(global_root)||'|'||hex(block_id) FROM v2_blocks WHERE global_height = $fleet;" 2>/dev/null || true)
+    rc1=$(sqlite3 "$cdb" "SELECT hex(global_root)||'|'||hex(block_id) FROM v2_blocks WHERE global_height = $fleet;" 2>/dev/null || true)
+    [ -n "$r1" ] && [ "$r1" = "$rc1" ] || die "(10b) cand1's block $fleet ('${rc1:0:32}') is not node1's ('${r1:0:32}')"
+    echo "[ok] (10b) cand1 derived chain $CHAIN_ID, is LIVE as a non-validator and caught up to $fleet (block identical to node1's)"
+
+    # ── (c) node 2's validator_id, the same on 8/8 ───────────────────
+    # validators.pubkey_hash IS the validator_id from the generation-4
+    # edge on (nodus_witness_validator.h "validators.pubkey_hash =
+    # validator_id (re-keyed at the edge)"; nodus_witness_v2_migrate.c
+    # UPDATE validators SET pubkey_hash = …); step 7 joined it to its roles
+    # row and found it as DELEG_VID.
+    VID="$DELEG_VID"
+    for n in $ROT_ALL; do
+        v=$(sqlite3 "$(rot_db "$n")" \
+            "SELECT lower(hex(pubkey_hash)) || '|' || status FROM validators WHERE lower(hex(pubkey)) = '$DELEG_PK';" \
+            2>/dev/null || echo ERR)
+        [ "${v%%|*}" = "$VID" ] || die "(10c) $(rot_name "$n"): node$DELEG_NODE's validator_id is '${v:0:16}…', step 7 read ${VID:0:16}…"
+        case "${v#*|}" in 0|4) ;; *) die "(10c) $(rot_name "$n"): node$DELEG_NODE's row is status ${v#*|} — ROTATE needs ACTIVE / ELIGIBLE (khan A5)" ;; esac
+    done
+    # (window: every node, cand1 included, is at or past `fleet`; the
+    # state cannot move before the ROTATE, so no upper bound)
+    check_rot_state "(10c) before the ROTATE" "$fleet" 999999999999 "old:zero:0|-|$VID:1|1"
+    echo "[ok] (10c) node$DELEG_NODE's validator_id ${VID:0:16}… on 8/8: old key, no pending key, cand1's key reserved by nobody"
+
+    # ── (d) cand1's key consents to the ROTATE onto it ───────────────
+    CONSENT="$LOGD/rot_consent.txt"
+    C_EXP=$(( $(tip_of 1) + ROT_CONSENT_AHEAD ))
+    clog="$LOGD/rot_consent.log"
+    "$CLI" -s 127.0.0.1 -p "$PORT1" -i "$CAND_DIR/identity" validator consent --op rotate \
+        --owner "$OWNER" --subject "$VID" --expiry "$C_EXP" --out "$CONSENT" > "$clog" 2>&1 \
+        || { cat "$clog" >&2; die "(10d) cand1's consent was refused by the CLI — read the log above"; }
+    [ -s "$CONSENT" ] || die "(10d) no consent file at $CONSENT"
+    echo "[ok] (10d) cand1 consented (expiry $C_EXP) — $CONSENT"
+
+    # ── (e) the owner submits the ROTATE; applied = its intent row ────
+    rlog="$LOGD/rot_rotate.log"
+    "$CLI" -s 127.0.0.1 -p "$PORT1" v2-envelope rotate --keys "$ROT_KEYS" --validator "$VID" \
+        --consent "$CONSENT" --submit "127.0.0.1:$PORT1" > "$rlog" 2>&1 \
+        || { cat "$rlog" >&2; die "(10e) the owner's ROTATE was REJECTED (CheckTx or the CLI's own checks) — read the log above"; }
+    r_intent=$(awk '/^ *intent_id=/{sub(/^ *intent_id=/,""); print; exit}' "$rlog")
+    [ "${#r_intent}" = 128 ] || { cat "$rlog" >&2; die "(10e) no intent_id in the ROTATE's output"; }
+    rh=$(stagef_cmt_wait_row "$(db_of 1)" \
+        "SELECT COUNT(*) FROM v2_intent_index WHERE lower(hex(intent_id)) = '$r_intent';" 4) && rwrc=0 || rwrc=$?
+    [ "$rwrc" = 1 ] && die "(10e) the ROTATE never applied and the chain STALLED at $rh"
+    [ "$rwrc" = 2 ] && die "(10e) the ROTATE was not applied within 20 heights (tip $rh) — dropped or refused by its exec (a refused item leaves no intent row)"
+    H_R=$(sqlite3 "$(db_of 1)" \
+        "SELECT global_height FROM v2_intent_index WHERE lower(hex(intent_id)) = '$r_intent' LIMIT 1;" 2>/dev/null || true)
+    case "$H_R" in ''|*[!0-9]*) die "(10e) the ROTATE applied but its height could not be read ('$H_R')" ;; esac
+    F=$(( (H_R + E - 1) / E * E ))     # rtn_rotate2_first_boundary: the first boundary >= h_r
+    U=$(( F + E ))
+    UE=$(( U + E ))
+    echo "[ok] (10e) the ROTATE applied at h_r=$H_R: F=$F (freeze), U=$U (switch), U+E=$UE (release)"
+
+    # ── (f) the pending rotation, 8/8, before U ──────────────────────
+    wait_rot "$H_R"
+    check_rot_state "(10f) pending" "$H_R" $(( U - 1 )) "old:cand:$F|$VID:2|$VID:1|2"
+    echo "[ok] (10f) 8/8: pending key = cand1's, consensus_key_effective_epoch = F=$F; cand1's key reserved role 2, the old key role 1"
+
+    # ── (g) crossing F: the freeze ACCEPTS the rotation ──────────────
+    pump_to $(( F + 1 ))
+    wait_rot $(( F + 1 ))
+    HS_F=$(snap_hash_8 "$F"); HS_U=$(snap_hash_8 "$U")
+    # the budget premise (header "THE BUDGET"), decoded on node 1 — the
+    # identical hashes make it every node's bytes
+    for ep in "$F" "$U"; do
+        ents=$(snap_v2_entries "$(db_of 1)" "$ep")
+        [ "$ents" != ERR ] && [ -n "$ents" ] || die "(10g) snapshot($ep) is absent or not ruleset 2 on node1"
+        ne=0; nvid=0; nold=0; ncand=0
+        while IFS='|' read -r evoter evid epk etot; do
+            ne=$(( ne + 1 ))
+            [ "$epk" = "$DELEG_PK" ] && nold=$(( nold + 1 ))
+            [ "$epk" = "$CAND_PK" ] && ncand=$(( ncand + 1 ))
+            if [ "$evid" = "$VID" ]; then
+                nvid=$(( nvid + 1 ))
+                [ "$etot" = "$ROT_DELEG_RAW" ] || die "(10g) snapshot($ep): node$DELEG_NODE's entry holds raw $etot, expected $ROT_DELEG_RAW (60M) — the budget premise"
+                if [ "$ep" = "$F" ]; then
+                    [ "$epk" = "$DELEG_PK" ] || die "(10g) snapshot(F=$F): node$DELEG_NODE's entry does not carry its OLD key"
+                else
+                    [ "$epk" = "$CAND_PK" ] && [ "$evoter" = "$CAND_VOTER" ] || die \
+                        "(10g) snapshot(U=$U): node$DELEG_NODE's entry does not carry cand1's key and voter id — the freeze at F did NOT accept the rotation"
+                fi
+            else
+                [ "$etot" = "$SELF_OLD" ] || die "(10g) snapshot($ep): an entry holds raw $etot, expected $SELF_OLD (10M) — the budget premise [60M, 10M x 6] does not hold"
+            fi
+        done <<< "$ents"
+        [ "$ne" = "$N" ] && [ "$nvid" = 1 ] || die "(10g) snapshot($ep): $ne entries, $nvid for node$DELEG_NODE's id — expected $N / 1"
+        if [ "$ep" = "$F" ]; then
+            [ "$nold" = 1 ] && [ "$ncand" = 0 ] || die "(10g) snapshot(F=$F): old key $nold x, cand1 $ncand x — expected 1 / 0"
+        else
+            [ "$nold" = 0 ] && [ "$ncand" = 1 ] || die "(10g) snapshot(U=$U): old key $nold x, cand1 $ncand x — expected 0 / 1"
+        fi
+    done
+    ACC_LINE="snapshot($U): 1 rotation(s) accepted, 0 waiting (P_U $ROT_P R_U $ROT_R, P_F $ROT_P R_F $ROT_R)"
+    for n in $ROT_ALL; do
+        al=$(grep -F "snapshot($U): " "$(rot_log "$n")" || true)
+        [[ "$al" == *"$ACC_LINE"* ]] || { printf '%s\n' "$al" >&2; die "(10g) $(rot_name "$n") did not log '$ACC_LINE'"; }
+        while IFS= read -r l; do
+            [[ "$l" != *"rotation(s) accepted"* ]] || [[ "$l" == *"$ACC_LINE"* ]] \
+                || die "(10g) $(rot_name "$n") logged a different budget verdict for snapshot($U): '$l'"
+        done <<< "$al"
+    done
+    echo "[ok] (10g) the freeze at F=$F ACCEPTED it, 8/8: snapshot($U) (hash ${HS_U:0:16}…) seats cand1's key for"
+    echo "     node$DELEG_NODE's id, snapshot($F) (${HS_F:0:16}…) the old key; raw [60M, 10M x 6] both; '$ACC_LINE'"
+
+    # ── (h) crossing U: the switch ───────────────────────────────────
+    pump_to $(( U + 1 ))
+    wait_rot $(( U + 1 ))
+    for x in $(( U - 1 )) "$U" $(( U + 1 )); do diff_at "$x" "rotate-at-height-$x"; done
+    for n in $ROT_ALL; do
+        vu=$(grep -F "epoch boundary height $U " "$(rot_log "$n")" || true)
+        [[ "$vu" == *"validator_updates n_added=1 n_power_changed=0 n_removed=1"* ]] || {
+            printf '%s\n' "$vu" >&2
+            die "(10h) $(rot_name "$n") did not log 'n_added=1 n_power_changed=0 n_removed=1' at U=$U (old key out, cand1 in)"; }
+    done
+    log_has_8 "boundary $U: 1 consensus key(s) switched to the key S(U) seats"
+    check_rot_state "(10h) switched" "$U" $(( UE - 1 )) "cand:zero:0|$VID:1|$VID:1|2"
+    snap_hash_8 "$UE" >/dev/null
+    ents=$(snap_v2_entries "$(db_of 1)" "$UE")
+    [ "$ents" != ERR ] && [ -n "$ents" ] || die "(10h) snapshot(U+E=$UE) is absent or not ruleset 2 on node1"
+    ok_ue=0
+    while IFS='|' read -r evoter evid epk etot; do
+        if [ "$evid" = "$VID" ] && [ "$epk" = "$CAND_PK" ]; then ok_ue=1; fi
+        [ "$epk" != "$DELEG_PK" ] || die "(10h) snapshot(U+E=$UE), frozen at U, carries node$DELEG_NODE's OLD key — Comet would fall back to it"
+    done <<< "$ents"
+    [ "$ok_ue" = 1 ] || die "(10h) snapshot(U+E=$UE) does not seat cand1's key for node$DELEG_NODE's id"
+    echo "[ok] (10h) at U=$U, 8/8: Comet told 1 removal + 1 addition; the row carries cand1's key, pending cleared;"
+    echo "     both keys reserved role 1 (khan A2); snapshot($UE) keeps cand1's key; blocks U-1/U/U+1 identical 7/7"
+
+    # ── (i) cand1 signs from U + 2, node 2's old key stops after U + 1 ─
+    ATT1=$(( U + 6 )); ATT2=$(( U + E - 5 ))
+    [ "$ATT2" -ge $(( ATT1 + 3 )) ] && [ "$ATT2" -lt "$UE" ] || die "internal: attendance reads $ATT1 / $ATT2 do not fit (U=$U, E=$E)"
+    pump_to "$ATT1"
+    wait_rot "$ATT1"
+    declare -A ATT_NEW_LAST=() ATT_OLD=()
+    for n in $ROT_ALL; do
+        IFS='|' read -r t anew aold <<< "$(att_state "$(rot_db "$n")")"
+        case "$t" in ''|*[!0-9]*) die "(10i) $(rot_name "$n")'s attendance read failed" ;; esac
+        [ "$t" -ge "$ATT1" ] && [ "$t" -lt "$UE" ] || die "(10i) $(rot_name "$n")'s first read at tip $t, outside [$ATT1, $(( UE - 1 ))] — false RED"
+        [ "$anew" != - ] || die "(10i) $(rot_name "$n"): cand1's voter has NO attendance row at tip $t — it never signed a committed block"
+        [ "$aold" != - ] || die "(10i) $(rot_name "$n"): node$DELEG_NODE's old voter has no attendance row before U+E"
+        nc="${anew%%:*}"; nl="${anew#*:}"; oc="${aold%%:*}"; ol="${aold#*:}"
+        [ "$nl" -ge $(( U + 2 )) ] && [ "$nl" -le $(( t - 1 )) ] || die \
+            "(10i) $(rot_name "$n"): cand1's last_signed_height $nl, expected in [U+2=$(( U + 2 )), $(( t - 1 ))]"
+        [ "$nc" -ge 1 ] && [ "$nc" -le $(( t - U - 2 )) ] || die \
+            "(10i) $(rot_name "$n"): cand1's signed_count $nc at tip $t — more than the $(( t - U - 2 )) commits from U+2 on (it signed before U+2?)"
+        [ "$ol" -le $(( U + 1 )) ] && [ "$oc" -le 2 ] || die \
+            "(10i) $(rot_name "$n"): the OLD key's last_signed_height $ol / signed_count $oc after U — it signed past U+1=$(( U + 1 ))"
+        ATT_NEW_LAST["$n"]="$nl"; ATT_OLD["$n"]="$aold"
+    done
+    pump_to "$ATT2"
+    wait_rot "$ATT2"
+    for n in $ROT_ALL; do
+        IFS='|' read -r t anew aold <<< "$(att_state "$(rot_db "$n")")"
+        case "$t" in ''|*[!0-9]*) die "(10i) $(rot_name "$n")'s second attendance read failed" ;; esac
+        [ "$t" -ge "$ATT2" ] && [ "$t" -lt "$UE" ] || die "(10i) $(rot_name "$n")'s second read at tip $t, outside [$ATT2, $(( UE - 1 ))] — false RED"
+        nl="${anew#*:}"
+        [ "$anew" != - ] && [ "$nl" -gt "${ATT_NEW_LAST[$n]}" ] || die \
+            "(10i) $(rot_name "$n"): cand1's last_signed_height did not advance (${ATT_NEW_LAST[$n]} -> ${nl:-none})"
+        [ "$aold" = "${ATT_OLD[$n]}" ] || die \
+            "(10i) $(rot_name "$n"): the OLD key's attendance moved after U+1 ('${ATT_OLD[$n]}' -> '$aold')"
+    done
+    node_runs_srv "$DELEG_NODE" || die "(10i) node$DELEG_NODE's (old) process is not running — this scenario never stops it (A8)"
+    cand_runs || die "(10i) cand1's process is not running"
+    echo "[ok] (10i) 8/8: cand1 credited from U+2 and advancing; node$DELEG_NODE's old key last credited <= U+1"
+    echo "     and frozen since; node$DELEG_NODE's old process still up (A8)"
+
+    # ── (j) crossing U + E: the old key and its attendance released ───
+    pump_to $(( UE + 1 ))
+    wait_rot $(( UE + 1 ))
+    diff_at "$UE" "rotate-release-at-height-$UE"
+    check_rot_state "(10j) released" "$UE" 999999999999 "cand:zero:0|$VID:1|-|1"
+    for n in $ROT_ALL; do
+        IFS='|' read -r t anew aold <<< "$(att_state "$(rot_db "$n")")"
+        [ "$aold" = - ] || die "(10j) $(rot_name "$n"): node$DELEG_NODE's OLD voter still has an attendance row ('$aold') at tip $t"
+        [ "$anew" != - ] || die "(10j) $(rot_name "$n"): cand1's attendance row is gone at tip $t"
+    done
+    log_has_8 "boundary $UE: 1 previous consensus key(s) released with their attendance rows"
+    node_runs_srv "$DELEG_NODE" || die "(10j) node$DELEG_NODE's (old) process is not running"
+    cand_runs || die "(10j) cand1's process is not running"
+    echo "[ok] (10j) at U+E=$UE, 8/8: the old key's reservation and the old voter's attendance row are gone;"
+    echo "     cand1's key is node$DELEG_NODE's only reservation (role 1); block $UE identical 7/7"
+    ROT_RAN=1
+    ROT_LINE="rotation: node$DELEG_NODE → cand1 — ROTATE at $H_R, accepted at F=$F, switched at U=$U, old key released at U+E=$UE (8/8)"
+fi
+
 stagef_sentinel ASSERT_RUN
 stagef_cmt_diff_at_floor "post-hf6" || exit 2
+if [ "$ROT_RAN" = 1 ]; then
+    # (k) the 8th compare: stagef_cmt_diff_at_floor loops 1..7 — a floor
+    # over all eight, 7/7 there by stagef_diff.sh, and cand1's row equal
+    # to node 1's
+    floor8=""
+    for n in $ROT_ALL; do
+        h=$(stagef_cmt_tip "$(rot_db "$n")")
+        if [ -z "$floor8" ] || [ "$h" -lt "$floor8" ]; then floor8="$h"; fi
+    done
+    [ "$floor8" -ge 1 ] || die "(10k) some node has no block (floor $floor8)"
+    diff_at "$floor8" "post-rotate-8"
+    r1=$(sqlite3 "$(db_of 1)" "SELECT hex(global_root)||'|'||hex(block_id) FROM v2_blocks WHERE global_height = $floor8;" 2>/dev/null || true)
+    rc1=$(sqlite3 "$(cand_db)" "SELECT hex(global_root)||'|'||hex(block_id) FROM v2_blocks WHERE global_height = $floor8;" 2>/dev/null || true)
+    [ -n "$r1" ] && [ "$r1" = "$rc1" ] || die "(10k) cand1's block $floor8 ('${rc1:0:32}') is not node1's ('${r1:0:32}')"
+    echo "[ok] (10k) cand1 agrees with the seven at the 8-node floor $floor8"
+fi
 stagef_sentinel PASS
 echo ""
 echo "[info] HEIGHTS: HF2 $H2 | HF3 $H3 | GEN2 $H4 | EVM $HE | v2user delegation $H_D (copy $C_D) | HF-6 H $H | boundaries $B1..$LAST_B ($checked checked, $paydays payday)"
@@ -1183,4 +1857,6 @@ echo "       2M bonds + 8M self-delegations (Σ unchanged, accrual merged), and 
 echo "       paid the validator reward to the owner and v2user's delegation share to v2user — 7/7 identical."
 echo "       5d: snapshot($(( B1 + E ))) is the first ruleset-2 blob (all <= $B1 ruleset 1), and at $(( B1 + E ))"
 echo "       node$DELEG_NODE's raw 60M became ONE capped power change on 7/7 (the counted value itself: unit tests)."
-echo "       E=15 / grace 15 / BPY 20 — the LOGIC only; owner operations are NOT exercised (header)."
+echo "       6f-2 $ROT_LINE."
+echo "       E=15 / grace 15 / BPY 20 — the LOGIC only; owner operations other than this one ROTATE"
+echo "       (kind-1 test owner) are NOT exercised (header)."
