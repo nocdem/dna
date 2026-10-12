@@ -119,9 +119,13 @@ try {
   await open('a');
   await page.evaluate(() => window.requestsTest.ui.messagesNavigate('add'));
   await page.locator('#nc-add-id').fill('22'.repeat(64));
-  await page.locator('#nc-add-form button[type="submit"]').click();
+  // 0.1.98 (operator: two presses sent two): the second press while the
+  // first runs does nothing — one write, one pending entry, a clear result.
+  await page.evaluate(() => { const f = document.querySelector('#nc-add-form'); f.requestSubmit(); f.requestSubmit(); });
   await page.waitForFunction(() => window.requestsTest.network.inbox[window.requestsTest.ids.b]?.length === 1);
-  await page.waitForFunction(() => document.querySelector('#nc-add-form').textContent.includes('Request sent.'));
+  await page.waitForFunction(() => document.querySelector('#nc-add-form .add-status[data-state="done"]')?.textContent.includes('Request sent to'));
+  assert.equal(await page.evaluate(() => window.requestsTest.network.writes.filter(w => w.owner === window.requestsTest.ids.a && w.name === 'nc_request_new').length), 1, 'one request for two presses');
+  assert.equal(await page.locator('#nc-add-form button[type="submit"]').innerText(), 'Send request', 'the button is back once sent');
   await open('b');
   await requests();
   await requestRows.getByRole('button', { name: 'Accept', exact: true }).click();
@@ -168,7 +172,7 @@ try {
   await page.evaluate(() => window.requestsTest.ui.messagesNavigate('add'));
   await page.locator('#nc-add-id').fill('22'.repeat(64));
   await page.locator('#nc-add-form button[type="submit"]').click();
-  await page.waitForFunction(() => document.querySelector('#nc-add-form').textContent.includes('Request sent.'));
+  await page.waitForFunction(() => document.querySelector('#nc-add-form').textContent.includes('Request sent to'));
   await page.evaluate(() => {
     const t = window.requestsTest;
     t.putRequest(t.ids.d, t.request(t.ids.b, true));

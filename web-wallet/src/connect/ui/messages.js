@@ -98,6 +98,10 @@ const CONNECTING_TEXT = 'Connecting to the network… Your messages on this devi
 const UPDATING_TEXT = 'Updating…';
 const OFFLINE_SEND_TEXT = 'Sending opens once Messages is connected to the network.';
 const ADD_SUBMIT_TEXT = 'Send request';  // the add dialog's button while no chain name is shown (showAddResolved)
+// One add at a time (0.1.98, operator 2026-10-12: "send request'e bastıktan
+// sonra belli olsun" — two presses sent two): the button is locked and says
+// what runs while a name is looked up or a request is sent.
+let adding = false;
 const ADD_OFFLINE_TEXT = 'Messages is still connecting to the network. You can send the request once it is connected.';
 
 // ── session state (all dropped by close / reset) ───────────────────────
@@ -191,7 +195,7 @@ function isOpen() { return !!core && !!state && phase === 'open'; }
 // touches the NODUS client (the host locks it afterwards).
 function wipe() {
   generation++;
-  clearInterval(syncTimer); syncTimer = undefined; syncing = false; sending = false; checkRound = 0;
+  clearInterval(syncTimer); syncTimer = undefined; syncing = false; sending = false; adding = false; checkRound = 0;
   const c = core; core = undefined;
   try { c?.lock(); } catch { /* the rest must still run */ }
   try { store?.close(); } catch { /* same */ }
@@ -306,6 +310,9 @@ async function openLocal(gen) {
     if (gen !== generation) { opened.close(); return; }
     store = opened;
     state = structuredClone(store.state);
+    // One pending request per ID: a double press before 0.1.98 could keep two
+    // (the newest wins; saved with the next change).
+    state.outgoing = [...new Map(state.outgoing.map(o => [o.fp, o])).values()];
     messages = [...store.messages];
     for (const p of store.profiles) kept.set(p.fp, { id: p.id, record: p.record });
     for (const v of store.vaults || []) vaultRecs.set(v.address, { id: v.id, value: v.value });
@@ -1389,7 +1396,7 @@ export function mountMessages(root, options = {}) {
   u.addHeading.id = 'nc-add-title';
   u.addId = input('input', { id: 'nc-add-id', type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', maxlength: '256', required: '' });
   u.addNote = input('input', { id: 'nc-add-note', type: 'text', maxlength: '200', autocomplete: 'off' });
-  u.addStatus = statusLine();
+  u.addStatus = statusLine('add-status');   // not a small grey hint: what the button did (0.1.98)
   u.addSubmit = el('button', { text: ADD_SUBMIT_TEXT }); u.addSubmit.type = 'submit';
   // A chain name's lookup result, shown before the request may be sent
   // (addContact): the name, the ID it belongs to, and the wallet's caution.
@@ -1478,7 +1485,10 @@ export function mountMessages(root, options = {}) {
   u.addForm.onsubmit = event => void addContact(event);
   // Any change to what is typed drops a shown lookup result: the request
   // goes only to the name that was looked up and shown.
-  u.addId.addEventListener('input', () => { if (addResolved) { addResolved = undefined; showAddResolved(); ui.addStatus.textContent = ''; } });
+  u.addId.addEventListener('input', () => {
+    if (addResolved) { addResolved = undefined; showAddResolved(); ui.addStatus.textContent = ''; }
+    if (ui.addStatus.dataset.state) { ui.addStatus.textContent = ''; ui.addStatus.dataset.state = ''; }   // a new ID: the last result goes
+  });
   u.sendForm.onsubmit = event => void send(event);
   u.profileForm.onsubmit = event => void saveProfile(event);
   u.avatarFile.onchange = () => {
@@ -1547,7 +1557,8 @@ function openAdd() {
   if (!ui) return;
   if (!isOpen()) { show('list'); return; }
   ui.addStatus.textContent = online ? '' : ADD_OFFLINE_TEXT;
-  ui.addSubmit.disabled = !online;
+  ui.addStatus.dataset.state = '';
+  ui.addSubmit.disabled = !online || adding;
   addResolved = undefined; showAddResolved();
   if (!ui.addDialog.open) ui.addDialog.showModal();
   ui.addId.focus();
@@ -1594,7 +1605,7 @@ function render({ scroll = false } = {}) {
   // Nothing can be sent before the first check round reached the network
   // (`online`): the add dialog's button waits instead of refusing each press
   // (W-04: a user pressed it 30+ times while the account check failed).
-  ui.addSubmit.disabled = !online;
+  ui.addSubmit.disabled = !online || adding;   // a redraw never unlocks a send in progress (0.1.98)
   if (!online && ui.addDialog.open && !ui.addStatus.textContent) ui.addStatus.textContent = ADD_OFFLINE_TEXT;
   if (online && ui.addStatus.textContent === ADD_OFFLINE_TEXT) ui.addStatus.textContent = '';
   ui.stateView.hidden = open;
@@ -2306,7 +2317,10 @@ function showAddResolved() {
 // before it is shown and again before sending.
 async function addContact(event) {
   event.preventDefault();
+  if (adding) return;
   const gen = generation;
+  adding = true; ui.addSubmit.disabled = true;
+  ui.addStatus.dataset.state = '';
   try {
     const typed = parseContactInput(ui.addId.value);
     let fp = typed.fp;
@@ -2315,6 +2329,7 @@ async function addContact(event) {
         addResolved = undefined; showAddResolved();
         const asked = ui.addId.value;
         ui.addStatus.textContent = 'Looking up the name…';
+        ui.addSubmit.textContent = 'Looking up…';
         const found = await resolveContactName(nodusClient, typed.name);
         if (gen !== generation) return;
         // The box changed while the lookup ran: this answer is not for it.
@@ -2333,19 +2348,29 @@ async function addContact(event) {
     if (!online) throw new Error('Requests can be sent once Messages is connected to the network.');
     const note = ui.addNote.value;
     ui.addStatus.textContent = 'Sending request…';
+    ui.addSubmit.textContent = 'Sending…';
     let result;
     try { result = await core.requestSend(fp, note); }
     catch { throw new Error(new TextEncoder().encode(note).length > 255 ? 'The note is too long.' : 'The request could not be sent. Try again in a minute.'); }
     if (gen !== generation) return;
-    // The offered salt is kept until they accept (core.js requestSend).
-    state.outgoing.push({ fp, salt: result.salt, at: nowSeconds() });
+    // The offered salt is kept until they accept (core.js requestSend); one
+    // pending entry per ID (0.1.98: a second send replaces, never adds).
+    state.outgoing = [...state.outgoing.filter(o => o.fp !== fp), { fp, salt: result.salt, at: nowSeconds() }];
     await persist();
     if (gen !== generation) return;
+    const to = addResolved?.name || shortId(fp);
     ui.addId.value = ''; ui.addNote.value = '';
     addResolved = undefined; showAddResolved();
-    ui.addStatus.textContent = 'Request sent. They appear in your contacts once they accept.';
+    ui.addStatus.textContent = `✓ Request sent to ${to}. They appear in your contacts once they accept.`;
+    ui.addStatus.dataset.state = 'done';
+    logCheck(`Contact request sent to ${to}`);
     render();
-  } catch (error) { if (gen === generation) { ui.addStatus.textContent = error.message; logFailure('A contact request was not sent', error); } }
+  } catch (error) {
+    if (gen === generation) { ui.addStatus.textContent = error.message; ui.addStatus.dataset.state = 'error'; logFailure('A contact request was not sent', error); }
+  } finally {
+    adding = false;
+    if (gen === generation && ui) { showAddResolved(); ui.addSubmit.disabled = !online; }
+  }
 }
 
 async function send(event) {
