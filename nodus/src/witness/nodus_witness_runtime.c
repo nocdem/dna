@@ -1032,9 +1032,12 @@ static const nodus_domain_runtime_t BUILTIN[] = {
          * multisig — a validator / delegation OWNER may be an M-of-N
          * address (the Foundation is one, K8). Only the generation-4
          * owner rule (nodus_witness_rt_native.c rtn_sys_owner_auth)
-         * accepts it; every other SYSTEM op refuses a kind-3 leg (storage
-         * ops and STORAGE_REPORT require kind 1, CHAIN_CONFIG a kind-2
-         * committee count). The allowlist is NOT part of the ruleset
+         * accepts it — since HF-6 slice 6b-1 that includes the storage
+         * record ops (STORAGE_REGISTER by the call's owner, STORAGE_EXIT
+         * by the row's owner; design rev 6 §11.3 / §11.5); every other
+         * SYSTEM op refuses a kind-3 leg (STORAGE_REPORT requires kind 1,
+         * CHAIN_CONFIG a kind-2 committee count). The allowlist is NOT
+         * part of the ruleset
          * descriptor (shared/dnac/domain_wire.h dna_ruleset_desc_t), so
          * the pinned SYS_RULESET_HASH_GST does not move. */
         .allowed_auth_kinds =

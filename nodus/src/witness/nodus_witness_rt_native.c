@@ -956,32 +956,42 @@ _Static_assert(RTN_SYS_VUPD_CALL_LEN == 2594u,
                                       (uint32_t)DNA_VALBIND_SIG_LEN + 8u)
 _Static_assert(RTN_SYS_ROTATE_V2_CALL_LEN == 7291u,
                "ROTATE call length drifted from design §2 (K7)");
+/** HF-6 slice 6b-1 — the storage record calls under generation 4 (design
+ *  rev 6 §2 table and §11.3 / §11.5; layouts APPROVED, Kurultay #16 khan
+ *  decision 1 "REGISTER 7299 / EXIT 64"), the only storage layouts any
+ *  generation accepts (the ops exist only from generation 4; the storage-
+ *  reward-v1 node-key layouts, 2664 / 2592 bytes, were never accepted on a
+ *  chain and are gone):
+ *    STORAGE_REGISTER (op 7) owner_fp[64] ‖ node_pk[2592] ‖
+ *                            consent_sig[4627] ‖ consent_expiry u64 ‖
+ *                            bond u64 = 7299 bytes;
+ *    STORAGE_EXIT     (op 8) node_fp[64] = 64 bytes (the registry key).
+ *  Both exact-length, both decoded here for BOTH domains' hooks (the CORE
+ *  funding leg reads the bond from the SIBLING call through
+ *  rtn_sys_call_flow). REGISTER is two bytes shorter than the generation-4
+ *  STAKE (no commission), so the capacity derivation below does not move. */
+#define RTN_SYS_STREG2_CALL_LEN      ((uint32_t)DNA_VALBIND_OWNER_FP_LEN +  \
+                                      (uint32_t)DNA_VALBIND_PUBKEY_LEN +    \
+                                      (uint32_t)DNA_VALBIND_SIG_LEN +       \
+                                      8u + 8u)
+#define RTN_SYS_STEXIT2_CALL_LEN     64u
+_Static_assert(RTN_SYS_STREG2_CALL_LEN == 7299u,
+               "STORAGE_REGISTER call length drifted from design §2 / "
+               "§11.3 (7299)");
+_Static_assert(RTN_SYS_STEXIT2_CALL_LEN == 64u,
+               "STORAGE_EXIT call length drifted from design §2 / §11.5 "
+               "(64)");
 _Static_assert(RTN_SYS_STAKE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_DELEGATE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_UNSTAKE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_VUPD_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
-                   RTN_SYS_ROTATE_V2_CALL_LEN < RTN_SYS_MAX_CALL_LEN,
-               "a validator-record call is no longer dominated by the "
-               "generation-4 STAKE call — re-derive the worst-case "
-               "envelope asserts below");
-/** Storage reward v1 (bytes doc docs/plans/2026-10-04-storage-reward-
- *  bytes.md item 5, approved by decision 2026-10-04-storage-reward-
- *  approved.md): STORAGE_REGISTER (op 7) = node_pk[2592] ‖ bond u64 BE ‖
- *  payee_fp[64]; STORAGE_EXIT (op 8) = node_pk[2592]. Both exact-length,
- *  both decoded here for BOTH domains' hooks (the CORE funding leg reads
- *  the bond from the SIBLING call through rtn_sys_call_flow). */
-#define RTN_SYS_STREG_CALL_LEN       ((uint32_t)DNAC_PUBKEY_SIZE + 8u + 64u)
-#define RTN_SYS_STEXIT_CALL_LEN      ((uint32_t)DNAC_PUBKEY_SIZE)
-_Static_assert(RTN_SYS_STREG_CALL_LEN == 2664u,
-               "STORAGE_REGISTER call length drifted (bytes doc item 5)");
-_Static_assert(RTN_SYS_STEXIT_CALL_LEN == 2592u,
-               "STORAGE_EXIT call length drifted (bytes doc item 5)");
-_Static_assert(RTN_SYS_STREG_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
-                   RTN_SYS_STEXIT_CALL_LEN < RTN_SYS_MAX_CALL_LEN,
-               "a storage record call is no longer dominated by the "
-               "generation-4 STAKE call — re-derive the worst-case envelope "
-               "asserts below (they stay the governing bounds only while "
-               "it is)");
+                   RTN_SYS_ROTATE_V2_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
+                   RTN_SYS_STREG2_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
+                   RTN_SYS_STEXIT2_CALL_LEN < RTN_SYS_MAX_CALL_LEN,
+               "a validator-record or storage record call is no longer "
+               "dominated by the generation-4 STAKE call — re-derive the "
+               "worst-case envelope asserts below (they stay the governing "
+               "bounds only while it is)");
 
 /* ── O11 capacity derivation — the governing worst case ──────────────
  * Every bound enters BY MACRO (the capacity-season discipline). The
@@ -1368,11 +1378,13 @@ static int rtn_sys_is_stake_op(uint32_t op) {
 }
 
 /** Storage reward v1 — the two storage RECORD ops (design rev 2.2 §1):
- *  they share the validator-record family's whole envelope contract —
- *  the 2-leg shape with a CORE SYSFUND sibling, the one-signer
- *  call-identity authority rule (rtn_sys_stake_auth). STORAGE_REPORT is
- *  NOT one of them: it is a single-leg, fee-0 SYSTEM op authorized by a
- *  consensus key (design §4), package B2. */
+ *  they share the validator-record family's envelope contract — the
+ *  2-leg shape with a CORE SYSFUND sibling. HF-6 slice 6b-1: their
+ *  authority is the OWNER (rtn_sys_owner_auth — REGISTER the call's
+ *  owner_fp, EXIT the row's; design rev 6 §11.3 / §11.5), no longer the
+ *  node key's one-signer call identity. STORAGE_REPORT is NOT one of
+ *  them: it is a single-leg, fee-0 SYSTEM op authorized by a consensus
+ *  key (design §4), package B2. */
 static int rtn_sys_is_storage_op(uint32_t op) {
     return op == DNA_SYSRULE_STORAGE_REGISTER ||
            op == DNA_SYSRULE_STORAGE_EXIT;
@@ -1396,20 +1408,49 @@ static uint32_t rtn_gen_of(const nodus_domain_runtime_t *rt) {
     return rt ? rt->generation : 0u;
 }
 
-typedef struct {
-    const uint8_t *node_pk;              /* [DNAC_PUBKEY_SIZE]           */
-    uint64_t       bond;
-    const uint8_t *payee_fp;             /* [64] RAW fingerprint bytes   */
-} rtn_streg_call_t;
+/* ── HF-6 slice 6b-1 — STORAGE_REGISTER (op 7) / STORAGE_EXIT (op 8) ──
+ * Design rev 6 §2 / §11.3 / §11.5 (layouts APPROVED, Kurultay #16): the
+ * STAKE discipline — framing only, every rule (owner authority, consent,
+ * expiry, the exact bond, the re-registration rule) is the exec's
+ * VERDICT; the CORE funding leg (rtn_sys_call_flow) and the read-only
+ * describer decode the SAME bytes through these two functions. */
+#define RTN_STREG2_OWNER_OFF   0u
+#define RTN_STREG2_PK_OFF      (RTN_STREG2_OWNER_OFF + 64u)
+#define RTN_STREG2_SIG_OFF     (RTN_STREG2_PK_OFF + (uint32_t)DNAC_PUBKEY_SIZE)
+#define RTN_STREG2_EXP_OFF     (RTN_STREG2_SIG_OFF + \
+                                (uint32_t)DNA_VALBIND_SIG_LEN)
+#define RTN_STREG2_BOND_OFF    (RTN_STREG2_EXP_OFF + 8u)
+_Static_assert(RTN_STREG2_BOND_OFF + 8u == RTN_SYS_STREG2_CALL_LEN,
+               "STORAGE_REGISTER field offsets do not sum to the call");
 
-/** STORAGE_REGISTER (op 7): exact length; nothing else is judged here
- *  (the bond and payee rules are exec's VERDICTs). @return 0 / -1. */
-static int rtn_streg_parse(const uint8_t *p, uint32_t len,
-                           rtn_streg_call_t *c) {
-    if (len != RTN_SYS_STREG_CALL_LEN) return -1;
-    c->node_pk  = p;
-    c->bond     = rtn_get64(p + DNAC_PUBKEY_SIZE);
-    c->payee_fp = p + DNAC_PUBKEY_SIZE + 8;
+typedef struct {
+    const uint8_t *owner_fp;             /* [64] RAW fingerprint bytes   */
+    const uint8_t *node_pk;              /* [DNAC_PUBKEY_SIZE]           */
+    const uint8_t *consent_sig;          /* [DNA_VALBIND_SIG_LEN]        */
+    uint64_t       consent_expiry;
+    uint64_t       bond;
+} rtn_streg2_call_t;
+
+/** STORAGE_REGISTER (op 7, generation 4): exact length only.
+ *  @return 0 / -1. */
+static int rtn_streg2_parse(const uint8_t *p, uint32_t len,
+                            rtn_streg2_call_t *c) {
+    if (len != RTN_SYS_STREG2_CALL_LEN) return -1;
+    c->owner_fp       = p + RTN_STREG2_OWNER_OFF;
+    c->node_pk        = p + RTN_STREG2_PK_OFF;
+    c->consent_sig    = p + RTN_STREG2_SIG_OFF;
+    c->consent_expiry = rtn_get64(p + RTN_STREG2_EXP_OFF);
+    c->bond           = rtn_get64(p + RTN_STREG2_BOND_OFF);
+    return 0;
+}
+
+/** STORAGE_EXIT (op 8, generation 4): the call IS the registry key
+ *  node_fp[64]; exact length only. @return 0 / -1 with *node_fp_out
+ *  borrowed from the call. */
+static int rtn_stexit2_parse(const uint8_t *p, uint32_t len,
+                             const uint8_t **node_fp_out) {
+    if (len != RTN_SYS_STEXIT2_CALL_LEN) return -1;
+    *node_fp_out = p;
     return 0;
 }
 
@@ -1431,9 +1472,11 @@ static int rtn_streg_parse(const uint8_t *p, uint32_t len,
  * authority is the row/call OWNER (rtn_sys_owner_auth; slice 4: STAKE by
  * the call's owner_fp, its consensus key by the node consent) — so they
  * REFUSE here (-1): a legacy pubkey call can never be authorized under
- * generation 4 through this path. The
- * storage record ops (7, 8) keep the node-key identity in every
- * generation that owns them (their owner split is slice 6b).
+ * generation 4 through this path. HF-6 slice 6b-1: the storage record
+ * ops (7, 8) carry no pubkey identity either (REGISTER is authorized by
+ * the call's owner_fp, EXIT by the row's — rtn_sys_owner_auth), so they
+ * fall to the default refusal in every generation, like ops 1..5 under
+ * generation 4.
  * @return 0 with *pk_out borrowed from the call / -1 reject.
  */
 static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
@@ -1464,18 +1507,6 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
         *pk_out = c.validator_pubkey;
         return 0;
     }
-    /* storage reward v1 (design rev 2.2 §1): the node's own key — its
-     * signature IS the node's consent (bytes doc item 5) */
-    case DNA_SYSRULE_STORAGE_REGISTER: {
-        rtn_streg_call_t c;
-        if (rtn_streg_parse(p, len, &c) != 0) return -1;
-        *pk_out = c.node_pk;
-        return 0;
-    }
-    case DNA_SYSRULE_STORAGE_EXIT:
-        if (len != RTN_SYS_STEXIT_CALL_LEN) return -1;
-        *pk_out = p;
-        return 0;
     default:
         return -1;
     }
@@ -1500,6 +1531,11 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
  *               only to pay the fee, exactly the UNSTAKE lock=0 side)
  *   ROTATE_CONSENSUS_KEY (generation 4 only, HF-6 slice 6b)
  *               lock = 0         release = 0  (khan decision A4)
+ *   STORAGE_REGISTER (generation 4 only; layout HF-6 slice 6b-1)
+ *               lock = bond      release = 0
+ *   STORAGE_EXIT (generation 4 only; layout HF-6 slice 6b-1)
+ *               lock = 0         release = 0  (the bond comes back at the
+ *               next epoch boundary, nodus_witness_v2_storage.c)
  *
  * HF-6 sub-slice 3c: under the HF-6 generation (`generation` >=
  * NODUS_RT_GEN_STORAGE) ops 2-5 decode their generation-4 layouts (design
@@ -1510,7 +1546,11 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
  * as before. HF-6 slice 6b: ROTATE_CONSENSUS_KEY (10) decodes its
  * 7291-byte layout under generation 4 only — lock = release = 0 (khan
  * decision A4); below generation 4 it is a foreign op (-1, the legacy
- * switch's default).
+ * switch's default). HF-6 slice 6b-1: the storage ops decode their
+ * 7299 / 64-byte layouts under generation 4 only — the storage-reward-v1
+ * node-key arms of the legacy switch are gone (unreachable: the ops are
+ * owned only by generation 4, and rtn_sysfund_shape refuses the pairing
+ * below it).
  * @return 0 / -1 (unparseable or foreign op).
  */
 static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
@@ -1553,8 +1593,24 @@ static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
             rtn_rotate2_call_t c;
             return rtn_rotate2_parse(p, len, &c);        /* fee-only     */
         }
+        /* storage reward v1 (design rev 2.2 §1), layouts HF-6 slice 6b-1:
+         * REGISTER locks the bond (utxo -> the storage bond bucket, the
+         * claims.c supply term); EXIT moves NO value in its own block —
+         * the bond is released as ONE locked UTXO at the next epoch
+         * boundary (package B2) — so its funding leg is fee-only, the
+         * UNSTAKE shape. */
+        case DNA_SYSRULE_STORAGE_REGISTER: {
+            rtn_streg2_call_t c;
+            if (rtn_streg2_parse(p, len, &c) != 0) return -1;
+            *lock_out = c.bond;
+            return 0;
+        }
+        case DNA_SYSRULE_STORAGE_EXIT: {
+            const uint8_t *nfp = NULL;
+            return rtn_stexit2_parse(p, len, &nfp);      /* fee-only     */
+        }
         default:
-            break;                       /* storage ops: below, unchanged */
+            break;                       /* the legacy switch below      */
         }
     }
     switch (op) {
@@ -1582,21 +1638,9 @@ static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
         rtn_vupd_call_t c;
         return rtn_vupd_parse(p, len, &c);   /* fee-only: both stay 0    */
     }
-    /* storage reward v1 (design rev 2.2 §1): REGISTER locks the bond
-     * (utxo -> the storage bond bucket, the claims.c supply term);
-     * EXIT moves NO value in its own block — the bond is released as ONE
-     * locked UTXO at the next epoch boundary (package B2) — so its
-     * funding leg is fee-only, the UNSTAKE shape. */
-    case DNA_SYSRULE_STORAGE_REGISTER: {
-        rtn_streg_call_t c;
-        if (rtn_streg_parse(p, len, &c) != 0) return -1;
-        *lock_out = c.bond;
-        return 0;
-    }
-    case DNA_SYSRULE_STORAGE_EXIT:
-        return len == RTN_SYS_STEXIT_CALL_LEN ? 0 : -1;
     default:
-        return -1;
+        return -1;                       /* the storage ops exist only
+                                          * from generation 4 (above)    */
     }
 }
 
@@ -1661,7 +1705,8 @@ static int rtn_sys_stake_shape(const dna_env_view_t *env,
  *        it — STAKE compares it against the destination fingerprint).
  * @param generation the judging generation (HF-6 3c: under generation 4
  *        ops 1..5 have no pubkey identity and refuse here — their gate is
- *        rtn_sys_owner_auth; the storage ops keep this rule).
+ *        rtn_sys_owner_auth; HF-6 6b-1: so do the storage ops 7 / 8, in
+ *        every generation — this rule serves generations 1-3 only).
  * @return 0 / -1 verdict / -2 hash-backend NODE fault.
  */
 static int rtn_sys_stake_auth(const dna_env_view_t *env, uint16_t leg_index,
@@ -1693,6 +1738,10 @@ static int rtn_sys_stake_auth(const dna_env_view_t *env, uint16_t leg_index,
  *   UNSTAKE / VALIDATOR_UPDATE
  *                          the committed row's owner_fp (decided AFTER the
  *                          mediated read that observed the row).
+ * Slice 4 / 6b added STAKE and ROTATE; slice 6b-1 the storage ops (design
+ * rev 6 §11.3 / §11.5): STORAGE_REGISTER against the call's owner_fp
+ * (before any read), STORAGE_EXIT against the registry row's owner_fp
+ * (after the read).
  *
  *   kind 1  exactly ONE verified signer, no descriptor, and
  *           SHA3-512(signer pk) == want_fp (the rtn_name_owner shape);
@@ -4784,7 +4833,14 @@ _Static_assert(RTN_KEYRES_KEY_LEN == NODUS_V2_KEY_HASH_LEN &&
 /* Storage reward v1 — the canonical storage registry record (exact 2693
  * bytes): every v2_storage_nodes column except the key, in table order.
  *   [0..2591]     node_pk             DNAC_PUBKEY_SIZE
- *   [2592..2655]  payee_fp            64 B raw
+ *   [2592..2655]  payee_fp            64 B raw — since HF-6 (slice 6b-1,
+ *                                     design rev 6 §11.2) the OWNER: the
+ *                                     address REGISTER v2 names and that
+ *                                     authorizes EXIT; the reward and the
+ *                                     released bond go to it. The SQL
+ *                                     column keeps its name (the DDL text
+ *                                     is shape-checked on every open) —
+ *                                     a meaning change, no byte change.
  *   [2656..2663]  bond                u64 BE
  *   [2664]        status              u8 (DNA_V2_STORAGE_ACTIVE..RELEASED)
  *   [2665..2672]  registered_height   u64 BE
@@ -4804,8 +4860,8 @@ _Static_assert(RTN_KEYRES_KEY_LEN == NODUS_V2_KEY_HASH_LEN &&
  * (rtn_stor_rec_ok). The registry LEAF (v2) hashes node_fp, payee_fp
  * and the six scalar columns — the roots loader, not this record. */
 #define RTN_STOR_PK_OFF      0u
-#define RTN_STOR_PAYEE_OFF   ((uint32_t)DNAC_PUBKEY_SIZE)
-#define RTN_STOR_BOND_OFF    (RTN_STOR_PAYEE_OFF + 64u)
+#define RTN_STOR_OWNER_OFF   ((uint32_t)DNAC_PUBKEY_SIZE)   /* payee_fp */
+#define RTN_STOR_BOND_OFF    (RTN_STOR_OWNER_OFF + 64u)
 #define RTN_STOR_STATUS_OFF  (RTN_STOR_BOND_OFF + 8u)
 #define RTN_STOR_REGH_OFF    (RTN_STOR_STATUS_OFF + 1u)
 #define RTN_STOR_EXITH_OFF   (RTN_STOR_REGH_OFF + 8u)
@@ -6042,79 +6098,143 @@ static int rtn_rotate2_exec(const dna_env_view_t *env, uint16_t leg_index,
 
 /* ══════════════════════════════════════════════════════════════════════
  * SYSTEM — STORAGE_REGISTER (op 7) / STORAGE_EXIT (op 8) — storage
- * reward v1, package B1. Decision docs/plans/decisions/2026-10-04-
- * storage-reward-approved.md; design docs/plans/2026-10-04-storage-
- * reward-v1-design.md rev 2.2 §1; call bytes docs/plans/2026-10-04-
- * storage-reward-bytes.md item 5. GEN_STORAGE only (the dispatch gates
- * rtn_gen_storage before any of these runs).
+ * reward v1 package B1, under the HF-6 owner/node split (slice 6b-1).
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §11 items 1-5 (call layouts §2, consent §6.1, G11-G13); decisions
+ * docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md
+ * (khan decisions 1 and 3: REGISTER 7299 / EXIT 64, consent op 3, the
+ * re-registration rule, STORAGE_BOND exact in [100k, 1M] NODUS, default
+ * 1M; storage identity = the node key, no storage ROTATE) and the
+ * storage-reward-v1 records 2026-10-04-storage-reward-approved.md /
+ * 2026-10-05-storage-reward-is-for-archive.md for everything §11 keeps.
+ * GEN_STORAGE (= the HF-6 generation 4) only: the dispatch gates
+ * rtn_gen_storage before any of these runs.
  *
- * Both follow the STAKE pattern exactly: a 2-leg envelope (leg 0 this
- * SYSTEM record leg, leg 1 the CORE SYSFUND funding leg —
- * rtn_sys_stake_shape), the authority rule rtn_sys_stake_auth (exactly
- * one kind-1 signer whose fp == SHA3-512(node_pk) — that signature IS the
- * node's consent), the row built FROM the record the mediated read
- * observed and bound to it (CREATE/ABSENT or SET/EXISTS_VHASH), and the
- * sibling SYSFUND call parsed before anything is written.
+ * Both keep the STAKE envelope: a 2-leg envelope (leg 0 this SYSTEM record
+ * leg, leg 1 the CORE SYSFUND funding leg — rtn_sys_stake_shape), the row
+ * built FROM the record the mediated read observed and bound to it
+ * (CREATE/ABSENT or SET/EXISTS_VHASH), and the sibling SYSFUND call parsed
+ * before anything is written. What 6b-1 changed is WHO authorizes:
+ *   REGISTER  the call's owner_fp (rtn_sys_owner_auth: kind 1, or kind 3
+ *             whose descriptor ADDRESS == owner_fp — a 2-of-3 owner is
+ *             legal), decided BEFORE any read (the rtn_stake2_exec
+ *             order), PLUS the node's consent: the §6.1 message rebuilt
+ *             here with op DNA_VALBIND_OP_STORAGE_REGISTER (3), subject
+ *             64 × 0x00, owner = the call's owner_fp, key = the call's
+ *             node_pk, chain = ctx->chain_id, expiry from the call —
+ *             verified under node_pk with ctx "nodus.valbind.v1" (no raw
+ *             fallback; the expiry window is dna_valbind_expiry_ok);
+ *   EXIT      the registry ROW's owner_fp (rtn_sys_owner_auth, kind 1 or
+ *             3), decided AFTER the read — the UNSTAKE twin: no node
+ *             consent (design §11.5: stopping the machine is not an exit).
+ * The node key is no longer a signer at all: a stolen node key cannot
+ * register, exit or move the bond (G1 / G11), and its funding coins are
+ * whoever pays (third-party funding stays legal, design §11.3).
  * ════════════════════════════════════════════════════════════════════ */
 
 /* Defined with the SYSTEM adapter below (the rtn_val_rec_ok shape). */
 static int rtn_stor_rec_ok(const uint8_t *v, const uint8_t *key);
 
-/* REGISTER: the row (op 8) then the live count (op 9); EXIT: the row only.
- * Ascending (op_id, key) by construction. The row key is node_fp =
- * SHA3-512(node_pk), untagged. */
+/* DNAC_HF6_STORAGE_BOND_DEFAULT is the compiled STORAGE_BOND until slice
+ * 8; the vote range is [DNAC_HF6_STORAGE_BOND_MIN, _MAX] (Kurultay #16
+ * khan decision 3) — pinned so a drifted constant cannot leave it, and so
+ * the exec's "0 < bond <= INT64_MAX" verdicts can never contradict the
+ * exact rule. */
+_Static_assert(DNAC_HF6_STORAGE_BOND_DEFAULT >= DNAC_HF6_STORAGE_BOND_MIN &&
+                   DNAC_HF6_STORAGE_BOND_DEFAULT <= DNAC_HF6_STORAGE_BOND_MAX &&
+                   DNAC_HF6_STORAGE_BOND_MIN > 0 &&
+                   DNAC_HF6_STORAGE_BOND_MAX <= (uint64_t)INT64_MAX,
+               "the compiled STORAGE_BOND left its vote range");
+
+/**
+ * STORAGE_BOND — THE ONE READ of the exact storage registration bond
+ * (design rev 6 §11.3 "Bond == STORAGE_BOND(h) tam eşit").
+ * ⚠ SLICE-8 SEAM, LABELED: chain_config param 21 (STORAGE_BOND) does not
+ * exist yet (slice 8 adds params 18-21, Kurultay #16 item 7). Until then
+ * the value is the compiled DNAC_HF6_STORAGE_BOND_DEFAULT (1M NODUS).
+ * Slice 8 replaces THIS BODY with the committed param-21 value active at
+ * ctx->global_height, fail-closed (a read fault a node FAULT, never a
+ * default) — and nothing else changes. Pure.
+ */
+static uint64_t rtn_storage_bond_at(const nodus_rt_exec_ctx_t *ctx) {
+    (void)ctx;
+    return (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+}
+
+/* REGISTER: the row (op 8, key node_fp = SHA3-512(call.node_pk),
+ * untagged) then the live count (op 9); EXIT: the row only, keyed by the
+ * call bytes themselves (the call IS node_fp). Ascending (op_id, key) by
+ * construction. */
 static int rtn_storage_read_plan(const dna_env_view_t *env,
                                  uint16_t leg_index,
                                  nodus_rt_read_req_t *reqs_out,
                                  uint16_t max_reqs, uint16_t *n_out) {
     const uint32_t op = env->leg[leg_index].runtime_op;
-    const uint8_t *pk = NULL;
+    const uint8_t *p = env->buf + env->call_off[leg_index];
+    const uint32_t len = env->leg[leg_index].call_len;
     if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
-    /* the dispatch gated rtn_gen_storage before reaching here; the storage
-     * ops' identity does not depend on the generation (HF-6 3c) */
-    if (rtn_sys_call_identity(op, env->buf + env->call_off[leg_index],
-                              env->leg[leg_index].call_len,
-                              NODUS_RT_GEN_STORAGE, &pk) != 0)
-        return -1;
-    const uint16_t need = op == DNA_SYSRULE_STORAGE_REGISTER ? 2u : 1u;
-    if (max_reqs < need) return -1;
-    memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
-    reqs_out[0].op_id = RTN_SYS_OP_STOR;
-    reqs_out[0].key_len = (uint16_t)RTN_STOR_KEY_LEN;
-    if (qgp_sha3_512(pk, DNAC_PUBKEY_SIZE, reqs_out[0].key) != 0)
-        return -2;                       /* hash backend: NODE fault     */
-    if (need == 2u) {
+    if (op == DNA_SYSRULE_STORAGE_REGISTER) {
+        rtn_streg2_call_t c;
+        if (rtn_streg2_parse(p, len, &c) != 0) return -1;
+        if (max_reqs < 2) return -1;
+        memset(&reqs_out[0], 0, sizeof(reqs_out[0]));
+        reqs_out[0].op_id = RTN_SYS_OP_STOR;
+        reqs_out[0].key_len = (uint16_t)RTN_STOR_KEY_LEN;
+        if (qgp_sha3_512(c.node_pk, DNAC_PUBKEY_SIZE, reqs_out[0].key) != 0)
+            return -2;                   /* hash backend: NODE fault     */
         memset(&reqs_out[1], 0, sizeof(reqs_out[1]));
         reqs_out[1].op_id = RTN_SYS_OP_STORCNT;
         reqs_out[1].key_len = 1;
         reqs_out[1].key[0] = RTN_STORCNT_SEL_LIVE;
+        *n_out = 2;
+        return 0;
     }
-    *n_out = need;
+    const uint8_t *node_fp = NULL;
+    if (rtn_stexit2_parse(p, len, &node_fp) != 0) return -1;
+    if (max_reqs < 1) return -1;
+    rtn_req_set(&reqs_out[0], RTN_SYS_OP_STOR, node_fp,
+                (uint16_t)RTN_STOR_KEY_LEN);
+    *n_out = 1;
     return 0;
 }
 
 /**
- * STORAGE_REGISTER (op 7) — a storage node enters the registry.
+ * STORAGE_REGISTER (op 7, generation 4) — a storage node enters the
+ * registry under an OWNER.
  *
- * Rules (design rev 2.2 §1; bytes doc item 5), every refusal a VERDICT
- * (-1) — a pure function of the call bytes, the verified verdict and the
- * committed rows:
- *   - authority: exactly one kind-1 signer, fp == SHA3-512(node_pk);
- *   - bond == DNAC_STORAGE_STAKE_MIN exactly (the W-B exact-bond shape);
- *   - payee_fp == node_fp — the design's "payee_fp (= SHA3-512(node_pk)
- *     until HF-5 re-keys it)" read FAIL-CLOSED: the call carries the
- *     field (bytes doc item 5) but this release accepts only the node's
- *     own fingerprint, so no reward can be routed elsewhere before HF-5
- *     (a decision point reported to the ORCHESTRATOR, not invented here);
+ * Rules (design rev 6 §11.3 / §11.4; storage-reward-v1 rev 2.2 §1 for the
+ * cap and the one-row rule), in this order, every refusal a VERDICT (-1)
+ * — a pure function of the call bytes, the verified verdict, the engine
+ * ctx (height, chain id) and the committed rows:
+ *   - the 2-leg shape and the exact 7299-byte call (framing);
+ *   - authority: the CALL's owner_fp (rtn_sys_owner_auth, kind 1 or 3;
+ *     kind 2 refused), before any read;
+ *   - the bond: == STORAGE_BOND(h) (rtn_storage_bond_at — exact, khan
+ *     decision 3), AND 0 < bond, AND bond <= INT64_MAX — three explicit
+ *     VERDICTs (G13: a zero bond would fault st_release on every node at
+ *     the exit's boundary, an unbounded one the mutate side);
+ *   - consent: expiry window (dna_valbind_expiry_ok), then the §6.1
+ *     message rebuilt with op 3 / zero subject / the call's owner_fp and
+ *     node_pk / ctx->chain_id, verified under node_pk (G11);
+ *   - one row per node: absent → CREATE; ACTIVE / EXITING → refused;
+ *     RELEASED → REVIVED only when x = the observed exit_height satisfies
+ *     x > 0, h > x and ⌊(h−1)/E⌋ − ⌊(x−1)/E⌋ >= 2 (design §11.4 — ⇔ h >
+ *     B_rel + E, B_rel = E·⌈x/E⌉: the settlement at B_rel + E pays and
+ *     counts the row as it then stands, so an earlier revive would hand
+ *     the old life's last epoch — reward AND fail_streak — to the new
+ *     one). The revive MAY name a different owner than the released row
+ *     (khan decision A2, 2026-10-12): the authority is the call's owner,
+ *     and the old owner was paid and refunded before the rule lets it in;
  *   - cap admission: refused when the live (ACTIVE + EXITING) row count
  *     already equals NODUS_STORAGE_SET_MAX (256);
- *   - one row per node: an absent row is CREATEd; a RELEASED row is
- *     REVIVED (SET bound to the observed record — re-registration only
- *     from RELEASED); an ACTIVE or EXITING row is refused.
- * The new row: node_pk, payee_fp, bond, status ACTIVE, registered_height
- * = the executing height, exit_height 0. The bond itself is MOVED by the
- * CORE SYSFUND sibling (lock = this call's bond, rtn_sys_call_flow) into
- * the bucket the supply equation counts (claims.c storage_bonds).
+ *   - the sibling CORE SYSFUND call well formed.
+ * The new row (fresh and revived alike): node_pk, owner_fp (in the
+ * payee_fp column), bond, ACTIVE, registered_height = h, exit_height 0,
+ * fail_streak 0, grace_until 0. The bond itself is MOVED by the CORE
+ * SYSFUND sibling (lock = this call's bond, rtn_sys_call_flow) into the
+ * bucket the supply equation counts (claims.c storage_bonds) — from
+ * whoever funds it (design §11.3: third-party funding is open; the bond
+ * is owner_fp's).
  * @return 0 / -1 verdict / -2 node fault.
  */
 static int rtn_storage_register_exec(const dna_env_view_t *env,
@@ -6124,33 +6244,57 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
                                      uint16_t n_reads,
                                      uint8_t *res_out, size_t res_cap,
                                      size_t *res_len_out) {
-    rtn_streg_call_t c;
+    static const uint8_t zero_subject[DNA_VALBIND_SUBJECT_LEN] = { 0 };
+    rtn_streg2_call_t c;
     if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
-    if (rtn_streg_parse(env->buf + env->call_off[leg_index],
-                        env->leg[leg_index].call_len, &c) != 0)
+    if (rtn_streg2_parse(env->buf + env->call_off[leg_index],
+                         env->leg[leg_index].call_len, &c) != 0)
         return -1;
 
-    /* ── authority: exactly one verified signer, and it is the node ──── */
-    uint8_t node_fp[64];
+    /* ── authority: the call's owner_fp (§11.3 → §1.3), before any read */
+    if (rtn_sys_owner_auth(env, leg_index, ctx, c.owner_fp) != 0)
+        return -1;                       /* not the owner                */
+
+    /* ── the bond: exact, and both INTEGER ends (G13) ───────────────── */
+    if (c.bond != rtn_storage_bond_at(ctx))
+        return -1;                       /* §11.3: not STORAGE_BOND(h)   */
+    if (c.bond == 0)
+        return -1;                       /* §11.3: 0 < bond              */
+    if (c.bond > (uint64_t)INT64_MAX)
+        return -1;                       /* §11.3: the INTEGER bound, a
+                                          * VERDICT (never the mutate
+                                          * side's node fault)            */
+
+    /* ── node consent (§11.3, §6.1 with op 3) ──────────────────────── */
+    const uint64_t H = ctx->global_height;
+    if (!dna_valbind_expiry_ok(H, c.consent_expiry))
+        return -1;                       /* expired, or > 720 ahead      */
+    if (!ctx->chain_id) return -2;
     {
-        /* gated GEN_STORAGE by the dispatch; generation-independent */
-        int rc = rtn_sys_stake_auth(env, leg_index, ctx,
-                                    NODUS_RT_GEN_STORAGE, node_fp);
-        if (rc != 0) return rc;
+        uint8_t msg[DNA_VALBIND_MSG_LEN];
+        if (dna_valbind_consent_msg(msg, ctx->chain_id,
+                                    DNA_VALBIND_OP_STORAGE_REGISTER,
+                                    zero_subject, c.owner_fp, c.node_pk,
+                                    c.consent_expiry) != 0)
+            return -2;                   /* every argument is well formed
+                                          * by construction (op 3 with a
+                                          * zero subject): a refusal is
+                                          * this node's codec broken     */
+        if (dna_valbind_consent_verify(c.consent_sig, DNA_VALBIND_SIG_LEN,
+                                       msg) != 0)
+            return -1;                   /* no consent from that node key
+                                          * for this owner / chain / op /
+                                          * expiry                       */
     }
 
-    /* ── scalar rules ───────────────────────────────────────────────── */
-    if (c.bond != DNAC_STORAGE_STAKE_MIN) return -1;   /* exact bond     */
-    if (memcmp(c.payee_fp, node_fp, 64) != 0) return -1;   /* payee =
-                                          * the node's own fp until HF-5 */
-
-    /* ── mediated reads ─────────────────────────────────────────────── */
+    /* ── mediated reads (the plan's order: STOR, STORCNT) ───────────── */
     if (n_reads != 2 || !reads) return -2;
     if (!reads[1].present || reads[1].value_len != 8)
         return -2;                       /* a COUNT always answers 8 B:
                                           * own adapter out of contract  */
-    if (rtn_get64(reads[1].value) >= (uint64_t)NODUS_STORAGE_SET_MAX)
-        return -1;                       /* cap: ACTIVE + EXITING == 256 */
+    uint8_t node_fp[64];
+    if (qgp_sha3_512(c.node_pk, DNAC_PUBKEY_SIZE, node_fp) != 0)
+        return -2;                       /* hash backend: NODE fault     */
     int revive = 0;
     if (reads[0].present) {
         const nodus_rt_read_res_t *sr = &reads[0];
@@ -6165,8 +6309,21 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
                                           * RELEASED                     */
         if (!rtn_stor_rec_ok(sr->value, node_fp)) return -1;   /* write-
                                           * frozen malformed row         */
+        /* §11.4 — the re-registration rule. x > 0 and H > x are checked
+         * FIRST, so x − 1 and H − 1 cannot wrap and the floor difference
+         * is >= 0 */
+        const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+        const uint64_t x = rtn_get64(sr->value + RTN_STOR_EXITH_OFF);
+        if (x == 0 || H <= x)
+            return -1;                   /* a RELEASED row without an
+                                          * exit height, or no later     */
+        if ((H - 1u) / E - (x - 1u) / E < 2u)
+            return -1;                   /* h <= B_rel + E: the old life's
+                                          * last settlement has not run  */
         revive = 1;
     }
+    if (rtn_get64(reads[1].value) >= (uint64_t)NODUS_STORAGE_SET_MAX)
+        return -1;                       /* cap: ACTIVE + EXITING == 256 */
 
     /* ── the SIBLING funding leg must be a well-formed SYSFUND call ─── */
     {
@@ -6178,7 +6335,7 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
     uint8_t rec[RTN_STOR_REC_LEN];
     memset(rec, 0, sizeof(rec));
     memcpy(rec + RTN_STOR_PK_OFF, c.node_pk, DNAC_PUBKEY_SIZE);
-    memcpy(rec + RTN_STOR_PAYEE_OFF, c.payee_fp, 64);
+    memcpy(rec + RTN_STOR_OWNER_OFF, c.owner_fp, 64);
     rtn_put64(rec + RTN_STOR_BOND_OFF, c.bond);
     rec[RTN_STOR_STATUS_OFF] = DNA_V2_STORAGE_ACTIVE;
     rtn_put64(rec + RTN_STOR_REGH_OFF, ctx->global_height);
@@ -6214,20 +6371,27 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
 }
 
 /**
- * STORAGE_EXIT (op 8) — a storage node asks to leave.
+ * STORAGE_EXIT (op 8, generation 4) — the OWNER takes a storage node out.
  *
- * Rules (design rev 2.2 §1 / F3): authority as REGISTER; the row must
- * exist and be ACTIVE (EXITING or RELEASED refuses — this is also the
- * duplicate-exit refusal); the row becomes EXITING with exit_height = the
- * executing height, every other column unchanged (SET bound to the
- * observed record). The funding leg is fee-only (rtn_sys_call_flow: lock
- * = release = 0) — NO value moves in this block.
+ * Rules (design rev 6 §11.5; storage-reward-v1 rev 2.2 §1 / F3), in this
+ * order: the 2-leg shape and the exact 64-byte call (the call IS node_fp,
+ * the registry key); the row must exist (-1) and be well formed
+ * (rtn_stor_rec_ok, -1); authority is the ROW's owner_fp
+ * (rtn_sys_owner_auth, kind 1 or 3 — the node key is NOT a signer, and no
+ * node consent is asked: the UNSTAKE twin); the row must be ACTIVE
+ * (EXITING or RELEASED refuses — this is also the duplicate-exit
+ * refusal); the sibling SYSFUND call well formed. The row becomes EXITING
+ * with exit_height = the executing height, every other column unchanged
+ * (SET bound to the observed record). The funding leg is fee-only
+ * (rtn_sys_call_flow: lock = release = 0) — NO value moves in this block.
+ * Stopping the machine is not an exit (§11.5): the bond stays locked.
  *
  * THE RELEASE STEP IS NOT HERE: at the next epoch boundary B the node
  * leaves the frozen storage set (only ACTIVE rows are frozen), and the
  * storage boundary (nodus_witness_v2_storage.c step 3, package B2a)
- * releases the bond as ONE locked UTXO to payee_fp with unlock = B +
- * 12·E (F3), identity dna_v2_storage_exit_id(chain_id, B, node_fp) /
+ * releases the bond as ONE locked UTXO to the row's owner (the payee_fp
+ * column) with unlock = B + 12·E (F3), identity
+ * dna_v2_storage_exit_id(chain_id, B, node_fp) /
  * dna_v2_storage_exit_nullifier (kind 0x11, out index 201), and sets the
  * row RELEASED — which removes the bond from the supply term (claims.c
  * storage_bonds) exactly as the UTXO adds it back. fail_streak and
@@ -6241,31 +6405,36 @@ static int rtn_storage_exit_exec(const dna_env_view_t *env,
                                  uint16_t n_reads,
                                  uint8_t *res_out, size_t res_cap,
                                  size_t *res_len_out) {
-    const uint8_t *pk = NULL;
-    uint8_t node_fp[64];
+    const uint8_t *node_fp = NULL;
     if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
-    /* gated GEN_STORAGE by the dispatch; generation-independent */
-    if (rtn_sys_call_identity(DNA_SYSRULE_STORAGE_EXIT,
-                              env->buf + env->call_off[leg_index],
-                              env->leg[leg_index].call_len,
-                              NODUS_RT_GEN_STORAGE, &pk) != 0)
+    if (rtn_stexit2_parse(env->buf + env->call_off[leg_index],
+                          env->leg[leg_index].call_len, &node_fp) != 0)
         return -1;
-    {
-        int rc = rtn_sys_stake_auth(env, leg_index, ctx,
-                                    NODUS_RT_GEN_STORAGE, node_fp);
-        if (rc != 0) return rc;          /* identity = the node itself   */
-    }
 
+    /* ── the mediated read (the plan's only one: STOR by the call) ──── */
     if (n_reads != 1 || !reads) return -2;
     const nodus_rt_read_res_t *sr = &reads[0];
     if (!sr->present) return -1;         /* not a registered node        */
     if (sr->value_len != RTN_STOR_REC_LEN) return -2;
-    if (memcmp(sr->value + RTN_STOR_PK_OFF, pk, DNAC_PUBKEY_SIZE) != 0)
-        return -2;
+    {
+        uint8_t kfp[64];
+        if (qgp_sha3_512(sr->value + RTN_STOR_PK_OFF, DNAC_PUBKEY_SIZE,
+                         kfp) != 0)
+            return -2;                   /* hash backend: NODE fault     */
+        if (memcmp(kfp, node_fp, 64) != 0)
+            return -2;                   /* row/key disagreement: fault  */
+    }
+    if (!rtn_stor_rec_ok(sr->value, node_fp)) return -1;   /* write-frozen
+                                          * malformed row                */
+
+    /* ── authority: the COMMITTED row's owner (§11.5) ───────────────── */
+    if (rtn_sys_owner_auth(env, leg_index, ctx,
+                           sr->value + RTN_STOR_OWNER_OFF) != 0)
+        return -1;                       /* not the owner                */
+
     if (sr->value[RTN_STOR_STATUS_OFF] != DNA_V2_STORAGE_ACTIVE)
         return -1;                       /* exit only from ACTIVE: a
                                           * repeated exit refuses here   */
-    if (!rtn_stor_rec_ok(sr->value, node_fp)) return -1;
     {
         rtn_spend_call_t fc;
         if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
@@ -8403,7 +8572,7 @@ static int rtn_sys_stor_fetch(nodus_witness_t *w, const uint8_t *key,
             stat <= (sqlite3_int64)DNA_V2_STORAGE_RELEASED) {
             memset(rec, 0, RTN_STOR_REC_LEN);
             memcpy(rec + RTN_STOR_PK_OFF, pk, DNAC_PUBKEY_SIZE);
-            memcpy(rec + RTN_STOR_PAYEE_OFF, py, 64);
+            memcpy(rec + RTN_STOR_OWNER_OFF, py, 64);
             rtn_put64(rec + RTN_STOR_BOND_OFF, (uint64_t)bond);
             rec[RTN_STOR_STATUS_OFF] = (uint8_t)stat;
             rtn_put64(rec + RTN_STOR_REGH_OFF, (uint64_t)rh);
@@ -9093,7 +9262,7 @@ static nodus_adapter_status_t rtn_sys_mutate(
         sqlite3_bind_blob(st, 1, key, RTN_STOR_KEY_LEN, SQLITE_TRANSIENT);
         sqlite3_bind_blob(st, 2, value + RTN_STOR_PK_OFF, DNAC_PUBKEY_SIZE,
                           SQLITE_TRANSIENT);
-        sqlite3_bind_blob(st, 3, value + RTN_STOR_PAYEE_OFF, 64,
+        sqlite3_bind_blob(st, 3, value + RTN_STOR_OWNER_OFF, 64,
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 4,
             (sqlite3_int64)rtn_get64(value + RTN_STOR_BOND_OFF));
@@ -9119,7 +9288,7 @@ static nodus_adapter_status_t rtn_sys_mutate(
                 -1, &st, NULL)
             != SQLITE_OK)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;
-        sqlite3_bind_blob(st, 1, value + RTN_STOR_PAYEE_OFF, 64,
+        sqlite3_bind_blob(st, 1, value + RTN_STOR_OWNER_OFF, 64,
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 2,
             (sqlite3_int64)rtn_get64(value + RTN_STOR_BOND_OFF));
@@ -9638,8 +9807,33 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
             out->rec = NODUS_RT_DESC_REC_NONE;
             return 0;
         }
+        /* storage reward v1 (package B1), layouts HF-6 slice 6b-1: an
+         * applied STORAGE_REGISTER / STORAGE_EXIT leg is DESCRIBED (its
+         * calls parse; the CORE sibling's inputs, change and fee are
+         * described by the SYSFUND case) but writes no record kind: rec
+         * stays NODUS_RT_DESC_REC_NONE. A storage record kind on the
+         * scan-v3 wire (NODUS_DNAC_V3_REC_*) and in the address index is
+         * a later wire decision; REC_NONE keeps both byte-unchanged (both
+         * consumers skip it). Refusing here instead would make every node
+         * with the address index ON fault on the first applied
+         * registration (nodus_witness_addr_index.c fails the block when an
+         * applied leg cannot be described). */
+        case DNA_SYSRULE_STORAGE_REGISTER: {
+            rtn_streg2_call_t c;
+            if (rtn_sys_stake_shape(env, leg) != 0) return -1;
+            if (rtn_streg2_parse(p, len, &c) != 0) return -1;
+            out->rec = NODUS_RT_DESC_REC_NONE;
+            return 0;
+        }
+        case DNA_SYSRULE_STORAGE_EXIT: {
+            const uint8_t *nfp = NULL;
+            if (rtn_sys_stake_shape(env, leg) != 0) return -1;
+            if (rtn_stexit2_parse(p, len, &nfp) != 0) return -1;
+            out->rec = NODUS_RT_DESC_REC_NONE;
+            return 0;
+        }
         default:
-            break;                       /* storage ops: below            */
+            break;                       /* the legacy switch below       */
         }
     }
 
@@ -9704,35 +9898,10 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
         out->rec = NODUS_RT_DESC_REC_CHAIN_CONFIG;
         return 0;
     }
-    /* storage reward v1 (package B1): an applied STORAGE_REGISTER /
-     * STORAGE_EXIT leg is DESCRIBED (its calls parse; the CORE sibling's
-     * inputs, change and fee are described by the SYSFUND case) but
-     * writes no record kind: rec stays NODUS_RT_DESC_REC_NONE. A storage
-     * record kind on the scan-v3 wire (NODUS_DNAC_V3_REC_*) and in the
-     * address index is a later wire decision; REC_NONE keeps both
-     * byte-unchanged (both consumers skip it). Refusing here instead
-     * would make every node with the address index ON fault on the first
-     * applied registration (nodus_witness_addr_index.c fails the block
-     * when an applied leg cannot be described). */
-    case DNA_SYSRULE_STORAGE_REGISTER: {
-        rtn_streg_call_t c;
-        if (rtn_sys_stake_shape(env, leg) != 0) return -1;
-        if (rtn_streg_parse(p, len, &c) != 0) return -1;
-        out->rec = NODUS_RT_DESC_REC_NONE;
-        return 0;
-    }
-    case DNA_SYSRULE_STORAGE_EXIT: {
-        const uint8_t *npk = NULL;
-        if (rtn_sys_stake_shape(env, leg) != 0) return -1;
-        if (rtn_sys_call_identity(DNA_SYSRULE_STORAGE_EXIT, p, len,
-                                  NODUS_RT_GEN_STORAGE, &npk) != 0)
-            return -1;
-        out->rec = NODUS_RT_DESC_REC_NONE;
-        return 0;
-    }
     /* archive reward (package B2a): an applied STORAGE_REPORT leg is
      * DESCRIBED (single leg, exact call framing) and writes no record
-     * kind — the B1 REC_NONE reason above: the address index fails the
+     * kind — the B1 REC_NONE reason (the storage record ops, generation-4
+     * switch above): the address index fails the
      * block when an APPLIED leg cannot be described, and a storage
      * report record kind on the scan-v3 wire is a later wire decision.
      * The window and the reads are not re-judged here (the leg already

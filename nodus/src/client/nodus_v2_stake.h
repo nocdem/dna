@@ -37,15 +37,8 @@
  *                       must be that key — rtn_sys_stake_auth)
  *     UNDELEGATE (op 4) the DELEGATE layout (rtn_deleg_parse,
  *                       RTN_SYS_UNDELEGATE_CALL_LEN)
- *     STORAGE_REGISTER (op 7) node_pk[2592] ‖ bond u64 BE
- *                       ‖ payee_fp[64 raw]                   = 2664 bytes
- *                       (RTN_SYS_STREG_CALL_LEN, rtn_streg_parse; bytes doc
- *                       docs/plans/2026-10-04-storage-reward-bytes.md item 5)
- *     STORAGE_EXIT     (op 8) node_pk[2592]                  = 2592 bytes
- *                       (RTN_SYS_STEXIT_CALL_LEN; rtn_sys_call_identity:
- *                       the call IS the node key, the signer must be it)
- *     Both storage ops exist only under the GEN_STORAGE rule set
- *     (rtn_gen_storage): the caller passes that generation's tuples.
+ *     STORAGE_REGISTER / STORAGE_EXIT (ops 7 / 8): generation 4 only, see
+ *                       "HF-6 6f-1 — GENERATION-AWARE" below.
  *   leg1 CORE SYSFUND (op 7) = a SPEND transfer section (rtn_sysfund_parse):
  *     in_count ‖ nullifiers ascending ‖ out_count (0/1) ‖ native change.
  *   Conservation (rtn_sysfund_exec): Σnative_in == Σchange + fee + lock,
@@ -53,8 +46,8 @@
  *   amount (DELEGATE) / 0 (UNSTAKE, UNDELEGATE, STORAGE_EXIT). STORAGE_EXIT
  *   moves no value in its block: the exec marks the row EXITING
  *   (rtn_storage_exit_exec) and the storage boundary releases the bond as
- *   one UTXO to payee_fp locked DNAC_STORAGE_EXIT_LOCK_EPOCHS epochs
- *   (nodus_witness_v2_storage.c step 3). UNDELEGATE's funding leg pays the
+ *   one UTXO to the row's owner locked DNAC_STORAGE_EXIT_LOCK_EPOCHS
+ *   epochs (nodus_witness_v2_storage.c step 3). UNDELEGATE's funding leg pays the
  *   FEE ONLY; its principal comes back as a release coin the CHAIN creates
  *   in the same block (rtn_sysfund_release_coin), LOCKED until L(h) +
  *   DNAC_UNDELEGATE_LOCK_EPOCHS · E — this builder writes no release output.
@@ -76,21 +69,19 @@
  *   UNDELEGATE 1 <= amount <= DNAC_DEFAULT_TOTAL_SUPPLY
  *   UNSTAKE    nothing — the call is the signer's own key; `amount`,
  *              `commission_bps`, `dest_fp` and `validator_pk` are ignored
- *   STORAGE_REGISTER
- *              bond == DNAC_STORAGE_STAKE_MIN and payee (`dest_fp`) ==
- *              SHA3-512(pk) (rtn_storage_register_exec: the payee is the
- *              node's own fingerprint until HF-5 re-keys it)
- *   STORAGE_EXIT
- *              nothing — the UNSTAKE shape (call = the node key)
+ *   STORAGE_REGISTER / STORAGE_EXIT: see the generation-4 block below
  * Everything that needs committed state is the chain's, at CheckTx:
  * DELEGATE — a bonded target, DNAC_MIN_DELEGATION for a NEW row, the
  * per-validator delegator cap; UNDELEGATE — the row exists, amount <= its
  * amount, a partial withdrawal leaves 0 or >= DNAC_MIN_DELEGATION
  * (rtn_undelegate_exec); UNSTAKE — the validator row exists and is ACTIVE
  * or ELIGIBLE (a repeated UNSTAKE finds it RETIRING and is rejected,
- * rtn_unstake_exec); STORAGE_REGISTER — no ACTIVE / EXITING row for the
- * node, fewer than NODUS_STORAGE_SET_MAX live rows; STORAGE_EXIT — the row
- * exists and is ACTIVE (rtn_storage_register_exec / _exit_exec).
+ * rtn_unstake_exec); STORAGE_REGISTER — the bond EXACTLY the STORAGE_BOND
+ * in force, the node consent valid (op 3) and unexpired, no ACTIVE /
+ * EXITING row for the node, a RELEASED row only past the re-registration
+ * line, fewer than NODUS_STORAGE_SET_MAX live rows; STORAGE_EXIT — the row
+ * exists, is ACTIVE and its owner signs (rtn_storage_register_exec /
+ * _exit_exec).
  *
  * RULESET IDENTITY: leg0 is built against the SYSTEM ruleset tuple and leg1
  * against the CORE one; both hashes enter the digests the signature covers
@@ -115,6 +106,14 @@
  *     ROTATE (op 10) validator_id[64] ‖ new_pk[2592] ‖ consent_sig[4627]
  *                    ‖ consent_expiry u64 = 7291 bytes (rtn_rotate2_parse);
  *                    fee-only funding (khan decision A4, rtn_sys_call_flow)
+ *     STORAGE_REGISTER (op 7, HF-6 slice 6b — design rev 6 §11.3)
+ *                    owner_fp[64] ‖ node_pk[2592] ‖ consent_sig[4627]
+ *                    ‖ consent_expiry u64 ‖ bond u64 = 7299 bytes
+ *                    (rtn_streg2_parse); lock = bond. `consensus_pk` is
+ *                    the NODE key, `consent_sig` its op-3 consent
+ *     STORAGE_EXIT     (op 8, design rev 6 §11.5) node_fp[64] = 64 bytes
+ *                    (rtn_stexit2_parse; `node_fp`); fee-only funding.
+ *                    The chain checks the signer against the ROW's owner
  *     The OWNER is the signer of both legs (kind 1: owner_fp = SHA3-512 of
  *     the signing key — rtn_sys_owner_auth) and owns the funding coins; the
  *     node's consent (signature + expiry) is an INPUT, produced by the
@@ -122,8 +121,12 @@
  *     UNSTAKE and UNDELEGATE have generation-4 layouts (136 / 64 / 136
  *     bytes) this module does not build yet: refused (ERR_GEN), never
  *     emitted in the legacy layout the generation-4 chain refuses by
- *     length. STORAGE_REGISTER / STORAGE_EXIT keep the layouts above (the
- *     generation-4 rtn_sys_call_flow still decodes them unchanged).
+ *     length. The storage ops exist ONLY at generation 4 (the chain owns
+ *     them nowhere else) and have no other layout: below it they are
+ *     refused (ERR_GEN). The builder refuses for STORAGE_REGISTER only
+ *     what the call bytes decide — a bond outside [1, INT64_MAX]
+ *     (ERR_STORAGE_BOND); the EXACT value is chain state (the STORAGE_BOND
+ *     in force, rtn_storage_bond_at), checked by the chain.
  *   This module never calls the consent codec (shared/dnac/valbind_wire.c):
  *   the web wallet's WASM module and native vector compile this file
  *   without it. Signing, verifying and the validator_id derivation are the
@@ -157,17 +160,17 @@ extern "C" {
 #define NODUS_V2_STAKE_FUND_EFFECT_BYTES  16384u
 
 /** SYSTEM call lengths (rtn_stake_parse / rtn_deleg_parse /
- *  RTN_SYS_UNSTAKE_CALL_LEN / RTN_SYS_STREG_CALL_LEN /
- *  RTN_SYS_STEXIT_CALL_LEN). */
+ *  RTN_SYS_UNSTAKE_CALL_LEN). */
 #define NODUS_V2_STAKE_CALL_LEN           2666u
 #define NODUS_V2_DELEG_CALL_LEN           5192u
 #define NODUS_V2_UNSTAKE_CALL_LEN         2592u
-#define NODUS_V2_STREG_CALL_LEN           2664u
-#define NODUS_V2_STEXIT_CALL_LEN          2592u
-/** HF-6 generation-4 call lengths (design rev 6 §2, K7 —
- *  RTN_SYS_STAKE_V2_CALL_LEN / RTN_SYS_ROTATE_V2_CALL_LEN). */
+/** HF-6 generation-4 call lengths (design rev 6 §2, K7; Kurultay #16 —
+ *  RTN_SYS_STAKE_V2_CALL_LEN / RTN_SYS_ROTATE_V2_CALL_LEN /
+ *  RTN_SYS_STREG2_CALL_LEN / RTN_SYS_STEXIT2_CALL_LEN). */
 #define NODUS_V2_STAKE2_CALL_LEN          7301u
 #define NODUS_V2_ROTATE_CALL_LEN          7291u
+#define NODUS_V2_STREG_CALL_LEN           7299u
+#define NODUS_V2_STEXIT_CALL_LEN          64u
 
 /** Refusals of this module beyond the shared nodus_v2_spend_rc_t values it
  *  also returns (ERR_ARG, ERR_ALLOC, ERR_OVERFLOW, ERR_INPUT_SUM,
@@ -180,14 +183,17 @@ typedef enum {
     NODUS_V2_STAKE_ERR_OP         = -43,  /* not STAKE/DELEGATE/UNSTAKE/
                                            * UNDELEGATE/STORAGE_REGISTER/
                                            * STORAGE_EXIT                 */
-    NODUS_V2_STAKE_ERR_STORAGE_BOND = -44,  /* STORAGE_REGISTER bond !=
-                                             * DNAC_STORAGE_STAKE_MIN     */
-    NODUS_V2_STAKE_ERR_PAYEE      = -45,  /* STORAGE_REGISTER payee !=
-                                           * SHA3-512(pk) (until HF-5)    */
+    NODUS_V2_STAKE_ERR_STORAGE_BOND = -44,  /* STORAGE_REGISTER bond
+                                             * outside [1, INT64_MAX] (the
+                                             * exact STORAGE_BOND is the
+                                             * chain's)                   */
+    /* -45 was NODUS_V2_STAKE_ERR_PAYEE (the storage-reward-v1 "payee ==
+     * node fp" rule), retired by HF-6 slice 6b: the value is not reused */
     NODUS_V2_STAKE_ERR_GEN        = -46   /* the op has no layout this
                                            * module builds at the request's
-                                           * generation: ROTATE below the
-                                           * HF-6 generation; DELEGATE /
+                                           * generation: ROTATE and the
+                                           * storage ops below the HF-6
+                                           * generation; DELEGATE /
                                            * UNSTAKE / UNDELEGATE at it   */
 } nodus_v2_stake_rc_t;
 
@@ -230,18 +236,18 @@ typedef struct {
                                       * EXPIRY_AHEAD]                       */
     const uint8_t *pk;               /* ML-DSA-87 pk 2592 B: the record
                                       * identity (staker / delegator /
-                                      * the retiring validator / the
-                                      * storage node), the signer of both
-                                      * legs and the owner of every
+                                      * the retiring validator; at
+                                      * generation 4 the OWNER), the signer
+                                      * of both legs and the owner of every
                                       * funding coin                        */
     const uint8_t *sk;               /* 4896 B                              */
     uint64_t       amount;           /* STAKE / STORAGE_REGISTER: the bond;
                                       * DELEGATE / UNDELEGATE: the amount;
-                                      * UNSTAKE / STORAGE_EXIT: ignored     */
+                                      * UNSTAKE / STORAGE_EXIT / ROTATE:
+                                      * ignored                             */
     uint32_t       commission_bps;   /* STAKE only                          */
-    const uint8_t *dest_fp;          /* STAKE: the unstake destination;
-                                      * STORAGE_REGISTER: the payee_fp
-                                      * (must be SHA3-512(pk)); 64 raw B    */
+    const uint8_t *dest_fp;          /* legacy STAKE: the unstake
+                                      * destination; 64 raw B               */
     const uint8_t *validator_pk;     /* DELEGATE / UNDELEGATE: 2592 B       */
     uint64_t       gas_price;        /* 0 = rule off (the flat floor)       */
     const nodus_v2_stake_coin_t *coins;
@@ -249,13 +255,21 @@ typedef struct {
     /* ── HF-6 6f-1 (zero in every older caller) ─────────────────────── */
     uint32_t       generation;       /* the rule-set generation `rs` is;
                                       * >= NODUS_RT_GEN_STORAGE selects the
-                                      * generation-4 STAKE / ROTATE layouts */
+                                      * generation-4 STAKE / ROTATE layouts
+                                      * and admits the storage ops          */
     const uint8_t *consensus_pk;     /* gen-4 STAKE: the node's consensus
-                                      * key; ROTATE: the NEW key (2592 B)   */
-    const uint8_t *consent_sig;      /* gen-4 STAKE / ROTATE: the node's
+                                      * key; ROTATE: the NEW key;
+                                      * STORAGE_REGISTER: the storage NODE
+                                      * key (2592 B)                        */
+    const uint8_t *consent_sig;      /* gen-4 STAKE / ROTATE /
+                                      * STORAGE_REGISTER: the node's
                                       * consent, DNA_VALBIND_SIG_LEN B      */
-    uint64_t       consent_expiry;   /* gen-4 STAKE / ROTATE               */
+    uint64_t       consent_expiry;   /* gen-4 STAKE / ROTATE /
+                                      * STORAGE_REGISTER                    */
     const uint8_t *validator_id;     /* ROTATE: the validator (64 B)        */
+    /* ── HF-6 slice 6b (zero in every older caller) ─────────────────── */
+    const uint8_t *node_fp;          /* STORAGE_EXIT: the registry key
+                                      * SHA3-512(node_pk) (64 raw B)        */
 } nodus_v2_stake_req_t;
 
 /** Fill `out` with the SYSTEM and CORE tuples of the generated
@@ -286,34 +300,42 @@ typedef struct {
     uint64_t expiry_height, fee, units;
     uint32_t sys_ruleset_version, core_ruleset_version;
     uint8_t  identity_pk[2592];          /* staker / delegator / the
-                                          * retiring validator (UNSTAKE) /
-                                          * the storage node (ops 7, 8)     */
+                                          * retiring validator (UNSTAKE);
+                                          * generation 4: the owner (the
+                                          * one signer)                     */
     uint8_t  validator_pk[2592];         /* DELEGATE / UNDELEGATE; zero
                                           * for every other op              */
-    uint64_t amount;                     /* bond / amount; 0 for UNSTAKE
-                                          * and STORAGE_EXIT                */
+    uint64_t amount;                     /* bond / amount; 0 for UNSTAKE,
+                                          * ROTATE and STORAGE_EXIT         */
     uint32_t commission_bps;             /* STAKE                           */
-    uint8_t  dest_fp[64];                /* STAKE: unstake destination;
-                                          * STORAGE_REGISTER: payee_fp      */
+    uint8_t  dest_fp[64];                /* legacy STAKE: unstake
+                                          * destination                     */
     int      n_in;
     uint8_t  in_nul[NODUS_V2_SPEND_MAX_IN][64];
     int      n_out;                      /* 0 or 1                          */
     char     change_owner[129];
     uint64_t change_amount;
     uint8_t  change_id[64];              /* SHA3-512(owner ‖ seed)          */
-    /* ── HF-6 6f-1: the generation-4 STAKE (7301 B) / ROTATE (7291 B) —
-     *    all zero for every other layout. identity_pk above is then the
-     *    single signer of both legs (the owner), read from the auth blob:
-     *    those calls carry no owner key. ─────────────────────────────── */
+    /* ── HF-6 6f-1 / 6b: the generation-4 STAKE (7301 B) / ROTATE (7291
+     *    B) / STORAGE_REGISTER (7299 B) / STORAGE_EXIT (64 B) — all zero
+     *    for every other layout. identity_pk above is then the single
+     *    signer of both legs (the owner), read from the auth blob: those
+     *    calls carry no owner key. ───────────────────────────────────── */
     int      gen4;                       /* 1 = a generation-4 layout       */
-    uint8_t  owner_fp[64];               /* STAKE: the call's owner_fp (==
+    uint8_t  owner_fp[64];               /* STAKE / STORAGE_REGISTER: the
+                                          * call's owner_fp (==
                                           * SHA3-512(identity_pk), checked);
-                                          * ROTATE: SHA3-512(identity_pk)   */
+                                          * ROTATE / STORAGE_EXIT:
+                                          * SHA3-512(identity_pk)           */
     uint8_t  consensus_pk[2592];         /* STAKE: consensus_pk; ROTATE:
-                                          * new_pk                          */
+                                          * new_pk; STORAGE_REGISTER:
+                                          * node_pk                         */
     uint8_t  consent_sig[DNA_VALBIND_SIG_LEN];
     uint64_t consent_expiry;
     uint8_t  validator_id[64];           /* ROTATE                          */
+    uint8_t  node_fp[64];                /* STORAGE_REGISTER: SHA3-512(
+                                          * node_pk); STORAGE_EXIT: the
+                                          * call                            */
 } nodus_v2_stake_decoded_t;
 
 typedef struct {
@@ -339,9 +361,12 @@ typedef struct {
  *            decide — STAKE: commission <= DNAC_COMMISSION_BPS_MAX, 1 <=
  *            bond <= INT64_MAX (ERR_BOND; STAKE_MIN is the chain's — a
  *            chain_config value from slice 8); ROTATE: a non-zero
- *            validator_id; both: consensus_pk and consent_sig present. It
- *            does NOT verify the consent nor its expiry window (the codec
- *            is not linked here — the caller does both);
+ *            validator_id; STAKE / ROTATE / STORAGE_REGISTER: consensus_pk
+ *            and consent_sig present; STORAGE_REGISTER: 1 <= bond <=
+ *            INT64_MAX (ERR_STORAGE_BOND; the exact STORAGE_BOND is the
+ *            chain's); STORAGE_EXIT: node_fp present. It does NOT verify
+ *            the consent nor its expiry window (the codec is not linked
+ *            here — the caller does both);
  *   inputs = eligible coins ascending by nullifier, taken until their sum
  *            covers `need`, at most NODUS_V2_SPEND_MAX_IN;
  *   change = sum − need, one native output to the signer when > 0.
@@ -355,11 +380,12 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
  *  other shape (leg count, domains, ops, access modes, auth kind / length,
  *  effect declarations, call lengths, input order, change owner hex, a
  *  non-native or zero change, an auth blob not carrying exactly one signer
- *  whose key is the record identity, a STORAGE_REGISTER whose payee_fp is
- *  not SHA3-512 of the node key — the pre-HF-5 exec rule). HF-6 6f-1:
- *  op 1 with a 7301-byte call and op 10 (7291 bytes) are the generation-4
- *  layouts; their record identity is the one signer of both legs, and a
- *  STAKE whose owner_fp is not SHA3-512 of that signer is refused.
+ *  whose key is the record identity). HF-6 6f-1 / 6b: op 1 with a
+ *  7301-byte call, op 10 (7291 bytes), op 7 (7299 bytes) and op 8 (64
+ *  bytes) are the generation-4 layouts; their record identity is the one
+ *  signer of both legs, and a STAKE or STORAGE_REGISTER whose owner_fp is
+ *  not SHA3-512 of that signer is refused (kind 1: the owner IS the
+ *  signer — the only shape this module builds).
  *  @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / _ERR_DECODE /
  *  _ERR_HASH. */
 int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
@@ -377,20 +403,24 @@ void nodus_v2_stake_built_free(nodus_v2_stake_built_t *b);
  * codec and verifies the signature before building. Exactly these lines,
  * in this order, each ending in '\n', lowercase hex, nothing else:
  *   nodus-valbind-consent v1
- *   op <1 | 2>                       DNA_VALBIND_OP_STAKE / _ROTATE
+ *   op <1 | 2 | 3>                   DNA_VALBIND_OP_STAKE / _ROTATE /
+ *                                    _STORAGE_REGISTER (HF-6 6b)
  *   chain_id <64 hex>                the v2 chain id (32 B)
- *   subject <128 hex>                STAKE: 64 × 00; ROTATE: validator_id
+ *   subject <128 hex>                STAKE / STORAGE_REGISTER: 64 × 00;
+ *                                    ROTATE: validator_id
  *   owner <128 hex>                  owner_fp
- *   consensus_pk <5184 hex>          the consenting key
+ *   consensus_pk <5184 hex>          the consenting key (STORAGE_REGISTER:
+ *                                    the storage node key)
  *   expiry <decimal u64>
  *   sig <9254 hex>                   DNA_VALBIND_SIG_LEN bytes
- * The parser also applies the op/subject rule of the codec (STAKE zero,
- * ROTATE non-zero) so a container that can never verify is refused early;
- * it does not verify the signature (that is the codec's, at the reader). */
+ * The parser also applies the op/subject rule of the codec (STAKE and
+ * STORAGE_REGISTER zero, ROTATE non-zero) so a container that can never
+ * verify is refused early; it does not verify the signature (that is the
+ * codec's, at the reader). */
 #define NODUS_V2_CONSENT_MAGIC  "nodus-valbind-consent v1"
 
 typedef struct {
-    uint8_t  op;                                  /* 1 STAKE / 2 ROTATE   */
+    uint8_t  op;                    /* 1 STAKE / 2 ROTATE / 3 STORAGE_REG */
     uint8_t  chain32[DNA_VALBIND_CHAIN_LEN];
     uint8_t  subject[DNA_VALBIND_SUBJECT_LEN];
     uint8_t  owner_fp[DNA_VALBIND_OWNER_FP_LEN];
@@ -400,7 +430,7 @@ typedef struct {
 } nodus_v2_consent_t;
 
 /** Encode `c` (format above). *text_out is heap, NUL-terminated, *len_out
- *  excludes the NUL. Refuses an op outside {1, 2} or a subject breaking
+ *  excludes the NUL. Refuses an op outside {1, 2, 3} or a subject breaking
  *  the op rule. @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC. */
 int nodus_v2_consent_text_encode(const nodus_v2_consent_t *c,
                                  char **text_out, size_t *len_out);
@@ -409,7 +439,7 @@ int nodus_v2_consent_text_encode(const nodus_v2_consent_t *c,
  *  NUL-terminated). @return NODUS_V2_SPEND_OK / _ERR_ARG (NULL) /
  *  _ERR_DECODE (anything else: magic, a missing / reordered / extra line,
  *  a wrong hex width, an uppercase or non-hex digit, a non-decimal or
- *  overflowing expiry, an op outside {1, 2}, the op/subject rule). On a
+ *  overflowing expiry, an op outside {1, 2, 3}, the op/subject rule). On a
  *  refusal `c` is zeroed. */
 int nodus_v2_consent_text_parse(const char *text, size_t len,
                                 nodus_v2_consent_t *c);

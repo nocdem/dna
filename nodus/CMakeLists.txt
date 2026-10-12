@@ -2902,11 +2902,15 @@ register_witness_test(test_hf4_names_engine)
 
 # Storage reward v1, package B1 (decision docs/plans/decisions/2026-10-04-
 # storage-reward-approved.md; design docs/plans/2026-10-04-storage-reward-
-# v1-design.md rev 2.2 §1, §6) — STORAGE_REGISTER / STORAGE_EXIT: the
-# hook-level rule matrix (read plans, happy path, every refusal, revive
-# from RELEASED, exit, the generation gate of SYSFUND's pairing) and
-# registrations applied end to end on a twin GEN_STORAGE chain (rows,
-# supply conservation, the v5 SYSTEM root, refusals). A new file: no
+# v1-design.md rev 2.2 §1, §6) — STORAGE_REGISTER / STORAGE_EXIT; since
+# HF-6 slice 6b-1 (design 2026-10-03-hf5-validator-owner-stake rev 6 §11,
+# Kurultay #16) the generation-4 owner/node split: the hook-level rule
+# matrix (read plans, kind-1 / kind-3 owners, every refusal incl. the
+# consent and bond variants, the re-registration rule and a different
+# owner's revive, exit by the row's owner, third-party funding) and twin
+# GEN_STORAGE chains with seven real-key validators through register,
+# exit, release to the owner, the old owner's last settlement and a
+# re-registration under a new owner. A new file: no
 # existing test owns a chain that crosses both rule-set edges with real
 # 2-leg storage envelopes. The generation switch GEN_EVM -> GEN_STORAGE and
 # the v4 -> v5 root edge live in test_hf4_switch (cases F / F2 / F3); param 16 in
@@ -2980,7 +2984,9 @@ register_witness_test(test_storage_segment)
 
 # Storage reward v1, package B2b-CLI — `nodus-cli storage register | exit
 # | status`: the shared builder's STORAGE_REGISTER / STORAGE_EXIT envelopes
-# (src/client/nodus_v2_stake.c ops 7 / 8, decision 2026-09-25-web-wallet-
+# (src/client/nodus_v2_stake.c ops 7 / 8 — since HF-6 slice 6b-1 the
+# owner-signed generation-4 layouts with the node's op-3 consent;
+# decision 2026-09-25-web-wallet-
 # nodus-send-transport.md "İşlem kurucu") fed to the GEN_STORAGE SYSTEM and
 # CORE hooks over fabricated engine facts (read plans, the CREATE / SET
 # records, the funding equation with lock = bond / fee only), the builder
@@ -2999,7 +3005,9 @@ endif()
 # test_hf6_rotate layouts, restated) fed to the GEN_STORAGE SYSTEM and CORE
 # hooks over fabricated engine facts — the exec verifies the REAL consent
 # and applies; the read plan names the validator_id nodus-cli prints — the
-# legacy STAKE unchanged at generations 0 and 3, the generation refusals.
+# legacy STAKE unchanged at generations 0 and 3, the generation refusals;
+# HF-6 slice 6b: the op-3 storage consent and the 7299 / 64-byte
+# STORAGE_REGISTER / STORAGE_EXIT encoders through the same hooks.
 # Generation 4 is compiled only with the EVM runtime. No database, no
 # network, no environment.
 if(NODUS_EVM_ENABLED)

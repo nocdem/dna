@@ -6120,6 +6120,15 @@ production 720 / 17 280.
 
 ### Storage reward v1, package B1 — storage-node registry, the GEN_STORAGE rule-set generation and the `NDS.SYS.v5` SYSTEM root (2026-10-04, branch only — not versioned, not voted)
 
+**Owner split since HF-6 slice 6b-1** (section "HF-6 slice 6b-1" below): the STORAGE_REGISTER /
+STORAGE_EXIT calls, their authority and the bond rule described in this section are the
+storage-reward-v1 ones and are REPLACED — REGISTER is 7299 bytes, signed by the OWNER and carrying the
+node's op-3 consent, its bond EXACTLY STORAGE_BOND (`rtn_storage_bond_at`, today
+`DNAC_HF6_STORAGE_BOND_DEFAULT`; `DNAC_STORAGE_STAKE_MIN` is gone); EXIT is the 64-byte node_fp signed
+by the row's owner; the `payee_fp` column holds the owner; a RELEASED row revives only past the
+re-registration line. The registry table, the record, the leaf, the root composition, the adapter and
+the GEN_STORAGE generation below are unchanged.
+
 **Renumbered onto main (2026-10-06, main merge order — decision
 `docs/plans/decisions/2026-10-04-storage-reward-approved.md`; Nodus EVM merged first; K10 in
 `2026-10-05-storage-reward-is-for-archive.md`).** Where the text below says generation 3, param 14,
@@ -6485,6 +6494,13 @@ NOT_SEATED refusal and the serving path's OK answer through `nodus_witness_stpro
 validator snapshot), the live channel, pacing and mempool submission (no harness scenario yet).
 
 ### Storage reward v1 rev 4, package B2b-CLI — `nodus-cli storage register|exit|status` and `dnac_storage_status` (2026-10-05, branch only — not versioned, not voted)
+
+**Owner split since HF-6 slice 6b-1** (section "HF-6 slice 6b-1" below): the builder's ops 7 / 8 now lay
+out only the generation-4 calls (REGISTER 7299 B, owner-signed, with the node's op-3 consent; EXIT the
+64-byte node_fp) and refuse below generation 4; the "payee = SHA3-512(node_pk)" builder / decoder rule
+and `NODUS_V2_STAKE_ERR_PAYEE` are gone. `nodus-cli storage register | exit` are refused with a message
+(no node contacted) until the owner-side commands of slice 6b-3; `storage status` and
+`dnac_storage_status` below are unchanged (their `payee` now names the owner).
 
 Decisions `docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md` (registration, the 1M bond and
 node-key authority stay), `2026-09-25-web-wallet-nodus-send-transport.md` ("İşlem kurucu": the CLI and the
@@ -7820,6 +7836,133 @@ builder's STAKE / ROTATE calls equal the restated 7301 / 7291-byte layouts; fed 
 SYSTEM hooks over fabricated reads the exec APPLIES (it verifies the real consent), the plan names the
 validator_id the CLI prints, the CORE funding leg balances (lock = bond / fee-only); the legacy STAKE
 is byte-identical at generations 0 and 3 outside the hedged auth blobs; the generation refusals.
+
+### HF-6 slice 6b-1 — STORAGE_REGISTER v2 / STORAGE_EXIT v2, the STORAGE_BOND seam, the v1 storage layouts removed (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §11 items 1-5 (storage identity
+= the node key, no storage ROTATE; REGISTER v2; the exact STORAGE_BOND; the re-registration rule; EXIT
+v2), §2 (call table), §6.1 (consent bytes, op 3), G11-G13, and the khan decisions of 2026-10-12 under
+§11.7 (A2: a released node may register again under a DIFFERENT owner); decision
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` (khan 1: REGISTER 7299 / EXIT 64,
+consent op 3, the rule; khan 3: STORAGE_BOND exact, vote range [100k, 1M] NODUS, default 1M); plan
+`tasks/hf6-slice6b-plan.md` §1.1-§1.3, §2 "6b-1" (and the client encoder half of "6b-3"). The settlement
+(pay the owner, F2 owner-or-key, the three-state verdict, the v1-snapshot owner bridge) is 6b-2's; the
+CLI commands and the harness are 6b-3's.
+
+**What is the same, byte for byte.** Every generation 1-3 path (no storage op exists there); the
+storage record (2693 B), its key (untagged SHA3-512(node_pk)), the registry leaf and root, the adapter
+(fetch / CREATE / SET / live count), STORAGE_REPORT, every pin and descriptor (SYSTEM v9 / CORE v7,
+`DNAC_CFG_RULESET_GEN_STORAGE_D`, the meter policy digest — call layouts and hook rules are not
+descriptor bytes), every KAT. The SQL column keeps the name `payee_fp` (the base DDL text is
+shape-checked on every open — a rename would be a schema rung for no byte change; plan §5 B1); since
+6b-1 it holds the OWNER, and the rt_native record macro is `RTN_STOR_OWNER_OFF` (offset 2592,
+unchanged). No migration: a storage row can only be written by a generation-4 exec, so a chain crossing
+the 3 → 4 edge holds zero rows (design §11.8).
+
+**Constants** (`dnac/include/dnac/dnac.h`). `DNAC_HF6_STORAGE_BOND_DEFAULT` (1M NODUS = 10^14 raw),
+`DNAC_HF6_STORAGE_BOND_MIN` (100k = 10^13 raw), `DNAC_HF6_STORAGE_BOND_MAX` (1M = 10^14 raw), pinned by
+`_Static_assert` (the values, and 0 < MIN ≤ DEFAULT ≤ MAX ≤ INT64_MAX). `DNAC_STORAGE_STAKE_MIN` (the
+storage-reward-v1 exact bond, the same 10^14) is removed with its asserts; every consumer moved.
+
+**The seam.** `rtn_storage_bond_at(ctx)` is THE ONE read of STORAGE_BOND: today the compiled default;
+slice 8 replaces its body with the committed param-21 value active at `ctx->global_height`,
+fail-closed — the `rtn_stake_min_at` pattern.
+
+**Calls** (`nodus_witness_rt_native.c`, design §2). STORAGE_REGISTER (op 7) = `owner_fp[64] ‖
+node_pk[2592] ‖ consent_sig[4627] ‖ consent_expiry u64 ‖ bond u64` = 7299 B
+(`RTN_SYS_STREG2_CALL_LEN`, `rtn_streg2_parse`); STORAGE_EXIT (op 8) = `node_fp[64]` = 64 B
+(`RTN_SYS_STEXIT2_CALL_LEN`, `rtn_stexit2_parse`) — the call IS the registry key. Exact length only;
+both lengths are in the "dominated by the generation-4 STAKE (7301)" capacity assert, so the capacity
+derivation does not move. The storage-reward-v1 layouts (2664 / 2592 B, `rtn_streg_parse`,
+`RTN_SYS_STREG_CALL_LEN`, `RTN_SYS_STEXIT_CALL_LEN`) are deleted: they were never accepted on a chain.
+`rtn_sys_call_identity` no longer knows ops 7 / 8 (no pubkey identity, −1 in every generation);
+`rtn_sys_call_flow` decodes them inside its generation-4 switch (REGISTER lock = bond, EXIT fee-only)
+and the legacy arms are gone (unreachable: the ops are owned only by generation 4 and
+`rtn_sysfund_shape` refuses the pairing below it); the describer describes them through the v2 parsers
+inside its generation-4 switch (`REC_NONE`, unchanged).
+
+**Read plans.** REGISTER `[STOR(8, SHA3-512(call.node_pk))] [STORCNT(9, selector 1)]`; EXIT `[STOR(8,
+the 64 call bytes)]`.
+
+**REGISTER exec** (`rtn_storage_register_exec`), in order — every refusal −1 unless noted: the 2-leg
+shape (CORE SYSFUND sibling); exact 7299 bytes; **authority = the CALL's owner_fp**
+(`rtn_sys_owner_auth`: kind 1 one signer whose fp == owner_fp; kind 3 one satisfied descriptor whose
+ADDRESS == owner_fp and no foreign signer — the Foundation's 2-of-3 is a legal owner; kind 2 refused),
+before any read; **the bond**: `bond == rtn_storage_bond_at(ctx)`, `bond != 0`, `bond ≤ INT64_MAX` —
+three explicit VERDICTs (G13: a zero bond would fault `st_release` on every node at the exit's
+boundary, an unbounded one the mutate side); **consent**: `dna_valbind_expiry_ok(h, expiry)` (`expiry ≥
+h ∧ expiry − h ≤ 720`), then the §6.1 message rebuilt — version 1, chain = the engine's chain id
+(−2 if absent), **op 3** (`DNA_VALBIND_OP_STORAGE_REGISTER`), subject 64 × 0x00, owner_fp = the call's,
+key = the call's node_pk, expiry from the call — verified under node_pk with ctx `nodus.valbind.v1`, no
+raw fallback (G11: a node key is never bound to an owner without its consent); **reads** (two, else −2;
+a count of the wrong length −2): no row → fresh; a row whose length or node_pk disagrees → −2; ACTIVE /
+EXITING → refused; RELEASED → **the re-registration rule** (design §11.4): with x = the row's
+exit_height, refused unless `x > 0 ∧ h > x ∧ ⌊(h−1)/E⌋ − ⌊(x−1)/E⌋ ≥ 2` (⇔ h > B_rel + E, B_rel =
+E·⌈x/E⌉; the first two checks come first so nothing wraps). Why: the settlement at B_rel + E (H = B −
+2E) pays and counts the registry row AS IT THEN STANDS; a revive at or before B_rel + E would hand the
+old life's last epoch — reward and fail_streak — to the new one. The revive may name a DIFFERENT owner
+(khan A2): the authority is the call's owner, and the old owner was refunded (at B_rel) and paid for
+its last epoch (at B_rel + E) before the rule lets the new life in. The rule holds for the same owner
+too. **cap**: 256 live (ACTIVE + EXITING) rows refuse; the SYSFUND sibling well formed. **Effect**: the
+record `node_pk ‖ owner_fp ‖ bond ‖ ACTIVE ‖ h ‖ 0 ‖ 0 ‖ 0` (fresh and revived alike — a revive resets
+fail_streak and grace_until), ONE effect on op 8: CREATE / ABSENT, or SET / EXISTS_VHASH bound to the
+observed record. The CORE leg locks `bond` from WHOEVER funds it (third-party funding is legal, design
+§11.3); the bond belongs to owner_fp.
+
+**EXIT exec** (`rtn_storage_exit_exec`): shape; exact 64 bytes; one read (else −2); the row present
+(else −1); its key == SHA3-512(row.node_pk) (else −2 — the adapter out of contract);
+`rtn_stor_rec_ok`; **authority = the ROW's owner_fp** (kind 1 / kind 3, after the read — the UNSTAKE
+twin); ACTIVE (a repeated exit refuses); the SYSFUND sibling (fee-only); SET status EXITING,
+exit_height = h, every other column copied. **No node consent** (design §11.5): stopping the machine is
+not an exit — the bond stays locked and K2 / K5 apply. The release is unchanged code: at the next
+boundary `st_release` writes ONE locked UTXO to the row's `payee_fp` column — now the owner.
+
+**What the node key can no longer do** (G1 / G11): sign a REGISTER or an EXIT, or move the bond. It
+only consents (op 3), and its consent binds one owner, one chain, one expiry window. A storage consent
+cannot be replayed as a STAKE / ROTATE consent (the op byte is signed); inside its 720-block window it
+can be re-used for another REGISTER by the same owner — intentional (design §11.3).
+
+**Client encoder half of 6b-3** (`src/client/nodus_v2_stake.{h,c}`). Ops 7 / 8 are built only at
+`generation >= NODUS_RT_GEN_STORAGE` (else `ERR_GEN` — they have no other layout):
+`NODUS_V2_STREG_CALL_LEN` = 7299, `NODUS_V2_STEXIT_CALL_LEN` = 64. REGISTER: owner_fp = SHA3-512 of the
+signer (kind 1), `consensus_pk` = the node key, `consent_sig` / `consent_expiry` = its op-3 consent,
+`amount` = the bond (refused outside [1, INT64_MAX] — `ERR_STORAGE_BOND`; the EXACT value is chain
+state), lock = bond. EXIT: the new request field `node_fp` (plan §5 B4), fee-only. The read-back
+(`nodus_v2_stake_decode`) decodes both as generation-4 layouts (identity = the one signer of both legs;
+`node_fp` decoded; a REGISTER whose owner_fp ≠ SHA3-512(signer) refused). `ERR_PAYEE` (−45) is
+removed. The consent container (`nodus_v2_consent_text_*`) accepts op 3 with a zero subject.
+
+**nodus-cli.** `storage register | exit` are REFUSED with a message (`cmd_storage_tx_refused`, no node
+contacted): the node-key envelope they built is refused by the chain, and the owner-side commands
+(`storage consent`, `storage register --keys <owner> --consent <file>`, `storage exit --keys <owner>
+--node-fp <hex128>`) are slice 6b-3's. `storage status` is unchanged (it still prints the wire key
+`payee`, which now names the owner).
+
+**Harness** — `tests/integration/stagef/tests/test_storage_archive.sh` is NOT updated by 6b-1 and
+breaks at its registration step: it builds `nodus-cli storage register` with the node identity
+(:715-724), which is now refused before anything is built; it names the retired constant (:36, the
+literal :250), asserts `payee == fp` (:573) and pays the node fps (:887-888, :914-915). Its rewrite to the
+owner + consent flow is 6b-3 (plan §2 "6b-3").
+
+**Tests** (written, NOT run by the author). `test_storage_reg` (rewritten): the hook matrix — plans;
+kind-1 and kind-3 positives with the record byte-checked; every refusal above (lengths 7298 / 7300, the
+v1 2664 / 2592 layouts, signer ≠ owner, the node key as signer, two signers, kind 2, kind-3 wrong
+address / foreign signer / below M, bond 0 / ± 1 / INT64_MAX + 1, expiry h − 1 / h + 721, consents
+with op 1 / op 2 / op 3 over a non-zero subject / another owner / chain / key / an empty ctx / ctx
+`nodus.valbind.v2`, ACTIVE / EXITING / RELEASED-with-x-0 rows, 256 live rows, single leg, a
+non-SYSFUND sibling, generations 3 / 2 / NULL); the rule's cells for x = 2E and x = 2E − 1 (B_rel + E
+refused, + 1 accepted with the record reset); A2 (a different owner applies, the old owner cannot sign
+it); EXIT positives kind 1 / kind 3 and refusals; third-party funding. Engine (twin generation-4 chains,
+seven real-key validators, eight pre-seeded segments): a registration under generation 2 not applied;
+KO registers KN (row, supply, v5 root); four real-signature refusals; an EXIT by the node key refused;
+KO's EXIT in the boundary block 2E released the same block to KO's address (not the node's); seven
+reports for H = E; at 3E both KO's and KP's re-registrations refused while the same block's settlement
+credits KO exactly the pool-1 debit; at 3E + 1 KP registers KN (A2). `test_storage_cli`,
+`test_storage_b2`, `test_storage_empty`: their registrations now take the generation-4 path (cli: a
+separate owner KW and node KN; b2 / empty: each node its own owner, so every payout / release
+observation reads as before). `test_v2_stake_client`: the op-3 consent (message == restatement,
+container), the 7299 / 64-byte calls restated, the exec verifying the real op-3 consent, the
+generation and argument refusals.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

@@ -136,16 +136,6 @@ extern "C" {
  * — explicitly deferred, no unverified runtime fallback introduced. */
 #define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
 
-/** Storage reward v1 — the storage-node registration bond, EXACTLY this
- *  amount (design docs/plans/2026-10-04-storage-reward-v1-design.md rev
- *  2.2 §1 "bond = STORAGE_STAKE_MIN = 1M NODUS"; role ladder decision
- *  docs/plans/decisions/2026-10-03-role-stake-amounts.md "storage 1M";
- *  bytes doc clarification: 1,000,000 NODUS = 10^14 raw). The SYSTEM
- *  STORAGE_REGISTER exec refuses any other bond (rtn_storage_register_exec,
- *  nodus/src/witness/nodus_witness_rt_native.c) — the W-B exact-bond
- *  shape of DNAC_SELF_STAKE_AMOUNT. Not a chain_config parameter. */
-#define DNAC_STORAGE_STAKE_MIN       (1000000ULL * 100000000ULL)    /* 1M × 10^8 raw */
-
 /** Storage reward v1 — the exit lock: a STORAGE_EXIT's bond is released
  *  at the next epoch boundary B as ONE locked UTXO with unlock_block =
  *  B + DNAC_STORAGE_EXIT_LOCK_EPOCHS × DNAC_EPOCH_LENGTH (design
@@ -1117,6 +1107,24 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  default and is bound into D4 (§8.1 consts[0]) in slice 8. */
 #define DNAC_HF6_STAKE_MIN_DEFAULT   (2000000ULL * 100000000ULL)    /* 2M × 10^8 raw */
 
+/** HF-6 — STORAGE_BOND, the storage-node registration bond (design rev 6
+ *  §11.3; Kurultay #16 khan decision 3, decision docs/plans/decisions/
+ *  2026-10-09-kurultay-16-hf6-storage-summary.md: "her storage düğümü TAM
+ *  olarak parametre değeri kadar bond yatırır", vote range [100,000 NODUS,
+ *  1,000,000 NODUS], default 1M — the top of the range; role ladder
+ *  2026-10-03-role-stake-amounts.md "storage 1M"). A STORAGE_REGISTER v2
+ *  whose bond is not EXACTLY the value in force is refused, and so is a
+ *  bond of 0 or above INT64_MAX (rtn_storage_register_exec, nodus/src/
+ *  witness/nodus_witness_rt_native.c — all three VERDICTs, G13). Today the
+ *  value in force is the compiled DEFAULT (rtn_storage_bond_at, the
+ *  slice-8 seam); slice 8 makes it chain_config param 21 with this range
+ *  as its scalar rule and binds all three numbers into D4 (design §8.1
+ *  consts[5..7]). Replaces the storage-reward-v1 DNAC_STORAGE_STAKE_MIN
+ *  (the same 10^14 raw, exact, not votable). */
+#define DNAC_HF6_STORAGE_BOND_DEFAULT (1000000ULL * 100000000ULL)   /* 1M × 10^8 raw */
+#define DNAC_HF6_STORAGE_BOND_MIN     (100000ULL * 100000000ULL)    /* 100k × 10^8 raw */
+#define DNAC_HF6_STORAGE_BOND_MAX     (1000000ULL * 100000000ULL)   /* 1M × 10^8 raw */
+
 /** HF-6 — the POWER_CAP_BPS default, 3000 bps = 30 % (design rev 6 §5
  *  "Oran", §8 param 20; Kurultay #14 K5: legal range [500, 3000]). The
  *  ratio the water-fill cap (shared/dnac/power_cap.h) applies to a
@@ -1235,10 +1243,17 @@ _Static_assert(DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT >= DNAC_CFG_MIN_EVM_BLOCK_GAS &&
                "the EVM block gas default must be a votable value");
 _Static_assert(DNAC_CFG_RULESET_GEN_STORAGE_D <= 0x7FFFFFFFFFFFFFFFULL,
                "the storage vote literal must fit SQLite int64");
-_Static_assert(DNAC_STORAGE_STAKE_MIN == 100000000000000ULL,
-               "storage bond = 1M NODUS = 10^14 raw (design rev 2.2 §1)");
-_Static_assert(DNAC_STORAGE_STAKE_MIN <= 0x7FFFFFFFFFFFFFFFULL,
-               "the storage bond fits the SQLite INTEGER bond column");
+_Static_assert(DNAC_HF6_STORAGE_BOND_DEFAULT == 100000000000000ULL &&
+               DNAC_HF6_STORAGE_BOND_MIN == 10000000000000ULL &&
+               DNAC_HF6_STORAGE_BOND_MAX == 100000000000000ULL,
+               "STORAGE_BOND default 1M, range [100k, 1M] NODUS "
+               "(Kurultay #16 khan decision 3)");
+_Static_assert(0 < DNAC_HF6_STORAGE_BOND_MIN &&
+               DNAC_HF6_STORAGE_BOND_MIN <= DNAC_HF6_STORAGE_BOND_DEFAULT &&
+               DNAC_HF6_STORAGE_BOND_DEFAULT <= DNAC_HF6_STORAGE_BOND_MAX &&
+               DNAC_HF6_STORAGE_BOND_MAX <= 0x7FFFFFFFFFFFFFFFULL,
+               "the STORAGE_BOND default lies in its vote range, and the "
+               "range fits the SQLite INTEGER bond column");
 _Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT == 200000000000000ULL,
                "HF-6 STAKE_MIN default = 2M NODUS = 2*10^14 raw (design §1.5)");
 _Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT < DNAC_SELF_STAKE_AMOUNT,

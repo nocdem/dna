@@ -61,7 +61,14 @@
  *     vote — GEN_STORAGE is built on the EVM generation, so this is an
  *     EVM-enabled-build test) at 4, eight segments PRE-SEEDED (k = 1..8,
  *     published_height 1 — see HOW IT CAN LIE). A, B, C and D (= validator
- *     0's key: the dual-role node) register at 4; X at E + 5.
+ *     0's key: the dual-role node) register at 4; X at E + 5. Since HF-6
+ *     slice 6b-1 every registration is the generation-4 STORAGE_REGISTER
+ *     (7299 bytes, design rev 6 §11.3) with each node its OWN owner (the
+ *     node key signs both legs and gives the op-3 consent), and B's exit
+ *     is the 64-byte node_fp call signed by that owner — so every row's
+ *     owner column is the node's fingerprint, the value the storage-
+ *     reward-v1 payee carried, and every payout / release check below
+ *     reads as before. Third-party owners are test_storage_reg's.
  *     THE K9a MODEL runs at EVERY boundary B (apply_both →
  *     model_boundary): n(m) = 0 without set(B−E), else |segments
  *     published <= B − E that m holds over set(B) \ those it held over
@@ -235,6 +242,7 @@
 #include "dnac/ledger_ids.h"
 #include "dnac/ledger_roots_v2.h"
 #include "dnac/validator.h"
+#include "dnac/valbind_wire.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 
@@ -267,7 +275,7 @@ static int g_checks = 0;
 #define D2       ((uint64_t)DNAC_CFG_RULESET_GEN2_D2)
 #define DS       ((uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
 #define FEE      ((uint64_t)DNAC_MIN_FEE_RAW)
-#define BOND     ((uint64_t)DNAC_STORAGE_STAKE_MIN)
+#define BOND     ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 #define POOL1    10000000000000000ULL          /* 10^16 raw (pool 1)     */
 #define OUT_LEN  232u
 #define PK_LEN   ((size_t)QGP_DSA87_PUBLICKEYBYTES)
@@ -279,7 +287,7 @@ static int g_checks = 0;
 #define OP_STSET       10u
 #define OP_SNAPSEAT    11u
 #define OP_STREP       12u
-#define STREG_LEN      (2592u + 8u + 64u)
+#define STREG_LEN      7299u   /* HF-6 6b-1, design §2 / §11.3          */
 #define REP_FIXED      78u
 
 static void put64(uint8_t *p, uint64_t v) {
@@ -1601,8 +1609,39 @@ static uint32_t fund_call(uint8_t *dst, const uint8_t nul[64]) {
     return 66;
 }
 
+/* HF-6 slice 6b-1 — the generation-4 STORAGE_REGISTER call (design rev 6
+ * §2 / §11.3: owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond, 7299 B)
+ * for a node that is its OWN owner: owner_fp = SHA3-512(the node key),
+ * the node key gives the op-3 consent against the engine's chain id
+ * (expiry `height` + 10, inside the 720-block window). The registry row's
+ * owner column is then the node's fingerprint — the value the storage-
+ * reward-v1 payee carried — so every payout and release observation of
+ * this file reads as before. @return STREG_LEN / 0 on a setup failure. */
+static uint32_t streg_call(nodus_witness_t *w, uint8_t *dst, int key,
+                           uint64_t height) {
+    static const uint8_t zero64[64] = { 0 };
+    uint8_t chain32[DNA_CHAIN_ID_LEN], msg[DNA_VALBIND_MSG_LEN];
+    const uint64_t cexp = height + 10u;
+    size_t sl = 0, off = 0;
+    if (nodus_witness_v2_chain_id(w, chain32) != 0 ||
+        dna_valbind_consent_msg(msg, chain32,
+                                DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                                g_k[key].fp, g_k[key].pk, cexp) != 0)
+        return 0;
+    memcpy(dst, g_k[key].fp, 64);                    off += 64;
+    memcpy(dst + off, g_k[key].pk, PK_LEN);          off += PK_LEN;
+    if (dna_valbind_consent_sign(dst + off, &sl, msg, g_k[key].sk) != 0 ||
+        sl != (size_t)DNA_VALBIND_SIG_LEN)
+        return 0;
+    off += DNA_VALBIND_SIG_LEN;
+    put64(dst + off, cexp);                          off += 8;
+    put64(dst + off, BOND);                          off += 8;
+    return off == STREG_LEN ? STREG_LEN : 0;
+}
+
 /* A 2-leg storage envelope (REGISTER / EXIT), really signed by the
- * node's key on both legs (the coin's owner is the node). */
+ * node's key on both legs — since HF-6 6b-1 as the node's OWNER (the
+ * node is its own owner here, streg_call) and the coin's owner. */
 static int st_env(nodus_witness_t *w, uint64_t height, uint32_t op,
                   const uint8_t *sys_call, uint32_t sys_len, int c,
                   int signer, uint8_t **out, size_t *out_len) {
@@ -2294,14 +2333,13 @@ static int t_engine(void) {
     CHECK(run_idle(&A, &B, &h, H14 - 1) == 0,
           "blocks 1..3 (the gen-2, EVM and storage edges)");
 
-    /* block 4: A, B, C, D register */
+    /* block 4: A, B, C, D register (each its own owner, HF-6 6b-1) */
     {
         const int who[4] = { KA, KB, KC, KD };
         const int coin[4] = { CA, CB, CC, CD };
         for (int i = 0; i < 4; i++) {
-            memcpy(call[i], g_k[who[i]].pk, PK_LEN);
-            put64(call[i] + PK_LEN, BOND);
-            memcpy(call[i] + PK_LEN + 8, g_k[who[i]].fp, 64);
+            CHECK(streg_call(A.w, call[i], who[i], H14) == STREG_LEN,
+                  "generation-4 registration call (op-3 consent)");
             CHECK(st_env(A.w, H14, DNA_SYSRULE_STORAGE_REGISTER, call[i],
                          STREG_LEN, coin[i], who[i], &e[i], &l[i]) == 0,
                   "registration envelope");
@@ -2353,9 +2391,8 @@ static int t_engine(void) {
 
     /* E + 5: X registers */
     CHECK(run_idle(&A, &B, &h, E_LEN + 4) == 0, "to E+4");
-    memcpy(call[0], g_k[KX].pk, PK_LEN);
-    put64(call[0] + PK_LEN, BOND);
-    memcpy(call[0] + PK_LEN + 8, g_k[KX].fp, 64);
+    CHECK(streg_call(A.w, call[0], KX, E_LEN + 5) == STREG_LEN,
+          "X's generation-4 registration call");
     CHECK(st_env(A.w, E_LEN + 5, DNA_SYSRULE_STORAGE_REGISTER, call[0],
                  STREG_LEN, CX, KX, &e[0], &l[0]) == 0, "X envelope");
     CHECK(submit(&A, &B, E_LEN + 5, e, l, 1, codes) == 0 &&
@@ -2704,8 +2741,8 @@ static int t_engine(void) {
      * takes B's segments gets its grace — the model checks it) */
     CHECK(run_idle(&A, &B, &h, T + 7 * E_LEN + 2) == 0, "to T+7E+2");
     CHECK(st_env(A.w, T + 7 * E_LEN + 3, DNA_SYSRULE_STORAGE_EXIT,
-                 g_k[KB].pk, (uint32_t)PK_LEN, CBX, KB, &e[0], &l[0]) == 0,
-          "B exit");
+                 g_k[KB].fp, 64u, CBX, KB, &e[0], &l[0]) == 0,
+          "B exit (call = node_fp, signed by B as its own owner)");
     CHECK(submit(&A, &B, T + 7 * E_LEN + 3, e, l, 1, codes) == 0 &&
           codes[0] == NODUS_V2_TX_OK, "B exits at T+7E+3");
     h = T + 7 * E_LEN + 3;
@@ -2816,9 +2853,8 @@ static int t_engine_v2_power(void) {
         const int who[4] = { KA, KB, KC, KD };
         const int coin[4] = { CA, CB, CC, CD };
         for (int i = 0; i < 4; i++) {
-            memcpy(call[i], g_k[who[i]].pk, PK_LEN);
-            put64(call[i] + PK_LEN, BOND);
-            memcpy(call[i] + PK_LEN + 8, g_k[who[i]].fp, 64);
+            CHECK(streg_call(A.w, call[i], who[i], H14) == STREG_LEN,
+                  "generation-4 registration call (op-3 consent)");
             CHECK(st_env(A.w, H14, DNA_SYSRULE_STORAGE_REGISTER, call[i],
                          STREG_LEN, coin[i], who[i], &e[i], &l[i]) == 0,
                   "registration envelope");
