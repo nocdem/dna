@@ -2142,10 +2142,11 @@ static const inv_t k_inv[] = {
       "nodus_validator_bonded_tenured(", 1, "ARMED" },
     { "nodus_witness_committee.c", "nodus_committee_compute_for_epoch",
       "nodus_witness_v2_balance_copy_frozen(", 1, "ARMED" },
-    /* flips by status / pubkey; the supply equation and the p2p bonded set
-     * by value */
+    /* flips by status / pubkey, or pubkey_hash (= validator_id) under
+     * ruleset 2 (HF-6 slice 6c: pass 1 + the two arms of pass 2); the
+     * supply equation and the p2p bonded set by value */
     { "nodus_witness_vset.c", "nodus_witness_vset_apply_boundary_flips",
-      "UPDATE validators", 2, "VALUE_SCAN" },
+      "UPDATE validators", 3, "VALUE_SCAN" },
     { "nodus_witness_v2_claims.c", "nodus_rt_core_invariant",
       "FROM validators", 2, "VALUE_SCAN" },
     { "nodus_witness_p2p.c", "nodus_witness_p2p_refresh_bonded",

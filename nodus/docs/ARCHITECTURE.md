@@ -7535,6 +7535,77 @@ ROTATE applying (row pending = new key, epoch E, KEYRES role 2 for the new key a
 current one, value conserved); a second ROTATE, a ROTATE to a role-2 key and one to a migrated role-1
 key refused with the ledger tables byte-identical; twins byte-identical.
 
+### HF-6 slice 6c — by-validator_id membership, the swap writer, the key promotion (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 ("Satır değişimi"; "Görev ve
+devam aramaları (attendance, Rule N) blokları yöneten snapshot'ın anahtarını kullanır, canlı satırı
+değil"; khan decisions A1, A2, A5 of 2026-10-12), §4; plan `tasks/hf6-slice6-plan.md` §1.4, §1.5,
+§1.11, §2 "6c", B3 / B4 / B5 / B8. Inert on a chain with no pending row: nothing here is called from a
+boundary step that writes a key — the swap writer has no caller until slice 6d.
+
+**The swap writer** `nodus_validator_v2_rotate_apply(w, validator_id, old_pk, new_pk)`
+(`nodus_witness_validator.c`): inside the caller's transaction (autocommit refused, nothing written);
+refuses an all-zero id or new key and new == old before any write (SQLite counts a matched no-op row as
+changed). Three UPDATEs, each required to change exactly one row: (1) `validators.pubkey := new` keyed by
+`(pubkey_hash = validator_id, pubkey = old)` — the ONE writer of the consensus key (`v2_update` keys by it
+and the op-13 SET never writes it, so both keep refusing a key change); (2) the roles row's
+`pending := 2592 × 0x00, effective epoch := 0` keyed by `(validator_id, pending = new)`; (3) the new
+key's reservation role 2 → 1 keyed by `(SHA3-512(new), validator_id, role 2)`. The OLD key's role-1
+row is kept — released at U+E by the 6d sweep (A2) — so from U to U+E a rotated validator holds TWO
+role-1 rows (the invariant text at `nodus_witness_validator.h` says so). A wrong old key writes nothing;
+a later-step failure is rolled back by the caller (the `v2_update` discipline).
+
+**Membership by validator_id** — `v2ep_member_in_snapshot(snap, validator_id, pubkey, chain32, &idx)`
+(`nodus_witness_v2_epoch.c`, replaces `v2ep_pubkey_in_snapshot`): a ruleset-2 snapshot by
+`entry.validator_id`; a ruleset-1 snapshot at key generation ≥ 4 through the migrated-id bridge
+`dna_validator_id_migrated(chain id, entry.pubkey) == validator_id` (the distribution's §7.5 bridge —
+exact, a v1 entry only ever names a pre-HF-6 row); below generation 4 the old pubkey memcmp whatever
+the snapshot's ruleset (byte-identical, including test fixtures that store a ruleset-2 row on a
+generation-1 chain). The bridge
+matters for the FIRST rotation cycle: the first generation-4 freeze F reads a ruleset-1 S(F), so Rule N
+at U = F + E judges a row whose key was just swapped against a v1 duty snapshot — a pubkey match would
+read "no duty" and reset its counter. A membership that cannot be decided is a boundary fault.
+Users: the graduation deferral (R5-3, snapshot(H)) and Rule N's duty test (snapshot(H−E)), whose
+attendance is now read by the **duty entry's** pubkey — the key that signed the ending epoch — not the
+row's live key. Rule N's counter UPDATE still addresses the row by its own pubkey.
+
+**Graduation** writes the UNSTAKED row back with no pending key (pending zero, epoch 0; B8);
+`nodus_validator_v2_key_release` is unchanged — its second DELETE ("every other row naming the
+validator") already takes a role-2 pending key and, between a swap and the sweep, the previous key's
+kept role-1 row.
+
+**Flips** (`nodus_witness_vset_apply_boundary_flips`, pass 2): a ruleset-2 snapshot activates rows by
+`pubkey_hash = entry.validator_id` (B5) — an accepted rotation seats the pending key, so a pubkey match
+would leave the validator ELIGIBLE for the epoch it is seated in whenever the swap had not run first; a
+ruleset-1 snapshot keeps the pubkey match.
+
+**Distribution** (`v2ec_member_load`, ruleset-2 arm): the key check is `entry.pubkey ∈ {row.pubkey,
+row.pending}` (B4; the pending arm only for a set pending key). With 6d's order (swap after the
+distribution, before the graduation) strict equality holds at U and U+E; the pending arm turns a future
+ordering mistake from −2 on every node into paying the right owner. A third key is still −2.
+
+**Byte-identical**: every path below generation 4 (pubkey arms unchanged; the attendance key is the
+matched entry's, which IS the row's key under a pubkey match); every generation-4 boundary on a chain
+where no row has rotated (the bridge and the by-id matches name the same entries; pending is all-zero,
+so the econ check reduces to equality and the graduation's zeroing writes the values already stored).
+Cost: the ruleset-1 bridge derives one SHA3-512 id per (candidate, entry) pair — at most 256 × 128 —
+only at the generation-4 boundaries whose snapshot is still ruleset 1 (the first two).
+
+**Tests** (written, NOT run by the author) — `test_hf6_rotate` case C, twin chains to 4E. Real STAKE,
+ROTATE and UNSTAKE envelopes on three generation-4 STAKEd rows (a genesis seat is Foundation-owned and
+cannot be signed for in a test); the ONE direct write is 6d's freeze stand-in (S(3E) re-keyed to the
+pending keys), made only immediately before a boundary block — a fired boundary declares SYSTEM touched
+(`nodus_witness_v2_apply.c` phase 6e, `dsys->touched = 1`), an ordinary block after a direct write is
+refused by phase 8's untouched-domain guard. rotate_apply's exact-row checks (autocommit, wrong old key,
+new == old, no / another pending key, missing role-2 row, replay) and the two role-1 rows after a swap,
+inside a rolled-back transaction; at 3E the flips activate unswapped rows seated under their pending keys
+and a RETIRING row so seated is deferred with both reservations kept; at 4E a third key in S(3E) faults
+the boundary (on one twin, rolled back), the real boundary pays entries carrying the rows' pending keys,
+the graduate's pending key and both reservations are released, and Rule N finds the duty by validator_id
+(counter +1 where a pubkey match would reset) and reads the entry key's attendance. Deferred to 6d (not
+reachable before the swap step): Rule N on a swapped row against its S(F), ruleset 1 (the migrated-id
+bridge) or ruleset 2.
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision

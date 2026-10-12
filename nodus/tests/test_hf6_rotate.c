@@ -76,6 +76,51 @@
  *      KN (pending for V_A, role 2) and block 9: to V1's key (role 1,
  *      reserved by the migration) are REFUSED, ledger byte-identical; the
  *      twins' databases agree at the end.
+ *  C. SLICE 6c (plan §2 "6c") — the same twin fixture, run to 4E. Every
+ *     state change goes through the engine (real STAKE / ROTATE / UNSTAKE
+ *     envelopes) except ONE plant, slice 6d's freeze stand-in, written
+ *     only immediately before a BOUNDARY block (the boundary declares
+ *     SYSTEM touched, nodus_witness_v2_apply.c:5915; an ordinary block
+ *     after a plant is refused by phase 8's untouched-domain guard,
+ *     :6052-6066). The rotators are generation-4 STAKEd rows (owner KO):
+ *     a genesis seat's owner is the compiled Foundation address, which no
+ *     test can sign for.
+ *   C1 blocks 4..6: STAKEs open V_A / V_B / V_C (keys KC1 / KC2 / KC3);
+ *      blocks E+1..E+3: ROTATEs to KN / KN2 / KN1 apply (pending + F = 2E,
+ *      role-2 reservations).
+ *   C2 nodus_validator_v2_rotate_apply on V_A's real pending state (A
+ *      only, ROLLED BACK): autocommit refused with nothing written; a
+ *      wrong old key refused with nothing written; new == old refused; no
+ *      pending key (V0) / another pending key refused at step 2, a missing
+ *      role-2 reservation at step 3 (caller rollback); the swap: consensus
+ *      key := pending, pending 2592 x 0x00, epoch 0, KN role 2 -> 1, KC1
+ *      still role 1 (two role-1 rows — khan A2); a replay refused; A then
+ *      byte-identical to B.
+ *   C3 boundary 2E stores S(3E) (ruleset 2) seating the three under their
+ *      current keys (fixture guard). C4 block 2E+1: V_B UNSTAKEs
+ *      (RETIRING, pending kept).
+ *   C5 block 3E-1 (before BOUNDARY 3E): S(3E) re-keyed to the pending keys
+ *      (6d's freeze stand-in). No row is swapped.
+ *   C6 boundary 3E: the flips activate V_A and V_C by validator_id though
+ *      their live keys are not S(3E)'s; the RETIRING V_B, seated under its
+ *      pending key, is DEFERRED by validator_id with its row and both
+ *      reservations untouched.
+ *   C7 from block 3E+3 KN1 (V_C's seated key) signs; KN never does. C7b:
+ *      on A alone, before BOUNDARY 4E, S(3E)'s V4 entry given a third key
+ *      makes boundary 4E FAULT; restored (again before block 4E), A equals
+ *      B.
+ *   C8 boundary 4E applies on both twins: the distribution accepts the
+ *      three entries carrying their rows' PENDING keys (B4); V_B graduates
+ *      with pending zeroed, epoch 0 and both reservations released; Rule N
+ *      judges duty S(3E) by validator_id with attendance on the ENTRY's key
+ *      — V_A counter 1 (a pubkey match would reset it to 0), V_C counter 0
+ *      (reading the row's own key KC3 would miss); the twins agree.
+ *   DEFERRED TO 6d (not reachable before the swap step exists): Rule N on
+ *      a SWAPPED row against its S(F), ruleset 1 (the migrated-id bridge,
+ *      first rotation cycle — a genesis seat, Foundation-owned) or ruleset
+ *      2 (a row pre-swapped before boundary U faults the distribution at
+ *      U, which reads S(F) before 6d's swap position); any engine path
+ *      through rotate_apply.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 exists only there; the
@@ -98,9 +143,19 @@
  *    Its consent signatures are real. Kind 3 is exercised only there (the
  *    engine's kind-3 SYSTEM authorization is test_hf6_stake's B3).
  *  - B stops before the first boundary: the freeze that decides whether
- *    the rotation is accepted, the row switch and the reservation
- *    promotion are slices 6c / 6d — nothing here proves a pending key
- *    ever becomes the consensus key.
+ *    the rotation is accepted and the boundary swap step are slice 6d —
+ *    nothing here proves the ENGINE makes a pending key the consensus key.
+ *  - C writes 6d's freeze output by hand (S(3E) re-keyed): it proves the
+ *    6c readers on that state, not that 6d produces it. No swap reaches
+ *    the chain, so C proves the readers on UNSWAPPED rows only (the
+ *    swapped-row cases are listed as deferred above). C runs ~4E blocks
+ *    per twin (2880 at the production E = 720).
+ *  - C7b applies a FAULTING boundary on twin A and then continues on A:
+ *    the digest check after it covers the database only. In-memory
+ *    state the aborted apply may have left in A's witness handle is not
+ *    compared — if A and B later diverge at 4E, suspect this probe first
+ *    (a production node does the same: the faulted block is rolled back
+ *    and the decided block re-applied).
  *  - B's genesis UTXOs are SEEDED (V2X_SEED_NOT_REAL_UTXOS); the reward
  *    pool is non-zero by hand (the test_v2_econ device).
  *
@@ -117,6 +172,7 @@
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_rt_native.h"
+#include "witness/nodus_witness_vset.h"
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"
@@ -128,6 +184,7 @@
 #include "dnac/msig_wire.h"
 #include "dnac/res_meter.h"
 #include "dnac/valbind_wire.h"
+#include "dnac/vset_wire.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 
@@ -199,13 +256,18 @@ typedef struct {
 
 /* V0..V6 the genesis committee; KO a single-key owner / funder, KX a
  * foreign key, K1..K3 the multisig keys; KC1 / KC2 consensus keys of
- * STAKEd validators, KN / KN2 rotation targets */
+ * STAKEd validators, KN / KN2 rotation targets (case C adds KN1, a third
+ * target, and KC3, a third STAKEd key — appended so every earlier key
+ * keeps its seed) */
 enum { V0, V1, V2, V3, V4, V5, V6, KO, KX, K1, K2, K3, KC1, KC2, KN, KN2,
-       N_KEYS };
+       KN1, KC3, N_KEYS };
 #define N_VAL 7
 static sk_key_t g_k[N_KEYS];
-static uint8_t  g_vaddr[N_VAL][32];
-static int32_t  g_vflag[N_VAL];
+/* the commit votes every block carries: V0..V6, plus — case C only — one
+ * extra voter in the last slot (g_nvote = N_VAL + 1) */
+static uint8_t  g_vaddr[N_VAL + 1][32];
+static int32_t  g_vflag[N_VAL + 1];
+static size_t   g_nvote = N_VAL;
 
 static void hex_of(const uint8_t raw[64], char out[129]) {
     static const char hx[] = "0123456789abcdef";
@@ -843,8 +905,10 @@ typedef struct {
 } fixture_t;
 
 /* every coin is KO's: S* fund a STAKE (bond STAKE_MIN + FEE), R* a
- * ROTATE or an admission probe (exactly FEE — a ROTATE locks nothing) */
-enum { S1, S2, R1, R2, R3, R4, R5, R6, N_COINS };
+ * ROTATE, an UNSTAKE or an admission probe (exactly FEE — neither locks
+ * anything). S3 (case C's third STAKE) is appended last so every earlier
+ * coin keeps its nullifier; case B leaves it an unused FEE coin. */
+enum { S1, S2, R1, R2, R3, R4, R5, R6, S3, N_COINS };
 static uint8_t  g_nul[N_COINS][64];
 static uint64_t g_amt[N_COINS];
 
@@ -978,7 +1042,7 @@ static void mk_block(nodus_v2_block_t *b, uint64_t h,
     if (h > 1) {
         b->cmt.votes_address = (const uint8_t (*)[32])g_vaddr;
         b->cmt.votes_block_id_flag = g_vflag;
-        b->cmt.votes_len = N_VAL;
+        b->cmt.votes_len = g_nvote;
     }
 }
 
@@ -1413,6 +1477,445 @@ static int t_engine(void) {
     return 0;
 }
 
+/* ══ C. slice 6c — rotate_apply and the by-validator_id readers ════════
+ *
+ * Every state change reaches the chain through the engine — real STAKE,
+ * ROTATE and UNSTAKE envelopes (case B's helpers) — EXCEPT the one thing
+ * slice 6d will produce and 6c cannot: S(U) seating the pending keys
+ * (6d's freeze pass). That snapshot is re-keyed directly, identically on
+ * both twins, and ONLY immediately before a BOUNDARY block: a boundary
+ * that fires declares SYSTEM touched (nodus_witness_v2_apply.c phase 6e,
+ * `dsys->touched = 1` after `ep.fired`, :5915), so phase 8's
+ * untouched-domain guard (:6052-6066) accepts the moved SYSTEM root; an
+ * ordinary block declares only the domains of its applied items (:5448)
+ * and would be REFUSED after a plant ("domain 0 was not declared touched
+ * yet its root moved" — measured by the ORCHESTRATOR on the first draft
+ * of this case). rotate_apply is exercised only inside a transaction that
+ * is rolled back (C2); no swap is planted on the chain, so every rotated
+ * row stays unswapped — the state 6c's readers must handle before 6d.
+ *
+ * Why the rotators are STAKEd rows, not genesis seats: a genesis seat's
+ * owner is the compiled Foundation address (migration D2 (a), dnac.h
+ * DNAC_HF6_FOUNDATION_OWNER) whose keys no test holds, so no test can
+ * sign its ROTATE; a STAKEd row's owner is KO. A STAKEd row is first
+ * seated in S(3E) (tenure: active_since + 2E <= e_start), so its freeze is
+ * F = 2E, U = 3E, U + E = 4E — and S(F) = S(2E) never seats it. */
+
+/* case C's three STAKEd validators: consensus key, rotation target, the
+ * STAKE coin; validator_ids filled from the STAKE intents */
+enum { RA, RB, RC, N_ROT };
+static const int g_ck[N_ROT] = { KC1, KC2, KC3 };
+static const int g_tk[N_ROT] = { KN, KN2, KN1 };
+static const int g_sc[N_ROT] = { S1, S2, S3 };
+static uint8_t   g_rid[N_ROT][64];
+
+/* run one SQL verb on both twins (BEGIN IMMEDIATE / COMMIT): 0 / -1 */
+static int tx_both(fixture_t *a, fixture_t *b, const char *verb) {
+    return (v2x_sql(a->w->db, verb) == 0 && v2x_sql(b->w->db, verb) == 0)
+               ? 0 : -1;
+}
+
+/* one envelope block on both twins, expected APPLIED: 0 / -1 */
+static int env_ok(fixture_t *A, fixture_t *B, uint64_t h, uint32_t op,
+                  const uint8_t *call, uint32_t len, int coin,
+                  uint8_t *intent) {
+    uint8_t *e = NULL;
+    size_t l = 0;
+    uint32_t code = 0;
+    if (rec_env(A->w, h, op, call, len, coin, &e, &l, intent) != 0)
+        return -1;
+    int ok = apply_both(A, B, h, e, l, &code) == 0 &&
+             code == NODUS_V2_TX_OK;
+    free(e);
+    return ok ? 0 : -1;
+}
+
+/* rows of v2_consensus_keys naming `vid` with `role`: count / -1 */
+static int keys_naming(nodus_witness_t *w, const uint8_t vid[64],
+                       unsigned role) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM v2_consensus_keys "
+            "WHERE validator_id = ?1 AND role = ?2", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    int out = -1;
+    if (sqlite3_bind_blob(st, 1, vid, 64, SQLITE_TRANSIENT) == SQLITE_OK &&
+        sqlite3_bind_int(st, 2, (int)role) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        out = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* the v2 row of `vid`: (status, consensus key == key `ck`, pending ==
+ * key `pk` or all-zero when pk < 0, effective epoch, missed counter) */
+typedef struct {
+    uint8_t  status;
+    int      cur_is;      /* rec.pubkey == g_k[ck].pk                     */
+    int      pend_is;     /* pending == g_k[pk].pk / all-zero if pk < 0   */
+    uint64_t epoch;
+    uint64_t missed;
+} rowv_t;
+
+static int row_view(nodus_witness_t *w, const uint8_t vid[64], int ck,
+                    int pk, rowv_t *o) {
+    static const uint8_t zero[QGP_DSA87_PUBLICKEYBYTES] = { 0 };
+    nodus_v2_validator_row_t *r = calloc(1, sizeof(*r));
+    int ok = -1;
+    if (r && nodus_validator_v2_get(w, vid, r) == 0) {
+        o->status = r->rec.status;
+        o->cur_is = memcmp(r->rec.pubkey, g_k[ck].pk, PK_LEN) == 0;
+        o->pend_is = memcmp(r->pending_consensus_pubkey,
+                            pk < 0 ? zero : g_k[pk].pk, PK_LEN) == 0;
+        o->epoch = r->consensus_key_effective_epoch;
+        o->missed = r->rec.consecutive_missed_epochs;
+        ok = 0;
+    }
+    free(r);
+    return ok;
+}
+
+/* Replace, in the STORED ruleset-2 snapshot of `epoch`, the key of the
+ * one entry naming `vid` by g_k[key].pk (voter_id recomputed). Order,
+ * powers, ids, owners unchanged; the hash is re-derived under the v2 tag;
+ * the committee cache is dropped so no reader serves the old set. Slice
+ * 6d's freeze stand-in (plant_su below). In a transaction. 0 / -1.
+ * Rewriting a stored, hash-committed row is safe in this fixture: the
+ * host builds every block record from the genesis state
+ * (v2_genesis_fixture.h v2x_cmt_store_block) — no block links to this
+ * snapshot's hash — and both twins carry the same rewrite, so the
+ * validator_set_root they commit stays equal. */
+static int snap_rekey(nodus_witness_t *w, uint64_t epoch,
+                      const uint8_t vid[64], int key) {
+    dna_vset_snapshot_t *s = NULL;
+    if (nodus_witness_vset_get(w, epoch, &s, NULL) != 0 || !s) return -1;
+    int ok = -1, hit = 0;
+    uint8_t *buf = NULL;
+    sqlite3_stmt *st = NULL;
+    do {
+        if (s->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) break;
+        for (uint16_t j = 0; j < s->active_count; j++) {
+            if (memcmp(s->entries[j].validator_id, vid, 64) != 0) continue;
+            memcpy(s->entries[j].pubkey, g_k[key].pk, PK_LEN);
+            if (nodus_chain_config_derive_witness_id(
+                    g_k[key].pk, s->entries[j].voter_id) != 0)
+                hit = -1;
+            else
+                hit++;
+        }
+        if (hit != 1) break;
+        size_t len = dna_vset_encoded_len_ex(s, DNA_VSET_RULESET_TOPN_V2);
+        size_t used = 0;
+        uint8_t hash[DNA_VSET_HASH_LEN];
+        if (len == 0 || !(buf = malloc(len))) break;
+        if (dna_vset_encode_ex(s, DNA_VSET_RULESET_TOPN_V2, buf, len,
+                               &used) != 0 || used != len ||
+            dna_vset_hash_bytes_ex(buf, len, DNA_VSET_RULESET_TOPN_V2,
+                                   hash) != 0)
+            break;
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE validator_set_snapshots SET snapshot_blob = ?1, "
+                "snapshot_hash = ?2 WHERE epoch_start = ?3", -1, &st, NULL)
+            != SQLITE_OK)
+            break;
+        if (sqlite3_bind_blob(st, 1, buf, (int)len, SQLITE_TRANSIENT)
+                == SQLITE_OK &&
+            sqlite3_bind_blob(st, 2, hash, DNA_VSET_HASH_LEN,
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+            sqlite3_bind_int64(st, 3, (sqlite3_int64)epoch) == SQLITE_OK &&
+            sqlite3_step(st) == SQLITE_DONE &&
+            sqlite3_changes(w->db) == 1)
+            ok = 0;
+    } while (0);
+    if (st) sqlite3_finalize(st);
+    free(buf);
+    dna_vset_free(&s);
+    w->cached_committee_epoch_start = UINT64_MAX;
+    return ok;
+}
+
+/* Slice 6d's freeze stand-in: S(epoch) as 6d's pass would store it when
+ * it accepts the three rotations of case C — each rotated entry carries
+ * its pending key. 0 / -1. */
+static int plant_su(nodus_witness_t *w, uint64_t epoch) {
+    for (int k = 0; k < N_ROT; k++)
+        if (snap_rekey(w, epoch, g_rid[k], g_tk[k]) != 0) return -1;
+    return 0;
+}
+
+static int t_swap(void) {
+    fixture_t A, B;
+    static uint8_t call[STK_LEN];
+    uint8_t chain32[DNA_CHAIN_ID_LEN], d0[64], d1[64], got[64], intent[64];
+    uint8_t vid0[64], role = 0;
+    uint64_t h = 0;
+    rowv_t rv;
+
+    CHECK(E_LEN >= 12, "the fixture's edge precedes the first boundary");
+    for (int c = R1; c < N_COINS; c++) g_amt[c] = FEE;
+    for (int k = 0; k < N_ROT; k++) g_amt[g_sc[k]] = SMIN + FEE;
+    for (int c = 0; c < N_COINS; c++)
+        CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
+    CHECK(fx_open(&A, "ca") == 0 && fx_open(&B, "cb") == 0,
+          "twin seeded chains (edge in block H14 - 1)");
+    CHECK(nodus_witness_v2_chain_id(A.w, chain32) == 0, "chain id");
+    CHECK(dna_validator_id_migrated(vid0, chain32, g_k[V0].pk) == 0,
+          "V0's migrated validator_id");
+
+    /* ── C1. blocks 4..6: three generation-4 STAKEs (owner KO) ───────── */
+    CHECK(run_to(&A, &B, &h, H14 - 1) == 0, "blocks 1..3 (the edge)");
+    for (int k = 0; k < N_ROT; k++) {
+        const uint64_t hb = H14 + (uint64_t)k;
+        CHECK(stake2_call(call, chain32, g_ck[k], hb + 100) == STK_LEN,
+              "STAKE call");
+        CHECK(env_ok(&A, &B, hb, DNA_SYSRULE_STAKE, call, STK_LEN, g_sc[k],
+                     intent) == 0, "the STAKE applies");
+        CHECK(vid_expect(chain32, intent, g_rid[k]) == 0, "validator_id");
+        h = hb;
+    }
+
+    /* ── C1b. blocks E+1..E+3: three REAL ROTATEs (6b's exec) ─────────
+     * F = the first boundary >= the commit height = 2E (khan A1). */
+    CHECK(run_to(&A, &B, &h, E_LEN) == 0, "to boundary E");
+    for (int k = 0; k < N_ROT; k++) {
+        const uint64_t hb = E_LEN + 1 + (uint64_t)k;
+        CHECK(rot_call(call, chain32, g_rid[k], g_k[KO].fp, g_tk[k],
+                       g_ck[k], hb + 100, CS_OK) == ROT_LEN, "ROTATE call");
+        CHECK(env_ok(&A, &B, hb, DNA_SYSRULE_ROTATE_CONSENSUS_KEY, call,
+                     ROT_LEN, R1 + k, NULL) == 0, "the ROTATE applies");
+        h = hb;
+        CHECK(row_view(A.w, g_rid[k], g_ck[k], g_tk[k], &rv) == 0 &&
+              rv.cur_is && rv.pend_is && rv.epoch == 2 * E_LEN &&
+              rv.epoch == first_boundary(hb),
+              "the row: current key kept, pending = target, F = 2E");
+        CHECK(key_of(A.w, g_k[g_tk[k]].pk, got, &role) == 0 &&
+              memcmp(got, g_rid[k], 64) == 0 &&
+              role == NODUS_V2_KEY_ROLE_PENDING, "target reserved, role 2");
+    }
+
+    /* ── C2. rotate_apply's exact-row checks (A only, ROLLED BACK) ─────
+     * Runs on V_A's real pending state; nothing here reaches the chain:
+     * the transaction is rolled back before the next block. */
+    CHECK(ledger_digest(A.w, d0) == 0, "digest");
+    CHECK(nodus_validator_v2_rotate_apply(A.w, g_rid[RA], g_k[KC1].pk,
+                                          g_k[KN].pk) == -1,
+          "autocommit: refused");
+    CHECK(ledger_digest(A.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "autocommit: nothing written");
+    CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0, "begin");
+    CHECK(nodus_validator_v2_rotate_apply(A.w, g_rid[RA], g_k[KC2].pk,
+                                          g_k[KN].pk) == -1,
+          "a wrong old key: refused");
+    CHECK(ledger_digest(A.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "a wrong old key: nothing written (step 1 is the first write)");
+    CHECK(nodus_validator_v2_rotate_apply(A.w, g_rid[RA], g_k[KC1].pk,
+                                          g_k[KC1].pk) == -1,
+          "new == old: refused");
+    /* step 1 matches in the next two calls and step 2 refuses: the
+     * caller rolls back (here a savepoint, on a node the block) */
+    CHECK(v2x_sql(A.w->db, "SAVEPOINT t_c2") == 0, "savepoint");
+    CHECK(nodus_validator_v2_rotate_apply(A.w, vid0, g_k[V0].pk,
+                                          g_k[KX].pk) == -1,
+          "a validator with no pending key: refused at step 2");
+    CHECK(v2x_sql(A.w->db, "ROLLBACK TO SAVEPOINT t_c2") == 0 &&
+          v2x_sql(A.w->db, "RELEASE SAVEPOINT t_c2") == 0, "rollback");
+    CHECK(v2x_sql(A.w->db, "SAVEPOINT t_c2") == 0, "savepoint");
+    CHECK(nodus_validator_v2_rotate_apply(A.w, g_rid[RA], g_k[KC1].pk,
+                                          g_k[KN2].pk) == -1,
+          "a key that is not the row's pending key: refused at step 2");
+    CHECK(v2x_sql(A.w->db, "ROLLBACK TO SAVEPOINT t_c2") == 0 &&
+          v2x_sql(A.w->db, "RELEASE SAVEPOINT t_c2") == 0, "rollback");
+    CHECK(ledger_digest(A.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "the caller's rollback leaves the pending state");
+    /* step 3 refuses: the pending key is set but its role-2 reservation
+     * is missing (removed inside a savepoint) */
+    CHECK(v2x_sql(A.w->db, "SAVEPOINT t_c2") == 0, "savepoint");
+    CHECK(v2x_sql(A.w->db, "DELETE FROM v2_consensus_keys WHERE role = 2")
+              == 0 &&
+          nodus_validator_v2_rotate_apply(A.w, g_rid[RA], g_k[KC1].pk,
+                                          g_k[KN].pk) == -1,
+          "the pending key without its role-2 reservation: refused at "
+          "step 3");
+    CHECK(v2x_sql(A.w->db, "ROLLBACK TO SAVEPOINT t_c2") == 0 &&
+          v2x_sql(A.w->db, "RELEASE SAVEPOINT t_c2") == 0, "rollback");
+    CHECK(ledger_digest(A.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "rolled back to the pending state");
+    CHECK(nodus_validator_v2_rotate_apply(A.w, g_rid[RA], g_k[KC1].pk,
+                                          g_k[KN].pk) == 0,
+          "the swap applies");
+    CHECK(row_view(A.w, g_rid[RA], KN, -1, &rv) == 0 && rv.cur_is &&
+          rv.pend_is && rv.epoch == 0,
+          "the row: consensus key KN, pending 2592 x 0x00, epoch 0");
+    CHECK(key_of(A.w, g_k[KN].pk, got, &role) == 0 &&
+          memcmp(got, g_rid[RA], 64) == 0 &&
+          role == NODUS_V2_KEY_ROLE_ACTIVE, "KN promoted: role 2 -> role 1");
+    CHECK(key_of(A.w, g_k[KC1].pk, got, &role) == 0 &&
+          memcmp(got, g_rid[RA], 64) == 0 &&
+          role == NODUS_V2_KEY_ROLE_ACTIVE,
+          "the old key keeps its role-1 row until the sweep (khan A2)");
+    CHECK(keys_naming(A.w, g_rid[RA], NODUS_V2_KEY_ROLE_ACTIVE) == 2 &&
+          keys_naming(A.w, g_rid[RA], NODUS_V2_KEY_ROLE_PENDING) == 0,
+          "two role-1 rows name V_A from U to U+E, no role-2 row");
+    CHECK(nodus_validator_v2_rotate_apply(A.w, g_rid[RA], g_k[KC1].pk,
+                                          g_k[KN].pk) == -1,
+          "a replayed swap: refused (the old key is no longer the row's)");
+    CHECK(v2x_sql(A.w->db, "ROLLBACK") == 0, "rollback");
+    {
+        uint8_t da[64], db[64];
+        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
+              memcmp(da, db, 64) == 0,
+              "C2 rolled back: A is byte-identical to its untouched twin");
+    }
+
+    /* ── C3. boundary 2E (F): the freeze of S(3E) ──────────────────────
+     * A STAKEd row is tenured for S(3E) (active_since 4..6, +2E <= 3E),
+     * so commit_next at 2E seats the three — under their CURRENT keys,
+     * 6c having no freeze pass. FIXTURE GUARD: S(3E) is ruleset 2 and
+     * names all three. */
+    CHECK(run_to(&A, &B, &h, 2 * E_LEN) == 0, "to boundary 2E");
+    {
+        dna_vset_snapshot_t *s = NULL;
+        int seen = 0;
+        CHECK(nodus_witness_vset_get(A.w, 3 * E_LEN, &s, NULL) == 0 && s &&
+              s->selection_ruleset == DNA_VSET_RULESET_TOPN_V2,
+              "S(3E) is ruleset 2");
+        for (uint16_t j = 0; j < s->active_count; j++)
+            for (int k = 0; k < N_ROT; k++)
+                if (memcmp(s->entries[j].validator_id, g_rid[k], 64) == 0 &&
+                    memcmp(s->entries[j].pubkey, g_k[g_ck[k]].pk, PK_LEN)
+                        == 0)
+                    seen++;
+        dna_vset_free(&s);
+        CHECK(seen == N_ROT, "FIXTURE GUARD: S(3E) seats V_A, V_B, V_C "
+              "under their current keys");
+    }
+
+    /* ── C4. block 2E+1: V_B UNSTAKEs (a REAL generation-4 UNSTAKE) ────
+     * It stays seated in S(3E), frozen at 2E while it was bonded. */
+    memcpy(call, g_rid[RB], 64);
+    CHECK(env_ok(&A, &B, 2 * E_LEN + 1, DNA_SYSRULE_UNSTAKE, call, 64,
+                 R1 + N_ROT, NULL) == 0, "block 2E+1: the UNSTAKE applies");
+    h = 2 * E_LEN + 1;
+    CHECK(row_view(A.w, g_rid[RB], KC2, KN2, &rv) == 0 && rv.cur_is &&
+          rv.pend_is && rv.status == DNAC_VALIDATOR_RETIRING,
+          "V_B RETIRING, its pending key kept");
+
+    /* ── C5. block 3E−1: THE ONE PLANT — slice 6d's freeze stand-in ────
+     * S(3E) re-keyed so the three entries carry their PENDING keys, what
+     * 6d's pass stores when it accepts the rotations at F = 2E. Written
+     * immediately before block 3E, a BOUNDARY block: it declares SYSTEM
+     * touched (nodus_witness_v2_apply.c:5915), so the moved
+     * validator_set_snapshots leg passes phase 8 (:6052-6066). No block
+     * between 2E and 3E reads S(3E) (its first readers are boundary 3E's
+     * graduation and flips). No row is swapped: 6d's swap step does not
+     * exist, so the rows keep their old keys — the state 6c's readers
+     * must handle by validator_id. */
+    CHECK(run_to(&A, &B, &h, 3 * E_LEN - 1) == 0, "to block 3E-1");
+    CHECK(tx_both(&A, &B, "BEGIN IMMEDIATE") == 0, "begin");
+    CHECK(plant_su(A.w, 3 * E_LEN) == 0 && plant_su(B.w, 3 * E_LEN) == 0,
+          "S(3E) carries KN / KN2 / KN1 (6d freeze stand-in)");
+    CHECK(tx_both(&A, &B, "COMMIT") == 0, "commit");
+
+    /* ── C6. boundary 3E (U) ───────────────────────────────────────── */
+    CHECK(run_to(&A, &B, &h, 3 * E_LEN) == 0,
+          "boundary 3E applies on both twins");
+    /* flips: S(3E) seats KN / KN1, the rows still hold KC1 / KC3 */
+    CHECK(row_view(A.w, g_rid[RA], KC1, KN, &rv) == 0 && rv.cur_is &&
+          rv.pend_is && rv.status == DNAC_VALIDATOR_ACTIVE &&
+          row_view(A.w, g_rid[RC], KC3, KN1, &rv) == 0 && rv.cur_is &&
+          rv.pend_is && rv.status == DNAC_VALIDATOR_ACTIVE,
+          "V_A and V_C flipped ACTIVE by validator_id (their live keys are "
+          "not S(3E)'s)");
+    /* graduation deferral: S(3E) seats KN2 for the RETIRING V_B */
+    CHECK(row_view(A.w, g_rid[RB], KC2, KN2, &rv) == 0 && rv.cur_is &&
+          rv.pend_is && rv.epoch == 2 * E_LEN &&
+          rv.status == DNAC_VALIDATOR_RETIRING,
+          "V_B deferred at 3E by validator_id: still RETIRING, row "
+          "untouched");
+    CHECK(key_of(A.w, g_k[KC2].pk, got, &role) == 0 &&
+          role == NODUS_V2_KEY_ROLE_ACTIVE &&
+          key_of(A.w, g_k[KN2].pk, got, &role) == 0 &&
+          role == NODUS_V2_KEY_ROLE_PENDING,
+          "V_B's two reservations kept while it is seated");
+
+    /* ── C7. (3E, 4E]: V_C's seated key KN1 signs from block 3E+3 (the
+     * commit of 3E+2 — cometbft applies S(U) at U+2); KN (V_A) never
+     * signs. The host hands the engine any vote list (no address check
+     * on the attendance credit, nodus_witness_v2_apply.c:5860). */
+    CHECK(run_to(&A, &B, &h, 3 * E_LEN + 2) == 0, "blocks 3E+1, 3E+2");
+    CHECK(nodus_chain_config_derive_witness_id(g_k[KN1].pk,
+                                               g_vaddr[N_VAL]) == 0,
+          "KN1's vote address");
+    g_vflag[N_VAL] = (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT;
+    g_nvote = N_VAL + 1;
+
+    /* ── C7b. the distribution still refuses a THIRD key ───────────────
+     * On A alone, immediately before the BOUNDARY block 4E (SYSTEM
+     * declared touched, :5915): S(3E)'s entry for V4 (no rotation, no
+     * pending key) is given KX; boundary 4E must FAULT (the host rolls it
+     * back); the entry is put back, byte for byte — again immediately
+     * before block 4E — and A must be identical to B. */
+    CHECK(run_to(&A, &B, &h, 4 * E_LEN - 1) == 0, "to block 4E-1");
+    {
+        uint8_t vid4[64], da[64], db[64];
+        nodus_v2_block_t bk;
+        CHECK(dna_validator_id_migrated(vid4, chain32, g_k[V4].pk) == 0,
+              "V4's validator_id");
+        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0 &&
+              snap_rekey(A.w, 3 * E_LEN, vid4, KX) == 0 &&
+              v2x_sql(A.w->db, "COMMIT") == 0,
+              "S(3E)'s V4 entry names a third key");
+        mk_block(&bk, 4 * E_LEN, NULL, 0);
+        CHECK(v2x_cmt_apply(A.w, &bk) == NODUS_V2_INTERNAL_FAULT,
+              "boundary 4E faults: an entry key that is neither the row's "
+              "key nor its pending key");
+        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0 &&
+              snap_rekey(A.w, 3 * E_LEN, vid4, V4) == 0 &&
+              v2x_sql(A.w->db, "COMMIT") == 0, "V4's entry restored");
+        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
+              memcmp(da, db, 64) == 0,
+              "after the rolled-back probe A is byte-identical to B");
+    }
+
+    /* ── C8. boundary 4E (U+E) ─────────────────────────────────────────
+     * The distribution pays S(3E): the three entries carry their rows'
+     * PENDING keys — the B4 arm; a strict key equality would fault the
+     * block on both twins. */
+    CHECK(run_to(&A, &B, &h, 4 * E_LEN) == 0,
+          "boundary 4E applies: the distribution accepts entries whose "
+          "key is the row's pending key");
+    CHECK(row_view(A.w, g_rid[RB], KC2, -1, &rv) == 0 && rv.cur_is &&
+          rv.pend_is && rv.epoch == 0 &&
+          rv.status == DNAC_VALIDATOR_UNSTAKED,
+          "V_B graduated at 4E: UNSTAKED, pending zeroed, epoch 0");
+    CHECK(key_of(A.w, g_k[KC2].pk, got, &role) == 1 &&
+          key_of(A.w, g_k[KN2].pk, got, &role) == 1 &&
+          keys_naming(A.w, g_rid[RB], NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
+          keys_naming(A.w, g_rid[RB], NODUS_V2_KEY_ROLE_PENDING) == 0,
+          "both of V_B's reservations released (current role 1, pending "
+          "role 2)");
+    /* Rule N at 4E: duty S(3E), found by validator_id (a pubkey match
+     * on the rows' live keys finds neither and RESETS both counters);
+     * attendance read on the duty ENTRY's key */
+    CHECK(row_view(A.w, g_rid[RA], KC1, KN, &rv) == 0 && rv.missed == 1,
+          "V_A: duty found by id, KN never signed — counter 1, not a "
+          "reset");
+    CHECK(row_view(A.w, g_rid[RC], KC3, KN1, &rv) == 0 && rv.missed == 0,
+          "V_C: KN1 signed the epoch — counter 0 (the row's own key KC3 "
+          "never signed: reading it would miss)");
+    {
+        uint8_t da[64], db[64];
+        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
+              memcmp(da, db, 64) == 0, "twin databases byte-identical");
+    }
+    g_nvote = N_VAL;
+    memset(g_vaddr[N_VAL], 0, sizeof(g_vaddr[N_VAL]));
+    fx_close(&A);
+    fx_close(&B);
+    return 0;
+}
+
 int main(void) {
     static const struct {
         const char *name;
@@ -1421,6 +1924,7 @@ int main(void) {
         { "table_op10_owned",      t_table },
         { "hooks_gen4_rotate",     t_hooks },
         { "engine_gen4_rotate",    t_engine },
+        { "swap_by_validator_id",  t_swap },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     if (keys_make() != 0 || desc_make() != 0) {

@@ -1169,13 +1169,18 @@ static uint64_t v2ec_source_copy(uint64_t boundary_height) {
  *     has_row     = a row is keyed by it;
  *     m->owner_fp = entry.owner_fp — base + commission accrue THERE
  *                   (§1.6 "vset v2 girdisinden");
- *     a found row must carry the entry's owner_fp AND the entry's
- *     consensus pubkey, else FAULT. Both are immutable in slice 5 (K3:
- *     no TRANSFER_OWNER; no rotation before slice 6), so a mismatch is
- *     a broken invariant, and paying the share to a different row's
- *     owner is the silent alternative this refuses. The pubkey-equality
- *     check is SLICE 6's edit: ROTATE replaces it with its snapshot-key
- *     rule (the frozen entry may then name the pre-rotation key).
+ *     a found row must carry the entry's owner_fp (immutable, K3: no
+ *     TRANSFER_OWNER), else FAULT — paying the share to a different
+ *     row's owner is the silent alternative this refuses. HF-6 slice 6c
+ *     (plan tasks/hf6-slice6-plan.md §1.5, B4): the entry's consensus
+ *     pubkey must be the row's CURRENT key or its PENDING key (a non-zero
+ *     pending_consensus_pubkey), else FAULT. A ROTATE seats the pending
+ *     key in S(U) and the row switches at boundary U after this step
+ *     (design rev 6 §3), so under that order strict equality holds at U
+ *     (S(F) old = row old) and at U+E (S(U) new = row new); the pending
+ *     arm makes a future ordering mistake pay the right owner instead of
+ *     halting every node with -2. Any third key is still a broken
+ *     invariant.
  *   RULESET 1 at generation >= NODUS_RT_GEN_STORAGE (the v1-SNAPSHOT
  *   BRIDGE, §7.5 literally: "pubkey → validator_id (§6.2 migration
  *   fonksiyonu)"):
@@ -1228,12 +1233,26 @@ static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
         m->has_row = (vrc == 0);
         if (v2) {
             memcpy(m->owner_fp, e->owner_fp, 64);
+            /* B4: entry.pubkey ∈ {row.pubkey, row.pending}; the pending
+             * arm only for a SET pending key — the all-zero "none"
+             * encoding is never a key an entry may carry */
+            int key_ok = 0;
+            if (m->has_row) {
+                static const uint8_t no_pending[DNAC_PUBKEY_SIZE] = { 0 };
+                key_ok =
+                    memcmp(row->rec.pubkey, e->pubkey, DNAC_PUBKEY_SIZE)
+                        == 0 ||
+                    (memcmp(row->pending_consensus_pubkey, no_pending,
+                            DNAC_PUBKEY_SIZE) != 0 &&
+                     memcmp(row->pending_consensus_pubkey, e->pubkey,
+                            DNAC_PUBKEY_SIZE) == 0);
+            }
             if (m->has_row &&
-                (memcmp(row->owner_fp, e->owner_fp, 64) != 0 ||
-                 memcmp(row->rec.pubkey, e->pubkey, DNAC_PUBKEY_SIZE) != 0)) {
+                (memcmp(row->owner_fp, e->owner_fp, 64) != 0 || !key_ok)) {
                 QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: the row keyed "
                               "by a v2 entry's validator_id carries another "
-                              "owner or consensus key — refusing",
+                              "owner, or neither its consensus key nor its "
+                              "pending key is the entry's — refusing",
                               (unsigned long long)boundary_height);
                 free(row);
                 return -2;
