@@ -6313,6 +6313,13 @@ S(H) ‖ count), `RTN_SYS_OP_SNAPSEAT` (11, the seat pubkey through
 is ABSENT, a verdict), `RTN_SYS_OP_STREP` (12, the row; CREATE / ABSENT). The reporter's own bit is
 accepted and ignored at settlement (F2). Described with record kind NONE.
 
+**Owner-OR-key since HF-6 slice 6b-2** (section "HF-6 slice 6b-2" below): the settlement's F2 below
+("F2; OK iff Σ others' power with the bit ·3 > P_rep(m)·2", paid "to its payee_fp") is REPLACED — a
+report is excluded for a member when the seat's owner equals the member's owner OR the seat's key is
+the member's node key, and the verdict has three states (NO_EVIDENCE when the remaining reporting
+power is at most half of P_total: unpaid, fail_streak unchanged, weight kept in W); pay goes to the
+row's owner. F1, the weights, the budget, the debit and every other step are unchanged.
+
 **The storage boundary (step 1b' of `nodus_witness_v2_epoch_boundary_apply`, after the validator
 distribution, before payday).** Gate: param 14 in effect at B (read first) and the SYSTEM runtime
 GEN_STORAGE (else FAULT). Then, in this order: (1) settle the epoch (H, H+E], H = B − 2E — eligibility
@@ -7963,6 +7970,87 @@ separate owner KW and node KN; b2 / empty: each node its own owner, so every pay
 observation reads as before). `test_v2_stake_client`: the op-3 consent (message == restatement,
 container), the 7299 / 64-byte calls restated, the exec verifying the real op-3 consent, the
 generation and argument refusals.
+
+### HF-6 slice 6b-2 — the storage settlement: pay the owner, F2 owner-OR-key, the three-state verdict, the v1-snapshot owner bridge (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §11 items 6-7 (F2 kural (a),
+the independent floor, the three states, version-aware readers), G12, and the khan decisions of
+2026-10-12 under §11.7 (A1: a missing owner row in the v1 bridge is a FAULT; A3: no reporter code
+change, a `seat_of` test over a ruleset-2 snapshot); decisions
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` (item 8, khan decision 2 "kural
+(a)", the additional design condition "a NO_EVIDENCE member stays in W") and
+`2026-10-05-storage-reward-is-for-archive.md` (K1 weight = block count, K5 / K5a fail_streak, F1);
+plan `tasks/hf6-slice6b-plan.md` §1.5-§1.6, §2 "6b-2". Code: `nodus_witness_v2_storage.{h,c}` only
+(`st_settle`, two new functions); the CLI and harness are 6b-3's.
+
+**What is the same, byte for byte.** Every byte layout, leaf, root, pin, KAT and wire; F1 (`2·P_rep >
+P_total`, checked BEFORE any registry row or owner is read — an F1-failed epoch returns exactly as
+before); the weights (K1), the budget (`pool1 >> 16`), `floor(budget·w/W)` over ALL members, the
+exact pool-1 debit; prune, release (the owner column, unchanged since 6b-1), publish, freeze, grace;
+the reporter (`seat_of` matches SHA3-512 of the entry pubkey — a field both snapshot layouts carry —
+and reads no owner, khan A3). `chain_id` was already a parameter of
+`nodus_witness_storage_boundary_apply` (the epoch boundary passes `nodus_witness_v2_chain_id`, the
+migration's own input); it is now handed to `st_settle`. `nodus_witness_v2_epoch.c` is untouched.
+
+**The settlement (step 1), after F1, in order.** (1) The registry rows of the members (moved up from
+after the verdicts; a member without a row is still a FAULT). (2) Two seats with one key → FAULT (was
+checked only when the key matched a member; any snapshot the codec decodes has distinct keys). (3)
+owner(s) once per settlement, `nodus_witness_storage_seat_owners` (not read for an empty set):
+ruleset 2 → the entry's `owner_fp`; ruleset 1 → the §7.5 bridge — `nodus_validator_v2_get(
+dna_validator_id_migrated(chain_id, entry.pubkey))`'s `owner_fp`, the read the distribution's
+`v2ec_member_load` makes. The step-0 gate proved generation ≥ `NODUS_RT_GEN_STORAGE`, so a ruleset-1
+snapshot here IS the first settlement after the generation-4 edge (the storage set first frozen at
+B₀ is settled at B₀ + 2E over snapshot(B₀), built before the edge). A row absent or unreadable is a
+FAULT naming the seat (khan A1: rows are never deleted; only node-local corruption loses one — that
+node stops at that boundary, the others continue). Never SHA3-512(pubkey) read as an owner; never the
+row's current (rotated) key — the key clause uses the SNAPSHOT's pubkey. (4) Per member m with row
+R(m), `nodus_storage_member_verdict`: seat s is excluded iff `owner(s) == R(m).payee_fp` (the owner)
+OR `SHA3-512(entry s pubkey) == node_fp(m)`; I = Σ power of reporting non-excluded seats, Y = the part
+with m's bit; **`2·I ≤ P_total` → NO_EVIDENCE; else `3·Y > 2·I` → OK; else NOT_OK** (checked u64; the
+`≤` makes the exact split no evidence). Power is the one helper's over the WHOLE snapshot (never
+re-capped over the filtered subset). (5) Pay: OK members with weight, to `R(m).payee_fp` = the owner.
+A NO_EVIDENCE member's weight stays in W — its share stays in pool 1, nobody else's grows. (6)
+fail_streak: a NO_EVIDENCE member is skipped like a member in grace — unchanged at 0 and unchanged at
+3 or more (its K5 return count pauses); NOT_OK advances by the rule.
+
+**Consequence (design §11.6).** A storage node registered under the Foundation's address while the
+seven Foundation validators report: every seat is owner-excluded, I = 0 → NO_EVIDENCE every epoch —
+no pay, no fail_streak movement, nothing else stops. It starts settling only when non-Foundation
+reporting power exceeds the Foundation's total. The khan registers storage from his personal account
+(K16 decision 2), so Foundation reports count as independent for those nodes. Address discipline is a
+visible self-discipline, not a mechanical guarantee (K16 "Açık / ayrılık").
+
+**Byte-identical with the pre-6b-2 settlement — exactly when.** When no member's owner equals any
+seat's owner, the mask is the old own-seat rule (the key clause) and I / Y equal the old `P_rep(m)` /
+`yes`. The floor is new: a member whose OWN seat reported loses that seat from I, and if F1 passed by
+less than that seat's power, `2·I ≤ P_total` gives NO_EVIDENCE where the old rule gave OK / NOT OK
+(e.g. 7 equal seats, 4 reporting including the member's: F1 8 > 7, I = 3, 6 ≤ 7). A member whose key
+holds no reporting seat has I = P_rep and, by F1, never NO_EVIDENCE — so for every storage-only node
+with an owner distinct from every validator's, the settlement is unchanged. The existing engine runs
+(`test_storage_b2` D / E, `test_storage_reg`, `test_storage_empty`) settle with all 7 (or 6) of 7
+equal seats reporting and every storage owner distinct from the Foundation: the dual-role member's
+I is 6/7 (or 5/7 — counted 50M of 85.7M in E) of P_total, above the floor; their expectations do not
+move.
+
+**Tests** (written, NOT run by the author). `test_storage_b2`: `f2_verdict_pure` — a hand-built
+ruleset-2 snapshot, seven equal seats owned by the compiled Foundation owner, all reporting (F1
+asserted first): Foundation-owned member NO_EVIDENCE; independent owner OK (and NOT_OK with no bit);
+owner-equal + key-equal combined I = 5/7, OK on 5 yes / NOT_OK on 3 / OK on 4; a silent seat in
+neither I nor Y; the exact floor over eight seats of power 1 (I = 4: 8 ≤ 8 NO_EVIDENCE; I = 5 OK;
+I = 3 NO_EVIDENCE); rulesets 0 / 3 refused, ruleset 1 without a witness refused; overflow −1.
+`engine_owner_f2` — twin generation-4 chains, the first settlement after the edge over the stored
+ruleset-1 snapshot(E): the bridge returns the Foundation for all seven seats; with V3's migrated row
+deleted the storage step FAULTS, with it present it settles (rolled back, A == B after); planted
+owners (A, B the Foundation, B at fail_streak 3; C the third party KX); at 3E A and B are
+NO_EVIDENCE (unpaid, fail_streak 0 and 3 unchanged, weight in W — C's share is
+`floor(budget·w_C/W)` with W over all four, and differs from the share without them), C OK paid to KX
+(C's node fp nothing), D NOT_OK 0 → 1, pool 1 debited by C's share alone; twins byte-identical.
+`engine_v2_power` + A3: over its ruleset-2 snapshot(E) `nodus_witness_stprobe_serve` passes the seat
+check for a seated requester (NOT_HELD at the sample step) and refuses an unseated one (NOT_SEATED).
+**How they can lie:** the Foundation-owned members are planted owner columns (no test holds the
+Foundation 2-of-3), written immediately before the boundary block that reads them; the A1 fault is
+observed at the storage step (`nodus_witness_storage_boundary_apply`), not through a whole block, so
+no earlier boundary step's reaction to the missing row can be mistaken for it.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

@@ -233,7 +233,9 @@ typedef struct {
  *                      address the STORAGE_REGISTER v2 call names, that
  *                      authorizes STORAGE_EXIT, and to which the storage
  *                      reward accrues and the released bond returns (64
- *                      B). The column keeps its name — the DDL text below
+ *                      B); since 6b-2 the settlement also excludes every
+ *                      report from a seat with this owner (F2, design
+ *                      §11.6). The column keeps its name — the DDL text below
  *                      is shape-checked on every open — a meaning
  *                      change, no byte change
  *   bond               the registration bond, EXACTLY the STORAGE_BOND in
