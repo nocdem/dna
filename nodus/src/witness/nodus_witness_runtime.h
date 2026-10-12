@@ -1191,7 +1191,11 @@ nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id);
  *   - the compiled vote literal DNAC_CFG_RULESET_GEN2_D2 re-derives from
  *     the generation-2 pins (dna_ruleset_gen_digest);
  *   - storage reward v1: the compiled vote literal
- *     DNAC_CFG_RULESET_GEN_STORAGE_D re-derives from the GEN_STORAGE pins.
+ *     DNAC_CFG_RULESET_GEN_STORAGE_D re-derives from the GEN_STORAGE pins;
+ *   - HF-6 slice 8b (EVM-enabled build): the compiled generation-4 vote
+ *     literal DNAC_CFG_RULESET_GEN_ROLES_D (D4) re-derives through
+ *     nodus_runtime_gen4_vote_digest — so a build whose Foundation owner
+ *     and D4 literal disagree refuses to start.
  * @return 0 healthy, -1 on the first violation.
  */
 int nodus_witness_runtime_selfcheck(void);
@@ -1241,6 +1245,20 @@ void nodus_runtime_manifest_init(const nodus_domain_runtime_t *rt,
  */
 int nodus_runtime_evm_activation_digest(uint64_t *d_out,
                                         dna_domain_manifest_t *evm_man_out);
+
+/**
+ * HF-6 slice 8b (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ * design.md rev 6 §8.1): the generation-4 vote value D4 — what the
+ * RULESET_GEN_ROLES vote must name (dnac.h DNAC_CFG_RULESET_GEN_ROLES_D)
+ * — re-derived through dna_rolegen_vote_digest from the compiled table:
+ * generation NODUS_RT_GEN_STORAGE (4), base NODUS_RT_GEN_STORAGE_BASE (3),
+ * that generation's SYSTEM and CORE ruleset hashes,
+ * DNAC_HF6_SWITCH_SPEC_VERSION, the compiled DNAC_HF6_FOUNDATION_OWNER and
+ * the nine GEN4_VOTE_CONSTS (nodus_witness_runtime.c, §8.1 order).
+ * Selfcheck compares it with the literal; nothing in the vote path calls it.
+ * @return 0 / -1 (NULL d_out, a generation-4 entry missing, digest failure).
+ */
+int nodus_runtime_gen4_vote_digest(uint64_t *d_out);
 #endif
 
 /* ── Nodus EVM: the ONE call-head decoder and the ONE pairing rule ──────────

@@ -8259,6 +8259,67 @@ key, 499 / 3001 / a negative stored value → -1, no row → 3000); `test_v2_gas
 `test_hf4_names` (the fee_info decoder); `test_explorer` (names); `dnac/tests/test_chain_config_verify`
 (the mirror's ranges, 18 refused).
 
+### HF-6 slice 8b — the generation-4 vote value D4: constructor, constants, literal, selfcheck row (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §8.1 (the crypto gate,
+APPROVED by the operator 2026-10-09; the 296-byte sum fixed by the khan 2026-10-13); decision
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md`; plan `tasks/hf6-slice8-plan.md`
+§2 "8b". Inert on chain: the literal is compiled and re-derived at start, but nothing votes it or
+compares a committed row with it until slice 8c (param 18 `RULESET_GEN_ROLES`, the generation-4 edge
+and the storage gate on 18 / D4, param 16 retired).
+
+**The value.** D4 = the first 8 bytes, big-endian, top bit cleared (so D4 ≤ INT64_MAX, the
+`chain_config_history` int64 column), of SHA3-512 over a 296-byte preimage:
+
+| offset | len | field |
+|---|---|---|
+| 0 | 16 | `"NDS.ROLEGEN.v1"` zero-padded (`DNA_ROLEGEN_TAG`) |
+| 16 | 4 | generation u32 BE = 4 (`NODUS_RT_GEN_STORAGE`) |
+| 20 | 4 | base generation u32 BE = 3 (`NODUS_RT_GEN_STORAGE_BASE`, GEN_EVM) |
+| 24 | 64 | generation-4 SYSTEM `ruleset_hash` (binds the meter policy) |
+| 88 | 64 | generation-4 CORE `ruleset_hash` |
+| 152 | 4 | spec version u32 BE = 1 (`DNAC_HF6_SWITCH_SPEC_VERSION`: the 3 → 4 phase code) |
+| 156 | 64 | Foundation owner, raw (`DNAC_HF6_FOUNDATION_OWNER`, K8) |
+| 220 | 4 | n_consts u32 BE = 9 |
+| 224 | 72 | 9 × u64 BE: STAKE_MIN default / lower, POWER_CAP_BPS default / lower / upper, STORAGE_BOND default / lower / upper, consent window 720 |
+
+The constructor is `dna_rolegen_vote_digest` (`shared/dnac/domain_wire.c`, the
+`dna_evm_activation_digest` shape with the EVM ruleset / manifest slots replaced by the owner); it
+refuses NULL inputs, `n_consts > 64`, and any preimage whose length is not
+`DNA_ROLEGEN_PREIMAGE_LEN(n)`. The witness wrapper `nodus_runtime_gen4_vote_digest`
+(`nodus_witness_runtime.c`, EVM builds) feeds it the compiled generation-4 pins, the compiled owner
+and `GEN4_VOTE_CONSTS` (the nine NAMED constants in §8.1's order, `_Static_assert` count 9). The
+literal `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x4dc61072d5982acd` (5604184871704996557) is the `D4 =` line
+of the INDEPENDENT oracle `shared/dnac/tests/hf6_vote_oracle.py` (S2 / S3 from `storage_oracle.py`,
+owner K8) — never this build's encoder; the plan author's separate scratch derivation gave the same
+number. Two binaries that differ in a generation-4 pin, the 3 → 4 procedure, the owner or one of the
+nine constants cannot carry one D4.
+
+**Selfcheck.** `nodus_witness_runtime_selfcheck` re-derives D4 on every start of an EVM build and
+refuses to start when it differs from the compiled literal. The storage development row
+(`DNAC_CFG_RULESET_GEN_STORAGE_D` through `dna_ruleset_gen_digest`) stays beside it until 8c retires the
+param-16 trigger.
+
+**Test builds — two flags.** Both `DNAC_HF6_FOUNDATION_OWNER` and `DNAC_CFG_RULESET_GEN_ROLES_D` are
+`#ifndef`-guarded. Because D4 binds the compiled owner, a build that overrides the owner must override
+the literal with that owner's D4, and a build that overrides only one refuses to start on every node
+(the selfcheck row). `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both flags; it takes
+the D4 from `hf6_vote_oracle.py --owner <fp>` and never computes it in bash (the 2026-10-12 harness
+owner `2cca88c4…ee196b93` → `0x4fc24934a9155c64`). Production defines neither.
+
+**Byte-identical.** Every descriptor, pin, the pins header, D2, the EVM D, the storage dev literal,
+every chain-config rule and every committed block: nothing on the vote path or in the engine reads
+the new literal yet.
+
+**Tests** (written, NOT run by the builder). `test_hf4_table` section 6'': constructor over the
+compiled pins + compiled owner + the test's own nine-constant array == the wrapper == the literal, and
+— only under `DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT` — == `0x4dc61072d5982acd`; the harness owner passed
+explicitly == `0x4fc24934a9155c64` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) == 296`; NULL and
+`n_consts > 64` refused; generation, base, either hash, spec, `n_consts`, one owner byte and each
+constant move the value; D4 differs from D2, the EVM D and the storage D. `test_v2_native` K7: the K8
+literal (owner-default builds). Both prove the C constructor agrees with the oracle, not that §8.1 is
+the right layout (that is the approved crypto gate).
+
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
 **Records:** `docs/plans/2026-09-28-scan-v3-design.md`, decision

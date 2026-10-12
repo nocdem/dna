@@ -1176,7 +1176,10 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  harness that must sign owner operations for them compiles its own
  *  address in, e.g.
  *    cmake -DCMAKE_C_FLAGS='-DDNAC_HF6_FOUNDATION_OWNER="{0x01,0x02,...}"'
- *  (exactly 64 bytes). Production builds never define it.
+ *  (exactly 64 bytes). Production builds never define it. Since slice 8b
+ *  such a build must ALSO define DNAC_CFG_RULESET_GEN_ROLES_D (below) to
+ *  that owner's D4, or it refuses to start (the runtime selfcheck);
+ *  nodus/tests/integration/stagef/stagef_hf6_owner.sh prints both flags.
  *  DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT is defined only when the compiled
  *  value is this K8 address (tests pin the bytes only then). */
 #ifndef DNAC_HF6_FOUNDATION_OWNER
@@ -1251,6 +1254,62 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  check and the water-fill's own refusal are one pair. */
 #define DNAC_CFG_MIN_POWER_CAP_BPS       500u
 #define DNAC_CFG_MAX_POWER_CAP_BPS       3000u
+
+/** HF-6 — the generation-4 switch procedure version (design docs/plans/
+ *  2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8.1 "spec_version
+ *  u32 BE = 1 (3→4 faz kodu: kayıt anahtarı + §7 göçü; değişirse artar)";
+ *  the DNAC_EVM_ACTIVATION_SPEC_VERSION precedent). It names the phase
+ *  code the engine runs at the end of block H-1 of the generation-4 vote
+ *  (nodus_witness_v2_apply.c phase_6b_gen4_edge: the registry switch 3 → 4
+ *  and the §7 validator-row migration). It is hashed into
+ *  DNAC_CFG_RULESET_GEN_ROLES_D, so two binaries that run a different
+ *  3 → 4 procedure cannot share a vote value; any change to that phase
+ *  bumps it, and with it D4. The global DNAC_RULESET_SWITCH_SPEC_VERSION
+ *  (D2's) does NOT change. */
+#define DNAC_HF6_SWITCH_SPEC_VERSION     1u
+
+/** RULESET_GEN_ROLES value domain (HF-6, the generation-4 vote; param 18
+ *  in slice 8c, name khan decision 2026-10-13): EXACTLY this literal, D4 =
+ *  the first 8 bytes, big-endian, top bit cleared, of
+ *    SHA3-512( TAG16("NDS.ROLEGEN.v1")
+ *              ‖ u32 BE NODUS_RT_GEN_STORAGE (4)
+ *              ‖ u32 BE NODUS_RT_GEN_STORAGE_BASE (3, GEN_EVM)
+ *              ‖ generation-4 SYSTEM ruleset_hash[64]
+ *              ‖ generation-4 CORE ruleset_hash[64]
+ *              ‖ u32 BE DNAC_HF6_SWITCH_SPEC_VERSION (1)
+ *              ‖ DNAC_HF6_FOUNDATION_OWNER[64]
+ *              ‖ u32 BE 9
+ *              ‖ 9 × u64 BE: DNAC_HF6_STAKE_MIN_DEFAULT,
+ *                DNAC_HF6_STAKE_MIN_MIN, DNAC_HF6_POWER_CAP_BPS_DEFAULT,
+ *                DNA_POWER_CAP_BPS_MIN, DNA_POWER_CAP_BPS_MAX,
+ *                DNAC_HF6_STORAGE_BOND_DEFAULT, DNAC_HF6_STORAGE_BOND_MIN,
+ *                DNAC_HF6_STORAGE_BOND_MAX, DNA_VALBIND_MAX_EXPIRY_BLOCKS )
+ *  — a 296-byte preimage (design §8.1, crypto gate APPROVED by the
+ *  operator 2026-10-09; decision docs/plans/decisions/2026-10-09-kurultay-
+ *  16-hf6-storage-summary.md). The top bit is cleared so D4 <= INT64_MAX
+ *  (chain_config_history stores new_value as SQLite int64). Two binaries
+ *  that differ in a generation-4 pin, the 3 → 4 procedure, the Foundation
+ *  owner or one of the nine constants cannot carry one D4.
+ *
+ *  The value is a literal from the INDEPENDENT oracle
+ *  shared/dnac/tests/hf6_vote_oracle.py (owner K8; S2/S3 from
+ *  storage_oracle.py) — never this build's encoder.
+ *  nodus_witness_runtime_selfcheck re-derives it through
+ *  dna_rolegen_vote_digest (shared/dnac/domain_wire.c) from the COMPILED
+ *  pins, owner and constants on every start of an EVM-enabled build;
+ *  nothing in the vote path hashes.
+ *
+ *  TEST-BUILD OVERRIDE ONLY, and only TOGETHER with
+ *  DNAC_HF6_FOUNDATION_OWNER: D4 binds the compiled owner, so a build that
+ *  overrides the owner must pass the D4 of that owner too, e.g.
+ *    -DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL
+ *  printed by nodus/tests/integration/stagef/stagef_hf6_owner.sh from
+ *  hf6_vote_oracle.py --owner <fp>. A build that overrides one and not the
+ *  other refuses to start (the selfcheck row). Production builds never
+ *  define it. */
+#ifndef DNAC_CFG_RULESET_GEN_ROLES_D
+#define DNAC_CFG_RULESET_GEN_ROLES_D     0x4dc61072d5982acdULL /* D4 of shared/dnac/tests/hf6_vote_oracle.py, owner K8 (5604184871704996557) */
+#endif
 
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
@@ -1359,6 +1418,8 @@ _Static_assert(DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT >= DNAC_CFG_MIN_EVM_BLOCK_GAS &&
                "the EVM block gas default must be a votable value");
 _Static_assert(DNAC_CFG_RULESET_GEN_STORAGE_D <= 0x7FFFFFFFFFFFFFFFULL,
                "the storage vote literal must fit SQLite int64");
+_Static_assert(DNAC_CFG_RULESET_GEN_ROLES_D <= 0x7FFFFFFFFFFFFFFFULL,
+               "D4 must fit SQLite int64 (top bit cleared by construction)");
 _Static_assert(DNAC_HF6_STORAGE_BOND_DEFAULT == 100000000000000ULL &&
                DNAC_HF6_STORAGE_BOND_MIN == 10000000000000ULL &&
                DNAC_HF6_STORAGE_BOND_MAX == 100000000000000ULL,

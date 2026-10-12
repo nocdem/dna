@@ -769,6 +769,18 @@ over EVM ruleset v2 on 2026-10-06; on branch `hf6` re-derived by slice 6a to 0x3
 10 ROTATE_CONSENSUS_KEY joined the SYSTEM descriptor, versions unchanged), the harness scenario (`test_storage_archive.sh`), and every
 client that builds storage envelopes.
 
+**HF-6 vote value D4 (branch `hf6`, slice 8b — compiled, not yet votable).** The value the HF-6
+generation-4 vote will carry (param 18 `RULESET_GEN_ROLES`, wired in slice 8c) is the literal
+`DNAC_CFG_RULESET_GEN_ROLES_D` = `0x4dc61072d5982acd` (5604184871704996557) in `dnac.h`, from the
+independent oracle `shared/dnac/tests/hf6_vote_oracle.py` (design rev 6 §8.1: the generation-4 pins,
+the 3 → 4 spec version, the K8 Foundation owner and nine compiled constants). Every EVM-enabled node
+re-derives it at start (runtime selfcheck) and **refuses to start** if the compiled literal does not
+match its own pins, owner and constants. Production builds define neither override. **Test builds
+only:** a harness build that compiles its own owner (`-DDNAC_HF6_FOUNDATION_OWNER="{…}"`) must also
+pass that owner's D4 (`-DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL`); a build with one and not the other
+refuses to start on every node. `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both
+flags, the D4 taken from `hf6_vote_oracle.py --owner <fp>` (stagef README row).
+
 The HF-8 row is a PLACEHOLDER (design `docs/plans/2026-10-07-delegate-name-required-design.md`
 rev 2 §1, Kurultay #11; number: decision `2026-10-05-hf-numbering-evm-hf5.md` "Ek 2026-10-07"):
 nothing is voted; the code is in every node binary since 0.25.3 (135d1b2e) and INERT until a param-17 row exists (the

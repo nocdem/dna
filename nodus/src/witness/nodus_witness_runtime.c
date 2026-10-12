@@ -74,6 +74,10 @@
 #include "nodus_witness_rt_evm.h"       /* Nodus EVM: the EVM generation's hooks
                                          * (compiled only where the EVM
                                          * runtime is — nodus/CMakeLists.txt) */
+#include "dnac/power_cap.h"             /* HF-6 8b: DNA_POWER_CAP_BPS_MIN /
+                                         * _MAX (D4 consts[3..4])        */
+#include "dnac/valbind_wire.h"          /* HF-6 8b: DNA_VALBIND_MAX_EXPIRY_
+                                         * BLOCKS (D4 consts[8])         */
 #endif
 #include "crypto/utils/qgp_log.h"
 
@@ -1677,6 +1681,26 @@ int nodus_witness_runtime_selfcheck(void) {
                     (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
                     (unsigned long long)d);
     }
+    /* HF-6 slice 8b: the compiled generation-4 vote literal D4 re-derives
+     * from the generation-4 pins, the 3 → 4 spec version, the compiled
+     * Foundation owner and GEN4_VOTE_CONSTS (design rev 6 §8.1) — dnac.h
+     * DNAC_CFG_RULESET_GEN_ROLES_D. A test build that overrides
+     * DNAC_HF6_FOUNDATION_OWNER without the matching literal (or the
+     * literal without the owner) stops HERE. The storage RSGEN row above
+     * stands until slice 8c retires the development trigger. */
+    {
+        uint64_t d = 0;
+        if (nodus_runtime_gen4_vote_digest(&d) != 0)
+            SC_FAIL("selfcheck: the generation-4 vote digest D4 could not "
+                    "be derived");
+        if (d != (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D)
+            SC_FAIL("selfcheck: the compiled RULESET_GEN_ROLES literal "
+                    "0x%016llx does not re-derive (0x%016llx) from the "
+                    "generation-4 pins, the compiled Foundation owner and "
+                    "constants",
+                    (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D,
+                    (unsigned long long)d);
+    }
 #endif
     return 0;
 }
@@ -1766,5 +1790,45 @@ int nodus_runtime_evm_activation_digest(uint64_t *d_out,
         return -1;
     if (evm_man_out) *evm_man_out = m;
     return 0;
+}
+
+/* HF-6 slice 8b — the compiled constants the generation-4 vote binds
+ * (dna_rolegen_vote_digest's `consts`), in EXACTLY design rev 6 §8.1's
+ * order — shared/dnac/tests/hf6_vote_oracle.py lists the same nine. On a
+ * chain with no param-19/20/21 row the defaults and the vote ranges are
+ * consensus rules, so two binaries that differ in any of them cannot
+ * share a vote value (the EVM_ACT_CONSTS precedent). */
+static const uint64_t GEN4_VOTE_CONSTS[] = {
+    DNAC_HF6_STAKE_MIN_DEFAULT,         /* 0 STAKE_MIN default (2M raw)     */
+    DNAC_HF6_STAKE_MIN_MIN,             /* 1 STAKE_MIN lower (100k raw)     */
+    DNAC_HF6_POWER_CAP_BPS_DEFAULT,     /* 2 POWER_CAP_BPS default (3000)   */
+    DNA_POWER_CAP_BPS_MIN,              /* 3 POWER_CAP_BPS lower (500)      */
+    DNA_POWER_CAP_BPS_MAX,              /* 4 POWER_CAP_BPS upper (3000)     */
+    DNAC_HF6_STORAGE_BOND_DEFAULT,      /* 5 STORAGE_BOND default (1M raw)  */
+    DNAC_HF6_STORAGE_BOND_MIN,          /* 6 STORAGE_BOND lower (100k raw)  */
+    DNAC_HF6_STORAGE_BOND_MAX,          /* 7 STORAGE_BOND upper (1M raw)    */
+    DNA_VALBIND_MAX_EXPIRY_BLOCKS       /* 8 consent window (720 blocks)    */
+};
+_Static_assert(sizeof(GEN4_VOTE_CONSTS) / sizeof(GEN4_VOTE_CONSTS[0]) == 9,
+               "design §8.1: D4 binds exactly nine constants");
+
+int nodus_runtime_gen4_vote_digest(uint64_t *d_out) {
+    if (!d_out) return -1;
+    const nodus_domain_runtime_t *s =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *c =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_CORE);
+    if (!s || !c) return -1;
+    static const uint8_t foundation[] = DNAC_HF6_FOUNDATION_OWNER;
+    _Static_assert(sizeof(foundation) == DNA_ROLEGEN_OWNER_LEN,
+                   "DNAC_HF6_FOUNDATION_OWNER must be exactly 64 bytes");
+    return dna_rolegen_vote_digest(NODUS_RT_GEN_STORAGE,
+                                   NODUS_RT_GEN_STORAGE_BASE,
+                                   s->ruleset_hash, c->ruleset_hash,
+                                   DNAC_HF6_SWITCH_SPEC_VERSION,
+                                   foundation, GEN4_VOTE_CONSTS,
+                                   (uint32_t)(sizeof(GEN4_VOTE_CONSTS) /
+                                              sizeof(GEN4_VOTE_CONSTS[0])),
+                                   d_out);
 }
 #endif
