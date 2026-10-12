@@ -3716,52 +3716,35 @@ static void handle_dnac_storage_by_owner(nodus_witness_t *w,
     bool set_exists = false;
     if (!o || !set || !fps) { fault = "out of memory"; goto done; }
 
-    /* ── the owner's rows: how many, then the first SET_MAX node_fps ── */
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT COUNT(*) FROM v2_storage_nodes WHERE payee_fp = ?1",
-            -1, &st, NULL) != SQLITE_OK) {
-        fault = "storage registry unreadable";
-        goto done;
-    }
-    sqlite3_bind_blob(st, 1, owner, 64, SQLITE_TRANSIENT);
-    if (sqlite3_step(st) != SQLITE_ROW ||
-        sqlite3_column_int64(st, 0) < 0) {
-        fault = "storage registry unreadable";
-        goto done;
-    }
-    total = (uint64_t)sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    st = NULL;
-
+    /* ── the owner's rows: ONE statement, stepped to its end — every row
+     *    counted into "total", the first SET_MAX node_fps kept (the list
+     *    and the count come from the same read; memory stays fixed) ── */
     if (sqlite3_prepare_v2(w->db,
             "SELECT node_fp FROM v2_storage_nodes WHERE payee_fp = ?1 "
-            "ORDER BY node_fp ASC LIMIT ?2",
+            "ORDER BY node_fp ASC",
             -1, &st, NULL) != SQLITE_OK) {
         fault = "storage registry unreadable";
         goto done;
     }
     sqlite3_bind_blob(st, 1, owner, 64, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)NODUS_DNAC_STORAGE_SET_MAX);
     for (;;) {
         int rc = sqlite3_step(st);
         if (rc == SQLITE_DONE) break;
-        if (rc != SQLITE_ROW || n >= NODUS_DNAC_STORAGE_SET_MAX ||
+        if (rc != SQLITE_ROW ||
             sqlite3_column_type(st, 0) != SQLITE_BLOB ||
             sqlite3_column_bytes(st, 0) != 64 ||
             sqlite3_column_blob(st, 0) == NULL) {
             fault = "storage registry unreadable";
             goto done;
         }
-        memcpy(fps[n], sqlite3_column_blob(st, 0), 64);
-        n++;
+        if (n < NODUS_DNAC_STORAGE_SET_MAX) {
+            memcpy(fps[n], sqlite3_column_blob(st, 0), 64);
+            n++;
+        }
+        total++;
     }
     sqlite3_finalize(st);
     st = NULL;
-    if ((uint64_t)n != (total < NODUS_DNAC_STORAGE_SET_MAX
-                        ? total : (uint64_t)NODUS_DNAC_STORAGE_SET_MAX)) {
-        fault = "storage registry count disagrees with its rows";
-        goto done;
-    }
 
     if (st_epoch_set(w, tip, set, &H, &set_exists) != 0) {
         fault = "storage set unreadable";

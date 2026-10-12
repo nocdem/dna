@@ -8116,7 +8116,8 @@ a half answer is never shown as an owner.
 **`dnac_storage_by_owner` {owner: tstr128}.** The storage nodes one OWNER registered: since 6b the
 registry column `v2_storage_nodes.payee_fp` holds owner_fp. Reply `ch`, `total` (the owner's rows,
 every status), `nodes` = the first min(total, 256) rows in node_fp order (the primary key — a total
-byte order, `ORDER BY node_fp ASC LIMIT 256`), each entry `fp` + exactly the keys `dnac_storage_status`
+byte order; ONE `ORDER BY node_fp ASC` statement stepped to its end counts every row into `total`
+and keeps the first 256, so count and list come from the same read), each entry `fp` + exactly the keys `dnac_storage_status`
 answers for that node. To share them, `handle_dnac_storage_status` was split into `st_fp_arg`,
 `st_epoch_set` (storage_set(H) read once per request), `st_status_fill` and `st_status_encode`; its own
 reply bytes are unchanged. Bound: live rows are capped at 256 by STORAGE_REGISTER, but RELEASED rows
