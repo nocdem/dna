@@ -267,7 +267,7 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
    4-module quiet zone, so no extra padding is needed for scanners. */
 .receive-qr { margin: 0 0 12px; }
 .receive-qr:empty { display: none; }
-.receive-qr svg { display: block; width: 168px; height: 168px; max-width: 100%; border-radius: 6px; }
+.receive-qr svg { display: block; width: 168px; height: 168px; max-width: 100%; border-radius: 6px; margin: 0 auto; }   /* centred (0.1.102, operator) */
 /* Send block: below the receive block in the same Send / Receive panel. */
 .send-block { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
 .send-block-network { color: var(--muted); font-weight: 400; white-space: nowrap; }
@@ -425,6 +425,14 @@ dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 .portfolio-networks { display: flex; flex-wrap: wrap; gap: 12px 20px; padding: 18px 0; border-bottom: 1px solid var(--line); }
 .network-health { display: inline-flex; gap: 7px; align-items: center; font-size: 10px; color: #b4bea9; }
 .network-health .coin-icon { width: 18px; height: 18px; }
+/* The network's light (0.1.103): green current, amber last read, red failed, grey not read; pulses while reading. */
+.health-light { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #6b7064; }
+.network-health[data-health="current"] .health-light { background: #6fd36a; box-shadow: 0 0 6px #6fd36a99; }
+.network-health[data-health="old"] .health-light { background: #f2c896; box-shadow: 0 0 6px #f2c89699; }
+.network-health[data-health="failed"] .health-light { background: #f06c5c; box-shadow: 0 0 6px #f06c5c99; }
+.network-health[data-reading="true"] .health-light { animation: health-pulse 1.2s ease-in-out infinite; }
+@keyframes health-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .network-health[data-reading="true"] .health-light { animation: none; opacity: .6; } }
 .coin-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; }
 .coin-letter { display: inline-grid; place-items: center; background: #2775ca; color: #fff; font-size: 18px; font-weight: 500; }
 .portfolio-filters { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 22px; }

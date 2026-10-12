@@ -156,9 +156,12 @@ try {
   // Portfolio: filter, health badge, and an IXIOS row read like the CPUNK row.
   assert.equal(await page.locator('.network-filter[data-chain="ixios"]').innerText(), 'Ixios');
   const badge = page.locator('#portfolio-networks .network-health', { hasText: 'Ixios' });
-  assert.ok((await badge.locator('img.coin-icon').getAttribute('src')).endsWith('/assets/coins/ixios.png'));
+  // 0.1.102: built-in icon (data: or content-hashed); data-icon names the file
+  assert.equal(await badge.locator('img.coin-icon').getAttribute('data-icon'), 'ixios.png');
+  assert.match(await badge.locator('img.coin-icon').getAttribute('src'), /^data:image\/|\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.png$/);
   await portfolioDone(page); await ixiosSettled(page);
-  assert.equal(await badge.innerText(), 'Ixios · Balances read');
+  assert.equal(await badge.getAttribute('title'), 'Ixios · Balances read');
+  assert.equal(await badge.getAttribute('data-health'), 'current', 'green light (0.1.103)');
   // Network identity (block 1's parentHash = genesis hash) is checked before the
   // balance is read, and the balance is read for the derived, checksummed address.
   assert.deepEqual(ixiosCalls, [
@@ -167,7 +170,7 @@ try {
   ]);
   const row = page.locator('.asset-group[data-symbol="IXIOS"]');
   assert.equal(await row.count(), 1);
-  assert.ok((await row.locator('summary img.coin-icon').getAttribute('src')).endsWith('/assets/coins/ixios.png'));
+  assert.equal(await row.locator('summary img.coin-icon').getAttribute('data-icon'), 'ixios.png');
   assert.equal(await row.locator('.asset-name small').innerText(), 'IXIOS · Ixios');
   assert.equal(await page.locator('.asset-group[data-symbol="ETH"] .asset-name small').innerText(), 'Ethereum · Ethereum', 'shared subtitle format unchanged for other coins');
   // Shown like the CPUNK row: the balance, and no USD value.
@@ -230,14 +233,16 @@ try {
   assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
   assert.match(await row.locator('.holding-value small').innerText(), /^Read failed · last read /);
   assert.equal(await row.locator('.asset-value small').innerText(), 'Last read');
-  assert.match(await badge.innerText(), /^Ixios · Last read /);
+  assert.match(await badge.getAttribute('title'), /^Ixios · Last read /);
+  assert.equal(await badge.getAttribute('data-health'), 'failed', 'red light: the last read failed (0.1.103)');
   assert.equal(await page.locator('#portfolio-total').innerText(), '$0.00');
   // The right network again: the balance comes back.
   ixiosCalls.length = 0; ixiosGenesis = IXIOS_GENESIS;
   await page.locator('#portfolio-refresh').click(); await portfolioDone(page);
   assert.deepEqual(ixiosCalls.map(call => call.method), ['eth_getBlockByNumber', 'eth_getBalance']);
   assert.equal(await row.locator('.holding-value strong').innerText(), '1,234.567 IXIOS');
-  assert.equal(await badge.innerText(), 'Ixios · Balances read');
+  assert.equal(await badge.getAttribute('title'), 'Ixios · Balances read');
+  assert.equal(await badge.getAttribute('data-health'), 'current');
   assert.doesNotMatch(await page.locator('body').innerText(), /not active/i);
   // The Cellframe derivation also fetches legacy-dilithium-*.wasm on open; what matters
   // here is that the keygen module was loaded and the signing module never was.

@@ -1,5 +1,6 @@
 import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfolio-routes.js';
 import { pastePhrase, readPhrase } from './browser-phrase.js';
+import { AUTO_LOCK_KEY } from '../src/auto-lock.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -90,6 +91,18 @@ try {
   assert.equal(await page.locator('#send-title').innerText(), 'Send / Receive · Nodus');
   assert.equal(await page.locator('#receive-qr svg').getAttribute('role'), 'img');
   assert.equal(await page.locator('#receive-qr svg').getAttribute('aria-label'), 'QR code for the receive address');
+  // 0.1.104 (operator: "auto lock … 10 minutes yazıyor … settings'ten okuması
+  // lazım"): the bar says the chosen time and follows a change.
+  assert.equal(await page.locator('#session-timeout').innerText(), 'Auto-lock after 15 minutes of inactivity');
+  await page.locator('#auto-lock-minutes').evaluate(select => { select.value = '5'; select.dispatchEvent(new Event('change')); });
+  assert.equal(await page.locator('#session-timeout').innerText(), 'Auto-lock after 5 minutes of inactivity');
+  await page.locator('#auto-lock-minutes').evaluate(select => { select.value = '0'; select.dispatchEvent(new Event('change')); });
+  assert.equal(await page.locator('#session-timeout').innerText(), 'Auto-lock off');
+  await page.locator('#auto-lock-minutes').evaluate(select => { select.value = '15'; select.dispatchEvent(new Event('change')); });
+  await page.evaluate(key => localStorage.removeItem(key), AUTO_LOCK_KEY);   // the choice was kept; this test expects no storage later
+  // 0.1.102 (operator: "sol tarafına yapışık … ortalayalım"): centred in its panel
+  const qrGap = await page.locator('#receive-qr svg').evaluate(svg => { const s = svg.getBoundingClientRect(), p = svg.parentElement.getBoundingClientRect(); return [s.left - p.left, p.right - s.right]; });
+  assert.ok(Math.abs(qrGap[0] - qrGap[1]) <= 2, `QR centred (left ${qrGap[0]}, right ${qrGap[1]})`);
   assert.equal(await decodeQr(), await page.locator('#receive-address').innerText());
   assert.equal(await page.locator('#nodus-address-status').isVisible(), true);
   assert.match(await page.locator('#nodus-address-status').innerText(), /Derived locally/);
@@ -108,10 +121,17 @@ try {
   // Portfolio: NODUS is the first asset group, badge and network filter; its row
   // has only Receive and shows no balance (no amount, no zero, no read state).
   assert.equal(await page.locator('#balances .asset-group').first().getAttribute('data-symbol'), 'NODUS');
-  assert.equal(await page.locator('#portfolio-networks .network-health').first().innerText(), 'Nodus · Balance not shown yet');
+  // 0.1.103: a light, the words in the title / accessible name
+  assert.equal(await page.locator('#portfolio-networks .network-health').first().getAttribute('title'), 'Nodus · Balance not shown yet');
+  assert.equal(await page.locator('#portfolio-networks .network-health').first().getAttribute('data-health'), 'none');
   assert.deepEqual((await page.locator('#portfolio-filters button').allTextContents()).slice(0, 2), ['All networks', 'Nodus']);
   const nodusGroup = page.locator('.asset-group[data-symbol="NODUS"]');
-  assert.ok((await nodusGroup.locator('summary img.coin-icon').getAttribute('src')).endsWith('/assets/coins/nodus.svg'));
+  // 0.1.102: icons are built in — inlined (data:) or under a content-hashed
+  // name, the only form the sites let browsers cache (an icon fetched again
+  // on every redraw blinked out); `data-icon` names the file.
+  const nodusIcon = nodusGroup.locator('summary img.coin-icon');
+  assert.equal(await nodusIcon.getAttribute('data-icon'), 'nodus.svg');
+  assert.match(await nodusIcon.getAttribute('src'), /^data:image\/|\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.(svg|png)$/);
   assert.equal(await nodusGroup.locator('.asset-value strong').innerText(), '—');
   await nodusGroup.locator('summary').click();
   assert.equal(await nodusGroup.locator('.chain-holding').count(), 1);

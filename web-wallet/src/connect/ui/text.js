@@ -245,6 +245,21 @@ export function contactListStatusText(status) {
   }
 }
 
+// The time a message shows (0.1.104, operator: "attığın mesajların tarihi
+// chat'i açtığın tarihmiş"): an incoming message shows when its sender sent
+// it (senderTs, as the app does: messenger_transport.c msg_timestamp), not
+// when this device first read it (`at` — a message that waited while
+// Messages was closed showed the time Messages was opened). The sender's
+// clock is not checked by anyone, so it is never later than `at`: a message
+// cannot have been sent after it arrived. Own messages, and an incoming one
+// without a usable sender time, show `at`. Display only: the order stays
+// local (compareLocal).
+export function shownAt(m) {
+  const at = Number(m?.at);
+  if (m?.dir !== 'in' || typeof m.senderTs !== 'string' || !U64.test(m.senderTs)) return at;
+  const sent = Number(m.senderTs) * 1000;
+  return Number.isSafeInteger(sent) && sent <= at ? sent : at;
+}
 // Sender's clock label: senderTs is unix seconds as a decimal string, set by
 // the sender's device and not checked by anyone (design §1.9).
 export function senderClockLabel(senderTs) {

@@ -30,7 +30,7 @@ import { renderQr } from './qr.js';
 // Nodus Connect page registers Messages (src/connect-main.js).
 import { raise, gather, siteName, onOwnIdentity } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
-import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote } from './auto-lock.js';
+import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote, autoLockBarText } from './auto-lock.js';
 import { readBalanceRefresh, writeBalanceRefresh, parseBalanceRefresh, balanceRefreshNote } from './balance-refresh.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
@@ -461,7 +461,16 @@ function renderActivity(save = true) {
 // intent_id; for a claim, for the coin it creates). A claim that reaches a
 // final state re-reads the NODUS balance and the claim offer once the
 // tracker has stored that state on the row (it does so after this returns).
+// Any transaction of this wallet confirmed now: its network's balance is read
+// again at once, in the background (0.1.102, operator: "birine nodus
+// gönderdikten sonra hemen bakiye güncellenmiyor … yarım dakika sonra refresh
+// ettiğim zaman … düzeliyor"); before, only a NODUS claim did so.
 const checkRow = async (row, options) => {
+  const update = await checkRowStatus(row, options);
+  if (update.status === 'confirmed' && row.status !== 'confirmed') setTimeout(() => { if (wallet) portfolio.reread(row.chain); }, 0);
+  return update;
+};
+const checkRowStatus = async (row, options) => {
   if (row.chain !== NODUS_ASSET.chain) {
     const update = await checkActivity(row, options);
     // Confirmed now: read the account history once (at most every
@@ -476,8 +485,7 @@ const checkRow = async (row, options) => {
   const update = await adapters.nodus.checkNodusActivity(row, { ...options, client: nodusClient });
   if (adapters.nodus.isClaimRow(row) && terminal(update.status) && !terminal(row.status)) setTimeout(() => {
     if (!wallet || !nodusClient) return;
-    void refreshClaim();
-    if (update.status === 'confirmed') portfolio.setAddress(NODUS_ASSET.chain, wallet.addresses.nodus);
+    void refreshClaim();               // its balance: checkRow above
   }, 0);
   // Any other NODUS transaction that reaches a final state may have moved a
   // delegation or the validator list, or registered this wallet's chain
@@ -820,14 +828,16 @@ const ENTRY_IDLE_MINUTES = 10;
 function autoLockStorage() { try { return globalThis.localStorage; } catch { return undefined; } }
 let autoLockMinutes = readAutoLock(autoLockStorage());
 {
-  const choice = $('auto-lock-minutes'), note = $('auto-lock-note');
+  const choice = $('auto-lock-minutes'), note = $('auto-lock-note'), bar = $('session-timeout');
   choice.value = String(autoLockMinutes);
   note.textContent = autoLockNote(autoLockMinutes);
+  bar.textContent = autoLockBarText(autoLockMinutes);
   choice.addEventListener('change', () => {
     autoLockMinutes = parseAutoLock(choice.value);
     choice.value = String(autoLockMinutes);
     const kept = writeAutoLock(autoLockStorage(), autoLockMinutes);
     note.textContent = autoLockNote(autoLockMinutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
+    bar.textContent = autoLockBarText(autoLockMinutes);
     activity();                                  // the new time counts from now
   });
 }

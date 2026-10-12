@@ -18,7 +18,7 @@ import {
   openHistoryStore, StorageError, HISTORY_SLOW_TEXT
 } from '../src/connect/store.js';
 import {
-  parseContactId, parseContactInput, requestRefusal, shortId, inspectUntrusted, httpsLink, linkSegments, profilePatch, profileStatusText, senderClockLabel,
+  parseContactId, parseContactInput, requestRefusal, shortId, inspectUntrusted, httpsLink, linkSegments, profilePatch, profileStatusText, senderClockLabel, shownAt,
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
   publishedSeqs, markPublished, markDelivered, ackToSend, ackAllowed, messageStatus,
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
@@ -252,6 +252,14 @@ test('names: one letter of another script inside a Latin name is unusual; mixed-
 });
 
 test('sender clock: a safe integer past the Date range is "unknown", never a thrown render', () => {
+  // 0.1.104: an incoming message shows its sender's time, never later than it arrived
+  const AT = 1791600000000;                                  // ms, arrived on this device
+  assert.equal(shownAt({ dir: 'in', at: AT, senderTs: '1791500000' }), 1791500000000, 'sent earlier: the sender\'s time');
+  assert.equal(shownAt({ dir: 'in', at: AT, senderTs: '1791700000' }), AT, 'a "future" sender clock: the arrival time');
+  assert.equal(shownAt({ dir: 'in', at: AT, senderTs: 'x' }), AT);
+  assert.equal(shownAt({ dir: 'in', at: AT }), AT);
+  assert.equal(shownAt({ dir: 'in', at: AT, senderTs: '99999999999999999999' }), AT, 'beyond a safe integer: the arrival time');
+  assert.equal(shownAt({ dir: 'out', at: AT, senderTs: '1791500000' }), AT, 'own messages: when they were written');
   assert.equal(senderClockLabel('8640000000001'), "sender's clock: unknown");
   assert.equal(senderClockLabel('9007199254740'), "sender's clock: unknown");
   assert.match(senderClockLabel('1790000000'), /^sender's clock: 2026-/);

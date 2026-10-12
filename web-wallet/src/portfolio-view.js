@@ -8,7 +8,27 @@ const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: '
 const icons = { ETH: 'eth.svg', BNB: 'bnb.svg', SOL: 'sol.svg', TRX: 'trx.svg', USDT: 'usdt.svg', CPUNK: 'cpunk.png' };
 const $ = id => document.getElementById(id);
 function el(tag, className, text) { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; }
-function iconImg(file) { const img = el('img', 'coin-icon'); img.src = `/assets/coins/${file}`; img.alt = ''; img.width = 36; img.height = 36; return img; }
+// The coin and network icons are part of the build (src/assets/coins), so
+// they get content-hashed names that the sites cache for a year (0.1.102).
+// Served from public/assets/coins under a fixed name they were "no-store"
+// (the sites cache only content-hashed files, nginx 2026-10-12), and every
+// redraw of the list fetched each icon again: they blinked out until loaded.
+// Each file is named here so the build emits only what it uses: Ixios's icon
+// only in a build with Ixios on (a build without it carries no Ixios code or
+// file, test/browser-ixios.js). Small files are inlined as data: URLs (CSP
+// img-src allows data:); `data-icon` keeps the file name for tests.
+const ICON_URLS = {
+  'bnb.svg': new URL('./assets/coins/bnb.svg', import.meta.url).href,
+  'cellframe.svg': new URL('./assets/coins/cellframe.svg', import.meta.url).href,
+  'cpunk.png': new URL('./assets/coins/cpunk.png', import.meta.url).href,
+  'eth.svg': new URL('./assets/coins/eth.svg', import.meta.url).href,
+  'nodus.svg': new URL('./assets/coins/nodus.svg', import.meta.url).href,
+  'sol.svg': new URL('./assets/coins/sol.svg', import.meta.url).href,
+  'trx.svg': new URL('./assets/coins/trx.svg', import.meta.url).href,
+  'usdt.svg': new URL('./assets/coins/usdt.svg', import.meta.url).href,
+  ...(import.meta.env.VITE_ENABLE_IXIOS === 'true' ? { 'ixios.png': new URL('./assets/coins/ixios.png', import.meta.url).href } : {})
+};
+function iconImg(file) { const img = el('img', 'coin-icon'); img.src = ICON_URLS[file]; img.dataset.icon = file; img.alt = ''; img.width = 36; img.height = 36; return img; }
 // `network`, when given, is the network the asset group belongs to: an optional
 // network's own asset that has no entry in `icons` (and whose symbol is that
 // network's own symbol) shows the network's icon rather than a letter.
@@ -101,15 +121,25 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     $('portfolio-networks').replaceChildren(...Object.entries(networks).map(([chain, c]) => {
       const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null && r.keptAt === undefined);
       const lastRead = rows.filter(r => r.keptAt !== undefined).map(r => r.keptAt);
-      const status = c.balanceUnavailable ? (lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : 'Balance not shown yet') : rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read'
+      const status = c.balanceUnavailable ? (lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : 'Balance not shown yet') : rows.some(r => r.state === 'loading') || jobs.has(chain) ? 'Reading' : ready ? 'Balances read'
         : lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
-      const badge = el('span', 'network-health'); badge.append(networkIcon(c), el('span', '', `${c.name} · ${status}`)); return badge;
+      // A light instead of the words (0.1.103, operator: "yeşil … stale
+      // olanlar … sarı … bağlanamayanlar kırmızı"): green = every balance
+      // read and current, amber = shown as last read (out of date, or no
+      // source yet), red = the last read failed, grey = not read yet; it
+      // pulses while a read runs. The words stay as the badge's title and
+      // accessible name.
+      const reading = status === 'Reading';
+      const health = rows.some(r => r.state === 'error') ? 'failed' : ready && rows.length && !c.balanceUnavailable ? 'current' : lastRead.length ? 'old' : 'none';
+      const badge = el('span', 'network-health'); badge.dataset.health = health; badge.dataset.reading = String(reading);
+      badge.title = `${c.name} · ${status}`; badge.setAttribute('role', 'img'); badge.setAttribute('aria-label', badge.title);
+      badge.append(el('span', 'health-light'), networkIcon(c), el('span', '', c.name)); return badge;
     }));
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
     const focused = document.activeElement, focusedGroup = focused?.closest('.asset-group')?.dataset.symbol;
     const focusedAction = focused?.getAttribute('aria-label'), focusedRowAction = focused?.dataset?.rowAction;
-    $('balances').replaceChildren(...groupAssets(snap.rows, filter).flatMap(group => {
+    $('balances').replaceChildren(...groupAssets(snap.rows, filter, Object.fromEntries(Object.entries(networks).map(([key, c]) => [key, c.name]))).flatMap(group => {
       const detail = el('details', 'asset-group'); detail.dataset.symbol = group.symbol; detail.open = opened.has(group.symbol);
       const summary = el('summary', 'asset-summary'), name = el('span', 'asset-name');
       const home = networks[group.rows[0].chain];
@@ -177,7 +207,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     if (!addresses[chain]) { if (background) return false; for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' }; render(); return false; }
     const controller = new AbortController(); jobs.set(chain, controller);
     if (background) backgroundJobs.add(controller);
-    if (!background) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' };
+    if (!background) for (const asset of assets.filter(a => a.chain === chain)) if (balances[asset.key]?.state !== 'ready') balances[asset.key] = { state: 'loading' };
     render();
     try {
       const rows = await readBalances(chain, addresses[chain], endpoints[chain], { signal: controller.signal });
@@ -222,7 +252,11 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     if (background ? (jobs.size || priceJob) : !yieldToRefresh()) return;
     const current = session;
     readAt = Date.now();
-    if (!background) { quotes = {}; for (const asset of assets) balances[asset.key] = { state: 'loading' }; }
+    // Refresh keeps what is shown until each answer replaces it (0.1.102,
+    // operator: "refresh ettiği anda hepsi boş oluyor … ikonlar gidiyor"): only
+    // a row with no balance yet shows "Reading…"; the network badges say
+    // "Reading" while their read runs; prices stay until new ones arrive.
+    if (!background) for (const asset of assets) if (balances[asset.key]?.state !== 'ready') balances[asset.key] = { state: 'loading' };
     const controller = new AbortController(); priceJob = controller;
     if (background) backgroundJobs.add(controller);
     if (!background) $('portfolio-updated').textContent = 'Reading balances and market prices…';
@@ -251,6 +285,17 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       const controller = new AbortController(); priceJob = controller; backgroundJobs.add(controller);
       void readQuotes(current, controller).finally(() => { backgroundJobs.delete(controller); if (session === current && priceJob === controller) { priceJob = undefined; render(); } });
     }
+  }
+  // One network read again now, in the background, whatever the age of its
+  // last read (0.1.102, operator: "nodus gönderdikten sonra hemen bakiye
+  // güncellenmiyor"): a transaction of this wallet on it was just confirmed
+  // (src/app.js checkRow). A read already running started before the
+  // confirmation, so it is cancelled and replaced.
+  function reread(chain) {
+    if (!addresses || !chains.includes(chain) || !addresses[chain]) return;
+    const running = jobs.get(chain);
+    if (running) { running.abort(); jobs.delete(chain); backgroundJobs.delete(running); }
+    void readChainBalances(chain, session, { background: true });
   }
   // Automatic updates: every `minutes` while the page is shown (0 = off).
   // A hidden page reads nothing; shown again after the interval, it reads at once.
@@ -358,5 +403,5 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh };
+  return { open, clear, refresh, reread, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh };
 }

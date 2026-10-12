@@ -122,6 +122,9 @@ test('payment cards: the app\'s form, amounts exact, the verdict from own histor
   assert.throws(() => buildTransfer({ amount: '0', wire: W, to: B }), /Invalid payment card/);
   assert.throws(() => buildTransfer({ amount: '1', wire: 'xx', to: B }), /Invalid payment card/);
   const card = parseTransfer(text);
+  // 0.1.102: A-Z only are lowered (the C core does the same)
+  assert.equal(parseTransfer('{"type":"token_transfer","chain":"NÖDUS"}').chain, 'nÖdus');
+  assert.equal(parseTransfer('{"type":"token_transfer","chain":"NODUS"}').chain, 'nodus');
   assert.equal(parseTransfer('hello'), null);
   assert.equal(parseTransfer('{"type":"other"}'), null);
   const row = (kind, peer, amount, extra = {}) => ({ h: 900n, kind, peer, amount: BigInt(amount), token: N, wire: W, ...extra });

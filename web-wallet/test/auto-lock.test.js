@@ -3,7 +3,20 @@
 // the default (15 minutes), never "never".
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AUTO_LOCK_KEY, AUTO_LOCK_CHOICES, AUTO_LOCK_DEFAULT, parseAutoLock, autoLockNote, readAutoLock, writeAutoLock } from '../src/auto-lock.js';
+import { AUTO_LOCK_KEY, AUTO_LOCK_CHOICES, AUTO_LOCK_DEFAULT, parseAutoLock, autoLockNote, autoLockBarText, readAutoLock, writeAutoLock } from '../src/auto-lock.js';
+import { readFileSync } from 'node:fs';
+
+test('the open wallet\'s bar says the chosen auto-lock time (0.1.104), not a fixed 10 minutes', () => {
+  assert.equal(autoLockBarText(15), 'Auto-lock after 15 minutes of inactivity');
+  assert.equal(autoLockBarText(60), 'Auto-lock after 1 hour of inactivity');
+  assert.equal(autoLockBarText(0), 'Auto-lock off');
+  assert.equal(autoLockBarText(AUTO_LOCK_DEFAULT), `Auto-lock after ${AUTO_LOCK_DEFAULT} minutes of inactivity`);
+  // Both sites' bar text before the script runs is the default's, and has an id app.js fills.
+  for (const file of ['index.html', 'connect-site/index.html']) {
+    const html = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+    assert.ok(html.includes(`<span id="session-timeout" class="session-timeout">${autoLockBarText(AUTO_LOCK_DEFAULT)}</span>`), file);
+  }
+});
 
 const memory = () => { const m = new Map(); return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), m }; };
 
