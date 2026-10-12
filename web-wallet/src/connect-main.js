@@ -132,7 +132,8 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
   new MutationObserver(syncOpen).observe($('wallet-open'), { attributes: true, attributeFilter: ['hidden'] });
 
   // Wallet pages (src/app.js, 0.1.75): Earn, Shared vaults, Smart contracts,
-  // Activity, Address book, Device & settings and Logs are pages of the
+  // Activity, Address book, Device & settings, Logs and (Connect only) Nodus
+  // are pages of the
   // Wallet tab, named by the URL hash. A page that opens while another tab
   // is shown (the browser's Back or Forward, a page that became available)
   // brings the Wallet tab forward. The More rows open their page through the
@@ -245,6 +246,10 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
   // src/session-log.js) and Smart contracts are wallet pages (src/app.js).
   $('more-address-book').onclick = () => openWalletPage('address-book');
   $('more-device').onclick = () => openWalletPage('settings');
+  // Nodus (HF-6 screens, src/nodus-roles.js): become a witness or a storage
+  // node, change your node's key — a wallet page (#nodus-roles), opened
+  // through its link in Device & settings (design: Settings → "Nodus").
+  $('more-nodus').onclick = () => openWalletPage('nodus-roles');
   $('more-logs').onclick = () => openWalletPage('logs');
   // Smart contracts: listed only while the wallet's own link is (src/evm/ui.js
   // showPanel — the node reports the EVM generation and NODUS is selected).
@@ -351,8 +356,8 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
 }
 
 try {
-  const [{ configureSite, registerExtension, reportOwnIdentity }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }, { mountSmartContracts, smartContractExtension }] = await Promise.all([
-    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js'), import('./evm/ui.js')
+  const [{ configureSite, registerExtension, reportOwnIdentity }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }, { mountSmartContracts, smartContractExtension }, { mountNodusRoles, nodusRolesExtension }] = await Promise.all([
+    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js'), import('./evm/ui.js'), import('./nodus-roles.js')
   ]);
   configureSite('connect');
   const { host, nameExtension } = wireShell({ messagesNavigate, ownIdText, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar, shownOwnName, profileEntryText, reportOwnIdentity });
@@ -369,6 +374,10 @@ try {
   // (client.evmBuildable / evmReadable) and NODUS is the selected network.
   mountSmartContracts({ panelNode: $('evm-panel'), rootNode: $('evm-root') });
   registerExtension(smartContractExtension);
+  // Nodus (src/nodus-roles.js, HF-6 screens): a page of the Wallet tab
+  // (#nodus-roles), Connect only — the wallet site has no such page.
+  mountNodusRoles({ panelNode: $('nodus-roles-panel'), rootNode: $('nodus-roles-root') });
+  registerExtension(nodusRolesExtension);
   await import('./app.js');
   for (const id of ['create', 'restore', 'unlock-wallet']) $(id).disabled = false;
   $('wallet-boot-status').hidden = true;

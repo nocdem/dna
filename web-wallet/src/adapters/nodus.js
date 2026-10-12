@@ -30,6 +30,7 @@ import { NODUS_ASSET } from '../nodus/network.js';
 import { chainName, chainNameOk, parseNameOf } from '../nodus/names.js';
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, RAW = /^(0|[1-9]\d{0,19})$/;
+const ZERO128 = '0'.repeat(128);
 const U64_MAX = 2n ** 64n - 1n;
 // nodus/tools/nodus-cli.c:93-94: NODUS_CMT_APP_MAX_EXPIRY_AHEAD (100) - 10.
 export const NODUS_EXPIRY_AHEAD = 90n;
@@ -392,7 +393,14 @@ export function parseValidators(result) {
     seen.add(v.fingerprint);
     const status = VALIDATOR_STATUS[v.status];
     const delegators = v.delegators === undefined || v.delegators === -1 ? null : v.delegators;
-    return { fingerprint: v.fingerprint, selfStake: rawUnits(v.selfStake, 'witness stake'), delegated: rawUnits(v.delegated, 'witness stake'), commissionBps: v.commissionBps, status, statusText: STATUS_TEXT[status], acceptsDelegation: status === 'active' || status === 'eligible', delegators };
+    // HF-6 (send-module.js validators): a generation-4 row's validator_id
+    // and owner — both 128 hex and not all zero when hasV2, '' otherwise. A
+    // module or node without them (hasV2 absent / false): '' for both.
+    const hasV2 = v.hasV2 === true;
+    const validatorId = hasV2 ? v.validatorId : '', ownerFp = hasV2 ? v.ownerFp : '';
+    if (hasV2 && ![validatorId, ownerFp].every(id => typeof id === 'string' && HEX128.test(id) && id !== ZERO128)) throw invalid();
+    if (hasV2) { if (seen.has(`vid:${validatorId}`)) throw invalid(); seen.add(`vid:${validatorId}`); }
+    return { fingerprint: v.fingerprint, selfStake: rawUnits(v.selfStake, 'witness stake'), delegated: rawUnits(v.delegated, 'witness stake'), commissionBps: v.commissionBps, status, statusText: STATUS_TEXT[status], acceptsDelegation: status === 'active' || status === 'eligible', delegators, hasV2, validatorId, ownerFp };
   });
   return { truncated: result.truncated, validators };
 }
@@ -528,6 +536,205 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
   return {
     kind, chain: NODUS_ASSET.chain, from, to: d.validator, symbol: NODUS_ASSET.symbol, amount: formatUnits(d.amount, DECIMALS),
     endpoint: undefined, fee: nodusText(d.fee), expiresAt, review, intentId: d.intentId,
+    cancel() { used = true; },
+    async confirm(onBroadcast) {
+      if (used) throw new Error('This review is already closed.');
+      used = true; // an ambiguous submission is never retried automatically
+      if (Date.now() >= expiresAt) throw new Error('Review expired. Prepare it again.');
+      // The record is durable before the envelope leaves the browser; its
+      // inputs are held like a send's (lockedInputs) until it resolves.
+      await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs], ...(d.wire ? { wire: d.wire } : {}) });
+      const result = await client.submit({ envelope: d.envelope });
+      if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this transaction. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
+      return d.intentId;
+    }
+  };
+}
+
+// ── HF-6: become a witness, become a storage node, change a node's key,
+//    leave storage (Nodus Connect "Nodus" page, src/nodus-roles.js) ────────
+// Design docs/plans/2026-10-12-connect-hf6-screens-design.md rev 1 (§2 the
+// consent checks, §3 the gates, G1-G4); docs/plans/2026-10-03-hf5-
+// validator-owner-stake-design.md rev 6 §6.1, §9, §11. The module side is
+// nodus-cli `v2-envelope stake2 | rotate` and `storage register | exit`
+// over the shared builder (crypto/nodus-send-wasm.c "HF-6: NODE CONSENT"):
+// it re-checks the consent with this wallet's own fingerprint, the pinned
+// chain and the coin listing's tip, and builds nothing below the HF-6
+// generation. This side checks what crosses the boundary, applies the gates
+// the page shows (generation, balance) and keeps the module's read-back of
+// the signed envelope — the only values the Review shows (G3).
+// The owner is always THIS wallet's own key (a single-key owner, kind 1):
+// a shared vault (multisig) owner is not built by any builder yet (design
+// §3) and is never offered.
+export const HF6_KINDS = Object.freeze(['stake', 'rotate', 'storageRegister', 'storageExit']);
+// The amber note of design §3 (operator 2026-10-12: the screens are shown
+// before HF-6 is in force; sending stays disabled until then).
+export const HF6_NOT_YET_TEXT = 'Before the network upgrade that opens these roles, these screens show what they will do but cannot send.';
+// dnac_storage_status "st" (nodus/include/nodus/nodus.h): 1 ACTIVE,
+// 2 EXITING, 3 RELEASED.
+export const STORAGE_STATUS = Object.freeze({ 1: 'active', 2: 'leaving', 3: 'released' });
+const STORAGE_STATUS_TEXT = Object.freeze({ active: 'Storing', leaving: 'Leaving', released: 'Left' });
+const CONSENT_CHECK_IDS = Object.freeze(['format', 'op', 'chain', 'owner', 'subject', 'expiry', 'signature']);
+// The module's hf6Rules (src/nodus/client.js validHf6Rules), as BigInt;
+// the two timing multipliers are null when the module does not carry them.
+export function parseHf6Rules(rules) {
+  const invalid = () => new Error('Witness and storage roles are not available in this wallet version.');
+  if (!rules || !Number.isSafeInteger(rules.generation) || rules.generation < 1) throw invalid();
+  const out = { generation: BigInt(rules.generation) };
+  for (const key of ['stakeMin', 'storageBond', 'consentWindow']) {
+    out[key] = rawUnits(rules[key], 'network rule');
+    if (out[key] === 0n) throw invalid();
+  }
+  for (const key of ['minTenureBlocks', 'storageExitLockEpochs']) out[key] = rules[key] === undefined ? null : rawUnits(rules[key], 'network rule');
+  return out;
+}
+function hf6Ready(client, from) {
+  if (!client || client.state !== 'ready' || !client.hf6able) throw new Error('Witness and storage roles are not available right now.');
+  if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
+}
+// The consent checks of design §2, run by the module (synchronous, no
+// network) against this wallet's own fingerprint, the pinned chain and
+// `tip` (BigInt, the block height last read). kind: 'stake' | 'rotate' |
+// 'storageRegister'; validatorId: the chosen witness (rotate). Resolves
+// { ok, checks: [{ id, ok, detail }] × 7, nodeFp ('' if the text did not
+// parse), expiry (BigInt | null) } — the module's own lines, checked for
+// shape. `ok` only when every line passed.
+export function checkConsent({ client, from, kind, text, validatorId = '', tip } = {}) {
+  if (!client || !client.identified) throw new Error('Nodus connection is not ready.');
+  if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
+  if (!['stake', 'rotate', 'storageRegister'].includes(kind)) throw new Error('Unknown consent action.');
+  if (typeof tip !== 'bigint') throw new Error('The current Nodus block height is unknown.');
+  const r = client.consentCheck({ op: kind, text, validatorId: kind === 'rotate' ? validatorId : '', tip: tip.toString() });
+  const invalid = () => new Error('The Nodus module returned an invalid consent check.');
+  if (!r || typeof r.ok !== 'boolean' || !Array.isArray(r.checks) || r.checks.length !== CONSENT_CHECK_IDS.length) throw invalid();
+  const checks = r.checks.map((line, i) => {
+    if (!line || line.id !== CONSENT_CHECK_IDS[i] || typeof line.ok !== 'boolean' || typeof line.detail !== 'string') throw invalid();
+    return { id: line.id, ok: line.ok, detail: line.detail };
+  });
+  if (typeof r.nodeFp !== 'string' || (r.nodeFp !== '' && !HEX128.test(r.nodeFp)) || typeof r.expiry !== 'string' || (r.expiry !== '' && !RAW.test(r.expiry))) throw invalid();
+  if (r.ok !== checks.every(line => line.ok) || (r.ok && r.nodeFp === '')) throw invalid();
+  return { ok: r.ok, checks, nodeFp: r.nodeFp, expiry: r.expiry === '' ? null : rawUnits(r.expiry, 'consent expiry') };
+}
+// The module's storageByOwner() answer, checked: tip, total, at most 256
+// nodes (min(total, 256) of them), node fp strictly ascending, status 1..3.
+export function parseStorageByOwner(result) {
+  const invalid = () => new Error('The Nodus module returned an invalid storage node list.');
+  if (!result || !Array.isArray(result.nodes) || result.nodes.length > 256) throw invalid();
+  const tip = rawUnits(result.tip, 'block height'), total = rawUnits(result.total, 'storage node count');
+  if (BigInt(result.nodes.length) !== (total < 256n ? total : 256n)) throw invalid();
+  let last = '';
+  const nodes = result.nodes.map(n => {
+    if (!n || typeof n.fp !== 'string' || !HEX128.test(n.fp) || n.fp <= last || !Object.hasOwn(STORAGE_STATUS, n.status) || typeof n.member !== 'boolean' || !Number.isSafeInteger(n.failStreak) || n.failStreak < 0) throw invalid();
+    last = n.fp;
+    const status = STORAGE_STATUS[n.status];
+    return {
+      fp: n.fp, status, statusText: STORAGE_STATUS_TEXT[status], bond: rawUnits(n.bond, 'storage bond'), failStreak: n.failStreak,
+      graceUntil: rawUnits(n.graceUntil, 'block height'), registered: rawUnits(n.registered, 'block height'), exit: rawUnits(n.exit, 'block height'),
+      member: n.member, segments: rawUnits(n.segments, 'segment count')
+    };
+  });
+  return { tip, total, nodes, hidden: total - BigInt(nodes.length) };
+}
+// This wallet's storage nodes (ONE node's committed tables, design G4).
+export async function storageNodes({ client, from, signal } = {}) {
+  hf6Ready(client, from);
+  return parseStorageByOwner(await client.storageByOwner({ signal }));
+}
+// The module's read-back of an HF-6 envelope, checked for shape.
+function decodeHf6(built, kind) {
+  const d = built?.decoded, invalid = () => new Error('The Nodus module returned an invalid transaction.');
+  if (!built || !(built.envelope instanceof Uint8Array) || built.envelope.length === 0 || typeof built.intentId !== 'string' || !HEX128.test(built.intentId) || !d) throw invalid();
+  if (d.op !== kind || typeof d.owner !== 'string' || !HEX128.test(d.owner) || typeof d.nodeFp !== 'string' || !HEX128.test(d.nodeFp) || typeof d.chainId !== 'string' || !HEX64.test(d.chainId)) throw invalid();
+  if (kind === 'rotate' ? typeof d.validatorId !== 'string' || !HEX128.test(d.validatorId) : d.validatorId !== '') throw invalid();
+  if (kind === 'storageExit' ? d.consentExpiry !== '' : typeof d.consentExpiry !== 'string' || !RAW.test(d.consentExpiry)) throw invalid();
+  if (!Array.isArray(d.inputs) || d.inputs.length < 1 || d.inputs.length > NODUS_MAX_INPUTS || new Set(d.inputs).size !== d.inputs.length || !d.inputs.every(input => typeof input === 'string' && HEX128.test(input))) throw invalid();
+  return {
+    envelope: built.envelope, intentId: built.intentId, owner: d.owner, nodeFp: d.nodeFp, validatorId: d.validatorId, chainId: d.chainId, inputs: [...d.inputs],
+    bond: rawUnits(d.bond, 'bond'), commissionBps: rawUnits(d.commissionBps, 'commission'), fee: rawUnits(d.fee, 'network fee'),
+    change: rawUnits(d.change, 'change amount'), expiryHeight: rawUnits(d.expiryHeight, 'expiry height'),
+    consentExpiry: kind === 'storageExit' ? null : rawUnits(d.consentExpiry, 'consent expiry'), ...builtWire(built)
+  };
+}
+// Builds and signs one HF-6 envelope for review, in the shape of
+// prepareStake (cancel(), confirm(onBroadcast) usable once, refused after
+// expiresAt). kind: HF6_KINDS. consent: the pasted text (not for
+// storageExit). validatorId: the witness (rotate). nodeFp: the storage node
+// (storageExit). bond: NODUS text (stake; at least stakeMin — the storage
+// bond is always exactly storageBond). commissionBps: integer text
+// (stake). locked: coins of pending NODUS transactions (lockedInputs) —
+// never offered to the builder. Besides the stake shape it resolves
+// `decoded` (what the module read back from the signed bytes: bond, fee,
+// change, nodeFp, validatorId, consentExpiry, expiryHeight), `tip` (the
+// coin listing's), `spendable` and `balanceAfter` (BigInt).
+export async function prepareHf6({ client, from, kind, consent = '', validatorId = '', nodeFp = '', bond, commissionBps = '0', locked = new Set() } = {}) {
+  hf6Ready(client, from);
+  if (!HF6_KINDS.includes(kind)) throw new Error('Unknown witness or storage action.');
+  const rules = parseHf6Rules(client.hf6Rules);
+  let amount = 0n, commission = 0n;
+  if (kind === 'stake') {
+    amount = nodusAmountUnits(bond);
+    if (amount < rules.stakeMin) throw new Error(`The witness bond is at least ${nodusText(rules.stakeMin)}.`);
+    if (typeof commissionBps !== 'string' || !/^(0|[1-9]\d{0,4})$/.test(commissionBps)) throw new Error('Enter a commission between 0% and 50%.');
+    commission = BigInt(commissionBps);
+    if (client.stakeable) {
+      const { commissionMaxBps } = parseStakingRules(client.stakingRules);
+      if (commission > commissionMaxBps) throw new Error(`The commission can be at most ${RATE(Number(commissionMaxBps))}.`);
+    }
+  } else if (kind === 'storageRegister') {
+    amount = rules.storageBond;
+  }
+  if (kind === 'rotate' && (typeof validatorId !== 'string' || !HEX128.test(validatorId) || validatorId === ZERO128)) throw new Error('Choose one of your witnesses.');
+  if (kind === 'storageExit' && (typeof nodeFp !== 'string' || !HEX128.test(nodeFp))) throw new Error('Choose one of your storage nodes.');
+  if (kind !== 'storageExit' && (typeof consent !== 'string' || !consent.trim())) throw new Error('Paste the consent your node printed.');
+  const { spendable } = parseBalance(await client.balance());
+  const listing = await client.list();
+  const coins = parseCoins(listing);
+  if (coins.length === 0 && spendable > 0n) throw new Error('Your coin list could not be read. Nothing was sent; try again later.');
+  // HF-4: which rules the node runs; the HF-6 calls exist only from
+  // hf6Rules.generation (design §3) — below it nothing is built.
+  const ruleset = parseRulesetInfo(await client.rulesetInfo());
+  if (ruleset.generation < rules.generation) throw new Error(HF6_NOT_YET_TEXT);
+  const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip, ruleset);
+  // The consent against the listing's tip — the one the module re-checks
+  // it with (nodus-send-wasm.c nsw_hf6_build). Its node key and expiry must
+  // be what the signed bytes carry.
+  const check = kind === 'storageExit' ? null : checkConsent({ client, from, kind, text: consent, validatorId, tip });
+  if (check && !check.ok) throw new Error(`The consent did not pass its checks: ${check.checks.find(line => !line.ok).detail}`);
+  const candidates = coins.filter(coin => !locked.has(coin.nullifier));
+  if (candidates.length === 0) throw new Error(locked.size ? 'Your coins are held by a pending transaction. Wait for it to be included or to expire.' : 'Insufficient NODUS balance.');
+  const available = candidates.reduce((sum, coin) => sum + BigInt(coin.amount), 0n);
+  if (amount > available) throw new Error(`This needs ${nodusText(amount)} plus the network fee; ${nodusText(available)} is free to spend (${nodusText(amount - available)} short). Nothing was sent.`);
+  const d = decodeHf6(await client.hf6Build({
+    op: kind, consent: kind === 'storageExit' ? '' : consent, validatorId: kind === 'rotate' ? validatorId : '', nodeFp: kind === 'storageExit' ? nodeFp : '',
+    amount: amount.toString(), commissionBps: commission.toString(), expiryHeight: expiryHeight.toString(), coins: candidates
+  }), kind);
+  // The signed envelope must be exactly what was requested, or nothing is shown.
+  if (d.owner !== from || d.bond !== amount || d.commissionBps !== commission || d.expiryHeight !== expiryHeight || d.chainId !== client.chainId ||
+      (kind === 'rotate' && d.validatorId !== validatorId) || (kind === 'storageExit' && d.nodeFp !== nodeFp) ||
+      (check && (d.nodeFp !== check.nodeFp || d.consentExpiry !== check.expiry))) throw new Error('The signed transaction does not match your request. Nothing was sent.');
+  const amounts = new Map(candidates.map(coin => [coin.nullifier, BigInt(coin.amount)]));
+  if (!d.inputs.every(input => amounts.has(input))) throw new Error('The signed transaction uses coins it may not use. Nothing was sent.');
+  const inSum = d.inputs.reduce((sum, input) => sum + amounts.get(input), 0n);
+  if (inSum !== d.bond + d.fee + d.change) throw new Error('The signed transaction does not add up. Nothing was sent.');
+  if (d.bond + d.fee > spendable) throw new Error(`This needs ${nodusText(d.bond + d.fee)}; ${nodusText(spendable)} is spendable (${nodusText(d.bond + d.fee - spendable)} short). Nothing was sent.`);
+  const balanceAfter = spendable - d.bond - d.fee;
+  const action = { stake: 'Become a witness', rotate: 'Change a witness’s node key', storageRegister: 'Become a storage node', storageExit: 'Leave storage' }[kind];
+  const review = [['Network', 'Nodus testnet'], ['Action', action]];
+  if (kind === 'rotate') review.push(['Witness', d.validatorId]);
+  review.push([kind === 'rotate' ? 'New node key fingerprint' : 'Node key fingerprint', d.nodeFp]);
+  if (d.bond > 0n) review.push(['Bond', nodusText(d.bond)]);
+  if (kind === 'stake') review.push(['Commission', RATE(Number(d.commissionBps))]);
+  review.push(['Owner (this wallet)', d.owner], ['Network fee', nodusText(d.fee)], ['Change back to you', nodusText(d.change)], ['Balance after', nodusText(balanceAfter)]);
+  if (d.consentExpiry !== null) review.push(['Consent valid until block', d.consentExpiry.toString()]);
+  review.push(['Valid until block', d.expiryHeight.toString()], ...expiryCapRows(tip, d.expiryHeight, ruleset), ['Chain ID', d.chainId], ['Fee note', 'The network fee may be charged even if the transaction fails.']);
+  if (listing.truncated === true) review.push(['Coin list', 'Your coin list may be incomplete; only the coins listed are used.']);
+  let used = false;
+  const expiresAt = Date.now() + NODUS_REVIEW_MS;
+  return {
+    kind, chain: NODUS_ASSET.chain, from, to: d.owner, symbol: NODUS_ASSET.symbol, amount: formatUnits(d.bond, DECIMALS),
+    endpoint: undefined, fee: nodusText(d.fee), expiresAt, review, intentId: d.intentId,
+    decoded: { bond: d.bond, fee: d.fee, change: d.change, nodeFp: d.nodeFp, validatorId: d.validatorId, commissionBps: d.commissionBps, consentExpiry: d.consentExpiry, expiryHeight: d.expiryHeight, chainId: d.chainId },
+    tip, spendable, balanceAfter,
     cancel() { used = true; },
     async confirm(onBroadcast) {
       if (used) throw new Error('This review is already closed.');

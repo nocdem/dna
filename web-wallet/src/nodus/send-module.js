@@ -670,15 +670,20 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     // the module from the key), selfStake, delegated (raw), commissionBps,
     // status (0 active, 1 retiring, 2 unstaked, 3 auto-retired, 4 eligible),
     // delegators (filled delegator slots; -1 = the node's answer carries no
-    // count — an older node — unknown, never 0) }] }
+    // count — an older node — unknown, never 0), hasV2, validatorId,
+    // ownerFp (HF-6: a generation-4 node's "vid" / "owner" for the row, 128
+    // lowercase hex; '' for both and hasV2 false when the node's entry
+    // carries neither) }] }
     async validators() {
       check(await call('nsw_validators'));
       const validators = [];
       for (let i = 0, n = num('nsw_val_count'); i < n; i++) {
+        const hasV2 = num('nsw_val_has_v2', ['number'], [i]) === 1;
         validators.push({
           fingerprint: str('nsw_val_fp', ['number'], [i]), selfStake: str('nsw_val_self', ['number'], [i]),
           delegated: str('nsw_val_delegated', ['number'], [i]), commissionBps: num('nsw_val_commission', ['number'], [i]),
-          status: num('nsw_val_status', ['number'], [i]), delegators: num('nsw_val_delegators', ['number'], [i])
+          status: num('nsw_val_status', ['number'], [i]), delegators: num('nsw_val_delegators', ['number'], [i]),
+          hasV2, validatorId: hasV2 ? str('nsw_val_vid', ['number'], [i]) : '', ownerFp: hasV2 ? str('nsw_val_owner', ['number'], [i]) : ''
         });
       }
       return { truncated: num('nsw_val_truncated') === 1, validators };
@@ -738,6 +743,34 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       stakeMin: str('nsw_const_hf6_stake_min'), storageBond: str('nsw_const_hf6_storage_bond'),
       consentWindow: str('nsw_const_consent_window'), generation: num('nsw_hf6_generation')
     }),
+    // hf6Timing: the timing multipliers of the screens' Review lines (design
+    // "Timing facts"), raw decimal from dnac.h — minTenureBlocks
+    // (DNAC_MIN_TENURE_BLOCKS: a new witness is a candidate for an epoch
+    // start only this many blocks after its stake) and storageExitLockEpochs
+    // (DNAC_STORAGE_EXIT_LOCK_EPOCHS: a left storage bond's lock, in epochs).
+    // ./client.js adds them to its hf6Rules.
+    hf6Timing: Object.freeze({
+      minTenureBlocks: str('nsw_const_min_tenure_blocks'), storageExitLockEpochs: str('nsw_const_storage_exit_lock_epochs')
+    }),
+    // storageByOwner() -> { tip, total, epochStart, set, setCount, nodes:
+    // [{ fp, status (1 active, 2 leaving, 3 released), bond, failStreak,
+    // graceUntil, registered, exit, member, segments }] } — the storage
+    // nodes THIS wallet registered (dnac_storage_by_owner; the module asks
+    // for its own session's fingerprint, never a caller's), every u64 a
+    // decimal string, at most 256 nodes (total > nodes.length: the node's
+    // list stops there). ONE node's committed tables (design G4).
+    // ./client.js checks the answer.
+    async storageByOwner() {
+      check(await call('nsw_storage_by_owner'));
+      const r = JSON.parse(str('nsw_storage_by_owner_json'));
+      return {
+        tip: r.tip, total: r.total, epochStart: r.epoch_start, set: r.set, setCount: r.set_count,
+        nodes: Array.isArray(r.nodes) ? r.nodes.map(n => ({
+          fp: n?.fp, status: n?.status, bond: n?.bond, failStreak: n?.fail_streak, graceUntil: n?.grace_until,
+          registered: n?.registered, exit: n?.exit, member: n?.member, segments: n?.segments
+        })) : null
+      };
+    },
     // consentCheck({ op: 'stake' | 'rotate' | 'storageRegister', text,
     // validatorId (128 hex, rotate only), tip, window? }) -> { ok, checks:
     // [{ id: 'format' | 'op' | 'chain' | 'owner' | 'subject' | 'expiry' |

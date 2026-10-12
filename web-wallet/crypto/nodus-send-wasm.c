@@ -48,7 +48,11 @@
  * HF-6 (nsw_hf6_*) is nodus-cli's `v2-envelope stake2 | rotate` and
  * `storage register | exit` over the same builder at rule-set generation 4,
  * with the node consent checked by the codec shared/dnac/valbind_wire.c —
- * see "HF-6: NODE CONSENT".
+ * see "HF-6: NODE CONSENT". The validator list also carries each row's
+ * generation-4 validator_id and owner (nsw_val_has_v2 / _vid / _owner),
+ * and nsw_storage_by_owner lists this wallet's own storage nodes
+ * (nodus-cli `storage status --owner`) — see "HF-6: THIS wallet's storage
+ * nodes".
  * VAULTS (nsw_msig_*) are nodus-cli's `msig address`, `v2-envelope spend
  * --msig`, `msig sign` and `msig combine` over the shared library
  * nodus/src/client/nodus_v2_msig.c — see "VAULTS".
@@ -833,6 +837,11 @@ static const char *nsw_stake_reason(int rc, int op) {
     case NODUS_V2_STAKE_ERR_COMMISSION:  return "The commission is above the maximum (50%).";
     case NODUS_V2_STAKE_ERR_AMOUNT:      return "Amount is out of range.";
     case NODUS_V2_STAKE_ERR_OP:          return "Unknown staking action.";
+    /* generation 4 (HF-6): the shared builder refuses DELEGATE /
+     * UNDELEGATE / UNSTAKE (nodus_v2_stake.h, "HF-6 6f-1 —
+     * GENERATION-AWARE") until their generation-4 layouts exist */
+    case NODUS_V2_STAKE_ERR_GEN:
+        return "This action is not available under the network's new rules yet. Nothing was built.";
     case NODUS_V2_SPEND_ERR_OVERFLOW:
     case NODUS_V2_SPEND_ERR_INPUT_SUM:   return "Amount is out of range.";
     case NODUS_V2_SPEND_ERR_GAS_OVERFLOW: return "The network fee is out of range.";
@@ -1349,6 +1358,18 @@ const char *nsw_const_consent_window(void) {
     return nsw_const(DNA_VALBIND_MAX_EXPIRY_BLOCKS);
 }
 int nsw_hf6_generation(void) { return (int)NODUS_RT_GEN_STORAGE; }
+/* The two multipliers of the HF-6 screens' timing lines (design 2026-10-12-
+ * connect-hf6-screens "Timing facts"), from dnac.h so the page never
+ * restates them: a new witness is a candidate for an epoch start only
+ * DNAC_MIN_TENURE_BLOCKS after its stake; a storage bond left by
+ * STORAGE_EXIT comes back as a coin locked DNAC_STORAGE_EXIT_LOCK_EPOCHS
+ * epochs past its release boundary. */
+const char *nsw_const_min_tenure_blocks(void) {
+    return nsw_const((uint64_t)DNAC_MIN_TENURE_BLOCKS);
+}
+const char *nsw_const_storage_exit_lock_epochs(void) {
+    return nsw_const((uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
+}
 
 static const char *nsw_hf6_reason(int rc, int op) {
     switch (rc) {
@@ -2852,6 +2873,13 @@ static struct {
     /* the reply's optional "dlg" (filled delegator slots); -1 = the node
      * predates the key (has_delegator_count 0) = unknown, never 0 */
     int      delegators[NSW_MAX_VALIDATORS];
+    /* HF-6 slice 7a: the reply's "vid" / "owner" (nodus_types.h
+     * nodus_dnac_validator_list_entry_t has_v2) as 128 lowercase hex, ""
+     * when the node's entry carries neither (has_v2 0: a node before
+     * generation 4) */
+    int      has_v2[NSW_MAX_VALIDATORS];
+    char     vid_hex[NSW_MAX_VALIDATORS][129];
+    char     owner_hex[NSW_MAX_VALIDATORS][129];
 } g_vals;
 
 static struct {
@@ -2871,6 +2899,10 @@ int nsw_val_commission(int i)        { return nsw_val_ok(i) ? g_vals.commission[
 int nsw_val_status(int i)            { return nsw_val_ok(i) ? g_vals.status[i] : -1; }
 /* -1: unknown (an older node's reply carries no count) */
 int nsw_val_delegators(int i)        { return nsw_val_ok(i) ? g_vals.delegators[i] : -1; }
+/* HF-6: 1 = the row carries its validator_id and owner (generation 4) */
+int nsw_val_has_v2(int i)            { return nsw_val_ok(i) ? g_vals.has_v2[i] : 0; }
+const char *nsw_val_vid(int i)       { return nsw_val_ok(i) ? g_vals.vid_hex[i] : ""; }
+const char *nsw_val_owner(int i)     { return nsw_val_ok(i) ? g_vals.owner_hex[i] : ""; }
 
 int nsw_del_count(void) { return g_dels.valid ? g_dels.n : 0; }
 static int nsw_del_ok(int i) { return g_dels.valid && i >= 0 && i < g_dels.n; }
@@ -2909,16 +2941,26 @@ int nsw_validators(void) {
         if (!bad) total = page.total;
         for (int i = 0; !bad && i < page.count; i++) {
             const nodus_dnac_validator_list_entry_t *e = &page.entries[i];
+            /* a generation-4 entry: neither id may be all zero (both are
+             * SHA3-512 outputs in every legal state — design rev 6 §6.5
+             * "Ek kural"); has_v2 is 0 or 1 (nodus_types.h) */
             if (memcmp(e->pubkey, zero_pk, NSW_PK_LEN) == 0 || e->status > 4 ||
                 e->commission_bps > DNAC_COMMISSION_BPS_MAX ||
-                (e->has_delegator_count && e->delegator_count > INT32_MAX)) { bad = 1; break; }
+                (e->has_delegator_count && e->delegator_count > INT32_MAX) ||
+                e->has_v2 > 1 ||
+                (e->has_v2 && (memcmp(e->validator_id, zero_pk, 64) == 0 ||
+                               memcmp(e->owner_fp, zero_pk, 64) == 0))) { bad = 1; break; }
             if (g_vals.n >= NSW_MAX_VALIDATORS) { g_vals.truncated = 1; break; }
             uint8_t fp[64];
-            char fp_hex[129];
+            char fp_hex[129], vid_hex[129] = "";
             if (qgp_sha3_512(e->pubkey, NSW_PK_LEN, fp) != 0) { bad = 1; break; }
             nsw_fmt_hex(fp, 64, fp_hex);
+            if (e->has_v2) nsw_fmt_hex(e->validator_id, 64, vid_hex);
+            /* a repeated key, or a repeated validator_id */
             for (int k = 0; k < g_vals.n; k++)
-                if (memcmp(g_vals.fp_hex[k], fp_hex, 128) == 0) bad = 1;
+                if (memcmp(g_vals.fp_hex[k], fp_hex, 128) == 0 ||
+                    (e->has_v2 && g_vals.has_v2[k] &&
+                     memcmp(g_vals.vid_hex[k], vid_hex, 128) == 0)) bad = 1;
             if (bad) break;
             const int n = g_vals.n++;
             memcpy(g_vals.pk[n], e->pubkey, NSW_PK_LEN);
@@ -2929,6 +2971,10 @@ int nsw_validators(void) {
             g_vals.status[n] = e->status;
             g_vals.delegators[n] = e->has_delegator_count
                                    ? (int)e->delegator_count : -1;
+            g_vals.has_v2[n] = e->has_v2 ? 1 : 0;
+            memcpy(g_vals.vid_hex[n], vid_hex, sizeof(vid_hex));
+            if (e->has_v2) nsw_fmt_hex(e->owner_fp, 64, g_vals.owner_hex[n]);
+            else g_vals.owner_hex[n][0] = '\0';
         }
         const int got = page.count;
         nodus_client_free_validator_list_result(&page);
@@ -5983,6 +6029,130 @@ int nsw_addr_history(const char *before_dec, const char *bi_dec,
     return nsw_end(0);
 }
 
+/* ── HF-6: THIS wallet's storage nodes (dnac_storage_by_owner) ──────────
+ *
+ * Design docs/plans/2026-10-12-connect-hf6-screens-design.md §1 ("Your
+ * storage nodes"), chain-side request 2 (answered by HF-6 slice 7a:
+ * nodus.h nodus_client_dnac_storage_by_owner). The owner is ALWAYS this
+ * session's own fingerprint (g_fp_hex) — never a caller's argument — so
+ * the client's decoder also refuses an entry whose owner ("payee", which
+ * holds the owner since HF-6 6b) is anyone else. ONE node's committed
+ * tables, for display (design G4); the chain decides a STORAGE_EXIT
+ * against the row it holds.
+ *
+ * The answer goes to JS as JSON (the convention of nsw_addr_history:
+ * every u64 a decimal string, byte strings lowercase hex):
+ *   {"tip":"N","total":"N","epoch_start":"N","set":bool,"set_count":n,
+ *    "nodes":[{"fp","status":1..3,"bond","fail_streak":n,"grace_until",
+ *              "registered","exit","member":bool,"segments"}...]}
+ * at most NODUS_DNAC_STORAGE_SET_MAX (256) nodes, node fp strictly
+ * ascending (the decoder's rule); total > the nodes listed = the list
+ * stops at that cap (no paging). status: 1 ACTIVE, 2 EXITING, 3 RELEASED
+ * (nodus.h dnac_storage_status "st"). An owner without rows: total "0",
+ * no nodes (not an error). An older node answers "unknown DNAC method".
+ * Asyncify: the one wait runs in the export's own frame; the answer struct
+ * (a count and a heap pointer) has its address taken (C stack), the nodes
+ * are heap and the JSON is built after the wait. */
+
+static char *g_sbo_json;
+
+/* The JSON of the last successful nsw_storage_by_owner ("" otherwise). */
+const char *nsw_storage_by_owner_json(void) { return g_sbo_json ? g_sbo_json : ""; }
+
+/* One decoded answer -> the JSON above in a new heap string (*out, the
+ * caller frees). `r` is NOT freed here. @return 0 / -1. */
+static int nsw_sbo_json(const nodus_dnac_storage_by_owner_t *r, char **out) {
+    *out = NULL;
+    if (r->count > NODUS_DNAC_STORAGE_SET_MAX || (r->count > 0 && !r->nodes))
+        return -1;
+    const nodus_dnac_storage_status_t *first = r->count ? &r->nodes[0].st : NULL;
+    nsw_jb_t jb;
+    memset(&jb, 0, sizeof(jb));
+    char n[NSW_U64_DEC];
+    nsw_jb_put(&jb, "{", 1);
+    nsw_jb_u64(&jb, "tip", r->committed_height);
+    nsw_jb_put(&jb, ",", 1);
+    nsw_jb_u64(&jb, "total", r->total);
+    nsw_jb_put(&jb, ",", 1);
+    nsw_jb_u64(&jb, "epoch_start", first ? first->epoch_start : 0);
+    nsw_jb_put(&jb, ",\"set\":", 7);
+    nsw_jb_put(&jb, first && first->set_exists ? "true" : "false",
+               first && first->set_exists ? 4 : 5);
+    nsw_fmt_u64(first ? first->set_count : 0, n);
+    nsw_jb_put(&jb, ",\"set_count\":", 13);
+    nsw_jb_put(&jb, n, strlen(n));
+    nsw_jb_put(&jb, ",\"nodes\":[", 10);
+    for (size_t k = 0; k < r->count; k++) {
+        const nodus_dnac_storage_node_t *e = &r->nodes[k];
+        const nodus_dnac_storage_status_t *s = &e->st;
+        if (strnlen(e->node_fp, sizeof(e->node_fp)) != 128 || !s->found ||
+            s->status < 1 || s->status > 3) {
+            jb.bad = 1;
+            break;
+        }
+        nsw_jb_put(&jb, k ? ",{\"fp\":" : "{\"fp\":", k ? 7 : 6);
+        nsw_jb_str(&jb, e->node_fp, 128);
+        nsw_fmt_u64(s->status, n);
+        nsw_jb_put(&jb, ",\"status\":", 10);
+        nsw_jb_put(&jb, n, strlen(n));
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "bond", s->bond);
+        nsw_fmt_u64(s->fail_streak, n);
+        nsw_jb_put(&jb, ",\"fail_streak\":", 15);
+        nsw_jb_put(&jb, n, strlen(n));
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "grace_until", s->grace_until);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "registered", s->registered_height);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "exit", s->exit_height);
+        nsw_jb_put(&jb, ",\"member\":", 10);
+        nsw_jb_put(&jb, s->member ? "true" : "false", s->member ? 4 : 5);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "segments", s->n_segments);
+        nsw_jb_put(&jb, "}", 1);
+    }
+    nsw_jb_put(&jb, "]}", 2);
+    if (jb.bad || !jb.p) {
+        free(jb.p);
+        return -1;
+    }
+    *out = jb.p;
+    return 0;
+}
+
+/* The storage nodes this wallet registered. Waits on the network (ccall
+ * { async: true }). @return 0 (nsw_storage_by_owner_json) / -1 (reason in
+ * nsw_error). */
+int nsw_storage_by_owner(void) {
+    if (nsw_begin() != 0) return -1;
+    free(g_sbo_json);
+    g_sbo_json = NULL;
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_storage_by_owner_t res;
+    memset(&res, 0, sizeof(res));
+    int rc = nodus_client_dnac_storage_by_owner(&g_client, g_fp_hex, &res);
+    if (g_cancel) {
+        nodus_dnac_storage_by_owner_free(&res);
+        return nsw_end(-1);
+    }
+    if (rc != 0) {
+        nodus_dnac_storage_by_owner_free(&res);
+        /* an older node answers "unknown DNAC method" as PROTOCOL_ERROR,
+         * the same code the client returns for a reply its decoder refuses
+         * (an entry of another owner included) */
+        return nsw_end(nsw_fail("Your storage nodes could not be read (an "
+                                "older node, or an unreadable answer; "
+                                "rc=%d).", rc));
+    }
+    int jrc = nsw_sbo_json(&res, &g_sbo_json);
+    nodus_dnac_storage_by_owner_free(&res);
+    if (jrc != 0)
+        return nsw_end(nsw_fail("The Nodus node returned an invalid storage "
+                                "node list."));
+    return nsw_end(0);
+}
+
 /* ── a shared vault's history (VAULTS "history"): dnac_msig_addr_history
  *    for the vault in use — the member gate of nsw_msig_coins, the page in
  *    the JSON shape above (src/nodus/history.js parseAddrHistory checks
@@ -6353,6 +6523,8 @@ void nsw_lock(void) {
         g_ah_json = NULL;
         free(g_mh_json);                    /* a vault's history page       */
         g_mh_json = NULL;
+        free(g_sbo_json);                   /* this wallet's storage nodes  */
+        g_sbo_json = NULL;
     }
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;

@@ -140,6 +140,13 @@ mode="${1:-release}"
 # consent text is copied to the heap before the first wait, and the consent
 # structs, message and builder structs are heap-allocated in nsw_hf6_core
 # after the last wait. Expected to hold, not measured.
+# The HF-6 export nsw_storage_by_owner has the shape of nsw_addr_history:
+# export -> nsw_session_ok / nodus_client_dnac_storage_by_owner ->
+# wait_response -> emscripten_sleep; the answer struct (a count and a heap
+# pointer) has its address taken (C stack), the ~650-byte per-node status
+# structs are heap, and the JSON is built after the last wait. The
+# validator_id / owner added to nsw_validators are copied into its static
+# cache after each page's wait. Expected to hold, not measured.
 # There is no ASYNCIFY_ONLY / ASYNCIFY_ADD list: with ASYNCIFY=1 Binaryen
 # instruments every function that can reach emscripten_sleep (directly or,
 # with the default ASYNCIFY_IGNORE_INDIRECT=0, through an indirect call),
@@ -341,6 +348,14 @@ exports_common=(
   nsw_built_consent_expiry
   nsw_const_hf6_stake_min nsw_const_hf6_storage_bond nsw_const_consent_window
   nsw_hf6_generation
+  # HF-6 screens: the timing multipliers the Review lines use (dnac.h
+  # DNAC_MIN_TENURE_BLOCKS, DNAC_STORAGE_EXIT_LOCK_EPOCHS), each row's
+  # generation-4 validator_id / owner from the last nsw_validators (getters,
+  # no network), and this wallet's own storage nodes (nsw_storage_by_owner
+  # waits on the network, ccall { async: true }; its JSON getter does not)
+  nsw_const_min_tenure_blocks nsw_const_storage_exit_lock_epochs
+  nsw_val_has_v2 nsw_val_vid nsw_val_owner
+  nsw_storage_by_owner nsw_storage_by_owner_json
   # HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.6,
   # §2 "Clients"): the rule-set generation the node runs, chain names and a
   # name owner's signed profile address. nsw_ruleset_info, nsw_name_lookup,

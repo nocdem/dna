@@ -910,3 +910,57 @@ details.danger-zone.danger-zone > summary { color: #f6c2bd; }
 @media (prefers-reduced-motion: reduce) {
   .wallet-card *, .danger-zone, .danger-zone * { transition: none !important; }
 }
+/* Nodus Connect "Nodus" page (src/nodus-roles.js, HF-6 screens): become a
+   witness / a storage node, change your node's key. Every long value (node
+   commands, 128-hex fingerprints) wraps anywhere: nothing scrolls sideways
+   at 320 px. */
+.roles-panel { display: flex; flex-direction: column; grid-column: 1 / -1; min-width: 0; scroll-margin-top: 24px; }
+#nodus-roles-root { min-width: 0; overflow-wrap: anywhere; }
+.roles-back { align-self: flex-start; margin: 4px 0 0; }
+.roles-amber { margin: 14px 0 0; padding: 12px 14px; border-left: 2px solid var(--amber); border-radius: 0 8px 8px 0; background: #f2c89610; color: #f2dcc0; font-size: 12.5px; line-height: 1.55; }
+.roles-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+button.roles-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; width: 100%; margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); box-shadow: none; color: var(--text); font-weight: 400; text-align: left; }
+button.roles-row:hover { border-color: #d5f99840; filter: none; }
+button.roles-row span { float: none; }
+.roles-row-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.roles-row-text strong { font-size: 14px; font-weight: 600; }
+.roles-row-text small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.roles-chevron { color: var(--muted); font-size: 18px; }
+.roles-card { min-width: 0; margin: 14px 0 0; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.roles-step { margin: 0 0 8px; color: var(--lime); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.roles-card .hint { margin: 6px 0 0; }
+.roles-cmd, .roles-fp-inline { display: block; margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #0c0f0a; color: #dfe7d2; font-family: var(--mono); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; word-break: break-all; white-space: normal; }
+.roles-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+.roles-actions button { margin: 0; }
+.roles-actions button.roles-primary { flex: 1 1 140px; }
+.roles-copy-note { color: var(--muted); font-size: 12px; }
+textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1.5; word-break: break-all; }
+.roles-checks { margin: 12px 0 0; padding: 0; list-style: none; }
+.roles-checks:empty { display: none; }
+.roles-checks li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 6px; padding: 5px 0; font-size: 13px; line-height: 1.5; }
+.roles-ok { color: #6fd36a; font-weight: 700; }
+.roles-bad { color: var(--red); font-weight: 700; }
+.roles-checks li[data-ok="false"] span:last-child { color: var(--text); }
+.roles-error { margin: 12px 0 0; color: var(--red); font-size: 12.5px; line-height: 1.5; }
+.roles-status { margin: 14px 0 0; padding: 12px 14px; border-left: 2px solid var(--lime); background: #d5f99808; font-size: 12.5px; line-height: 1.5; }
+.roles-big { margin: 0; color: var(--lime); font-size: 21px; font-weight: 700; line-height: 1.3; }
+.roles-sum { margin: 8px 0 0; padding: 0; list-style: none; }
+.roles-sum li { padding: 9px 0; border-bottom: 1px solid var(--line-soft); font-size: 13.5px; line-height: 1.5; }
+.roles-sum li:last-child { border-bottom: 0; }
+.roles-fp { margin: 14px 0 0; padding: 12px 14px; border: 1px solid #d5f99860; border-radius: 12px; background: #d5f99808; }
+.roles-fp-label { margin: 0; color: var(--lime); font-size: 12px; font-weight: 600; }
+.roles-fp-value { display: block; margin: 8px 0 0; color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; word-break: break-all; }
+.roles-fp-note { margin: 8px 0 0; color: #f2dcc0; font-size: 12.5px; line-height: 1.5; }
+.roles-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 14px 0 0; font-size: 13px; }
+.roles-kv dt { color: var(--muted); }
+.roles-kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+label.roles-radio { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 10px; margin: 8px 0 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; cursor: pointer; }
+label.roles-radio:has(input:checked) { border-color: #d5f99880; background: #d5f99808; }
+label.roles-radio input { width: auto; margin: 0; }
+label.roles-radio small { color: var(--muted); }
+.roles-node .stake-actions button { margin: 0; }
+@media (max-width: 760px) {
+  .roles-actions button { min-height: 44px; }
+  .roles-actions button.roles-primary { flex: 1 1 100%; }
+  .roles-big { font-size: 19px; }
+}
