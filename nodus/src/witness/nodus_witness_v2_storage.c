@@ -24,11 +24,13 @@
 #include "witness/nodus_witness_runtime.h"    /* NODUS_RT_GEN_STORAGE      */
 #include "witness/nodus_witness_emission.h"   /* DNAC_DECIMAL_UNIT         */
 #include "witness/nodus_witness_vset.h"       /* HF-6 5b: the power helper */
+#include "witness/nodus_witness_validator.h"  /* HF-6 6b-2: the v1 bridge  */
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"
 #include "dnac/res_meter.h"                   /* dna_ck_add/mul_u64        */
 #include "dnac/vset_wire.h"
+#include "dnac/valbind_wire.h"                /* dna_validator_id_migrated */
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_fingerprint.h"
@@ -772,8 +774,99 @@ static int st_streak_write(nodus_witness_t *w, const uint8_t fp[64],
     return (rc == SQLITE_DONE && sqlite3_changes(w->db) == 1) ? 0 : -1;
 }
 
-/* STEP 1 — settle epoch (H, H+E], H = B − 2E. @return 0 / -2. */
+int nodus_storage_member_verdict(uint32_t n_seat, const uint64_t *power,
+                                 const uint8_t (*seat_owner)[64],
+                                 const uint8_t (*seat_key)[64],
+                                 const uint8_t *reported, const uint8_t *bit,
+                                 uint64_t p_total,
+                                 const uint8_t member_owner[64],
+                                 const uint8_t member_fp[64],
+                                 nodus_storage_verdict_t *out,
+                                 uint64_t *i_out, uint64_t *y_out) {
+    if ((n_seat > 0 && (!power || !seat_owner || !seat_key || !reported ||
+                        !bit)) ||
+        !member_owner || !member_fp || !out)
+        return -1;
+    uint64_t I = 0, Y = 0;
+    for (uint32_t s = 0; s < n_seat; s++) {             /* seat order */
+        if (!reported[s]) continue;
+        /* F2, kural (a) (design rev 6 §11.6; K16 item 8): a report from
+         * the member's own owner OR from the member's own key does not
+         * count for or against it */
+        if (memcmp(seat_owner[s], member_owner, 64) == 0 ||
+            memcmp(seat_key[s], member_fp, 64) == 0)
+            continue;
+        if (dna_ck_add_u64(I, power[s], &I) != 0) return -1;
+        if (bit[s] && dna_ck_add_u64(Y, power[s], &Y) != 0) return -1;
+    }
+    /* design rev 6 §11.6 (K16 item 8): "2·I_m ≤ P_toplam → KANIT YOK;
+     * aksi hâlde 3·Y_m > 2·I_m → OK, değilse OK DEĞİL" — `<=` at the
+     * floor: the exact split 2·I == P_total is NO_EVIDENCE */
+    uint64_t i2 = 0, y3 = 0;
+    if (dna_ck_mul_u64(I, 2, &i2) != 0 || dna_ck_mul_u64(Y, 3, &y3) != 0)
+        return -1;
+    if (i2 <= p_total)  *out = NODUS_STORAGE_NO_EVIDENCE;
+    else if (y3 > i2)   *out = NODUS_STORAGE_OK;
+    else                *out = NODUS_STORAGE_NOT_OK;
+    if (i_out) *i_out = I;
+    if (y_out) *y_out = Y;
+    return 0;
+}
+
+int nodus_witness_storage_seat_owners(nodus_witness_t *w,
+                                      const dna_vset_snapshot_t *snap,
+                                      const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                                      uint8_t (*owner_out)[64]) {
+    if (!snap || !owner_out) return -1;
+    if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
+        for (uint32_t s = 0; s < snap->active_count; s++)
+            memcpy(owner_out[s], snap->entries[s].owner_fp, 64);
+        return 0;
+    }
+    if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V1) {
+        QGP_LOG_ERROR(LOG_TAG, "storage settlement: snapshot ruleset %u "
+                      "has no owner rule — refusing",
+                      (unsigned)snap->selection_ruleset);
+        return -1;
+    }
+    /* RULESET 1 — the §7.5 bridge (design rev 6 §11.7: "pubkey →
+     * validator_id → commit edilmiş satırın owner_fp'si; satırlar
+     * silinmez"), the read the distribution's v2ec_member_load makes; a
+     * row it cannot find is a FAULT here (khan A1, 2026-10-12) */
+    if (!w || !w->db || !chain_id) return -1;
+    nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
+    if (!row) return -1;
+    int ret = -1;
+    for (uint32_t s = 0; s < snap->active_count; s++) {
+        uint8_t vid[NODUS_V2_VALIDATOR_ID_LEN];
+        if (dna_validator_id_migrated(vid, chain_id,
+                                      snap->entries[s].pubkey) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "storage settlement: seat %u's migrated "
+                          "validator_id did not derive", (unsigned)s);
+            goto done;
+        }
+        const int rc = nodus_validator_v2_get(w, vid, row);
+        if (rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "storage settlement: seat %u of a "
+                          "ruleset-1 snapshot — the validator row keyed by "
+                          "its migrated id is %s (rows are never deleted: "
+                          "corrupt state)", (unsigned)s,
+                          rc == 1 ? "absent" : "unreadable or malformed");
+            goto done;
+        }
+        memcpy(owner_out[s], row->owner_fp, 64);
+    }
+    ret = 0;
+done:
+    free(row);
+    return ret;
+}
+
+/* STEP 1 — settle epoch (H, H+E], H = B − 2E. `chain_id` = the boundary's
+ * (nodus_witness_storage_boundary_apply's — the migration's own input),
+ * read only by the ruleset-1 owner bridge. @return 0 / -2. */
 static int st_settle(nodus_witness_t *w, uint64_t B,
+                     const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                      nodus_storage_boundary_t *out) {
     const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
     if (B < 3 * E) return 0;            /* H = B − 2E >= E: set(H) needs a
@@ -793,6 +886,8 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
     size_t n_rows = 0;
     uint64_t *power = NULL;
     uint8_t (*seat_fp)[64] = NULL;
+    uint8_t (*seat_owner)[64] = NULL;
+    uint8_t *reported = NULL, *bit = NULL;
     const dna_v2_storage_report_t **by_seat = NULL;
     if (!cur || !prev || !wt) goto done;
 
@@ -826,14 +921,18 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
     const uint32_t n_seat = snap->active_count;
     power = calloc(n_seat, sizeof(*power));
     seat_fp = calloc(n_seat, sizeof(*seat_fp));
+    seat_owner = calloc(n_seat, sizeof(*seat_owner));
+    reported = calloc(n_seat, sizeof(*reported));
+    bit = calloc(n_seat, sizeof(*bit));
     by_seat = calloc(n_seat, sizeof(*by_seat));
-    if (!power || !seat_fp || !by_seat) goto done;
+    if (!power || !seat_fp || !seat_owner || !reported || !bit || !by_seat)
+        goto done;
     /* HF-6 slice 5b (ORCHESTRATOR decision D3; design rev 6 §5 consumer
      * list, §11.7): the seats' power from THE ONE helper, computed once
      * over the whole snapshot (ruleset 1: total / DNAC_DECIMAL_UNIT as
      * before; ruleset 2: the counted power at that snapshot's epoch
-     * ratio). A power that cannot be computed is a FAULT. The F2 owner
-     * exclusion and the payee move are slice 6b's. */
+     * ratio) — never re-capped over the subset a member's exclusion
+     * leaves (§11.6). A power that cannot be computed is a FAULT. */
     if (nodus_witness_vset_powers(w, snap, power) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "settlement at %llu: snapshot(%llu)'s voting "
                       "power cannot be computed", (unsigned long long)B,
@@ -867,11 +966,14 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
             (rp->bitmap[want_bl - 1] >> (cur->count % 8u)) != 0)
             goto done;                    /* unused high bits set        */
         by_seat[rp->seat] = rp;
+        reported[rp->seat] = 1u;
         if (dna_ck_add_u64(P_rep, power[rp->seat], &P_rep) != 0) goto done;
     }
 
     /* ── F1: reports from MORE THAN 1/2 of total power, else nothing
-     *    moves for that epoch (no pay, no fail_streak) ──────────────── */
+     *    moves for that epoch (no pay, no fail_streak). Kept BEFORE any
+     *    registry row or owner is read: an F1-failed epoch returns 0
+     *    here exactly as before HF-6 6b-2 ──────────────────────────── */
     {
         uint64_t twice = 0;
         if (dna_ck_mul_u64(P_rep, 2, &twice) != 0) goto done;
@@ -879,32 +981,9 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
     }
     out->settled = 1;
 
-    /* ── per-member verdict (F2 + the > 2/3 test) ─────────────────── */
-    uint8_t ok[DNA_V2_STORAGE_SET_MAX];
-    memset(ok, 0, sizeof(ok));
-    for (uint32_t i = 0; i < cur->count; i++) {
-        long self = -1;
-        for (uint32_t s = 0; s < n_seat; s++) {
-            if (memcmp(seat_fp[s], cur->fps[i], 64) != 0) continue;
-            if (self >= 0) goto done;     /* two seats, one key: corrupt */
-            self = (long)s;
-        }
-        uint64_t prep = P_rep;
-        if (self >= 0 && by_seat[self]) prep -= power[self];   /* F2 */
-        uint64_t yes = 0;
-        for (uint32_t s = 0; s < n_seat; s++) {
-            if (!by_seat[s] || (long)s == self) continue;  /* F2: own bit */
-            if ((by_seat[s]->bitmap[i / 8u] >> (i % 8u)) & 1u)
-                if (dna_ck_add_u64(yes, power[s], &yes) != 0) goto done;
-        }
-        uint64_t y3 = 0, p2 = 0;
-        if (dna_ck_mul_u64(yes, 3, &y3) != 0 ||
-            dna_ck_mul_u64(prep, 2, &p2) != 0)
-            goto done;
-        ok[i] = y3 > p2 ? 1u : 0u;
-    }
-
-    /* ── the registry rows of the members (payee, live fail_streak) ── */
+    /* ── the registry rows of the members (owner, live fail_streak) —
+     *    read BEFORE the verdicts: the exclusion compares each member's
+     *    owner (HF-6 6b-2) ─────────────────────────────────────────── */
     if (nodus_witness_storage_registry_load(w, &rows, &n_rows) != 0)
         goto done;
     long row_of[DNA_V2_STORAGE_SET_MAX];
@@ -918,14 +997,61 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
         }
     }
 
-    /* ── weighted pay from pool 1 (W == 0 → nothing) ──────────────── */
+    /* ── the seats' keys must be distinct (two seats, one key: corrupt
+     *    — the exclusion's key clause would otherwise be ambiguous), and
+     *    owner(s) once per settlement (header "SETTLEMENT": ruleset 2
+     *    the entry's owner_fp; ruleset 1 the §7.5 bridge, khan A1: a
+     *    missing row is a FAULT). The step-0 gate proved generation >=
+     *    NODUS_RT_GEN_STORAGE, so a ruleset-1 snapshot here IS the first
+     *    settlement after the generation-4 edge. Not read for an empty
+     *    set: nothing would consume it ───────────────────────────────── */
+    for (uint32_t s = 0; s < n_seat; s++)
+        for (uint32_t t = s + 1; t < n_seat; t++)
+            if (memcmp(seat_fp[s], seat_fp[t], 64) == 0) {
+                QGP_LOG_ERROR(LOG_TAG, "settlement at %llu: seats %u and %u "
+                              "of snapshot(%llu) carry one key — corrupt",
+                              (unsigned long long)B, (unsigned)s,
+                              (unsigned)t, (unsigned long long)H);
+                goto done;
+            }
+    if (cur->count > 0 &&
+        nodus_witness_storage_seat_owners(w, snap, chain_id, seat_owner)
+            != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "settlement at %llu: the owners of "
+                      "snapshot(%llu)'s seats cannot be read",
+                      (unsigned long long)B, (unsigned long long)H);
+        goto done;
+    }
+
+    /* ── per-member verdict: the owner-OR-key exclusion and the three
+     *    states (header "SETTLEMENT"; nodus_storage_member_verdict:
+     *    2·I <= P_total → NO_EVIDENCE, else 3·Y > 2·I → OK, else
+     *    NOT_OK — design rev 6 §11.6) ──────────────────────────────── */
+    nodus_storage_verdict_t verdict[DNA_V2_STORAGE_SET_MAX];
+    for (uint32_t i = 0; i < cur->count; i++) {
+        for (uint32_t s = 0; s < n_seat; s++)
+            bit[s] = by_seat[s] ? (uint8_t)((by_seat[s]->bitmap[i / 8u] >>
+                                             (i % 8u)) & 1u)
+                                : 0u;
+        if (nodus_storage_member_verdict(
+                n_seat, power, (const uint8_t (*)[64])seat_owner,
+                (const uint8_t (*)[64])seat_fp, reported, bit, P_total,
+                rows[row_of[i]].payee_fp, cur->fps[i], &verdict[i], NULL,
+                NULL) != 0)
+            goto done;
+    }
+
+    /* ── weighted pay from pool 1 (W == 0 → nothing) — OK members only,
+     *    to the row's OWNER (the payee_fp column since 6b-1); W keeps
+     *    every member's weight, NO_EVIDENCE included ───────────────── */
     if (W > 0) {
         uint64_t pool1 = 0;
         if (st_pool1_get(w, &pool1) != 0) goto done;
         const uint64_t budget = pool1 >> NODUS_V2_GEN_REWARD_DIVISOR_LOG2;
         uint64_t total = 0;
         for (uint32_t i = 0; i < cur->count && budget > 0; i++) {
-            if (!ok[i] || wt->weight[i] == 0) continue;
+            if (verdict[i] != NODUS_STORAGE_OK || wt->weight[i] == 0)
+                continue;
             if (wt->weight[i] > W) goto done;
             const uint64_t share = st_muldiv(budget, wt->weight[i], W);
             if (share == 0) continue;
@@ -949,12 +1075,16 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
      *    member adds one (14 + 1 written as 0); else below 3 an eligible
      *    block and NOT OK adds one, no eligible block leaves it. A member
      *    in grace for (H, H+E] (K9) is left unchanged, whatever its value
-     *    — the K9 text "fail_streak unchanged" (header "SETTLEMENT") ── */
+     *    — the K9 text "fail_streak unchanged" (header "SETTLEMENT"); a
+     *    NO_EVIDENCE member the same way, also at 3 or more (design rev 6
+     *    §11.6 "hata sayacı DEĞİŞMEZ") ──────────────────────────────── */
     for (uint32_t i = 0; i < cur->count; i++) {
         if (nodus_storage_in_grace(H, cur->grace_until[i])) continue;
+        if (verdict[i] == NODUS_STORAGE_NO_EVIDENCE) continue;
         const uint32_t old = rows[row_of[i]].fail_streak;
         const uint32_t nv = nodus_storage_fail_streak_next(
-                                old, wt->weight[i] > 0, ok[i]);
+                                old, wt->weight[i] > 0,
+                                verdict[i] == NODUS_STORAGE_OK);
         if (st_streak_write(w, cur->fps[i], old, nv) != 0) goto done;
     }
     ret = 0;
@@ -962,6 +1092,9 @@ static int st_settle(nodus_witness_t *w, uint64_t B,
 done:
     free(rows);
     free(by_seat);
+    free(bit);
+    free(reported);
+    free(seat_owner);
     free(seat_fp);
     free(power);
     free(reps);
@@ -1261,7 +1394,7 @@ int nodus_witness_storage_boundary_apply(
     }
     out->active = 1;
 
-    if (st_settle(w, B, out) != 0) {
+    if (st_settle(w, B, chain_id, out) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "storage settlement failed at %llu",
                       (unsigned long long)B);
         return -2;

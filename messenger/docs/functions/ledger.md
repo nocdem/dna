@@ -423,6 +423,19 @@ Tests: `nodus/tests/test_storage_reg.c` (rewritten), `test_storage_cli.c`, `test
 | `nodus_v2_consent_text_encode`, `nodus_v2_consent_text_parse` | **CHANGED (behaviour):** op 3 (STORAGE_REGISTER) accepted with a zero subject; op ∉ {1, 2, 3} or a broken op/subject rule refused as before. |
 | `static int cmd_storage_tx_refused(const char *verb)` (`nodus-cli.c`) | **NEW (internal), replaces `cmd_storage_tx`.** `storage register | exit` print why they are not built (owner-signed since HF-6; the owner-side commands are slice 6b-3's) and return 1 without contacting a node. `storage status` unchanged. |
 
+### 5b.13 HF-6 slice 6b-2 — the storage settlement: pay the owner, F2 owner-OR-key, the three-state verdict, the v1-snapshot owner bridge (design rev 6 §11.6-§11.7, G12, khan A1 / A3 2026-10-12; Kurultay #16 item 8 + khan decision 2 "kural (a)"; plan `tasks/hf6-slice6b-plan.md` §1.5-§1.6, §2 "6b-2")
+
+Tests: `nodus/tests/test_storage_b2.c` (+ `f2_verdict_pure`, `engine_owner_f2`; `engine_v2_power` + the A3 `seat_of` probe) — EVM builds. Architecture: `nodus/docs/ARCHITECTURE.md` "HF-6 slice 6b-2". No byte, pin, leaf, KAT or wire change; no reporter code change (khan A3).
+
+| Item | Description |
+|------|-------------|
+| `nodus_storage_verdict_t` { `NODUS_STORAGE_NO_EVIDENCE` = 0, `NODUS_STORAGE_OK` = 1, `NODUS_STORAGE_NOT_OK` = 2 } (`nodus_witness_v2_storage.h`) | **NEW.** The settlement's three states (design §11.6) — one enum so the floor is read one way. |
+| `int nodus_storage_member_verdict(uint32_t n_seat, const uint64_t *power, const uint8_t (*seat_owner)[64], const uint8_t (*seat_key)[64], const uint8_t *reported, const uint8_t *bit, uint64_t p_total, const uint8_t member_owner[64], const uint8_t member_fp[64], nodus_storage_verdict_t *out, uint64_t *i_out, uint64_t *y_out)` | **NEW (pure).** Seat s excluded iff `seat_owner[s] == member_owner` OR `seat_key[s] == member_fp`; I = Σ power of reporting non-excluded seats, Y = the part with the member's bit; `2·I ≤ p_total` → NO_EVIDENCE, else `3·Y > 2·I` → OK, else NOT_OK (checked u64; the caller has checked F1). `i_out` / `y_out` optional. 0 / -1 (NULL, overflow). |
+| `int nodus_witness_storage_seat_owners(nodus_witness_t *w, const dna_vset_snapshot_t *snap, const uint8_t chain_id[32], uint8_t (*owner_out)[64])` | **NEW.** owner(s) per seat: ruleset 2 → the entry's owner_fp (`w`, `chain_id` unread); ruleset 1 → the §7.5 bridge (`nodus_validator_v2_get(dna_validator_id_migrated(chain_id, pubkey))` → owner_fp); any other ruleset, an id that does not derive, a row absent or unreadable → -1 (khan A1: the settlement FAULTS), logged with the seat index. |
+| `static int st_settle(nodus_witness_t *w, uint64_t B, const uint8_t chain_id[32], nodus_storage_boundary_t *out)` (`nodus_witness_v2_storage.c`) | **CHANGED signature** (+ `chain_id`, the boundary's — `nodus_witness_storage_boundary_apply` already received it; no caller outside this file). **CHANGED (rules):** F1 unchanged and still first; then the registry rows (moved up from after the verdicts), a duplicate seat key FAULT (was: only when the duplicated key matched a member), owner(s) once (skipped for an empty set), the verdict per member through `nodus_storage_member_verdict`; pay only OK members, to the row's `payee_fp` (the owner); W keeps every member's weight; fail_streak skipped for NO_EVIDENCE exactly as for grace (also at ≥ 3). |
+| `nodus_storage_fail_streak_next` | **Documentation only:** not called for a NO_EVIDENCE member; `ok` = (verdict == OK). |
+| `int nodus_witness_storage_boundary_apply(...)` | **CHANGED (behaviour), signature unchanged:** step 1 settles by the owner-OR-key rule and the three-state verdict; a ruleset-1 snapshot(H) whose seat has no migrated row is a FAULT (-2). |
+
 ---
 
 ## 6. Package W-B — exact self-stake, self-delegation (`docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md` items 5, 6)
