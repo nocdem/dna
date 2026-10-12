@@ -139,12 +139,27 @@ typedef struct {
  * result, never grow it past the chain-derived target.
  *
  * HF-6 slice 5c: at key generation >= NODUS_RT_GEN_STORAGE each member
- * carries its v2 row's validator_id and owner_fp (the generation is read
- * here, once, from the committed registry); below it, and on the
+ * carries its v2 row's validator_id and owner_fp; below it, and on the
  * bootstrap path, both are all zero. `power` is left 0.
+ *
+ * HF-6 slice 5d (ORCHESTRATOR decision D4 (i)): the key generation is
+ * the CALLER's — this function no longer reads the registry. A boundary
+ * passes its one read (nodus_witness_v2_epoch_boundary_apply), so the
+ * candidates, the tiebreak, the emitted ids and the snapshot's
+ * selection_ruleset (nodus_witness_vset.c) all come from ONE value; a
+ * caller outside a boundary reads nodus_witness_v2_key_generation once
+ * and passes it. At `key_gen >= NODUS_RT_GEN_STORAGE` the tiebreak
+ * inside equal frozen totals is SHA3-512(0x02 ‖ validator_id[64] ‖
+ * state_seed[64]) (129 bytes, 0x02 = NODUS_TREE_TAG_VALIDATOR; design
+ * rev 6 §7.8, the khan's decision 2026-10-12); below it
+ * SHA3-512(0x02 ‖ pubkey[DNAC_PUBKEY_SIZE] ‖ state_seed[64]), byte for
+ * byte as before. The bootstrap path (e_start < EPOCH_LENGTH + 1) does
+ * not read `key_gen`.
  *
  * @param w           Witness context (DB must be open)
  * @param e_start     Epoch start block height
+ * @param key_gen     The key generation the caller resolved
+ *                    (nodus_witness_v2_key_generation; NODUS_RT_GEN_*)
  * @param out         Caller-allocated array of >= max_entries members
  * @param max_entries out[] capacity (heap-size it to DNAC_MAX_ACTIVE_VALIDATORS)
  * @param count_out   [out] Number of members populated (may be < max_entries)
@@ -152,6 +167,7 @@ typedef struct {
  */
 int nodus_committee_compute_for_epoch(nodus_witness_t *w,
                                         uint64_t e_start,
+                                        uint32_t key_gen,
                                         nodus_committee_member_t *out,
                                         int max_entries,
                                         int *count_out);

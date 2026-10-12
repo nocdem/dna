@@ -14,6 +14,29 @@
  *       live; a candidate absent from the copy is not seated; the emitted
  *       total_stake / self_stake are the frozen values, commission the
  *       live one.
+ *   (7) HF-6 slice 5d — the key generation is the CALLER's and decides
+ *       the tiebreak (design rev 6 §7.7 item 8, the khan's decision
+ *       2026-10-12). One fresh database, a 2000 validator C plus two
+ *       equal 1000 validators A / B, each with a v2_validator_roles row
+ *       (validator_id = the row's stored validators.pubkey_hash, read
+ *       from the DB; owner 0x0F × 64) and a kind-0 copy row keyed by that
+ *       id beside the legacy SHA3-512(pubkey)-keyed copy rows (each arm
+ *       reads its own keying). A lookback seed is chosen by scanning fills 0..255
+ *       for the first under which the two INDEPENDENTLY computed
+ *       preimages order A / B differently:
+ *         gen 4  SHA3-512(0x02 ‖ validator_id[64] ‖ seed[64])  129 B
+ *         gen 3  SHA3-512(0x02 ‖ pubkey[2592]     ‖ seed[64])  2657 B
+ *       (both built byte by byte here, not through the witness code).
+ *       On the SAME database: key_gen = NODUS_RT_GEN_EVM orders A / B by
+ *       the pubkey preimage with zero ids; key_gen = NODUS_RT_GEN_STORAGE
+ *       orders them by the validator_id preimage and emits each row's
+ *       validator_id / owner_fp; C (higher stake) is first under both.
+ *       HOW IT CAN LIE: the database is bare (no registry, legacy seed
+ *       table) — it proves the core's arm for a given key_gen, not which
+ *       key_gen a boundary passes (test_hf6_readers proves that).
+ *       REQUIRES: a default build; nothing in the environment. LEAVES
+ *       BEHIND: nothing (its /tmp directory is removed; left when a
+ *       CHECK aborts).
  *
  * tokenomics-v3 P3-1 FIXTURE CHANGE (every post-bootstrap scenario): the
  * selection now reads copy(e_start − 2E) (nodus_committee_compute_for_
@@ -32,6 +55,7 @@
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_v2_econ.h"   /* P3-1: the frozen copy */
+#include "witness/nodus_witness_runtime.h"   /* HF-6 5d: NODUS_RT_GEN_* */
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -65,6 +89,11 @@
                 __FILE__, __LINE__, _a, _b); \
         exit(1); \
     } } while (0)
+
+/* HF-6 slice 5d: the committee core takes the key generation from its
+ * caller. Scenarios 1-6 and B1-B5 run on bare databases with no domain
+ * registry row — generation 1 (nodus_witness_v2_key_generation). */
+#define GEN1 NODUS_RT_GEN_1
 
 static void rmrf(const char *path) {
     DIR *d = opendir(path);
@@ -245,7 +274,7 @@ int main(void) {
 
     nodus_committee_member_t out[DNAC_COMMITTEE_SIZE];
     int count = 0;
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out, 3, &count), 0);
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out, 3, &count), 0);
     CHECK_EQ(count, 3);
     CHECK(out[0].total_stake == 500);
     CHECK(out[1].total_stake == 400);
@@ -266,7 +295,7 @@ int main(void) {
     CHECK_EQ(nodus_validator_insert(&w, &vt_b), 0);
     refresh_copy(&w, copy_e);
 
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out, 2, &count), 0);
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out, 2, &count), 0);
     CHECK_EQ(count, 2);
     CHECK(out[0].total_stake == 1000);
     CHECK(out[1].total_stake == 1000);
@@ -279,7 +308,7 @@ int main(void) {
     memset(seed_b, 0x33, sizeof(seed_b));
     insert_block_row(&w, lookback, seed_b);
 
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out, 2, &count), 0);
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out, 2, &count), 0);
     CHECK_EQ(count, 2);
     int idx_a_seed_b = find_pubkey(out, count, 0xAA);
     int idx_b_seed_b = find_pubkey(out, count, 0xBB);
@@ -289,7 +318,7 @@ int main(void) {
      * again with seed_b, result must match. */
     nodus_committee_member_t out2[DNAC_COMMITTEE_SIZE];
     int count2 = 0;
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out2, 2,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out2, 2,
                                                  &count2), 0);
     CHECK_EQ(count2, count);
     for (int i = 0; i < count; i++) {
@@ -335,7 +364,7 @@ int main(void) {
     CHECK_EQ(nodus_validator_insert(&w, &v_fresh), 0);
     refresh_copy(&w, copy_e);
 
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK(find_pubkey(out, count, 0x66) < 0);
 
@@ -359,7 +388,7 @@ int main(void) {
         CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
         sqlite3_finalize(stmt);
     }
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK(find_pubkey(out, count, 0x66) >= 0);
 
@@ -369,7 +398,7 @@ int main(void) {
     update_status(&w, v2.pubkey, DNAC_VALIDATOR_UNSTAKED);
     update_status(&w, v3.pubkey, DNAC_VALIDATOR_AUTO_RETIRED);
 
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK(find_pubkey(out, count, 0x11) < 0);
     CHECK(find_pubkey(out, count, 0x22) < 0);
@@ -379,7 +408,7 @@ int main(void) {
     printf("  (5) insufficient validators — count_out < max_entries\n");
     /* After retiring v1/v2/v3 and unstaking tie pair above, we have
      * v4, v5, and v_fresh ACTIVE. Request 7 — expect 3. */
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 3);
     /* Top by stake: v_fresh(10000) > v5(500) > v4(400). */
@@ -403,7 +432,7 @@ int main(void) {
     printf("  (6) P3-1 okuma B — frozen copy ranks, live status filters\n");
     /* (6a) frozen v4 = 20000 (live stays 400): v4 > v_fresh > v5. */
     set_copy_amount(&w, copy_e, v4.pubkey, v4.pubkey, 20000);
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 3);
     CHECK(find_pubkey(out, count, 0x44) == 0);
@@ -416,7 +445,7 @@ int main(void) {
     /* (6b) status is LIVE: v3 is AUTO_RETIRED live; a huge frozen row
      * must not bring it back. */
     set_copy_amount(&w, copy_e, v3.pubkey, v3.pubkey, 99999999);
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK(find_pubkey(out, count, 0x33) < 0);
     CHECK_EQ(count, 3);
@@ -440,7 +469,7 @@ int main(void) {
         CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
         sqlite3_finalize(stmt);
     }
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 3);
     CHECK(find_pubkey(out, count, 0x55) == 0);
@@ -464,7 +493,7 @@ int main(void) {
         CHECK_EQ(sqlite3_changes(w.db), 1);
         sqlite3_finalize(stmt);
     }
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 2);
     CHECK(find_pubkey(out, count, 0x66) < 0);
@@ -483,7 +512,7 @@ int main(void) {
         CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
         sqlite3_finalize(stmt);
     }
-    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&w, e_start, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 2);
     CHECK(find_pubkey(out, count, 0x44) == 1);
@@ -524,7 +553,7 @@ int main(void) {
 
     /* Scenario B1: e_start = 0. Entirely in the bootstrap zone. */
     printf("  (B1) bootstrap — e_start = 0\n");
-    CHECK_EQ(nodus_committee_compute_for_epoch(&wb, 0, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&wb, 0, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 2);
     /* Ranked by stake DESC — vg2(200) before vg1(100). */
@@ -536,7 +565,7 @@ int main(void) {
     printf("  (B2) bootstrap — e_start = EPOCH_LENGTH\n");
     CHECK_EQ(nodus_committee_compute_for_epoch(&wb,
                                                  (uint64_t)DNAC_EPOCH_LENGTH,
-                                                 out,
+                                                 GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 2);
     CHECK(find_pubkey(out, count, 0x72) == 0);
@@ -563,7 +592,7 @@ int main(void) {
     refresh_copy(&wb, 0);
     CHECK_EQ(nodus_committee_compute_for_epoch(&wb,
                                                  (uint64_t)DNAC_EPOCH_LENGTH + 1,
-                                                 out,
+                                                 GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 2);
     CHECK(find_pubkey(out, count, 0x72) == 0);
@@ -579,7 +608,7 @@ int main(void) {
     CHECK_EQ(nodus_validator_insert(&wb, &vg_a), 0);
     CHECK_EQ(nodus_validator_insert(&wb, &vg_b), 0);
 
-    CHECK_EQ(nodus_committee_compute_for_epoch(&wb, 0, out, 4, &count), 0);
+    CHECK_EQ(nodus_committee_compute_for_epoch(&wb, 0, GEN1, out, 4, &count), 0);
     CHECK_EQ(count, 4);
     int idx_vga = find_pubkey(out, count, 0x81);
     int idx_vgb = find_pubkey(out, count, 0x82);
@@ -614,7 +643,7 @@ int main(void) {
     dnac_validator_record_t vn;
     init_validator(&vn, 0x91, 1, 42, 0, DNAC_VALIDATOR_ACTIVE);
     CHECK_EQ(nodus_validator_insert(&wc, &vn), 0);
-    CHECK_EQ(nodus_committee_compute_for_epoch(&wc, 0, out,
+    CHECK_EQ(nodus_committee_compute_for_epoch(&wc, 0, GEN1, out,
                                                  DNAC_COMMITTEE_SIZE, &count), 0);
     CHECK_EQ(count, 1);
     CHECK(find_pubkey(out, count, 0x91) == 0);
@@ -625,6 +654,147 @@ int main(void) {
     sqlite3_close(wb.db);
     wb.db = NULL;
     rmrf(data_path_b);
+
+    /* ── Scenario 7: HF-6 5d — the tiebreak follows the caller's key
+     * generation (header (7)). ─────────────────────────────────────── */
+    printf("  (7) HF-6 5d — gen 4 ties break by validator_id, gen 3 by "
+           "pubkey\n");
+    {
+        char data_path_d[] = "/tmp/test_committee_gen4_XXXXXX";
+        CHECK(mkdtemp(data_path_d) != NULL);
+        static nodus_witness_t wd; /* multi-MB — static storage */
+        memset(&wd, 0, sizeof(wd));
+        snprintf(wd.data_path, sizeof(wd.data_path), "%s", data_path_d);
+        uint8_t chain_id_d[16];
+        memset(chain_id_d, 0xC4, sizeof(chain_id_d));
+        CHECK_EQ(nodus_witness_create_chain_db(&wd, chain_id_d), 0);
+
+        const uint64_t es = (uint64_t)DNAC_EPOCH_LENGTH * 4;
+        const uint64_t lb = es - (uint64_t)DNAC_EPOCH_LENGTH - 1;
+        const uint64_t ce = es - 2 * (uint64_t)DNAC_EPOCH_LENGTH;
+
+        dnac_validator_record_t va, vb, vc;
+        init_validator(&va, 0xA1, 1, 1000, 0, DNAC_VALIDATOR_ACTIVE);
+        init_validator(&vb, 0xB2, 1, 1000, 0, DNAC_VALIDATOR_ACTIVE);
+        init_validator(&vc, 0xC3, 1, 2000, 0, DNAC_VALIDATOR_ACTIVE);
+        CHECK_EQ(nodus_validator_insert(&wd, &va), 0);
+        CHECK_EQ(nodus_validator_insert(&wd, &vb), 0);
+        CHECK_EQ(nodus_validator_insert(&wd, &vc), 0);
+
+        /* the v2 roles rows. The generation-4 reader joins a validators
+         * row to its roles row by validators.pubkey_hash (= validator_id,
+         * nodus_witness_validator.c V2_VAL_SELECT) — so each id IS the
+         * row's stored pubkey_hash, read from the DB (whatever the CRUD
+         * writer derives it as: today the tagged leaf key, not a value
+         * this test restates). */
+        const dnac_validator_record_t *vr[3] = { &va, &vb, &vc };
+        uint8_t vid[3][64], own[64];
+        memset(own, 0x0F, sizeof(own));
+        for (int i = 0; i < 3; i++) {
+            sqlite3_stmt *st = NULL;
+            CHECK_EQ(sqlite3_prepare_v2(wd.db, "SELECT pubkey_hash FROM "
+                         "validators WHERE pubkey = ?", -1, &st, NULL),
+                     SQLITE_OK);
+            sqlite3_bind_blob(st, 1, vr[i]->pubkey, DNAC_PUBKEY_SIZE,
+                              SQLITE_STATIC);
+            CHECK_EQ(sqlite3_step(st), SQLITE_ROW);
+            CHECK_EQ(sqlite3_column_bytes(st, 0), 64);
+            memcpy(vid[i], sqlite3_column_blob(st, 0), 64);
+            sqlite3_finalize(st);
+            st = NULL;
+            CHECK_EQ(sqlite3_prepare_v2(wd.db, "INSERT INTO "
+                         "v2_validator_roles (validator_id, owner_fp, "
+                         "pending_consensus_pubkey, "
+                         "consensus_key_effective_epoch) VALUES (?, ?, "
+                         "zeroblob(2592), 0)", -1, &st, NULL), SQLITE_OK);
+            sqlite3_bind_blob(st, 1, vid[i], 64, SQLITE_STATIC);
+            sqlite3_bind_blob(st, 2, own, 64, SQLITE_STATIC);
+            CHECK_EQ(sqlite3_step(st), SQLITE_DONE);
+            sqlite3_finalize(st);
+        }
+        CHECK(memcmp(vid[0], vid[1], 64) != 0);
+        /* copy(es − 2E), both keyings on one table: the legacy writer's
+         * rows keyed by SHA3-512(pubkey) (what the generation-3 arm reads,
+         * nodus_witness_v2_balance_copy_frozen), then one kind-0 row per
+         * candidate keyed by its validator_id (validator_fp = owner_fp =
+         * the id — the kind-0 rule v2ec_member_copy enforces), what the
+         * generation-4 arm reads (nodus_witness_v2_balance_copy_frozen_
+         * key). Amounts = the live bonds. */
+        refresh_copy(&wd, ce);
+        for (int i = 0; i < 3; i++) {
+            sqlite3_stmt *st = NULL;
+            CHECK_EQ(sqlite3_prepare_v2(wd.db, "INSERT INTO v2_balance_copy "
+                         "(epoch_start, validator_fp, owner_fp, kind, amount) "
+                         "VALUES (?, ?, ?, 0, ?)", -1, &st, NULL), SQLITE_OK);
+            sqlite3_bind_int64(st, 1, (int64_t)ce);
+            sqlite3_bind_blob (st, 2, vid[i], 64, SQLITE_STATIC);
+            sqlite3_bind_blob (st, 3, vid[i], 64, SQLITE_STATIC);
+            sqlite3_bind_int64(st, 4, (int64_t)vr[i]->self_stake);
+            CHECK_EQ(sqlite3_step(st), SQLITE_DONE);
+            sqlite3_finalize(st);
+        }
+
+        /* the first seed fill under which the two preimages disagree on
+         * A / B — so the two arms below are told apart, not equal by
+         * luck */
+        uint8_t seed[64];
+        int a_first_pk = -1, a_first_id = -1, found = 0;
+        static uint8_t pre_pk[1 + DNAC_PUBKEY_SIZE + 64];
+        uint8_t pre_id[129];
+        for (int s = 0; s < 256 && !found; s++) {
+            uint8_t hpa[64], hpb[64], hia[64], hib[64];
+            memset(seed, s, sizeof(seed));
+            pre_pk[0] = 0x02;                       /* NODUS_TREE_TAG_VALIDATOR */
+            memcpy(&pre_pk[1 + DNAC_PUBKEY_SIZE], seed, 64);
+            memcpy(&pre_pk[1], va.pubkey, DNAC_PUBKEY_SIZE);
+            CHECK_EQ(qgp_sha3_512(pre_pk, sizeof(pre_pk), hpa), 0);
+            memcpy(&pre_pk[1], vb.pubkey, DNAC_PUBKEY_SIZE);
+            CHECK_EQ(qgp_sha3_512(pre_pk, sizeof(pre_pk), hpb), 0);
+            pre_id[0] = 0x02;
+            memcpy(&pre_id[65], seed, 64);
+            memcpy(&pre_id[1], vid[0], 64);
+            CHECK_EQ(qgp_sha3_512(pre_id, sizeof(pre_id), hia), 0);
+            memcpy(&pre_id[1], vid[1], 64);
+            CHECK_EQ(qgp_sha3_512(pre_id, sizeof(pre_id), hib), 0);
+            a_first_pk = memcmp(hpa, hpb, 64) < 0;
+            a_first_id = memcmp(hia, hib, 64) < 0;
+            found = a_first_pk != a_first_id;
+        }
+        CHECK(found);
+        CHECK_EQ(NODUS_TREE_TAG_VALIDATOR, 0x02);
+        insert_block_row(&wd, lb, seed);
+
+        /* gen 3: the pubkey preimage, ids zero */
+        static const uint8_t z[64] = { 0 };
+        CHECK_EQ(nodus_committee_compute_for_epoch(&wd, es, NODUS_RT_GEN_EVM,
+                                                     out, 3, &count), 0);
+        CHECK_EQ(count, 3);
+        CHECK(find_pubkey(out, count, 0xC3) == 0);
+        CHECK_EQ(find_pubkey(out, count, 0xA1) <
+                 find_pubkey(out, count, 0xB2), a_first_pk);
+        for (int i = 0; i < count; i++)
+            CHECK(memcmp(out[i].validator_id, z, 64) == 0 &&
+                  memcmp(out[i].owner_fp, z, 64) == 0);
+
+        /* gen 4: the validator_id preimage, each row's ids emitted */
+        CHECK_EQ(nodus_committee_compute_for_epoch(&wd, es,
+                                                     NODUS_RT_GEN_STORAGE,
+                                                     out, 3, &count), 0);
+        CHECK_EQ(count, 3);
+        CHECK(find_pubkey(out, count, 0xC3) == 0);
+        CHECK_EQ(find_pubkey(out, count, 0xA1) <
+                 find_pubkey(out, count, 0xB2), a_first_id);
+        for (int i = 0; i < count; i++) {
+            const int k = find_pubkey(out, count, 0xA1) == i ? 0
+                        : find_pubkey(out, count, 0xB2) == i ? 1 : 2;
+            CHECK(memcmp(out[i].validator_id, vid[k], 64) == 0 &&
+                  memcmp(out[i].owner_fp, own, 64) == 0);
+        }
+
+        sqlite3_close(wd.db);
+        wd.db = NULL;
+        rmrf(data_path_d);
+    }
 
     printf("\nAll Task 51 + Task 52 committee election tests passed.\n");
     return 0;

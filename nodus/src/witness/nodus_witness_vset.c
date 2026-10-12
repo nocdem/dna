@@ -12,6 +12,7 @@
 
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_runtime.h"   /* HF-6 5d: NODUS_RT_GEN_*  */
 #include "nodus/nodus_chain_config.h"
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT        */
 #include "dnac/dnac.h"
@@ -390,6 +391,11 @@ int nodus_witness_vset_entry_from_member(const nodus_committee_member_t *m,
  * Rule N judges and the snapshot commit_next stores can never be built by
  * two different pieces of selection logic.
  *
+ * HF-6 slice 5d: `key_gen` (the caller's resolved key generation) is
+ * handed to the committee core AND decides the selection_ruleset here,
+ * so the candidates, the tiebreak, the members' ids and the layout they
+ * are written in are one value's consequences (ORCHESTRATOR D4 (i)).
+ *
  * Unlike the public build_for_epoch, this core tells the two "no
  * snapshot" outcomes apart (FAULT vs VERDICT — a DB failure is never a
  * value):
@@ -400,7 +406,7 @@ int nodus_witness_vset_entry_from_member(const nodus_committee_member_t *m,
  *      count above max_active, a witness_id derivation failure),
  *      *snap_out untouched. */
 static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
-                               int max_active,
+                               int max_active, uint32_t key_gen,
                                dna_vset_snapshot_t **snap_out) {
     if (!w || !w->db || !snap_out) return -1;
     if (max_active < 1 || max_active > DNA_MAX_ACTIVE_VALIDATORS) return -1;
@@ -413,7 +419,7 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
     int count = 0;
     /* DIRECT compute (not the cached get_for_block): the cache carries no
      * self_stake, and self_bond must be the real bond. See the header. */
-    if (nodus_committee_compute_for_epoch(w, epoch_start, members,
+    if (nodus_committee_compute_for_epoch(w, epoch_start, key_gen, members,
                                           max_active, &count) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: committee compute failed",
                       (unsigned long long)epoch_start);
@@ -438,10 +444,15 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
     if (!snap) { free(members); return -1; }
 
     snap->epoch             = epoch_start;
-    /* HF-6 slice 5c: still ruleset 1 on every chain — the switch by key
-     * generation is slice 5d's (plan tasks/hf6-slice5-plan.md §1 "Rule").
-     * The entry fill below already writes either layout. */
-    snap->selection_ruleset = DNA_VSET_RULESET_TOPN_V1;
+    /* HF-6 slice 5d — THE SWITCH (plan tasks/hf6-slice5-plan.md §1
+     * "Rule"; design rev 6 §7.7, §8): ruleset 2 from key generation
+     * NODUS_RT_GEN_STORAGE, ruleset 1 below it. The members were emitted
+     * by the core at the SAME `key_gen`, so under ruleset 2 every one
+     * carries its row's validator_id / owner_fp (emit_member), and the
+     * entry fill below writes the layout this value names. */
+    snap->selection_ruleset = key_gen >= NODUS_RT_GEN_STORAGE
+                                  ? DNA_VSET_RULESET_TOPN_V2
+                                  : DNA_VSET_RULESET_TOPN_V1;
     memset(snap->sortition_seed, 0, DNA_VSET_SEED_LEN);  /* reserved slot */
 
     for (int i = 0; i < count; i++) {
@@ -464,6 +475,7 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
 int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
                                        uint64_t epoch_start,
                                        int max_active,
+                                       uint32_t key_gen,
                                        dna_vset_snapshot_t **snapshot_out,
                                        uint8_t **blob_out,
                                        size_t *blob_len_out,
@@ -473,7 +485,7 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
     if (blob_out && !blob_len_out) return -1;
 
     dna_vset_snapshot_t *snap = NULL;
-    int brc = vset_build_snapshot(w, epoch_start, max_active, &snap);
+    int brc = vset_build_snapshot(w, epoch_start, max_active, key_gen, &snap);
     if (brc == 1) {
         /* A chain with no eligible validators has NO snapshot. An empty
          * set would encode as active_count 0, which the codec rejects —
@@ -581,13 +593,15 @@ static int vset_target_for_epoch(nodus_witness_t *w, uint64_t e_start,
  *
  * @param created_at_height provenance column only — never hashed, never
  *        read back by consensus (see WITNESS_DB_SCHEMA).
+ * @param key_gen the key generation the snapshot is built at (HF-6 5d).
  * @return 0 stored or idempotent re-apply, -1 on any fault INCLUDING the
  *         -2 conflict from _insert (two different validator sets claiming
  *         one epoch is a validator_set_root divergence; the block must
  *         not commit). */
 static int vset_build_and_store(nodus_witness_t *w,
                                   uint64_t e_start,
-                                  uint64_t created_at_height) {
+                                  uint64_t created_at_height,
+                                  uint32_t key_gen) {
     int target = 0;
     if (vset_target_for_epoch(w, e_start, &target) != 0) return -1;
 
@@ -595,8 +609,9 @@ static int vset_build_and_store(nodus_witness_t *w,
     size_t   blob_len = 0;
     uint8_t  hash[DNA_VSET_HASH_LEN];
 
-    if (nodus_witness_vset_build_for_epoch(w, e_start, target, NULL,
-                                            &blob, &blob_len, hash) != 0) {
+    if (nodus_witness_vset_build_for_epoch(w, e_start, target, key_gen,
+                                            NULL, &blob, &blob_len,
+                                            hash) != 0) {
         /* Includes "committee is empty". On a real chain that is a fault,
          * not an empty set — an epoch with nobody allowed to vote is not
          * a state this ledger can represent. */
@@ -761,21 +776,24 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
 /* ── Next-epoch commitment ──────────────────────────────────────────── */
 
 int nodus_witness_vset_commit_next(nodus_witness_t *w,
-                                   uint64_t boundary_height) {
+                                   uint64_t boundary_height,
+                                   uint32_t key_gen) {
     if (!w || !w->db) return -1;
 
     /* The NEXT epoch's start height keys BOTH the target lookup and the
      * snapshot row. Rows in chain_config_history whose effective_block is
      * <= that height are already committed state at this point, so every
-     * node reads the same target. */
+     * node reads the same target. `key_gen` is the boundary's one read
+     * (HF-6 5d): it decides the ruleset of the row stored here. */
     uint64_t next_start = boundary_height + (uint64_t)DNAC_EPOCH_LENGTH;
-    return vset_build_and_store(w, next_start, boundary_height);
+    return vset_build_and_store(w, next_start, boundary_height, key_gen);
 }
 
 /* ── Next-epoch preview (tokenomics-v3 P1 round 6) ──────────────────── */
 
 int nodus_witness_vset_preview_next(nodus_witness_t *w,
                                     uint64_t boundary_height,
+                                    uint32_t key_gen,
                                     dna_vset_snapshot_t **snapshot_out) {
     if (!w || !w->db || !snapshot_out) return -1;
     if (boundary_height > UINT64_MAX - (uint64_t)DNAC_EPOCH_LENGTH) {
@@ -784,15 +802,16 @@ int nodus_witness_vset_preview_next(nodus_witness_t *w,
         return -1;
     }
 
-    /* EXACTLY commit_next's key, target lookup and builder core:
-     * next_start as above, vset_target_for_epoch(next_start) as
-     * vset_build_and_store does, and the same vset_build_snapshot that
-     * nodus_witness_vset_build_for_epoch wraps. Nothing is encoded,
-     * hashed or stored. */
+    /* EXACTLY commit_next's key, target lookup, key generation and
+     * builder core: next_start as above, vset_target_for_epoch(next_start)
+     * as vset_build_and_store does, the caller's `key_gen` (the same
+     * boundary read commit_next receives — HF-6 5d), and the same
+     * vset_build_snapshot that nodus_witness_vset_build_for_epoch wraps.
+     * Nothing is encoded, hashed or stored. */
     uint64_t next_start = boundary_height + (uint64_t)DNAC_EPOCH_LENGTH;
     int target = 0;
     if (vset_target_for_epoch(w, next_start, &target) != 0) return -1;
-    return vset_build_snapshot(w, next_start, target, snapshot_out);
+    return vset_build_snapshot(w, next_start, target, key_gen, snapshot_out);
 }
 
 /* ── Genesis seeding ────────────────────────────────────────────────── */
@@ -834,10 +853,16 @@ int nodus_witness_vset_commit_genesis(nodus_witness_t *w,
      * (nodus/tests/v2_genesis_fixture.h v2x_seed_inflation_off). Neither
      * writes DNAC_CFG_TARGET_ACTIVE_COUNT, the ONLY id
      * vset_target_for_epoch reads (:438-440), so the conclusion stands —
-     * but it now rests on the param, not on the table being empty. */
-    if (vset_build_and_store(w, 0ULL, block_height) != 0) return -1;
+     * but it now rests on the param, not on the table being empty.
+     *
+     * HF-6 slice 5d: both at NODUS_RT_GEN_1 — a chain born on this
+     * binary starts at generation 1 (design rev 6 §8), so the genesis
+     * snapshots are ruleset 1 (and the bootstrap path they take emits no
+     * ids a ruleset-2 entry would need). */
+    if (vset_build_and_store(w, 0ULL, block_height, NODUS_RT_GEN_1) != 0)
+        return -1;
     if (vset_build_and_store(w, (uint64_t)DNAC_EPOCH_LENGTH,
-                               block_height) != 0) return -1;
+                               block_height, NODUS_RT_GEN_1) != 0) return -1;
 
     QGP_LOG_INFO(LOG_TAG, "genesis: validator-set snapshots seeded for "
                  "epochs 0 and %d", (int)DNAC_EPOCH_LENGTH);
