@@ -203,6 +203,20 @@ try {
   assert.equal(await ethBadge.getAttribute('data-health'), 'current', 'and keeps its colour: the shown balances are current');
   const release = ethHold; ethHold = undefined; release.resolve();
   await usdt.locator('summary').focus(); gate.resolve(); await completed.promise; await done();
+  // 0.1.106 (operator: "tam ortalamak … sağa dayalı"): every badge's light is
+  // its last item, right of the name, centred top to bottom — wide and narrow.
+  for (const width of [1440, 360]) {
+    await page.setViewportSize({ width, height: 1050 });
+    const marks = await page.locator('#portfolio-networks .network-health').evaluateAll(badges => badges.map(b => {
+      const light = b.lastElementChild, name = light.previousElementSibling;
+      const l = light.getBoundingClientRect(), n = name.getBoundingClientRect(), r = b.getBoundingClientRect();
+      const pad = parseFloat(getComputedStyle(b).paddingRight) + parseFloat(getComputedStyle(b).borderRightWidth);
+      return { last: light.classList.contains('health-light'), right: l.left >= n.right, edge: Math.abs(r.right - pad - l.right) <= 1, centred: Math.abs((l.top + l.bottom) / 2 - (r.top + r.bottom) / 2) <= 1 };
+    }));
+    assert.ok(marks.length > 0 && marks.every(m => m.last && m.right && m.edge && m.centred), `badge lights at ${width}px: ${JSON.stringify(marks)}`);
+    if (process.env.BADGE_SHOT_DIR) await page.locator('#portfolio-networks').screenshot({ path: `${process.env.BADGE_SHOT_DIR}/badges-${width}.png` });
+  }
+  await page.setViewportSize({ width: 1440, height: 1050 });
   assert.equal(await usdt.locator('summary').evaluate(node => document.activeElement === node), true);
   priceMode = 'valid'; await refresh();
   // A balance counts until two minutes past its next automatic read (0.1.93:

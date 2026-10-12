@@ -186,6 +186,17 @@ test('identity record: round trip, wrong key or wallet refused, bad shapes refus
   const other = await identityKeyFor('legal winner thank year wave sausage worth useful legal winner thank yellow', id);
   await assert.rejects(parseIdentity(text, id, other));
   await assert.rejects(parseIdentity(text, Buffer.alloc(16, 9).toString('base64'), key));
+  // 0.1.106: the NODUS counterparties' chain names are kept too (`peers`),
+  // at most IDENTITY_PEERS_MAX; 200 of them and the largest picture fit.
+  const { IDENTITY_PEERS_MAX } = await import('../src/activity-storage.js');
+  const peers = Object.fromEntries(Array.from({ length: IDENTITY_PEERS_MAX }, (_, i) => [i.toString(16).padStart(2, '0').repeat(64), `name${i}`.padEnd(36, 'x')]));
+  const full = { ...value, avatar: 'A'.repeat(20480), peers };
+  assert.deepEqual(await parseIdentity(await serializeIdentity(id, full, key), id, key), full, 'all peers and the largest picture fit');
+  assert.throws(() => checkIdentity({ addresses: {}, peers: { ...peers, ['ff'.repeat(64)]: 'one' } }), /Invalid saved identity/, 'more than IDENTITY_PEERS_MAX');
+  for (const bad of [{ ['AB'.repeat(64)]: 'x' }, { ['ab'.repeat(63)]: 'x' }, { ['ab'.repeat(64)]: 'Bad Name' }, { ['ab'.repeat(64)]: '' }, { ['ab'.repeat(64)]: 7 }]) {
+    assert.throws(() => checkIdentity({ addresses: {}, peers: bad }), /Invalid saved identity/, JSON.stringify(bad));
+  }
+  assert.deepEqual(checkIdentity({ addresses: {}, peers: {} }), { addresses: {} }, 'no peers: no field');
   // 0.1.102: network keys are checked by form (a build without Ixios names no
   // Ixios), so another network's address is kept, not refused.
   assert.deepEqual(checkIdentity({ addresses: { bitcoin: 'a' } }), { addresses: { bitcoin: 'a' } });

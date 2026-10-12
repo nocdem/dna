@@ -426,7 +426,9 @@ dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 .network-health { display: inline-flex; gap: 7px; align-items: center; font-size: 10px; color: #b4bea9; }
 .network-health .coin-icon { width: 18px; height: 18px; }
 /* The network's light (0.1.103): green current, amber last read, red failed, grey not read; pulses while reading. */
-.health-light { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #6b7064; }
+/* At the badge's right end, centred top to bottom even where the badge aligns its text to the top (narrow screens, below). */
+.health-light { flex: none; align-self: center; width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: #6b7064; }
+.network-health > span:not(.health-light) { margin-right: 2px; }
 .network-health[data-health="current"] .health-light { background: #6fd36a; box-shadow: 0 0 6px #6fd36a99; }
 .network-health[data-health="old"] .health-light { background: #f2c896; box-shadow: 0 0 6px #f2c89699; }
 .network-health[data-health="failed"] .health-light { background: #f06c5c; box-shadow: 0 0 6px #f06c5c99; }

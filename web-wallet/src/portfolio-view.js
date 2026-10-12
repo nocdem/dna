@@ -133,7 +133,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       const health = rows.some(r => r.state === 'error') ? 'failed' : ready && rows.length && !c.balanceUnavailable ? 'current' : lastRead.length ? 'old' : 'none';
       const badge = el('span', 'network-health'); badge.dataset.health = health; badge.dataset.reading = String(reading);
       badge.title = `${c.name} · ${status}`; badge.setAttribute('role', 'img'); badge.setAttribute('aria-label', badge.title);
-      badge.append(el('span', 'health-light'), networkIcon(c), el('span', '', c.name)); return badge;
+      // The light at the right end, centred top to bottom (0.1.106, operator:
+      // "tam ortalamak … sağa dayalı olması lazım").
+      badge.append(networkIcon(c), el('span', '', c.name), el('span', 'health-light')); return badge;
     }));
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));

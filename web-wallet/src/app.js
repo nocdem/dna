@@ -1,7 +1,7 @@
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, sentRowsToShow, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor, serializeIdentity, parseIdentity, identityKeyFor } from './activity-storage.js';
+import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, sentRowsToShow, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor, serializeIdentity, parseIdentity, identityKeyFor, IDENTITY_PEERS_MAX } from './activity-storage.js';
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
@@ -304,7 +304,7 @@ function persistHistory() {
 }
 function clearHistory() {
   historyJob?.controller.abort(); historyJob = null; historyByChain = {}; historyNote = {};
-  nodusHistoryJob?.controller.abort(); nodusHistoryJob = null; nodusHistory = null; nodusHistoryError = ''; nodusPeerNames.clear();
+  nodusHistoryJob?.controller.abort(); nodusHistoryJob = null; nodusHistory = null; nodusHistoryError = ''; nodusPeerNames.clear(); keptPeerNames.clear();
   renderHistory();
 }
 // ── NODUS account history (src/nodus/history.js) ────────────────────────
@@ -322,6 +322,20 @@ let nodusHistory = null, nodusHistoryJob = null, nodusHistoryError = '';
 // Chain names of the counterparties (nameOf, one node), fingerprint -> name
 // ('' = none); at most NODUS_NAME_LOOKUPS new lookups per read.
 const nodusPeerNames = new Map(), NODUS_NAME_LOOKUPS = 20;
+// The names a saved wallet learned in earlier sessions (its identity record,
+// `peers`; 0.1.106): shown at once, until this session's answer for the same
+// counterparty replaces it. Typed words keep nothing (decision
+// 2026-10-02-device-cache-only-when-saved).
+const keptPeerNames = new Map();
+const peerNamesShown = () => new Map([...keptPeerNames, ...nodusPeerNames]);
+function keepPeerName(peer, name) {
+  const peers = { ...(ownIdentity.peers || {}) };
+  delete peers[peer];
+  if (name) peers[peer] = name;
+  const keys = Object.keys(peers);
+  for (const old of keys.slice(0, Math.max(0, keys.length - IDENTITY_PEERS_MAX))) delete peers[old];   // the last ones learned stay
+  noteIdentity({ peers });
+}
 const nodusHistoryFor = () => (nodusHistory && wallet && nodusHistory.address === wallet.addresses.nodus ? nodusHistory : null);
 function renderNodusHistory(list, status, button) {
   const client = nodusClient, readable = !!client?.historyReadable, kept = nodusHistoryFor();
@@ -331,7 +345,7 @@ function renderNodusHistory(list, status, button) {
     : nodusHistoryStatus({ page: kept?.page ?? null, error: nodusHistoryError, reading: !!nodusHistoryJob, readAt: kept ? historyTime(kept.readAt) : '', limit: NODUS_HISTORY_LIMIT });
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
   list.replaceChildren(...(kept ? kept.page.entries : []).map(entry => {
-    const r = nodusHistoryRow(entry, { names: nodusPeerNames });
+    const r = nodusHistoryRow(entry, { names: peerNamesShown() });
     const div = el('div', `activity-row nodus-history-row${r.dir ? ` history-dir-${r.dir}` : ''}`), main = el('span', 'activity-main');
     main.append(el('strong', '', r.amount ? `${r.sign}${r.amount}` : r.title), el('small', '', [r.amount ? r.title : '', r.detail].filter(Boolean).join(' · ')));
     const side = el('span', 'activity-side'), badge = el('span', 'status-badge', 'confirmed');
@@ -381,6 +395,7 @@ async function nameNodusPeers(page, source, client) {
       const found = parseNameOf(await client.nameOf({ owner: peer }));
       if (wallet !== source || client !== nodusClient) return;
       nodusPeerNames.set(peer, found.found ? found.name : '');
+      if ((keptPeerNames.get(peer) || '') !== (found.found ? found.name : '')) keepPeerName(peer, found.found ? found.name : '');
     } catch { if (wallet !== source || client !== nodusClient) return; /* not an answer: asked again next read */ }
   }
   if (peers.length && wallet === source && $('chain').value === NODUS_ASSET.chain) renderHistory();
@@ -2153,6 +2168,7 @@ $('unlock-form').onsubmit = async event => {
     } catch (error) { disposeWallet(restored); throw error; }
     disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, addressBookKey, identityKey, vault: text }; activityBlocked = !!problem;
     ownIdentity = keptIdentity;
+    keptPeerNames.clear(); for (const [peer, name] of Object.entries(keptIdentity.peers || {})) keptPeerNames.set(peer, name);
     historyByChain = keptHistory;
     addressBook = keptBook; addressBookNote = bookProblem; addressBookUnreadable = !!bookProblem;
     walletFresh = false; siteLock.start();

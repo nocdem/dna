@@ -134,14 +134,24 @@ export const IDENTITY_CONTEXT = 'nodus.wallet.identity.v1';
 // (test/browser-ixios.js), and still reads a record that a build with it
 // wrote — an address of a network this build lacks is ignored where shown
 // (portfolio-view.js setAddress).
-const IDENTITY_MAX_PLAIN = 24000, IDENTITY_CHAIN_KEY = /^[a-z][a-z0-9]{1,15}$/, IDENTITY_CHAINS_MAX = 8;
+// `peers` (0.1.106, operator "kişi adlarını cüzdanda saklamayı da
+// yapabilirsin"): the chain names of the NODUS account history's
+// counterparties, fingerprint -> name, at most IDENTITY_PEERS_MAX (the last
+// ones learned), shown at once on the next unlock and asked again that
+// session. 200 × ~160 B + a 20 KB picture fit IDENTITY_MAX_PLAIN.
+const IDENTITY_MAX_PLAIN = 60000, IDENTITY_CHAIN_KEY = /^[a-z][a-z0-9]{1,15}$/, IDENTITY_CHAINS_MAX = 8;
+export const IDENTITY_PEERS_MAX = 200;
+const IDENTITY_PEER_NAME = /^[a-z0-9]{1,64}$/;  // shape only; chain-names rules are checked where shown
 const IDENTITY_AVATAR_MAX = 20480;              // base64 characters (connect/ui/text.js AVATAR_MAX_B64)
 export const identityKeyFor = (phrase, id) => activityKeyFor(phrase, id, IDENTITY_CONTEXT);
 // -> the checked identity, or throws. Shapes only: a name or picture is
 // checked again where it is shown (connect/ui/chain-names.js chainNameOk,
 // connect/ui/text.js avatarSource).
 export function checkIdentity(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !['addresses', 'name', 'avatar'].includes(k))) throw new Error('Invalid saved identity.');
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !['addresses', 'name', 'avatar', 'peers'].includes(k))) throw new Error('Invalid saved identity.');
+  const peers = value.peers ?? {};
+  if (!peers || typeof peers !== 'object' || Array.isArray(peers) || Object.keys(peers).length > IDENTITY_PEERS_MAX ||
+      Object.entries(peers).some(([fp, name]) => !/^[0-9a-f]{128}$/.test(fp) || typeof name !== 'string' || !IDENTITY_PEER_NAME.test(name))) throw new Error('Invalid saved identity.');
   const addresses = value.addresses ?? {};
   if (!addresses || typeof addresses !== 'object' || Array.isArray(addresses) || Object.keys(addresses).length > IDENTITY_CHAINS_MAX || Object.keys(addresses).some(k => !IDENTITY_CHAIN_KEY.test(k))) throw new Error('Invalid saved identity.');
   for (const [chain, a] of Object.entries(addresses)) {
@@ -149,7 +159,7 @@ export function checkIdentity(value) {
   }
   if (value.name !== undefined && (typeof value.name !== 'string' || value.name.length > 64)) throw new Error('Invalid saved identity.');
   if (value.avatar !== undefined && (typeof value.avatar !== 'string' || value.avatar.length > IDENTITY_AVATAR_MAX || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.avatar))) throw new Error('Invalid saved identity.');
-  return { addresses: { ...addresses }, ...(value.name ? { name: value.name } : {}), ...(value.avatar ? { avatar: value.avatar } : {}) };
+  return { addresses: { ...addresses }, ...(value.name ? { name: value.name } : {}), ...(value.avatar ? { avatar: value.avatar } : {}), ...(Object.keys(peers).length ? { peers: { ...peers } } : {}) };
 }
 export async function serializeIdentity(id, value, key) {
   return sealRecord(IDENTITY_CONTEXT, id, checkIdentity(value), key, IDENTITY_MAX_PLAIN, 'identity');
