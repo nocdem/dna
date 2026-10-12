@@ -102,6 +102,33 @@
  * above, extended to the SYSTEM tuple by the same mechanism — ctest
  * test_ruleset_pins byte-compares the header with the node's table).
  *
+ * HF-6 6f-1 — GENERATION-AWARE (design docs/plans/2026-10-03-hf5-validator-
+ * owner-stake-design.md rev 6 §2: "STAKE/DELEGATE istemci kodlayıcısı
+ * generation'a duyarlı olur"). The request names the rule-set generation
+ * it builds for (`generation`; 0 — every caller before 6f-1, which
+ * memsets the request — reads as "below the HF-6 generation"):
+ *   below NODUS_RT_GEN_STORAGE: every path above, byte-identical;
+ *   NODUS_RT_GEN_STORAGE and later (the HF-6 generation 4):
+ *     STAKE  (op 1)  owner_fp[64] ‖ consensus_pk[2592] ‖ consent_sig[4627]
+ *                    ‖ consent_expiry u64 ‖ commission u16 ‖ bond u64
+ *                    = 7301 bytes (rtn_stake2_parse); lock = bond
+ *     ROTATE (op 10) validator_id[64] ‖ new_pk[2592] ‖ consent_sig[4627]
+ *                    ‖ consent_expiry u64 = 7291 bytes (rtn_rotate2_parse);
+ *                    fee-only funding (khan decision A4, rtn_sys_call_flow)
+ *     The OWNER is the signer of both legs (kind 1: owner_fp = SHA3-512 of
+ *     the signing key — rtn_sys_owner_auth) and owns the funding coins; the
+ *     node's consent (signature + expiry) is an INPUT, produced by the
+ *     node's key elsewhere (nodus-cli `validator consent`). DELEGATE,
+ *     UNSTAKE and UNDELEGATE have generation-4 layouts (136 / 64 / 136
+ *     bytes) this module does not build yet: refused (ERR_GEN), never
+ *     emitted in the legacy layout the generation-4 chain refuses by
+ *     length. STORAGE_REGISTER / STORAGE_EXIT keep the layouts above (the
+ *     generation-4 rtn_sys_call_flow still decodes them unchanged).
+ *   This module never calls the consent codec (shared/dnac/valbind_wire.c):
+ *   the web wallet's WASM module and native vector compile this file
+ *   without it. Signing, verifying and the validator_id derivation are the
+ *   caller's (nodus-cli links the codec); only its WIDTHS are used here.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -113,6 +140,7 @@
 #include <stddef.h>
 
 #include "nodus/nodus_v2_spend.h"   /* rc values, widths, sign_one_key */
+#include "dnac/valbind_wire.h"      /* HF-6 consent WIDTHS only — no call */
 
 #ifdef __cplusplus
 extern "C" {
@@ -136,6 +164,10 @@ extern "C" {
 #define NODUS_V2_UNSTAKE_CALL_LEN         2592u
 #define NODUS_V2_STREG_CALL_LEN           2664u
 #define NODUS_V2_STEXIT_CALL_LEN          2592u
+/** HF-6 generation-4 call lengths (design rev 6 §2, K7 —
+ *  RTN_SYS_STAKE_V2_CALL_LEN / RTN_SYS_ROTATE_V2_CALL_LEN). */
+#define NODUS_V2_STAKE2_CALL_LEN          7301u
+#define NODUS_V2_ROTATE_CALL_LEN          7291u
 
 /** Refusals of this module beyond the shared nodus_v2_spend_rc_t values it
  *  also returns (ERR_ARG, ERR_ALLOC, ERR_OVERFLOW, ERR_INPUT_SUM,
@@ -150,8 +182,13 @@ typedef enum {
                                            * STORAGE_EXIT                 */
     NODUS_V2_STAKE_ERR_STORAGE_BOND = -44,  /* STORAGE_REGISTER bond !=
                                              * DNAC_STORAGE_STAKE_MIN     */
-    NODUS_V2_STAKE_ERR_PAYEE      = -45   /* STORAGE_REGISTER payee !=
+    NODUS_V2_STAKE_ERR_PAYEE      = -45,  /* STORAGE_REGISTER payee !=
                                            * SHA3-512(pk) (until HF-5)    */
+    NODUS_V2_STAKE_ERR_GEN        = -46   /* the op has no layout this
+                                           * module builds at the request's
+                                           * generation: ROTATE below the
+                                           * HF-6 generation; DELEGATE /
+                                           * UNSTAKE / UNDELEGATE at it   */
 } nodus_v2_stake_rc_t;
 
 /** Which SYSTEM record leg — the value IS the runtime_op on the wire
@@ -162,7 +199,8 @@ typedef enum {
     NODUS_V2_STAKE_OP_UNSTAKE          = 3,
     NODUS_V2_STAKE_OP_UNDELEGATE       = 4,
     NODUS_V2_STAKE_OP_STORAGE_REGISTER = 7,
-    NODUS_V2_STAKE_OP_STORAGE_EXIT     = 8
+    NODUS_V2_STAKE_OP_STORAGE_EXIT     = 8,
+    NODUS_V2_STAKE_OP_ROTATE           = 10  /* HF-6 generation 4 only */
 } nodus_v2_stake_op_t;
 
 /** The two ruleset tuples a staking envelope is built against. */
@@ -208,6 +246,16 @@ typedef struct {
     uint64_t       gas_price;        /* 0 = rule off (the flat floor)       */
     const nodus_v2_stake_coin_t *coins;
     int            n_coins;
+    /* ── HF-6 6f-1 (zero in every older caller) ─────────────────────── */
+    uint32_t       generation;       /* the rule-set generation `rs` is;
+                                      * >= NODUS_RT_GEN_STORAGE selects the
+                                      * generation-4 STAKE / ROTATE layouts */
+    const uint8_t *consensus_pk;     /* gen-4 STAKE: the node's consensus
+                                      * key; ROTATE: the NEW key (2592 B)   */
+    const uint8_t *consent_sig;      /* gen-4 STAKE / ROTATE: the node's
+                                      * consent, DNA_VALBIND_SIG_LEN B      */
+    uint64_t       consent_expiry;   /* gen-4 STAKE / ROTATE               */
+    const uint8_t *validator_id;     /* ROTATE: the validator (64 B)        */
 } nodus_v2_stake_req_t;
 
 /** Fill `out` with the SYSTEM and CORE tuples of the generated
@@ -253,6 +301,19 @@ typedef struct {
     char     change_owner[129];
     uint64_t change_amount;
     uint8_t  change_id[64];              /* SHA3-512(owner ‖ seed)          */
+    /* ── HF-6 6f-1: the generation-4 STAKE (7301 B) / ROTATE (7291 B) —
+     *    all zero for every other layout. identity_pk above is then the
+     *    single signer of both legs (the owner), read from the auth blob:
+     *    those calls carry no owner key. ─────────────────────────────── */
+    int      gen4;                       /* 1 = a generation-4 layout       */
+    uint8_t  owner_fp[64];               /* STAKE: the call's owner_fp (==
+                                          * SHA3-512(identity_pk), checked);
+                                          * ROTATE: SHA3-512(identity_pk)   */
+    uint8_t  consensus_pk[2592];         /* STAKE: consensus_pk; ROTATE:
+                                          * new_pk                          */
+    uint8_t  consent_sig[DNA_VALBIND_SIG_LEN];
+    uint64_t consent_expiry;
+    uint8_t  validator_id[64];           /* ROTATE                          */
 } nodus_v2_stake_decoded_t;
 
 typedef struct {
@@ -271,7 +332,16 @@ typedef struct {
  *   fee    = max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE), raised to
  *            NODUS_V2_STAKE_UNITS × gas_price when that is larger;
  *   need   = lock + fee (lock = amount for STAKE / DELEGATE /
- *            STORAGE_REGISTER, 0 for UNSTAKE / UNDELEGATE / STORAGE_EXIT);
+ *            STORAGE_REGISTER, 0 for UNSTAKE / UNDELEGATE / STORAGE_EXIT /
+ *            ROTATE);
+ *   gen-4 STAKE / ROTATE (generation >= NODUS_RT_GEN_STORAGE): owner_fp =
+ *            SHA3-512(pk); the builder refuses only what the call bytes
+ *            decide — STAKE: commission <= DNAC_COMMISSION_BPS_MAX, 1 <=
+ *            bond <= INT64_MAX (ERR_BOND; STAKE_MIN is the chain's — a
+ *            chain_config value from slice 8); ROTATE: a non-zero
+ *            validator_id; both: consensus_pk and consent_sig present. It
+ *            does NOT verify the consent nor its expiry window (the codec
+ *            is not linked here — the caller does both);
  *   inputs = eligible coins ascending by nullifier, taken until their sum
  *            covers `need`, at most NODUS_V2_SPEND_MAX_IN;
  *   change = sum − need, one native output to the signer when > 0.
@@ -286,7 +356,10 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
  *  effect declarations, call lengths, input order, change owner hex, a
  *  non-native or zero change, an auth blob not carrying exactly one signer
  *  whose key is the record identity, a STORAGE_REGISTER whose payee_fp is
- *  not SHA3-512 of the node key — the pre-HF-5 exec rule).
+ *  not SHA3-512 of the node key — the pre-HF-5 exec rule). HF-6 6f-1:
+ *  op 1 with a 7301-byte call and op 10 (7291 bytes) are the generation-4
+ *  layouts; their record identity is the one signer of both legs, and a
+ *  STAKE whose owner_fp is not SHA3-512 of that signer is refused.
  *  @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / _ERR_DECODE /
  *  _ERR_HASH. */
 int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
@@ -294,6 +367,52 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
 
 /** Free what nodus_v2_stake_build allocated inside `b`. NULL-safe. */
 void nodus_v2_stake_built_free(nodus_v2_stake_built_t *b);
+
+/* ── HF-6 6f-1: the node-consent CONTAINER ──────────────────────────────
+ * How a node's consent travels from the node's machine (nodus-cli
+ * `validator consent`, which builds the §6.1 message and signs it through
+ * shared/dnac/valbind_wire.c) to the owner's (`v2-envelope stake2 |
+ * rotate`). A local text file, NOT a wire format and not signed: every
+ * field is re-checked by the reader, which rebuilds the message with the
+ * codec and verifies the signature before building. Exactly these lines,
+ * in this order, each ending in '\n', lowercase hex, nothing else:
+ *   nodus-valbind-consent v1
+ *   op <1 | 2>                       DNA_VALBIND_OP_STAKE / _ROTATE
+ *   chain_id <64 hex>                the v2 chain id (32 B)
+ *   subject <128 hex>                STAKE: 64 × 00; ROTATE: validator_id
+ *   owner <128 hex>                  owner_fp
+ *   consensus_pk <5184 hex>          the consenting key
+ *   expiry <decimal u64>
+ *   sig <9254 hex>                   DNA_VALBIND_SIG_LEN bytes
+ * The parser also applies the op/subject rule of the codec (STAKE zero,
+ * ROTATE non-zero) so a container that can never verify is refused early;
+ * it does not verify the signature (that is the codec's, at the reader). */
+#define NODUS_V2_CONSENT_MAGIC  "nodus-valbind-consent v1"
+
+typedef struct {
+    uint8_t  op;                                  /* 1 STAKE / 2 ROTATE   */
+    uint8_t  chain32[DNA_VALBIND_CHAIN_LEN];
+    uint8_t  subject[DNA_VALBIND_SUBJECT_LEN];
+    uint8_t  owner_fp[DNA_VALBIND_OWNER_FP_LEN];
+    uint8_t  consensus_pk[DNA_VALBIND_PUBKEY_LEN];
+    uint64_t expiry;
+    uint8_t  sig[DNA_VALBIND_SIG_LEN];
+} nodus_v2_consent_t;
+
+/** Encode `c` (format above). *text_out is heap, NUL-terminated, *len_out
+ *  excludes the NUL. Refuses an op outside {1, 2} or a subject breaking
+ *  the op rule. @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC. */
+int nodus_v2_consent_text_encode(const nodus_v2_consent_t *c,
+                                 char **text_out, size_t *len_out);
+
+/** Parse exactly the format above from `len` bytes (need not be
+ *  NUL-terminated). @return NODUS_V2_SPEND_OK / _ERR_ARG (NULL) /
+ *  _ERR_DECODE (anything else: magic, a missing / reordered / extra line,
+ *  a wrong hex width, an uppercase or non-hex digit, a non-decimal or
+ *  overflowing expiry, an op outside {1, 2}, the op/subject rule). On a
+ *  refusal `c` is zeroed. */
+int nodus_v2_consent_text_parse(const char *text, size_t len,
+                                nodus_v2_consent_t *c);
 
 #ifdef __cplusplus
 }

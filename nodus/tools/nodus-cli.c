@@ -3608,60 +3608,185 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  * ACTIVE validator keeps signing until the set that drops it takes effect
  * (same decision, 2026-09-23 graduation deferral).
  *
+ * HF-6 6f-1 (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ * design.md rev 6 §2, §3, §6.1, §9; decision docs/plans/decisions/2026-10-
+ * 03-role-stake-amounts.md 1B: the node only consents, the owner pays and
+ * signs). The node generation decides the layout (cli_select_runtimes):
+ *   `v2-envelope stake2 --keys <owner> --consent <file> --bond <raw>
+ *   [--commission <bps>]` — the generation-4 STAKE: owner_fp = SHA3-512
+ *   of the --keys identity (kind 1), the node's consensus key, consent
+ *   signature and expiry from the consent file (`validator consent`
+ *   --op stake), the owner's coins fund bond + fee. After the build the
+ *   new validator's id is printed: SHA3-512("NDS.VALID.v1" ‖ chain id ‖
+ *   intent_id) (dna_validator_id_new — what rtn_stake2_exec derives from
+ *   the engine's chain id and the envelope's intent_id), valid for THIS
+ *   envelope only (a dry run's intent_id can differ from the submit's).
+ *   `v2-envelope rotate --keys <owner> --validator <validator_id hex128>
+ *   --consent <file>` — ROTATE_CONSENSUS_KEY (op 10): the new key and its
+ *   consent (`validator consent --op rotate`) from the file, fee-only
+ *   funding (khan decision A4).
+ * Before building, the consent is re-checked against THIS session: op,
+ * chain id, owner = the --keys identity, ROTATE subject = --validator, the
+ * §6.1 message rebuilt with dna_valbind_consent_msg and its signature
+ * verified (dna_valbind_consent_verify), and the window
+ * dna_valbind_expiry_ok(tip + 1, expiry). Only a kind-1 owner is built: a
+ * multisig (kind-3) owner's two-leg envelope needs the msig export path,
+ * which today carries single-leg CORE SPENDs only (nodus_v2_msig_leg_open).
+ * Under generation 4 `stake`, `delegate`, `undelegate` and `unstake` are
+ * refused here — their generation-4 layouts (§2: 7301 / 136 / 136 / 64
+ * bytes) are not the legacy ones they build.
+ *
  * The envelope itself is built by the shared, I/O-free builder
  * (nodus/src/client/nodus_v2_stake.c, nodus_v2_stake_build) — the body
  * this function had before the move; this function does the I/O and the
  * printing. */
+
+/* Defined with the msig commands below (general file helpers). */
+static int msig_read_file(const char *path, uint8_t **out, size_t *len,
+                          size_t max);
+static int msig_write_text(const char *path, const char *text, size_t len);
+
+/* HF-6 6f-1: the consent container's size bound (format in
+ * nodus_v2_stake.h — the 9254-hex signature and 5184-hex key dominate). */
+#define CLI_CONSENT_FILE_MAX 16384u
+
+/* Read and parse a consent file. @return 0 / -1 (message printed). */
+static int cli_consent_load(const char *path, nodus_v2_consent_t *c) {
+    uint8_t *raw = NULL;
+    size_t rl = 0;
+    if (msig_read_file(path, &raw, &rl, CLI_CONSENT_FILE_MAX) != 0)
+        return -1;
+    const int prc = nodus_v2_consent_text_parse((const char *)raw, rl, c);
+    free(raw);
+    if (prc != NODUS_V2_SPEND_OK) {
+        fprintf(stderr, "%s is not a consent file (`validator consent` "
+                "output, \"%s\")\n", path, NODUS_V2_CONSENT_MAGIC);
+        return -1;
+    }
+    return 0;
+}
+
+/* Re-check a node consent against what the envelope will carry, with the
+ * codec (design §2 re-construction, §6.1): the op, the session's chain id,
+ * the owner (= the --keys identity, kind 1), the ROTATE subject, the
+ * signature over the REBUILT message under the embedded key, and the
+ * expiry window at the next height. @return 0 / -1 (reason printed). */
+static int cli_consent_check(const nodus_v2_consent_t *c, uint8_t want_op,
+                             const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                             const uint8_t owner_fp[64],
+                             const uint8_t *validator_id, uint64_t tip) {
+    if (c->op != want_op) {
+        fprintf(stderr, "the consent is for %s, not %s\n",
+                c->op == DNA_VALBIND_OP_STAKE ? "a STAKE" : "a ROTATE",
+                want_op == DNA_VALBIND_OP_STAKE ? "a STAKE" : "a ROTATE");
+        return -1;
+    }
+    if (memcmp(c->chain32, chain32, DNA_CHAIN_ID_LEN) != 0) {
+        fprintf(stderr, "the consent names another chain than this node's\n");
+        return -1;
+    }
+    if (memcmp(c->owner_fp, owner_fp, 64) != 0) {
+        fprintf(stderr, "the consent names another owner than the --keys "
+                "identity (the owner signs this envelope)\n");
+        return -1;
+    }
+    if (validator_id && memcmp(c->subject, validator_id, 64) != 0) {
+        fprintf(stderr, "the consent names another validator than "
+                "--validator\n");
+        return -1;
+    }
+    uint8_t msg[DNA_VALBIND_MSG_LEN];
+    if (dna_valbind_consent_msg(msg, c->chain32, c->op, c->subject,
+                                c->owner_fp, c->consensus_pk,
+                                c->expiry) != 0 ||
+        dna_valbind_consent_verify(c->sig, DNA_VALBIND_SIG_LEN, msg) != 0) {
+        fprintf(stderr, "the consent signature does not verify under its "
+                "consensus key — nothing built\n");
+        return -1;
+    }
+    if (!dna_valbind_expiry_ok(tip + 1u, c->expiry)) {
+        fprintf(stderr, "the consent expiry %llu is outside the window the "
+                "chain accepts at the next height %llu (expiry >= h and "
+                "expiry - h <= %llu) — ask the node for a new consent\n",
+                (unsigned long long)c->expiry,
+                (unsigned long long)(tip + 1u),
+                (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS);
+        return -1;
+    }
+    return 0;
+}
+
 static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *dest_fp_hex = NULL;
     const char *validator_hex = NULL;
+    const char *consent_path = NULL;
     const char *submit = NULL;
     uint64_t bond = 0;
     uint32_t commission = 0;
     int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
-    /* "stake", "delegate", "unstake" or "undelegate" — the word after
-     * "v2-envelope" (main's dispatch routes only those four here).
-     * DELEGATE and UNDELEGATE share the call layout and so the arguments;
-     * UNSTAKE takes none beyond the key (its call is the key itself). */
+    /* "stake", "delegate", "unstake", "undelegate", and (HF-6 6f-1) the
+     * generation-4 "stake2" and "rotate" — the word after "v2-envelope"
+     * (main's dispatch routes only those six here). DELEGATE and
+     * UNDELEGATE share the call layout and so the arguments; UNSTAKE takes
+     * none beyond the key (its call is the key itself). */
     const int is_unstake = !strcmp(argv[cmd_start + 1], "unstake");
     const int is_undeleg = !strcmp(argv[cmd_start + 1], "undelegate");
     const int is_deleg = is_undeleg ||
                          !strcmp(argv[cmd_start + 1], "delegate");
-    const int is_stake = !is_deleg && !is_unstake;
+    const int is_stake2 = !strcmp(argv[cmd_start + 1], "stake2");
+    const int is_rotate = !strcmp(argv[cmd_start + 1], "rotate");
+    const int is_gen4 = is_stake2 || is_rotate;
+    const int is_stake = !is_deleg && !is_unstake && !is_gen4;
     const char *verb = is_unstake ? "unstake"
                      : is_undeleg ? "undelegate"
-                     : is_deleg   ? "delegate" : "stake";
+                     : is_deleg   ? "delegate"
+                     : is_stake2  ? "stake2"
+                     : is_rotate  ? "rotate" : "stake";
     const nodus_v2_stake_op_t op = is_unstake ? NODUS_V2_STAKE_OP_UNSTAKE
                                  : is_undeleg ? NODUS_V2_STAKE_OP_UNDELEGATE
                                  : is_deleg   ? NODUS_V2_STAKE_OP_DELEGATE
+                                 : is_rotate  ? NODUS_V2_STAKE_OP_ROTATE
                                               : NODUS_V2_STAKE_OP_STAKE;
 
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the verb word */
         const char *a = argv[i];
         if      (!strcmp(a, "--keys")       && i + 1 < argc) keys_csv = argv[++i];
-        else if (is_stake && !strcmp(a, "--bond") && i + 1 < argc) {
+        else if ((is_stake || is_stake2) &&
+                 !strcmp(a, "--bond") && i + 1 < argc) {
             bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
         } else if (is_deleg && !strcmp(a, "--amount") && i + 1 < argc) {
             bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
-        } else if (is_stake && !strcmp(a, "--commission") && i + 1 < argc) {
+        } else if ((is_stake || is_stake2) &&
+                   !strcmp(a, "--commission") && i + 1 < argc) {
             commission = (uint32_t)strtoul(argv[++i], NULL, 10); have_comm = 1;
         } else if (is_stake && !strcmp(a, "--dest-fp") && i + 1 < argc)
             dest_fp_hex = argv[++i];
-        else if (is_deleg && !strcmp(a, "--validator") && i + 1 < argc)
+        else if ((is_deleg || is_rotate) &&
+                 !strcmp(a, "--validator") && i + 1 < argc)
             validator_hex = argv[++i];
+        else if (is_gen4 && !strcmp(a, "--consent") && i + 1 < argc)
+            consent_path = argv[++i];
         else if (!strcmp(a, "--submit")     && i + 1 < argc) submit = argv[++i];
         else if (!strcmp(a, "--dry-run"))                    dry_run = 1;
         else { bad_arg = 1; break; }   /* incl. the retired --db */
     }
-    if (bad_arg || !keys_csv || (!is_unstake && !have_bond) ||
+    if (bad_arg || !keys_csv ||
+        (!is_unstake && !is_rotate && !have_bond) ||
         (!submit && !dry_run) ||
         (is_stake && (!dest_fp_hex || !have_comm)) ||
-        (is_deleg && !validator_hex)) {
+        ((is_deleg || is_rotate) && !validator_hex) ||
+        (is_gen4 && !consent_path)) {
         fprintf(stderr,
             "Usage: v2-envelope stake --keys <keydir> --bond <raw> "
             "--commission <bps> --dest-fp <hex128>\n"
             "       (--dry-run | --submit ip:port)\n"
+            "       v2-envelope stake2 --keys <owner keydir> --consent <file> "
+            "--bond <raw>\n"
+            "       [--commission <bps>] (--dry-run | --submit ip:port)\n"
+            "       v2-envelope rotate --keys <owner keydir> --validator "
+            "<validator_id hex128>\n"
+            "       --consent <file> (--dry-run | --submit ip:port)\n"
             "       v2-envelope delegate --keys <keydir> --validator "
             "<hex5184 pubkey> --amount <raw>\n"
             "       (--dry-run | --submit ip:port)\n"
@@ -3690,11 +3815,49 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "delegations are\n"
             "  returned to their delegators when it graduates (locked %d "
             "epochs), its bond\n"
-            "  to its recorded unstake destination (locked %d epochs).\n",
+            "  to its recorded unstake destination (locked %d epochs).\n"
+            "  stake2 / rotate (rule-set generation 4, HF-6): the --keys "
+            "identity is the OWNER\n"
+            "  (it signs and pays); the node's consent comes from "
+            "`validator consent`\n"
+            "  run with the node's identity. stake / delegate / undelegate / "
+            "unstake are\n"
+            "  refused under generation 4 (their generation-4 layouts are not "
+            "built yet).\n",
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS,
             (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
         return 1;
     }
+    /* HF-6 6f-1: the consent file and the ROTATE target, read before any
+     * I/O (rechecked against the session below) */
+    nodus_v2_consent_t consent;
+    memset(&consent, 0, sizeof(consent));
+    uint8_t rot_vid[64] = {0};
+    if (is_gen4 && cli_consent_load(consent_path, &consent) != 0) return 1;
+    if (is_rotate && t6_hex_exact(validator_hex, rot_vid, 64) != 0) {
+        fprintf(stderr, "--validator must be exactly 128 lowercase hex chars "
+                "(the validator_id)\n");
+        return 1;
+    }
+    if (is_stake2 && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr, "--commission must be 0..%u\n",
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return 1;
+    }
+    /* design §1.5: STAKE_MIN <= bond <= INT64_MAX. The floor is the
+     * chain's (today the compiled DNAC_HF6_STAKE_MIN_DEFAULT, a chain_config
+     * value from slice 8), so below it is a warning, the integer bound a
+     * refusal (the builder's too) */
+    if (is_stake2 && (bond < 1 || bond > (uint64_t)INT64_MAX)) {
+        fprintf(stderr, "--bond must be 1..%llu raw\n",
+                (unsigned long long)INT64_MAX);
+        return 1;
+    }
+    if (is_stake2 && bond < (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT)
+        fprintf(stderr, "warning: --bond %llu is below this build's STAKE_MIN "
+                "%llu — the chain refuses a bond below the STAKE_MIN in "
+                "force\n", (unsigned long long)bond,
+                (unsigned long long)DNAC_HF6_STAKE_MIN_DEFAULT);
     uint8_t validator_pk[DNAC_PUBKEY_SIZE] = {0};
     if (is_deleg) {
         if (t6_hex_exact(validator_hex, validator_pk, DNAC_PUBKEY_SIZE) != 0) {
@@ -3815,6 +3978,23 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     }
     /* HF-4: build for the generation the node names */
     if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
+    /* HF-6 6f-1 (design rev 6 §2): the generation decides the layout */
+    if (is_gen4 && g_cli_sel_gen < NODUS_RT_GEN_STORAGE) {
+        fprintf(stderr, "the node runs rule-set generation %u — `v2-envelope "
+                "%s` exists from generation %u (HF-6); nothing built\n",
+                (unsigned)g_cli_sel_gen, verb,
+                (unsigned)NODUS_RT_GEN_STORAGE);
+        goto done;
+    }
+    if (!is_gen4 && g_cli_sel_gen >= NODUS_RT_GEN_STORAGE) {
+        fprintf(stderr, "the node runs rule-set generation %u (HF-6): the "
+                "chain refuses the legacy `%s` layout; %s — nothing built\n",
+                (unsigned)g_cli_sel_gen, verb,
+                is_stake ? "use `v2-envelope stake2`"
+                         : "this CLI does not build its generation-4 layout "
+                           "yet");
+        goto done;
+    }
 
     /* `unstake`: the validator's own row, read on this session. The chain
      * decides (rtn_unstake_exec); the CLI refuses only a status the chain
@@ -3915,6 +4095,16 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                 "cap are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
+    /* HF-6 6f-1: the consent against THIS session's chain id, the owner
+     * (= the staker identity, kind 1), the ROTATE target and the tip */
+    if (is_gen4 &&
+        cli_consent_check(&consent,
+                          is_stake2 ? DNA_VALBIND_OP_STAKE
+                                    : DNA_VALBIND_OP_ROTATE,
+                          chain32, staker_raw, is_rotate ? rot_vid : NULL,
+                          tip) != 0)
+        goto done;
+
     /* The listed coins, as the builder takes them; it applies the filter
      * (zero amount, non-native, unlock_block > tip) and the selection. */
     coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
@@ -3955,6 +4145,22 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     sreq.gas_price      = gas_price;
     sreq.coins          = coins;
     sreq.n_coins        = utxos.count;
+    /* HF-6 6f-1: the generation the runtimes were selected for */
+    sreq.generation     = g_cli_sel_gen;
+    if (is_gen4) {
+        sreq.consensus_pk   = consent.consensus_pk;
+        sreq.consent_sig    = consent.sig;
+        sreq.consent_expiry = consent.expiry;
+        sreq.validator_id   = is_rotate ? rot_vid : NULL;
+        /* the consent window is judged at inclusion; an envelope that can
+         * still be included after the consent expires is then refused */
+        if (consent.expiry < sreq.expiry_height)
+            fprintf(stderr, "warning: the consent expires at %llu, before "
+                    "this envelope (%llu) — if it lands after %llu the chain "
+                    "refuses it\n", (unsigned long long)consent.expiry,
+                    (unsigned long long)sreq.expiry_height,
+                    (unsigned long long)consent.expiry);
+    }
 
     /* Sign each leg's auth_digest with the staker sk (kind-1: count=1 ‖
      * pubkey ‖ sig). One key covers BOTH legs: it is the record identity
@@ -3964,8 +4170,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         memset(&se, 0, sizeof(se));
         int brc = nodus_v2_stake_build(&sreq, &built, &se);
         if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT &&
-            (is_undeleg || is_unstake)) {
-            /* UNDELEGATE's and UNSTAKE's funding leg pays the fee only */
+            (is_undeleg || is_unstake || is_rotate)) {
+            /* UNDELEGATE's, UNSTAKE's and ROTATE's funding leg pays the
+             * fee only */
             fprintf(stderr, "insufficient native funding for the fee: have "
                     "%llu, need %llu over %d input(s)\n",
                     (unsigned long long)se.sum_in,
@@ -4002,11 +4209,17 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                                                        "requested"
               : brc == NODUS_V2_SPEND_ERR_EXPIRY     ? "expiry outside the "
                                                        "mempool window"
-              : brc == NODUS_V2_STAKE_ERR_BOND       ? "the bond is not the "
-                                                       "self-bond"
+              : brc == NODUS_V2_STAKE_ERR_BOND       ? (is_stake2
+                                                       ? "the bond is outside "
+                                                         "1..INT64_MAX"
+                                                       : "the bond is not the "
+                                                         "self-bond")
               : brc == NODUS_V2_STAKE_ERR_COMMISSION ? "commission above the "
                                                        "maximum"
               : brc == NODUS_V2_STAKE_ERR_AMOUNT     ? "amount out of range"
+              : brc == NODUS_V2_STAKE_ERR_GEN        ? "no layout for this op "
+                                                       "at this rule-set "
+                                                       "generation"
                                                      : "build failed";
             if (brc == NODUS_V2_SPEND_ERR_SIGN)
                 fprintf(stderr, "leg %d %s\n", se.leg, why);
@@ -4019,7 +4232,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* Printed on BOTH paths (P2P-PORT F6): the submitted envelope's own
      * intent_id is what a caller waits for — a dry run's may differ (its
      * expiry is tip-relative, see this function's header). */
-    if (is_unstake)
+    if (is_unstake || is_rotate)
         printf("v2-envelope %s: %zu bytes, inputs=%d sum_in=%llu "
                "fee=%llu change=%llu tip=%llu\n", verb, built.env_len,
                built.n_in, (unsigned long long)built.sum_in,
@@ -4037,12 +4250,34 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     printf("\n  intent_id=");
     for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
     printf("\n");
+    if (is_stake2) {
+        /* design §6.2 / rtn_stake2_vid: the id the chain gives the new
+         * validator from its chain id and THIS envelope's intent_id */
+        uint8_t vid[DNA_VALBIND_ID_LEN];
+        if (dna_validator_id_new(vid, chain32, built.intent_id) != 0) {
+            fprintf(stderr, "validator_id derivation failed\n");
+            goto done;
+        }
+        printf("  validator_id=");
+        for (int b = 0; b < DNA_VALBIND_ID_LEN; b++) printf("%02x", vid[b]);
+        printf("\n  (the id of the validator THIS envelope creates; a dry "
+               "run's can differ from the submitted one's)\n");
+    } else if (is_rotate) {
+        printf("  validator_id=");
+        for (int b = 0; b < 64; b++) printf("%02x", rot_vid[b]);
+        printf("\n  (a pending rotation: judged at every epoch boundary from "
+               "the first one at or after its commit; admitted by the "
+               "rotation budget at boundary F, the new key joins the set of "
+               "F + E and signs from F + E + 2 — keep the old node running "
+               "until then)\n");
+    }
     fflush(stdout);
     if (dry_run) {
         printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM %s + CORE "
                "SYSFUND) — not submitted (--dry-run)\n",
                is_unstake ? "UNSTAKE" : is_undeleg ? "UNDELEGATE"
-             : is_deleg   ? "DELEGATE" : "STAKE");
+             : is_deleg   ? "DELEGATE" : is_rotate ? "ROTATE_CONSENSUS_KEY"
+             : is_stake2  ? "STAKE (generation 4)" : "STAKE");
     } else {
         /* on the session the gas price and the coins were read from */
         if (t6_submit_on(&client, &keys[0], built.wire_id, built.env,
@@ -5894,6 +6129,171 @@ static int cmd_ruleset_info(const char *server_ip, uint16_t server_port) {
     if (!carried)
         printf("  this CLI does NOT carry it — out of date, rebuild\n");
     return carried ? 0 : 1;
+}
+
+/* ── `validator consent` — HF-6 6f-1 ──────────────────────────────────
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §2 (the consent re-construction contract), §6.1 (bytes, ctx
+ * "nodus.valbind.v1", expiry rule), §9 ("node, verilen owner için
+ * consent'i basar"); decision docs/plans/decisions/2026-10-03-role-stake-
+ * amounts.md 1B (the node only consents; the owner pays and signs).
+ *
+ *   -i <node identity dir> -s <node> validator consent --op stake|rotate
+ *       --owner <owner_fp hex128> [--subject <validator_id hex128>]
+ *       --expiry <height> [--out <file>]
+ *
+ * The -i identity IS the consensus key (design §1.4: coupled — privval,
+ * 4004 and 4002 all run on the node identity); its ML-DSA-87 key signs.
+ * The chain id is read from the node over one session (dnac_supply's
+ * chain_id32 — the value every envelope of that chain is bound to): an
+ * operator-typed chain id would be a second, unverified source of the one
+ * field that pins the consent to a chain. The same session's tip judges
+ * the expiry: refused unless dna_valbind_expiry_ok(tip + 1, expiry) — a
+ * consent the chain could not accept at the next height is not signed.
+ * The message is built and signed ONLY by the codec
+ * (dna_valbind_consent_msg / _sign, shared/dnac/valbind_wire.c) and
+ * verified once before it is written. Output: the consent container
+ * (nodus_v2_stake.h NODUS_V2_CONSENT_MAGIC) to --out, or to stdout without
+ * it; with --out, the consensus key, the signature and the expiry are
+ * printed too. No secret is printed. */
+static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
+                                 int argc, char **argv, int cmd_start) {
+    const char *op_s = NULL, *owner_hex = NULL, *subject_hex = NULL;
+    const char *expiry_s = NULL, *out_path = NULL;
+    int bad_arg = 0;
+    for (int i = cmd_start + 2; i < argc; i++) {   /* skip "consent" */
+        const char *a = argv[i];
+        if      (!strcmp(a, "--op")      && i + 1 < argc) op_s = argv[++i];
+        else if (!strcmp(a, "--owner")   && i + 1 < argc) owner_hex = argv[++i];
+        else if (!strcmp(a, "--subject") && i + 1 < argc) subject_hex = argv[++i];
+        else if (!strcmp(a, "--expiry")  && i + 1 < argc) expiry_s = argv[++i];
+        else if (!strcmp(a, "--out")     && i + 1 < argc) out_path = argv[++i];
+        else { bad_arg = 1; break; }
+    }
+    const int is_stake  = op_s && !strcmp(op_s, "stake");
+    const int is_rotate = op_s && !strcmp(op_s, "rotate");
+    if (bad_arg || (!is_stake && !is_rotate) || !owner_hex || !expiry_s ||
+        (is_rotate && !subject_hex) || (is_stake && subject_hex)) {
+        fprintf(stderr,
+            "Usage: -i <node identity dir> validator consent --op "
+            "stake|rotate\n"
+            "       --owner <owner_fp hex128> [--subject <validator_id "
+            "hex128>] --expiry <height>\n"
+            "       [--out <file>]\n"
+            "  The node's key consents to the owner's STAKE (no --subject) "
+            "or ROTATE onto\n"
+            "  this key (--subject = the validator_id). The chain accepts "
+            "it at height h\n"
+            "  when expiry >= h and expiry - h <= %llu.\n",
+            (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS);
+        return 1;
+    }
+    nodus_v2_consent_t c;
+    memset(&c, 0, sizeof(c));
+    c.op = is_stake ? DNA_VALBIND_OP_STAKE : DNA_VALBIND_OP_ROTATE;
+    if (t6_hex_exact(owner_hex, c.owner_fp, 64) != 0) {
+        fprintf(stderr, "--owner must be exactly 128 lowercase hex chars\n");
+        return 1;
+    }
+    if (is_rotate && t6_hex_exact(subject_hex, c.subject, 64) != 0) {
+        fprintf(stderr, "--subject must be exactly 128 lowercase hex chars "
+                "(the validator_id)\n");
+        return 1;
+    }
+    {
+        char *end = NULL;
+        errno = 0;
+        const unsigned long long e = strtoull(expiry_s, &end, 10);
+        if (expiry_s[0] < '0' || expiry_s[0] > '9' || !end || *end != '\0' ||
+            errno != 0) {
+            fprintf(stderr, "--expiry must be a decimal block height\n");
+            return 1;
+        }
+        c.expiry = (uint64_t)e;
+    }
+    memcpy(c.consensus_pk, identity.pk.bytes, DNA_VALBIND_PUBKEY_LEN);
+
+    nodus_client_t client;
+    if (t8_session(&client, server_ip, server_port) != 0) return 1;
+    bool has_chain32 = false;
+    const int crc = nodus_client_dnac_chain_id32(&client, &has_chain32,
+                                                 c.chain32);
+    nodus_dnac_ruleset_info_t ri;
+    memset(&ri, 0, sizeof(ri));
+    const int rrc = crc == 0 && has_chain32
+                  ? nodus_client_dnac_ruleset_info(&client, &ri) : -1;
+    nodus_client_close(&client);
+    if (crc != 0 || !has_chain32) {
+        fprintf(stderr, "this node names no version-3 chain id (dnac_supply "
+                "chain_id32) — nothing signed\n");
+        return 1;
+    }
+    if (rrc != 0) {
+        fprintf(stderr, "dnac_ruleset_info failed (rc=%d) — the tip is "
+                "unknown, the expiry cannot be judged; nothing signed\n",
+                rrc);
+        return 1;
+    }
+    if (ri.tip == 0) {
+        /* the CHECKTX-P1 r3 rule of cmd_v2_stake: a 0 tip is a fail-open
+         * height read, never a real version-3 tip */
+        fprintf(stderr, "the node reported tip 0 — its height read may have "
+                "faulted; the expiry cannot be judged, nothing signed\n");
+        return 1;
+    }
+    if (ri.generation < NODUS_RT_GEN_STORAGE)
+        fprintf(stderr, "warning: the node runs rule-set generation %u; a "
+                "consent is used only from generation %u (HF-6)\n",
+                (unsigned)ri.generation, (unsigned)NODUS_RT_GEN_STORAGE);
+    if (!dna_valbind_expiry_ok(ri.tip + 1u, c.expiry)) {
+        fprintf(stderr, "--expiry %llu is outside the window the chain "
+                "accepts at the next height %llu (expiry >= h and expiry - h "
+                "<= %llu) — nothing signed\n", (unsigned long long)c.expiry,
+                (unsigned long long)(ri.tip + 1u),
+                (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS);
+        return 1;
+    }
+
+    /* the §6.1 message and its ctx signature — the codec only */
+    uint8_t msg[DNA_VALBIND_MSG_LEN];
+    size_t sl = 0;
+    if (dna_valbind_consent_msg(msg, c.chain32, c.op, c.subject, c.owner_fp,
+                                c.consensus_pk, c.expiry) != 0) {
+        fprintf(stderr, "the consent message was refused by the codec (a "
+                "ROTATE subject must not be all zero)\n");
+        return 1;
+    }
+    if (dna_valbind_consent_sign(c.sig, &sl, msg, identity.sk.bytes) != 0 ||
+        sl != DNA_VALBIND_SIG_LEN ||
+        dna_valbind_consent_verify(c.sig, sl, msg) != 0) {
+        fprintf(stderr, "consent signature failed\n");
+        return 1;
+    }
+    char *text = NULL;
+    size_t tl = 0;
+    if (nodus_v2_consent_text_encode(&c, &text, &tl) != NODUS_V2_SPEND_OK) {
+        fprintf(stderr, "consent encoding failed\n");
+        return 1;
+    }
+    int rc = 0;
+    if (!out_path) {
+        if (fwrite(text, 1, tl, stdout) != tl) rc = 1;
+    } else if (msig_write_text(out_path, text, tl) != 0) {
+        rc = 1;
+    } else {
+        printf("validator consent: op=%s expiry=%llu tip=%llu generation=%u\n",
+               is_stake ? "stake" : "rotate", (unsigned long long)c.expiry,
+               (unsigned long long)ri.tip, (unsigned)ri.generation);
+        printf("  consensus_pk=");
+        for (int b = 0; b < DNA_VALBIND_PUBKEY_LEN; b++)
+            printf("%02x", c.consensus_pk[b]);
+        printf("\n  sig=");
+        for (int b = 0; b < DNA_VALBIND_SIG_LEN; b++) printf("%02x", c.sig[b]);
+        printf("\n  written to %s\n", out_path);
+    }
+    fflush(stdout);
+    free(text);
+    return rc;
 }
 
 /* `name lookup <name>` / `name of <fp128>`. */
@@ -8839,6 +9239,15 @@ static void usage(const char *prog) {
             (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
     fprintf(stderr, "                                   delegations back to delegators, locked %d epochs\n",
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
+    fprintf(stderr, "  validator consent --op stake|rotate --owner <hex128>\n");
+    fprintf(stderr, "           [--subject <validator_id hex128>] --expiry <h> [--out <f>]\n");
+    fprintf(stderr, "                                   HF-6: the -i node key consents (needs -i)\n");
+    fprintf(stderr, "  v2-envelope stake2 --keys <owner dir> --consent <file> --bond <raw>\n");
+    fprintf(stderr, "           [--commission <bps>] (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   HF-6 generation-4 STAKE; prints validator_id\n");
+    fprintf(stderr, "  v2-envelope rotate --keys <owner dir> --validator <validator_id hex128>\n");
+    fprintf(stderr, "           --consent <file> (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   HF-6 ROTATE_CONSENSUS_KEY (fee only)\n");
     fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
     fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
     fprintf(stderr, "           [--shard <I>/<M>] [--no-dust-sweep]\n");
@@ -9063,7 +9472,9 @@ int main(int argc, char **argv) {
             (strcmp(argv[optind + 1], "stake") == 0 ||
              strcmp(argv[optind + 1], "delegate") == 0 ||
              strcmp(argv[optind + 1], "unstake") == 0 ||
-             strcmp(argv[optind + 1], "undelegate") == 0))
+             strcmp(argv[optind + 1], "undelegate") == 0 ||
+             strcmp(argv[optind + 1], "stake2") == 0 ||
+             strcmp(argv[optind + 1], "rotate") == 0))
             rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
         else if (optind + 1 < argc && strcmp(argv[optind + 1], "spend") == 0)
             rc = cmd_v2_spend(server_ip, server_port, argc, argv, optind);
@@ -9073,6 +9484,30 @@ int main(int argc, char **argv) {
                                      optind);
         else
             rc = cmd_v2_envelope(server_ip, server_port, argc, argv, optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* HF-6 6f-1 — `validator consent`: THIS node identity (-i) consents to
+     * an owner's generation-4 STAKE or a ROTATE onto its key. Without -i
+     * the identity above is a random key whose consent names no node. */
+    if (strcmp(command, "validator") == 0) {
+        int rc;
+        const char *sub = optind + 1 < argc ? argv[optind + 1] : NULL;
+        if (!sub || strcmp(sub, "consent") != 0) {
+            fprintf(stderr, "Usage: -i <node identity dir> validator consent "
+                    "--op stake|rotate --owner <hex128>\n"
+                    "       [--subject <validator_id hex128>] --expiry "
+                    "<height> [--out <file>]\n");
+            rc = 1;
+        } else if (!identity_dir) {
+            fprintf(stderr, "validator consent signs with the node identity: "
+                    "give -i <node identity dir>\n");
+            rc = 1;
+        } else {
+            rc = cmd_validator_consent(server_ip, server_port, argc, argv,
+                                       optind);
+        }
         nodus_identity_clear(&identity);
         return rc;
     }

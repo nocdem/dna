@@ -2990,6 +2990,22 @@ if(NODUS_EVM_ENABLED)
 register_witness_test(test_storage_cli)
 endif()
 
+# HF-6 6f-1 — the client path of a generation-4 STAKE and a ROTATE (design
+# 2026-10-03-hf5-validator-owner-stake rev 6 §2, §6.1, §6.2; K7): the node
+# consent formed with the codec calls nodus-cli `validator consent` makes
+# (message == an independent §6.1 restatement, ctx "nodus.valbind.v1"),
+# the consent container round trip and refusals, the shared builder's
+# 7301-byte STAKE and 7291-byte ROTATE (== the test_hf6_stake /
+# test_hf6_rotate layouts, restated) fed to the GEN_STORAGE SYSTEM and CORE
+# hooks over fabricated engine facts — the exec verifies the REAL consent
+# and applies; the read plan names the validator_id nodus-cli prints — the
+# legacy STAKE unchanged at generations 0 and 3, the generation refusals.
+# Generation 4 is compiled only with the EVM runtime. No database, no
+# network, no environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_v2_stake_client)
+endif()
+
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
 # a pins-built envelope admitted by the CheckTx dry run on a seeded
