@@ -21,7 +21,7 @@
  *     owner 64 ‖ pk 2592 ‖ expiry u64 BE = 2765), for op 1 and op 2; the
  *     signature dna_valbind_consent_sign makes verifies under
  *     qgp_dsa87_verify_ctx with the ctx bytes "nodus.valbind.v1" written
- *     here, and NOT under an empty ctx.
+ *     here, and NOT under the plain empty-ctx qgp_dsa87_verify.
  *  V2 The consent container (nodus_v2_consent_text_*) round-trips every
  *     field byte for byte; it refuses a wrong magic, an uppercase hex
  *     digit, a reordered line, trailing bytes, a missing final newline,
@@ -307,9 +307,10 @@ static int t_consent(void) {
                                g_k[KN].pk) == 0,
           "the signature verifies over the restated bytes with ctx "
           "\"nodus.valbind.v1\"");
-    CHECK(qgp_dsa87_verify_ctx(c.sig, SIG_LEN, m_rest, sizeof(m_rest),
-                               NULL, 0, g_k[KN].pk) != 0,
-          "and NOT with an empty ctx");
+    CHECK(qgp_dsa87_verify(c.sig, SIG_LEN, m_rest, sizeof(m_rest),
+                           g_k[KN].pk) != 0,
+          "and NOT under the plain (empty-ctx) verify — test_hf6_stake "
+          "CS_CTX_EMPTY's API");
 
     /* ── V2. the container ─────────────────────────────────────────── */
     char *t = NULL;

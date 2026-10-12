@@ -6234,6 +6234,13 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
                 rrc);
         return 1;
     }
+    if (ri.tip == 0) {
+        /* the CHECKTX-P1 r3 rule of cmd_v2_stake: a 0 tip is a fail-open
+         * height read, never a real version-3 tip */
+        fprintf(stderr, "the node reported tip 0 — its height read may have "
+                "faulted; the expiry cannot be judged, nothing signed\n");
+        return 1;
+    }
     if (ri.generation < NODUS_RT_GEN_STORAGE)
         fprintf(stderr, "warning: the node runs rule-set generation %u; a "
                 "consent is used only from generation %u (HF-6)\n",
