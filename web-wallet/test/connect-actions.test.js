@@ -113,6 +113,12 @@ test('payment cards: the app\'s form, amounts exact, the verdict from own histor
   for (const bad of ['', '1.', '.5', '01', '1.123456789', '-1', '1e3', ' 1', 7]) assert.equal(nodusUnits(bad), null, String(bad));
   const text = buildTransfer({ amount: '2.5', wire: W, to: B, name: 'bob' });
   assert.deepEqual(JSON.parse(text), { type: 'token_transfer', amount: '2.5', token: 'NODUS', network: 'Nodus', chain: 'nodus', txHash: W, recipientAddress: B, recipientName: 'bob' });
+  // 0.1.101: the name is cut at 64 UTF-16 units but never inside an emoji
+  const nameOf = name => JSON.parse(buildTransfer({ amount: '1', wire: W, to: B, name })).recipientName;
+  assert.equal(nameOf('x'.repeat(70)), 'x'.repeat(64));
+  assert.equal(nameOf('x'.repeat(63) + '😀'), 'x'.repeat(63), 'the emoji that would be split is dropped');
+  assert.equal(nameOf('x'.repeat(62) + '😀'), 'x'.repeat(62) + '😀', 'a whole emoji at the end stays');
+  assert.doesNotMatch(buildTransfer({ amount: '1', wire: W, to: B, name: 'x'.repeat(63) + '😀' }), /\\ud/);
   assert.throws(() => buildTransfer({ amount: '0', wire: W, to: B }), /Invalid payment card/);
   assert.throws(() => buildTransfer({ amount: '1', wire: 'xx', to: B }), /Invalid payment card/);
   const card = parseTransfer(text);

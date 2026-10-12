@@ -338,6 +338,17 @@ test('pending set: own undelivered messages to that contact within 7 days, in lo
   assert.equal(kept[0], '1');                          // the oldest message stays
   assert.ok(!kept.includes('2') && !kept.includes('3')); // moot 👍 add, then the oldest reaction
   assert.ok(kept.includes('100') && kept.includes('101'));
+  // W-12 (0.1.101, Astra's case): the clock stepped back between an add and
+  // its remove — the receiver replays by sender time, so the ADD (ts 100) is
+  // the last op and must stay; the remove (ts 99) is the one overridden.
+  const back = [
+    { seq: '1', fp: FP, dir: 'out', text: R('👍', 'add'), ts: '100', kind: 'reaction' },
+    { seq: '2', fp: FP, dir: 'out', text: R('👍', 'remove'), ts: '99', kind: 'reaction' },
+    ...Array.from({ length: OUTBOX_MAX - 1 }, (_, i) => ({ seq: String(i + 3), fp: FP, dir: 'out', text: 'm', ts: '100' }))
+  ];
+  const keptBack = pendingOutbox(back, FP, '200').map(m => m.seq);
+  assert.equal(keptBack.length, OUTBOX_MAX);
+  assert.ok(keptBack.includes('1') && !keptBack.includes('2'), 'the add the receiver replays last is kept');
   assert.equal(isDelivered({ ts: '5' }), false);
   assert.equal(isDelivered({ ts: '5', published: true }), false);
   assert.equal(isDelivered({ ts: '5', delivered: true }), true);

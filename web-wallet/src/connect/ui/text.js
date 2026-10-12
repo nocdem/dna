@@ -442,15 +442,20 @@ export function pendingOutbox(messages, fp, nowSeconds) {
   // push a message out): a reaction a later one of the same target and emoji
   // overrides (the last op wins, actions.js reactionSummary), then the oldest
   // reactions; only then the oldest of the rest.
+  // Which reaction is overridden is decided in the receiver's replay order
+  // — sender time, then seq (actions.js reactionSummary) — not in local order
+  // (0.1.101, BUGS W-12: with the clock stepped back, local order dropped the
+  // reaction the receiver's replay keeps).
   let kept = list;
   if (kept.length > OUTBOX_MAX) {
-    const later = new Set(), moot = new Set();
-    for (let i = kept.length - 1; i >= 0; i--) {
-      const r = kept[i].kind === 'reaction' ? parseReaction(kept[i].text) : null;
-      if (!r) continue;
-      const key = `${r.target.toLowerCase()} ${r.emoji}`;
-      if (later.has(key)) moot.add(kept[i]); else later.add(key);
+    const replay = [];
+    for (const m of kept) {
+      const r = m.kind === 'reaction' ? parseReaction(m.text) : null;
+      if (r) replay.push({ m, key: `${r.target.toLowerCase()} ${r.emoji}`, ts: BigInt(m.ts), seq: BigInt(m.seq) });
     }
+    replay.sort((a, b) => (a.ts === b.ts ? (a.seq < b.seq ? 1 : a.seq > b.seq ? -1 : 0) : a.ts < b.ts ? 1 : -1));   // newest first
+    const later = new Set(), moot = new Set();
+    for (const { m, key } of replay) { if (later.has(key)) moot.add(m); else later.add(key); }
     kept = kept.filter(m => !moot.has(m));
     let extra = kept.length - OUTBOX_MAX;
     if (extra > 0) kept = kept.filter(m => m.kind !== 'reaction' || extra-- <= 0);

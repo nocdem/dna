@@ -173,7 +173,15 @@ export function nodusUnits(amount) {
 }
 export function buildTransfer({ amount, wire, to, name = '' }) {
   if (nodusUnits(amount) === null || nodusUnits(amount) === 0n || !HEX128.test(wire) || !HEX128.test(to)) throw new Error('Invalid payment card.');
-  return JSON.stringify({ type: 'token_transfer', amount, token: 'NODUS', network: 'Nodus', chain: 'nodus', txHash: wire, recipientAddress: to, recipientName: String(name).slice(0, 64) });
+  return JSON.stringify({ type: 'token_transfer', amount, token: 'NODUS', network: 'Nodus', chain: 'nodus', txHash: wire, recipientAddress: to, recipientName: cardName(name) });
+}
+// The recipient name is cut at 64 UTF-16 units, never inside a character:
+// a cut that would leave the first half of a pair (an emoji) drops it
+// (0.1.101, operator 2026-10-12; before, the half went out as a lone
+// "\udXXX"). The app does not cut at all (chat_screen.dart:2622-2631).
+function cardName(name) {
+  const cut = String(name).slice(0, 64);
+  return /[\ud800-\udbff]$/.test(cut) ? cut.slice(0, -1) : cut;
 }
 // -> { chain, amount, token, wire, to, name } | null (not a card). A card of
 // another chain keeps its chain and amount for "cannot be checked here".
