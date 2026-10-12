@@ -12884,6 +12884,11 @@ static int test_hf2_netzero_block(void) {
  *  generation-4 (storage) SYSTEM / CORE tuples equal their pins. The EVM
  *  domain's own tuple has no pin in nodus_ruleset_pins.h and is not
  *  checked here (the EVM D literal binds it).
+ *  K7 additionally (HF-6 slice 8b, builds whose Foundation owner is the
+ *  K8 default — DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT): the generation-4
+ *  vote literal D4 (DNAC_CFG_RULESET_GEN_ROLES_D) keeps its value
+ *  0x4dc61072d5982acd. A test build that overrides the owner (and with it
+ *  D4) skips that one line.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; DNAC_EPOCH_LENGTH > 6 (no
@@ -13304,6 +13309,13 @@ static int test_hf8_name_gate_hooks(void) {
               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D ==
                   0x329b0ea92c8b8c58ULL,
               "K7 D2, the EVM D and the storage D keep their literals");
+#ifdef DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT
+        /* HF-6 slice 8b: D4 is overridable together with the owner (a
+         * test build), so its K8 literal is pinned only where the owner is
+         * K8 — shared/dnac/tests/hf6_vote_oracle.py */
+        CHECK((uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D == 0x4dc61072d5982acdULL,
+              "K7 D4 (the K8 owner) keeps its literal");
+#endif
         OK();
     }
     fx_close(&fx);

@@ -1,0 +1,51 @@
+── HF-6 generation-4 vote value D4 (param 18) ────────────────────
+  spec: design 2026-10-03-hf5-validator-owner-stake rev 6 §8.1
+  storage_oracle CONTROL: green; S2/S3 equal in-process, subprocess and pinned hex
+  owner: K8 (default)
+
+  preimage breakdown (offset, length, field, hex):
+  [  0 +16] TAG16("NDS.ROLEGEN.v1")
+            4e44532e524f4c4547454e2e76310000
+  [ 16 + 4] generation u32 BE = 4
+            00000004
+  [ 20 + 4] base_generation u32 BE = 3
+            00000003
+  [ 24 +64] gen-4 SYSTEM ruleset_hash (S2)
+            c347ddd7b30730b17fe62583a663356a303c548dd2fc0dab7fa8dfdfea63140b25c1f496590a66c8373c3e50d23cbaa5f5730097ee041eca50ed377a1f924b00
+  [ 88 +64] gen-4 CORE ruleset_hash (S3)
+            fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f060
+  [152 + 4] spec_version u32 BE = 1
+            00000001
+  [156 +64] foundation_owner
+            8eff7f418ab7a4432118ff99e21f2c3d1baf186200c148a3bba7d274499386ac970e267a9c9b3bbc05bfff1c62a72d63f72a555db780feeaaad4fb49ba9f7b89
+  [220 + 4] n_consts u32 BE = 9
+            00000009
+  [224 + 8] const[0] STAKE_MIN default = 200000000000000
+            0000b5e620f48000
+  [232 + 8] const[1] STAKE_MIN lower bound = 10000000000000
+            000009184e72a000
+  [240 + 8] const[2] POWER_CAP_BPS default = 3000
+            0000000000000bb8
+  [248 + 8] const[3] POWER_CAP_BPS min = 500
+            00000000000001f4
+  [256 + 8] const[4] POWER_CAP_BPS max = 3000
+            0000000000000bb8
+  [264 + 8] const[5] STORAGE_BOND default = 100000000000000
+            00005af3107a4000
+  [272 + 8] const[6] STORAGE_BOND min = 10000000000000
+            000009184e72a000
+  [280 + 8] const[7] STORAGE_BOND max = 100000000000000
+            00005af3107a4000
+  [288 + 8] const[8] consent window (blocks) = 720
+            00000000000002d0
+
+  preimage (296 B) = 4e44532e524f4c4547454e2e763100000000000400000003c347ddd7b30730b17fe62583a663356a303c548dd2fc0dab7fa8dfdfea63140b25c1f496590a66c8373c3e50d23cbaa5f5730097ee041eca50ed377a1f924b00fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f060000000018eff7f418ab7a4432118ff99e21f2c3d1baf186200c148a3bba7d274499386ac970e267a9c9b3bbc05bfff1c62a72d63f72a555db780feeaaad4fb49ba9f7b89000000090000b5e620f48000000009184e72a0000000000000000bb800000000000001f40000000000000bb800005af3107a4000000009184e72a00000005af3107a400000000000000002d0
+  SHA3-512        = cdc61072d5982acdb5060db7cb039ba3aab9cf74f11e51369c579bf29f7a385dd6caea801720dfc6222aa868b31642208d540d866dafe1d022e2849aa80b15bc
+  first 8 BE      = 0xcdc61072d5982acd
+  top bit was     = SET (cleared)
+  D4              = 0x4dc61072d5982acdULL
+  D4 (decimal)    = 5604184871704996557
+
+  C: _Static_assert(<D4 macro> == 0x4dc61072d5982acdULL, "D4 = hf6_vote_oracle.py");
+
+  sanity: D4 != D2 0x44dfbe7ad3c75adf, != EVM D 0x029f47596864d407, != slice-6a 0x329b0ea92c8b8c58: True
