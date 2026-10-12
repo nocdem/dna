@@ -359,6 +359,9 @@ static int t_consent(void) {
         free(st);
     }
 
+    /* V3 above reused m_rest for the op-3 restatement: restate the
+     * ROTATE message again before verifying the ROTATE signature */
+    msg_restate(m_rest, 2, vid, g_k[KO].fp, g_k[KN].pk, EXP);
     nodus_v2_consent_t c;
     CHECK(consent_make(&c, DNA_VALBIND_OP_ROTATE, vid, g_k[KO].fp, KN, EXP)
           == 0, "ROTATE consent signs");
