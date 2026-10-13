@@ -467,6 +467,20 @@ static int hs_assert_app_hash_from_state(const uint8_t *app_hash, size_t len,
  * (`nodus_cmt_blockexec_init` zeroes it; nothing here sets it). The
  * handshake therefore reads no clock, exactly as the reference's does.
  */
+/* The executor's after-ROLLBACK hook (nodus_cmt_blockexec_t.on_rollback),
+ * bound to the witness: a chain_config lookup cache warmed inside the
+ * rolled-back ledger transaction may hold rows that are gone — cold, so
+ * the next lookup re-reads the database (HF-6 red-team round 1
+ * close-out). Node-local; a NULL witness is nothing. */
+static void node_ledger_rolled_back(void *arg)
+{
+    nodus_witness_t *w = (nodus_witness_t *)arg;
+
+    if (w) {
+        w->chain_config_cache_warm = false;
+    }
+}
+
 static int hs_exec_open(nodus_cmt_handshaker_t *h, nodus_cmt_app_t *app,
                         nodus_cmt_blockexec_t **out)
 {
@@ -484,6 +498,8 @@ static int hs_exec_open(nodus_cmt_handshaker_t *h, nodus_cmt_app_t *app,
         free(be);
         return CMT_FAULT;
     }
+    (void)nodus_cmt_blockexec_set_rollback_hook(be, node_ledger_rolled_back,
+                                                h->w);
     *out = be;
     return CMT_OK;
 }
@@ -1398,6 +1414,7 @@ static int node_load_genesis_doc(nodus_cmt_node_t *n,
         QGP_LOG_ERROR(LOG_TAG, "%s", "the supplied genesis document could not "
                       "be stored");
         (void)sqlite3_exec(n->w->db, "ROLLBACK", NULL, NULL, NULL);
+        n->w->chain_config_cache_warm = false;   /* see below */
         return CMT_FAULT;
     }
     /* :567-571 ValidateAndComplete, as the four checks of D-18 rev 5 (3)
@@ -1410,6 +1427,10 @@ static int node_load_genesis_doc(nodus_cmt_node_t *n,
         free(n->gen_allocs);
         n->gen_allocs = NULL;
         (void)sqlite3_exec(n->w->db, "ROLLBACK", NULL, NULL, NULL);
+        /* HF-6 red-team round 1 close-out: a chain_config lookup cache
+         * warmed inside the rolled-back transaction may hold rows that
+         * are gone — cold, so the next lookup re-reads the database */
+        n->w->chain_config_cache_warm = false;
         return CMT_FAULT;                                            /* :572 */
     }
     if (sqlite3_exec(n->w->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
@@ -1419,6 +1440,7 @@ static int node_load_genesis_doc(nodus_cmt_node_t *n,
         /* A failed COMMIT can leave the transaction open; close it so the
          * caller's release does not run against one. */
         (void)sqlite3_exec(n->w->db, "ROLLBACK", NULL, NULL, NULL);
+        n->w->chain_config_cache_warm = false;   /* as above */
         free(n->gen_allocs);
         n->gen_allocs = NULL;
         return CMT_FAULT;                                            /* :575-577 */
@@ -2140,6 +2162,8 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
         goto fail;
     }
     n->be_ready = true;
+    (void)nodus_cmt_blockexec_set_rollback_hook(n->be, node_ledger_rolled_back,
+                                                n->w);
     /* cometbft@v0.38.26 node/node.go:393 —
      * `sm.BlockExecutorWithBlockTimeTolerance(config.Consensus.BlockTimeTolerance)`
      * (state/execution.go:59-63). */
