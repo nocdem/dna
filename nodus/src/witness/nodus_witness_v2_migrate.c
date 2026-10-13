@@ -813,8 +813,9 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
      * row holds a pending or previous key yet — ROTATE is generation 4;
      * the full rule, with role 2 and the khan-A2 previous keys, is in
      * nodus_witness_validator.h and is checked at every boundary by
-     * nodus_witness_v2_keyres_diff). Visited in SHA3-512(pk) ASC (m.by_fp — the table's own key order); the keys
-     * are distinct (checked in mg_read_validators). */
+     * nodus_witness_v2_keyres_diff). Visited in SHA3-512(pk) ASC
+     * (m.by_fp — the table's own key order); the keys are distinct
+     * (checked in mg_read_validators). */
     for (size_t k = 0; k < m.nv; k++) {
         const mg_val_t *v = &m.v[m.by_fp[k].idx];
         if (v->unstaked) continue;
