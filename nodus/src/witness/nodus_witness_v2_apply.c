@@ -1551,6 +1551,7 @@ static int dry_run_note_rows(nodus_v2_env_dry_run_t *dry,
  * compiled production table carries one in this release. */
 
 static int cmt_savepoint_release(nodus_witness_t *w, const char *name);
+static int cmt_savepoint_rollback(nodus_witness_t *w, const char *name);
 
 /** One cached logical read: (op, key) → the answer, for the life of ONE
  *  leg (design §3 I11: the overlay — and so this cache — is fresh per
@@ -2372,7 +2373,7 @@ done:
         /* only a FAULT leaves it open; the item's own rollback discards
          * it too — undone here so the transaction's savepoint stack is
          * what the item loop expects */
-        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+        (void)cmt_savepoint_rollback(w, sp);
         (void)cmt_savepoint_release(w, sp);
     }
     if (out.release) out.release(&out);
@@ -2938,6 +2939,33 @@ static int cmt_savepoint_release(nodus_witness_t *w, const char *name)
 
     snprintf(sql, sizeof(sql), "RELEASE SAVEPOINT %s", name);
     return exec_sql(w, sql);
+}
+
+/**
+ * `ROLLBACK TO SAVEPOINT <name>` (nodus_witness_db_rollback_to_savepoint)
+ * and the chain_config lookup cache made COLD — every item / claim / inner
+ * savepoint of the cometbft lane rolls back through here.
+ *
+ * Why (HF-6 red-team round 1 close-out): a chain_config row written
+ * inside the savepoint marks the cache cold (rt_native.c, the SYSTEM
+ * adapter's "invalidate-before-commit" rule), but a lookup LATER in the
+ * same savepoint re-warms it from the database — which then holds the
+ * uncommitted row. Rolled back, the row is gone and a warm cache would
+ * still answer with it, while a cold one re-reads the database
+ * (nodus_witness_chain_config.c: a hit and the DB-direct fallback answer
+ * identically only while the cache holds exactly the committed rows).
+ * Cooling is always safe — the next lookup re-warms from the database —
+ * and costs one re-warm SELECT. Unconditional: a failed ROLLBACK TO
+ * leaves the cache cold too.
+ *
+ * @return nodus_witness_db_rollback_to_savepoint's return.
+ */
+static int cmt_savepoint_rollback(nodus_witness_t *w, const char *name)
+{
+    int rc = nodus_witness_db_rollback_to_savepoint(w, name);
+
+    w->chain_config_cache_warm = false;
+    return rc;
 }
 
 /**
@@ -5381,7 +5409,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                         V2AP_FAULT("cometbft item %llu: the preflight's "
                                    "hash backend failed on this node",
                                    (unsigned long long)i);
-                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                        (void)cmt_savepoint_rollback(w, sp);
                         (void)cmt_savepoint_release(w, sp);
                         goto fail_fault;
                     }
@@ -5424,7 +5452,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
 
                 if (env_replay_guard(w, &pf[i], i, &hit, blk->out_reason,
                                      sizeof blk->out_reason) != 0) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;   /* the helper owns the reason     */
                 }
@@ -5442,7 +5470,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                          sizeof blk->out_reason);
 
                 if (arc == -2) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;   /* the helper owns the reason     */
                 }
@@ -5462,7 +5490,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                               sizeof blk->out_reason);
 
                 if (grc == -2) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;   /* the helper owns the reason     */
                 }
@@ -5498,7 +5526,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     V2AP_FAULT("cometbft item %llu: the meter reported an "
                                "accounting fault on this node",
                                (unsigned long long)i);
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;
                 }
@@ -5518,7 +5546,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     blk->out_reason, sizeof blk->out_reason);
 
                 if (arc == -2) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;   /* the helper owns the reason     */
                 }
@@ -5536,7 +5564,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                       blk->out_reason,
                                       sizeof blk->out_reason);
                 if (rc == -2) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;      /* exec_one_env owns the reason */
                 }
@@ -5557,7 +5585,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
             if (cmt_item_index(w, blk->global_height, &pf[i], doms, n_dom,
                                gidx, blk->out_reason,
                                sizeof blk->out_reason) != 0) {
-                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
                 goto fail_fault;       /* the helper owns the reason     */
             }
@@ -5572,7 +5600,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                              (uint32_t)i, &pf[i], auths,
                                              blk->out_reason,
                                              sizeof blk->out_reason) != 0) {
-                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
                 goto fail_fault;       /* the helper owns the reason     */
             }
@@ -5597,7 +5625,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                    (unsigned long long)i, (unsigned)l,
                                    (unsigned)d->domain_id,
                                    (unsigned long long)blk->n_envs);
-                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                        (void)cmt_savepoint_rollback(w, sp);
                         (void)cmt_savepoint_release(w, sp);
                         goto fail_fault;
                     }
@@ -5631,7 +5659,7 @@ cmt_item_failed:
             memset(res->data, 0, sizeof(res->data));
             blk->cmt.results_len = i + 1;
             blk->out_reason[0] = '\0';
-            if (nodus_witness_db_rollback_to_savepoint(w, sp) != 0 ||
+            if (cmt_savepoint_rollback(w, sp) != 0 ||
                 cmt_savepoint_release(w, sp) != 0) {
                 V2AP_FAULT("cometbft item %llu: its savepoint could not "
                            "be rolled back on this node",
@@ -5734,7 +5762,7 @@ cmt_item_failed:
                      * it is still unwound here so the claim lane and
                      * the envelope lane (every in-savepoint
                      * `goto fail_fault` above) exit the same way. */
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;
                 }
@@ -5768,7 +5796,7 @@ cmt_item_failed:
                 V2AP_FAULT("cometbft claim %llu targets ACTIVE domain %u "
                            "whose runtime this node cannot resolve",
                            (unsigned long long)i, (unsigned)target);
-                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
                 goto fail_fault;
             }
@@ -5779,7 +5807,7 @@ cmt_item_failed:
                 if (erc == -2) {
                     /* NODE-LOCAL, see above — unwound like the envelope
                      * lane, then the host's ROLLBACK. */
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;
                 }
@@ -5794,7 +5822,7 @@ cmt_item_failed:
                     w, blk->global_height, (uint32_t)(blk->n_envs + i),
                     &blk->claims[i], claim_nuls[i], target,
                     blk->out_reason, sizeof blk->out_reason) != 0) {
-                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
                 goto fail_fault;       /* the helper owns the reason     */
             }
@@ -5815,7 +5843,7 @@ cmt_claim_failed:
             blk->cmt.results_len = blk->n_envs + i + 1;
             blk->out_reason[0] = '\0';   /* an ITEM's refusal is not the
                                           * block's                     */
-            if (nodus_witness_db_rollback_to_savepoint(w, sp) != 0 ||
+            if (cmt_savepoint_rollback(w, sp) != 0 ||
                 cmt_savepoint_release(w, sp) != 0) {
                 V2AP_FAULT("cometbft claim %llu: its savepoint could not "
                            "be rolled back on this node",
@@ -6952,6 +6980,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * unconditional; it maps negative returns only — 0 (applied) passes
      * through, and no positive return exists any more (the legacy rc 1
      * replay / rc 2 post-commit window are deleted with that lane). */
+    if (rc < 0 && w) {
+        /* the host rolls the block's transaction back on every failure
+         * (above): a cache warmed inside it may hold rows that are about
+         * to vanish — cold, as at cmt_savepoint_rollback (HF-6 red-team
+         * round 1 close-out). The host's own later rollbacks (after a
+         * successful body) cannot reach this witness from the generic
+         * executor (nodus_witness_cmt_host.c ledger_txn_rollback). */
+        w->chain_config_cache_warm = false;
+    }
     if (rc < 0 && rc != NODUS_V2_INTERNAL_FAULT) {
         return NODUS_V2_INTERNAL_FAULT;
     }
