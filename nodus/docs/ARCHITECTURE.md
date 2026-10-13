@@ -9836,46 +9836,32 @@ peers and form the BFT consensus group for DNAC transaction processing.
 
 ### `witness`
 
-Shows the current witness roster and BFT consensus status by querying the DHT `"nodus:pk"` registry.
+Shows the committee that governs the NEXT block (tip + 1), as the connected node's chain states it,
+over the `dnac_committee_query` RPC (`nodus-cli.c` `cmd_witness`; server
+`nodus_witness_handlers.c` `handle_dnac_committee_query`). Read-only. (The DHT `"nodus:pk"` roster this
+command used to read is deleted — P2P-PORT F6.)
 
 ```bash
 nodus-cli -s <server_ip> witness
 ```
 
-**Output for each witness:**
-- `node_id` — first 32 bytes of SHA3-512(pubkey), hex
-- `address` — IP:port (TCP 4002 inter-node)
-- `sig` — VALID/INVALID (Dilithium5 signature on DHT value)
-- `seq` — sequence number (monotonic, used for value replacement)
-- `expires` — seconds until DHT entry expires (re-published every 10 minutes)
+**RPC entry fields** (`"r".committee[]`, one map per seat, resolution order): `pk` (2592-byte key),
+`stake` (the ranked total), `comm` (commission bps), `status` (validator status — at key generation 4
+read by the seat's validator_id, Z-30a), `addr` (the seat's signed 4004 address, or empty), and —
+since the HF-6 red-team round 1 close-out — `power`: the seat's VOTING power as the engine counts it
+(`nodus_committee_member_t.power`: ruleset 1 `total / 10^8`, ruleset 2 the counted, capped power,
+`nodus_witness_vset_powers`). An older node sends no `power`; the client decoder
+(`nodus_dnac_committee_decode`) then reports `has_power = 0`.
 
-**BFT summary:**
-- `Valid witnesses` — total nodes with valid, non-expired DHT entries
-- `Server index` — index of the connected server in the sorted roster
-- `Consensus` — ACTIVE (>= 5 witnesses) or DISABLED
-- `f_tolerance` — max faulty nodes tolerated: (n-1)/3
-- `Quorum` — votes needed: 2f+1
+**Output for each seat:** `fingerprint` (first 16 bytes of SHA3-512(pubkey), hex), `p2p id`, `address`,
+`status`, `stake`, `commission`, and `power` when the node sent it.
 
-**Example:**
-```
-Witness Roster (from DHT "nodus:pk")
-=====================================
-Total entries: 6
-
-[0] (CONNECTED)
-    node_id:  03499d1fae35f9e9...
-    address:  154.38.182.161:4002
-    sig:      VALID
-    seq:      1773464845
-    expires:  553s from now
-...
-─────────────────────────────────
-Valid witnesses: 6
-Server index:    0
-Consensus:       ACTIVE
-f_tolerance:     1
-Quorum:          3
-```
+**Summary:** `Committee size`; `Quorum (seats)` — `dna_bft_quorum(n)`, the governance approval rule
+below the HF-2 height; and one power line:
+- every seat carries `power` → `Voting power: Σ (need > floor(2Σ/3))` — the consensus count (capped
+  per validator from HF-6) and the same integer > 2/3 rule the approval selection uses;
+- otherwise (an older node) → `Stake power:` the UNCAPPED sum of `floor(stake / 10^8)`, with no
+  threshold (an uncapped threshold would be wrong after HF-6, Z-30b).
 
 ### `addr-history`
 

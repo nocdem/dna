@@ -3957,9 +3957,14 @@ static void handle_dnac_token_info(nodus_witness_t *w,
  *                 "epoch_start":  u64,
  *                 "committee": [
  *                   {"pk": bstr(2592), "stake": u64,
- *                    "comm": u16, "status": u8, "addr": tstr},
+ *                    "comm": u16, "status": u8, "addr": tstr,
+ *                    "power": u64},
  *                   ... one entry per seat of the epoch's active set
  *                 ]}
+ * "power" (added with the HF-6 red-team round 1 close-out) is the seat's
+ * voting power as the engine counts it (nodus_committee_member_t.power;
+ * capped under ruleset 2). An older node sends the five other keys only;
+ * the client decoder reports that as has_power = 0.
  *
  * S3: the array is COUNT-DRIVEN on the wire, so a governance-widened
  * committee needs no wire change here — the encoder emits `count`
@@ -4148,7 +4153,7 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
         char addr[CMT_P2P_NETADDR_STR_MAX];
         witness_reply_addr(w, committee[i].pubkey, addr, sizeof(addr));
 
-        cbor_encode_map(&enc, 5);
+        cbor_encode_map(&enc, 6);
         cbor_encode_cstr(&enc, "pk");
         cbor_encode_bstr(&enc, committee[i].pubkey, DNAC_PUBKEY_SIZE);
         cbor_encode_cstr(&enc, "stake");
@@ -4159,6 +4164,15 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
         cbor_encode_uint(&enc, status);
         cbor_encode_cstr(&enc, "addr");
         cbor_encode_cstr(&enc, addr);
+        /* HF-6 red-team round 1 close-out: the seat's VOTING power as the
+         * engine counts it — member.power from the same
+         * nodus_committee_get_for_block lookup (nodus_witness_vset_powers
+         * over the served snapshot: ruleset 1 total / DNAC_DECIMAL_UNIT,
+         * ruleset 2 the counted, capped power; the recompute arm total /
+         * DNAC_DECIMAL_UNIT), the value the CLI's approval selection
+         * reads. */
+        cbor_encode_cstr(&enc, "power");
+        cbor_encode_uint(&enc, committee[i].power);
     }
 
     size_t rlen = cbor_encoder_len(&enc);
