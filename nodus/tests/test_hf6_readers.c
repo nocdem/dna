@@ -105,6 +105,16 @@
  *        commission to entry.owner_fp (the Foundation owner) by
  *        validator_id, KD's delegation share to KD, nobody else, no
  *        node-key accrual.
+ *     E8 (red-team round 1 close-out, Z-30a) dnac_committee_query through
+ *        the REAL dispatcher over a socketpair, at tip 5E (served set:
+ *        the stored ruleset-2 snapshot(5E), every row migrated and
+ *        re-keyed): each seat's status equals its row's read by
+ *        validator_id, in the snapshot's order, each with a power; seat
+ *        0's row set RETIRING (rolled-back transaction) shows RETIRING on
+ *        the wire; seat 1's validators row deleted (a state no path
+ *        produces) gives an ERROR reply, never an ACTIVE seat; after the
+ *        rollback the control answer again. The reply is decoded by the
+ *        client SDK's nodus_dnac_committee_decode.
  *     E2..E6 call nodus_witness_v2_settlement_apply directly inside a
  *     transaction that is always rolled back.
  *  F. engine_switch (HF-6 slice 5d; plan §1 "Which boundary writes the
@@ -222,8 +232,15 @@
 #include "witness/nodus_witness_delegation.h"
 #include "witness/nodus_witness_domreg.h"
 #include "witness/nodus_witness_runtime.h"
+#include "witness/nodus_witness_handlers.h"
+#include "witness/nodus_witness_v2_produce.h"   /* v2_tip_height (E8) */
+#include "nodus/nodus.h"
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"
+#include "transport/nodus_tcp.h"
+#include "protocol/nodus_cbor.h"
+#include "protocol/nodus_tier2.h"
+#include "protocol/nodus_wire.h"
 
 #include "dnac/dnac.h"
 #include "dnac/cmt_pb.h"
@@ -238,10 +255,13 @@
 
 #include "v2_genesis_fixture.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sqlite3.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #ifndef NODUS_HF6_READERS_SRC_DIR
@@ -1493,6 +1513,79 @@ static int settle_rolled_back(nodus_witness_t *w, uint64_t B, uint32_t gen,
     return chk == 0 ? 0 : 97;
 }
 
+/* E8 — dnac_committee_query through the REAL dispatcher
+ * (nodus_witness_handle_dnac) over a socketpair, on `w`'s own connection
+ * (so an open transaction's rows are what it reads). *type_out = the
+ * reply's 'r' / 'e'; on 'r' the reply is decoded into *res by the client
+ * SDK's nodus_dnac_committee_decode. The harness is test_storage_by_
+ * owner.c's: bytes the node's socket did not take stay in
+ * conn->wbuf[wpos..wlen) and are written here, as the poll loop's drain
+ * would. @return 0 / -1 (harness failure). */
+static int cq_query(nodus_witness_t *w, nodus_dnac_committee_result_t *res,
+                    char *type_out) {
+    static uint8_t req[256];
+    static uint8_t rx[1 << 20];
+    int sv[2] = { -1, -1 }, ret = -1;
+    size_t have = 0;
+    nodus_tcp_conn_t *conn = NULL;
+    nodus_frame_t fr;
+    nodus_tier2_msg_t msg;
+    cbor_encoder_t enc;
+
+    cbor_encoder_init(&enc, req, sizeof(req));
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 88);
+    cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "q");
+    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "dnac_committee_query");
+    cbor_encode_cstr(&enc, "a"); cbor_encode_map(&enc, 0);
+    const size_t req_len = cbor_encoder_len(&enc);
+    if (req_len == 0) return -1;
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -1;
+    if (fcntl(sv[0], F_SETFL, O_NONBLOCK) != 0 ||
+        fcntl(sv[1], F_SETFL, O_NONBLOCK) != 0)
+        goto out;
+    conn = calloc(1, sizeof(*conn));
+    if (!conn) goto out;
+    conn->fd = sv[0];
+    conn->state = NODUS_CONN_CONNECTED;
+
+    nodus_witness_handle_dnac(w, conn, req, req_len, "dnac_committee_query",
+                              88);
+    for (;;) {
+        ssize_t n = read(sv[1], rx + have, sizeof(rx) - have);
+        if (n > 0) { have += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        if (conn->wpos < conn->wlen) {
+            ssize_t wr = write(sv[0], conn->wbuf + conn->wpos,
+                               conn->wlen - conn->wpos);
+            if (wr > 0) { conn->wpos += (size_t)wr; continue; }
+            if (wr < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+            goto out;
+        }
+        break;
+    }
+    if (have == 0 || nodus_frame_decode(rx, have, &fr) != (int)have)
+        goto out;
+    memset(&msg, 0, sizeof(msg));
+    if (nodus_t2_decode(fr.payload, fr.payload_len, &msg) != 0) goto out;
+    *type_out = msg.type;
+    nodus_t2_msg_free(&msg);
+    if (*type_out == 'r' &&
+        nodus_dnac_committee_decode(fr.payload, fr.payload_len, res) != 0)
+        goto out;
+    ret = 0;
+out:
+    if (conn) {
+        free(conn->wbuf);
+        free(conn->rbuf);
+        free(conn);
+    }
+    if (sv[0] >= 0) close(sv[0]);
+    if (sv[1] >= 0) close(sv[1]);
+    return ret;
+}
+
 static int t_engine_v2_snapshot(void) {
     fixture_t O;
     uint64_t h = 0;
@@ -1785,6 +1878,82 @@ static int t_engine_v2_snapshot(void) {
             CHECK(accrual_of(O.w, g_k[i].fp, &a, &present) == 0 && !present,
                   "no node-key accrual row");
         }
+    }
+
+    /* ── E8. (red-team round 1, Z-30a) dnac_committee_query's generation-4
+     * arm: every seat's status read by its validator_id from the served
+     * snapshot (cq_v2_statuses). The rows are the migrated, RE-KEYED rows
+     * (pubkey_hash = validator_id), which the legacy by-pubkey read
+     * misses — before Z-30a every seat showed ACTIVE. Inside ONE
+     * transaction on the fixture's connection, rolled back. ─────────── */
+    {
+        uint64_t tip = 0;
+        CHECK(nodus_witness_v2_tip_height(O.w, &tip) == 0 && tip == B,
+              "tip 5E (block 5E applied in E7)");
+        dna_vset_snapshot_t *s5 = stored_v2(O.w, B, chain32);
+        CHECK(s5 != NULL && s5->active_count == N_VAL,
+              "the served snapshot(5E): ruleset 2, seven seats");
+        nodus_dnac_committee_result_t *res = calloc(1, sizeof(*res));
+        CHECK(res != NULL, "alloc");
+        char ty = 0;
+
+        /* control: every seat's status is its row's */
+        CHECK(cq_query(O.w, res, &ty) == 0 && ty == 'r',
+              "committee query answers");
+        CHECK(res->count == N_VAL && res->epoch_start == B &&
+              res->block_height == B + 1, "seven seats, the epoch of 5E");
+        for (int i = 0; i < N_VAL; i++) {
+            CHECK(memcmp(res->entries[i].pubkey, s5->entries[i].pubkey,
+                         PKLEN) == 0, "the snapshot's seat order");
+            CHECK(nodus_validator_v2_get(O.w, s5->entries[i].validator_id,
+                                         row) == 0 &&
+                  res->entries[i].status == row->rec.status,
+                  "each seat's status is its row's (by validator_id)");
+            CHECK(res->entries[i].has_power == 1,
+                  "the seat carries its counted power");
+        }
+
+        /* seat 0's row RETIRING: the wire shows RETIRING, the rest
+         * unchanged */
+        CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0, "begin");
+        CHECK(nodus_validator_v2_get(O.w, s5->entries[0].validator_id,
+                                     row) == 0, "seat 0's row");
+        CHECK(row->rec.status != DNAC_VALIDATOR_RETIRING,
+              "FIXTURE GUARD: seat 0 is not RETIRING yet");
+        row->rec.status = DNAC_VALIDATOR_RETIRING;
+        CHECK(nodus_validator_v2_update(O.w, row) == 0, "seat 0 RETIRING");
+        CHECK(cq_query(O.w, res, &ty) == 0 && ty == 'r',
+              "committee query answers");
+        CHECK(res->count == N_VAL &&
+              res->entries[0].status == DNAC_VALIDATOR_RETIRING,
+              "the RETIRING seat is RETIRING on the wire (Z-30a)");
+
+        /* seat 1's validators row gone (no path deletes one — a state
+         * the read must survive): an ERROR reply, never a seat shown
+         * ACTIVE */
+        {
+            sqlite3_stmt *st = NULL;
+            CHECK(sqlite3_prepare_v2(O.w->db, "DELETE FROM validators WHERE "
+                                     "pubkey_hash = ?1", -1, &st, NULL)
+                      == SQLITE_OK, "prepare");
+            sqlite3_bind_blob(st, 1, s5->entries[1].validator_id, 64,
+                              SQLITE_STATIC);
+            const int drc = sqlite3_step(st);
+            const int ch = sqlite3_changes(O.w->db);
+            sqlite3_finalize(st);
+            CHECK(drc == SQLITE_DONE && ch == 1, "seat 1's row deleted");
+        }
+        CHECK(cq_query(O.w, res, &ty) == 0 && ty == 'e',
+              "a seat without its row: an error reply");
+        CHECK(run_sql(O.w->db, "ROLLBACK") == 0, "rollback");
+
+        /* rolled back: the control again */
+        CHECK(cq_query(O.w, res, &ty) == 0 && ty == 'r' &&
+              res->count == N_VAL &&
+              res->entries[0].status != DNAC_VALIDATOR_RETIRING,
+              "rolled back: seat 0's own status again");
+        free(res);
+        dna_vset_free(&s5);
     }
 
     dna_vset_free(&T);
