@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════
-# stagef_hf6_owner.sh — HF-6 6f-2: the PRE-BUILD step of the rotation
-# phase of tests/test_hf6_edge.sh. Generates (or re-reads) ONE single-key
-# nodus identity that a TEST build compiles in as the HF-6 Foundation
-# owner, and prints the exact cmake flags (TWO: the owner and its D4) and
-# environment that go with it.
+# stagef_hf6_owner.sh — HF-6 6f-2: the PRE-BUILD step of an owner
+# operation on a genesis validator in the harness — today the TEST-OWNER
+# MODE of tests/test_storage_archive.sh (it was written for the rotation
+# phase of tests/test_hf6_edge.sh, deleted with ROTATE by HF-6 D1/D2 — khan
+# decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1).
+# Generates (or re-reads) ONE single-key nodus identity that a TEST build
+# compiles in as the HF-6 Foundation owner, and prints the exact cmake
+# flags (TWO: the owner and its D4) and environment that go with it.
 # ════════════════════════════════════════════════════════════════════
 #
 # WHY A PRE-BUILD STEP. After the HF-6 generation-4 edge every genesis
@@ -13,8 +16,9 @@
 # active_since_block <= 1 — decision docs/plans/decisions/2026-10-09-
 # kurultay-16-hf6-storage-summary.md D2 (a)). The default is the K8 address
 # (decision 2026-10-08-kurultay-14-hf6-summary.md K8), a 2-of-3 whose keys
-# the harness does not hold, and nodus-cli's `v2-envelope rotate` builds
-# kind-1 (single-key) owners only (nodus-cli.c cmd_v2_stake header, 6f-1).
+# the harness does not hold, and the harness's owner operations
+# (`v2-envelope unstake | validator-update`, `storage register | exit`)
+# are driven with kind-1 (single-key) owners (nodus-cli.c cmd_v2_stake).
 # So an owner operation of a genesis validator is signable in the harness
 # only on a build whose owner is SHA3-512 of a key the harness holds — and
 # that key must exist BEFORE the build (the build bakes it in), so it
@@ -49,7 +53,7 @@
 #
 # CHECKED, NOT ASSUMED: nodus.fp == SHA3-512(nodus.pk) (openssl over the
 # raw 2592 bytes — stagef_env.sh stagef_sha3_512_hex), and nodus.sk exists
-# (the owner SIGNS the ROTATE envelope). That 128-hex value is the owner_fp
+# (the owner SIGNS its envelopes). That 128-hex value is the owner_fp
 # a kind-1 owner has (design docs/plans/2026-10-03-hf5-validator-owner-
 # stake-design.md rev 6 §1.3: SHA3-512(signer pk) == owner_fp).
 #
@@ -87,8 +91,10 @@
 # HOW IT CAN LIE: it proves the identity's files agree with each other; it
 # cannot prove the BUILD you make next carries the printed bytes — that is
 # test_hf6_edge.sh's job (step 7 FAILs unless every migrated row's owner_fp
-# equals STAGEF_HF6_OWNER_FP_HEX; the rotation phase's gate FAILs unless
-# SHA3-512 of STAGEF_HF6_OWNER_KEYS's nodus.pk equals it). A build made
+# equals STAGEF_HF6_OWNER_FP_HEX) and test_storage_archive.sh's (its
+# TEST-OWNER gate FAILs unless SHA3-512 of STAGEF_HF6_OWNER_KEYS's
+# nodus.pk equals it, its step-4 owner check unless the build carries
+# it). A build made
 # with the owner flag and a wrong or missing D4 flag does not lie
 # silently: every node refuses to start at the runtime selfcheck, so the
 # bring-up fails visibly.
@@ -145,7 +151,7 @@ else
     echo "[ok] identity generated in $ID (by $SRV)"
 fi
 
-[ -s "$ID/nodus.sk" ] || die "$ID has no nodus.sk — the owner must SIGN the ROTATE envelope"
+[ -s "$ID/nodus.sk" ] || die "$ID has no nodus.sk — the owner must SIGN its envelopes"
 [ -s "$ID/nodus.fp" ] || die "$ID has no nodus.fp"
 PK_LEN=$(stat -c %s "$ID/nodus.pk")
 [ "$PK_LEN" = 2592 ] || die "$ID/nodus.pk is $PK_LEN bytes, not 2592 (ML-DSA-87)"

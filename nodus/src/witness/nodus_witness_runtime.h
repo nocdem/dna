@@ -116,8 +116,10 @@ extern "C" {
  *  UNSTAKE + a new STAKE under a fresh key, and a key once used is burned
  *  for good): NO generation owns or prices op 10, so admission refuses it
  *  like any unowned op, and no SYSTEM hook decodes it. The id stays
- *  reserved (never reused) because client code still names it until the
- *  next package removes the client builders. Its consent op byte was 2
+ *  reserved, never reused (an id that was owned once must not come back
+ *  with another meaning; the tests name it to prove the refusal); the
+ *  client builders and CLI verbs were removed by HF-6 D2. Its consent op
+ *  byte was 2
  *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — the shared codec
  *  keeps the constant; the chain accepts no op-2 consent). */
 #define DNA_SYSRULE_ROTATE_CONSENSUS_KEY ((uint32_t)10)

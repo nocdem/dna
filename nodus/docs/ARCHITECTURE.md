@@ -6141,8 +6141,9 @@ its vote literal deleted; the storage boundary gate reads param 18. Everything b
 SYSTEM v8 / CORE v6 or "the switch from generation 2", read: GEN_STORAGE = **generation 4**, built ON
 the EVM generation (`NODUS_RT_GEN_STORAGE_BASE` = `NODUS_RT_GEN_EVM` = 3); the vote is chain_config
 **param 16** (`DNAC_CFG_RULESET_GEN_STORAGE`; `DNAC_CFG_PARAM_MAX_ID` = 16, after the EVM's 14 / 15);
-**SYSTEM v9** (the EVM generation's rules {1..6} + 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9
-STORAGE_REPORT), **CORE v7** (the EVM generation's rules {1..9} incl. 9 EVMFUND, SYSFUND paired with
+**SYSTEM v9** (v10 since HF-6 D2) (the EVM generation's rules {1..6} + 7 STORAGE_REGISTER / 8
+STORAGE_EXIT / 9 STORAGE_REPORT), **CORE v7** (v8 since HF-6 D2) (the EVM generation's rules {1..9}
+incl. 9 EVMFUND, SYSFUND paired with
 the storage ops too), the EVM domain unchanged (v1; GEN_STORAGE has no EVM slot — exact-tuple
 uniqueness — so the EVM record keeps resolving the EVM generation's entry); the SYSTEM meter policy is
 the EVM generation's (ops 1..9 at weight 1 — the storage ops' ids are already priced by CORE's
@@ -6938,8 +6939,8 @@ reaches them there).
 | op | call | len |
 |---|---|---|
 | DELEGATE (2) / UNDELEGATE (4) | `delegator_fp[64] ‖ validator_id[64] ‖ amount u64` | 136 |
-| UNSTAKE (3) | `validator_id[64]` | 64 |
-| VALIDATOR_UPDATE (5) | `validator_id[64] ‖ commission u16` (≤ `DNAC_COMMISSION_BPS_MAX`, non-zero id) | 66 |
+| UNSTAKE (3) | `validator_id[64]` — since HF-6 D2 `validator_id[64] ‖ owner_fp[64]` (128, "C2", section "HF-6 D2") | 64 → 128 |
+| VALIDATOR_UPDATE (5) | `validator_id[64] ‖ commission u16` (≤ `DNAC_COMMISSION_BPS_MAX`, non-zero id) — since HF-6 D2 `validator_id ‖ owner_fp ‖ commission` (130) | 66 → 130 |
 | STAKE (1) | — refused (-1) on the SYSTEM plan and exec AND by the CORE SYSFUND pairing (`rtn_sysfund_shape`, `rtn_sys_call_flow`) in 3c; since slice 4 the 7301-B owner + consent call ("HF-6 slice 4" below) | — |
 
 **Owner authority** (`rtn_sys_owner_auth`, design §1.3), against `want_fp`: kind 1 — exactly one
@@ -6947,7 +6948,8 @@ verified signer, no descriptor, SHA3-512(signer pk) == want_fp; kind 3 — exact
 descriptor, satisfied, its address == want_fp (mandatory: the verifier only records satisfaction),
 and every verified signer one of its keys; kind 2 and any other kind refused. DELEGATE / UNDELEGATE:
 want_fp = the call's delegator_fp, decided before the reads are judged. UNSTAKE / VALIDATOR_UPDATE:
-want_fp = the observed row's owner_fp, decided AFTER the mediated read (an absent row is -1 first).
+want_fp = the observed row's owner_fp, decided AFTER the mediated read (an absent row is -1 first) —
+since HF-6 D2 want_fp is the CALL's owner_fp, which must equal the observed row's (−1 otherwise).
 The rules themselves are the legacy execs' (minimum delegation, delegator cap, BONDED targeting, no
 status gate on UNDELEGATE, the two-epoch commission deferral, underflow and writable-shape verdicts),
 on the generation-4 rows; owner_fp and the pending consensus-key fields are carried byte for byte.
@@ -7494,13 +7496,9 @@ machinery were deleted; their sections are gone from this file (`git log` keeps 
 (`rt_owns_runtime_op` in `env_admit_legs`) refuses it like any unowned op (`NODUS_V2_TX_ERR_ADMISSION`, a
 VERDICT); every SYSTEM hook returns −1 for it (the un-migrated-op default), CORE SYSFUND does not pair
 with it, the describer does not describe it. `DNA_SYSRULE_ROTATE_CONSENSUS_KEY` (10) stays as a RETIRED,
-reserved id because client code still names it; the shared codec keeps `DNA_VALBIND_OP_ROTATE` (2) —
-the chain accepts no op-2 consent. ⚠ **The SYSTEM descriptor version is still 9** and the pinned
-SYSTEM ruleset hash / policy digest (`SYS_RULESET_HASH_GST`, `SYS_METER_POLICY_DIGEST_GST`), the
-generated `nodus/include/nodus/nodus_ruleset_pins.h` and dnac.h's D4 literal still carry the {1..10}
-values: decision item 3 (SYSTEM 9 → 10, CORE 7 → 8, an oracle re-pin, a new D4) is the next package's
-(D2). Until then `nodus_witness_runtime_selfcheck` refuses the table — a node built from D1 alone
-does not start.
+reserved id; the shared codec keeps `DNA_VALBIND_OP_ROTATE` (2) — the chain accepts no op-2 consent.
+D1 left the pins at the {1..10} values (a node built from D1 alone does not start — the selfcheck
+refuses the table); D2 below bumped the versions and re-pinned.
 
 **The permanent index** (`v2_consensus_keys`, slice 4's table): role 1 only, one row per validators
 row of any status, never released — the generation-4 edge (`nodus_witness_v2_migrate.c`) seeds
@@ -7543,15 +7541,96 @@ the ledger byte-identical, a fresh key applies; the self-check: 0 differences, o
 corruption, no comparison on a non-zero pending field); `test_hf6_stake` B5/B6 (graduation keeps the
 reservation, re-STAKE refused); `test_hf6_migrate` A1 (five reservations, UNSTAKED included);
 `test_v2_valrow` (any non-zero pending field refused on write and on read); `test_witness_p2p` (2a'')
-(forged pending keys bond nothing); `test_hf6_msig_owner` O2 and `test_v2_stake_client` R1 (the client
-still builds a ROTATE — the chain refuses it); `test_hf4_table` 3b ({1..9}); `test_hf6_readers`
-(inventory without `bonded_add_pending`); `test_hf6_edge.sh` (step 10 deleted).
+(forged pending keys bond nothing); `test_hf4_table` 3b ({1..9}); `test_hf6_readers`
+(inventory without `bonded_add_pending`); `test_hf6_edge.sh` (step 10 deleted). (D1's client-side
+ROTATE cases in `test_hf6_msig_owner` O2 / `test_v2_stake_client` R1 were replaced in D2.)
+
+### HF-6 D2 — the owner in the call (C2), generation 4 = SYSTEM v10 / CORE v8, no ROTATE in the client, `msig sign` verifies the inputs (branch `hf6-d` — not versioned, not voted)
+
+Khan decision `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` items 1, 2, 3 and 5; design
+rev 6 §2 "DEĞİŞİKLİK — han kararı 2026-10-13".
+
+**Why (C2).** A kind-3 owner's descriptor bytes are NOT in the signed auth context
+(`shared/dnac/env_wire.c` — only `auth_len` is). An operation that took its owner from committed
+state alone therefore bound its signatures to no vault: the co-members of two vaults could be shown
+vault B and have their signatures carried under vault A's descriptor (same length) after signing.
+Three generation-4 calls now name the owner, and the exec requires it to equal the committed row's
+owner (a VERDICT, −1) before `rtn_sys_owner_auth(…, owner_fp)`:
+
+| op | call | len |
+|---|---|---|
+| UNSTAKE (3) | `validator_id[64] ‖ owner_fp[64]` | 128 |
+| VALIDATOR_UPDATE (5) | `validator_id[64] ‖ owner_fp[64] ‖ commission u16` | 130 |
+| STORAGE_EXIT (8) | `node_fp[64] ‖ owner_fp[64]` | 128 |
+
+(`nodus_witness_rt_native.c` `rtn_unstake_parse_v2` / `rtn_vupd_parse_v2` / `rtn_stexit2_parse`,
+`rtn_unstake2_exec` / `rtn_vupd2_exec` / `rtn_storage_exit_exec`.) STAKE / STORAGE_REGISTER already
+carried the owner and DELEGATE / UNDELEGATE the delegator. The read plans still make ONE read (the
+key is unchanged); `rtn_sys_call_flow`, the describer and `rtn_sys_call_gen_of` read the new lengths
+through the same parsers. The length sets stay disjoint from the legacy ones (128 / 130 vs 2592 /
+2594; STORAGE_EXIT exists only in generation 4) — `_Static_assert`ed.
+
+**The version bump (item 3).** The ruleset hash commits the rule list, not the call layouts
+(`shared/dnac/domain_wire.h`), so C2 alone would not have moved the generation-4 identity. The
+generation-4 SYSTEM descriptor is **v10** (rules {1..9} — op 10 gone, D1), CORE **v8** (CORE decodes
+the sibling calls); generations 1-3 are untouched. The skipped numbers (SYSTEM 9, CORE 7 were the
+never-activated generation-4 values) are legal: the selfcheck requires only strictly increasing
+versions per domain. Pins, from the independent oracle `shared/dnac/tests/storage_oracle.py`
+(control C1-C12 green; output `storage_oracle_out.txt`):
+
+| pin | value |
+|---|---|
+| S1 `SYS_METER_POLICY_DIGEST_GST` (ops 1..9 weight 1) | `0aa4c690a05af882…25922766` — byte-equal to the EVM generation's policy (the same op set); the selfcheck requires each SYSTEM entry's own sealed policy, never distinct digests |
+| S2 `SYS_RULESET_HASH_GST` (SYSTEM v10) | `a012cc08bbf96524fa2dace331921f9d39107aa52643fc99392c14146ef09159a54d11502d538d424f1e5bde9a493e2abab2738bf20c3e261fe5627c09bb662a` |
+| S3 `CORE_RULESET_HASH_GST` (CORE v8) | `db32614f1eb4818d7609e15f0130dec652362196a1d416a7b8ea4546a64abf9ac08b0b76cc9c0b62e1a47a3a7cf04b0982d299501cbf800f12849f64a0f991d1` |
+| D4 `DNAC_CFG_RULESET_GEN_ROLES_D` (K8 owner; `hf6_vote_oracle.py`, 296-B preimage unchanged) | `0x5922111a3501f58b` = 6422714822839891339 |
+| D4, harness test owner `2cca88c4…ee196b93` (`--owner`; `test_hf4_table` KAT) | `0x2a3351e7325932f1` = 3040864226829218545 |
+
+`nodus/include/nodus/nodus_ruleset_pins.h` was regenerated by `make regen_ruleset_pins` (G4 versions
+10u / 8u, op count 9, the same three values). The web wallet re-pins in its own session.
+
+**Client** (`src/client/nodus_v2_stake.{c,h}`): the three calls carry `owner_fp` = SHA3-512(signer)
+(kind 1) or the multisig address (kind 3); the decoder refuses an `owner_fp` that is not the
+identity. ROTATE is gone (`NODUS_V2_STAKE_OP_ROTATE`, `NODUS_V2_ROTATE_CALL_LEN`, every arm — op 10 is
+`ERR_OP`); the consent container refuses op 2. `nodus_v2_msig.c`: `review2` refuses a change output to
+anyone but the vault (`ERR_CALL`); `assemble` / `assemble2` refuse (`ERR_ARG`, nothing written) a
+target blob whose count byte is not `n_sig` or whose length cannot hold the slots.
+
+**`msig sign` verifies the inputs (item 5 — Astra's objection, agreed).** C2 binds the SYSTEM owner;
+the FUNDING side cannot be bound in call bytes without touching live v1 SPEND hashing, so the signer
+checks it: `nodus-cli -s <node> msig sign` (v1 and v2) prints the chain id (`--chain-id <hex64>` must
+equal it), opens a session to `-s` with the co-signer's own key (a descriptor member), requires the
+node's chain id == the export's, and requires EVERY input nullifier in the vault's coin set
+(`nodus_client_dnac_msig_utxo`, one page of at most `NODUS_DNAC_MAX_UTXO_RESULTS` coins, amount DESC);
+each input's amount / token / lock is printed from the node's answer. No `-s`, an unsupported or
+refused query, another chain, or one input not in the page (truncated or not) → nothing is signed; no
+flag skips it (`msig_inputs_verify`). The chain itself still accepts a funding leg whose descriptor
+was swapped to the coins' real owner (`rtn_input_owned`); a protocol-level binding (the descriptor in
+the kind-3 auth context) is a separate height-activated hard fork, recorded, not done.
+
+**CLI removals:** `v2-envelope rotate`, `validator consent --op rotate` and `--subject` (usage and
+help too).
+
+**Determinism**: the new exec rule reads only the call bytes and the one row the plan already reads;
+the pins are compile-time literals re-derived by the selfcheck; nothing reads a clock or a cache.
+
+**Tests** (written, NOT run by the author): `test_hf6_calls` (C2 owner mismatch kind 1 both ways,
+the kind-3 descriptor swap both ways, 128 / 130 ± 1 and the pre-C2 64 / 66 refused, the C2 lengths
+refused under generation 3), `test_storage_reg` (the same for STORAGE_EXIT), `test_hf6_msig_owner`
+(O2 UNSTAKE / VALIDATOR_UPDATE and O3 STORAGE_EXIT under kind 3; N4 the descriptor swap with REAL
+signatures — SYSTEM refused, CORE accepted and labelled as the gap item 5 closes; N5 review2
+change-owner and assemble2 count refusals), `test_v2_stake_client` (layouts, decode refusals, a chain
+C2 mismatch, op 10 `ERR_OP`, the container's op-2 refusal), `test_v2_msig` M6 (assemble count),
+`test_storage_cli`, `test_storage_b2`, `test_hf6_rotate`, `test_hf4_table` / `test_v2_native` K7 (the
+versions, the GST = GEVM policy equality, both D4 KATs). ⚠ The Genesis Protocol scenario
+`test_cmt_multisig.sh` calls `msig sign` without `-s` and is refused until it passes one (stagef
+README row).
 
 ### HF-6 6f-1 client — `validator consent`, `v2-envelope stake2 | rotate` (branch `hf6` only — not versioned, not voted)
 
-⚠ **HF-6 D1:** the chain no longer accepts ROTATE (op 10 is owned by no generation — section "HF-6
-D1" above); the client's `--op rotate` / `v2-envelope rotate` below still build it until the next
-package (D2) removes them, and every such envelope is refused at admission.
+⚠ **HF-6 D1 / D2:** the chain no longer accepts ROTATE (op 10 is owned by no generation — section
+"HF-6 D1" above) and D2 removed the client's `--op rotate` / `v2-envelope rotate` / `--subject` and
+`NODUS_V2_STAKE_OP_ROTATE` (section "HF-6 D2"); the ROTATE text below is history.
 
 The minimal client path the 6f harness needs (plan `tasks/hf6-slice6-plan.md` §2 "6f", §5 B6), brought
 forward from slice 7; storage consent (op 3) and the Connect screens stay in slice 7. Design rev 6 §2
@@ -7904,8 +7983,8 @@ decision moves: the chain side is sub-slice 3c's.
 |---|---|---|---|
 | DELEGATE 2 | `delegator_fp ‖ validator_id ‖ amount` = 136 | lock = amount | delegator_fp (`rtn_delegate2_exec`) |
 | UNDELEGATE 4 | the same 136 | fee-only; the chain creates the release coin to delegator_fp (`rtn_sysfund_release_coin`) | delegator_fp (`rtn_undelegate2_exec`) |
-| UNSTAKE 3 | `validator_id` = 64 | fee-only | the row's owner_fp (`rtn_unstake2_exec`) |
-| VALIDATOR_UPDATE 5 | `validator_id ‖ commission u16` = 66 | fee-only | the row's owner_fp (`rtn_vupd2_exec`) |
+| UNSTAKE 3 | `validator_id ‖ owner_fp` = 128 (64 before HF-6 D2) | fee-only | the call's owner_fp, which must be the row's (`rtn_unstake2_exec`) |
+| VALIDATOR_UPDATE 5 | `validator_id ‖ owner_fp ‖ commission u16` = 130 (66 before HF-6 D2) | fee-only | the call's owner_fp, which must be the row's (`rtn_vupd2_exec`) |
 
 delegator_fp = SHA3-512 of the signing key (kind 1 — the delegator IS the signer). The request names
 the validator through the existing `validator_id` field (no struct grows); `commission_bps` carries the
@@ -8045,7 +8124,8 @@ refuses NULL inputs, `n_consts > 64`, and any preimage whose length is not
 `DNA_ROLEGEN_PREIMAGE_LEN(n)`. The witness wrapper `nodus_runtime_gen4_vote_digest`
 (`nodus_witness_runtime.c`, EVM builds) feeds it the compiled generation-4 pins, the compiled owner
 and `GEN4_VOTE_CONSTS` (the nine NAMED constants in §8.1's order, `_Static_assert` count 9). The
-literal `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x4dc61072d5982acd` (5604184871704996557) is the `D4 =` line
+literal `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x5922111a3501f58b` (6422714822839891339, since HF-6 D2 —
+`0x4dc61072d5982acd` = 5604184871704996557 before it, over the SYSTEM v9 / CORE v7 pins) is the `D4 =` line
 of the INDEPENDENT oracle `shared/dnac/tests/hf6_vote_oracle.py` (S2 / S3 from `storage_oracle.py`,
 owner K8) — never this build's encoder; the plan author's separate scratch derivation gave the same
 number. Two binaries that differ in a generation-4 pin, the 3 → 4 procedure, the owner or one of the
@@ -8061,7 +8141,8 @@ param-16 trigger (done: deleted in 8c, section "HF-6 slice 8c").
 the literal with that owner's D4, and a build that overrides only one refuses to start on every node
 (the selfcheck row). `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both flags; it takes
 the D4 from `hf6_vote_oracle.py --owner <fp>` and never computes it in bash (the 2026-10-12 harness
-owner `2cca88c4…ee196b93` → `0x4fc24934a9155c64`). Production defines neither.
+owner `2cca88c4…ee196b93` → `0x2a3351e7325932f1` since HF-6 D2, `0x4fc24934a9155c64` before).
+Production defines neither.
 
 **Byte-identical.** Every descriptor, pin, the pins header, D2, the EVM D, the storage dev literal,
 every chain-config rule and every committed block: nothing on the vote path or in the engine reads
@@ -8069,8 +8150,8 @@ the new literal yet.
 
 **Tests** (written, NOT run by the builder). `test_hf4_table` section 6'': constructor over the
 compiled pins + compiled owner + the test's own nine-constant array == the wrapper == the literal, and
-— only under `DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT` — == `0x4dc61072d5982acd`; the harness owner passed
-explicitly == `0x4fc24934a9155c64` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) == 296`; NULL and
+— only under `DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT` — == `0x5922111a3501f58b` (HF-6 D2); the harness
+owner passed explicitly == `0x2a3351e7325932f1` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) == 296`; NULL and
 `n_consts > 64` refused; generation, base, either hash, spec, `n_consts`, one owner byte and each
 constant move the value; D4 differs from D2, the EVM D and the storage D. `test_v2_native` K7: the K8
 literal (owner-default builds). Both prove the C constructor agrees with the oracle, not that §8.1 is
@@ -8086,7 +8167,7 @@ change: the moment 16 is retired every fixture and both harness scenarios reach 
 
 **Param 18 `DNAC_CFG_RULESET_GEN_ROLES` (`dnac.h`).** On the read list
 (`dnac_cfg_param_read_by_consensus`); scalar rule EXACTLY `DNAC_CFG_RULESET_GEN_ROLES_D` (D4,
-`0x4dc61072d5982acd`) in `nodus_chain_config_scalar_rules` and the client mirror
+`0x5922111a3501f58b` since HF-6 D2) in `nodus_chain_config_scalar_rules` and the client mirror
 (`dnac_tx_verify_chain_config_rules`); grace ERGONOMIC (its own case); `CC_PARAM_RULESET_GEN_ROLES`
 `_Static_assert`ed to the dnac id. Stateful (`nodus_chain_config_stateful_rules_ex`, its own case —
 not a fall-through into param 9's), each a −1 verdict:
@@ -8239,8 +8320,9 @@ owner every check compares (the consent's owner, the validator row's, the storag
 and the coins are the named ones (`dnac_utxo` answers the session's own fingerprint only — the
 `spend --msig` rule; the chain checks each input). `msig sign` and `msig combine` recognise a v2 export
 by its first line: sign prints both legs decoded (op, validator_id, owner / delegator, key hashes, the
-consent expiry, commission, bond / amount, inputs, change, digests, the inputs-not-verified WARNING)
-and signs every digest; combine checks every signature, assembles, runs `nodus_rt_auth_dsa87_v1` on
+consent expiry, commission, bond / amount, inputs, change, digests) and — since HF-6 D2 — the chain id,
+then verifies every input against the vault's coin set on `-s` (section "HF-6 D2"; the
+inputs-not-verified WARNING is gone) and signs every digest; combine checks every signature, assembles, runs `nodus_rt_auth_dsa87_v1` on
 every leg (satisfied; the SYSTEM leg also no foreign signer) and submits. `validator consent` /
 `storage consent` take `--msig <descriptor>` as the owner (exactly one of `--owner` / `--msig`).
 
@@ -9140,8 +9222,10 @@ audited** (independent oracle `shared/dnac/tests/multisig_oracle.py`).
 - **CLI (F6.1)**, `nodus-cli`: `msig address` (offline), `v2-envelope
   spend --msig` (UNSIGNED envelope + export; coins named explicitly with
   `--in nullifier:amount`, because `dnac_utxo` lists only the session's
-  own fingerprint), `msig sign` (offline, re-derives the digest and
-  refuses a mismatch), `msig combine` (exactly the K signatures the
+  own fingerprint), `msig sign` (re-derives the digest and refuses a
+  mismatch; offline until HF-6 D2, which makes it verify every input
+  against the vault's coins on `-s` before signing — section "HF-6 D2"),
+  `msig combine` (exactly the K signatures the
   export fixed — auth_len is signed — ascending, the chain's auth hook run
   locally, then submitted over any session). **Since 2026-10-03** the
   bodies of the four steps live in the shared client library
