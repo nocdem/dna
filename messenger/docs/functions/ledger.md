@@ -598,7 +598,7 @@ A rotation khan A3 accepts for a validator with no seat in S(F) = S(U − E) no 
 | `int nodus_witness_v2_epoch_boundary_apply(...)` | **CHANGED (behaviour), signature unchanged:** step 1d may delete role-1 rows (A8); step 3d deletes the A8 voters' attendance rows. Fault stages unchanged (F61 after 1d, F62 after 3d). |
 | `nodus_validator_v2_rotate_apply`, `nodus_validator_v2_key_release`, `nodus_validator_v2_key_sweep_previous`, `nodus_validator_v2_key_rotated_ids` | **Unchanged behaviour** (contract comments updated: the old key's row is the caller's — A8 at U or A2 at U + E). |
 
-### 5b.22 HF-6 — a multisig (kind-3) OWNER for the owner operations: builder, v2 co-sign files, CLI (decision `docs/plans/decisions/2026-09-29-general-multisig.md`, addendum "çok bacaklı ortak imza dosyası v2", operator 2026-10-13; design rev 6 §1.3; branch `hf6-msig`, not versioned)
+### 5b.23 HF-6 — a multisig (kind-3) OWNER for the owner operations: builder, v2 co-sign files, CLI (decision `docs/plans/decisions/2026-09-29-general-multisig.md`, addendum "çok bacaklı ortak imza dosyası v2", operator 2026-10-13; design rev 6 §1.3; branch `hf6-msig`, not versioned)
 
 No consensus change: the chain already accepts a kind-3 owner at generation 4 (`rtn_sys_owner_auth`, the generation-4 SYSTEM allowlist {1,2,3}). The kind-1 builder path and the v1 multisig files / functions are unchanged. Tests: `nodus/tests/test_hf6_msig_owner.c` (NEW, EVM builds). Architecture: `nodus/docs/ARCHITECTURE.md` "HF-6 multisig owner".
 
@@ -977,7 +977,7 @@ A read-only display field: how many of a validator's `NODUS_MAX_DELEGATORS_PER_V
 
 ## 17. Shared vaults — the general-multisig client library (`nodus/src/client/nodus_v2_msig.h`, `nodus/src/client/nodus_v2_msig.c`; decision `docs/plans/decisions/2026-09-29-general-multisig.md`)
 
-I/O-free like §11 / §13 / §15.9: the bodies of nodus-cli `msig address`, `v2-envelope spend --msig`, `msig sign` and `msig combine`, moved out unchanged in behaviour (nodus-cli calls them); the web wallet's `send.wasm` compiles the same file (`web-wallet/crypto/nodus-send-wasm.c` "VAULTS"). No stdio, no clock, no global RNG (output seeds from the caller's `rand`). Test: `nodus/tests/test_v2_msig.c`. The v2 multi-leg functions (`*2`, the HF-6 multisig owner — §5b.22) live in the same file; since then it includes `client/nodus_v2_stake.h` (review2 decodes the owner operation with `nodus_v2_stake_decode`), so any build of `nodus_v2_msig.c` must also compile `nodus_v2_stake.c` (the wallet's `send.wasm` already does).
+I/O-free like §11 / §13 / §15.9: the bodies of nodus-cli `msig address`, `v2-envelope spend --msig`, `msig sign` and `msig combine`, moved out unchanged in behaviour (nodus-cli calls them); the web wallet's `send.wasm` compiles the same file (`web-wallet/crypto/nodus-send-wasm.c` "VAULTS"). No stdio, no clock, no global RNG (output seeds from the caller's `rand`). Test: `nodus/tests/test_v2_msig.c`. The v2 multi-leg functions (`*2`, the HF-6 multisig owner — §5b.23) live in the same file; since then it includes `client/nodus_v2_stake.h` (review2 decodes the owner operation with `nodus_v2_stake_decode`), so any build of `nodus_v2_msig.c` must also compile `nodus_v2_stake.c` (the wallet's `send.wasm` already does).
 
 | Item | Description |
 |------|-------------|
