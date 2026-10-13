@@ -156,7 +156,8 @@ static int g_checks = 0;
 #define OP10_LEN  7291u     /* the removed ROTATE call's length: any bytes
                              * of it are refused before they are parsed  */
 #define STK_LEN   7301u     /* design §2 (K7): 64+2592+4627+8+2+8        */
-#define UNS_LEN   64u       /* the generation-4 UNSTAKE: validator_id    */
+#define UNS_LEN   128u      /* the generation-4 UNSTAKE: validator_id ‖
+                             * owner_fp (khan decision 2026-10-13 "C2")  */
 
 /* restated from nodus_witness_rt_native.c (static there) */
 #define V2_REC_LEN    5389u
@@ -1038,6 +1039,7 @@ static int t_engine(void) {
     CHECK(vid_expect(chain32, intent, vid_a) == 0, "V_A's validator_id");
     h = 5;
     memcpy(call, vid_a, 64);
+    memcpy(call + 64, g_k[KO].fp, 64);      /* the owner (C2)           */
     CHECK(env_ok(&A, &B, 6, DNA_SYSRULE_UNSTAKE, call, UNS_LEN, R3, NULL)
               == 0, "block 6: V_A's UNSTAKE applies");
     h = 6;

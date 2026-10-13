@@ -254,9 +254,11 @@
  * through the same compiled parsers. These are the layouts of
  * GENERATIONS 1-3. HF-6 sub-slice 3c: under the HF-6 generation (>=
  * NODUS_RT_GEN_STORAGE) ops 2-5 take the 64-byte-identity layouts of
- * design rev 6 §2 (136 / 64 / 136 / 66 bytes — "the generation-4 calls of
- * ops 2-5" block below), authorized by the row / delegation OWNER
- * (rtn_sys_owner_auth, kind 1 or kind 3), on adapter ops 13 / 14 / 15;
+ * design rev 6 §2 (136 / 128 / 136 / 130 bytes — "the generation-4 calls
+ * of ops 2-5" block below; UNSTAKE and VALIDATOR_UPDATE carry the owner,
+ * khan decision 2026-10-13 "C2"), authorized by the row / delegation
+ * OWNER (rtn_sys_owner_auth, kind 1 or kind 3), on adapter ops 13 / 14 /
+ * 15;
  * HF-6 slice 4: STAKE takes the 7301-byte owner + node-consent layout
  * (owner_fp ‖ consensus_pk ‖ consent_sig ‖ expiry ‖ commission ‖ bond)
  * on adapter ops 7 / 13 / 17 (rtn_stake2_exec). ROTATE_CONSENSUS_KEY
@@ -949,14 +951,21 @@ _Static_assert(RTN_SYS_VUPD_CALL_LEN == 2594u,
                "VALIDATOR_UPDATE call length drifted");
 /** HF-6 slice 6b-1 — the storage record calls under generation 4 (design
  *  rev 6 §2 table and §11.3 / §11.5; layouts APPROVED, Kurultay #16 khan
- *  decision 1 "REGISTER 7299 / EXIT 64"), the only storage layouts any
+ *  decision 1 "REGISTER 7299 / EXIT 64"; EXIT grew to 128 by the khan
+ *  decision of 2026-10-13, below), the only storage layouts any
  *  generation accepts (the ops exist only from generation 4; the storage-
  *  reward-v1 node-key layouts, 2664 / 2592 bytes, were never accepted on a
  *  chain and are gone):
  *    STORAGE_REGISTER (op 7) owner_fp[64] ‖ node_pk[2592] ‖
  *                            consent_sig[4627] ‖ consent_expiry u64 ‖
  *                            bond u64 = 7299 bytes;
- *    STORAGE_EXIT     (op 8) node_fp[64] = 64 bytes (the registry key).
+ *    STORAGE_EXIT     (op 8) node_fp[64] ‖ owner_fp[64] = 128 bytes (the
+ *                            registry key and the owner the signers act
+ *                            for — khan decision 2026-10-13, Kurultay #18
+ *                            item 2 "C2": the kind-3 descriptor is not in
+ *                            the signed context, so the owner is named in
+ *                            the signed call bytes and the exec requires it
+ *                            to equal the committed row's owner).
  *  Both exact-length, both decoded here for BOTH domains' hooks (the CORE
  *  funding leg reads the bond from the SIBLING call through
  *  rtn_sys_call_flow). REGISTER is two bytes shorter than the generation-4
@@ -965,13 +974,13 @@ _Static_assert(RTN_SYS_VUPD_CALL_LEN == 2594u,
                                       (uint32_t)DNA_VALBIND_PUBKEY_LEN +    \
                                       (uint32_t)DNA_VALBIND_SIG_LEN +       \
                                       8u + 8u)
-#define RTN_SYS_STEXIT2_CALL_LEN     64u
+#define RTN_SYS_STEXIT2_CALL_LEN     (64u + 64u)
 _Static_assert(RTN_SYS_STREG2_CALL_LEN == 7299u,
                "STORAGE_REGISTER call length drifted from design §2 / "
                "§11.3 (7299)");
-_Static_assert(RTN_SYS_STEXIT2_CALL_LEN == 64u,
-               "STORAGE_EXIT call length drifted from design §2 / §11.5 "
-               "(64)");
+_Static_assert(RTN_SYS_STEXIT2_CALL_LEN == 128u,
+               "STORAGE_EXIT call length drifted from design §2 (khan "
+               "decision 2026-10-13: node_fp ‖ owner_fp = 128)");
 _Static_assert(RTN_SYS_STAKE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_DELEGATE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_UNSTAKE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
@@ -1189,29 +1198,41 @@ static int rtn_vupd_parse(const uint8_t *p, uint32_t len,
  * §2 (APPROVED, K7): every identity is a 64-byte value, never a pubkey —
  *   DELEGATE   (op 2) delegator_fp[64] ‖ validator_id[64] ‖ amount u64 = 136
  *   UNDELEGATE (op 4) same layout                                    = 136
- *   UNSTAKE    (op 3) validator_id[64]                               =  64
- *   VALIDATOR_UPDATE (op 5) validator_id[64] ‖ commission u16        =  66
- * BE, exact length. Under generation >= NODUS_RT_GEN_STORAGE (the HF-6
- * generation — design §8: ONE generation 4 carries storage and the
- * validator role) these are the ONLY accepted layouts of ops 2-5 and the
- * legacy pubkey layouts above are refused; under generations 1-3 the
- * reverse. The two length sets are disjoint (136/64/66 vs 5192/2592/2594),
- * which is what lets the read-only describer tell an APPLIED leg's format
- * from its length alone (rtn_sys_call_gen_of). STAKE (op 1) gets its
- * generation-4 layout in slice 4 (RTN_SYS_STAKE_V2_CALL_LEN, 7301 —
- * disjoint from the legacy 2666; rtn_stake2_parse below). */
+ *   UNSTAKE    (op 3) validator_id[64] ‖ owner_fp[64]                = 128
+ *   VALIDATOR_UPDATE (op 5) validator_id[64] ‖ owner_fp[64] ‖
+ *                      commission u16                                = 130
+ * BE, exact length. UNSTAKE and VALIDATOR_UPDATE carry the OWNER the
+ * signers act for (khan decision 2026-10-13, Kurultay #18 item 2 "C2";
+ * design §2 "DEĞİŞİKLİK — han kararı 2026-10-13"): the kind-3 descriptor
+ * bytes are not in the signed auth context (shared/dnac/env_wire.c — only
+ * auth_len is), so an owner taken from committed state alone would let the
+ * signatures of co-members of two vaults be replayed under the other
+ * vault's descriptor; with owner_fp in the intent-committed call the exec
+ * requires owner_fp == the committed row's owner (-1 otherwise) and
+ * authorizes against owner_fp. Under generation >= NODUS_RT_GEN_STORAGE
+ * (the HF-6 generation — design §8: ONE generation 4 carries storage and
+ * the validator role) these are the ONLY accepted layouts of ops 2-5 and
+ * the legacy pubkey layouts above are refused; under generations 1-3 the
+ * reverse. The two length sets are disjoint (136/128/130 vs
+ * 5192/2592/2594), which is what lets the read-only describer tell an
+ * APPLIED leg's format from its length alone (rtn_sys_call_gen_of). STAKE
+ * (op 1) gets its generation-4 layout in slice 4 (RTN_SYS_STAKE_V2_CALL_LEN,
+ * 7301 — disjoint from the legacy 2666; rtn_stake2_parse below). */
 #define RTN_SYS_DELEGATE_V2_CALL_LEN  (64u + 64u + 8u)
-#define RTN_SYS_UNSTAKE_V2_CALL_LEN   64u
-#define RTN_SYS_VUPD_V2_CALL_LEN      (64u + 2u)
+#define RTN_SYS_UNSTAKE_V2_CALL_LEN   (64u + 64u)
+#define RTN_SYS_VUPD_V2_CALL_LEN      (64u + 64u + 2u)
 _Static_assert(RTN_SYS_DELEGATE_V2_CALL_LEN == 136u &&
-               RTN_SYS_UNSTAKE_V2_CALL_LEN == 64u &&
-               RTN_SYS_VUPD_V2_CALL_LEN == 66u,
-               "generation-4 call lengths drifted from design §2");
+               RTN_SYS_UNSTAKE_V2_CALL_LEN == 128u &&
+               RTN_SYS_VUPD_V2_CALL_LEN == 130u,
+               "generation-4 call lengths drifted from design §2 (khan "
+               "decision 2026-10-13: UNSTAKE 128, VALIDATOR_UPDATE 130)");
 _Static_assert(RTN_SYS_DELEGATE_V2_CALL_LEN != RTN_SYS_DELEGATE_CALL_LEN &&
                RTN_SYS_UNSTAKE_V2_CALL_LEN != RTN_SYS_UNSTAKE_CALL_LEN &&
                RTN_SYS_VUPD_V2_CALL_LEN != RTN_SYS_VUPD_CALL_LEN &&
                RTN_SYS_STAKE_V2_CALL_LEN != RTN_SYS_STAKE_CALL_LEN &&
-               RTN_SYS_DELEGATE_V2_CALL_LEN < RTN_SYS_MAX_CALL_LEN,
+               RTN_SYS_DELEGATE_V2_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
+               RTN_SYS_UNSTAKE_V2_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
+               RTN_SYS_VUPD_V2_CALL_LEN < RTN_SYS_MAX_CALL_LEN,
                "the generation-4 and legacy call lengths must stay disjoint "
                "(the describer dispatches on them) and dominated by the "
                "generation-4 STAKE call (the capacity asserts above)");
@@ -1224,8 +1245,15 @@ typedef struct {
 
 typedef struct {
     const uint8_t *validator_id;         /* [64]                         */
+    const uint8_t *owner_fp;             /* [64] the owner the signers
+                                          * act for (C2)                 */
     uint16_t       new_commission_bps;
 } rtn_vupd2_call_t;
+
+typedef struct {
+    const uint8_t *validator_id;         /* [64]                         */
+    const uint8_t *owner_fp;             /* [64] (C2)                    */
+} rtn_unstake2_call_t;
 
 /** DELEGATE / UNDELEGATE (gen 4): exact length only — the amount rules
  *  are exec's VERDICTs, as for the legacy layout. @return 0 / -1. */
@@ -1238,25 +1266,29 @@ static int rtn_deleg_parse_v2(const uint8_t *p, uint32_t len,
     return 0;
 }
 
-/** UNSTAKE (gen 4): exact length. @return 0 / -1. */
+/** UNSTAKE (gen 4): exact length only — the owner equality and authority
+ *  are the exec's VERDICTs (rtn_unstake2_exec). @return 0 / -1. */
 static int rtn_unstake_parse_v2(const uint8_t *p, uint32_t len,
-                                const uint8_t **validator_id_out) {
+                                rtn_unstake2_call_t *c) {
     if (len != RTN_SYS_UNSTAKE_V2_CALL_LEN) return -1;
-    *validator_id_out = p;
+    c->validator_id = p;
+    c->owner_fp     = p + 64;
     return 0;
 }
 
 /** VALIDATOR_UPDATE (gen 4): the legacy decoder's three rejects, on the
  *  new layout — exact length, an all-zero identity (no SHA3-512 output a
  *  STAKE or the migration writes is all zero), and the bps bound
- *  (rtn_vupd_parse's rationale). @return 0 / -1. */
+ *  (rtn_vupd_parse's rationale). The owner equality and authority are the
+ *  exec's VERDICTs (rtn_vupd2_exec). @return 0 / -1. */
 static int rtn_vupd_parse_v2(const uint8_t *p, uint32_t len,
                              rtn_vupd2_call_t *c) {
     static const uint8_t zero_id[64] = { 0 };
     if (len != RTN_SYS_VUPD_V2_CALL_LEN) return -1;
     if (memcmp(p, zero_id, 64) == 0) return -1;
     c->validator_id       = p;
-    c->new_commission_bps = rtn_get16(p + 64);
+    c->owner_fp           = p + 64;
+    c->new_commission_bps = rtn_get16(p + 128);
     if (c->new_commission_bps > DNAC_COMMISSION_BPS_MAX) return -1;
     return 0;
 }
@@ -1398,13 +1430,21 @@ static int rtn_streg2_parse(const uint8_t *p, uint32_t len,
     return 0;
 }
 
-/** STORAGE_EXIT (op 8, generation 4): the call IS the registry key
- *  node_fp[64]; exact length only. @return 0 / -1 with *node_fp_out
- *  borrowed from the call. */
+typedef struct {
+    const uint8_t *node_fp;              /* [64] the registry key        */
+    const uint8_t *owner_fp;             /* [64] the owner the signers
+                                          * act for (C2)                 */
+} rtn_stexit2_call_t;
+
+/** STORAGE_EXIT (op 8, generation 4): node_fp[64] (the registry key) ‖
+ *  owner_fp[64]; exact length only — the owner equality and authority are
+ *  the exec's VERDICTs (rtn_storage_exit_exec). @return 0 / -1 with both
+ *  pointers borrowed from the call. */
 static int rtn_stexit2_parse(const uint8_t *p, uint32_t len,
-                             const uint8_t **node_fp_out) {
+                             rtn_stexit2_call_t *c) {
     if (len != RTN_SYS_STEXIT2_CALL_LEN) return -1;
-    *node_fp_out = p;
+    c->node_fp  = p;
+    c->owner_fp = p + 64;
     return 0;
 }
 
@@ -1498,7 +1538,7 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
  * as before. ROTATE_CONSENSUS_KEY (10) is a foreign op under every
  * generation (-1, the default — removed from HF-6, decision
  * 2026-10-13-kurultay-18-summary.md item 1). HF-6 slice 6b-1: the storage ops decode their
- * 7299 / 64-byte layouts under generation 4 only — the storage-reward-v1
+ * 7299 / 128-byte layouts under generation 4 only — the storage-reward-v1
  * node-key arms of the legacy switch are gone (unreachable: the ops are
  * owned only by generation 4, and rtn_sysfund_shape refuses the pairing
  * below it).
@@ -1524,8 +1564,8 @@ static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
             return 0;
         }
         case DNA_SYSRULE_UNSTAKE: {
-            const uint8_t *vid = NULL;
-            return rtn_unstake_parse_v2(p, len, &vid);   /* fee-only     */
+            rtn_unstake2_call_t c;
+            return rtn_unstake_parse_v2(p, len, &c);     /* fee-only     */
         }
         case DNA_SYSRULE_UNDELEGATE: {
             rtn_deleg2_call_t c;
@@ -1550,8 +1590,8 @@ static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
             return 0;
         }
         case DNA_SYSRULE_STORAGE_EXIT: {
-            const uint8_t *nfp = NULL;
-            return rtn_stexit2_parse(p, len, &nfp);      /* fee-only     */
+            rtn_stexit2_call_t c;
+            return rtn_stexit2_parse(p, len, &c);        /* fee-only     */
         }
         default:
             break;                       /* the legacy switch below      */
@@ -2158,7 +2198,7 @@ static int rtn_sysfund_shape(const dna_env_view_t *env, uint16_t leg_index,
 
 /* The generation an APPLIED SYSTEM record leg's call bytes prove, for the
  * read-only describer, which holds no runtime (HF-6 3c): ops 1..5 at a
- * generation-4 length (design §2 — 7301 / 136 / 64 / 66, disjoint from
+ * generation-4 length (design §2 — 7301 / 136 / 128 / 130, disjoint from
  * every legacy length; STAKE since slice 4) and the storage record ops
  * (which exist only from NODUS_RT_GEN_STORAGE) read as
  * NODUS_RT_GEN_STORAGE; everything else as the last pre-HF-6 generation,
@@ -5118,8 +5158,11 @@ static int rtn_vupd_read_plan(const dna_env_view_t *env,
  *     never names op 4, 5 or 6;
  *   - authority is rtn_sys_owner_auth: DELEGATE / UNDELEGATE by the call's
  *     delegator_fp, decided BEFORE the reads are judged; UNSTAKE /
- *     VALIDATOR_UPDATE by the observed row's owner_fp, decided AFTER the
- *     mediated read (the owner is committed state, not a call field);
+ *     VALIDATOR_UPDATE by the call's owner_fp, which must EQUAL the
+ *     observed row's owner_fp (a VERDICT, decided AFTER the mediated read
+ *     — khan decision 2026-10-13, Kurultay #18 item 2 "C2": the owner is
+ *     named in the signed call bytes, so a signature is bound to the vault
+ *     it was given for, not to whichever descriptor rides along);
  *   - the pending consensus-key fields (always zero — no key rotation in
  *     HF-6, khan decision 2026-10-13-kurultay-18-summary.md item 4) and
  *     owner_fp are carried through byte for byte (owner_fp is immutable —
@@ -5206,7 +5249,9 @@ static int rtn_val2_only_read_plan(const dna_env_view_t *env,
     const uint32_t len = env->leg[leg_index].call_len;
     if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
     if (env->leg[leg_index].runtime_op == DNA_SYSRULE_UNSTAKE) {
-        if (rtn_unstake_parse_v2(p, len, &vid) != 0) return -1;
+        rtn_unstake2_call_t c;
+        if (rtn_unstake_parse_v2(p, len, &c) != 0) return -1;
+        vid = c.validator_id;
     } else {
         rtn_vupd2_call_t c;
         if (rtn_vupd_parse_v2(p, len, &c) != 0) return -1;
@@ -5465,19 +5510,21 @@ static int rtn_undelegate2_exec(const dna_env_view_t *env,
 }
 
 /** UNSTAKE (gen 4) — rtn_unstake_exec's rule (BONDED → RETIRING,
- *  unstake_commit_block := h) on the generation-4 row; authority = the
- *  row's owner_fp, decided after the read. @return 0 / -1 / -2. */
+ *  unstake_commit_block := h) on the generation-4 row; the call's owner_fp
+ *  must equal the row's owner_fp (C2) and authorizes, decided after the
+ *  read. @return 0 / -1 / -2. */
 static int rtn_unstake2_exec(const dna_env_view_t *env, uint16_t leg_index,
                              const nodus_rt_exec_ctx_t *ctx,
                              const nodus_rt_read_res_t *reads,
                              uint16_t n_reads,
                              uint8_t *res_out, size_t res_cap,
                              size_t *res_len_out) {
-    const uint8_t *vid = NULL;
+    rtn_unstake2_call_t c;
     if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
     if (rtn_unstake_parse_v2(env->buf + env->call_off[leg_index],
-                             env->leg[leg_index].call_len, &vid) != 0)
+                             env->leg[leg_index].call_len, &c) != 0)
         return -1;
+    const uint8_t *vid = c.validator_id;
     if (n_reads != 1 || !reads) return -2;
     const nodus_rt_read_res_t *vr = &reads[0];
     {
@@ -5485,8 +5532,10 @@ static int rtn_unstake2_exec(const dna_env_view_t *env, uint16_t leg_index,
         if (o < 0) return o;
         if (o == 0) return -1;           /* unknown validator            */
     }
-    if (rtn_sys_owner_auth(env, leg_index, ctx,
-                           vr->value + RTN_VAL2_OWNER_OFF) != 0)
+    if (memcmp(c.owner_fp, vr->value + RTN_VAL2_OWNER_OFF, 64) != 0)
+        return -1;                       /* the call names another owner
+                                          * than the committed row (C2)  */
+    if (rtn_sys_owner_auth(env, leg_index, ctx, c.owner_fp) != 0)
         return -1;                       /* not the owner                */
     {
         uint8_t st = vr->value[RTN_VAL2_STATUS_OFF];
@@ -5517,8 +5566,9 @@ static int rtn_unstake2_exec(const dna_env_view_t *env, uint16_t leg_index,
 
 /** VALIDATOR_UPDATE (gen 4) — rtn_vupd_exec's rule (an increase deferred
  *  to max(next boundary, h + 2E), a decrease immediate and clearing the
- *  pending entry, Rule K stamp) on the generation-4 row; authority = the
- *  row's owner_fp, decided after the read. @return 0 / -1 / -2. */
+ *  pending entry, Rule K stamp) on the generation-4 row; the call's
+ *  owner_fp must equal the row's owner_fp (C2) and authorizes, decided
+ *  after the read. @return 0 / -1 / -2. */
 static int rtn_vupd2_exec(const dna_env_view_t *env, uint16_t leg_index,
                           const nodus_rt_exec_ctx_t *ctx,
                           const nodus_rt_read_res_t *reads,
@@ -5540,8 +5590,10 @@ static int rtn_vupd2_exec(const dna_env_view_t *env, uint16_t leg_index,
         if (o < 0) return o;
         if (o == 0) return -1;           /* unknown validator            */
     }
-    if (rtn_sys_owner_auth(env, leg_index, ctx,
-                           vr->value + RTN_VAL2_OWNER_OFF) != 0)
+    if (memcmp(c.owner_fp, vr->value + RTN_VAL2_OWNER_OFF, 64) != 0)
+        return -1;                       /* the call names another owner
+                                          * than the committed row (C2)  */
+    if (rtn_sys_owner_auth(env, leg_index, ctx, c.owner_fp) != 0)
         return -1;                       /* not the owner                */
     {
         uint8_t st = vr->value[RTN_VAL2_STATUS_OFF];
@@ -5855,7 +5907,8 @@ static int rtn_stake2_exec(const dna_env_view_t *env, uint16_t leg_index,
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
  * §11 items 1-5 (call layouts §2, consent §6.1, G11-G13); decisions
  * docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md
- * (khan decisions 1 and 3: REGISTER 7299 / EXIT 64, consent op 3, the
+ * (khan decisions 1 and 3: REGISTER 7299 / EXIT 64 — EXIT 128 since the
+ * khan decision of 2026-10-13, Kurultay #18 item 2 —, consent op 3, the
  * re-registration rule, STORAGE_BOND exact in [100k, 1M] NODUS, default
  * 1M; storage identity = the node key, no storage ROTATE) and the
  * storage-reward-v1 records 2026-10-04-storage-reward-approved.md /
@@ -5945,10 +5998,10 @@ static int rtn_storage_read_plan(const dna_env_view_t *env,
         *n_out = 2;
         return 0;
     }
-    const uint8_t *node_fp = NULL;
-    if (rtn_stexit2_parse(p, len, &node_fp) != 0) return -1;
+    rtn_stexit2_call_t xc;
+    if (rtn_stexit2_parse(p, len, &xc) != 0) return -1;
     if (max_reqs < 1) return -1;
-    rtn_req_set(&reqs_out[0], RTN_SYS_OP_STOR, node_fp,
+    rtn_req_set(&reqs_out[0], RTN_SYS_OP_STOR, xc.node_fp,
                 (uint16_t)RTN_STOR_KEY_LEN);
     *n_out = 1;
     return 0;
@@ -6135,9 +6188,10 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
  * STORAGE_EXIT (op 8, generation 4) — the OWNER takes a storage node out.
  *
  * Rules (design rev 6 §11.5; storage-reward-v1 rev 2.2 §1 / F3), in this
- * order: the 2-leg shape and the exact 64-byte call (the call IS node_fp,
- * the registry key); the row must exist (-1) and be well formed
- * (rtn_stor_rec_ok, -1); authority is the ROW's owner_fp
+ * order: the 2-leg shape and the exact 128-byte call (node_fp, the
+ * registry key, ‖ owner_fp); the row must exist (-1) and be well formed
+ * (rtn_stor_rec_ok, -1); the call's owner_fp must EQUAL the ROW's owner_fp
+ * (-1 — khan decision 2026-10-13, Kurultay #18 item 2 "C2") and authorizes
  * (rtn_sys_owner_auth, kind 1 or 3 — the node key is NOT a signer, and no
  * node consent is asked: the UNSTAKE twin); the row must be ACTIVE
  * (EXITING or RELEASED refuses — this is also the duplicate-exit
@@ -6166,11 +6220,12 @@ static int rtn_storage_exit_exec(const dna_env_view_t *env,
                                  uint16_t n_reads,
                                  uint8_t *res_out, size_t res_cap,
                                  size_t *res_len_out) {
-    const uint8_t *node_fp = NULL;
+    rtn_stexit2_call_t xc;
     if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
     if (rtn_stexit2_parse(env->buf + env->call_off[leg_index],
-                          env->leg[leg_index].call_len, &node_fp) != 0)
+                          env->leg[leg_index].call_len, &xc) != 0)
         return -1;
+    const uint8_t *node_fp = xc.node_fp;
 
     /* ── the mediated read (the plan's only one: STOR by the call) ──── */
     if (n_reads != 1 || !reads) return -2;
@@ -6188,9 +6243,12 @@ static int rtn_storage_exit_exec(const dna_env_view_t *env,
     if (!rtn_stor_rec_ok(sr->value, node_fp)) return -1;   /* write-frozen
                                           * malformed row                */
 
-    /* ── authority: the COMMITTED row's owner (§11.5) ───────────────── */
-    if (rtn_sys_owner_auth(env, leg_index, ctx,
-                           sr->value + RTN_STOR_OWNER_OFF) != 0)
+    /* ── authority: the call's owner, which must be the COMMITTED row's
+     *    owner (§11.5; C2) ─────────────────────────────────────────── */
+    if (memcmp(xc.owner_fp, sr->value + RTN_STOR_OWNER_OFF, 64) != 0)
+        return -1;                       /* the call names another owner
+                                          * than the committed row (C2)  */
+    if (rtn_sys_owner_auth(env, leg_index, ctx, xc.owner_fp) != 0)
         return -1;                       /* not the owner                */
 
     if (sr->value[RTN_STOR_STATUS_OFF] != DNA_V2_STORAGE_ACTIVE)
@@ -9546,10 +9604,10 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
             return 0;
         }
         case DNA_SYSRULE_UNSTAKE: {
-            const uint8_t *vid = NULL;
+            rtn_unstake2_call_t c;
             if (rtn_sys_stake_shape(env, leg) != 0) return -1;
-            if (rtn_unstake_parse_v2(p, len, &vid) != 0) return -1;
-            memcpy(out->rec_validator_fp, vid, 64);
+            if (rtn_unstake_parse_v2(p, len, &c) != 0) return -1;
+            memcpy(out->rec_validator_fp, c.validator_id, 64);
             out->rec_v2 = 1;
             out->rec = NODUS_RT_DESC_REC_UNSTAKE;
             return 0;
@@ -9583,9 +9641,9 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
             return 0;
         }
         case DNA_SYSRULE_STORAGE_EXIT: {
-            const uint8_t *nfp = NULL;
+            rtn_stexit2_call_t c;
             if (rtn_sys_stake_shape(env, leg) != 0) return -1;
-            if (rtn_stexit2_parse(p, len, &nfp) != 0) return -1;
+            if (rtn_stexit2_parse(p, len, &c) != 0) return -1;
             out->rec = NODUS_RT_DESC_REC_NONE;
             return 0;
         }

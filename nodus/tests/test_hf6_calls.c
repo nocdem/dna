@@ -9,8 +9,10 @@
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
  * §1.3 (owner rule, kind-3 address equality), §2 (call layouts: DELEGATE /
  * UNDELEGATE delegator_fp[64] ‖ validator_id[64] ‖ amount u64 = 136,
- * UNSTAKE validator_id[64] = 64, VALIDATOR_UPDATE validator_id[64] ‖
- * commission u16 = 66), §6.3/§6.4 (the row values); plan
+ * UNSTAKE validator_id[64] ‖ owner_fp[64] = 128, VALIDATOR_UPDATE
+ * validator_id[64] ‖ owner_fp[64] ‖ commission u16 = 130 — the owner_fp
+ * since the khan decision of 2026-10-13, docs/plans/decisions/2026-10-13-
+ * kurultay-18-summary.md item 2 "C2"), §6.3/§6.4 (the row values); plan
  * tasks/hf6-slice3-plan.md §2 "3c" / "3e" + §3; decisions D3 (Kurultay #16
  * summary — the HF-8 self-delegation exemption under generation 4 is
  * delegator_fp == owner_fp(validator_id), judged on the SYSTEM side, sub-
@@ -39,7 +41,15 @@
  *      non-delegator (kind 1); UNSTAKE / VALIDATOR_UPDATE by a non-owner
  *      (kind 1); kind 3 with a satisfied descriptor of the WRONG address,
  *      an UNSATISFIED one, an extra foreign signer (D6 bit clear), TWO
- *      descriptors; a kind-2 leg; a missing verdict.
+ *      descriptors; a kind-2 leg; a missing verdict. C2: UNSTAKE /
+ *      VALIDATOR_UPDATE whose call owner_fp is not the committed row's —
+ *      kind 1 signed by the call's owner AND by the row's owner, and kind
+ *      3 with the row's vault descriptor swapped in for the call's vault
+ *      (the "descriptor swap": the signatures of co-members of two vaults
+ *      cannot be redirected) and with the call's vault signing; the 128 /
+ *      130-byte calls ± 1, the pre-C2 64 / 66-byte calls, and the C2
+ *      lengths under generation 3 (the length sets stay disjoint from the
+ *      legacy 2592 / 2594).
  *   A4 the CORE SYSFUND leg: a STAKE sibling planned by the generation-4
  *      CORE read plan since slice 4 (refused by it in 3c) and by
  *      generation 3; a generation-4
@@ -346,12 +356,22 @@ static uint32_t deleg2_call(uint8_t *dst, const uint8_t dfp[64],
     put64(dst + 128, amount);
     return 136u;
 }
-static uint32_t vupd2_call(uint8_t *dst, const uint8_t vid[64],
-                           uint16_t bps) {
+/* C2 (khan decision 2026-10-13, Kurultay #18 item 2): UNSTAKE =
+ * validator_id ‖ owner_fp (128 B), VALIDATOR_UPDATE = validator_id ‖
+ * owner_fp ‖ commission u16 (130 B) */
+static uint32_t unstake2_call(uint8_t *dst, const uint8_t vid[64],
+                              const uint8_t owner[64]) {
     memcpy(dst, vid, 64);
-    dst[64] = (uint8_t)(bps >> 8);
-    dst[65] = (uint8_t)bps;
-    return 66u;
+    memcpy(dst + 64, owner, 64);
+    return 128u;
+}
+static uint32_t vupd2_call(uint8_t *dst, const uint8_t vid[64],
+                           const uint8_t owner[64], uint16_t bps) {
+    memcpy(dst, vid, 64);
+    memcpy(dst + 64, owner, 64);
+    dst[128] = (uint8_t)(bps >> 8);
+    dst[129] = (uint8_t)bps;
+    return 130u;
 }
 static uint32_t stake1_call(uint8_t *dst, int key, uint16_t bps,
                             uint64_t bond) {
@@ -639,30 +659,44 @@ static int t_hooks(void) {
                            (uint32_t)((int)cl + d), 1) == 0, "env");
             CHECK(sys_plan(s4, &e, rq, &n) == -1, "UNDELEGATE 136 ± 1");
         }
-        memcpy(call, vid, 64);
-        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, 64, 1) == 0, "env");
+        cl = unstake2_call(call, vid, g_k[KO].fp);
+        CHECK(cl == 128u, "gen-4 UNSTAKE is 128 bytes (C2)");
+        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, cl, 1) == 0, "env");
         CHECK(sys_plan(s4, &e, rq, &n) == 0 && n == 1 &&
               rq[0].op_id == OP_VAL2 && memcmp(rq[0].key, vid, 64) == 0,
               "UNSTAKE: op 13 by validator_id");
-        for (int d = -1; d <= 1; d += 2) {
-            CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call,
-                           (uint32_t)(64 + d), 1) == 0, "env");
-            CHECK(sys_plan(s4, &e, rq, &n) == -1, "UNSTAKE 64 ± 1 plan");
-            CHECK(sys_exec(s4, &e, 1, NULL) == -1, "UNSTAKE 64 ± 1 exec");
+        /* ±1 and the pre-C2 64-byte layout: every one refused */
+        {
+            const int bad_len[3] = { 127, 129, 64 };
+            for (int d = 0; d < 3; d++) {
+                CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call,
+                               (uint32_t)bad_len[d], 1) == 0, "env");
+                CHECK(sys_plan(s4, &e, rq, &n) == -1,
+                      "UNSTAKE 128 ± 1 / pre-C2 64 plan");
+                CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+                      "UNSTAKE 128 ± 1 / pre-C2 64 exec");
+            }
         }
-        cl = vupd2_call(call, vid, 300);
+        cl = vupd2_call(call, vid, g_k[KO].fp, 300);
+        CHECK(cl == 130u, "gen-4 VALIDATOR_UPDATE is 130 bytes (C2)");
         CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl, 1) == 0,
               "env");
         CHECK(sys_plan(s4, &e, rq, &n) == 0 && n == 1 &&
               rq[0].op_id == OP_VAL2 && memcmp(rq[0].key, vid, 64) == 0,
               "VALIDATOR_UPDATE: op 13 by validator_id");
-        for (int d = -1; d <= 1; d += 2) {
-            CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call,
-                           (uint32_t)(66 + d), 1) == 0, "env");
-            CHECK(sys_plan(s4, &e, rq, &n) == -1, "VUPD 66 ± 1 plan");
-            CHECK(sys_exec(s4, &e, 1, NULL) == -1, "VUPD 66 ± 1 exec");
+        {
+            const int bad_len[3] = { 129, 131, 66 };
+            for (int d = 0; d < 3; d++) {
+                CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call,
+                               (uint32_t)bad_len[d], 1) == 0, "env");
+                CHECK(sys_plan(s4, &e, rq, &n) == -1,
+                      "VUPD 130 ± 1 / pre-C2 66 plan");
+                CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+                      "VUPD 130 ± 1 / pre-C2 66 exec");
+            }
         }
-        cl = vupd2_call(call, vid, (uint16_t)(DNAC_COMMISSION_BPS_MAX + 1));
+        cl = vupd2_call(call, vid, g_k[KO].fp,
+                        (uint16_t)(DNAC_COMMISSION_BPS_MAX + 1));
         CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl, 1) == 0,
               "env");
         CHECK(sys_plan(s4, &e, rq, &n) == -1,
@@ -711,6 +745,20 @@ static int t_hooks(void) {
         CHECK(sys_plan(s4, &e, rq, &n) == -1 &&
               sys_exec(s4, &e, 1, NULL) == -1,
               "gen 4: legacy 2594-B VALIDATOR_UPDATE refused");
+        /* the reverse: the C2 lengths are no legacy layout (the length
+         * sets stay disjoint — 128 / 130 vs 2592 / 2594) */
+        cl = unstake2_call(call, vid, g_k[KO].fp);
+        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, cl, 1) == 0, "env");
+        av_k1(KO);
+        CHECK(sys_plan(s3, &e, rq, &n) == -1 &&
+              sys_exec(s3, &e, 1, NULL) == -1,
+              "gen 3: the 128-B UNSTAKE is refused");
+        cl = vupd2_call(call, vid, g_k[KO].fp, 300);
+        CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl, 1) == 0,
+              "env");
+        CHECK(sys_plan(s3, &e, rq, &n) == -1 &&
+              sys_exec(s3, &e, 1, NULL) == -1,
+              "gen 3: the 130-B VALIDATOR_UPDATE is refused");
     }
 
     /* ── A2/A3. DELEGATE ─────────────────────────────────────────── */
@@ -841,10 +889,10 @@ static int t_hooks(void) {
         CHECK(sys_exec(s4, &e, 2, NULL) == -1, "kind 3 foreign signer");
     }
 
-    /* ── A2/A3. UNSTAKE (owner from the row) ──────────────────────── */
+    /* ── A2/A3. UNSTAKE (owner in the call == the row's — C2) ─────── */
     {
-        memcpy(call, vid, 64);
-        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, 64, 1) == 0, "env");
+        uint32_t cl = unstake2_call(call, vid, g_k[KO].fp);
+        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, cl, 1) == 0, "env");
         rd_val2(0, vid, g_k[KO].fp, DNAC_VALIDATOR_ACTIVE, 8 * DLG, 500);
         av_k1(KO);
         CHECK(sys_exec(s4, &e, 1, &ev) == 0 && ev.effect_count == 1 &&
@@ -857,12 +905,40 @@ static int t_hooks(void) {
         av_k1(KX);
         CHECK(sys_exec(s4, &e, 1, NULL) == -1,
               "the consensus key is not the owner");
-        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, 64,
+        /* C2 owner mismatch, kind 1: the call names KD, KD signs, the row
+         * is KO's — refused although the signer matches the call */
+        cl = unstake2_call(call, vid, g_k[KD].fp);
+        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, cl, 1) == 0, "env");
+        av_k1(KD);
+        CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+              "C2 kind 1: call owner != row owner (signer == call owner)");
+        av_k1(KO);
+        CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+              "C2 kind 1: call owner != row owner (signer == row owner)");
+        cl = unstake2_call(call, vid, g_am);
+        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, cl,
                        NODUS_RT_AUTHKIND_DSA87_MSIG_V1) == 0, "env");
         rd_val2(0, vid, g_am, DNAC_VALIDATOR_ELIGIBLE, 8 * DLG, 500);
         av_k3(g_am, 1, 1, 1);
         CHECK(sys_exec(s4, &e, 1, &ev) == 0 && only_new_ops(&ev),
               "kind 3 owner (multisig-owned row)");
+        /* C2 descriptor swap (SYSTEM): the signatures were given for the
+         * vault named in the call (g_an); the row is g_am's and g_am's
+         * satisfied descriptor rides along — refused by the owner
+         * equality, whichever descriptor is presented */
+        cl = unstake2_call(call, vid, g_an);
+        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, cl,
+                       NODUS_RT_AUTHKIND_DSA87_MSIG_V1) == 0, "env");
+        av_k3(g_am, 1, 1, 1);
+        CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+              "C2 kind 3: descriptor swapped to the row's vault, call names "
+              "another vault");
+        av_k3(g_an, 1, 1, 1);
+        CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+              "C2 kind 3: the call's vault signs, the row is another's");
+        cl = unstake2_call(call, vid, g_am);
+        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, cl,
+                       NODUS_RT_AUTHKIND_DSA87_MSIG_V1) == 0, "env");
         av_k3(g_an, 1, 1, 1);
         CHECK(sys_exec(s4, &e, 1, NULL) == -1, "kind 3 wrong address");
         av_k3(g_am, 0, 1, 1);
@@ -876,9 +952,9 @@ static int t_hooks(void) {
         CHECK(sys_exec(s4, &e, 1, NULL) == -1, "repeat (not BONDED)");
     }
 
-    /* ── A2/A3. VALIDATOR_UPDATE (owner from the row) ─────────────── */
+    /* ── A2/A3. VALIDATOR_UPDATE (owner in the call == the row's) ─── */
     {
-        uint32_t cl = vupd2_call(call, vid, 300);
+        uint32_t cl = vupd2_call(call, vid, g_k[KO].fp, 300);
         CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl, 1) == 0,
               "env");
         rd_val2(0, vid, g_k[KO].fp, DNAC_VALIDATOR_ACTIVE, 8 * DLG, 500);
@@ -890,7 +966,7 @@ static int t_hooks(void) {
               get64(ev_val(&ev, 0) + V2_PEFF_OFF) == 0 &&
               get64(ev_val(&ev, 0) + V2_LUPD_OFF) == H,
               "decrease: immediate, Rule K stamp");
-        cl = vupd2_call(call, vid, 700);
+        cl = vupd2_call(call, vid, g_k[KO].fp, 700);
         CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl, 1) == 0,
               "env");
         CHECK(sys_exec(s4, &e, 1, &ev) == 0 &&
@@ -900,12 +976,36 @@ static int t_hooks(void) {
               "increase: deferred to h + 2E");
         av_k1(KD);
         CHECK(sys_exec(s4, &e, 1, NULL) == -1, "a non-owner (kind 1)");
+        /* C2 owner mismatch, kind 1 */
+        cl = vupd2_call(call, vid, g_k[KD].fp, 700);
+        CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl, 1) == 0,
+              "env");
+        CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+              "C2 kind 1: call owner != row owner (signer == call owner)");
+        av_k1(KO);
+        CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+              "C2 kind 1: call owner != row owner (signer == row owner)");
+        cl = vupd2_call(call, vid, g_am, 700);
         CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl,
                        NODUS_RT_AUTHKIND_DSA87_MSIG_V1) == 0, "env");
         rd_val2(0, vid, g_am, DNAC_VALIDATOR_ACTIVE, 8 * DLG, 500);
         av_k3(g_am, 1, 1, 1);
         CHECK(sys_exec(s4, &e, 1, &ev) == 0 && only_new_ops(&ev),
               "kind 3 owner");
+        /* C2 descriptor swap (SYSTEM) */
+        cl = vupd2_call(call, vid, g_an, 700);
+        CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl,
+                       NODUS_RT_AUTHKIND_DSA87_MSIG_V1) == 0, "env");
+        CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+              "C2 kind 3: descriptor swapped to the row's vault, call names "
+              "another vault");
+        av_k3(g_an, 1, 1, 1);
+        CHECK(sys_exec(s4, &e, 1, NULL) == -1,
+              "C2 kind 3: the call's vault signs, the row is another's");
+        cl = vupd2_call(call, vid, g_am, 700);
+        CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl,
+                       NODUS_RT_AUTHKIND_DSA87_MSIG_V1) == 0, "env");
+        av_k3(g_am, 1, 1, 1);
         av_k3(g_an, 1, 1, 1);
         CHECK(sys_exec(s4, &e, 1, NULL) == -1, "kind 3 wrong address");
         av_k3(g_am, 1, 0, 1);
@@ -1117,13 +1217,13 @@ static int t_hooks(void) {
               && d.n_created == 1 &&
               memcmp(d.created[0].owner_hex, g_k[KD].hex, 128) == 0,
               "legacy UNDELEGATE release: hex(SHA3-512(delegator pk))");
-        memcpy(call, vid, 64);
-        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, 64, 1) == 0, "env");
+        cl = unstake2_call(call, vid, g_k[KO].fp);
+        CHECK(hk_build(&e, DNA_SYSRULE_UNSTAKE, call, cl, 1) == 0, "env");
         CHECK(nodus_rt_native_describe_leg(&e.view, 0, H, g_intent, &d) == 0
               && d.rec == NODUS_RT_DESC_REC_UNSTAKE &&
               memcmp(d.rec_validator_fp, vid, 64) == 0,
               "gen-4 UNSTAKE described");
-        cl = vupd2_call(call, vid, 250);
+        cl = vupd2_call(call, vid, g_k[KO].fp, 250);
         CHECK(hk_build(&e, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl, 1) == 0,
               "env");
         CHECK(nodus_rt_native_describe_leg(&e.view, 0, H, g_intent, &d) == 0
@@ -1140,10 +1240,10 @@ static int t_hooks(void) {
 /* a single-leg SYSTEM envelope carrying `blob` as its kind-3 auth */
 static int k3_view(uint8_t *bytes, size_t cap, const uint8_t *blob,
                    size_t blen, dna_env_view_t *v, size_t *len) {
-    static uint8_t call[66];
+    static uint8_t call[130];
     uint8_t vid[64];
     memset(vid, 0xC1, sizeof(vid));
-    uint32_t cl = vupd2_call(call, vid, 100);
+    uint32_t cl = vupd2_call(call, vid, g_am, 100);
     dna_env_leg_in_t leg;
     memset(&leg, 0, sizeof(leg));
     leg.hdr.domain_id = DNA_DOMAIN_SYSTEM;
@@ -1704,11 +1804,11 @@ static int t_engine(void) {
         uint8_t *e2 = NULL;
         size_t l2 = 0;
         uint32_t codes[2];
-        cl = vupd2_call(call, vids, 300);
+        cl = vupd2_call(call, vids, g_k[KS].fp, 300);
         CHECK(st_env(F.w, 9, DNA_SYSRULE_VALIDATOR_UPDATE, call, cl, CV1, KS,
                      &e, &l) == 0, "VUPD by the owner");
-        static uint8_t call2[128];
-        uint32_t cl2 = vupd2_call(call2, vids, 200);
+        static uint8_t call2[130];
+        uint32_t cl2 = vupd2_call(call2, vids, g_k[KD].fp, 200);
         CHECK(st_env(F.w, 9, DNA_SYSRULE_VALIDATOR_UPDATE, call2, cl2, CV2,
                      KD, &e2, &l2) == 0, "VUPD by a non-owner");
         nodus_v2_envelope_t v[2] = { { e, l }, { e2, l2 } };
@@ -1745,8 +1845,8 @@ static int t_engine(void) {
                       "(the call's delegator_fp) and locked");
         }
 
-        memcpy(call, vids, 64);
-        CHECK(st_env(F.w, 11, DNA_SYSRULE_UNSTAKE, call, 64, CX1, KS, &e, &l)
+        cl = unstake2_call(call, vids, g_k[KS].fp);
+        CHECK(st_env(F.w, 11, DNA_SYSRULE_UNSTAKE, call, cl, CX1, KS, &e, &l)
               == 0 && apply1(&F, 11, e, l) == 0,
               "block 11: UNSTAKE by the owner applies");
         CHECK(q_u64(F.w, "SELECT status FROM validators WHERE pubkey_hash = "

@@ -9,7 +9,9 @@
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
  * §11 items 1-5 (identity = the node key; REGISTER v2 7299 B; the exact
  * STORAGE_BOND with 0 < bond <= INT64_MAX; the re-registration rule
- * ⌊(h−1)/E⌋ − ⌊(x−1)/E⌋ >= 2; EXIT v2 64 B by the row's owner), §2 (call
+ * ⌊(h−1)/E⌋ − ⌊(x−1)/E⌋ >= 2; EXIT v2 by the row's owner — 128 B =
+ * node_fp ‖ owner_fp since the khan decision of 2026-10-13, docs/plans/
+ * decisions/2026-10-13-kurultay-18-summary.md item 2 "C2"), §2 (call
  * table), §6.1 (consent bytes: op 3, subject 64 × 0, ctx
  * "nodus.valbind.v1"), G11-G13, and the khan decisions under §11.7 of
  * 2026-10-12 (A2: a released node may register again under a DIFFERENT
@@ -26,8 +28,8 @@
  *     fabricated engine facts (a decoded 2-leg envelope, a verdict,
  *     mediated-read results) and REAL ML-DSA-87 node consents:
  *   A1 plans: REGISTER = [row op 8 keyed SHA3-512(call.node_pk), live
- *      count op 9 selector 1]; EXIT = [row op 8 keyed by the 64 call bytes
- *      themselves]; generation 2 plans nothing; a malformed REPORT
+ *      count op 9 selector 1]; EXIT = [row op 8 keyed by the call's first
+ *      64 bytes, node_fp]; generation 2 plans nothing; a malformed REPORT
  *      refused (its rule: test_storage_b2).
  *   A2 REGISTER positives: kind 1 (owner KO signs) — ONE CREATE / ABSENT
  *      on op 8 keyed node_fp whose 2693-byte record is node_pk ‖ owner_fp
@@ -59,9 +61,13 @@
  *   A5 EXIT: by the row's owner kind 1 and kind 3 — ONE SET / EXISTS_VHASH
  *      on op 8 (the only op named), EXITING, exit_height h, every other
  *      column copied (fail_streak and grace_until included); refused (-1):
- *      the node key as the signer, a non-owner, call length 63 / 65 (plan
- *      and exec), no row, EXITING, RELEASED, a non-SYSFUND sibling, a
- *      single leg; a row whose key does not hash from its node_pk is -2.
+ *      the node key as the signer, a non-owner, call length 127 / 129 and
+ *      the pre-C2 64 (plan and exec), no row, EXITING, RELEASED, a
+ *      non-SYSFUND sibling, a single leg; C2: the call's owner_fp not the
+ *      row's — kind 1 signed by the call's owner AND by the row's owner,
+ *      kind 3 with the row's vault descriptor swapped in for the call's
+ *      vault (the descriptor swap) and with the call's vault signing; a
+ *      row whose key does not hash from its node_pk is -2.
  *   A6 the CORE SYSFUND leg pairs with a storage op only under GEN_STORAGE
  *      (the generation-2 CORE refuses the plan; GEN_STORAGE plans inputs +
  *      pool), and a THIRD-PARTY-funded REGISTER balances: leg 1 signed by
@@ -229,7 +235,7 @@ static int g_checks = 0;
 
 /* design §2 / §11.3 / §11.5 (Kurultay #16 khan decision 1) */
 #define STREG_LEN  7299u          /* 64 + 2592 + 4627 + 8 + 8            */
-#define STEXIT_LEN 64u            /* node_fp                             */
+#define STEXIT_LEN 128u           /* node_fp ‖ owner_fp (C2, 2026-10-13) */
 #define V1_STREG_LEN 2664u        /* storage reward v1 (refused)         */
 
 /* restated from nodus_witness_rt_native.c (static there) */
@@ -308,6 +314,17 @@ static uint8_t g_dm[DNA_MSIG_MAX_DESC_LEN];
 static size_t  g_dm_len;
 static uint8_t g_am[64];                       /* address of M            */
 static uint8_t g_an[64];                       /* a foreign address        */
+
+/* The generation-4 STORAGE_EXIT call node_fp ‖ owner_fp (128 B — khan
+ * decision 2026-10-13, Kurultay #18 item 2 "C2"). One static buffer: every
+ * caller encodes it into an envelope before the next call. */
+static uint8_t g_xc[STEXIT_LEN];
+static const uint8_t *exit_call(const uint8_t node_fp[64],
+                                const uint8_t owner[64]) {
+    memcpy(g_xc, node_fp, 64);
+    memcpy(g_xc + 64, owner, 64);
+    return g_xc;
+}
 
 static int desc_make(void) {
     static uint8_t keys[3 * 2592];
@@ -626,12 +643,13 @@ static int t_hooks(void) {
     CHECK(rq[1].op_id == OP_STORCNT && rq[1].key_len == 1 &&
           rq[1].key[0] == 1, "read 1 = the live count, selector 1");
     CHECK(hk_plan(s2, &e, rq, &n) == -1, "generation 2 plans nothing");
-    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT, g_k[KN].fp, STEXIT_LEN,
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN,
                    NODUS_RT_AUTHKIND_DSA87_MULTI_V1, DNA_CORERULE_SYSFUND, 0)
           == 0, "exit envelope");
     CHECK(hk_plan(s4, &e, rq, &n) == 0 && n == 1 && rq[0].op_id == OP_STOR
           && rq[0].key_len == 64 && memcmp(rq[0].key, g_k[KN].fp, 64) == 0,
-          "EXIT plans the row keyed by the 64 call bytes");
+          "EXIT plans the row keyed by the call's first 64 bytes (node_fp)");
     CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_REPORT, call, 8,
                    NODUS_RT_AUTHKIND_DSA87_MULTI_V1, DNA_CORERULE_SYSFUND, 1)
           == 0, "report envelope");
@@ -890,7 +908,8 @@ static int t_hooks(void) {
 
     /* ── A5. EXIT ─────────────────────────────────────────────────── */
     ctx_at(H);
-    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT, g_k[KN].fp, STEXIT_LEN,
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN,
                    NODUS_RT_AUTHKIND_DSA87_MULTI_V1, DNA_CORERULE_SYSFUND, 0)
           == 0, "exit envelope");
     av_k1(KO, 0);
@@ -910,7 +929,8 @@ static int t_hooks(void) {
               "ONE SET on op 8 (the only op named): EXITING, exit_height "
               "h, every other column copied (fail_streak, grace_until)");
     }
-    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT, g_k[KN].fp, STEXIT_LEN,
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_am), STEXIT_LEN,
                    NODUS_RT_AUTHKIND_DSA87_MSIG_V1, DNA_CORERULE_SYSFUND, 0)
           == 0, "kind-3 exit envelope");
     reads_set(DNA_V2_STORAGE_ACTIVE, g_am, 0, 0);
@@ -919,7 +939,22 @@ static int t_hooks(void) {
     av_k3(g_an, 1, 1);
     CHECK(hk_exec(s4, &e, 1, NULL) == -1,
           "EXIT by another kind-3 address refused");
-    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT, g_k[KN].fp, STEXIT_LEN,
+    /* C2 descriptor swap (SYSTEM): the call names vault N (the one its
+     * signers were shown), the row is M's and M's satisfied descriptor is
+     * swapped in — refused by the owner equality; and N signing the call
+     * that names N is refused because the row is M's */
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_an), STEXIT_LEN,
+                   NODUS_RT_AUTHKIND_DSA87_MSIG_V1, DNA_CORERULE_SYSFUND, 0)
+          == 0, "kind-3 exit naming N");
+    av_k3(g_am, 1, 1);
+    CHECK(hk_exec(s4, &e, 1, NULL) == -1,
+          "C2 kind 3: the row's vault descriptor swapped in for the call's");
+    av_k3(g_an, 1, 1);
+    CHECK(hk_exec(s4, &e, 1, NULL) == -1,
+          "C2 kind 3: the call's vault signs, the row is another's");
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN,
                    NODUS_RT_AUTHKIND_DSA87_MULTI_V1, DNA_CORERULE_SYSFUND, 0)
           == 0, "exit envelope");
     reads_set(DNA_V2_STORAGE_ACTIVE, g_k[KO].fp, 0, 0);
@@ -928,6 +963,21 @@ static int t_hooks(void) {
           "EXIT signed by the node key refused (no node authority, G1)");
     av_k1(KX, 0);
     CHECK(hk_exec(s4, &e, 1, NULL) == -1, "EXIT by a non-owner refused");
+    /* C2 owner mismatch, kind 1: the call names KX and KX signs — the
+     * row is KO's */
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_k[KX].fp), STEXIT_LEN,
+                   NODUS_RT_AUTHKIND_DSA87_MULTI_V1, DNA_CORERULE_SYSFUND, 0)
+          == 0, "exit naming KX");
+    CHECK(hk_exec(s4, &e, 1, NULL) == -1,
+          "C2 kind 1: call owner != row owner (signer == call owner)");
+    av_k1(KO, 0);
+    CHECK(hk_exec(s4, &e, 1, NULL) == -1,
+          "C2 kind 1: call owner != row owner (signer == row owner)");
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN,
+                   NODUS_RT_AUTHKIND_DSA87_MULTI_V1, DNA_CORERULE_SYSFUND, 0)
+          == 0, "exit envelope");
     av_k1(KO, 0);
     reads_set(0, NULL, 0, 0);
     CHECK(hk_exec(s4, &e, 1, NULL) == -1, "EXIT with no row refused");
@@ -940,25 +990,31 @@ static int t_hooks(void) {
     CHECK(hk_exec(s4, &e, 1, NULL) == -2,
           "a row whose node_pk does not hash to the key: -2");
     {
-        uint8_t fp65[65];
-        memcpy(fp65, g_k[KN].fp, 64);
-        fp65[64] = 0;
-        for (uint32_t L = STEXIT_LEN - 1u; L <= STEXIT_LEN + 1u; L += 2u) {
-            CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT, fp65, L,
+        /* 127 / 129 bytes, and the pre-C2 64-byte layout */
+        uint8_t x129[STEXIT_LEN + 1];
+        memcpy(x129, exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN);
+        x129[STEXIT_LEN] = 0;
+        const uint32_t bad_len[3] = { STEXIT_LEN - 1u, STEXIT_LEN + 1u, 64u };
+        for (int d = 0; d < 3; d++) {
+            CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT, x129, bad_len[d],
                            NODUS_RT_AUTHKIND_DSA87_MULTI_V1,
                            DNA_CORERULE_SYSFUND, 0) == 0, "exit ± 1 env");
             reads_set(DNA_V2_STORAGE_ACTIVE, g_k[KO].fp, 0, 0);
+            av_k1(KO, 0);
             CHECK(hk_plan(s4, &e, rq, &n) == -1 &&
                   hk_exec(s4, &e, 1, NULL) == -1,
-                  "EXIT call 63 / 65 bytes refused (plan and exec)");
+                  "EXIT call 127 / 129 / pre-C2 64 bytes refused (plan and "
+                  "exec)");
         }
     }
-    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT, g_k[KN].fp, STEXIT_LEN,
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN,
                    NODUS_RT_AUTHKIND_DSA87_MULTI_V1, DNA_CORERULE_SPEND, 0)
           == 0, "exit with a SPEND sibling");
     reads_set(DNA_V2_STORAGE_ACTIVE, g_k[KO].fp, 0, 0);
     CHECK(hk_exec(s4, &e, 1, NULL) == -1, "EXIT: a non-SYSFUND sibling");
-    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT, g_k[KN].fp, STEXIT_LEN,
+    CHECK(hk_build(&e, DNA_SYSRULE_STORAGE_EXIT,
+                   exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN,
                    NODUS_RT_AUTHKIND_DSA87_MULTI_V1, DNA_CORERULE_SYSFUND, 1)
           == 0, "exit single leg");
     CHECK(hk_exec(s4, &e, 1, NULL) == -1, "EXIT: no funding leg");
@@ -1762,9 +1818,11 @@ static int t_engine(void) {
     }
 
     /* block 6: EXIT signed by the node key; EXIT of an unregistered node */
-    CHECK(st_env(A.w, 6, DNA_SYSRULE_STORAGE_EXIT, g_k[KN].fp, STEXIT_LEN,
+    CHECK(st_env(A.w, 6, DNA_SYSRULE_STORAGE_EXIT,
+                 exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN,
                  CO8, 0, KN, KO, &e[0], &l[0]) == 0 &&
-          st_env(A.w, 6, DNA_SYSRULE_STORAGE_EXIT, g_k[KX].fp, STEXIT_LEN,
+          st_env(A.w, 6, DNA_SYSRULE_STORAGE_EXIT,
+                 exit_call(g_k[KX].fp, g_k[KO].fp), STEXIT_LEN,
                  CO9, 0, KO, KO, &e[1], &l[1]) == 0, "two exits");
     CHECK(submit(&A, &B, 6, e, l, 2, codes) == 0, "block 6");
     CHECK(codes[0] == NODUS_V2_TX_ERR_EXEC,
@@ -1789,7 +1847,8 @@ static int t_engine(void) {
     CHECK(nodus_witness_storage_bond_total(A.w, &bonds0) == 0 &&
           q_u64(A.w, "SELECT COALESCE(SUM(amount),0) FROM utxo_set",
                 &utxo0) == 0 && bonds0 == BOND, "buckets before 2E");
-    CHECK(st_env(A.w, BR, DNA_SYSRULE_STORAGE_EXIT, g_k[KN].fp, STEXIT_LEN,
+    CHECK(st_env(A.w, BR, DNA_SYSRULE_STORAGE_EXIT,
+                 exit_call(g_k[KN].fp, g_k[KO].fp), STEXIT_LEN,
                  CO2, 0, KO, KO, &e[0], &l[0]) == 0, "KO's exit");
     CHECK(submit(&A, &B, BR, e, l, 1, codes) == 0 &&
           codes[0] == NODUS_V2_TX_OK,
