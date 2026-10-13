@@ -441,6 +441,18 @@ int nodus_validator_list_paged(nodus_witness_t *w,
                                 dnac_validator_record_t *out,
                                 int *count_out,
                                 int *total_out) {
+    return nodus_validator_list_paged_keys(w, filter_status, offset, limit,
+                                           out, NULL, count_out, total_out);
+}
+
+int nodus_validator_list_paged_keys(nodus_witness_t *w,
+                                     int filter_status,
+                                     int offset,
+                                     int limit,
+                                     dnac_validator_record_t *out,
+                                     uint8_t (*key_out)[64],
+                                     int *count_out,
+                                     int *total_out) {
     if (!w || !w->db || !out || !count_out || !total_out ||
         limit <= 0 || offset < 0) return -1;
     *count_out = 0;
@@ -466,25 +478,35 @@ int nodus_validator_list_paged(nodus_witness_t *w,
     sqlite3_finalize(stmt);
     stmt = NULL;
 
-    /* Page the filtered rows. */
+    /* Page the filtered rows. Column 14 is the row's key (pubkey_hash);
+     * row_to_record reads columns 0..13 only. The last ORDER BY key,
+     * pubkey_hash (the PRIMARY KEY), makes the order total: under the
+     * HF-6 generation two rows may carry one consensus pubkey (an
+     * UNSTAKED row and a later STAKE's — validators.pubkey is not
+     * UNIQUE), and without it their order, and so the page boundary,
+     * would be SQLite's choice (red-team round 1, Z-29). Below the HF-6
+     * generation pubkey_hash is a function of pubkey, so the extra key
+     * never reorders a row. */
     const char *list_sql = (filter_status < 0)
         ? "SELECT pubkey, self_stake, total_delegated, external_delegated,"
           "       commission_bps, pending_commission_bps,"
           "       pending_effective_block, status, active_since_block,"
           "       unstake_commit_block, unstake_destination_fp,"
           "       unstake_destination_pubkey, last_validator_update_block,"
-          "       consecutive_missed_epochs "
+          "       consecutive_missed_epochs, pubkey_hash "
           "FROM validators "
-          "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
+          "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC,"
+          "         pubkey_hash ASC "
           "LIMIT ? OFFSET ?"
         : "SELECT pubkey, self_stake, total_delegated, external_delegated,"
           "       commission_bps, pending_commission_bps,"
           "       pending_effective_block, status, active_since_block,"
           "       unstake_commit_block, unstake_destination_fp,"
           "       unstake_destination_pubkey, last_validator_update_block,"
-          "       consecutive_missed_epochs "
+          "       consecutive_missed_epochs, pubkey_hash "
           "FROM validators WHERE status = ? "
-          "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
+          "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC,"
+          "         pubkey_hash ASC "
           "LIMIT ? OFFSET ?";
 
     rc = sqlite3_prepare_v2(w->db, list_sql, -1, &stmt, NULL);
@@ -506,6 +528,16 @@ int nodus_validator_list_paged(nodus_witness_t *w,
         if (row_to_record(stmt, &out[count]) != 0) {
             sqlite3_finalize(stmt);
             return -1;
+        }
+        if (key_out) {
+            const void *k = sqlite3_column_blob(stmt, 14);
+            if (!k || sqlite3_column_bytes(stmt, 14) != 64) {
+                QGP_LOG_ERROR(LOG_TAG, "list_paged: a row's pubkey_hash is "
+                              "not 64 bytes");
+                sqlite3_finalize(stmt);
+                return -1;
+            }
+            memcpy(key_out[count], k, 64);
         }
         count++;
     }

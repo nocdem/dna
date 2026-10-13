@@ -129,8 +129,12 @@ int nodus_validator_active_count(nodus_witness_t *w, int *count_out);
  *   filter_status >= 0 : rows where status == filter_status.
  *
  * Results are ordered by (self_stake + external_delegated) DESC,
- * pubkey ASC — identical to top_n so rankings remain stable across
- * calls regardless of filter.
+ * pubkey ASC, pubkey_hash ASC — the first two keys as top_n, the last
+ * one (the PRIMARY KEY) making the order total when two rows carry one
+ * consensus pubkey (the HF-6 generation: an UNSTAKED row and a later
+ * STAKE's row; validators.pubkey is not UNIQUE). Below the HF-6
+ * generation pubkey_hash is a function of pubkey, so the extra key never
+ * reorders a row.
  *
  * On success *count_out holds the number of rows written to `out`, and
  * *total_out holds the total row count matching the filter (ignoring
@@ -145,6 +149,25 @@ int nodus_validator_list_paged(nodus_witness_t *w,
                                 dnac_validator_record_t *out,
                                 int *count_out,
                                 int *total_out);
+
+/**
+ * nodus_validator_list_paged plus each row's key: key_out[i] (capacity
+ * `limit`; NULL = not wanted) receives row i's validators.pubkey_hash —
+ * under the HF-6 generation that value IS the validator_id
+ * (v2_validator_roles.validator_id), the one key that tells two rows with
+ * one consensus pubkey apart. A key that is not 64 bytes is -1.
+ * nodus_validator_list_paged is this call with key_out NULL.
+ *
+ * @return 0 on success, -1 on error.
+ */
+int nodus_validator_list_paged_keys(nodus_witness_t *w,
+                                     int filter_status,
+                                     int offset,
+                                     int limit,
+                                     dnac_validator_record_t *out,
+                                     uint8_t (*key_out)[64],
+                                     int *count_out,
+                                     int *total_out);
 
 /* ══ HF-6 sub-slice 3a — the v2 validator row (INERT) ═══════════════════
  *

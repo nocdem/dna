@@ -376,8 +376,16 @@ static int cmd_witness(const char *server_ip, uint16_t server_port) {
          *   - governance (chain-config) approval: SEATS,
          *     dna_bft_quorum(n), below the HF-2 height, and the same power
          *     rule as block commit from it (nodus_rt_system_exec).
-         * Power = floor(stake / 10^8), the engine's derivation. This RPC
-         * does not say whether HF-2 is active, so both are printed. */
+         * This RPC does not say whether HF-2 is active, so the seat
+         * quorum is printed for the rule below it.
+         *
+         * The power line is the UNCAPPED sum of floor(stake / 10^8) — the
+         * ruleset-1 derivation. From HF-6 the chain counts each
+         * validator's power capped (ruleset 2, nodus_witness_vset_powers),
+         * and this RPC carries no power field, so the consensus power and
+         * its > 2/3 threshold cannot be computed here: no threshold is
+         * printed — an uncapped one would be wrong after HF-6 (red-team
+         * round 1, Z-30b). */
         uint64_t total_power = 0;
         int      power_ok = 1;
         for (int i = 0; i < c->count; i++) {
@@ -388,14 +396,15 @@ static int cmd_witness(const char *server_ip, uint16_t server_port) {
         printf("Quorum (seats):  %u  (dna_bft_quorum — governance approval "
                "below the HF-2 height)\n",
                (unsigned)dna_bft_quorum((uint32_t)c->count));
-        if (power_ok && total_power <= UINT64_MAX / 2)
-            printf("Voting power:    %llu  (block commit, and governance "
-                   "approval from the HF-2 height, need > %llu)\n",
-                   (unsigned long long)total_power,
-                   (unsigned long long)(total_power * 2 / 3));
+        if (power_ok)
+            printf("Stake power:     %llu  (uncapped floor(stake / 10^8) "
+                   "sum; from HF-6 the chain caps each validator — the "
+                   "consensus power and its > 2/3 threshold are not shown "
+                   "by this RPC)\n",
+                   (unsigned long long)total_power);
         else
-            printf("Voting power:    overflows u64 (the chain refuses "
-                   "every power-weighted approval)\n");
+            printf("Stake power:     overflows u64 (uncapped sum; the "
+                   "consensus power is not shown by this RPC)\n");
     }
     rc = 0;
 
