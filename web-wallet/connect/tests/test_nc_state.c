@@ -394,6 +394,7 @@ static int run_vector_file(const char *path) {
         const nc_jv_t *kind = jstrv(v, "kind"), *name = jstrv(v, "name");
         char where[512];
         snprintf(where, sizeof(where), "%s[%zu] %s", path, i, name ? name->s : "?");
+        if (kind && nc_js_str_eq(kind->s, kind->n, "doc")) continue;   /* the file's notes */
         if (kind && nc_js_str_eq(kind->s, kind->n, "project")) ran += run_project(where, v);
         else if (kind && nc_js_str_eq(kind->s, kind->n, "load")) ran += run_load(where, v);
         else { printf("FAIL %s: unknown kind\n", where); g_fail++; }
@@ -433,7 +434,13 @@ static void run_vectors(void) {
     }
 }
 
-static void expect_text(const char *what, int rc, char *got, const char *want) {
+/* `gotp`, not the value: C leaves the order in which arguments are evaluated
+ * unspecified, so passing `got` next to the call that sets it read it as
+ * NULL before the call (and leaked the result). The pointer is read here,
+ * after the call has returned. */
+static void expect_text(const char *what, int rc, char **gotp, const char *want) {
+    char *got = *gotp;
+    *gotp = NULL;
     if (rc != 0 || !got) { printf("FAIL %s: no result\n", what); g_fail++; free(got); return; }
     compare(what, got, strlen(got), want, strlen(want));
     free(got);
@@ -448,27 +455,27 @@ static void direct_cases(void) {
     if (nc_state_load_json(NULL, 0, &got, &gl) != -1 || got) { printf("FAIL load NULL\n"); g_fail++; } else g_pass++;
 
     got = NULL;
-    expect_text("project: empty input", nc_state_project_json("", 0, "{}", 2, &got, &gl), got,
+    expect_text("project: empty input", nc_state_project_json("", 0, "{}", 2, &got, &gl), &got,
                 "{\"status\":\"invalid\",\"reason\":\"json\"}");
     got = NULL;
-    expect_text("project: trailing junk", nc_state_project_json("{}x", 3, "{}", 2, &got, &gl), got,
+    expect_text("project: trailing junk", nc_state_project_json("{}x", 3, "{}", 2, &got, &gl), &got,
                 "{\"status\":\"invalid\",\"reason\":\"json\"}");
     got = NULL;
-    expect_text("project: embedded NUL", nc_state_project_json("{}\0", 3, "{}", 2, &got, &gl), got,
+    expect_text("project: embedded NUL", nc_state_project_json("{}\0", 3, "{}", 2, &got, &gl), &got,
                 "{\"status\":\"invalid\",\"reason\":\"json\"}");
     got = NULL;
-    expect_text("load: empty input", nc_state_load_json("", 0, &got, &gl), got,
+    expect_text("load: empty input", nc_state_load_json("", 0, &got, &gl), &got,
                 "{\"status\":\"damaged\",\"reason\":\"input\"}");
     got = NULL;
-    expect_text("load: an array", nc_state_load_json("[]", 2, &got, &gl), got,
+    expect_text("load: an array", nc_state_load_json("[]", 2, &got, &gl), &got,
                 "{\"status\":\"damaged\",\"reason\":\"input\"}");
     got = NULL;
     static const char NOT_ARRAY[] = "{\"header\":\"{}\",\"records\":{}}";
-    expect_text("load: records not an array", nc_state_load_json(NOT_ARRAY, strlen(NOT_ARRAY), &got, &gl), got,
+    expect_text("load: records not an array", nc_state_load_json(NOT_ARRAY, strlen(NOT_ARRAY), &got, &gl), &got,
                 "{\"status\":\"damaged\",\"reason\":\"input\"}");
     got = NULL;
     static const char BAD_HEADER[] = "{\"header\":\"{\",\"records\":[]}";
-    expect_text("load: header not JSON", nc_state_load_json(BAD_HEADER, strlen(BAD_HEADER), &got, &gl), got,
+    expect_text("load: header not JSON", nc_state_load_json(BAD_HEADER, strlen(BAD_HEADER), &got, &gl), &got,
                 "{\"status\":\"damaged\",\"reason\":\"header\"}");
 
     /* nesting past NC_JS_MAX_NEST in the state: refused as JSON, no crash */
@@ -478,7 +485,7 @@ static void direct_cases(void) {
     memset(deep, '[', depth);
     memset(deep + depth, ']', depth);
     got = NULL;
-    expect_text("project: deep nesting", nc_state_project_json(deep, n, "{}", 2, &got, &gl), got,
+    expect_text("project: deep nesting", nc_state_project_json(deep, n, "{}", 2, &got, &gl), &got,
                 "{\"status\":\"invalid\",\"reason\":\"json\"}");
     free(deep);
 }
