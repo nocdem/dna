@@ -137,7 +137,14 @@ export function witnessJoinFrom(tip, minTenureBlocks) {
 export function rotationHeights(tip, E) {
   if (typeof tip !== 'bigint' || typeof E !== 'bigint' || tip <= 0n || E <= 0n) return null;
   const F = epochStartAtOrAfter(tip + 1n, E), U = F + E;
-  return { boundary: F, switchAt: U, keepThrough: U + 1n, keepThroughStorage: U + E / 2n, releasedAt: U + E };
+  // keepThrough = U + E: the safe upper bound until the hf6 session confirms
+  // the exact rule. Khan A8 (nodus/docs/ARCHITECTURE.md "the old node stays
+  // up through U + E for its S(F) storage duty") and the old key's release
+  // at U + E when it held a seat in S(F) (khan A2, nodus_witness_v2_epoch.c
+  // v2ep_rotate_sweep), at U when it did not (hf6 session, 2026-10-13).
+  // Keeping the old node up longer harms nothing: its key signs nothing
+  // after U + 1.
+  return { boundary: F, switchAt: U, keepThrough: U + E, releasedAt: U + E };
 }
 // STORAGE_EXIT included at x: released at B_rel = E * ceil(x / E) as one
 // coin locked until B_rel + lockEpochs * E; the node may register again only
@@ -495,7 +502,7 @@ function reviewCard() {
     const at = E !== null ? rotationHeights(t.tip, E) : null;
     items.push(`Witness ${d.validatorId} moves to the new node below. No bond moves.`);
     items.push(at ? `The switch happens at block ${block(at.switchAt)} at the earliest (after two epoch boundaries). The network can defer a key change to a later boundary; no date is promised.` : 'The switch happens after the next epoch boundaries; the network can defer it to a later boundary.');
-    items.push(at ? `Keep the OLD node running at least through block ${block(at.keepThrough)} (through block ${block(at.keepThroughStorage)} if it is also a storage node). Its old key is released at block ${block(at.releasedAt)}.` : 'Keep the OLD node running until the switch has happened.');
+    items.push(at ? `Keep the OLD node running through block ${block(at.keepThrough)}. Its old key is released by then (at the switch if the old key held no seat before it).` : 'Keep the OLD node running until one epoch after the switch.');
   } else {
     const at = E !== null ? storageExitHeights(t.tip, E, r.storageExitLockEpochs) : null;
     items.push(`Node ${d.nodeFp} stops being a storage node; it is no longer paid.`);
