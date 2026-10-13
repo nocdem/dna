@@ -8452,8 +8452,13 @@ static nodus_adapter_status_t rtn_sys_val2_set(nodus_witness_t *w,
  * unstake_destination_fp = hex(owner_fp) (128 lowercase hex: the bond
  * resolves to owner_fp, §1.5) and unstake_destination_pubkey = 2592 ×
  * 0x00, written FULL-LENGTH because the v1 validator leaf loader
- * (nodus_witness_merkle.c load_validator_leaves — still composed by
- * nodus_witness_global_root_v2 after the edge) refuses any other length.
+ * (nodus_witness_merkle.c load_validator_leaves) refuses any other length
+ * and is still composed by the helpers that take no generation input —
+ * nodus_witness_system_root_v2 and nodus_witness_system_payload_root_v2
+ * (nodus_witness_roots_v2.c). The production SYSTEM root at generation 4
+ * is the v5 composition over the §6.3 leaves (nodus_rt_system_state_root);
+ * nodus_witness_global_root_v2 has no production caller in nodus/src (its
+ * callers are tests).
  * `v2_validator_roles`: (validator_id, owner_fp, pending key, effective
  * epoch) — the record's own values (the "no pending key" encoding).
  * @return NODUS_ADAPTER_OK / NODUS_ADAPTER_ERR_STORAGE_FAULT. */

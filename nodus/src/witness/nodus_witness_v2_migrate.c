@@ -713,12 +713,19 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
          * (plan §1; the §6.4 leaf, nodus_witness_merkle.c
          * nodus_witness_merkle_compute_delegation_root_v2, leaves them
          * out). They are still written FULL-LENGTH (sub-slice 3d kept
-         * this deliberately): the v4 SYSTEM composition — still reached
-         * after the edge through nodus_witness_global_root_v2
-         * (nodus_witness_roots_v2.c), which has no generation input —
-         * composes the v1 delegation loader, which refuses any other
-         * length (load_delegation_leaves); a zero-length column would
-         * turn that helper into a fault on every migrated chain.
+         * this deliberately). After the edge the production SYSTEM root
+         * is the v5 composition over the §6.3 / §6.4 leaves
+         * (nodus_rt_system_state_root, nodus_witness_v2_claims.c);
+         * nodus_witness_global_root_v2 has NO production caller in
+         * nodus/src (its callers are tests — test_v2_claims.c,
+         * test_hf4_names_engine.c). The v1 delegation loader, which
+         * refuses any other length (load_delegation_leaves), is still
+         * composed by the helpers that take no generation input —
+         * nodus_witness_system_root_v2 (the v4 composition; the tests'
+         * nodus_witness_global_root_v2 reads it) and
+         * nodus_witness_system_payload_root_v2 (the SYSTEM activation
+         * payload, nodus_witness_roots_v2.c); a zero-length column would
+         * turn those helpers into a fault on every migrated chain.
          * validator_pubkey = the consensus key (true). delegator_pubkey =
          * that same key when the owner IS SHA3-512(key) (true: the node
          * key is the owner); for a Foundation-owned row there is no

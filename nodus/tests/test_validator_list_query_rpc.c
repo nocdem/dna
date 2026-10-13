@@ -24,7 +24,20 @@
  *      key rtn_delegate_read_plan builds for rtn_sys_delegcnt_fetch
  *      (nodus_witness_rt_native.c), computed here independently. No DB
  *      connection is a failure (-1), never a 0.
+ *   7. (HF-6 red-team round 1, Z-29) Two generation-4 rows carrying ONE
+ *      consensus pubkey — a graduated UNSTAKED row and a later STAKE's
+ *      row (design rev 6 §4; validators.pubkey is not UNIQUE) — are both
+ *      listed, each with its own key (nodus_validator_list_paged_keys),
+ *      in pubkey_hash ASC order inside an equal-stake, equal-pubkey pair,
+ *      across a page boundary too; each key resolves through
+ *      nodus_validator_v2_get to its own owner and status (the read the
+ *      handler's generation-4 arm makes per row), while the pubkey-keyed
+ *      read the arm made before the fix faults (-1) on the pair.
  *
+ * What it proves: the list's backing query is a total order that tells
+ * two rows with one pubkey apart, and the per-row key it returns is one
+ * the v2 row read resolves — false if the list dropped/merged the pair,
+ * ordered it by SQLite's choice, or the key were not the row's PK.
  * Requires: a default build, no environment. Leaves behind: nothing (the
  * /tmp directory is removed; an aborting CHECK leaves it).
  * How it can lie: scenario 6 pins the count SOURCE and its key
@@ -32,8 +45,12 @@
  * _query is static and only sends) — the reply's decode side is pinned
  * by tests/test_client_validator_list.c. The delegation rows are
  * inserted by nodus_delegation_insert, not by an applied DELEGATE.
- * Nothing here was RUN by the author of scenario 6 (BUILDER: compile
- * only).
+ * Scenario 7 seeds the generation-4 rows by re-keying v1 inserts with raw
+ * SQL (not by the HF-6 edge or an applied STAKE), runs with no key
+ * generation set, and does not reach the handler (static): it pins the
+ * two calls vl_v2_ids is built from, not vl_v2_ids itself or the reply.
+ * Nothing here was RUN by the author of scenarios 6 and 7 (BUILDER:
+ * compile only).
  */
 
 #define NODUS_WITNESS_INTERNAL_API 1
@@ -121,6 +138,47 @@ static void seed_val(nodus_witness_t *w, uint8_t pub_fill,
     CHECK_EQ(nodus_validator_insert(w, &v), 0);
 }
 
+/* A generation-4 row: the v1 insert, then re-keyed in place to
+ * `validator_id` (what the HF-6 edge / a generation-4 STAKE leaves:
+ * validators.pubkey_hash = validator_id), plus its v2_validator_roles row
+ * (owner_fp = 64 × owner_fill, no pending key). The row re-keyed is the
+ * one with this pubkey that has no roles row yet — the one just inserted
+ * — so a second row with the same pubkey can be seeded after the first. */
+static void seed_v2_val(nodus_witness_t *w, uint8_t pub_fill,
+                        uint64_t self_stake, uint8_t status,
+                        const uint8_t validator_id[64], uint8_t owner_fill) {
+    seed_val(w, pub_fill, self_stake, 0, status);
+
+    uint8_t pk[DNAC_PUBKEY_SIZE];
+    memset(pk, pub_fill, sizeof(pk));
+    sqlite3_stmt *st = NULL;
+    CHECK_EQ(sqlite3_prepare_v2(w->db,
+                 "UPDATE validators SET pubkey_hash = ?1 WHERE pubkey = ?2 "
+                 "AND pubkey_hash NOT IN "
+                 "(SELECT validator_id FROM v2_validator_roles)",
+                 -1, &st, NULL), SQLITE_OK);
+    sqlite3_bind_blob(st, 1, validator_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, pk, DNAC_PUBKEY_SIZE, SQLITE_TRANSIENT);
+    CHECK_EQ(sqlite3_step(st), SQLITE_DONE);
+    sqlite3_finalize(st);
+    CHECK_EQ(sqlite3_changes(w->db), 1);
+
+    uint8_t owner[64];
+    memset(owner, owner_fill, sizeof(owner));
+    uint8_t *pending = calloc(1, DNAC_PUBKEY_SIZE);   /* no pending key */
+    CHECK(pending != NULL);
+    CHECK_EQ(sqlite3_prepare_v2(w->db,
+                 "INSERT INTO v2_validator_roles (validator_id, owner_fp, "
+                 "pending_consensus_pubkey, consensus_key_effective_epoch) "
+                 "VALUES (?1, ?2, ?3, 0)", -1, &st, NULL), SQLITE_OK);
+    sqlite3_bind_blob(st, 1, validator_id, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 2, owner, 64, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 3, pending, DNAC_PUBKEY_SIZE, SQLITE_TRANSIENT);
+    CHECK_EQ(sqlite3_step(st), SQLITE_DONE);
+    sqlite3_finalize(st);
+    free(pending);
+}
+
 static void seed_deleg(nodus_witness_t *w, uint8_t delegator_fill,
                         uint8_t validator_fill) {
     dnac_delegation_record_t d;
@@ -176,7 +234,7 @@ int main(void) {
                                           out, &count, &total), 0);
     CHECK_EQ(count, 0);
     CHECK_EQ(total, 0);
-    fprintf(stderr, "[1/6] empty DB OK\n");
+    fprintf(stderr, "[1/7] empty DB OK\n");
 
     /* Seed 4 rows — 3 ACTIVE, 1 RETIRING. Stakes designed so the DESC
      * ordering is deterministic: 0x44 > 0x33 > 0x22 > 0x11 by stake. */
@@ -197,7 +255,7 @@ int main(void) {
     CHECK_EQ(out[1].pubkey[0], 0x33);
     CHECK_EQ(out[2].self_stake, 2000);
     CHECK_EQ(out[3].self_stake, 1000);
-    fprintf(stderr, "[2/6] filter=-1 returns all 4 OK\n");
+    fprintf(stderr, "[2/7] filter=-1 returns all 4 OK\n");
 
     /* ── (3) filter=ACTIVE returns 3 rows ─────────────────────────── */
     count = -1; total = -1;
@@ -209,7 +267,7 @@ int main(void) {
     CHECK_EQ(out[0].pubkey[0], 0x44);
     CHECK_EQ(out[1].pubkey[0], 0x22);
     CHECK_EQ(out[2].pubkey[0], 0x11);
-    fprintf(stderr, "[3/6] filter=ACTIVE filters correctly OK\n");
+    fprintf(stderr, "[3/7] filter=ACTIVE filters correctly OK\n");
 
     /* ── (4) Pagination: limit=2 offset=0 then offset=2 ──────────── */
     count = -1; total = -1;
@@ -225,7 +283,7 @@ int main(void) {
     CHECK_EQ(total, 4);
     CHECK_EQ(out[0].pubkey[0], 0x22);
     CHECK_EQ(out[1].pubkey[0], 0x11);
-    fprintf(stderr, "[4/6] pagination (limit+offset) OK\n");
+    fprintf(stderr, "[4/7] pagination (limit+offset) OK\n");
 
     /* ── (5) pubkey-tiebreak: same stake -> ASC by pubkey ─────────── */
     seed_val(&w, 0x55, 4000, 0, DNAC_VALIDATOR_ACTIVE);  /* ties 0x44 */
@@ -237,7 +295,7 @@ int main(void) {
     /* 0x44 < 0x55 byte-wise -> 0x44 first in the tied pair. */
     CHECK_EQ(out[0].pubkey[0], 0x44);
     CHECK_EQ(out[1].pubkey[0], 0x55);
-    fprintf(stderr, "[5/6] pubkey tiebreak ASC OK\n");
+    fprintf(stderr, "[5/7] pubkey tiebreak ASC OK\n");
 
     /* ── (6) the "dlg" source: delegator count per listed validator ── */
     {
@@ -276,7 +334,71 @@ int main(void) {
         /* the 2048 cap is the constant the client shows N against */
         CHECK_EQ(NODUS_MAX_DELEGATORS_PER_VALIDATOR, 2048);
     }
-    fprintf(stderr, "[6/6] delegator count per validator OK\n");
+    fprintf(stderr, "[6/7] delegator count per validator OK\n");
+
+    /* ── (7) Z-29: two generation-4 rows with ONE consensus pubkey ───
+     * A graduated (UNSTAKED) row and the row a later STAKE opened carry
+     * the same validators.pubkey under different keys (design rev 6 §4).
+     * Same stake on purpose, so only the last ORDER BY key, pubkey_hash,
+     * orders them. */
+    {
+        uint8_t vid_old[64], vid_new[64];
+        memset(vid_old, 0xB0, sizeof(vid_old));
+        memset(vid_new, 0xA0, sizeof(vid_new));   /* sorts first */
+        seed_v2_val(&w, 0x66, 5000, DNAC_VALIDATOR_UNSTAKED, vid_old, 0xC1);
+        seed_v2_val(&w, 0x66, 5000, DNAC_VALIDATOR_ACTIVE, vid_new, 0xC2);
+
+        uint8_t (*keys)[64] = calloc((size_t)cap, sizeof(*keys));
+        CHECK(keys != NULL);
+        count = -1; total = -1;
+        CHECK_EQ(nodus_validator_list_paged_keys(&w, -1, 0, cap, out, keys,
+                                                 &count, &total), 0);
+        CHECK_EQ(count, 7);
+        CHECK_EQ(total, 7);
+        /* 5000 > 4000: the pair leads, pubkey_hash ASC inside it */
+        CHECK_EQ(out[0].pubkey[0], 0x66);
+        CHECK_EQ(out[1].pubkey[0], 0x66);
+        CHECK(memcmp(keys[0], vid_new, 64) == 0);
+        CHECK(memcmp(keys[1], vid_old, 64) == 0);
+        CHECK_EQ(out[0].status, DNAC_VALIDATOR_ACTIVE);
+        CHECK_EQ(out[1].status, DNAC_VALIDATOR_UNSTAKED);
+
+        /* the page boundary between the pair is fixed, not SQLite's */
+        count = -1; total = -1;
+        CHECK_EQ(nodus_validator_list_paged_keys(&w, -1, 1, 1, out, keys,
+                                                 &count, &total), 0);
+        CHECK_EQ(count, 1);
+        CHECK(memcmp(keys[0], vid_old, 64) == 0);
+
+        /* the wrapper lists the same order without keys */
+        count = -1; total = -1;
+        CHECK_EQ(nodus_validator_list_paged(&w, -1, 0, 2, out,
+                                            &count, &total), 0);
+        CHECK_EQ(count, 2);
+        CHECK_EQ(out[0].status, DNAC_VALIDATOR_ACTIVE);
+        CHECK_EQ(out[1].status, DNAC_VALIDATOR_UNSTAKED);
+
+        /* what the handler's generation-4 arm (vl_v2_ids) reads per
+         * listed row: the PRIMARY KEY read resolves each row, with its
+         * own owner and status ... */
+        nodus_v2_validator_row_t *row = malloc(sizeof(*row));
+        CHECK(row != NULL);
+        CHECK_EQ(nodus_validator_v2_get(&w, vid_new, row), 0);
+        CHECK_EQ(row->rec.pubkey[0], 0x66);
+        CHECK_EQ(row->owner_fp[0], 0xC2);
+        CHECK_EQ(row->rec.status, DNAC_VALIDATOR_ACTIVE);
+        CHECK_EQ(nodus_validator_v2_get(&w, vid_old, row), 0);
+        CHECK_EQ(row->owner_fp[0], 0xC1);
+        CHECK_EQ(row->rec.status, DNAC_VALIDATOR_UNSTAKED);
+        /* ... while a read keyed by the pubkey (the pre-fix arm) cannot
+         * answer: two rows is a fault, which failed the whole list. */
+        uint8_t pk[DNAC_PUBKEY_SIZE];
+        memset(pk, 0x66, sizeof(pk));
+        CHECK_EQ(nodus_validator_v2_get_by_pubkey(&w, pk, row), -1);
+        free(row);
+        free(keys);
+    }
+    fprintf(stderr, "[7/7] two rows, one pubkey: listed by key OK\n");
 
     /* No DB connection (w->db NULL — the helper's own guard, not a failed
      * SQL step) is a failure, never a 0, and leaves *count_out untouched
@@ -293,6 +415,6 @@ int main(void) {
 
     free(out);
     rmrf(data_path);
-    fprintf(stderr, "test_validator_list_query_rpc: all 6 scenarios passed\n");
+    fprintf(stderr, "test_validator_list_query_rpc: all 7 scenarios passed\n");
     return 0;
 }

@@ -68,15 +68,20 @@ typedef struct {
 /* SHA3-512(0x02 || pubkey || state_seed). state_seed is 64 bytes
  * (NODUS_T3_TX_HASH_LEN / the block's state_root column width). The
  * tiebreak below key generation NODUS_RT_GEN_STORAGE and on the
- * bootstrap path. */
-static void compute_tiebreak_hash(const uint8_t pubkey[DNAC_PUBKEY_SIZE],
-                                    const uint8_t state_seed[64],
-                                    uint8_t out[64]) {
+ * bootstrap path.
+ *
+ * Returns 0, or -1 when qgp_sha3_512 fails (digest context alloc/init):
+ * `out` is then NOT written, and a caller that went on would rank the
+ * candidate by whatever the buffer held — every caller fails the
+ * committee build closed instead (red-team round 1, Z-28). */
+static int compute_tiebreak_hash(const uint8_t pubkey[DNAC_PUBKEY_SIZE],
+                                   const uint8_t state_seed[64],
+                                   uint8_t out[64]) {
     uint8_t buf[1 + DNAC_PUBKEY_SIZE + 64];
     buf[0] = NODUS_TREE_TAG_VALIDATOR;   /* 0x02 */
     memcpy(&buf[1], pubkey, DNAC_PUBKEY_SIZE);
     memcpy(&buf[1 + DNAC_PUBKEY_SIZE], state_seed, 64);
-    qgp_sha3_512(buf, sizeof(buf), out);
+    return qgp_sha3_512(buf, sizeof(buf), out) == 0 ? 0 : -1;
 }
 
 /* HF-6 slice 5d — the tiebreak at key generation >= NODUS_RT_GEN_STORAGE
@@ -84,8 +89,9 @@ static void compute_tiebreak_hash(const uint8_t pubkey[DNAC_PUBKEY_SIZE],
  * edebiliriz"): SHA3-512(0x02 || validator_id[64] || state_seed[64]), a
  * 129-byte preimage — compute_tiebreak_hash above with ONLY the pubkey
  * replaced by the row's 64-byte validator_id. Same tag
- * (NODUS_TREE_TAG_VALIDATOR), same seed, no new tag string. */
-static void compute_tiebreak_hash_v2(
+ * (NODUS_TREE_TAG_VALIDATOR), same seed, no new tag string. Returns 0 or
+ * -1 exactly as compute_tiebreak_hash does. */
+static int compute_tiebreak_hash_v2(
         const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
         const uint8_t state_seed[64],
         uint8_t out[64]) {
@@ -93,7 +99,7 @@ static void compute_tiebreak_hash_v2(
     buf[0] = NODUS_TREE_TAG_VALIDATOR;   /* 0x02 */
     memcpy(&buf[1], validator_id, NODUS_V2_VALIDATOR_ID_LEN);
     memcpy(&buf[1 + NODUS_V2_VALIDATOR_ID_LEN], state_seed, 64);
-    qgp_sha3_512(buf, sizeof(buf), out);
+    return qgp_sha3_512(buf, sizeof(buf), out) == 0 ? 0 : -1;
 }
 _Static_assert(1 + NODUS_V2_VALIDATOR_ID_LEN + 64 == 129,
                "the generation-4 tiebreak preimage is 129 bytes");
@@ -557,12 +563,21 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
         work[n_work].total_stake = frozen_total;
         work[n_work].self_stake  = frozen_self;   /* <= total: own row is
                                                    * one of the summands  */
-        if (g4)   /* HF-6 5d: the id of the row the total was read by */
-            compute_tiebreak_hash_v2(cand_v2[i].validator_id, state_seed,
-                                     work[n_work].tiebreak);
-        else
-            compute_tiebreak_hash(rec->pubkey, state_seed,
-                                  work[n_work].tiebreak);
+        int trc = g4   /* HF-6 5d: the id of the row the total was read by */
+            ? compute_tiebreak_hash_v2(cand_v2[i].validator_id, state_seed,
+                                       work[n_work].tiebreak)
+            : compute_tiebreak_hash(rec->pubkey, state_seed,
+                                    work[n_work].tiebreak);
+        if (trc != 0) {
+            /* An unhashed tiebreak is never "rank by whatever is there". */
+            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: tiebreak hash failed — "
+                          "failing closed",
+                          (unsigned long long)e_start);
+            free(work);
+            free(candidates);
+            free(cand_v2);
+            return -1;
+        }
         n_work++;
     }
 
@@ -698,8 +713,14 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
         work[i].total_stake =
             candidates[i].self_stake + candidates[i].external_delegated;
         work[i].self_stake = candidates[i].self_stake;
-        compute_tiebreak_hash(candidates[i].pubkey, state_seed,
-                              work[i].tiebreak);
+        if (compute_tiebreak_hash(candidates[i].pubkey, state_seed,
+                                  work[i].tiebreak) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "bootstrap: tiebreak hash failed — "
+                          "failing closed");
+            free(work);
+            free(candidates);
+            return -1;
+        }
     }
     for (int i = 0; i < cand_count; ) {
         int j = i + 1;

@@ -4652,7 +4652,9 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
  * Generation-4 descriptors are unchanged by 3b (storage content); the
  * gen-4 readers of the re-keyed tables are sub-slice 3d's.
  *
- * Runs after 6b' and 6b'' and BEFORE 6c, so the re-scan reloads the
+ * Runs as 6b''': after 6b' (phase_6b_ruleset_switch), BEFORE 6b''
+ * (phase_6b_evm_activation — the call order in the phase list below is
+ * 6b' → 6b''' → 6b''), and BEFORE 6c, so the re-scan reloads the
  * generation-4 runtimes and phases 7-11 commit the migrated tables into
  * H−1's roots and app hash. A faulted block is rolled back whole by the
  * host, so the edge is atomic and a replay of H−1 re-runs it exactly
