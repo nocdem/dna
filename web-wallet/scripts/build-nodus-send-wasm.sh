@@ -429,8 +429,10 @@ exports_common=(
   # P7 (connect/nc_wasm.c "state schema v2 codec"): synchronous and pure —
   # no network, no session, outside the op bracket, like nc_salt_pick. Each
   # takes its input from the state input buffer (nc_state_in_alloc, up to
-  # 8 MiB, P7 stage 2); used by src/connect/store.js through core.js.
-  nc_state_in_alloc nc_state_project nc_state_load
+  # 8 MiB, P7 stage 2); used by src/connect/store.js through core.js. Their
+  # result is their own (nc_state_result), never the shared nc_result an
+  # asynchronous export may still have to be read from (R13).
+  nc_state_in_alloc nc_state_project nc_state_load nc_state_result
   nc_lock
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match

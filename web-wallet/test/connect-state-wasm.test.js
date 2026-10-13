@@ -119,8 +119,12 @@ test('connect state: the wasm module (nc_state_project / nc_state_load) answers 
   const call = name => {
     const rc = M.ccall(name, 'number', [], []);
     assert.equal(rc, 0, `${name}: ${M.ccall('nc_error', 'string', [], [])}`);
-    return M.ccall('nc_result', 'string', [], []);
+    // The state exports answer in their OWN result (nc_state_result, R13),
+    // never the shared nc_result.
+    assert.equal(M.ccall('nc_result', 'string', [], []), sharedBefore, `${name} must not touch the shared nc_result`);
+    return M.ccall('nc_state_result', 'string', [], []);
   };
+  const sharedBefore = M.ccall('nc_result', 'string', [], []);
   // core.js stateProject's input: both texts as JSON strings in one object.
   const project = (state, map) => { putIn(JSON.stringify({ state, map })); return call('nc_state_project'); };
   const load = (header, records) => { putIn(JSON.stringify({ header, records })); return call('nc_state_load'); };

@@ -109,7 +109,7 @@ try {
           if (name === 'nc_contact_reads' && window.__hold) { window.__held = true; await window.__hold.promise; }
           return 0;
         },
-        str: name => (name === 'nc_result' ? JSON.stringify(answer()) : name === 'nc_day_today' ? TODAY : ''),
+        str: name => (name === 'nc_result' || name === 'nc_state_result' ? JSON.stringify(answer()) : name === 'nc_day_today' ? TODAY : ''),
         heap: () => HEAP
       };
     }

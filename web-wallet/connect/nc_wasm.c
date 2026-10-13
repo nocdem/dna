@@ -2472,12 +2472,29 @@ static uint8_t *state_in_take(size_t *len) {
     return b;
 }
 
+/* The state exports' OWN result (P7; Kurultay #19 / builder R13): they are
+ * synchronous and run on every save, so writing the shared g_result could
+ * replace an asynchronous export's result between its return and the page's
+ * nc_result read (the page reads it in the continuation after `await`, and
+ * another continuation may run a save first). nc_state_result() is read only
+ * by the state calls of src/connect/core.js. Wiped like g_result. */
+static char  *g_state_result;
+static size_t g_state_result_len;
+
+const char *nc_state_result(void) { return g_state_result ? g_state_result : "{}"; }
+
+static void state_result_drop(void) {
+    if (g_state_result) { nc_wipe(g_state_result, g_state_result_len); free(g_state_result); }
+    g_state_result = NULL;
+    g_state_result_len = 0;
+}
+
 /* Takes ownership of `s` (malloc'd, NUL-terminated, `len` bytes). */
-static int set_result_text(char *s, size_t len) {
-    result_drop();
+static int set_state_result(char *s, size_t len) {
+    state_result_drop();
     if (!s) return fail("Out of memory.");
-    g_result = s;
-    g_result_len = len + 1;
+    g_state_result = s;
+    g_state_result_len = len + 1;
     return 0;
 }
 
@@ -2493,7 +2510,7 @@ int nc_state_project(void) {
     int rc = nc_state_project_wrapped_json(in ? (const char *)in : "", len, &out, &out_len);
     in_free(in, len);
     if (rc != 0) return fail("Out of memory.");
-    return set_result_text(out, out_len);
+    return set_state_result(out, out_len);
 }
 
 /* { "header": "<text>", "records": [ { "id", "json" }, … ] } in the state
@@ -2507,7 +2524,7 @@ int nc_state_load(void) {
     int rc = nc_state_load_json(in ? (const char *)in : "", len, &out, &out_len);
     in_free(in, len);
     if (rc != 0) return fail("Out of memory.");
-    return set_result_text(out, out_len);
+    return set_state_result(out, out_len);
 }
 
 #ifdef NODUS_SEND_TEST_FIXED_RANDOM
@@ -2571,6 +2588,7 @@ void nc_session_wipe(void) {
     in_drop();
     state_in_drop();
     result_drop();
+    state_result_drop();
     nc_wipe(g_hist_key, sizeof(g_hist_key));
     g_hist_ok = 0;
     nc_wipe(g_peers, sizeof(g_peers));

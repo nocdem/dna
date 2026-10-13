@@ -567,7 +567,7 @@ export function createNodusConnectCore({ nodus } = {}) {
       return sync(b => {
         putState(b, text);
         b.check(b.num('nc_state_project'));
-        return b.result();
+        return JSON.parse(b.str('nc_state_result'));   // its own result (R13)
       });
     },
     stateLoad({ header, records } = {}) {
@@ -577,7 +577,7 @@ export function createNodusConnectCore({ nodus } = {}) {
       return sync(b => {
         putState(b, text);
         b.check(b.num('nc_state_load'));
-        return b.result();
+        return JSON.parse(b.str('nc_state_result'));   // its own result (R13)
       });
     },
     // A text that is not a group message (too long, a NUL inside — the C
