@@ -731,7 +731,7 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
 | HF-5 | rule-set generation 3: SYSTEM v8 / CORE v6 / EVM v2 — the EVM domain (domain 2) registered ACTIVE at the end of H−1; CORE op 9 EVMFUND; id 15 EVM_BLOCK_GAS_LIMIT in force | 14 `EVM_ACTIVE` | 188948158701949959 (D = 0x029f47596864d407) | 62425 | 79757 | 0.24.1 | `1D6A68F08EC42ED0` |
-| HF-6 validator owner/node roles + archive storage, after HF-5 (**not voted**) | rule-set generation 4 (SYSTEM v10 / CORE v8 since HF-6 D2 — khan decision `2026-10-13-kurultay-18-summary.md` item 3, the call layouts of UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT changed and the ruleset hash does not commit layouts — from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): at the end of H−1 the registry switches 3 → 4 AND the validator migration runs (keys re-valued to validator_id, each 10M bond → 2M bond + 8M Foundation-owned self-delegation, the Foundation accrual merge), the SYSTEM root becomes `NDS.SYS.v5` in H−1's own app_hash; from H: SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT (no op 10: ROTATE_CONSENSUS_KEY was removed, khan decision `2026-10-13-kurultay-18-summary.md` item 1 — a used consensus key is burned for good, §2.7), the owner/node split for both roles (UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT name their owner in the call, "C2", §2.6-§2.7), params 19 `STAKE_MIN` / 20 `POWER_CAP_BPS` / 21 `STORAGE_BOND` votable; the storage boundary gate opens at the first boundary ≥ H | 18 `RULESET_GEN_ROLES` (khan 2026-10-13; param 16 `RULESET_GEN_STORAGE` RETIRED — the new binary refuses it) | 6422714822839891339 (D4 = 0x5922111a3501f58b since HF-6 D2 — 0x4dc61072d5982acd before it, never voted; `DNAC_CFG_RULESET_GEN_ROLES_D`, from `shared/dnac/tests/hf6_vote_oracle.py`, design rev 6 §8.1) | — | — | branch `hf6` (not released) | — |
+| HF-6 validator owner/node roles + archive storage, after HF-5 (**not voted**) | rule-set generation 4 (SYSTEM v10 / CORE v9 — SYSTEM v10 and CORE v8 since HF-6 D2, khan decision `2026-10-13-kurultay-18-summary.md` item 3, the call layouts of UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT changed and the ruleset hash does not commit layouts; CORE v9 since the payer binding, design `2026-10-03-hf5-validator-owner-stake` §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13": a multisig (kind-3) CORE funding leg of an owner operation must be the vault the SYSTEM call's signed owner names — from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): at the end of H−1 the registry switches 3 → 4 AND the validator migration runs (keys re-valued to validator_id, each 10M bond → 2M bond + 8M Foundation-owned self-delegation, the Foundation accrual merge), the SYSTEM root becomes `NDS.SYS.v5` in H−1's own app_hash; from H: SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT (no op 10: ROTATE_CONSENSUS_KEY was removed, khan decision `2026-10-13-kurultay-18-summary.md` item 1 — a used consensus key is burned for good, §2.7), the owner/node split for both roles (UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT name their owner in the call, "C2", §2.6-§2.7), params 19 `STAKE_MIN` / 20 `POWER_CAP_BPS` / 21 `STORAGE_BOND` votable; the storage boundary gate opens at the first boundary ≥ H | 18 `RULESET_GEN_ROLES` (khan 2026-10-13; param 16 `RULESET_GEN_STORAGE` RETIRED — the new binary refuses it) | 7217855907516077065 (D4 = 0x642af9b4bf735409 since the payer binding / CORE v9 — 0x5922111a3501f58b at HF-6 D2 and 0x4dc61072d5982acd before it, neither ever voted; `DNAC_CFG_RULESET_GEN_ROLES_D`, from `shared/dnac/tests/hf6_vote_oracle.py`, design rev 6 §8.1) | — | — | branch `hf6` (not released) | — |
 | HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not the validator itself is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; self-delegation, UNDELEGATE, existing rows and payouts untouched); such a DELEGATE's funding leg takes at most 14 inputs. No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | 0.25.3 (code released, inert, vote not cast) | — |
 
 Read 2026-10-07: HF-5 ACTIVE on 7/7 — every node logged "Nodus EVM: rule-set generation
@@ -767,7 +767,7 @@ section): there must be no `param_id = 16` row.
 
 **The vote: param 18 `RULESET_GEN_ROLES`, value exactly D4.** It follows the HF-4 procedure below
 with param 18 in place of param 9 (`nodus-cli chain-config propose --param RULESET_GEN_ROLES --value
-6422714822839891339 --effective <H>`; the CLI prints D4 in its usage), class ERGONOMIC (H ≥ the
+7217855907516077065 --effective <H>`; the CLI prints D4 in its usage), class ERGONOMIC (H ≥ the
 committing block + 720), and the stateful rules (`nodus_witness_chain_config.c`,
 `nodus_chain_config_stateful_rules_ex`), each a verdict on every node: (a) single use — no param-18
 row at any height; (a′) no param-16 row at any height; (b) HF-2 in force; (c) judged under rule-set
@@ -778,20 +778,22 @@ not an epoch boundary either (the first block under the new rules) — so choose
 binary built without `NODUS_EVM_ENABLED` (the messenger tree, Windows) carries neither generation
 3 nor 4 and stops at the EVM edge.
 
-**D4 and the startup line.** D4 = `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x5922111a3501f58b`
-(6422714822839891339) in `dnac.h`, from the independent oracle `shared/dnac/tests/hf6_vote_oracle.py`
+**D4 and the startup line.** D4 = `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x642af9b4bf735409`
+(7217855907516077065) in `dnac.h`, from the independent oracle `shared/dnac/tests/hf6_vote_oracle.py`
 (design rev 6 §8.1: the generation-4 pins, the 3 → 4 spec version, the K8 Foundation owner and nine
-compiled constants). Since HF-6 D2 the generation-4 pins are SYSTEM v10 (rules 1..9)
-`a012cc08bbf96524…09bb662a`, CORE v8 `db32614f1eb4818d…a0f991d1` and the SYSTEM policy (ops 1..9)
+compiled constants). The generation-4 pins are SYSTEM v10 (rules 1..9)
+`a012cc08bbf96524…09bb662a`, CORE v9 `964f300629cdbea0…4cb0aac0` and the SYSTEM policy (ops 1..9)
 `0aa4c690a05af882…25922766` — byte-equal to the EVM generation's policy, the same op set — all from
-`shared/dnac/tests/storage_oracle.py` (S1 / S2 / S3; `nodus_ruleset_pins.h` regenerated). The value
-before D2 (`0x4dc61072d5982acd`, SYSTEM v9 with op 10, CORE v7) was never voted and no binary carries
-it. Every EVM-enabled node re-derives it at start (runtime selfcheck) and **refuses
+`shared/dnac/tests/storage_oracle.py` (S1 / S2 / S3; `nodus_ruleset_pins.h` regenerated). CORE moved
+8 → 9 with the payer binding (a kind-3 SYSFUND leg must be the vault the SYSTEM call's signed owner
+names — design `2026-10-03-hf5-validator-owner-stake` §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13").
+Earlier values were never voted and no binary carries them: `0x5922111a3501f58b` (HF-6 D2, CORE v8
+`db32614f…`) and `0x4dc61072d5982acd` (SYSTEM v9 with op 10, CORE v7). Every EVM-enabled node re-derives it at start (runtime selfcheck) and **refuses
 to start** if the compiled literal does not match its own pins, owner and constants. The startup log
 carries the line
-`HF-6 rule-set generation 4 vote D4 0x5922111a3501f58b (param 18 RULESET_GEN_ROLES, switch spec v1), built from git commit …`,
+`HF-6 rule-set generation 4 vote D4 0x642af9b4bf735409 (param 18 RULESET_GEN_ROLES, switch spec v1), built from git commit …`,
 compared on 7/7 before the vote exactly as the D2 line is before param 9. At the edge every node logs
-`HF-6: rule-set generation 3 -> 4 and the validator migration at the end of height <H−1> (param 18 RULESET_GEN_ROLES, D4 0x5922111a3501f58b); height <H> is judged under generation 4`.
+`HF-6: rule-set generation 3 -> 4 and the validator migration at the end of height <H−1> (param 18 RULESET_GEN_ROLES, D4 0x642af9b4bf735409); height <H> is judged under generation 4`.
 Production builds define neither override. **Test builds only:** a harness build that compiles its
 own owner (`-DDNAC_HF6_FOUNDATION_OWNER="{…}"`) must also pass that owner's D4
 (`-DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL`); a build with one and not the other refuses to start on
@@ -1506,10 +1508,13 @@ nodus-cli -s 127.0.0.1 -p 4001 -i /var/lib/nodus/identity storage consent \
 nodus-cli -s <node> -p 4001 storage register --keys <any key dir> --msig owner.desc \
     --consent storage-consent.txt --in <nullifier>:<amount> [--in ...] --export reg.export
 
-# each of K co-signers: shows both legs decoded and the chain id, checks every input against the
-# vault's coins on -s (asked with the co-signer's OWN key), then signs both digests
-nodus-cli -s <node> -p 4001 msig sign --keys <co-signer key dir> --in reg.export \
-    --out sig-<name>.txt [--chain-id <hex64>]
+# each of K co-signers, against the node HE runs: shows both legs decoded and the chain id, asks
+# HIS node (pinned) for exactly the export's inputs as coins of the vault (with his OWN key), checks
+# the window from that node's height, then signs both digests.
+# --pin = his node's fingerprint: `nodus-cli -i <the node's identity dir> whoami` ("Fingerprint:")
+# or the node's identity/nodus.fp
+nodus-cli -s <your node> -p 4001 msig sign --pin <your node's fingerprint> \
+    --keys <co-signer key dir> --in reg.export --out sig-<name>.txt [--chain-id <hex64>]
 
 # anyone: exactly K signature files; checks every leg with the chain's auth hook, then submits
 nodus-cli -s <node> -p 4001 msig combine --in reg.export --sig sig-a.txt --sig sig-b.txt \
@@ -1524,15 +1529,32 @@ The export is valid until tip + 90 blocks (its expiry); combine after that and t
 build a new export. **`msig sign` verifies the inputs and refuses otherwise** (HF-6 D2, khan decision
 `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` item 5): the descriptor the export carries
 is NOT covered by the signatures, so co-members of two vaults could be shown vault B while the coins
-are vault A's. Before signing, `msig sign` opens a session to `-s` with the co-signer's own key (a
-member of the descriptor), requires the node's chain id to equal the export's, asks the vault's coin
-set (`dnac_msig_utxo`, one page of at most 100 coins, largest first) and requires EVERY input
-nullifier in it — it prints each input's amount from the node. No `-s`, a node without the method, a
-key outside the descriptor, another chain, or one input not in the page (a vault with more than 100
-coins whose input is not among the 100 largest included) → **nothing is signed**; there is no flag
-that skips it. `--chain-id <hex64>` additionally pins the chain the co-signer expects. A change
-output to any address but the vault's is refused too. The same holds for a v1 (single SPEND leg)
-export.
+are vault A's. Before signing, `msig sign` opens a **pinned** session to `-s` — the node the
+co-signer runs himself; `--pin` is its fingerprint, the node must sign its channel key with exactly
+that identity and the session is ML-KEM-1024 only (payer-binding package, design
+`2026-10-03-hf5-validator-owner-stake` §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13") — with the
+co-signer's own key (a member of the descriptor), requires the node's chain id to equal the
+export's, asks for exactly the export's inputs (`dnac_msig_utxo` with `"nul"`: the named coins that
+are unspent coins of the vault, any token, no 100-coin page) and requires EVERY input to be
+answered with the vault as owner — it prints each input's amount, token and lock from the node.
+It then judges the validity window from **that node's height H**, not the export's tip: expiry ≤
+H, expiry > H + 100 (the chain's admission cap from now), or a node more than 90 blocks behind the
+export's tip → refused (a node a few blocks behind the builder still signs: the export's expiry is
+the builder's tip + 90, within the cap). No `-s`, no
+`--pin`, a pin mismatch, a node without the `"nul"` query (not updated), a key outside the
+descriptor, another chain, one unverified input or a window refusal → **nothing is signed**; there
+is no flag that skips it. `--chain-id <hex64>` additionally pins the chain the co-signer expects. A
+change output to any address but the vault's is refused too. The same holds for a v1 (single SPEND
+leg) export. Operationally: every co-signer needs a node of his own, updated to this build, and its
+fingerprint; asking a node someone else runs gives no guarantee about the coins.
+
+**On chain (generation 4, CORE v9):** for the owner operations the funding is bound too — a
+multisig CORE funding leg must be exactly the vault the SYSTEM call names as owner (STAKE /
+STORAGE_REGISTER / UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT: `owner_fp`; DELEGATE / UNDELEGATE:
+`delegator_fp`), else the chain refuses it. A single-key (kind-1) funding leg — including a third
+party's key paying for someone else's operation — is unchanged; a vault paying for ANOTHER owner's
+operation is no longer possible. The v1 SPEND is outside this rule (a separate, height-activated
+fork, not now): there the pinned input check above is the only protection.
 
 **The call carries the owner (HF-6 D2, "C2", item 2).** `STORAGE_EXIT` is `node_fp[64] ‖
 owner_fp[64]` (128 B) — the CLI writes `owner_fp` = SHA3-512 of the `--keys` identity, or with
@@ -1637,8 +1659,10 @@ validator's bond comes back only through the normal graduation below.
 
 **Procedure.**
 1. **The owner UNSTAKEs the old validator** (`v2-envelope unstake`, kind 1 or — for a multisig owner —
-   the `--msig … --in … --export` form of §2.6 "Multisig owner"; the co-signers' `msig sign` needs
-   `-s <node>` to verify the funding inputs, §2.6). The call is `validator_id ‖ owner_fp` (128 B —
+   the `--msig … --in … --export` form of §2.6 "Multisig owner"; each co-signer's `msig sign` needs
+   `-s <the node he runs> --pin <its fingerprint>` to verify the funding inputs, §2.6; the funding
+   vault must be the owner itself — the chain refuses a multisig funding leg of another vault,
+   CORE v9). The call is `validator_id ‖ owner_fp` (128 B —
    HF-6 D2 "C2": the CLI writes the `--keys` identity's fingerprint or the multisig address; the chain
    refuses an UNSTAKE whose `owner_fp` is not the row's owner, whoever signs — the same for
    `v2-envelope validator-update`, `validator_id ‖ owner_fp ‖ commission`, 130 B). Its row becomes

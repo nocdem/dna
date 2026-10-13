@@ -55,6 +55,7 @@
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
 #include "dnac/msig_wire.h"                 /* dnac_msig_* member gate */
+#include "nodus/nodus_v2_spend.h"           /* dnac_msig_utxo "nul" cap */
 #include "dnac/ledger_ids.h"
 /* Nodus EVM P4-C — dnac_v3_block's "ev": the shared call / receipt codec
  * (always compiled, nodus/CMakeLists.txt — no EVM engine needed) */
@@ -688,7 +689,8 @@ static void dnac_utxo_answer_send(nodus_witness_t *w,
                                   struct nodus_tcp_conn *conn,
                                   uint32_t txn_id, const char *method,
                                   const nodus_witness_utxo_entry_t *utxos,
-                                  int count, bool with_trunc, bool trunc);
+                                  int count, bool with_trunc, bool trunc,
+                                  int nul_marker);
 
 static void handle_dnac_utxo(nodus_witness_t *w,
                                struct nodus_tcp_conn *conn,
@@ -785,7 +787,7 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     }
 
     dnac_utxo_answer_send(w, conn, txn_id, "dnac_utxo", utxos, count,
-                          false, false);
+                          false, false, -1);
     free(utxos);
 }
 
@@ -795,12 +797,22 @@ static void handle_dnac_utxo(nodus_witness_t *w,
  * `method` and sends it (or an INTERNAL_ERROR). `with_trunc` false =
  * exactly the three top-level keys dnac_utxo has always sent; true = the
  * same three, then a fourth, "trunc" (bool) = `trunc`, LAST, so the first
- * three are positionally identical. Does not free `utxos`. */
+ * three are positionally identical. `nul_marker` >= 0 (dnac_msig_utxo with
+ * "nul" only, requires with_trunc) adds a fifth key AFTER "trunc": "nul"
+ * (uint) = nul_marker, the count of nullifiers the request named; < 0
+ * adds nothing (every earlier answer, byte for byte). Does not free
+ * `utxos`. */
 static void dnac_utxo_answer_send(nodus_witness_t *w,
                                   struct nodus_tcp_conn *conn,
                                   uint32_t txn_id, const char *method,
                                   const nodus_witness_utxo_entry_t *utxos,
-                                  int count, bool with_trunc, bool trunc) {
+                                  int count, bool with_trunc, bool trunc,
+                                  int nul_marker) {
+    if (nul_marker >= 0 && !with_trunc) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "nul marker without trunc");
+        return;
+    }
     /* Phase 2 / Task 38 defined a per-UTXO proof block. Its wire keys
      * STAY (short CBOR keys to match existing conventions "n", "tid",
      * "bh"):
@@ -844,7 +856,8 @@ static void dnac_utxo_answer_send(nodus_witness_t *w,
 
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, buf_size);
-    enc_dnac_response(&enc, txn_id, method, with_trunc ? 4 : 3);
+    enc_dnac_response(&enc, txn_id, method,
+                      (size_t)(with_trunc ? 4 : 3) + (nul_marker >= 0 ? 1u : 0u));
 
     cbor_encode_cstr(&enc, "count");
     cbor_encode_uint(&enc, (uint64_t)count);
@@ -914,6 +927,10 @@ static void dnac_utxo_answer_send(nodus_witness_t *w,
         cbor_encode_cstr(&enc, "trunc");
         cbor_encode_bool(&enc, trunc);
     }
+    if (nul_marker >= 0) {
+        cbor_encode_cstr(&enc, "nul");
+        cbor_encode_uint(&enc, (uint64_t)nul_marker);
+    }
 
     size_t rlen = cbor_encoder_len(&enc);
     if (rlen > 0) {
@@ -946,7 +963,10 @@ static void dnac_utxo_answer_send(nodus_witness_t *w,
  *  b. every argument decoded STRICTLY: each known key at most once, the
  *     right type, in bounds; unknown keys skipped; `owner` exactly 128
  *     lowercase hex; `msig` a bstr of 1..DNA_MSIG_MAX_DESC_LEN bytes —
- *     a bad `msig` is refused, never treated as absent → PROTOCOL_ERROR;
+ *     a bad `msig` is refused, never treated as absent; dnac_msig_utxo's
+ *     optional `nul` (2026-10-13, nodus-cli `msig sign`'s input check) an
+ *     array of 1..NODUS_DNAC_MSIG_MAX_NULS strictly ascending 64-byte
+ *     bstr, exclusive with `max` → PROTOCOL_ERROR;
  *  c. ONCE, after the loop: dna_msig_desc_parse(msig) == 0,
  *     dna_msig_address(msig) == owner (64 raw bytes), and the session's
  *     authenticated public key (conn->peer_pk: nodus_auth.c on the
@@ -964,6 +984,9 @@ static void dnac_utxo_answer_send(nodus_witness_t *w,
 _Static_assert(NODUS_DNAC_MSIG_MAX_DESC_LEN == DNA_MSIG_MAX_DESC_LEN,
                "nodus.h restates the longest multisig descriptor");
 
+_Static_assert(NODUS_DNAC_MSIG_MAX_NULS == NODUS_V2_SPEND_MAX_IN,
+               "nodus.h restates the chain's per-leg input ceiling");
+
 typedef struct {
     char           owner[NODUS_KEY_HEX_LEN];   /* 128 lowercase hex + NUL */
     uint8_t        owner_raw[64];
@@ -971,6 +994,11 @@ typedef struct {
     size_t         msig_len;
     bool           have_max, have_limit, have_before, have_bi, have_bq;
     uint64_t       max, limit, before, bi, bq;
+    /* dnac_msig_utxo "nul" (2026-10-13): pointers into the payload,
+     * strictly ascending, 1..NODUS_DNAC_MSIG_MAX_NULS of them */
+    bool           have_nul;
+    uint32_t       n_nul;
+    const uint8_t *nul[NODUS_DNAC_MSIG_MAX_NULS];
 } msig_query_args_t;
 
 /* THE GATE (a → b → c above). `history` selects the method's own keys:
@@ -1038,6 +1066,32 @@ static int msig_query_open(struct nodus_tcp_conn *conn,
             have_msig = true;
             continue;
         }
+        if (!history && key_match(&key, "nul")) {
+            /* 1..NODUS_DNAC_MSIG_MAX_NULS bstr of exactly 64 bytes,
+             * strictly ascending (one canonical request, no duplicate) —
+             * the bound is checked BEFORE any element is read */
+            cbor_item_t arr = cbor_decode_next(&dec);
+            bool ok = !a->have_nul && arr.type == CBOR_ITEM_ARRAY &&
+                      arr.count >= 1 &&
+                      arr.count <= NODUS_DNAC_MSIG_MAX_NULS;
+            for (size_t j = 0; ok && j < arr.count; j++) {
+                cbor_item_t n = cbor_decode_next(&dec);
+                if (n.type != CBOR_ITEM_BSTR || n.bstr.len != 64 ||
+                    (j > 0 && memcmp(a->nul[j - 1], n.bstr.ptr, 64) >= 0))
+                    ok = false;
+                else
+                    a->nul[j] = n.bstr.ptr;
+            }
+            if (!ok || dec.error) {
+                send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                           "nul must be one array of 1..15 strictly "
+                           "ascending 64-byte strings");
+                return -1;
+            }
+            a->n_nul = (uint32_t)arr.count;
+            a->have_nul = true;
+            continue;
+        }
         if (!history && key_match(&key, "max")) {
             seen = &a->have_max;    slot = &a->max;
         } else if (history && key_match(&key, "limit")) {
@@ -1083,6 +1137,10 @@ static int msig_query_open(struct nodus_tcp_conn *conn,
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                    "max must be 1..100");
         return -1;
+    } else if (a->have_max && a->have_nul) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                   "max and nul are exclusive");
+        return -1;
     }
 
     /* step c — the same test the history builder runs itself */
@@ -1095,6 +1153,95 @@ static int msig_query_open(struct nodus_tcp_conn *conn,
     return 0;
 }
 
+/* dnac_msig_utxo "nul" (nodus.h; the input check of nodus-cli `msig sign`,
+ * design 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ BAĞLAMA"
+ * 2026-10-13): of the request's named coins, the unspent CORE ones owned
+ * by `a->owner`, any token, written in request order (strictly ascending
+ * nullifier). A named coin that is absent, spent or another owner's is
+ * simply not written. One primary-key lookup per name (utxo_set.nullifier
+ * is the PRIMARY KEY, nodus_witness.c), at most NODUS_DNAC_MSIG_MAX_NULS.
+ * The row discipline is nodus_witness_utxo_by_owner's (nodus_witness_db.c,
+ * not on this change's file list — restated here, not shared): CORE
+ * domain only where the column exists, a NEGATIVE stored unlock_block
+ * reads as locked forever; stricter here: a wrong-size nullifier / token /
+ * tx_hash blob, a non-integer or negative amount, or any step error is a
+ * FAULT (-1) — never a partial answer (nodus/CLAUDE.md "A DB failure is
+ * never a value"). Read-only, committed state, node-local; no consensus
+ * path calls it. @return 0 (*count_out written) / -1 fault. */
+static int msig_utxo_by_nuls(nodus_witness_t *w, const msig_query_args_t *a,
+                             nodus_witness_utxo_entry_t *out,
+                             int *count_out) {
+    *count_out = 0;
+    if (!w || !w->db) return -1;
+    int has_dom = 0;
+    {
+        sqlite3_stmt *pt = NULL;
+        if (sqlite3_prepare_v2(w->db, "PRAGMA table_info(utxo_set)", -1,
+                               &pt, NULL) != SQLITE_OK)
+            return -1;
+        int prc;
+        while ((prc = sqlite3_step(pt)) == SQLITE_ROW) {
+            const unsigned char *nm = sqlite3_column_text(pt, 1);
+            if (nm && strcmp((const char *)nm, "domain_id") == 0)
+                has_dom = 1;
+        }
+        sqlite3_finalize(pt);
+        if (prc != SQLITE_DONE) return -1;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            has_dom
+            ? "SELECT nullifier, owner, amount, token_id, tx_hash, "
+              "output_index, block_height, unlock_block FROM utxo_set "
+              "WHERE nullifier = ?1 AND owner = ?2 AND domain_id = ?3"
+            : "SELECT nullifier, owner, amount, token_id, tx_hash, "
+              "output_index, block_height, unlock_block FROM utxo_set "
+              "WHERE nullifier = ?1 AND owner = ?2", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    int count = 0, rc = -1;
+    for (uint32_t i = 0; i < a->n_nul; i++) {
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+        sqlite3_bind_blob(st, 1, a->nul[i], 64, SQLITE_STATIC);
+        sqlite3_bind_text(st, 2, a->owner, 128, SQLITE_STATIC);
+        if (has_dom)
+            sqlite3_bind_int64(st, 3, (sqlite3_int64)DNA_DOMAIN_CORE);
+        int s = sqlite3_step(st);
+        if (s == SQLITE_DONE) continue;              /* not the vault's  */
+        if (s != SQLITE_ROW) goto done;
+        nodus_witness_utxo_entry_t *e = &out[count];
+        memset(e, 0, sizeof(*e));
+        if (sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, 0) != NODUS_T3_NULLIFIER_LEN ||
+            sqlite3_column_type(st, 2) != SQLITE_INTEGER ||
+            sqlite3_column_int64(st, 2) < 0 ||
+            sqlite3_column_type(st, 3) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, 3) != 64 ||
+            sqlite3_column_type(st, 4) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, 4) != NODUS_T3_TX_HASH_LEN)
+            goto done;
+        memcpy(e->nullifier, sqlite3_column_blob(st, 0),
+               NODUS_T3_NULLIFIER_LEN);
+        memcpy(e->owner, a->owner, 128);             /* == the WHERE      */
+        e->owner[128] = '\0';
+        e->amount = (uint64_t)sqlite3_column_int64(st, 2);
+        memcpy(e->token_id, sqlite3_column_blob(st, 3), 64);
+        memcpy(e->tx_hash, sqlite3_column_blob(st, 4), NODUS_T3_TX_HASH_LEN);
+        e->output_index = (uint32_t)sqlite3_column_int(st, 5);
+        e->block_height = (uint64_t)sqlite3_column_int64(st, 6);
+        sqlite3_int64 ub = sqlite3_column_int64(st, 7);
+        e->unlock_block = (ub < 0) ? UINT64_MAX : (uint64_t)ub;
+        if (sqlite3_step(st) != SQLITE_DONE) goto done;  /* PK: one row  */
+        count++;
+    }
+    rc = 0;
+done:
+    sqlite3_finalize(st);
+    if (rc == 0) *count_out = count;
+    return rc;
+}
+
 static void handle_dnac_msig_utxo(nodus_witness_t *w,
                                   struct nodus_tcp_conn *conn,
                                   const uint8_t *payload, size_t len,
@@ -1102,6 +1249,29 @@ static void handle_dnac_msig_utxo(nodus_witness_t *w,
     msig_query_args_t a;
     if (msig_query_open(conn, payload, len, txn_id, false, &a) != 0)
         return;
+
+    if (a.have_nul) {
+        /* the named coins only (nodus.h "nul"); "trunc" false, the
+         * "nul" marker = the count named */
+        nodus_witness_utxo_entry_t *nu =
+            calloc(NODUS_DNAC_MSIG_MAX_NULS, sizeof(*nu));
+        if (!nu) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "allocation failed");
+            return;
+        }
+        int nc = 0;
+        if (msig_utxo_by_nuls(w, &a, nu, &nc) != 0) {
+            free(nu);
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "coin list unreadable");
+            return;
+        }
+        dnac_utxo_answer_send(w, conn, txn_id, "dnac_msig_utxo", nu, nc,
+                              true, false, (int)a.n_nul);
+        free(nu);
+        return;
+    }
 
     int max_results = a.have_max ? (int)a.max : DNAC_MAX_UTXO_RESULTS;
 
@@ -1130,7 +1300,7 @@ static void handle_dnac_msig_utxo(nodus_witness_t *w,
     if (trunc) count = max_results;
 
     dnac_utxo_answer_send(w, conn, txn_id, "dnac_msig_utxo", utxos, count,
-                          true, trunc);
+                          true, trunc, -1);
     free(utxos);
 }
 

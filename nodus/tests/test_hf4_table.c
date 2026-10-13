@@ -54,7 +54,9 @@
  *       exactly the EVM generation's op set, and op 10 is owned by NO
  *       generation (its id stays reserved, == 10). HF-6 D2 (decision item
  *       3): the versions are SYSTEM 10 / CORE 8 (from 9 / 7), the pins and
- *       D4 re-derived by the independent oracles.
+ *       D4 re-derived by the independent oracles. The payer binding
+ *       (design 2026-10-03-hf5-validator-owner-stake §2, 2026-10-13):
+ *       CORE 8 -> 9, the CORE pin and D4 re-derived again.
  *   6'. (deleted in HF-6 slice 8c with param 16: the storage vote
  *       literal it re-derived no longer exists.)
  *   6''. HF-6 slice 8b (design 2026-10-03-hf5-validator-owner-stake-
@@ -62,10 +64,10 @@
  *       generation-4 pins + the compiled owner + the nine named constants
  *       (the test's own array) == nodus_runtime_gen4_vote_digest ==
  *       DNAC_CFG_RULESET_GEN_ROLES_D, and — only under
- *       DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT — == 0x5922111a3501f58b, the
+ *       DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT — == 0x642af9b4bf735409, the
  *       K8 value of shared/dnac/tests/hf6_vote_oracle.py; the harness test
  *       owner 2cca88c4…ee196b93 passed explicitly gives the oracle's
- *       --owner value 0x2a3351e7325932f1 in every build; the preimage is
+ *       --owner value 0x315dc58be7dec68d in every build; the preimage is
  *       296 bytes for n = 9 (DNA_ROLEGEN_PREIMAGE_LEN, which the
  *       constructor checks before hashing); NULL pointers and n_consts >
  *       64 are refused; generation, base, either hash, the spec version,
@@ -284,7 +286,7 @@ int main(void) {
 
     /* ── 3b. storage reward v1 — GEN_STORAGE (EVM-enabled build, K10):
      *        SYSTEM v10 (rules {1..9} — the EVM generation's {1..6} + ops
-     *        7..9 the storage ops, types unchanged), CORE v8 (the EVM
+     *        7..9 the storage ops, types unchanged), CORE v9 (the EVM
      *        generation's rules {1..9}, types unchanged), same kind / abi /
      *        names / hooks / adapters / allowlists / root and invariant
      *        hooks as the EVM generation; policy = the EVM generation's,
@@ -296,7 +298,7 @@ int main(void) {
     CHECK(DNA_SYSRULE_ROTATE_CONSENSUS_KEY == 10);
 #ifdef NODUS_EVM_ENABLED
     CHECK(gE[0].ruleset_version == 8 && gE[1].ruleset_version == 6);
-    CHECK(gS[0].ruleset_version == 10 && gS[1].ruleset_version == 8);
+    CHECK(gS[0].ruleset_version == 10 && gS[1].ruleset_version == 9);
     CHECK(rules_are(&gE[0].descriptor, 6));
     CHECK(rules_are(&gS[0].descriptor, 9));         /* op 10 removed      */
     CHECK(rules_are(&gE[1].descriptor, 9));
@@ -466,16 +468,18 @@ int main(void) {
         CHECK(nodus_runtime_gen4_vote_digest(NULL) == -1);
 #ifdef DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT
         /* KAT: owner K8 → D4 of shared/dnac/tests/hf6_vote_oracle.py
-         * (hf6_vote_oracle_out.txt: 0x5922111a3501f58b =
-         * 6422714822839891339, HF-6 D2 pins) */
-        CHECK(d0 == 0x5922111a3501f58bULL);
+         * (hf6_vote_oracle_out.txt: 0x642af9b4bf735409 =
+         * 7217855907516077065, CORE v9 pins — the payer binding;
+         * 0x5922111a3501f58b at HF-6 D2's CORE v8) */
+        CHECK(d0 == 0x642af9b4bf735409ULL);
 #endif
         /* KAT: the harness test owner (stagef_hf6_owner.sh's identity of
          * the 2026-10-12 rotation run, SHA3-512 of its nodus.pk
          * 2cca88c4…ee196b93) passed EXPLICITLY → the oracle's
          * `hf6_vote_oracle.py --owner 2cca88c4…ee196b93` value
-         * 0x2a3351e7325932f1 (3040864226829218545) over the HF-6 D2 pins
-         * (0x4fc24934a9155c64 before them). A KAT vector, not a project
+         * 0x315dc58be7dec68d (3557216485373822605) over the CORE v9 pins
+         * (0x2a3351e7325932f1 at HF-6 D2's CORE v8, 0x4fc24934a9155c64
+         * before D2). A KAT vector, not a project
          * fixture: no build carries this owner by default. */
         {
             static const uint8_t harness_owner[64] = {
@@ -494,7 +498,7 @@ int main(void) {
                                           gS[1].ruleset_hash,
                                           DNAC_HF6_SWITCH_SPEC_VERSION,
                                           harness_owner, k, 9, &d) == 0);
-            CHECK(d == 0x2a3351e7325932f1ULL);
+            CHECK(d == 0x315dc58be7dec68dULL);
         }
         /* refusals: every pointer, n_consts > 64, NULL consts with n > 0 */
         CHECK(dna_rolegen_vote_digest(4, 3, NULL, gS[1].ruleset_hash, 1,

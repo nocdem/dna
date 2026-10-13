@@ -48,8 +48,9 @@
  * reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
  * design.md rev 2.2 §6): generation 4, GEN_STORAGE (SYSTEM v10 — ops
  * 7..9 STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT appended to the
- * EVM generation's, policy ops 1..9 — / CORE v8 / no EVM slot; v9 / v7
- * until HF-6 D2, Kurultay #18 item 3), reached
+ * EVM generation's, policy ops 1..9 — / CORE v9 / no EVM slot; v9 / v7
+ * until HF-6 D2, Kurultay #18 item 3; CORE v8 until the payer binding,
+ * design 2026-10-03-hf5-validator-owner-stake §2), reached
  * from the EVM generation by the phase-6b''' switch on the chain_config
  * param-18 RULESET_GEN_ROLES vote (HF-6 slice 8c; param 16 RETIRED).
  * Numbers assigned in main merge order (decision
@@ -145,7 +146,7 @@ static const uint32_t CORE_RULES_GEVM[9] = {
  * {1..9} — the EVM generation's six ops with STORAGE_REGISTER (7),
  * STORAGE_EXIT (8) and STORAGE_REPORT (9) appended. Its tx_type list is
  * the SAME SYS_TYPES (the storage ops carry no legacy tx type — op and
- * tx_type are different axes). Its CORE (v8) reuses CORE_RULES_GEVM
+ * tx_type are different axes). Its CORE (v9) reuses CORE_RULES_GEVM
  * unchanged: the version advances because SYSFUND (rule 7) now also pairs
  * with the two storage record ops (rtn_sysfund_shape) — a hook-side
  * semantics change, the W-C / general-multisig precedent
@@ -162,7 +163,9 @@ static const uint32_t CORE_RULES_GEVM[9] = {
  * three call layouts (UNSTAKE 128 / VALIDATOR_UPDATE 130 / STORAGE_EXIT
  * 128 B) and the ruleset hash does not commit call layouts
  * (shared/dnac/domain_wire.h); the pins below were re-derived by the
- * independent oracle. */
+ * independent oracle. The payer binding (design 2026-10-03-hf5-validator-
+ * owner-stake §2, 2026-10-13) bumped CORE 8 -> 9 once more (a kind-3
+ * SYSFUND leg must carry the SYSTEM leg's signed owner's vault). */
 static const uint32_t SYS_RULES_GST[9] = {
     DNA_SYSRULE_STAKE, DNA_SYSRULE_DELEGATE, DNA_SYSRULE_UNSTAKE,
     DNA_SYSRULE_UNDELEGATE, DNA_SYSRULE_VALIDATOR_UPDATE,
@@ -564,7 +567,7 @@ static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
  *              meter_policy_digest = SYS_METER_POLICY_DIGEST_GST
  *              (policy v2, seven scalar weights 1, max_block_env_bytes
  *              2 * DNA_ENV_MAX_TOTAL_LEN, ops 1..9 weight 1);
- *   CORE v8:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 8,
+ *   CORE v9:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 9,
  *              rules {1..9}, types {1,2,3,11,12,13},
  *              meter_policy_digest = 64 zero bytes.
  * Vote literal: dnac.h DNAC_CFG_RULESET_GEN_ROLES_D (D4, param 18) =
@@ -578,10 +581,14 @@ static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
  * (khan decision 2026-10-13-kurultay-18-summary.md): op 10 removed (item
  * 1) and the versions bumped SYSTEM 9 -> 10 / CORE 7 -> 8 (item 3 — the
  * ruleset hash does not commit call layouts, and item 2 "C2" changed
- * three of them; CORE decodes the sibling calls). The versions skip 9
- * (SYSTEM) and 7 (CORE) relative to the EVM generation's 8 / 6: selfcheck
- * requires only that each domain's version strictly increases with the
- * generation.
+ * three of them; CORE decodes the sibling calls). The payer binding
+ * (design 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ BAĞLAMA — han
+ * kararı 2026-10-13", operator "Yap") bumped CORE 8 -> 9: a kind-3 SYSFUND
+ * leg must carry exactly the vault the SYSTEM leg's signed owner field
+ * names (nodus_witness_rt_native.c rtn_sysfund_payer_bound); the D2 CORE
+ * v8 hash db32614f… never activated. The versions skip 9 (SYSTEM) and 7,
+ * 8 (CORE) relative to the EVM generation's 8 / 6: selfcheck requires only
+ * that each domain's version strictly increases with the generation.
  *
  * Both are filled by the INDEPENDENT oracle over the preimages above
  * (shared/dnac/tests/storage_oracle.py S2 / S3), never from this build's
@@ -601,16 +608,17 @@ static const uint8_t SYS_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
     0x1f, 0xe5, 0x62, 0x7c, 0x09, 0xbb, 0x66, 0x2a
 };
 static const uint8_t CORE_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
-    /* STORAGE-ORACLE: GEN_STORAGE CORE v8 ruleset_hash — S3 of
-     * shared/dnac/tests/storage_oracle.py (generation 4, HF-6 D2). */
-    0xdb, 0x32, 0x61, 0x4f, 0x1e, 0xb4, 0x81, 0x8d,
-    0x76, 0x09, 0xe1, 0x5f, 0x01, 0x30, 0xde, 0xc6,
-    0x52, 0x36, 0x21, 0x96, 0xa1, 0xd4, 0x16, 0xa7,
-    0xb8, 0xea, 0x45, 0x46, 0xa6, 0x4a, 0xbf, 0x9a,
-    0xc0, 0x8b, 0x0b, 0x76, 0xcc, 0x9c, 0x0b, 0x62,
-    0xe1, 0xa4, 0x7a, 0x3a, 0x7c, 0xf0, 0x4b, 0x09,
-    0x82, 0xd2, 0x99, 0x50, 0x1c, 0xbf, 0x80, 0x0f,
-    0x12, 0x84, 0x9f, 0x64, 0xa0, 0xf9, 0x91, 0xd1
+    /* STORAGE-ORACLE: GEN_STORAGE CORE v9 ruleset_hash — S3 of
+     * shared/dnac/tests/storage_oracle.py (generation 4, the payer
+     * binding). */
+    0x96, 0x4f, 0x30, 0x06, 0x29, 0xcd, 0xbe, 0xa0,
+    0xa5, 0x43, 0xc5, 0x2a, 0xa8, 0x15, 0x03, 0x4a,
+    0x61, 0xdf, 0x83, 0x77, 0xf3, 0x33, 0xdd, 0xbb,
+    0xd4, 0xf6, 0xf7, 0xa0, 0xc3, 0x49, 0x76, 0x3b,
+    0xe1, 0xb0, 0x8e, 0x70, 0x21, 0x5d, 0xda, 0x92,
+    0x44, 0x02, 0xfd, 0x19, 0x9c, 0xca, 0xd6, 0x97,
+    0xa3, 0xbf, 0xb6, 0xcc, 0x68, 0xef, 0x7f, 0x10,
+    0x2d, 0x8c, 0x1f, 0xad, 0x4c, 0xb0, 0xaa, 0xc0
 };
 #endif
 
@@ -1090,9 +1098,13 @@ static const nodus_domain_runtime_t BUILTIN[] = {
          * exact-tuple identity IS the activation mechanism) and — 7 -> 8,
          * khan decision 2026-10-13-kurultay-18-summary.md item 3 — because
          * the SYSFUND leg decodes the C2 sibling calls (UNSTAKE 128 /
-         * VALIDATOR_UPDATE 130 / STORAGE_EXIT 128 B) */
+         * VALIDATOR_UPDATE 130 / STORAGE_EXIT 128 B); 8 -> 9 (design
+         * 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ BAĞLAMA — han
+         * kararı 2026-10-13") because a kind-3 SYSFUND leg must carry the
+         * vault the SYSTEM leg's signed owner field names
+         * (rtn_sysfund_payer_bound) */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 8,
+        .ruleset_version = 9,
         .generation      = NODUS_RT_GEN_STORAGE,
         .ruleset_hash    = { 0 },   /* CORE_RULESET_HASH_GST via table_get */
         .descriptor = {
@@ -1100,7 +1112,7 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .domain_id = DNA_DOMAIN_CORE,
             .name = "DNA_CORE",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 8,
+            .ruleset_version = 9,
             .rule_count = 9, .rule_ids = CORE_RULES_GEVM,
             .tx_type_count = 6, .tx_types = CORE_TYPES
         },

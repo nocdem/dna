@@ -541,6 +541,19 @@ int nodus_v2_msig_digest(const nodus_v2_msig_export_t *x,
 
 /* ── 5. the co-signer's read-back ───────────────────────────────────── */
 
+/* the signing horizon against the node's height (contract: the header) */
+int nodus_v2_msig_horizon(uint64_t export_tip, uint64_t expiry_height,
+                          uint64_t node_height) {
+    if (node_height > UINT64_MAX - NODUS_CMT_APP_MAX_EXPIRY_AHEAD)
+        return NODUS_V2_SPEND_ERR_ARG;
+    if (expiry_height <= node_height) return NODUS_V2_MSIG_ERR_HORIZON;
+    if (expiry_height > node_height + NODUS_CMT_APP_MAX_EXPIRY_AHEAD)
+        return NODUS_V2_MSIG_ERR_HORIZON;
+    if (export_tip > node_height + NODUS_V2_MSIG_EXPIRY_AHEAD)
+        return NODUS_V2_MSIG_ERR_HORIZON;
+    return NODUS_V2_SPEND_OK;
+}
+
 int nodus_v2_msig_review(const nodus_v2_msig_export_t *x,
                          uint32_t core_version,
                          const uint8_t core_hash[DNA_ENV_RULESET_HASH_LEN],

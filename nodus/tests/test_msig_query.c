@@ -72,6 +72,30 @@
  *                    PROTOCOL_ERROR with other text stays 7; a
  *                    NOT_AUTHENTICATED stays 1; a non-bool "trunc" is
  *                    refused by the decoder.
+ *  t_nul             dnac_msig_utxo "nul" (2026-10-13 — nodus-cli `msig
+ *                    sign`'s input check, design 2026-10-03-hf5-validator-
+ *                    owner-stake §2 "ÖDEYİCİ BAĞLAMA"): named [a vault
+ *                    native coin, a vault coin of ANOTHER token, another
+ *                    owner's coin, a missing coin] → exactly the two vault
+ *                    coins, in request order, owner = the vault, five "r"
+ *                    keys with the "nul" marker LAST; the client seam
+ *                    (nodus_client_test_parse_msig_utxo_nuls — the checks
+ *                    of nodus_client_dnac_msig_utxo_nuls) accepts it and
+ *                    refuses it against a list of another length (marker
+ *                    != count) or one that did not ask a returned coin;
+ *                    the request WITHOUT "nul" answers exactly as before
+ *                    (4 keys, "trunc" last) and that reply — what a node
+ *                    that skips the unknown "nul" sends — is REFUSED by
+ *                    the "nul" decoder (no marker) while the page decoder
+ *                    still accepts it; "nul" empty / 16 entries / not
+ *                    ascending / a duplicate / a 63-byte element / not an
+ *                    array / together with "max" / repeated →
+ *                    PROTOCOL_ERROR, 15 entries accepted; a non-member →
+ *                    NOT_AUTHENTICATED; a store fault → INTERNAL_ERROR.
+ *  t_nul_beyond_page 101 vault coins: the page (100, amount DESC) is
+ *                    truncated and lacks the smallest coin; "nul" naming
+ *                    that coin answers it — the 100-coin cap no longer
+ *                    hides an input.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build (the target compiles
@@ -98,8 +122,11 @@
  *     test_addr_index.c (same builder, ai_history_build). The client side
  *     of a success is pinned with a crafted reply.
  *  4. The client request functions (nodus_client_dnac_msig_utxo /
- *     _addr_history) are not round-tripped (no client session); their
- *     decoders and their error mapping are, over the node's real bytes.
+ *     _utxo_nuls / _addr_history) are not round-tripped (no client
+ *     session); their decoders, the "nul" reply checks and their error
+ *     mapping are, over the node's real bytes. nodus-cli `msig sign` (the
+ *     --pin requirement, the pinned session, the horizon) is not driven
+ *     here — test_cmt_multisig.sh does, on a cluster.
  *  5. Coins are planted in utxo_set by SQL with domain_id = CORE when the
  *     column exists; no block applies them.
  *  6. Nothing here was RUN by its author (BUILDER: compile only). Every
@@ -141,6 +168,11 @@ int nodus_client_test_parse_msig_utxo(const uint8_t *raw, size_t raw_len,
                                       nodus_dnac_utxo_result_t *out,
                                       bool *trunc_out);
 int nodus_client_test_msig_error_rc(const uint8_t *raw, size_t raw_len);
+int nodus_client_test_parse_msig_utxo_nuls(const uint8_t *raw,
+                                           size_t raw_len,
+                                           const uint8_t (*nuls)[64],
+                                           uint32_t n_nuls,
+                                           nodus_dnac_utxo_result_t *out);
 
 static int g_checks = 0;
 #define CHECK(c, msg)                                                     \
@@ -257,9 +289,10 @@ static void fx_close(fx_t *f)
     memset(f, 0, sizeof(*f));
 }
 
-/* Plant one CORE coin of `owner` (128 hex). */
-static void plant_coin(fx_t *f, const char *owner, uint8_t nf_byte,
-                       uint64_t amount)
+/* Plant one CORE coin of `owner` (128 hex), token every byte `tok_byte`
+ * (0 = native). */
+static void plant_coin_tok(fx_t *f, const char *owner, uint8_t nf_byte,
+                           uint64_t amount, uint8_t tok_byte)
 {
     sqlite3_stmt *ti = NULL;
     bool has_dom = false;
@@ -284,7 +317,7 @@ static void plant_coin(fx_t *f, const char *owner, uint8_t nf_byte,
           "prepare coin insert");
     uint8_t nf[64], tok[64], txh[64];
     memset(nf, nf_byte, sizeof(nf));
-    memset(tok, 0, sizeof(tok));
+    memset(tok, tok_byte, sizeof(tok));
     memset(txh, nf_byte ^ 0x5a, sizeof(txh));
     sqlite3_bind_blob(st, 1, nf, 64, SQLITE_TRANSIENT);
     sqlite3_bind_text(st, 2, owner, -1, SQLITE_TRANSIENT);
@@ -294,6 +327,13 @@ static void plant_coin(fx_t *f, const char *owner, uint8_t nf_byte,
     if (has_dom) sqlite3_bind_int64(st, 6, (sqlite3_int64)DNA_DOMAIN_CORE);
     CHECK(sqlite3_step(st) == SQLITE_DONE, "coin planted");
     sqlite3_finalize(st);
+}
+
+/* Plant one native CORE coin of `owner` (128 hex). */
+static void plant_coin(fx_t *f, const char *owner, uint8_t nf_byte,
+                       uint64_t amount)
+{
+    plant_coin_tok(f, owner, nf_byte, amount, 0);
 }
 
 /* ── requests ───────────────────────────────────────────────────────── */
@@ -1107,6 +1147,250 @@ static void t_error_mapping(void)
     fx_close(&f);
 }
 
+/* ── dnac_msig_utxo "nul" (2026-10-13, `msig sign`'s input check) ───── */
+
+/* dnac_msig_utxo {owner, msig, nul:[n × 64-byte bstr of bytes nf[i]]}
+ * (+ "max" when with_max). `elem_len` != 64 makes every element that
+ * long; `as_array` false sends "nul" as one byte string instead. */
+static size_t nul_req(const char *owner, const desc_t *d, const uint8_t *nf,
+                      size_t n, bool with_max, size_t elem_len,
+                      bool as_array, bool twice)
+{
+    cbor_encoder_t enc;
+    uint8_t el[80];
+    cbor_encoder_init(&enc, g_req, sizeof(g_req));
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 77);
+    cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "q");
+    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "dnac_msig_utxo");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3 + (with_max ? 1u : 0u) + (twice ? 1u : 0u));
+    cbor_encode_cstr(&enc, "owner");
+    cbor_encode_tstr(&enc, owner, strlen(owner));
+    cbor_encode_cstr(&enc, "msig");
+    cbor_encode_bstr(&enc, d->d, d->len);
+    for (int rep = 0; rep < (twice ? 2 : 1); rep++) {
+        cbor_encode_cstr(&enc, "nul");
+        if (!as_array) {
+            memset(el, nf[0], 64);
+            cbor_encode_bstr(&enc, el, 64);
+            continue;
+        }
+        cbor_encode_array(&enc, n);
+        for (size_t i = 0; i < n; i++) {
+            memset(el, nf[i], sizeof(el));
+            cbor_encode_bstr(&enc, el, elem_len);
+        }
+    }
+    if (with_max) {
+        cbor_encode_cstr(&enc, "max");
+        cbor_encode_uint(&enc, 5);
+    }
+    size_t len = cbor_encoder_len(&enc);
+    CHECK(len > 0, "nul request encodes");
+    return len;
+}
+
+/* the client-side nullifier array for bytes nf[0..n) */
+static void nuls_fill(uint8_t (*out)[64], const uint8_t *nf, size_t n)
+{
+    for (size_t i = 0; i < n; i++) memset(out[i], nf[i], 64);
+}
+
+static void t_nul(void)
+{
+    fx_t f; desc_t d, d_other;
+    static const int K123[3] = {1, 2, 3};
+    fx_open(&f, "nul");
+    desc_make(&d, K012, 3);
+    desc_make(&d_other, K123, 3);
+    plant_coin(&f, d.owner, 0x31, 700);
+    plant_coin_tok(&f, d.owner, 0x32, 500, 0x77);      /* another token  */
+    plant_coin(&f, d_other.owner, 0x33, 900);           /* not the vault's */
+    fx_session(&f, true, 1);
+
+    /* the named coins only: 0x31 (native), 0x32 (token 0x77..), 0x33 is
+     * another owner's, 0x34 does not exist */
+    {
+        static const uint8_t nf[4] = {0x31, 0x32, 0x33, 0x34};
+        uint8_t nuls[4][64];
+        nuls_fill(nuls, nf, 4);
+        reply_t *r = call(&f, "dnac_msig_utxo",
+                          nul_req(d.owner, &d, nf, 4, false, 64, true,
+                                  false));
+        CHECK(r->type == 'r' && strcmp(r->q, "dnac_msig_utxo") == 0,
+              "nul: a member gets an answer");
+        CHECK(r->rkeys == 5 && r->has_trunc &&
+              strcmp(r->last_rkey, "nul") == 0,
+              "nul: count / block_height / utxos / trunc, then the \"nul\" "
+              "marker LAST");
+        nodus_dnac_utxo_result_t res;
+        CHECK(nodus_client_test_parse_msig_utxo_nuls(
+                  r->payload, r->len, (const uint8_t (*)[64])nuls, 4,
+                  &res) == 0, "nul: the client accepts the named answer");
+        CHECK(res.count == 2, "nul: exactly the two vault coins named");
+        CHECK(res.entries[0].nullifier[0] == 0x31 &&
+              res.entries[1].nullifier[0] == 0x32,
+              "nul: in request order");
+        CHECK(strcmp(res.entries[0].owner, d.owner) == 0 &&
+              strcmp(res.entries[1].owner, d.owner) == 0,
+              "nul: owner = the vault address");
+        CHECK(res.entries[0].amount == 700 && res.entries[1].amount == 500 &&
+              res.entries[1].token_id[0] == 0x77 &&
+              res.entries[0].token_id[0] == 0x00,
+              "nul: any token, amounts as stored");
+        nodus_client_free_utxo_result(&res);
+
+        /* the client refuses the same reply checked against another list:
+         * the marker (4) != 3 asked; a returned coin (0x32) not asked */
+        CHECK(nodus_client_test_parse_msig_utxo_nuls(
+                  r->payload, r->len, (const uint8_t (*)[64])nuls, 3,
+                  &res) == NODUS_ERR_PROTOCOL_ERROR && res.count == 0,
+              "nul: a marker that is not the count asked is refused");
+        static const uint8_t nf2[4] = {0x31, 0x35, 0x36, 0x37};
+        uint8_t nuls2[4][64];
+        nuls_fill(nuls2, nf2, 4);
+        CHECK(nodus_client_test_parse_msig_utxo_nuls(
+                  r->payload, r->len, (const uint8_t (*)[64])nuls2, 4,
+                  &res) == NODUS_ERR_PROTOCOL_ERROR && res.count == 0,
+              "nul: a returned coin that was not asked is refused");
+    }
+
+    /* an OLD node skips "nul" and answers the page — no marker: the
+     * client refuses it (here: the page answer of today's request) */
+    {
+        static const uint8_t nf[1] = {0x31};
+        uint8_t nuls[1][64];
+        nuls_fill(nuls, nf, 1);
+        reply_t *r = msig_utxo(&f, d.owner, &d, false, 0);
+        CHECK(r->type == 'r' && r->rkeys == 4 &&
+              strcmp(r->last_rkey, "trunc") == 0,
+              "no nul: the answer is exactly as before (4 keys, trunc "
+              "last)");
+        nodus_dnac_utxo_result_t res;
+        CHECK(nodus_client_test_parse_msig_utxo_nuls(
+                  r->payload, r->len, (const uint8_t (*)[64])nuls, 1,
+                  &res) == NODUS_ERR_PROTOCOL_ERROR && res.count == 0,
+              "nul: a reply without the marker (a node that ignored "
+              "\"nul\") is refused");
+        bool trunc = true;
+        CHECK(nodus_client_test_parse_msig_utxo(r->payload, r->len, &res,
+                                                &trunc) == 0 &&
+              res.count == 2 && !trunc,
+              "no nul: the page decoder is unchanged");
+        nodus_client_free_utxo_result(&res);
+    }
+
+    /* argument refusals, each PROTOCOL_ERROR with a member session */
+    {
+        static const uint8_t asc[2] = {0x31, 0x32};
+        static const uint8_t desc_order[2] = {0x32, 0x31};
+        static const uint8_t dup[2] = {0x31, 0x31};
+        static uint8_t many[16];
+        for (int i = 0; i < 16; i++) many[i] = (uint8_t)(0x40 + i);
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, asc, 0, false, 64, true,
+                                false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "nul: an empty array");
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, many, 16, false, 64, true,
+                                false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "nul: 16 entries (> 15)");
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, desc_order, 2, false, 64, true,
+                                false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "nul: not ascending");
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, dup, 2, false, 64, true,
+                                false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "nul: a duplicate");
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, asc, 2, false, 63, true,
+                                false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "nul: a 63-byte element");
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, asc, 2, false, 64, false,
+                                false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "nul: not an array");
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, asc, 2, true, 64, true,
+                                false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "nul and max together");
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, asc, 2, false, 64, true,
+                                true)),
+                   NODUS_ERR_PROTOCOL_ERROR, "nul repeated");
+        /* 15 entries is the bound, accepted */
+        reply_t *r = call(&f, "dnac_msig_utxo",
+                          nul_req(d.owner, &d, many, 15, false, 64, true,
+                                  false));
+        CHECK(r->type == 'r' && strcmp(r->last_rkey, "nul") == 0,
+              "nul: 15 entries accepted");
+    }
+
+    /* the member gate is unchanged: a non-member asking by name */
+    {
+        static const uint8_t nf[1] = {0x31};
+        fx_session(&f, true, 3);                /* key 3: not in d     */
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, nf, 1, false, 64, true, false)),
+                   NODUS_ERR_NOT_AUTHENTICATED,
+                   "nul: a non-member is NOT_AUTHENTICATED");
+        fx_session(&f, true, 1);
+    }
+
+    /* a store fault answers INTERNAL_ERROR, never an empty list */
+    {
+        static const uint8_t nf[1] = {0x31};
+        sqlite3 *db = f.w->db;
+        f.w->db = NULL;
+        expect_err(call(&f, "dnac_msig_utxo",
+                        nul_req(d.owner, &d, nf, 1, false, 64, true, false)),
+                   NODUS_ERR_INTERNAL_ERROR,
+                   "nul: a store fault is INTERNAL_ERROR");
+        f.w->db = db;
+    }
+    fx_close(&f);
+}
+
+/* the 100-coin page no longer hides an input: 101 coins, the named one
+ * the SMALLEST (outside the amount-DESC page) */
+static void t_nul_beyond_page(void)
+{
+    fx_t f; desc_t d;
+    fx_open(&f, "nulpage");
+    desc_make(&d, K012, 3);
+    for (int c = 0; c < 100; c++)
+        plant_coin(&f, d.owner, (uint8_t)(0x80 + c), 1000u + (uint64_t)c);
+    plant_coin(&f, d.owner, 0x20, 1);                   /* the smallest   */
+    fx_session(&f, true, 0);
+
+    nodus_dnac_utxo_result_t res;
+    bool trunc = false;
+    reply_t *r = msig_utxo(&f, d.owner, &d, false, 0);
+    CHECK(nodus_client_test_parse_msig_utxo(r->payload, r->len, &res,
+                                            &trunc) == 0 &&
+          res.count == 100 && trunc, "the page: 100 of 101, truncated");
+    bool seen = false;
+    for (int i = 0; i < res.count; i++)
+        if (res.entries[i].nullifier[0] == 0x20) seen = true;
+    CHECK(!seen, "the page does not carry the smallest coin");
+    nodus_client_free_utxo_result(&res);
+
+    static const uint8_t nf[1] = {0x20};
+    uint8_t nuls[1][64];
+    nuls_fill(nuls, nf, 1);
+    r = call(&f, "dnac_msig_utxo",
+             nul_req(d.owner, &d, nf, 1, false, 64, true, false));
+    CHECK(nodus_client_test_parse_msig_utxo_nuls(
+              r->payload, r->len, (const uint8_t (*)[64])nuls, 1,
+              &res) == 0 && res.count == 1 &&
+          res.entries[0].nullifier[0] == 0x20 && res.entries[0].amount == 1,
+          "nul: the named coin is answered whatever the page holds");
+    nodus_client_free_utxo_result(&res);
+    fx_close(&f);
+}
+
 int main(void)
 {
     printf("=== dnac_msig_utxo / dnac_msig_addr_history (vault member) ===\n");
@@ -1121,6 +1405,8 @@ int main(void)
     t_dnac_utxo_same();
     t_dnac_utxo_strict();
     t_error_mapping();
+    t_nul();
+    t_nul_beyond_page();
     printf("test_msig_query: ALL %d checks passed\n", g_checks);
     return 0;
 }

@@ -12887,8 +12887,9 @@ static int test_hf2_netzero_block(void) {
  *  K7 additionally (HF-6 slice 8b, builds whose Foundation owner is the
  *  K8 default — DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT): the generation-4
  *  vote literal D4 (DNAC_CFG_RULESET_GEN_ROLES_D) keeps its value
- *  0x5922111a3501f58b (HF-6 D2 — SYSTEM v10 / CORE v8 pins; it was
- *  0x4dc61072d5982acd before). A test build that overrides the owner (and with it
+ *  0x642af9b4bf735409 (SYSTEM v10 / CORE v9 pins — the payer binding; it
+ *  was 0x5922111a3501f58b at HF-6 D2's CORE v8 and 0x4dc61072d5982acd
+ *  before D2). A test build that overrides the owner (and with it
  *  D4) skips that one line.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
@@ -13314,8 +13315,8 @@ static int test_hf8_name_gate_hooks(void) {
         /* HF-6 slice 8b: D4 is overridable together with the owner (a
          * test build), so its K8 literal is pinned only where the owner is
          * K8 — shared/dnac/tests/hf6_vote_oracle.py */
-        CHECK((uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D == 0x5922111a3501f58bULL,
-              "K7 D4 (the K8 owner) keeps its literal (HF-6 D2 pins)");
+        CHECK((uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D == 0x642af9b4bf735409ULL,
+              "K7 D4 (the K8 owner) keeps its literal (CORE v9 pins)");
 #endif
         OK();
     }

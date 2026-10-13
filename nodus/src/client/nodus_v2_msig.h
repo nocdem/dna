@@ -151,9 +151,45 @@ typedef enum {
     NODUS_V2_MSIG_ERR_COUNT       = -71, /* signatures != the export's K   */
     NODUS_V2_MSIG_ERR_DUP_SIGNER  = -72, /* one key signed twice           */
     NODUS_V2_MSIG_ERR_RULESET     = -73, /* no CORE leg version to judge   */
-    NODUS_V2_MSIG_ERR_EXPIRY      = -74  /* expiry 0, or past the export's
+    NODUS_V2_MSIG_ERR_EXPIRY      = -74, /* expiry 0, or past the export's
                                           * tip + NODUS_V2_MSIG_EXPIRY_AHEAD*/
+    NODUS_V2_MSIG_ERR_HORIZON     = -75  /* judged against the NODE's
+                                          * height (nodus_v2_msig_horizon):
+                                          * expired, valid past node + the
+                                          * mempool cap (100), or the node
+                                          * more than EXPIRY_AHEAD behind
+                                          * the export's tip              */
 } nodus_v2_msig_rc_t;
+
+/**
+ * The signing horizon judged against the height of the co-signer's OWN
+ * node (2026-10-13, red-team round 3 — `msig sign` takes it from the
+ * pinned session's dnac_msig_utxo answer, "block_height"), not against the
+ * export's own `tip`, which its author chose. With H = node_height (the
+ * last committed block; the envelope runs at H + 1 or later):
+ *   expiry_height <= H                         → expired: nothing to sign
+ *   expiry_height >  H + NODUS_CMT_APP_MAX_EXPIRY_AHEAD (100)
+ *                                              → the signature would stay
+ *     usable longer than the chain admits an envelope from the present
+ *     (the mempool cap, nodus_witness_cmt_app.c — CheckTx refuses expiry
+ *     > tip + 100) — an export whose tip was set into the future (review /
+ *     review2 check expiry only against that tip) would otherwise yield a
+ *     signature that waits to be submitted later. The bound is the cap,
+ *     not the builders' tip + 90: builders write expiry = tip + 90
+ *     (nodus-cli CLI_ENV_EXPIRY_AHEAD), so a co-signer's node a few blocks
+ *     behind the builder must still sign — the 10-block gossip margin
+ *     absorbs that lag;
+ *   export_tip    >  H + NODUS_V2_MSIG_EXPIRY_AHEAD (90)
+ *                                              → the node is that far
+ *     behind the builder: its coin set (the input check) is not the one the
+ *     export was built on.
+ * (H − export_tip > 90 needs no rule of its own: the export's expiry is
+ * <= tip + 90 < H, the first line.) Pure. @return NODUS_V2_SPEND_OK /
+ * NODUS_V2_MSIG_ERR_HORIZON / NODUS_V2_SPEND_ERR_ARG (a height near
+ * UINT64_MAX).
+ */
+int nodus_v2_msig_horizon(uint64_t export_tip, uint64_t expiry_height,
+                          uint64_t node_height);
 
 /* ── 1. descriptor + address from keys (nodus-cli `msig address`) ────── */
 
