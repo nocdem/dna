@@ -1827,6 +1827,9 @@ int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
     int rc = -1;
     const int targeted = nsw_hf6_targeted(op);
     const int consented = nsw_hf6_consent_op(op) != 0;
+    /* a refusal below (invalid input, bonds out of range) must not leave the
+     * previous build's envelope readable — as nsw_hf6_build clears first */
+    nsw_built_clear();
     if (gen < 1 || !nsw_hf6_op_ok(op) ||
         nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
         nsw_parse_u64(tip_dec, &tip) != 0 ||
