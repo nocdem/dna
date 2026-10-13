@@ -191,7 +191,7 @@ int nodus_validator_list_paged_keys(nodus_witness_t *w,
  * "absent" (1) — a DB failure or an inconsistency is never a value.
  *
  * CALLERS (sub-slice 3d, every one behind a generation-4 test): the
- * distribution's v1-snapshot bridge (get_by_pubkey, nodus_witness_v2_
+ * distribution (get by validator_id since slice 5c, nodus_witness_v2_
  * econ.c), the graduation (get + update, nodus_witness_v2_epoch.c), the
  * committee (bonded_tenured, nodus_witness_committee.c) and the v5 root's
  * validator leaves (scan + leaf_encode below, nodus_witness_merkle.c).
@@ -231,19 +231,6 @@ typedef struct {
 int nodus_validator_v2_get(nodus_witness_t *w,
                            const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
                            nodus_v2_validator_row_t *out);
-
-/**
- * Fetch the v2 row whose consensus pubkey (validators.pubkey) is `pubkey`
- * (DNAC_PUBKEY_SIZE bytes). `pubkey` carries no UNIQUE constraint, so the
- * scan continues past the first hit: a SECOND matching row is a fault.
- *
- * @return 0 found (*out set); 1 no validators row holds the pubkey;
- *         -1 fault — SQLite error, two rows with the pubkey, a malformed
- *         row, or a validators row without its roles row.
- */
-int nodus_validator_v2_get_by_pubkey(nodus_witness_t *w,
-                                     const uint8_t *pubkey,
-                                     nodus_v2_validator_row_t *out);
 
 /**
  * Write a v2 row back: the 13 mutable `validators` columns (the

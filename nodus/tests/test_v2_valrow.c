@@ -8,13 +8,15 @@
  * validator fields in the side table v2_validator_roles).
  *
  * What it proves (each would be false if the matching check failed):
- *   1. v2 get / get_by_pubkey return the JOIN of a re-keyed validators
- *      row (pubkey_hash = validator_id) and its roles row, every field
- *      byte-equal to what was written;
+ *   1. v2 get returns the JOIN of a re-keyed validators row (pubkey_hash
+ *      = validator_id) and its roles row, every field byte-equal to what
+ *      was written (the read by consensus pubkey, get_by_pubkey, is
+ *      deleted — HF-6 red-team round 1 close-out: no production caller);
  *   2. absent (1) and fault (-1) are distinct: an unknown key is 1; a
- *      validators row without its roles row, an orphan roles row, two
- *      validators rows with one pubkey, a malformed roles row and a
- *      missing roles table are all -1 — never "absent", never a value;
+ *      validators row without its roles row, an orphan roles row, a
+ *      malformed roles row and a missing roles table are all -1 — never
+ *      "absent", never a value; a second validators row holding the same
+ *      consensus pubkey under its own id leaves both keyed reads intact;
  *   3. v2 update writes BOTH tables inside the caller's transaction and
  *      round-trips; it refuses autocommit mode, a mixed "no pending key"
  *      encoding (design §6.3), a changed owner_fp (no TRANSFER_OWNER) and
@@ -255,25 +257,19 @@ static int t_get_update(void) {
     memcpy(want.validator_id, vidA, 64);
     memcpy(want.owner_fp, ownA, 64);
 
-    /* 1. both readers return the joined row */
+    /* 1. the keyed reader returns the joined row */
     CHECK(nodus_validator_v2_get(fx.w, vidA, &got) == 0, "v2_get A"); OK();
     CHECK(row_eq(&want, &got), "v2_get: every field round-trips"); OK();
-    CHECK(nodus_validator_v2_get_by_pubkey(fx.w, want.rec.pubkey, &got) == 0,
-          "get_by_pubkey A"); OK();
-    CHECK(row_eq(&want, &got), "get_by_pubkey: every field"); OK();
     /* the v1 get by pubkey no longer finds the re-keyed row (its key is
      * the tagged hash) — the reason the v2 readers exist */
     CHECK(nodus_validator_get(fx.w, want.rec.pubkey, &got.rec) == 1,
           "v1 get misses a re-keyed row"); OK();
 
     /* 2. absent */
-    uint8_t vidX[64], pkX[DNAC_PUBKEY_SIZE];
+    uint8_t vidX[64];
     memset(vidX, 0xEE, 64);
-    memset(pkX, 0xEE, sizeof(pkX));
     CHECK(nodus_validator_v2_get(fx.w, vidX, &got) == 1, "unknown id = 1");
     OK();
-    CHECK(nodus_validator_v2_get_by_pubkey(fx.w, pkX, &got) == 1,
-          "unknown pubkey = 1"); OK();
 
     /* 3. update round trip, inside a transaction */
     want.rec.self_stake = 200000000000000ULL;
@@ -343,8 +339,6 @@ static int t_get_update(void) {
           "re-key B WITHOUT a roles row");
     CHECK(nodus_validator_v2_get(fx.w, vidB, &got) == -1,
           "v2_get: validators row without roles = -1 (not absent)"); OK();
-    CHECK(nodus_validator_v2_get_by_pubkey(fx.w, b.rec.pubkey, &got) == -1,
-          "get_by_pubkey: validators row without roles = -1"); OK();
     memcpy(b.validator_id, vidB, 64);
     memcpy(b.owner_fp, ownA, 64);
     CHECK(run_sql(fx.w->db, "BEGIN") == 0, "begin");
@@ -367,7 +361,7 @@ static int t_get_update(void) {
 
     /* two validators rows with A's pubkey: the v1 insert keys by the
      * tagged hash, which A no longer occupies; re-key it to vidD with a
-     * roles row so the -1 can only come from the duplicate */
+     * roles row — each keyed read still resolves its own row */
     {
         static dnac_validator_record_t dup;
         dup = want.rec;
@@ -386,20 +380,23 @@ static int t_get_update(void) {
         sqlite3_finalize(st);
         CHECK(rc == SQLITE_DONE && ch == 1, "re-key the duplicate");
         CHECK(roles_insert_only(fx.w->db, vidD, ownA) == 0, "its roles row");
-        CHECK(nodus_validator_v2_get_by_pubkey(fx.w, want.rec.pubkey,
-                                               &got) == -1,
-              "two rows with one consensus pubkey = -1"); OK();
-        CHECK(nodus_validator_v2_get(fx.w, vidA, &got) == 0,
+        CHECK(nodus_validator_v2_get(fx.w, vidA, &got) == 0 &&
+              row_eq(&want, &got),
               "the keyed read is unaffected"); OK();
+        CHECK(nodus_validator_v2_get(fx.w, vidD, &got) == 0 &&
+              memcmp(got.validator_id, vidD, 64) == 0 &&
+              memcmp(got.rec.pubkey, want.rec.pubkey, DNAC_PUBKEY_SIZE) == 0,
+              "the duplicate resolves by its own id"); OK();
         CHECK(run_sql(fx.w->db, "DELETE FROM validators WHERE pubkey_hash = "
                       "x'" "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
                       "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
                       "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4"
                       "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4'") == 0,
               "remove the duplicate");
-        CHECK(nodus_validator_v2_get_by_pubkey(fx.w, want.rec.pubkey,
-                                               &got) == 0,
-              "one row again: found"); OK();
+        CHECK(nodus_validator_v2_get(fx.w, vidA, &got) == 0 &&
+              row_eq(&want, &got), "one row again: A found"); OK();
+        CHECK(nodus_validator_v2_get(fx.w, vidD, &got) == -1,
+              "the duplicate's roles row left alone = -1 (orphan)"); OK();
     }
 
     /* a malformed roles row (owner_fp 63 bytes) is a fault */
@@ -411,13 +408,9 @@ static int t_get_update(void) {
                   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1'") == 0, "corrupt owner");
     CHECK(nodus_validator_v2_get(fx.w, vidA, &got) == -1,
           "malformed roles row = -1"); OK();
-    CHECK(nodus_validator_v2_get_by_pubkey(fx.w, want.rec.pubkey, &got) == -1,
-          "malformed roles row via pubkey = -1"); OK();
 
     /* the roles table missing = a fault, not "absent" */
     CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles") == 0, "drop");
-    CHECK(nodus_validator_v2_get_by_pubkey(fx.w, pkX, &got) == -1,
-          "get_by_pubkey with no roles table = -1 (not absent)"); OK();
     CHECK(nodus_validator_v2_get(fx.w, vidX, &got) == -1,
           "v2_get with no roles table = -1 (not absent)"); OK();
 

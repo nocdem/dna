@@ -94,9 +94,9 @@
  *        counted, and the witness helper over the stored row agrees);
  *        shares by counted / Σcounted, V0's split on its raw 60M — every
  *        delta exact;
- *     E6 an UNSTAKED row holding V1's consensus pubkey under its own id:
- *        nodus_validator_v2_get_by_pubkey FAULTS (slice-4 fault 2); with
- *        snapshot(4E) rewritten in its ruleset-1 shape (the v1 governing
+ *     E6 an UNSTAKED row holding V1's consensus pubkey under its own id
+ *        (the by-pubkey read that FAULTED on it, slice-4 fault 2, is
+ *        deleted — no production caller); with snapshot(4E) rewritten in its ruleset-1 shape (the v1 governing
  *        snapshot a post-H boundary still reads — case F crosses the real
  *        one) the ruleset-1 bridge (v2_get of the migrated id) pays
  *        exactly;
@@ -977,9 +977,10 @@ static int expect_dist(nodus_witness_t *w, uint64_t B,
         if (e->self_bond > o->self_bond_max) o->self_bond_max = e->self_bond;
         if (memcmp(e->pubkey, g_k[V6].pk, PKLEN) == 0) o->v6_member = 1;
         uint8_t vid[64];
+        /* the row the migrated id names holds this entry's pubkey */
         if (dna_validator_id_migrated(vid, chain32, e->pubkey) != 0 ||
-            nodus_validator_v2_get_by_pubkey(w, e->pubkey, row) != 0 ||
-            memcmp(row->validator_id, vid, 64) != 0)
+            nodus_validator_v2_get(w, vid, row) != 0 ||
+            memcmp(row->rec.pubkey, e->pubkey, PKLEN) != 0)
             goto out;
         const uint64_t power = e->total_stake / DNAC_DECIMAL_UNIT;
         const uint64_t share = sum_power ? muldiv(payout, power, sum_power)
@@ -1721,17 +1722,16 @@ static int t_engine_v2_snapshot(void) {
         dna_vset_free(&s);
     }
 
-    /* ── E6. an UNSTAKED row sharing V1's consensus pubkey: by-pubkey
-     * resolution faults (slice-4 fault 2); the ruleset-1 bridge and the
-     * ruleset-2 arm resolve by id and pay. ─────────────────────────── */
+    /* ── E6. an UNSTAKED row sharing V1's consensus pubkey: the
+     * ruleset-1 bridge and the ruleset-2 arm resolve by id and pay (the
+     * by-pubkey read that faulted here, slice-4 fault 2, is deleted —
+     * no production caller). ──────────────────────────────────────── */
     {
         uint8_t uid[64];
         owed_t o;
         CHECK(run_sql(O.w->db, "BEGIN IMMEDIATE") == 0 &&
               put_unstaked_twin(O.w, V1, g_k[KD].fp, uid) == 0,
               "the UNSTAKED twin row");
-        CHECK(nodus_validator_v2_get_by_pubkey(O.w, g_k[V1].pk, row) == -1,
-              "two rows hold V1's pubkey: the by-pubkey read faults");
         /* HF-6 5d: every snapshot this chain built after its edge is
          * ruleset 2, so the ruleset-1 governing snapshot a post-H
          * boundary still reads (snapshot(B₀) at B₀ + E) is written here by

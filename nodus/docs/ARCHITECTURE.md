@@ -6815,8 +6815,9 @@ this sub-slice).
 `nodus_v2_validator_row_t` (`nodus_witness_validator.h`) = `dnac_validator_record_t` + `validator_id`
 + `owner_fp` + `pending_consensus_pubkey` + `consensus_key_effective_epoch` (witness-local — the
 client header `dnac/include/dnac/validator.h` is not extended). `nodus_validator_v2_get`,
-`nodus_validator_v2_get_by_pubkey` (a second row with the pubkey is a fault; no production caller
-since slice 5c),
+(`nodus_validator_v2_get_by_pubkey` — the read by consensus pubkey — had no production caller
+since slice 5c and is DELETED in the HF-6 red-team round 1 close-out; every reader resolves by
+validator_id),
 `nodus_validator_v2_update` (both tables, inside the caller's transaction; validator_id, consensus
 pubkey and owner_fp are immutable and checked; the single "no pending key" encoding is enforced),
 `nodus_validator_v2_bonded_tenured` (the gen-4 arm: the v1 filters and pubkey ASC order, each
@@ -7375,8 +7376,8 @@ UNSTAKED row may share it with a later STAKE of the same key):
 
 The ruleset-2 refusal is removed; a ruleset-2 governing snapshot paid below generation 4 is a
 broken invariant (-2). Attendance stays keyed by the entry pubkey; shares by counted power over
-Σcounted, inner split on raw amounts (5b, K2). `nodus_validator_v2_get_by_pubkey` has no production
-caller after this (only tests) — not removed here (outside 5c's files).
+Σcounted, inner split on raw amounts (5b, K2). `nodus_validator_v2_get_by_pubkey` had no production
+caller after this (only tests); it was deleted in the HF-6 red-team round 1 close-out.
 
 **5d blocker found in 5c — CLOSED in slice 5d** (phase 0a now hashes the governing snapshot with
 `dna_vset_hash_ex(…, DNA_VSET_RULESET_TOPN_V2, …)`; see "HF-6 slice 5d"). The 5c tests never let a

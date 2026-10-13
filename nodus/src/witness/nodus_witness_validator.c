@@ -756,52 +756,10 @@ int nodus_validator_v2_get(nodus_witness_t *w,
     return ret == 0 ? 0 : -1;
 }
 
-int nodus_validator_v2_get_by_pubkey(nodus_witness_t *w,
-                                     const uint8_t *pubkey,
-                                     nodus_v2_validator_row_t *out) {
-    if (!w || !w->db || !pubkey || !out) return -1;
-
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db, V2_VAL_SELECT "WHERE v.pubkey = ?",
-                           -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "v2_get_by_pubkey prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_blob(st, 1, pubkey, DNAC_PUBKEY_SIZE,
-                          SQLITE_STATIC) != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    int rc = sqlite3_step(st);
-    if (rc == SQLITE_DONE) {
-        sqlite3_finalize(st);
-        return 1;
-    }
-    if (rc != SQLITE_ROW) {
-        QGP_LOG_ERROR(LOG_TAG, "v2_get_by_pubkey step failed (rc=%d): %s",
-                      rc, sqlite3_errmsg(w->db));
-        sqlite3_finalize(st);
-        return -1;
-    }
-    if (v2_row_from_stmt(st, out) != 0) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    /* `pubkey` is not UNIQUE: a second row with it is a fault, never "the
-     * first one wins" (which one is first is not a committed fact). */
-    rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc == SQLITE_DONE) return 0;
-    if (rc == SQLITE_ROW)
-        QGP_LOG_ERROR(LOG_TAG, "%s", "v2_get_by_pubkey: two validators rows "
-                      "hold the same consensus pubkey — fault");
-    else
-        QGP_LOG_ERROR(LOG_TAG, "v2_get_by_pubkey second step failed "
-                      "(rc=%d)", rc);
-    memset(out, 0, sizeof(*out));
-    return -1;
-}
+/* nodus_validator_v2_get_by_pubkey (the read by consensus pubkey) is
+ * DELETED (HF-6 red-team round 1 close-out): no production caller since
+ * slice 5c — every generation-4 reader resolves a row by its validator_id
+ * (nodus_validator_v2_get, the PRIMARY KEY read). HF-6 never went live. */
 
 int nodus_validator_v2_update(nodus_witness_t *w,
                               const nodus_v2_validator_row_t *row) {
