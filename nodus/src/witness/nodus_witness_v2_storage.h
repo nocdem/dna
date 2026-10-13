@@ -31,7 +31,8 @@
  * ── THE STORAGE BOUNDARY (step 1b' of nodus_witness_v2_epoch_boundary_
  *    apply: after the validator distribution 1b, before payday 1c —
  *    rev 2.2 §5 "between epoch.c:1571 and :1589") ──────────────────────
- *   0. GATE — runs only when chain_config param 16 (RULESET_GEN_STORAGE)
+ *   0. GATE — runs only when chain_config param 18 (RULESET_GEN_ROLES —
+ *      HF-6 8c; the retired param 16 RULESET_GEN_STORAGE before it)
  *      is in effect at B (a committed row with effective <= B, i.e.
  *      B >= H_act) AND the SYSTEM runtime the registry resolves is
  *      GEN_STORAGE or later; param in effect with an older runtime is a

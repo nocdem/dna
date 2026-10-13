@@ -2289,7 +2289,8 @@ int nodus_witness_v2_epoch_boundary_apply(
 
     /* ── 1b'. THE STORAGE BOUNDARY (archive reward — storage reward v1
      * rev 4, package B2a; contract nodus_witness_v2_storage.h) ────────
-     * Inert unless chain_config param 16 is in effect at this height and
+     * Inert unless chain_config param 18 (RULESET_GEN_ROLES, HF-6 8c — it
+     * replaced the retired param 16) is in effect at this height and
      * the registry resolves GEN_STORAGE: settle the epoch (H−2E, H−E] of
      * the storage set, prune, release EXITING bonds, publish due
      * segments, freeze storage_set(H). AFTER 1b and BEFORE 1c (design
