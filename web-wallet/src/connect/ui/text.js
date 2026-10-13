@@ -308,7 +308,8 @@ export function contactDays(fp, dmSync, now, today) {
 //      wrote with first — by the message's time as the chat shows it
 //      (shownAt: the sender's time, never later than its arrival here; our
 //      own messages' send time), then by the LOCAL sequence (`seq`, the
-//      later stored first) when two times are equal;
+//      later stored first) when two times are equal. A message whose `at`
+//      is not an integer number counts as no message here;
 //   2. then every other contact — never written with, or never checked —
 //      in list order. They are still checked every round, last.
 // Before 0.1.111 contacts never checked came first and "newest" was the
@@ -320,8 +321,12 @@ export function checkOrder(contacts, messages) {
   const newest = new Map();
   for (const m of messages || []) {
     if (!m || typeof m.fp !== 'string' || !U64.test(String(m.seq))) continue;
+    // Only an integer `at` is a time (every stored message's `at` is
+    // Date.now()): no string-to-number coercion, so the C rule compares
+    // integers (P1 design: integer comparisons, never floating point).
+    // shownAt then gives `at` or the sender's time, both safe integers.
+    if (typeof m.at !== 'number' || !Number.isSafeInteger(m.at)) continue;
     const time = shownAt(m), seq = BigInt(String(m.seq));
-    if (!Number.isFinite(time)) continue;
     const seen = newest.get(m.fp);
     if (seen === undefined || time > seen.time || (time === seen.time && seq > seen.seq)) newest.set(m.fp, { time, seq });
   }

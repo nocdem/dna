@@ -591,6 +591,8 @@ test('check order (0.1.111): the contact last written with first, by the message
     { fp: fp('5'), dir: 'in', seq: '9', at: 3000_000, senderTs: '9999' },   // sender clock ahead: shown at arrival 3,000,000
     { fp: fp('6'), dir: 'in', seq: 'x', at: 9000_000 },                      // unreadable seq: ignored
     { fp: fp('7'), dir: 'out', seq: '3' },                                   // no time: ignored
+    { fp: fp('2'), dir: 'out', seq: '4', at: '9500000' },                    // string at: not a time, ignored
+    { fp: fp('4'), dir: 'out', seq: '5', at: 9500000.5 },                    // fractional at: ignored
     { fp: fp('9'), dir: 'in', seq: '99', at: 9900_000 }                      // not a contact
   ];
   const before = contacts.map(c => c.fp);
