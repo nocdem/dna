@@ -32,6 +32,7 @@ import { raise, gather, siteName, onOwnIdentity } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
 import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote, autoLockBarText } from './auto-lock.js';
 import { readBalanceRefresh, writeBalanceRefresh, parseBalanceRefresh, balanceRefreshNote } from './balance-refresh.js';
+import { readShowZero, writeShowZero, showZeroNote } from './zero-balances.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
 // column (`@media (max-width: 900px)`): below it the Send / Receive panel sits
@@ -852,6 +853,17 @@ let autoLockMinutes = readAutoLock(autoLockStorage());
     const minutes = parseBalanceRefresh(choice.value);
     const kept = writeBalanceRefresh(autoLockStorage(), minutes);
     note.textContent = apply(minutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
+  });
+}
+// Zero balances (src/zero-balances.js, 0.1.113): hidden from the asset list
+// unless Device & settings shows them.
+{
+  const box = $('show-zero-balances'), note = $('show-zero-balances-note');
+  const apply = show => { box.checked = show; portfolio.setHideZero(!show); return showZeroNote(show); };
+  note.textContent = apply(readShowZero(autoLockStorage()));
+  box.addEventListener('change', () => {
+    const kept = writeShowZero(autoLockStorage(), box.checked);
+    note.textContent = apply(box.checked) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
   });
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);

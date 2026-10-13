@@ -30,6 +30,17 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
+- **Assets you do not hold are left out of the list (0.1.113, 2026-10-13).** Operator: "sıfır olan bakiyeleri göstermenin bir anlamı yok … settings olması lazım, bir tane sıfır bakiyeleri gizli gibi … Hiç olmayan … Kaç dolar olduğu değil, bir şey olup olmadığı önemli".
+  - **The rule.** `src/portfolio.js` `zeroRow` / `groupAssets(…, { hideZero })` hides a row whose amount was read as exactly 0. It goes by the amount, never by the dollar value: an unpriced asset that is held, like CPUNK, stays.
+  - **What always stays.** A row whose amount is not known (reading, failed, not read) stays, because it may hold something. NODUS always stays: it is the wallet's own asset, and Send / Receive start there.
+  - **Several networks.** An asset held on some networks shows only those networks.
+  - **Empty list.** When a network filter leaves nothing, the list says so ("Nothing held here yet …").
+  - **The setting.** Device & settings → "Show assets with a zero balance" (both sites; `src/zero-balances.js`, key `nodus.showZeroBalances`), off by default. It is a per-device convenience kept in localStorage, like the automatic lock.
+  - **Tests.**
+    - `test/portfolio.test.js`: held / zero / unread / unpriced / NODUS / per network / empty filter.
+    - `test/browser-smoke.js`: unchecking the box removes SOL, which is read as 0; NODUS stays; checking brings SOL back.
+    - The smoke and Ixios suites run with zero balances shown, because they work with every row. Their "nothing stored" checks ignore only this test-set key.
+
 - **A saved wallet with many contacts keeps saving (0.1.112, 2026-10-13; BUGS W-15).**
   - **The defect.** Nodus Connect keeps its whole state of a saved wallet in ONE sealed record (`src/connect/store.js` `STATE_ID`): contacts, ACK times, kept profiles' index, check times, chain names, groups and vaults. A record's plaintext was capped at 64 KiB (`PLAINTEXT_MAX`; `connect/nc_wasm.c` `NC_HIST_PT_MAX`). The cap existed because the record crossed into the module as a hex string, which Emscripten copies onto the 1 MiB C stack.
   - **The measurement.** About 1 KB per contact. The cap was crossed at about 60 contacts: 20 contacts take 20.9 KB, 50 take 52.0 KB, 80 take 83.1 KB. From then on every save failed with "This is too large to save on this device." Received messages were not kept, a check round failed every time, and sending failed too.

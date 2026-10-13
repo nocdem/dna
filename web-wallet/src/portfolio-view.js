@@ -76,6 +76,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // `selected`: the network chosen in the Send / Receive panel, set by the app
   // through setSelected(). It is UI state, not wallet state, so clear() keeps it.
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob, selected;
+  // Zero balances left out of the list (src/zero-balances.js; src/app.js sets
+  // it from Device & settings).
+  let hideZero = true;
   // Automatic updates (src/balance-refresh.js, 0.1.93): every `autoMinutes`
   // while the page is shown (0 = off); `readAt` the start of the last full
   // read, `pricesAt` of the last price read, `doneAt` when the last full read
@@ -150,7 +153,11 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
     const focused = document.activeElement, focusedGroup = focused?.closest('.asset-group')?.dataset.symbol;
     const focusedAction = focused?.getAttribute('aria-label'), focusedRowAction = focused?.dataset?.rowAction;
-    $('balances').replaceChildren(...groupAssets(snap.rows, filter, Object.fromEntries(Object.entries(networks).map(([key, c]) => [key, c.name]))).flatMap(group => {
+    const groups = groupAssets(snap.rows, filter, Object.fromEntries(Object.entries(networks).map(([key, c]) => [key, c.name])), { hideZero });
+    // Every asset of this filter left out as a zero balance (0.1.113): say so,
+    // never an empty box.
+    if (!groups.length) { $('balances').replaceChildren(el('p', 'hint balances-empty', 'Nothing held here yet. Zero balances are hidden — Device & settings can show them.')); return; }
+    $('balances').replaceChildren(...groups.flatMap(group => {
       const detail = el('details', 'asset-group'); detail.dataset.symbol = group.symbol; detail.open = opened.has(group.symbol);
       const summary = el('summary', 'asset-summary'), name = el('span', 'asset-name');
       const home = networks[group.rows[0].chain];
@@ -315,6 +322,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     if (Date.now() - readAt < autoMinutes * 60000 - 1000) return;
     void refresh({ background: true });
   }
+  function setHideZero(value) { hideZero = value === true; render(); }
   function setAutoRefresh(minutes) {
     autoMinutes = Number.isSafeInteger(minutes) && minutes > 0 ? minutes : 0;
     clearInterval(autoTimer); autoTimer = undefined;
@@ -420,5 +428,5 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, reread, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh };
+  return { open, clear, refresh, reread, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh, setHideZero };
 }

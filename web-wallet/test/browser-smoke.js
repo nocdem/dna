@@ -2,6 +2,7 @@ import { portfolioRead, cellframeRead, ixiosRead, historyRead } from './portfoli
 import { pastePhrase, readPhrase } from './browser-phrase.js';
 import { AUTO_LOCK_KEY } from '../src/auto-lock.js';
 import { BALANCE_REFRESH_KEY } from '../src/balance-refresh.js';
+import { SHOW_ZERO_KEY } from '../src/zero-balances.js';
 // Run after npm run build + npm run preview. Every external request is intercepted.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -20,6 +21,10 @@ const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
 const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
 page.setDefaultTimeout(10000);
+// This suite works with every asset row, held or not: zero balances shown
+// (Device & settings, src/zero-balances.js, 0.1.113 — hidden by default; the
+// hiding itself is checked in test/browser-portfolio.js).
+await page.addInitScript(key => { try { localStorage.setItem(key, '1'); } catch { /* storage refused */ } }, SHOW_ZERO_KEY);
 const errors = [], broadcasts = [], calls = [];
 page.on('pageerror', error => errors.push(error.message));
 await page.routeWebSocket(() => true, ws => ws.close());
@@ -152,6 +157,20 @@ try {
   assert.doesNotMatch(await nodusGroup.innerText(), /Reading|Not read|Balance unavailable|\b0\.0\b/);
   assert.deepEqual(await nodusGroup.locator('.holding-actions button').allTextContents(), ['Receive']);
   await nodusGroup.locator('summary').click();
+  // Zero balances (0.1.113, src/zero-balances.js): hidden unless Device &
+  // settings shows them. SOL is read as 0 here: it leaves the list while NODUS
+  // stays; the box brings it back. (This suite runs with them shown.)
+  await openPage('settings');
+  assert.equal(await page.locator('#show-zero-balances').isChecked(), true);
+  await page.locator('#show-zero-balances').uncheck();
+  assert.match(await page.locator('#show-zero-balances-note').innerText(), /left out of the list/);
+  await walletView();
+  assert.equal(await page.locator('.asset-group[data-symbol="SOL"]').count(), 0);
+  assert.equal(await page.locator('.asset-group[data-symbol="NODUS"]').count(), 1);
+  await openPage('settings');
+  await page.locator('#show-zero-balances').check();
+  await walletView();
+  await page.locator('.asset-group[data-symbol="SOL"]').waitFor();
   // Clicking a holding row (outside its buttons) switches the Send / Receive
   // panel to that network and marks the row; the network name is the row's
   // keyboard control and does the same on Enter.
@@ -378,7 +397,7 @@ try {
   await page.waitForFunction(() => { const small = document.querySelector('.asset-group[data-symbol="CPUNK"] .holding-value small'); return small && small.textContent.startsWith('Read failed · last read'); });
   assert.notEqual(await page.locator('.asset-group[data-symbol="CPUNK"] .holding-value strong').textContent(), '0 CPUNK');
   cellframeFail = false;
-  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
   networkId = '0x1';
   await openPage('settings');
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
@@ -392,7 +411,7 @@ try {
     await page.locator('#vault-confirm-password').fill(confirmation);
     await page.locator('#vault-save').click();
     assert.match(await page.locator('#vault-save-status').innerText(), /passwords do not match/);
-    assert.equal(await page.evaluate(() => localStorage.length), 0);
+    assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length, SHOW_ZERO_KEY), 0);
     assert.equal(await page.locator('#vault-password').inputValue(), 'public-test-password-123');
     assert.equal(await page.locator('#vault-confirm-password').inputValue(), confirmation);
     assert.equal(await page.evaluate(() => document.activeElement.id), 'vault-confirm-password');
@@ -488,7 +507,7 @@ try {
   // same step (app.js vault-delete, the 'deleted' outcome).
   await page.waitForFunction(() => document.querySelector('#vault-status').textContent.includes('deleted from this device'));
   assert.equal(await page.locator('#vault-status').innerText(), 'Saved wallet, saved activity and message history deleted from this device.');
-  assert.equal(await page.evaluate(() => localStorage.length), 0);
+  assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length, SHOW_ZERO_KEY), 0);
   await openPage('settings');
   await page.getByText('Save wallet on this device (optional)', { exact: true }).click();
   assert.equal(await page.locator('#vault-save').isVisible(), true);
@@ -496,10 +515,10 @@ try {
   assert.equal(await page.locator('#vault-old-password').isVisible(), false);
   assert.equal(await page.locator('#vault-confirm-label').innerText(), 'Confirm password');
   await page.locator('#vault-password').fill('public-test-password-123'); await page.locator('#vault-confirm-password').fill('public-test-password-123'); await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click(); await page.locator('#lock').click(); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
-  await page.waitForFunction(() => !document.querySelector('#vault-save').disabled); assert.equal(await page.evaluate(() => localStorage.length), 0);
+  await page.waitForFunction(() => !document.querySelector('#vault-save').disabled); assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length, SHOW_ZERO_KEY), 0);
   assert.equal(await page.locator('#vault-confirm-password').inputValue(), '');
   await page.locator('#welcome').waitFor({ state: 'visible' }); assert.equal(await page.locator('#receive-address').innerText(), '');
-  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
   await page.locator('#create').click(); const created = await readPhrase(page); assert.equal(created.split(' ').length, 24); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
   // E-4 blocks paste on this verify step by design, so the backup check below
   // types each word into its own box instead of pasting the full phrase.

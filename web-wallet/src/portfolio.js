@@ -116,9 +116,21 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
 // "Ethereum", "Ixios", "Solana", "TRON"), compared case-insensitively code
 // unit by code unit (no locale), so the order is the same on every device.
 const STABLECOINS = ['USDT', 'USDC', 'DAI', 'USDD'];
-export function groupAssets(rows, filter = 'all', networkNames = {}) {
+// Zero balances hidden (0.1.113, operator 2026-10-13: "sıfır olan bakiyeleri
+// göstermenin bir anlamı yok … settings olması lazım … Hiç olmayan … Kaç dolar
+// olduğu değil, bir şey olup olmadığı önemli"): with `hideZero`, a row whose
+// amount was read as exactly 0 is left out — by the amount, never by its
+// dollar value (an unpriced asset that is held stays). A row whose amount is
+// not known (reading, failed, not read) stays: it may hold something. NODUS
+// always stays (the wallet's own asset; Send / Receive start there). An asset
+// whose every row is left out disappears; one held on some networks shows
+// only those.
+export function zeroRow(row) {
+  return row.symbol !== 'NODUS' && row.balance !== null && row.units === 0n;
+}
+export function groupAssets(rows, filter = 'all', networkNames = {}, { hideZero = false } = {}) {
   const groups = new Map();
-  for (const row of rows.filter(r => filter === 'all' || r.chain === filter)) {
+  for (const row of rows.filter(r => (filter === 'all' || r.chain === filter) && !(hideZero && zeroRow(r)))) {
     if (!groups.has(row.symbol)) groups.set(row.symbol, []);
     groups.get(row.symbol).push(row);
   }
