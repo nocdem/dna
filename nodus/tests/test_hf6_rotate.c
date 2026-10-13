@@ -2561,11 +2561,14 @@ static int t_swap(void) {
      * candidate swapped at 3E (S(3E) seats it under KN) and
      * nodus_validator_v2_key_sweep_previous finds three role-1 rows where
      * a swapped validator holds two: the boundary FAULTS. The rows are
-     * removed again before block 4E. (ONE extra row would not fault: two
-     * rows, one of them the current key, is the A2 shape, and the sweep
-     * would release the extra one as a previous key — the sweep cannot
-     * tell an A2 residue from a stray row on an A8 rotator; the boundary
-     * self-check, log-only, reports that row as an extra — C6k.) */
+     * removed again before block 4E. (ONE extra row would NOT fault, and
+     * would not be reported either: two rows, one of them the current
+     * key, is the A2 shape, so the sweep (3d) releases the extra one as a
+     * "previous key" before the boundary self-check (7) runs. That
+     * absorption holds for a stray row on ANY validator S(h − E) seats
+     * under its current key; before khan A8 an A3 rotator at U + E held
+     * two rows already and one stray made three — a FAULT. Only a direct
+     * kr_diff call between boundaries (C6k's probes) sees such a row.) */
     {
         uint8_t da[64], db[64], junk[2][64];
         nodus_v2_block_t bk;
