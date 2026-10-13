@@ -10,7 +10,7 @@
 // when the node did not say; "your witnesses" are the generation-4 rows
 // owned by this wallet only; the Review warning fires exactly when the
 // consent expires before the transaction's validity; the earliest heights
-// of the timing facts; the validator list keeps the generation-4 ids and
+// of the timing facts (witness join, storage exit); the validator list keeps the generation-4 ids and
 // refuses all-zero ones; the storage list's shape rules; prepareHf6 refuses
 // below the HF-6 generation and refuses a signed transaction whose node key
 // is not the consent's. "Stop being a witness" (prepareHf6 kind 'unstake',
@@ -19,7 +19,9 @@
 // a leaving one, an unknown or all-zero id, a module without the witness
 // list), built with no consent and no bond, its review names the witness
 // and has no node key line, and a signed witness id or node key that is not
-// the request's is refused; the lock block counts are epochs × E.
+// the request's is refused; the lock block counts are epochs × E. No key
+// rotation (Kurultay #18 item 1): no 'rotate' kind, no rotate heights, a
+// rotate consent check or build is refused before the client is asked.
 // Requires: nothing beyond `npm ci` (node --test). Leaves nothing behind.
 // How it can lie: the client is a fake — the module's own consent checks,
 // signature verification and envelope bytes are NOT exercised here (that is
@@ -29,9 +31,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   suggestExpiry, EXPIRY_MARGIN, percentToBps, gateOpen, ownWitnesses, consentExpiresEarly, consentCommand,
-  epochStartAtOrAfter, witnessJoinFrom, rotationHeights, storageExitHeights, canStopWitness, lockBlocks
+  epochStartAtOrAfter, witnessJoinFrom, storageExitHeights, canStopWitness, lockBlocks
 } from '../src/nodus-roles.js';
-import { parseValidators, parseStorageByOwner, checkConsent, prepareHf6, parseHf6Rules, HF6_NOT_YET_TEXT } from '../src/adapters/nodus.js';
+import * as roles from '../src/nodus-roles.js';
+import { parseValidators, parseStorageByOwner, checkConsent, prepareHf6, parseHf6Rules, HF6_NOT_YET_TEXT, HF6_KINDS } from '../src/adapters/nodus.js';
 
 const OWN = '1a'.repeat(64), OTHER = '2b'.repeat(64), NODE = '3c'.repeat(64), NODE2 = '4d'.repeat(64);
 const VID = '5e'.repeat(64), VID2 = '6f'.repeat(64);
@@ -91,7 +94,18 @@ test('roles: the consent warning fires exactly when the consent expires first', 
 test('roles: the node commands are the forms nodus-cli accepts', () => {
   assert.equal(consentCommand({ kind: 'stake', owner: OWN, expiry: '1710' }), `nodus-cli -i ~/.nodus -s 127.0.0.1 validator consent --op stake --owner ${OWN} --expiry 1710`);
   assert.equal(consentCommand({ kind: 'storageRegister', owner: OWN, expiry: '1710' }), `nodus-cli -i ~/.nodus -s 127.0.0.1 storage consent --owner ${OWN} --expiry 1710`);
-  assert.equal(consentCommand({ kind: 'rotate', owner: OWN, expiry: '1710', validatorId: VID }), `nodus-cli -i ~/.nodus -s 127.0.0.1 validator consent --op rotate --owner ${OWN} --subject ${VID} --expiry 1710`);
+});
+
+// Kurultay #18 item 1 (decision 2026-10-13-kurultay-18-summary.md): no key
+// rotation in HF-6 — no rotate kind, no rotate heights, the consent check
+// and the build refuse it before reaching the module.
+test('roles: there is no key rotation (ROTATE removed from HF-6)', async () => {
+  assert.deepEqual([...HF6_KINDS], ['stake', 'storageRegister', 'storageExit', 'unstake']);
+  assert.equal(roles.rotationHeights, undefined);
+  const client = fakeClient();
+  assert.throws(() => checkConsent({ client, from: OWN, kind: 'rotate', text: 'x', tip: 1000n }), /Unknown consent action/);
+  await assert.rejects(prepareHf6({ client, from: OWN, kind: 'rotate', consent: 'x', validatorId: VID }), /Unknown witness or storage action/);
+  assert.equal(client.builds.length, 0, 'nothing was built');
 });
 
 test('roles: the earliest heights of the timing facts', () => {
@@ -99,9 +113,6 @@ test('roles: the earliest heights of the timing facts', () => {
   assert.equal(epochStartAtOrAfter(721n, 720n), 1440n);
   assert.equal(witnessJoinFrom(1000n, 1440n), 2441n);
   assert.equal(witnessJoinFrom(1000n, null), null);
-  // tip 1000 -> F = 1440, U = 2160
-  assert.deepEqual(rotationHeights(1000n, 720n), { boundary: 1440n, switchAt: 2160n, keepAtLeast: 2520n, keepThrough: 2880n, releasedAt: 2880n });
-  assert.equal(rotationHeights(1000n, null), null);
   // exit included at 1001: B_rel 1440, locked 12 epochs, again from 2161
   assert.deepEqual(storageExitHeights(1000n, 720n, 12n), { release: 1440n, lockedUntil: 10080n, registerAgainFrom: 2161n });
   // design rev 6 §11.4: an exit at 720 may register again at 1441 at the earliest

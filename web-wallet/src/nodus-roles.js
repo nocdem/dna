@@ -1,6 +1,10 @@
 // Nodus Connect — the "Nodus" page (#nodus-roles; More → Nodus): become a
-// witness, become a storage node, change your node's key, leave storage,
-// and stop being a witness ("Your witnesses"; operator 2026-10-13 "Ekle").
+// witness, become a storage node, leave storage, and stop being a witness
+// ("Your witnesses"; operator 2026-10-13 "Ekle"). There is no "change your
+// node's key": the khan removed key ROTATE from HF-6 (decision
+// docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1 — a key
+// used once is never usable again); a witness moves to a new key by
+// stopping here and becoming a witness again from the new node.
 // src/app.js wallet pages show the page; this module fills its
 // panel. Connect site only: src/connect-main.js mounts it and registers its
 // extension; the wallet site (index.html) has none of its elements and
@@ -110,14 +114,13 @@ export function lockBlocks(epochs, E) {
 export function consentExpiresEarly(consentExpiry, expiryHeight) {
   return typeof consentExpiry === 'bigint' && typeof expiryHeight === 'bigint' && consentExpiry < expiryHeight;
 }
-// The command the node runs (nodus/tools/nodus-cli.c usage: `validator
-// consent --op stake|rotate --owner <hex128> [--subject <validator_id>]
-// --expiry <h>`, `storage consent --owner <hex128> --expiry <h>`; -i the
-// node identity, -s the node it asks for the chain id and tip).
-export function consentCommand({ kind, owner, expiry, validatorId = '' }) {
+// The command the node runs (nodus/tools/nodus-cli.c cmd_validator_consent
+// usage: `validator consent --op stake --owner <hex128> --expiry <h>`,
+// `storage consent --owner <hex128> --expiry <h>`; -i the node identity,
+// -s the node it asks for the chain id and tip).
+export function consentCommand({ kind, owner, expiry }) {
   const head = 'nodus-cli -i ~/.nodus -s 127.0.0.1';
   if (kind === 'storageRegister') return `${head} storage consent --owner ${owner} --expiry ${expiry}`;
-  if (kind === 'rotate') return `${head} validator consent --op rotate --owner ${owner} --subject ${validatorId} --expiry ${expiry}`;
   return `${head} validator consent --op stake --owner ${owner} --expiry ${expiry}`;
 }
 // The first epoch start (a multiple of E) at or after block h.
@@ -130,28 +133,6 @@ export function witnessJoinFrom(tip, minTenureBlocks) {
   if (typeof tip !== 'bigint' || typeof minTenureBlocks !== 'bigint' || tip <= 0n) return null;
   return tip + 1n + minTenureBlocks;
 }
-// ROTATE: accepted (or deferred) at the first boundary F >= the commit
-// height; the switch U = F + E (the old key signs U and U + 1, the new node
-// from U + 2). The old node, by the hf6 session's rule of 2026-10-13
-// (nodus/docs/DEPLOY_RUNBOOK.md §2.6 item 4-5, §2.7 item 7 on hf6
-// 1c9e29d25):
-//   seated in S(F): at least through U + floor(E/2) — it files S(F)'s
-//     storage reports in (U, U + floor(E/2)] with its seat key, as every
-//     seated witness does (rt_native.c "the signer is that seat") — and
-//     U + E is the safe upper bound: the old key's reservation is released
-//     there (khan A2);
-//   not seated in S(F): its key is released at U (khan A8); it may stop
-//     after the switch;
-//   also a storage node on the old key: storage keys do not rotate (khan
-//     A4) — it stays up as long as the old key should stay a storage node.
-// No RPC tells whether the witness is seated in S(F) (dnac_committee_query
-// answers the committee of tip + 1 only), so the Review states both cases;
-// the storage case is shown when this wallet's storage list holds the node.
-export function rotationHeights(tip, E) {
-  if (typeof tip !== 'bigint' || typeof E !== 'bigint' || tip <= 0n || E <= 0n) return null;
-  const F = epochStartAtOrAfter(tip + 1n, E), U = F + E;
-  return { boundary: F, switchAt: U, keepAtLeast: U + E / 2n, keepThrough: U + E, releasedAt: U + E };
-}
 // STORAGE_EXIT included at x: released at B_rel = E * ceil(x / E) as one
 // coin locked until B_rel + lockEpochs * E; the node may register again only
 // when floor((h-1)/E) - floor((x-1)/E) >= 2, i.e. from B_rel + E + 1.
@@ -163,8 +144,7 @@ export function storageExitHeights(tip, E, lockEpochs) {
 
 // ── the page ────────────────────────────────────────────────────────────
 
-const TITLES = Object.freeze({ stake: 'Become a witness', storageRegister: 'Become a storage node', rotate: 'Change your node’s key', storageExit: 'Leave storage', unstake: 'Stop being a witness' });
-const ACTIVITY_TITLES = Object.freeze({ stake: 'Witness bond', storageRegister: 'Storage node bond', rotate: 'Node key change', storageExit: 'Leaving storage', unstake: 'Leaving the witnesses' });
+const ACTIVITY_TITLES = Object.freeze({ stake: 'Witness bond', storageRegister: 'Storage node bond', storageExit: 'Leaving storage', unstake: 'Leaving the witnesses' });
 const WHOAMI = 'nodus-cli -i ~/.nodus whoami';
 
 // Host hooks (src/app.js nodusReady): lockedInputs() — coins of pending
@@ -182,13 +162,12 @@ let form = freshForm();
 let fieldCount = 0;
 
 function freshForm() {
-  // kind: the consent kind of the screen ('stake' | 'storageRegister' |
-  // 'rotate'); reviewKind: the kind of the prepared transaction (a storage
-  // screen also prepares 'storageExit', the "Your witnesses" screen
-  // 'unstake'); exitNode / stopWitness: the storage node / witness the
-  // prepared leave names; error / errorFor: the last failure and the kind
-  // it belongs to.
-  return { kind: null, reviewKind: null, consent: '', check: null, checkError: '', bond: '', commission: '', witness: '', exitNode: '', stopWitness: '', expiry: null, prepared: null, busy: false, status: '', error: '', errorFor: null };
+  // kind: the consent kind of the screen ('stake' | 'storageRegister');
+  // reviewKind: the kind of the prepared transaction (a storage screen also
+  // prepares 'storageExit', the "Your witnesses" screen 'unstake');
+  // exitNode / stopWitness: the storage node / witness the prepared leave
+  // names; error / errorFor: the last failure and the kind it belongs to.
+  return { kind: null, reviewKind: null, consent: '', check: null, checkError: '', bond: '', commission: '', exitNode: '', stopWitness: '', expiry: null, prepared: null, busy: false, status: '', error: '', errorFor: null };
 }
 
 function el(tag, { className, text } = {}, ...children) {
@@ -233,10 +212,8 @@ async function readFacts() {
   if (form.kind && !facts.error && r) form.expiry = suggestExpiry(facts.tip, r.consentWindow);
   if (form.consent) runCheck();
   render();
-  if (screen === 'rotate' || screen === 'witness' || screen === 'witnesses') await readWitnesses(seq, c);
-  // rotate reads the storage list too: the Review warns when the node is
-  // also this wallet's storage node (its registration stays on the old key)
-  if (screen === 'storage' || screen === 'rotate') await readStorage(seq, c, from);
+  if (screen === 'witness' || screen === 'witnesses') await readWitnesses(seq, c);
+  if (screen === 'storage') await readStorage(seq, c, from);
 }
 async function readWitnesses(seq, c) {
   if (!c.stakeable) { witnesses = { rows: [], error: 'The witness list is not available in this wallet version.' }; render(); return; }
@@ -265,25 +242,17 @@ async function readStorage(seq, c, from) {
 
 // The consent checks of the module for what is pasted now, plus the one
 // check the module leaves to the chain (design §2 item 7) where the witness
-// list was read: a stake's node key is not already a witness's key; a
-// rotate's new key differs from the witness's current one.
+// list was read: a stake's node key is not already a witness's key.
 function runCheck() {
   form.check = null; form.checkError = '';
   if (!client || !form.consent.trim() || !form.kind) return;
   if (!facts || facts.error) { form.checkError = 'Waiting for the network’s current block height before the consent can be checked.'; return; }
-  if (form.kind === 'rotate' && !form.witness) { form.checkError = 'Choose the witness first.'; return; }
   try {
-    const check = checkConsent({ client, from: client.fingerprint, kind: form.kind, text: form.consent, validatorId: form.witness, tip: facts.tip });
+    const check = checkConsent({ client, from: client.fingerprint, kind: form.kind, text: form.consent, tip: facts.tip });
     const rows = witnesses && !witnesses.error ? witnesses.rows : null;
-    if (rows && check.nodeFp) {
-      if (form.kind === 'stake') {
-        const taken = rows.some(v => v.fingerprint === check.nodeFp);
-        check.checks.push({ id: 'key', ok: !taken, detail: taken ? 'This node key is already a witness’s key. Each witness needs its own node key.' : 'This node key is not a witness’s key yet.' });
-      } else if (form.kind === 'rotate') {
-        const current = rows.find(v => v.validatorId === form.witness);
-        const same = !!current && current.fingerprint === check.nodeFp;
-        check.checks.push({ id: 'key', ok: !same, detail: same ? 'This is the witness’s current node key. Run the command on the NEW node.' : 'The new node key differs from the witness’s current one.' });
-      }
+    if (rows && check.nodeFp && form.kind === 'stake') {
+      const taken = rows.some(v => v.fingerprint === check.nodeFp);
+      check.checks.push({ id: 'key', ok: !taken, detail: taken ? 'This node key is already a witness’s key. Each witness needs its own node key.' : 'This node key is not a witness’s key yet.' });
       check.ok = check.checks.every(line => line.ok);
     }
     form.check = check;
@@ -322,7 +291,6 @@ function view() {
   out.push(...gateNotes());
   if (screen === 'witness') out.push(...consentFlow('stake'));
   else if (screen === 'storage') out.push(...storageList(), ...consentFlow('storageRegister'));
-  else if (screen === 'rotate') out.push(...rotateView());
   else if (screen === 'witnesses') out.push(...witnessesView());
   if (form.status) out.push(el('p', { className: 'roles-status', text: form.status }));
   return out;
@@ -350,7 +318,6 @@ function homeView() {
     el('div', { className: 'roles-list' },
       row('Become a witness', `Run a witness node you control. Bond at least ${nodus(r.stakeMin)}.`, () => goto('witness', { kind: 'stake', bond: formatUnits(r.stakeMin, NODUS_ASSET.decimals) }), 'witness'),
       row('Become a storage node', `Keep a copy of the chain’s archive. Bond ${nodus(r.storageBond)}.`, () => goto('storage', { kind: 'storageRegister' }), 'storage'),
-      row('Change your node’s key', 'Move your witness to a new machine or key. Fee only.', () => goto('rotate', { kind: 'rotate' }), 'rotate'),
       row('Your witnesses', 'See the witnesses this wallet owns, or stop being a witness and get the bond back. Fee only.', () => goto('witnesses'), 'witnesses'))
   ];
 }
@@ -376,23 +343,19 @@ function consentFlow(kind) {
   const owner = client.fingerprint;
   // 1 · the command
   const cmdNodes = [];
-  if (kind === 'rotate' && !form.witness) cmdNodes.push(el('p', { className: 'hint', text: 'Choose the witness first.' }));
-  else if (form.expiry === null) cmdNodes.push(el('p', { className: 'hint', text: 'The command appears once the network’s current block height is read.' }));
+  if (form.expiry === null) cmdNodes.push(el('p', { className: 'hint', text: 'The command appears once the network’s current block height is read.' }));
   else {
-    const command = consentCommand({ kind, owner, expiry: form.expiry.toString(), validatorId: form.witness });
+    const command = consentCommand({ kind, owner, expiry: form.expiry.toString() });
     const copyNote = el('span', { className: 'roles-copy-note' });
     cmdNodes.push(
-      el('p', { className: 'hint', text: kind === 'rotate'
-        ? `On the NEW node (the computer and key the witness moves to), run this. It prints a consent for this wallet, valid until block ${block(form.expiry)}.`
-        : `On the computer that runs your ${kind === 'stake' ? 'witness' : 'storage'} node, run this. It prints a consent for this wallet, valid until block ${block(form.expiry)}.` }),
+      el('p', { className: 'hint', text: `On the computer that runs your ${kind === 'stake' ? 'witness' : 'storage'} node, run this. It prints a consent for this wallet, valid until block ${block(form.expiry)}.` }),
       el('code', { className: 'roles-cmd', text: command }),
       el('div', { className: 'roles-actions' }, btn('Copy command', async () => {
         try { await navigator.clipboard.writeText(command); copyNote.textContent = 'Copied.'; } catch { copyNote.textContent = 'Copy is unavailable here; select the command and copy it.'; }
       }), copyNote),
       el('p', { className: 'hint', text: `Your node’s key fingerprint, to compare on the Review: ${WHOAMI}` }));
   }
-  out.push(card(kind === 'rotate' ? '2 · On the new node, run' : '1 · Prepare your node', ...cmdNodes));
-  if (kind === 'rotate' && !form.witness) return out;
+  out.push(card('1 · Prepare your node', ...cmdNodes));
   // 2 · paste and checks
   const area = el('textarea', { className: 'roles-paste' });
   area.rows = 6; area.spellcheck = false; area.autocomplete = 'off';
@@ -408,7 +371,7 @@ function consentFlow(kind) {
   }
   const checkNodes = [...field('Paste the consent the node printed', area, 'consent'), el('ul', { className: 'roles-checks' }, ...lines)];
   if (form.check?.nodeFp) checkNodes.push(el('p', { className: 'hint', text: 'Node key fingerprint in this consent:' }), el('code', { className: 'roles-fp-inline', text: form.check.nodeFp }));
-  out.push(card(kind === 'rotate' ? '3 · Paste the consent' : '2 · Paste the consent', ...checkNodes));
+  out.push(card('2 · Paste the consent', ...checkNodes));
   // 3 · the bond (witness: a floor; storage: exact) and commission
   let amount = null, amountError = '';
   if (kind === 'stake') {
@@ -464,7 +427,6 @@ async function startReview(kind, extra = {}) {
       params.commissionBps = percentToBps(form.commission, s?.commissionMaxBps ?? null).toString();
     }
     if (kind !== 'storageExit' && kind !== 'unstake') params.consent = form.consent;
-    if (kind === 'rotate') params.validatorId = form.witness;
     if (kind === 'unstake') params.validatorId = extra.validatorId;
     if (kind === 'storageExit') params.nodeFp = extra.nodeFp;
     const prepared = await prepareHf6(params);
@@ -483,7 +445,7 @@ async function startReview(kind, extra = {}) {
 function reviewCard() {
   const t = form.prepared, d = t.decoded, kind = form.reviewKind, E = epochLength(), r = rules();
   const items = [];
-  const big = kind === 'rotate' ? 'Change your witness’s node key' : kind === 'storageExit' ? 'Leave storage' : kind === 'unstake' ? 'Stop being a witness' : `Lock ${nodus(d.bond)}`;
+  const big = kind === 'storageExit' ? 'Leave storage' : kind === 'unstake' ? 'Stop being a witness' : `Lock ${nodus(d.bond)}`;
   if (kind === 'stake') {
     items.push('as the witness bond of the node below, owned by this wallet.', 'Rewards go to this wallet.');
     const join = witnessJoinFrom(t.tip, r.minTenureBlocks);
@@ -504,24 +466,12 @@ function reviewCard() {
     items.push(`Delegations to this witness are returned to their delegators at the same boundary, each as a coin ${delegLock !== null ? `locked for ${block(delegLock)} blocks` : 'locked for a while'}; delegators do not need to do anything.`);
     items.push('No bond moves now: this transaction pays only the network fee.');
     items.push('This cannot be undone. Becoming a witness again needs a new bond and your node’s consent (Become a witness).');
+    // How a node's key changes now: there is no key change (ROTATE removed
+    // from HF-6, decision 2026-10-13-kurultay-18-summary.md item 1) — the
+    // witness stops and a new one is made from the new node
+    items.push('To move a witness to a new key, stop it here and become a witness again from the new node (a new witness ID; delegators delegate again).');
   } else if (kind === 'storageRegister') {
     items.push('as the storage bond of the node below, owned by this wallet.', 'Storage rewards go to this wallet. The bond does not change the reward.', 'Turning the node off later is not leaving: the bond stays locked until you leave storage here.');
-  } else if (kind === 'rotate') {
-    const at = E !== null ? rotationHeights(t.tip, E) : null;
-    items.push(`Witness ${d.validatorId} moves to the new node below. No bond moves.`);
-    items.push(at ? `The switch happens at block ${block(at.switchAt)} at the earliest (after two epoch boundaries). The network can defer a key change to a later boundary; no date is promised.` : 'The switch happens after the next epoch boundaries; the network can defer it to a later boundary.');
-    items.push(at
-      ? `Keep the OLD node running through block ${block(at.keepThrough)} — at the very least through block ${block(at.keepAtLeast)}: it signs blocks ${block(at.switchAt)} and ${block(at.switchAt + 1n)} and files the storage reports of its last seat. If the old key held no seat in the witness set before the switch, you may turn it off after the switch at block ${block(at.switchAt)}.`
-      : 'Keep the OLD node running until one epoch after the switch.');
-    // A machine that is also this wallet's storage node keeps its storage
-    // registration on the OLD key: no storage key rotation (design §11.1,
-    // khan A4; nodus/docs/DEPLOY_RUNBOOK.md §2.6 "both a validator and a
-    // storage node"). Matched by the node fingerprint = SHA3-512 of the
-    // witness's current key (the list row's fingerprint).
-    const current = witnesses?.rows?.find(v => v.validatorId === d.validatorId)?.fingerprint;
-    if (current && storage?.nodes?.some(n => n.fp === current && n.status !== 'released')) {
-      items.push('This node is also your storage node, and its storage registration stays on the OLD key. Keep the old node running for as long as it should stay a storage node — or leave storage for it (Your storage nodes → Leave) and register the new node as a storage node with a new consent; expect at least one epoch without storage pay.');
-    }
   } else {
     const at = E !== null ? storageExitHeights(t.tip, E, r.storageExitLockEpochs) : null;
     items.push(`Node ${d.nodeFp} stops being a storage node; it is no longer paid.`);
@@ -530,7 +480,7 @@ function reviewCard() {
     items.push('Turning the node off is not leaving: the bond stays locked until you leave here.');
   }
   const fpBlock = kind === 'storageExit' || kind === 'unstake' ? null : el('div', { className: 'roles-fp' },
-    el('p', { className: 'roles-fp-label', text: kind === 'rotate' ? 'NEW node key fingerprint' : 'Node key fingerprint' }),
+    el('p', { className: 'roles-fp-label', text: 'Node key fingerprint' }),
     el('code', { className: 'roles-fp-value', text: d.nodeFp }),
     el('p', { className: 'roles-fp-note', text: `Check that this matches the fingerprint your node printed (${WHOAMI} on that node). If it does not, cancel: someone else’s node would get this role.` }));
   const kv = el('dl', { className: 'roles-kv' });
@@ -573,7 +523,7 @@ async function confirmPrepared() {
     record.settled(true);
     if (c !== client) return;
     const done = `${ACTIVITY_TITLES[kind]} submitted; confirmation is pending. Transaction ID ${hash}. Its status is tracked in Activity.`;
-    goto(screen, { kind: screen === 'witness' ? 'stake' : screen === 'storage' ? 'storageRegister' : screen === 'rotate' ? 'rotate' : null, status: done, bond: screen === 'witness' ? formatUnits(rules().stakeMin, NODUS_ASSET.decimals) : '' });
+    goto(screen, { kind: screen === 'witness' ? 'stake' : screen === 'storage' ? 'storageRegister' : null, status: done, bond: screen === 'witness' ? formatUnits(rules().stakeMin, NODUS_ASSET.decimals) : '' });
   } catch (error) {
     record.settled(false);
     if (c !== client) return;
@@ -606,29 +556,6 @@ function storageList() {
     rows.length ? el('div', { className: 'stake-list' }, ...rows) : el('p', { className: 'hint', text: 'This wallet has no storage node.' }),
     storage.hidden > 0n ? el('p', { className: 'hint', text: `${storage.hidden} more ${storage.hidden === 1n ? 'node is' : 'nodes are'} not shown (the network lists ${storage.nodes.length} at most).` }) : null,
     form.error && form.errorFor === 'storageExit' ? el('p', { className: 'roles-error', text: form.error }) : null));
-  return out;
-}
-
-function rotateView() {
-  const out = [];
-  const head = el('p', { className: 'roles-step', text: '1 · Which witness?' });
-  if (!witnesses) return [card(null, head, el('p', { className: 'hint', text: 'Reading your witnesses…' }))];
-  if (witnesses.error) return [card(null, head, el('p', { className: 'hint', text: `Your witnesses could not be read: ${witnesses.error}` }))];
-  const mine = ownWitnesses(witnesses.rows, client.fingerprint);
-  if (!mine.length) return [card(null, head, el('p', { className: 'hint', text: 'This wallet owns no witness.' }))];
-  const choices = mine.map(v => {
-    const input = el('input');
-    input.type = 'radio'; input.name = 'roles-witness'; input.value = v.validatorId; input.checked = form.witness === v.validatorId;
-    input.dataset.field = `witness-${v.validatorId.slice(0, 16)}`;
-    input.disabled = !!form.prepared || form.busy;
-    input.onchange = () => { form.witness = v.validatorId; form.consent = ''; form.check = null; form.checkError = ''; form.error = ''; render(); };
-    const label = el('label', { className: 'roles-radio' }, input, el('span', {}, el('strong', { text: `Witness ${shortKey(v.validatorId)}` }), el('small', { text: ` · node ${shortKey(v.fingerprint)} · ${v.statusText}` })));
-    label.title = v.validatorId;
-    label.dataset.witness = v.validatorId;
-    return label;
-  });
-  out.push(card(null, head, ...choices));
-  out.push(...consentFlow('rotate'));
   return out;
 }
 

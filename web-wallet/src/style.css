@@ -911,7 +911,7 @@ details.danger-zone.danger-zone > summary { color: #f6c2bd; }
   .wallet-card *, .danger-zone, .danger-zone * { transition: none !important; }
 }
 /* Nodus Connect "Nodus" page (src/nodus-roles.js, HF-6 screens): become a
-   witness / a storage node, change your node's key. Every long value (node
+   witness / a storage node, leave storage, stop being a witness. Every long value (node
    commands, 128-hex fingerprints) wraps anywhere: nothing scrolls sideways
    at 320 px. */
 .roles-panel { display: flex; flex-direction: column; grid-column: 1 / -1; min-width: 0; scroll-margin-top: 24px; }
@@ -954,10 +954,6 @@ textarea.roles-paste { font-family: var(--mono); font-size: 11px; line-height: 1
 .roles-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 14px 0 0; font-size: 13px; }
 .roles-kv dt { color: var(--muted); }
 .roles-kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-label.roles-radio { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 10px; margin: 8px 0 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; cursor: pointer; }
-label.roles-radio:has(input:checked) { border-color: #d5f99880; background: #d5f99808; }
-label.roles-radio input { width: auto; margin: 0; }
-label.roles-radio small { color: var(--muted); }
 .roles-node .stake-actions button { margin: 0; }
 @media (max-width: 760px) {
   .roles-actions button { min-height: 44px; }

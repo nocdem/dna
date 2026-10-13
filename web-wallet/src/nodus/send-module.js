@@ -41,11 +41,14 @@ const ADDR_HISTORY_MAX_LIMIT = 100;          // nodus/include/nodus/nodus.h NODU
 const STAKE_OPS = Object.freeze({ stake: 1, delegate: 2, undelegate: 4 });
 // HF-6 (design docs/plans/2026-10-12-connect-hf6-screens-design.md): the
 // generation-4 envelope ops and their SYSTEM runtime_op (nodus_v2_stake.h
-// NODUS_V2_STAKE_OP_STAKE / _ROTATE / _STORAGE_REGISTER / _STORAGE_EXIT /
-// _UNSTAKE), and the node-consent op each screen expects (valbind_wire.h
-// DNA_VALBIND_OP_*; STORAGE_EXIT and UNSTAKE carry no consent).
-const HF6_OPS = Object.freeze({ stake: 1, rotate: 10, storageRegister: 7, storageExit: 8, unstake: 3 });
-const HF6_CONSENT_OPS = Object.freeze({ stake: 1, rotate: 2, storageRegister: 3 });
+// NODUS_V2_STAKE_OP_STAKE / _STORAGE_REGISTER / _STORAGE_EXIT / _UNSTAKE),
+// and the node-consent op each screen expects (valbind_wire.h
+// DNA_VALBIND_OP_*; STORAGE_EXIT and UNSTAKE carry no consent). No ROTATE
+// (op 10, consent op 2): removed from HF-6 by the khan (decision
+// 2026-10-13-kurultay-18-summary.md item 1) — a witness moves to a new key
+// by UNSTAKE and a new STAKE.
+const HF6_OPS = Object.freeze({ stake: 1, storageRegister: 7, storageExit: 8, unstake: 3 });
+const HF6_CONSENT_OPS = Object.freeze({ stake: 1, storageRegister: 3 });
 // The pasted consent: line ends made '\n', surrounding blank space dropped,
 // one final '\n' (nodus_v2_stake.h's container ends every line with '\n';
 // a pasted text often lacks the last one). Nothing else is changed: the
@@ -779,36 +782,34 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
         })) : null
       };
     },
-    // consentCheck({ op: 'stake' | 'rotate' | 'storageRegister', text,
-    // validatorId (128 hex, rotate only), tip, window? }) -> { ok, checks:
-    // [{ id: 'format' | 'op' | 'chain' | 'owner' | 'subject' | 'expiry' |
-    // 'signature', ok, detail }], nodeFp (SHA3-512 of the node key, '' if
-    // the text did not parse), expiry ('' likewise) }. Synchronous and pure
-    // in the module (no network, no secret; safe while another operation
-    // waits): the chain is this build's pinned chain, the owner this
-    // wallet's own fingerprint (identify/unlock first), `tip` the block
-    // height the caller last read (decimal) and `window` (decimal, default
-    // consentWindow) can only narrow the chain's 720-block rule. `ok` is
-    // true only when every check passed. Does NOT check that a rotate's key
-    // differs from the witness's current one, or that a stake's key is not
-    // already a witness's (design §2 item 7) — the module has no
-    // generation-4 witness list yet; the chain refuses both.
-    consentCheck({ op, text, validatorId = '', tip, window } = {}) {
+    // consentCheck({ op: 'stake' | 'storageRegister', text, tip, window? })
+    // -> { ok, checks: [{ id: 'format' | 'op' | 'chain' | 'owner' |
+    // 'subject' | 'expiry' | 'signature', ok, detail }], nodeFp (SHA3-512
+    // of the node key, '' if the text did not parse), expiry ('' likewise) }.
+    // Synchronous and pure in the module (no network, no secret; safe while
+    // another operation waits): the chain is this build's pinned chain, the
+    // owner this wallet's own fingerprint (identify/unlock first), the
+    // subject 64 zero bytes (a new registration — the only subject of both
+    // ops), `tip` the block height the caller last read (decimal) and
+    // `window` (decimal, default consentWindow) can only narrow the chain's
+    // 720-block rule. `ok` is true only when every check passed. Does NOT
+    // check that a stake's key is not already a witness's (design §2 item
+    // 7) — the page does that from the witness list; the chain refuses it.
+    consentCheck({ op, text, tip, window } = {}) {
       const code = typeof op === 'string' && Object.hasOwn(HF6_CONSENT_OPS, op) ? HF6_CONSENT_OPS[op] : 0;
       if (!code) throw new Error('Unknown consent action.');
-      if (op === 'rotate' ? typeof validatorId !== 'string' || !HEX128.test(validatorId) || validatorId === '0'.repeat(128) : validatorId !== '') throw new Error('Invalid witness.');
       const owner = str('nsw_fingerprint');
       if (!HEX128.test(owner)) throw new Error('The wallet is not unlocked.');
       raw(tip, 'block height');
       const w = window === undefined ? str('nsw_const_consent_window') : raw(window, 'validity window');
-      const result = JSON.parse(str('nsw_hf6_consent_check', ['number', 'string', 'string', 'string', 'string', 'string', 'string'],
-        [code, consentText(text), op === 'rotate' ? validatorId : '0'.repeat(128), net.chainId, owner, tip, w]));
+      const result = JSON.parse(str('nsw_hf6_consent_check', ['number', 'string', 'string', 'string', 'string', 'string'],
+        [code, consentText(text), net.chainId, owner, tip, w]));
       if (result.error) throw new Error(result.error);
       return { ok: result.ok === true, checks: result.checks, nodeFp: result.node_fp, expiry: result.expiry };
     },
-    // hf6Build({ op: 'stake' | 'rotate' | 'storageRegister' | 'storageExit' |
+    // hf6Build({ op: 'stake' | 'storageRegister' | 'storageExit' |
     // 'unstake', consent (the pasted text; not for storageExit / unstake),
-    // validatorId (128 hex, not all zero: rotate, unstake — the witness),
+    // validatorId (128 hex, not all zero: unstake — the witness),
     // nodeFp (128 hex, storageExit), amount (raw: stake >=
     // stakeMin, storageRegister == storageBond, else '0'), commissionBps
     // (stake), expiryHeight, coins }) -> { envelope, intentId, wireId,
@@ -818,13 +819,16 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     // wallet's own fingerprint, the pinned chain and the coin listing's
     // tip) and builds only for a generation >= hf6Rules.generation the node
     // runs; `decoded` is read back from the signed bytes by the C side —
-    // show THAT to the user (bond, fee, node key fingerprint). Submitted
-    // with submit().
+    // show THAT to the user (bond, fee, node key fingerprint). Every call
+    // names its owner: STAKE / STORAGE_REGISTER first, STORAGE_EXIT /
+    // UNSTAKE after their 64-byte target (128-byte calls, Kurultay #18
+    // "C2"); the module checks it is this wallet's fingerprint (`owner`).
+    // Submitted with submit().
     async hf6Build({ op, consent = '', validatorId = '', nodeFp = '', amount = '0', commissionBps = '0', expiryHeight, coins } = {}) {
       const code = typeof op === 'string' && Object.hasOwn(HF6_OPS, op) ? HF6_OPS[op] : 0;
       if (!code) throw new Error('Unknown witness or storage action.');
-      const byWitness = op === 'rotate' || op === 'unstake', noConsent = op === 'storageExit' || op === 'unstake';
-      if (byWitness ? typeof validatorId !== 'string' || !HEX128.test(validatorId) || (op === 'unstake' && validatorId === '0'.repeat(128)) : validatorId !== '') throw new Error('Invalid witness.');
+      const byWitness = op === 'unstake', noConsent = op === 'storageExit' || op === 'unstake';
+      if (byWitness ? typeof validatorId !== 'string' || !HEX128.test(validatorId) || validatorId === '0'.repeat(128) : validatorId !== '') throw new Error('Invalid witness.');
       if (op === 'storageExit' ? typeof nodeFp !== 'string' || !HEX128.test(nodeFp) : nodeFp !== '') throw new Error('Invalid storage node.');
       if (noConsent && consent !== '') throw new Error(op === 'unstake' ? 'Stopping a witness takes no consent.' : 'Leaving storage takes no consent.');
       const text = noConsent ? '' : consentText(consent);

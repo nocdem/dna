@@ -6,7 +6,9 @@
 //
 // What it proves:
 // - the page shows its three rows (Become a witness, Become a storage node,
-//   Change your node's key), with the bonds read from the module's hf6Rules;
+//   Your witnesses), with the bonds read from the module's hf6Rules — no
+//   "Change your node's key" (the khan removed key ROTATE from HF-6,
+//   decision 2026-10-13-kurultay-18-summary.md item 1);
 // - at rule-set generation 3 the amber note shows and Review stays disabled
 //   even for a consent that passes every check — the checks still run;
 // - a consent that fails a check shows that line with ✗ and its reason, and
@@ -15,8 +17,6 @@
 //   signed bytes and, when the consent expires before the transaction's
 //   validity, the expiry warning; Confirm records the transaction (the host
 //   recorder's broadcast runs BEFORE the submission) and says it is tracked;
-// - "Change your node's key" lists only the generation-4 witnesses owned by
-//   this wallet;
 // - "Your storage nodes" lists this wallet's nodes, with Leave on an active
 //   one only, and Leave opens a Review that says what leaving means;
 // - "Your witnesses" lists this wallet's generation-4 witnesses, with "Stop
@@ -25,8 +25,10 @@
 //   and the buttons are disabled; at generation 4 the button opens a Review
 //   that says the witness leaves at an epoch boundary (no date), the bond
 //   comes back locked for the unbond block count after it leaves, the
-//   delegations are returned, and that it cannot be undone — no node key
-//   block, no bond line; Confirm records "Leaving the witnesses";
+//   delegations are returned, that it cannot be undone, and how a witness
+//   moves to a new key now (stop it, become a witness again from the new
+//   node) — no node key block, no bond line; Confirm records "Leaving the
+//   witnesses";
 // - nothing scrolls sideways at 390 px and 320 px on any of these screens.
 // How it mounts: vite serves the real sources; a harness page holds the
 // panel and root and imports src/nodus-roles.js and the real adapter; the
@@ -100,7 +102,7 @@ try {
         const check = args.op === 'storageExit' || args.op === 'unstake' ? null : consentCheck({ text: args.consent });
         return {
           envelope: new Uint8Array([1, 2, 3]), intentId: 'cd'.repeat(64), wireId: 'ef'.repeat(64),
-          decoded: { op: args.op, owner: OWN, nodeFp: args.op === 'storageExit' ? args.nodeFp : args.op === 'unstake' ? '' : NODE, validatorId: args.op === 'rotate' || args.op === 'unstake' ? args.validatorId : '', bond: args.amount, commissionBps: args.commissionBps, consentExpiry: check ? check.expiry : '', fee: String(fee), change: String(BigInt(coin.amount) - bond - fee), expiryHeight: args.expiryHeight, chainId: CHAIN, inputs: [coin.nullifier] }
+          decoded: { op: args.op, owner: OWN, nodeFp: args.op === 'storageExit' ? args.nodeFp : args.op === 'unstake' ? '' : NODE, validatorId: args.op === 'unstake' ? args.validatorId : '', bond: args.amount, commissionBps: args.commissionBps, consentExpiry: check ? check.expiry : '', fee: String(fee), change: String(BigInt(coin.amount) - bond - fee), expiryHeight: args.expiryHeight, chainId: CHAIN, inputs: [coin.nullifier] }
         };
       },
       submit: async () => { window.__t.events.push('submit'); return { accepted: true }; }
@@ -126,7 +128,8 @@ try {
 
   // The page and its three rows, the amber note at generation 3.
   await root.locator('.roles-row').first().waitFor();
-  assert.deepEqual(await root.locator('.roles-row strong').allInnerTexts(), ['Become a witness', 'Become a storage node', 'Change your node’s key', 'Your witnesses']);
+  assert.deepEqual(await root.locator('.roles-row strong').allInnerTexts(), ['Become a witness', 'Become a storage node', 'Your witnesses']);
+  assert.equal(await root.locator('[data-role="rotate"]').count(), 0, 'no key change row');
   assert.match(await root.locator('[data-role="witness"]').innerText(), /2,000,000\.0 NODUS/);
   assert.match(await root.locator('[data-role="storage"]').innerText(), /1,000,000\.0 NODUS/);
   await root.locator('.roles-amber').waitFor();
@@ -181,40 +184,8 @@ try {
   assert.ok(events.indexOf(`record:Witness bond:${'cd'.repeat(64)}`) >= 0 && events.indexOf(`record:Witness bond:${'cd'.repeat(64)}`) < events.indexOf('submit'), `recorded before the submission: ${events}`);
   assert.ok(events.includes('settled:true'));
 
-  // Change your node's key: only this wallet's generation-4 witnesses.
-  await root.locator('.roles-back').click();
-  await root.locator('[data-role="rotate"]').click();
-  await root.locator('label.roles-radio').first().waitFor();
-  assert.deepEqual(await root.locator('label.roles-radio').evaluateAll(nodes => nodes.map(n => n.dataset.witness)), ['51'.repeat(64), '52'.repeat(64), '55'.repeat(64)]);
-  await root.locator('label.roles-radio').first().click();
-  await root.locator('.roles-cmd').waitFor();
-  assert.ok((await root.locator('.roles-cmd').innerText()).includes(`--op rotate --owner ${'1a'.repeat(64)} --subject ${'51'.repeat(64)}`));
-  await noSideways('rotate');
-  // Its Review: keep the old node up through U + E, at least U + E/2, the
-  // unseated case; and, because this machine is also the wallet's storage
-  // node 61, the storage warning (storage keys do not rotate, khan A4).
-  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
-  await page.waitForFunction(() => document.querySelectorAll('.roles-checks li[data-ok="false"]').length === 0);
-  await root.locator('[data-action="review"]').click();
-  await root.locator('.roles-review').waitFor();
-  const rotateText = await root.locator('.roles-review').innerText();
-  assert.match(rotateText, /Keep the OLD node running through block [\d,]+ — at the very least through block [\d,]+/);
-  assert.match(rotateText, /If the old key held no seat in the witness set before the switch, you may turn it off after the switch/);
-  assert.match(rotateText, /also your storage node, and its storage registration stays on the OLD key/);
-  // Witness 52 (key 42) is no storage node: no storage warning.
-  await root.locator('.roles-back').click();          // "← Nodus" always goes home (goto('home'))
-  await root.locator('[data-role="rotate"]').click();
-  await root.locator('label.roles-radio').nth(1).waitFor();
-  await root.locator('label.roles-radio').nth(1).click();
-  await root.locator('.roles-cmd').waitFor();
-  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
-  await page.waitForFunction(() => document.querySelectorAll('.roles-checks li[data-ok="false"]').length === 0);
-  await root.locator('[data-action="review"]').click();
-  await root.locator('.roles-review').waitFor();
-  assert.doesNotMatch(await root.locator('.roles-review').innerText(), /also your storage node/);
-
   // Your storage nodes: Leave on the active one only; its Review.
-  await root.locator('.roles-back').click();
+  await root.locator('.roles-back').click();          // "← Nodus" always goes home (goto('home'))
   await root.locator('[data-role="storage"]').click();
   await root.locator('.roles-node').first().waitFor();
   assert.equal(await root.locator('.roles-node').count(), 2);
@@ -265,6 +236,7 @@ try {
   assert.match(stop, /Delegations to this witness are returned to their delegators at the same boundary, each as a coin locked for 720 blocks/);
   assert.match(stop, /This cannot be undone/);
   assert.match(stop, /new bond and your node’s consent/);
+  assert.ok(stop.includes('To move a witness to a new key, stop it here and become a witness again from the new node (a new witness ID; delegators delegate again).'), stop);
   assert.ok(!/\bdays?\b|\bhours?\b/.test(stop), 'block counts only, never hours or days');
   assert.equal(await root.locator('.roles-review .roles-fp').count(), 0, 'no node key block');
   assert.deepEqual(await root.locator('.roles-review .roles-kv dt').allInnerTexts(), ['Network fee', 'Balance after', 'Valid until block'], 'no bond, no consent line: fee only');
@@ -278,7 +250,7 @@ try {
 
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
-  console.log('Nodus roles test passed: four rows, the generation gate, failing and passing consent checks, the Review with the node key and the expiry warning, the record before the submission, the rotate list, the storage list with Leave, your witnesses with Stop being a witness (gate, offered rows, Review, record), no sideways scroll at 390 / 320 px.');
+  console.log('Nodus roles test passed: three rows (no key change), the generation gate, failing and passing consent checks, the Review with the node key and the expiry warning, the record before the submission, the storage list with Leave, your witnesses with Stop being a witness (gate, offered rows, Review with the new-key line, record), no sideways scroll at 390 / 320 px.');
 } finally {
   await browser?.close();
   server.stop();

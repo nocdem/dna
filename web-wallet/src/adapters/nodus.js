@@ -580,12 +580,14 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
   };
 }
 
-// ── HF-6: become a witness, become a storage node, change a node's key,
-//    leave storage (Nodus Connect "Nodus" page, src/nodus-roles.js) ────────
+// ── HF-6: become a witness, become a storage node, leave storage, stop
+//    being a witness (Nodus Connect "Nodus" page, src/nodus-roles.js) ─────
 // Design docs/plans/2026-10-12-connect-hf6-screens-design.md rev 1 (§2 the
 // consent checks, §3 the gates, G1-G4); docs/plans/2026-10-03-hf5-
-// validator-owner-stake-design.md rev 6 §6.1, §9, §11. The module side is
-// nodus-cli `v2-envelope stake2 | rotate` and `storage register | exit`
+// validator-owner-stake-design.md rev 6 §6.1, §9, §11. No key rotation:
+// the khan removed ROTATE from HF-6 (decision 2026-10-13-kurultay-18-
+// summary.md item 1). The module side is nodus-cli `v2-envelope stake2 |
+// unstake` and `storage register | exit`
 // over the shared builder (crypto/nodus-send-wasm.c "HF-6: NODE CONSENT"):
 // it re-checks the consent with this wallet's own fingerprint, the pinned
 // chain and the coin listing's tip, and builds nothing below the HF-6
@@ -595,7 +597,7 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
 // The owner is always THIS wallet's own key (a single-key owner, kind 1):
 // a shared vault (multisig) owner is not built by any builder yet (design
 // §3) and is never offered.
-export const HF6_KINDS = Object.freeze(['stake', 'rotate', 'storageRegister', 'storageExit', 'unstake']);
+export const HF6_KINDS = Object.freeze(['stake', 'storageRegister', 'storageExit', 'unstake']);
 // The amber note of design §3 (operator 2026-10-12: the screens are shown
 // before HF-6 is in force; sending stays disabled until then).
 export const HF6_NOT_YET_TEXT = 'Before the network upgrade that opens these roles, these screens show what they will do but cannot send.';
@@ -623,17 +625,17 @@ function hf6Ready(client, from) {
 }
 // The consent checks of design §2, run by the module (synchronous, no
 // network) against this wallet's own fingerprint, the pinned chain and
-// `tip` (BigInt, the block height last read). kind: 'stake' | 'rotate' |
-// 'storageRegister'; validatorId: the chosen witness (rotate). Resolves
+// `tip` (BigInt, the block height last read). kind: 'stake' |
+// 'storageRegister'. Resolves
 // { ok, checks: [{ id, ok, detail }] × 7, nodeFp ('' if the text did not
 // parse), expiry (BigInt | null) } — the module's own lines, checked for
 // shape. `ok` only when every line passed.
-export function checkConsent({ client, from, kind, text, validatorId = '', tip } = {}) {
+export function checkConsent({ client, from, kind, text, tip } = {}) {
   if (!client || !client.identified) throw new Error('Nodus connection is not ready.');
   if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
-  if (!['stake', 'rotate', 'storageRegister'].includes(kind)) throw new Error('Unknown consent action.');
+  if (!['stake', 'storageRegister'].includes(kind)) throw new Error('Unknown consent action.');
   if (typeof tip !== 'bigint') throw new Error('The current Nodus block height is unknown.');
-  const r = client.consentCheck({ op: kind, text, validatorId: kind === 'rotate' ? validatorId : '', tip: tip.toString() });
+  const r = client.consentCheck({ op: kind, text, tip: tip.toString() });
   const invalid = () => new Error('The Nodus module returned an invalid consent check.');
   if (!r || typeof r.ok !== 'boolean' || !Array.isArray(r.checks) || r.checks.length !== CONSENT_CHECK_IDS.length) throw invalid();
   const checks = r.checks.map((line, i) => {
@@ -674,11 +676,11 @@ function decodeHf6(built, kind) {
   const d = built?.decoded, invalid = () => new Error('The Nodus module returned an invalid transaction.');
   if (!built || !(built.envelope instanceof Uint8Array) || built.envelope.length === 0 || typeof built.intentId !== 'string' || !HEX128.test(built.intentId) || !d) throw invalid();
   // UNSTAKE's call carries no node key (nodus-send-wasm.c nsw_hf6_core):
-  // its nodeFp is ''; it names the witness by validatorId, like rotate.
+  // its nodeFp is ''; it names the witness by validatorId.
   const noConsent = kind === 'storageExit' || kind === 'unstake';
   if (d.op !== kind || typeof d.owner !== 'string' || !HEX128.test(d.owner) || typeof d.chainId !== 'string' || !HEX64.test(d.chainId)) throw invalid();
   if (kind === 'unstake' ? d.nodeFp !== '' : typeof d.nodeFp !== 'string' || !HEX128.test(d.nodeFp)) throw invalid();
-  if (kind === 'rotate' || kind === 'unstake' ? typeof d.validatorId !== 'string' || !HEX128.test(d.validatorId) || d.validatorId === ZERO128 : d.validatorId !== '') throw invalid();
+  if (kind === 'unstake' ? typeof d.validatorId !== 'string' || !HEX128.test(d.validatorId) || d.validatorId === ZERO128 : d.validatorId !== '') throw invalid();
   if (noConsent ? d.consentExpiry !== '' : typeof d.consentExpiry !== 'string' || !RAW.test(d.consentExpiry)) throw invalid();
   if (!Array.isArray(d.inputs) || d.inputs.length < 1 || d.inputs.length > NODUS_MAX_INPUTS || new Set(d.inputs).size !== d.inputs.length || !d.inputs.every(input => typeof input === 'string' && HEX128.test(input))) throw invalid();
   return {
@@ -691,7 +693,7 @@ function decodeHf6(built, kind) {
 // Builds and signs one HF-6 envelope for review, in the shape of
 // prepareStake (cancel(), confirm(onBroadcast) usable once, refused after
 // expiresAt). kind: HF6_KINDS. consent: the pasted text (not for
-// storageExit / unstake). validatorId: the witness (rotate, unstake).
+// storageExit / unstake). validatorId: the witness (unstake).
 // nodeFp: the storage node (storageExit). bond: NODUS text (stake; at
 // least stakeMin — the storage bond is always exactly storageBond). commissionBps: integer text
 // (stake). locked: coins of pending NODUS transactions (lockedInputs) —
@@ -700,10 +702,11 @@ function decodeHf6(built, kind) {
 // change, nodeFp, validatorId, consentExpiry, expiryHeight), `tip` (the
 // coin listing's), `spendable` and `balanceAfter` (BigInt).
 // unstake ("Stop being a witness", generation-4 UNSTAKE, op 3): the call is
-// the validator_id alone and the chain authorizes it by the witness ROW's
-// owner and refuses a row that is not ACTIVE or ELIGIBLE
-// (nodus_witness_rt_native.c rtn_unstake2_exec) — so the witness must be
-// one of this wallet's own generation-4 witnesses in the node's list
+// validator_id ‖ owner_fp (128 bytes; owner_fp = this wallet's fingerprint,
+// written by the module's builder — Kurultay #18 "C2") and the chain
+// refuses it unless owner_fp is the witness ROW's owner and the row is
+// ACTIVE or ELIGIBLE (nodus_witness_rt_native.c rtn_unstake2_exec) — so the
+// witness must be one of this wallet's own generation-4 witnesses in the node's list
 // (ownerFp === this wallet) with status active or eligible
 // (UNSTAKE_STATUSES), checked here before anything is built. Its decoded
 // nodeFp is '' (the call carries no key) and no bond moves (fee only).
@@ -725,7 +728,7 @@ export async function prepareHf6({ client, from, kind, consent = '', validatorId
   } else if (kind === 'storageRegister') {
     amount = rules.storageBond;
   }
-  const byWitness = kind === 'rotate' || kind === 'unstake', noConsent = kind === 'storageExit' || kind === 'unstake';
+  const byWitness = kind === 'unstake', noConsent = kind === 'storageExit' || kind === 'unstake';
   if (byWitness && (typeof validatorId !== 'string' || !HEX128.test(validatorId) || validatorId === ZERO128)) throw new Error('Choose one of your witnesses.');
   if (kind === 'storageExit' && (typeof nodeFp !== 'string' || !HEX128.test(nodeFp))) throw new Error('Choose one of your storage nodes.');
   if (!noConsent && (typeof consent !== 'string' || !consent.trim())) throw new Error('Paste the consent your node printed.');
@@ -749,7 +752,7 @@ export async function prepareHf6({ client, from, kind, consent = '', validatorId
   // The consent against the listing's tip — the one the module re-checks
   // it with (nodus-send-wasm.c nsw_hf6_build). Its node key and expiry must
   // be what the signed bytes carry.
-  const check = noConsent ? null : checkConsent({ client, from, kind, text: consent, validatorId, tip });
+  const check = noConsent ? null : checkConsent({ client, from, kind, text: consent, tip });
   if (check && !check.ok) throw new Error(`The consent did not pass its checks: ${check.checks.find(line => !line.ok).detail}`);
   const candidates = coins.filter(coin => !locked.has(coin.nullifier));
   if (candidates.length === 0) throw new Error(locked.size ? 'Your coins are held by a pending transaction. Wait for it to be included or to expire.' : 'Insufficient NODUS balance.');
@@ -769,10 +772,10 @@ export async function prepareHf6({ client, from, kind, consent = '', validatorId
   if (inSum !== d.bond + d.fee + d.change) throw new Error('The signed transaction does not add up. Nothing was sent.');
   if (d.bond + d.fee > spendable) throw new Error(`This needs ${nodusText(d.bond + d.fee)}; ${nodusText(spendable)} is spendable (${nodusText(d.bond + d.fee - spendable)} short). Nothing was sent.`);
   const balanceAfter = spendable - d.bond - d.fee;
-  const action = { stake: 'Become a witness', rotate: 'Change a witness’s node key', storageRegister: 'Become a storage node', storageExit: 'Leave storage', unstake: 'Stop being a witness' }[kind];
+  const action = { stake: 'Become a witness', storageRegister: 'Become a storage node', storageExit: 'Leave storage', unstake: 'Stop being a witness' }[kind];
   const review = [['Network', 'Nodus testnet'], ['Action', action]];
   if (byWitness) review.push(['Witness', d.validatorId]);
-  if (kind !== 'unstake') review.push([kind === 'rotate' ? 'New node key fingerprint' : 'Node key fingerprint', d.nodeFp]);
+  if (kind !== 'unstake') review.push(['Node key fingerprint', d.nodeFp]);
   if (d.bond > 0n) review.push(['Bond', nodusText(d.bond)]);
   if (kind === 'stake') review.push(['Commission', RATE(Number(d.commissionBps))]);
   review.push(['Owner (this wallet)', d.owner], ['Network fee', nodusText(d.fee)], ['Change back to you', nodusText(d.change)], ['Balance after', nodusText(balanceAfter)]);

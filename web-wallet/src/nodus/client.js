@@ -69,8 +69,8 @@
 //     consentCheck({ ... }) / hf6Build({ ... }) / storageByOwner() + hf6Rules
 //     (+ hf6Timing, optional)
 //                                OPTIONAL (HF-6 screens: become a witness, a
-//                                storage node, change a node key, leave
-//                                storage, stop being a witness — shapes in
+//                                storage node, leave storage, stop being a
+//                                witness — shapes in
 //                                src/nodus/send-module.js;
 //                                design docs/plans/2026-10-12-connect-hf6-
 //                                screens-design.md), their own group, same
