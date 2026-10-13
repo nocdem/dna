@@ -34,6 +34,11 @@
 #                        JS of src/connect/ui/actions.js, text.js and
 #                        core.js) byte-equal through nc_rule_call;
 #                        malformed JSON inputs; ASan + UBSan
+#   test_nc_state        P7 stage 1: the state schema v2 codec — every
+#                        shared vector of test/vectors/connect-state/
+#                        (projection, load, round trip, fail-closed load)
+#                        byte-equal through nc_state_project_json /
+#                        nc_state_load_json; ASan + UBSan
 cmake_minimum_required(VERSION 3.16)
 project(nodus_connect_tests C)
 
@@ -112,6 +117,9 @@ set(NC_SOURCES
   ${CONNECT_DIR}/nc_payload.c
   ${CONNECT_DIR}/nc_rules.c
   ${CONNECT_DIR}/nc_rules_json.c
+  # P7 stage 1: the state schema v2 codec (design
+  # 2026-10-13-connect-core-p7-state-design.md rev 2)
+  ${CONNECT_DIR}/nc_state.c
   ${ROOT}/messenger/codec/contact_request_codec.c
   ${ROOT}/messenger/codec/contactlist_codec.c
   ${ROOT}/messenger/codec/dm_outbox_codec.c
@@ -237,6 +245,21 @@ target_link_options(test_nc_rules PRIVATE -fsanitize=address,undefined)
 target_compile_definitions(test_nc_rules PRIVATE
   VECTORS_DIR="${ROOT}/web-wallet/test/vectors/connect-rules")
 add_test(NAME test_nc_rules COMMAND test_nc_rules)
+
+# P7 stage 1: the state codec against the shared vectors
+# (web-wallet/test/vectors/connect-state/*.json, read at run time), plus
+# direct malformed inputs. Instrumented like test_nc_rules: the codec and
+# the JSON layer it uses are compiled INTO the test with ASan + UBSan; the
+# uninstrumented copies in nc_core are not pulled in.
+add_executable(test_nc_state test_nc_state.c
+  ${CONNECT_DIR}/nc_state.c ${CONNECT_DIR}/nc_jsjson.c)
+target_link_libraries(test_nc_state nc_core)
+target_compile_options(test_nc_state PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror
+  -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+target_link_options(test_nc_state PRIVATE -fsanitize=address,undefined)
+target_compile_definitions(test_nc_state PRIVATE
+  VECTORS_DIR="${ROOT}/web-wallet/test/vectors/connect-state")
+add_test(NAME test_nc_state COMMAND test_nc_state)
 
 # NC-3a: live READ-ONLY probe against a real node (not a ctest: it needs a
 # words file and a live server; see its file header).

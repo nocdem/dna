@@ -25,6 +25,9 @@
  *   - nc_lock, nc_salt_pick and nc_day_today are synchronous and never
  *     reach emscripten_sleep, so JS may call them while another export is
  *     suspended; the module's cancel / lock are nsw_cancel / nsw_lock;
+ *   - the state codec exports nc_state_project / nc_state_load (P7 stage 1,
+ *     connect/nc_state.h) are synchronous and pure too: no network, no
+ *     session material, outside the bracket;
  *   - the groups codec exports (nc_group_*, package G2) are synchronous and
  *     pure (no network). Those that hold no session material
  *     (nc_group_addr_str, nc_group_salt, nc_group_record_read,
@@ -2410,6 +2413,67 @@ int nc_group_bucket_fetch(const char *group_id_hex, const char *salt_hex, const 
         return nc_end(fail("Group bucket could not be read (fault)."));
     }
     return nc_end(set_result(o));
+}
+
+/* ── P7 stage 1: the state schema v2 codec (connect/nc_state.h) ────────
+ * Design docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2
+ * (§2.0, §2.1, §2.2, §2.5, D1, D2). Not used by the pages yet (stage 2
+ * wires them into src/connect/store.js).
+ *
+ * Synchronous and pure, like nc_salt_pick: no network (never reaches
+ * emscripten_sleep), no session material, outside the op bracket. The
+ * input crosses through the heap input buffer (nc_group_in_alloc, up to
+ * NC_GROUP_BUCKET_MAX = 1 MiB), filled by the page and taken here first, so
+ * it is wiped and freed on every path; a missing buffer reads as empty
+ * input (-> "invalid" / "damaged"). The result is the codec's JSON text,
+ * put in g_result as it is (no json-c re-serialisation: the header and
+ * record texts inside it are the exact bytes to seal), read with
+ * nc_result(). Like every synchronous export, a call made while an async
+ * export is between its return and the page's nc_result read would replace
+ * that result (P1 red-team R13): the page calls these through the wallet's
+ * synchronous slot (src/connect/core.js sync), never inside an async one. */
+#include "nc_state.h"
+
+/* Takes ownership of `s` (malloc'd, NUL-terminated, `len` bytes). */
+static int set_result_text(char *s, size_t len) {
+    result_drop();
+    if (!s) return fail("Out of memory.");
+    g_result = s;
+    g_result_len = len + 1;
+    return 0;
+}
+
+/* The v1 state (JSON text) in the heap input buffer; prev_map_json: the
+ * previous fp -> id map ("{}" on migration). The map crosses as a ccall
+ * string, which Emscripten copies onto the 1 MiB C stack: the page caps it
+ * (src/connect/core.js STATE_MAP_MAX, 256 KiB). Result: nc_state.h
+ * PROJECTION. */
+int nc_state_project(const char *prev_map_json) {
+    size_t len;
+    uint8_t *in = in_take(&len);
+    if (g_closed) { in_free(in, len); return fail("Messages is locked."); }
+    if (!prev_map_json) { in_free(in, len); return fail("Invalid state input."); }
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = nc_state_project_json(in ? (const char *)in : "", len, prev_map_json,
+                                   strlen(prev_map_json), &out, &out_len);
+    in_free(in, len);
+    if (rc != 0) return fail("Out of memory.");
+    return set_result_text(out, out_len);
+}
+
+/* { "header": "<text>", "records": [ { "id", "json" }, … ] } in the heap
+ * input buffer. Result: nc_state.h LOAD ("ok" or "damaged"). */
+int nc_state_load(void) {
+    size_t len;
+    uint8_t *in = in_take(&len);
+    if (g_closed) { in_free(in, len); return fail("Messages is locked."); }
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = nc_state_load_json(in ? (const char *)in : "", len, &out, &out_len);
+    in_free(in, len);
+    if (rc != 0) return fail("Out of memory.");
+    return set_result_text(out, out_len);
 }
 
 #ifdef NODUS_SEND_TEST_FIXED_RANDOM

@@ -1,0 +1,125 @@
+[
+{"kind":"doc","text":[
+ "P7 stage 1 — loading the v2 records (connect/nc_state.h LOAD; design §2.5 fail closed). Tokens and runners: see project.json.",
+ "Every 'not canonical' case is a header or record that opens and parses but is not the exact bytes the projection writes for what it holds."
+]},
+
+{"kind":"load","name":"one contact loads back to the canonical v1 and the map",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\",\"contact\":{},\"net\":{\"v\":1,\"salt\":\"#SA#\",\"listed\":true,\"ack\":\"100\",\"dmSync\":\"200\"}}"}],
+ "expect":{"status":"ok",
+  "state":"{\"version\":1,\"nextSeq\":\"8\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":\"#SA#\",\"listed\":true}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{\"#A#\":\"100\"},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{\"#A#\":\"200\"},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+  "map":{"#A#":"#c7#"}}},
+
+{"kind":"load","name":"a record the header does not list is ignored (only the header's ids are authoritative)",
+ "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c9#","json":"not json"}],
+ "expect":{"status":"ok",
+  "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+  "map":{}}},
+
+{"kind":"load","name":"damaged: a listed record is missing",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[],
+ "expect":{"status":"damaged","reason":"missing record"}},
+
+{"kind":"load","name":"damaged: two records with the same fp",
+ "header":"{\"version\":2,\"nextSeq\":\"3\",\"ids\":[\"#c1#\",\"#c2#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c1#","json":"{\"fp\":\"#A#\",\"contact\":{}}"},{"id":"#c2#","json":"{\"fp\":\"#A#\",\"contact\":{}}"}],
+ "expect":{"status":"damaged","reason":"duplicate fp"}},
+
+{"kind":"load","name":"damaged: an unknown header version",
+ "header":"{\"version\":3,\"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[],
+ "expect":{"status":"damaged","reason":"version"}},
+
+{"kind":"load","name":"damaged: a v1 state record is not a v2 header",
+ "header":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "records":[],
+ "expect":{"status":"damaged","reason":"version"}},
+
+{"kind":"load","name":"damaged: version \"2\" as a string",
+ "header":"{\"version\":\"2\",\"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[],
+ "expect":{"status":"damaged","reason":"version"}},
+
+{"kind":"load","name":"damaged: an unknown net section version in the header",
+ "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":2}}",
+ "records":[],
+ "expect":{"status":"damaged","reason":"version"}},
+
+{"kind":"load","name":"damaged: an unknown net section version in a record",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\",\"contact\":{},\"net\":{\"v\":2,\"salt\":\"#SA#\"}}"}],
+ "expect":{"status":"damaged","reason":"version"}},
+
+{"kind":"load","name":"damaged: the header is not JSON",
+ "header":"{\"version\":2,",
+ "records":[],
+ "expect":{"status":"damaged","reason":"header"}},
+
+{"kind":"load","name":"damaged: a header id that is not c + 20 digits",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"c7\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"c7","json":"{\"fp\":\"#A#\",\"contact\":{}}"}],
+ "expect":{"status":"damaged","reason":"header"}},
+
+{"kind":"load","name":"damaged: a listed record that is not JSON",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":"}],
+ "expect":{"status":"damaged","reason":"bad record"}},
+
+{"kind":"load","name":"damaged: a listed record whose fp is not an ID",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"abc\",\"contact\":{}}"}],
+ "expect":{"status":"damaged","reason":"bad record"}},
+
+{"kind":"load","name":"damaged: one id twice in the input",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\",\"contact\":{}}"},{"id":"#c7#","json":"{\"fp\":\"#B#\",\"contact\":{}}"}],
+ "expect":{"status":"damaged","reason":"input"}},
+
+{"kind":"load","name":"not canonical: an ack stored as a number, not a string",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\",\"contact\":{},\"net\":{\"v\":1,\"ack\":100}}"}],
+ "expect":{"status":"damaged","reason":"not canonical"}},
+
+{"kind":"load","name":"not canonical: a field v2 does not have",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\",\"contact\":{},\"extra\":1}"}],
+ "expect":{"status":"damaged","reason":"not canonical"}},
+
+{"kind":"load","name":"not canonical: a record holding only its fp (a record exists iff a field besides fp is set)",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\"}"}],
+ "expect":{"status":"damaged","reason":"not canonical"}},
+
+{"kind":"load","name":"not canonical: listed false written out (only true is kept)",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\",\"contact\":{},\"net\":{\"v\":1,\"listed\":false}}"}],
+ "expect":{"status":"damaged","reason":"not canonical"}},
+
+{"kind":"load","name":"not canonical: the header's ids not ascending",
+ "header":"{\"version\":2,\"nextSeq\":\"3\",\"ids\":[\"#c2#\",\"#c1#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c1#","json":"{\"fp\":\"#A#\",\"contact\":{}}"},{"id":"#c2#","json":"{\"fp\":\"#B#\",\"contact\":{}}"}],
+ "expect":{"status":"damaged","reason":"not canonical"}},
+
+{"kind":"load","name":"not canonical: whitespace in the header",
+ "header":"{\"version\":2, \"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[],
+ "expect":{"status":"damaged","reason":"not canonical"}},
+
+{"kind":"load","name":"not canonical: a header field missing (removed)",
+ "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[],
+ "expect":{"status":"damaged","reason":"not canonical"}},
+
+{"kind":"load","name":"not canonical: an id at or above the header's nextSeq",
+ "header":"{\"version\":2,\"nextSeq\":\"7\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\",\"contact\":{}}"}],
+ "expect":{"status":"damaged","reason":"not canonical"}},
+
+{"kind":"load","name":"not canonical: a pending flag without its time",
+ "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+ "records":[{"id":"#c7#","json":"{\"fp\":\"#A#\",\"pending\":{}}"}],
+ "expect":{"status":"damaged","reason":"not canonical"}}
+]

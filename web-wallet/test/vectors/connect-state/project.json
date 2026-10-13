@@ -1,0 +1,302 @@
+[
+{"kind":"doc","text":[
+ "P7 stage 1 — the state schema v2 codec (connect/nc_state.h; design docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2).",
+ "Hand-specified; read by connect/tests/test_nc_state.c (native, ASan + UBSan) and test/connect-state-wasm.test.js (the wasm, and store.js checkState).",
+ "kind project: nc_state_project_json(state, map). expect {status:'ok', nextSeq, header, records:[{id, fp, json}], v1?} or {status:'invalid', reason}.",
+ "  header / json / v1 are the exact canonical TEXTS. With v1: loading the expected records must give {status:'ok', state: v1, map: {fp: id in record order}}, and projecting v1 with that map must give the same result again.",
+ "kind load: nc_state_load_json({header, records:[{id, json}]}). expect {status:'ok', state, map} or {status:'damaged', reason}.",
+ "TOKENS, expanded by both runners in every string of a vector (texts, ids, fps, map keys and values) before use:",
+ "  #1# = '1' x 128 (the own ID), #A# #B# #C# #D# #E# = 'a'..'e' x 128, #V# = '9' x 128, #W# = '8' x 128 (vault addresses),",
+ "  #SA# #SB# #SC# = 'a' 'b' 'c' x 64 (salts), #G# = 'f' x 64 (a group id),",
+ "  #<p><n># with <p> one of c p v g = <p> followed by <n> zero-padded to 20 digits (#c7# = c00000000000000000007).",
+ "fills: {'<token>': [[fp, count], ...]} — the JSON string '<token>' (quotes included) stands for a JSON array of those fps, each repeated count times, in order. Fills are expanded before tokens.",
+ "The node runner also checks every project vector against the REAL store.js checkState: it must throw exactly when reason is 'checkState' (reason 'json' is not checked: JSON.parse itself refuses)."
+]},
+
+{"kind":"project","name":"empty state, every v1 key","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"1",
+  "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[],
+  "v1":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"empty state saved by an old version (checkState defaults, store.js:250-252)","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"acks\":{}}",
+ "expect":{"status":"ok","nextSeq":"1",
+  "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[],
+  "v1":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"one contact (migration: id from nextSeq)","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"7\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":\"#SA#\",\"listed\":true}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{\"#A#\":\"100\"},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{\"#A#\":\"200\"},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"8",
+  "header":"{\"version\":2,\"nextSeq\":\"8\",\"ids\":[\"#c7#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[
+   {"id":"#c7#","fp":"#A#","json":"{\"fp\":\"#A#\",\"contact\":{},\"net\":{\"v\":1,\"salt\":\"#SA#\",\"listed\":true,\"ack\":\"100\",\"dmSync\":\"200\"}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"8\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":\"#SA#\",\"listed\":true}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{\"#A#\":\"100\"},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{\"#A#\":\"200\"},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"the own ID only: kept profile and chain name, seenOwn in the header","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"4\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{\"#1#\":{\"id\":\"#p3#\",\"at\":\"1700000000\",\"name\":\"me\"}},\"dmSync\":{},\"chainNames\":{\"#1#\":{\"name\":\"punk\",\"at\":\"1700000001\"}},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{\"profile\":\"1700000002\"}}",
+ "expect":{"status":"ok","nextSeq":"5",
+  "header":"{\"version\":2,\"nextSeq\":\"5\",\"ids\":[\"#c4#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1,\"seenOwn\":{\"profile\":\"1700000002\"}}}",
+  "records":[
+   {"id":"#c4#","fp":"#1#","json":"{\"fp\":\"#1#\",\"profile\":{\"id\":\"#p3#\",\"at\":\"1700000000\",\"name\":\"me\"},\"chainName\":{\"name\":\"punk\",\"at\":\"1700000001\"}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"5\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{\"#1#\":{\"id\":\"#p3#\",\"at\":\"1700000000\",\"name\":\"me\"}},\"dmSync\":{},\"chainNames\":{\"#1#\":{\"name\":\"punk\",\"at\":\"1700000001\"}},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{\"profile\":\"1700000002\"}}"}},
+
+{"kind":"project","name":"a removed contact keeps its ack values, so its record stays (text.js:549-561)","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"10\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[\"#B#\"],\"acks\":{\"#B#\":\"50\"},\"ackSent\":{\"#B#\":\"60\"},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"11",
+  "header":"{\"version\":2,\"nextSeq\":\"11\",\"ids\":[\"#c10#\"],\"removed\":[\"#B#\"],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[
+   {"id":"#c10#","fp":"#B#","json":"{\"fp\":\"#B#\",\"net\":{\"v\":1,\"ack\":\"50\",\"ackSent\":\"60\"}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"11\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[\"#B#\"],\"acks\":{\"#B#\":\"50\"},\"ackSent\":{\"#B#\":\"60\"},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"outgoing only: a pending request is a flag on the known-ID record","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"2\",\"contacts\":[],\"outgoing\":[{\"fp\":\"#C#\",\"salt\":\"#SC#\",\"at\":\"1700000005\"}],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"3",
+  "header":"{\"version\":2,\"nextSeq\":\"3\",\"ids\":[\"#c2#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[
+   {"id":"#c2#","fp":"#C#","json":"{\"fp\":\"#C#\",\"pending\":{\"at\":\"1700000005\"},\"net\":{\"v\":1,\"pendingSalt\":\"#SC#\"}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"3\",\"contacts\":[],\"outgoing\":[{\"fp\":\"#C#\",\"salt\":\"#SC#\",\"at\":\"1700000005\"}],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"duplicates: contacts first wins (messages.js:469); outgoing = new Map(...).values(): last value at the first position (messages.js:317); ids in D1 order","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[{\"fp\":\"#B#\",\"salt\":\"#SB#\",\"listed\":false},{\"fp\":\"#A#\",\"salt\":\"#SA#\",\"listed\":true},{\"fp\":\"#B#\",\"salt\":\"#SC#\",\"listed\":true}],\"outgoing\":[{\"fp\":\"#D#\",\"salt\":\"#SA#\",\"at\":\"1\"},{\"fp\":\"#E#\",\"salt\":\"#SB#\",\"at\":\"2\"},{\"fp\":\"#D#\",\"salt\":\"#SC#\",\"at\":\"3\"}],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"5",
+  "header":"{\"version\":2,\"nextSeq\":\"5\",\"ids\":[\"#c1#\",\"#c2#\",\"#c3#\",\"#c4#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[
+   {"id":"#c1#","fp":"#B#","json":"{\"fp\":\"#B#\",\"contact\":{},\"net\":{\"v\":1,\"salt\":\"#SB#\"}}"},
+   {"id":"#c2#","fp":"#A#","json":"{\"fp\":\"#A#\",\"contact\":{},\"net\":{\"v\":1,\"salt\":\"#SA#\",\"listed\":true}}"},
+   {"id":"#c3#","fp":"#D#","json":"{\"fp\":\"#D#\",\"pending\":{\"at\":\"3\"},\"net\":{\"v\":1,\"pendingSalt\":\"#SC#\"}}"},
+   {"id":"#c4#","fp":"#E#","json":"{\"fp\":\"#E#\",\"pending\":{\"at\":\"2\"},\"net\":{\"v\":1,\"pendingSalt\":\"#SB#\"}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"5\",\"contacts\":[{\"fp\":\"#B#\",\"salt\":\"#SB#\",\"listed\":false},{\"fp\":\"#A#\",\"salt\":\"#SA#\",\"listed\":true}],\"outgoing\":[{\"fp\":\"#D#\",\"salt\":\"#SC#\",\"at\":\"3\"},{\"fp\":\"#E#\",\"salt\":\"#SB#\",\"at\":\"2\"}],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"one ID both a contact and pending: one record with both","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"3\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":false}],\"outgoing\":[{\"fp\":\"#A#\",\"salt\":\"#SB#\",\"at\":\"9\"}],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"4",
+  "header":"{\"version\":2,\"nextSeq\":\"4\",\"ids\":[\"#c3#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[
+   {"id":"#c3#","fp":"#A#","json":"{\"fp\":\"#A#\",\"contact\":{},\"pending\":{\"at\":\"9\"},\"net\":{\"v\":1,\"pendingSalt\":\"#SB#\"}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"4\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":false}],\"outgoing\":[{\"fp\":\"#A#\",\"salt\":\"#SB#\",\"at\":\"9\"}],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"IDs found only in per-ID maps: ids ascending by fp, whatever the map and key order","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{\"#E#\":\"1\"},\"ackSent\":{\"#B#\":\"4\"},\"profileCache\":{},\"dmSync\":{\"#C#\":\"2\"},\"chainNames\":{},\"chainNoName\":{\"#D#\":\"3\"},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"5",
+  "header":"{\"version\":2,\"nextSeq\":\"5\",\"ids\":[\"#c1#\",\"#c2#\",\"#c3#\",\"#c4#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[
+   {"id":"#c1#","fp":"#B#","json":"{\"fp\":\"#B#\",\"net\":{\"v\":1,\"ackSent\":\"4\"}}"},
+   {"id":"#c2#","fp":"#C#","json":"{\"fp\":\"#C#\",\"net\":{\"v\":1,\"dmSync\":\"2\"}}"},
+   {"id":"#c3#","fp":"#D#","json":"{\"fp\":\"#D#\",\"chainNoName\":\"3\"}"},
+   {"id":"#c4#","fp":"#E#","json":"{\"fp\":\"#E#\",\"net\":{\"v\":1,\"ack\":\"1\"}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"5\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{\"#E#\":\"1\"},\"ackSent\":{\"#B#\":\"4\"},\"profileCache\":{},\"dmSync\":{\"#C#\":\"2\"},\"chainNames\":{},\"chainNoName\":{\"#D#\":\"3\"},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"listTaken, seenOwn, vaults, groups and declined kept in the header; a number becomes its String(); vaults sorted by address; seenOwn profile then list","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":4,\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":true}],\"outgoing\":[],\"declined\":[\"#B#\",{\"fp\":\"#C#\",\"at\":9}],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{\"#V#\":{\"id\":\"#v2#\",\"at\":\"7\"},\"#W#\":{\"id\":\"#v3#\",\"at\":\"6\"}},\"groups\":{\"#G#\":{\"id\":\"#g1#\",\"at\":8}},\"seenOwn\":{\"list\":\"5\",\"profile\":\"6\"},\"listTaken\":true}",
+ "expect":{"status":"ok","nextSeq":"5",
+  "header":"{\"version\":2,\"nextSeq\":\"5\",\"ids\":[\"#c4#\"],\"removed\":[],\"declined\":[\"#B#\",{\"fp\":\"#C#\",\"at\":\"9\"}],\"vaults\":{\"#W#\":{\"id\":\"#v3#\",\"at\":\"6\"},\"#V#\":{\"id\":\"#v2#\",\"at\":\"7\"}},\"groups\":{\"#G#\":{\"id\":\"#g1#\",\"at\":\"8\"}},\"net\":{\"v\":1,\"seenOwn\":{\"profile\":\"6\",\"list\":\"5\"},\"listTaken\":true}}",
+  "records":[
+   {"id":"#c4#","fp":"#A#","json":"{\"fp\":\"#A#\",\"contact\":{},\"net\":{\"v\":1,\"listed\":true}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"5\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":true}],\"outgoing\":[],\"declined\":[\"#B#\",{\"fp\":\"#C#\",\"at\":\"9\"}],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{\"#W#\":{\"id\":\"#v3#\",\"at\":\"6\"},\"#V#\":{\"id\":\"#v2#\",\"at\":\"7\"}},\"groups\":{\"#G#\":{\"id\":\"#g1#\",\"at\":\"8\"}},\"seenOwn\":{\"profile\":\"6\",\"list\":\"5\"},\"listTaken\":true}"}},
+
+{"kind":"project","name":"listTaken false is left out (only true is kept)","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"listTaken\":false}",
+ "expect":{"status":"ok","nextSeq":"1",
+  "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[],
+  "v1":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"stable ids: the kept id stays, a new contact gets the next one, an fp that left the state is dropped and its id not reused",
+ "map":"{\"#A#\":\"#c7#\",\"#C#\":\"#c8#\"}",
+ "state":"{\"version\":1,\"nextSeq\":\"9\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":\"#SA#\",\"listed\":true},{\"fp\":\"#B#\",\"salt\":\"#SB#\",\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"10",
+  "header":"{\"version\":2,\"nextSeq\":\"10\",\"ids\":[\"#c7#\",\"#c9#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[
+   {"id":"#c7#","fp":"#A#","json":"{\"fp\":\"#A#\",\"contact\":{},\"net\":{\"v\":1,\"salt\":\"#SA#\",\"listed\":true}}"},
+   {"id":"#c9#","fp":"#B#","json":"{\"fp\":\"#B#\",\"contact\":{},\"net\":{\"v\":1,\"salt\":\"#SB#\"}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"10\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":\"#SA#\",\"listed\":true},{\"fp\":\"#B#\",\"salt\":\"#SB#\",\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"stable ids: an older id comes first on load (canonical v1 lists contacts in id order)",
+ "map":"{\"#A#\":\"#c2#\"}",
+ "state":"{\"version\":1,\"nextSeq\":\"5\",\"contacts\":[{\"fp\":\"#B#\",\"salt\":null,\"listed\":false},{\"fp\":\"#A#\",\"salt\":null,\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}",
+ "expect":{"status":"ok","nextSeq":"6",
+  "header":"{\"version\":2,\"nextSeq\":\"6\",\"ids\":[\"#c2#\",\"#c5#\"],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[
+   {"id":"#c2#","fp":"#A#","json":"{\"fp\":\"#A#\",\"contact\":{}}"},
+   {"id":"#c5#","fp":"#B#","json":"{\"fp\":\"#B#\",\"contact\":{}}"}],
+  "v1":"{\"version\":1,\"nextSeq\":\"6\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":false},{\"fp\":\"#B#\",\"salt\":null,\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"removed: the last 1,000 entries are kept, the earliest dropped (§2.1 Bounds)","map":"{}",
+ "fills":{"@in@":[["#C#",1],["#A#",999],["#B#",1]],"@out@":[["#A#",999],["#B#",1]]},
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":\"@in@\",\"acks\":{}}",
+ "expect":{"status":"ok","nextSeq":"1",
+  "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":\"@out@\",\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[],
+  "v1":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":\"@out@\",\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"removed: exactly 1,000 entries are all kept","map":"{}",
+ "fills":{"@in@":[["#C#",1],["#A#",999]]},
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":\"@in@\",\"acks\":{}}",
+ "expect":{"status":"ok","nextSeq":"1",
+  "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":\"@in@\",\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[],
+  "v1":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":\"@in@\",\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"nextSeq as an array: String([\"12\"]) is \"12\", which checkState accepts","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":[\"12\"],\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"ok","nextSeq":"12",
+  "header":"{\"version\":2,\"nextSeq\":\"12\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[],
+  "v1":"{\"version\":1,\"nextSeq\":\"12\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"an empty acks array (checkState lets it through) reads as {}","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":[]}",
+ "expect":{"status":"ok","nextSeq":"1",
+  "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[],
+  "v1":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"nextSeq at 10^20 - 1 with nothing to allocate","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"99999999999999999999\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"ok","nextSeq":"99999999999999999999",
+  "header":"{\"version\":2,\"nextSeq\":\"99999999999999999999\",\"ids\":[],\"removed\":[],\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
+  "records":[],
+  "v1":"{\"version\":1,\"nextSeq\":\"99999999999999999999\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
+
+{"kind":"project","name":"nextSeq at 10^20 - 1 with an ID to allocate: the next nextSeq would not be U64","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"99999999999999999999\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"nextSeq"}},
+
+{"kind":"project","name":"checkState: version 2 is not a v1 state","map":"{}",
+ "state":"{\"version\":2,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: version \"1\" (a string) is refused","map":"{}",
+ "state":"{\"version\":\"1\",\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: a JSON array is not a state","map":"{}",
+ "state":"[]",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: nextSeq with a leading zero","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"01\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: nextSeq [1,2] (String gives \"1,2\")","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":[1,2],\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: nextSeq 1e21 (String gives \"1e+21\")","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":1e21,\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: nextSeq of 21 digits","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"100000000000000000000\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: acks missing (no default for acks)","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[]}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: acks null","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":null}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: ackSent null (present, so not defaulted)","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":null}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: a declined entry without at","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[{\"fp\":\"#A#\"}],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: a removed entry that is not an ID","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[\"xyz\"],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: a group record id that is not g + 20 digits","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"groups\":{\"#G#\":{\"id\":\"g1\",\"at\":\"1\"}}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: a chain name of 8 hex characters (names.js chainNameOk)","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"chainNames\":{\"#A#\":{\"name\":\"abcdef12\",\"at\":\"1\"}}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: an unknown seenOwn kind","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"seenOwn\":{\"other\":\"1\"}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: a kept profile name that is not a string","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"profileCache\":{\"#A#\":{\"id\":\"#p1#\",\"at\":\"1\",\"name\":5}}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"checkState: a check time that is not U64","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"dmSync\":{\"#A#\":\"-1\"}}",
+ "expect":{"status":"invalid","reason":"checkState"}},
+
+{"kind":"project","name":"unrepresentable: a contact whose fp is not an ID (checkState does not look)","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[{\"fp\":\"abc\",\"salt\":null,\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"unrepresentable contacts"}},
+
+{"kind":"project","name":"unrepresentable: a contact salt that is not 64 hex","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":\"xyz\",\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"unrepresentable contacts"}},
+
+{"kind":"project","name":"unrepresentable: a contact with a key v2 has no place for","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":false,\"x\":1}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"unrepresentable contacts"}},
+
+{"kind":"project","name":"unrepresentable: a pending request without at","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[{\"fp\":\"#A#\",\"salt\":\"#SA#\"}],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"unrepresentable outgoing"}},
+
+{"kind":"project","name":"unrepresentable: a non-empty acks array","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":[\"1\"]}",
+ "expect":{"status":"invalid","reason":"unrepresentable acks"}},
+
+{"kind":"project","name":"unrepresentable: an ackSent value that is not U64","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{\"#A#\":\"x\"}}",
+ "expect":{"status":"invalid","reason":"unrepresentable ackSent"}},
+
+{"kind":"project","name":"unrepresentable: a kept profile under a key that is not an ID","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"profileCache\":{\"zz\":{\"id\":\"#p1#\",\"at\":\"1\",\"name\":\"\"}}}",
+ "expect":{"status":"invalid","reason":"unrepresentable profileCache"}},
+
+{"kind":"project","name":"unrepresentable: a vault entry with an extra key","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"vaults\":{\"#V#\":{\"id\":\"#v1#\",\"at\":\"1\",\"x\":true}}}",
+ "expect":{"status":"invalid","reason":"unrepresentable vaults"}},
+
+{"kind":"project","name":"unrepresentable: an unknown top-level key","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"foo\":1}",
+ "expect":{"status":"invalid","reason":"unrepresentable key"}},
+
+{"kind":"project","name":"unrepresentable: listTaken that is not a boolean","map":"{}",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"listTaken\":\"yes\"}",
+ "expect":{"status":"invalid","reason":"unrepresentable listTaken"}},
+
+{"kind":"project","name":"map: an id at nextSeq would collide with the next allocation",
+ "map":"{\"#A#\":\"#c5#\"}",
+ "state":"{\"version\":1,\"nextSeq\":\"5\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"map"}},
+
+{"kind":"project","name":"map: one id for two IDs",
+ "map":"{\"#A#\":\"#c1#\",\"#B#\":\"#c1#\"}",
+ "state":"{\"version\":1,\"nextSeq\":\"5\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"map"}},
+
+{"kind":"project","name":"map: an id that is not c + 20 digits",
+ "map":"{\"#A#\":\"#p1#\"}",
+ "state":"{\"version\":1,\"nextSeq\":\"5\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"map"}},
+
+{"kind":"project","name":"map: not JSON","map":"x",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"map"}},
+
+{"kind":"project","name":"map: an array","map":"[]",
+ "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{}}",
+ "expect":{"status":"invalid","reason":"map"}},
+
+{"kind":"project","name":"json: the state is not JSON","map":"{}",
+ "state":"{",
+ "expect":{"status":"invalid","reason":"json"}}
+]
