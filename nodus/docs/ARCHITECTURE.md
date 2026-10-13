@@ -7851,8 +7851,8 @@ the owner signs and pays).
   MIGRATED validator's id is `dna_validator_id_migrated(chain id, its pre-H pubkey)` — not printed by
   this CLI; the validator-list reply carries `vid` under generation 4 but the client SDK does not decode
   it yet.
-- **Not built:** a kind-3 (multisig) owner — the msig export path carries single-leg CORE SPENDs only
-  (`nodus_v2_msig_leg_open`); the generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE
+- **Not built here:** a kind-3 (multisig) owner — built since the v2 co-sign files (section "HF-6
+  multisig owner"); the generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE
   (built since slice 7b — section "HF-6 slice 7b").
 
 **Tests** (written, NOT run by the author). `test_v2_stake_client` (EVM-enabled builds): the codec
@@ -8087,7 +8087,8 @@ function and one container either way.
 
 **`storage register | exit`** — routed by `main` into `cmd_v2_stake` (the owner-signed two-leg flow
 `v2-envelope stake2 | rotate` already use; `argv[cmd_start]` = "storage"). One session as the `--keys`
-identity (the owner, kind 1 — the CLI builds no kind-3 owner), in this order: the consent file parsed
+identity (the owner, kind 1 — a kind-3 owner takes `--msig`, section "HF-6 multisig owner"), in this
+order: the consent file parsed
 before any I/O (register; the node fp = SHA3-512 of its consensus_pk) or `--node-fp` parsed (exit) →
 chain id → `cli_select_runtimes` → **the storage generation gate** (`storage registration exists only
 from generation 4` / `storage exit …`, BEFORE the consent re-check, so a valid request below generation 4
@@ -8178,8 +8179,7 @@ layouts byte for byte; op 5 is refused (`ERR_GEN`) — its legacy 2594-byte layo
 `nodus_v2_stake_decode` tells the layouts of ops 2-4 apart by length (136 / 64 vs 5192 / 2592,
 disjoint — the chain's `rtn_sys_call_gen_of` does the same), reads op 5 only at 66 bytes, and refuses a
 delegator_fp that is not SHA3-512 of the signer, an all-zero validator_id and a commission above the
-bound. A kind-3 (multisig) owner or delegator is not built (the msig export path carries single-leg
-CORE SPENDs only).
+bound. A kind-3 (multisig) owner or delegator: section "HF-6 multisig owner".
 
 **nodus-cli.** `v2-envelope delegate | undelegate` take `--validator <validator_id hex128>` when the node
 names generation 4 and `<hex5184 pubkey>` below; `unstake` takes `--validator <validator_id hex128>` at
@@ -8456,6 +8456,63 @@ generation < 4 / -1 unreadable). Tests: `test_hf6_rotate` section K — every ge
 `apply_both` commits in C / D / E / F compares with 0 differences on both twins; rolled-back
 corruptions D4k (each single-row change exactly one difference), C6k (the A3 tolerance is one row),
 F2k (the ruleset-1 bridge).
+
+### HF-6 multisig owner — kind-3 owner operations and the v2 co-sign files (branch `hf6-msig` only — not versioned, not voted)
+
+Decision `docs/plans/decisions/2026-09-29-general-multisig.md`, addendum "çok bacaklı ortak imza dosyası
+v2" (operator 2026-10-13, "1 ile devam edelim"; option 2 — every key on one machine — rejected: the
+Foundation 2-of-3 is held by separate people); design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md`
+rev 6 §1.3. **No consensus change:** the generation-4 SYSTEM allowlist already admits auth_kind 3 and
+`rtn_sys_owner_auth` already judges it (one descriptor, ≥ M signed, no foreign signer —
+`msig_signers_in_desc` bit 0 —, its address == the owner); the CORE SYSFUND leg's inputs are owned
+through `rtn_input_owned` (a satisfied descriptor owns its address's coins). This section is the client.
+
+**Why a second file format.** An owner operation (STAKE v2, ROTATE, UNSTAKE / VALIDATOR_UPDATE /
+DELEGATE / UNDELEGATE at generation 4, STORAGE_REGISTER v2 / EXIT v2) is TWO legs, and each leg's auth
+digest is its own (`env_preflight.c` step 8: `dna_env_auth_digest(auth_context_commit, i, domain, op)`),
+so a multisig owner's co-signers sign two digests: leg 0 proves the owner, leg 1 spends the address's
+coins. The v1 export / signature files carry ONE digest and accept one CORE SPEND leg only
+(`nodus_v2_msig_leg_open`); they are unchanged (the wallet's vaults and `spend --msig` use them).
+
+**Builder** (`nodus/src/client/nodus_v2_stake.c`). A request with `msig_desc` (+ `msig_desc_len`,
+`msig_signers` = K) builds any generation-4 layout for the address SHA3-512(descriptor): owner_fp /
+delegator_fp / the change owner = the address; both legs auth_kind 3 = K zero slots ‖ dcount 1 ‖ dlen ‖
+the descriptor (the `nodus_v2_msig_unsigned_auth` shape, written locally — this file links no
+`msig_wire.c`: the web wallet's native vector compiles it alone, so only the descriptor's header bounds
+are checked here, M ≤ K ≤ N); the envelope is encoded and preflighted ONCE and returned UNSIGNED with
+`leg_digest[0..1]` and a zero `wire_id` (auth bytes reach the wire id only — env_wire.h — so the intent
+id and the digests do not move when the signatures are written). The decoder reads kind 3 on both legs
+(same K, descriptor and slot keys; zero slots accepted) for the generation-4 layouts only.
+
+**v2 files** (`nodus/src/client/nodus_v2_msig.c`). Export: `nodus-msig-export v2` / `chain_id` / `tip` /
+`signers` / `digests <k>` / k × `digest <leg_index> <128 hex>` / `envelope <hex>`; signature:
+`nodus-msig-sig v2` / `pubkey` / k × (`digest <i>` + `sig <i>`). Read strictly in line order (the
+`digest` key repeats). `legs_open2` (every leg kind 3, the same descriptor and K on each), `digests2`
+(the positional per-leg ruleset contexts), `review2` (membership, every digest re-derived and equal,
+the tip + 90 window, the owner operation decoded through `nodus_v2_stake_decode`), `sig2_check` (all
+or nothing: exactly the export's legs and digests, every signature verifies), `assemble2` (ascending
+keys into every leg), `combine2`. `nodus_v2_msig.c` now includes `client/nodus_v2_stake.h` (any build
+of it must compile `nodus_v2_stake.c` too — the wallet's `send.wasm` does); the native vector compiles
+`nodus_v2_stake.c` without `nodus_v2_msig.c`, and the builder change links nothing new.
+
+**nodus-cli.** `v2-envelope stake2 | rotate | unstake | validator-update | delegate | undelegate` and
+`storage register | exit` take `--msig <descriptor> --in <nullifier>:<amount> ... [--signers <K>]
+--export <file>`: the `--keys` identity is the session only (chain id, tip, gas price, the rows), the
+owner every check compares (the consent's owner, the validator row's, the storage row's) is the address,
+and the coins are the named ones (`dnac_utxo` answers the session's own fingerprint only — the
+`spend --msig` rule; the chain checks each input). `msig sign` and `msig combine` recognise a v2 export
+by its first line: sign prints both legs decoded (op, validator_id, owner / delegator, key hashes, the
+consent expiry, commission, bond / amount, inputs, change, digests, the inputs-not-verified WARNING)
+and signs every digest; combine checks every signature, assembles, runs `nodus_rt_auth_dsa87_v1` on
+every leg (satisfied; the SYSTEM leg also no foreign signer) and submits. `validator consent` /
+`storage consent` take `--msig <descriptor>` as the owner (exactly one of `--owner` / `--msig`).
+
+**Tests.** `nodus/tests/test_hf6_msig_owner.c` (EVM builds): a 2-of-3 owner through the library path
+for STAKE v2, ROTATE and STORAGE_REGISTER, the REAL auth-hook verdicts fed to the GEN_STORAGE exec
+hooks (applied; the funding balances from the address's coins), one signer below M and a foreign
+signer assembled by hand (refused by the owner rule; the funding below M refused too), the
+all-or-nothing and text refusals, the kind-1 path and the v1 / v2 separation. `test_v2_msig.c` (v1
+byte vectors) is unchanged.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
