@@ -399,9 +399,9 @@ static const char *WITNESS_DB_SCHEMA =
      * pubkey); role 1 active, role 2 pending (slice 6). EMPTY until the
      * HF-6 edge; no root reads it: a function of validators,
      * v2_validator_roles AND the stored snapshots S(h−E) / S(h) (the
-     * previous keys of the khan-A2 window), all rooted — except the
-     * previous key of a validator S(h−E) does not seat (khan A3), whose
-     * only committed record is its row here. Checked at every
+     * previous keys of the khan-A2 window), all rooted — fully
+     * derivable since khan A8 (the swap releases the previous key of a
+     * validator S(h−E) does not seat, khan A3). Checked at every
      * generation-4 boundary by v2ep_keyres_selfcheck (log-only;
      * nodus_witness_v2_epoch.c). Byte-identical to the S18 rung's
      * statement (nodus_witness_v2_schema.c), which verifies the shape. */

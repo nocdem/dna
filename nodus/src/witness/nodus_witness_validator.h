@@ -362,25 +362,29 @@ int nodus_validator_v2_scan(nodus_witness_t *w,
  * active consensus key; role 2 = a pending key (ROTATE, slice 6). The rows
  * are a pure function of committed state: role 1 for the CURRENT key of
  * every validators row not UNSTAKED, PLUS the PREVIOUS key of a row
- * swapped at boundary U, from U until the sweep at U+E (khan decision A2,
- * 2026-10-12: the old key stays reserved while its snapshot S(F) is still
- * read — so from U to U+E a rotated validator holds TWO role-1 rows; one
- * that graduates at U+E holds only the previous one between its
- * graduation (step 2) and the sweep (step 3d) of that boundary, inside its
- * transaction); role 2 for every non-zero pending_consensus_pubkey. A count of role-1
- * rows equals the count of non-UNSTAKED rows only outside every such
- * window. The previous key is derivable from rooted state (the key the
- * stored S(U−E) seats the validator under) EXCEPT for a validator S(U−E)
- * does not seat (khan A3): its row here is the only committed record of
- * that key. Every generation-4 boundary re-derives the table and compares
- * (nodus_witness_v2_keyres_diff; the boundary step only logs).
+ * swapped at boundary U whose validator S(F) = S(U−E) seats, from U until
+ * the sweep at U+E (khan decision A2, 2026-10-12: the old key stays
+ * reserved while its snapshot S(F) is still read — so from U to U+E such
+ * a validator holds TWO role-1 rows; one that graduates at U+E holds only
+ * the previous one between its graduation (step 2) and the sweep (step
+ * 3d) of that boundary, inside its transaction); role 2 for every non-zero
+ * pending_consensus_pubkey. A validator S(F) does NOT seat (a rotation
+ * khan A3 accepts) loses its previous key in the swap at U itself (khan
+ * A8, 2026-10-13: that key signs nothing S(F) governs, so A2 protects no
+ * duty — nodus_validator_v2_key_release_previous). A count of role-1 rows
+ * equals the count of non-UNSTAKED rows only outside every A2 window.
+ * Every row is derivable from rooted state — the previous key is the key
+ * the stored S(U−E) seats the validator under — so every generation-4
+ * boundary re-derives the table and compares it row for row, with no
+ * tolerance (nodus_witness_v2_keyres_diff; the boundary step only logs).
  * Writers: the generation-4 edge (nodus_witness_v2_migrate.c),
  * the generation-4 STAKE and ROTATE (SYSTEM adapter op 17,
  * nodus_witness_rt_native.c — STAKE role 1, ROTATE role 2), the swap
- * (nodus_validator_v2_rotate_apply: the new key role 2 → 1) and the
- * generation-4 graduation (nodus_validator_v2_key_release,
- * nodus_witness_v2_epoch.c) and the sweep at U+E
- * (nodus_validator_v2_key_sweep_previous, slice 6d). */
+ * (nodus_validator_v2_rotate_apply: the new key role 2 → 1;
+ * nodus_validator_v2_key_release_previous: an unseated validator's
+ * previous key, khan A8), the generation-4 graduation
+ * (nodus_validator_v2_key_release, nodus_witness_v2_epoch.c) and the sweep
+ * at U+E (nodus_validator_v2_key_sweep_previous, slice 6d). */
 
 #define NODUS_V2_KEY_HASH_LEN      64u
 #define NODUS_V2_KEY_ROLE_ACTIVE   1u
@@ -417,9 +421,11 @@ int nodus_validator_v2_key_insert(nodus_witness_t *w,
  * row, else -1 (missing or foreign: a bonded-or-exiting row without its
  * reservation is corruption, never "nothing to release") — then every
  * role-2 row naming `validator_id` (a pending key; any count). A previous
- * key kept at role 1 (swapped at U, graduating at U+E) is NOT deleted: the
- * sweep of the same boundary releases it with the previous voter's
- * attendance row (HF-6 slice 6e; nodus_validator_v2_key_sweep_previous).
+ * key kept at role 1 (swapped at U with a seat in S(F), graduating at U+E)
+ * is NOT deleted: the sweep of the same boundary releases it with the
+ * previous voter's attendance row (HF-6 slice 6e;
+ * nodus_validator_v2_key_sweep_previous). A validator S(F) did not seat
+ * holds none: the swap released it (khan A8).
  * @param consensus_pubkey DNAC_PUBKEY_SIZE bytes (validators.pubkey).
  * @return 0 / -1.
  */
@@ -430,11 +436,14 @@ int nodus_validator_v2_key_release(nodus_witness_t *w,
 /* ══ HF-6 slice 6d — the previous key's reservation (khan A2) ══════════
  *
  * Design rev 6 §3, khan decision A2 (2026-10-12): the key a validator
- * rotated away from at boundary U stays reserved (role 1) until the sweep
- * at U + E (nodus_witness_v2_epoch.c v2ep_rotate_sweep) releases it. The
- * reservation table is the ONLY committed record of that key for a
- * validator that was not seated in S(F) (khan A3 accepts such a rotation),
- * so the sweep finds its candidates here. */
+ * seated in S(F) rotated away from at boundary U stays reserved (role 1)
+ * until the sweep at U + E (nodus_witness_v2_epoch.c v2ep_rotate_sweep)
+ * releases it; the sweep finds its candidates here (the validators with
+ * two role-1 rows). Khan decision A8 (2026-10-13): the previous key of a
+ * validator S(F) does NOT seat (khan A3 accepts such a rotation) is
+ * released by the swap at U (nodus_validator_v2_key_release_previous), so
+ * that validator never holds two role-1 rows and is never a sweep
+ * candidate. */
 
 /**
  * Every validator_id holding MORE THAN ONE role-1 reservation — exactly
@@ -475,6 +484,26 @@ int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
                                           int graduated,
                                           uint8_t prev_hash_out[NODUS_V2_KEY_HASH_LEN]);
 
+/**
+ * Khan A8 (2026-10-13; design rev 6 §3 "(A8)"): release, AT THE SWAP, the
+ * previous consensus key of a validator the predecessor snapshot S(F) does
+ * not seat. INSIDE THE CALLER'S TRANSACTION (autocommit → -1, nothing
+ * written). Deletes the role-1 row keyed by SHA3-512(`previous_pubkey`)
+ * AND naming `validator_id` AND role 1 — EXACTLY one row, else -1 (missing
+ * or foreign: the swap just moved the validator off that key, so its
+ * reservation must be there). Writes the deleted consensus_pk_hash to
+ * `prev_hash_out` (the caller derives the previous voter_id from it, as
+ * for key_sweep_previous). Role-2 rows and the current key's row are not
+ * touched. Caller: the boundary swap (nodus_witness_v2_epoch.c
+ * v2ep_rotate_swap), right after nodus_validator_v2_rotate_apply.
+ * @param previous_pubkey DNAC_PUBKEY_SIZE bytes (the key before the swap).
+ * @return 0 / -1.
+ */
+int nodus_validator_v2_key_release_previous(nodus_witness_t *w,
+                                            const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                                            const uint8_t *previous_pubkey,
+                                            uint8_t prev_hash_out[NODUS_V2_KEY_HASH_LEN]);
+
 /* ══ HF-6 slice 6c — the rotation swap writer (design rev 6 §3) ═══════ */
 
 /**
@@ -491,8 +520,10 @@ int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
  *   3. v2_consensus_keys SET role = 1
  *      WHERE consensus_pk_hash = SHA3-512(new_pk) AND validator_id =
  *      validator_id AND role = 2.
- * The OLD key's role-1 reservation is NOT touched — it is released at U+E
- * by the sweep (khan A2; slice 6d). This is the ONE writer allowed to
+ * The OLD key's role-1 reservation is NOT touched here — the caller
+ * releases it at U when S(F) does not seat the validator (khan A8,
+ * nodus_validator_v2_key_release_previous), else the sweep at U+E does
+ * (khan A2; slice 6d). This is the ONE writer allowed to
  * change validators.pubkey (nodus_validator_v2_update and the SYSTEM
  * adapter's op-13 SET never do).
  *

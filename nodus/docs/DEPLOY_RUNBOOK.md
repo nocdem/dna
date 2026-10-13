@@ -1609,8 +1609,16 @@ exec writes it into the validator's row as `consensus_key_effective_epoch` — k
 chain decides whether the rotation fits the budget below; if it does, the validator set of
 U = F + E (E = the epoch length, 720 on the testnet) carries the NEW key. At U the validator's row
 switches to the new key and cometbft is told "old key out, new key in"; the old key still signs
-blocks U and U+1, the new key signs from **U + 2** (design §3). At U + E the old key's reservation
-and its attendance row are released (khan A2) — only then may that key be used again.
+blocks U and U+1, the new key signs from **U + 2** (design §3). When the old key may be used again
+depends on whether the validator held a seat in the set governing at F (the set before U):
+- **Seated at F** (the normal case — it was signing with the old key): at U + E the old key's
+  reservation and its attendance row are released (khan A2) — only then may that key be used again;
+  a STAKE under it before U + E is refused.
+- **Not seated at F** (a validator entering the set at U for the first time, or returning to it —
+  its old key signs nothing from F + 2 on): the old key's reservation is released at U itself, in
+  the same boundary that switches the row (khan A8, 2026-10-13); its old attendance row, if it ever
+  signed in an earlier set, is deleted at the end of that same boundary. The key may be used again
+  from U + 1 — binding it to another validator still needs that key's own consent.
 
 **The budget — why a rotation can wait.** At F the rotations waiting there are taken in
 validator_id order, and each is accepted only if the set of keys changing at once still leaves
@@ -1641,7 +1649,8 @@ consent and key uniqueness — it promises no date.
 - The validator must be ACTIVE or ELIGIBLE (khan A5) and have no rotation already pending (a second
   ROTATE is refused until the first has switched at U).
 - The new key must not be reserved by any validator in any role (current or pending) — never reuse a
-  key another validator holds; the old key of this validator is reserved until U + E.
+  key another validator holds; the old key of this validator is reserved until U + E (until U when
+  the validator has no seat in the set governing at F — khan A8 of 2026-10-13, see "The heights").
 
 **Procedure.**
 1. **Prepare the new node — new identity, new data directory.** Give it its own `identity_path` and
@@ -1704,7 +1713,9 @@ consent and key uniqueness — it promises no date.
    sqlite3 <witness db> "SELECT consensus_key_effective_epoch, pending_consensus_pubkey != zeroblob(2592)
        FROM v2_validator_roles WHERE lower(hex(validator_id)) = '<validator_id>';"
    ```
-6. **At U** every node logs `boundary <U>: <n> consensus key(s) switched to the key S(U) seats` and
+6. **At U** every node logs `boundary <U>: <n> consensus key(s) switched to the key S(U) seats, <m>
+   previous key(s) of validators S(F) does not seat released (khan A8)` (m counts the rotators
+   without a seat at F, whose old key is free from U + 1) and
    `FinalizeBlock: epoch boundary height <U> — validator_updates n_added=1 … n_removed=1` (with other
    set changes at the same boundary the counts are larger). The new node starts signing at U + 2 by
    itself; the old node stops signing at U + 2 by itself (it is no longer in the set) — no restart,
@@ -1715,7 +1726,9 @@ consent and key uniqueness — it promises no date.
    seat, is still read at U + E, and a node seated in it files that epoch's STORAGE_REPORT in the
    window (U, U + E/2] (§2.6 item 5); the old key and its attendance row are released at U + E
    (`boundary <U+E>: 1 previous consensus key(s) released with their attendance rows`). After that
-   the old node may be stopped; its key is no longer reserved.
+   the old node may be stopped; its key is no longer reserved. **A validator with no seat at F**
+   (khan A8): its old node signs nothing from F + 2 on and files no report for the set of F, and its
+   old key is released at U — the old node may be stopped once the switch at U is logged.
 8. **Governance from U + 1.** Chain-config approvals are counted against the set governing the
    height (plan §0.6 #13): from U + 1 the NEW key approves for this validator, the old key's
    approval no longer counts. Run governance from the new node.

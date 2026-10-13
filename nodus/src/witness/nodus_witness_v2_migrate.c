@@ -811,7 +811,8 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
      * sentence), so it holds none: at the edge the table is exactly
      * "role 1 = every validators row whose status is not UNSTAKED" (no
      * row holds a pending or previous key yet — ROTATE is generation 4;
-     * the full rule, with role 2 and the khan-A2 previous keys, is in
+     * the full rule, with role 2 and the khan-A2 previous keys — every
+     * row of it derivable since khan A8 — is in
      * nodus_witness_validator.h and is checked at every boundary by
      * nodus_witness_v2_keyres_diff). Visited in SHA3-512(pk) ASC
      * (m.by_fp — the table's own key order); the keys are distinct

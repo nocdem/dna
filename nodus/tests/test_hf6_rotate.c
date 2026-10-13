@@ -17,7 +17,8 @@
  * §6.3 (row); decision 2026-10-08-kurultay-14-hf6-summary.md K7; plan
  * tasks/hf6-slice6-plan.md §1.1, §1.2, §1.4, §1.8, §2 "6a" .. "6d" (khan
  * A2: the previous key released at U+E; A3: skip-and-continue, 0 for a
- * candidate absent from S(F)).
+ * candidate absent from S(F); A8 (2026-10-13): the previous key of a
+ * validator S(F) does not seat released in the swap at U).
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
  *  A. TABLE (no database):
@@ -105,8 +106,9 @@
  *      pending key (V0) / another pending key refused at step 2, a missing
  *      role-2 reservation at step 3 (caller rollback); the swap: consensus
  *      key := pending, pending 2592 x 0x00, epoch 0, KN role 2 -> 1, KC1
- *      still role 1 (two role-1 rows — khan A2); a replay refused; A then
- *      byte-identical to B.
+ *      still role 1 (rotate_apply never touches the old key's row — its
+ *      caller, the swap, releases it at U (A8) or leaves it to the sweep
+ *      (A2)); a replay refused; A then byte-identical to B.
  *   C3 boundary E: (c) the three are not seated in S(2E) — they WAIT,
  *      rows untouched, F = E kept (the swap at E reads the ruleset-1 S(E)
  *      and returns).
@@ -122,20 +124,38 @@
  *      one coin — FAULT with candidates, builds without (the helper is not
  *      called).
  *   C5 block 2E+1: V_B UNSTAKEs (RETIRING, pending kept).
- *   C6 boundary 3E: THE SWAP — all three rows (V_B RETIRING too) switch
- *      to the key S(3E) seats, pending 0, epoch 0, the new key role 1 and
- *      the previous one still role 1; the sweep at 3E keeps them (swapped
- *      at this boundary); the flips activate V_A / V_C, the graduation
- *      defers V_B, all by validator_id.
+ *   C6a an attendance row for KC1's voter_id PLANTED on both twins at
+ *      2E+1 (the old voter of a validator seated in an earlier set; this
+ *      fixture cannot seat a STAKEd row before S(3E)).
+ *   C6p (A only, rolled back) S(2E) deleted with reward_pool 0, boundary
+ *      3E called directly: with the three pending rows it returns -2
+ *      before the swap's stage (S(F) absent at a swap is a FAULT, never
+ *      "not seated"); with the pending keys cleared the same state passes
+ *      the swap's stage (the control).
+ *   C6 boundary 3E: F62 on A first — a FAULT rolled back whole (no swap,
+ *      the previous keys still role 1, KC1's row present); then THE SWAP
+ *      on both twins — all three rows (V_B RETIRING too) switch to the
+ *      key S(3E) seats, pending 0, epoch 0, the new key role 1; none of
+ *      the three has a seat in S(2E), so (khan A8) each previous key's
+ *      role-1 row is deleted in the swap — ONE role-1 row each — and the
+ *      sweep at 3E deletes KC1's planted attendance row (after the
+ *      digest); the flips activate V_A / V_C, the graduation defers V_B,
+ *      all by validator_id; A == B.
+ *   C6s block 3E+1: a REAL STAKE of a new validator under KC3 (V_C's
+ *      released previous key, its own consent) APPLIES — KC3 reserved to
+ *      the new validator_id.
  *   C7 from block 3E+3 KN1 (V_C's key) signs; KN never does. C7b: on A
  *      alone, before BOUNDARY 4E, S(3E)'s V4 entry given a third key makes
- *      boundary 4E FAULT; restored, A equals B. C7c: a THIRD role-1 row
- *      naming V_A makes the sweep at 4E FAULT; removed, A equals B.
+ *      boundary 4E FAULT; restored, A equals B. C7c: ONE extra role-1
+ *      row naming V_A is one difference for the boundary-start check's
+ *      core (derivation of 3E) and makes the sweep at 4E FAULT (S(2E)
+ *      does not seat V_A: no previous key is due — never released
+ *      silently); TWO extra rows (three in all) FAULT too; removed, A
+ *      equals B each time.
  *   C8 boundary 4E: applies on both twins; V_B graduates (key_release
- *      takes KN2; the sweep's graduated arm the kept KC2 — 6e); the SWEEP
- *      releases KC1 and KC3 — keys
- *      no committed snapshot names; Rule N on duty S(3E): V_A counter 1
- *      (KN never signed), V_C 0; the twins agree.
+ *      takes KN2; KC2 already went in the swap at 3E); the sweep has no
+ *      candidate; KC1 free, KC3 the C6s validator's; Rule N on duty
+ *      S(3E): V_A counter 1 (KN never signed), V_C 0; the twins agree.
  *  D. SLICE 6d — the budget and one full rotation (F / U / U+E) of
  *     validators seated in S(F): three 12M STAKEs, ROTATEs in (2E, 3E]
  *     (F = 3E); S(3E) = S(4E) = [12M x 3, 10M x 7] counted, P = 106M,
@@ -152,6 +172,15 @@
  *      already carries o0 / o1's rotations (24M against S(3E)), so the
  *      third's 12M would make 36M, 70M ≤ 70666666: it waits again;
  *      preview_next(4E) == stored S(5E).
+ *   D4s block 4E+1: a REAL STAKE of a new validator under o0's previous
+ *      key (its own consent) is REFUSED at exec — the key is still
+ *      reserved to o0 (khan A2: o0 was seated in S(F)) — ledger tables
+ *      byte-identical, the coin unspent. D5s block 5E+1: the same call
+ *      APPLIES (the sweep at 5E released the key).
+ *   D5x (A only) a stray role-1 row naming V0 (never rotated) before
+ *      boundary 6E: one difference for the boundary-start check's core
+ *      (derivation of 5E); the sweep at 6E FAULTS (S(4E) seats V0 under
+ *      its current key — no previous key is due); removed, A == B.
  *   D5 boundary 5E: KO paid again; (a) the sweep deletes the two old
  *      voters' attendance rows (credited at 4E+1, 4E+2) and their role-1
  *      rows; Rule N 0 on the new keys; the third not swapped (F = 3E
@@ -198,18 +227,24 @@
  *      commits: the check compares on both twins and finds 0 differences
  *      (rc 0, n 0) — through the normal rotation (D: swap at U, previous
  *      keys DERIVED from S(F), released at U+E), the A3 rotation (C:
- *      previous keys no snapshot names, tolerated one per validator), the
- *      graduation of a swapped validator (C at 4E, E) and the ruleset-1
- *      bridge boundary (2E); counted per case (2 per boundary).
+ *      previous keys released in the swap, khan A8 — no tolerance), the
+ *      re-use of released keys (C6s, D5s), the graduation of a swapped
+ *      validator (C at 4E, E) and the ruleset-1 bridge boundary (2E);
+ *      counted per case (2 per boundary).
  *   K2 (D4k, at 4E, A only, ROLLED BACK) each single-row corruption is
  *      exactly one difference: a derived previous key deleted, a current
  *      key and a pending key in the other role, a previous key naming
  *      another validator, a spare role-1 row for a validator with a seat
  *      in S(F); rolled back: 0, A == B.
- *   K3 (C6k, at 3E) the A3 tolerance is ONE row: a second spare row on
- *      an A3 rotator, or a spare row on a validator both snapshots seat,
- *      is one difference; deleting an A3 previous key is NOT seen (the
- *      pinned blind spot — nothing rooted names that key).
+ *   K3 (C6k, at 3E) no tolerance (khan A8): the A3 rotator's own released
+ *      previous key put back at role 1, a spare row on an A3 rotator, a
+ *      spare row on a validator both snapshots seat — each one difference
+ *      (the former blind spot is now seen).
+ *   K5 (C7c, D5x) the BOUNDARY-START check (step 0, the derivation of
+ *      H − E, before the swap and the sweep) sees a stray role-1 row
+ *      written between boundaries as 1 difference — the core is called
+ *      directly at the pre-boundary state; that step 0 calls it is read
+ *      from the source.
  *   K4 (F2k, at 2E) the ruleset-1 bridge: S(2E)'s V0 entry re-keyed (A
  *      only, ROLLED BACK) makes the bridge match V0 in S(E) under another
  *      key, deriving V0's own key a second time: one difference.
@@ -247,7 +282,7 @@
  *  - The B4 arm of the distribution (entry key == the row's PENDING key)
  *    is no longer reached on any path here: with the 6d swap placed after
  *    the distribution, strict equality holds at U and at U+E.
- *  - F61 / F62 (D-F, E): that the stage fires AFTER the step's writes is
+ *  - F61 / F62 (D-F, E, C6): that the stage fires AFTER the step's writes is
  *    read from the source (nodus_witness_v2_epoch.c, steps 1d / 3d), not
  *    observed — the test proves that the injected block faults (so the
  *    stage fired: the clean block with the same inputs commits) and that
@@ -278,6 +313,27 @@
  *    captured. K2-K4 corrupt the table / a snapshot inside a rolled-back
  *    transaction and call the core there; they prove the comparison, not
  *    that any writer could produce that state.
+ *  - Khan A8 (C6): every A8 release here reads a RULESET-2 S(F) (S(2E));
+ *    the swap's ruleset-1 bridge arm (U = 2E, S(F) = the genesis S(E))
+ *    is not driven end to end — no fixture rotation reaches U = 2E (a
+ *    genesis seat is Foundation-owned and cannot ROTATE here). The swap
+ *    calls the same v2ep_member_in_snapshot the sweep and Rule N use.
+ *  - C6p calls the boundary DIRECTLY on a forced state (S(2E) deleted,
+ *    reward_pool 0) that no committed chain reaches; the swap is not
+ *    named in the result — its refusal is inferred from the control
+ *    (pending keys cleared ⇒ the swap's stage is reached). If the control
+ *    fails, some step before 1d read S(2E) and the probe proves nothing.
+ *  - The sweep's new "previous key = the key S(U − E) seats" check is
+ *    driven only through its FAULT arms (C7c, D5x); its pass arm is every
+ *    clean A2 release in D and E.
+ *  - C6a's attendance row is PLANTED (on both twins), not earned: the
+ *    fixture cannot seat a rotator in a set before S(F). It proves the
+ *    swap → sweep hand-off deletes it at 3E; that the delete runs AFTER
+ *    the digest of 3E (so that digest still folds it) is read from the
+ *    source (steps 3b / 3d), not observed.
+ *  - D4s's refusal is asserted as NODUS_V2_TX_ERR_EXEC with the ledger
+ *    untouched; D5s (the same call, applied after the sweep) is what pins
+ *    the refusal to the reservation and not to the call.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -1492,14 +1548,14 @@ static int key_of(nodus_witness_t *w, const uint8_t *pk, uint8_t vid[64],
     return nodus_validator_v2_key_get(w, kh, vid, role);
 }
 
-/* one ROTATE block expected REFUSED with the ledger tables untouched */
-static int rot_refused(fixture_t *A, fixture_t *B, uint64_t h,
-                       const uint8_t *call, int coin) {
+/* one SYSTEM-`op` block expected REFUSED at exec with the ledger tables
+ * untouched and the funding coin unspent */
+static int env_refused(fixture_t *A, fixture_t *B, uint64_t h, uint32_t op,
+                       const uint8_t *call, uint32_t len, int coin) {
     uint8_t *e = NULL, d0[64], d1[64];
     size_t l = 0;
     uint32_t code = 0;
-    if (rec_env(A->w, h, DNA_SYSRULE_ROTATE_CONSENSUS_KEY, call, ROT_LEN,
-                coin, &e, &l, NULL) != 0)
+    if (rec_env(A->w, h, op, call, len, coin, &e, &l, NULL) != 0)
         return -1;
     int ok = ledger_digest(A->w, d0) == 0 &&
              apply_both(A, B, h, e, l, &code) == 0 &&
@@ -1508,6 +1564,13 @@ static int rot_refused(fixture_t *A, fixture_t *B, uint64_t h,
              coin_count(A->w, coin) == 1;
     free(e);
     return ok ? 0 : -1;
+}
+
+/* one ROTATE block expected REFUSED with the ledger tables untouched */
+static int rot_refused(fixture_t *A, fixture_t *B, uint64_t h,
+                       const uint8_t *call, int coin) {
+    return env_refused(A, B, h, DNA_SYSRULE_ROTATE_CONSENSUS_KEY, call,
+                       ROT_LEN, coin);
 }
 
 static int t_engine(void) {
@@ -1658,9 +1721,9 @@ static int t_engine(void) {
  * seated in S(3E) (tenure: active_since + 2E <= e_start). ROTATEs in
  * blocks 7..9 have F = E: the freeze at E WAITS them (not seated in
  * S(2E)), the freeze at 2E accepts them with 0 in S(F) = S(2E) (khan A3),
- * U = 3E, U + E = 4E. Their previous keys are in NO committed snapshot —
- * the case plan §1.8's S(F)-diff sweep would never release, and the
- * reservation-table sweep does. */
+ * U = 3E, U + E = 4E. Their previous keys are in NO committed snapshot,
+ * so (khan A8, 2026-10-13) the swap at U releases them — the sweep at
+ * U + E has nothing of theirs left. */
 
 /* cases C and D: three STAKEd validators — consensus key, rotation
  * target, the STAKE coin; validator_ids filled from the STAKE intents */
@@ -1723,6 +1786,52 @@ static long kr_probe(nodus_witness_t *w, uint64_t h, const char *sql,
     if (v2x_sql(w->db, "ROLLBACK") != 0) n = -1;
     w->cached_committee_epoch_start = UINT64_MAX;
     return n;
+}
+
+/* the boundary stages a direct boundary_apply reached (C6p) */
+static int g_stage_seen[32];
+static int stage_rec(void *ud, nodus_v2_epoch_stage_t st, uint32_t gi) {
+    (void)ud;
+    (void)gi;
+    if ((unsigned)st < 32u) g_stage_seen[st] = 1;
+    return 0;
+}
+
+/* C6p: inside ONE rolled-back transaction on `w` — reward_pool := 0 (so
+ * the distribution at `u` pays nothing and reads no snapshot), the stored
+ * S(`f`) deleted, the pending keys cleared when `clear_pending` — then
+ * nodus_witness_v2_epoch_boundary_apply(w, u) called DIRECTLY with a
+ * stage recorder. *rc_out = its return; g_stage_seen = the stages it
+ * reached. 0 / -1 (an edit did not apply, or the rollback failed). */
+static int swap_probe(nodus_witness_t *w, uint64_t f, uint64_t u,
+                      int clear_pending, int *rc_out) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    char sql[160];
+    nodus_v2_epoch_result_t out;
+    memset(g_stage_seen, 0, sizeof(g_stage_seen));
+    if (nodus_witness_v2_chain_id(w, chain32) != 0) return -1;
+    if (v2x_sql(w->db, "BEGIN IMMEDIATE") != 0) return -1;
+    int ok = v2x_sql(w->db, "UPDATE supply_tracking SET reward_pool = 0 "
+                            "WHERE id = 1") == 0 &&
+             sqlite3_changes(w->db) == 1;
+    snprintf(sql, sizeof(sql), "DELETE FROM validator_set_snapshots "
+             "WHERE epoch_start = %llu", (unsigned long long)f);
+    ok = ok && v2x_sql(w->db, sql) == 0 && sqlite3_changes(w->db) == 1;
+    if (ok && clear_pending)
+        ok = v2x_sql(w->db, "UPDATE v2_validator_roles SET "
+                            "pending_consensus_pubkey = zeroblob(2592), "
+                            "consensus_key_effective_epoch = 0 "
+                            "WHERE pending_consensus_pubkey != "
+                            "zeroblob(2592)") == 0 &&
+             sqlite3_changes(w->db) > 0;
+    w->cached_committee_epoch_start = UINT64_MAX;
+    if (ok)
+        *rc_out = nodus_witness_v2_epoch_boundary_apply(w, u, chain32,
+                                                        stage_rec, NULL,
+                                                        &out);
+    if (v2x_sql(w->db, "ROLLBACK") != 0) ok = 0;
+    w->cached_committee_epoch_start = UINT64_MAX;
+    return ok ? 0 : -1;
 }
 
 #define KR_SQL_ADD  "INSERT INTO v2_consensus_keys (consensus_pk_hash, " \
@@ -1924,11 +2033,15 @@ static void votes_reset(void) {
     for (int i = 0; i < N_XVOTE; i++) g_vflag[N_VAL + i] = 0;
 }
 
+/* defined with case D below (C6 uses them since khan A8) */
+static int inject_boundary(fixture_t *A, uint64_t h, nodus_v2_apply_fail_t pt);
+static int twins_equal(fixture_t *A, fixture_t *B);
+
 static int t_swap(void) {
     fixture_t A, B;
     static uint8_t call[STK_LEN];
     uint8_t chain32[DNA_CHAIN_ID_LEN], d0[64], d1[64], got[64], intent[64];
-    uint8_t vid0[64], role = 0;
+    uint8_t vid0[64], vid_d[64], role = 0;
     uint64_t h = 0;
     const int kr0 = g_kr_runs;
     rowv_t rv;
@@ -1936,6 +2049,7 @@ static int t_swap(void) {
     CHECK(E_LEN >= 12, "the fixture's edge precedes the first boundary");
     for (int c = R1; c < N_COINS; c++) g_amt[c] = FEE;
     for (int k = 0; k < N_ROT; k++) g_amt[g_sc[k]] = SMIN + FEE;
+    g_amt[R6] = SMIN + FEE;               /* C6s: the STAKE of KC3        */
     for (int c = 0; c < N_COINS; c++)
         CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
     CHECK(fx_open(&A, "ca") == 0 && fx_open(&B, "cb") == 0,
@@ -2120,10 +2234,12 @@ static int t_swap(void) {
     CHECK(key_of(A.w, g_k[KC1].pk, got, &role) == 0 &&
           memcmp(got, g_rid[RA], 64) == 0 &&
           role == NODUS_V2_KEY_ROLE_ACTIVE,
-          "the old key keeps its role-1 row until the sweep (khan A2)");
+          "rotate_apply leaves the old key's role-1 row (its caller, the "
+          "swap, decides: A8 at U or the sweep at U+E, A2)");
     CHECK(keys_naming(A.w, g_rid[RA], NODUS_V2_KEY_ROLE_ACTIVE) == 2 &&
           keys_naming(A.w, g_rid[RA], NODUS_V2_KEY_ROLE_PENDING) == 0,
-          "two role-1 rows name V_A from U to U+E, no role-2 row");
+          "after rotate_apply alone: two role-1 rows name V_A, no role-2 "
+          "row");
     CHECK(nodus_validator_v2_rotate_apply(A.w, g_rid[RA], g_k[KC1].pk,
                                           g_k[KN].pk) == -1,
           "a replayed swap: refused (the old key is no longer the row's)");
@@ -2329,16 +2445,99 @@ static int t_swap(void) {
           rv.pend_is && rv.status == DNAC_VALIDATOR_RETIRING,
           "V_B RETIRING, its pending key kept");
 
+    /* ── C6a. the previous voter's attendance row (khan A8) ─────────────
+     * "No seat in S(F)" is not "never signed": a validator seated in an
+     * earlier set, out of S(F) and back in S(U), keeps its old voter's
+     * attendance row (the reset zeroes it, never deletes it). This
+     * fixture cannot seat a STAKEd row before S(3E), so that row is
+     * PLANTED — identically on BOTH twins (a fixture device, not a probe:
+     * the digest of 3E folds it on both, so the twins stay equal) — for
+     * KC1's voter_id at block 2E+1. No reader sees it before 3E: the
+     * distribution and Rule N at 3E read S(2E)'s seats, and KC1 is not one.
+     * At 3E the swap releases KC1 (V_A has no seat in S(2E)) and records
+     * its voter_id; the sweep (3d, after the digest and the reset)
+     * deletes the row. KC2 / KC3 have none (0 rows deleted, the sweep's
+     * 0-or-1 rule). */
+    {
+        uint8_t vo[32];
+        CHECK(nodus_chain_config_derive_witness_id(g_k[KC1].pk, vo) == 0,
+              "KC1's voter_id");
+        fixture_t *tw[2] = { &A, &B };
+        for (int t = 0; t < 2; t++) {
+            sqlite3_stmt *st = NULL;
+            int ok = sqlite3_prepare_v2(tw[t]->w->db,
+                         "INSERT INTO v2_attendance (voter_id, signed_count, "
+                         "last_signed_height) VALUES (?1, 1, ?2)", -1, &st,
+                         NULL) == SQLITE_OK &&
+                     sqlite3_bind_blob(st, 1, vo, 32, SQLITE_TRANSIENT)
+                         == SQLITE_OK &&
+                     sqlite3_bind_int64(st, 2, (sqlite3_int64)h) == SQLITE_OK &&
+                     sqlite3_step(st) == SQLITE_DONE &&
+                     sqlite3_changes(tw[t]->w->db) == 1;
+            if (st) sqlite3_finalize(st);
+            CHECK(ok, "KC1's old voter row planted on both twins");
+        }
+        CHECK(att_rows(A.w, KC1) == 1 && att_rows(A.w, KC2) == 0 &&
+              att_rows(A.w, KC3) == 0, "attendance rows before 3E");
+    }
+
     /* ── C6. boundary 3E (U): THE SWAP, then the by-id readers ─────────
      * S(3E) carries the three pending keys, so step 1d switches all three
      * rows — the RETIRING V_B too (S(3E) seats it under KN2, the key
-     * Comet uses from 3E+2). The previous keys keep their role-1 rows
-     * (khan A2). The flips activate V_A / V_C, the graduation defers V_B
-     * (both by validator_id). The sweep at 3E finds the three with two
-     * role-1 rows, S(2E) not seating them and S(3E) seating them under
-     * their (new) current keys: swapped at THIS boundary — kept. */
+     * Comet uses from 3E+2). None of the three has a seat in S(F) =
+     * S(2E): khan A8 — each previous key's role-1 row is deleted IN THE
+     * SWAP (A2's window protects a duty these keys never had), so each
+     * validator holds ONE role-1 row (its new key) and the sweep at 3E
+     * has no candidate. The flips activate V_A / V_C, the graduation
+     * defers V_B (both by validator_id).
+     * F62 first (HF-6 6e), on A alone: boundary 3E with a fault injected
+     * after the sweep — a node FAULT with the whole database rolled back:
+     * the swap's A8 deletes did not survive either (three previous keys
+     * still role 1, still pending, KC1's planted row there). */
+    CHECK(run_to(&A, &B, &h, 3 * E_LEN - 1) == 0, "to block 3E-1");
+
+    /* ── C6p. S(F) absent at a boundary that swaps ⇒ FAULT (A only,
+     * ROLLED BACK; operator 2026-10-13: fail closed, never "not seated").
+     * Unreachable on a committed chain (the freeze refuses a pass with
+     * candidates when S(F) is absent — C4b (f)), so it is forced: in one
+     * rolled-back transaction S(2E) is deleted and reward_pool zeroed (so
+     * the distribution at 3E, which reads S(2E), pays nothing and reads
+     * no snapshot), and boundary 3E is called directly. With the three
+     * pending rows it returns -2 BEFORE the swap's stage fires; the
+     * control — the same edits plus the pending keys cleared, so the swap
+     * has no candidate and reads no S(F) — reaches the swap's stage. The
+     * steps between 1 and 1d do not read the pending rows, so the
+     * difference is the swap's refusal of the absent S(F). */
+    {
+        int rc = 0;
+        CHECK(swap_probe(A.w, 2 * E_LEN, 3 * E_LEN, 0, &rc) == 0,
+              "C6p probe applied and rolled back");
+        CHECK(rc == -2 && g_stage_seen[NODUS_V2_EPST_COMMISSIONS] &&
+              !g_stage_seen[NODUS_V2_EPST_ROTATE_SWAP],
+              "S(2E) absent with three swaps due: boundary 3E is a FAULT "
+              "before the swap's stage");
+        CHECK(swap_probe(A.w, 2 * E_LEN, 3 * E_LEN, 1, &rc) == 0,
+              "C6p control applied and rolled back");
+        CHECK(g_stage_seen[NODUS_V2_EPST_ROTATE_SWAP],
+              "control (no pending row): the same state passes the swap");
+        CHECK(twins_equal(&A, &B) == 0, "C6p rolled back: A == B");
+    }
+
+    CHECK(inject_boundary(&A, 3 * E_LEN, V2AP_FAIL_AFTER_ROTATE_SWEEP) == 0,
+          "F62: boundary 3E faults after the sweep and rolls back whole");
+    for (int k = 0; k < N_ROT; k++)
+        CHECK(row_view(A.w, g_rid[k], g_ck[k], g_tk[k], &rv) == 0 &&
+              rv.cur_is && rv.pend_is &&
+              key_of(A.w, g_k[g_ck[k]].pk, got, &role) == 0 &&
+              memcmp(got, g_rid[k], 64) == 0 &&
+              role == NODUS_V2_KEY_ROLE_ACTIVE,
+              "F62 at 3E: not swapped, the previous key still role 1");
+    CHECK(att_rows(A.w, KC1) == 1,
+          "F62 at 3E: the planted attendance row survived the rollback");
     CHECK(run_to(&A, &B, &h, 3 * E_LEN) == 0,
           "boundary 3E applies on both twins");
+    CHECK(twins_equal(&A, &B) == 0,
+          "F62: the replayed 3E is byte-identical to the unfaulted twin's");
     for (int k = 0; k < N_ROT; k++) {
         CHECK(row_view(A.w, g_rid[k], g_tk[k], -1, &rv) == 0 && rv.cur_is &&
               rv.pend_is && rv.epoch == 0,
@@ -2347,13 +2546,14 @@ static int t_swap(void) {
         CHECK(key_of(A.w, g_k[g_tk[k]].pk, got, &role) == 0 &&
               memcmp(got, g_rid[k], 64) == 0 &&
               role == NODUS_V2_KEY_ROLE_ACTIVE &&
-              key_of(A.w, g_k[g_ck[k]].pk, got, &role) == 0 &&
-              memcmp(got, g_rid[k], 64) == 0 &&
-              role == NODUS_V2_KEY_ROLE_ACTIVE &&
-              keys_naming(A.w, g_rid[k], NODUS_V2_KEY_ROLE_ACTIVE) == 2 &&
+              key_of(A.w, g_k[g_ck[k]].pk, got, &role) == 1 &&
+              keys_naming(A.w, g_rid[k], NODUS_V2_KEY_ROLE_ACTIVE) == 1 &&
               keys_naming(A.w, g_rid[k], NODUS_V2_KEY_ROLE_PENDING) == 0,
-              "the new key role 1, the previous key still role 1 (kept by "
-              "the sweep at 3E: swapped at this boundary)");
+              "khan A8: the new key role 1, the previous key released in "
+              "the swap (no seat in S(2E)) — one role-1 row");
+        CHECK(att_rows(A.w, g_ck[k]) == 0,
+              "khan A8: no previous voter's attendance row after 3E (KC1's "
+              "planted row deleted at 3d)");
     }
     CHECK(row_view(A.w, g_rid[RA], KN, -1, &rv) == 0 &&
           rv.status == DNAC_VALIDATOR_ACTIVE &&
@@ -2364,36 +2564,55 @@ static int t_swap(void) {
           rv.status == DNAC_VALIDATOR_RETIRING,
           "V_B deferred at 3E by validator_id: still RETIRING");
 
-    /* ── C6k. the key-reservation self-check at 3E (khan A3 tolerance) ─
-     * The three rotators hold their previous keys KC1 / KC2 / KC3 — keys
-     * no committed snapshot names (S(2E) never seated them). Each is
-     * seated in S(3E) under its row's current key with no seat in S(2E),
-     * so each may hold ONE role-1 row beyond the derived set: 0
-     * differences. A SECOND such row naming V_A is one difference; a
-     * spare row naming V0 (seated in S(2E) and S(3E) under one key: its
-     * reservations are fully derivable) is one difference. Deleting KC1's
-     * row is NOT seen — the tolerance bounds the A3 previous key by count
-     * only (the known blind spot: nothing rooted names that key). All on
-     * A, ROLLED BACK. */
+    /* ── C6k. the key-reservation self-check at 3E, no tolerance (A8) ──
+     * Every row is derived: the three rotators hold only their new keys
+     * (current, role 1) — exactly a new entrant's rows. 0 differences on
+     * both twins. Each single extra role-1 row is one difference: the A3
+     * rotator's own previous key KC1 put back (the row khan A3 used to
+     * leave until U+E and the check could only tolerate — now seen), an
+     * arbitrary key naming V_A, an arbitrary key naming V0 (seated in
+     * S(2E) and S(3E) under one key). All on A, ROLLED BACK. */
     {
         uint8_t junk[64], kc1[64];
         memset(junk, 0x5A, sizeof(junk));
         CHECK(kh_of(KC1, kc1) == 0, "KC1's hash");
         CHECK(kr_diff(A.w, 3 * E_LEN) == 0 && kr_diff(B.w, 3 * E_LEN) == 0,
-              "self-check at 3E: 0 differences (three A3 previous keys "
-              "tolerated)");
+              "self-check at 3E: 0 differences, nothing tolerated");
+        CHECK(kr_probe(A.w, 3 * E_LEN, KR_SQL_ADD, kc1, g_rid[RA]) == 1,
+              "V_A's released previous key KC1 back at role 1: 1 difference "
+              "(the former A3 blind spot, now detected)");
         CHECK(kr_probe(A.w, 3 * E_LEN, KR_SQL_ADD, junk, g_rid[RA]) == 1,
-              "a second extra role-1 row on an A3 rotator: 1 difference");
+              "an extra role-1 row on an A3 rotator: 1 difference");
         CHECK(kr_probe(A.w, 3 * E_LEN, KR_SQL_ADD, junk, vid0) == 1,
               "an extra role-1 row on a validator S(2E) seats: 1 "
               "difference");
-        CHECK(kr_probe(A.w, 3 * E_LEN, KR_SQL_DEL, kc1, NULL) == 0,
-              "KNOWN BLIND SPOT: V_A's A3 previous key deleted — not "
-              "derivable, not seen");
         uint8_t da[64], db[64];
         CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
               memcmp(da, db, 64) == 0 && kr_diff(A.w, 3 * E_LEN) == 0,
               "C6k rolled back: A == B, 0 differences");
+    }
+
+    /* ── C6s. the released key is free from the next block (khan A8) ───
+     * Block 3E+1: a REAL generation-4 STAKE (owner KO, coin R6) of a NEW
+     * validator under KC3 — V_C's previous key, released by the swap at
+     * 3E — with KC3's own consent (stake2_call signs the op-1 consent
+     * with KC3: binding a key to another validator needs that key's
+     * consent, design §3 "(A8)" / G2). It APPLIES: KC3 is reserved to the
+     * new validator_id at role 1. Its counterpart for a seated rotator
+     * (khan A2: the old key is still reserved until U+E) is D4s. */
+    {
+        CHECK(stake2_call(call, chain32, KC3, 3 * E_LEN + 1 + 100, SMIN)
+                  == STK_LEN, "STAKE call (KC3)");
+        CHECK(env_ok(&A, &B, 3 * E_LEN + 1, DNA_SYSRULE_STAKE, call,
+                     STK_LEN, R6, intent) == 0,
+              "block 3E+1: a STAKE under V_C's released key KC3 APPLIES");
+        h = 3 * E_LEN + 1;
+        CHECK(vid_expect(chain32, intent, vid_d) == 0, "the new validator_id");
+        CHECK(key_of(A.w, g_k[KC3].pk, got, &role) == 0 &&
+              memcmp(got, vid_d, 64) == 0 &&
+              role == NODUS_V2_KEY_ROLE_ACTIVE &&
+              memcmp(vid_d, g_rid[RC], 64) != 0,
+              "KC3 reserved to the NEW validator_id, role 1");
     }
 
     /* ── C7. (3E, 4E]: V_C's seated key KN1 signs from block 3E+3 (the
@@ -2434,39 +2653,55 @@ static int t_swap(void) {
     }
 
     /* ── C7c. the sweep refuses a shape no swap explains ───────────────
-     * On A alone, immediately before BOUNDARY block 4E: a THIRD role-1
-     * row naming V_A (an arbitrary key hash). The sweep at 4E classifies
-     * V_A as swapped at 3E and nodus_validator_v2_key_sweep_previous
-     * finds three role-1 rows where a swapped validator holds two: the
-     * boundary FAULTS. The row is removed again before block 4E. */
-    {
-        uint8_t da[64], db[64], junk[64];
+     * On A alone, immediately before BOUNDARY block 4E, two rounds:
+     *  (1) ONE extra role-1 row naming V_A (an arbitrary key hash): V_A
+     *      then has the two-row A2 shape (KN + the stray). The boundary-
+     *      start self-check's core — the set derived as of 3E, which
+     *      step 0 of boundary 4E compares, log-only — counts it as ONE
+     *      difference. The sweep at 4E reads V_A as swapped at 3E (S(3E)
+     *      seats it under KN) but S(2E) does not seat V_A at all (khan
+     *      A8 released its previous key at 3E), so no previous key can be
+     *      due: the boundary FAULTS — it does not release the stray
+     *      silently as a "previous key" (operator 2026-10-13).
+     *  (2) TWO extra rows (three in all): key_sweep_previous's own shape
+     *      check faults.
+     * The rows are removed again before block 4E each time. */
+    for (int nj = 1; nj <= 2; nj++) {
+        uint8_t junk[2][64];
         nodus_v2_block_t bk;
-        memset(junk, 0x77, sizeof(junk));
-        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0 &&
-              nodus_validator_v2_key_insert(A.w, junk, g_rid[RA],
-                                            NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
-              v2x_sql(A.w->db, "COMMIT") == 0,
-              "a third role-1 row names V_A");
+        memset(junk[0], 0x77, sizeof(junk[0]));
+        memset(junk[1], 0x78, sizeof(junk[1]));
+        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0, "begin");
+        for (int j = 0; j < nj; j++)
+            CHECK(nodus_validator_v2_key_insert(A.w, junk[j], g_rid[RA],
+                                                NODUS_V2_KEY_ROLE_ACTIVE) == 0,
+                  "an extra role-1 row names V_A");
+        CHECK(v2x_sql(A.w->db, "COMMIT") == 0, "commit");
+        if (nj == 1)
+            CHECK(kr_diff(A.w, 3 * E_LEN) == 1,
+                  "the boundary-start check (derivation of 3E) sees the "
+                  "stray row: 1 difference");
         mk_block(&bk, 4 * E_LEN, NULL, 0);
         CHECK(v2x_cmt_apply(A.w, &bk) == NODUS_V2_INTERNAL_FAULT,
-              "boundary 4E faults: three role-1 rows on a swapped "
-              "validator");
-        {
+              nj == 1 ? "boundary 4E faults: one stray row beside the "
+                        "current key, no S(2E) seat — never released "
+                        "silently"
+                      : "boundary 4E faults: three role-1 rows on a "
+                        "swapped validator");
+        for (int j = 0; j < nj; j++) {
             sqlite3_stmt *st = NULL;
             int ok = sqlite3_prepare_v2(A.w->db,
                          "DELETE FROM v2_consensus_keys "
                          "WHERE consensus_pk_hash = ?1", -1, &st, NULL)
                          == SQLITE_OK &&
-                     sqlite3_bind_blob(st, 1, junk, 64, SQLITE_TRANSIENT)
+                     sqlite3_bind_blob(st, 1, junk[j], 64, SQLITE_TRANSIENT)
                          == SQLITE_OK &&
                      sqlite3_step(st) == SQLITE_DONE &&
                      sqlite3_changes(A.w->db) == 1;
             if (st) sqlite3_finalize(st);
-            CHECK(ok, "the junk row removed (autocommit)");
+            CHECK(ok, "a junk row removed (autocommit)");
         }
-        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
-              memcmp(da, db, 64) == 0,
+        CHECK(twins_equal(&A, &B) == 0,
               "after the rolled-back probe A is byte-identical to B");
     }
 
@@ -2474,14 +2709,13 @@ static int t_swap(void) {
      * The distribution pays S(3E) against the swapped rows (strict key
      * equality holds — the B4 {pubkey, pending} relaxation is not needed
      * on this path any more). V_B graduates: key_release takes KN2 (its
-     * current key); since 6e the kept KC2 is left to the sweep of the
-     * same boundary (the graduated arm). The sweep releases KC1 / KC3 —
-     * validators S(2E) never seated, whose previous key is in no
-     * committed snapshot (khan A3 accepted them with 0 in S(F)); the
-     * reservation table is its only record. KC1 / KC3 never signed: no
-     * attendance row to delete. */
+     * current key) — its previous key KC2 went in the swap at 3E (khan
+     * A8), so V_B holds no reservation afterwards and is no sweep
+     * candidate (the graduated arm needs one role-1 row). The sweep at 4E
+     * has no candidate at all: KC1 / KC3 went at 3E too, and V_A / V_C
+     * hold one role-1 row each. */
     CHECK(att_rows(A.w, KC1) == 0 && att_rows(A.w, KC3) == 0,
-          "KC1 / KC3 never signed: no attendance rows");
+          "no attendance rows for KC1 / KC3 before 4E");
     CHECK(run_to(&A, &B, &h, 4 * E_LEN) == 0,
           "boundary 4E applies on both twins (no -2)");
     CHECK(row_view(A.w, g_rid[RB], KN2, -1, &rv) == 0 && rv.cur_is &&
@@ -2492,18 +2726,20 @@ static int t_swap(void) {
           key_of(A.w, g_k[KN2].pk, got, &role) == 1 &&
           keys_naming(A.w, g_rid[RB], NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
           keys_naming(A.w, g_rid[RB], NODUS_V2_KEY_ROLE_PENDING) == 0,
-          "both of V_B's keys released at 4E (KN2 by the graduation, KC2 "
-          "by the sweep)");
+          "both of V_B's keys released (KC2 by the swap at 3E — A8, KN2 by "
+          "the graduation at 4E)");
     CHECK(key_of(A.w, g_k[KC1].pk, got, &role) == 1 &&
-          key_of(A.w, g_k[KC3].pk, got, &role) == 1 &&
+          key_of(A.w, g_k[KC3].pk, got, &role) == 0 &&
+          memcmp(got, vid_d, 64) == 0 &&
+          role == NODUS_V2_KEY_ROLE_ACTIVE &&
           keys_naming(A.w, g_rid[RA], NODUS_V2_KEY_ROLE_ACTIVE) == 1 &&
           keys_naming(A.w, g_rid[RC], NODUS_V2_KEY_ROLE_ACTIVE) == 1 &&
           key_of(A.w, g_k[KN].pk, got, &role) == 0 &&
           role == NODUS_V2_KEY_ROLE_ACTIVE &&
           key_of(A.w, g_k[KN1].pk, got, &role) == 0 &&
           role == NODUS_V2_KEY_ROLE_ACTIVE,
-          "the sweep at U+E released KC1 and KC3 (khan A2); KN / KN1 "
-          "stay role 1");
+          "KC1 free, KC3 the C6s validator's; V_A / V_C one role-1 row "
+          "each (KN / KN1)");
     /* Rule N at 4E: duty S(3E), found by validator_id; attendance read
      * on the duty ENTRY's key (= the swapped row's key) */
     CHECK(row_view(A.w, g_rid[RA], KN, -1, &rv) == 0 && rv.missed == 1,
@@ -2614,6 +2850,7 @@ static int t_budget(void) {
           "the cap arithmetic is derived at 3000 bps");
     for (int c = R1; c < N_COINS; c++) g_amt[c] = FEE;
     for (int k = 0; k < N_ROT; k++) g_amt[g_sc[k]] = BIG + FEE;
+    g_amt[R6] = SMIN + FEE;           /* D4s / D5s: the STAKE of o0's old key */
     for (int c = 0; c < N_COINS; c++)
         CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
     CHECK(fx_open(&A, "da") == 0 && fx_open(&B, "db") == 0,
@@ -2762,8 +2999,7 @@ static int t_budget(void) {
      * difference: o0's previous key deleted (missing), o0's current key
      * flipped to role 2 (other role), o2's pending key flipped to role 1
      * (other role), o1's previous key re-assigned to o2 (other validator),
-     * a spare role-1 row naming o2 (extra; o2 has a seat in S(3E), so no
-     * A3 tolerance applies). */
+     * a spare role-1 row naming o2 (extra). */
     {
         uint8_t prev0[64], cur0[64], pend2[64], prev1[64], junk[64];
         memset(junk, 0x3C, sizeof(junk));
@@ -2815,7 +3051,26 @@ static int t_budget(void) {
     /* ── votes for (4E, 5E]: old keys of o0 / o1 sign 4E+1, 4E+2 ──────── */
     CHECK(vote_slot(1, g_ck[o[1]], (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT)
               == 0, "o1's old key signs U, U+1");
-    CHECK(run_to(&A, &B, &h, 4 * E_LEN + 2) == 0, "blocks 4E+1, 4E+2");
+
+    /* ── D4s. the seated rotator's old key stays reserved (khan A2) ────
+     * Block 4E+1: a REAL generation-4 STAKE of a new validator under o0's
+     * previous key, with that key's own consent and coin R6 (SMIN + FEE).
+     * o0 was seated in S(F) = S(3E), so its old key — which still signs
+     * U and U+1 — keeps its role-1 row until the sweep at U+E: the STAKE
+     * is REFUSED at exec (§4, the key reserved by another validator), the
+     * ledger tables byte-identical, R6 unspent. The same call after 5E is
+     * D5s. The unseated counterpart (A8: free from U+1) is C6s. */
+    CHECK(stake2_call(call, chain32, g_ck[o[0]], 4 * E_LEN + 1 + 100, SMIN)
+              == STK_LEN, "STAKE call (o0's old key)");
+    CHECK(env_refused(&A, &B, 4 * E_LEN + 1, DNA_SYSRULE_STAKE, call,
+                      STK_LEN, R6) == 0,
+          "block 4E+1: a STAKE under o0's kept previous key is REFUSED");
+    h = 4 * E_LEN + 1;
+    CHECK(key_of(A.w, g_k[g_ck[o[0]]].pk, got, &role) == 0 &&
+          memcmp(got, g_rid[o[0]], 64) == 0 &&
+          role == NODUS_V2_KEY_ROLE_ACTIVE,
+          "o0's previous key still reserved to o0 (A2 window)");
+    CHECK(run_to(&A, &B, &h, 4 * E_LEN + 2) == 0, "block 4E+2");
     CHECK(vote_slot(0, g_tk[o[0]], (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT)
               == 0 &&
           vote_slot(1, g_tk[o[1]], (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT)
@@ -2869,8 +3124,70 @@ static int t_budget(void) {
           "(b) A7: accepted at 5E — S(5E) carries no key change against "
           "S(4E), carry 0, party {o2}: 94M > 70666666");
 
+    /* ── D5s. the same STAKE after U+E (D4s's control) ─────────────────
+     * Block 5E+1: the D4s call (o0's previous key, its consent, coin R6)
+     * APPLIES — the sweep at 5E released the key — so D4s's refusal was
+     * the reservation and nothing else in the call. */
+    CHECK(stake2_call(call, chain32, g_ck[o[0]], 5 * E_LEN + 1 + 100, SMIN)
+              == STK_LEN, "STAKE call (o0's old key, again)");
+    CHECK(env_ok(&A, &B, 5 * E_LEN + 1, DNA_SYSRULE_STAKE, call, STK_LEN,
+                 R6, intent) == 0,
+          "block 5E+1: the STAKE under o0's released previous key APPLIES");
+    h = 5 * E_LEN + 1;
+    {
+        uint8_t vid_n[64];
+        CHECK(vid_expect(chain32, intent, vid_n) == 0, "the new validator_id");
+        CHECK(key_of(A.w, g_k[g_ck[o[0]]].pk, got, &role) == 0 &&
+              memcmp(got, vid_n, 64) == 0 &&
+              role == NODUS_V2_KEY_ROLE_ACTIVE,
+              "o0's previous key reserved to the NEW validator_id, role 1");
+    }
+
     /* ── votes for (5E, 6E]: o2's OLD key keeps signing (S(5E) duty) ─── */
     CHECK(run_to(&A, &B, &h, 6 * E_LEN - 1) == 0, "to block 6E-1");
+
+    /* ── D5x. a stray role-1 row on a STEADY validator (A only) ────────
+     * Before BOUNDARY block 6E: one extra role-1 row naming V0 (genesis,
+     * never rotated, seated in S(4E) and S(5E) under one key). Before the
+     * operator's 2026-10-13 rule the sweep at 6E released it silently as
+     * a "previous key" (two rows, one the current key's; S(5E) seats V0
+     * under it). Now: the boundary-start check's core (derivation of 5E)
+     * counts it as one difference, and the sweep FAULTS — S(4E) seats V0
+     * under its CURRENT key, so no previous key is due. Removed, A == B. */
+    {
+        uint8_t vidv0[64], junk[64];
+        nodus_v2_block_t bk;
+        memset(junk, 0x5C, sizeof(junk));
+        CHECK(dna_validator_id_migrated(vidv0, chain32, g_k[V0].pk) == 0,
+              "V0's validator_id");
+        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0 &&
+              nodus_validator_v2_key_insert(A.w, junk, vidv0,
+                                            NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
+              v2x_sql(A.w->db, "COMMIT") == 0,
+              "a stray role-1 row names V0");
+        CHECK(kr_diff(A.w, 5 * E_LEN) == 1,
+              "the boundary-start check (derivation of 5E) sees it: 1 "
+              "difference");
+        mk_block(&bk, 6 * E_LEN, NULL, 0);
+        CHECK(v2x_cmt_apply(A.w, &bk) == NODUS_V2_INTERNAL_FAULT,
+              "boundary 6E faults: a stray beside a steady validator's key "
+              "is never released as a previous key");
+        {
+            sqlite3_stmt *st = NULL;
+            int ok = sqlite3_prepare_v2(A.w->db,
+                         "DELETE FROM v2_consensus_keys "
+                         "WHERE consensus_pk_hash = ?1", -1, &st, NULL)
+                         == SQLITE_OK &&
+                     sqlite3_bind_blob(st, 1, junk, 64, SQLITE_TRANSIENT)
+                         == SQLITE_OK &&
+                     sqlite3_step(st) == SQLITE_DONE &&
+                     sqlite3_changes(A.w->db) == 1;
+            if (st) sqlite3_finalize(st);
+            CHECK(ok, "the stray row removed (autocommit)");
+        }
+        CHECK(twins_equal(&A, &B) == 0,
+              "after the rolled-back probe A is byte-identical to B");
+    }
 
     /* ── D6. boundary 6E (U of o2) ───────────────────────────────────── */
     CHECK(run_to(&A, &B, &h, 6 * E_LEN) == 0, "boundary 6E");

@@ -1129,6 +1129,43 @@ int nodus_validator_v2_key_insert(nodus_witness_t *w,
     return 0;
 }
 
+/* Delete EXACTLY the role-1 reservation (consensus_pk_hash = `kh`,
+ * validator_id, role 1): the one exact-row shape of every role-1 release
+ * (key_release step 1, key_release_previous, key_sweep_previous step 2).
+ * Any other change count is a fault, logged under `what`. 0 / -1. */
+static int v2_key_delete_role1(nodus_witness_t *w,
+                               const uint8_t kh[NODUS_V2_KEY_HASH_LEN],
+                               const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                               const char *what) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "DELETE FROM v2_consensus_keys WHERE consensus_pk_hash = ?1 "
+            "AND validator_id = ?2 AND role = ?3", -1, &st, NULL)
+        != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "%s: prepare failed: %s", what,
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    if (sqlite3_bind_blob(st, 1, kh, NODUS_V2_KEY_HASH_LEN,
+                          SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
+                          SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
+            != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "%s: the role-1 reservation is missing or "
+                      "foreign (rc=%d, %d rows) — fault", what, rc,
+                      sqlite3_changes(w->db));
+        return -1;
+    }
+    return 0;
+}
+
 int nodus_validator_v2_key_release(nodus_witness_t *w,
                                    const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
                                    const uint8_t *consensus_pubkey) {
@@ -1147,39 +1184,19 @@ int nodus_validator_v2_key_release(nodus_witness_t *w,
      *    key AND naming it — a missing or foreign row is a fault (the
      *    reservation set is a function of the validators rows, so a
      *    bonded-or-exiting row without its reservation is corruption) */
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "DELETE FROM v2_consensus_keys WHERE consensus_pk_hash = ?1 "
-            "AND validator_id = ?2 AND role = ?3", -1, &st, NULL)
-        != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "key_release prepare failed: %s",
-                      sqlite3_errmsg(w->db));
+    if (v2_key_delete_role1(w, kh, validator_id,
+                            "key_release (the graduating validator)") != 0)
         return -1;
-    }
-    if (sqlite3_bind_blob(st, 1, kh, sizeof(kh), SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 3, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
-            != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "key_release: the role-1 reservation of the "
-                      "graduating validator is missing or foreign (rc=%d, "
-                      "%d rows) — fault", rc, sqlite3_changes(w->db));
-        return -1;
-    }
     /* 2. every role-2 row the validator holds, any count: a pending key (a
      *    ROTATE never swapped). A previous key kept at role 1 (a swap at
-     *    U, this graduation at U+E — khan A2) is NOT taken here: the sweep
-     *    of this same boundary (nodus_witness_v2_epoch.c
-     *    v2ep_rotate_sweep, step 3d) releases it together with the
-     *    previous voter's attendance row, AFTER the attendance digest —
-     *    one release site for every previous key (design rev 6 §3). */
-    st = NULL;
+     *    U of a validator S(F) seated, this graduation at U+E — khan A2)
+     *    is NOT taken here: the sweep of this same boundary
+     *    (nodus_witness_v2_epoch.c v2ep_rotate_sweep, step 3d) releases it
+     *    together with the previous voter's attendance row, AFTER the
+     *    attendance digest (design rev 6 §3). A validator S(F) did not
+     *    seat holds no previous key here: the swap at U released it
+     *    (khan A8, nodus_validator_v2_key_release_previous). */
+    sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "DELETE FROM v2_consensus_keys WHERE validator_id = ?1 "
             "AND role = ?2", -1, &st, NULL) != SQLITE_OK) {
@@ -1194,7 +1211,7 @@ int nodus_validator_v2_key_release(nodus_witness_t *w,
         sqlite3_finalize(st);
         return -1;
     }
-    rc = sqlite3_step(st);
+    int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "key_release (pending role) step failed "
@@ -1357,32 +1374,34 @@ int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
     }
 
     /* 2. delete exactly that row */
-    st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "DELETE FROM v2_consensus_keys WHERE consensus_pk_hash = ?1 "
-            "AND validator_id = ?2 AND role = ?3", -1, &st, NULL)
-        != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "key_sweep_previous delete prepare failed: "
-                      "%s", sqlite3_errmsg(w->db));
+    if (v2_key_delete_role1(w, prev, validator_id,
+                            "key_sweep_previous (the previous key)") != 0)
         return -1;
-    }
-    if (sqlite3_bind_blob(st, 1, prev, NODUS_V2_KEY_HASH_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 3, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
-            != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "key_sweep_previous: the previous key's row "
-                      "did not delete as read (rc=%d) — fault", rc);
-        return -1;
-    }
     memcpy(prev_hash_out, prev, NODUS_V2_KEY_HASH_LEN);
+    return 0;
+}
+
+int nodus_validator_v2_key_release_previous(nodus_witness_t *w,
+                                            const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                                            const uint8_t *previous_pubkey,
+                                            uint8_t prev_hash_out[NODUS_V2_KEY_HASH_LEN]) {
+    if (!w || !w->db || !validator_id || !previous_pubkey || !prev_hash_out)
+        return -1;
+    if (sqlite3_get_autocommit(w->db)) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "key_release_previous called outside a "
+                      "transaction — refused, nothing written");
+        return -1;
+    }
+    uint8_t kh[NODUS_V2_KEY_HASH_LEN];
+    if (qgp_sha3_512(previous_pubkey, DNAC_PUBKEY_SIZE, kh) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "key_release_previous: hash backend "
+                      "failure");
+        return -1;
+    }
+    if (v2_key_delete_role1(w, kh, validator_id,
+                            "key_release_previous (khan A8)") != 0)
+        return -1;
+    memcpy(prev_hash_out, kh, NODUS_V2_KEY_HASH_LEN);
     return 0;
 }
 
@@ -1486,8 +1505,11 @@ int nodus_validator_v2_rotate_apply(nodus_witness_t *w,
         return -1;
 
     /* 3. v2_consensus_keys: the new key's reservation role 2 → role 1,
-     *    naming this validator. The OLD key's role-1 row is NOT touched:
-     *    it is released at U+E by the sweep (khan A2, slice 6d). */
+     *    naming this validator. The OLD key's role-1 row is NOT touched
+     *    here: the caller (the boundary swap) releases it at U when S(F)
+     *    does not seat the validator (khan A8,
+     *    nodus_validator_v2_key_release_previous), else the sweep at U+E
+     *    does (khan A2, slice 6d). */
     st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "UPDATE v2_consensus_keys SET role = ?1 "
