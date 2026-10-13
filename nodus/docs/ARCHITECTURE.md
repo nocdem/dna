@@ -8308,7 +8308,7 @@ nine constants cannot carry one D4.
 **Selfcheck.** `nodus_witness_runtime_selfcheck` re-derives D4 on every start of an EVM build and
 refuses to start when it differs from the compiled literal. The storage development row
 (`DNAC_CFG_RULESET_GEN_STORAGE_D` through `dna_ruleset_gen_digest`) stays beside it until 8c retires the
-param-16 trigger.
+param-16 trigger (done: deleted in 8c, section "HF-6 slice 8c").
 
 **Test builds — two flags.** Both `DNAC_HF6_FOUNDATION_OWNER` and `DNAC_CFG_RULESET_GEN_ROLES_D` are
 `#ifndef`-guarded. Because D4 binds the compiled owner, a build that overrides the owner must override
