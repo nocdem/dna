@@ -141,9 +141,12 @@
  *      the new validator_id.
  *   C7 from block 3E+3 KN1 (V_C's key) signs; KN never does. C7b: on A
  *      alone, before BOUNDARY 4E, S(3E)'s V4 entry given a third key makes
- *      boundary 4E FAULT; restored, A equals B. C7c: two extra role-1
- *      rows naming V_A (three in all) make the sweep at 4E FAULT;
- *      removed, A equals B.
+ *      boundary 4E FAULT; restored, A equals B. C7c: ONE extra role-1
+ *      row naming V_A is one difference for the boundary-start check's
+ *      core (derivation of 3E) and makes the sweep at 4E FAULT (S(2E)
+ *      does not seat V_A: no previous key is due — never released
+ *      silently); TWO extra rows (three in all) FAULT too; removed, A
+ *      equals B each time.
  *   C8 boundary 4E: applies on both twins; V_B graduates (key_release
  *      takes KN2; KC2 already went in the swap at 3E); the sweep has no
  *      candidate; KC1 free, KC3 the C6s validator's; Rule N on duty
@@ -169,6 +172,10 @@
  *      reserved to o0 (khan A2: o0 was seated in S(F)) — ledger tables
  *      byte-identical, the coin unspent. D5s block 5E+1: the same call
  *      APPLIES (the sweep at 5E released the key).
+ *   D5x (A only) a stray role-1 row naming V0 (never rotated) before
+ *      boundary 6E: one difference for the boundary-start check's core
+ *      (derivation of 5E); the sweep at 6E FAULTS (S(4E) seats V0 under
+ *      its current key — no previous key is due); removed, A == B.
  *   D5 boundary 5E: KO paid again; (a) the sweep deletes the two old
  *      voters' attendance rows (credited at 4E+1, 4E+2) and their role-1
  *      rows; Rule N 0 on the new keys; the third not swapped (F = 3E
@@ -228,6 +235,11 @@
  *      previous key put back at role 1, a spare row on an A3 rotator, a
  *      spare row on a validator both snapshots seat — each one difference
  *      (the former blind spot is now seen).
+ *   K5 (C7c, D5x) the BOUNDARY-START check (step 0, the derivation of
+ *      H − E, before the swap and the sweep) sees a stray role-1 row
+ *      written between boundaries as 1 difference — the core is called
+ *      directly at the pre-boundary state; that step 0 calls it is read
+ *      from the source.
  *   K4 (F2k, at 2E) the ruleset-1 bridge: S(2E)'s V0 entry re-keyed (A
  *      only, ROLLED BACK) makes the bridge match V0 in S(E) under another
  *      key, deriving V0's own key a second time: one difference.
@@ -301,7 +313,9 @@
  *    is not driven end to end — no fixture rotation reaches U = 2E (a
  *    genesis seat is Foundation-owned and cannot ROTATE here). The swap
  *    calls the same v2ep_member_in_snapshot the sweep and Rule N use.
- *    The absent-S(F) arm (rc 1 ⇒ not seated) is not driven either.
+ *  - The sweep's new "previous key = the key S(U − E) seats" check is
+ *    driven only through its FAULT arms (C7c, D5x); its pass arm is every
+ *    clean A2 release in D and E.
  *  - C6a's attendance row is PLANTED (on both twins), not earned: the
  *    fixture cannot seat a rotator in a set before S(F). It proves the
  *    swap → sweep hand-off deletes it at 3E; that the delete runs AFTER
@@ -2555,37 +2569,42 @@ static int t_swap(void) {
     }
 
     /* ── C7c. the sweep refuses a shape no swap explains ───────────────
-     * On A alone, immediately before BOUNDARY block 4E: TWO extra role-1
-     * rows naming V_A (arbitrary key hashes) — since khan A8 V_A holds
-     * one row (KN), so two make three. The sweep at 4E reads V_A as a
-     * candidate swapped at 3E (S(3E) seats it under KN) and
-     * nodus_validator_v2_key_sweep_previous finds three role-1 rows where
-     * a swapped validator holds two: the boundary FAULTS. The rows are
-     * removed again before block 4E. (ONE extra row would NOT fault, and
-     * would not be reported either: two rows, one of them the current
-     * key, is the A2 shape, so the sweep (3d) releases the extra one as a
-     * "previous key" before the boundary self-check (7) runs. That
-     * absorption holds for a stray row on ANY validator S(h − E) seats
-     * under its current key; before khan A8 an A3 rotator at U + E held
-     * two rows already and one stray made three — a FAULT. Only a direct
-     * kr_diff call between boundaries (C6k's probes) sees such a row.) */
-    {
-        uint8_t da[64], db[64], junk[2][64];
+     * On A alone, immediately before BOUNDARY block 4E, two rounds:
+     *  (1) ONE extra role-1 row naming V_A (an arbitrary key hash): V_A
+     *      then has the two-row A2 shape (KN + the stray). The boundary-
+     *      start self-check's core — the set derived as of 3E, which
+     *      step 0 of boundary 4E compares, log-only — counts it as ONE
+     *      difference. The sweep at 4E reads V_A as swapped at 3E (S(3E)
+     *      seats it under KN) but S(2E) does not seat V_A at all (khan
+     *      A8 released its previous key at 3E), so no previous key can be
+     *      due: the boundary FAULTS — it does not release the stray
+     *      silently as a "previous key" (operator 2026-10-13).
+     *  (2) TWO extra rows (three in all): key_sweep_previous's own shape
+     *      check faults.
+     * The rows are removed again before block 4E each time. */
+    for (int nj = 1; nj <= 2; nj++) {
+        uint8_t junk[2][64];
         nodus_v2_block_t bk;
         memset(junk[0], 0x77, sizeof(junk[0]));
         memset(junk[1], 0x78, sizeof(junk[1]));
-        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0 &&
-              nodus_validator_v2_key_insert(A.w, junk[0], g_rid[RA],
-                                            NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
-              nodus_validator_v2_key_insert(A.w, junk[1], g_rid[RA],
-                                            NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
-              v2x_sql(A.w->db, "COMMIT") == 0,
-              "two extra role-1 rows name V_A (three in all)");
+        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0, "begin");
+        for (int j = 0; j < nj; j++)
+            CHECK(nodus_validator_v2_key_insert(A.w, junk[j], g_rid[RA],
+                                                NODUS_V2_KEY_ROLE_ACTIVE) == 0,
+                  "an extra role-1 row names V_A");
+        CHECK(v2x_sql(A.w->db, "COMMIT") == 0, "commit");
+        if (nj == 1)
+            CHECK(kr_diff(A.w, 3 * E_LEN) == 1,
+                  "the boundary-start check (derivation of 3E) sees the "
+                  "stray row: 1 difference");
         mk_block(&bk, 4 * E_LEN, NULL, 0);
         CHECK(v2x_cmt_apply(A.w, &bk) == NODUS_V2_INTERNAL_FAULT,
-              "boundary 4E faults: three role-1 rows on a swapped "
-              "validator");
-        for (int j = 0; j < 2; j++) {
+              nj == 1 ? "boundary 4E faults: one stray row beside the "
+                        "current key, no S(2E) seat — never released "
+                        "silently"
+                      : "boundary 4E faults: three role-1 rows on a "
+                        "swapped validator");
+        for (int j = 0; j < nj; j++) {
             sqlite3_stmt *st = NULL;
             int ok = sqlite3_prepare_v2(A.w->db,
                          "DELETE FROM v2_consensus_keys "
@@ -2598,8 +2617,7 @@ static int t_swap(void) {
             if (st) sqlite3_finalize(st);
             CHECK(ok, "a junk row removed (autocommit)");
         }
-        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
-              memcmp(da, db, 64) == 0,
+        CHECK(twins_equal(&A, &B) == 0,
               "after the rolled-back probe A is byte-identical to B");
     }
 
@@ -3043,6 +3061,49 @@ static int t_budget(void) {
 
     /* ── votes for (5E, 6E]: o2's OLD key keeps signing (S(5E) duty) ─── */
     CHECK(run_to(&A, &B, &h, 6 * E_LEN - 1) == 0, "to block 6E-1");
+
+    /* ── D5x. a stray role-1 row on a STEADY validator (A only) ────────
+     * Before BOUNDARY block 6E: one extra role-1 row naming V0 (genesis,
+     * never rotated, seated in S(4E) and S(5E) under one key). Before the
+     * operator's 2026-10-13 rule the sweep at 6E released it silently as
+     * a "previous key" (two rows, one the current key's; S(5E) seats V0
+     * under it). Now: the boundary-start check's core (derivation of 5E)
+     * counts it as one difference, and the sweep FAULTS — S(4E) seats V0
+     * under its CURRENT key, so no previous key is due. Removed, A == B. */
+    {
+        uint8_t vidv0[64], junk[64];
+        nodus_v2_block_t bk;
+        memset(junk, 0x5C, sizeof(junk));
+        CHECK(dna_validator_id_migrated(vidv0, chain32, g_k[V0].pk) == 0,
+              "V0's validator_id");
+        CHECK(v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0 &&
+              nodus_validator_v2_key_insert(A.w, junk, vidv0,
+                                            NODUS_V2_KEY_ROLE_ACTIVE) == 0 &&
+              v2x_sql(A.w->db, "COMMIT") == 0,
+              "a stray role-1 row names V0");
+        CHECK(kr_diff(A.w, 5 * E_LEN) == 1,
+              "the boundary-start check (derivation of 5E) sees it: 1 "
+              "difference");
+        mk_block(&bk, 6 * E_LEN, NULL, 0);
+        CHECK(v2x_cmt_apply(A.w, &bk) == NODUS_V2_INTERNAL_FAULT,
+              "boundary 6E faults: a stray beside a steady validator's key "
+              "is never released as a previous key");
+        {
+            sqlite3_stmt *st = NULL;
+            int ok = sqlite3_prepare_v2(A.w->db,
+                         "DELETE FROM v2_consensus_keys "
+                         "WHERE consensus_pk_hash = ?1", -1, &st, NULL)
+                         == SQLITE_OK &&
+                     sqlite3_bind_blob(st, 1, junk, 64, SQLITE_TRANSIENT)
+                         == SQLITE_OK &&
+                     sqlite3_step(st) == SQLITE_DONE &&
+                     sqlite3_changes(A.w->db) == 1;
+            if (st) sqlite3_finalize(st);
+            CHECK(ok, "the stray row removed (autocommit)");
+        }
+        CHECK(twins_equal(&A, &B) == 0,
+              "after the rolled-back probe A is byte-identical to B");
+    }
 
     /* ── D6. boundary 6E (U of o2) ───────────────────────────────────── */
     CHECK(run_to(&A, &B, &h, 6 * E_LEN) == 0, "boundary 6E");

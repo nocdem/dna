@@ -2200,11 +2200,22 @@ done:
  *                at U (one swapped at h is seated in S(h), so its
  *                graduation at h was deferred); any third shape is a
  *                FAULT;
- *   a swapped-at-U candidate: nodus_validator_v2_key_sweep_previous
+ *   a swapped-at-U candidate: S(U − E) must seat it (by id, ruleset-1
+ *                bridge) under a key OTHER than the row's current key —
+ *                the A2 shape: only a validator S(U − E) seated keeps a
+ *                previous key past the swap at U, and that key is the one
+ *                S(U − E) seats (the self-check's derivation); then
+ *                nodus_validator_v2_key_sweep_previous
  *                deletes the previous key's role-1 row (exactly one; the
  *                bonded / exiting shape is two role-1 rows with one the
  *                current key's, the graduated shape one row that is not)
- *                and names its hash; the previous voter's attendance row
+ *                and names its hash, which must be SHA3-512 of that
+ *                S(U − E) key — else FAULT (operator 2026-10-13: a stray
+ *                role-1 row beside a current key has the same two-row
+ *                shape and must never be released silently as a
+ *                "previous key"; same fault class as a third role-1 row);
+ *                S(U − E) absent / unreadable, or U < E, is a FAULT; the
+ *                previous voter's attendance row
  *                (voter_id = that hash's first 32 bytes — the untagged
  *                SHA3-512(pk) both derivations take, nodus_chain_config_
  *                derive_witness_id and v2_consensus_keys.consensus_pk_hash)
@@ -2278,7 +2289,7 @@ static int v2ep_rotate_sweep(nodus_witness_t *w, uint64_t h,
 
     int ret = -2;
     uint32_t swept = 0;
-    dna_vset_snapshot_t *su = NULL, *sh = NULL;
+    dna_vset_snapshot_t *su = NULL, *sh = NULL, *sp = NULL;
     nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
     if (!row) goto done;
     const uint64_t u = h - (uint64_t)DNAC_EPOCH_LENGTH;  /* h >= E: gate */
@@ -2304,11 +2315,59 @@ static int v2ep_rotate_sweep(nodus_witness_t *w, uint64_t h,
         if (in_u == 1 &&
             memcmp(su->entries[idx].pubkey, row->rec.pubkey,
                    DNAC_PUBKEY_SIZE) == 0) {
+            /* the previous key must be the one S(U − E) seats this
+             * validator under — by id, ruleset-1 bridge — and differ from
+             * the current key (khan A2: only a validator S(U − E) seated
+             * keeps one past the swap; A8 released every other). Read
+             * S(U − E) once, here, only when a candidate needs it. */
+            if (u < (uint64_t)DNAC_EPOCH_LENGTH) {
+                /* no swap can have run at a boundary below E */
+                QGP_LOG_ERROR(LOG_TAG, "%s", "sweep: a second role-1 row "
+                              "before any swap was possible — fault");
+                goto done;
+            }
+            if (!sp) {
+                arc = nodus_witness_v2_epoch_authority_for_epoch(
+                          w, u - (uint64_t)DNAC_EPOCH_LENGTH, &sp, NULL,
+                          NULL);
+                if (arc != 0 || !sp) {
+                    QGP_LOG_ERROR(LOG_TAG, "sweep: S(%llu) absent or "
+                                  "unreadable (rc=%d) with a previous key "
+                                  "to release — fault", (unsigned long long)
+                                  (u - (uint64_t)DNAC_EPOCH_LENGTH), arc);
+                    goto done;
+                }
+            }
+            size_t pidx = 0;
+            int in_p = v2ep_member_in_snapshot(sp, ids[i], row->rec.pubkey,
+                                               chain_id, &pidx);
+            if (in_p < 0) goto done;
+            uint8_t want[NODUS_V2_KEY_HASH_LEN];
+            if (in_p != 1 ||
+                memcmp(sp->entries[pidx].pubkey, row->rec.pubkey,
+                       DNAC_PUBKEY_SIZE) == 0 ||
+                qgp_sha3_512(sp->entries[pidx].pubkey, DNAC_PUBKEY_SIZE,
+                             want) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "sweep: a second role-1 row on a "
+                              "validator S(%llu) does not seat under "
+                              "another key — no swap at %llu explains it, "
+                              "fault", (unsigned long long)
+                              (u - (uint64_t)DNAC_EPOCH_LENGTH),
+                              (unsigned long long)u);
+                goto done;
+            }
             uint8_t prev[NODUS_V2_KEY_HASH_LEN];
             if (nodus_validator_v2_key_sweep_previous(w, ids[i],
                                                       row->rec.pubkey,
                                                       graduated, prev) != 0)
                 goto done;
+            if (memcmp(prev, want, sizeof(want)) != 0) {
+                /* the row just deleted is not the key S(U − E) names:
+                 * the boundary faults and rolls the delete back */
+                QGP_LOG_ERROR(LOG_TAG, "%s", "sweep: the reserved previous "
+                              "key is not the key S(U − E) seats — fault");
+                goto done;
+            }
             if (v2ep_attendance_drop(w, prev) != 0) goto done;
             swept++;
             continue;
@@ -2352,6 +2411,7 @@ done:
     free(row);
     dna_vset_free(&su);
     dna_vset_free(&sh);
+    dna_vset_free(&sp);
     return ret;
 }
 
@@ -2402,7 +2462,9 @@ done:
  * READ-ONLY, no transaction of its own: valid inside the boundary
  * transaction and in autocommit. `h` must be the LAST boundary applied
  * (a multiple of E, >= E): between boundaries only ROTATE / STAKE move
- * the table, and both are in the role-2 / current-key derivations.
+ * the table, and both are in the role-2 / current-key derivations. Two
+ * callers in the boundary: step 0 (h = H − E, before this boundary's
+ * writers) and step 7 (h = H, after them).
  * Cost: one v2 row scan, two snapshot reads, one table scan, sorts.
  * Never a block decision — the caller ignores everything it returns.
  *
@@ -2679,8 +2741,12 @@ static void v2ep_kr_hex(const uint8_t *p, char out[2 * V2EP_KR_PREFIX + 1]) {
  * check itself — is written to the log and nothing else happens: no
  * return value, no state written, no effect on the block. A defect in
  * the checker would trigger identically on every node, and as a fault it
- * would halt the chain. */
+ * would halt the chain.
+ * `h` = the boundary whose derivation is checked (the last one applied to
+ * the table as it stands); `at` = the boundary being applied now, for the
+ * log: `at` == h at step 7, `at` == h + E at the boundary-start check. */
 static void v2ep_keyres_selfcheck(nodus_witness_t *w, uint64_t h,
+                                  uint64_t at,
                                   const uint8_t chain_id[DNA_CHAIN_ID_LEN]) {
     static const char *const kind_name[] = {
         "?", "missing", "extra", "other-validator", "other-role",
@@ -2690,15 +2756,19 @@ static void v2ep_keyres_selfcheck(nodus_witness_t *w, uint64_t h,
     int rc = v2ep_keyres_compare(w, h, chain_id, &rep);
     if (rc == 1) return;
     if (rc != 0) {
-        QGP_LOG_WARN(LOG_TAG, "boundary %llu: key-reservation self-check "
-                     "skipped — an input was unreadable (log-only, the "
-                     "block is unaffected)", (unsigned long long)h);
+        QGP_LOG_WARN(LOG_TAG, "boundary %llu (%s): key-reservation "
+                     "self-check skipped — an input was unreadable "
+                     "(log-only, the block is unaffected)",
+                     (unsigned long long)at,
+                     at == h ? "end" : "start");
         return;
     }
     if (rep.n_diff == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "boundary %llu: key reservations agree with "
-                      "the derived set (%zu derived, %zu rows)",
-                      (unsigned long long)h, rep.n_derived, rep.n_table);
+        QGP_LOG_DEBUG(LOG_TAG, "boundary %llu (%s): key reservations agree "
+                      "with the set derived as of %llu (%zu derived, %zu "
+                      "rows)", (unsigned long long)at,
+                      at == h ? "end" : "start", (unsigned long long)h,
+                      rep.n_derived, rep.n_table);
         return;
     }
     for (size_t i = 0; i < rep.n_items; i++) {
@@ -2706,19 +2776,21 @@ static void v2ep_keyres_selfcheck(nodus_witness_t *w, uint64_t h,
         char hh[2 * V2EP_KR_PREFIX + 1], vh[2 * V2EP_KR_PREFIX + 1];
         v2ep_kr_hex(it->hash, hh);
         v2ep_kr_hex(it->vid, vh);
-        QGP_LOG_ERROR(LOG_TAG, "boundary %llu: key reservation %s — key "
-                      "%s.. validator %s.. expected role %u, found role %u "
-                      "(0 = none)", (unsigned long long)h,
+        QGP_LOG_ERROR(LOG_TAG, "boundary %llu (%s): key reservation %s — "
+                      "key %s.. validator %s.. expected role %u, found role "
+                      "%u (0 = none)", (unsigned long long)at,
+                      at == h ? "end" : "start",
                       it->kind < sizeof(kind_name) / sizeof(kind_name[0])
                           ? kind_name[it->kind] : "?",
                       hh, vh, (unsigned)it->want_role,
                       (unsigned)it->got_role);
     }
-    QGP_LOG_ERROR(LOG_TAG, "boundary %llu: KEY RESERVATION SELF-CHECK: %zu "
-                  "difference(s) (%zu derived, %zu rows) — log-only, the "
-                  "block is unaffected",
-                  (unsigned long long)h, rep.n_diff, rep.n_derived,
-                  rep.n_table);
+    QGP_LOG_ERROR(LOG_TAG, "boundary %llu (%s): KEY RESERVATION SELF-CHECK "
+                  "against the set derived as of %llu: %zu difference(s) "
+                  "(%zu derived, %zu rows) — log-only, the block is "
+                  "unaffected", (unsigned long long)at,
+                  at == h ? "end" : "start", (unsigned long long)h,
+                  rep.n_diff, rep.n_derived, rep.n_table);
 }
 
 /* ── entry point ───────────────────────────────────────────────────── */
@@ -2749,6 +2821,25 @@ int nodus_witness_v2_epoch_boundary_apply(
                       "unreadable", (unsigned long long)global_height);
         return -2;
     }
+
+    /* ── 0. THE KEY-RESERVATION SELF-CHECK AT BOUNDARY START (log-only)
+     * Step 7 of the PREVIOUS boundary compared the table right after its
+     * own writers; between boundaries only STAKE (role 1, current key)
+     * and ROTATE (role 2) write it, and both are in the derivation of
+     * H − E — so the table as it stands now must still equal the set
+     * derived as of H − E. This check sees the table BEFORE this
+     * boundary's swap (1d) and sweep (3d) touch it: a stray role-1 row
+     * that appeared between boundaries would otherwise reach the sweep,
+     * which can release it as a "previous key" (or fault on it) before
+     * step 7 ever runs — this logs it first (operator 2026-10-13, "açık
+     * bırakmayalım"). Same core and wrapper as step 7: read-only, its
+     * outcome IGNORED, never a block decision. Generation 4 only (the
+     * swap / sweep gate); skipped when H − E < E (no earlier boundary
+     * to derive from — the core refuses h < E). */
+    if (key_gen >= NODUS_RT_GEN_STORAGE &&
+        global_height >= 2 * (uint64_t)DNAC_EPOCH_LENGTH)
+        v2ep_keyres_selfcheck(w, global_height - (uint64_t)DNAC_EPOCH_LENGTH,
+                              global_height, chain_id);
 
     if (v2ep_activate_commissions(w, global_height) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_COMMISSIONS, UINT32_MAX))
@@ -2975,7 +3066,7 @@ int nodus_witness_v2_epoch_boundary_apply(
      * point reads anything the check could touch. Generation 4 only, the
      * swap / sweep gate. No fault stage: a read-only step. */
     if (key_gen >= NODUS_RT_GEN_STORAGE)
-        v2ep_keyres_selfcheck(w, global_height, chain_id);
+        v2ep_keyres_selfcheck(w, global_height, global_height, chain_id);
 
     QGP_LOG_DEBUG(LOG_TAG, "boundary at %llu applied (%u graduates, "
                   "%llu accrued, %u payday utxos)",

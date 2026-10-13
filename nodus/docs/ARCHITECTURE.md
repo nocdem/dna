@@ -8425,7 +8425,9 @@ the param-16 row. `test_explorer`: the 18 label and the retired 16 label.
 STAKE / ROTATE's KEYRES read (op 17) differently from its peers and nothing would flag it before a
 block diverged. Step **7** of `nodus_witness_v2_epoch_boundary_apply` (generation ≥ 4, after the
 balance copy) re-derives the table and compares it row for row (`nodus_witness_v2_epoch.c`
-`v2ep_keyres_compare`, ORDER BY `consensus_pk_hash`).
+`v2ep_keyres_compare`, ORDER BY `consensus_pk_hash`). Since the khan-A8 follow-up (2026-10-13) the
+same check also runs at **step 0** of every generation-4 boundary H ≥ 2E, against the derivation of
+H − E, before the swap and the sweep write (see "HF-6 khan A8").
 
 **Derivation** (read from the writers — `key_insert` / `key_release` / `rotate_apply` /
 `key_sweep_previous`, the migration, `v2ep_rotate_swap` / `v2ep_rotate_sweep`):
@@ -8499,21 +8501,43 @@ until U + E. `v2_consensus_keys` is fully derivable and the self-check lost its 
 sweep's candidates are now exactly the swapped validators S(U − E) seated (an A8 validator holds one
 role-1 row after its swap; graduating at U + E, `key_release` takes its current key and it holds
 none). Graduation at U itself is impossible for a swapped validator (it is seated in S(U), so its
-graduation is deferred). **A stray role-1 row is absorbed, not reported:** a validator holding one
-stray role-1 row beside its current key's has the A2 shape, so the sweep (3d) releases the stray as a
-"previous key" when S(h − E) seats the validator under its current key — before the self-check (step
-7) runs, so that check never sees it. This holds for any steady validator and predates A8; what A8
-changes is that an A3 rotator at U + E used to hold two rows already, so one stray made three and the
-sweep FAULTED — it is now absorbed silently. Only a direct `nodus_witness_v2_keyres_diff` call
-between boundaries sees such a row. Fault stages unchanged: F61 after 1d (now including the A8
-deletes), F62 after 3d.
+graduation is deferred). Fault stages unchanged: F61 after 1d (now including the A8 deletes), F62
+after 3d.
+
+**A stray role-1 row is never released silently (operator 2026-10-13, "açık bırakmayalım").** A
+validator holding one stray role-1 row beside its current key's has the two-row A2 shape. Until this
+rule the sweep (3d) released such a stray as a "previous key" whenever S(h − E) seated the validator
+under its current key — for any steady validator, and since A8 for an A3 rotator at U + E too —
+before step 7 could see it. Two changes close that:
+- **The sweep checks the previous key against S(U − E).** For a candidate swapped at U = h − E it
+  reads S(U − E) (once per boundary, only for such a candidate; by validator_id, ruleset-1 bridge):
+  the validator must be seated there under a key OTHER than its current key, and the row
+  `key_sweep_previous` deletes must be SHA3-512 of THAT key — otherwise FAULT (also S(U − E)
+  absent / unreadable, or U < E). Why this is consistent: after A8 the only previous key that
+  survives a swap is A2's, kept for a validator S(U − E) seated, and its key before the swap is the
+  key S(U − E) seats it under (the self-check's derivation rests on the same fact); a stray row
+  matches neither condition. The FAULT is the class the sweep already used for a third role-1 row
+  (`key_sweep_previous`'s shape check) and for an unexplained second row. Like those, it fires on a
+  node whose out-of-root table drifted, not on every node.
+- **The self-check also runs at the START of every generation-4 boundary H ≥ 2E** (step 0, before
+  step 1): the same core and log-only wrapper against the set derived as of H − E. Between
+  boundaries only STAKE (role 1, current key) and ROTATE (role 2) write the table and both are in
+  that derivation, so the table must still match it; this sees a stray row written between
+  boundaries BEFORE the swap and the sweep touch the table. The log line names it
+  `boundary <H> (start)`; step 7's is `(end)`.
+
+What remains unseen: a stray row on a validator swapped AT h (seated in S(h − E)) passes the sweep
+at h (the "swapped at this boundary" arm checks the S(h) seat, not the row count) — the start check
+of h has already logged it if it existed before h, and the sweep at h + E faults on it.
 
 **Tests** (written, NOT run by the author). `test_hf6_rotate` case C: an old voter's attendance row
 planted on both twins (C6a); F62 at 3E rolls the swap's A8 deletes back; the swap at 3E leaves each
 unseated rotator ONE role-1 row and the sweep deletes the planted row (C6); the self-check without
-tolerance (C6k); a STAKE under a released key APPLIES at 3E + 1 (C6s); the sweep fault now needs
-three role-1 rows (C7c); C8's releases moved to 3E. Case D: a STAKE under a seated rotator's old key
-is REFUSED at 4E + 1 (D4s) and the same call APPLIES at 5E + 1 (D5s).
+tolerance (C6k); a STAKE under a released key APPLIES at 3E + 1 (C6s); one stray role-1 row on an A8
+rotator is one difference for the start check's core and FAULTS the sweep at 4E, two strays too
+(C7c); C8's releases moved to 3E. Case D: a STAKE under a seated rotator's old key is REFUSED at
+4E + 1 (D4s) and the same call APPLIES at 5E + 1 (D5s); a stray row on the never-rotated V0 is one
+difference and FAULTS the sweep at 6E (D5x).
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

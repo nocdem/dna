@@ -36,6 +36,11 @@
  *   0. GATE — no-op (0) unless global_height > 0 &&
  *      global_height % DNAC_EPOCH_LENGTH == 0. Exact mirror of
  *      nodus_witness_bft.c:2358. Height only: no clock, no timestamp.
+ *   0'. KEY-RESERVATION SELF-CHECK AT START (HF-6, khan A8 follow-up) —
+ *      generation 4 and H ≥ 2E only, LOG ONLY: the step-7 core against
+ *      the set derived as of H−E, before this boundary's swap and sweep
+ *      touch the table (a stray row written between boundaries is logged
+ *      before the sweep can act on it). Outcome ignored.
  *   1. PENDING COMMISSION ACTIVATION — bft.c:2379-2402 verbatim shape.
  *   1b. REWARD DISTRIBUTION (tokenomics-v3 P2, P2-6) —
  *      nodus_witness_v2_settlement_apply(w, H): payout = reward_pool >>
@@ -153,7 +158,10 @@
  *      graduated at step 2 of this boundary, only the previous one (HF-6
  *      slice 6e) — and snapshot(H−E) seats it under its current key) the
  *      previous key's role-1 reservation and its attendance row are
- *      deleted: the A2 release site. Candidates come from the reservation
+ *      deleted: the A2 release site — only when snapshot(H−2E) seats the
+ *      validator under another key and the deleted row is THAT key's;
+ *      otherwise (a stray row in the two-row shape) FAULT, like a third
+ *      role-1 row. Candidates come from the reservation
  *      table (since A8 they are exactly the swapped validators
  *      snapshot(H−2E) seated); none ⇒ no snapshot is read. AFTER 3b/3c,
  *      BEFORE 4 and 5; writes only v2_consensus_keys and v2_attendance.
