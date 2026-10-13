@@ -40,6 +40,12 @@ export const CHAINS = {
 // reached), and this network carries no priced token list. `receiveOnly` drives
 // the UI's send-form disabling and single Receive button for its assets.
 export const CELLFRAME = { name: 'Cellframe', symbol: 'CPUNK', decimals: 18, endpoint: CPUNK_ENDPOINT, icon: 'cellframe.svg', rpcOptions: [{ url: CPUNK_ENDPOINT, label: 'CPUNK network' }], tokens: [], receiveOnly: true };
+// Whether Device & settings offers the network connection settings for this
+// network (0.1.114, operator 2026-10-13: "Tek seçenekli ağlarda gizle"): only
+// where there are at least two providers to choose from.
+export function rpcChoiceOffered(network) {
+  return Array.isArray(network?.rpcOptions) && network.rpcOptions.length > 1;
+}
 export function assetFor(chain, symbol) {
   const c = CHAINS[chain];
   if (!c) throw new Error('Unsupported chain.');

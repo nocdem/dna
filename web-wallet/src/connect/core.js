@@ -133,7 +133,8 @@
 //     K stays in module memory; it is wiped by lock.
 //   core.historyEncrypt({ store, id, plaintext, counter }) -> { nonce, ct,
 //     tag, counter }   store / id: strings (the AAD; no NUL character);
-//     plaintext: Uint8Array, 1..65536 bytes; counter: the vault's invocation
+//     plaintext: Uint8Array, 1..1048576 bytes (crosses through the heap
+//     input buffer since 0.1.112); counter: the vault's invocation
 //     counter as a decimal string. nonce / ct / tag: Uint8Array, stored
 //     SEPARATELY (decision Ek 2); counter: the new value to persist.
 //     Refused once the counter reaches 2^32 (SP 800-38D §8.3).
@@ -173,6 +174,23 @@
 //   heap input buffer (nc_group_in_alloc), filled and consumed in ONE queue
 //   slot.
 //
+// STATE SCHEMA v2 (P7; connect/nc_state.h, design
+// docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2 + 2.1).
+// Synchronous, no session key, no network; used by src/connect/store.js
+// (stage 2). The input crosses through the module's state input buffer
+// (nc_state_in_alloc, 8 MiB).
+//   core.stateProject(v1State, prevMap = {}) -> { status: 'ok', nextSeq,
+//     header, records: [{ id, fp, json }], dropped: [path] } |
+//     { status: 'invalid', reason }   dropped: what v2 could not keep
+//     (nc_state.h DROPPED; paths, no values)
+//     v1State: the page's v1 state object (JSON.stringify'd here, the bytes
+//     store.js seals today); prevMap: fp -> 'c' + 20 digits from the last
+//     stateLoad ({} = the v1 -> v2 migration). header / json: the exact
+//     canonical texts to seal (record ids 'state' and id).
+//   core.stateLoad({ header, records: [{ id, json }] }) -> { status: 'ok',
+//     state, map } | { status: 'damaged', reason }   header / json: the
+//     opened texts; state: the canonical v1 object; map: fp -> id.
+//
 // Queue slots (design §6.4 F7): every async call is ONE bounded network
 // step in C (one GET, one GET_ALL or one PUT) — except the gated writes
 // profileUpdate, saltReconcile and contactsAdd: a read then at most one
@@ -187,7 +205,7 @@
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, HEX32 = /^[0-9a-f]{32}$/, U64 = /^(0|[1-9]\d{0,19})$/;
 export const CONTACT_ACCEPTED_MSG = 'Contact request accepted';
-const HISTORY_MAX_BYTES = 65536;           // connect/nc_wasm.c NC_HIST_PT_MAX
+const HISTORY_MAX_BYTES = 1048576;         // connect/nc_wasm.c NC_HIST_PT_MAX (64 KiB until 0.1.112, BUGS W-15)
 const HISTORY_NAME_MAX = 65535;            // connect/nc_history.h NC_HISTORY_NAME_MAX
 const lockedError = () => new Error('Wallet is locked.');
 
@@ -257,6 +275,15 @@ function recordBytes(value, what, { exact } = {}) {
   if (!(value instanceof Uint8Array) || value.length === 0 || value.length > HISTORY_MAX_BYTES || (exact !== undefined && value.length !== exact)) throw new Error(`Invalid history ${what}.`);
   return bytesToHex(value);
 }
+// A history record's bytes into the module's heap input buffer
+// (nc_group_in_alloc), consumed by the nc_hist_* export called next in the
+// same queue slot.
+function putHistory(b, value, what) {
+  if (!(value instanceof Uint8Array) || value.length === 0 || value.length > HISTORY_MAX_BYTES) throw new Error(`Invalid history ${what}.`);
+  const at = b.num('nc_group_in_alloc', ['number'], [value.length]);
+  if (!at) throw new Error('Out of memory.');
+  b.heap().set(value, at);
+}
 
 // ── groups (G2 + G3) ───────────────────────────────────────────────────
 const GROUP_PURPOSE = { head: 1, packet: 2, record: 3 };
@@ -294,6 +321,27 @@ function putIn(b, bytes) {
   if (!at) throw new Error('Out of memory.');
   b.heap().set(bytes, at);
 }
+// ── state schema v2 (P7) ───────────────────────────────────────────────
+// Every state input — the v1 state with the previous map, or the records
+// to load — crosses into the module's STATE input buffer (connect/nc_wasm.c
+// nc_state_in_alloc, NC_STATE_IN_MAX; P7 stage 2, rev 2.1 item 2): no ccall
+// string, so nothing is copied onto the module's 1 MiB C stack and the
+// state as a whole has no 1 MiB cap. Consumed by the nc_state_* export
+// called next in the same synchronous slot.
+const STATE_IN_MAX = 8388608;
+const STATE_RECORD_ID = /^c\d{20}$/;
+function putState(b, text) {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length === 0 || bytes.length > STATE_IN_MAX) throw new Error('The message state is too large for this version.');
+  const at = b.num('nc_state_in_alloc', ['number'], [bytes.length]);
+  if (!at) { bytes.fill(0); throw new Error('Out of memory.'); }
+  b.heap().set(bytes, at);
+  bytes.fill(0);
+}
+function plainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 function purposeOf(name) {
   const p = GROUP_PURPOSE[name];
   if (!p) throw new Error('Invalid group address.');
@@ -478,15 +526,22 @@ export function createNodusConnectCore({ nodus } = {}) {
       b.check(b.num('nc_hist_key', ['string'], [vaultIdHex]));
       return {};
     }),
+    // The record's bytes cross through the heap input buffer (web 0.1.112,
+    // BUGS W-15: a hex argument is copied onto the 1 MiB C stack, which
+    // capped a record at 64 KiB); put and consumed in this one queue slot.
     historyEncrypt: localOp(async (b, { store, id, plaintext, counter } = {}) => {
       if (typeof counter !== 'string' || !U64.test(counter)) throw new Error('Invalid history counter.');
-      b.check(b.num('nc_hist_encrypt', ['string', 'string', 'string', 'string'], [aadName(store, 'store'), aadName(id, 'id'), recordBytes(plaintext, 'record'), counter]));
+      const s = aadName(store, 'store'), i = aadName(id, 'id');
+      putHistory(b, plaintext, 'record');
+      b.check(b.num('nc_hist_encrypt', ['string', 'string', 'string'], [s, i, counter]));
       const r = b.result();
       return { nonce: hexToBytes(r.nonce), ct: hexToBytes(r.ct), tag: hexToBytes(r.tag), counter: r.counter };
     }),
     historyDecrypt: localOp(async (b, { store, id, nonce, ct, tag } = {}) => {
-      b.check(b.num('nc_hist_decrypt', ['string', 'string', 'string', 'string', 'string'],
-        [aadName(store, 'store'), aadName(id, 'id'), recordBytes(nonce, 'nonce', { exact: 12 }), recordBytes(ct, 'record'), recordBytes(tag, 'tag', { exact: 16 })]));
+      const s = aadName(store, 'store'), i = aadName(id, 'id');
+      const n = recordBytes(nonce, 'nonce', { exact: 12 }), t = recordBytes(tag, 'tag', { exact: 16 });
+      putHistory(b, ct, 'record');
+      b.check(b.num('nc_hist_decrypt', ['string', 'string', 'string', 'string'], [s, i, n, t]));
       return { plaintext: hexToBytes(b.result().pt) };
     }),
     // ── groups: synchronous ──
@@ -501,6 +556,30 @@ export function createNodusConnectCore({ nodus } = {}) {
       return sync(b => { b.check(b.num('nc_group_accept', ['string', 'string'], [hexN(gid, 64, 'group id'), hexN(inviteId, 32, 'invite')])); return b.result().json; });
     },
     groupLeaveJson(gid) { return sync(b => { b.check(b.num('nc_group_leave', ['string'], [hexN(gid, 64, 'group id')])); return b.result().json; }); },
+    // ── state schema v2 (P7): synchronous ──
+    // Both texts cross as JSON strings inside one input (connect/nc_state.h
+    // nc_state_project_wrapped_json), so the module answers exactly what
+    // the native codec answers for them.
+    stateProject(v1State, prevMap = {}) {
+      if (!plainObject(v1State)) throw new Error('Invalid message state.');
+      if (!plainObject(prevMap) || Object.entries(prevMap).some(([key, id]) => !HEX128.test(key) || typeof id !== 'string' || !STATE_RECORD_ID.test(id))) throw new Error('Invalid message state map.');
+      const text = JSON.stringify({ state: JSON.stringify(v1State), map: JSON.stringify(prevMap) });
+      return sync(b => {
+        putState(b, text);
+        b.check(b.num('nc_state_project'));
+        return JSON.parse(b.str('nc_state_result'));   // its own result (R13)
+      });
+    },
+    stateLoad({ header, records } = {}) {
+      if (typeof header !== 'string' || !Array.isArray(records) ||
+          records.some(r => !r || typeof r.id !== 'string' || !STATE_RECORD_ID.test(r.id) || typeof r.json !== 'string')) throw new Error('Invalid stored message state.');
+      const text = JSON.stringify({ header, records: records.map(r => ({ id: r.id, json: r.json })) });
+      return sync(b => {
+        putState(b, text);
+        b.check(b.num('nc_state_load'));
+        return JSON.parse(b.str('nc_state_result'));   // its own result (R13)
+      });
+    },
     // A text that is not a group message (too long, a NUL inside — the C
     // string would end there) is answered 'refused' without the module.
     groupJsonRead(text) {
