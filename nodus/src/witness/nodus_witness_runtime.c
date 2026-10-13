@@ -152,15 +152,20 @@ static const uint32_t CORE_RULES_GEVM[9] = {
  * HF-6 slice 6a (design docs/plans/2026-10-03-hf5-validator-owner-stake-
  * design.md rev 6 §2, §8 — ONE generation 4 carries storage and the
  * validator role; decision 2026-10-08-kurultay-14-hf6-summary.md K7):
- * + ROTATE_CONSENSUS_KEY (10), so the list is {1..10}. The descriptor
- * versions stay SYSTEM 9 / CORE 7 (khan decision A6, 2026-10-12 — nothing
- * shipped under them); only the SYSTEM hash and its policy digest move. */
-static const uint32_t SYS_RULES_GST[10] = {
+ * added ROTATE_CONSENSUS_KEY (10); the khan REMOVED it again (decision
+ * docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1: no key
+ * rotation in HF-6 — a key is changed by UNSTAKE + a new STAKE), so the
+ * list is {1..9} and op 10 is owned by no generation (admission refuses
+ * it like any unowned op). ⚠ The pinned SYSTEM hash / policy digest below
+ * (and nodus_ruleset_pins.h, dnac.h's D4 literal) still carry the {1..10}
+ * values: the descriptor version bump (SYSTEM 9 -> 10, CORE 7 -> 8,
+ * decision item 3) and the re-derivation by the independent oracle are
+ * the next package's — until then selfcheck refuses this table. */
+static const uint32_t SYS_RULES_GST[9] = {
     DNA_SYSRULE_STAKE, DNA_SYSRULE_DELEGATE, DNA_SYSRULE_UNSTAKE,
     DNA_SYSRULE_UNDELEGATE, DNA_SYSRULE_VALIDATOR_UPDATE,
     DNA_SYSRULE_CHAIN_CONFIG, DNA_SYSRULE_STORAGE_REGISTER,
-    DNA_SYSRULE_STORAGE_EXIT, DNA_SYSRULE_STORAGE_REPORT,
-    DNA_SYSRULE_ROTATE_CONSENSUS_KEY
+    DNA_SYSRULE_STORAGE_EXIT, DNA_SYSRULE_STORAGE_REPORT
 };
 #endif
 /* ASCENDING is load-bearing twice over: rt_owns_type() stops at the first
@@ -274,19 +279,18 @@ static const uint8_t SYS_METER_POLICY_DIGEST_GEVM[DNA_DOM_HASH_LEN] = {
 /* Storage reward v1 + HF-6 — the GEN_STORAGE SYSTEM (v9) metering policy:
  * the EVM generation's policy SHAPE — v2, seven scalar weights 1, the
  * 2 MiB max_block_env_bytes field kept — over the authoritative op set
- * 1..10 at weight 1: SYSTEM 1..10 / CORE 1..9 / EVM 1..5. The three
+ * 1..9 at weight 1: SYSTEM 1..9 / CORE 1..9 / EVM 1..5. The three
  * storage ops 7..9 are priced by the rows CORE SYSFUND / NAME_REGISTER /
- * EVMFUND already own (w_op is keyed by runtime_op across domains); HF-6
- * slice 6a adds the row for op 10 (ROTATE_CONSENSUS_KEY — design rev 6
- * §2: "SYSTEM meter politikası 10'u fiyatlar"), which no other domain
- * names. An op with no committed weight is unreservable (sys_policy_build),
- * so without that row every ROTATE would die at reservation. Built by
- * sys_policy_build(p, 10); its identity digest is pinned separately (one
+ * EVMFUND already own (w_op is keyed by runtime_op across domains). HF-6
+ * slice 6a had added a row for op 10 (ROTATE_CONSENSUS_KEY); the khan
+ * removed op 10 from HF-6 (decision 2026-10-13-kurultay-18-summary.md
+ * item 1), so the row is gone and op 10 is unreservable. Built by
+ * sys_policy_build(p, 9); its identity digest is pinned separately (one
  * literal per generation) and filled by the INDEPENDENT oracle, never this
- * build's serializer. It no longer equals SYS_METER_POLICY_DIGEST_GEVM
- * (the oracle asserts the difference). Selfcheck re-derives it on every
- * start. */
-#define SYS_POLICY_MAX_OP_GST 10u
+ * build's serializer. Selfcheck re-derives it on every start. ⚠ The
+ * literal below is still the ops-1..10 value until the next package
+ * re-derives it with the oracle (see SYS_RULES_GST). */
+#define SYS_POLICY_MAX_OP_GST 9u
 static dna_meter_policy_t g_sys_policy_gst;
 static int g_sys_policy_gst_ready = 0;
 static const uint8_t SYS_METER_POLICY_DIGEST_GST[DNA_DOM_HASH_LEN] = {
@@ -565,6 +569,13 @@ static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
  * CORE hash did not move (its list, types and version are unchanged —
  * the oracle asserts S3 equals the pre-6a value). The storage-only SYSTEM
  * v9 hash b37f489d… is dead.
+ * ⚠ STALE (2026-10-13): the khan removed op 10 (decision
+ * 2026-10-13-kurultay-18-summary.md item 1) — SYS_RULES_GST is {1..9} and
+ * the policy prices ops 1..9 again, so the SYSTEM literal below and the
+ * preimage text above ("rules {..,10}", "ops 1..10") no longer describe
+ * the table; selfcheck refuses it until the next package bumps SYSTEM
+ * 9 -> 10 / CORE 7 -> 8 (decision item 3) and re-derives every literal
+ * with the independent oracle.
  *
  * Both are filled by the INDEPENDENT oracle over the preimages above
  * (shared/dnac/tests/storage_oracle.py S2 / S3), never from this build's
@@ -1015,10 +1026,12 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_SYSTEM,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 9 — the rule list GREW (ops 7..9 and, HF-6
-         * slice 6a, 10 appended) and the state root composition changed
-         * (v5); the policy prices ops 1..10 (SYS_POLICY_MAX_OP_GST). The
-         * version did not advance for op 10 (khan decision A6) */
+        /* ruleset_version 9 — the rule list GREW (ops 7..9 appended) and
+         * the state root composition changed (v5); the policy prices ops
+         * 1..9 (SYS_POLICY_MAX_OP_GST). Op 10 (HF-6 slice 6a) was removed
+         * again by the khan (decision 2026-10-13-kurultay-18-summary.md
+         * item 1); the version bump that decision requires (item 3) is
+         * the next package's */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
         .ruleset_version = 9,
         .generation      = NODUS_RT_GEN_STORAGE,
@@ -1029,7 +1042,7 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .name = "SYSTEM",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
             .ruleset_version = 9,
-            .rule_count = 10, .rule_ids = SYS_RULES_GST,
+            .rule_count = 9, .rule_ids = SYS_RULES_GST,
             .tx_type_count = 6, .tx_types = SYS_TYPES
         },
         .admit = rt_admit_common,

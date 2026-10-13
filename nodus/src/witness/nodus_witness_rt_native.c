@@ -259,11 +259,12 @@
  * (rtn_sys_owner_auth, kind 1 or kind 3), on adapter ops 13 / 14 / 15;
  * HF-6 slice 4: STAKE takes the 7301-byte owner + node-consent layout
  * (owner_fp ‖ consensus_pk ‖ consent_sig ‖ expiry ‖ commission ‖ bond)
- * on adapter ops 7 / 13 / 17 (rtn_stake2_exec). HF-6 slice 6b:
- *   ROTATE_CONSENSUS_KEY (op 10, generation 4 only)
- *                     validator_id[64] ‖ new_pk[2592] ‖ consent_sig[4627]
- *                     ‖ consent_expiry u64                         = 7291
- * on adapter ops 13 / 17 (rtn_rotate2_exec); its funding leg is fee-only.
+ * on adapter ops 7 / 13 / 17 (rtn_stake2_exec). ROTATE_CONSENSUS_KEY
+ * (op 10) is NOT a call of any generation: the khan removed it from HF-6
+ * (decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md item
+ * 1) — no descriptor owns op 10, so admission refuses it like any unowned
+ * op, and no hook below decodes it. A consensus key is changed by
+ * UNSTAKE + a new STAKE under a fresh key.
  *
  * ⚠ DELIBERATELY DROPPED on V2 — the legacy VALIDATOR_UPDATE wire also
  * carried `signed_at_block[8 BE]` after the bps field (bft.c:1913,
@@ -946,16 +947,6 @@ _Static_assert(RTN_SYS_UNSTAKE_CALL_LEN == 2592u,
                "UNSTAKE call length drifted");
 _Static_assert(RTN_SYS_VUPD_CALL_LEN == 2594u,
                "VALIDATOR_UPDATE call length drifted");
-/** HF-6 slice 6b — ROTATE_CONSENSUS_KEY (op 10, generation 4 only;
- *  design rev 6 §2, layouts APPROVED K7): validator_id[64] ‖
- *  new_pk[2592] ‖ consent_sig[4627] ‖ consent_expiry u64 = 7291 bytes.
- *  Ten bytes shorter than the generation-4 STAKE (no commission, no
- *  bond), so the capacity derivation below does not move. */
-#define RTN_SYS_ROTATE_V2_CALL_LEN   ((uint32_t)DNA_VALBIND_ID_LEN +        \
-                                      (uint32_t)DNA_VALBIND_PUBKEY_LEN +    \
-                                      (uint32_t)DNA_VALBIND_SIG_LEN + 8u)
-_Static_assert(RTN_SYS_ROTATE_V2_CALL_LEN == 7291u,
-               "ROTATE call length drifted from design §2 (K7)");
 /** HF-6 slice 6b-1 — the storage record calls under generation 4 (design
  *  rev 6 §2 table and §11.3 / §11.5; layouts APPROVED, Kurultay #16 khan
  *  decision 1 "REGISTER 7299 / EXIT 64"), the only storage layouts any
@@ -985,7 +976,6 @@ _Static_assert(RTN_SYS_STAKE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_DELEGATE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_UNSTAKE_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_VUPD_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
-                   RTN_SYS_ROTATE_V2_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_STREG2_CALL_LEN < RTN_SYS_MAX_CALL_LEN &&
                    RTN_SYS_STEXIT2_CALL_LEN < RTN_SYS_MAX_CALL_LEN,
                "a validator-record or storage record call is no longer "
@@ -1312,39 +1302,6 @@ static int rtn_stake2_parse(const uint8_t *p, uint32_t len,
     return 0;
 }
 
-/* ── HF-6 slice 6b — ROTATE_CONSENSUS_KEY (op 10) under generation 4 ──
- * Design rev 6 §2 (K7): validator_id[64] ‖ new_pk[2592] ‖
- * consent_sig[4627] ‖ consent_expiry u64 = 7291 bytes, BE, EXACT length.
- * Framing only, the STAKE discipline: every rule (owner authority, the
- * status, the pending key, the reservation, consent, expiry) is the
- * exec's VERDICT; the CORE funding leg (rtn_sys_call_flow) decodes the
- * SAME bytes through this one function. */
-#define RTN_ROT2_VID_OFF       0u
-#define RTN_ROT2_PK_OFF        (RTN_ROT2_VID_OFF + 64u)
-#define RTN_ROT2_SIG_OFF       (RTN_ROT2_PK_OFF + (uint32_t)DNAC_PUBKEY_SIZE)
-#define RTN_ROT2_EXP_OFF       (RTN_ROT2_SIG_OFF + \
-                                (uint32_t)DNA_VALBIND_SIG_LEN)
-_Static_assert(RTN_ROT2_EXP_OFF + 8u == RTN_SYS_ROTATE_V2_CALL_LEN,
-               "ROTATE field offsets do not sum to the call");
-
-typedef struct {
-    const uint8_t *validator_id;         /* [64]                         */
-    const uint8_t *new_pk;               /* [DNAC_PUBKEY_SIZE]           */
-    const uint8_t *consent_sig;          /* [DNA_VALBIND_SIG_LEN]        */
-    uint64_t       consent_expiry;
-} rtn_rotate2_call_t;
-
-/** ROTATE (gen 4): exact length only. @return 0 / -1. */
-static int rtn_rotate2_parse(const uint8_t *p, uint32_t len,
-                             rtn_rotate2_call_t *c) {
-    if (len != RTN_SYS_ROTATE_V2_CALL_LEN) return -1;
-    c->validator_id   = p + RTN_ROT2_VID_OFF;
-    c->new_pk         = p + RTN_ROT2_PK_OFF;
-    c->consent_sig    = p + RTN_ROT2_SIG_OFF;
-    c->consent_expiry = rtn_get64(p + RTN_ROT2_EXP_OFF);
-    return 0;
-}
-
 /** Is `generation` the HF-6 generation or later (the gen-4 call layouts,
  *  owner authority, ops 13-15)? NODUS_RT_GEN_STORAGE IS the HF-6
  *  generation (design §8: one generation 4). */
@@ -1357,12 +1314,10 @@ static int rtn_gen_roles(uint32_t generation) {
  *  validator-record op and shares the family's whole envelope contract —
  *  the 2-leg shape, the CORE funding sibling (fee-only, lock = release =
  *  0) and, under generations 1-3, the one-signer call-identity authority
- *  rule. HF-6 slice 6b: ROTATE_CONSENSUS_KEY (10) joins the family (design
- *  rev 6 §2: "rtn_sys_is_stake_op aralık değil, açık küme olur") — an
- *  EXPLICIT set, because 6..9 (CHAIN_CONFIG, the storage ops) sit between
- *  5 and 10 and are not members. Op 10 is owned only by generation 4, so
- *  its membership never widens what generations 1-3 accept (admission
- *  refuses it there; rtn_sys_call_flow refuses it below generation 4). */
+ *  rule. An EXPLICIT set: ROTATE_CONSENSUS_KEY (10), which joined it in
+ *  HF-6 slice 6b, was removed from HF-6 by the khan (decision
+ *  2026-10-13-kurultay-18-summary.md item 1) and is no member — no
+ *  generation owns op 10. */
 static int rtn_sys_is_stake_op(uint32_t op) {
     switch (op) {
     case DNA_SYSRULE_STAKE:
@@ -1370,7 +1325,6 @@ static int rtn_sys_is_stake_op(uint32_t op) {
     case DNA_SYSRULE_UNSTAKE:
     case DNA_SYSRULE_UNDELEGATE:
     case DNA_SYSRULE_VALIDATOR_UPDATE:
-    case DNA_SYSRULE_ROTATE_CONSENSUS_KEY:
         return 1;
     default:
         return 0;
@@ -1529,8 +1483,6 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
  *               lock = 0         release = 0  (O12 S1: a commission
  *               change moves NO value at all — the funding leg exists
  *               only to pay the fee, exactly the UNSTAKE lock=0 side)
- *   ROTATE_CONSENSUS_KEY (generation 4 only, HF-6 slice 6b)
- *               lock = 0         release = 0  (khan decision A4)
  *   STORAGE_REGISTER (generation 4 only; layout HF-6 slice 6b-1)
  *               lock = bond      release = 0
  *   STORAGE_EXIT (generation 4 only; layout HF-6 slice 6b-1)
@@ -1543,10 +1495,9 @@ static int rtn_sys_call_identity(uint32_t op, const uint8_t *p,
  * generation-4 layout (rtn_stake2_parse) — lock = the call's bond, the
  * legacy flow (design §1.5: the bond is the call's bond field; anything
  * above it is a separate self-delegation). Generations 1-3 decode exactly
- * as before. HF-6 slice 6b: ROTATE_CONSENSUS_KEY (10) decodes its
- * 7291-byte layout under generation 4 only — lock = release = 0 (khan
- * decision A4); below generation 4 it is a foreign op (-1, the legacy
- * switch's default). HF-6 slice 6b-1: the storage ops decode their
+ * as before. ROTATE_CONSENSUS_KEY (10) is a foreign op under every
+ * generation (-1, the default — removed from HF-6, decision
+ * 2026-10-13-kurultay-18-summary.md item 1). HF-6 slice 6b-1: the storage ops decode their
  * 7299 / 64-byte layouts under generation 4 only — the storage-reward-v1
  * node-key arms of the legacy switch are gone (unreachable: the ops are
  * owned only by generation 4, and rtn_sysfund_shape refuses the pairing
@@ -1585,13 +1536,6 @@ static int rtn_sys_call_flow(uint32_t op, const uint8_t *p, uint32_t len,
         case DNA_SYSRULE_VALIDATOR_UPDATE: {
             rtn_vupd2_call_t c;
             return rtn_vupd_parse_v2(p, len, &c);        /* fee-only     */
-        }
-        case DNA_SYSRULE_ROTATE_CONSENSUS_KEY: {
-            /* HF-6 slice 6b — khan decision A4 (2026-10-12): a key
-             * change moves NO value; the funding leg pays the fee only
-             * (lock = release = 0, the UNSTAKE / VALIDATOR_UPDATE shape) */
-            rtn_rotate2_call_t c;
-            return rtn_rotate2_parse(p, len, &c);        /* fee-only     */
         }
         /* storage reward v1 (design rev 2.2 §1), layouts HF-6 slice 6b-1:
          * REGISTER locks the bond (utxo -> the storage bond bucket, the
@@ -1738,7 +1682,7 @@ static int rtn_sys_stake_auth(const dna_env_view_t *env, uint16_t leg_index,
  *   UNSTAKE / VALIDATOR_UPDATE
  *                          the committed row's owner_fp (decided AFTER the
  *                          mediated read that observed the row).
- * Slice 4 / 6b added STAKE and ROTATE; slice 6b-1 the storage ops (design
+ * Slice 4 added STAKE; slice 6b-1 the storage ops (design
  * rev 6 §11.3 / §11.5): STORAGE_REGISTER against the call's owner_fp
  * (before any read), STORAGE_EXIT against the registry row's owner_fp
  * (after the read).
@@ -2197,19 +2141,15 @@ static int rtn_sysfund_parse(const dna_env_view_t *env, uint16_t leg,
  * The exec and read-plan callers pass their runtime's generation
  * (rtn_gen_of); the read-only describer passes the generation the APPLIED
  * leg's call bytes prove (rtn_sys_call_gen_of) — it re-judges nothing.
- *
- * HF-6 slice 6b: ROTATE_CONSENSUS_KEY (10) is a member of the
- * validator-record set but exists only under generation 4, so its pairing
- * is refused below it (the storage-op precedent above) — the hook-side
- * second line behind admission (rt_owns_runtime_op).
+ * ROTATE_CONSENSUS_KEY (10) is no member of either set (removed from HF-6,
+ * decision 2026-10-13-kurultay-18-summary.md item 1), so its pairing is
+ * refused under every generation.
  * @return 0 / -1. */
 static int rtn_sysfund_shape(const dna_env_view_t *env, uint16_t leg_index,
                              uint32_t generation) {
     if (env->leg_count != 2 || leg_index != 1) return -1;
     if (env->leg[0].domain_id != DNA_DOMAIN_SYSTEM) return -1;
-    if (rtn_sys_is_stake_op(env->leg[0].runtime_op))
-        return (env->leg[0].runtime_op != DNA_SYSRULE_ROTATE_CONSENSUS_KEY ||
-                generation >= NODUS_RT_GEN_STORAGE) ? 0 : -1;
+    if (rtn_sys_is_stake_op(env->leg[0].runtime_op)) return 0;
     if (generation >= NODUS_RT_GEN_STORAGE &&
         rtn_sys_is_storage_op(env->leg[0].runtime_op))
         return 0;
@@ -2219,9 +2159,8 @@ static int rtn_sysfund_shape(const dna_env_view_t *env, uint16_t leg_index,
 /* The generation an APPLIED SYSTEM record leg's call bytes prove, for the
  * read-only describer, which holds no runtime (HF-6 3c): ops 1..5 at a
  * generation-4 length (design §2 — 7301 / 136 / 64 / 66, disjoint from
- * every legacy length; STAKE since slice 4), the storage record ops and
- * ROTATE_CONSENSUS_KEY (slice 6b) (which exist only from
- * NODUS_RT_GEN_STORAGE) read as
+ * every legacy length; STAKE since slice 4) and the storage record ops
+ * (which exist only from NODUS_RT_GEN_STORAGE) read as
  * NODUS_RT_GEN_STORAGE; everything else as the last pre-HF-6 generation,
  * NODUS_RT_GEN_EVM. A function of the applied bytes alone; it decides no
  * validity (the leg already applied). */
@@ -2242,7 +2181,6 @@ static uint32_t rtn_sys_call_gen_of(uint32_t op, uint32_t len) {
                                                : NODUS_RT_GEN_EVM;
     case DNA_SYSRULE_STORAGE_REGISTER:
     case DNA_SYSRULE_STORAGE_EXIT:
-    case DNA_SYSRULE_ROTATE_CONSENSUS_KEY:   /* HF-6 6b: gen 4 only    */
         return NODUS_RT_GEN_STORAGE;
     default:
         return NODUS_RT_GEN_EVM;
@@ -4636,12 +4574,14 @@ const nodus_domain_adapter_t NODUS_RT_CORE_ADAPTER = {
 /* HF-6 slice 4 (design rev 6 §4 "Tekillik"): the consensus-key
  * reservation — the ONE table whose unique key column makes "a consensus
  * key appears at most once" a primary-key fact (v2_consensus_keys,
- * nodus_witness_validator.h). STAKE (and ROTATE, slice 6) read it through
- * this MEDIATED read ("Exec'te DB yok") and STAKE CREATEs its row behind an
- * ABSENT precondition. The graduation releases it by direct SQL at the
- * boundary (nodus_validator_v2_key_release — the attendance / balance-copy
- * precedent: boundary work is not an effect). Key = SHA3-512(consensus
- * pubkey), UNTAGGED (64); value = validator_id[64] ‖ role u8 (65).
+ * nodus_witness_validator.h). STAKE reads it through this MEDIATED read
+ * ("Exec'te DB yok") and CREATEs its row behind an ABSENT precondition.
+ * Nothing ever releases a row: the index is PERMANENT and append-only — a
+ * consensus key that ever appeared in a validators row (any status,
+ * UNSTAKED included) can never be STAKEd again (khan decision,
+ * docs/plans/decisions/2026-10-13-kurultay-18-summary.md items 1 and 4).
+ * Key = SHA3-512(consensus pubkey), UNTAGGED (64); value =
+ * validator_id[64] ‖ role u8 (65), role always 1.
  * Appended after the last used id (16); ids 1 and 3 stay frozen. */
 #define RTN_SYS_OP_KEYRES    17u /* CREATE + read: v2_consensus_keys row */
 
@@ -5904,204 +5844,6 @@ static int rtn_stake2_exec(const dna_env_view_t *env, uint16_t leg_index,
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * SYSTEM — HF-6 slice 6b: ROTATE_CONSENSUS_KEY (op 10), generation 4
- *
- * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
- * §2 (call + the consent re-construction contract), §3 (rotation; the
- * khan decisions of 2026-10-12 under its bullets), §4 (key uniqueness),
- * §6.1 (consent bytes, ctx, expiry rule), §6.3 (row); decision
- * 2026-10-08-kurultay-14-hf6-summary.md K7; plan tasks/hf6-slice6-plan.md
- * §1.1, §2 "6b".
- *
- * The exec checks authority, state, uniqueness and consent and promises
- * NO date (§3 "Exec yalnız yetki, consent ve tekillik kontrolü yapar …
- * geçiş tarihi vaat etmez"): acceptance is decided at the freeze by the
- * rotation budget (slice 6d), which this hook neither reads nor
- * anticipates. Rules, in order:
- *   - the 2-leg shape and the exact 7291-byte call (framing, -1);
- *   - the row (VAL2, op 13) must exist — authority is the COMMITTED
- *     row's owner_fp (rtn_sys_owner_auth, kind 1 or kind 3; kind 2
- *     refused), decided AFTER the read;
- *   - status ACTIVE or ELIGIBLE (khan decision A5: RETIRING and UNSTAKED
- *     refused — a RETIRING row is never a candidate again, so its
- *     rotation could never be accepted);
- *   - no pending key (§3 "Bekleyen rotasyonu olan validator için yeni
- *     ROTATE reddedilir");
- *   - new_pk != the row's current key, then the reservation (KEYRES, op
- *     17) absent — a key reserved by ANY validator in ANY role (active
- *     1 / pending 2) refuses (§4; plan §1.9);
- *   - consent: expiry window dna_valbind_expiry_ok (the STAKE rule,
- *     expiry >= h && expiry - h <= 720), then the §6.1 message rebuilt
- *     here — version 1, chain = ctx->chain_id, op DNA_VALBIND_OP_ROTATE
- *     (2, NOT runtime_op 10 — §2), subject = the call's validator_id,
- *     owner_fp = the COMMITTED row's, key = the call's new_pk, expiry
- *     from the call — verified under new_pk with ctx "nodus.valbind.v1";
- *   - the sibling CORE SYSFUND call well formed (fee-only, A4).
- * Effects, canonical order (kind-major, then op id): CREATE KEYRES (17)
- * SHA3-512(new_pk) -> validator_id ‖ role 2 (pending) behind ABSENT, then
- * SET VAL2 (13) behind EXISTS_VHASH with pending_consensus_pubkey :=
- * new_pk and consensus_key_effective_epoch := F, the first epoch boundary
- * >= the commit height (khan decision A1: "the first evaluation
- * boundary"; "zero key ⇔ epoch 0" unchanged — F >= E > 0 for every
- * height >= 1). Nothing else in the row moves (no Rule K stamp: this is
- * not a VALIDATOR_UPDATE).
- * ════════════════════════════════════════════════════════════════════ */
-
-/* Defined with the SYSTEM adapter below. */
-static int rtn_all_zero(const uint8_t *p, size_t n);
-
-/* F = the first epoch boundary >= h: h itself when h is a boundary, else
- * ceil(h / E) · E (nodus_v2_power_exit_boundary's nb(h), v2_epoch.c — a
- * hook cannot call a witness module). The caller has bounded h by
- * INT64_MAX, so ceil(h / E) · E <= h + E - 1 < 2^64: no wrap. */
-static uint64_t rtn_rotate2_first_boundary(uint64_t h) {
-    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    if ((h % E) == 0) return h;
-    return (h / E + 1) * E;
-}
-
-/* ROTATE (gen 4) read plan: [VAL2(13, validator_id)] [KEYRES(17,
- * SHA3-512(new_pk))] — ascending (op_id, key) by construction (13 < 17). */
-static int rtn_rotate2_read_plan(const dna_env_view_t *env,
-                                 uint16_t leg_index,
-                                 nodus_rt_read_req_t *reqs_out,
-                                 uint16_t max_reqs, uint16_t *n_out) {
-    rtn_rotate2_call_t c;
-    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
-    if (rtn_rotate2_parse(env->buf + env->call_off[leg_index],
-                          env->leg[leg_index].call_len, &c) != 0)
-        return -1;
-    if (max_reqs < 2) return -1;
-    uint8_t kh[RTN_KEYRES_KEY_LEN];
-    if (qgp_sha3_512(c.new_pk, DNAC_PUBKEY_SIZE, kh) != 0)
-        return -2;                       /* hash backend: NODE fault     */
-    rtn_req_set(&reqs_out[0], RTN_SYS_OP_VAL2, c.validator_id,
-                (uint16_t)RTN_VAL2_KEY_LEN);
-    rtn_req_set(&reqs_out[1], RTN_SYS_OP_KEYRES, kh,
-                (uint16_t)RTN_KEYRES_KEY_LEN);
-    *n_out = 2;
-    return 0;
-}
-
-/** ROTATE (gen 4) — contract in the section header above.
- *  @return 0 / -1 verdict / -2 node fault. */
-static int rtn_rotate2_exec(const dna_env_view_t *env, uint16_t leg_index,
-                            const nodus_rt_exec_ctx_t *ctx,
-                            const nodus_rt_read_res_t *reads,
-                            uint16_t n_reads,
-                            uint8_t *res_out, size_t res_cap,
-                            size_t *res_len_out) {
-    rtn_rotate2_call_t c;
-    if (rtn_sys_stake_shape(env, leg_index) != 0) return -1;
-    if (rtn_rotate2_parse(env->buf + env->call_off[leg_index],
-                          env->leg[leg_index].call_len, &c) != 0)
-        return -1;
-    const uint64_t H = ctx->global_height;
-    if (H > (uint64_t)INT64_MAX) return -1;   /* the storage bound, as a
-                                          * VERDICT (rtn_vupd_exec)      */
-
-    /* ── mediated reads (the plan's order: VAL2, KEYRES) ────────────── */
-    if (!reads || n_reads != 2) return -2;
-    const nodus_rt_read_res_t *vr = &reads[0], *kr = &reads[1];
-    {
-        int o = rtn_val2_observed(vr, c.validator_id);
-        if (o < 0) return o;
-        if (o == 0) return -1;           /* unknown validator            */
-    }
-    if (!rtn_val2_rec_ok(vr->value, c.validator_id)) return -1;
-
-    /* ── authority: the COMMITTED row's owner (§1.3, §2) ────────────── */
-    const uint8_t *owner_fp = vr->value + RTN_VAL2_OWNER_OFF;
-    if (rtn_sys_owner_auth(env, leg_index, ctx, owner_fp) != 0)
-        return -1;                       /* not the owner                */
-
-    /* ── state ──────────────────────────────────────────────────────── */
-    {
-        uint8_t st = vr->value[RTN_VAL2_STATUS_OFF];
-        if (st != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
-            st != (uint8_t)DNAC_VALIDATOR_ELIGIBLE)
-            return -1;                   /* A5: not bonded               */
-    }
-    if (!rtn_all_zero(vr->value + RTN_VAL2_PPK_OFF, DNAC_PUBKEY_SIZE))
-        return -1;                       /* §3: a rotation is pending    */
-
-    /* ── uniqueness (§4) ────────────────────────────────────────────── */
-    if (memcmp(c.new_pk, vr->value + RTN_VAL2_CPK_OFF,
-               DNAC_PUBKEY_SIZE) == 0)
-        return -1;                       /* the row's own current key    */
-    if (kr->present) {
-        if (kr->value_len != RTN_KEYRES_REC_LEN) return -2;   /* own
-                                          * adapter out of contract      */
-        return -1;                       /* reserved by a validator,
-                                          * active or pending            */
-    }
-
-    /* ── node consent (§2 re-construction, §6.1) ─────────────────────── */
-    if (!dna_valbind_expiry_ok(H, c.consent_expiry))
-        return -1;                       /* expired, or > 720 ahead      */
-    if (!ctx->chain_id) return -2;
-    {
-        uint8_t msg[DNA_VALBIND_MSG_LEN];
-        if (dna_valbind_consent_msg(msg, ctx->chain_id,
-                                    DNA_VALBIND_OP_ROTATE, c.validator_id,
-                                    owner_fp, c.new_pk,
-                                    c.consent_expiry) != 0)
-            return -2;                   /* every argument is well formed
-                                          * by construction (the subject
-                                          * is a row's non-zero id —
-                                          * rtn_val2_rec_ok): a refusal
-                                          * is this node's codec broken  */
-        if (dna_valbind_consent_verify(c.consent_sig, DNA_VALBIND_SIG_LEN,
-                                       msg) != 0)
-            return -1;                   /* no consent from new_pk for
-                                          * this validator / owner /
-                                          * chain / op / expiry          */
-    }
-
-    /* ── the SIBLING funding leg must be a well-formed SYSFUND call ─── */
-    {
-        rtn_spend_call_t fc;
-        if (rtn_sysfund_parse(env, 1, &fc) != 0) return -1;
-    }
-
-    /* ── the new row: pending key + F, nothing else ─────────────────── */
-    uint8_t vnew[RTN_VAL2_REC_LEN];
-    memcpy(vnew, vr->value, RTN_VAL2_REC_LEN);
-    memcpy(vnew + RTN_VAL2_PPK_OFF, c.new_pk, DNAC_PUBKEY_SIZE);
-    rtn_put64(vnew + RTN_VAL2_KEFF_OFF, rtn_rotate2_first_boundary(H));
-    if (!rtn_val2_rec_ok(vnew, c.validator_id))
-        return -1;                       /* F above INT64_MAX, or h = 0
-                                          * (F = 0 with a key: the mixed
-                                          * encoding §6.3 forbids)       */
-
-    uint8_t kh[RTN_KEYRES_KEY_LEN];
-    if (qgp_sha3_512(c.new_pk, DNAC_PUBKEY_SIZE, kh) != 0) return -2;
-    uint8_t kval[RTN_KEYRES_REC_LEN];
-    memcpy(kval + RTN_KEYRES_VID_OFF, c.validator_id, 64);
-    kval[RTN_KEYRES_ROLE_OFF] = (uint8_t)NODUS_V2_KEY_ROLE_PENDING;
-
-    /* ── effects, canonical order (kind-major, then op id): CREATE
-     *    KEYRES (17), SET VAL2 (13) ─────────────────────────────────── */
-    dna_effect_in_t effs[2];
-    memset(effs, 0, sizeof(effs));
-    effs[0].hdr.op_id = RTN_SYS_OP_KEYRES;
-    effs[0].hdr.effect_kind = DNA_EFFECT_CREATE;
-    effs[0].hdr.precond_tag = DNA_EFFECT_PRE_ABSENT;   /* §4 backstop     */
-    effs[0].hdr.key_len = (uint16_t)RTN_KEYRES_KEY_LEN;
-    effs[0].hdr.value_len = RTN_KEYRES_REC_LEN;
-    effs[0].key = kh;
-    effs[0].value = kval;
-    if (rtn_row_set_eff(&effs[1], RTN_SYS_OP_VAL2, vr, RTN_VAL2_REC_LEN,
-                        c.validator_id, (uint16_t)RTN_VAL2_KEY_LEN,
-                        vnew) != 0)
-        return -2;
-    if (dna_effect_result_encode(effs, 2, res_out, res_cap,
-                                 res_len_out) != 0)
-        return -2;
-    return 0;
-}
-
-/* ══════════════════════════════════════════════════════════════════════
  * SYSTEM — STORAGE_REGISTER (op 7) / STORAGE_EXIT (op 8) — storage
  * reward v1 package B1, under the HF-6 owner/node split (slice 6b-1).
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
@@ -6647,8 +6389,9 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
     }
     /* HF-6 sub-slice 3c: under the HF-6 generation ops 1..5 plan through
      * the generation-4 arms only (ops 13/14/15, + 16 under the HF-8 gate);
-     * slice 4: STAKE plans ops 7 / 13 / 17; slice 6b: ROTATE (op 10,
-     * generation 4 only) plans ops 13 / 17. */
+     * slice 4: STAKE plans ops 7 / 13 / 17. Op 10 plans nothing in any
+     * generation (removed from HF-6, decision
+     * 2026-10-13-kurultay-18-summary.md item 1). */
     if (rtn_gen_roles(rtn_gen_of(rt))) {
         switch (env->leg[leg_index].runtime_op) {
         case DNA_SYSRULE_STAKE:
@@ -6665,10 +6408,6 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
         case DNA_SYSRULE_VALIDATOR_UPDATE:
             return rtn_val2_only_read_plan(env, leg_index, reqs_out,
                                            max_reqs, n_out);
-        case DNA_SYSRULE_ROTATE_CONSENSUS_KEY:
-            /* slice 6b: ops 13 / 17 */
-            return rtn_rotate2_read_plan(env, leg_index, reqs_out,
-                                         max_reqs, n_out);
         default:
             break;                       /* CHAIN_CONFIG: below          */
         }
@@ -7668,8 +7407,10 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         break;
     }
     /* HF-6 sub-slice 3c: under the HF-6 generation ops 1..5 execute
-     * through the generation-4 arms only (slice 4: STAKE too; slice 6b:
-     * ROTATE, op 10, exists only here).
+     * through the generation-4 arms only (slice 4: STAKE too). Op 10
+     * (ROTATE_CONSENSUS_KEY, removed from HF-6 — decision
+     * 2026-10-13-kurultay-18-summary.md item 1) has no arm in any
+     * generation: it falls to the un-migrated-op default (-1).
      * Generations 1-3 fall through to the legacy execs unchanged. */
     if (rtn_gen_roles(rtn_gen_of(rt))) {
         switch (env->leg[leg_index].runtime_op) {
@@ -7688,11 +7429,6 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         case DNA_SYSRULE_VALIDATOR_UPDATE:
             return rtn_vupd2_exec(env, leg_index, ctx, reads, n_reads,
                                   res_out, res_cap, res_len_out);
-        case DNA_SYSRULE_ROTATE_CONSENSUS_KEY:
-            /* slice 6b — generation 4 only: below it op 10 falls to the
-             * un-migrated-op default (-1) */
-            return rtn_rotate2_exec(env, leg_index, ctx, reads, n_reads,
-                                    res_out, res_cap, res_len_out);
         default:
             break;                       /* CHAIN_CONFIG: below          */
         }
@@ -9812,20 +9548,6 @@ static int rtn_desc_system(const dna_env_view_t *env, uint16_t leg,
             out->rec_v2 = 1;
             out->rec_commission_bps = c.new_commission_bps;
             out->rec = NODUS_RT_DESC_REC_VALIDATOR_UPDATE;
-            return 0;
-        }
-        case DNA_SYSRULE_ROTATE_CONSENSUS_KEY: {
-            /* HF-6 slice 6b — an APPLIED ROTATE is DESCRIBED (its call
-             * parses; the CORE sibling's input and fee are described by
-             * the SYSFUND case) but writes no record kind: rec stays
-             * NODUS_RT_DESC_REC_NONE — the storage-op reason below: the
-             * address index fails the block when an applied leg cannot be
-             * described, and a rotation record kind on the scan-v3 wire is
-             * the RPC slice's (design §9, slice 7). */
-            rtn_rotate2_call_t c;
-            if (rtn_sys_stake_shape(env, leg) != 0) return -1;
-            if (rtn_rotate2_parse(p, len, &c) != 0) return -1;
-            out->rec = NODUS_RT_DESC_REC_NONE;
             return 0;
         }
         /* storage reward v1 (package B1), layouts HF-6 slice 6b-1: an

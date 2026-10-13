@@ -111,15 +111,15 @@ extern "C" {
  *  rev 6 §2, §3; decision docs/plans/decisions/2026-10-08-kurultay-14-
  *  hf6-summary.md K7): ROTATE_CONSENSUS_KEY — the next free SYSTEM rule
  *  id after the storage ops (TRANSFER_OWNER keeps 11 reserved, K3).
- *  Owned by the generation-4 SYSTEM descriptor only (earlier generations
- *  do not own it, so admission refuses it there) and priced by its policy
- *  (no other domain names op 10). Its consent op byte is 2, NOT 10
- *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — design §2: the
- *  mapping is written explicitly in code). Executes under generation 4
- *  only (sub-slice 6b, nodus_witness_rt_native.c rtn_rotate2_exec: owner
- *  authority, state, key reservation and node consent; writes the
- *  pending key and its first evaluation boundary — the switch itself is
- *  the boundary's, slices 6c/6d). */
+ *  RETIRED (khan decision docs/plans/decisions/2026-10-13-kurultay-18-
+ *  summary.md item 1: HF-6 has no key rotation — a key is changed by
+ *  UNSTAKE + a new STAKE under a fresh key, and a key once used is burned
+ *  for good): NO generation owns or prices op 10, so admission refuses it
+ *  like any unowned op, and no SYSTEM hook decodes it. The id stays
+ *  reserved (never reused) because client code still names it until the
+ *  next package removes the client builders. Its consent op byte was 2
+ *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — the shared codec
+ *  keeps the constant; the chain accepts no op-2 consent). */
 #define DNA_SYSRULE_ROTATE_CONSENSUS_KEY ((uint32_t)10)
 
 #define DNA_CORERULE_SPEND           ((uint32_t)1)
