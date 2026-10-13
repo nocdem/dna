@@ -814,6 +814,26 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
         }
     }
 
+    /* HF-6 red-team round 1 close-out: dnac_storage_by_owner reads
+     * v2_storage_nodes WHERE payee_fp = ?1 (nodus_witness_handlers.c) —
+     * without an index, a full scan per query. NODE-LOCAL: an index is its
+     * own sqlite_master row (type 'index'), so the per-open shape check
+     * above (type 'table' only) is untouched; no consensus reader depends
+     * on it — the registry root and every other reader name ORDER BY
+     * node_fp explicitly (nodus_witness_roots_v2.c), so the index changes
+     * no row and no order, only the plan. Idempotent on every open, like
+     * the schema exec above. */
+    rc = sqlite3_exec(witness->db,
+                      "CREATE INDEX IF NOT EXISTS idx_v2_storage_nodes_payee "
+                      "ON v2_storage_nodes(payee_fp);", NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_storage_nodes payee_fp index failed: %s",
+                      err_msg ? err_msg : "?");
+        sqlite3_free(err_msg);
+        witness_db_open_fail(witness);
+        return rc;
+    }
+
     /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent; aborts on
      * unrecoverable error. */
     nodus_witness_db_migrate_v12(witness);
