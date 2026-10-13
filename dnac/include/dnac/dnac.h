@@ -1307,9 +1307,15 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  printed by nodus/tests/integration/stagef/stagef_hf6_owner.sh from
  *  hf6_vote_oracle.py --owner <fp>. A build that overrides one and not the
  *  other refuses to start (the selfcheck row). Production builds never
- *  define it. */
+ *  define it.
+ *
+ *  HF-6 D2 (khan decision docs/plans/decisions/2026-10-13-kurultay-18-
+ *  summary.md items 1 and 3): the generation-4 pins moved (SYSTEM v10
+ *  rules {1..9}, CORE v8), so D4 moved with them; the preimage layout
+ *  above is unchanged. The previous value 0x4dc61072d5982acd (SYSTEM v9
+ *  {1..10} / CORE v7) never activated and is dead. */
 #ifndef DNAC_CFG_RULESET_GEN_ROLES_D
-#define DNAC_CFG_RULESET_GEN_ROLES_D     0x4dc61072d5982acdULL /* D4 of shared/dnac/tests/hf6_vote_oracle.py, owner K8 (5604184871704996557) */
+#define DNAC_CFG_RULESET_GEN_ROLES_D     0x5922111a3501f58bULL /* D4 of shared/dnac/tests/hf6_vote_oracle.py, owner K8 (6422714822839891339) */
 #endif
 
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:

@@ -60,7 +60,6 @@ typedef struct {
     uint8_t *pk;               /* MG_PK bytes, owned                    */
     int      foundation;       /* active_since_block <= 1 (D2 (a))      */
     int      bonded;           /* ACTIVE or ELIGIBLE                    */
-    int      unstaked;         /* UNSTAKED: graduated, no reservation   */
     uint64_t self_stake, total_delegated, external_delegated;  /* to write */
     uint64_t read_self_stake, read_total_delegated;            /* as read  */
 } mg_val_t;
@@ -277,7 +276,6 @@ static int mg_read_validators(nodus_witness_t *w, mg_t *m,
         memcpy(v.owner, v.foundation ? foundation_fp : v.fp, MG_KEY);
         v.bonded = (status == DNAC_VALIDATOR_ACTIVE ||
                     status == DNAC_VALIDATOR_ELIGIBLE);
-        v.unstaked = (status == DNAC_VALIDATOR_UNSTAKED);
         if (v.bonded) {
             /* design §7.2: 10M → 2M bond + 8M self-delegation; the exact
              * 10M is what every STAKE and the genesis wrote
@@ -783,7 +781,8 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
     st = NULL;
 
     /* v2_validator_roles: (validator_id, owner_fp, 2592 × 0x00, 0) — the
-     * one "no pending key" encoding (design §6.3) */
+     * pending fields are always zero (design §6.3 bytes; khan decision
+     * 2026-10-13-kurultay-18-summary.md item 4) */
     if (sqlite3_prepare_v2(w->db,
             "INSERT INTO v2_validator_roles (validator_id, owner_fp, "
             "pending_consensus_pubkey, consensus_key_effective_epoch) "
@@ -804,21 +803,21 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
     sqlite3_finalize(st);
     st = NULL;
 
-    /* HF-6 slice 4 (design rev 6 §4) — v2_consensus_keys: one role-1
-     * reservation (SHA3-512(pk), validator_id) per migrated row that has
-     * NOT graduated. An UNSTAKED row already left the bonded/exiting
-     * lifecycle (its graduation would have released the key, §4 last
-     * sentence), so it holds none: at the edge the table is exactly
-     * "role 1 = every validators row whose status is not UNSTAKED" (no
-     * row holds a pending or previous key yet — ROTATE is generation 4;
-     * the full rule, with role 2 and the khan-A2 previous keys, is in
-     * nodus_witness_validator.h and is checked at every boundary by
-     * nodus_witness_v2_keyres_diff). Visited in SHA3-512(pk) ASC
-     * (m.by_fp — the table's own key order); the keys are distinct
-     * (checked in mg_read_validators). */
+    /* HF-6 (design rev 6 §4; khan decision docs/plans/decisions/
+     * 2026-10-13-kurultay-18-summary.md items 1 and 4) — v2_consensus_keys
+     * is a PERMANENT index: one role-1 reservation (SHA3-512(pk),
+     * validator_id) per migrated row of ANY status, UNSTAKED included —
+     * a key that ever appeared in a validators row is never usable
+     * again, so a pre-HF-6 retired key cannot be STAKEd anew after the
+     * edge. (Until 2026-10-13 the edge skipped UNSTAKED rows, whose
+     * graduation had released their key.) At the edge the table is
+     * exactly "one role-1 row per validators row" — the rule
+     * nodus_witness_validator.h states and every generation-4 boundary
+     * checks (nodus_witness_v2_keyres_diff). Visited in SHA3-512(pk) ASC
+     * (m.by_fp — the table's own key order); the keys are distinct over
+     * every row (checked in mg_read_validators). */
     for (size_t k = 0; k < m.nv; k++) {
         const mg_val_t *v = &m.v[m.by_fp[k].idx];
-        if (v->unstaked) continue;
         if (nodus_validator_v2_key_insert(w, v->fp, v->vid,
                                           (uint8_t)NODUS_V2_KEY_ROLE_ACTIVE)
             != 0) {
@@ -944,7 +943,8 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
     }
 
     QGP_LOG_INFO(LOG_TAG, "HF-6 migration: %zu validators re-keyed (%zu "
-                 "Foundation-owned), %zu consensus keys reserved, %zu "
+                 "Foundation-owned), %zu consensus keys reserved (one per "
+                 "validators row, every status), %zu "
                  "delegations (%zu before), %zu balance-copy rows, %zu "
                  "accrual rows merged into the Foundation owner", m.nv,
                  n_found, n_keys, m.nd, m.nd_old, m.nc, n_src);

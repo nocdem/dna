@@ -13,14 +13,11 @@
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_runtime.h"   /* HF-6 5d: NODUS_RT_GEN_*  */
-#include "witness/nodus_witness_v2_epoch.h"  /* HF-6 6d: S(F) authority  */
-#include "witness/nodus_witness_v2_claims.h" /* HF-6 6d: v2 chain id     */
 #include "nodus/nodus_chain_config.h"
 #include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT        */
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
 #include "dnac/power_cap.h"                 /* HF-6 5b: the water-fill  */
-#include "dnac/valbind_wire.h"              /* HF-6 6d: migrated id     */
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
@@ -403,398 +400,11 @@ int nodus_witness_vset_entry_from_member(const nodus_committee_member_t *m,
     return 0;
 }
 
-/* ── HF-6 slice 6d: the rotation pass of the freeze ──────────────────
- *
- * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
- * §3 and the khan decisions written under it (2026-10-12: A1, A2, A3);
- * plan tasks/hf6-slice6-plan.md §1.2, §2 "6d", B1.
- *
- * The snapshot being built is S(U), U = snap->epoch, frozen at boundary
- * F = U − E (commit_next and Rule N's preview both reach here with
- * U = F + E). The candidates are the v2_validator_roles rows carrying a
- * pending key whose consensus_key_effective_epoch is <= F — the ROTATE
- * exec writes the first boundary >= its commit height (A1), so a ROTATE
- * committed IN block F is a candidate at F ("F'de commit edilen ROTATE
- * dahildir"). They are read by ONE statement in validator_id ASC (the
- * table's primary key — B1: the committee member struct is not widened).
- * A pending row with an effective epoch above F cannot exist at the
- * freeze of F (it would need a ROTATE committed after block F, whose
- * items precede this boundary step), so the filter only states the rule;
- * an epoch of 0 beside a pending key is the mixed encoding every row
- * reader refuses, and is refused here too.
- *
- * NO CANDIDATE ⇒ return before anything else is read: no power helper,
- * no S(F). The no-rotation build is then byte-identical AND
- * fault-identical to the pre-6d builder (which never called the helper —
- * a zero-power or ratio-seam refusal must not become a new freeze fault
- * on a chain with no pending row; plan §4).
- *
- * With candidates, the walk (validator_id ASC) accepts candidate c iff
- * the accumulated party (the candidates already accepted, plus c)
- * satisfies, in BOTH sets, each with its own COUNTED powers from THE ONE
- * helper nodus_witness_vset_powers (ruleset 1 ⇒ raw, ruleset 2 ⇒ capped):
- *     P − R > floor(2P/3)     written   P − (R + p) > P * 2 / 3
- * — the integer form of the design ("R ≤ floor((P−1)/3)"; tam 1/3
- * güvensiz: the quorum is total*2/3+1, shared/dnac/cmt_vote_set.c:509,
- * the same form as Rule N's floor, nodus_witness_v2_epoch.c
- * v2ep_rn_weight_verdict) — over
- *   - the SUCCESSOR S(U): this snapshot, provisional (every entry still
- *     under its current key — a power never depends on the key, the helper
- *     reads total_stake and validator_id only);
- *   - the PREDECESSOR S(F): the stored snapshot that governs from F,
- *     through the authority resolver (absent / unreadable ⇒ FAULT).
- * Locating c: in S(U) by validator_id (absent ⇒ it is not seated in the
- * successor: it WAITS — design "ardıl sette olmayan bekler"); in S(F) by
- * validator_id (ruleset 2) or by dna_validator_id_migrated(chain id, entry
- * pubkey) (ruleset 1 — the bridge every generation-4 reader uses; only
- * the first generation-4 freeze can see a v1 S(F), and a v1 entry names a
- * pre-HF-6 row whose id IS the migrated id of that key). A candidate with
- * no seat in S(F) adds 0 to the predecessor's party (A3: it has no seat
- * there to go silent in). A candidate that does not fit is SKIPPED and the
- * walk CONTINUES (A3 — a later, smaller one may fit); it is re-evaluated
- * at the next freeze with its F unchanged (A1).
- *
- * An accepted candidate's member takes the pending key and its entry is
- * re-filled by nodus_witness_vset_entry_from_member — the ONE derivation
- * of voter_id. NOTHING is written to any table: the stored S(U) bytes are
- * the only record of the acceptance (A1); the boundary swap at U reads
- * them (nodus_witness_v2_epoch.c v2ep_rotate_swap).
- *
- * Determinism: committed inputs only (the roles rows in primary-key
- * order, S(F)'s stored bytes, the snapshot being built), integer
- * arithmetic, every sum checked. Because the pass lives in THIS core,
- * Rule N's preview and commit_next run it over the same inputs and agree
- * (design §3 "rotasyon işleme ikisine aynı sırada girer"; the floor
- * argument in nodus_witness_v2_epoch.c v2ep_rule_n lists why no step
- * between the two writes them). The encoder's duplicate-pubkey refusal is
- * the backstop; the key reservation keeps it unreachable (design §4).
- *
- * @param members  the committee core's members, entry i ↔ snap entry i.
- * @param snap     the filled, provisional ruleset-2 snapshot of U.
- * @return 0 (entries of accepted candidates re-keyed) / -1 fault. */
-typedef struct {
-    uint8_t vid[DNA_VSET_VALIDATOR_ID_LEN];
-    uint8_t pending[DNA_VSET_PUBKEY_LEN];
-} vset_rot_cand_t;
-
-/* the candidates (validator_id ASC); *out heap, *n_out count. 0 / -1 */
-static int vset_rot_candidates(nodus_witness_t *w, uint64_t f,
-                               vset_rot_cand_t **out, size_t *n_out) {
-    *out = NULL;
-    *n_out = 0;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT validator_id, pending_consensus_pubkey, "
-            "       consensus_key_effective_epoch "
-            "FROM v2_validator_roles "
-            "WHERE pending_consensus_pubkey != zeroblob(?1) "
-            "  AND consensus_key_effective_epoch <= ?2 "
-            "ORDER BY validator_id ASC", -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: candidate prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_int(st, 1, (int)DNA_VSET_PUBKEY_LEN) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)f) != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    vset_rot_cand_t *c = NULL;
-    size_t n = 0, cap = 0;
-    int rc;
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        const void *vid = sqlite3_column_blob(st, 0);
-        int vid_len = sqlite3_column_bytes(st, 0);
-        const void *pk = sqlite3_column_blob(st, 1);
-        int pk_len = sqlite3_column_bytes(st, 1);
-        sqlite3_int64 ep = sqlite3_column_int64(st, 2);
-        if (!vid || vid_len != DNA_VSET_VALIDATOR_ID_LEN ||
-            !pk || pk_len != DNA_VSET_PUBKEY_LEN ||
-            sqlite3_column_type(st, 2) != SQLITE_INTEGER || ep <= 0) {
-            /* the row readers refuse the same shapes
-             * (nodus_witness_validator.c v2_row_from_stmt) */
-            QGP_LOG_ERROR(LOG_TAG, "rotation pass: a malformed pending "
-                          "row (id %d B, key %d B, epoch %lld)", vid_len,
-                          pk_len, (long long)ep);
-            sqlite3_finalize(st);
-            free(c);
-            return -1;
-        }
-        if (n == cap) {
-            size_t nc = cap ? cap * 2 : 8;
-            vset_rot_cand_t *g = realloc(c, nc * sizeof(*g));
-            if (!g) { sqlite3_finalize(st); free(c); return -1; }
-            c = g;
-            cap = nc;
-        }
-        memcpy(c[n].vid, vid, DNA_VSET_VALIDATOR_ID_LEN);
-        memcpy(c[n].pending, pk, DNA_VSET_PUBKEY_LEN);
-        n++;
-    }
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: candidate scan failed "
-                      "(rc=%d): %s", rc, sqlite3_errmsg(w->db));
-        free(c);
-        return -1;
-    }
-    *out = c;
-    *n_out = n;
-    return 0;
-}
-
-/* P = Σ pw[0..n), checked; P > 0 and 2P representable. 0 / -1 */
-static int vset_rot_total(const uint64_t *pw, uint16_t n, uint64_t *p_out) {
-    uint64_t p = 0;
-    for (uint16_t i = 0; i < n; i++) {
-        if (p > UINT64_MAX - pw[i]) return -1;
-        p += pw[i];
-    }
-    if (p == 0 || p > UINT64_MAX / 2) return -1;
-    *p_out = p;
-    return 0;
-}
-
-/* Does the party R + p still leave P − (R + p) > P * 2 / 3?
- * 1 yes / 0 no / -1 the party exceeds the set (a broken invariant). */
-static int vset_rot_fits(uint64_t P, uint64_t R, uint64_t p) {
-    if (R > UINT64_MAX - p || R + p > P) return -1;
-    return (P - (R + p)) > P * 2 / 3 ? 1 : 0;
-}
-
-/* HF-6 khan A7 (2026-10-13, design §3 "(A7) Birikimli bütçe"; BUGS Z-27):
- * the predecessor party R_F of the freeze of S(f + E) starts from the
- * counted power (pf[j]) of the entries of sf = S(f) whose key differs from
- * the same validator_id's entry in sf's own predecessor S(f − E) — the
- * party the previous freeze already admitted into sf. An entry of sf with
- * no seat in S(f − E) is not counted (a new entrant is not a rotation).
- * A ruleset-1 S(f − E) has no ids: its entries are matched through the
- * migrated-id bridge (dna_validator_id_migrated(chain, entry pubkey)),
- * exactly as the candidate loop matches a ruleset-1 sf — the first
- * generation-4 freeze accepts rotations against the ruleset-1 set, and
- * the next freeze must carry them. The carry is 0, with nothing read,
- * when sf is ruleset 1 or f < E (no S(f − E)); 0 when S(f − E) is ABSENT
- * — the resolver's terminal rc 1, which every node answers alike:
- * validator_set_snapshots is a leg of system_state_root
- * (nodus_witness_roots_v2.c). An unreadable S(f − E), an unreadable chain
- * id or an underivable bridge id is a fault (-1), never a 0. The sum is
- * order-independent and checked like vset_rot_total. 0 / -1. */
-static int vset_rot_carried(nodus_witness_t *w,
-                            const dna_vset_snapshot_t *sf,
-                            const uint64_t *pf, uint64_t f,
-                            uint64_t *r_out) {
-    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    *r_out = 0;
-    if (sf->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) return 0;
-    if (f < E) return 0;                  /* no S(f − E) is defined     */
-
-    dna_vset_snapshot_t *sp = NULL;
-    int prc = nodus_witness_v2_epoch_authority_for_epoch(w, f - E, &sp,
-                                                         NULL, NULL);
-    if (prc == 1) return 0;               /* S(f − E) absent (terminal) */
-    if (prc != 0 || !sp) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: S(%llu), the predecessor of "
-                      "S(%llu), is unreadable (rc=%d) — the carried party "
-                      "cannot be judged", (unsigned long long)(f - E),
-                      (unsigned long long)f, prc);
-        return -1;
-    }
-    int ret = -1;
-    uint64_t r = 0;
-    /* the id each S(f − E) entry is matched by: its own (ruleset 2) or
-     * the migrated-id bridge over its key (ruleset 1) — the same
-     * derivation the candidate loop of vset_rotation_pass uses for sf */
-    uint8_t (*pid)[DNA_VSET_VALIDATOR_ID_LEN] = NULL;
-    if (sp->selection_ruleset == DNA_VSET_RULESET_TOPN_V1) {
-        uint8_t chain32[DNA_CHAIN_ID_LEN];
-        if (nodus_witness_v2_chain_id(w, chain32) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: the chain id of "
-                          "the carried party's ruleset-1 bridge is "
-                          "unreadable");
-            goto out;
-        }
-        pid = malloc((size_t)sp->active_count * sizeof(*pid));
-        if (!pid) goto out;
-        for (uint16_t i = 0; i < sp->active_count; i++) {
-            if (dna_validator_id_migrated(pid[i], chain32,
-                                          sp->entries[i].pubkey) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: a v1 entry's "
-                              "migrated validator_id did not derive "
-                              "(carried party)");
-                goto out;
-            }
-        }
-    } else if (sp->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: S(%llu) carries ruleset %u",
-                      (unsigned long long)(f - E),
-                      (unsigned)sp->selection_ruleset);
-        goto out;
-    }
-    for (uint16_t j = 0; j < sf->active_count; j++) {
-        for (uint16_t i = 0; i < sp->active_count; i++) {
-            if (memcmp(pid ? pid[i] : sp->entries[i].validator_id,
-                       sf->entries[j].validator_id,
-                       DNA_VSET_VALIDATOR_ID_LEN) != 0)
-                continue;
-            if (memcmp(sp->entries[i].pubkey, sf->entries[j].pubkey,
-                       DNA_VSET_PUBKEY_LEN) != 0) {
-                if (r > UINT64_MAX - pf[j]) goto out;
-                r += pf[j];
-            }
-            break;
-        }
-    }
-    *r_out = r;
-    ret = 0;
-out:
-    free(pid);
-    dna_vset_free(&sp);
-    return ret;
-}
-
-static int vset_rotation_pass(nodus_witness_t *w,
-                              nodus_committee_member_t *members,
-                              dna_vset_snapshot_t *snap) {
-    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V2 ||
-        snap->epoch < E) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: snapshot(%llu) ruleset %u "
-                      "has no predecessor freeze", (unsigned long long)
-                      snap->epoch, (unsigned)snap->selection_ruleset);
-        return -1;
-    }
-    const uint64_t f = snap->epoch - E;
-
-    vset_rot_cand_t *cand = NULL;
-    size_t n_cand = 0;
-    if (vset_rot_candidates(w, f, &cand, &n_cand) != 0) return -1;
-    if (n_cand == 0) return 0;            /* nothing else is read        */
-
-    int ret = -1;
-    dna_vset_snapshot_t *sf = NULL;
-    uint64_t pu[DNA_MAX_ACTIVE_VALIDATORS], pf[DNA_MAX_ACTIVE_VALIDATORS];
-    uint64_t P_U = 0, P_F = 0, R_U = 0, R_F = 0, R_F0 = 0;
-    uint8_t chain32[DNA_CHAIN_ID_LEN];
-    unsigned n_acc = 0, n_wait = 0;
-    int arc = -1;
-
-    if (nodus_witness_vset_powers(w, snap, pu) != 0 ||
-        vset_rot_total(pu, snap->active_count, &P_U) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: the successor S(%llu) has no "
-                      "computable positive power", (unsigned long long)
-                      snap->epoch);
-        goto done;
-    }
-    arc = nodus_witness_v2_epoch_authority_for_epoch(w, f, &sf, NULL, NULL);
-    if (arc != 0 || !sf) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: the predecessor S(%llu) is "
-                      "absent or unreadable (rc=%d) — a rotation cannot be "
-                      "judged against a set it cannot read",
-                      (unsigned long long)f, arc);
-        goto done;
-    }
-    if (nodus_witness_vset_powers(w, sf, pf) != 0 ||
-        vset_rot_total(pf, sf->active_count, &P_F) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: the predecessor S(%llu) has "
-                      "no computable positive power", (unsigned long long)f);
-        goto done;
-    }
-    if (sf->selection_ruleset == DNA_VSET_RULESET_TOPN_V1) {
-        if (nodus_witness_v2_chain_id(w, chain32) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: the chain id of the "
-                          "ruleset-1 bridge is unreadable");
-            goto done;
-        }
-    } else if (sf->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: S(%llu) carries ruleset %u",
-                      (unsigned long long)f, (unsigned)sf->selection_ruleset);
-        goto done;
-    }
-    /* khan A7: the predecessor's party starts from the rotations S(f)
-     * already carries. The previous freeze admitted exactly that party
-     * against these same counted powers (the ratio of S(f) is frozen by
-     * the POWER_CAP_BPS grace, see nodus_witness_power_cap_bps_for_epoch),
-     * so it fits; a carry that does not is a broken invariant — the
-     * freeze is refused like a party exceeding its set. */
-    if (vset_rot_carried(w, sf, pf, f, &R_F0) != 0) goto done;
-    if (vset_rot_fits(P_F, 0, R_F0) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "rotation pass: the party S(%llu) carries "
-                      "(%llu of %llu) exceeds its budget — refusing the "
-                      "freeze", (unsigned long long)f,
-                      (unsigned long long)R_F0, (unsigned long long)P_F);
-        goto done;
-    }
-    R_F = R_F0;
-
-    for (size_t c = 0; c < n_cand; c++) {
-        /* the successor seat (by validator_id) */
-        int iu = -1;
-        for (uint16_t i = 0; i < snap->active_count; i++) {
-            if (memcmp(snap->entries[i].validator_id, cand[c].vid,
-                       DNA_VSET_VALIDATOR_ID_LEN) == 0) {
-                iu = (int)i;
-                break;
-            }
-        }
-        if (iu < 0) { n_wait++; continue; }  /* not seated in S(U): waits */
-
-        /* the predecessor seat: by id (ruleset 2) or the migrated-id
-         * bridge (ruleset 1); none ⇒ 0 (A3) */
-        uint64_t p_f = 0;
-        for (uint16_t j = 0; j < sf->active_count; j++) {
-            int hit;
-            if (sf->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
-                hit = memcmp(sf->entries[j].validator_id, cand[c].vid,
-                             DNA_VSET_VALIDATOR_ID_LEN) == 0;
-            } else {
-                uint8_t mid[DNA_VALBIND_ID_LEN];
-                if (dna_validator_id_migrated(mid, chain32,
-                                              sf->entries[j].pubkey) != 0) {
-                    QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: a v1 "
-                                  "entry's migrated validator_id did not "
-                                  "derive");
-                    goto done;
-                }
-                hit = memcmp(mid, cand[c].vid, DNA_VALBIND_ID_LEN) == 0;
-            }
-            if (hit) { p_f = pf[j]; break; }
-        }
-
-        int fu = vset_rot_fits(P_U, R_U, pu[iu]);
-        int ff = vset_rot_fits(P_F, R_F, p_f);
-        if (fu < 0 || ff < 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: the party exceeds "
-                          "its set — refusing the freeze");
-            goto done;
-        }
-        if (!fu || !ff) { n_wait++; continue; }  /* A3: skip, keep walking */
-
-        R_U += pu[iu];
-        R_F += p_f;
-        memcpy(members[iu].pubkey, cand[c].pending, DNA_VSET_PUBKEY_LEN);
-        if (nodus_witness_vset_entry_from_member(&members[iu],
-                                                 snap->selection_ruleset,
-                                                 &snap->entries[iu]) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: the rotated entry "
-                          "could not be filled");
-            goto done;
-        }
-        n_acc++;
-    }
-    if (n_acc > 0 || n_wait > 0)
-        QGP_LOG_INFO(LOG_TAG, "snapshot(%llu): %u rotation(s) accepted, %u "
-                     "waiting (P_U %llu R_U %llu, P_F %llu R_F %llu, "
-                     "carried %llu)",
-                     (unsigned long long)snap->epoch, n_acc, n_wait,
-                     (unsigned long long)P_U, (unsigned long long)R_U,
-                     (unsigned long long)P_F, (unsigned long long)R_F,
-                     (unsigned long long)R_F0);
-    ret = 0;
-done:
-    free(cand);
-    dna_vset_free(&sf);
-    return ret;
-}
+/* (The HF-6 slice 6d rotation pass of the freeze — the khan-A3 budget
+ * walk and the khan-A7 cumulative carry — was deleted with ROTATE: khan
+ * decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1.
+ * No row holds a pending key, so a snapshot's entries carry the rows'
+ * own, immutable keys.) */
 
 /* The ONE selection core behind both public builders —
  * nodus_witness_vset_build_for_epoch (every stored snapshot: genesis and
@@ -815,15 +425,12 @@ done:
  *   1  the committee is EMPTY — a well-formed answer from committed
  *      state (no bonded, tenured validator), *snap_out untouched;
  *  -1  fault (bad args, allocation, the committee compute failed, a
- *      count above max_active, a witness_id derivation failure, the
- *      HF-6 6d rotation pass faulted — at generation 4 with a pending
- *      row only), *snap_out untouched.
- *
- * HF-6 slice 6d: at key_gen >= NODUS_RT_GEN_STORAGE the entries of the
- * rotations the budget accepts carry the PENDING key (vset_rotation_pass
- * above; its predecessor budget is cumulative since khan A7 — it starts
- * from the rotations S(F) already carries) — the one core keeps Rule N's
- * preview equal to the stored row. */
+ *      count above max_active, a witness_id derivation failure),
+ *      *snap_out untouched.
+ * (The HF-6 6d rotation pass that ran here at generation 4 was deleted
+ * with ROTATE — khan decision 2026-10-13-kurultay-18-summary.md item 1;
+ * every entry carries its row's own key, so the generation-4 bytes are
+ * the pre-6d builder's bytes.) */
 static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
                                int max_active, uint32_t key_gen,
                                dna_vset_snapshot_t **snap_out) {
@@ -884,17 +491,6 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
             free(members);
             return -1;
         }
-    }
-    /* HF-6 slice 6d: the rotation pass of the freeze (above), generation
-     * 4 only — below it no row can hold a pending key (ROTATE is a
-     * generation-4 op) and the bytes stay exactly the pre-6d bytes. */
-    if (key_gen >= NODUS_RT_GEN_STORAGE &&
-        vset_rotation_pass(w, members, snap) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: the rotation pass faulted",
-                      (unsigned long long)epoch_start);
-        dna_vset_free(&snap);
-        free(members);
-        return -1;
     }
     free(members);
 
@@ -1166,13 +762,12 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
     {
         /* HF-6 slice 6c (design 2026-10-03-hf5-validator-owner-stake rev
          * 6 §3; plan tasks/hf6-slice6-plan.md §1.5, B5): a ruleset-2
-         * member is matched by its validator_id (validators.pubkey_hash),
-         * never by its consensus key — an accepted ROTATE seats the row's
-         * PENDING key in this snapshot, so a pubkey match would leave the
-         * rotating validator ELIGIBLE for the epoch it is seated in unless
-         * the row swap had already run. A ruleset-1 snapshot keeps the
-         * pubkey match, byte-identical (no rotation precedes the first
-         * ruleset-2 snapshot's epoch). */
+         * member is matched by its validator_id (validators.pubkey_hash,
+         * the v2 row's identity). Written for ROTATE; the khan removed it
+         * (decision 2026-10-13-kurultay-18-summary.md item 1), so a row's
+         * key never changes and the id match flips exactly the rows the
+         * pubkey match would. A ruleset-1 snapshot keeps the pubkey match,
+         * byte-identical. */
         const int by_id =
             snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2;
         sqlite3_stmt *st = NULL;

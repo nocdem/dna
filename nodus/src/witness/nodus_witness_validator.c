@@ -605,11 +605,13 @@ static int v2_all_zero(const uint8_t *p, size_t n) {
     return acc == 0;
 }
 
-/* Design §6.3: "no pending key" has ONE encoding — 2592 × 0x00 AND epoch
- * 0. 1 = consistent, 0 = a mixed encoding. */
-static int v2_pending_consistent(const uint8_t *pending, uint64_t epoch) {
-    int zero_key = v2_all_zero(pending, DNAC_PUBKEY_SIZE);
-    return zero_key == (epoch == 0);
+/* Design §6.3 keeps the two pending fields in the leaf (bytes APPROVED,
+ * unchanged), but HF-6 has no key rotation (khan decision docs/plans/
+ * decisions/2026-10-13-kurultay-18-summary.md items 1 and 4): both are
+ * ALWAYS zero — 2592 × 0x00 AND epoch 0. Any other value is a malformed
+ * row, for every reader and every writer. 1 = zero, 0 = malformed. */
+static int v2_pending_zero(const uint8_t *pending, uint64_t epoch) {
+    return v2_all_zero(pending, DNAC_PUBKEY_SIZE) && epoch == 0;
 }
 
 /* Copy a BLOB column of EXACTLY `len` bytes into `dst`.
@@ -659,11 +661,11 @@ static int v2_row_from_stmt(sqlite3_stmt *st, nodus_v2_validator_row_t *out) {
     if (memcmp(key, out->validator_id, sizeof(key)) != 0 ||
         v2_all_zero(out->validator_id, sizeof(out->validator_id)) ||
         v2_all_zero(out->owner_fp, sizeof(out->owner_fp)) ||
-        !v2_pending_consistent(out->pending_consensus_pubkey,
-                               out->consensus_key_effective_epoch)) {
+        !v2_pending_zero(out->pending_consensus_pubkey,
+                         out->consensus_key_effective_epoch)) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "v2 row: malformed (key mismatch, an "
-                      "all-zero validator_id / owner_fp, or a mixed pending-"
-                      "key encoding)");
+                      "all-zero validator_id / owner_fp, or a pending key / "
+                      "effective epoch that is not zero)");
         return -1;
     }
     return 0;
@@ -775,12 +777,11 @@ int nodus_validator_v2_update(nodus_witness_t *w,
     }
     if (v2_all_zero(row->validator_id, sizeof(row->validator_id)) ||
         v2_all_zero(row->owner_fp, sizeof(row->owner_fp)) ||
-        row->consensus_key_effective_epoch > (uint64_t)INT64_MAX ||
-        !v2_pending_consistent(row->pending_consensus_pubkey,
-                               row->consensus_key_effective_epoch)) {
+        !v2_pending_zero(row->pending_consensus_pubkey,
+                         row->consensus_key_effective_epoch)) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "v2_update: malformed row (all-zero "
-                      "validator_id / owner_fp, a mixed pending-key "
-                      "encoding, or an epoch above INT64_MAX) — refused, "
+                      "validator_id / owner_fp, or a pending key / "
+                      "effective epoch that is not zero) — refused, "
                       "nothing written");
         return -1;
     }
@@ -820,8 +821,9 @@ int nodus_validator_v2_update(nodus_witness_t *w,
         return -1;
     }
 
-    /* 2. v2_validator_roles — the two consensus-key fields; keyed by
-     *    (validator_id, owner_fp): the owner is never rewritten. */
+    /* 2. v2_validator_roles — the two pending fields (zero, refused above
+     *    otherwise: the writer writes zero); keyed by (validator_id,
+     *    owner_fp): the owner is never rewritten. */
     st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "UPDATE v2_validator_roles SET "
@@ -1062,18 +1064,18 @@ int nodus_validator_v2_key_get(nodus_witness_t *w,
     if (rc == SQLITE_ROW) {
         uint8_t vid[NODUS_V2_VALIDATOR_ID_LEN];
         sqlite3_int64 role = sqlite3_column_int64(st, 1);
-        if (v2_blob_exact(st, 0, vid, sizeof(vid)) == 0 &&
+        if (sqlite3_column_type(st, 0) == SQLITE_BLOB &&
+            v2_blob_exact(st, 0, vid, sizeof(vid)) == 0 &&
             !v2_all_zero(vid, sizeof(vid)) &&
             sqlite3_column_type(st, 1) == SQLITE_INTEGER &&
-            (role == NODUS_V2_KEY_ROLE_ACTIVE ||
-             role == NODUS_V2_KEY_ROLE_PENDING)) {
+            role == NODUS_V2_KEY_ROLE_ACTIVE) {
             memcpy(validator_id_out, vid, sizeof(vid));
             *role_out = (uint8_t)role;
             ret = 0;
         } else {
             QGP_LOG_ERROR(LOG_TAG, "%s", "key_get: a malformed "
-                          "v2_consensus_keys row (validator_id length / "
-                          "all-zero, or a role outside {1, 2}) — fault");
+                          "v2_consensus_keys row (validator_id not a 64-byte "
+                          "BLOB / all-zero, or a role other than 1) — fault");
         }
     } else {
         QGP_LOG_ERROR(LOG_TAG, "key_get step failed (rc=%d): %s", rc,
@@ -1093,11 +1095,10 @@ int nodus_validator_v2_key_insert(nodus_witness_t *w,
                       "transaction — refused, nothing written");
         return -1;
     }
-    if ((role != NODUS_V2_KEY_ROLE_ACTIVE &&
-         role != NODUS_V2_KEY_ROLE_PENDING) ||
+    if (role != NODUS_V2_KEY_ROLE_ACTIVE ||
         v2_all_zero(key_hash, NODUS_V2_KEY_HASH_LEN) ||
         v2_all_zero(validator_id, NODUS_V2_VALIDATOR_ID_LEN)) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "key_insert: a role outside {1, 2} or "
+        QGP_LOG_ERROR(LOG_TAG, "%s", "key_insert: a role other than 1 or "
                       "an all-zero key / validator_id — refused");
         return -1;
     }
@@ -1129,385 +1130,10 @@ int nodus_validator_v2_key_insert(nodus_witness_t *w,
     return 0;
 }
 
-int nodus_validator_v2_key_release(nodus_witness_t *w,
-                                   const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
-                                   const uint8_t *consensus_pubkey) {
-    if (!w || !w->db || !validator_id || !consensus_pubkey) return -1;
-    if (sqlite3_get_autocommit(w->db)) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "key_release called outside a "
-                      "transaction — refused, nothing written");
-        return -1;
-    }
-    uint8_t kh[NODUS_V2_KEY_HASH_LEN];
-    if (qgp_sha3_512(consensus_pubkey, DNAC_PUBKEY_SIZE, kh) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "key_release: hash backend failure");
-        return -1;
-    }
-    /* 1. the validator's role-1 row: EXACTLY one, keyed by its consensus
-     *    key AND naming it — a missing or foreign row is a fault (the
-     *    reservation set is a function of the validators rows, so a
-     *    bonded-or-exiting row without its reservation is corruption) */
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "DELETE FROM v2_consensus_keys WHERE consensus_pk_hash = ?1 "
-            "AND validator_id = ?2 AND role = ?3", -1, &st, NULL)
-        != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "key_release prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_blob(st, 1, kh, sizeof(kh), SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 3, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
-            != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "key_release: the role-1 reservation of the "
-                      "graduating validator is missing or foreign (rc=%d, "
-                      "%d rows) — fault", rc, sqlite3_changes(w->db));
-        return -1;
-    }
-    /* 2. every role-2 row the validator holds, any count: a pending key (a
-     *    ROTATE never swapped). A previous key kept at role 1 (a swap at
-     *    U, this graduation at U+E — khan A2) is NOT taken here: the sweep
-     *    of this same boundary (nodus_witness_v2_epoch.c
-     *    v2ep_rotate_sweep, step 3d) releases it together with the
-     *    previous voter's attendance row, AFTER the attendance digest —
-     *    one release site for every previous key (design rev 6 §3). */
-    st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "DELETE FROM v2_consensus_keys WHERE validator_id = ?1 "
-            "AND role = ?2", -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "key_release (pending role) prepare failed: "
-                      "%s", sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_blob(st, 1, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)NODUS_V2_KEY_ROLE_PENDING)
-            != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "key_release (pending role) step failed "
-                      "(rc=%d): %s", rc, sqlite3_errmsg(w->db));
-        return -1;
-    }
-    return 0;
-}
-
-/* ══ HF-6 slice 6d — the previous key's reservation (khan A2) ══════════
- * Contracts: nodus_witness_validator.h. */
-
-int nodus_validator_v2_key_rotated_ids(nodus_witness_t *w,
-                                       uint8_t (**ids_out)[NODUS_V2_VALIDATOR_ID_LEN],
-                                       size_t *n_out) {
-    if (!w || !w->db || !ids_out || !n_out) return -1;
-    *ids_out = NULL;
-    *n_out = 0;
-    sqlite3_stmt *st = NULL;
-    /* a bonded / exiting row's two role-1 keys, or — HF-6 6e — the one
-     * role-1 key an UNSTAKED row still holds: the previous key of a
-     * validator that graduated at this boundary (key_release keeps it for
-     * the sweep). UNION: one id per validator; one ordered result. */
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT validator_id FROM v2_consensus_keys WHERE role = ?1 "
-            "GROUP BY validator_id HAVING COUNT(*) > 1 "
-            "UNION "
-            "SELECT k.validator_id FROM v2_consensus_keys k "
-            "JOIN validators v ON v.pubkey_hash = k.validator_id "
-            "WHERE k.role = ?1 AND v.status = ?2 "
-            "ORDER BY 1 ASC", -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "key_rotated_ids prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
-            != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)DNAC_VALIDATOR_UNSTAKED)
-            != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    uint8_t (*ids)[NODUS_V2_VALIDATOR_ID_LEN] = NULL;
-    size_t n = 0, cap = 0;
-    int rc;
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        if (n == cap) {
-            size_t nc = cap ? cap * 2 : 8;
-            uint8_t (*g)[NODUS_V2_VALIDATOR_ID_LEN] =
-                realloc(ids, nc * sizeof(*g));
-            if (!g) { sqlite3_finalize(st); free(ids); return -1; }
-            ids = g;
-            cap = nc;
-        }
-        if (v2_blob_exact(st, 0, ids[n], NODUS_V2_VALIDATOR_ID_LEN) != 0 ||
-            v2_all_zero(ids[n], NODUS_V2_VALIDATOR_ID_LEN)) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "key_rotated_ids: a malformed "
-                          "validator_id — fault");
-            sqlite3_finalize(st);
-            free(ids);
-            return -1;
-        }
-        n++;
-    }
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "key_rotated_ids step failed (rc=%d): %s",
-                      rc, sqlite3_errmsg(w->db));
-        free(ids);
-        return -1;
-    }
-    *ids_out = ids;
-    *n_out = n;
-    return 0;
-}
-
-int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
-                                          const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
-                                          const uint8_t *consensus_pubkey,
-                                          int graduated,
-                                          uint8_t prev_hash_out[NODUS_V2_KEY_HASH_LEN]) {
-    if (!w || !w->db || !validator_id || !consensus_pubkey || !prev_hash_out)
-        return -1;
-    if (sqlite3_get_autocommit(w->db)) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "key_sweep_previous called outside a "
-                      "transaction — refused, nothing written");
-        return -1;
-    }
-    uint8_t cur[NODUS_V2_KEY_HASH_LEN];
-    if (qgp_sha3_512(consensus_pubkey, DNAC_PUBKEY_SIZE, cur) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "key_sweep_previous: hash backend "
-                      "failure");
-        return -1;
-    }
-    /* 1. the role-1 rows naming the validator: EXACTLY two, one of them
-     *    the current key's — or, for a validator that graduated at this
-     *    boundary (key_release took its current key's row), EXACTLY one
-     *    and NOT the current key's. Any other shape is not "a swapped row
-     *    between U and U+E" and is refused before anything is written. */
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT consensus_pk_hash FROM v2_consensus_keys "
-            "WHERE validator_id = ?1 AND role = ?2 "
-            "ORDER BY consensus_pk_hash ASC", -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "key_sweep_previous prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_blob(st, 1, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
-            != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    uint8_t rows[2][NODUS_V2_KEY_HASH_LEN];
-    int n = 0, rc;
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        if (n >= 2 ||
-            v2_blob_exact(st, 0, rows[n], NODUS_V2_KEY_HASH_LEN) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "key_sweep_previous: more than two "
-                          "role-1 rows, or a malformed key hash — fault");
-            sqlite3_finalize(st);
-            return -1;
-        }
-        n++;
-    }
-    sqlite3_finalize(st);
-    const int want = graduated ? 1 : 2;
-    if (rc != SQLITE_DONE || n != want) {
-        QGP_LOG_ERROR(LOG_TAG, "key_sweep_previous: %d role-1 row(s) (rc=%d) "
-                      "where a swapped %s validator holds %d — fault", n, rc,
-                      graduated ? "graduated" : "bonded / exiting", want);
-        return -1;
-    }
-    const uint8_t *prev;
-    if (graduated) {
-        if (memcmp(rows[0], cur, sizeof(cur)) == 0) {
-            /* the graduation released the current key; a row under it is
-             * not a previous key */
-            QGP_LOG_ERROR(LOG_TAG, "%s", "key_sweep_previous: a graduated "
-                          "validator's only role-1 row is its current key — "
-                          "fault");
-            return -1;
-        }
-        prev = rows[0];
-    } else {
-        const int c0 = memcmp(rows[0], cur, sizeof(cur)) == 0;
-        const int c1 = memcmp(rows[1], cur, sizeof(cur)) == 0;
-        if (c0 == c1) {
-            /* neither (the current key is unreserved) or both (impossible
-             * under the primary key) — never guess which row is
-             * "previous" */
-            QGP_LOG_ERROR(LOG_TAG, "%s", "key_sweep_previous: the current "
-                          "key's role-1 row is not exactly one of the two — "
-                          "fault");
-            return -1;
-        }
-        prev = c0 ? rows[1] : rows[0];
-    }
-
-    /* 2. delete exactly that row */
-    st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "DELETE FROM v2_consensus_keys WHERE consensus_pk_hash = ?1 "
-            "AND validator_id = ?2 AND role = ?3", -1, &st, NULL)
-        != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "key_sweep_previous delete prepare failed: "
-                      "%s", sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_blob(st, 1, prev, NODUS_V2_KEY_HASH_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 3, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
-            != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE || sqlite3_changes(w->db) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "key_sweep_previous: the previous key's row "
-                      "did not delete as read (rc=%d) — fault", rc);
-        return -1;
-    }
-    memcpy(prev_hash_out, prev, NODUS_V2_KEY_HASH_LEN);
-    return 0;
-}
-
-/* ══ HF-6 slice 6c — the rotation swap writer (design rev 6 §3) ═══════
- * Contract: nodus_witness_validator.h. */
-
-/* One step of rotate_apply: run the prepared, bound statement `st`
- * (finalized here) and require EXACTLY one changed row. 0 / -1. */
-static int v2_rot_step_one(nodus_witness_t *w, sqlite3_stmt *st,
-                           const char *what) {
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    int ch = sqlite3_changes(w->db);
-    if (rc != SQLITE_DONE || ch != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "rotate_apply: %s changed %d row(s) (rc=%d) "
-                      "— the row does not hold the state the swap requires; "
-                      "fault (the caller rolls back)", what, ch, rc);
-        return -1;
-    }
-    return 0;
-}
-
-int nodus_validator_v2_rotate_apply(nodus_witness_t *w,
-                                    const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
-                                    const uint8_t *old_pk,
-                                    const uint8_t *new_pk) {
-    if (!w || !w->db || !validator_id || !old_pk || !new_pk) return -1;
-    /* The caller's transaction, or nothing — the v2_update discipline:
-     * three tables move together or the block rolls back. */
-    if (sqlite3_get_autocommit(w->db)) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "rotate_apply called outside a "
-                      "transaction — refused, nothing written");
-        return -1;
-    }
-    /* SQLite counts a matched row as changed even when the value written
-     * equals the stored one, so old == new would pass step 1 as a "swap";
-     * an all-zero new key is the "no pending key" encoding (§6.3). */
-    if (v2_all_zero(validator_id, NODUS_V2_VALIDATOR_ID_LEN) ||
-        v2_all_zero(new_pk, DNAC_PUBKEY_SIZE) ||
-        memcmp(old_pk, new_pk, DNAC_PUBKEY_SIZE) == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "rotate_apply: an all-zero validator_id "
-                      "or new key, or new == old — refused, nothing written");
-        return -1;
-    }
-    uint8_t new_kh[NODUS_V2_KEY_HASH_LEN];
-    if (qgp_sha3_512(new_pk, DNAC_PUBKEY_SIZE, new_kh) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "rotate_apply: hash backend failure");
-        return -1;
-    }
-
-    /* 1. validators: the consensus key := the pending key. Keyed by
-     *    (validator_id, OLD key) — the one writer allowed to change
-     *    validators.pubkey (nodus_validator_v2_update keys by it and so
-     *    can never change it). First, so a wrong old key writes nothing. */
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "UPDATE validators SET pubkey = ?1 "
-            "WHERE pubkey_hash = ?2 AND pubkey = ?3",
-            -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "rotate_apply validators prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_blob(st, 1, new_pk, DNAC_PUBKEY_SIZE,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 3, old_pk, DNAC_PUBKEY_SIZE,
-                          SQLITE_STATIC) != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    if (v2_rot_step_one(w, st, "validators (validator_id, old key)") != 0)
-        return -1;
-
-    /* 2. v2_validator_roles: pending := 2592 × 0x00, effective epoch := 0
-     *    — the one "no pending key" encoding. Keyed by (validator_id,
-     *    pending == new key): a row pending another key, or none, is a
-     *    fault, never silently cleared. */
-    st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "UPDATE v2_validator_roles SET "
-            "  pending_consensus_pubkey = zeroblob(?1), "
-            "  consensus_key_effective_epoch = 0 "
-            "WHERE validator_id = ?2 AND pending_consensus_pubkey = ?3",
-            -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "rotate_apply roles prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_int(st, 1, (int)DNAC_PUBKEY_SIZE) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 2, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 3, new_pk, DNAC_PUBKEY_SIZE,
-                          SQLITE_STATIC) != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    if (v2_rot_step_one(w, st, "v2_validator_roles (pending == new key)")
-        != 0)
-        return -1;
-
-    /* 3. v2_consensus_keys: the new key's reservation role 2 → role 1,
-     *    naming this validator. The OLD key's role-1 row is NOT touched:
-     *    it is released at U+E by the sweep (khan A2, slice 6d). */
-    st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "UPDATE v2_consensus_keys SET role = ?1 "
-            "WHERE consensus_pk_hash = ?2 AND validator_id = ?3 "
-            "AND role = ?4",
-            -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "rotate_apply keys prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -1;
-    }
-    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)NODUS_V2_KEY_ROLE_ACTIVE)
-            != SQLITE_OK ||
-        sqlite3_bind_blob(st, 2, new_kh, sizeof(new_kh),
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_blob(st, 3, validator_id, NODUS_V2_VALIDATOR_ID_LEN,
-                          SQLITE_STATIC) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 4, (sqlite3_int64)NODUS_V2_KEY_ROLE_PENDING)
-            != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -1;
-    }
-    return v2_rot_step_one(w, st, "v2_consensus_keys (new key, role 2)");
-}
+/* (The HF-6 slice 4-6e reservation releases — key_release at the
+ * graduation, key_release_previous at the swap, key_sweep_previous at the
+ * sweep, key_rotated_ids — and the slice-6c swap writer rotate_apply were
+ * deleted with ROTATE: khan decision docs/plans/decisions/2026-10-13-
+ * kurultay-18-summary.md items 1 and 4. v2_consensus_keys is permanent
+ * and append-only; validators.pubkey has no writer after the row is
+ * created.) */

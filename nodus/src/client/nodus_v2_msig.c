@@ -707,6 +707,15 @@ int nodus_v2_msig_assemble(nodus_v2_msig_export_t *x,
         v->buf != x->env || v->leg_count != 1)
         return NODUS_V2_SPEND_ERR_ARG;
     if ((uint32_t)n_sig != x->signers) return NODUS_V2_MSIG_ERR_COUNT;
+    /* the target blob must already hold exactly n_sig slots (count byte ==
+     * n_sig, room for every slot): the slots are written in place, so a
+     * view whose blob is shorter — or says another count — would have
+     * them land past it, over the next leg or the envelope's end */
+    if (n_sig > (int)NODUS_RT_AUTH_MAX_SIGNERS ||
+        (uint64_t)v->leg[0].auth_len <
+            1u + (uint64_t)n_sig * NODUS_RT_AUTH_SIGNER_LEN ||
+        x->env[v->auth_off[0]] != (uint8_t)n_sig)
+        return NODUS_V2_SPEND_ERR_ARG;
     /* ascending pubkey order (the ONE canonical signer encoding), no
      * duplicate key — selection sort over <= 15 entries (nodus-cli
      * cmd_msig_combine) */
@@ -1128,6 +1137,18 @@ int nodus_v2_msig_review2(const nodus_v2_msig_export2_t *x,
             rc = NODUS_V2_MSIG_ERR_CALL;
             goto done;
         }
+        /* the change returns to THIS vault (the builder writes
+         * hex(address) — nodus_v2_stake_build), never to anyone else: the
+         * decoder checks only that the owner is lowercase hex, so a change
+         * output to another address would otherwise be signed unseen */
+        if (out->op.n_out == 1) {
+            char ah[129];
+            v2m_put_hex(ah, out->addr, 64);
+            if (memcmp(out->op.change_owner, ah, 128) != 0) {
+                rc = NODUS_V2_MSIG_ERR_CALL;
+                goto done;
+            }
+        }
     }
     out->m = leg.m;
     out->n = leg.n;
@@ -1179,6 +1200,16 @@ int nodus_v2_msig_assemble2(nodus_v2_msig_export2_t *x,
     for (uint32_t j = 0; j < x->n_digests; j++)
         if (x->leg_index[j] >= v->leg_count) return NODUS_V2_SPEND_ERR_ARG;
     if ((uint32_t)n_sig != x->signers) return NODUS_V2_MSIG_ERR_COUNT;
+    /* every target blob must already hold exactly n_sig slots (count
+     * byte == n_sig, room for every slot) — the slots are written in
+     * place (nodus_v2_msig_assemble's rule, per leg) */
+    for (uint32_t j = 0; j < x->n_digests; j++) {
+        const uint16_t L = x->leg_index[j];
+        if ((uint64_t)v->leg[L].auth_len <
+                1u + (uint64_t)n_sig * NODUS_RT_AUTH_SIGNER_LEN ||
+            x->env[v->auth_off[L]] != (uint8_t)n_sig)
+            return NODUS_V2_SPEND_ERR_ARG;
+    }
     /* ascending public-key order (the ONE canonical signer encoding), no
      * duplicate key — an insertion sort of <= 15 indices */
     int ord[NODUS_RT_AUTH_MAX_SIGNERS];

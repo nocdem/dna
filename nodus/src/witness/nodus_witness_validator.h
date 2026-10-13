@@ -173,8 +173,10 @@ int nodus_validator_list_paged_keys(nodus_witness_t *w,
  *
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
  * §1.1-§1.2 (validator_id, owner_fp, the consensus-key fields), §6.3 (the
- * row's fields; "no pending key" has ONE encoding — 2592 × 0x00 AND
- * effective epoch 0 — enforced at write), §7 (keys re-valued in place at
+ * row's fields; the two pending fields stay in the leaf but are ALWAYS
+ * zero — 2592 × 0x00 AND effective epoch 0 — enforced at every read and
+ * write: HF-6 has no key rotation, khan decision docs/plans/decisions/
+ * 2026-10-13-kurultay-18-summary.md items 1 and 4), §7 (keys re-valued in place at
  * the activation edge); plan tasks/hf6-slice3-plan.md §1, decision D1
  * option (i).
  *
@@ -212,17 +214,17 @@ typedef struct {
     /** SHA3-512 of one key, or a dna_msig_address (§1.2). Immutable: HF-6
      *  has no TRANSFER_OWNER (design K3, goal G10). */
     uint8_t  owner_fp[NODUS_V2_OWNER_FP_LEN];
-    /** 2592 × 0x00 iff no rotation is pending. */
+    /** ALWAYS 2592 × 0x00 (no key rotation in HF-6; the §6.3 leaf keeps
+     *  the field). Any other value is a malformed row. */
     uint8_t  pending_consensus_pubkey[DNAC_PUBKEY_SIZE];
-    /** 0 iff no rotation is pending. */
+    /** ALWAYS 0 (as above). */
     uint64_t consensus_key_effective_epoch;
 } nodus_v2_validator_row_t;
 
 /**
  * Fetch the v2 row whose key (validators.pubkey_hash) is `validator_id`.
  * The row read must be well formed: blob lengths exact, validator_id and
- * owner_fp not all-zero, the one "no pending key" encoding, the effective
- * epoch within INT64.
+ * owner_fp not all-zero, both pending fields zero.
  *
  * @return 0 found (*out set); 1 neither table holds the key;
  *         -1 fault — SQLite error, a malformed row, or only ONE of the two
@@ -235,12 +237,11 @@ int nodus_validator_v2_get(nodus_witness_t *w,
 /**
  * Write a v2 row back: the 13 mutable `validators` columns (the
  * bind_validator_mutable_fields set) and the roles row's
- * pending_consensus_pubkey + consensus_key_effective_epoch.
+ * pending_consensus_pubkey + consensus_key_effective_epoch (always zero).
  *
  * IMMUTABLE and checked, never written: validator_id (the key), the
- * consensus pubkey (validators.pubkey — its ONE writer is
- * nodus_validator_v2_rotate_apply, below), owner_fp
- * (no TRANSFER_OWNER in HF-6). The UPDATEs are keyed by
+ * consensus pubkey (validators.pubkey — no writer changes it: HF-6 has
+ * no key rotation), owner_fp (no TRANSFER_OWNER in HF-6). The UPDATEs are keyed by
  * (validator_id, pubkey) and (validator_id, owner_fp): a row whose stored
  * pubkey or owner differs is NOT updated and the call is a fault.
  *
@@ -250,8 +251,7 @@ int nodus_validator_v2_get(nodus_witness_t *w,
  * every block fault).
  *
  * Refused before any write (-1): an all-zero validator_id or owner_fp, a
- * mixed "pending" encoding (a nonzero key with epoch 0, or a zero key with
- * a nonzero epoch — design §6.3), an effective epoch above INT64_MAX.
+ * pending key or effective epoch that is not zero.
  *
  * @return 0 both rows updated; 1 neither table holds validator_id;
  *         -1 fault (above, an SQLite error, only one table holding the
@@ -334,8 +334,8 @@ typedef int (*nodus_v2_validator_visit_fn)(const nodus_v2_validator_row_t *row,
 /**
  * EVERY v2 validator row, in validators.pubkey_hash (= validator_id) ASC
  * order — the §6.3 leaf order — each decoded by the same strict reader as
- * nodus_validator_v2_get (blob lengths exact, the one "no pending key"
- * encoding, a validators row without its roles row is a FAULT). After
+ * nodus_validator_v2_get (blob lengths exact, both pending fields zero,
+ * a validators row without its roles row is a FAULT). After
  * the scan the v2_validator_roles row count must equal the number of
  * validators rows visited: a roles row with no validators row (an
  * orphan) is a FAULT too, so neither table can hold state the other —
@@ -356,41 +356,33 @@ int nodus_validator_v2_scan(nodus_witness_t *w,
  *
  * `v2_consensus_keys (consensus_pk_hash PK, validator_id, role)` — the ONE
  * table with a unique key column that makes "a consensus key appears at
- * most once (active + pending)" a primary-key fact (§4: a composite UNIQUE
- * over two columns would not catch current(A) = pending(B)).
- * consensus_pk_hash = SHA3-512(consensus pubkey), UNTAGGED. Role 1 = an
- * active consensus key; role 2 = a pending key (ROTATE, slice 6). The rows
- * are a pure function of committed state: role 1 for the CURRENT key of
- * every validators row not UNSTAKED, PLUS the PREVIOUS key of a row
- * swapped at boundary U, from U until the sweep at U+E (khan decision A2,
- * 2026-10-12: the old key stays reserved while its snapshot S(F) is still
- * read — so from U to U+E a rotated validator holds TWO role-1 rows; one
- * that graduates at U+E holds only the previous one between its
- * graduation (step 2) and the sweep (step 3d) of that boundary, inside its
- * transaction); role 2 for every non-zero pending_consensus_pubkey. A count of role-1
- * rows equals the count of non-UNSTAKED rows only outside every such
- * window. The previous key is derivable from rooted state (the key the
- * stored S(U−E) seats the validator under) EXCEPT for a validator S(U−E)
- * does not seat (khan A3): its row here is the only committed record of
- * that key. Every generation-4 boundary re-derives the table and compares
- * (nodus_witness_v2_keyres_diff; the boundary step only logs).
- * Writers: the generation-4 edge (nodus_witness_v2_migrate.c),
- * the generation-4 STAKE and ROTATE (SYSTEM adapter op 17,
- * nodus_witness_rt_native.c — STAKE role 1, ROTATE role 2), the swap
- * (nodus_validator_v2_rotate_apply: the new key role 2 → 1) and the
- * generation-4 graduation (nodus_validator_v2_key_release,
- * nodus_witness_v2_epoch.c) and the sweep at U+E
- * (nodus_validator_v2_key_sweep_previous, slice 6d). */
+ * most once" a primary-key fact. consensus_pk_hash = SHA3-512(consensus
+ * pubkey), UNTAGGED.
+ *
+ * PERMANENT AND APPEND-ONLY (khan decision docs/plans/decisions/
+ * 2026-10-13-kurultay-18-summary.md items 1 and 4): a consensus key that
+ * ever appeared in a validators row — any status, UNSTAKED included — is
+ * never usable again. The rows are a pure function of committed state:
+ * EXACTLY one row per validators row (validators rows are never deleted
+ * and their pubkey never changes), role 1, naming that row's
+ * validator_id; no other row. Nothing releases a row. The role column is
+ * kept (schema S18, unchanged) and holds 1 only — the slice-6 pending role
+ * 2 is gone with ROTATE.
+ * Writers: the generation-4 edge (nodus_witness_v2_migrate.c — every
+ * validators row, UNSTAKED included) and the generation-4 STAKE (SYSTEM
+ * adapter op 17, nodus_witness_rt_native.c rtn_stake2_exec, behind an
+ * ABSENT precondition). Every generation-4 boundary re-derives the table
+ * and compares it row for row, with no tolerance
+ * (nodus_witness_v2_keyres_diff; the boundary step only logs). */
 
 #define NODUS_V2_KEY_HASH_LEN      64u
 #define NODUS_V2_KEY_ROLE_ACTIVE   1u
-#define NODUS_V2_KEY_ROLE_PENDING  2u
 
 /**
  * The reservation of `key_hash`.
- * @return 0 found (*validator_id_out, *role_out set); 1 absent; -1 fault
- *         (SQLite error, a validator_id not exactly 64 bytes or all-zero,
- *         a role outside {1, 2}).
+ * @return 0 found (*validator_id_out, *role_out set — always 1); 1
+ *         absent; -1 fault (SQLite error, a validator_id that is not a
+ *         64-byte BLOB or is all-zero, a role other than 1).
  */
 int nodus_validator_v2_key_get(nodus_witness_t *w,
                                const uint8_t key_hash[NODUS_V2_KEY_HASH_LEN],
@@ -400,120 +392,15 @@ int nodus_validator_v2_key_get(nodus_witness_t *w,
 /**
  * STRICT insert of one reservation, INSIDE THE CALLER'S TRANSACTION
  * (autocommit → -1, nothing written). Refused (-1) before writing: a role
- * outside {1, 2}, an all-zero key_hash or validator_id. A held key is a
+ * other than 1, an all-zero key_hash or validator_id. A held key is a
  * PRIMARY KEY conflict → -1 (the caller proved it absent first).
+ * There is NO release function: the index is permanent (above).
  * @return 0 one row inserted / -1.
  */
 int nodus_validator_v2_key_insert(nodus_witness_t *w,
                                   const uint8_t key_hash[NODUS_V2_KEY_HASH_LEN],
                                   const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
                                   uint8_t role);
-
-/**
- * Release every reservation of a graduating validator (design §4 last
- * sentence: a released key can be STAKEd again under a new validator_id).
- * INSIDE THE CALLER'S TRANSACTION. Deletes the role-1 row keyed by
- * SHA3-512(`consensus_pubkey`) and naming `validator_id` — EXACTLY one
- * row, else -1 (missing or foreign: a bonded-or-exiting row without its
- * reservation is corruption, never "nothing to release") — then every
- * role-2 row naming `validator_id` (a pending key; any count). A previous
- * key kept at role 1 (swapped at U, graduating at U+E) is NOT deleted: the
- * sweep of the same boundary releases it with the previous voter's
- * attendance row (HF-6 slice 6e; nodus_validator_v2_key_sweep_previous).
- * @param consensus_pubkey DNAC_PUBKEY_SIZE bytes (validators.pubkey).
- * @return 0 / -1.
- */
-int nodus_validator_v2_key_release(nodus_witness_t *w,
-                                   const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
-                                   const uint8_t *consensus_pubkey);
-
-/* ══ HF-6 slice 6d — the previous key's reservation (khan A2) ══════════
- *
- * Design rev 6 §3, khan decision A2 (2026-10-12): the key a validator
- * rotated away from at boundary U stays reserved (role 1) until the sweep
- * at U + E (nodus_witness_v2_epoch.c v2ep_rotate_sweep) releases it. The
- * reservation table is the ONLY committed record of that key for a
- * validator that was not seated in S(F) (khan A3 accepts such a rotation),
- * so the sweep finds its candidates here. */
-
-/**
- * Every validator_id holding MORE THAN ONE role-1 reservation — exactly
- * the validators swapped at this boundary or the previous one (a STAKE,
- * the migration and a swap's promotion each give a validator ONE role-1
- * key; only the swap's kept previous key makes a second) — and (HF-6 6e)
- * every validator_id whose validators row is UNSTAKED and still holds a
- * role-1 reservation: a validator swapped at the previous boundary that
- * graduated at this one (key_release keeps the previous key). Read-only;
- * one id per validator (UNION), validator_id ASC (ordered explicitly).
- * @param ids_out [out] heap array (free()) of *n_out ids; NULL when 0.
- * @return 0 / -1 (SQLite error, a malformed id, allocation).
- */
-int nodus_validator_v2_key_rotated_ids(nodus_witness_t *w,
-                                       uint8_t (**ids_out)[NODUS_V2_VALIDATOR_ID_LEN],
-                                       size_t *n_out);
-
-/**
- * Release the PREVIOUS consensus key of a swapped validator. INSIDE THE
- * CALLER'S TRANSACTION (autocommit → -1, nothing written). Reads the
- * role-1 rows naming `validator_id`: with `graduated` == 0 there must be
- * EXACTLY two and EXACTLY one of them keyed by SHA3-512(`consensus_pubkey`)
- * (the row's current key); with `graduated` != 0 (the row is UNSTAKED —
- * it graduated at this boundary and key_release took its current key's
- * row) EXACTLY one, NOT keyed by the current key. The previous key's row
- * is deleted (one row, else -1) and its consensus_pk_hash written to
- * `prev_hash_out` (the caller derives the previous key's voter_id from
- * it: SHA3-512(pk)[0..31] is the same untagged digest's prefix). Any other
- * shape is refused before a write. Role-2 rows (a NEW pending key) are
- * not touched.
- * @param consensus_pubkey DNAC_PUBKEY_SIZE bytes (validators.pubkey).
- * @param graduated        nonzero iff the validators row is UNSTAKED.
- * @return 0 / -1.
- */
-int nodus_validator_v2_key_sweep_previous(nodus_witness_t *w,
-                                          const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
-                                          const uint8_t *consensus_pubkey,
-                                          int graduated,
-                                          uint8_t prev_hash_out[NODUS_V2_KEY_HASH_LEN]);
-
-/* ══ HF-6 slice 6c — the rotation swap writer (design rev 6 §3) ═══════ */
-
-/**
- * The row switch of an accepted rotation (design §3 "Satır değişimi":
- * consensus_pubkey := pending; pending := 0; effective_epoch := 0; plan
- * tasks/hf6-slice6-plan.md §1.4, B3). Three UPDATEs, in this order, each
- * required to change EXACTLY one row:
- *   1. validators SET pubkey = new_pk
- *      WHERE pubkey_hash = validator_id AND pubkey = old_pk;
- *   2. v2_validator_roles SET pending_consensus_pubkey = 2592 × 0x00,
- *      consensus_key_effective_epoch = 0
- *      WHERE validator_id = validator_id AND pending_consensus_pubkey =
- *      new_pk;
- *   3. v2_consensus_keys SET role = 1
- *      WHERE consensus_pk_hash = SHA3-512(new_pk) AND validator_id =
- *      validator_id AND role = 2.
- * The OLD key's role-1 reservation is NOT touched — it is released at U+E
- * by the sweep (khan A2; slice 6d). This is the ONE writer allowed to
- * change validators.pubkey (nodus_validator_v2_update and the SYSTEM
- * adapter's op-13 SET never do).
- *
- * INSIDE THE CALLER'S TRANSACTION — autocommit → -1, nothing written.
- * Refused before any write (-1): an all-zero validator_id or new_pk,
- * new_pk == old_pk. A wrong old key fails step 1, so nothing is written;
- * a failure at step 2 or 3 leaves the earlier steps written and the caller
- * rolls the transaction back (the host does so on every block fault) — the
- * nodus_validator_v2_update discipline.
- *
- * Caller: the boundary swap step (nodus_witness_v2_epoch.c
- * v2ep_rotate_swap, slice 6d), for a row whose entry in the snapshot S(U)
- * taking effect at the boundary carries the row's pending key.
- *
- * @param old_pk, new_pk DNAC_PUBKEY_SIZE bytes.
- * @return 0 / -1.
- */
-int nodus_validator_v2_rotate_apply(nodus_witness_t *w,
-                                    const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
-                                    const uint8_t *old_pk,
-                                    const uint8_t *new_pk);
 
 #ifdef __cplusplus
 }

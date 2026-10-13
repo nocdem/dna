@@ -31,10 +31,10 @@
  *   RETIRING / AUTO_RETIRED /     amounts untouched (re-keyed + roles row)
  *   UNSTAKED rows
  *   v2_consensus_keys (slice 4,   one role-1 row (SHA3-512(pk) untagged,
- *   design §4)                    validator_id, 1) per validator whose
- *                                 status is NOT UNSTAKED (an UNSTAKED row
- *                                 has graduated — §4: graduation releases
- *                                 the key), in SHA3-512(pk) ASC
+ *   design §4; khan decision      validator_id, 1) per validator of ANY
+ *   2026-10-13-kurultay-18-       status, UNSTAKED included (the index is
+ *   summary.md items 1, 4)        permanent: a key once used is never
+ *                                 STAKEd again), in SHA3-512(pk) ASC
  *   delegations                   (SHA3-512(0x03‖dpk), SHA3-512(0x03‖vpk))
  *                                 → (SHA3-512(dpk), validator_id(vpk));
  *                                 amount, delegated_at_block and both

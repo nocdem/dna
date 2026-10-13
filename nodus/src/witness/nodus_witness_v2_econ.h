@@ -383,12 +383,14 @@ int nodus_witness_v2_payout_interval(nodus_witness_t *w, uint64_t *out);
  * HF-6 — at `key_generation` >= NODUS_RT_GEN_STORAGE (design 2026-10-03-
  * hf5-validator-owner-stake rev 6 §1.6, §7.5) every member is resolved by
  * its row's PRIMARY KEY (nodus_validator_v2_get), never by the consensus
- * pubkey (not unique across rows — a graduated UNSTAKED row may share it):
+ * pubkey (validators.pubkey is not a UNIQUE column; since the permanent
+ * key index — khan decision 2026-10-13-kurultay-18-summary.md item 4 — no
+ * two generation-4 rows share one, but the primary-key read stays):
  *   a RULESET-2 entry (slice 5c): copy key = entry.validator_id; has_row =
  *     a row is keyed by it; "accrue base + commission to fp(v)" is "to
  *     entry.owner_fp" (§1.6 "vset v2 girdisinden"); a found row whose
  *     owner_fp or consensus pubkey differs from the entry's is a FAULT
- *     (-2) — the pubkey check is slice 6's to replace (ROTATE);
+ *     (-2) — strict equality: HF-6 has no key rotation;
  *   a RULESET-1 entry (the v1-SNAPSHOT BRIDGE, sub-slice 3d, §7.5): copy
  *     key = dna_validator_id_migrated(chain id, entry pubkey) (the key the
  *     edge re-keyed the retained copies to and the boundary writes new

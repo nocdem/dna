@@ -731,7 +731,7 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
 | HF-5 | rule-set generation 3: SYSTEM v8 / CORE v6 / EVM v2 — the EVM domain (domain 2) registered ACTIVE at the end of H−1; CORE op 9 EVMFUND; id 15 EVM_BLOCK_GAS_LIMIT in force | 14 `EVM_ACTIVE` | 188948158701949959 (D = 0x029f47596864d407) | 62425 | 79757 | 0.24.1 | `1D6A68F08EC42ED0` |
-| HF-6 validator owner/node roles + archive storage, after HF-5 (**not voted**) | rule-set generation 4 (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): at the end of H−1 the registry switches 3 → 4 AND the validator migration runs (keys re-valued to validator_id, each 10M bond → 2M bond + 8M Foundation-owned self-delegation, the Foundation accrual merge), the SYSTEM root becomes `NDS.SYS.v5` in H−1's own app_hash; from H: SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT and 10 ROTATE_CONSENSUS_KEY, the owner/node split for both roles, params 19 `STAKE_MIN` / 20 `POWER_CAP_BPS` / 21 `STORAGE_BOND` votable; the storage boundary gate opens at the first boundary ≥ H | 18 `RULESET_GEN_ROLES` (khan 2026-10-13; param 16 `RULESET_GEN_STORAGE` RETIRED — the new binary refuses it) | 5604184871704996557 (D4 = 0x4dc61072d5982acd; `DNAC_CFG_RULESET_GEN_ROLES_D`, from `shared/dnac/tests/hf6_vote_oracle.py`, design rev 6 §8.1) | — | — | branch `hf6` (not released) | — |
+| HF-6 validator owner/node roles + archive storage, after HF-5 (**not voted**) | rule-set generation 4 (SYSTEM v10 / CORE v8 since HF-6 D2 — khan decision `2026-10-13-kurultay-18-summary.md` item 3, the call layouts of UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT changed and the ruleset hash does not commit layouts — from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): at the end of H−1 the registry switches 3 → 4 AND the validator migration runs (keys re-valued to validator_id, each 10M bond → 2M bond + 8M Foundation-owned self-delegation, the Foundation accrual merge), the SYSTEM root becomes `NDS.SYS.v5` in H−1's own app_hash; from H: SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT (no op 10: ROTATE_CONSENSUS_KEY was removed, khan decision `2026-10-13-kurultay-18-summary.md` item 1 — a used consensus key is burned for good, §2.7), the owner/node split for both roles (UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT name their owner in the call, "C2", §2.6-§2.7), params 19 `STAKE_MIN` / 20 `POWER_CAP_BPS` / 21 `STORAGE_BOND` votable; the storage boundary gate opens at the first boundary ≥ H | 18 `RULESET_GEN_ROLES` (khan 2026-10-13; param 16 `RULESET_GEN_STORAGE` RETIRED — the new binary refuses it) | 6422714822839891339 (D4 = 0x5922111a3501f58b since HF-6 D2 — 0x4dc61072d5982acd before it, never voted; `DNAC_CFG_RULESET_GEN_ROLES_D`, from `shared/dnac/tests/hf6_vote_oracle.py`, design rev 6 §8.1) | — | — | branch `hf6` (not released) | — |
 | HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not the validator itself is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; self-delegation, UNDELEGATE, existing rows and payouts untouched); such a DELEGATE's funding leg takes at most 14 inputs. No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | 0.25.3 (code released, inert, vote not cast) | — |
 
 Read 2026-10-07: HF-5 ACTIVE on 7/7 — every node logged "Nodus EVM: rule-set generation
@@ -767,7 +767,7 @@ section): there must be no `param_id = 16` row.
 
 **The vote: param 18 `RULESET_GEN_ROLES`, value exactly D4.** It follows the HF-4 procedure below
 with param 18 in place of param 9 (`nodus-cli chain-config propose --param RULESET_GEN_ROLES --value
-5604184871704996557 --effective <H>`; the CLI prints D4 in its usage), class ERGONOMIC (H ≥ the
+6422714822839891339 --effective <H>`; the CLI prints D4 in its usage), class ERGONOMIC (H ≥ the
 committing block + 720), and the stateful rules (`nodus_witness_chain_config.c`,
 `nodus_chain_config_stateful_rules_ex`), each a verdict on every node: (a) single use — no param-18
 row at any height; (a′) no param-16 row at any height; (b) HF-2 in force; (c) judged under rule-set
@@ -778,15 +778,20 @@ not an epoch boundary either (the first block under the new rules) — so choose
 binary built without `NODUS_EVM_ENABLED` (the messenger tree, Windows) carries neither generation
 3 nor 4 and stops at the EVM edge.
 
-**D4 and the startup line.** D4 = `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x4dc61072d5982acd`
-(5604184871704996557) in `dnac.h`, from the independent oracle `shared/dnac/tests/hf6_vote_oracle.py`
+**D4 and the startup line.** D4 = `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x5922111a3501f58b`
+(6422714822839891339) in `dnac.h`, from the independent oracle `shared/dnac/tests/hf6_vote_oracle.py`
 (design rev 6 §8.1: the generation-4 pins, the 3 → 4 spec version, the K8 Foundation owner and nine
-compiled constants). Every EVM-enabled node re-derives it at start (runtime selfcheck) and **refuses
+compiled constants). Since HF-6 D2 the generation-4 pins are SYSTEM v10 (rules 1..9)
+`a012cc08bbf96524…09bb662a`, CORE v8 `db32614f1eb4818d…a0f991d1` and the SYSTEM policy (ops 1..9)
+`0aa4c690a05af882…25922766` — byte-equal to the EVM generation's policy, the same op set — all from
+`shared/dnac/tests/storage_oracle.py` (S1 / S2 / S3; `nodus_ruleset_pins.h` regenerated). The value
+before D2 (`0x4dc61072d5982acd`, SYSTEM v9 with op 10, CORE v7) was never voted and no binary carries
+it. Every EVM-enabled node re-derives it at start (runtime selfcheck) and **refuses
 to start** if the compiled literal does not match its own pins, owner and constants. The startup log
 carries the line
-`HF-6 rule-set generation 4 vote D4 0x4dc61072d5982acd (param 18 RULESET_GEN_ROLES, switch spec v1), built from git commit …`,
+`HF-6 rule-set generation 4 vote D4 0x5922111a3501f58b (param 18 RULESET_GEN_ROLES, switch spec v1), built from git commit …`,
 compared on 7/7 before the vote exactly as the D2 line is before param 9. At the edge every node logs
-`HF-6: rule-set generation 3 -> 4 and the validator migration at the end of height <H−1> (param 18 RULESET_GEN_ROLES, D4 0x4dc61072d5982acd); height <H> is judged under generation 4`.
+`HF-6: rule-set generation 3 -> 4 and the validator migration at the end of height <H−1> (param 18 RULESET_GEN_ROLES, D4 0x5922111a3501f58b); height <H> is judged under generation 4`.
 Production builds define neither override. **Test builds only:** a harness build that compiles its
 own owner (`-DDNAC_HF6_FOUNDATION_OWNER="{…}"`) must also pass that owner's D4
 (`-DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL`); a build with one and not the other refuses to start on
@@ -1346,7 +1351,7 @@ nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7
 `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §11; Kurultay #16, decision
 `docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` khan 1 and 3): the owner is a
 wallet — any address whose key signs (kind 1), or a multisig address (kind 3; nodus-cli builds it with
-`--msig`, co-signed through the v2 export — "Multisig owner" below and in §2.7). The owner signs the
+`--msig`, co-signed through the v2 export — "Multisig owner" below). The owner signs the
 registration, pays a bond of **exactly**
 1 000 000 NODUS = 10^14 raw (the STORAGE_BOND in force: chain_config param 21 `STORAGE_BOND` at the
 registration's height, no row = 1 000 000 NODUS; votable from generation 4, range 100 000 – 1 000 000
@@ -1501,8 +1506,10 @@ nodus-cli -s 127.0.0.1 -p 4001 -i /var/lib/nodus/identity storage consent \
 nodus-cli -s <node> -p 4001 storage register --keys <any key dir> --msig owner.desc \
     --consent storage-consent.txt --in <nullifier>:<amount> [--in ...] --export reg.export
 
-# each of K co-signers, offline: shows both legs decoded, signs both digests
-nodus-cli msig sign --keys <co-signer key dir> --in reg.export --out sig-<name>.txt
+# each of K co-signers: shows both legs decoded and the chain id, checks every input against the
+# vault's coins on -s (asked with the co-signer's OWN key), then signs both digests
+nodus-cli -s <node> -p 4001 msig sign --keys <co-signer key dir> --in reg.export \
+    --out sig-<name>.txt [--chain-id <hex64>]
 
 # anyone: exactly K signature files; checks every leg with the chain's auth hook, then submits
 nodus-cli -s <node> -p 4001 msig combine --in reg.export --sig sig-a.txt --sig sig-b.txt \
@@ -1514,8 +1521,24 @@ nodus-cli -s <node> -p 4001 storage exit --keys <any key dir> --msig owner.desc 
 ```
 
 The export is valid until tip + 90 blocks (its expiry); combine after that and the node refuses it —
-build a new export. `msig sign` prints a WARNING that the inputs' owner is not verified (no RPC
-answers it): sign only if every nullifier is a coin of the address.
+build a new export. **`msig sign` verifies the inputs and refuses otherwise** (HF-6 D2, khan decision
+`docs/plans/decisions/2026-10-13-kurultay-18-summary.md` item 5): the descriptor the export carries
+is NOT covered by the signatures, so co-members of two vaults could be shown vault B while the coins
+are vault A's. Before signing, `msig sign` opens a session to `-s` with the co-signer's own key (a
+member of the descriptor), requires the node's chain id to equal the export's, asks the vault's coin
+set (`dnac_msig_utxo`, one page of at most 100 coins, largest first) and requires EVERY input
+nullifier in it — it prints each input's amount from the node. No `-s`, a node without the method, a
+key outside the descriptor, another chain, or one input not in the page (a vault with more than 100
+coins whose input is not among the 100 largest included) → **nothing is signed**; there is no flag
+that skips it. `--chain-id <hex64>` additionally pins the chain the co-signer expects. A change
+output to any address but the vault's is refused too. The same holds for a v1 (single SPEND leg)
+export.
+
+**The call carries the owner (HF-6 D2, "C2", item 2).** `STORAGE_EXIT` is `node_fp[64] ‖
+owner_fp[64]` (128 B) — the CLI writes `owner_fp` = SHA3-512 of the `--keys` identity, or with
+`--msig` the multisig address; the chain refuses (a verdict) an exit whose `owner_fp` is not the
+registry row's owner, whoever signs. UNSTAKE (`validator_id ‖ owner_fp`, 128 B) and VALIDATOR_UPDATE
+(`validator_id ‖ owner_fp ‖ commission u16`, 130 B) follow the same rule (§2.7).
 
 - **The consent** (`storage consent`, `-i` = the node's own identity, `identity_path` in its config —
   the path above is an example; without `-i` the CLI refuses). The node's key signs "register me under
@@ -1567,15 +1590,15 @@ answers it): sign only if every nullifier is a coin of the address.
   fail_streak is its only trace — 0 after a good epoch with segments, growing after failed ones,
   unchanged after an epoch with no evidence (the self-approval rule above); at 3 or more the node is
   skipped for placement.
-- **A machine that is both a validator and a storage node and rotates its validator key (§2.7; khan
-  decision A4 of 2026-10-12).** The storage registration stays on the OLD key — there is no storage key
-  rotation (design §11.1): validators keep probing the old identity, and the old node, still seated in
-  the last pre-rotation validator set S(F), must file its storage reports for it inside
-  (U, U + ⌊E/2⌋] (§2.7's U). Either keep the OLD process running — through at least U + ⌊E/2⌋ for those
-  reports, and for as long as the old key is to stay a storage node, with its own data directory and the
-  archive (item 1) — or have the owner EXIT the old key and REGISTER the new key (a new consent signed by
-  the new node): the new key is a new row, joins the storage set only at the next boundary and takes
-  over its segments with a grace (1b), so expect at least one epoch without storage pay.
+- **A machine that is both a validator and a storage node and changes its validator key (§2.7: UNSTAKE
+  + a new STAKE under a fresh key — HF-6 has no key rotation, khan decision
+  `2026-10-13-kurultay-18-summary.md` item 1).** The storage registration is keyed by the OLD node key
+  and there is no storage key rotation either (design §11.1): validators keep probing the old identity.
+  Either keep the OLD process running for as long as the old key is to stay a storage node — with its
+  own data directory and the archive (item 1), and as a validator until its row graduates (§2.7 step
+  1) — or have the owner EXIT the old key and REGISTER the new key (a new consent signed by the new
+  node): the new key is a new row, joins the storage set only at the next boundary and takes over its
+  segments with a grace (1b), so expect at least one epoch without storage pay.
 
 **5. Validators need nothing.** A node seated in snapshot(H) probes every other storage member once per
 epoch and submits its STORAGE_REPORT in the report window (H+E, H+E+⌊E/2⌋] by itself — there is no
@@ -1589,139 +1612,69 @@ orders by fee per unit (decision `2026-09-25-mempool-policy.md` item 2), so in a
 waits; the reporter resubmits after its expiry and the window is 360 blocks at E = 720. No priority
 lane exists for it (only CHAIN_CONFIG has one); adding one is an operator decision.
 
-## 2.7 Validator key rotation (HF-6 ROTATE_CONSENSUS_KEY) — branch only, NOT voted, NOT deployable yet
+## 2.7 Changing a validator's consensus key = UNSTAKE + a new STAKE (HF-6: NO key rotation) — branch only, NOT voted, NOT deployable yet
 
-Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.4 and §3 (with the khan
-decisions written under §3 on 2026-10-12: A1-A5); plan `tasks/hf6-slice6-plan.md` §1 and §5 A8.
-Everything here exists only on branch `hf6` and only under rule-set generation 4 (HF-6 — voted by
-chain_config param 18 `RULESET_GEN_ROLES` = D4, §2.2 HF-6 row), which is not voted on any live chain. Its end-to-end harness proof is `test_hf6_edge.sh` step 10
-(`nodus/tests/integration/stagef/README.md`) — **written, not yet run**. **Doing any of it on a live
-node needs the operator's word like every deploy.**
+Khan decision `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` items 1 and 4 (operator: "bir
+node unstake edildikten sonra tamamen bir daha kullanılmaması", "aynı makinede yapmak istiyorsa silsin
+anahtarı, bir daha yapsın, bir yeni anahtar oluştursun"); the design's §3 box "KALDIRILDI — han kararı
+2026-10-13". **HF-6 has no ROTATE_CONSENSUS_KEY** (SYSTEM op 10 is owned by no generation — the chain
+refuses it at admission; since HF-6 D2 the CLI has no `validator consent --op rotate` /
+`v2-envelope rotate` either, and the consent file refuses op 2). Everything here exists only on
+branch `hf6` and only under rule-set generation 4 (HF-6 — voted by chain_config param 18
+`RULESET_GEN_ROLES` = D4, §2.2 HF-6 row), which is not voted on any live chain. **Doing any of it on a
+live node needs the operator's word like every deploy.**
 
-**What a rotation is.** A validator's consensus key IS its node's identity: the same key runs the
-consensus signer (privval), the 4004 p2p ID and the 4002 inter-node auth (design §1.4). So "a new
-key" means **a new node with a new identity**; the validator itself — its validator_id, owner,
-bond, delegations and the owner's earnings — does not change. The OWNER submits the rotation and
-pays a normal fee (khan A4: no bond moves); the NEW node's key consents to it first.
-
-**The heights.** The ROTATE is applied at height h. F = the first epoch boundary at or after h (the
-exec writes it into the validator's row as `consensus_key_effective_epoch` — khan A1). At F the
-chain decides whether the rotation fits the budget below; if it does, the validator set of
-U = F + E (E = the epoch length, 720 on the testnet) carries the NEW key. At U the validator's row
-switches to the new key and cometbft is told "old key out, new key in"; the old key still signs
-blocks U and U+1, the new key signs from **U + 2** (design §3). At U + E the old key's reservation
-and its attendance row are released (khan A2) — only then may that key be used again.
-
-**The budget — why a rotation can wait.** At F the rotations waiting there are taken in
-validator_id order, and each is accepted only if the set of keys changing at once still leaves
-MORE than two thirds of the counted voting power on unchanged keys — in BOTH the set governing at
-F and the one that starts at U (`P − R > ⌊2P/3⌋`, `nodus_witness_vset.c` `vset_rotation_pass`).
-The budget is cumulative (khan A7, 2026-10-13): in the set governing at F, R does not start at
-zero but at the counted power of the validators that set already carries under a key changed
-since the set before it — the rotations accepted one boundary earlier, whose new nodes are still
-taking over during that set — so two consecutive batches together never move a third of one set
-(a validator with no seat in the earlier set is a new entrant, not a rotation, and is not
-counted; when the earlier set is a pre-generation-4 (ruleset 1) set its validators are matched
-by the migrated validator_id derived from their key, so the rotations the first generation-4
-boundary accepts are carried too; when there is no earlier set, R starts at zero). One that does not fit is skipped and the walk continues (khan A3); it is judged again at every
-later boundary, its F unchanged. Consequences: with **three or fewer equal validators no rotation
-is ever accepted** (design §3 — rotating any one of three equal keys moves a full third); one
-validator holding more than a third of the counted power can never rotate while that holds;
-several validators rotating together wait for each other. The exec checks only who signed, the
-consent and key uniqueness — it promises no date.
-
-**Prerequisites.**
-- The owner's key — a single key (kind 1, step 4 as written) or a multisig address (kind 3,
-  step 4 "Multisig owner"). The Foundation's seven genesis validators are owned by the **kind-3
-  2-of-3 K8 address** (decision `2026-10-08-kurultay-14-hf6-summary.md` K8; the HF-6 migration,
-  decision `2026-10-09-kurultay-16-hf6-storage-summary.md` D2 (a)): their rotation takes the
-  multisig path (decision `2026-09-29-general-multisig.md`, addendum "çok bacaklı ortak imza dosyası
-  v2"; the chain's rule `rtn_sys_owner_auth`: ≥ M of the descriptor's keys, no other signer, the
-  descriptor's address == the row's owner).
-- The validator must be ACTIVE or ELIGIBLE (khan A5) and have no rotation already pending (a second
-  ROTATE is refused until the first has switched at U).
-- The new key must not be reserved by any validator in any role (current or pending) — never reuse a
-  key another validator holds; the old key of this validator is reserved until U + E.
+**The rule.** A validator's consensus key IS its node's identity: the same key runs the consensus
+signer (privval), the 4004 p2p ID and the 4002 inter-node auth (design §1.4). A key that has EVER
+appeared in a validators row — any status, UNSTAKED included, and every pre-HF-6 row (the
+generation-4 edge reserves them all) — is **burned for good**: no STAKE can ever use it again
+(`v2_consensus_keys` is permanent; the generation-4 STAKE refuses a reserved key at exec,
+`nodus_witness_rt_native.c` `rtn_stake2_exec`). So a new key — whether wanted, or because the old one
+leaked — means **a NEW validator**: a new node with a new identity, a new STAKE, a new validator_id.
+Nothing carries over: delegators re-delegate to the new validator, its Rule R tenure starts again
+(seated no earlier than two epochs after its STAKE, `DNAC_MIN_TENURE_BLOCKS` = 2E), and the old
+validator's bond comes back only through the normal graduation below.
 
 **Procedure.**
-1. **Prepare the new node — new identity, new data directory.** Give it its own `identity_path` and
-   its own data directory (the consensus signer's state lives in
-   `<data dir>/priv_validator_state.json`, `nodus_witness.c`). **Never copy the old node's identity
-   or data directory**: two processes with one consensus key is double signing. Its network file /
-   `persistent_peers` lists the existing validators like any node (§2.3). Its own 4004 p2p ID is
-   derived from its key: `nodus-cli -i <new identity dir> whoami` prints `P2P ID:`; once it is a
-   validator the published network file should carry its `<p2p id>@ip:4004` (the old node's entry
-   can stay while the old node runs).
-2. **Start it and let it catch up BEFORE the rotation.** It joins as a non-validator (by the
-   genesis pin of the network file, §1.5 "Joining a node"), block-syncs, and must be at the fleet's
-   tip and connected to the validators well before U + 2 — from the ROTATE's commit on, the pending
-   key already counts as bonded for 4004 peering (design §3; HF-6 6e), whatever the validator's
-   status: it stays bonded even if the validator unstakes after the rotation was accepted (RETIRING /
-   AUTO_RETIRED — the switch at U still seats the new key), until the switch or the graduation
-   clears it. Check: its log shows
-   `cometbft lane LIVE` and its tip equals the fleet's.
-3. **The new node consents** (its own key signs; run where its identity is):
-   ```bash
-   nodus-cli -s 127.0.0.1 -p 4001 -i <new identity dir> validator consent --op rotate \
-       --owner <owner fp, 128 hex> --subject <validator_id, 128 hex> --expiry <height> --out consent.txt
-   ```
-   The chain accepts the consent at inclusion height h only when `expiry ≥ h` and
-   `expiry − h ≤ 720` (`DNA_VALBIND_MAX_EXPIRY_BLOCKS`, a fixed number); the CLI refuses an expiry
-   the next height would not accept. Choose an expiry above the envelope's own (tip + 90).
-4. **The owner submits** (its key signs and pays the fee; the consent file is re-verified first):
-   ```bash
-   nodus-cli -s <node> -p 4001 v2-envelope rotate --keys <owner key dir> \
-       --validator <validator_id> --consent consent.txt --dry-run
-   nodus-cli -s <node> -p 4001 v2-envelope rotate --keys <owner key dir> \
-       --validator <validator_id> --consent consent.txt --submit <node>:4001
-   ```
-   "accepted" on submit is mempool admission only (§1.5 / README "Submit returns" rule). The ROTATE
-   is applied when its `intent_id` (printed) appears in `v2_intent_index`; a refused one leaves no row.
+1. **The owner UNSTAKEs the old validator** (`v2-envelope unstake`, kind 1 or — for a multisig owner —
+   the `--msig … --in … --export` form of §2.6 "Multisig owner"; the co-signers' `msig sign` needs
+   `-s <node>` to verify the funding inputs, §2.6). The call is `validator_id ‖ owner_fp` (128 B —
+   HF-6 D2 "C2": the CLI writes the `--keys` identity's fingerprint or the multisig address; the chain
+   refuses an UNSTAKE whose `owner_fp` is not the row's owner, whoever signs — the same for
+   `v2-envelope validator-update`, `validator_id ‖ owner_fp ‖ commission`, 130 B). Its row becomes
+   RETIRING. It
+   graduates at the first epoch boundary where it is no longer an entry of the snapshot taking effect
+   (often one epoch later than the UNSTAKE — an exiting validator stays seated and MUST keep signing
+   until then, `nodus_witness_v2_epoch.h` GRADUATION); at the graduation its bond is released to the
+   owner as a coin locked `DNAC_VALIDATOR_UNBOND_EPOCHS` (84) epochs and every delegation it still
+   holds goes back to its delegator locked `DNAC_UNDELEGATE_LOCK_EPOCHS` (12) epochs. **Keep the old
+   node running and signing until its row reads UNSTAKED** (`SELECT status FROM validators WHERE
+   lower(hex(pubkey_hash)) = '<validator_id>'` → 2). After that the old key is never usable again —
+   delete it.
+2. **Prepare the new node — new identity, new data directory** (the consensus signer's state lives in
+   `<data dir>/priv_validator_state.json`, `nodus_witness.c`). **Never copy the old node's identity or
+   data directory**: two processes with one consensus key is double signing — and the old key could
+   not be STAKEd anyway. On the same machine: stop the old process after step 1, move its identity and
+   data aside (or delete them), let nodus-server generate a fresh identity. Its own 4004 p2p ID:
+   `nodus-cli -i <new identity dir> whoami` (`P2P ID:`). It joins as a non-validator and block-syncs
+   (§1.5 "Joining a node").
+3. **The new node consents and the owner STAKEs** — `validator consent --op stake` signed by the NEW
+   key, then `v2-envelope stake2` by the owner with a bond ≥ STAKE_MIN (chain_config param 19; the
+   compiled default 2 000 000 NODUS). A STAKE naming a used key is refused at exec (the item leaves no
+   `v2_intent_index` row) — that is the rule, not a fault.
+4. **The bond.** The new STAKE needs its own bond from the owner (the old bond is locked for 84 epochs
+   after the old validator's graduation). Funding the new one from other coins does not wait for the
+   old bond.
 
-   **Multisig owner (kind 3).** In step 3 the consent names the ADDRESS: `--msig owner.desc` instead
-   of `--owner`. Then three steps (the same files as §2.6 "Multisig owner"; every co-signer signs
-   BOTH legs — the SYSTEM call and the CORE fee funding — in one v2 signature file):
-   ```bash
-   # the UNSIGNED v2 export; --keys only opens the session; the fee comes from the address's coins
-   nodus-cli -s <node> -p 4001 v2-envelope rotate --keys <any key dir> --msig owner.desc \
-       --validator <validator_id> --consent consent.txt --in <nullifier>:<amount> --export rot.export
-   # each of K co-signers (offline): both legs shown decoded, both digests signed
-   nodus-cli msig sign --keys <co-signer key dir> --in rot.export --out sig-<name>.txt
-   # exactly K files; every leg checked with the chain's auth hook; then submit
-   nodus-cli -s <node> -p 4001 msig combine --in rot.export --sig sig-a.txt --sig sig-b.txt \
-       --keys <any key dir> --submit <node>:4001
-   ```
-   The same `--msig ... --in ... --export` form builds `stake2`, `unstake`, `validator-update`,
-   `delegate` and `undelegate` for a multisig owner / delegator. The export expires at tip + 90.
-5. **Watch F.** Every node logs, at boundary F, `snapshot(<U>): <a> rotation(s) accepted, <w> waiting
-   (P_U … R_U …, P_F … R_F …, carried …)` — `carried` is the part of R_F the set governing at F
-   already carried from the previous boundary's rotations (the cumulative budget above). Accepted →
-   go on. **Waiting = deferred by the budget:** the
-   validator's `v2_validator_roles` row keeps the pending key and its F; the stored snapshot(U)
-   carries the OLD key; nothing switches at U; it is judged again at the next boundary. There is no
-   CLI / RPC display of the pending key yet (slice 7); read it on a node:
-   ```bash
-   sqlite3 <witness db> "SELECT consensus_key_effective_epoch, pending_consensus_pubkey != zeroblob(2592)
-       FROM v2_validator_roles WHERE lower(hex(validator_id)) = '<validator_id>';"
-   ```
-6. **At U** every node logs `boundary <U>: <n> consensus key(s) switched to the key S(U) seats` and
-   `FinalizeBlock: epoch boundary height <U> — validator_updates n_added=1 … n_removed=1` (with other
-   set changes at the same boundary the counts are larger). The new node starts signing at U + 2 by
-   itself; the old node stops signing at U + 2 by itself (it is no longer in the set) — no restart,
-   no config change on either.
-7. **Keep the OLD node running** through **U + 1** at the very least — it signs blocks U and U + 1
-   (design §3; the CLI's own note after `rotate` says the same). The plan's runbook item (A8,
-   JUDGMENT) keeps it up **through U + E**: the snapshot of F, where the old key still holds the
-   seat, is still read at U + E, and a node seated in it files that epoch's STORAGE_REPORT in the
-   window (U, U + E/2] (§2.6 item 5); the old key and its attendance row are released at U + E
-   (`boundary <U+E>: 1 previous consensus key(s) released with their attendance rows`). After that
-   the old node may be stopped; its key is no longer reserved.
-8. **Governance from U + 1.** Chain-config approvals are counted against the set governing the
-   height (plan §0.6 #13): from U + 1 the NEW key approves for this validator, the old key's
-   approval no longer counts. Run governance from the new node.
-9. **4002.** The design's runbook line names "4002 pin/session change" for the new node (it
-   authenticates on 4002 with its new key). What, if anything, a peer must change on 4002 is not
-   specified anywhere in this tree — open item, ask before the first live rotation.
+**A storage node on the same machine** (§2.6 item 1's "both a validator and a storage node"): the
+storage registration is keyed by the node key too; changing the key means EXITing the old storage
+row and REGISTERing the new key (a new consent by the new node) — expect at least one epoch without
+storage pay while the new row joins the storage set.
+
+(Until 2026-10-13 this section described the HF-6 slice-6 key rotation — the freeze's budget, the
+switch at U, the release at U + E and khan decisions A1-A8; the feature was removed before any chain
+ran it. `git log` keeps the old text.)
+
 
 ---
 

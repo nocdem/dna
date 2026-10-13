@@ -34,11 +34,32 @@
  *     APPLIES (op-13 row owner = ADDR); the CORE exec, fed the REAL leg-1
  *     verdict and coins owned by ADDR, balances (Σin == change + fee +
  *     bond).
- *  O2 ROTATE of that validator by ADDR (the new key KN consents to ADDR):
- *     the same path; the exec, given the committed row from O1, APPLIES.
+ *  O2 UNSTAKE and VALIDATOR_UPDATE of that validator by ADDR (HF-6 D2,
+ *     C2 — khan decision 2026-10-13-kurultay-18-summary.md item 2): the
+ *     same path; the call is validator_id ‖ owner_fp = ADDR (128 / 130
+ *     bytes); the SYSTEM exec, given O1's committed row, APPLIES; the
+ *     fee-only funding by ADDR's coins balances. (The ROTATE case that
+ *     stood here is gone with the operation, item 1.)
  *  O3 STORAGE_REGISTER owned by ADDR (KS consents with op 3): the same
  *     path; the exec CREATEs the storage row with ADDR in its owner
- *     column; the funding balances with lock = bond.
+ *     column; the funding balances with lock = bond. Then STORAGE_EXIT of
+ *     that node by ADDR: the call is node_fp ‖ owner_fp = ADDR (128 B,
+ *     C2) and the exec over the registered record APPLIES.
+ *  N4 THE DESCRIPTOR SWAP with real signatures (C2; item 5): vault B =
+ *     2-of-3 {K1, K2, KX} shares K1, K2 with A. K1 and K2 sign an UNSTAKE
+ *     built for B; A's descriptor (same length) is then put in both
+ *     blobs: the preflight digests and the intent do not move (the
+ *     descriptor is outside the signed context) and the auth hook finds
+ *     A satisfied by the same signatures. SYSTEM: the call names B, O1's
+ *     row is A's → REFUSED (-1) — before C2 this applied. CORE: the
+ *     swapped funding leg with A's coins is ACCEPTED by the chain (pinned
+ *     on purpose: the chain cannot tell; `msig sign`'s check of every
+ *     input against the vault's coin set is what refuses it).
+ *  N5 HF-6 D2 library guards: review2 refuses (ERR_CALL) an export whose
+ *     change output names another address, every digest re-derived for
+ *     the edited bytes; assemble2 refuses (ERR_ARG, no slot written on
+ *     either leg) a leg whose count byte is not n_sig, and assembles once
+ *     it is restored.
  *  N1 BELOW M — the O1 STAKE rebuilt by hand with ONE slot (K = 1 < M = 2;
  *     the builder refuses K < M, ERR_ARG — checked), signed by K1 alone
  *     and assembled with assemble2: the auth hook verifies the signature
@@ -85,6 +106,10 @@
  *  - The CORE leg's foreign-signer case (N2) is not checked at the CORE
  *    exec: the chain does not apply the owner rule there (a satisfied
  *    descriptor owns its coins whatever else signed).
+ *  - N4's CORE assertion PASSES because of a known protocol gap (the
+ *    chain accepts the swapped funding leg); it is not a guarantee. The
+ *    signer-side refusal (nodus-cli msig_inputs_verify, which needs a
+ *    node) is NOT driven by this file.
  *  - The v1 SPEND flow's byte vectors are test_v2_msig.c's (unchanged);
  *    this file only checks that the two formats do not read each other.
  *  - Written and compiled, NOT RUN by its author (the BUILDER rule).
@@ -170,7 +195,9 @@ static void hex_of(const uint8_t raw[64], char out[129]) {
 
 /* ══ keys, descriptor, ruleset ═══════════════════════════════════════ */
 
-/* K1..K3 the members, KX foreign, KC the STAKE node key, KN the rotation
+/* K1..K3 the members, KX foreign (and vault B's third key), KC the STAKE
+ * node key, KN unused since HF-6 D2 removed ROTATE (kept so every other
+ * key keeps its seed 0x91 + index), formerly the rotation
  * target, KS a storage node */
 enum { K1, K2, K3, KX, KC, KN, KS, N_KEYS };
 static uint8_t g_pk[N_KEYS][QGP_DSA87_PUBLICKEYBYTES];
@@ -180,6 +207,11 @@ static uint8_t g_desc[DNA_MSIG_MAX_DESC_LEN];
 static size_t  g_desc_len;
 static uint8_t g_addr[64];
 static char    g_addr_hex[129];
+/* C2: a SECOND vault B = 2-of-3 {K1, K2, KX} — K1 and K2 are members of
+ * both A and B, the co-members the descriptor swap needs */
+static uint8_t g_descB[DNA_MSIG_MAX_DESC_LEN];
+static size_t  g_descB_len;
+static uint8_t g_addrB[64];
 
 static nodus_v2_stake_ruleset_t g_rs4;
 static const nodus_domain_runtime_t *g_s4, *g_c4;
@@ -199,6 +231,12 @@ static int setup(void) {
                                      &g_desc_len, g_addr) != NODUS_V2_SPEND_OK)
         return -1;
     hex_of(g_addr, g_addr_hex);
+    memcpy(keys + 2u * PK_LEN, g_pk[KX], PK_LEN);   /* B = {K1, K2, KX} */
+    if (nodus_v2_msig_desc_from_keys(2, 3, keys, g_descB, sizeof(g_descB),
+                                     &g_descB_len, g_addrB) !=
+            NODUS_V2_SPEND_OK ||
+        g_descB_len != g_desc_len || memcmp(g_addrB, g_addr, 64) == 0)
+        return -1;
     g_s4 = nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
                                         DNA_DOMAIN_SYSTEM);
     g_c4 = nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_CORE);
@@ -270,7 +308,6 @@ static void req_msig(nodus_v2_stake_req_t *r, nodus_v2_stake_op_t op,
         r->consensus_pk = c->consensus_pk;
         r->consent_sig = c->sig;
         r->consent_expiry = c->expiry;
-        r->validator_id = op == NODUS_V2_STAKE_OP_ROTATE ? c->subject : NULL;
     }
     r->msig_desc = g_desc;
     r->msig_desc_len = g_desc_len;
@@ -533,6 +570,7 @@ static int owner_path(const nodus_v2_stake_req_t *r, nodus_v2_msig_export2_t *x,
 
 static uint8_t g_vid[64];
 static uint8_t g_row[V2_REC_LEN];
+static uint8_t g_srec[STOR_REC_LEN];     /* O3's storage record          */
 
 static int t_stake2(void) {
     static const uint8_t zero64[64] = { 0 };
@@ -590,45 +628,225 @@ static int t_stake2(void) {
     return 0;
 }
 
-static int t_rotate(void) {
-    nodus_v2_consent_t c;
-    CHECK(consent_make(&c, DNA_VALBIND_OP_ROTATE, g_vid, KN) == 0,
-          "KN consents to ADDR rotating the validator onto it");
+/* the committed row of O1 as the one mediated read */
+static void reads_row(void) {
+    memset(g_reads, 0, sizeof(g_reads));
+    g_reads[0].present = 1;
+    g_reads[0].value_len = V2_REC_LEN;
+    memcpy(g_reads[0].value, g_row, V2_REC_LEN);
+}
+
+/* O2 — UNSTAKE and VALIDATOR_UPDATE of O1's validator by ADDR (C2: the
+ * call names the owner) through the whole v2 path; the chain applies. */
+static int t_unstake(void) {
+    for (int vu = 0; vu < 2; vu++) {
+        const uint64_t coin = 5000000000ULL;
+        coin_set(coin);
+        nodus_v2_stake_req_t r;
+        req_msig(&r, vu ? NODUS_V2_STAKE_OP_VALIDATOR_UPDATE
+                        : NODUS_V2_STAKE_OP_UNSTAKE, NULL, 2);
+        r.validator_id = g_vid;
+        r.commission_bps = vu ? BPS - 100u : 0;
+        nodus_v2_stake_built_t b;
+        nodus_v2_msig_export2_t x;
+        dna_env_view_t *v = calloc(1, sizeof(*v));
+        uint8_t intent[64];
+        CHECK(v != NULL, "alloc");
+        if (owner_path(&r, &x, v, intent, &b) != 0) return 1;
+        const uint8_t *call = v->buf + v->call_off[0];
+        CHECK(v->leg[0].call_len == (vu ? NODUS_V2_VUPD2_CALL_LEN
+                                        : NODUS_V2_UNSTAKE2_CALL_LEN) &&
+              memcmp(call, g_vid, 64) == 0 &&
+              memcmp(call + 64, g_addr, 64) == 0,
+              "call = validator_id ‖ owner_fp = ADDR (C2: 128 / 130 B)");
+        ctx_for(0, intent);
+        reads_row();
+        dna_effect_view_t ev;
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(v, 1, &ev) == 0 && ev.effect_count == 1 &&
+              ev.eff[0].op_id == OP_VAL2,
+              vu ? "VALIDATOR_UPDATE APPLIES under the kind-3 owner"
+                 : "UNSTAKE APPLIES under the kind-3 owner");
+        ctx_for(1, intent);
+        {
+            uint16_t nr = fund_reads(v, coin);
+            CHECK(core_exec(v, nr) == 0, "fee-only funding by ADDR's coins");
+        }
+        nodus_v2_msig_export2_free(&x);
+        nodus_v2_stake_built_free(&b);
+        free(v);
+    }
+    return 0;
+}
+
+/* N4 — the descriptor swap with REAL signatures (C2, khan decision
+ * 2026-10-13-kurultay-18-summary.md items 2 and 5). K1 and K2 are members
+ * of both A (ADDR) and B. They are shown, and sign, an UNSTAKE built for
+ * vault B; afterwards A's descriptor (same length) is put in both blobs.
+ * The digests do not move (the descriptor is outside the signed context)
+ * and A's descriptor is satisfied by the same two signatures.
+ *   SYSTEM: the call still names B as the owner, the row is A's → the
+ *           exec REFUSES (-1). Before C2 the owner came from the row and
+ *           this applied: an UNSTAKE of A's validator signed under B.
+ *   CORE:   the chain ACCEPTS the swapped funding leg with A's coins — it
+ *           cannot tell (rtn_input_owned: the satisfied descriptor owns
+ *           the coins). Pinned on purpose: this is the gap nodus-cli
+ *           `msig sign` closes by checking every input against the vault's
+ *           coin set before signing (item 5); a protocol binding is a
+ *           separate, height-activated decision (not now). */
+static int t_c2_swap(void) {
     const uint64_t coin = 5000000000ULL;
     coin_set(coin);
     nodus_v2_stake_req_t r;
-    req_msig(&r, NODUS_V2_STAKE_OP_ROTATE, &c, 2);
+    req_msig(&r, NODUS_V2_STAKE_OP_UNSTAKE, NULL, 2);
+    r.validator_id = g_vid;
+    r.msig_desc = g_descB;
+    r.msig_desc_len = g_descB_len;
     nodus_v2_stake_built_t b;
+    nodus_v2_stake_err_t e;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK &&
+          memcmp(b.dec.owner_fp, g_addrB, 64) == 0 &&
+          memcmp(b.dec.msig_addr, g_addrB, 64) == 0,
+          "N4: an UNSTAKE built for vault B (its call names B)");
     nodus_v2_msig_export2_t x;
+    CHECK(export_of(&b, 2, &x) == 0, "N4: export");
+    dna_env_leg_ctx_t lctx[2];
+    lctx_set(lctx);
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    dna_env_preflight_t *pf2 = calloc(1, sizeof(*pf2));
+    nodus_v2_msig_sig2_t *s[2] = { calloc(1, sizeof(nodus_v2_msig_sig2_t)),
+                                   calloc(1, sizeof(nodus_v2_msig_sig2_t)) };
     dna_env_view_t *v = calloc(1, sizeof(*v));
-    uint8_t intent[64];
-    CHECK(v != NULL, "alloc");
-    if (owner_path(&r, &x, v, intent, &b) != 0) return 1;
-    CHECK(v->leg[0].call_len == NODUS_V2_ROTATE_CALL_LEN &&
-          memcmp(v->buf + v->call_off[0], g_vid, 64) == 0,
-          "ROTATE call names the validator (7291 bytes)");
-    ctx_for(0, intent);
-    {
-        dna_effect_view_t ev;
-        memset(g_reads, 0, sizeof(g_reads));
-        g_reads[0].present = 1;                     /* the committed row */
-        g_reads[0].value_len = V2_REC_LEN;
-        memcpy(g_reads[0].value, g_row, V2_REC_LEN);
-        memset(&ev, 0, sizeof(ev));
-        CHECK(sys_exec(v, 2, &ev) == 0 && ev.effect_count == 2 &&
-              memcmp(ev.buf + ev.val_off[1] + V2_PPK_OFF, g_pk[KN], PK_LEN)
-                  == 0,
-              "ROTATE exec APPLIES: the row's owner ADDR authorized it, the "
-              "pending key is KN");
+    CHECK(pf && pf2 && s[0] && s[1] && v, "alloc");
+    CHECK(sig2_make(K1, &x, s[0]) == 0 && sig2_make(K2, &x, s[1]) == 0,
+          "N4: K1 and K2 sign B's export");
+    int bad = 7;
+    CHECK(nodus_v2_msig_combine2(&x, lctx, 2,
+                                 (const nodus_v2_msig_sig2_t *const *)s, 2,
+                                 pf, &bad) == NODUS_V2_SPEND_OK,
+          "N4: combine2 under B");
+    /* the swap: A's descriptor into both blobs */
+    CHECK(dna_env_decode(x.env, x.env_len, v) == 0, "N4: decode");
+    const size_t doff = 1u + 2u * NODUS_RT_AUTH_SIGNER_LEN + 3u;
+    for (uint16_t L = 0; L < 2; L++) {
+        uint8_t *a = x.env + v->auth_off[L];
+        CHECK(memcmp(a + doff, g_descB, g_descB_len) == 0,
+              "N4: B's descriptor in the blob");
+        memcpy(a + doff, g_desc, g_desc_len);
     }
-    ctx_for(1, intent);
+    CHECK(dna_env_preflight(x.env, x.env_len, g_chain32, TIP + 1, lctx, 2,
+                            pf2) == DNA_ENV_PF_OK &&
+          memcmp(pf2->auth_digest[0], pf->auth_digest[0], 64) == 0 &&
+          memcmp(pf2->auth_digest[1], pf->auth_digest[1], 64) == 0 &&
+          memcmp(pf2->intent_id, pf->intent_id, 64) == 0,
+          "N4: the premise — the swap moves no digest and no intent");
+    CHECK(dna_env_decode(x.env, x.env_len, v) == 0, "N4: re-decode");
+    for (uint16_t L = 0; L < 2; L++)
+        CHECK(verdict(v, L, pf2->auth_digest[L]) == 0 &&
+              g_av[L].n_msig == 1 && g_av[L].msig_satisfied[0] == 1 &&
+              (g_av[L].msig_signers_in_desc & 1u) == 1u &&
+              memcmp(g_av[L].msig_addr[0], g_addr, 64) == 0,
+              "N4: the auth hook — A's descriptor, satisfied by the SAME "
+              "signatures");
+    ctx_for(0, pf2->intent_id);
+    reads_row();                                 /* the row is A's       */
+    CHECK(sys_exec(v, 1, NULL) == -1,
+          "N4 SYSTEM: the call names B, the row is A's — REFUSED (C2)");
+    ctx_for(1, pf2->intent_id);
     {
-        uint16_t nr = fund_reads(v, coin);
-        CHECK(core_exec(v, nr) == 0, "fee-only funding by ADDR balances");
+        uint16_t nr = fund_reads(v, coin);      /* A's coins             */
+        CHECK(core_exec(v, nr) == 0,
+              "N4 CORE: the swapped funding leg with A's coins is accepted "
+              "by the chain — the signer-side input check (item 5) is what "
+              "refuses it");
     }
+    free(v);
+    free(s[0]);
+    free(s[1]);
+    free(pf);
+    free(pf2);
     nodus_v2_msig_export2_free(&x);
     nodus_v2_stake_built_free(&b);
+    return 0;
+}
+
+/* N5 — HF-6 D2 library guards on an UNSTAKE export of ADDR: review2
+ * refuses a change output to anyone but the vault (digests re-derived,
+ * so only the new rule can catch it); assemble2 refuses a blob whose
+ * count byte is not n_sig (nothing written). */
+static int t_d2_guards(void) {
+    const uint64_t coin = 5000000000ULL;
+    coin_set(coin);
+    nodus_v2_stake_req_t r;
+    req_msig(&r, NODUS_V2_STAKE_OP_UNSTAKE, NULL, 2);
+    r.validator_id = g_vid;
+    nodus_v2_stake_built_t b;
+    nodus_v2_stake_err_t e;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK &&
+          b.dec.n_out == 1, "N5: build (with a change output)");
+    dna_env_leg_ctx_t lctx[2];
+    lctx_set(lctx);
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    nodus_v2_msig_review2_t *rv = calloc(1, sizeof(*rv));
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    nodus_v2_msig_sig2_t *s[2] = { calloc(1, sizeof(nodus_v2_msig_sig2_t)),
+                                   calloc(1, sizeof(nodus_v2_msig_sig2_t)) };
+    CHECK(pf && rv && v && s[0] && s[1], "alloc");
+    {
+        nodus_v2_msig_export2_t x;
+        CHECK(export_of(&b, 2, &x) == 0, "N5: export");
+        CHECK(nodus_v2_msig_review2(&x, lctx, 2, g_pk[K1], pf, rv) ==
+                  NODUS_V2_SPEND_OK, "N5: the untouched export reviews");
+        /* the change owner's first hex digit moved to another lowercase
+         * hex digit, every digest re-derived for the new bytes */
+        CHECK(dna_env_decode(x.env, x.env_len, v) == 0, "N5: decode");
+        const uint8_t *fc = x.env + v->call_off[1];
+        uint8_t *own = x.env + v->call_off[1] + 1u + (size_t)fc[0] * 64u + 1u;
+        CHECK(memcmp(own, g_addr_hex, 128) == 0, "N5: change owner = ADDR");
+        own[0] = own[0] == '0' ? '1' : '0';
+        CHECK(dna_env_preflight(x.env, x.env_len, g_chain32, TIP + 1, lctx,
+                                2, pf) == DNA_ENV_PF_OK, "N5: preflight");
+        memcpy(x.digest[0], pf->auth_digest[0], 64);
+        memcpy(x.digest[1], pf->auth_digest[1], 64);
+        CHECK(nodus_v2_msig_review2(&x, lctx, 2, g_pk[K1], pf, rv) ==
+                  NODUS_V2_MSIG_ERR_CALL,
+              "N5: review2 refuses a change output to another address");
+        nodus_v2_msig_export2_free(&x);
+    }
+    {
+        nodus_v2_msig_export2_t x;
+        CHECK(export_of(&b, 2, &x) == 0, "N5: export again");
+        CHECK(sig2_make(K1, &x, s[0]) == 0 && sig2_make(K2, &x, s[1]) == 0,
+              "N5: K1 and K2 sign");
+        nodus_v2_msig_leg_t leg;
+        CHECK(nodus_v2_msig_legs_open2(&x, v, &leg) == NODUS_V2_SPEND_OK,
+              "N5: legs");
+        uint8_t *a1 = x.env + v->auth_off[1];
+        CHECK(a1[0] == 2, "N5: leg 1 says K = 2");
+        a1[0] = 3;
+        uint8_t zslot[NODUS_RT_AUTH_SIGNER_LEN];
+        memset(zslot, 0, sizeof(zslot));
+        const uint8_t *a0 = x.env + v->auth_off[0];
+        CHECK(nodus_v2_msig_assemble2(&x, v,
+                                      (const nodus_v2_msig_sig2_t *const *)s,
+                                      2) == NODUS_V2_SPEND_ERR_ARG &&
+              memcmp(a0 + 1, zslot, sizeof(zslot)) == 0 &&
+              memcmp(a1 + 1, zslot, sizeof(zslot)) == 0,
+              "N5: assemble2 refuses a leg whose count byte is not n_sig, "
+              "nothing written on any leg");
+        a1[0] = 2;
+        CHECK(nodus_v2_msig_assemble2(&x, v,
+                                      (const nodus_v2_msig_sig2_t *const *)s,
+                                      2) == NODUS_V2_SPEND_OK,
+              "N5: the restored count assembles");
+        nodus_v2_msig_export2_free(&x);
+    }
+    free(s[0]);
+    free(s[1]);
     free(v);
+    free(rv);
+    free(pf);
+    nodus_v2_stake_built_free(&b);
     return 0;
 }
 
@@ -669,12 +887,39 @@ static int t_storage(void) {
               memcmp(rec + STOR_OWNER_OFF, g_addr, 64) == 0 &&
               get64(rec + STOR_BOND_OFF) == SBOND,
               "CREATE op 8: ADDR in the owner column, the bond");
+        memcpy(g_srec, rec, STOR_REC_LEN);
     }
     ctx_for(1, intent);
     {
         uint16_t nr = fund_reads(v, coin);
         CHECK(core_exec(v, nr) == 0,
               "funding by ADDR's coins balances (lock = bond)");
+    }
+    nodus_v2_msig_export2_free(&x);
+    nodus_v2_stake_built_free(&b);
+
+    /* O3' — STORAGE_EXIT of that node by ADDR (C2: node_fp ‖ owner_fp),
+     * the registered (ACTIVE) record as the read */
+    coin_set(5000000000ULL);
+    req_msig(&r, NODUS_V2_STAKE_OP_STORAGE_EXIT, NULL, 2);
+    r.node_fp = ks_fp;
+    if (owner_path(&r, &x, v, intent, &b) != 0) return 1;
+    CHECK(v->leg[0].call_len == NODUS_V2_STEXIT_CALL_LEN &&
+          memcmp(v->buf + v->call_off[0], ks_fp, 64) == 0 &&
+          memcmp(v->buf + v->call_off[0] + 64, g_addr, 64) == 0,
+          "STORAGE_EXIT call: node_fp ‖ owner_fp = ADDR (128 bytes, C2)");
+    ctx_for(0, intent);
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;
+        g_reads[0].value_len = STOR_REC_LEN;
+        memcpy(g_reads[0].value, g_srec, STOR_REC_LEN);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(v, 1, &ev) == 0 && ev.effect_count == 1 &&
+              ev.eff[0].op_id == OP_STOR &&
+              ev.eff[0].effect_kind == DNA_EFFECT_SET,
+              "EXIT exec APPLIES under the kind-3 owner");
     }
     nodus_v2_msig_export2_free(&x);
     nodus_v2_stake_built_free(&b);
@@ -1010,7 +1255,9 @@ int main(void) {
         return 1;
     }
     if (t_stake2() != 0) return 1;
-    if (t_rotate() != 0) return 1;           /* after O1: its row */
+    if (t_unstake() != 0) return 1;          /* after O1: its row */
+    if (t_c2_swap() != 0) return 1;          /* after O1: its row */
+    if (t_d2_guards() != 0) return 1;
     if (t_storage() != 0) return 1;
     if (t_below_m() != 0) return 1;
     if (t_foreign() != 0) return 1;

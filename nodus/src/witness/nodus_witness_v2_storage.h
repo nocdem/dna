@@ -120,9 +120,9 @@
  *   P_total = Σ power(s); P_rep = Σ power of the seats with a committed
  *   report for H. F1: nothing moves (no pay, no fail_streak, no owner
  *   read) unless P_rep · 2 > P_total.
- *   key(s)   = SHA3-512(entry s's consensus pubkey) — the snapshot's key,
- *              never the row's current (rotated) one; two seats with one
- *              key are corrupt state (FAULT).
+ *   key(s)   = SHA3-512(entry s's consensus pubkey) — the snapshot's key
+ *              (a row's key never changes: HF-6 has no key rotation);
+ *              two seats with one key are corrupt state (FAULT).
  *   owner(s) (nodus_witness_storage_seat_owners, once per settlement):
  *              ruleset 2 → entry s's owner_fp; ruleset 1 (the first
  *              settlement after the generation-4 edge reads the last

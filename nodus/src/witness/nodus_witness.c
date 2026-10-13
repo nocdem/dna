@@ -396,13 +396,12 @@ static const char *WITNESS_DB_SCHEMA =
     ");"
     /* HF-6 slice 4 (design rev 6 §4): the consensus-key reservation table
      * — one unique key column, consensus_pk_hash = SHA3-512(consensus
-     * pubkey); role 1 active, role 2 pending (slice 6). EMPTY until the
-     * HF-6 edge; no root reads it: a function of validators,
-     * v2_validator_roles AND the stored snapshots S(h−E) / S(h) (the
-     * previous keys of the khan-A2 window), all rooted — except the
-     * previous key of a validator S(h−E) does not seat (khan A3), whose
-     * only committed record is its row here. Checked at every
-     * generation-4 boundary by v2ep_keyres_selfcheck (log-only;
+     * pubkey); role 1 only (the slice-6 pending role went with ROTATE —
+     * khan decision 2026-10-13-kurultay-18-summary.md items 1 and 4).
+     * PERMANENT and append-only: one row per validators row of any
+     * status, never released. EMPTY until the HF-6 edge; no root reads
+     * it: a function of the validators rows alone, all rooted. Checked
+     * at every generation-4 boundary by v2ep_keyres_selfcheck (log-only;
      * nodus_witness_v2_epoch.c). Byte-identical to the S18 rung's
      * statement (nodus_witness_v2_schema.c), which verifies the shape. */
     "CREATE TABLE IF NOT EXISTS v2_consensus_keys ("
