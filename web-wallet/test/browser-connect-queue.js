@@ -62,16 +62,37 @@ try {
       nc_profile_get: args => profile(args[0]),
       nc_contacts_get: () => ({ outcome: 'found', why: 'none', invalid: '0', timestamp: '1', contacts: [{ fp: B, salt: SALT }] }),
       nc_contacts_add: () => ({ status: 'unchanged', outcome: 'found', why: 'none', created: false, count_before: '1', count_after: '1', salt_kept: '0', put_rc: 0 }),
-      nc_requests_get: () => ({ outcome: 'empty', why: 'none', partial: true, truncated: false, dropped: {}, requests: [] }),
+      nc_requests_get: () => { window.__requestReads = (window.__requestReads || 0) + 1; return { outcome: 'empty', why: 'none', partial: true, truncated: false, dropped: {}, requests: [] }; },
       nc_salt_reconcile: () => ({ status: 'nothing_to_write', outcome: 'found', why: 'none', wrong_pair: '0', choice: 'keep_local', salt: SALT, put_rc: 0 }),
       nc_contact_reads: args => ({ contacts: JSON.parse(args[0]).map(c => ({ ack: { outcome: 'empty', why: 'none' }, days: c.days.map(x => day(x.day, x.day === TODAY ? inbox : [])) })) }),
       nc_outbox_send: args => { window.__sent.push(JSON.parse(args[2]).map(m => m.text)); return { day: TODAY, alg: 1, count: String(JSON.parse(args[2]).length) }; },
       nc_ack_send: () => ({}),
       // A saved wallet's history, "sealed" as the identity (shapes only).
       nc_hist_key: () => ({}),
-      nc_hist_encrypt: args => ({ nonce: '00'.repeat(12), ct: args[2], tag: '00'.repeat(16), counter: String(BigInt(args[3]) + 1n) }),
-      nc_hist_decrypt: args => ({ pt: args[3] })
+      // Since 0.1.112 the record's bytes come through the heap input buffer
+      // (nc_group_in_alloc), not as an argument (BUGS W-15).
+      nc_hist_encrypt: args => ({ nonce: '00'.repeat(12), ct: takeIn(), tag: '00'.repeat(16), counter: String(BigInt(args[2]) + 1n) }),
+      nc_hist_decrypt: () => ({ pt: takeIn() }),
+      // P7 stage 2: store.js keeps the state as schema v2 through the core
+      // (core.stateProject / stateLoad, the state input buffer). A FAKE that
+      // is merely reversible, not the real codec (that is
+      // test/browser-connect-state.js and the vectors): the "header" carries
+      // the whole v1 state, no known-ID record is made, nothing is dropped.
+      // Since rev 2.2 item 2 every save also LOADS its own snapshot (the
+      // load check, store.js save): nc_state_load answers that from the
+      // same header, so it gives back the state that was projected.
+      nc_state_project: () => {
+        const v1 = JSON.parse(takeState().state);
+        return { status: 'ok', nextSeq: String(v1.nextSeq), header: JSON.stringify({ version: 2, nextSeq: String(v1.nextSeq), ids: [], v1 }), records: [], dropped: [] };
+      },
+      nc_state_load: () => ({ status: 'ok', state: JSON.parse(takeState().header).v1, map: {} })
     };
+    // The module's heap, its one input buffer (src/connect/core.js
+    // putHistory) and the state input buffer (core.js putState).
+    const HEAP = new Uint8Array(1 << 21), IN_AT = 1024, STATE_AT = 1 << 20;
+    let inLen = 0, stateLen = 0;
+    const takeIn = () => { const h = Array.from(HEAP.subarray(IN_AT, IN_AT + inLen), b => b.toString(16).padStart(2, '0')).join(''); inLen = 0; return h; };
+    const takeState = () => { const t = new TextDecoder().decode(HEAP.subarray(STATE_AT, STATE_AT + stateLen)); stateLen = 0; return JSON.parse(t); };
     // One api object per call, so a call that waits keeps its own result.
     function api() {
       let last, lastArgs;
@@ -80,15 +101,19 @@ try {
         window.__unknown.push(last); return {};
       };
       return {
-        num: (name, types, args) => { last = name; lastArgs = args; return name === 'nc_words_alloc' ? 64 : 0; },
+        num: (name, types, args) => {
+          if (name === 'nc_group_in_alloc') { inLen = args[0]; return IN_AT; }
+          if (name === 'nc_state_in_alloc') { stateLen = args[0]; return STATE_AT; }
+          last = name; lastArgs = args; return name === 'nc_words_alloc' ? 64 : 0;
+        },
         call: async (name, types, args) => {
           last = name; lastArgs = args;
           // A contact read the test holds: the queue stays busy meanwhile.
           if (name === 'nc_contact_reads' && window.__hold) { window.__held = true; await window.__hold.promise; }
           return 0;
         },
-        str: name => (name === 'nc_result' ? JSON.stringify(answer()) : name === 'nc_day_today' ? TODAY : ''),
-        heap: () => new Uint8Array(4096)
+        str: name => (name === 'nc_result' || name === 'nc_state_result' ? JSON.stringify(answer()) : name === 'nc_day_today' ? TODAY : ''),
+        heap: () => HEAP
       };
     }
     // The wallet client's ONE queue (src/nodus/client.js): connect and
@@ -103,6 +128,15 @@ try {
     client.state = 'ready';
     walletExtension.nodusReady({ client });
   });
+  await page.waitForFunction(() => document.querySelector('.messenger-sync')?.textContent.startsWith('Last checked'));
+  // 0.1.115: the page shown again starts a check round at once (a phone or
+  // browser pauses a hidden page's timers). The clock is frozen here, so the
+  // 30-second timer cannot fire: a new requests read can only come from the
+  // visibilitychange handler.
+  const readsBefore = await page.evaluate(() => window.__requestReads);
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { value: false, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.waitForFunction(n => window.__requestReads > n, readsBefore, { timeout: 2000 })
+    .catch(() => { throw new Error('a page shown again starts a check round at once: it does not'); });
   await page.waitForFunction(() => document.querySelector('.messenger-sync')?.textContent.startsWith('Last checked'));
   await page.locator('.contact-row').first().click();
   const bubble = page.locator('.message-in', { hasText: 'hello from B' }).locator('.message-bubble');

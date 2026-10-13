@@ -6,7 +6,7 @@ import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, ch
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
 import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus, evmActivityText } from './activity.js';
-import { CHAINS, CELLFRAME } from './config.js';
+import { CHAINS, CELLFRAME, rpcChoiceOffered } from './config.js';
 import { CPUNK_ASSET, displayAmount } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
@@ -32,6 +32,7 @@ import { raise, gather, siteName, onOwnIdentity } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
 import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote, autoLockBarText } from './auto-lock.js';
 import { readBalanceRefresh, writeBalanceRefresh, parseBalanceRefresh, balanceRefreshNote } from './balance-refresh.js';
+import { readShowZero, writeShowZero, showZeroNote } from './zero-balances.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
 // column (`@media (max-width: 900px)`): below it the Send / Receive panel sits
@@ -856,6 +857,17 @@ let autoLockMinutes = readAutoLock(autoLockStorage());
     note.textContent = apply(minutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
   });
 }
+// Zero balances (src/zero-balances.js, 0.1.113): hidden from the asset list
+// unless Device & settings shows them.
+{
+  const box = $('show-zero-balances'), note = $('show-zero-balances-note');
+  const apply = show => { box.checked = show; portfolio.setHideZero(!show); return showZeroNote(show); };
+  note.textContent = apply(readShowZero(autoLockStorage()));
+  box.addEventListener('change', () => {
+    const kept = writeShowZero(autoLockStorage(), box.checked);
+    note.textContent = apply(box.checked) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
+  });
+}
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
 // Shown again: an idle wallet locks; otherwise the connection is checked
 // (resumeCheck, RESUME CHECK below).
@@ -1262,6 +1274,19 @@ function hideStaking() {
   stakeCheck++; stakeView = undefined; expandedValidator = undefined; setEarnAvailable(false);
   $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('unlisted-delegations').hidden = true;
   $('stake-status').textContent = '';
+  $('stake-network').replaceChildren(); $('stake-network').hidden = true;
+}
+// The network's total stake above the witness list (adapters/nodus.js
+// networkStake: bonded witnesses only, Scan's rule). A failed or older read
+// keeps the last figure shown rather than blanking it (as the portfolio
+// does on Refresh); hideStaking clears it.
+function renderNetworkStake(network) {
+  const box = $('stake-network');
+  const label = document.createElement('span'); label.className = 'stake-network-label'; label.textContent = 'Staked on the network';
+  const total = document.createElement('strong'); total.textContent = `${network.partial ? 'at least ' : ''}${nodusAmountText(network.total)} NODUS`;
+  const detail = document.createElement('small');
+  detail.textContent = `${nodusAmountText(network.selfStake)} NODUS in witness bonds and ${nodusAmountText(network.delegated)} NODUS delegated, across ${network.witnesses} witness${network.witnesses === 1 ? '' : 'es'}${network.partial ? ' (only the first witnesses are listed)' : ''}.`;
+  box.replaceChildren(label, total, detail); box.hidden = false;
 }
 async function refreshStaking() {
   const client = nodusClient, source = wallet, check = ++stakeCheck;
@@ -1271,7 +1296,7 @@ async function refreshStaking() {
   try {
     const view = await adapters.nodus.stakingOverview({ client, from: source.addresses.nodus });
     if (!current()) return;
-    stakeView = view; renderStaking(view);
+    stakeView = view; renderStaking(view); renderNetworkStake(view.network);
     $('stake-status').textContent = view.truncated ? 'The witness list is longer than this wallet shows; only the first witnesses are listed.' : '';
   } catch (error) {
     if (!current()) return;
@@ -1794,7 +1819,11 @@ function selectChain() {
   setReceiveAddress(address || '');
   portfolio.setSelected(chain);
   // A network with no RPC to choose (Nodus) hides the connection settings.
-  $('rpc-settings').hidden = !c.rpcOptions; if (c.rpcOptions) populateRpcChoice(chain, c);
+  // Offered only where there is a choice (0.1.114, operator 2026-10-13:
+  // "settings'te cpunk endpoint ne … Tek seçenekli ağlarda gizle"): a network
+  // with one provider (Cellframe, TRON, Solana, Ixios) uses it, no block.
+  const offered = rpcChoiceOffered(c);
+  $('rpc-settings').hidden = !offered; if (offered) populateRpcChoice(chain, c);
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
   $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
@@ -2017,12 +2046,12 @@ function populateRpcChoice(chain, c) {
 }
 $('rpc-choice').onchange = () => {
   const chain = $('chain').value, c = networkFor(chain), value = $('rpc-choice').value;
-  if (!c.rpcOptions) return;
+  if (!rpcChoiceOffered(c)) return;
   if (value === CUSTOM_RPC) { setRpcCustomVisible(true); $('rpc-endpoint').value = ''; $('rpc-endpoint').focus(); setRpcNote(undefined); return; }
   const option = c.rpcOptions[Number(value)];
   setRpcCustomVisible(false); $('rpc-endpoint').value = option.url; setRpcNote(option.note);
 };
-$('save-rpc').onclick = () => { if (!networkFor($('chain').value).rpcOptions) return; try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message, { error: true }); } };
+$('save-rpc').onclick = () => { if (!rpcChoiceOffered(networkFor($('chain').value))) return; try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message, { error: true }); } };
 $('send-form').onsubmit = async event => {
   event.preventDefault(); if (busy) return;
   // Belt-and-suspenders: the send fields are hidden/disabled for a receive-only

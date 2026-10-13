@@ -210,6 +210,13 @@ sources=(
   connect/nc_contactlist.c
   # groups codec (G1 nc_group.h; exports nc_group_* in nc_wasm.c, G2)
   connect/nc_group.c
+  # P7 stage 1 (design docs/plans/2026-10-13-connect-core-p7-state-design.md
+  # rev 2): the state schema v2 codec (exports nc_state_project /
+  # nc_state_load in nc_wasm.c) and the JavaScript-compatible JSON layer it
+  # reads and writes with — nc_jsjson.c moved here from sources_test_only
+  # below, since the shipped module now calls it.
+  connect/nc_state.c
+  connect/nc_jsjson.c
   # message codecs, verbatim (NC-1, NC-1b)
   $root/messenger/codec/contact_request_codec.c
   $root/messenger/codec/contactlist_codec.c
@@ -458,6 +465,13 @@ exports_common=(
   # nc_group_bucket_send, nc_group_bucket_fetch.
   nc_group_in_alloc nc_group_random nc_group_leave
   nc_group_get nc_group_put nc_group_bucket_send nc_group_bucket_fetch
+  # P7 (connect/nc_wasm.c "state schema v2 codec"): synchronous and pure —
+  # no network, no session, outside the op bracket, like nc_salt_pick. Each
+  # takes its input from the state input buffer (nc_state_in_alloc, up to
+  # 8 MiB, P7 stage 2); used by src/connect/store.js through core.js. Their
+  # result is their own (nc_state_result), never the shared nc_result an
+  # asynchronous export may still have to be read from (R13).
+  nc_state_in_alloc nc_state_project nc_state_load nc_state_result
   nc_lock
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match
@@ -481,14 +495,13 @@ join_exports() {
 }
 
 # P1 rules (design docs/plans/2026-10-12-connect-core-p1-rules-design.md
-# rev 2): the JS-compatible JSON layer, the payload and request/delivery rules
-# and their JSON dispatcher — compiled into the parity TEST build only, which
-# exports nc_rule_test (exports_test; test/connect-rules-vectors.test.js).
-# Not in the shipped module: the web is not switched to them in P1, so there
-# they would be dead code, and src/nodus/send.wasm stays byte for byte the
-# module test/nodus-send-wasm.test.js compares the parity build against.
+# rev 2): the payload and request/delivery rules and their JSON dispatcher —
+# compiled into the parity TEST build only, which exports nc_rule_test
+# (exports_test; test/connect-rules-vectors.test.js). Not in the shipped
+# module: the web is not switched to them in P1, so there they would be dead
+# code. Their JS-compatible JSON layer (connect/nc_jsjson.c) is in `sources`
+# since P7 stage 1, which the shipped module uses (nc_state.c).
 sources_test_only=(
-  connect/nc_jsjson.c
   connect/nc_payload.c
   connect/nc_rules.c
   connect/nc_rules_json.c

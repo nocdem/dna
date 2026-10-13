@@ -1,6 +1,6 @@
 {
   "name": "nodus-web-wallet",
-  "version": "0.1.108",
+  "version": "0.1.116",
   "private": true,
   "type": "module",
   "scripts": {
@@ -24,6 +24,7 @@
     "test:requests": "node test/browser-connect-requests.js",
     "test:queue": "node test/browser-connect-queue.js",
     "test:roles": "node test/browser-nodus-roles.js",
+    "test:state": "node test/browser-connect-state.js",
     "build:nodus-send": "bash scripts/build-nodus-send-wasm.sh",
     "build:connect-core": "bash scripts/build-connect-wasm.sh"
   },

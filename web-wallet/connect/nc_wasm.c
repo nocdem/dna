@@ -25,6 +25,9 @@
  *   - nc_lock, nc_salt_pick and nc_day_today are synchronous and never
  *     reach emscripten_sleep, so JS may call them while another export is
  *     suspended; the module's cancel / lock are nsw_cancel / nsw_lock;
+ *   - the state codec exports nc_state_in_alloc / nc_state_project /
+ *     nc_state_load (P7, connect/nc_state.h) are synchronous and pure too:
+ *     no network, no session material, outside the bracket;
  *   - the groups codec exports (nc_group_*, package G2) are synchronous and
  *     pure (no network). Those that hold no session material
  *     (nc_group_addr_str, nc_group_salt, nc_group_record_read,
@@ -97,13 +100,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>                           /* nc_begin: g_ctx.now           */
 
 #define LOG_TAG "NC_WASM"
 
-/* A history record's plaintext cap. The hex of a record crosses ccall as a
- * string, which Emscripten copies onto the 1 MiB C stack
- * (stringToUTF8OnStack); 64 KiB of plaintext is 128 KiB of hex. */
-#define NC_HIST_PT_MAX 65536u
+/* A history record's plaintext cap. Until web 0.1.112 a record crossed
+ * ccall as a hex string, which Emscripten copies onto the 1 MiB C stack
+ * (stringToUTF8OnStack), so the cap was 64 KiB (128 KiB of hex) — and the
+ * one 'state' record outgrew it at about 60 contacts (BUGS W-15). Since
+ * 0.1.112 the record's bytes (plaintext to seal, ciphertext to open) cross
+ * through the heap input buffer (nc_group_in_alloc below), so the cap is
+ * the buffer's: 1 MiB. Records already stored are unchanged (same AAD,
+ * same layout); only larger ones become possible. */
+#define NC_HIST_PT_MAX 1048576u
 
 static void nc_wipe(void *p, size_t n) {
     volatile uint8_t *v = (volatile uint8_t *)p;
@@ -265,6 +274,10 @@ static int nc_begin(void) {
     g_inside = 1;
     g_error[0] = '\0';
     result_drop();
+    // The library reads no clock (nc_ctx_t now): the browser entry gives it
+    // the page's time once per export, as the library's own time(NULL) calls
+    // read it before (Kurultay #17 item 5).
+    g_ctx.now = (uint64_t)time(NULL);
     return 0;
 }
 
@@ -1133,20 +1146,28 @@ int nc_hist_key(const char *vault_id_hex) {
     return nc_end(set_result(json_object_new_object()));
 }
 
-/* One record. store / id: UTF-8 strings (the AAD, nc_history.h); pt_hex:
- * 1..NC_HIST_PT_MAX bytes; counter_dec: the vault's invocation counter.
- * Result { nonce, ct, tag (hex), counter (decimal, +1) }. */
-int nc_hist_encrypt(const char *store, const char *id, const char *pt_hex,
-                    const char *counter_dec) {
-    if (nc_begin() != 0) return -1;
-    if (!g_unlocked || !g_hist_ok) return nc_end(fail("History key is not ready."));
-    uint64_t counter;
-    if (!store || !id || parse_u64(counter_dec, &counter) != 0)
-        return nc_end(fail("Invalid history record."));
-    uint8_t *pt;
+/* The heap input buffer (nc_group_in_alloc) is defined with the groups
+ * below; the history exports take it too. */
+static uint8_t *in_take(size_t *len);
+static void in_free(uint8_t *b, size_t len);
+
+/* One record. store / id: UTF-8 strings (the AAD, nc_history.h); the
+ * plaintext: 1..NC_HIST_PT_MAX bytes the page put in the heap input buffer
+ * (nc_group_in_alloc) in the same queue slot (web 0.1.112, BUGS W-15);
+ * counter_dec: the vault's invocation counter. The buffer is taken first,
+ * so it is wiped and freed on every path. Result { nonce, ct, tag (hex),
+ * counter (decimal, +1) }. */
+int nc_hist_encrypt(const char *store, const char *id, const char *counter_dec) {
     size_t pt_len;
-    if (parse_hex_var(pt_hex, NC_HIST_PT_MAX, &pt, &pt_len) != 0)
+    uint8_t *pt = in_take(&pt_len);
+    if (nc_begin() != 0) { in_free(pt, pt_len); return -1; }
+    if (!g_unlocked || !g_hist_ok) { in_free(pt, pt_len); return nc_end(fail("History key is not ready.")); }
+    uint64_t counter;
+    if (!store || !id || parse_u64(counter_dec, &counter) != 0 ||
+        !pt || pt_len == 0 || pt_len > NC_HIST_PT_MAX) {
+        in_free(pt, pt_len);
         return nc_end(fail("Invalid history record."));
+    }
     uint8_t *ct = malloc(pt_len);
     if (!ct) { nc_wipe(pt, pt_len); free(pt); return nc_end(fail("Out of memory.")); }
     uint8_t nonce[NC_HISTORY_NONCE_LEN], tag[NC_HISTORY_TAG_LEN];
@@ -1171,18 +1192,22 @@ int nc_hist_encrypt(const char *store, const char *id, const char *pt_hex,
     return nc_end(set_result(o));
 }
 
-/* Result { pt (hex) }; a record that does not authenticate is an error. */
+/* The ciphertext: 1..NC_HIST_PT_MAX bytes in the heap input buffer, as for
+ * nc_hist_encrypt. Result { pt (hex) }; a record that does not
+ * authenticate is an error. */
 int nc_hist_decrypt(const char *store, const char *id, const char *nonce_hex,
-                    const char *ct_hex, const char *tag_hex) {
-    if (nc_begin() != 0) return -1;
-    if (!g_unlocked || !g_hist_ok) return nc_end(fail("History key is not ready."));
-    uint8_t nonce[NC_HISTORY_NONCE_LEN], tag[NC_HISTORY_TAG_LEN];
-    uint8_t *ct;
+                    const char *tag_hex) {
     size_t ct_len;
+    uint8_t *ct = in_take(&ct_len);
+    if (nc_begin() != 0) { in_free(ct, ct_len); return -1; }
+    if (!g_unlocked || !g_hist_ok) { in_free(ct, ct_len); return nc_end(fail("History key is not ready.")); }
+    uint8_t nonce[NC_HISTORY_NONCE_LEN], tag[NC_HISTORY_TAG_LEN];
     if (!store || !id || parse_hex_fixed(nonce_hex, nonce, sizeof(nonce)) != 0 ||
         parse_hex_fixed(tag_hex, tag, sizeof(tag)) != 0 ||
-        parse_hex_var(ct_hex, NC_HIST_PT_MAX, &ct, &ct_len) != 0)
+        !ct || ct_len == 0 || ct_len > NC_HIST_PT_MAX) {
+        in_free(ct, ct_len);
         return nc_end(fail("Invalid history record."));
+    }
     uint8_t *pt = malloc(ct_len);
     if (!pt) { free(ct); return nc_end(fail("Out of memory.")); }
     int rc = nc_history_decrypt(g_hist_key,
@@ -2390,6 +2415,119 @@ int nc_group_bucket_fetch(const char *group_id_hex, const char *salt_hex, const 
     return nc_end(set_result(o));
 }
 
+/* ── P7: the state schema v2 codec (connect/nc_state.h) ────────────────
+ * Design docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2
+ * (§2.0, §2.1, §2.2, §2.5, D1, D2) and rev 2.1. Used by the web storage
+ * backend (src/connect/store.js, through src/connect/core.js stateProject /
+ * stateLoad) since stage 2.
+ *
+ * Synchronous and pure, like nc_salt_pick: no network (never reaches
+ * emscripten_sleep), no session material, outside the op bracket. The
+ * input crosses through the STATE input buffer (nc_state_in_alloc below,
+ * up to NC_STATE_IN_MAX = 8 MiB — rev 2.1 item 2: the whole v1 state and
+ * the previous map are one input, no ccall string, so no 1 MiB cap applies
+ * to the state as a whole; each SEALED record stays ≤ NC_HIST_PT_MAX),
+ * filled by the page and taken here first, so it is wiped and freed on
+ * every path; a missing buffer reads as empty input (-> "invalid" /
+ * "damaged"). The result is the codec's JSON text, put in its OWN result
+ * g_state_result as it is (no json-c re-serialisation: the header and
+ * record texts inside it are the exact bytes to seal), read with
+ * nc_state_result() (below). A state call therefore no longer replaces an
+ * async export's nc_result while that export is between its return and the
+ * page's nc_result read (P1 red-team R13, fixed in P7 stage 2); the page
+ * still calls these through the wallet's synchronous slot
+ * (src/connect/core.js sync). */
+#include "nc_state.h"
+
+#define NC_STATE_IN_MAX (8u * 1024u * 1024u)
+
+/* Its own buffer, apart from nc_group_in_alloc's (1 MiB): the page fills
+ * it and calls nc_state_project / nc_state_load in the same synchronous
+ * slot; those take it first. Wiped by nc_session_wipe (lock). */
+static uint8_t *g_state_in;
+static size_t   g_state_in_len;
+
+static void state_in_drop(void) {
+    if (g_state_in) { nc_wipe(g_state_in, g_state_in_len); free(g_state_in); }
+    g_state_in = NULL;
+    g_state_in_len = 0;
+}
+
+/* `len` bytes (1..NC_STATE_IN_MAX) for the next nc_state_* call; NULL when
+ * out of range, out of memory or after nc_lock. A previous unused buffer
+ * is wiped and freed. */
+uint8_t *nc_state_in_alloc(int len) {
+    state_in_drop();
+    if (len <= 0 || (size_t)len > NC_STATE_IN_MAX || g_closed) return NULL;
+    g_state_in = malloc((size_t)len);
+    if (g_state_in) g_state_in_len = (size_t)len;
+    return g_state_in;
+}
+
+/* The buffer, now owned by the caller (in_free), or NULL. */
+static uint8_t *state_in_take(size_t *len) {
+    uint8_t *b = g_state_in;
+    *len = b ? g_state_in_len : 0;
+    g_state_in = NULL;
+    g_state_in_len = 0;
+    return b;
+}
+
+/* The state exports' OWN result (P7; Kurultay #19 / builder R13): they are
+ * synchronous and run on every save, so writing the shared g_result could
+ * replace an asynchronous export's result between its return and the page's
+ * nc_result read (the page reads it in the continuation after `await`, and
+ * another continuation may run a save first). nc_state_result() is read only
+ * by the state calls of src/connect/core.js. Wiped like g_result. */
+static char  *g_state_result;
+static size_t g_state_result_len;
+
+const char *nc_state_result(void) { return g_state_result ? g_state_result : "{}"; }
+
+static void state_result_drop(void) {
+    if (g_state_result) { nc_wipe(g_state_result, g_state_result_len); free(g_state_result); }
+    g_state_result = NULL;
+    g_state_result_len = 0;
+}
+
+/* Takes ownership of `s` (malloc'd, NUL-terminated, `len` bytes). */
+static int set_state_result(char *s, size_t len) {
+    state_result_drop();
+    if (!s) return fail("Out of memory.");
+    g_state_result = s;
+    g_state_result_len = len + 1;
+    return 0;
+}
+
+/* { "state": "<the v1 state as JSON text>", "map": "<the previous fp -> id
+ * map as JSON text>" } ("{}" on migration) in the state input buffer.
+ * Result: nc_state.h PROJECTION (nc_state_project_wrapped_json). */
+int nc_state_project(void) {
+    size_t len;
+    uint8_t *in = state_in_take(&len);
+    if (g_closed) { in_free(in, len); return fail("Messages is locked."); }
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = nc_state_project_wrapped_json(in ? (const char *)in : "", len, &out, &out_len);
+    in_free(in, len);
+    if (rc != 0) return fail("Out of memory.");
+    return set_state_result(out, out_len);
+}
+
+/* { "header": "<text>", "records": [ { "id", "json" }, … ] } in the state
+ * input buffer. Result: nc_state.h LOAD ("ok" or "damaged"). */
+int nc_state_load(void) {
+    size_t len;
+    uint8_t *in = state_in_take(&len);
+    if (g_closed) { in_free(in, len); return fail("Messages is locked."); }
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = nc_state_load_json(in ? (const char *)in : "", len, &out, &out_len);
+    in_free(in, len);
+    if (rc != 0) return fail("Out of memory.");
+    return set_state_result(out, out_len);
+}
+
 #ifdef NODUS_SEND_TEST_FIXED_RANDOM
 /* ── P1 rules: the parity build's vector entry (TEST ONLY) ─────────────
  * Design docs/plans/2026-10-12-connect-core-p1-rules-design.md rev 2: the
@@ -2449,7 +2587,9 @@ void nc_session_wipe(void) {
     nc_keys_wipe(&g_keys);
     words_drop();
     in_drop();
+    state_in_drop();
     result_drop();
+    state_result_drop();
     nc_wipe(g_hist_key, sizeof(g_hist_key));
     g_hist_ok = 0;
     nc_wipe(g_peers, sizeof(g_peers));

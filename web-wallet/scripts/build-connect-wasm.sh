@@ -16,9 +16,11 @@
 #   build-connect-wasm.sh           the shipped module -> src/nodus/send.{js,wasm}
 #   build-connect-wasm.sh parity    the node builds for the parity tests
 # The source lists and the export lists live in build-nodus-send-wasm.sh —
-# including the P1 rules (connect/nc_jsjson.c, nc_payload.c, nc_rules.c,
-# nc_rules_json.c), compiled into the parity TEST build only, with its
-# nc_rule_in_alloc / nc_rule_test exports; the shipped module has none.
+# including the P1 rules (connect/nc_payload.c, nc_rules.c, nc_rules_json.c),
+# compiled into the parity TEST build only, with its nc_rule_in_alloc /
+# nc_rule_test exports; the shipped module has none. Their JSON layer
+# (connect/nc_jsjson.c) and the P7 stage 1 state codec (connect/nc_state.c,
+# exports nc_state_project / nc_state_load) are in the shipped module.
 # Native unit tests of the library: connect/tests/ (CMake).
 set -euo pipefail
 exec bash "$(dirname "$0")/build-nodus-send-wasm.sh" "$@"

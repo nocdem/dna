@@ -1,7 +1,8 @@
 /* Nodus Connect core — P1a: the contact-request, delivery, check-scheduling
  * and contact-state rules (nc_rules.h), ported from src/connect/ui/text.js
- * and src/connect/core.js (web 0.1.101). Each function cites the JS line
- * it copies.
+ * and src/connect/core.js (web 0.1.101; checkOrder follows web 0.1.111:
+ * contacts by the last message time, integer times only). Each function
+ * cites the JS line it copies.
  *
  * The small accept-set / sort helpers below repeat nc_payload.c's private
  * ones (static there; that file is not part of this package's change).
@@ -1031,22 +1032,54 @@ int nc_contact_days(const nc_val_t *fp, const nc_rmap_t *dm_sync, const nc_val_t
     return full ? nc_full_days(today, days, n_days, msg) : nc_recent_days(today, days, n_days, msg);
 }
 
-/* checkOrder's newest map: (fp string, newest seq) of the messages. */
-typedef struct { sv_t fp; nc_u128_t seq; } newest_t;
+/* Number.MAX_SAFE_INTEGER, 2^53 - 1: exactly representable as a double. */
+#define JS_MAX_SAFE 9007199254740991LL
+
+/* typeof v === 'number' && Number.isSafeInteger(v): *out = v exactly
+ * (an integer of magnitude <= 2^53 - 1 converts to int64 without loss;
+ * -0 becomes 0, which JS compares equal to it). */
+static int safe_int(const nc_val_t *v, int64_t *out) {
+    if (v->kind != NC_V_NUM || !nc_js_is_integer(v->num)) return 0;
+    if (v->num > (double)JS_MAX_SAFE || v->num < -(double)JS_MAX_SAFE) return 0;
+    *out = (int64_t)v->num;
+    return 1;
+}
+
+/* shownAt(m) (text.js:257) for a message whose `at` is a safe integer:
+ * dir 'in' with a U64 senderTs string s -> sent = Number(s) * 1000 when it
+ * is a safe integer and sent <= at, else at. Number.isSafeInteger(Number(s)
+ * * 1000) holds exactly when s * 1000 <= 2^53 - 1 as integers: below that
+ * s is exact and the product exact; for s * 1000 >= 2^53 (any s >=
+ * 9007199254741) the correctly rounded double is >= 2^53, never safe. */
+static int64_t shown_at(const nc_rmsg_t *m, int64_t at) {
+    nc_u128_t s;
+    if (!nc_val_is(&m->dir, "in") || !u64_str(&m->sender_ts, &s)) return at;
+    if (s > (nc_u128_t)JS_MAX_SAFE / 1000) return at;                 /* s * 1000 > 2^53 - 1 */
+    int64_t sent = (int64_t)s * 1000;
+    return sent <= at ? sent : at;
+}
+
+/* checkOrder's newest map: (fp string, newest time, its seq) of the
+ * counted messages. */
+typedef struct { sv_t fp; int64_t time; nc_u128_t seq; } newest_t;
 static int newest_cmp(const void *ctx, size_t a, size_t b) {
     const newest_t *v = ctx;
     return sv_cmp(&v[a].fp, &v[b].fp);
 }
-typedef struct { size_t index; int rank; nc_u128_t seq; } ord_t;
+/* has: the contact has a counted message (time, seq); the sort of
+ * text.js:334-339 — with one first, time descending, seq descending, then
+ * list index. */
+typedef struct { size_t index; int has; int64_t time; nc_u128_t seq; } ord_t;
 static int ord_cmp(const void *ctx, size_t a, size_t b) {
     const ord_t *o = ctx;
-    if (o[a].rank != o[b].rank) return o[a].rank - o[b].rank;
-    if (o[a].rank == 1 && o[a].seq != o[b].seq) return o[a].seq > o[b].seq ? -1 : 1;
+    if (o[a].has != o[b].has) return o[a].has ? -1 : 1;
+    if (o[a].has && o[a].time != o[b].time) return o[a].time > o[b].time ? -1 : 1;
+    if (o[a].has && o[a].seq != o[b].seq) return o[a].seq > o[b].seq ? -1 : 1;
     return o[a].index < o[b].index ? -1 : o[a].index > o[b].index ? 1 : 0;
 }
 
 int nc_check_order(nc_list_t kind, const nc_rmsg_t *contacts, size_t n,
-                   const nc_rmap_t *dm_sync, nc_list_t msg_kind, const nc_rmsg_t *msgs, size_t n_msgs,
+                   nc_list_t msg_kind, const nc_rmsg_t *msgs, size_t n_msgs,
                    size_t **order) {
     *order = NULL;
     /* for (const m of messages || []) — first */
@@ -1061,21 +1094,29 @@ int nc_check_order(nc_list_t kind, const nc_rmsg_t *contacts, size_t n,
         if (x->elem != NC_ELEM_OBJECT || x->fp.kind != NC_V_STR) continue;
         nc_u128_t s;
         if (!u64_of(&x->seq, &s, NULL)) continue;                     /* BigInt(String(m.seq)) */
+        /* typeof m.at !== 'number' || !Number.isSafeInteger(m.at) */
+        int64_t at;
+        if (!safe_int(&x->at, &at)) continue;
         nw[nn].fp.s = x->fp.n ? x->fp.s : "";
         nw[nn].fp.n = x->fp.n;
+        nw[nn].time = shown_at(x, at);
         nw[nn].seq = s;
         nn++;
     }
     size_t *ni = iota(nn);
     if (!ni || stable_sort(ni, nn, newest_cmp, nw) != 0) { free(ni); free(nw); return NC_P_NOMEM; }
-    /* collapse to one (fp, max seq) per fp, sorted by fp */
+    /* collapse to one entry per fp, sorted by fp: newest.set when
+     * time > seen.time || (time === seen.time && seq > seen.seq). The
+     * result does not depend on the messages' order (the kept pair is the
+     * maximum of (time, seq)), so the fp sort may reorder them. */
     newest_t *grp = malloc((nn ? nn : 1) * sizeof(*grp));
     if (!grp) { free(ni); free(nw); return NC_P_NOMEM; }
     size_t ng = 0;
     for (size_t i = 0; i < nn; i++) {
         const newest_t *x = &nw[ni[i]];
         if (ng && sv_cmp(&grp[ng - 1].fp, &x->fp) == 0) {
-            if (x->seq > grp[ng - 1].seq) grp[ng - 1].seq = x->seq;
+            newest_t *g = &grp[ng - 1];
+            if (x->time > g->time || (x->time == g->time && x->seq > g->seq)) { g->time = x->time; g->seq = x->seq; }
         } else {
             grp[ng++] = *x;
         }
@@ -1084,30 +1125,27 @@ int nc_check_order(nc_list_t kind, const nc_rmsg_t *contacts, size_t n,
     free(nw);
 
     if (kind != NC_LIST_ARRAY) { free(grp); return NC_P_TYPE_ERROR; }  /* contacts.map */
-    mapidx_t mi;
     ord_t *o = malloc((n ? n : 1) * sizeof(*o));
-    if (!o || mapidx_build(&mi, dm_sync) != 0) { free(o); free(grp); return NC_P_NOMEM; }
+    if (!o) { free(grp); return NC_P_NOMEM; }
     int rc = NC_P_OK;
     for (size_t i = 0; i < n; i++) {
         const nc_rmsg_t *c = &contacts[i];
         if (c->elem == NC_ELEM_NULL) { rc = NC_P_TYPE_ERROR; break; } /* contact.fp */
-        nc_val_t cfp = c->elem == NC_ELEM_OBJECT ? c->fp : nc_val_undef();
         o[i].index = i;
+        o[i].has = 0;
+        o[i].time = 0;
         o[i].seq = 0;
-        nc_u128_t last;
-        if (!mapidx_u64(&mi, &cfp, &last) || last == 0) { o[i].rank = 0; continue; }
-        o[i].rank = 2;
-        if (cfp.kind != NC_V_STR) continue;                           /* newest.has: string keys */
-        sv_t k = { cfp.n ? cfp.s : "", cfp.n };
+        /* newest.get(contact.fp): the keys are strings (SameValueZero) */
+        if (c->elem != NC_ELEM_OBJECT || c->fp.kind != NC_V_STR) continue;
+        sv_t k = { c->fp.n ? c->fp.s : "", c->fp.n };
         size_t lo = 0, hi = ng;
         while (lo < hi) {
             size_t mid = lo + (hi - lo) / 2;
             int cmp = sv_cmp(&grp[mid].fp, &k);
-            if (cmp == 0) { o[i].rank = 1; o[i].seq = grp[mid].seq; break; }
+            if (cmp == 0) { o[i].has = 1; o[i].time = grp[mid].time; o[i].seq = grp[mid].seq; break; }
             if (cmp < 0) lo = mid + 1; else hi = mid;
         }
     }
-    free(mi.idx);
     free(grp);
     if (rc != NC_P_OK) { free(o); return rc; }
     size_t *idx = iota(n);

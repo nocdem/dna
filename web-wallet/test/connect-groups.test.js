@@ -196,8 +196,10 @@ function party(net, fp, { contacts = [], kem = () => true } = {}) {
   p.deps = {
     core: fakeCore(net, fp), ownFp: fp, now: () => net.clock.t, state: () => state,
     takeSeq: () => { const s = state.nextSeq; state.nextSeq = String(BigInt(s) + 1n); return s; },
-    saveAll: async ({ records = [], messages = [] }) => {
-      if (p.failSave) throw new Error('save failed');
+    // A failure runs the caller's `undo` before it rejects, as store.js
+    // save does (P7 rev 2.2 item 1).
+    saveAll: async ({ records = [], messages = [], undo }) => {
+      if (p.failSave) { undo?.(); throw new Error('save failed'); }
       for (const r of records) db.set(r.id, structuredClone(r.value));
       for (const m of messages) kept.set(m.seq, structuredClone(m));
     },
@@ -602,9 +604,11 @@ test('a failed save leaves the group as it was', async () => {
   const net = world();
   const B = party(net, FB, { contacts: [FA] });
   const { A, gid } = await groupOf(net, [B]);
+  const indexBefore = structuredClone(A.state.groups[gid]);
   A.failSave = true;
   await assert.rejects(A.engine.removeMember(gid, FB));
   assert.deepEqual(A.engine.group(gid).removals, []);
+  assert.deepEqual(A.state.groups[gid], indexBefore, 'the state index entry is rolled back (by the undo handed to saveAll)');
   A.failSave = false;
 });
 

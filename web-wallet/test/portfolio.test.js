@@ -177,3 +177,25 @@ test('balance display: thousands separators, at most 6 decimals truncated (never
   assert.equal(displayAmount('1234'), '1,234');
   assert.equal(displayAmount('not a number'), 'not a number');
 });
+
+// 0.1.113 (operator 2026-10-13: "Hiç olmayan … Kaç dolar olduğu değil, bir şey
+// olup olmadığı önemli"): zero balances hidden by the AMOUNT, never by the
+// dollar value; NODUS and rows not read stay.
+test('zero balances: hidden by the amount; held unpriced assets, unread rows and NODUS stay; held networks only', () => {
+  const row = (symbol, chain, fields) => ({ symbol, chain, decimals: 6, ...fields });
+  const rows = [
+    row('NODUS', 'nodus', { balance: '0', units: 0n, usd: null }),           // the wallet's own asset: stays at 0
+    row('USDT', 'tron', { balance: '5', units: 5000000n, priceId: 'tether', usd: 5n }),
+    row('USDT', 'ethereum', { balance: '0', units: 0n, priceId: 'tether', usd: 0n }), // held elsewhere: this network left out
+    row('ETH', 'ethereum', { balance: '0', units: 0n, priceId: 'ethereum', usd: 0n }), // nothing held: left out
+    row('SOL', 'solana', { balance: null, state: 'loading', usd: null }),     // not read yet: stays
+    row('CPUNK', 'cellframe', { balance: '3', units: 3000000n, usd: null })    // held, no price: stays
+  ];
+  const shown = groupAssets(rows, 'all', {}, { hideZero: true });
+  assert.deepEqual(shown.map(g => g.symbol).sort(), ['CPUNK', 'NODUS', 'SOL', 'USDT']);
+  assert.deepEqual(shown.find(g => g.symbol === 'USDT').rows.map(r => r.chain), ['tron']);
+  // Off (the default of groupAssets itself, and the "show" setting): everything.
+  assert.deepEqual(groupAssets(rows).map(g => g.symbol).sort(), ['CPUNK', 'ETH', 'NODUS', 'SOL', 'USDT']);
+  // A network filter whose only asset is zero gives an empty list (the page says so).
+  assert.deepEqual(groupAssets(rows, 'ethereum', {}, { hideZero: true }), []);
+});

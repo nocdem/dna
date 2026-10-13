@@ -63,6 +63,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define WORDS_BUF 2048   /* the CLI's own mnemonic buffer, cli_commands.c */
@@ -296,7 +297,7 @@ int main(int argc, char **argv) {
 
     static int cancel_flag;
     nc_ctx_t ctx = { .client = c, .keys = keys, .fresh = false,
-                     .cancel = &cancel_flag };
+                     .cancel = &cancel_flag, .now = (uint64_t)time(NULL) };   /* this tool is the clock's caller */
 
     /* R1 own profile */
     read_profile(&ctx, "own profile", keys->fp, NULL);

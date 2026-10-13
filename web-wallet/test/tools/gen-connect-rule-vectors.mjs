@@ -205,7 +205,7 @@ const RULES = {
   },
   fullDays: a => T.fullDays(scalar(a, 'today')),
   recentDays: a => T.recentDays(scalar(a, 'today')),
-  checkOrder: a => { const c = listArg(a, 'contacts'), d = flatMapArg(a, 'dmSync'), m = listArg(a, 'messages'); return T.checkOrder(c, d, m); },
+  checkOrder: a => { const c = listArg(a, 'contacts'), m = listArg(a, 'messages'); return T.checkOrder(c, m); },
   profileFresh: a => { const e = elemArg(a, 'entry'), n = scalar(a, 'now'); return T.profileFresh(e, n); },
   mergeListedContacts: a => {
     const s = stateArg(a), e = listArg(a, 'entries'), o = scalar(a, 'ownFp');
@@ -1050,37 +1050,93 @@ export function rulesCases() {
     add('fullDays', {});
   }
 
-  // ── checkOrder (text.js:287)
+  // ── checkOrder (text.js:320, web 0.1.111): contacts with a counted
+  // message first, by the message's shown time (shownAt) descending, then
+  // seq descending; then the rest; ties in list order. A message counts only
+  // with a string fp, a U64 String(seq) and an `at` that is a Number and a
+  // safe integer — every other `at` (a string, numeric or not; fractional;
+  // boolean; null; missing; 2^53) is IGNORED, never coerced. An `at` that
+  // is an array or an object makes the message non-flat: bad arguments on
+  // both sides (the contract), before the rule runs.
   {
-    const now = '1790000000';
+    const AT = 1790000000000;                                      // Date.now() form (ms)
+    const MAX = Number.MAX_SAFE_INTEGER;                           // 2^53 - 1
+    const [A, B, C] = ['a', 'b', 'c'].map(hexFp);
+    const ab = [{ fp: A }, { fp: B }];
     const contacts = ['1', '2', '3', '4', '5', '6'].map(ch => ({ fp: hexFp(ch) }));
-    const dmSync = { [hexFp('1')]: now, [hexFp('2')]: now, [hexFp('3')]: now, [hexFp('5')]: '0', [hexFp('6')]: now };
     const messages = [
-      { fp: hexFp('1'), dir: 'out', seq: '7' },
-      { fp: hexFp('3'), dir: 'in', seq: '9' },
-      { fp: hexFp('1'), dir: 'in', seq: '8' },
-      { fp: hexFp('6'), dir: 'in', seq: 'x' },
-      { fp: hexFp('9'), dir: 'in', seq: '99' }
+      { fp: hexFp('1'), dir: 'out', seq: '7', at: AT },
+      { fp: hexFp('3'), dir: 'in', seq: '9', at: AT + 5 },
+      { fp: hexFp('1'), dir: 'in', seq: '8', at: AT + 1 },
+      { fp: hexFp('6'), dir: 'in', seq: 'x', at: AT + 9 },        // unreadable seq: ignored
+      { fp: hexFp('9'), dir: 'in', seq: '99', at: AT + 9 }        // not a contact
     ];
-    add('checkOrder', { contacts, dmSync, messages });
-    add('checkOrder', { contacts: [{ fp: hexFp('2') }, { fp: hexFp('1') }], dmSync: { [hexFp('1')]: now, [hexFp('2')]: now }, messages: [{ fp: hexFp('1'), seq: '5' }, { fp: hexFp('2'), seq: '5' }] });   // tie: list order
-    add('checkOrder', { contacts: [{ fp: hexFp('1') }, { fp: hexFp('2') }], dmSync: { [hexFp('1')]: now, [hexFp('2')]: now }, messages: [{ fp: hexFp('1'), seq: '9' }, { fp: hexFp('2'), seq: '10' }] });
-    add('checkOrder', { contacts, dmSync: {}, messages: [] });
+    add('checkOrder', { contacts, messages });
+    add('checkOrder', { contacts: [{ fp: hexFp('2') }, { fp: hexFp('1') }], messages: [{ fp: hexFp('1'), seq: '5', at: AT }, { fp: hexFp('2'), seq: '5', at: AT }] });   // equal time and seq: list order
+    add('checkOrder', { contacts: [{ fp: hexFp('1') }, { fp: hexFp('2') }], messages: [{ fp: hexFp('1'), seq: '9', at: AT }, { fp: hexFp('2'), seq: '10', at: AT }] });  // equal time: greater seq first
+    add('checkOrder', { contacts: [{ fp: hexFp('1') }, { fp: hexFp('2') }], messages: [{ fp: hexFp('1'), seq: '10', at: AT }, { fp: hexFp('2'), seq: 9, at: AT }] });   // seq a Number
+    add('checkOrder', { contacts: [{ fp: hexFp('1') }, { fp: hexFp('2') }], messages: [{ fp: hexFp('1'), seq: '99', at: AT }, { fp: hexFp('2'), seq: '1', at: AT + 1 }] });   // time before seq
+    add('checkOrder', { contacts, messages: [] });
     add('checkOrder', { contacts });
-    add('checkOrder', { contacts: [], dmSync: {}, messages });
-    // ties inside each rank, seq forms, extra fields echoed
+    add('checkOrder', { contacts: [], messages });
+    // ties inside each group, seq forms, extra fields echoed
     add('checkOrder', {
       contacts: [{ fp: hexFp('1'), salt: 's', listed: true, 10: 'x' }, { fp: hexFp('2') }, { fp: hexFp('3') }, { fp: hexFp('4') }, { fp: hexFp('5') }, 'x', 7, [1]],
-      dmSync: { [hexFp('1')]: now, [hexFp('2')]: now, [hexFp('3')]: now, [hexFp('4')]: 5, 5: now },
-      messages: [{ fp: hexFp('2'), seq: 9 }, { fp: hexFp('3'), seq: '9' }, { fp: hexFp('1'), seq: D20 }, { fp: hexFp('4'), seq: '01' }, null, 0, 'x', { seq: '5' }]
+      messages: [{ fp: hexFp('2'), seq: 9, at: AT }, { fp: hexFp('3'), seq: '9', at: AT }, { fp: hexFp('1'), seq: D20, at: AT }, { fp: hexFp('4'), seq: '01', at: AT }, null, 0, 'x', { seq: '5', at: AT }]
     });
-    add('checkOrder', { contacts: [{ fp: hexFp('1') }], dmSync: { [hexFp('1')]: now }, messages: [{ fp: hexFp('1'), seq: 18446744073709551616 }] });
-    add('checkOrder', { contacts, dmSync, messages: 'abc' });                          // for…of a string
-    add('checkOrder', { contacts, dmSync, messages: 5 });                              // TypeError
-    add('checkOrder', { contacts, dmSync, messages: {} });
-    add('checkOrder', { contacts: [{ fp: hexFp('1') }, null], dmSync, messages });
-    add('checkOrder', { contacts: 'abc', dmSync, messages });
-    add('checkOrder', { contacts: 'abc', dmSync, messages: 5 });                       // the messages loop runs first
+    add('checkOrder', { contacts: [{ fp: hexFp('1') }, { fp: hexFp('2') }], messages: [{ fp: hexFp('2'), seq: 18446744073709551616, at: AT }] });   // String(2^64) is not U64
+    add('checkOrder', { contacts: [{ fp: 5 }, { fp: A }], messages: [{ fp: '5', seq: '1', at: AT }, { fp: A, seq: '1', at: AT - 1 }] });            // a Number fp is no Map key
+    add('checkOrder', { contacts, messages: 'abc' });                                  // for…of a string
+    add('checkOrder', { contacts, messages: 5 });                                      // TypeError
+    add('checkOrder', { contacts, messages: {} });
+    add('checkOrder', { contacts, messages: null });
+    add('checkOrder', { contacts: [{ fp: hexFp('1') }, null], messages });
+    add('checkOrder', { contacts: 'abc', messages });
+    add('checkOrder', { contacts: 'abc', messages: 5 });                               // the messages loop runs first
+
+    // `at` forms: B's only message, with that `at`. Counted -> [B, A];
+    // ignored -> [A, B] (list order).
+    for (const at of [AT, 0, -5, MAX, -MAX, 1, '1790000000000', 'x', '', ' 5 ', '0x10', 'Infinity', null, true, false,
+      1.5, -0.5, MAX + 1, -(MAX + 1), 1e21, 1e300, -1e300])
+      add('checkOrder', { contacts: ab, messages: [{ fp: B, seq: '1', at }] });
+    add('checkOrder', { contacts: ab, messages: [{ fp: B, seq: '1' }] });              // at missing: ignored
+    add('checkOrder', { contacts: ab, messages: [{ fp: B, seq: '1', at: [AT] }] });     // not flat: bad arguments
+    add('checkOrder', { contacts: ab, messages: [{ fp: B, seq: '1', at: { v: AT } }] });
+    // signed order: MAX, then -5, then -MAX
+    add('checkOrder', { contacts: [{ fp: A }, { fp: B }, { fp: C }], messages: [{ fp: B, seq: '1', at: -MAX }, { fp: C, seq: '1', at: MAX }, { fp: A, seq: '1', at: -5 }] });
+    // one fp, several messages: the greatest (time, seq) counts; an ignored one does not
+    add('checkOrder', { contacts: ab, messages: [{ fp: A, seq: '9', at: AT }, { fp: A, seq: '1', at: AT + 2 }, { fp: B, seq: '5', at: AT + 1 }] });
+    add('checkOrder', { contacts: ab, messages: [{ fp: A, seq: '3', at: AT }, { fp: A, seq: '8', at: AT }, { fp: B, seq: '5', at: AT }] });
+    add('checkOrder', { contacts: ab, messages: [{ fp: A, seq: '1', at: AT }, { fp: B, seq: '2', at: String(AT + 9) }, { fp: B, seq: '1', at: AT - 1 }] });
+
+    // senderTs (shownAt): A's message at T (out); B's incoming at 2T with
+    // senderTs s. B is first when its time is `at` (2T), second when it is
+    // s * 1000 (< T).
+    const T = 1000000, st = (senderTs, dir = 'in', at = 2 * T) =>
+      add('checkOrder', { contacts: ab, messages: [{ fp: A, dir: 'out', seq: '1', at: T }, { fp: B, dir, seq: '1', at, senderTs }] });
+    st('500');                                                     // behind at: the sender's time
+    st('0');
+    st('5000');                                                    // ahead of at: at
+    st('2000');                                                    // equal to at: either, 2T
+    st('999');                                                     // just below T
+    st('1000');                                                    // equal to A's time: seq, then list order
+    st('500', 'out');                                              // own message: at
+    st('500', 'local');
+    st('500', 'IN');
+    st(500);                                                       // not a string: at
+    st('0500');                                                    // not U64: at
+    st('-5');
+    st(' 500');
+    st('5e2');
+    st(D20);
+    st(U64_MAX);
+    st(null);
+    st('500', 'in', -5);                                           // negative at: 500000 > -5, so at (-5)
+    st('500', 'in', '2000000');                                    // string at: ignored altogether
+    // the safe-integer edge of senderTs * 1000 (2^53 - 1 = 9007199254740991)
+    add('checkOrder', { contacts: ab, messages: [{ fp: A, dir: 'out', seq: '1', at: MAX - 1 }, { fp: B, dir: 'in', seq: '1', at: MAX, senderTs: '9007199254740' }] });   // 9007199254740000: safe, behind
+    add('checkOrder', { contacts: ab, messages: [{ fp: A, dir: 'out', seq: '1', at: MAX - 1 }, { fp: B, dir: 'in', seq: '1', at: MAX, senderTs: '9007199254741' }] });   // 9007199254741000: not safe, at
+    add('checkOrder', { contacts: ab, messages: [{ fp: A, dir: 'out', seq: '1', at: MAX - 1 }, { fp: B, dir: 'in', seq: '1', at: MAX, senderTs: '9007199254740991' }] });
   }
 
   // ── profileFresh (text.js:318)

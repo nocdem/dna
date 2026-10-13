@@ -136,8 +136,12 @@ static void test_requests(void) {
     uint8_t *bytes = NULL;
     size_t len = 0;
 
-    int rc = nc_request_build(A, B->fp, "hi there", salt, &bytes, &len);
+    /* The caller's time (nc_ctx_t now, Kurultay #17 item 5): the library
+     * reads no clock; 0 is refused. */
+    const uint64_t NOW = 1791500000u;
+    int rc = nc_request_build(A, B->fp, "hi there", salt, NOW, &bytes, &len);
     CHECK(rc == 0 && decode_verify(bytes, len, r) == 0 &&
+          r->timestamp == NOW && r->expiry == NOW + DHT_CONTACT_REQUEST_DEFAULT_TTL &&
           strcmp(r->sender_fingerprint, A->fp) == 0 &&
           r->version == DHT_CONTACT_REQUEST_VERSION_SALT && r->has_dht_salt &&
           memcmp(r->dht_salt, salt, NC_SALT_LEN) == 0 &&
@@ -145,13 +149,15 @@ static void test_requests(void) {
           "Q1 v2 request passes the codec's deserialize + verify");
     free(bytes); bytes = NULL;
 
-    rc = nc_request_build(A, B->fp, NULL, NULL, &bytes, &len);
+    rc = nc_request_build(A, B->fp, NULL, NULL, NOW, &bytes, &len);
     CHECK(rc == 0 && decode_verify(bytes, len, r) == 0 &&
           r->version == DHT_CONTACT_REQUEST_VERSION && !r->has_dht_salt &&
           r->message[0] == '\0', "Q2 v1 request (no salt) verifies");
     free(bytes); bytes = NULL;
+    CHECK(nc_request_build(A, B->fp, NULL, NULL, 0, &bytes, &len) == NC_ERR_ARG && !bytes,
+          "Q2b no time given (0) -> refused, never a 0 stamp");
 
-    rc = nc_request_build(B, A->fp, NC_CONTACT_ACCEPTED_MSG, salt, &bytes, &len);
+    rc = nc_request_build(B, A->fp, NC_CONTACT_ACCEPTED_MSG, salt, NOW, &bytes, &len);
     CHECK(rc == 0 && decode_verify(bytes, len, r) == 0 &&
           strcmp(r->message, "Contact request accepted") == 0 &&
           memcmp(r->dht_salt, salt, NC_SALT_LEN) == 0 &&
@@ -162,13 +168,13 @@ static void test_requests(void) {
     char longmsg[300];
     memset(longmsg, 'x', sizeof(longmsg) - 1);
     longmsg[sizeof(longmsg) - 1] = '\0';
-    CHECK(nc_request_build(A, B->fp, longmsg, NULL, &bytes, &len) == NC_ERR_ARG && !bytes &&
-          nc_request_build(A, "not-a-fingerprint", NULL, NULL, &bytes, &len) == NC_ERR_ARG,
+    CHECK(nc_request_build(A, B->fp, longmsg, NULL, NOW, &bytes, &len) == NC_ERR_ARG && !bytes &&
+          nc_request_build(A, "not-a-fingerprint", NULL, NULL, NOW, &bytes, &len) == NC_ERR_ARG,
           "Q4 overlong message / bad recipient refused");
 
     /* Q5: the signature covers exactly dht_contact_request_signing_preimage
      * of the decoded request — the bytes the app's send path signs. */
-    rc = nc_request_build(A, B->fp, "preimage", salt, &bytes, &len);
+    rc = nc_request_build(A, B->fp, "preimage", salt, NOW, &bytes, &len);
     uint8_t *pre = NULL;
     size_t pre_len = 0;
     int ok = rc == 0 && decode_verify(bytes, len, r) == 0 &&

@@ -982,7 +982,8 @@ int main(void) {
         return 1;
     }
     static int cancel_flag;
-    nc_ctx_t ctx = { .client = c, .keys = g_keys, .fresh = false, .cancel = &cancel_flag };
+    nc_ctx_t ctx = { .client = c, .keys = g_keys, .fresh = false, .cancel = &cancel_flag,
+                     .now = 1791500000u };     /* the library reads no clock (nc_ctx_t now) */
 
     read_case(&ctx, M_TIMEOUT, NC_UNREADABLE, NC_WHY_TIMEOUT, "F1 timeout -> UNREADABLE(timeout)");
     read_case(&ctx, M_EMPTY, NC_EMPTY, NC_WHY_NONE, "F2 empty -> EMPTY");

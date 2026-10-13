@@ -308,7 +308,13 @@ async function openLocal(gen) {
     // answers must not hold it. On expiry Messages closes with
     // HISTORY_SLOW_TEXT (retry offered), nothing half-loaded is kept and a
     // late database handle is closed (store.js bounded).
-    const opened = vaultId ? await openHistoryStore({ core, vaultId, signal: AbortSignal.timeout(HISTORY_OPEN_MS) }) : memoryHistoryStore();
+    // A history kept before P7 is updated to the new layout once, after the
+    // bounded read (store.js onMigrate; design §2.2); what the update could
+    // not keep — stored fields no code reads — is written to the session log
+    // as paths, never values (store.js onDropped).
+    const opened = vaultId ? await openHistoryStore({ core, vaultId, signal: AbortSignal.timeout(HISTORY_OPEN_MS),
+      onMigrate: step => { if (step === 'start' && gen === generation) showState('Opening Messages', 'Updating your message history…', false); },
+      onDropped: paths => logCheck(`Message history: ${paths.length} stored field(s) could not be kept: ${paths.join(', ')}`, true) }) : memoryHistoryStore();
     if (gen !== generation) { opened.close(); return; }
     store = opened;
     state = structuredClone(store.state);
@@ -322,7 +328,7 @@ async function openLocal(gen) {
     // no network until the network phase.
     groups = createGroupsEngine({
       core, ownFp, state: () => state, takeSeq,
-      saveAll: ({ records = [], messages: groupMessages = [] }) => store.save(state, groupMessages, [], [], records),
+      saveAll: ({ records = [], messages: groupMessages = [], undo }) => store.save(state, groupMessages, [], [], records, { undo }),
       sendDirect: sendControl,
       isContact: fp => !!contactOf(fp)?.salt,
       ensureProfile: fp => ensureProfile(fp, !!contactOf(fp)),
@@ -381,6 +387,16 @@ function goOnline(gen) {
   clearInterval(syncTimer);
   syncTimer = setInterval(() => { void sync(); }, SYNC_MS);
   void sync();
+}
+// The page shown again (0.1.115, operator 2026-10-13: "Connect açıldıktan
+// sonra … arka planda mesajların, kontakların, kontak request'lerin check
+// edilmesi … o sayfalara girilmesi gerekiyor"): a phone or browser pauses a
+// hidden page's timers, so after coming back the next round could wait for
+// the 30-second timer. A round starts at once instead, whichever tab is
+// shown. `sync` keeps its own guards (open, network started, one at a time).
+// A reconnect already starts one (nodusReady -> goOnline).
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void sync(); });
 }
 
 // The own profile on the network (was the gate of opening Messages; now
@@ -480,7 +496,10 @@ const contactOf = fp => state.contacts.find(c => c.fp === fp);
 const pendingOf = fp => { const o = state.outgoing.find(x => x.fp === fp); return o && !contactOf(fp) ? { fp: o.fp, salt: o.salt || null, pending: true } : undefined; };
 const chatPeerOf = fp => contactOf(fp) || pendingOf(fp);
 function takeSeq() { const seq = state.nextSeq; state.nextSeq = String(BigInt(seq) + 1n); return seq; }
-async function persist(newMessages = []) { await store.save(state, newMessages); }
+// `undo` (optional): the caller's rollback of its own change, run by the
+// store when this save fails, before the error reaches the caller
+// (store.js save, design P7 rev 2.2 item 1).
+async function persist(newMessages = [], undo) { await store.save(state, newMessages, [], [], [], { undo }); }
 // Changed copies of stored messages (published / delivered flags): saved
 // first, then put in place of the in-page ones (by local seq).
 async function saveUpdated(updated) {
@@ -573,13 +592,13 @@ async function keepProfile(fp, result) {
   const before = state.profileCache[fp];
   const id = before?.id || `p${takeSeq().padStart(20, '0')}`;
   state.profileCache[fp] = { id, at: nowSeconds(), name: typeof result.profile.name === 'string' ? result.profile.name : '' };
+  // not kept on a failure: read from the network next time (the store runs
+  // the rollback before this call sees the error)
+  const undo = () => { if (before) state.profileCache[fp] = before; else delete state.profileCache[fp]; };
   try {
-    await store.save(state, [], [{ id, fp, record: result.record }]);
+    await store.save(state, [], [{ id, fp, record: result.record }], [], [], { undo });
     kept.set(fp, { id, record: result.record });
-  } catch {
-    // not kept: read from the network next time
-    if (before) state.profileCache[fp] = before; else delete state.profileCache[fp];
-  }
+  } catch { /* rolled back by undo */ }
 }
 async function forgetProfile(fp) {
   if (!state.profileCache[fp]) return;
@@ -751,10 +770,10 @@ async function sync() {
     // not leave every contact after it in the list unchecked, round after
     // round. A close / reset meanwhile still ends the check.
     let syncMoved = false, failed = 0, storageFailure, arrivedTotal = 0;
-    // Check order (web 0.1.72, text.js checkOrder): never-checked contacts
-    // first, then the ones with the newest message on this device, then
-    // the rest — a copy; state.contacts keeps its order.
-    const contacts = checkOrder(state.contacts, state.dmSync, messages);
+    // Check order (web 0.1.111, text.js checkOrder): the contacts we last
+    // wrote with first, by the message's time; then everyone else in list
+    // order — a copy; state.contacts keeps its order.
+    const contacts = checkOrder(state.contacts, messages);
     const daysOf = new Map(contacts.map(c => [c.fp, contactDays(c.fp, state.dmSync, startedAt, today)]));
     const full = contacts.filter(c => contactNeedsFullSync(c.fp, state.dmSync, startedAt)).length;
     logCheck(roundStartLine(round, { first, contacts: contacts.length, full, recent: contacts.length - full }));
@@ -2707,16 +2726,15 @@ async function keepVault(address, value) {
   const id = before?.id || `v${takeSeq().padStart(20, '0')}`;
   const entry = { id, at: nowSeconds() };
   state.vaults[address] = entry;
-  try {
-    await store.save(state, [], [], [{ id, address, value }]);
-  } catch (error) {
-    // roll back only this call's own entry: a dropVault (or another
-    // keepVault) that ran during the save stands as it left it
+  // On a failure the store rolls back (before this call sees the error) only
+  // this call's own entry: a dropVault (or another keepVault) that ran
+  // during the save stands as it left it.
+  const undo = () => {
     if (state.vaults[address] === entry) {
       if (before) state.vaults[address] = before; else delete state.vaults[address];
     }
-    throw error;
-  }
+  };
+  await store.save(state, [], [], [{ id, address, value }], [], { undo });
   vaultRecs.set(address, { id, value });
 }
 
@@ -2724,7 +2742,8 @@ async function dropVault(address) {
   if (!isOpen() || !state.vaults[address]) return;
   const before = state.vaults[address];
   delete state.vaults[address];
-  try { await persist(); } catch (error) { state.vaults[address] = before; throw error; }
+  // on a failure the store puts the entry back before the error reaches here
+  await persist([], () => { state.vaults[address] = before; });
   vaultRecs.delete(address);
 }
 

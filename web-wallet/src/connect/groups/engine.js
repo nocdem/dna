@@ -28,9 +28,11 @@
 //   state()          the Messages state record (store.js emptyState): its
 //                    `groups` index and `nextSeq` live there
 //   takeSeq()        the next local sequence (state.nextSeq)
-//   saveAll({ records, messages })   one store.save of the state, these
+//   saveAll({ records, messages, undo })   one store.save of the state, these
 //                    group records ({ id, value }) and group messages;
-//                    resolves once written (or kept in memory: unsaved wallet)
+//                    resolves once written (or kept in memory: unsaved wallet);
+//                    on a failure it runs `undo` (optional, synchronous: the
+//                    caller's rollback of the state) before it rejects
 //   sendDirect(fp, text)   a 1:1 message carrying an invite / accept /
 //                    welcome / leave: kept on the device and published by the
 //                    1:1 outbox (src/connect/ui/messages.js)
@@ -204,13 +206,16 @@ export function createGroupsEngine(deps) {
   // ── persistence ──────────────────────────────────────────────────────
   // The next version of a group is written first, then put in place; a
   // failed save leaves the group as it was (and the state index too).
+  // The index rollback is handed to saveAll (`undo`): the store runs it on a
+  // failure, inside its queue, before the error reaches here (store.js
+  // save, P7 rev 2.2 item 1) — exactly once, never again here.
   async function commit(gid, next, { keys = [], pieces = [], messages: msgs = [] } = {}) {
     const st = state();
     const before = st.groups[gid];
     const id = recIds.get(gid) || newId('g');
     st.groups[gid] = { id, at: seconds() };
-    try { await saveAll({ records: [{ id, value: storedGroup(next) }, ...keys, ...pieces], messages: msgs }); }
-    catch (error) { if (before) st.groups[gid] = before; else delete st.groups[gid]; throw error; }
+    const undo = () => { if (before) st.groups[gid] = before; else delete st.groups[gid]; };
+    await saveAll({ records: [{ id, value: storedGroup(next) }, ...keys, ...pieces], messages: msgs, undo });
     recIds.set(gid, id);
     groups.set(gid, next);
     return next;
@@ -218,8 +223,7 @@ export function createGroupsEngine(deps) {
   async function forget(gid) {
     const st = state(), before = st.groups[gid];
     delete st.groups[gid];
-    try { await saveAll({ records: [], messages: [] }); }
-    catch (error) { if (before) st.groups[gid] = before; throw error; }
+    await saveAll({ records: [], messages: [], undo: () => { if (before) st.groups[gid] = before; } });
     groups.delete(gid); recIds.delete(gid); stagePackets.delete(gid); stageKeys.delete(gid);
   }
   function note(gid, text) { if (text) notes.set(gid, text); else notes.delete(gid); }

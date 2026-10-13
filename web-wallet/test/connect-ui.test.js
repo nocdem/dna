@@ -2,10 +2,12 @@
 // encoding (src/connect/store.js, decision 2026-09-30-nodus-connect-thin-core.md
 // Ek 2: separate id / nonce / ct / tag fields, one decimal counter record per
 // vault) and the UI helpers (src/connect/ui/text.js, design rev 5 §1.9).
-// NOT COVERED ANYWHERE YET: the IndexedDB transactions of openHistoryStore
-// (readAll / writeAll / oncomplete / onabort, the counter record written in
-// the same transaction). fake-indexeddb is not a dependency and no browser
-// test opens the Messages page, so those paths have no automated test.
+// The IndexedDB transactions of openHistoryStore (readAll / writeAll /
+// oncomplete / onabort, the counter record in the same transaction, the P7
+// migration and commit) are covered since web 0.1.116 by
+// test/connect-store.test.js (a fake IndexedDB at the transaction level —
+// fake-indexeddb is not a dependency) and test/browser-connect-state.js
+// (Chromium's real IndexedDB, the real module).
 // deleteVaultHistory is covered below against a minimal stub of
 // indexedDB.deleteDatabase (the request's events only, not a database).
 import test from 'node:test';
@@ -115,7 +117,7 @@ test('record ids are opaque and ordered by the local sequence', () => {
   assert.throws(() => messageRecordId(1));
 });
 
-test('plaintext crosses to the core as UTF-8 JSON bytes, at most 65536, and back (wiped after parsing)', () => {
+test('plaintext crosses to the core as UTF-8 JSON bytes, at most 1 MiB, and back (wiped after parsing)', () => {
   const value = { text: 'merhaba ğüşİ 👋', fp: FP };
   const plain = plaintextBytes(value);
   assert.ok(plain instanceof Uint8Array);
@@ -123,8 +125,25 @@ test('plaintext crosses to the core as UTF-8 JSON bytes, at most 65536, and back
   assert.ok(plain.every(b => b === 0));
   assert.throws(() => parsePlaintext(Uint8Array.from([0xff])));
   assert.throws(() => parsePlaintext('7b7d'));
-  assert.equal(PLAINTEXT_MAX, 65536);
+  assert.equal(PLAINTEXT_MAX, 1048576);
   assert.throws(() => plaintextBytes({ text: 'x'.repeat(PLAINTEXT_MAX) }), /too large/);
+});
+
+// BUGS W-15 (web 0.1.112): the one 'state' record of a saved wallet holds
+// every contact's entries; at the old 64 KiB cap it stopped saving at about
+// 60 contacts. 200 contacts with every per-contact map filled must fit now.
+test('state record: 200 contacts with every per-contact map filled fit one record (W-15)', () => {
+  const s = emptyState(); s.nextSeq = '123456';
+  for (let i = 0; i < 200; i++) {
+    const fp = (i + 1).toString(16).padStart(8, '0').repeat(16);
+    s.contacts.push({ fp, salt: (i + 7).toString(16).padStart(8, '0').repeat(8), listed: true });
+    s.acks[fp] = '1790000000'; s.ackSent[fp] = '1790000000'; s.dmSync[fp] = '1790000000';
+    s.profileCache[fp] = { id: 'p' + String(1000 + i).padStart(20, '0'), at: '1790000000', name: `Contact Name ${i}` };
+    s.chainNames[fp] = { name: `name${i}abcdef`, at: '1790000000' };
+  }
+  const plain = plaintextBytes(checkState(s));
+  assert.ok(plain.length > 65536, 'over the old cap');
+  assert.ok(plain.length <= PLAINTEXT_MAX);
 });
 
 test('state shape is checked; the memory store keeps nothing and refuses after close', async () => {
@@ -579,34 +598,39 @@ test('smart sync per contact (0.1.72): only a contact never checked, or checked 
   assert.throws(() => needFullSync([], {}, 'x'), /Invalid time/);
 });
 
-test('check order (0.1.72): never checked first, then the newest message on this device, then the rest; ties keep the list order', () => {
-  const fp = ch => ch.repeat(128), now = '1790000000';
-  const contacts = ['1', '2', '3', '4', '5', '6'].map(ch => ({ fp: fp(ch) }));
-  const dmSync = { [fp('1')]: now, [fp('2')]: now, [fp('3')]: now, [fp('5')]: '0', [fp('6')]: now };
-  // 4: no entry, 5: '0' — never checked. 3 has the newest message (in), 1 an
-  // older one (out), 6 a message with an unreadable seq (ignored), 2 none.
+test('check order (0.1.111): the contact last written with first, by the message time as shown; then everyone else in list order', () => {
+  const fp = ch => ch.repeat(128);
+  const contacts = ['1', '2', '3', '4', '5', '6', '7'].map(ch => ({ fp: fp(ch) }));
+  // at: arrival / send time on this device (ms). senderTs: the sender's
+  // clock (s), used when not later than the arrival (shownAt).
   const messages = [
-    { fp: fp('1'), dir: 'out', seq: '7' },
-    { fp: fp('3'), dir: 'in', seq: '9' },
-    { fp: fp('1'), dir: 'in', seq: '8' },
-    { fp: fp('6'), dir: 'in', seq: 'x' },
-    { fp: fp('9'), dir: 'in', seq: '99' }   // not a contact
+    { fp: fp('1'), dir: 'out', seq: '7', at: 1000_000 },
+    { fp: fp('3'), dir: 'in', seq: '2', at: 5000_000, senderTs: '4000' },   // shown at 4,000,000
+    { fp: fp('1'), dir: 'in', seq: '8', at: 2000_000 },                      // 1's newest: 2,000,000
+    { fp: fp('5'), dir: 'in', seq: '9', at: 3000_000, senderTs: '9999' },   // sender clock ahead: shown at arrival 3,000,000
+    { fp: fp('6'), dir: 'in', seq: 'x', at: 9000_000 },                      // unreadable seq: ignored
+    { fp: fp('7'), dir: 'out', seq: '3' },                                   // no time: ignored
+    { fp: fp('2'), dir: 'out', seq: '4', at: '9500000' },                    // string at: not a time, ignored
+    { fp: fp('4'), dir: 'out', seq: '5', at: 9500000.5 },                    // fractional at: ignored
+    { fp: fp('9'), dir: 'in', seq: '99', at: 9900_000 }                      // not a contact
   ];
   const before = contacts.map(c => c.fp);
-  const order = checkOrder(contacts, dmSync, messages).map(c => c.fp);
-  assert.deepEqual(order, [fp('4'), fp('5'), fp('3'), fp('1'), fp('2'), fp('6')]);
+  // 3 (4.0e6) > 5 (3.0e6) > 1 (2.0e6): by time, NOT by seq (3's seq 2 is the
+  // lowest — an old message stored late does not count as new); then 2, 4, 6,
+  // 7 with no usable message, in list order — never-written contacts are
+  // still in the round, last.
+  assert.deepEqual(checkOrder(contacts, messages).map(c => c.fp), [fp('3'), fp('5'), fp('1'), fp('2'), fp('4'), fp('6'), fp('7')]);
   assert.deepEqual(contacts.map(c => c.fp), before, 'the list itself is not reordered');
-  assert.notEqual(checkOrder(contacts, dmSync, messages), contacts, 'a new array');
-  // Same newest seq (cannot happen for one device, but the order stays total): list order.
-  const tie = checkOrder([{ fp: fp('2') }, { fp: fp('1') }], { [fp('1')]: now, [fp('2')]: now }, [{ fp: fp('1'), seq: '5' }, { fp: fp('2'), seq: '5' }]);
+  assert.notEqual(checkOrder(contacts, messages), contacts, 'a new array');
+  // Same time: the later stored (higher seq) first; same time and seq: list order.
+  const sameTime = checkOrder([{ fp: fp('1') }, { fp: fp('2') }], [{ fp: fp('1'), seq: '9', at: 7 }, { fp: fp('2'), seq: '10', at: 7 }]);
+  assert.deepEqual(sameTime.map(c => c.fp), [fp('2'), fp('1')], 'seq compared as integers, not text');
+  const tie = checkOrder([{ fp: fp('2') }, { fp: fp('1') }], [{ fp: fp('1'), seq: '5', at: 7 }, { fp: fp('2'), seq: '5', at: 7 }]);
   assert.deepEqual(tie.map(c => c.fp), [fp('2'), fp('1')]);
-  // seq compared as integers, not text ('10' after '9')
-  const big = checkOrder([{ fp: fp('1') }, { fp: fp('2') }], { [fp('1')]: now, [fp('2')]: now }, [{ fp: fp('1'), seq: '9' }, { fp: fp('2'), seq: '10' }]);
-  assert.deepEqual(big.map(c => c.fp), [fp('2'), fp('1')]);
-  // Nothing checked yet, no messages: the list order.
-  assert.deepEqual(checkOrder(contacts, {}, []).map(c => c.fp), before);
-  assert.deepEqual(checkOrder(contacts, undefined, undefined).map(c => c.fp), before);
-  assert.deepEqual(checkOrder([], {}, messages), []);
+  // No messages: the list order.
+  assert.deepEqual(checkOrder(contacts, []).map(c => c.fp), before);
+  assert.deepEqual(checkOrder(contacts, undefined).map(c => c.fp), before);
+  assert.deepEqual(checkOrder([], messages), []);
 });
 
 test('profile cache: a kept profile is used for 7 days', () => {

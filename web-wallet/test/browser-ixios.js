@@ -95,6 +95,8 @@ async function ixiosRead(route) {
 }
 async function openWallet(url) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 960 } }); page.setDefaultTimeout(20000);
+  // Every asset row, held or not (zero balances hidden by default since 0.1.113).
+  await page.addInitScript(() => { try { localStorage.setItem('nodus.showZeroBalances', '1'); } catch { /* storage refused */ } });
   const unexpected = [], errors = [], wasm = [], ixiosRequests = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', req => { if (ixiosHost(req.url())) ixiosRequests.push(req.url()); });
@@ -255,7 +257,7 @@ try {
   assert.equal(await page.locator('#receive-qr').evaluate(node => node.childElementCount), 0);
   assert.equal(await page.locator('#ixios-address-status').textContent(), '');
   assert.equal(await page.locator('#balances').textContent(), '');
-  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  assert.equal(await page.evaluate(() => Object.keys(localStorage).filter(x => x !== 'nodus.showZeroBalances').length + sessionStorage.length), 0);
   // Every Ixios-host request went to the configured public RPC (and was mocked).
   assert.ok(on.ixiosRequests.length > 0);
   assert.ok(on.ixiosRequests.every(requestUrl => new URL(requestUrl).origin === new URL(IXIOS_RPC).origin), on.ixiosRequests.join());
@@ -274,7 +276,7 @@ try {
   assert.ok(off.wasm.every(path => !/mldsa87-sign/.test(path)));
   assert.ok(off.wasm.every(path => !/\?ixios$/.test(path)), 'flag-off build makes no Ixios keygen request');
   await off.page.locator('#lock').click();
-  assert.equal(await off.page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  assert.equal(await off.page.evaluate(() => Object.keys(localStorage).filter(x => x !== 'nodus.showZeroBalances').length + sessionStorage.length), 0);
   assert.deepEqual(off.ixiosRequests, []);
   assert.deepEqual(off.unexpected, []); assert.deepEqual(off.errors, []);
   console.log('Ixios browser checks passed: flag-on build lists Ixios in the network selector, portfolio filters, badges and assets (IXIOS row: Receive only, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Read failed · last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). Flag-off build shows no Ixios anywhere and ships no Ixios JavaScript; neither build ships mldsa87-sign.wasm or Ixios markup; no unmocked external requests or storage.');
