@@ -1068,7 +1068,9 @@ else
     consent_file_ok "$c_x" "$ST_B" "$FP_1" "$CS_EXP"
 fi
 st_register "$ST_B" "$(node_keys "$ST_B")" "$c_x" dry-run "$LOGD/register_node${ST_B}_as_node.log"
-[ "$RG_RC" != 0 ] && [[ "$RG_OUT" == *"the consent names another owner than the --keys identity"* ]] \
+# prefix match: the HF-6 multisig work reworded the tail ("than this envelope's
+# owner (the --keys identity, or with --msig the multisig address)")
+[ "$RG_RC" != 0 ] && [[ "$RG_OUT" == *"the consent names another owner than"* ]] \
     || die "storage register with node$ST_B's own identity as --keys was not refused by the CLI's owner check (rc $RG_RC)"
 [ -z "$(spend_intent "$LOGD/register_node${ST_B}_as_node.log")" ] || die "the refused registration built an envelope"
 echo "[ok] the CLI refused node$ST_B's identity as --keys for a consent naming another owner — nothing built"

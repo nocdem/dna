@@ -3,7 +3,8 @@ r"""
 Independent oracle for the storage reward v1 rule-set generation
 (GEN_STORAGE = generation 4, built on the EVM generation 3) pinned values:
 the GEN_STORAGE SYSTEM meter-policy digest and the SYSTEM v10 and DNA_CORE
-v8 ruleset hashes (v9 / v7 until HF-6 D2 — see "HF-6 D2" below).
+v9 ruleset hashes (v9 / v7 until HF-6 D2, CORE v8 until the payer binding
+— see "HF-6 D2" and "PAYER BINDING" below).
 
 This file REPLACES the generation-3 / param-14 version (written before
 Nodus EVM merged first and took generation 3 and params 14-15). Its old
@@ -122,6 +123,15 @@ reward-is-for-archive.md item K10, operator 2026-10-06 "ok"):
   7"). The {1..10} / v9 / v7 outputs (S1 e5d96b4a…, S2 c347ddd7…, S3
   fb25e5c4…) are REPLACED, not kept (generation 4 never activated).
 
+  PAYER BINDING (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+  design.md §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13", operator "Yap"):
+  under generation 4 a kind-3 CORE SYSFUND funding leg must carry exactly
+  the vault the SYSTEM leg's signed owner field names — a CORE hook-side
+  semantics change, so "CORE ruleset_version 8 → 9 (D4 hareket etsin
+  diye)". Only the CORE version field moves: S1 and S2 must reproduce the
+  D2 values byte-exactly (asserted below), S3 must differ from the D2 CORE
+  v8 value db32614f… (asserted), which is REPLACED, not kept.
+
 NOT GROUNDED IN A RECORD (stated, not hidden):
   * SYSTEM tx_types unchanged {4,5,6,7,9,10} and CORE tx_types unchanged
     {1,2,3,11,12,13} for generation 4 — inferred: no record assigns the
@@ -156,7 +166,7 @@ Stages, fail-closed:
        the same op set at the same weights)
     S2 SYSTEM v10 ruleset hash (rules {1..9}, types {4,5,6,7,9,10},
        policy S1)
-    S3 DNA_CORE v8 ruleset hash (rules {1..9}, types {1,2,3,11,12,13}, zero)
+    S3 DNA_CORE v9 ruleset hash (rules {1..9}, types {1,2,3,11,12,13}, zero)
   (no vote literal: generation 4's D4 is hf6_vote_oracle.py's)
 
 Run:  python3 shared/dnac/tests/storage_oracle.py
@@ -275,7 +285,9 @@ READINESS_POLICY_STAGED_V1 = 1
 # ── the storage generation (decision K10) ─────────────────────────────
 
 SYS_RULESET_VERSION_STORAGE = 10       # Kurultay #18 item 3: 9 -> 10
-CORE_RULESET_VERSION_STORAGE = 8       # Kurultay #18 item 3: 7 -> 8
+CORE_RULESET_VERSION_STORAGE = 9       # Kurultay #18 item 3: 7 -> 8;
+                                       # payer binding (design §2,
+                                       # 2026-10-13): 8 -> 9
 SYS_RULES_STORAGE = SYS_RULES + [7, 8, 9]   # K10: "SYSTEM rules 7/8/9";
                                        # op 10 removed again (Kurultay #18
                                        # item 1) — {1..9}
@@ -291,6 +303,18 @@ POLICY_MAX_OP_STORAGE = 9              # K10 "ops 1..9 weight 1" (op 10 no
 PRE_BUMP_RS_CORE_V7 = (
     "fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073"
     "ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f060")
+# The HF-6 D2 values (SYSTEM v10 rules {1..9} / CORE v8, emitted by this
+# file at eb2e9d46c). The payer binding moves ONLY the CORE version field,
+# so S1 and S2 must reproduce the D2 values and S3 must differ from D2's.
+D2_S1_POLICY = (
+    "0aa4c690a05af8827a322912a402d87b2642c99edc1db83f2871af64da18c3f8"
+    "b74a6e5c870edc3450ae0474a3c8d7279efb884df8b285c8848beffb25922766")
+D2_S2_SYSTEM_V10 = (
+    "a012cc08bbf96524fa2dace331921f9d39107aa52643fc99392c14146ef09159"
+    "a54d11502d538d424f1e5bde9a493e2abab2738bf20c3e261fe5627c09bb662a")
+D2_S3_CORE_V8 = (
+    "db32614f1eb4818d7609e15f0130dec652362196a1d416a7b8ea4546a64abf9a"
+    "c08b0b76cc9c0b62e1a47a3a7cf04b0982d299501cbf800f12849f64a0f991d1")
 
 
 def sha3(b: bytes) -> bytes:
@@ -456,6 +480,9 @@ def emit() -> None:
           "1..9 at weight 1 — op 10 is priced by no generation): %s"
           % (SHIPPED_METPOL_GEVM[:16], s1 == e_pol))
     assert s1 == e_pol
+    print("  S1 == the HF-6 D2 S1 (the payer binding moves only the CORE "
+          "version): %s" % (s1.hex() == D2_S1_POLICY))
+    assert s1.hex() == D2_S1_POLICY
     print_c_bytes("SYS_METER_POLICY_DIGEST_GST", "DNA_DOM_HASH_LEN", s1)
 
     print()
@@ -466,6 +493,9 @@ def emit() -> None:
              SYS_TYPES_STORAGE))
     s2 = system_rs_rules(SYS_RULESET_VERSION_STORAGE, SYS_RULES_STORAGE, s1)
     print("  S2 = %s" % s2.hex())
+    print("  S2 == the HF-6 D2 S2 (SYSTEM untouched by the payer binding): "
+          "%s" % (s2.hex() == D2_S2_SYSTEM_V10))
+    assert s2.hex() == D2_S2_SYSTEM_V10
     print_c_bytes("SYS_RULESET_HASH_GST", "DNA_DOM_HASH_LEN", s2)
 
     print()
@@ -479,13 +509,20 @@ def emit() -> None:
                       CORE_TYPES_STORAGE, b"\x00" * 64)
     print("  S3 = %s" % s3.hex())
     print("  S3 != the pre-bump CORE v7 pin (fb25e5c4…; the version field "
-          "moved 7 -> 8): %s" % (s3.hex() != PRE_BUMP_RS_CORE_V7))
+          "moved 7 -> 9): %s" % (s3.hex() != PRE_BUMP_RS_CORE_V7))
     assert s3.hex() != PRE_BUMP_RS_CORE_V7
-    # the v7 pin re-derives from the same builder with ONLY the version
-    # field changed back (CORE's rule / type lists are unchanged by D2)
+    print("  S3 != the HF-6 D2 CORE v8 pin (db32614f…; the payer binding "
+          "moved the version 8 -> 9): %s" % (s3.hex() != D2_S3_CORE_V8))
+    assert s3.hex() != D2_S3_CORE_V8
+    # the v7 and v8 pins re-derive from the same builder with ONLY the
+    # version field changed back (CORE's rule / type lists are unchanged
+    # by D2 and by the payer binding)
     assert ruleset_hash(DOMAIN_CORE, "DNA_CORE", RUNTIME_ABI_V1, 7,
                         CORE_RULES_STORAGE, CORE_TYPES_STORAGE,
                         b"\x00" * 64).hex() == PRE_BUMP_RS_CORE_V7
+    assert ruleset_hash(DOMAIN_CORE, "DNA_CORE", RUNTIME_ABI_V1, 8,
+                        CORE_RULES_STORAGE, CORE_TYPES_STORAGE,
+                        b"\x00" * 64).hex() == D2_S3_CORE_V8
     print_c_bytes("CORE_RULESET_HASH_GST", "DNA_DOM_HASH_LEN", s3)
 
     print()
@@ -495,7 +532,7 @@ def emit() -> None:
           % (s3.hex() != SHIPPED_RS_CORE_V6))
     assert s2.hex() != SHIPPED_RS_SYSTEM_V8
     assert s3.hex() != SHIPPED_RS_CORE_V6
-    # CORE v8 differs from CORE v6 ONLY in the ruleset_version field
+    # CORE v9 differs from CORE v6 ONLY in the ruleset_version field
     assert ruleset_hash(DOMAIN_CORE, "DNA_CORE", RUNTIME_ABI_V1,
                         CORE_RULESET_VERSION_GEVM, CORE_RULES_STORAGE,
                         CORE_TYPES_STORAGE, b"\x00" * 64).hex() \
@@ -512,7 +549,8 @@ def main() -> int:
     print("control green — GEN_STORAGE (generation 4) values above derived "
           "from the written layouts by hashlib, not by the C encoders "
           "(generation-4 inputs: decision K10 + HF-6 design rev 6 §2 / K7 + "
-          "Kurultay #18 items 1 and 3; C-only inputs listed in the "
+          "Kurultay #18 items 1 and 3 + the payer binding's CORE v9; "
+          "C-only inputs listed in the "
           "docstring).")
     return 0
 

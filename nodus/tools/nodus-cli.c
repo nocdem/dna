@@ -7302,8 +7302,8 @@ done:
  *      ANY identity: it opens the session that reads the chain id, the
  *      tip and the gas price; it signs nothing. Change returns to the
  *      multisig address.
- *   3. -s <node> msig sign --keys <dir> --in <export> --out <sigfile>
- *      [--chain-id <hex64>]
+ *   3. -s <YOUR node> msig sign --pin <its fp> --keys <dir> --in <export>
+ *      --out <sigfile> [--chain-id <hex64>]
  *      (each co-signer) re-derives the leg digest from the envelope bytes
  *      + chain id + the compiled CORE ruleset and REFUSES if it differs
  *      from the exported one, checks its key is in the descriptor, REFUSES
@@ -7311,16 +7311,24 @@ done:
  *      what it is signing (every input's full nullifier, every output's
  *      owner, amount and token id) and the chain id (with --chain-id it
  *      must equal the export's), then VERIFIES THE INPUTS (khan decision
- *      docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 5): on
- *      a session to -s opened with the co-signer's OWN key (a member of
- *      the descriptor), the node's chain id must be the export's and every
- *      input nullifier must be in the vault's coin set (dnac_msig_utxo —
- *      the member query, nodus_client_dnac_msig_utxo); each input's amount
- *      and token are shown from the node's answer. No -s, a node without
- *      the method, an input not in the answer (incl. a page that came back
- *      truncated) → nothing is signed. The carried descriptor is outside
- *      the signed context, so this is the only thing that ties the inputs
- *      to the vault the co-signer was shown. No flag skips it.
+ *      docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 5;
+ *      hardened 2026-10-13, design 2026-10-03-hf5-validator-owner-stake §2
+ *      "ÖDEYİCİ BAĞLAMA"): on a session to -s — the co-signer's OWN node,
+ *      PINNED by --pin (its fingerprint: the session must be signed by that
+ *      key and ML-KEM encrypted) — opened with the co-signer's OWN key (a
+ *      member of the descriptor), the node's chain id must be the export's
+ *      and every input must be an unspent coin of the vault (dnac_msig_utxo
+ *      "nul" — exactly the export's inputs, any token, no page:
+ *      nodus_client_dnac_msig_utxo_nuls), with owner == the vault; each
+ *      input's amount, token and lock are shown from the node's answer;
+ *      the validity window is judged from the node's height, not the
+ *      export's tip (nodus_v2_msig_horizon). No -s, no --pin, a pin
+ *      mismatch, a node without the "nul" query, an unverified input or a
+ *      window refusal → nothing is signed. The carried descriptor is
+ *      outside the signed context, so for the v1 SPEND this is the only
+ *      thing that ties the inputs to the vault the co-signer was shown
+ *      (the generation-4 owner operations are also bound on chain,
+ *      rtn_sysfund_payer_bound). No flag skips it.
  *   4. msig combine --in <export> --sig <file> ... [--keys <dir>
  *      --submit ip:port] [--out <envelope file>]
  *      verifies every signature, assembles them in ascending pubkey
@@ -7956,38 +7964,58 @@ static int msig_chain_check(const uint8_t chain32[DNA_CHAIN_ID_LEN],
 }
 
 /* Khan decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md
- * item 5 (Astra's objection, agreed by all three): before a co-signer
- * signs, EVERY funding input must be a coin of the vault it was shown.
- * The carried descriptor is not in the signed context (only auth_len is,
+ * item 5 (Astra's objection, agreed by all three), hardened by red-team
+ * round 3 (design 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ
+ * BAĞLAMA — han kararı 2026-10-13": "v1 SPEND … o zamana kadar imza aracı
+ * pinli kendi düğümüyle girdi doğrular"): before a co-signer signs, EVERY
+ * funding input must be a coin of the vault it was shown. The carried
+ * descriptor is not in the signed context (only auth_len is,
  * shared/dnac/env_wire.c), so co-members of two vaults could be shown
- * vault B while the inputs are vault A's; the chain accepts whichever
- * satisfied descriptor owns the coins (rtn_input_owned). The check:
- *   - a session to -s opened with the co-signer's OWN key (the node
- *     answers the member query only to a descriptor member — design
- *     2026-09-29-general-multisig §8.6 rev 2);
+ * vault B while the inputs are vault A's; for the v1 SPEND the chain
+ * accepts whichever satisfied descriptor owns the coins (rtn_input_owned;
+ * the generation-4 owner operations are bound on chain too,
+ * rtn_sysfund_payer_bound). The check:
+ *   - a PINNED session to -s (`pin` = the fingerprint of the node the
+ *     co-signer runs itself — nodus_client.c pin_check_auth_ok: the node
+ *     must sign its channel key with the pinned identity and the session
+ *     is ML-KEM-1024 only; no pin match → no session → nothing signed),
+ *     opened with the co-signer's OWN key (the node answers the member
+ *     query only to a descriptor member — design 2026-09-29-general-
+ *     multisig §8.6 rev 2). An unpinned answer could come from anyone on
+ *     the path;
  *   - the node's chain id (dnac_supply chain_id32) == the export's — a
  *     coin set read on another chain proves nothing;
- *   - nodus_client_dnac_msig_utxo(hex(address), descriptor, the node's
- *     maximum page): every input nullifier must be in the answer. The
- *     answer is ONE page of at most NODUS_DNAC_MAX_UTXO_RESULTS coins
- *     (amount DESC, nullifier ASC — no paging yet); an input missing from
- *     it is NOT verified whether or not the page came back truncated, and
- *     nothing is signed.
+ *   - nodus_client_dnac_msig_utxo_nuls(hex(address), descriptor, the
+ *     inputs): the node answers exactly the named coins it holds as the
+ *     vault's (any token, no page — so neither a vault of more than 100
+ *     coins nor coins of other tokens can hide an input); every input must
+ *     be in the answer with owner == hex(address). A node without the
+ *     "nul" argument answers no marker → refused, nothing signed;
+ *   - the signing horizon against the NODE's height (the answer's
+ *     block_height), not the export's tip (nodus_v2_msig_horizon).
  * Each input's amount, token and lock are printed from the node's answer,
- * with the native sum. No -s, a refused / unsupported query, a chain id
- * mismatch or one unverified input → -1 (nothing signed). There is no
- * flag that skips this. @return 0 / -1 (reason printed). */
+ * with the native sum. No -s, no pin, a refused / unsupported query, a
+ * chain id mismatch, one unverified input or a horizon refusal → -1
+ * (nothing signed). There is no flag that skips this.
+ * @return 0 / -1 (reason printed). */
 static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
                               const nodus_identity_t *key,
+                              const nodus_key_t *pin,
                               const uint8_t chain32[DNA_CHAIN_ID_LEN],
                               const uint8_t *desc, size_t desc_len,
                               const uint8_t addr[64], int n_in,
-                              const uint8_t (*in_nul)[64]) {
+                              const uint8_t (*in_nul)[64],
+                              uint64_t export_tip, uint64_t expiry_height) {
     char sip[64];
     uint16_t sport = 0;
+    if (!pin) {
+        fprintf(stderr, "msig sign needs --pin <fingerprint of YOUR node> — "
+                "nothing signed\n");
+        return -1;
+    }
     if (t6_resolve_target(NULL, server_ip, server_port, sip, &sport) != 0) {
         fprintf(stderr, "msig sign verifies every input against the vault's "
-                "coins on a node: give -s <node> — nothing signed\n");
+                "coins on YOUR node: give -s <node> — nothing signed\n");
         return -1;
     }
     if (n_in < 1 || n_in > (int)NODUS_V2_SPEND_MAX_IN) {
@@ -8005,6 +8033,8 @@ static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
     cfg.servers[0].port = sport;
     cfg.server_count    = 1;
     cfg.auto_reconnect  = false;
+    cfg.pinned_server_fps      = pin;    /* the co-signer's own node     */
+    cfg.pinned_server_fp_count = 1;
     if (nodus_client_init(&client, &cfg, key) != 0) {
         fprintf(stderr, "client_init failed — inputs not verified, nothing "
                 "signed\n");
@@ -8015,8 +8045,10 @@ static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
     memset(&res, 0, sizeof(res));
     int res_valid = 0;
     if (nodus_client_connect(&client) != 0) {
-        fprintf(stderr, "client connect failed (%s:%u) — inputs not "
-                "verified, nothing signed\n", sip, (unsigned)sport);
+        fprintf(stderr, "no PINNED session to %s:%u (the node's key is not "
+                "--pin, it sent no signed ML-KEM key, or it is down) — "
+                "inputs not verified, nothing signed\n", sip,
+                (unsigned)sport);
         goto out;
     }
     {
@@ -8036,13 +8068,18 @@ static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
         }
     }
     {
-        bool trunc = false;
-        const int qrc = nodus_client_dnac_msig_utxo(
-            &client, ah, desc, desc_len, NODUS_DNAC_MAX_UTXO_RESULTS, &res,
-            &trunc);
+        const int qrc = nodus_client_dnac_msig_utxo_nuls(
+            &client, ah, desc, desc_len, in_nul, (uint32_t)n_in, &res);
         if (qrc == NODUS_CLIENT_ERR_METHOD_UNSUPPORTED) {
             fprintf(stderr, "the node does not serve dnac_msig_utxo (not "
                     "updated yet) — inputs not verified, nothing signed\n");
+            goto out;
+        }
+        if (qrc == NODUS_ERR_PROTOCOL_ERROR) {
+            fprintf(stderr, "the node did not answer the named coins (a node "
+                    "without the dnac_msig_utxo \"nul\" argument, or a "
+                    "malformed reply) — inputs not verified, nothing "
+                    "signed\n");
             goto out;
         }
         if (qrc != 0) {
@@ -8055,9 +8092,9 @@ static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
         static const uint8_t native[64] = {0};
         uint64_t native_sum = 0;
         int sum_ok = 1;
-        printf("  inputs verified against the coins of %s (node %s:%u, %d "
-               "coin(s) listed%s):\n", ah, sip, (unsigned)sport, res.count,
-               trunc ? ", page TRUNCATED" : "");
+        printf("  inputs verified against the coins of %s (YOUR node %s:%u, "
+               "pinned; %d of %d named coin(s) are the vault's):\n", ah, sip,
+               (unsigned)sport, res.count, n_in);
         for (int i = 0; i < n_in; i++) {
             const nodus_dnac_utxo_entry_t *hit = NULL;
             for (int k = 0; k < res.count; k++)
@@ -8068,12 +8105,14 @@ static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
             char nh[QGP_FP_HEX_BUFFER];
             qgp_fp_raw_to_hex(in_nul[i], nh);
             if (!hit) {
-                fprintf(stderr, "REFUSED: in[%d] %s is %s — nothing signed\n",
-                        i, nh,
-                        trunc ? "not among the vault coins the node listed "
-                                "(the listing is one capped page and came "
-                                "back truncated: it cannot be verified)"
-                              : "not a coin of this vault");
+                fprintf(stderr, "REFUSED: in[%d] %s is not an unspent coin "
+                        "of this vault — nothing signed\n", i, nh);
+                goto out;
+            }
+            if (strncmp(hit->owner, ah, 128) != 0 || hit->owner[128] != '\0') {
+                fprintf(stderr, "REFUSED: in[%d] %s is answered with owner "
+                        "%.128s, not the vault — nothing signed\n", i, nh,
+                        hit->owner);
                 goto out;
             }
             const int is_native = memcmp(hit->token_id, native, 64) == 0;
@@ -8095,6 +8134,22 @@ static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
             printf("  native inputs total %llu (node tip %llu)\n",
                    (unsigned long long)native_sum,
                    (unsigned long long)res.block_height);
+        /* the signing horizon from YOUR node's height, not the export's
+         * tip (its author chose that) — nodus_v2_msig_horizon */
+        if (nodus_v2_msig_horizon(export_tip, expiry_height,
+                                  res.block_height) != NODUS_V2_SPEND_OK) {
+            fprintf(stderr, "REFUSED: your node is at block %llu; the export "
+                    "(built at tip %llu) is valid until block %llu — "
+                    "already expired, valid longer than %u blocks from now, "
+                    "or your node is more than %u blocks behind the "
+                    "builder — nothing signed\n",
+                    (unsigned long long)res.block_height,
+                    (unsigned long long)export_tip,
+                    (unsigned long long)expiry_height,
+                    (unsigned)NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
+                    (unsigned)NODUS_V2_MSIG_EXPIRY_AHEAD);
+            goto out;
+        }
     }
     rc = 0;
 out:
@@ -8108,8 +8163,9 @@ out:
  * against the vault's coins (msig_inputs_verify), sign EVERY digest (all or
  * nothing), write one v2 signature file. @return 0 / 1. */
 static int cmd_msig_sign2(const char *server_ip, uint16_t server_port,
-                          const nodus_identity_t *key, const char *in_path,
-                          const char *out_path, const char *chain_hex) {
+                          const nodus_identity_t *key, const nodus_key_t *pin,
+                          const char *in_path, const char *out_path,
+                          const char *chain_hex) {
     int rc = 1;
     nodus_v2_msig_export2_t *x = calloc(1, sizeof(*x));
     dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
@@ -8163,10 +8219,11 @@ static int cmd_msig_sign2(const char *server_ip, uint16_t server_port,
         nodus_v2_msig_leg_t leg;
         if (nodus_v2_msig_legs_open2(x, vw, &leg) != NODUS_V2_SPEND_OK)
             goto done;
-        if (msig_inputs_verify(server_ip, server_port, key, x->chain32,
+        if (msig_inputs_verify(server_ip, server_port, key, pin, x->chain32,
                                leg.desc, leg.desc_len, rv->addr,
                                rv->op.n_in,
-                               (const uint8_t (*)[64])rv->op.in_nul) != 0)
+                               (const uint8_t (*)[64])rv->op.in_nul,
+                               rv->tip, rv->expiry_height) != 0)
             goto done;
     }
     /* every digest, or nothing: one file carries them all */
@@ -8363,33 +8420,55 @@ done:
     return rc;
 }
 
-/* `msig sign` — one co-signer; -s <node> for the input verification
- * (msig_inputs_verify — khan decision 2026-10-13-kurultay-18-summary.md
- * item 5). */
+/* `msig sign` — one co-signer; -s <YOUR node> --pin <its fingerprint> for
+ * the input verification (msig_inputs_verify — khan decision 2026-10-13-
+ * kurultay-18-summary.md item 5; the pin and the named-coin query: design
+ * 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ BAĞLAMA", red-team
+ * round 3). */
 static int cmd_msig_sign(const char *server_ip, uint16_t server_port,
                          int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *in_path = NULL, *out_path = NULL;
-    const char *chain_hex = NULL;
+    const char *chain_hex = NULL, *pin_hex = NULL;
     for (int i = cmd_start + 2; i < argc; i++) {
         const char *a = argv[i];
         if      (!strcmp(a, "--keys") && i + 1 < argc) keys_csv = argv[++i];
         else if (!strcmp(a, "--in")   && i + 1 < argc) in_path  = argv[++i];
         else if (!strcmp(a, "--out")  && i + 1 < argc) out_path = argv[++i];
+        else if (!strcmp(a, "--pin")  && i + 1 < argc) pin_hex  = argv[++i];
         else if (!strcmp(a, "--chain-id") && i + 1 < argc)
             chain_hex = argv[++i];
         else { keys_csv = NULL; break; }
     }
-    if (!keys_csv || !in_path || !out_path) {
-        fprintf(stderr, "Usage: -s <node> msig sign --keys <dir> --in <export> "
-                "--out <sigfile>\n"
-                "       [--chain-id <hex64>]\n"
+    if (!keys_csv || !in_path || !out_path || !pin_hex) {
+        fprintf(stderr, "Usage: -s <YOUR node> msig sign --pin <its fingerprint> "
+                "--keys <dir>\n"
+                "       --in <export> --out <sigfile> [--chain-id <hex64>]\n"
+                "  -s    the node YOU run (your own, not one the export's "
+                "author names).\n"
+                "  --pin that node's fingerprint, 128 lowercase hex: `nodus-cli "
+                "-i <the node's\n"
+                "        identity dir> whoami` (\"Fingerprint:\"), or its "
+                "identity/nodus.fp.\n"
+                "        The session must be signed by that key and ML-KEM "
+                "encrypted, else\n"
+                "        nothing is signed.\n"
                 "  Prints what is signed and the chain id (--chain-id: must "
                 "be the export's),\n"
-                "  then verifies every input is a coin of the vault on -s "
-                "(dnac_msig_utxo,\n"
-                "  asked with this --keys identity, a member) — no -s or an "
+                "  then asks YOUR node, with this --keys identity (a member), "
+                "for exactly the\n"
+                "  export's inputs (dnac_msig_utxo \"nul\"): each must be an "
+                "unspent coin of the\n"
+                "  vault, and the validity window is judged from your node's "
+                "height. No -s, no\n"
+                "  --pin, a pin mismatch, a node without the query or one "
                 "unverified input:\n"
                 "  nothing is signed.\n");
+        return 1;
+    }
+    nodus_key_t pin;
+    if (t6_hex_exact(pin_hex, pin.bytes, sizeof(pin.bytes)) != 0) {
+        fprintf(stderr, "--pin must be exactly 128 lowercase hex chars (your "
+                "node's fingerprint) — nothing signed\n");
         return 1;
     }
     int rc = 1;
@@ -8410,8 +8489,8 @@ static int cmd_msig_sign(const char *server_ip, uint16_t server_port,
         const int ver = msig_export_version(in_path);
         if (ver < 0) goto done;
         if (ver == 2) {
-            rc = cmd_msig_sign2(server_ip, server_port, &keys[0], in_path,
-                                out_path, chain_hex);
+            rc = cmd_msig_sign2(server_ip, server_port, &keys[0], &pin,
+                                in_path, out_path, chain_hex);
             goto done;
         }
     }
@@ -8483,9 +8562,10 @@ static int cmd_msig_sign(const char *server_ip, uint16_t server_port,
         nodus_v2_msig_leg_t leg;
         if (nodus_v2_msig_leg_open(&x, vw, &leg) != NODUS_V2_SPEND_OK)
             goto done;
-        if (msig_inputs_verify(server_ip, server_port, &keys[0], x.chain32,
-                               leg.desc, leg.desc_len, rv->addr, rv->n_in,
-                               (const uint8_t (*)[64])rv->in_nul) != 0)
+        if (msig_inputs_verify(server_ip, server_port, &keys[0], &pin,
+                               x.chain32, leg.desc, leg.desc_len, rv->addr,
+                               rv->n_in, (const uint8_t (*)[64])rv->in_nul,
+                               rv->tip, rv->expiry_height) != 0)
             goto done;
     }
     uint8_t sig[DNAC_SIGNATURE_SIZE];
@@ -10537,9 +10617,10 @@ static void usage(const char *prog) {
     fprintf(stderr, "           --in <nul128hex>:<amount> ... --to <fp128hex> --amount <raw>\n");
     fprintf(stderr, "           [--fee <raw>] [--signers <K>] --export <file>\n");
     fprintf(stderr, "                                   UNSIGNED multisig spend + digest\n");
-    fprintf(stderr, "  msig sign --keys <dir> --in <export> --out <sigfile> [--chain-id <hex64>]\n");
-    fprintf(stderr, "                                   needs -s: every input checked against\n");
-    fprintf(stderr, "                                   the vault's coins before signing\n");
+    fprintf(stderr, "  msig sign --pin <fp128hex> --keys <dir> --in <export> --out <sigfile>\n");
+    fprintf(stderr, "           [--chain-id <hex64>]    needs -s <YOUR node> and --pin = its\n");
+    fprintf(stderr, "                                   fingerprint (whoami): every input is\n");
+    fprintf(stderr, "                                   checked on it before signing\n");
     fprintf(stderr, "  msig combine --in <export> --sig <f> ... (--keys <dir>\n");
     fprintf(stderr, "           [--submit ip:port] | --out <envelope>)   assemble + submit\n");
     fprintf(stderr, "  v2-envelope stake2|unstake|validator-update|delegate|undelegate\n");

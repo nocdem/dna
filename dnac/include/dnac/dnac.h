@@ -1313,9 +1313,16 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  summary.md items 1 and 3): the generation-4 pins moved (SYSTEM v10
  *  rules {1..9}, CORE v8), so D4 moved with them; the preimage layout
  *  above is unchanged. The previous value 0x4dc61072d5982acd (SYSTEM v9
- *  {1..10} / CORE v7) never activated and is dead. */
+ *  {1..10} / CORE v7) never activated and is dead.
+ *
+ *  Payer binding (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ *  design.md §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13"): the
+ *  generation-4 CORE moved to v9 (a kind-3 SYSFUND leg must carry the
+ *  vault the SYSTEM leg's signed owner field names), so its pin and D4
+ *  moved again; SYSTEM v10 and the preimage layout are unchanged. The D2
+ *  value 0x5922111a3501f58b (CORE v8) never activated and is dead. */
 #ifndef DNAC_CFG_RULESET_GEN_ROLES_D
-#define DNAC_CFG_RULESET_GEN_ROLES_D     0x5922111a3501f58bULL /* D4 of shared/dnac/tests/hf6_vote_oracle.py, owner K8 (6422714822839891339) */
+#define DNAC_CFG_RULESET_GEN_ROLES_D     0x642af9b4bf735409ULL /* D4 of shared/dnac/tests/hf6_vote_oracle.py, owner K8 (7217855907516077065) */
 #endif
 
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:

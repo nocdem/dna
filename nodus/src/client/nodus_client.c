@@ -3639,7 +3639,7 @@ int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
  * the NODUS_CLIENT_TEST_SEAM wrappers at the end of the DNAC section). */
 static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
                            nodus_dnac_utxo_result_t *result_out,
-                           bool *trunc_out);
+                           bool *trunc_out, uint64_t *nul_out);
 static int dnac_ledger_range_parse(const uint8_t *raw, size_t raw_len,
                                    nodus_dnac_range_result_t *result_out);
 static int dnac_block_parse(const uint8_t *raw, size_t raw_len,
@@ -3694,7 +3694,7 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
     QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: got response raw_len=%zu", req->raw_response_len);
 
     int prc = dnac_utxo_parse(req->raw_response, req->raw_response_len,
-                              result_out, NULL);
+                              result_out, NULL, NULL);
     free_pending(client, req);
     return prc;
 }
@@ -3712,13 +3712,20 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
  * `trunc_out` NULL = the dnac_utxo reply: a "trunc" key is an unknown key
  * (skipped), exactly as before. Non-NULL = the dnac_msig_utxo reply (the
  * same keys plus "trunc"): "trunc" is REQUIRED and must be a bool, else
- * NODUS_ERR_PROTOCOL_ERROR. */
+ * NODUS_ERR_PROTOCOL_ERROR.
+ *
+ * `nul_out` NULL = a "nul" key is an unknown key (skipped). Non-NULL =
+ * the reply to a dnac_msig_utxo "nul" request (nodus_client_dnac_msig_
+ * utxo_nuls): "nul" is REQUIRED and must be a uint (requires trunc_out),
+ * else NODUS_ERR_PROTOCOL_ERROR — its absence means the node did not
+ * honour the list. */
 static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
                            nodus_dnac_utxo_result_t *result_out,
-                           bool *trunc_out) {
+                           bool *trunc_out, uint64_t *nul_out) {
     cbor_decoder_t dec;
     size_t mc;
-    bool have_trunc = false;
+    bool have_trunc = false, have_nul = false;
+    if (nul_out && !trunc_out) return NODUS_ERR_PROTOCOL_ERROR;
     if (find_response_map(raw, raw_len, &dec, &mc) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: find_response_map failed");
         return NODUS_ERR_PROTOCOL_ERROR;
@@ -3873,6 +3880,15 @@ static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
             }
             *trunc_out = v.bool_val;
             have_trunc = true;
+        } else if (nul_out && key.tstr.len == 3 &&
+                   memcmp(key.tstr.ptr, "nul", 3) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type != CBOR_ITEM_UINT) {
+                nodus_client_free_utxo_result(result_out);
+                return NODUS_ERR_PROTOCOL_ERROR;
+            }
+            *nul_out = v.uint_val;
+            have_nul = true;
         } else {
             cbor_decode_skip(&dec);
         }
@@ -3881,6 +3897,12 @@ static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
     if (trunc_out && (!have_trunc || dec.error)) {
         QGP_LOG_WARN(LOG_TAG, "dnac_msig_utxo: reply without a valid "
                      "\"trunc\" — refused");
+        nodus_client_free_utxo_result(result_out);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    if (nul_out && !have_nul) {
+        QGP_LOG_WARN(LOG_TAG, "dnac_msig_utxo: reply without the \"nul\" "
+                     "marker — the node did not honour the list; refused");
         nodus_client_free_utxo_result(result_out);
         return NODUS_ERR_PROTOCOL_ERROR;
     }
@@ -3970,10 +3992,100 @@ int nodus_client_dnac_msig_utxo(nodus_client_t *client,
         return rc;
     }
     int prc = dnac_utxo_parse(req->raw_response, req->raw_response_len,
-                              result_out, &trunc);
+                              result_out, &trunc, NULL);
     free_pending(client, req);
     if (prc == 0 && trunc_out) *trunc_out = trunc;
     return prc;
+}
+
+/* The checks nodus_client_dnac_msig_utxo_nuls applies to a decoded "nul"
+ * reply (nodus.h): the marker equals the count asked, "trunc" is false, at
+ * most n entries, every entry's nullifier is one of the asked ones and
+ * none repeats. Shared with the test seam. @return 0 / -1. */
+static int dnac_msig_nuls_reply_ok(const nodus_dnac_utxo_result_t *r,
+                                   bool trunc, uint64_t marker,
+                                   const uint8_t (*nuls)[64],
+                                   uint32_t n_nuls) {
+    if (marker != (uint64_t)n_nuls || trunc) return -1;
+    if (r->count < 0 || (uint32_t)r->count > n_nuls) return -1;
+    for (int i = 0; i < r->count; i++) {
+        bool asked = false;
+        for (uint32_t j = 0; j < n_nuls && !asked; j++)
+            asked = memcmp(r->entries[i].nullifier, nuls[j], 64) == 0;
+        if (!asked) return -1;
+        for (int k = 0; k < i; k++)
+            if (memcmp(r->entries[k].nullifier, r->entries[i].nullifier,
+                       64) == 0)
+                return -1;
+    }
+    return 0;
+}
+
+int nodus_client_dnac_msig_utxo_nuls(nodus_client_t *client,
+                                     const char *owner_hex,
+                                     const uint8_t *msig, size_t msig_len,
+                                     const uint8_t (*nuls)[64],
+                                     uint32_t n_nuls,
+                                     nodus_dnac_utxo_result_t *result_out) {
+    bool trunc = false;
+    uint64_t marker = 0;
+
+    if (!nodus_client_is_ready(client) || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+    if (!dnac_msig_args_ok(owner_hex, msig, msig_len)) return -1;
+    if (!nuls || n_nuls < 1 || n_nuls > NODUS_DNAC_MSIG_MAX_NULS) return -1;
+    for (uint32_t j = 1; j < n_nuls; j++)
+        if (memcmp(nuls[j - 1], nuls[j], 64) >= 0) return -1;  /* the node
+                                          * refuses an unordered list   */
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_msig_utxo", 3);
+    cbor_encode_cstr(&enc, "owner");
+    cbor_encode_tstr(&enc, owner_hex, 128);
+    cbor_encode_cstr(&enc, "msig");
+    cbor_encode_bstr(&enc, msig, msig_len);
+    cbor_encode_cstr(&enc, "nul");
+    cbor_encode_array(&enc, n_nuls);
+    for (uint32_t j = 0; j < n_nuls; j++)
+        cbor_encode_bstr(&enc, nuls[j], 64);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = dnac_msig_error_rc(resp);
+        QGP_LOG_WARN(LOG_TAG, "dnac_msig_utxo (nul): error response code=%d "
+                     "(rc %d)", resp->error_code, rc);
+        free_pending(client, req);
+        return rc;
+    }
+    int prc = dnac_utxo_parse(req->raw_response, req->raw_response_len,
+                              result_out, &trunc, &marker);
+    free_pending(client, req);
+    if (prc != 0) return prc;
+    if (dnac_msig_nuls_reply_ok(result_out, trunc, marker, nuls,
+                                n_nuls) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "dnac_msig_utxo (nul): the reply does not "
+                     "answer the named coins — refused");
+        nodus_client_free_utxo_result(result_out);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    return 0;
 }
 
 int nodus_client_dnac_msig_addr_history(nodus_client_t *client,
@@ -7663,7 +7775,7 @@ int nodus_client_test_parse_block(const uint8_t *raw, size_t raw_len,
 int nodus_client_test_parse_utxo(const uint8_t *raw, size_t raw_len,
                                  nodus_dnac_utxo_result_t *out) {
     memset(out, 0, sizeof(*out));
-    return dnac_utxo_parse(raw, raw_len, out, NULL);
+    return dnac_utxo_parse(raw, raw_len, out, NULL, NULL);
 }
 
 /* tests/test_msig_query.c — the dnac_msig_utxo reply decode (the
@@ -7679,7 +7791,34 @@ int nodus_client_test_parse_msig_utxo(const uint8_t *raw, size_t raw_len,
                                       bool *trunc_out) {
     memset(out, 0, sizeof(*out));
     *trunc_out = false;
-    return dnac_utxo_parse(raw, raw_len, out, trunc_out);
+    return dnac_utxo_parse(raw, raw_len, out, trunc_out, NULL);
+}
+
+/* tests/test_msig_query.c — the dnac_msig_utxo "nul" reply decode and the
+ * named-coin checks nodus_client_dnac_msig_utxo_nuls applies, over raw
+ * reply bytes. @return 0 (out filled) / NODUS_ERR_PROTOCOL_ERROR (out
+ * empty). */
+int nodus_client_test_parse_msig_utxo_nuls(const uint8_t *raw,
+                                           size_t raw_len,
+                                           const uint8_t (*nuls)[64],
+                                           uint32_t n_nuls,
+                                           nodus_dnac_utxo_result_t *out);
+
+int nodus_client_test_parse_msig_utxo_nuls(const uint8_t *raw,
+                                           size_t raw_len,
+                                           const uint8_t (*nuls)[64],
+                                           uint32_t n_nuls,
+                                           nodus_dnac_utxo_result_t *out) {
+    bool trunc = false;
+    uint64_t marker = 0;
+    memset(out, 0, sizeof(*out));
+    int rc = dnac_utxo_parse(raw, raw_len, out, &trunc, &marker);
+    if (rc != 0) return rc;
+    if (dnac_msig_nuls_reply_ok(out, trunc, marker, nuls, n_nuls) != 0) {
+        nodus_client_free_utxo_result(out);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    return 0;
 }
 
 /* @return the mapped code of an error reply; NODUS_ERR_PROTOCOL_ERROR
