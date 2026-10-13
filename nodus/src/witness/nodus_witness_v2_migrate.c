@@ -808,11 +808,14 @@ int nodus_witness_v2_roles_migrate(nodus_witness_t *w, uint64_t h_next,
      * reservation (SHA3-512(pk), validator_id) per migrated row that has
      * NOT graduated. An UNSTAKED row already left the bonded/exiting
      * lifecycle (its graduation would have released the key, §4 last
-     * sentence), so it holds none: the table stays the pure function
-     * "role 1 = every validators row whose status is not UNSTAKED" that
-     * the generation-4 STAKE and graduation maintain afterwards. Visited
-     * in SHA3-512(pk) ASC (m.by_fp — the table's own key order); the keys
-     * are distinct (checked in mg_read_validators). */
+     * sentence), so it holds none: at the edge the table is exactly
+     * "role 1 = every validators row whose status is not UNSTAKED" (no
+     * row holds a pending or previous key yet — ROTATE is generation 4;
+     * the full rule, with role 2 and the khan-A2 previous keys, is in
+     * nodus_witness_validator.h and is checked at every boundary by
+     * nodus_witness_v2_keyres_diff). Visited in SHA3-512(pk) ASC
+     * (m.by_fp — the table's own key order); the keys are distinct
+     * (checked in mg_read_validators). */
     for (size_t k = 0; k < m.nv; k++) {
         const mg_val_t *v = &m.v[m.by_fp[k].idx];
         if (v->unstaked) continue;

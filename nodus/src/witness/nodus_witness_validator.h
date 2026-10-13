@@ -369,7 +369,12 @@ int nodus_validator_v2_scan(nodus_witness_t *w,
  * graduation (step 2) and the sweep (step 3d) of that boundary, inside its
  * transaction); role 2 for every non-zero pending_consensus_pubkey. A count of role-1
  * rows equals the count of non-UNSTAKED rows only outside every such
- * window. Writers: the generation-4 edge (nodus_witness_v2_migrate.c),
+ * window. The previous key is derivable from rooted state (the key the
+ * stored S(U−E) seats the validator under) EXCEPT for a validator S(U−E)
+ * does not seat (khan A3): its row here is the only committed record of
+ * that key. Every generation-4 boundary re-derives the table and compares
+ * (nodus_witness_v2_keyres_diff; the boundary step only logs).
+ * Writers: the generation-4 edge (nodus_witness_v2_migrate.c),
  * the generation-4 STAKE and ROTATE (SYSTEM adapter op 17,
  * nodus_witness_rt_native.c — STAKE role 1, ROTATE role 2), the swap
  * (nodus_validator_v2_rotate_apply: the new key role 2 → 1) and the
