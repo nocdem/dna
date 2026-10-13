@@ -2320,9 +2320,11 @@ static const inv_t k_inv[] = {
       "FROM validators", 2, "VALUE_SCAN" },
     { "nodus_witness_p2p.c", "nodus_witness_p2p_refresh_bonded",
       "FROM validators", 1, "VALUE_SCAN" },
-    /* HF-6 slice 6e: the pending consensus keys of ACTIVE / ELIGIBLE rows,
-     * joined on pubkey_hash = v2_validator_roles.validator_id — by value
-     * (status), node-local, empty below generation 4 */
+    /* HF-6 slice 6e: the pending consensus keys of every row holding one
+     * (no status filter since red-team round 1, Z-31 — a row that
+     * UNSTAKEs after its accepted rotation is still seated under the new
+     * key), joined on pubkey_hash = v2_validator_roles.validator_id — by
+     * value (the pending key), node-local, empty below generation 4 */
     { "nodus_witness_p2p.c", "bonded_add_pending", "JOIN validators", 1,
       "VALUE_SCAN" },
 };

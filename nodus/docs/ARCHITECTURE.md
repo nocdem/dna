@@ -7730,13 +7730,16 @@ voter's attendance row deleted at U+E after that epoch's settlement and digest c
 **The p2p pending set** (`bonded_add_pending`, `nodus_witness_p2p.c`, called by
 `nodus_witness_p2p_refresh_bonded` between the validators read and the two committee reads, before the
 sort). One ordered statement: `SELECT r.pending_consensus_pubkey FROM v2_validator_roles r JOIN
-validators v ON v.pubkey_hash = r.validator_id WHERE v.status IN (ACTIVE, ELIGIBLE) AND
-r.pending_consensus_pubkey != zeroblob(2592) ORDER BY r.validator_id`. From the ROTATE's commit on, the
+validators v ON v.pubkey_hash = r.validator_id WHERE r.pending_consensus_pubkey != zeroblob(2592)
+ORDER BY r.validator_id` (no status filter since red-team round 1, Z-31). From the ROTATE's commit on, the
 node that will sign under the pending key from U + 2 is bonded: its connections bypass the inbound cap,
 it is dialed without being abandoned, its signed ADDR record is verified against that key
 (`h_bonded_pubkey`) and an unsigned one is refused. Below generation 4 the roles table is empty — no
-change. A RETIRING / AUTO_RETIRED / UNSTAKED row's pending key is not added. At the swap (U) the key
-becomes the row's own and stays bonded through the validators read. A failure of the statement is
+change. The status is not read: a row that UNSTAKEs after its rotation was accepted (RETIRING, or
+AUTO_RETIRED by Rule N) keeps the pending key and the swap at U seats it under the new key regardless
+of status, so its new node stays bonded; an UNSTAKED row carries no pending key (the graduation zeroes
+it). At the swap (U) the key becomes the row's own and stays bonded through the validators read while
+the row is ACTIVE / ELIGIBLE, and through the committee reads while a snapshot seats it. A failure of the statement is
 logged and the set is built from the other three sources (the validators read's rule). Node-local: the
 set decides connections only. The inbound job queue (`inbound_depth`) follows the listener limit,
 which grows by the pending keys (`cmt_p2p_transport_max_incoming` = cap + unconditional + bonded).
