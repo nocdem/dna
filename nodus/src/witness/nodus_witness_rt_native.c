@@ -2227,6 +2227,110 @@ static uint32_t rtn_sys_call_gen_of(uint32_t op, uint32_t len) {
     }
 }
 
+/* The SIGNED owner field of a generation-4 SYSTEM record call — the
+ * identity its intent-committed call bytes name as the one the signers
+ * act for (design rev 6 §2 / §1.3 "Owner yetkisi"):
+ *   STAKE / STORAGE_REGISTER / UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT
+ *                          the call's owner_fp;
+ *   DELEGATE / UNDELEGATE  the call's delegator_fp.
+ * Parsed with each op's ONE generation-4 decoder (exact length). Pure over
+ * the call bytes. @return 0 with *owner_out borrowed from the call / -1
+ * (malformed call, or an op that is not a generation-4 record op). */
+static int rtn_sys_call_owner_v2(uint32_t op, const uint8_t *p, uint32_t len,
+                                 const uint8_t **owner_out) {
+    switch (op) {
+    case DNA_SYSRULE_STAKE: {
+        rtn_stake2_call_t c;
+        if (rtn_stake2_parse(p, len, &c) != 0) return -1;
+        *owner_out = c.owner_fp;
+        return 0;
+    }
+    case DNA_SYSRULE_DELEGATE:
+    case DNA_SYSRULE_UNDELEGATE: {
+        rtn_deleg2_call_t c;
+        if (rtn_deleg_parse_v2(p, len, &c) != 0) return -1;
+        *owner_out = c.delegator_fp;
+        return 0;
+    }
+    case DNA_SYSRULE_UNSTAKE: {
+        rtn_unstake2_call_t c;
+        if (rtn_unstake_parse_v2(p, len, &c) != 0) return -1;
+        *owner_out = c.owner_fp;
+        return 0;
+    }
+    case DNA_SYSRULE_VALIDATOR_UPDATE: {
+        rtn_vupd2_call_t c;
+        if (rtn_vupd_parse_v2(p, len, &c) != 0) return -1;
+        *owner_out = c.owner_fp;
+        return 0;
+    }
+    case DNA_SYSRULE_STORAGE_REGISTER: {
+        rtn_streg2_call_t c;
+        if (rtn_streg2_parse(p, len, &c) != 0) return -1;
+        *owner_out = c.owner_fp;
+        return 0;
+    }
+    case DNA_SYSRULE_STORAGE_EXIT: {
+        rtn_stexit2_call_t c;
+        if (rtn_stexit2_parse(p, len, &c) != 0) return -1;
+        *owner_out = c.owner_fp;
+        return 0;
+    }
+    default:
+        return -1;
+    }
+}
+
+/* THE PAYER BINDING of the SYSFUND funding leg (design docs/plans/
+ * 2026-10-03-hf5-validator-owner-stake-design.md §2 "ÖDEYİCİ BAĞLAMA —
+ * han kararı 2026-10-13", operator "Yap"; red-team round 3).
+ *
+ * The kind-3 descriptor bytes are not in the signed auth context
+ * (shared/dnac/env_wire.c — only auth_len is), so before this rule the
+ * co-members of two vaults could sign a SYSTEM record op for vault B and
+ * have its fee / bond paid from vault A's coins by swapping the CORE leg's
+ * carried descriptor after signing ("ücreti/bond'u A öder, işlem B'nin").
+ * Generation 4 binds the payer through the signed owner field instead —
+ * no new byte:
+ *   CORE leg auth_kind 3  ⇒  EVERY carried descriptor's address == the
+ *                            SYSTEM call's signed owner
+ *                            (rtn_sys_call_owner_v2), else -1.
+ * "Every" — not only msig_addr[0]: rtn_owners_init admits several
+ * descriptors on a CORE leg and rtn_owners_all_used only requires each to
+ * own an input, so a second descriptor (vault A) could still pay for vault
+ * B's op. Descriptor addresses are strictly ascending (rtn_auth_msig), so
+ * this is exactly "n_msig == 1 and msig_addr[0] == owner". A kind-3 CORE
+ * leg funding a kind-1 owner is therefore refused (no vault address equals
+ * a single key's fingerprint, barring a SHA3-512 collision): multisig
+ * THIRD-PARTY funding closes. kind-1 CORE funding (no descriptor — the
+ * signers are the payers, bound by their own signatures) and kind-1
+ * third-party funding are UNCHANGED. Generations 1-3: no rule (they decode
+ * the legacy layouts; the caller gates on rtn_gen_roles).
+ *
+ * Pure: the intent-committed SYSTEM call bytes and the ENGINE auth verdict
+ * only — no read, no clock, no cache, no height branch; every node judges
+ * the same bytes the same way. Caller contract: rtn_sysfund_shape accepted
+ * the envelope (leg 0 SYSTEM, leg 1 this CORE leg) and rtn_owners_init
+ * accepted the verdict for the leg's auth_kind.
+ * @return 0 bound (or not a kind-3 leg) / -1 verdict. */
+static int rtn_sysfund_payer_bound(const dna_env_view_t *env,
+                                   const nodus_rt_exec_ctx_t *ctx) {
+    if (env->leg[1].auth_kind != NODUS_RT_AUTHKIND_DSA87_MSIG_V1) return 0;
+    const nodus_rt_auth_verdict_t *a = ctx->auth;
+    if (!a || a->n_msig < 1 || a->n_msig > NODUS_RT_MSIG_MAX_DESC)
+        return -1;
+    const uint8_t *owner = NULL;
+    if (rtn_sys_call_owner_v2(env->leg[0].runtime_op,
+                              env->buf + env->call_off[0],
+                              env->leg[0].call_len, &owner) != 0)
+        return -1;                       /* malformed record call        */
+    for (uint16_t m = 0; m < a->n_msig; m++)
+        if (memcmp(a->msig_addr[m], owner, 64) != 0)
+            return -1;                   /* a vault other than the signed
+                                          * owner's pays: refused        */
+    return 0;
+}
+
 /* HF-8 — THE ONE NAME-GATE PREDICATE of the SYSFUND funding leg (design
  * docs/plans/2026-10-07-delegate-name-required-design.md rev 2 §1;
  * Kurultay #11 change 5). Is this funding leg's DELEGATE required to name
@@ -3419,6 +3523,8 @@ static int rtn_sysfund_release_coin(const uint8_t *spc, uint32_t spl,
  * sibling record call is decoded (rtn_sys_call_flow — gen 4: the §2
  * layouts, STAKE's since slice 4), how the release owner is derived
  * (rtn_sysfund_release_coin) and the name gate's generation-4 arm.
+ * Generation 4 (CORE v9) also binds a kind-3 payer to the SYSTEM call's
+ * signed owner (rtn_sysfund_payer_bound — design §2 "ÖDEYİCİ BAĞLAMA").
  *
  * @return 0 / -1 verdict / -2 node fault. */
 static int rtn_sysfund_exec(const rtn_spend_call_t *c,
@@ -3463,6 +3569,10 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
                           &lock, &release) != 0)
         return -1;                       /* unparseable record leg       */
 
+    /* ── generation 4: a kind-3 payer is the signed owner's vault ───── */
+    if (rtn_gen_roles(generation) && rtn_sysfund_payer_bound(env, ctx) != 0)
+        return -1;                       /* rtn_sysfund_payer_bound      */
+
     static const uint8_t native_token[64] = { 0 };
 
     /* ── inputs: exist, unlocked, OWNED (rtn_input_owned), NATIVE ───── */
@@ -3488,7 +3598,10 @@ static int rtn_sysfund_exec(const rtn_spend_call_t *c,
          * nodus_witness_verify.c CRITICAL-4 loop; only the CLIENT lane
          * pinned signer_count==1). X still signs the record leg and the
          * lock still binds to X's identity, so this widens who may PAY,
-         * never who OWNS. */
+         * never who OWNS. Generation 4 narrows it for kind 3: a carried
+         * descriptor must be the SYSTEM call's signed owner
+         * (rtn_sysfund_payer_bound, above) — kind-1 third-party funding
+         * stays. */
         if (memcmp(rec + RTN_UTXO_TOKEN_OFF, native_token, 64) != 0)
             return -1;                   /* native-only (rtn_sysfund_parse
                                           * carries the same label)      */

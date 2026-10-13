@@ -443,7 +443,8 @@ static int hk_build(hk_env_t *e, uint32_t op, const uint8_t *call,
     legs[0].auth_data = e->auth[0];
     legs[1].hdr.domain_id = DNA_DOMAIN_CORE;
     legs[1].hdr.runtime_op = DNA_CORERULE_SYSFUND;
-    legs[1].hdr.ruleset_version = 8;    /* the generation-4 CORE (D2)   */
+    legs[1].hdr.ruleset_version = 9;    /* the generation-4 CORE (payer
+                                         * binding, 2026-10-13)         */
     legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[1].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
     legs[1].hdr.call_len = fl;

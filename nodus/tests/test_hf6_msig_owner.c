@@ -52,9 +52,11 @@
  *     descriptor is outside the signed context) and the auth hook finds
  *     A satisfied by the same signatures. SYSTEM: the call names B, O1's
  *     row is A's → REFUSED (-1) — before C2 this applied. CORE: the
- *     swapped funding leg with A's coins is ACCEPTED by the chain (pinned
- *     on purpose: the chain cannot tell; `msig sign`'s check of every
- *     input against the vault's coin set is what refuses it).
+ *     swapped funding leg with A's coins is REFUSED (-1) — the payer
+ *     binding (design §2 "ÖDEYİCİ BAĞLAMA", CORE v9): a kind-3 payer must
+ *     be the SYSTEM call's signed owner (B), not the carried vault (A).
+ *     Before it the chain accepted this leg. The full per-op matrix
+ *     (equal / different / kind 1 / generation 3) is test_hf6_payer.c.
  *  N5 HF-6 D2 library guards: review2 refuses (ERR_CALL) an export whose
  *     change output names another address, every digest re-derived for
  *     the edited bytes; assemble2 refuses (ERR_ARG, no slot written on
@@ -106,10 +108,10 @@
  *  - The CORE leg's foreign-signer case (N2) is not checked at the CORE
  *    exec: the chain does not apply the owner rule there (a satisfied
  *    descriptor owns its coins whatever else signed).
- *  - N4's CORE assertion PASSES because of a known protocol gap (the
- *    chain accepts the swapped funding leg); it is not a guarantee. The
- *    signer-side refusal (nodus-cli msig_inputs_verify, which needs a
- *    node) is NOT driven by this file.
+ *  - N4's CORE refusal is the payer binding of generation 4 only; the v1
+ *    SPEND (a single CORE leg, no SYSTEM owner) is outside that rule and
+ *    still relies on the signer-side check (nodus-cli msig_inputs_verify,
+ *    which needs a node), which this file does NOT drive.
  *  - The v1 SPEND flow's byte vectors are test_v2_msig.c's (unchanged);
  *    this file only checks that the two formats do not read each other.
  *  - Written and compiled, NOT RUN by its author (the BUILDER rule).
@@ -688,12 +690,13 @@ static int t_unstake(void) {
  *   SYSTEM: the call still names B as the owner, the row is A's → the
  *           exec REFUSES (-1). Before C2 the owner came from the row and
  *           this applied: an UNSTAKE of A's validator signed under B.
- *   CORE:   the chain ACCEPTS the swapped funding leg with A's coins — it
- *           cannot tell (rtn_input_owned: the satisfied descriptor owns
- *           the coins). Pinned on purpose: this is the gap nodus-cli
- *           `msig sign` closes by checking every input against the vault's
- *           coin set before signing (item 5); a protocol binding is a
- *           separate, height-activated decision (not now). */
+ *   CORE:   the swapped funding leg with A's coins is REFUSED (-1): under
+ *           generation 4 (CORE v9) a kind-3 payer must be the vault the
+ *           SYSTEM call's signed owner field names (rtn_sysfund_payer_bound
+ *           — design §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13"); the
+ *           call names B, the carried descriptor is A. Before the payer
+ *           binding the chain accepted it and only `msig sign`'s input
+ *           check (Kurultay #18 item 5) stood in the way. */
 static int t_c2_swap(void) {
     const uint64_t coin = 5000000000ULL;
     coin_set(coin);
@@ -755,10 +758,10 @@ static int t_c2_swap(void) {
     ctx_for(1, pf2->intent_id);
     {
         uint16_t nr = fund_reads(v, coin);      /* A's coins             */
-        CHECK(core_exec(v, nr) == 0,
-              "N4 CORE: the swapped funding leg with A's coins is accepted "
-              "by the chain — the signer-side input check (item 5) is what "
-              "refuses it");
+        CHECK(core_exec(v, nr) == -1,
+              "N4 CORE: the swapped funding leg with A's coins is REFUSED — "
+              "the call's signed owner is B, the carried vault is A (the "
+              "payer binding, CORE v9)");
     }
     free(v);
     free(s[0]);

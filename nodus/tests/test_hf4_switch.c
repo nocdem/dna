@@ -66,8 +66,9 @@
  *     migration — the seven genesis validators get roles rows and 8M
  *     self-delegations, pinned row by row in test_hf6_migrate.c); it
  *     switches the EVM
- *     generation -> GEN_STORAGE (SYSTEM v10 / CORE v8 since HF-6 D2 — Kurultay
- *     #18; v9 / v7 before — with the compiled
+ *     generation -> GEN_STORAGE (SYSTEM v10 / CORE v9 — HF-6 D2, Kurultay
+ *     #18, and the payer binding; v9 / v7, then 10 / 8, before — with the
+ *     compiled
  *     hashes, the registry root moved, both runtimes resolve GEN_STORAGE,
  *     the EVM domain's record still the EVM generation's v1) and its
  *     committed SYSTEM root is ALREADY v5 — the DomainUpdate's pre_root
@@ -1030,8 +1031,8 @@ static int t_storage_switch(void) {
         dna_domain_manifest_t ms1, mc1;
         CHECK(reg_get(fx.w, DNA_DOMAIN_SYSTEM, &rs1, &ms1) == 0 &&
               reg_get(fx.w, DNA_DOMAIN_CORE, &rc1, &mc1) == 0, "registry");
-        CHECK(ms1.ruleset_version == 10 && mc1.ruleset_version == 8,
-              "SYSTEM v10 / CORE v8 (HF-6 D2)");
+        CHECK(ms1.ruleset_version == 10 && mc1.ruleset_version == 9,
+              "SYSTEM v10 / CORE v9 (HF-6 D2 + the payer binding)");
         /* the EVM domain's record is untouched: still the EVM
          * generation's v1 tuple */
         dna_domreg_record_t re1;
@@ -1077,7 +1078,7 @@ static int t_storage_switch(void) {
               "CORE's root did not move (touched for K4's accrual merge; "
               "this fixture has no accrual row before its first "
               "boundary, so the accrual leg is unchanged)");
-        CHECK(us.ruleset_version == 10 && uc.ruleset_version == 8,
+        CHECK(us.ruleset_version == 10 && uc.ruleset_version == 9,
               "the H14-1 updates name GEN_STORAGE");
         /* the v5 storage leg over the EMPTY registry: storage_root
          * ("NDS.STOR.v2", archive bytes item 5) of four tagged-empty

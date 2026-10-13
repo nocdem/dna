@@ -104,17 +104,20 @@ K8_OWNER_HEX = (
     "8eff7f418ab7a4432118ff99e21f2c3d1baf186200c148a3bba7d274499386ac"
     "970e267a9c9b3bbc05bfff1c62a72d63f72a555db780feeaaad4fb49ba9f7b89")
 
-# storage_oracle.py S2 / S3 as emitted after HF-6 D2 (SYSTEM v10 rules
-# {1..9}, CORE v8 — khan decision 2026-10-13-kurultay-18-summary.md items
-# 1 and 3; checked, not trusted: the run below must reproduce them). The
-# previous pins (SYSTEM v9 {1..10} c347ddd7…, CORE v7 fb25e5c4…, D4
-# 0x4dc61072d5982acd) never activated and are dead.
+# storage_oracle.py S2 / S3 as emitted after the payer binding (SYSTEM
+# v10 rules {1..9} — HF-6 D2, khan decision 2026-10-13-kurultay-18-
+# summary.md items 1 and 3 — and CORE v9 — design 2026-10-03-hf5-
+# validator-owner-stake §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13";
+# checked, not trusted: the run below must reproduce them). The previous
+# pins never activated and are dead: SYSTEM v9 {1..10} c347ddd7… / CORE v7
+# fb25e5c4… (D4 0x4dc61072d5982acd), and HF-6 D2's CORE v8 db32614f… (D4
+# 0x5922111a3501f58b, harness owner 0x2a3351e7325932f1).
 PIN_S2 = (
     "a012cc08bbf96524fa2dace331921f9d39107aa52643fc99392c14146ef09159"
     "a54d11502d538d424f1e5bde9a493e2abab2738bf20c3e261fe5627c09bb662a")
 PIN_S3 = (
-    "db32614f1eb4818d7609e15f0130dec652362196a1d416a7b8ea4546a64abf9a"
-    "c08b0b76cc9c0b62e1a47a3a7cf04b0982d299501cbf800f12849f64a0f991d1")
+    "964f300629cdbea0a543c52aa815034a61df8377f333ddbbd4f6f7a0c349763b"
+    "e1b08e70215dda924402fd199ccad697a3bfb6cc68ef7f102d8c1fad4cb0aac0")
 
 # vote literals D4 must not collide with
 D2_LITERAL = 0x44dfbe7ad3c75adf        # generation 2, param 9

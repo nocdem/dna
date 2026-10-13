@@ -252,9 +252,11 @@ extern "C" {
  *  reward-approved.md — QEVM merged first): the generation built ON the
  *  EVM generation — SYSTEM v10 (the EVM generation's ops 1..6 +
  *  STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT, SYSTEM state root
- *  "NDS.SYS.v5") / CORE v8 (the EVM generation's rules {1..9}, SYSFUND
+ *  "NDS.SYS.v5") / CORE v9 (the EVM generation's rules {1..9}, SYSFUND
  *  pairs with the two storage record ops); v9 / v7 until HF-6 D2 (khan
- *  decision 2026-10-13-kurultay-18-summary.md item 3); the EVM domain is
+ *  decision 2026-10-13-kurultay-18-summary.md item 3), CORE v8 until the
+ *  payer binding (design 2026-10-03-hf5-validator-owner-stake §2, a
+ *  kind-3 SYSFUND leg carries the signed owner's vault); the EVM domain is
  *  unchanged
  *  (its v1 entry stays the EVM generation's — the generation carries no
  *  EVM slot, since one exact tuple names ONE entry). Code names it

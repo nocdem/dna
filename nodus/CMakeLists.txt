@@ -3033,6 +3033,17 @@ if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_msig_owner)
 endif()
 
+# HF-6 — the payer binding of the CORE SYSFUND leg under generation 4
+# (CORE v9; design 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ
+# BAĞLAMA — han kararı 2026-10-13"): for each of the seven owner
+# operations a kind-3 payer equal to the call's signed owner applies, a
+# different vault is refused, a kind-1 third-party payer applies; two
+# descriptors are refused; generation 3 has no rule. Hook level over
+# fabricated verdicts and reads. No database, no network, no environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_payer)
+endif()
+
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
 # a pins-built envelope admitted by the CheckTx dry run on a seeded

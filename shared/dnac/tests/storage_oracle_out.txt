@@ -29,6 +29,7 @@
   policy v2, scalars 1, max_block_env_bytes = 2097152, ops 1..9 w=1
   S1 = 0aa4c690a05af8827a322912a402d87b2642c99edc1db83f2871af64da18c3f8b74a6e5c870edc3450ae0474a3c8d7279efb884df8b285c8848beffb25922766
   S1 == the EVM generation's policy (C8, 0aa4c690a05af882…; both price ops 1..9 at weight 1 — op 10 is priced by no generation): True
+  S1 == the HF-6 D2 S1 (the payer binding moves only the CORE version): True
   static const uint8_t SYS_METER_POLICY_DIGEST_GST[DNA_DOM_HASH_LEN] = {
       0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
       0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
@@ -43,6 +44,7 @@
 ── S2 SYSTEM ruleset v10 ──────────────────────────────────────────
   domain 0 "SYSTEM" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8, 9] types [4, 5, 6, 7, 9, 10] policy S1
   S2 = a012cc08bbf96524fa2dace331921f9d39107aa52643fc99392c14146ef09159a54d11502d538d424f1e5bde9a493e2abab2738bf20c3e261fe5627c09bb662a
+  S2 == the HF-6 D2 S2 (SYSTEM untouched by the payer binding): True
   static const uint8_t SYS_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
       0xa0, 0x12, 0xcc, 0x08, 0xbb, 0xf9, 0x65, 0x24,
       0xfa, 0x2d, 0xac, 0xe3, 0x31, 0x92, 0x1f, 0x9d,
@@ -54,22 +56,23 @@
       0x1f, 0xe5, 0x62, 0x7c, 0x09, 0xbb, 0x66, 0x2a
   };
 
-── S3 DNA_CORE ruleset v8 ────────────────────────────────────────
+── S3 DNA_CORE ruleset v9 ────────────────────────────────────────
   domain 1 "DNA_CORE" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8, 9] types [1, 2, 3, 11, 12, 13] policy all-zero
-  S3 = db32614f1eb4818d7609e15f0130dec652362196a1d416a7b8ea4546a64abf9ac08b0b76cc9c0b62e1a47a3a7cf04b0982d299501cbf800f12849f64a0f991d1
-  S3 != the pre-bump CORE v7 pin (fb25e5c4…; the version field moved 7 -> 8): True
+  S3 = 964f300629cdbea0a543c52aa815034a61df8377f333ddbbd4f6f7a0c349763be1b08e70215dda924402fd199ccad697a3bfb6cc68ef7f102d8c1fad4cb0aac0
+  S3 != the pre-bump CORE v7 pin (fb25e5c4…; the version field moved 7 -> 9): True
+  S3 != the HF-6 D2 CORE v8 pin (db32614f…; the payer binding moved the version 8 -> 9): True
   static const uint8_t CORE_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
-      0xdb, 0x32, 0x61, 0x4f, 0x1e, 0xb4, 0x81, 0x8d,
-      0x76, 0x09, 0xe1, 0x5f, 0x01, 0x30, 0xde, 0xc6,
-      0x52, 0x36, 0x21, 0x96, 0xa1, 0xd4, 0x16, 0xa7,
-      0xb8, 0xea, 0x45, 0x46, 0xa6, 0x4a, 0xbf, 0x9a,
-      0xc0, 0x8b, 0x0b, 0x76, 0xcc, 0x9c, 0x0b, 0x62,
-      0xe1, 0xa4, 0x7a, 0x3a, 0x7c, 0xf0, 0x4b, 0x09,
-      0x82, 0xd2, 0x99, 0x50, 0x1c, 0xbf, 0x80, 0x0f,
-      0x12, 0x84, 0x9f, 0x64, 0xa0, 0xf9, 0x91, 0xd1
+      0x96, 0x4f, 0x30, 0x06, 0x29, 0xcd, 0xbe, 0xa0,
+      0xa5, 0x43, 0xc5, 0x2a, 0xa8, 0x15, 0x03, 0x4a,
+      0x61, 0xdf, 0x83, 0x77, 0xf3, 0x33, 0xdd, 0xbb,
+      0xd4, 0xf6, 0xf7, 0xa0, 0xc3, 0x49, 0x76, 0x3b,
+      0xe1, 0xb0, 0x8e, 0x70, 0x21, 0x5d, 0xda, 0x92,
+      0x44, 0x02, 0xfd, 0x19, 0x9c, 0xca, 0xd6, 0x97,
+      0xa3, 0xbf, 0xb6, 0xcc, 0x68, 0xef, 0x7f, 0x10,
+      0x2d, 0x8c, 0x1f, 0xad, 0x4c, 0xb0, 0xaa, 0xc0
   };
 
   sanity: S2 != SYSTEM v8 (EVM): True
   sanity: S3 != CORE v6 (EVM, version field only): True
 
-control green — GEN_STORAGE (generation 4) values above derived from the written layouts by hashlib, not by the C encoders (generation-4 inputs: decision K10 + HF-6 design rev 6 §2 / K7 + Kurultay #18 items 1 and 3; C-only inputs listed in the docstring).
+control green — GEN_STORAGE (generation 4) values above derived from the written layouts by hashlib, not by the C encoders (generation-4 inputs: decision K10 + HF-6 design rev 6 §2 / K7 + Kurultay #18 items 1 and 3 + the payer binding's CORE v9; C-only inputs listed in the docstring).

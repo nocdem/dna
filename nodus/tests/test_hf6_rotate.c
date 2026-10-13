@@ -22,7 +22,7 @@
  *      rt_owns_runtime_op walks, restated as the same ascending scan) and
  *      no SYSTEM meter policy prices it; the generation-4 SYSTEM (v10 since
  *      HF-6 D2, decision item 3) owns exactly {1..9} and the generation-4
- *      CORE is v8.
+ *      CORE is v9 (v8 at D2; the payer binding, design §2 2026-10-13).
  *   A2 the compiled table passes its selfcheck and the param-18 vote value
  *      D4 re-derives through nodus_runtime_gen4_vote_digest (the pins and
  *      D4 re-derived by the independent oracles in HF-6 D2 —
@@ -259,9 +259,9 @@ static int t_table(void) {
         const nodus_domain_runtime_t *c4 =
             nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
                                          DNA_DOMAIN_CORE);
-        CHECK(s4->ruleset_version == 10 && c4 && c4->ruleset_version == 8,
-              "the generation-4 versions are SYSTEM 10 / CORE 8 (HF-6 D2, "
-              "decision item 3)");
+        CHECK(s4->ruleset_version == 10 && c4 && c4->ruleset_version == 9,
+              "the generation-4 versions are SYSTEM 10 / CORE 9 (HF-6 D2 "
+              "decision item 3; the payer binding)");
         CHECK(s4->descriptor.rule_count == 9, "SYSTEM v10 rules {1..9}");
         for (uint32_t i = 0; i < 9; i++)
             CHECK(s4->descriptor.rule_ids[i] == i + 1u, "ascending 1..9");
@@ -309,7 +309,8 @@ static int hk_build(hk_env_t *e, const uint8_t *call, uint32_t call_len) {
     legs[0].auth_data = e->auth[0];
     legs[1].hdr.domain_id = DNA_DOMAIN_CORE;
     legs[1].hdr.runtime_op = DNA_CORERULE_SYSFUND;
-    legs[1].hdr.ruleset_version = 8;    /* the generation-4 CORE (D2)   */
+    legs[1].hdr.ruleset_version = 9;    /* the generation-4 CORE (payer
+                                         * binding, 2026-10-13)         */
     legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[1].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
     legs[1].hdr.call_len = fl;
