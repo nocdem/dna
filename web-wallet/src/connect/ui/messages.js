@@ -751,10 +751,10 @@ async function sync() {
     // not leave every contact after it in the list unchecked, round after
     // round. A close / reset meanwhile still ends the check.
     let syncMoved = false, failed = 0, storageFailure, arrivedTotal = 0;
-    // Check order (web 0.1.72, text.js checkOrder): never-checked contacts
-    // first, then the ones with the newest message on this device, then
-    // the rest — a copy; state.contacts keeps its order.
-    const contacts = checkOrder(state.contacts, state.dmSync, messages);
+    // Check order (web 0.1.111, text.js checkOrder): the contacts we last
+    // wrote with first, by the message's time; then everyone else in list
+    // order — a copy; state.contacts keeps its order.
+    const contacts = checkOrder(state.contacts, messages);
     const daysOf = new Map(contacts.map(c => [c.fp, contactDays(c.fp, state.dmSync, startedAt, today)]));
     const full = contacts.filter(c => contactNeedsFullSync(c.fp, state.dmSync, startedAt)).length;
     logCheck(roundStartLine(round, { first, contacts: contacts.length, full, recent: contacts.length - full }));

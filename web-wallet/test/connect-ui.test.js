@@ -579,34 +579,37 @@ test('smart sync per contact (0.1.72): only a contact never checked, or checked 
   assert.throws(() => needFullSync([], {}, 'x'), /Invalid time/);
 });
 
-test('check order (0.1.72): never checked first, then the newest message on this device, then the rest; ties keep the list order', () => {
-  const fp = ch => ch.repeat(128), now = '1790000000';
-  const contacts = ['1', '2', '3', '4', '5', '6'].map(ch => ({ fp: fp(ch) }));
-  const dmSync = { [fp('1')]: now, [fp('2')]: now, [fp('3')]: now, [fp('5')]: '0', [fp('6')]: now };
-  // 4: no entry, 5: '0' — never checked. 3 has the newest message (in), 1 an
-  // older one (out), 6 a message with an unreadable seq (ignored), 2 none.
+test('check order (0.1.111): the contact last written with first, by the message time as shown; then everyone else in list order', () => {
+  const fp = ch => ch.repeat(128);
+  const contacts = ['1', '2', '3', '4', '5', '6', '7'].map(ch => ({ fp: fp(ch) }));
+  // at: arrival / send time on this device (ms). senderTs: the sender's
+  // clock (s), used when not later than the arrival (shownAt).
   const messages = [
-    { fp: fp('1'), dir: 'out', seq: '7' },
-    { fp: fp('3'), dir: 'in', seq: '9' },
-    { fp: fp('1'), dir: 'in', seq: '8' },
-    { fp: fp('6'), dir: 'in', seq: 'x' },
-    { fp: fp('9'), dir: 'in', seq: '99' }   // not a contact
+    { fp: fp('1'), dir: 'out', seq: '7', at: 1000_000 },
+    { fp: fp('3'), dir: 'in', seq: '2', at: 5000_000, senderTs: '4000' },   // shown at 4,000,000
+    { fp: fp('1'), dir: 'in', seq: '8', at: 2000_000 },                      // 1's newest: 2,000,000
+    { fp: fp('5'), dir: 'in', seq: '9', at: 3000_000, senderTs: '9999' },   // sender clock ahead: shown at arrival 3,000,000
+    { fp: fp('6'), dir: 'in', seq: 'x', at: 9000_000 },                      // unreadable seq: ignored
+    { fp: fp('7'), dir: 'out', seq: '3' },                                   // no time: ignored
+    { fp: fp('9'), dir: 'in', seq: '99', at: 9900_000 }                      // not a contact
   ];
   const before = contacts.map(c => c.fp);
-  const order = checkOrder(contacts, dmSync, messages).map(c => c.fp);
-  assert.deepEqual(order, [fp('4'), fp('5'), fp('3'), fp('1'), fp('2'), fp('6')]);
+  // 3 (4.0e6) > 5 (3.0e6) > 1 (2.0e6): by time, NOT by seq (3's seq 2 is the
+  // lowest — an old message stored late does not count as new); then 2, 4, 6,
+  // 7 with no usable message, in list order — never-written contacts are
+  // still in the round, last.
+  assert.deepEqual(checkOrder(contacts, messages).map(c => c.fp), [fp('3'), fp('5'), fp('1'), fp('2'), fp('4'), fp('6'), fp('7')]);
   assert.deepEqual(contacts.map(c => c.fp), before, 'the list itself is not reordered');
-  assert.notEqual(checkOrder(contacts, dmSync, messages), contacts, 'a new array');
-  // Same newest seq (cannot happen for one device, but the order stays total): list order.
-  const tie = checkOrder([{ fp: fp('2') }, { fp: fp('1') }], { [fp('1')]: now, [fp('2')]: now }, [{ fp: fp('1'), seq: '5' }, { fp: fp('2'), seq: '5' }]);
+  assert.notEqual(checkOrder(contacts, messages), contacts, 'a new array');
+  // Same time: the later stored (higher seq) first; same time and seq: list order.
+  const sameTime = checkOrder([{ fp: fp('1') }, { fp: fp('2') }], [{ fp: fp('1'), seq: '9', at: 7 }, { fp: fp('2'), seq: '10', at: 7 }]);
+  assert.deepEqual(sameTime.map(c => c.fp), [fp('2'), fp('1')], 'seq compared as integers, not text');
+  const tie = checkOrder([{ fp: fp('2') }, { fp: fp('1') }], [{ fp: fp('1'), seq: '5', at: 7 }, { fp: fp('2'), seq: '5', at: 7 }]);
   assert.deepEqual(tie.map(c => c.fp), [fp('2'), fp('1')]);
-  // seq compared as integers, not text ('10' after '9')
-  const big = checkOrder([{ fp: fp('1') }, { fp: fp('2') }], { [fp('1')]: now, [fp('2')]: now }, [{ fp: fp('1'), seq: '9' }, { fp: fp('2'), seq: '10' }]);
-  assert.deepEqual(big.map(c => c.fp), [fp('2'), fp('1')]);
-  // Nothing checked yet, no messages: the list order.
-  assert.deepEqual(checkOrder(contacts, {}, []).map(c => c.fp), before);
-  assert.deepEqual(checkOrder(contacts, undefined, undefined).map(c => c.fp), before);
-  assert.deepEqual(checkOrder([], {}, messages), []);
+  // No messages: the list order.
+  assert.deepEqual(checkOrder(contacts, []).map(c => c.fp), before);
+  assert.deepEqual(checkOrder(contacts, undefined).map(c => c.fp), before);
+  assert.deepEqual(checkOrder([], messages), []);
 });
 
 test('profile cache: a kept profile is used for 7 days', () => {

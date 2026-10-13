@@ -300,32 +300,36 @@ export function contactDays(fp, dmSync, now, today) {
 }
 // The order in which one round checks the contacts (web 0.1.72; operator's
 // phone 2026-10-07: 17 contacts at ~12 s each, and the contact that had
-// sent a new message, last in the list, was reached at minute 11):
-//   1. contacts never checked (no valid state.dmSync entry, or 0),
-//   2. then contacts with a message on this device (in or out), the one
-//      with the newest message first — newest by the LOCAL sequence
-//      (`seq`, compareLocal), never by anyone's clock,
-//   3. then the rest.
+// sent a new message, last in the list, was reached at minute 11). Since
+// web 0.1.111 (operator 2026-10-13: "en son mesajlaştığımız kişilerden
+// başlayarak çekmek lazım … hiç mesajlaşmadıklarımı … çekmeyi de unutmamak
+// lazım"):
+//   1. contacts with a message on this device (in or out), the one we last
+//      wrote with first — by the message's time as the chat shows it
+//      (shownAt: the sender's time, never later than its arrival here; our
+//      own messages' send time), then by the LOCAL sequence (`seq`, the
+//      later stored first) when two times are equal;
+//   2. then every other contact — never written with, or never checked —
+//      in list order. They are still checked every round, last.
+// Before 0.1.111 contacts never checked came first and "newest" was the
+// local sequence alone (an old history read late counted as new).
 // Ties keep the order of `contacts`. Returns a new array; `contacts` itself
 // (state.contacts) is neither reordered nor saved differently. A function
 // of its arguments only, so the same state gives the same order.
-export function checkOrder(contacts, dmSync, messages) {
+export function checkOrder(contacts, messages) {
   const newest = new Map();
   for (const m of messages || []) {
     if (!m || typeof m.fp !== 'string' || !U64.test(String(m.seq))) continue;
-    const seq = BigInt(String(m.seq));
+    const time = shownAt(m), seq = BigInt(String(m.seq));
+    if (!Number.isFinite(time)) continue;
     const seen = newest.get(m.fp);
-    if (seen === undefined || seq > seen) newest.set(m.fp, seq);
+    if (seen === undefined || time > seen.time || (time === seen.time && seq > seen.seq)) newest.set(m.fp, { time, seq });
   }
-  const rank = contact => {
-    const last = u64OrNull(dmSync?.[contact.fp]);
-    if (last === null || last === 0n) return 0;
-    return newest.has(contact.fp) ? 1 : 2;
-  };
-  return contacts.map((contact, index) => ({ contact, index, rank: rank(contact), seq: newest.get(contact.fp) }))
+  return contacts.map((contact, index) => ({ contact, index, last: newest.get(contact.fp) }))
     .sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      if (a.rank === 1 && a.seq !== b.seq) return a.seq > b.seq ? -1 : 1;
+      if (!a.last !== !b.last) return a.last ? -1 : 1;
+      if (a.last && a.last.time !== b.last.time) return b.last.time - a.last.time;
+      if (a.last && a.last.seq !== b.last.seq) return a.last.seq > b.last.seq ? -1 : 1;
       return a.index - b.index;
     })
     .map(entry => entry.contact);
