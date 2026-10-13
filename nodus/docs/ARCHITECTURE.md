@@ -3429,7 +3429,7 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 | `dnac_nullifier` | Client→Witness | Check if nullifier is spent |
 | `dnac_supply` | Client→Witness | Query supply state (version 3 adds `chain_id32`, `tip` and the supply buckets `reward_pool` / `treasury` / `unclaimed` — see "Supply buckets for Nodus Scan") |
 | `dnac_utxo` | Client→Witness | Query UTXOs by owner. `owner` = exactly 128 lowercase hex (else `PROTOCOL_ERROR`, never truncated) and == the session fingerprint (C11, else `NOT_AUTHENTICATED`); a coin-store or chain-height read fault is `INTERNAL_ERROR` ("coin list unreadable" / "chain height unreadable"), never an empty list or `block_height` 0 (BUGS.md Z-11). At most 100 coins (`max` 1..100, by design) |
-| `dnac_msig_utxo` | Client→Witness | A multisig vault MEMBER's query of the vault address's coins: `dnac_utxo`'s answer plus `trunc` (see "Vault-member queries") |
+| `dnac_msig_utxo` | Client→Witness | A multisig vault MEMBER's query of the vault address's coins: `dnac_utxo`'s answer plus `trunc`; with `"nul"` exactly the named coins plus the `"nul"` marker (see "Vault-member queries") |
 | `dnac_msig_addr_history` | Client→Witness | A multisig vault MEMBER's query of the vault address's history: `dnac_addr_history`'s answer (see "Vault-member queries") |
 | `dnac_utxo_proof` | Client→Witness | Query UTXO existence proof |
 | `dnac_ledger` | Client→Witness | Query ledger entry by hash |
@@ -7545,7 +7545,93 @@ reservation, re-STAKE refused); `test_hf6_migrate` A1 (five reservations, UNSTAK
 (inventory without `bonded_add_pending`); `test_hf6_edge.sh` (step 10 deleted). (D1's client-side
 ROTATE cases in `test_hf6_msig_owner` O2 / `test_v2_stake_client` R1 were replaced in D2.)
 
+### HF-6 payer binding — a kind-3 SYSFUND leg is the signed owner's vault, CORE v9; `msig sign` pinned to your own node, named-coin query, node-height horizon (branch `hf6-payer` — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` §2 "ÖDEYİCİ BAĞLAMA — han kararı
+2026-10-13" (red-team round 3, two independent sources; operator "Yap"); the signer side extends
+Kurultay #18 item 5 (`docs/plans/decisions/2026-10-13-kurultay-18-summary.md`).
+
+**Why.** C2 (below) bound the SYSTEM leg's owner; the CORE SYSFUND funding leg was still free: its
+kind-3 descriptor is outside the signed auth context (`shared/dnac/env_wire.c` — only `auth_len`), so
+after signing it could be swapped for another vault with the same co-signers — "the fee / bond is paid
+by vault A, the operation is vault B's" (`test_hf6_msig_owner` N4 pinned the chain ACCEPTING that).
+
+**The chain rule (generation 4 only).** `nodus_witness_rt_native.c` `rtn_sysfund_payer_bound`, called
+once from `rtn_sysfund_exec` under `rtn_gen_roles(generation)`, after the sibling's flow decode: when
+the CORE leg is `auth_kind` 3, EVERY carried descriptor's address must equal the SYSTEM call's signed
+owner (`rtn_sys_call_owner_v2`, each op's own generation-4 decoder):
+
+| SYSTEM op | the signed owner |
+|---|---|
+| STAKE (1, 7301 B) / STORAGE_REGISTER (7, 7299 B) | `owner_fp` at offset 0 |
+| DELEGATE (2) / UNDELEGATE (4) (136 B) | `delegator_fp` at offset 0 |
+| UNSTAKE (3, 128 B) / VALIDATOR_UPDATE (5, 130 B) / STORAGE_EXIT (8, 128 B) | `owner_fp` at offset 64 |
+
+else −1 (a verdict). "Every", not only `msig_addr[0]`: the CORE verdict admits up to
+`NODUS_RT_MSIG_MAX_DESC` (7) descriptors and `rtn_owners_all_used` only requires each to own one input,
+so a second descriptor could still pay; addresses are strictly ascending (`rtn_auth_msig`), so the rule
+is exactly `n_msig == 1 && msig_addr[0] == owner`. Consequences: a vault pays only for its OWN
+operations; a kind-3 CORE leg funding a single-key (kind-1) owner is refused (no vault address equals
+a key fingerprint); kind-1 funding — the signers pay, bound by their own signatures — including
+kind-1 THIRD-PARTY funding is unchanged; generations 1-3 have no rule. No new byte. The v1 SPEND
+(single CORE leg, no SYSTEM owner) is outside it — a protocol binding there is a separate,
+height-activated fork (BUGS record), not this package. **Determinism:** pure over the
+intent-committed SYSTEM call bytes and the engine's auth verdict — no read, no clock, no cache, no
+height branch; the read plan and the describer are unchanged (no read added).
+
+**Version and pins.** A CORE hook-side semantics change → CORE ruleset_version **8 → 9** (generation 4;
+"D4 hareket etsin diye"). Independent oracle `shared/dnac/tests/storage_oracle.py` (S1 / S2 asserted
+equal to D2's, S3 asserted ≠ D2's v8 and ≠ v7):
+
+| pin | value |
+|---|---|
+| S1 `SYS_METER_POLICY_DIGEST_GST` | `0aa4c690…25922766` (unchanged) |
+| S2 `SYS_RULESET_HASH_GST` (SYSTEM v10) | `a012cc08…09bb662a` (unchanged) |
+| S3 `CORE_RULESET_HASH_GST` (CORE v9) | `964f300629cdbea0a543c52aa815034a61df8377f333ddbbd4f6f7a0c349763be1b08e70215dda924402fd199ccad697a3bfb6cc68ef7f102d8c1fad4cb0aac0` |
+| D4 `DNAC_CFG_RULESET_GEN_ROLES_D` (K8 owner; `hf6_vote_oracle.py`, 296-B preimage unchanged) | `0x642af9b4bf735409` = 7217855907516077065 |
+| D4, harness test owner `2cca88c4…ee196b93` (`--owner`; `test_hf4_table` KAT) | `0x315dc58be7dec68d` = 3557216485373822605 |
+
+`nodus_ruleset_pins.h` regenerated (`make regen_ruleset_pins`: G4 CORE 9u + S3). The D2 values below
+(CORE v8 `db32614f…`, D4 `0x5922111a3501f58b` / `0x2a3351e7325932f1`) never activated. The web wallet
+re-pins in its own session.
+
+**`msig sign` (v1 and v2) — the signer side** (`nodus/tools/nodus-cli.c` `cmd_msig_sign` /
+`cmd_msig_sign2` / `msig_inputs_verify`):
+- **`--pin <fp128hex>` is required** — the fingerprint of the node the co-signer runs himself (`whoami`
+  "Fingerprint:" / `identity/nodus.fp`). The session to `-s` sets `pinned_server_fps`, so
+  `nodus_client.c` `pin_check_auth_ok` refuses an unsigned or foreign channel key and the session is
+  ML-KEM-1024 only. No pin / a malformed pin / a mismatch → nothing is signed.
+- **Named-coin query.** `dnac_msig_utxo` gains an optional `"nul"` argument (1..`NODUS_DNAC_MSIG_MAX_NULS`
+  = 15 strictly ascending 64-byte nullifiers — the chain's per-leg input ceiling, `_Static_assert`ed
+  against `NODUS_V2_SPEND_MAX_IN`; exclusive with `"max"`). The node (`nodus_witness_handlers.c`
+  `msig_utxo_by_nuls`, behind the unchanged member gate) answers exactly the named coins that are
+  unspent CORE coins of the vault, any token, in request order, `"trunc"` false, and appends a LAST key
+  `"nul"` = the count named. Without `"nul"` the answer is byte-identical to before (the web wallet's
+  request). Client: `nodus_client_dnac_msig_utxo_nuls` (new; `nodus_client_dnac_msig_utxo`
+  unchanged) requires the marker == the count asked — a node that skips the unknown argument answers
+  the page with no marker and is refused —, `trunc` false, ≤ n entries, each asked, none repeated.
+  `msig_inputs_verify` then requires every input answered with owner == hex(vault). The 100-coin page
+  and foreign-token coins can no longer hide an input.
+- **Horizon from the node.** `nodus_v2_msig_horizon` (`src/client/nodus_v2_msig.c`,
+  `NODUS_V2_MSIG_ERR_HORIZON` −75), with H = the pinned answer's `block_height`: refused when expiry ≤ H,
+  expiry > H + 90, or the export's tip > H + 90 (the node too far behind the builder). review /
+  review2 judge the window only against the export's `tip`, which its author chose — a future tip
+  would otherwise yield a signature usable long after it was given. 90 = `NODUS_V2_MSIG_EXPIRY_AHEAD`
+  (mempool cap 100 − the 10-block gossip margin), the read-back's own window.
+
+**Tests** (written, NOT run by the author): `test_hf6_payer` (new — for each of the seven owner ops:
+kind-3 payer == owner applies, another vault refused, kind-1 third party applies; two descriptors in
+either order refused; generation 3 legacy DELEGATE / UNSTAKE funded by an unrelated vault applies),
+`test_hf6_msig_owner` N4 (the swapped CORE funding leg is now REFUSED), `test_msig_query` t_nul /
+t_nul_beyond_page, `test_v2_msig` M4c; versions / D4 in `test_hf4_table`, `test_hf4_switch`,
+`test_hf6_rotate`, `test_v2_native` K7 and the hook builders. Genesis Protocol
+`test_cmt_multisig.sh` passes `--pin` and checks no-pin / wrong-pin refusals.
+
 ### HF-6 D2 — the owner in the call (C2), generation 4 = SYSTEM v10 / CORE v8, no ROTATE in the client, `msig sign` verifies the inputs (branch `hf6-d` — not versioned, not voted)
+
+⚠ **Superseded in part by "HF-6 payer binding" above:** CORE is v9 and D4 `0x642af9b4bf735409`; the
+CORE v8 / D4 values in the table below never activated; `msig sign` now also needs `--pin`, asks for
+the named coins (no page) and the chain refuses the swapped funding leg described below.
 
 Khan decision `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` items 1, 2, 3 and 5; design
 rev 6 §2 "DEĞİŞİKLİK — han kararı 2026-10-13".
@@ -8124,7 +8210,8 @@ refuses NULL inputs, `n_consts > 64`, and any preimage whose length is not
 `DNA_ROLEGEN_PREIMAGE_LEN(n)`. The witness wrapper `nodus_runtime_gen4_vote_digest`
 (`nodus_witness_runtime.c`, EVM builds) feeds it the compiled generation-4 pins, the compiled owner
 and `GEN4_VOTE_CONSTS` (the nine NAMED constants in §8.1's order, `_Static_assert` count 9). The
-literal `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x5922111a3501f58b` (6422714822839891339, since HF-6 D2 —
+literal `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x642af9b4bf735409` (7217855907516077065, since the payer
+binding's CORE v9 — `0x5922111a3501f58b` = 6422714822839891339 at HF-6 D2's CORE v8, and
 `0x4dc61072d5982acd` = 5604184871704996557 before it, over the SYSTEM v9 / CORE v7 pins) is the `D4 =` line
 of the INDEPENDENT oracle `shared/dnac/tests/hf6_vote_oracle.py` (S2 / S3 from `storage_oracle.py`,
 owner K8) — never this build's encoder; the plan author's separate scratch derivation gave the same
@@ -8141,7 +8228,8 @@ param-16 trigger (done: deleted in 8c, section "HF-6 slice 8c").
 the literal with that owner's D4, and a build that overrides only one refuses to start on every node
 (the selfcheck row). `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both flags; it takes
 the D4 from `hf6_vote_oracle.py --owner <fp>` and never computes it in bash (the 2026-10-12 harness
-owner `2cca88c4…ee196b93` → `0x2a3351e7325932f1` since HF-6 D2, `0x4fc24934a9155c64` before).
+owner `2cca88c4…ee196b93` → `0x315dc58be7dec68d` since the payer binding's CORE v9,
+`0x2a3351e7325932f1` at HF-6 D2, `0x4fc24934a9155c64` before).
 Production defines neither.
 
 **Byte-identical.** Every descriptor, pin, the pins header, D2, the EVM D, the storage dev literal,
@@ -8150,8 +8238,8 @@ the new literal yet.
 
 **Tests** (written, NOT run by the builder). `test_hf4_table` section 6'': constructor over the
 compiled pins + compiled owner + the test's own nine-constant array == the wrapper == the literal, and
-— only under `DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT` — == `0x5922111a3501f58b` (HF-6 D2); the harness
-owner passed explicitly == `0x2a3351e7325932f1` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) == 296`; NULL and
+— only under `DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT` — == `0x642af9b4bf735409` (CORE v9); the harness
+owner passed explicitly == `0x315dc58be7dec68d` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) == 296`; NULL and
 `n_consts > 64` refused; generation, base, either hash, spec, `n_consts`, one owner byte and each
 constant move the value; D4 differs from D2, the EVM D and the storage D. `test_v2_native` K7: the K8
 literal (owner-default builds). Both prove the C constructor agrees with the oracle, not that §8.1 is
@@ -8167,7 +8255,7 @@ change: the moment 16 is retired every fixture and both harness scenarios reach 
 
 **Param 18 `DNAC_CFG_RULESET_GEN_ROLES` (`dnac.h`).** On the read list
 (`dnac_cfg_param_read_by_consensus`); scalar rule EXACTLY `DNAC_CFG_RULESET_GEN_ROLES_D` (D4,
-`0x5922111a3501f58b` since HF-6 D2) in `nodus_chain_config_scalar_rules` and the client mirror
+`0x642af9b4bf735409` since the payer binding's CORE v9) in `nodus_chain_config_scalar_rules` and the client mirror
 (`dnac_tx_verify_chain_config_rules`); grace ERGONOMIC (its own case); `CC_PARAM_RULESET_GEN_ROLES`
 `_Static_assert`ed to the dnac id. Stateful (`nodus_chain_config_stateful_rules_ex`, its own case —
 not a fall-through into param 9's), each a −1 verdict:
@@ -8544,6 +8632,16 @@ had to scan every block from the vault's first one, which block pruning breaks.
   builder itself (`ai_history_build` behind `nodus_witness_addr_history_build`
   and `nodus_witness_msig_addr_history_build`), `q` = `dnac_msig_addr_history`,
   same node-local caveats (`enabled`, `from_height`).
+- **Named coins — `"nul"` (2026-10-13, branch `hf6-payer`; section "HF-6 payer
+  binding").** `dnac_msig_utxo` also takes `"nul"`: 1..15 strictly ascending
+  64-byte nullifiers (`NODUS_DNAC_MSIG_MAX_NULS` = the chain's per-leg input
+  ceiling), exclusive with `max`, decoded strictly in the same gate. The answer
+  lists exactly the named coins that are unspent CORE coins of `owner` (any
+  token, request order; `msig_utxo_by_nuls`: one primary-key lookup each, a row
+  fault is `INTERNAL_ERROR`), `trunc` false, then a LAST key `"nul"` = the count
+  named — the marker `nodus_client_dnac_msig_utxo_nuls` requires (a node without
+  the argument skips it and answers the page, which the client refuses). Without
+  `"nul"` every byte is as before. Used by nodus-cli `msig sign`.
 - **What it does not protect:** `dnac_v3_block` is ungated, so on a node that
   keeps old blocks anyone can still rebuild an address's coins from the blocks
   (§8.6 item 5): the gate keeps the FAST path for members, not the data secret.
