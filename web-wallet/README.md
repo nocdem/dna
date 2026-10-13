@@ -30,6 +30,12 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
+- **Messages checks again as soon as the page is shown (0.1.115, 2026-10-13).** Operator: "Connect açıldıktan sonra … arka planda mesajların, kontakların, kontak request'lerin check edilmesi için o sayfalara girilmesi gerekiyor … Mina'nın bana gönderdiği kontaktı görmedim … Node'un network'e connect olduktan sonra bunların yapılması lazım".
+  - **What the code already does.** Once the Nodus connection is ready, the check round (requests, contacts, messages) runs every 30 seconds whatever tab is shown (`goOnline`). A reconnect starts one at once (`nodusReady` → `goOnline`). A new request updates the More badge at once (`syncRequests` → `render` → `onRequests`).
+  - **What was missing.** A phone or browser pauses a hidden page's timers. After coming back, the next round could wait for the 30-second timer. The progress line shows only on Chats, so the check looked as if it started when Chats was opened.
+  - **The fix.** A `visibilitychange` to shown starts a round at once (`sync` keeps its own guards). The exact cause of the reported case is not confirmed: the session log of such a case would show the round times.
+  - **Test.** `test/browser-connect-queue.js`, with the clock frozen so the timer cannot fire: a shown page starts a requests read at once. Without the handler the test fails (checked).
+
 - **Network connection settings only where there is a choice (0.1.114, 2026-10-13).** Operator: "settings'te cpunk endpoint ne … Kaldır CPUNK'ınkini … Tek seçenekli ağlarda gizle".
   - **The problem.** Device & settings showed "Network connection settings" for whichever network was selected, even when it had a single provider (Cellframe "CPUNK network", TRON, Solana, Ixios). There was nothing to choose, and it was a technical setting.
   - **The fix.** `src/config.js` `rpcChoiceOffered` (two or more providers) now decides whether `src/app.js` shows the block, populates the choice, and accepts Apply. Ethereum and BNB Smart Chain keep it; the providers themselves are unchanged.

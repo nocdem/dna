@@ -382,6 +382,16 @@ function goOnline(gen) {
   syncTimer = setInterval(() => { void sync(); }, SYNC_MS);
   void sync();
 }
+// The page shown again (0.1.115, operator 2026-10-13: "Connect açıldıktan
+// sonra … arka planda mesajların, kontakların, kontak request'lerin check
+// edilmesi … o sayfalara girilmesi gerekiyor"): a phone or browser pauses a
+// hidden page's timers, so after coming back the next round could wait for
+// the 30-second timer. A round starts at once instead, whichever tab is
+// shown. `sync` keeps its own guards (open, network started, one at a time).
+// A reconnect already starts one (nodusReady -> goOnline).
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void sync(); });
+}
 
 // The own profile on the network (was the gate of opening Messages; now
 // the gate of sending). An account with no profile yet gets its first one
