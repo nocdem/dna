@@ -35,6 +35,10 @@
  *        of the pages equals the one-page answer, byte for byte;
  *      · two calls answer byte-identical frames (Determinism);
  *      · h = 0 / h > tip / an index past the block are refused.
+ *  t_intent_join_plan — EXPLAIN QUERY PLAN of the builder's "w"/"in"
+ *    statement (a copy of its text, V3B_IDS_SQL) on the derived schema:
+ *    v2_intent_index is SEARCHed through its UNIQUE tx_id autoindex and
+ *    never full-scanned (a scan grows with chain history, once per item).
  *  t_decoder_hostile — a hand-built VALID reply decodes (the control);
  *    the same reply with a duplicate key, truncated at several lengths,
  *    with an oversize item array, an oversize consumed array, a
@@ -126,6 +130,12 @@
  *     a unit test; only the open-transaction refusal is. The fixture's
  *     reward_pool and treasury are 0 at genesis (cfg_make_v3_real), so
  *     the non-zero readings come from crafted UPDATEs, not a genesis.
+ *  7. t_intent_join_plan plans a COPY of the handler's SQL text: if the
+ *     handler's literal changes and the copy does not, it checks the old
+ *     query. It proves index use on an empty table, not latency; and the
+ *     plan wording it parses is SQLite's, which may change between
+ *     versions (a reworded scan would read as "no scan" — the positive
+ *     SEARCH check then fails instead).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -1408,6 +1418,61 @@ static int t_block_query(void)
     return 0;
 }
 
+/* ══ the "w"/"in" join's query plan ═══════════════════════════════════ */
+
+/* The exact text nodus_witness_v3_block_build prepares into c.st_ids
+ * (nodus_witness_handlers.c, the prepare after "the intent row is looked
+ * up through the UNIQUE tx_id autoindex"). A copy: the handler's literal is
+ * not exported. Keep the two identical. */
+#define V3B_IDS_SQL                                                       \
+    "SELECT t.tx_id, i.tx_id, i.intent_id FROM v2_tx_index t "            \
+    "JOIN v2_intent_index i ON i.tx_id = t.tx_id "                        \
+    "AND i.global_height = t.global_height "                              \
+    "AND i.global_index = t.global_index "                                \
+    "WHERE t.global_height = ?1 AND t.global_index = ?2"
+
+/* true = the plan row is a full scan of v2_intent_index (alias i), in both
+ * the >= 3.36 wording ("SCAN i") and the 3.35 one
+ * ("SCAN TABLE v2_intent_index AS i"). */
+static bool plan_scans_intent(const char *d)
+{
+    if (strncmp(d, "SCAN ", 5) != 0) return false;
+    return strstr(d, "v2_intent_index") != NULL ||
+           strcmp(d, "SCAN i") == 0 || strncmp(d, "SCAN i ", 7) == 0 ||
+           strstr(d, " AS i") != NULL;
+}
+
+static int t_intent_join_plan(void)
+{
+    gfx_t         g;
+    sqlite3_stmt *st = NULL;
+    int           rows = 0, scans = 0, searches = 0, rc;
+
+    CHECK(gfx_open(&g, "plan") == 0, "version-3 fixture");
+    CHECK(sqlite3_prepare_v2(g.w->db, "EXPLAIN QUERY PLAN " V3B_IDS_SQL,
+                             -1, &st, NULL) == SQLITE_OK,
+          "the handler's ids statement prepares on the derived schema");
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const char *d = (const char *)sqlite3_column_text(st, 3);
+
+        rows++;
+        if (!d) continue;
+        if (plan_scans_intent(d)) scans++;
+        if (strncmp(d, "SEARCH ", 7) == 0 &&
+            strstr(d, "sqlite_autoindex_v2_intent_index_") != NULL &&
+            strstr(d, "(tx_id=?)") != NULL)
+            searches++;
+    }
+    sqlite3_finalize(st);
+    CHECK(rc == SQLITE_DONE, "EXPLAIN QUERY PLAN steps to the end");
+    CHECK(rows > 0, "the plan has rows (an empty plan proves nothing)");
+    CHECK(scans == 0, "v2_intent_index is never full-scanned");
+    CHECK(searches == 1, "v2_intent_index is searched through its UNIQUE "
+                         "tx_id autoindex");
+    gfx_close(&g);
+    return 0;
+}
+
 /* ══ the decoder over hostile replies ════════════════════════════════ */
 
 /* A hand-built reply. `dup` repeats the "h" key; `n_items` item maps
@@ -2411,6 +2476,7 @@ int main(void)
         int (*fn)(void);
     } cases[] = {
         { "block_query",      t_block_query },
+        { "intent_join_plan", t_intent_join_plan },
         { "decoder_hostile",  t_decoder_hostile },
         { "balance",          t_balance },
         { "balance_decoder",  t_balance_decoder_hostile },

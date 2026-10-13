@@ -8445,6 +8445,14 @@ version-3 lane never writes (`ledger_entries` has no writer).
   UNDELEGATE release-coin derivation is one helper shared with the exec
   (`rtn_sysfund_release_coin`). Pure read: no write, no clock, no cache; refused
   while a ledger transaction is open; any store/decode fault fails the request.
+  An applied envelope's wire/intent ids are read with ONE indexed lookup per
+  item: `v2_tx_index` by its (global_height, global_index) key, then
+  `v2_intent_index` through its UNIQUE `tx_id` autoindex, with the position
+  columns kept as a consistency filter. `v2_intent_index` has no index on
+  (global_height, global_index); joining on those columns alone scanned the
+  whole table — every envelope ever committed — once per item, on the
+  witness's consensus thread (BUGS Z-35, fixed 2026-10-13;
+  `test_v3_block_query` `intent_join_plan` pins the plan).
   Wire keys: `nodus.h` (the `dnac_v3_block` comment). Since HF-4 an applied
   NAME_REGISTER (op `"name_register"`) also carries the OPTIONAL pair `"nm"`
   (name) / `"pr"` (price paid into the reward pool, never `"bu"`) — see "HF-4".
@@ -8480,7 +8488,7 @@ version-3 lane never writes (`ledger_entries` has no writer).
   Frontend `website/scan/app.js` shows position (height:index), op names,
   refused items and per-token balances.
 - Tests: `test_v3_block_query` (real chain: header/codes/effects/paging/balance,
-  hostile client replies), `explorer/tests/test_explorer.c` (schema, page loop,
+  hostile client replies, the ids lookup's query plan), `explorer/tests/test_explorer.c` (schema, page loop,
   partial-height watermark, reset check, routes).
 
 ### Supply buckets for Nodus Scan (`dnac_supply` additive keys)
