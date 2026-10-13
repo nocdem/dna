@@ -1277,6 +1277,19 @@ this load it missed NO vote and the chain slowed by 2-5 % on average,
 precommit that arrives late is still counted while the proposer waits
 `timeout_commit` (4 s) — a pass would have to stall beyond that.
 
+**Third measurement (same day and build, by hand — not a mode of this
+bench):** the bench (victim node 2) plus, during phase B only, two more
+`stagef_rpc_flood` instances (19 × 32, `spend-invalid`) on nodes 4 and 5 —
+three of seven validators flooded — and a 1-session / 1-thread `balance`
+probe on node 2 for 60 s in each phase (the driver lived in the
+ORCHESTRATOR's scratch, not in the tree). sec/height mean 4.50 → 7.11
+(+58 %), max 5.19 → 18.96; every validator still +30 / +30; 7/7 after.
+Each flood ran at ≈ 380 refused/s and the victim's CPU reached only 60 %:
+the ONE 4-CPU machine (21 node processes + 3 tools) was saturated, so how
+much of the slowdown is the shared host and how much the node is NOT
+separated. Honest-user probe on the victim: 18.7 → 1.0 answers/s (≈ 53 ms
+→ ≈ 960 ms per query, ~18 ×), 0 errors.
+
 #### Order matters on the Comet lane too (R3 W3, C2d)
 
 The nineteen Comet scenarios are order-INDEPENDENT of each other's LEAVES
