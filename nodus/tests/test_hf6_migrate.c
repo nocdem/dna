@@ -34,9 +34,10 @@
  *       every amount equal, the row count equal; K4: the Foundation rows'
  *       accruals added to an EXISTING Foundation row, the sources deleted,
  *       every other accrual untouched, Σaccrual equal. Slice 4 (design
- *       §4): one role-1 v2_consensus_keys row SHA3-512(pk) ->
- *       validator_id per row that is NOT UNSTAKED (four of five; the
- *       UNSTAKED key is free).
+ *       §4) + khan decision 2026-10-13-kurultay-18-summary.md item 4: one
+ *       role-1 v2_consensus_keys row SHA3-512(pk) -> validator_id per row
+ *       of ANY status (five of five — the UNSTAKED key is reserved too:
+ *       the index is permanent).
  *   A2. K4 with NO Foundation accrual row: it is created with the source's
  *       amount; a second migration on the migrated DB is a fault with the
  *       DB unchanged; a call in autocommit mode is a fault.
@@ -474,13 +475,15 @@ static int t_direct_expected(void) {
         CHECK(count_q(w, "SELECT COUNT(*) FROM validators", &n) == 0 &&
               n == 5, "five validators rows");
     }
-    /* slice 4 (design §4): one role-1 reservation SHA3-512(pk) ->
-     * validator_id per row that is NOT UNSTAKED (0x44 has graduated) */
+    /* design §4 + khan decision 2026-10-13-kurultay-18-summary.md item 4:
+     * one role-1 reservation SHA3-512(pk) -> validator_id per row of ANY
+     * status — the UNSTAKED 0x44 included (the index is permanent: a
+     * pre-HF-6 retired key can never be STAKEd again) */
     {
         sqlite3_int64 n = -1;
         uint8_t got[64], role = 0;
         CHECK(count_q(w, "SELECT COUNT(*) FROM v2_consensus_keys", &n) == 0
-              && n == 4, "four reservations (UNSTAKED 0x44 holds none)");
+              && n == 5, "five reservations (UNSTAKED 0x44 included)");
         CHECK(nodus_validator_v2_key_get(w, fp11, got, &role) == 0 &&
               memcmp(got, v11, 64) == 0 && role == 1 &&
               nodus_validator_v2_key_get(w, fp22, got, &role) == 0 &&
@@ -491,8 +494,10 @@ static int t_direct_expected(void) {
               memcmp(got, v55, 64) == 0 && role == 1,
               "ACTIVE / ELIGIBLE / RETIRING keys reserved, role 1, to "
               "their validator_ids");
-        CHECK(nodus_validator_v2_key_get(w, fp44, got, &role) == 1,
-              "the UNSTAKED row's key is free");
+        CHECK(nodus_validator_v2_key_get(w, fp44, got, &role) == 0 &&
+              memcmp(got, v44, 64) == 0 && role == 1,
+              "the UNSTAKED row's key is reserved too, role 1, to its "
+              "validator_id");
     }
 
     /* delegations */

@@ -416,12 +416,13 @@ static int v2ep_active_count_dec(nodus_witness_t *w) {
  *
  * HF-6 slice 6c (design 2026-10-03-hf5-validator-owner-stake rev 6 §3
  * "Görev ve devam aramaları … blokları yöneten snapshot'ın anahtarını
- * kullanır, canlı satırı değil"; plan tasks/hf6-slice6-plan.md §1.5): a
- * ROTATE swaps a row's consensus key at boundary U while the snapshots
- * S(F) and S(U) name the old and the new key respectively, so the row is
- * matched by its validator_id, never by its live key, when the caller is
- * at key generation >= NODUS_RT_GEN_STORAGE (it passes `chain32` and
- * `validator_id`):
+ * kullanır, canlı satırı değil"; plan tasks/hf6-slice6-plan.md §1.5): the
+ * row is matched by its validator_id, never by its live key, when the
+ * caller is at key generation >= NODUS_RT_GEN_STORAGE (it passes
+ * `chain32` and `validator_id`). Written for ROTATE; the khan removed
+ * ROTATE (decision 2026-10-13-kurultay-18-summary.md item 1), so a row's
+ * key never changes and the id match equals the pubkey match — kept
+ * because the validator_id IS the v2 row's identity:
  *   ruleset 2  — entry.validator_id == `validator_id`;
  *   ruleset 1  — the v1-SNAPSHOT BRIDGE of the distribution (nodus_
  *              witness_v2_econ.c v2ec_member_load; design §7.5):
@@ -429,11 +430,7 @@ static int v2ep_active_count_dec(nodus_witness_t *w) {
  *              `validator_id`. Exact: a v1 entry names only a pre-HF-6
  *              row, whose validator_id IS the migrated id of its pre-HF-6
  *              key (a generation-4 STAKE's row is first seated in a
- *              ruleset-2 snapshot). It equals the pubkey match on every
- *              row that never rotated, and stays right for the one that
- *              did: the first gen-4 freeze F reads a ruleset-1 S(F), so
- *              Rule N at U = F + E judges a swapped row against a v1 duty
- *              snapshot.
+ *              ruleset-2 snapshot). It equals the pubkey match.
  * Below generation 4 (`chain32` NULL) the pre-HF-6 pubkey memcmp, for any
  * ruleset — byte-identical to before (`validator_id` is not read).
  * `pubkey` is the row's live key (read by that arm only).
@@ -731,14 +728,15 @@ done:
  *     unchanged (the migration added the 8M self-delegation to both
  *     totals of a bonded row; a RETIRING row's totals are untouched);
  *   - the row is written back through nodus_validator_v2_update;
- *   - HF-6 slice 4 (design §4): its consensus-key reservation
- *     (v2_consensus_keys) is released — nodus_validator_v2_key_release,
- *     the role-1 row must exist — so the key can be STAKEd again.
+ *   - its consensus-key reservation (v2_consensus_keys) is KEPT: the index
+ *     is permanent (khan decision 2026-10-13-kurultay-18-summary.md items
+ *     1 and 4 — until then slice 4 released it here so the key could be
+ *     STAKEd again).
  * The grad_id / nullifier derivation (pubkey-based, a pure function, not a
  * DB key) is unchanged. HF-6 slice 6c: the R5-3 deferral matches the row
  * by validator_id at generation 4 (v2ep_member_in_snapshot — ruleset 2 by
  * the entry's id, ruleset 1 through the migrated-id bridge), by pubkey
- * below it; the row written back carries no pending key. */
+ * below it — with no key rotation the two answer alike. */
 static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
                          const uint8_t chain_id[DNA_CHAIN_ID_LEN],
                          nodus_v2_epoch_fault_fn fault, void *ud,
@@ -863,8 +861,8 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
          * boundary -> leave it UNTOUCHED for a later boundary. No row
          * read, no counter, no status change, no fault() call — nothing
          * about this candidate is decided yet. HF-6 6c: at generation 4
-         * by validator_id (an accepted rotation seats the row's PENDING
-         * key in snapshot(H) — design rev 6 §3), below it by pubkey. */
+         * by validator_id (the v2 row's identity), below it by pubkey —
+         * with keys immutable the two name the same entry. */
         size_t eidx = 0;
         int seated = v2ep_member_in_snapshot(effective,
                                              g4 ? cand_key[i] : NULL,
@@ -1066,37 +1064,18 @@ static int v2ep_graduate(nodus_witness_t *w, uint64_t h, uint32_t gen,
         v.external_delegated = 0;
         if (g4) {
             /* the v2 writer: keyed by (validator_id, consensus pubkey) and
-             * (validator_id, owner_fp), both unchanged; 0 = both rows.
-             * HF-6 6c (plan tasks/hf6-slice6-plan.md §1.11, B8): an
-             * UNSTAKED row carries no pending key — a rotation never
-             * swapped (exec takes only ACTIVE / ELIGIBLE rows, khan A5;
-             * the row UNSTAKEd before its swap) is dropped here together
-             * with its role-2 reservation (key_release below). Inert on a
-             * row without one: both fields are already zero. */
+             * (validator_id, owner_fp), both unchanged; 0 = both rows. The
+             * pending fields are zero (the strict reader refused anything
+             * else) and stay zero.
+             * The consensus-key reservation is NOT released: the index is
+             * permanent (khan decision 2026-10-13-kurultay-18-summary.md
+             * items 1 and 4 — a key that ever appeared in a validators row
+             * is never usable again, so the graduate's key can never be
+             * STAKEd anew; the operator STAKEs a new validator under a
+             * fresh key). */
             row2->rec = v;
-            memset(row2->pending_consensus_pubkey, 0,
-                   sizeof(row2->pending_consensus_pubkey));
-            row2->consensus_key_effective_epoch = 0;
             if (nodus_validator_v2_update(w, row2) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "%s", "graduate v2 row update failed");
-                goto done;
-            }
-            /* HF-6 slice 4 (design rev 6 §4, last sentence): the graduate
-             * releases its consensus-key reservation in the same step, so
-             * the key may be STAKEd again under a NEW validator_id. The
-             * role-1 row must exist and name this row (else FAULT).
-             * HF-6 6c: key_release's second DELETE takes the pending
-             * key's role-2 row. HF-6 6e: a previous key kept at role 1 (a
-             * swap at U of a validator S(U−E) seated, this graduation at
-             * U+E — khan A2) is left for the sweep of this boundary (step
-             * 3d), which releases it with the previous voter's attendance
-             * row after the digest (v2ep_rotate_sweep). A validator
-             * S(U−E) did not seat holds none: its swap released it (khan
-             * A8, v2ep_rotate_swap). */
-            if (nodus_validator_v2_key_release(w, cand_key[i], v.pubkey)
-                != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "%s", "graduate: the consensus-key "
-                              "reservation could not be released");
                 goto done;
             }
         } else if (nodus_validator_update(w, &v) != 0) {
@@ -1386,11 +1365,11 @@ static int v2ep_rn_weight_verdict(nodus_witness_t *w,
  * row by validator_id (v2ep_member_in_snapshot; `chain_id` — the derived
  * V2 chain id, the migration's own input — feeds its ruleset-1 bridge) and
  * the attendance is read by the DUTY ENTRY's pubkey, never the row's live
- * key: a row swapped at this boundary is judged on the key that signed
- * the epoch just ending. Without it a rotation would read as "no duty"
- * and reset the counter — a free pass from AUTO_RETIRE. Below generation
- * 4 the entry matched by pubkey IS the row's key, so both reads are
- * byte-identical to before. The counter UPDATE stays keyed by the row's
+ * key (written for ROTATE, which the khan removed — decision
+ * 2026-10-13-kurultay-18-summary.md item 1; with no key change the entry's
+ * pubkey IS the row's key, so the two reads answer alike). Below
+ * generation 4 the entry matched by pubkey IS the row's key, so both
+ * reads are byte-identical to before. The counter UPDATE stays keyed by the row's
  * own pubkey — it addresses the row, it is not a duty lookup. */
 static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen,
                        const uint8_t chain_id[DNA_CHAIN_ID_LEN]) {
@@ -1637,17 +1616,10 @@ static int v2ep_rule_n(nodus_witness_t *w, uint64_t h, uint32_t key_gen,
      *   - key generation (HF-6 5d): the preview and commit_next receive
      *     the SAME boundary read (`key_gen`, nodus_witness_v2_epoch_
      *     boundary_apply), so they cannot build in two rulesets.
-     *   - the rotation pass (HF-6 6d, vset_rotation_pass in the shared
-     *     core): it reads the pending rows of `v2_validator_roles`, the
-     *     stored S(H) (its predecessor S(F)) and the powers of both sets.
-     *     The boundary's SWAP (v2ep_rotate_swap) writes `validators.pubkey`,
-     *     `v2_validator_roles` and `v2_consensus_keys` BEFORE Rule N;
-     *     between Rule N and
-     *     commit_next the SWEEP (v2ep_rotate_sweep) writes only
-     *     `v2_consensus_keys` and `v2_attendance`, which the pass does not
-     *     read, and no step writes `v2_validator_roles` or a stored
-     *     snapshot — so the preview accepts the rotations commit_next
-     *     stores, under the same keys.
+     *   - (the HF-6 6d rotation pass of the shared core, and the swap /
+     *     sweep around Rule N, were deleted with ROTATE — khan decision
+     *     2026-10-13-kurultay-18-summary.md item 1: no step writes
+     *     `validators.pubkey`, `v2_validator_roles` or a stored snapshot.)
      * test_v2_epoch.c §12g checks the stored snapshot(H+E) hash equals
      * a preview built over the SAME post-boundary state — it proves the
      * builder is shared, NOT this input-by-input argument: a step later
@@ -1918,559 +1890,50 @@ static int v2ep_attendance_reset(nodus_witness_t *w) {
     return 0;
 }
 
-/* ── HF-6 slice 6d: the rotation SWAP at U ────────────────────────────
- *
- * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
- * §3 "Satır değişimi: consensus_pubkey := pending; pending := 0;
- * effective_epoch := 0 — sınır U'da, U'nun S(U+E) freeze'inden ÖNCE"
- * (left to U+1, U's freeze would copy the OLD key into S(U+E) and Comet
- * would return to the old key one epoch later — with the old node shut
- * down, that power is lost); khan decision A1 (2026-10-12): the swap
- * fires at U when S(U)'s entry for the validator carries the row's pending
- * key; a deferred rotation (S(U) carries the current key, or does not
- * seat the row) is untouched and keeps its F. Plan tasks/hf6-slice6-
- * plan.md §1.4.
- *
- * `h` = U, the boundary; S(U) = the snapshot taking effect at h, frozen
- * at F = h − E by the rotation pass (nodus_witness_vset.c). Candidates =
- * every v2_validator_roles row with a pending key, validator_id ASC (the
- * primary key), read FIRST: none ⇒ return 0 before S(U) is read (a chain
- * with no pending row runs the pre-6d boundary, fault for fault).
- * A ruleset-1 S(U) seats no pending key (a v1 snapshot is frozen below
- * generation 4, where no row can hold one), so no swap is possible under
- * it — by rule, not because an all-zero id happens to match nothing.
- * Each swap is nodus_validator_v2_rotate_apply (three exact-row UPDATEs).
- * The status of the row is not a condition: a row that UNSTAKEd after its
- * rotation was accepted is still seated in S(U) under the new key — the
- * key Comet uses from U + 2 — and its graduation is deferred (by
- * validator_id) until it is not.
- *
- * THE PREVIOUS KEY (khan A2 / A8). Whether the swapped validator holds a
- * seat in S(F) = S(U − E) decides when its previous key is released:
- *   - seated (khan A2): the old key signs U and U + 1 (Comet applies S(U)
- *     at U + 2) and is credited at U + 1 / U + 2, so its role-1
- *     reservation is kept until the sweep at U + E;
- *   - NOT seated (khan A3 accepted the rotation with 0 in S(F); khan A8,
- *     2026-10-13): the old key is in no set that signs from F + 2 on, so A2
- *     protects no duty — its role-1 row is deleted HERE
- *     (nodus_validator_v2_key_release_previous: exactly that one row), in
- *     the boundary transaction, and the key may be bound again (with its
- *     own consent, G2) from the next block.
- * The seat is matched by validator_id — v2ep_member_in_snapshot: the id
- * itself in a ruleset-2 S(F), the migrated-id bridge in a ruleset-1 S(F)
- * (the first generation-4 freeze judged its rotations against one) — the
- * same mapping the freeze's rotation pass (nodus_witness_vset.c
- * vset_rotation_pass, its candidate loop) and vset_rot_carried use, so
- * "no seat" here is exactly the "none ⇒ 0" the freeze applied. S(F) is
- * read once, at the first swap, and only then. An unreadable S(F), an
- * ABSENT S(F) (the resolver's terminal rc 1) or a mapping fault is a
- * FAULT — never "not seated", which would free a key whose old node may
- * still sign U and U + 1 (fail closed, operator 2026-10-13). An absent
- * S(F) at a boundary that swaps cannot arise from a committed chain:
- * vset_rotation_pass (nodus_witness_vset.c, "the predecessor S(%llu) is
- * absent or unreadable") refuses the freeze of S(U) with candidates when
- * S(F) is absent, so no S(U) carrying a pending key exists without its
- * S(F), and no production path deletes a stored snapshot
- * (validator_set_snapshots is a system_state_root leg).
- *
- * THE PREVIOUS VOTER'S ATTENDANCE ROW (khan A8 premise checked against
- * the code). "No seat in S(F)" is not "never signed": a validator seated
- * in S(F − E) or earlier, out of S(F) and back in S(U), may ROTATE (khan
- * A5 needs ACTIVE / ELIGIBLE only), and its old key's v2_attendance row
- * survives every reset (v2ep_attendance_reset zeroes signed_count, never
- * deletes) — with its last credits (heights F, F + 1, credited at F + 1 /
- * F + 2) inside the epoch (F, U] that the digest of THIS boundary (step
- * 3b) folds. Deleting it here, before 3b, would change that digest; design
- * rev 6 §3 puts the deletion after the epoch's digest consumers. So the
- * swap only RECORDS the previous voter_id in `rel` and the sweep step
- * (3d, after the digest and the reset) deletes its row: 0 or 1 row, the
- * sweep's own rule (a key that never signed has none). No credit can
- * re-create it after U: the old key signs nothing from F + 2 on.
- * `rel` holds at most one entry per S(U) seat (only a validator S(U)
- * seats is swapped), so DNA_MAX_ACTIVE_VALIDATORS bounds it.
- *
- * POSITION (nodus_witness_v2_epoch_boundary_apply): after the
- * distribution (1b), the storage boundary (1b') and the payday (1c), and
- * before the graduation (2), Rule N (3) and commit_next (5):
- *   - the distribution at U pays S(F), whose entries name the OLD keys;
- *     its ruleset-2 arm (nodus_witness_v2_econ.c) compares the entry key
- *     with the row — the row still holds the old key at 1b, so a swap
- *     before 1b would rely on the relaxed {pubkey, pending} form alone;
- *   - every reader of S(U) after it (the graduation deferral, Rule N's
- *     preview, the flips, commit_next building S(U+E)) sees the row as
- *     S(U) names it, and commit_next copies the NEW key into S(U+E).
- * @return 0 / -2. */
-typedef struct {
-    uint8_t vid[NODUS_V2_VALIDATOR_ID_LEN];
-    uint8_t pending[DNAC_PUBKEY_SIZE];
-} v2ep_pending_t;
-
-_Static_assert(NODUS_CC_WITNESS_ID_SIZE <= NODUS_V2_KEY_HASH_LEN,
-               "a voter_id is a prefix of the reservation's key hash");
-
-/* the previous voter_ids the swap released (khan A8), in the swap's
- * validator_id ASC order; their attendance rows go at step 3d */
-typedef struct {
-    uint8_t voter[DNA_MAX_ACTIVE_VALIDATORS][NODUS_CC_WITNESS_ID_SIZE];
-    size_t  n;
-} v2ep_a8_rel_t;
-
-static int v2ep_rotate_swap(nodus_witness_t *w, uint64_t h,
-                            const uint8_t chain_id[DNA_CHAIN_ID_LEN],
-                            v2ep_a8_rel_t *rel) {
-    rel->n = 0;
-    v2ep_pending_t *c = NULL;
-    size_t n = 0, cap = 0;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT validator_id, pending_consensus_pubkey "
-            "FROM v2_validator_roles "
-            "WHERE pending_consensus_pubkey != zeroblob(?1) "
-            "ORDER BY validator_id ASC", -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "swap: pending prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -2;
-    }
-    if (sqlite3_bind_int(st, 1, (int)DNAC_PUBKEY_SIZE) != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -2;
-    }
-    int rc;
-    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        const void *vid = sqlite3_column_blob(st, 0);
-        int vid_len = sqlite3_column_bytes(st, 0);
-        const void *pk = sqlite3_column_blob(st, 1);
-        int pk_len = sqlite3_column_bytes(st, 1);
-        if (!vid || vid_len != NODUS_V2_VALIDATOR_ID_LEN ||
-            !pk || pk_len != DNAC_PUBKEY_SIZE) {
-            QGP_LOG_ERROR(LOG_TAG, "swap: a malformed pending row (%d / %d "
-                          "bytes)", vid_len, pk_len);
-            sqlite3_finalize(st);
-            free(c);
-            return -2;
-        }
-        if (n == cap) {
-            size_t nc = cap ? cap * 2 : 8;
-            v2ep_pending_t *g = realloc(c, nc * sizeof(*g));
-            if (!g) { sqlite3_finalize(st); free(c); return -2; }
-            c = g;
-            cap = nc;
-        }
-        memcpy(c[n].vid, vid, NODUS_V2_VALIDATOR_ID_LEN);
-        memcpy(c[n].pending, pk, DNAC_PUBKEY_SIZE);
-        n++;
-    }
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "swap: pending scan failed (rc=%d): %s", rc,
-                      sqlite3_errmsg(w->db));
-        free(c);
-        return -2;
-    }
-    if (n == 0) return 0;                 /* S(U) is not read            */
-
-    int ret = -2;
-    uint32_t swapped = 0, released = 0;
-    dna_vset_snapshot_t *su = NULL, *sf = NULL;
-    nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
-    if (!row) goto done;
-    int arc = nodus_witness_v2_epoch_authority_for_epoch(w, h, &su, NULL,
-                                                         NULL);
-    if (arc != 0 || !su) {
-        QGP_LOG_ERROR(LOG_TAG, "swap: S(%llu) unreadable (rc=%d)",
-                      (unsigned long long)h, arc);
-        goto done;
-    }
-    if (su->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
-        ret = 0;                          /* no pending key can be seated */
-        goto done;
-    }
-    for (size_t i = 0; i < n; i++) {
-        int carries = 0;
-        for (uint16_t j = 0; j < su->active_count; j++) {
-            if (memcmp(su->entries[j].validator_id, c[i].vid,
-                       DNA_VSET_VALIDATOR_ID_LEN) == 0) {
-                carries = memcmp(su->entries[j].pubkey, c[i].pending,
-                                 DNAC_PUBKEY_SIZE) == 0;
-                break;
-            }
-        }
-        if (!carries) continue;           /* deferred: F kept (khan A1)  */
-        if (nodus_validator_v2_get(w, c[i].vid, row) != 0 ||
-            memcmp(row->pending_consensus_pubkey, c[i].pending,
-                   DNAC_PUBKEY_SIZE) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "swap: the rotating validator's v2 "
-                          "row is unreadable or not the scanned row");
-            goto done;
-        }
-        if (nodus_validator_v2_rotate_apply(w, c[i].vid, row->rec.pubkey,
-                                            c[i].pending) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "swap: the row switch failed at boundary "
-                          "%llu", (unsigned long long)h);
-            goto done;
-        }
-        swapped++;
-
-        /* khan A2 / A8: does S(F) seat the validator? (read once) */
-        if (!sf) {
-            arc = nodus_witness_v2_epoch_authority_for_epoch(
-                      w, h - (uint64_t)DNAC_EPOCH_LENGTH, &sf, NULL, NULL);
-            if (arc != 0 || !sf) {         /* h >= E: the gate; rc 1 too   */
-                QGP_LOG_ERROR(LOG_TAG, "swap: S(%llu) absent or unreadable "
-                              "(rc=%d) with a swap at %llu — fault",
-                              (unsigned long long)
-                                  (h - (uint64_t)DNAC_EPOCH_LENGTH), arc,
-                              (unsigned long long)h);
-                goto done;
-            }
-        }
-        size_t idx = 0;
-        int in_f = v2ep_member_in_snapshot(sf, c[i].vid, row->rec.pubkey,
-                                           chain_id, &idx);
-        if (in_f < 0) goto done;
-        if (in_f == 1) continue;           /* seated: kept to U + E (A2)   */
-        uint8_t prev[NODUS_V2_KEY_HASH_LEN];
-        if (nodus_validator_v2_key_release_previous(w, c[i].vid,
-                                                    row->rec.pubkey,
-                                                    prev) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "swap: the unseated validator's previous "
-                          "key did not release at boundary %llu",
-                          (unsigned long long)h);
-            goto done;
-        }
-        if (rel->n >= DNA_MAX_ACTIVE_VALIDATORS) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "swap: more releases than S(U) "
-                          "seats — fault");
-            goto done;
-        }
-        memcpy(rel->voter[rel->n++], prev, NODUS_CC_WITNESS_ID_SIZE);
-        released++;
-    }
-    if (swapped > 0)
-        QGP_LOG_INFO(LOG_TAG, "boundary %llu: %u consensus key(s) switched to "
-                     "the key S(U) seats, %u previous key(s) of validators "
-                     "S(F) does not seat released (khan A8)",
-                     (unsigned long long)h, (unsigned)swapped,
-                     (unsigned)released);
-    ret = 0;
-done:
-    free(c);
-    free(row);
-    dna_vset_free(&su);
-    dna_vset_free(&sf);
-    return ret;
-}
-
-/* ── HF-6 slice 6d: the rotation SWEEP at U + E ───────────────────────
- *
- * Design rev 6 §3: the previous voter_id's attendance row survives the
- * swap (the old key signs the precommits of U and U+1, credited at U+1
- * and U+2) and is deleted at U + E, after that epoch's settlement and
- * digest consumers; khan decision A2 (2026-10-12): the previous key's
- * role-1 reservation is released at the same boundary ("bir epok sonra
- * serbest kalabilir"). Plan tasks/hf6-slice6-plan.md §1.8.
- *
- * DERIVATION — the candidates are read from the reservation table, not
- * walked from the snapshots (plan §1.8 walked S(U) and found the old key
- * as S(F)'s entry with a different pubkey). Since khan A8 (2026-10-13)
- * every key the table still holds as a previous key is one S(F) seats:
- * the swap released the previous key of every validator S(F) does not
- * seat (v2ep_rotate_swap, "THE PREVIOUS KEY"), so such a validator holds
- * ONE role-1 row after its swap and is never a candidate here. The table
- * and the snapshot walk now name the same set; the table read stays
- * because it also finds the graduated shape (one previous key, no
- * current one) without a second scan. So:
- *   candidates = the validator_ids holding two role-1 rows, and the
- *                UNSTAKED ones still holding one (HF-6 6e: graduated at
- *                this boundary; key_release keeps a previous key for this
- *                step) (nodus_validator_v2_key_rotated_ids, validator_id
- *                ASC) — read FIRST; none ⇒ return 0 before any snapshot is
- *                read;
- *   each candidate was swapped at U = h − E or at h itself (this
- *                boundary's swap ran before; one sweep per boundary keeps
- *                every older window closed). It was swapped at U iff
- *                S(U) seats it (by validator_id — v2ep_member_in_snapshot,
- *                with the ruleset-1 bridge) WITH the row's current key —
- *                a validator swapped at h is seated in S(U), if at all,
- *                under the key it had before h. Swapped at h ⇒ kept for
- *                the sweep at h + E, and S(h) must seat it under the
- *                current key; a GRADUATED candidate must have been swapped
- *                at U (one swapped at h is seated in S(h), so its
- *                graduation at h was deferred); any third shape is a
- *                FAULT;
- *   a swapped-at-U candidate: S(U − E) must seat it (by id, ruleset-1
- *                bridge) under a key OTHER than the row's current key —
- *                the A2 shape: only a validator S(U − E) seated keeps a
- *                previous key past the swap at U, and that key is the one
- *                S(U − E) seats (the self-check's derivation); then
- *                nodus_validator_v2_key_sweep_previous
- *                deletes the previous key's role-1 row (exactly one; the
- *                bonded / exiting shape is two role-1 rows with one the
- *                current key's, the graduated shape one row that is not)
- *                and names its hash, which must be SHA3-512 of that
- *                S(U − E) key — else FAULT (operator 2026-10-13: a stray
- *                role-1 row beside a current key has the same two-row
- *                shape and must never be released silently as a
- *                "previous key"; same fault class as a third role-1 row);
- *                S(U − E) absent / unreadable, or U < E, is a FAULT; the
- *                previous voter's attendance row
- *                (voter_id = that hash's first 32 bytes — the untagged
- *                SHA3-512(pk) both derivations take, nodus_chain_config_
- *                derive_witness_id and v2_consensus_keys.consensus_pk_hash)
- *                is deleted: 0 or 1 row (a key that never signed has none).
- * FIRST, before the candidates are read: the attendance rows of the
- * previous voters THIS boundary's swap released (khan A8, `rel`, filled
- * by v2ep_rotate_swap at step 1d), under the same 0-or-1 rule — kept
- * until here so the digest of (h − E, h] (step 3b) still folds them.
- * TWO key release sites, ONE attendance release step: the swap (A8, at
- * U) and this sweep (A2, at U + E) release previous keys; every previous
- * voter's attendance row is deleted in this step.
- * ONE A2 release site (HF-6 6e). A validator swapped at U that graduates at
- * U + E (it UNSTAKEd or was AUTO_RETIRED before U's freeze, so S(U+E)
- * does not seat it) used to lose its previous key's reservation in
- * key_release (step 2) and keep the previous voter's attendance row for
- * ever — the sweep never saw it. key_release now leaves the previous key
- * at role 1 and this step releases it with the attendance row, for a
- * graduate exactly as for a bonded / exiting row: after the digest of the
- * epoch (U, U+E], which still counts the previous voter's U+1 / U+2
- * credits (design rev 6 §3: "silme … o epoch'un settlement'ı ve digest
- * tüketicileri bittikten sonra, sınır U+E'de"). Graduation at any other
- * boundary cannot hold a previous key: at U it is deferred (seated in
- * S(U)), after U+E the sweep of U+E has released it.
- *
- * POSITION: after the attendance digest (3b) and reset (3c) — the digest
- * of the epoch (U, U+E] still includes the previous voter's U+1 / U+2
- * credits — and before the flips and commit_next. It writes
- * v2_attendance and v2_consensus_keys only; the snapshot builder reads
- * neither (the floor argument in v2ep_rule_n).
- * @return 0 / -2. */
-
-/* DELETE the v2_attendance row of `voter` (NODUS_CC_WITNESS_ID_SIZE
- * bytes): 0 or 1 row. 0 / -2. */
-static int v2ep_attendance_drop(nodus_witness_t *w, const uint8_t *voter) {
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "DELETE FROM v2_attendance WHERE voter_id = ?1",
-            -1, &st, NULL) != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "sweep: attendance prepare failed: %s",
-                      sqlite3_errmsg(w->db));
-        return -2;
-    }
-    if (sqlite3_bind_blob(st, 1, voter, NODUS_CC_WITNESS_ID_SIZE,
-                          SQLITE_TRANSIENT) != SQLITE_OK) {
-        sqlite3_finalize(st);
-        return -2;
-    }
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE || sqlite3_changes(w->db) > 1) {
-        QGP_LOG_ERROR(LOG_TAG, "sweep: the previous voter's attendance "
-                      "row did not delete (rc=%d)", rc);
-        return -2;
-    }
-    return 0;
-}
-
-static int v2ep_rotate_sweep(nodus_witness_t *w, uint64_t h,
-                             const uint8_t chain_id[DNA_CHAIN_ID_LEN],
-                             const v2ep_a8_rel_t *rel) {
-    for (size_t i = 0; i < rel->n; i++)   /* khan A8: the swap's releases */
-        if (v2ep_attendance_drop(w, rel->voter[i]) != 0) return -2;
-
-    uint8_t (*ids)[NODUS_V2_VALIDATOR_ID_LEN] = NULL;
-    size_t n = 0;
-    if (nodus_validator_v2_key_rotated_ids(w, &ids, &n) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s", "sweep: the reservation scan faulted");
-        return -2;
-    }
-    if (n == 0) return 0;                 /* no snapshot is read         */
-
-    int ret = -2;
-    uint32_t swept = 0;
-    dna_vset_snapshot_t *su = NULL, *sh = NULL, *sp = NULL;
-    nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
-    if (!row) goto done;
-    const uint64_t u = h - (uint64_t)DNAC_EPOCH_LENGTH;  /* h >= E: gate */
-    int arc = nodus_witness_v2_epoch_authority_for_epoch(w, u, &su, NULL,
-                                                         NULL);
-    if (arc != 0 || !su) {
-        QGP_LOG_ERROR(LOG_TAG, "sweep: S(%llu) unreadable (rc=%d)",
-                      (unsigned long long)u, arc);
-        goto done;
-    }
-    for (size_t i = 0; i < n; i++) {
-        if (nodus_validator_v2_get(w, ids[i], row) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s", "sweep: a validator holding a "
-                          "previous reservation has no readable row — fault");
-            goto done;
-        }
-        const int graduated =
-            row->rec.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED;
-        size_t idx = 0;
-        int in_u = v2ep_member_in_snapshot(su, ids[i], row->rec.pubkey,
-                                           chain_id, &idx);
-        if (in_u < 0) goto done;
-        if (in_u == 1 &&
-            memcmp(su->entries[idx].pubkey, row->rec.pubkey,
-                   DNAC_PUBKEY_SIZE) == 0) {
-            /* the previous key must be the one S(U − E) seats this
-             * validator under — by id, ruleset-1 bridge — and differ from
-             * the current key (khan A2: only a validator S(U − E) seated
-             * keeps one past the swap; A8 released every other). Read
-             * S(U − E) once, here, only when a candidate needs it. */
-            if (u < (uint64_t)DNAC_EPOCH_LENGTH) {
-                /* no swap can have run at a boundary below E */
-                QGP_LOG_ERROR(LOG_TAG, "%s", "sweep: a second role-1 row "
-                              "before any swap was possible — fault");
-                goto done;
-            }
-            if (!sp) {
-                arc = nodus_witness_v2_epoch_authority_for_epoch(
-                          w, u - (uint64_t)DNAC_EPOCH_LENGTH, &sp, NULL,
-                          NULL);
-                if (arc != 0 || !sp) {
-                    QGP_LOG_ERROR(LOG_TAG, "sweep: S(%llu) absent or "
-                                  "unreadable (rc=%d) with a previous key "
-                                  "to release — fault", (unsigned long long)
-                                  (u - (uint64_t)DNAC_EPOCH_LENGTH), arc);
-                    goto done;
-                }
-            }
-            size_t pidx = 0;
-            int in_p = v2ep_member_in_snapshot(sp, ids[i], row->rec.pubkey,
-                                               chain_id, &pidx);
-            if (in_p < 0) goto done;
-            uint8_t want[NODUS_V2_KEY_HASH_LEN];
-            if (in_p != 1 ||
-                memcmp(sp->entries[pidx].pubkey, row->rec.pubkey,
-                       DNAC_PUBKEY_SIZE) == 0 ||
-                qgp_sha3_512(sp->entries[pidx].pubkey, DNAC_PUBKEY_SIZE,
-                             want) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "sweep: a second role-1 row on a "
-                              "validator S(%llu) does not seat under "
-                              "another key — no swap at %llu explains it, "
-                              "fault", (unsigned long long)
-                              (u - (uint64_t)DNAC_EPOCH_LENGTH),
-                              (unsigned long long)u);
-                goto done;
-            }
-            uint8_t prev[NODUS_V2_KEY_HASH_LEN];
-            if (nodus_validator_v2_key_sweep_previous(w, ids[i],
-                                                      row->rec.pubkey,
-                                                      graduated, prev) != 0)
-                goto done;
-            if (memcmp(prev, want, sizeof(want)) != 0) {
-                /* the row just deleted is not the key S(U − E) names:
-                 * the boundary faults and rolls the delete back */
-                QGP_LOG_ERROR(LOG_TAG, "%s", "sweep: the reserved previous "
-                              "key is not the key S(U − E) seats — fault");
-                goto done;
-            }
-            if (v2ep_attendance_drop(w, prev) != 0) goto done;
-            swept++;
-            continue;
-        }
-        /* not swapped at U: it must be this boundary's swap — never a
-         * graduate (a row swapped at h is seated in S(h), so its
-         * graduation at h was deferred) */
-        if (graduated) {
-            QGP_LOG_ERROR(LOG_TAG, "sweep: a graduated validator keeps a "
-                          "reservation that no swap at %llu explains — fault",
-                          (unsigned long long)u);
-            goto done;
-        }
-        if (!sh) {
-            arc = nodus_witness_v2_epoch_authority_for_epoch(w, h, &sh, NULL,
-                                                             NULL);
-            if (arc != 0 || !sh) {
-                QGP_LOG_ERROR(LOG_TAG, "sweep: S(%llu) unreadable (rc=%d)",
-                              (unsigned long long)h, arc);
-                goto done;
-            }
-        }
-        int in_h = v2ep_member_in_snapshot(sh, ids[i], row->rec.pubkey,
-                                           chain_id, &idx);
-        if (in_h != 1 ||
-            memcmp(sh->entries[idx].pubkey, row->rec.pubkey,
-                   DNAC_PUBKEY_SIZE) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "sweep: a second active reservation that "
-                          "no swap at %llu or %llu explains — fault",
-                          (unsigned long long)u, (unsigned long long)h);
-            goto done;
-        }
-    }
-    if (swept > 0)
-        QGP_LOG_INFO(LOG_TAG, "boundary %llu: %u previous consensus key(s) "
-                     "released with their attendance rows",
-                     (unsigned long long)h, (unsigned)swept);
-    ret = 0;
-done:
-    free(ids);
-    free(row);
-    dna_vset_free(&su);
-    dna_vset_free(&sh);
-    dna_vset_free(&sp);
-    return ret;
-}
+/* (The HF-6 slice 6d/6e rotation SWAP at U and SWEEP at U + E, with the
+ * khan-A2 / A8 previous-key releases, were deleted with ROTATE itself —
+ * khan decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md
+ * items 1 and 4: no consensus key ever changes, so no boundary step
+ * writes v2_consensus_keys or a previous voter's attendance row.) */
 
 /* ── HF-6: the key-reservation SELF-CHECK (log-only) ──────────────────
  *
  * v2_consensus_keys is in no root. Its content is re-derived here from
- * rooted state and compared row for row, at the end of every
- * generation-4 boundary. The derivation, read from the writers
- * (nodus_witness_validator.c key_insert / key_release / rotate_apply /
- * key_sweep_previous, nodus_witness_v2_migrate.c, the swap and sweep
- * above):
- *   role 1, CURRENT key — SHA3-512(validators.pubkey) of every v2 row
- *       (validators JOIN v2_validator_roles, nodus_validator_v2_scan)
- *       whose status is not UNSTAKED: the migration and STAKE insert it,
- *       the swap promotes the new key to it, the graduation (the only
- *       writer of UNSTAKED at generation 4) releases it;
- *   role 2 — SHA3-512 of every non-zero pending_consensus_pubkey: ROTATE
- *       inserts it, the swap promotes it, the graduation clears both;
- *   role 1, PREVIOUS key (khan A2) — the swap at h keeps the old key of
- *       a validator S(h − E) seats, the sweep at h releases every key kept
- *       by the swap at h − E, so after this boundary exactly the
- *       validators swapped AT h with a seat in S(h − E) hold one. A
- *       validator is swapped at h iff S(h) seats its pending key, and its
- *       key before the swap is the one S(h − E) seats it under (the row's
- *       key does not change between the swap at h − E and the swap at h).
- *       So: for every entry of a ruleset-2 S(h) whose key differs from the
- *       same validator_id's entry in S(h − E) — matched by id, or through
- *       the migrated-id bridge when S(h − E) is ruleset 1
- *       (v2ep_member_in_snapshot, vset_rot_carried) — SHA3-512 of the
- *       S(h − E) key, naming that validator_id. A ruleset-1 or absent
- *       S(h) seats no pending key (the swap returns before reading one).
- * FULLY DERIVABLE (khan A8, 2026-10-13). A validator swapped at h WITHOUT
- * a seat in S(h − E) (a rotation khan A3 accepted; an absent S(h − E)
- * with a swap is a FAULT) loses its previous key in that same swap
- * (v2ep_rotate_swap, "THE
- * PREVIOUS KEY"), so it holds exactly the derived rows above, like a new
- * entrant. There is no tolerance: every table row not derived is a
- * difference, for every validator. (Until A8 such a previous key stayed
- * to h + E with no rooted record of it, and one extra role-1 row per such
- * validator was tolerated as "unverified" — a deletion of it could not be
- * seen.)
+ * rooted state and compared row for row, once per generation-4 boundary.
+ * Khan decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md
+ * items 1 and 4 made the table a PERMANENT, append-only index — no
+ * rotation, no pending role, no release — so the derivation is one rule,
+ * read from its two writers (nodus_witness_v2_migrate.c, the
+ * generation-4 edge: every validators row of ANY status; the
+ * generation-4 STAKE, nodus_witness_rt_native.c rtn_stake2_exec: its
+ * new row) and from the fact that no validators row is ever deleted and
+ * no validators.pubkey ever changes at generation 4:
+ *   EXACTLY ONE row per validators row (nodus_validator_v2_scan — every
+ *   status, UNSTAKED included): consensus_pk_hash = SHA3-512(validators.
+ *   pubkey) (untagged), validator_id = the row's validator_id, role 1.
+ *   No other row may exist.
  *
  * Differences counted: a derived row the table lacks (missing), a table
- * row not derived (extra), the same key reserved for another validator
- * or in another role, a key derived twice (committed state naming one
- * key for two reservations — the §4 uniqueness broken upstream), a table
- * row of the wrong shape.
+ * row not derived (extra), the same key reserved for another validator,
+ * a derived key whose row carries a role other than 1, a key derived
+ * twice (two validators rows with one consensus key — the §4 uniqueness
+ * broken upstream), a table row of the wrong shape (consensus_pk_hash or
+ * validator_id not a 64-byte BLOB — the SQLite storage class is checked,
+ * so a 64-character TEXT value is malformed, not a key — or role not an
+ * INTEGER).
  *
  * READ-ONLY, no transaction of its own: valid inside the boundary
- * transaction and in autocommit. `h` must be the LAST boundary applied
- * (a multiple of E, >= E): between boundaries only ROTATE / STAKE move
- * the table, and both are in the role-2 / current-key derivations. Two
- * callers in the boundary: step 0 (h = H − E, before this boundary's
- * writers) and step 7 (h = H, after them).
- * Cost: one v2 row scan, two snapshot reads, one table scan, sorts.
+ * transaction and in autocommit. The comparison is a function of the
+ * CURRENT tables only (no snapshot is read), so the boundary height
+ * matters only for the generation gate and the log line.
+ * Cost: one v2 row scan, one table scan, one sort.
  * Never a block decision — the caller ignores everything it returns.
  *
  * @return 0 compared (rep filled); 1 below generation 4 (nothing read
- *         after the generation); -1 an input unreadable (SQLite, a
- *         snapshot, the scan's strict reader, allocation, hash backend)
- *         — not compared. */
+ *         after the generation); -1 an input unreadable (SQLite, the
+ *         scan's strict reader — a pending field that is not zero is a
+ *         malformed row there —, allocation, hash backend) — not
+ *         compared. */
 #define V2EP_KR_REPORT_MAX  4u
 #define V2EP_KR_PREFIX      8u
 
@@ -2539,28 +2002,17 @@ static int v2ep_kr_push(v2ep_kr_acc_t *a, const uint8_t *hash,
     return 0;
 }
 
-/* nodus_validator_v2_scan visitor: the row's current-key (role 1, not
- * UNSTAKED) and pending-key (role 2) reservations. No DB. */
+/* nodus_validator_v2_scan visitor: the row's one reservation — its
+ * consensus key, role 1, whatever the status (the index is permanent).
+ * No DB. (The scan's strict reader already refused a row whose pending
+ * fields are not zero.) */
 static int v2ep_kr_visit(const nodus_v2_validator_row_t *row, void *ud) {
     v2ep_kr_acc_t *a = ud;
-    if (row->rec.status != (uint8_t)DNAC_VALIDATOR_UNSTAKED) {
-        uint8_t kh[NODUS_V2_KEY_HASH_LEN];
-        if (qgp_sha3_512(row->rec.pubkey, DNAC_PUBKEY_SIZE, kh) != 0 ||
-            v2ep_kr_push(a, kh, row->validator_id,
-                         (uint8_t)NODUS_V2_KEY_ROLE_ACTIVE) != 0)
-            return -1;
-    }
-    int pending = 0;
-    for (size_t i = 0; i < DNAC_PUBKEY_SIZE && !pending; i++)
-        pending = row->pending_consensus_pubkey[i] != 0;
-    if (pending) {
-        uint8_t ph[NODUS_V2_KEY_HASH_LEN];
-        if (qgp_sha3_512(row->pending_consensus_pubkey, DNAC_PUBKEY_SIZE,
-                         ph) != 0 ||
-            v2ep_kr_push(a, ph, row->validator_id,
-                         (uint8_t)NODUS_V2_KEY_ROLE_PENDING) != 0)
-            return -1;
-    }
+    uint8_t kh[NODUS_V2_KEY_HASH_LEN];
+    if (qgp_sha3_512(row->rec.pubkey, DNAC_PUBKEY_SIZE, kh) != 0 ||
+        v2ep_kr_push(a, kh, row->validator_id,
+                     (uint8_t)NODUS_V2_KEY_ROLE_ACTIVE) != 0)
+        return -1;
     return 0;
 }
 
@@ -2575,12 +2027,9 @@ static int v2ep_kr_ent_cmp(const void *x, const void *y) {
     return (int)a->role - (int)b->role;
 }
 
-static int v2ep_keyres_compare(nodus_witness_t *w, uint64_t h,
-                               const uint8_t chain_id[DNA_CHAIN_ID_LEN],
-                               v2ep_kr_report_t *rep) {
+static int v2ep_keyres_compare(nodus_witness_t *w, v2ep_kr_report_t *rep) {
     memset(rep, 0, sizeof(*rep));
-    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
-    if (!w || !w->db || !chain_id || h < E || (h % E) != 0) return -1;
+    if (!w || !w->db) return -1;
     uint32_t gen = 0;
     if (nodus_witness_v2_key_generation(w, &gen) != 0) return -1;
     if (gen < NODUS_RT_GEN_STORAGE) return 1;
@@ -2588,62 +2037,12 @@ static int v2ep_keyres_compare(nodus_witness_t *w, uint64_t h,
     int ret = -1;
     v2ep_kr_acc_t a;
     memset(&a, 0, sizeof(a));
-    dna_vset_snapshot_t *sh = NULL, *sp = NULL;
-    uint8_t (*pid)[NODUS_V2_VALIDATOR_ID_LEN] = NULL;
     sqlite3_stmt *st = NULL;
 
-    /* 1. role 1 (current) and role 2, from the v2 rows (vid ASC) */
+    /* 1. one role-1 row per v2 row, every status (vid ASC) */
     if (nodus_validator_v2_scan(w, v2ep_kr_visit, &a) != 0) goto done;
 
-    /* 2. role 1 (previous): S(h) against S(h − E) */
-    int arc = nodus_witness_v2_epoch_authority_for_epoch(w, h, &sh, NULL,
-                                                         NULL);
-    if (arc != 0 && arc != 1) goto done;
-    if (arc == 0 && sh->selection_ruleset == DNA_VSET_RULESET_TOPN_V2 &&
-        sh->active_count > 0) {
-        arc = nodus_witness_v2_epoch_authority_for_epoch(w, h - E, &sp,
-                                                         NULL, NULL);
-        if (arc != 0 && arc != 1) goto done;
-        if (arc == 0 && sp->active_count > 0) {
-            pid = malloc((size_t)sp->active_count * sizeof(*pid));
-            if (!pid) goto done;
-            for (uint16_t i = 0; i < sp->active_count; i++) {
-                if (sp->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
-                    memcpy(pid[i], sp->entries[i].validator_id,
-                           NODUS_V2_VALIDATOR_ID_LEN);
-                } else if (sp->selection_ruleset ==
-                               DNA_VSET_RULESET_TOPN_V1) {
-                    if (dna_validator_id_migrated(pid[i], chain_id,
-                                                  sp->entries[i].pubkey)
-                        != 0)
-                        goto done;
-                } else {
-                    goto done;
-                }
-            }
-        }
-        /* no seat in S(h − E) (or no S(h − E)): nothing derived — khan A8
-         * released that validator's previous key in the swap */
-        for (uint16_t j = 0; pid && j < sh->active_count; j++) {
-            const uint8_t *vid = sh->entries[j].validator_id;
-            for (uint16_t i = 0; i < sp->active_count; i++) {
-                if (memcmp(pid[i], vid, NODUS_V2_VALIDATOR_ID_LEN) != 0)
-                    continue;
-                if (memcmp(sp->entries[i].pubkey, sh->entries[j].pubkey,
-                           DNAC_PUBKEY_SIZE) != 0) {
-                    uint8_t ph[NODUS_V2_KEY_HASH_LEN];
-                    if (qgp_sha3_512(sp->entries[i].pubkey,
-                                     DNAC_PUBKEY_SIZE, ph) != 0 ||
-                        v2ep_kr_push(&a, ph, vid,
-                                     (uint8_t)NODUS_V2_KEY_ROLE_ACTIVE) != 0)
-                        goto done;
-                }
-                break;
-            }
-        }
-    }
-
-    /* 3. sort the derived set; a key derived twice is a difference */
+    /* 2. sort the derived set; a key derived twice is a difference */
     if (a.n_d > 1) qsort(a.d, a.n_d, sizeof(*a.d), v2ep_kr_ent_cmp);
     {
         size_t k = 0;
@@ -2661,7 +2060,7 @@ static int v2ep_keyres_compare(nodus_witness_t *w, uint64_t h,
     }
     rep->n_derived = a.n_d;
 
-    /* 4. merge against the whole table, in its own key order */
+    /* 3. merge against the whole table, in its own key order */
     if (sqlite3_prepare_v2(w->db,
             "SELECT consensus_pk_hash, validator_id, role "
             "FROM v2_consensus_keys ORDER BY consensus_pk_hash ASC",
@@ -2671,19 +2070,27 @@ static int v2ep_keyres_compare(nodus_witness_t *w, uint64_t h,
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         rep->n_table++;
+        /* the storage class FIRST: sqlite3_column_blob converts a TEXT (or
+         * a number) to bytes, so a 64-character TEXT key would otherwise
+         * pass the length test as if it were a 64-byte hash */
+        if (sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+            sqlite3_column_type(st, 1) != SQLITE_BLOB ||
+            sqlite3_column_type(st, 2) != SQLITE_INTEGER) {
+            v2ep_kr_note(rep, V2EP_KR_MALFORMED, NULL, NULL, 0, 0);
+            continue;
+        }
         const void *kh = sqlite3_column_blob(st, 0);
         const void *kv = sqlite3_column_blob(st, 1);
         sqlite3_int64 role = sqlite3_column_int64(st, 2);
         if (!kh || sqlite3_column_bytes(st, 0) != NODUS_V2_KEY_HASH_LEN ||
-            !kv || sqlite3_column_bytes(st, 1) != NODUS_V2_VALIDATOR_ID_LEN ||
-            sqlite3_column_type(st, 2) != SQLITE_INTEGER ||
-            (role != NODUS_V2_KEY_ROLE_ACTIVE &&
-             role != NODUS_V2_KEY_ROLE_PENDING)) {
+            !kv || sqlite3_column_bytes(st, 1) != NODUS_V2_VALIDATOR_ID_LEN) {
             v2ep_kr_note(rep, V2EP_KR_MALFORMED, NULL, NULL, 0, 0);
             continue;
         }
         const uint8_t *th = kh, *tv = kv;
-        const uint8_t tr = (uint8_t)role;
+        /* the only legal role is 1; any other value is reported as found
+         * (clamped to a byte for the log line — 255 = "out of range") */
+        const uint8_t tr = (role >= 0 && role <= 254) ? (uint8_t)role : 255u;
         while (di < a.n_d &&
                memcmp(a.d[di].hash, th, NODUS_V2_KEY_HASH_LEN) < 0) {
             v2ep_kr_note(rep, V2EP_KR_MISSING, a.d[di].hash, a.d[di].vid,
@@ -2694,12 +2101,13 @@ static int v2ep_keyres_compare(nodus_witness_t *w, uint64_t h,
             memcmp(a.d[di].hash, th, NODUS_V2_KEY_HASH_LEN) == 0) {
             if (memcmp(a.d[di].vid, tv, NODUS_V2_VALIDATOR_ID_LEN) != 0)
                 v2ep_kr_note(rep, V2EP_KR_OWNER, th, tv, a.d[di].role, tr);
-            else if (a.d[di].role != tr)
+            else if (role != (sqlite3_int64)a.d[di].role)
                 v2ep_kr_note(rep, V2EP_KR_ROLE, th, tv, a.d[di].role, tr);
             di++;
             continue;
         }
-        /* not derived: a difference, for every validator (khan A8) */
+        /* not derived: a difference — no row outside the derivation may
+         * exist, for any validator */
         v2ep_kr_note(rep, V2EP_KR_EXTRA, th, tv, 0, tr);
     }
     if (rc != SQLITE_DONE) goto done;
@@ -2710,19 +2118,14 @@ static int v2ep_keyres_compare(nodus_witness_t *w, uint64_t h,
 done:
     if (st) sqlite3_finalize(st);
     free(a.d);
-    free(pid);
-    dna_vset_free(&sh);
-    dna_vset_free(&sp);
     return ret;
 }
 
-int nodus_witness_v2_keyres_diff(nodus_witness_t *w, uint64_t h,
-                                 const uint8_t chain_id[DNA_CHAIN_ID_LEN],
-                                 size_t *n_diff_out) {
+int nodus_witness_v2_keyres_diff(nodus_witness_t *w, size_t *n_diff_out) {
     if (!n_diff_out) return -1;
     *n_diff_out = 0;
     v2ep_kr_report_t rep;
-    int rc = v2ep_keyres_compare(w, h, chain_id, &rep);
+    int rc = v2ep_keyres_compare(w, &rep);
     if (rc == 0) *n_diff_out = rep.n_diff;
     return rc;
 }
@@ -2740,34 +2143,25 @@ static void v2ep_kr_hex(const uint8_t *p, char out[2 * V2EP_KR_PREFIX + 1]) {
  * check itself — is written to the log and nothing else happens: no
  * return value, no state written, no effect on the block. A defect in
  * the checker would trigger identically on every node, and as a fault it
- * would halt the chain.
- * `h` = the boundary whose derivation is checked (the last one applied to
- * the table as it stands); `at` = the boundary being applied now, for the
- * log: `at` == h at step 7, `at` == h + E at the boundary-start check. */
-static void v2ep_keyres_selfcheck(nodus_witness_t *w, uint64_t h,
-                                  uint64_t at,
-                                  const uint8_t chain_id[DNA_CHAIN_ID_LEN]) {
+ * would halt the chain. `h` = the boundary being applied, for the log. */
+static void v2ep_keyres_selfcheck(nodus_witness_t *w, uint64_t h) {
     static const char *const kind_name[] = {
         "?", "missing", "extra", "other-validator", "other-role",
         "derived-twice", "malformed"
     };
     v2ep_kr_report_t rep;
-    int rc = v2ep_keyres_compare(w, h, chain_id, &rep);
+    int rc = v2ep_keyres_compare(w, &rep);
     if (rc == 1) return;
     if (rc != 0) {
-        QGP_LOG_WARN(LOG_TAG, "boundary %llu (%s): key-reservation "
-                     "self-check skipped — an input was unreadable "
-                     "(log-only, the block is unaffected)",
-                     (unsigned long long)at,
-                     at == h ? "end" : "start");
+        QGP_LOG_WARN(LOG_TAG, "boundary %llu: key-reservation self-check "
+                     "skipped — an input was unreadable (log-only, the "
+                     "block is unaffected)", (unsigned long long)h);
         return;
     }
     if (rep.n_diff == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "boundary %llu (%s): key reservations agree "
-                      "with the set derived as of %llu (%zu derived, %zu "
-                      "rows)", (unsigned long long)at,
-                      at == h ? "end" : "start", (unsigned long long)h,
-                      rep.n_derived, rep.n_table);
+        QGP_LOG_DEBUG(LOG_TAG, "boundary %llu: key reservations agree with "
+                      "the validators rows (%zu derived, %zu rows)",
+                      (unsigned long long)h, rep.n_derived, rep.n_table);
         return;
     }
     for (size_t i = 0; i < rep.n_items; i++) {
@@ -2775,20 +2169,17 @@ static void v2ep_keyres_selfcheck(nodus_witness_t *w, uint64_t h,
         char hh[2 * V2EP_KR_PREFIX + 1], vh[2 * V2EP_KR_PREFIX + 1];
         v2ep_kr_hex(it->hash, hh);
         v2ep_kr_hex(it->vid, vh);
-        QGP_LOG_ERROR(LOG_TAG, "boundary %llu (%s): key reservation %s — "
-                      "key %s.. validator %s.. expected role %u, found role "
-                      "%u (0 = none)", (unsigned long long)at,
-                      at == h ? "end" : "start",
+        QGP_LOG_ERROR(LOG_TAG, "boundary %llu: key reservation %s — key "
+                      "%s.. validator %s.. expected role %u, found role %u "
+                      "(0 = none)", (unsigned long long)h,
                       it->kind < sizeof(kind_name) / sizeof(kind_name[0])
                           ? kind_name[it->kind] : "?",
                       hh, vh, (unsigned)it->want_role,
                       (unsigned)it->got_role);
     }
-    QGP_LOG_ERROR(LOG_TAG, "boundary %llu (%s): KEY RESERVATION SELF-CHECK "
-                  "against the set derived as of %llu: %zu difference(s) "
-                  "(%zu derived, %zu rows) — log-only, the block is "
-                  "unaffected", (unsigned long long)at,
-                  at == h ? "end" : "start", (unsigned long long)h,
+    QGP_LOG_ERROR(LOG_TAG, "boundary %llu: KEY RESERVATION SELF-CHECK: %zu "
+                  "difference(s) (%zu derived, %zu rows) — log-only, the "
+                  "block is unaffected", (unsigned long long)h,
                   rep.n_diff, rep.n_derived, rep.n_table);
 }
 
@@ -2820,25 +2211,6 @@ int nodus_witness_v2_epoch_boundary_apply(
                       "unreadable", (unsigned long long)global_height);
         return -2;
     }
-
-    /* ── 0. THE KEY-RESERVATION SELF-CHECK AT BOUNDARY START (log-only)
-     * Step 7 of the PREVIOUS boundary compared the table right after its
-     * own writers; between boundaries only STAKE (role 1, current key)
-     * and ROTATE (role 2) write it, and both are in the derivation of
-     * H − E — so the table as it stands now must still equal the set
-     * derived as of H − E. This check sees the table BEFORE this
-     * boundary's swap (1d) and sweep (3d) touch it: a stray role-1 row
-     * that appeared between boundaries would otherwise reach the sweep,
-     * which can release it as a "previous key" (or fault on it) before
-     * step 7 ever runs — this logs it first (operator 2026-10-13, "açık
-     * bırakmayalım"). Same core and wrapper as step 7: read-only, its
-     * outcome IGNORED, never a block decision. Generation 4 only (the
-     * swap / sweep gate); skipped when H − E < E (no earlier boundary
-     * to derive from — the core refuses h < E). */
-    if (key_gen >= NODUS_RT_GEN_STORAGE &&
-        global_height >= 2 * (uint64_t)DNAC_EPOCH_LENGTH)
-        v2ep_keyres_selfcheck(w, global_height - (uint64_t)DNAC_EPOCH_LENGTH,
-                              global_height, chain_id);
 
     if (v2ep_activate_commissions(w, global_height) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_COMMISSIONS, UINT32_MAX))
@@ -2903,28 +2275,6 @@ int nodus_witness_v2_epoch_boundary_apply(
         }
     }
 
-    /* ── 1d. THE ROTATION SWAP (HF-6 slice 6d; design rev 6 §3) ───────
-     * Generation 4 only (ROTATE is a generation-4 op; below it no row
-     * holds a pending key). AFTER 1b — the distribution compares S(F)'s
-     * old keys with the rows, which still hold them — and BEFORE the
-     * graduation, Rule N and commit_next, every one of which must see the
-     * row under the key S(U) seats (commit_next copies it into S(U+E)).
-     * Full argument: v2ep_rotate_swap above. Its fault stage (HF-6 6e,
-     * engine id F61) fires after the step's writes, at generation >= 4
-     * only — below it the step does not exist. The previous voter_ids it
-     * releases (khan A8) are carried to the sweep (3d) in `a8_rel`. */
-    v2ep_a8_rel_t a8_rel;                 /* 4 KiB, no heap: no cleanup  */
-    a8_rel.n = 0;
-    if (key_gen >= NODUS_RT_GEN_STORAGE) {
-        if (v2ep_rotate_swap(w, global_height, chain_id, &a8_rel) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "rotation swap failed at boundary %llu",
-                          (unsigned long long)global_height);
-            return -2;
-        }
-        if (fault && fault(fault_ud, NODUS_V2_EPST_ROTATE_SWAP, UINT32_MAX))
-            return -2;
-    }
-
     if (v2ep_graduate(w, global_height, key_gen, chain_id, fault, fault_ud,
                       &out->n_graduates) != 0)
         return -2;
@@ -2937,18 +2287,18 @@ int nodus_witness_v2_epoch_boundary_apply(
      * evaluation; AUTO_RETIRE at DNAC_AUTO_RETIRE_EPOCHS behind the
      * round-6 WEIGHT floor, decrementing active_count once per flip.
      * RETIRING rows are not evaluated. The weight floor previews the
-     * snapshot commit_next (below) stores for H+E; the four steps
-     * between here and commit_next (digest, reset, the HF-6 6d sweep,
-     * flips) change none of that snapshot's inputs — the argument is
+     * snapshot commit_next (below) stores for H+E; the three steps
+     * between here and commit_next (digest, reset, flips) change none of
+     * that snapshot's inputs — the argument is
      * written above the floor in v2ep_rule_n; moving any step that writes
      * `validators` stakes, keys, tenure or bonded membership,
      * `v2_validator_roles`, a stored snapshot, `chain_config_history`, or
      * the H-1 seed row in between would break it. Full contract:
      * v2ep_rule_n above and the header's "RULE N: REWRITTEN" section.
      * Ordered BEFORE the attendance digest/reset and the boundary flips
-     * (1 commissions → 1b distribution → 1b' storage → 1c payday → 1d
-     * rotation swap → 2 graduation → 3 Rule N → 3b digest → 3c reset →
-     * 3d rotation sweep → 4 flips → 5 snapshot → 6 balance copy). */
+     * (1 commissions → 1b distribution → 1b' storage → 1c payday → 2
+     * graduation → 3 Rule N → 3b digest → 3c reset → 4 flips → 5
+     * snapshot → 6 balance copy → 7 key-reservation self-check). */
     if (v2ep_rule_n(w, global_height, key_gen, chain_id) != 0) return -2;
     if (fault && fault(fault_ud, NODUS_V2_EPST_RULE_N, UINT32_MAX))
         return -2;
@@ -2985,25 +2335,6 @@ int nodus_witness_v2_epoch_boundary_apply(
     if (fault && fault(fault_ud, NODUS_V2_EPST_ATTENDANCE_RESET,
                        UINT32_MAX))
         return -2;
-
-    /* ── 3d. THE ROTATION SWEEP (HF-6 slice 6d; design rev 6 §3, khan
-     * A2 / A8) — the previous key of every validator swapped at H−E with a
-     * seat in S(H−2E): its role-1 reservation and its attendance row; and
-     * the attendance rows of the previous voters the swap at 1d released
-     * (khan A8). AFTER 3b/3c (the digest of the epoch just ended still
-     * counts the previous voter's last credits) and before the flips and
-     * commit_next (it writes neither a table the builder reads nor a
-     * status). Generation 4 only; its fault stage (HF-6 6e, engine id
-     * F62) fires after the step's writes. Argument: v2ep_rotate_sweep. */
-    if (key_gen >= NODUS_RT_GEN_STORAGE) {
-        if (v2ep_rotate_sweep(w, global_height, chain_id, &a8_rel) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "rotation sweep failed at boundary %llu",
-                          (unsigned long long)global_height);
-            return -2;
-        }
-        if (fault && fault(fault_ud, NODUS_V2_EPST_ROTATE_SWEEP, UINT32_MAX))
-            return -2;
-    }
 
     /* Boundary flips consume the snapshot frozen one epoch earlier; an
      * ABSENT snapshot row is a documented NO-OP inside the source
@@ -3053,19 +2384,23 @@ int nodus_witness_v2_epoch_boundary_apply(
 
     /* ── 7. THE KEY-RESERVATION SELF-CHECK (log-only) ─────────────────
      * v2_consensus_keys is in no root; v2ep_keyres_selfcheck re-derives
-     * it from rooted state and LOGS any difference. Its outcome is
-     * IGNORED: it returns nothing, writes nothing and cannot fail the
-     * block (a checker defect would fire on every node alike; as a fault
-     * it would halt the chain). POSITION: the table's last writer in this
-     * boundary is the sweep (3d); the flips touch only the ACTIVE /
-     * ELIGIBLE status byte (never UNSTAKED, never a key), commit_next
-     * writes the snapshot of H+E (not S(H) / S(H−E), which the
-     * derivation reads) and the balance copy its own table — so after
-     * step 6 the table and every input are final, and nothing after this
-     * point reads anything the check could touch. Generation 4 only, the
-     * swap / sweep gate. No fault stage: a read-only step. */
+     * it from rooted state (one role-1 row per validators row) and LOGS
+     * any difference. Its outcome is IGNORED: it returns nothing, writes
+     * nothing and cannot fail the block (a checker defect would fire on
+     * every node alike; as a fault it would halt the chain).
+     * ONE CALL PER BOUNDARY (the boundary-start call of khan A8 is gone):
+     * since the khan removed ROTATE (decision 2026-10-13-kurultay-18-
+     * summary.md items 1 and 4) no boundary step writes v2_consensus_keys,
+     * creates or deletes a validators row or changes a validators.pubkey
+     * — the graduation (2) and the flips (4) change status and stake
+     * columns only, and the derivation reads neither — so the table and
+     * every input the check reads are the same at the start and at the
+     * end of the boundary; a second call would compare identical inputs.
+     * Everything written between two boundaries (the STAKE's row and its
+     * reservation, in one item) is seen here. Generation 4 only. No fault
+     * stage: a read-only step. */
     if (key_gen >= NODUS_RT_GEN_STORAGE)
-        v2ep_keyres_selfcheck(w, global_height, global_height, chain_id);
+        v2ep_keyres_selfcheck(w, global_height);
 
     QGP_LOG_DEBUG(LOG_TAG, "boundary at %llu applied (%u graduates, "
                   "%llu accrued, %u payday utxos)",

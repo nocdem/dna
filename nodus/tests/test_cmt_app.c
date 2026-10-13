@@ -2936,9 +2936,14 @@ static int t_val_updates_v2_old_side(void)
  * power and no longer the old one, with the set size unchanged. No port
  * change: cometbft has no "key change", a rotation IS remove + add.
  *
- * WHAT IT CANNOT PROVE (stated, not faked): that the 6d builder produces
- * this snapshot — this host fixture is not at key generation 4 and has no
- * ROTATE (nodus/tests/test_hf6_rotate.c cases C and D prove the builder);
+ * ⚠ HF-6 D1 (khan decision docs/plans/decisions/2026-10-13-kurultay-18-
+ * summary.md item 1): ROTATE and the 6d builder were removed, so no
+ * committed chain produces this snapshot pair any more — the case is kept
+ * as a test of the generic §A diff (a key change, however it arises, is
+ * remove + add).
+ *
+ * WHAT IT CANNOT PROVE (stated, not faked): that any builder produces
+ * this snapshot — this host fixture is not at key generation 4;
  * the new address's proposer priority — cometbft sets −1.125·P on entry
  * (cmt_validator_set.c compute_new_priorities) and the saved value is
  * after the rescale/centre and one increment of the update, so pinning it

@@ -2269,31 +2269,24 @@ endif()
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_stake)
 endif()
-# HF-6 slice 6 — ROTATE_CONSENSUS_KEY (runtime_op 10; design 2026-10-03-
-# hf5-validator-owner-stake rev 6 §2, §3, §8; K7; khan decisions A1/A4/A5/
-# A6 of 2026-10-12; plan tasks/hf6-slice6-plan.md §2 "6a"): op 10 is owned
-# and priced by the generation-4 SYSTEM descriptor only (still v9, rules
-# {1..10}; the re-pinned hashes re-derive in the selfcheck), every
-# earlier generation refuses it. 6b: the hook matrix (plan ops 13 / 17,
-# length ± 1, kind-1 / kind-3 owners of the COMMITTED row, ACTIVE /
-# ELIGIBLE only, no pending key, new key ≠ current and unreserved in any
-# role, real ML-DSA-87 op-2 consent negatives — op 1, zero subject,
-# another id / owner / chain, the old key, ctx v2 — expiry h-1 / h+721,
-# the SYSFUND sibling, the two effects byte-checked with F = the first
-# boundary >= h, the CORE pairing, the describer) and twin seeded chains:
-# op 10 refused at ADMISSION under generation 3; a STAKE then a ROTATE
-# applied (pending key + F, reservation role 2); a second ROTATE and
-# ROTATEs to reserved keys refused with the ledger byte-identical.
-# 6c (case C, twin chains run to 4E; real STAKE / ROTATE / UNSTAKE
-# envelopes, the one plant — 6d's re-keyed S(3E) — only before a boundary
-# block): nodus_validator_v2_rotate_apply's exact-row checks and the two
-# role-1 rows after a swap (khan A2, rolled back); at 3E the flips activate
-# unswapped rows seated under their pending keys and a RETIRING row so
-# seated is deferred; at 4E the distribution pays entries carrying the
-# rows' pending keys and faults on a third key, the graduate's pending key
-# and both reservations are released, Rule N judges duty by validator_id
-# on the entry key's attendance. Swapped-row Rule N cases: deferred to 6d.
-# Generation 4 is compiled only with the EVM runtime. No environment.
+# HF-6 D1 — NO key rotation; the consensus-key index is permanent (khan
+# decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md items 1
+# and 4; until then this target tested the ROTATE exec, the freeze's
+# rotation pass, the swap and the sweep, all deleted): op 10 owned and
+# priced by no generation (the id stays reserved), generation-4 SYSTEM
+# rules {1..9}; every SYSTEM hook of generations 0..4 refuses op 10 (-1)
+# and CORE SYSFUND does not pair with it; twin seeded chains (an UNSTAKED
+# pre-HF-6 row seeded): op 10 refused at ADMISSION under generations 3 and
+# 4; the edge reserves every row's key, UNSTAKED included; a STAKE under
+# that key, and under a key whose validator UNSTAKEd and graduated, is
+# refused with the ledger byte-identical; a fresh key applies; the
+# key-reservation self-check core: 0 differences on the healthy chain,
+# exactly one per single-row corruption (missing, extra, other validator,
+# role 2, TEXT key / id), no comparison on a non-zero pending field.
+# ⚠ Its selfcheck / D4 assertion (and every engine case, which opens a
+# chain through the same selfcheck) is RED until the next package re-pins
+# the generation-4 hashes. Generation 4 is compiled only with the EVM
+# runtime. No environment.
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_rotate)
 endif()

@@ -1639,9 +1639,9 @@ static int v2x_cmt_fail_class(nodus_v2_apply_fail_t pt) {
     case V2AP_FAIL_AFTER_PAYDAY_APPLIED:
     case V2AP_FAIL_AFTER_BALANCE_COPY:
     case V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE:
-    /* HF-6 slice 6d/6e: the rotation swap (1d) and sweep (3d) stages */
-    case V2AP_FAIL_AFTER_ROTATE_SWAP:
-    case V2AP_FAIL_AFTER_ROTATE_SWEEP:
+    /* (61 / 62, the HF-6 rotation swap / sweep stages, are RETIRED with
+     * ROTATE — never fired, so not a class here; the retired 50-52
+     * precedent) */
         return 0;
     default:
         break;

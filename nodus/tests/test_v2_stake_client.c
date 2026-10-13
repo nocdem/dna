@@ -52,12 +52,11 @@
  *     is refused.
  *  R1 ROTATE built against the row S3 created (validator_id = S2's): the
  *     call equals the restated 7291-byte layout (test_hf6_rotate.c
- *     rot_call's); the plan asks [op 13 validator_id][op 17
- *     SHA3-512(new_pk)]; the exec APPLIES (consent rebuilt with the
- *     COMMITTED row's owner and verified): CREATE op 17 role 2, SET op 13
- *     with pending key = the new key and effective epoch = the first
- *     boundary >= h; the funding leg is fee-only (Σin == change + fee; +1
- *     refused).
+ *     rot_call's — the CLIENT builder, removed by the next package); the
+ *     CHAIN refuses it (HF-6 D1, khan decision 2026-10-13-kurultay-18-
+ *     summary.md item 1: no key rotation): the generation-4 SYSTEM read
+ *     plan and exec return -1 for op 10 with the row's owner signing, and
+ *     the CORE funding leg refuses to pair with it (-1).
  *  G1 Generation awareness: a STAKE at generation 0 and at GEN_EVM builds
  *     the legacy 2666-byte call with the same intent_id and identical
  *     bytes outside the two auth blobs (the v1 path is unchanged by the
@@ -898,55 +897,31 @@ static int t_rotate(void) {
               "(7291 bytes)");
     }
 
+    /* HF-6 D1 (khan decision 2026-10-13-kurultay-18-summary.md item 1):
+     * the CHAIN has no ROTATE. The client builder above still produces
+     * the envelope (removed by the next package); every chain hook of
+     * the generation-4 runtimes refuses op 10 as an unowned op — -1, a
+     * VERDICT, never -2 — whoever signs it */
     ctx_set(KO, b.intent_id);
-    uint8_t khn[64];
-    CHECK(qgp_sha3_512(g_k[KN].pk, PK_LEN, khn) == 0, "key hash");
     {
         nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
         uint16_t n = 0;
         CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
-                                        NODUS_RT_MAX_READS, &n) == 0 &&
-              n == 2 && rq[0].op_id == OP_VAL2 &&
-              memcmp(rq[0].key, g_vid, 64) == 0 &&
-              rq[1].op_id == OP_KEYRES && memcmp(rq[1].key, khn, 64) == 0,
-              "plan [op 13 validator_id][op 17 SHA3-512(new_pk)]");
+                                        NODUS_RT_MAX_READS, &n) == -1,
+              "the SYSTEM read plan refuses op 10 (-1)");
     }
     {
-        dna_effect_view_t ev;
         memset(g_reads, 0, sizeof(g_reads));
         g_reads[0].present = 1;                    /* the committed row */
         g_reads[0].value_len = V2_REC_LEN;
         memcpy(g_reads[0].value, g_row, V2_REC_LEN);
-        memset(&ev, 0, sizeof(ev));
-        CHECK(sys_exec(s4, v, 2, &ev) == 0 && ev.effect_count == 2,
-              "ROTATE exec applies: consent rebuilt with the committed "
-              "owner and verified");
-        const uint8_t *v0 = ev.buf + ev.val_off[0];
-        const uint8_t *v1 = ev.buf + ev.val_off[1];
-        const uint64_t F = ((H_EXEC + E_LEN - 1) / E_LEN) * E_LEN;
-        CHECK(ev.eff[0].op_id == OP_KEYRES &&
-              ev.eff[0].effect_kind == DNA_EFFECT_CREATE &&
-              memcmp(ev.buf + ev.key_off[0], khn, 64) == 0 &&
-              ev.eff[0].value_len == 65 && memcmp(v0, g_vid, 64) == 0 &&
-              v0[64] == 2u, "CREATE op 17: new key -> validator_id, role 2");
-        CHECK(ev.eff[1].op_id == OP_VAL2 &&
-              ev.eff[1].effect_kind == DNA_EFFECT_SET &&
-              ev.eff[1].value_len == V2_REC_LEN &&
-              memcmp(v1 + V2_PPK_OFF, g_k[KN].pk, PK_LEN) == 0 &&
-              get64(v1 + V2_KEFF_OFF) == F &&
-              memcmp(v1 + V2_CPK_OFF, g_k[KC].pk, PK_LEN) == 0,
-              "SET op 13: pending key = the new key, epoch = the first "
-              "boundary >= h, current key unchanged");
-        ctx_set(KX, b.intent_id);
         CHECK(sys_exec(s4, v, 2, NULL) == -1,
-              "a signer other than the row's owner is refused");
-        ctx_set(KO, b.intent_id);
+              "the SYSTEM exec refuses op 10 (-1), the row's owner signing");
     }
     {
         uint16_t nr = fund_reads(v, coin);
-        CHECK(core_exec(c4, v, nr) == 0, "funding is fee-only (A4)");
-        nr = fund_reads(v, coin + 1u);
-        CHECK(core_exec(c4, v, nr) == -1, "+1 on the input refused");
+        CHECK(core_exec(c4, v, nr) == -1,
+              "the CORE funding leg does not pair with an op-10 sibling");
     }
     free(v);
     nodus_v2_stake_built_free(&b);

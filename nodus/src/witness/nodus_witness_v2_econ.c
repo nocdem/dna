@@ -1159,8 +1159,10 @@ static uint64_t v2ec_source_copy(uint64_t boundary_height) {
  * plan.md §1, §2 "5c"). Every arm resolves by the PRIMARY KEY
  * (nodus_validator_v2_get: a malformed row, or a validators row without
  * its roles row, is a FAULT — never "absent"), never by the consensus
- * pubkey, which is not unique across rows (a graduated, UNSTAKED row may
- * share it with a later STAKE of the same key, §4) — slice-4 fault 2:
+ * pubkey (validators.pubkey is not a UNIQUE column; written when a
+ * graduated key could be re-STAKEd — slice-4 fault 2 — which the khan's
+ * permanent key index now forbids, decision 2026-10-13-kurultay-18-
+ * summary.md item 4; the primary-key read stays):
  *
  *   RULESET 2 (slice 5c; a ruleset-2 snapshot exists only at key
  *   generation >= NODUS_RT_GEN_STORAGE — settlement_apply refuses one
@@ -1171,16 +1173,11 @@ static uint64_t v2ec_source_copy(uint64_t boundary_height) {
  *                   (§1.6 "vset v2 girdisinden");
  *     a found row must carry the entry's owner_fp (immutable, K3: no
  *     TRANSFER_OWNER), else FAULT — paying the share to a different
- *     row's owner is the silent alternative this refuses. HF-6 slice 6c
- *     (plan tasks/hf6-slice6-plan.md §1.5, B4): the entry's consensus
- *     pubkey must be the row's CURRENT key or its PENDING key (a non-zero
- *     pending_consensus_pubkey), else FAULT. A ROTATE seats the pending
- *     key in S(U) and the row switches at boundary U after this step
- *     (design rev 6 §3), so under that order strict equality holds at U
- *     (S(F) old = row old) and at U+E (S(U) new = row new); the pending
- *     arm makes a future ordering mistake pay the right owner instead of
- *     halting every node with -2. Any third key is still a broken
- *     invariant.
+ *     row's owner is the silent alternative this refuses. The entry's
+ *     consensus pubkey must be the row's key, else FAULT (HF-6 slice 6c
+ *     had also accepted the row's PENDING key; the khan removed ROTATE —
+ *     decision 2026-10-13-kurultay-18-summary.md item 1 — so the pending
+ *     field is always zero and that arm is gone).
  *   RULESET 1 at generation >= NODUS_RT_GEN_STORAGE (the v1-SNAPSHOT
  *   BRIDGE, §7.5 literally: "pubkey → validator_id (§6.2 migration
  *   fonksiyonu)"):
@@ -1233,26 +1230,17 @@ static int v2ec_member_load(nodus_witness_t *w, uint64_t src,
         m->has_row = (vrc == 0);
         if (v2) {
             memcpy(m->owner_fp, e->owner_fp, 64);
-            /* B4: entry.pubkey ∈ {row.pubkey, row.pending}; the pending
-             * arm only for a SET pending key — the all-zero "none"
-             * encoding is never a key an entry may carry */
-            int key_ok = 0;
-            if (m->has_row) {
-                static const uint8_t no_pending[DNAC_PUBKEY_SIZE] = { 0 };
-                key_ok =
-                    memcmp(row->rec.pubkey, e->pubkey, DNAC_PUBKEY_SIZE)
-                        == 0 ||
-                    (memcmp(row->pending_consensus_pubkey, no_pending,
-                            DNAC_PUBKEY_SIZE) != 0 &&
-                     memcmp(row->pending_consensus_pubkey, e->pubkey,
-                            DNAC_PUBKEY_SIZE) == 0);
-            }
+            /* the entry's key IS the row's key: no key rotation in HF-6
+             * (khan decision 2026-10-13-kurultay-18-summary.md item 1 —
+             * the slice-6c pending-key arm is gone) */
             if (m->has_row &&
-                (memcmp(row->owner_fp, e->owner_fp, 64) != 0 || !key_ok)) {
+                (memcmp(row->owner_fp, e->owner_fp, 64) != 0 ||
+                 memcmp(row->rec.pubkey, e->pubkey, DNAC_PUBKEY_SIZE)
+                     != 0)) {
                 QGP_LOG_ERROR(LOG_TAG, "distribution at %llu: the row keyed "
                               "by a v2 entry's validator_id carries another "
-                              "owner, or neither its consensus key nor its "
-                              "pending key is the entry's — refusing",
+                              "owner, or its consensus key is not the "
+                              "entry's — refusing",
                               (unsigned long long)boundary_height);
                 free(row);
                 return -2;

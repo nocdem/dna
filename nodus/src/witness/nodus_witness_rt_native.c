@@ -4694,7 +4694,10 @@ _Static_assert(RTN_DEL_KEY_LEN <= (uint32_t)DNA_EFFECT_MAX_KEY_LEN,
  *   [5365..5372]  unstake_commit_block           u64 BE
  *   [5373..5380]  last_validator_update_block    u64 BE
  *   [5381..5388]  consecutive_missed_epochs      u64 BE
- * "No pending key" has ONE encoding: 2592 × 0x00 AND epoch 0 (§6.3). */
+ * The two pending fields are ALWAYS zero — 2592 × 0x00 AND epoch 0 (the
+ * §6.3 bytes are kept; HF-6 has no key rotation, khan decision
+ * 2026-10-13-kurultay-18-summary.md item 4): rtn_val2_rec_ok refuses any
+ * other value. */
 #define RTN_VAL2_ID_OFF       0u
 #define RTN_VAL2_OWNER_OFF    64u
 #define RTN_VAL2_CPK_OFF      128u
@@ -5117,8 +5120,10 @@ static int rtn_vupd_read_plan(const dna_env_view_t *env,
  *     delegator_fp, decided BEFORE the reads are judged; UNSTAKE /
  *     VALIDATOR_UPDATE by the observed row's owner_fp, decided AFTER the
  *     mediated read (the owner is committed state, not a call field);
- *   - the pending consensus-key fields and owner_fp are carried through
- *     byte for byte (rotation is slice 6; owner_fp is immutable — K3).
+ *   - the pending consensus-key fields (always zero — no key rotation in
+ *     HF-6, khan decision 2026-10-13-kurultay-18-summary.md item 4) and
+ *     owner_fp are carried through byte for byte (owner_fp is immutable —
+ *     K3).
  * ════════════════════════════════════════════════════════════════════ */
 
 static int rtn_val2_rec_ok(const uint8_t *v, const uint8_t *key);
@@ -5791,8 +5796,9 @@ static int rtn_stake2_exec(const dna_env_view_t *env, uint16_t leg_index,
     memcpy(val + RTN_VAL2_ID_OFF, vid, 64);
     memcpy(val + RTN_VAL2_OWNER_OFF, c.owner_fp, 64);
     memcpy(val + RTN_VAL2_CPK_OFF, c.consensus_pk, DNAC_PUBKEY_SIZE);
-    /* pending_consensus_pubkey 2592 × 0x00 AND effective epoch 0: the ONE
-     * "no pending key" encoding (§6.3) — memset above */
+    /* pending_consensus_pubkey 2592 × 0x00 AND effective epoch 0: the
+     * only legal values (§6.3 fields, always zero — no key rotation in
+     * HF-6) — memset above */
     rtn_put64(val + RTN_VAL2_SELF_OFF, c.bond);
     /* total / external delegated, the pending commission, the unstake
      * commit, Rule K and the Rule N counter all start at 0 */
@@ -6224,8 +6230,8 @@ static int rtn_storage_exit_exec(const dna_env_view_t *env,
  * the CHAIN_CONFIG precedent; all-SYSTEM envelopes are exempt from the
  * HF-1 gas price), auth_kind 1 with EXACTLY one verified signer whose
  * fingerprint is SHA3-512 of snapshot(H).entries[seat].pubkey (the
- * consensus key of that seat — keyed by (H, seat), so it survives a key
- * rotation of the validator row).
+ * consensus key of that seat — keyed by (H, seat); HF-6 has no key
+ * rotation, so it is also the row's key).
  *
  * Pure parse rules (read plan AND exec): call 78..110 bytes, exact;
  * bitmap_len <= 32; H a boundary (H % E == 0, H >= E); the applying
@@ -7991,7 +7997,10 @@ static int rtn_sys_val2_fetch(nodus_witness_t *w, const uint8_t *key,
             memcmp(vid, key, 64) == 0 &&
             self >= 0 && totd >= 0 && extd >= 0 && peff >= 0 &&
             sinc >= 0 && ucom >= 0 && lupd >= 0 && miss >= 0 &&
-            keff >= 0 &&
+            /* both pending fields ZERO (no key rotation in HF-6, khan
+             * decision 2026-10-13-kurultay-18-summary.md item 4): any
+             * other value is a malformed row — a FAULT, never served */
+            keff == 0 && rtn_all_zero(ppk, DNAC_PUBKEY_SIZE) &&
             comm >= 0 && comm <= UINT16_MAX &&
             pcom >= 0 && pcom <= UINT16_MAX &&
             stat >= 0 && stat <= UINT8_MAX) {
@@ -8059,9 +8068,11 @@ static int rtn_sys_delegcnt2_fetch(nodus_witness_t *w, const uint8_t *key,
 /* The writable shape of a generation-4 validator record (the
  * rtn_val_rec_ok discipline): the key IS the record's validator_id;
  * validator_id and owner_fp are not all zero (each is a SHA3-512 output
- * in every legal state — design §6.5 add-on rule); "no pending key" has
- * ONE encoding (2592 × 0x00 ⇔ epoch 0, §6.3); every u64 within the SQLite
- * INTEGER bound; both bps within DNAC_COMMISSION_BPS_MAX; a defined status.
+ * in every legal state — design §6.5 add-on rule); both pending fields
+ * ZERO (2592 × 0x00 AND epoch 0 — the §6.3 fields are kept but HF-6 has
+ * no key rotation, khan decision 2026-10-13-kurultay-18-summary.md item
+ * 4); every u64 within the SQLite INTEGER bound; both bps within
+ * DNAC_COMMISSION_BPS_MAX; a defined status.
  * @return 1 ok / 0 reject. */
 static int rtn_val2_rec_ok(const uint8_t *v, const uint8_t *key) {
     static const uint32_t u64_offs[] = {
@@ -8073,9 +8084,9 @@ static int rtn_val2_rec_ok(const uint8_t *v, const uint8_t *key) {
     if (rtn_all_zero(v + RTN_VAL2_ID_OFF, 64) ||
         rtn_all_zero(v + RTN_VAL2_OWNER_OFF, 64))
         return 0;
-    if (rtn_all_zero(v + RTN_VAL2_PPK_OFF, DNAC_PUBKEY_SIZE) !=
-        (rtn_get64(v + RTN_VAL2_KEFF_OFF) == 0))
-        return 0;                        /* a mixed "pending" encoding   */
+    if (!rtn_all_zero(v + RTN_VAL2_PPK_OFF, DNAC_PUBKEY_SIZE) ||
+        rtn_get64(v + RTN_VAL2_KEFF_OFF) != 0)
+        return 0;                        /* a pending field not zero     */
     for (size_t i = 0; i < sizeof(u64_offs) / sizeof(u64_offs[0]); i++)
         if (rtn_get64(v + u64_offs[i]) > (uint64_t)INT64_MAX) return 0;
     if (rtn_get16(v + RTN_VAL2_COMM_OFF) > DNAC_COMMISSION_BPS_MAX ||
@@ -8098,9 +8109,11 @@ static int rtn_del2_rec_ok(const uint8_t *v, const uint8_t *key) {
 
 /* The generation-4 validator SET (op 13): exactly the record's columns —
  * the eleven mutable `validators` columns the §6.3 leaf carries, then the
- * roles row's two consensus-key fields. IMMUTABLE and checked by the WHERE
- * clauses, never written: validator_id (the key), the consensus pubkey
- * (`validators.pubkey` — rotation is slice 6's) and owner_fp (K3).
+ * roles row's two pending fields (always zero: the caller's
+ * rtn_val2_rec_ok refused any other value). IMMUTABLE and checked by the
+ * WHERE clauses, never written: validator_id (the key), the consensus
+ * pubkey (`validators.pubkey` — no key rotation in HF-6) and owner_fp
+ * (K3).
  * `unstake_destination_*` are not in the record and are NOT touched (they
  * left the leaf, §6.3; decision D4). Two statements inside the block
  * transaction the engine holds; each must change exactly one row — a
@@ -8196,7 +8209,8 @@ static nodus_adapter_status_t rtn_sys_val2_set(nodus_witness_t *w,
  * nodus_witness_global_root_v2 has no production caller in nodus/src (its
  * callers are tests).
  * `v2_validator_roles`: (validator_id, owner_fp, pending key, effective
- * epoch) — the record's own values (the "no pending key" encoding).
+ * epoch) — the record's own values, zero for both pending fields (the
+ * caller's rtn_val2_rec_ok refused any other value).
  * @return NODUS_ADAPTER_OK / NODUS_ADAPTER_ERR_STORAGE_FAULT. */
 static nodus_adapter_status_t rtn_sys_val2_create(nodus_witness_t *w,
                                                   const uint8_t *key,
@@ -9104,9 +9118,9 @@ static nodus_adapter_status_t rtn_sys_mutate(
          * precondition already ruled inside this transaction) */
         if (key_len != RTN_KEYRES_KEY_LEN ||
             value_len != RTN_KEYRES_REC_LEN || !value ||
-            (value[RTN_KEYRES_ROLE_OFF] != NODUS_V2_KEY_ROLE_ACTIVE &&
-             value[RTN_KEYRES_ROLE_OFF] != NODUS_V2_KEY_ROLE_PENDING))
-            return NODUS_ADAPTER_ERR_STORAGE_FAULT;
+            value[RTN_KEYRES_ROLE_OFF] != NODUS_V2_KEY_ROLE_ACTIVE)
+            return NODUS_ADAPTER_ERR_STORAGE_FAULT;   /* role 1 only: the
+                                          * pending role went with ROTATE */
         if (nodus_validator_v2_key_insert(w, key, value + RTN_KEYRES_VID_OFF,
                                           value[RTN_KEYRES_ROLE_OFF]) != 0)
             return NODUS_ADAPTER_ERR_STORAGE_FAULT;

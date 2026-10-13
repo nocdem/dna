@@ -35,7 +35,12 @@
  *     verdict and coins owned by ADDR, balances (Σin == change + fee +
  *     bond).
  *  O2 ROTATE of that validator by ADDR (the new key KN consents to ADDR):
- *     the same path; the exec, given the committed row from O1, APPLIES.
+ *     the same CLIENT path builds, signs and combines (the client builder
+ *     is removed by the next package), but the chain REFUSES it: HF-6 has
+ *     no key rotation (khan decision 2026-10-13-kurultay-18-summary.md
+ *     item 1) — the generation-4 SYSTEM exec returns -1 for op 10 even
+ *     with the owner's real authorization and the committed row from O1,
+ *     and the CORE funding leg refuses to pair with it (-1).
  *  O3 STORAGE_REGISTER owned by ADDR (KS consents with op 3): the same
  *     path; the exec CREATEs the storage row with ADDR in its owner
  *     column; the funding balances with lock = bond.
@@ -615,16 +620,19 @@ static int t_rotate(void) {
         g_reads[0].value_len = V2_REC_LEN;
         memcpy(g_reads[0].value, g_row, V2_REC_LEN);
         memset(&ev, 0, sizeof(ev));
-        CHECK(sys_exec(v, 2, &ev) == 0 && ev.effect_count == 2 &&
-              memcmp(ev.buf + ev.val_off[1] + V2_PPK_OFF, g_pk[KN], PK_LEN)
-                  == 0,
-              "ROTATE exec APPLIES: the row's owner ADDR authorized it, the "
-              "pending key is KN");
+        /* HF-6 D1 (khan decision 2026-10-13-kurultay-18-summary.md item
+         * 1): the chain has no ROTATE — the client builder still produces
+         * the envelope (its removal is the next package's), the chain's
+         * generation-4 SYSTEM exec refuses op 10 as an unowned op (-1, a
+         * VERDICT, never -2) even with the owner's real authorization */
+        CHECK(sys_exec(v, 2, &ev) == -1,
+              "ROTATE exec REFUSED (-1): op 10 is no chain operation");
     }
     ctx_for(1, intent);
     {
         uint16_t nr = fund_reads(v, coin);
-        CHECK(core_exec(v, nr) == 0, "fee-only funding by ADDR balances");
+        CHECK(core_exec(v, nr) == -1,
+              "the CORE funding leg does not pair with an op-10 sibling (-1)");
     }
     nodus_v2_msig_export2_free(&x);
     nodus_v2_stake_built_free(&b);
