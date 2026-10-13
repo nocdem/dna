@@ -87,7 +87,9 @@ try {
       balance: async () => ({ total: coin.amount, spendable: coin.amount }),
       list: async () => ({ tip: window.__t.tip, coins: [coin], truncated: false }),
       validators: async () => ({ truncated: false, validators: [
-        witness('41'.repeat(64), '51'.repeat(64), OWN), witness('42'.repeat(64), '52'.repeat(64), OWN, 4),
+        // witness 51 runs on the machine that is also this wallet's active
+        // storage node 61 (its key fingerprint = the storage node's fp)
+        witness('61'.repeat(64), '51'.repeat(64), OWN), witness('42'.repeat(64), '52'.repeat(64), OWN, 4),
         witness('43'.repeat(64), '53'.repeat(64), OTHER), witness('44'.repeat(64), '', ''),
         witness('45'.repeat(64), '55'.repeat(64), OWN, 1)   // this wallet's, already leaving
       ] }),
@@ -188,6 +190,28 @@ try {
   await root.locator('.roles-cmd').waitFor();
   assert.ok((await root.locator('.roles-cmd').innerText()).includes(`--op rotate --owner ${'1a'.repeat(64)} --subject ${'51'.repeat(64)}`));
   await noSideways('rotate');
+  // Its Review: keep the old node up through U + E, at least U + E/2, the
+  // unseated case; and, because this machine is also the wallet's storage
+  // node 61, the storage warning (storage keys do not rotate, khan A4).
+  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
+  await page.waitForFunction(() => document.querySelectorAll('.roles-checks li[data-ok="false"]').length === 0);
+  await root.locator('[data-action="review"]').click();
+  await root.locator('.roles-review').waitFor();
+  const rotateText = await root.locator('.roles-review').innerText();
+  assert.match(rotateText, /Keep the OLD node running through block [\d,]+ — at the very least through block [\d,]+/);
+  assert.match(rotateText, /If the old key held no seat in the witness set before the switch, you may turn it off after the switch/);
+  assert.match(rotateText, /also your storage node, and its storage registration stays on the OLD key/);
+  // Witness 52 (key 42) is no storage node: no storage warning.
+  await root.locator('.roles-back').click();          // "← Nodus" always goes home (goto('home'))
+  await root.locator('[data-role="rotate"]').click();
+  await root.locator('label.roles-radio').nth(1).waitFor();
+  await root.locator('label.roles-radio').nth(1).click();
+  await root.locator('.roles-cmd').waitFor();
+  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
+  await page.waitForFunction(() => document.querySelectorAll('.roles-checks li[data-ok="false"]').length === 0);
+  await root.locator('[data-action="review"]').click();
+  await root.locator('.roles-review').waitFor();
+  assert.doesNotMatch(await root.locator('.roles-review').innerText(), /also your storage node/);
 
   // Your storage nodes: Leave on the active one only; its Review.
   await root.locator('.roles-back').click();

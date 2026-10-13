@@ -131,20 +131,26 @@ export function witnessJoinFrom(tip, minTenureBlocks) {
   return tip + 1n + minTenureBlocks;
 }
 // ROTATE: accepted (or deferred) at the first boundary F >= the commit
-// height; the switch U = F + E (the new node signs from U + 2); the old key
-// is released at U + E; the old node stays up through U + 1 (through
-// U + floor(E/2) if it is also a storage node).
+// height; the switch U = F + E (the old key signs U and U + 1, the new node
+// from U + 2). The old node, by the hf6 session's rule of 2026-10-13
+// (nodus/docs/DEPLOY_RUNBOOK.md §2.6 item 4-5, §2.7 item 7 on hf6
+// 1c9e29d25):
+//   seated in S(F): at least through U + floor(E/2) — it files S(F)'s
+//     storage reports in (U, U + floor(E/2)] with its seat key, as every
+//     seated witness does (rt_native.c "the signer is that seat") — and
+//     U + E is the safe upper bound: the old key's reservation is released
+//     there (khan A2);
+//   not seated in S(F): its key is released at U (khan A8); it may stop
+//     after the switch;
+//   also a storage node on the old key: storage keys do not rotate (khan
+//     A4) — it stays up as long as the old key should stay a storage node.
+// No RPC tells whether the witness is seated in S(F) (dnac_committee_query
+// answers the committee of tip + 1 only), so the Review states both cases;
+// the storage case is shown when this wallet's storage list holds the node.
 export function rotationHeights(tip, E) {
   if (typeof tip !== 'bigint' || typeof E !== 'bigint' || tip <= 0n || E <= 0n) return null;
   const F = epochStartAtOrAfter(tip + 1n, E), U = F + E;
-  // keepThrough = U + E: the safe upper bound until the hf6 session confirms
-  // the exact rule. Khan A8 (nodus/docs/ARCHITECTURE.md "the old node stays
-  // up through U + E for its S(F) storage duty") and the old key's release
-  // at U + E when it held a seat in S(F) (khan A2, nodus_witness_v2_epoch.c
-  // v2ep_rotate_sweep), at U when it did not (hf6 session, 2026-10-13).
-  // Keeping the old node up longer harms nothing: its key signs nothing
-  // after U + 1.
-  return { boundary: F, switchAt: U, keepThrough: U + E, releasedAt: U + E };
+  return { boundary: F, switchAt: U, keepAtLeast: U + E / 2n, keepThrough: U + E, releasedAt: U + E };
 }
 // STORAGE_EXIT included at x: released at B_rel = E * ceil(x / E) as one
 // coin locked until B_rel + lockEpochs * E; the node may register again only
@@ -228,7 +234,9 @@ async function readFacts() {
   if (form.consent) runCheck();
   render();
   if (screen === 'rotate' || screen === 'witness' || screen === 'witnesses') await readWitnesses(seq, c);
-  if (screen === 'storage') await readStorage(seq, c, from);
+  // rotate reads the storage list too: the Review warns when the node is
+  // also this wallet's storage node (its registration stays on the old key)
+  if (screen === 'storage' || screen === 'rotate') await readStorage(seq, c, from);
 }
 async function readWitnesses(seq, c) {
   if (!c.stakeable) { witnesses = { rows: [], error: 'The witness list is not available in this wallet version.' }; render(); return; }
@@ -502,7 +510,18 @@ function reviewCard() {
     const at = E !== null ? rotationHeights(t.tip, E) : null;
     items.push(`Witness ${d.validatorId} moves to the new node below. No bond moves.`);
     items.push(at ? `The switch happens at block ${block(at.switchAt)} at the earliest (after two epoch boundaries). The network can defer a key change to a later boundary; no date is promised.` : 'The switch happens after the next epoch boundaries; the network can defer it to a later boundary.');
-    items.push(at ? `Keep the OLD node running through block ${block(at.keepThrough)}. Its old key is released by then (at the switch if the old key held no seat before it).` : 'Keep the OLD node running until one epoch after the switch.');
+    items.push(at
+      ? `Keep the OLD node running through block ${block(at.keepThrough)} — at the very least through block ${block(at.keepAtLeast)}: it signs blocks ${block(at.switchAt)} and ${block(at.switchAt + 1n)} and files the storage reports of its last seat. If the old key held no seat in the witness set before the switch, you may turn it off after the switch at block ${block(at.switchAt)}.`
+      : 'Keep the OLD node running until one epoch after the switch.');
+    // A machine that is also this wallet's storage node keeps its storage
+    // registration on the OLD key: no storage key rotation (design §11.1,
+    // khan A4; nodus/docs/DEPLOY_RUNBOOK.md §2.6 "both a validator and a
+    // storage node"). Matched by the node fingerprint = SHA3-512 of the
+    // witness's current key (the list row's fingerprint).
+    const current = witnesses?.rows?.find(v => v.validatorId === d.validatorId)?.fingerprint;
+    if (current && storage?.nodes?.some(n => n.fp === current && n.status !== 'released')) {
+      items.push('This node is also your storage node, and its storage registration stays on the OLD key. Keep the old node running for as long as it should stay a storage node — or leave storage for it (Your storage nodes → Leave) and register the new node as a storage node with a new consent; expect at least one epoch without storage pay.');
+    }
   } else {
     const at = E !== null ? storageExitHeights(t.tip, E, r.storageExitLockEpochs) : null;
     items.push(`Node ${d.nodeFp} stops being a storage node; it is no longer paid.`);

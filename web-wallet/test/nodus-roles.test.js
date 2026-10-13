@@ -100,7 +100,7 @@ test('roles: the earliest heights of the timing facts', () => {
   assert.equal(witnessJoinFrom(1000n, 1440n), 2441n);
   assert.equal(witnessJoinFrom(1000n, null), null);
   // tip 1000 -> F = 1440, U = 2160
-  assert.deepEqual(rotationHeights(1000n, 720n), { boundary: 1440n, switchAt: 2160n, keepThrough: 2880n, releasedAt: 2880n });
+  assert.deepEqual(rotationHeights(1000n, 720n), { boundary: 1440n, switchAt: 2160n, keepAtLeast: 2520n, keepThrough: 2880n, releasedAt: 2880n });
   assert.equal(rotationHeights(1000n, null), null);
   // exit included at 1001: B_rel 1440, locked 12 epochs, again from 2161
   assert.deepEqual(storageExitHeights(1000n, 720n, 12n), { release: 1440n, lockedUntil: 10080n, registerAgainFrom: 2161n });
