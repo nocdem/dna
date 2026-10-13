@@ -1446,12 +1446,15 @@ stagef_voter_id() {
 #
 # HF-6 6f-2 — the FULL SHA3-512 of FILE's raw bytes, 128 lowercase hex
 # (empty on a read or openssl failure — the caller checks the length).
-# Two values in the HF-6 rotation scenario are exactly this over a
-# 2592-byte nodus.pk: a kind-1 owner_fp (design 2026-10-03-hf5-validator-
-# owner-stake rev 6 §1.2/§1.3: owner_fp = SHA3-512 of the single key) and a
-# key reservation's consensus_pk_hash (v2_consensus_keys, untagged
-# SHA3-512(consensus pubkey) — nodus_witness_v2_schema.h S18 note). Same
-# openssl call as stagef_voter_id, whose 32-byte prefix is the voter_id.
+# Two HF-6 values are exactly this over a 2592-byte nodus.pk: a kind-1
+# owner_fp (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.2/§1.3:
+# owner_fp = SHA3-512 of the single key — what test_hf6_edge.sh /
+# test_storage_archive.sh compare; it was first written for the rotation
+# scenario, deleted with ROTATE by HF-6 D1/D2, khan decision 2026-10-13-
+# kurultay-18-summary.md item 1) and a key reservation's
+# consensus_pk_hash (v2_consensus_keys, untagged SHA3-512(consensus
+# pubkey) — nodus_witness_v2_schema.h S18 note). Same openssl call as
+# stagef_voter_id, whose 32-byte prefix is the voter_id.
 stagef_sha3_512_hex() {
     openssl dgst -sha3-512 "$1" 2>/dev/null | awk '{print tolower($NF)}'
 }

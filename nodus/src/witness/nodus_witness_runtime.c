@@ -46,9 +46,10 @@
  *
  * Storage reward v1 (decision docs/plans/decisions/2026-10-04-storage-
  * reward-approved.md; design docs/plans/2026-10-04-storage-reward-v1-
- * design.md rev 2.2 §6): generation 4, GEN_STORAGE (SYSTEM v9 — ops
+ * design.md rev 2.2 §6): generation 4, GEN_STORAGE (SYSTEM v10 — ops
  * 7..9 STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT appended to the
- * EVM generation's, policy ops 1..9 — / CORE v7 / no EVM slot), reached
+ * EVM generation's, policy ops 1..9 — / CORE v8 / no EVM slot; v9 / v7
+ * until HF-6 D2, Kurultay #18 item 3), reached
  * from the EVM generation by the phase-6b''' switch on the chain_config
  * param-18 RULESET_GEN_ROLES vote (HF-6 slice 8c; param 16 RETIRED).
  * Numbers assigned in main merge order (decision
@@ -140,11 +141,11 @@ static const uint32_t CORE_RULES_GEVM[9] = {
     DNA_CORERULE_NAME_REGISTER, DNA_CORERULE_EVMFUND
 };
 /* Storage reward v1 (design docs/plans/2026-10-04-storage-reward-v1-
- * design.md rev 2.2 §1, §4, §6): the GEN_STORAGE SYSTEM (v9) owns rules
+ * design.md rev 2.2 §1, §4, §6): the GEN_STORAGE SYSTEM (v10) owns rules
  * {1..9} — the EVM generation's six ops with STORAGE_REGISTER (7),
  * STORAGE_EXIT (8) and STORAGE_REPORT (9) appended. Its tx_type list is
  * the SAME SYS_TYPES (the storage ops carry no legacy tx type — op and
- * tx_type are different axes). Its CORE (v7) reuses CORE_RULES_GEVM
+ * tx_type are different axes). Its CORE (v8) reuses CORE_RULES_GEVM
  * unchanged: the version advances because SYSFUND (rule 7) now also pairs
  * with the two storage record ops (rtn_sysfund_shape) — a hook-side
  * semantics change, the W-C / general-multisig precedent
@@ -152,15 +153,21 @@ static const uint32_t CORE_RULES_GEVM[9] = {
  * HF-6 slice 6a (design docs/plans/2026-10-03-hf5-validator-owner-stake-
  * design.md rev 6 §2, §8 — ONE generation 4 carries storage and the
  * validator role; decision 2026-10-08-kurultay-14-hf6-summary.md K7):
- * + ROTATE_CONSENSUS_KEY (10), so the list is {1..10}. The descriptor
- * versions stay SYSTEM 9 / CORE 7 (khan decision A6, 2026-10-12 — nothing
- * shipped under them); only the SYSTEM hash and its policy digest move. */
-static const uint32_t SYS_RULES_GST[10] = {
+ * added ROTATE_CONSENSUS_KEY (10); the khan REMOVED it again (decision
+ * docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1: no key
+ * rotation in HF-6 — a key is changed by UNSTAKE + a new STAKE), so the
+ * list is {1..9} and op 10 is owned by no generation (admission refuses
+ * it like any unowned op). The same decision (item 3) bumped the
+ * versions — SYSTEM 9 -> 10, CORE 7 -> 8 — because item 2 ("C2") changed
+ * three call layouts (UNSTAKE 128 / VALIDATOR_UPDATE 130 / STORAGE_EXIT
+ * 128 B) and the ruleset hash does not commit call layouts
+ * (shared/dnac/domain_wire.h); the pins below were re-derived by the
+ * independent oracle. */
+static const uint32_t SYS_RULES_GST[9] = {
     DNA_SYSRULE_STAKE, DNA_SYSRULE_DELEGATE, DNA_SYSRULE_UNSTAKE,
     DNA_SYSRULE_UNDELEGATE, DNA_SYSRULE_VALIDATOR_UPDATE,
     DNA_SYSRULE_CHAIN_CONFIG, DNA_SYSRULE_STORAGE_REGISTER,
-    DNA_SYSRULE_STORAGE_EXIT, DNA_SYSRULE_STORAGE_REPORT,
-    DNA_SYSRULE_ROTATE_CONSENSUS_KEY
+    DNA_SYSRULE_STORAGE_EXIT, DNA_SYSRULE_STORAGE_REPORT
 };
 #endif
 /* ASCENDING is load-bearing twice over: rt_owns_type() stops at the first
@@ -271,40 +278,45 @@ static const uint8_t SYS_METER_POLICY_DIGEST_GEVM[DNA_DOM_HASH_LEN] = {
     0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
 };
 
-/* Storage reward v1 + HF-6 — the GEN_STORAGE SYSTEM (v9) metering policy:
- * the EVM generation's policy SHAPE — v2, seven scalar weights 1, the
- * 2 MiB max_block_env_bytes field kept — over the authoritative op set
- * 1..10 at weight 1: SYSTEM 1..10 / CORE 1..9 / EVM 1..5. The three
+/* Storage reward v1 + HF-6 — the GEN_STORAGE SYSTEM (v10) metering
+ * policy: the EVM generation's policy SHAPE — v2, seven scalar weights 1,
+ * the 2 MiB max_block_env_bytes field kept — over the authoritative op set
+ * 1..9 at weight 1: SYSTEM 1..9 / CORE 1..9 / EVM 1..5. The three
  * storage ops 7..9 are priced by the rows CORE SYSFUND / NAME_REGISTER /
- * EVMFUND already own (w_op is keyed by runtime_op across domains); HF-6
- * slice 6a adds the row for op 10 (ROTATE_CONSENSUS_KEY — design rev 6
- * §2: "SYSTEM meter politikası 10'u fiyatlar"), which no other domain
- * names. An op with no committed weight is unreservable (sys_policy_build),
- * so without that row every ROTATE would die at reservation. Built by
- * sys_policy_build(p, 10); its identity digest is pinned separately (one
+ * EVMFUND already own (w_op is keyed by runtime_op across domains). HF-6
+ * slice 6a had added a row for op 10 (ROTATE_CONSENSUS_KEY); the khan
+ * removed op 10 from HF-6 (decision 2026-10-13-kurultay-18-summary.md
+ * item 1), so the row is gone and op 10 is unreservable. Built by
+ * sys_policy_build(p, 9); its identity digest is pinned separately (one
  * literal per generation) and filled by the INDEPENDENT oracle, never this
- * build's serializer. It no longer equals SYS_METER_POLICY_DIGEST_GEVM
- * (the oracle asserts the difference). Selfcheck re-derives it on every
- * start. */
-#define SYS_POLICY_MAX_OP_GST 10u
+ * build's serializer. Selfcheck re-derives it on every start. With op 10
+ * gone the policy prices exactly the EVM generation's op set, so its
+ * digest EQUALS SYS_METER_POLICY_DIGEST_GEVM byte for byte (the oracle
+ * asserts it): selfcheck requires each SYSTEM entry's policy to be ITS
+ * generation's sealed object and its digest to equal the descriptor's,
+ * never that two generations' digests differ — the generation-4 SYSTEM
+ * descriptor still differs from the EVM one (version 10 vs 8, rules
+ * {1..9} vs {1..6}). */
+#define SYS_POLICY_MAX_OP_GST 9u
 static dna_meter_policy_t g_sys_policy_gst;
 static int g_sys_policy_gst_ready = 0;
 static const uint8_t SYS_METER_POLICY_DIGEST_GST[DNA_DOM_HASH_LEN] = {
     /* STORAGE-ORACLE: GEN_STORAGE SYSTEM meter-policy identity digest
-     * ("NDS.METPOLID.v1", ops 1..10 weight 1) — S1 of the INDEPENDENT
-     * oracle shared/dnac/tests/storage_oracle.py (generation 4, HF-6
-     * slice 6a), whose control legs reproduced every generation-1/2 pin,
-     * D2, the EVM generation's policy / SYSTEM v8 / CORE v6 / EVM v2 and
-     * the param-14 literal first. The storage-only ops-1..9 value
-     * (0aa4c690…, = the EVM policy) is dead. */
-    0xe5, 0xd9, 0x6b, 0x4a, 0xe1, 0x4d, 0xf9, 0x36,
-    0x29, 0x16, 0x01, 0x33, 0xc5, 0x7f, 0x98, 0xdc,
-    0xce, 0x98, 0xa1, 0x87, 0xee, 0xbd, 0x91, 0x30,
-    0x1d, 0x91, 0x57, 0x66, 0xe6, 0x94, 0x08, 0x3b,
-    0x74, 0x5c, 0x2a, 0x92, 0x8d, 0xb9, 0x62, 0xd9,
-    0x02, 0xc7, 0x4e, 0x8f, 0x98, 0x76, 0x7e, 0xdc,
-    0xa4, 0x8f, 0x9c, 0x69, 0x9a, 0x78, 0x5c, 0x87,
-    0x16, 0xdc, 0x1d, 0x70, 0x6e, 0x06, 0xe9, 0xb8
+     * ("NDS.METPOLID.v1", ops 1..9 weight 1) — S1 of the INDEPENDENT
+     * oracle shared/dnac/tests/storage_oracle.py (generation 4, HF-6 D2),
+     * whose control legs reproduced every generation-1/2 pin, D2, the
+     * EVM generation's policy / SYSTEM v8 / CORE v6 / EVM v2 and the
+     * param-14 literal first. Equal to the EVM generation's 0aa4c690…
+     * (same op set — see above). The ops-1..10 value (e5d96b4a…, HF-6
+     * slice 6a) is dead. */
+    0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
+    0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
+    0x26, 0x42, 0xc9, 0x9e, 0xdc, 0x1d, 0xb8, 0x3f,
+    0x28, 0x71, 0xaf, 0x64, 0xda, 0x18, 0xc3, 0xf8,
+    0xb7, 0x4a, 0x6e, 0x5c, 0x87, 0x0e, 0xdc, 0x34,
+    0x50, 0xae, 0x04, 0x74, 0xa3, 0xc8, 0xd7, 0x27,
+    0x9e, 0xfb, 0x88, 0x4d, 0xf8, 0xb2, 0x85, 0xc8,
+    0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
 };
 #endif
 
@@ -547,12 +559,12 @@ static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
  * merge order (decision 2026-10-04-storage-reward-approved.md; QEVM merged
  * first): generation 4 on the EVM generation. Preimages (the
  * RulesetDescriptor v2 layout, shared/dnac/domain_wire.h):
- *   SYSTEM v9: version 2, domain 0, "SYSTEM", abi 1, ruleset_version 9,
- *              rules {1,2,3,4,5,6,7,8,9,10}, types {4,5,6,7,9,10},
+ *   SYSTEM v10: version 2, domain 0, "SYSTEM", abi 1, ruleset_version 10,
+ *              rules {1,2,3,4,5,6,7,8,9}, types {4,5,6,7,9,10},
  *              meter_policy_digest = SYS_METER_POLICY_DIGEST_GST
  *              (policy v2, seven scalar weights 1, max_block_env_bytes
- *              2 * DNA_ENV_MAX_TOTAL_LEN, ops 1..10 weight 1);
- *   CORE v7:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 7,
+ *              2 * DNA_ENV_MAX_TOTAL_LEN, ops 1..9 weight 1);
+ *   CORE v8:   version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 8,
  *              rules {1..9}, types {1,2,3,11,12,13},
  *              meter_policy_digest = 64 zero bytes.
  * Vote literal: dnac.h DNAC_CFG_RULESET_GEN_ROLES_D (D4, param 18) =
@@ -560,41 +572,45 @@ static const uint8_t EVM_RULESET_HASH_GEVM[DNA_DOM_HASH_LEN] =
  *   version, the Foundation owner and GEN4_VOTE_CONSTS (HF-6 slice 8b/8c;
  *   the param-16 RSGEN literal is deleted with the param).
  * The EVM domain has no GEN_STORAGE entry (EVM v1 unchanged).
- * HF-6 slice 6a re-pinned the SYSTEM hash (rule 10 + its price, design
- * rev 6 §2) at the SAME version 9 (khan decision A6, 2026-10-12); the
- * CORE hash did not move (its list, types and version are unchanged —
- * the oracle asserts S3 equals the pre-6a value). The storage-only SYSTEM
- * v9 hash b37f489d… is dead.
+ * HISTORY (none of it activated on any chain): the storage-only SYSTEM v9
+ * b37f489d…; HF-6 slice 6a's SYSTEM v9 with rule 10 c347ddd7… (khan
+ * decision A6 kept the versions 9 / 7) and CORE v7 fb25e5c4…. HF-6 D2
+ * (khan decision 2026-10-13-kurultay-18-summary.md): op 10 removed (item
+ * 1) and the versions bumped SYSTEM 9 -> 10 / CORE 7 -> 8 (item 3 — the
+ * ruleset hash does not commit call layouts, and item 2 "C2" changed
+ * three of them; CORE decodes the sibling calls). The versions skip 9
+ * (SYSTEM) and 7 (CORE) relative to the EVM generation's 8 / 6: selfcheck
+ * requires only that each domain's version strictly increases with the
+ * generation.
  *
  * Both are filled by the INDEPENDENT oracle over the preimages above
  * (shared/dnac/tests/storage_oracle.py S2 / S3), never from this build's
  * encoder; selfcheck re-derives them on every start, so a build whose
  * tables disagree with them refuses to start. */
 static const uint8_t SYS_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
-    /* STORAGE-ORACLE: GEN_STORAGE SYSTEM v9 ruleset_hash (rules {1..10})
+    /* STORAGE-ORACLE: GEN_STORAGE SYSTEM v10 ruleset_hash (rules {1..9})
      * — S2 of shared/dnac/tests/storage_oracle.py (generation 4, HF-6
-     * slice 6a). */
-    0xc3, 0x47, 0xdd, 0xd7, 0xb3, 0x07, 0x30, 0xb1,
-    0x7f, 0xe6, 0x25, 0x83, 0xa6, 0x63, 0x35, 0x6a,
-    0x30, 0x3c, 0x54, 0x8d, 0xd2, 0xfc, 0x0d, 0xab,
-    0x7f, 0xa8, 0xdf, 0xdf, 0xea, 0x63, 0x14, 0x0b,
-    0x25, 0xc1, 0xf4, 0x96, 0x59, 0x0a, 0x66, 0xc8,
-    0x37, 0x3c, 0x3e, 0x50, 0xd2, 0x3c, 0xba, 0xa5,
-    0xf5, 0x73, 0x00, 0x97, 0xee, 0x04, 0x1e, 0xca,
-    0x50, 0xed, 0x37, 0x7a, 0x1f, 0x92, 0x4b, 0x00
+     * D2). */
+    0xa0, 0x12, 0xcc, 0x08, 0xbb, 0xf9, 0x65, 0x24,
+    0xfa, 0x2d, 0xac, 0xe3, 0x31, 0x92, 0x1f, 0x9d,
+    0x39, 0x10, 0x7a, 0xa5, 0x26, 0x43, 0xfc, 0x99,
+    0x39, 0x2c, 0x14, 0x14, 0x6e, 0xf0, 0x91, 0x59,
+    0xa5, 0x4d, 0x11, 0x50, 0x2d, 0x53, 0x8d, 0x42,
+    0x4f, 0x1e, 0x5b, 0xde, 0x9a, 0x49, 0x3e, 0x2a,
+    0xba, 0xb2, 0x73, 0x8b, 0xf2, 0x0c, 0x3e, 0x26,
+    0x1f, 0xe5, 0x62, 0x7c, 0x09, 0xbb, 0x66, 0x2a
 };
 static const uint8_t CORE_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
-    /* STORAGE-ORACLE: GEN_STORAGE CORE v7 ruleset_hash — S3 of
-     * shared/dnac/tests/storage_oracle.py (generation 4; unchanged by
-     * HF-6 slice 6a). */
-    0xfb, 0x25, 0xe5, 0xc4, 0x1d, 0x60, 0x0f, 0x0e,
-    0xd4, 0xe8, 0x97, 0x9f, 0xb4, 0x34, 0xd7, 0x35,
-    0xb6, 0x2f, 0xfe, 0x9a, 0xca, 0x03, 0x32, 0x77,
-    0x0f, 0x95, 0xa9, 0x4b, 0x33, 0x8d, 0x10, 0x73,
-    0xec, 0x3e, 0xc3, 0xb5, 0xaa, 0x59, 0x30, 0x34,
-    0x67, 0xcc, 0x83, 0xfd, 0xdc, 0xa2, 0xb8, 0xba,
-    0xf1, 0x00, 0x2d, 0xca, 0xb2, 0xc6, 0xc3, 0x04,
-    0x97, 0x4c, 0x06, 0x38, 0x14, 0x37, 0xf0, 0x60
+    /* STORAGE-ORACLE: GEN_STORAGE CORE v8 ruleset_hash — S3 of
+     * shared/dnac/tests/storage_oracle.py (generation 4, HF-6 D2). */
+    0xdb, 0x32, 0x61, 0x4f, 0x1e, 0xb4, 0x81, 0x8d,
+    0x76, 0x09, 0xe1, 0x5f, 0x01, 0x30, 0xde, 0xc6,
+    0x52, 0x36, 0x21, 0x96, 0xa1, 0xd4, 0x16, 0xa7,
+    0xb8, 0xea, 0x45, 0x46, 0xa6, 0x4a, 0xbf, 0x9a,
+    0xc0, 0x8b, 0x0b, 0x76, 0xcc, 0x9c, 0x0b, 0x62,
+    0xe1, 0xa4, 0x7a, 0x3a, 0x7c, 0xf0, 0x4b, 0x09,
+    0x82, 0xd2, 0x99, 0x50, 0x1c, 0xbf, 0x80, 0x0f,
+    0x12, 0x84, 0x9f, 0x64, 0xa0, 0xf9, 0x91, 0xd1
 };
 #endif
 
@@ -1015,12 +1031,15 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_SYSTEM,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 9 — the rule list GREW (ops 7..9 and, HF-6
-         * slice 6a, 10 appended) and the state root composition changed
-         * (v5); the policy prices ops 1..10 (SYS_POLICY_MAX_OP_GST). The
-         * version did not advance for op 10 (khan decision A6) */
+        /* ruleset_version 10 — the rule list GREW (ops 7..9 appended) and
+         * the state root composition changed (v5); the policy prices ops
+         * 1..9 (SYS_POLICY_MAX_OP_GST). Op 10 (HF-6 slice 6a) was removed
+         * again and the version bumped 9 -> 10 by the khan (decision
+         * 2026-10-13-kurultay-18-summary.md items 1 and 3: the C2 call
+         * layouts of UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT are not in
+         * the descriptor hash, the version is) */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 9,
+        .ruleset_version = 10,
         .generation      = NODUS_RT_GEN_STORAGE,
         .ruleset_hash    = { 0 },   /* SYS_RULESET_HASH_GST via table_get */
         .descriptor = {
@@ -1028,8 +1047,8 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .domain_id = DNA_DOMAIN_SYSTEM,
             .name = "SYSTEM",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 9,
-            .rule_count = 10, .rule_ids = SYS_RULES_GST,
+            .ruleset_version = 10,
+            .rule_count = 9, .rule_ids = SYS_RULES_GST,
             .tx_type_count = 6, .tx_types = SYS_TYPES
         },
         .admit = rt_admit_common,
@@ -1065,12 +1084,15 @@ static const nodus_domain_runtime_t BUILTIN[] = {
     {
         .domain_id       = DNA_DOMAIN_CORE,
         .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
-        /* ruleset_version 7 — rule list {1..9}, tx_type list and the
+        /* ruleset_version 8 — rule list {1..9}, tx_type list and the
          * all-zero "no policy declared" field UNCHANGED from v6; the
          * version advances because SYSFUND's pairing rule widened (the
-         * exact-tuple identity IS the activation mechanism) */
+         * exact-tuple identity IS the activation mechanism) and — 7 -> 8,
+         * khan decision 2026-10-13-kurultay-18-summary.md item 3 — because
+         * the SYSFUND leg decodes the C2 sibling calls (UNSTAKE 128 /
+         * VALIDATOR_UPDATE 130 / STORAGE_EXIT 128 B) */
         .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
-        .ruleset_version = 7,
+        .ruleset_version = 8,
         .generation      = NODUS_RT_GEN_STORAGE,
         .ruleset_hash    = { 0 },   /* CORE_RULESET_HASH_GST via table_get */
         .descriptor = {
@@ -1078,7 +1100,7 @@ static const nodus_domain_runtime_t BUILTIN[] = {
             .domain_id = DNA_DOMAIN_CORE,
             .name = "DNA_CORE",
             .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
-            .ruleset_version = 7,
+            .ruleset_version = 8,
             .rule_count = 9, .rule_ids = CORE_RULES_GEVM,
             .tx_type_count = 6, .tx_types = CORE_TYPES
         },

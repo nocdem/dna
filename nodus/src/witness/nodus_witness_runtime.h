@@ -111,15 +111,17 @@ extern "C" {
  *  rev 6 §2, §3; decision docs/plans/decisions/2026-10-08-kurultay-14-
  *  hf6-summary.md K7): ROTATE_CONSENSUS_KEY — the next free SYSTEM rule
  *  id after the storage ops (TRANSFER_OWNER keeps 11 reserved, K3).
- *  Owned by the generation-4 SYSTEM descriptor only (earlier generations
- *  do not own it, so admission refuses it there) and priced by its policy
- *  (no other domain names op 10). Its consent op byte is 2, NOT 10
- *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — design §2: the
- *  mapping is written explicitly in code). Executes under generation 4
- *  only (sub-slice 6b, nodus_witness_rt_native.c rtn_rotate2_exec: owner
- *  authority, state, key reservation and node consent; writes the
- *  pending key and its first evaluation boundary — the switch itself is
- *  the boundary's, slices 6c/6d). */
+ *  RETIRED (khan decision docs/plans/decisions/2026-10-13-kurultay-18-
+ *  summary.md item 1: HF-6 has no key rotation — a key is changed by
+ *  UNSTAKE + a new STAKE under a fresh key, and a key once used is burned
+ *  for good): NO generation owns or prices op 10, so admission refuses it
+ *  like any unowned op, and no SYSTEM hook decodes it. The id stays
+ *  reserved, never reused (an id that was owned once must not come back
+ *  with another meaning; the tests name it to prove the refusal); the
+ *  client builders and CLI verbs were removed by HF-6 D2. Its consent op
+ *  byte was 2
+ *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — the shared codec
+ *  keeps the constant; the chain accepts no op-2 consent). */
 #define DNA_SYSRULE_ROTATE_CONSENSUS_KEY ((uint32_t)10)
 
 #define DNA_CORERULE_SPEND           ((uint32_t)1)
@@ -248,10 +250,12 @@ extern "C" {
 /** Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md rev
  *  2.2 §6; numbering in main merge order, decision 2026-10-04-storage-
  *  reward-approved.md — QEVM merged first): the generation built ON the
- *  EVM generation — SYSTEM v9 (the EVM generation's ops 1..6 +
+ *  EVM generation — SYSTEM v10 (the EVM generation's ops 1..6 +
  *  STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT, SYSTEM state root
- *  "NDS.SYS.v5") / CORE v7 (the EVM generation's rules {1..9}, SYSFUND
- *  pairs with the two storage record ops); the EVM domain is unchanged
+ *  "NDS.SYS.v5") / CORE v8 (the EVM generation's rules {1..9}, SYSFUND
+ *  pairs with the two storage record ops); v9 / v7 until HF-6 D2 (khan
+ *  decision 2026-10-13-kurultay-18-summary.md item 3); the EVM domain is
+ *  unchanged
  *  (its v1 entry stays the EVM generation's — the generation carries no
  *  EVM slot, since one exact tuple names ONE entry). Code names it
  *  GEN_STORAGE, never "4". Since HF-6 (design docs/plans/2026-10-03-hf5-

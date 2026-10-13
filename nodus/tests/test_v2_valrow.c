@@ -18,9 +18,13 @@
  *      "absent", never a value; a second validators row holding the same
  *      consensus pubkey under its own id leaves both keyed reads intact;
  *   3. v2 update writes BOTH tables inside the caller's transaction and
- *      round-trips; it refuses autocommit mode, a mixed "no pending key"
- *      encoding (design §6.3), a changed owner_fp (no TRANSFER_OWNER) and
- *      a changed consensus pubkey, and reports an unknown key as 1;
+ *      round-trips; it refuses autocommit mode, ANY pending key or
+ *      effective epoch that is not zero (HF-6 D1, khan decision
+ *      2026-10-13-kurultay-18-summary.md item 4: the §6.3 fields are
+ *      always zero — the slice-6 consistent "pending rotation" shape is
+ *      malformed too), a changed owner_fp (no TRANSFER_OWNER) and a
+ *      changed consensus pubkey, and reports an unknown key as 1; a
+ *      STORED non-zero pending key is a fault on read (-1);
  *   4. the gen-4 bonded_tenured arm returns each candidate's re-keyed
  *      pubkey_hash AS its validator_id, with the v1 function's filters and
  *      pubkey ASC collect order (the v1 function, unchanged, returns the
@@ -278,8 +282,10 @@ static int t_get_update(void) {
     want.rec.commission_bps = 1200;
     want.rec.status = DNAC_VALIDATOR_ELIGIBLE;
     want.rec.consecutive_missed_epochs = 2;
-    memset(want.pending_consensus_pubkey, 0x5A, DNAC_PUBKEY_SIZE);
-    want.consensus_key_effective_epoch = 7;
+    /* the pending fields stay zero: HF-6 has no key rotation (khan
+     * decision 2026-10-13-kurultay-18-summary.md item 4) */
+    memset(want.pending_consensus_pubkey, 0, DNAC_PUBKEY_SIZE);
+    want.consensus_key_effective_epoch = 0;
     CHECK(run_sql(fx.w->db, "BEGIN") == 0, "begin");
     CHECK(nodus_validator_v2_update(fx.w, &want) == 0, "v2_update"); OK();
     CHECK(run_sql(fx.w->db, "COMMIT") == 0, "commit");
@@ -294,17 +300,23 @@ static int t_get_update(void) {
     CHECK(nodus_validator_v2_get(fx.w, vidA, &got) == 0 &&
           row_eq(&want, &got), "and wrote nothing"); OK();
 
-    /* a mixed pending encoding is refused (both directions) */
+    /* a pending field that is not zero is refused — each alone and both
+     * together (the slice-6 "consistent pending key" is malformed too) */
     CHECK(run_sql(fx.w->db, "BEGIN") == 0, "begin");
     tmp = want;
+    memset(tmp.pending_consensus_pubkey, 0x5A, DNAC_PUBKEY_SIZE);
     tmp.consensus_key_effective_epoch = 0;          /* key set, epoch 0  */
     CHECK(nodus_validator_v2_update(fx.w, &tmp) == -1,
           "nonzero pending key with epoch 0 = -1"); OK();
     tmp = want;
-    memset(tmp.pending_consensus_pubkey, 0, DNAC_PUBKEY_SIZE);
     tmp.consensus_key_effective_epoch = 3;          /* no key, epoch 3   */
     CHECK(nodus_validator_v2_update(fx.w, &tmp) == -1,
           "zero pending key with epoch 3 = -1"); OK();
+    tmp = want;
+    memset(tmp.pending_consensus_pubkey, 0x5A, DNAC_PUBKEY_SIZE);
+    tmp.consensus_key_effective_epoch = 7;          /* key set, epoch 7  */
+    CHECK(nodus_validator_v2_update(fx.w, &tmp) == -1,
+          "nonzero pending key with epoch 7 = -1 (no rotation)"); OK();
     /* a changed owner is refused (no TRANSFER_OWNER in HF-6) */
     tmp = want;
     memset(tmp.owner_fp, 0xB2, 64);
@@ -398,6 +410,39 @@ static int t_get_update(void) {
         CHECK(nodus_validator_v2_get(fx.w, vidD, &got) == -1,
               "the duplicate's roles row left alone = -1 (orphan)"); OK();
     }
+
+    /* a STORED non-zero pending key + epoch (the slice-6 "pending
+     * rotation" shape) is a malformed row on READ — HF-6 D1: the fields
+     * are always zero; restored, the row reads again */
+    {
+        uint8_t ppk[DNAC_PUBKEY_SIZE];
+        sqlite3_stmt *st = NULL;
+        memset(ppk, 0x5A, sizeof(ppk));
+        int ok = sqlite3_prepare_v2(fx.w->db, "UPDATE v2_validator_roles "
+                     "SET pending_consensus_pubkey = ?1, "
+                     "consensus_key_effective_epoch = 7 "
+                     "WHERE validator_id = ?2", -1, &st, NULL) == SQLITE_OK &&
+                 sqlite3_bind_blob(st, 1, ppk, (int)sizeof(ppk),
+                                   SQLITE_STATIC) == SQLITE_OK &&
+                 sqlite3_bind_blob(st, 2, vidA, 64, SQLITE_STATIC)
+                     == SQLITE_OK &&
+                 sqlite3_step(st) == SQLITE_DONE &&
+                 sqlite3_changes(fx.w->db) == 1;
+        if (st) sqlite3_finalize(st);
+        CHECK(ok, "plant a pending key");
+    }
+    CHECK(nodus_validator_v2_get(fx.w, vidA, &got) == -1,
+          "a stored pending key = -1 (malformed)"); OK();
+    CHECK(run_sql(fx.w->db, "UPDATE v2_validator_roles SET "
+                  "pending_consensus_pubkey = zeroblob(2592), "
+                  "consensus_key_effective_epoch = 0 WHERE validator_id = x'"
+                  "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+                  "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+                  "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+                  "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1'") == 0,
+          "zero it again");
+    CHECK(nodus_validator_v2_get(fx.w, vidA, &got) == 0 &&
+          row_eq(&want, &got), "zeroed: the row reads again"); OK();
 
     /* a malformed roles row (owner_fp 63 bytes) is a fault */
     CHECK(run_sql(fx.w->db, "UPDATE v2_validator_roles SET owner_fp = "

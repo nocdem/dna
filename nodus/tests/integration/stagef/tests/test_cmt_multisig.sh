@@ -18,7 +18,9 @@
 #       (inputs named explicitly, change back to the address); `msig
 #       combine` with ONE signature is REFUSED locally (the export fixed
 #       K = 2 — auth_len is signed) and submits nothing.
-#   (3) nodes 2 and 3 each `msig sign` offline; `msig combine` assembles
+#   (3) nodes 2 and 3 each `msig sign` (Kurultay #18 item 5: over their OWN
+#       node's client port, which verifies every input is a coin of the
+#       vault — dnac_msig_utxo — before signing); `msig combine` assembles
 #       the two signatures, runs the chain's own auth hook locally and
 #       submits over node 5's session. CheckTx admits it and the chain
 #       applies it: its v2_intent_index row exists.
@@ -198,7 +200,7 @@ echo "[ok] unsigned kind-3 envelope exported (change $change back to the address
 
 S2="$BASE_DIR/msig_sig_node2"
 S3="$BASE_DIR/msig_sig_node3"
-"$CLI" msig sign --keys "$(key_dir 2)" --in "$EXP" --out "$S2" \
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 2)" msig sign --keys "$(key_dir 2)" --in "$EXP" --out "$S2" \
     > "$BASE_DIR/msig_sign2.log" 2>&1 \
     || { cat "$BASE_DIR/msig_sign2.log" >&2; die "node 2 could not sign"; }
 if "$CLI" msig combine --in "$EXP" --sig "$S2" --out "$BASE_DIR/msig_one_sig.env" \
@@ -211,7 +213,7 @@ grep -q "fixed 2 signers" "$BASE_DIR/msig_combine_one.log" \
 echo "[ok] one signature (M - 1) refused by combine — nothing written or sent"
 
 # ── Stage 5: the second signature, assembly, submission ──────────────
-"$CLI" msig sign --keys "$(key_dir 3)" --in "$EXP" --out "$S3" \
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 3)" msig sign --keys "$(key_dir 3)" --in "$EXP" --out "$S3" \
     > "$BASE_DIR/msig_sign3.log" 2>&1 \
     || { cat "$BASE_DIR/msig_sign3.log" >&2; die "node 3 could not sign"; }
 clog="$BASE_DIR/msig_combine.log"
@@ -281,7 +283,7 @@ if [ -s "$BASE_DIR/msig_genesis.addr" ]; then
         > "$BASE_DIR/msig_genesis_build.log" 2>&1 \
         || { cat "$BASE_DIR/msig_genesis_build.log" >&2; die "the genesis-coin envelope could not be BUILT"; }
     for n in 2 4; do
-        "$CLI" msig sign --keys "$(key_dir "$n")" --in "$GEXP" \
+        "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" msig sign --keys "$(key_dir "$n")" --in "$GEXP" \
             --out "$BASE_DIR/msig_genesis_sig_node$n" \
             > "$BASE_DIR/msig_genesis_sign$n.log" 2>&1 \
             || { cat "$BASE_DIR/msig_genesis_sign$n.log" >&2; die "node $n could not sign the genesis-coin spend"; }

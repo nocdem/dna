@@ -6141,8 +6141,9 @@ its vote literal deleted; the storage boundary gate reads param 18. Everything b
 SYSTEM v8 / CORE v6 or "the switch from generation 2", read: GEN_STORAGE = **generation 4**, built ON
 the EVM generation (`NODUS_RT_GEN_STORAGE_BASE` = `NODUS_RT_GEN_EVM` = 3); the vote is chain_config
 **param 16** (`DNAC_CFG_RULESET_GEN_STORAGE`; `DNAC_CFG_PARAM_MAX_ID` = 16, after the EVM's 14 / 15);
-**SYSTEM v9** (the EVM generation's rules {1..6} + 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9
-STORAGE_REPORT), **CORE v7** (the EVM generation's rules {1..9} incl. 9 EVMFUND, SYSFUND paired with
+**SYSTEM v9** (v10 since HF-6 D2) (the EVM generation's rules {1..6} + 7 STORAGE_REGISTER / 8
+STORAGE_EXIT / 9 STORAGE_REPORT), **CORE v7** (v8 since HF-6 D2) (the EVM generation's rules {1..9}
+incl. 9 EVMFUND, SYSFUND paired with
 the storage ops too), the EVM domain unchanged (v1; GEN_STORAGE has no EVM slot — exact-tuple
 uniqueness — so the EVM record keeps resolving the EVM generation's entry); the SYSTEM meter policy is
 the EVM generation's (ops 1..9 at weight 1 — the storage ops' ids are already priced by CORE's
@@ -6819,7 +6820,8 @@ client header `dnac/include/dnac/validator.h` is not extended). `nodus_validator
 since slice 5c and is DELETED in the HF-6 red-team round 1 close-out; every reader resolves by
 validator_id),
 `nodus_validator_v2_update` (both tables, inside the caller's transaction; validator_id, consensus
-pubkey and owner_fp are immutable and checked; the single "no pending key" encoding is enforced),
+pubkey and owner_fp are immutable and checked; the pending fields must be zero — since HF-6 D1 any
+other value is refused),
 `nodus_validator_v2_bonded_tenured` (the gen-4 arm: the v1 filters and pubkey ASC order, each
 candidate's `pubkey_hash` returned as its validator_id); `nodus_v2_delegation_row_t` and
 `nodus_delegation_v2_{get,delete,count_by_validator,list_by_validator}`
@@ -6937,8 +6939,8 @@ reaches them there).
 | op | call | len |
 |---|---|---|
 | DELEGATE (2) / UNDELEGATE (4) | `delegator_fp[64] ‖ validator_id[64] ‖ amount u64` | 136 |
-| UNSTAKE (3) | `validator_id[64]` | 64 |
-| VALIDATOR_UPDATE (5) | `validator_id[64] ‖ commission u16` (≤ `DNAC_COMMISSION_BPS_MAX`, non-zero id) | 66 |
+| UNSTAKE (3) | `validator_id[64]` — since HF-6 D2 `validator_id[64] ‖ owner_fp[64]` (128, "C2", section "HF-6 D2") | 64 → 128 |
+| VALIDATOR_UPDATE (5) | `validator_id[64] ‖ commission u16` (≤ `DNAC_COMMISSION_BPS_MAX`, non-zero id) — since HF-6 D2 `validator_id ‖ owner_fp ‖ commission` (130) | 66 → 130 |
 | STAKE (1) | — refused (-1) on the SYSTEM plan and exec AND by the CORE SYSFUND pairing (`rtn_sysfund_shape`, `rtn_sys_call_flow`) in 3c; since slice 4 the 7301-B owner + consent call ("HF-6 slice 4" below) | — |
 
 **Owner authority** (`rtn_sys_owner_auth`, design §1.3), against `want_fp`: kind 1 — exactly one
@@ -6946,7 +6948,8 @@ verified signer, no descriptor, SHA3-512(signer pk) == want_fp; kind 3 — exact
 descriptor, satisfied, its address == want_fp (mandatory: the verifier only records satisfaction),
 and every verified signer one of its keys; kind 2 and any other kind refused. DELEGATE / UNDELEGATE:
 want_fp = the call's delegator_fp, decided before the reads are judged. UNSTAKE / VALIDATOR_UPDATE:
-want_fp = the observed row's owner_fp, decided AFTER the mediated read (an absent row is -1 first).
+want_fp = the observed row's owner_fp, decided AFTER the mediated read (an absent row is -1 first) —
+since HF-6 D2 want_fp is the CALL's owner_fp, which must equal the observed row's (−1 otherwise).
 The rules themselves are the legacy execs' (minimum delegation, delegator cap, BONDED targeting, no
 status gate on UNDELEGATE, the two-epoch commission deferral, underflow and writable-shape verdicts),
 on the generation-4 rows; owner_fp and the pending consensus-key fields are carried byte for byte.
@@ -7219,22 +7222,21 @@ block height — the engine fact `ctx->stake_min` (section "HF-6 slice 8a").
 **Read plan** (`rtn_stake2_read_plan`): `[op 7 active_count] [op 13 validator_id] [op 17
 SHA3-512(consensus_pk)]` — ascending (op, key).
 
-**The consensus-key reservation** (design §4). New table `v2_consensus_keys (consensus_pk_hash
-BLOB PRIMARY KEY, validator_id BLOB NOT NULL, role INTEGER NOT NULL)` — role 1 active, role 2
-pending (ROTATE, slice 6; no writer yet). Added to the **S18 rung** (unreleased, branch hf6 only —
-no S19): DDL, shape verification (`table_cols_exact`) and the base schema (`nodus_witness.c`). A
-database already at 18 gets it only from the base schema's `CREATE TABLE IF NOT EXISTS` at open
-(the rung is a no-op at 18). Not a bundle table. Writers: the generation-4 edge
-(`nodus_witness_v2_roles_migrate` — the table must be empty; one role-1 row per migrated row whose
-status is NOT UNSTAKED, in SHA3-512(pk) order), the STAKE (op 17 CREATE), the graduation
-(`nodus_validator_v2_key_release` in `v2ep_graduate`'s generation-4 arm — the role-1 row must exist,
-else FAULT — then any other row of the validator). Accessors in `nodus_witness_validator.{h,c}`
-(`nodus_validator_v2_key_get / _insert / _release`). Its content derives from rooted state (role 1
-= every validators row not UNSTAKED, key = SHA3-512(validators.pubkey); role 2 = every non-zero
-pending key; since slice 6 also the previous key a swap keeps until U+E, read from the stored
-snapshots — except for a validator the predecessor snapshot does not seat, khan A3) — so NO root leg
-was added. Every generation-4 boundary compares it with that derivation, log-only: "HF-6 — the
-key-reservation self-check" below.
+**The consensus-key reservation** (design §4; since HF-6 D1 a PERMANENT index — khan decision
+`docs/plans/decisions/2026-10-13-kurultay-18-summary.md` items 1 and 4, section "HF-6 D1" below).
+New table `v2_consensus_keys (consensus_pk_hash BLOB PRIMARY KEY, validator_id BLOB NOT NULL, role
+INTEGER NOT NULL)` — role always 1 (the slice-6 pending role 2 went with ROTATE). Added to the
+**S18 rung** (unreleased, branch hf6 only — no S19): DDL, shape verification (`table_cols_exact`)
+and the base schema (`nodus_witness.c`). A database already at 18 gets it only from the base
+schema's `CREATE TABLE IF NOT EXISTS` at open (the rung is a no-op at 18). Not a bundle table.
+Writers — append-only, NOTHING deletes a row: the generation-4 edge (`nodus_witness_v2_roles_migrate`
+— the table must be empty; one role-1 row per migrated row of ANY status, UNSTAKED included, in
+SHA3-512(pk) order) and the STAKE (op 17 CREATE behind ABSENT). The graduation does NOT release
+(until D1 it did, through the deleted `nodus_validator_v2_key_release`). Accessors in
+`nodus_witness_validator.{h,c}` (`nodus_validator_v2_key_get / _insert`, role 1 only). Its content
+derives from rooted state alone — exactly one row per validators row (rows are never deleted, their
+pubkey never changes) — so NO root leg was added. Every generation-4 boundary compares it with that
+derivation, log-only: "HF-6 — the key-reservation self-check" below.
 
 **SYSTEM adapter ops**: **17 `RTN_SYS_OP_KEYRES`** (CREATE / ABSENT, key 64, value 65 =
 validator_id ‖ role; probe / read / mutate arms); op 13 gains CREATE / ABSENT (`rtn_sys_val2_create`:
@@ -7478,347 +7480,157 @@ ruleset-2 rows; case G: no ruleset-1-only codec call in `nodus_witness_vset.c`. 
 snapshot ≤ B1 is ruleset 1 and snapshot(B1 + E) ruleset 2, node 2 raw 60M in both; at B1 + E every
 node logs `n_power_changed=1`.
 
-### HF-6 slice 6a — ROTATE_CONSENSUS_KEY (op 10) owned and priced; the generation-4 pins re-derived (branch `hf6` only — not versioned, not voted)
+### HF-6 D1 — key rotation REMOVED; the consensus-key index is permanent (branch `hf6-d` — not versioned, not voted)
 
-Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §2 (ROTATE = runtime_op
-10; the generation-4 SYSTEM descriptor `{1..10}`; "SYSTEM meter politikası 10'u fiyatlar"), §3 (khan
-decisions of 2026-10-12, A6: the descriptor VERSIONS stay SYSTEM 9 / CORE 7, only the hashes are
-re-pinned — nothing shipped under them), §8, §10 item 2 (every slice that changes the generation-4
-descriptors re-derives the pins and the development literal from the oracle); decision
-`2026-10-08-kurultay-14-hf6-summary.md` K7; plan `tasks/hf6-slice6-plan.md` §2 "6a".
+Khan decision `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` items 1 and 4 (Option D; the
+design's §3 box "KALDIRILDI — han kararı 2026-10-13"): **HF-6 generation 4 has no
+ROTATE_CONSENSUS_KEY** (SYSTEM op 10, consent op 2). A consensus key that ever appeared in a
+validators row — any status, UNSTAKED included — can never be STAKEd again; an operator who wants a
+new key UNSTAKEs (the 84-epoch unbond) and STAKEs a NEW validator under a fresh key (new validator_id,
+delegators re-delegate). Slices 6a-6e (the op, its exec, the swap writer, the freeze's rotation budget,
+the boundary swap and sweep, the p2p pending set, the rotation fault stages) and the khan A2-A8
+machinery were deleted; their sections are gone from this file (`git log` keeps them).
 
-**What moved** (`nodus_witness_runtime.{h,c}`, `dnac.h`): `DNA_SYSRULE_ROTATE_CONSENSUS_KEY = 10`;
-`SYS_RULES_GST` = {1..10} (`rule_count` 10) at ruleset_version 9; `SYS_POLICY_MAX_OP_GST` = 10 (op 10
-had no row in any policy — an unpriced op is unreservable); the GEN_STORAGE pins, all from S1-S4 of the
-independent oracle `shared/dnac/tests/storage_oracle.py` (rules {1..10}, ops 1..10):
+**Op 10** (`nodus_witness_runtime.{h,c}`, `nodus_witness_rt_native.c`): `SYS_RULES_GST` = {1..9}
+(`rule_count` 9), `SYS_POLICY_MAX_OP_GST` = 9 — no generation owns or prices op 10, so admission
+(`rt_owns_runtime_op` in `env_admit_legs`) refuses it like any unowned op (`NODUS_V2_TX_ERR_ADMISSION`, a
+VERDICT); every SYSTEM hook returns −1 for it (the un-migrated-op default), CORE SYSFUND does not pair
+with it, the describer does not describe it. `DNA_SYSRULE_ROTATE_CONSENSUS_KEY` (10) stays as a RETIRED,
+reserved id; the shared codec keeps `DNA_VALBIND_OP_ROTATE` (2) — the chain accepts no op-2 consent.
+D1 left the pins at the {1..10} values (a node built from D1 alone does not start — the selfcheck
+refuses the table); D2 below bumped the versions and re-pinned.
 
-| Pin | Before (storage-only generation 4, `4fedbbdc`) | After (6a) |
+**The permanent index** (`v2_consensus_keys`, slice 4's table): role 1 only, one row per validators
+row of any status, never released — the generation-4 edge (`nodus_witness_v2_migrate.c`) seeds
+UNSTAKED rows too (log line "… N consensus keys reserved (one per validators row, every status) …"),
+the STAKE adds its row behind ABSENT, the graduation keeps it. Deleted: `nodus_validator_v2_key_release`,
+`_key_release_previous`, `_key_sweep_previous`, `_key_rotated_ids`, `_rotate_apply`,
+`NODUS_V2_KEY_ROLE_PENDING`; `key_get` / `key_insert` / the op-17 CREATE accept role 1 only.
+
+**The §6.3 pending fields** (`pending_consensus_pubkey`, `consensus_key_effective_epoch`) keep their
+bytes in the validator leaf (5390 B, APPROVED — no leaf change) and are ALWAYS zero: every reader
+(`v2_row_from_stmt`, `rtn_sys_val2_fetch`) and validator (`rtn_val2_rec_ok`, `nodus_validator_v2_update`)
+treats any other value as a malformed row (fault on read, refusal on write); the writers write zero.
+
+**Membership by validator_id** (kept from slice 6c, now rotation-free) — `v2ep_member_in_snapshot`
+(`nodus_witness_v2_epoch.c`): at key generation ≥ 4 a ruleset-2 snapshot by `entry.validator_id`, a
+ruleset-1 snapshot through the migrated-id bridge `dna_validator_id_migrated(chain id,
+entry.pubkey)`; below generation 4 the pubkey memcmp. Users: the graduation deferral (R5-3) and Rule N's
+duty test, whose attendance is read by the duty entry's pubkey. The ruleset-2 flips activate by
+`pubkey_hash = entry.validator_id`. With keys immutable the id match and the pubkey match name the same
+entries — kept because the validator_id is the v2 row's identity. The distribution's ruleset-2 key
+check is strict equality again (`entry.pubkey == row.pubkey`; the slice-6c pending arm is gone).
+
+**Boundary steps**: 1d (swap) and 3d (sweep) deleted; the epoch stages 19 / 20 deleted (they were the
+last two values); the engine fault ids `V2AP_FAIL_AFTER_ROTATE_SWAP / _SWEEP` (61 / 62) are RETIRED —
+kept reserved, never fired (the 50-52 precedent). The freeze builds every entry under the row's own
+key (the 6d rotation pass is gone), so generation-4 snapshot bytes are the pre-6d builder's. The p2p
+bonded set is again ACTIVE / ELIGIBLE validators keys ∪ committees at tip ± 1 (`bonded_add_pending`
+deleted).
+
+**Determinism**: nothing new is read or written in any consensus path; every deleted step was inert on
+a chain with no pending row, so a generation-4 chain that never rotated computes the same bytes with
+or without D1 — except the edge's reservation of UNSTAKED rows (in no root) and the refusal of a
+STAKE under a used key (a verdict every node derives from the same table).
+
+**Tests** (written, NOT run by the author): `test_hf6_rotate` rewritten (op 10 owned / priced by no
+generation; every SYSTEM hook of generations 0-4 refuses it −1; CORE SYSFUND refuses the pairing; twin
+chains with an UNSTAKED pre-HF-6 row: op 10 refused at ADMISSION under generations 3 and 4, the edge
+reserves the UNSTAKED row's key, a STAKE under it and under a graduated validator's key REFUSED with
+the ledger byte-identical, a fresh key applies; the self-check: 0 differences, one per single-row
+corruption, no comparison on a non-zero pending field); `test_hf6_stake` B5/B6 (graduation keeps the
+reservation, re-STAKE refused); `test_hf6_migrate` A1 (five reservations, UNSTAKED included);
+`test_v2_valrow` (any non-zero pending field refused on write and on read); `test_witness_p2p` (2a'')
+(forged pending keys bond nothing); `test_hf4_table` 3b ({1..9}); `test_hf6_readers`
+(inventory without `bonded_add_pending`); `test_hf6_edge.sh` (step 10 deleted). (D1's client-side
+ROTATE cases in `test_hf6_msig_owner` O2 / `test_v2_stake_client` R1 were replaced in D2.)
+
+### HF-6 D2 — the owner in the call (C2), generation 4 = SYSTEM v10 / CORE v8, no ROTATE in the client, `msig sign` verifies the inputs (branch `hf6-d` — not versioned, not voted)
+
+Khan decision `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` items 1, 2, 3 and 5; design
+rev 6 §2 "DEĞİŞİKLİK — han kararı 2026-10-13".
+
+**Why (C2).** A kind-3 owner's descriptor bytes are NOT in the signed auth context
+(`shared/dnac/env_wire.c` — only `auth_len` is). An operation that took its owner from committed
+state alone therefore bound its signatures to no vault: the co-members of two vaults could be shown
+vault B and have their signatures carried under vault A's descriptor (same length) after signing.
+Three generation-4 calls now name the owner, and the exec requires it to equal the committed row's
+owner (a VERDICT, −1) before `rtn_sys_owner_auth(…, owner_fp)`:
+
+| op | call | len |
 |---|---|---|
-| `SYS_METER_POLICY_DIGEST_GST` (S1) | `0aa4c690…25922766` (= the EVM policy) | `e5d96b4a…6e06e9b8` (≠ the EVM policy; the oracle asserts it) |
-| `SYS_RULESET_HASH_GST` (S2, SYSTEM v9) | `b37f489d…9a8976ac` | `c347ddd7…1f924b00` |
-| `CORE_RULESET_HASH_GST` (S3, CORE v7) | `fb25e5c4…1437f060` | unchanged (the oracle asserts it — CORE's list, types and version did not move) |
-| `DNAC_CFG_RULESET_GEN_STORAGE_D` (S4) | `0x0c6fd6f2484e6024` | `0x329b0ea92c8b8c58` (3646524443046153304) |
+| UNSTAKE (3) | `validator_id[64] ‖ owner_fp[64]` | 128 |
+| VALIDATOR_UPDATE (5) | `validator_id[64] ‖ owner_fp[64] ‖ commission u16` | 130 |
+| STORAGE_EXIT (8) | `node_fp[64] ‖ owner_fp[64]` | 128 |
 
-Generations 1-3 and every pin of theirs are byte-identical (the oracle's control legs C1-C12 reproduce
-them before it emits). `nodus_witness_runtime_selfcheck` re-derives the new pins and literal on every
-start, so a build whose table and literal disagree refuses to start. S4 was still the DEVELOPMENT
-trigger (param 16); slice 8c deleted it with the param (the oracle's S4 leg, the dnac.h literal and
-its selfcheck row) — generation 4 is voted with D4 (§8.1, sections "HF-6 slice 8b" / "8c"). Op 10 is owned and priced but
-NOT executable in 6a — the SYSTEM read plan and exec refuse it (−1, the un-migrated-op default) until
-6b. **Admission:** the live gate for a V2 leg is `rt_owns_runtime_op` in `env_admit_legs`
-(`nodus_witness_v2_apply.c`, the committed descriptor's rule list); `rt_admit_common` judges only
-(tx_type, pool) and is reached solely through `nodus_witness_domreg_admit_v2`, which has no production
-caller — so no `SYS_TYPES` change is involved.
+(`nodus_witness_rt_native.c` `rtn_unstake_parse_v2` / `rtn_vupd_parse_v2` / `rtn_stexit2_parse`,
+`rtn_unstake2_exec` / `rtn_vupd2_exec` / `rtn_storage_exit_exec`.) STAKE / STORAGE_REGISTER already
+carried the owner and DELEGATE / UNDELEGATE the delegator. The read plans still make ONE read (the
+key is unchanged); `rtn_sys_call_flow`, the describer and `rtn_sys_call_gen_of` read the new lengths
+through the same parsers. The length sets stay disjoint from the legacy ones (128 / 130 vs 2592 /
+2594; STORAGE_EXIT exists only in generation 4) — `_Static_assert`ed.
 
-**Follow-ups outside the 6a file set** (left to the ORCHESTRATOR): the generated
-`nodus/include/nodus/nodus_ruleset_pins.h` (its `NODUS_PIN_G4_SYS_RULESET_HASH_INIT` and the G4 op list
-1..9) must be regenerated (`regen_ruleset_pins`; `test_ruleset_pins` byte-compares it, and
-`test_v2_native` K7 compares the G4 hashes against it); `test_v2_native` K7 and `nodus/README.md` quote
-the old S4.
+**The version bump (item 3).** The ruleset hash commits the rule list, not the call layouts
+(`shared/dnac/domain_wire.h`), so C2 alone would not have moved the generation-4 identity. The
+generation-4 SYSTEM descriptor is **v10** (rules {1..9} — op 10 gone, D1), CORE **v8** (CORE decodes
+the sibling calls); generations 1-3 are untouched. The skipped numbers (SYSTEM 9, CORE 7 were the
+never-activated generation-4 values) are legal: the selfcheck requires only strictly increasing
+versions per domain. Pins, from the independent oracle `shared/dnac/tests/storage_oracle.py`
+(control C1-C12 green; output `storage_oracle_out.txt`):
 
-**Tests** (written, NOT run by the author). `test_hf6_rotate` (new): op 10 owned and priced by the
-generation-4 SYSTEM only (generations 1-3 and every CORE refuse), versions 9 / 7, the literal re-derives;
-every generation's SYSTEM read plan / exec refuses op 10 (6a); twin seeded chains: an op-10 envelope is
-refused at ADMISSION at block 3 (generation 3) and passes admission + reservation at block 4
-(generation 4), refused at exec with the ledger tables byte-identical. `test_hf4_table` 3b: GEN_STORAGE
-SYSTEM rules {1..10}, op 10 owned by generation 4 only, the policy = the EVM generation's op set plus 10.
+| pin | value |
+|---|---|
+| S1 `SYS_METER_POLICY_DIGEST_GST` (ops 1..9 weight 1) | `0aa4c690a05af882…25922766` — byte-equal to the EVM generation's policy (the same op set); the selfcheck requires each SYSTEM entry's own sealed policy, never distinct digests |
+| S2 `SYS_RULESET_HASH_GST` (SYSTEM v10) | `a012cc08bbf96524fa2dace331921f9d39107aa52643fc99392c14146ef09159a54d11502d538d424f1e5bde9a493e2abab2738bf20c3e261fe5627c09bb662a` |
+| S3 `CORE_RULESET_HASH_GST` (CORE v8) | `db32614f1eb4818d7609e15f0130dec652362196a1d416a7b8ea4546a64abf9ac08b0b76cc9c0b62e1a47a3a7cf04b0982d299501cbf800f12849f64a0f991d1` |
+| D4 `DNAC_CFG_RULESET_GEN_ROLES_D` (K8 owner; `hf6_vote_oracle.py`, 296-B preimage unchanged) | `0x5922111a3501f58b` = 6422714822839891339 |
+| D4, harness test owner `2cca88c4…ee196b93` (`--owner`; `test_hf4_table` KAT) | `0x2a3351e7325932f1` = 3040864226829218545 |
 
-### HF-6 slice 6b — the ROTATE_CONSENSUS_KEY exec (branch `hf6` only — not versioned, not voted)
+`nodus/include/nodus/nodus_ruleset_pins.h` was regenerated by `make regen_ruleset_pins` (G4 versions
+10u / 8u, op count 9, the same three values). The web wallet re-pins in its own session.
 
-Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §2 (call, consent re-construction
-contract), §3 (khan decisions of 2026-10-12: A1, A4, A5), §4, §6.1, §6.3; K7; plan
-`tasks/hf6-slice6-plan.md` §1.1, §2 "6b". Generation 4 only; the pending key it writes changes nothing
-else on the chain until the freeze / switch / sweep of slices 6c-6d.
+**Client** (`src/client/nodus_v2_stake.{c,h}`): the three calls carry `owner_fp` = SHA3-512(signer)
+(kind 1) or the multisig address (kind 3); the decoder refuses an `owner_fp` that is not the
+identity. ROTATE is gone (`NODUS_V2_STAKE_OP_ROTATE`, `NODUS_V2_ROTATE_CALL_LEN`, every arm — op 10 is
+`ERR_OP`); the consent container refuses op 2. `nodus_v2_msig.c`: `review2` refuses a change output to
+anyone but the vault (`ERR_CALL`); `assemble` / `assemble2` refuse (`ERR_ARG`, nothing written) a
+target blob whose count byte is not `n_sig` or whose length cannot hold the slots.
 
-**Call** (`nodus_witness_rt_native.c`): `validator_id[64] ‖ new_pk[2592] ‖ consent_sig[4627] ‖
-consent_expiry u64` = 7291 B (`RTN_SYS_ROTATE_V2_CALL_LEN`, `_Static_assert` == 7291 and < the
-generation-4 STAKE's 7301 — the capacity derivation does not move), exact length (`rtn_rotate2_parse`).
-`rtn_sys_is_stake_op` is now an explicit set {1, 2, 3, 4, 5, 10}. The CORE SYSFUND sibling is FEE-ONLY
-(`rtn_sys_call_flow`: lock 0 / release 0 at generation 4, A4; −1 below); `rtn_sysfund_shape` refuses
-the pairing below generation 4; `rtn_sys_call_identity` refuses op 10 (no pubkey identity at
-generation 4); the describer's `rtn_sys_call_gen_of` reads op 10 as generation 4.
+**`msig sign` verifies the inputs (item 5 — Astra's objection, agreed).** C2 binds the SYSTEM owner;
+the FUNDING side cannot be bound in call bytes without touching live v1 SPEND hashing, so the signer
+checks it: `nodus-cli -s <node> msig sign` (v1 and v2) prints the chain id (`--chain-id <hex64>` must
+equal it), opens a session to `-s` with the co-signer's own key (a descriptor member), requires the
+node's chain id == the export's, and requires EVERY input nullifier in the vault's coin set
+(`nodus_client_dnac_msig_utxo`, one page of at most `NODUS_DNAC_MAX_UTXO_RESULTS` coins, amount DESC);
+each input's amount / token / lock is printed from the node's answer. No `-s`, an unsupported or
+refused query, another chain, or one input not in the page (truncated or not) → nothing is signed; no
+flag skips it (`msig_inputs_verify`). The chain itself still accepts a funding leg whose descriptor
+was swapped to the coins' real owner (`rtn_input_owned`); a protocol-level binding (the descriptor in
+the kind-3 auth context) is a separate height-activated hard fork, recorded, not done.
 
-**Read plan** `[VAL2(13, validator_id)] [KEYRES(17, SHA3-512(new_pk))]`.
+**CLI removals:** `v2-envelope rotate`, `validator consent --op rotate` and `--subject` (usage and
+help too).
 
-**Exec** (`rtn_rotate2_exec`), in order — every refusal −1 unless noted: shape; exact length; h ≤ INT64_MAX;
-two reads (else −2); the row exists and is well formed; **authority = the COMMITTED row's owner_fp**
-(`rtn_sys_owner_auth`, kind 1 or kind 3, kind 2 refused); status ACTIVE or ELIGIBLE (A5 — RETIRING /
-UNSTAKED / AUTO_RETIRED refused); no pending key (a second ROTATE is refused, §3); `new_pk` ≠ the row's
-current key; `new_pk` not reserved by any validator in any role (role 1 active, role 2 pending — §4; a
-reservation answer of the wrong length −2); consent expiry `expiry ≥ h ∧ expiry − h ≤ 720`
-(`dna_valbind_expiry_ok`, the STAKE rule); the §6.1 message rebuilt — version 1, chain = the engine's
-chain id, **op 2** (`DNA_VALBIND_OP_ROTATE`, not runtime_op 10), subject = the call's validator_id,
-owner_fp = the committed row's, key = `new_pk`, expiry from the call — verified under `new_pk` with ctx
-`nodus.valbind.v1`; the SYSFUND sibling call well formed.
+**Determinism**: the new exec rule reads only the call bytes and the one row the plan already reads;
+the pins are compile-time literals re-derived by the selfcheck; nothing reads a clock or a cache.
 
-**Effects**, canonical (kind-major, then op id): `CREATE op 17` behind ABSENT — key SHA3-512(`new_pk`),
-value `validator_id ‖ 0x02` (role 2 = pending, `NODUS_V2_KEY_ROLE_PENDING`); then `SET op 13` behind
-EXISTS_VHASH of the observed row — the row with ONLY `pending_consensus_pubkey := new_pk` and
-`consensus_key_effective_epoch := F` changed, F = the first epoch boundary ≥ the commit height (h itself
-at a boundary; A1). "Zero key ⇔ epoch 0" is unchanged (`rtn_val2_rec_ok`, `v2_pending_consistent`):
-F ≥ E > 0 for every h ≥ 1. No Rule K stamp. The adapter needed no new arm: `rtn_sys_probe` already
-answers op 13 (value hash for EXISTS_VHASH) and op 17 (existence for ABSENT); the op-13 SET writer
-(`rtn_sys_val2_set`) already writes the two roles fields and never `validators.pubkey`; the op-17
-CREATE writer accepts role 2. **Describer**: an applied ROTATE is described with no record kind
-(`NODUS_RT_DESC_REC_NONE`, the storage-op precedent) — without the arm the address index would fail
-the block on the first applied ROTATE; its SYSFUND sibling is described like any fee-only sibling.
-
-**Tests** (written, NOT run by the author). `test_hf6_rotate`: hooks — plan order and keys, length
-± 1, kind-1 (ACTIVE, ELIGIBLE) and kind-3 positives with the two effects byte-checked (F = E at h = 9,
-F = E at h = E, F = 2E at h = E + 1), every refusal above plus consents with op 1, an all-zero subject,
-another validator's id, another owner, another chain, the OLD key signing and ctx `nodus.valbind.v2`,
-a malformed and a non-SYSFUND sibling; the CORE pairing at generation 4 and its refusal at 3; the
-describer. Engine (twin seeded chains): op 10 refused at ADMISSION under generation 3; a STAKE then a
-ROTATE applying (row pending = new key, epoch E, KEYRES role 2 for the new key and role 1 kept for the
-current one, value conserved); a second ROTATE, a ROTATE to a role-2 key and one to a migrated role-1
-key refused with the ledger tables byte-identical; twins byte-identical.
-
-### HF-6 slice 6c — by-validator_id membership, the swap writer, the key promotion (branch `hf6` only — not versioned, not voted)
-
-Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 ("Satır değişimi"; "Görev ve
-devam aramaları (attendance, Rule N) blokları yöneten snapshot'ın anahtarını kullanır, canlı satırı
-değil"; khan decisions A1, A2, A5 of 2026-10-12), §4; plan `tasks/hf6-slice6-plan.md` §1.4, §1.5,
-§1.11, §2 "6c", B3 / B4 / B5 / B8. Inert on a chain with no pending row. The swap writer's caller is
-slice 6d's boundary swap step (next section).
-
-**The swap writer** `nodus_validator_v2_rotate_apply(w, validator_id, old_pk, new_pk)`
-(`nodus_witness_validator.c`): inside the caller's transaction (autocommit refused, nothing written);
-refuses an all-zero id or new key and new == old before any write (SQLite counts a matched no-op row as
-changed). Three UPDATEs, each required to change exactly one row: (1) `validators.pubkey := new` keyed by
-`(pubkey_hash = validator_id, pubkey = old)` — the ONE writer of the consensus key (`v2_update` keys by it
-and the op-13 SET never writes it, so both keep refusing a key change); (2) the roles row's
-`pending := 2592 × 0x00, effective epoch := 0` keyed by `(validator_id, pending = new)`; (3) the new
-key's reservation role 2 → 1 keyed by `(SHA3-512(new), validator_id, role 2)`. The OLD key's role-1
-row is kept — released at U+E by the 6d sweep (A2) — so from U to U+E a rotated validator holds TWO
-role-1 rows (the invariant text at `nodus_witness_validator.h` says so). A wrong old key writes nothing;
-a later-step failure is rolled back by the caller (the `v2_update` discipline).
-
-**Membership by validator_id** — `v2ep_member_in_snapshot(snap, validator_id, pubkey, chain32, &idx)`
-(`nodus_witness_v2_epoch.c`, replaces `v2ep_pubkey_in_snapshot`): a ruleset-2 snapshot by
-`entry.validator_id`; a ruleset-1 snapshot at key generation ≥ 4 through the migrated-id bridge
-`dna_validator_id_migrated(chain id, entry.pubkey) == validator_id` (the distribution's §7.5 bridge —
-exact, a v1 entry only ever names a pre-HF-6 row); below generation 4 the old pubkey memcmp whatever
-the snapshot's ruleset (byte-identical, including test fixtures that store a ruleset-2 row on a
-generation-1 chain). The bridge
-matters for the FIRST rotation cycle: the first generation-4 freeze F reads a ruleset-1 S(F), so Rule N
-at U = F + E judges a row whose key was just swapped against a v1 duty snapshot — a pubkey match would
-read "no duty" and reset its counter. A membership that cannot be decided is a boundary fault.
-Users: the graduation deferral (R5-3, snapshot(H)) and Rule N's duty test (snapshot(H−E)), whose
-attendance is now read by the **duty entry's** pubkey — the key that signed the ending epoch — not the
-row's live key. Rule N's counter UPDATE still addresses the row by its own pubkey.
-
-**Graduation** writes the UNSTAKED row back with no pending key (pending zero, epoch 0; B8);
-`nodus_validator_v2_key_release` is unchanged — its second DELETE ("every other row naming the
-validator") already takes a role-2 pending key and, between a swap and the sweep, the previous key's
-kept role-1 row.
-
-**Flips** (`nodus_witness_vset_apply_boundary_flips`, pass 2): a ruleset-2 snapshot activates rows by
-`pubkey_hash = entry.validator_id` (B5) — an accepted rotation seats the pending key, so a pubkey match
-would leave the validator ELIGIBLE for the epoch it is seated in whenever the swap had not run first; a
-ruleset-1 snapshot keeps the pubkey match.
-
-**Distribution** (`v2ec_member_load`, ruleset-2 arm): the key check is `entry.pubkey ∈ {row.pubkey,
-row.pending}` (B4; the pending arm only for a set pending key). With 6d's order (swap after the
-distribution, before the graduation) strict equality holds at U and U+E; the pending arm turns a future
-ordering mistake from −2 on every node into paying the right owner. A third key is still −2.
-
-**Byte-identical**: every path below generation 4 (pubkey arms unchanged; the attendance key is the
-matched entry's, which IS the row's key under a pubkey match); every generation-4 boundary on a chain
-where no row has rotated (the bridge and the by-id matches name the same entries; pending is all-zero,
-so the econ check reduces to equality and the graduation's zeroing writes the values already stored).
-Cost: the ruleset-1 bridge derives one SHA3-512 id per (candidate, entry) pair — at most 256 × 128 —
-only at the generation-4 boundaries whose snapshot is still ruleset 1 (the first two).
-
-**Tests** (written, NOT run by the author) — `test_hf6_rotate` case C, twin chains to 4E. Real STAKE,
-ROTATE and UNSTAKE envelopes on three generation-4 STAKEd rows (a genesis seat is Foundation-owned and
-cannot be signed for in a test); the ONE direct write is 6d's freeze stand-in (S(3E) re-keyed to the
-pending keys), made only immediately before a boundary block — a fired boundary declares SYSTEM touched
-(`nodus_witness_v2_apply.c` phase 6e, `dsys->touched = 1`), an ordinary block after a direct write is
-refused by phase 8's untouched-domain guard. rotate_apply's exact-row checks (autocommit, wrong old key,
-new == old, no / another pending key, missing role-2 row, replay) and the two role-1 rows after a swap,
-inside a rolled-back transaction; at 3E the flips activate unswapped rows seated under their pending keys
-and a RETIRING row so seated is deferred with both reservations kept; at 4E a third key in S(3E) faults
-the boundary (on one twin, rolled back), the real boundary pays entries carrying the rows' pending keys,
-the graduate's pending key and both reservations are released, and Rule N finds the duty by validator_id
-(counter +1 where a pubkey match would reset) and reads the entry key's attendance. Slice 6d replaced
-the stand-in with the real freeze and swap and rewrote case C accordingly (next section).
-
-### HF-6 slice 6d — the freeze's rotation budget, the swap at U, the sweep at U+E (branch `hf6` only — not versioned, not voted)
-
-Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 (the budget `P − R >
-floor(2P/3)` on BOTH S(F) and S(U) with each set's counted power, validator_id ASC; "kabul edilen
-rotasyon S(U)'ya YENİ anahtarla girer"; the row switch at U before U's freeze of S(U+E); Rule N's
-preview == stored) and the khan decisions of 2026-10-12 under it: A1 (exec writes F, the freeze writes
-NOTHING, acceptance is the stored S(U) bytes, the swap fires when S(U)'s entry carries the pending key,
-a deferred rotation keeps its F), A2 (the previous key's role-1 reservation released at U+E with the
-previous voter's attendance row), A3 (a candidate that does not fit is skipped and the walk continues;
-one with no seat in S(F) adds 0 there — operator: "3'te 2'yi kaybedersek patlarız"). Plan
-`tasks/hf6-slice6-plan.md` §1.2, §1.4, §1.8, §2 "6d". Heights: ROTATE at h, F = the first boundary ≥ h,
-U = F + E.
-
-**The freeze pass** (`vset_rotation_pass`, `nodus_witness_vset.c`, inside the ONE builder core
-`vset_build_snapshot`, after the entry fill; only at key generation ≥ 4). Candidates = the
-`v2_validator_roles` rows with a pending key and `consensus_key_effective_epoch ≤ F` (F = the snapshot's
-epoch − E), one statement in validator_id ASC (B1 — the member struct is not widened). **No candidate ⇒
-nothing else is read** (no power helper, no S(F)): the bytes and the fault set are the pre-6d builder's.
-With candidates: the counted powers of the provisional S(U) (current keys — a power reads only
-total_stake and validator_id) and of the stored S(F) (authority resolver; absent / unreadable ⇒ fault;
-ruleset 1 ⇒ raw powers), both through `nodus_witness_vset_powers`; P = 0 or a helper refusal ⇒ fault.
-The walk accepts candidate c iff `P − (R + p) > P * 2 / 3` holds in both sets with the party
-accumulated so far (`vset_rot_fits`; the quorum `total*2/3+1`, `shared/dnac/cmt_vote_set.c:509`; Rule
-N's floor form). c is located in S(U) by validator_id (absent ⇒ waits) and in S(F) by validator_id
-(ruleset 2) or `dna_validator_id_migrated(chain id, entry.pubkey)` (ruleset 1, the first generation-4
-freeze); absent from S(F) ⇒ p_F = 0 (A3). A refused c is skipped, the walk continues (A3). An accepted
-member takes the pending key and its entry is re-filled by `nodus_witness_vset_entry_from_member`
-(voter_id re-derived). Nothing is written. Rule N's preview and commit_next run the same core over the
-same inputs, so they accept the same rotations (the floor-argument list in `v2ep_rule_n` gains the
-pass's inputs and the two new boundary steps). Worked example (test D): S(3E) = S(4E) = [12M × 3,
-10M × 7], P = 106M, floor(2P/3) = 70666666 — parties of 12M and 24M fit (94M, 82M), 36M does not (70M),
-so the third waits and is accepted at the next freeze with its F kept. With seven equal members a
-boundary admits at most two rotations; with n ≤ 3 equal members none (design §3).
-
-**The swap** (`v2ep_rotate_swap`, boundary step 1d — after 1b distribution, 1b′ storage and 1c payday,
-before 2 graduation, 3 Rule N and 5 commit_next; generation ≥ 4 only). Candidates = every pending row,
-validator_id ASC, read first — none ⇒ S(U) is not read. S(U) ruleset 1 ⇒ no swap (a v1 snapshot can
-seat no pending key). For each row whose S(U) entry (by validator_id) carries its pending key:
-`nodus_validator_v2_rotate_apply` (the row's status is not a condition — a validator that UNSTAKEd
-after its rotation was accepted is seated in S(U) under the new key and is deferred by id). Why the
-position: the distribution at U pays S(F), whose entries name the old keys, against rows that still
-hold them (the ruleset-2 key check); every reader of S(U) after the swap sees the row as S(U) names it,
-and commit_next copies the NEW key into S(U+E) (design §3: left to U+1, Comet would fall back to the old
-key one epoch later).
-
-**The sweep** (`v2ep_rotate_sweep`, boundary step 3d — after 3b digest and 3c reset, before 4 flips;
-generation ≥ 4 only). **A departure from plan §1.8's derivation** (S(U) entries whose validator
-appears in S(F) under a different key): candidates are read from the reservation table. (Its first
-reason — an A3 validator S(F) does not seat keeps a previous key no committed snapshot names — is gone
-since khan A8, which releases that key in the swap at U; see "HF-6 khan A8". The table read stays and
-also finds the graduated shape.) So: candidates = validator_ids holding two role-1
-rows (`nodus_validator_v2_key_rotated_ids`, validator_id ASC) — none ⇒ no snapshot is read; a candidate
-whose S(U = H−E) entry (by id, ruleset-1 bridge) carries the row's current key was swapped at U ⇒
-`nodus_validator_v2_key_sweep_previous` deletes the previous key's role-1 row (exactly two role-1 rows,
-exactly one the current key's, else fault) and the previous voter's `v2_attendance` row (voter_id =
-the first 32 bytes of that same untagged SHA3-512 — 0 or 1 row) is deleted; otherwise it must be this
-boundary's swap (S(H) seats it under the current key) and is kept until H+E; any other shape faults. A
-validator swapped at U that graduates at U+E is a candidate too since slice 6e (see "HF-6 slice 6e":
-`key_release` keeps its previous key for this step).
-
-The two steps' fault-injection stages (19 / 20, engine ids F61 / F62) were added by slice 6e.
-
-**Byte-identical**: every path below generation 4; every generation-4 freeze, swap and sweep on a chain
-with no pending row and no second role-1 row (each step reads its candidates first and returns).
-
-**Tests** (written, NOT run by the author). `test_hf6_rotate` case C (rewritten): STAKEd rotators not
-seated in S(F) — ROTATEs at 7..9 (F = E) wait at E (not seated in S(2E)), are accepted at 2E with 0 in
-S(F), S(3E) carries the keys and equals `preview_next(2E)` byte for byte; probes on S(2E) (rolled back):
-(d) S(F) at 1 coin per seat still accepts them; (f) S(F) absent faults with candidates and builds
-without them — then byte-equal to the stored S(3E) under the current keys; (h) a sub-coin S(F) seat
-faults with candidates only; (e) the v1 bridge on a genesis seat (preview, rolled back). Swap of all
-three at 3E (a RETIRING one included); the previous keys KC1 / KC2 / KC3 (keys no snapshot names) are
-released in that swap since khan A8 (before A8: by the sweep at 4E); three role-1 rows on a swapped
-validator fault the sweep. Case D: three 12M STAKEs rotating with F = 3E — the budget arithmetic
-above, the swap at 4E, Rule N at U on the OLD keys (signed → 0, absent → 1), the distribution paying
-the owner at U and U+E, the sweep deleting the previous attendance and role-1 rows at 5E (and the
-third's at 6E), twin digests. `test_cmt_app` `t_val_updates_rotation`: a snapshot(E) differing in one
-entry's key is announced as exactly [new key at its power, old key at 0] and Comet's set for E+2 holds
-the new address only (hand-written snapshot; priority not pinned).
-
-### HF-6 slice 6e — the p2p pending set; the rotation stages; the graduate's previous key (branch `hf6` only — not versioned, not voted)
-
-Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 ("p2p bonded set
-`pending_consensus_pubkey`'i de kapsar — yeni node ilk görevinden önce gossip yapabilsin"; the previous
-voter's attendance row deleted at U+E after that epoch's settlement and digest consumers) and khan A2
-(the previous key's reservation released at U+E with it). Plan `tasks/hf6-slice6-plan.md` §0.6 #14,
-§2 "6e", §5 B2.
-
-**The p2p pending set** (`bonded_add_pending`, `nodus_witness_p2p.c`, called by
-`nodus_witness_p2p_refresh_bonded` between the validators read and the two committee reads, before the
-sort). One ordered statement: `SELECT r.pending_consensus_pubkey FROM v2_validator_roles r JOIN
-validators v ON v.pubkey_hash = r.validator_id WHERE r.pending_consensus_pubkey != zeroblob(2592)
-ORDER BY r.validator_id` (no status filter since red-team round 1, Z-31). From the ROTATE's commit on, the
-node that will sign under the pending key from U + 2 is bonded: its connections bypass the inbound cap,
-it is dialed without being abandoned, its signed ADDR record is verified against that key
-(`h_bonded_pubkey`) and an unsigned one is refused. Below generation 4 the roles table is empty — no
-change. The status is not read: a row that UNSTAKEs after its rotation was accepted (RETIRING, or
-AUTO_RETIRED by Rule N) keeps the pending key and the swap at U seats it under the new key regardless
-of status, so its new node stays bonded; an UNSTAKED row carries no pending key (the graduation zeroes
-it). At the swap (U) the key becomes the row's own and stays bonded through the validators read while
-the row is ACTIVE / ELIGIBLE, and through the committee reads while a snapshot seats it. A failure of the statement is
-logged and the set is built from the other three sources (the validators read's rule). Node-local: the
-set decides connections only. The inbound job queue (`inbound_depth`) follows the listener limit,
-which grows by the pending keys (`cmt_p2p_transport_max_incoming` = cap + unconditional + bonded).
-
-*The old key's exit.* At tip U + 1 neither the validators row (swapped at U) nor committee(U ± 1)
-(both S(U)) names the old key, while it signed U + 1's precommit. No consumer disconnects a peer that
-leaves the set: the switch tests "unconditional" only when it ACCEPTS an inbound connection
-(`cmt_p2p_switch.c` the inbound-peer cap) and when it COUNTS peers (`cmt_p2p_switch_num_peers` — the
-old ID now counts toward the inbound / outbound numbers — an outbound one leaves PEX one dial fewer to
-make); the mempool reactor's
-unconditional flag is fixed when the peer is added; the transport's `n_inbound` keeps the job queue
-deep enough for a limit that shrank. What the old ID loses: the inbound-cap bypass on a RECONNECT, the
-never-ban rule (`cmt_p2p_addrbook_mark_bad`), the never-abandon dial rule (PEX `dial_peer`), the
-signed-record-only rule (an unsigned address for it is admitted again), the 0x71 approval gate
-(`nodus_witness_handle_cc_appr_req` drops its requests — it is no longer a seat for governance from
-U + 1 either, plan §0.6 #13) and the 4001 roster listing. Consequence for the runbook (plan-local item A8 of
-`tasks/hf6-slice6-plan.md` §5 — NOT khan decision A8 of 2026-10-13: a validator seated in S(F) keeps its
-old node up through at least U + 1 (it signs U and U + 1) and U + ⌊E/2⌋ (its STORAGE_REPORT for H = F,
-window (U, U + ⌊E/2⌋]); U + E is the safe upper bound (the old key's reservation ends there); a
-validator with no seat in S(F) has none of these duties — DEPLOY_RUNBOOK §2.7 item 7): from U + 2 it
-reaches the network as an ordinary peer.
-
-**Tests** (written, NOT run by the author). `test_witness_p2p` (2a''): on a derived version-3 chain,
-inside a rolled-back transaction — two keys in no committee and no row are not bonded; a roles row
-with pending K_R under ACTIVE row 2 makes K_R bonded; a pending K_S under row 3 is not bonded while row
-3 is RETIRING or UNSTAKED and is bonded when row 3 is ACTIVE again (the control); after
-`nodus_validator_v2_rotate_apply` switches row 2 to K_R (no pending key left) K_R is bonded as the row's
-key; rolled back, the set is the chain's again. `test_hf6_readers` D pins the new `JOIN validators`
-reader (`bonded_add_pending`, VALUE_SCAN, ×1).
-
-**The rotation stages** (plan §5 B2). `NODUS_V2_EPST_ROTATE_SWAP = 19` and `NODUS_V2_EPST_ROTATE_SWEEP =
-20` (`nodus_witness_v2_epoch.h`, appended after 18) fire right after boundary steps 1d and 3d, at key
-generation ≥ 4 only (below it the steps do not exist), whether or not the step had a candidate (the
-neighbouring stages' convention). The engine maps them BY NAME in `epoch_stage_fault`
-(`nodus_witness_v2_apply.c`) onto the appended fault ids `V2AP_FAIL_AFTER_ROTATE_SWAP = 61` and
-`V2AP_FAIL_AFTER_ROTATE_SWEEP = 62` (`nodus_witness_v2_apply.h`, after 60). Proof obligations: an
-interrupt after 1d leaves every accepted row on its old key with its pending key and role-2 reservation;
-after 3d it leaves the previous keys' role-1 rows and attendance rows in place. Not in the test
-fixture's lane-class table (`tests/v2_genesis_fixture.h` `v2x_cmt_fail_class`, outside this slice's
-files): a test that routes 61 / 62 through `v2x_cmt_injected` gets "never fires"; the slice's tests call
-`v2x_cmt_fault` directly.
-
-**The graduate's previous key** (design §3 + khan A2). A validator swapped at U that leaves S(U+E) —
-it UNSTAKEd, or Rule N retired it, before U's freeze — graduates at U+E (at U its graduation is
-deferred: S(U) seats it). Before 6e the graduation's `nodus_validator_v2_key_release` deleted every
-reservation naming it, the previous key's kept role-1 row included, so the sweep (which finds its
-candidates in the reservation table) never saw it and the previous voter's `v2_attendance` row stayed
-for ever. Now: `key_release`'s second DELETE takes role-2 rows only; `nodus_validator_v2_key_rotated_ids`
-also returns every UNSTAKED row that still holds a role-1 reservation (`UNION`, one ordered result);
-`v2ep_rotate_sweep` accepts such a candidate only if S(U) seats it under its current key (swapped at
-U) and releases through `nodus_validator_v2_key_sweep_previous(…, graduated = 1, …)` (exactly one
-role-1 row, not the current key's) — then deletes the previous voter's attendance row exactly as for a
-bonded row. ONE release site for every previous key and its attendance row, AFTER the digest of
-(U, U+E], which still counts the previous voter's U+1 / U+2 credits (design: "silme … o epoch'un
-settlement'ı ve digest tüketicileri bittikten sonra, sınır U+E'de"); deleting inside the graduation
-(step 2) would have removed them from that digest. Between step 2 and step 3d of that one boundary the
-UNSTAKED row holds its previous key at role 1; nothing between reads `v2_consensus_keys`. A graduation
-at any other boundary cannot hold a previous key (deferred at U; released by the sweep of U+E after
-it), so a graduated candidate that S(U) does not seat under its current key is a fault. Deterministic:
-the candidates are committed rows in validator_id order; voter_id = the first 32 bytes of the untagged
-SHA3-512 of the key both derivations take (`nodus_chain_config_derive_witness_id`, OpenSSL; the
-reservation hash, `qgp_sha3_512`). Not changed: the CURRENT key's attendance row of any graduate stays
-(graduation has never deleted attendance rows).
-
-**Tests** (written, NOT run by the author). `test_hf6_rotate` case D: F61 at 4E and F62 at 5E on twin
-A — node FAULT, whole database byte-identical, the rows the step writes found unchanged; the clean
-boundary then applies on both twins and A == B right after it. Case E (new): one validator rotated
-(F = 3E), UNSTAKEd at 3E+3, swapped at 4E while RETIRING, graduation deferred at 4E, not in S(5E), its
-previous key KC1 signs into an attendance row; F62 at 5E rolls the graduation and the sweep back
-together; the clean 5E leaves it UNSTAKED with no attendance row for KC1 and no reservation naming it;
-A == B. Case C's V_B (swapped at 3E, graduated at 4E) had its kept KC2 released by the sweep's
-graduated arm — since khan A8 KC2 goes in the swap at 3E instead (V_B has no seat in S(2E)), so the
-graduated arm is driven by case E only.
+**Tests** (written, NOT run by the author): `test_hf6_calls` (C2 owner mismatch kind 1 both ways,
+the kind-3 descriptor swap both ways, 128 / 130 ± 1 and the pre-C2 64 / 66 refused, the C2 lengths
+refused under generation 3), `test_storage_reg` (the same for STORAGE_EXIT), `test_hf6_msig_owner`
+(O2 UNSTAKE / VALIDATOR_UPDATE and O3 STORAGE_EXIT under kind 3; N4 the descriptor swap with REAL
+signatures — SYSTEM refused, CORE accepted and labelled as the gap item 5 closes; N5 review2
+change-owner and assemble2 count refusals), `test_v2_stake_client` (layouts, decode refusals, a chain
+C2 mismatch, op 10 `ERR_OP`, the container's op-2 refusal), `test_v2_msig` M6 (assemble count),
+`test_storage_cli`, `test_storage_b2`, `test_hf6_rotate`, `test_hf4_table` / `test_v2_native` K7 (the
+versions, the GST = GEVM policy equality, both D4 KATs). ⚠ The Genesis Protocol scenario
+`test_cmt_multisig.sh` calls `msig sign` without `-s` and is refused until it passes one (stagef
+README row).
 
 ### HF-6 6f-1 client — `validator consent`, `v2-envelope stake2 | rotate` (branch `hf6` only — not versioned, not voted)
+
+⚠ **HF-6 D1 / D2:** the chain no longer accepts ROTATE (op 10 is owned by no generation — section
+"HF-6 D1" above) and D2 removed the client's `--op rotate` / `v2-envelope rotate` / `--subject` and
+`NODUS_V2_STAKE_OP_ROTATE` (section "HF-6 D2"); the ROTATE text below is history.
 
 The minimal client path the 6f harness needs (plan `tasks/hf6-slice6-plan.md` §2 "6f", §5 B6), brought
 forward from slice 7; storage consent (op 3) and the Connect screens stay in slice 7. Design rev 6 §2
@@ -8024,7 +7836,8 @@ snapshot here IS the first settlement after the generation-4 edge (the storage s
 B₀ is settled at B₀ + 2E over snapshot(B₀), built before the edge). A row absent or unreadable is a
 FAULT naming the seat (khan A1: rows are never deleted; only node-local corruption loses one — that
 node stops at that boundary, the others continue). Never SHA3-512(pubkey) read as an owner; never the
-row's current (rotated) key — the key clause uses the SNAPSHOT's pubkey. (4) Per member m with row
+row's current key (written for ROTATE; since HF-6 D1 the two are the same key) — the key clause
+uses the SNAPSHOT's pubkey. (4) Per member m with row
 R(m), `nodus_storage_member_verdict`: seat s is excluded iff `owner(s) == R(m).payee_fp` (the owner)
 OR `SHA3-512(entry s pubkey) == node_fp(m)`; I = Σ power of reporting non-excluded seats, Y = the part
 with m's bit; **`2·I ≤ P_total` → NO_EVIDENCE; else `3·Y > 2·I` → OK; else NOT_OK** (checked u64; the
@@ -8170,8 +7983,8 @@ decision moves: the chain side is sub-slice 3c's.
 |---|---|---|---|
 | DELEGATE 2 | `delegator_fp ‖ validator_id ‖ amount` = 136 | lock = amount | delegator_fp (`rtn_delegate2_exec`) |
 | UNDELEGATE 4 | the same 136 | fee-only; the chain creates the release coin to delegator_fp (`rtn_sysfund_release_coin`) | delegator_fp (`rtn_undelegate2_exec`) |
-| UNSTAKE 3 | `validator_id` = 64 | fee-only | the row's owner_fp (`rtn_unstake2_exec`) |
-| VALIDATOR_UPDATE 5 | `validator_id ‖ commission u16` = 66 | fee-only | the row's owner_fp (`rtn_vupd2_exec`) |
+| UNSTAKE 3 | `validator_id ‖ owner_fp` = 128 (64 before HF-6 D2) | fee-only | the call's owner_fp, which must be the row's (`rtn_unstake2_exec`) |
+| VALIDATOR_UPDATE 5 | `validator_id ‖ owner_fp ‖ commission u16` = 130 (66 before HF-6 D2) | fee-only | the call's owner_fp, which must be the row's (`rtn_vupd2_exec`) |
 
 delegator_fp = SHA3-512 of the signing key (kind 1 — the delegator IS the signer). The request names
 the validator through the existing `validator_id` field (no struct grows); `commission_bps` carries the
@@ -8311,7 +8124,8 @@ refuses NULL inputs, `n_consts > 64`, and any preimage whose length is not
 `DNA_ROLEGEN_PREIMAGE_LEN(n)`. The witness wrapper `nodus_runtime_gen4_vote_digest`
 (`nodus_witness_runtime.c`, EVM builds) feeds it the compiled generation-4 pins, the compiled owner
 and `GEN4_VOTE_CONSTS` (the nine NAMED constants in §8.1's order, `_Static_assert` count 9). The
-literal `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x4dc61072d5982acd` (5604184871704996557) is the `D4 =` line
+literal `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x5922111a3501f58b` (6422714822839891339, since HF-6 D2 —
+`0x4dc61072d5982acd` = 5604184871704996557 before it, over the SYSTEM v9 / CORE v7 pins) is the `D4 =` line
 of the INDEPENDENT oracle `shared/dnac/tests/hf6_vote_oracle.py` (S2 / S3 from `storage_oracle.py`,
 owner K8) — never this build's encoder; the plan author's separate scratch derivation gave the same
 number. Two binaries that differ in a generation-4 pin, the 3 → 4 procedure, the owner or one of the
@@ -8327,7 +8141,8 @@ param-16 trigger (done: deleted in 8c, section "HF-6 slice 8c").
 the literal with that owner's D4, and a build that overrides only one refuses to start on every node
 (the selfcheck row). `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both flags; it takes
 the D4 from `hf6_vote_oracle.py --owner <fp>` and never computes it in bash (the 2026-10-12 harness
-owner `2cca88c4…ee196b93` → `0x4fc24934a9155c64`). Production defines neither.
+owner `2cca88c4…ee196b93` → `0x2a3351e7325932f1` since HF-6 D2, `0x4fc24934a9155c64` before).
+Production defines neither.
 
 **Byte-identical.** Every descriptor, pin, the pins header, D2, the EVM D, the storage dev literal,
 every chain-config rule and every committed block: nothing on the vote path or in the engine reads
@@ -8335,8 +8150,8 @@ the new literal yet.
 
 **Tests** (written, NOT run by the builder). `test_hf4_table` section 6'': constructor over the
 compiled pins + compiled owner + the test's own nine-constant array == the wrapper == the literal, and
-— only under `DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT` — == `0x4dc61072d5982acd`; the harness owner passed
-explicitly == `0x4fc24934a9155c64` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) == 296`; NULL and
+— only under `DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT` — == `0x5922111a3501f58b` (HF-6 D2); the harness
+owner passed explicitly == `0x2a3351e7325932f1` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) == 296`; NULL and
 `n_consts > 64` refused; generation, base, either hash, spec, `n_consts`, one owner byte and each
 constant move the value; D4 differs from D2, the EVM D and the storage D. `test_v2_native` K7: the K8
 literal (owner-default builds). Both prove the C constructor agrees with the oracle, not that §8.1 is
@@ -8352,7 +8167,7 @@ change: the moment 16 is retired every fixture and both harness scenarios reach 
 
 **Param 18 `DNAC_CFG_RULESET_GEN_ROLES` (`dnac.h`).** On the read list
 (`dnac_cfg_param_read_by_consensus`); scalar rule EXACTLY `DNAC_CFG_RULESET_GEN_ROLES_D` (D4,
-`0x4dc61072d5982acd`) in `nodus_chain_config_scalar_rules` and the client mirror
+`0x5922111a3501f58b` since HF-6 D2) in `nodus_chain_config_scalar_rules` and the client mirror
 (`dnac_tx_verify_chain_config_rules`); grace ERGONOMIC (its own case); `CC_PARAM_RULESET_GEN_ROLES`
 `_Static_assert`ed to the dnac id. Stateful (`nodus_chain_config_stateful_rules_ex`, its own case —
 not a fall-through into param 9's), each a −1 verdict:
@@ -8424,125 +8239,41 @@ the param-16 row. `test_explorer`: the 18 label and the retired 16 label.
 
 ### HF-6 — the key-reservation self-check, log-only (branch `hf6` only — not versioned, not voted)
 
-`v2_consensus_keys` (design rev 6 §4, goal G7) is in no root: a node whose table drifted would answer
-STAKE / ROTATE's KEYRES read (op 17) differently from its peers and nothing would flag it before a
-block diverged. Step **7** of `nodus_witness_v2_epoch_boundary_apply` (generation ≥ 4, after the
-balance copy) re-derives the table and compares it row for row (`nodus_witness_v2_epoch.c`
-`v2ep_keyres_compare`, ORDER BY `consensus_pk_hash`). Since the khan-A8 follow-up (2026-10-13) the
-same check also runs at **step 0** of every generation-4 boundary H ≥ 2E, against the derivation of
-H − E, before the swap and the sweep write (see "HF-6 khan A8").
+`v2_consensus_keys` (design rev 6 §4, goal G7) is in no root, yet it decides every generation-4 STAKE
+verdict (the KEYRES read, op 17) for the life of the chain — since HF-6 D1 the index is permanent (khan
+decision `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` items 1 and 4). A node whose table
+drifted would answer that read differently from its peers and nothing would flag it before a block
+diverged. Step **7** of `nodus_witness_v2_epoch_boundary_apply` (generation ≥ 4, after the balance
+copy) re-derives the table and compares it row for row (`nodus_witness_v2_epoch.c`
+`v2ep_keyres_compare`, ORDER BY `consensus_pk_hash`).
 
-**Derivation** (read from the writers — `key_insert` / `key_release` / `rotate_apply` /
-`key_sweep_previous`, the migration, `v2ep_rotate_swap` / `v2ep_rotate_sweep`):
-- role 1, current key: SHA3-512(pubkey) of every v2 row (`nodus_validator_v2_scan`) not UNSTAKED;
-- role 2: SHA3-512 of every non-zero `pending_consensus_pubkey`;
-- role 1, previous key (khan A2): after boundary h only the validators swapped AT h hold one (the
-  sweep at h released the swap of h − E's). Swapped at h ⇔ S(h) seats the pending key; the key
-  before the swap is the one S(h − E) seats. So for every entry of a ruleset-2 S(h) whose key
-  differs from the same validator_id's entry in S(h − E) (a ruleset-1 S(h − E) through
-  `dna_validator_id_migrated`), SHA3-512 of the S(h − E) key.
+**Derivation** (read from the two writers — the generation-4 edge and the STAKE — and from the facts
+that no validators row is ever deleted and no `validators.pubkey` ever changes at generation 4):
+EXACTLY one row per validators row of ANY status (`nodus_validator_v2_scan`, UNSTAKED included):
+`consensus_pk_hash` = SHA3-512(`validators.pubkey`) (untagged), `validator_id` = the row's id,
+role 1. No other row may exist; no snapshot is read.
 
-**Fully derivable since khan A8 (2026-10-13).** A rotation is accepted for a validator with no seat
-in S(F) (khan A3, `vset_rotation_pass`); its previous key is in no committed snapshot. Until A8 that
-key's role-1 row stayed until U + E with no rooted record of it, so the check tolerated ONE extra
-role-1 row per such validator ("unverified") and could not see it deleted. A8 releases that key in
-the swap at U (see "HF-6 khan A8" below), so such a validator holds exactly a new entrant's rows and
-there is **no tolerance**: every table row not derived is a difference, for every validator.
+**Differences**: missing, extra, another validator_id, a derived key whose row carries a role other
+than 1, a key derived twice (two validators rows with one key — §4 broken upstream), a malformed row:
+`consensus_pk_hash` or `validator_id` not a 64-byte BLOB — the SQLite storage class is checked first,
+because `sqlite3_column_blob` would convert a 64-character TEXT value into bytes that pass a length
+test — or `role` not an INTEGER. A v2 row whose pending fields are not zero makes the scan's strict
+reader refuse, so the check reports "skipped — an input was unreadable". **Result = LOG ONLY**: one
+`QGP_LOG_ERROR` per reported difference (up to 4: kind, 8-byte prefixes of the key hash and the
+validator_id, expected / found role) and a summary line; a read failure of the check is a
+`QGP_LOG_WARN`. Nothing is returned to the boundary, nothing written, no fault stage — a defect in the
+checker would fire identically on every node, and as a fault it would halt the chain (ORCHESTRATOR
+design decision). **One call per boundary**: no boundary step writes the table, adds or deletes a
+validators row or changes a key (the graduation and the flips move status / stake columns only), so
+the start and the end of a boundary compare identical inputs — the step-0 call of the khan-A8
+follow-up was removed with the swap and the sweep it guarded. **Cost**: one v2 row scan, one table
+scan, one sort; no table or column added.
 
-**Differences**: missing, extra, another validator_id, another role, a key derived twice, a
-malformed row. **Result = LOG ONLY**: one `QGP_LOG_ERROR` per reported difference (up to 4: kind,
-8-byte prefixes of the key hash and the validator_id, expected / found role) and a summary line; a
-read failure of the check is a `QGP_LOG_WARN`. Nothing is returned to the boundary, nothing written,
-no fault stage — a defect in the checker would fire identically on every node, and as a fault it
-would halt the chain (ORCHESTRATOR design decision). **Position**: the table's last writer in the
-boundary is the sweep (3d); the flips move only ACTIVE ↔ ELIGIBLE, commit_next writes S(h+E) (the
-derivation reads S(h) / S(h−E)), the balance copy its own table — after step 6 every input is final.
-**Cost**: one v2 row scan, two snapshot reads, one table scan, two sorts; no table or column added.
-
-Test-facing core: `nodus_witness_v2_keyres_diff` (`nodus_witness_v2_epoch.h`, 0 compared / 1
-generation < 4 / -1 unreadable). Tests: `test_hf6_rotate` section K — every generation-4 boundary
-`apply_both` commits in C / D / E / F compares with 0 differences on both twins; rolled-back
-corruptions D4k (each single-row change exactly one difference), C6k (no tolerance: an A3 rotator's
-released previous key put back is one difference), F2k (the ruleset-1 bridge).
-
-### HF-6 khan A8 — the previous key of a validator S(F) does not seat is released in the swap at U (branch `hf6-a8` — not versioned, not voted)
-
-Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 "(A8)" (khan 2026-10-13:
-"Burada bir güvenlik açığı oluşturmayalım boşu boşuna … liveness açığı, güvenlik açığı, bunlar önemli
-şeyler"). A2 keeps a rotated validator's old key reserved from U to U + E because that key still
-signs U and U + 1 (Comet applies S(U) at U + 2) under S(F)'s duty. A validator khan A3 accepted with
-no seat in S(F) has no such duty: its old key is in no set that signs from F + 2 on.
-
-**The rule** (`v2ep_rotate_swap`, step 1d). After each row switch
-(`nodus_validator_v2_rotate_apply`), S(F) = S(U − E) is read (once per boundary, only when a row
-swaps) and the validator is looked up by validator_id — `v2ep_member_in_snapshot`: the id in a
-ruleset-2 S(F), `dna_validator_id_migrated(chain id, entry.pubkey)` in a ruleset-1 S(F) — the same
-mapping as the freeze's candidate loop and `vset_rot_carried`, so "no seat" is exactly the
-"none ⇒ 0" the freeze applied. **Seated** ⇒ unchanged (A2: the sweep at U + E). **Not seated** ⇒
-`nodus_validator_v2_key_release_previous` deletes exactly the role-1 row (SHA3-512(old key),
-validator_id, role 1) in the boundary transaction; any other change count is a FAULT. S(F)
-unreadable, S(F) ABSENT (the resolver's terminal rc 1) or a mapping fault ⇒ FAULT — never "not
-seated", which would free a key whose old node may still sign U and U + 1 (fail closed, operator
-2026-10-13; the first A8 commit treated absent as "not seated"). An absent S(F) at a boundary that
-swaps cannot arise from a committed chain: `vset_rotation_pass` faults the freeze of S(U) with
-candidates when S(F) is absent, and no production path deletes a stored snapshot.
-
-**The previous voter's attendance row.** A8's premise "the old key signed nothing" holds for U and
-U + 1, not for the key's whole life: a validator seated in S(F − E) or earlier, out of S(F) and back
-in S(U), may ROTATE (A5 needs ACTIVE / ELIGIBLE only), and its old voter's `v2_attendance` row
-survives every reset (the reset zeroes `signed_count`, never deletes) with its last credits (heights
-F, F + 1, credited at F + 1 / F + 2) inside the epoch (F, U] that THIS boundary's digest (3b) folds.
-Deleting it at 1d would change that digest (design §3: delete after the epoch's digest consumers).
-So the swap records the voter_id (`v2ep_a8_rel_t`, 32 bytes per seat of S(U), on the boundary's
-stack) and the sweep step (3d, after 3b / 3c) deletes the row — 0 or 1 row, the sweep's own rule.
-No credit can re-create it after U. Compared with pre-A8 (deleted at U + E), the digest at U + E no
-longer folds that (zeroed) row.
-
-**Consequences.** The released key can be STAKEd again (with its own consent — design §3 G2) from
-U + 1, where before A8 that STAKE was refused until U + E; a seated rotator's old key stays refused
-until U + E. `v2_consensus_keys` is fully derivable and the self-check lost its A3 tolerance. The
-sweep's candidates are now exactly the swapped validators S(U − E) seated (an A8 validator holds one
-role-1 row after its swap; graduating at U + E, `key_release` takes its current key and it holds
-none). Graduation at U itself is impossible for a swapped validator (it is seated in S(U), so its
-graduation is deferred). Fault stages unchanged: F61 after 1d (now including the A8 deletes), F62
-after 3d.
-
-**A stray role-1 row is never released silently (operator 2026-10-13, "açık bırakmayalım").** A
-validator holding one stray role-1 row beside its current key's has the two-row A2 shape. Until this
-rule the sweep (3d) released such a stray as a "previous key" whenever S(h − E) seated the validator
-under its current key — for any steady validator, and since A8 for an A3 rotator at U + E too —
-before step 7 could see it. Two changes close that:
-- **The sweep checks the previous key against S(U − E).** For a candidate swapped at U = h − E it
-  reads S(U − E) (once per boundary, only for such a candidate; by validator_id, ruleset-1 bridge):
-  the validator must be seated there under a key OTHER than its current key, and the row
-  `key_sweep_previous` deletes must be SHA3-512 of THAT key — otherwise FAULT (also S(U − E)
-  absent / unreadable, or U < E). Why this is consistent: after A8 the only previous key that
-  survives a swap is A2's, kept for a validator S(U − E) seated, and its key before the swap is the
-  key S(U − E) seats it under (the self-check's derivation rests on the same fact); a stray row
-  matches neither condition. The FAULT is the class the sweep already used for a third role-1 row
-  (`key_sweep_previous`'s shape check) and for an unexplained second row. Like those, it fires on a
-  node whose out-of-root table drifted, not on every node.
-- **The self-check also runs at the START of every generation-4 boundary H ≥ 2E** (step 0, before
-  step 1): the same core and log-only wrapper against the set derived as of H − E. Between
-  boundaries only STAKE (role 1, current key) and ROTATE (role 2) write the table and both are in
-  that derivation, so the table must still match it; this sees a stray row written between
-  boundaries BEFORE the swap and the sweep touch the table. The log line names it
-  `boundary <H> (start)`; step 7's is `(end)`.
-
-What remains unseen: a stray row on a validator swapped AT h (seated in S(h − E)) passes the sweep
-at h (the "swapped at this boundary" arm checks the S(h) seat, not the row count) — the start check
-of h has already logged it if it existed before h, and the sweep at h + E faults on it.
-
-**Tests** (written, NOT run by the author). `test_hf6_rotate` case C: an old voter's attendance row
-planted on both twins (C6a); S(2E) deleted in a rolled-back probe makes a direct boundary 3E return
--2 before the swap's stage, and the same state without pending keys passes it (C6p); F62 at 3E rolls
-the swap's A8 deletes back; the swap at 3E leaves each
-unseated rotator ONE role-1 row and the sweep deletes the planted row (C6); the self-check without
-tolerance (C6k); a STAKE under a released key APPLIES at 3E + 1 (C6s); one stray role-1 row on an A8
-rotator is one difference for the start check's core and FAULTS the sweep at 4E, two strays too
-(C7c); C8's releases moved to 3E. Case D: a STAKE under a seated rotator's old key is REFUSED at
-4E + 1 (D4s) and the same call APPLIES at 5E + 1 (D5s); a stray row on the never-rotated V0 is one
-difference and FAULTS the sweep at 6E (D5x).
+Test-facing core: `nodus_witness_v2_keyres_diff(w, &n)` (`nodus_witness_v2_epoch.h`, 0 compared / 1
+generation < 4 / -1 unreadable). Tests: `test_hf6_rotate` — every generation-4 boundary `apply_both`
+commits compares with 0 differences on both twins; section K (rolled back): a missing row, an extra
+row, a row naming another validator, a role-2 row, a TEXT key and a TEXT validator_id are each exactly
+one difference; a non-zero pending field makes the core refuse to compare (−1).
 
 ### HF-6 multisig owner — kind-3 owner operations and the v2 co-sign files (branch `hf6-msig` only — not versioned, not voted)
 
@@ -8589,8 +8320,9 @@ owner every check compares (the consent's owner, the validator row's, the storag
 and the coins are the named ones (`dnac_utxo` answers the session's own fingerprint only — the
 `spend --msig` rule; the chain checks each input). `msig sign` and `msig combine` recognise a v2 export
 by its first line: sign prints both legs decoded (op, validator_id, owner / delegator, key hashes, the
-consent expiry, commission, bond / amount, inputs, change, digests, the inputs-not-verified WARNING)
-and signs every digest; combine checks every signature, assembles, runs `nodus_rt_auth_dsa87_v1` on
+consent expiry, commission, bond / amount, inputs, change, digests) and — since HF-6 D2 — the chain id,
+then verifies every input against the vault's coin set on `-s` (section "HF-6 D2"; the
+inputs-not-verified WARNING is gone) and signs every digest; combine checks every signature, assembles, runs `nodus_rt_auth_dsa87_v1` on
 every leg (satisfied; the SYSTEM leg also no foreign signer) and submits. `validator consent` /
 `storage consent` take `--msig <descriptor>` as the owner (exactly one of `--owner` / `--msig`).
 
@@ -9490,8 +9222,10 @@ audited** (independent oracle `shared/dnac/tests/multisig_oracle.py`).
 - **CLI (F6.1)**, `nodus-cli`: `msig address` (offline), `v2-envelope
   spend --msig` (UNSIGNED envelope + export; coins named explicitly with
   `--in nullifier:amount`, because `dnac_utxo` lists only the session's
-  own fingerprint), `msig sign` (offline, re-derives the digest and
-  refuses a mismatch), `msig combine` (exactly the K signatures the
+  own fingerprint), `msig sign` (re-derives the digest and refuses a
+  mismatch; offline until HF-6 D2, which makes it verify every input
+  against the vault's coins on `-s` before signing — section "HF-6 D2"),
+  `msig combine` (exactly the K signatures the
   export fixed — auth_len is signed — ascending, the chain's auth hook run
   locally, then submitted over any session). **Since 2026-10-03** the
   bodies of the four steps live in the shared client library

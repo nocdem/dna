@@ -41,8 +41,10 @@
  *         input breaks the equation and is refused.
  *     False if the call layout, the op id, the leg shape, the consent
  *     binding, the funding arithmetic or the owner binding were wrong.
- *  C2 EXIT built by the builder: op 8, call = node_fp (64 bytes), the read
- *     plan [row keyed by the call]; the exec from an ACTIVE row owned by
+ *  C2 EXIT built by the builder: op 8, call = node_fp ‖ owner_fp =
+ *     SHA3-512(the signing owner) (128 bytes — khan decision 2026-10-13,
+ *     Kurultay #18 item 2), the read plan [row keyed by the call's
+ *     node_fp]; the exec from an ACTIVE row owned by
  *     KW emits ONE SET / EXISTS_VHASH to EXITING with exit_height h; the
  *     node key as the signer is refused; the funding leg is fee-only (Σin
  *     == change + fee; +1 refused); decoded amount 0.
@@ -481,9 +483,10 @@ static int t_exit(void) {
     CHECK(v != NULL, "view alloc");
     CHECK(dna_env_decode(b.env, b.env_len, v) == 0 && v->leg_count == 2 &&
           v->leg[0].runtime_op == DNA_SYSRULE_STORAGE_EXIT &&
-          v->leg[0].call_len == 64u &&
-          memcmp(v->buf + v->call_off[0], g_k[KN].fp, 64) == 0,
-          "call = node_fp (64 bytes)");
+          v->leg[0].call_len == 128u &&
+          memcmp(v->buf + v->call_off[0], g_k[KN].fp, 64) == 0 &&
+          memcmp(v->buf + v->call_off[0] + 64, g_k[KW].fp, 64) == 0,
+          "call = node_fp ‖ owner_fp = SHA3-512(signer) (128 bytes, C2)");
 
     ctx_set(KW);
     {

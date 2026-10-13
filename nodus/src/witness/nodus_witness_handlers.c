@@ -4237,11 +4237,13 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
  *
  * Red-team round 1 (Z-29): the generation-4 arm is keyed by each listed
  * row's OWN key (validators.pubkey_hash, returned by
- * nodus_validator_list_paged_keys), never by its consensus pubkey. Two
- * rows may carry one pubkey — a graduated UNSTAKED row and the row a
- * later STAKE opens (design rev 6 §4: a re-STAKE after graduation opens a
- * new validator_id; validators.pubkey is not UNIQUE) — and a pubkey-keyed
- * read answered "two rows", which failed the whole list.
+ * nodus_validator_list_paged_keys), never by its consensus pubkey. It was
+ * written when a graduated UNSTAKED row and a later re-STAKE of the same
+ * key could carry one pubkey (validators.pubkey is not UNIQUE) and a
+ * pubkey-keyed read answered "two rows". Since the khan made a used key
+ * permanently unusable (decision 2026-10-13-kurultay-18-summary.md items
+ * 1 and 4) no two generation-4 rows share a pubkey; the read by the row's
+ * own key is kept — it is the primary-key read.
  * ════════════════════════════════════════════════════════════════════ */
 
 /* HF-6 3e: the validator_id and owner_fp of the generation-4 validators

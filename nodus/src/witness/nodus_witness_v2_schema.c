@@ -2210,10 +2210,11 @@ static const char *V2_S18_ROLES_DDL =
 
 /* HF-6 slice 4 (design rev 6 §4) — the consensus-key reservation table,
  * added to the SAME unreleased rung (S18 exists on branch hf6 only). One
- * unique key column: a consensus key appears at most once, whatever its
- * role. Created EMPTY; writers: the generation-4 edge (one role-1 row per
- * migrated, not-UNSTAKED validator), the generation-4 STAKE (role 1) and
- * the generation-4 graduation (delete). */
+ * unique key column: a consensus key appears at most once. Created EMPTY;
+ * PERMANENT and append-only (khan decision 2026-10-13-kurultay-18-
+ * summary.md items 1 and 4); writers: the generation-4 edge (one role-1
+ * row per migrated validator, every status) and the generation-4 STAKE
+ * (role 1). Nothing deletes a row. */
 static const char *V2_S18_KEYS_DDL =
     "CREATE TABLE IF NOT EXISTS v2_consensus_keys ("
     "  consensus_pk_hash BLOB PRIMARY KEY,"

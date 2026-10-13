@@ -52,7 +52,13 @@
  *      (nodus_rt_auth_dsa87_v1, the compiled CORE runtime) reports the
  *      descriptor satisfied; refused: one signature for K = 2, a signature
  *      over another digest, a key outside the descriptor, a corrupted
- *      signature, the same key twice.
+ *      signature, the same key twice. HF-6 D2: nodus_v2_msig_assemble
+ *      refuses (ERR_ARG, nothing written) a blob whose count byte is not
+ *      n_sig, and assembles the same blob once the count is restored.
+ *      (M4's descriptor swap still REVIEWS at the library level — the
+ *      library cannot see the chain; `msig sign` closes it by checking
+ *      every input against the vault's coin set on a node, nodus-cli
+ *      msig_inputs_verify — not driven here.)
  *  M7  nodus_v2_msig_unsigned_auth writes count ‖ K × 7219 zero ‖ 1 ‖
  *      dlen BE ‖ descriptor, written out here by hand.
  *
@@ -1004,6 +1010,42 @@ static int test_m6(void) {
                        pf, &bad) == NODUS_V2_MSIG_ERR_DUP_SIGNER,
           "M6: the same key twice");
     nodus_v2_msig_export_free(&x);
+
+    /* HF-6 D2: assemble writes the slots in place — a blob whose count
+     * byte is not n_sig (here 3 for 2 signatures: its room is for 2) is
+     * refused before anything is written */
+    {
+        static uint8_t pks[2][NODUS_V2_MSIG_PK_LEN];
+        static uint8_t sigs[2][NODUS_V2_MSIG_SIG_LEN];
+        CHECK(nodus_v2_msig_export_parse(t, tl, &x) == NODUS_V2_SPEND_OK,
+              "M6: parse for assemble");
+        dna_env_view_t *v = calloc(1, sizeof(*v));
+        CHECK(v && dna_env_decode(x.env, x.env_len, v) == 0, "M6: view");
+        for (int i = 0; i < 2; i++) {
+            memcpy(pks[i], g_pk[ok_who[i]], MS_PK);
+            CHECK(sign_digest(ok_who[i], b.digest, sigs[i]) == 0, "M6: sign");
+        }
+        uint8_t *a = x.env + v->auth_off[0];
+        CHECK(a[0] == 2, "M6: the export's blob says K = 2");
+        a[0] = 3;
+        uint8_t zslot[NODUS_RT_AUTH_SIGNER_LEN];
+        memset(zslot, 0, sizeof(zslot));
+        CHECK(nodus_v2_msig_assemble(
+                  &x, v, (const uint8_t (*)[NODUS_V2_MSIG_PK_LEN])pks,
+                  (const uint8_t (*)[NODUS_V2_MSIG_SIG_LEN])sigs, 2) ==
+                  NODUS_V2_SPEND_ERR_ARG &&
+              memcmp(a + 1, zslot, sizeof(zslot)) == 0,
+              "M6: assemble refuses a blob whose count byte is not n_sig, "
+              "nothing written");
+        a[0] = 2;
+        CHECK(nodus_v2_msig_assemble(
+                  &x, v, (const uint8_t (*)[NODUS_V2_MSIG_PK_LEN])pks,
+                  (const uint8_t (*)[NODUS_V2_MSIG_SIG_LEN])sigs, 2) ==
+                  NODUS_V2_SPEND_OK,
+              "M6: the same blob with its count restored assembles");
+        free(v);
+        nodus_v2_msig_export_free(&x);
+    }
 
     free(pf);
     free(t);

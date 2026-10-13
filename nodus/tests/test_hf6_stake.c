@@ -66,10 +66,13 @@
  *   B4 block 6: a STAKE re-using KC1 (reserved by B2's validator) and
  *      block 7: a STAKE using VR's key (reserved by the migrated RETIRING
  *      VR) are REFUSED with the ledger tables byte-identical.
- *   B5 at boundary E VR graduates: UNSTAKED and its reservation released.
- *   B6 block E + 1: a STAKE re-using VR's key APPLIES under a NEW
- *      validator_id (≠ VR's migrated id) and re-reserves the key; the two
- *      twins' databases are byte-identical.
+ *   B5 at boundary E VR graduates: UNSTAKED and its reservation KEPT
+ *      (HF-6 D1, khan decision docs/plans/decisions/2026-10-13-kurultay-
+ *      18-summary.md items 1 and 4: v2_consensus_keys is permanent).
+ *   B6 block E + 1: a STAKE re-using VR's key is REFUSED with the ledger
+ *      tables byte-identical — a key once used is never usable again; no
+ *      row under the would-be validator_id, the key still names VR; the
+ *      two twins' databases are byte-identical.
  *   B7 (HF-6 slice 8a) a committed chain_config param-19 (STAKE_MIN) row
  *      of 10^13 effective at E (written into both twins just before the
  *      boundary block E): block E + 2's STAKE with bond 10^13 - 1 is
@@ -417,7 +420,7 @@ static int hk_build(hk_env_t *e, const uint8_t *call, uint32_t call_len,
     memset(legs, 0, sizeof(legs));
     legs[0].hdr.domain_id = DNA_DOMAIN_SYSTEM;
     legs[0].hdr.runtime_op = DNA_SYSRULE_STAKE;
-    legs[0].hdr.ruleset_version = 9;
+    legs[0].hdr.ruleset_version = 10;   /* the generation-4 SYSTEM (D2) */
     legs[0].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[0].hdr.auth_kind = sys_kind;
     legs[0].hdr.call_len = call_len;
@@ -428,7 +431,7 @@ static int hk_build(hk_env_t *e, const uint8_t *call, uint32_t call_len,
     legs[0].auth_data = e->auth[0];
     legs[1].hdr.domain_id = DNA_DOMAIN_CORE;
     legs[1].hdr.runtime_op = DNA_CORERULE_SYSFUND;
-    legs[1].hdr.ruleset_version = 7;
+    legs[1].hdr.ruleset_version = 8;    /* the generation-4 CORE (D2)   */
     legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[1].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
     legs[1].hdr.call_len = fl;
@@ -1218,7 +1221,9 @@ static int t_engine(void) {
           "twin seeded chains (edge in block H14 - 1)");
     CHECK(nodus_witness_v2_chain_id(A.w, chain32) == 0, "chain id");
 
-    /* ── B1. the edge reserves every not-UNSTAKED key ──────────────── */
+    /* ── B1. the edge reserves every validators row's key (any status;
+     *       this fixture has no UNSTAKED row — test_hf6_migrate A1 and
+     *       test_hf6_rotate P cover one) ─────────────────────────────── */
     CHECK(run_to(&A, &B, &h, H14 - 1) == 0, "blocks 1..H14-1 (the edge)");
     CHECK(q_u64(A.w, "SELECT COUNT(*) FROM v2_consensus_keys", NULL, 0, &x)
           == 0 && x == N_VAL + 1, "eight reservations (seven + VR)");
@@ -1310,7 +1315,7 @@ static int t_engine(void) {
     CHECK(ledger_digest(A.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
           "the ledger tables are byte-identical across the block");
 
-    /* ── B5. boundary E: VR graduates, its key is released ─────────── */
+    /* ── B5. boundary E: VR graduates, its key stays reserved ──────── */
     /* HF-6 slice 8a: a committed param-19 (STAKE_MIN) row of 10^13
      * (100k NODUS, the K9 lower end) effective at E, written into BOTH
      * twins immediately before the boundary block E — a block that
@@ -1327,29 +1332,38 @@ static int t_engine(void) {
     CHECK(q_u64(A.w, "SELECT status FROM validators WHERE pubkey_hash = ?1",
                 vidr, 64, &x) == 0 && x == DNAC_VALIDATOR_UNSTAKED,
           "VR graduated at E (UNSTAKED)");
-    CHECK(key_of(A.w, g_k[VR].pk, got, &role) == 1,
-          "VR's reservation released (§4, last sentence)");
+    CHECK(key_of(A.w, g_k[VR].pk, got, &role) == 0 &&
+          memcmp(got, vidr, 64) == 0 && role == 1,
+          "VR's reservation KEPT after its graduation (khan decision "
+          "2026-10-13-kurultay-18-summary.md item 4: permanent)");
     CHECK(key_of(A.w, g_k[KC1].pk, got, &role) == 0 &&
           memcmp(got, vid1, 64) == 0, "KC1's reservation kept");
 
-    /* ── B6. E + 1: VR's key STAKEd again under a NEW validator_id ─── */
+    /* ── B6. E + 1: VR's key — a graduated, UNSTAKED validator's — can
+     *       NEVER be STAKEd again (HF-6 D1; until then it applied under a
+     *       new validator_id) ─────────────────────────────────────────── */
     CHECK(stake2_call(call, chain32, g_k[KO].fp, VR, E_LEN + 50, 300, SMIN,
                       CS_OK) == CALL_LEN, "call");
     CHECK(st_env(A.w, E_LEN + 1, call, C5, KO, &e, &l, intent) == 0,
           "envelope");
+    CHECK(ledger_digest(A.w, d0) == 0, "ledger before");
     CHECK(apply_both(&A, &B, E_LEN + 1, e, l, &code) == 0 &&
-          code == NODUS_V2_TX_OK,
-          "E + 1: the released key is STAKEd again");
+          code != NODUS_V2_TX_OK,
+          "E + 1: the graduated validator's key is REFUSED");
     free(e); e = NULL;
     h = E_LEN + 1;
+    CHECK(ledger_digest(A.w, d1) == 0 && memcmp(d0, d1, 64) == 0,
+          "the ledger tables are byte-identical across the block");
     CHECK(vid_expect(chain32, intent, vidr2) == 0 &&
-          memcmp(vidr2, vidr, 64) != 0, "a NEW validator_id");
+          q_u64(A.w, "SELECT COUNT(*) FROM validators WHERE pubkey_hash = "
+                "?1", vidr2, 64, &x) == 0 && x == 0,
+          "no row under the would-be new validator_id");
     CHECK(key_of(A.w, g_k[VR].pk, got, &role) == 0 &&
-          memcmp(got, vidr2, 64) == 0 && role == 1,
-          "the key re-reserved to the new validator_id");
+          memcmp(got, vidr, 64) == 0 && role == 1,
+          "the key still names the graduated VR");
     CHECK(q_u64(A.w, "SELECT COUNT(*) FROM validators WHERE pubkey = ?1",
-                g_k[VR].pk, (int)PK_LEN, &x) == 0 && x == 2,
-          "two rows hold VR's key: the UNSTAKED one and the new one");
+                g_k[VR].pk, (int)PK_LEN, &x) == 0 && x == 1,
+          "one row holds VR's key: the UNSTAKED one");
     CHECK(core_invariant(A.w) == 0, "the CORE invariant holds");
     {
         uint8_t da[64], db[64];

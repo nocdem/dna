@@ -2972,9 +2972,17 @@ static int t_engine(void) {
     /* T + 7E + 3: B exits; boundary T + 8E releases it (and whoever
      * takes B's segments gets its grace — the model checks it) */
     CHECK(run_idle(&A, &B, &h, T + 7 * E_LEN + 2) == 0, "to T+7E+2");
-    CHECK(st_env(A.w, T + 7 * E_LEN + 3, DNA_SYSRULE_STORAGE_EXIT,
-                 g_k[KB].fp, 64u, CBX, KB, &e[0], &l[0]) == 0,
-          "B exit (call = node_fp, signed by B as its own owner)");
+    {
+        /* the generation-4 EXIT call node_fp ‖ owner_fp (128 B, khan
+         * decision 2026-10-13 "C2"): B is its own owner */
+        uint8_t xcall[128];
+        memcpy(xcall, g_k[KB].fp, 64);
+        memcpy(xcall + 64, g_k[KB].fp, 64);
+        CHECK(st_env(A.w, T + 7 * E_LEN + 3, DNA_SYSRULE_STORAGE_EXIT,
+                     xcall, 128u, CBX, KB, &e[0], &l[0]) == 0,
+              "B exit (call = node_fp ‖ owner_fp, signed by B as its own "
+              "owner)");
+    }
     CHECK(submit(&A, &B, T + 7 * E_LEN + 3, e, l, 1, codes) == 0 &&
           codes[0] == NODUS_V2_TX_OK, "B exits at T+7E+3");
     h = T + 7 * E_LEN + 3;

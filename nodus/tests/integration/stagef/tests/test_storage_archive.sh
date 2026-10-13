@@ -550,8 +550,12 @@ st_usage=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" storage 2>&1 || true)
 # prefix match: HF-6 7a appended " | --owner <hex128>" inside the brackets
 [[ "$st_usage" == *"storage status [--fp <hex128>"* ]] || {
     printf '%s\n' "$st_usage" >&2; die "the CLI has no 'storage' command (B2b-CLI)"; }
-# 6b-3: the owner-side commands (nodus-cli.c cli_storage_usage)
-[[ "$st_usage" == *"storage consent --owner"* && "$st_usage" == *"storage register --keys"* && \
+# 6b-3: the owner-side commands (nodus-cli.c cli_storage_usage). The
+# consent's owner form is matched as a regex: since the kind-3 owner the
+# usage reads "storage consent (--owner <owner_fp hex128> | --msig ...",
+# the bracket is optional so either form of the line passes.
+consent_re='storage consent \(?--owner'
+[[ "$st_usage" =~ $consent_re && "$st_usage" == *"storage register --keys"* && \
    "$st_usage" == *"storage exit --keys"* ]] || {
     printf '%s\n' "$st_usage" >&2; die "the CLI has no owner-side 'storage consent | register --keys | exit --keys' (HF-6 6b-3)"; }
 echo "[ok] capability gate: one build v$SRV_VER; EVM D = $D_DEC (0x$D_HEX), HF-6 D4 = $D4_DEC (0x$D4_HEX); 'storage' with the owner-side commands present"
