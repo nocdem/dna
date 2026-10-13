@@ -332,6 +332,11 @@ typedef struct {
  * nullifier ‖ nout u8 (1..NODUS_V2_MSIG_MAX_OUTS) ‖ nout × 232-byte
  * records with call_len exactly that — nothing is read before its length
  * is proved; every output owner is 128 lowercase hex characters.
+ * It does NOT prove that the inputs are the vault's coins (the descriptor
+ * is outside the signed context — a descriptor of the same length can be
+ * swapped in after signing): the caller checks every input against the
+ * vault's own coin set before it signs (nodus-cli `msig sign`, through
+ * dnac_msig_utxo — khan decision 2026-10-13-kurultay-18-summary.md item 5).
  * `pf` is caller-provided heap scratch.
  * @return NODUS_V2_SPEND_OK / _ERR_ARG / NODUS_V2_MSIG_ERR_SHAPE / _DESC /
  *         _NOT_MEMBER / NODUS_V2_SPEND_ERR_PREFLIGHT1 / NODUS_V2_MSIG_ERR_
@@ -374,7 +379,10 @@ int nodus_v2_msig_sig_check(const nodus_v2_msig_export_t *x,
 /** Write the `n_sig` (== x->signers) CHECKED signatures into the export's
  *  signer slots in ascending pubkey order (the one canonical signer
  *  encoding); a key given twice is refused. `v` is the view of x->env
- *  from nodus_v2_msig_leg_open (the slots are written in place).
+ *  from nodus_v2_msig_leg_open (the slots are written in place, so the
+ *  leg's auth blob must already be at least 1 + n_sig ×
+ *  NODUS_RT_AUTH_SIGNER_LEN bytes with its count byte == n_sig — else
+ *  ERR_ARG, nothing written).
  *  @return NODUS_V2_SPEND_OK / _ERR_ARG / NODUS_V2_MSIG_ERR_COUNT /
  *          NODUS_V2_MSIG_ERR_DUP_SIGNER. */
 int nodus_v2_msig_assemble(nodus_v2_msig_export_t *x,
@@ -487,7 +495,7 @@ int nodus_v2_msig_digests2(const nodus_v2_msig_export2_t *x,
 
 /** What a v2 co-signer is shown — every field READ BACK from the envelope
  *  bytes (decision addendum: the SYSTEM call decoded — op, validator_id,
- *  owner, amount / commission / new key — and the CORE funding — inputs,
+ *  owner, amount / commission / consensus key — and the CORE funding — inputs,
  *  outputs, fee). */
 typedef struct {
     uint8_t  addr[DNA_MSIG_ADDR_LEN];   /* the owner multisig address     */
@@ -512,7 +520,14 @@ typedef struct {
  * as an owner operation of client/nodus_v2_stake.h — two legs, a
  * generation-4 layout, kind 3 on both, its owner the descriptor's address
  * (ERR_CALL otherwise: the only multi-leg kind-3 envelopes this library
- * signs are the HF-6 owner operations). `pf` is heap scratch.
+ * signs are the HF-6 owner operations — op 10, the removed ROTATE, is
+ * none), and a change output, if any, goes to that address (hex) — else
+ * ERR_CALL (HF-6 D2). It does NOT prove that the funding inputs are the
+ * vault's coins: the descriptor is outside the signed context, so the
+ * caller must check every input against the vault's own coin set before
+ * signing (nodus-cli `msig sign` does, through dnac_msig_utxo — khan
+ * decision 2026-10-13-kurultay-18-summary.md item 5). `pf` is heap
+ * scratch.
  * @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / NODUS_V2_MSIG_ERR_SHAPE
  *         / _DESC / _NOT_MEMBER / NODUS_V2_SPEND_ERR_PREFLIGHT1 /
  *         NODUS_V2_MSIG_ERR_DIGEST / _EXPIRY / _CALL / NODUS_V2_SPEND_ERR_HASH.
@@ -537,7 +552,10 @@ int nodus_v2_msig_sig2_check(const nodus_v2_msig_export2_t *x,
  *  digest j's signature into leg x->leg_index[j]; a key given twice is
  *  refused. Like nodus_v2_msig_assemble it does not judge the signatures
  *  (nodus_v2_msig_sig2_check does). `v` is the view from
- *  nodus_v2_msig_legs_open2. @return NODUS_V2_SPEND_OK / _ERR_ARG /
+ *  nodus_v2_msig_legs_open2. Every target leg's auth blob must already
+ *  be at least 1 + n_sig × NODUS_RT_AUTH_SIGNER_LEN bytes with its count
+ *  byte == n_sig (the slots are written in place) — else ERR_ARG, nothing
+ *  written. @return NODUS_V2_SPEND_OK / _ERR_ARG /
  *  NODUS_V2_MSIG_ERR_COUNT / NODUS_V2_MSIG_ERR_DUP_SIGNER. */
 int nodus_v2_msig_assemble2(nodus_v2_msig_export2_t *x,
                             const dna_env_view_t *v,

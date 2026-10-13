@@ -1,33 +1,37 @@
 /**
  * @file nodus/tests/test_v2_stake_client.c
- * @brief HF-6 6f-1 — the client path for a generation-4 STAKE and a
- *        ROTATE: the node consent formed the way nodus-cli `validator
- *        consent` forms it, carried through the consent container, laid
- *        out by the shared builder (nodus/src/client/nodus_v2_stake.c) and
- *        fed to the chain's OWN generation-4 hooks; HF-6 slice 7b adds the
- *        generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE.
+ * @brief HF-6 6f-1 — the client path for a generation-4 STAKE: the node
+ *        consent formed the way nodus-cli `validator consent` forms it,
+ *        carried through the consent container, laid out by the shared
+ *        builder (nodus/src/client/nodus_v2_stake.c) and fed to the
+ *        chain's OWN generation-4 hooks; HF-6 slice 7b adds the
+ *        generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE;
+ *        HF-6 D2 removes ROTATE from the client and puts the owner in the
+ *        UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT calls (C2).
  *
  * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
- * §2 (STAKE 7301 B, ROTATE 7291 B, the consent re-construction contract,
- * "STAKE/DELEGATE istemci kodlayıcısı generation'a duyarlı olur"), §3 (khan
- * decision A4: ROTATE fee-only), §6.1 (consent bytes, ctx
+ * §2 (STAKE 7301 B, the consent re-construction contract, "STAKE/DELEGATE
+ * istemci kodlayıcısı generation'a duyarlı olur", the "DEĞİŞİKLİK — han
+ * kararı 2026-10-13" C2 layouts), §6.1 (consent bytes, ctx
  * "nodus.valbind.v1"), §6.2 (validator_id); decisions docs/plans/decisions/
- * 2026-10-08-kurultay-14-hf6-summary.md (K7) and 2026-10-03-role-stake-
- * amounts.md 1B (the node consents, the owner signs and pays).
+ * 2026-10-08-kurultay-14-hf6-summary.md (K7), 2026-10-03-role-stake-
+ * amounts.md 1B (the node consents, the owner signs and pays) and
+ * 2026-10-13-kurultay-18-summary.md (items 1 and 2: no ROTATE; C2).
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
  *  V1 The consent: the message dna_valbind_consent_msg builds (the codec
  *     call nodus-cli makes) equals an independent restatement of the §6.1
  *     bytes in this file (version 1 BE ‖ chain 32 ‖ op ‖ subject 64 ‖
- *     owner 64 ‖ pk 2592 ‖ expiry u64 BE = 2765), for op 1 and op 2; the
- *     signature dna_valbind_consent_sign makes verifies under
- *     qgp_dsa87_verify_ctx with the ctx bytes "nodus.valbind.v1" written
- *     here, and NOT under the plain empty-ctx qgp_dsa87_verify.
+ *     owner 64 ‖ pk 2592 ‖ expiry u64 BE = 2765), for op 1 and op 2 (the
+ *     codec still has op 2); the STAKE signature dna_valbind_consent_sign
+ *     makes verifies under qgp_dsa87_verify_ctx with the ctx bytes
+ *     "nodus.valbind.v1" written here, and NOT under the plain empty-ctx
+ *     qgp_dsa87_verify.
  *  V2 The consent container (nodus_v2_consent_text_*) round-trips every
  *     field byte for byte; it refuses a wrong magic, an uppercase hex
  *     digit, a reordered line, trailing bytes, a missing final newline,
- *     op 3 or a STAKE with a non-zero subject, a ROTATE with a zero
- *     subject, op 4,
+ *     op 3 or a STAKE with a non-zero subject, op 2 — the removed ROTATE —
+ *     on encode (a codec-signed op-2 consent too) and on parse, op 4,
  *     a leading-zero / overflowing expiry, a short signature.
  *  S1 Generation-4 STAKE built by nodus_v2_stake_build (GEN_STORAGE
  *     tuples, generation 4, the owner key signs, the consent from V2's
@@ -50,24 +54,20 @@
  *  S4 The GEN_STORAGE CORE exec of the funding leg balances with lock =
  *     bond (Σin == change + fee + bond); one raw unit more on the input
  *     is refused.
- *  R1 ROTATE built against the row S3 created (validator_id = S2's): the
- *     call equals the restated 7291-byte layout (test_hf6_rotate.c
- *     rot_call's — the CLIENT builder, removed by the next package); the
- *     CHAIN refuses it (HF-6 D1, khan decision 2026-10-13-kurultay-18-
- *     summary.md item 1: no key rotation): the generation-4 SYSTEM read
- *     plan and exec return -1 for op 10 with the row's owner signing, and
- *     the CORE funding leg refuses to pair with it (-1).
+ *  R1 No ROTATE in the client (HF-6 D2): runtime_op 10 is ERR_OP at
+ *     generation 4 and at generation 0 (the chain's refusal of op 10 is
+ *     test_hf6_rotate's).
  *  G1 Generation awareness: a STAKE at generation 0 and at GEN_EVM builds
  *     the legacy 2666-byte call with the same intent_id and identical
  *     bytes outside the two auth blobs (the v1 path is unchanged by the
  *     generation field); so do a DELEGATE, an UNDELEGATE (5192 bytes,
  *     equal to the restated delegator_pk ‖ validator_pk ‖ amount) and an
  *     UNSTAKE (2592 bytes, the signer's key) — HF-6 slice 7b left the
- *     legacy layouts of ops 2-4 as they were; ROTATE and VALIDATOR_UPDATE
- *     below generation 4 are ERR_GEN; a gen-4 STAKE with bond 0 or
+ *     legacy layouts of ops 2-4 as they were; VALIDATOR_UPDATE below
+ *     generation 4 is ERR_GEN; a gen-4 STAKE with bond 0 or
  *     INT64_MAX + 1 is ERR_BOND, a commission above the bound
- *     ERR_COMMISSION, a missing consent or a zero ROTATE validator_id
- *     ERR_ARG; at generation 4 DELEGATE / UNDELEGATE / UNSTAKE /
+ *     ERR_COMMISSION, a missing consent ERR_ARG; at generation 4
+ *     DELEGATE / UNDELEGATE / UNSTAKE /
  *     VALIDATOR_UPDATE without a validator_id or with an all-zero one are
  *     ERR_ARG, a DELEGATE amount of 0 ERR_AMOUNT, a VALIDATOR_UPDATE
  *     commission above the bound ERR_COMMISSION.
@@ -89,10 +89,11 @@
  *     exec — the real consent verified under the node key — CREATEs the
  *     row with the owner in the payee_fp column; the decoder refuses a
  *     flipped owner_fp byte.
- *  T2 STORAGE_EXIT built at generation 4: the call is exactly the 64-byte
- *     node_fp; read-back amount 0, owner_fp = SHA3-512(signer), node_fp
- *     = the request's; the exec against an ACTIVE row owned by KO
- *     applies, and the node key itself as the signer is refused.
+ *  T2 STORAGE_EXIT built at generation 4: the call is exactly node_fp ‖
+ *     owner_fp = SHA3-512(signer) (128 bytes, C2); read-back amount 0,
+ *     owner_fp = SHA3-512(signer), node_fp = the request's; the exec
+ *     against an ACTIVE row owned by KO applies, and the node key itself
+ *     as the signer is refused; the decoder refuses a flipped owner_fp.
  *  T3 Refusals: REGISTER and EXIT at generation 0 and GEN_EVM (ERR_GEN —
  *     the storage ops have no other layout); REGISTER bond 0 and
  *     INT64_MAX + 1 (ERR_STORAGE_BOND); REGISTER without the node key or
@@ -113,16 +114,20 @@
  *     the funding leg is fee-only (Σin == change + fee, +1 refused) and
  *     CREATEs the release coin owned by hex(SHA3-512(KD)) holding the
  *     amount, locked past h.
- *  W3 UNSTAKE by the owner KO: the call is exactly g_vid (64 bytes); plan
- *     [op 13]; the exec APPLIES — SET op 13 RETIRING, unstake commit = h;
- *     KX refused; fee-only funding, +1 refused.
- *  W4 VALIDATOR_UPDATE by KO: the call is g_vid ‖ commission u16 (66
- *     bytes); a decrease applies at once (commission = new, pending 0), an
- *     increase is pending until h + 2E (current commission unchanged);
- *     Rule K stamp = h; KX refused; fee-only funding.
+ *  W3 UNSTAKE by the owner KO: the call is exactly g_vid ‖ SHA3-512(KO)
+ *     (128 bytes, C2); plan [op 13]; the exec APPLIES — SET op 13
+ *     RETIRING, unstake commit = h; KX refused; the call rewritten to name
+ *     KX as the owner is refused with KX signing AND with the row's owner
+ *     KO signing (C2); fee-only funding, +1 refused.
+ *  W4 VALIDATOR_UPDATE by KO: the call is g_vid ‖ SHA3-512(KO) ‖
+ *     commission u16 (130 bytes, C2); a decrease applies at once
+ *     (commission = new, pending 0), an increase is pending until h + 2E
+ *     (current commission unchanged); Rule K stamp = h; KX refused;
+ *     fee-only funding.
  *  W5 Decode refusals: a DELEGATE whose delegator_fp byte is flipped (not
- *     SHA3-512 of the signer), an UNSTAKE whose validator_id is zeroed, a
- *     VALIDATOR_UPDATE whose commission is 0xFFFF; the untouched bytes
+ *     SHA3-512 of the signer), an UNSTAKE whose validator_id is zeroed or
+ *     whose owner_fp byte is flipped, a VALIDATOR_UPDATE whose commission
+ *     is 0xFFFF or whose owner_fp byte is flipped; the untouched bytes
  *     decode.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
@@ -143,10 +148,10 @@
  *  - nodus-cli's `validator consent` body is NOT driven (it is I/O around
  *    two codec calls); this test makes the same two codec calls. The
  *    CLI's file handling, session reads and printing are untested here.
- *  - The layout restatements (V1, S1, R1, W1-W4) are written by the same
+ *  - The layout restatements (V1, S1, W1-W4, T2) are written by the same
  *    author as the builder change; they are self-consistency with the
  *    design bytes and the exec's parsers, not an independent oracle. The
- *    exec accepting the bytes (S3, R1, W1-W4) is the stronger check.
+ *    exec accepting the bytes (S3, W1-W4, T2) is the stronger check.
  *  - G1's "legacy ops 2-4 unchanged" is a restatement of the legacy call
  *    bytes plus generation 0 == GEN_EVM: no intent_id vector from before
  *    slice 7b is pinned here (pinning one needs a run of the old code).
@@ -199,9 +204,9 @@ static int g_checks = 0;
 #define EXP      (H_EXEC + 100u)  /* the consent expiry (within 720)      */
 #define BPS      500u
 #define STK_LEN  7301u            /* design §2 (K7): 64+2592+4627+8+2+8   */
-#define ROT_LEN  7291u            /* design §2 (K7): 64+2592+4627+8       */
 #define SRG_LEN  7299u            /* design §2 / §11.3: 64+2592+4627+8+8  */
-#define SEX_LEN  64u              /* design §2 / §11.5: node_fp           */
+#define SEX_LEN  128u             /* design §2 / §11.5 + C2 (2026-10-13):
+                                   * node_fp ‖ owner_fp                   */
 #define SBOND    ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 
 /* restated from nodus_witness_rt_native.c (static there) */
@@ -231,8 +236,9 @@ static int g_checks = 0;
 #define DEL2_AMT_OFF  128u
 #define DEL2_AT_OFF   136u
 #define DLG_LEN       136u        /* design §2 (K7): 64+64+8              */
-#define UNS_LEN       64u         /* design §2 (K7): validator_id         */
-#define VUP_LEN       66u         /* design §2 (K7): 64+2                 */
+#define UNS_LEN       128u        /* design §2 (K7) + C2: validator_id ‖
+                                   * owner_fp                             */
+#define VUP_LEN       130u        /* design §2 (K7) + C2: 64+64+2         */
 #define UTXO_REC_LEN  284u
 #define UTXO_AMT_OFF  128u
 #define UTXO_UNL_OFF  276u
@@ -416,23 +422,38 @@ static int t_consent(void) {
     }
 
     /* V3 above reused m_rest for the op-3 restatement: restate the
-     * ROTATE message again before verifying the ROTATE signature */
-    msg_restate(m_rest, 2, vid, g_k[KO].fp, g_k[KN].pk, EXP);
+     * STAKE message again before verifying the STAKE signature. (The
+     * ROTATE consent op 2 stays a value of the shared codec — its message
+     * is checked above — but no operation consumes it since HF-6 D2, and
+     * the client container refuses it: V2 below.) */
+    msg_restate(m_rest, 1, zero64, g_k[KO].fp, g_k[KC].pk, EXP);
     nodus_v2_consent_t c;
-    CHECK(consent_make(&c, DNA_VALBIND_OP_ROTATE, vid, g_k[KO].fp, KN, EXP)
-          == 0, "ROTATE consent signs");
+    CHECK(consent_make(&c, DNA_VALBIND_OP_STAKE, zero64, g_k[KO].fp, KC, EXP)
+          == 0, "STAKE consent signs");
     static const uint8_t ctx_bytes[16] = {
         'n','o','d','u','s','.','v','a','l','b','i','n','d','.','v','1'
     };
     CHECK(qgp_dsa87_verify_ctx(c.sig, SIG_LEN, m_rest, sizeof(m_rest),
                                ctx_bytes, sizeof(ctx_bytes),
-                               g_k[KN].pk) == 0,
+                               g_k[KC].pk) == 0,
           "the signature verifies over the restated bytes with ctx "
           "\"nodus.valbind.v1\"");
     CHECK(qgp_dsa87_verify(c.sig, SIG_LEN, m_rest, sizeof(m_rest),
-                           g_k[KN].pk) != 0,
+                           g_k[KC].pk) != 0,
           "and NOT under the plain (empty-ctx) verify — test_hf6_stake "
           "CS_CTX_EMPTY's API");
+    {
+        /* HF-6 D2: a ROTATE consent (op 2) the CODEC signs is refused by
+         * the client container — encode, and parse of a hand-made text */
+        nodus_v2_consent_t rc2;
+        CHECK(consent_make(&rc2, DNA_VALBIND_OP_ROTATE, vid, g_k[KO].fp, KN,
+                           EXP) == 0, "the codec still signs an op-2 consent");
+        char *rt = NULL;
+        size_t rtl = 0;
+        CHECK(nodus_v2_consent_text_encode(&rc2, &rt, &rtl) ==
+                  NODUS_V2_SPEND_ERR_ARG && rt == NULL,
+              "the container refuses to encode op 2 (no ROTATE operation)");
+    }
 
     /* ── V2. the container ─────────────────────────────────────────── */
     char *t = NULL;
@@ -498,15 +519,14 @@ static int t_consent(void) {
     /* field rules, through the encoder's twin checks */
     {
         nodus_v2_consent_t z = c;
-        memset(z.subject, 0, 64);              /* ROTATE, zero subject */
+        memset(z.subject, 0x3B, 64);           /* STAKE, non-zero subject */
         CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
               NODUS_V2_SPEND_ERR_ARG && t == NULL,
-              "encode refuses a ROTATE with a zero subject");
-        z = c;
-        z.op = DNA_VALBIND_OP_STAKE;           /* STAKE, non-zero subject */
+              "encode refuses a STAKE with a subject");
+        z.op = DNA_VALBIND_OP_ROTATE;          /* op 2, non-zero subject */
         CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
-              NODUS_V2_SPEND_ERR_ARG, "encode refuses a STAKE with a subject");
-        z = c;
+              NODUS_V2_SPEND_ERR_ARG,
+              "encode refuses op 2 even with a non-zero subject (HF-6 D2)");
         z.op = 3;                              /* op 3, non-zero subject */
         CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
               NODUS_V2_SPEND_ERR_ARG,
@@ -522,23 +542,34 @@ static int t_consent(void) {
         char *e = malloc(tl + 32);
         CHECK(e != NULL, "alloc");
         size_t el;
-        /* op 2 -> 1 with the ROTATE (non-zero) subject still in place */
+        /* op 1 -> 2 (the removed ROTATE), subject zero */
         memcpy(e, t, tl); el = tl;
         {
-            char *p = strstr(e, "\nop 2\n");
+            char *p = strstr(e, "\nop 1\n");
             CHECK(p != NULL, "op line");
-            p[4] = '1';
+            p[4] = '2';
+        }
+        CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
+              NODUS_V2_SPEND_ERR_DECODE, "parse refuses op 2 (HF-6 D2)");
+        /* a STAKE whose subject line is not all zero */
+        memcpy(e, t, tl); el = tl;
+        {
+            char *p = strstr(e, "\nsubject ");
+            CHECK(p != NULL, "subject line");
+            p[9] = '1';
         }
         CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
               NODUS_V2_SPEND_ERR_DECODE, "parse refuses STAKE + subject");
+        /* op 1 -> 3 (zero subject): a well-formed op-3 container */
         memcpy(e, t, tl); el = tl;
         {
-            char *p = strstr(e, "\nop 2\n");
+            char *p = strstr(e, "\nop 1\n");
             p[4] = '3';
         }
-        CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
-              NODUS_V2_SPEND_ERR_DECODE,
-              "parse refuses op 3 with the (non-zero) ROTATE subject");
+        CHECK(nodus_v2_consent_text_parse(e, el, &r) == NODUS_V2_SPEND_OK &&
+              r.op == 3,
+              "parse accepts op 3 with a zero subject (the signature is the "
+              "reader's codec check)");
         /* expiry with a leading zero */
         {
             char *p = strstr(t, "\nexpiry ");
@@ -677,7 +708,7 @@ static void req_gen4(nodus_v2_stake_req_t *r, nodus_v2_stake_op_t op,
     r->consensus_pk = c->consensus_pk;
     r->consent_sig = c->sig;
     r->consent_expiry = c->expiry;
-    r->validator_id = op == NODUS_V2_STAKE_OP_ROTATE ? c->subject : NULL;
+    r->validator_id = NULL;
 }
 
 /* the STAKE of S1-S4 leaves its validator_id and op-13 row for R1 */
@@ -842,89 +873,29 @@ static int t_stake2(void) {
     return 0;
 }
 
-/* ══ R1 — ROTATE against the row S3 created ═════════════════════════ */
+/* ══ R1 — no ROTATE in the client (HF-6 D2) ═════════════════════════ */
 
+/* The khan removed key rotation from HF-6 (decision 2026-10-13-kurultay-
+ * 18-summary.md item 1); the chain refuses op 10 everywhere
+ * (test_hf6_rotate). HF-6 D2 removes it from the shared builder too: the
+ * runtime_op 10 is no op this module builds, at any generation, kind 1
+ * or kind 3. */
 static int t_rotate(void) {
-    const nodus_domain_runtime_t *s4 =
-        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_SYSTEM);
-    const nodus_domain_runtime_t *c4 =
-        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_CORE);
-    CHECK(s4 && c4, "generation 4 compiled");
-
-    /* the NEW node (KN) consents to KO rotating validator g_vid onto it */
-    nodus_v2_consent_t c, cr;
-    CHECK(consent_make(&c, DNA_VALBIND_OP_ROTATE, g_vid, g_k[KO].fp, KN, EXP)
-          == 0, "ROTATE consent signs");
-    {
-        char *t = NULL;
-        size_t tl = 0;
-        CHECK(nodus_v2_consent_text_encode(&c, &t, &tl) == NODUS_V2_SPEND_OK &&
-              nodus_v2_consent_text_parse(t, tl, &cr) == NODUS_V2_SPEND_OK,
-              "through the container");
-        free(t);
-    }
-
-    const uint64_t coin = 5000000000ULL;
-    coin_set(coin);
+    static const uint8_t zero64[64] = { 0 };
+    nodus_v2_consent_t c;
+    CHECK(consent_make(&c, DNA_VALBIND_OP_STAKE, zero64, g_k[KO].fp, KN, EXP)
+          == 0, "a consent to carry");
+    coin_set(5000000000ULL);
     nodus_v2_stake_req_t r;
-    req_gen4(&r, NODUS_V2_STAKE_OP_ROTATE, &cr);
     nodus_v2_stake_built_t b;
     nodus_v2_stake_err_t e;
-    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
-          "ROTATE builds");
-    CHECK(b.dec.op == DNA_SYSRULE_ROTATE_CONSENSUS_KEY && b.dec.gen4 == 1 &&
-          b.dec.amount == 0 &&
-          memcmp(b.dec.validator_id, g_vid, 64) == 0 &&
-          memcmp(b.dec.consensus_pk, g_k[KN].pk, PK_LEN) == 0 &&
-          memcmp(b.dec.owner_fp, g_k[KO].fp, 64) == 0 &&
-          b.dec.consent_expiry == EXP && b.change == coin - b.fee,
-          "read-back: op 10, validator_id, new key, fee-only change");
-
-    dna_env_view_t *v = calloc(1, sizeof(*v));
-    CHECK(v != NULL, "view alloc");
-    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 && v->leg_count == 2 &&
-          v->leg[0].runtime_op == DNA_SYSRULE_ROTATE_CONSENSUS_KEY &&
-          v->leg[1].runtime_op == DNA_CORERULE_SYSFUND, "two legs");
-    {   /* test_hf6_rotate.c rot_call's layout, restated */
-        static uint8_t want[ROT_LEN];
-        memcpy(want, g_vid, 64);
-        memcpy(want + 64, g_k[KN].pk, PK_LEN);
-        memcpy(want + 64 + PK_LEN, c.sig, SIG_LEN);
-        put64(want + 64 + PK_LEN + SIG_LEN, EXP);
-        CHECK(v->leg[0].call_len == ROT_LEN &&
-              memcmp(v->buf + v->call_off[0], want, ROT_LEN) == 0,
-              "call = validator_id ‖ new_pk ‖ consent_sig ‖ expiry "
-              "(7291 bytes)");
-    }
-
-    /* HF-6 D1 (khan decision 2026-10-13-kurultay-18-summary.md item 1):
-     * the CHAIN has no ROTATE. The client builder above still produces
-     * the envelope (removed by the next package); every chain hook of
-     * the generation-4 runtimes refuses op 10 as an unowned op — -1, a
-     * VERDICT, never -2 — whoever signs it */
-    ctx_set(KO, b.intent_id);
-    {
-        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
-        uint16_t n = 0;
-        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
-                                        NODUS_RT_MAX_READS, &n) == -1,
-              "the SYSTEM read plan refuses op 10 (-1)");
-    }
-    {
-        memset(g_reads, 0, sizeof(g_reads));
-        g_reads[0].present = 1;                    /* the committed row */
-        g_reads[0].value_len = V2_REC_LEN;
-        memcpy(g_reads[0].value, g_row, V2_REC_LEN);
-        CHECK(sys_exec(s4, v, 2, NULL) == -1,
-              "the SYSTEM exec refuses op 10 (-1), the row's owner signing");
-    }
-    {
-        uint16_t nr = fund_reads(v, coin);
-        CHECK(core_exec(c4, v, nr) == -1,
-              "the CORE funding leg does not pair with an op-10 sibling");
-    }
-    free(v);
-    nodus_v2_stake_built_free(&b);
+    req_gen4(&r, (nodus_v2_stake_op_t)DNA_SYSRULE_ROTATE_CONSENSUS_KEY, &c);
+    r.validator_id = g_vid;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_OP,
+          "op 10 at generation 4: no such operation (ERR_OP)");
+    r.generation = 0;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_OP,
+          "op 10 at generation 0: ERR_OP");
     return 0;
 }
 
@@ -1004,18 +975,6 @@ static int t_generation(void) {
     r.consensus_pk = NULL;
     CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
           "gen-4 STAKE without the consensus key");
-
-    req_gen4(&r, NODUS_V2_STAKE_OP_ROTATE, &c);
-    r.validator_id = zero64;
-    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
-          "ROTATE with a zero validator_id");
-    r.validator_id = g_vid;
-    r.generation = NODUS_RT_GEN_EVM;
-    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
-          "ROTATE below generation 4");
-    r.generation = 0;
-    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
-          "ROTATE at generation 0");
 
     /* HF-6 slice 7b: ops 2-5 at generation 4 need a validator_id; op 5
      * has no layout below generation 4 */
@@ -1348,8 +1307,10 @@ static int t_role2(void) {
           "read-back: op 3, validator_id, the signer, fee only");
     CHECK(dna_env_decode(b.env, b.env_len, v) == 0 &&
           v->leg[0].call_len == UNS_LEN &&
-          memcmp(v->buf + v->call_off[0], g_vid, UNS_LEN) == 0,
-          "call = validator_id (64 bytes)");
+          memcmp(v->buf + v->call_off[0], g_vid, 64) == 0 &&
+          memcmp(v->buf + v->call_off[0] + 64, g_k[KO].fp, 64) == 0,
+          "call = validator_id ‖ owner_fp = SHA3-512(signer) (128 bytes, "
+          "C2)");
     ctx_set(KO, b.intent_id);
     {
         nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
@@ -1384,14 +1345,45 @@ static int t_role2(void) {
         nr = fund_reads(v, coin + 1u);
         CHECK(core_exec(c4, v, nr) == -1, "+1 on the input refused");
     }
-    {   /* W5 — a zero validator_id is refused by the decoder */
+    {   /* W5 — a zero validator_id is refused by the decoder; so is an
+         * owner_fp that is not the signer's (C2) */
         uint8_t *bad = malloc(b.env_len);
         CHECK(bad != NULL, "alloc");
         memcpy(bad, b.env, b.env_len);
-        memset(bad + v->call_off[0], 0, UNS_LEN);
+        memset(bad + v->call_off[0], 0, 64);
         CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
                   NODUS_V2_SPEND_ERR_DECODE,
               "an UNSTAKE naming an all-zero validator_id is refused");
+        memcpy(bad, b.env, b.env_len);
+        bad[v->call_off[0] + 64] ^= 0x01;
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "an UNSTAKE whose owner_fp is not the signer's is refused");
+        free(bad);
+    }
+    {   /* C2 on the chain: the call names KX as the owner — the exec
+         * refuses it even signed by KX (not the row's owner) and by KO
+         * (the row's owner, but not the call's) */
+        static uint8_t call[UNS_LEN];
+        memcpy(call, g_vid, 64);
+        memcpy(call + 64, g_k[KX].fp, 64);
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(bad != NULL, "alloc");
+        memcpy(bad, b.env, b.env_len);
+        memcpy(bad + v->call_off[0], call, UNS_LEN);
+        dna_env_view_t *bv = calloc(1, sizeof(*bv));
+        CHECK(bv && dna_env_decode(bad, b.env_len, bv) == 0, "decode");
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;
+        g_reads[0].value_len = V2_REC_LEN;
+        memcpy(g_reads[0].value, g_row, V2_REC_LEN);
+        ctx_set(KX, b.intent_id);
+        CHECK(sys_exec(s4, bv, 1, NULL) == -1,
+              "C2: a call naming KX refused, KX signing");
+        ctx_set(KO, b.intent_id);
+        CHECK(sys_exec(s4, bv, 1, NULL) == -1,
+              "C2: a call naming KX refused, the row's owner KO signing");
+        free(bv);
         free(bad);
     }
     nodus_v2_stake_built_free(&b);
@@ -1414,12 +1406,14 @@ static int t_role2(void) {
         {
             uint8_t want[VUP_LEN];
             memcpy(want, g_vid, 64);
-            want[64] = (uint8_t)(nb >> 8);
-            want[65] = (uint8_t)nb;
+            memcpy(want + 64, g_k[KO].fp, 64);
+            want[128] = (uint8_t)(nb >> 8);
+            want[129] = (uint8_t)nb;
             CHECK(v->leg[0].runtime_op == DNA_SYSRULE_VALIDATOR_UPDATE &&
                   v->leg[0].call_len == VUP_LEN &&
                   memcmp(v->buf + v->call_off[0], want, VUP_LEN) == 0,
-                  "call = validator_id ‖ commission u16 (66 bytes)");
+                  "call = validator_id ‖ owner_fp ‖ commission u16 (130 "
+                  "bytes, C2)");
         }
         ctx_set(KO, b.intent_id);
         dna_effect_view_t ev;
@@ -1457,11 +1451,17 @@ static int t_role2(void) {
             uint8_t *bad = malloc(b.env_len);
             CHECK(bad != NULL, "alloc");
             memcpy(bad, b.env, b.env_len);
-            bad[v->call_off[0] + 64] = 0xFF;
-            bad[v->call_off[0] + 65] = 0xFF;
+            bad[v->call_off[0] + 128] = 0xFF;
+            bad[v->call_off[0] + 129] = 0xFF;
             CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
                       NODUS_V2_SPEND_ERR_DECODE,
                   "a VALIDATOR_UPDATE commission of 0xFFFF is refused");
+            memcpy(bad, b.env, b.env_len);
+            bad[v->call_off[0] + 70] ^= 0x01;
+            CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                      NODUS_V2_SPEND_ERR_DECODE,
+                  "a VALIDATOR_UPDATE whose owner_fp is not the signer's is "
+                  "refused (C2)");
             free(bad);
         }
         nodus_v2_stake_built_free(&b);
@@ -1612,8 +1612,9 @@ static int t_storage(void) {
     CHECK(v != NULL, "view alloc");
     CHECK(dna_env_decode(b.env, b.env_len, v) == 0 &&
           v->leg[0].call_len == SEX_LEN &&
-          memcmp(v->buf + v->call_off[0], g_k[KS].fp, SEX_LEN) == 0,
-          "call = node_fp (64 bytes)");
+          memcmp(v->buf + v->call_off[0], g_k[KS].fp, 64) == 0 &&
+          memcmp(v->buf + v->call_off[0] + 64, g_k[KO].fp, 64) == 0,
+          "call = node_fp ‖ owner_fp = SHA3-512(signer) (128 bytes, C2)");
     ctx_set(KO, b.intent_id);
     {
         nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
@@ -1649,6 +1650,18 @@ static int t_storage(void) {
     {
         uint16_t nr = fund_reads(v, 5000000000ULL);
         CHECK(core_exec(c4, v, nr) == 0, "EXIT funding is fee-only");
+    }
+    {   /* C2: the decoder refuses an owner_fp that is not the signer's */
+        nodus_v2_stake_decoded_t *dx = calloc(1, sizeof(*dx));
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(dx && bad, "alloc");
+        memcpy(bad, b.env, b.env_len);
+        bad[v->call_off[0] + 64] ^= 0x01;
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, dx) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "a STORAGE_EXIT whose owner_fp is not the signer's is refused");
+        free(bad);
+        free(dx);
     }
     free(v);
     nodus_v2_stake_built_free(&b);
