@@ -46,6 +46,12 @@
  *  M4b The read-back refuses an expiry of 0 ("never") and one beyond the
  *      export's tip + 90 (NODUS_V2_MSIG_ERR_EXPIRY); tip + 90 and tip + 1
  *      are accepted (fix round F3).
+ *  M4c nodus_v2_msig_horizon (2026-10-13, `msig sign` judges the window
+ *      from its OWN node's height H, not the export's tip): expiry H + 1
+ *      and H + 90 accepted; H (past), H + 91, a future tip's tip + 90, a
+ *      node more than 90 behind the builder, an export built 200 blocks
+ *      ago → NODUS_V2_MSIG_ERR_HORIZON; a node exactly 90 behind with a
+ *      valid expiry accepted; a height near UINT64_MAX → ERR_ARG.
  *  M5  The signature text round-trips; malformed texts are refused.
  *  M6  The combine: two of three members sign; nodus_v2_msig_combine
  *      writes them ascending by key; the chain's OWN auth hook
@@ -881,6 +887,35 @@ static int test_m4b(void) {
           "M4b: expiry tip + 90 accepted");
     CHECK(review_expiry(MS_TIP + 1) == NODUS_V2_SPEND_OK,
           "M4b: expiry tip + 1 accepted");
+
+    /* M4c — the horizon judged against the NODE's height
+     * (nodus_v2_msig_horizon, 2026-10-13): H the node's block. */
+    const uint64_t H = 1000u;
+    CHECK(nodus_v2_msig_horizon(H, H + 1, H) == NODUS_V2_SPEND_OK,
+          "M4c: expiry H + 1 (the next block) accepted");
+    CHECK(nodus_v2_msig_horizon(H, H + MS_AHEAD, H) == NODUS_V2_SPEND_OK,
+          "M4c: expiry H + 90 accepted");
+    CHECK(nodus_v2_msig_horizon(H, H, H) == NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: expiry H (already past) refused");
+    CHECK(nodus_v2_msig_horizon(H, H + MS_AHEAD + 1, H) ==
+              NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: expiry H + 91 refused (outlives the window from now)");
+    /* an export whose author set its tip into the future: the read-back
+     * accepts expiry <= tip + 90, the horizon does not */
+    CHECK(nodus_v2_msig_horizon(H + 500, H + 500 + MS_AHEAD, H) ==
+              NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: a future tip's long-lived expiry refused");
+    CHECK(nodus_v2_msig_horizon(H + MS_AHEAD + 1, H + 10, H) ==
+              NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: a node more than 90 blocks behind the builder refused");
+    CHECK(nodus_v2_msig_horizon(H + MS_AHEAD, H + MS_AHEAD, H) ==
+              NODUS_V2_SPEND_OK,
+          "M4c: a node exactly 90 behind with a valid expiry accepted");
+    CHECK(nodus_v2_msig_horizon(H - 200, H - 200 + MS_AHEAD, H) ==
+              NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: an export built 200 blocks ago (expired) refused");
+    CHECK(nodus_v2_msig_horizon(0, 5, UINT64_MAX) == NODUS_V2_SPEND_ERR_ARG,
+          "M4c: a node height near UINT64_MAX is an argument error");
     return 0;
 }
 

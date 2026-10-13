@@ -2088,6 +2088,19 @@ void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *res
  *                 tag ‖ M ‖ N ‖ N × pubkey, address = SHA3-512(it))
  *   dnac_msig_utxo:          "max" uint 1..NODUS_DNAC_MAX_UTXO_RESULTS
  *                            (optional; absent = 100)
+ *                            "nul" array of 1..NODUS_DNAC_MSIG_MAX_NULS
+ *                            bstr, each exactly 64 bytes, STRICTLY
+ *                            ascending (optional; the input check of
+ *                            nodus-cli `msig sign`, design §2 "ÖDEYİCİ
+ *                            BAĞLAMA" 2026-10-13). Given: the answer
+ *                            lists exactly those of the named coins that
+ *                            are unspent CORE coins whose owner is
+ *                            "owner" (any token), in "nul" order — a
+ *                            coin that is missing, spent or another
+ *                            owner's is simply absent — and "max" must be
+ *                            absent (both → PROTOCOL_ERROR). Not given:
+ *                            the page below, exactly as before (the web
+ *                            wallet's request).
  *   dnac_msig_addr_history:  "limit", "before", "bi", "bq" exactly as
  *                            dnac_addr_history above
  *   Each key at most once; a known key of the wrong type or out of
@@ -2103,7 +2116,14 @@ void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *res
  *     "utxos" (same per-entry keys and encoding, CORE-domain coins,
  *     ordered amount DESC then nullifier ASC), then one more key LAST:
  *     "trunc" bool  true = the owner holds more coins than were returned
- *                   (no paging yet: the page is the first "max")
+ *                   (no paging yet: the page is the first "max");
+ *                   always false for a "nul" request
+ *     and, ONLY for a "nul" request, one more key LAST:
+ *     "nul"   uint  the number of nullifiers the request named — the
+ *                   marker a client requires to know the list was honoured
+ *                   (a node without it skips the unknown "nul" argument and
+ *                   answers the page, which proves nothing about the named
+ *                   coins)
  *     "q" = "dnac_msig_utxo".
  *   dnac_msig_addr_history — EXACTLY dnac_addr_history's answer (same
  *     four keys, same entries, same node-local caveats: "enabled",
@@ -2122,6 +2142,14 @@ void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *res
  *  (DNA_MSIG_MAX_DESC_LEN, shared/dnac/msig_wire.h; the node
  *  _Static_asserts the equality). */
 #define NODUS_DNAC_MSIG_MAX_DESC_LEN  18162u
+
+/** The most nullifiers one dnac_msig_utxo "nul" request names: the chain's
+ *  per-leg input ceiling (15 — RTN_SPEND_MAX_IN, restated by the client
+ *  builders as NODUS_V2_SPEND_MAX_IN; the node _Static_asserts the
+ *  equality). Every funding leg a co-signer is asked to sign has at most
+ *  this many inputs, so one request always covers it, and the node's work
+ *  per request is bounded by it (one indexed lookup per nullifier). */
+#define NODUS_DNAC_MSIG_MAX_NULS  15u
 
 /** The error text a node answers (with NODUS_ERR_PROTOCOL_ERROR) for a
  *  `dnac_*` method it does not have (nodus_witness_handlers.c dispatch).
@@ -2155,6 +2183,28 @@ int nodus_client_dnac_msig_utxo(nodus_client_t *client,
                                 int max_results,
                                 nodus_dnac_utxo_result_t *result_out,
                                 bool *trunc_out);
+
+/**
+ * A vault member's view of NAMED coins of the multisig address
+ * `owner_hex` (dnac_msig_utxo with "nul", above): the answer lists exactly
+ * those of `nuls` that are unspent CORE coins owned by `owner_hex`.
+ * The reply is refused (NODUS_ERR_PROTOCOL_ERROR, `result_out` empty)
+ * unless it carries the "nul" marker equal to `n_nuls` (a node that does
+ * not know the argument answers the page instead — not a verification),
+ * "trunc" is false, it has at most `n_nuls` entries, every entry's
+ * nullifier is one of `nuls` and no nullifier repeats.
+ * @param nuls    n_nuls nullifiers, STRICTLY ascending (checked before
+ *                sending)
+ * @param n_nuls  1..NODUS_DNAC_MSIG_MAX_NULS
+ * @return as nodus_client_dnac_msig_utxo; free the result with
+ *         nodus_client_free_utxo_result.
+ */
+int nodus_client_dnac_msig_utxo_nuls(nodus_client_t *client,
+                                     const char *owner_hex,
+                                     const uint8_t *msig, size_t msig_len,
+                                     const uint8_t (*nuls)[64],
+                                     uint32_t n_nuls,
+                                     nodus_dnac_utxo_result_t *result_out);
 
 /**
  * A vault member's history of the multisig address `owner_hex`

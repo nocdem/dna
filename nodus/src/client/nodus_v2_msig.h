@@ -151,9 +151,42 @@ typedef enum {
     NODUS_V2_MSIG_ERR_COUNT       = -71, /* signatures != the export's K   */
     NODUS_V2_MSIG_ERR_DUP_SIGNER  = -72, /* one key signed twice           */
     NODUS_V2_MSIG_ERR_RULESET     = -73, /* no CORE leg version to judge   */
-    NODUS_V2_MSIG_ERR_EXPIRY      = -74  /* expiry 0, or past the export's
+    NODUS_V2_MSIG_ERR_EXPIRY      = -74, /* expiry 0, or past the export's
                                           * tip + NODUS_V2_MSIG_EXPIRY_AHEAD*/
+    NODUS_V2_MSIG_ERR_HORIZON     = -75  /* judged against the NODE's
+                                          * height (nodus_v2_msig_horizon):
+                                          * expired, valid past node +
+                                          * EXPIRY_AHEAD, or the node more
+                                          * than EXPIRY_AHEAD behind the
+                                          * export's tip                  */
 } nodus_v2_msig_rc_t;
+
+/**
+ * The signing horizon judged against the height of the co-signer's OWN
+ * node (2026-10-13, red-team round 3 — `msig sign` takes it from the
+ * pinned session's dnac_msig_utxo answer, "block_height"), not against the
+ * export's own `tip`, which its author chose. With H = node_height (the
+ * last committed block; the envelope runs at H + 1 or later):
+ *   expiry_height <= H                         → expired: nothing to sign
+ *   expiry_height >  H + NODUS_V2_MSIG_EXPIRY_AHEAD
+ *                                              → the signature would stay
+ *     usable longer than any builder makes from the present — an export
+ *     whose tip was set into the future (review / review2 check expiry
+ *     only against that tip) would otherwise yield a signature that waits
+ *     to be submitted later;
+ *   export_tip    >  H + NODUS_V2_MSIG_EXPIRY_AHEAD
+ *                                              → the node is that far
+ *     behind the builder: its coin set (the input check) is not the one the
+ *     export was built on.
+ * (H − export_tip > EXPIRY_AHEAD needs no rule of its own: the export's
+ * expiry is <= tip + EXPIRY_AHEAD < H, the first line.) One constant, the
+ * read-back's own window (mempool cap 100 − the 10-block gossip margin),
+ * so the node-side window and the export-side window are the same size.
+ * Pure. @return NODUS_V2_SPEND_OK / NODUS_V2_MSIG_ERR_HORIZON /
+ *         NODUS_V2_SPEND_ERR_ARG (a height near UINT64_MAX).
+ */
+int nodus_v2_msig_horizon(uint64_t export_tip, uint64_t expiry_height,
+                          uint64_t node_height);
 
 /* ── 1. descriptor + address from keys (nodus-cli `msig address`) ────── */
 
