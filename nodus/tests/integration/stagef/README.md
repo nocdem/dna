@@ -834,6 +834,7 @@ should tick every interval on a healthy chain.
 | `test_hf6_edge.sh` (**SKIP 99 in every split mode** — `stagef_split_skip_if --reason "HF-6 edge scenario not checked through a split core"`) (HF-6 sub-slice 3f: design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §7, §1.6, §8, §10 item 2; decisions `2026-10-08-kurultay-14-hf6-summary.md` K4/K8, `2026-10-09-kurultay-16-hf6-storage-summary.md` D2 (a); plan `tasks/hf6-slice3-plan.md` §2 "3f"; **extended by HF-6 slice 5d** (plan `tasks/hf6-slice5-plan.md` §1, §2 "5d", ORCHESTRATOR D7: the ruleset-2 switch, the validator_id tiebreak, a 50M pre-edge delegation so the power cap bites at the switch); HF-6 slice 6f-2's optional step 10 (a consensus-key rotation of node 2 onto an 8th node) was **DELETED by HF-6 D1** — the khan removed ROTATE from HF-6 (decision `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` item 1); branch `hf6` only — **written against the source, NOT yet run**, neither the 3f body nor the 5d extension, nor after the D1 edit) | **Compile:** ONE build of an HF-6 tree carrying sub-slices 3a-3d AND slice 5d (an HF-6 tree without 5d FAILs step 8a: snapshot(B1 + E) still ruleset 1), `nodus-server` + `nodus-cli` from the same tree, with `NODUS_EVM_ENABLED` (the standalone non-Windows default — the generation-4 edge FAULTs without it) and the short-epoch + short-grace set `-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15`. The default compiles the K8 Foundation owner; a build with `-DDNAC_HF6_FOUNDATION_OWNER='{…}'` (64 bytes) needs the same bytes in `STAGEF_HF6_OWNER_FP_HEX` (row in "Environment"). The harness's per-bring-up 2-of-3 cannot be compiled in (keys born after the build), so owner operations of the genesis validators are NOT signable here. **Env, exported BEFORE `stagef_up_v2.sh`:** `STAGEF_NODUS_BIN` / `STAGEF_NODUSCLI_BIN` → that build, `STAGEF_EPOCH_LENGTH=15 STAGEF_BLOCKS_PER_YEAR=20`; read by the script only: `STAGEF_CC_GRACE_SAFETY=15 STAGEF_CC_GRACE_ERGONOMIC=15`, optional `STAGEF_HF6_OWNER_FP_HEX`. Leave `STAGEF_PAYOUT_INTERVAL_EPOCHS` unset (24). No `STAGEF_TREASURY_POOL1_RAW` (no storage node). **5d:** the bring-up's non-validator identity `$BASE_DIR/v2user` with its UNCLAIMED genesis leaf (100M NODUS) — the 50M delegator; nothing to export for it. Tools: `sqlite3`, `xxd`, `ss`. Exact sequence in the script header. **SKIPs (99):** a binary missing, `STAGEF_EPOCH_LENGTH` or the genesis `epoch_length` ≠ 15, a grace variable ≠ 15, not a Comet cluster, no `v2_genesis.conf`, no `$BASE_DIR/v2user` identity, `payout_interval_epochs` ≤ 1, a tool missing, any split mode. **FAILs (1)** on the capability gate (banners differ, the CLI's usage names no `EVM_ACTIVE exactly <D>` / `RULESET_GEN_ROLES exactly <D4>`, no `v2_validator_roles` table = not schema S18, (8c) a node whose startup banner `HF-6 rule-set generation 4 vote D4 0x<D4> (param 18 RULESET_GEN_ROLES, switch spec v1)` names another D4), on a chain already holding a param 7 / 8 / 9 / 14 / 16 / 18 row, a delegation or a roles row, on v2user's leaf already claimed, and on a malformed `STAGEF_HF6_OWNER_FP_HEX`. `STAGEF_HF6_OWNER_KEYS` / `STAGEF_V2_CANDIDATES` are NOT read any more (the D1-deleted step 10's). **Run standalone** on its own fresh bring-up — not in the sweep (special build). Duration ≈ 370 blocks (JUDGMENT, not measured; ≈ 1-1.5 h; 5d adds the claim + delegation and up to ≈ 16 blocks of a later H). **Leaves:** HF-2, HF-3, generation 2, the EVM generation 3 + domain, generation 4 (HF-6) — all one-way; rows params 7, 8, 9, 14, 18; the seven validator rows re-keyed to validator_id with 2M bonds, seven 8M self-delegations owned by the Foundation owner, seven `v2_validator_roles` rows, the validators' accrual on the Foundation row (a payday crossed pays it as one coin to the Foundation address, unspendable by the harness); **5d:** v2user's leaf claimed and 50M NODUS of it delegated to node 2 for good (re-keyed to node 2's validator_id; node 2 raw 60M — 50 % of the raw power until the switch, capped to 25714285 counted power in every ruleset-2 snapshot), v2user's accrual row (or payday coin), every snapshot from B1 + E on ruleset 2; node 3's leaf claimed by the pump, every pump fee and v2user's two fees in the reward pool; `$BASE_DIR/hf6/` (CLI logs); seven `v2_consensus_keys` rows (one per validators row — permanent, never released). Nothing restarted. Single-use — tear down before re-running. | **Proves:** the HF-6 generation-4 edge migrates the genesis validators and their earnings go to the owner, 7/7; **(5d)** the first boundary after the edge stores the first ruleset-2 snapshot (every earlier one stays v1) and the power cap reaches cometbft's set the epoch after, 7/7. (0) capability gate. (1) fresh chain: 7 validator rows, one per harness node (raw `nodus.pk` bytes), ACTIVE / ELIGIBLE, `active_since_block` ≤ 1, 10M, no delegations / roles rows. (2) HF2_ACTIVE, HF3_ACTIVE, RULESET_GEN2, EVM_ACTIVE voted and crossed (the archive scenario's step 2 — param 18 is votable only under the EVM generation with HF-2 on, rules (b), (c)). **(2b, 5d)** v2user claims its leaf and, under generation 3, `v2-envelope delegate --validator <node 2's pubkey> --amount 5000000000000000` (50M; `test_cmt_self_delegate.sh`'s builder) — applied (its `v2_intent_index` row at h_d), 7/7 the row holds 50M and node 2's total = external delegated = 50M; C_D = the first boundary ≥ h_d. (3) RULESET_GEN_ROLES = D4 (param 18, the real generation-4 vote since HF-6 slice 8c; design rev 6 §8, §8.1) at H with H % E = 8 (H−1 and H off a boundary, rules (d), (e); last boundary H−8, stepped off a payday; first after B1 = H+7) AND H ≥ C_D + E + 8 (5d: the delegation in copy(H − 8 − E), the copy snapshot(B1) is built from); round 1 7/7, row 7/7 < H; generation 3 on 7/7. (4) pre-edge, one statement per node at tip ∈ [H−8, H−2]: Σself = 7 × 10M, Σtotal_delegated 50M, v2user's one delegation, no roles, Σaccrual > 0 held only by node-key fps and v2user; identical 7/7. (5) crossing H (pumped to H−7, idle): blocks AT H−1 / H / H+1 identical 7/7; every node logged `HF-6: rule-set generation 3 -> 4 and the validator migration at the end of height H−1 (param 18 RULESET_GEN_ROLES, D4 0x<D4>); height H is judged under generation 4` and `HF-6 migration: 7 validators re-keyed (7 Foundation-owned), 7 consensus keys reserved (one per validators row, every status), 8 delegations (1 before)` (5d: the 3f text lacked slice 4's key count — it could not have matched; HF-6 D1 added the "(one per validators row, every status)" clause — the edge now seeds UNSTAKED rows too); `ruleset-info` 7/7 = 4. (6) post-edge, tip ∈ [H, B1−1], 7/7: Σself + Σtotal_delegated unchanged (7 × 2M + 7 × 8M + 50M), Σaccrual unchanged = the Foundation row (all node-key rows merged, K4) + v2user's row untouched. (7) the rows, dumped canonically, identical 7/7: each validators row joined to its roles row (validator_id ≠ its pre-edge key), owner = Foundation, no pending key, 2M bond, total = external delegated = 8M (node 2: 58M); 8 delegations — Foundation → each validator_id, 8M, dated H, and v2user → node 2's validator_id, 50M, its pre-edge date. (8) boundaries B1, B1+E, … until ≥ 3 non-payday ones are checked AND one is ≥ B1+3E (its source copy B−3E was written after the edge — the 2M/8M copy governs): pumped to B−3, one-statement reads before and after B with NO envelope between (Σ `tx_count` = 0), 7/7 identical block AT B and accrual table; non-payday: the accrual table holds the Foundation owner's row and at most v2user's (no node-key row), Δowner + Δv2user = ΔΣaccrual = reward-pool debit, Δowner > 0, Δv2user > 0 once B − 3E ≥ C_D; payday (not counted): accrual empty, the coins (`output_index` ≥ 400) at B: ONE to the owner, at most one to v2user (present once B − 3E ≥ C_D), summing to the prior accrual + pool debit. **(8a, 5d)** at B1 (the plan's B₀ — the first boundary reading generation 4): on 7/7 every stored snapshot with `epoch_start` ≤ B1 has `substr(snapshot_blob, 11, 4)` = `00000001` and snapshot(B1 + E) = `00000002` (no row above it), node 2's entry decoded at the layout's fixed offsets (`vset_wire.h`) holds raw 60M in snapshot(B1) (v1) and in snapshot(B1 + E) (v2). **(8b, 5d)** at B1 + E every node logged `epoch boundary height <B1+E> — validator_updates n_added=0 n_power_changed=1 n_removed=0` (raw 60M on the old side, so the one change is the cap's — raw on the new side would log 0); snapshot(B1 + 2E) ruleset 2 on 7/7. **(8c, 5d)** B1 + 2E, the first distribution governed by a ruleset-2 snapshot, pays the owner and v2user (by validator_id). (9) the step-7 dumps unchanged 7/7 at the end; final floor 7/7. (The 6f-2 step 10 — a consensus-key rotation — is gone with ROTATE, HF-6 D1.) **How it can lie:** E = 15 / grace 15 / BPY 20 — the LOGIC only; **the trigger is the real one** (param 18 = D4, HF-6 slice 8c) voted ONCE the legal way — the stateful rule's refusals (a second vote, a param-16 row, HF-2 off, another judging generation, H or H−1 on a boundary) are `test_hf4_params.c`'s, a param-16 proposal (the CLI cannot name it) and a mixed fleet are not exercised; the banner check proves the CLI and the servers carry ONE D4, not that it is the oracle's number (`test_hf4_table.c` KAT); **every node runs one binary**, so a gen-4 reader forgotten uniformly computes the same wrong value on all seven and 7/7 identity cannot see it — what IS seen: a reader that FAULTs (stall → FAIL), accrual anywhere but the owner, the exact pool → accrual conservation (the reader inventory is `test_hf6_readers`); **not exercised:** owner operations (UNSTAKE / VALIDATOR_UPDATE / the owner's UNDELEGATE), a generation-4 STAKE, an own-owner (non-genesis) validator, a pre-H SELF-delegation (plan D5 — the one pre-H delegation is v2user's, external), a RETIRING row graduating to the owner, the permanent key index (a used key refused at STAKE, the edge seeding UNSTAKED rows — this cluster has no UNSTAKED row and no second STAKE) (`test_hf6_migrate`, `test_hf6_calls`, `test_hf6_stake`, `test_hf6_readers`, `test_hf6_rotate` are their proof); **(5d) the counted power VALUE is not read from cometbft** — its validator set is in opaque protobuf blobs and no RPC reports counted power (slice 5e): the scenario sees node 2's raw 60M in both stored blobs and the node's own `n_power_changed=1` line, which raw-on-both-sides would make 0 — a build capping to any other value below 60M logs the same line; 25714285 exactly is `test_hf6_readers` F4 / `test_cmt_app`; **(5d) the validator_id tiebreak order is not decoded** (node 2 alone at the top; the six equal seats' order is `test_hf6_readers` F2 / `test_committee_election` (7)) — 7/7 identical blocks and snapshot hashes are what this scenario sees of it; **(5d) node 2 holds 50 % of the raw power** from the first v1 snapshot holding the delegation until B1 + E — every commit there needs its precommit (a node-2 stall halts the chain → FAIL, never a pass); **the committee after H is not decoded** beyond node 2's entry (continued 7/7 commits and the payments are indirect evidence); **the validator_id value is not re-derived** (a 64-byte new key joined to its roles row, identical 7/7 — the codec is slice 1's); boundaries before B1+3E pay from pre-edge copies (through the §7.5 bridge up to B1 + E, by validator_id from B1 + 2E), and the per-member split (base vs x_d) is not separable for the Foundation — one owner receives both; v2user's share is asserted > 0, owner + v2user = the pool debit, not each amount; a payday among the boundaries is checked differently and not counted, and need not occur; the pre-/post-edge and boundary windows are wall-clock-adjacent (idle ≈ 60 s per block): a read outside its window, or any envelope inside a boundary window, FAILs as "layout broke" — false RED, never false PASS; every proposal is kept away from an epoch boundary (`cc_guard`); the log lines are asserted but the tables are the proof; rc 99 = coverage that did not happen. |
 | `bench_tps_v2.sh` (in `stagef/`, not `tests/`) | Default build (`nodus-server` + `nodus-cli` from the same tree). `STAGEF_V2_PUMP_IDENTITIES=<K>` and `STAGEF_V2_PUMP_LEAVES=<N>` (per identity) exported BEFORE `stagef_up_v2.sh` — suggested for trial B: **K = 7, N = 150** (see "The TPS bench"); knobs `STAGEF_BENCH_WORKERS` (M, default 7 = one per node, max 7 — a node EVICTS an older session of the same identity, `SESSION_EVICT`, so two workers on one node kill each other's handshake; measured with M=8) and `STAGEF_BENCH_DURATION_S` (D, default 600). Optional: `ss` (iproute2) with `-i` byte counters for the bandwidth section (SKIPPED with a message otherwise; the bench still runs). **Run standalone** against its own fresh bring-up — it claims and churns the whole PUMP batch. rc 99 on a non-Comet cluster. | A **measurement, not a scenario**: sustained CORE SPEND TPS at today's unit budget, per-node TCP bandwidth during the load, (the per-channel NETSTATS section is deleted in P2P-PORT F6 — no such counters on the new stack). See "The TPS bench" below. |
 | `bench_tps_live.sh` (in `stagef/`, not `tests/`) | **Targets the LIVE 7-node devnet, not a localhost cluster.** Default build of this tree (the unit budget is read from its header; the live nodes and every client host's `nodus-cli` should be built from the same source). `ssh -o BatchMode=yes root@<node>` to all 7 nodes (each with `sqlite3`, `ss`, `journalctl`, `systemctl`, unit `nodus`, one `witness_*.db`); ssh to every remote client host in `BENCH_HOSTS`; the claimed test identities in `/home/nocdem/testkeys` (2026-09-25 devnet baseline genesis). Knobs `BENCH_HOSTS`, `BENCH_K`, `BENCH_COINS` (N, 150), `BENCH_WORKERS` (M, default K), `BENCH_DURATION_S` (D, 600), `BENCH_OUT`, `BENCH_CLIENT_IPS` — see "The live TPS bench". **Run by the operator / ORCHESTRATOR only**: it writes to the live chain. | A **measurement, not a scenario**: the same TPS / cap / CPU / bandwidth report as `bench_tps_v2.sh`, over a real network, with the load from several client machines. See "The live TPS bench" below. |
+| `bench_rpc_flood.sh` (in `stagef/`, not `tests/`) | Default build (`nodus-server` + `nodus-cli` + `stagef_rpc_flood` from the SAME tree — the flood tool and the pump take the CORE ruleset from their own compiled table; a binary from another tree builds for a different ruleset and is refused EARLY, not at the input-existence check `spend-invalid` exercises). An already-up Comet cluster from `stagef_up_v2.sh` (**any `STAGEF_MODE`; `STAGEF_MODE=split` is the honest shape — production runs three processes per node**, decision `docs/plans/decisions/2026-10-01-nodus-component-split.md`). Knobs (all optional): `STAGEF_FLOOD_VICTIM` (node flooded + measured, default 2 — **must differ from the pump funder node $STAGEF_PUMP_FUNDER_NODE and submit node, else it refuses at once**), `STAGEF_FLOOD_MODE` (`spend-invalid` default / `v3-block` / `balance`), `STAGEF_FLOOD_SESSIONS` (S, default 19, 1..19 — 20 connections per IP is the server cap), `STAGEF_FLOOD_THREADS` (T per session, default 32, 1..64 — `NODUS_MAX_PENDING` per client), `STAGEF_FLOOD_HEIGHTS` (window length in committed heights, default 30), `STAGEF_FLOOD_BIN`. Nothing exported before bring-up. rc 99 on a non-Comet cluster; rc 1 on a pump / setup fault. **Run standalone against an up cluster.** | A **measurement, not a scenario**: does a high volume of ordinary client chain requests to ONE node delay that node's own consensus participation? Two equal windows (baseline vs flood) of `STAGEF_FLOOD_HEIGHTS` committed heights, the chain driven at commit pace by the CLI-SPEND pump from a non-victim node; per window it records harness-observed sec/height (mean/max), each validator's `v2_attendance.signed_count` delta, the victim's max tip lag and (if readable) the victim witness-process CPU%. Asserts NO threshold — the two columns are the output. See "The RPC flood bench" below. |
 
 #### The TPS bench (`bench_tps_v2.sh`)
 
@@ -1162,6 +1163,119 @@ checked, or fewer than 2 nodes were readable — a divergence on an
 unchecked node is not excluded; the unchecked nodes are listed in
 `agreement.txt` · 129 hang-up (HUP, trapped so the cleanup still runs)
 · 130 interrupted (INT / TERM).
+
+#### The RPC flood bench (`bench_rpc_flood.sh`)
+
+**What it measures.** One question: does a high volume of ordinary client
+chain requests to ONE node delay that node's own consensus participation?
+A defensive measurement of our own node on localhost — never a live node.
+Against an already-up cluster it runs two windows of the SAME length, each
+`STAGEF_FLOOD_HEIGHTS` committed heights long (default 30; boundaries read
+from a NON-victim reference node's DB, never wall-clock): **phase A** with
+no flood, **phase B** with `stagef_rpc_flood` pointed at ONE node's client
+port only (`STAGEF_FLOOD_VICTIM`), `STAGEF_FLOOD_SESSIONS` sessions ×
+`STAGEF_FLOOD_THREADS` threads of `STAGEF_FLOOD_MODE` requests. In BOTH
+windows the chain is driven at the timeout_commit pace by the CLI-SPEND
+pump (`stagef_cmt_pump_to`) run from a node that is NOT the victim, so the
+heights come at commit pace, not the 60 s idle interval. Per window,
+reading the reference node's witness DB once a second in ONE sqlite
+statement per sample (tip + every validator's `signed_count`), it reports:
+heights committed, harness-observed seconds per height (mean / max),
+per-validator `v2_attendance.signed_count` delta across the window (voter
+id = `SHA3-512(pubkey)[0..31]`, `stagef_voter_id`), the victim's max tip
+lag behind the reference, and — if the victim's witness pid is readable —
+its CPU% (utime+stime from `/proc`, as `bench_tps_v2.sh`). The flood
+tool's own stats (sent / answered / refused / errors / timeouts,
+requests/s) are copied in. **It asserts NO threshold**: the two columns
+side by side are the output, plus the closing 7/7 agreement check.
+
+The three modes (`STAGEF_FLOOD_MODE`): `spend-invalid` builds ONE
+well-formed CORE SPEND envelope per session — the SAME shared builder
+`nodus-cli v2-envelope spend` uses (`nodus_v2_spend_plan` +
+`nodus_v2_spend_build`) over a single FABRICATED coin (a random nullifier
+that is not a real coin), signed kind-1 by an EPHEMERAL in-memory key, fee
+at the floor — so the node runs its full CheckTx (signature verify +
+envelope decode) and refuses only at the input-existence check
+(`rtn_xfer_exec`); a refused tx is removed from the mempool cache
+(`keep_invalid_txs_in_cache` is false, `shared/dnac/cmt_mem.c:1308`), so
+each resubmission re-runs the full CheckTx. `v3-block` repeats
+`dnac_v3_block(H, from_index 0, budget 1 MiB)`; `balance` repeats
+`dnac_balance(owner)` (decision `docs/plans/decisions/2026-09-28-scan-v3-query.md`).
+
+**What it requires.** *Compile flags:* none beyond a default build —
+`nodus-server`, `nodus-cli` and `stagef_rpc_flood` (`cd nodus/build &&
+make stagef_rpc_flood`) from the SAME tree (the flood tool and the pump
+take the CORE ruleset from their own compiled table; a binary from another
+tree would build for a different ruleset and be refused EARLY, not at the
+input-existence check). A short-epoch build only changes how often
+`signed_count` resets (see below). *Environment:* nothing exported before
+bring-up — the bench runs against the cluster as it stands. Optional
+knobs: `STAGEF_FLOOD_VICTIM` (default 2; **MUST differ from the pump
+funder node `STAGEF_PUMP_FUNDER_NODE` (3) and submit node
+`STAGEF_PUMP_SUBMIT_NODE` (1)** — the bench refuses at once otherwise),
+`STAGEF_FLOOD_MODE` (default `spend-invalid`), `STAGEF_FLOOD_SESSIONS` (S,
+default 19, 1..19 — 20 connections per IP is the server cap,
+`nodus_tcp.c`), `STAGEF_FLOOD_THREADS` (T per session, default 32, 1..64 —
+`NODUS_MAX_PENDING` per client), `STAGEF_FLOOD_HEIGHTS` (default 30),
+`STAGEF_FLOOD_BIN` (default `nodus/build/stagef_rpc_flood`). A Comet
+cluster from `stagef_up_v2.sh` with a pump-ready funder leaf, else rc 99.
+
+**What it leaves behind.** The pump's fees spent (node 3's genesis leaf
+claimed if no earlier pump did; each pump spend replaces one coin
+`STAGEF_PUMP_FEE_RAW` smaller). The chain many blocks further on (two
+windows of driven heights). The flood tool's refused / read requests
+committed NOTHING. NOTHING is killed or restarted — no node is stopped, no
+identity file is touched (the flood tool's identities are ephemeral, in
+memory only). Outputs under `$BASE_DIR/rpcflood/`: `summary.txt` (both
+phases side by side + the flood stats), `A_poll.csv` / `B_poll.csv`
+(per-poll tip / victim tip / tip lag / per-validator `signed_count`).
+
+**How it can lie.** (The full list is in the script header.) Headline
+traps: **one machine, 7 nodes + the clients** — a delay under flood may be
+host CPU contention, not a protocol effect (the victim CPU% is printed so
+that is visible); **localhost has no network**, so this measures the
+node's CPU/lock response to request volume, not a NIC-saturation attack;
+**`signed_count` resets to 0 at every epoch boundary** (`v2ep_attendance_
+reset`, `nodus_witness_v2_epoch.c:1881`) — a window that crosses a
+boundary would compute a NEGATIVE delta, so the bench detects end < start
+and reports "epoch boundary crossed" instead (under the short-epoch build,
+E=15, a 30-height window ALWAYS crosses one; at production E=720 it rarely
+does); **tip lag is a proxy, not a vote** — a validator can lag its DB
+write yet still have precommitted on time, so lag rising under flood is a
+hint, the same-epoch `signed_count` delta is the direct participation
+signal; **the flood is client-paced** — a low sent/s with no delay means
+the node shrugged off THIS request rate, not that no rate could delay it;
+**`spend-invalid` proves CheckTx work only if the proof line printed** (the
+tool refuses to run unless the node answered the first submission with a
+"CheckTx code N" refusal); **a skip is not a pass** (rc 99 measured
+nothing); **pump drift** — if the funder leaf was spent down, the pump
+faults and the bench fails as a setup fault rather than silently measuring
+an idle chain. **The tool is SDK-shaped:** every thread waits for its
+answer (≤ 64 in flight per session, `NODUS_MAX_PENDING`), so it cannot
+queue the 256 frames per session per poll pass a client that never waits
+could — that load, and load from several IPs, are NOT what this bench
+measures.
+
+**First measurements (2026-10-13, ORCHESTRATOR, branch `rpcdos-flood` at
+main `6fa4986b7`, `STAGEF_MODE=split`, production constants E = 720,
+7 nodes + the flood tool on ONE 4-CPU machine, victim node 2, mode
+`spend-invalid` — every request refused at CheckTx AFTER its signature
+check, "dry run item code 7 … runtime exec refused"):**
+
+| | 19 × 32 | 19 × 64 |
+|---|---|---|
+| sec/height mean (A → B) | 4.59 → 4.81 | 4.57 → 4.68 |
+| sec/height max (A → B) | 5.20 → 6.12 | 5.17 → 6.12 |
+| victim `signed_count` over 30 heights (A / B) | +30 / +30 | +30 / +30 |
+| victim witness CPU (A → B) | 2.6 % → 97.3 % | 3.1 % → 99.0 % |
+| requests answered / s (all refused, 0 errors, 0 timeouts) | 680 | 704 |
+| victim max tip lag (A / B) | 0 / 1 | 0 / 1 |
+
+The single-threaded witness saturates at ≈ 700 CheckTx per second; at
+this load it missed NO vote and the chain slowed by 2-5 % on average,
+7/7 identical after. Why no vote was lost is INFERRED, not traced: a
+precommit that arrives late is still counted while the proposer waits
+`timeout_commit` (4 s) — a pass would have to stall beyond that.
 
 #### Order matters on the Comet lane too (R3 W3, C2d)
 
