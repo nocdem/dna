@@ -212,6 +212,25 @@ static int do_auth(void) {
     return 0;
 }
 
+/* Strict unsigned decimal option value, bounded by `max` (the target
+ * type's range — the caller's own semantic checks follow). Refused: NULL /
+ * empty, a sign or leading space (the first char must be a digit — strtoull
+ * would accept "-1" as UINT64_MAX and " 5" as 5), trailing characters,
+ * ERANGE, a value above `max`. HF-6 red-team round 1 close-out: the
+ * HF-6 commands used to take strtoull / (uint32_t)strtoul without an end
+ * check, so "12abc" was 12 and 4294967306 a commission of 10.
+ * @return 0 (*out set) / -1. */
+static int cli_u64(const char *s, uint64_t max, uint64_t *out) {
+    if (!s || s[0] < '0' || s[0] > '9') return -1;
+    char *end = NULL;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (!end || *end != '\0' || errno == ERANGE || (uint64_t)v > max)
+        return -1;
+    *out = (uint64_t)v;
+    return 0;
+}
+
 /* ── Commands ────────────────────────────────────────────────────── */
 
 static int cmd_ping(void) {
@@ -3867,14 +3886,26 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the verb word */
         const char *a = argv[i];
         if      (!strcmp(a, "--keys")       && i + 1 < argc) keys_csv = argv[++i];
-        else if ((is_stake || is_stake2) &&
-                 !strcmp(a, "--bond") && i + 1 < argc) {
-            bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
-        } else if (is_deleg && !strcmp(a, "--amount") && i + 1 < argc) {
-            bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
+        else if (((is_stake || is_stake2) && !strcmp(a, "--bond")) ||
+                 (is_deleg && !strcmp(a, "--amount"))) {
+            /* strict (cli_u64): the range checks below then judge it */
+            if (i + 1 >= argc || cli_u64(argv[++i], UINT64_MAX, &bond) != 0) {
+                fprintf(stderr, "%s must be an unsigned decimal raw amount "
+                        "(no sign, no trailing characters, <= %llu)\n", a,
+                        (unsigned long long)UINT64_MAX);
+                return 1;
+            }
+            have_bond = 1;
         } else if ((is_stake || is_stake2 || is_vupd) &&
-                   !strcmp(a, "--commission") && i + 1 < argc) {
-            commission = (uint32_t)strtoul(argv[++i], NULL, 10); have_comm = 1;
+                   !strcmp(a, "--commission")) {
+            uint64_t cv = 0;
+            if (i + 1 >= argc || cli_u64(argv[++i], UINT32_MAX, &cv) != 0) {
+                fprintf(stderr, "--commission must be an unsigned decimal "
+                        "number of bps (0..%u)\n",
+                        (unsigned)DNAC_COMMISSION_BPS_MAX);
+                return 1;
+            }
+            commission = (uint32_t)cv; have_comm = 1;
         } else if (is_stake && !strcmp(a, "--dest-fp") && i + 1 < argc)
             dest_fp_hex = argv[++i];
         else if ((is_deleg || is_rotate || is_unstake || is_vupd) &&
@@ -4669,7 +4700,7 @@ static void cli_storage_usage(void) {
     fprintf(stderr,
         "Usage: -i <node identity dir> storage consent --owner <owner_fp "
         "hex128>\n"
-        "           --expiry <height> [--out <file>]\n"
+        "           --expiry <height> [--chain-id <hex64>] [--out <file>]\n"
         "       storage register --keys <owner keydir> --consent <file> "
         "(--dry-run | --submit ip:port)\n"
         "       storage exit --keys <owner keydir> --node-fp <hex128> "
@@ -4682,7 +4713,13 @@ static void cli_storage_usage(void) {
         "registration\n"
         "            under --owner. The chain accepts it at height h when "
         "expiry >= h and\n"
-        "            expiry - h <= %llu.\n"
+        "            expiry - h <= %llu. The chain id is read from the -s "
+        "server and\n"
+        "            printed before signing (stdout with --out, stderr "
+        "without); with\n"
+        "            --chain-id (64 lowercase hex) it must equal the server's "
+        "or nothing is\n"
+        "            signed.\n"
         "  register: the --keys identity is the owner: it signs, pays the "
         "bond (exactly\n"
         "            the chain's STORAGE_BOND, read from the node; %llu raw "
@@ -6428,7 +6465,7 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
                                  int argc, char **argv, int cmd_start,
                                  int storage) {
     const char *op_s = NULL, *owner_hex = NULL, *subject_hex = NULL;
-    const char *expiry_s = NULL, *out_path = NULL;
+    const char *expiry_s = NULL, *out_path = NULL, *chain_hex = NULL;
     int bad_arg = 0;
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip "consent" */
         const char *a = argv[i];
@@ -6438,6 +6475,7 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
             subject_hex = argv[++i];
         else if (!strcmp(a, "--expiry")  && i + 1 < argc) expiry_s = argv[++i];
         else if (!strcmp(a, "--out")     && i + 1 < argc) out_path = argv[++i];
+        else if (!strcmp(a, "--chain-id") && i + 1 < argc) chain_hex = argv[++i];
         else { bad_arg = 1; break; }
     }
     if (storage && (bad_arg || !owner_hex || !expiry_s)) {
@@ -6454,12 +6492,19 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
             "stake|rotate\n"
             "       --owner <owner_fp hex128> [--subject <validator_id "
             "hex128>] --expiry <height>\n"
-            "       [--out <file>]\n"
+            "       [--chain-id <hex64>] [--out <file>]\n"
             "  The node's key consents to the owner's STAKE (no --subject) "
             "or ROTATE onto\n"
             "  this key (--subject = the validator_id). The chain accepts "
             "it at height h\n"
-            "  when expiry >= h and expiry - h <= %llu.\n",
+            "  when expiry >= h and expiry - h <= %llu.\n"
+            "  The chain id is read from the -s server and printed before "
+            "anything is signed\n"
+            "  (stdout with --out, stderr without — stdout then carries "
+            "the consent). With\n"
+            "  --chain-id (64 lowercase hex) the server's chain id must "
+            "equal it, or nothing\n"
+            "  is signed.\n",
             (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS);
         return 1;
     }
@@ -6487,6 +6532,16 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
             return 1;
         }
         c.expiry = (uint64_t)e;
+    }
+    /* red-team round 1 (Z-31 note): the operator may pin the chain the
+     * consent binds to; it is compared with the server's below, before
+     * anything is signed */
+    uint8_t want_chain32[DNA_VALBIND_CHAIN_LEN];
+    if (chain_hex &&
+        t6_hex_exact(chain_hex, want_chain32, sizeof(want_chain32)) != 0) {
+        fprintf(stderr, "--chain-id must be exactly %u lowercase hex chars\n",
+                (unsigned)(2u * sizeof(want_chain32)));
+        return 1;
     }
     memcpy(c.consensus_pk, identity.pk.bytes, DNA_VALBIND_PUBKEY_LEN);
 
@@ -6528,6 +6583,29 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
                 "<= %llu) — nothing signed\n", (unsigned long long)c.expiry,
                 (unsigned long long)(ri.tip + 1u),
                 (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS);
+        return 1;
+    }
+
+    /* What is about to be signed, before it is: the chain id the server
+     * named (the one field that pins the consent to a chain — read from
+     * -s, so the operator sees which chain that is) and the op. stdout
+     * when --out holds the consent; stderr otherwise, because stdout then
+     * IS the consent container and a line before it would break
+     * `> consent.txt`. */
+    {
+        FILE *info = out_path ? stdout : stderr;
+        fprintf(info, "%s consent: chain id ", storage ? "storage"
+                                                       : "validator");
+        for (size_t b = 0; b < sizeof(c.chain32); b++)
+            fprintf(info, "%02x", c.chain32[b]);
+        fprintf(info, ", op %s, tip %llu\n",
+                storage ? "storage" : is_stake ? "stake" : "rotate",
+                (unsigned long long)ri.tip);
+        fflush(info);
+    }
+    if (chain_hex && memcmp(want_chain32, c.chain32, sizeof(c.chain32)) != 0) {
+        fprintf(stderr, "--chain-id %s is not the chain id the server names "
+                "(printed above) — nothing signed\n", chain_hex);
         return 1;
     }
 
@@ -8914,15 +8992,9 @@ static void evm_usage(void) {
         "1 NODUS = 10^8 raw = 10^18 wei.\n");
 }
 
-/* Strict u64 decimal. @return 0 / -1. */
+/* Strict u64 decimal (cli_u64 over the whole range). @return 0 / -1. */
 static int evm_u64(const char *s, uint64_t *out) {
-    if (!s || s[0] < '0' || s[0] > '9') return -1;
-    char *end = NULL;
-    errno = 0;
-    unsigned long long v = strtoull(s, &end, 10);
-    if (!end || *end || errno == ERANGE) return -1;
-    *out = (uint64_t)v;
-    return 0;
+    return cli_u64(s, UINT64_MAX, out);
 }
 
 static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
