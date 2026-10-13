@@ -34,7 +34,11 @@
 //     refusals (generation 3, a bond below STAKE_MIN, a storage bond that
 //     is not exact, a consent failing a check, a consent for STORAGE_EXIT
 //     or UNSTAKE, an all-zero witness id for UNSTAKE, op 10 — the removed
-//     ROTATE) build nothing. UNSTAKE / STORAGE_EXIT: the whole 128-byte
+//     ROTATE) build nothing. BONDS (BUGS W-20): the STAKE floor and the
+//     storage bond are the node-reported values (dnac_fee_info, passed to
+//     the offline build): a non-default one is what is built (TEST wasm ==
+//     native vector), "0" is the compiled default, a value outside the
+//     node handler's range builds nothing. UNSTAKE / STORAGE_EXIT: the whole 128-byte
 //     call — target ‖ owner_fp, owner_fp = SHA3-512 of the wallet key — is
 //     in the envelope, no amount; UNSTAKE has no node key (node_fp ""), the
 //     read-back names the witness. The owner and status checks against the
@@ -58,7 +62,7 @@ const wasmBytes = readFileSync(new URL('../src/nodus/send.wasm', import.meta.url
 
 const HF6_ENTRY_POINTS = [
   'nsw_hf6_consent_check', 'nsw_hf6_build', 'nsw_hf6_offline_build', 'nsw_built_gen4', 'nsw_built_node_fp',
-  'nsw_built_validator_id', 'nsw_built_consent_expiry', 'nsw_const_hf6_stake_min', 'nsw_const_hf6_storage_bond',
+  'nsw_built_validator_id', 'nsw_built_consent_expiry', 'nsw_hf6_bonds', 'nsw_hb_stake_min', 'nsw_hb_storage_bond',
   'nsw_const_consent_window', 'nsw_hf6_generation', 'nsw_const_min_tenure_blocks', 'nsw_const_storage_exit_lock_epochs',
   'nsw_const_validator_unbond_epochs'
 ];
@@ -66,6 +70,9 @@ const HF6_ENTRY_POINTS = [
 test('the shipped send.wasm exports the HF-6 entry points and no test-only one', () => {
   const exports = new Set(WebAssembly.Module.exports(new WebAssembly.Module(wasmBytes)).map(({ name }) => name));
   for (const name of HF6_ENTRY_POINTS) assert.ok(exports.has(name), `missing export ${name}`);
+  // the bonds are chain parameters read from the node (BUGS W-20): no
+  // compiled-constant export the page could show instead
+  for (const name of ['nsw_const_hf6_stake_min', 'nsw_const_hf6_storage_bond']) assert.ok(!exports.has(name), `stale export ${name}`);
   assert.ok(!exports.has('nsw_test_valbind_msg_sha3'), 'the test-only consent message hash is in the shipped module');
   assert.ok(![...exports].some(name => name.startsWith('nsw_test_')), 'a test-only entry point is in the shipped module');
 });
@@ -260,7 +267,8 @@ test('consent check through the JS bridge: the pinned chain, the wallet\'s own o
   assert.throws(() => api.consentCheck({ op: 'stake', text: 'é'.repeat(8193), tip: HF6.tip }), /too long/, 'counted in UTF-8 bytes');
   assert.equal(api.consentCheck({ op: 'stake', text: stake.text, tip: HF6.tip }).ok, true);
   // the screens' values
-  assert.deepEqual({ ...api.hf6Rules }, { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4 });
+  assert.deepEqual({ ...api.hf6Rules }, { consentWindow: '720', generation: 4 }, 'no bond constants: the bonds come from hf6Bonds()');
+  assert.equal(typeof api.hf6Bonds, 'function');
   api.lock();
 });
 
@@ -287,9 +295,13 @@ function nativeHf6(op, c, gen = '4') {
     '--amount', c.amount, '--commission', c.commission, '--expiry', HF6.expiry, '--sign-random', hex(HF6.signRandom)];
   if (c.consent) args.push('--consent', c.consent.hex);
   if (c.target) args.push('--target', c.target);
+  // the node-reported bonds (BUGS W-20); absent = "0" = not reported
+  if (c.stakeMin) args.push('--stake-min', c.stakeMin);
+  if (c.storageBond) args.push('--storage-bond', c.storageBond);
   for (const [nullifier, amount] of c.coins) args.push('--coin', `${nullifier}:${amount}`);
   return vector(args);
 }
+const HF6_BUILD_TYPES = ['number', 'number', 'string', 'string', 'string', 'string', 'string', 'string', 'string', 'string', 'string', 'string'];
 function wasmHf6({ M, num, str }, fixedRandom, op, c, gen = 4) {
   M.HEAPU8.set(HF6.seed, num('nsw_seed_buf'));
   if (fixedRandom) {
@@ -298,8 +310,9 @@ function wasmHf6({ M, num, str }, fixedRandom, op, c, gen = 4) {
   }
   num('nsw_req_reset');
   for (const [nullifier, amount] of c.coins) assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nullifier, amount]), 0, str('nsw_error'));
-  const rc = num('nsw_hf6_offline_build', ['number', 'number', 'string', 'string', 'string', 'string', 'string', 'string', 'string', 'string'],
-    [gen, ENV_OPS[op], HF6.chain, HF6.tip, HF6.gas, c.consent ? c.consent.text : '', c.target, c.amount, c.commission, HF6.expiry]);
+  const rc = num('nsw_hf6_offline_build', HF6_BUILD_TYPES,
+    [gen, ENV_OPS[op], HF6.chain, HF6.tip, HF6.gas, c.consent ? c.consent.text : '', c.target, c.amount, c.commission, HF6.expiry,
+      c.stakeMin || '0', c.storageBond || '0']);
   if (rc !== 0) return { rc, error: str('nsw_error'), envLen: num('nsw_built_env_len') };
   const at = num('nsw_built_env'), length = num('nsw_built_env_len'), input = [];
   for (let i = 0; i < num('nsw_built_n_in'); i++) input.push(str('nsw_built_in', ['number'], [i]));
@@ -388,8 +401,8 @@ test('hf6 refusals in the module: generation 3, the bonds, a failing consent, a 
   refused(wasmHf6(mod, false, 'storage-exit', { ...envCase('storage-exit'), amount: '1' }), /Invalid witness or storage request/);
   // op 10 (the removed ROTATE, Kurultay #18 item 1) and consent op 2: no
   // build, in the module and in the native vector (same C function)
-  const rotateOp = mod.num('nsw_hf6_offline_build', ['number', 'number', 'string', 'string', 'string', 'string', 'string', 'string', 'string', 'string'],
-    [4, 10, HF6.chain, HF6.tip, HF6.gas, stake.consent.text, HF6.validatorId, '0', '0', HF6.expiry]);
+  const rotateOp = mod.num('nsw_hf6_offline_build', HF6_BUILD_TYPES,
+    [4, 10, HF6.chain, HF6.tip, HF6.gas, stake.consent.text, HF6.validatorId, '0', '0', HF6.expiry, '0', '0']);
   refused({ rc: rotateOp, error: mod.str('nsw_error'), envLen: mod.num('nsw_built_env_len') }, /Invalid offline/);
   assert.throws(() => nativeHf6('rotate', { ...envCase('unstake') }));
   assert.throws(() => vector(['hf6-consent', '--op', 'rotate', '--node-seed', hex(HF6.nodeSeed), '--chain', HF6.chain, '--expiry', HF6.consentExpiry,
@@ -402,11 +415,50 @@ test('hf6 refusals in the module: generation 3, the bonds, a failing consent, a 
   refused(wasmHf6(mod, false, 'unstake', { ...unstake, amount: '1' }), /Invalid witness or storage request/);
   // the native vector refuses the same all-zero id (the same C function)
   assert.throws(() => nativeHf6('unstake', { ...unstake, target: '00'.repeat(64) }));
-  // the screens' values (dnac.h, valbind_wire.h, nodus_witness_runtime.h)
-  assert.equal(mod.str('nsw_const_hf6_stake_min'), '200000000000000');
-  assert.equal(mod.str('nsw_const_hf6_storage_bond'), '100000000000000');
+  // the screens' values (valbind_wire.h, nodus_witness_runtime.h)
   assert.equal(mod.str('nsw_const_consent_window'), '720');
   assert.equal(mod.num('nsw_hf6_generation'), 4);
   // the UNSTAKE bond lock, in epochs (dnac.h DNAC_VALIDATOR_UNBOND_EPOCHS)
   assert.equal(mod.str('nsw_const_validator_unbond_epochs'), '84');
+});
+
+// BUGS W-20: the bonds are the node-reported chain parameters (dnac_fee_info
+// "stake_min" / "storage_bond", params 19 / 21) — nsw_hf6_bonds_of: "0" (an
+// older node) is the compiled default (nodus-cli cmd_v2_stake's rule), a
+// value outside the range the node's handler answers with
+// (nodus_witness_handlers.c: stake_min [100,000 NODUS, INT64_MAX raw],
+// storage_bond [100,000, 1,000,000 NODUS]) builds nothing.
+test('hf6 bonds: a node-reported storage bond / stake minimum other than the default is what is built; 0 is the default; out of range is refused', { skip: skipParity }, async () => {
+  const mod = await loadParity('send-node.mjs', false);
+  const refused = (r, pattern) => {
+    assert.notEqual(r.rc, 0); assert.match(r.error, pattern); assert.equal(r.envLen, 0, 'nothing built after a refusal');
+  };
+  const streg = envCase('storage-register'), stake = envCase('stake');
+  // 500,000 NODUS storage bond: built exactly, and the TEST wasm equals the
+  // native vector byte for byte with the same reported value
+  const half = { ...streg, storageBond: '50000000000000', amount: '50000000000000' };
+  const built = wasmHf6(mod, false, 'storage-register', half);
+  assert.equal(built.amount, '50000000000000');
+  assert.deepEqual(built.input, ['d4'.repeat(64)], 'the first coin covers the smaller bond and the fee');
+  assert.deepEqual(wasmHf6(await loadParity('send-test-node.mjs', true), true, 'storage-register', half), nativeHf6('storage-register', half));
+  // that node's value, not the compiled one, is the rule
+  refused(wasmHf6(mod, false, 'storage-register', { ...half, amount: '100000000000000' }), /exactly 500000 NODUS/);
+  refused(wasmHf6(mod, false, 'storage-register', { ...streg, storageBond: '15000050000000', amount: '100000000000000' }), /exactly 150000\.5 NODUS/);
+  // a stake minimum of 150,000.5 NODUS: below it refused, at it built
+  const low = { ...stake, stakeMin: '15000050000000' };
+  refused(wasmHf6(mod, false, 'stake', { ...low, amount: '15000049999999' }), /at least 150000\.5 NODUS/);
+  assert.equal(wasmHf6(mod, false, 'stake', { ...low, amount: '15000050000000' }).amount, '15000050000000');
+  // "0" = not reported = the compiled default (2,000,000 / 1,000,000 NODUS)
+  assert.equal(wasmHf6(mod, false, 'storage-register', { ...streg, storageBond: '0' }).amount, '100000000000000');
+  refused(wasmHf6(mod, false, 'stake', { ...stake, stakeMin: '0', amount: '199999999999999' }), /at least 2000000 NODUS/);
+  // outside the handler's ranges: nothing built, whatever the amount
+  refused(wasmHf6(mod, false, 'storage-register', { ...streg, storageBond: '100000000000001' }), /storage bond outside the network's range/);
+  refused(wasmHf6(mod, false, 'storage-register', { ...streg, storageBond: '9999999999999', amount: '9999999999999' }), /storage bond outside the network's range/);
+  refused(wasmHf6(mod, false, 'stake', { ...stake, stakeMin: '9999999999999' }), /witness bond minimum outside the network's range/);
+  refused(wasmHf6(mod, false, 'stake', { ...stake, stakeMin: '9223372036854775808' }), /witness bond minimum outside the network's range/);
+  // the range edges are accepted
+  assert.equal(wasmHf6(mod, false, 'storage-register', { ...streg, storageBond: '10000000000000', amount: '10000000000000' }).amount, '10000000000000');
+  assert.equal(wasmHf6(mod, false, 'stake', { ...stake, stakeMin: '10000000000000' }).amount, stake.amount);
+  // an unparsable reported value is an invalid input
+  refused(wasmHf6(mod, false, 'stake', { ...stake, stakeMin: '01' }), /Invalid offline/);
 });

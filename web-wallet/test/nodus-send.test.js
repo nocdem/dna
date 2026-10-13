@@ -576,8 +576,13 @@ function addStaking(mock) {
       inputs.push(c.nullifier); sum += BigInt(c.amount);
     }
     if (sum < need) throw new Error('Insufficient NODUS balance for this amount plus the network fee.');
+    // the module's generation-4 layout names the witness by the validator_id
+    // of the SAME list row as the key (nsw_stake_core); '' below it
+    const row = state.validators.find(v => v.fingerprint === request.validator);
+    const gen4 = request.op !== 'stake' && BigInt(state.ruleset.generation) >= 4n;
     const decoded = {
-      op: request.op, validator: request.op === 'stake' ? FINGERPRINT : request.validator, amount: request.amount,
+      op: request.op, validator: request.op === 'stake' ? FINGERPRINT : request.validator,
+      validatorId: gen4 && row?.hasV2 ? row.validatorId : '', amount: request.amount,
       commissionBps: request.op === 'stake' ? request.commissionBps : '0', fee: FEE, change: (sum - need).toString(),
       expiryHeight: request.expiryHeight, chainId: state.chainId, inputs
     };
@@ -587,6 +592,26 @@ function addStaking(mock) {
 }
 async function stakingClient() {
   const mock = addStaking(createMockNodusModule());
+  const client = createNodusClient({ factory: mock.factory, setInterval: () => 1, clearInterval: () => {} });
+  await client.unlock({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  return { mock, client };
+}
+// A staking module that also carries the HF-6 group (hf6Rules generation 4)
+// and whose witnesses A and C carry generation-4 ids (ID_A, ID_C).
+const ID_A = 'e1'.repeat(64), ID_C = 'e3'.repeat(64), ID_OWNER = 'f9'.repeat(64);
+async function hf6StakingClient() {
+  const mock = addStaking(createMockNodusModule());
+  Object.assign(mock.module, {
+    hf6Rules: { consentWindow: '720', generation: 4 },
+    consentCheck: () => { throw new Error('not used'); }, hf6Build: async () => { throw new Error('not used'); },
+    storageByOwner: async () => ({ tip: '1', total: '0', nodes: [] }),
+    hf6Bonds: async () => ({ stakeMin: '200000000000000', storageBond: '100000000000000' })
+  });
+  mock.state.validators = [
+    { ...mock.state.validators[0], hasV2: true, validatorId: ID_A, ownerFp: ID_OWNER },
+    mock.state.validators[1],
+    { ...mock.state.validators[2], hasV2: true, validatorId: ID_C, ownerFp: ID_OWNER }
+  ];
   const client = createNodusClient({ factory: mock.factory, setInterval: () => 1, clearInterval: () => {} });
   await client.unlock({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
   return { mock, client };
@@ -686,13 +711,7 @@ test('staking overview, generation 4: a delegation named by validator_id joins i
 // refused before any build with the text that points to the Nodus page; a
 // delegation is still built (the module picks its generation-4 layout).
 test('stake, generation 4: refused with the consent text before any build; a delegation still builds', async () => {
-  const mock = addStaking(createMockNodusModule());
-  Object.assign(mock.module, {
-    hf6Rules: { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4 },
-    consentCheck: () => { throw new Error('not used'); }, hf6Build: async () => { throw new Error('not used'); }, storageByOwner: async () => ({ tip: '1', total: '0', nodes: [] })
-  });
-  const client = createNodusClient({ factory: mock.factory, setInterval: () => 1, clearInterval: () => {} });
-  await client.unlock({ seed: new Uint8Array(32).fill(5), fingerprint: FINGERPRINT });
+  const { mock, client } = await hf6StakingClient();
   assert.equal(client.hf6Rules.generation, 4);
   mock.state.ruleset = { ...mock.state.ruleset, generation: '4' };
   await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'stake', commissionBps: '0' }), { message: HF6_STAKE_CONSENT_TEXT });
@@ -706,6 +725,45 @@ test('stake, generation 4: refused with the consent text before any build; a del
   assert.ok(!(s instanceof Error) || !s.message.includes('needs your node'), String(s?.message));
   assert.equal(mock.state.lastStake?.op, 'stake');
   if (!(s instanceof Error)) s.cancel();
+  client.lock();
+});
+
+// BUGS W-19 (design hf5 rev 6 §9 "Cüzdan Earn validator_id'yi hedefler"):
+// under generation 4 the signed call names its witness only by
+// validator_id; Earn checks it against the row the user chose and shows it.
+test('delegate / undelegate, generation 4: the signed validator_id must be the chosen row\'s and is shown as "Witness ID"', async () => {
+  const { mock, client } = await hf6StakingClient();
+  mock.state.ruleset = { ...mock.state.ruleset, generation: '4' };
+  const d = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' });
+  const rows = d.review.map(([k]) => k);
+  assert.equal(rows.indexOf('Witness ID'), rows.indexOf('Witness') + 1, '"Witness ID" right after "Witness"');
+  assert.deepEqual(d.review.find(([k]) => k === 'Witness ID'), ['Witness ID', ID_A], 'the full 128-hex signed id');
+  d.cancel();
+  mock.state.delegations = [{ validator: ID_C, amount: '20000000000', block: '5' }];
+  const u = await prepareStake({ client, from: FINGERPRINT, kind: 'undelegate', validator: VAL_C, amount: '50' });
+  assert.deepEqual(u.review.find(([k]) => k === 'Witness ID'), ['Witness ID', ID_C]);
+  u.cancel();
+  // a signed id that is not the chosen row's (another witness's, or none)
+  // is refused — nothing is shown or sent
+  for (const validatorId of [ID_C, 'dd'.repeat(64), '']) {
+    mock.state.stakeTamper = { validatorId };
+    await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' }),
+      { message: 'The signed transaction does not match your request. Nothing was sent.' }, validatorId || '(none)');
+  }
+  // an all-zero or malformed id is an invalid read-back
+  for (const validatorId of ['00'.repeat(64), 'E1'.repeat(64)]) {
+    mock.state.stakeTamper = { validatorId };
+    await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' }), /invalid transaction/);
+  }
+  // below generation 4 the call carries no id: one appearing is refused,
+  // none is the legacy result (no "Witness ID" row)
+  mock.state.ruleset = { ...mock.state.ruleset, generation: '3' };
+  mock.state.stakeTamper = { validatorId: ID_A };
+  await assert.rejects(prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' }), /does not match your request/);
+  mock.state.stakeTamper = null;
+  const legacy = await prepareStake({ client, from: FINGERPRINT, kind: 'delegate', validator: VAL_A, amount: '100' });
+  assert.equal(legacy.review.some(([k]) => k === 'Witness ID'), false);
+  legacy.cancel();
   client.lock();
 });
 

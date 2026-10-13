@@ -36,7 +36,9 @@
 //     decision 8);
 //   - the device keeps everything: a fresh engine loaded from what was saved
 //     shows the same group, versions and messages;
-//   - the store's `groups` index and the split of group messages from 1:1.
+//   - the store's `groups` index and the split of group messages from 1:1;
+//   - a failed save's undo takes back only its own index entry: a second
+//     change of the same group made while it waited stands (web 0.1.118).
 //
 // How it can lie: the mock core is NOT the module. Its "packets", "records",
 // "HEADs" and "items" are JSON in hex, its digests SHA-512 of that hex, its
@@ -192,13 +194,18 @@ function party(net, fp, { contacts = [], kem = () => true } = {}) {
   const state = emptyState();
   const db = new Map(), kept = new Map();
   const outbox = [];
-  const p = { fp, state, db, kept, outbox, contacts: [...contacts], failSave: false };
+  // holdNext: { wait, fail } — the NEXT save waits for `wait`, then fails
+  // (fail true) or goes on; other saves run meanwhile.
+  const p = { fp, state, db, kept, outbox, contacts: [...contacts], failSave: false, holdNext: null };
   p.deps = {
     core: fakeCore(net, fp), ownFp: fp, now: () => net.clock.t, state: () => state,
     takeSeq: () => { const s = state.nextSeq; state.nextSeq = String(BigInt(s) + 1n); return s; },
     // A failure runs the caller's `undo` before it rejects, as store.js
     // save does (P7 rev 2.2 item 1).
     saveAll: async ({ records = [], messages = [], undo }) => {
+      const hold = p.holdNext;
+      p.holdNext = null;
+      if (hold) { await hold.wait; if (hold.fail) { undo?.(); throw new Error('save failed'); } }
       if (p.failSave) { undo?.(); throw new Error('save failed'); }
       for (const r of records) db.set(r.id, structuredClone(r.value));
       for (const m of messages) kept.set(m.seq, structuredClone(m));
@@ -610,6 +617,22 @@ test('a failed save leaves the group as it was', async () => {
   assert.deepEqual(A.engine.group(gid).removals, []);
   assert.deepEqual(A.state.groups[gid], indexBefore, 'the state index entry is rolled back (by the undo handed to saveAll)');
   A.failSave = false;
+});
+
+test('a failed save takes back only its own index entry: a second change of the same group made during it stands', async () => {
+  const net = world();
+  const B = party(net, FB, { contacts: [FA] }), C = party(net, FC, { contacts: [FA] });
+  const { A, gid } = await groupOf(net, [B, C]);
+  const indexBefore = A.state.groups[gid];
+  let release;
+  A.holdNext = { wait: new Promise(resolve => { release = resolve; }), fail: true };
+  const first = A.engine.removeMember(gid, FB);           // its save waits, then fails
+  await A.engine.removeMember(gid, FC);                   // runs meanwhile; its save succeeds
+  const secondEntry = A.state.groups[gid];
+  assert.notEqual(secondEntry, indexBefore, 'the second change set its own index entry');
+  release();
+  await assert.rejects(first, /save failed/);
+  assert.equal(A.state.groups[gid], secondEntry, 'the first save\'s undo left the second change\'s entry in place');
 });
 
 // ── pure rules ───────────────────────────────────────────────────────────

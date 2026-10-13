@@ -66,8 +66,8 @@
 //     validators() / delegations() / stakeBuild({ ... }) + stakingRules
 //                                OPTIONAL (0.1.29, staking — shapes in
 //                                src/nodus/send-module.js), same rule.
-//     consentCheck({ ... }) / hf6Build({ ... }) / storageByOwner() + hf6Rules
-//     (+ hf6Timing, optional)
+//     consentCheck({ ... }) / hf6Build({ ... }) / storageByOwner() /
+//     hf6Bonds() + hf6Rules (+ hf6Timing, optional)
 //                                OPTIONAL (HF-6 screens: become a witness, a
 //                                storage node, leave storage, stop being a
 //                                witness — shapes in
@@ -194,11 +194,13 @@ const CLAIM_OPS = ['claimStatus', 'claimBuild', 'claimSubmit'];
 // submitted with submit().
 const STAKE_OPS = ['validators', 'delegations', 'stakeBuild'];
 // OPTIONAL (HF-6 screens — shapes in src/nodus/send-module.js): a module
-// without all three (and a valid `hf6Rules`) still unlocks; this client then
+// without all four (and a valid `hf6Rules`) still unlocks; this client then
 // answers every HF-6 call "not available". consentCheck never waits (see the
-// contract above); hf6Build and storageByOwner are queued like every other
-// operation.
-const HF6_OPS = ['consentCheck', 'hf6Build', 'storageByOwner'];
+// contract above); hf6Build, storageByOwner and hf6Bonds (the two role bonds
+// the node reports — chain parameters, BUGS W-20; a module without it would
+// show compiled values, so it is part of the group) are queued like every
+// other operation.
+const HF6_OPS = ['consentCheck', 'hf6Build', 'storageByOwner', 'hf6Bonds'];
 // OPTIONAL (NC-4b, Messages — shapes in src/nodus/send-module.js):
 // connect(run) is an asynchronous operation of THIS queue (the Messages
 // exports share the module, its one session and its one Asyncify state);
@@ -307,12 +309,12 @@ const RAW_RULE = /^[1-9]\d{0,19}$/;
 function validRules(rules) {
   return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength', 'maxDelegators'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
 }
-// The HF-6 values (send-module.js hf6Rules): stakeMin, storageBond and
-// consentWindow raw decimal above 0, generation a positive integer.
+// The HF-6 values (send-module.js hf6Rules): consentWindow raw decimal above
+// 0, generation a positive integer. The bonds are not among them: they are
+// chain parameters the page reads with hf6Bonds() (BUGS W-20).
 const rawRuleOk = value => typeof value === 'string' && RAW_RULE.test(value) && BigInt(value) < 2n ** 64n;
 function validHf6Rules(rules) {
-  return !!rules && ['stakeMin', 'storageBond', 'consentWindow'].every(key => rawRuleOk(rules[key])) &&
-    Number.isSafeInteger(rules.generation) && rules.generation > 0;
+  return !!rules && rawRuleOk(rules.consentWindow) && Number.isSafeInteger(rules.generation) && rules.generation > 0;
 }
 // The module's hf6Timing (minTenureBlocks, storageExitLockEpochs) is
 // optional: a module without it (or with a malformed one) makes the screens
@@ -548,7 +550,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     stakeable = STAKE_OPS.every(name => typeof loaded[name] === 'function') && validRules(loaded.stakingRules);
     stakingRules = stakeable ? Object.freeze({ ...loaded.stakingRules }) : undefined;
     hf6able = HF6_OPS.every(name => typeof loaded[name] === 'function') && validHf6Rules(loaded.hf6Rules);
-    hf6Rules = hf6able ? Object.freeze({ stakeMin: loaded.hf6Rules.stakeMin, storageBond: loaded.hf6Rules.storageBond, consentWindow: loaded.hf6Rules.consentWindow, generation: loaded.hf6Rules.generation, ...hf6TimingOf(loaded.hf6Timing) }) : undefined;
+    hf6Rules = hf6able ? Object.freeze({ consentWindow: loaded.hf6Rules.consentWindow, generation: loaded.hf6Rules.generation, ...hf6TimingOf(loaded.hf6Timing) }) : undefined;
     connectable = CONNECT_OPS.every(name => typeof loaded[name] === 'function');
     nameable = NAME_OPS.every(name => typeof loaded[name] === 'function');
     registrable = nameable && NAME_REG_OPS.every(name => typeof loaded[name] === 'function');
@@ -749,12 +751,13 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     delegations: (options) => stakeCall('delegations')(undefined, options),
     stakeBuild: stakeCall('stakeBuild'),
     // HF-6 screens (HF6_OPS): whether the loaded module offers them, its
-    // values (stakeMin, storageBond, consentWindow, generation, and — when
-    // the module carries its hf6Timing — minTenureBlocks,
-    // storageExitLockEpochs and validatorUnbondEpochs; all from the module's
-    // own build), the consent check
-    // (synchronous: run now, never queued — it needs the identity only),
-    // the build and this wallet's storage nodes (queued).
+    // values (consentWindow, generation, and — when the module carries its
+    // hf6Timing — minTenureBlocks, storageExitLockEpochs and
+    // validatorUnbondEpochs; all from the module's own build), the consent
+    // check (synchronous: run now, never queued — it needs the identity
+    // only), the build, this wallet's storage nodes and the two role bonds
+    // the node reports (hf6Bonds -> { stakeMin, storageBond }, raw decimal;
+    // src/adapters/nodus.js hf6Bonds checks them) (queued).
     get hf6able() { return hf6able && state === 'ready'; },
     get hf6Rules() { return hf6able && identified() ? hf6Rules : undefined; },
     consentCheck(args) {
@@ -765,6 +768,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     },
     hf6Build: hf6Call('hf6Build'),
     storageByOwner: (options) => hf6Call('storageByOwner')(undefined, options),
+    hf6Bonds: (options) => hf6Call('hf6Bonds')(undefined, options),
     // Messages (NC-4b): whether the loaded module carries the Nodus Connect
     // exports; connect(run) runs `run` in this queue on the module's
     // session; connectSync(run) runs it now (non-waiting exports only; also

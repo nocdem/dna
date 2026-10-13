@@ -117,8 +117,12 @@
  *     --op stake|storage-register|storage-exit|unstake --seed <64hex>
  *     --chain <64hex> --tip <dec> --gas <dec> [--consent <hex of the text>]
  *     [--target <128hex>] [--amount <dec>] [--commission <bps>]
+ *     [--stake-min <dec>] [--storage-bond <dec>]
  *     --expiry <dec> --coin <128hex>:<dec> [--coin ...]
  *     --sign-random <hex, the bytes qgp_platform_random returns in order>
+ *   --stake-min / --storage-bond: dnac_fee_info's "stake_min" /
+ *   "storage_bond" as a node would report them (default "0" = not
+ *   reported: the compiled default; BUGS W-20).
  *   Builds with nsw_hf6_offline_build (the shared builder at the given
  *   generation, the consent re-checked by the codec — the function every
  *   wasm build runs). --target: unstake the validator_id, storage-exit the
@@ -196,7 +200,8 @@ int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
                           const char *tip_dec, const char *gas_dec,
                           const char *consent_text, const char *target_hex,
                           const char *amount_dec, const char *commission_dec,
-                          const char *expiry_dec);
+                          const char *expiry_dec, const char *stake_min_dec,
+                          const char *storage_bond_dec);
 int nsw_built_gen4(void);
 const char *nsw_built_node_fp(void);
 const char *nsw_built_validator_id(void);
@@ -606,7 +611,7 @@ static int main_hf6(int argc, char **argv) {
     const char *op_s = NULL, *gen_s = NULL, *seed = NULL, *chain = NULL,
                *tip = NULL, *gas = NULL, *consent_hex = "", *target = "",
                *amount = "0", *commission = "0", *expiry = NULL,
-               *sign_random = NULL;
+               *sign_random = NULL, *stake_min = "0", *storage_bond = "0";
     nsw_req_reset();
     for (int i = 2; i < argc; i += 2) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -623,6 +628,8 @@ static int main_hf6(int argc, char **argv) {
         else if (!strcmp(a, "--commission"))  commission = v;
         else if (!strcmp(a, "--expiry"))      expiry = v;
         else if (!strcmp(a, "--sign-random")) sign_random = v;
+        else if (!strcmp(a, "--stake-min"))   stake_min = v;
+        else if (!strcmp(a, "--storage-bond")) storage_bond = v;
         else if (!strcmp(a, "--coin")) {
             char nul[129];
             const char *colon = strchr(v, ':');
@@ -654,7 +661,8 @@ static int main_hf6(int argc, char **argv) {
         nsw_test_random_load((int)n) != 0)
         return fail("--sign-random is at most 4096 bytes of lowercase hex");
     if (nsw_hf6_offline_build((int)gen, op, chain, tip, gas, consent, target,
-                              amount, commission, expiry) != 0)
+                              amount, commission, expiry, stake_min,
+                              storage_bond) != 0)
         return fail(nsw_error());
     if (print_env()) return 1;
     line("wire_id", nsw_built_wire());

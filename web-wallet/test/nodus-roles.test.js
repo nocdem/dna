@@ -8,8 +8,12 @@
 // unknown tip); a percent commission becomes basis points and the chain's
 // maximum is a ceiling; sending opens only at the HF-6 generation and never
 // when the node did not say; "your witnesses" are the generation-4 rows
-// owned by this wallet only; the Review warning fires exactly when the
-// consent expires before the transaction's validity; the earliest heights
+// owned by this wallet only; a consent that expires before the transaction's
+// validity fails its check line and prepareHf6 refuses it, and the node-key
+// line is "free" only against the complete witness list (BUGS W-21); the
+// role bonds are the node's (hf6Bonds): what prepareHf6 builds, a failed
+// read builds nothing (BUGS W-20); leaving storage only for a listed,
+// storing node (W-21); the earliest heights
 // of the timing facts (witness join, storage exit); the validator list keeps the generation-4 ids and
 // refuses all-zero ones; the storage list's shape rules; prepareHf6 refuses
 // below the HF-6 generation and refuses a signed transaction whose node key
@@ -30,11 +34,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  suggestExpiry, EXPIRY_MARGIN, percentToBps, gateOpen, ownWitnesses, consentExpiresEarly, consentCommand,
+  suggestExpiry, EXPIRY_MARGIN, percentToBps, gateOpen, ownWitnesses, consentMarginLine, keyCheckLine, consentCommand,
   epochStartAtOrAfter, witnessJoinFrom, storageExitHeights, canStopWitness, lockBlocks
 } from '../src/nodus-roles.js';
 import * as roles from '../src/nodus-roles.js';
-import { parseValidators, parseStorageByOwner, checkConsent, prepareHf6, parseHf6Rules, HF6_NOT_YET_TEXT, HF6_KINDS } from '../src/adapters/nodus.js';
+import {
+  parseValidators, parseStorageByOwner, checkConsent, prepareHf6, parseHf6Rules, parseHf6Bonds, hf6Bonds, HF6_NOT_YET_TEXT, HF6_KINDS,
+  consentEndsBefore, CONSENT_ENDS_EARLY_TEXT
+} from '../src/adapters/nodus.js';
 
 const OWN = '1a'.repeat(64), OTHER = '2b'.repeat(64), NODE = '3c'.repeat(64), NODE2 = '4d'.repeat(64);
 const VID = '5e'.repeat(64), VID2 = '6f'.repeat(64);
@@ -84,11 +91,35 @@ test('roles: your witnesses are the generation-4 rows owned by this wallet', () 
   assert.deepEqual(ownWitnesses(undefined, OWN), []);
 });
 
-test('roles: the consent warning fires exactly when the consent expires first', () => {
-  assert.equal(consentExpiresEarly(1050n, 1090n), true);
-  assert.equal(consentExpiresEarly(1090n, 1090n), false);
-  assert.equal(consentExpiresEarly(1700n, 1090n), false);
-  assert.equal(consentExpiresEarly(null, 1090n), false, 'storage exit: no consent');
+// BUGS W-21: a consent ending before the transaction's last valid block is a
+// FAILED check line (no Review), not a warning; an unknown height fails too.
+test('roles: the consent margin line fails exactly when the consent expires first, or the height is unknown', () => {
+  assert.equal(consentEndsBefore(1050n, 1090n), true);
+  assert.equal(consentEndsBefore(1090n, 1090n), false);
+  assert.equal(consentEndsBefore(1700n, 1090n), false);
+  assert.equal(consentEndsBefore(null, 1090n), false, 'storage exit: no consent');
+  assert.deepEqual(consentMarginLine(1050n, 1090n), { id: 'margin', ok: false, detail: CONSENT_ENDS_EARLY_TEXT });
+  assert.equal(CONSENT_ENDS_EARLY_TEXT, 'This consent expires before this transaction could be included; make a new consent on the node.');
+  assert.equal(consentMarginLine(1090n, 1090n).ok, true);
+  assert.equal(consentMarginLine(1700n, 1090n).ok, true);
+  const unknown = consentMarginLine(1700n, null);
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.detail, /could not be checked/);
+});
+
+// BUGS W-21: the "node key already used" check is taken / free / unknown;
+// unknown (list pending, failed, or partial) fails — Review stays off.
+test('roles: the node-key line is free only against the complete witness list', () => {
+  const rows = [{ fingerprint: NODE }, { fingerprint: NODE2 }];
+  assert.deepEqual(keyCheckLine({ rows, truncated: false, error: '' }, NODE).state, 'taken');
+  assert.equal(keyCheckLine({ rows, truncated: false, error: '' }, NODE).ok, false);
+  const free = keyCheckLine({ rows, truncated: false, error: '' }, OTHER);
+  assert.equal(free.state, 'free'); assert.equal(free.ok, true);
+  for (const [witnesses, why] of [[null, /still being read/], [{ rows: [], truncated: true, error: 'timeout' }, /could not be read \(timeout\)/], [{ rows, truncated: true, error: '' }, /only part of the witnesses/]]) {
+    const line = keyCheckLine(witnesses, OTHER);
+    assert.equal(line.state, 'unknown'); assert.equal(line.ok, false); assert.match(line.detail, /could not be checked/); assert.match(line.detail, why);
+  }
+  assert.equal(keyCheckLine({ rows, truncated: true, error: '' }, NODE).state, 'taken', 'a key found in a partial list is taken');
 });
 
 test('roles: the node commands are the forms nodus-cli accepts', () => {
@@ -150,14 +181,20 @@ test('roles: the storage list shape', () => {
 // witnesses: the validator list (send-module.js validators() rows) — given,
 // the client is stakeable; unstake builds read back signedVid (default: the
 // requested id) and signedUnstakeNodeFp (default '': the call has no key).
-function fakeClient({ generation = '4', nodeFp = NODE, signedNodeFp = nodeFp, expiry = '1700', witnesses, signedVid, signedUnstakeNodeFp = '' } = {}) {
+// bonds: what hf6Bonds() answers (the node-reported role bonds, raw
+// decimal; an Error = the read fails); storage: this wallet's storage nodes
+// (storageByOwner rows).
+const BONDS = { stakeMin: '200000000000000', storageBond: '100000000000000' };
+function fakeClient({ generation = '4', nodeFp = NODE, signedNodeFp = nodeFp, expiry = '1700', witnesses, signedVid, signedUnstakeNodeFp = '', bonds = BONDS, storage = [] } = {}) {
   const coin = { nullifier: 'aa'.repeat(64), amount: '250000000000000' };
   const checks = ['format', 'op', 'chain', 'owner', 'subject', 'expiry', 'signature'].map(id => ({ id, ok: true, detail: `${id} ok` }));
   const builds = [];
   return {
     state: 'ready', identified: true, hf6able: true, stakeable: !!witnesses, fingerprint: OWN, chainId: '77'.repeat(32),
-    hf6Rules: { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4, minTenureBlocks: '1440', storageExitLockEpochs: '12', validatorUnbondEpochs: '84' },
+    hf6Rules: { consentWindow: '720', generation: 4, minTenureBlocks: '1440', storageExitLockEpochs: '12', validatorUnbondEpochs: '84' },
     builds,
+    hf6Bonds: async () => { if (bonds instanceof Error) throw bonds; return { ...bonds }; },
+    storageByOwner: async () => ({ tip: '1000', total: String(storage.length), epochStart: '720', set: '0', setCount: '0', nodes: storage.map(n => ({ ...n })) }),
     consentCheck: () => ({ ok: true, checks: checks.map(c => ({ ...c })), nodeFp, expiry }),
     balance: async () => ({ total: coin.amount, spendable: coin.amount }),
     list: async () => ({ tip: '1000', coins: [coin], truncated: false }),
@@ -165,10 +202,10 @@ function fakeClient({ generation = '4', nodeFp = NODE, signedNodeFp = nodeFp, ex
     ...(witnesses ? { validators: async () => ({ truncated: false, validators: witnesses }) } : {}),
     hf6Build: async args => {
       builds.push(args);
-      const unstake = args.op === 'unstake';
+      const unstake = args.op === 'unstake', exit = args.op === 'storageExit';
       return {
         envelope: new Uint8Array([1]), intentId: 'cd'.repeat(64), wireId: 'ef'.repeat(64),
-        decoded: { op: args.op, owner: OWN, nodeFp: unstake ? signedUnstakeNodeFp : signedNodeFp, validatorId: unstake ? signedVid ?? args.validatorId : '', bond: args.amount, commissionBps: args.commissionBps, consentExpiry: unstake ? '' : expiry, fee: '1000000', change: String(BigInt(coin.amount) - BigInt(args.amount) - 1000000n), expiryHeight: args.expiryHeight, chainId: '77'.repeat(32), inputs: [coin.nullifier] }
+        decoded: { op: args.op, owner: OWN, nodeFp: unstake ? signedUnstakeNodeFp : exit ? args.nodeFp : signedNodeFp, validatorId: unstake ? signedVid ?? args.validatorId : '', bond: args.amount, commissionBps: args.commissionBps, consentExpiry: unstake || exit ? '' : expiry, fee: '1000000', change: String(BigInt(coin.amount) - BigInt(args.amount) - 1000000n), expiryHeight: args.expiryHeight, chainId: '77'.repeat(32), inputs: [coin.nullifier] }
       };
     },
     submit: async () => ({ accepted: true })
@@ -189,13 +226,65 @@ test('roles: checkConsent passes the module lines through, checked for shape', (
 test('roles: prepareHf6 refuses below the HF-6 generation and builds at it', async () => {
   await assert.rejects(prepareHf6({ client: fakeClient({ generation: '3' }), from: OWN, kind: 'storageRegister', consent: 'x' }), { message: HF6_NOT_YET_TEXT });
   const t = await prepareHf6({ client: fakeClient(), from: OWN, kind: 'storageRegister', consent: 'x' });
-  assert.equal(t.decoded.bond, parseHf6Rules(fakeClient().hf6Rules).storageBond);
+  assert.equal(t.decoded.bond, BigInt(BONDS.storageBond));
   assert.equal(t.decoded.nodeFp, NODE);
   assert.equal(t.decoded.expiryHeight, 1090n, 'tip + 90');
   assert.equal(t.balanceAfter, 250000000000000n - 100000000000000n - 1000000n);
-  assert.equal(consentExpiresEarly(t.decoded.consentExpiry, t.decoded.expiryHeight), false);
-  const early = await prepareHf6({ client: fakeClient({ expiry: '1050' }), from: OWN, kind: 'storageRegister', consent: 'x' });
-  assert.equal(consentExpiresEarly(early.decoded.consentExpiry, early.decoded.expiryHeight), true);
+  assert.equal(consentEndsBefore(t.decoded.consentExpiry, t.decoded.expiryHeight), false);
+});
+
+// BUGS W-21: a consent that ends before the transaction's validity is
+// refused before anything is built (it was a Review warning).
+test('roles: prepareHf6 refuses a consent that expires before the transaction could be included', async () => {
+  for (const kind of ['storageRegister', 'stake']) {
+    const client = fakeClient({ expiry: '1089' });
+    await assert.rejects(prepareHf6({ client, from: OWN, kind, consent: 'x', bond: '2000000', commissionBps: '0' }), { message: CONSENT_ENDS_EARLY_TEXT });
+    assert.equal(client.builds.length, 0, 'nothing was built');
+  }
+  const edge = await prepareHf6({ client: fakeClient({ expiry: '1090' }), from: OWN, kind: 'storageRegister', consent: 'x' });
+  assert.equal(edge.decoded.consentExpiry, 1090n, 'lasting to the last valid block passes');
+});
+
+// BUGS W-20: the bonds are the node's (chain params 19 / 21), read by
+// prepareHf6 — what is built, not a compiled value.
+test('roles: the node-reported bonds are what prepareHf6 builds; a failed read builds nothing', async () => {
+  const bonds = { stakeMin: '15000050000000', storageBond: '50000000000000' };   // 150,000.5 and 500,000 NODUS
+  const client = fakeClient({ bonds });
+  const s = await prepareHf6({ client, from: OWN, kind: 'storageRegister', consent: 'x' });
+  assert.equal(client.builds[0].amount, bonds.storageBond, 'the storage bond asked for is the node\'s');
+  assert.equal(s.decoded.bond, 50000000000000n);
+  assert.equal(new Map(s.review).get('Bond'), '500000.0 NODUS');
+  await assert.rejects(prepareHf6({ client, from: OWN, kind: 'stake', consent: 'x', bond: '150000', commissionBps: '0' }), /at least 150000\.5 NODUS/);
+  const w = await prepareHf6({ client, from: OWN, kind: 'stake', consent: 'x', bond: '150000.5', commissionBps: '0' });
+  assert.equal(w.decoded.bond, 15000050000000n, 'the node\'s floor, below the compiled 2,000,000');
+  const failing = fakeClient({ bonds: new Error('The network\'s bond amounts could not be read (rc=-1).') });
+  for (const kind of ['storageRegister', 'stake']) {
+    await assert.rejects(prepareHf6({ client: failing, from: OWN, kind, consent: 'x', bond: '2000000', commissionBps: '0' }), /bond amounts could not be read/);
+  }
+  assert.equal(failing.builds.length, 0, 'nothing was built');
+  // the answer is checked for shape (the module resolved 0 and the range)
+  assert.deepEqual(parseHf6Bonds(BONDS), { stakeMin: 200000000000000n, storageBond: 100000000000000n });
+  for (const bad of [null, { stakeMin: '0', storageBond: '1' }, { stakeMin: '1', storageBond: '' }, { stakeMin: '01', storageBond: '1' }, { stakeMin: 5, storageBond: '1' }]) {
+    assert.throws(() => parseHf6Bonds(bad), /invalid/, JSON.stringify(bad));
+  }
+  assert.deepEqual(await hf6Bonds({ client: fakeClient({ bonds }), from: OWN }), { stakeMin: 15000050000000n, storageBond: 50000000000000n });
+  await assert.rejects(hf6Bonds({ client: fakeClient(), from: OTHER }), /does not match/);
+});
+
+// BUGS W-21: leaving storage re-reads this wallet's storage nodes and
+// refuses (before any build) a node not listed or not storing.
+test('roles: prepareHf6 storageExit builds only for a listed, storing node', async () => {
+  const node = (fp, status) => ({ fp, status, bond: '100000000000000', failStreak: 0, graceUntil: '0', registered: '5', exit: '0', member: false, segments: '0' });
+  const storage = [node(NODE, 1), node(NODE2, 2)];
+  const ok = fakeClient({ storage });
+  const t = await prepareHf6({ client: ok, from: OWN, kind: 'storageExit', nodeFp: NODE });
+  assert.deepEqual(ok.builds.map(b => [b.op, b.nodeFp, b.amount]), [['storageExit', NODE, '0']]);
+  assert.equal(t.decoded.bond, 0n);
+  for (const [fp, pattern] of [[NODE2, /cannot leave now \(Leaving\)/], ['ee'.repeat(64), /not in this wallet's list of storage nodes/]]) {
+    const client = fakeClient({ storage });
+    await assert.rejects(prepareHf6({ client, from: OWN, kind: 'storageExit', nodeFp: fp }), pattern);
+    assert.equal(client.builds.length, 0, 'nothing was built');
+  }
 });
 
 test('roles: prepareHf6 refuses a signed node key that is not the consent\'s (G2/G3)', async () => {

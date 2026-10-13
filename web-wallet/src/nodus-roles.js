@@ -35,6 +35,14 @@
 // - Gate: below the HF-6 generation (hf6Rules.generation vs the node's
 //   rulesetInfo().generation), or when the node does not say, the amber
 //   note shows and no Review / Confirm is enabled; the checks still run.
+// - Bonds: the witness bond floor and the exact storage bond are chain
+//   parameters (19 / 21), read from the node on every refresh (hf6Bonds,
+//   BUGS W-20) — the figures shown and the amount asked for; when they
+//   cannot be read the page says so and becoming a witness or a storage
+//   node offers no Review. Leaving storage re-reads the node's row first.
+// - A consent that ends before the transaction could be included, and a
+//   node key the page could not check against the COMPLETE witness list,
+//   fail their check lines (BUGS W-21): no Review.
 // - Times are BLOCK HEIGHTS computed from the chain constants the module
 //   carries (epoch length, minimum tenure, storage exit lock) — earliest
 //   heights only, never hours or days; without a constant, no number. When
@@ -50,7 +58,8 @@ import { formatUnits } from './core.js';
 import { NODUS_ASSET } from './nodus/network.js';
 import {
   HF6_NOT_YET_TEXT, parseHf6Rules, parseRulesetInfo, parseBalance, parseValidators, parseStakingRules,
-  checkConsent, storageNodes, prepareHf6, shortKey, UNSTAKE_STATUSES
+  checkConsent, storageNodes, prepareHf6, shortKey, UNSTAKE_STATUSES, hf6Bonds, expiryHeightFor,
+  consentEndsBefore, CONSENT_ENDS_EARLY_TEXT
 } from './adapters/nodus.js';
 
 // ── pure helpers (no DOM; test/nodus-roles.test.js) ─────────────────────
@@ -108,11 +117,32 @@ export function lockBlocks(epochs, E) {
   if (typeof epochs !== 'bigint' || typeof E !== 'bigint' || E <= 0n) return null;
   return epochs * E;
 }
-// The Review warning (nodus-cli.c cmd_v2_stake's): the consent expires
-// before the transaction's own validity ends — included after the consent's
-// block, the network refuses it.
-export function consentExpiresEarly(consentExpiry, expiryHeight) {
-  return typeof consentExpiry === 'bigint' && typeof expiryHeight === 'bigint' && consentExpiry < expiryHeight;
+// The page's own consent check lines (BUGS W-21), added after the module's
+// seven; each fails closed — Review is offered only when every line passed.
+// consentMarginLine: the consent must last at least until the last block
+// this transaction could be included in (`expiryHeight`, BigInt — the
+// height a build made now would request, src/adapters/nodus.js
+// expiryHeightFor; null = not known). A consent ending earlier was a
+// warning on the Review (nodus-cli.c cmd_v2_stake's); now it blocks, and
+// prepareHf6 refuses it too (consentEndsBefore).
+export function consentMarginLine(consentExpiry, expiryHeight) {
+  if (typeof consentExpiry !== 'bigint' || typeof expiryHeight !== 'bigint') return { id: 'margin', ok: false, detail: 'Whether this consent lasts long enough could not be checked: the network’s current block height is not known.' };
+  if (consentEndsBefore(consentExpiry, expiryHeight)) return { id: 'margin', ok: false, detail: CONSENT_ENDS_EARLY_TEXT };
+  return { id: 'margin', ok: true, detail: `This consent lasts until block ${block(consentExpiry)}, not before the last block this transaction could be included in (${block(expiryHeight)}).` };
+}
+// keyCheckLine: a stake's node key is not already a witness's key (the one
+// check the module leaves to the chain, design §2 item 7), from the witness
+// list `witnesses` ({ rows, truncated, error } | null while reading).
+// `state`: 'taken' (the key is in the list), 'free' (the COMPLETE list does
+// not have it) or 'unknown' (the list is being read, could not be read, or
+// is only part of the witnesses) — 'unknown' fails, never passes.
+export function keyCheckLine(witnesses, nodeFp) {
+  const unknown = why => ({ id: 'key', ok: false, state: 'unknown', detail: `Whether this node key is already a witness’s key could not be checked: ${why}` });
+  if (!witnesses) return unknown('the witness list is still being read.');
+  if (witnesses.error) return unknown(`the witness list could not be read (${witnesses.error}).`);
+  if (Array.isArray(witnesses.rows) && witnesses.rows.some(v => v.fingerprint === nodeFp)) return { id: 'key', ok: false, state: 'taken', detail: 'This node key is already a witness’s key. Each witness needs its own node key.' };
+  if (!Array.isArray(witnesses.rows) || witnesses.truncated !== false) return unknown('the network listed only part of the witnesses.');
+  return { id: 'key', ok: true, state: 'free', detail: 'This node key is not a witness’s key yet.' };
 }
 // The command the node runs (nodus/tools/nodus-cli.c cmd_validator_consent
 // usage: `validator consent --op stake --owner <hex128> --expiry <h>`,
@@ -153,10 +183,14 @@ const WHOAMI = 'nodus-cli -i ~/.nodus whoami';
 // recordRoleActivity).
 let panel = null, root = null, client = null, lockedInputs = () => new Set(), roleRecorder = null;
 let screen = 'home';
-// facts: what this page read from the node — { generation, tip, spendable }
-// (BigInt; spendable null when the balance read failed) or { error }; null
-// while reading. witnesses / storage: the lists the screens need, { rows,
-// error } (null while reading or not asked).
+// facts: what this page read from the node — { generation, tip, spendable,
+// expiryHeight, bonds, bondsError } (BigInt; spendable null when the balance
+// read failed; expiryHeight the last block a transaction built now could be
+// included in, null when not computable; bonds { stakeMin, storageBond } —
+// the chain's parameters 19 / 21 as the node reports them (BUGS W-20) — or
+// null with bondsError) or { error }; null while reading. witnesses /
+// storage: the lists the screens need, { rows, truncated, error } (null
+// while reading or not asked).
 let facts = null, witnesses = null, storage = null, readSeq = 0;
 let form = freshForm();
 let fieldCount = 0;
@@ -204,26 +238,35 @@ async function readFacts() {
     const ri = parseRulesetInfo(await c.rulesetInfo());
     let spendable = null;
     try { spendable = parseBalance(await c.balance()).spendable; } catch { spendable = null; }
-    next = { generation: ri.generation, tip: ri.tip, spendable };
+    // the bonds in force — what the screens show and Review asks for; when
+    // they cannot be read the amounts are "unknown" and becoming a witness
+    // or a storage node is not offered (fail closed)
+    let bonds = null, bondsError = '';
+    try { bonds = await hf6Bonds({ client: c, from }); } catch (error) { bondsError = error.message; }
+    let expiryHeight = null;
+    try { expiryHeight = expiryHeightFor(ri.tip, ri); } catch { expiryHeight = null; }
+    next = { generation: ri.generation, tip: ri.tip, spendable, expiryHeight, bonds, bondsError };
   } catch (error) { next = { error: error.message }; }
   if (seq !== readSeq || c !== client) return;
   facts = next;
   const r = rules();
   if (form.kind && !facts.error && r) form.expiry = suggestExpiry(facts.tip, r.consentWindow);
+  // the witness bond field starts at the minimum once it is known
+  if (form.kind === 'stake' && form.bond === '' && facts.bonds) form.bond = formatUnits(facts.bonds.stakeMin, NODUS_ASSET.decimals);
   if (form.consent) runCheck();
   render();
   if (screen === 'witness' || screen === 'witnesses') await readWitnesses(seq, c);
   if (screen === 'storage') await readStorage(seq, c, from);
 }
 async function readWitnesses(seq, c) {
-  if (!c.stakeable) { witnesses = { rows: [], error: 'The witness list is not available in this wallet version.' }; render(); return; }
+  if (!c.stakeable) { witnesses = { rows: [], truncated: true, error: 'The witness list is not available in this wallet version.' }; if (form.consent) runCheck(); render(); return; }
   try {
-    const { validators } = parseValidators(await c.validators());
+    const { truncated, validators } = parseValidators(await c.validators());
     if (seq !== readSeq || c !== client) return;
-    witnesses = { rows: validators, error: '' };
+    witnesses = { rows: validators, truncated, error: '' };
   } catch (error) {
     if (seq !== readSeq || c !== client) return;
-    witnesses = { rows: [], error: error.message };
+    witnesses = { rows: [], truncated: true, error: error.message };
   }
   if (form.consent) runCheck();
   render();
@@ -240,21 +283,21 @@ async function readStorage(seq, c, from) {
   render();
 }
 
-// The consent checks of the module for what is pasted now, plus the one
-// check the module leaves to the chain (design §2 item 7) where the witness
-// list was read: a stake's node key is not already a witness's key.
+// The consent checks of the module for what is pasted now, plus the page's
+// own two (BUGS W-21): the consent lasts until the transaction's last
+// valid block (consentMarginLine), and — for a stake — the one check the
+// module leaves to the chain (design §2 item 7): the node key is not
+// already a witness's key (keyCheckLine; while the witness list is read,
+// failed or partial it is "could not be checked" and Review stays off).
 function runCheck() {
   form.check = null; form.checkError = '';
   if (!client || !form.consent.trim() || !form.kind) return;
   if (!facts || facts.error) { form.checkError = 'Waiting for the network’s current block height before the consent can be checked.'; return; }
   try {
     const check = checkConsent({ client, from: client.fingerprint, kind: form.kind, text: form.consent, tip: facts.tip });
-    const rows = witnesses && !witnesses.error ? witnesses.rows : null;
-    if (rows && check.nodeFp && form.kind === 'stake') {
-      const taken = rows.some(v => v.fingerprint === check.nodeFp);
-      check.checks.push({ id: 'key', ok: !taken, detail: taken ? 'This node key is already a witness’s key. Each witness needs its own node key.' : 'This node key is not a witness’s key yet.' });
-      check.ok = check.checks.every(line => line.ok);
-    }
+    if (check.expiry !== null) check.checks.push(consentMarginLine(check.expiry, facts.expiryHeight));
+    if (check.nodeFp && form.kind === 'stake') check.checks.push(keyCheckLine(witnesses, check.nodeFp));
+    check.ok = check.checks.every(line => line.ok);
     form.check = check;
   } catch (error) { form.checkError = error.message; }
 }
@@ -302,11 +345,19 @@ function gateNotes() {
   if (!facts) out.push(el('p', { className: 'hint', text: 'Reading the network’s rules…' }));
   else if (facts.error) out.push(el('p', { className: 'roles-amber', text: `${HF6_NOT_YET_TEXT} (The network’s rules could not be read: ${facts.error})` }), btn('Read again', () => void readFacts()));
   else if (!open()) out.push(el('p', { className: 'roles-amber', text: HF6_NOT_YET_TEXT }));
+  if (facts && !facts.error && !facts.bonds) {
+    const note = el('p', { className: 'roles-amber', text: `The bond amounts are unknown: they could not be read from the network (${facts.bondsError}). Becoming a witness or a storage node stays off until they are read.` });
+    note.dataset.note = 'bonds-unknown';
+    out.push(note, btn('Read again', () => void readFacts()));
+  }
   return out;
 }
+// The bonds in force as this page last read them (null: reading, or unknown).
+const bondsNow = () => (facts && !facts.error ? facts.bonds : null);
+const bondsMissingText = () => (facts ? 'The bond amounts are unknown: they could not be read from the network.' : 'Reading the bond amounts…');
 
 function homeView() {
-  const r = rules();
+  const b = bondsNow();
   const row = (title, note, onClick, id) => {
     const node = el('button', { className: 'roles-row' }, el('span', { className: 'roles-row-text' }, el('strong', { text: title }), el('small', { text: note })), el('span', { className: 'roles-chevron', text: '›' }));
     node.type = 'button'; node.onclick = onClick; node.dataset.role = id;
@@ -316,8 +367,8 @@ function homeView() {
     el('p', { className: 'hint', text: 'Take part in running the Nodus network with a node you control. This wallet owns the node, pays the bond and receives the rewards; the node itself only gives its consent.' }),
     ...gateNotes(),
     el('div', { className: 'roles-list' },
-      row('Become a witness', `Run a witness node you control. Bond at least ${nodus(r.stakeMin)}.`, () => goto('witness', { kind: 'stake', bond: formatUnits(r.stakeMin, NODUS_ASSET.decimals) }), 'witness'),
-      row('Become a storage node', `Keep a copy of the chain’s archive. Bond ${nodus(r.storageBond)}.`, () => goto('storage', { kind: 'storageRegister' }), 'storage'),
+      row('Become a witness', `Run a witness node you control. ${b ? `Bond at least ${nodus(b.stakeMin)}.` : bondsMissingText()}`, () => goto('witness', { kind: 'stake', bond: b ? formatUnits(b.stakeMin, NODUS_ASSET.decimals) : '' }), 'witness'),
+      row('Become a storage node', `Keep a copy of the chain’s archive. ${b ? `Bond ${nodus(b.storageBond)}.` : bondsMissingText()}`, () => goto('storage', { kind: 'storageRegister' }), 'storage'),
       row('Your witnesses', 'See the witnesses this wallet owns, or stop being a witness and get the bond back. Fee only.', () => goto('witnesses'), 'witnesses'))
   ];
 }
@@ -338,7 +389,6 @@ function field(labelText, input, name) {
 function consentFlow(kind) {
   if (form.prepared && form.reviewKind === kind) return [reviewCard()];
   if (form.prepared) return [];
-  const r = rules();
   const out = [];
   const owner = client.fingerprint;
   // 1 · the command
@@ -372,7 +422,9 @@ function consentFlow(kind) {
   const checkNodes = [...field('Paste the consent the node printed', area, 'consent'), el('ul', { className: 'roles-checks' }, ...lines)];
   if (form.check?.nodeFp) checkNodes.push(el('p', { className: 'hint', text: 'Node key fingerprint in this consent:' }), el('code', { className: 'roles-fp-inline', text: form.check.nodeFp }));
   out.push(card('2 · Paste the consent', ...checkNodes));
-  // 3 · the bond (witness: a floor; storage: exact) and commission
+  // 3 · the bond (witness: a floor; storage: exact) and commission — the
+  // values the node reports (BUGS W-20); unknown → no Review
+  const b = bondsNow();
   let amount = null, amountError = '';
   if (kind === 'stake') {
     const bond = el('input', { className: 'roles-input' });
@@ -382,18 +434,24 @@ function consentFlow(kind) {
     commission.inputMode = 'decimal'; commission.autocomplete = 'off'; commission.placeholder = 'e.g. 10'; commission.value = form.commission;
     commission.oninput = () => { form.commission = commission.value; render(); };
     const s = stakingRules();
-    try { amount = bondUnits(form.bond, r.stakeMin); } catch (error) { amountError = error.message; }
+    if (!b) amountError = bondsMissingText();
+    else try { amount = bondUnits(form.bond, b.stakeMin); } catch (error) { amountError = error.message; }
     let commissionError = '';
     try { percentToBps(form.commission, s?.commissionMaxBps ?? null); } catch (error) { commissionError = error.message; }
     out.push(card('3 · Bond and commission',
-      ...field(`Bond (at least ${nodus(r.stakeMin)})`, bond, 'bond'),
+      ...field(b ? `Bond (at least ${nodus(b.stakeMin)})` : 'Bond (the minimum is not known)', bond, 'bond'),
       ...field(`Commission, percent${s ? ` (0 to ${Number(s.commissionMaxBps) / 100})` : ''} — your share of the rewards of those who delegate to your witness`, commission, 'commission'),
       amountError ? el('p', { className: 'roles-error', text: amountError }) : null,
       form.commission && commissionError ? el('p', { className: 'roles-error', text: commissionError }) : null));
     if (!form.commission || commissionError) amountError = amountError || commissionError || 'Enter a commission.';
   } else if (kind === 'storageRegister') {
-    amount = r.storageBond;
-    out.push(card('3 · Bond', el('p', { className: 'hint', text: `A storage node’s bond is exactly ${nodus(r.storageBond)}. It does not change the reward; it comes back when the node leaves storage.` })));
+    if (b) {
+      amount = b.storageBond;
+      out.push(card('3 · Bond', el('p', { className: 'hint', text: `A storage node’s bond is exactly ${nodus(b.storageBond)}. It does not change the reward; it comes back when the node leaves storage.` })));
+    } else {
+      amountError = bondsMissingText();
+      out.push(card('3 · Bond', el('p', { className: 'roles-error', text: amountError })));
+    }
   } else amount = 0n;
   // funds: the bond against what is spendable (the fee comes on top)
   const short = amount !== null && facts && !facts.error && facts.spendable !== null && amount > facts.spendable ? amount - facts.spendable : null;
@@ -420,10 +478,11 @@ async function startReview(kind, extra = {}) {
   const c = client;
   form.busy = true; form.error = ''; form.errorFor = null; form.status = ''; render();
   try {
-    const r = rules(), s = stakingRules();
+    const s = stakingRules(), b = bondsNow();
     const params = { client: c, from: c.fingerprint, kind, locked: lockedInputs() };
+    if ((kind === 'stake' || kind === 'storageRegister') && !b) throw new Error(bondsMissingText());
     if (kind === 'stake') {
-      params.bond = formatUnits(bondUnits(form.bond, r.stakeMin), NODUS_ASSET.decimals);
+      params.bond = formatUnits(bondUnits(form.bond, b.stakeMin), NODUS_ASSET.decimals);
       params.commissionBps = percentToBps(form.commission, s?.commissionMaxBps ?? null).toString();
     }
     if (kind !== 'storageExit' && kind !== 'unstake') params.consent = form.consent;
@@ -475,7 +534,8 @@ function reviewCard() {
   } else {
     const at = E !== null ? storageExitHeights(t.tip, E, r.storageExitLockEpochs) : null;
     items.push(`Node ${d.nodeFp} stops being a storage node; it is no longer paid.`);
-    items.push(at && at.lockedUntil !== null ? `The ${nodus(storageBondOf(form.exitNode))} bond comes back to this wallet as one coin, released at block ${block(at.release)} at the earliest and locked until block ${block(at.lockedUntil)}.` : 'The bond comes back to this wallet as one coin after the next epoch boundary, locked for a while after that.');
+    const exitBond = storageBondOf(form.exitNode), theBond = exitBond !== null ? `The ${nodus(exitBond)} bond` : 'The bond';
+    items.push(at && at.lockedUntil !== null ? `${theBond} comes back to this wallet as one coin, released at block ${block(at.release)} at the earliest and locked until block ${block(at.lockedUntil)}.` : `${theBond} comes back to this wallet as one coin after the next epoch boundary, locked for a while after that.`);
     items.push(at ? `This node can register again only after two epoch boundaries — from block ${block(at.registerAgainFrom)} at the earliest.` : 'This node can register again only after two epoch boundaries.');
     items.push('Turning the node off is not leaving: the bond stays locked until you leave here.');
   }
@@ -494,10 +554,8 @@ function reviewCard() {
   pair('Balance after', nodus(t.balanceAfter));
   if (d.consentExpiry !== null) pair('Consent valid until block', block(d.consentExpiry));
   pair('Valid until block', block(d.expiryHeight));
-  const warn = consentExpiresEarly(d.consentExpiry, d.expiryHeight)
-    ? el('p', { className: 'roles-amber', text: `This consent expires at block ${block(d.consentExpiry)}, before this transaction’s validity ends (block ${block(d.expiryHeight)}). If the transaction is included after block ${block(d.consentExpiry)}, the network refuses it. Make a new consent on the node if in doubt.` })
-    : null;
-  if (warn) warn.dataset.warning = 'consent-expiry';
+  // (a consent ending before the transaction's validity never reaches this
+  // card: the page's check and prepareHf6 refuse it — BUGS W-21)
   const cancel = btn('Cancel', () => { t.cancel(); form.prepared = null; form.reviewKind = null; render(); });
   const confirm = btn(kind === 'storageExit' ? 'Leave storage' : kind === 'unstake' ? 'Stop being a witness' : 'Confirm and send', () => void confirmPrepared(), 'roles-primary');
   confirm.dataset.action = 'confirm';
@@ -506,12 +564,15 @@ function reviewCard() {
     el('p', { className: 'roles-step', text: 'You are about to' }),
     el('p', { className: 'roles-big', text: big }),
     el('ul', { className: 'roles-sum' }, ...items.map(text => el('li', { text }))),
-    fpBlock, kv, warn,
+    fpBlock, kv,
     roleRecorder ? null : el('p', { className: 'roles-error', text: 'Activity is not available, so nothing can be sent from here.' }),
     el('div', { className: 'roles-actions' }, cancel, confirm),
     form.error && form.errorFor === kind ? el('p', { className: 'roles-error', text: form.error }) : null);
 }
-function storageBondOf(fp) { return storage?.nodes?.find(n => n.fp === fp)?.bond ?? rules().storageBond; }
+// The leaving storage node's bond as the node's list gives it (the bond it
+// registered with — not today's STORAGE_BOND); null when the list does not
+// have the row.
+function storageBondOf(fp) { return storage?.nodes?.find(n => n.fp === fp)?.bond ?? null; }
 // The witness's bond as the node's list gives it (one node's answer, like
 // the storage bond above); null when the list does not have the row.
 function stopWitnessBond(vid) { return witnesses?.rows?.find(v => v.validatorId === vid)?.selfStake ?? null; }
@@ -526,7 +587,7 @@ async function confirmPrepared() {
     record.settled(true);
     if (c !== client) return;
     const done = `${ACTIVITY_TITLES[kind]} submitted; confirmation is pending. Transaction ID ${hash}. Its status is tracked in Activity.`;
-    goto(screen, { kind: screen === 'witness' ? 'stake' : screen === 'storage' ? 'storageRegister' : null, status: done, bond: screen === 'witness' ? formatUnits(rules().stakeMin, NODUS_ASSET.decimals) : '' });
+    goto(screen, { kind: screen === 'witness' ? 'stake' : screen === 'storage' ? 'storageRegister' : null, status: done, bond: screen === 'witness' && bondsNow() ? formatUnits(bondsNow().stakeMin, NODUS_ASSET.decimals) : '' });
   } catch (error) {
     record.settled(false);
     if (c !== client) return;

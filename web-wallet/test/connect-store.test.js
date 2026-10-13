@@ -31,7 +31,10 @@
 //   - rev 2.2 item 2: a snapshot the load check refuses is rejected with
 //     HISTORY_TOO_LARGE_TEXT at the call — nothing reserved, sealed or
 //     written, nextSeq not advanced, the caller's undo run;
-//   - rev 2.2 item 3: a `removed` cut is reported and written back.
+//   - rev 2.2 item 3: a `removed` cut is reported and written back;
+//   - stateSnapshot: a projection refused past core.js's 8 MiB state input
+//     bound reads HISTORY_TOO_LARGE_TEXT, any other projection error the
+//     "could not be prepared" text (web 0.1.118).
 // Requires: nothing (pure node).
 // Leaves behind: nothing.
 // How it can lie: the core is a fake — its "projection" is a reversible
@@ -44,7 +47,7 @@ import assert from 'node:assert/strict';
 import {
   openHistoryStore, stateDiff, writeAll, StorageError, DAMAGED_STATE_TEXT, emptyState, counterStorageKey,
   MAX_INVOCATIONS, STATE_ID, STORE_STATE, STORE_MESSAGES, STORE_META, COUNTER_ID,
-  HISTORY_TOO_LARGE_TEXT, STATE_REMOVED_MAX
+  HISTORY_TOO_LARGE_TEXT, STATE_REMOVED_MAX, stateSnapshot
 } from '../src/connect/store.js';
 
 const A = 'aa'.repeat(64), B = 'bb'.repeat(64), C = 'cc'.repeat(64);
@@ -511,4 +514,18 @@ test('rev 2.2 item 3: a removed list over the cap is reported as dropped and cut
     await store.save(state);
     assert.deepEqual(seen, [['removed']]);
   });
+});
+
+test('stateSnapshot: a projection refused for its 8 MiB input bound is "too large", any other projection error stays "could not be prepared"', () => {
+  const throwing = message => ({ stateProject() { throw new Error(message); } });
+  // the text src/connect/core.js putState throws past STATE_IN_MAX
+  assert.throws(() => stateSnapshot(throwing('The message state is too large for this version.'), emptyState(), {}),
+    err => err instanceof StorageError && err.message === HISTORY_TOO_LARGE_TEXT);
+  for (const message of ['Invalid message state.', 'Out of memory.', 'The message state is too large']) {
+    assert.throws(() => stateSnapshot(throwing(message), emptyState(), {}),
+      err => err instanceof StorageError && /could not be prepared/.test(err.message) && err.message !== HISTORY_TOO_LARGE_TEXT, message);
+  }
+  // a StorageError from the core passes through unchanged
+  const own = new StorageError('own');
+  assert.throws(() => stateSnapshot({ stateProject() { throw own; } }, emptyState(), {}), err => err === own);
 });

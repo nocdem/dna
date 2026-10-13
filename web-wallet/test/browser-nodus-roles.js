@@ -6,16 +6,20 @@
 //
 // What it proves:
 // - the page shows its three rows (Become a witness, Become a storage node,
-//   Your witnesses), with the bonds read from the module's hf6Rules — no
+//   Your witnesses), with the bonds the NODE reports (hf6Bonds — values
+//   other than the compiled defaults here; BUGS W-20) — no
 //   "Change your node's key" (the khan removed key ROTATE from HF-6,
 //   decision 2026-10-13-kurultay-18-summary.md item 1);
 // - at rule-set generation 3 the amber note shows and Review stays disabled
 //   even for a consent that passes every check — the checks still run;
 // - a consent that fails a check shows that line with ✗ and its reason, and
 //   Review stays disabled; a passing consent enables Review at generation 4;
+// - a consent that expires before the transaction's validity fails its
+//   line (no Review); while the witness list is partial the node-key line
+//   says it could not be checked (no Review); when the bonds cannot be read
+//   the page says they are unknown (no Review) — BUGS W-20 / W-21;
 // - the Review shows the node key fingerprint the module read back from the
-//   signed bytes and, when the consent expires before the transaction's
-//   validity, the expiry warning; Confirm records the transaction (the host
+//   signed bytes; Confirm records the transaction (the host
 //   recorder's broadcast runs BEFORE the submission) and says it is tracked;
 // - "Your storage nodes" lists this wallet's nodes, with Leave on an active
 //   one only, and Leave opens a Review that says what leaving means;
@@ -69,7 +73,8 @@ try {
     const roles = await import('/src/nodus-roles.js');
     const OWN = '1a'.repeat(64), OTHER = '2b'.repeat(64), NODE = '3c'.repeat(64), CHAIN = '77'.repeat(32);
     const coin = { nullifier: 'aa'.repeat(64), amount: '350000000000000' };
-    window.__t = { OWN, NODE, generation: '3', tip: '1000', events: [] };
+    // bondsFail: hf6Bonds rejects; truncated: the witness list is partial
+    window.__t = { OWN, NODE, generation: '3', tip: '1000', events: [], bondsFail: false, truncated: false };
     const IDS = ['format', 'op', 'chain', 'owner', 'subject', 'expiry', 'signature'];
     // The fake module check: a text holding "owner other" fails the owner
     // line; "expiry N" sets the consent's expiry; anything else passes.
@@ -82,13 +87,16 @@ try {
     const node = (fp, status) => ({ fp, status, bond: '100000000000000', failStreak: 0, graceUntil: '0', registered: '900', exit: status === 3 ? '950' : '0', member: status === 1, segments: '0' });
     const client = {
       state: 'ready', identified: true, hf6able: true, stakeable: true, fingerprint: OWN, chainId: CHAIN,
-      hf6Rules: { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4, minTenureBlocks: '1440', storageExitLockEpochs: '12', validatorUnbondEpochs: '84' },
+      hf6Rules: { consentWindow: '720', generation: 4, minTenureBlocks: '1440', storageExitLockEpochs: '12', validatorUnbondEpochs: '84' },
+      // the node's role bonds (chain params 19 / 21): 1,500,000 and 500,000
+      // NODUS — not the compiled 2,000,000 / 1,000,000
+      hf6Bonds: async () => { if (window.__t.bondsFail) throw new Error('The network\'s bond amounts could not be read (rc=-1).'); return { stakeMin: '150000000000000', storageBond: '50000000000000' }; },
       stakingRules: { minDelegation: '10000000000', selfStake: '1000000000000000', commissionMaxBps: '5000', undelegateLockEpochs: '1', epochLength: '720', maxDelegators: '2048' },
       consentCheck,
       rulesetInfo: async () => ({ tip: window.__t.tip, generation: window.__t.generation, gen2Height: '0' }),
       balance: async () => ({ total: coin.amount, spendable: coin.amount }),
       list: async () => ({ tip: window.__t.tip, coins: [coin], truncated: false }),
-      validators: async () => ({ truncated: false, validators: [
+      validators: async () => ({ truncated: window.__t.truncated, validators: [
         // witness 51 runs on the machine that is also this wallet's active
         // storage node 61 (its key fingerprint = the storage node's fp)
         witness('61'.repeat(64), '51'.repeat(64), OWN), witness('42'.repeat(64), '52'.repeat(64), OWN, 4),
@@ -130,8 +138,9 @@ try {
   await root.locator('.roles-row').first().waitFor();
   assert.deepEqual(await root.locator('.roles-row strong').allInnerTexts(), ['Become a witness', 'Become a storage node', 'Your witnesses']);
   assert.equal(await root.locator('[data-role="rotate"]').count(), 0, 'no key change row');
-  assert.match(await root.locator('[data-role="witness"]').innerText(), /2,000,000\.0 NODUS/);
-  assert.match(await root.locator('[data-role="storage"]').innerText(), /1,000,000\.0 NODUS/);
+  await page.waitForFunction(() => /NODUS/.test(document.querySelector('[data-role="storage"]')?.innerText || ''));
+  assert.match(await root.locator('[data-role="witness"]').innerText(), /1,500,000\.0 NODUS/, 'the node\'s stake minimum');
+  assert.match(await root.locator('[data-role="storage"]').innerText(), /500,000\.0 NODUS/, 'the node\'s storage bond');
   await root.locator('.roles-amber').waitFor();
   assert.match(await root.locator('.roles-amber').innerText(), /cannot send/);
   await noSideways('the page');
@@ -141,9 +150,10 @@ try {
   await root.locator('.roles-cmd').waitFor();
   const command = await root.locator('.roles-cmd').innerText();
   assert.ok(command.includes(`validator consent --op stake --owner ${'1a'.repeat(64)} --expiry 1710`), command);
+  assert.equal(await root.locator('input[data-field="bond"]').inputValue(), '1500000.0', 'the bond starts at the node\'s minimum');
   await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nop 1\nexpiry 1700\n');
-  await root.locator('.roles-checks li[data-check="signature"]').waitFor();
-  assert.equal(await root.locator('.roles-checks li[data-ok="false"]').count(), 0, 'every module line passed');
+  await root.locator('.roles-checks li[data-check="key"][data-ok="true"]').waitFor();
+  assert.equal(await root.locator('.roles-checks li[data-ok="false"]').count(), 0, 'every line passed (the module\'s seven, the margin, the node key)');
   await root.locator('input[data-field="commission"]').fill('10');
   assert.ok(await root.locator('[data-action="review"]').isDisabled(), 'Review is disabled before the HF-6 generation');
   assert.match(await root.locator('.roles-amber').first().innerText(), /cannot send/);
@@ -163,17 +173,25 @@ try {
   await root.locator('input[data-field="commission"]').fill('10');
   assert.ok(await root.locator('[data-action="review"]').isDisabled(), 'Review is disabled for a failing consent');
 
-  // A passing paste whose consent expires before the transaction's validity
-  // (tip 1000 + 90 = 1090 > 1050): Review shows the node fp and the warning.
+  // A consent that passes the module's lines but expires before the
+  // transaction's validity (tip 1000 + 90 = 1090 > 1050): its margin line
+  // fails with the plain reason and Review stays disabled (BUGS W-21).
   await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1050\n');
-  await page.waitForFunction(() => document.querySelectorAll('.roles-checks li[data-ok="false"]').length === 0);
+  const margin = root.locator('.roles-checks li[data-check="margin"]');
+  await margin.waitFor();
+  assert.equal(await margin.getAttribute('data-ok'), 'false');
+  assert.match(await margin.innerText(), /This consent expires before this transaction could be included; make a new consent on the node\./);
+  assert.ok(await root.locator('[data-action="review"]').isDisabled(), 'Review is disabled for a consent that ends too early');
+  // A passing paste: Review shows the node fp; no expiry warning exists any more.
+  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
+  await page.waitForFunction(() => document.querySelectorAll('.roles-checks li[data-ok="false"]').length === 0 && !!document.querySelector('.roles-checks li[data-check="key"][data-ok="true"]'));
   assert.ok(!(await root.locator('[data-action="review"]').isDisabled()), 'Review is enabled for a passing consent at generation 4');
   await root.locator('[data-action="review"]').click();
   await root.locator('.roles-review').waitFor();
   assert.equal(await root.locator('.roles-fp-value').innerText(), '3c'.repeat(64));
   assert.match(await root.locator('.roles-fp-note').innerText(), /matches the fingerprint your node printed/);
-  const warning = root.locator('[data-warning="consent-expiry"]');
-  assert.match(await warning.innerText(), /expires at block 1,050, before this transaction’s validity ends \(block 1,090\)/);
+  assert.equal(await root.locator('[data-warning="consent-expiry"]').count(), 0);
+  assert.match(await root.locator('.roles-review').innerText(), /Lock 1,500,000\.0 NODUS/, 'the bond built is the node\'s minimum');
   assert.match(await root.locator('.roles-review').innerText(), /Rewards go to this wallet/);
   assert.match(await root.locator('.roles-review').innerText(), /at or after block 2,441/);
   await noSideways('witness review');
@@ -200,6 +218,43 @@ try {
   assert.match(leave, /two epoch boundaries/);
   assert.match(leave, /Turning the node off is not leaving/);
   await noSideways('leave review');
+
+  // A partial witness list: the node-key line "could not be checked", no
+  // Review (BUGS W-21).
+  await page.evaluate(() => { window.__t.truncated = true; });
+  await root.locator('.roles-back').click();
+  await root.locator('[data-role="witness"]').click();
+  await root.locator('.roles-cmd').waitFor();
+  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
+  await root.locator('input[data-field="commission"]').fill('10');
+  await page.waitForFunction(() => /only part of the witnesses/.test(document.querySelector('.roles-checks li[data-check="key"]')?.innerText || ''));
+  assert.equal(await root.locator('.roles-checks li[data-check="key"]').getAttribute('data-ok'), 'false');
+  assert.match(await root.locator('.roles-checks li[data-check="key"]').innerText(), /could not be checked/);
+  assert.ok(await root.locator('[data-action="review"]').isDisabled(), 'Review is disabled while the node key is unchecked');
+  await page.evaluate(() => { window.__t.truncated = false; });
+
+  // The bonds cannot be read: the page says the amounts are unknown, and
+  // neither becoming a witness nor a storage node offers Review (BUGS W-20).
+  await page.evaluate(() => { window.__t.bondsFail = true; });
+  await root.locator('.roles-back').click();
+  await root.locator('[data-note="bonds-unknown"]').waitFor();
+  assert.match(await root.locator('[data-note="bonds-unknown"]').innerText(), /bond amounts are unknown/);
+  assert.match(await root.locator('[data-role="witness"]').innerText(), /bond amounts are unknown/);
+  assert.doesNotMatch(await root.locator('[data-role="storage"]').innerText(), /NODUS\./);
+  await root.locator('[data-role="storage"]').click();
+  await root.locator('[data-note="bonds-unknown"]').waitFor();
+  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
+  await root.locator('.roles-checks li[data-check="margin"][data-ok="true"]').waitFor();
+  assert.ok(await root.locator('[data-action="review"]').isDisabled(), 'no storage Review without the node\'s bond');
+  await root.locator('.roles-back').click();
+  await root.locator('[data-role="witness"]').click();
+  await root.locator('[data-note="bonds-unknown"]').waitFor();
+  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
+  await root.locator('input[data-field="bond"]').fill('2000000');
+  await root.locator('input[data-field="commission"]').fill('10');
+  await root.locator('.roles-checks li[data-check="key"][data-ok="true"]').waitFor();
+  assert.ok(await root.locator('[data-action="review"]').isDisabled(), 'no witness Review without the node\'s minimum');
+  await page.evaluate(() => { window.__t.bondsFail = false; });
 
   // Your witnesses at generation 3: this wallet's three witnesses listed,
   // "Stop being a witness" on the active and the eligible one only, both

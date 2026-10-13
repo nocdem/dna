@@ -591,10 +591,16 @@ async function keepProfile(fp, result) {
   if (!store?.persistent || typeof result.record !== 'string' || result.record.length > PROFILE_KEEP_MAX) return;
   const before = state.profileCache[fp];
   const id = before?.id || `p${takeSeq().padStart(20, '0')}`;
-  state.profileCache[fp] = { id, at: nowSeconds(), name: typeof result.profile.name === 'string' ? result.profile.name : '' };
+  const entry = { id, at: nowSeconds(), name: typeof result.profile.name === 'string' ? result.profile.name : '' };
+  state.profileCache[fp] = entry;
   // not kept on a failure: read from the network next time (the store runs
-  // the rollback before this call sees the error)
-  const undo = () => { if (before) state.profileCache[fp] = before; else delete state.profileCache[fp]; };
+  // the rollback before this call sees the error) — only this call's own
+  // entry: a keep or forget of the same fp that ran during the save stands
+  const undo = () => {
+    if (state.profileCache[fp] === entry) {
+      if (before) state.profileCache[fp] = before; else delete state.profileCache[fp];
+    }
+  };
   try {
     await store.save(state, [], [{ id, fp, record: result.record }], [], [], { undo });
     kept.set(fp, { id, record: result.record });
@@ -2743,7 +2749,9 @@ async function dropVault(address) {
   const before = state.vaults[address];
   delete state.vaults[address];
   // on a failure the store puts the entry back before the error reaches here
-  await persist([], () => { state.vaults[address] = before; });
+  // — only while the address is still absent: a keepVault that ran during
+  // the save stands as it left it (the guard of keepVault's undo)
+  await persist([], () => { if (!Object.hasOwn(state.vaults, address)) state.vaults[address] = before; });
   vaultRecs.delete(address);
 }
 

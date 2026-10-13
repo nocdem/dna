@@ -1198,10 +1198,17 @@ done:
  * not a request field: the shared builder writes SHA3-512 of the signing
  * key into the call and its decoder refuses any other value; the read-back
  * below checks it once more against this wallet's own fingerprint.
- * STAKE_MIN and STORAGE_BOND are the compiled defaults
- * DNAC_HF6_STAKE_MIN_DEFAULT / DNAC_HF6_STORAGE_BOND_DEFAULT (dnac.h), the
- * values of the chain's seams until HF-6 slice 8 makes them chain
- * parameters (nodus-cli uses the same values). The owner is THIS wallet's
+ * STAKE_MIN and STORAGE_BOND are chain parameters (HF-6 slice 8a:
+ * chain_config params 19 / 21, read by the chain at each item's height —
+ * nodus_witness_rt_native.c rtn_stake_min_at / rtn_storage_bond_at). The
+ * build takes them from the SAME dnac_fee_info answer as its gas price
+ * ("stake_min" / "storage_bond", the values in force at tip + 1), exactly
+ * as nodus-cli cmd_v2_stake does: 0 = a server that predates the keys, so
+ * the compiled default DNAC_HF6_STAKE_MIN_DEFAULT /
+ * DNAC_HF6_STORAGE_BOND_DEFAULT (dnac.h) is the value in force there; a
+ * value outside the range the node's handler answers with is refused
+ * (nsw_hf6_bonds_of; BUGS W-20). nsw_hf6_bonds gives the page the same
+ * two values for its screens. The owner is THIS wallet's
  * key (kind 1: owner_fp = SHA3-512 of the signing key; a multisig owner is
  * not built — design §3). The consent is RE-CHECKED inside the build with
  * that owner and the build's own chain id and tip, whatever the page
@@ -1212,12 +1219,61 @@ done:
 /* 1 NODUS in raw units (dnac.h: every amount above is "x 10^8 raw") */
 #define NSW_RAW_PER_NODUS    100000000ULL
 
-_Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT % NSW_RAW_PER_NODUS == 0 &&
-               DNAC_HF6_STORAGE_BOND_DEFAULT % NSW_RAW_PER_NODUS == 0,
-               "the HF-6 bonds are whole NODUS (the messages print them so)");
 _Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT <= (uint64_t)INT64_MAX &&
                DNAC_HF6_STORAGE_BOND_DEFAULT <= (uint64_t)INT64_MAX,
                "the HF-6 bonds are inside the builder's integer bound");
+_Static_assert(DNAC_HF6_STAKE_MIN_MIN <= DNAC_HF6_STAKE_MIN_DEFAULT &&
+               DNAC_HF6_STORAGE_BOND_MIN <= DNAC_HF6_STORAGE_BOND_DEFAULT &&
+               DNAC_HF6_STORAGE_BOND_DEFAULT <= DNAC_HF6_STORAGE_BOND_MAX,
+               "a compiled default passes the range nsw_hf6_bonds_of checks");
+
+/* A raw amount as NODUS text for a message: whole NODUS, then up to 8
+ * decimals without trailing zeros ("2000000", "150000.5"). A voted bond
+ * need not be whole NODUS (params 19 / 21 are raw values). */
+#define NSW_NODUS_TEXT 32
+static void nsw_fmt_nodus(uint64_t raw, char out[NSW_NODUS_TEXT]) {
+    char whole[NSW_U64_DEC];
+    nsw_fmt_u64(raw / NSW_RAW_PER_NODUS, whole);
+    uint64_t frac = raw % NSW_RAW_PER_NODUS;
+    if (frac == 0) { snprintf(out, NSW_NODUS_TEXT, "%s", whole); return; }
+    char f[9];
+    for (int i = 7; i >= 0; i--) { f[i] = (char)('0' + (frac % 10u)); frac /= 10u; }
+    int n = 8;
+    while (n > 1 && f[n - 1] == '0') n--;
+    f[n] = '\0';
+    snprintf(out, NSW_NODUS_TEXT, "%s.%s", whole, f);
+}
+
+/* The two role bonds a node reported in dnac_fee_info (HF-6 slice 8a,
+ * nodus_witness_handlers.c handle_dnac_fee_info: chain_config params 19
+ * STAKE_MIN and 21 STORAGE_BOND at tip + 1), as the build uses them:
+ * 0 = a server that predates the keys (nodus_client.c leaves 0 for an
+ * absent key), so the value in force there is the compiled default —
+ * nodus-cli cmd_v2_stake's rule. Any other value must lie inside the range
+ * that handler answers with — it sends an error, never a value, for a
+ * stored stake_min outside [DNAC_HF6_STAKE_MIN_MIN, INT64_MAX] or a
+ * storage_bond outside [DNAC_HF6_STORAGE_BOND_MIN,
+ * DNAC_HF6_STORAGE_BOND_MAX] (dnac.h: each param's vote range) — else it
+ * is refused and nothing is built. @return 0 / -1 (reason in nsw_error). */
+static int nsw_hf6_bonds_of(uint64_t rep_stake_min, uint64_t rep_storage_bond,
+                            uint64_t *stake_min, uint64_t *storage_bond) {
+    const uint64_t smin = rep_stake_min != 0
+                              ? rep_stake_min
+                              : (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+    const uint64_t sbond = rep_storage_bond != 0
+                               ? rep_storage_bond
+                               : (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+    if (smin < (uint64_t)DNAC_HF6_STAKE_MIN_MIN || smin > (uint64_t)INT64_MAX)
+        return nsw_fail("The node reported a witness bond minimum outside "
+                        "the network's range; nothing is built with it.");
+    if (sbond < (uint64_t)DNAC_HF6_STORAGE_BOND_MIN ||
+        sbond > (uint64_t)DNAC_HF6_STORAGE_BOND_MAX)
+        return nsw_fail("The node reported a storage bond outside the "
+                        "network's range; nothing is built with it.");
+    *stake_min = smin;
+    *storage_bond = sbond;
+    return 0;
+}
 
 enum { NSW_CC_FORMAT, NSW_CC_OP, NSW_CC_CHAIN, NSW_CC_OWNER, NSW_CC_SUBJECT,
        NSW_CC_EXPIRY, NSW_CC_SIG, NSW_CC_N };
@@ -1428,17 +1484,12 @@ const char *nsw_hf6_consent_check(int op, const char *text,
                : g_cc_json;
 }
 
-/* The values the HF-6 screens show and pre-check with, as decimal strings
- * (dnac.h compiled defaults until slice 8; valbind_wire.h), and the
- * rule-set generation that carries the HF-6 calls (nodus_witness_runtime.h
- * NODUS_RT_GEN_STORAGE) — the page compares rulesetInfo().generation with
- * it to enable sending. */
-const char *nsw_const_hf6_stake_min(void) {
-    return nsw_const(DNAC_HF6_STAKE_MIN_DEFAULT);
-}
-const char *nsw_const_hf6_storage_bond(void) {
-    return nsw_const(DNAC_HF6_STORAGE_BOND_DEFAULT);
-}
+/* The consent window the HF-6 screens pre-check with, as a decimal string
+ * (valbind_wire.h), and the rule-set generation that carries the HF-6
+ * calls (nodus_witness_runtime.h NODUS_RT_GEN_STORAGE) — the page compares
+ * rulesetInfo().generation with it to enable sending. The two bonds are
+ * chain parameters, not constants: the page reads them from the node
+ * (nsw_hf6_bonds, BUGS W-20). */
 const char *nsw_const_consent_window(void) {
     return nsw_const(DNA_VALBIND_MAX_EXPIRY_BLOCKS);
 }
@@ -1526,8 +1577,10 @@ static int nsw_hf6_gen_ok(const nsw_gen_t *g) {
  * and nothing is built unless every check passes. `target`: UNSTAKE the
  * validator_id (never all zero), STORAGE_EXIT the node_fp (64 raw bytes),
  * NULL otherwise.
- * `amount`: STAKE the bond (>= STAKE_MIN), STORAGE_REGISTER the bond
- * (== STORAGE_BOND), 0 otherwise; `commission`: STAKE only (else 0).
+ * `amount`: STAKE the bond (>= `stake_min`), STORAGE_REGISTER the bond
+ * (== `storage_bond`), 0 otherwise; `commission`: STAKE only (else 0).
+ * `stake_min` / `storage_bond`: the values nsw_hf6_bonds_of resolved from
+ * the node's report (the chain's params 19 / 21).
  * On success g_built holds the envelope and the fields DECODED FROM ITS
  * BYTES (nodus_v2_stake_built_t.dec), each checked here against the
  * request: generation-4 layout, the op, the signer = this key, the call's
@@ -1545,6 +1598,7 @@ static int nsw_hf6_core(const uint8_t *pk, const uint8_t *sk,
                         uint64_t tip, uint64_t gas_price, int op,
                         const char *consent_text, const uint8_t *target,
                         uint64_t amount, uint32_t commission, uint64_t expiry,
+                        uint64_t stake_min, uint64_t storage_bond,
                         const nsw_gen_t *g) {
     nsw_built_clear();
     const uint8_t cop = nsw_hf6_consent_op(op);
@@ -1567,16 +1621,18 @@ static int nsw_hf6_core(const uint8_t *pk, const uint8_t *sk,
         if (memcmp(target, zero_id, 64) == 0)
             return nsw_fail("Invalid witness: choose one of your witnesses.");
     }
-    /* the bond rules the builder leaves to the chain (section header) */
-    if (is_stake && (amount < DNAC_HF6_STAKE_MIN_DEFAULT ||
-                     amount > (uint64_t)INT64_MAX))
-        return nsw_fail("A witness bond must be at least %llu NODUS.",
-                        (unsigned long long)(DNAC_HF6_STAKE_MIN_DEFAULT /
-                                             NSW_RAW_PER_NODUS));
-    if (is_streg && amount != DNAC_HF6_STORAGE_BOND_DEFAULT)
-        return nsw_fail("A storage bond must be exactly %llu NODUS.",
-                        (unsigned long long)(DNAC_HF6_STORAGE_BOND_DEFAULT /
-                                             NSW_RAW_PER_NODUS));
+    /* the bond rules the builder leaves to the chain (section header),
+     * with the values the node reported for them */
+    if (is_stake && (amount < stake_min || amount > (uint64_t)INT64_MAX)) {
+        char t[NSW_NODUS_TEXT];
+        nsw_fmt_nodus(stake_min, t);
+        return nsw_fail("A witness bond must be at least %s NODUS.", t);
+    }
+    if (is_streg && amount != storage_bond) {
+        char t[NSW_NODUS_TEXT];
+        nsw_fmt_nodus(storage_bond, t);
+        return nsw_fail("A storage bond must be exactly %s NODUS.", t);
+    }
     if (is_stake && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX)
         return nsw_fail("The commission is above the maximum (50%%).");
     if (nsw_expiry_check(tip, g, expiry) != 0) return -1;
@@ -1753,15 +1809,20 @@ done:
  * rule-set generation, chain id, tip and gas price as a node would report
  * them. `consent_text` "" for STORAGE_EXIT and UNSTAKE, else the node's
  * consent; `target_hex` 128 hex — UNSTAKE the validator_id, STORAGE_EXIT
- * the node_fp — "" for STAKE and STORAGE_REGISTER. No output
+ * the node_fp — "" for STAKE and STORAGE_REGISTER. `stake_min_dec` /
+ * `storage_bond_dec`: dnac_fee_info's "stake_min" / "storage_bond" as a
+ * node would report them ("0" = not reported), resolved by the same
+ * nsw_hf6_bonds_of as the networked build. No output
  * seeds: the builder draws none. */
 int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
                           const char *tip_dec, const char *gas_dec,
                           const char *consent_text, const char *target_hex,
                           const char *amount_dec, const char *commission_dec,
-                          const char *expiry_dec) {
+                          const char *expiry_dec, const char *stake_min_dec,
+                          const char *storage_bond_dec) {
     uint8_t chain32[DNA_CHAIN_ID_LEN], target[64];
     uint64_t tip = 0, gas = 0, amount = 0, commission = 0, expiry = 0;
+    uint64_t rep_smin = 0, rep_sbond = 0, stake_min = 0, storage_bond = 0;
     uint8_t *pk = NULL, *sk = NULL;
     int rc = -1;
     const int targeted = nsw_hf6_targeted(op);
@@ -1774,6 +1835,8 @@ int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
         nsw_parse_u64(commission_dec, &commission) != 0 ||
         commission > 0xffffu ||
         nsw_parse_u64(expiry_dec, &expiry) != 0 ||
+        nsw_parse_u64(stake_min_dec, &rep_smin) != 0 ||
+        nsw_parse_u64(storage_bond_dec, &rep_sbond) != 0 ||
         !consent_text || (consented != (consent_text[0] != '\0')) ||
         !target_hex ||
         (targeted ? nsw_parse_hex(target_hex, target, sizeof(target)) != 0
@@ -1781,6 +1844,8 @@ int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
         rc = nsw_fail("Invalid offline witness or storage input.");
         goto done;
     }
+    if (nsw_hf6_bonds_of(rep_smin, rep_sbond, &stake_min, &storage_bond) != 0)
+        goto done;
     pk = malloc(NSW_PK_LEN);
     sk = malloc(NSW_SK_LEN);
     if (!pk || !sk)
@@ -1792,7 +1857,8 @@ int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
         rc = nsw_hf6_core(pk, sk, chain32, tip, gas, op,
                           consented ? consent_text : NULL,
                           targeted ? target : NULL, amount,
-                          (uint32_t)commission, expiry, &g);
+                          (uint32_t)commission, expiry, stake_min,
+                          storage_bond, &g);
     }
 done:
     nsw_wipe(g_seed, sizeof(g_seed));
@@ -3262,6 +3328,44 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     return nsw_end(rc);
 }
 
+/* ── HF-6: the two role bonds in force (BUGS W-20) ──
+ * nsw_hf6_bonds: dnac_fee_info on this session, its "stake_min" and
+ * "storage_bond" resolved by nsw_hf6_bonds_of — the rule nsw_hf6_build
+ * applies to its own answer (0 → the compiled default, out of the node
+ * handler's range → refused) — so the figures the Nodus page shows and
+ * the amount it asks for are the values the build checks against. ONE
+ * node's answer at tip + 1; a vote taking effect between this read and a
+ * build makes the build refuse (it reads again). Getters: decimal raw
+ * strings, "" until a read succeeded. Waits on the network (ccall
+ * { async: true }); the result is two small static strings written after
+ * the last wait. */
+static struct {
+    char stake_min[NSW_U64_DEC], storage_bond[NSW_U64_DEC];
+} g_hb;
+
+const char *nsw_hb_stake_min(void)    { return g_hb.stake_min; }
+const char *nsw_hb_storage_bond(void) { return g_hb.storage_bond; }
+
+int nsw_hf6_bonds(void) {
+    if (nsw_begin() != 0) return -1;
+    memset(&g_hb, 0, sizeof(g_hb));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_fee_info_t fi;
+    memset(&fi, 0, sizeof(fi));
+    int rc = nodus_client_dnac_fee_info(&g_client, &fi);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The network's bond amounts could not be "
+                                "read (rc=%d).", rc));
+    if (g_cancel) return nsw_end(-1);
+    uint64_t stake_min = 0, storage_bond = 0;
+    if (nsw_hf6_bonds_of(fi.stake_min, fi.storage_bond, &stake_min,
+                         &storage_bond) != 0)
+        return nsw_end(-1);
+    nsw_fmt_u64(stake_min, g_hb.stake_min);
+    nsw_fmt_u64(storage_bond, g_hb.storage_bond);
+    return nsw_end(0);
+}
+
 /* ── HF-6: become a witness / a storage node, leave storage, stop being a
  *    witness (section "HF-6: NODE CONSENT") ──
  * nsw_hf6_build(op, consent, target, amount, commission, expiry): `op`
@@ -3276,8 +3380,10 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
  * as nsw_stake_build: the candidate coins come from the LAST nsw_list,
  * the chain id is re-read on this session, the generation is chosen from
  * the node's answer on this call — below generation 4 nothing is built
- * (checked before the consent, as nodus-cli does) — and the fee from
- * dnac_fee_info. The consent is re-checked in nsw_hf6_core with this
+ * (checked before the consent, as nodus-cli does) — and the fee, STAKE_MIN
+ * and STORAGE_BOND from ONE dnac_fee_info answer (nsw_hf6_bonds_of: 0 →
+ * the compiled default, out of range → nothing built; BUGS W-20). The
+ * consent is re-checked in nsw_hf6_core with this
  * wallet's own fingerprint, the pinned chain id and the listing's tip.
  * The submission is nsw_submit (only the envelope built last). The consent
  * text is copied to the heap before the first wait; the other locals are
@@ -3362,9 +3468,15 @@ int nsw_hf6_build(int op, const char *consent_text, const char *target_hex,
     }
     rc = -1;
     if (g_cancel) goto out;
+    /* the bonds from the same answer as the gas price (BUGS W-20) */
+    uint64_t stake_min = 0, storage_bond = 0;
+    if (nsw_hf6_bonds_of(fi.stake_min, fi.storage_bond, &stake_min,
+                         &storage_bond) != 0)
+        goto out;
     rc = nsw_hf6_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
                       fi.gas_price, op, consent, targeted ? target : NULL,
-                      amount, (uint32_t)commission, expiry, &gen);
+                      amount, (uint32_t)commission, expiry, stake_min,
+                      storage_bond, &gen);
 out:
     free(consent);
     return nsw_end(rc);

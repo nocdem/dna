@@ -349,12 +349,14 @@ exports_common=(
   # consent check (synchronous, pure — never reaches emscripten_sleep), the
   # generation-4 builds (nsw_hf6_build waits on the network, ccall
   # { async: true }; nsw_hf6_offline_build does not), what the build read
-  # back, and the constants the screens show
+  # back, and the constants the screens show. The two role bonds are chain
+  # parameters (BUGS W-20): nsw_hf6_bonds reads them from the node (waits
+  # on the network, ccall { async: true }; its getters do not)
   nsw_hf6_consent_check nsw_hf6_build nsw_hf6_offline_build
   nsw_built_gen4 nsw_built_node_fp nsw_built_validator_id
   nsw_built_consent_expiry
-  nsw_const_hf6_stake_min nsw_const_hf6_storage_bond nsw_const_consent_window
-  nsw_hf6_generation
+  nsw_const_consent_window nsw_hf6_generation
+  nsw_hf6_bonds nsw_hb_stake_min nsw_hb_storage_bond
   # HF-6 screens: the timing multipliers the Review lines use (dnac.h
   # DNAC_MIN_TENURE_BLOCKS, DNAC_STORAGE_EXIT_LOCK_EPOCHS), each row's
   # generation-4 validator_id / owner from the last nsw_validators (getters,

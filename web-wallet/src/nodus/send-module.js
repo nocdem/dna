@@ -714,9 +714,12 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     },
     // stakeBuild({ op: 'stake' | 'delegate' | 'undelegate', validator (128
     // hex, '' for stake), amount, commissionBps (stake), expiryHeight, coins })
-    // -> { envelope, intentId, decoded: { op, validator, amount,
+    // -> { envelope, intentId, decoded: { op, validator, validatorId, amount,
     // commissionBps, fee, change, expiryHeight, chainId, inputs } }, `decoded`
-    // read back from the signed bytes by the C side. Submitted with submit().
+    // read back from the signed bytes by the C side. validatorId: the
+    // validator_id a generation-4 DELEGATE / UNDELEGATE call names — the
+    // witness the chain credits (nodus-send-wasm.c nsw_stake_core, BUGS
+    // W-19); '' below generation 4 and for stake. Submitted with submit().
     async stakeBuild({ op, validator = '', amount, commissionBps = '0', expiryHeight, coins } = {}) {
       const code = typeof op === 'string' && Object.hasOwn(STAKE_OPS, op) ? STAKE_OPS[op] : 0;
       if (!code) throw new Error('Unknown staking action.');
@@ -738,7 +741,8 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
         intentId: str('nsw_built_intent'),
         wireId: str('nsw_built_wire'),
         decoded: {
-          op: opName, validator: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
+          op: opName, validator: str('nsw_built_recipient'),
+          validatorId: num('nsw_built_gen4') === 1 ? str('nsw_built_validator_id') : '', amount: str('nsw_built_amount'),
           commissionBps: op === 'stake' ? str('nsw_built_commission') : '0', fee: str('nsw_built_fee'),
           change: str('nsw_built_change'), expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
         }
@@ -747,17 +751,26 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     // HF-6 — become a witness, become a storage node, change a witness's
     // node key, leave storage (nodus-send-wasm.c "HF-6: NODE CONSENT";
     // design docs/plans/2026-10-12-connect-hf6-screens-design.md). The
-    // values the screens show, read from the module, never restated:
-    // stakeMin (the witness bond floor) and storageBond (the exact storage
-    // bond) — raw decimal, the compiled defaults until HF-6 slice 8 makes
-    // them chain parameters; consentWindow — the most blocks ahead a
-    // consent may expire (720, fixed by the chain); generation — the
-    // rule-set generation that carries these calls: compare it with
-    // rulesetInfo().generation; below it the module builds nothing.
+    // values the screens use, read from the module, never restated:
+    // consentWindow — the most blocks ahead a consent may expire (720,
+    // fixed by the chain); generation — the rule-set generation that
+    // carries these calls: compare it with rulesetInfo().generation; below
+    // it the module builds nothing. The two bonds are chain parameters
+    // (params 19 / 21): hf6Bonds() reads them from the node.
     hf6Rules: Object.freeze({
-      stakeMin: str('nsw_const_hf6_stake_min'), storageBond: str('nsw_const_hf6_storage_bond'),
       consentWindow: str('nsw_const_consent_window'), generation: num('nsw_hf6_generation')
     }),
+    // hf6Bonds() -> { stakeMin, storageBond } (raw decimal): the witness
+    // bond floor and the exact storage bond in force at the node's tip + 1
+    // (dnac_fee_info "stake_min" / "storage_bond"; nodus-send-wasm.c
+    // nsw_hf6_bonds — 0 from an older node is the compiled default, a value
+    // outside the network's range rejects). The same rule hf6Build applies
+    // to its own read, so what the page shows is what the build checks
+    // (BUGS W-20). ONE node's answer.
+    async hf6Bonds() {
+      check(await call('nsw_hf6_bonds'));
+      return { stakeMin: str('nsw_hb_stake_min'), storageBond: str('nsw_hb_storage_bond') };
+    },
     // hf6Timing: the timing multipliers of the screens' Review lines (design
     // "Timing facts"), raw decimal from dnac.h — minTenureBlocks
     // (DNAC_MIN_TENURE_BLOCKS: a new witness is a candidate for an epoch
@@ -817,8 +830,9 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     // hf6Build({ op: 'stake' | 'storageRegister' | 'storageExit' |
     // 'unstake', consent (the pasted text; not for storageExit / unstake),
     // validatorId (128 hex, not all zero: unstake — the witness),
-    // nodeFp (128 hex, storageExit), amount (raw: stake >=
-    // stakeMin, storageRegister == storageBond, else '0'), commissionBps
+    // nodeFp (128 hex, storageExit), amount (raw: stake >= the node's
+    // stakeMin, storageRegister == its storageBond — hf6Bonds(), checked
+    // again against the build's own dnac_fee_info read — else '0'), commissionBps
     // (stake), expiryHeight, coins }) -> { envelope, intentId, wireId,
     // decoded: { op, owner, nodeFp, validatorId, bond, commissionBps,
     // consentExpiry, fee, change, expiryHeight, chainId, inputs } }.
