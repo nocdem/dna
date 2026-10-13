@@ -1,6 +1,6 @@
 /* Nodus Connect core — P1a: the contact-request, delivery, check-scheduling
  * and contact-state rules, ported from src/connect/ui/text.js and
- * src/connect/core.js (web 0.1.101) to C
+ * src/connect/core.js (web 0.1.101; checkOrder web 0.1.111) to C
  * (docs/plans/2026-10-12-connect-core-p1-rules-design.md rev 2).
  *
  * THE JAVASCRIPT IS THE SPECIFICATION. Each function below is the JS
@@ -88,7 +88,7 @@ typedef unsigned __int128 nc_u128_t;
  * a non-object element reads every field as undefined). */
 typedef struct {
     nc_elem_t elem;
-    nc_val_t  dir, fp, ts, sender_ts, seq, kind, text, published, delivered, delivered_at;
+    nc_val_t  dir, fp, ts, sender_ts, seq, kind, text, published, delivered, delivered_at, at;
 } nc_rmsg_t;
 
 /* A JS object used as a map (dmSync, profileCache, seenOwn, …): its own
@@ -252,13 +252,21 @@ int nc_recent_days(const nc_val_t *today, nc_u128_t days[8], size_t *n_days, con
 int nc_contact_days(const nc_val_t *fp, const nc_rmap_t *dm_sync, const nc_val_t *now,
                     const nc_val_t *today, nc_u128_t days[8], size_t *n_days, const char **msg);
 
-/* checkOrder (text.js:287): contacts (elem, fp read) and messages (elem,
- * fp, seq read). *order = malloc'd indices into contacts: the JS returns
- * the SAME contact objects in this order (a caller outside JS must map
- * them back by fp, design §R R3). msg_kind NC_LIST_EMPTY: `messages ||
- * []` of a falsy value, or a string. */
+/* checkOrder (text.js:319, web 0.1.111): contacts (elem, fp read) and
+ * messages (elem, fp, seq, at, dir, senderTs read). A message counts when
+ * its fp is a string, String(seq) passes U64 and `at` is a Number that is
+ * a safe integer (|at| <= 2^53 - 1); its time is shownAt (text.js:257):
+ * for dir 'in' with a U64 senderTs string s, s * 1000 when that is a safe
+ * integer and <= at, else at. Every time compared is therefore a safe
+ * integer, held exactly in int64 — no floating-point comparison. Contacts
+ * with a counted message come first, newest time first, then greater seq
+ * (BigInt(String(seq))); then the rest; ties keep list order. *order =
+ * malloc'd indices into contacts: the JS returns the SAME contact objects
+ * in this order (a caller outside JS must map them back by fp, design §R
+ * R3). msg_kind NC_LIST_EMPTY: `messages || []` of a falsy value, or a
+ * string. */
 int nc_check_order(nc_list_t kind, const nc_rmsg_t *contacts, size_t n,
-                   const nc_rmap_t *dm_sync, nc_list_t msg_kind, const nc_rmsg_t *msgs, size_t n_msgs,
+                   nc_list_t msg_kind, const nc_rmsg_t *msgs, size_t n_msgs,
                    size_t **order);
 
 /* profileFresh (text.js:318): entry elem + at (the `at` field read). */

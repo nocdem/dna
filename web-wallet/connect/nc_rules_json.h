@@ -48,7 +48,7 @@
  *   compareLocal {a, b}                 receivedKey {fp, message}
  *   contactNeedsFullSync {fp, dmSync, now}     needFullSync {contactFps, dmSync, now}
  *   contactDays {fp, dmSync, now, today}       fullDays {today}   recentDays {today}
- *   checkOrder {contacts, dmSync, messages}    profileFresh {entry, now}
+ *   checkOrder {contacts, messages}            profileFresh {entry, now}
  *   mergeListedContacts {state, entries, ownFp}   removeContact {state, fp}
  *   unremoveContact {state, fp}         markOwnRecordSeen {state, kind, nowSec}
  *   ownRecordSeen / firstRecordAllowed {state, ownFp, kind}

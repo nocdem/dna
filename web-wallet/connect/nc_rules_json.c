@@ -809,6 +809,7 @@ static int rmsg_of(const nc_jv_t *o, int present, nc_rmsg_t *m) {
     m->published = fld(o, "published");
     m->delivered = fld(o, "delivered");
     m->delivered_at = fld(o, "deliveredAt");
+    m->at = fld(o, "at");
     return RJ_OK;
 }
 
@@ -1513,15 +1514,10 @@ static int r_check_order(const nc_jv_t *a, nc_sb_t *o) {
     if (rc != RJ_OK) return rc;
     rc = rmsgs_arg(a, "messages", LM_OR_FOR_OF, &mk, &m, &nm);
     if (rc != RJ_OK) { free(c); return rc; }
-    nc_rmap_t dm;
-    mapbuf_t mb;
-    rc = flat_map_arg(a, "dmSync", &dm, &mb);
-    if (rc != RJ_OK) { free(c); free(m); return rc; }
     size_t *order;
-    int p = nc_check_order(ck, c, nc, &dm, mk, m, nm, &order);
+    int p = nc_check_order(ck, c, nc, mk, m, nm, &order);
     free(c);
     free(m);
-    mapbuf_free(&mb);
     if (p != NC_P_OK) return w_p(o, p, NULL);
     const nc_jv_t *contacts = nc_jv_get(a, "contacts");
     nc_sb_putc(o, '[');
