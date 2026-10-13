@@ -4,7 +4,7 @@
 // vault) and the UI helpers (src/connect/ui/text.js, design rev 5 §1.9).
 // The IndexedDB transactions of openHistoryStore (readAll / writeAll /
 // oncomplete / onabort, the counter record in the same transaction, the P7
-// migration and commit) are covered since web 0.1.115 by
+// migration and commit) are covered since web 0.1.116 by
 // test/connect-store.test.js (a fake IndexedDB at the transaction level —
 // fake-indexeddb is not a dependency) and test/browser-connect-state.js
 // (Chromium's real IndexedDB, the real module).
