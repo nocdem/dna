@@ -1577,7 +1577,13 @@ and its attendance row are released (khan A2) — only then may that key be used
 validator_id order, and each is accepted only if the set of keys changing at once still leaves
 MORE than two thirds of the counted voting power on unchanged keys — in BOTH the set governing at
 F and the one that starts at U (`P − R > ⌊2P/3⌋`, `nodus_witness_vset.c` `vset_rotation_pass`).
-One that does not fit is skipped and the walk continues (khan A3); it is judged again at every
+The budget is cumulative (khan A7, 2026-10-13): in the set governing at F, R does not start at
+zero but at the counted power of the validators that set already carries under a key changed
+since the set before it — the rotations accepted one boundary earlier, whose new nodes are still
+taking over during that set — so two consecutive batches together never move a third of one set
+(a validator with no seat in the earlier set is a new entrant, not a rotation, and is not
+counted; when the earlier set is a pre-generation-4 (ruleset 1) set, or there is none, R starts
+at zero). One that does not fit is skipped and the walk continues (khan A3); it is judged again at every
 later boundary, its F unchanged. Consequences: with **three or fewer equal validators no rotation
 is ever accepted** (design §3 — rotating any one of three equal keys moves a full third); one
 validator holding more than a third of the counted power can never rotate while that holds;

@@ -562,6 +562,72 @@ static int vset_rot_fits(uint64_t P, uint64_t R, uint64_t p) {
     return (P - (R + p)) > P * 2 / 3 ? 1 : 0;
 }
 
+/* HF-6 khan A7 (2026-10-13, design §3 "(A7) Birikimli bütçe"; BUGS Z-27):
+ * the predecessor party R_F of the freeze of S(f + E) starts from the
+ * counted power (pf[j]) of the entries of sf = S(f) whose key differs from
+ * the same validator_id's entry in sf's own predecessor S(f − E) — the
+ * party the previous freeze already admitted into sf. An entry of sf with
+ * no seat in S(f − E) is not counted (a new entrant is not a rotation).
+ * The carry is 0, with nothing read, when sf is ruleset 1 or f < E (no
+ * S(f − E)); 0 when S(f − E) is ruleset 1 (the recorded rule: no id to
+ * match by) or ABSENT — the resolver's terminal rc 1, which every node
+ * answers alike: validator_set_snapshots is a leg of system_state_root
+ * (nodus_witness_roots_v2.c). An unreadable S(f − E) is a fault (-1),
+ * never a 0. The sum is order-independent and checked like
+ * vset_rot_total. 0 / -1. */
+static int vset_rot_carried(nodus_witness_t *w,
+                            const dna_vset_snapshot_t *sf,
+                            const uint64_t *pf, uint64_t f,
+                            uint64_t *r_out) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    *r_out = 0;
+    if (sf->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) return 0;
+    if (f < E) return 0;                  /* no S(f − E) is defined     */
+
+    dna_vset_snapshot_t *sp = NULL;
+    int prc = nodus_witness_v2_epoch_authority_for_epoch(w, f - E, &sp,
+                                                         NULL, NULL);
+    if (prc == 1) return 0;               /* S(f − E) absent (terminal) */
+    if (prc != 0 || !sp) {
+        QGP_LOG_ERROR(LOG_TAG, "rotation pass: S(%llu), the predecessor of "
+                      "S(%llu), is unreadable (rc=%d) — the carried party "
+                      "cannot be judged", (unsigned long long)(f - E),
+                      (unsigned long long)f, prc);
+        return -1;
+    }
+    int ret = -1;
+    uint64_t r = 0;
+    if (sp->selection_ruleset == DNA_VSET_RULESET_TOPN_V1) {
+        ret = 0;                          /* the recorded rule: 0        */
+        goto out;
+    }
+    if (sp->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
+        QGP_LOG_ERROR(LOG_TAG, "rotation pass: S(%llu) carries ruleset %u",
+                      (unsigned long long)(f - E),
+                      (unsigned)sp->selection_ruleset);
+        goto out;
+    }
+    for (uint16_t j = 0; j < sf->active_count; j++) {
+        for (uint16_t i = 0; i < sp->active_count; i++) {
+            if (memcmp(sp->entries[i].validator_id,
+                       sf->entries[j].validator_id,
+                       DNA_VSET_VALIDATOR_ID_LEN) != 0)
+                continue;
+            if (memcmp(sp->entries[i].pubkey, sf->entries[j].pubkey,
+                       DNA_VSET_PUBKEY_LEN) != 0) {
+                if (r > UINT64_MAX - pf[j]) goto out;
+                r += pf[j];
+            }
+            break;
+        }
+    }
+    *r_out = r;
+    ret = 0;
+out:
+    dna_vset_free(&sp);
+    return ret;
+}
+
 static int vset_rotation_pass(nodus_witness_t *w,
                               nodus_committee_member_t *members,
                               dna_vset_snapshot_t *snap) {
@@ -583,7 +649,7 @@ static int vset_rotation_pass(nodus_witness_t *w,
     int ret = -1;
     dna_vset_snapshot_t *sf = NULL;
     uint64_t pu[DNA_MAX_ACTIVE_VALIDATORS], pf[DNA_MAX_ACTIVE_VALIDATORS];
-    uint64_t P_U = 0, P_F = 0, R_U = 0, R_F = 0;
+    uint64_t P_U = 0, P_F = 0, R_U = 0, R_F = 0, R_F0 = 0;
     uint8_t chain32[DNA_CHAIN_ID_LEN];
     unsigned n_acc = 0, n_wait = 0;
     int arc = -1;
@@ -620,6 +686,21 @@ static int vset_rotation_pass(nodus_witness_t *w,
                       (unsigned long long)f, (unsigned)sf->selection_ruleset);
         goto done;
     }
+    /* khan A7: the predecessor's party starts from the rotations S(f)
+     * already carries. The previous freeze admitted exactly that party
+     * against these same counted powers (the ratio of S(f) is frozen by
+     * the POWER_CAP_BPS grace, see nodus_witness_power_cap_bps_for_epoch),
+     * so it fits; a carry that does not is a broken invariant — the
+     * freeze is refused like a party exceeding its set. */
+    if (vset_rot_carried(w, sf, pf, f, &R_F0) != 0) goto done;
+    if (vset_rot_fits(P_F, 0, R_F0) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "rotation pass: the party S(%llu) carries "
+                      "(%llu of %llu) exceeds its budget — refusing the "
+                      "freeze", (unsigned long long)f,
+                      (unsigned long long)R_F0, (unsigned long long)P_F);
+        goto done;
+    }
+    R_F = R_F0;
 
     for (size_t c = 0; c < n_cand; c++) {
         /* the successor seat (by validator_id) */
@@ -678,10 +759,12 @@ static int vset_rotation_pass(nodus_witness_t *w,
     }
     if (n_acc > 0 || n_wait > 0)
         QGP_LOG_INFO(LOG_TAG, "snapshot(%llu): %u rotation(s) accepted, %u "
-                     "waiting (P_U %llu R_U %llu, P_F %llu R_F %llu)",
+                     "waiting (P_U %llu R_U %llu, P_F %llu R_F %llu, "
+                     "carried %llu)",
                      (unsigned long long)snap->epoch, n_acc, n_wait,
                      (unsigned long long)P_U, (unsigned long long)R_U,
-                     (unsigned long long)P_F, (unsigned long long)R_F);
+                     (unsigned long long)P_F, (unsigned long long)R_F,
+                     (unsigned long long)R_F0);
     ret = 0;
 done:
     free(cand);
@@ -714,7 +797,9 @@ done:
  *
  * HF-6 slice 6d: at key_gen >= NODUS_RT_GEN_STORAGE the entries of the
  * rotations the budget accepts carry the PENDING key (vset_rotation_pass
- * above) — the one core keeps Rule N's preview equal to the stored row. */
+ * above; its predecessor budget is cumulative since khan A7 — it starts
+ * from the rotations S(F) already carries) — the one core keeps Rule N's
+ * preview equal to the stored row. */
 static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
                                int max_active, uint32_t key_gen,
                                dna_vset_snapshot_t **snap_out) {
