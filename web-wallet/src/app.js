@@ -6,7 +6,7 @@ import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, ch
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
 import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus, evmActivityText } from './activity.js';
-import { CHAINS, CELLFRAME } from './config.js';
+import { CHAINS, CELLFRAME, rpcChoiceOffered } from './config.js';
 import { CPUNK_ASSET, displayAmount } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
@@ -1774,7 +1774,11 @@ function selectChain() {
   setReceiveAddress(address || '');
   portfolio.setSelected(chain);
   // A network with no RPC to choose (Nodus) hides the connection settings.
-  $('rpc-settings').hidden = !c.rpcOptions; if (c.rpcOptions) populateRpcChoice(chain, c);
+  // Offered only where there is a choice (0.1.114, operator 2026-10-13:
+  // "settings'te cpunk endpoint ne … Tek seçenekli ağlarda gizle"): a network
+  // with one provider (Cellframe, TRON, Solana, Ixios) uses it, no block.
+  const offered = rpcChoiceOffered(c);
+  $('rpc-settings').hidden = !offered; if (offered) populateRpcChoice(chain, c);
   $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
   $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
@@ -1997,12 +2001,12 @@ function populateRpcChoice(chain, c) {
 }
 $('rpc-choice').onchange = () => {
   const chain = $('chain').value, c = networkFor(chain), value = $('rpc-choice').value;
-  if (!c.rpcOptions) return;
+  if (!rpcChoiceOffered(c)) return;
   if (value === CUSTOM_RPC) { setRpcCustomVisible(true); $('rpc-endpoint').value = ''; $('rpc-endpoint').focus(); setRpcNote(undefined); return; }
   const option = c.rpcOptions[Number(value)];
   setRpcCustomVisible(false); $('rpc-endpoint').value = option.url; setRpcNote(option.note);
 };
-$('save-rpc').onclick = () => { if (!networkFor($('chain').value).rpcOptions) return; try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message, { error: true }); } };
+$('save-rpc').onclick = () => { if (!rpcChoiceOffered(networkFor($('chain').value))) return; try { const chain = $('chain').value, endpoint = endpointUrl($('rpc-endpoint').value); if (chain === 'tron' && endpoint !== endpointUrl(CHAINS.tron.endpoint)) throw new Error('TRON requires the mainnet provider.'); endpoints[chain] = endpoint; revision++; closeReview(); stopTracking(); for (const row of visibleActivity()) row.endpoint = endpoints[$('chain').value]; trackActivity(); portfolio.changeEndpoint(chain, endpoint); message('RPC updated for this tab.'); } catch (error) { message(error.message, { error: true }); } };
 $('send-form').onsubmit = async event => {
   event.preventDefault(); if (busy) return;
   // Belt-and-suspenders: the send fields are hidden/disabled for a receive-only

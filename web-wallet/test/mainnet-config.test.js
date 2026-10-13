@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getAddress } from 'ethers';
-import { CHAINS, CELLFRAME } from '../src/config.js';
+import { CHAINS, CELLFRAME, rpcChoiceOffered } from '../src/config.js';
+import { IXIOS_NETWORK } from '../src/ixios/network.js';
 import { endpointUrl } from '../src/core.js';
 import { balances } from '../src/adapters/solana.js';
 import { checkActivity } from '../src/activity.js';
@@ -65,4 +66,14 @@ test('every rpcOptions entry is a valid, unique HTTPS URL, and index 0 matches t
   assert.equal(CHAINS.tron.rpcOptions.length, 1);
   assert.equal(CHAINS.solana.rpcOptions.length, 1);
   assert.equal(CELLFRAME.rpcOptions.length, 1);
+});
+
+// 0.1.114 (operator 2026-10-13: "Tek seçenekli ağlarda gizle"): the network
+// connection settings are offered only where there are two or more providers.
+test('connection settings are offered only for networks with a choice of providers', () => {
+  assert.equal(rpcChoiceOffered(CHAINS.ethereum), true);
+  assert.equal(rpcChoiceOffered(CHAINS.bsc), true);
+  for (const one of [CHAINS.solana, CHAINS.tron, CELLFRAME, IXIOS_NETWORK]) assert.equal(rpcChoiceOffered(one), false);
+  assert.equal(rpcChoiceOffered({}), false);
+  assert.equal(rpcChoiceOffered(undefined), false);
 });

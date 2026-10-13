@@ -30,6 +30,13 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
+- **Network connection settings only where there is a choice (0.1.114, 2026-10-13).** Operator: "settings'te cpunk endpoint ne … Kaldır CPUNK'ınkini … Tek seçenekli ağlarda gizle".
+  - **The problem.** Device & settings showed "Network connection settings" for whichever network was selected, even when it had a single provider (Cellframe "CPUNK network", TRON, Solana, Ixios). There was nothing to choose, and it was a technical setting.
+  - **The fix.** `src/config.js` `rpcChoiceOffered` (two or more providers) now decides whether `src/app.js` shows the block, populates the choice, and accepts Apply. Ethereum and BNB Smart Chain keep it; the providers themselves are unchanged.
+  - **Tests.**
+    - `test/mainnet-config.test.js`: which networks are offered.
+    - `test/browser-smoke.js`: the block is hidden for TRON, Solana and Cellframe and shown for BNB and Ethereum. The zero-balance check now waits until SOL has been READ as 0; a check before the read raced it, because an unread row always stays.
+
 - **Assets you do not hold are left out of the list (0.1.113, 2026-10-13).** Operator: "sıfır olan bakiyeleri göstermenin bir anlamı yok … settings olması lazım, bir tane sıfır bakiyeleri gizli gibi … Hiç olmayan … Kaç dolar olduğu değil, bir şey olup olmadığı önemli".
   - **The rule.** `src/portfolio.js` `zeroRow` / `groupAssets(…, { hideZero })` hides a row whose amount was read as exactly 0. It goes by the amount, never by the dollar value: an unpriced asset that is held, like CPUNK, stays.
   - **What always stays.** A row whose amount is not known (reading, failed, not read) stays, because it may hold something. NODUS always stays: it is the wallet's own asset, and Send / Receive start there.

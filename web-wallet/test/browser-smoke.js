@@ -160,6 +160,9 @@ try {
   // Zero balances (0.1.113, src/zero-balances.js): hidden unless Device &
   // settings shows them. SOL is read as 0 here: it leaves the list while NODUS
   // stays; the box brings it back. (This suite runs with them shown.)
+  // SOL must have been READ as 0 first: a row not read yet always stays (it
+  // may hold something) — checking before the read answered raced it.
+  await page.waitForFunction(() => document.querySelector('.asset-group[data-symbol="SOL"] .holding-value strong')?.textContent === '0 SOL');
   await openPage('settings');
   assert.equal(await page.locator('#show-zero-balances').isChecked(), true);
   await page.locator('#show-zero-balances').uncheck();
@@ -315,6 +318,8 @@ try {
   assert.equal(await decodeQr(), await page.locator('#receive-address').innerText(), 'cellframe QR decodes to the shown address');
   assert.equal(await page.locator('#send-fields').isVisible(), false);
   assert.match(await page.locator('#send-disabled-note').innerText(), /Sending CPUNK is not available/);
+  // No network connection settings for Cellframe (0.1.114: one provider).
+  assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), true);
   assert.equal(await page.locator('#account-explorer').evaluate(node => node.hidden), true);
   assert.equal(broadcasts.length, 0);
   for (const [chain, expected] of [['bsc','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb'],['solana','3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx'],['tron','TEfhiqsW1SdN44DeHrAWVmbyr8ZbvChrtS'],['ethereum','0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb']]) {
@@ -335,14 +340,16 @@ try {
   await openPage('settings');
   await page.locator('#rpc-settings summary').click();
   assert.equal(await page.locator('#rpc-choice').isVisible(), true);
+  // One provider (TRON, Solana): no connection settings at all (0.1.114,
+  // operator "Tek seçenekli ağlarda gizle").
   await rpcFor('tron');
-  assert.deepEqual(await page.locator('#rpc-choice option').allTextContents(), ['TronGrid']);
-  assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
+  assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), true);
   await rpcFor('bsc');
+  assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), false);
   assert.equal(await page.locator('#rpc-choice option').count(), 9);
   assert.equal(await page.locator('#rpc-choice option').last().innerText(), 'Custom HTTPS endpoint…');
   await rpcFor('solana');
-  assert.equal(await page.locator('#rpc-choice option').count(), 2);
+  assert.equal(await page.locator('#rpc-settings').evaluate(node => node.hidden), true);
   await rpcFor('ethereum');
   assert.equal(await page.locator('#rpc-choice option').count(), 5);
   assert.equal(await page.locator('#rpc-endpoint').isVisible(), false);
