@@ -3026,6 +3026,20 @@ if(NODUS_EVM_ENABLED)
 register_witness_test(test_v2_stake_client)
 endif()
 
+# HF-6 — a multisig (auth_kind 3) OWNER for the generation-4 owner
+# operations (decision 2026-09-29-general-multisig.md, addendum "çok
+# bacaklı ortak imza dosyası v2"; design rev 6 §1.3): the shared builder's
+# UNSIGNED two-leg envelope for a 2-of-3 address (STAKE v2, ROTATE,
+# STORAGE_REGISTER), the v2 export / signature texts, review2, combine2,
+# then the chain's OWN auth hook on each leg and the GEN_STORAGE exec hooks
+# over fabricated reads — applied; one signer below M and a foreign signer
+# (assembled by hand) refused; all-or-nothing signatures; the kind-1 path
+# and the v1 / v2 format separation. Generation 4 is compiled only with
+# the EVM runtime. No database, no network, no environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_msig_owner)
+endif()
+
 # Web wallet package (c2) — the shared CORE SPEND builder
 # (src/client/nodus_v2_spend.c): the pins ruleset == the compiled table,
 # a pins-built envelope admitted by the CheckTx dry run on a seeded

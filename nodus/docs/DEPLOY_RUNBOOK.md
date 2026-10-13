@@ -1345,8 +1345,9 @@ nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7
 **Since HF-6 (rule-set generation 4) a storage node has an OWNER** (design
 `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §11; Kurultay #16, decision
 `docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` khan 1 and 3): the owner is a
-wallet — any address whose key signs (kind 1), or a multisig address (kind 3, which the chain accepts
-but this nodus-cli cannot build yet). The owner signs the registration, pays a bond of **exactly**
+wallet — any address whose key signs (kind 1), or a multisig address (kind 3; nodus-cli builds it with
+`--msig`, co-signed through the v2 export — "Multisig owner" below and in §2.7). The owner signs the
+registration, pays a bond of **exactly**
 1 000 000 NODUS = 10^14 raw (the STORAGE_BOND in force: chain_config param 21 `STORAGE_BOND` at the
 registration's height, no row = 1 000 000 NODUS; votable from generation 4, range 100 000 – 1 000 000
 NODUS — HF-6 slice 8a) plus the fee, and receives the storage
@@ -1456,8 +1457,9 @@ skew of several seconds already starts costing answers.
 under rule-set generation 4, which is not voted on any live chain; its harness proof is
 `test_storage_archive.sh` (`nodus/tests/integration/stagef/README.md`) — **written, not yet run**.
 Two places are involved, and they may be one machine: the storage NODE (its identity directory) and the
-OWNER's key directory (`nodus.pk` + `nodus.sk` — a wallet identity; the CLI builds a single-key, kind-1
-owner only). The node's secret key never leaves the node; the owner's never leaves the owner.
+OWNER's key directory (`nodus.pk` + `nodus.sk` — a wallet identity, kind 1) — or, for a multisig
+owner (kind 3), the descriptor file and each co-signer's own key directory ("Multisig owner" below).
+The node's secret key never leaves the node; the owner's never leaves the owner.
 
 ```bash
 # on the storage node — its fingerprint (the registry key) and its consent
@@ -1480,6 +1482,41 @@ nodus-cli -s <node> -p 4001 storage exit --keys <owner key dir> --node-fp <node 
 nodus-cli -s <node> -p 4001 storage exit --keys <owner key dir> --node-fp <node fp> --submit <node>:4001
 ```
 
+**Multisig owner (kind 3).** Decision `docs/plans/decisions/2026-09-29-general-multisig.md`, addendum
+"çok bacaklı ortak imza dosyası v2" (operator 2026-10-13). The owner is an M-of-N address (`msig
+address --m <M> --pubkey ... --descriptor-out owner.desc`). The envelope has TWO legs signed by the
+co-signers — the SYSTEM call (it proves the owner) and the CORE funding (it spends the address's
+coins) — so every co-signer signs BOTH; the files are the v2 export / signature (`nodus-msig-export
+v2`, `nodus-msig-sig v2`). The address's coins cannot be listed over a session (`dnac_utxo` answers
+only the session's own fingerprint), so they are named with `--in <nullifier>:<amount>` (native, at
+least bond + fee); the chain checks every input.
+
+```bash
+# on the storage node — the consent names the multisig ADDRESS as owner
+nodus-cli -s 127.0.0.1 -p 4001 -i /var/lib/nodus/identity storage consent \
+    --msig owner.desc --expiry <height> --out storage-consent.txt
+
+# anyone with the descriptor: the UNSIGNED v2 export (--keys only opens the session, signs nothing;
+# K = --signers, default M, is FINAL)
+nodus-cli -s <node> -p 4001 storage register --keys <any key dir> --msig owner.desc \
+    --consent storage-consent.txt --in <nullifier>:<amount> [--in ...] --export reg.export
+
+# each of K co-signers, offline: shows both legs decoded, signs both digests
+nodus-cli msig sign --keys <co-signer key dir> --in reg.export --out sig-<name>.txt
+
+# anyone: exactly K signature files; checks every leg with the chain's auth hook, then submits
+nodus-cli -s <node> -p 4001 msig combine --in reg.export --sig sig-a.txt --sig sig-b.txt \
+    --keys <any key dir> --submit <node>:4001
+
+# exit — the same three steps
+nodus-cli -s <node> -p 4001 storage exit --keys <any key dir> --msig owner.desc \
+    --node-fp <node fp> --in <nullifier>:<amount> --export exit.export
+```
+
+The export is valid until tip + 90 blocks (its expiry); combine after that and the node refuses it —
+build a new export. `msig sign` prints a WARNING that the inputs' owner is not verified (no RPC
+answers it): sign only if every nullifier is a coin of the address.
+
 - **The consent** (`storage consent`, `-i` = the node's own identity, `identity_path` in its config —
   the path above is an example; without `-i` the CLI refuses). The node's key signs "register me under
   this owner, on this chain, until height X" (design §6.1 message, op 3, zero subject). The CLI reads the
@@ -1495,12 +1532,14 @@ nodus-cli -s <node> -p 4001 storage exit --keys <owner key dir> --node-fp <node 
   comes back to the owner. There is no separate payee.
 - **What the CLI checks before it builds.** The node's rule-set generation (below 4: `storage
   registration exists only from generation 4` — the storage vote has not taken effect; nothing built);
-  the consent against the session — op 3, this node's chain, owner = the `--keys` identity (a consent
+  the consent against the session — op 3, this node's chain, owner = the `--keys` identity (with
+  `--msig`: the multisig address) (a consent
   naming another owner is refused: run `register` with the OWNER's keys, not the node's), the signature
   under the node key, the window at the next height; the registry row (`dnac_storage_status`):
   `register` refuses a node already ACTIVE or EXITING, and a RELEASED one before its re-registration
   height (the message names the first accepted height); `exit` refuses a node not registered, not
-  ACTIVE, or owned by someone other than the `--keys` identity. If the row query fails it warns and
+  ACTIVE, or owned by someone other than the `--keys` identity (the `--msig` address). If the row
+  query fails it warns and
   lets the chain decide.
 - **Explicit confirmation**, as every `v2-envelope` builder: `--dry-run` builds, self-checks and prints
   everything without sending; only `--submit ip:port` sends. Before the wire id the CLI prints the node
@@ -1592,12 +1631,13 @@ several validators rotating together wait for each other. The exec checks only w
 consent and key uniqueness — it promises no date.
 
 **Prerequisites.**
-- The owner's key: today's `nodus-cli v2-envelope rotate` builds a **kind-1 (single-key) owner
-  only** (the multisig export path carries plain CORE spends only — `nodus-cli.c` `cmd_v2_stake`
-  header). The Foundation's seven genesis validators are owned by the **kind-3 2-of-3 K8 address**
-  (decision `2026-10-08-kurultay-14-hf6-summary.md` K8; the HF-6 migration, decision
-  `2026-10-09-kurultay-16-hf6-storage-summary.md` D2 (a)): **their rotation cannot be built with
-  this CLI yet.** The chain itself accepts a kind-3 owner (`rtn_sys_owner_auth`).
+- The owner's key — a single key (kind 1, step 4 as written) or a multisig address (kind 3,
+  step 4 "Multisig owner"). The Foundation's seven genesis validators are owned by the **kind-3
+  2-of-3 K8 address** (decision `2026-10-08-kurultay-14-hf6-summary.md` K8; the HF-6 migration,
+  decision `2026-10-09-kurultay-16-hf6-storage-summary.md` D2 (a)): their rotation takes the
+  multisig path (decision `2026-09-29-general-multisig.md`, addendum "çok bacaklı ortak imza dosyası
+  v2"; the chain's rule `rtn_sys_owner_auth`: ≥ M of the descriptor's keys, no other signer, the
+  descriptor's address == the row's owner).
 - The validator must be ACTIVE or ELIGIBLE (khan A5) and have no rotation already pending (a second
   ROTATE is refused until the first has switched at U).
 - The new key must not be reserved by any validator in any role (current or pending) — never reuse a
@@ -1637,6 +1677,22 @@ consent and key uniqueness — it promises no date.
    ```
    "accepted" on submit is mempool admission only (§1.5 / README "Submit returns" rule). The ROTATE
    is applied when its `intent_id` (printed) appears in `v2_intent_index`; a refused one leaves no row.
+
+   **Multisig owner (kind 3).** In step 3 the consent names the ADDRESS: `--msig owner.desc` instead
+   of `--owner`. Then three steps (the same files as §2.6 "Multisig owner"; every co-signer signs
+   BOTH legs — the SYSTEM call and the CORE fee funding — in one v2 signature file):
+   ```bash
+   # the UNSIGNED v2 export; --keys only opens the session; the fee comes from the address's coins
+   nodus-cli -s <node> -p 4001 v2-envelope rotate --keys <any key dir> --msig owner.desc \
+       --validator <validator_id> --consent consent.txt --in <nullifier>:<amount> --export rot.export
+   # each of K co-signers (offline): both legs shown decoded, both digests signed
+   nodus-cli msig sign --keys <co-signer key dir> --in rot.export --out sig-<name>.txt
+   # exactly K files; every leg checked with the chain's auth hook; then submit
+   nodus-cli -s <node> -p 4001 msig combine --in rot.export --sig sig-a.txt --sig sig-b.txt \
+       --keys <any key dir> --submit <node>:4001
+   ```
+   The same `--msig ... --in ... --export` form builds `stake2`, `unstake`, `validator-update`,
+   `delegate` and `undelegate` for a multisig owner / delegator. The export expires at tip + 90.
 5. **Watch F.** Every node logs, at boundary F, `snapshot(<U>): <a> rotation(s) accepted, <w> waiting
    (P_U … R_U …, P_F … R_F …, carried …)` — `carried` is the part of R_F the set governing at F
    already carried from the previous boundary's rotations (the cumulative budget above). Accepted →
