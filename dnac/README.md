@@ -163,8 +163,9 @@ The chain is implemented in three layers of the monorepo:
   §8.1; name khan 2026-10-13):** id 18 `RULESET_GEN_ROLES`
   (`DNAC_CFG_RULESET_GEN_ROLES`) — the rule-set generation-4 vote
   (storage + the validator owner/node roles): EXACTLY
-  `DNAC_CFG_RULESET_GEN_ROLES_D` (D4 = 0x4dc61072d5982acd =
-  5604184871704996557), ERGONOMIC grace; the witness's stateful rules
+  `DNAC_CFG_RULESET_GEN_ROLES_D` (D4 = 0x5922111a3501f58b =
+  6422714822839891339 since HF-6 D2 / Kurultay #18 — generation 4 is
+  SYSTEM v10 / CORE v8), ERGONOMIC grace; the witness's stateful rules
   (single use, no param-16 row at any height, HF-2 active, judged under
   generation exactly 3, neither H−1 nor H an epoch boundary) need chain
   state the `verify.c` mirror does not have — it applies exactly-D4. **HF-6 slice 8a
