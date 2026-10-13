@@ -247,7 +247,7 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
   $('more-address-book').onclick = () => openWalletPage('address-book');
   $('more-device').onclick = () => openWalletPage('settings');
   // Nodus (HF-6 screens, src/nodus-roles.js): become a witness or a storage
-  // node, change your node's key — a wallet page (#nodus-roles), opened
+  // node, your witnesses (stop one) — a wallet page (#nodus-roles), opened
   // through its link in Device & settings (design: Settings → "Nodus").
   $('more-nodus').onclick = () => openWalletPage('nodus-roles');
   $('more-logs').onclick = () => openWalletPage('logs');
