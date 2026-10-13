@@ -8478,11 +8478,11 @@ mapping as the freeze's candidate loop and `vset_rot_carried`, so "no seat" is e
 "none ⇒ 0" the freeze applied. **Seated** ⇒ unchanged (A2: the sweep at U + E). **Not seated** ⇒
 `nodus_validator_v2_key_release_previous` deletes exactly the role-1 row (SHA3-512(old key),
 validator_id, role 1) in the boundary transaction; any other change count is a FAULT. S(F)
-unreadable or a mapping fault ⇒ FAULT (never "not seated", which would free a key whose old node
-still signs). S(F) absent (the resolver's terminal rc 1) ⇒ "not seated": no committed set names the
-old key and the self-check derives no previous key against an absent S(h − E) either; it cannot
-arise from a committed freeze (`vset_rotation_pass` faults a pass with candidates when S(F) is
-absent; no production path deletes a stored snapshot).
+unreadable, S(F) ABSENT (the resolver's terminal rc 1) or a mapping fault ⇒ FAULT — never "not
+seated", which would free a key whose old node may still sign U and U + 1 (fail closed, operator
+2026-10-13; the first A8 commit treated absent as "not seated"). An absent S(F) at a boundary that
+swaps cannot arise from a committed chain: `vset_rotation_pass` faults the freeze of S(U) with
+candidates when S(F) is absent, and no production path deletes a stored snapshot.
 
 **The previous voter's attendance row.** A8's premise "the old key signed nothing" holds for U and
 U + 1, not for the key's whole life: a validator seated in S(F − E) or earlier, out of S(F) and back
@@ -8531,7 +8531,9 @@ at h (the "swapped at this boundary" arm checks the S(h) seat, not the row count
 of h has already logged it if it existed before h, and the sweep at h + E faults on it.
 
 **Tests** (written, NOT run by the author). `test_hf6_rotate` case C: an old voter's attendance row
-planted on both twins (C6a); F62 at 3E rolls the swap's A8 deletes back; the swap at 3E leaves each
+planted on both twins (C6a); S(2E) deleted in a rolled-back probe makes a direct boundary 3E return
+-2 before the swap's stage, and the same state without pending keys passes it (C6p); F62 at 3E rolls
+the swap's A8 deletes back; the swap at 3E leaves each
 unseated rotator ONE role-1 row and the sweep deletes the planted row (C6); the self-check without
 tolerance (C6k); a STAKE under a released key APPLIES at 3E + 1 (C6s); one stray role-1 row on an A8
 rotator is one difference for the start check's core and FAULTS the sweep at 4E, two strays too

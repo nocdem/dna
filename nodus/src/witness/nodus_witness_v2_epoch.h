@@ -73,7 +73,8 @@
  *      row is deleted here (khan A8, nodus_validator_v2_key_release_
  *      previous) and its voter_id handed to 3d of this boundary for the
  *      attendance row. No pending row ⇒ nothing else is read; snapshot(H−E)
- *      is read only once a row swaps. AFTER 1b (the distribution
+ *      is read only once a row swaps, and absent or unreadable there it is
+ *      a FAULT (never "not seated"). AFTER 1b (the distribution
  *      compares snapshot(H−E)'s old keys with the rows), BEFORE 2, 3 and 5
  *      (they must see the row as snapshot(H) names it; commit_next copies
  *      the new key into snapshot(H+E)). Fault stage

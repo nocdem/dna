@@ -127,6 +127,11 @@
  *   C6a an attendance row for KC1's voter_id PLANTED on both twins at
  *      2E+1 (the old voter of a validator seated in an earlier set; this
  *      fixture cannot seat a STAKEd row before S(3E)).
+ *   C6p (A only, rolled back) S(2E) deleted with reward_pool 0, boundary
+ *      3E called directly: with the three pending rows it returns -2
+ *      before the swap's stage (S(F) absent at a swap is a FAULT, never
+ *      "not seated"); with the pending keys cleared the same state passes
+ *      the swap's stage (the control).
  *   C6 boundary 3E: F62 on A first — a FAULT rolled back whole (no swap,
  *      the previous keys still role 1, KC1's row present); then THE SWAP
  *      on both twins — all three rows (V_B RETIRING too) switch to the
@@ -313,6 +318,11 @@
  *    is not driven end to end — no fixture rotation reaches U = 2E (a
  *    genesis seat is Foundation-owned and cannot ROTATE here). The swap
  *    calls the same v2ep_member_in_snapshot the sweep and Rule N use.
+ *  - C6p calls the boundary DIRECTLY on a forced state (S(2E) deleted,
+ *    reward_pool 0) that no committed chain reaches; the swap is not
+ *    named in the result — its refusal is inferred from the control
+ *    (pending keys cleared ⇒ the swap's stage is reached). If the control
+ *    fails, some step before 1d read S(2E) and the probe proves nothing.
  *  - The sweep's new "previous key = the key S(U − E) seats" check is
  *    driven only through its FAULT arms (C7c, D5x); its pass arm is every
  *    clean A2 release in D and E.
@@ -1778,6 +1788,52 @@ static long kr_probe(nodus_witness_t *w, uint64_t h, const char *sql,
     return n;
 }
 
+/* the boundary stages a direct boundary_apply reached (C6p) */
+static int g_stage_seen[32];
+static int stage_rec(void *ud, nodus_v2_epoch_stage_t st, uint32_t gi) {
+    (void)ud;
+    (void)gi;
+    if ((unsigned)st < 32u) g_stage_seen[st] = 1;
+    return 0;
+}
+
+/* C6p: inside ONE rolled-back transaction on `w` — reward_pool := 0 (so
+ * the distribution at `u` pays nothing and reads no snapshot), the stored
+ * S(`f`) deleted, the pending keys cleared when `clear_pending` — then
+ * nodus_witness_v2_epoch_boundary_apply(w, u) called DIRECTLY with a
+ * stage recorder. *rc_out = its return; g_stage_seen = the stages it
+ * reached. 0 / -1 (an edit did not apply, or the rollback failed). */
+static int swap_probe(nodus_witness_t *w, uint64_t f, uint64_t u,
+                      int clear_pending, int *rc_out) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    char sql[160];
+    nodus_v2_epoch_result_t out;
+    memset(g_stage_seen, 0, sizeof(g_stage_seen));
+    if (nodus_witness_v2_chain_id(w, chain32) != 0) return -1;
+    if (v2x_sql(w->db, "BEGIN IMMEDIATE") != 0) return -1;
+    int ok = v2x_sql(w->db, "UPDATE supply_tracking SET reward_pool = 0 "
+                            "WHERE id = 1") == 0 &&
+             sqlite3_changes(w->db) == 1;
+    snprintf(sql, sizeof(sql), "DELETE FROM validator_set_snapshots "
+             "WHERE epoch_start = %llu", (unsigned long long)f);
+    ok = ok && v2x_sql(w->db, sql) == 0 && sqlite3_changes(w->db) == 1;
+    if (ok && clear_pending)
+        ok = v2x_sql(w->db, "UPDATE v2_validator_roles SET "
+                            "pending_consensus_pubkey = zeroblob(2592), "
+                            "consensus_key_effective_epoch = 0 "
+                            "WHERE pending_consensus_pubkey != "
+                            "zeroblob(2592)") == 0 &&
+             sqlite3_changes(w->db) > 0;
+    w->cached_committee_epoch_start = UINT64_MAX;
+    if (ok)
+        *rc_out = nodus_witness_v2_epoch_boundary_apply(w, u, chain32,
+                                                        stage_rec, NULL,
+                                                        &out);
+    if (v2x_sql(w->db, "ROLLBACK") != 0) ok = 0;
+    w->cached_committee_epoch_start = UINT64_MAX;
+    return ok ? 0 : -1;
+}
+
 #define KR_SQL_ADD  "INSERT INTO v2_consensus_keys (consensus_pk_hash, " \
                     "validator_id, role) VALUES (?1, ?2, 1)"
 #define KR_SQL_DEL  "DELETE FROM v2_consensus_keys WHERE consensus_pk_hash = ?1"
@@ -2439,6 +2495,34 @@ static int t_swap(void) {
      * the swap's A8 deletes did not survive either (three previous keys
      * still role 1, still pending, KC1's planted row there). */
     CHECK(run_to(&A, &B, &h, 3 * E_LEN - 1) == 0, "to block 3E-1");
+
+    /* ── C6p. S(F) absent at a boundary that swaps ⇒ FAULT (A only,
+     * ROLLED BACK; operator 2026-10-13: fail closed, never "not seated").
+     * Unreachable on a committed chain (the freeze refuses a pass with
+     * candidates when S(F) is absent — C4b (f)), so it is forced: in one
+     * rolled-back transaction S(2E) is deleted and reward_pool zeroed (so
+     * the distribution at 3E, which reads S(2E), pays nothing and reads
+     * no snapshot), and boundary 3E is called directly. With the three
+     * pending rows it returns -2 BEFORE the swap's stage fires; the
+     * control — the same edits plus the pending keys cleared, so the swap
+     * has no candidate and reads no S(F) — reaches the swap's stage. The
+     * steps between 1 and 1d do not read the pending rows, so the
+     * difference is the swap's refusal of the absent S(F). */
+    {
+        int rc = 0;
+        CHECK(swap_probe(A.w, 2 * E_LEN, 3 * E_LEN, 0, &rc) == 0,
+              "C6p probe applied and rolled back");
+        CHECK(rc == -2 && g_stage_seen[NODUS_V2_EPST_COMMISSIONS] &&
+              !g_stage_seen[NODUS_V2_EPST_ROTATE_SWAP],
+              "S(2E) absent with three swaps due: boundary 3E is a FAULT "
+              "before the swap's stage");
+        CHECK(swap_probe(A.w, 2 * E_LEN, 3 * E_LEN, 1, &rc) == 0,
+              "C6p control applied and rolled back");
+        CHECK(g_stage_seen[NODUS_V2_EPST_ROTATE_SWAP],
+              "control (no pending row): the same state passes the swap");
+        CHECK(twins_equal(&A, &B) == 0, "C6p rolled back: A == B");
+    }
+
     CHECK(inject_boundary(&A, 3 * E_LEN, V2AP_FAIL_AFTER_ROTATE_SWEEP) == 0,
           "F62: boundary 3E faults after the sweep and rolls back whole");
     for (int k = 0; k < N_ROT; k++)

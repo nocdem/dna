@@ -1962,14 +1962,15 @@ static int v2ep_attendance_reset(nodus_witness_t *w) {
  * same mapping the freeze's rotation pass (nodus_witness_vset.c
  * vset_rotation_pass, its candidate loop) and vset_rot_carried use, so
  * "no seat" here is exactly the "none ⇒ 0" the freeze applied. S(F) is
- * read once, at the first swap, and only then. An unreadable S(F) or a
- * mapping fault is a FAULT (never "not seated", which would free a key
- * whose old node still signs). An ABSENT S(F) (the resolver's terminal
- * rc 1) counts as "not seated": no committed set names the old key, and
- * the key-reservation self-check derives no previous key against an
- * absent S(h − E) either, so the two agree. It cannot arise from a
- * committed freeze — vset_rotation_pass refuses a pass with candidates
- * when S(F) is absent, and no production path deletes a stored snapshot
+ * read once, at the first swap, and only then. An unreadable S(F), an
+ * ABSENT S(F) (the resolver's terminal rc 1) or a mapping fault is a
+ * FAULT — never "not seated", which would free a key whose old node may
+ * still sign U and U + 1 (fail closed, operator 2026-10-13). An absent
+ * S(F) at a boundary that swaps cannot arise from a committed chain:
+ * vset_rotation_pass (nodus_witness_vset.c, "the predecessor S(%llu) is
+ * absent or unreadable") refuses the freeze of S(U) with candidates when
+ * S(F) is absent, so no S(U) carrying a pending key exists without its
+ * S(F), and no production path deletes a stored snapshot
  * (validator_set_snapshots is a system_state_root leg).
  *
  * THE PREVIOUS VOTER'S ATTENDANCE ROW (khan A8 premise checked against
@@ -2071,7 +2072,6 @@ static int v2ep_rotate_swap(nodus_witness_t *w, uint64_t h,
     int ret = -2;
     uint32_t swapped = 0, released = 0;
     dna_vset_snapshot_t *su = NULL, *sf = NULL;
-    int sf_read = 0;                      /* S(F) read (sf NULL: absent)  */
     nodus_v2_validator_row_t *row = calloc(1, sizeof(*row));
     if (!row) goto done;
     int arc = nodus_witness_v2_epoch_authority_for_epoch(w, h, &su, NULL,
@@ -2112,24 +2112,22 @@ static int v2ep_rotate_swap(nodus_witness_t *w, uint64_t h,
         swapped++;
 
         /* khan A2 / A8: does S(F) seat the validator? (read once) */
-        if (!sf_read) {
+        if (!sf) {
             arc = nodus_witness_v2_epoch_authority_for_epoch(
                       w, h - (uint64_t)DNAC_EPOCH_LENGTH, &sf, NULL, NULL);
-            if (arc != 0 && arc != 1) {    /* h >= E: the gate             */
-                QGP_LOG_ERROR(LOG_TAG, "swap: S(%llu) unreadable (rc=%d)",
+            if (arc != 0 || !sf) {         /* h >= E: the gate; rc 1 too   */
+                QGP_LOG_ERROR(LOG_TAG, "swap: S(%llu) absent or unreadable "
+                              "(rc=%d) with a swap at %llu — fault",
                               (unsigned long long)
-                                  (h - (uint64_t)DNAC_EPOCH_LENGTH), arc);
+                                  (h - (uint64_t)DNAC_EPOCH_LENGTH), arc,
+                              (unsigned long long)h);
                 goto done;
             }
-            sf_read = 1;                   /* rc 1: absent, sf stays NULL  */
         }
-        int in_f = 0;
-        if (sf) {
-            size_t idx = 0;
-            in_f = v2ep_member_in_snapshot(sf, c[i].vid, row->rec.pubkey,
+        size_t idx = 0;
+        int in_f = v2ep_member_in_snapshot(sf, c[i].vid, row->rec.pubkey,
                                            chain_id, &idx);
-            if (in_f < 0) goto done;
-        }
+        if (in_f < 0) goto done;
         if (in_f == 1) continue;           /* seated: kept to U + E (A2)   */
         uint8_t prev[NODUS_V2_KEY_HASH_LEN];
         if (nodus_validator_v2_key_release_previous(w, c[i].vid,
@@ -2444,8 +2442,9 @@ done:
  *       S(h − E) key, naming that validator_id. A ruleset-1 or absent
  *       S(h) seats no pending key (the swap returns before reading one).
  * FULLY DERIVABLE (khan A8, 2026-10-13). A validator swapped at h WITHOUT
- * a seat in S(h − E) (a rotation khan A3 accepted; or an absent S(h − E))
- * loses its previous key in that same swap (v2ep_rotate_swap, "THE
+ * a seat in S(h − E) (a rotation khan A3 accepted; an absent S(h − E)
+ * with a swap is a FAULT) loses its previous key in that same swap
+ * (v2ep_rotate_swap, "THE
  * PREVIOUS KEY"), so it holds exactly the derived rows above, like a new
  * entrant. There is no tolerance: every table row not derived is a
  * difference, for every validator. (Until A8 such a previous key stayed
