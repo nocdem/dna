@@ -7759,9 +7759,12 @@ deep enough for a limit that shrank. What the old ID loses: the inbound-cap bypa
 never-ban rule (`cmt_p2p_addrbook_mark_bad`), the never-abandon dial rule (PEX `dial_peer`), the
 signed-record-only rule (an unsigned address for it is admitted again), the 0x71 approval gate
 (`nodus_witness_handle_cc_appr_req` drops its requests — it is no longer a seat for governance from
-U + 1 either, plan §0.6 #13) and the 4001 roster listing. Consequence for the runbook (khan A8: the old
-node stays up through U + E for its S(F) storage duty): from U + 2 it reaches the network as an ordinary
-peer.
+U + 1 either, plan §0.6 #13) and the 4001 roster listing. Consequence for the runbook (plan-local item A8 of
+`tasks/hf6-slice6-plan.md` §5 — NOT khan decision A8 of 2026-10-13: a validator seated in S(F) keeps its
+old node up through at least U + 1 (it signs U and U + 1) and U + ⌊E/2⌋ (its STORAGE_REPORT for H = F,
+window (U, U + ⌊E/2⌋]); U + E is the safe upper bound (the old key's reservation ends there); a
+validator with no seat in S(F) has none of these duties — DEPLOY_RUNBOOK §2.7 item 7): from U + 2 it
+reaches the network as an ordinary peer.
 
 **Tests** (written, NOT run by the author). `test_witness_p2p` (2a''): on a derived version-3 chain,
 inside a rolled-back transaction — two keys in no committee and no row are not bonded; a roles row
