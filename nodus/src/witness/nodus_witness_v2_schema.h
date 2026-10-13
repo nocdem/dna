@@ -863,15 +863,18 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w);
  *
  * the ONE consensus-key reservation table: consensus_pk_hash =
  * SHA3-512(consensus pubkey), untagged; role 1 = the validator's active
- * consensus key, role 2 = a pending (rotating-in) key (ROTATE, slice 6 —
- * no writer yet). A key appears at most once, whatever its role. It is a
- * pure function of committed state: role 1 = every validators row whose
- * status is not UNSTAKED (key = SHA3-512(validators.pubkey), value = its
- * pubkey_hash = validator_id); role 2 = every non-zero
- * v2_validator_roles.pending_consensus_pubkey. Writers: the generation-4
- * edge (nodus_witness_v2_migrate.c), the generation-4 STAKE (SYSTEM
- * adapter op 17) and the generation-4 graduation (delete). No root reads
- * it (both inputs are already rooted). Not a bundle table. A database
+ * consensus key, role 2 = a pending (rotating-in) key (ROTATE, slice 6).
+ * A key appears at most once, whatever its role. Its content: role 1 =
+ * every validators row whose status is not UNSTAKED (key =
+ * SHA3-512(validators.pubkey), value = its pubkey_hash = validator_id),
+ * plus the previous key of a validator swapped at the last boundary
+ * (khan A2); role 2 = every non-zero
+ * v2_validator_roles.pending_consensus_pubkey. All of it derives from
+ * rooted state (the rows and the stored snapshots) except the previous
+ * key of a validator the predecessor snapshot does not seat (khan A3) —
+ * full rule and writers: nodus_witness_validator.h. No root reads it;
+ * every generation-4 boundary compares it with the derivation, log-only
+ * (nodus_witness_v2_keyres_diff). Not a bundle table. A database
  * already at 18 before this change gets the table from the base schema's
  * CREATE TABLE IF NOT EXISTS at open (this rung is a no-op at 18 and does
  * not re-verify its shape there).

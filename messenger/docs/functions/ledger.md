@@ -572,6 +572,16 @@ No consensus byte changes. Tests: `test_validator_list_query_rpc`, `test_committ
 | `static void node_ledger_rolled_back(void *arg)` (`nodus_witness_cmt_node.c`) | **NEW (internal).** The hook bound to the witness for the node's executor and the handshaker's: `chain_config_cache_warm = false`. The genesis-document ROLLBACKs there and the bundle-apply ROLLBACKs (`nodus_witness_v2_bundle.c`) cool it too. |
 | `idx_v2_storage_nodes_payee` (`witness_db_open_attempt`, `nodus_witness.c`) | **NEW index** on `v2_storage_nodes(payee_fp)`, created on every open (`IF NOT EXISTS`), node-local, for `dnac_storage_by_owner`. |
 
+### 5b.21 HF-6 — the key-reservation self-check, log-only (design rev 6 §3 khan A2 / A3, §4 G7; branch `hf6`, not versioned)
+
+`v2_consensus_keys` is in no root. Every generation-4 epoch boundary now re-derives it from rooted state and compares row for row; a difference is LOGGED, never returned, never written, never a block decision. No consensus byte changes. Tests: `test_hf6_rotate` section K (every gen-4 boundary of C / D / E / F through `apply_both`; rolled-back corruption probes D4k, C6k, F2k). Architecture: `nodus/docs/ARCHITECTURE.md` "HF-6 — the key-reservation self-check".
+
+| Item | Description |
+|------|-------------|
+| `int nodus_witness_v2_keyres_diff(nodus_witness_t *w, uint64_t h, const uint8_t chain_id[32], size_t *n_diff_out)` (`nodus_witness_v2_epoch.h`) | **NEW, exported for tests.** Read-only, no transaction of its own. Derived set: role 1 = SHA3-512(pubkey) of every v2 row (`nodus_validator_v2_scan`) not UNSTAKED; role 2 = SHA3-512 of every non-zero `pending_consensus_pubkey`; role 1 = for every entry of a ruleset-2 S(h) whose key differs from the same validator_id's entry in S(h − E) (ruleset-1 S(h − E): `dna_validator_id_migrated` bridge), SHA3-512 of the S(h − E) key. Tolerance (khan A3): a validator seated in S(h) under its row's current key, not UNSTAKED, with no seat in S(h − E), may hold ONE further role-1 row (unverified, not a difference). Differences: missing, extra, another validator_id, another role, a key derived twice, a malformed row. `h` = the last boundary applied (multiple of E, ≥ E). 0 compared (`*n_diff_out` set) / 1 generation < 4 / -1 an input unreadable or a bad argument (`*n_diff_out` 0). |
+| `static int v2ep_keyres_compare(nodus_witness_t *w, uint64_t h, const uint8_t chain_id[32], v2ep_kr_report_t *rep)` (`nodus_witness_v2_epoch.c`) | **NEW (internal).** The core both of the above and of the wrapper; fills the totals (derived, table rows, unverified, differences) and the first 4 differences (kind, 8-byte key-hash and validator_id prefixes, expected / found role). |
+| `static void v2ep_keyres_selfcheck(nodus_witness_t *w, uint64_t h, const uint8_t chain_id[32])` (`nodus_witness_v2_epoch.c`) | **NEW (internal).** Boundary step 7 — after the balance copy (step 6), generation ≥ 4 only. Differences → one `QGP_LOG_ERROR` per reported difference + a summary line; no difference → `QGP_LOG_DEBUG`; the core unable to read → `QGP_LOG_WARN`. Returns nothing; `nodus_witness_v2_epoch_boundary_apply`'s result and writes are unchanged. |
+
 ---
 
 ## 6. Package W-B — exact self-stake, self-delegation (`docs/plans/decisions/2026-09-28-treasury-pools-and-exact-self-stake.md` items 5, 6)

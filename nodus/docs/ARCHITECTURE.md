@@ -7229,10 +7229,12 @@ database already at 18 gets it only from the base schema's `CREATE TABLE IF NOT 
 status is NOT UNSTAKED, in SHA3-512(pk) order), the STAKE (op 17 CREATE), the graduation
 (`nodus_validator_v2_key_release` in `v2ep_graduate`'s generation-4 arm — the role-1 row must exist,
 else FAULT — then any other row of the validator). Accessors in `nodus_witness_validator.{h,c}`
-(`nodus_validator_v2_key_get / _insert / _release`). It is a pure function of committed state
-(role 1 = every validators row not UNSTAKED, key = SHA3-512(validators.pubkey); role 2 = every
-non-zero pending key), both inputs already in the SYSTEM root — so NO root leg was added (the
-question whether to add one is left to the ORCHESTRATOR).
+(`nodus_validator_v2_key_get / _insert / _release`). Its content derives from rooted state (role 1
+= every validators row not UNSTAKED, key = SHA3-512(validators.pubkey); role 2 = every non-zero
+pending key; since slice 6 also the previous key a swap keeps until U+E, read from the stored
+snapshots — except for a validator the predecessor snapshot does not seat, khan A3) — so NO root leg
+was added. Every generation-4 boundary compares it with that derivation, log-only: "HF-6 — the
+key-reservation self-check" below.
 
 **SYSTEM adapter ops**: **17 `RTN_SYS_OP_KEYRES`** (CREATE / ABSENT, key 64, value 65 =
 validator_id ‖ role; probe / read / mutate arms); op 13 gains CREATE / ABSENT (`rtn_sys_val2_create`:
@@ -8413,6 +8415,47 @@ the storage literal's checks removed, D4's stand. Nine engine fixtures (`test_hf
 `test_hf6_migrate`, `test_hf6_readers`, `test_hf6_rotate`, `test_hf6_stake`, `test_hf6_calls`,
 `test_storage_b2`, `test_storage_empty`, `test_storage_reg`) seed a param-18 row with D4 instead of
 the param-16 row. `test_explorer`: the 18 label and the retired 16 label.
+
+### HF-6 — the key-reservation self-check, log-only (branch `hf6` only — not versioned, not voted)
+
+`v2_consensus_keys` (design rev 6 §4, goal G7) is in no root: a node whose table drifted would answer
+STAKE / ROTATE's KEYRES read (op 17) differently from its peers and nothing would flag it before a
+block diverged. Step **7** of `nodus_witness_v2_epoch_boundary_apply` (generation ≥ 4, after the
+balance copy) re-derives the table and compares it row for row (`nodus_witness_v2_epoch.c`
+`v2ep_keyres_compare`, ORDER BY `consensus_pk_hash`).
+
+**Derivation** (read from the writers — `key_insert` / `key_release` / `rotate_apply` /
+`key_sweep_previous`, the migration, `v2ep_rotate_swap` / `v2ep_rotate_sweep`):
+- role 1, current key: SHA3-512(pubkey) of every v2 row (`nodus_validator_v2_scan`) not UNSTAKED;
+- role 2: SHA3-512 of every non-zero `pending_consensus_pubkey`;
+- role 1, previous key (khan A2): after boundary h only the validators swapped AT h hold one (the
+  sweep at h released the swap of h − E's). Swapped at h ⇔ S(h) seats the pending key; the key
+  before the swap is the one S(h − E) seats. So for every entry of a ruleset-2 S(h) whose key
+  differs from the same validator_id's entry in S(h − E) (a ruleset-1 S(h − E) through
+  `dna_validator_id_migrated`), SHA3-512 of the S(h − E) key.
+
+**The one underivable row (khan A3).** A rotation is accepted for a validator with no seat in S(F)
+(`vset_rotation_pass`); its previous key is in no committed snapshot and its kept role-1 row is the
+only committed record of it — and in rooted state such a validator looks exactly like a new entrant.
+So a validator seated in S(h) under its row's current key, not UNSTAKED and with no seat in S(h − E)
+may hold ONE further role-1 row: counted as *unverified*, not as a difference. Deleting such a row is
+not detected (pinned as the known blind spot in `test_hf6_rotate` C6k).
+
+**Differences**: missing, extra, another validator_id, another role, a key derived twice, a
+malformed row. **Result = LOG ONLY**: one `QGP_LOG_ERROR` per reported difference (up to 4: kind,
+8-byte prefixes of the key hash and the validator_id, expected / found role) and a summary line; a
+read failure of the check is a `QGP_LOG_WARN`. Nothing is returned to the boundary, nothing written,
+no fault stage — a defect in the checker would fire identically on every node, and as a fault it
+would halt the chain (ORCHESTRATOR design decision). **Position**: the table's last writer in the
+boundary is the sweep (3d); the flips move only ACTIVE ↔ ELIGIBLE, commit_next writes S(h+E) (the
+derivation reads S(h) / S(h−E)), the balance copy its own table — after step 6 every input is final.
+**Cost**: one v2 row scan, two snapshot reads, one table scan, two sorts; no table or column added.
+
+Test-facing core: `nodus_witness_v2_keyres_diff` (`nodus_witness_v2_epoch.h`, 0 compared / 1
+generation < 4 / -1 unreadable). Tests: `test_hf6_rotate` section K — every generation-4 boundary
+`apply_both` commits in C / D / E / F compares with 0 differences on both twins; rolled-back
+corruptions D4k (each single-row change exactly one difference), C6k (the A3 tolerance is one row),
+F2k (the ruleset-1 bridge).
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

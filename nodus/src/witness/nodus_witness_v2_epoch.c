@@ -2237,6 +2237,435 @@ done:
     return ret;
 }
 
+/* ── HF-6: the key-reservation SELF-CHECK (log-only) ──────────────────
+ *
+ * v2_consensus_keys is in no root. Its content is re-derived here from
+ * rooted state and compared row for row, at the end of every
+ * generation-4 boundary. The derivation, read from the writers
+ * (nodus_witness_validator.c key_insert / key_release / rotate_apply /
+ * key_sweep_previous, nodus_witness_v2_migrate.c, the swap and sweep
+ * above):
+ *   role 1, CURRENT key — SHA3-512(validators.pubkey) of every v2 row
+ *       (validators JOIN v2_validator_roles, nodus_validator_v2_scan)
+ *       whose status is not UNSTAKED: the migration and STAKE insert it,
+ *       the swap promotes the new key to it, the graduation (the only
+ *       writer of UNSTAKED at generation 4) releases it;
+ *   role 2 — SHA3-512 of every non-zero pending_consensus_pubkey: ROTATE
+ *       inserts it, the swap promotes it, the graduation clears both;
+ *   role 1, PREVIOUS key (khan A2) — the swap at h keeps the old key,
+ *       the sweep at h releases every key kept by the swap at h − E, so
+ *       after this boundary exactly the validators swapped AT h hold one.
+ *       A validator is swapped at h iff S(h) seats its pending key, and
+ *       its key before the swap is the one S(h − E) seats it under (the
+ *       row's key does not change between the swap at h − E and the swap
+ *       at h). So: for every entry of a ruleset-2 S(h) whose key differs
+ *       from the same validator_id's entry in S(h − E) — matched by id,
+ *       or through the migrated-id bridge when S(h − E) is ruleset 1
+ *       (v2ep_member_in_snapshot, vset_rot_carried) — SHA3-512 of the
+ *       S(h − E) key, naming that validator_id. A ruleset-1 or absent
+ *       S(h) seats no pending key (the swap returns before reading one).
+ * THE ONE UNDERIVABLE ROW. Khan A3 accepts a rotation whose validator has
+ * no seat in S(h − E) (v2ep_rotate_sweep, "DERIVATION"); its previous key
+ * is in no committed snapshot and its kept role-1 row is the ONLY
+ * committed record of it — and such a validator is indistinguishable,
+ * in rooted state, from a new entrant seated in S(h) without a rotation.
+ * So a validator seated in S(h) under its row's current key, not UNSTAKED
+ * and with no seat in S(h − E) (or no S(h − E)) may hold AT MOST ONE
+ * role-1 row beyond the derived set: it is counted as UNVERIFIED, not as
+ * a difference. A second such row, or one for any other validator, is a
+ * difference.
+ *
+ * Differences counted: a derived row the table lacks (missing), a table
+ * row not derived (extra), the same key reserved for another validator
+ * or in another role, a key derived twice (committed state naming one
+ * key for two reservations — the §4 uniqueness broken upstream), a table
+ * row of the wrong shape.
+ *
+ * READ-ONLY, no transaction of its own: valid inside the boundary
+ * transaction and in autocommit. `h` must be the LAST boundary applied
+ * (a multiple of E, >= E): between boundaries only ROTATE / STAKE move
+ * the table, and both are in the role-2 / current-key derivations.
+ * Cost: one v2 row scan, two snapshot reads, one table scan, sorts.
+ * Never a block decision — the caller ignores everything it returns.
+ *
+ * @return 0 compared (rep filled); 1 below generation 4 (nothing read
+ *         after the generation); -1 an input unreadable (SQLite, a
+ *         snapshot, the scan's strict reader, allocation, hash backend)
+ *         — not compared. */
+#define V2EP_KR_REPORT_MAX  4u
+#define V2EP_KR_PREFIX      8u
+
+enum {
+    V2EP_KR_MISSING = 1,  /* derived, absent from the table              */
+    V2EP_KR_EXTRA,        /* in the table, not derived                   */
+    V2EP_KR_OWNER,        /* same key, another validator_id              */
+    V2EP_KR_ROLE,         /* same key and validator_id, another role     */
+    V2EP_KR_DUP,          /* the same key derived twice                  */
+    V2EP_KR_MALFORMED     /* a table row of the wrong shape              */
+};
+
+typedef struct {
+    uint8_t kind;
+    uint8_t hash[V2EP_KR_PREFIX];
+    uint8_t vid[V2EP_KR_PREFIX];
+    uint8_t want_role;    /* 0 = not derived                             */
+    uint8_t got_role;     /* 0 = not in the table                        */
+} v2ep_kr_item_t;
+
+typedef struct {
+    size_t n_derived;     /* after duplicates are collapsed              */
+    size_t n_table;
+    size_t n_unverified;  /* tolerated A3 previous keys                  */
+    size_t n_diff;
+    size_t n_items;
+    v2ep_kr_item_t items[V2EP_KR_REPORT_MAX];
+} v2ep_kr_report_t;
+
+typedef struct {
+    uint8_t hash[NODUS_V2_KEY_HASH_LEN];
+    uint8_t vid[NODUS_V2_VALIDATOR_ID_LEN];
+    uint8_t role;
+} v2ep_kr_ent_t;
+
+typedef struct {
+    uint8_t vid[NODUS_V2_VALIDATOR_ID_LEN];
+    uint8_t kh[NODUS_V2_KEY_HASH_LEN];      /* SHA3-512(current key)       */
+    uint8_t unstaked;
+} v2ep_kr_row_t;
+
+typedef struct {
+    uint8_t vid[NODUS_V2_VALIDATOR_ID_LEN];
+    uint8_t used;
+} v2ep_kr_elig_t;
+
+typedef struct {
+    v2ep_kr_row_t *rows;  size_t n_rows, cap_rows;
+    v2ep_kr_ent_t *d;     size_t n_d, cap_d;
+} v2ep_kr_acc_t;
+
+static void v2ep_kr_note(v2ep_kr_report_t *rep, uint8_t kind,
+                         const uint8_t *hash, const uint8_t *vid,
+                         uint8_t want_role, uint8_t got_role) {
+    rep->n_diff++;
+    if (rep->n_items >= V2EP_KR_REPORT_MAX) return;
+    v2ep_kr_item_t *it = &rep->items[rep->n_items++];
+    memset(it, 0, sizeof(*it));
+    it->kind = kind;
+    if (hash) memcpy(it->hash, hash, V2EP_KR_PREFIX);
+    if (vid) memcpy(it->vid, vid, V2EP_KR_PREFIX);
+    it->want_role = want_role;
+    it->got_role = got_role;
+}
+
+static int v2ep_kr_push(v2ep_kr_acc_t *a, const uint8_t *hash,
+                        const uint8_t *vid, uint8_t role) {
+    if (a->n_d == a->cap_d) {
+        size_t nc = a->cap_d ? a->cap_d * 2 : 16;
+        v2ep_kr_ent_t *g = realloc(a->d, nc * sizeof(*g));
+        if (!g) return -1;
+        a->d = g;
+        a->cap_d = nc;
+    }
+    memcpy(a->d[a->n_d].hash, hash, NODUS_V2_KEY_HASH_LEN);
+    memcpy(a->d[a->n_d].vid, vid, NODUS_V2_VALIDATOR_ID_LEN);
+    a->d[a->n_d].role = role;
+    a->n_d++;
+    return 0;
+}
+
+/* nodus_validator_v2_scan visitor: the row (for the A3 tolerance) and its
+ * current-key (role 1) and pending-key (role 2) reservations. No DB. */
+static int v2ep_kr_visit(const nodus_v2_validator_row_t *row, void *ud) {
+    v2ep_kr_acc_t *a = ud;
+    if (a->n_rows == a->cap_rows) {
+        size_t nc = a->cap_rows ? a->cap_rows * 2 : 16;
+        v2ep_kr_row_t *g = realloc(a->rows, nc * sizeof(*g));
+        if (!g) return -1;
+        a->rows = g;
+        a->cap_rows = nc;
+    }
+    v2ep_kr_row_t *r = &a->rows[a->n_rows];
+    memcpy(r->vid, row->validator_id, NODUS_V2_VALIDATOR_ID_LEN);
+    if (qgp_sha3_512(row->rec.pubkey, DNAC_PUBKEY_SIZE, r->kh) != 0)
+        return -1;
+    r->unstaked = row->rec.status == (uint8_t)DNAC_VALIDATOR_UNSTAKED;
+    a->n_rows++;
+    if (!r->unstaked &&
+        v2ep_kr_push(a, r->kh, r->vid, (uint8_t)NODUS_V2_KEY_ROLE_ACTIVE)
+            != 0)
+        return -1;
+    int pending = 0;
+    for (size_t i = 0; i < DNAC_PUBKEY_SIZE && !pending; i++)
+        pending = row->pending_consensus_pubkey[i] != 0;
+    if (pending) {
+        uint8_t ph[NODUS_V2_KEY_HASH_LEN];
+        if (qgp_sha3_512(row->pending_consensus_pubkey, DNAC_PUBKEY_SIZE,
+                         ph) != 0 ||
+            v2ep_kr_push(a, ph, r->vid, (uint8_t)NODUS_V2_KEY_ROLE_PENDING)
+                != 0)
+            return -1;
+    }
+    return 0;
+}
+
+/* (hash, validator_id, role): a total order, so the sort — and which of
+ * two duplicates is reported — is the same on every node. */
+static int v2ep_kr_ent_cmp(const void *x, const void *y) {
+    const v2ep_kr_ent_t *a = x, *b = y;
+    int c = memcmp(a->hash, b->hash, NODUS_V2_KEY_HASH_LEN);
+    if (c) return c;
+    c = memcmp(a->vid, b->vid, NODUS_V2_VALIDATOR_ID_LEN);
+    if (c) return c;
+    return (int)a->role - (int)b->role;
+}
+
+static int v2ep_kr_vid_cmp(const void *x, const void *y) {
+    return memcmp(x, y, NODUS_V2_VALIDATOR_ID_LEN);  /* vid is first     */
+}
+
+static int v2ep_keyres_compare(nodus_witness_t *w, uint64_t h,
+                               const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                               v2ep_kr_report_t *rep) {
+    memset(rep, 0, sizeof(*rep));
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    if (!w || !w->db || !chain_id || h < E || (h % E) != 0) return -1;
+    uint32_t gen = 0;
+    if (nodus_witness_v2_key_generation(w, &gen) != 0) return -1;
+    if (gen < NODUS_RT_GEN_STORAGE) return 1;
+
+    int ret = -1;
+    v2ep_kr_acc_t a;
+    memset(&a, 0, sizeof(a));
+    dna_vset_snapshot_t *sh = NULL, *sp = NULL;
+    uint8_t (*pid)[NODUS_V2_VALIDATOR_ID_LEN] = NULL;
+    v2ep_kr_elig_t *elig = NULL;
+    size_t n_elig = 0;
+    sqlite3_stmt *st = NULL;
+
+    /* 1. role 1 (current) and role 2, from the v2 rows (vid ASC) */
+    if (nodus_validator_v2_scan(w, v2ep_kr_visit, &a) != 0) goto done;
+
+    /* 2. role 1 (previous): S(h) against S(h − E) */
+    int arc = nodus_witness_v2_epoch_authority_for_epoch(w, h, &sh, NULL,
+                                                         NULL);
+    if (arc != 0 && arc != 1) goto done;
+    if (arc == 0 && sh->selection_ruleset == DNA_VSET_RULESET_TOPN_V2 &&
+        sh->active_count > 0) {
+        arc = nodus_witness_v2_epoch_authority_for_epoch(w, h - E, &sp,
+                                                         NULL, NULL);
+        if (arc != 0 && arc != 1) goto done;
+        if (arc == 0 && sp->active_count > 0) {
+            pid = malloc((size_t)sp->active_count * sizeof(*pid));
+            if (!pid) goto done;
+            for (uint16_t i = 0; i < sp->active_count; i++) {
+                if (sp->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
+                    memcpy(pid[i], sp->entries[i].validator_id,
+                           NODUS_V2_VALIDATOR_ID_LEN);
+                } else if (sp->selection_ruleset ==
+                               DNA_VSET_RULESET_TOPN_V1) {
+                    if (dna_validator_id_migrated(pid[i], chain_id,
+                                                  sp->entries[i].pubkey)
+                        != 0)
+                        goto done;
+                } else {
+                    goto done;
+                }
+            }
+        }
+        elig = calloc(sh->active_count, sizeof(*elig));
+        if (!elig) goto done;
+        for (uint16_t j = 0; j < sh->active_count; j++) {
+            const uint8_t *vid = sh->entries[j].validator_id;
+            int found = -1;
+            for (uint16_t i = 0; pid && i < sp->active_count; i++) {
+                if (memcmp(pid[i], vid, NODUS_V2_VALIDATOR_ID_LEN) == 0) {
+                    found = (int)i;
+                    break;
+                }
+            }
+            if (found >= 0) {
+                if (memcmp(sp->entries[found].pubkey, sh->entries[j].pubkey,
+                           DNAC_PUBKEY_SIZE) != 0) {
+                    uint8_t ph[NODUS_V2_KEY_HASH_LEN];
+                    if (qgp_sha3_512(sp->entries[found].pubkey,
+                                     DNAC_PUBKEY_SIZE, ph) != 0 ||
+                        v2ep_kr_push(&a, ph, vid,
+                                     (uint8_t)NODUS_V2_KEY_ROLE_ACTIVE) != 0)
+                        goto done;
+                }
+                continue;
+            }
+            /* no seat in S(h − E): eligible for the A3 tolerance iff its
+             * row is not UNSTAKED and holds the key S(h) seats it under */
+            const v2ep_kr_row_t *r =
+                a.n_rows ? bsearch(vid, a.rows, a.n_rows, sizeof(*a.rows),
+                                   v2ep_kr_vid_cmp)
+                         : NULL;
+            if (!r || r->unstaked) continue;
+            uint8_t eh[NODUS_V2_KEY_HASH_LEN];
+            if (qgp_sha3_512(sh->entries[j].pubkey, DNAC_PUBKEY_SIZE, eh)
+                != 0)
+                goto done;
+            if (memcmp(eh, r->kh, sizeof(eh)) != 0) continue;
+            memcpy(elig[n_elig].vid, vid, NODUS_V2_VALIDATOR_ID_LEN);
+            n_elig++;
+        }
+        if (n_elig > 1)
+            qsort(elig, n_elig, sizeof(*elig), v2ep_kr_vid_cmp);
+    }
+
+    /* 3. sort the derived set; a key derived twice is a difference */
+    if (a.n_d > 1) qsort(a.d, a.n_d, sizeof(*a.d), v2ep_kr_ent_cmp);
+    {
+        size_t k = 0;
+        for (size_t i = 0; i < a.n_d; i++) {
+            if (k > 0 && memcmp(a.d[k - 1].hash, a.d[i].hash,
+                                NODUS_V2_KEY_HASH_LEN) == 0) {
+                v2ep_kr_note(rep, V2EP_KR_DUP, a.d[i].hash, a.d[i].vid,
+                             a.d[i].role, 0);
+                continue;
+            }
+            if (k != i) a.d[k] = a.d[i];
+            k++;
+        }
+        a.n_d = k;
+    }
+    rep->n_derived = a.n_d;
+
+    /* 4. merge against the whole table, in its own key order */
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT consensus_pk_hash, validator_id, role "
+            "FROM v2_consensus_keys ORDER BY consensus_pk_hash ASC",
+            -1, &st, NULL) != SQLITE_OK)
+        goto done;
+    size_t di = 0;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        rep->n_table++;
+        const void *kh = sqlite3_column_blob(st, 0);
+        const void *kv = sqlite3_column_blob(st, 1);
+        sqlite3_int64 role = sqlite3_column_int64(st, 2);
+        if (!kh || sqlite3_column_bytes(st, 0) != NODUS_V2_KEY_HASH_LEN ||
+            !kv || sqlite3_column_bytes(st, 1) != NODUS_V2_VALIDATOR_ID_LEN ||
+            sqlite3_column_type(st, 2) != SQLITE_INTEGER ||
+            (role != NODUS_V2_KEY_ROLE_ACTIVE &&
+             role != NODUS_V2_KEY_ROLE_PENDING)) {
+            v2ep_kr_note(rep, V2EP_KR_MALFORMED, NULL, NULL, 0, 0);
+            continue;
+        }
+        const uint8_t *th = kh, *tv = kv;
+        const uint8_t tr = (uint8_t)role;
+        while (di < a.n_d &&
+               memcmp(a.d[di].hash, th, NODUS_V2_KEY_HASH_LEN) < 0) {
+            v2ep_kr_note(rep, V2EP_KR_MISSING, a.d[di].hash, a.d[di].vid,
+                         a.d[di].role, 0);
+            di++;
+        }
+        if (di < a.n_d &&
+            memcmp(a.d[di].hash, th, NODUS_V2_KEY_HASH_LEN) == 0) {
+            if (memcmp(a.d[di].vid, tv, NODUS_V2_VALIDATOR_ID_LEN) != 0)
+                v2ep_kr_note(rep, V2EP_KR_OWNER, th, tv, a.d[di].role, tr);
+            else if (a.d[di].role != tr)
+                v2ep_kr_note(rep, V2EP_KR_ROLE, th, tv, a.d[di].role, tr);
+            di++;
+            continue;
+        }
+        /* not derived: the A3 previous key, once per eligible validator */
+        if (tr == NODUS_V2_KEY_ROLE_ACTIVE && n_elig > 0) {
+            v2ep_kr_elig_t *e = bsearch(tv, elig, n_elig, sizeof(*elig),
+                                        v2ep_kr_vid_cmp);
+            if (e && !e->used) {
+                e->used = 1;
+                rep->n_unverified++;
+                continue;
+            }
+        }
+        v2ep_kr_note(rep, V2EP_KR_EXTRA, th, tv, 0, tr);
+    }
+    if (rc != SQLITE_DONE) goto done;
+    for (; di < a.n_d; di++)
+        v2ep_kr_note(rep, V2EP_KR_MISSING, a.d[di].hash, a.d[di].vid,
+                     a.d[di].role, 0);
+    ret = 0;
+done:
+    if (st) sqlite3_finalize(st);
+    free(a.rows);
+    free(a.d);
+    free(pid);
+    free(elig);
+    dna_vset_free(&sh);
+    dna_vset_free(&sp);
+    return ret;
+}
+
+int nodus_witness_v2_keyres_diff(nodus_witness_t *w, uint64_t h,
+                                 const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                                 size_t *n_diff_out) {
+    if (!n_diff_out) return -1;
+    *n_diff_out = 0;
+    v2ep_kr_report_t rep;
+    int rc = v2ep_keyres_compare(w, h, chain_id, &rep);
+    if (rc == 0) *n_diff_out = rep.n_diff;
+    return rc;
+}
+
+static void v2ep_kr_hex(const uint8_t *p, char out[2 * V2EP_KR_PREFIX + 1]) {
+    static const char hx[] = "0123456789abcdef";
+    for (size_t i = 0; i < V2EP_KR_PREFIX; i++) {
+        out[2 * i] = hx[p[i] >> 4];
+        out[2 * i + 1] = hx[p[i] & 0x0f];
+    }
+    out[2 * V2EP_KR_PREFIX] = '\0';
+}
+
+/* The boundary's wrapper: LOG ONLY. A difference — or a fault of the
+ * check itself — is written to the log and nothing else happens: no
+ * return value, no state written, no effect on the block. A defect in
+ * the checker would trigger identically on every node, and as a fault it
+ * would halt the chain. */
+static void v2ep_keyres_selfcheck(nodus_witness_t *w, uint64_t h,
+                                  const uint8_t chain_id[DNA_CHAIN_ID_LEN]) {
+    static const char *const kind_name[] = {
+        "?", "missing", "extra", "other-validator", "other-role",
+        "derived-twice", "malformed"
+    };
+    v2ep_kr_report_t rep;
+    int rc = v2ep_keyres_compare(w, h, chain_id, &rep);
+    if (rc == 1) return;
+    if (rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "boundary %llu: key-reservation self-check "
+                     "skipped — an input was unreadable (log-only, the "
+                     "block is unaffected)", (unsigned long long)h);
+        return;
+    }
+    if (rep.n_diff == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "boundary %llu: key reservations agree with "
+                      "the derived set (%zu derived, %zu rows, %zu "
+                      "unverified A3 previous key(s))",
+                      (unsigned long long)h, rep.n_derived, rep.n_table,
+                      rep.n_unverified);
+        return;
+    }
+    for (size_t i = 0; i < rep.n_items; i++) {
+        const v2ep_kr_item_t *it = &rep.items[i];
+        char hh[2 * V2EP_KR_PREFIX + 1], vh[2 * V2EP_KR_PREFIX + 1];
+        v2ep_kr_hex(it->hash, hh);
+        v2ep_kr_hex(it->vid, vh);
+        QGP_LOG_ERROR(LOG_TAG, "boundary %llu: key reservation %s — key "
+                      "%s.. validator %s.. expected role %u, found role %u "
+                      "(0 = none)", (unsigned long long)h,
+                      it->kind < sizeof(kind_name) / sizeof(kind_name[0])
+                          ? kind_name[it->kind] : "?",
+                      hh, vh, (unsigned)it->want_role,
+                      (unsigned)it->got_role);
+    }
+    QGP_LOG_ERROR(LOG_TAG, "boundary %llu: KEY RESERVATION SELF-CHECK: %zu "
+                  "difference(s) (%zu derived, %zu rows, %zu unverified) — "
+                  "log-only, the block is unaffected",
+                  (unsigned long long)h, rep.n_diff, rep.n_derived,
+                  rep.n_table, rep.n_unverified);
+}
+
 /* ── entry point ───────────────────────────────────────────────────── */
 
 int nodus_witness_v2_epoch_boundary_apply(
@@ -2472,6 +2901,22 @@ int nodus_witness_v2_epoch_boundary_apply(
     }
     if (fault && fault(fault_ud, NODUS_V2_EPST_BALANCE_COPY, UINT32_MAX))
         return -2;
+
+    /* ── 7. THE KEY-RESERVATION SELF-CHECK (log-only) ─────────────────
+     * v2_consensus_keys is in no root; v2ep_keyres_selfcheck re-derives
+     * it from rooted state and LOGS any difference. Its outcome is
+     * IGNORED: it returns nothing, writes nothing and cannot fail the
+     * block (a checker defect would fire on every node alike; as a fault
+     * it would halt the chain). POSITION: the table's last writer in this
+     * boundary is the sweep (3d); the flips touch only the ACTIVE /
+     * ELIGIBLE status byte (never UNSTAKED, never a key), commit_next
+     * writes the snapshot of H+E (not S(H) / S(H−E), which the
+     * derivation reads) and the balance copy its own table — so after
+     * step 6 the table and every input are final, and nothing after this
+     * point reads anything the check could touch. Generation 4 only, the
+     * swap / sweep gate. No fault stage: a read-only step. */
+    if (key_gen >= NODUS_RT_GEN_STORAGE)
+        v2ep_keyres_selfcheck(w, global_height, chain_id);
 
     QGP_LOG_DEBUG(LOG_TAG, "boundary at %llu applied (%u graduates, "
                   "%llu accrued, %u payday utxos)",

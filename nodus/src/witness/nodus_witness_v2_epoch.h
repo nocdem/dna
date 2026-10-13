@@ -162,6 +162,12 @@
  *      to the H−2E, H−E and H copies (three — P3-2). Out of every root.
  *      Read by the commit_next of boundary H+E (P3-1 "okuma B") and by
  *      the distribution of boundary H+3E (src).
+ *   7. KEY-RESERVATION SELF-CHECK (HF-6) — generation 4 only, LOG ONLY:
+ *      v2_consensus_keys (in no root) re-derived from the v2 rows and
+ *      S(H) / S(H−E) and compared row for row; a difference is logged
+ *      (QGP_LOG_ERROR), never returned, never written, never a fault.
+ *      After step 6: the table's last writer is 3d. The test-facing core
+ *      is nodus_witness_v2_keyres_diff below.
  *
  * ── WHY THE DISTRIBUTION SITS AT 1b (tokenomics-v3 P2) ──────────────
  * Three inputs decide it, and each fixes a bound on its position:
@@ -499,6 +505,37 @@ int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v);
  * @return 0 / -2 (node-local fault, the boundary convention).
  */
 int nodus_witness_v2_key_generation(nodus_witness_t *w, uint32_t *gen_out);
+
+/**
+ * HF-6 — the key-reservation self-check's core, EXPORTED FOR TESTS (the
+ * boundary calls only its log-only wrapper, step 7, and ignores the
+ * outcome). Re-derives v2_consensus_keys from rooted state and compares
+ * it row for row with the table:
+ *   role 1 — SHA3-512(validators.pubkey) of every v2 row not UNSTAKED;
+ *   role 2 — SHA3-512 of every non-zero pending_consensus_pubkey;
+ *   role 1 — for every entry of a ruleset-2 S(h) whose key differs from
+ *            the same validator_id's entry in S(h − E) (ruleset-1
+ *            S(h − E): the migrated-id bridge), SHA3-512 of the S(h − E)
+ *            key (the previous key kept by the swap at h, khan A2).
+ * A validator seated in S(h) under its row's current key, not UNSTAKED
+ * and with no seat in S(h − E) may hold ONE further role-1 row (khan A3:
+ * its previous key is in no committed snapshot) — counted as
+ * unverified, not as a difference.
+ * Read-only; no transaction of its own (valid inside the boundary
+ * transaction and in autocommit).
+ *
+ * @param h          the LAST boundary applied: a multiple of
+ *                   DNAC_EPOCH_LENGTH, >= DNAC_EPOCH_LENGTH.
+ * @param chain_id   the derived V2 chain id (the ruleset-1 bridge).
+ * @param n_diff_out required; the number of differences (missing, extra,
+ *                   another validator, another role, a key derived twice,
+ *                   a malformed row); 0 on any return other than 0.
+ * @return 0 compared; 1 generation < 4 (not applicable); -1 an input was
+ *         unreadable or an argument is bad — not compared.
+ */
+int nodus_witness_v2_keyres_diff(nodus_witness_t *w, uint64_t h,
+                                 const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                                 size_t *n_diff_out);
 
 /** The 16-byte graduation-identity tag (zero-padded, exactly 16 B). */
 #define NODUS_V2_EPGRAD_TAG      "NDS.EPGRAD.v1"
