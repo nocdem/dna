@@ -1475,20 +1475,21 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
         { "evm_active",           DNAC_CFG_EVM_ACTIVE },
         { "EVM_BLOCK_GAS_LIMIT",  DNAC_CFG_EVM_BLOCK_GAS_LIMIT },
         { "evm_block_gas_limit",  DNAC_CFG_EVM_BLOCK_GAS_LIMIT },
-        /* storage reward v1 (design docs/plans/2026-10-04-storage-reward-
-         * v1-design.md rev 2.2 §6, "voted like RULESET_GEN2") — param id
-         * 16, value exactly DNAC_CFG_RULESET_GEN_STORAGE_D; votable only
-         * while the EVM generation judges the vote */
-        { "RULESET_GEN_STORAGE",  DNAC_CFG_RULESET_GEN_STORAGE },
-        { "ruleset_gen_storage",  DNAC_CFG_RULESET_GEN_STORAGE },
         /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-
          * design.md rev 2 §1) — param id 17, value exactly 1; votable
          * only while generation 2 or later judges the vote */
         { "DELEGATE_NAME_REQUIRED", DNAC_CFG_DELEGATE_NAME_REQUIRED },
         { "delegate_name_required", DNAC_CFG_DELEGATE_NAME_REQUIRED },
         /* HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-
-         * design.md rev 6 §8) — params 19-21, votable only while
-         * generation 4 judges the vote (id 18 is not assigned yet) */
+         * design.md rev 6 §8, §8.1) — param id 18, the generation-4 vote,
+         * value exactly DNAC_CFG_RULESET_GEN_ROLES_D (D4); votable once,
+         * while generation 3 judges the vote. Param id 16
+         * (RULESET_GEN_STORAGE) is RETIRED by it — removed from this
+         * table like ids 1 and 3, refused witness-side. */
+        { "RULESET_GEN_ROLES",    DNAC_CFG_RULESET_GEN_ROLES },
+        { "ruleset_gen_roles",    DNAC_CFG_RULESET_GEN_ROLES },
+        /* HF-6 — params 19-21, votable only while generation 4 judges
+         * the vote */
         { "STAKE_MIN",            DNAC_CFG_STAKE_MIN },
         { "stake_min",            DNAC_CFG_STAKE_MIN },
         { "POWER_CAP_BPS",        DNAC_CFG_POWER_CAP_BPS },
@@ -1737,14 +1738,16 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "only; HF-2, HF-3 and a non-zero gas price active)\n"
             "  EVM_BLOCK_GAS_LIMIT    [%llu, %llu]   "
             "(Nodus EVM: the summed declared EVM gas one block may hold)\n"
-            "  RULESET_GEN_STORAGE    exactly %llu   "
-            "(storage-reward rule-set generation from --effective on; "
-            "once only; the EVM generation must be in force; HF-2 must "
-            "be active; --effective - 1 not an epoch boundary)\n"
             "  DELEGATE_NAME_REQUIRED exactly %llu   "
             "(HF-8 switch: from --effective on a delegation needs the "
             "delegator's on-chain name, self-delegation exempt; one-way; "
             "generation 2 must be in force)\n"
+            "  RULESET_GEN_ROLES      exactly %llu   "
+            "(HF-6: rule-set generation 4 (storage + the validator role) "
+            "from --effective on; once only; the EVM generation must be "
+            "in force; HF-2 must be active; neither --effective nor "
+            "--effective - 1 an epoch boundary; no RULESET_GEN_STORAGE "
+            "row)\n"
             "  STAKE_MIN              [%llu, %llu]   "
             "(HF-6: raw bond floor of a validator STAKE; generation 4 "
             "must be in force)\n"
@@ -1755,7 +1758,7 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "(HF-6: exact raw bond of a storage registration; generation "
             "4 must be in force)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
-            "and is refused.\n",
+            "and is refused; RULESET_GEN_STORAGE (id 16) is retired.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_GAS_PRICE,
@@ -1769,8 +1772,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
             (unsigned long long)DNAC_CFG_MIN_EVM_BLOCK_GAS,
             (unsigned long long)DNAC_CFG_MAX_EVM_BLOCK_GAS,
-            (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
             (unsigned long long)DNAC_CFG_DELEGATE_NAME_REQUIRED_ON,
+            (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D,
             (unsigned long long)DNAC_HF6_STAKE_MIN_MIN,
             (unsigned long long)INT64_MAX,
             (unsigned)DNAC_CFG_MIN_POWER_CAP_BPS,
@@ -1786,8 +1789,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE | "
                 "RULESET_GEN2 | NAME_PRICE_3P | NAME_PRICE_4P | "
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
-                "EVM_BLOCK_GAS_LIMIT | RULESET_GEN_STORAGE | "
-                "DELEGATE_NAME_REQUIRED | STAKE_MIN | POWER_CAP_BPS | "
+                "EVM_BLOCK_GAS_LIMIT | DELEGATE_NAME_REQUIRED | "
+                "RULESET_GEN_ROLES | STAKE_MIN | POWER_CAP_BPS | "
                 "STORAGE_BOND "
                 "(the parameters the running consensus reads)\n",
                 param_name);
@@ -9479,7 +9482,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        NAME_PRICE_3P | NAME_PRICE_4P |\n");
     fprintf(stderr, "                        NAME_PRICE_5P | NAME_PRICE_6P |\n");
     fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT |\n");
-    fprintf(stderr, "                        RULESET_GEN_STORAGE | DELEGATE_NAME_REQUIRED |\n");
+    fprintf(stderr, "                        DELEGATE_NAME_REQUIRED | RULESET_GEN_ROLES |\n");
     fprintf(stderr, "                        STAKE_MIN | POWER_CAP_BPS | STORAGE_BOND\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");

@@ -7818,10 +7818,12 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
      * runtime's own generation; 0 for a synthetic runtime). A refusal
      * here is the same verdict class, at the same point (no reads, no
      * effect charged), as the scalar refusal above.
-     * Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md
-     * rev 2.2 §6): a param-16 vote's single-use fact is
-     * ctx->ruleset_gen_storage_voted (the same UNMETERED engine fact
-     * class); only the param-16 rule reads it. */
+     * HF-6 slice 8c (design docs/plans/2026-10-03-hf5-validator-owner-
+     * stake-design.md rev 6 §8): the param-18 vote reads two facts of the
+     * same UNMETERED engine class — its single-use fact
+     * ctx->ruleset_gen_roles_voted (rule (a)) and "any param-16 row"
+     * ctx->ruleset_gen_storage_voted (RETIRED id 16, rule (a')); only the
+     * param-18 rule reads either. */
     {
         /* Nodus EVM: + the EVM_ACTIVE facts (hf3_active / gas_price_on /
          * evm_active_voted — UNMETERED engine facts like the two above);
@@ -7834,6 +7836,7 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         facts.ruleset_gen2_voted = ctx->ruleset_gen2_voted;
         facts.evm_active_voted = ctx->evm_active_voted;
         facts.ruleset_gen_storage_voted = ctx->ruleset_gen_storage_voted;
+        facts.ruleset_gen_roles_voted = ctx->ruleset_gen_roles_voted;
         facts.chain_initial_height = ctx->chain_initial_height; /* F5 */
         facts.judging_generation = rt ? rt->generation : 0u;
         if (nodus_chain_config_stateful_rules_ex(c.param_id, c.effective,

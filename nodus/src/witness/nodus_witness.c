@@ -2743,16 +2743,22 @@ int nodus_witness_init(nodus_witness_t *witness,
                  (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
                  (unsigned)DNAC_RULESET_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
-    /* Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md
-     * rev 2.2 §6): the GEN_STORAGE vote literal (chain_config param 16)
-     * for the same 7/7 comparison before THAT vote — its own line, so the
-     * HF-4 line above keeps the exact text test_cmt_hf4_names.sh greps. */
-    QGP_LOG_INFO(LOG_TAG, "storage rule-set generation %u vote 0x%016llx "
-                 "(param %u, switch spec v%u), built from git commit %s",
+    /* HF-6 slice 8c (design docs/plans/2026-10-03-hf5-validator-owner-
+     * stake-design.md rev 6 §8, §8.1): the generation-4 vote literal D4
+     * (chain_config param 18 RULESET_GEN_ROLES) — an EVM-enabled build's
+     * selfcheck just re-derived it from the generation-4 pins, the
+     * compiled Foundation owner and the HF-6 constants — for the same
+     * 7/7 comparison before THAT vote (DEPLOY_RUNBOOK §2.2). Its own
+     * line, so the HF-4 line above keeps the exact text
+     * test_cmt_hf4_names.sh greps; test_hf6_edge.sh and
+     * test_storage_archive.sh grep this one. */
+    QGP_LOG_INFO(LOG_TAG, "HF-6 rule-set generation %u vote D4 0x%016llx "
+                 "(param %u RULESET_GEN_ROLES, switch spec v%u), built from "
+                 "git commit %s",
                  (unsigned)NODUS_RT_GEN_STORAGE,
-                 (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
-                 (unsigned)DNAC_CFG_RULESET_GEN_STORAGE,
-                 (unsigned)DNAC_RULESET_SWITCH_SPEC_VERSION,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D,
+                 (unsigned)DNAC_CFG_RULESET_GEN_ROLES,
+                 (unsigned)DNAC_HF6_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
     /* HF-4 review (L1 F2): the compile-time constants consensus depends
      * on and that a harness build overrides (#ifndef in dnac.h /

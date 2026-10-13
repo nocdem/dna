@@ -6129,6 +6129,12 @@ by the row's owner; the `payee_fp` column holds the owner; a RELEASED row revive
 re-registration line. The registry table, the record, the leaf, the root composition, the adapter and
 the GEN_STORAGE generation below are unchanged.
 
+**Superseded by HF-6 slice 8 (design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev
+6 §8; section "HF-6 slice 8c" below):** generation 4 — storage AND the validator owner/node roles — is
+voted by chain_config **param 18** `RULESET_GEN_ROLES` with the D4 value; **param 16 is RETIRED** and
+its vote literal deleted; the storage boundary gate reads param 18. Everything below that names param
+16 or its literal as the storage vote is history of the storage-only package.
+
 **Renumbered onto main (2026-10-06, main merge order — decision
 `docs/plans/decisions/2026-10-04-storage-reward-approved.md`; Nodus EVM merged first; K10 in
 `2026-10-05-storage-reward-is-for-archive.md`).** Where the text below says generation 3, param 14,
@@ -6185,7 +6191,9 @@ Selfcheck re-derives the generation's pins and the new vote literal. At this ste
 generated `nodus/include/nodus/nodus_ruleset_pins.h` must be regenerated after the fill
 (`regen_ruleset_pins`; `test_ruleset_pins` byte-compares it).
 
-**The vote (chain_config param 14 `DNAC_CFG_RULESET_GEN_STORAGE`, `dnac.h`).** Value EXACTLY the
+*(History — superseded: since HF-6 slice 8c the generation-4 vote is param 18 `RULESET_GEN_ROLES`
+and param 16 is retired; section "HF-6 slice 8c".)* **The vote (chain_config param 14
+`DNAC_CFG_RULESET_GEN_STORAGE`, `dnac.h`).** Value EXACTLY the
 compiled literal (`dna_ruleset_gen_digest(3, SYSTEM v8 hash, CORE v6 hash, spec 1)` — the switch
 procedure is HF-4's, so `DNAC_RULESET_SWITCH_SPEC_VERSION` stays 1); grace ERGONOMIC. Stateful rules
 (`nodus_chain_config_stateful_rules`, the ONE authority the exec and the 0x71 responder share): (d)
@@ -6839,9 +6847,10 @@ switched by `phase_6b_gen4_edge` (phase 6b‴), run after 6b′ and BEFORE 6b″
 edge row held — an EVM edge and a generation-4 edge in the same block therefore still FAULT, the
 registry not yet at generation 3; `test_hf4_switch` F3) and before the 6c re-scan, inside the block's
 transaction, at the end of block H−1:
-1. trigger — during development the existing param-16 row with `DNAC_CFG_RULESET_GEN_STORAGE_D`,
-   present at H and absent at H−1 (design §10 item 2; slice 8 moves it to param 18 / D4); another
-   value is a FAULT; a build without `NODUS_EVM_ENABLED` FAULTs (the 6b″ rule);
+1. trigger — since HF-6 slice 8c the param-18 (`RULESET_GEN_ROLES`) row with
+   `DNAC_CFG_RULESET_GEN_ROLES_D` (D4), present at H and absent at H−1 (until 8c: the development
+   param-16 row with the storage literal, design §10 item 2); another value is a FAULT; a build
+   without `NODUS_EVM_ENABLED` FAULTs (the 6b″ rule);
 2. schema exactly S18, else FAULT;
 3. `nodus_witness_domreg_generation_switch(NODUS_RT_GEN_STORAGE_BASE, NODUS_RT_GEN_STORAGE)` — the
    procedure the removed row ran; "registry is not generation 3" is a FAULT;
@@ -7489,8 +7498,9 @@ independent oracle `shared/dnac/tests/storage_oracle.py` (rules {1..10}, ops 1..
 
 Generations 1-3 and every pin of theirs are byte-identical (the oracle's control legs C1-C12 reproduce
 them before it emits). `nodus_witness_runtime_selfcheck` re-derives the new pins and literal on every
-start, so a build whose table and literal disagree refuses to start. S4 is still the DEVELOPMENT
-trigger (param 16); slice 8 replaces it with the D4 construction (§8.1). Op 10 is owned and priced but
+start, so a build whose table and literal disagree refuses to start. S4 was still the DEVELOPMENT
+trigger (param 16); slice 8c deleted it with the param (the oracle's S4 leg, the dnac.h literal and
+its selfcheck row) — generation 4 is voted with D4 (§8.1, sections "HF-6 slice 8b" / "8c"). Op 10 is owned and priced but
 NOT executable in 6a — the SYSTEM read plan and exec refuse it (−1, the un-migrated-op default) until
 6b. **Admission:** the live gate for a V2 leg is `rt_owns_runtime_op` in `env_admit_legs`
 (`nodus_witness_v2_apply.c`, the committed descriptor's rule list); `rt_admit_common` judges only
@@ -8298,7 +8308,7 @@ nine constants cannot carry one D4.
 **Selfcheck.** `nodus_witness_runtime_selfcheck` re-derives D4 on every start of an EVM build and
 refuses to start when it differs from the compiled literal. The storage development row
 (`DNAC_CFG_RULESET_GEN_STORAGE_D` through `dna_ruleset_gen_digest`) stays beside it until 8c retires the
-param-16 trigger.
+param-16 trigger (done: deleted in 8c, section "HF-6 slice 8c").
 
 **Test builds — two flags.** Both `DNAC_HF6_FOUNDATION_OWNER` and `DNAC_CFG_RULESET_GEN_ROLES_D` are
 `#ifndef`-guarded. Because D4 binds the compiled owner, a build that overrides the owner must override
@@ -8319,6 +8329,86 @@ explicitly == `0x4fc24934a9155c64` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) 
 constant move the value; D4 differs from D2, the EVM D and the storage D. `test_v2_native` K7: the K8
 literal (owner-default builds). Both prove the C constructor agrees with the oracle, not that §8.1 is
 the right layout (that is the approved crypto gate).
+
+### HF-6 slice 8c — the flip: param 18 RULESET_GEN_ROLES = D4 triggers generation 4; param 16 retired (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §8 ("Oy = yeni param 18
+`RULESET_GEN_ROLES`", khan 2026-10-13; "Param 16 EMEKLİ"; the stateful rule; "Storage sınır kapısı
+param 18'i okur"), §8.1 (D4); decision `docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md`
+item 1 (khan "1 onaylıyorum", "4 ok", "6 ok"); plan `tasks/hf6-slice8-plan.md` §1, §2 "8c". ONE atomic
+change: the moment 16 is retired every fixture and both harness scenarios reach generation 4 through 18.
+
+**Param 18 `DNAC_CFG_RULESET_GEN_ROLES` (`dnac.h`).** On the read list
+(`dnac_cfg_param_read_by_consensus`); scalar rule EXACTLY `DNAC_CFG_RULESET_GEN_ROLES_D` (D4,
+`0x4dc61072d5982acd`) in `nodus_chain_config_scalar_rules` and the client mirror
+(`dnac_tx_verify_chain_config_rules`); grace ERGONOMIC (its own case); `CC_PARAM_RULESET_GEN_ROLES`
+`_Static_assert`ed to the dnac id. Stateful (`nodus_chain_config_stateful_rules_ex`, its own case —
+not a fall-through into param 9's), each a −1 verdict:
+- (a) `facts->ruleset_gen_roles_voted` — any committed param-18 row, any height (single use);
+- (a′) `facts->ruleset_gen_storage_voted` — any committed param-16 row, any height (K16: a 16 row is
+  a refusal condition, never ignored; a read fault is a node FAULT, distinct from absence);
+- (b) HF-2 active at the vote height;
+- (c) judging generation EXACTLY `NODUS_RT_GEN_STORAGE_BASE` (3) — the `domreg_generation_switch`
+  3 → 4 FAULT at H−1 stays unreachable, and the generation-4 edge never shares the EVM edge's block;
+- (d) effective ≠ 0 and effective − 1 not a nonzero multiple of `DNAC_EPOCH_LENGTH`;
+- (e) effective not a multiple of `DNAC_EPOCH_LENGTH` (H itself off a boundary — the clause 18 adds
+  over the old param-16 rule).
+The test-only 5-argument wrapper sets the param-9 AND param-18 single-use facts from its 4th argument
+and leaves the param-16 fact 0.
+
+**The facts.** `nodus_cc_state_facts_t.ruleset_gen_roles_voted` (new) beside
+`ruleset_gen_storage_voted` (kept, re-purposed as rule (a′)); the engine reads both once per item at
+`INT64_MAX` with the three-valued accessor (`env_ruleset_gen_roles_voted` /
+`env_ruleset_gen_storage_voted`, `nodus_witness_v2_apply.c`; −1 = node FAULT) into
+`nodus_rt_exec_ctx_t` at BOTH ctx sites (exec and the authorization stage); the SYSTEM CHAIN_CONFIG
+exec (`nodus_witness_rt_native.c`) copies them into the facts; the 0x71 responder
+(`cc_appr_rules_chain_config`) reads r16 and r18 the same way. UNMETERED (no mediated read; the
+CHAIN_CONFIG read plan stays empty), so no committed block's `gas_used` moves.
+
+**Param 16 RETIRED (the id-1 way).** The enum value stays (never reused) with a RETIRED comment; off
+the read list, so both rule sides refuse it before any bound; its scalar and stateful cases are
+removed (stateful answers −1 through `default`); grace `UINT64_MAX`; the nodus-cli name table drops
+it; the explorer keeps its label (committed rows keep their names). `DNAC_CFG_RULESET_GEN_STORAGE_D`,
+its `_Static_assert`, the selfcheck's RSGEN generation-4 row and `storage_oracle.py`'s S4 leg are
+DELETED (never active on any chain). Slot 16 of the chain-config cache stays: the engine still reads
+the retired id's history (rule (a′)).
+
+**The edge and the gate.** `phase_6b_gen4_edge` fires on param 18 present at H and absent at H−1 and
+requires its value to be D4 (anything else: FAULT — reachable only through a corrupted DB); the rest
+of the phase is unchanged. Its INFO line (pinned by `test_hf6_edge.sh` HF6_LINE and
+`test_storage_archive.sh` STOR_LINE): `HF-6: rule-set generation 3 -> 4 and the validator migration at
+the end of height <H−1> (param 18 RULESET_GEN_ROLES, D4 0x<D4>); height <H> is judged under generation
+4`. The storage boundary gate (`nodus_witness_storage_boundary_apply`, `nodus_witness_v2_storage.c`)
+reads param 18 at B — the same id as the edge, so it opens at the first boundary ≥ H. The startup
+banner (`nodus_witness.c`) reads `HF-6 rule-set generation 4 vote D4 0x<D4> (param 18
+RULESET_GEN_ROLES, switch spec v1), built from git commit <c>` — the runbook's 7/7 pre-vote line and
+what both harness scripts cross-check against the CLI's usage.
+
+**Mixed fleet (operational, not code — plan §1.8-1.9).** A binary without 8c does not know id 18: it
+refuses to approve a param-18 proposal (scalar rules) and, at the block that commits one, its exec
+returns −1 where the new binaries create the row — it diverges at that block. Conversely a param-16
+proposal is accepted by old binaries and refused by new ones. A committed param-16 row (any height)
+refuses every param-18 vote forever. Closed by procedure: 7/7 on the new binary, no param-16 row on
+7/7, then the vote (`DEPLOY_RUNBOOK.md` §2.2 HF-6 row).
+
+**Byte-identical.** Generations 1-3; every descriptor, pin and the pins header; D2 and the EVM D; a
+chain with no param-16 / param-18 row (neither the edge nor the gate fires; both facts read 0; the
+chain-config root and every committed block unchanged).
+
+**Tests** (written, NOT run by the builder). `test_hf4_params`: 16 off the read list and refused by
+the scalar rules for every probed value, grace 16 `UINT64_MAX`, stateful 16 −1; 18 exactly D4 (± 1, 0,
+D2, the EVM D, UINT64_MAX refused); grace 18 ERGONOMIC; the 18 matrix — accepted only with no 18 row
+AND no 16 row AND HF-2 AND generation 3 AND H, H−1 off a boundary (0, E, E+1, 2E, 2E+1 refused; 1 and
+E+2 accepted), generations 0/1/2/4 refused; the 16 fact gates 18 only, the 18 fact gates neither 9
+nor 14; K10 under the EVM base; the exec hook refuses an 18 leg under generations 1/2/4 and NULL,
+creates exactly one row keyed (18 ‖ H) under 3, refuses on each fact / HF-2 off / either boundary, a
+16 leg under every runtime; the read plan empty; slot 18 and slot 16 read. `test_chain_config_verify`
+(client mirror): 16 refused for every value, 18 exactly D4, the read list. `test_v2_gas_price`: id
+adjacency 15-16-17-18-19, 16 off the list. `test_hf4_table` / `test_hf6_rotate` / `test_v2_native`:
+the storage literal's checks removed, D4's stand. Nine engine fixtures (`test_hf4_switch`,
+`test_hf6_migrate`, `test_hf6_readers`, `test_hf6_rotate`, `test_hf6_stake`, `test_hf6_calls`,
+`test_storage_b2`, `test_storage_empty`, `test_storage_reg`) seed a param-18 row with D4 instead of
+the param-16 row. `test_explorer`: the 18 label and the retired 16 label.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

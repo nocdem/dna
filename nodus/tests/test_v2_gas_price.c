@@ -440,24 +440,29 @@ static int t_scalar_rule_matrix(void)
     /* Nodus EVM (design 2026-10-04-nodus-evm-chain-integration-design.md §9) appends
      * EVM_ACTIVE 14 and EVM_BLOCK_GAS_LIMIT 15; storage reward v1 appends
      * RULESET_GEN_STORAGE 16; HF-8 appends DELEGATE_NAME_REQUIRED 17 (main
-     * merge order); HF-6 slice 8a appends STAKE_MIN 19, POWER_CAP_BPS 20
-     * and STORAGE_BOND 21, leaving 18 unassigned until slice 8c (which
-     * finishes this adjacency with its id-18 vote). */
+     * merge order); HF-6 appends RULESET_GEN_ROLES 18 (slice 8c, which
+     * also RETIRES 16 — the id keeps its number, off the read list),
+     * STAKE_MIN 19, POWER_CAP_BPS 20 and STORAGE_BOND 21 (slice 8a). */
     CHECK(DNAC_CFG_NAME_PRICE_6P + 1 == DNAC_CFG_EVM_ACTIVE &&
               DNAC_CFG_EVM_ACTIVE + 1 == DNAC_CFG_EVM_BLOCK_GAS_LIMIT,
           "id 13 is followed by Nodus EVM's ids 14-15");
     CHECK(DNAC_CFG_EVM_BLOCK_GAS_LIMIT + 1 == DNAC_CFG_RULESET_GEN_STORAGE &&
               DNAC_CFG_RULESET_GEN_STORAGE == 16,
-          "id 15 is followed by the storage vote's id 16");
+          "id 15 is followed by the (retired) storage vote's id 16");
+    CHECK(!dnac_cfg_param_read_by_consensus(
+              (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE),
+          "id 16 is RETIRED (HF-6 8c): off the read list");
     CHECK(DNAC_CFG_RULESET_GEN_STORAGE + 1 ==
                   DNAC_CFG_DELEGATE_NAME_REQUIRED &&
               DNAC_CFG_DELEGATE_NAME_REQUIRED == 17,
           "id 16 is followed by HF-8's id 17");
-    CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED + 2 == DNAC_CFG_STAKE_MIN &&
-              !dnac_cfg_param_read_by_consensus(
-                  (uint8_t)(DNAC_CFG_DELEGATE_NAME_REQUIRED + 1)),
-          "id 17 is followed by the unassigned, refused id 18 (HF-6 8c)");
-    CHECK(DNAC_CFG_STAKE_MIN == 19 &&
+    CHECK(DNAC_CFG_DELEGATE_NAME_REQUIRED + 1 == DNAC_CFG_RULESET_GEN_ROLES &&
+              DNAC_CFG_RULESET_GEN_ROLES == 18 &&
+              dnac_cfg_param_read_by_consensus(
+                  (uint8_t)DNAC_CFG_RULESET_GEN_ROLES),
+          "id 17 is followed by HF-6's generation-4 vote id 18");
+    CHECK(DNAC_CFG_RULESET_GEN_ROLES + 1 == DNAC_CFG_STAKE_MIN &&
+              DNAC_CFG_STAKE_MIN == 19 &&
               DNAC_CFG_STAKE_MIN + 1 == DNAC_CFG_POWER_CAP_BPS &&
               DNAC_CFG_POWER_CAP_BPS + 1 == DNAC_CFG_STORAGE_BOND,
           "id 18 is followed by HF-6's ids 19-21");

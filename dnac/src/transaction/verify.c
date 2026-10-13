@@ -414,8 +414,7 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
  *   - dnac_cfg_param_read_by_consensus(param_id) (0.20.3) — the running
  *     consensus reads the parameter; today {4, 5, 6, 7, 8, 9, 10, 11,
- *     12, 13, 14, 15, 16, 17, 19, 20, 21} (18 is not assigned until
- *     HF-6 slice 8c)
+ *     12, 13, 14, 15, 17, 18, 19, 20, 21} (16 RETIRED by HF-6 slice 8c)
  *   - chain_config_fields.new_value in per-param range (§5.2):
  *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
  *                                "kaldır" 2026-09-18;
@@ -434,6 +433,10 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                is refused unconditionally, mirroring
  *                                the witness-side scalar_rules; there is
  *                                no per-block mint left to start
+ *       RULESET_GEN_STORAGE    : RETIRED (HF-6 slice 8c) — id 16 is
+ *                                refused unconditionally, mirroring the
+ *                                witness-side scalar_rules; generation 4
+ *                                is voted by RULESET_GEN_ROLES (18)
  *       TARGET_ACTIVE_COUNT    : [DNAC_CFG_MIN_TARGET_ACTIVE=7,
  *                                 DNAC_CFG_MAX_TARGET_ACTIVE=128]  (S3)
  *       GAS_PRICE_RAW_PER_UNIT : [0, DNAC_CFG_MAX_GAS_PRICE=1000000] (HF-1;
@@ -458,12 +461,12 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
  *                                stateful rules are witness-side only)
  *       EVM_BLOCK_GAS_LIMIT    : [DNAC_CFG_MIN_EVM_BLOCK_GAS,
  *                                 DNAC_CFG_MAX_EVM_BLOCK_GAS] (Nodus EVM)
- *       RULESET_GEN_STORAGE    : exactly DNAC_CFG_RULESET_GEN_STORAGE_D
- *                                (storage reward v1, param 16; the
- *                                RULESET_GEN2 shape — the witness's
- *                                stateful rules are not mirrored)
  *       DELEGATE_NAME_REQUIRED : exactly DNAC_CFG_DELEGATE_NAME_REQUIRED_ON
  *                                = 1 (HF-8)
+ *       RULESET_GEN_ROLES      : exactly DNAC_CFG_RULESET_GEN_ROLES_D (D4;
+ *                                HF-6, param 18; the RULESET_GEN2 shape
+ *                                — the witness's stateful rules are not
+ *                                mirrored)
  *       STAKE_MIN              : [DNAC_HF6_STAKE_MIN_MIN=10^13, INT64_MAX]
  *                                (HF-6, param 19; the upper end is
  *                                checked on new_value itself)
@@ -517,9 +520,10 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
     }
 
     /* new_value in per-param range (Rule CC-B). Only ids ON the read list
-     * reach here — why 1 (retired), 2 (not read) and 3 (retired) are off
-     * it is written at nodus_witness_chain_config.c's scalar_rules; their
-     * former cases were unreachable after the gate and were removed. */
+     * reach here — why 1 (retired), 2 (not read), 3 (retired) and 16
+     * (retired, HF-6 slice 8c) are off it is written at
+     * nodus_witness_chain_config.c's scalar_rules; their former cases
+     * were unreachable after the gate and were removed. */
     switch ((dnac_chain_config_param_id_t)cc->param_id) {
         case DNAC_CFG_TARGET_ACTIVE_COUNT:
             if (cc->new_value < DNAC_CFG_MIN_TARGET_ACTIVE ||
@@ -620,22 +624,23 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;
-        case DNAC_CFG_RULESET_GEN_STORAGE:
-            /* Storage reward v1 (design 2026-10-04-storage-reward-v1-
-             * design.md rev 2.2 §6, "voted like RULESET_GEN2"),
-             * mirroring nodus_witness_chain_config.c's scalar_rules:
-             * EXACTLY the compiled vote literal (the same dnac.h literal
-             * the witness compares against). The witness's stateful
-             * rules — single use, HF-2 active, H-1 not an epoch
-             * boundary, judged under generation 2 or later — need chain
-             * state this mirror does not have (the param-9 divergence). */
-            if (cc->new_value != (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D) {
+        case DNAC_CFG_RULESET_GEN_ROLES:
+            /* HF-6 (design 2026-10-03-hf5-validator-owner-stake-design.md
+             * rev 6 §8, §8.1), mirroring nodus_witness_chain_config.c's
+             * scalar_rules: EXACTLY the compiled generation-4 vote
+             * literal D4 (the same dnac.h literal the witness compares
+             * against). The witness's stateful rules — single use, no
+             * param-16 row, HF-2 active, judged under generation 3, H-1
+             * and H not epoch boundaries — need chain state this mirror
+             * does not have (the param-9 divergence). RETIRED param 16
+             * has no case: the read-list gate above refuses it. */
+            if (cc->new_value != (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D) {
                 QGP_LOG_ERROR(LOG_TAG,
-                              "CHAIN_CONFIG: RULESET_GEN_STORAGE=0x%016llx, "
-                              "only D=0x%016llx is a legal value",
+                              "CHAIN_CONFIG: RULESET_GEN_ROLES=0x%016llx, "
+                              "only D4=0x%016llx is a legal value",
                               (unsigned long long)cc->new_value,
                               (unsigned long long)
-                                  DNAC_CFG_RULESET_GEN_STORAGE_D);
+                                  DNAC_CFG_RULESET_GEN_ROLES_D);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

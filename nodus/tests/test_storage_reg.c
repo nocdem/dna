@@ -72,7 +72,7 @@
  *     every boundary and every block with an envelope each committed
  *     SYSTEM head equals its runtime's recomputation): seven seeded
  *     validators with REAL keys (every block carries their COMMIT votes),
- *     treasury pool 1 = 10^16, param 9 at 2, param 14 at 3, param 16 at 4
+ *     treasury pool 1 = 10^16, param 9 at 2, param 14 at 3, param 18 at 4
  *     (the generation-4 edge runs in block 3), eight segments PRE-SEEDED
  *     (published at 1). KN is the storage node key, KO its first owner, KP
  *     the second; KN never signs a leg, it only consents.
@@ -214,7 +214,7 @@ static int g_checks = 0;
 
 #define E_LEN    ((uint64_t)DNAC_EPOCH_LENGTH)
 #define D2       ((uint64_t)DNAC_CFG_RULESET_GEN2_D2)
-#define DS       ((uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
+#define D4       ((uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D)
 #define FEE      ((uint64_t)DNAC_MIN_FEE_RAW)
 #define BOND     ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 #define CHG      700000000ULL
@@ -1093,7 +1093,7 @@ static int seg_root(uint64_t k, uint8_t out[64]) {
 #define H9   2u
 #define HE   3u       /* EVM_ACTIVE (param 14): GEN_STORAGE is built on the
                        * EVM generation (K10) */
-#define H14  4u       /* param 16: the generation-4 edge runs in block 3 */
+#define H14  4u       /* param 18: the generation-4 edge runs in block 3 */
 
 static void fx_close(fixture_t *fx) {
     if (!fx->w) return;
@@ -1123,7 +1123,7 @@ static int fx_open(fixture_t *fx, const char *tag) {
         cc_row(w, DNAC_CFG_RULESET_GEN2, D2, H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE, DS, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES, D4, H14, 13) != 0)
         return -1;
     uint64_t bonds = 0, coins = 0;
     for (int i = 0; i < N_VAL; i++) {

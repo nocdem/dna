@@ -28,8 +28,10 @@
  *      same ascending scan.
  *   A2 the generation-4 SYSTEM policy prices op 10 at weight 1; no
  *      earlier one does; the compiled table passes its selfcheck (every
- *      pin and DNAC_CFG_RULESET_GEN_STORAGE_D re-derive — the oracle
- *      literals of shared/dnac/tests/storage_oracle.py).
+ *      pin re-derives — the oracle literals of shared/dnac/tests/
+ *      storage_oracle.py) and the param-18 vote value D4
+ *      (DNAC_CFG_RULESET_GEN_ROLES_D, hf6_vote_oracle.py) re-derives
+ *      from the generation-4 hashes through nodus_runtime_gen4_vote_digest.
  *   A3 the SYSTEM read plan and exec of generations 1..3 and of a NULL
  *      runtime refuse op 10 (-1, never -2).
  *  H. HOOKS — the generation-4 SYSTEM / CORE runtimes over fabricated
@@ -61,7 +63,8 @@
  *      read-only describer describes both legs (SYSTEM: no record kind).
  *  B. ENGINE (twin seeded chains, EVM-enabled build — the test_hf6_stake
  *     fixture: V0..V6 ACTIVE 10M since 1; param 9 at 2, param 14 at 3,
- *     param 16 — the generation-4 dev trigger — at 4, so the edge runs in
+ *     param 18 (RULESET_GEN_ROLES = D4, the generation-4 vote) at 4, so
+ *     the edge runs in
  *     block 3):
  *   B1 block 3 (generation 3): a 2-leg {SYSTEM op 10, CORE SYSFUND}
  *      envelope is refused at ADMISSION (the live gate is
@@ -682,12 +685,10 @@ static int t_table(void) {
               s4->descriptor.rule_ids[9] == OP,
               "SYSTEM v9 rules {1..10}");
         uint64_t d = 0;
-        CHECK(dna_ruleset_gen_digest(NODUS_RT_GEN_STORAGE,
-                                     s4->ruleset_hash, c4->ruleset_hash,
-                                     DNAC_RULESET_SWITCH_SPEC_VERSION,
-                                     &d) == 0 &&
-              d == (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D,
-              "the dev vote literal re-derives from the re-pinned hashes");
+        CHECK(nodus_runtime_gen4_vote_digest(&d) == 0 &&
+              d == (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D,
+              "the generation-4 vote D4 re-derives from the re-pinned "
+              "hashes (HF-6 slice 8c: the param-18 vote)");
     }
 
     /* A3: below generation 4 every SYSTEM hook refuses op 10 */
@@ -990,7 +991,7 @@ static uint64_t g_amt[N_COINS];
 
 #define H9   2u
 #define HE   3u
-#define H14  4u       /* param 16: the gen-4 edge runs in block H14 − 1 */
+#define H14  4u       /* param 18: the gen-4 edge runs in block H14 − 1 */
 
 static int coin_nul(int c, uint8_t out[64]) {
     uint8_t pre[160];
@@ -1068,8 +1069,8 @@ static int fx_open(fixture_t *fx, const char *tag) {
                H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE,
-               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES,
+               (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, H14, 13) != 0)
         return -1;
     uint64_t total = 0;
     for (int i = 0; i < N_VAL; i++) {

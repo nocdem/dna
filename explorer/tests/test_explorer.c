@@ -1852,7 +1852,12 @@ static void cc_item(nodus_dnac_v3_item_t *it, uint32_t index, uint8_t tag,
  *             item 1 applied chain_config unknown id 200 = 5 @ 4000,
  *             items 2-4 applied chain_config HF-6 STAKE_MIN (19) =
  *             10^13 @ 5000, POWER_CAP_BPS (20) = 500 @ 5000,
- *             STORAGE_BOND (21) = 10^14 @ 5000 (HF-6 slice 8a names) */
+ *             STORAGE_BOND (21) = 10^14 @ 5000 (HF-6 slice 8a names),
+ *             item 5 applied chain_config RULESET_GEN_ROLES (18) = D4
+ *             5604184871704996557 @ 4500 (HF-6 slice 8c; above 2^53: a
+ *             string), item 6 applied chain_config RETIRED
+ *             RULESET_GEN_STORAGE (16) = 7 @ 4600 (a committed row of a
+ *             retired id keeps its label) */
 static int seed_governance(exp_db_t *db) {
     nodus_dnac_v3_block_result_t p;
     exp_block_batch_t b;
@@ -1885,14 +1890,16 @@ static int seed_governance(exp_db_t *db) {
     nodus_client_free_v3_block_result(&p);
     if (rc != 0) return rc;
 
-    page_header(&p, 2, 5, 5, 2);
-    p.count = 5;
-    p.items = calloc(5, sizeof(nodus_dnac_v3_item_t));
+    page_header(&p, 2, 7, 7, 2);
+    p.count = 7;
+    p.items = calloc(7, sizeof(nodus_dnac_v3_item_t));
     cc_item(&p.items[0], 0, 0x75, 9, 4962894749133920991ULL, 3151);
     cc_item(&p.items[1], 1, 0x77, 200, 5, 4000);
     cc_item(&p.items[2], 2, 0x79, 19, 10000000000000ULL, 5000);
     cc_item(&p.items[3], 3, 0x7B, 20, 500, 5000);
     cc_item(&p.items[4], 4, 0x7D, 21, 100000000000000ULL, 5000);
+    cc_item(&p.items[5], 5, 0x81, 18, 5604184871704996557ULL, 4500);
+    cc_item(&p.items[6], 6, 0x83, 16, 7, 4600);
     exp_block_batch_init(&b);
     rc = exp_extract_page(&p, &b);
     if (rc == 0) rc = exp_db_write_height(db, &b);
@@ -1943,6 +1950,10 @@ static void test_route_governance(void) {
         "\"effective_height\":5000,",
         "\"param_id\":21,\"param_name\":\"STORAGE_BOND\",\"new_value\":\"100000000000000\","
         "\"effective_height\":5000,",
+        "\"param_id\":18,\"param_name\":\"RULESET_GEN_ROLES\",\"new_value\":\"5604184871704996557\","
+        "\"effective_height\":4500,",
+        "\"param_id\":16,\"param_name\":\"RULESET_GEN_STORAGE\",\"new_value\":\"7\","
+        "\"effective_height\":4600,",
         "],\"truncated\":false}",
         NULL };
 
@@ -1955,15 +1966,17 @@ static void test_route_governance(void) {
     if (exp_http_route(&ctx, "GET", "/api/governance", &body, &status) != 0) { FAIL("route"); exp_db_close(db); return; }
     int ok = (status == 200);
     for (int i = 0; ok && needles[i]; i++) if (!strstr(body.buf, needles[i])) ok = 0;
-    /* exactly six records — the delegate record and the refused item are not listed */
-    if (ok && count_substr(body.buf, "\"param_id\":") != 6) ok = 0;
+    /* exactly eight records — the delegate record and the refused item are not listed */
+    if (ok && count_substr(body.buf, "\"param_id\":") != 8) ok = 0;
     /* (height, index) ascending */
     if (ok) {
         const char *a = strstr(body.buf, "\"position\":\"1:1\"");
         const char *c = strstr(body.buf, "\"position\":\"2:0\"");
         const char *d = strstr(body.buf, "\"position\":\"2:1\"");
         const char *e = strstr(body.buf, "\"position\":\"2:4\"");
-        if (!a || !c || !d || !e || !(a < c && c < d && d < e)) ok = 0;
+        const char *f = strstr(body.buf, "\"position\":\"2:6\"");
+        if (!a || !c || !d || !e || !f ||
+            !(a < c && c < d && d < e && e < f)) ok = 0;
     }
     if (!ok) printf("(%d: %s) ", status, body.buf ? body.buf : "(null)");
     exp_json_freebuf(&body);

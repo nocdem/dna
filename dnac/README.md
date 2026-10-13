@@ -153,11 +153,21 @@ The chain is implemented in three layers of the monorepo:
   not have. Nothing under `dnac/` builds an EVM transaction — it is a
   version-3 envelope (`nodus-cli evm`, `nodus/README.md`; the web wallet's
   smart-contract panel, `web-wallet/README.md` "Smart contracts").
-  Id 16 `RULESET_GEN_STORAGE` (storage reward v1: the rule-set generation-4
-  vote, EXACTLY `DNAC_CFG_RULESET_GEN_STORAGE_D`, ERGONOMIC grace — HF-6
-  slice 8c moves this vote to id 18 and retires 16) and id 17
+  Id 16 `RULESET_GEN_STORAGE` (storage reward v1's generation-4 vote) is
+  **RETIRED by HF-6 slice 8c** the id-1 way: off the list, refused by the
+  witness's vote rules and by this library's mirror for every value, its
+  vote literal deleted; the number is never reused. Id 17
   `DELEGATE_NAME_REQUIRED` (HF-8: EXACTLY 1, ERGONOMIC grace; votable once
-  generation 2 judges the vote) are on the list too. **HF-6 slice 8a
+  generation 2 judges the vote) is on the list. **HF-6 slice 8c (design
+  `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §8,
+  §8.1; name khan 2026-10-13):** id 18 `RULESET_GEN_ROLES`
+  (`DNAC_CFG_RULESET_GEN_ROLES`) — the rule-set generation-4 vote
+  (storage + the validator owner/node roles): EXACTLY
+  `DNAC_CFG_RULESET_GEN_ROLES_D` (D4 = 0x4dc61072d5982acd =
+  5604184871704996557), ERGONOMIC grace; the witness's stateful rules
+  (single use, no param-16 row at any height, HF-2 active, judged under
+  generation exactly 3, neither H−1 nor H an epoch boundary) need chain
+  state the `verify.c` mirror does not have — it applies exactly-D4. **HF-6 slice 8a
   (design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6
   §8; decisions `docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md`
   K5 / K9, `2026-10-09-kurultay-16-hf6-storage-summary.md` khan 3 and
@@ -175,13 +185,12 @@ The chain is implemented in three layers of the monorepo:
   1 000 000] NODUS, no-row default 1 000 000 NODUS (an existing
   registration keeps the bond it paid). All three ERGONOMIC grace, no
   single-use rule, votable only while rule-set generation 4 judges the
-  vote. Id 18 is not assigned yet (HF-6 slice 8c) and is refused like any
-  unknown id; `DNAC_CFG_PARAM_MAX_ID` 17 → 21. The `verify.c` mirror
+  vote. `DNAC_CFG_PARAM_MAX_ID` 17 → 21. The `verify.c` mirror
   applies the three ranges (id 19's upper end checked on the value
   itself); "generation 4 judges the vote" is the witness's. With no
   19 / 20 / 21 row every reader answers the compiled default, so a chain
   without the votes behaves exactly as before.
-  The read list is therefore ids 4 through 17 and 19 through 21), GENESIS
+  The read list is therefore ids 4 through 15 and 17 through 21), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee
   gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
   POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid

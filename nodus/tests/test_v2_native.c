@@ -13304,11 +13304,11 @@ static int test_hf8_name_gate_hooks(void) {
                   "K7 and so are their versions");
         }
 #endif
+        /* (the storage-reward param-16 literal is deleted with the param
+         * — HF-6 slice 8c; generation 4's vote value is D4 below) */
         CHECK((uint64_t)DNAC_CFG_RULESET_GEN2_D2 == 0x44dfbe7ad3c75adfULL &&
-              (uint64_t)DNAC_CFG_EVM_ACTIVE_D == 0x029f47596864d407ULL &&
-              (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D ==
-                  0x329b0ea92c8b8c58ULL,
-              "K7 D2, the EVM D and the storage D keep their literals");
+              (uint64_t)DNAC_CFG_EVM_ACTIVE_D == 0x029f47596864d407ULL,
+              "K7 D2 and the EVM D keep their literals");
 #ifdef DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT
         /* HF-6 slice 8b: D4 is overridable together with the owner (a
          * test build), so its K8 literal is pinned only where the owner is

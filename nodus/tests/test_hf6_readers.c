@@ -272,7 +272,7 @@ static int g_checks = 0;
 
 #define H9   2u
 #define HE   3u
-#define H14  4u       /* param 16: the gen-4 edge runs in block H14 − 1 */
+#define H14  4u       /* param 18: the gen-4 edge runs in block H14 − 1 */
 
 static const uint8_t k_found[] = DNAC_HF6_FOUNDATION_OWNER;
 _Static_assert(sizeof(k_found) == 64, "64-byte Foundation owner");
@@ -745,7 +745,7 @@ static int seed_del(nodus_witness_t *w, int dk, int vk, uint64_t amount) {
 #define KD_AMT  (4 * MIL)
 #define KR_AMT  (3 * MIL)
 
-/* A seeded chain: param 9 at H9, param 14 at HE, param 16 at H14 (the
+/* A seeded chain: param 9 at H9, param 14 at HE, param 18 at H14 (the
  * gen-4 edge in block H14 − 1); V0..V6 ACTIVE 10M (V6 active_since
  * `v6_since`, the rest 1); KD → V0 4M; with `retiring`, VR RETIRING 10M
  * since 1 with KR → VR 3M; with `kb_amt` > 0 (case F) also KB → V0
@@ -761,8 +761,8 @@ static int fx_open(fixture_t *fx, const char *tag, uint64_t v6_since,
                H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE,
-               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES,
+               (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, H14, 13) != 0)
         return -1;
     uint64_t bonds = 0, deleg = 0;
     for (int i = 0; i < N_VAL; i++) {
@@ -1860,7 +1860,7 @@ static int seed_at(nodus_witness_t *w, uint64_t h, uint8_t out[64]) {
 static int t_engine_switch(void) {
     fixture_t A, Bf;
     uint64_t h = 0, iv = 0;
-    /* B₀ = the first multiple of E strictly above H = H14 (the param-16
+    /* B₀ = the first multiple of E strictly above H = H14 (the param-18
      * row's effective block; the edge flips the registry in H14 − 1) */
     const uint64_t B0 = (H14 / E_LEN + 1) * E_LEN;
     CHECK(E_LEN >= 8 && B0 == E_LEN, "FIXTURE GUARD: H14 < E, so B₀ = E");

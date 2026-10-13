@@ -69,17 +69,7 @@
       0x97, 0x4c, 0x06, 0x38, 0x14, 0x37, 0xf0, 0x60
   };
 
-── S4 param-16 RULESET_GEN_STORAGE vote literal ──────────────────
-  generation      = 4 (base 3), switch spec version = 1
-  preimage (152 B) = 4e44532e525347454e2e76310000000000000004c347ddd7b30730b17fe62583a663356a303c548dd2fc0dab7fa8dfdfea63140b25c1f496590a66c8373c3e50d23cbaa5f5730097ee041eca50ed377a1f924b00fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f06000000001
-  SHA3-512        = 329b0ea92c8b8c58760659b57190e339f26d59f71b6e88be5c5bb11269d29cb094e4076a639a9f4f1ebbc943db5c10c88e099023121115db22123bf9f40b54ae
-  first 8 BE      = 0x329b0ea92c8b8c58
-  top bit was     = clear (unchanged)
-  S4              = 0x329b0ea92c8b8c58ULL
-  S4 (decimal)    = 3646524443046153304
-
   sanity: S2 != SYSTEM v8 (EVM): True
   sanity: S3 != CORE v6 (EVM, version field only): True
-  sanity: S4 != D2, S4 != EVM_ACTIVE D: True
 
 control green — GEN_STORAGE (generation 4) values above derived from the written layouts by hashlib, not by the C encoders (generation-4 inputs: decision K10 + HF-6 design rev 6 §2 / K7 / khan A6; C-only inputs listed in the docstring).

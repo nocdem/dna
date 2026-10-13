@@ -53,7 +53,8 @@
  *       v9) also owns op 10 ROTATE_CONSENSUS_KEY — rules {1..10} — and
  *       its policy prices ops 1..10, i.e. exactly the EVM generation's op
  *       set plus 10 (owned by no earlier generation); CORE v7 unchanged.
- *   6'. the storage vote literal re-derives from the GEN_STORAGE pins.
+ *   6'. (deleted in HF-6 slice 8c with param 16: the storage vote
+ *       literal it re-derived no longer exists.)
  *   6''. HF-6 slice 8b (design 2026-10-03-hf5-validator-owner-stake-
  *       design.md rev 6 §8.1): dna_rolegen_vote_digest over the compiled
  *       generation-4 pins + the compiled owner + the nine named constants
@@ -78,11 +79,11 @@
  *       call bytes GEN_STORAGE refuses them too (op 9 unconditionally —
  *       package B2); the generation-2 and NULL CORE read_plan refuse a
  *       SYSFUND leg paired with a storage op.
- *  HOW IT CAN LIE (storage): the GEN_STORAGE pins and the storage vote
- *  literal are independent-oracle literals (shared/dnac/tests/
- *  storage_oracle.py, nodus_witness_runtime.c / dnac.h); section 5
- *  (selfcheck) and the 6' re-derivation prove the C encoders agree with
- *  that oracle, not that the PROVISIONAL generation number / op ids /
+ *  HOW IT CAN LIE (storage): the GEN_STORAGE pins are independent-oracle
+ *  literals (shared/dnac/tests/storage_oracle.py, nodus_witness_runtime.c)
+ *  and D4 is hf6_vote_oracle.py's (dnac.h); section 5 (selfcheck) and the
+ *  6'' re-derivation prove the C encoders agree with those oracles, not
+ *  that the PROVISIONAL generation number / op ids /
  *  versions (main merge order) are final. Section 8 feeds views without
  *  call bytes, so its GEN_STORAGE case proves only the parse / B2
  *  refusals; the register /
@@ -397,16 +398,9 @@ int main(void) {
                                      DNAC_RULESET_SWITCH_SPEC_VERSION,
                                      &d) == 0);
         CHECK(d == (uint64_t)DNAC_CFG_RULESET_GEN2_D2);
-#ifdef NODUS_EVM_ENABLED
-        /* storage reward v1: the storage vote literal re-derives from the
-         * compiled GEN_STORAGE pins (both oracle-filled — header "HOW IT
-         * CAN LIE"; STORAGE-ORACLE: shared/dnac/tests/storage_oracle.py) */
-        CHECK(dna_ruleset_gen_digest(NODUS_RT_GEN_STORAGE,
-                                     gS[0].ruleset_hash, gS[1].ruleset_hash,
-                                     DNAC_RULESET_SWITCH_SPEC_VERSION,
-                                     &d) == 0);
-        CHECK(d == (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D);
-#endif
+        /* (the storage-reward v1 RSGEN literal that re-derived here from
+         * the GEN_STORAGE pins is deleted with param 16 — HF-6 slice 8c;
+         * generation 4's vote value is 6'' below) */
     }
 
     /* ── 6''. HF-6 slice 8b: the generation-4 vote value D4 (design rev 6
@@ -548,8 +542,7 @@ int main(void) {
                                       &d) == 0 && d == d0);
         /* distinct from every other vote value */
         CHECK(d0 != (uint64_t)DNAC_CFG_RULESET_GEN2_D2 &&
-              d0 != (uint64_t)DNAC_CFG_EVM_ACTIVE_D &&
-              d0 != (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D);
+              d0 != (uint64_t)DNAC_CFG_EVM_ACTIVE_D);
     }
 #endif
 

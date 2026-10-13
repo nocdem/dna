@@ -85,12 +85,14 @@
 #define CC_PARAM_NAME_PRICE_6P      13    /* HF-4 — DNAC_CFG_NAME_PRICE_6P */
 #define CC_PARAM_EVM_ACTIVE         DNAC_CFG_EVM_ACTIVE          /* Nodus EVM */
 #define CC_PARAM_EVM_BLOCK_GAS      DNAC_CFG_EVM_BLOCK_GAS_LIMIT /* Nodus EVM */
-#define CC_PARAM_RULESET_GEN_STORAGE 16   /* storage reward v1 —
-                                           * DNAC_CFG_RULESET_GEN_STORAGE */
+#define CC_PARAM_RULESET_GEN_STORAGE 16   /* RETIRED (HF-6 slice 8c) —
+                                           * DNAC_CFG_RULESET_GEN_STORAGE;
+                                           * named for its grace case and
+                                           * the "any param-16 row" read */
 #define CC_PARAM_DELEGATE_NAME_REQUIRED 17 /* HF-8 —
                                            * DNAC_CFG_DELEGATE_NAME_REQUIRED */
-/* id 18 is not assigned in this tree (HF-6 slice 8c — dnac.h) */
-#define CC_PARAM_STAKE_MIN         19     /* HF-6 — DNAC_CFG_STAKE_MIN */
+#define CC_PARAM_RULESET_GEN_ROLES 18     /* HF-6 — DNAC_CFG_RULESET_GEN_ROLES */
+#define CC_PARAM_STAKE_MIN        19     /* HF-6 — DNAC_CFG_STAKE_MIN */
 #define CC_PARAM_POWER_CAP_BPS     20     /* HF-6 — DNAC_CFG_POWER_CAP_BPS */
 #define CC_PARAM_STORAGE_BOND      21     /* HF-6 — DNAC_CFG_STORAGE_BOND */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
@@ -100,10 +102,10 @@
  * 9-13 and every read of them would FAULT on every node. Nodus EVM grew it
  * 14 -> 16 for the same reason (ids 14 EVM_ACTIVE, 15 EVM_BLOCK_GAS);
  * storage reward v1 grows it 16 -> 17 (id 16), HF-8 17 -> 18 (id 17,
- * DELEGATE_NAME_REQUIRED) and HF-6 18 -> 22 (ids 19 STAKE_MIN, 20
- * POWER_CAP_BPS, 21 STORAGE_BOND; slot 18 exists but no row can be
- * committed for it until slice 8c assigns the id) through the same
- * derivation. */
+ * DELEGATE_NAME_REQUIRED) and HF-6 18 -> 22 (ids 18 RULESET_GEN_ROLES,
+ * 19 STAKE_MIN, 20 POWER_CAP_BPS, 21 STORAGE_BOND) through the same
+ * derivation. Slot 16 stays: RETIRED id 16 is still READ (any committed
+ * row refuses the param-18 vote). */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
 /* CC_MAX_TXS_HARD_CAP RETIRED (R3 W4-C delta 2) with CC_PARAM_MAX_TXS —
  * no live consumer; the id space stays 1..CC_PARAM_MAX_ID unchanged. */
@@ -201,6 +203,8 @@ _Static_assert(CC_MIN_NAME_PRICE == DNAC_CFG_MIN_NAME_PRICE &&
                "NAME_PRICE range drift vs dnac");
 _Static_assert(CC_PARAM_RULESET_GEN_STORAGE == DNAC_CFG_RULESET_GEN_STORAGE,
                "CC_PARAM_RULESET_GEN_STORAGE drift vs dnac param id");
+_Static_assert(CC_PARAM_RULESET_GEN_ROLES == DNAC_CFG_RULESET_GEN_ROLES,
+               "CC_PARAM_RULESET_GEN_ROLES drift vs dnac param id");
 _Static_assert(CC_PARAM_DELEGATE_NAME_REQUIRED ==
                    DNAC_CFG_DELEGATE_NAME_REQUIRED,
                "CC_PARAM_DELEGATE_NAME_REQUIRED drift vs dnac param id");
@@ -680,7 +684,14 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
      *        this function).
      *   id 3 INFLATION_START_BLOCK — RETIRED (tokenomics-v3 P2, P2-4:
      *        "INFLATION_START parametresi (id 3) emekli"; no per-block
-     *        mint remains). */
+     *        mint remains).
+     *   id 16 RULESET_GEN_STORAGE — RETIRED (HF-6 slice 8c; design
+     *        docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
+     *        rev 6 §8 "Param 16 EMEKLİ", the id-1 precedent; decision
+     *        2026-10-09-kurultay-16-hf6-storage-summary.md): generation
+     *        4 is voted by id 18. Committed id-16 rows stay readable —
+     *        one at any height refuses the id-18 vote (stateful rule
+     *        (a') below). */
     if (!dnac_cfg_param_read_by_consensus(param_id)) return -1;
 
     switch (param_id) {
@@ -731,13 +742,17 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
              * nodus_chain_config_stateful_rules. */
             if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN2_D2) return -1;
             break;
-        case CC_PARAM_RULESET_GEN_STORAGE:
-            /* storage reward v1 (design 2026-10-04-storage-reward-v1-
-             * design.md rev 2.2 §6 — "voted like RULESET_GEN2"): EXACTLY
-             * the compiled GEN_STORAGE vote literal, the param-9 shape.
-             * Its stateful rules live in nodus_chain_config_stateful_
-             * rules. */
-            if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
+        case CC_PARAM_RULESET_GEN_ROLES:
+            /* HF-6 (design 2026-10-03-hf5-validator-owner-stake-design.md
+             * rev 6 §8, §8.1): EXACTLY the compiled generation-4 vote
+             * literal D4, the param-9 shape — the vote names its target
+             * (the generation-4 pins, the 3 -> 4 procedure, the
+             * Foundation owner and the nine HF-6 constants). A binary
+             * whose generation 4 differs refuses here, at the vote block.
+             * Pure: the literal, never a hash. The single-use / no-
+             * param-16-row / HF-2 / generation-3 / boundary rules need
+             * chain state: nodus_chain_config_stateful_rules_ex. */
+            if (new_value != (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D)
                 return -1;
             break;
         case CC_PARAM_NAME_PRICE_3P:
@@ -869,8 +884,16 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
              * return, the HF-3 shape: never the default: branch. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_RULESET_GEN_STORAGE:
-            /* storage reward v1 — ERGONOMIC, param 9's class ("voted like
-             * RULESET_GEN2", design rev 2.2 §6). Its own return. */
+            /* RETIRED (HF-6 slice 8c) — the id-1 treatment above,
+             * verbatim in intent: `scalar_rules` refuses id 16 before any
+             * caller reaches a grace check; UINT64_MAX makes the gap test
+             * unsatisfiable by construction for a caller that reaches
+             * this function directly. */
+            return (uint64_t)-1;
+        case CC_PARAM_RULESET_GEN_ROLES:
+            /* HF-6 — ERGONOMIC (Kurultay #16 khan "4 ok": 18-21
+             * ERGONOMIC; param 9's class). Its own return, never the
+             * default: branch. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_STAKE_MIN:
             /* HF-6 — ERGONOMIC (Kurultay #16 khan "4 ok": 18-21
@@ -927,13 +950,14 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
  * approval responder (cc_appr_rules_chain_config below) derives the same
  * three facts at its candidate height — so the two sites cannot fork.
  *
- * Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md rev
- * 2.2 §6 — param 16 "voted like RULESET_GEN2"): the 4th argument is the
- * SINGLE-USE fact OF THE PARAM BEING VOTED — "any committed param-9 row"
- * for a param-9 vote, "any committed param-16 row" for a param-16 vote —
- * so this form sets BOTH single-use facts from it (the _ex form reads
- * only the one matching param_id). The production callers use the _ex
- * form with each fact read separately. */
+ * The 4th argument is the SINGLE-USE fact OF THE PARAM BEING VOTED — "any
+ * committed param-9 row" for a param-9 vote, "any committed param-18 row"
+ * for a param-18 vote (HF-6 slice 8c) — so this form sets BOTH of those
+ * single-use facts from it (the _ex form reads only the one matching
+ * param_id). It has no "any committed param-16 row" input: that fact is
+ * 0 here (no param-16 row), and only the _ex form can set it. The
+ * production callers use the _ex form with each fact read separately;
+ * this form is test-only. */
 int nodus_chain_config_stateful_rules(uint8_t param_id,
                                       uint64_t effective_block_height,
                                       uint8_t hf2_active,
@@ -943,7 +967,7 @@ int nodus_chain_config_stateful_rules(uint8_t param_id,
     memset(&f, 0, sizeof(f));
     f.hf2_active = hf2_active;
     f.ruleset_gen2_voted = ruleset_gen2_voted;
-    f.ruleset_gen_storage_voted = ruleset_gen2_voted;
+    f.ruleset_gen_roles_voted = ruleset_gen2_voted;
     f.judging_generation = judging_generation;
     return nodus_chain_config_stateful_rules_ex(param_id,
                                                 effective_block_height, &f);
@@ -1011,28 +1035,56 @@ int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
         }
         case CC_PARAM_EVM_BLOCK_GAS:
             return 0;              /* the scalar rules decide it alone   */
-        case CC_PARAM_RULESET_GEN_STORAGE:
-            /* (d) the switch this vote schedules is the EVM generation ->
-             * GEN_STORAGE (nodus_witness_v2_apply.c phase 6b'), so it is
-             * votable only while the EVM generation (NODUS_RT_GEN_STORAGE_
-             * BASE) judges the vote: under any other generation it would
-             * schedule an edge the registry could not take (6b' would
-             * FAULT, every node at once). It also keeps the storage edge
-             * out of the EVM edge's block: a vote judged at the EVM
-             * generation is committed at or after the EVM edge's H, so its
-             * own H-1 lies strictly above the EVM edge block. Then rules
-             * (a)-(c) exactly as param 9 below, (a) over the param-16
-             * fact. A synthetic or unresolved runtime reads 0 here. */
+        case CC_PARAM_RULESET_GEN_ROLES:
+            /* HF-6 (design 2026-10-03-hf5-validator-owner-stake-design.md
+             * rev 6 §8 "Durumlu kural (param 18)"; decision 2026-10-09-
+             * kurultay-16-hf6-storage-summary.md item 1, khan "6 ok"): */
+            /* (a) single use: any committed param-18 row, at any
+             * effective height (the far-future one included), refuses
+             * every further vote — param 9's rule (a) over its own fact */
+            if (facts->ruleset_gen_roles_voted) return -1;
+            /* (a') no committed param-16 (RETIRED RULESET_GEN_STORAGE)
+             * row at any height: such a row is a generation-4 vote of the
+             * retired development path, and this binary's edge never
+             * reads it — refused rather than ignored (Kurultay #16) */
+            if (facts->ruleset_gen_storage_voted) return -1;
+            /* (b) HF-2 active at the vote height (design §8 "HF-2
+             * yürürlükte" — the param-9 rule (b), which the param-16
+             * rule carried too; HF-2 has no off vote) */
+            if (!hf2_active) return -1;
+            /* (c) judged under generation EXACTLY 3 (NODUS_RT_GEN_
+             * STORAGE_BASE = GEN_EVM): phase 6b''' switches SYSTEM / CORE
+             * FROM it, and nodus_witness_domreg_generation_switch FAULTs
+             * every node at H-1 if the registry is elsewhere — this rule
+             * keeps that FAULT unreachable (the EVM_ACTIVE rule (e)
+             * precedent). It also keeps the generation-4 edge out of the
+             * EVM edge's block: a vote judged at generation 3 is
+             * committed at or after the EVM edge's H, so its own H-1 lies
+             * strictly above the EVM edge block. A synthetic or
+             * unresolved runtime reads 0 here. */
             if (judging_generation != NODUS_RT_GEN_STORAGE_BASE) return -1;
-            /* fall through */
+            /* (d) H-1 must not be an epoch boundary (the param-9 rule
+             * (c)): H-1 is the migration block */
+            if (effective_block_height == 0) return -1;
+            {
+                uint64_t h1 = effective_block_height - 1u;
+                if (h1 != 0 && (h1 % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
+                    return -1;
+            }
+            /* (e) H must not be an epoch boundary either: H is the first
+             * block under the generation-4 rules, kept apart from the
+             * boundary work (design rev 6 §8 "H−1 VE H sınır değil";
+             * Kurultay #16 recorded the disagreement, the khan kept it).
+             * effective != 0 here by (d). */
+            if ((effective_block_height % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
+                return -1;
+            return 0;
         case CC_PARAM_RULESET_GEN2: {
-            /* (a) single use: any committed row OF THIS PARAM — at any
+            /* (a) single use: any committed param-9 row — at any
              * effective height, the far-future one included (design §1.2:
              * "a far-future effective retires param 9 for good") —
              * refuses every further vote. */
-            if (param_id == CC_PARAM_RULESET_GEN_STORAGE
-                    ? facts->ruleset_gen_storage_voted != 0
-                    : ruleset_gen2_voted != 0)
+            if (ruleset_gen2_voted != 0)
                 return -1;
             /* (b) HF-2 must be active at the vote height: the switch
              * leaves CORE's root unchanged at H-1, which phase 9 accepts
@@ -1090,7 +1142,10 @@ int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
             /* no stateful rule — the scalar rules decide these alone */
             return 0;
         default:
-            return -1;                   /* unknown id: fail closed      */
+            /* unknown id: fail closed. RETIRED id 16 lands here too
+             * (HF-6 slice 8c removed its case; the scalar rules refuse it
+             * first, so no caller that runs them reaches this line) */
+            return -1;
     }
 }
 
@@ -1364,15 +1419,17 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
      *   - the judging generation: the runtime the committed SYSTEM
      *     manifest resolves — the registry after the tip names the
      *     generation that judges tip + 1 = h (exec: rt->generation).
-     * Storage reward v1: "any param-16 row" is read the param-9 way
-     * (exec: ctx.ruleset_gen_storage_voted) into its own fact. */
+     * HF-6 slice 8c: "any param-18 row" (exec: ctx.ruleset_gen_roles_
+     * voted) and "any param-16 row" (RETIRED id 16 — exec: ctx.ruleset_
+     * gen_storage_voted) are each read the param-9 way into their own
+     * fact; the param-18 vote is refused by either. */
     {
         /* Nodus EVM: + HF-3 at h (param 8), a non-zero gas price at h
          * (param 5) and "any param-14 row" — the EVM_ACTIVE facts the
          * exec reads from ctx (hf3_active / gas_price_on /
          * evm_active_voted), derived here with the same discipline; and
          * (red-team 1 F5) the chain's initial height for param 14. */
-        uint64_t v7 = 0, v9 = 0, v8 = 0, v5 = 0, v14 = 0, v16 = 0;
+        uint64_t v7 = 0, v9 = 0, v8 = 0, v5 = 0, v14 = 0, v16 = 0, v18 = 0;
         int r7 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF2_ACTIVE,
                                             h, 0ULL, &v7);
         int r9 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_RULESET_GEN2,
@@ -1386,8 +1443,12 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         int r16 = nodus_chain_config_get_u64(
                       w, (uint8_t)CC_PARAM_RULESET_GEN_STORAGE,
                       (uint64_t)INT64_MAX, 0ULL, &v16);
+        int r18 = nodus_chain_config_get_u64(
+                      w, (uint8_t)CC_PARAM_RULESET_GEN_ROLES,
+                      (uint64_t)INT64_MAX, 0ULL, &v18);
         const nodus_domain_runtime_t *sys_rt = NULL;
         if (r7 < 0 || r9 < 0 || r8 < 0 || r5 < 0 || r14 < 0 || r16 < 0 ||
+            r18 < 0 ||
             (v7 != 0ULL && v7 != CC_HF2_ACTIVE_ON) ||
             (v8 != 0ULL && v8 != CC_HF3_ACTIVE_ON)) {
             snprintf(reason, reason_size,
@@ -1408,6 +1469,7 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         facts.ruleset_gen2_voted = (uint8_t)(r9 == 0 ? 1u : 0u);
         facts.evm_active_voted = (uint8_t)(r14 == 0 ? 1u : 0u);
         facts.ruleset_gen_storage_voted = (uint8_t)(r16 == 0 ? 1u : 0u);
+        facts.ruleset_gen_roles_voted = (uint8_t)(r18 == 0 ? 1u : 0u);
         facts.judging_generation = sys_rt->generation;
         /* red-team 1 F5: the chain's first block height, from the stored
          * genesis document (nodus_witness_v2_chain_initial_height — the

@@ -718,38 +718,34 @@ typedef enum {
                                           *   BLOCK_GAS]; grace SAFETY.
                                           *   NEXT FREE id in this
                                           *   tree. */
-    DNAC_CFG_RULESET_GEN_STORAGE   = 16, /**< Storage reward v1 (design
-                                          *   docs/plans/2026-10-04-
-                                          *   storage-reward-v1-design.md
-                                          *   rev 2.2 §6 — "voted like
-                                          *   RULESET_GEN2 (param 9
-                                          *   mechanism)"; decision docs/
-                                          *   plans/decisions/2026-10-04-
-                                          *   storage-reward-approved.md):
-                                          *   the rule-set upgrade vote to
-                                          *   the compiled GEN_STORAGE
-                                          *   generation. Its effective
-                                          *   block H is the first block
-                                          *   judged under it; the engine
-                                          *   rewrites the SYSTEM and CORE
-                                          *   registry records from
-                                          *   the EVM generation at the
-                                          *   end of block H-1 (phase
-                                          *   6b'). Value domain EXACTLY
-                                          *   DNAC_CFG_RULESET_GEN_
-                                          *   STORAGE_D. Single use; HF-2
-                                          *   active; H-1 not an epoch
-                                          *   boundary; and the vote must
-                                          *   be judged under the EVM
-                                          *   generation (the switch is
-                                          *   GEN_EVM -> GEN_STORAGE) —
-                                          *   witness-side stateful rules
-                                          *   the client mirror cannot
-                                          *   apply. Grace class
-                                          *   ERGONOMIC (the param-9
-                                          *   class). Id assigned in main
-                                          *   merge order (QEVM took 14
-                                          *   and 15). */
+    DNAC_CFG_RULESET_GEN_STORAGE   = 16, /**< RETIRED (HF-6 slice 8c;
+                                          *   design docs/plans/2026-10-
+                                          *   03-hf5-validator-owner-
+                                          *   stake-design.md rev 6 §8
+                                          *   "Param 16 EMEKLİ"; decision
+                                          *   docs/plans/decisions/2026-
+                                          *   10-09-kurultay-16-hf6-
+                                          *   storage-summary.md item 1).
+                                          *   Was storage reward v1's
+                                          *   generation-4 vote (the
+                                          *   development trigger on the
+                                          *   hf6 branch); generation 4
+                                          *   is now voted by param 18
+                                          *   RULESET_GEN_ROLES. Refused
+                                          *   unconditionally by the
+                                          *   witness-side scalar rules
+                                          *   and this client-side mirror
+                                          *   (verify.c) — the id-1
+                                          *   treatment; the id NEVER
+                                          *   activates again and is
+                                          *   never reassigned. Its vote
+                                          *   literal is deleted (never
+                                          *   active on any chain). A
+                                          *   committed param-16 row is
+                                          *   still READ: any one, at any
+                                          *   height, refuses every
+                                          *   param-18 vote (the param-18
+                                          *   stateful rule (a')). */
     DNAC_CFG_DELEGATE_NAME_REQUIRED = 17, /**< HF-8 (design docs/plans/
                                           *   2026-10-07-delegate-name-
                                           *   required-design.md rev 2 §1;
@@ -792,13 +788,38 @@ typedef enum {
                                           *   HF-2/HF-3 class). Id
                                           *   assigned in main merge
                                           *   order (16 = storage). */
-    /* id 18 is NOT assigned in this tree: it is HF-6's generation-4 vote
-     * (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
-     * rev 6 §8, "param 18 RULESET_GEN_ROLES"), which lands together with
-     * its vote value D4 and param 16's retirement in HF-6 slice 8c. Until
-     * then dnac_cfg_param_read_by_consensus(18) is false, so both rule
-     * sides refuse it like any unknown id. */
-    DNAC_CFG_STAKE_MIN             = 19, /**< HF-6 (design rev 6 §1.5, §8;
+    DNAC_CFG_RULESET_GEN_ROLES     = 18, /**< HF-6 (design docs/plans/
+                                          *   2026-10-03-hf5-validator-
+                                          *   owner-stake-design.md rev 6
+                                          *   §8, §8.1; name khan decision
+                                          *   2026-10-13; decision docs/
+                                          *   plans/decisions/2026-10-09-
+                                          *   kurultay-16-hf6-storage-
+                                          *   summary.md): the vote for
+                                          *   rule-set generation 4 —
+                                          *   storage + the validator
+                                          *   owner/node roles. Its
+                                          *   effective block H is the
+                                          *   first block judged under
+                                          *   it; the engine switches the
+                                          *   SYSTEM and CORE registry
+                                          *   records 3 -> 4 and runs the
+                                          *   §7 validator migration at
+                                          *   the end of block H-1
+                                          *   (phase 6b'''). Value domain
+                                          *   EXACTLY DNAC_CFG_RULESET_
+                                          *   GEN_ROLES_D (D4). Single
+                                          *   use; HF-2 active; judged
+                                          *   under generation EXACTLY 3
+                                          *   (GEN_EVM); neither H-1 nor
+                                          *   H an epoch boundary; no
+                                          *   param-16 row committed at
+                                          *   any height — witness-side
+                                          *   stateful rules the client
+                                          *   mirror cannot apply. Grace
+                                          *   class ERGONOMIC (Kurultay
+                                          *   #16 "4 ok"). */
+    DNAC_CFG_STAKE_MIN            = 19, /**< HF-6 (design rev 6 §1.5, §8;
                                           *   decision docs/plans/
                                           *   decisions/2026-10-08-
                                           *   kurultay-14-hf6-summary.md
@@ -918,11 +939,13 @@ typedef enum {
  *      block_ctx_from_doms (the block gas sum of Prepare / Process /
  *      FinalizeBlock and the EVM block environment's GASLIMIT), read only
  *      while the EVM domain is ACTIVE;
- *    - RULESET_GEN_STORAGE (16, storage reward v1): nodus_witness_v2_
- *      apply.c phase 6b' (the second edge trigger — the EVM generation ->
- *      GEN_STORAGE at the end of block H-1) and env_ruleset_gen_storage_
- *      voted (nodus_rt_exec_ctx_t.ruleset_gen_storage_voted — the
- *      single-use vote rule);
+ *    - RULESET_GEN_ROLES (18, HF-6): nodus_witness_v2_apply.c phase
+ *      6b''' (the edge trigger — the EVM generation -> generation 4 and
+ *      the validator migration at the end of block H-1),
+ *      nodus_witness_v2_storage.c nodus_witness_storage_boundary_apply
+ *      (the storage boundary gate) and env_ruleset_gen_roles_voted
+ *      (nodus_rt_exec_ctx_t.ruleset_gen_roles_voted — the single-use
+ *      vote rule);
  *    - DELEGATE_NAME_REQUIRED (17, HF-8): nodus_witness_v2_apply.c
  *      env_delegate_name_required (the engine reads it into
  *      nodus_rt_exec_ctx_t.delegate_name_required — the CORE SYSFUND
@@ -941,9 +964,12 @@ typedef enum {
  *      (into nodus_rt_exec_ctx_t.storage_bond — the exact STORAGE_REGISTER
  *      bond, nodus_witness_rt_native.c rtn_storage_bond_at),
  *      nodus_witness_handlers.c (dnac_fee_info).
- *  No other governed id has a reader: 1 and 3 are RETIRED (above), 2
- *  (BLOCK_INTERVAL_SEC) is not read on this lane, and 18 is not assigned
- *  yet (HF-6 slice 8c).
+ *  No other governed id is votable: 1, 3 and 16 are RETIRED (above), 2
+ *  (BLOCK_INTERVAL_SEC) is not read on this lane. RETIRED 16
+ *  (RULESET_GEN_STORAGE) is off this list, so no new param-16 row can be
+ *  committed; the engine still reads "any committed param-16 row"
+ *  (env_ruleset_gen_storage_voted) as a refusal condition of the
+ *  param-18 vote — a read of history, not of a votable parameter.
  *
  *  Both sides of the rule consume THIS predicate — the witness-side
  *  nodus_chain_config_scalar_rules (the one authority for the 0x71
@@ -968,8 +994,8 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_NAME_PRICE_6P ||
            param_id == (uint8_t)DNAC_CFG_EVM_ACTIVE ||
            param_id == (uint8_t)DNAC_CFG_EVM_BLOCK_GAS_LIMIT ||
-           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE ||
            param_id == (uint8_t)DNAC_CFG_DELEGATE_NAME_REQUIRED ||
+           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_ROLES ||
            param_id == (uint8_t)DNAC_CFG_STAKE_MIN ||
            param_id == (uint8_t)DNAC_CFG_POWER_CAP_BPS ||
            param_id == (uint8_t)DNAC_CFG_STORAGE_BOND;
@@ -1120,38 +1146,10 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  mirror's (dnac/src/transaction/verify.c). */
 #define DNAC_CFG_RULESET_GEN2_D2            0x44dfbe7ad3c75adfULL /* G4 of shared/dnac/tests/hf4_oracle.py (4962894749133920991) */
 
-/** RULESET_GEN_STORAGE value domain (storage reward v1, param_id 16):
- *  EXACTLY this literal — the D2 construction above with the storage
- *  generation's inputs:
- *    SHA3-512( TAG16("NDS.RSGEN.v1") ‖ u32 BE NODUS_RT_GEN_STORAGE (4)
- *              ‖ GEN_STORAGE SYSTEM (v9) ruleset_hash[64]
- *              ‖ GEN_STORAGE CORE (v7) ruleset_hash[64]
- *              ‖ u32 BE DNAC_RULESET_SWITCH_SPEC_VERSION (1) )
- *  first 8 bytes big-endian, top bit cleared. The switch procedure is
- *  the HF-4 one unchanged (the same fields copied / replaced, SYSTEM and
- *  CORE touched; the EVM domain's record is not rewritten), so the spec
- *  version stays 1; the generation number in the preimage keeps this
- *  value distinct from D2.
- *
- *  The value is a literal from the INDEPENDENT oracle (the hf4_oracle.py
- *  procedure over the GEN_STORAGE preimages listed at
- *  nodus_witness_runtime.c SYS_RULESET_HASH_GST) — never this build's
- *  encoder. nodus_witness_runtime_selfcheck re-derives it on every start
- *  of an EVM-enabled build. Numbers assigned in main merge order
- *  (decision 2026-10-04-storage-reward-approved.md; QEVM merged first;
- *  decision 2026-10-05-storage-reward-is-for-archive.md K10).
- *  STORAGE-ORACLE: S4 of shared/dnac/tests/storage_oracle.py
- *  (generation 4, base GEN_EVM 3), whose control legs reproduced the
- *  generation-1/2 pins, D2, the EVM generation's pins and
- *  DNAC_CFG_EVM_ACTIVE_D first (the earlier generation-3 value
- *  0x14bb86ad… is dead).
- *  HF-6 slice 6a (design docs/plans/2026-10-03-hf5-validator-owner-
- *  stake-design.md rev 6 §2, §10 item 2): the generation-4 SYSTEM v9
- *  descriptor owns and prices ROTATE_CONSENSUS_KEY (10), so its hash and
- *  this literal were re-derived by the same oracle (the storage-only value
- *  0x0c6fd6f2484e6024 is dead). Still the DEVELOPMENT trigger only: slice
- *  8 replaces it with the D4 construction of design §8.1 (param 18). */
-#define DNAC_CFG_RULESET_GEN_STORAGE_D      0x329b0ea92c8b8c58ULL /* STORAGE-ORACLE: S4 of shared/dnac/tests/storage_oracle.py (3646524443046153304) */
+/* The param-16 (RULESET_GEN_STORAGE) development vote literal that stood
+ * here is DELETED with the param (HF-6 slice 8c; design rev 6 §8: never
+ * active on any chain, "tarih olarak tutulmaz"). Generation 4 is voted
+ * with DNAC_CFG_RULESET_GEN_ROLES_D (D4, below). */
 
 /** HF-6 — the Foundation owner address (design docs/plans/2026-10-03-
  *  hf5-validator-owner-stake-design.md rev 6 §7.1; decision
@@ -1268,8 +1266,8 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  (D2's) does NOT change. */
 #define DNAC_HF6_SWITCH_SPEC_VERSION     1u
 
-/** RULESET_GEN_ROLES value domain (HF-6, the generation-4 vote; param 18
- *  in slice 8c, name khan decision 2026-10-13): EXACTLY this literal, D4 =
+/** RULESET_GEN_ROLES value domain (HF-6, the generation-4 vote, param_id
+ *  18; name khan decision 2026-10-13): EXACTLY this literal, D4 =
  *  the first 8 bytes, big-endian, top bit cleared, of
  *    SHA3-512( TAG16("NDS.ROLEGEN.v1")
  *              ‖ u32 BE NODUS_RT_GEN_STORAGE (4)
@@ -1297,7 +1295,10 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *  nodus_witness_runtime_selfcheck re-derives it through
  *  dna_rolegen_vote_digest (shared/dnac/domain_wire.c) from the COMPILED
  *  pins, owner and constants on every start of an EVM-enabled build;
- *  nothing in the vote path hashes.
+ *  nothing in the vote path hashes. Its three comparers (HF-6 slice 8c):
+ *  the witness scalar rule (nodus_witness_chain_config.c), the client
+ *  mirror (dnac/src/transaction/verify.c) and the generation-4 edge
+ *  (nodus_witness_v2_apply.c phase_6b_gen4_edge).
  *
  *  TEST-BUILD OVERRIDE ONLY, and only TOGETHER with
  *  DNAC_HF6_FOUNDATION_OWNER: D4 binds the compiled owner, so a build that
@@ -1416,8 +1417,6 @@ _Static_assert(DNAC_CFG_EVM_ACTIVE_D <= 0x7FFFFFFFFFFFFFFFULL,
 _Static_assert(DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT >= DNAC_CFG_MIN_EVM_BLOCK_GAS &&
                DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT <= DNAC_CFG_MAX_EVM_BLOCK_GAS,
                "the EVM block gas default must be a votable value");
-_Static_assert(DNAC_CFG_RULESET_GEN_STORAGE_D <= 0x7FFFFFFFFFFFFFFFULL,
-               "the storage vote literal must fit SQLite int64");
 _Static_assert(DNAC_CFG_RULESET_GEN_ROLES_D <= 0x7FFFFFFFFFFFFFFFULL,
                "D4 must fit SQLite int64 (top bit cleared by construction)");
 _Static_assert(DNAC_HF6_STORAGE_BOND_DEFAULT == 100000000000000ULL &&
@@ -1448,9 +1447,10 @@ _Static_assert(DNAC_CFG_MIN_POWER_CAP_BPS == 500u &&
                DNAC_CFG_MIN_POWER_CAP_BPS <= DNAC_HF6_POWER_CAP_BPS_DEFAULT &&
                DNAC_HF6_POWER_CAP_BPS_DEFAULT <= DNAC_CFG_MAX_POWER_CAP_BPS,
                "POWER_CAP_BPS range [500, 3000] (K5), default inside it");
-_Static_assert(DNAC_CFG_STAKE_MIN == 19 && DNAC_CFG_POWER_CAP_BPS == 20 &&
+_Static_assert(DNAC_CFG_RULESET_GEN_ROLES == 18 &&
+               DNAC_CFG_STAKE_MIN == 19 && DNAC_CFG_POWER_CAP_BPS == 20 &&
                DNAC_CFG_STORAGE_BOND == 21,
-               "HF-6 param ids (design rev 6 §8; 18 is slice 8c's)");
+               "HF-6 param ids (design rev 6 §8)");
 _Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
                DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
                DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
