@@ -369,7 +369,15 @@ const char* qgp_platform_cache_dir(void) {
     if (!data_dir) {
         return NULL;
     }
-    snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s\\cache", data_dir);
+    /* data_dir\cache — NULL when it does not fit (it was cut short
+     * silently by snprintf before). */
+    static const char sub[] = "\\cache";
+    size_t data_len = strlen(data_dir);
+    if (data_len + sizeof(sub) > sizeof(g_app_cache_dir)) {
+        return NULL;
+    }
+    memcpy(g_app_cache_dir, data_dir, data_len);
+    memcpy(g_app_cache_dir + data_len, sub, sizeof(sub));
 
     /* Create cache directory */
     qgp_platform_mkdir(g_app_cache_dir);
@@ -397,7 +405,14 @@ int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir) {
         }
         memcpy(g_app_cache_dir, cache_dir, cache_len + 1);
     } else {
-        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s\\cache", data_dir);
+        /* data_dir\cache — refused when it does not fit (it was cut short
+         * silently by snprintf before). */
+        static const char sub[] = "\\cache";
+        if (data_len + sizeof(sub) > sizeof(g_app_cache_dir)) {
+            return -1;  /* Path too long */
+        }
+        memcpy(g_app_cache_dir, data_dir, data_len);
+        memcpy(g_app_cache_dir + data_len, sub, sizeof(sub));
     }
 
     g_dirs_initialized = 1;

@@ -1,7 +1,7 @@
 import { getAddress } from 'ethers';
-import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
+import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor } from './activity-storage.js';
+import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, sentRowsToShow, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor, serializeIdentity, parseIdentity, identityKeyFor, IDENTITY_PEERS_MAX } from './activity-storage.js';
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
@@ -15,7 +15,7 @@ import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient, NODUS_CONNECT_BOUND_MS } from './nodus/client.js';
-import { nodusHistoryRow, nodusHistoryStatus, localRowsToShow, NODUS_HISTORY_LIMIT } from './nodus/history.js';
+import { nodusHistoryRow, nodusHistoryStatus, NODUS_HISTORY_LIMIT } from './nodus/history.js';
 import { parseNameOf } from './nodus/names.js';
 import { netLevelFor, netStatusView } from './net-status.js';
 // The session log (memory only, cleared on lock; the Logs page).
@@ -28,8 +28,10 @@ import { createPortfolio } from './portfolio-view.js';
 import { renderQr } from './qr.js';
 // Wallet-only page: no extension is registered and these are no-ops; the
 // Nodus Connect page registers Messages (src/connect-main.js).
-import { raise, gather, siteName } from './wallet-extensions.js';
+import { raise, gather, siteName, onOwnIdentity } from './wallet-extensions.js';
 import { createSiteLock } from './site-lock.js';
+import { readAutoLock, writeAutoLock, parseAutoLock, autoLockNote, autoLockBarText } from './auto-lock.js';
+import { readBalanceRefresh, writeBalanceRefresh, parseBalanceRefresh, balanceRefreshNote } from './balance-refresh.js';
 const $ = id => document.getElementById(id);
 // Must equal the src/style.css media query that sets `.dashboard-grid` to one
 // column (`@media (max-width: 900px)`): below it the Send / Receive panel sits
@@ -74,6 +76,9 @@ let claimCheck = 0;
 // Set only inside the VITE_ENABLE_IXIOS blocks below; undefined/no-ops in a
 // disabled build (so no Ixios string literal is needed outside those blocks).
 let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
+// Settles once the open wallet's NODUS address derivation has ended (either
+// way); the other receive-only addresses are derived after it (0.1.96).
+let nodusAddressFirst = Promise.resolve();
 // Receive-panel derivation status line per receive-only network, shown only
 // while that network is selected. The Ixios entry is added by its flag block.
 const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellframe-address-status') };
@@ -176,6 +181,52 @@ function persistBalances(entries) {
     localStorage.setItem(BALANCES_KEY, encrypted);
   }).catch(() => { /* the balances are read again next time */ });
 }
+// The own identity (0.1.97, src/activity-storage.js serializeIdentity): the
+// derived receive-only addresses and the own name / picture last shown,
+// saved encrypted only while a SAVED wallet is open, shown at once on the
+// next unlock. `ownIdentity` is this wallet's current one; a derived address
+// replaces a kept one.
+let ownIdentity = { addresses: {} }, identityWrites = Promise.resolve();
+function noteIdentity(change) {
+  const next = { ...ownIdentity, ...change, addresses: { ...ownIdentity.addresses, ...(change.addresses || {}) } };
+  for (const key of ['name', 'avatar']) if (!next[key]) delete next[key];
+  if (JSON.stringify(next) === JSON.stringify(ownIdentity)) return;
+  ownIdentity = next;
+  saveIdentity();
+}
+function saveIdentity() {
+  const session = activitySession, source = wallet, value = ownIdentity;
+  if (!session?.identityKey || !source) return;
+  identityWrites = identityWrites.catch(() => {}).then(async () => {
+    const encrypted = await serializeIdentity(session.id, value, session.identityKey);
+    if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return;
+    localStorage.setItem(IDENTITY_KEY, encrypted);
+  }).catch(() => { /* derived again next time */ });
+}
+// The own name and picture as the page shows them (Nodus Connect,
+// src/connect-main.js through wallet-extensions.js reportOwnIdentity).
+onOwnIdentity(({ name = '', avatar = '' } = {}) => { if (wallet && !wallet.locked) noteIdentity({ name, avatar }); });
+// Every receive-only address derived after unlock: the NODUS address (the
+// own ID of Nodus Connect) first, Cellframe and Ixios after it, so they do
+// not compete with it for the main thread (0.1.96 for typed words; 0.1.97 for
+// the saved-wallet unlock too, which still started all three at once).
+// A saved wallet's kept identity, shown before anything is derived: the
+// portfolio rows of those addresses (their kept balances, a read for the
+// networks that have a source) and, for Nodus Connect, the own ID, name and
+// picture. Nothing signs or receives with a kept address: `wallet.addresses`
+// is set only by derivation (showNodusAddress / Cellframe / Ixios).
+function showKeptIdentity(kept) {
+  const a = kept?.addresses || {}, opened = wallet;
+  if (a.nodus || kept?.name || kept?.avatar) raise('ownIdentityKept', { address: a.nodus, name: kept.name || '', avatar: kept.avatar || '' });
+  // The portfolio rows after the wallet view has been drawn (each one
+  // re-draws the portfolio; measured: opening ~0.2 s later when done inline).
+  setTimeout(() => { if (wallet === opened && !opened.locked) for (const [chain, address] of Object.entries(a)) portfolio.setAddress(chain, address); }, 0);
+}
+function deriveOwnAddresses() {
+  const opened = wallet;
+  nodusAddressFirst = showNodusAddress().catch(() => {});
+  void nodusAddressFirst.then(() => { if (wallet === opened && !opened.locked) { void showCellframeAddress(); showIxiosAddress(); } });
+}
 // ── Account history (src/history.js) ────────────────────────────────────
 // Read for the network selected in Send / Receive, at most once per
 // HISTORY_AUTO_MS by itself and once per HISTORY_MANUAL_MS on "Refresh
@@ -239,7 +290,7 @@ async function loadHistory(chain, { manual = false } = {}) {
     historyByChain[chain] = { address, readAt: Date.now(), rows: mergeHistory(kept?.rows, rows) };
     persistHistory();
   } catch (error) { if (historyJob === job) historyNote[chain] = error.message; }
-  finally { if (historyJob === job) { historyJob = null; renderHistory(); } }
+  finally { if (historyJob === job) { historyJob = null; renderHistory(); renderActivity(); } }   // a send this read lists leaves "Sent from here" (0.1.96)
 }
 function persistHistory() {
   const session = activitySession, source = wallet;
@@ -253,7 +304,7 @@ function persistHistory() {
 }
 function clearHistory() {
   historyJob?.controller.abort(); historyJob = null; historyByChain = {}; historyNote = {};
-  nodusHistoryJob?.controller.abort(); nodusHistoryJob = null; nodusHistory = null; nodusHistoryError = ''; nodusPeerNames.clear();
+  nodusHistoryJob?.controller.abort(); nodusHistoryJob = null; nodusHistory = null; nodusHistoryError = ''; nodusPeerNames.clear(); keptPeerNames.clear();
   renderHistory();
 }
 // ── NODUS account history (src/nodus/history.js) ────────────────────────
@@ -271,6 +322,20 @@ let nodusHistory = null, nodusHistoryJob = null, nodusHistoryError = '';
 // Chain names of the counterparties (nameOf, one node), fingerprint -> name
 // ('' = none); at most NODUS_NAME_LOOKUPS new lookups per read.
 const nodusPeerNames = new Map(), NODUS_NAME_LOOKUPS = 20;
+// The names a saved wallet learned in earlier sessions (its identity record,
+// `peers`; 0.1.106): shown at once, until this session's answer for the same
+// counterparty replaces it. Typed words keep nothing (decision
+// 2026-10-02-device-cache-only-when-saved).
+const keptPeerNames = new Map();
+const peerNamesShown = () => new Map([...keptPeerNames, ...nodusPeerNames]);
+function keepPeerName(peer, name) {
+  const peers = { ...(ownIdentity.peers || {}) };
+  delete peers[peer];
+  if (name) peers[peer] = name;
+  const keys = Object.keys(peers);
+  for (const old of keys.slice(0, Math.max(0, keys.length - IDENTITY_PEERS_MAX))) delete peers[old];   // the last ones learned stay
+  noteIdentity({ peers });
+}
 const nodusHistoryFor = () => (nodusHistory && wallet && nodusHistory.address === wallet.addresses.nodus ? nodusHistory : null);
 function renderNodusHistory(list, status, button) {
   const client = nodusClient, readable = !!client?.historyReadable, kept = nodusHistoryFor();
@@ -280,7 +345,7 @@ function renderNodusHistory(list, status, button) {
     : nodusHistoryStatus({ page: kept?.page ?? null, error: nodusHistoryError, reading: !!nodusHistoryJob, readAt: kept ? historyTime(kept.readAt) : '', limit: NODUS_HISTORY_LIMIT });
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
   list.replaceChildren(...(kept ? kept.page.entries : []).map(entry => {
-    const r = nodusHistoryRow(entry, { names: nodusPeerNames });
+    const r = nodusHistoryRow(entry, { names: peerNamesShown() });
     const div = el('div', `activity-row nodus-history-row${r.dir ? ` history-dir-${r.dir}` : ''}`), main = el('span', 'activity-main');
     main.append(el('strong', '', r.amount ? `${r.sign}${r.amount}` : r.title), el('small', '', [r.amount ? r.title : '', r.detail].filter(Boolean).join(' · ')));
     const side = el('span', 'activity-side'), badge = el('span', 'status-badge', 'confirmed');
@@ -330,6 +395,7 @@ async function nameNodusPeers(page, source, client) {
       const found = parseNameOf(await client.nameOf({ owner: peer }));
       if (wallet !== source || client !== nodusClient) return;
       nodusPeerNames.set(peer, found.found ? found.name : '');
+      if ((keptPeerNames.get(peer) || '') !== (found.found ? found.name : '')) keepPeerName(peer, found.found ? found.name : '');
     } catch { if (wallet !== source || client !== nodusClient) return; /* not an answer: asked again next read */ }
   }
   if (peers.length && wallet === source && $('chain').value === NODUS_ASSET.chain) renderHistory();
@@ -339,7 +405,6 @@ $('history-refresh').onclick = () => void loadHistory($('chain').value, { manual
 // no record is hidden behind the NODUS account history.
 const ACTIVITY_EMPTY_TEXT = document.querySelector('#activity + .activity-empty')?.textContent ?? '';
 function renderActivity(save = true) {
-  if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   // A row is laid out like a portfolio holding row (src/portfolio-view.js):
   // amount and what it did on the left, status and when on the right, the
   // network's note below, then the transaction link and any row action.
@@ -348,8 +413,15 @@ function renderActivity(save = true) {
   // only, once (src/nodus/history.js localRowsToShow — the wire id, or the
   // confirmed block). Display only: the tracker still follows every record
   // (trackActivity reads visibleActivity, not this list).
-  const all = visibleActivity(), nodus = $('chain').value === NODUS_ASSET.chain;
-  const rows = nodus ? localRowsToShow(all, nodusHistoryFor()?.page ?? null, { limit: NODUS_HISTORY_LIMIT }) : all;
+  // Where the chain's account history is read, a confirmed send leaves this
+  // list (and the saved Activity) only once that list SHOWS it — its wire or
+  // block (NODUS, localRowsToShow) or its hash (the other networks) — and is
+  // marked `listed`; until then it stays here (0.1.96, BUGS W-05: since
+  // 0.1.91 it left at confirmation, before the history was read again, and
+  // could be in neither list).
+  const all = visibleActivity(), chain = $('chain').value, nodus = chain === NODUS_ASSET.chain;
+  const rows = sentRowsToShow(all, nodus ? { nodus, nodusPage: nodusHistoryFor()?.page ?? null } : { historyRows: historyFor(chain)?.rows || [] });
+  if (save) void persistActivity().catch(error => { $('vault-status').textContent = error.message; });
   const empty = document.querySelector('#activity + .activity-empty');
   if (empty) empty.textContent = rows.length < all.length ? 'Nothing waiting here: your confirmed transactions are listed under Account history below.' : ACTIVITY_EMPTY_TEXT;
   $('activity').replaceChildren(...rows.map(row => {
@@ -404,13 +476,31 @@ function renderActivity(save = true) {
 // intent_id; for a claim, for the coin it creates). A claim that reaches a
 // final state re-reads the NODUS balance and the claim offer once the
 // tracker has stored that state on the row (it does so after this returns).
+// Any transaction of this wallet confirmed now: its network's balance is read
+// again at once, in the background (0.1.102, operator: "birine nodus
+// gönderdikten sonra hemen bakiye güncellenmiyor … yarım dakika sonra refresh
+// ettiğim zaman … düzeliyor"); before, only a NODUS claim did so.
 const checkRow = async (row, options) => {
-  if (row.chain !== NODUS_ASSET.chain) return checkActivity(row, options);
+  const update = await checkRowStatus(row, options);
+  if (update.status === 'confirmed' && row.status !== 'confirmed') setTimeout(() => { if (wallet) portfolio.reread(row.chain); }, 0);
+  return update;
+};
+const checkRowStatus = async (row, options) => {
+  if (row.chain !== NODUS_ASSET.chain) {
+    const update = await checkActivity(row, options);
+    // Confirmed now: read the account history once (at most every
+    // HISTORY_MANUAL_MS) while its network is shown, so the send can move
+    // to that list (renderActivity `listed`, 0.1.96 W-05).
+    if (update.status === 'confirmed' && row.status !== 'confirmed' && historySupported(row.chain)) setTimeout(() => {
+      const kept = historyFor(row.chain);
+      if (wallet && $('chain').value === row.chain && (!kept || Date.now() - kept.readAt >= HISTORY_MANUAL_MS)) void loadHistory(row.chain, { manual: true });
+    }, 0);
+    return update;
+  }
   const update = await adapters.nodus.checkNodusActivity(row, { ...options, client: nodusClient });
   if (adapters.nodus.isClaimRow(row) && terminal(update.status) && !terminal(row.status)) setTimeout(() => {
     if (!wallet || !nodusClient) return;
-    void refreshClaim();
-    if (update.status === 'confirmed') portfolio.setAddress(NODUS_ASSET.chain, wallet.addresses.nodus);
+    void refreshClaim();               // its balance: checkRow above
   }, 0);
   // Any other NODUS transaction that reaches a final state may have moved a
   // delegation or the validator list, or registered this wallet's chain
@@ -464,6 +554,9 @@ const portfolio = createPortfolio({
     if (action !== 'earn') navigateWalletPage(null);
     $('chain').value = chain; selectChain(); $('asset').value = symbol;
     if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
+    // 'choose' (a network badge, 0.1.108): only the network changes — the
+    // TRANSFER NETWORK box below says it — nothing scrolls, nothing opens.
+    if (action === 'choose') return;
     $(action === 'send' ? 'quick-send' : action === 'earn' ? 'quick-earn' : 'quick-receive').click();
   },
   onKept: entries => persistBalances(entries),
@@ -704,27 +797,10 @@ function followSubmission() {
 for (const { network, asset } of leadingNetworks) $('chain').add(new Option(network.name, asset.chain));
 for (const [key, chain] of Object.entries(CHAINS)) $('chain').add(new Option(chain.name, key));
 for (const { network, asset } of extraNetworks) $('chain').add(new Option(network.name, asset.chain));
-// The portfolio scope line. Its NODUS sentence follows the actual state: the
-// balance is read only while the send module is ready (setNodusReady), and
-// even then it is a testnet balance, never priced into the total. The default
-// (no CPUNK, no Ixios) is index.html's own text.
-const NODUS_SCOPE = {
-  false: 'NODUS is shown, but its balance is not shown yet.',
-  true: 'The NODUS balance is shown (Nodus testnet), but it does not count toward the estimated total.'
-};
-let portfolioScope = nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana and TRON. ${nodus} Only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.`;
-if (CPUNK_ENABLED) {
-  // With the CPUNK module enabled its balance IS shown here, just never
-  // priced into the total.
-  portfolioScope = nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Cellframe. ${nodus} The CPUNK balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.`;
-}
-if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
-  portfolioScope = CPUNK_ENABLED
-    ? nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON, Cellframe and Ixios. ${nodus} CPUNK and IXIOS balances are shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total.`
-    : nodus => `Supported assets on Ethereum, BNB Smart Chain, Solana, TRON and Ixios. ${nodus} The IXIOS balance is shown, but only Ethereum, BNB Smart Chain, Solana and TRON count toward the estimated total. CPUNK is not included.`;
-}
-function showPortfolioScope(nodusReady) { $('portfolio-scope').textContent = portfolioScope(NODUS_SCOPE[nodusReady === true]); }
-showPortfolioScope(false);
+// (The portfolio scope paragraph — which networks are listed and which count
+// toward the total — was removed in 0.1.108, operator: "bir dolu bilgi
+// yazıyor … Gerek yok onlar artık … insanlara bastıkları zaman o network'te
+// ne yaptıklarını görüyorlar".)
 function expireIdle() {
   if (idleDeadline && Date.now() >= idleDeadline) { lock(); return true; }
   return false;
@@ -735,7 +811,48 @@ function activity() {
   // A tab that took the session over holds it before the wallet is reopened;
   // the same idle lock gives it back if nobody reopens it here.
   const sensitive = wallet || sessionRelease || !$('phrase-form').hidden || $('unlock-wallet').disabled || $('vault-save').disabled || ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password'].some(id => $(id).value);
-  if (sensitive) { idleDeadline = Date.now() + 10 * 60 * 1000; lockTimer = setTimeout(lock, 10 * 60 * 1000); }
+  // The open wallet's time comes from Device & settings (src/auto-lock.js;
+  // default 15 minutes, 0 = never — until 0.1.89 a fixed 10 minutes). The
+  // recovery words on screen, or a typed password, always clear after a
+  // fixed 10 minutes, whatever is chosen there; so does a session this tab
+  // took over without opening a wallet (0.1.90: "never" must not hold it).
+  const entry = !$('phrase-form').hidden || ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password'].some(id => $(id).value) || (!wallet && !!sessionRelease);
+  const minutes = entry ? ENTRY_IDLE_MINUTES : autoLockMinutes;
+  if (sensitive) {
+    if (minutes > 0) { const ms = minutes * 60 * 1000; idleDeadline = Date.now() + ms; lockTimer = setTimeout(lock, ms); }
+    else idleDeadline = 0;
+  }
+}
+const ENTRY_IDLE_MINUTES = 10;
+// Reading the localStorage property itself throws where the browser blocks
+// site data: asked for inside a try, like every other use here (0.1.90).
+function autoLockStorage() { try { return globalThis.localStorage; } catch { return undefined; } }
+let autoLockMinutes = readAutoLock(autoLockStorage());
+{
+  const choice = $('auto-lock-minutes'), note = $('auto-lock-note'), bar = $('session-timeout');
+  choice.value = String(autoLockMinutes);
+  note.textContent = autoLockNote(autoLockMinutes);
+  bar.textContent = autoLockBarText(autoLockMinutes);
+  choice.addEventListener('change', () => {
+    autoLockMinutes = parseAutoLock(choice.value);
+    choice.value = String(autoLockMinutes);
+    const kept = writeAutoLock(autoLockStorage(), autoLockMinutes);
+    note.textContent = autoLockNote(autoLockMinutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
+    bar.textContent = autoLockBarText(autoLockMinutes);
+    activity();                                  // the new time counts from now
+  });
+}
+// Automatic balance updates (src/balance-refresh.js, 0.1.93): the portfolio
+// reads balances and prices again every N minutes while the page is shown.
+{
+  const choice = $('balance-refresh-minutes'), note = $('balance-refresh-note');
+  const apply = minutes => { choice.value = String(minutes); portfolio.setAutoRefresh(minutes); return balanceRefreshNote(minutes); };
+  note.textContent = apply(readBalanceRefresh(autoLockStorage()));
+  choice.addEventListener('change', () => {
+    const minutes = parseBalanceRefresh(choice.value);
+    const kept = writeBalanceRefresh(autoLockStorage(), minutes);
+    note.textContent = apply(minutes) + (kept ? '' : ' This browser did not allow saving the choice: it applies until this page is closed.');
+  });
 }
 for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, activity);
 // Shown again: an idle wallet locks; otherwise the connection is checked
@@ -753,7 +870,6 @@ function setNodusReady(ready, { reselect = true } = {}) {
   if (!ready && wallet) wallet.nodusClient = undefined;
   if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); hideStaking(); hideName(); }
   portfolio.setNetwork(NODUS_ASSET.chain, network);
-  showPortfolioScope(ready);
   if (reselect && wallet && $('chain').value === NODUS_ASSET.chain) selectChain();
 }
 // Lock order lives in the client (src/nodus/client.js lock): stop the queue ->
@@ -1090,14 +1206,30 @@ const nodusAmountText = units => groupDigits(formatUnits(units, NODUS_ASSET.deci
 // exist only while the panel does. Since 0.1.75 the panel is its own page
 // (#earn, the wallet pages below); #stake-panel's `hidden` says only whether
 // staking is available, and the page closes by itself when it is not.
+// The button beside Send / Receive is always shown since 0.1.107 (operator:
+// "bizde earn olması lazım"): disabled, saying why, until staking can be read.
 function setEarnAvailable(available) {
-  $('quick-earn').hidden = !available; $('nav-earn').hidden = !available; $('stake-panel').hidden = !available;
+  $('quick-earn').disabled = !available; $('nav-earn').hidden = !available; $('stake-panel').hidden = !available;
+  $('quick-earn').title = available ? '' : 'Earn opens once the wallet is connected to the Nodus network.';
   portfolio.setEarn(NODUS_ASSET.chain, available);
 }
 function hideStaking() {
   stakeCheck++; stakeView = undefined; expandedValidator = undefined; setEarnAvailable(false);
   $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('unlisted-delegations').hidden = true;
   $('stake-status').textContent = '';
+  $('stake-network').replaceChildren(); $('stake-network').hidden = true;
+}
+// The network's total stake above the witness list (adapters/nodus.js
+// networkStake: bonded witnesses only, Scan's rule). A failed or older read
+// keeps the last figure shown rather than blanking it (as the portfolio
+// does on Refresh); hideStaking clears it.
+function renderNetworkStake(network) {
+  const box = $('stake-network');
+  const label = document.createElement('span'); label.className = 'stake-network-label'; label.textContent = 'Staked on the network';
+  const total = document.createElement('strong'); total.textContent = `${network.partial ? 'at least ' : ''}${nodusAmountText(network.total)} NODUS`;
+  const detail = document.createElement('small');
+  detail.textContent = `${nodusAmountText(network.selfStake)} NODUS in witness bonds and ${nodusAmountText(network.delegated)} NODUS delegated, across ${network.witnesses} witness${network.witnesses === 1 ? '' : 'es'}${network.partial ? ' (only the first witnesses are listed)' : ''}.`;
+  box.replaceChildren(label, total, detail); box.hidden = false;
 }
 async function refreshStaking() {
   const client = nodusClient, source = wallet, check = ++stakeCheck;
@@ -1107,7 +1239,7 @@ async function refreshStaking() {
   try {
     const view = await adapters.nodus.stakingOverview({ client, from: source.addresses.nodus });
     if (!current()) return;
-    stakeView = view; renderStaking(view);
+    stakeView = view; renderStaking(view); renderNetworkStake(view.network);
     $('stake-status').textContent = view.truncated ? 'The witness list is longer than this wallet shows; only the first witnesses are listed.' : '';
   } catch (error) {
     if (!current()) return;
@@ -1402,7 +1534,7 @@ function lock(event) {
   // Extensions close before the NODUS client (stopNodusSend raises
   // nodusClosing first), then the cross-site mark is dropped.
   stopNodusSend({ reselect: false }); nodusRetries = 0;
-  siteLock.stop(); walletFresh = false;
+  siteLock.stop(); walletFresh = false; ownIdentity = { addresses: {} };
   portfolio.clear();
   phraseFields.clear();
   nodusDerivation?.abort(); nodusDerivation = undefined;
@@ -1472,7 +1604,10 @@ $('phrase-form').onsubmit = async event => {
     if (session !== sessionRelease) return;
     wallet = deriveWallet(phrase); generatedPhrase = undefined; phraseFields.clear();
     walletFresh = fresh; siteLock.start();
-    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); focusOpenWallet();
+    $('phrase-form').hidden = true; $('wallet-open').hidden = false; message('Wallet open. Portfolio balances load automatically.'); selectChain(); activity();
+    ownIdentity = { addresses: {} };     // typed words: nothing kept to show first
+    deriveOwnAddresses();
+    focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) message(error.message, { error: true }); }
   finally { if (claimed) unclaimSession(); }
 };
@@ -1494,6 +1629,11 @@ async function showNodusAddress() {
     const address = await deriveNodusAddress(source.recoveryPhrase, { signal: operation.signal });
     if (!current()) return;
     source.addresses.nodus = address;
+    raise('nodusAddress', { address });
+    noteIdentity({ addresses: { nodus: address } });
+    // Known before the connection: the portfolio shows the NODUS balance last
+    // read for it (a saved wallet's kept one too) until it is read again (0.1.96).
+    portfolio.setAddress(NODUS_ASSET.chain, address);
     if ($('chain').value === NODUS_ASSET.chain) setReceiveAddress(address);
     $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
     if (nodusSendModuleFactory) void startNodusSend(source, address);
@@ -1531,6 +1671,7 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
         const address = await deriveCpunkAddress(source.recoveryPhrase, { signal: operation.signal });
         if (!current()) return;
         source.addresses.cellframe = address;
+        noteIdentity({ addresses: { cellframe: address } });
         if ($('chain').value === 'cellframe') { setReceiveAddress(address); renderHistory(); void loadHistory('cellframe'); }
         $('cellframe-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
         portfolio.setAddress('cellframe', address);
@@ -1545,7 +1686,7 @@ if (import.meta.env.VITE_ENABLE_CPUNK !== 'false') {
     // reopen raced ahead of it); start derivation for whichever wallet is
     // current once it is ready, exactly as a direct showCellframeAddress()
     // call would have.
-    if (wallet && !wallet.locked) void doShowCellframeAddress();
+    if (wallet && !wallet.locked) void nodusAddressFirst.then(() => { if (wallet && !wallet.locked) void doShowCellframeAddress(); });
   }).catch(() => { if (wallet && !wallet.locked) $('cellframe-address-status').textContent = 'Cellframe address unavailable. Lock and reopen your wallet to retry.'; });
 }
 function showCellframeAddress() { void doShowCellframeAddress?.(); }
@@ -1586,6 +1727,7 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
         if (!current()) return;
         const address = ixiosChecksumAddress(bytes);
         source.addresses[chain] = address;
+        if (chain === 'ixios') noteIdentity({ addresses: { ixios: address } });
         if ($('chain').value === chain) setReceiveAddress(address);
         status.textContent = 'Derived locally from this wallet’s recovery phrase.';
         portfolio.setAddress(chain, address);
@@ -1595,10 +1737,22 @@ if (import.meta.env.VITE_ENABLE_IXIOS === 'true') {
     };
     // The modules can resolve after a wallet is already open; start derivation
     // for whichever wallet is current, as a direct showIxiosAddress() would.
-    if (wallet && !wallet.locked) void doShowIxiosAddress();
+    if (wallet && !wallet.locked) void nodusAddressFirst.then(() => { if (wallet && !wallet.locked) void doShowIxiosAddress(); });
   }).catch(() => { if (wallet && !wallet.locked) status.textContent = unavailable; });
 }
 function showIxiosAddress() { void doShowIxiosAddress?.(); }
+// The TRANSFER NETWORK box's buttons follow what the chosen network can do
+// (0.1.108, operator: "Cellframe'e geldi. Send kapalı. Sadece receive var …
+// Swap yok … Earn yok … Ethereum'a geldi … send receive açık"): Send is
+// disabled on a receive-only network (its reason as the title); Earn and Swap
+// exist only for Nodus (Earn disabled until staking can be read,
+// setEarnAvailable; Swap not yet usable).
+function showTransferActions(chain, c) {
+  $('quick-send').disabled = !!c.receiveOnly;
+  $('quick-send').title = c.receiveOnly ? (c.sendNote || DEFAULT_SEND_DISABLED_NOTE) : '';
+  $('quick-earn').hidden = chain !== NODUS_ASSET.chain;
+  $('quick-swap').hidden = chain !== NODUS_ASSET.chain;
+}
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
@@ -1618,6 +1772,7 @@ function selectChain() {
   $('recipient').value = ''; $('amount').value = '';
   $('send-fields').hidden = !!c.receiveOnly; $('send-disabled-note').hidden = !c.receiveOnly;
   $('send-disabled-note').textContent = c.sendNote || DEFAULT_SEND_DISABLED_NOTE;
+  showTransferActions(chain, c);
   for (const [key, node] of Object.entries(addressStatus)) node.hidden = chain !== key;
   hideSaveRecipient(); renderRecipientBook();
   showNameBlock();
@@ -1783,7 +1938,7 @@ $('quick-receive').onclick = () => {
 // Earn opens the NODUS staking page; the selected network moves to NODUS
 // so Activity shows where a delegation is tracked.
 $('quick-earn').onclick = () => {
-  if ($('quick-earn').hidden) return;
+  if ($('quick-earn').disabled) return;
   if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
   navigateWalletPage('earn');
 };
@@ -1893,13 +2048,19 @@ $('confirm-send').onclick = async () => {
   const idLabel = transfer.kind === 'claim' ? 'Claim ID' : transfer.kind ? 'Transaction ID' : CHAINS[transfer.chain] ? null : 'Transfer ID';
   const follow = () => { if (record) { submissionFollow = { record, what, idLabel, link: !idLabel, shown: null }; followSubmission(); } };
   $('confirm-send').disabled = true; $('cancel-send').disabled = true; $('review-error').textContent = 'Signing locally and broadcasting…';
+  let sentWire;
   try {
     const hash = await transfer.confirm(async details => {
+      sentWire = typeof details?.wire === 'string' ? details.wire : undefined;
       record = recordActivity(transfer, details); history.push(record); if (current === revision) renderActivity(false);
       // The signed hash must be durable before the first network submission.
       await persistActivity({ required: true });
     });
     if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
+    // A plain NODUS transfer the network accepted: Nodus Connect's Messages
+    // may post its payment card in the chat it was started from (web
+    // 0.1.90, src/connect/ui/messages.js walletExtension.nodusSent).
+    if (!transfer.kind && transfer.chain === NODUS_ASSET.chain && sentWire) raise('nodusSent', { to: transfer.to, amount: transfer.amount, wire: sentWire, intentId: hash });
     closeReview();
     // A submitted claim withdraws the offer while its record is unresolved.
     if (transfer.kind === 'claim') void refreshClaim();
@@ -1995,12 +2156,16 @@ $('unlock-form').onsubmit = async event => {
     if (session !== sessionRelease) return;
     const saved = await decryptVault(text, password);
     if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) return;
-    const restored = deriveWallet(saved.phrase); let key, balancesKey, historyKey, addressBookKey, rows = [], kept = {}, keptHistory = {}, keptBook = [], bookProblem = '', problem = '';
+    const restored = deriveWallet(saved.phrase); let key, balancesKey, historyKey, addressBookKey, identityKey, rows = [], kept = {}, keptHistory = {}, keptBook = [], keptIdentity = { addresses: {} }, bookProblem = '', problem = '';
     try {
       key = await activityKeyFor(saved.phrase, saved.id);
       balancesKey = await balancesKeyFor(saved.phrase, saved.id);
       historyKey = await historyKeyFor(saved.phrase, saved.id);
       addressBookKey = await addressBookKeyFor(saved.phrase, saved.id);
+      identityKey = await identityKeyFor(saved.phrase, saved.id);
+      // A kept identity that does not authenticate is simply not shown (0.1.97).
+      try { keptIdentity = await parseIdentity(localStorage.getItem(IDENTITY_KEY), saved.id, identityKey); }
+      catch { keptIdentity = { addresses: {} }; }
       // A saved address book that does not authenticate or check out is not
       // shown; the next saved address replaces it (said in the panel).
       try { keptBook = await parseAddressBook(localStorage.getItem(ADDRESS_BOOK_KEY), saved.id, addressBookKey, ADDRESS_CHECKS); }
@@ -2015,13 +2180,17 @@ $('unlock-form').onsubmit = async event => {
       catch { kept = {}; }
       if (operation !== vaultOperation || session !== sessionRelease || text !== localStorage.getItem(VAULT_KEY)) { disposeWallet(restored); return; }
     } catch (error) { disposeWallet(restored); throw error; }
-    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, addressBookKey, vault: text }; activityBlocked = !!problem;
+    disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, addressBookKey, identityKey, vault: text }; activityBlocked = !!problem;
+    ownIdentity = keptIdentity;
+    keptPeerNames.clear(); for (const [peer, name] of Object.entries(keptIdentity.peers || {})) keptPeerNames.set(peer, name);
     historyByChain = keptHistory;
     addressBook = keptBook; addressBookNote = bookProblem; addressBookUnreadable = !!bookProblem;
     walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
     $('discard-activity').hidden = !problem; $('vault-status').textContent = problem || 'Saved activity authenticated.';
-    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); void showNodusAddress(); void showCellframeAddress(); showIxiosAddress(); message('Saved wallet unlocked locally.'); focusOpenWallet(kept);
+    $('welcome').hidden = true; $('phrase-form').hidden = true; $('wallet-open').hidden = false; updateVaultUI(); selectChain(); activity(); message('Saved wallet unlocked locally.'); focusOpenWallet(kept);
+    showKeptIdentity(keptIdentity);      // at once, while the addresses are derived again (0.1.97)
+    deriveOwnAddresses();
   } catch (error) { if (operation === vaultOperation) $('vault-status').textContent = error.message; }
   finally { $('unlock-wallet').disabled = false; if (claimed) unclaimSession(); }
 };
@@ -2091,11 +2260,11 @@ async function saveVault(change) {
     const encrypted = await encryptVault(source.recoveryPhrase, password, id);
     const newId = parseVault(encrypted).id, key = await activityKeyFor(source.recoveryPhrase, newId);
     const balancesKey = await balancesKeyFor(source.recoveryPhrase, newId), historyKey = await historyKeyFor(source.recoveryPhrase, newId);
-    const addressBookKey = await addressBookKeyFor(source.recoveryPhrase, newId);
+    const addressBookKey = await addressBookKeyFor(source.recoveryPhrase, newId), identityKey = await identityKeyFor(source.recoveryPhrase, newId);
     if (operation !== vaultOperation || wallet !== source || source.locked || localStorage.getItem(VAULT_KEY) !== previous) return;
     const stored = await withActivityLock(() => {
       if (operation !== vaultOperation || wallet !== source || source.locked || !$('vault-risk-confirm').checked || localStorage.getItem(VAULT_KEY) !== previous) return false;
-      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, historyKey, addressBookKey, vault: encrypted }; return true;
+      localStorage.setItem(VAULT_KEY, encrypted); activitySession = { id: newId, key, balancesKey, historyKey, addressBookKey, identityKey, vault: encrypted }; return true;
     });
     if (!stored) {
       if (operation === vaultOperation && wallet === source && !source.locked && !$('vault-risk-confirm').checked) saveResult('Save canceled. The storage risks were not accepted; no new copy was saved.');
@@ -2105,6 +2274,7 @@ async function saveVault(change) {
     await persistActivity();
     // Balances read before the save are kept from now on as well.
     if (latestKept) persistBalances(latestKept);
+    saveIdentity();                      // the identity derived / shown so far is kept from now on (0.1.97)
     persistHistory();
     // The address book of this session (kept in memory until now) is saved
     // with the wallet from now on — unless the saved one could not be read
@@ -2157,7 +2327,7 @@ $('vault-delete').onclick = async () => {
     if (previous) raise('vaultDeleting');
     const messages = await withActivityLock(async () => {
       if (localStorage.getItem(VAULT_KEY) !== previous) throw new Error('Saved wallet changed before deletion.');
-      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY); localStorage.removeItem(HISTORY_KEY); localStorage.removeItem(ADDRESS_BOOK_KEY);
+      localStorage.removeItem(VAULT_KEY); localStorage.removeItem(ACTIVITY_KEY); localStorage.removeItem(BALANCES_KEY); localStorage.removeItem(HISTORY_KEY); localStorage.removeItem(ADDRESS_BOOK_KEY); localStorage.removeItem(IDENTITY_KEY);
       if (!previous) return 'none';
       if (!vaultId) return 'unknown';
       try { await deleteVaultHistory(vaultId, localStorage); return 'deleted'; }

@@ -97,6 +97,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>                           /* nc_begin: g_ctx.now           */
 
 #define LOG_TAG "NC_WASM"
 
@@ -265,6 +266,10 @@ static int nc_begin(void) {
     g_inside = 1;
     g_error[0] = '\0';
     result_drop();
+    // The library reads no clock (nc_ctx_t now): the browser entry gives it
+    // the page's time once per export, as the library's own time(NULL) calls
+    // read it before (Kurultay #17 item 5).
+    g_ctx.now = (uint64_t)time(NULL);
     return 0;
 }
 
@@ -373,6 +378,23 @@ int nc_unlock(int fresh) {
     return nc_end(set_result(o));
 }
 
+/* First-time records (W-04; thin-core decision Q1, addendum 2026-10-09).
+ * The core writes a FIRST record of a gated kind only when ctx->fresh is
+ * set for the call (nc_profile.c, nc_contactlist.c, nc_salt.c). Until
+ * 0.1.88 that was the session's "words generated in this tab" flag only,
+ * because a node answered "could not look" as "empty"; since DHT package A
+ * (0c814d70) an EMPTY strict answer means at least one replica answered
+ * (nodus_dht_server.c nodus_dht_read_outcome) and "could not look" is
+ * UNREADABLE. The page now decides per call: `first_ok` 1 = this device
+ * never saw the record on the network (its own memory, src/connect/ui/
+ * text.js firstRecordAllowed), so an EMPTY may create it. The session flag
+ * is restored after the call. */
+static bool first_begin(int first_ok) {
+    bool was = g_ctx.fresh;
+    if (first_ok) g_ctx.fresh = true;
+    return was;
+}
+
 /* ── R1 ─────────────────────────────────────────────────────────────── */
 
 static json_object *profile_json(const dna_unified_identity_t *id) {
@@ -472,11 +494,14 @@ int nc_profile_load(const char *fp, const char *record, const char *name) {
     return nc_end(set_result(o));
 }
 
-int nc_profile_update(const char *patch_json) {
+/* `first_ok`: first_begin above. */
+int nc_profile_update(const char *patch_json, int first_ok) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
     nc_profile_result_t r;
+    bool was = first_begin(first_ok);
     int rc = nc_profile_publish(&g_ctx, patch_json, &r);
+    g_ctx.fresh = was;
     if (rc != NC_OK) return nc_end(fail("Profile update did not run (%d).", rc));
     static const char *const ST[] = { "published", "wait", "taken", "failed", "bad_patch" };
     json_object *o = json_object_new_object();
@@ -611,7 +636,11 @@ int nc_salt_pick(const char *local_hex, const char *dht_hex) {
 }
 
 /* Read + reconcile + (gated) publish; local_hex "" = no local salt. The
- * page stores "salt" unless status is "wait". */
+ * page stores "salt" unless status is "wait". An EMPTY read publishes the
+ * local salt for every identity (first_begin(1), W-04): the record is this
+ * identity's own EPHEMERAL row (30-day TTL, dht_salt_agreement.h:45) that
+ * expires on its own, and the salt it carries is the one this device
+ * already uses — the app republishes it the same way. */
 int nc_salt_reconcile(const char *fp, const char *local_hex) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
@@ -624,7 +653,9 @@ int nc_salt_reconcile(const char *fp, const char *local_hex) {
         lp = l;
     }
     nc_salt_sync_t s;
+    bool was = first_begin(1);
     int rc = nc_salt_sync(&g_ctx, peer, lp, &s);
+    g_ctx.fresh = was;
     nc_wipe(l, sizeof(l));
     if (rc != NC_OK) { nc_salt_sync_clear(&s); return nc_end(fail("Salt could not be reconciled (%d).", rc)); }
     static const char *const ST[] = { "nothing_to_write", "published", "wait", "failed" };
@@ -665,8 +696,8 @@ int nc_contacts_get(void) {
 }
 
 /* add_json: [{"fp":"<128 hex>","salt":"<64 hex>"|null}, ...] — merged into
- * the list read in the same call (merge only). */
-int nc_contacts_add(const char *add_json) {
+ * the list read in the same call (merge only). `first_ok`: first_begin. */
+int nc_contacts_add(const char *add_json, int first_ok) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
     json_object *arr = add_json ? json_tokener_parse(add_json) : NULL;
@@ -700,7 +731,9 @@ int nc_contacts_add(const char *add_json) {
     }
     json_object_put(arr);
     nc_list_result_t r;
+    bool was = first_begin(first_ok);
     int rc = nc_contactlist_add(&g_ctx, c, n, &r);
+    g_ctx.fresh = was;
     nc_wipe(c, n * sizeof(*c));
     free(c);
     if (rc != NC_OK) return nc_end(fail("Contact list update did not run (%d).", rc));
@@ -798,6 +831,12 @@ static json_object *inbox_json(uint64_t day, nc_inbox_t *in) {
         json_object_object_add(e, "seq", jstr_u64(in->items[i].seq));
         json_object_object_add(e, "sender_ts", jstr_u64(in->items[i].sender_timestamp));
         json_object_object_add(e, "text_hex", jhex(in->items[i].plaintext, in->items[i].plaintext_len));
+        /* web 0.1.89: chat text, or a reaction / delete notice the page
+         * applies to an earlier message (nc_plaintext_kind) */
+        json_object_object_add(e, "kind", json_object_new_string(
+            in->items[i].kind == NC_MSG_REACTION ? "reaction" :
+            in->items[i].kind == NC_MSG_DELETE ? "delete" :
+            in->items[i].kind == NC_MSG_TRANSFER ? "transfer" : "chat"));
         json_object_array_add(a, e);
     }
     json_object_object_add(o, "messages", a);
@@ -2355,6 +2394,56 @@ int nc_group_bucket_fetch(const char *group_id_hex, const char *salt_hex, const 
     }
     return nc_end(set_result(o));
 }
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* ── P1 rules: the parity build's vector entry (TEST ONLY) ─────────────
+ * Design docs/plans/2026-10-12-connect-core-p1-rules-design.md rev 2: the
+ * shared vectors (test/vectors/connect-rules/) run through the SAME
+ * dispatcher as native ctest (nc_rules_json.h nc_rule_call), here in wasm
+ * (test/connect-rules-vectors.test.js). Compiled only with
+ * NODUS_SEND_TEST_FIXED_RANDOM — never in the shipped NODUS_SEND_RELEASE
+ * module (the web is not switched to C in P1) — and exported only by the
+ * parity build (scripts/build-nodus-send-wasm.sh exports_test).
+ *
+ * Synchronous and pure: no network (never reaches emscripten_sleep), no
+ * session material, no op bracket, no g_result. The input does not cross
+ * as a ccall string (copied onto the 1 MiB C stack, design §R R1): the page
+ * asks for `len` bytes (nc_rule_in_alloc, up to NC_RULE_IN_MAX + 1 so the
+ * dispatcher's own cap check is reachable), fills them through HEAPU8 and
+ * calls nc_rule_test(name), which takes and frees the buffer. The result is
+ * this entry's OWN buffer (valid until the next nc_rule_test): a JSON text
+ * without a raw NUL (the writer escapes it), so the page reads it up to the
+ * NUL as bytes. */
+#include "nc_rules_json.h"
+
+static char  *g_rule_in;
+static size_t g_rule_in_len;
+static char  *g_rule_out;
+
+char *nc_rule_in_alloc(int len) {
+    free(g_rule_in);
+    g_rule_in = NULL;
+    g_rule_in_len = 0;
+    if (len < 0 || (size_t)len > NC_RULE_IN_MAX + 1u) return NULL;
+    g_rule_in = malloc(len ? (size_t)len : 1u);
+    if (g_rule_in) g_rule_in_len = (size_t)len;
+    return g_rule_in;
+}
+
+/* The result JSON (nc_rules_json.h), or NULL when out of memory. Without a
+ * prior nc_rule_in_alloc the input is empty (-> "invalid JSON"). */
+const char *nc_rule_test(const char *name) {
+    char  *in = g_rule_in;
+    size_t len = g_rule_in_len;
+    g_rule_in = NULL;
+    g_rule_in_len = 0;
+    free(g_rule_out);
+    g_rule_out = NULL;
+    if (nc_rule_call(name, in, len, &g_rule_out) != 0) g_rule_out = NULL;
+    free(in);
+    return g_rule_out;
+}
+#endif /* NODUS_SEND_TEST_FIXED_RANDOM */
 
 /* ── lock: synchronous, never reaches emscripten_sleep ───────────────── */
 

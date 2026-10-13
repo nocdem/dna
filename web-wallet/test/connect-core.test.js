@@ -112,7 +112,8 @@ test('core: outboxFetchDays sends every day in one call and maps each answer as 
   assert.deepEqual(JSON.parse(sent[0].args[2]), [{ day: '20367', skip: '' }, { day: '20368', skip: BLOB }, { day: '20369', skip: '' }]);
   assert.ok(Array.isArray(r.days) && r.days.length === 3);
   assert.deepEqual(r.days.map(d => d.day), ['20367', '20368', '20369'], 'the order asked');
-  assert.deepEqual(r.days[1].messages, [{ seq: '7', senderTs: '1700000000', text: 'hello' }]);
+  // kind (web 0.1.89): an answer without one is chat text
+  assert.deepEqual(r.days[1].messages, [{ seq: '7', senderTs: '1700000000', text: 'hello', kind: 'chat' }]);
   assert.equal(r.days[2].outcome, 'unreadable');
   assert.equal(r.days[2].why, 'timeout');
   // The same answer through the single call maps to the same object.
@@ -169,7 +170,7 @@ test('core: contactReads sends every contact in one call; ack as ackGet, days as
   assert.deepEqual(r.contacts[0].ack, ack);
   const { generation: g2, requestId: q2, ...days } = await core.outboxFetchDays(OTHER, SALT, [{ day: '20367' }, { day: '20368', skipBlob: BLOB }]);
   assert.deepEqual({ days: r.contacts[0].days }, days);
-  assert.deepEqual(r.contacts[0].days[1].messages, [{ seq: '7', senderTs: '1700000000', text: 'hello' }]);
+  assert.deepEqual(r.contacts[0].days[1].messages, [{ seq: '7', senderTs: '1700000000', text: 'hello', kind: 'chat' }]);
   for (const v of [g1, q1, g2, q2]) assert.equal(typeof v, 'number');
 });
 
@@ -213,4 +214,47 @@ test('core: outboxFetchDays refuses a bad day list before the module, and an ans
   await assert.rejects(core.outboxFetchDays(OTHER, 'nope', [{ day: '1' }]), /Invalid salt/);
   assert.equal(calls.filter(c => c.name === 'nc_outbox_get_days').length, 0, 'nothing reached the module');
   await assert.rejects(core.outboxFetchDays(OTHER, SALT, [{ day: '1' }, { day: '2' }]), /invalid answer/);
+});
+
+// W-04 (web 0.1.88): the first-time record permission crosses into the
+// module as one number per gated write — 1 only when the page passes
+// firstOk: true (nc_wasm.c first_begin). The default is 0: a caller that
+// does not ask never lets an EMPTY read create the own profile or list.
+test('core: profileUpdate and contactsAdd pass firstOk to the module as 0 / 1', async () => {
+  const { nodus, calls } = fakeDaysNodus({
+    nc_unlock: { fingerprint: FP, fresh: false },
+    nc_profile_update: { status: 'published', read: { outcome: 'empty', why: 'none' }, created: true, put_rc: 0, version: '1' },
+    nc_contacts_add: { status: 'published', outcome: 'empty', why: 'none', created: true, count_before: '0', count_after: '1', salt_kept: '0', put_rc: 0 }
+  });
+  const core = createNodusConnectCore({ nodus });
+  await core.unlock({ words: new TextEncoder().encode('alpha beta gamma') });
+  await core.profileUpdate({});
+  await core.profileUpdate({}, { firstOk: true });
+  await core.profileUpdate({ bio: 'x' }, { firstOk: 'yes' });
+  await core.contactsAdd([{ fp: OTHER }]);
+  await core.contactsAdd([{ fp: OTHER, salt: SALT }], { firstOk: true });
+  const prof = calls.filter(c => c.name === 'nc_profile_update');
+  assert.deepEqual(prof.map(c => c.types), [['string', 'number'], ['string', 'number'], ['string', 'number']]);
+  assert.deepEqual(prof.map(c => c.args[1]), [0, 1, 0], 'only a literal true allows the first record');
+  const list = calls.filter(c => c.name === 'nc_contacts_add');
+  assert.deepEqual(list.map(c => c.types), [['string', 'number'], ['string', 'number']]);
+  assert.deepEqual(list.map(c => c.args[1]), [0, 1]);
+  assert.equal(JSON.parse(list[1].args[0])[0].salt, SALT);
+});
+
+// Web 0.1.89: the module names a reaction / delete notice by `kind`; any
+// other value (or none) maps to 'chat', never passed through.
+test('core: a day answer carries each message\'s kind; unknown kinds map to chat', async () => {
+  const hex = s => Buffer.from(s).toString('hex');
+  const day = dayAnswer('20368', { outcome: 'found', blob: BLOB, messages: [
+    { seq: '1', sender_ts: '1700000000', text_hex: hex('{"target":"x"}'), kind: 'reaction' },
+    { seq: '2', sender_ts: '1700000001', text_hex: hex('{"type":"delete"}'), kind: 'delete' },
+    { seq: '3', sender_ts: '1700000002', text_hex: hex('hi'), kind: 'evil' },
+    { seq: '4', sender_ts: '1700000003', text_hex: hex('ho') }
+  ] });
+  const { nodus } = fakeDaysNodus({ nc_unlock: { fingerprint: FP, fresh: false }, nc_outbox_get: day });
+  const core = createNodusConnectCore({ nodus });
+  await core.unlock({ words: new TextEncoder().encode('alpha beta gamma') });
+  const r = await core.outboxFetchDay(OTHER, SALT, '20368');
+  assert.deepEqual(r.messages.map(m => m.kind), ['reaction', 'delete', 'chat', 'chat']);
 });

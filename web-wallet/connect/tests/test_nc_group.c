@@ -132,6 +132,12 @@ static const char *jstr(json_object *o, const char *k) {
     return v && json_object_is_type(v, json_type_string) ? json_object_get_string(v) : NULL;
 }
 
+/* jstr for a printf %s: never NULL (a vector without the field). */
+static const char *jlabel(json_object *o, const char *k) {
+    const char *s = jstr(o, k);
+    return s ? s : "(none)";
+}
+
 static int64_t jint(json_object *o, const char *k) {
     json_object *v = jget(o, k);
     return v ? json_object_get_int64(v) : -1;
@@ -241,7 +247,7 @@ static void test_tags_salt_addr_kek(json_object *J) {
         json_object *t = json_object_array_get_idx(tags, i);
         jhex(t, "bytes", want, sizeof(want));
         char nm[64];
-        snprintf(nm, sizeof(nm), "tag %s", jstr(t, "name"));
+        snprintf(nm, sizeof(nm), "tag %s", jlabel(t, "name"));
         CHECK(nc_group_tag(order[i]) && memcmp(nc_group_tag(order[i]), want, 16) == 0, nm);
     }
     CHECK(nc_group_tag(NC_GROUP_TAG_COUNT) == NULL, "unknown tag id -> NULL");
@@ -866,7 +872,7 @@ static void test_days(json_object *J) {
         uint32_t d = 0xdeadbeef;
         int rc = nc_group_day(ts, &d);
         char nm[128];
-        snprintf(nm, sizeof(nm), "day: %s", jstr(e, "note"));
+        snprintf(nm, sizeof(nm), "day: %s", jlabel(e, "note"));
         if (valid)
             CHECK(rc == 0 && d == (uint32_t)jint(e, "day"), nm);
         else

@@ -3,12 +3,52 @@
 // arguments, so test/connect-ui.test.js pins it under node --test.
 
 import { chainName } from '../../nodus/names.js';
+import { parseReaction } from './actions.js';
 
 const HEX128 = /^[0-9a-f]{128}$/;
 const U64 = /^(0|[1-9]\d{0,19})$/;
 
 // An ID the user typed or pasted: whitespace removed, lowercased; returns
 // the 128-hex ID or throws a plain-words error.
+// Declined senders (web 0.1.96, BUGS W-07): `{ fp, at }` entries (unix
+// seconds), one per sender, forgotten after DECLINE_KEEP_SECONDS — the app
+// removes denied requests after 7 days (messenger/src/api/engine/
+// dna_engine_contacts.c:786-787) — and at most DECLINE_MAX (the newest), so
+// the list stays well inside the one 64 KiB state record (store.js
+// PLAINTEXT_MAX; ~150 bytes an entry). An entry saved before 0.1.96 is a
+// bare ID: it counts from now.
+export const DECLINE_KEEP_SECONDS = 7n * 86400n;
+export const DECLINE_MAX = 200;
+const declinedFp = d => (typeof d === 'string' ? d : d?.fp);
+export function declinedNow(list, nowSeconds) {
+  if (typeof nowSeconds !== 'string' || !U64.test(nowSeconds)) throw new Error('Invalid time.');
+  const now = BigInt(nowSeconds), byFp = new Map();
+  for (const d of Array.isArray(list) ? list : []) {
+    const fp = declinedFp(d);
+    if (typeof fp !== 'string' || !/^[0-9a-f]{128}$/.test(fp)) continue;
+    const at = typeof d === 'string' ? nowSeconds : String(d.at);
+    if (!U64.test(at) || now - BigInt(at) > DECLINE_KEEP_SECONDS) continue;
+    const seen = byFp.get(fp);
+    if (!seen || BigInt(at) > BigInt(seen.at)) byFp.set(fp, { fp, at });
+  }
+  return [...byFp.values()].sort((a, b) => (BigInt(a.at) < BigInt(b.at) ? -1 : BigInt(a.at) > BigInt(b.at) ? 1 : 0)).slice(-DECLINE_MAX);
+}
+export function isDeclined(list, fp) { return (Array.isArray(list) ? list : []).some(d => declinedFp(d) === fp); }
+export function addDeclined(list, fp, nowSeconds) {
+  return declinedNow([...(Array.isArray(list) ? list : []).filter(d => declinedFp(d) !== fp), { fp, at: nowSeconds }], nowSeconds);
+}
+export function undecline(list, fp) { return (Array.isArray(list) ? list : []).filter(d => declinedFp(d) !== fp); }
+
+// The salt a contact keeps when they accepted OUR request (messages.js
+// completeOutgoing): the salt WE offered with the request (`mine`, our
+// state.outgoing entry), else the one in their acceptance, else none.
+// Deliberately not the app's choice: the frozen app stores the accepter's
+// salt (messenger/src/api/engine/dna_engine_contacts.c:570-574); Kurultay
+// #17 item 5 keeps the web's rule and pins it with shared vectors.
+export function acceptedSalt(mine, request) {
+  return mine?.salt || request.salt || null;
+}
+
 export function parseContactId(value) {
   const id = typeof value === 'string' ? value.replace(/\s+/g, '').toLowerCase() : '';
   if (!HEX128.test(id)) throw new Error('That is not a valid ID. An ID is 128 characters, letters a–f and digits.');
@@ -121,6 +161,35 @@ export function httpsLink(value) {
   return url.href;
 }
 
+// Message text split into plain runs and https links (web 0.1.89): a link
+// is `https://` up to whitespace or a quote/angle bracket, without trailing
+// punctuation, accepted by httpsLink (no other scheme, no user:pass). It is
+// shown as the parsed href (an international domain appears as punycode, so
+// a look-alike host is visible). Nothing is fetched: no preview.
+const LINK = /https:\/\/[^\s<>"'`]+/g;
+const LINK_TAIL = /[.,!?;:)\]}]+$/;
+// A ")" that closes a "(" inside the link stays part of it (0.1.90:
+// https://…/wiki/Foo_(bar)); one around the whole link does not.
+const parens = (s, c) => s.split(c).length - 1;
+function trimLink(found) {
+  let raw = found.replace(LINK_TAIL, '');
+  while (raw.length < found.length && found[raw.length] === ')' && parens(raw, '(') > parens(raw, ')')) raw += ')';
+  return raw;
+}
+export function linkSegments(text) {
+  const s = String(text), out = [];
+  let last = 0;
+  for (const match of s.matchAll(LINK)) {
+    const raw = trimLink(match[0]), href = httpsLink(raw);
+    if (!href) continue;
+    if (match.index > last) out.push({ text: s.slice(last, match.index) });
+    out.push({ text: href, href });
+    last = match.index + raw.length;
+  }
+  if (last < s.length) out.push({ text: s.slice(last) });
+  return out;
+}
+
 // A profile picture as an <img> source, or null. The app stores a 128x128
 // JPEG (quality 80) as plain base64 (profile_editor_screen.dart:507-513) in
 // avatar_base64 (dna_engine.h:377: 20484 bytes with the NUL). Shown only
@@ -176,6 +245,21 @@ export function contactListStatusText(status) {
   }
 }
 
+// The time a message shows (0.1.104, operator: "attığın mesajların tarihi
+// chat'i açtığın tarihmiş"): an incoming message shows when its sender sent
+// it (senderTs, as the app does: messenger_transport.c msg_timestamp), not
+// when this device first read it (`at` — a message that waited while
+// Messages was closed showed the time Messages was opened). The sender's
+// clock is not checked by anyone, so it is never later than `at`: a message
+// cannot have been sent after it arrived. Own messages, and an incoming one
+// without a usable sender time, show `at`. Display only: the order stays
+// local (compareLocal).
+export function shownAt(m) {
+  const at = Number(m?.at);
+  if (m?.dir !== 'in' || typeof m.senderTs !== 'string' || !U64.test(m.senderTs)) return at;
+  const sent = Number(m.senderTs) * 1000;
+  return Number.isSafeInteger(sent) && sent <= at ? sent : at;
+}
 // Sender's clock label: senderTs is unix seconds as a decimal string, set by
 // the sender's device and not checked by anyone (design §1.9).
 export function senderClockLabel(senderTs) {
@@ -216,32 +300,41 @@ export function contactDays(fp, dmSync, now, today) {
 }
 // The order in which one round checks the contacts (web 0.1.72; operator's
 // phone 2026-10-07: 17 contacts at ~12 s each, and the contact that had
-// sent a new message, last in the list, was reached at minute 11):
-//   1. contacts never checked (no valid state.dmSync entry, or 0),
-//   2. then contacts with a message on this device (in or out), the one
-//      with the newest message first — newest by the LOCAL sequence
-//      (`seq`, compareLocal), never by anyone's clock,
-//   3. then the rest.
+// sent a new message, last in the list, was reached at minute 11). Since
+// web 0.1.111 (operator 2026-10-13: "en son mesajlaştığımız kişilerden
+// başlayarak çekmek lazım … hiç mesajlaşmadıklarımı … çekmeyi de unutmamak
+// lazım"):
+//   1. contacts with a message on this device (in or out), the one we last
+//      wrote with first — by the message's time as the chat shows it
+//      (shownAt: the sender's time, never later than its arrival here; our
+//      own messages' send time), then by the LOCAL sequence (`seq`, the
+//      later stored first) when two times are equal. A message whose `at`
+//      is not an integer number counts as no message here;
+//   2. then every other contact — never written with, or never checked —
+//      in list order. They are still checked every round, last.
+// Before 0.1.111 contacts never checked came first and "newest" was the
+// local sequence alone (an old history read late counted as new).
 // Ties keep the order of `contacts`. Returns a new array; `contacts` itself
 // (state.contacts) is neither reordered nor saved differently. A function
 // of its arguments only, so the same state gives the same order.
-export function checkOrder(contacts, dmSync, messages) {
+export function checkOrder(contacts, messages) {
   const newest = new Map();
   for (const m of messages || []) {
     if (!m || typeof m.fp !== 'string' || !U64.test(String(m.seq))) continue;
-    const seq = BigInt(String(m.seq));
+    // Only an integer `at` is a time (every stored message's `at` is
+    // Date.now()): no string-to-number coercion, so the C rule compares
+    // integers (P1 design: integer comparisons, never floating point).
+    // shownAt then gives `at` or the sender's time, both safe integers.
+    if (typeof m.at !== 'number' || !Number.isSafeInteger(m.at)) continue;
+    const time = shownAt(m), seq = BigInt(String(m.seq));
     const seen = newest.get(m.fp);
-    if (seen === undefined || seq > seen) newest.set(m.fp, seq);
+    if (seen === undefined || time > seen.time || (time === seen.time && seq > seen.seq)) newest.set(m.fp, { time, seq });
   }
-  const rank = contact => {
-    const last = u64OrNull(dmSync?.[contact.fp]);
-    if (last === null || last === 0n) return 0;
-    return newest.has(contact.fp) ? 1 : 2;
-  };
-  return contacts.map((contact, index) => ({ contact, index, rank: rank(contact), seq: newest.get(contact.fp) }))
+  return contacts.map((contact, index) => ({ contact, index, last: newest.get(contact.fp) }))
     .sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      if (a.rank === 1 && a.seq !== b.seq) return a.seq > b.seq ? -1 : 1;
+      if (!a.last !== !b.last) return a.last ? -1 : 1;
+      if (a.last && a.last.time !== b.last.time) return b.last.time - a.last.time;
+      if (a.last && a.last.seq !== b.last.seq) return a.last.seq > b.last.seq ? -1 : 1;
       return a.index - b.index;
     })
     .map(entry => entry.contact);
@@ -345,6 +438,15 @@ export function ackToSend(messages, fp, lastSent) {
   return newest.toString();
 }
 
+// Whether a contact's check may publish an ACK at all (G11): only from a
+// store that keeps messages (an unsaved wallet never ACKs), only when every
+// message of the check verified (`lost` 0), and only when every day bucket
+// was read (`complete`; 0.1.100, BUGS W-11, Kurultay #17) — an unreadable
+// bucket may hold older messages the newest stored timestamp would cover.
+export function ackAllowed({ persistent, complete, lost }) {
+  return persistent === true && complete === true && !lost;
+}
+
 // The WHOLE pending set of own messages to one contact (the blob replaces
 // today's previous one, core.outboxPublish): outgoing, not yet delivered
 // (isDelivered above) or delivered less than DELIVERED_GRACE_SECONDS ago,
@@ -368,10 +470,32 @@ export function pendingOutbox(messages, fp, nowSeconds) {
   const oldest = now - OUTBOX_LIFETIME_SECONDS;
   const list = messages
     .filter(m => m.dir === 'out' && m.fp === fp && BigInt(m.ts) > oldest && (!isDelivered(m) || inGrace(m, now)))
-    .sort(compareLocal)
-    .map(m => ({ seq: m.seq, ts: m.ts, text: m.text }));
-  // Beyond the limit only the newest are kept.
-  return list.length > OUTBOX_MAX ? list.slice(list.length - OUTBOX_MAX) : list;
+    .sort(compareLocal);
+  // Beyond the limit reactions give way first (0.1.90 — the app drops the
+  // oldest whatever it is, dht_dm_outbox.c:312, so a run of reactions could
+  // push a message out): a reaction a later one of the same target and emoji
+  // overrides (the last op wins, actions.js reactionSummary), then the oldest
+  // reactions; only then the oldest of the rest.
+  // Which reaction is overridden is decided in the receiver's replay order
+  // — sender time, then seq (actions.js reactionSummary) — not in local order
+  // (0.1.101, BUGS W-12: with the clock stepped back, local order dropped the
+  // reaction the receiver's replay keeps).
+  let kept = list;
+  if (kept.length > OUTBOX_MAX) {
+    const replay = [];
+    for (const m of kept) {
+      const r = m.kind === 'reaction' ? parseReaction(m.text) : null;
+      if (r) replay.push({ m, key: `${r.target.toLowerCase()} ${r.emoji}`, ts: BigInt(m.ts), seq: BigInt(m.seq) });
+    }
+    replay.sort((a, b) => (a.ts === b.ts ? (a.seq < b.seq ? 1 : a.seq > b.seq ? -1 : 0) : a.ts < b.ts ? 1 : -1));   // newest first
+    const later = new Set(), moot = new Set();
+    for (const { m, key } of replay) { if (later.has(key)) moot.add(m); else later.add(key); }
+    kept = kept.filter(m => !moot.has(m));
+    let extra = kept.length - OUTBOX_MAX;
+    if (extra > 0) kept = kept.filter(m => m.kind !== 'reaction' || extra-- <= 0);
+    if (kept.length > OUTBOX_MAX) kept = kept.slice(kept.length - OUTBOX_MAX);
+  }
+  return kept.map(m => ({ seq: m.seq, ts: m.ts, text: m.text }));
 }
 
 // Own messages to `fp` still waiting for delivery (what makes a contact's
@@ -442,6 +566,38 @@ export function unremoveContact(state, fp) {
   state.removed = state.removed.filter(r => r !== fp);
 }
 
+// ── first-time records (web 0.1.88, W-04) ───────────────────────────────
+// The own profile and the own contact list are EXCLUSIVE records: writing
+// one over an existing record loses what it held. Until 0.1.88 the page
+// created them only for words generated in this tab (thin-core decision Q1,
+// 2026-09-30), because a node then answered "could not look" as "empty";
+// an account whose words came from elsewhere and that had no profile yet
+// stayed offline in Messages for good. Since DHT package A a strict EMPTY
+// means a replica answered (nodus_dht_server.c nodus_dht_read_outcome), so
+// an EMPTY may create the record — unless THIS device has already seen it
+// on the network (its memory, state.seenOwn), in which case an EMPTY is a
+// wrong answer to wait out, never a reason to write. Older states: a kept
+// own profile (profileCache) or a contact marked listed counts as seen.
+export function ownRecordSeen(state, ownFp, kind) {
+  if (!state) return true;
+  if (state.seenOwn && state.seenOwn[kind] !== undefined) return true;
+  if (kind === 'profile') return !!(state.profileCache && ownFp && state.profileCache[ownFp]);
+  if (kind === 'list') return Array.isArray(state.contacts) && state.contacts.some(c => c && c.listed === true);
+  return true;                                   // an unknown kind: never create
+}
+export function firstRecordAllowed(state, ownFp, kind) {
+  return !ownRecordSeen(state, ownFp, kind);
+}
+// Remembers that the own record of `kind` exists on the network (read
+// found, or written). True when the state changed (the caller saves it).
+export function markOwnRecordSeen(state, kind, nowSec) {
+  if (!state || (kind !== 'profile' && kind !== 'list')) return false;
+  if (!state.seenOwn) state.seenOwn = {};
+  if (state.seenOwn[kind] !== undefined) return false;
+  state.seenOwn[kind] = String(nowSec);
+  return true;
+}
+
 // ── message check progress (web 0.1.71) ─────────────────────────────────
 // Operator 2026-10-07: on a phone the Chats status line said "Updating…"
 // for minutes with nothing to show which step ran. The status line now
@@ -473,10 +629,15 @@ export function updatingStageText(stage) {
   return `Updating: ${CHECK_STAGES[stage] || 'messages'}…`;
 }
 
-// Status line while the contacts are checked: "Checking messages: 5 of 31 contacts…".
-export function checkingContactsText(done, total) {
-  const n = whole(total);
-  return `Checking messages: ${Math.min(whole(done), n)} of ${n} contact${n === 1 ? '' : 's'}…`;
+// Status line while the contacts are checked: "Checking messages: 5 of 31
+// contacts…", and with the contact being checked (0.1.92, operator
+// 2026-10-12: "hangi ID'yi kontrol ettiğini de yazsa"): "Checking messages:
+// cenk · 5 of 31…". `who` is the contact's chain name or short ID
+// (messages.js displayName — never a profile's claimed name).
+export function checkingContactsText(done, total, who = '') {
+  const n = whole(total), at = Math.min(whole(done), n);
+  if (typeof who === 'string' && who) return `Checking messages: ${who} · ${at} of ${n}…`;
+  return `Checking messages: ${at} of ${n} contact${n === 1 ? '' : 's'}…`;
 }
 
 // Log: "check round 3 started (regular): 31 contacts, 2 full (8 days), 29

@@ -8,7 +8,27 @@ const names = { ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana', TRX: 'TRON', USDT: '
 const icons = { ETH: 'eth.svg', BNB: 'bnb.svg', SOL: 'sol.svg', TRX: 'trx.svg', USDT: 'usdt.svg', CPUNK: 'cpunk.png' };
 const $ = id => document.getElementById(id);
 function el(tag, className, text) { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; }
-function iconImg(file) { const img = el('img', 'coin-icon'); img.src = `/assets/coins/${file}`; img.alt = ''; img.width = 36; img.height = 36; return img; }
+// The coin and network icons are part of the build (src/assets/coins), so
+// they get content-hashed names that the sites cache for a year (0.1.102).
+// Served from public/assets/coins under a fixed name they were "no-store"
+// (the sites cache only content-hashed files, nginx 2026-10-12), and every
+// redraw of the list fetched each icon again: they blinked out until loaded.
+// Each file is named here so the build emits only what it uses: Ixios's icon
+// only in a build with Ixios on (a build without it carries no Ixios code or
+// file, test/browser-ixios.js). Small files are inlined as data: URLs (CSP
+// img-src allows data:); `data-icon` keeps the file name for tests.
+const ICON_URLS = {
+  'bnb.svg': new URL('./assets/coins/bnb.svg', import.meta.url).href,
+  'cellframe.svg': new URL('./assets/coins/cellframe.svg', import.meta.url).href,
+  'cpunk.png': new URL('./assets/coins/cpunk.png', import.meta.url).href,
+  'eth.svg': new URL('./assets/coins/eth.svg', import.meta.url).href,
+  'nodus.svg': new URL('./assets/coins/nodus.svg', import.meta.url).href,
+  'sol.svg': new URL('./assets/coins/sol.svg', import.meta.url).href,
+  'trx.svg': new URL('./assets/coins/trx.svg', import.meta.url).href,
+  'usdt.svg': new URL('./assets/coins/usdt.svg', import.meta.url).href,
+  ...(import.meta.env.VITE_ENABLE_IXIOS === 'true' ? { 'ixios.png': new URL('./assets/coins/ixios.png', import.meta.url).href } : {})
+};
+function iconImg(file) { const img = el('img', 'coin-icon'); img.src = ICON_URLS[file]; img.dataset.icon = file; img.alt = ''; img.width = 36; img.height = 36; return img; }
 // `network`, when given, is the network the asset group belongs to: an optional
 // network's own asset that has no entry in `icons` (and whose symbol is that
 // network's own symbol) shows the network's icon rather than a letter.
@@ -56,6 +76,12 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // `selected`: the network chosen in the Send / Receive panel, set by the app
   // through setSelected(). It is UI state, not wallet state, so clear() keeps it.
   let addresses, endpoints, balances = {}, quotes = {}, filter = 'all', hidden = false, session = 0, timer, priceJob, selected;
+  // Automatic updates (src/balance-refresh.js, 0.1.93): every `autoMinutes`
+  // while the page is shown (0 = off); `readAt` the start of the last full
+  // read, `pricesAt` of the last price read, `doneAt` when the last full read
+  // finished (those three cleared with the wallet). `autoMinutes` is kept
+  // across open()/clear() (a device setting, like `selected`).
+  let autoMinutes = 0, autoTimer, readAt = 0, pricesAt = 0, doneAt = 0;
   // assetKey -> { units: bigint, observedAt, address }: the last balance read.
   let kept = {};
   function keepRead(chain, result) {
@@ -79,7 +105,9 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   }
   const readTime = ms => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   function render() {
-    const snap = portfolioSnapshot(balances, quotes, Date.now(), assets, visibleKept());
+    // Read again automatically: a balance counts until two minutes past its
+    // next scheduled read, so a value is never crossed out between reads.
+    const snap = portfolioSnapshot(balances, quotes, Date.now(), assets, visibleKept(), { balanceMaxAge: autoMinutes ? (autoMinutes + 2) * 60000 : 0 });
     $('portfolio-total').textContent = text(usdText(snap.total, snap.positive));
     $('portfolio-label').textContent = snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
     $('portfolio-status').textContent = snap.state === 'idle' ? 'Refresh all to read your balances and prices.'
@@ -93,15 +121,36 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     $('portfolio-networks').replaceChildren(...Object.entries(networks).map(([chain, c]) => {
       const rows = snap.rows.filter(r => r.chain === chain), ready = rows.every(r => r.balance !== null && r.keptAt === undefined);
       const lastRead = rows.filter(r => r.keptAt !== undefined).map(r => r.keptAt);
-      const status = c.balanceUnavailable ? 'Balance not shown yet' : rows.some(r => r.state === 'loading') ? 'Reading' : ready ? 'Balances read'
+      const status = c.balanceUnavailable ? (lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : 'Balance not shown yet') : rows.some(r => r.state === 'loading') || jobs.has(chain) ? 'Reading' : ready ? 'Balances read'
         : lastRead.length ? `Last read ${readTime(Math.min(...lastRead))}` : rows.every(r => r.state === 'idle') ? 'Not read' : 'Incomplete';
-      const badge = el('span', 'network-health'); badge.append(networkIcon(c), el('span', '', `${c.name} · ${status}`)); return badge;
+      // A light instead of the words (0.1.103, operator: "yeşil … stale
+      // olanlar … sarı … bağlanamayanlar kırmızı"): green = every balance
+      // read and current, amber = shown as last read (out of date, or no
+      // source yet), red = the last read failed, grey = not read yet; it
+      // pulses while a read runs. The words stay as the badge's title and
+      // accessible name.
+      const reading = status === 'Reading';
+      const health = rows.some(r => r.state === 'error') ? 'failed' : ready && rows.length && !c.balanceUnavailable ? 'current' : lastRead.length ? 'old' : 'none';
+      // A button (0.1.107, operator: "clickable yap … network
+      // seçebilirsin"): it chooses this network — the TRANSFER NETWORK box
+      // below names it and offers its actions — without scrolling or opening
+      // anything (0.1.108, 'choose': "QR kodunu oraya gönderiyorsun … ben
+      // oraya göndermeni istemiyorum"); the chosen network's badge is marked
+      // (aria-pressed, setSelected).
+      const badge = el('button', 'network-health'); badge.type = 'button'; badge.dataset.chain = chain;
+      badge.dataset.health = health; badge.dataset.reading = String(reading);
+      badge.title = `${c.name} · ${status}`; badge.setAttribute('aria-label', `${badge.title}. Use ${c.name} for Send / Receive`);
+      badge.setAttribute('aria-pressed', String(chain === selected));
+      badge.onclick = () => selectAsset(chain, c.symbol, 'choose');
+      // The light at the right end, centred top to bottom (0.1.106, operator:
+      // "tam ortalamak … sağa dayalı olması lazım").
+      badge.append(networkIcon(c), el('span', '', c.name), el('span', 'health-light')); return badge;
     }));
     for (const button of $('portfolio-filters').querySelectorAll('button')) button.setAttribute('aria-pressed', String(button.dataset.chain === filter));
     const opened = new Set([...$('balances').querySelectorAll('details[open]')].map(d => d.dataset.symbol));
     const focused = document.activeElement, focusedGroup = focused?.closest('.asset-group')?.dataset.symbol;
     const focusedAction = focused?.getAttribute('aria-label'), focusedRowAction = focused?.dataset?.rowAction;
-    $('balances').replaceChildren(...groupAssets(snap.rows, filter).flatMap(group => {
+    $('balances').replaceChildren(...groupAssets(snap.rows, filter, Object.fromEntries(Object.entries(networks).map(([key, c]) => [key, c.name]))).flatMap(group => {
       const detail = el('details', 'asset-group'); detail.dataset.symbol = group.symbol; detail.open = opened.has(group.symbol);
       const summary = el('summary', 'asset-summary'), name = el('span', 'asset-name');
       const home = networks[group.rows[0].chain];
@@ -160,12 +209,16 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       control?.focus({ preventScroll: true });
     }
   }
-  async function readChainBalances(chain, current) {
+  // `background`: an automatic read (setAutoRefresh, freshen) — the shown
+  // values stay until the answer replaces them, and a failed read keeps them
+  // (they go out of date by their own age, portfolioSnapshot).
+  async function readChainBalances(chain, current, { background = false } = {}) {
     // No address yet (Cellframe/Ixios derivation still pending): stay "Reading…"
     // rather than issuing a request or reporting a false error.
-    if (!addresses[chain]) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' }; render(); return; }
+    if (!addresses[chain]) { if (background) return false; for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' }; render(); return false; }
     const controller = new AbortController(); jobs.set(chain, controller);
-    for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'loading' };
+    if (background) backgroundJobs.add(controller);
+    if (!background) for (const asset of assets.filter(a => a.chain === chain)) if (balances[asset.key]?.state !== 'ready') balances[asset.key] = { state: 'loading' };
     render();
     try {
       const rows = await readBalances(chain, addresses[chain], endpoints[chain], { signal: controller.signal });
@@ -173,29 +226,114 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         const result = chainBalances(chain, rows, Date.now(), assets);
         Object.assign(balances, result);
         keepRead(chain, result);
+        return true;
       }
     } catch {
-      if (session === current && !controller.signal.aborted) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
-    } finally { if (session === current) { if (jobs.get(chain) === controller) jobs.delete(chain); render(); } }
+      if (session === current && !controller.signal.aborted && !background) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' };
+    } finally { backgroundJobs.delete(controller); if (session === current) { if (jobs.get(chain) === controller) jobs.delete(chain); render(); } }
+    return false;
   }
-  async function refresh() {
-    if (!addresses || jobs.size || priceJob) return;
+  // Automatic reads in flight (0.1.96, W-08): a Refresh pressed meanwhile
+  // cancels them and reads at once instead of being refused without a word.
+  const backgroundJobs = new Set();
+  function yieldToRefresh() {
+    const running = [...jobs.values(), ...(priceJob ? [priceJob] : [])];
+    if (!running.length) return true;
+    if (!running.every(c => backgroundJobs.has(c))) return false;
+    for (const c of running) c.abort();
+    jobs.clear(); priceJob = undefined; backgroundJobs.clear();
+    return true;
+  }
+  // The market prices, read again (an automatic read keeps the old quotes
+  // when it fails).
+  // A successful read replaces every quote: one the source no longer vouches
+  // for is dropped (0.1.96, W-08); a failed automatic read keeps the old ones,
+  // which still expire by their own age (PRICE_MAX_AGE).
+  function readQuotes(current, controller) {
+    return readPrices({ signal: controller.signal })
+      .then(value => { if (session === current && !controller.signal.aborted) { quotes = value; pricesAt = Date.now(); return true; } return false; })
+      .catch(() => false);
+  }
+  function updatedText() {
+    const auto = autoMinutes ? ` Read again every ${autoMinutes} minutes while this page is shown.` : ' After 5 minutes a balance is shown as last read and leaves the total; prices expire after 15 minutes.';
+    return `Last refresh: ${new Date(doneAt).toLocaleTimeString()}.${auto}`;
+  }
+  async function refresh({ background = false } = {}) {
+    if (!addresses) return;
+    if (background ? (jobs.size || priceJob) : !yieldToRefresh()) return;
     const current = session;
-    quotes = {};
-    for (const asset of assets) balances[asset.key] = { state: 'loading' };
+    readAt = Date.now();
+    // Refresh keeps what is shown until each answer replaces it (0.1.102,
+    // operator: "refresh ettiği anda hepsi boş oluyor … ikonlar gidiyor"): only
+    // a row with no balance yet shows "Reading…"; the network badges say
+    // "Reading" while their read runs; prices stay until new ones arrive.
+    if (!background) for (const asset of assets) if (balances[asset.key]?.state !== 'ready') balances[asset.key] = { state: 'loading' };
     const controller = new AbortController(); priceJob = controller;
-    $('portfolio-updated').textContent = 'Reading balances and market prices…'; render();
-    const priceRead = readPrices({ signal: controller.signal }).then(value => { if (session === current) quotes = value; }).catch(() => {});
-    const reads = chains.map(chain => readChainBalances(chain, current));
-    await Promise.allSettled([priceRead, ...reads]);
-    if (session !== current) return;
+    if (background) backgroundJobs.add(controller);
+    if (!background) $('portfolio-updated').textContent = 'Reading balances and market prices…';
+    render();
+    const priceRead = readQuotes(current, controller);
+    const reads = chains.map(chain => readChainBalances(chain, current, { background }));
+    const results = await Promise.allSettled([priceRead, ...reads]);
+    backgroundJobs.delete(controller);
+    if (session !== current || priceJob !== controller) return;      // cancelled by a Refresh, or the wallet closed
     priceJob = undefined;
-    $('portfolio-updated').textContent = `Last refresh: ${new Date().toLocaleTimeString()}. After 5 minutes a balance is shown as last read and leaves the total; prices expire after 15 minutes.`;
+    // "Last refresh" names the last read that brought something (0.1.96, W-08).
+    if (results.some(r => r.status === 'fulfilled' && r.value === true)) doneAt = Date.now();
+    $('portfolio-updated').textContent = doneAt ? updatedText() : 'Balances and prices could not be read just now.';
     render();
   }
+  // One network chosen (src/app.js, the Send / Receive network): its balance,
+  // and the prices, read again in the background when older than a minute.
+  const FRESHEN_MS = 60000;
+  function freshen(chain) {
+    if (!addresses || !chains.includes(chain) || !addresses[chain] || jobs.has(chain) || priceJob) return;
+    const current = session, now = Date.now();
+    const read = assets.filter(a => a.chain === chain).map(a => balances[a.key]).filter(b => b?.state === 'ready').map(b => b.observedAt);
+    if (read.length && now - Math.min(...read) < FRESHEN_MS) return;
+    void readChainBalances(chain, current, { background: true });
+    if (now - pricesAt >= FRESHEN_MS) {
+      const controller = new AbortController(); priceJob = controller; backgroundJobs.add(controller);
+      void readQuotes(current, controller).finally(() => { backgroundJobs.delete(controller); if (session === current && priceJob === controller) { priceJob = undefined; render(); } });
+    }
+  }
+  // One network read again now, in the background, whatever the age of its
+  // last read (0.1.102, operator: "nodus gönderdikten sonra hemen bakiye
+  // güncellenmiyor"): a transaction of this wallet on it was just confirmed
+  // (src/app.js checkRow). A read already running started before the
+  // confirmation, so it is cancelled and replaced.
+  function reread(chain) {
+    if (!addresses || !chains.includes(chain) || !addresses[chain]) return;
+    const running = jobs.get(chain);
+    if (running) { running.abort(); jobs.delete(chain); backgroundJobs.delete(running); }
+    void readChainBalances(chain, session, { background: true });
+  }
+  // Automatic updates: every `minutes` while the page is shown (0 = off).
+  // A hidden page reads nothing; shown again after the interval, it reads at once.
+  function autoTick() {
+    if (!autoMinutes || !addresses || document.hidden) return;
+    if (Date.now() - readAt < autoMinutes * 60000 - 1000) return;
+    void refresh({ background: true });
+  }
+  function setAutoRefresh(minutes) {
+    autoMinutes = Number.isSafeInteger(minutes) && minutes > 0 ? minutes : 0;
+    clearInterval(autoTimer); autoTimer = undefined;
+    if (autoMinutes) autoTimer = setInterval(autoTick, 30000);
+    // The Refresh buttons only when balances are not read automatically
+    // (0.1.108, operator: "refresh networks var. Ona da gerek yok. Otomatik
+    // refresh ediyoruz zaten"); with automatic updates Off they are the only
+    // way to read again, so they come back.
+    for (const id of ['portfolio-refresh', 'refresh']) $(id).hidden = autoMinutes > 0;
+    if (doneAt && addresses && !jobs.size && !priceJob) $('portfolio-updated').textContent = updatedText();
+    render();
+  }
+  // After the page's own handlers (0.1.96, W-08): a page shown again past its
+  // idle deadline is locked first (src/app.js), and then nothing is read.
+  document.addEventListener('visibilitychange', () => setTimeout(autoTick, 0));
   function clear() {
     session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
     clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept = {};
+    readAt = 0; pricesAt = 0; doneAt = 0; backgroundJobs.clear();
     $('portfolio-updated').textContent = ''; render();
   }
   // `kept`: entries saved with this wallet (src/activity-storage.js
@@ -210,6 +348,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     // Cancel the old endpoint's reads so they cannot overwrite the new state.
     const savedAddresses = addresses, savedEndpoints = { ...endpoints, [chain]: endpoint }, savedActions = rowActions, savedKept = kept;
     open(savedAddresses, savedEndpoints, { automatic: false, kept: savedKept });
+    readAt = Date.now();                 // no automatic read right after: the line below asks for Refresh (0.1.96)
     rowActions = savedActions; render();
     $('portfolio-status').textContent = 'Network endpoint changed. Refresh all to read balances again.';
   }
@@ -220,7 +359,14 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // wallet's caller could reach this, and readChainBalances re-checks `session`
   // itself.
   function setAddress(chain, address) {
-    if (!addresses || !chains.includes(chain)) return;
+    if (!addresses || !Object.hasOwn(networks, chain)) return;
+    // A network with no balance source yet (NODUS before its connection is
+    // ready): the address is only remembered, so the balance last read for it
+    // (kept, a saved wallet's too) is shown as last read; nothing is read (0.1.96).
+    if (!chains.includes(chain)) { if (address) { addresses[chain] = address; render(); } return; }
+    // The same address again (a kept one, then the derived one, 0.1.97) while
+    // its read runs: that read answers for both.
+    if (address && addresses[chain] === address && jobs.has(chain)) return;
     addresses[chain] = address;
     if (!address) { for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error' }; render(); return; }
     void readChainBalances(chain, session);
@@ -235,13 +381,16 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     networks[chain] = network; flag();
     jobs.get(chain)?.abort(); jobs.delete(chain);
     for (const asset of baseAssets.filter(a => a.chain === chain)) delete balances[asset.key];
-    if (addresses && network.balanceUnavailable) delete addresses[chain];
+    // The address stays (0.1.96): its last read balance (kept) is shown as
+    // "last read" while the network has no source, e.g. NODUS reconnecting.
     render();
   }
   // Marks the selected network's rows in place (no re-render, so no focus change);
   // render() applies the same marks to rows it builds later.
   function setSelected(chain) {
     selected = chain;
+    freshen(chain);                      // read it again if older than a minute (0.1.93)
+    for (const badge of $('portfolio-networks').querySelectorAll('.network-health')) badge.setAttribute('aria-pressed', String(badge.dataset.chain === chain));
     for (const entry of $('balances').querySelectorAll('.chain-holding')) {
       const current = entry.dataset.chain === chain, control = entry.querySelector('.holding-select');
       entry.classList.toggle('selected', current);
@@ -271,5 +420,5 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     button.onclick = () => { filter = chain; render(); }; return button;
   }));
   render();
-  return { open, clear, refresh, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn };
+  return { open, clear, refresh, reread, changeEndpoint, setAddress, setSelected, setNetwork, setAction, setEarn, setAutoRefresh };
 }

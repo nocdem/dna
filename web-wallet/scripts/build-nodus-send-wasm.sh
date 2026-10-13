@@ -426,7 +426,11 @@ exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_t
   nsw_test_msig_seed_pk nsw_test_msig_seed_sign
   nsw_test_evm_call_hex nsw_test_evm_call_roundtrip nsw_test_evmfund_roundtrip
   nsw_test_evm_op_weight nsw_test_evm_build nsw_test_evm_create_address
-  nsw_test_evm_args_hex)
+  nsw_test_evm_args_hex
+  # P1 rules' vector entry (connect/nc_wasm.c, compiled only with
+  # NODUS_SEND_TEST_FIXED_RANDOM; test/connect-rules-vectors.test.js).
+  # Synchronous, no network, no session.
+  nc_rule_in_alloc nc_rule_test)
 
 join_exports() {
   local out="" name
@@ -434,13 +438,28 @@ join_exports() {
   printf '[%s]' "$out"
 }
 
+# P1 rules (design docs/plans/2026-10-12-connect-core-p1-rules-design.md
+# rev 2): the JS-compatible JSON layer, the payload and request/delivery rules
+# and their JSON dispatcher — compiled into the parity TEST build only, which
+# exports nc_rule_test (exports_test; test/connect-rules-vectors.test.js).
+# Not in the shipped module: the web is not switched to them in P1, so there
+# they would be dead code, and src/nodus/send.wasm stays byte for byte the
+# module test/nodus-send-wasm.test.js compares the parity build against.
+sources_test_only=(
+  connect/nc_jsjson.c
+  connect/nc_payload.c
+  connect/nc_rules.c
+  connect/nc_rules_json.c
+)
+
 # build <define> <environment> <output .js/.mjs> <exports...>
 build() {
   local define="$1" env="$2" output="$3"; shift 3
   local objdir="$work/obj-${define}-${env}"
   mkdir -p "$objdir"
-  local objects=() src obj
-  for src in "${sources[@]}"; do
+  local objects=() src obj all=("${sources[@]}")
+  if [ "$define" = NODUS_SEND_TEST_FIXED_RANDOM ]; then all+=("${sources_test_only[@]}"); fi
+  for src in "${all[@]}"; do
     obj="$objdir/$(echo "$src" | tr '/.' '__').o"
     local extra=()
     # shared/crypto/utils/qgp_fingerprint.c:15 sizes a 16-char digit table

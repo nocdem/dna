@@ -18,13 +18,14 @@ import {
   openHistoryStore, StorageError, HISTORY_SLOW_TEXT
 } from '../src/connect/store.js';
 import {
-  parseContactId, parseContactInput, requestRefusal, shortId, inspectUntrusted, httpsLink, profilePatch, profileStatusText, senderClockLabel,
+  parseContactId, parseContactInput, requestRefusal, shortId, inspectUntrusted, httpsLink, linkSegments, profilePatch, profileStatusText, senderClockLabel, shownAt,
   recentDays, isDelivered, pendingOutbox, OUTBOX_MAX, compareLocal, receivedKey,
-  publishedSeqs, markPublished, markDelivered, ackToSend, messageStatus,
+  publishedSeqs, markPublished, markDelivered, ackToSend, ackAllowed, messageStatus,
   hasUndelivered, DELIVERED_GRACE_SECONDS, avatarSource, AVATAR_MAX_B64, avatarPatch, AVATAR_UPLOAD_MAX_B64,
   needFullSync, fullDays, SMART_SYNC_FULL_SECONDS, contactNeedsFullSync, contactDays, checkOrder, profileFresh, PROFILE_CACHE_SECONDS,
   CHECK_STAGES, updatingStageText, checkingContactsText, roundStartLine, stageLine, stageStartLine, contactStartLine, contactStepLine,
-  saltShortText, daysRead, contactLine, roundDoneLine, removeContact
+  saltShortText, daysRead, contactLine, roundDoneLine, removeContact,
+  ownRecordSeen, firstRecordAllowed, markOwnRecordSeen
 } from '../src/connect/ui/text.js';
 import { scrubLogText } from '../src/session-log.js';
 import {
@@ -251,6 +252,14 @@ test('names: one letter of another script inside a Latin name is unusual; mixed-
 });
 
 test('sender clock: a safe integer past the Date range is "unknown", never a thrown render', () => {
+  // 0.1.104: an incoming message shows its sender's time, never later than it arrived
+  const AT = 1791600000000;                                  // ms, arrived on this device
+  assert.equal(shownAt({ dir: 'in', at: AT, senderTs: '1791500000' }), 1791500000000, 'sent earlier: the sender\'s time');
+  assert.equal(shownAt({ dir: 'in', at: AT, senderTs: '1791700000' }), AT, 'a "future" sender clock: the arrival time');
+  assert.equal(shownAt({ dir: 'in', at: AT, senderTs: 'x' }), AT);
+  assert.equal(shownAt({ dir: 'in', at: AT }), AT);
+  assert.equal(shownAt({ dir: 'in', at: AT, senderTs: '99999999999999999999' }), AT, 'beyond a safe integer: the arrival time');
+  assert.equal(shownAt({ dir: 'out', at: AT, senderTs: '1791500000' }), AT, 'own messages: when they were written');
   assert.equal(senderClockLabel('8640000000001'), "sender's clock: unknown");
   assert.equal(senderClockLabel('9007199254740'), "sender's clock: unknown");
   assert.match(senderClockLabel('1790000000'), /^sender's clock: 2026-/);
@@ -321,6 +330,33 @@ test('pending set: own undelivered messages to that contact within 7 days, in lo
   const capped = pendingOutbox(many, FP, now);
   assert.equal(capped.length, OUTBOX_MAX);
   assert.equal(capped[0].seq, '6');
+  // 0.1.90: over the limit reactions give way before messages — first one a
+  // later reaction of the same target and emoji overrides, then the oldest
+  const T = 'ab'.repeat(32), R = (e, op) => `{"target":"${T}","emoji":"${e}","op":"${op}"}`;
+  const mixed = [
+    { seq: '1', fp: FP, dir: 'out', text: 'first chat', ts: now },
+    { seq: '2', fp: FP, dir: 'out', text: R('👍', 'add'), ts: now, kind: 'reaction' },
+    { seq: '3', fp: FP, dir: 'out', text: R('🔥', 'add'), ts: now, kind: 'reaction' },
+    ...Array.from({ length: OUTBOX_MAX - 3 }, (_, i) => ({ seq: String(i + 4), fp: FP, dir: 'out', text: 'm', ts: now })),
+    { seq: '100', fp: FP, dir: 'out', text: R('👍', 'remove'), ts: now, kind: 'reaction' },
+    { seq: '101', fp: FP, dir: 'out', text: R('🎉', 'add'), ts: now, kind: 'reaction' },
+  ];
+  const kept = pendingOutbox(mixed, FP, now).map(m => m.seq);
+  assert.equal(kept.length, OUTBOX_MAX);
+  assert.equal(kept[0], '1');                          // the oldest message stays
+  assert.ok(!kept.includes('2') && !kept.includes('3')); // moot 👍 add, then the oldest reaction
+  assert.ok(kept.includes('100') && kept.includes('101'));
+  // W-12 (0.1.101, Astra's case): the clock stepped back between an add and
+  // its remove — the receiver replays by sender time, so the ADD (ts 100) is
+  // the last op and must stay; the remove (ts 99) is the one overridden.
+  const back = [
+    { seq: '1', fp: FP, dir: 'out', text: R('👍', 'add'), ts: '100', kind: 'reaction' },
+    { seq: '2', fp: FP, dir: 'out', text: R('👍', 'remove'), ts: '99', kind: 'reaction' },
+    ...Array.from({ length: OUTBOX_MAX - 1 }, (_, i) => ({ seq: String(i + 3), fp: FP, dir: 'out', text: 'm', ts: '100' }))
+  ];
+  const keptBack = pendingOutbox(back, FP, '200').map(m => m.seq);
+  assert.equal(keptBack.length, OUTBOX_MAX);
+  assert.ok(keptBack.includes('1') && !keptBack.includes('2'), 'the add the receiver replays last is kept');
   assert.equal(isDelivered({ ts: '5' }), false);
   assert.equal(isDelivered({ ts: '5', published: true }), false);
   assert.equal(isDelivered({ ts: '5', delivered: true }), true);
@@ -388,6 +424,14 @@ test('the status shown for an own message follows its flags', () => {
   assert.equal(messageStatus({}), 'waiting to send');
   assert.equal(messageStatus({ published: true }), 'sent');
   assert.equal(messageStatus({ published: true, delivered: true }), 'delivered');
+});
+
+test('an ACK is published only from a saved store, with every message verified and every day bucket read (W-11)', () => {
+  assert.equal(ackAllowed({ persistent: true, complete: true, lost: 0 }), true);
+  assert.equal(ackAllowed({ persistent: false, complete: true, lost: 0 }), false, 'an unsaved wallet keeps nothing, so it never ACKs');
+  assert.equal(ackAllowed({ persistent: true, complete: true, lost: 1 }), false, 'a message that did not verify would be covered without being stored');
+  assert.equal(ackAllowed({ persistent: true, complete: false, lost: 0 }), false, 'an unreadable bucket may hold older messages the value would cover');
+  assert.equal(ackAllowed({ persistent: 'yes', complete: 1, lost: 0 }), false, 'only true counts');
 });
 
 test('the ACK value is the newest stored sender timestamp of that contact, sent only when it is new', () => {
@@ -535,34 +579,39 @@ test('smart sync per contact (0.1.72): only a contact never checked, or checked 
   assert.throws(() => needFullSync([], {}, 'x'), /Invalid time/);
 });
 
-test('check order (0.1.72): never checked first, then the newest message on this device, then the rest; ties keep the list order', () => {
-  const fp = ch => ch.repeat(128), now = '1790000000';
-  const contacts = ['1', '2', '3', '4', '5', '6'].map(ch => ({ fp: fp(ch) }));
-  const dmSync = { [fp('1')]: now, [fp('2')]: now, [fp('3')]: now, [fp('5')]: '0', [fp('6')]: now };
-  // 4: no entry, 5: '0' — never checked. 3 has the newest message (in), 1 an
-  // older one (out), 6 a message with an unreadable seq (ignored), 2 none.
+test('check order (0.1.111): the contact last written with first, by the message time as shown; then everyone else in list order', () => {
+  const fp = ch => ch.repeat(128);
+  const contacts = ['1', '2', '3', '4', '5', '6', '7'].map(ch => ({ fp: fp(ch) }));
+  // at: arrival / send time on this device (ms). senderTs: the sender's
+  // clock (s), used when not later than the arrival (shownAt).
   const messages = [
-    { fp: fp('1'), dir: 'out', seq: '7' },
-    { fp: fp('3'), dir: 'in', seq: '9' },
-    { fp: fp('1'), dir: 'in', seq: '8' },
-    { fp: fp('6'), dir: 'in', seq: 'x' },
-    { fp: fp('9'), dir: 'in', seq: '99' }   // not a contact
+    { fp: fp('1'), dir: 'out', seq: '7', at: 1000_000 },
+    { fp: fp('3'), dir: 'in', seq: '2', at: 5000_000, senderTs: '4000' },   // shown at 4,000,000
+    { fp: fp('1'), dir: 'in', seq: '8', at: 2000_000 },                      // 1's newest: 2,000,000
+    { fp: fp('5'), dir: 'in', seq: '9', at: 3000_000, senderTs: '9999' },   // sender clock ahead: shown at arrival 3,000,000
+    { fp: fp('6'), dir: 'in', seq: 'x', at: 9000_000 },                      // unreadable seq: ignored
+    { fp: fp('7'), dir: 'out', seq: '3' },                                   // no time: ignored
+    { fp: fp('2'), dir: 'out', seq: '4', at: '9500000' },                    // string at: not a time, ignored
+    { fp: fp('4'), dir: 'out', seq: '5', at: 9500000.5 },                    // fractional at: ignored
+    { fp: fp('9'), dir: 'in', seq: '99', at: 9900_000 }                      // not a contact
   ];
   const before = contacts.map(c => c.fp);
-  const order = checkOrder(contacts, dmSync, messages).map(c => c.fp);
-  assert.deepEqual(order, [fp('4'), fp('5'), fp('3'), fp('1'), fp('2'), fp('6')]);
+  // 3 (4.0e6) > 5 (3.0e6) > 1 (2.0e6): by time, NOT by seq (3's seq 2 is the
+  // lowest — an old message stored late does not count as new); then 2, 4, 6,
+  // 7 with no usable message, in list order — never-written contacts are
+  // still in the round, last.
+  assert.deepEqual(checkOrder(contacts, messages).map(c => c.fp), [fp('3'), fp('5'), fp('1'), fp('2'), fp('4'), fp('6'), fp('7')]);
   assert.deepEqual(contacts.map(c => c.fp), before, 'the list itself is not reordered');
-  assert.notEqual(checkOrder(contacts, dmSync, messages), contacts, 'a new array');
-  // Same newest seq (cannot happen for one device, but the order stays total): list order.
-  const tie = checkOrder([{ fp: fp('2') }, { fp: fp('1') }], { [fp('1')]: now, [fp('2')]: now }, [{ fp: fp('1'), seq: '5' }, { fp: fp('2'), seq: '5' }]);
+  assert.notEqual(checkOrder(contacts, messages), contacts, 'a new array');
+  // Same time: the later stored (higher seq) first; same time and seq: list order.
+  const sameTime = checkOrder([{ fp: fp('1') }, { fp: fp('2') }], [{ fp: fp('1'), seq: '9', at: 7 }, { fp: fp('2'), seq: '10', at: 7 }]);
+  assert.deepEqual(sameTime.map(c => c.fp), [fp('2'), fp('1')], 'seq compared as integers, not text');
+  const tie = checkOrder([{ fp: fp('2') }, { fp: fp('1') }], [{ fp: fp('1'), seq: '5', at: 7 }, { fp: fp('2'), seq: '5', at: 7 }]);
   assert.deepEqual(tie.map(c => c.fp), [fp('2'), fp('1')]);
-  // seq compared as integers, not text ('10' after '9')
-  const big = checkOrder([{ fp: fp('1') }, { fp: fp('2') }], { [fp('1')]: now, [fp('2')]: now }, [{ fp: fp('1'), seq: '9' }, { fp: fp('2'), seq: '10' }]);
-  assert.deepEqual(big.map(c => c.fp), [fp('2'), fp('1')]);
-  // Nothing checked yet, no messages: the list order.
-  assert.deepEqual(checkOrder(contacts, {}, []).map(c => c.fp), before);
-  assert.deepEqual(checkOrder(contacts, undefined, undefined).map(c => c.fp), before);
-  assert.deepEqual(checkOrder([], {}, messages), []);
+  // No messages: the list order.
+  assert.deepEqual(checkOrder(contacts, []).map(c => c.fp), before);
+  assert.deepEqual(checkOrder(contacts, undefined).map(c => c.fp), before);
+  assert.deepEqual(checkOrder([], messages), []);
 });
 
 test('profile cache: a kept profile is used for 7 days', () => {
@@ -865,6 +914,10 @@ test('progress status line: the first round names its step; every round counts i
   assert.equal(checkingContactsText(1, 1), 'Checking messages: 1 of 1 contact…');
   assert.equal(checkingContactsText(7, 3), 'Checking messages: 3 of 3 contacts…', 'never more than the total');
   assert.equal(checkingContactsText(undefined, undefined), 'Checking messages: 0 of 0 contacts…');
+  // 0.1.92: with the contact being checked (chain name or short ID)
+  assert.equal(checkingContactsText(2, 13, 'cenk'), 'Checking messages: cenk · 2 of 13…');
+  assert.equal(checkingContactsText(20, 13, 'ID 72b656d2…2fd9'), 'Checking messages: ID 72b656d2…2fd9 · 13 of 13…');
+  assert.equal(checkingContactsText(1, 1, ''), 'Checking messages: 1 of 1 contact…', 'no name: the old line');
 });
 
 test('progress log: round, stage and per-step lines are exact', () => {
@@ -950,4 +1003,88 @@ test('progress log lines pass the session log scrub unchanged (short ID, counts,
   ];
   for (const line of lines) assert.equal(scrubLogText(line), line);
   assert.ok(!lines.some(line => line.includes(PROGRESS_FP)), 'never the full ID');
+});
+
+// W-04 (web 0.1.88): the device memory that decides whether an EMPTY read
+// may create the own profile / own contact list (text.js firstRecordAllowed)
+// and its place in the saved state (store.js seenOwn).
+test('first records: allowed until this device has seen the own record on the network', () => {
+  const own = 'ab'.repeat(64), other = 'cd'.repeat(64);
+  const s = emptyState();
+  assert.equal(firstRecordAllowed(s, own, 'profile'), true, 'a new device, nothing seen: the first profile may be written');
+  assert.equal(firstRecordAllowed(s, own, 'list'), true);
+  assert.equal(markOwnRecordSeen(s, 'profile', '1791500000'), true);
+  assert.equal(markOwnRecordSeen(s, 'profile', '1791600000'), false, 'the first sighting is kept');
+  assert.equal(s.seenOwn.profile, '1791500000');
+  assert.equal(firstRecordAllowed(s, own, 'profile'), false, 'seen: an EMPTY answer never creates it again');
+  assert.equal(firstRecordAllowed(s, own, 'list'), true, 'each kind has its own memory');
+  // A state saved before 0.1.88: a kept own profile, or a listed contact,
+  // counts as seen (an existing user is protected from the first upgrade).
+  const old = emptyState(); delete old.seenOwn;
+  old.profileCache[own] = { id: 'p' + '1'.padStart(20, '0'), at: '1', name: '' };
+  assert.equal(ownRecordSeen(old, own, 'profile'), true);
+  assert.equal(ownRecordSeen(old, other, 'profile'), false, 'only the own ID counts');
+  old.contacts.push({ fp: other, salt: null, listed: false });
+  assert.equal(ownRecordSeen(old, own, 'list'), false, 'an unlisted contact is no proof the list exists');
+  old.contacts[0].listed = true;
+  assert.equal(ownRecordSeen(old, own, 'list'), true);
+  // Unknown kind or no state: never create.
+  assert.equal(firstRecordAllowed(s, own, 'salt'), false);
+  assert.equal(firstRecordAllowed(null, own, 'profile'), false);
+  assert.equal(markOwnRecordSeen(s, 'salt', '1'), false);
+});
+
+test('first records: the saved state keeps seenOwn and refuses a damaged one', () => {
+  const s = emptyState();
+  assert.deepEqual(s.seenOwn, {});
+  const old = emptyState(); delete old.seenOwn;
+  assert.deepEqual(checkState(old).seenOwn, {}, 'a state saved before 0.1.88 gets the default');
+  const ok = emptyState(); ok.seenOwn = { profile: '1791500000', list: '1791500001' };
+  assert.deepEqual(checkState(ok).seenOwn, { profile: '1791500000', list: '1791500001' });
+  for (const bad of [{ salt: '1' }, { profile: 'yesterday' }, { profile: '-1' }, []]) {
+    const v = emptyState(); v.seenOwn = bad;
+    assert.throws(() => checkState(v), StorageError, JSON.stringify(bad));
+  }
+});
+
+// Web 0.1.89: only https links become clickable; trailing punctuation stays
+// text; the href is the parsed URL (punycode for an international host).
+test('links: https only, punctuation outside, the parsed href shown', () => {
+  assert.deepEqual(linkSegments('no links here'), [{ text: 'no links here' }]);
+  assert.deepEqual(linkSegments('see https://nodusnetwork.io/wiki, ok'), [
+    { text: 'see ' }, { text: 'https://nodusnetwork.io/wiki', href: 'https://nodusnetwork.io/wiki' }, { text: ', ok' }]);
+  assert.deepEqual(linkSegments('(https://a.example/x)'), [{ text: '(' }, { text: 'https://a.example/x', href: 'https://a.example/x' }, { text: ')' }]);
+  const wiki = 'https://en.wikipedia.org/wiki/Foo_(bar)';
+  assert.deepEqual(linkSegments(`see ${wiki}.`), [{ text: 'see ' }, { text: wiki, href: wiki }, { text: '.' }]);
+  assert.deepEqual(linkSegments(`(${wiki})`), [{ text: '(' }, { text: wiki, href: wiki }, { text: ')' }]);
+  for (const bad of ['http://a.example', 'javascript:alert(1)', 'https://user:pass@a.example/', 'ftp://a.example']) {
+    assert.ok(linkSegments(bad).every(s => !s.href), bad);
+  }
+  const idn = linkSegments('https://exаmple.com/');            // Cyrillic "а"
+  assert.equal(idn.length, 1);
+  assert.match(idn[0].href, /^https:\/\/xn--/, 'a look-alike host shows as punycode');
+  assert.deepEqual(linkSegments('a https://x.example b https://y.example'), [
+    { text: 'a ' }, { text: 'https://x.example/', href: 'https://x.example/' }, { text: ' b ' }, { text: 'https://y.example/', href: 'https://y.example/' }]);
+});
+
+// 0.1.96 (BUGS W-07): declined senders are kept once, for 7 days (as the
+// app), at most DECLINE_MAX — the one 64 KiB state record can never fill up
+// with them; an entry saved before 0.1.96 (a bare ID) counts from now.
+test('declined senders: one entry each, forgotten after 7 days, capped', async () => {
+  const { declinedNow, isDeclined, addDeclined, undecline, DECLINE_KEEP_SECONDS, DECLINE_MAX } = await import('../src/connect/ui/text.js');
+  const A = 'a1'.repeat(64), B = 'b2'.repeat(64), now = '2000000000';
+  let list = addDeclined([], A, now);
+  list = addDeclined(list, A, now);
+  assert.deepEqual(list, [{ fp: A, at: now }], 'the same sender twice is one entry');
+  assert.equal(isDeclined(list, A), true);
+  assert.equal(isDeclined(list, B), false);
+  assert.deepEqual(declinedNow([A, 'nonsense', { fp: B, at: '1' }], now), [{ fp: A, at: now }], 'a bare old ID counts from now; garbage and expired entries go');
+  const later = String(BigInt(now) + DECLINE_KEEP_SECONDS + 1n);
+  assert.deepEqual(declinedNow(list, later), [], 'forgotten after 7 days');
+  assert.deepEqual(undecline(list, A), []);
+  let many = [];
+  for (let i = 0; i < DECLINE_MAX + 50; i++) many = addDeclined(many, i.toString(16).padStart(128, '0'), String(BigInt(now) + BigInt(i)));
+  assert.equal(many.length, DECLINE_MAX, 'at most DECLINE_MAX, the newest');
+  assert.equal(many[0].fp, (50).toString(16).padStart(128, '0'));
+  assert.ok(JSON.stringify(many).length < 40000, 'well inside the 64 KiB state record');
 });

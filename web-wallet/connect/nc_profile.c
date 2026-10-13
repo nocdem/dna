@@ -23,7 +23,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define LOG_TAG "NC_PROFILE"
 
@@ -269,7 +268,7 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
                        nc_profile_result_t *res) {
     if (!res) return NC_ERR_ARG;
     memset(res, 0, sizeof(*res));
-    if (!ctx || !ctx->keys || !patch_json) return NC_ERR_ARG;
+    if (!ctx || !ctx->keys || !patch_json || ctx->now == 0) return NC_ERR_ARG;
 
     json_object *patch = json_tokener_parse(patch_json);
     if (!patch || !json_object_is_type(patch, json_type_object) ||
@@ -312,7 +311,7 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
     json_object_put(patch);
 
     /* keyserver_profiles.c:156-184 */
-    id->timestamp = (uint64_t)time(NULL);
+    id->timestamp = ctx->now;                     /* the caller's clock (nc_ctx_t now) */
     id->version++;
     int rc = NC_ERR_INTERNAL;
     char *unsigned_json = dna_identity_to_json_unsigned(id);

@@ -241,6 +241,10 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .transfer-buttons { display: flex; gap: 12px; }
 .transfer-buttons button { min-width: 130px; border-radius: 9px; }
 .transfer-buttons button span { float: none; font-size: 18px; margin-right: 10px; line-height: 1; }
+/* Swap (0.1.107, operator: "swap getir. Ama swap disabled yap şu anda"):
+   shown, not yet usable — "Soon" says why, the cursor says it cannot be pressed. */
+#quick-swap:disabled, #quick-earn:disabled, #quick-send:disabled { cursor: not-allowed; }
+.transfer-buttons .soon { margin-left: 8px; padding: 1px 7px; border: 1px solid currentColor; border-radius: 999px; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; vertical-align: middle; }
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 22px; }
 .dashboard-panel { min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #1c2218; }
 .panel-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -267,7 +271,7 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
    4-module quiet zone, so no extra padding is needed for scanners. */
 .receive-qr { margin: 0 0 12px; }
 .receive-qr:empty { display: none; }
-.receive-qr svg { display: block; width: 168px; height: 168px; max-width: 100%; border-radius: 6px; }
+.receive-qr svg { display: block; width: 168px; height: 168px; max-width: 100%; border-radius: 6px; margin: 0 auto; }   /* centred (0.1.102, operator) */
 /* Send block: below the receive block in the same Send / Receive panel. */
 .send-block { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
 .send-block-network { color: var(--muted); font-weight: 400; white-space: nowrap; }
@@ -337,6 +341,10 @@ body:has(#wallet-open:not([hidden])) .wallet-card { background: #171c13; }
 .stake-panel { display: flex; flex-direction: column; }
 .stake-panel > .hint { margin-bottom: 0; }
 #stake-status:empty { margin: 0; }
+.stake-network { display: flex; flex-direction: column; gap: 4px; margin: 16px 0 0; padding: 16px 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.stake-network-label { font-size: 12px; color: var(--muted); }
+.stake-network strong { font-size: 20px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.stake-network small { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .stake-block { margin: 24px 0 0; padding-top: 20px; border-top: 1px solid var(--line); scroll-margin-top: 24px; }
 .stake-block h4 { font-size: 12px; font-weight: 500; margin: 0 0 12px; color: var(--text); }
 /* A validator row's header is one button that opens the row's own
@@ -421,10 +429,21 @@ dialog.evm-review dd { font-family: ui-monospace, monospace; font-size: 12px; }
 #portfolio-status { font-size: 12px; line-height: 1.7; min-height: 40px; margin: 12px 0 20px; color: #c4d1b5; }
 .portfolio-card > button { padding: 11px 16px; font-size: 12px; }
 .portfolio-card > button span { margin-left: 20px; }
-.portfolio-scope { font-size: 10px; line-height: 1.8; margin: 18px 0 0; color: #aebba1; }
 .portfolio-networks { display: flex; flex-wrap: wrap; gap: 12px 20px; padding: 18px 0; border-bottom: 1px solid var(--line); }
 .network-health { display: inline-flex; gap: 7px; align-items: center; font-size: 10px; color: #b4bea9; }
 .network-health .coin-icon { width: 18px; height: 18px; }
+/* The network's light (0.1.103): green current, amber last read, red failed, grey not read; pulses while reading. */
+/* At the badge's right end, centred top to bottom even where the badge aligns its text to the top (narrow screens, below). */
+.health-light { flex: none; align-self: center; width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: #6b7064; }
+.network-health > span:not(.health-light) { margin-right: 2px; }
+/* Only a problem shows (0.1.108, operator: "yeşili kaldıralım. Sadece sarı ve kırmızı durumlar kalsın"):
+   a current or not-yet-read network has no light; amber = shown as last read, red = the last read failed. */
+.network-health:not([data-health="old"]):not([data-health="failed"]) .health-light { display: none; }
+.network-health[data-health="old"] .health-light { background: #f2c896; box-shadow: 0 0 6px #f2c89699; }
+.network-health[data-health="failed"] .health-light { background: #f06c5c; box-shadow: 0 0 6px #f06c5c99; }
+.network-health[data-reading="true"] .health-light { animation: health-pulse 1.2s ease-in-out infinite; }
+@keyframes health-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .network-health[data-reading="true"] .health-light { animation: none; opacity: .6; } }
 .coin-icon { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; }
 .coin-letter { display: inline-grid; place-items: center; background: #2775ca; color: #fff; font-size: 18px; font-weight: 500; }
 .portfolio-filters { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 22px; }
@@ -515,9 +534,16 @@ body:has(#wallet-open:not([hidden])) .site-check > p:last-child { display: none;
 .portfolio-card > #portfolio-refresh { display: inline-flex; align-items: center; gap: 10px; min-height: 40px; padding: 9px 14px; border: 1px solid #d5f99845; background: #d5f99810; color: var(--lime); box-shadow: none; font-weight: 500; }
 .portfolio-card > #portfolio-refresh:hover { background: #d5f9981c; filter: none; }
 .portfolio-card > #portfolio-refresh span { float: none; margin: 0; }
-.portfolio-scope { padding-top: 14px; border-top: 1px solid #d5f9981c; }
 .portfolio-networks { gap: 8px; padding: 14px 0 0; border-bottom: 0; }
 .network-health { padding: 5px 10px 5px 6px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); line-height: 1.4; }
+/* A button since 0.1.107 (it chooses the network for Send / Receive): the
+   global button look (lime fill, bold, shadow, floated spans) is undone; the
+   chosen network's badge has a lime edge. */
+button.network-health { margin: 0; color: #b4bea9; font-weight: 400; text-align: left; box-shadow: none; cursor: pointer; }
+button.network-health span { float: none; }
+button.network-health:hover { border-color: #d5f99840; filter: none; }
+button.network-health[aria-pressed="true"] { border-color: #d5f99899; color: var(--text); }
+button.network-health:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 .transfer-actions { margin: 18px 0 20px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
 .transfer-actions .eyebrow { margin-bottom: 4px; }
 .transfer-buttons { flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
@@ -619,6 +645,11 @@ body:has(#wallet-open:not([hidden])) .site-check > p:last-child { display: none;
 /* Device & settings. */
 .storage-state { display: flex; align-items: center; gap: 10px; margin: 0; padding: 14px 16px; border: 1px solid var(--line-tint); border-radius: 12px; background: #d5f99808; color: var(--text); font-size: 13px; font-weight: 500; }
 .storage-state::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 4px #d5f99814; flex-shrink: 0; }
+/* Automatic lock (web 0.1.89, src/auto-lock.js). */
+.auto-lock { margin-top: 18px; }
+.auto-lock label { display: block; margin-bottom: 6px; color: var(--text); font-size: 14px; font-weight: 600; }
+.auto-lock select { max-width: 320px; }
+.auto-lock .hint { margin: 8px 0 0; }
 .wallet-page .device-panel > details > summary, .wallet-page .log-viewer > summary, .danger-zone > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; list-style: none; color: var(--text); font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
 .wallet-page .device-panel > details > summary::-webkit-details-marker, .wallet-page .log-viewer > summary::-webkit-details-marker, .danger-zone > summary::-webkit-details-marker { display: none; }
 .wallet-page .device-panel > details > summary::after, .wallet-page .log-viewer > summary::after, .danger-zone > summary::after { content: ''; width: 8px; height: 8px; margin-right: 4px; border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(45deg) translateY(-2px); color: var(--muted); transition: transform .15s ease; flex-shrink: 0; }

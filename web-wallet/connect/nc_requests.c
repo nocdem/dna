@@ -27,7 +27,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define LOG_TAG "NC_REQUEST"
 
@@ -48,9 +47,9 @@ static void inbox_key(const char *fp, nodus_key_t *key) {
 }
 
 int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
-                     const char *message, const uint8_t *salt,
+                     const char *message, const uint8_t *salt, uint64_t now,
                      uint8_t **out, size_t *out_len) {
-    if (!keys || !out || !out_len) return NC_ERR_ARG;
+    if (!keys || !out || !out_len || now == 0) return NC_ERR_ARG;
     *out = NULL;
     *out_len = 0;
     nodus_key_t chk_fp;
@@ -66,7 +65,7 @@ int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
 
     /* The fields of dht_send_contact_request (dht_contact_request.c:62-97). */
     req->magic = DHT_CONTACT_REQUEST_MAGIC;
-    req->timestamp = (uint64_t)time(NULL);
+    req->timestamp = now;                         /* the caller's clock (nc_ctx_t now) */
     req->expiry = req->timestamp + DHT_CONTACT_REQUEST_DEFAULT_TTL;
     if (salt) {
         req->version = DHT_CONTACT_REQUEST_VERSION_SALT;
@@ -121,7 +120,7 @@ static int request_put(const nc_ctx_t *ctx, const char *recipient_fp,
     if (!ctx || !ctx->keys) return NC_ERR_ARG;
     uint8_t *bytes = NULL;
     size_t len = 0;
-    int rc = nc_request_build(ctx->keys, recipient_fp, message, salt,
+    int rc = nc_request_build(ctx->keys, recipient_fp, message, salt, ctx->now,
                               &bytes, &len);
     if (rc != NC_OK) return rc;
     nodus_key_t key;

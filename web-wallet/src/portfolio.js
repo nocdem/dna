@@ -64,15 +64,27 @@ export async function readPrices({ signal, fetcher } = {}) {
 // shows it with its read time (`keptAt`), like the app's wallet cache
 // (messenger/database/wallet_cache.h: stale-while-revalidate); it is never
 // priced, never part of the total and still counts as a missing balance.
-export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = ASSETS, kept = {}) {
+// `balanceMaxAge`: how old a read balance may be and still count (default
+// BALANCE_MAX_AGE; longer while the balances are read again automatically,
+// src/portfolio-view.js setAutoRefresh — never shorter than the default).
+export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = ASSETS, kept = {}, { balanceMaxAge = BALANCE_MAX_AGE } = {}) {
+  const maxAge = Math.max(BALANCE_MAX_AGE, balanceMaxAge);
   const rows = assets.map(asset => {
     // An asset with no balance source yet (NODUS, flagged by portfolio-view.js)
     // is always 'unsupported', whatever `balances` holds: never read, never an
     // amount, a zero or an error, and never priced.
-    if (asset.balanceUnavailable) return { ...asset, state: 'unsupported', balance: null, usd: null, positive: false, priceMissing: false };
+    // While it is unavailable only for a moment (NODUS while the connection is
+    // made again), the last balance read for this address is shown as last
+    // read (0.1.96, operator 2026-10-12: "disconnect olduktan sonra reconnect
+    // olana kadar en son balansları yüklese") — never priced, never in the total.
+    if (asset.balanceUnavailable) {
+      const last = typeof kept[asset.key]?.units === 'bigint' ? kept[asset.key] : undefined;
+      return { ...asset, state: 'unsupported', balance: last ? formatUnits(last.units, asset.decimals) : null,
+        ...(last ? { units: last.units, keptAt: last.observedAt } : {}), usd: null, positive: false, priceMissing: false };
+    }
     const balance = balances[asset.key] || { state: 'idle' }, quote = quotes[asset.key];
     const priced = asset.priceId !== undefined;
-    const freshBalance = balance.state === 'ready' && now - balance.observedAt <= BALANCE_MAX_AGE && balance.observedAt <= now;
+    const freshBalance = balance.state === 'ready' && now - balance.observedAt <= maxAge && balance.observedAt <= now;
     const freshPrice = quote && now - quote.observedAt <= PRICE_MAX_AGE && quote.observedAt <= now + 60000;
     // Unpriced assets (e.g. CPUNK) never resolve a USD value, even at a known zero
     // balance: there is no price feed for them to be consistent against.
@@ -98,7 +110,13 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
     positive: known.some(row => row.positive), missingBalances: priced.filter(r => r.balance === null || r.keptAt !== undefined).length,
     missingPrices: priced.filter(r => r.priceMissing).length };
 }
-export function groupAssets(rows, filter = 'all') {
+// The listing order (0.1.102, operator 2026-10-12): NODUS first, then the
+// stablecoins in this order, then every other coin by its network's name
+// (`networkNames`: chain key -> shown name; "BNB Smart Chain", "Cellframe",
+// "Ethereum", "Ixios", "Solana", "TRON"), compared case-insensitively code
+// unit by code unit (no locale), so the order is the same on every device.
+const STABLECOINS = ['USDT', 'USDC', 'DAI', 'USDD'];
+export function groupAssets(rows, filter = 'all', networkNames = {}) {
   const groups = new Map();
   for (const row of rows.filter(r => filter === 'all' || r.chain === filter)) {
     if (!groups.has(row.symbol)) groups.set(row.symbol, []);
@@ -113,12 +131,10 @@ export function groupAssets(rows, filter = 'all') {
       partialBalance: known.length !== entries.length, partialValue: valued.length !== entries.length,
       usd: priced ? (valued.length === entries.length || usd > 0n ? usd : null) : null, positive: valued.some(row => row.positive) };
   }).sort((a, b) => {
-    // A symbol missing from this list (an optional network's asset, added by
-    // portfolio-view.js) sorts after every listed one instead of first (-1).
-    // NODUS, the wallet's native coin, is listed first.
-    const order = ['NODUS', 'USDT', 'USDC', 'ETH', 'BNB', 'SOL', 'TRX', 'DAI', 'USDD', 'CPUNK'];
-    const rank = symbol => { const index = order.indexOf(symbol); return index < 0 ? order.length : index; };
-    return rank(a.symbol) - rank(b.symbol);
+    const rank = g => g.symbol === 'NODUS' ? 0 : STABLECOINS.includes(g.symbol) ? 1 + STABLECOINS.indexOf(g.symbol) : 1 + STABLECOINS.length;
+    const name = g => String(networkNames[g.rows[0].chain] ?? g.rows[0].chain).toLowerCase();
+    const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+    return rank(a) - rank(b) || cmp(name(a), name(b)) || cmp(a.symbol, b.symbol);
   });
 }
 // Display form of a decimal balance string (formatUnits output, e.g.

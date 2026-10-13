@@ -94,8 +94,12 @@ void nc_keys_wipe(nc_keys_t *k);
 typedef struct {
     nodus_client_t     *client;     /* READY tier-2 session (caller owns)   */
     const nc_keys_t    *keys;
-    /* Q1 (thin-core decision, "peki kaydet"): true ONLY for words this
-     * session generated. A restored identity never creates a record. */
+    /* true: an EMPTY read may create the FIRST record of a gated kind
+     * (profile, contact list, salt agreement) in this call. Q1 (thin-core
+     * decision, 2026-09-30) set it only for words the session generated;
+     * since web 0.1.88 (W-04, Q1 addendum 2026-10-09) the browser entry
+     * sets it per call (nc_wasm.c first_begin) from the page's device
+     * memory, because a strict EMPTY now means a replica answered. */
     bool                fresh;
     /* Checked before every network call; set by the caller's cancel/lock
      * (a synchronous export). A set flag makes the call return NC_ERR_CANCELLED
@@ -104,6 +108,14 @@ typedef struct {
      * flag that is always set (nc_wasm.c nc_lock): either stop reaches a
      * suspended gated write before its PUT. */
     volatile const int *cancel;
+    /* The time, unix seconds, of this call — the library reads no clock
+     * (Kurultay #17 item 5, docs/plans/decisions/2026-10-12-kurultay-17-
+     * summary.md): every signed timestamp it writes (a contact request, a
+     * profile, a contact list) and every PUT's seq come from here, so a test
+     * or a native caller can pin them. The browser entry sets it from the
+     * page's clock at the start of every export (nc_wasm.c nc_begin). 0 is
+     * refused (NC_ERR_ARG) wherever a time is written: never a 0 stamp. */
+    uint64_t            now;
 } nc_ctx_t;
 
 /* Library return codes (negative) — distinct from the node's NODUS_ERR_*. */
@@ -420,7 +432,8 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
 /**
  * Build one signed contact request for `recipient_fp` exactly as
  * dht_send_contact_request (dht_contact_request.c:43-229) does: magic DNAR,
- * v2 when `salt` != NULL (v1 otherwise), timestamp = now, expiry = now +
+ * v2 when `salt` != NULL (v1 otherwise), timestamp = `now` (unix seconds,
+ * the caller's; 0 -> NC_ERR_ARG), expiry = now +
  * DHT_CONTACT_REQUEST_DEFAULT_TTL, sender_name empty (the web registers no
  * name), message (<= 255 bytes, NULL = empty), ML-DSA-87 over the signing
  * preimage. The serialised bytes are checked with the codec's own
@@ -429,7 +442,7 @@ int nc_profile_publish(const nc_ctx_t *ctx, const char *patch_json,
  * returned; a request that would not verify is never returned.
  */
 int nc_request_build(const nc_keys_t *keys, const char *recipient_fp,
-                     const char *message, const uint8_t *salt,
+                     const char *message, const uint8_t *salt, uint64_t now,
                      uint8_t **out, size_t *out_len);
 
 /** Build + PUT to SHA3-512(SHA3-512("<recipient>:requests")), EPHEMERAL,
@@ -710,23 +723,32 @@ int nc_outbox_publish(const nc_ctx_t *ctx, const nc_peer_t *peer,
                       const uint8_t salt[NC_SALT_LEN], uint64_t day,
                       const nc_outmsg_t *msgs, size_t n, uint8_t *alg_out);
 
+/* The kinds of an authentic 1:1 plaintext the page handles
+ * (nc_plaintext_kind). Web 0.1.89 returns reactions and delete notices
+ * too (message actions); every other class stays counted in `other`. */
+#define NC_MSG_CHAT      1
+#define NC_MSG_REACTION  2
+#define NC_MSG_DELETE    3
+#define NC_MSG_TRANSFER  4   /* the app's "token_transfer" card (web 0.1.90) */
+
 typedef struct {
     uint64_t seq;
     uint64_t sender_timestamp;  /* the Seal's timestamp = sender's clock   */
     uint8_t *plaintext;         /* not NUL-terminated                       */
     size_t   plaintext_len;
+    int      kind;              /* NC_MSG_CHAT / _REACTION / _DELETE        */
 } nc_inmsg_t;
 
 typedef struct {
     nc_read_t   read;           /* value freed                              */
-    nc_inmsg_t *items;          /* chat text only (nc_plaintext_is_chat)    */
+    nc_inmsg_t *items;          /* chat text, reactions and delete notices
+                                 * (nc_plaintext_kind), each with its kind  */
     size_t      count;
     size_t      dropped;        /* not decryptable / not authored by peer   */
-    size_t      other;          /* authentic, but not chat text: the app's
-                                 * control payloads (reaction, call signal,
-                                 * group invite, delete) and the payloads
-                                 * its chat screen draws as cards; never
-                                 * returned, never shown as text            */
+    size_t      other;          /* authentic, but none of the kinds above:
+                                 * call signal, group invite and the
+                                 * payloads the app's chat screen draws as
+                                 * cards; never returned, never shown        */
     uint8_t     blob[32];       /* SHA3-256 of the bucket value (FOUND)     */
     bool        unchanged;      /* blob == skip_blob: nothing was decoded   */
 } nc_inbox_t;
@@ -755,6 +777,16 @@ void nc_inbox_clear(nc_inbox_t *in);
  * acknowledged without being shown (Connect RT2 L2 F3).
  */
 int nc_plaintext_is_chat(const uint8_t *pt, size_t len);
+
+/**
+ * The same classification, naming the non-chat classes the page now
+ * handles: NC_MSG_CHAT, NC_MSG_REACTION (the reaction sniff above),
+ * NC_MSG_DELETE (a JSON object with "type" "delete"), NC_MSG_TRANSFER (an
+ * object whose "type" is exactly the string "token_transfer"); 0 for every
+ * other non-chat class; -1 could not classify (as nc_plaintext_is_chat).
+ * nc_plaintext_is_chat(pt, len) == (kind == NC_MSG_CHAT ? 1 : kind < 0 ? -1 : 0).
+ */
+int nc_plaintext_kind(const uint8_t *pt, size_t len);
 
 /**
  * ONE day bucket of `peer`'s outbox to this identity (dht_dm_outbox_sync_day
@@ -820,7 +852,7 @@ int nc_ack_publish(const nc_ctx_t *ctx, const char *peer_fp,
  *  its own clock there, the web the newest of OUR timestamps it stored. It
  *  is a watermark, not a list: the caller treats a message as delivered
  *  only if it was in a blob published BEFORE this read and its timestamp
- *  is <= *ack_ts. */
+ *  is < *ack_ts (strictly: src/connect/ui/text.js markDelivered). */
 void nc_ack_read(const nc_ctx_t *ctx, const char *peer_fp,
                  const uint8_t salt[NC_SALT_LEN], nc_read_t *raw,
                  uint64_t *ack_ts);

@@ -30,7 +30,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define LOG_TAG "NC_CLIST"
 
@@ -237,7 +236,7 @@ int nc_contactlist_add(const nc_ctx_t *ctx, const nc_contact_t *add,
                        size_t n_add, nc_list_result_t *res) {
     if (!res) return NC_ERR_ARG;
     memset(res, 0, sizeof(*res));
-    if (!ctx || !ctx->keys) return NC_ERR_ARG;
+    if (!ctx || !ctx->keys || ctx->now == 0) return NC_ERR_ARG;
 
     /* The input: 128 lowercase hex each, no duplicates. */
     if (!add || n_add == 0) { res->status = NC_LIST_REFUSED; return NC_OK; }
@@ -300,7 +299,7 @@ int nc_contactlist_add(const nc_ctx_t *ctx, const nc_contact_t *add,
         res->count_after = n;
         goto done;
     }
-    rc = nc_contactlist_build(ctx->keys, merged, n, (uint64_t)time(NULL),
+    rc = nc_contactlist_build(ctx->keys, merged, n, ctx->now,   /* the caller's clock */
                               &blob, &blob_len);
     if (rc != NC_OK) goto done;
     nodus_key_t key;

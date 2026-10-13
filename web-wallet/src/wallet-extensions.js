@@ -56,6 +56,14 @@
 //                               found, or '' = confirmed no name); absent
 //                               for a failed lookup, names unavailable or
 //                               the wallet closing.
+//   ownIdentityKept({ address, name, avatar })   a saved wallet's identity as
+//                               kept at its last use (0.1.97, src/app.js
+//                               noteIdentity): shown at once on unlock until
+//                               the address is derived and the name read again.
+//   nodusAddress({ address })   the open wallet's NODUS address (128 hex),
+//                               derived on this device (src/app.js
+//                               showNodusAddress) — before any connection;
+//                               the own ID of Nodus Connect (0.1.92).
 //   vaultDeleting()             the saved wallet is about to be deleted
 //                               from this device (its Messages history goes
 //                               with it, src/app.js vault-delete).
@@ -97,6 +105,12 @@ export function raise(event, detail) {
     try { extension[event]?.(detail); } catch { /* the wallet path continues */ }
   }
 }
+// The other way round (0.1.97): the page reports the own name and picture it
+// shows (Nodus Connect, src/connect-main.js) so the wallet can keep them with
+// a saved wallet (src/app.js noteIdentity). One listener: the wallet's.
+let ownIdentityListener = null;
+export function onOwnIdentity(listener) { ownIdentityListener = typeof listener === 'function' ? listener : null; }
+export function reportOwnIdentity(detail) { try { ownIdentityListener?.(detail); } catch { /* the page path continues */ } }
 export function gather(question, detail) {
   const out = [];
   for (const extension of extensions) {

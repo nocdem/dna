@@ -8,6 +8,9 @@ export const BALANCES_KEY = 'nodus.balances.v1';
 export const HISTORY_KEY = 'nodus.history.v1';
 // The address book of a saved wallet, encrypted (serializeAddressBook).
 export const ADDRESS_BOOK_KEY = 'nodus.addressbook.v1';
+// The own identity of a saved wallet (addresses, own name and picture),
+// encrypted (serializeIdentity, 0.1.97).
+export const IDENTITY_KEY = 'nodus.identity.v1';
 const ITERATIONS = 600000;
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 function decode(value, length) {

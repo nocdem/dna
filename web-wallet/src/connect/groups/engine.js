@@ -103,7 +103,7 @@ function hexToText(hex) {
 const clone = g => structuredClone(g);
 // The module's answer when a key it needs fell out of its 64-entry peer
 // cache (connect/nc_wasm.c peer_need).
-const needsProfile = error => /profile first/i.test(String(error?.message || ''));
+export const needsProfile = error => /profile first/i.test(String(error?.message || ''));
 
 export function createGroupsEngine(deps) {
   const { core, ownFp, now = () => Date.now(), state, takeSeq, saveAll, sendDirect, isContact, ensureProfile, reloadProfile, hasKemKey, nameStatus, lookupName } = deps;

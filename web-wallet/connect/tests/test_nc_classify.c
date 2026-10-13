@@ -204,6 +204,47 @@ static void test_salt_choice(void) {
     CHECK(nc_salt_choose(z, NULL, c, &rep) == NC_SALT_NONE, "R5 all-zero local = unset");
 }
 
+/* K1-K12 (web 0.1.89): nc_plaintext_kind — the app receiver's classes
+ * (messenger_transport.c :733-808, chat_screen.dart cards) with reactions
+ * and delete notices now named, and nc_plaintext_is_chat agreeing with it. */
+static int kind_of(const char *s) {
+    return nc_plaintext_kind((const uint8_t *)s, strlen(s));
+}
+static void test_kinds(void) {
+    const char *t64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    char react[256], bad_hex[256], short_t[256];
+    snprintf(react, sizeof(react), "{\"target\":\"%s\",\"emoji\":\"x\",\"op\":\"add\"}", t64);
+    snprintf(bad_hex, sizeof(bad_hex), "{\"target\":\"%.63sg\",\"emoji\":\"x\",\"op\":\"add\"}", t64);
+    snprintf(short_t, sizeof(short_t), "{\"target\":\"%.63s\",\"emoji\":\"x\",\"op\":\"remove\"}", t64);
+    CHECK(kind_of("hello") == NC_MSG_CHAT, "K1 plain text: chat");
+    CHECK(kind_of(react) == NC_MSG_REACTION, "K2 reaction (64-hex target, op add): reaction");
+    CHECK(kind_of(bad_hex) == NC_MSG_CHAT, "K3 target with a non-hex char: chat, as the app");
+    CHECK(kind_of(short_t) == NC_MSG_CHAT, "K4 63-char target: chat");
+    CHECK(kind_of("{\"type\":\"delete\",\"action\":0,\"hashes\":[]}") == NC_MSG_DELETE, "K5 delete notice: delete");
+    CHECK(kind_of("{\"type\":\"call_signal\"}") == 0, "K6 call signal: other");
+    CHECK(kind_of("{\"type\":\"group_invite\"}") == 0 && kind_of("{\"type\":\"groupinvite\"}") == 0, "K7 group invite: other");
+    CHECK(kind_of("{\"type\":\"media_ref\"}") == 0 &&
+          kind_of("{\"type\":\"image_attachment\"}") == 0, "K8 media card payloads: other");
+    CHECK(kind_of("{\"type\":\"token_transfer\",\"amount\":\"1\"}") == NC_MSG_TRANSFER &&
+          kind_of("{\"type\":7}") == NC_MSG_CHAT, "K13 token_transfer (string type): payment card");
+    char r_del[320], r_call[320], r_inv[320], r_card[320];
+    snprintf(r_del, sizeof(r_del), "{\"type\":\"delete\",\"target\":\"%s\",\"op\":\"add\",\"hashes\":[]}", t64);
+    snprintf(r_call, sizeof(r_call), "{\"type\":\"call_signal\",\"target\":\"%s\",\"op\":\"add\"}", t64);
+    snprintf(r_inv, sizeof(r_inv), "{\"type\":\"group_invite\",\"target\":\"%s\",\"op\":\"add\"}", t64);
+    snprintf(r_card, sizeof(r_card), "{\"type\":\"token_transfer\",\"target\":\"%s\",\"op\":\"add\"}", t64);
+    CHECK(kind_of(r_del) == NC_MSG_DELETE && kind_of(r_call) == 0 && kind_of(r_inv) == 0 &&
+          kind_of(r_card) == NC_MSG_REACTION,
+          "K14 reaction fields + a type: delete / call / invite win, a card stays a reaction (app order)");
+    CHECK(kind_of("{\"type\":\"something\"}") == NC_MSG_CHAT, "K9 unknown JSON type: chat");
+    CHECK(nc_plaintext_kind((const uint8_t *)"", 0) == -1 && nc_plaintext_kind(NULL, 3) == -1, "K10 empty / NULL: unknown");
+    const uint8_t nul_cut[] = { 'h', 'i', 0, '{', '}' };
+    CHECK(nc_plaintext_kind(nul_cut, sizeof(nul_cut)) == NC_MSG_CHAT, "K11 text read up to its first NUL");
+    CHECK(nc_plaintext_is_chat((const uint8_t *)"hello", 5) == 1 &&
+          nc_plaintext_is_chat((const uint8_t *)react, strlen(react)) == 0 &&
+          nc_plaintext_is_chat((const uint8_t *)"{\"type\":\"delete\"}", 17) == 0 &&
+          nc_plaintext_is_chat((const uint8_t *)"", 0) == -1, "K12 nc_plaintext_is_chat agrees with the kind");
+}
+
 int main(void) {
     printf("=== Nodus Connect: pure classifier tests ===\n");
     g_a = calloc(1, sizeof(*g_a));
@@ -217,6 +258,7 @@ int main(void) {
     test_all();
     test_servers();
     test_salt_choice();
+    test_kinds();
     nodus_identity_clear(g_a);
     nodus_identity_clear(g_b);
     free(g_a);

@@ -22,7 +22,7 @@ test('vault uses randomized authenticated encryption, rejects wrong password and
 });
 test('encrypted history is bounded, scoped, rechecked after reload and excludes provider credentials', async () => {
   const addresses = { ethereum: '0xabc' };
-  const row = { chain: 'ethereum', address: '0xabc', to: '0xdef', symbol: 'ETH', amount: '1', hash: '0x' + 'a'.repeat(64), endpoint: 'https://rpc.example/private-api-key?secret=abc', createdAt: new Date().toISOString(), status: 'confirmed', recoveryPhrase: phrase };
+  const row = { chain: 'ethereum', address: '0xabc', to: '0xdef', symbol: 'ETH', amount: '1', hash: '0x' + 'a'.repeat(64), endpoint: 'https://rpc.example/private-api-key?secret=abc', createdAt: new Date().toISOString(), status: 'failed', recoveryPhrase: phrase };
   const id = btoa('0123456789abcdef'), key = await activityKeyFor(phrase, id);
   const text = await serializeActivity(id, Array(101).fill(row), key);
   assert.ok(!text.includes('private-api-key')); assert.ok(!text.includes(phrase));
@@ -38,7 +38,7 @@ test('saved activity keeps an abandoned mark permanent, resets other statuses to
   const rows = [
     { ...base, hash: '0x' + 'a'.repeat(64), status: 'abandoned', nonce: 3 },
     { ...base, hash: '0x' + 'b'.repeat(64), status: 'replaced', nonce: 4 },
-    { ...base, hash: '0x' + 'c'.repeat(64), status: 'confirmed' },
+    { ...base, hash: '0x' + 'c'.repeat(64), status: 'failed' },
   ];
   const text = await serializeActivity(id, rows, key);
   const parsed = await parseActivity(text, id, addresses, key);

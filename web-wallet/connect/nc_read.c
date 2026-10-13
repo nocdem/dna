@@ -18,7 +18,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define LOG_TAG "NC_READ"
 
@@ -460,12 +459,12 @@ int nc_read_owner_many(const nc_ctx_t *ctx, const nodus_key_t *keys,
 int nc_put(const nc_ctx_t *ctx, const nodus_key_t *key,
            const uint8_t *data, size_t data_len,
            nodus_value_type_t type, uint32_t ttl, uint64_t value_id) {
-    if (!ctx || !ctx->client || !ctx->keys || !key) return NC_ERR_ARG;
+    if (!ctx || !ctx->client || !ctx->keys || !key || ctx->now == 0) return NC_ERR_ARG;
     if (ctx->cancel && *ctx->cancel) return NC_ERR_CANCELLED;
     if (!nodus_client_is_ready(ctx->client)) return -1;
 
     const nodus_identity_t *id = &ctx->keys->id;
-    uint64_t seq = (uint64_t)time(NULL);
+    uint64_t seq = ctx->now;                       /* the caller's clock (nc_ctx_t now) */
     nodus_value_t *val = NULL;
     if (nodus_value_create(key, data, data_len, type, ttl, value_id, seq,
                            &id->pk, &val) != 0)

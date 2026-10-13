@@ -164,36 +164,47 @@ static bool is_reaction(const char *s) {
 }
 
 int nc_plaintext_is_chat(const uint8_t *pt, size_t len) {
+    int kind = nc_plaintext_kind(pt, len);
+    return kind == NC_MSG_CHAT ? 1 : kind < 0 ? -1 : 0;
+}
+
+int nc_plaintext_kind(const uint8_t *pt, size_t len) {
     if (!pt || len == 0) return -1;
     char *s = malloc(len + 1);                 /* the app's NUL, :727-732 */
     if (!s) return -1;                         /* unknown: counted dropped */
     memcpy(s, pt, len);
     s[len] = '\0';
-    bool chat = !is_reaction(s);
-    if (chat) {
-        json_object *j = json_tokener_parse(s);           /* :751 */
-        json_object *jt = NULL;
-        if (j && json_object_object_get_ex(j, "type", &jt)) {
-            /* the receiver's classes (:753-808), read as it reads them */
-            const char *t = json_object_get_string(jt);
-            if (t && (strcmp(t, "call_signal") == 0 ||
-                      strcmp(t, "group_invite") == 0 ||
-                      strcmp(t, "groupinvite") == 0 ||
-                      strcmp(t, "delete") == 0))
-                chat = false;
-            /* the chat screen's cards (chat_screen.dart:2012-2046): an
-             * object whose "type" is exactly that string */
-            if (json_object_is_type(jt, json_type_string) &&
-                (strcmp(t, "token_transfer") == 0 ||
-                 strcmp(t, "media_ref") == 0 ||
-                 strcmp(t, "image_attachment") == 0))
-                chat = false;
-        }
-        if (j) json_object_put(j);
+    /* The app sniffs a reaction first (messenger_transport.c:741-748), then
+     * reads "type" anyway (:751): a delete returns early (:809), a call
+     * signal is routed away (:760) and a group invite overrides the type
+     * (:772) — so those win over the sniff, as here. */
+    int kind = is_reaction(s) ? NC_MSG_REACTION : NC_MSG_CHAT;
+    json_object *j = json_tokener_parse(s);
+    json_object *jt = NULL;
+    if (j && json_object_object_get_ex(j, "type", &jt)) {
+        const char *t = json_object_get_string(jt);
+        if (t && strcmp(t, "delete") == 0)
+            kind = NC_MSG_DELETE;
+        else if (t && (strcmp(t, "call_signal") == 0 ||
+                       strcmp(t, "group_invite") == 0 ||
+                       strcmp(t, "groupinvite") == 0))
+            kind = 0;
+        /* the chat screen's cards (chat_screen.dart:2012-2046): an object
+         * whose "type" is exactly that string, on a chat message */
+        else if (kind == NC_MSG_CHAT &&
+                 json_object_is_type(jt, json_type_string) &&
+                 strcmp(t, "token_transfer") == 0)
+            kind = NC_MSG_TRANSFER;              /* web 0.1.90: a payment card */
+        else if (kind == NC_MSG_CHAT &&
+                 json_object_is_type(jt, json_type_string) &&
+                 (strcmp(t, "media_ref") == 0 ||
+                  strcmp(t, "image_attachment") == 0))
+            kind = 0;
     }
+    if (j) json_object_put(j);
     qgp_secure_memzero(s, len);
     free(s);
-    return chat ? 1 : 0;
+    return kind;
 }
 
 void nc_inbox_clear(nc_inbox_t *in) {
@@ -331,20 +342,25 @@ static int outbox_day_finish(const nc_ctx_t *ctx, const nc_peer_t *peer,
              dna_verify_seal_authorship(pt, pt_len, sig, sig_len,
                                         peer->dsa_pk, sizeof(peer->dsa_pk),
                                         claimed, NULL) == DNA_OK;
-        int kind = ok ? nc_plaintext_is_chat(pt, pt_len) : -1;
+        int kind = ok ? nc_plaintext_kind(pt, pt_len) : -1;
         if (kind == 0) {
-            /* authentic, but a control payload / card: not text for the UI */
+            /* authentic, but a control payload / card the page does not
+             * handle: not text for the UI */
             out->other++;
             qgp_secure_memzero(pt, pt_len);
-        } else if (kind == 1) {
+        } else if (kind > 0) {
+            /* chat text, a reaction, a delete notice (web 0.1.89) or a
+             * payment card (0.1.90) */
             nc_inmsg_t *m = &out->items[out->count++];
             m->seq = msgs[i].seq_num;
             m->sender_timestamp = ts;
             m->plaintext = pt;
             m->plaintext_len = pt_len;
+            m->kind = kind;
             pt = NULL;
         } else {
             out->dropped++;
+            if (pt) qgp_secure_memzero(pt, pt_len);
         }
         free(pt);
         free(claimed);

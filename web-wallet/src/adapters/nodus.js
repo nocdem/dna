@@ -428,8 +428,24 @@ export async function stakingOverview({ client, from, signal } = {}) {
     rules, truncated, validators,
     delegations: delegations.map(row => ({ ...row, validatorInfo: byKey.get(row.validator), canUndelegate: byKey.has(row.validator) })),
     ownValidator: own && own.status !== 'unstaked' ? own : undefined,
+    network: networkStake(validators, truncated),
     lockText: `${rules.undelegateLockEpochs} epochs (${rules.undelegateLockEpochs} × ${rules.epochLength} = ${rules.undelegateLockEpochs * rules.epochLength} blocks)`
   };
+}
+// The network's total stake (operator 2026-10-12: "Total network'taki stack
+// durumunu görebiliyor muyuz?" — "Ekle"), summed from the same witness list
+// Earn shows, by Scan's rule (explorer/src/exp_http.c "Staking"): only the
+// BONDED witnesses — status active or eligible — count; their bonds
+// (selfStake) and the NODUS delegated to them (delegated, self-delegations
+// included). `partial`: the node listed only the first witnesses, so the sum
+// is a lower bound.
+export function networkStake(validators, truncated) {
+  let witnesses = 0, selfStake = 0n, delegated = 0n;
+  for (const v of validators) {
+    if (v.status !== 'active' && v.status !== 'eligible') continue;
+    witnesses++; selfStake += v.selfStake; delegated += v.delegated;
+  }
+  return { witnesses, selfStake, delegated, total: selfStake + delegated, partial: truncated === true };
 }
 // The module's read-back of a staking envelope, checked for shape.
 function decodeStake(built) {

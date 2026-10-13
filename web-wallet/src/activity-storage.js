@@ -3,6 +3,7 @@ import { validHash, validNodusPending, terminal } from './activity.js';
 import { NODUS_ASSET } from './nodus/network.js';
 import { historySupported, checkHistoryRows } from './history.js';
 import { checkAddressBook, ADDRESS_BOOK_MAX } from './address-book.js';
+import { localRowsToShow, NODUS_HISTORY_LIMIT } from './nodus/history.js';
 const encoder = new TextEncoder(), MAX_PLAIN = 150000;
 const context = 'nodus.wallet.activity.v2';
 function encode(bytes) {
@@ -119,6 +120,54 @@ export async function parseBalances(text, id, key, now = Date.now()) {
   }
   return out;
 }
+// This wallet's own identity, kept with a SAVED wallet only (0.1.97,
+// operator 2026-10-12: "id saklanabilir … başka saklanabilecek bir şey varsa
+// o da saklanabilir"; decision 2026-10-02-device-cache-only-when-saved): the
+// receive-only addresses derived after unlock (NODUS = Nodus Connect's own
+// ID, Cellframe, Ixios) and the own chain name and profile picture last
+// shown. Shown at once on the next unlock while the addresses are derived
+// again; a derived address always wins and replaces a kept one. Sealed like
+// the balances under its own HKDF info (IDENTITY_CONTEXT).
+export const IDENTITY_CONTEXT = 'nodus.wallet.identity.v1';
+// Network keys are checked by form, not listed by name (0.1.102): a build
+// without a network (Ixios off) must carry no mention of it
+// (test/browser-ixios.js), and still reads a record that a build with it
+// wrote — an address of a network this build lacks is ignored where shown
+// (portfolio-view.js setAddress).
+// `peers` (0.1.106, operator "kişi adlarını cüzdanda saklamayı da
+// yapabilirsin"): the chain names of the NODUS account history's
+// counterparties, fingerprint -> name, at most IDENTITY_PEERS_MAX (the last
+// ones learned), shown at once on the next unlock and asked again that
+// session. 200 × ~160 B + a 20 KB picture fit IDENTITY_MAX_PLAIN.
+const IDENTITY_MAX_PLAIN = 60000, IDENTITY_CHAIN_KEY = /^[a-z][a-z0-9]{1,15}$/, IDENTITY_CHAINS_MAX = 8;
+export const IDENTITY_PEERS_MAX = 200;
+const IDENTITY_PEER_NAME = /^[a-z0-9]{1,64}$/;  // shape only; chain-names rules are checked where shown
+const IDENTITY_AVATAR_MAX = 20480;              // base64 characters (connect/ui/text.js AVATAR_MAX_B64)
+export const identityKeyFor = (phrase, id) => activityKeyFor(phrase, id, IDENTITY_CONTEXT);
+// -> the checked identity, or throws. Shapes only: a name or picture is
+// checked again where it is shown (connect/ui/chain-names.js chainNameOk,
+// connect/ui/text.js avatarSource).
+export function checkIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !['addresses', 'name', 'avatar', 'peers'].includes(k))) throw new Error('Invalid saved identity.');
+  const peers = value.peers ?? {};
+  if (!peers || typeof peers !== 'object' || Array.isArray(peers) || Object.keys(peers).length > IDENTITY_PEERS_MAX ||
+      Object.entries(peers).some(([fp, name]) => !/^[0-9a-f]{128}$/.test(fp) || typeof name !== 'string' || !IDENTITY_PEER_NAME.test(name))) throw new Error('Invalid saved identity.');
+  const addresses = value.addresses ?? {};
+  if (!addresses || typeof addresses !== 'object' || Array.isArray(addresses) || Object.keys(addresses).length > IDENTITY_CHAINS_MAX || Object.keys(addresses).some(k => !IDENTITY_CHAIN_KEY.test(k))) throw new Error('Invalid saved identity.');
+  for (const [chain, a] of Object.entries(addresses)) {
+    if (typeof a !== 'string' || (chain === 'nodus' ? !/^[0-9a-f]{128}$/.test(a) : !/^[A-Za-z0-9]{1,128}$/.test(a))) throw new Error('Invalid saved identity.');
+  }
+  if (value.name !== undefined && (typeof value.name !== 'string' || value.name.length > 64)) throw new Error('Invalid saved identity.');
+  if (value.avatar !== undefined && (typeof value.avatar !== 'string' || value.avatar.length > IDENTITY_AVATAR_MAX || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.avatar))) throw new Error('Invalid saved identity.');
+  return { addresses: { ...addresses }, ...(value.name ? { name: value.name } : {}), ...(value.avatar ? { avatar: value.avatar } : {}), ...(Object.keys(peers).length ? { peers: { ...peers } } : {}) };
+}
+export async function serializeIdentity(id, value, key) {
+  return sealRecord(IDENTITY_CONTEXT, id, checkIdentity(value), key, IDENTITY_MAX_PLAIN, 'identity');
+}
+export async function parseIdentity(text, id, key) {
+  if (!text) return { addresses: {} };
+  return checkIdentity(await openRecord(IDENTITY_CONTEXT, text, id, key, IDENTITY_MAX_PLAIN, 'identity'));
+}
 const header = data => ({ version: data.version, id: data.id, cipher: data.cipher, iv: data.iv });
 // A smart-contract transaction's Activity row must be DURABLE before its
 // envelope is sent (red-team 1 F8), and Activity is saved only for a wallet
@@ -145,13 +194,47 @@ const ACTIVITY_MAX_ROWS = 100;
 // the live status only; neither rule changes it.
 const unresolvedForRetention = row => !terminal(row.status) && (row.savedStatus === undefined || !terminal(row.savedStatus));
 const savedForm = row => (row.status === 'pending' && row.savedStatus !== undefined && terminal(row.savedStatus) ? row.savedStatus : row.status);
+// A network whose account history this wallet reads from the chain (NODUS,
+// and src/history.js HISTORY_SOURCES). There a CONFIRMED send is the chain
+// list's, not this device's (0.1.91, operator 2026-10-12: "İkisi de aynı
+// şeyi gösteriyor … cihazdan gösterenin bir anlamı yok") — once that list
+// has SHOWN it (`listed`, set by src/app.js renderActivity when the chain
+// list holds its hash / wire / block; 0.1.96, BUGS W-05): then it is not
+// shown under "Sent from here" and not kept (below), so it is not verified
+// again on every unlock. Until then it stays, shown and saved. A send still
+// waiting, or one that never made it (failed / expired / replaced /
+// abandoned), is not in the chain list and stays here. The LIVE status
+// decides (0.1.96, W-08): a row saved confirmed and not re-checked yet stays
+// visible, so a guard that reads the live status always has a row to act on.
+export const chainListsHistory = chain => chain === NODUS_ASSET.chain || historySupported(chain);
+export const confirmedOnChainList = row => chainListsHistory(row.chain) && row.status === 'confirmed' && row.listed === true;
+// The "Sent from here" rows of one network (src/app.js renderActivity; pure,
+// 0.1.97 so it is tested): marks `listed` on a confirmed row the chain's own
+// list shows — NODUS: its wire or block in the node's page
+// (nodus/history.js localRowsToShow, which also hides a pending row whose
+// wire is already listed); another network: its hash among `historyRows`
+// (hex compared without case) — and returns the rows still to show.
+export function sentRowsToShow(all, { nodus = false, nodusPage = null, historyRows = [] } = {}) {
+  if (nodus) {
+    const rows = localRowsToShow(all, nodusPage, { limit: NODUS_HISTORY_LIMIT });
+    const shown = new Set(rows);
+    for (const row of all) if (row.status === 'confirmed' && !shown.has(row)) row.listed = true;
+    return rows;
+  }
+  const norm = h => (typeof h === 'string' && /^(0x)?[0-9a-fA-F]+$/.test(h) ? h.toLowerCase() : h);
+  const hashes = new Set((historyRows || []).map(r => norm(r.hash)));
+  for (const row of all) if (row.status === 'confirmed' && hashes.has(norm(row.hash))) row.listed = true;
+  return all.filter(row => !confirmedOnChainList(row));
+}
 // The rows kept in the saved Activity, in their given (time) order: EVERY
 // unresolved row (a pending NODUS send or EVM reservation holds coins and
 // must survive any number of newer rows), then the newest resolved rows up
 // to ACTIVITY_MAX_ROWS in total. More unresolved rows than that cannot be
 // saved (parseActivity reads at most ACTIVITY_MAX_ROWS) and are refused as
-// too large, never dropped.
+// too large, never dropped. A confirmed send of a network with a chain list
+// (confirmedOnChainList above) is not kept.
 function keptActivity(rows) {
+  rows = rows.filter(row => !confirmedOnChainList(row));
   const open = rows.filter(unresolvedForRetention).length;
   if (open > ACTIVITY_MAX_ROWS) throw new Error('Saved activity is too large.');
   let room = ACTIVITY_MAX_ROWS - open;

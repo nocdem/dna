@@ -16,11 +16,15 @@
 // "Delete saved wallet" control moves into Device & settings while open and
 // back after lock; Chats is Messages, open LOCALLY with no node (local
 // first: the own ID, the empty list and the add button at once, the status
-// line connecting / not connected, sending a contact request and saving the
-// profile refused offline); the Lock in More is the wallet's lock and
+// line connecting / not connected, the contact request's send button
+// disabled under the connecting text and saving the profile refused
+// offline); the Lock in More is the wallet's lock and
 // closes Messages too; Home shows the unavailable chain-name entry offline;
 // saving changes the device controls from Save to Change password, and deleting
 // the saved copy restores the initial Save controls;
+// Device & settings offers the automatic lock (15 minutes by default) and the
+// automatic balance update (every 5 minutes by default, 0.1.93), each kept
+// in this browser;
 // the other site's fresh cross-site mark refuses an unlock (src/site-lock.js,
 // through the real page wiring); no horizontal scroll at 390 px and 320 px;
 // the wallet build has no app shell, Messages navigation or Messages UI code.
@@ -133,6 +137,24 @@ try {
   assert.equal(await page.evaluate(() => location.hash), '#settings');
   assert.equal(await page.evaluate(() => document.activeElement?.id), 'device-title');
   assert.equal(await page.locator('#vault-delete-details').evaluate(node => node.parentElement.id), 'device-panel');
+  // Automatic lock (web 0.1.89): 15 minutes by default; "Never" warns and
+  // is kept in this browser; the default comes back after choosing it.
+  assert.equal(await page.locator('#auto-lock-minutes').inputValue(), '15');
+  assert.match(await page.locator('#auto-lock-note').textContent(), /after 15 minutes without use/);
+  await page.locator('#auto-lock-minutes').selectOption('0');
+  assert.match(await page.locator('#auto-lock-note').textContent(), /shared or public device/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.autoLockMinutes')), '0');
+  await page.locator('#auto-lock-minutes').selectOption('15');
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.autoLockMinutes')), '15');
+  // Automatic balance updates (web 0.1.93): every 5 minutes by default; the
+  // choice is kept in this browser and the portfolio line says so.
+  assert.equal(await page.locator('#balance-refresh-minutes').inputValue(), '5');
+  assert.match(await page.locator('#balance-refresh-note').textContent(), /every 5 minutes/);
+  await page.locator('#balance-refresh-minutes').selectOption('0');
+  assert.match(await page.locator('#balance-refresh-note').textContent(), /when you press Refresh/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.balanceRefreshMinutes')), '0');
+  await page.locator('#balance-refresh-minutes').selectOption('5');
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.balanceRefreshMinutes')), '5');
   // Logs is a page of its own, reached from Device & settings.
   await page.locator('#device-panel a[href="#logs"]').click();
   assert.equal(await page.locator('#session-logs').isVisible(), true);
@@ -178,13 +200,17 @@ try {
   assert.match(await page.locator('.messenger-sync').textContent(), /^(Connecting to the network… Your messages on this device are shown; sending opens once connected\.|Not connected to the network right now; trying again in \d+ seconds\. Your messages on this device are shown\.)$/);
   // Navigation is local and stays enabled.
   for (const label of ['Contact requests', 'Your ID & profile']) assert.equal(await page.locator(`.messenger-chats .nc-icon-button[title="${label}"]`).isDisabled(), false, label);
-  // Add contact: the dialog opens; sending the request is refused offline.
+  // Add contact: the dialog opens; offline its send button waits, disabled,
+  // under the connecting text (web 0.1.88, W-04 — it used to refuse every
+  // press; a user pressed it 30+ times). Enter cannot submit either: a
+  // form whose default button is disabled has no implicit submission.
   await page.locator('.nc-fab').click();
   await page.locator('#nc-add-dialog').waitFor({ state: 'visible' });
   await page.locator('#nc-add-id').fill(vectors[1].address);
-  await page.locator('#nc-add-form button[type="submit"]').click();
-  await page.waitForFunction(() => document.querySelector('#nc-add-form [role="status"]')?.textContent.length > 0);
-  assert.equal(await page.locator('#nc-add-form [role="status"]').textContent(), 'Requests can be sent once Messages is connected to the network.');
+  assert.equal(await page.locator('#nc-add-form button[type="submit"]').isDisabled(), true, 'send waits offline');
+  assert.equal(await page.locator('#nc-add-form [role="status"]').textContent(), 'Messages is still connecting to the network. You can send the request once it is connected.');
+  await page.locator('#nc-add-id').press('Enter');
+  assert.equal(await page.locator('#nc-add-form [role="status"]').textContent(), 'Messages is still connecting to the network. You can send the request once it is connected.', 'Enter did not submit');
   await page.locator('#nc-add-form button', { hasText: 'Close' }).click();
   // Your ID & profile: the own ID; saving the profile is refused offline.
   await page.locator('.messenger-chats .nc-icon-button[title="Your ID & profile"]').click();
