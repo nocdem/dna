@@ -189,7 +189,9 @@
  *     S(3E) carrying V0, V1 re-keyed against S(2E) (2/7): both WAIT;
  *     carrying V0 alone: one accepted, one waits; V0 without a seat in
  *     S(2E): not counted; S(2E) absent: carry 0; S(2E) unreadable: FAULT
- *     with candidates, builds without. f = 2E — S(E) ruleset 1: carry 0.
+ *     with candidates, builds without; a carry of 3/7: FAULT with
+ *     candidates, builds without. f = 2E — S(E) ruleset 1: matched through
+ *     the migrated-id bridge, carry 2/7 both wait, 1/7 one waits.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 exists only there; the
@@ -2855,8 +2857,9 @@ static int t_grad_sweep(void) {
  * Design §3 "(A7) Birikimli bütçe" (khan 2026-10-13): at the freeze of
  * S(f + E) the predecessor party R_F starts from the counted power of the
  * entries of S(f) whose key differs from the same validator_id's entry in
- * S(f − E); 0 when S(f − E) is ruleset 1 or absent; an unreadable S(f − E)
- * is a fault. The seven genesis seats of a fresh twin (no STAKE) are
+ * S(f − E) — a ruleset-1 S(f − E) matched through the migrated-id bridge
+ * (dna_validator_id_migrated over its entry keys); 0 when S(f − E) is
+ * absent; an unreadable S(f − E) is a fault. The seven genesis seats of a fresh twin (no STAKE) are
  * [10M × 7] in every snapshot: P = 70M, floor(2P/3) = 46666666 — a party
  * of 2 seats leaves 50M (fits), of 3 leaves 40M (does not).
  *
@@ -2881,19 +2884,21 @@ static int t_grad_sweep(void) {
  *          both accepted;
  *      (f) V0, V1 re-keyed, S(2E)'s stored hash broken: with candidates the
  *          freeze FAULTS (unreadable ≠ absent); with none it builds (the
- *          pass reads nothing then).
+ *          pass reads nothing then);
+ *      (g) V0, V1, V2 re-keyed in S(3E) (carry 30M = 3/7, 40M left ≤
+ *          46666666 — a carry over its budget, the broken invariant):
+ *          with candidates the freeze FAULTS; with none it builds.
  *   F2 f = 2E (S(2E) ruleset 2, its predecessor S(E) the genesis ruleset
- *      1): V0, V1 re-keyed in S(2E) — both candidates accepted: the
- *      recorded rule's 0 for a ruleset-1 S(f − E).
+ *      1 — the first generation-4 freeze accepts rotations into S(2E)
+ *      against it through the bridge, C1c): V0, V1 re-keyed in S(2E) —
+ *      the bridge matches them in S(E), carry 2/7, both candidates WAIT;
+ *      V0 alone — carry 1/7, the id-smaller accepted, the other waits.
  *
- * HOW IT CAN LIE: F2 pins the recorded rule, and the rule has a gap the
- * test makes visible rather than closes — the first generation-4 freeze
- * (S(2E) here) accepts rotations against the ruleset-1 S(E) through the
- * migrated-id bridge (C1c), and the next freeze's carry is 0 because
- * S(E) is ruleset 1: for that one epoch two parties can again share
- * S(2E)'s third. The re-keyed snapshots are hand-written (the hash
+ * HOW IT CAN LIE: the re-keyed snapshots are hand-written (the hash
  * re-derived): they prove the pass on those bytes, not that a chain
- * reaches them (D does that for (b)). */
+ * reaches them (D does that for (b)). F1 (d) and (e) assume the committee
+ * compute of S(4E) does not read S(2E) (as C4b (f) shows for S(3E) with
+ * S(2E) deleted); if it did, they would fault rather than pass. */
 
 /* the roles row of `vid`: pending := g_k[key].pk, F := ep. 0 / -1 */
 static int plant_pending(nodus_witness_t *w, const uint8_t vid[64], int key,
@@ -2940,7 +2945,7 @@ static int snap_drop(nodus_witness_t *w, uint64_t epoch,
 enum { CUM_PRED_KEEP, CUM_PRED_DROP_V0, CUM_PRED_DELETE, CUM_PRED_BREAK };
 
 /* One rolled-back probe on twin A: re-key `nrk` seats of S(f) (vids
- * rk[0..nrk) to KC1, KC2), edit S(f − E) per `pred`, plant the pending
+ * rk[0..nrk) to KC1, KC2, KC3; nrk <= 3), edit S(f − E) per `pred`, plant the pending
  * keys KN / KN2 on cand[0] / cand[1] with F = f (ncand of them), preview
  * the freeze of S(f + E). *rc = the preview's rc; acc[c] = 1 the
  * candidate's S(f + E) entry carries its pending key / 0 its current key
@@ -2949,7 +2954,7 @@ static int cum_probe(nodus_witness_t *w, uint64_t f,
                      const uint8_t (*rk)[64], int nrk, int pred,
                      const uint8_t (*cand)[64], const int *vk, int ncand,
                      int *rc, int acc[2]) {
-    static const int rkey[2] = { KC1, KC2 };
+    static const int rkey[3] = { KC1, KC2, KC3 };
     static const int pkey[2] = { KN, KN2 };
     dna_vset_snapshot_t *pv = NULL;
     int ok = 1;
@@ -2998,7 +3003,7 @@ static int cum_probe(nodus_witness_t *w, uint64_t f,
 static int t_cumulative(void) {
     fixture_t A, B;
     uint8_t chain32[DNA_CHAIN_ID_LEN], vid[N_VAL][64];
-    uint8_t rk[2][64], cd[2][64];
+    uint8_t rk[3][64], cd[2][64];
     int vk[2], acc[2], rc = 0;
     uint64_t h = 0;
 
@@ -3016,6 +3021,7 @@ static int t_cumulative(void) {
      * ASC (cd[0] the smaller), vk[] their current keys */
     memcpy(rk[0], vid[0], 64);
     memcpy(rk[1], vid[1], 64);
+    memcpy(rk[2], vid[2], 64);              /* (g) only: three re-keys */
     {
         const int lo = memcmp(vid[2], vid[3], 64) < 0 ? 2 : 3;
         const int hi = lo == 2 ? 3 : 2;
@@ -3058,9 +3064,14 @@ static int t_cumulative(void) {
                     CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
                     acc) == 0 && rc == 0,
           "F2: probe ran, preview built");
-    CHECK(acc[0] == 1 && acc[1] == 1,
-          "F2: S(f − E) ruleset 1 ⇒ carry 0 — both accepted despite V0, V1 "
-          "re-keyed in S(2E)");
+    CHECK(acc[0] == 0 && acc[1] == 0,
+          "F2: the bridge finds V0, V1 in the ruleset-1 S(E) — carry 2/7, "
+          "both WAIT");
+    CHECK(cum_probe(A.w, 2 * E_LEN, (const uint8_t (*)[64])rk, 1,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == 0 && acc[0] == 1 && acc[1] == 0,
+          "F2: V0 alone through the bridge — carry 1/7, the id-smaller "
+          "accepted, the other waits");
     CHECK(twins_equal(&A, &B) == 0, "F2 rolled back: A == B");
 
     /* ── F1. f = 3E: S(3E), S(2E) both ruleset 2 ──────────────────────── */
@@ -3094,6 +3105,15 @@ static int t_cumulative(void) {
                     CUM_PRED_BREAK, (const uint8_t (*)[64])cd, vk, 0, &rc,
                     acc) == 0 && rc == 0,
           "(f) S(2E) unreadable, no candidate: builds (nothing read)");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 3,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == -1,
+          "(g) a carry of 3/7 exceeds its budget: with candidates the "
+          "freeze FAULTS");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 3,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 0, &rc,
+                    acc) == 0 && rc == 0,
+          "(g) the same S(3E), no candidate: builds (nothing read)");
     CHECK(twins_equal(&A, &B) == 0, "F1 rolled back: A == B");
 
     fx_close(&A);

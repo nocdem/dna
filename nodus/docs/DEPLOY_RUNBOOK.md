@@ -1582,8 +1582,9 @@ zero but at the counted power of the validators that set already carries under a
 since the set before it — the rotations accepted one boundary earlier, whose new nodes are still
 taking over during that set — so two consecutive batches together never move a third of one set
 (a validator with no seat in the earlier set is a new entrant, not a rotation, and is not
-counted; when the earlier set is a pre-generation-4 (ruleset 1) set, or there is none, R starts
-at zero). One that does not fit is skipped and the walk continues (khan A3); it is judged again at every
+counted; when the earlier set is a pre-generation-4 (ruleset 1) set its validators are matched
+by the migrated validator_id derived from their key, so the rotations the first generation-4
+boundary accepts are carried too; when there is no earlier set, R starts at zero). One that does not fit is skipped and the walk continues (khan A3); it is judged again at every
 later boundary, its F unchanged. Consequences: with **three or fewer equal validators no rotation
 is ever accepted** (design §3 — rotating any one of three equal keys moves a full third); one
 validator holding more than a third of the counted power can never rotate while that holds;
@@ -1634,7 +1635,9 @@ consent and key uniqueness — it promises no date.
    "accepted" on submit is mempool admission only (§1.5 / README "Submit returns" rule). The ROTATE
    is applied when its `intent_id` (printed) appears in `v2_intent_index`; a refused one leaves no row.
 5. **Watch F.** Every node logs, at boundary F, `snapshot(<U>): <a> rotation(s) accepted, <w> waiting
-   (P_U … R_U …, P_F … R_F …)`. Accepted → go on. **Waiting = deferred by the budget:** the
+   (P_U … R_U …, P_F … R_F …, carried …)` — `carried` is the part of R_F the set governing at F
+   already carried from the previous boundary's rotations (the cumulative budget above). Accepted →
+   go on. **Waiting = deferred by the budget:** the
    validator's `v2_validator_roles` row keeps the pending key and its F; the stored snapshot(U)
    carries the OLD key; nothing switches at U; it is judged again at the next boundary. There is no
    CLI / RPC display of the pending key yet (slice 7); read it on a node:

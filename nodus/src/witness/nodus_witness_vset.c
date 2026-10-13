@@ -568,13 +568,17 @@ static int vset_rot_fits(uint64_t P, uint64_t R, uint64_t p) {
  * the same validator_id's entry in sf's own predecessor S(f − E) — the
  * party the previous freeze already admitted into sf. An entry of sf with
  * no seat in S(f − E) is not counted (a new entrant is not a rotation).
- * The carry is 0, with nothing read, when sf is ruleset 1 or f < E (no
- * S(f − E)); 0 when S(f − E) is ruleset 1 (the recorded rule: no id to
- * match by) or ABSENT — the resolver's terminal rc 1, which every node
- * answers alike: validator_set_snapshots is a leg of system_state_root
- * (nodus_witness_roots_v2.c). An unreadable S(f − E) is a fault (-1),
- * never a 0. The sum is order-independent and checked like
- * vset_rot_total. 0 / -1. */
+ * A ruleset-1 S(f − E) has no ids: its entries are matched through the
+ * migrated-id bridge (dna_validator_id_migrated(chain, entry pubkey)),
+ * exactly as the candidate loop matches a ruleset-1 sf — the first
+ * generation-4 freeze accepts rotations against the ruleset-1 set, and
+ * the next freeze must carry them. The carry is 0, with nothing read,
+ * when sf is ruleset 1 or f < E (no S(f − E)); 0 when S(f − E) is ABSENT
+ * — the resolver's terminal rc 1, which every node answers alike:
+ * validator_set_snapshots is a leg of system_state_root
+ * (nodus_witness_roots_v2.c). An unreadable S(f − E), an unreadable chain
+ * id or an underivable bridge id is a fault (-1), never a 0. The sum is
+ * order-independent and checked like vset_rot_total. 0 / -1. */
 static int vset_rot_carried(nodus_witness_t *w,
                             const dna_vset_snapshot_t *sf,
                             const uint64_t *pf, uint64_t f,
@@ -597,11 +601,30 @@ static int vset_rot_carried(nodus_witness_t *w,
     }
     int ret = -1;
     uint64_t r = 0;
+    /* the id each S(f − E) entry is matched by: its own (ruleset 2) or
+     * the migrated-id bridge over its key (ruleset 1) — the same
+     * derivation the candidate loop of vset_rotation_pass uses for sf */
+    uint8_t (*pid)[DNA_VSET_VALIDATOR_ID_LEN] = NULL;
     if (sp->selection_ruleset == DNA_VSET_RULESET_TOPN_V1) {
-        ret = 0;                          /* the recorded rule: 0        */
-        goto out;
-    }
-    if (sp->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
+        uint8_t chain32[DNA_CHAIN_ID_LEN];
+        if (nodus_witness_v2_chain_id(w, chain32) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: the chain id of "
+                          "the carried party's ruleset-1 bridge is "
+                          "unreadable");
+            goto out;
+        }
+        pid = malloc((size_t)sp->active_count * sizeof(*pid));
+        if (!pid) goto out;
+        for (uint16_t i = 0; i < sp->active_count; i++) {
+            if (dna_validator_id_migrated(pid[i], chain32,
+                                          sp->entries[i].pubkey) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: a v1 entry's "
+                              "migrated validator_id did not derive "
+                              "(carried party)");
+                goto out;
+            }
+        }
+    } else if (sp->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
         QGP_LOG_ERROR(LOG_TAG, "rotation pass: S(%llu) carries ruleset %u",
                       (unsigned long long)(f - E),
                       (unsigned)sp->selection_ruleset);
@@ -609,7 +632,7 @@ static int vset_rot_carried(nodus_witness_t *w,
     }
     for (uint16_t j = 0; j < sf->active_count; j++) {
         for (uint16_t i = 0; i < sp->active_count; i++) {
-            if (memcmp(sp->entries[i].validator_id,
+            if (memcmp(pid ? pid[i] : sp->entries[i].validator_id,
                        sf->entries[j].validator_id,
                        DNA_VSET_VALIDATOR_ID_LEN) != 0)
                 continue;
@@ -624,6 +647,7 @@ static int vset_rot_carried(nodus_witness_t *w,
     *r_out = r;
     ret = 0;
 out:
+    free(pid);
     dna_vset_free(&sp);
     return ret;
 }
