@@ -544,12 +544,13 @@ int nodus_v2_msig_digest(const nodus_v2_msig_export_t *x,
 /* the signing horizon against the node's height (contract: the header) */
 int nodus_v2_msig_horizon(uint64_t export_tip, uint64_t expiry_height,
                           uint64_t node_height) {
-    if (node_height > UINT64_MAX - NODUS_V2_MSIG_EXPIRY_AHEAD)
+    if (node_height > UINT64_MAX - NODUS_CMT_APP_MAX_EXPIRY_AHEAD)
         return NODUS_V2_SPEND_ERR_ARG;
-    const uint64_t far = node_height + NODUS_V2_MSIG_EXPIRY_AHEAD;
     if (expiry_height <= node_height) return NODUS_V2_MSIG_ERR_HORIZON;
-    if (expiry_height > far) return NODUS_V2_MSIG_ERR_HORIZON;
-    if (export_tip > far) return NODUS_V2_MSIG_ERR_HORIZON;
+    if (expiry_height > node_height + NODUS_CMT_APP_MAX_EXPIRY_AHEAD)
+        return NODUS_V2_MSIG_ERR_HORIZON;
+    if (export_tip > node_height + NODUS_V2_MSIG_EXPIRY_AHEAD)
+        return NODUS_V2_MSIG_ERR_HORIZON;
     return NODUS_V2_SPEND_OK;
 }
 

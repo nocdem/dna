@@ -1538,7 +1538,9 @@ export's, asks for exactly the export's inputs (`dnac_msig_utxo` with `"nul"`: t
 are unspent coins of the vault, any token, no 100-coin page) and requires EVERY input to be
 answered with the vault as owner — it prints each input's amount, token and lock from the node.
 It then judges the validity window from **that node's height H**, not the export's tip: expiry ≤
-H, expiry > H + 90, or a node more than 90 blocks behind the export's tip → refused. No `-s`, no
+H, expiry > H + 100 (the chain's admission cap from now), or a node more than 90 blocks behind the
+export's tip → refused (a node a few blocks behind the builder still signs: the export's expiry is
+the builder's tip + 90, within the cap). No `-s`, no
 `--pin`, a pin mismatch, a node without the `"nul"` query (not updated), a key outside the
 descriptor, another chain, one unverified input or a window refusal → **nothing is signed**; there
 is no flag that skips it. `--chain-id <hex64>` additionally pins the chain the co-signer expects. A

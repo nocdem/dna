@@ -8146,7 +8146,7 @@ static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
                     (unsigned long long)res.block_height,
                     (unsigned long long)export_tip,
                     (unsigned long long)expiry_height,
-                    (unsigned)NODUS_V2_MSIG_EXPIRY_AHEAD,
+                    (unsigned)NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
                     (unsigned)NODUS_V2_MSIG_EXPIRY_AHEAD);
             goto out;
         }

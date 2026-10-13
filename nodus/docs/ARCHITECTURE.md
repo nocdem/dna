@@ -7614,10 +7614,13 @@ re-pins in its own session.
   and foreign-token coins can no longer hide an input.
 - **Horizon from the node.** `nodus_v2_msig_horizon` (`src/client/nodus_v2_msig.c`,
   `NODUS_V2_MSIG_ERR_HORIZON` −75), with H = the pinned answer's `block_height`: refused when expiry ≤ H,
-  expiry > H + 90, or the export's tip > H + 90 (the node too far behind the builder). review /
-  review2 judge the window only against the export's `tip`, which its author chose — a future tip
-  would otherwise yield a signature usable long after it was given. 90 = `NODUS_V2_MSIG_EXPIRY_AHEAD`
-  (mempool cap 100 − the 10-block gossip margin), the read-back's own window.
+  expiry > H + 100 (`NODUS_CMT_APP_MAX_EXPIRY_AHEAD`, the chain's own admission cap — CheckTx refuses
+  expiry > tip + 100), or the export's tip > H + 90 (`NODUS_V2_MSIG_EXPIRY_AHEAD`; the node too far
+  behind the builder for its coin set to be the export's). review / review2 judge the window only
+  against the export's `tip`, which its author chose — a future tip would otherwise yield a signature
+  usable long after it was given. The bound is the cap, not tip + 90: builders write expiry = their
+  tip + 90, so a co-signer's node a few blocks behind the builder still signs (the 10-block gossip
+  margin absorbs the lag).
 
 **Tests** (written, NOT run by the author): `test_hf6_payer` (new — for each of the seven owner ops:
 kind-3 payer == owner applies, another vault refused, kind-1 third party applies; two descriptors in
