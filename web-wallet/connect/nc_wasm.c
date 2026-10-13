@@ -2429,13 +2429,14 @@ int nc_group_bucket_fetch(const char *group_id_hex, const char *salt_hex, const 
  * to the state as a whole; each SEALED record stays ≤ NC_HIST_PT_MAX),
  * filled by the page and taken here first, so it is wiped and freed on
  * every path; a missing buffer reads as empty input (-> "invalid" /
- * "damaged"). The result is the codec's JSON text, put in g_result as it
- * is (no json-c re-serialisation: the header and record texts inside it
- * are the exact bytes to seal), read with nc_result(). Like every
- * synchronous export, a call made while an async export is between its
- * return and the page's nc_result read would replace that result (P1
- * red-team R13): the page calls these through the wallet's synchronous
- * slot (src/connect/core.js sync), never inside an async one. */
+ * "damaged"). The result is the codec's JSON text, put in its OWN result
+ * g_state_result as it is (no json-c re-serialisation: the header and
+ * record texts inside it are the exact bytes to seal), read with
+ * nc_state_result() (below). A state call therefore no longer replaces an
+ * async export's nc_result while that export is between its return and the
+ * page's nc_result read (P1 red-team R13, fixed in P7 stage 2); the page
+ * still calls these through the wallet's synchronous slot
+ * (src/connect/core.js sync). */
 #include "nc_state.h"
 
 #define NC_STATE_IN_MAX (8u * 1024u * 1024u)

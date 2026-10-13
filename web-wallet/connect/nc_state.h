@@ -63,7 +63,11 @@
  *        - a key other than {id, at, name} in a profileCache value, {name,
  *          at} in a chainNames value, {id, at} in a vaults / groups value
  *          -> "profileCache[j].<key>" (likewise);
- *        - listTaken not absent / boolean -> absent (false), "listTaken".
+ *        - listTaken not absent / boolean -> absent (false), "listTaken";
+ *        - removed with more than NC_STATE_REMOVED_MAX entries -> the last
+ *          NC_STATE_REMOVED_MAX kept (item 5 below), "removed" (design rev
+ *          2.2 item 3: the cut is listed, never silent; the page writes the
+ *          same cut back into its state, store.js save).
  *      "dropped" is sorted ascending by bytes ("contacts[10]" before
  *      "contacts[2]") with each path once. The checks are made for every
  *      entry, also one the dedup below then does not keep.
@@ -87,7 +91,10 @@
  *      map that no longer has a field is dropped; its id is not reused.
  *      An allocation past 10^20 − 1 is refused (reason "nextSeq").
  *   5. removed: the LAST NC_STATE_REMOVED_MAX entries are kept (the oldest,
- *      earliest, are dropped; §2.1 Bounds). declined: kept as it is — the
+ *      earliest, are dropped; §2.1 Bounds) and the path "removed" is listed
+ *      in "dropped" when any is (item 2). An ID cut here that is still on
+ *      the account's network contact list comes back at the next list merge
+ *      (text.js mergeListedContacts; design rev 2.2 item 3). declined: kept as it is — the
  *      7-day / 200 rule (text.js declinedNow) needs a clock and stays where
  *      it is applied today; a bare-ID entry stays a bare ID.
  * Output: { "status": "ok", "nextSeq": "<advanced>", "header": "<text>",

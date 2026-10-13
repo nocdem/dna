@@ -78,6 +78,9 @@ try {
       // is merely reversible, not the real codec (that is
       // test/browser-connect-state.js and the vectors): the "header" carries
       // the whole v1 state, no known-ID record is made, nothing is dropped.
+      // Since rev 2.2 item 2 every save also LOADS its own snapshot (the
+      // load check, store.js save): nc_state_load answers that from the
+      // same header, so it gives back the state that was projected.
       nc_state_project: () => {
         const v1 = JSON.parse(takeState().state);
         return { status: 'ok', nextSeq: String(v1.nextSeq), header: JSON.stringify({ version: 2, nextSeq: String(v1.nextSeq), ids: [], v1 }), records: [], dropped: [] };

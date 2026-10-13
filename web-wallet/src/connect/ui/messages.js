@@ -328,7 +328,7 @@ async function openLocal(gen) {
     // no network until the network phase.
     groups = createGroupsEngine({
       core, ownFp, state: () => state, takeSeq,
-      saveAll: ({ records = [], messages: groupMessages = [] }) => store.save(state, groupMessages, [], [], records),
+      saveAll: ({ records = [], messages: groupMessages = [], undo }) => store.save(state, groupMessages, [], [], records, { undo }),
       sendDirect: sendControl,
       isContact: fp => !!contactOf(fp)?.salt,
       ensureProfile: fp => ensureProfile(fp, !!contactOf(fp)),
@@ -496,7 +496,10 @@ const contactOf = fp => state.contacts.find(c => c.fp === fp);
 const pendingOf = fp => { const o = state.outgoing.find(x => x.fp === fp); return o && !contactOf(fp) ? { fp: o.fp, salt: o.salt || null, pending: true } : undefined; };
 const chatPeerOf = fp => contactOf(fp) || pendingOf(fp);
 function takeSeq() { const seq = state.nextSeq; state.nextSeq = String(BigInt(seq) + 1n); return seq; }
-async function persist(newMessages = []) { await store.save(state, newMessages); }
+// `undo` (optional): the caller's rollback of its own change, run by the
+// store when this save fails, before the error reaches the caller
+// (store.js save, design P7 rev 2.2 item 1).
+async function persist(newMessages = [], undo) { await store.save(state, newMessages, [], [], [], { undo }); }
 // Changed copies of stored messages (published / delivered flags): saved
 // first, then put in place of the in-page ones (by local seq).
 async function saveUpdated(updated) {
@@ -589,13 +592,13 @@ async function keepProfile(fp, result) {
   const before = state.profileCache[fp];
   const id = before?.id || `p${takeSeq().padStart(20, '0')}`;
   state.profileCache[fp] = { id, at: nowSeconds(), name: typeof result.profile.name === 'string' ? result.profile.name : '' };
+  // not kept on a failure: read from the network next time (the store runs
+  // the rollback before this call sees the error)
+  const undo = () => { if (before) state.profileCache[fp] = before; else delete state.profileCache[fp]; };
   try {
-    await store.save(state, [], [{ id, fp, record: result.record }]);
+    await store.save(state, [], [{ id, fp, record: result.record }], [], [], { undo });
     kept.set(fp, { id, record: result.record });
-  } catch {
-    // not kept: read from the network next time
-    if (before) state.profileCache[fp] = before; else delete state.profileCache[fp];
-  }
+  } catch { /* rolled back by undo */ }
 }
 async function forgetProfile(fp) {
   if (!state.profileCache[fp]) return;
@@ -2723,16 +2726,15 @@ async function keepVault(address, value) {
   const id = before?.id || `v${takeSeq().padStart(20, '0')}`;
   const entry = { id, at: nowSeconds() };
   state.vaults[address] = entry;
-  try {
-    await store.save(state, [], [], [{ id, address, value }]);
-  } catch (error) {
-    // roll back only this call's own entry: a dropVault (or another
-    // keepVault) that ran during the save stands as it left it
+  // On a failure the store rolls back (before this call sees the error) only
+  // this call's own entry: a dropVault (or another keepVault) that ran
+  // during the save stands as it left it.
+  const undo = () => {
     if (state.vaults[address] === entry) {
       if (before) state.vaults[address] = before; else delete state.vaults[address];
     }
-    throw error;
-  }
+  };
+  await store.save(state, [], [], [{ id, address, value }], [], { undo });
   vaultRecs.set(address, { id, value });
 }
 
@@ -2740,7 +2742,8 @@ async function dropVault(address) {
   if (!isOpen() || !state.vaults[address]) return;
   const before = state.vaults[address];
   delete state.vaults[address];
-  try { await persist(); } catch (error) { state.vaults[address] = before; throw error; }
+  // on a failure the store puts the entry back before the error reaches here
+  await persist([], () => { state.vaults[address] = before; });
   vaultRecs.delete(address);
 }
 

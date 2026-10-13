@@ -23,6 +23,12 @@
 //     only that contact's 'c…' record — the header does not hold dmSync, so
 //     its bytes are unchanged and it is not rewritten (store.js stateDiff)
 //     — and the counter grows by one; reopening gives that state;
+//   - rev 2.2 item 2: a save of 38,000 contacts holding only an ID — whose
+//     records project fine but whose load input is over the module's 8 MiB
+//     bound (checked in the harness first) — is refused with the
+//     too-large text (store.js HISTORY_TOO_LARGE_TEXT), hands out no id,
+//     writes nothing (same records, nonces, counter and copy), and the next
+//     open gives the previous state;
 //   - a 'c…' record with one ciphertext bit flipped keeps the history
 //     closed (fail closed, §2.5).
 // How it mounts: a harness page served by vite (the real sources); the send
@@ -223,6 +229,44 @@ try {
   assert.deepEqual(second.stateIds, first.after.stateIds, 'no record added or deleted');
   assert.deepEqual(second.againState, second.next, 'reopening gives the saved state');
 
+  // ── a save this build could not open again is refused (rev 2.2 item 2) ──
+  // 38,000 contacts holding only an ID: projecting them is fine (the input
+  // {"state":…,"map":…} is about 5.4 MB), but the LOAD input of the records
+  // they project to is over the module's 8 MiB bound. Per such contact the
+  // load input grows by 223 B: its record {"fp":"<128>","contact":{}} is
+  // 150 B, 156 B once escaped inside the wrapper, plus {"id":"c<20>","json":""}
+  // and a comma (41 B), plus its id in the header's ids, escaped (26 B);
+  // 8,388,608 / 223 > 37,616, so 38,000 crosses it with room (the
+  // ORCHESTRATOR measured 8,474,149 B for 38,000 on the parity build).
+  // The harness checks that premise itself before it trusts the refusal.
+  const fourth = await page.evaluate(async () => {
+    const { S, core, VAULT, raw } = window.__t;
+    const store = await S.openHistoryStore({ core, vaultId: VAULT });
+    const previous = structuredClone(store.state);
+    const big = structuredClone(store.state);
+    for (let i = 0; i < 38000; i++) big.contacts.push({ fp: (i + 1).toString(16).padStart(128, '0') });
+    const snap = S.stateSnapshot(core, structuredClone(big), {});
+    const loadInput = new TextEncoder().encode(JSON.stringify({ header: snap.texts.get(S.STATE_ID), records: [...snap.texts].filter(([rid]) => rid !== S.STATE_ID).map(([rid, json]) => ({ id: rid, json })) })).length;
+    const before = await raw();
+    const nextSeqBefore = big.nextSeq;
+    let refused;
+    try { await store.save(big); refused = { saved: true }; }
+    catch (error) { refused = { saved: false, storageError: error instanceof S.StorageError, message: error.message }; }
+    const after = await raw();
+    store.close();
+    const again = await S.openHistoryStore({ core, vaultId: VAULT });
+    const result = { loadInput, refused, nextSeqBefore, nextSeqAfter: big.nextSeq, before, after, previous, againState: again.state, text: S.HISTORY_TOO_LARGE_TEXT };
+    again.close();
+    return result;
+  });
+  assert.ok(fourth.loadInput > 8388608, `the premise: the load input (${fourth.loadInput} B) is over the 8 MiB bound`);
+  assert.equal(fourth.refused.saved, false, 'the save is refused');
+  assert.equal(fourth.refused.storageError, true, fourth.refused.message);
+  assert.equal(fourth.refused.message, fourth.text, 'with the too-large text, not the damaged-history text');
+  assert.equal(fourth.nextSeqAfter, fourth.nextSeqBefore, 'no id handed out');
+  assert.deepEqual(fourth.after, fourth.before, 'nothing written: the same records, nonces, counter and copy');
+  assert.deepEqual(fourth.againState, fourth.previous, 'the next open gives the previous state');
+
   // ── a known-ID record with one bit flipped: the history stays closed ──
   const third = await page.evaluate(async () => {
     const { S, core, VAULT, tamper } = window.__t;
@@ -235,7 +279,7 @@ try {
 
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, [], 'no request left the dev server (no connection was made)');
-  console.log('Connect state test passed: a v1 history migrates to schema v2 on the real module and IndexedDB (counter + 5), reopens unchanged, a check-time save rewrites one record, a tampered record keeps Messages closed.');
+  console.log('Connect state test passed: a v1 history migrates to schema v2 on the real module and IndexedDB (counter + 5), reopens unchanged, a check-time save rewrites one record, a save over the load bound is refused and writes nothing, a tampered record keeps Messages closed.');
 } finally {
   await browser?.close();
   server.stop();

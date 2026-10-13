@@ -24,7 +24,12 @@
 //     commit (§2.3): snapshot at the call, diff against the last COMMITTED
 //     records at the run, a counter reservation before the first seal, one
 //     transaction, aborted when queuing it throws; the header and the
-//     known-ID records fail closed (§2.5).
+//     known-ID records fail closed (§2.5). Rev 2.2 (after the code
+//     red-team): the caller's rollback is handed to save() (`undo`) and run
+//     inside the queue on a failure, and every save queued behind a failed
+//     one is rebuilt from the state (§2.3 item 3); a save first checks that
+//     this build could load what it commits; a cut `removed` list is
+//     reported and written back.
 //
 // Naming: database = the vault id as 32 lowercase hex characters (the same 16
 // bytes as the vault's base64 `id`). Object stores: 'messages' (one record per
@@ -87,6 +92,13 @@ export const KNOWN_ID_RECORD_ID = /^c\d{20}$/;
 const STATE_SCHEMA_V2 = 2;
 export const DAMAGED_STATE_TEXT = 'The stored contact list is damaged.';
 const SAVE_PREPARE_TEXT = 'Message history could not be saved: the contact list could not be prepared.';
+// A save whose records this build could not open again (design rev 2.2
+// item 2: the load check at save) — never the damaged-history text.
+export const HISTORY_TOO_LARGE_TEXT = 'Your message history is too large to save on this device.';
+// nc_state.h NC_STATE_REMOVED_MAX (§2.1 Bounds): the projection keeps the
+// last this many `removed` entries and lists the path 'removed' as dropped;
+// save() then cuts the page's list the same way (design rev 2.2 item 3).
+export const STATE_REMOVED_MAX = 1000;
 const SEAL_TEXT = 'Message history could not be saved: the message could not be sealed.';
 const BUDGET_TEXT = 'This device has stored the maximum number of messages for this wallet. Nothing more can be saved here.';
 const READ_TEXT = 'A stored message could not be read.';
@@ -341,6 +353,9 @@ export function stateLoaded(core, header, records) {
   if (!r || r.status !== 'ok' || !isMap(r.state) || !isMap(r.map)) throw new StorageError(DAMAGED_STATE_TEXT);
   return { state: checkState(r.state), map: r.map };
 }
+// A snapshot's known-ID records in the shape stateLoaded takes (the header
+// is the 'state' text; the records follow it ascending, as projected).
+const snapshotRecords = texts => [...texts].filter(([id]) => id !== STATE_ID).map(([id, json]) => ({ id, json }));
 
 // A record text -> the plaintext bytes handed to the core (UTF-8).
 export function textBytes(text) {
@@ -554,7 +569,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
         const v1 = checkState(parsed);
         try { onMigrate?.('start'); } catch { /* the page's status line */ }
         const snap = stateSnapshot(core, v1, {});
-        const loaded = stateLoaded(core, snap.texts.get(STATE_ID), [...snap.texts].filter(([id]) => id !== STATE_ID).map(([id, json]) => ({ id, json })));
+        const loaded = stateLoaded(core, snap.texts.get(STATE_ID), snapshotRecords(snap.texts));
         const puts = await sealAll(plainEntries([...snap.texts].map(([id, text]) => ({ store: STORE_STATE, id, text }))));
         await writeAll(db, puts);
         ({ state, map: idMap } = loaded);
@@ -612,79 +627,129 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   } catch (error) { db.close(); throw error; }
 
   let queue = Promise.resolve(), closed = false;
+  // How many queued runs have failed so far (design rev 2.2 item 1): a save
+  // keeps the value it saw at its call; a different value at its run means a
+  // run failed after the call, so its call-time snapshot may hold what that
+  // failure's undo took back — it is rebuilt. Counted in queue order, never
+  // by time.
+  let failures = 0;
   // Another tab deleting this history (the wallet page's vault delete) closes
   // the store for good: a save already sealing must not write the counter
   // copy back after the delete (Connect RT2 L3 F1).
   db.onversionchange = () => { closed = true; db.close(); };
+  // The snapshot of `nextState` (synchronous): refused when closed, when
+  // checkState refuses, when the core cannot project it, or when the records
+  // it projects to could not be loaded again by this build (design rev 2.2
+  // item 2: the same check the migration makes, stateLoaded — the 8 MiB load
+  // input bound included — so a save never commits a history that would
+  // keep Messages closed; HISTORY_TOO_LARGE_TEXT). Only once all of that
+  // passed is anything written back: the advanced nextSeq into `nextState`
+  // (the page's local sequence shares it, messages.js takeSeq), a `removed`
+  // list the projection cut (its path in `dropped`) to the same last
+  // STATE_REMOVED_MAX entries (rev 2.2 item 3: the session log shows the cut
+  // once), the newest fp -> id map; then the dropped paths are reported.
+  function prepare(nextState) {
+    if (closed) throw new StorageError('Message history is closed.');
+    checkState(nextState);
+    const snap = stateSnapshot(core, nextState, idMap);
+    try { stateLoaded(core, snap.texts.get(STATE_ID), snapshotRecords(snap.texts)); }
+    catch { throw new StorageError(HISTORY_TOO_LARGE_TEXT); }
+    nextState.nextSeq = snap.nextSeq;
+    if (snap.dropped.includes('removed')) nextState.removed = nextState.removed.slice(-STATE_REMOVED_MAX);
+    idMap = snap.map;
+    reportDropped(snap.dropped);
+    return snap;
+  }
+  // The caller's rollback, run at most once; its own throw never replaces
+  // the save's error and never stops the queue.
+  const runUndo = undo => { if (typeof undo === 'function') { try { undo(); } catch { /* the save's error stands */ } } };
   // ONE commit per save (design §2.3), serialised: one in flight.
-  //   At the call, synchronously, before anything yields: the state is
-  //   projected (stateSnapshot — the canonical text of every state record,
-  //   ids kept from the newest snapshot's map, new ids from nextSeq) and the
-  //   advanced nextSeq is written into `nextState`, which the page's local
-  //   sequence shares (messages.js takeSeq). A mutation of the state after
-  //   the call cannot leak into this commit (store.js:441 before P7).
-  //   At the run (after the commits before it): the snapshot is diffed
+  //   At the call, synchronously, before anything yields: prepare() above.
+  //   A mutation of the state after the call cannot leak into this commit
+  //   (store.js:441 before P7). A refusal here rejects at once, after the
+  //   caller's `undo` ran; nothing was queued, so nothing is rebuilt.
+  //   At the run (after the commits before it): if a run failed since the
+  //   call, the snapshot is taken again from `nextState` as it is now
+  //   (prepare, with the same refusals) — design §2.3 item 3, Kurultay #19
+  //   item 6; otherwise the call-time snapshot is used. It is diffed
   //   against the last COMMITTED records (stateDiff): changed or new records
   //   are put, known-ID records no longer projected are deleted; plus the
   //   new messages, kept profiles, vaults and group records as before P7.
   //   One reservation for every seal (sealAll), then ONE transaction of the
   //   puts, the deletes and the counter record (writeAll). On its
-  //   oncomplete the baseline becomes this snapshot. On a failure the
-  //   reservation stays used, the baseline is unchanged (the next save diffs
-  //   against what is really committed, so nothing a failed commit carried
-  //   is lost from a later one) and the error propagates.
+  //   oncomplete the baseline becomes this snapshot. On a failure (any throw
+  //   of the run) the reservation stays used, the baseline is unchanged (the
+  //   next save diffs against what is really committed), the failure count
+  //   grows, and the caller's `undo` runs — synchronously, inside the
+  //   queue, before the next run starts and before this save's promise
+  //   rejects with the error.
   // `keptProfiles`: [{ id, fp, record }] written to the 'state' store next
   // to the state that points to them (state.profileCache).
   // `keptVaults`: [{ id, address, value }] likewise (state.vaults).
   // `keptGroups`: [{ id, value }] group / key version / staged packet piece
   // records (GROUP_RECORD_ID; state.groups, src/connect/groups/).
-  function save(nextState, newMessages = [], keptProfiles = [], keptVaults = [], keptGroups = []) {
+  // `undo` (optional, synchronous): takes back the caller's own change to
+  // the state when this save fails, at the call or at the run — exactly
+  // once, before the caller sees the error (design rev 2.2 item 1).
+  function save(nextState, newMessages = [], keptProfiles = [], keptVaults = [], keptGroups = [], { undo } = {}) {
     let snap;
     try {
-      if (closed) throw new StorageError('Message history is closed.');
-      checkState(nextState);
-      snap = stateSnapshot(core, nextState, idMap);
-      nextState.nextSeq = snap.nextSeq;
-      idMap = snap.map;
+      snap = prepare(nextState);
     } catch (error) {
+      runUndo(undo);
       return Promise.reject(error instanceof StorageError ? error : new StorageError(SAVE_PREPARE_TEXT));
     }
-    reportDropped(snap.dropped);
+    const seen = failures;
     const run = async () => {
-      if (closed) throw new StorageError('Message history is closed.');
-      const diff = stateDiff(baseline, snap.texts);
-      const list = [
-        ...newMessages.map(m => ({ store: STORE_MESSAGES, id: messageRecordId(String(m.seq)), value: m })),
-        ...keptProfiles.map(p => {
-          if (typeof p?.id !== 'string' || !PROFILE_RECORD_ID.test(p.id)) throw new StorageError('Invalid profile record.');
-          return { store: STORE_STATE, id: p.id, value: checkProfileRecord({ fp: p.fp, record: p.record }) };
-        }),
-        ...keptVaults.map(v => {
-          if (typeof v?.id !== 'string' || !VAULT_RECORD_ID.test(v.id)) throw new StorageError('Invalid vault record.');
-          return { store: STORE_STATE, id: v.id, value: checkVaultRecord({ address: v.address, value: v.value }) };
-        }),
-        ...keptGroups.map(g => {
-          if (typeof g?.id !== 'string' || !GROUP_RECORD_ID.test(g.id) || !isMap(g.value)) throw new StorageError('Invalid group record.');
-          return { store: STORE_STATE, id: g.id, value: g.value };
-        }),
-        ...diff.puts.map(p => ({ store: STORE_STATE, id: p.id, text: p.text }))
-      ];
-      const deletes = diff.deletes.map(id => ({ store: STORE_STATE, id }));
-      // Nothing changed: nothing is sealed or written.
-      if (list.length === 0 && deletes.length === 0) return;
-      // The reservation is written before the first seal (sealAll); closed
-      // was checked just above, with nothing awaited in between.
-      const puts = await sealAll(plainEntries(list));
-      // Closed while sealing (lock, or the history deleted by another tab):
-      // nothing is written to the database (the counter copy already holds
-      // the reservation: conservative).
-      if (closed) throw new StorageError('Message history is closed.');
-      await writeAll(db, puts, deletes);
-      baseline = snap.texts;
+      try {
+        if (closed) throw new StorageError('Message history is closed.');
+        if (seen !== failures) {
+          try { snap = prepare(nextState); }
+          catch (error) { throw error instanceof StorageError ? error : new StorageError(SAVE_PREPARE_TEXT); }
+        }
+        await commitSnapshot(snap, newMessages, keptProfiles, keptVaults, keptGroups);
+      } catch (error) {
+        failures++;
+        runUndo(undo);
+        throw error;
+      }
     };
     const result = queue.then(run, run);
     queue = result.catch(() => {});
     return result;
+  }
+  // The run's commit of one snapshot (above): the diff, the seals, ONE
+  // transaction; the baseline moves only on its oncomplete.
+  async function commitSnapshot(snap, newMessages, keptProfiles, keptVaults, keptGroups) {
+    const diff = stateDiff(baseline, snap.texts);
+    const list = [
+      ...newMessages.map(m => ({ store: STORE_MESSAGES, id: messageRecordId(String(m.seq)), value: m })),
+      ...keptProfiles.map(p => {
+        if (typeof p?.id !== 'string' || !PROFILE_RECORD_ID.test(p.id)) throw new StorageError('Invalid profile record.');
+        return { store: STORE_STATE, id: p.id, value: checkProfileRecord({ fp: p.fp, record: p.record }) };
+      }),
+      ...keptVaults.map(v => {
+        if (typeof v?.id !== 'string' || !VAULT_RECORD_ID.test(v.id)) throw new StorageError('Invalid vault record.');
+        return { store: STORE_STATE, id: v.id, value: checkVaultRecord({ address: v.address, value: v.value }) };
+      }),
+      ...keptGroups.map(g => {
+        if (typeof g?.id !== 'string' || !GROUP_RECORD_ID.test(g.id) || !isMap(g.value)) throw new StorageError('Invalid group record.');
+        return { store: STORE_STATE, id: g.id, value: g.value };
+      }),
+      ...diff.puts.map(p => ({ store: STORE_STATE, id: p.id, text: p.text }))
+    ];
+    const deletes = diff.deletes.map(id => ({ store: STORE_STATE, id }));
+    // Nothing changed: nothing is sealed or written.
+    if (list.length === 0 && deletes.length === 0) return;
+    // The reservation is written before the first seal (sealAll); closed
+    // was checked by the run just before, with nothing awaited in between.
+    const puts = await sealAll(plainEntries(list));
+    // Closed while sealing (lock, or the history deleted by another tab):
+    // nothing is written to the database (the counter copy already holds
+    // the reservation: conservative).
+    if (closed) throw new StorageError('Message history is closed.');
+    await writeAll(db, puts, deletes);
+    baseline = snap.texts;
   }
   function close() { closed = true; db.close(); }
   // Delete-from-this-device under the wallet's storage Web Lock (§1.7). The
@@ -704,7 +769,17 @@ export function memoryHistoryStore() {
   let closed = false;
   return {
     persistent: false, state: emptyState(), messages: [], profiles: [], vaults: [], groupRecords: [], groupMessages: [],
-    async save(nextState) { if (closed) throw new StorageError('Message history is closed.'); checkState(nextState); },
+    // The same arguments as the persistent save(); nothing is written. A
+    // refusal runs the caller's `undo` first, as there.
+    async save(nextState, newMessages = [], keptProfiles = [], keptVaults = [], keptGroups = [], { undo } = {}) {
+      try {
+        if (closed) throw new StorageError('Message history is closed.');
+        checkState(nextState);
+      } catch (error) {
+        if (typeof undo === 'function') { try { undo(); } catch { /* the save's error stands */ } }
+        throw error;
+      }
+    },
     close() { closed = true; },
     async erase() { closed = true; }
   };

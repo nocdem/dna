@@ -125,12 +125,13 @@
    {"id":"#c5#","fp":"#B#","json":"{\"fp\":\"#B#\",\"contact\":{}}"}],
   "v1":"{\"version\":1,\"nextSeq\":\"6\",\"contacts\":[{\"fp\":\"#A#\",\"salt\":null,\"listed\":false},{\"fp\":\"#B#\",\"salt\":null,\"listed\":false}],\"outgoing\":[],\"declined\":[],\"removed\":[],\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
 
-{"kind":"project","name":"removed: the last 1,000 entries are kept, the earliest dropped (§2.1 Bounds)","map":"{}",
+{"kind":"project","name":"removed: the last 1,000 entries are kept, the earliest dropped (§2.1 Bounds) and the cut listed (rev 2.2 item 3)","map":"{}",
  "fills":{"@in@":[["#C#",1],["#A#",999],["#B#",1]],"@out@":[["#A#",999],["#B#",1]]},
  "state":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":\"@in@\",\"acks\":{}}",
  "expect":{"status":"ok","nextSeq":"1",
   "header":"{\"version\":2,\"nextSeq\":\"1\",\"ids\":[],\"removed\":\"@out@\",\"declined\":[],\"vaults\":{},\"groups\":{},\"net\":{\"v\":1}}",
   "records":[],
+  "dropped":["removed"],
   "v1":"{\"version\":1,\"nextSeq\":\"1\",\"contacts\":[],\"outgoing\":[],\"declined\":[],\"removed\":\"@out@\",\"acks\":{},\"ackSent\":{},\"profileCache\":{},\"dmSync\":{},\"chainNames\":{},\"chainNoName\":{},\"vaults\":{},\"groups\":{},\"seenOwn\":{}}"}},
 
 {"kind":"project","name":"removed: exactly 1,000 entries are all kept","map":"{}",

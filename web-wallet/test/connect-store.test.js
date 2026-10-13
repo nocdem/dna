@@ -21,7 +21,17 @@
 //     the counter grown by exactly N+1, the dropped paths reported; a
 //     reopen loads v2 and does not migrate again;
 //   - fail closed (§2.5): a listed known-ID record that does not open, or
-//     is missing, keeps the history closed.
+//     is missing, keeps the history closed;
+//   - rev 2.2 item 1 (§2.3 item 3): a failed run's `undo` runs inside the
+//     queue, once, before the save queued behind it runs and before the
+//     failed save rejects; that queued save is rebuilt and commits the
+//     rolled-back state; a save CALLED after the failure keeps its call-time
+//     snapshot; an `undo` that throws neither stops the queue nor replaces
+//     the error;
+//   - rev 2.2 item 2: a snapshot the load check refuses is rejected with
+//     HISTORY_TOO_LARGE_TEXT at the call — nothing reserved, sealed or
+//     written, nextSeq not advanced, the caller's undo run;
+//   - rev 2.2 item 3: a `removed` cut is reported and written back.
 // Requires: nothing (pure node).
 // Leaves behind: nothing.
 // How it can lie: the core is a fake — its "projection" is a reversible
@@ -33,7 +43,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   openHistoryStore, stateDiff, writeAll, StorageError, DAMAGED_STATE_TEXT, emptyState, counterStorageKey,
-  MAX_INVOCATIONS, STATE_ID, STORE_STATE, STORE_MESSAGES, STORE_META, COUNTER_ID
+  MAX_INVOCATIONS, STATE_ID, STORE_STATE, STORE_MESSAGES, STORE_META, COUNTER_ID,
+  HISTORY_TOO_LARGE_TEXT, STATE_REMOVED_MAX
 } from '../src/connect/store.js';
 
 const A = 'aa'.repeat(64), B = 'bb'.repeat(64), C = 'cc'.repeat(64);
@@ -125,11 +136,15 @@ function fakeIndexedDB(log = []) {
 // reversible toy with the real call shapes — one known-ID record per
 // contact (its salt and check time), everything else in the header, ids
 // kept from the map or allocated from nextSeq. A state whose listTaken is
-// 'odd' reports the path 'listTaken' as dropped.
+// 'odd' reports the path 'listTaken' as dropped; a `removed` list over
+// STATE_REMOVED_MAX is cut to its last entries and reported as 'removed'
+// (nc_state.c). `refuseLoad`: stateLoad throws what src/connect/core.js
+// putState throws past the 8 MiB input bound. Neither call logs anything
+// but 'project' (the log assertions below count on it).
 function fakeCore(log = []) {
   const tamper = new Set();
   return {
-    tamper,
+    tamper, refuseLoad: false,
     async historyKey() { return {}; },
     async historyEncrypt({ store, id, plaintext, counter }) {
       log.push(`seal ${store}/${id} @${counter}`);
@@ -149,10 +164,15 @@ function fakeCore(log = []) {
       }
       records.sort((x, y) => (x.id < y.id ? -1 : 1));
       const { contacts, dmSync, nextSeq, ...rest } = v1;
+      const dropped = [];
+      if (v1.listTaken === 'odd') dropped.push('listTaken');
+      if (v1.removed.length > STATE_REMOVED_MAX) { rest.removed = v1.removed.slice(-STATE_REMOVED_MAX); dropped.push('removed'); }
+      dropped.sort();
       const header = JSON.stringify({ version: 2, nextSeq: String(next), ids: records.map(r => r.id), rest });
-      return { status: 'ok', nextSeq: String(next), header, records, dropped: v1.listTaken === 'odd' ? ['listTaken'] : [] };
+      return { status: 'ok', nextSeq: String(next), header, records, dropped };
     },
     stateLoad({ header, records }) {
+      if (this.refuseLoad) throw new Error('The message state is too large for this version.');
       const h = JSON.parse(header);
       if (h.ids.length !== records.length || h.ids.some((id, i) => records[i].id !== id)) return { status: 'damaged', reason: 'missing record' };
       const recs = records.map(r => JSON.parse(r.json));
@@ -374,5 +394,121 @@ test('save: the dropped paths of a projection are reported; C is a third contact
     await store.save(state);
     assert.deepEqual(seen, [['listTaken']]);
     assert.equal(state.nextSeq, '4');
+  });
+});
+
+// ── rev 2.2 (after the code red-team) ──────────────────────────────────
+const VADDR = '99'.repeat(64), VREC = 'v00000000000000000009';
+// The committed header's text (the fake core seals the plaintext as it is).
+const committedHeader = idb => JSON.parse(new TextDecoder().decode(idb.dbs.get(NAME).stores.get(STORE_STATE).get(STATE_ID).ct));
+
+test('rev 2.2 item 1: a failed save\'s undo runs once, before the save queued behind it, which is rebuilt and commits the rolled-back state', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const state = structuredClone(store.state);
+    await store.save(state);                                   // the header is committed
+    // save1: a vault index entry, rolled back by its undo as keepVault does
+    state.vaults[VADDR] = { id: VREC, at: '1' };
+    let undone = 0, undoneAtReject = -1;
+    idb.ctl.failCommit = 1;
+    log.length = 0;
+    const save1 = store.save(state, [], [], [{ id: VREC, address: VADDR, value: {} }], [], {
+      undo: () => { undone++; log.push('undo'); delete state.vaults[VADDR]; }
+    });
+    const saw1 = save1.then(() => assert.fail('save1 must fail'), error => { undoneAtReject = undone; return error; });
+    // save2 is queued while save1 is in flight: its call-time snapshot
+    // still holds the vault entry.
+    state.contacts.push(contact(A));
+    const save2 = store.save(state);
+    const error = await saw1;
+    await save2;
+    assert.ok(error instanceof StorageError && /could not be saved/.test(error.message), error.message);
+    assert.equal(undone, 1, 'undo ran exactly once');
+    assert.equal(undoneAtReject, 1, 'undo ran before save1 rejected');
+    const strings = log.filter(e => typeof e === 'string');
+    const failed = log.indexOf('commit failed'), undoAt = log.indexOf('undo');
+    assert.ok(failed >= 0 && undoAt > failed, 'undo runs after the failure');
+    // the projections: save1's call, save2's call, then save2 rebuilt at its run, after the undo
+    assert.deepEqual(strings.filter(e => e === 'project').length, 3, 'save2 was projected again at its run');
+    assert.ok(log.lastIndexOf('project') > undoAt, 'the rebuild follows the undo');
+    // save2's commit: the header without the vault entry, A's record, no vault record
+    assert.deepEqual(commits(log), [['put state/state', `put state/${cid(1)}`, 'put meta/counter']]);
+    assert.deepEqual(committedHeader(idb).rest.vaults, {}, 'the committed header holds the ROLLED-BACK state');
+    assert.equal(idb.dbs.get(NAME).stores.get(STORE_STATE).has(VREC), false);
+    assert.deepEqual(state.vaults, {});
+  });
+});
+
+test('rev 2.2 item 1: a save CALLED after a failure finished keeps its call-time snapshot (not rebuilt)', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const state = structuredClone(store.state);
+    await store.save(state);
+    idb.ctl.failCommit = 1;
+    state.seenOwn.profile = '5';                               // a header change: a commit to fail
+    await assert.rejects(store.save(state));
+    log.length = 0;
+    state.contacts.push(contact(A));
+    const saving = store.save(state);
+    state.contacts.push(contact(B));                           // after the call: not in this commit
+    await saving;
+    assert.deepEqual(log.filter(e => e === 'project'), ['project'], 'projected once, at the call');
+    assert.deepEqual(commits(log), [['put state/state', `put state/${cid(1)}`, 'put meta/counter']], 'B is not in it');
+  });
+});
+
+test('rev 2.2 item 1: an undo that throws does not stop the queue; the caller sees the save\'s own error', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const state = structuredClone(store.state);
+    await store.save(state);
+    idb.ctl.failCommit = 1;
+    state.seenOwn.profile = '5';                               // a header change: a commit to fail
+    const save1 = store.save(state, [], [], [], [], { undo: () => { throw new Error('undo broke'); } });
+    state.contacts.push(contact(A));
+    const save2 = store.save(state);
+    await assert.rejects(save1, err => err instanceof StorageError && /could not be saved/.test(err.message) && !/undo broke/.test(err.message));
+    log.length = 0;
+    await save2;
+    assert.deepEqual(commits(log), [['put state/state', `put state/${cid(1)}`, 'put meta/counter']], 'the queued save still committed');
+  });
+});
+
+test('rev 2.2 item 2: a snapshot the load check refuses is rejected as too large at the call — nothing reserved, sealed or written', async () => {
+  await withFake(async ({ log, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const state = structuredClone(store.state);
+    state.contacts.push(contact(A));
+    core.refuseLoad = true;
+    let undone = 0;
+    log.length = 0;
+    await assert.rejects(store.save(state, [], [], [], [], { undo: () => { undone++; } }),
+      err => err instanceof StorageError && err.message === HISTORY_TOO_LARGE_TEXT && err.message !== DAMAGED_STATE_TEXT);
+    assert.equal(undone, 1, 'the caller\'s undo ran');
+    assert.deepEqual(log, ['project'], 'projected, then refused: no counter write, no seal, no commit');
+    assert.equal(storage.getItem(counterStorageKey(NAME)), null);
+    assert.equal(state.nextSeq, '1', 'nextSeq not advanced by a refused save');
+    // Within the bound again: the same state saves, with the same id for A.
+    core.refuseLoad = false;
+    await store.save(state);
+    assert.deepEqual(commits(log), [['put state/state', `put state/${cid(1)}`, 'put meta/counter']]);
+  });
+});
+
+test('rev 2.2 item 3: a removed list over the cap is reported as dropped and cut in the page\'s state by save()', async () => {
+  await withFake(async ({ idb, core, storage }) => {
+    const seen = [];
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage, onDropped: paths => seen.push(paths) });
+    const state = structuredClone(store.state);
+    const ids = Array.from({ length: STATE_REMOVED_MAX + 1 }, (_, i) => (i + 1).toString(16).padStart(128, '0'));
+    state.removed = [...ids];
+    const saving = store.save(state);
+    assert.deepEqual(state.removed, ids.slice(-STATE_REMOVED_MAX), 'cut before save() yields: the last 1,000');
+    await saving;
+    assert.deepEqual(seen, [['removed']]);
+    assert.equal(committedHeader(idb).rest.removed.length, STATE_REMOVED_MAX);
+    // The next save has nothing more to cut: the log line came once.
+    await store.save(state);
+    assert.deepEqual(seen, [['removed']]);
   });
 });

@@ -397,6 +397,9 @@ static void scan_drops(nc_sb_t *t, const nc_jv_t *root, drops_t *d) {
     }
     const nc_jv_t *lt = nc_jv_get(root, "listTaken");
     if (lt && !is_bool(lt)) DROP(d, "listTaken", 0, 0, NULL, 0);
+    /* removed over the cap: w_header keeps the last NC_STATE_REMOVED_MAX
+     * entries; the cut is listed, never silent (design rev 2.2 item 3). */
+    if (field(root, "removed")->len > NC_STATE_REMOVED_MAX) DROP(d, "removed", 0, 0, NULL, 0);
 }
 
 /* ── sorting (stable merge sort over indices; never qsort) ──────────── */
