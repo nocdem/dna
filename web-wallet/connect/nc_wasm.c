@@ -101,10 +101,15 @@
 
 #define LOG_TAG "NC_WASM"
 
-/* A history record's plaintext cap. The hex of a record crosses ccall as a
- * string, which Emscripten copies onto the 1 MiB C stack
- * (stringToUTF8OnStack); 64 KiB of plaintext is 128 KiB of hex. */
-#define NC_HIST_PT_MAX 65536u
+/* A history record's plaintext cap. Until web 0.1.112 a record crossed
+ * ccall as a hex string, which Emscripten copies onto the 1 MiB C stack
+ * (stringToUTF8OnStack), so the cap was 64 KiB (128 KiB of hex) — and the
+ * one 'state' record outgrew it at about 60 contacts (BUGS W-15). Since
+ * 0.1.112 the record's bytes (plaintext to seal, ciphertext to open) cross
+ * through the heap input buffer (nc_group_in_alloc below), so the cap is
+ * the buffer's: 1 MiB. Records already stored are unchanged (same AAD,
+ * same layout); only larger ones become possible. */
+#define NC_HIST_PT_MAX 1048576u
 
 static void nc_wipe(void *p, size_t n) {
     volatile uint8_t *v = (volatile uint8_t *)p;
@@ -1138,20 +1143,28 @@ int nc_hist_key(const char *vault_id_hex) {
     return nc_end(set_result(json_object_new_object()));
 }
 
-/* One record. store / id: UTF-8 strings (the AAD, nc_history.h); pt_hex:
- * 1..NC_HIST_PT_MAX bytes; counter_dec: the vault's invocation counter.
- * Result { nonce, ct, tag (hex), counter (decimal, +1) }. */
-int nc_hist_encrypt(const char *store, const char *id, const char *pt_hex,
-                    const char *counter_dec) {
-    if (nc_begin() != 0) return -1;
-    if (!g_unlocked || !g_hist_ok) return nc_end(fail("History key is not ready."));
-    uint64_t counter;
-    if (!store || !id || parse_u64(counter_dec, &counter) != 0)
-        return nc_end(fail("Invalid history record."));
-    uint8_t *pt;
+/* The heap input buffer (nc_group_in_alloc) is defined with the groups
+ * below; the history exports take it too. */
+static uint8_t *in_take(size_t *len);
+static void in_free(uint8_t *b, size_t len);
+
+/* One record. store / id: UTF-8 strings (the AAD, nc_history.h); the
+ * plaintext: 1..NC_HIST_PT_MAX bytes the page put in the heap input buffer
+ * (nc_group_in_alloc) in the same queue slot (web 0.1.112, BUGS W-15);
+ * counter_dec: the vault's invocation counter. The buffer is taken first,
+ * so it is wiped and freed on every path. Result { nonce, ct, tag (hex),
+ * counter (decimal, +1) }. */
+int nc_hist_encrypt(const char *store, const char *id, const char *counter_dec) {
     size_t pt_len;
-    if (parse_hex_var(pt_hex, NC_HIST_PT_MAX, &pt, &pt_len) != 0)
+    uint8_t *pt = in_take(&pt_len);
+    if (nc_begin() != 0) { in_free(pt, pt_len); return -1; }
+    if (!g_unlocked || !g_hist_ok) { in_free(pt, pt_len); return nc_end(fail("History key is not ready.")); }
+    uint64_t counter;
+    if (!store || !id || parse_u64(counter_dec, &counter) != 0 ||
+        !pt || pt_len == 0 || pt_len > NC_HIST_PT_MAX) {
+        in_free(pt, pt_len);
         return nc_end(fail("Invalid history record."));
+    }
     uint8_t *ct = malloc(pt_len);
     if (!ct) { nc_wipe(pt, pt_len); free(pt); return nc_end(fail("Out of memory.")); }
     uint8_t nonce[NC_HISTORY_NONCE_LEN], tag[NC_HISTORY_TAG_LEN];
@@ -1176,18 +1189,22 @@ int nc_hist_encrypt(const char *store, const char *id, const char *pt_hex,
     return nc_end(set_result(o));
 }
 
-/* Result { pt (hex) }; a record that does not authenticate is an error. */
+/* The ciphertext: 1..NC_HIST_PT_MAX bytes in the heap input buffer, as for
+ * nc_hist_encrypt. Result { pt (hex) }; a record that does not
+ * authenticate is an error. */
 int nc_hist_decrypt(const char *store, const char *id, const char *nonce_hex,
-                    const char *ct_hex, const char *tag_hex) {
-    if (nc_begin() != 0) return -1;
-    if (!g_unlocked || !g_hist_ok) return nc_end(fail("History key is not ready."));
-    uint8_t nonce[NC_HISTORY_NONCE_LEN], tag[NC_HISTORY_TAG_LEN];
-    uint8_t *ct;
+                    const char *tag_hex) {
     size_t ct_len;
+    uint8_t *ct = in_take(&ct_len);
+    if (nc_begin() != 0) { in_free(ct, ct_len); return -1; }
+    if (!g_unlocked || !g_hist_ok) { in_free(ct, ct_len); return nc_end(fail("History key is not ready.")); }
+    uint8_t nonce[NC_HISTORY_NONCE_LEN], tag[NC_HISTORY_TAG_LEN];
     if (!store || !id || parse_hex_fixed(nonce_hex, nonce, sizeof(nonce)) != 0 ||
         parse_hex_fixed(tag_hex, tag, sizeof(tag)) != 0 ||
-        parse_hex_var(ct_hex, NC_HIST_PT_MAX, &ct, &ct_len) != 0)
+        !ct || ct_len == 0 || ct_len > NC_HIST_PT_MAX) {
+        in_free(ct, ct_len);
         return nc_end(fail("Invalid history record."));
+    }
     uint8_t *pt = malloc(ct_len);
     if (!pt) { free(ct); return nc_end(fail("Out of memory.")); }
     int rc = nc_history_decrypt(g_hist_key,

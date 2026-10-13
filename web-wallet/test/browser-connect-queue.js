@@ -69,9 +69,15 @@ try {
       nc_ack_send: () => ({}),
       // A saved wallet's history, "sealed" as the identity (shapes only).
       nc_hist_key: () => ({}),
-      nc_hist_encrypt: args => ({ nonce: '00'.repeat(12), ct: args[2], tag: '00'.repeat(16), counter: String(BigInt(args[3]) + 1n) }),
-      nc_hist_decrypt: args => ({ pt: args[3] })
+      // Since 0.1.112 the record's bytes come through the heap input buffer
+      // (nc_group_in_alloc), not as an argument (BUGS W-15).
+      nc_hist_encrypt: args => ({ nonce: '00'.repeat(12), ct: takeIn(), tag: '00'.repeat(16), counter: String(BigInt(args[2]) + 1n) }),
+      nc_hist_decrypt: () => ({ pt: takeIn() })
     };
+    // The module's heap and its one input buffer (src/connect/core.js putHistory).
+    const HEAP = new Uint8Array(1 << 21), IN_AT = 1024;
+    let inLen = 0;
+    const takeIn = () => { const h = Array.from(HEAP.subarray(IN_AT, IN_AT + inLen), b => b.toString(16).padStart(2, '0')).join(''); inLen = 0; return h; };
     // One api object per call, so a call that waits keeps its own result.
     function api() {
       let last, lastArgs;
@@ -80,7 +86,10 @@ try {
         window.__unknown.push(last); return {};
       };
       return {
-        num: (name, types, args) => { last = name; lastArgs = args; return name === 'nc_words_alloc' ? 64 : 0; },
+        num: (name, types, args) => {
+          if (name === 'nc_group_in_alloc') { inLen = args[0]; return IN_AT; }
+          last = name; lastArgs = args; return name === 'nc_words_alloc' ? 64 : 0;
+        },
         call: async (name, types, args) => {
           last = name; lastArgs = args;
           // A contact read the test holds: the queue stays busy meanwhile.
@@ -88,7 +97,7 @@ try {
           return 0;
         },
         str: name => (name === 'nc_result' ? JSON.stringify(answer()) : name === 'nc_day_today' ? TODAY : ''),
-        heap: () => new Uint8Array(4096)
+        heap: () => HEAP
       };
     }
     // The wallet client's ONE queue (src/nodus/client.js): connect and

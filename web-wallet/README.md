@@ -30,6 +30,21 @@ For Caddy, `deploy/Caddyfile` serves the static files and supplies the response 
 
 ## Implemented
 
+- **A saved wallet with many contacts keeps saving (0.1.112, 2026-10-13; BUGS W-15).**
+  - **The defect.** Nodus Connect keeps its whole state of a saved wallet in ONE sealed record (`src/connect/store.js` `STATE_ID`): contacts, ACK times, kept profiles' index, check times, chain names, groups and vaults. A record's plaintext was capped at 64 KiB (`PLAINTEXT_MAX`; `connect/nc_wasm.c` `NC_HIST_PT_MAX`). The cap existed because the record crossed into the module as a hex string, which Emscripten copies onto the 1 MiB C stack.
+  - **The measurement.** About 1 KB per contact. The cap was crossed at about 60 contacts: 20 contacts take 20.9 KB, 50 take 52.0 KB, 80 take 83.1 KB. From then on every save failed with "This is too large to save on this device." Received messages were not kept, a check round failed every time, and sending failed too.
+  - **The fix.** `nc_hist_encrypt(store, id, counter)` and `nc_hist_decrypt(store, id, nonce, tag)` now take the record's bytes from the heap input buffer the group calls already use (`nc_group_in_alloc`, filled in the same queue slot by `src/connect/core.js` `putHistory`). The cap is now that buffer's, 1 MiB: about 1,000 contacts.
+  - **Stored records are unchanged.** Key, AAD and layout are the same, so every record already kept on a device opens.
+  - **Still to come.** Splitting the state into one record per contact is package P7 of the core plan.
+  - **Tests.**
+    - `test/connect-history-wasm.test.js` (new) runs on the real module (parity build, `NODUS_SEND_PARITY_OUT`):
+      - a 200 KB record seals and opens byte for byte;
+      - one flipped bit, or another record id, does not open;
+      - 1 MiB + 1 byte is refused;
+      - with `NODUS_CONNECT_OLD_OUT` (the 0.1.111 parity build), a record sealed by the old module opens with the new one.
+    - `test/connect-ui.test.js`: 200 contacts with every map filled fit one record.
+    - `test/browser-connect-queue.js`: its fake module serves the heap buffer.
+
 - **Contacts checked by the last message time (0.1.111, 2026-10-13).** Operator: "en son mesajlaştığımız kişilerden başlayarak çekmek lazım … hiç mesajlaşmadıklarımı falan çekmeyi de unutmamak lazım". Each check round (`text.js` `checkOrder`) now takes first the contacts with a message on this device — in or out — the one we last wrote with first, by the message's time as the chat shows it (`shownAt`: the sender's time, never later than its arrival; our own send time); equal times go by the local sequence, later first. Every other contact follows in list order and is still checked every round. The last-check times (`dmSync`) no longer take part: before, contacts never checked came first and "newest" was the local sequence alone, so an old history read late counted as new. Only a message whose `at` is a safe-integer Number counts (|at| ≤ 2^53 − 1; every stored message's `at` is `Date.now()`); any other `at` is ignored, never converted, so every compared time is an exact integer. The C rule moved with it (`connect/nc_rules.c` `nc_check_order`: no `dmSync` argument, times held exactly in 64-bit integers, the sender-time bound `s × 1000 ≤ 2^53 − 1` checked as integers; `nc_rules_json.c` reads `at`), and the shared vectors were regenerated from the JS (`test/tools/gen-connect-rule-vectors.mjs`: `rules.json` 441 → 496 vectors, `checkOrder` 14 → 69 — the `at` forms that count and those that are ignored, ±(2^53 − 1), 2^53, the `senderTs` cases and the safe-integer edge of `senderTs × 1000`).
 - **Earn shows the network's total stake (0.1.110, 2026-10-12).** Operator: "Total network'taki stack durumunu görebiliyor muyuz?" → "Ekle".
   - Above the witness list, a card "Staked on the network" shows the total, then how much of it is witness bonds and how much is delegated, and across how many witnesses.

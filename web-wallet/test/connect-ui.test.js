@@ -115,7 +115,7 @@ test('record ids are opaque and ordered by the local sequence', () => {
   assert.throws(() => messageRecordId(1));
 });
 
-test('plaintext crosses to the core as UTF-8 JSON bytes, at most 65536, and back (wiped after parsing)', () => {
+test('plaintext crosses to the core as UTF-8 JSON bytes, at most 1 MiB, and back (wiped after parsing)', () => {
   const value = { text: 'merhaba ğüşİ 👋', fp: FP };
   const plain = plaintextBytes(value);
   assert.ok(plain instanceof Uint8Array);
@@ -123,8 +123,25 @@ test('plaintext crosses to the core as UTF-8 JSON bytes, at most 65536, and back
   assert.ok(plain.every(b => b === 0));
   assert.throws(() => parsePlaintext(Uint8Array.from([0xff])));
   assert.throws(() => parsePlaintext('7b7d'));
-  assert.equal(PLAINTEXT_MAX, 65536);
+  assert.equal(PLAINTEXT_MAX, 1048576);
   assert.throws(() => plaintextBytes({ text: 'x'.repeat(PLAINTEXT_MAX) }), /too large/);
+});
+
+// BUGS W-15 (web 0.1.112): the one 'state' record of a saved wallet holds
+// every contact's entries; at the old 64 KiB cap it stopped saving at about
+// 60 contacts. 200 contacts with every per-contact map filled must fit now.
+test('state record: 200 contacts with every per-contact map filled fit one record (W-15)', () => {
+  const s = emptyState(); s.nextSeq = '123456';
+  for (let i = 0; i < 200; i++) {
+    const fp = (i + 1).toString(16).padStart(8, '0').repeat(16);
+    s.contacts.push({ fp, salt: (i + 7).toString(16).padStart(8, '0').repeat(8), listed: true });
+    s.acks[fp] = '1790000000'; s.ackSent[fp] = '1790000000'; s.dmSync[fp] = '1790000000';
+    s.profileCache[fp] = { id: 'p' + String(1000 + i).padStart(20, '0'), at: '1790000000', name: `Contact Name ${i}` };
+    s.chainNames[fp] = { name: `name${i}abcdef`, at: '1790000000' };
+  }
+  const plain = plaintextBytes(checkState(s));
+  assert.ok(plain.length > 65536, 'over the old cap');
+  assert.ok(plain.length <= PLAINTEXT_MAX);
 });
 
 test('state shape is checked; the memory store keeps nothing and refuses after close', async () => {

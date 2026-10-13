@@ -133,7 +133,8 @@
 //     K stays in module memory; it is wiped by lock.
 //   core.historyEncrypt({ store, id, plaintext, counter }) -> { nonce, ct,
 //     tag, counter }   store / id: strings (the AAD; no NUL character);
-//     plaintext: Uint8Array, 1..65536 bytes; counter: the vault's invocation
+//     plaintext: Uint8Array, 1..1048576 bytes (crosses through the heap
+//     input buffer since 0.1.112); counter: the vault's invocation
 //     counter as a decimal string. nonce / ct / tag: Uint8Array, stored
 //     SEPARATELY (decision Ek 2); counter: the new value to persist.
 //     Refused once the counter reaches 2^32 (SP 800-38D §8.3).
@@ -187,7 +188,7 @@
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, HEX32 = /^[0-9a-f]{32}$/, U64 = /^(0|[1-9]\d{0,19})$/;
 export const CONTACT_ACCEPTED_MSG = 'Contact request accepted';
-const HISTORY_MAX_BYTES = 65536;           // connect/nc_wasm.c NC_HIST_PT_MAX
+const HISTORY_MAX_BYTES = 1048576;         // connect/nc_wasm.c NC_HIST_PT_MAX (64 KiB until 0.1.112, BUGS W-15)
 const HISTORY_NAME_MAX = 65535;            // connect/nc_history.h NC_HISTORY_NAME_MAX
 const lockedError = () => new Error('Wallet is locked.');
 
@@ -256,6 +257,15 @@ function aadName(value, what) {
 function recordBytes(value, what, { exact } = {}) {
   if (!(value instanceof Uint8Array) || value.length === 0 || value.length > HISTORY_MAX_BYTES || (exact !== undefined && value.length !== exact)) throw new Error(`Invalid history ${what}.`);
   return bytesToHex(value);
+}
+// A history record's bytes into the module's heap input buffer
+// (nc_group_in_alloc), consumed by the nc_hist_* export called next in the
+// same queue slot.
+function putHistory(b, value, what) {
+  if (!(value instanceof Uint8Array) || value.length === 0 || value.length > HISTORY_MAX_BYTES) throw new Error(`Invalid history ${what}.`);
+  const at = b.num('nc_group_in_alloc', ['number'], [value.length]);
+  if (!at) throw new Error('Out of memory.');
+  b.heap().set(value, at);
 }
 
 // ── groups (G2 + G3) ───────────────────────────────────────────────────
@@ -478,15 +488,22 @@ export function createNodusConnectCore({ nodus } = {}) {
       b.check(b.num('nc_hist_key', ['string'], [vaultIdHex]));
       return {};
     }),
+    // The record's bytes cross through the heap input buffer (web 0.1.112,
+    // BUGS W-15: a hex argument is copied onto the 1 MiB C stack, which
+    // capped a record at 64 KiB); put and consumed in this one queue slot.
     historyEncrypt: localOp(async (b, { store, id, plaintext, counter } = {}) => {
       if (typeof counter !== 'string' || !U64.test(counter)) throw new Error('Invalid history counter.');
-      b.check(b.num('nc_hist_encrypt', ['string', 'string', 'string', 'string'], [aadName(store, 'store'), aadName(id, 'id'), recordBytes(plaintext, 'record'), counter]));
+      const s = aadName(store, 'store'), i = aadName(id, 'id');
+      putHistory(b, plaintext, 'record');
+      b.check(b.num('nc_hist_encrypt', ['string', 'string', 'string'], [s, i, counter]));
       const r = b.result();
       return { nonce: hexToBytes(r.nonce), ct: hexToBytes(r.ct), tag: hexToBytes(r.tag), counter: r.counter };
     }),
     historyDecrypt: localOp(async (b, { store, id, nonce, ct, tag } = {}) => {
-      b.check(b.num('nc_hist_decrypt', ['string', 'string', 'string', 'string', 'string'],
-        [aadName(store, 'store'), aadName(id, 'id'), recordBytes(nonce, 'nonce', { exact: 12 }), recordBytes(ct, 'record'), recordBytes(tag, 'tag', { exact: 16 })]));
+      const s = aadName(store, 'store'), i = aadName(id, 'id');
+      const n = recordBytes(nonce, 'nonce', { exact: 12 }), t = recordBytes(tag, 'tag', { exact: 16 });
+      putHistory(b, ct, 'record');
+      b.check(b.num('nc_hist_decrypt', ['string', 'string', 'string', 'string'], [s, i, n, t]));
       return { plaintext: hexToBytes(b.result().pt) };
     }),
     // ── groups: synchronous ──

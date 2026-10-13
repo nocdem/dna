@@ -35,7 +35,7 @@
 //   core.historyKey(vaultIdHex)             32 lowercase hex
 //   core.historyEncrypt({ store, id, plaintext, counter }) -> { nonce, ct, tag, counter }
 //     store = the object-store name (nc_history.h: the AAD's "store");
-//     plaintext: Uint8Array (UTF-8 JSON here), 1..65536 bytes
+//     plaintext: Uint8Array (UTF-8 JSON here), 1..1048576 bytes
 //     (nc_wasm.c NC_HIST_PT_MAX); counter: decimal string in, the new value
 //     out (checked here to be exactly in + 1); nonce / ct / tag: Uint8Array
 //   core.historyDecrypt({ store, id, nonce, ct, tag }) -> { plaintext: Uint8Array }
@@ -57,8 +57,12 @@ export const STATE_ID = 'state', COUNTER_ID = 'counter';
 export const NONCE_LEN = 12, TAG_LEN = 16;
 // SP 800-38D §8.3: at most 2^32 random-nonce invocations per key.
 export const MAX_INVOCATIONS = 2n ** 32n;
-// The core seals at most this many plaintext bytes per record (nc_wasm.c NC_HIST_PT_MAX).
-export const PLAINTEXT_MAX = 65536;
+// The core seals at most this many plaintext bytes per record (nc_wasm.c
+// NC_HIST_PT_MAX). 64 KiB until web 0.1.112: the one 'state' record (every
+// contact's entries in one record, ~1 KB per contact) outgrew it at about 60
+// contacts and every save failed (BUGS W-15). Splitting the state record is
+// package P7 (docs/plans/2026-10-12-connect-core-migration-plan.md).
+export const PLAINTEXT_MAX = 1048576;
 const U64 = /^(0|[1-9]\d{0,19})$/;
 
 function bytesToHex(bytes) {
