@@ -390,11 +390,9 @@ int main(void) {
         CHECK_EQ(nodus_validator_v2_get(&w, vid_old, row), 0);
         CHECK_EQ(row->owner_fp[0], 0xC1);
         CHECK_EQ(row->rec.status, DNAC_VALIDATOR_UNSTAKED);
-        /* ... while a read keyed by the pubkey (the pre-fix arm) cannot
-         * answer: two rows is a fault, which failed the whole list. */
-        uint8_t pk[DNAC_PUBKEY_SIZE];
-        memset(pk, 0x66, sizeof(pk));
-        CHECK_EQ(nodus_validator_v2_get_by_pubkey(&w, pk, row), -1);
+        /* (the read keyed by the pubkey — the pre-fix arm, which faulted
+         * on two rows and failed the whole list — is deleted:
+         * nodus_validator_v2_get_by_pubkey had no production caller) */
         free(row);
         free(keys);
     }

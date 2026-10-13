@@ -887,6 +887,11 @@ typedef struct {
     uint16_t commission_bps;
     uint8_t  status;             /* dnac_validator_status_t */
     char     address[256];       /* Empty string if unknown. */
+    /** The seat's VOTING power as the engine counts it ("power"; capped
+     *  under ruleset 2 — HF-6). Valid only when has_power is 1; an older
+     *  node does not send it (has_power 0, power 0). */
+    uint64_t power;
+    uint8_t  has_power;
 } nodus_dnac_committee_entry_t;
 
 /** Committee query result.

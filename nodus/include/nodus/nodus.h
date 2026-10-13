@@ -1248,6 +1248,15 @@ void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *resul
 int nodus_client_dnac_committee(nodus_client_t *client,
                                   nodus_dnac_committee_result_t *result_out);
 
+/** Its raw-reply decoder, exported for tests (no network). Lenient as
+ *  before (a key of the wrong type is ignored, unknown keys skipped,
+ *  entries past the struct's capacity dropped); a repeated top-level key
+ *  is refused. Each entry's "power" sets power + has_power = 1; an entry
+ *  without it (an older node) decodes with has_power = 0, power = 0.
+ *  @return 0 / -1 malformed (result zeroed). */
+int nodus_dnac_committee_decode(const uint8_t *raw, size_t raw_len,
+                                nodus_dnac_committee_result_t *result_out);
+
 /* ── Governance approvals collected by the proposer's OWN node ────────
  * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)
  *

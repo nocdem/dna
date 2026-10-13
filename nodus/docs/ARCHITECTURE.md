@@ -6815,8 +6815,9 @@ this sub-slice).
 `nodus_v2_validator_row_t` (`nodus_witness_validator.h`) = `dnac_validator_record_t` + `validator_id`
 + `owner_fp` + `pending_consensus_pubkey` + `consensus_key_effective_epoch` (witness-local — the
 client header `dnac/include/dnac/validator.h` is not extended). `nodus_validator_v2_get`,
-`nodus_validator_v2_get_by_pubkey` (a second row with the pubkey is a fault; no production caller
-since slice 5c),
+(`nodus_validator_v2_get_by_pubkey` — the read by consensus pubkey — had no production caller
+since slice 5c and is DELETED in the HF-6 red-team round 1 close-out; every reader resolves by
+validator_id),
 `nodus_validator_v2_update` (both tables, inside the caller's transaction; validator_id, consensus
 pubkey and owner_fp are immutable and checked; the single "no pending key" encoding is enforced),
 `nodus_validator_v2_bonded_tenured` (the gen-4 arm: the v1 filters and pubkey ASC order, each
@@ -7375,8 +7376,8 @@ UNSTAKED row may share it with a later STAKE of the same key):
 
 The ruleset-2 refusal is removed; a ruleset-2 governing snapshot paid below generation 4 is a
 broken invariant (-2). Attendance stays keyed by the entry pubkey; shares by counted power over
-Σcounted, inner split on raw amounts (5b, K2). `nodus_validator_v2_get_by_pubkey` has no production
-caller after this (only tests) — not removed here (outside 5c's files).
+Σcounted, inner split on raw amounts (5b, K2). `nodus_validator_v2_get_by_pubkey` had no production
+caller after this (only tests); it was deleted in the HF-6 red-team round 1 close-out.
 
 **5d blocker found in 5c — CLOSED in slice 5d** (phase 0a now hashes the governing snapshot with
 `dna_vset_hash_ex(…, DNA_VSET_RULESET_TOPN_V2, …)`; see "HF-6 slice 5d"). The 5c tests never let a
@@ -7729,13 +7730,16 @@ voter's attendance row deleted at U+E after that epoch's settlement and digest c
 **The p2p pending set** (`bonded_add_pending`, `nodus_witness_p2p.c`, called by
 `nodus_witness_p2p_refresh_bonded` between the validators read and the two committee reads, before the
 sort). One ordered statement: `SELECT r.pending_consensus_pubkey FROM v2_validator_roles r JOIN
-validators v ON v.pubkey_hash = r.validator_id WHERE v.status IN (ACTIVE, ELIGIBLE) AND
-r.pending_consensus_pubkey != zeroblob(2592) ORDER BY r.validator_id`. From the ROTATE's commit on, the
+validators v ON v.pubkey_hash = r.validator_id WHERE r.pending_consensus_pubkey != zeroblob(2592)
+ORDER BY r.validator_id` (no status filter since red-team round 1, Z-31). From the ROTATE's commit on, the
 node that will sign under the pending key from U + 2 is bonded: its connections bypass the inbound cap,
 it is dialed without being abandoned, its signed ADDR record is verified against that key
 (`h_bonded_pubkey`) and an unsigned one is refused. Below generation 4 the roles table is empty — no
-change. A RETIRING / AUTO_RETIRED / UNSTAKED row's pending key is not added. At the swap (U) the key
-becomes the row's own and stays bonded through the validators read. A failure of the statement is
+change. The status is not read: a row that UNSTAKEs after its rotation was accepted (RETIRING, or
+AUTO_RETIRED by Rule N) keeps the pending key and the swap at U seats it under the new key regardless
+of status, so its new node stays bonded; an UNSTAKED row carries no pending key (the graduation zeroes
+it). At the swap (U) the key becomes the row's own and stays bonded through the validators read while
+the row is ACTIVE / ELIGIBLE, and through the committee reads while a snapshot seats it. A failure of the statement is
 logged and the set is built from the other three sources (the validators read's rule). Node-local: the
 set decides connections only. The inbound job queue (`inbound_depth`) follows the listener limit,
 which grows by the pending keys (`cmt_p2p_transport_max_incoming` = cap + unconditional + bonded).
@@ -9835,46 +9839,32 @@ peers and form the BFT consensus group for DNAC transaction processing.
 
 ### `witness`
 
-Shows the current witness roster and BFT consensus status by querying the DHT `"nodus:pk"` registry.
+Shows the committee that governs the NEXT block (tip + 1), as the connected node's chain states it,
+over the `dnac_committee_query` RPC (`nodus-cli.c` `cmd_witness`; server
+`nodus_witness_handlers.c` `handle_dnac_committee_query`). Read-only. (The DHT `"nodus:pk"` roster this
+command used to read is deleted — P2P-PORT F6.)
 
 ```bash
 nodus-cli -s <server_ip> witness
 ```
 
-**Output for each witness:**
-- `node_id` — first 32 bytes of SHA3-512(pubkey), hex
-- `address` — IP:port (TCP 4002 inter-node)
-- `sig` — VALID/INVALID (Dilithium5 signature on DHT value)
-- `seq` — sequence number (monotonic, used for value replacement)
-- `expires` — seconds until DHT entry expires (re-published every 10 minutes)
+**RPC entry fields** (`"r".committee[]`, one map per seat, resolution order): `pk` (2592-byte key),
+`stake` (the ranked total), `comm` (commission bps), `status` (validator status — at key generation 4
+read by the seat's validator_id, Z-30a), `addr` (the seat's signed 4004 address, or empty), and —
+since the HF-6 red-team round 1 close-out — `power`: the seat's VOTING power as the engine counts it
+(`nodus_committee_member_t.power`: ruleset 1 `total / 10^8`, ruleset 2 the counted, capped power,
+`nodus_witness_vset_powers`). An older node sends no `power`; the client decoder
+(`nodus_dnac_committee_decode`) then reports `has_power = 0`.
 
-**BFT summary:**
-- `Valid witnesses` — total nodes with valid, non-expired DHT entries
-- `Server index` — index of the connected server in the sorted roster
-- `Consensus` — ACTIVE (>= 5 witnesses) or DISABLED
-- `f_tolerance` — max faulty nodes tolerated: (n-1)/3
-- `Quorum` — votes needed: 2f+1
+**Output for each seat:** `fingerprint` (first 16 bytes of SHA3-512(pubkey), hex), `p2p id`, `address`,
+`status`, `stake`, `commission`, and `power` when the node sent it.
 
-**Example:**
-```
-Witness Roster (from DHT "nodus:pk")
-=====================================
-Total entries: 6
-
-[0] (CONNECTED)
-    node_id:  03499d1fae35f9e9...
-    address:  154.38.182.161:4002
-    sig:      VALID
-    seq:      1773464845
-    expires:  553s from now
-...
-─────────────────────────────────
-Valid witnesses: 6
-Server index:    0
-Consensus:       ACTIVE
-f_tolerance:     1
-Quorum:          3
-```
+**Summary:** `Committee size`; `Quorum (seats)` — `dna_bft_quorum(n)`, the governance approval rule
+below the HF-2 height; and one power line:
+- every seat carries `power` → `Voting power: Σ (need > floor(2Σ/3))` — the consensus count (capped
+  per validator from HF-6) and the same integer > 2/3 rule the approval selection uses;
+- otherwise (an older node) → `Stake power:` the UNCAPPED sum of `floor(stake / 10^8)`, with no
+  threshold (an uncapped threshold would be wrong after HF-6, Z-30b).
 
 ### `addr-history`
 

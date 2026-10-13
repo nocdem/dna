@@ -1615,7 +1615,10 @@ consent and key uniqueness — it promises no date.
 2. **Start it and let it catch up BEFORE the rotation.** It joins as a non-validator (by the
    genesis pin of the network file, §1.5 "Joining a node"), block-syncs, and must be at the fleet's
    tip and connected to the validators well before U + 2 — from the ROTATE's commit on, the pending
-   key already counts as bonded for 4004 peering (design §3; HF-6 6e). Check: its log shows
+   key already counts as bonded for 4004 peering (design §3; HF-6 6e), whatever the validator's
+   status: it stays bonded even if the validator unstakes after the rotation was accepted (RETIRING /
+   AUTO_RETIRED — the switch at U still seats the new key), until the switch or the graduation
+   clears it. Check: its log shows
    `cometbft lane LIVE` and its tip equals the fleet's.
 3. **The new node consents** (its own key signs; run where its identity is):
    ```bash

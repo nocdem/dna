@@ -5576,13 +5576,20 @@ int nodus_client_dnac_committee(nodus_client_t *client,
         int rc = resp->error_code; free_pending(client, req); return rc;
     }
 
+    int drc = nodus_dnac_committee_decode(req->raw_response,
+                                          req->raw_response_len, result_out);
+    free_pending(client, req);
+    return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
+}
+
+int nodus_dnac_committee_decode(const uint8_t *raw, size_t raw_len,
+                                nodus_dnac_committee_result_t *result_out) {
+    if (!raw || !result_out) return -1;
+    memset(result_out, 0, sizeof(*result_out));
+
     cbor_decoder_t dec;
     size_t mc;
-    if (find_response_map(req->raw_response, req->raw_response_len,
-                           &dec, &mc) != 0) {
-        free_pending(client, req);
-        return NODUS_ERR_PROTOCOL_ERROR;
-    }
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
 
     /* P0-B (2026-09-28): every response key once. The entry writes are
      * already bounded by the fixed entries[] capacity below. */
@@ -5594,8 +5601,7 @@ int nodus_client_dnac_committee(nodus_client_t *client,
         if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
             QGP_LOG_WARN(LOG_TAG, "dnac_committee: repeated key in response — refused");
             memset(result_out, 0, sizeof(*result_out));
-            free_pending(client, req);
-            return NODUS_ERR_PROTOCOL_ERROR;
+            return -1;
         }
 
         if (KEY_EQ(key, "block_height")) {
@@ -5645,6 +5651,14 @@ int nodus_client_dnac_committee(nodus_client_t *client,
                             memcpy(e->address, v.tstr.ptr, cl);
                             e->address[cl] = '\0';
                         }
+                    } else if (KEY_EQ(ek, "power")) {
+                        /* HF-6 red-team round 1 close-out; an older node
+                         * omits it (has_power stays 0) */
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT) {
+                            e->power = v.uint_val;
+                            e->has_power = 1;
+                        }
                     } else {
                         cbor_decode_skip(&dec);
                     }
@@ -5656,7 +5670,6 @@ int nodus_client_dnac_committee(nodus_client_t *client,
         }
     }
 
-    free_pending(client, req);
     return 0;
 }
 
