@@ -12,9 +12,12 @@
 
 #include "witness/nodus_witness_vset.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_runtime.h"   /* HF-6 5d: NODUS_RT_GEN_*  */
 #include "nodus/nodus_chain_config.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT        */
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
+#include "dnac/power_cap.h"                 /* HF-6 5b: the water-fill  */
 #include "crypto/utils/qgp_log.h"
 
 #include <sqlite3.h>
@@ -33,6 +36,52 @@ _Static_assert(DNA_VSET_PUBKEY_LEN == DNAC_PUBKEY_SIZE,
                "snapshot pubkey width != validator pubkey width");
 _Static_assert(DNA_VSET_HASH_LEN == DNA_V2_ROOT_LEN,
                "snapshot hash width != V2 root width");
+/* HF-6 5b: the compiled POWER_CAP_BPS default lies in the K5 range the
+ * cap accepts (design rev 6 §5, §8) — a default outside it would make
+ * every ruleset-2 power computation refuse. */
+_Static_assert(DNAC_HF6_POWER_CAP_BPS_DEFAULT >= DNA_POWER_CAP_BPS_MIN &&
+               DNAC_HF6_POWER_CAP_BPS_DEFAULT <= DNA_POWER_CAP_BPS_MAX,
+               "DNAC_HF6_POWER_CAP_BPS_DEFAULT outside [500, 3000]");
+/* HF-6 slice 8a: param 20's vote range (dnac.h, the client mirror's and
+ * the scalar rule's pair) IS the water-fill's own legal range, so a legal
+ * vote can never make dna_power_cap_counted refuse. */
+_Static_assert(DNAC_CFG_MIN_POWER_CAP_BPS == DNA_POWER_CAP_BPS_MIN &&
+               DNAC_CFG_MAX_POWER_CAP_BPS == DNA_POWER_CAP_BPS_MAX,
+               "param 20's range drifted from power_cap.h");
+/* HF-6 slice 8a (plan §1.7): the frozen-ratio premise. A param-20 row
+ * that governs snapshot(X) has effective <= X and was committed at
+ * c <= effective - grace; with grace >= DNAC_EPOCH_LENGTH that is at or
+ * before boundary X - E, whose items run before that boundary builds
+ * snapshot(X) — so the builder and every later consumer of snapshot(X)
+ * (the Comet diffs, Rule N, the distribution, the storage settlement)
+ * read ONE ratio for it. A grace below E would let a row land between the
+ * build and a consumption. */
+_Static_assert(DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS >= DNAC_EPOCH_LENGTH,
+               "POWER_CAP_BPS's grace must cover an epoch (frozen ratio)");
+/* The snapshot's validator_id is the 64-byte id the cap tie-breaks on. */
+_Static_assert(DNA_VSET_VALIDATOR_ID_LEN == 64,
+               "snapshot validator_id width != power-cap id width");
+
+/* ── HF-6 slice 5c: BOTH snapshot versions, for the chain's life ────────
+ *
+ * Design rev 6 §6.5 ("Her okuyucu zincir ömrü boyunca iki sürümü de kabul
+ * eder. v1 çıktıları bayt bayt değişmez"); plan tasks/hf6-slice5-plan.md
+ * §0 fact 2, §2 "5c". Every codec call in this file is the `_ex` family
+ * at max_ruleset = DNA_VSET_RULESET_TOPN_V2 with the ruleset-2 length
+ * ceiling as the outer cap; the layout, the hash tag and the per-ruleset
+ * length ceiling are chosen by the blob's / snapshot's OWN header
+ * (shared/dnac/vset_wire.c dna_vset_hash_bytes_ex: a ruleset-1 header
+ * hashes under "NDS.VSET.v1" and is refused above the ruleset-1 ceiling,
+ * exactly the pre-5c bytes). A superset of the old acceptance for every
+ * well-formed ruleset-1 row; the one input it now refuses on insert — a
+ * blob shorter than a header or naming ruleset 0 / >= 3, which the
+ * pre-5c (max_ruleset 1) bytes-level hash accepted without reading a
+ * header — is a row the pre-5c decode already refused on every read.
+ * No ruleset-1-only (legacy) codec entry point remains in this file.
+ * Which ruleset is BUILT is the builder's (vset_build_snapshot); this
+ * file stores and reads both. */
+#define VSET_MAX_RULESET  DNA_VSET_RULESET_TOPN_V2
+#define VSET_MAX_ENC_LEN  DNA_VSET_MAX_ENC_LEN_V2
 
 /* ── Insert ─────────────────────────────────────────────────────────── */
 
@@ -42,12 +91,13 @@ int nodus_witness_vset_insert(nodus_witness_t *w,
                               const uint8_t hash64[DNA_VSET_HASH_LEN],
                               uint64_t created_at_height) {
     if (!w || !w->db || !blob || !hash64) return -1;
-    if (blob_len == 0 || blob_len > DNA_VSET_MAX_ENC_LEN) return -1;
+    if (blob_len == 0 || blob_len > VSET_MAX_ENC_LEN) return -1;
 
     /* Never store a blob whose claimed hash is not its hash: that would
      * seed the table with a row every later read must reject. */
     uint8_t derived[DNA_VSET_HASH_LEN];
-    if (dna_vset_hash_bytes(blob, blob_len, derived) != 0) {
+    if (dna_vset_hash_bytes_ex(blob, blob_len, VSET_MAX_RULESET,
+                               derived) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: snapshot hash derivation failed",
                       (unsigned long long)epoch_start);
         return -1;
@@ -190,7 +240,7 @@ int nodus_witness_vset_get(nodus_witness_t *w,
 
     if (!st_hash || st_hash_len != DNA_VSET_HASH_LEN ||
         !st_blob || st_blob_len <= 0 ||
-        (size_t)st_blob_len > DNA_VSET_MAX_ENC_LEN) {
+        (size_t)st_blob_len > VSET_MAX_ENC_LEN) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: malformed snapshot row "
                       "(hash %d B, blob %d B)",
                       (unsigned long long)epoch_start, st_hash_len,
@@ -199,10 +249,12 @@ int nodus_witness_vset_get(nodus_witness_t *w,
         return -1;
     }
 
-    /* Integrity BEFORE trust: re-derive the hash over the stored bytes. */
+    /* Integrity BEFORE trust: re-derive the hash over the stored bytes
+     * (the tag the stored header names — a pre-5c ruleset-1 row
+     * re-derives exactly the hash it was stored under). */
     uint8_t derived[DNA_VSET_HASH_LEN];
-    if (dna_vset_hash_bytes((const uint8_t *)st_blob, (size_t)st_blob_len,
-                            derived) != 0 ||
+    if (dna_vset_hash_bytes_ex((const uint8_t *)st_blob, (size_t)st_blob_len,
+                               VSET_MAX_RULESET, derived) != 0 ||
         memcmp(derived, st_hash, DNA_VSET_HASH_LEN) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: stored snapshot blob does not "
                       "match its stored hash — corruption",
@@ -212,8 +264,8 @@ int nodus_witness_vset_get(nodus_witness_t *w,
     }
 
     dna_vset_snapshot_t *snap = NULL;
-    if (dna_vset_decode((const uint8_t *)st_blob, (size_t)st_blob_len,
-                        &snap) != 0) {
+    if (dna_vset_decode_ex((const uint8_t *)st_blob, (size_t)st_blob_len,
+                           VSET_MAX_RULESET, &snap) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: stored snapshot failed to decode",
                       (unsigned long long)epoch_start);
         sqlite3_finalize(st);
@@ -315,12 +367,56 @@ int nodus_witness_vset_root(nodus_witness_t *w,
 
 /* ── Builder ────────────────────────────────────────────────────────── */
 
+int nodus_witness_vset_entry_from_member(const nodus_committee_member_t *m,
+                                         uint32_t ruleset,
+                                         dna_vset_entry_t *e) {
+    if (!m || !e) return -1;
+    if (ruleset != DNA_VSET_RULESET_TOPN_V1 &&
+        ruleset != DNA_VSET_RULESET_TOPN_V2)
+        return -1;
+    /* Shipped derivation, reused: SHA3-512(pubkey)[0..31]
+     * (nodus_witness_chain_config.c:498) — under ruleset 2 the codec
+     * recomputes and enforces the same value (vset_wire.c vset_check). */
+    if (nodus_chain_config_derive_witness_id(m->pubkey, e->voter_id) != 0)
+        return -1;
+    memcpy(e->pubkey, m->pubkey, DNA_VSET_PUBKEY_LEN);
+    e->total_stake    = m->total_stake;
+    e->self_bond      = m->self_stake;
+    e->commission_bps = m->commission_bps;
+    if (ruleset == DNA_VSET_RULESET_TOPN_V2) {
+        /* HF-6 slice 5c (design rev 6 §6.5; ORCHESTRATOR decision D6):
+         * the member's ids, set by emit_member from its v2 row at key
+         * generation >= NODUS_RT_GEN_STORAGE. A zero id (a member emitted
+         * below generation 4) is not repaired here — the v2 encoder
+         * refuses an all-zero validator_id / owner_fp. */
+        memcpy(e->validator_id, m->validator_id, DNA_VSET_VALIDATOR_ID_LEN);
+        memcpy(e->owner_fp, m->owner_fp, DNA_VSET_OWNER_FP_LEN);
+    } else {
+        /* Ruleset 1 has no slot for them (the v1 encoder refuses a
+         * nonzero byte) — whatever the member carries. */
+        memset(e->validator_id, 0, DNA_VSET_VALIDATOR_ID_LEN);
+        memset(e->owner_fp, 0, DNA_VSET_OWNER_FP_LEN);
+    }
+    return 0;
+}
+
+/* (The HF-6 slice 6d rotation pass of the freeze — the khan-A3 budget
+ * walk and the khan-A7 cumulative carry — was deleted with ROTATE: khan
+ * decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1.
+ * No row holds a pending key, so a snapshot's entries carry the rows'
+ * own, immutable keys.) */
+
 /* The ONE selection core behind both public builders —
  * nodus_witness_vset_build_for_epoch (every stored snapshot: genesis and
  * commit_next) and nodus_witness_vset_preview_next (tokenomics-v3 P1
  * round 6, Rule N's weight floor). Kept as one function so the snapshot
  * Rule N judges and the snapshot commit_next stores can never be built by
  * two different pieces of selection logic.
+ *
+ * HF-6 slice 5d: `key_gen` (the caller's resolved key generation) is
+ * handed to the committee core AND decides the selection_ruleset here,
+ * so the candidates, the tiebreak, the members' ids and the layout they
+ * are written in are one value's consequences (ORCHESTRATOR D4 (i)).
  *
  * Unlike the public build_for_epoch, this core tells the two "no
  * snapshot" outcomes apart (FAULT vs VERDICT — a DB failure is never a
@@ -330,14 +426,18 @@ int nodus_witness_vset_root(nodus_witness_t *w,
  *      state (no bonded, tenured validator), *snap_out untouched;
  *  -1  fault (bad args, allocation, the committee compute failed, a
  *      count above max_active, a witness_id derivation failure),
- *      *snap_out untouched. */
+ *      *snap_out untouched.
+ * (The HF-6 6d rotation pass that ran here at generation 4 was deleted
+ * with ROTATE — khan decision 2026-10-13-kurultay-18-summary.md item 1;
+ * every entry carries its row's own key, so the generation-4 bytes are
+ * the pre-6d builder's bytes.) */
 static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
-                               int max_active,
+                               int max_active, uint32_t key_gen,
                                dna_vset_snapshot_t **snap_out) {
     if (!w || !w->db || !snap_out) return -1;
     if (max_active < 1 || max_active > DNA_MAX_ACTIVE_VALIDATORS) return -1;
 
-    /* 128 members are ~335 KB — heap, never the stack. */
+    /* 128 members are ~344 KB — heap, never the stack. */
     nodus_committee_member_t *members =
         calloc((size_t)max_active, sizeof(*members));
     if (!members) return -1;
@@ -345,7 +445,7 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
     int count = 0;
     /* DIRECT compute (not the cached get_for_block): the cache carries no
      * self_stake, and self_bond must be the real bond. See the header. */
-    if (nodus_committee_compute_for_epoch(w, epoch_start, members,
+    if (nodus_committee_compute_for_epoch(w, epoch_start, key_gen, members,
                                           max_active, &count) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "epoch %llu: committee compute failed",
                       (unsigned long long)epoch_start);
@@ -370,26 +470,27 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
     if (!snap) { free(members); return -1; }
 
     snap->epoch             = epoch_start;
-    snap->selection_ruleset = DNA_VSET_RULESET_TOPN_V1;
+    /* HF-6 slice 5d — THE SWITCH (plan tasks/hf6-slice5-plan.md §1
+     * "Rule"; design rev 6 §7.7, §8): ruleset 2 from key generation
+     * NODUS_RT_GEN_STORAGE, ruleset 1 below it. The members were emitted
+     * by the core at the SAME `key_gen`, so under ruleset 2 every one
+     * carries its row's validator_id / owner_fp (emit_member), and the
+     * entry fill below writes the layout this value names. */
+    snap->selection_ruleset = key_gen >= NODUS_RT_GEN_STORAGE
+                                  ? DNA_VSET_RULESET_TOPN_V2
+                                  : DNA_VSET_RULESET_TOPN_V1;
     memset(snap->sortition_seed, 0, DNA_VSET_SEED_LEN);  /* reserved slot */
 
     for (int i = 0; i < count; i++) {
-        dna_vset_entry_t *e = &snap->entries[i];
-        /* Shipped derivation, reused: SHA3-512(pubkey)[0..31]
-         * (nodus_witness_chain_config.c:498). */
-        if (nodus_chain_config_derive_witness_id(members[i].pubkey,
-                                                 e->voter_id) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: witness_id derivation "
-                          "failed for member %d",
-                          (unsigned long long)epoch_start, i);
+        if (nodus_witness_vset_entry_from_member(&members[i],
+                                                 snap->selection_ruleset,
+                                                 &snap->entries[i]) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "epoch %llu: entry fill failed for "
+                          "member %d", (unsigned long long)epoch_start, i);
             dna_vset_free(&snap);
             free(members);
             return -1;
         }
-        memcpy(e->pubkey, members[i].pubkey, DNA_VSET_PUBKEY_LEN);
-        e->total_stake    = members[i].total_stake;
-        e->self_bond      = members[i].self_stake;
-        e->commission_bps = members[i].commission_bps;
     }
     free(members);
 
@@ -400,6 +501,7 @@ static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
 int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
                                        uint64_t epoch_start,
                                        int max_active,
+                                       uint32_t key_gen,
                                        dna_vset_snapshot_t **snapshot_out,
                                        uint8_t **blob_out,
                                        size_t *blob_len_out,
@@ -409,7 +511,7 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
     if (blob_out && !blob_len_out) return -1;
 
     dna_vset_snapshot_t *snap = NULL;
-    int brc = vset_build_snapshot(w, epoch_start, max_active, &snap);
+    int brc = vset_build_snapshot(w, epoch_start, max_active, key_gen, &snap);
     if (brc == 1) {
         /* A chain with no eligible validators has NO snapshot. An empty
          * set would encode as active_count 0, which the codec rejects —
@@ -424,21 +526,24 @@ int nodus_witness_vset_build_for_epoch(nodus_witness_t *w,
     if (brc != 0 || !snap) return -1;
 
     /* Encode once; every output is derived from the SAME bytes so the
-     * caller can never hold a hash that disagrees with its blob. */
-    size_t need = dna_vset_encoded_len(snap);
+     * caller can never hold a hash that disagrees with its blob. The
+     * layout and the hash tag follow the snapshot's own ruleset (HF-6
+     * 5c — VSET_MAX_RULESET above). */
+    size_t need = dna_vset_encoded_len_ex(snap, VSET_MAX_RULESET);
     if (need == 0) { dna_vset_free(&snap); return -1; }
 
     uint8_t *blob = malloc(need);
     if (!blob) { dna_vset_free(&snap); return -1; }
     size_t written = 0;
-    if (dna_vset_encode(snap, blob, need, &written) != 0 || written != need) {
+    if (dna_vset_encode_ex(snap, VSET_MAX_RULESET, blob, need,
+                           &written) != 0 || written != need) {
         free(blob);
         dna_vset_free(&snap);
         return -1;
     }
 
     uint8_t hash[DNA_VSET_HASH_LEN];
-    if (dna_vset_hash_bytes(blob, written, hash) != 0) {
+    if (dna_vset_hash_bytes_ex(blob, written, VSET_MAX_RULESET, hash) != 0) {
         free(blob);
         dna_vset_free(&snap);
         return -1;
@@ -514,13 +619,15 @@ static int vset_target_for_epoch(nodus_witness_t *w, uint64_t e_start,
  *
  * @param created_at_height provenance column only — never hashed, never
  *        read back by consensus (see WITNESS_DB_SCHEMA).
+ * @param key_gen the key generation the snapshot is built at (HF-6 5d).
  * @return 0 stored or idempotent re-apply, -1 on any fault INCLUDING the
  *         -2 conflict from _insert (two different validator sets claiming
  *         one epoch is a validator_set_root divergence; the block must
  *         not commit). */
 static int vset_build_and_store(nodus_witness_t *w,
                                   uint64_t e_start,
-                                  uint64_t created_at_height) {
+                                  uint64_t created_at_height,
+                                  uint32_t key_gen) {
     int target = 0;
     if (vset_target_for_epoch(w, e_start, &target) != 0) return -1;
 
@@ -528,8 +635,9 @@ static int vset_build_and_store(nodus_witness_t *w,
     size_t   blob_len = 0;
     uint8_t  hash[DNA_VSET_HASH_LEN];
 
-    if (nodus_witness_vset_build_for_epoch(w, e_start, target, NULL,
-                                            &blob, &blob_len, hash) != 0) {
+    if (nodus_witness_vset_build_for_epoch(w, e_start, target, key_gen,
+                                            NULL, &blob, &blob_len,
+                                            hash) != 0) {
         /* Includes "committee is empty". On a real chain that is a fault,
          * not an empty set — an epoch with nobody allowed to vote is not
          * a state this ledger can represent. */
@@ -652,10 +760,22 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
         }
     }
     {
+        /* HF-6 slice 6c (design 2026-10-03-hf5-validator-owner-stake rev
+         * 6 §3; plan tasks/hf6-slice6-plan.md §1.5, B5): a ruleset-2
+         * member is matched by its validator_id (validators.pubkey_hash,
+         * the v2 row's identity). Written for ROTATE; the khan removed it
+         * (decision 2026-10-13-kurultay-18-summary.md item 1), so a row's
+         * key never changes and the id match flips exactly the rows the
+         * pubkey match would. A ruleset-1 snapshot keeps the pubkey match,
+         * byte-identical. */
+        const int by_id =
+            snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2;
         sqlite3_stmt *st = NULL;
         int rc = sqlite3_prepare_v2(w->db,
-            "UPDATE validators SET status = ? "
-            "WHERE pubkey = ? AND status = ?", -1, &st, NULL);
+            by_id ? "UPDATE validators SET status = ? "
+                    "WHERE pubkey_hash = ? AND status = ?"
+                  : "UPDATE validators SET status = ? "
+                    "WHERE pubkey = ? AND status = ?", -1, &st, NULL);
         if (rc != SQLITE_OK) {
             QGP_LOG_ERROR(LOG_TAG, "epoch %llu: flip-to-active prepare "
                           "failed: %s", (unsigned long long)boundary_height,
@@ -667,8 +787,12 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
             sqlite3_reset(st);
             sqlite3_clear_bindings(st);
             sqlite3_bind_int (st, 1, (int)DNAC_VALIDATOR_ACTIVE);
-            sqlite3_bind_blob(st, 2, snap->entries[i].pubkey,
-                              DNA_VSET_PUBKEY_LEN, SQLITE_STATIC);
+            if (by_id)
+                sqlite3_bind_blob(st, 2, snap->entries[i].validator_id,
+                                  DNA_VSET_VALIDATOR_ID_LEN, SQLITE_STATIC);
+            else
+                sqlite3_bind_blob(st, 2, snap->entries[i].pubkey,
+                                  DNA_VSET_PUBKEY_LEN, SQLITE_STATIC);
             sqlite3_bind_int (st, 3, (int)DNAC_VALIDATOR_ELIGIBLE);
             rc = sqlite3_step(st);
             if (rc != SQLITE_DONE) {
@@ -694,21 +818,24 @@ int nodus_witness_vset_apply_boundary_flips(nodus_witness_t *w,
 /* ── Next-epoch commitment ──────────────────────────────────────────── */
 
 int nodus_witness_vset_commit_next(nodus_witness_t *w,
-                                   uint64_t boundary_height) {
+                                   uint64_t boundary_height,
+                                   uint32_t key_gen) {
     if (!w || !w->db) return -1;
 
     /* The NEXT epoch's start height keys BOTH the target lookup and the
      * snapshot row. Rows in chain_config_history whose effective_block is
      * <= that height are already committed state at this point, so every
-     * node reads the same target. */
+     * node reads the same target. `key_gen` is the boundary's one read
+     * (HF-6 5d): it decides the ruleset of the row stored here. */
     uint64_t next_start = boundary_height + (uint64_t)DNAC_EPOCH_LENGTH;
-    return vset_build_and_store(w, next_start, boundary_height);
+    return vset_build_and_store(w, next_start, boundary_height, key_gen);
 }
 
 /* ── Next-epoch preview (tokenomics-v3 P1 round 6) ──────────────────── */
 
 int nodus_witness_vset_preview_next(nodus_witness_t *w,
                                     uint64_t boundary_height,
+                                    uint32_t key_gen,
                                     dna_vset_snapshot_t **snapshot_out) {
     if (!w || !w->db || !snapshot_out) return -1;
     if (boundary_height > UINT64_MAX - (uint64_t)DNAC_EPOCH_LENGTH) {
@@ -717,15 +844,16 @@ int nodus_witness_vset_preview_next(nodus_witness_t *w,
         return -1;
     }
 
-    /* EXACTLY commit_next's key, target lookup and builder core:
-     * next_start as above, vset_target_for_epoch(next_start) as
-     * vset_build_and_store does, and the same vset_build_snapshot that
-     * nodus_witness_vset_build_for_epoch wraps. Nothing is encoded,
-     * hashed or stored. */
+    /* EXACTLY commit_next's key, target lookup, key generation and
+     * builder core: next_start as above, vset_target_for_epoch(next_start)
+     * as vset_build_and_store does, the caller's `key_gen` (the same
+     * boundary read commit_next receives — HF-6 5d), and the same
+     * vset_build_snapshot that nodus_witness_vset_build_for_epoch wraps.
+     * Nothing is encoded, hashed or stored. */
     uint64_t next_start = boundary_height + (uint64_t)DNAC_EPOCH_LENGTH;
     int target = 0;
     if (vset_target_for_epoch(w, next_start, &target) != 0) return -1;
-    return vset_build_snapshot(w, next_start, target, snapshot_out);
+    return vset_build_snapshot(w, next_start, target, key_gen, snapshot_out);
 }
 
 /* ── Genesis seeding ────────────────────────────────────────────────── */
@@ -767,12 +895,124 @@ int nodus_witness_vset_commit_genesis(nodus_witness_t *w,
      * (nodus/tests/v2_genesis_fixture.h v2x_seed_inflation_off). Neither
      * writes DNAC_CFG_TARGET_ACTIVE_COUNT, the ONLY id
      * vset_target_for_epoch reads (:438-440), so the conclusion stands —
-     * but it now rests on the param, not on the table being empty. */
-    if (vset_build_and_store(w, 0ULL, block_height) != 0) return -1;
+     * but it now rests on the param, not on the table being empty.
+     *
+     * HF-6 slice 5d: both at NODUS_RT_GEN_1 — a chain born on this
+     * binary starts at generation 1 (design rev 6 §8), so the genesis
+     * snapshots are ruleset 1 (and the bootstrap path they take emits no
+     * ids a ruleset-2 entry would need). */
+    if (vset_build_and_store(w, 0ULL, block_height, NODUS_RT_GEN_1) != 0)
+        return -1;
     if (vset_build_and_store(w, (uint64_t)DNAC_EPOCH_LENGTH,
-                               block_height) != 0) return -1;
+                               block_height, NODUS_RT_GEN_1) != 0) return -1;
 
     QGP_LOG_INFO(LOG_TAG, "genesis: validator-set snapshots seeded for "
                  "epochs 0 and %d", (int)DNAC_EPOCH_LENGTH);
     return 0;
+}
+
+/* ── HF-6 slice 5b: the ratio seam and the ONE power helper ─────────── */
+
+int nodus_witness_power_cap_bps_for_epoch(nodus_witness_t *w,
+                                          uint64_t epoch_start,
+                                          uint32_t *ratio_out) {
+    if (!w || !ratio_out) return -1;
+    /* HF-6 slice 8a: chain_config param 20 at the snapshot's EPOCH START
+     * (the committee_target_for_epoch pattern, nodus_witness_committee.c),
+     * the compiled default with no row. A read fault is -1, never the
+     * default. A stored value outside [500, 3000] is this node's storage
+     * disagreeing with every writer (the scalar rule admits nothing
+     * else) — -1 too, checked on the u64 BEFORE the narrowing to
+     * uint32_t, so no out-of-range value can wrap into the range. */
+    uint64_t v = 0;
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_POWER_CAP_BPS,
+                                   epoch_start,
+                                   (uint64_t)DNAC_HF6_POWER_CAP_BPS_DEFAULT,
+                                   &v) < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: POWER_CAP_BPS is unreadable — "
+                      "refusing to derive voting power from a guessed "
+                      "ratio", (unsigned long long)epoch_start);
+        return -1;
+    }
+    if (v < (uint64_t)DNAC_CFG_MIN_POWER_CAP_BPS ||
+        v > (uint64_t)DNAC_CFG_MAX_POWER_CAP_BPS) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: POWER_CAP_BPS reads %llu, a "
+                      "value no committed row can hold — this node's "
+                      "chain_config storage is inconsistent",
+                      (unsigned long long)epoch_start,
+                      (unsigned long long)v);
+        return -1;
+    }
+    *ratio_out = (uint32_t)v;
+    return 0;
+}
+
+int nodus_witness_vset_powers(nodus_witness_t *w,
+                              const dna_vset_snapshot_t *snap,
+                              uint64_t out[]) {
+    if (!w || !snap || !out) return -1;
+    const uint16_t n = snap->active_count;
+    if (n > DNA_MAX_ACTIVE_VALIDATORS) return -1;
+    if (n > 0 && !snap->entries) return -1;
+
+    if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V1) {
+        /* Uncapped, the pre-slice-5 derivation byte for byte (zero
+         * allowed — each caller keeps its own zero rule). */
+        for (uint16_t i = 0; i < n; i++)
+            out[i] = snap->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+        return 0;
+    }
+    if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
+        QGP_LOG_ERROR(LOG_TAG, "powers: snapshot(%llu) carries ruleset %u — "
+                      "no power derivation for it",
+                      (unsigned long long)snap->epoch,
+                      (unsigned)snap->selection_ruleset);
+        return -1;
+    }
+
+    /* Ruleset 2: the water-fill cap over whole-coin powers at the ratio of
+     * the snapshot's own epoch start. */
+    uint32_t ratio = 0;
+    if (nodus_witness_power_cap_bps_for_epoch(w, snap->epoch, &ratio) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "powers: POWER_CAP_BPS for epoch %llu is "
+                      "unreadable", (unsigned long long)snap->epoch);
+        return -1;
+    }
+    if (n == 0) return -1;                /* the cap refuses an empty set */
+
+    /* The cap takes scalar arrays (design §5); the entries' ids are not
+     * contiguous, so copy them out. Heap: 128 × 64 B ids. */
+    uint64_t *p = calloc(n, sizeof(*p));
+    uint8_t (*ids)[DNA_VSET_VALIDATOR_ID_LEN] = calloc(n, sizeof(*ids));
+    uint64_t *counted = calloc(n, sizeof(*counted));
+    int ret = -1;
+    if (!p || !ids || !counted) goto done;
+    for (uint16_t i = 0; i < n; i++) {
+        p[i] = snap->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+        if (p[i] == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "powers: snapshot(%llu) ruleset-2 entry "
+                          "%u holds total_stake %llu — below one whole coin, "
+                          "a broken invariant", (unsigned long long)snap->epoch,
+                          (unsigned)i,
+                          (unsigned long long)snap->entries[i].total_stake);
+            goto done;
+        }
+        memcpy(ids[i], snap->entries[i].validator_id,
+               DNA_VSET_VALIDATOR_ID_LEN);
+    }
+    if (dna_power_cap_counted(p, (const uint8_t (*)[64])ids, n, ratio,
+                              counted) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "powers: the power cap refused snapshot(%llu) "
+                      "(n=%u, ratio %u bps)", (unsigned long long)snap->epoch,
+                      (unsigned)n, (unsigned)ratio);
+        goto done;
+    }
+    memcpy(out, counted, (size_t)n * sizeof(*counted));
+    ret = 0;
+
+done:
+    free(p);
+    free(ids);
+    free(counted);
+    return ret;
 }

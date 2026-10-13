@@ -24,8 +24,13 @@
  * each committed SYSTEM head also equals its runtime's recomputation).
  * Seven seeded validators with REAL keys (every block carries their
  * COMMIT votes), treasury pool 1 = 10^16, param 9 at 2, param 14
- * (EVM_ACTIVE) at 3, param 16 (the storage vote) at 4. KM is the one
- * storage-only (non-validator) key.
+ * (EVM_ACTIVE) at 3, param 18 (the generation-4 vote, D4) at 4. KM is the one
+ * storage-only (non-validator) key. Since HF-6 slice 6b-1 KM registers
+ * through the generation-4 STORAGE_REGISTER (7299 bytes, design rev 6
+ * §11.3) as its OWN owner — KM signs both legs and gives the op-3 node
+ * consent — so the registry row's owner column is KM's fingerprint, the
+ * same value the storage-reward-v1 payee carried: every assertion below
+ * reads as before.
  *
  *  empty_chain_then_first_member  (no pre-seeded segment)
  *   - EVERY boundary B = E .. 25E with nobody registered (the zero-member
@@ -118,7 +123,7 @@
  *  - The SYSTEM-head recomputation runs at boundaries and at blocks with
  *    an envelope, not at every idle block (the global-root twin compare
  *    does run at every block).
- *  - The GEN_STORAGE pins and the storage vote literal are the
+ *  - The GEN_STORAGE pins and the generation-4 vote D4 are the
  *    independent-oracle literals the runtime selfcheck re-derives at the
  *    seeded genesis; if they stop re-deriving, both cases FAIL at genesis.
  *  - Case 2's eight segments are PRE-SEEDED rows (published_height 1, a
@@ -178,6 +183,7 @@
 #include "dnac/ledger_ids.h"
 #include "dnac/ledger_roots_v2.h"
 #include "dnac/validator.h"
+#include "dnac/valbind_wire.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 
@@ -204,9 +210,9 @@ static int g_checks = 0;
 #define E_LEN    ((uint64_t)DNAC_EPOCH_LENGTH)
 #define P_LEN    ((uint64_t)DNA_V2_SEGMENT_BLOCKS)
 #define D2       ((uint64_t)DNAC_CFG_RULESET_GEN2_D2)
-#define DS       ((uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
+#define D4       ((uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D)
 #define FEE      ((uint64_t)DNAC_MIN_FEE_RAW)
-#define BOND     ((uint64_t)DNAC_STORAGE_STAKE_MIN)
+#define BOND     ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 #define POOL1    10000000000000000ULL          /* 10^16 raw (pool 1)     */
 #define RPOOL    10000000000000000ULL          /* 10^16 raw validator
                                                 * reward pool (genesis) */
@@ -215,13 +221,14 @@ static int g_checks = 0;
 #define MAX_SEGS 8u
 
 /* restated from nodus_witness_rt_native.c (static there) */
-#define STREG_LEN      (2592u + 8u + 64u)
+#define STREG_LEN      7299u   /* HF-6 6b-1: owner_fp ‖ node_pk ‖
+                                * consent_sig ‖ expiry ‖ bond (design §2) */
 #define REP_FIXED      78u
 
 #define H9   2u
 #define HE   3u       /* EVM_ACTIVE (param 14): GEN_STORAGE is built on the
                        * EVM generation (K10) */
-#define H14  4u       /* RULESET_GEN_STORAGE (param 16): the storage edge */
+#define H14  4u       /* RULESET_GEN_ROLES (param 18): the gen-4 edge */
 
 static void put64(uint8_t *p, uint64_t v) {
     for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
@@ -377,7 +384,7 @@ static int fx_open(fixture_t *fx, const char *tag, uint64_t n_segs) {
         cc_row(w, DNAC_CFG_RULESET_GEN2, D2, H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE, DS, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES, D4, H14, 13) != 0)
         return -1;
     uint64_t bonds = 0;
     for (int i = 0; i < N_VAL; i++) {
@@ -561,17 +568,40 @@ static uint32_t fund_call(uint8_t *dst, const uint8_t nul[64]) {
     return 66;
 }
 
-/* KM's 2-leg STORAGE_REGISTER envelope, really signed on both legs. */
+/* KM's 2-leg STORAGE_REGISTER envelope (HF-6 slice 6b-1, design rev 6
+ * §11.3: owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond), really signed
+ * on both legs. KM registers ITSELF: owner_fp = SHA3-512(KM's key) (kind
+ * 1, KM signs both legs and owns the coin) and KM's key gives the op-3
+ * node consent, against the engine's chain id — so the registry row's
+ * owner column is KM's own fingerprint, exactly the payee the storage-
+ * reward-v1 call carried, and every observation below is unchanged. */
 static int reg_env(nodus_witness_t *w, uint64_t height, uint8_t **out,
                    size_t *out_len) {
+    static const uint8_t zero64[64] = { 0 };
     static uint8_t call[STREG_LEN];
     static uint8_t fund[66];
     static uint8_t auth[2][AUTH_LEN];
     dna_domain_manifest_t sys, core;
     *out = NULL;
-    memcpy(call, g_k[KM].pk, PK_LEN);
-    put64(call + PK_LEN, BOND);
-    memcpy(call + PK_LEN + 8, g_k[KM].fp, 64);       /* payee = node_fp */
+    {
+        uint8_t chain32[DNA_CHAIN_ID_LEN], msg[DNA_VALBIND_MSG_LEN];
+        const uint64_t cexp = height + 10u;          /* within 720       */
+        size_t sl = 0, off = 0;
+        if (nodus_witness_v2_chain_id(w, chain32) != 0 ||
+            dna_valbind_consent_msg(msg, chain32,
+                                    DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                                    g_k[KM].fp, g_k[KM].pk, cexp) != 0)
+            return -1;
+        memcpy(call, g_k[KM].fp, 64);                off += 64;  /* owner */
+        memcpy(call + off, g_k[KM].pk, PK_LEN);      off += PK_LEN;
+        if (dna_valbind_consent_sign(call + off, &sl, msg, g_k[KM].sk) != 0
+            || sl != (size_t)DNA_VALBIND_SIG_LEN)
+            return -1;
+        off += DNA_VALBIND_SIG_LEN;
+        put64(call + off, cexp);                     off += 8;
+        put64(call + off, BOND);                     off += 8;
+        if (off != STREG_LEN) return -1;
+    }
     if (nodus_witness_domreg_get(w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL)
         != 0 ||
         nodus_witness_domreg_get(w, DNA_DOMAIN_CORE, NULL, &core, NULL) != 0)

@@ -1039,6 +1039,18 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
                                 nodus_dnac_fee_info_t *result_out);
 
 /**
+ * @brief The dnac_fee_info raw-reply decoder nodus_client_dnac_fee_info
+ *        uses, exported for tests (no network). Zeroes *result_out, then
+ *        fills each known key whose value is an unsigned integer
+ *        (base_fee, mempool, min_fee, gas_price, token_create_fee and —
+ *        HF-6 slice 8a — stake_min, storage_bond, power_cap_bps); unknown
+ *        keys are skipped, an absent key leaves its field 0.
+ * @return 0; -1 on NULL arguments or a reply the CBOR decoder cannot walk.
+ */
+int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
+                               nodus_dnac_fee_info_t *result_out);
+
+/**
  * Query UTXOs by owner fingerprint.
  * Caller must free result_out->entries when done.
  *
@@ -1236,6 +1248,15 @@ void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *resul
 int nodus_client_dnac_committee(nodus_client_t *client,
                                   nodus_dnac_committee_result_t *result_out);
 
+/** Its raw-reply decoder, exported for tests (no network). Lenient as
+ *  before (a key of the wrong type is ignored, unknown keys skipped,
+ *  entries past the struct's capacity dropped); a repeated top-level key
+ *  is refused. Each entry's "power" sets power + has_power = 1; an entry
+ *  without it (an older node) decodes with has_power = 0, power = 0.
+ *  @return 0 / -1 malformed (result zeroed). */
+int nodus_dnac_committee_decode(const uint8_t *raw, size_t raw_len,
+                                nodus_dnac_committee_result_t *result_out);
+
 /* ── Governance approvals collected by the proposer's OWN node ────────
  * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)
  *
@@ -1403,6 +1424,12 @@ int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
  *                   "ds" tstr128 unstake destination fp, "a" u64 amount,
  *                   "cm" u16 commission bps, "p" u8 param id,
  *                   "nv" u64 new value, "ef" u64 effective height}
+ *                  HF-6 generation 4 (sub-slice 3e, OPTIONAL — present
+ *                  exactly for a generation-4 STAKE-family record; this
+ *                  SDK's decoder skips them): "vid" tstr128 validator_id
+ *                  (the value "v" also carries under generation 4 — "v"
+ *                  names the validator's id there, not an address),
+ *                  "ow" tstr128 the validator's owner_fp (its address)
  * An error reply (NODUS_ERR_NOT_FOUND: not committed / not held;
  * NODUS_ERR_INTERNAL_ERROR: a store/decode fault on the node) is never a
  * partial page. */
@@ -1565,6 +1592,65 @@ int nodus_client_dnac_storage_status(nodus_client_t *client,
  *  @return 0 / -1 malformed (the rules above). */
 int nodus_dnac_storage_status_decode(const uint8_t *raw, size_t raw_len,
                                      nodus_dnac_storage_status_t *out);
+
+/* ── HF-6 slice 7a — dnac_storage_by_owner (design docs/plans/2026-10-03-
+ *    hf5-validator-owner-stake-design.md rev 6 §9 / §11) ──
+ *
+ * READ-ONLY, committed tables only: the storage registry rows an OWNER
+ * registered (v2_storage_nodes.payee_fp = owner_fp since HF-6 6b).
+ * Request "a": {"owner": tstr, exactly 128 lowercase hex}. Response "r":
+ *   "ch"    u64   the node's committed tip
+ *   "total" u64   the owner's rows, every status (ACTIVE / EXITING /
+ *                 RELEASED)
+ *   "nodes" array of the first min(total, NODUS_DNAC_STORAGE_SET_MAX)
+ *                 rows, node_fp strictly ASCENDING; each a map of "fp"
+ *                 tstr128 (the node_fp) plus exactly the keys
+ *                 dnac_storage_status answers for that node (above), all
+ *                 against ONE storage_set(H).
+ * The live rows are capped at NODUS_DNAC_STORAGE_SET_MAX on chain;
+ * RELEASED rows never vanish, so total may exceed the list — total >
+ * count means the list stops at the cap (no paging). An owner without
+ * rows answers total 0 and an empty list (not an error).
+ * Rules the decoder enforces, besides every per-node rule of
+ * nodus_dnac_storage_status_decode: "ch", "total", "nodes" each exactly
+ * once; |nodes| = min(total, SET_MAX); every entry carries "fp" (128
+ * lowercase hex), found = true, the reply's "ch", and the same "es" /
+ * "set" / "sc" as the first entry; fp strictly ascending; when the caller
+ * names the owner, every entry's "payee" equals it. An older node answers
+ * "unknown DNAC method". One node is trusted for the answer. */
+
+/** One node of a dnac_storage_by_owner answer. */
+typedef struct {
+    char                         node_fp[129];   /* "fp": 128 hex + NUL  */
+    nodus_dnac_storage_status_t  st;             /* its status answer    */
+} nodus_dnac_storage_node_t;
+
+/** A dnac_storage_by_owner answer. nodes is heap (count entries, NULL
+ *  when count is 0); free with nodus_dnac_storage_by_owner_free(). */
+typedef struct {
+    uint64_t                   committed_height; /* "ch"                 */
+    uint64_t                   total;            /* "total"              */
+    size_t                     count;            /* entries of nodes[]   */
+    nodus_dnac_storage_node_t *nodes;
+} nodus_dnac_storage_by_owner_t;
+
+/** dnac_storage_by_owner for `owner_hex` (128 lowercase hex). @return 0;
+ *  a NODUS_ERR_* the node answered (an older node: "unknown DNAC
+ *  method"); NODUS_ERR_PROTOCOL_ERROR for a reply the decoder refuses
+ *  (incl. an entry whose owner is not `owner_hex`); NODUS_ERR_TIMEOUT;
+ *  -1 on invalid args / transport failure. On success the caller frees
+ *  `out` with nodus_dnac_storage_by_owner_free(). */
+int nodus_client_dnac_storage_by_owner(nodus_client_t *client,
+                                       const char *owner_hex,
+                                       nodus_dnac_storage_by_owner_t *out);
+/** Its raw-reply decoder, exported for tests (no network). `owner_hex`
+ *  NULL skips the per-entry owner check. On -1 `out` is freed and zeroed.
+ *  @return 0 / -1 malformed (the rules above). */
+int nodus_dnac_storage_by_owner_decode(const uint8_t *raw, size_t raw_len,
+                                       const char *owner_hex,
+                                       nodus_dnac_storage_by_owner_t *out);
+/** Free a dnac_storage_by_owner answer (nodes) and zero it. NULL-safe. */
+void nodus_dnac_storage_by_owner_free(nodus_dnac_storage_by_owner_t *r);
 
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MIN      1024u
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MAX      (1024u * 1024u)
@@ -2002,6 +2088,19 @@ void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *res
  *                 tag ‖ M ‖ N ‖ N × pubkey, address = SHA3-512(it))
  *   dnac_msig_utxo:          "max" uint 1..NODUS_DNAC_MAX_UTXO_RESULTS
  *                            (optional; absent = 100)
+ *                            "nul" array of 1..NODUS_DNAC_MSIG_MAX_NULS
+ *                            bstr, each exactly 64 bytes, STRICTLY
+ *                            ascending (optional; the input check of
+ *                            nodus-cli `msig sign`, design §2 "ÖDEYİCİ
+ *                            BAĞLAMA" 2026-10-13). Given: the answer
+ *                            lists exactly those of the named coins that
+ *                            are unspent CORE coins whose owner is
+ *                            "owner" (any token), in "nul" order — a
+ *                            coin that is missing, spent or another
+ *                            owner's is simply absent — and "max" must be
+ *                            absent (both → PROTOCOL_ERROR). Not given:
+ *                            the page below, exactly as before (the web
+ *                            wallet's request).
  *   dnac_msig_addr_history:  "limit", "before", "bi", "bq" exactly as
  *                            dnac_addr_history above
  *   Each key at most once; a known key of the wrong type or out of
@@ -2017,7 +2116,14 @@ void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *res
  *     "utxos" (same per-entry keys and encoding, CORE-domain coins,
  *     ordered amount DESC then nullifier ASC), then one more key LAST:
  *     "trunc" bool  true = the owner holds more coins than were returned
- *                   (no paging yet: the page is the first "max")
+ *                   (no paging yet: the page is the first "max");
+ *                   always false for a "nul" request
+ *     and, ONLY for a "nul" request, one more key LAST:
+ *     "nul"   uint  the number of nullifiers the request named — the
+ *                   marker a client requires to know the list was honoured
+ *                   (a node without it skips the unknown "nul" argument and
+ *                   answers the page, which proves nothing about the named
+ *                   coins)
  *     "q" = "dnac_msig_utxo".
  *   dnac_msig_addr_history — EXACTLY dnac_addr_history's answer (same
  *     four keys, same entries, same node-local caveats: "enabled",
@@ -2036,6 +2142,14 @@ void nodus_client_free_addr_history_result(nodus_dnac_addr_history_result_t *res
  *  (DNA_MSIG_MAX_DESC_LEN, shared/dnac/msig_wire.h; the node
  *  _Static_asserts the equality). */
 #define NODUS_DNAC_MSIG_MAX_DESC_LEN  18162u
+
+/** The most nullifiers one dnac_msig_utxo "nul" request names: the chain's
+ *  per-leg input ceiling (15 — RTN_SPEND_MAX_IN, restated by the client
+ *  builders as NODUS_V2_SPEND_MAX_IN; the node _Static_asserts the
+ *  equality). Every funding leg a co-signer is asked to sign has at most
+ *  this many inputs, so one request always covers it, and the node's work
+ *  per request is bounded by it (one indexed lookup per nullifier). */
+#define NODUS_DNAC_MSIG_MAX_NULS  15u
 
 /** The error text a node answers (with NODUS_ERR_PROTOCOL_ERROR) for a
  *  `dnac_*` method it does not have (nodus_witness_handlers.c dispatch).
@@ -2069,6 +2183,28 @@ int nodus_client_dnac_msig_utxo(nodus_client_t *client,
                                 int max_results,
                                 nodus_dnac_utxo_result_t *result_out,
                                 bool *trunc_out);
+
+/**
+ * A vault member's view of NAMED coins of the multisig address
+ * `owner_hex` (dnac_msig_utxo with "nul", above): the answer lists exactly
+ * those of `nuls` that are unspent CORE coins owned by `owner_hex`.
+ * The reply is refused (NODUS_ERR_PROTOCOL_ERROR, `result_out` empty)
+ * unless it carries the "nul" marker equal to `n_nuls` (a node that does
+ * not know the argument answers the page instead — not a verification),
+ * "trunc" is false, it has at most `n_nuls` entries, every entry's
+ * nullifier is one of `nuls` and no nullifier repeats.
+ * @param nuls    n_nuls nullifiers, STRICTLY ascending (checked before
+ *                sending)
+ * @param n_nuls  1..NODUS_DNAC_MSIG_MAX_NULS
+ * @return as nodus_client_dnac_msig_utxo; free the result with
+ *         nodus_client_free_utxo_result.
+ */
+int nodus_client_dnac_msig_utxo_nuls(nodus_client_t *client,
+                                     const char *owner_hex,
+                                     const uint8_t *msig, size_t msig_len,
+                                     const uint8_t (*nuls)[64],
+                                     uint32_t n_nuls,
+                                     nodus_dnac_utxo_result_t *result_out);
 
 /**
  * A vault member's history of the multisig address `owner_hex`
@@ -2282,6 +2418,13 @@ int nodus_client_evm_ticket(nodus_client_t *client, const uint8_t id[64],
  * has_delegator_count is 1; a node that predates the reply's "dlg" key
  * leaves it 0 = unknown (not "0 delegators"). A malformed or repeated
  * "dlg" refuses the whole reply (NODUS_ERR_PROTOCOL_ERROR).
+ * HF-6 generation 4 (sub-slice 3e): each entry also carries OPTIONAL
+ * "vid" / "owner" bstr(64) (validator_id / owner_fp); "pk" is the
+ * consensus key. Since slice 7a this decoder fills the entry's
+ * validator_id / owner_fp with has_v2 = 1 when both are present; an older
+ * node (neither) leaves has_v2 0 and both zero. A non-64-byte value, a
+ * repeated key or one key without the other refuses the whole reply
+ * (NODUS_ERR_PROTOCOL_ERROR).
  *
  * @param filter_status  -1 = all statuses, 0..3 = filter by status
  * @param offset         Page offset (0-based)
@@ -2306,6 +2449,9 @@ void nodus_client_free_validator_list_result(nodus_dnac_validator_list_result_t 
  * the authenticated session fingerprint — mismatch yields
  * NODUS_ERR_NOT_AUTHENTICATED. Response entries carry validator_fp
  * rendered server-side so the client never sees raw validator pubkeys.
+ * HF-6 generation 4 (sub-slice 3e): validator_fp then holds the
+ * validator_id (the identifier a generation-4 DELEGATE names), and the
+ * reply carries OPTIONAL "vid" / "owner" (hex) keys this decoder skips.
  *
  * Caller must free result_out with nodus_client_free_delegations_result().
  *

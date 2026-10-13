@@ -460,10 +460,12 @@ static int run_s12_apply_matrix(void) {
         CHECK(s12_open_dist(&fx, chain, mh) == 0,
               "present-distribution genesis"); OK();
         uint32_t sv = 0;
-        /* Nodus EVM F3-C2 made S17 (empty EVM tables) the live rung; S17
+        /* Nodus EVM F3-C2 made S17 (empty EVM tables) the live rung;
+         * HF-6 3a moved it to S18 (+ the empty v2_validator_roles). S18
          * still carries the S12 claim tables this section checks. */
-        CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 && sv == 17,
-              "fixture DB at the live rung S17"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 &&
+              sv == NODUS_V2_SCHEMA_VERSION_S18,
+              "fixture DB at the live rung S18"); OK();
         CHECK(has_table(fx.w->db, "v2_claim_bytes") == 1 &&
               has_table(fx.w->db, "v2_claim_counts") == 1,
               "S12 claim tables present"); OK();
@@ -989,6 +991,225 @@ static int run_s17_log_scan(void) {
     return 0;
 }
 
+/* ══ HF-6 sub-slice 3a — the S18 rung (v2_validator_roles) ════════════
+ *
+ * Proves: (a) a fresh DB climbs 0 → 18 in one call (the cascade through
+ * S17) and ends with v2_validator_roles of the exact four-column shape,
+ * empty, idempotently; (b) from a valid S17 database that lacks the table
+ * (what the previous binary produced), EVERY fault stage rolls back to a
+ * byte-identical S17 database with no table leaked, and the rung then
+ * succeeds; (c) a pre-existing v2_validator_roles of another shape is
+ * REFUSED (shape verification); (d) an unknown version (19) fails closed,
+ * untouched, and the S17 rung refuses an S18 database; (e) the at-open
+ * index ensure step still runs at S18 (a database that reached S17 before
+ * the evm_logs scan indexes existed is climbed to S18 first).
+ *
+ * The base schema (nodus_witness.c) creates v2_validator_roles on every
+ * open, so a fresh fixture already HAS the table at version 0: the
+ * rollback and drift cases drop it first, to stand for a database an
+ * older build created. HF-6 slice 4 added the second S18 table
+ * v2_consensus_keys (same rung, unreleased): every case checks / drops it
+ * alongside, and (c) also refuses a keys table of another shape. */
+static int s18_table_shape_ok(sqlite3 *db) {
+    static const char *const cols[] = {
+        "validator_id", "owner_fp", "pending_consensus_pubkey",
+        "consensus_key_effective_epoch" };
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(\"v2_validator_roles\")",
+                           -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    size_t i = 0;
+    int ok = 1, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        int notnull = sqlite3_column_int(st, 3);
+        int pk = sqlite3_column_int(st, 5);
+        if (i >= 4 || !nm || strcmp((const char *)nm, cols[i]) != 0 ||
+            pk != (i == 0 ? 1 : 0) || (i > 0 && notnull != 1))
+            ok = 0;
+        i++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return (ok && i == 4) ? 1 : 0;
+}
+
+/* HF-6 slice 4 — the second S18 table, v2_consensus_keys
+ * (consensus_pk_hash PK, validator_id NOT NULL, role NOT NULL). */
+static int s18_keys_shape_ok(sqlite3 *db) {
+    static const char *const cols[] = {
+        "consensus_pk_hash", "validator_id", "role" };
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(\"v2_consensus_keys\")",
+                           -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    size_t i = 0;
+    int ok = 1, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        int notnull = sqlite3_column_int(st, 3);
+        int pk = sqlite3_column_int(st, 5);
+        if (i >= 3 || !nm || strcmp((const char *)nm, cols[i]) != 0 ||
+            pk != (i == 0 ? 1 : 0) || (i > 0 && notnull != 1))
+            ok = 0;
+        i++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return (ok && i == 3) ? 1 : 0;
+}
+
+static int run_s18_rung(void) {
+    uint32_t ver = 0;
+    int n = -1;
+
+    /* (a) fresh 0 → 18, idempotent */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s18 fresh fixture"); OK();
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == 0, "0->18"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18, "version != 18"); OK();
+        CHECK(s18_table_shape_ok(fx.w->db) == 1,
+              "v2_validator_roles: four columns, validator_id the PK, the "
+              "other three NOT NULL"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_validator_roles",
+                      &n) == 0 && n == 0, "the table is created empty"); OK();
+        CHECK(s18_keys_shape_ok(fx.w->db) == 1,
+              "v2_consensus_keys (slice 4): three columns, "
+              "consensus_pk_hash the PK, the other two NOT NULL"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_consensus_keys",
+                      &n) == 0 && n == 0, "the keys table is empty"); OK();
+        CHECK(has_table(fx.w->db, "evm_logs") == 1 &&
+              has_table(fx.w->db, "v2_evm_reserve") == 1,
+              "the cascade ran the S17 rung (EVM tables present)"); OK();
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == 0 &&
+              nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18,
+              "re-run is a no-op"); OK();
+
+        /* (d2) the S17 rung must not touch an S18 database */
+        CHECK(nodus_witness_db_migrate_v2s17(fx.w) == -1,
+              "migrate_v2s17 on an S18 DB fails closed"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18, "and leaves it at 18"); OK();
+
+        /* (e) the evm_logs scan indexes are ensured at S18 too */
+        CHECK(run_sql(fx.w->db, "DROP INDEX evm_receipts_by_pos;"
+                                "DROP INDEX evm_logs_by_addr") == 0,
+              "drop the scan indexes");
+        CHECK(nodus_witness_db_ensure_v2s17_indexes(fx.w) == 0,
+              "ensure at S18"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='index' AND name IN ('evm_receipts_by_pos', "
+                      "'evm_logs_by_addr')", &n) == 0 && n == 2,
+              "ensure recreated both at S18"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18,
+              "ensure left the version at 18"); OK();
+        fx_close(&fx);
+    }
+
+    /* (b) S17 → S18: every fault stage rolls back byte-identically */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s18 cascade fixture");
+        CHECK(nodus_witness_db_migrate_v2s17(fx.w) == 0, "0->17"); OK();
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles;"
+                                "DROP TABLE v2_consensus_keys") == 0,
+              "the previous binary's S17: no roles / keys table");
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S17, "base at 17"); OK();
+        uint8_t d17[64];
+        CHECK(v2x_db_digest(fx.w, d17) == 0, "S17 digest"); OK();
+
+        for (int stage = V2S18MIG_FAIL_AFTER_BEGIN;
+             stage <= V2S18MIG_FAIL_BEFORE_COMMIT; stage++) {
+            CHECK(nodus_witness_db_migrate_v2s18_ex(fx.w,
+                      (nodus_v2s18_mig_fail_t)stage) == -1,
+                  "staged S18 failure did not fail");
+            CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+                  ver == NODUS_V2_SCHEMA_VERSION_S17,
+                  "failed S18 stage moved the version");
+            CHECK(has_table(fx.w->db, "v2_validator_roles") == 0 &&
+                  has_table(fx.w->db, "v2_consensus_keys") == 0,
+                  "failed S18 stage left a table");
+            uint8_t dnow[64];
+            CHECK(v2x_db_digest(fx.w, dnow) == 0, "post-stage digest");
+            CHECK(memcmp(d17, dnow, 64) == 0,
+                  "failed S18 stage mutated the DB");
+        }
+        OK();
+
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == 0, "17->18"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18,
+              "post-fault version != 18"); OK();
+        CHECK(s18_table_shape_ok(fx.w->db) == 1 &&
+              s18_keys_shape_ok(fx.w->db) == 1,
+              "post-fault table shapes"); OK();
+        fx_close(&fx);
+    }
+
+    /* (c) shape drift: a v2_validator_roles of another shape is refused */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s18 drift fixture");
+        CHECK(nodus_witness_db_migrate_v2s17(fx.w) == 0, "0->17");
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles;"
+                      "CREATE TABLE v2_validator_roles ("
+                      "  validator_id BLOB PRIMARY KEY,"
+                      "  owner_fp BLOB NOT NULL)") == 0,
+              "a two-column table of the same name");
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == -1,
+              "another shape is refused"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S17,
+              "a refused rung leaves 17"); OK();
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles;"
+                      "CREATE TABLE v2_validator_roles ("
+                      "  validator_id BLOB PRIMARY KEY,"
+                      "  pending_consensus_pubkey BLOB NOT NULL,"
+                      "  owner_fp BLOB NOT NULL,"
+                      "  consensus_key_effective_epoch INTEGER NOT NULL)")
+              == 0, "the four columns, two swapped");
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == -1,
+              "a reordered shape is refused"); OK();
+        /* slice 4: a v2_consensus_keys of another shape is refused too */
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles;"
+                      "DROP TABLE v2_consensus_keys;"
+                      "CREATE TABLE v2_consensus_keys ("
+                      "  consensus_pk_hash BLOB PRIMARY KEY,"
+                      "  validator_id BLOB NOT NULL)") == 0,
+              "a two-column keys table of the same name");
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == -1,
+              "another keys-table shape is refused"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S17,
+              "a refused rung leaves 17 (keys)"); OK();
+        fx_close(&fx);
+    }
+
+    /* (d) unknown/newer version (19) fails closed — nothing changes */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s18 v19 fixture");
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_validator_roles;"
+                                "DROP TABLE v2_consensus_keys;"
+                                "PRAGMA user_version = 19") == 0, "set 19");
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == -1,
+              "version 19 migrated"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 19,
+              "version 19 mutated"); OK();
+        CHECK(has_table(fx.w->db, "v2_validator_roles") == 0 &&
+              has_table(fx.w->db, "v2_consensus_keys") == 0 &&
+              has_table(fx.w->db, "evm_logs") == 0,
+              "version 19 got a table"); OK();
+        fx_close(&fx);
+    }
+    return 0;
+}
+
 int main(void) {
     /* ── 1+2. fresh / S4-shaped DB (current production schema) ──────── */
     fixture_t fx;
@@ -1481,6 +1702,9 @@ int main(void) {
 
     /* Nodus EVM red-team 1 F4: the evm_logs scan indexes + cursor scan. */
     if (run_s17_log_scan() != 0) return 1;
+
+    /* HF-6 sub-slice 3a: the S18 rung (v2_validator_roles). */
+    if (run_s18_rung() != 0) return 1;
 
     printf("test_v2_schema: ALL %d checks passed\n", g_checks);
     return 0;

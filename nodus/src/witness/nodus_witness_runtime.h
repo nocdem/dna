@@ -107,6 +107,22 @@ extern "C" {
 /** Owned and priced, NOT executable in this package: its read plan and
  *  exec refuse it (-1) until package B2 implements the report rule. */
 #define DNA_SYSRULE_STORAGE_REPORT   ((uint32_t)9)
+/** HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
+ *  rev 6 §2, §3; decision docs/plans/decisions/2026-10-08-kurultay-14-
+ *  hf6-summary.md K7): ROTATE_CONSENSUS_KEY — the next free SYSTEM rule
+ *  id after the storage ops (TRANSFER_OWNER keeps 11 reserved, K3).
+ *  RETIRED (khan decision docs/plans/decisions/2026-10-13-kurultay-18-
+ *  summary.md item 1: HF-6 has no key rotation — a key is changed by
+ *  UNSTAKE + a new STAKE under a fresh key, and a key once used is burned
+ *  for good): NO generation owns or prices op 10, so admission refuses it
+ *  like any unowned op, and no SYSTEM hook decodes it. The id stays
+ *  reserved, never reused (an id that was owned once must not come back
+ *  with another meaning; the tests name it to prove the refusal); the
+ *  client builders and CLI verbs were removed by HF-6 D2. Its consent op
+ *  byte was 2
+ *  (shared/dnac/valbind_wire.h DNA_VALBIND_OP_ROTATE — the shared codec
+ *  keeps the constant; the chain accepts no op-2 consent). */
+#define DNA_SYSRULE_ROTATE_CONSENSUS_KEY ((uint32_t)10)
 
 #define DNA_CORERULE_SPEND           ((uint32_t)1)
 #define DNA_CORERULE_BURN            ((uint32_t)2)
@@ -234,15 +250,22 @@ extern "C" {
 /** Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md rev
  *  2.2 §6; numbering in main merge order, decision 2026-10-04-storage-
  *  reward-approved.md — QEVM merged first): the generation built ON the
- *  EVM generation — SYSTEM v9 (the EVM generation's ops 1..6 +
+ *  EVM generation — SYSTEM v10 (the EVM generation's ops 1..6 +
  *  STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT, SYSTEM state root
- *  "NDS.SYS.v5") / CORE v7 (the EVM generation's rules {1..9}, SYSFUND
- *  pairs with the two storage record ops); the EVM domain is unchanged
+ *  "NDS.SYS.v5") / CORE v9 (the EVM generation's rules {1..9}, SYSFUND
+ *  pairs with the two storage record ops); v9 / v7 until HF-6 D2 (khan
+ *  decision 2026-10-13-kurultay-18-summary.md item 3), CORE v8 until the
+ *  payer binding (design 2026-10-03-hf5-validator-owner-stake §2, a
+ *  kind-3 SYSFUND leg carries the signed owner's vault); the EVM domain is
+ *  unchanged
  *  (its v1 entry stays the EVM generation's — the generation carries no
  *  EVM slot, since one exact tuple names ONE entry). Code names it
- *  GEN_STORAGE, never "4". The switch to it is phase 6b' of the engine
- *  at the end of block H-1 of the RULESET_GEN_STORAGE vote (chain_config
- *  param 16), from NODUS_RT_GEN_STORAGE_BASE.
+ *  GEN_STORAGE, never "4". Since HF-6 (design docs/plans/2026-10-03-hf5-
+ *  validator-owner-stake-design.md rev 6 §8) it also carries the
+ *  validator owner/node roles. The switch to it is phase 6b''' of the
+ *  engine at the end of block H-1 of the RULESET_GEN_ROLES vote
+ *  (chain_config param 18; param 16 RETIRED), from
+ *  NODUS_RT_GEN_STORAGE_BASE.
  *  EVM-ONLY like the EVM generation (decision 2026-10-05-storage-reward-
  *  is-for-archive.md K10): compiled only under NODUS_EVM_ENABLED; a build
  *  without it never passes the EVM edge, so it never reaches this one.
@@ -250,9 +273,10 @@ extern "C" {
  *  hooks' `generation >=` tests name it). */
 #define NODUS_RT_GEN_STORAGE         ((uint32_t)4)
 /** The generation the storage generation is built on and switches FROM.
- *  ONE definition; committed by the vote literal; a vote is refused unless
- *  the registry is at this generation (nodus_chain_config_stateful_rules
- *  rule (d)). */
+ *  ONE definition; committed by the vote literal (D4's base_generation
+ *  field); a param-18 vote is refused unless the registry is at this
+ *  generation (nodus_chain_config_stateful_rules_ex, param-18 rule
+ *  (c)). */
 #define NODUS_RT_GEN_STORAGE_BASE    NODUS_RT_GEN_EVM
 #ifdef NODUS_EVM_ENABLED
 #define NODUS_RT_GEN_MAX             NODUS_RT_GEN_STORAGE
@@ -396,8 +420,10 @@ typedef struct {
  *   intent-identity season inherits, not a soundness hole.
  *
  *   auth_kind 3 — NODUS_RT_AUTHKIND_DSA87_MSIG_V1 (general multisig,
- *   decision 2026-09-29-general-multisig.md, design §7 rev 2 — CORE
- *   only): auth_data =
+ *   decision 2026-09-29-general-multisig.md, design §7 rev 2 — CORE,
+ *   and — HF-6 sub-slice 3c, design 2026-10-03-hf5-validator-owner-stake
+ *   rev 6 §1.3 — the HF-6 generation's SYSTEM, where only the owner
+ *   rule of the validator-record ops 2..5 accepts it): auth_data =
  *     the ENTIRE kind-1 body (the signer section, same rules, same
  *     signatures over the SAME leg auth_digest — there is NO new
  *     signature preimage)
@@ -418,7 +444,10 @@ typedef struct {
  *   uses" rule, are EXEC decisions (design F1.2; the CORE exec's one
  *   ownership predicate, nodus_witness_rt_native.c rtn_input_owned), so
  *   the descriptor bytes are always priced (w_authbyte) before any exec
- *   verdict. The descriptor bytes do NOT enter intent_id (they are
+ *   verdict. HF-6 3c (decision D6) adds one more RECORDED fact per
+ *   descriptor — whether every verified signer is one of its keys
+ *   (verdict msig_signers_in_desc) — which only the SYSTEM owner rule
+ *   reads. The descriptor bytes do NOT enter intent_id (they are
  *   authorization bytes) — auth_kind does (F1.4): the kind-1 and kind-3
  *   spellings of one transfer are two intents.
  *
@@ -472,9 +501,12 @@ typedef struct {
     const uint8_t *pubkeys;        /* count × 2592, contiguous           */
     const uint8_t (*fps)[64];      /* count × SHA3-512(pubkey)           */
     /* HF-2 (GW-1): count × the member's VOTING POWER, in seat order —
-     * floor(total_stake / DNAC_DECIMAL_UNIT), the SAME derivation the
-     * block-commit validator set uses (nodus_witness_cmt_app.c, the
-     * FinalizeBlock validator-update loop). Filled for every non-empty
+     * the committee member's `power` (nodus_committee_get_for_block,
+     * HF-6 5b: nodus_witness_vset_powers over the epoch's snapshot —
+     * floor(total_stake / DNAC_DECIMAL_UNIT) under ruleset 1, the counted
+     * power under ruleset 2), the SAME derivation the block-commit
+     * validator set uses (nodus_witness_cmt_app.c, the FinalizeBlock
+     * validator-update loop). Filled for every non-empty
      * view; the auth hook sums it into the verdict whether or not HF-2
      * is active, and the SYSTEM exec reads the sums only when it is. */
     const uint64_t *powers;
@@ -500,6 +532,18 @@ typedef struct {
     uint8_t  msig_satisfied[NODUS_RT_MSIG_MAX_DESC];  /* 1 = >= M of its
                                           * keys are verified signers    */
     uint8_t  msig_addr[NODUS_RT_MSIG_MAX_DESC][64];   /* SHA3-512(desc)  */
+    /* HF-6 sub-slice 3c (design docs/plans/2026-10-03-hf5-validator-owner-
+     * stake-design.md rev 6 §1.3; ORCHESTRATOR decision D6), kind 3 only:
+     * bit i set iff EVERY verified signer of this leg is one of descriptor
+     * i's keys (no foreign signer rode along). ENGINE-INTERNAL — never
+     * hashed, stored or put on a wire; shared by every domain's verdict,
+     * read today only by the SYSTEM owner-authority rule
+     * (nodus_witness_rt_native.c rtn_sys_owner_auth). It is only RECORDED
+     * here, like msig_satisfied: CORE kind-3 ownership never reads it, so
+     * its behaviour is byte-identical. 0 for kinds 1 and 2. It occupies
+     * the one pad byte that followed msig_addr (members end at 1 423 B),
+     * so sizeof stays 1 440 — the nodus_witness_v2_apply.h pin proves it. */
+    uint8_t  msig_signers_in_desc;
     /* HF-2 (GW-1), kind 2 only — checked u64 sums over the committee
      * view's `powers`: the VERIFIED approving seats, and every seat (both
      * 0 when the sum is unweighable). 0 for kinds 1 and 3. Never hashed,
@@ -586,15 +630,24 @@ typedef struct {
      * gas_used moves. One consumer: the SYSTEM CHAIN_CONFIG exec's
      * single-use rule (nodus_chain_config_stateful_rules). */
     uint8_t        ruleset_gen2_voted;
-    /* Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md
-     * rev 2.2 §6 — "voted like RULESET_GEN2"): 1 when ANY chain_config
-     * param-16 (RULESET_GEN_STORAGE) row exists, at any effective height,
-     * else 0 — the ruleset_gen2_voted contract above, verbatim, for the
-     * storage vote (nodus_witness_v2_apply.c env_ruleset_gen_storage_
-     * voted). UNMETERED for the same reason. One consumer: the SYSTEM
-     * CHAIN_CONFIG exec, which hands the fact MATCHING the voted param
-     * to the single-use rule (nodus_chain_config_stateful_rules). */
+    /* 1 when ANY chain_config param-16 (RULESET_GEN_STORAGE — RETIRED by
+     * HF-6 slice 8c) row exists, at any effective height, else 0 — the
+     * ruleset_gen2_voted contract above, verbatim
+     * (nodus_witness_v2_apply.c env_ruleset_gen_storage_voted). UNMETERED
+     * for the same reason. Since 8c no new param-16 row can be committed;
+     * the fact is read because one committed before the retirement
+     * refuses every param-18 vote (design docs/plans/2026-10-03-hf5-
+     * validator-owner-stake-design.md rev 6 §8, the param-18 stateful
+     * rule (a')). One consumer: the SYSTEM CHAIN_CONFIG exec
+     * (nodus_chain_config_stateful_rules_ex). */
     uint8_t        ruleset_gen_storage_voted;
+    /* HF-6 (design rev 6 §8): 1 when ANY chain_config param-18
+     * (RULESET_GEN_ROLES) row exists, at any effective height, else 0 —
+     * the ruleset_gen2_voted contract above, verbatim
+     * (nodus_witness_v2_apply.c env_ruleset_gen_roles_voted). UNMETERED
+     * for the same reason. One consumer: the SYSTEM CHAIN_CONFIG exec,
+     * the param-18 single-use rule (a). */
+    uint8_t        ruleset_gen_roles_voted;
     /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md
      * rev 2 §1): 1 when the COMMITTED chain_config param 17
      * (DELEGATE_NAME_REQUIRED) is active at `global_height`, else 0. Read
@@ -603,10 +656,14 @@ typedef struct {
      * row or a stored value outside {0, 1} is a node FAULT, never a
      * default) and filled on every ctx it builds (the authorization stage
      * and read_plan/exec). UNMETERED like hf2_active — the fact itself is
-     * no mediated read. One consumer: the CORE SYSFUND hooks' name gate
-     * (nodus_witness_rt_native.c rtn_sysfund_name_gate), which — while it
-     * is 1, the sibling is SYSTEM DELEGATE and the delegator is not the
-     * validator — adds ONE mediated, charged CORE NAMEOWN read. Not part
+     * no mediated read. Two consumers: under generations 1-3 the CORE
+     * SYSFUND hooks' name gate (nodus_witness_rt_native.c
+     * rtn_sysfund_name_gate), which — while it is 1, the sibling is SYSTEM
+     * DELEGATE and the delegator is not the validator — adds ONE mediated,
+     * charged CORE NAMEOWN read; under generation 4 (HF-6 sub-slice 3e,
+     * decision D3) the SYSTEM DELEGATE's own plan/exec (rtn_deleg2_name_gate
+     * / rtn_delegate2_exec), which reads the name through SYSTEM op 16 and
+     * exempts delegator_fp == the validator's owner_fp. Not part
      * of any committed identity (hooks are not in the ruleset descriptor).
      * A hook never chooses it. */
     uint8_t        delegate_name_required;
@@ -620,6 +677,29 @@ typedef struct {
      * node FAULT, never a default). One consumer: the CORE NAME_REGISTER
      * exec. A hook never chooses it. */
     uint64_t       name_price[4];
+    /* HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+     * design.md rev 6 §1.5, §8; HF-6 slice 8a): the generation-4 STAKE
+     * bond FLOOR at `global_height` — the committed chain_config param 19
+     * (STAKE_MIN) active there, or the compiled DNAC_HF6_STAKE_MIN_DEFAULT
+     * with no row. Read by the ENGINE with the token_create_fee
+     * discipline (nodus_witness_v2_apply.c env_stake_min: an unreadable
+     * row, or a stored value outside [DNAC_HF6_STAKE_MIN_MIN, INT64_MAX],
+     * is a node FAULT, never a default) and filled on every ctx it builds.
+     * UNMETERED (no mediated read). One consumer: the SYSTEM STAKE
+     * generation-4 exec (nodus_witness_rt_native.c rtn_stake_min_at). A
+     * hook never chooses it. A ctx built by hand (tests) must set it: 0
+     * is never a legal floor, and the hook refuses a ctx carrying 0 as a
+     * node fault rather than reading it as "no floor". */
+    uint64_t       stake_min;
+    /* HF-6 (design rev 6 §11.3, §8): the EXACT storage registration bond
+     * at `global_height` — the committed chain_config param 21
+     * (STORAGE_BOND) active there, or the compiled
+     * DNAC_HF6_STORAGE_BOND_DEFAULT. The stake_min contract above
+     * (nodus_witness_v2_apply.c env_storage_bond; range [DNAC_HF6_
+     * STORAGE_BOND_MIN, _MAX]). One consumer: the SYSTEM STORAGE_REGISTER
+     * generation-4 exec (rtn_storage_bond_at). 0 is never legal: a hook
+     * seeing 0 refuses as a node fault. */
+    uint64_t       storage_bond;
     /* Nodus EVM (design §10): the block being applied's Comet header time in
      * SECONDS (`blk->timestamp`, nodus_witness_cmt_app.c FinalizeBlock)
      * and the EVM block gas limit in force at `global_height` (chain_config
@@ -1129,8 +1209,10 @@ nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id);
  *     CORE descriptors;
  *   - the compiled vote literal DNAC_CFG_RULESET_GEN2_D2 re-derives from
  *     the generation-2 pins (dna_ruleset_gen_digest);
- *   - storage reward v1: the compiled vote literal
- *     DNAC_CFG_RULESET_GEN_STORAGE_D re-derives from the GEN_STORAGE pins.
+ *   - HF-6 slice 8b (EVM-enabled build): the compiled generation-4 vote
+ *     literal DNAC_CFG_RULESET_GEN_ROLES_D (D4) re-derives through
+ *     nodus_runtime_gen4_vote_digest — so a build whose Foundation owner
+ *     and D4 literal disagree refuses to start.
  * @return 0 healthy, -1 on the first violation.
  */
 int nodus_witness_runtime_selfcheck(void);
@@ -1180,6 +1262,20 @@ void nodus_runtime_manifest_init(const nodus_domain_runtime_t *rt,
  */
 int nodus_runtime_evm_activation_digest(uint64_t *d_out,
                                         dna_domain_manifest_t *evm_man_out);
+
+/**
+ * HF-6 slice 8b (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ * design.md rev 6 §8.1): the generation-4 vote value D4 — what the
+ * RULESET_GEN_ROLES vote must name (dnac.h DNAC_CFG_RULESET_GEN_ROLES_D)
+ * — re-derived through dna_rolegen_vote_digest from the compiled table:
+ * generation NODUS_RT_GEN_STORAGE (4), base NODUS_RT_GEN_STORAGE_BASE (3),
+ * that generation's SYSTEM and CORE ruleset hashes,
+ * DNAC_HF6_SWITCH_SPEC_VERSION, the compiled DNAC_HF6_FOUNDATION_OWNER and
+ * the nine GEN4_VOTE_CONSTS (nodus_witness_runtime.c, §8.1 order).
+ * Selfcheck compares it with the literal; nothing in the vote path calls it.
+ * @return 0 / -1 (NULL d_out, a generation-4 entry missing, digest failure).
+ */
+int nodus_runtime_gen4_vote_digest(uint64_t *d_out);
 #endif
 
 /* ── Nodus EVM: the ONE call-head decoder and the ONE pairing rule ──────────

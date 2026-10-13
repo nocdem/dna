@@ -19,16 +19,17 @@
          got    fe4ac585fba570280b87ec10cea8195acafbe1624c38e1efe476afc97c88645745567d291796cbdb12a805ede476efc3378d3c22d1c7334b1823200ac740516b
   [PASS] C10 gen-3 DNA_CORE ruleset v6
          got    ddde5acbd811aad624cddbf6d6d0d3d4c1452e02ce83507b5edce94e6a43f9efe6d79b7b35c00a34f5889160b5a0992af67c699cd609bbe21864476ccf6d1fc8
-  [PASS] C11 gen-3 EVM ruleset v1
-         got    415e6f97f58143f436bb3eae73582eff45078dcc23cb0497008838e494065533c2ff1acf271db7aa71a47c6c9a36fc22ce8b0c6e5e3585922c5919e4349f11ae
+  [PASS] C11 gen-3 EVM ruleset v2
+         got    6af8346d10c9ce5ced25b68e1ddd201be205e0d7d465e90412f78962206e775bf85f6c1d71d4cf3833148893977dc8126dfa01fcae2c83ca6a06d74c1bf4465f
   [PASS] C12 gen-3 EVM_ACTIVE literal D (param 14)
-         got    0x5a10af78d85302e6
-  (C12 inputs computed here: empty EVM root eab4a1aa80537cb1…, EVM manifest hash 3814c58b26074100…)
+         got    0x029f47596864d407
+  (C12 inputs computed here: empty EVM root eab4a1aa80537cb1…, EVM manifest hash 3e6fbc42f2616eec…)
 
 ── S1 GEN_STORAGE SYSTEM meter-policy digest ─────────────────────
   policy v2, scalars 1, max_block_env_bytes = 2097152, ops 1..9 w=1
   S1 = 0aa4c690a05af8827a322912a402d87b2642c99edc1db83f2871af64da18c3f8b74a6e5c870edc3450ae0474a3c8d7279efb884df8b285c8848beffb25922766
-  S1 == the EVM generation's policy (C8, 0aa4c690a05af882…): CONFIRMED
+  S1 == the EVM generation's policy (C8, 0aa4c690a05af882…; both price ops 1..9 at weight 1 — op 10 is priced by no generation): True
+  S1 == the HF-6 D2 S1 (the payer binding moves only the CORE version): True
   static const uint8_t SYS_METER_POLICY_DIGEST_GST[DNA_DOM_HASH_LEN] = {
       0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
       0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
@@ -40,45 +41,38 @@
       0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
   };
 
-── S2 SYSTEM ruleset v9 ──────────────────────────────────────────
+── S2 SYSTEM ruleset v10 ──────────────────────────────────────────
   domain 0 "SYSTEM" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8, 9] types [4, 5, 6, 7, 9, 10] policy S1
-  S2 = b37f489d474134eda056363c7d6d7648c17c16de30cca967cb6210c8f82b71513d2a6f494840a2f0259621ee466cac8d70a344a69193611df99bbe1d9a8976ac
+  S2 = a012cc08bbf96524fa2dace331921f9d39107aa52643fc99392c14146ef09159a54d11502d538d424f1e5bde9a493e2abab2738bf20c3e261fe5627c09bb662a
+  S2 == the HF-6 D2 S2 (SYSTEM untouched by the payer binding): True
   static const uint8_t SYS_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
-      0xb3, 0x7f, 0x48, 0x9d, 0x47, 0x41, 0x34, 0xed,
-      0xa0, 0x56, 0x36, 0x3c, 0x7d, 0x6d, 0x76, 0x48,
-      0xc1, 0x7c, 0x16, 0xde, 0x30, 0xcc, 0xa9, 0x67,
-      0xcb, 0x62, 0x10, 0xc8, 0xf8, 0x2b, 0x71, 0x51,
-      0x3d, 0x2a, 0x6f, 0x49, 0x48, 0x40, 0xa2, 0xf0,
-      0x25, 0x96, 0x21, 0xee, 0x46, 0x6c, 0xac, 0x8d,
-      0x70, 0xa3, 0x44, 0xa6, 0x91, 0x93, 0x61, 0x1d,
-      0xf9, 0x9b, 0xbe, 0x1d, 0x9a, 0x89, 0x76, 0xac
+      0xa0, 0x12, 0xcc, 0x08, 0xbb, 0xf9, 0x65, 0x24,
+      0xfa, 0x2d, 0xac, 0xe3, 0x31, 0x92, 0x1f, 0x9d,
+      0x39, 0x10, 0x7a, 0xa5, 0x26, 0x43, 0xfc, 0x99,
+      0x39, 0x2c, 0x14, 0x14, 0x6e, 0xf0, 0x91, 0x59,
+      0xa5, 0x4d, 0x11, 0x50, 0x2d, 0x53, 0x8d, 0x42,
+      0x4f, 0x1e, 0x5b, 0xde, 0x9a, 0x49, 0x3e, 0x2a,
+      0xba, 0xb2, 0x73, 0x8b, 0xf2, 0x0c, 0x3e, 0x26,
+      0x1f, 0xe5, 0x62, 0x7c, 0x09, 0xbb, 0x66, 0x2a
   };
 
-── S3 DNA_CORE ruleset v7 ────────────────────────────────────────
+── S3 DNA_CORE ruleset v9 ────────────────────────────────────────
   domain 1 "DNA_CORE" abi 1 rules [1, 2, 3, 4, 5, 6, 7, 8, 9] types [1, 2, 3, 11, 12, 13] policy all-zero
-  S3 = fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f060
+  S3 = 964f300629cdbea0a543c52aa815034a61df8377f333ddbbd4f6f7a0c349763be1b08e70215dda924402fd199ccad697a3bfb6cc68ef7f102d8c1fad4cb0aac0
+  S3 != the pre-bump CORE v7 pin (fb25e5c4…; the version field moved 7 -> 9): True
+  S3 != the HF-6 D2 CORE v8 pin (db32614f…; the payer binding moved the version 8 -> 9): True
   static const uint8_t CORE_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
-      0xfb, 0x25, 0xe5, 0xc4, 0x1d, 0x60, 0x0f, 0x0e,
-      0xd4, 0xe8, 0x97, 0x9f, 0xb4, 0x34, 0xd7, 0x35,
-      0xb6, 0x2f, 0xfe, 0x9a, 0xca, 0x03, 0x32, 0x77,
-      0x0f, 0x95, 0xa9, 0x4b, 0x33, 0x8d, 0x10, 0x73,
-      0xec, 0x3e, 0xc3, 0xb5, 0xaa, 0x59, 0x30, 0x34,
-      0x67, 0xcc, 0x83, 0xfd, 0xdc, 0xa2, 0xb8, 0xba,
-      0xf1, 0x00, 0x2d, 0xca, 0xb2, 0xc6, 0xc3, 0x04,
-      0x97, 0x4c, 0x06, 0x38, 0x14, 0x37, 0xf0, 0x60
+      0x96, 0x4f, 0x30, 0x06, 0x29, 0xcd, 0xbe, 0xa0,
+      0xa5, 0x43, 0xc5, 0x2a, 0xa8, 0x15, 0x03, 0x4a,
+      0x61, 0xdf, 0x83, 0x77, 0xf3, 0x33, 0xdd, 0xbb,
+      0xd4, 0xf6, 0xf7, 0xa0, 0xc3, 0x49, 0x76, 0x3b,
+      0xe1, 0xb0, 0x8e, 0x70, 0x21, 0x5d, 0xda, 0x92,
+      0x44, 0x02, 0xfd, 0x19, 0x9c, 0xca, 0xd6, 0x97,
+      0xa3, 0xbf, 0xb6, 0xcc, 0x68, 0xef, 0x7f, 0x10,
+      0x2d, 0x8c, 0x1f, 0xad, 0x4c, 0xb0, 0xaa, 0xc0
   };
-
-── S4 param-16 RULESET_GEN_STORAGE vote literal ──────────────────
-  generation      = 4 (base 3), switch spec version = 1
-  preimage (152 B) = 4e44532e525347454e2e76310000000000000004b37f489d474134eda056363c7d6d7648c17c16de30cca967cb6210c8f82b71513d2a6f494840a2f0259621ee466cac8d70a344a69193611df99bbe1d9a8976acfb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f06000000001
-  SHA3-512        = 8c6fd6f2484e602469076637d071480f316e4ac0058f4633384e9d32f3c7a15bd0b92b99adf53e2f78718f550b549da810d21d1fe15a8bd5f2faa8a874314ded
-  first 8 BE      = 0x8c6fd6f2484e6024
-  top bit was     = SET (cleared)
-  S4              = 0x0c6fd6f2484e6024ULL
-  S4 (decimal)    = 896171186953543716
 
   sanity: S2 != SYSTEM v8 (EVM): True
   sanity: S3 != CORE v6 (EVM, version field only): True
-  sanity: S4 != D2, S4 != EVM_ACTIVE D: True
 
-control green — GEN_STORAGE (generation 4) values above derived from the written layouts by hashlib, not by the C encoders (generation-4 inputs: decision K10; C-only inputs listed in the docstring).
+control green — GEN_STORAGE (generation 4) values above derived from the written layouts by hashlib, not by the C encoders (generation-4 inputs: decision K10 + HF-6 design rev 6 §2 / K7 + Kurultay #18 items 1 and 3 + the payer binding's CORE v9; C-only inputs listed in the docstring).

@@ -25,9 +25,9 @@ extern "C" {
  * reading the string reported a version this binary had not been for a
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  25
-#define NODUS_VERSION_PATCH  8
-#define NODUS_VERSION_STRING "0.25.8"
+#define NODUS_VERSION_MINOR  26
+#define NODUS_VERSION_PATCH  0
+#define NODUS_VERSION_STRING "0.26.0"
 
 /* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
  * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND
@@ -593,6 +593,20 @@ typedef struct {
                              *   row is active); 0 = an older server that
                              *   does not send the key — the caller falls
                              *   back to NODUS_W_TOKEN_CREATE_FEE. */
+    uint64_t stake_min;     /**< HF-6 slice 8a: committed chain_config
+                             *   param 19 STAKE_MIN at tip + 1 — the
+                             *   generation-4 STAKE bond floor (the server
+                             *   answers DNAC_HF6_STAKE_MIN_DEFAULT with
+                             *   no row); 0 = an older server that does
+                             *   not send the key. */
+    uint64_t storage_bond;  /**< HF-6 slice 8a: param 21 STORAGE_BOND at
+                             *   tip + 1 — the EXACT STORAGE_REGISTER bond
+                             *   (DNAC_HF6_STORAGE_BOND_DEFAULT with no
+                             *   row); 0 = not reported. */
+    uint64_t power_cap_bps; /**< HF-6 slice 8a: param 20 POWER_CAP_BPS
+                             *   active at tip + 1 (3000 with no row); a
+                             *   snapshot uses the value active at its
+                             *   own epoch start. 0 = not reported. */
 } nodus_dnac_fee_info_t;
 
 /** Maximum inclusion-proof depth for anchored UTXO / TX proofs.
@@ -873,6 +887,11 @@ typedef struct {
     uint16_t commission_bps;
     uint8_t  status;             /* dnac_validator_status_t */
     char     address[256];       /* Empty string if unknown. */
+    /** The seat's VOTING power as the engine counts it ("power"; capped
+     *  under ruleset 2 — HF-6). Valid only when has_power is 1; an older
+     *  node does not send it (has_power 0, power 0). */
+    uint64_t power;
+    uint8_t  has_power;
 } nodus_dnac_committee_entry_t;
 
 /** Committee query result.
@@ -976,7 +995,15 @@ typedef struct {
  * slots are filled.
  * Valid ONLY when has_delegator_count is 1; a node that predates the key
  * leaves has_delegator_count 0 = "unknown", which is not the same as 0
- * delegators. */
+ * delegators.
+ *
+ * validator_id / owner_fp (HF-6 slice 7a; design 2026-10-03-hf5-
+ * validator-owner-stake rev 6 §9): the reply's "vid" / "owner" keys, each
+ * bstr(64), which a generation-4 node sends for every entry (pubkey is
+ * then the consensus key). Valid ONLY when has_v2 is 1 (both keys were
+ * present); a node that predates them leaves has_v2 0 and both zero.
+ * Appended at the END of the struct: the fields above keep their
+ * offsets. */
 typedef struct {
     uint8_t  pubkey[2592];
     uint64_t self_stake;
@@ -987,6 +1014,9 @@ typedef struct {
     uint64_t active_since_block;
     uint8_t  has_delegator_count;   /* 1 = delegator_count is the node's answer */
     uint32_t delegator_count;
+    uint8_t  validator_id[64];      /* "vid", when has_v2                */
+    uint8_t  owner_fp[64];          /* "owner", when has_v2              */
+    uint8_t  has_v2;                /* 1 = both keys were in the entry   */
 } nodus_dnac_validator_list_entry_t;
 
 /** Validator list query result. entries is heap; caller frees via

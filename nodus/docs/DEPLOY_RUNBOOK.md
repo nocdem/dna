@@ -59,6 +59,7 @@ One node at a time for a rolling deploy; all nodes at once for a stop-all.
 | Any consensus change (the cometbft port's `cmt_*`, the application's ABCI rows, the genesis document) | **STOP-ALL + fresh chain** — a version-3 chain has no migration; §2.1 explains why there is no `pbft_state` step any more |
 | A **height-activated** rule that is inert until a chain-config vote turns it on (HF-1 gas price, nodus 0.19.80; HF-2 param 7; HF-3 param 8; HF-4 param 9 — the rule-set generation switch, nodus 0.23.10) | **Rolling** binary upgrade (the rule is byte-identical to the old binary while no row exists) — then the vote, ONLY after 7/7 run the new binary. §2.2 |
 | HF-5 Nodus EVM (nodus 0.24.1 — 0.24.0 was never deployed and votes a different D; param 14 `EVM_ACTIVE`, rule-set generation 3) — a release that also migrates the witness DB to schema **S17** at its first open | **Rolling**, one node at a time, but every node through **§4.1** (stop it, copy its data directory, only then start the new binary — the previous binary cannot open an S17 database). The `EVM_ACTIVE` vote is a §2.2 procedure, ONLY after 7/7 run the new binary |
+| HF-6 validator owner/node roles + storage (branch `hf6`, not released; param 18 `RULESET_GEN_ROLES`, rule-set generation 4) — a binary that carries witness schema **S18** (the `v2_validator_roles` table the generation-4 edge requires) | **Rolling**, one node at a time, every node through **§4.1** as for HF-5 (S18 is a schema migration). The `RULESET_GEN_ROLES` vote is a §2.2 procedure, ONLY after 7/7 run the new binary, their startup D4 lines are identical and `chain_config_history` on 7/7 holds no param-16 row; **param 16 is never proposed** (an old binary accepts it, a new one refuses it — a split; a committed one blocks HF-6 for good) |
 | Logging, metrics, non-consensus tooling | Rolling, one node at a time |
 
 **Why stop-all for validity changes:** during a rolling window the cluster runs mixed
@@ -730,7 +731,7 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-3 | block bounded by cometbft's limits only (no 2 MiB / 2 097 152-unit bound); ProcessProposal checks gas price, committed replay, units ≤ INT64_MAX | 8 `HF3_ACTIVE` | 1 | 2206 | 2926 | 0.23.9 | `4CE838897C4F853B` |
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
 | HF-5 | rule-set generation 3: SYSTEM v8 / CORE v6 / EVM v2 — the EVM domain (domain 2) registered ACTIVE at the end of H−1; CORE op 9 EVMFUND; id 15 EVM_BLOCK_GAS_LIMIT in force | 14 `EVM_ACTIVE` | 188948158701949959 (D = 0x029f47596864d407) | 62425 | 79757 | 0.24.1 | `1D6A68F08EC42ED0` |
-| HF-7 storage reward, after HF-5 (**not voted** — placeholder) | rule-set generation 4 GEN_STORAGE (SYSTEM v9 / CORE v7, from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): the registry switches at the end of H−1 and the SYSTEM root becomes `NDS.SYS.v5` (storage leg) in H−1's own app_hash; SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT in force from H | 16 `RULESET_GEN_STORAGE` (numbers assigned in main merge order — design rev 2.2 §6; Nodus EVM took generation 3 and params 14 / 15) | 896171186953543716 (S4 = 0x0c6fd6f2484e6024; `DNAC_CFG_RULESET_GEN_STORAGE_D`, re-derived by `shared/dnac/tests/storage_oracle.py` over EVM v2) | — | — | 0.25.0 (code released, vote not cast) | — |
+| HF-6 validator owner/node roles + archive storage, after HF-5 (**not voted**) | rule-set generation 4 (SYSTEM v10 / CORE v9 — SYSTEM v10 and CORE v8 since HF-6 D2, khan decision `2026-10-13-kurultay-18-summary.md` item 3, the call layouts of UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT changed and the ruleset hash does not commit layouts; CORE v9 since the payer binding, design `2026-10-03-hf5-validator-owner-stake` §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13": a multisig (kind-3) CORE funding leg of an owner operation must be the vault the SYSTEM call's signed owner names — from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): at the end of H−1 the registry switches 3 → 4 AND the validator migration runs (keys re-valued to validator_id, each 10M bond → 2M bond + 8M Foundation-owned self-delegation, the Foundation accrual merge), the SYSTEM root becomes `NDS.SYS.v5` in H−1's own app_hash; from H: SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT (no op 10: ROTATE_CONSENSUS_KEY was removed, khan decision `2026-10-13-kurultay-18-summary.md` item 1 — a used consensus key is burned for good, §2.7), the owner/node split for both roles (UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT name their owner in the call, "C2", §2.6-§2.7), params 19 `STAKE_MIN` / 20 `POWER_CAP_BPS` / 21 `STORAGE_BOND` votable; the storage boundary gate opens at the first boundary ≥ H | 18 `RULESET_GEN_ROLES` (khan 2026-10-13; param 16 `RULESET_GEN_STORAGE` RETIRED — the new binary refuses it) | 7217855907516077065 (D4 = 0x642af9b4bf735409 since the payer binding / CORE v9 — 0x5922111a3501f58b at HF-6 D2 and 0x4dc61072d5982acd before it, neither ever voted; `DNAC_CFG_RULESET_GEN_ROLES_D`, from `shared/dnac/tests/hf6_vote_oracle.py`, design rev 6 §8.1) | — | — | branch `hf6` (not released) | — |
 | HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not the validator itself is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; self-delegation, UNDELEGATE, existing rows and payouts untouched); such a DELEGATE's funding leg takes at most 14 inputs. No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | 0.25.3 (code released, inert, vote not cast) | — |
 
 Read 2026-10-07: HF-5 ACTIVE on 7/7 — every node logged "Nodus EVM: rule-set generation
@@ -745,28 +746,68 @@ wallet, Connect, explorer and Scan released before the vote). The HF-3 row on 7/
 HF-1 and HF-2 rows on EU-5 (the HF-2 row was read on 7/7 when it was voted, 2026-09-30). A node that was not on the introducing binary when a vote committed
 diverges at that block — recovery at the end of this section.
 
-The storage row is a PLACEHOLDER (storage reward v1, package B1 — decision
-`docs/plans/decisions/2026-10-04-storage-reward-approved.md`, design
-`docs/plans/2026-10-04-storage-reward-v1-design.md` rev 2.2 §6): nothing is voted; the code has
-been in every node binary since 0.25.0 (release fd89dfbe), so param 16 IS votable on the live chain
-today — **do NOT propose it**. Order (operator 2026-10-08, Kurultay #14 summary K12): storage
-opens TOGETHER with the validator-role fork HF-6 (owner/node split for both roles, joining from
-Connect), never on its own with today's node-key registration; whether that is one rule-set
-generation or two is open in the HF-6 design. Its numbers were assigned in main merge order after Nodus EVM (HF-5) merged
-first: generation 4 on the EVM generation, param 16, SYSTEM v9 / CORE v7. Its fork number is
-**HF-7** (operator, 2026-10-07; the role-stake package is HF-6, and the planned "delegation
-requires an on-chain name" rule is HF-8 — decision `2026-10-05-hf-numbering-evm-hf5.md`). Its vote follows the HF-4 procedure below with param 16
-in place of param 9 and one more stateful rule: the vote is refused unless EXACTLY the EVM
-generation judges it, because the switch it schedules is generation 3 → 4 — so HF-5's
-EVM_ACTIVE edge must have passed first, and the storage edge can never fall in the EVM edge's
-block. EVM-only (decision `2026-10-05-storage-reward-is-for-archive.md` K10): a binary built
-without `NODUS_EVM_ENABLED` (the messenger tree, Windows) carries neither generation 3 nor 4
-and stops at the EVM edge. The binary's startup log carries a second line,
-`storage rule-set generation 4 vote 0x… (param 16, switch spec v1), built from git commit …`,
-compared on 7/7 before that vote exactly as the D2 line is before param 9. Before the vote:
-the oracle-filled pins and literal (filled in `4fedbbdc`, S4 = 0x0c6fd6f2484e6024, re-checked
-over EVM ruleset v2 on 2026-10-06), the harness scenario (`test_storage_archive.sh`), and every
-client that builds storage envelopes.
+The HF-6 row is NOT VOTED (design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md`
+rev 6 §8, §8.1; decisions `docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md` and
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md`; code on branch `hf6`, HF-6
+slice 8c). Storage opens INSIDE HF-6's single vote (Kurultay #14 K12 / #16 item 1): ONE rule-set
+generation 4 carries the archive storage reward, the validator owner/node split and the storage
+owner/node split. **The former "HF-7 storage reward" placeholder row is retired** (khan
+2026-10-13): there is no separate storage fork any more; HF-8 keeps its number (decision
+`2026-10-05-hf-numbering-evm-hf5.md` "Ek 2026-10-07").
+
+**Param 16 (`RULESET_GEN_STORAGE`) on the LIVE chain.** The storage-only generation 4 of release
+0.25.0 (fd89dfbe) made param 16 votable in every node binary since 0.25.0, so param 16 IS votable on
+the live chain today — **do NOT propose it**, before, during or after the HF-6 rollout. An HF-6 binary
+RETIRES it (scalar rules, client mirror and nodus-cli refuse id 16 — the id-1 treatment), so during
+a mixed rollout a param-16 proposal is accepted by the old binaries and refused by the new ones: a
+split at the block that commits it. And a param-16 row committed at ANY height makes every param-18
+vote refused forever (stateful rule (a') below) — HF-6 unreachable on that chain without a further
+fork. Read `chain_config_history` on 7/7 before the param-18 vote (the SQL at the top of this
+section): there must be no `param_id = 16` row.
+
+**The vote: param 18 `RULESET_GEN_ROLES`, value exactly D4.** It follows the HF-4 procedure below
+with param 18 in place of param 9 (`nodus-cli chain-config propose --param RULESET_GEN_ROLES --value
+7217855907516077065 --effective <H>`; the CLI prints D4 in its usage), class ERGONOMIC (H ≥ the
+committing block + 720), and the stateful rules (`nodus_witness_chain_config.c`,
+`nodus_chain_config_stateful_rules_ex`), each a verdict on every node: (a) single use — no param-18
+row at any height; (a′) no param-16 row at any height; (b) HF-2 in force; (c) judged under rule-set
+generation EXACTLY 3 — HF-5's EVM_ACTIVE edge must have passed, and the generation-4 edge can never
+fall in the EVM edge's block; (d) H−1 not an epoch boundary (H − 1 is the migration block); (e) H
+not an epoch boundary either (the first block under the new rules) — so choose H with
+`H % 720 ∉ {0, 1}`. EVM-only (decision `2026-10-05-storage-reward-is-for-archive.md` K10): a
+binary built without `NODUS_EVM_ENABLED` (the messenger tree, Windows) carries neither generation
+3 nor 4 and stops at the EVM edge.
+
+**D4 and the startup line.** D4 = `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x642af9b4bf735409`
+(7217855907516077065) in `dnac.h`, from the independent oracle `shared/dnac/tests/hf6_vote_oracle.py`
+(design rev 6 §8.1: the generation-4 pins, the 3 → 4 spec version, the K8 Foundation owner and nine
+compiled constants). The generation-4 pins are SYSTEM v10 (rules 1..9)
+`a012cc08bbf96524…09bb662a`, CORE v9 `964f300629cdbea0…4cb0aac0` and the SYSTEM policy (ops 1..9)
+`0aa4c690a05af882…25922766` — byte-equal to the EVM generation's policy, the same op set — all from
+`shared/dnac/tests/storage_oracle.py` (S1 / S2 / S3; `nodus_ruleset_pins.h` regenerated). CORE moved
+8 → 9 with the payer binding (a kind-3 SYSFUND leg must be the vault the SYSTEM call's signed owner
+names — design `2026-10-03-hf5-validator-owner-stake` §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13").
+Earlier values were never voted and no binary carries them: `0x5922111a3501f58b` (HF-6 D2, CORE v8
+`db32614f…`) and `0x4dc61072d5982acd` (SYSTEM v9 with op 10, CORE v7). Every EVM-enabled node re-derives it at start (runtime selfcheck) and **refuses
+to start** if the compiled literal does not match its own pins, owner and constants. The startup log
+carries the line
+`HF-6 rule-set generation 4 vote D4 0x642af9b4bf735409 (param 18 RULESET_GEN_ROLES, switch spec v1), built from git commit …`,
+compared on 7/7 before the vote exactly as the D2 line is before param 9. At the edge every node logs
+`HF-6: rule-set generation 3 -> 4 and the validator migration at the end of height <H−1> (param 18 RULESET_GEN_ROLES, D4 0x642af9b4bf735409); height <H> is judged under generation 4`.
+Production builds define neither override. **Test builds only:** a harness build that compiles its
+own owner (`-DDNAC_HF6_FOUNDATION_OWNER="{…}"`) must also pass that owner's D4
+(`-DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL`); a build with one and not the other refuses to start on
+every node. `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both flags, the D4 taken from
+`hf6_vote_oracle.py --owner <fp>` (stagef README row).
+
+**Rollout.** The HF-6 binary carries witness schema S18 (the roles table the edge requires), so every
+node goes through §4.1 (stop, copy the data directory, start the new binary) — the HF-5 row's shape —
+one node at a time; the vote only after 7/7 run it, their D4 startup lines are identical and the
+param-16 read above is empty. A node not on the HF-6 binary when the param-18 vote commits refuses
+the proposal (its scalar rules do not know id 18) and diverges at that block (recovery at the end of
+this section). Before the vote: the harness scenarios (`test_hf6_edge.sh`, `test_storage_archive.sh`
+— both vote param 18 with the CLI's D4), every client that builds generation-4 envelopes, and the
+roadmap / Wiki / Scan fork item.
 
 The HF-8 row is a PLACEHOLDER (design `docs/plans/2026-10-07-delegate-name-required-design.md`
 rev 2 §1, Kurultay #11; number: decision `2026-10-05-hf-numbering-evm-hf5.md` "Ek 2026-10-07"):
@@ -1300,15 +1341,34 @@ Storage reward v1 rev 4 (decision `docs/plans/decisions/2026-10-05-storage-rewar
 the reward pays registered storage nodes for holding the block ARCHIVE). Package B2b-1 (design
 `docs/plans/2026-10-05-archive-reward-design.md` rev 4 §4; `docs/ARCHITECTURE.md` "package B2b-1")
 makes validators probe storage nodes and storage nodes answer; package B2b-2 (rev 4 §3; "package
-B2b-2") keeps the assigned segments as files and fetches missing ones. Nothing here applies before the
-storage rule-set generation is voted (§2.2 table, the storage placeholder row) — every step below is
+B2b-2") keeps the assigned segments as files and fetches missing ones. Nothing here applies before
+rule-set generation 4 is voted (§2.2 table, the HF-6 row: param 18 `RULESET_GEN_ROLES`; the storage
+boundary gate reads param 18 since HF-6 slice 8c) — every step below is
 for a node on a chain where it is in force. **Deploying any of it needs the operator's word like every
 deploy.**
 
 **What a storage node is.** A node with a chain database (nodus-server with its in-process witness, or
-nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7 STORAGE_REGISTER, a
-bond of exactly 1 000 000 NODUS = 10^14 raw locked from coins owned by that same key, plus the fee).
-It may also be a validator (a both-roles node earns both rewards).
+nodus-witness) whose node key is registered in the storage registry (SYSTEM op 7 STORAGE_REGISTER).
+**Since HF-6 (rule-set generation 4) a storage node has an OWNER** (design
+`docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §11; Kurultay #16, decision
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` khan 1 and 3): the owner is a
+wallet — any address whose key signs (kind 1), or a multisig address (kind 3; nodus-cli builds it with
+`--msig`, co-signed through the v2 export — "Multisig owner" below). The owner signs the
+registration, pays a bond of **exactly**
+1 000 000 NODUS = 10^14 raw (the STORAGE_BOND in force: chain_config param 21 `STORAGE_BOND` at the
+registration's height, no row = 1 000 000 NODUS; votable from generation 4, range 100 000 – 1 000 000
+NODUS — HF-6 slice 8a) plus the fee, and receives the storage
+reward and, after an exit, the bond. The NODE key never moves coins: it only signs a **consent** — "I
+agree to be registered under this owner, on this chain, until height X" (consent op 3). The node's
+identity (its key) is still the registry key, what the validators probe on 4004 and what fetches
+segments on 0x73; the owner never runs anything. One machine may be a validator and a storage node at
+once (a both-roles node; each role's earnings go to that role's owner). **Self-approval rule:** a
+validator's report about a storage node does not count when the validator's owner is the storage node's
+owner, or when it is the same machine (the same key) — so a storage node registered under the SAME
+owner as the validators reporting it gets **no evidence** while no other validators report enough
+power: it earns nothing (its fail_streak does not move either). Register storage nodes under a
+different owner than the validators that probe them (design §11.6; the operator's own choice for the
+Foundation: storage from a personal account, Kurultay #16 khan 2).
 
 **1. Keep the archive — until the node's segment files are complete.** A probe is answered from the
 node's own block store (the header of h+1, the sampled part and its proof) while the store has the
@@ -1399,47 +1459,168 @@ the storage node refuses a request whose deadline its own clock has passed (`LAT
 already an operational obligation (the 60 s block-time tolerance of block validation); for probes a
 skew of several seconds already starts costing answers.
 
-**4. Register / exit / status — `nodus-cli storage register|exit|status` (package B2b-CLI).** Both
-transactions are signed by the NODE key — the key the storage node runs with, not a wallet key: the
-registry row is the key's own (the chain accepts exactly one signer whose fingerprint is SHA3-512 of the
-node key in the call) and the bond is paid from coins that key owns. So, on the storage node:
+**4. Consent / register / exit / status — the node consents, the OWNER acts (HF-6 slice 6b-3;
+`nodus-cli storage consent|register|exit|status`).** Everything here exists only on branch `hf6`
+under rule-set generation 4, which is not voted on any live chain; its harness proof is
+`test_storage_archive.sh` (`nodus/tests/integration/stagef/README.md`) — **written, not yet run**.
+Two places are involved, and they may be one machine: the storage NODE (its identity directory) and the
+OWNER's key directory (`nodus.pk` + `nodus.sk` — a wallet identity, kind 1) — or, for a multisig
+owner (kind 3), the descriptor file and each co-signer's own key directory ("Multisig owner" below).
+The node's secret key never leaves the node; the owner's never leaves the owner.
 
 ```bash
-# 0. the node key's fingerprint (send it 1 000 000 NODUS + the fee first)
+# on the storage node — its fingerprint (the registry key) and its consent
 nodus-cli -i /var/lib/nodus/identity whoami
-# 1. what the chain says about this node (works for any node with --fp <hex128>)
-nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage status
-# 2. build and self-check without sending, then send
-nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --dry-run
-nodus-cli -s 127.0.0.1:4001 -i /var/lib/nodus/identity storage register --submit 127.0.0.1:4001
+nodus-cli -s 127.0.0.1 -p 4001 -i /var/lib/nodus/identity storage consent \
+    --owner <owner fp, 128 hex> --expiry <height> --out storage-consent.txt
+# hand storage-consent.txt to the owner (it carries no secret)
+
+# where the owner's keys are — any node's client port; the node identity is not needed here
+nodus-cli -s <node> -p 4001 storage register --keys <owner key dir> \
+    --consent storage-consent.txt --dry-run
+nodus-cli -s <node> -p 4001 storage register --keys <owner key dir> \
+    --consent storage-consent.txt --submit <node>:4001
+
+# what the chain says about a node (its own -i, or any node with --fp <hex128>)
+nodus-cli -s 127.0.0.1 -p 4001 -i /var/lib/nodus/identity storage status
+
+# the owner takes the node out
+nodus-cli -s <node> -p 4001 storage exit --keys <owner key dir> --node-fp <node fp> --dry-run
+nodus-cli -s <node> -p 4001 storage exit --keys <owner key dir> --node-fp <node fp> --submit <node>:4001
 ```
 
-- **`-i` is required** for `register` / `exit` (without it the CLI would use a random key; it refuses).
-  The identity directory is the node's own (`identity_path` in its config; the path above is an
-  example — use the node's).
+**Multisig owner (kind 3).** Decision `docs/plans/decisions/2026-09-29-general-multisig.md`, addendum
+"çok bacaklı ortak imza dosyası v2" (operator 2026-10-13). The owner is an M-of-N address (`msig
+address --m <M> --pubkey ... --descriptor-out owner.desc`). The envelope has TWO legs signed by the
+co-signers — the SYSTEM call (it proves the owner) and the CORE funding (it spends the address's
+coins) — so every co-signer signs BOTH; the files are the v2 export / signature (`nodus-msig-export
+v2`, `nodus-msig-sig v2`). The address's coins cannot be listed over a session (`dnac_utxo` answers
+only the session's own fingerprint), so they are named with `--in <nullifier>:<amount>` (native, at
+least bond + fee); the chain checks every input.
+
+```bash
+# on the storage node — the consent names the multisig ADDRESS as owner
+nodus-cli -s 127.0.0.1 -p 4001 -i /var/lib/nodus/identity storage consent \
+    --msig owner.desc --expiry <height> --out storage-consent.txt
+
+# anyone with the descriptor: the UNSIGNED v2 export (--keys only opens the session, signs nothing;
+# K = --signers, default M, is FINAL)
+nodus-cli -s <node> -p 4001 storage register --keys <any key dir> --msig owner.desc \
+    --consent storage-consent.txt --in <nullifier>:<amount> [--in ...] --export reg.export
+
+# each of K co-signers, against the node HE runs: shows both legs decoded and the chain id, asks
+# HIS node (pinned) for exactly the export's inputs as coins of the vault (with his OWN key), checks
+# the window from that node's height, then signs both digests.
+# --pin = his node's fingerprint: `nodus-cli -i <the node's identity dir> whoami` ("Fingerprint:")
+# or the node's identity/nodus.fp
+nodus-cli -s <your node> -p 4001 msig sign --pin <your node's fingerprint> \
+    --keys <co-signer key dir> --in reg.export --out sig-<name>.txt [--chain-id <hex64>]
+
+# anyone: exactly K signature files; checks every leg with the chain's auth hook, then submits
+nodus-cli -s <node> -p 4001 msig combine --in reg.export --sig sig-a.txt --sig sig-b.txt \
+    --keys <any key dir> --submit <node>:4001
+
+# exit — the same three steps
+nodus-cli -s <node> -p 4001 storage exit --keys <any key dir> --msig owner.desc \
+    --node-fp <node fp> --in <nullifier>:<amount> --export exit.export
+```
+
+The export is valid until tip + 90 blocks (its expiry); combine after that and the node refuses it —
+build a new export. **`msig sign` verifies the inputs and refuses otherwise** (HF-6 D2, khan decision
+`docs/plans/decisions/2026-10-13-kurultay-18-summary.md` item 5): the descriptor the export carries
+is NOT covered by the signatures, so co-members of two vaults could be shown vault B while the coins
+are vault A's. Before signing, `msig sign` opens a **pinned** session to `-s` — the node the
+co-signer runs himself; `--pin` is its fingerprint, the node must sign its channel key with exactly
+that identity and the session is ML-KEM-1024 only (payer-binding package, design
+`2026-10-03-hf5-validator-owner-stake` §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13") — with the
+co-signer's own key (a member of the descriptor), requires the node's chain id to equal the
+export's, asks for exactly the export's inputs (`dnac_msig_utxo` with `"nul"`: the named coins that
+are unspent coins of the vault, any token, no 100-coin page) and requires EVERY input to be
+answered with the vault as owner — it prints each input's amount, token and lock from the node.
+It then judges the validity window from **that node's height H**, not the export's tip: expiry ≤
+H, expiry > H + 100 (the chain's admission cap from now), or a node more than 90 blocks behind the
+export's tip → refused (a node a few blocks behind the builder still signs: the export's expiry is
+the builder's tip + 90, within the cap). No `-s`, no
+`--pin`, a pin mismatch, a node without the `"nul"` query (not updated), a key outside the
+descriptor, another chain, one unverified input or a window refusal → **nothing is signed**; there
+is no flag that skips it. `--chain-id <hex64>` additionally pins the chain the co-signer expects. A
+change output to any address but the vault's is refused too. The same holds for a v1 (single SPEND
+leg) export. Operationally: every co-signer needs a node of his own, updated to this build, and its
+fingerprint; asking a node someone else runs gives no guarantee about the coins.
+
+**On chain (generation 4, CORE v9):** for the owner operations the funding is bound too — a
+multisig CORE funding leg must be exactly the vault the SYSTEM call names as owner (STAKE /
+STORAGE_REGISTER / UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT: `owner_fp`; DELEGATE / UNDELEGATE:
+`delegator_fp`), else the chain refuses it. A single-key (kind-1) funding leg — including a third
+party's key paying for someone else's operation — is unchanged; a vault paying for ANOTHER owner's
+operation is no longer possible. The v1 SPEND is outside this rule (a separate, height-activated
+fork, not now): there the pinned input check above is the only protection.
+
+**The call carries the owner (HF-6 D2, "C2", item 2).** `STORAGE_EXIT` is `node_fp[64] ‖
+owner_fp[64]` (128 B) — the CLI writes `owner_fp` = SHA3-512 of the `--keys` identity, or with
+`--msig` the multisig address; the chain refuses (a verdict) an exit whose `owner_fp` is not the
+registry row's owner, whoever signs. UNSTAKE (`validator_id ‖ owner_fp`, 128 B) and VALIDATOR_UPDATE
+(`validator_id ‖ owner_fp ‖ commission u16`, 130 B) follow the same rule (§2.7).
+
+- **The consent** (`storage consent`, `-i` = the node's own identity, `identity_path` in its config —
+  the path above is an example; without `-i` the CLI refuses). The node's key signs "register me under
+  this owner, on this chain, until height X" (design §6.1 message, op 3, zero subject). The CLI reads the
+  chain id and the tip from the node and refuses an expiry the next height would not accept: the chain
+  accepts the registration at height h only when `expiry ≥ h` and `expiry − h ≤ 720`
+  (`DNA_VALBIND_MAX_EXPIRY_BLOCKS`, a fixed number). Choose an expiry above the registration envelope's
+  own lifetime (tip + 90), e.g. tip + 150. Inside its window the same owner may use one consent again
+  (deliberate, design §11.3); at the shipped epoch length every re-registration is more than 720 blocks
+  after the exit, so it always needs a fresh consent.
+- **The owner pays.** The bond — **exactly** 10^14 raw = 1 000 000 NODUS today (the chain refuses any
+  other amount) — and the fee (≈ 0.48 NODUS at the current gas price) come from coins the `--keys`
+  identity owns. The storage reward accrues to the owner and pays out on paydays; after an exit the bond
+  comes back to the owner. There is no separate payee.
+- **What the CLI checks before it builds.** The node's rule-set generation (below 4: `storage
+  registration exists only from generation 4` — the storage vote has not taken effect; nothing built);
+  the consent against the session — op 3, this node's chain, owner = the `--keys` identity (with
+  `--msig`: the multisig address) (a consent
+  naming another owner is refused: run `register` with the OWNER's keys, not the node's), the signature
+  under the node key, the window at the next height; the registry row (`dnac_storage_status`):
+  `register` refuses a node already ACTIVE or EXITING, and a RELEASED one before its re-registration
+  height (the message names the first accepted height); `exit` refuses a node not registered, not
+  ACTIVE, or owned by someone other than the `--keys` identity (the `--msig` address). If the row
+  query fails it warns and
+  lets the chain decide.
 - **Explicit confirmation**, as every `v2-envelope` builder: `--dry-run` builds, self-checks and prints
-  everything without sending; only `--submit ip:port` sends. Before the wire id the CLI prints what is
-  sent: the node fingerprint, the bond (exactly 10^14 raw = 1 000 000 NODUS — the chain accepts no other
-  amount), the payee (the node's own fingerprint — the only payee the chain accepts before HF-5), the
-  fee, inputs and change.
-- **Generation gate.** The CLI builds for the rule-set generation the node names and refuses with a
-  plain message while it is below the storage generation (the vote has not taken effect).
-- **What it refuses on its own** (from the node's `dnac_storage_status` answer): `register` when the
-  node is already ACTIVE or EXITING; `exit` when it is not registered or not ACTIVE. If that query fails
-  it warns and lets the chain decide.
-- **Exit:** `storage exit (--dry-run | --submit ip:port)` pays only the fee. The node leaves the storage
-  set at the next epoch boundary and earns nothing after it; the bond comes back at that boundary as one
-  coin to the payee, locked 12 epochs (`DNAC_STORAGE_EXIT_LOCK_EPOCHS`). Re-registering is possible only
-  after the bond was released (row RELEASED).
-- **Status** prints the registry row (status, bond, fail_streak, registered / exit height, payee,
+  everything without sending; only `--submit ip:port` sends. Before the wire id the CLI prints the node
+  fingerprint, the owner, the bond and what follows, then the fee, inputs and change. "accepted" on
+  submit is mempool admission only; the registration is in when `storage status` shows the row.
+- **Exit** (`storage exit`, the owner, fee only). The node leaves the storage set at the first epoch
+  boundary at or after the exit's height (B_rel) and earns nothing after it; at B_rel the bond comes back
+  as one coin to the OWNER, locked 12 epochs (`DNAC_STORAGE_EXIT_LOCK_EPOCHS`). **Stopping the machine
+  is not an exit**: the bond stays locked, the node fails its probes, and at 3 failed epochs it is skipped
+  for placement (it returns by itself after 12, decision K2/K5).
+- **Registering again** (a RELEASED node — the same owner or a different one, with a new consent; khan
+  decision A2 of 2026-10-12): only from the first height after the epoch boundary that FOLLOWS its
+  release boundary. With x = the exit height and E = 720: allowed at h ≥ (⌊(x−1)/E⌋ + 2)·E + 1 — a node
+  that exits at 720 may register again at 1441 (design §11.4). Why: the node's last epoch in the old life
+  is settled at B_rel + E and paid to whoever owns the row at that moment; registering earlier would hand
+  that payment (and a reset fail counter) to the new life. The CLI and the chain both refuse earlier.
+- **Status** prints the registry row (status, bond, fail_streak, registered / exit height, **owner**,
   grace_until — and, while the epoch start is below it, `IN GRACE this epoch … N grace epoch(s) left`,
   see 1b), the frozen storage set for the current epoch (H, H+E] and whether this node is in it, and
   the segments that count for it this epoch (number and blocks = number × 17280; at most the first 64
-  are listed; 0 while in grace).
+  are listed; 0 while in grace). (The node RPC still names the field `payee`; since HF-6 it holds the
+  owner.)
   **The last settled outcome is not available**: the settlement records no per-node verdict on chain
-  (it writes only fail_streak and the payee's reward accrual, and deletes the epoch's reports), so
-  fail_streak is its only trace — 0 after a good epoch with segments, growing after failed ones;
-  at 3 or more the node is skipped for placement.
+  (it writes only fail_streak and the owner's reward accrual, and deletes the epoch's reports), so
+  fail_streak is its only trace — 0 after a good epoch with segments, growing after failed ones,
+  unchanged after an epoch with no evidence (the self-approval rule above); at 3 or more the node is
+  skipped for placement.
+- **A machine that is both a validator and a storage node and changes its validator key (§2.7: UNSTAKE
+  + a new STAKE under a fresh key — HF-6 has no key rotation, khan decision
+  `2026-10-13-kurultay-18-summary.md` item 1).** The storage registration is keyed by the OLD node key
+  and there is no storage key rotation either (design §11.1): validators keep probing the old identity.
+  Either keep the OLD process running for as long as the old key is to stay a storage node — with its
+  own data directory and the archive (item 1), and as a validator until its row graduates (§2.7 step
+  1) — or have the owner EXIT the old key and REGISTER the new key (a new consent signed by the new
+  node): the new key is a new row, joins the storage set only at the next boundary and takes over its
+  segments with a grace (1b), so expect at least one epoch without storage pay.
 
 **5. Validators need nothing.** A node seated in snapshot(H) probes every other storage member once per
 epoch and submits its STORAGE_REPORT in the report window (H+E, H+E+⌊E/2⌋] by itself — there is no
@@ -1452,6 +1633,72 @@ storage_set(H)). Log lines to look for (tag `W_STPROBE`): `probing epoch H=… s
 orders by fee per unit (decision `2026-09-25-mempool-policy.md` item 2), so in a run of full blocks it
 waits; the reporter resubmits after its expiry and the window is 360 blocks at E = 720. No priority
 lane exists for it (only CHAIN_CONFIG has one); adding one is an operator decision.
+
+## 2.7 Changing a validator's consensus key = UNSTAKE + a new STAKE (HF-6: NO key rotation) — branch only, NOT voted, NOT deployable yet
+
+Khan decision `docs/plans/decisions/2026-10-13-kurultay-18-summary.md` items 1 and 4 (operator: "bir
+node unstake edildikten sonra tamamen bir daha kullanılmaması", "aynı makinede yapmak istiyorsa silsin
+anahtarı, bir daha yapsın, bir yeni anahtar oluştursun"); the design's §3 box "KALDIRILDI — han kararı
+2026-10-13". **HF-6 has no ROTATE_CONSENSUS_KEY** (SYSTEM op 10 is owned by no generation — the chain
+refuses it at admission; since HF-6 D2 the CLI has no `validator consent --op rotate` /
+`v2-envelope rotate` either, and the consent file refuses op 2). Everything here exists only on
+branch `hf6` and only under rule-set generation 4 (HF-6 — voted by chain_config param 18
+`RULESET_GEN_ROLES` = D4, §2.2 HF-6 row), which is not voted on any live chain. **Doing any of it on a
+live node needs the operator's word like every deploy.**
+
+**The rule.** A validator's consensus key IS its node's identity: the same key runs the consensus
+signer (privval), the 4004 p2p ID and the 4002 inter-node auth (design §1.4). A key that has EVER
+appeared in a validators row — any status, UNSTAKED included, and every pre-HF-6 row (the
+generation-4 edge reserves them all) — is **burned for good**: no STAKE can ever use it again
+(`v2_consensus_keys` is permanent; the generation-4 STAKE refuses a reserved key at exec,
+`nodus_witness_rt_native.c` `rtn_stake2_exec`). So a new key — whether wanted, or because the old one
+leaked — means **a NEW validator**: a new node with a new identity, a new STAKE, a new validator_id.
+Nothing carries over: delegators re-delegate to the new validator, its Rule R tenure starts again
+(seated no earlier than two epochs after its STAKE, `DNAC_MIN_TENURE_BLOCKS` = 2E), and the old
+validator's bond comes back only through the normal graduation below.
+
+**Procedure.**
+1. **The owner UNSTAKEs the old validator** (`v2-envelope unstake`, kind 1 or — for a multisig owner —
+   the `--msig … --in … --export` form of §2.6 "Multisig owner"; each co-signer's `msig sign` needs
+   `-s <the node he runs> --pin <its fingerprint>` to verify the funding inputs, §2.6; the funding
+   vault must be the owner itself — the chain refuses a multisig funding leg of another vault,
+   CORE v9). The call is `validator_id ‖ owner_fp` (128 B —
+   HF-6 D2 "C2": the CLI writes the `--keys` identity's fingerprint or the multisig address; the chain
+   refuses an UNSTAKE whose `owner_fp` is not the row's owner, whoever signs — the same for
+   `v2-envelope validator-update`, `validator_id ‖ owner_fp ‖ commission`, 130 B). Its row becomes
+   RETIRING. It
+   graduates at the first epoch boundary where it is no longer an entry of the snapshot taking effect
+   (often one epoch later than the UNSTAKE — an exiting validator stays seated and MUST keep signing
+   until then, `nodus_witness_v2_epoch.h` GRADUATION); at the graduation its bond is released to the
+   owner as a coin locked `DNAC_VALIDATOR_UNBOND_EPOCHS` (84) epochs and every delegation it still
+   holds goes back to its delegator locked `DNAC_UNDELEGATE_LOCK_EPOCHS` (12) epochs. **Keep the old
+   node running and signing until its row reads UNSTAKED** (`SELECT status FROM validators WHERE
+   lower(hex(pubkey_hash)) = '<validator_id>'` → 2). After that the old key is never usable again —
+   delete it.
+2. **Prepare the new node — new identity, new data directory** (the consensus signer's state lives in
+   `<data dir>/priv_validator_state.json`, `nodus_witness.c`). **Never copy the old node's identity or
+   data directory**: two processes with one consensus key is double signing — and the old key could
+   not be STAKEd anyway. On the same machine: stop the old process after step 1, move its identity and
+   data aside (or delete them), let nodus-server generate a fresh identity. Its own 4004 p2p ID:
+   `nodus-cli -i <new identity dir> whoami` (`P2P ID:`). It joins as a non-validator and block-syncs
+   (§1.5 "Joining a node").
+3. **The new node consents and the owner STAKEs** — `validator consent --op stake` signed by the NEW
+   key, then `v2-envelope stake2` by the owner with a bond ≥ STAKE_MIN (chain_config param 19; the
+   compiled default 2 000 000 NODUS). A STAKE naming a used key is refused at exec (the item leaves no
+   `v2_intent_index` row) — that is the rule, not a fault.
+4. **The bond.** The new STAKE needs its own bond from the owner (the old bond is locked for 84 epochs
+   after the old validator's graduation). Funding the new one from other coins does not wait for the
+   old bond.
+
+**A storage node on the same machine** (§2.6 item 1's "both a validator and a storage node"): the
+storage registration is keyed by the node key too; changing the key means EXITing the old storage
+row and REGISTERing the new key (a new consent by the new node) — expect at least one epoch without
+storage pay while the new row joins the storage set.
+
+(Until 2026-10-13 this section described the HF-6 slice-6 key rotation — the freeze's budget, the
+switch at U, the release at U + E and khan decisions A1-A8; the feature was removed before any chain
+ran it. `git log` keeps the old text.)
+
 
 ---
 

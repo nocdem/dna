@@ -20,6 +20,8 @@
                                                 * conflict key           */
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_claims.h"
+#include "witness/nodus_witness_v2_migrate.h"  /* HF-6 3b: the gen-4 edge's
+                                                * validator migration    */
 #include "witness/nodus_witness_v2_adapter.h"
 #include "witness/nodus_witness_v2_epoch.h"    /* O12 S2: the boundary  */
 #include "witness/nodus_witness_v2_econ.h"     /* econ params (6f),
@@ -46,8 +48,10 @@
  * (env_gas_price_check), — final pre-testnet wipe W-C — of
  * DNAC_CFG_TOKEN_CREATE_FEE_RAW (env_token_create_fee), — HF-2 — of
  * DNAC_CFG_HF2_ACTIVE (env_hf2_active), — HF-3 — of
- * DNAC_CFG_HF3_ACTIVE (env_hf3_active) and — HF-8 — of
- * DNAC_CFG_DELEGATE_NAME_REQUIRED (env_delegate_name_required). */
+ * DNAC_CFG_HF3_ACTIVE (env_hf3_active), — HF-8 — of
+ * DNAC_CFG_DELEGATE_NAME_REQUIRED (env_delegate_name_required) and — HF-6
+ * slice 8a — of DNAC_CFG_STAKE_MIN (env_stake_min) and
+ * DNAC_CFG_STORAGE_BOND (env_storage_bond). */
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"         /* NODUS_W_BASE_TX_FEE,
                                         * NODUS_W_TOKEN_CREATE_FEE       */
@@ -954,12 +958,15 @@ static int env_ruleset_gen2_voted(nodus_witness_t *w, uint8_t *voted,
     return 0;
 }
 
-/* Storage reward v1 (design docs/plans/2026-10-04-storage-reward-v1-
- * design.md rev 2.2 §6 — "voted like RULESET_GEN2"): has ANY chain_config
- * param-16 (RULESET_GEN_STORAGE) row been committed, at any effective
- * height? env_ruleset_gen2_voted's contract verbatim (the INT64_MAX
+/* Has ANY chain_config param-16 (RULESET_GEN_STORAGE — RETIRED by HF-6
+ * slice 8c) row been committed, at any effective height?
+ * env_ruleset_gen2_voted's contract verbatim (the INT64_MAX
  * current_block, the three-valued accessor, a read fault = node FAULT,
- * UNMETERED, once per item) — into ctx.ruleset_gen_storage_voted.
+ * UNMETERED, once per item) — into ctx.ruleset_gen_storage_voted. No new
+ * param-16 row can be committed since 8c (the scalar rules refuse the
+ * id); one committed before refuses every param-18 vote (design docs/
+ * plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8, the
+ * param-18 stateful rule (a') — "a read fault is distinct from absence").
  * @return 0 (*voted = 0/1) / -2. */
 static int env_ruleset_gen_storage_voted(nodus_witness_t *w, uint8_t *voted,
                                          char *reason, size_t reason_size)
@@ -970,9 +977,32 @@ static int env_ruleset_gen_storage_voted(nodus_witness_t *w, uint8_t *voted,
                                         (uint64_t)INT64_MAX, 0ULL, &v);
 
     if (rc < 0) {
-        V2AP_ENV_FAULT("%s", "storage reward: the RULESET_GEN_STORAGE "
-                       "history is unreadable on this node - refusing to "
-                       "judge a vote's single-use rule against a guess");
+        V2AP_ENV_FAULT("%s", "HF-6: the RULESET_GEN_STORAGE (retired param "
+                       "16) history is unreadable on this node - refusing "
+                       "to judge the generation-4 vote against a guess");
+        return -2;
+    }
+    *voted = (rc == 0) ? 1u : 0u;
+    return 0;
+}
+
+/* HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md
+ * rev 6 §8): has ANY chain_config param-18 (RULESET_GEN_ROLES) row been
+ * committed, at any effective height? env_ruleset_gen2_voted's contract
+ * verbatim — into ctx.ruleset_gen_roles_voted, the param-18 single-use
+ * rule (a). @return 0 (*voted = 0/1) / -2. */
+static int env_ruleset_gen_roles_voted(nodus_witness_t *w, uint8_t *voted,
+                                       char *reason, size_t reason_size)
+{
+    uint64_t v = 0;
+    int rc = nodus_chain_config_get_u64(w,
+                                        (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                                        (uint64_t)INT64_MAX, 0ULL, &v);
+
+    if (rc < 0) {
+        V2AP_ENV_FAULT("%s", "HF-6: the RULESET_GEN_ROLES history is "
+                       "unreadable on this node - refusing to judge a "
+                       "vote's single-use rule against a guess");
         return -2;
     }
     *voted = (rc == 0) ? 1u : 0u;
@@ -1018,6 +1048,73 @@ static int env_name_prices(nodus_witness_t *w, uint64_t height,
                            (unsigned long long)out[k]);
             return -2;
         }
+    }
+    return 0;
+}
+
+/* HF-6 slice 8a (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ * design.md rev 6 §1.5, §8; Kurultay #14 K9): the generation-4 STAKE bond
+ * floor at `height` — chain_config param 19 (STAKE_MIN), the committed row
+ * active at `height` or the compiled DNAC_HF6_STAKE_MIN_DEFAULT. The
+ * env_name_prices discipline: the one three-valued accessor; an
+ * unanswerable read is a node FAULT, never a default; a stored value
+ * outside the votable range [DNAC_HF6_STAKE_MIN_MIN, INT64_MAX] is this
+ * node's storage disagreeing with every writer (the scalar rule — the
+ * SAME constant pair — admits nothing else), a FAULT too. A value above
+ * INT64_MAX is what a NEGATIVE stored int64 reads back as. UNMETERED;
+ * filled into every ctx the engine builds (exec_one_env,
+ * env_authorize_legs) so the pure STAKE hook never touches the database.
+ * `height` is the block being applied — tip + 1 on the CheckTx dry run —
+ * so CheckTx and FinalizeBlock read the same row. @return 0 / -2. */
+static int env_stake_min(nodus_witness_t *w, uint64_t height,
+                         uint64_t *out, char *reason, size_t reason_size)
+{
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_STAKE_MIN, height,
+                                   (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT,
+                                   out) < 0) {
+        V2AP_ENV_FAULT("HF-6: STAKE_MIN at height %llu is unreadable on "
+                       "this node - refusing to judge a STAKE against a "
+                       "guessed bond floor", (unsigned long long)height);
+        return -2;
+    }
+    if (*out < (uint64_t)DNAC_HF6_STAKE_MIN_MIN ||
+        *out > (uint64_t)INT64_MAX) {
+        V2AP_ENV_FAULT("HF-6: STAKE_MIN at height %llu reads %llu, a value "
+                       "no committed row can hold - this node's "
+                       "chain_config storage is inconsistent",
+                       (unsigned long long)height,
+                       (unsigned long long)*out);
+        return -2;
+    }
+    return 0;
+}
+
+/* HF-6 slice 8a (design rev 6 §11.3, §8; Kurultay #16 khan decision 3):
+ * the EXACT storage registration bond at `height` — chain_config param 21
+ * (STORAGE_BOND), the committed row active at `height` or the compiled
+ * DNAC_HF6_STORAGE_BOND_DEFAULT. The env_stake_min contract above
+ * statement for statement, over the range [DNAC_HF6_STORAGE_BOND_MIN,
+ * DNAC_HF6_STORAGE_BOND_MAX] (the scalar rule's pair). @return 0 / -2. */
+static int env_storage_bond(nodus_witness_t *w, uint64_t height,
+                            uint64_t *out, char *reason, size_t reason_size)
+{
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_STORAGE_BOND, height,
+                                   (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT,
+                                   out) < 0) {
+        V2AP_ENV_FAULT("HF-6: STORAGE_BOND at height %llu is unreadable on "
+                       "this node - refusing to judge a STORAGE_REGISTER "
+                       "against a guessed bond",
+                       (unsigned long long)height);
+        return -2;
+    }
+    if (*out < (uint64_t)DNAC_HF6_STORAGE_BOND_MIN ||
+        *out > (uint64_t)DNAC_HF6_STORAGE_BOND_MAX) {
+        V2AP_ENV_FAULT("HF-6: STORAGE_BOND at height %llu reads %llu, a "
+                       "value no committed row can hold - this node's "
+                       "chain_config storage is inconsistent",
+                       (unsigned long long)height,
+                       (unsigned long long)*out);
+        return -2;
     }
     return 0;
 }
@@ -1244,6 +1341,9 @@ static int epoch_stage_fault(void *ud, nodus_v2_epoch_stage_t s,
         case NODUS_V2_EPST_GRAD_DELEG_RELEASED:
             return graduate_index == 0 &&
                    blk->fail_at == V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE;
+        /* F61 / F62 (the HF-6 6e rotation swap / sweep) are RETIRED with
+         * the steps (khan decision 2026-10-13-kurultay-18-summary.md item
+         * 1): the module never fires a stage for them. */
         default:
             return 1;                    /* unknown stage: fail closed   */
     }
@@ -1448,6 +1548,7 @@ static int dry_run_note_rows(nodus_v2_env_dry_run_t *dry,
  * compiled production table carries one in this release. */
 
 static int cmt_savepoint_release(nodus_witness_t *w, const char *name);
+static int cmt_savepoint_rollback(nodus_witness_t *w, const char *name);
 
 /** One cached logical read: (op, key) → the answer, for the life of ONE
  *  leg (design §3 I11: the overlay — and so this cache — is fresh per
@@ -2269,7 +2370,7 @@ done:
         /* only a FAULT leaves it open; the item's own rollback discards
          * it too — undone here so the transaction's savepoint stack is
          * what the item loop expects */
-        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+        (void)cmt_savepoint_rollback(w, sp);
         (void)cmt_savepoint_release(w, sp);
     }
     if (out.release) out.release(&out);
@@ -2371,15 +2472,30 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     uint8_t gen2_voted = 0;
     if (env_ruleset_gen2_voted(w, &gen2_voted, reason, reason_size) != 0)
         return -2;
-    /* storage reward v1: "any param-16 row", the same discipline */
+    /* HF-6: "any param-16 row" (RETIRED id — the param-18 vote's rule
+     * (a')) and "any param-18 row" (its single use), the same discipline */
     uint8_t gen_storage_voted = 0;
     if (env_ruleset_gen_storage_voted(w, &gen_storage_voted, reason,
                                       reason_size) != 0)
+        return -2;
+    uint8_t gen_roles_voted = 0;
+    if (env_ruleset_gen_roles_voted(w, &gen_roles_voted, reason,
+                                    reason_size) != 0)
         return -2;
     /* HF-4: the name price tiers at this block's height, once per item */
     uint64_t name_price[4];
     if (env_name_prices(w, blk->global_height, name_price, reason,
                         reason_size) != 0)
+        return -2;
+    /* HF-6 slice 8a: the STAKE bond floor (param 19) and the exact
+     * storage bond (param 21) at this block's height, once per item, the
+     * same discipline */
+    uint64_t stake_min = 0, storage_bond = 0;
+    if (env_stake_min(w, blk->global_height, &stake_min, reason,
+                      reason_size) != 0)
+        return -2;
+    if (env_storage_bond(w, blk->global_height, &storage_bond, reason,
+                         reason_size) != 0)
         return -2;
     /* Nodus EVM: the EVM_ACTIVE vote facts and the EVM block gas limit, once
      * per item (an earlier item's vote row counts — the HF-4 rule) */
@@ -2433,8 +2549,11 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.hf2_active          = hf2;
         ctx.ruleset_gen2_voted  = gen2_voted;
         ctx.ruleset_gen_storage_voted = gen_storage_voted;
+        ctx.ruleset_gen_roles_voted = gen_roles_voted;
         ctx.delegate_name_required = dlg_name;
         memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
+        ctx.stake_min           = stake_min;
+        ctx.storage_bond        = storage_bond;
         /* Nodus EVM (design §10): the block environment an ABI-2 runtime
          * reads — the Comet header seconds and the EVM block gas limit
          * (chain_config param 15 at this height, the compiled default
@@ -2820,6 +2939,33 @@ static int cmt_savepoint_release(nodus_witness_t *w, const char *name)
 }
 
 /**
+ * `ROLLBACK TO SAVEPOINT <name>` (nodus_witness_db_rollback_to_savepoint)
+ * and the chain_config lookup cache made COLD — every item / claim / inner
+ * savepoint of the cometbft lane rolls back through here.
+ *
+ * Why (HF-6 red-team round 1 close-out): a chain_config row written
+ * inside the savepoint marks the cache cold (rt_native.c, the SYSTEM
+ * adapter's "invalidate-before-commit" rule), but a lookup LATER in the
+ * same savepoint re-warms it from the database — which then holds the
+ * uncommitted row. Rolled back, the row is gone and a warm cache would
+ * still answer with it, while a cold one re-reads the database
+ * (nodus_witness_chain_config.c: a hit and the DB-direct fallback answer
+ * identically only while the cache holds exactly the committed rows).
+ * Cooling is always safe — the next lookup re-warms from the database —
+ * and costs one re-warm SELECT. Unconditional: a failed ROLLBACK TO
+ * leaves the cache cold too.
+ *
+ * @return nodus_witness_db_rollback_to_savepoint's return.
+ */
+static int cmt_savepoint_rollback(nodus_witness_t *w, const char *name)
+{
+    int rc = nodus_witness_db_rollback_to_savepoint(w, name);
+
+    w->chain_config_cache_warm = false;
+    return rc;
+}
+
+/**
  * The GOVERNING COMMITTEE SNAPSHOT for a block at `height` — the
  * authority a committee-indexed (`auth_kind` 2) leg's approvals are
  * verified against.
@@ -2900,13 +3046,17 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
             memcpy(cm_pubkeys + (size_t)ci * NODUS_CC_PUBKEY_SIZE,
                    mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE);
             /* HF-2 (GW-1): the seat's VOTING POWER, copied out BEFORE
-             * `mem` is freed below — floor(total_stake / DNAC_DECIMAL_
-             * UNIT), the SAME derivation the block-commit validator set
+             * `mem` is freed below, in the same seat order the approvals
+             * index. HF-6 slice 5b: it is the member's `power`, which
+             * nodus_committee_get_for_block fills (cache hit and miss
+             * alike) from nodus_witness_vset_powers over the epoch's
+             * snapshot — the SAME helper the block-commit validator set
              * uses (nodus_witness_cmt_app.c's FinalizeBlock
-             * validator-update loop: `en->total_stake /
-             * DNAC_DECIMAL_UNIT`), in the same seat order the approvals
-             * index. */
-            cm_powers[ci] = mem[ci].total_stake / DNAC_DECIMAL_UNIT;
+             * validator-update loop). For a ruleset-1 snapshot that is
+             * floor(total_stake / DNAC_DECIMAL_UNIT), byte-identical to
+             * the pre-slice-5 derivation; for ruleset 2 the counted
+             * power (design rev 6 §5 "HF-2 yönetişim gücü"). */
+            cm_powers[ci] = mem[ci].power;
             if (qgp_sha3_512(mem[ci].pubkey, NODUS_CC_PUBKEY_SIZE,
                              cm_fps[ci]) != 0) {
                 free(cm_pubkeys);
@@ -3297,7 +3447,9 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint8_t  dlg_name = 0;
     uint8_t  gen2_voted = 0;
     uint8_t  gen_storage_voted = 0;
+    uint8_t  gen_roles_voted = 0;
     uint64_t name_price[4];
+    uint64_t stake_min = 0, storage_bond = 0;
 
     /* W-C: every ctx the engine builds carries the committed
      * token-creation fee (runtime.h contract); no auth hook reads it
@@ -3305,9 +3457,9 @@ static int env_authorize_legs(nodus_witness_t *w,
      * partly zero. Same read, same fault rule as exec_one_env. HF-2's
      * switch rides along for the same reason (the auth hook computes the
      * power sums unconditionally and does not read it), and so do
-     * HF-4's and the storage vote's single-use facts (no auth hook reads
-     * either), and HF-8's name rule (read_plan/exec only — no auth hook
-     * reads it). */
+     * HF-4's single-use fact and HF-6's two generation-4 vote facts (no
+     * auth hook reads any of them), and HF-8's name rule (read_plan/exec only — no auth hook
+     * reads it), and HF-6's STAKE floor and storage bond (exec only). */
     if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
         return -2;
     if (env_hf2_active(w, height, &hf2, reason, reason_size) != 0)
@@ -3320,7 +3472,14 @@ static int env_authorize_legs(nodus_witness_t *w,
     if (env_ruleset_gen_storage_voted(w, &gen_storage_voted, reason,
                                       reason_size) != 0)
         return -2;
+    if (env_ruleset_gen_roles_voted(w, &gen_roles_voted, reason,
+                                    reason_size) != 0)
+        return -2;
     if (env_name_prices(w, height, name_price, reason, reason_size) != 0)
+        return -2;
+    if (env_stake_min(w, height, &stake_min, reason, reason_size) != 0)
+        return -2;
+    if (env_storage_bond(w, height, &storage_bond, reason, reason_size) != 0)
         return -2;
     /* Nodus EVM: the EVM_ACTIVE facts and the EVM block gas limit ride along
      * like the facts above (no auth hook reads them) */
@@ -3377,7 +3536,10 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.delegate_name_required = dlg_name;
         actx.ruleset_gen2_voted  = gen2_voted;
         actx.ruleset_gen_storage_voted = gen_storage_voted;
+        actx.ruleset_gen_roles_voted = gen_roles_voted;
         memcpy(actx.name_price, name_price, sizeof(actx.name_price));
+        actx.stake_min           = stake_min;
+        actx.storage_bond        = storage_bond;
         /* Nodus EVM: the gas limit rides along like the facts above; the auth
          * stage has no block time (the dry run has no header) and no auth
          * hook reads either — block_time_s stays 0 here (runtime.h) */
@@ -4222,27 +4384,14 @@ static int cmt_item_index(nodus_witness_t *w, uint64_t global_height,
  * although h's items ran under generation 1 — outside the app hash,
  * stated in the design (§1.3) for explorers.
  *
- * STORAGE REWARD v1 (design docs/plans/2026-10-04-storage-reward-v1-
- * design.md rev 2.2 §6 / D5; decision docs/plans/decisions/2026-10-04-
- * storage-reward-approved.md; numbering in main merge order, Nodus EVM
- * first; K10 in 2026-10-05-storage-reward-is-for-archive.md): a SECOND
- * edge in this table, the same procedure — param 16
- * (RULESET_GEN_STORAGE, value DNAC_CFG_RULESET_GEN_STORAGE_D) switches
- * the registry from the EVM generation (NODUS_RT_GEN_STORAGE_BASE) to
- * GEN_STORAGE at the end of block H-1; the EVM domain's record is not
- * touched (EVM v1 unchanged). EVM-only: compiled under NODUS_EVM_ENABLED.
- * The EVM edge (2 -> GEN_EVM) is NOT a row here — it is phase 6b''
- * below, run after this one. The vote's stateful rule (d) (judged under
- * EXACTLY the EVM generation) is what makes "the registry is at the EVM
- * generation" true at the storage edge, and it keeps the two edges in
- * different blocks: every block up to and including the EVM edge block
- * is judged under the EVM base, so the storage vote is committed at or
- * after the EVM edge's H and its own H-1 lies strictly above the EVM
- * edge block. The edges are checked in this fixed order, each with
- * HF-4's exact reads, refusals and log text; the param-9 edge's
- * behaviour (and its log/fault wording) is byte-for-byte the HF-4 one.
- * Two more unmetered chain_config reads per block, no state effect when
- * no edge fires.
+ * The table holds ONE row today (param 9). Storage reward v1 put a
+ * second row here (param 16, EVM generation -> GEN_STORAGE); HF-6
+ * sub-slice 3b moved that edge into its own phase, phase_6b_gen4_edge
+ * (after 6b'' below), because generation 4 now carries the validator
+ * migration (design 2026-10-03-hf5-validator-owner-stake rev 6 §7-§8).
+ * The param-9 edge's behaviour (and its log/fault wording) is
+ * byte-for-byte the HF-4 one. Two unmetered chain_config reads per
+ * block, no state effect when no edge fires.
  *
  * @return 0 (switched or nothing to do) / -2 node FAULT (reason written).
  */
@@ -4260,14 +4409,12 @@ static const ruleset_edge_t RULESET_EDGES[] = {
     { (uint8_t)DNAC_CFG_RULESET_GEN2, "RULESET_GEN2",
       (uint64_t)DNAC_CFG_RULESET_GEN2_D2, "D2",
       NODUS_RT_GEN_1, NODUS_RT_GEN_2, "HF-4" },
-#ifdef NODUS_EVM_ENABLED
-    /* K10: EVM-only like GEN_STORAGE itself; the EVM edge (2 -> GEN_EVM)
-     * is NOT in this table — it is phase 6b'' below, which also
-     * registers the EVM domain */
-    { (uint8_t)DNAC_CFG_RULESET_GEN_STORAGE, "RULESET_GEN_STORAGE",
-      (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, "storage vote literal",
-      NODUS_RT_GEN_STORAGE_BASE, NODUS_RT_GEN_STORAGE, "storage reward" }
-#endif
+    /* HF-6 sub-slice 3b (design 2026-10-03-hf5-validator-owner-stake rev 6
+     * §8): the param-16 row (EVM generation -> GEN_STORAGE) that stood
+     * here is REMOVED. Generation 4 is now storage + the validator role,
+     * and its edge is its own phase, phase_6b_gen4_edge below (after
+     * 6b''), because the switch must be followed by the §7 migration in
+     * the same block. It never activated on any chain (design §8). */
 };
 
 /* One edge: 0 (switched or not this edge) / -2 node FAULT. */
@@ -4363,8 +4510,9 @@ static int phase_6b_ruleset_switch(nodus_witness_t *w, nodus_v2_block_t *blk,
  *   1. the row's value must be this build's DNAC_CFG_EVM_ACTIVE_D (the
  *      scalar rules admit nothing else; another value is this node's
  *      storage) and this build must carry the EVM generation — else FAULT;
- *   2. the schema must be S17 (the EVM tables, the CORE reserve row) —
- *      a node-local shape, so FAULT, never a verdict;
+ *   2. the schema must be S17 or S18 (the EVM tables, the CORE reserve
+ *      row; S18 = S17 + HF-6's empty v2_validator_roles, the live rung
+ *      since HF-6 3a) — a node-local shape, so FAULT, never a verdict;
  *   3. SYSTEM and CORE switch from NODUS_RT_GEN_EVM_BASE to
  *      NODUS_RT_GEN_EVM (nodus_witness_domreg_generation_switch — the
  *      HF-4 procedure); "not at the base" is a FAULT (the vote's stateful
@@ -4427,10 +4575,13 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
+        /* S17 or S18: a node replaying from genesis on this build is at
+         * S18 (the at-open rung) when it reaches the EVM edge */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S17) {
-            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17; this "
-                       "node's database is at %u", (unsigned)ver);
+            (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S18)) {
+            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17 or S18; "
+                       "this node's database is at %u", (unsigned)ver);
             return -2;
         }
     }
@@ -4485,6 +4636,170 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
                  (unsigned)NODUS_RT_GEN_EVM, (unsigned long long)h,
                  (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
                  (unsigned long long)h_next);
+    return 0;
+#endif
+}
+
+/*
+ * PHASE 6b''' — HF-6: THE GENERATION-4 EDGE + THE VALIDATOR MIGRATION
+ * (design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §7, §8; plan tasks/hf6-slice3-plan.md §1 "Migration step placement",
+ * §2 "3b"; decisions docs/plans/decisions/2026-10-08-kurultay-14-hf6-
+ * summary.md K4 / K8 and 2026-10-09-kurultay-16-hf6-storage-summary.md
+ * D2).
+ *
+ * TRIGGER (design §8, §8.1; HF-6 slice 8c): the param-18
+ * (RULESET_GEN_ROLES) row with this build's DNAC_CFG_RULESET_GEN_ROLES_D
+ * (D4) literal, effective at H = h+1 and absent at h — the phase-6b'
+ * shape. The storage boundary gate (nodus_witness_v2_storage.c) reads the
+ * same param 18. RETIRED param 16 is not read here: a committed param-16
+ * row refuses the param-18 vote itself (stateful rule (a')), so no chain
+ * this binary judges carries both.
+ *
+ * Then, in this order, inside the block's transaction:
+ *   1. the row's value must be this build's D4 (the scalar rules admit
+ *      nothing else; another value is this node's storage) and this
+ *      build must carry the EVM-based generation 4 (NODUS_EVM_ENABLED) —
+ *      else FAULT;
+ *   2. the schema must be EXACTLY S18 (v2_validator_roles exists) — a
+ *      node-local shape, so FAULT, never a verdict;
+ *   3. SYSTEM and CORE switch from NODUS_RT_GEN_STORAGE_BASE (3) to
+ *      NODUS_RT_GEN_STORAGE (4) through nodus_witness_domreg_generation_
+ *      switch — the procedure the removed RULESET_EDGES row ran; "not at
+ *      generation 3" is a FAULT (the vote's stateful rule (c) refused
+ *      every vote judged away from generation 3);
+ *   4. nodus_witness_v2_roles_migrate (nodus_witness_v2_migrate.h): keys
+ *      re-valued to validator_id, roles rows, 10M → 2M + 8M
+ *      self-delegation, balance copies re-keyed with equal amounts, the
+ *      Foundation accrual merge; any surprise is a FAULT;
+ *   5. SYSTEM and CORE are declared touched (SYSTEM: the registry and the
+ *      staking tables; CORE: accrual_root is a CORE leg and K4 moves it).
+ * Generation-4 descriptors are unchanged by 3b (storage content); the
+ * gen-4 readers of the re-keyed tables are sub-slice 3d's.
+ *
+ * Runs as 6b''': after 6b' (phase_6b_ruleset_switch), BEFORE 6b''
+ * (phase_6b_evm_activation — the call order in the phase list below is
+ * 6b' → 6b''' → 6b''), and BEFORE 6c, so the re-scan reloads the
+ * generation-4 runtimes and phases 7-11 commit the migrated tables into
+ * H−1's roots and app hash. A faulted block is rolled back whole by the
+ * host, so the edge is atomic and a replay of H−1 re-runs it exactly
+ * once (the 6b' argument). Not the edge → nothing.
+ * @return 0 / -2 node FAULT (reason written).
+ */
+static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
+                              dom_ctx_t *doms, size_t n_dom) {
+    const uint64_t h = blk->global_height;
+    uint64_t h_next = 0, v_next = 0, v_h = 0;
+    int at_next, at_h;
+
+    if (dna_ck_add_u64(h, 1u, &h_next) != 0 ||
+        h_next > (uint64_t)INT64_MAX) {
+        V2AP_FAULT("phase 6b''': height %llu + 1 leaves the int64 range of "
+                   "chain_config effective heights", (unsigned long long)h);
+        return -2;
+    }
+    at_next = nodus_chain_config_get_u64(w,
+                                         (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                                         h_next, 0ULL, &v_next);
+    at_h = nodus_chain_config_get_u64(w,
+                                      (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                                      h, 0ULL, &v_h);
+    if (at_next < 0 || at_h < 0) {
+        V2AP_FAULT("phase 6b''': RULESET_GEN_ROLES at heights %llu/%llu "
+                   "is unreadable on this node - refusing to decide the "
+                   "generation-4 edge on a guess", (unsigned long long)h_next,
+                   (unsigned long long)h);
+        return -2;
+    }
+    if (!(at_next == 0 && at_h == 1))
+        return 0;                       /* not the H-1 edge: nothing     */
+    if (v_next != (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D) {
+        V2AP_FAULT("phase 6b''': the RULESET_GEN_ROLES row effective at "
+                   "%llu reads 0x%016llx, not this build's generation-4 vote "
+                   "D4 0x%016llx - a value no committed row can hold here",
+                   (unsigned long long)h_next, (unsigned long long)v_next,
+                   (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D);
+        return -2;
+    }
+#ifndef NODUS_EVM_ENABLED
+    (void)doms;
+    (void)n_dom;
+    V2AP_FAULT("phase 6b''': the generation-4 edge is at height %llu but "
+               "this build does not carry generation 4 (built without "
+               "NODUS_EVM_ENABLED)", (unsigned long long)h);
+    return -2;
+#else
+    {
+        uint32_t ver = 0;
+        if (nodus_witness_db_schema_version(w, &ver) != 0 ||
+            ver != NODUS_V2_SCHEMA_VERSION_S18) {
+            V2AP_FAULT("phase 6b''': the generation-4 edge needs schema "
+                       "S18; this node's database is at %u", (unsigned)ver);
+            return -2;
+        }
+    }
+    int src = nodus_witness_domreg_generation_switch(
+        w, NODUS_RT_GEN_STORAGE_BASE, NODUS_RT_GEN_STORAGE);
+    if (src == 1) {
+        V2AP_FAULT("phase 6b''': the generation-%u vote reaches its edge at "
+                   "height %llu but the registry is not generation %u",
+                   (unsigned)NODUS_RT_GEN_STORAGE, (unsigned long long)h,
+                   (unsigned)NODUS_RT_GEN_STORAGE_BASE);
+        return -2;
+    }
+    if (src != 0) {
+        V2AP_FAULT("phase 6b''': the registry rewrite to generation %u "
+                   "failed on this node at height %llu (read, precondition "
+                   "or write)", (unsigned)NODUS_RT_GEN_STORAGE,
+                   (unsigned long long)h);
+        return -2;
+    }
+    {
+        /* K8 / D2: the compiled Foundation owner; the unsized array and
+         * the assert refuse a short (zero-padded) or long override */
+        static const uint8_t foundation[] = DNAC_HF6_FOUNDATION_OWNER;
+        _Static_assert(sizeof(foundation) == 64,
+                       "DNAC_HF6_FOUNDATION_OWNER must be exactly 64 bytes");
+        uint8_t chain32[DNA_CHAIN_ID_LEN];
+        if (nodus_witness_v2_chain_id(w, chain32) != 0) {
+            V2AP_FAULT("phase 6b''': the chain id (validator_id input) is "
+                       "underivable on this node at height %llu",
+                       (unsigned long long)h);
+            return -2;
+        }
+        if (nodus_witness_v2_roles_migrate(w, h_next, chain32,
+                                           foundation) != 0) {
+            V2AP_FAULT("phase 6b''': the generation-4 validator migration "
+                       "failed on this node at height %llu (reason in the "
+                       "W_V2MIGRATE log)", (unsigned long long)h);
+            return -2;
+        }
+    }
+    {
+        dom_ctx_t *dsys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+        dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
+        if (!dsys || !dcore) {
+            V2AP_FAULT("phase 6b''': SYSTEM or CORE is absent from the "
+                       "block-start working set at height %llu",
+                       (unsigned long long)h);
+            return -2;
+        }
+        dsys->touched = 1;
+        dcore->touched = 1;
+    }
+    /* The text is pinned by the harness (test_hf6_edge.sh HF6_LINE,
+     * test_storage_archive.sh STOR_LINE) and quoted by DEPLOY_RUNBOOK
+     * §2.2: change all of them together. */
+    QGP_LOG_INFO(LOG_TAG, "HF-6: rule-set generation %u -> %u and the "
+                 "validator migration at the end of height %llu (param %u "
+                 "RULESET_GEN_ROLES, D4 0x%016llx); height %llu is judged "
+                 "under generation %u",
+                 (unsigned)NODUS_RT_GEN_STORAGE_BASE,
+                 (unsigned)NODUS_RT_GEN_STORAGE, (unsigned long long)h,
+                 (unsigned)DNAC_CFG_RULESET_GEN_ROLES,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D,
+                 (unsigned long long)h_next,
+                 (unsigned)NODUS_RT_GEN_STORAGE);
     return 0;
 #endif
 }
@@ -4552,16 +4867,20 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * (nodus_witness_v2_schema.h), so the lane writes the same rows
          * at either rung; S17 is the live rung (every builder and the
          * at-open rung, nodus_witness.c, migrate to it). The EVM edge
-         * itself (phase 6b'') FAULTs below S17. */
+         * itself (phase 6b'') FAULTs below S17. HF-6 3a: S18 = S17 + the
+         * empty v2_validator_roles is the live rung; the lane writes the
+         * same rows at 16, 17 or 18. */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S17)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S17 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S18)) {
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
-                       "not %u or %u - the Comet block row cannot be "
+                       "not %u, %u or %u - the Comet block row cannot be "
                        "written here; nothing about the block was judged",
                        (unsigned)ver,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S16,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S17);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S17,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S18);
             return -2;
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
@@ -4800,7 +5119,16 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                        (unsigned long long)blk->global_height);
             return -2;
         }
-        int hrc = dna_vset_hash(snap, blk->out_vset_hash);
+        /* HF-6 slice 5d: the governing snapshot may be ruleset 2 from the
+         * first generation-4 boundary's stored row on, so hash it through
+         * the `_ex` family at max ruleset 2. The layout and the tag follow
+         * the snapshot's own header (shared/dnac/vset_wire.c
+         * dna_vset_hash_ex → dna_vset_hash_bytes_ex): a ruleset-1
+         * snapshot hashes to exactly the bytes dna_vset_hash produced
+         * (v1 layout, NDS.VSET.v1 tag); the ruleset-1-only wrapper would
+         * refuse a ruleset-2 one and fault every block it governs. */
+        int hrc = dna_vset_hash_ex(snap, DNA_VSET_RULESET_TOPN_V2,
+                                   blk->out_vset_hash);
         dna_vset_free(&snap);
         if (hrc != 0) {
             doms_free(doms);
@@ -5078,7 +5406,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                         V2AP_FAULT("cometbft item %llu: the preflight's "
                                    "hash backend failed on this node",
                                    (unsigned long long)i);
-                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                        (void)cmt_savepoint_rollback(w, sp);
                         (void)cmt_savepoint_release(w, sp);
                         goto fail_fault;
                     }
@@ -5121,7 +5449,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
 
                 if (env_replay_guard(w, &pf[i], i, &hit, blk->out_reason,
                                      sizeof blk->out_reason) != 0) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;   /* the helper owns the reason     */
                 }
@@ -5139,7 +5467,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                          sizeof blk->out_reason);
 
                 if (arc == -2) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;   /* the helper owns the reason     */
                 }
@@ -5159,7 +5487,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                               sizeof blk->out_reason);
 
                 if (grc == -2) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;   /* the helper owns the reason     */
                 }
@@ -5195,7 +5523,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     V2AP_FAULT("cometbft item %llu: the meter reported an "
                                "accounting fault on this node",
                                (unsigned long long)i);
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;
                 }
@@ -5215,7 +5543,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                     blk->out_reason, sizeof blk->out_reason);
 
                 if (arc == -2) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;   /* the helper owns the reason     */
                 }
@@ -5233,7 +5561,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                       blk->out_reason,
                                       sizeof blk->out_reason);
                 if (rc == -2) {
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;      /* exec_one_env owns the reason */
                 }
@@ -5254,7 +5582,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
             if (cmt_item_index(w, blk->global_height, &pf[i], doms, n_dom,
                                gidx, blk->out_reason,
                                sizeof blk->out_reason) != 0) {
-                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
                 goto fail_fault;       /* the helper owns the reason     */
             }
@@ -5269,7 +5597,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                              (uint32_t)i, &pf[i], auths,
                                              blk->out_reason,
                                              sizeof blk->out_reason) != 0) {
-                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
                 goto fail_fault;       /* the helper owns the reason     */
             }
@@ -5294,7 +5622,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
                                    (unsigned long long)i, (unsigned)l,
                                    (unsigned)d->domain_id,
                                    (unsigned long long)blk->n_envs);
-                        (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                        (void)cmt_savepoint_rollback(w, sp);
                         (void)cmt_savepoint_release(w, sp);
                         goto fail_fault;
                     }
@@ -5328,7 +5656,7 @@ cmt_item_failed:
             memset(res->data, 0, sizeof(res->data));
             blk->cmt.results_len = i + 1;
             blk->out_reason[0] = '\0';
-            if (nodus_witness_db_rollback_to_savepoint(w, sp) != 0 ||
+            if (cmt_savepoint_rollback(w, sp) != 0 ||
                 cmt_savepoint_release(w, sp) != 0) {
                 V2AP_FAULT("cometbft item %llu: its savepoint could not "
                            "be rolled back on this node",
@@ -5431,7 +5759,7 @@ cmt_item_failed:
                      * it is still unwound here so the claim lane and
                      * the envelope lane (every in-savepoint
                      * `goto fail_fault` above) exit the same way. */
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;
                 }
@@ -5465,7 +5793,7 @@ cmt_item_failed:
                 V2AP_FAULT("cometbft claim %llu targets ACTIVE domain %u "
                            "whose runtime this node cannot resolve",
                            (unsigned long long)i, (unsigned)target);
-                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
                 goto fail_fault;
             }
@@ -5476,7 +5804,7 @@ cmt_item_failed:
                 if (erc == -2) {
                     /* NODE-LOCAL, see above — unwound like the envelope
                      * lane, then the host's ROLLBACK. */
-                    (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                    (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
                     goto fail_fault;
                 }
@@ -5491,7 +5819,7 @@ cmt_item_failed:
                     w, blk->global_height, (uint32_t)(blk->n_envs + i),
                     &blk->claims[i], claim_nuls[i], target,
                     blk->out_reason, sizeof blk->out_reason) != 0) {
-                (void)nodus_witness_db_rollback_to_savepoint(w, sp);
+                (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
                 goto fail_fault;       /* the helper owns the reason     */
             }
@@ -5512,7 +5840,7 @@ cmt_claim_failed:
             blk->cmt.results_len = blk->n_envs + i + 1;
             blk->out_reason[0] = '\0';   /* an ITEM's refusal is not the
                                           * block's                     */
-            if (nodus_witness_db_rollback_to_savepoint(w, sp) != 0 ||
+            if (cmt_savepoint_rollback(w, sp) != 0 ||
                 cmt_savepoint_release(w, sp) != 0) {
                 V2AP_FAULT("cometbft claim %llu: its savepoint could not "
                            "be rolled back on this node",
@@ -5533,6 +5861,19 @@ cmt_claim_failed:
      * SYSTEM + CORE declared touched). BEFORE 6c, so the re-scan below
      * reloads the generation-2 manifests and runtimes. */
     if (phase_6b_ruleset_switch(w, blk, doms, n_dom) != 0)
+        goto fail_fault;               /* the helper wrote the reason     */
+
+    /* 6b'''. HF-6 — the GENERATION-4 EDGE, at the end of block H-1 of the
+     * param-18 (RULESET_GEN_ROLES) vote only (phase_6b_gen4_edge above):
+     * the registry 3 -> 4, then the validator migration, SYSTEM + CORE
+     * touched. BEFORE 6b'' — the slot the removed param-16 RULESET_EDGES
+     * row held (6b') — so an EVM edge and a generation-4 edge in the SAME
+     * block still FAULT here (the registry is not at generation 3 yet)
+     * instead of switching 2 -> 3 -> 4 in one block (test_hf4_switch F3;
+     * the vote's stateful rule (c) keeps them apart, this is the second
+     * line). BEFORE 6c, so the re-scan reloads the generation-4 runtimes
+     * and the roots below commit the migration. */
+    if (phase_6b_gen4_edge(w, blk, doms, n_dom) != 0)
         goto fail_fault;               /* the helper wrote the reason     */
 
     /* 6b''. Nodus EVM — the EVM ACTIVATION EDGE, at the end of block H-1 of the
@@ -6636,6 +6977,15 @@ int nodus_witness_v2_apply_block(nodus_witness_t *w, nodus_v2_block_t *blk) {
      * unconditional; it maps negative returns only — 0 (applied) passes
      * through, and no positive return exists any more (the legacy rc 1
      * replay / rc 2 post-commit window are deleted with that lane). */
+    if (rc < 0 && w) {
+        /* the host rolls the block's transaction back on every failure
+         * (above): a cache warmed inside it may hold rows that are about
+         * to vanish — cold, as at cmt_savepoint_rollback (HF-6 red-team
+         * round 1 close-out). The host's own later rollbacks (after a
+         * successful body) cannot reach this witness from the generic
+         * executor (nodus_witness_cmt_host.c ledger_txn_rollback). */
+        w->chain_config_cache_warm = false;
+    }
     if (rc < 0 && rc != NODUS_V2_INTERNAL_FAULT) {
         return NODUS_V2_INTERNAL_FAULT;
     }
@@ -6703,13 +7053,17 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
      * gate accepts S17; S16 stays accepted because S17 is a pure
      * superset whose additions no genesis step touches (the S16 test
      * fixtures and an S16 scratch database produce the identical
-     * genesis). */
+     * genesis). HF-6 3a: every live builder migrates to S18 first (S17 +
+     * the empty v2_validator_roles, which no genesis step touches), so
+     * the gate accepts S18 too. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S17)) {
-        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16 or S17, "
-                      "the database is at %u — refusing", (unsigned)ver);
+         ver != NODUS_V2_SCHEMA_VERSION_S17 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S18)) {
+        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, S17 or "
+                      "S18, the database is at %u — refusing",
+                      (unsigned)ver);
         return -1;
     }
 

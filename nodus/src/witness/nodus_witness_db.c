@@ -1931,6 +1931,11 @@ int nodus_witness_db_rollback(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
     char *err = NULL;
     int rc = sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, &err);
+    /* HF-6 red-team round 1 close-out: a chain_config lookup cache warmed
+     * inside the transaction may hold rows that are gone now — cold, so
+     * the next lookup re-reads the database (nodus_witness_chain_config.c;
+     * unconditional: a failed ROLLBACK leaves it cold too). */
+    w->chain_config_cache_warm = false;
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: ROLLBACK failed: %s\n", LOG_TAG, err);
         sqlite3_free(err);
@@ -1974,6 +1979,8 @@ int nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name)
     snprintf(sql, sizeof(sql), "ROLLBACK TO SAVEPOINT %s", name);
     char *err = NULL;
     int rc = sqlite3_exec(w->db, sql, NULL, NULL, &err);
+    /* the chain_config cache goes cold, as at nodus_witness_db_rollback */
+    w->chain_config_cache_warm = false;
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: ROLLBACK TO SAVEPOINT %s failed: %s\n", LOG_TAG, name, err);
         sqlite3_free(err);

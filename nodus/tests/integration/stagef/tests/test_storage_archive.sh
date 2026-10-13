@@ -1,22 +1,35 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════
 # test_storage_archive.sh — the archive storage reward on a 7-node chain:
-# the storage rule-set generation voted in (param 16, generation 3 -> 4
-# on top of the Nodus EVM generation), two storage nodes registered, the
-# first archive segment published, probed over channel 0x72, reported
-# and SETTLED from treasury pool 1 (standalone — NOT in the sweep)
+# the storage rule-set generation voted in (param 18 RULESET_GEN_ROLES =
+# D4 since HF-6 slice 8c — param 16 RETIRED —, generation 3 -> 4 on top
+# of the Nodus EVM generation), two storage nodes registered by
+# their OWNERS (HF-6 owner/node split), the first archive segment
+# published, probed over channel 0x72, reported and SETTLED from treasury
+# pool 1, one node taken out by its owner and its bond released
+# (standalone — NOT in the sweep)
 # ════════════════════════════════════════════════════════════════════
 #
 # Governing records: docs/plans/decisions/2026-10-05-storage-reward-is-
 # for-archive.md (K1 block count, K2/K5/K5a fail_streak, K3 samples, K4
 # R = 3, K6 channel 0x72, K7 report window, K9/K9a grace, K10 generation
-# 4 on GEN_EVM, param 16); 2026-10-05-archive-reward-bytes-approved.md
+# 4 on GEN_EVM — its param 16 superseded by param 18, design rev 6 §8 and
+# 2026-10-09-kurultay-16-hf6-storage-summary.md item 1);
+# 2026-10-05-archive-reward-bytes-approved.md
 # (segment root bytes item 1); 2026-10-04-storage-reward-approved.md (S(H),
 # register / report / exit); design docs/plans/2026-10-05-archive-reward-
 # design.md rev 4; nodus/docs/DEPLOY_RUNBOOK.md §2.2 (height-activated
-# votes) and §2.6 (the storage node). TEMPLATE: test_cmt_evm.sh — its
-# helpers are copied (one build here: no OLD/NEW pair, no rolling
-# upgrade), every new part is marked "storage:".
+# votes) and §2.6 (the storage node). HF-6 slice 6b-3 (plan tasks/hf6-
+# slice6b-plan.md §2 "6b-3"): design docs/plans/2026-10-03-hf5-validator-
+# owner-stake-design.md rev 6 §11 (REGISTER 7299 B owner-signed with the
+# node's op-3 consent, EXIT 64 B by the row's owner, F2 owner-OR-key
+# exclusion and the three-state verdict, the khan decisions of 2026-10-12
+# under §11.7); decision 2026-10-09-kurultay-16-hf6-storage-summary.md
+# (khan 1, 2 "kural (a)", 3; D2 (a): the genesis validators are owned by
+# the compiled Foundation owner after the generation-4 edge). TEMPLATE:
+# test_cmt_evm.sh — its helpers are copied (one build here: no OLD/NEW
+# pair, no rolling upgrade), every new part is marked "storage:"; the
+# test-owner gate is test_hf6_edge.sh's (6f-2).
 #
 # WHY THE SEGMENT IS REACHABLE AT ALL: a segment is one payday period of
 # 24 epochs (DNA_V2_SEGMENT_BLOCKS = 24 × DNAC_EPOCH_LENGTH,
@@ -29,36 +42,69 @@
 # WHAT IT PROVES — each item would be false if it failed
 #   0. Capability gate (FAIL): the server and the CLI print one version
 #      banner; the CLI's chain-config usage names "EVM_ACTIVE exactly <D>"
-#      and "RULESET_GEN_STORAGE exactly <DS>" (its compiled literals —
-#      never a script literal) and it has the `storage` command.
+#      and "RULESET_GEN_ROLES exactly <D4>" (its compiled literals —
+#      never a script literal) and it has the `storage` command; and
+#      (step 0) every node's newest start logged the startup banner "HF-6
+#      rule-set generation 4 vote D4 0x<D4> (param 18 RULESET_GEN_ROLES,
+#      switch spec v1)" with the CLI's D4 (nodus_witness.c).
+#      HF-6 6b-3: it also names "storage consent --owner" and
+#      "storage register --keys" (an older CLI FAILs here).
 #   1. The chain commits; node 3 (the pump) and the two storage nodes 4
 #      and 5 claim their genesis leaves (100M NODUS each — the bond is
-#      exactly 10^14 raw, DNAC_STORAGE_STAKE_MIN).
+#      exactly 10^14 raw, DNAC_HF6_STORAGE_BOND_DEFAULT, the value of the
+#      chain's STORAGE_BOND seam rtn_storage_bond_at). TEST-OWNER MODE
+#      only: node 5 pays the test owner 10^14 + 2 × 10^8 raw (the bond and
+#      two fees), the coin found by the spend's intent_id.
 #   2. The storage generation's prerequisites, in order, each row
 #      identical 7/7 and committed below its effective height: HF2_ACTIVE,
 #      HF3_ACTIVE, RULESET_GEN2 (generation 1 -> 2), EVM_ACTIVE
 #      (generation 2 -> 3 + the EVM domain; H >= initial_height + 256 + 5,
-#      red-team F5 rule (g)). A fresh chain is generation 1, and param 16
-#      is votable only while the EVM generation judges the vote
-#      (nodus_witness_chain_config.c, CC_PARAM_RULESET_GEN_STORAGE rule
-#      (d)), whose own vote needs HF-2, HF-3 and generation 2 (rules
-#      (b)/(c)/(e)) — so all five votes are needed, not two.
-#   3. Before the storage vote: `storage register --dry-run` is refused by
-#      the CLI's generation gate ("storage registration exists only from
-#      generation 4"), and `storage status` says "not registered".
-#   4. RULESET_GEN_STORAGE = DS voted at H_s (H_s % E == 2: H_s - 1 is off
-#      a boundary — rule (c) — and the first storage boundary is E - 2
-#      blocks after it); round 1 7/7; the row identical 7/7, committed
-#      < H_s. Crossing H_s (pumped to H_s - 7, then idle): 7/7 identical
-#      blocks AT H_s - 1, H_s, H_s + 1; every node logged "storage reward:
-#      rule-set generation 3 -> 4 at the end of height H_s - 1 (storage
-#      vote literal 0x<DS>)"; `ruleset-info` 7/7 = generation 4.
-#   5. Nodes 4 and 5 `storage register --submit` with their NODE keys:
-#      each v2_storage_nodes row lands (ACTIVE, bond 10^14, payee = the
-#      node's own fingerprint, fail_streak 0, grace_until 0) and the
-#      registry is identical on 7/7; both are members of the first frozen
-#      set that contains them (B_in), and B_in <= the publication boundary
-#      (else the layout broke — FAIL, see HOW IT CAN LIE).
+#      red-team F5 rule (g)). A fresh chain is generation 1, and param 18
+#      is votable only while the EVM generation judges the vote, with
+#      HF-2 on (nodus_witness_chain_config.c, CC_PARAM_RULESET_GEN_ROLES
+#      rules (b), (c)), whose own vote needs HF-2, HF-3 and generation 2
+#      (rules (b)/(c)/(e)) — so all five votes are needed, not two.
+#   3. Before the storage vote (generation 3): node 4's key signs a VALID
+#      storage consent (`storage consent` warns about the generation and
+#      signs), and `storage register --keys <node 4> --consent <it>
+#      --dry-run` is refused by the CLI's generation gate ("storage
+#      registration exists only from generation 4") with no envelope
+#      built — the gate runs before the consent re-check (nodus-cli.c
+#      cmd_v2_stake), so the generation is what refuses; `storage status`
+#      says "not registered".
+#   4. RULESET_GEN_ROLES = D4 voted at H_s (H_s % E == 2: neither H_s - 1
+#      nor H_s is a boundary — rules (d), (e) — and the first storage
+#      boundary is E - 2 blocks after it); round 1 7/7; the row identical
+#      7/7, committed < H_s. Crossing H_s (pumped to H_s - 7, then idle):
+#      7/7 identical blocks AT H_s - 1, H_s, H_s + 1; every node logged
+#      "HF-6: rule-set generation 3 -> 4 and the validator migration at
+#      the end of height H_s - 1 (param 18 RULESET_GEN_ROLES, D4 0x<D4>)"
+#      (the generation-4 vote also runs the validator migration);
+#      `ruleset-info` 7/7 = generation 4. 6b-3: the seven
+#      v2_validator_roles rows all carry owner_fp = the build's Foundation
+#      owner (the K8 address, or STAGEF_HF6_OWNER_FP_HEX), identical 7/7 —
+#      the premise of item 9's verdicts (D2 (a)), and what names the build
+#      in the PASS line.
+#   5. The OWNER registers (design rev 6 §11.3): for each storage node k,
+#      the node's key signs `storage consent --owner <owner_k>` (op 3) and
+#      the consent FILE round-trips — its eight lines are exactly the
+#      container (nodus_v2_stake.h): op 3, chain_id = $BASE_DIR/v2_chain_id,
+#      a zero subject, owner_k, consensus_pk = the node's nodus.pk bytes,
+#      the requested expiry, a 4627-byte signature; then `storage register
+#      --keys <owner_k> --consent <file>` (node 4: a dry run first, which
+#      prints "node <fp_4>" and "owner <owner_4>"; then --submit).
+#      owner_4 = node 4's OWN key (kind 1; its validator seat is excluded
+#      for it by the KEY clause, the other six count). owner_5 = the
+#      test owner (TEST-OWNER MODE) or node 5's own key (default). The
+#      CLI's own owner check: a consent naming another owner than the
+#      --keys identity is refused before anything is built — tried with
+#      node 5's NODE identity as --keys (TEST-OWNER MODE: node 5's real
+#      consent, which names the test owner; default: a node-5 consent
+#      naming node 1). Each v2_storage_nodes row lands (ACTIVE, bond 10^14,
+#      owner column = owner_k, fail_streak 0, grace_until 0), the registry
+#      identical on 7/7; both are members of the first frozen set that
+#      contains them (B_in), and B_in <= the publication boundary (else
+#      the layout broke — FAIL, see HOW IT CAN LIE).
 #   6. Segment 1 is published at exactly H_pub = the first storage
 #      boundary >= 26E: one v2_storage_segments row (k 1, root,
 #      published_height) identical on 7/7, no k = 2; its root equals
@@ -67,7 +113,8 @@
 #      node 1's v2_blocks (bytes item 1 at P = 24E).
 #   7. `storage status` during the epoch after H_pub, on each storage
 #      node's own port with its own key: "registry: ACTIVE, bond
-#      100000000000000 raw, fail_streak 0", "grace_until: 0 (never in
+#      100000000000000 raw, fail_streak 0", "owner: <owner_k>" (the RPC's
+#      "payee" key, which holds the owner since HF-6), "grace_until: 0 (never in
 #      grace)" — K9a: no set(H − E) at the first storage boundary, and a
 #      segment published at a boundary is not counted at it
 #      (nodus_witness_v2_storage.c nodus_storage_grace_counts,
@@ -78,23 +125,58 @@
 #      epoch when H_pub + 2E is a payday), the committed
 #      v2_storage_reports rows (read after the window (Hx+E, Hx+E+⌊E/2⌋]
 #      closed and before Hx + 2E prunes them) are identical on 7/7, carry
-#      set_hash = the frozen S(Hx), and come from MORE than half the seats
-#      (F1, equal genesis power).
+#      set_hash = the frozen S(Hx), and come from at least
+#      ⌊N/2⌋ + 2 seats: with node 4's own seat among the reporters its
+#      independent power (6b-2, key clause) is N_rep − 1 seats, and only
+#      2·(N_rep − 1) > N makes its verdict decidable from here (equal
+#      validator power — after the edge every validator holds 2M + 8M).
 #   9. The settlement at B = Hx + 2E (not a payday) pays the storage
-#      payees: from ONE-statement snapshots before and after B,
-#        pool1_pre − pool1_post == 2 × ⌊(pool1_pre >> 16) / 2⌋
-#      (both members OK with equal weight P — v2_storage.c st_settle:
-#      budget = pool1 >> NODUS_V2_GEN_REWARD_DIVISOR_LOG2, share =
-#      ⌊budget × w / W⌋),
+#      OWNERS (v2_storage.c st_settle, 6b-2): from ONE-statement snapshots
+#      before and after B, budget = pool1 >> NODUS_V2_GEN_REWARD_DIVISOR_
+#      LOG2, SHARE = ⌊budget / 2⌋ (two members of equal weight P; W counts
+#      BOTH, a NO_EVIDENCE member included — design §11.6),
 #        Σaccrual_post − Σaccrual_pre == (reward_pool_pre − reward_pool_post)
-#                                        + (pool1_pre − pool1_post)
-#      (the storage pay lands in the same v2_reward_accrual table as the
-#      validator reward of the same boundary), and each storage payee's
-#      accrual rose by at least ⌊(pool1_pre >> 16) / 2⌋.
-#  10. fail_streak stays 0 and grace_until 0 for both honest storage
-#      nodes on 7/7 after the settlement (an OK epoch with eligible blocks
-#      resets to 0 — K5a; a NOT OK one would have written 1), and 7/7
-#      identical global_root + block_id at the final floor.
+#                                        + (pool1_pre − pool1_post),
+#      and node 4's owner (its own key) rose by EXACTLY SHARE — after the
+#      generation-4 edge a node key earns no validator reward (every
+#      validator's earnings go to its owner, the Foundation; test_hf6_edge
+#      step 8 "no node-key row"), so its only accrual is the storage share.
+#      DEFAULT MODE: pool 1 fell by exactly 2 × SHARE and node 5's owner
+#      (its own key) rose by exactly SHARE — both members OK.
+#      TEST-OWNER MODE: node 5 is owned by the SAME address as every
+#      validator, so every report about it is owner-excluded, I = 0 and
+#      2·I <= P_total — NO_EVIDENCE: pool 1 fell by exactly ONE SHARE
+#      (node 5's share stays in pool 1), and node 5's owner (= the
+#      Foundation owner) rose by exactly the reward-pool debit (the
+#      validator reward, no storage share).
+#  10. fail_streak stays 0 and grace_until 0 for both storage nodes on 7/7
+#      after the settlement (an OK epoch with eligible blocks resets to 0 —
+#      K5a; a NOT OK one would have written 1; NO_EVIDENCE leaves it
+#      untouched — so in TEST-OWNER MODE "one share AND fail_streak 0" is
+#      NO_EVIDENCE, neither OK (two shares) nor NOT OK (1)); pool 1 and
+#      the block AT B identical 7/7.
+#  11. The OWNER takes node 5 out (design §11.5): `storage exit --keys
+#      <node 4>` is refused by the CLI (node 4 does not own node 5);
+#      `storage exit --keys <owner_5> --node-fp <fp_5> --submit` → the row
+#      EXITING with exit_height x; at B_rel = the first boundary >= x, on
+#      7/7: the row RELEASED (x kept), node 4's row still ACTIVE, and
+#      exactly ONE storage release coin (utxo_set output_index 201,
+#      DNA_V2_STORAGE_EXIT_OUT_IDX) — to owner_5, amount 10^14, created at
+#      B_rel, unlock_block = B_rel + 12·E (DNAC_STORAGE_EXIT_LOCK_EPOCHS;
+#      st_release); the block AT B_rel and the final floor identical 7/7.
+#
+# THE TWO MODES — which one ran is printed in the PASS line
+#   DEFAULT (STAGEF_HF6_OWNER_KEYS unset): the build compiles the K8
+#     Foundation owner (a 2-of-3 whose keys nobody in the harness holds),
+#     so no storage node can be registered under the validators' owner:
+#     node 5 is owned by its own key like node 4, both settle OK, and the
+#     PASS line says "NO_EVIDENCE: not run" — coverage that did not happen.
+#   TEST-OWNER (STAGEF_HF6_OWNER_KEYS set): the build compiles a single
+#     test key made BEFORE the build by stagef_hf6_owner.sh as the
+#     Foundation owner (test_hf6_edge.sh 6f-2's mechanism); the seven
+#     validators are owned by it after the edge, and node 5 is registered
+#     under it — the Foundation-owned storage node of design §11.6, which
+#     must settle NO_EVIDENCE on 7/7.
 #
 # WHAT IT REQUIRES
 #   Compile flags — ONE short-epoch + short-grace build, nodus-server AND
@@ -104,7 +186,7 @@
 #     -DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20
 #     -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15
 #     -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15
-#   (params 7, 8, 9, 16 are ERGONOMIC; param 14 is SAFETY.)
+#   (params 7, 8, 9, 18 are ERGONOMIC; param 14 is SAFETY.)
 #   Environment, ALL exported BEFORE stagef_up_v2.sh (hashed into the
 #   genesis document) unless noted:
 #     STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN    that build
@@ -116,8 +198,10 @@
 #         this script only)
 #   Leave STAGEF_PAYOUT_INTERVAL_EPOCHS unset (24): the script steps off a
 #   payday by itself; 1 (every boundary a payday) is a SKIP.
+#   The tree must carry HF-6 through slice 6b-3 (the owner-signed storage
+#   calls 6b-1, the owner-aware settlement 6b-2, this CLI 6b-3).
 #   Tools: sqlite3, xxd, openssl with SHA3-512, ss.
-#   Exact command sequence (ORCHESTRATOR):
+#   Exact command sequence, DEFAULT MODE (ORCHESTRATOR):
 #     F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
 #     cmake -S <TREE>/nodus -B <TREE>/nodus/build-shortepoch -DCMAKE_C_FLAGS="$F"
 #     make -C <TREE>/nodus/build-shortepoch -j"$(nproc)" nodus-server nodus-cli
@@ -130,6 +214,22 @@
 #     bash $S/stagef_up_v2.sh
 #     bash $S/tests/test_storage_archive.sh; echo "rc=$?"
 #     bash $S/stagef_down.sh
+#   TEST-OWNER MODE (NO_EVIDENCE) — the same, plus BEFORE the build:
+#     bash $S/stagef_hf6_owner.sh /tmp/hf6-owner <TREE>/nodus/build/nodus-server
+#       (prints the owner's 128-hex fp and the exact
+#        -DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}" flag — 64 bytes, no spaces)
+#     cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf6own \
+#           -DCMAKE_C_FLAGS="$F -DDNAC_HF6_FOUNDATION_OWNER={0x..,…}"
+#     make -C <TREE>/nodus/build-hf6own -j"$(nproc)" nodus-server nodus-cli
+#     export STAGEF_NODUS_BIN / STAGEF_NODUSCLI_BIN = that build's binaries
+#     export STAGEF_HF6_OWNER_FP_HEX=<the helper's 128 hex>
+#     export STAGEF_HF6_OWNER_KEYS=/tmp/hf6-owner/identity
+#   (both read by this script only; STAGEF_V2_CANDIDATES is NOT needed
+#   here). Set STAGEF_HF6_OWNER_KEYS and the scenario FAILs at its gate,
+#   before step 1, unless nodus.pk (2592 B) / nodus.sk exist, SHA3-512(
+#   nodus.pk) == STAGEF_HF6_OWNER_FP_HEX != the K8 default, and the owner
+#   fp is no node's; a build that did not compile that owner FAILs at
+#   step 4's owner check.
 #   SKIP (rc 99): a binary missing / not executable, STAGEF_EPOCH_LENGTH
 #   or the genesis epoch_length != 15, a grace variable != 15, not a
 #   Comet cluster, no $BASE_DIR/v2_genesis.conf, pool 1 below 2^17,
@@ -139,15 +239,22 @@
 #
 # WHAT IT LEAVES BEHIND
 #   HF-2 ACTIVE, HF-3 ACTIVE, rule-set generation 2, the EVM generation 3
-#   + EVM domain and the storage generation 4 — all one-way; five
-#   chain_config_history rows (params 7, 8, 9, 14, 16). Nodes 4 and 5
-#   registered storage nodes (ACTIVE, bond 10^14 each locked), segment 1
-#   published, their segment files under node<4,5>/data/segments (if the
-#   holder finished exporting), pool 1 debited by one settlement, the
-#   payees' accrual raised. The leaves of nodes 3, 4, 5 claimed. Every
-#   pump fee in the reward pool. $BASE_DIR/storage/ (every CLI log).
-#   Nothing restarted. Tear down with stagef_down.sh before re-running
-#   (leaves and params 9 / 14 / 16 are single-use).
+#   + EVM domain and the storage generation 4 (and with it the HF-6
+#   validator migration: the seven validators owned by the build's
+#   Foundation owner) — all one-way; five chain_config_history rows
+#   (params 7, 8, 9, 14, 18). Node 4 a registered storage node (ACTIVE,
+#   bond 10^14 locked, owned by its own key); node 5 RELEASED (its bond
+#   back as one coin to its owner, locked 12 epochs, output_index 201);
+#   segment 1 published, segment files under node<4,5>/data/segments (if
+#   the holder finished exporting), pool 1 debited by one paying settlement
+#   (and by whatever node 4 earned at the boundaries pumped across to the
+#   release), the owners' accrual raised. The leaves of nodes 3, 4, 5
+#   claimed. TEST-OWNER MODE: the test owner holds the change of its
+#   funding coin (≈ 1.03 NODUS after two fees) and node 5's released bond.
+#   Every pump fee in the reward pool. $BASE_DIR/storage/ (every CLI log
+#   and the consent files). Nothing restarted. Tear down with
+#   stagef_down.sh before re-running (leaves and params 9 / 14 / 18 are
+#   single-use).
 #
 # HOW IT CAN LIE
 #   - **E = 15, grace 15/15, BPY 20 prove the LOGIC, not 720 / 17 280.**
@@ -158,30 +265,74 @@
 #     (test_storage_*; their own headers say most of them run at any
 #     E >= 8 — test_storage_b2.c:144-147 — and test_storage_probe.c loops
 #     E = 720 and 15; whether every one passes at E = 15 is NOT verified).
+#   - **With the DEFAULT build the Foundation-owned case is UNREACHABLE.**
+#     The default compiles the K8 Foundation owner, a 2-of-3 whose keys
+#     are not in the harness, so no storage node can be registered under
+#     the validators' owner: both nodes settle OK and NO_EVIDENCE (design
+#     §11.6, the three-state verdict's third state) is NOT exercised —
+#     the PASS line says "NO_EVIDENCE: not run". Only the TEST-OWNER
+#     build (stagef_hf6_owner.sh + -DDNAC_HF6_FOUNDATION_OWNER and that
+#     owner's -DDNAC_CFG_RULESET_GEN_ROLES_D) proves it
+#     on 7/7; the PASS line names which build ran (the validators' owner
+#     read from v2_validator_roles at step 4, not taken from the env).
+#   - **NO_EVIDENCE vs NOT OK vs "unpaid"**: a NO_EVIDENCE node is merely
+#     "unpaid" unless its fail_streak is ALSO seen frozen. Step 10 asserts
+#     fail_streak 0 after the paying settlement (NOT OK writes 1, K5a);
+#     the counter frozen at 3 (K5 return paused) is the unit test's
+#     (test_storage_b2), not driven here.
 #   - **Both storage nodes are also validators** (the runbook §2.6
 #     "both-roles node"). A storage node that is NOT a validator (serving
 #     0x72 to validators over a persistent peer, earning only the storage
-#     reward) is NOT exercised; F2 (a seat's own bit is not counted for
-#     itself) is exercised only in that each storage node's own seat is
-#     one of the reporters.
-#   - **Only the honest path.** No NOT OK verdict, no fail_streak + 1, no
-#     skip at 3, no K5 return, no grace > 0, no handoff of a segment to
-#     another holder, no exit / release, no 0x73 fetch (every holder has
-#     the blocks in its own store). No fault knob for the 0x72 serving
-#     side exists in the tree (no getenv in nodus_witness_storage_*.c);
-#     SIGSTOP of a storage node here would also freeze a validator for
-#     >= 7 blocks, beyond the 5-block cap test_cmt_blocksync.sh keeps to
-#     stay clear of Rule N — so the NOT OK path is not driven. Unit tests
-#     (test_storage_b2, test_storage_probe) are its proof.
-#   - **The settlement checks are arithmetic on committed tables:** each
-#     payee's own storage share is not separable from its validator
-#     reward of the same boundary — only the conservation sum, the exact
-#     pool 1 debit and a lower bound per payee are asserted. The per-seat
-#     report bitmaps are PRINTED, not judged; the > 2/3 verdict per member
-#     is proved by the exact debit (a member NOT OK is paid nothing).
-#   - **F1 is asserted as "more than half the seats reported"**, which is
-#     "more than half the power" only because the genesis validators bond
-#     equal stakes; nothing here self-delegates.
+#     reward) is NOT exercised. F2 is exercised only as: node 4's OWN
+#     seat excluded by the key clause (its owner, its own key, owns no
+#     seat), and in TEST-OWNER MODE all seven excluded by the owner
+#     clause for node 5. Mixed cases (a member excluded by owner on some
+#     seats and by key on another, the exact 2·I == P_total split) are
+#     test_storage_b2's.
+#   - **The v1-snapshot owner bridge (6b-2, khan A1) is not asserted.**
+#     The paying settlement reads snapshot(Hx), frozen long after the
+#     edge — ruleset 2, the owner from the entry (JUDGMENT from the
+#     layout: Hx >= 390, the first ruleset-2 snapshot is B0 + E with B0 the
+#     first boundary after H_s). The first settlement after the edge may
+#     run the bridge at B0 + 2E with zero weights (no segment yet); a FAULT
+#     there would stall the chain (FAIL), its verdicts are not read.
+#   - **The generation-4 trigger is the real one** (param 18
+#     RULESET_GEN_ROLES = D4, HF-6 slice 8c), voted ONCE the legal way:
+#     its stateful refusals (a second vote, a param-16 row, HF-2 off,
+#     another judging generation, H or H − 1 on a boundary) are
+#     test_hf4_params.c's; a param-16 proposal and a mixed fleet (an old
+#     binary refusing param 18 / accepting 16) are not exercised — one
+#     build.
+#   - **Only the honest path otherwise.** No NOT OK verdict, no
+#     fail_streak + 1, no skip at 3, no K5 return, no grace > 0, no
+#     handoff of a segment to another holder, no 0x73 fetch (every holder
+#     has the blocks in its own store), no re-registration of the released
+#     node (the B_rel + E rule is test_storage_reg's), no kind-3 (multisig)
+#     owner (the CLI builds kind 1 only). No fault knob for the 0x72
+#     serving side exists in the tree (no getenv in
+#     nodus_witness_storage_*.c); SIGSTOP of a storage node here would
+#     also freeze a validator for >= 7 blocks, beyond the 5-block cap
+#     test_cmt_blocksync.sh keeps to stay clear of Rule N — so the NOT OK
+#     path is not driven. Unit tests (test_storage_b2, test_storage_probe,
+#     test_storage_reg) are its proof.
+#   - **The settlement checks are arithmetic on committed tables:** the
+#     conservation sum, the exact pool 1 debit and the exact accrual step
+#     of each owner. "Exact SHARE for a node-key owner" rests on the
+#     generation-4 rule that validator earnings go to the validator's
+#     OWNER (the Foundation), never to a node key — if that rule broke,
+#     the step FAILs (false RED, never a false PASS). The per-seat report
+#     bitmaps are PRINTED, not judged; the verdict per member is proved by
+#     the exact debit.
+#   - **F1 / the verdict floor are asserted in SEAT counts** (>= ⌊N/2⌋ + 2
+#     reporters), which equal power counts only because every validator
+#     holds the same 2M bond + 8M self-delegation after the edge; nothing
+#     here delegates.
+#   - **The exit is checked at B_rel only.** The released coin's lock (12
+#     epochs) is read from its unlock_block, not exercised by a spend; the
+#     boundaries crossed by the pump to B_rel run settlements for node 4
+#     (and node 5 while still a member) whose verdicts are not asserted —
+#     the post-exit check reads status, owner, bond and exit_height, not
+#     fail_streak.
 #   - **No payday is observed:** the settlement boundary is stepped off a
 #     payday on purpose (a payday empties the accrual table in the same
 #     block); the accrual -> coin step is test_v2_rewards.sh's subject.
@@ -205,14 +356,18 @@
 #     _wait_row), never a bare sleep (the 0.5 s / 1 s attempt-bounded
 #     polls are the template's). rc 99 = SKIP, coverage that did not
 #     happen.
-#   - Duration: ≈ 430 blocks (JUDGMENT, not measured): pumped to the EVM
+#   - Duration: ≈ 460 blocks (JUDGMENT, not measured): pumped to the EVM
 #     edge's window floor (≈ 262) and on to the publication boundary
 #     (≈ 390), idle across the GEN2, EVM and storage edges (≈ 8 blocks
-#     each) and across the last ≈ 30 blocks (probing epoch, report
-#     window, settlement) — on the order of 1.5-2 h.
-#   - Run results: PASS on 2026-10-06 at bf1c4c1f (104 [ok]) and at
-#     49c7218f (103 [ok]), both E=15 / BPY 20 / grace 15/15, P=360,
-#     pool 1 = 10^15 (orchestration ledger, the two HARNESS BİTTİ lines).
+#     each) and across the probing epoch, report window and settlement
+#     (≈ 30 blocks), then pumped to the release boundary (≤ E + 2) — on
+#     the order of 1.5-2 h.
+#   - Run results: the PRE-HF-6 shape (node-key registration, no exit)
+#     PASSED on 2026-10-06 at bf1c4c1f (104 [ok]) and at 49c7218f (103
+#     [ok]), both E=15 / BPY 20 / grace 15/15, P=360, pool 1 = 10^15
+#     (orchestration ledger, the two HARNESS BİTTİ lines). THIS shape (HF-6
+#     6b-3: owner registration, NO_EVIDENCE, exit) is written against the
+#     source and NOT yet run, in either mode.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -231,7 +386,8 @@ PARAM_HF2=7                # DNAC_CFG_HF2_ACTIVE (dnac.h), value exactly 1
 PARAM_HF3=8                # DNAC_CFG_HF3_ACTIVE (dnac.h), value exactly 1
 PARAM_GEN2=9               # DNAC_CFG_RULESET_GEN2 (dnac.h), value exactly D2
 PARAM_EVM=14               # DNAC_CFG_EVM_ACTIVE (dnac.h), value exactly D
-PARAM_STOR=16              # storage: DNAC_CFG_RULESET_GEN_STORAGE, value exactly DS
+PARAM_HF6=18               # storage: DNAC_CFG_RULESET_GEN_ROLES, value exactly D4
+PARAM_RET16=16             # DNAC_CFG_RULESET_GEN_STORAGE — RETIRED; a row refuses PARAM_HF6
 GEN_2=2                    # NODUS_RT_GEN_2
 GEN_EVM=3                  # NODUS_RT_GEN_EVM (= NODUS_RT_GEN_STORAGE_BASE)
 GEN_STOR=4                 # storage: NODUS_RT_GEN_STORAGE (nodus_witness_runtime.c)
@@ -245,9 +401,24 @@ P=$(( 24 * E ))            # storage: DNA_V2_SEGMENT_BLOCKS = 24 x DNAC_EPOCH_LE
 DELAY=$(( 2 * E ))         # storage: DNAC_STORAGE_SEGMENT_DELAY_EPOCHS x E
 REPORT_CLOSE=$(( E / 2 ))  # storage: the report window (H+E, H+E+⌊E/2⌋]
 DIV_LOG2=16                # storage: NODUS_V2_GEN_REWARD_DIVISOR_LOG2 (v2_gen.h)
-BOND=100000000000000       # storage: DNAC_STORAGE_STAKE_MIN = 10^6 x 10^8
+BOND=100000000000000       # storage: DNAC_HF6_STORAGE_BOND_DEFAULT = 10^6 x 10^8 —
+                           # chain_config param 21's no-row value (this
+                           # scenario votes no param 21; slice 8a)
 ST_A=4                     # storage: the two storage nodes (both validators)
 ST_B=5
+# 6b-3: the owner/node split. The K8 Foundation address (dnac/include/dnac/
+# dnac.h DNAC_HF6_FOUNDATION_OWNER, the hex in its own comment — the
+# test_hf6_edge.sh constant) is the default build's compiled owner.
+K8_OWNER=8eff7f418ab7a4432118ff99e21f2c3d1baf186200c148a3bba7d274499386ac970e267a9c9b3bbc05bfff1c62a72d63f72a555db780feeaaad4fb49ba9f7b89
+OWNER=$(printf '%s' "${STAGEF_HF6_OWNER_FP_HEX:-$K8_OWNER}" | tr 'A-F' 'a-f')
+OWN_KEYS="${STAGEF_HF6_OWNER_KEYS:-}"   # set = TEST-OWNER MODE (header)
+CONSENT_AHEAD=150          # consent expiry = tip + this (> the envelope's tip + 90;
+                           # the chain's window is 720, DNA_VALBIND_MAX_EXPIRY_BLOCKS)
+OWNER_FUND=$(( BOND + 200000000 ))   # TEST-OWNER: the bond + 2 NODUS for the
+                           # REGISTER and EXIT fees (each 400 000 units x 121 =
+                           # 0.484 NODUS at the harness gas price)
+EXIT_LOCK_EPOCHS=12        # storage: DNAC_STORAGE_EXIT_LOCK_EPOCHS (dnac.h)
+EXIT_OUT_IDX=201           # storage: DNA_V2_STORAGE_EXIT_OUT_IDX (ledger_roots_v2.h)
 CONF="$BASE_DIR/v2_genesis.conf"
 LOGD="$BASE_DIR/storage"
 N="$STAGEF_COMMITTEE_SIZE"
@@ -319,7 +490,29 @@ if [ "$POOL1_0" -lt 131072 ]; then
     echo "       1000000000000000) BEFORE stagef_up_v2.sh"
     exit 99
 fi
+[[ "$OWNER" =~ ^[0-9a-f]{128}$ ]] || die "STAGEF_HF6_OWNER_FP_HEX is not 128 hex characters ('$OWNER')"
+[ -s "$BASE_DIR/v2_chain_id" ] || die "the bring-up recorded no $BASE_DIR/v2_chain_id (the consent files are checked against it)"
+CHAIN_HEX=$(tr -d '\n' < "$BASE_DIR/v2_chain_id" | tr 'A-F' 'a-f')
+[[ "$CHAIN_HEX" =~ ^[0-9a-f]{64}$ ]] || die "$BASE_DIR/v2_chain_id is not 64 hex characters ('$CHAIN_HEX')"
 mkdir -p "$LOGD"
+
+# ── 6b-3: the TEST-OWNER gate (FAIL when asked for and impossible) ───
+# Set = the operator asked for the NO_EVIDENCE leg, so every missing piece
+# FAILs here, before the ≈ 1.5-2 h of steps 1-11 (test_hf6_edge.sh's 6f-2
+# gate, without its cand1 part). Unset = the leg is NOT RUN (PASS line).
+if [ -n "$OWN_KEYS" ]; then
+    [ -s "$OWN_KEYS/nodus.pk" ] && [ -s "$OWN_KEYS/nodus.sk" ] || die \
+        "STAGEF_HF6_OWNER_KEYS=$OWN_KEYS holds no nodus.pk / nodus.sk — make it with stagef_hf6_owner.sh BEFORE the build"
+    [ "$(stat -c %s "$OWN_KEYS/nodus.pk")" = 2592 ] || die "$OWN_KEYS/nodus.pk is not 2592 bytes"
+    [ "$OWNER" != "$K8_OWNER" ] || die \
+        "STAGEF_HF6_OWNER_KEYS is set but STAGEF_HF6_OWNER_FP_HEX is the K8 default — the NO_EVIDENCE leg needs the test owner compiled in (stagef_hf6_owner.sh prints the flag)"
+    own_kfp=$(stagef_sha3_512_hex "$OWN_KEYS/nodus.pk")
+    [ "$own_kfp" = "$OWNER" ] || die \
+        "SHA3-512($OWN_KEYS/nodus.pk) = ${own_kfp:0:16}… is not STAGEF_HF6_OWNER_FP_HEX ${OWNER:0:16}… — the owner key and the compiled owner must be one identity"
+    echo "[ok] TEST-OWNER MODE armed: owner keys $OWN_KEYS (SHA3-512 = STAGEF_HF6_OWNER_FP_HEX ${OWNER:0:16}…) — node $ST_B will be registered under the validators' owner"
+else
+    echo "[info] TEST-OWNER MODE not armed (STAGEF_HF6_OWNER_KEYS unset) — node $ST_B registers under its own key; NO_EVIDENCE will NOT be exercised"
+fi
 
 # ── CAPABILITY GATE (FAIL, not skip) ────────────────────────────────
 bin_version() {            # BIN KIND ("Server" | "CLI") -> X.Y.Z, "" if no banner
@@ -342,21 +535,30 @@ done
 [ -n "$PROBE_PORT" ] || die "no free port in 14991..14999 for the usage probe"
 # the compiled vote literals, from the CLI's own usage text (nodus-cli.c
 # cmd_chain_config_propose: "  EVM_ACTIVE             exactly %llu",
-# "  RULESET_GEN_STORAGE    exactly %llu", printed before any connect)
+# "  RULESET_GEN_ROLES      exactly %llu", printed before any connect)
 usage_out=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" chain-config propose 2>&1 || true)
 D_DEC=$(sed -n 's/^  EVM_ACTIVE  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
 D_DEC="${D_DEC%%$'\n'*}"
-DS_DEC=$(sed -n 's/^  RULESET_GEN_STORAGE  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
-DS_DEC="${DS_DEC%%$'\n'*}"
-[ -n "$D_DEC" ] && [ -n "$DS_DEC" ] || {
+D4_DEC=$(sed -n 's/^  RULESET_GEN_ROLES  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
+D4_DEC="${D4_DEC%%$'\n'*}"
+[ -n "$D_DEC" ] && [ -n "$D4_DEC" ] || {
     printf '%s\n' "$usage_out" >&2
-    die "the CLI's chain-config usage does not name both 'EVM_ACTIVE exactly <D>' and 'RULESET_GEN_STORAGE exactly <DS>'"; }
-[ "$D_DEC" -gt 0 ] 2>/dev/null && [ "$DS_DEC" -gt 0 ] 2>/dev/null || die "a vote literal is not a positive int64 (D '$D_DEC', DS '$DS_DEC')"
-D_HEX=$(printf '%016x' "$D_DEC"); DS_HEX=$(printf '%016x' "$DS_DEC")
+    die "the CLI's chain-config usage does not name both 'EVM_ACTIVE exactly <D>' and 'RULESET_GEN_ROLES exactly <D4>'"; }
+[ "$D_DEC" -gt 0 ] 2>/dev/null && [ "$D4_DEC" -gt 0 ] 2>/dev/null || die "a vote literal is not a positive int64 (D '$D_DEC', D4 '$D4_DEC')"
+D_HEX=$(printf '%016x' "$D_DEC"); D4_HEX=$(printf '%016x' "$D4_DEC")
 st_usage=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" storage 2>&1 || true)
-[[ "$st_usage" == *"storage status [--fp <hex128>]"* ]] || {
+# prefix match: HF-6 7a appended " | --owner <hex128>" inside the brackets
+[[ "$st_usage" == *"storage status [--fp <hex128>"* ]] || {
     printf '%s\n' "$st_usage" >&2; die "the CLI has no 'storage' command (B2b-CLI)"; }
-echo "[ok] capability gate: one build v$SRV_VER; EVM D = $D_DEC (0x$D_HEX), storage DS = $DS_DEC (0x$DS_HEX); 'storage' present"
+# 6b-3: the owner-side commands (nodus-cli.c cli_storage_usage). The
+# consent's owner form is matched as a regex: since the kind-3 owner the
+# usage reads "storage consent (--owner <owner_fp hex128> | --msig ...",
+# the bracket is optional so either form of the line passes.
+consent_re='storage consent \(?--owner'
+[[ "$st_usage" =~ $consent_re && "$st_usage" == *"storage register --keys"* && \
+   "$st_usage" == *"storage exit --keys"* ]] || {
+    printf '%s\n' "$st_usage" >&2; die "the CLI has no owner-side 'storage consent | register --keys | exit --keys' (HF-6 6b-3)"; }
+echo "[ok] capability gate: one build v$SRV_VER; EVM D = $D_DEC (0x$D_HEX), HF-6 D4 = $D4_DEC (0x$D4_HEX); 'storage' with the owner-side commands present"
 
 # ── script-local helpers (test_cmt_evm.sh's, unless "storage:") ─────
 db_of()  { stagef_node_chain_db "$1"; }
@@ -553,11 +755,17 @@ registry_dump() {
            FROM v2_storage_nodes ORDER BY node_fp;" 2>/dev/null || echo ERR
 }
 
-# require_registry WHAT — the registry identical on 7/7, exactly the two
-# storage nodes, each ACTIVE (1), bond 10^14, payee = its own fp,
-# exit_height 0, fail_streak 0, grace_until 0
+# require_registry WHAT [B_STATUS B_EXIT_HEIGHT] — the registry identical
+# on 7/7, exactly the two storage nodes, bond 10^14, the owner column
+# (SQL name payee_fp — the HF-6 meaning is the owner, design rev 6 §11.2)
+# = owner_k. Default (no B_STATUS): both ACTIVE (1), exit_height 0,
+# fail_streak 0, grace_until 0. After node 5's exit (B_STATUS 3): node 4
+# ACTIVE / exit_height 0, node 5 RELEASED with exit_height B_EXIT_HEIGHT,
+# and fail_streak / grace_until NOT judged (the boundaries crossed to the
+# release settle unasserted verdicts — header, HOW IT CAN LIE).
 require_registry() {
-    local what="$1" n ref d line fp payee bond status rh xh fs gu nrow=0
+    local what="$1" b_status="${2:-1}" b_xh="${3:-0}"
+    local n ref d fp owner bond status rh xh fs gu nrow=0 want_owner want_st want_xh
     ref=$(registry_dump 1)
     [ "$ref" != ERR ] && [ -n "$ref" ] || die "$what: node1's storage registry is unreadable or empty"
     for n in $(seq 2 "$N"); do
@@ -565,18 +773,76 @@ require_registry() {
         [ "$d" = "$ref" ] || { printf 'node1:\n%s\nnode%s:\n%s\n' "$ref" "$n" "$d" >&2
             die "$what: node$n's storage registry differs from node1's"; }
     done
-    while IFS='|' read -r fp payee bond status rh xh fs gu; do
+    while IFS='|' read -r fp owner bond status rh xh fs gu; do
         nrow=$(( nrow + 1 ))
-        [ "$fp" = "$FP_A" ] || [ "$fp" = "$FP_B" ] || die "$what: a registry row for an unexpected node ${fp:0:16}..."
-        [ "$payee" = "$fp" ] || die "$what: ${fp:0:16}...'s payee is not its own fingerprint"
+        if [ "$fp" = "$FP_A" ]; then want_owner="$OWNER_A"; want_st=1; want_xh=0
+        elif [ "$fp" = "$FP_B" ]; then want_owner="$OWNER_B"; want_st="$b_status"; want_xh="$b_xh"
+        else die "$what: a registry row for an unexpected node ${fp:0:16}..."; fi
+        [ "$owner" = "$want_owner" ] || die "$what: ${fp:0:16}...'s owner is ${owner:0:16}..., expected ${want_owner:0:16}..."
         [ "$bond" = "$BOND" ] || die "$what: ${fp:0:16}...'s bond is $bond, expected $BOND"
-        [ "$status" = 1 ] || die "$what: ${fp:0:16}... is status $status, expected 1 (ACTIVE)"
-        [ "$xh" = 0 ] || die "$what: ${fp:0:16}... has exit_height $xh"
-        [ "$fs" = 0 ] || die "$what: ${fp:0:16}...'s fail_streak is $fs, expected 0 (honest)"
-        [ "$gu" = 0 ] || die "$what: ${fp:0:16}...'s grace_until is $gu, expected 0 (K9a: no take-over)"
+        [ "$status" = "$want_st" ] || die "$what: ${fp:0:16}... is status $status, expected $want_st (1 ACTIVE, 3 RELEASED)"
+        [ "$xh" = "$want_xh" ] || die "$what: ${fp:0:16}... has exit_height $xh, expected $want_xh"
+        if [ "$b_status" = 1 ]; then
+            [ "$fs" = 0 ] || die "$what: ${fp:0:16}...'s fail_streak is $fs, expected 0 (OK resets it, NO_EVIDENCE leaves it; NOT OK would write 1)"
+            [ "$gu" = 0 ] || die "$what: ${fp:0:16}...'s grace_until is $gu, expected 0 (K9a: no take-over)"
+        fi
     done <<< "$ref"
     [ "$nrow" = 2 ] || die "$what: the registry holds $nrow rows, expected 2"
-    echo "[ok] $what: the storage registry is identical on 7/7 — nodes $ST_A and $ST_B ACTIVE, bond $BOND, own payee, fail_streak 0, grace_until 0"
+    if [ "$b_status" = 1 ]; then
+        echo "[ok] $what: the storage registry is identical on 7/7 — nodes $ST_A and $ST_B ACTIVE, bond $BOND, owners ${OWNER_A:0:16}... / ${OWNER_B:0:16}..., fail_streak 0, grace_until 0"
+    else
+        echo "[ok] $what: the storage registry is identical on 7/7 — node $ST_A ACTIVE, node $ST_B status $b_status (exit at $b_xh), bond $BOND, owners ${OWNER_A:0:16}... / ${OWNER_B:0:16}..."
+    fi
+}
+
+# consent_make NODE OWNER OUT LOG — `-i <node> storage consent` (6b-3):
+# the storage NODE's key consents to registration under OWNER, expiry =
+# its tip + CONSENT_AHEAD. Sets CS_EXP. FAIL unless the file is written.
+consent_make() {
+    local n="$1" own="$2" out="$3" log="$4" crc=0
+    CS_EXP=$(( $(tip_of "$n") + CONSENT_AHEAD ))
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" -i "$(node_keys "$n")" \
+        storage consent --owner "$own" --expiry "$CS_EXP" --out "$out" > "$log" 2>&1 || crc=$?
+    cat "$log"
+    [ "$crc" = 0 ] && [ -s "$out" ] || die "node$n's storage consent (owner ${own:0:16}...) was refused (rc $crc, see $log)"
+}
+
+# consent_file_ok FILE NODE OWNER EXPIRY — the consent container
+# (nodus_v2_stake.h NODUS_V2_CONSENT_MAGIC: exactly these eight lines)
+# carries what the node was asked to sign: op 3, this chain, a zero
+# subject, OWNER, the node's own nodus.pk bytes, EXPIRY, a 4627-byte sig.
+consent_file_ok() {
+    local f="$1" n="$2" own="$3" exp="$4" pkhex zero
+    local -a L=()
+    pkhex=$(xxd -p "$(node_keys "$n")/nodus.pk" | tr -d '\n')
+    zero=$(printf '%0128d' 0)
+    mapfile -t L < "$f"
+    [ "${#L[@]}" = 8 ] || die "consent $f has ${#L[@]} lines, expected 8"
+    [ "${L[0]}" = "nodus-valbind-consent v1" ] || die "consent $f: bad magic line '${L[0]}'"
+    [ "${L[1]}" = "op 3" ] || die "consent $f: '${L[1]}', expected 'op 3' (STORAGE_REGISTER)"
+    [ "${L[2]}" = "chain_id $CHAIN_HEX" ] || die "consent $f names chain '${L[2]#chain_id }', the bring-up's is $CHAIN_HEX"
+    [ "${L[3]}" = "subject $zero" ] || die "consent $f: the subject is not 64 zero bytes"
+    [ "${L[4]}" = "owner $own" ] || die "consent $f names owner '${L[4]#owner }', expected $own"
+    [ "${L[5]}" = "consensus_pk $pkhex" ] || die "consent $f: consensus_pk is not node$n's nodus.pk"
+    [ "${L[6]}" = "expiry $exp" ] || die "consent $f: '${L[6]}', expected 'expiry $exp'"
+    [[ "${L[7]}" =~ ^sig\ [0-9a-f]{9254}$ ]] || die "consent $f: the sig line is not 4627 bytes of hex"
+    echo "[ok] consent file $f: op 3, this chain, zero subject, owner ${own:0:16}..., node$n's key, expiry $exp"
+}
+
+# st_register NODE KEYS CONSENT MODE LOG — `storage register` (6b-3) on
+# NODE's port, MODE dry-run | submit. Sets RG_RC, RG_OUT.
+st_register() {
+    local n="$1" keys="$2" cf="$3" mode="$4" log="$5" port
+    port=$(stagef_tcp_port "$n"); RG_RC=0
+    if [ "$mode" = submit ]; then
+        "$CLI" -s 127.0.0.1 -p "$port" storage register --keys "$keys" --consent "$cf" \
+            --submit "127.0.0.1:$port" > "$log" 2>&1 || RG_RC=$?
+    else
+        "$CLI" -s 127.0.0.1 -p "$port" storage register --keys "$keys" --consent "$cf" \
+            --dry-run > "$log" 2>&1 || RG_RC=$?
+    fi
+    RG_OUT=$(cat "$log")
+    printf '%s\n' "$RG_OUT"
 }
 
 # status_of NODE KEYS_NODE [--fp FP] — `storage status` on NODE's own port
@@ -594,7 +860,16 @@ status_of() {
 for n in $(seq 1 "$N"); do
     node_runs_srv "$n" || die "node$n is not running STAGEF_NODUS_BIN ($(readlink -f "$SRV")) — bring the cluster up with it"
 done
-for p in "$PARAM_HF2" "$PARAM_HF3" "$PARAM_GEN2" "$PARAM_EVM" "$PARAM_STOR"; do
+# HF-6 8c: every node's newest start printed the CLI's D4 in its startup
+# banner (nodus_witness.c — the runbook's 7/7 pre-vote comparison)
+for n in $(seq 1 "$N"); do
+    bl=$(grep -o 'HF-6 rule-set generation 4 vote D4 0x[0-9a-f]* (param 18 RULESET_GEN_ROLES, switch spec v[0-9]*)' \
+            "$(node_log "$n")" | tail -1 || true)
+    [ "$bl" = "HF-6 rule-set generation 4 vote D4 0x$D4_HEX (param 18 RULESET_GEN_ROLES, switch spec v1)" ] || die \
+        "node$n's startup banner D4 line is '${bl:-none}', not the CLI's D4 0x$D4_HEX (param 18, switch spec v1)"
+done
+echo "[ok] 7/7 startup banners name param 18 and the CLI's D4 0x$D4_HEX"
+for p in "$PARAM_HF2" "$PARAM_HF3" "$PARAM_GEN2" "$PARAM_EVM" "$PARAM_RET16" "$PARAM_HF6"; do
     [ "$(sqlite3 "$ref_db0" "SELECT COUNT(*) FROM chain_config_history WHERE param_id = $p;" 2>/dev/null || echo ERR)" = 0 ] \
         || die "node1 already holds a param-$p row — this scenario needs a fresh bring-up"
 done
@@ -606,6 +881,18 @@ INIT_H=$(sed -n 's/^initial_height *= *\([0-9][0-9]*\) *$/\1/p' "$CONF")
 FP_A=$(fp_lc "$(node_keys "$ST_A")"); FP_B=$(fp_lc "$(node_keys "$ST_B")")
 FP_1=$(fp_lc "$(node_keys 1)")
 for f in "$FP_A" "$FP_B" "$FP_1"; do [ "${#f}" = 128 ] || die "a node fingerprint is not 128 hex"; done
+# 6b-3: the owners. Node 4 is owned by its own key; node 5 by the test
+# owner (TEST-OWNER MODE) or by its own key.
+OWNER_A="$FP_A"; KEYS_A=$(node_keys "$ST_A")
+if [ -n "$OWN_KEYS" ]; then
+    OWNER_B="$OWNER"; KEYS_B="$OWN_KEYS"
+    for n in $(seq 1 "$N"); do
+        [ "$(fp_lc "$(node_keys "$n")")" != "$OWNER" ] || die \
+            "the test owner ${OWNER:0:16}... is node$n's own key — it must be a separate identity (stagef_hf6_owner.sh)"
+    done
+else
+    OWNER_B="$FP_B"; KEYS_B=$(node_keys "$ST_B")
+fi
 stagef_sentinel SETUP_OK
 echo "[ok] 7/7 nodes run $(readlink -f "$SRV"); pool 1 = $POOL1_0 raw; payday every $INTERVAL epochs; P = $P"
 
@@ -614,6 +901,28 @@ stagef_cmt_diff_at_floor "pre-storage" || exit 2
 claim_leaf "$PUMP_KEYS" 1
 claim_leaf "$(node_keys "$ST_A")" "$ST_A"
 claim_leaf "$(node_keys "$ST_B")" "$ST_B"
+# 6b-3, TEST-OWNER MODE: the owner holds nothing on a fresh chain — node 5
+# pays it the bond + two fees; the coin is found by the spend's intent_id
+# (utxo_set.tx_hash), never by "the owner has a coin".
+if [ -n "$OWN_KEYS" ]; then
+    flog="$LOGD/fund_owner.log"; frc=0
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$ST_B")" v2-envelope spend \
+        --keys "$(node_keys "$ST_B")" --to "$OWNER" --amount "$OWNER_FUND" \
+        --submit "127.0.0.1:$(stagef_tcp_port "$ST_B")" > "$flog" 2>&1 || frc=$?
+    cat "$flog"
+    [ "$frc" = 0 ] || die "node$ST_B's funding spend to the test owner was refused (rc $frc, see $flog)"
+    f_intent=$(spend_intent "$flog")
+    [ "${#f_intent}" = 128 ] || die "the funding spend printed no intent_id (see $flog)"
+    fh=$(stagef_cmt_wait_row "$(db_of "$ST_B")" \
+        "SELECT COUNT(*) FROM utxo_set WHERE lower(hex(tx_hash)) = '$f_intent'
+           AND lower(owner) = '$OWNER' AND amount = $OWNER_FUND;") && fwrc=0 || fwrc=$?
+    case "$fwrc" in
+        0) ;;
+        1) die "chain STALLED waiting for the test owner's funding coin (tip $fh)" ;;
+        *) die "the test owner's funding coin was not included within 20 heights (tip $fh) — dropped, not delayed" ;;
+    esac
+    echo "[ok] the test owner holds a $OWNER_FUND-raw coin from node$ST_B (tip $fh)"
+fi
 t=$(tip_of 1)
 pump_to 1 $(( t + 2 ))
 stagef_cmt_diff_at_floor "storage-chain-committing" || exit 2
@@ -675,47 +984,105 @@ for n in $(seq 1 "$N"); do
 done
 echo "[ok] the EVM generation $GEN_EVM on 7/7 from HE=$HE"
 
-# ── 3. storage: before the vote — the CLI refuses, the node knows nothing ─
-st_log="$LOGD/register_pre_vote.log"; prc=0
-"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$ST_A")" -i "$(node_keys "$ST_A")" \
-    storage register --dry-run > "$st_log" 2>&1 || prc=$?
-cat "$st_log"
-[ "$prc" != 0 ] && grep -q "storage registration exists only from generation $GEN_STOR" "$st_log" \
-    || die "storage register before the vote was not refused by the CLI's generation gate (rc $prc, see $st_log)"
-[ -z "$(spend_intent "$st_log")" ] || die "storage register before the vote built an envelope"
+# ── 3. storage: before the vote — the CLI's generation gate refuses ──
+# 6b-3: the request is otherwise VALID (node 4's key consents to its own
+# key as owner, inside the window), so the generation is the only reason
+# left to refuse it: the gate runs before the consent re-check
+# (nodus-cli.c cmd_v2_stake). Until 6b-3 this step called the 6b-1 stub
+# (cmd_storage_tx_refused), which refused at every generation and never
+# printed the gate's sentence — the step had lost its subject.
+c_pre="$LOGD/consent_pre_vote_node$ST_A.txt"
+consent_make "$ST_A" "$OWNER_A" "$c_pre" "$LOGD/consent_pre_vote_node$ST_A.log"
+consent_file_ok "$c_pre" "$ST_A" "$OWNER_A" "$CS_EXP"
+st_register "$ST_A" "$KEYS_A" "$c_pre" dry-run "$LOGD/register_pre_vote.log"
+[ "$RG_RC" != 0 ] && [[ "$RG_OUT" == *"storage registration exists only from generation $GEN_STOR"* ]] \
+    || die "storage register before the vote was not refused by the CLI's generation gate (rc $RG_RC, see $LOGD/register_pre_vote.log)"
+[ -z "$(spend_intent "$LOGD/register_pre_vote.log")" ] || die "storage register before the vote built an envelope"
 status_of "$ST_A" "$ST_A"
 [ "$ST_RC" = 0 ] && [[ "$ST_OUT" == *"registry: not registered"* ]] || {
     printf '%s\n' "$ST_OUT" >&2; die "storage status before the vote did not say 'not registered' (rc $ST_RC)"; }
-echo "[ok] before the storage vote: register REFUSED by the generation gate; status 'not registered'"
+echo "[ok] before the storage vote: a valid owner registration REFUSED by the generation gate; status 'not registered'"
 
-# ── 4. storage: the RULESET_GEN_STORAGE vote, H_s % E == 2 ──────────
+# ── 4. storage: the RULESET_GEN_ROLES vote, H_s % E == 2 ────────────
 cc_guard 1
 HS=$(( CCG_TIP + 1 + STAGEF_CC_GRACE_ERGONOMIC + GRACE_MARGIN ))
-while [ $(( HS % E )) != 2 ]; do HS=$(( HS + 1 )); done          # rule (c) + E-2 blocks to the boundary
-echo "[ok] tip $CCG_TIP — node1 proposes RULESET_GEN_STORAGE=$DS_DEC effective H_s=$HS (first storage boundary $(( HS - 2 + E )))"
-propose RULESET_GEN_STORAGE "$DS_DEC" "$HS" "$LOGD/propose_storage.log"
-wait_cc_row "$PARAM_STOR" "$HS" "$DS_DEC" 20
-[ "$CC_CB" -lt "$HS" ] || die "the RULESET_GEN_STORAGE row committed at $CC_CB, not before its effective height $HS"
+while [ $(( HS % E )) != 2 ]; do HS=$(( HS + 1 )); done          # rules (d)(e) + E-2 blocks to the boundary
+echo "[ok] tip $CCG_TIP — node1 proposes RULESET_GEN_ROLES=$D4_DEC effective H_s=$HS (first storage boundary $(( HS - 2 + E )))"
+propose RULESET_GEN_ROLES "$D4_DEC" "$HS" "$LOGD/propose_storage.log"
+wait_cc_row "$PARAM_HF6" "$HS" "$D4_DEC" 20
+[ "$CC_CB" -lt "$HS" ] || die "the RULESET_GEN_ROLES row committed at $CC_CB, not before its effective height $HS"
 for n in $(seq 1 "$N"); do require_gen "$n" "$GEN_EVM" "$H4"; done
 cross_edge storage "$HS"
-STOR_LINE="storage reward: rule-set generation $GEN_EVM -> $GEN_STOR at the end of height $(( HS - 1 )) (storage vote literal 0x$DS_HEX)"
+# HF-6: the generation-4 edge (switch + validator migration) logs its own
+# "HF-6:" line (nodus_witness_v2_apply.c phase_6b_gen4_edge); the storage
+# boundary gate reads the same param 18 (nodus_witness_v2_storage.c).
+STOR_LINE="HF-6: rule-set generation $GEN_EVM -> $GEN_STOR and the validator migration at the end of height $(( HS - 1 )) (param $PARAM_HF6 RULESET_GEN_ROLES, D4 0x$D4_HEX); height $HS is judged under generation $GEN_STOR"
 for n in $(seq 1 "$N"); do
     grep -qF "$STOR_LINE" "$(node_log "$n")" || die "node$n logged no '$STOR_LINE' line"
     require_gen "$n" "$GEN_STOR" "$H4"
 done
 stagef_cmt_diff_at_floor "past-storage-edge" || exit 2
-echo "[ok] the storage generation $GEN_STOR on 7/7 from H_s=$HS (DS 0x$DS_HEX)"
+echo "[ok] the storage generation $GEN_STOR on 7/7 from H_s=$HS (D4 0x$D4_HEX)"
+# 6b-3: whom the migration made the validators' owner (D2 (a): every
+# genesis validator -> the compiled Foundation owner) — item 9's premise,
+# read from the chain, never taken from the environment
+VOWN_REF=""
+for n in $(seq 1 "$N"); do
+    v=$(sqlite3 -separator '|' "$(db_of "$n")" \
+        "SELECT COUNT(*), COUNT(DISTINCT owner_fp), COALESCE(MIN(lower(hex(owner_fp))), '-')
+           FROM v2_validator_roles;" 2>/dev/null || echo ERR)
+    if [ -z "$VOWN_REF" ]; then VOWN_REF="$v"
+    elif [ "$v" != "$VOWN_REF" ]; then die "node$n's validator owners '$v' differ from node1's '$VOWN_REF'"; fi
+done
+[ "$VOWN_REF" = "$N|1|$OWNER" ] || die \
+    "the validator owners after the edge are '$VOWN_REF', expected '$N|1|${OWNER:0:16}...' — the build's DNAC_HF6_FOUNDATION_OWNER is not $([ -n "${STAGEF_HF6_OWNER_FP_HEX:-}" ] && echo 'STAGEF_HF6_OWNER_FP_HEX' || echo 'the K8 default')"
+if [ "$OWNER" = "$K8_OWNER" ]; then BUILD_OWNER="the default build (Foundation owner = the K8 2-of-3 address)"
+else BUILD_OWNER="a test-owner build (Foundation owner ${OWNER:0:16}...)"; fi
+echo "[ok] all $N validators owned by ${OWNER:0:16}... on 7/7 — $BUILD_OWNER"
 
-# ── 5. storage: register nodes 4 and 5 with their NODE keys ─────────
+# ── 5. storage: the OWNERS register nodes 4 and 5 (6b-3) ─────────────
+# 5a. node 4 — its key consents to its OWN key as owner; the file
+# round-trips; a dry run names the node and the owner
+c_a="$LOGD/consent_node$ST_A.txt"
+consent_make "$ST_A" "$OWNER_A" "$c_a" "$LOGD/consent_node$ST_A.log"
+consent_file_ok "$c_a" "$ST_A" "$OWNER_A" "$CS_EXP"
+st_register "$ST_A" "$KEYS_A" "$c_a" dry-run "$LOGD/register_dry_node$ST_A.log"
+[ "$RG_RC" = 0 ] || die "storage register --dry-run for node$ST_A exited $RG_RC"
+[[ "$RG_OUT" == *"storage register: node $FP_A"* && "$RG_OUT" == *"  owner $OWNER_A"* ]] \
+    || die "the node$ST_A dry run does not name node ${FP_A:0:16}... and owner ${OWNER_A:0:16}..."
+[[ "$RG_OUT" == *"PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM STORAGE_REGISTER + CORE SYSFUND)"* ]] \
+    || die "the node$ST_A dry run did not pass its self-check"
+# 5b. node 5 — its key consents to owner_5. The CLI's own owner check: a
+# consent naming another owner than the --keys identity is refused before
+# anything is built — with node 5's NODE identity as --keys (TEST-OWNER
+# MODE: its real consent; default: a consent naming node 1, the only way
+# to make the node identity a non-owner when it owns itself)
+c_b="$LOGD/consent_node$ST_B.txt"
+consent_make "$ST_B" "$OWNER_B" "$c_b" "$LOGD/consent_node$ST_B.log"
+consent_file_ok "$c_b" "$ST_B" "$OWNER_B" "$CS_EXP"
+if [ -n "$OWN_KEYS" ]; then
+    c_x="$c_b"
+else
+    c_x="$LOGD/consent_node${ST_B}_owner_node1.txt"
+    consent_make "$ST_B" "$FP_1" "$c_x" "$LOGD/consent_node${ST_B}_owner_node1.log"
+    consent_file_ok "$c_x" "$ST_B" "$FP_1" "$CS_EXP"
+fi
+st_register "$ST_B" "$(node_keys "$ST_B")" "$c_x" dry-run "$LOGD/register_node${ST_B}_as_node.log"
+# prefix match: the HF-6 multisig work reworded the tail ("than this envelope's
+# owner (the --keys identity, or with --msig the multisig address)")
+[ "$RG_RC" != 0 ] && [[ "$RG_OUT" == *"the consent names another owner than"* ]] \
+    || die "storage register with node$ST_B's own identity as --keys was not refused by the CLI's owner check (rc $RG_RC)"
+[ -z "$(spend_intent "$LOGD/register_node${ST_B}_as_node.log")" ] || die "the refused registration built an envelope"
+echo "[ok] the CLI refused node$ST_B's identity as --keys for a consent naming another owner — nothing built"
+# 5c. submit both, each on its own node's port
 for k in "$ST_A" "$ST_B"; do
-    log="$LOGD/register_node$k.log"; prc=0
-    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$k")" -i "$(node_keys "$k")" \
-        storage register --submit "127.0.0.1:$(stagef_tcp_port "$k")" > "$log" 2>&1 || prc=$?
-    cat "$log"
-    [ "$prc" = 0 ] || die "storage register on node$k exited $prc (see $log)"
-    grep -q '^accepted: mempool CheckTx approved' "$log" || die "storage register on node$k: no CheckTx approval line (see $log)"
+    if [ "$k" = "$ST_A" ]; then keys="$KEYS_A"; cf="$c_a"; else keys="$KEYS_B"; cf="$c_b"; fi
+    log="$LOGD/register_node$k.log"
+    st_register "$k" "$keys" "$cf" submit "$log"
+    [ "$RG_RC" = 0 ] || die "storage register for node$k exited $RG_RC (see $log)"
+    grep -q '^accepted: mempool CheckTx approved' "$log" || die "storage register for node$k: no CheckTx approval line (see $log)"
     intent=$(spend_intent "$log")
-    [ "${#intent}" = 128 ] || die "storage register on node$k printed no intent_id (see $log)"
+    [ "${#intent}" = 128 ] || die "storage register for node$k printed no intent_id (see $log)"
 done
 REG_H=0
 for k in "$ST_A" "$ST_B"; do
@@ -802,13 +1169,14 @@ echo "[ok] segment 1 (heights 1..$P) published at $H_PUB on 7/7; root ${SEG_ROOT
 
 # ── 7. storage: `storage status` in the epoch after the publication ──
 for k in "$ST_A" "$ST_B"; do
-    if [ "$k" = "$ST_A" ]; then fp="$FP_A"; else fp="$FP_B"; fi
+    if [ "$k" = "$ST_A" ]; then fp="$FP_A"; own="$OWNER_A"; else fp="$FP_B"; own="$OWNER_B"; fi
     status_of "$k" "$k"
     printf '%s\n' "$ST_OUT"
     [ "$ST_RC" = 0 ] || die "storage status on node$k exited $ST_RC"
     [[ "$ST_OUT" == *"storage node $fp"* ]] || die "node$k's status names another node"
     [[ "$ST_OUT" == *"registry: ACTIVE, bond $BOND raw, fail_streak 0, registered at "* ]] \
         || die "node$k's status is not 'ACTIVE, bond $BOND raw, fail_streak 0'"
+    [[ "$ST_OUT" == *"  owner: $own"* ]] || die "node$k's status does not name its owner ${own:0:16}... ('owner:' line, 6b-3)"
     [[ "$ST_OUT" == *"grace_until: 0 (never in grace)"* ]] || die "node$k's status is not 'grace_until: 0' (K9a)"
     [[ "$ST_OUT" != *"IN GRACE"* ]] || die "node$k's status says it is IN GRACE"
     re='frozen storage set for epoch [(]([0-9]+), [0-9]+[]]: 2 member[(]s[)], this node IS a member'
@@ -849,6 +1217,12 @@ for n in $(seq 1 "$N"); do
 done
 N_REP="${REP_REF%% *}"
 [ $(( N_REP * 2 )) -gt "$N" ] || die "only $N_REP of $N seats committed a report for H=$HX — F1 (more than half the power) cannot hold"
+# 6b-2: node 4's own seat is excluded for node 4 (key clause), so its
+# independent power is N_REP − 1 seats when that seat reported; only
+# 2·(N_REP − 1) > N makes "node 4 is OK" decidable without decoding which
+# seat is node 4's (a NO_EVIDENCE node 4 would read as a broken pay)
+[ $(( (N_REP - 1) * 2 )) -gt "$N" ] || die \
+    "only $N_REP of $N seats reported for H=$HX — with node $ST_A's own seat among them its independent power can be <= half (the three-state verdict, design §11.6): the expected debit is not decidable here (layout broke — false RED)"
 echo "[ok] $N_REP/$N seats committed a STORAGE_REPORT for H=$HX against S($HX), identical on 7/7 (seat:bitmap ${REP_REF#* })"
 n_logged=0
 for n in $(seq 1 "$N"); do
@@ -867,9 +1241,10 @@ for k in "$ST_A" "$ST_B"; do
     echo "[info] REPORTED: node$k — $n_ok/$N node logs hold a 'probe of ${fp:0:16}.. OK' line; segment file marker seg-1.ok $f"
 done
 
-# ── 9. storage: the settlement at B = Hx + 2E pays the storage payees ─
+# ── 9. storage: the settlement at B = Hx + 2E pays the storage OWNERS ─
 # snap — ONE statement (the test_v2_rewards.sh lesson: every value from
-# one read snapshot): "tip reward_pool pool1 Σaccrual acc(A) acc(B)".
+# one read snapshot): "tip reward_pool pool1 Σaccrual acc(owner_A)
+# acc(owner_B)" — owner_B is the Foundation owner in TEST-OWNER MODE.
 # Prints the line and returns 0, or prints the raw answer and returns 1
 # (the caller dies — a die inside $(...) would only end the subshell).
 snap() {
@@ -879,8 +1254,8 @@ snap() {
               (SELECT reward_pool FROM supply_tracking WHERE id = 1),
               (SELECT balance FROM v2_treasury WHERE pool_id = 1),
               (SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual),
-              (SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual WHERE lower(hex(owner_fp)) = '$FP_A'),
-              (SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual WHERE lower(hex(owner_fp)) = '$FP_B');" \
+              (SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual WHERE lower(hex(owner_fp)) = '$OWNER_A'),
+              (SELECT COALESCE(SUM(amount),0) FROM v2_reward_accrual WHERE lower(hex(owner_fp)) = '$OWNER_B');" \
           2>&1) || { printf '%s\n' "$out"; return 1; }
     [[ "$out" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]] || { printf '%s\n' "$out"; return 1; }
     printf '%s\n' "$out"
@@ -898,19 +1273,37 @@ read -r t_post rp_post p1_post acc_post a_post b_post <<< "$s"
     || die "post read at tip $t_post, outside [$B_SET, $(( B_SET + E )))"
 echo "[ok] post B=$B_SET: tip $t_post reward_pool $rp_post pool1 $p1_post Σaccrual $acc_post node$ST_A $a_post node$ST_B $b_post"
 BUDGET=$(( p1_pre >> DIV_LOG2 ))
-SHARE=$(( BUDGET / 2 ))
+SHARE=$(( BUDGET / 2 ))     # ⌊budget × P / 2P⌋: W counts both members (design §11.6)
 [ "$SHARE" -gt 0 ] || die "the budget $BUDGET cannot pay two shares (pool 1 $p1_pre)"
 DEBIT=$(( p1_pre - p1_post ))
-[ "$DEBIT" = $(( 2 * SHARE )) ] || die \
-    "pool 1 fell by $DEBIT, expected 2 x floor(($p1_pre >> $DIV_LOG2) / 2) = $(( 2 * SHARE )) (both members OK, equal weight $P) — $([ "$DEBIT" = "$SHARE" ] && echo 'ONE member was paid' || echo 'not a two-member settlement')"
 d_acc=$(( acc_post - acc_pre )); d_rp=$(( rp_pre - rp_post ))
+d_a=$(( a_post - a_pre )); d_b=$(( b_post - b_pre ))
 [ "$d_acc" = $(( d_rp + DEBIT )) ] || die \
     "Σaccrual rose by $d_acc, expected reward-pool debit $d_rp + pool 1 debit $DEBIT = $(( d_rp + DEBIT ))"
-[ $(( a_post - a_pre )) -ge "$SHARE" ] || die "node$ST_A's accrual rose by $(( a_post - a_pre )), below its storage share $SHARE"
-[ $(( b_post - b_pre )) -ge "$SHARE" ] || die "node$ST_B's accrual rose by $(( b_post - b_pre )), below its storage share $SHARE"
-echo "[ok] settlement at $B_SET paid the storage payees: pool 1 -$DEBIT (2 x $SHARE), Σaccrual +$d_acc = reward pool -$d_rp + pool 1 -$DEBIT"
+# node 4's owner is its own key: after the generation-4 edge a node key
+# earns no validator reward (the owner — the Foundation — does), so its
+# accrual step is the storage share alone
+[ "$d_a" = "$SHARE" ] || die \
+    "node$ST_A's owner (its own key) rose by $d_a, expected exactly its storage share $SHARE (OK, equal weight $P)"
+if [ -n "$OWN_KEYS" ]; then
+    # NO_EVIDENCE (design §11.6): node 5 is owned by the validators' owner —
+    # every report about it is owner-excluded, I = 0, 2·I <= P_total
+    [ "$DEBIT" = "$SHARE" ] || die \
+        "pool 1 fell by $DEBIT, expected ONE share $SHARE (node $ST_A OK, node $ST_B NO_EVIDENCE — its share stays in pool 1) — $([ "$DEBIT" = $(( 2 * SHARE )) ] && echo "node $ST_B was PAID: its validators' reports counted for it (owner exclusion not applied)" || echo 'not this settlement')"
+    [ "$d_b" = "$d_rp" ] || die \
+        "node$ST_B's owner (the Foundation owner) rose by $d_b, expected exactly the reward-pool debit $d_rp (the validator reward, no storage share)"
+    echo "[ok] settlement at $B_SET: pool 1 -$DEBIT = ONE share — node$ST_A's owner +$SHARE; node$ST_B (owned by the validators' owner) NO_EVIDENCE, its owner +$d_b = the validator reward only; Σaccrual +$d_acc = reward pool -$d_rp + pool 1 -$DEBIT"
+else
+    [ "$DEBIT" = $(( 2 * SHARE )) ] || die \
+        "pool 1 fell by $DEBIT, expected 2 x floor(($p1_pre >> $DIV_LOG2) / 2) = $(( 2 * SHARE )) (both members OK, equal weight $P) — $([ "$DEBIT" = "$SHARE" ] && echo 'ONE member was paid' || echo 'not a two-member settlement')"
+    [ "$d_b" = "$SHARE" ] || die \
+        "node$ST_B's owner (its own key) rose by $d_b, expected exactly its storage share $SHARE"
+    echo "[ok] settlement at $B_SET paid both owners: pool 1 -$DEBIT (2 x $SHARE), each node-key owner +$SHARE, Σaccrual +$d_acc = reward pool -$d_rp + pool 1 -$DEBIT"
+fi
 
-# ── 10. storage: honest nodes keep fail_streak 0; 7/7 ───────────────
+# ── 10. storage: fail_streak 0 on both after the settlement; 7/7 ────
+# OK resets it (K5a), NO_EVIDENCE leaves it untouched, NOT OK writes 1 —
+# with the debit above this separates the three verdicts
 wait_all "$B_SET"
 require_registry "post-settlement"
 for n in $(seq 1 "$N"); do
@@ -919,13 +1312,75 @@ for n in $(seq 1 "$N"); do
 done
 diff_at "$B_SET" "storage-settlement-at-$B_SET"
 
+# ── 11. storage: the OWNER takes node 5 out; the bond comes back (6b-3) ─
+# 11a. the CLI's owner check on exit: node 4's keys do not own node 5
+xlog="$LOGD/exit_node${ST_B}_by_node$ST_A.log"; xrc=0
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$ST_B")" storage exit --keys "$KEYS_A" \
+    --node-fp "$FP_B" --dry-run > "$xlog" 2>&1 || xrc=$?
+cat "$xlog"
+[ "$xrc" != 0 ] && grep -q "only its owner can take it out" "$xlog" \
+    || die "storage exit of node$ST_B with node$ST_A's keys was not refused by the CLI's owner check (rc $xrc, see $xlog)"
+[ -z "$(spend_intent "$xlog")" ] || die "the refused exit built an envelope"
+echo "[ok] the CLI refused an exit of node$ST_B by a non-owner — nothing built"
+# 11b. the owner's exit
+xlog="$LOGD/exit_node$ST_B.log"; xrc=0
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$ST_B")" storage exit --keys "$KEYS_B" \
+    --node-fp "$FP_B" --submit "127.0.0.1:$(stagef_tcp_port "$ST_B")" > "$xlog" 2>&1 || xrc=$?
+cat "$xlog"
+[ "$xrc" = 0 ] || die "storage exit of node$ST_B by its owner exited $xrc (see $xlog)"
+grep -q '^accepted: mempool CheckTx approved' "$xlog" || die "storage exit: no CheckTx approval line (see $xlog)"
+x_intent=$(spend_intent "$xlog")
+[ "${#x_intent}" = 128 ] || die "storage exit printed no intent_id (see $xlog)"
+# the exec's effect: EXITING (2) with exit_height x — or already RELEASED
+# (3) when x itself is a boundary (the EXIT is applied before that
+# block's boundary step, which releases it in the same block)
+h=$(stagef_cmt_wait_row "$(db_of "$ST_B")" \
+    "SELECT COUNT(*) FROM v2_storage_nodes WHERE lower(hex(node_fp)) = '$FP_B'
+       AND status IN (2, 3) AND exit_height > 0;") && wrc=0 || wrc=$?
+case "$wrc" in
+    0) ;;
+    1) die "chain STALLED waiting for node$ST_B's EXITING row (tip $h)" ;;
+    *) die "node$ST_B's exit did not land within 20 heights (tip $h) — dropped, or refused by its exec (a refused item writes no row)" ;;
+esac
+XH=$(sqlite3 "$(db_of "$ST_B")" "SELECT exit_height FROM v2_storage_nodes WHERE lower(hex(node_fp)) = '$FP_B';" 2>/dev/null || echo ERR)
+[[ "$XH" =~ ^[0-9]+$ ]] && [ "$XH" -gt 0 ] || die "node$ST_B's exit_height is '$XH'"
+B_REL=$(( (XH + E - 1) / E * E ))      # the first boundary >= x (st_release runs at it)
+UNLOCK=$(( B_REL + EXIT_LOCK_EPOCHS * E ))
+echo "[ok] node$ST_B EXITING at x=$XH (tip $h) — release boundary B_rel=$B_REL, unlock $UNLOCK"
+# 11c. at B_rel: RELEASED + ONE release coin to the owner, 7/7
+pump_to 1 $(( B_REL + 1 ))
+wait_all "$B_REL"
+require_registry "post-release" 3 "$XH"
+REL_REF=""
+for n in $(seq 1 "$N"); do
+    r=$(sqlite3 -separator '|' "$(db_of "$n")" \
+        "SELECT COUNT(*), COALESCE(MIN(lower(owner)), '-'), COALESCE(MIN(amount), -1),
+                COALESCE(MIN(block_height), -1), COALESCE(MIN(unlock_block), -1)
+           FROM utxo_set WHERE output_index = $EXIT_OUT_IDX;" 2>/dev/null || echo ERR)
+    if [ -z "$REL_REF" ]; then REL_REF="$r"
+    elif [ "$r" != "$REL_REF" ]; then die "node$n's storage release coins '$r' differ from node1's '$REL_REF'"; fi
+done
+[ "$REL_REF" = "1|$OWNER_B|$BOND|$B_REL|$UNLOCK" ] || die \
+    "the storage release coins are '$REL_REF', expected exactly one: '1|${OWNER_B:0:16}...|$BOND|$B_REL|$UNLOCK' (owner_5, the bond, created at B_rel, locked $EXIT_LOCK_EPOCHS epochs)"
+diff_at "$B_REL" "storage-release-at-$B_REL"
+echo "[ok] at B_rel=$B_REL on 7/7: node$ST_B RELEASED (exit at $XH), node$ST_A ACTIVE, ONE release coin of $BOND raw to its owner ${OWNER_B:0:16}..., unlock_block $UNLOCK"
+
 stagef_sentinel ASSERT_RUN
 stagef_cmt_diff_at_floor "post-storage" || exit 2
 stagef_sentinel PASS
+if [ -n "$OWN_KEYS" ]; then
+    NE_LINE="NO_EVIDENCE: PROVEN on 7/7 — node $ST_B owned by the validators' owner: one share paid, its fail_streak 0"
+else
+    NE_LINE="NO_EVIDENCE: not run (STAGEF_HF6_OWNER_KEYS unset — coverage that did not happen; both nodes settled OK)"
+fi
 echo ""
 echo "[info] HEIGHTS: HF2 $H2 | HF3 $H3 | GEN2 $H4 | EVM $HE | storage H_s $HS | first storage set $B_FIRST"
 echo "       | both members from $B_IN | segment 1 published $H_PUB | probed epoch $HX | settled $B_SET"
-echo "[PASS] archive storage reward: generation $GEN_STOR voted on top of the EVM generation, nodes $ST_A/$ST_B"
-echo "       registered, segment 1 (P = $P) published and re-derived, $N_REP/$N reports, the settlement paid"
-echo "       2 x $SHARE from pool 1 with fail_streak 0 and grace_until 0 — 7/7 identical."
+echo "       | node $ST_B exit $XH | released $B_REL"
+echo "[PASS] archive storage reward on $BUILD_OWNER: generation $GEN_STOR voted on top of the EVM"
+echo "       generation, nodes $ST_A/$ST_B registered by their OWNERS (node consent op 3, file round-trip,"
+echo "       the CLI's generation and owner checks), segment 1 (P = $P) published and re-derived,"
+echo "       $N_REP/$N reports, the settlement debited pool 1 by $DEBIT (SHARE $SHARE), node $ST_B"
+echo "       taken out by its owner and its bond released as one locked coin — 7/7 identical."
+echo "       $NE_LINE."
 echo "       E=15 / grace 15 / P=360 — the LOGIC only; the NOT OK / grace / handoff paths are NOT exercised (header)."

@@ -58,6 +58,12 @@
  *       IDs lose their unsigned entry / ban — is test_p2p_pex's
  *       (test_book_bans). B runs without PEX (no book): the joined count
  *       is computed whether or not a book exists.
+ *  (2a'') NO PENDING KEY IS BONDED (HF-6 D1, khan decision 2026-10-13-
+ *       kurultay-18-summary.md items 1 / 4): forged pending keys in
+ *       v2_validator_roles (rolled back) bond nothing, under an ACTIVE or
+ *       a RETIRING row; the set size stays the chain's. It can lie only if
+ *       the forged state differs from what a buggy writer would produce —
+ *       it pins that the host never reads the column.
  *  (2b) THE INBOUND CAP BINDS THE UNBONDED ONLY (K2): with
  *       max_num_inbound_peers = 1, an unbonded C gets in, a second unbonded
  *       D is refused, and a BONDED A still gets in (B then has 2 inbound
@@ -235,7 +241,9 @@ static int g_checks = 0;
 #define K_E     (N_KEYS + 2)      /* another chain                     */
 #define K_P     (N_KEYS + 3)      /* part 1                            */
 #define K_Q     (N_KEYS + 4)      /* part 1                            */
-#define N_ALL   (N_KEYS + 5)
+#define K_R     (N_KEYS + 5)      /* (2a'') a forged pending key, row 2 */
+#define K_S     (N_KEYS + 6)      /* (2a'') a forged pending key, row 3 */
+#define N_ALL   (N_KEYS + 7)
 #define GEN_TIME_MS 1767225600000ULL
 
 typedef struct {
@@ -1145,6 +1153,114 @@ static bool pred_collect_done(void *ctx) {
     return ((nodus_witness_t *)ctx)->cc_collect == NULL;
 }
 
+/* (2a'') — `sql` with blob ?1 (`l1` bytes) and int ?2, changing exactly
+ * one row. 0 / -1. */
+static int sql_one(sqlite3 *db, const char *sql, const uint8_t *b1, int l1,
+                   int i2) {
+    sqlite3_stmt *st = NULL;
+    int ok = sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK &&
+             sqlite3_bind_blob(st, 1, b1, l1, SQLITE_TRANSIENT) == SQLITE_OK &&
+             sqlite3_bind_int(st, 2, i2) == SQLITE_OK &&
+             sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(db) == 1;
+    if (st) sqlite3_finalize(st);
+    return ok ? 0 : -1;
+}
+
+/* (2a'') — the validators.pubkey_hash of genesis key `k`'s row. 0 / -1. */
+static int row_key_of(sqlite3 *db, int k, uint8_t out[64]) {
+    sqlite3_stmt *st = NULL;
+    int ok = sqlite3_prepare_v2(db, "SELECT pubkey_hash FROM validators "
+                                    "WHERE pubkey = ?1", -1, &st, NULL)
+                 == SQLITE_OK &&
+             sqlite3_bind_blob(st, 1, g_ks[k].pk, DNAC_PUBKEY_SIZE,
+                               SQLITE_TRANSIENT) == SQLITE_OK &&
+             sqlite3_step(st) == SQLITE_ROW &&
+             sqlite3_column_bytes(st, 0) == 64;
+    if (ok) memcpy(out, sqlite3_column_blob(st, 0), 64);
+    if (st) sqlite3_finalize(st);
+    return ok ? 0 : -1;
+}
+
+/* (2a'') HF-6 D1 — NO pending consensus key is bonded. HF-6 slice 6e had
+ * added the pending key of every v2_validator_roles row to the bonded
+ * set (for ROTATE); the khan removed ROTATE (decision docs/plans/
+ * decisions/2026-10-13-kurultay-18-summary.md items 1 and 4) and the
+ * pending field is always zero, so the set is again "ACTIVE / ELIGIBLE
+ * validators keys ∪ the committees at tip ± 1" and nothing else.
+ * Inside ONE transaction on B's chain database, rolled back at the end:
+ * genesis row 2 (ACTIVE) gets a roles row with a FORGED pending key K_R,
+ * genesis row 3 (made RETIRING, then ACTIVE) one with K_S — a state no
+ * committed chain can reach (every reader refuses a non-zero pending
+ * field). Neither K_R nor K_S is in any committee or validators row.
+ *   - refreshed: neither K_R nor K_S is bonded and the set size is the
+ *     chain's (`nb`) — the pending column is not read at all;
+ *   - rolled back → the set is the chain's again (`nb`). */
+static int part2_pending(gfx_t *g, nodus_witness_p2p_t *B, int nb) {
+    int rc = 0;
+    bool in_tx = false;
+    char idr[CMT_P2P_ID_CAP], ids[CMT_P2P_ID_CAP];
+    uint8_t vid2[64], vid3[64], owner[64];
+    sqlite3 *db = g->w->db;
+    static const char *roles_ins =
+        "INSERT INTO v2_validator_roles (validator_id, owner_fp, "
+        "pending_consensus_pubkey, consensus_key_effective_epoch) "
+        "VALUES (?1, ?2, ?3, ?4)";
+    static const char *set_status =
+        "UPDATE validators SET status = ?2 WHERE pubkey_hash = ?1";
+
+    memset(owner, 0x5E, sizeof(owner));
+    CHECK(key_id(K_R, idr) == 0 && key_id(K_S, ids) == 0, "(2a'') ids");
+    CHECK(row_key_of(db, 2, vid2) == 0 && row_key_of(db, 3, vid3) == 0,
+          "(2a'') rows 2 and 3 read");
+    CHECK(!nodus_witness_p2p_is_bonded(B, idr) &&
+          !nodus_witness_p2p_is_bonded(B, ids),
+          "(2a'') FIXTURE GUARD: K_R / K_S are in no committee and no row");
+    CHECK(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'') begin");
+    in_tx = true;
+    for (int r = 0; r < 2; r++) {
+        sqlite3_stmt *st = NULL;
+        const uint8_t *vid = r ? vid3 : vid2;
+        const uint8_t *pk = g_ks[r ? K_S : K_R].pk;
+        int ok = sqlite3_prepare_v2(db, roles_ins, -1, &st, NULL) == SQLITE_OK &&
+                 sqlite3_bind_blob(st, 1, vid, 64, SQLITE_TRANSIENT) == SQLITE_OK &&
+                 sqlite3_bind_blob(st, 2, owner, 64, SQLITE_TRANSIENT) == SQLITE_OK &&
+                 sqlite3_bind_blob(st, 3, pk, DNAC_PUBKEY_SIZE, SQLITE_TRANSIENT)
+                     == SQLITE_OK &&
+                 sqlite3_bind_int64(st, 4, (sqlite3_int64)DNAC_EPOCH_LENGTH)
+                     == SQLITE_OK &&
+                 sqlite3_step(st) == SQLITE_DONE;
+        if (st) sqlite3_finalize(st);
+        CHECK(ok, "(2a'') a roles row with a forged pending key");
+    }
+
+    CHECK(sql_one(db, set_status, vid3, 64, (int)DNAC_VALIDATOR_RETIRING) == 0,
+          "(2a'') row 3 RETIRING");
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(!nodus_witness_p2p_is_bonded(B, idr) &&
+          !nodus_witness_p2p_is_bonded(B, ids),
+          "(2a'') no pending key is bonded (ACTIVE row 2, RETIRING row 3)");
+    CHECK(sql_one(db, set_status, vid3, 64, (int)DNAC_VALIDATOR_ACTIVE) == 0,
+          "(2a'') row 3 ACTIVE again");
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(!nodus_witness_p2p_is_bonded(B, idr) &&
+          !nodus_witness_p2p_is_bonded(B, ids) &&
+          nodus_witness_p2p_bonded_count(B) == nb,
+          "(2a'') ... nor under an ACTIVE row: the set is the chain's");
+
+    CHECK(sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a'') rollback");
+    in_tx = false;
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(!nodus_witness_p2p_is_bonded(B, idr) &&
+          !nodus_witness_p2p_is_bonded(B, ids) &&
+          nodus_witness_p2p_bonded_count(B) == nb,
+          "(2a'') rolled back: the chain's set again");
+out:
+    if (in_tx) (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    return rc;
+}
+
 static int part2(void) {
     int rc = 0;
     gfx_t g;
@@ -1213,6 +1329,10 @@ static int part2(void) {
               nodus_witness_p2p_bonded_joined_total(B) == j0 + (uint64_t)nb,
               "(2a') refilled: every member joined again");
     }
+
+    /* (2a'') HF-6 D1 — no pending consensus key is bonded (part2_pending) */
+    CHECK(part2_pending(&g, B, nodus_witness_p2p_bonded_count(B)) == 0,
+          "(2a'') no pending key bonded");
 
     cfg_local(&cfgX);
     /* A is seat key 0 WITH a witness on the same chain (a second

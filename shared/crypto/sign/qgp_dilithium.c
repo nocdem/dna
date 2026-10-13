@@ -111,3 +111,53 @@ int qgp_dsa87_verify(const uint8_t *sig, size_t siglen,
     QGP_BENCH_END(QGP_BENCH_DILITHIUM_VERIFY);
     return _rc;
 }
+
+int qgp_dsa87_sign_ctx(uint8_t *sig, size_t *siglen,
+                       const uint8_t *m, size_t mlen,
+                       const uint8_t *ctx, size_t ctxlen,
+                       const uint8_t *sk)
+{
+    if (!sig || !siglen || !m || !sk) {
+        return -1;
+    }
+    if (!ctx && ctxlen > 0) {
+        return -1;
+    }
+    if (ctxlen > QGP_DSA87_CTX_MAX_BYTES) {
+        return -1;
+    }
+
+    // Call upstream Dilithium5 detached signature (ML-DSA-87) with the
+    // FIPS 204 context: the library forms pre = 0 || ctxlen || ctx
+    // (dsa/sign.c:262-295). ctx is never prepended to m here.
+    QGP_BENCH_START(QGP_BENCH_DILITHIUM_SIGN);
+    int _rc = pqcrystals_dilithium5_ref_signature(sig, siglen, m, mlen,
+                                                  ctx, ctxlen, sk);
+    QGP_BENCH_END(QGP_BENCH_DILITHIUM_SIGN);
+    return _rc;
+}
+
+int qgp_dsa87_verify_ctx(const uint8_t *sig, size_t siglen,
+                         const uint8_t *m, size_t mlen,
+                         const uint8_t *ctx, size_t ctxlen,
+                         const uint8_t *pk)
+{
+    if (!sig || !m || !pk) {
+        return -1;
+    }
+    if (!ctx && ctxlen > 0) {
+        return -1;
+    }
+    if (ctxlen > QGP_DSA87_CTX_MAX_BYTES) {
+        return -1;
+    }
+
+    // Call upstream Dilithium5 signature verification (ML-DSA-87) with the
+    // FIPS 204 context (dsa/sign.c:439-458). No fallback to the empty-ctx
+    // verify: a ctx signature checks under exactly this ctx or not at all.
+    QGP_BENCH_START(QGP_BENCH_DILITHIUM_VERIFY);
+    int _rc = pqcrystals_dilithium5_ref_verify(sig, siglen, m, mlen,
+                                               ctx, ctxlen, pk);
+    QGP_BENCH_END(QGP_BENCH_DILITHIUM_VERIFY);
+    return _rc;
+}

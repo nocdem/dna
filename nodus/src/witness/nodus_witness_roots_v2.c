@@ -700,23 +700,44 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
 
 /* The 8 v4 SYSTEM legs, in v4 order — shared by the v4 composition and
  * (storage reward v1) the v5 composition, so both read the SAME legs the
- * SAME way; the comments are the legs' history. @return 0 / -1. */
+ * SAME way; the comments are the legs' history. @return 0 / -1.
+ *
+ * HF-6 sub-slice 3d: `v2_leaves` chooses the validator / delegation leaf
+ * version — 0 the v1 loaders (pubkey-keyed preimages), 1 the §6.3 / §6.4
+ * loaders over the re-keyed rows. It is NOT a free input: the v4
+ * composition passes 0 and the v5 composition 1, so the leaf version is
+ * tied to the composition, which nodus_rt_system_state_root
+ * (nodus_witness_v2_claims.c) already chooses by the resolved runtime's
+ * generation — one dynamic input, not two. Every other leg is identical. */
 typedef struct {
     uint8_t validator_root[64], delegation_root[64];
     uint8_t chain_config_root[64], vset[64], domreg[64], manifest[64];
     uint8_t attendance[64], treasury[64];
 } sys_legs_v4_t;
 
-static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l) {
+static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l,
+                          int v2_leaves) {
     uint8_t *validator_root = l->validator_root;
     uint8_t *delegation_root = l->delegation_root;
     uint8_t *chain_config_root = l->chain_config_root;
     uint8_t *vset = l->vset, *domreg = l->domreg, *manifest = l->manifest;
     uint8_t *attendance = l->attendance, *treasury = l->treasury;
-    if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0)
-        return -1;
-    if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0)
-        return -1;
+    if (v2_leaves) {
+        if (nodus_witness_merkle_compute_validator_root_v2(w, validator_root)
+                != 0)
+            return -1;
+        if (nodus_witness_merkle_compute_delegation_root_v2(w,
+                                                            delegation_root)
+                != 0)
+            return -1;
+    } else {
+        if (nodus_witness_merkle_compute_validator_root(w, validator_root)
+                != 0)
+            return -1;
+        if (nodus_witness_merkle_compute_delegation_root(w, delegation_root)
+                != 0)
+            return -1;
+    }
     /* Root-layout round (K2): the epoch_state leg that sat here is
      * DELETED; the composition tag moved "NDS.SYS.v2" -> "NDS.SYS.v3". */
     if (nodus_chain_config_compute_root(w, chain_config_root) != 0)
@@ -770,7 +791,7 @@ static int system_legs_v4(nodus_witness_t *w, sys_legs_v4_t *l) {
 int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
-    if (system_legs_v4(w, &l) != 0) return -1;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/0) != 0) return -1;
     /* GENERICITY CORRECTION (locked): the native supply_root is NOT a
      * SYSTEM leg — issuance belongs to the DNA_CORE runtime and is
      * committed by ITS state root below. */
@@ -780,12 +801,20 @@ int nodus_witness_system_root_v2(nodus_witness_t *w, uint8_t out[64]) {
 }
 
 /* Storage reward v1 (contract: nodus_witness_roots_v2.h; bytes doc item
- * 4): the same 8 legs, then storage_root, under "NDS.SYS.v5". */
+ * 4): the same 8 legs, then storage_root, under "NDS.SYS.v5".
+ * HF-6 sub-slice 3d: the validator and delegation legs are the
+ * generation-4 leaves (design 2026-10-03-hf5-validator-owner-stake rev 6
+ * §6.3 / §6.4) — unconditionally: v5 is the HF-6 generation's composition
+ * and is computed only over migrated tables (its one production caller,
+ * nodus_rt_system_state_root, is generation-gated, and the generation-4
+ * edge migrates the rows in the same transaction that switches the
+ * registry). The tags 0x02 / 0x03 and the composition tag "NDS.SYS.v5"
+ * are unchanged (§6.3: a different preimage under the same tag). */
 int nodus_witness_system_root_v5(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !out) return -1;
     sys_legs_v4_t l;
     uint8_t storage[64];
-    if (system_legs_v4(w, &l) != 0) return -1;
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1) != 0) return -1;
     if (nodus_witness_storage_root_v2(w, storage) != 0) return -1;
     return dna_v2_system_root_v5(l.validator_root, l.delegation_root,
                                  l.chain_config_root, l.vset, l.domreg,

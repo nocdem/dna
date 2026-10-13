@@ -51,6 +51,27 @@
  * no leading zero, within u64 / the signer bound) — the pre-move CLI read
  * them with strtoull/strtoul, which also accepted trailing junk.
  *
+ * THE TWO v2 TEXT FORMATS (decision 2026-09-29-general-multisig.md, addendum
+ * "çok bacaklı ortak imza dosyası v2", operator 2026-10-13 "1 ile devam
+ * edelim") — ONLY for an envelope with >= 2 kind-3 legs (the HF-6 owner
+ * operations: a SYSTEM record leg that proves the owner and a CORE SYSFUND
+ * leg that spends the address's coins, each with its OWN leg auth digest,
+ * shared/dnac/env_preflight.c step 8). The v1 formats above are unchanged
+ * and stay the single-leg SPEND's:
+ *   export v2: "nodus-msig-export v2\n" "chain_id <64 hex>\n" "tip <dec>\n"
+ *              "signers <dec>\n" "digests <k>\n"
+ *              k × "digest <leg_index> <128 hex>\n" (leg_index strictly
+ *              ascending) "envelope <hex>\n"
+ *   sig v2:    "nodus-msig-sig v2\n" "pubkey <5184 hex>\n"
+ *              k × ("digest <leg_index> <128 hex>\n"
+ *                   "sig <leg_index> <9254 hex>\n")
+ * Unlike v1 (whose keys are looked up anywhere) a v2 file is read
+ * STRICTLY in this line order — its "digest" key repeats — with nothing
+ * before, between or after the lines and a final newline; decimals as v1.
+ * A co-signer signs EVERY digest or nothing (one signature file carries
+ * all k), and the combine re-derives every digest and assembles every
+ * kind-3 leg.
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -63,6 +84,8 @@
 
 #include "nodus/nodus_v2_spend.h"   /* rc values, coin, ruleset id, rand fn */
 #include "dnac/msig_wire.h"         /* DNA_MSIG_* bounds                   */
+#include "client/nodus_v2_stake.h"  /* v2: the owner operation read back
+                                     * (nodus_v2_stake_decode)             */
 
 #ifdef __cplusplus
 extern "C" {
@@ -70,6 +93,13 @@ extern "C" {
 
 #define NODUS_V2_MSIG_EXPORT_MAGIC "nodus-msig-export v1"
 #define NODUS_V2_MSIG_SIG_MAGIC    "nodus-msig-sig v1"
+/* The v2 (multi-leg) magics — see "THE TWO v2 TEXT FORMATS". */
+#define NODUS_V2_MSIG_EXPORT2_MAGIC "nodus-msig-export v2"
+#define NODUS_V2_MSIG_SIG2_MAGIC    "nodus-msig-sig v2"
+/** The digests a v2 file carries: one per kind-3 leg, at least 2 (one leg
+ *  is the v1 shape) and at most the envelope's own leg bound. */
+#define NODUS_V2_MSIG2_MIN_LEGS  2u
+#define NODUS_V2_MSIG2_MAX_LEGS  ((uint32_t)DNA_ENV_MAX_LEGS)
 
 /** One ML-DSA-87 public key / signature (DNAC_PUBKEY_SIZE /
  *  DNAC_SIGNATURE_SIZE; the auth_kind 1/3 signer slot is pk ‖ sig). */
@@ -90,6 +120,16 @@ extern "C" {
 #define NODUS_V2_MSIG_EXPIRY_AHEAD 90u
 /** The largest signature text (3 magic/key lines + hex), with slack. */
 #define NODUS_V2_MSIG_SIG_TEXT_MAX 32768u
+/** The largest v2 signature text: magic + pubkey line + one digest line
+ *  and one sig line per leg (each line bounded generously by 32 bytes of
+ *  key, index and separators plus its hex). */
+#define NODUS_V2_MSIG_SIG2_TEXT_MAX                                        \
+    (32u + 2u * NODUS_V2_MSIG_PK_LEN + 32u +                              \
+     NODUS_V2_MSIG2_MAX_LEGS * (2u * 32u + 128u + 2u * NODUS_V2_MSIG_SIG_LEN))
+/** The largest v2 export text: the v1 bound plus the digest lines. */
+#define NODUS_V2_MSIG_EXPORT2_TEXT_MAX                                     \
+    (2u * (size_t)DNA_ENV_MAX_TOTAL_LEN + 4096u +                         \
+     (size_t)NODUS_V2_MSIG2_MAX_LEGS * (32u + 128u))
 
 /** Refusals of this module beyond the shared nodus_v2_spend_rc_t values it
  *  also returns (ERR_ARG, ERR_ALLOC, ERR_INPUT_SUM, ERR_INSUFFICIENT,
@@ -111,9 +151,45 @@ typedef enum {
     NODUS_V2_MSIG_ERR_COUNT       = -71, /* signatures != the export's K   */
     NODUS_V2_MSIG_ERR_DUP_SIGNER  = -72, /* one key signed twice           */
     NODUS_V2_MSIG_ERR_RULESET     = -73, /* no CORE leg version to judge   */
-    NODUS_V2_MSIG_ERR_EXPIRY      = -74  /* expiry 0, or past the export's
+    NODUS_V2_MSIG_ERR_EXPIRY      = -74, /* expiry 0, or past the export's
                                           * tip + NODUS_V2_MSIG_EXPIRY_AHEAD*/
+    NODUS_V2_MSIG_ERR_HORIZON     = -75  /* judged against the NODE's
+                                          * height (nodus_v2_msig_horizon):
+                                          * expired, valid past node + the
+                                          * mempool cap (100), or the node
+                                          * more than EXPIRY_AHEAD behind
+                                          * the export's tip              */
 } nodus_v2_msig_rc_t;
+
+/**
+ * The signing horizon judged against the height of the co-signer's OWN
+ * node (2026-10-13, red-team round 3 — `msig sign` takes it from the
+ * pinned session's dnac_msig_utxo answer, "block_height"), not against the
+ * export's own `tip`, which its author chose. With H = node_height (the
+ * last committed block; the envelope runs at H + 1 or later):
+ *   expiry_height <= H                         → expired: nothing to sign
+ *   expiry_height >  H + NODUS_CMT_APP_MAX_EXPIRY_AHEAD (100)
+ *                                              → the signature would stay
+ *     usable longer than the chain admits an envelope from the present
+ *     (the mempool cap, nodus_witness_cmt_app.c — CheckTx refuses expiry
+ *     > tip + 100) — an export whose tip was set into the future (review /
+ *     review2 check expiry only against that tip) would otherwise yield a
+ *     signature that waits to be submitted later. The bound is the cap,
+ *     not the builders' tip + 90: builders write expiry = tip + 90
+ *     (nodus-cli CLI_ENV_EXPIRY_AHEAD), so a co-signer's node a few blocks
+ *     behind the builder must still sign — the 10-block gossip margin
+ *     absorbs that lag;
+ *   export_tip    >  H + NODUS_V2_MSIG_EXPIRY_AHEAD (90)
+ *                                              → the node is that far
+ *     behind the builder: its coin set (the input check) is not the one the
+ *     export was built on.
+ * (H − export_tip > 90 needs no rule of its own: the export's expiry is
+ * <= tip + 90 < H, the first line.) Pure. @return NODUS_V2_SPEND_OK /
+ * NODUS_V2_MSIG_ERR_HORIZON / NODUS_V2_SPEND_ERR_ARG (a height near
+ * UINT64_MAX).
+ */
+int nodus_v2_msig_horizon(uint64_t export_tip, uint64_t expiry_height,
+                          uint64_t node_height);
 
 /* ── 1. descriptor + address from keys (nodus-cli `msig address`) ────── */
 
@@ -292,6 +368,11 @@ typedef struct {
  * nullifier ‖ nout u8 (1..NODUS_V2_MSIG_MAX_OUTS) ‖ nout × 232-byte
  * records with call_len exactly that — nothing is read before its length
  * is proved; every output owner is 128 lowercase hex characters.
+ * It does NOT prove that the inputs are the vault's coins (the descriptor
+ * is outside the signed context — a descriptor of the same length can be
+ * swapped in after signing): the caller checks every input against the
+ * vault's own coin set before it signs (nodus-cli `msig sign`, through
+ * dnac_msig_utxo — khan decision 2026-10-13-kurultay-18-summary.md item 5).
  * `pf` is caller-provided heap scratch.
  * @return NODUS_V2_SPEND_OK / _ERR_ARG / NODUS_V2_MSIG_ERR_SHAPE / _DESC /
  *         _NOT_MEMBER / NODUS_V2_SPEND_ERR_PREFLIGHT1 / NODUS_V2_MSIG_ERR_
@@ -334,7 +415,10 @@ int nodus_v2_msig_sig_check(const nodus_v2_msig_export_t *x,
 /** Write the `n_sig` (== x->signers) CHECKED signatures into the export's
  *  signer slots in ascending pubkey order (the one canonical signer
  *  encoding); a key given twice is refused. `v` is the view of x->env
- *  from nodus_v2_msig_leg_open (the slots are written in place).
+ *  from nodus_v2_msig_leg_open (the slots are written in place, so the
+ *  leg's auth blob must already be at least 1 + n_sig ×
+ *  NODUS_RT_AUTH_SIGNER_LEN bytes with its count byte == n_sig — else
+ *  ERR_ARG, nothing written).
  *  @return NODUS_V2_SPEND_OK / _ERR_ARG / NODUS_V2_MSIG_ERR_COUNT /
  *          NODUS_V2_MSIG_ERR_DUP_SIGNER. */
 int nodus_v2_msig_assemble(nodus_v2_msig_export_t *x,
@@ -361,6 +445,173 @@ int nodus_v2_msig_combine(nodus_v2_msig_export_t *x, uint32_t core_version,
                           const uint8_t (*sigs)[NODUS_V2_MSIG_SIG_LEN],
                           int n_sig, dna_env_preflight_t *pf,
                           int *bad_index);
+
+/* ══ v2 — the multi-leg kind-3 envelope (the HF-6 owner operations) ════
+ * Decision 2026-09-29-general-multisig.md, addendum "çok bacaklı ortak
+ * imza dosyası v2". The unsigned envelope comes from nodus_v2_stake_build
+ * with req->msig_desc (client/nodus_v2_stake.h "KIND-3 OWNER"); its two
+ * leg digests are out->leg_digest. Every function below refuses an
+ * envelope in which any leg is NOT auth_kind 3 (such a leg needs its own
+ * signer, which these files do not carry) or whose kind-3 legs do not all
+ * carry the same K and the same ONE descriptor. */
+
+/** A v2 export, parsed (or to encode). `env` is heap after a parse
+ *  (nodus_v2_msig_export2_free). */
+typedef struct {
+    uint8_t  chain32[DNA_CHAIN_ID_LEN];
+    uint64_t tip;
+    uint32_t signers;                             /* K                    */
+    uint32_t n_digests;                           /* k, one per kind-3 leg*/
+    uint16_t leg_index[NODUS_V2_MSIG2_MAX_LEGS];  /* strictly ascending   */
+    uint8_t  digest[NODUS_V2_MSIG2_MAX_LEGS][64];
+    uint8_t *env;
+    size_t   env_len;
+} nodus_v2_msig_export2_t;
+
+/** A v2 signature: ONE key's signature over EVERY digest of an export.
+ *  Large (~300 KB at the leg bound): heap-allocate it. */
+typedef struct {
+    uint8_t  pk[NODUS_V2_MSIG_PK_LEN];
+    uint32_t n;
+    uint16_t leg_index[NODUS_V2_MSIG2_MAX_LEGS];
+    uint8_t  digest[NODUS_V2_MSIG2_MAX_LEGS][64];
+    uint8_t  sig[NODUS_V2_MSIG2_MAX_LEGS][NODUS_V2_MSIG_SIG_LEN];
+} nodus_v2_msig_sig2_t;
+
+/** The v2 export text. Refuses (ERR_ARG) k outside [NODUS_V2_MSIG2_MIN_LEGS,
+ *  NODUS_V2_MSIG2_MAX_LEGS], a leg_index not strictly ascending or >=
+ *  the leg bound, K outside [1, NODUS_RT_AUTH_MAX_SIGNERS], an empty or
+ *  oversized envelope. *text_out heap, NUL-terminated, *len_out excludes
+ *  the NUL. @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC. */
+int nodus_v2_msig_export2_encode(const nodus_v2_msig_export2_t *x,
+                                 char **text_out, size_t *len_out);
+
+/** Parse exactly the v2 export text (strict line order, final newline,
+ *  nothing else; the encoder's bounds). On a refusal nothing is left
+ *  allocated. @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC /
+ *  NODUS_V2_MSIG_ERR_FORMAT. */
+int nodus_v2_msig_export2_parse(const char *text, size_t len,
+                                nodus_v2_msig_export2_t *x);
+
+/** Free the envelope of a v2 export. NULL-safe. */
+void nodus_v2_msig_export2_free(nodus_v2_msig_export2_t *x);
+
+/** The v2 signature text (same bounds as the export's k and indices).
+ *  @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC. */
+int nodus_v2_msig_sig2_encode(const nodus_v2_msig_sig2_t *s,
+                              char **text_out, size_t *len_out);
+
+/** Parse exactly the v2 signature text (at most
+ *  NODUS_V2_MSIG_SIG2_TEXT_MAX bytes; strict line order). On a refusal `s`
+ *  is zeroed. @return NODUS_V2_SPEND_OK / _ERR_ARG /
+ *  NODUS_V2_MSIG_ERR_FORMAT. */
+int nodus_v2_msig_sig2_parse(const char *text, size_t len,
+                             nodus_v2_msig_sig2_t *s);
+
+/** The kind-3 legs of a v2 export: EVERY leg is auth_kind 3; their indices
+ *  are exactly x->leg_index (k = x->n_digests >= 2, == leg_count); each
+ *  blob is K = x->signers slots ‖ dcount 1 ‖ dlen ‖ a descriptor that
+ *  dna_msig_desc_parse accepts, consumed exactly, and every leg carries
+ *  the SAME descriptor bytes. `leg` describes that descriptor (pointing
+ *  into the first leg). `v` (heap) borrows x->env.
+ *  @return NODUS_V2_SPEND_OK / _ERR_ARG / NODUS_V2_MSIG_ERR_SHAPE /
+ *  NODUS_V2_MSIG_ERR_DESC. */
+int nodus_v2_msig_legs_open2(const nodus_v2_msig_export2_t *x,
+                             dna_env_view_t *v, nodus_v2_msig_leg_t *leg);
+
+/** Every leg digest of the export, re-derived: dna_env_preflight on its
+ *  envelope + chain id at tip + 1 with `lctx` (n_lctx entries, POSITIONAL
+ *  per leg — env_preflight.h — the caller resolves each leg's (domain,
+ *  ruleset_version) to its compiled or pinned tuple). Writes `pf`; the
+ *  caller compares pf->auth_digest[leg_index]. @return NODUS_V2_SPEND_OK /
+ *  _ERR_ARG / NODUS_V2_SPEND_ERR_PREFLIGHT1. */
+int nodus_v2_msig_digests2(const nodus_v2_msig_export2_t *x,
+                           const dna_env_leg_ctx_t *lctx, uint16_t n_lctx,
+                           dna_env_preflight_t *pf);
+
+/** What a v2 co-signer is shown — every field READ BACK from the envelope
+ *  bytes (decision addendum: the SYSTEM call decoded — op, validator_id,
+ *  owner, amount / commission / consensus key — and the CORE funding — inputs,
+ *  outputs, fee). */
+typedef struct {
+    uint8_t  addr[DNA_MSIG_ADDR_LEN];   /* the owner multisig address     */
+    uint8_t  m, n;
+    uint32_t signers;
+    uint64_t tip, expiry_height, fee;
+    uint32_t n_digests;
+    uint16_t leg_index[NODUS_V2_MSIG2_MAX_LEGS];
+    uint8_t  digest[NODUS_V2_MSIG2_MAX_LEGS][64];
+    uint8_t  intent_id[64];
+    nodus_v2_stake_decoded_t op;        /* the owner operation: the SYSTEM
+                                         * call and the CORE funding
+                                         * (nodus_v2_stake_decode)        */
+} nodus_v2_msig_review2_t;
+
+/**
+ * The checks `msig sign` makes on a v2 export before it signs, in order:
+ * the legs (nodus_v2_msig_legs_open2); `signer_pk` (NULL = skip) is one
+ * of the descriptor's keys (ERR_NOT_MEMBER); every digest re-derives and
+ * EQUALS the exported one (ERR_DIGEST — never sign a digest you did not
+ * derive); the expiry window of v1 (ERR_EXPIRY); the envelope reads back
+ * as an owner operation of client/nodus_v2_stake.h — two legs, a
+ * generation-4 layout, kind 3 on both, its owner the descriptor's address
+ * (ERR_CALL otherwise: the only multi-leg kind-3 envelopes this library
+ * signs are the HF-6 owner operations — op 10, the removed ROTATE, is
+ * none), and a change output, if any, goes to that address (hex) — else
+ * ERR_CALL (HF-6 D2). It does NOT prove that the funding inputs are the
+ * vault's coins: the descriptor is outside the signed context, so the
+ * caller must check every input against the vault's own coin set before
+ * signing (nodus-cli `msig sign` does, through dnac_msig_utxo — khan
+ * decision 2026-10-13-kurultay-18-summary.md item 5). `pf` is heap
+ * scratch.
+ * @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / NODUS_V2_MSIG_ERR_SHAPE
+ *         / _DESC / _NOT_MEMBER / NODUS_V2_SPEND_ERR_PREFLIGHT1 /
+ *         NODUS_V2_MSIG_ERR_DIGEST / _EXPIRY / _CALL / NODUS_V2_SPEND_ERR_HASH.
+ */
+int nodus_v2_msig_review2(const nodus_v2_msig_export2_t *x,
+                          const dna_env_leg_ctx_t *lctx, uint16_t n_lctx,
+                          const uint8_t *signer_pk, dna_env_preflight_t *pf,
+                          nodus_v2_msig_review2_t *out);
+
+/** One v2 signature against an opened export: it carries exactly the
+ *  export's leg indices and digests (else ERR_SIG_DIGEST — a file that
+ *  signs some legs and not others is refused: all or nothing), its key is
+ *  one of the descriptor's (else ERR_NOT_MEMBER), and every signature
+ *  verifies over its digest (else ERR_SIG). @return NODUS_V2_SPEND_OK or
+ *  that refusal / _ERR_ARG. */
+int nodus_v2_msig_sig2_check(const nodus_v2_msig_export2_t *x,
+                             const nodus_v2_msig_leg_t *leg,
+                             const nodus_v2_msig_sig2_t *s);
+
+/** Write the `n_sig` (== x->signers) signatures into EVERY kind-3 leg's
+ *  slots, ascending by public key (the one canonical signer encoding),
+ *  digest j's signature into leg x->leg_index[j]; a key given twice is
+ *  refused. Like nodus_v2_msig_assemble it does not judge the signatures
+ *  (nodus_v2_msig_sig2_check does). `v` is the view from
+ *  nodus_v2_msig_legs_open2. Every target leg's auth blob must already
+ *  be at least 1 + n_sig × NODUS_RT_AUTH_SIGNER_LEN bytes with its count
+ *  byte == n_sig (the slots are written in place) — else ERR_ARG, nothing
+ *  written. @return NODUS_V2_SPEND_OK / _ERR_ARG /
+ *  NODUS_V2_MSIG_ERR_COUNT / NODUS_V2_MSIG_ERR_DUP_SIGNER. */
+int nodus_v2_msig_assemble2(nodus_v2_msig_export2_t *x,
+                            const dna_env_view_t *v,
+                            const nodus_v2_msig_sig2_t *const *sigs,
+                            int n_sig);
+
+/**
+ * The whole v2 combine: the legs, the exact-K count (ERR_COUNT), every
+ * digest re-derived and equal (ERR_DIGEST), each signature
+ * (nodus_v2_msig_sig2_check, in order; *bad_index receives the failing
+ * one, else -1), the assembly, and the pass-2 preflight self-check into
+ * `pf` (its wire_id / intent_id are then the signed envelope's). On OK
+ * x->env is the SIGNED envelope. Does NOT run the chain's own auth hook
+ * per leg (nodus-cli does, after this call; a browser cannot link it).
+ */
+int nodus_v2_msig_combine2(nodus_v2_msig_export2_t *x,
+                           const dna_env_leg_ctx_t *lctx, uint16_t n_lctx,
+                           const nodus_v2_msig_sig2_t *const *sigs,
+                           int n_sig, dna_env_preflight_t *pf,
+                           int *bad_index);
 
 #ifdef __cplusplus
 }

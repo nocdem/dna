@@ -25,6 +25,9 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_emission.h"  /* DNAC_DECIMAL_UNIT */
+#include "witness/nodus_witness_v2_epoch.h"  /* HF-6 5d: key generation */
+#include "crypto/utils/qgp_log.h"
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -174,8 +177,19 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
         fprintf(stderr, "%s: bootstrap committee alloc failed\n", LOG_TAG);
         return -1;
     }
+    /* HF-6 slice 5d (ORCHESTRATOR decision D4 (i)): the core takes the
+     * key generation from its caller — read once here from the
+     * committed registry. e_start 0 is the bootstrap path, which does
+     * not consult it. */
+    uint32_t key_gen = 0;
+    if (nodus_witness_v2_key_generation(w, &key_gen) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "bootstrap committee: the key "
+                      "generation is unreadable");
+        free(boot);
+        return -1;
+    }
     int boot_count = 0;
-    int rc2 = nodus_committee_compute_for_epoch(w, 0ULL, boot,
+    int rc2 = nodus_committee_compute_for_epoch(w, 0ULL, key_gen, boot,
                                                   DNAC_MAX_ACTIVE_VALIDATORS,
                                                   &boot_count);
     if (rc2 != 0) {
@@ -201,6 +215,12 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
          * bootstrap epoch. */
         w->cached_committee_self_stakes[i]    = boot[i].self_stake;
         w->cached_committee_commission_bps[i] = boot[i].commission_bps;
+        /* HF-6 5b: the seat's voting power, so a hit on this seeded
+         * epoch-0 cache equals the miss path's below-generation-4
+         * recompute (nodus_committee_get_for_block: total /
+         * DNAC_DECIMAL_UNIT). */
+        w->cached_committee_powers[i]         = boot[i].total_stake /
+                                                DNAC_DECIMAL_UNIT;
     }
     free(boot);
     w->cached_committee_count       = boot_count;

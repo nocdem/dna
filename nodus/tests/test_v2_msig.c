@@ -46,13 +46,27 @@
  *  M4b The read-back refuses an expiry of 0 ("never") and one beyond the
  *      export's tip + 90 (NODUS_V2_MSIG_ERR_EXPIRY); tip + 90 and tip + 1
  *      are accepted (fix round F3).
+ *  M4c nodus_v2_msig_horizon (2026-10-13, `msig sign` judges the window
+ *      from its OWN node's height H, not the export's tip): expiry H + 1,
+ *      H + 90, and the builder 1 / 10 blocks ahead (expiry H + 91 /
+ *      H + 100 = the mempool cap) accepted; H (past), H + 101, a future
+ *      tip's tip + 90, a node more than 90 behind the builder, an export
+ *      built 200 blocks ago → NODUS_V2_MSIG_ERR_HORIZON; a node exactly 90
+ *      behind with a valid expiry accepted; a height near UINT64_MAX →
+ *      ERR_ARG.
  *  M5  The signature text round-trips; malformed texts are refused.
  *  M6  The combine: two of three members sign; nodus_v2_msig_combine
  *      writes them ascending by key; the chain's OWN auth hook
  *      (nodus_rt_auth_dsa87_v1, the compiled CORE runtime) reports the
  *      descriptor satisfied; refused: one signature for K = 2, a signature
  *      over another digest, a key outside the descriptor, a corrupted
- *      signature, the same key twice.
+ *      signature, the same key twice. HF-6 D2: nodus_v2_msig_assemble
+ *      refuses (ERR_ARG, nothing written) a blob whose count byte is not
+ *      n_sig, and assembles the same blob once the count is restored.
+ *      (M4's descriptor swap still REVIEWS at the library level — the
+ *      library cannot see the chain; `msig sign` closes it by checking
+ *      every input against the vault's coin set on a node, nodus-cli
+ *      msig_inputs_verify — not driven here.)
  *  M7  nodus_v2_msig_unsigned_auth writes count ‖ K × 7219 zero ‖ 1 ‖
  *      dlen BE ‖ descriptor, written out here by hand.
  *
@@ -875,6 +889,46 @@ static int test_m4b(void) {
           "M4b: expiry tip + 90 accepted");
     CHECK(review_expiry(MS_TIP + 1) == NODUS_V2_SPEND_OK,
           "M4b: expiry tip + 1 accepted");
+
+    /* M4c — the horizon judged against the NODE's height
+     * (nodus_v2_msig_horizon, 2026-10-13): H the node's block. */
+    const uint64_t H = 1000u;
+    const uint64_t CAP = (uint64_t)NODUS_CMT_APP_MAX_EXPIRY_AHEAD;  /* 100 */
+    CHECK(nodus_v2_msig_horizon(H, H + 1, H) == NODUS_V2_SPEND_OK,
+          "M4c: expiry H + 1 (the next block) accepted");
+    CHECK(nodus_v2_msig_horizon(H, H + MS_AHEAD, H) == NODUS_V2_SPEND_OK,
+          "M4c: expiry H + 90 (built on the node's own tip) accepted");
+    /* the production case: the builder's node is ahead of the signer's
+     * by a few blocks, expiry = builder tip + 90 */
+    CHECK(nodus_v2_msig_horizon(H + 1, H + 1 + MS_AHEAD, H) ==
+              NODUS_V2_SPEND_OK,
+          "M4c: the builder one block ahead (expiry H + 91) accepted");
+    CHECK(nodus_v2_msig_horizon(H + 10, H + 10 + MS_AHEAD, H) ==
+              NODUS_V2_SPEND_OK,
+          "M4c: the builder ten blocks ahead (expiry H + 100 = the cap) "
+          "accepted");
+    CHECK(nodus_v2_msig_horizon(H, H, H) == NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: expiry H (already past) refused");
+    CHECK(nodus_v2_msig_horizon(H, H + CAP + 1, H) ==
+              NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: expiry H + 101 refused (past the chain's admission cap "
+          "from now)");
+    /* an export whose author set its tip into the future: the read-back
+     * accepts expiry <= tip + 90, the horizon does not */
+    CHECK(nodus_v2_msig_horizon(H + 500, H + 500 + MS_AHEAD, H) ==
+              NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: a future tip's long-lived expiry refused");
+    CHECK(nodus_v2_msig_horizon(H + MS_AHEAD + 1, H + 10, H) ==
+              NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: a node more than 90 blocks behind the builder refused");
+    CHECK(nodus_v2_msig_horizon(H + MS_AHEAD, H + MS_AHEAD, H) ==
+              NODUS_V2_SPEND_OK,
+          "M4c: a node exactly 90 behind with a valid expiry accepted");
+    CHECK(nodus_v2_msig_horizon(H - 200, H - 200 + MS_AHEAD, H) ==
+              NODUS_V2_MSIG_ERR_HORIZON,
+          "M4c: an export built 200 blocks ago (expired) refused");
+    CHECK(nodus_v2_msig_horizon(0, 5, UINT64_MAX) == NODUS_V2_SPEND_ERR_ARG,
+          "M4c: a node height near UINT64_MAX is an argument error");
     return 0;
 }
 
@@ -1004,6 +1058,42 @@ static int test_m6(void) {
                        pf, &bad) == NODUS_V2_MSIG_ERR_DUP_SIGNER,
           "M6: the same key twice");
     nodus_v2_msig_export_free(&x);
+
+    /* HF-6 D2: assemble writes the slots in place — a blob whose count
+     * byte is not n_sig (here 3 for 2 signatures: its room is for 2) is
+     * refused before anything is written */
+    {
+        static uint8_t pks[2][NODUS_V2_MSIG_PK_LEN];
+        static uint8_t sigs[2][NODUS_V2_MSIG_SIG_LEN];
+        CHECK(nodus_v2_msig_export_parse(t, tl, &x) == NODUS_V2_SPEND_OK,
+              "M6: parse for assemble");
+        dna_env_view_t *v = calloc(1, sizeof(*v));
+        CHECK(v && dna_env_decode(x.env, x.env_len, v) == 0, "M6: view");
+        for (int i = 0; i < 2; i++) {
+            memcpy(pks[i], g_pk[ok_who[i]], MS_PK);
+            CHECK(sign_digest(ok_who[i], b.digest, sigs[i]) == 0, "M6: sign");
+        }
+        uint8_t *a = x.env + v->auth_off[0];
+        CHECK(a[0] == 2, "M6: the export's blob says K = 2");
+        a[0] = 3;
+        uint8_t zslot[NODUS_RT_AUTH_SIGNER_LEN];
+        memset(zslot, 0, sizeof(zslot));
+        CHECK(nodus_v2_msig_assemble(
+                  &x, v, (const uint8_t (*)[NODUS_V2_MSIG_PK_LEN])pks,
+                  (const uint8_t (*)[NODUS_V2_MSIG_SIG_LEN])sigs, 2) ==
+                  NODUS_V2_SPEND_ERR_ARG &&
+              memcmp(a + 1, zslot, sizeof(zslot)) == 0,
+              "M6: assemble refuses a blob whose count byte is not n_sig, "
+              "nothing written");
+        a[0] = 2;
+        CHECK(nodus_v2_msig_assemble(
+                  &x, v, (const uint8_t (*)[NODUS_V2_MSIG_PK_LEN])pks,
+                  (const uint8_t (*)[NODUS_V2_MSIG_SIG_LEN])sigs, 2) ==
+                  NODUS_V2_SPEND_OK,
+              "M6: the same blob with its count restored assembles");
+        free(v);
+        nodus_v2_msig_export_free(&x);
+    }
 
     free(pf);
     free(t);

@@ -2735,6 +2735,332 @@ static int t_val_updates_boundary_diff(void)
     return 0;
 }
 
+/* Overwrite the stored snapshot row of s->epoch with `s` (any ruleset,
+ * encoded and hashed by the `_ex` family) — the test-only bypass
+ * `t_val_updates_boundary_diff` documents. */
+static int vu_snap_overwrite(nodus_witness_t *w, const dna_vset_snapshot_t *s)
+{
+    size_t         need = dna_vset_encoded_len_ex(s, DNA_VSET_RULESET_TOPN_V2);
+    uint8_t       *b;
+    uint8_t        h[DNA_VSET_HASH_LEN];
+    sqlite3_stmt  *st = NULL;
+    int            ok = -1;
+
+    if (need == 0) {
+        return -1;
+    }
+    b = (uint8_t *)malloc(need);
+    if (!b) {
+        return -1;
+    }
+    if (dna_vset_encode_ex(s, DNA_VSET_RULESET_TOPN_V2, b, need, NULL) == 0 &&
+        dna_vset_hash_bytes_ex(b, need, DNA_VSET_RULESET_TOPN_V2, h) == 0 &&
+        sqlite3_prepare_v2(w->db,
+            "UPDATE validator_set_snapshots SET active_count = ?1, "
+            "snapshot_hash = ?2, snapshot_blob = ?3 WHERE epoch_start = ?4",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, (int)s->active_count);
+        sqlite3_bind_blob(st, 2, h, DNA_VSET_HASH_LEN, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 3, b, (int)need, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, (sqlite3_int64)s->epoch);
+        if (sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(w->db) == 1) {
+            ok = 0;
+        }
+    }
+    if (st) {
+        sqlite3_finalize(st);
+    }
+    free(b);
+    return ok;
+}
+
+/**
+ * HF-6 slice 5c — the §A diff with a RULESET-2 snapshot on the OLD side
+ * (design rev 6 §5 "sınır güncelleme farkı … yeni VE eski güç"; plan
+ * tasks/hf6-slice5-plan.md §1 "Comet's update across the switch").
+ *
+ * WHAT IT PROVES: at boundary E the diff reads snapshot(0)'s powers
+ * through `nodus_witness_vset_powers` BY ITS OWN RULESET — counted
+ * (capped) for a ruleset-2 snapshot — and still matches entries by
+ * pubkey. snapshot(0) is rewritten (after heights 1..E-1, which it
+ * governs, are committed) as a ruleset-2 set [60M, 10M × 6] whole coins
+ * (g_ks[1] at 60M), whose counted vector at the compiled 3000 bps is
+ * [25714285, 10M × 6] (design §5: k = 0 S = 120M c = 36M < 60M; k = 1
+ * S = 60M c = ⌊3000·60M / 7000⌋ = 25714285 ≥ 10M, stop). snapshot(E)
+ * stays ruleset 1 with g_ks[1] at exactly 25714285 coins and g_ks[2]
+ * doubled to 20M. Counted on the old side ⇒ ONE update (g_ks[2], power
+ * 20M); raw on the old side would be TWO (g_ks[1] 60M → 25714285 too).
+ *
+ * WHAT IT CANNOT PROVE (stated, not faked): a RULESET-2 snapshot on the
+ * NEW side. The new side of the diff at H is snapshot(H), which governs
+ * block H itself, and the engine's per-block phase 0a hashes the governing
+ * snapshot with the ruleset-1-only `dna_vset_hash`
+ * (nodus_witness_v2_apply.c, outside slice 5c's files) — a v2 snapshot(H)
+ * faults block H before FinalizeBlock reaches the diff. That consumer is
+ * slice 5d's (with the phase-0a codec switch).
+ *
+ * REQUIRES: a default build; nothing in the environment. The rewrite
+ * happens at E-1 for the same reason `t_val_updates_boundary_diff` gives
+ * (the untouched-domain guard). The other readers of snapshot(0) at block
+ * E: Rule N's duty set (pubkey / voter_id — unchanged here) and the
+ * reward distribution, which returns before reading any snapshot because
+ * this fixture's reward pool is 0 (reward_pool_initial 0, empty blocks).
+ *
+ * LEAVES BEHIND: its `/tmp/test_cmt_app_vu_v2old_*` directory, removed at
+ * close (left when a CHECK aborts).
+ *
+ * HOW IT CAN LIE: the snapshots are hand-written rows, not ones a builder
+ * produced; the ids are arbitrary distinct bytes (they only tie-break the
+ * cap, and no tie exists here).
+ */
+static int t_val_updates_v2_old_side(void)
+{
+    gfx_t                              g;
+    exec_t                             x;
+    cmt_block_id_t                     bid;
+    cmt_pb_response_finalize_block_t   got;
+    cmt_pb_validator_update_t          vu_pool[16];
+    cmt_pb_arena_t                     arena;
+    uint8_t                            arena_buf[8192];
+    dna_vset_snapshot_t               *s0 = NULL, *sE = NULL;
+    uint64_t                           pw[DNA_MAX_ACTIVE_VALIDATORS];
+    const uint64_t                     U = DNAC_DECIMAL_UNIT;
+    const uint64_t                     counted_big = 25714285ULL;
+    int                                i, j1 = -1, j2 = -1;
+
+    CHECK(DNAC_HF6_POWER_CAP_BPS_DEFAULT == 3000u,
+          "the expected vector is derived at 3000 bps");
+    CHECK(DNAC_SELF_STAKE_AMOUNT == 10000000ULL * U,
+          "FIXTURE GUARD: genesis members hold 10M whole coins");
+    CHECK(gfx_open_n(&g, "vu_v2old", 1) == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    memset(&bid, 0, sizeof(bid));
+    CHECK(vu_host_drive_to(&x, &bid, 0, (int64_t)VU_EPOCH - 1) == 0,
+          "drive height 1..E-1 (snapshot(0) governs them, unmodified)");
+
+    /* the OLD side: snapshot(0) as ruleset 2, g_ks[1] at 60M */
+    CHECK(nodus_witness_vset_get(g.w, 0, &s0, NULL) == 0 &&
+          s0->active_count == (uint16_t)N_KEYS &&
+          s0->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+          "the genesis-seeded snapshot(0)");
+    s0->selection_ruleset = DNA_VSET_RULESET_TOPN_V2;
+    for (i = 0; i < (int)s0->active_count; i++) {
+        dna_vset_entry_t *e = &s0->entries[i];
+
+        memset(e->validator_id, 0x40 + i, DNA_VSET_VALIDATOR_ID_LEN);
+        memset(e->owner_fp, 0x80 + i, DNA_VSET_OWNER_FP_LEN);
+        CHECK(e->total_stake == DNAC_SELF_STAKE_AMOUNT,
+              "FIXTURE GUARD: 10M each in snapshot(0)");
+        if (memcmp(e->pubkey, g_ks[1].pk, DNAC_PUBKEY_SIZE) == 0) {
+            e->total_stake = 60000000ULL * U;
+            j1 = i;
+        }
+        if (memcmp(e->pubkey, g_ks[2].pk, DNAC_PUBKEY_SIZE) == 0) {
+            j2 = i;
+        }
+    }
+    CHECK(j1 >= 0 && j2 >= 0, "FIXTURE GUARD: g_ks[1], g_ks[2] seated");
+    CHECK(nodus_witness_vset_powers(g.w, s0, pw) == 0,
+          "the helper over the v2 old side");
+    for (i = 0; i < (int)s0->active_count; i++) {
+        CHECK(pw[i] == (i == j1 ? counted_big : 10000000ULL),
+              "old side counted [25714285, 10M x 6]");
+    }
+    CHECK(vu_snap_overwrite(g.w, s0) == 0, "rewrite snapshot(0) as ruleset 2");
+
+    /* the NEW side: snapshot(E) stays ruleset 1 */
+    CHECK(nodus_witness_vset_get(g.w, VU_EPOCH, &sE, NULL) == 0 &&
+          sE->active_count == (uint16_t)N_KEYS &&
+          sE->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+          "the genesis-seeded snapshot(E)");
+    for (i = 0; i < (int)sE->active_count; i++) {
+        dna_vset_entry_t *e = &sE->entries[i];
+
+        if (memcmp(e->pubkey, g_ks[1].pk, DNAC_PUBKEY_SIZE) == 0) {
+            e->total_stake = counted_big * U;   /* == its old counted power */
+        }
+        if (memcmp(e->pubkey, g_ks[2].pk, DNAC_PUBKEY_SIZE) == 0) {
+            e->total_stake *= 2;                /* 20M: a real change      */
+        }
+    }
+    CHECK(vu_snap_overwrite(g.w, sE) == 0, "rewrite snapshot(E), ruleset 1");
+    {
+        dna_vset_snapshot_t *back = NULL;
+
+        CHECK(nodus_witness_vset_get(g.w, 0, &back, NULL) == 0 &&
+              back->selection_ruleset == DNA_VSET_RULESET_TOPN_V2,
+              "the stored ruleset-2 snapshot(0) reads back (5c store)");
+        dna_vset_free(&back);
+    }
+    dna_vset_free(&s0);
+    dna_vset_free(&sE);
+
+    CHECK(vu_host_drive_to(&x, &bid, (int64_t)VU_EPOCH - 1,
+                           (int64_t)VU_EPOCH) == 0,
+          "apply the boundary block E (governed by the ruleset-1 snapshot(E))");
+
+    arena.buf = arena_buf;
+    arena.cap = sizeof(arena_buf);
+    arena.used = 0;
+    CHECK(vu_host_load_updates(&x, (int64_t)VU_EPOCH, &got, vu_pool, 16,
+                               &arena) == CMT_OK,
+          "load the boundary's stored FinalizeBlock response");
+    CHECK(got.validator_updates_len == 1,
+          "exactly ONE update: the old side was read COUNTED (raw would "
+          "also re-announce g_ks[1])");
+    CHECK(got.validator_updates[0].pub_key.present &&
+          memcmp(got.validator_updates[0].pub_key.key, g_ks[2].pk,
+                 DNAC_PUBKEY_SIZE) == 0 &&
+          (uint64_t)got.validator_updates[0].power == 20000000ULL,
+          "the update is g_ks[2] at its new raw power 20M, matched by pubkey");
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
+/**
+ * HF-6 slice 6d — what Comet is told at boundary U when a rotation was
+ * accepted (design 2026-10-03-hf5-validator-owner-stake rev 6 §3
+ * "Kabul edilen rotasyon S(U)'ya YENİ anahtarla girer. Comet: FinalizeBlock
+ * U ilan eder"; plan tasks/hf6-slice6-plan.md §1.3, consumer #1).
+ *
+ * WHAT IT PROVES: a snapshot(U) that differs from snapshot(U−E) only in
+ * ONE entry's consensus key (same stake, voter_id re-derived) — the shape
+ * the 6d freeze stores for an accepted rotation — is announced by the §A
+ * diff as EXACTLY two updates: the new key at the entry's power, then the
+ * old key at power 0 (additions before removals); cometbft's
+ * update_with_change_set accepts it (the boundary block commits), and the
+ * validator set Comet saved for height U+2 holds the new address at that
+ * power and no longer the old one, with the set size unchanged. No port
+ * change: cometbft has no "key change", a rotation IS remove + add.
+ *
+ * ⚠ HF-6 D1 (khan decision docs/plans/decisions/2026-10-13-kurultay-18-
+ * summary.md item 1): ROTATE and the 6d builder were removed, so no
+ * committed chain produces this snapshot pair any more — the case is kept
+ * as a test of the generic §A diff (a key change, however it arises, is
+ * remove + add).
+ *
+ * WHAT IT CANNOT PROVE (stated, not faked): that any builder produces
+ * this snapshot — this host fixture is not at key generation 4;
+ * the new address's proposer priority — cometbft sets −1.125·P on entry
+ * (cmt_validator_set.c compute_new_priorities) and the saved value is
+ * after the rescale/centre and one increment of the update, so pinning it
+ * would restate the port's own arithmetic (its unit tests cover it); and
+ * any height past E — exec_make_last_commit signs only with g_ks keys, and
+ * from E+2 the set holds a key this fixture did not generate as a member.
+ *
+ * REQUIRES: a default build; nothing in the environment. The rewrite
+ * happens at E-1 (the untouched-domain guard — see
+ * `t_val_updates_boundary_diff`).
+ *
+ * LEAVES BEHIND: its `/tmp/test_cmt_app_vu_rot_*` directory, removed at
+ * close (left when a CHECK aborts).
+ *
+ * HOW IT CAN LIE: the snapshot is a hand-written ruleset-1 row; the other
+ * readers of snapshot(E) at block E (the flips by pubkey: the replaced
+ * member's row simply stays ELIGIBLE; the reward distribution returns
+ * early on this fixture's empty pool) are not what is asserted.
+ */
+static int t_val_updates_rotation(void)
+{
+    gfx_t                              g;
+    exec_t                             x;
+    cmt_block_id_t                     bid;
+    cmt_pb_response_finalize_block_t   got;
+    cmt_pb_validator_update_t          vu_pool[16];
+    cmt_pb_arena_t                     arena;
+    uint8_t                            arena_buf[8192];
+    dna_vset_snapshot_t               *s = NULL;
+    uint8_t                            new_pk[QGP_DSA87_PUBLICKEYBYTES];
+    uint8_t                            new_sk[QGP_DSA87_SECRETKEYBYTES];
+    uint8_t                            seed[32];
+    uint8_t                            new_voter[32];
+    cmt_validator_t                   *storage = NULL;
+    cmt_validator_set_t                vals;
+    int64_t                            power = -1;
+    size_t                             i;
+    int                                j = -1, saw_new = 0, saw_old = 0;
+
+    CHECK(gfx_open_n(&g, "vu_rot", 1) == 0, "version-3 fixture");
+    CHECK(exec_init(&x, &g) == 0, "blockexec + real application");
+
+    memset(&bid, 0, sizeof(bid));
+    CHECK(vu_host_drive_to(&x, &bid, 0, (int64_t)VU_EPOCH - 1) == 0,
+          "drive height 1..E-1 (snapshot(0) governs them, unmodified)");
+
+    /* snapshot(E) = snapshot(0)'s members with g_ks[3]'s key rotated */
+    memset(seed, 0x6D, sizeof(seed));
+    CHECK(qgp_dsa87_keypair_derand(new_pk, new_sk, seed) == 0,
+          "the rotation target key");
+    CHECK(nodus_chain_config_derive_witness_id(new_pk, new_voter) == 0,
+          "its voter_id (= Comet address)");
+    CHECK(nodus_witness_vset_get(g.w, VU_EPOCH, &s, NULL) == 0 &&
+          s->active_count == (uint16_t)N_KEYS &&
+          s->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+          "the genesis-seeded snapshot(E)");
+    for (i = 0; i < s->active_count; i++) {
+        if (memcmp(s->entries[i].pubkey, g_ks[3].pk, DNAC_PUBKEY_SIZE) == 0)
+            j = (int)i;
+    }
+    CHECK(j >= 0, "FIXTURE GUARD: g_ks[3] seated in snapshot(E)");
+    memcpy(s->entries[j].pubkey, new_pk, DNAC_PUBKEY_SIZE);
+    memcpy(s->entries[j].voter_id, new_voter, 32);
+    power = (int64_t)(s->entries[j].total_stake / DNAC_DECIMAL_UNIT);
+    CHECK(power > 0, "the rotated entry keeps its stake");
+    CHECK(vu_snap_overwrite(g.w, s) == 0,
+          "rewrite snapshot(E): one entry under a new key");
+    dna_vset_free(&s);
+
+    CHECK(vu_host_drive_to(&x, &bid, (int64_t)VU_EPOCH - 1,
+                           (int64_t)VU_EPOCH) == 0,
+          "apply the boundary block E: cometbft accepts the change set");
+
+    arena.buf = arena_buf;
+    arena.cap = sizeof(arena_buf);
+    arena.used = 0;
+    CHECK(vu_host_load_updates(&x, (int64_t)VU_EPOCH, &got, vu_pool, 16,
+                               &arena) == CMT_OK,
+          "load the boundary's stored FinalizeBlock response");
+    CHECK(got.validator_updates_len == 2,
+          "a rotation is EXACTLY two updates");
+    CHECK(got.validator_updates[0].pub_key.present &&
+          memcmp(got.validator_updates[0].pub_key.key, new_pk,
+                 DNAC_PUBKEY_SIZE) == 0 &&
+          got.validator_updates[0].power == power,
+          "first the new key, at the entry's power");
+    CHECK(got.validator_updates[1].pub_key.present &&
+          memcmp(got.validator_updates[1].pub_key.key, g_ks[3].pk,
+                 DNAC_PUBKEY_SIZE) == 0 &&
+          got.validator_updates[1].power == 0,
+          "then the old key, removed (power 0)");
+
+    storage = calloc(CMT_VALSET_MAX, sizeof(*storage));
+    CHECK(storage != NULL, "alloc");
+    CHECK(cmt_validator_set_init(&vals, storage, CMT_VALSET_MAX) == CMT_OK &&
+          nodus_cmt_ss_load_validators(x.store, (int64_t)VU_EPOCH + 2,
+                                       &vals) == CMT_OK,
+          "the validator set cometbft saved for height E+2");
+    CHECK(vals.validators_len == (size_t)N_KEYS, "the set size is unchanged");
+    for (i = 0; i < vals.validators_len; i++) {
+        if (memcmp(vals.validators[i].address, new_voter, 32) == 0) {
+            saw_new = 1;
+            CHECK(vals.validators[i].voting_power == power,
+                  "the new address carries the entry's power");
+        }
+        if (memcmp(vals.validators[i].address, g_ks[3].voter, 32) == 0)
+            saw_old = 1;
+    }
+    CHECK(saw_new && !saw_old,
+          "from E+2 cometbft's set holds the new address, not the old one");
+    free(storage);
+
+    exec_free(&x);
+    gfx_close(&g);
+    return 0;
+}
+
 /**
  * ORCHESTRATOR delta 4, item A (D-4 rev 3's `create_empty_blocks_interval`,
  * 60 s) — AN EMPTY DECIDED BLOCK.
@@ -7045,6 +7371,8 @@ int main(void)
         { "val_updates_quiet_boundary", t_val_updates_quiet_boundary },
         { "val_updates_missing_snapshot", t_val_updates_missing_snapshot },
         { "val_updates_boundary_diff",  t_val_updates_boundary_diff },
+        { "val_updates_v2_old_side",    t_val_updates_v2_old_side },
+        { "val_updates_rotation",       t_val_updates_rotation },
         { "finalize_block_empty",       t_finalize_block_empty },
         { "d4_empty_blocks_root_stable", t_d4_empty_blocks_root_stable },
         { "attendance_mixed_flags",     t_attendance_mixed_flags },

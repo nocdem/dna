@@ -31,7 +31,8 @@
  * ── THE STORAGE BOUNDARY (step 1b' of nodus_witness_v2_epoch_boundary_
  *    apply: after the validator distribution 1b, before payday 1c —
  *    rev 2.2 §5 "between epoch.c:1571 and :1589") ──────────────────────
- *   0. GATE — runs only when chain_config param 16 (RULESET_GEN_STORAGE)
+ *   0. GATE — runs only when chain_config param 18 (RULESET_GEN_ROLES —
+ *      HF-6 8c; the retired param 16 RULESET_GEN_STORAGE before it)
  *      is in effect at B (a committed row with effective <= B, i.e.
  *      B >= H_act) AND the SYSTEM runtime the registry resolves is
  *      GEN_STORAGE or later; param in effect with an older runtime is a
@@ -39,13 +40,15 @@
  *      FIRST, so a chain without the vote never resolves a runtime here.
  *   1. SETTLE the epoch (H, H+E], H = B − 2E (rev 2.2 §5 steps 1-3; rev
  *      4 §5) — skipped when storage_set(H) does not exist (the first two
- *      storage boundaries). Weights, F1 floor, F2 own-report rule, the
- *      > 2/3 test, weighted pay from treasury pool 1, fail_streak.
+ *      storage boundaries). Weights, F1 floor, the F2 owner-OR-key
+ *      exclusion and the three-state verdict (HF-6 6b-2), weighted pay
+ *      from treasury pool 1 to the row's OWNER, fail_streak.
  *   2. PRUNE reports with epoch_start <= H and frozen sets with
  *      epoch_start < H (keeps set(B−2E), set(B−E), set(B): every set a
  *      later report or settlement reads).
  *   3. RELEASE every EXITING registry row: one locked UTXO (kind 0x11,
- *      index 201, unlock B + 12·E) to payee_fp, status RELEASED.
+ *      index 201, unlock B + 12·E) to the row's payee_fp column — the
+ *      OWNER since HF-6 6b-1 — status RELEASED.
  *   4. PUBLISH every unpublished segment k with k·P + 2E <= B, k
  *      ascending from the last published + 1 (one rule = the activation
  *      backfill AND the schedule; never an immature segment).
@@ -106,20 +109,49 @@
  *   holder's must-hold list (nodus_witness_storage_holder.h) is the same
  *   two lines WITHOUT the grace gate — a member in grace still fetches.
  *
- * ── SETTLEMENT (rev 2.2 §5 + rev 4 §5) ────────────────────────────────
- *   P_total = Σ power of snapshot(H) (total_stake / DNAC_DECIMAL_UNIT —
- *   the distribution's power); P_rep = Σ power of the seats with a
- *   committed report for H. F1: nothing moves (no pay, no fail_streak)
- *   unless P_rep · 2 > P_total. For member m: if m's node key is a
- *   seated validator that reported, its power leaves P_rep (F2) and its
- *   own bit about itself is ignored; OK iff Σ power of the other
- *   reporters with m's bit set · 3 > P_rep(m) · 2 (checked u64).
- *   W = Σ weight over ALL members; W == 0 → nothing. budget = pool1 >> 16
- *   (treasury pool 1, read at this step); each OK member with weight w
- *   accrues floor(budget · w / W) (128-bit intermediate) to its payee_fp
- *   through nodus_witness_v2_accrue; pool 1 is debited by exactly Σ
- *   credited, bound to the observed balance; failed shares and the
- *   remainder stay in pool 1.
+ * ── SETTLEMENT (rev 2.2 §5 + rev 4 §5; HF-6 6b-2: design 2026-10-03-
+ *    hf5-validator-owner-stake rev 6 §11.6-§11.7, decision 2026-10-09-
+ *    kurultay-16-hf6-storage-summary.md item 8 + khan 2 "kural (a)") ──
+ *   Seats are snapshot(H)'s entries; seat s is bitmap index s of every
+ *   report. power(s) = nodus_witness_vset_powers over the WHOLE snapshot,
+ *   once (the distribution's power, HF-6 5b: total_stake /
+ *   DNAC_DECIMAL_UNIT for a ruleset-1 snapshot, the counted power for a
+ *   ruleset-2 one — never re-capped over a filtered subset).
+ *   P_total = Σ power(s); P_rep = Σ power of the seats with a committed
+ *   report for H. F1: nothing moves (no pay, no fail_streak, no owner
+ *   read) unless P_rep · 2 > P_total.
+ *   key(s)   = SHA3-512(entry s's consensus pubkey) — the snapshot's key
+ *              (a row's key never changes: HF-6 has no key rotation);
+ *              two seats with one key are corrupt state (FAULT).
+ *   owner(s) (nodus_witness_storage_seat_owners, once per settlement):
+ *              ruleset 2 → entry s's owner_fp; ruleset 1 (the first
+ *              settlement after the generation-4 edge reads the last
+ *              snapshot frozen before it) → the §7.5 bridge: the
+ *              committed v2 row keyed dna_validator_id_migrated(the
+ *              boundary's chain id, entry s's pubkey), its owner_fp; a
+ *              row absent or unreadable is a FAULT (khan A1, 2026-10-12:
+ *              rows are never deleted — only node-local corruption loses
+ *              one). Never SHA3-512(pubkey) read as an owner.
+ *   For member m with registry row R(m) (owner_fp = R(m).payee_fp, the
+ *   OWNER since 6b-1): seat s is EXCLUDED iff
+ *       owner(s) == R(m).owner_fp   OR   key(s) == node_fp(m);
+ *   I_m = Σ power(s) over reporting, non-excluded seats;
+ *   Y_m = Σ power(s) over those whose report has m's bit set.
+ *   The three-state verdict (nodus_storage_member_verdict, checked u64):
+ *       2 · I_m <= P_total        → NO_EVIDENCE   (the independent floor)
+ *       else 3 · Y_m > 2 · I_m    → OK
+ *       else                      → NOT_OK.
+ *   F1 has passed before any verdict is computed, so NO_EVIDENCE is never
+ *   an F1 failure in disguise. A member whose owner is no seat's owner
+ *   and whose key is no reporting seat has I_m = P_rep and, by F1, never
+ *   NO_EVIDENCE.
+ *   W = Σ weight over ALL members (a NO_EVIDENCE member's weight STAYS in
+ *   W — its share is not redistributed); W == 0 → nothing. budget =
+ *   pool1 >> 16 (treasury pool 1, read at this step); each OK member with
+ *   weight w accrues floor(budget · w / W) (128-bit intermediate) to
+ *   R(m)'s owner (the payee_fp column) through nodus_witness_v2_accrue;
+ *   pool 1 is debited by exactly Σ credited, bound to the observed
+ *   balance; unpaid shares and the remainder stay in pool 1.
  *   fail_streak (bytes item 4 + K5 + K5a), for every member of
  *   storage_set(H) (node_fp ASC), old = the live registry value, the
  *   first matching line applies:
@@ -136,7 +168,10 @@
  *   A member IN GRACE for (H, H+E] (K9) is skipped by this step — its
  *   fail_streak is unchanged even when it is 3 or more (K9's "fail_streak
  *   unchanged" read over K5's "+1 every settled epoch"; a long grace thus
- *   also pauses a skipped member's K5 return count).
+ *   also pauses a skipped member's K5 return count). A NO_EVIDENCE member
+ *   is skipped the same way (design §11.6 "hata sayacı DEĞİŞMEZ — :942'deki
+ *   continue ile aynı atlama"): unchanged at 0, unchanged at 3 or more
+ *   (its K5 return count pauses too). NOT_OK is the rule's "NOT OK".
  *   Under a failed F1 floor nothing is settled, so fail_streak is
  *   unchanged for every member (reading of "nothing moves for that
  *   epoch").
@@ -150,6 +185,7 @@
 #include "witness/nodus_witness.h"
 #include "dnac/ledger_ids.h"
 #include "dnac/ledger_roots_v2.h"
+#include "dnac/vset_wire.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -188,6 +224,16 @@ typedef struct {
     uint32_t n_published;     /* segments published                       */
     uint32_t set_count;       /* |storage_set(B)| frozen                  */
 } nodus_storage_boundary_t;
+
+/** A member's settlement verdict (header "SETTLEMENT", HF-6 6b-2; the
+ *  three states of design rev 6 §11.6 — one enum so two implementations
+ *  cannot read the floor differently). */
+typedef enum {
+    NODUS_STORAGE_NO_EVIDENCE = 0,  /* 2·I <= P_total: unpaid, fail_streak
+                                     * unchanged, weight stays in W      */
+    NODUS_STORAGE_OK          = 1,  /* paid; fail_streak by the rule      */
+    NODUS_STORAGE_NOT_OK      = 2   /* unpaid; fail_streak by the rule    */
+} nodus_storage_verdict_t;
 
 /** The storage boundary (header: steps 0-5). Called by
  *  nodus_witness_v2_epoch_boundary_apply at a boundary height B only.
@@ -301,9 +347,46 @@ int nodus_storage_member_eligible(uint64_t H, uint64_t grace_until,
  *  (DNA_V2_STORAGE_FAIL_LIMIT) → old + 1, or 0 when that would be
  *  NODUS_STORAGE_FAIL_RETURN or more; else had_eligible (NOT OK) →
  *  old + 1; else unchanged. Not called under a failed F1 floor (nothing
- *  moves). */
+ *  moves), nor for a member in grace or with a NO_EVIDENCE verdict
+ *  (unchanged); `ok` is 1 for OK, 0 for NOT_OK. */
 uint32_t nodus_storage_fail_streak_next(uint32_t old, int had_eligible,
                                         int ok);
+
+/** One member's three-state verdict (pure; header "SETTLEMENT"). Over the
+ *  n_seat seats of snapshot(H): power[s], seat_owner[s] (owner(s)),
+ *  seat_key[s] (SHA3-512 of the seat's consensus pubkey), reported[s]
+ *  (nonzero = a committed report for H) and bit[s] (nonzero = that
+ *  report sets the member's bit; read only where reported[s]). Seat s is
+ *  excluded iff seat_owner[s] == member_owner OR seat_key[s] ==
+ *  member_fp; I = Σ power of reporting non-excluded seats, Y = the part
+ *  with the bit set; 2·I <= p_total → NO_EVIDENCE, else 3·Y > 2·I → OK,
+ *  else NOT_OK. The caller has checked F1 (2·P_rep > p_total). `i_out` /
+ *  `y_out` may be NULL. @return 0 (*out set) / -1 (NULL input, a sum or
+ *  product past UINT64_MAX). */
+int nodus_storage_member_verdict(uint32_t n_seat, const uint64_t *power,
+                                 const uint8_t (*seat_owner)[64],
+                                 const uint8_t (*seat_key)[64],
+                                 const uint8_t *reported, const uint8_t *bit,
+                                 uint64_t p_total,
+                                 const uint8_t member_owner[64],
+                                 const uint8_t member_fp[64],
+                                 nodus_storage_verdict_t *out,
+                                 uint64_t *i_out, uint64_t *y_out);
+
+/** owner(s) for every seat of `snap` = snapshot(H) (header "SETTLEMENT";
+ *  design rev 6 §11.7, khan A1): ruleset 2 → entry s's owner_fp (`w` and
+ *  `chain_id` not read); ruleset 1 → the §7.5 bridge — the committed v2
+ *  row keyed dna_validator_id_migrated(chain_id, entry s's pubkey), its
+ *  owner_fp (the storage boundary runs only at generation >=
+ *  NODUS_RT_GEN_STORAGE, where every pre-edge validator was migrated
+ *  under that id). `chain_id` must be the boundary's (the migration's own
+ *  input). owner_out has snap->active_count rows.
+ *  @return 0 / -1 FAULT: any other ruleset, an id that does not derive,
+ *  a row absent or unreadable (logged with the seat index). */
+int nodus_witness_storage_seat_owners(nodus_witness_t *w,
+                                      const dna_vset_snapshot_t *snap,
+                                      const uint8_t chain_id[DNA_CHAIN_ID_LEN],
+                                      uint8_t (*owner_out)[64]);
 
 /** Position → height within the eligible blocks (pure): the blocks of
  *  ks[0..n) (k strictly ascending) in ascending height; position p is

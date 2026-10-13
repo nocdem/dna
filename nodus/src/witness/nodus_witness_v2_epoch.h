@@ -57,6 +57,9 @@
  *      at (H / E) % payout_interval_epochs == 0 every accrual row
  *      becomes one CORE UTXO and is deleted; a no-op otherwise. Runs
  *      AFTER 1b so the epoch that just ended is included in the pay.
+ *   (1d — the HF-6 6d ROTATION SWAP — and 3d — the ROTATION SWEEP — are
+ *      GONE: the khan removed ROTATE from HF-6, decision docs/plans/
+ *      decisions/2026-10-13-kurultay-18-summary.md items 1 and 4.)
  *   2. GRADUATION — tokenomics-v3 P1 (D-11): candidates are every row
  *      whose status is RETIRING **or AUTO_RETIRED** (widened from
  *      RETIRING-only; an AUTO_RETIRED member's bond is RETURNED, never
@@ -88,6 +91,17 @@
  *      ONE FULL EXTRA EPOCH past its own UNSTAKE; its unlock height
  *      starts counting from the boundary at which it actually graduates,
  *      not the one at which UNSTAKE was requested.
+ *      HF-6 slice 6c (design 2026-10-03-hf5-validator-owner-stake rev 6
+ *      §3): at key generation >= NODUS_RT_GEN_STORAGE "an entry" means an
+ *      entry naming the row's validator_id — by the entry's validator_id
+ *      in a ruleset-2 snapshot, by dna_validator_id_migrated(chain id,
+ *      entry pubkey) in a ruleset-1 one (the v2 row's identity; with no
+ *      key rotation it names the same entry as the pubkey); below it, by
+ *      pubkey (unchanged). A membership test that cannot be decided is
+ *      -2. The graduate's row is written back with its pending fields
+ *      zero (as they always are) and its consensus-key reservation is
+ *      KEPT: v2_consensus_keys is permanent (khan decision
+ *      2026-10-13-kurultay-18-summary.md items 1 and 4).
  *
  *      Per graduate, in the legacy order (bft.c:2465-2560): release UTXO
  *      (locked DNAC_VALIDATOR_UNBOND_EPOCHS · E past H — P3-3) → every
@@ -126,6 +140,14 @@
  *      to the H−2E, H−E and H copies (three — P3-2). Out of every root.
  *      Read by the commit_next of boundary H+E (P3-1 "okuma B") and by
  *      the distribution of boundary H+3E (src).
+ *   7. KEY-RESERVATION SELF-CHECK (HF-6) — generation 4 only, LOG ONLY:
+ *      v2_consensus_keys (in no root) re-derived from the v2 rows (one
+ *      role-1 row per validators row, any status) and compared row for
+ *      row; a difference is logged (QGP_LOG_ERROR), never returned, never
+ *      written, never a fault. ONE call per boundary: no boundary step
+ *      writes the table or a validators key, so a start-of-boundary call
+ *      would compare the same inputs. The test-facing core is
+ *      nodus_witness_v2_keyres_diff below.
  *
  * ── WHY THE DISTRIBUTION SITS AT 1b (tokenomics-v3 P2) ──────────────
  * Three inputs decide it, and each fixes a bound on its position:
@@ -211,6 +233,15 @@
  * survive into a later, unrelated one, turning two NON-consecutive
  * misses into a retirement — both measured (verifier V-1). Absent/
  * unreadable duty snapshot -> -2 (a boundary has no verdict class).
+ * HF-6 slice 6c (design rev 6 §3 "Görev ve devam aramaları … blokları
+ * yöneten snapshot'ın anahtarını kullanır, canlı satırı değil"): at key
+ * generation >= NODUS_RT_GEN_STORAGE the duty entry is found by the row's
+ * validator_id (the graduation's rule above) and the attendance is read
+ * by THAT ENTRY's pubkey — the key that signed the ending epoch — never
+ * by the row's live key (written for ROTATE, removed by the khan —
+ * decision 2026-10-13-kurultay-18-summary.md item 1; a row's key never
+ * changes, so the two keys are the same). Below generation 4 both reads
+ * are the row's pubkey, unchanged.
  *
  * ── ROUND 6: THE WEIGHT FLOOR (decision file §3 2026-09-23 "Rule N
  * TABANI WEIGHT ÜZERİNDEN", replacing round 5's count floor "Rule N
@@ -231,8 +262,10 @@
  * Rule N builds — without storing — the snapshot this same boundary's
  * `nodus_witness_vset_commit_next` will store for H+E
  * (`nodus_witness_vset_preview_next`, nodus_witness_vset.h). Power per
- * entry = `total_stake / DNAC_DECIMAL_UNIT` (the unit the §A
- * ValidatorUpdate diff reports, nodus_witness_cmt_app.c:1569); P = the
+ * entry = `nodus_witness_vset_powers` over the preview (HF-6 5b; the
+ * unit the §A ValidatorUpdate diff reports): `total_stake /
+ * DNAC_DECIMAL_UNIT` for a ruleset-1 preview, the counted (capped) power
+ * for a ruleset-2 one (built from slice 5d on); P = the
  * checked sum, max = the largest entry. The retirement stands iff
  * P > 0 AND (P − max) > P * 2 / 3 — cometbft's own integer commit form
  * (shared/dnac/cmt_validation.c:298): the next set must still commit
@@ -418,6 +451,69 @@ extern "C" {
  */
 int nodus_witness_v2_epoch_val_rec_ok(const dnac_validator_record_t *v);
 
+/**
+ * HF-6 sub-slice 3d — THE KEY GENERATION of the boundary and committee
+ * readers: which key derivation the committed `validators` /
+ * `delegations` / `v2_balance_copy` rows carry right now.
+ *
+ *   generation < NODUS_RT_GEN_STORAGE: the tagged pubkey hashes
+ *     (validators.pubkey_hash = SHA3-512(0x02 ‖ pk), delegations PK =
+ *     (SHA3-512(0x03 ‖ dpk), SHA3-512(0x03 ‖ vpk)), copy rows keyed by the
+ *     untagged SHA3-512(pk)) — every reader exactly as before;
+ *   generation >= NODUS_RT_GEN_STORAGE: the HF-6 keys (design 2026-10-03-
+ *     hf5-validator-owner-stake rev 6 §1.1, §7; plan tasks/hf6-slice3-
+ *     plan.md §1) — validators.pubkey_hash = validator_id, delegations
+ *     = (delegator_fp = SHA3-512(dpk) untagged, validator_id), copy rows
+ *     keyed by validator_id (kind-0 owner = validator_id).
+ *
+ * Read from the COMMITTED registry through nodus_witness_v2_runtime_for
+ * (the payday precedent, nodus_witness_v2_econ.c): the generation-4 edge
+ * switches the registry and re-keys the rows in ONE transaction at the end
+ * of block H−1 (nodus_witness_v2_apply.c phase 6b'''), so in every state a
+ * reader can observe — the edge block's own later phases included — the
+ * resolved generation and the rows' keys agree. A pure function of
+ * committed state: no clock, no node-local input.
+ *
+ * A database with NO SYSTEM registry row (domreg_get → 1) answers
+ * NODUS_RT_GEN_1: such a database (a pre-V2 test fixture, a legacy chain)
+ * has never been through any rule-set edge, so its rows carry the
+ * pre-HF-6 keys. A version-3 chain always has the row (the engine genesis
+ * writes it). A registry row whose tuple does not resolve to an ACTIVE
+ * runtime, or any read fault, is a FAULT — never "generation 1".
+ *
+ * @param gen_out  required; written only on 0.
+ * @return 0 / -2 (node-local fault, the boundary convention).
+ */
+int nodus_witness_v2_key_generation(nodus_witness_t *w, uint32_t *gen_out);
+
+/**
+ * HF-6 — the key-reservation self-check's core, EXPORTED FOR TESTS (the
+ * boundary calls only its log-only wrapper, step 7, and ignores the
+ * outcome). Re-derives v2_consensus_keys from rooted state and compares
+ * it row for row with the table. The index is PERMANENT and append-only
+ * (khan decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md
+ * items 1 and 4), so the derivation is one rule: EXACTLY one row per
+ * validators row of ANY status (UNSTAKED included) — consensus_pk_hash =
+ * SHA3-512(validators.pubkey) (untagged), validator_id = the row's id,
+ * role 1 — and no other row. A table row whose consensus_pk_hash or
+ * validator_id is not a 64-byte BLOB (the SQLite storage class is
+ * checked: a TEXT value is malformed) or whose role is not an INTEGER is
+ * a malformed row. No snapshot is read: the comparison is a function of
+ * the current tables only.
+ * Read-only; no transaction of its own (valid inside the boundary
+ * transaction and in autocommit).
+ *
+ * @param n_diff_out required; the number of differences (missing, extra,
+ *                   another validator, a role other than 1 on a derived
+ *                   key, a key derived twice, a malformed row); 0 on any
+ *                   return other than 0.
+ * @return 0 compared; 1 generation < 4 (not applicable); -1 an input was
+ *         unreadable (a v2 row the strict reader refuses — a pending
+ *         field that is not zero included) or an argument is bad — not
+ *         compared.
+ */
+int nodus_witness_v2_keyres_diff(nodus_witness_t *w, size_t *n_diff_out);
+
 /** The 16-byte graduation-identity tag (zero-padded, exactly 16 B). */
 #define NODUS_V2_EPGRAD_TAG      "NDS.EPGRAD.v1"
 #define NODUS_V2_EPGRAD_TAG_LEN  16u
@@ -540,7 +636,11 @@ typedef enum {
      * delegation rows deleted, BEFORE its validators row is rewritten
      * (3). The engine maps it BY NAME. */
     NODUS_V2_EPST_GRAD_DELEG_RELEASED = 18
-    /* The numbers are append-only and NOT in firing order any more
+    /* (19 / 20 — the HF-6 6e rotation swap / sweep stages — were deleted
+     * with the steps; the khan removed ROTATE, decision
+     * 2026-10-13-kurultay-18-summary.md item 1. They were the last two
+     * values, so no number moved.)
+     * The numbers are append-only and NOT in firing order any more
      * (13-16 fire before 2); they are module-internal: the engine maps
      * them onto its own frozen fault ids BY NAME
      * (nodus_witness_v2_apply.c epoch_stage_fault), so nothing outside

@@ -350,6 +350,17 @@ int nodus_cmt_blockexec_set_wal(nodus_cmt_blockexec_t *ctx,
     return CMT_OK;
 }
 
+int nodus_cmt_blockexec_set_rollback_hook(nodus_cmt_blockexec_t *ctx,
+                                          void (*fn)(void *arg), void *arg)
+{
+    if (!ctx) {
+        return CMT_FAULT;
+    }
+    ctx->on_rollback     = fn;
+    ctx->on_rollback_arg = fn ? arg : NULL;
+    return CMT_OK;
+}
+
 /* cometbft@v0.38.26 state/execution.go:59-63
  * BlockExecutorWithBlockTimeTolerance — stored as given (:61). */
 int nodus_cmt_blockexec_set_block_time_tolerance(nodus_cmt_blockexec_t *ctx,
@@ -1655,13 +1666,17 @@ static int ledger_txn_begin(nodus_cmt_blockexec_t *ctx)
 }
 
 /** Rolls back IFF a transaction is still open, so it is a no-op after
- *  `app.commit` has executed the COMMIT. */
+ *  `app.commit` has executed the COMMIT. After a ROLLBACK it calls the
+ *  node's `on_rollback` hook, when one is bound (NULL = nothing). */
 static void ledger_txn_rollback(nodus_cmt_blockexec_t *ctx)
 {
     sqlite3 *db = blockexec_db(ctx);
 
     if (db && !sqlite3_get_autocommit(db)) {
         (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        if (ctx->on_rollback) {
+            ctx->on_rollback(ctx->on_rollback_arg);
+        }
     }
 }
 

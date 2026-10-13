@@ -12,8 +12,8 @@
 #include "witness/nodus_witness_storage_holder.h"   /* segment files (B2b-2) */
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_v2_pools.h"  /* S7 startup check      */
-#include "witness/nodus_witness_v2_schema.h" /* Nodus EVM: the at-open S17
-                                              * rung                  */
+#include "witness/nodus_witness_v2_schema.h" /* the at-open S18 rung
+                                              * (HF-6 3a; was S17)    */
 #include "witness/nodus_witness_v2_gate.h"      /* O15B activation gate  */
 #include "witness/nodus_witness_v2_preflight.h" /* O15A readiness report */
 /* O15J Faz 3 — chain-role derivation is what makes a Ledger V2 database
@@ -374,6 +374,40 @@ static const char *WITNESS_DB_SCHEMA =
     "  kind INTEGER NOT NULL,"
     "  amount INTEGER NOT NULL,"
     "  PRIMARY KEY (epoch_start, validator_fp, owner_fp, kind)"
+    ");"
+    /* HF-6 sub-slice 3a (design 2026-10-03-hf5-validator-owner-stake
+     * rev 6 §1.2/§6.3; plan D1 option (i)): the three validator fields
+     * `validators` does not carry — owner_fp, pending_consensus_pubkey,
+     * consensus_key_effective_epoch — keyed by validator_id, which under
+     * the HF-6 generation is also the value of validators.pubkey_hash
+     * (re-keyed in place at the activation edge). A NEW table, never a
+     * new column: `validators` is a genesis-bundle table and a joiner
+     * refuses the bundle on a column-count mismatch
+     * (nodus_witness_v2_bundle.c apply_table). EMPTY until the HF-6 edge;
+     * no root reads it before then. In the base schema for the reason the
+     * reward tables above are; the S18 rung (nodus_witness_v2_schema.c)
+     * keeps a byte-identical CREATE TABLE IF NOT EXISTS and verifies the
+     * shape. */
+    "CREATE TABLE IF NOT EXISTS v2_validator_roles ("
+    "  validator_id BLOB PRIMARY KEY,"
+    "  owner_fp BLOB NOT NULL,"
+    "  pending_consensus_pubkey BLOB NOT NULL,"
+    "  consensus_key_effective_epoch INTEGER NOT NULL"
+    ");"
+    /* HF-6 slice 4 (design rev 6 §4): the consensus-key reservation table
+     * — one unique key column, consensus_pk_hash = SHA3-512(consensus
+     * pubkey); role 1 only (the slice-6 pending role went with ROTATE —
+     * khan decision 2026-10-13-kurultay-18-summary.md items 1 and 4).
+     * PERMANENT and append-only: one row per validators row of any
+     * status, never released. EMPTY until the HF-6 edge; no root reads
+     * it: a function of the validators rows alone, all rooted. Checked
+     * at every generation-4 boundary by v2ep_keyres_selfcheck (log-only;
+     * nodus_witness_v2_epoch.c). Byte-identical to the S18 rung's
+     * statement (nodus_witness_v2_schema.c), which verifies the shape. */
+    "CREATE TABLE IF NOT EXISTS v2_consensus_keys ("
+    "  consensus_pk_hash BLOB PRIMARY KEY,"
+    "  validator_id BLOB NOT NULL,"
+    "  role INTEGER NOT NULL"
     ");"
     /* Final pre-testnet wipe, W-A (decision
      * 2026-09-28-treasury-pools-and-exact-self-stake.md): the keyless,
@@ -784,6 +818,26 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
         }
     }
 
+    /* HF-6 red-team round 1 close-out: dnac_storage_by_owner reads
+     * v2_storage_nodes WHERE payee_fp = ?1 (nodus_witness_handlers.c) —
+     * without an index, a full scan per query. NODE-LOCAL: an index is its
+     * own sqlite_master row (type 'index'), so the per-open shape check
+     * above (type 'table' only) is untouched; no consensus reader depends
+     * on it — the registry root and every other reader name ORDER BY
+     * node_fp explicitly (nodus_witness_roots_v2.c), so the index changes
+     * no row and no order, only the plan. Idempotent on every open, like
+     * the schema exec above. */
+    rc = sqlite3_exec(witness->db,
+                      "CREATE INDEX IF NOT EXISTS idx_v2_storage_nodes_payee "
+                      "ON v2_storage_nodes(payee_fp);", NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_storage_nodes payee_fp index failed: %s",
+                      err_msg ? err_msg : "?");
+        sqlite3_free(err_msg);
+        witness_db_open_fail(witness);
+        return rc;
+    }
+
     /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent; aborts on
      * unrecoverable error. */
     nodus_witness_db_migrate_v12(witness);
@@ -932,8 +986,15 @@ static int witness_gate_table_has_rows(sqlite3 *db, const char *count_sql) {
  * is the gates' to refuse). Outside every transaction (the rung opens
  * its own BEGIN IMMEDIATE), BEFORE the S7 startup check. A failed rung
  * rolls back whole and the database is refused (fail closed).
+ *
+ * HF-6 sub-slice 3a: the at-open rung is now S18 (S17 + the empty
+ * v2_validator_roles table, nodus_witness_v2_schema.h) and runs on a
+ * version-3 chain at S16 OR S17 — the S18 rung cascades through S17, so
+ * an S16 database still gets the EVM tables first. S18 is a no-op;
+ * anything else is the gates' to refuse. No root moves (no root, invariant
+ * or verdict reads the new table before the HF-6 edge).
  * @return 0 (migrated, or nothing to do) / -1 refuse the database. */
-static int witness_open_migrate_s17(nodus_witness_t *witness,
+static int witness_open_migrate_s18(nodus_witness_t *witness,
                                     const char *db_path) {
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(witness, &ver) != 0) {
@@ -941,7 +1002,8 @@ static int witness_open_migrate_s17(nodus_witness_t *witness,
                 "the database (fail closed)\n", LOG_TAG, db_path);
         return -1;
     }
-    if (ver != NODUS_V2_SCHEMA_VERSION_S16) return 0;
+    if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S17) return 0;
     int st = witness_gate_table_exists(witness->db,
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cmt_state'");
     int bs = witness_gate_table_exists(witness->db,
@@ -958,31 +1020,34 @@ static int witness_open_migrate_s17(nodus_witness_t *witness,
     if (nodus_witness_v2_gen_stored_chain_id(witness, id) != 0)
         return 0;                       /* no stored document: the role
                                          * gate below refuses it         */
-    if (nodus_witness_db_migrate_v2s17(witness) != 0) {
-        fprintf(stderr, "%s: the S16 -> S17 migration (Nodus EVM, empty EVM "
-                "tables) FAILED for %s — rolled back, refusing the "
-                "database (fail closed)\n", LOG_TAG, db_path);
+    if (nodus_witness_db_migrate_v2s18(witness) != 0) {
+        fprintf(stderr, "%s: the S%u -> S18 migration (Nodus EVM empty EVM "
+                "tables when below S17; HF-6 empty v2_validator_roles) "
+                "FAILED for %s — rolled back, refusing the database (fail "
+                "closed)\n", LOG_TAG, (unsigned)ver, db_path);
         return -1;
     }
-    fprintf(stderr, "%s: schema S16 -> S17 (Nodus EVM: EVM tables created "
-            "empty, CORE EVM reserve 0; no root moves) for %s\n",
-            LOG_TAG, db_path);
+    fprintf(stderr, "%s: schema S%u -> S18 (empty tables only; no root "
+            "moves) for %s\n", LOG_TAG, (unsigned)ver, db_path);
     return 0;
 }
 
 static int witness_post_open_gate(nodus_witness_t *witness,
                                   const char *db_path) {
-    /* Nodus EVM: the at-open S16 -> S17 rung (witness_open_migrate_s17 above),
-     * FIRST — the S7 check and every later gate see the live rung. */
-    if (witness_open_migrate_s17(witness, db_path) != 0) {
+    /* The at-open rung (witness_open_migrate_s18 above; Nodus EVM added
+     * it for S16 -> S17, HF-6 3a moved it to S18), FIRST — the S7 check
+     * and every later gate see the live rung. */
+    if (witness_open_migrate_s18(witness, db_path) != 0) {
         sqlite3_close(witness->db);
         witness->db = NULL;
         return -1;
     }
     /* Nodus EVM red-team 1 F4: a database that reached S17 before the §18
      * evm_logs scan indexes existed gets them here — indexes only, no
-     * shape or version change, nothing a root reads (any other version:
-     * nothing). A failure refuses the database like the rung above. */
+     * shape or version change, nothing a root reads (any version but S17
+     * or S18: nothing; HF-6 3a added S18 because the rung above now
+     * climbs such a database to S18 first). A failure refuses the
+     * database like the rung above. */
     if (nodus_witness_db_ensure_v2s17_indexes(witness) != 0) {
         fprintf(stderr, "%s: the S17 EVM log scan indexes could not be "
                 "ensured for %s — refusing the database (fail closed)\n",
@@ -2702,16 +2767,22 @@ int nodus_witness_init(nodus_witness_t *witness,
                  (unsigned long long)DNAC_CFG_RULESET_GEN2_D2,
                  (unsigned)DNAC_RULESET_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
-    /* Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md
-     * rev 2.2 §6): the GEN_STORAGE vote literal (chain_config param 16)
-     * for the same 7/7 comparison before THAT vote — its own line, so the
-     * HF-4 line above keeps the exact text test_cmt_hf4_names.sh greps. */
-    QGP_LOG_INFO(LOG_TAG, "storage rule-set generation %u vote 0x%016llx "
-                 "(param %u, switch spec v%u), built from git commit %s",
+    /* HF-6 slice 8c (design docs/plans/2026-10-03-hf5-validator-owner-
+     * stake-design.md rev 6 §8, §8.1): the generation-4 vote literal D4
+     * (chain_config param 18 RULESET_GEN_ROLES) — an EVM-enabled build's
+     * selfcheck just re-derived it from the generation-4 pins, the
+     * compiled Foundation owner and the HF-6 constants — for the same
+     * 7/7 comparison before THAT vote (DEPLOY_RUNBOOK §2.2). Its own
+     * line, so the HF-4 line above keeps the exact text
+     * test_cmt_hf4_names.sh greps; test_hf6_edge.sh and
+     * test_storage_archive.sh grep this one. */
+    QGP_LOG_INFO(LOG_TAG, "HF-6 rule-set generation %u vote D4 0x%016llx "
+                 "(param %u RULESET_GEN_ROLES, switch spec v%u), built from "
+                 "git commit %s",
                  (unsigned)NODUS_RT_GEN_STORAGE,
-                 (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
-                 (unsigned)DNAC_CFG_RULESET_GEN_STORAGE,
-                 (unsigned)DNAC_RULESET_SWITCH_SPEC_VERSION,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D,
+                 (unsigned)DNAC_CFG_RULESET_GEN_ROLES,
+                 (unsigned)DNAC_HF6_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
     /* HF-4 review (L1 F2): the compile-time constants consensus depends
      * on and that a harness build overrides (#ifndef in dnac.h /

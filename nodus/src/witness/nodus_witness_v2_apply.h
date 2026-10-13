@@ -731,8 +731,17 @@ typedef enum {
      * mapped BY NAME in epoch_stage_fault). The proof obligation: an
      * interrupt there leaves no release UTXO, every delegation row and
      * the row's delegated totals exactly as before the block. */
-    V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE = 60 /* graduate 0 delegations
-                                                   * released            */
+    V2AP_FAIL_AFTER_FIRST_GRAD_DELEG_RELEASE = 60, /* graduate 0 delegations
+                                                    * released           */
+
+    /* HF-6 slice 6e (plan tasks/hf6-slice6-plan.md §5 B2) appended 61 /
+     * 62 for the generation-4 rotation swap (step 1d) and sweep (step 3d).
+     * RETIRED: the khan removed ROTATE from HF-6 (decision docs/plans/
+     * decisions/2026-10-13-kurultay-18-summary.md item 1) and both steps
+     * with it. The ids stay reserved — never fired, never reused (the
+     * 50-52 precedent); epoch_stage_fault maps nothing onto them. */
+    V2AP_FAIL_AFTER_ROTATE_SWAP       = 61, /* RETIRED (HF-6 D1)         */
+    V2AP_FAIL_AFTER_ROTATE_SWEEP      = 62  /* RETIRED (HF-6 D1)         */
 } nodus_v2_apply_fail_t;
 
 /*

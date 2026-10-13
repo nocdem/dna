@@ -582,6 +582,19 @@ typedef struct {
      * (libs/fail/fail.go:9-47). No production path sets it.
      */
     bool test_fail_after_commit;
+
+    /**
+     * Called by the ledger transaction's rollback (`ledger_txn_rollback`)
+     * right after it issued the ROLLBACK, with `on_rollback_arg`. NULL (the
+     * `nodus_cmt_blockexec_init` default — every test executor) = nothing.
+     * Not a reference hook: it exists so the node can drop the witness's
+     * node-local caches that a rolled-back transaction may have filled
+     * (the chain_config lookup cache — HF-6 red-team round 1 close-out);
+     * the generic executor itself holds no witness pointer. Set with
+     * `nodus_cmt_blockexec_set_rollback_hook`. Must not touch the ledger.
+     */
+    void (*on_rollback)(void *arg);
+    void  *on_rollback_arg;
 } nodus_cmt_blockexec_t;
 
 /**
@@ -638,6 +651,14 @@ int nodus_cmt_blockexec_set_block_time_tolerance(nodus_cmt_blockexec_t *ctx,
  */
 int nodus_cmt_blockexec_set_wal(nodus_cmt_blockexec_t *ctx,
                                 nodus_cmt_wal_t *wal);
+
+/**
+ * Bind (or, with fn NULL, unbind) the after-ROLLBACK callback of the
+ * ledger transaction (`nodus_cmt_blockexec_t.on_rollback`). Node-local;
+ * no reference counterpart. @return CMT_OK, CMT_FAULT on a NULL `ctx`.
+ */
+int nodus_cmt_blockexec_set_rollback_hook(nodus_cmt_blockexec_t *ctx,
+                                          void (*fn)(void *arg), void *arg);
 
 /** Fills all 26 rows of `out` with this module's functions; `ctx` is the
  *  `host_ctx` for `cmt_cs_init`. @return CMT_OK, CMT_FAULT on NULL. */

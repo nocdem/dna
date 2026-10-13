@@ -212,6 +212,25 @@ static int do_auth(void) {
     return 0;
 }
 
+/* Strict unsigned decimal option value, bounded by `max` (the target
+ * type's range — the caller's own semantic checks follow). Refused: NULL /
+ * empty, a sign or leading space (the first char must be a digit — strtoull
+ * would accept "-1" as UINT64_MAX and " 5" as 5), trailing characters,
+ * ERANGE, a value above `max`. HF-6 red-team round 1 close-out: the
+ * HF-6 commands used to take strtoull / (uint32_t)strtoul without an end
+ * check, so "12abc" was 12 and 4294967306 a commission of 10.
+ * @return 0 (*out set) / -1. */
+static int cli_u64(const char *s, uint64_t max, uint64_t *out) {
+    if (!s || s[0] < '0' || s[0] > '9') return -1;
+    char *end = NULL;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (!end || *end != '\0' || errno == ERANGE || (uint64_t)v > max)
+        return -1;
+    *out = (uint64_t)v;
+    return 0;
+}
+
 /* ── Commands ────────────────────────────────────────────────────── */
 
 static int cmd_ping(void) {
@@ -365,6 +384,8 @@ static int cmd_witness(const char *server_ip, uint16_t server_port) {
         printf("    status:      %u\n", (unsigned)e->status);
         printf("    stake:       %llu\n", (unsigned long long)e->total_stake);
         printf("    commission:  %u bps\n", (unsigned)e->commission_bps);
+        if (e->has_power)
+            printf("    power:       %llu\n", (unsigned long long)e->power);
     }
     printf("─────────────────────────────────\n");
     printf("Committee size:  %d\n", c->count);
@@ -376,26 +397,52 @@ static int cmd_witness(const char *server_ip, uint16_t server_port) {
          *   - governance (chain-config) approval: SEATS,
          *     dna_bft_quorum(n), below the HF-2 height, and the same power
          *     rule as block commit from it (nodus_rt_system_exec).
-         * Power = floor(stake / 10^8), the engine's derivation. This RPC
-         * does not say whether HF-2 is active, so both are printed. */
+         * This RPC does not say whether HF-2 is active, so the seat
+         * quorum is printed for the rule below it.
+         *
+         * The power line: when the node sends every seat's "power" (the
+         * engine's counted power — capped under ruleset 2 from HF-6,
+         * nodus_witness_vset_powers; HF-6 red-team round 1 close-out), the
+         * sum and its > 2/3 threshold are printed with the integer rule
+         * the approval selection uses (`chain-config` collect: twice =
+         * 2Σ, approved while <= twice / 3, so the need is > floor(2Σ/3)).
+         * An older node sends no power: the UNCAPPED sum of
+         * floor(stake / 10^8) — the ruleset-1 derivation — is printed
+         * with no threshold, since an uncapped one would be wrong after
+         * HF-6 (red-team round 1, Z-30b). */
+        int all_power = 1;
+        for (int i = 0; i < c->count; i++)
+            if (!c->entries[i].has_power) { all_power = 0; break; }
         uint64_t total_power = 0;
         int      power_ok = 1;
         for (int i = 0; i < c->count; i++) {
-            uint64_t p = c->entries[i].total_stake / DNAC_DECIMAL_UNIT;
+            uint64_t p = all_power ? c->entries[i].power
+                                   : c->entries[i].total_stake /
+                                         DNAC_DECIMAL_UNIT;
             if (p > UINT64_MAX - total_power) { power_ok = 0; break; }
             total_power += p;
         }
         printf("Quorum (seats):  %u  (dna_bft_quorum — governance approval "
                "below the HF-2 height)\n",
                (unsigned)dna_bft_quorum((uint32_t)c->count));
-        if (power_ok && total_power <= UINT64_MAX / 2)
-            printf("Voting power:    %llu  (block commit, and governance "
-                   "approval from the HF-2 height, need > %llu)\n",
-                   (unsigned long long)total_power,
-                   (unsigned long long)(total_power * 2 / 3));
-        else
-            printf("Voting power:    overflows u64 (the chain refuses "
-                   "every power-weighted approval)\n");
+        if (all_power) {
+            if (power_ok && total_power <= UINT64_MAX / 2)
+                printf("Voting power:    %llu  (need > %llu — the consensus "
+                       "count, capped per validator from HF-6)\n",
+                       (unsigned long long)total_power,
+                       (unsigned long long)(total_power * 2 / 3));
+            else
+                printf("Voting power:    not weighable (the sum overflows)\n");
+        } else if (power_ok) {
+            printf("Stake power:     %llu  (uncapped floor(stake / 10^8) "
+                   "sum; this node sends no voting power — from HF-6 the "
+                   "chain caps each validator, so no > 2/3 threshold is "
+                   "shown)\n",
+                   (unsigned long long)total_power);
+        } else {
+            printf("Stake power:     overflows u64 (uncapped sum; this node "
+                   "sends no voting power)\n");
+        }
     }
     rc = 0;
 
@@ -1332,6 +1379,62 @@ cli_core_runtime_for_env(const uint8_t *env, size_t env_len) {
     return hit;
 }
 
+/* HF-6 kind-3 owner (multisig v2 files): the compiled entry of `domain_id`
+ * whose ruleset_version equals `version` — the SYSTEM twin of
+ * cli_core_runtime_for_env's lookup, for any domain (versions strictly
+ * increase across generations, runtime selfcheck, so at most one
+ * matches). @return the entry or NULL. */
+static const nodus_domain_runtime_t *cli_runtime_for_version(uint32_t domain_id,
+                                                             uint32_t version) {
+    for (uint32_t g = 1; g <= nodus_runtime_generation_count(); g++) {
+        const nodus_domain_runtime_t *rt = cli_builtin_runtime(domain_id, g);
+        if (rt && rt->domain_id == domain_id && rt->ruleset_version == version)
+            return rt;
+    }
+    return NULL;
+}
+
+/* The positional per-leg ruleset contexts (env_preflight.h: one entry per
+ * leg) of an already-built envelope, from the compiled table — what the
+ * offline v2 `msig sign` / `msig combine` judge an export with. `rts`
+ * (may be NULL) receives each leg's entry. @return 0 / -1 (message
+ * printed). */
+static int cli_leg_ctx_for_env(const uint8_t *env, size_t env_len,
+                               dna_env_leg_ctx_t *lctx,
+                               const nodus_domain_runtime_t **rts,
+                               uint16_t *n_out) {
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    int rc = -1;
+    if (!v) return -1;
+    if (dna_env_decode(env, env_len, v) != 0) {
+        fprintf(stderr, "the exported envelope does not decode\n");
+        goto done;
+    }
+    for (uint16_t l = 0; l < v->leg_count; l++) {
+        const nodus_domain_runtime_t *rt =
+            cli_runtime_for_version(v->leg[l].domain_id,
+                                    v->leg[l].ruleset_version);
+        if (!rt) {
+            fprintf(stderr, "leg %u of the exported envelope names domain %u "
+                    "ruleset version %u, which this CLI does not carry\n",
+                    (unsigned)l, (unsigned)v->leg[l].domain_id,
+                    (unsigned)v->leg[l].ruleset_version);
+            goto done;
+        }
+        memset(&lctx[l], 0, sizeof(lctx[l]));
+        lctx[l].domain_id       = rt->domain_id;
+        lctx[l].ruleset_version = rt->ruleset_version;
+        memcpy(lctx[l].ruleset_hash, rt->ruleset_hash,
+               DNA_ENV_RULESET_HASH_LEN);
+        if (rts) rts[l] = rt;
+    }
+    *n_out = v->leg_count;
+    rc = 0;
+done:
+    free(v);
+    return rc;
+}
+
 /* HF-4 (design §1.6 "Expiry"): tip + CLI_ENV_EXPIRY_AHEAD, and — for an
  * envelope built for rule-set GENERATION 1 while a RULESET_GEN2 height H
  * is committed — never past H-1: a generation-1 envelope must not
@@ -1475,17 +1578,27 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
         { "evm_active",           DNAC_CFG_EVM_ACTIVE },
         { "EVM_BLOCK_GAS_LIMIT",  DNAC_CFG_EVM_BLOCK_GAS_LIMIT },
         { "evm_block_gas_limit",  DNAC_CFG_EVM_BLOCK_GAS_LIMIT },
-        /* storage reward v1 (design docs/plans/2026-10-04-storage-reward-
-         * v1-design.md rev 2.2 §6, "voted like RULESET_GEN2") — param id
-         * 16, value exactly DNAC_CFG_RULESET_GEN_STORAGE_D; votable only
-         * while the EVM generation judges the vote */
-        { "RULESET_GEN_STORAGE",  DNAC_CFG_RULESET_GEN_STORAGE },
-        { "ruleset_gen_storage",  DNAC_CFG_RULESET_GEN_STORAGE },
         /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-
          * design.md rev 2 §1) — param id 17, value exactly 1; votable
          * only while generation 2 or later judges the vote */
         { "DELEGATE_NAME_REQUIRED", DNAC_CFG_DELEGATE_NAME_REQUIRED },
         { "delegate_name_required", DNAC_CFG_DELEGATE_NAME_REQUIRED },
+        /* HF-6 (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+         * design.md rev 6 §8, §8.1) — param id 18, the generation-4 vote,
+         * value exactly DNAC_CFG_RULESET_GEN_ROLES_D (D4); votable once,
+         * while generation 3 judges the vote. Param id 16
+         * (RULESET_GEN_STORAGE) is RETIRED by it — removed from this
+         * table like ids 1 and 3, refused witness-side. */
+        { "RULESET_GEN_ROLES",    DNAC_CFG_RULESET_GEN_ROLES },
+        { "ruleset_gen_roles",    DNAC_CFG_RULESET_GEN_ROLES },
+        /* HF-6 — params 19-21, votable only while generation 4 judges
+         * the vote */
+        { "STAKE_MIN",            DNAC_CFG_STAKE_MIN },
+        { "stake_min",            DNAC_CFG_STAKE_MIN },
+        { "POWER_CAP_BPS",        DNAC_CFG_POWER_CAP_BPS },
+        { "power_cap_bps",        DNAC_CFG_POWER_CAP_BPS },
+        { "STORAGE_BOND",         DNAC_CFG_STORAGE_BOND },
+        { "storage_bond",         DNAC_CFG_STORAGE_BOND },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1728,16 +1841,27 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "only; HF-2, HF-3 and a non-zero gas price active)\n"
             "  EVM_BLOCK_GAS_LIMIT    [%llu, %llu]   "
             "(Nodus EVM: the summed declared EVM gas one block may hold)\n"
-            "  RULESET_GEN_STORAGE    exactly %llu   "
-            "(storage-reward rule-set generation from --effective on; "
-            "once only; the EVM generation must be in force; HF-2 must "
-            "be active; --effective - 1 not an epoch boundary)\n"
             "  DELEGATE_NAME_REQUIRED exactly %llu   "
             "(HF-8 switch: from --effective on a delegation needs the "
             "delegator's on-chain name, self-delegation exempt; one-way; "
             "generation 2 must be in force)\n"
+            "  RULESET_GEN_ROLES      exactly %llu   "
+            "(HF-6: rule-set generation 4 (storage + the validator role) "
+            "from --effective on; once only; the EVM generation must be "
+            "in force; HF-2 must be active; neither --effective nor "
+            "--effective - 1 an epoch boundary; no RULESET_GEN_STORAGE "
+            "row)\n"
+            "  STAKE_MIN              [%llu, %llu]   "
+            "(HF-6: raw bond floor of a validator STAKE; generation 4 "
+            "must be in force)\n"
+            "  POWER_CAP_BPS          [%u, %u]   "
+            "(HF-6: largest share of counted voting power one validator "
+            "may hold, basis points; generation 4 must be in force)\n"
+            "  STORAGE_BOND           [%llu, %llu]   "
+            "(HF-6: exact raw bond of a storage registration; generation "
+            "4 must be in force)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
-            "and is refused.\n",
+            "and is refused; RULESET_GEN_STORAGE (id 16) is retired.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_TARGET_ACTIVE,
             (unsigned long long)DNAC_CFG_MAX_GAS_PRICE,
@@ -1751,8 +1875,14 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned long long)DNAC_CFG_EVM_ACTIVE_D,
             (unsigned long long)DNAC_CFG_MIN_EVM_BLOCK_GAS,
             (unsigned long long)DNAC_CFG_MAX_EVM_BLOCK_GAS,
-            (unsigned long long)DNAC_CFG_RULESET_GEN_STORAGE_D,
-            (unsigned long long)DNAC_CFG_DELEGATE_NAME_REQUIRED_ON);
+            (unsigned long long)DNAC_CFG_DELEGATE_NAME_REQUIRED_ON,
+            (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D,
+            (unsigned long long)DNAC_HF6_STAKE_MIN_MIN,
+            (unsigned long long)INT64_MAX,
+            (unsigned)DNAC_CFG_MIN_POWER_CAP_BPS,
+            (unsigned)DNAC_CFG_MAX_POWER_CAP_BPS,
+            (unsigned long long)DNAC_HF6_STORAGE_BOND_MIN,
+            (unsigned long long)DNAC_HF6_STORAGE_BOND_MAX);
         return 1;
     }
     uint8_t param_id = 0;
@@ -1762,8 +1892,9 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "TOKEN_CREATE_FEE_RAW | HF2_ACTIVE | HF3_ACTIVE | "
                 "RULESET_GEN2 | NAME_PRICE_3P | NAME_PRICE_4P | "
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
-                "EVM_BLOCK_GAS_LIMIT | RULESET_GEN_STORAGE | "
-                "DELEGATE_NAME_REQUIRED "
+                "EVM_BLOCK_GAS_LIMIT | DELEGATE_NAME_REQUIRED | "
+                "RULESET_GEN_ROLES | STAKE_MIN | POWER_CAP_BPS | "
+                "STORAGE_BOND "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -2525,8 +2656,11 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
      * never guesses). Off: the first `quorum` keys approve (seat count,
      * as before). On: the keys approve IN THE ORDER GIVEN until their
      * seats' voting power exceeds 2/3 of the committee's power — the
-     * engine's rule (nodus_rt_system_exec), power = floor(total_stake /
-     * DNAC_DECIMAL_UNIT) as the engine derives it. */
+     * engine's rule (nodus_rt_system_exec), each seat's power the
+     * member's `power` from the SAME committee lookup the engine reads
+     * (HF-6 slice 5b: nodus_witness_vset_powers over the epoch's
+     * snapshot — floor(total_stake / DNAC_DECIMAL_UNIT) for ruleset 1,
+     * the counted power for ruleset 2). */
     uint64_t hf2_raw = 0;
     if (nodus_chain_config_get_u64(wr, (uint8_t)DNAC_CFG_HF2_ACTIVE,
                                    tip + 1, 0ULL, &hf2_raw) < 0 ||
@@ -2542,7 +2676,7 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
         uint64_t total_power = 0, approved = 0, twice = 0;
         int ovf = 0;
         for (int s = 0; s < cm_count; s++) {
-            uint64_t p = committee[s].total_stake / DNAC_DECIMAL_UNIT;
+            uint64_t p = committee[s].power;
             if (p > UINT64_MAX - total_power) { ovf = 1; break; }
             total_power += p;
         }
@@ -2566,7 +2700,7 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
                 fprintf(stderr, "key %d is not a committee member\n", k);
                 goto done;
             }
-            uint64_t p = committee[seat].total_stake / DNAC_DECIMAL_UNIT;
+            uint64_t p = committee[seat].power;
             if (p > UINT64_MAX - approved) {
                 fprintf(stderr, "approver power sum overflows (a key "
                                 "given twice?)\n");
@@ -3506,11 +3640,16 @@ static const char *cli_validator_status_name(uint8_t st) {
 #define CLI_VLIST_PAGE       DNAC_MAX_VALIDATORS
 #define CLI_VLIST_MAX_PAGES  64
 
-/* `v2-envelope unstake`: find `pk`'s row in the node's validator list
- * (dnac_validator_list_query, every status, paged by offset).
+/* `v2-envelope unstake | validator-update`: find a row in the node's
+ * validator list (dnac_validator_list_query, every status, paged by
+ * offset) — by `pk` (below generation 4: the validator key) or, when `vid`
+ * is given (HF-6 slice 7b, generation 4), by the entry's validator_id
+ * (only an entry that carries one, has_v2 — nodus_types.h; at generation 4
+ * `pubkey` is the consensus key, not an identity).
  * @return 1 found (*row filled) / 0 the listing ended without it /
  *         -1 the query failed or the walk did not end. */
 static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
+                             const uint8_t *vid,
                              nodus_dnac_validator_list_entry_t *row) {
     int offset = 0;
     for (int page = 0; page < CLI_VLIST_MAX_PAGES; page++) {
@@ -3521,7 +3660,11 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
             return -1;
         int found = 0;
         for (int i = 0; i < res.count && res.entries; i++) {
-            if (memcmp(res.entries[i].pubkey, pk, DNAC_PUBKEY_SIZE) == 0) {
+            const int hit = vid
+                ? (res.entries[i].has_v2 &&
+                   memcmp(res.entries[i].validator_id, vid, 64) == 0)
+                : memcmp(res.entries[i].pubkey, pk, DNAC_PUBKEY_SIZE) == 0;
+            if (hit) {
                 *row = res.entries[i];
                 found = 1;
                 break;
@@ -3605,68 +3748,334 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  * ACTIVE validator keeps signing until the set that drops it takes effect
  * (same decision, 2026-09-23 graduation deferral).
  *
+ * HF-6 6f-1 (design docs/plans/2026-10-03-hf5-validator-owner-stake-
+ * design.md rev 6 §2, §3, §6.1, §9; decision docs/plans/decisions/2026-10-
+ * 03-role-stake-amounts.md 1B: the node only consents, the owner pays and
+ * signs). The node generation decides the layout (cli_select_runtimes):
+ *   `v2-envelope stake2 --keys <owner> --consent <file> --bond <raw>
+ *   [--commission <bps>]` — the generation-4 STAKE: owner_fp = SHA3-512
+ *   of the --keys identity (kind 1), the node's consensus key, consent
+ *   signature and expiry from the consent file (`validator consent`
+ *   --op stake), the owner's coins fund bond + fee. After the build the
+ *   new validator's id is printed: SHA3-512("NDS.VALID.v1" ‖ chain id ‖
+ *   intent_id) (dna_validator_id_new — what rtn_stake2_exec derives from
+ *   the engine's chain id and the envelope's intent_id), valid for THIS
+ *   envelope only (a dry run's intent_id can differ from the submit's).
+ *   There is no `rotate`: the khan removed key rotation from HF-6 (decision
+ *   docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1) — a key
+ *   is changed by `unstake` + a new `stake2` under a fresh key.
+ * Before building, the consent is re-checked against THIS session: op,
+ * chain id, owner = the --keys identity, the
+ * §6.1 message rebuilt with dna_valbind_consent_msg and its signature
+ * verified (dna_valbind_consent_verify), and the window
+ * dna_valbind_expiry_ok(tip + 1, expiry). Under generation 4 the legacy
+ * `stake` is refused (its generation-4 form is `stake2`).
+ *
+ * HF-6 kind-3 OWNER (decision docs/plans/decisions/2026-09-29-general-
+ * multisig.md, addendum "çok bacaklı ortak imza dosyası v2", operator
+ * 2026-10-13; design rev 6 §1.3): every generation-4 verb below (stake2,
+ * unstake, validator-update, delegate, undelegate, storage
+ * register, storage exit) takes `--msig <descriptor> --in
+ * <nullifier>:<amount> ... [--signers <K>] --export <file>` instead of a
+ * signing owner. The owner (DELEGATE / UNDELEGATE: the delegator) is then
+ * the multisig address SHA3-512(descriptor); every owner comparison below
+ * (the consent's owner, the validator / storage row's owner) is made
+ * against it; the funding coins are the address's, named explicitly with
+ * --in (dnac_utxo answers only for the session's own fingerprint — the
+ * `spend --msig` rule; the chain checks every input); --keys is ANY
+ * identity: it opens the session (chain id, tip, gas price, rows) and
+ * signs nothing. The shared builder lays out both legs with auth_kind 3
+ * UNSIGNED and returns their two leg digests; this function writes the
+ * v2 export (nodus_v2_msig_export2_encode). Next: `msig sign` by K
+ * co-signers (each signs BOTH digests), then `msig combine`, which
+ * submits.
+ *
+ * HF-6 slice 7b (design rev 6 §1.3, §2 — K7): under generation 4
+ * `delegate`, `undelegate`, `unstake` and the new `validator-update` name
+ * the validator by its validator_id (`--validator <validator_id hex128>`,
+ * the id `stake2` printed; the node's validator list carries it since
+ * slice 7a) and the shared builder lays
+ * out the generation-4 calls (136 / 136 / 128 / 130 bytes): DELEGATE and
+ * UNDELEGATE carry delegator_fp = SHA3-512 of the --keys identity (the
+ * delegator signs, kind 1); UNSTAKE and VALIDATOR_UPDATE are signed by the
+ * validator's OWNER and name it in the call (owner_fp, khan decision
+ * 2026-10-13 "C2" — the chain requires it to equal the row's owner_fp).
+ * Below generation 4 `delegate` / `undelegate` keep the
+ * pubkey form (`--validator <hex5184 pubkey>`), `unstake` takes no
+ * --validator, and `validator-update` does not exist (this CLI never built
+ * the legacy op-5 layout). The wrong form for the node's generation is
+ * refused, naming the generation and the form it takes. `unstake` and
+ * `validator-update` at generation 4 read the validator's row by
+ * validator_id and refuse a status the chain refuses, or an owner that is
+ * not the --keys identity (with --msig: not the multisig address).
+ *
+ * HF-6 6b-3 (design rev 6 §11.3-§11.5, §11.10; Kurultay #16 khan 1 and 3):
+ * `storage register` and `storage exit` are this same flow (main's
+ * dispatch routes them here; argv[cmd_start] is "storage"):
+ *   `storage register --keys <owner> --consent <file>` — STORAGE_REGISTER
+ *   (op 7, 7299 B): owner_fp = SHA3-512 of the --keys identity (kind 1),
+ *   the storage NODE's key, consent signature and expiry from the file
+ *   (`storage consent`, op 3); the owner's coins fund the bond + fee. The
+ *   bond is the node's dnac_fee_info "storage_bond" — chain_config param
+ *   21 STORAGE_BOND at tip + 1 (HF-6 slice 8a; the compiled
+ *   DNAC_HF6_STORAGE_BOND_DEFAULT when the server predates the key). The
+ *   node identity is not needed on this host.
+ *   `storage exit --keys <owner> --node-fp <hex128>` — STORAGE_EXIT (op 8,
+ *   128 B = node_fp ‖ owner_fp, C2): fee-only funding; the chain requires
+ *   the call's owner (the --keys identity, or the multisig address) to be
+ *   the ROW's owner and the signer to be that owner.
+ * The generation gate comes BEFORE the consent re-check, so below the
+ * storage generation the refusal names the generation; the registry row
+ * is read on the same session and only what the chain refuses is refused
+ * (cli_storage_row_check).
+ *
  * The envelope itself is built by the shared, I/O-free builder
  * (nodus/src/client/nodus_v2_stake.c, nodus_v2_stake_build) — the body
  * this function had before the move; this function does the I/O and the
  * printing. */
+
+/* Defined with the msig commands below (general file helpers). */
+static int msig_read_file(const char *path, uint8_t **out, size_t *len,
+                          size_t max);
+static int msig_write_text(const char *path, const char *text, size_t len);
+
+/* Defined with the storage commands below (HF-6 6b-3). */
+static void cli_storage_usage(void);
+static int cli_storage_row_check(nodus_client_t *client, int is_exit,
+                                 const uint8_t node_fp[64],
+                                 const uint8_t owner_fp[64]);
+
+/* HF-6 6f-1: the consent container's size bound (format in
+ * nodus_v2_stake.h — the 9254-hex signature and 5184-hex key dominate). */
+#define CLI_CONSENT_FILE_MAX 16384u
+
+/* Read and parse a consent file. @return 0 / -1 (message printed). */
+static int cli_consent_load(const char *path, nodus_v2_consent_t *c) {
+    uint8_t *raw = NULL;
+    size_t rl = 0;
+    if (msig_read_file(path, &raw, &rl, CLI_CONSENT_FILE_MAX) != 0)
+        return -1;
+    const int prc = nodus_v2_consent_text_parse((const char *)raw, rl, c);
+    free(raw);
+    if (prc != NODUS_V2_SPEND_OK) {
+        fprintf(stderr, "%s is not a consent file (`validator consent` "
+                "output, \"%s\")\n", path, NODUS_V2_CONSENT_MAGIC);
+        return -1;
+    }
+    return 0;
+}
+
+/* The consent op as a message names it. */
+static const char *cli_consent_op_name(uint8_t op) {
+    return op == DNA_VALBIND_OP_STAKE  ? "a STAKE"
+         : op == DNA_VALBIND_OP_STORAGE_REGISTER ? "a STORAGE_REGISTER"
+                                                 : "an unknown op";
+}
+
+/* Re-check a node consent against what the envelope will carry, with the
+ * codec (design §2 re-construction, §6.1, §11.3): the op, the session's
+ * chain id, the owner (= the --keys identity, kind 1; with --msig the
+ * multisig address, kind 3), the zero subject (STAKE / STORAGE_REGISTER:
+ * the container parser already refused a non-zero one), the signature over
+ * the REBUILT message under the embedded key, and the expiry window at the
+ * next height. @return 0 / -1 (reason printed). */
+static int cli_consent_check(const nodus_v2_consent_t *c, uint8_t want_op,
+                             const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                             const uint8_t owner_fp[64], uint64_t tip) {
+    if (c->op != want_op) {
+        fprintf(stderr, "the consent is for %s, not %s\n",
+                cli_consent_op_name(c->op), cli_consent_op_name(want_op));
+        return -1;
+    }
+    if (memcmp(c->chain32, chain32, DNA_CHAIN_ID_LEN) != 0) {
+        fprintf(stderr, "the consent names another chain than this node's\n");
+        return -1;
+    }
+    if (memcmp(c->owner_fp, owner_fp, 64) != 0) {
+        fprintf(stderr, "the consent names another owner than this "
+                "envelope's owner (the --keys identity, or with --msig the "
+                "multisig address)\n");
+        return -1;
+    }
+    uint8_t msg[DNA_VALBIND_MSG_LEN];
+    if (dna_valbind_consent_msg(msg, c->chain32, c->op, c->subject,
+                                c->owner_fp, c->consensus_pk,
+                                c->expiry) != 0 ||
+        dna_valbind_consent_verify(c->sig, DNA_VALBIND_SIG_LEN, msg) != 0) {
+        fprintf(stderr, "the consent signature does not verify under its "
+                "consensus key — nothing built\n");
+        return -1;
+    }
+    if (!dna_valbind_expiry_ok(tip + 1u, c->expiry)) {
+        fprintf(stderr, "the consent expiry %llu is outside the window the "
+                "chain accepts at the next height %llu (expiry >= h and "
+                "expiry - h <= %llu) — ask the node for a new consent\n",
+                (unsigned long long)c->expiry,
+                (unsigned long long)(tip + 1u),
+                (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS);
+        return -1;
+    }
+    return 0;
+}
+
 static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                         int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *dest_fp_hex = NULL;
     const char *validator_hex = NULL;
+    const char *consent_path = NULL;
+    const char *node_fp_hex = NULL;
     const char *submit = NULL;
+    /* HF-6 kind-3 owner: --msig <descriptor> --in ... [--signers K]
+     * --export <file> */
+    const char *msig_path = NULL, *export_path = NULL;
+    const char *in_arg[NODUS_V2_SPEND_MAX_IN];
+    int n_in_arg = 0;
+    long k_signers = 0;
     uint64_t bond = 0;
     uint32_t commission = 0;
     int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
-    /* "stake", "delegate", "unstake" or "undelegate" — the word after
-     * "v2-envelope" (main's dispatch routes only those four here).
-     * DELEGATE and UNDELEGATE share the call layout and so the arguments;
-     * UNSTAKE takes none beyond the key (its call is the key itself). */
+    /* "stake", "delegate", "unstake", "undelegate", and (HF-6 6f-1) the
+     * generation-4 "stake2", (HF-6 slice 7b) "validator-update" — the word
+     * after "v2-envelope"; (HF-6 6b-3) "register" and "exit" — the word
+     * after "storage" (main's dispatch routes only those eight here; "rotate"
+     * is gone with the operation, HF-6 D2). DELEGATE and UNDELEGATE share the
+     * call layout and so the
+     * arguments; below generation 4 UNSTAKE takes none beyond the key (its
+     * call is the key itself), at generation 4 --validator. */
+    const int is_storage = !strcmp(argv[cmd_start], "storage");
+    const int is_streg  = is_storage &&
+                          !strcmp(argv[cmd_start + 1], "register");
+    const int is_stexit = is_storage && !strcmp(argv[cmd_start + 1], "exit");
     const int is_unstake = !strcmp(argv[cmd_start + 1], "unstake");
     const int is_undeleg = !strcmp(argv[cmd_start + 1], "undelegate");
     const int is_deleg = is_undeleg ||
                          !strcmp(argv[cmd_start + 1], "delegate");
-    const int is_stake = !is_deleg && !is_unstake;
-    const char *verb = is_unstake ? "unstake"
+    const int is_stake2 = !strcmp(argv[cmd_start + 1], "stake2");
+    /* HF-6 slice 7b: VALIDATOR_UPDATE (op 5), generation 4 only here */
+    const int is_vupd = !strcmp(argv[cmd_start + 1], "validator-update");
+    const int is_gen4 = is_stake2 || is_storage || is_vupd;
+    /* the owner-signed calls that carry a node consent (design §2, §11.3) */
+    const int is_consented = is_stake2 || is_streg;
+    const int is_stake = !is_deleg && !is_unstake && !is_gen4;
+    const char *cmdw = is_storage ? "storage" : "v2-envelope";
+    const char *verb = is_streg   ? "register"
+                     : is_stexit  ? "exit"
+                     : is_unstake ? "unstake"
                      : is_undeleg ? "undelegate"
-                     : is_deleg   ? "delegate" : "stake";
-    const nodus_v2_stake_op_t op = is_unstake ? NODUS_V2_STAKE_OP_UNSTAKE
+                     : is_deleg   ? "delegate"
+                     : is_stake2  ? "stake2"
+                     : is_vupd    ? "validator-update" : "stake";
+    const nodus_v2_stake_op_t op = is_streg ? NODUS_V2_STAKE_OP_STORAGE_REGISTER
+                                 : is_stexit  ? NODUS_V2_STAKE_OP_STORAGE_EXIT
+                                 : is_unstake ? NODUS_V2_STAKE_OP_UNSTAKE
                                  : is_undeleg ? NODUS_V2_STAKE_OP_UNDELEGATE
                                  : is_deleg   ? NODUS_V2_STAKE_OP_DELEGATE
+                                 : is_vupd    ? NODUS_V2_STAKE_OP_VALIDATOR_UPDATE
                                               : NODUS_V2_STAKE_OP_STAKE;
 
     for (int i = cmd_start + 2; i < argc; i++) {   /* skip the verb word */
         const char *a = argv[i];
         if      (!strcmp(a, "--keys")       && i + 1 < argc) keys_csv = argv[++i];
-        else if (is_stake && !strcmp(a, "--bond") && i + 1 < argc) {
-            bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
-        } else if (is_deleg && !strcmp(a, "--amount") && i + 1 < argc) {
-            bond = strtoull(argv[++i], NULL, 10); have_bond = 1;
-        } else if (is_stake && !strcmp(a, "--commission") && i + 1 < argc) {
-            commission = (uint32_t)strtoul(argv[++i], NULL, 10); have_comm = 1;
+        else if (((is_stake || is_stake2) && !strcmp(a, "--bond")) ||
+                 (is_deleg && !strcmp(a, "--amount"))) {
+            /* strict (cli_u64): the range checks below then judge it */
+            if (i + 1 >= argc || cli_u64(argv[++i], UINT64_MAX, &bond) != 0) {
+                fprintf(stderr, "%s must be an unsigned decimal raw amount "
+                        "(no sign, no trailing characters, <= %llu)\n", a,
+                        (unsigned long long)UINT64_MAX);
+                return 1;
+            }
+            have_bond = 1;
+        } else if ((is_stake || is_stake2 || is_vupd) &&
+                   !strcmp(a, "--commission")) {
+            uint64_t cv = 0;
+            if (i + 1 >= argc || cli_u64(argv[++i], UINT32_MAX, &cv) != 0) {
+                fprintf(stderr, "--commission must be an unsigned decimal "
+                        "number of bps (0..%u)\n",
+                        (unsigned)DNAC_COMMISSION_BPS_MAX);
+                return 1;
+            }
+            commission = (uint32_t)cv; have_comm = 1;
         } else if (is_stake && !strcmp(a, "--dest-fp") && i + 1 < argc)
             dest_fp_hex = argv[++i];
-        else if (is_deleg && !strcmp(a, "--validator") && i + 1 < argc)
-            validator_hex = argv[++i];
+        else if ((is_deleg || is_unstake || is_vupd) &&
+                 !strcmp(a, "--validator") && i + 1 < argc)
+            validator_hex = argv[++i];   /* unstake: generation 4 only —
+                                          * judged once it is known     */
+        else if (is_consented && !strcmp(a, "--consent") && i + 1 < argc)
+            consent_path = argv[++i];
+        else if (is_stexit && !strcmp(a, "--node-fp") && i + 1 < argc)
+            node_fp_hex = argv[++i];
         else if (!strcmp(a, "--submit")     && i + 1 < argc) submit = argv[++i];
         else if (!strcmp(a, "--dry-run"))                    dry_run = 1;
+        else if (!is_stake && !strcmp(a, "--msig") && i + 1 < argc)
+            msig_path = argv[++i];
+        else if (!is_stake && !strcmp(a, "--export") && i + 1 < argc)
+            export_path = argv[++i];
+        else if (!is_stake && !strcmp(a, "--signers") && i + 1 < argc) {
+            uint64_t kv = 0;
+            if (cli_u64(argv[++i], NODUS_RT_AUTH_MAX_SIGNERS, &kv) != 0 ||
+                kv == 0) {
+                fprintf(stderr, "--signers must be 1..%u\n",
+                        (unsigned)NODUS_RT_AUTH_MAX_SIGNERS);
+                return 1;
+            }
+            k_signers = (long)kv;
+        } else if (!is_stake && !strcmp(a, "--in") && i + 1 < argc) {
+            if (n_in_arg >= (int)NODUS_V2_SPEND_MAX_IN) { bad_arg = 1; break; }
+            in_arg[n_in_arg++] = argv[++i];
+        }
         else { bad_arg = 1; break; }   /* incl. the retired --db */
     }
-    if (bad_arg || !keys_csv || (!is_unstake && !have_bond) ||
-        (!submit && !dry_run) ||
+    /* HF-6 kind-3 owner: --msig needs --export and >= 1 --in; it builds an
+     * UNSIGNED export, so --dry-run is meaningless (--submit names the
+     * node only); --in / --signers / --export without --msig are errors */
+    const int is_msig = msig_path != NULL;
+    if (is_msig ? (!export_path || n_in_arg < 1 || dry_run)
+                : (export_path || n_in_arg > 0 || k_signers != 0))
+        bad_arg = 1;
+    if (is_storage &&
+        (bad_arg || !keys_csv || (!submit && !dry_run && !is_msig) ||
+         (is_streg && !consent_path) || (is_stexit && !node_fp_hex))) {
+        cli_storage_usage();
+        return 1;
+    }
+    if (bad_arg || !keys_csv ||
+        (!is_unstake && !is_storage && !is_vupd && !have_bond) ||
+        (!submit && !dry_run && !is_msig) ||
         (is_stake && (!dest_fp_hex || !have_comm)) ||
-        (is_deleg && !validator_hex)) {
+        ((is_deleg || is_vupd) && !validator_hex) ||
+        (is_vupd && !have_comm) ||
+        (is_consented && !consent_path)) {
         fprintf(stderr,
             "Usage: v2-envelope stake --keys <keydir> --bond <raw> "
             "--commission <bps> --dest-fp <hex128>\n"
             "       (--dry-run | --submit ip:port)\n"
+            "       v2-envelope stake2 --keys <owner keydir> --consent <file> "
+            "--bond <raw>\n"
+            "       [--commission <bps>] (--dry-run | --submit ip:port)\n"
             "       v2-envelope delegate --keys <keydir> --validator "
-            "<hex5184 pubkey> --amount <raw>\n"
-            "       (--dry-run | --submit ip:port)\n"
+            "<validator_id hex128 | hex5184 pubkey>\n"
+            "       --amount <raw> (--dry-run | --submit ip:port)\n"
             "       v2-envelope undelegate --keys <keydir> --validator "
-            "<hex5184 pubkey> --amount <raw>\n"
+            "<validator_id hex128 | hex5184 pubkey>\n"
+            "       --amount <raw> (--dry-run | --submit ip:port)\n"
+            "       v2-envelope unstake --keys <keydir> [--validator "
+            "<validator_id hex128>]\n"
             "       (--dry-run | --submit ip:port)\n"
-            "       v2-envelope unstake --keys <keydir> "
-            "(--dry-run | --submit ip:port)\n"
+            "       v2-envelope validator-update --keys <owner keydir> "
+            "--validator <validator_id hex128>\n"
+            "       --commission <bps> (--dry-run | --submit ip:port)\n"
+            "  --validator by rule-set generation (the node names it): "
+            "generation 4 (HF-6)\n"
+            "  takes the validator_id (128 hex) for delegate / undelegate / "
+            "unstake /\n"
+            "  validator-update, and unstake needs it; below generation 4 "
+            "delegate /\n"
+            "  undelegate take the validator's public key (5184 hex), unstake "
+            "takes no\n"
+            "  --validator (the --keys identity retires), and "
+            "validator-update does not exist.\n"
             "  Everything (chain id, coins, tip, gas price) is read from "
             "the node over ONE\n"
             "  session: --submit, or the outer -s server for --dry-run. No "
@@ -3683,23 +4092,111 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "A delegation to\n"
             "  another validator is funded by at most 14 coins (the chain "
             "reads the name too).\n"
-            "  unstake: the --keys identity retires as a validator; its "
-            "delegations are\n"
-            "  returned to their delegators when it graduates (locked %d "
-            "epochs), its bond\n"
-            "  to its recorded unstake destination (locked %d epochs).\n",
+            "  unstake: the validator retires; its delegations are returned "
+            "to their\n"
+            "  delegators when it graduates (locked %d epochs), its bond "
+            "(locked %d epochs)\n"
+            "  to its recorded unstake destination — at generation 4 to its "
+            "owner.\n"
+            "  stake2 (rule-set generation 4, HF-6): the --keys "
+            "identity is the OWNER\n"
+            "  (it signs and pays); the node's consent comes from "
+            "`validator consent`\n"
+            "  run with the node's identity. At generation 4 unstake and "
+            "validator-update\n"
+            "  are signed by the OWNER (named in the call), delegate / "
+            "undelegate by the\n"
+            "  delegator; the legacy stake is refused there (use stake2). "
+            "There is no key\n"
+            "  rotation: to change a consensus key, unstake and stake2 a new "
+            "validator with a\n"
+            "  fresh key (a key used once is never accepted again).\n"
+            "  Multisig owner / delegator (generation 4, every verb but the "
+            "legacy stake):\n"
+            "    --msig <descriptor> --in <nullifier128hex>:<amount> [--in "
+            "...]\n"
+            "    [--signers <K>] --export <file> [--submit ip:port]\n"
+            "  instead of (--dry-run | --submit): the owner is the multisig "
+            "address, the coins\n"
+            "  are the address's (named with --in, native), --keys only "
+            "opens the session and\n"
+            "  signs nothing; writes the UNSIGNED v2 export for `msig sign` "
+            "(every co-signer\n"
+            "  signs BOTH legs) and `msig combine`. K (default M) is FINAL. "
+            "The consent must\n"
+            "  name the multisig address (`validator consent --msig "
+            "<descriptor>`).\n",
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS,
             (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
         return 1;
     }
+    /* HF-6 6f-1: the consent file, read before any I/O (rechecked against
+     * the session below) */
+    nodus_v2_consent_t consent;
+    memset(&consent, 0, sizeof(consent));
+    if (is_consented && cli_consent_load(consent_path, &consent) != 0)
+        return 1;
+    /* HF-6 6b-3: the storage node — register: SHA3-512 of the consent's
+     * node key (the registry key the chain derives from the call,
+     * rtn_storage_read_plan); exit: --node-fp. The bond is the node's
+     * STORAGE_BOND (dnac_fee_info, read on the session below). */
+    uint8_t st_node_fp[64] = {0};
+    if (is_streg) {
+        if (qgp_sha3_512(consent.consensus_pk, DNA_VALBIND_PUBKEY_LEN,
+                         st_node_fp) != 0)
+            return 1;
+    }
+    if (is_stexit && t6_hex_exact(node_fp_hex, st_node_fp, 64) != 0) {
+        fprintf(stderr, "--node-fp must be exactly 128 lowercase hex chars "
+                "(the storage node's fingerprint)\n");
+        return 1;
+    }
+    if (is_stake2 && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr, "--commission must be 0..%u\n",
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return 1;
+    }
+    /* design §1.5: STAKE_MIN <= bond <= INT64_MAX. The integer bound is a
+     * refusal here (the builder's too); the floor is chain state
+     * (chain_config param 19), compared with the node's dnac_fee_info
+     * "stake_min" on the session below. */
+    if (is_stake2 && (bond < 1 || bond > (uint64_t)INT64_MAX)) {
+        fprintf(stderr, "--bond must be 1..%llu raw\n",
+                (unsigned long long)INT64_MAX);
+        return 1;
+    }
+    /* HF-6 slice 7b: --validator's FORM, read before any I/O — a
+     * validator_id (128 hex, generation 4) or, for delegate / undelegate,
+     * the validator's public key (5184 hex, below generation 4). Which form
+     * the node's generation takes is judged once cli_select_runtimes has
+     * named it (below). */
     uint8_t validator_pk[DNAC_PUBKEY_SIZE] = {0};
-    if (is_deleg) {
-        if (t6_hex_exact(validator_hex, validator_pk, DNAC_PUBKEY_SIZE) != 0) {
-            fprintf(stderr, "--validator must be exactly %d lowercase hex "
-                    "chars (the validator's public key)\n",
-                    2 * DNAC_PUBKEY_SIZE);
+    uint8_t role_vid[64] = {0};
+    int vid_form = 0;                     /* 1 = --validator is a validator_id */
+    if ((is_deleg || is_unstake || is_vupd) && validator_hex) {
+        if (strlen(validator_hex) == 128) {
+            if (t6_hex_exact(validator_hex, role_vid, 64) != 0) {
+                fprintf(stderr, "--validator: a validator_id is exactly 128 "
+                        "lowercase hex chars\n");
+                return 1;
+            }
+            vid_form = 1;
+        } else if (!is_deleg ||
+                   t6_hex_exact(validator_hex, validator_pk,
+                                DNAC_PUBKEY_SIZE) != 0) {
+            fprintf(stderr, "--validator must be exactly 128 lowercase hex "
+                    "chars (the validator_id, rule-set generation 4)%s\n",
+                    is_deleg ? " or exactly 5184 (the validator's public "
+                               "key, below generation 4)" : "");
             return 1;
         }
+    }
+    if (is_vupd && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr, "--commission must be 0..%u\n",
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return 1;
+    }
+    if (is_deleg) {
         /* the chain's scalar rule (rtn_delegate_exec) */
         if (bond < 1 || bond > DNAC_DEFAULT_TOTAL_SUPPLY) {
             fprintf(stderr, "--amount must be 1..%llu raw\n",
@@ -3731,6 +4228,61 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         return 1;
     }
 
+    /* HF-6 kind-3 owner: the descriptor (validated by the codec, its
+     * address = the owner), K (default M, M <= K <= N) and the named
+     * coins, read before any I/O. The library sorts the coins for the wire;
+     * a duplicate --in is refused here. */
+    uint8_t msig_desc[DNA_MSIG_MAX_DESC_LEN];
+    size_t msig_dlen = 0;
+    uint8_t msig_m = 0, msig_n = 0;
+    uint8_t msig_addr[64] = {0};
+    nodus_v2_stake_coin_t msig_coins[NODUS_V2_SPEND_MAX_IN];
+    memset(msig_coins, 0, sizeof(msig_coins));
+    if (is_msig) {
+        uint8_t *dbuf = NULL;
+        if (msig_read_file(msig_path, &dbuf, &msig_dlen,
+                           DNA_MSIG_MAX_DESC_LEN) != 0)
+            return 1;
+        const int dok = dna_msig_desc_parse(dbuf, msig_dlen, &msig_m, &msig_n,
+                                            NULL) == 0 &&
+                        dna_msig_address(dbuf, msig_dlen, msig_addr) == 0;
+        if (dok) memcpy(msig_desc, dbuf, msig_dlen);
+        free(dbuf);
+        if (!dok) {
+            fprintf(stderr, "%s is not a valid multisig descriptor\n",
+                    msig_path);
+            return 1;
+        }
+        if (k_signers == 0) k_signers = msig_m;
+        if (k_signers < msig_m || k_signers > msig_n) {
+            fprintf(stderr, "--signers must be in [M=%u, N=%u]\n",
+                    (unsigned)msig_m, (unsigned)msig_n);
+            return 1;
+        }
+        for (int i = 0; i < n_in_arg; i++) {
+            const char *c = strchr(in_arg[i], ':');
+            char nh[129];
+            if (!c || (size_t)(c - in_arg[i]) != 128) {
+                fprintf(stderr, "--in must be <nullifier 128 hex>:<amount>\n");
+                return 1;
+            }
+            memcpy(nh, in_arg[i], 128);
+            nh[128] = '\0';
+            if (t6_hex_exact(nh, msig_coins[i].nul, 64) != 0 ||
+                cli_u64(c + 1, UINT64_MAX, &msig_coins[i].amount) != 0 ||
+                msig_coins[i].amount == 0) {
+                fprintf(stderr, "--in must be <nullifier 128 lowercase hex>:"
+                        "<amount >= 1, decimal>\n");
+                return 1;
+            }
+            for (int j = 0; j < i; j++)
+                if (memcmp(msig_coins[j].nul, msig_coins[i].nul, 64) == 0) {
+                    fprintf(stderr, "duplicate --in nullifier\n");
+                    return 1;
+                }
+        }
+    }
+
     int rc = 1;
     nodus_identity_t *keys = NULL;
     int n_keys = 0;
@@ -3750,7 +4302,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     if (!keys) return 1;
     n_keys = act_load_keys(keys_csv, keys, 4);
     if (n_keys != 1) {
-        fprintf(stderr, "v2-envelope %s needs exactly one --keys identity\n",
+        fprintf(stderr, "%s %s needs exactly one --keys identity\n", cmdw,
                 verb);
         goto done;
     }
@@ -3772,6 +4324,14 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     if (qgp_sha3_512(keys[0].pk.bytes, DNAC_PUBKEY_SIZE, staker_raw) != 0)
         goto done;
     qgp_fp_raw_to_hex(staker_raw, staker_fp);
+    /* The OWNER (DELEGATE / UNDELEGATE: the delegator) every owner check
+     * below compares with: the --keys identity, or (HF-6 kind 3) the
+     * multisig address — the --keys identity is then the session only. */
+    const uint8_t *owner_raw = is_msig ? msig_addr : staker_raw;
+    char owner_hex[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(owner_raw, owner_hex);
+    const char *owner_who = is_msig ? "the --msig address"
+                                    : "the --keys identity";
 
     /* ── ONE session, authenticated as the staker ─────────────────── */
     {
@@ -3805,22 +4365,97 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         if (nodus_client_dnac_chain_id32(&client, &has_chain32, chain32) != 0 ||
             !has_chain32) {
             fprintf(stderr, "this node is not on a version-3 chain (no "
-                    "chain_id32 in its dnac_supply reply) — v2-envelope "
-                    "%s needs a version-3 chain\n", verb);
+                    "chain_id32 in its dnac_supply reply) — %s %s needs a "
+                    "version-3 chain\n", cmdw, verb);
             goto done;
         }
     }
     /* HF-4: build for the generation the node names */
     if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
+    /* HF-6 6f-1 (design rev 6 §2): the generation decides the layout.
+     * HF-6 6b-3: the storage ops are owned by no lower generation
+     * (rt_owns_runtime_op) — refused here before the consent is judged */
+    if (is_storage && g_cli_sel_gen < NODUS_RT_GEN_STORAGE) {
+        fprintf(stderr, "the node runs rule-set generation %u — storage %s "
+                "exists only from generation %u (the storage vote has not "
+                "taken effect); nothing built\n", (unsigned)g_cli_sel_gen,
+                is_streg ? "registration" : "exit",
+                (unsigned)NODUS_RT_GEN_STORAGE);
+        goto done;
+    }
+    if (is_gen4 && g_cli_sel_gen < NODUS_RT_GEN_STORAGE) {
+        fprintf(stderr, "the node runs rule-set generation %u — `v2-envelope "
+                "%s` exists from generation %u (HF-6); nothing built\n",
+                (unsigned)g_cli_sel_gen, verb,
+                (unsigned)NODUS_RT_GEN_STORAGE);
+        goto done;
+    }
+    /* HF-6 6b-3: the storage node's registry row, on this session */
+    if (is_storage &&
+        cli_storage_row_check(&client, is_stexit, st_node_fp, owner_raw) != 0)
+        goto done;
+    if (is_stake && g_cli_sel_gen >= NODUS_RT_GEN_STORAGE) {
+        fprintf(stderr, "the node runs rule-set generation %u (HF-6): the "
+                "chain refuses the legacy `%s` layout; use `v2-envelope "
+                "stake2` — nothing built\n", (unsigned)g_cli_sel_gen, verb);
+        goto done;
+    }
+    /* HF-6 slice 7b: the --validator form the generation takes (design
+     * rev 6 §2 — K7: from generation 4 every identity of ops 2-5 is a
+     * 64-byte value) */
+    const int role2 = (is_deleg || is_unstake || is_vupd) &&
+                      g_cli_sel_gen >= NODUS_RT_GEN_STORAGE;
+    /* HF-6 kind-3 owner: the generation-4 layouts only (a legacy layout's
+     * authority is one signer — the builder's ERR_GEN, said here) */
+    if (is_msig && !is_gen4 && !role2) {
+        fprintf(stderr, "the node runs rule-set generation %u — a multisig "
+                "owner or delegator exists from generation %u (HF-6); "
+                "nothing built\n", (unsigned)g_cli_sel_gen,
+                (unsigned)NODUS_RT_GEN_STORAGE);
+        goto done;
+    }
+    if (role2 && !vid_form) {
+        fprintf(stderr, "the node runs rule-set generation %u (HF-6): `%s` "
+                "names the validator by its validator_id — give --validator "
+                "<validator_id hex128> (`v2-envelope stake2` printed it)%s; "
+                "nothing "
+                "built\n", (unsigned)g_cli_sel_gen, verb,
+                is_deleg ? ", not the validator's public key" : "");
+        goto done;
+    }
+    if (role2) {
+        static const uint8_t zero_vid[64] = {0};
+        if (memcmp(role_vid, zero_vid, 64) == 0) {
+            fprintf(stderr, "--validator: no validator has an all-zero "
+                    "validator_id; nothing built\n");
+            goto done;
+        }
+    }
+    if ((is_deleg || is_unstake) && !role2 && validator_hex &&
+        (vid_form || is_unstake)) {
+        fprintf(stderr, "the node runs rule-set generation %u: %s — "
+                "nothing built\n", (unsigned)g_cli_sel_gen,
+                is_unstake ? "`unstake` takes no --validator below "
+                             "generation 4 (the --keys identity retires)"
+                           : "--validator is the validator's public key "
+                             "(5184 hex) below generation 4, not a "
+                             "validator_id");
+        goto done;
+    }
 
     /* `unstake`: the validator's own row, read on this session. The chain
      * decides (rtn_unstake_exec); the CLI refuses only a status the chain
      * would reject, and never on account of delegations — a validator
-     * with delegators may exit (tokenomics-v3 P3-4, Rule A removed). */
+     * with delegators may exit (tokenomics-v3 P3-4, Rule A removed).
+     * HF-6 slice 7b, generation 4: the row is found by validator_id, and
+     * an owner other than the --keys identity (with --msig: the multisig
+     * address) is refused too (rtn_unstake2_exec compares the signer —
+     * kind 3: the descriptor's address — with the row's owner_fp). */
     if (is_unstake) {
         nodus_dnac_validator_list_entry_t vrow;
         memset(&vrow, 0, sizeof(vrow));
-        const int vr = cli_validator_row(&client, keys[0].pk.bytes, &vrow);
+        const int vr = cli_validator_row(&client, keys[0].pk.bytes,
+                                         role2 ? role_vid : NULL, &vrow);
         if (vr == 1 && vrow.status != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
             vrow.status != (uint8_t)DNAC_VALIDATOR_ELIGIBLE) {
             fprintf(stderr, "this validator is %s — the chain accepts an "
@@ -3829,14 +4464,23 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                     cli_validator_status_name(vrow.status));
             goto done;
         }
+        if (vr == 1 && role2 && memcmp(vrow.owner_fp, owner_raw, 64) != 0) {
+            fprintf(stderr, "%s is not this validator's owner — the chain "
+                    "accepts an unstake only from the owner; nothing "
+                    "built\n", owner_who);
+            goto done;
+        }
         if (vr == 1)
             printf("validator %s, bond %llu raw\n",
                    cli_validator_status_name(vrow.status),
                    (unsigned long long)vrow.self_stake);
         else if (vr == 0)
-            fprintf(stderr, "warning: this key has no row in the node's "
-                    "validator list — the chain rejects an unstake from a "
-                    "key that is not a validator\n");
+            fprintf(stderr, "warning: %s — the chain rejects an unstake of "
+                    "a validator that does not exist\n",
+                    role2 ? "no validator with this validator_id in the "
+                            "node's validator list"
+                          : "this key has no row in the node's validator "
+                            "list");
         else
             fprintf(stderr, "warning: the node's validator list could not "
                     "be read — status and delegations not checked here; "
@@ -3853,13 +4497,63 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             printf("  - delegations: any delegation to this validator is "
                    "returned to its delegator when it graduates, locked %d "
                    "epochs\n", (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
-        printf("  - bond: returned to the unstake destination recorded "
-               "when it staked, locked %d epochs after it graduates\n",
-               (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
+        if (role2)                      /* v2ep_graduate, generation 4 */
+            printf("  - bond: returned to the validator's owner, locked %d "
+                   "epochs after it graduates\n",
+                   (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
+        else
+            printf("  - bond: returned to the unstake destination recorded "
+                   "when it staked, locked %d epochs after it graduates\n",
+                   (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
         printf("  - keep this node running until the exit takes effect: it "
                "stays in the validator set until the set change after it "
                "leaves, and graduates at the first epoch boundary whose "
                "new validator set no longer includes it\n");
+        fflush(stdout);
+    }
+
+    /* HF-6 slice 7b — `validator-update` (generation 4 only): the row by
+     * validator_id; the CLI refuses what rtn_vupd2_exec refuses on the
+     * row — a frozen status (UNSTAKED / AUTO_RETIRED) or an owner other
+     * than the --keys identity (with --msig: the multisig address) — and
+     * says how the commission moves. */
+    if (is_vupd) {
+        nodus_dnac_validator_list_entry_t vrow;
+        memset(&vrow, 0, sizeof(vrow));
+        const int vr = cli_validator_row(&client, NULL, role_vid, &vrow);
+        if (vr == 1 && vrow.status != (uint8_t)DNAC_VALIDATOR_ACTIVE &&
+            vrow.status != (uint8_t)DNAC_VALIDATOR_ELIGIBLE &&
+            vrow.status != (uint8_t)DNAC_VALIDATOR_RETIRING) {
+            fprintf(stderr, "this validator is %s — its commission is frozen "
+                    "(the chain accepts an update only from an ACTIVE, "
+                    "ELIGIBLE or RETIRING validator); nothing built\n",
+                    cli_validator_status_name(vrow.status));
+            goto done;
+        }
+        if (vr == 1 && memcmp(vrow.owner_fp, owner_raw, 64) != 0) {
+            fprintf(stderr, "%s is not this validator's owner — the chain "
+                    "accepts a commission update only from the owner; "
+                    "nothing built\n", owner_who);
+            goto done;
+        }
+        if (vr == 1)
+            printf("validator %s, commission %u bps -> %u bps\n",
+                   cli_validator_status_name(vrow.status),
+                   (unsigned)vrow.commission_bps, (unsigned)commission);
+        else if (vr == 0)
+            fprintf(stderr, "warning: no validator with this validator_id in "
+                    "the node's validator list — the chain rejects the "
+                    "update\n");
+        else
+            fprintf(stderr, "warning: the node's validator list could not "
+                    "be read — status and owner not checked here; the chain "
+                    "decides\n");
+        /* rtn_vupd2_exec: an increase is pending until max(next boundary,
+         * h + 2E) = h + 2E; a decrease is immediate */
+        printf("  - a lower (or equal) commission takes effect at once; a "
+               "higher one is recorded as pending and takes effect %d "
+               "blocks (two epochs) after the update lands — the "
+               "delegators' notice\n", 2 * (int)DNAC_EPOCH_LENGTH);
         fflush(stdout);
     }
 
@@ -3880,6 +4574,24 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             goto done;
         }
         gas_price = fi.gas_price;
+        /* HF-6 slice 8a: the STORAGE_BOND (param 21) and STAKE_MIN (param
+         * 19) the node reports at tip + 1. 0 = a server that predates the
+         * keys — and therefore the two params: the value in force there is
+         * the compiled default, which is what this build then uses. */
+        if (is_streg)
+            bond = fi.storage_bond != 0
+                       ? fi.storage_bond
+                       : (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+        if (is_stake2) {
+            const uint64_t smin = fi.stake_min != 0
+                                      ? fi.stake_min
+                                      : (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+            if (bond < smin)
+                fprintf(stderr, "warning: --bond %llu is below the node's "
+                        "STAKE_MIN %llu — the chain refuses a bond below the "
+                        "STAKE_MIN in force\n", (unsigned long long)bond,
+                        (unsigned long long)smin);
+        }
     }
 
     /* The staker's CORE coins and the committed tip (dnac_utxo answers
@@ -3905,19 +4617,37 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                 "would be wrong\n");
         goto done;
     }
-    if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
+    if (!is_msig && utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
         fprintf(stderr, "warning: the coin listing is capped at %d rows and "
                 "came back full — a node >= 0.25.2 lists the largest coins "
                 "first (an older node in no order); smaller coins beyond the "
                 "cap are invisible to this selection\n",
                 (int)NODUS_DNAC_MAX_UTXO_RESULTS);
 
-    /* The listed coins, as the builder takes them; it applies the filter
-     * (zero amount, non-native, unlock_block > tip) and the selection. */
-    coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
-                   sizeof(*coins));
+    /* HF-6 6f-1 / 6b-3: the consent against THIS session's chain id, the
+     * owner (= the staker identity, kind 1; the multisig address, kind 3)
+     * and the tip */
+    if (is_consented &&
+        cli_consent_check(&consent,
+                          is_stake2 ? DNA_VALBIND_OP_STAKE
+                                    : DNA_VALBIND_OP_STORAGE_REGISTER,
+                          chain32, owner_raw, tip) != 0)
+        goto done;
+
+    /* The coins, as the builder takes them; it applies the filter (zero
+     * amount, non-native, unlock_block > tip) and the selection. Kind 1:
+     * the session's listed coins. Kind 3: the --in coins of the multisig
+     * address (native, unlock 0 as given — the chain checks presence,
+     * lock and ownership of every input). The session's listing above
+     * then served only the tip. */
+    const int n_coins = is_msig ? n_in_arg : utxos.count;
+    coins = calloc((size_t)(n_coins > 0 ? n_coins : 1), sizeof(*coins));
     if (!coins) goto done;
-    for (int i = 0; i < utxos.count; i++) {
+    for (int i = 0; i < n_coins; i++) {
+        if (is_msig) {
+            coins[i] = msig_coins[i];
+            continue;
+        }
         const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
         memcpy(coins[i].nul, e->nullifier, 64);
         coins[i].amount = e->amount;
@@ -3948,10 +4678,37 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     sreq.amount         = bond;
     sreq.commission_bps = commission;
     sreq.dest_fp        = is_stake ? dest_fp : NULL;
-    sreq.validator_pk   = is_deleg ? validator_pk : NULL;
+    sreq.validator_pk   = (is_deleg && !role2) ? validator_pk : NULL;
+    /* HF-6 slice 7b: the generation-4 ops 2-5 name the validator by id */
+    sreq.validator_id   = role2 ? role_vid : NULL;
     sreq.gas_price      = gas_price;
     sreq.coins          = coins;
-    sreq.n_coins        = utxos.count;
+    sreq.n_coins        = n_coins;
+    /* HF-6 6f-1: the generation the runtimes were selected for */
+    sreq.generation     = g_cli_sel_gen;
+    sreq.node_fp        = is_stexit ? st_node_fp : NULL;   /* HF-6 6b-3 */
+    if (is_msig) {
+        /* HF-6 kind-3 owner: the descriptor replaces the signing key; the
+         * builder signs nothing */
+        sreq.pk            = NULL;
+        sreq.sk            = NULL;
+        sreq.msig_desc     = msig_desc;
+        sreq.msig_desc_len = msig_dlen;
+        sreq.msig_signers  = (uint32_t)k_signers;
+    }
+    if (is_consented) {
+        sreq.consensus_pk   = consent.consensus_pk;
+        sreq.consent_sig    = consent.sig;
+        sreq.consent_expiry = consent.expiry;
+        /* the consent window is judged at inclusion; an envelope that can
+         * still be included after the consent expires is then refused */
+        if (consent.expiry < sreq.expiry_height)
+            fprintf(stderr, "warning: the consent expires at %llu, before "
+                    "this envelope (%llu) — if it lands after %llu the chain "
+                    "refuses it\n", (unsigned long long)consent.expiry,
+                    (unsigned long long)sreq.expiry_height,
+                    (unsigned long long)consent.expiry);
+    }
 
     /* Sign each leg's auth_digest with the staker sk (kind-1: count=1 ‖
      * pubkey ‖ sig). One key covers BOTH legs: it is the record identity
@@ -3961,8 +4718,9 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
         memset(&se, 0, sizeof(se));
         int brc = nodus_v2_stake_build(&sreq, &built, &se);
         if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT &&
-            (is_undeleg || is_unstake)) {
-            /* UNDELEGATE's and UNSTAKE's funding leg pays the fee only */
+            (is_undeleg || is_unstake || is_stexit || is_vupd)) {
+            /* UNDELEGATE's, UNSTAKE's, STORAGE_EXIT's and
+             * VALIDATOR_UPDATE's funding leg pays the fee only */
             fprintf(stderr, "insufficient native funding for the fee: have "
                     "%llu, need %llu over %d input(s)\n",
                     (unsigned long long)se.sum_in,
@@ -3999,11 +4757,19 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                                                        "requested"
               : brc == NODUS_V2_SPEND_ERR_EXPIRY     ? "expiry outside the "
                                                        "mempool window"
-              : brc == NODUS_V2_STAKE_ERR_BOND       ? "the bond is not the "
-                                                       "self-bond"
+              : brc == NODUS_V2_STAKE_ERR_BOND       ? (is_stake2
+                                                       ? "the bond is outside "
+                                                         "1..INT64_MAX"
+                                                       : "the bond is not the "
+                                                         "self-bond")
               : brc == NODUS_V2_STAKE_ERR_COMMISSION ? "commission above the "
                                                        "maximum"
               : brc == NODUS_V2_STAKE_ERR_AMOUNT     ? "amount out of range"
+              : brc == NODUS_V2_STAKE_ERR_STORAGE_BOND ? "the storage bond is "
+                                                       "outside 1..INT64_MAX"
+              : brc == NODUS_V2_STAKE_ERR_GEN        ? "no layout for this op "
+                                                       "at this rule-set "
+                                                       "generation"
                                                      : "build failed";
             if (brc == NODUS_V2_SPEND_ERR_SIGN)
                 fprintf(stderr, "leg %d %s\n", se.leg, why);
@@ -4016,30 +4782,120 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     /* Printed on BOTH paths (P2P-PORT F6): the submitted envelope's own
      * intent_id is what a caller waits for — a dry run's may differ (its
      * expiry is tip-relative, see this function's header). */
-    if (is_unstake)
-        printf("v2-envelope %s: %zu bytes, inputs=%d sum_in=%llu "
-               "fee=%llu change=%llu tip=%llu\n", verb, built.env_len,
+    if (is_storage) {
+        /* HF-6 6b-3: what the storage call does, before its ids */
+        char st_node_hex[QGP_FP_HEX_BUFFER];
+        qgp_fp_raw_to_hex(st_node_fp, st_node_hex);
+        printf("storage %s: node %s\n  owner %s%s\n", verb, st_node_hex,
+               owner_hex, is_msig ? " (multisig)" : "");
+        if (is_streg) {
+            printf("  - bond: %llu raw, paid by the owner and locked until "
+                   "an exit is released (the chain accepts exactly the "
+                   "STORAGE_BOND in force, no other amount)\n",
+                   (unsigned long long)bond);
+            printf("  - the storage reward and, after an exit, the bond go "
+                   "to the owner\n");
+            printf("  - the node joins the storage set frozen at the next "
+                   "epoch boundary; it must keep the archive and its 4004 "
+                   "connections to the validators\n");
+        } else {
+            printf("  - the node leaves the storage set at the next epoch "
+                   "boundary and earns nothing after it\n");
+            printf("  - the bond is returned to the owner at that boundary "
+                   "as one coin, locked %d epochs\n",
+                   (int)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
+            printf("  - the node may register again (a new consent, any "
+                   "owner) only after the epoch boundary that follows the "
+                   "release boundary\n");
+        }
+    }
+    if (is_unstake || is_stexit || is_vupd)
+        printf("%s %s: %zu bytes, inputs=%d sum_in=%llu "
+               "fee=%llu change=%llu tip=%llu\n", cmdw, verb, built.env_len,
                built.n_in, (unsigned long long)built.sum_in,
                (unsigned long long)built.fee,
                (unsigned long long)built.change, (unsigned long long)tip);
     else
-        printf("v2-envelope %s: %zu bytes, inputs=%d sum_in=%llu "
-               "%s=%llu fee=%llu change=%llu tip=%llu\n", verb,
+        printf("%s %s: %zu bytes, inputs=%d sum_in=%llu "
+               "%s=%llu fee=%llu change=%llu tip=%llu\n", cmdw, verb,
                built.env_len, built.n_in, (unsigned long long)built.sum_in,
                is_deleg ? "amount" : "bond",
                (unsigned long long)bond, (unsigned long long)built.fee,
                (unsigned long long)built.change, (unsigned long long)tip);
-    printf("  wire_id=");
-    for (int b = 0; b < 64; b++) printf("%02x", built.wire_id[b]);
+    if (is_msig) {
+        /* HF-6 kind-3 owner: the unsigned envelope has no final wire_id
+         * (msig combine prints it); its intent_id is the final one */
+        printf("  owner %s (%u-of-%u multisig, %ld signer(s) fixed)",
+               owner_hex, (unsigned)msig_m, (unsigned)msig_n, k_signers);
+    } else {
+        printf("  wire_id=");
+        for (int b = 0; b < 64; b++) printf("%02x", built.wire_id[b]);
+    }
     printf("\n  intent_id=");
     for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
     printf("\n");
+    if (is_stake2) {
+        /* design §6.2 / rtn_stake2_vid: the id the chain gives the new
+         * validator from its chain id and THIS envelope's intent_id */
+        uint8_t vid[DNA_VALBIND_ID_LEN];
+        if (dna_validator_id_new(vid, chain32, built.intent_id) != 0) {
+            fprintf(stderr, "validator_id derivation failed\n");
+            goto done;
+        }
+        printf("  validator_id=");
+        for (int b = 0; b < DNA_VALBIND_ID_LEN; b++) printf("%02x", vid[b]);
+        printf("\n  (the id of the validator THIS envelope creates; a dry "
+               "run's can differ from the submitted one's)\n");
+    } else if (role2) {
+        /* HF-6 slice 7b: the validator the generation-4 call names */
+        printf("  validator_id=");
+        for (int b = 0; b < 64; b++) printf("%02x", role_vid[b]);
+        printf("\n");
+    }
     fflush(stdout);
-    if (dry_run) {
+    if (is_msig) {
+        /* HF-6 kind-3 owner: the UNSIGNED v2 export — one digest per leg
+         * (decision 2026-09-29-general-multisig.md addendum v2) */
+        nodus_v2_msig_export2_t x2;
+        memset(&x2, 0, sizeof(x2));
+        memcpy(x2.chain32, chain32, DNA_CHAIN_ID_LEN);
+        x2.tip          = tip;
+        x2.signers      = (uint32_t)k_signers;
+        x2.n_digests    = 2;
+        x2.leg_index[0] = 0;
+        x2.leg_index[1] = 1;
+        memcpy(x2.digest[0], built.leg_digest[0], 64);
+        memcpy(x2.digest[1], built.leg_digest[1], 64);
+        x2.env          = built.env;
+        x2.env_len      = built.env_len;
+        char *xtext = NULL;
+        size_t xlen = 0;
+        const int xrc = nodus_v2_msig_export2_encode(&x2, &xtext, &xlen);
+        if (xrc != NODUS_V2_SPEND_OK ||
+            msig_write_text(export_path, xtext, xlen) != 0) {
+            if (xrc != NODUS_V2_SPEND_OK)
+                fprintf(stderr, "encoding the v2 export failed (rc=%d)\n",
+                        xrc);
+            free(xtext);
+            goto done;
+        }
+        free(xtext);
+        printf("  digest[0] (SYSTEM)=");
+        for (int b = 0; b < 64; b++) printf("%02x", built.leg_digest[0][b]);
+        printf("\n  digest[1] (CORE SYSFUND)=");
+        for (int b = 0; b < 64; b++) printf("%02x", built.leg_digest[1][b]);
+        printf("\n  UNSIGNED v2 export written to %s — next: `msig sign` by "
+               "%ld co-signer(s) (each signs both legs), then `msig "
+               "combine` before block %llu\n", export_path, k_signers,
+               (unsigned long long)sreq.expiry_height);
+    } else if (dry_run) {
         printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM %s + CORE "
                "SYSFUND) — not submitted (--dry-run)\n",
                is_unstake ? "UNSTAKE" : is_undeleg ? "UNDELEGATE"
-             : is_deleg   ? "DELEGATE" : "STAKE");
+             : is_deleg   ? "DELEGATE"
+             : is_streg   ? "STORAGE_REGISTER" : is_stexit ? "STORAGE_EXIT"
+             : is_vupd    ? "VALIDATOR_UPDATE"
+             : is_stake2  ? "STAKE (generation 4)" : "STAKE");
     } else {
         /* on the session the gas price and the coins were read from */
         if (t6_submit_on(&client, &keys[0], built.wire_id, built.env,
@@ -4060,45 +4916,184 @@ done:
     return rc;
 }
 
-/* ── `storage register | exit | status` — storage reward v1, package
- *    B2b-CLI ─────────────────────────────────────────────────────────
+/* ── `storage consent | register | exit | status` — storage reward v1
+ *    (package B2b-CLI), owner/node split since HF-6 6b-3 ──────────────
  *
  * Decision docs/plans/decisions/2026-10-05-storage-reward-is-for-
- * archive.md (registration, the 1M bond and node-key authority STAY);
- * call bytes docs/plans/2026-10-04-storage-reward-bytes.md item 5.
- *
- * `register` / `exit` act for THIS NODE's identity (-i dir) — the key the
- * storage node runs with, as the validator-side `stake` verb does: the
- * exec binds the record to the single signer (rtn_sys_stake_auth, fp ==
- * SHA3-512(node_pk)), so the envelope is signed by the node key and is
- * funded from coins that key owns. They build through the shared builder
- * (nodus_v2_stake_build, ops 7 / 8 — decision 2026-09-25-web-wallet-nodus-
- * send-transport.md "İşlem kurucu": one C builder for CLI and wallet) and,
- * like every `v2-envelope` builder, need an explicit `--dry-run` (build
- * and self-check, submit nothing) or `--submit ip:port`.
- *   register: SYSTEM STORAGE_REGISTER (call node_pk ‖ bond ‖ payee_fp,
- *             bond EXACTLY DNAC_STORAGE_STAKE_MIN, payee = the node's own
- *             fp — the exec's pre-HF-5 rule) + a SYSFUND leg locking the
- *             bond and paying the fee;
- *   exit:     SYSTEM STORAGE_EXIT (call = the node key) + a fee-only
- *             SYSFUND leg; the bond comes back at the next epoch boundary
- *             as one coin to payee_fp, locked DNAC_STORAGE_EXIT_LOCK_EPOCHS
- *             epochs (nodus_witness_v2_storage.c step 3).
- * Both exist only from the GEN_STORAGE rule-set generation; the CLI builds
- * for the generation the node names and refuses below it. Before building
- * it reads the node's registry row (dnac_storage_status) and refuses only
- * what the chain would refuse (register: a row ACTIVE or EXITING; exit: no
- * row, or not ACTIVE); a failed query is a warning — the chain decides.
+ * archive.md (registration and the bond STAY); HF-6 (design docs/plans/
+ * 2026-10-03-hf5-validator-owner-stake-design.md rev 6 §11, §11.10;
+ * Kurultay #16 khan 1 and 3): the storage record calls are OWNER-signed —
+ * STORAGE_REGISTER = owner_fp ‖ node_pk ‖ the node's op-3 consent ‖
+ * expiry ‖ bond (7299 bytes), STORAGE_EXIT = node_fp ‖ owner_fp (128
+ * bytes since the khan decision of 2026-10-13 "C2"; owner_fp must be the
+ * row's owner, who signs). The node's key only consents:
+ *   `-i <node identity> storage consent --owner <hex128> --expiry <h>
+ *   [--out <file>]` — cmd_validator_consent with op 3 (zero subject);
+ *   `storage register --keys <owner> --consent <file>` and
+ *   `storage exit --keys <owner> --node-fp <hex128>` — cmd_v2_stake (the
+ *   shared owner-signed two-leg flow; nodus_v2_stake_build ops 7 / 8).
  *
  * `status [--fp <hex128>]` prints the dnac_storage_status answer for this
- * node's fp (or --fp): the registry row, the frozen-set membership for the
+ * node's fp (or --fp): the registry row (its owner — the RPC's "payee"
+ * key, which since HF-6 holds the owner), the frozen-set membership for the
  * current epoch and the eligible segments. The last SETTLED outcome is not
- * recorded on chain (only its fail_streak trace) and is said so. */
+ * recorded on chain (only its fail_streak trace) and is said so.
+ * `status --owner <hex128>` (HF-6 slice 7a) prints the same per node for
+ * every storage node that owner registered (dnac_storage_by_owner). */
+
+/* The `storage` usage (main's dispatch and cmd_v2_stake's storage verbs). */
+static void cli_storage_usage(void) {
+    fprintf(stderr,
+        "Usage: -i <node identity dir> storage consent (--owner <owner_fp "
+        "hex128> |\n"
+        "           --msig <descriptor>) --expiry <height> [--chain-id "
+        "<hex64>] [--out <file>]\n"
+        "       storage register --keys <owner keydir> --consent <file> "
+        "(--dry-run | --submit ip:port)\n"
+        "       storage exit --keys <owner keydir> --node-fp <hex128> "
+        "(--dry-run | --submit ip:port)\n"
+        "       storage register | exit ... with a multisig owner: --keys "
+        "<session keydir>\n"
+        "           --msig <descriptor> --in <nullifier128hex>:<amount> "
+        "[--in ...]\n"
+        "           [--signers <K>] --export <file> [--submit ip:port]   "
+        "(UNSIGNED v2\n"
+        "           export for `msig sign` / `msig combine`)\n"
+        "       storage status [--fp <hex128> | --owner <hex128>]\n"
+        "  From rule-set generation %u (HF-6) a storage node is registered "
+        "and taken out\n"
+        "  by its OWNER; the node's key only consents.\n"
+        "  consent:  run where the node's identity is; its key consents to "
+        "registration\n"
+        "            under --owner (--msig: the descriptor's multisig "
+        "address). The chain\n"
+        "            accepts it at height h when "
+        "expiry >= h and\n"
+        "            expiry - h <= %llu. The chain id is read from the -s "
+        "server and\n"
+        "            printed before signing (stdout with --out, stderr "
+        "without); with\n"
+        "            --chain-id (64 lowercase hex) it must equal the server's "
+        "or nothing is\n"
+        "            signed.\n"
+        "  register: the --keys identity is the owner: it signs, pays the "
+        "bond (exactly\n"
+        "            the chain's STORAGE_BOND, read from the node; %llu raw "
+        "until a vote\n"
+        "            changes it) and the fee, and receives the reward "
+        "and, after an\n"
+        "            exit, the bond. The node identity is not needed here.\n"
+        "  exit:     the owner takes node --node-fp out (fee only); the bond "
+        "comes back to\n"
+        "            the owner at the next epoch boundary, locked %d epochs. "
+        "The node may\n"
+        "            register again only after the boundary that follows "
+        "that release.\n"
+        "  status:   the registry row of this node (-i) or of --fp; with "
+        "--owner, every\n"
+        "            storage node that owner registered (every status).\n"
+        "  --dry-run builds and self-checks, submits nothing.\n",
+        (unsigned)NODUS_RT_GEN_STORAGE,
+        (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS,
+        (unsigned long long)DNAC_HF6_STORAGE_BOND_DEFAULT,
+        (int)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
+}
 
 static const char *cli_storage_status_name(uint8_t s) {
     return s == DNA_V2_STORAGE_ACTIVE   ? "ACTIVE"
          : s == DNA_V2_STORAGE_EXITING  ? "EXITING"
          : s == DNA_V2_STORAGE_RELEASED ? "RELEASED" : "UNKNOWN";
+}
+
+/* HF-6 6b-3: the storage node's registry row before `storage register |
+ * exit` is built — refuse only what the chain refuses
+ * (rtn_storage_register_exec / rtn_storage_exit_exec, design rev 6 §11.3-
+ * §11.5):
+ *   register — a row ACTIVE or EXITING; a RELEASED row before the
+ *     re-registration height: x = exit_height > 0 and the next height h
+ *     must satisfy ⌊(h−1)/E⌋ − ⌊(x−1)/E⌋ >= 2, i.e. h >= (⌊(x−1)/E⌋ + 2)·E
+ *     + 1 (judged at committed + 1; a later inclusion only helps);
+ *   exit — no row, a row not ACTIVE, a row whose owner is not the --keys
+ *     identity / the --msig address (the chain checks the signer — kind
+ *     3: the descriptor's address — against the ROW's owner).
+ * A failed query warns and lets the chain decide (the B2b-CLI rule).
+ * @return 0 (build) / -1 (refused, reason printed). */
+static int cli_storage_row_check(nodus_client_t *client, int is_exit,
+                                 const uint8_t node_fp[64],
+                                 const uint8_t owner_fp[64]) {
+    char node_hex[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(node_fp, node_hex);
+    nodus_dnac_storage_status_t st;
+    memset(&st, 0, sizeof(st));
+    const int qrc = nodus_client_dnac_storage_status(client, node_hex, &st);
+    if (qrc != 0) {
+        fprintf(stderr, "warning: dnac_storage_status failed (rc=%d) — the "
+                "registry row is not checked here; the chain decides\n", qrc);
+        return 0;
+    }
+    if (!is_exit) {
+        if (st.found && (st.status == DNA_V2_STORAGE_ACTIVE ||
+                         st.status == DNA_V2_STORAGE_EXITING)) {
+            fprintf(stderr, "storage node %s is already registered (%s) — "
+                    "the chain accepts a registration only for a new node or "
+                    "one whose bond was RELEASED; nothing built\n", node_hex,
+                    cli_storage_status_name(st.status));
+            return -1;
+        }
+        if (st.found && st.status == DNA_V2_STORAGE_RELEASED) {
+            const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+            const uint64_t x = st.exit_height;
+            if (x == 0 || (x - 1u) / E > UINT64_MAX / E - 3u) {
+                fprintf(stderr, "storage node %s is RELEASED with exit "
+                        "height %llu — the chain refuses to register it "
+                        "again; nothing built\n", node_hex,
+                        (unsigned long long)x);
+                return -1;
+            }
+            const uint64_t first = ((x - 1u) / E + 2u) * E + 1u;
+            if (st.committed_height >= UINT64_MAX ||
+                st.committed_height + 1u < first) {
+                fprintf(stderr, "storage node %s exited at %llu; the chain "
+                        "accepts its registration again from height %llu "
+                        "(after the epoch boundary that follows its release "
+                        "boundary — the old life's last settlement pays the "
+                        "old owner first); the next height is %llu — nothing "
+                        "built\n", node_hex, (unsigned long long)x,
+                        (unsigned long long)first,
+                        (unsigned long long)(st.committed_height + 1u));
+                return -1;
+            }
+            printf("storage node %s was RELEASED (exit at %llu): registering "
+                   "it again under this owner\n", node_hex,
+                   (unsigned long long)x);
+        }
+        return 0;
+    }
+    if (!st.found) {
+        fprintf(stderr, "storage node %s is not registered — nothing to "
+                "exit; nothing built\n", node_hex);
+        return -1;
+    }
+    if (st.status != DNA_V2_STORAGE_ACTIVE) {
+        fprintf(stderr, "storage node %s is %s — the chain accepts an exit "
+                "only from ACTIVE (a repeated exit is rejected); nothing "
+                "built\n", node_hex, cli_storage_status_name(st.status));
+        return -1;
+    }
+    uint8_t row_owner[64];
+    if (qgp_fp_hex_to_raw(st.payee, row_owner) != 0 ||
+        memcmp(row_owner, owner_fp, 64) != 0) {
+        char owner_hex[QGP_FP_HEX_BUFFER];
+        qgp_fp_raw_to_hex(owner_fp, owner_hex);
+        fprintf(stderr, "storage node %s is owned by %s, not by this "
+                "envelope's owner %s (the --keys identity, or the --msig "
+                "address) — only its owner can take it out; nothing "
+                "built\n", node_hex, st.payee, owner_hex);
+        return -1;
+    }
+    printf("storage node %s ACTIVE, bond %llu raw\n", node_hex,
+           (unsigned long long)st.bond);
+    return 0;
 }
 
 /* One authenticated session as THIS identity on `submit` (or -s).
@@ -4145,7 +5140,9 @@ static void cli_storage_status_print(const char *fp_hex,
         if (s->exit_height != 0)
             printf(", exit requested at %llu",
                    (unsigned long long)s->exit_height);
-        printf("\n  payee: %s\n", s->payee);
+        /* the RPC's "payee" key holds the OWNER since HF-6 (design rev 6
+         * §11.2): the reward and the released bond go there */
+        printf("\n  owner: %s\n", s->payee);
         if (s->grace_until == 0)
             printf("  grace_until: 0 (never in grace)\n");
         else
@@ -4201,17 +5198,79 @@ static void cli_storage_status_print(const char *fp_hex,
            "trace\n");
 }
 
+/* `storage status --owner <hex128>` (HF-6 slice 7a): every storage node
+ * the owner registered (dnac_storage_by_owner — every status, node_fp
+ * ascending), each printed as `storage status --fp` prints one node. */
+static int cmd_storage_status_owner(const char *server_ip,
+                                    uint16_t server_port,
+                                    const char *owner_arg) {
+    char owner_hex[129];
+    uint8_t raw[64];
+    if (strlen(owner_arg) != 128 || qgp_fp_hex_to_raw(owner_arg, raw) != 0) {
+        fprintf(stderr, "--owner must be exactly 128 lowercase hex chars\n");
+        return 1;
+    }
+    qgp_fp_raw_to_hex(raw, owner_hex);
+
+    int rc = 1, connected = 0;
+    nodus_client_t client;
+    nodus_dnac_storage_by_owner_t res;
+    memset(&client, 0, sizeof(client));
+    memset(&res, 0, sizeof(res));
+    if (cli_storage_session(&client, &connected, NULL, server_ip,
+                            server_port) != 0)
+        goto done;
+    {
+        nodus_dnac_ruleset_info_t ri;
+        memset(&ri, 0, sizeof(ri));
+        if (nodus_client_dnac_ruleset_info(&client, &ri) == 0)
+            printf("rule-set generation %u (storage ops from generation "
+                   "%u)\n", (unsigned)ri.generation,
+                   (unsigned)NODUS_RT_GEN_STORAGE);
+    }
+    int qrc = nodus_client_dnac_storage_by_owner(&client, owner_hex, &res);
+    if (qrc != 0) {
+        fprintf(stderr, "dnac_storage_by_owner failed (rc=%d) — an older "
+                "node does not answer it\n", qrc);
+        goto done;
+    }
+    printf("owner %s: %llu storage node(s) registered (every status), "
+           "committed height %llu\n", owner_hex,
+           (unsigned long long)res.total,
+           (unsigned long long)res.committed_height);
+    for (size_t i = 0; i < res.count; i++)
+        cli_storage_status_print(res.nodes[i].node_fp, &res.nodes[i].st);
+    if ((uint64_t)res.count < res.total)
+        printf("NOTE: the node lists the first %zu by node fingerprint; "
+               "%llu more are not shown\n", res.count,
+               (unsigned long long)(res.total - (uint64_t)res.count));
+    rc = 0;
+done:
+    nodus_dnac_storage_by_owner_free(&res);
+    if (connected) nodus_client_close(&client);
+    return rc;
+}
+
 static int cmd_storage_status(const char *server_ip, uint16_t server_port,
                               int argc, char **argv, int cmd_start,
                               int have_identity) {
-    const char *fp_arg = NULL;
+    const char *fp_arg = NULL, *owner_arg = NULL;
     for (int i = cmd_start + 2; i < argc; i++) {
         if (!strcmp(argv[i], "--fp") && i + 1 < argc) fp_arg = argv[++i];
+        else if (!strcmp(argv[i], "--owner") && i + 1 < argc)
+            owner_arg = argv[++i];
         else {
-            fprintf(stderr, "Usage: storage status [--fp <hex128>]\n");
+            fprintf(stderr, "Usage: storage status [--fp <hex128> | "
+                    "--owner <hex128>]\n");
             return 1;
         }
     }
+    if (fp_arg && owner_arg) {
+        fprintf(stderr, "storage status takes --fp or --owner, not both\n");
+        return 1;
+    }
+    if (owner_arg)
+        return cmd_storage_status_owner(server_ip, server_port, owner_arg);
     char fp_hex[129];
     if (fp_arg) {
         uint8_t raw[64];
@@ -4253,273 +5312,6 @@ static int cmd_storage_status(const char *server_ip, uint16_t server_port,
     rc = 0;
 done:
     if (connected) nodus_client_close(&client);
-    return rc;
-}
-
-static int cmd_storage_tx(const char *server_ip, uint16_t server_port,
-                          int argc, char **argv, int cmd_start,
-                          int is_exit) {
-    const char *verb = is_exit ? "exit" : "register";
-    const char *submit = NULL;
-    int dry_run = 0;
-    for (int i = cmd_start + 2; i < argc; i++) {
-        if (!strcmp(argv[i], "--submit") && i + 1 < argc) submit = argv[++i];
-        else if (!strcmp(argv[i], "--dry-run")) dry_run = 1;
-        else { submit = NULL; dry_run = 0; break; }
-    }
-    if (dry_run == (submit != NULL)) {
-        fprintf(stderr,
-            "Usage: -i <node identity dir> storage %s "
-            "(--dry-run | --submit ip:port)\n"
-            "  register: bonds exactly %llu raw (1 000 000 NODUS) from coins "
-            "the node key owns,\n"
-            "            plus the fee; the reward is paid to the node's own "
-            "fingerprint.\n"
-            "  exit:     the bond comes back at the next epoch boundary, "
-            "locked %d epochs.\n"
-            "  --dry-run builds and self-checks, submits nothing.\n",
-            verb, (unsigned long long)DNAC_STORAGE_STAKE_MIN,
-            (int)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
-        return 1;
-    }
-
-    int rc = 1, connected = 0, utxos_valid = 0;
-    nodus_client_t client;
-    memset(&client, 0, sizeof(client));
-    nodus_v2_stake_coin_t *coins = NULL;
-    nodus_v2_stake_built_t built;
-    memset(&built, 0, sizeof(built));
-    nodus_dnac_utxo_result_t utxos;
-    memset(&utxos, 0, sizeof(utxos));
-
-    /* the node fingerprint: the registry key, the payee (until HF-5) and
-     * the owner of the funding coins */
-    uint8_t node_fp[64];
-    char node_fp_hex[QGP_FP_HEX_BUFFER];
-    if (qgp_sha3_512(identity.pk.bytes, DNAC_PUBKEY_SIZE, node_fp) != 0)
-        return 1;
-    qgp_fp_raw_to_hex(node_fp, node_fp_hex);
-
-    if (cli_storage_session(&client, &connected, submit, server_ip,
-                            server_port) != 0)
-        goto done;
-
-    uint8_t chain32[DNA_CHAIN_ID_LEN];
-    {
-        bool has_chain32 = false;
-        if (nodus_client_dnac_chain_id32(&client, &has_chain32, chain32) != 0 ||
-            !has_chain32) {
-            fprintf(stderr, "this node is not on a version-3 chain (no "
-                    "chain_id32 in its dnac_supply reply)\n");
-            goto done;
-        }
-    }
-    /* build for the generation the node names; the storage ops exist only
-     * from GEN_STORAGE (rtn_gen_storage) */
-    const nodus_domain_runtime_t *sys_rt = NULL, *core_rt = NULL;
-    if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
-    if (g_cli_sel_gen < NODUS_RT_GEN_STORAGE) {
-        fprintf(stderr, "the node runs rule-set generation %u — storage "
-                "registration exists only from generation %u (the storage "
-                "vote has not taken effect); nothing built\n",
-                (unsigned)g_cli_sel_gen, (unsigned)NODUS_RT_GEN_STORAGE);
-        goto done;
-    }
-
-    /* the registry row: refuse only what the chain refuses */
-    {
-        nodus_dnac_storage_status_t st;
-        int qrc = nodus_client_dnac_storage_status(&client, node_fp_hex, &st);
-        if (qrc != 0) {
-            fprintf(stderr, "warning: dnac_storage_status failed (rc=%d) — "
-                    "the registry row is not checked here; the chain "
-                    "decides\n", qrc);
-        } else if (!is_exit && st.found &&
-                   (st.status == DNA_V2_STORAGE_ACTIVE ||
-                    st.status == DNA_V2_STORAGE_EXITING)) {
-            fprintf(stderr, "this node is already registered (%s) — the "
-                    "chain accepts a registration only for a new node or "
-                    "one whose bond was RELEASED; nothing built\n",
-                    cli_storage_status_name(st.status));
-            goto done;
-        } else if (is_exit && !st.found) {
-            fprintf(stderr, "this node is not registered — nothing to exit; "
-                    "nothing built\n");
-            goto done;
-        } else if (is_exit && st.status != DNA_V2_STORAGE_ACTIVE) {
-            fprintf(stderr, "this node is %s — the chain accepts an exit "
-                    "only from ACTIVE (a repeated exit is rejected); "
-                    "nothing built\n", cli_storage_status_name(st.status));
-            goto done;
-        } else if (is_exit) {
-            printf("storage node ACTIVE, bond %llu raw\n",
-                   (unsigned long long)st.bond);
-        }
-    }
-
-    /* HF-1 gas price (dnac_fee_info) — a failed query is not "price 0" */
-    uint64_t gas_price = 0;
-    {
-        nodus_dnac_fee_info_t fi;
-        memset(&fi, 0, sizeof(fi));
-        int frc = nodus_client_dnac_fee_info(&client, &fi);
-        if (frc != 0) {
-            fprintf(stderr, "dnac_fee_info query failed (rc=%d) — the gas "
-                    "price is unknown, refusing to size a fee\n", frc);
-            goto done;
-        }
-        gas_price = fi.gas_price;
-    }
-
-    /* the node key's CORE coins and the committed tip */
-    {
-        int urc = nodus_client_dnac_utxo(&client, node_fp_hex,
-                                         NODUS_DNAC_MAX_UTXO_RESULTS, &utxos);
-        if (urc != 0) {
-            fprintf(stderr, "dnac_utxo query failed (rc=%d)\n", urc);
-            goto done;
-        }
-        utxos_valid = 1;
-    }
-    const uint64_t tip = utxos.block_height;
-    if (tip == 0) {
-        fprintf(stderr, "the node reported tip 0 (its height read may have "
-                "faulted) — refusing to build an envelope whose expiry "
-                "would be wrong\n");
-        goto done;
-    }
-    if (utxos.count >= (int)NODUS_DNAC_MAX_UTXO_RESULTS)
-        fprintf(stderr, "warning: the coin listing is capped at %d rows and "
-                "came back full — coins beyond it are invisible to this "
-                "selection\n", (int)NODUS_DNAC_MAX_UTXO_RESULTS);
-    coins = calloc((size_t)(utxos.count > 0 ? utxos.count : 1),
-                   sizeof(*coins));
-    if (!coins) goto done;
-    for (int i = 0; i < utxos.count; i++) {
-        const nodus_dnac_utxo_entry_t *e = &utxos.entries[i];
-        memcpy(coins[i].nul, e->nullifier, 64);
-        coins[i].amount = e->amount;
-        memcpy(coins[i].token, e->token_id, 64);
-        coins[i].unlock_block = e->unlock_block;
-    }
-
-    nodus_v2_stake_ruleset_t rs;
-    memset(&rs, 0, sizeof(rs));
-    rs.sys_ruleset_version  = sys_rt->ruleset_version;
-    memcpy(rs.sys_ruleset_hash, sys_rt->ruleset_hash, 64);
-    rs.core_ruleset_version = core_rt->ruleset_version;
-    memcpy(rs.core_ruleset_hash, core_rt->ruleset_hash, 64);
-
-    nodus_v2_stake_req_t sreq;
-    memset(&sreq, 0, sizeof(sreq));
-    sreq.rs        = &rs;
-    sreq.op        = is_exit ? NODUS_V2_STAKE_OP_STORAGE_EXIT
-                             : NODUS_V2_STAKE_OP_STORAGE_REGISTER;
-    sreq.chain32   = chain32;
-    sreq.tip       = tip;
-    if (cli_env_expiry(tip, &sreq.expiry_height) != 0) goto done;
-    sreq.pk        = identity.pk.bytes;
-    sreq.sk        = identity.sk.bytes;
-    sreq.amount    = is_exit ? 0 : DNAC_STORAGE_STAKE_MIN;
-    sreq.dest_fp   = is_exit ? NULL : node_fp;   /* payee = own fp */
-    sreq.gas_price = gas_price;
-    sreq.coins     = coins;
-    sreq.n_coins   = utxos.count;
-    {
-        nodus_v2_stake_err_t se;
-        memset(&se, 0, sizeof(se));
-        int brc = nodus_v2_stake_build(&sreq, &built, &se);
-        if (brc == NODUS_V2_SPEND_ERR_INSUFFICIENT) {
-            if (is_exit)
-                fprintf(stderr, "insufficient native funding for the fee on "
-                        "the node key: have %llu, need %llu over %d "
-                        "input(s)\n", (unsigned long long)se.sum_in,
-                        (unsigned long long)se.need, se.n_in);
-            else
-                fprintf(stderr, "insufficient native funding on the node key "
-                        "%.16s…: have %llu, need %llu (bond %llu + fee %llu) "
-                        "over %d input(s) — fund it first\n", node_fp_hex,
-                        (unsigned long long)se.sum_in,
-                        (unsigned long long)se.need,
-                        (unsigned long long)DNAC_STORAGE_STAKE_MIN,
-                        (unsigned long long)se.fee, se.n_in);
-            goto done;
-        }
-        if (brc == NODUS_V2_SPEND_ERR_GAS_OVERFLOW) {
-            fprintf(stderr, "units %llu x gas price %llu overflows u64 — "
-                    "no fee can pay it\n", (unsigned long long)se.units,
-                    (unsigned long long)se.gas_price);
-            goto done;
-        }
-        if (brc != NODUS_V2_SPEND_OK) {
-            const char *why =
-                brc == NODUS_V2_SPEND_ERR_OVERFLOW   ? "bond+fee overflow"
-              : brc == NODUS_V2_SPEND_ERR_INPUT_SUM  ? "the funding input sum "
-                                                       "overflows u64"
-              : brc == NODUS_V2_SPEND_ERR_PREFLIGHT1 ? "pass-1 preflight failed"
-              : brc == NODUS_V2_SPEND_ERR_SIGN       ? "signature failed"
-              : brc == NODUS_V2_SPEND_ERR_PREFLIGHT2 ? "pass-2 preflight "
-                                                       "(self-check) failed"
-              : brc == NODUS_V2_SPEND_ERR_DECODE     ? "the built envelope did "
-                                                       "not read back as "
-                                                       "requested"
-              : brc == NODUS_V2_SPEND_ERR_EXPIRY     ? "expiry outside the "
-                                                       "mempool window"
-              : brc == NODUS_V2_STAKE_ERR_STORAGE_BOND ? "the bond is not the "
-                                                       "storage bond"
-              : brc == NODUS_V2_STAKE_ERR_PAYEE      ? "the payee is not the "
-                                                       "node's own fingerprint"
-                                                     : "build failed";
-            if (brc == NODUS_V2_SPEND_ERR_SIGN)
-                fprintf(stderr, "leg %d %s\n", se.leg, why);
-            else
-                fprintf(stderr, "%s (rc=%d)\n", why, brc);
-            goto done;
-        }
-    }
-
-    /* what will be sent */
-    printf("storage %s for node %s\n", verb, node_fp_hex);
-    if (is_exit) {
-        printf("  - the node leaves the storage set at the next epoch "
-               "boundary and earns nothing after it\n");
-        printf("  - the bond is returned to the payee at that boundary as one "
-               "coin, locked %d epochs\n", (int)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
-    } else {
-        printf("  - bond: %llu raw (1 000 000 NODUS), locked until an exit "
-               "is released\n", (unsigned long long)DNAC_STORAGE_STAKE_MIN);
-        printf("  - payee: %s (the node's own fingerprint — the only payee "
-               "the chain accepts before HF-5)\n", node_fp_hex);
-        printf("  - the node joins the storage set frozen at the next epoch "
-               "boundary; keep the archive (retain_blocks 0) and the 4004 "
-               "connections to the validators\n");
-    }
-    printf("v2-envelope storage-%s: %zu bytes, inputs=%d sum_in=%llu "
-           "fee=%llu change=%llu tip=%llu\n", verb, built.env_len,
-           built.n_in, (unsigned long long)built.sum_in,
-           (unsigned long long)built.fee, (unsigned long long)built.change,
-           (unsigned long long)tip);
-    printf("  wire_id=");
-    for (int b = 0; b < 64; b++) printf("%02x", built.wire_id[b]);
-    printf("\n  intent_id=");
-    for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
-    printf("\n");
-    fflush(stdout);
-    if (dry_run) {
-        printf("  PREFLIGHT SELF-CHECK: OK (2 legs SYSTEM %s + CORE "
-               "SYSFUND) — not submitted (--dry-run)\n",
-               is_exit ? "STORAGE_EXIT" : "STORAGE_REGISTER");
-    } else if (t6_submit_on(&client, &identity, built.wire_id, built.env,
-                            (uint32_t)built.env_len) != 0) {
-        goto done;
-    }
-    rc = 0;
-
-done:
-    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
-    if (connected) nodus_client_close(&client);
-    free(coins);
-    nodus_v2_stake_built_free(&built);
     return rc;
 }
 
@@ -5893,6 +6685,250 @@ static int cmd_ruleset_info(const char *server_ip, uint16_t server_port) {
     return carried ? 0 : 1;
 }
 
+/* ── `validator consent` — HF-6 6f-1 ──────────────────────────────────
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §2 (the consent re-construction contract), §6.1 (bytes, ctx
+ * "nodus.valbind.v1", expiry rule), §9 ("node, verilen owner için
+ * consent'i basar"); decision docs/plans/decisions/2026-10-03-role-stake-
+ * amounts.md 1B (the node only consents; the owner pays and signs).
+ *
+ *   -i <node identity dir> -s <node> validator consent --op stake
+ *       --owner <owner_fp hex128> --expiry <height> [--out <file>]
+ *
+ * (`--op rotate` and its `--subject` are gone with the operation: the khan
+ * removed key rotation from HF-6, decision docs/plans/decisions/2026-10-13-
+ * kurultay-18-summary.md item 1.)
+ *
+ * HF-6 6b-3 (design rev 6 §11.3, §11.10 — the design names the command
+ * `storage consent`, kept verbatim; one function, one container):
+ *
+ *   -i <node identity dir> -s <node> storage consent
+ *       --owner <owner_fp hex128> --expiry <height> [--out <file>]
+ *
+ * is this function with `storage` set: op 3 (STORAGE_REGISTER), subject
+ * 64 × 0x00, no --op; the -i identity is the storage NODE key.
+ *
+ * The -i identity IS the consensus key (design §1.4: coupled — privval,
+ * 4004 and 4002 all run on the node identity); its ML-DSA-87 key signs.
+ * The chain id is read from the node over one session (dnac_supply's
+ * chain_id32 — the value every envelope of that chain is bound to): an
+ * operator-typed chain id would be a second, unverified source of the one
+ * field that pins the consent to a chain. The same session's tip judges
+ * the expiry: refused unless dna_valbind_expiry_ok(tip + 1, expiry) — a
+ * consent the chain could not accept at the next height is not signed.
+ * The message is built and signed ONLY by the codec
+ * (dna_valbind_consent_msg / _sign, shared/dnac/valbind_wire.c) and
+ * verified once before it is written. Output: the consent container
+ * (nodus_v2_stake.h NODUS_V2_CONSENT_MAGIC) to --out, or to stdout without
+ * it; with --out, the consensus key, the signature and the expiry are
+ * printed too. No secret is printed. */
+static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
+                                 int argc, char **argv, int cmd_start,
+                                 int storage) {
+    const char *op_s = NULL, *owner_hex = NULL;
+    const char *expiry_s = NULL, *out_path = NULL, *chain_hex = NULL;
+    const char *msig_path = NULL;
+    int bad_arg = 0;
+    for (int i = cmd_start + 2; i < argc; i++) {   /* skip "consent" */
+        const char *a = argv[i];
+        if      (!storage && !strcmp(a, "--op") && i + 1 < argc) op_s = argv[++i];
+        else if (!strcmp(a, "--owner")   && i + 1 < argc) owner_hex = argv[++i];
+        /* HF-6 kind-3 owner: the owner is the descriptor's address */
+        else if (!strcmp(a, "--msig")    && i + 1 < argc) msig_path = argv[++i];
+        else if (!strcmp(a, "--expiry")  && i + 1 < argc) expiry_s = argv[++i];
+        else if (!strcmp(a, "--out")     && i + 1 < argc) out_path = argv[++i];
+        else if (!strcmp(a, "--chain-id") && i + 1 < argc) chain_hex = argv[++i];
+        else { bad_arg = 1; break; }
+    }
+    /* exactly one owner form: --owner <hex128> or --msig <descriptor> */
+    const int has_owner = (owner_hex != NULL) != (msig_path != NULL);
+    if (storage && (bad_arg || !has_owner || !expiry_s)) {
+        cli_storage_usage();
+        return 1;
+    }
+    const int is_stake  = !storage && op_s && !strcmp(op_s, "stake");
+    if (!storage && (bad_arg || !is_stake || !has_owner || !expiry_s)) {
+        fprintf(stderr,
+            "Usage: -i <node identity dir> validator consent --op stake\n"
+            "       (--owner <owner_fp hex128> | --msig <descriptor>) "
+            "--expiry <height>\n"
+            "       [--chain-id <hex64>] [--out <file>]\n"
+            "  The node's key consents to the owner's STAKE of this key. "
+            "--msig: the owner is\n"
+            "  that descriptor's multisig address (HF-6 kind-3 owner). The "
+            "chain accepts it at\n"
+            "  height h when expiry >= h and expiry - h <= %llu. There is no "
+            "key rotation\n"
+            "  (HF-6): a new key is a new validator (unstake, then stake2 "
+            "with the new key).\n"
+            "  The chain id is read from the -s server and printed before "
+            "anything is signed\n"
+            "  (stdout with --out, stderr without — stdout then carries "
+            "the consent). With\n"
+            "  --chain-id (64 lowercase hex) the server's chain id must "
+            "equal it, or nothing\n"
+            "  is signed.\n",
+            (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS);
+        return 1;
+    }
+    nodus_v2_consent_t c;
+    memset(&c, 0, sizeof(c));
+    /* storage: op 3, the subject stays 64 × 0x00 (design §11.3) */
+    c.op = storage ? DNA_VALBIND_OP_STORAGE_REGISTER : DNA_VALBIND_OP_STAKE;
+    if (msig_path) {
+        /* HF-6 kind-3 owner: the descriptor, validated by the codec; its
+         * address SHA3-512(descriptor) is the owner the consent names */
+        uint8_t *dbuf = NULL;
+        size_t dl = 0;
+        if (msig_read_file(msig_path, &dbuf, &dl, DNA_MSIG_MAX_DESC_LEN) != 0)
+            return 1;
+        uint8_t m = 0, n = 0;
+        const int dok = dna_msig_desc_parse(dbuf, dl, &m, &n, NULL) == 0 &&
+                        dna_msig_address(dbuf, dl, c.owner_fp) == 0;
+        free(dbuf);
+        if (!dok) {
+            fprintf(stderr, "%s is not a valid multisig descriptor\n",
+                    msig_path);
+            return 1;
+        }
+        char ah[QGP_FP_HEX_BUFFER];
+        qgp_fp_raw_to_hex(c.owner_fp, ah);
+        fprintf(out_path ? stdout : stderr,
+                "owner: the %u-of-%u multisig address %s\n", (unsigned)m,
+                (unsigned)n, ah);
+    } else if (t6_hex_exact(owner_hex, c.owner_fp, 64) != 0) {
+        fprintf(stderr, "--owner must be exactly 128 lowercase hex chars\n");
+        return 1;
+    }
+    {
+        char *end = NULL;
+        errno = 0;
+        const unsigned long long e = strtoull(expiry_s, &end, 10);
+        if (expiry_s[0] < '0' || expiry_s[0] > '9' || !end || *end != '\0' ||
+            errno != 0) {
+            fprintf(stderr, "--expiry must be a decimal block height\n");
+            return 1;
+        }
+        c.expiry = (uint64_t)e;
+    }
+    /* red-team round 1 (Z-31 note): the operator may pin the chain the
+     * consent binds to; it is compared with the server's below, before
+     * anything is signed */
+    uint8_t want_chain32[DNA_VALBIND_CHAIN_LEN];
+    if (chain_hex &&
+        t6_hex_exact(chain_hex, want_chain32, sizeof(want_chain32)) != 0) {
+        fprintf(stderr, "--chain-id must be exactly %u lowercase hex chars\n",
+                (unsigned)(2u * sizeof(want_chain32)));
+        return 1;
+    }
+    memcpy(c.consensus_pk, identity.pk.bytes, DNA_VALBIND_PUBKEY_LEN);
+
+    nodus_client_t client;
+    if (t8_session(&client, server_ip, server_port) != 0) return 1;
+    bool has_chain32 = false;
+    const int crc = nodus_client_dnac_chain_id32(&client, &has_chain32,
+                                                 c.chain32);
+    nodus_dnac_ruleset_info_t ri;
+    memset(&ri, 0, sizeof(ri));
+    const int rrc = crc == 0 && has_chain32
+                  ? nodus_client_dnac_ruleset_info(&client, &ri) : -1;
+    nodus_client_close(&client);
+    if (crc != 0 || !has_chain32) {
+        fprintf(stderr, "this node names no version-3 chain id (dnac_supply "
+                "chain_id32) — nothing signed\n");
+        return 1;
+    }
+    if (rrc != 0) {
+        fprintf(stderr, "dnac_ruleset_info failed (rc=%d) — the tip is "
+                "unknown, the expiry cannot be judged; nothing signed\n",
+                rrc);
+        return 1;
+    }
+    if (ri.tip == 0) {
+        /* the CHECKTX-P1 r3 rule of cmd_v2_stake: a 0 tip is a fail-open
+         * height read, never a real version-3 tip */
+        fprintf(stderr, "the node reported tip 0 — its height read may have "
+                "faulted; the expiry cannot be judged, nothing signed\n");
+        return 1;
+    }
+    if (ri.generation < NODUS_RT_GEN_STORAGE)
+        fprintf(stderr, "warning: the node runs rule-set generation %u; a "
+                "consent is used only from generation %u (HF-6)\n",
+                (unsigned)ri.generation, (unsigned)NODUS_RT_GEN_STORAGE);
+    if (!dna_valbind_expiry_ok(ri.tip + 1u, c.expiry)) {
+        fprintf(stderr, "--expiry %llu is outside the window the chain "
+                "accepts at the next height %llu (expiry >= h and expiry - h "
+                "<= %llu) — nothing signed\n", (unsigned long long)c.expiry,
+                (unsigned long long)(ri.tip + 1u),
+                (unsigned long long)DNA_VALBIND_MAX_EXPIRY_BLOCKS);
+        return 1;
+    }
+
+    /* What is about to be signed, before it is: the chain id the server
+     * named (the one field that pins the consent to a chain — read from
+     * -s, so the operator sees which chain that is) and the op. stdout
+     * when --out holds the consent; stderr otherwise, because stdout then
+     * IS the consent container and a line before it would break
+     * `> consent.txt`. */
+    {
+        FILE *info = out_path ? stdout : stderr;
+        fprintf(info, "%s consent: chain id ", storage ? "storage"
+                                                       : "validator");
+        for (size_t b = 0; b < sizeof(c.chain32); b++)
+            fprintf(info, "%02x", c.chain32[b]);
+        fprintf(info, ", op %s, tip %llu\n", storage ? "storage" : "stake",
+                (unsigned long long)ri.tip);
+        fflush(info);
+    }
+    if (chain_hex && memcmp(want_chain32, c.chain32, sizeof(c.chain32)) != 0) {
+        fprintf(stderr, "--chain-id %s is not the chain id the server names "
+                "(printed above) — nothing signed\n", chain_hex);
+        return 1;
+    }
+
+    /* the §6.1 message and its ctx signature — the codec only */
+    uint8_t msg[DNA_VALBIND_MSG_LEN];
+    size_t sl = 0;
+    if (dna_valbind_consent_msg(msg, c.chain32, c.op, c.subject, c.owner_fp,
+                                c.consensus_pk, c.expiry) != 0) {
+        fprintf(stderr, "the consent message was refused by the codec\n");
+        return 1;
+    }
+    if (dna_valbind_consent_sign(c.sig, &sl, msg, identity.sk.bytes) != 0 ||
+        sl != DNA_VALBIND_SIG_LEN ||
+        dna_valbind_consent_verify(c.sig, sl, msg) != 0) {
+        fprintf(stderr, "consent signature failed\n");
+        return 1;
+    }
+    char *text = NULL;
+    size_t tl = 0;
+    if (nodus_v2_consent_text_encode(&c, &text, &tl) != NODUS_V2_SPEND_OK) {
+        fprintf(stderr, "consent encoding failed\n");
+        return 1;
+    }
+    int rc = 0;
+    if (!out_path) {
+        if (fwrite(text, 1, tl, stdout) != tl) rc = 1;
+    } else if (msig_write_text(out_path, text, tl) != 0) {
+        rc = 1;
+    } else {
+        printf("%s consent: op=%s expiry=%llu tip=%llu generation=%u\n",
+               storage ? "storage" : "validator",
+               storage ? "storage" : "stake",
+               (unsigned long long)c.expiry, (unsigned long long)ri.tip,
+               (unsigned)ri.generation);
+        printf("  consensus_pk=");
+        for (int b = 0; b < DNA_VALBIND_PUBKEY_LEN; b++)
+            printf("%02x", c.consensus_pk[b]);
+        printf("\n  sig=");
+        for (int b = 0; b < DNA_VALBIND_SIG_LEN; b++) printf("%02x", c.sig[b]);
+        printf("\n  written to %s\n", out_path);
+    }
+    fflush(stdout);
+    free(text);
+    return rc;
+}
+
 /* `name lookup <name>` / `name of <fp128>`. */
 static int cmd_name_query(const char *server_ip, uint16_t server_port,
                           int is_of, const char *arg) {
@@ -6266,21 +7302,55 @@ done:
  *      ANY identity: it opens the session that reads the chain id, the
  *      tip and the gas price; it signs nothing. Change returns to the
  *      multisig address.
- *   3. msig sign --keys <dir> --in <export> --out <sigfile>
- *      (offline, each co-signer) re-derives the leg digest from the
- *      envelope bytes + chain id + the compiled CORE ruleset and REFUSES
- *      if it differs from the exported one, checks its key is in the
- *      descriptor, REFUSES a SPEND call whose length does not match its
- *      own counts, prints what it is signing (every input's full
- *      nullifier, every output's owner, amount and token id) with a
- *      WARNING that the input owners were NOT verified (no RPC answers
- *      an address's coins without its session key), and signs.
+ *   3. -s <YOUR node> msig sign --pin <its fp> --keys <dir> --in <export>
+ *      --out <sigfile> [--chain-id <hex64>]
+ *      (each co-signer) re-derives the leg digest from the envelope bytes
+ *      + chain id + the compiled CORE ruleset and REFUSES if it differs
+ *      from the exported one, checks its key is in the descriptor, REFUSES
+ *      a SPEND call whose length does not match its own counts, prints
+ *      what it is signing (every input's full nullifier, every output's
+ *      owner, amount and token id) and the chain id (with --chain-id it
+ *      must equal the export's), then VERIFIES THE INPUTS (khan decision
+ *      docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 5;
+ *      hardened 2026-10-13, design 2026-10-03-hf5-validator-owner-stake §2
+ *      "ÖDEYİCİ BAĞLAMA"): on a session to -s — the co-signer's OWN node,
+ *      PINNED by --pin (its fingerprint: the session must be signed by that
+ *      key and ML-KEM encrypted) — opened with the co-signer's OWN key (a
+ *      member of the descriptor), the node's chain id must be the export's
+ *      and every input must be an unspent coin of the vault (dnac_msig_utxo
+ *      "nul" — exactly the export's inputs, any token, no page:
+ *      nodus_client_dnac_msig_utxo_nuls), with owner == the vault; each
+ *      input's amount, token and lock are shown from the node's answer;
+ *      the validity window is judged from the node's height, not the
+ *      export's tip (nodus_v2_msig_horizon). No -s, no --pin, a pin
+ *      mismatch, a node without the "nul" query, an unverified input or a
+ *      window refusal → nothing is signed. The carried descriptor is
+ *      outside the signed context, so for the v1 SPEND this is the only
+ *      thing that ties the inputs to the vault the co-signer was shown
+ *      (the generation-4 owner operations are also bound on chain,
+ *      rtn_sysfund_payer_bound). No flag skips it.
  *   4. msig combine --in <export> --sig <file> ... [--keys <dir>
  *      --submit ip:port] [--out <envelope file>]
  *      verifies every signature, assembles them in ascending pubkey
  *      order, runs the chain's OWN auth hook locally (the satisfied flag
  *      must be 1) and the preflight self-check, then submits (any
  *      session identity) or writes the envelope.
+ *
+ * v2 — THE HF-6 OWNER OPERATIONS (decision 2026-09-29-general-multisig.md,
+ * addendum "çok bacaklı ortak imza dosyası v2", operator 2026-10-13): a
+ * multisig-owned STAKE v2 / UNSTAKE / VALIDATOR_UPDATE /
+ * DELEGATE / UNDELEGATE / STORAGE_REGISTER / STORAGE_EXIT has TWO kind-3
+ * legs (SYSTEM: the owner proof; CORE SYSFUND: the address's coins), each
+ * with its own digest. Step 2 is then `v2-envelope <verb> --msig ...` /
+ * `storage register|exit --msig ...` (cmd_v2_stake), which writes a
+ * "nodus-msig-export v2" file (one digest line per leg); `msig sign`
+ * recognises it by its first line, shows BOTH legs decoded, verifies the
+ * funding inputs against the vault's coin set exactly as for v1 (and
+ * refuses a change output to anyone but the vault), and signs EVERY
+ * digest into one "nodus-msig-sig v2" file; `msig combine` checks
+ * every signature over every leg, assembles every leg, runs the chain's
+ * auth hook on each (the SYSTEM leg also under the owner rule: no
+ * foreign signer) and submits. The v1 files and steps are unchanged.
  * ════════════════════════════════════════════════════════════════════ */
 
 /* The four steps' bodies — descriptor from keys, the unsigned build, the
@@ -6733,32 +7803,696 @@ done:
     return rc;
 }
 
-/* `msig sign` — offline, one co-signer. */
-static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
+/* ── v2 — the multi-leg kind-3 export (the HF-6 owner operations;
+ *    decision 2026-09-29-general-multisig.md, addendum "çok bacaklı ortak
+ *    imza dosyası v2") ─────────────────────────────────────────────── */
+
+/* Which export version `path` holds, from its first line: 2 for
+ * NODUS_V2_MSIG_EXPORT2_MAGIC, else 1 (the v1 reader then judges the file
+ * and prints its own refusal). @return 1 / 2 / -1 (cannot open). */
+static int msig_export_version(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", path); return -1; }
+    char head[32];
+    const size_t n = fread(head, 1, sizeof(head), f);
+    fclose(f);
+    const size_t ml = strlen(NODUS_V2_MSIG_EXPORT2_MAGIC);
+    if (n > ml && memcmp(head, NODUS_V2_MSIG_EXPORT2_MAGIC, ml) == 0 &&
+        head[ml] == '\n')
+        return 2;
+    return 1;
+}
+
+/* Read and parse a v2 export (nodus_v2_msig_export2_parse). `x->env` is
+ * heap (nodus_v2_msig_export2_free). @return 0 / -1 (message printed). */
+static int msig_export2_read(const char *path, nodus_v2_msig_export2_t *x) {
+    memset(x, 0, sizeof(*x));
+    uint8_t *raw = NULL;
+    size_t rl = 0;
+    if (msig_read_file(path, &raw, &rl, NODUS_V2_MSIG_EXPORT2_TEXT_MAX) != 0)
+        return -1;
+    const int prc = nodus_v2_msig_export2_parse((const char *)raw, rl, x);
+    free(raw);
+    if (prc != NODUS_V2_SPEND_OK) {
+        fprintf(stderr, "%s: not a well-formed %s file (its lines, in "
+                "order: chain_id, tip, signers, digests, one digest line per "
+                "leg, envelope)\n", path, NODUS_V2_MSIG_EXPORT2_MAGIC);
+        return -1;
+    }
+    return 0;
+}
+
+static const char *msig_owner_op_name(uint32_t op) {
+    switch (op) {
+    case DNA_SYSRULE_STAKE:                 return "STAKE (generation 4)";
+    case DNA_SYSRULE_DELEGATE:              return "DELEGATE";
+    case DNA_SYSRULE_UNSTAKE:               return "UNSTAKE";
+    case DNA_SYSRULE_UNDELEGATE:            return "UNDELEGATE";
+    case DNA_SYSRULE_VALIDATOR_UPDATE:      return "VALIDATOR_UPDATE";
+    case DNA_SYSRULE_STORAGE_REGISTER:      return "STORAGE_REGISTER";
+    case DNA_SYSRULE_STORAGE_EXIT:          return "STORAGE_EXIT";
+    default:                                return "UNKNOWN";
+    }
+}
+
+static void msig_print_hex64(const char *label, const uint8_t b[64]) {
+    char h[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(b, h);
+    printf("%s%s\n", label, h);
+}
+
+/* What a v2 co-signer signs, every field read back from the envelope
+ * (nodus_v2_msig_review2): the SYSTEM call decoded and the CORE funding.
+ * @return 0 / -1 (a hash failure). */
+static int msig_print_owner_op(const nodus_v2_msig_review2_t *rv,
+                               const uint8_t chain32[DNA_CHAIN_ID_LEN]) {
+    const nodus_v2_stake_decoded_t *d = &rv->op;
+    char ah[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(rv->addr, ah);
+    printf("signing a two-leg %s owned by the %u-of-%u multisig address\n"
+           "  %s\n", msig_owner_op_name(d->op), (unsigned)rv->m,
+           (unsigned)rv->n, ah);
+    printf("  valid until block %llu (built at tip %llu), fee %llu, %u "
+           "signer(s) fixed\n", (unsigned long long)rv->expiry_height,
+           (unsigned long long)rv->tip, (unsigned long long)rv->fee,
+           (unsigned)rv->signers);
+    /* leg 0 — the SYSTEM record call */
+    printf("  leg 0 SYSTEM %s:\n", msig_owner_op_name(d->op));
+    const int has_vid = d->op == DNA_SYSRULE_DELEGATE ||
+                        d->op == DNA_SYSRULE_UNDELEGATE ||
+                        d->op == DNA_SYSRULE_UNSTAKE ||
+                        d->op == DNA_SYSRULE_VALIDATOR_UPDATE;
+    if (has_vid) msig_print_hex64("    validator_id ", d->validator_id);
+    msig_print_hex64(d->op == DNA_SYSRULE_DELEGATE ||
+                     d->op == DNA_SYSRULE_UNDELEGATE ? "    delegator    "
+                                                     : "    owner        ",
+                     d->owner_fp);
+    if (d->op == DNA_SYSRULE_STAKE ||
+        d->op == DNA_SYSRULE_STORAGE_REGISTER) {
+        uint8_t kh[64];
+        if (qgp_sha3_512(d->consensus_pk, DNAC_PUBKEY_SIZE, kh) != 0)
+            return -1;
+        msig_print_hex64(d->op == DNA_SYSRULE_STAKE
+                             ? "    consensus key SHA3-512 "
+                             : "    storage node key SHA3-512 ", kh);
+        printf("    node consent valid until block %llu\n",
+               (unsigned long long)d->consent_expiry);
+    }
+    if (d->op == DNA_SYSRULE_STORAGE_EXIT)
+        msig_print_hex64("    storage node ", d->node_fp);
+    if (d->op == DNA_SYSRULE_STAKE || d->op == DNA_SYSRULE_VALIDATOR_UPDATE)
+        printf("    commission %u bps\n", (unsigned)d->commission_bps);
+    if (d->op == DNA_SYSRULE_STAKE || d->op == DNA_SYSRULE_STORAGE_REGISTER)
+        printf("    bond %llu raw (locked from the funding below)\n",
+               (unsigned long long)d->amount);
+    if (d->op == DNA_SYSRULE_DELEGATE)
+        printf("    amount %llu raw (locked from the funding below)\n",
+               (unsigned long long)d->amount);
+    if (d->op == DNA_SYSRULE_UNDELEGATE)
+        printf("    amount %llu raw (returned to the delegator, locked)\n",
+               (unsigned long long)d->amount);
+    if (d->op == DNA_SYSRULE_STAKE) {
+        uint8_t vid[DNA_VALBIND_ID_LEN];
+        if (dna_validator_id_new(vid, chain32, rv->intent_id) != 0) return -1;
+        msig_print_hex64("    creates validator_id ", vid);
+    }
+    /* leg 1 — the CORE SYSFUND funding */
+    printf("  leg 1 CORE SYSFUND (funding): %d input(s)\n", d->n_in);
+    for (int i = 0; i < d->n_in; i++) {
+        char nh[QGP_FP_HEX_BUFFER];
+        qgp_fp_raw_to_hex(d->in_nul[i], nh);
+        printf("    in[%d]  nullifier %s\n", i, nh);
+    }
+    if (d->n_out == 1)
+        printf("    out[0] -> %s amount %llu (change, native)\n",
+               d->change_owner, (unsigned long long)d->change_amount);
+    else
+        printf("    no change output\n");
+    printf("  intent_id ");
+    for (int b = 0; b < 64; b++) printf("%02x", rv->intent_id[b]);
+    printf("\n");
+    for (uint32_t j = 0; j < rv->n_digests; j++) {
+        printf("  digest[%u] ", (unsigned)rv->leg_index[j]);
+        for (int b = 0; b < 64; b++) printf("%02x", rv->digest[j][b]);
+        printf("\n");
+    }
+    return 0;
+}
+
+/* Print the export's chain id (what the signature binds to — the digest
+ * commits it) and, with --chain-id, refuse unless it is exactly that one.
+ * @return 0 / -1 (reason printed). */
+static int msig_chain_check(const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                            const char *want_hex) {
+    printf("  chain id ");
+    for (int b = 0; b < DNA_CHAIN_ID_LEN; b++) printf("%02x", chain32[b]);
+    printf("\n");
+    fflush(stdout);
+    if (!want_hex) return 0;
+    uint8_t want[DNA_CHAIN_ID_LEN];
+    if (t6_hex_exact(want_hex, want, sizeof(want)) != 0) {
+        fprintf(stderr, "--chain-id must be exactly %u lowercase hex chars — "
+                "nothing signed\n", (unsigned)(2u * sizeof(want)));
+        return -1;
+    }
+    if (memcmp(want, chain32, sizeof(want)) != 0) {
+        fprintf(stderr, "REFUSED: the export is for chain id (printed above), "
+                "not --chain-id %s — nothing signed\n", want_hex);
+        return -1;
+    }
+    return 0;
+}
+
+/* Khan decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md
+ * item 5 (Astra's objection, agreed by all three), hardened by red-team
+ * round 3 (design 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ
+ * BAĞLAMA — han kararı 2026-10-13": "v1 SPEND … o zamana kadar imza aracı
+ * pinli kendi düğümüyle girdi doğrular"): before a co-signer signs, EVERY
+ * funding input must be a coin of the vault it was shown. The carried
+ * descriptor is not in the signed context (only auth_len is,
+ * shared/dnac/env_wire.c), so co-members of two vaults could be shown
+ * vault B while the inputs are vault A's; for the v1 SPEND the chain
+ * accepts whichever satisfied descriptor owns the coins (rtn_input_owned;
+ * the generation-4 owner operations are bound on chain too,
+ * rtn_sysfund_payer_bound). The check:
+ *   - a PINNED session to -s (`pin` = the fingerprint of the node the
+ *     co-signer runs itself — nodus_client.c pin_check_auth_ok: the node
+ *     must sign its channel key with the pinned identity and the session
+ *     is ML-KEM-1024 only; no pin match → no session → nothing signed),
+ *     opened with the co-signer's OWN key (the node answers the member
+ *     query only to a descriptor member — design 2026-09-29-general-
+ *     multisig §8.6 rev 2). An unpinned answer could come from anyone on
+ *     the path;
+ *   - the node's chain id (dnac_supply chain_id32) == the export's — a
+ *     coin set read on another chain proves nothing;
+ *   - nodus_client_dnac_msig_utxo_nuls(hex(address), descriptor, the
+ *     inputs): the node answers exactly the named coins it holds as the
+ *     vault's (any token, no page — so neither a vault of more than 100
+ *     coins nor coins of other tokens can hide an input); every input must
+ *     be in the answer with owner == hex(address). A node without the
+ *     "nul" argument answers no marker → refused, nothing signed;
+ *   - the signing horizon against the NODE's height (the answer's
+ *     block_height), not the export's tip (nodus_v2_msig_horizon).
+ * Each input's amount, token and lock are printed from the node's answer,
+ * with the native sum. No -s, no pin, a refused / unsupported query, a
+ * chain id mismatch, one unverified input or a horizon refusal → -1
+ * (nothing signed). There is no flag that skips this.
+ * @return 0 / -1 (reason printed). */
+static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
+                              const nodus_identity_t *key,
+                              const nodus_key_t *pin,
+                              const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                              const uint8_t *desc, size_t desc_len,
+                              const uint8_t addr[64], int n_in,
+                              const uint8_t (*in_nul)[64],
+                              uint64_t export_tip, uint64_t expiry_height) {
+    char sip[64];
+    uint16_t sport = 0;
+    if (!pin) {
+        fprintf(stderr, "msig sign needs --pin <fingerprint of YOUR node> — "
+                "nothing signed\n");
+        return -1;
+    }
+    if (t6_resolve_target(NULL, server_ip, server_port, sip, &sport) != 0) {
+        fprintf(stderr, "msig sign verifies every input against the vault's "
+                "coins on YOUR node: give -s <node> — nothing signed\n");
+        return -1;
+    }
+    if (n_in < 1 || n_in > (int)NODUS_V2_SPEND_MAX_IN) {
+        fprintf(stderr, "the export carries %d input(s) — nothing signed\n",
+                n_in);
+        return -1;
+    }
+    char ah[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(addr, ah);
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+    cfg.servers[0].port = sport;
+    cfg.server_count    = 1;
+    cfg.auto_reconnect  = false;
+    cfg.pinned_server_fps      = pin;    /* the co-signer's own node     */
+    cfg.pinned_server_fp_count = 1;
+    if (nodus_client_init(&client, &cfg, key) != 0) {
+        fprintf(stderr, "client_init failed — inputs not verified, nothing "
+                "signed\n");
+        return -1;
+    }
+    int rc = -1;
+    nodus_dnac_utxo_result_t res;
+    memset(&res, 0, sizeof(res));
+    int res_valid = 0;
+    if (nodus_client_connect(&client) != 0) {
+        fprintf(stderr, "no PINNED session to %s:%u (the node's key is not "
+                "--pin, it sent no signed ML-KEM key, or it is down) — "
+                "inputs not verified, nothing signed\n", sip,
+                (unsigned)sport);
+        goto out;
+    }
+    {
+        bool has_chain32 = false;
+        uint8_t node_chain[DNA_CHAIN_ID_LEN];
+        if (nodus_client_dnac_chain_id32(&client, &has_chain32,
+                                         node_chain) != 0 || !has_chain32) {
+            fprintf(stderr, "the node names no version-3 chain id — inputs "
+                    "not verified, nothing signed\n");
+            goto out;
+        }
+        if (memcmp(node_chain, chain32, DNA_CHAIN_ID_LEN) != 0) {
+            fprintf(stderr, "REFUSED: the node at %s:%u is on another chain "
+                    "than the export — its coin set proves nothing; nothing "
+                    "signed\n", sip, (unsigned)sport);
+            goto out;
+        }
+    }
+    {
+        const int qrc = nodus_client_dnac_msig_utxo_nuls(
+            &client, ah, desc, desc_len, in_nul, (uint32_t)n_in, &res);
+        if (qrc == NODUS_CLIENT_ERR_METHOD_UNSUPPORTED) {
+            fprintf(stderr, "the node does not serve dnac_msig_utxo (not "
+                    "updated yet) — inputs not verified, nothing signed\n");
+            goto out;
+        }
+        if (qrc == NODUS_ERR_PROTOCOL_ERROR) {
+            fprintf(stderr, "the node did not answer the named coins (a node "
+                    "without the dnac_msig_utxo \"nul\" argument, or a "
+                    "malformed reply) — inputs not verified, nothing "
+                    "signed\n");
+            goto out;
+        }
+        if (qrc != 0) {
+            fprintf(stderr, "dnac_msig_utxo refused (rc=%d; a key outside the "
+                    "descriptor is refused as not authorized) — inputs not "
+                    "verified, nothing signed\n", qrc);
+            goto out;
+        }
+        res_valid = 1;
+        static const uint8_t native[64] = {0};
+        uint64_t native_sum = 0;
+        int sum_ok = 1;
+        printf("  inputs verified against the coins of %s (YOUR node %s:%u, "
+               "pinned; %d of %d named coin(s) are the vault's):\n", ah, sip,
+               (unsigned)sport, res.count, n_in);
+        for (int i = 0; i < n_in; i++) {
+            const nodus_dnac_utxo_entry_t *hit = NULL;
+            for (int k = 0; k < res.count; k++)
+                if (memcmp(res.entries[k].nullifier, in_nul[i], 64) == 0) {
+                    hit = &res.entries[k];
+                    break;
+                }
+            char nh[QGP_FP_HEX_BUFFER];
+            qgp_fp_raw_to_hex(in_nul[i], nh);
+            if (!hit) {
+                fprintf(stderr, "REFUSED: in[%d] %s is not an unspent coin "
+                        "of this vault — nothing signed\n", i, nh);
+                goto out;
+            }
+            if (strncmp(hit->owner, ah, 128) != 0 || hit->owner[128] != '\0') {
+                fprintf(stderr, "REFUSED: in[%d] %s is answered with owner "
+                        "%.128s, not the vault — nothing signed\n", i, nh,
+                        hit->owner);
+                goto out;
+            }
+            const int is_native = memcmp(hit->token_id, native, 64) == 0;
+            printf("    in[%d] %s\n          amount %llu%s", i, nh,
+                   (unsigned long long)hit->amount,
+                   is_native ? " (native)" : " token ");
+            if (!is_native)
+                for (int b = 0; b < 64; b++) printf("%02x", hit->token_id[b]);
+            if (hit->unlock_block > res.block_height)
+                printf(" — LOCKED until block %llu (the chain refuses it "
+                       "before then)", (unsigned long long)hit->unlock_block);
+            printf("\n");
+            if (is_native) {
+                if (native_sum > UINT64_MAX - hit->amount) sum_ok = 0;
+                else native_sum += hit->amount;
+            }
+        }
+        if (sum_ok)
+            printf("  native inputs total %llu (node tip %llu)\n",
+                   (unsigned long long)native_sum,
+                   (unsigned long long)res.block_height);
+        /* the signing horizon from YOUR node's height, not the export's
+         * tip (its author chose that) — nodus_v2_msig_horizon */
+        if (nodus_v2_msig_horizon(export_tip, expiry_height,
+                                  res.block_height) != NODUS_V2_SPEND_OK) {
+            fprintf(stderr, "REFUSED: your node is at block %llu; the export "
+                    "(built at tip %llu) is valid until block %llu — "
+                    "already expired, valid longer than %u blocks from now, "
+                    "or your node is more than %u blocks behind the "
+                    "builder — nothing signed\n",
+                    (unsigned long long)res.block_height,
+                    (unsigned long long)export_tip,
+                    (unsigned long long)expiry_height,
+                    (unsigned)NODUS_CMT_APP_MAX_EXPIRY_AHEAD,
+                    (unsigned)NODUS_V2_MSIG_EXPIRY_AHEAD);
+            goto out;
+        }
+    }
+    rc = 0;
+out:
+    if (res_valid) nodus_client_free_utxo_result(&res);
+    nodus_client_close(&client);
+    fflush(stdout);
+    return rc;
+}
+
+/* `msig sign` on a v2 export: read back, show, verify the funding inputs
+ * against the vault's coins (msig_inputs_verify), sign EVERY digest (all or
+ * nothing), write one v2 signature file. @return 0 / 1. */
+static int cmd_msig_sign2(const char *server_ip, uint16_t server_port,
+                          const nodus_identity_t *key, const nodus_key_t *pin,
+                          const char *in_path, const char *out_path,
+                          const char *chain_hex) {
+    int rc = 1;
+    nodus_v2_msig_export2_t *x = calloc(1, sizeof(*x));
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    nodus_v2_msig_review2_t *rv = calloc(1, sizeof(*rv));
+    nodus_v2_msig_sig2_t *s = calloc(1, sizeof(*s));
+    dna_env_leg_ctx_t *lctx = calloc(DNA_ENV_MAX_LEGS, sizeof(*lctx));
+    dna_env_view_t *vw = calloc(1, sizeof(*vw));
+    char *text = NULL;
+    uint16_t n_lctx = 0;
+    if (!x || !pf || !rv || !s || !lctx || !vw) goto done;
+    if (msig_export2_read(in_path, x) != 0) goto done;
+    if (cli_leg_ctx_for_env(x->env, x->env_len, lctx, NULL, &n_lctx) != 0)
+        goto done;
+    const int vrc = nodus_v2_msig_review2(x, lctx, n_lctx, key->pk.bytes, pf,
+                                          rv);
+    if (vrc != NODUS_V2_SPEND_OK) {
+        if (vrc == NODUS_V2_MSIG_ERR_SHAPE)
+            fprintf(stderr, "the export is not an envelope whose every leg is "
+                    "auth_kind 3 carrying %u signer slots and the SAME one "
+                    "descriptor, with one digest line per leg\n",
+                    (unsigned)x->signers);
+        else if (vrc == NODUS_V2_MSIG_ERR_DESC)
+            fprintf(stderr, "the carried descriptor is malformed\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_NOT_MEMBER)
+            fprintf(stderr, "this key is not one of the descriptor's keys\n");
+        else if (vrc == NODUS_V2_SPEND_ERR_PREFLIGHT1)
+            fprintf(stderr, "preflight of the exported envelope failed (wrong "
+                    "chain id, expired, or a different ruleset)\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_DIGEST)
+            fprintf(stderr, "REFUSED: an exported digest is not the digest "
+                    "of its leg of the exported envelope on this chain\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_EXPIRY)
+            fprintf(stderr, "REFUSED: the export never expires, or expires "
+                    "later than its tip %llu + %u blocks\n",
+                    (unsigned long long)x->tip,
+                    (unsigned)NODUS_V2_MSIG_EXPIRY_AHEAD);
+        else if (vrc == NODUS_V2_MSIG_ERR_CALL)
+            fprintf(stderr, "REFUSED: the envelope does not read back as a "
+                    "generation-4 owner operation of this multisig address "
+                    "(or its change goes to another address)\n");
+        else
+            fprintf(stderr, "the export could not be read back (rc=%d)\n",
+                    vrc);
+        goto done;
+    }
+    if (msig_print_owner_op(rv, x->chain32) != 0) goto done;
+    if (msig_chain_check(x->chain32, chain_hex) != 0) goto done;
+    {
+        /* the descriptor the export carries (both legs carry the same one,
+         * legs_open2) — the vault whose coins the inputs must be */
+        nodus_v2_msig_leg_t leg;
+        if (nodus_v2_msig_legs_open2(x, vw, &leg) != NODUS_V2_SPEND_OK)
+            goto done;
+        if (msig_inputs_verify(server_ip, server_port, key, pin, x->chain32,
+                               leg.desc, leg.desc_len, rv->addr,
+                               rv->op.n_in,
+                               (const uint8_t (*)[64])rv->op.in_nul,
+                               rv->tip, rv->expiry_height) != 0)
+            goto done;
+    }
+    /* every digest, or nothing: one file carries them all */
+    memcpy(s->pk, key->pk.bytes, NODUS_V2_MSIG_PK_LEN);
+    s->n = x->n_digests;
+    for (uint32_t j = 0; j < x->n_digests; j++) {
+        size_t sl = 0;
+        s->leg_index[j] = x->leg_index[j];
+        memcpy(s->digest[j], x->digest[j], 64);
+        if (qgp_dsa87_sign(s->sig[j], &sl, x->digest[j], 64,
+                           key->sk.bytes) != 0 ||
+            sl != NODUS_V2_MSIG_SIG_LEN) {
+            fprintf(stderr, "signing leg %u failed — nothing written\n",
+                    (unsigned)x->leg_index[j]);
+            goto done;
+        }
+    }
+    size_t tl = 0;
+    if (nodus_v2_msig_sig2_encode(s, &text, &tl) != NODUS_V2_SPEND_OK ||
+        msig_write_text(out_path, text, tl) != 0)
+        goto done;
+    printf("signature (%u legs) written to %s\n", (unsigned)s->n, out_path);
+    rc = 0;
+done:
+    if (x) nodus_v2_msig_export2_free(x);
+    free(x);
+    free(pf);
+    free(rv);
+    if (s) memset(s, 0, sizeof(*s));
+    free(s);
+    free(lctx);
+    free(vw);
+    free(text);
+    return rc;
+}
+
+/* `msig combine` on a v2 export: every signature checked over every leg,
+ * assembled into every kind-3 leg, the chain's OWN auth hook run on EVERY
+ * leg (satisfied; on the SYSTEM leg also the owner rule of
+ * rtn_sys_owner_auth: one descriptor, no foreign signer), the pass-2
+ * self-check, then write and / or submit. @return 0 / 1. */
+static int cmd_msig_combine2(const char *server_ip, uint16_t server_port,
+                             const char *in_path, const char *const *sig_path,
+                             int n_sig, const char *keys_csv,
+                             const char *submit, const char *out_path) {
+    int rc = 1;
+    nodus_v2_msig_export2_t *x = calloc(1, sizeof(*x));
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    dna_env_view_t *vp = calloc(1, sizeof(*vp));
+    dna_env_leg_ctx_t *lctx = calloc(DNA_ENV_MAX_LEGS, sizeof(*lctx));
+    const nodus_domain_runtime_t **rts = calloc(DNA_ENV_MAX_LEGS,
+                                                sizeof(*rts));
+    nodus_v2_msig_sig2_t **sigs = calloc(NODUS_RT_AUTH_MAX_SIGNERS,
+                                         sizeof(*sigs));
+    nodus_identity_t *keys = NULL;
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+    int connected = 0;
+    uint16_t n_lctx = 0;
+    if (!x || !pf || !vp || !lctx || !rts || !sigs) goto done;
+    if (msig_export2_read(in_path, x) != 0) goto done;
+    if ((uint32_t)n_sig != x->signers) {
+        fprintf(stderr, "the export fixed %u signers (auth_len is signed); "
+                "%d signature file(s) given\n", (unsigned)x->signers, n_sig);
+        goto done;
+    }
+    if (cli_leg_ctx_for_env(x->env, x->env_len, lctx, rts, &n_lctx) != 0)
+        goto done;
+    for (int i = 0; i < n_sig; i++) {
+        uint8_t *raw = NULL;
+        size_t rl = 0;
+        sigs[i] = calloc(1, sizeof(*sigs[i]));
+        if (!sigs[i] ||
+            msig_read_file(sig_path[i], &raw, &rl,
+                           NODUS_V2_MSIG_SIG2_TEXT_MAX) != 0)
+            goto done;
+        const int ok = nodus_v2_msig_sig2_parse((const char *)raw, rl,
+                                                sigs[i]) == NODUS_V2_SPEND_OK;
+        free(raw);
+        if (!ok) {
+            fprintf(stderr, "%s is not a well-formed %s file\n", sig_path[i],
+                    NODUS_V2_MSIG_SIG2_MAGIC);
+            goto done;
+        }
+    }
+    int bad = -1;
+    const int crc = nodus_v2_msig_combine2(
+        x, lctx, n_lctx, (const nodus_v2_msig_sig2_t *const *)sigs, n_sig, pf,
+        &bad);
+    if (crc != NODUS_V2_SPEND_OK) {
+        if (crc == NODUS_V2_MSIG_ERR_SIG_DIGEST && bad >= 0)
+            fprintf(stderr, "%s does not sign exactly this export's legs and "
+                    "digests (all or nothing)\n", sig_path[bad]);
+        else if (crc == NODUS_V2_MSIG_ERR_NOT_MEMBER && bad >= 0)
+            fprintf(stderr, "%s: key not in the descriptor\n", sig_path[bad]);
+        else if (crc == NODUS_V2_MSIG_ERR_SIG && bad >= 0)
+            fprintf(stderr, "%s: a signature does not verify\n",
+                    sig_path[bad]);
+        else if (crc == NODUS_V2_MSIG_ERR_DUP_SIGNER)
+            fprintf(stderr, "duplicate signer key among the signature "
+                    "files\n");
+        else if (crc == NODUS_V2_MSIG_ERR_DIGEST)
+            fprintf(stderr, "the export's digests do not re-derive\n");
+        else if (crc == NODUS_V2_MSIG_ERR_SHAPE)
+            fprintf(stderr, "the export is not an envelope whose every leg "
+                    "is auth_kind 3 carrying %u slots and the SAME one "
+                    "descriptor\n", (unsigned)x->signers);
+        else
+            fprintf(stderr, "combine failed (rc=%d)\n", crc);
+        goto done;
+    }
+    /* the chain's OWN auth hook on every kind-3 leg, locally */
+    if (dna_env_decode(x->env, x->env_len, vp) != 0) goto done;
+    for (uint16_t L = 0; L < vp->leg_count; L++) {
+        nodus_rt_auth_verdict_t av;
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id = x->chain32;
+        ctx.global_height = x->tip + 1;
+        ctx.leg_auth_digest = pf->auth_digest[L];
+        const int is_sys = vp->leg[L].domain_id == DNA_DOMAIN_SYSTEM;
+        if (nodus_rt_auth_dsa87_v1(rts[L], vp, L, &ctx, &av) != 0 ||
+            av.n_msig != 1 || !av.msig_satisfied[0] ||
+            (is_sys && (av.msig_signers_in_desc & 1u) == 0)) {
+            fprintf(stderr, "the assembled authorization of leg %u does not "
+                    "satisfy the descriptor%s\n", (unsigned)L,
+                    is_sys ? " (or a signer is not one of its keys)" : "");
+            goto done;
+        }
+    }
+    printf("msig combine (v2): %d signature(s) assembled into %u legs, %zu "
+           "bytes\n  wire_id=", n_sig, (unsigned)vp->leg_count, x->env_len);
+    for (int b = 0; b < 64; b++) printf("%02x", pf->wire_id[b]);
+    printf("\n  intent_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", pf->intent_id[b]);
+    printf("\n");
+    if (out_path) {
+        FILE *f = fopen(out_path, "wb");
+        if (!f || fwrite(x->env, 1, x->env_len, f) != x->env_len) {
+            fprintf(stderr, "cannot write %s\n", out_path);
+            if (f) fclose(f);
+            goto done;
+        }
+        fclose(f);
+        printf("  signed envelope written to %s\n", out_path);
+    }
+    if (keys_csv) {
+        keys = calloc(4, sizeof(*keys));
+        if (!keys || act_load_keys(keys_csv, keys, 4) != 1) {
+            fprintf(stderr, "--keys must name exactly one identity\n");
+            goto done;
+        }
+        char sip[64];
+        uint16_t sport = 0;
+        if (t6_resolve_target(submit, server_ip, server_port, sip,
+                              &sport) != 0) {
+            fprintf(stderr, "invalid --submit target (and no -s server)\n");
+            goto done;
+        }
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+        cfg.servers[0].port = sport;
+        cfg.server_count    = 1;
+        cfg.auto_reconnect  = false;
+        if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
+        connected = 1;
+        if (nodus_client_connect(&client) != 0) {
+            fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+            goto done;
+        }
+        if (t6_submit_on(&client, &keys[0], pf->wire_id, x->env,
+                         (uint32_t)x->env_len) != 0)
+            goto done;
+    }
+    rc = 0;
+done:
+    if (x) nodus_v2_msig_export2_free(x);
+    free(x);
+    free(pf);
+    free(vp);
+    free(lctx);
+    free(rts);
+    if (sigs) {
+        for (int i = 0; i < n_sig && i < (int)NODUS_RT_AUTH_MAX_SIGNERS; i++)
+            free(sigs[i]);
+        free(sigs);
+    }
+    if (connected) nodus_client_close(&client);
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
+
+/* `msig sign` — one co-signer; -s <YOUR node> --pin <its fingerprint> for
+ * the input verification (msig_inputs_verify — khan decision 2026-10-13-
+ * kurultay-18-summary.md item 5; the pin and the named-coin query: design
+ * 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ BAĞLAMA", red-team
+ * round 3). */
+static int cmd_msig_sign(const char *server_ip, uint16_t server_port,
+                         int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *in_path = NULL, *out_path = NULL;
+    const char *chain_hex = NULL, *pin_hex = NULL;
     for (int i = cmd_start + 2; i < argc; i++) {
         const char *a = argv[i];
         if      (!strcmp(a, "--keys") && i + 1 < argc) keys_csv = argv[++i];
         else if (!strcmp(a, "--in")   && i + 1 < argc) in_path  = argv[++i];
         else if (!strcmp(a, "--out")  && i + 1 < argc) out_path = argv[++i];
+        else if (!strcmp(a, "--pin")  && i + 1 < argc) pin_hex  = argv[++i];
+        else if (!strcmp(a, "--chain-id") && i + 1 < argc)
+            chain_hex = argv[++i];
         else { keys_csv = NULL; break; }
     }
-    if (!keys_csv || !in_path || !out_path) {
-        fprintf(stderr, "Usage: msig sign --keys <dir> --in <export> --out "
-                "<sigfile>\n");
+    if (!keys_csv || !in_path || !out_path || !pin_hex) {
+        fprintf(stderr, "Usage: -s <YOUR node> msig sign --pin <its fingerprint> "
+                "--keys <dir>\n"
+                "       --in <export> --out <sigfile> [--chain-id <hex64>]\n"
+                "  -s    the node YOU run (your own, not one the export's "
+                "author names).\n"
+                "  --pin that node's fingerprint, 128 lowercase hex: `nodus-cli "
+                "-i <the node's\n"
+                "        identity dir> whoami` (\"Fingerprint:\"), or its "
+                "identity/nodus.fp.\n"
+                "        The session must be signed by that key and ML-KEM "
+                "encrypted, else\n"
+                "        nothing is signed.\n"
+                "  Prints what is signed and the chain id (--chain-id: must "
+                "be the export's),\n"
+                "  then asks YOUR node, with this --keys identity (a member), "
+                "for exactly the\n"
+                "  export's inputs (dnac_msig_utxo \"nul\"): each must be an "
+                "unspent coin of the\n"
+                "  vault, and the validity window is judged from your node's "
+                "height. No -s, no\n"
+                "  --pin, a pin mismatch, a node without the query or one "
+                "unverified input:\n"
+                "  nothing is signed.\n");
+        return 1;
+    }
+    nodus_key_t pin;
+    if (t6_hex_exact(pin_hex, pin.bytes, sizeof(pin.bytes)) != 0) {
+        fprintf(stderr, "--pin must be exactly 128 lowercase hex chars (your "
+                "node's fingerprint) — nothing signed\n");
         return 1;
     }
     int rc = 1;
     nodus_identity_t *keys = calloc(4, sizeof(*keys));
     dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
     nodus_v2_msig_review_t *rv = calloc(1, sizeof(*rv));
+    dna_env_view_t *vw = calloc(1, sizeof(*vw));
     nodus_v2_msig_export_t x;
     memset(&x, 0, sizeof(x));
     char *sig_text = NULL;
-    if (!keys || !pf || !rv) goto done;
+    if (!keys || !pf || !rv || !vw) goto done;
     if (act_load_keys(keys_csv, keys, 4) != 1) {
         fprintf(stderr, "msig sign needs exactly one --keys identity\n");
         goto done;
+    }
+    {
+        /* the v2 (multi-leg, HF-6 owner) export has its own read-back */
+        const int ver = msig_export_version(in_path);
+        if (ver < 0) goto done;
+        if (ver == 2) {
+            rc = cmd_msig_sign2(server_ip, server_port, &keys[0], &pin,
+                                in_path, out_path, chain_hex);
+            goto done;
+        }
     }
     if (msig_export_read(in_path, &x) != 0) goto done;
     const nodus_domain_runtime_t *core_rt = msig_core_rt(&x);
@@ -6819,14 +8553,20 @@ static int cmd_msig_sign(int argc, char **argv, int cmd_start) {
                    (unsigned)o, rv->out_owner[o],
                    (unsigned long long)rv->out_amount[o], th);
         }
-        /* R1-5: the carried descriptor is not covered by the digest, and
-         * no RPC answers a coin's owner for an address that has no
-         * session key (dnac_utxo is gated to the session's own
-         * fingerprint), so this tool cannot prove the inputs belong to
-         * the address above. Say so on every signature. */
-        printf("WARNING: the input owners were NOT verified. Sign only if "
-               "you know every nullifier above is a coin of address %s.\n",
-               ah);
+    }
+    /* the carried descriptor is not covered by the digest: the inputs
+     * are tied to the address above only by checking them against its
+     * coin set on a node (item 5 of the Kurultay #18 decision) */
+    if (msig_chain_check(x.chain32, chain_hex) != 0) goto done;
+    {
+        nodus_v2_msig_leg_t leg;
+        if (nodus_v2_msig_leg_open(&x, vw, &leg) != NODUS_V2_SPEND_OK)
+            goto done;
+        if (msig_inputs_verify(server_ip, server_port, &keys[0], &pin,
+                               x.chain32, leg.desc, leg.desc_len, rv->addr,
+                               rv->n_in, (const uint8_t (*)[64])rv->in_nul,
+                               rv->tip, rv->expiry_height) != 0)
+            goto done;
     }
     uint8_t sig[DNAC_SIGNATURE_SIZE];
     size_t sl = 0;
@@ -6847,6 +8587,7 @@ done:
     free(sig_text);
     free(rv);
     free(pf);
+    free(vw);
     if (keys) {
         for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
         free(keys);
@@ -6878,8 +8619,21 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
             "         (--keys <dir> [--submit ip:port] | --out <envelope>)\n"
             "  Needs EXACTLY the export's K signatures. --keys is any "
             "identity (the\n"
-            "  submitting session); --out only writes the signed envelope.\n");
+            "  submitting session); --out only writes the signed envelope.\n"
+            "  A v2 export (an HF-6 owner operation: two kind-3 legs) takes "
+            "v2 signature\n"
+            "  files, each signing every leg; every leg is checked with the "
+            "chain's auth hook.\n");
         return 1;
+    }
+    {
+        /* the v2 (multi-leg, HF-6 owner) export has its own combine */
+        const int ver = msig_export_version(in_path);
+        if (ver < 0) return 1;
+        if (ver == 2)
+            return cmd_msig_combine2(server_ip, server_port, in_path,
+                                     sig_path, n_sig, keys_csv, submit,
+                                     out_path);
     }
     int rc = 1;
     nodus_v2_msig_export_t x;
@@ -8232,15 +9986,9 @@ static void evm_usage(void) {
         "1 NODUS = 10^8 raw = 10^18 wei.\n");
 }
 
-/* Strict u64 decimal. @return 0 / -1. */
+/* Strict u64 decimal (cli_u64 over the whole range). @return 0 / -1. */
 static int evm_u64(const char *s, uint64_t *out) {
-    if (!s || s[0] < '0' || s[0] > '9') return -1;
-    char *end = NULL;
-    errno = 0;
-    unsigned long long v = strtoull(s, &end, 10);
-    if (!end || *end || errno == ERANGE) return -1;
-    *out = (uint64_t)v;
-    return 0;
+    return cli_u64(s, UINT64_MAX, out);
 }
 
 static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
@@ -8809,33 +10557,52 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        NAME_PRICE_3P | NAME_PRICE_4P |\n");
     fprintf(stderr, "                        NAME_PRICE_5P | NAME_PRICE_6P |\n");
     fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT |\n");
-    fprintf(stderr, "                        RULESET_GEN_STORAGE | DELEGATE_NAME_REQUIRED\n");
+    fprintf(stderr, "                        DELEGATE_NAME_REQUIRED | RULESET_GEN_ROLES |\n");
+    fprintf(stderr, "                        STAKE_MIN | POWER_CAP_BPS | STORAGE_BOND\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
-    fprintf(stderr, "  storage register (--dry-run | --submit ip:port)   Register THIS node (-i) as a storage node\n");
-    fprintf(stderr, "                                   (bond exactly 1M NODUS from the node key's coins)\n");
-    fprintf(stderr, "  storage exit (--dry-run | --submit ip:port)       Exit; bond back next boundary, locked %d epochs\n",
-            (int)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
-    fprintf(stderr, "  storage status [--fp <hex128>]   Registry row, storage-set membership, eligible segments\n");
+    fprintf(stderr, "  storage consent (--owner <hex128> | --msig <descriptor>) --expiry <h> [--out <f>]\n");
+    fprintf(stderr, "                                   HF-6: the -i storage node key consents (needs -i)\n");
+    fprintf(stderr, "  storage register --keys <owner dir> --consent <file>\n");
+    fprintf(stderr, "           (--dry-run | --submit ip:port)   HF-6: the OWNER registers the node,\n");
+    fprintf(stderr, "                                   pays the bond (the chain's STORAGE_BOND, %llu raw\n",
+            (unsigned long long)DNAC_HF6_STORAGE_BOND_DEFAULT);
+    fprintf(stderr, "                                   until voted) + fee, earns the reward\n");
+    fprintf(stderr, "  storage exit --keys <owner dir> --node-fp <hex128>\n");
+    fprintf(stderr, "           (--dry-run | --submit ip:port)   HF-6: the owner takes the node out\n");
+    fprintf(stderr, "  storage status [--fp <hex128> | --owner <hex128>]   Registry row, storage-set membership, eligible segments (--owner: every node of that owner)\n");
     fprintf(stderr, "  v2-claim --legacy-db <t.db> --db <s.db> --keys <dir>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   Successor GENESIS_CLAIM\n");
     fprintf(stderr, "  v2-envelope stake --keys <dir> --bond <raw = exactly 10M NODUS>\n");
     fprintf(stderr, "           --commission <bps> --dest-fp <hex128>\n");
     fprintf(stderr, "           (--dry-run | --submit ip:port)   O11 two-leg STAKE\n");
-    fprintf(stderr, "  v2-envelope delegate --keys <dir> --validator <hex5184 pubkey>\n");
+    fprintf(stderr, "  v2-envelope delegate --keys <dir> --validator <validator_id hex128 | hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
-    fprintf(stderr, "                                   two-leg DELEGATE (own key = self-delegation)\n");
+    fprintf(stderr, "                                   two-leg DELEGATE (own validator = self-delegation)\n");
     fprintf(stderr, "                                   after HF-8: needs an on-chain name (self exempt)\n");
-    fprintf(stderr, "  v2-envelope undelegate --keys <dir> --validator <hex5184 pubkey>\n");
+    fprintf(stderr, "                                   --validator: validator_id at generation 4 (HF-6), pubkey below\n");
+    fprintf(stderr, "  v2-envelope undelegate --keys <dir> --validator <validator_id hex128 | hex5184 pubkey>\n");
     fprintf(stderr, "           --amount <raw> (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   two-leg UNDELEGATE (returned coin locked %d epochs)\n",
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
-    fprintf(stderr, "  v2-envelope unstake --keys <dir> (--dry-run | --submit ip:port)\n");
-    fprintf(stderr, "                                   two-leg UNSTAKE: the --keys validator retires;\n");
+    fprintf(stderr, "  v2-envelope unstake --keys <dir> [--validator <validator_id hex128>]\n");
+    fprintf(stderr, "           (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   two-leg UNSTAKE: the validator retires (generation 4:\n");
+    fprintf(stderr, "                                   --validator required, --keys = its owner);\n");
     fprintf(stderr, "                                   bond back %d epochs after graduation,\n",
             (int)DNAC_VALIDATOR_UNBOND_EPOCHS);
     fprintf(stderr, "                                   delegations back to delegators, locked %d epochs\n",
             (int)DNAC_UNDELEGATE_LOCK_EPOCHS);
+    fprintf(stderr, "  validator consent --op stake (--owner <hex128> | --msig <descriptor>)\n");
+    fprintf(stderr, "           --expiry <h> [--out <f>]\n");
+    fprintf(stderr, "                                   HF-6: the -i node key consents (needs -i)\n");
+    fprintf(stderr, "  v2-envelope stake2 --keys <owner dir> --consent <file> --bond <raw>\n");
+    fprintf(stderr, "           [--commission <bps>] (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   HF-6 generation-4 STAKE; prints validator_id\n");
+    fprintf(stderr, "                                   (no key rotation: unstake + stake2 a new key)\n");
+    fprintf(stderr, "  v2-envelope validator-update --keys <owner dir> --validator <validator_id hex128>\n");
+    fprintf(stderr, "           --commission <bps> (--dry-run | --submit ip:port)\n");
+    fprintf(stderr, "                                   HF-6 VALIDATOR_UPDATE (fee only; a rise waits 2 epochs)\n");
     fprintf(stderr, "  v2-envelope spend --keys <dir> --to <fp128hex> --amount <raw|all>\n");
     fprintf(stderr, "           [--fee <raw>] [--token <hex128>] [--count <N|all>]\n");
     fprintf(stderr, "           [--shard <I>/<M>] [--no-dust-sweep]\n");
@@ -8850,9 +10617,17 @@ static void usage(const char *prog) {
     fprintf(stderr, "           --in <nul128hex>:<amount> ... --to <fp128hex> --amount <raw>\n");
     fprintf(stderr, "           [--fee <raw>] [--signers <K>] --export <file>\n");
     fprintf(stderr, "                                   UNSIGNED multisig spend + digest\n");
-    fprintf(stderr, "  msig sign --keys <dir> --in <export> --out <sigfile>   (offline)\n");
+    fprintf(stderr, "  msig sign --pin <fp128hex> --keys <dir> --in <export> --out <sigfile>\n");
+    fprintf(stderr, "           [--chain-id <hex64>]    needs -s <YOUR node> and --pin = its\n");
+    fprintf(stderr, "                                   fingerprint (whoami): every input is\n");
+    fprintf(stderr, "                                   checked on it before signing\n");
     fprintf(stderr, "  msig combine --in <export> --sig <f> ... (--keys <dir>\n");
     fprintf(stderr, "           [--submit ip:port] | --out <envelope>)   assemble + submit\n");
+    fprintf(stderr, "  v2-envelope stake2|unstake|validator-update|delegate|undelegate\n");
+    fprintf(stderr, "  storage register|exit   ... --keys <session dir> --msig <descriptor>\n");
+    fprintf(stderr, "           --in <nul128hex>:<amount> ... [--signers <K>] --export <file>\n");
+    fprintf(stderr, "                                   HF-6: multisig OWNER (two-leg v2 export;\n");
+    fprintf(stderr, "                                   msig sign / combine read it)\n");
 #endif
 }
 
@@ -8918,14 +10693,15 @@ int main(int argc, char **argv) {
     }
 
 #ifdef NODUS_CLI_HAS_DNAC
-    /* general multisig — `msig address` and `msig sign` are OFFLINE;
+    /* general multisig — `msig address` is OFFLINE; `msig sign` verifies
+     * the inputs on -s with the co-signer's own key (Kurultay #18 item 5);
      * `msig combine` submits over its own --submit / -s session */
     if (strcmp(command, "msig") == 0) {
         const char *sub = optind + 1 < argc ? argv[optind + 1] : "";
         if (!strcmp(sub, "address"))
             return cmd_msig_address(argc, argv, optind);
         if (!strcmp(sub, "sign"))
-            return cmd_msig_sign(argc, argv, optind);
+            return cmd_msig_sign(server_ip, server_port, argc, argv, optind);
         if (!strcmp(sub, "combine"))
             return cmd_msig_combine(server_ip, server_port, argc, argv,
                                     optind);
@@ -9018,30 +10794,31 @@ int main(int argc, char **argv) {
         return rc;
     }
 
-    /* storage reward v1 (B2b-CLI) — register / exit THIS node identity as
-     * a storage node, or show a storage node's status. register / exit
-     * sign with the node key: without -i the identity above is a random
-     * key that owns no coin and no registry row, so they refuse. */
+    /* storage reward v1 (B2b-CLI), owner/node split since HF-6 6b-3:
+     * `consent` signs with THIS node identity (-i; without it the identity
+     * above is a random key whose consent names no node); `register` /
+     * `exit` are the OWNER's (--keys) — the shared owner-signed flow
+     * (cmd_v2_stake); `status` reads the registry. */
     if (strcmp(command, "storage") == 0) {
         int rc;
         const char *sub = optind + 1 < argc ? argv[optind + 1] : NULL;
-        if (sub && (strcmp(sub, "register") == 0 ||
-                    strcmp(sub, "exit") == 0)) {
+        if (sub && strcmp(sub, "consent") == 0) {
             if (!identity_dir) {
-                fprintf(stderr, "storage %s signs with the node identity: "
-                        "give -i <node identity dir>\n", sub);
+                fprintf(stderr, "storage consent signs with the storage "
+                        "node's identity: give -i <node identity dir>\n");
                 rc = 1;
             } else {
-                rc = cmd_storage_tx(server_ip, server_port, argc, argv,
-                                    optind, strcmp(sub, "exit") == 0);
+                rc = cmd_validator_consent(server_ip, server_port, argc,
+                                           argv, optind, 1);
             }
+        } else if (sub && (strcmp(sub, "register") == 0 ||
+                           strcmp(sub, "exit") == 0)) {
+            rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
         } else if (sub && strcmp(sub, "status") == 0) {
             rc = cmd_storage_status(server_ip, server_port, argc, argv,
                                     optind, identity_dir != NULL);
         } else {
-            fprintf(stderr, "Usage: -i <node identity dir> storage "
-                    "(register | exit) (--dry-run | --submit ip:port)\n"
-                    "       storage status [--fp <hex128>]\n");
+            cli_storage_usage();
             rc = 1;
         }
         nodus_identity_clear(&identity);
@@ -9053,14 +10830,17 @@ int main(int argc, char **argv) {
      * adds `spend` (single-leg CORE SPEND, networked); `token-create`
      * builds a single-leg CORE TOKEN_CREATE the same way; W-B adds
      * `delegate` (two-leg DELEGATE, the stake builder's sibling);
-     * `undelegate` and `unstake` are the same builder's ops 4 and 3. */
+     * `undelegate` and `unstake` are the same builder's ops 4 and 3;
+     * HF-6 slice 7b adds `validator-update` (op 5, generation 4). */
     if (strcmp(command, "v2-envelope") == 0) {
         int rc;
         if (optind + 1 < argc &&
             (strcmp(argv[optind + 1], "stake") == 0 ||
              strcmp(argv[optind + 1], "delegate") == 0 ||
              strcmp(argv[optind + 1], "unstake") == 0 ||
-             strcmp(argv[optind + 1], "undelegate") == 0))
+             strcmp(argv[optind + 1], "undelegate") == 0 ||
+             strcmp(argv[optind + 1], "stake2") == 0 ||
+             strcmp(argv[optind + 1], "validator-update") == 0))
             rc = cmd_v2_stake(server_ip, server_port, argc, argv, optind);
         else if (optind + 1 < argc && strcmp(argv[optind + 1], "spend") == 0)
             rc = cmd_v2_spend(server_ip, server_port, argc, argv, optind);
@@ -9070,6 +10850,29 @@ int main(int argc, char **argv) {
                                      optind);
         else
             rc = cmd_v2_envelope(server_ip, server_port, argc, argv, optind);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* HF-6 6f-1 — `validator consent`: THIS node identity (-i) consents to
+     * an owner's generation-4 STAKE of its key (no ROTATE: HF-6 D2). Without
+     * -i the identity above is a random key whose consent names no node. */
+    if (strcmp(command, "validator") == 0) {
+        int rc;
+        const char *sub = optind + 1 < argc ? argv[optind + 1] : NULL;
+        if (!sub || strcmp(sub, "consent") != 0) {
+            fprintf(stderr, "Usage: -i <node identity dir> validator consent "
+                    "--op stake (--owner <hex128> | --msig <descriptor>)\n"
+                    "       --expiry <height> [--out <file>]\n");
+            rc = 1;
+        } else if (!identity_dir) {
+            fprintf(stderr, "validator consent signs with the node identity: "
+                    "give -i <node identity dir>\n");
+            rc = 1;
+        } else {
+            rc = cmd_validator_consent(server_ip, server_port, argc, argv,
+                                       optind, 0);
+        }
         nodus_identity_clear(&identity);
         return rc;
     }

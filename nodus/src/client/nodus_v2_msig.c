@@ -541,6 +541,19 @@ int nodus_v2_msig_digest(const nodus_v2_msig_export_t *x,
 
 /* ── 5. the co-signer's read-back ───────────────────────────────────── */
 
+/* the signing horizon against the node's height (contract: the header) */
+int nodus_v2_msig_horizon(uint64_t export_tip, uint64_t expiry_height,
+                          uint64_t node_height) {
+    if (node_height > UINT64_MAX - NODUS_CMT_APP_MAX_EXPIRY_AHEAD)
+        return NODUS_V2_SPEND_ERR_ARG;
+    if (expiry_height <= node_height) return NODUS_V2_MSIG_ERR_HORIZON;
+    if (expiry_height > node_height + NODUS_CMT_APP_MAX_EXPIRY_AHEAD)
+        return NODUS_V2_MSIG_ERR_HORIZON;
+    if (export_tip > node_height + NODUS_V2_MSIG_EXPIRY_AHEAD)
+        return NODUS_V2_MSIG_ERR_HORIZON;
+    return NODUS_V2_SPEND_OK;
+}
+
 int nodus_v2_msig_review(const nodus_v2_msig_export_t *x,
                          uint32_t core_version,
                          const uint8_t core_hash[DNA_ENV_RULESET_HASH_LEN],
@@ -707,6 +720,15 @@ int nodus_v2_msig_assemble(nodus_v2_msig_export_t *x,
         v->buf != x->env || v->leg_count != 1)
         return NODUS_V2_SPEND_ERR_ARG;
     if ((uint32_t)n_sig != x->signers) return NODUS_V2_MSIG_ERR_COUNT;
+    /* the target blob must already hold exactly n_sig slots (count byte ==
+     * n_sig, room for every slot): the slots are written in place, so a
+     * view whose blob is shorter — or says another count — would have
+     * them land past it, over the next leg or the envelope's end */
+    if (n_sig > (int)NODUS_RT_AUTH_MAX_SIGNERS ||
+        (uint64_t)v->leg[0].auth_len <
+            1u + (uint64_t)n_sig * NODUS_RT_AUTH_SIGNER_LEN ||
+        x->env[v->auth_off[0]] != (uint8_t)n_sig)
+        return NODUS_V2_SPEND_ERR_ARG;
     /* ascending pubkey order (the ONE canonical signer encoding), no
      * duplicate key — selection sort over <= 15 entries (nodus-cli
      * cmd_msig_combine) */
@@ -768,6 +790,506 @@ int nodus_v2_msig_combine(nodus_v2_msig_export_t *x, uint32_t core_version,
     /* pass-2 self-check: the signed envelope still preflights */
     rc = nodus_v2_msig_digest(x, core_version, core_hash, pf);
     if (rc == NODUS_V2_SPEND_ERR_PREFLIGHT1) rc = NODUS_V2_SPEND_ERR_PREFLIGHT2;
+done:
+    free(v);
+    return rc;
+}
+
+/* ══ v2 — the multi-leg kind-3 envelope (decision 2026-09-29-general-
+ *    multisig.md, addendum "çok bacaklı ortak imza dosyası v2") ═══════ */
+
+/* A strict line cursor: each line is read in order, must end in '\n', and
+ * nothing is skipped (the v2 formats repeat the "digest" key, so the v1
+ * find-anywhere rule cannot read them). */
+typedef struct {
+    const char *t;
+    size_t      len, p;
+} v2m_cur_t;
+
+/* The next line is exactly `exact`. @return 0 / -1. */
+static int v2m_line_exact(v2m_cur_t *c, const char *exact) {
+    const size_t el = strlen(exact);
+    if (c->len - c->p < el + 1 || memcmp(c->t + c->p, exact, el) != 0 ||
+        c->t[c->p + el] != '\n')
+        return -1;
+    c->p += el + 1;
+    return 0;
+}
+
+/* The next line is "key value"; *val / *vlen = value (to the newline).
+ * @return 0 / -1. */
+static int v2m_line_kv(v2m_cur_t *c, const char *key, const char **val,
+                       size_t *vlen) {
+    if (c->p >= c->len) return -1;
+    const char *line = c->t + c->p;
+    const char *nl = memchr(line, '\n', c->len - c->p);
+    if (!nl) return -1;                          /* no final newline     */
+    const size_t ll = (size_t)(nl - line), kl = strlen(key);
+    if (ll <= kl || memcmp(line, key, kl) != 0 || line[kl] != ' ') return -1;
+    *val = line + kl + 1;
+    *vlen = ll - kl - 1;
+    c->p += ll + 1;
+    return 0;
+}
+
+/* "key <dec>" — v1's strict decimal. @return 0 / -1. */
+static int v2m_line_u64(v2m_cur_t *c, const char *key, uint64_t *out) {
+    const char *v = NULL;
+    size_t vl = 0;
+    if (v2m_line_kv(c, key, &v, &vl) != 0) return -1;
+    return v2m_parse_u64(v, vl, out);
+}
+
+/* "key <leg_index dec> <hex of n bytes>": the index strictly above *prev
+ * (-1 = none yet) and below the leg bound. @return 0 / -1. */
+static int v2m_line_indexed(v2m_cur_t *c, const char *key, long prev,
+                            uint16_t *idx_out, uint8_t *out, size_t n) {
+    const char *v = NULL;
+    size_t vl = 0;
+    if (v2m_line_kv(c, key, &v, &vl) != 0) return -1;
+    const char *sp = memchr(v, ' ', vl);
+    if (!sp) return -1;
+    uint64_t idx = 0;
+    if (v2m_parse_u64(v, (size_t)(sp - v), &idx) != 0 ||
+        idx >= NODUS_V2_MSIG2_MAX_LEGS || (long)idx <= prev)
+        return -1;
+    const size_t hl = vl - (size_t)(sp - v) - 1;
+    if (v2m_hex_exact(sp + 1, hl, out, n) != 0) return -1;
+    *idx_out = (uint16_t)idx;
+    return 0;
+}
+
+/* k within [MIN, MAX] and the indices strictly ascending below the bound.
+ * @return 0 / -1. */
+static int v2m_indices_ok(uint32_t k, const uint16_t *idx) {
+    if (k < NODUS_V2_MSIG2_MIN_LEGS || k > NODUS_V2_MSIG2_MAX_LEGS) return -1;
+    for (uint32_t j = 0; j < k; j++)
+        if (idx[j] >= NODUS_V2_MSIG2_MAX_LEGS || (j > 0 && idx[j - 1] >= idx[j]))
+            return -1;
+    return 0;
+}
+
+/* "key <idx> <hex>\n" into t + *p. */
+static void v2m_put_indexed(char *t, size_t *p, const char *key, uint16_t idx,
+                            const uint8_t *b, size_t n) {
+    const size_t kl = strlen(key);
+    memcpy(t + *p, key, kl);              *p += kl;
+    t[(*p)++] = ' ';
+    *p += v2m_fmt_u64(idx, t + *p);
+    t[(*p)++] = ' ';
+    v2m_put_hex(t + *p, b, n);            *p += 2 * n;
+    t[(*p)++] = '\n';
+}
+
+int nodus_v2_msig_export2_encode(const nodus_v2_msig_export2_t *x,
+                                 char **text_out, size_t *len_out) {
+    if (!text_out || !len_out) return NODUS_V2_SPEND_ERR_ARG;
+    *text_out = NULL;
+    *len_out = 0;
+    if (!x || !x->env || x->env_len == 0 ||
+        x->env_len > DNA_ENV_MAX_TOTAL_LEN || x->signers < 1 ||
+        x->signers > NODUS_RT_AUTH_MAX_SIGNERS ||
+        v2m_indices_ok(x->n_digests, x->leg_index) != 0)
+        return NODUS_V2_SPEND_ERR_ARG;
+    static const char magic[] = NODUS_V2_MSIG_EXPORT2_MAGIC "\n";
+    const size_t cap = sizeof(magic) + 9 + 2 * DNA_CHAIN_ID_LEN + 1 +
+                       4 + 20 + 1 + 8 + 20 + 1 + 8 + 20 + 1 +
+                       (size_t)x->n_digests * (7 + 20 + 1 + 128 + 1) +
+                       9 + 2 * x->env_len + 1 + 1;
+    char *t = malloc(cap);
+    if (!t) return NODUS_V2_SPEND_ERR_ALLOC;
+    size_t p = 0;
+    memcpy(t + p, magic, sizeof(magic) - 1);              p += sizeof(magic) - 1;
+    memcpy(t + p, "chain_id ", 9);                        p += 9;
+    v2m_put_hex(t + p, x->chain32, DNA_CHAIN_ID_LEN);     p += 2 * DNA_CHAIN_ID_LEN;
+    t[p++] = '\n';
+    memcpy(t + p, "tip ", 4);                             p += 4;
+    p += v2m_fmt_u64(x->tip, t + p);
+    t[p++] = '\n';
+    memcpy(t + p, "signers ", 8);                         p += 8;
+    p += v2m_fmt_u64(x->signers, t + p);
+    t[p++] = '\n';
+    memcpy(t + p, "digests ", 8);                         p += 8;
+    p += v2m_fmt_u64(x->n_digests, t + p);
+    t[p++] = '\n';
+    for (uint32_t j = 0; j < x->n_digests; j++)
+        v2m_put_indexed(t, &p, "digest", x->leg_index[j], x->digest[j], 64);
+    memcpy(t + p, "envelope ", 9);                        p += 9;
+    v2m_put_hex(t + p, x->env, x->env_len);               p += 2 * x->env_len;
+    t[p++] = '\n';
+    t[p] = '\0';
+    *text_out = t;
+    *len_out = p;
+    return NODUS_V2_SPEND_OK;
+}
+
+void nodus_v2_msig_export2_free(nodus_v2_msig_export2_t *x) {
+    if (!x) return;
+    free(x->env);
+    x->env = NULL;
+    x->env_len = 0;
+}
+
+int nodus_v2_msig_export2_parse(const char *text, size_t len,
+                                nodus_v2_msig_export2_t *x) {
+    if (!x) return NODUS_V2_SPEND_ERR_ARG;
+    memset(x, 0, sizeof(*x));
+    if (!text || len == 0 || len > NODUS_V2_MSIG_EXPORT2_TEXT_MAX)
+        return NODUS_V2_SPEND_ERR_ARG;
+    v2m_cur_t c = { text, len, 0 };
+    uint64_t signers = 0, k = 0;
+    const char *v = NULL;
+    size_t vl = 0;
+    if (v2m_line_exact(&c, NODUS_V2_MSIG_EXPORT2_MAGIC) != 0 ||
+        v2m_line_kv(&c, "chain_id", &v, &vl) != 0 ||
+        v2m_hex_exact(v, vl, x->chain32, DNA_CHAIN_ID_LEN) != 0 ||
+        v2m_line_u64(&c, "tip", &x->tip) != 0 ||
+        v2m_line_u64(&c, "signers", &signers) != 0 || signers < 1 ||
+        signers > NODUS_RT_AUTH_MAX_SIGNERS ||
+        v2m_line_u64(&c, "digests", &k) != 0 ||
+        k < NODUS_V2_MSIG2_MIN_LEGS || k > NODUS_V2_MSIG2_MAX_LEGS)
+        goto bad;
+    for (uint32_t j = 0; j < (uint32_t)k; j++)
+        if (v2m_line_indexed(&c, "digest", j ? (long)x->leg_index[j - 1] : -1,
+                             &x->leg_index[j], x->digest[j], 64) != 0)
+            goto bad;
+    if (v2m_line_kv(&c, "envelope", &v, &vl) != 0 || vl == 0 || vl % 2 != 0 ||
+        vl / 2 > DNA_ENV_MAX_TOTAL_LEN || c.p != c.len)
+        goto bad;
+    x->signers = (uint32_t)signers;
+    x->n_digests = (uint32_t)k;
+    x->env_len = vl / 2;
+    x->env = malloc(x->env_len);
+    if (!x->env) { memset(x, 0, sizeof(*x)); return NODUS_V2_SPEND_ERR_ALLOC; }
+    if (v2m_hex_exact(v, vl, x->env, x->env_len) != 0) {
+        nodus_v2_msig_export2_free(x);
+        goto bad;
+    }
+    return NODUS_V2_SPEND_OK;
+bad:
+    memset(x, 0, sizeof(*x));
+    return NODUS_V2_MSIG_ERR_FORMAT;
+}
+
+int nodus_v2_msig_sig2_encode(const nodus_v2_msig_sig2_t *s,
+                              char **text_out, size_t *len_out) {
+    if (!text_out || !len_out) return NODUS_V2_SPEND_ERR_ARG;
+    *text_out = NULL;
+    *len_out = 0;
+    if (!s || v2m_indices_ok(s->n, s->leg_index) != 0)
+        return NODUS_V2_SPEND_ERR_ARG;
+    static const char magic[] = NODUS_V2_MSIG_SIG2_MAGIC "\n";
+    const size_t cap = sizeof(magic) + 7 + 2 * NODUS_V2_MSIG_PK_LEN + 1 +
+                       (size_t)s->n * ((7 + 20 + 1 + 128 + 1) +
+                                       (4 + 20 + 1 +
+                                        2 * NODUS_V2_MSIG_SIG_LEN + 1)) + 1;
+    char *t = malloc(cap);
+    if (!t) return NODUS_V2_SPEND_ERR_ALLOC;
+    size_t p = 0;
+    memcpy(t + p, magic, sizeof(magic) - 1);              p += sizeof(magic) - 1;
+    memcpy(t + p, "pubkey ", 7);                          p += 7;
+    v2m_put_hex(t + p, s->pk, NODUS_V2_MSIG_PK_LEN);      p += 2 * NODUS_V2_MSIG_PK_LEN;
+    t[p++] = '\n';
+    for (uint32_t j = 0; j < s->n; j++) {
+        v2m_put_indexed(t, &p, "digest", s->leg_index[j], s->digest[j], 64);
+        v2m_put_indexed(t, &p, "sig", s->leg_index[j], s->sig[j],
+                        NODUS_V2_MSIG_SIG_LEN);
+    }
+    t[p] = '\0';
+    *text_out = t;
+    *len_out = p;
+    return NODUS_V2_SPEND_OK;
+}
+
+int nodus_v2_msig_sig2_parse(const char *text, size_t len,
+                             nodus_v2_msig_sig2_t *s) {
+    if (!s) return NODUS_V2_SPEND_ERR_ARG;
+    memset(s, 0, sizeof(*s));
+    if (!text || len == 0 || len > NODUS_V2_MSIG_SIG2_TEXT_MAX)
+        return NODUS_V2_SPEND_ERR_ARG;
+    v2m_cur_t c = { text, len, 0 };
+    const char *v = NULL;
+    size_t vl = 0;
+    if (v2m_line_exact(&c, NODUS_V2_MSIG_SIG2_MAGIC) != 0 ||
+        v2m_line_kv(&c, "pubkey", &v, &vl) != 0 ||
+        v2m_hex_exact(v, vl, s->pk, NODUS_V2_MSIG_PK_LEN) != 0)
+        goto bad;
+    /* digest/sig pairs until the end: the pair count is the file's k */
+    uint32_t k = 0;
+    while (c.p < c.len) {
+        if (k >= NODUS_V2_MSIG2_MAX_LEGS) goto bad;
+        uint16_t si = 0;
+        if (v2m_line_indexed(&c, "digest", k ? (long)s->leg_index[k - 1] : -1,
+                             &s->leg_index[k], s->digest[k], 64) != 0 ||
+            v2m_line_indexed(&c, "sig", (long)s->leg_index[k] - 1, &si,
+                             s->sig[k], NODUS_V2_MSIG_SIG_LEN) != 0 ||
+            si != s->leg_index[k])
+            goto bad;
+        k++;
+    }
+    if (k < NODUS_V2_MSIG2_MIN_LEGS) goto bad;
+    s->n = k;
+    return NODUS_V2_SPEND_OK;
+bad:
+    memset(s, 0, sizeof(*s));
+    return NODUS_V2_MSIG_ERR_FORMAT;
+}
+
+int nodus_v2_msig_legs_open2(const nodus_v2_msig_export2_t *x,
+                             dna_env_view_t *v, nodus_v2_msig_leg_t *leg) {
+    if (!x || !x->env || !v || !leg) return NODUS_V2_SPEND_ERR_ARG;
+    memset(leg, 0, sizeof(*leg));
+    if (x->signers < 1 || x->signers > NODUS_RT_AUTH_MAX_SIGNERS ||
+        v2m_indices_ok(x->n_digests, x->leg_index) != 0 ||
+        dna_env_decode(x->env, x->env_len, v) != 0 ||
+        (uint32_t)v->leg_count != x->n_digests)
+        return NODUS_V2_MSIG_ERR_SHAPE;
+    /* every leg kind 3 (a kind-1 / kind-2 leg needs a signer these files
+     * do not carry), and its index in the digest list — with k ==
+     * leg_count and strictly ascending indices that is leg_index[j] == j */
+    const uint64_t off = 1u + (uint64_t)x->signers * NODUS_RT_AUTH_SIGNER_LEN;
+    const uint8_t *d0 = NULL;
+    size_t dl0 = 0;
+    for (uint16_t L = 0; L < v->leg_count; L++) {
+        if (x->leg_index[L] != L ||
+            v->leg[L].auth_kind != NODUS_RT_AUTHKIND_DSA87_MSIG_V1)
+            return NODUS_V2_MSIG_ERR_SHAPE;
+        const uint8_t *a = v->buf + v->auth_off[L];
+        const uint32_t alen = v->leg[L].auth_len;
+        if ((uint64_t)alen < off + 3u || a[0] != x->signers || a[off] != 1)
+            return NODUS_V2_MSIG_ERR_SHAPE;
+        const size_t dl = ((size_t)a[off + 1] << 8) | a[off + 2];
+        if ((uint64_t)alen != off + 3u + dl) return NODUS_V2_MSIG_ERR_SHAPE;
+        if (L == 0) {
+            if (dna_msig_desc_parse(a + off + 3, dl, &leg->m, &leg->n,
+                                    &leg->keys) != 0) {
+                memset(leg, 0, sizeof(*leg));
+                return NODUS_V2_MSIG_ERR_DESC;
+            }
+            d0 = a + off + 3;
+            dl0 = dl;
+        } else if (dl != dl0 || memcmp(a + off + 3, d0, dl0) != 0) {
+            memset(leg, 0, sizeof(*leg));
+            return NODUS_V2_MSIG_ERR_SHAPE;       /* another descriptor   */
+        }
+    }
+    leg->desc = d0;
+    leg->desc_len = dl0;
+    return NODUS_V2_SPEND_OK;
+}
+
+int nodus_v2_msig_digests2(const nodus_v2_msig_export2_t *x,
+                           const dna_env_leg_ctx_t *lctx, uint16_t n_lctx,
+                           dna_env_preflight_t *pf) {
+    if (!x || !x->env || !lctx || n_lctx == 0 || !pf || x->tip == UINT64_MAX)
+        return NODUS_V2_SPEND_ERR_ARG;
+    if (dna_env_preflight(x->env, x->env_len, x->chain32, x->tip + 1, lctx,
+                          n_lctx, pf) != DNA_ENV_PF_OK)
+        return NODUS_V2_SPEND_ERR_PREFLIGHT1;
+    return NODUS_V2_SPEND_OK;
+}
+
+/* Every exported digest equals the re-derived one of its leg. */
+static int v2m_digests_equal(const nodus_v2_msig_export2_t *x,
+                             const dna_env_preflight_t *pf) {
+    for (uint32_t j = 0; j < x->n_digests; j++)
+        if (memcmp(pf->auth_digest[x->leg_index[j]], x->digest[j], 64) != 0)
+            return 0;
+    return 1;
+}
+
+int nodus_v2_msig_review2(const nodus_v2_msig_export2_t *x,
+                          const dna_env_leg_ctx_t *lctx, uint16_t n_lctx,
+                          const uint8_t *signer_pk, dna_env_preflight_t *pf,
+                          nodus_v2_msig_review2_t *out) {
+    if (!out) return NODUS_V2_SPEND_ERR_ARG;
+    memset(out, 0, sizeof(*out));
+    if (!x || !x->env || !lctx || !pf) return NODUS_V2_SPEND_ERR_ARG;
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    if (!v) return NODUS_V2_SPEND_ERR_ALLOC;
+    nodus_v2_msig_leg_t leg;
+    int rc = nodus_v2_msig_legs_open2(x, v, &leg);
+    if (rc != NODUS_V2_SPEND_OK) goto done;
+    if (signer_pk && !v2m_key_in(leg.keys, leg.n, signer_pk)) {
+        rc = NODUS_V2_MSIG_ERR_NOT_MEMBER;
+        goto done;
+    }
+    /* never sign a digest you did not derive yourself — every one */
+    rc = nodus_v2_msig_digests2(x, lctx, n_lctx, pf);
+    if (rc != NODUS_V2_SPEND_OK) goto done;
+    if (!v2m_digests_equal(x, pf)) {
+        rc = NODUS_V2_MSIG_ERR_DIGEST;
+        goto done;
+    }
+    /* v1's window (F3): never "never", never longer than tip + 90 */
+    if (v->expiry_height == 0 ||
+        x->tip > UINT64_MAX - NODUS_V2_MSIG_EXPIRY_AHEAD ||
+        v->expiry_height > x->tip + NODUS_V2_MSIG_EXPIRY_AHEAD) {
+        rc = NODUS_V2_MSIG_ERR_EXPIRY;
+        goto done;
+    }
+    {
+        int arc = dna_msig_address(leg.desc, leg.desc_len, out->addr);
+        if (arc != 0) {
+            rc = arc == -2 ? NODUS_V2_SPEND_ERR_HASH : NODUS_V2_MSIG_ERR_DESC;
+            goto done;
+        }
+    }
+    /* the owner operation, read back from its bytes (the decision: the
+     * co-signer sees the SYSTEM call decoded and the CORE funding) */
+    {
+        const int drc = nodus_v2_stake_decode(x->env, x->env_len, &out->op);
+        if (drc == NODUS_V2_SPEND_ERR_HASH || drc == NODUS_V2_SPEND_ERR_ALLOC) {
+            rc = drc;
+            goto done;
+        }
+        if (drc != NODUS_V2_SPEND_OK || !out->op.gen4 ||
+            out->op.auth_kind != NODUS_RT_AUTHKIND_DSA87_MSIG_V1 ||
+            out->op.msig_signers != x->signers ||
+            memcmp(out->op.msig_addr, out->addr, 64) != 0) {
+            rc = NODUS_V2_MSIG_ERR_CALL;
+            goto done;
+        }
+        /* the change returns to THIS vault (the builder writes
+         * hex(address) — nodus_v2_stake_build), never to anyone else: the
+         * decoder checks only that the owner is lowercase hex, so a change
+         * output to another address would otherwise be signed unseen */
+        if (out->op.n_out == 1) {
+            char ah[129];
+            v2m_put_hex(ah, out->addr, 64);
+            if (memcmp(out->op.change_owner, ah, 128) != 0) {
+                rc = NODUS_V2_MSIG_ERR_CALL;
+                goto done;
+            }
+        }
+    }
+    out->m = leg.m;
+    out->n = leg.n;
+    out->signers = x->signers;
+    out->tip = x->tip;
+    out->expiry_height = v->expiry_height;
+    out->fee = v->fee_amount;
+    out->n_digests = x->n_digests;
+    memcpy(out->leg_index, x->leg_index, sizeof(out->leg_index));
+    memcpy(out->digest, x->digest, sizeof(out->digest));
+    memcpy(out->intent_id, pf->intent_id, 64);
+    rc = NODUS_V2_SPEND_OK;
+done:
+    if (rc != NODUS_V2_SPEND_OK) memset(out, 0, sizeof(*out));
+    free(v);
+    return rc;
+}
+
+int nodus_v2_msig_sig2_check(const nodus_v2_msig_export2_t *x,
+                             const nodus_v2_msig_leg_t *leg,
+                             const nodus_v2_msig_sig2_t *s) {
+    if (!x || !leg || !leg->keys || !s) return NODUS_V2_SPEND_ERR_ARG;
+    /* all or nothing: exactly the export's legs and digests */
+    if (s->n != x->n_digests) return NODUS_V2_MSIG_ERR_SIG_DIGEST;
+    for (uint32_t j = 0; j < s->n; j++)
+        if (s->leg_index[j] != x->leg_index[j] ||
+            memcmp(s->digest[j], x->digest[j], 64) != 0)
+            return NODUS_V2_MSIG_ERR_SIG_DIGEST;
+    if (!v2m_key_in(leg->keys, leg->n, s->pk))
+        return NODUS_V2_MSIG_ERR_NOT_MEMBER;
+    for (uint32_t j = 0; j < s->n; j++)
+        if (qgp_dsa87_verify(s->sig[j], NODUS_V2_MSIG_SIG_LEN, x->digest[j], 64,
+                             s->pk) != 0)
+            return NODUS_V2_MSIG_ERR_SIG;
+    return NODUS_V2_SPEND_OK;
+}
+
+int nodus_v2_msig_assemble2(nodus_v2_msig_export2_t *x,
+                            const dna_env_view_t *v,
+                            const nodus_v2_msig_sig2_t *const *sigs,
+                            int n_sig) {
+    if (!x || !x->env || !v || !sigs || n_sig < 1 || v->buf != x->env ||
+        n_sig > (int)NODUS_RT_AUTH_MAX_SIGNERS ||
+        v2m_indices_ok(x->n_digests, x->leg_index) != 0)
+        return NODUS_V2_SPEND_ERR_ARG;
+    for (int i = 0; i < n_sig; i++)
+        if (!sigs[i] || sigs[i]->n != x->n_digests)
+            return NODUS_V2_SPEND_ERR_ARG;
+    for (uint32_t j = 0; j < x->n_digests; j++)
+        if (x->leg_index[j] >= v->leg_count) return NODUS_V2_SPEND_ERR_ARG;
+    if ((uint32_t)n_sig != x->signers) return NODUS_V2_MSIG_ERR_COUNT;
+    /* every target blob must already hold exactly n_sig slots (count
+     * byte == n_sig, room for every slot) — the slots are written in
+     * place (nodus_v2_msig_assemble's rule, per leg) */
+    for (uint32_t j = 0; j < x->n_digests; j++) {
+        const uint16_t L = x->leg_index[j];
+        if ((uint64_t)v->leg[L].auth_len <
+                1u + (uint64_t)n_sig * NODUS_RT_AUTH_SIGNER_LEN ||
+            x->env[v->auth_off[L]] != (uint8_t)n_sig)
+            return NODUS_V2_SPEND_ERR_ARG;
+    }
+    /* ascending public-key order (the ONE canonical signer encoding), no
+     * duplicate key — an insertion sort of <= 15 indices */
+    int ord[NODUS_RT_AUTH_MAX_SIGNERS];
+    for (int i = 0; i < n_sig; i++) {
+        int b = i - 1;
+        while (b >= 0 && memcmp(sigs[ord[b]]->pk, sigs[i]->pk,
+                                NODUS_V2_MSIG_PK_LEN) > 0) {
+            ord[b + 1] = ord[b];
+            b--;
+        }
+        ord[b + 1] = i;
+    }
+    for (int i = 1; i < n_sig; i++)
+        if (memcmp(sigs[ord[i - 1]]->pk, sigs[ord[i]]->pk,
+                   NODUS_V2_MSIG_PK_LEN) == 0)
+            return NODUS_V2_MSIG_ERR_DUP_SIGNER;
+    for (uint32_t j = 0; j < x->n_digests; j++) {
+        uint8_t *a = x->env + v->auth_off[x->leg_index[j]];
+        for (int i = 0; i < n_sig; i++) {
+            uint8_t *slot = a + 1 + (size_t)i * NODUS_RT_AUTH_SIGNER_LEN;
+            memcpy(slot, sigs[ord[i]]->pk, NODUS_V2_MSIG_PK_LEN);
+            memcpy(slot + NODUS_V2_MSIG_PK_LEN, sigs[ord[i]]->sig[j],
+                   NODUS_V2_MSIG_SIG_LEN);
+        }
+    }
+    return NODUS_V2_SPEND_OK;
+}
+
+int nodus_v2_msig_combine2(nodus_v2_msig_export2_t *x,
+                           const dna_env_leg_ctx_t *lctx, uint16_t n_lctx,
+                           const nodus_v2_msig_sig2_t *const *sigs,
+                           int n_sig, dna_env_preflight_t *pf,
+                           int *bad_index) {
+    if (bad_index) *bad_index = -1;
+    if (!x || !x->env || !lctx || !sigs || !pf || n_sig < 1 ||
+        n_sig > (int)NODUS_RT_AUTH_MAX_SIGNERS)
+        return NODUS_V2_SPEND_ERR_ARG;
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    if (!v) return NODUS_V2_SPEND_ERR_ALLOC;
+    nodus_v2_msig_leg_t leg;
+    int rc = nodus_v2_msig_legs_open2(x, v, &leg);
+    if (rc != NODUS_V2_SPEND_OK) goto done;
+    if ((uint32_t)n_sig != x->signers) {
+        rc = NODUS_V2_MSIG_ERR_COUNT;
+        goto done;
+    }
+    rc = nodus_v2_msig_digests2(x, lctx, n_lctx, pf);
+    if (rc != NODUS_V2_SPEND_OK) goto done;
+    if (!v2m_digests_equal(x, pf)) {
+        rc = NODUS_V2_MSIG_ERR_DIGEST;
+        goto done;
+    }
+    for (int i = 0; i < n_sig; i++) {
+        rc = nodus_v2_msig_sig2_check(x, &leg, sigs[i]);
+        if (rc != NODUS_V2_SPEND_OK) {
+            if (bad_index) *bad_index = i;
+            goto done;
+        }
+    }
+    rc = nodus_v2_msig_assemble2(x, v, sigs, n_sig);
+    if (rc != NODUS_V2_SPEND_OK) goto done;
+    /* pass-2 self-check: the signed envelope still preflights, and its
+     * digests did not move (auth bytes reach wire_id only) */
+    rc = nodus_v2_msig_digests2(x, lctx, n_lctx, pf);
+    if (rc == NODUS_V2_SPEND_ERR_PREFLIGHT1) rc = NODUS_V2_SPEND_ERR_PREFLIGHT2;
+    if (rc == NODUS_V2_SPEND_OK && !v2m_digests_equal(x, pf))
+        rc = NODUS_V2_MSIG_ERR_DIGEST;
 done:
     free(v);
     return rc;

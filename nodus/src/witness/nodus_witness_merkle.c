@@ -8,6 +8,8 @@
 
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_validator.h"  /* HF-6 3d: the v2 row scan */
+#include "witness/nodus_witness_delegation.h" /* + the §6.3 / §6.4 bodies */
 #include "nodus/nodus_types.h"
 #include "crypto/utils/qgp_log.h"     /* QGP_LOG_* (new code; legacy lines use fprintf) */
 
@@ -1136,6 +1138,123 @@ int nodus_witness_merkle_compute_delegation_root(nodus_witness_t *w,
     int rc = merkle_root_rfc6962(leaves, n, root_out);
     free(leaves);
     return rc;
+}
+
+/* ── HF-6 sub-slice 3d — the generation-4 validator / delegation leaves ──
+ *
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §6.3 / §6.4 (APPROVED bytes). Under the HF-6 generation the validator
+ * and delegation trees keep their tags (0x02 / 0x03 — the P1 precedent
+ * above: a different preimage under the same tag, every row migrated in
+ * ONE transaction at H−1, so no tree ever mixes versions) and their
+ * two-stage shape: leaf value = SHA3-512(tag ‖ body), then the RFC 6962
+ * leaf prefix, then the RFC 6962 root; an empty table is the tagged
+ * sentinel. The bodies come from the ONE encoder per row type
+ * (nodus_validator_v2_leaf_encode, nodus_delegation_v2_leaf_encode) over
+ * the strict v2 row readers, so a validators row with no roles row, an
+ * orphan roles row, or a malformed row FAILS the root — it is never
+ * skipped and never zero-filled.
+ *
+ * ORDER: validators by pubkey_hash (= validator_id) ASC; delegations by
+ * (validator_hash, delegator_hash) = (validator_id, delegator_fp) ASC —
+ * both TOTAL orders over the tables' primary keys.
+ *
+ * Only nodus_witness_system_root_v5 ("NDS.SYS.v5", the HF-6 generation's
+ * composition) calls these; the v1 loaders above stay byte-identical for
+ * every block before H. */
+
+typedef struct {
+    uint8_t *buf;
+    size_t   n, cap;
+    uint8_t  tag;
+} merkle_v2_leaves_t;
+
+/* Append SHA3-512(tag ‖ body) to `acc`. @return 0 / -1. */
+static int merkle_v2_leaf_push(merkle_v2_leaves_t *acc, const uint8_t *body,
+                               size_t body_len) {
+    if (acc->n == acc->cap) {
+        size_t nc = acc->cap ? acc->cap * 2 : 16;
+        uint8_t *nb = realloc(acc->buf, nc * 64);
+        if (!nb) return -1;
+        acc->buf = nb;
+        acc->cap = nc;
+    }
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) return -1;
+    if (EVP_DigestUpdate(md, &acc->tag, 1) != 1 ||
+        EVP_DigestUpdate(md, body, body_len) != 1) {
+        EVP_MD_CTX_free(md);
+        return -1;
+    }
+    if (sha3_512_final(md, acc->buf + acc->n * 64) != 0) return -1;
+    acc->n++;
+    return 0;
+}
+
+static int merkle_v2_validator_visit(const nodus_v2_validator_row_t *row,
+                                     void *ud) {
+    merkle_v2_leaves_t *acc = ud;
+    uint8_t *body = malloc(NODUS_V2_VALIDATOR_LEAF_BODY_LEN);
+    if (!body) return -1;
+    int rc = -1;
+    if (nodus_validator_v2_leaf_encode(row, body) == 0 &&
+        merkle_v2_leaf_push(acc, body, NODUS_V2_VALIDATOR_LEAF_BODY_LEN) == 0)
+        rc = 0;
+    free(body);
+    return rc;
+}
+
+static int merkle_v2_delegation_visit(const nodus_v2_delegation_row_t *row,
+                                      void *ud) {
+    uint8_t body[NODUS_V2_DELEGATION_LEAF_BODY_LEN];
+    if (nodus_delegation_v2_leaf_encode(row, body) != 0) return -1;
+    return merkle_v2_leaf_push(ud, body, sizeof(body));
+}
+
+/* Leaf values → RFC 6962 root (the v1 subtrees' second stage, verbatim);
+ * an empty set is the tag's sentinel. Frees acc->buf. @return 0 / -1. */
+static int merkle_v2_root(merkle_v2_leaves_t *acc, uint8_t *root_out) {
+    int rc = -1;
+    if (acc->n == 0) {
+        rc = nodus_merkle_empty_root(acc->tag, root_out);
+    } else {
+        rc = 0;
+        for (size_t i = 0; i < acc->n && rc == 0; i++) {
+            uint8_t prehashed[64];
+            if (leaf_hash(acc->buf + i * 64, 64, prehashed) != 0) rc = -1;
+            else memcpy(acc->buf + i * 64, prehashed, 64);
+        }
+        if (rc == 0) rc = merkle_root_rfc6962(acc->buf, acc->n, root_out);
+    }
+    free(acc->buf);
+    acc->buf = NULL;
+    return rc;
+}
+
+int nodus_witness_merkle_compute_validator_root_v2(nodus_witness_t *w,
+                                                   uint8_t *root_out) {
+    if (!w || !w->db || !root_out) return -1;
+    merkle_v2_leaves_t acc = { NULL, 0, 0, NODUS_TREE_TAG_VALIDATOR };
+    if (nodus_validator_v2_scan(w, merkle_v2_validator_visit, &acc) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "validator leaf v2 load failed — "
+                      "failing the validator root");
+        free(acc.buf);
+        return -1;
+    }
+    return merkle_v2_root(&acc, root_out);
+}
+
+int nodus_witness_merkle_compute_delegation_root_v2(nodus_witness_t *w,
+                                                    uint8_t *root_out) {
+    if (!w || !w->db || !root_out) return -1;
+    merkle_v2_leaves_t acc = { NULL, 0, 0, NODUS_TREE_TAG_DELEGATION };
+    if (nodus_delegation_v2_scan(w, merkle_v2_delegation_visit, &acc) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "delegation leaf v2 load failed — "
+                      "failing the delegation root");
+        free(acc.buf);
+        return -1;
+    }
+    return merkle_v2_root(&acc, root_out);
 }
 
 /* Root-layout round (K2/K3, 2026-09-25): the epoch_state subtree

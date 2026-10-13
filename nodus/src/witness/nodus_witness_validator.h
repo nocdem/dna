@@ -129,8 +129,12 @@ int nodus_validator_active_count(nodus_witness_t *w, int *count_out);
  *   filter_status >= 0 : rows where status == filter_status.
  *
  * Results are ordered by (self_stake + external_delegated) DESC,
- * pubkey ASC — identical to top_n so rankings remain stable across
- * calls regardless of filter.
+ * pubkey ASC, pubkey_hash ASC — the first two keys as top_n, the last
+ * one (the PRIMARY KEY) making the order total when two rows carry one
+ * consensus pubkey (the HF-6 generation: an UNSTAKED row and a later
+ * STAKE's row; validators.pubkey is not UNIQUE). Below the HF-6
+ * generation pubkey_hash is a function of pubkey, so the extra key never
+ * reorders a row.
  *
  * On success *count_out holds the number of rows written to `out`, and
  * *total_out holds the total row count matching the filter (ignoring
@@ -145,6 +149,258 @@ int nodus_validator_list_paged(nodus_witness_t *w,
                                 dnac_validator_record_t *out,
                                 int *count_out,
                                 int *total_out);
+
+/**
+ * nodus_validator_list_paged plus each row's key: key_out[i] (capacity
+ * `limit`; NULL = not wanted) receives row i's validators.pubkey_hash —
+ * under the HF-6 generation that value IS the validator_id
+ * (v2_validator_roles.validator_id), the one key that tells two rows with
+ * one consensus pubkey apart. A key that is not 64 bytes is -1.
+ * nodus_validator_list_paged is this call with key_out NULL.
+ *
+ * @return 0 on success, -1 on error.
+ */
+int nodus_validator_list_paged_keys(nodus_witness_t *w,
+                                     int filter_status,
+                                     int offset,
+                                     int limit,
+                                     dnac_validator_record_t *out,
+                                     uint8_t (*key_out)[64],
+                                     int *count_out,
+                                     int *total_out);
+
+/* ══ HF-6 sub-slice 3a — the v2 validator row (INERT) ═══════════════════
+ *
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §1.1-§1.2 (validator_id, owner_fp, the consensus-key fields), §6.3 (the
+ * row's fields; the two pending fields stay in the leaf but are ALWAYS
+ * zero — 2592 × 0x00 AND effective epoch 0 — enforced at every read and
+ * write: HF-6 has no key rotation, khan decision docs/plans/decisions/
+ * 2026-10-13-kurultay-18-summary.md items 1 and 4), §7 (keys re-valued in place at
+ * the activation edge); plan tasks/hf6-slice3-plan.md §1, decision D1
+ * option (i).
+ *
+ * Under the HF-6 generation a validator row is TWO table rows joined on
+ * one key:
+ *   validators.pubkey_hash          = validator_id (re-keyed at the edge;
+ *                                     the column name is historical)
+ *   validators.pubkey               = consensus_pubkey
+ *   v2_validator_roles.validator_id = validator_id
+ *   v2_validator_roles.{owner_fp, pending_consensus_pubkey,
+ *                       consensus_key_effective_epoch}
+ * A validators row with no roles row (or the reverse) is a half-migrated
+ * state: every function below reports it as a FAULT (-1), never as
+ * "absent" (1) — a DB failure or an inconsistency is never a value.
+ *
+ * CALLERS (sub-slice 3d, every one behind a generation-4 test): the
+ * distribution (get by validator_id since slice 5c, nodus_witness_v2_
+ * econ.c), the graduation (get + update, nodus_witness_v2_epoch.c), the
+ * committee (bonded_tenured, nodus_witness_committee.c) and the v5 root's
+ * validator leaves (scan + leaf_encode below, nodus_witness_merkle.c).
+ * Every function above is unchanged.
+ * `dnac/include/dnac/validator.h` (a client header) is NOT extended — the
+ * row type is witness-local. ~5.4 KB per row: callers heap-allocate
+ * arrays. */
+
+#define NODUS_V2_VALIDATOR_ID_LEN  64u
+#define NODUS_V2_OWNER_FP_LEN      64u
+
+typedef struct {
+    /** Today's 13 mutable columns + the pubkey, exactly as the v1 functions
+     *  read them; `rec.pubkey` IS the consensus_pubkey. */
+    dnac_validator_record_t rec;
+    /** validators.pubkey_hash = v2_validator_roles.validator_id. */
+    uint8_t  validator_id[NODUS_V2_VALIDATOR_ID_LEN];
+    /** SHA3-512 of one key, or a dna_msig_address (§1.2). Immutable: HF-6
+     *  has no TRANSFER_OWNER (design K3, goal G10). */
+    uint8_t  owner_fp[NODUS_V2_OWNER_FP_LEN];
+    /** ALWAYS 2592 × 0x00 (no key rotation in HF-6; the §6.3 leaf keeps
+     *  the field). Any other value is a malformed row. */
+    uint8_t  pending_consensus_pubkey[DNAC_PUBKEY_SIZE];
+    /** ALWAYS 0 (as above). */
+    uint64_t consensus_key_effective_epoch;
+} nodus_v2_validator_row_t;
+
+/**
+ * Fetch the v2 row whose key (validators.pubkey_hash) is `validator_id`.
+ * The row read must be well formed: blob lengths exact, validator_id and
+ * owner_fp not all-zero, both pending fields zero.
+ *
+ * @return 0 found (*out set); 1 neither table holds the key;
+ *         -1 fault — SQLite error, a malformed row, or only ONE of the two
+ *         tables holds the key.
+ */
+int nodus_validator_v2_get(nodus_witness_t *w,
+                           const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                           nodus_v2_validator_row_t *out);
+
+/**
+ * Write a v2 row back: the 13 mutable `validators` columns (the
+ * bind_validator_mutable_fields set) and the roles row's
+ * pending_consensus_pubkey + consensus_key_effective_epoch (always zero).
+ *
+ * IMMUTABLE and checked, never written: validator_id (the key), the
+ * consensus pubkey (validators.pubkey — no writer changes it: HF-6 has
+ * no key rotation), owner_fp (no TRANSFER_OWNER in HF-6). The UPDATEs are keyed by
+ * (validator_id, pubkey) and (validator_id, owner_fp): a row whose stored
+ * pubkey or owner differs is NOT updated and the call is a fault.
+ *
+ * Runs INSIDE THE CALLER'S TRANSACTION — called in autocommit mode it
+ * refuses (-1) before writing anything. On -1 one table may already have
+ * been written; the caller rolls the transaction back (the host does so on
+ * every block fault).
+ *
+ * Refused before any write (-1): an all-zero validator_id or owner_fp, a
+ * pending key or effective epoch that is not zero.
+ *
+ * @return 0 both rows updated; 1 neither table holds validator_id;
+ *         -1 fault (above, an SQLite error, only one table holding the
+ *         key, or a pubkey / owner mismatch).
+ */
+int nodus_validator_v2_update(nodus_witness_t *w,
+                              const nodus_v2_validator_row_t *row);
+
+/**
+ * The HF-6 generation's arm of nodus_validator_bonded_tenured — a NEW
+ * function (the existing one stays byte-identical, so generations 1-3
+ * read exactly what they read today). SAME WHERE (status IN (ACTIVE,
+ * ELIGIBLE), Rule R tenure at `tenure_anchor` or the genesis carve-out
+ * active_since_block <= 1), SAME collect order (pubkey ASC — slice 3 keeps
+ * the pubkey tiebreak), no LIMIT; each candidate is returned as a full v2
+ * row whose validator_id is the row's pubkey_hash value (after the HF-6
+ * edge that value IS the validator_id — `dna_validator_id_migrated` would
+ * be wrong for rows a v2 STAKE creates later).
+ *
+ * @param out  heap array of capacity `cap` (~5.4 KB per row).
+ * @return 0 (*count_out set, may be 0); -1 fault — SQLite error, a
+ *         malformed row, a candidate with no roles row, or more matching
+ *         rows than `cap` (never a truncation: two nodes must rank the
+ *         same set).
+ */
+int nodus_validator_v2_bonded_tenured(nodus_witness_t *w,
+                                      uint64_t tenure_anchor,
+                                      nodus_v2_validator_row_t *out,
+                                      int cap,
+                                      int *count_out);
+
+/* ══ HF-6 sub-slice 3d — the v2 validator leaf and the full scan ════════
+ *
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §6.3 (APPROVED bytes, operator 2026-10-08 "hepsi onaylı"): the
+ * validator leaf v2 is 5390 bytes — the tree tag 0x02 (unchanged,
+ * NODUS_TREE_TAG_VALIDATOR) followed by the BODY below, all integers
+ * big-endian:
+ *
+ *   off  field                              len
+ *      0 validator_id                         64
+ *     64 owner_fp                             64
+ *    128 consensus_pubkey                   2592
+ *   2720 pending_consensus_pubkey           2592
+ *   5312 consensus_key_effective_epoch u64     8
+ *   5320 self_stake u64                        8
+ *   5328 total_delegated u64                   8
+ *   5336 external_delegated u64                8
+ *   5344 commission_bps u16                    2
+ *   5346 pending_commission_bps u16            2
+ *   5348 pending_effective_block u64           8
+ *   5356 status u8                             1
+ *   5357 active_since_block u64                8
+ *   5365 unstake_commit_block u64              8
+ *   5373 last_validator_update_block u64       8
+ *   5381 consecutive_missed_epochs u64         8
+ *   5389 (end)
+ *
+ * unstake_destination_fp / unstake_destination_pubkey are NOT in it
+ * (§6.3 "v1'den çıkan"). The body is also the value plan
+ * tasks/hf6-slice3-plan.md §2 "3c" names for the gen-4 SYSTEM adapter op
+ * (leaf minus tag) — ONE encoder for both. */
+
+#define NODUS_V2_VALIDATOR_LEAF_BODY_LEN  5389u
+
+/**
+ * Encode `row` as the §6.3 leaf body. Every u64 field must be within
+ * [0, INT64_MAX] — the stored SQLite INTEGER range; a value above it can
+ * only come from a negative stored integer cast through uint64_t, i.e.
+ * local corruption — and is refused rather than hashed.
+ * @return 0 / -1.
+ */
+int nodus_validator_v2_leaf_encode(const nodus_v2_validator_row_t *row,
+                                   uint8_t out[NODUS_V2_VALIDATOR_LEAF_BODY_LEN]);
+
+/** Visitor of nodus_validator_v2_scan: nonzero stops the scan (fault). */
+typedef int (*nodus_v2_validator_visit_fn)(const nodus_v2_validator_row_t *row,
+                                           void *ud);
+
+/**
+ * EVERY v2 validator row, in validators.pubkey_hash (= validator_id) ASC
+ * order — the §6.3 leaf order — each decoded by the same strict reader as
+ * nodus_validator_v2_get (blob lengths exact, both pending fields zero,
+ * a validators row without its roles row is a FAULT). After
+ * the scan the v2_validator_roles row count must equal the number of
+ * validators rows visited: a roles row with no validators row (an
+ * orphan) is a FAULT too, so neither table can hold state the other —
+ * and therefore the root — does not see.
+ *
+ * Read-only; one statement open at a time (the visitor must not write
+ * either table). `row` passed to the visitor is a scratch buffer reused
+ * per row (~5.4 KB, heap).
+ *
+ * @return 0 every row visited (none is fine); -1 fault (SQLite error, a
+ *         malformed / half-migrated row, an orphan roles row, an
+ *         allocation failure, or a visitor returning nonzero).
+ */
+int nodus_validator_v2_scan(nodus_witness_t *w,
+                            nodus_v2_validator_visit_fn fn, void *ud);
+
+/* ══ HF-6 slice 4 — the consensus-key reservation (design rev 6 §4) ════
+ *
+ * `v2_consensus_keys (consensus_pk_hash PK, validator_id, role)` — the ONE
+ * table with a unique key column that makes "a consensus key appears at
+ * most once" a primary-key fact. consensus_pk_hash = SHA3-512(consensus
+ * pubkey), UNTAGGED.
+ *
+ * PERMANENT AND APPEND-ONLY (khan decision docs/plans/decisions/
+ * 2026-10-13-kurultay-18-summary.md items 1 and 4): a consensus key that
+ * ever appeared in a validators row — any status, UNSTAKED included — is
+ * never usable again. The rows are a pure function of committed state:
+ * EXACTLY one row per validators row (validators rows are never deleted
+ * and their pubkey never changes), role 1, naming that row's
+ * validator_id; no other row. Nothing releases a row. The role column is
+ * kept (schema S18, unchanged) and holds 1 only — the slice-6 pending role
+ * 2 is gone with ROTATE.
+ * Writers: the generation-4 edge (nodus_witness_v2_migrate.c — every
+ * validators row, UNSTAKED included) and the generation-4 STAKE (SYSTEM
+ * adapter op 17, nodus_witness_rt_native.c rtn_stake2_exec, behind an
+ * ABSENT precondition). Every generation-4 boundary re-derives the table
+ * and compares it row for row, with no tolerance
+ * (nodus_witness_v2_keyres_diff; the boundary step only logs). */
+
+#define NODUS_V2_KEY_HASH_LEN      64u
+#define NODUS_V2_KEY_ROLE_ACTIVE   1u
+
+/**
+ * The reservation of `key_hash`.
+ * @return 0 found (*validator_id_out, *role_out set — always 1); 1
+ *         absent; -1 fault (SQLite error, a validator_id that is not a
+ *         64-byte BLOB or is all-zero, a role other than 1).
+ */
+int nodus_validator_v2_key_get(nodus_witness_t *w,
+                               const uint8_t key_hash[NODUS_V2_KEY_HASH_LEN],
+                               uint8_t validator_id_out[NODUS_V2_VALIDATOR_ID_LEN],
+                               uint8_t *role_out);
+
+/**
+ * STRICT insert of one reservation, INSIDE THE CALLER'S TRANSACTION
+ * (autocommit → -1, nothing written). Refused (-1) before writing: a role
+ * other than 1, an all-zero key_hash or validator_id. A held key is a
+ * PRIMARY KEY conflict → -1 (the caller proved it absent first).
+ * There is NO release function: the index is permanent (above).
+ * @return 0 one row inserted / -1.
+ */
+int nodus_validator_v2_key_insert(nodus_witness_t *w,
+                                  const uint8_t key_hash[NODUS_V2_KEY_HASH_LEN],
+                                  const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
+                                  uint8_t role);
 
 #ifdef __cplusplus
 }

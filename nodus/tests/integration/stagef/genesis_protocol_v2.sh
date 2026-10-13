@@ -202,9 +202,11 @@ echo "════ V2 Genesis Protocol — mode: $(if [ "$SCENARIOS_ONLY" = 1 ];
 #     compared snapshots.
 #   test_cmt_multisig.sh (general multisig, final pre-testnet wipe) —
 #     `nodus-cli msig address` over nodes 2/3/4 (2-of-3); node 1 pays it
-#     with an ordinary spend; `v2-envelope spend --msig` + two offline
-#     `msig sign` + `msig combine` spend it to node 5 (one signature is
-#     refused locally first); 7/7 effects and state_root. DEFAULT build,
+#     with an ordinary spend; `v2-envelope spend --msig` + two `msig
+#     sign` (each over its OWN node, --pin = that node's nodus.fp; no pin
+#     and a wrong pin refused first) + `msig combine` spend it to node 5
+#     (one signature is refused locally first); 7/7 effects and
+#     state_root. DEFAULT build,
 #     no epoch wait. Funded by node 1's coins — AFTER
 #     test_cmt_token_create.sh / test_cmt_self_delegate.sh (claims node
 #     1's leaf itself only if node 1 is not already funded).

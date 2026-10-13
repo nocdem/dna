@@ -1,0 +1,1725 @@
+/**
+ * @file nodus/tests/test_v2_stake_client.c
+ * @brief HF-6 6f-1 — the client path for a generation-4 STAKE: the node
+ *        consent formed the way nodus-cli `validator consent` forms it,
+ *        carried through the consent container, laid out by the shared
+ *        builder (nodus/src/client/nodus_v2_stake.c) and fed to the
+ *        chain's OWN generation-4 hooks; HF-6 slice 7b adds the
+ *        generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE;
+ *        HF-6 D2 removes ROTATE from the client and puts the owner in the
+ *        UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT calls (C2).
+ *
+ * Design docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6
+ * §2 (STAKE 7301 B, the consent re-construction contract, "STAKE/DELEGATE
+ * istemci kodlayıcısı generation'a duyarlı olur", the "DEĞİŞİKLİK — han
+ * kararı 2026-10-13" C2 layouts), §6.1 (consent bytes, ctx
+ * "nodus.valbind.v1"), §6.2 (validator_id); decisions docs/plans/decisions/
+ * 2026-10-08-kurultay-14-hf6-summary.md (K7), 2026-10-03-role-stake-
+ * amounts.md 1B (the node consents, the owner signs and pays) and
+ * 2026-10-13-kurultay-18-summary.md (items 1 and 2: no ROTATE; C2).
+ *
+ * ── WHAT IT PROVES ──────────────────────────────────────────────────────
+ *  V1 The consent: the message dna_valbind_consent_msg builds (the codec
+ *     call nodus-cli makes) equals an independent restatement of the §6.1
+ *     bytes in this file (version 1 BE ‖ chain 32 ‖ op ‖ subject 64 ‖
+ *     owner 64 ‖ pk 2592 ‖ expiry u64 BE = 2765), for op 1 and op 2 (the
+ *     codec still has op 2); the STAKE signature dna_valbind_consent_sign
+ *     makes verifies under qgp_dsa87_verify_ctx with the ctx bytes
+ *     "nodus.valbind.v1" written here, and NOT under the plain empty-ctx
+ *     qgp_dsa87_verify.
+ *  V2 The consent container (nodus_v2_consent_text_*) round-trips every
+ *     field byte for byte; it refuses a wrong magic, an uppercase hex
+ *     digit, a reordered line, trailing bytes, a missing final newline,
+ *     op 3 or a STAKE with a non-zero subject, op 2 — the removed ROTATE —
+ *     on encode (a codec-signed op-2 consent too) and on parse, op 4,
+ *     a leading-zero / overflowing expiry, a short signature.
+ *  S1 Generation-4 STAKE built by nodus_v2_stake_build (GEN_STORAGE
+ *     tuples, generation 4, the owner key signs, the consent from V2's
+ *     parse): the SYSTEM call equals the restated 7301-byte layout
+ *     (owner_fp = SHA3-512(owner pk) ‖ consensus_pk ‖ consent_sig ‖
+ *     expiry ‖ commission ‖ bond — test_hf6_stake.c stake2_call's
+ *     layout); the read-back fields equal the request.
+ *  S2 The GEN_STORAGE SYSTEM read plan of that envelope, with the
+ *     engine's chain id and the builder's intent_id as ctx, asks
+ *     [op 7 active_count][op 13 validator_id][op 17 SHA3-512(pk)], and
+ *     the validator_id it names equals both dna_validator_id_new(chain,
+ *     intent_id) — what nodus-cli prints — and an independent restatement
+ *     of §6.2; the GEN_EVM runtime refuses the call.
+ *  S3 The GEN_STORAGE SYSTEM exec, given the owner as the single verified
+ *     signer and the "may apply" reads, APPLIES (it rebuilds the consent
+ *     message from the call and verifies the REAL signature — the check
+ *     that the client's consent and bytes agree with the chain): three
+ *     effects, the op-13 row naming the owner, the consensus key, the
+ *     bond, the commission. Another signer is refused.
+ *  S4 The GEN_STORAGE CORE exec of the funding leg balances with lock =
+ *     bond (Σin == change + fee + bond); one raw unit more on the input
+ *     is refused.
+ *  R1 No ROTATE in the client (HF-6 D2): runtime_op 10 is ERR_OP at
+ *     generation 4 and at generation 0 (the chain's refusal of op 10 is
+ *     test_hf6_rotate's).
+ *  G1 Generation awareness: a STAKE at generation 0 and at GEN_EVM builds
+ *     the legacy 2666-byte call with the same intent_id and identical
+ *     bytes outside the two auth blobs (the v1 path is unchanged by the
+ *     generation field); so do a DELEGATE, an UNDELEGATE (5192 bytes,
+ *     equal to the restated delegator_pk ‖ validator_pk ‖ amount) and an
+ *     UNSTAKE (2592 bytes, the signer's key) — HF-6 slice 7b left the
+ *     legacy layouts of ops 2-4 as they were; VALIDATOR_UPDATE below
+ *     generation 4 is ERR_GEN; a gen-4 STAKE with bond 0 or
+ *     INT64_MAX + 1 is ERR_BOND, a commission above the bound
+ *     ERR_COMMISSION, a missing consent ERR_ARG; at generation 4
+ *     DELEGATE / UNDELEGATE / UNSTAKE /
+ *     VALIDATOR_UPDATE without a validator_id or with an all-zero one are
+ *     ERR_ARG, a DELEGATE amount of 0 ERR_AMOUNT, a VALIDATOR_UPDATE
+ *     commission above the bound ERR_COMMISSION.
+ *  D1 nodus_v2_stake_decode refuses a generation-4 STAKE whose owner_fp
+ *     byte was flipped (owner != SHA3-512(signer)) and accepts the
+ *     untouched bytes.
+ *  HF-6 slice 6b (design rev 6 §11.3 / §11.5, §6.1 op 3; Kurultay #16
+ *  khan decision 1):
+ *  V3 The op-3 (STORAGE_REGISTER) consent: dna_valbind_consent_msg with
+ *     op 3 and a zero subject equals the §6.1 restatement with op byte 3;
+ *     the container round-trips an op-3 consent byte for byte, and
+ *     refuses op 3 with a non-zero subject (encode and parse).
+ *  T1 STORAGE_REGISTER built by nodus_v2_stake_build at generation 4 (the
+ *     owner KO signs, the storage node KS consents with op 3 through the
+ *     container): the SYSTEM call equals the restated 7299-byte layout
+ *     owner_fp = SHA3-512(KO) ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond;
+ *     the read-back carries the owner, the node key, the node_fp =
+ *     SHA3-512(node_pk), the consent and the bond; the GEN_STORAGE SYSTEM
+ *     exec — the real consent verified under the node key — CREATEs the
+ *     row with the owner in the payee_fp column; the decoder refuses a
+ *     flipped owner_fp byte.
+ *  T2 STORAGE_EXIT built at generation 4: the call is exactly node_fp ‖
+ *     owner_fp = SHA3-512(signer) (128 bytes, C2); read-back amount 0,
+ *     owner_fp = SHA3-512(signer), node_fp = the request's; the exec
+ *     against an ACTIVE row owned by KO applies, and the node key itself
+ *     as the signer is refused; the decoder refuses a flipped owner_fp.
+ *  T3 Refusals: REGISTER and EXIT at generation 0 and GEN_EVM (ERR_GEN —
+ *     the storage ops have no other layout); REGISTER bond 0 and
+ *     INT64_MAX + 1 (ERR_STORAGE_BOND); REGISTER without the node key or
+ *     the consent, EXIT without node_fp (ERR_ARG).
+ *  HF-6 slice 7b (design rev 6 §1.3 owner rule, §2 layouts — K7), against
+ *  the validator row S3 created (validator_id g_vid, owner KO):
+ *  W1 DELEGATE by the delegator KD at generation 4: the SYSTEM call equals
+ *     the restated 136 bytes SHA3-512(KD) ‖ g_vid ‖ amount; read-back
+ *     owner_fp = SHA3-512(KD), validator_id, amount; the plan asks
+ *     [op 13 vid][op 14 dfp ‖ vid][op 15 vid]; the exec (no name gate)
+ *     APPLIES — CREATE op 14 (dfp, vid, amount, h), SET op 13 with
+ *     total / external delegated + amount; KX and the validator's owner KO
+ *     as the signer are refused (the delegator_fp is KD's); the funding
+ *     leg balances with lock = amount, +1 refused.
+ *  W2 UNDELEGATE of all of it by KD (the rows W1 wrote as the reads): the
+ *     same 136-byte layout under op 4; plan [op 13][op 14]; the exec
+ *     APPLIES — SET op 13 back to 0 delegated, DELETE op 14; KX refused;
+ *     the funding leg is fee-only (Σin == change + fee, +1 refused) and
+ *     CREATEs the release coin owned by hex(SHA3-512(KD)) holding the
+ *     amount, locked past h.
+ *  W3 UNSTAKE by the owner KO: the call is exactly g_vid ‖ SHA3-512(KO)
+ *     (128 bytes, C2); plan [op 13]; the exec APPLIES — SET op 13
+ *     RETIRING, unstake commit = h; KX refused; the call rewritten to name
+ *     KX as the owner is refused with KX signing AND with the row's owner
+ *     KO signing (C2); fee-only funding, +1 refused.
+ *  W4 VALIDATOR_UPDATE by KO: the call is g_vid ‖ SHA3-512(KO) ‖
+ *     commission u16 (130 bytes, C2); a decrease applies at once
+ *     (commission = new, pending 0), an increase is pending until h + 2E
+ *     (current commission unchanged); Rule K stamp = h; KX refused;
+ *     fee-only funding.
+ *  W5 Decode refusals: a DELEGATE whose delegator_fp byte is flipped (not
+ *     SHA3-512 of the signer), an UNSTAKE whose validator_id is zeroed or
+ *     whose owner_fp byte is flipped, a VALIDATOR_UPDATE whose commission
+ *     is 0xFFFF or whose owner_fp byte is flipped; the untouched bytes
+ *     decode.
+ *
+ * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
+ * Compile flags: NODUS_EVM_ENABLED (generation 4 is compiled only with the
+ * EVM runtime; the CMake target is registered only then). Environment:
+ * none. No database, no network, no files.
+ *
+ * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
+ * Nothing.
+ *
+ * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
+ *  - Hook level only: the verdict, the active_count / row / reservation
+ *    reads and the funding UTXO rows are FABRICATED engine facts. It
+ *    proves the client's bytes and consent against the exec's rule
+ *    decisions, NOT admission (descriptor ownership, the meter, the
+ *    leg signatures — the builder's own preflight self-check covers
+ *    those), nor a block applied end to end.
+ *  - nodus-cli's `validator consent` body is NOT driven (it is I/O around
+ *    two codec calls); this test makes the same two codec calls. The
+ *    CLI's file handling, session reads and printing are untested here.
+ *  - The layout restatements (V1, S1, W1-W4, T2) are written by the same
+ *    author as the builder change; they are self-consistency with the
+ *    design bytes and the exec's parsers, not an independent oracle. The
+ *    exec accepting the bytes (S3, W1-W4, T2) is the stronger check.
+ *  - G1's "legacy ops 2-4 unchanged" is a restatement of the legacy call
+ *    bytes plus generation 0 == GEN_EVM: no intent_id vector from before
+ *    slice 7b is pinned here (pinning one needs a run of the old code).
+ *  - W1-W4 are hook-level with fabricated rows: the HF-8 name gate is off
+ *    (ctx.delegate_name_required 0), so W1 does not exercise the op-16
+ *    name read.
+ *  - Written and compiled, NOT RUN by its author (the BUILDER rule).
+ *
+ * Copyright (c) 2026 nocdem
+ * SPDX-License-Identifier: MIT
+ */
+
+#define NODUS_WITNESS_INTERNAL_API 1
+
+#include "witness/nodus_witness_runtime.h"
+#include "nodus/nodus_types.h"
+#include "nodus/nodus_v2_spend.h"
+#include "client/nodus_v2_stake.h"
+
+#include "dnac/dnac.h"
+#include "dnac/validator.h"
+#include "dnac/env_wire.h"
+#include "dnac/effect_wire.h"
+#include "dnac/ledger_ids.h"
+#include "dnac/valbind_wire.h"
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define CHECK(cond, msg) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, \
+                (msg)); \
+        return 1; \
+    } \
+    g_checks++; \
+} while (0)
+
+static int g_checks = 0;
+
+#define E_LEN    ((uint64_t)DNAC_EPOCH_LENGTH)
+#define SMIN     ((uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT)
+#define PK_LEN   ((size_t)QGP_DSA87_PUBLICKEYBYTES)
+#define SIG_LEN  ((size_t)QGP_DSA87_SIGNATURE_BYTES)
+#define TIP      8u
+#define H_EXEC   9u               /* the fabricated executing height      */
+#define EXP      (H_EXEC + 100u)  /* the consent expiry (within 720)      */
+#define BPS      500u
+#define STK_LEN  7301u            /* design §2 (K7): 64+2592+4627+8+2+8   */
+#define SRG_LEN  7299u            /* design §2 / §11.3: 64+2592+4627+8+8  */
+#define SEX_LEN  128u             /* design §2 / §11.5 + C2 (2026-10-13):
+                                   * node_fp ‖ owner_fp                   */
+#define SBOND    ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
+
+/* restated from nodus_witness_rt_native.c (static there) */
+#define OP_STATS      7u
+#define OP_VAL2       13u
+#define OP_KEYRES     17u
+#define OP_UTXO       1u
+#define V2_REC_LEN    5389u
+#define V2_OWNER_OFF  64u
+#define V2_CPK_OFF    128u
+#define V2_PPK_OFF    (128u + 2592u)
+#define V2_KEFF_OFF   (128u + 2u * 2592u)             /* 5312 */
+#define V2_SELF_OFF   (V2_KEFF_OFF + 8u)
+#define V2_TOTDEL_OFF (V2_SELF_OFF + 8u)
+#define V2_EXTDEL_OFF (V2_SELF_OFF + 16u)
+#define V2_COMM_OFF   (V2_SELF_OFF + 24u)
+#define V2_PCOMM_OFF  (V2_COMM_OFF + 2u)
+#define V2_PEFF_OFF   (V2_COMM_OFF + 4u)
+#define V2_STAT_OFF   (V2_COMM_OFF + 12u)
+#define V2_UCOMMIT_OFF (V2_STAT_OFF + 9u)
+#define V2_LASTUPD_OFF (V2_STAT_OFF + 17u)
+/* HF-6 slice 7b — the generation-4 delegation rows (rt_native.c
+ * RTN_SYS_OP_DELEG2 / _DELEGCNT2, RTN_DEL2_*) and the calls (design §2) */
+#define OP_DELEG2     14u
+#define OP_DELEGCNT2  15u
+#define DEL2_REC_LEN  144u
+#define DEL2_AMT_OFF  128u
+#define DEL2_AT_OFF   136u
+#define DLG_LEN       136u        /* design §2 (K7): 64+64+8              */
+#define UNS_LEN       128u        /* design §2 (K7) + C2: validator_id ‖
+                                   * owner_fp                             */
+#define VUP_LEN       130u        /* design §2 (K7) + C2: 64+64+2         */
+#define UTXO_REC_LEN  284u
+#define UTXO_AMT_OFF  128u
+#define UTXO_UNL_OFF  276u
+#define OP_STOR       8u
+#define OP_STORCNT    9u
+#define STOR_REC_LEN  2693u
+#define STOR_OWNER_OFF 2592u      /* the payee_fp column (= the owner)    */
+#define STOR_BOND_OFF 2656u
+#define STOR_STAT_OFF 2664u
+#define STOR_REGH_OFF 2665u
+#define STOR_EXITH_OFF 2673u
+
+static void put64(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
+}
+static uint64_t get64(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | p[i];
+    return v;
+}
+static void hex_of(const uint8_t raw[64], char out[129]) {
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 64; i++) {
+        out[2 * i]     = hx[raw[i] >> 4];
+        out[2 * i + 1] = hx[raw[i] & 15];
+    }
+    out[128] = '\0';
+}
+
+/* ══ keys, ruleset, coin ═════════════════════════════════════════════ */
+
+typedef struct {
+    uint8_t pk[QGP_DSA87_PUBLICKEYBYTES];
+    uint8_t sk[QGP_DSA87_SECRETKEYBYTES];
+    uint8_t fp[64];
+    char    hex[129];
+} cl_key_t;
+
+/* KO the owner (signs, pays), KC the node's consensus key at STAKE, KN the
+ * rotation target, KX a foreign key, KS a storage node key (HF-6 6b), KD a
+ * delegator (HF-6 slice 7b) */
+enum { KO, KC, KN, KX, KS, KD, N_KEYS };
+static cl_key_t g_k[N_KEYS];
+
+static int keys_make(void) {
+    for (int i = 0; i < N_KEYS; i++) {
+        uint8_t seed[32];
+        memset(seed, 0x6A + i, sizeof(seed));
+        if (qgp_dsa87_keypair_derand(g_k[i].pk, g_k[i].sk, seed) != 0)
+            return -1;
+        if (qgp_sha3_512(g_k[i].pk, PK_LEN, g_k[i].fp) != 0) return -1;
+        hex_of(g_k[i].fp, g_k[i].hex);
+    }
+    return 0;
+}
+
+static nodus_v2_stake_ruleset_t g_rs4, g_rs3;
+static uint8_t g_chain32[DNA_CHAIN_ID_LEN];
+
+static int rs_from(uint32_t gen, nodus_v2_stake_ruleset_t *rs) {
+    const nodus_domain_runtime_t *s =
+        nodus_runtime_for_generation(gen, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *c =
+        nodus_runtime_for_generation(gen, DNA_DOMAIN_CORE);
+    if (!s || !c) return -1;
+    memset(rs, 0, sizeof(*rs));
+    rs->sys_ruleset_version  = s->ruleset_version;
+    memcpy(rs->sys_ruleset_hash, s->ruleset_hash, 64);
+    rs->core_ruleset_version = c->ruleset_version;
+    memcpy(rs->core_ruleset_hash, c->ruleset_hash, 64);
+    return 0;
+}
+
+static nodus_v2_stake_coin_t g_coin;
+
+static void coin_set(uint64_t amount) {
+    memset(&g_coin, 0, sizeof(g_coin));
+    memset(g_coin.nul, 0x47, 64);
+    g_coin.amount = amount;
+}
+
+/* ══ V1 — the consent, as nodus-cli `validator consent` forms it ═════ */
+
+/* the §6.1 message restated from the design table (NOT the codec) */
+static void msg_restate(uint8_t out[2765], uint8_t op,
+                        const uint8_t subject[64], const uint8_t owner[64],
+                        const uint8_t pk[2592], uint64_t expiry) {
+    memset(out, 0, 2765);
+    out[3] = 1;                                  /* version u32 BE = 1  */
+    memcpy(out + 4, g_chain32, 32);
+    out[36] = op;
+    memcpy(out + 37, subject, 64);
+    memcpy(out + 101, owner, 64);
+    memcpy(out + 165, pk, 2592);
+    put64(out + 2757, expiry);
+}
+
+/* the consent nodus-cli signs: dna_valbind_consent_msg + _sign (the two
+ * codec calls of cmd_validator_consent) — into a container. */
+static int consent_make(nodus_v2_consent_t *c, uint8_t op,
+                        const uint8_t subject[64], const uint8_t owner[64],
+                        int key, uint64_t expiry) {
+    memset(c, 0, sizeof(*c));
+    c->op = op;
+    memcpy(c->chain32, g_chain32, 32);
+    memcpy(c->subject, subject, 64);
+    memcpy(c->owner_fp, owner, 64);
+    memcpy(c->consensus_pk, g_k[key].pk, PK_LEN);
+    c->expiry = expiry;
+    uint8_t msg[DNA_VALBIND_MSG_LEN];
+    size_t sl = 0;
+    if (dna_valbind_consent_msg(msg, c->chain32, op, c->subject, c->owner_fp,
+                                c->consensus_pk, expiry) != 0)
+        return -1;
+    if (dna_valbind_consent_sign(c->sig, &sl, msg, g_k[key].sk) != 0 ||
+        sl != SIG_LEN)
+        return -1;
+    return 0;
+}
+
+/* field by field (the struct has padding before `expiry`) */
+static int consent_eq(const nodus_v2_consent_t *a,
+                      const nodus_v2_consent_t *b) {
+    return a->op == b->op && a->expiry == b->expiry &&
+           memcmp(a->chain32, b->chain32, sizeof(a->chain32)) == 0 &&
+           memcmp(a->subject, b->subject, sizeof(a->subject)) == 0 &&
+           memcmp(a->owner_fp, b->owner_fp, sizeof(a->owner_fp)) == 0 &&
+           memcmp(a->consensus_pk, b->consensus_pk,
+                  sizeof(a->consensus_pk)) == 0 &&
+           memcmp(a->sig, b->sig, sizeof(a->sig)) == 0;
+}
+
+static int t_consent(void) {
+    static const uint8_t zero64[64] = { 0 };
+    uint8_t vid[64];
+    memset(vid, 0x3B, sizeof(vid));
+    static uint8_t m_codec[DNA_VALBIND_MSG_LEN], m_rest[2765];
+    CHECK(DNA_VALBIND_MSG_LEN == 2765, "message length (design §6.1)");
+
+    /* op 1 */
+    CHECK(dna_valbind_consent_msg(m_codec, g_chain32, DNA_VALBIND_OP_STAKE,
+                                  zero64, g_k[KO].fp, g_k[KC].pk, EXP) == 0,
+          "STAKE message builds");
+    msg_restate(m_rest, 1, zero64, g_k[KO].fp, g_k[KC].pk, EXP);
+    CHECK(memcmp(m_codec, m_rest, sizeof(m_rest)) == 0,
+          "codec STAKE message == the §6.1 restatement");
+    /* op 2 */
+    CHECK(dna_valbind_consent_msg(m_codec, g_chain32, DNA_VALBIND_OP_ROTATE,
+                                  vid, g_k[KO].fp, g_k[KN].pk, EXP) == 0,
+          "ROTATE message builds");
+    msg_restate(m_rest, 2, vid, g_k[KO].fp, g_k[KN].pk, EXP);
+    CHECK(memcmp(m_codec, m_rest, sizeof(m_rest)) == 0,
+          "codec ROTATE message == the §6.1 restatement");
+    /* V3 — op 3 (STORAGE_REGISTER, design §11.3): zero subject, the
+     * storage node key in the key field */
+    CHECK(dna_valbind_consent_msg(m_codec, g_chain32,
+                                  DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                                  g_k[KO].fp, g_k[KS].pk, EXP) == 0,
+          "STORAGE_REGISTER message builds");
+    msg_restate(m_rest, 3, zero64, g_k[KO].fp, g_k[KS].pk, EXP);
+    CHECK(memcmp(m_codec, m_rest, sizeof(m_rest)) == 0,
+          "codec STORAGE_REGISTER message == the §6.1 restatement, op 3");
+    CHECK(dna_valbind_consent_msg(m_codec, g_chain32,
+                                  DNA_VALBIND_OP_STORAGE_REGISTER, vid,
+                                  g_k[KO].fp, g_k[KS].pk, EXP) != 0,
+          "the codec refuses op 3 with a non-zero subject");
+    {
+        nodus_v2_consent_t s, sr;
+        char *st = NULL;
+        size_t stl = 0;
+        CHECK(consent_make(&s, DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                           g_k[KO].fp, KS, EXP) == 0,
+              "STORAGE_REGISTER consent signs");
+        CHECK(nodus_v2_consent_text_encode(&s, &st, &stl) ==
+                  NODUS_V2_SPEND_OK &&
+              strstr(st, "\nop 3\n") != NULL &&
+              nodus_v2_consent_text_parse(st, stl, &sr) ==
+                  NODUS_V2_SPEND_OK && consent_eq(&sr, &s),
+              "the container carries op 3 and round-trips every field");
+        free(st);
+    }
+
+    /* V3 above reused m_rest for the op-3 restatement: restate the
+     * STAKE message again before verifying the STAKE signature. (The
+     * ROTATE consent op 2 stays a value of the shared codec — its message
+     * is checked above — but no operation consumes it since HF-6 D2, and
+     * the client container refuses it: V2 below.) */
+    msg_restate(m_rest, 1, zero64, g_k[KO].fp, g_k[KC].pk, EXP);
+    nodus_v2_consent_t c;
+    CHECK(consent_make(&c, DNA_VALBIND_OP_STAKE, zero64, g_k[KO].fp, KC, EXP)
+          == 0, "STAKE consent signs");
+    static const uint8_t ctx_bytes[16] = {
+        'n','o','d','u','s','.','v','a','l','b','i','n','d','.','v','1'
+    };
+    CHECK(qgp_dsa87_verify_ctx(c.sig, SIG_LEN, m_rest, sizeof(m_rest),
+                               ctx_bytes, sizeof(ctx_bytes),
+                               g_k[KC].pk) == 0,
+          "the signature verifies over the restated bytes with ctx "
+          "\"nodus.valbind.v1\"");
+    CHECK(qgp_dsa87_verify(c.sig, SIG_LEN, m_rest, sizeof(m_rest),
+                           g_k[KC].pk) != 0,
+          "and NOT under the plain (empty-ctx) verify — test_hf6_stake "
+          "CS_CTX_EMPTY's API");
+    {
+        /* HF-6 D2: a ROTATE consent (op 2) the CODEC signs is refused by
+         * the client container — encode, and parse of a hand-made text */
+        nodus_v2_consent_t rc2;
+        CHECK(consent_make(&rc2, DNA_VALBIND_OP_ROTATE, vid, g_k[KO].fp, KN,
+                           EXP) == 0, "the codec still signs an op-2 consent");
+        char *rt = NULL;
+        size_t rtl = 0;
+        CHECK(nodus_v2_consent_text_encode(&rc2, &rt, &rtl) ==
+                  NODUS_V2_SPEND_ERR_ARG && rt == NULL,
+              "the container refuses to encode op 2 (no ROTATE operation)");
+    }
+
+    /* ── V2. the container ─────────────────────────────────────────── */
+    char *t = NULL;
+    size_t tl = 0;
+    CHECK(nodus_v2_consent_text_encode(&c, &t, &tl) == NODUS_V2_SPEND_OK &&
+          t && tl == strlen(t), "container encodes");
+    nodus_v2_consent_t r;
+    CHECK(nodus_v2_consent_text_parse(t, tl, &r) == NODUS_V2_SPEND_OK &&
+          consent_eq(&r, &c), "container round-trips every field");
+    /* a second encode is the same text (deterministic) */
+    {
+        char *t2 = NULL;
+        size_t tl2 = 0;
+        CHECK(nodus_v2_consent_text_encode(&r, &t2, &tl2) ==
+                  NODUS_V2_SPEND_OK && tl2 == tl &&
+              memcmp(t, t2, tl) == 0, "re-encode is byte-identical");
+        free(t2);
+    }
+    char *b = malloc(tl + 8);
+    CHECK(b != NULL, "alloc");
+#define REFUSE(why) CHECK(nodus_v2_consent_text_parse(b, bl, &r) == \
+                          NODUS_V2_SPEND_ERR_DECODE && r.op == 0, why)
+    size_t bl;
+    /* magic */
+    memcpy(b, t, tl); bl = tl; b[0] = 'N';
+    REFUSE("wrong magic");
+    /* uppercase hex in chain_id */
+    {
+        memcpy(b, t, tl); bl = tl;
+        char *p = strstr(b, "chain_id ");
+        CHECK(p != NULL, "chain_id line");
+        p += 9;
+        int done = 0;
+        for (; *p != '\n'; p++)
+            if (*p >= 'a' && *p <= 'f') { *p = (char)(*p - 'a' + 'A'); done = 1; break; }
+        if (!done) {               /* all digits: make one a non-hex letter */
+            p = strstr(b, "chain_id ") + 9;
+            *p = 'g';
+        }
+        REFUSE("uppercase / non-hex digit");
+    }
+    /* reordered: swap the "op" and "chain_id" keywords' lines is hard to
+     * do in place; renaming one key is the same refusal class */
+    memcpy(b, t, tl); bl = tl;
+    {
+        char *p = strstr(b, "\nowner ");
+        CHECK(p != NULL, "owner line");
+        memcpy(p + 1, "owneR", 5);
+    }
+    REFUSE("a renamed key");
+    /* trailing bytes */
+    memcpy(b, t, tl); b[tl] = 'x'; bl = tl + 1;
+    REFUSE("a byte after the last line");
+    /* missing final newline */
+    memcpy(b, t, tl); bl = tl - 1;
+    REFUSE("no final newline");
+    /* a short signature */
+    memcpy(b, t, tl - 3); b[tl - 3] = '\n'; bl = tl - 2;
+    REFUSE("a signature two hex chars short");
+#undef REFUSE
+    free(b);
+    free(t);
+    /* field rules, through the encoder's twin checks */
+    {
+        nodus_v2_consent_t z = c;
+        memset(z.subject, 0x3B, 64);           /* STAKE, non-zero subject */
+        CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
+              NODUS_V2_SPEND_ERR_ARG && t == NULL,
+              "encode refuses a STAKE with a subject");
+        z.op = DNA_VALBIND_OP_ROTATE;          /* op 2, non-zero subject */
+        CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
+              NODUS_V2_SPEND_ERR_ARG,
+              "encode refuses op 2 even with a non-zero subject (HF-6 D2)");
+        z.op = 3;                              /* op 3, non-zero subject */
+        CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
+              NODUS_V2_SPEND_ERR_ARG,
+              "encode refuses op 3 with a non-zero subject");
+        z.op = 4;
+        CHECK(nodus_v2_consent_text_encode(&z, &t, &tl) ==
+              NODUS_V2_SPEND_ERR_ARG, "encode refuses op 4 (no such op)");
+    }
+    /* the parser's own op / subject / expiry rules over hand-edited text */
+    {
+        CHECK(nodus_v2_consent_text_encode(&c, &t, &tl) == NODUS_V2_SPEND_OK,
+              "re-encode");
+        char *e = malloc(tl + 32);
+        CHECK(e != NULL, "alloc");
+        size_t el;
+        /* op 1 -> 2 (the removed ROTATE), subject zero */
+        memcpy(e, t, tl); el = tl;
+        {
+            char *p = strstr(e, "\nop 1\n");
+            CHECK(p != NULL, "op line");
+            p[4] = '2';
+        }
+        CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
+              NODUS_V2_SPEND_ERR_DECODE, "parse refuses op 2 (HF-6 D2)");
+        /* a STAKE whose subject line is not all zero */
+        memcpy(e, t, tl); el = tl;
+        {
+            char *p = strstr(e, "\nsubject ");
+            CHECK(p != NULL, "subject line");
+            p[9] = '1';
+        }
+        CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
+              NODUS_V2_SPEND_ERR_DECODE, "parse refuses STAKE + subject");
+        /* op 1 -> 3 (zero subject): a well-formed op-3 container */
+        memcpy(e, t, tl); el = tl;
+        {
+            char *p = strstr(e, "\nop 1\n");
+            p[4] = '3';
+        }
+        CHECK(nodus_v2_consent_text_parse(e, el, &r) == NODUS_V2_SPEND_OK &&
+              r.op == 3,
+              "parse accepts op 3 with a zero subject (the signature is the "
+              "reader's codec check)");
+        /* expiry with a leading zero */
+        {
+            char *p = strstr(t, "\nexpiry ");
+            CHECK(p != NULL, "expiry line");
+            const size_t pre = (size_t)(p - t) + 8;
+            memcpy(e, t, pre);
+            e[pre] = '0';
+            memcpy(e + pre + 1, t + pre, tl - pre);
+            el = tl + 1;
+            CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
+                  NODUS_V2_SPEND_ERR_DECODE, "parse refuses '0' + expiry");
+            /* 2^64 */
+            const char *big = "18446744073709551616";
+            const char *nl = strchr(t + pre, '\n');
+            const size_t tail = tl - (size_t)(nl - t);
+            memcpy(e, t, pre);
+            memcpy(e + pre, big, strlen(big));
+            memcpy(e + pre + strlen(big), nl, tail);
+            el = pre + strlen(big) + tail;
+            CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
+                  NODUS_V2_SPEND_ERR_DECODE, "parse refuses expiry 2^64");
+            /* 2^64 - 1 is a valid number */
+            const char *max = "18446744073709551615";
+            memcpy(e + pre, max, strlen(max));
+            memcpy(e + pre + strlen(max), nl, tail);
+            el = pre + strlen(max) + tail;
+            CHECK(nodus_v2_consent_text_parse(e, el, &r) ==
+                      NODUS_V2_SPEND_OK && r.expiry == UINT64_MAX,
+                  "expiry 2^64 - 1 parses");
+        }
+        free(e);
+        free(t);
+    }
+    return 0;
+}
+
+/* ══ fabricated engine facts (the test_storage_cli pattern) ══════════ */
+
+static nodus_rt_auth_verdict_t g_av;
+static nodus_rt_exec_ctx_t     g_ctx;
+static uint8_t g_dig[64];
+static nodus_rt_read_res_t g_reads[NODUS_RT_MAX_READS];
+static uint8_t g_res[DNA_EFFECT_MAX_TOTAL_LEN];
+
+/* ctx with the builder's intent_id — what v2_apply passes the hook
+ * (ctx.intent_id = pf->intent_id) */
+static void ctx_set(int signer, const uint8_t intent[64]) {
+    memset(&g_av, 0, sizeof(g_av));
+    g_av.n_signers = 1;
+    memcpy(g_av.signer_fp[0], g_k[signer].fp, 64);
+    memset(&g_ctx, 0, sizeof(g_ctx));
+    memset(g_dig, 0x2E, sizeof(g_dig));
+    g_ctx.chain_id = g_chain32;
+    g_ctx.global_height = H_EXEC;
+    g_ctx.epoch = H_EXEC / E_LEN;
+    g_ctx.wire_id = intent;
+    g_ctx.intent_id = intent;
+    g_ctx.auth_context_commit = g_dig;
+    g_ctx.leg_auth_digest = g_dig;
+    g_ctx.auth = &g_av;
+    /* HF-6 8a: the engine fills these from params 19 / 21 (no row → the
+     * compiled defaults); a hand-built ctx sets the defaults itself */
+    g_ctx.stake_min = (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+    g_ctx.storage_bond = (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+}
+
+/* the funding leg's reads: one UTXO row per input owned by key `k`
+ * holding `amount`, then the pool */
+static uint16_t fund_reads_k(const dna_env_view_t *v, uint64_t amount, int k) {
+    const uint8_t *c = v->buf + v->call_off[1];
+    const uint8_t n_in = c[0];
+    memset(g_reads, 0, sizeof(g_reads));
+    for (uint8_t i = 0; i < n_in; i++) {
+        g_reads[i].present = 1;
+        g_reads[i].value_len = UTXO_REC_LEN;
+        memcpy(g_reads[i].value, g_k[k].hex, 128);
+        put64(g_reads[i].value + UTXO_AMT_OFF, amount);
+        put64(g_reads[i].value + UTXO_UNL_OFF, 0);
+    }
+    g_reads[n_in].present = 1;
+    g_reads[n_in].value_len = 8;
+    put64(g_reads[n_in].value, 1000u);
+    return (uint16_t)(n_in + 1u);
+}
+
+/* the owner's coins (every test before HF-6 slice 7b) */
+static uint16_t fund_reads(const dna_env_view_t *v, uint64_t amount) {
+    return fund_reads_k(v, amount, KO);
+}
+
+static int sys_exec(const nodus_domain_runtime_t *rt,
+                    const dna_env_view_t *v, uint16_t n_reads,
+                    dna_effect_view_t *ev) {
+    size_t rl = 0;
+    int rc = nodus_rt_system_exec(rt, v, 0, &g_ctx, g_reads, n_reads,
+                                  g_res, sizeof(g_res), &rl);
+    if (rc == 0 && ev && dna_effect_result_decode(g_res, rl, ev) != 0)
+        return -9;
+    return rc;
+}
+
+static int core_exec(const nodus_domain_runtime_t *rt,
+                     const dna_env_view_t *v, uint16_t n_reads) {
+    size_t rl = 0;
+    return nodus_rt_core_exec(rt, v, 1, &g_ctx, g_reads, n_reads,
+                              g_res, sizeof(g_res), &rl);
+}
+
+/* the same, with the effects decoded (HF-6 slice 7b: the release coin) */
+static int core_exec_ev(const nodus_domain_runtime_t *rt,
+                        const dna_env_view_t *v, uint16_t n_reads,
+                        dna_effect_view_t *ev) {
+    size_t rl = 0;
+    int rc = nodus_rt_core_exec(rt, v, 1, &g_ctx, g_reads, n_reads,
+                                g_res, sizeof(g_res), &rl);
+    if (rc == 0 && dna_effect_result_decode(g_res, rl, ev) != 0) return -9;
+    return rc;
+}
+
+static void req_gen4(nodus_v2_stake_req_t *r, nodus_v2_stake_op_t op,
+                     const nodus_v2_consent_t *c) {
+    memset(r, 0, sizeof(*r));
+    r->rs = &g_rs4;
+    r->op = op;
+    r->chain32 = g_chain32;
+    r->tip = TIP;
+    r->expiry_height = TIP + 50u;
+    r->pk = g_k[KO].pk;
+    r->sk = g_k[KO].sk;
+    r->amount = op == NODUS_V2_STAKE_OP_STAKE ? SMIN : 0;
+    r->commission_bps = op == NODUS_V2_STAKE_OP_STAKE ? BPS : 0;
+    r->gas_price = 0;
+    r->coins = &g_coin;
+    r->n_coins = 1;
+    r->generation = NODUS_RT_GEN_STORAGE;
+    r->consensus_pk = c->consensus_pk;
+    r->consent_sig = c->sig;
+    r->consent_expiry = c->expiry;
+    r->validator_id = NULL;
+}
+
+/* the STAKE of S1-S4 leaves its validator_id and op-13 row for R1 */
+static uint8_t g_vid[64];
+static uint8_t g_row[V2_REC_LEN];
+
+/* ══ S1-S4 — the generation-4 STAKE ═════════════════════════════════ */
+
+static int t_stake2(void) {
+    static const uint8_t zero64[64] = { 0 };
+    const nodus_domain_runtime_t *s4 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *s3 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *c4 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_CORE);
+    CHECK(s4 && s3 && c4, "generations 3 and 4 compiled");
+
+    /* the node consents (KC) to KO's STAKE; the owner reads it back */
+    nodus_v2_consent_t c, cr;
+    CHECK(consent_make(&c, DNA_VALBIND_OP_STAKE, zero64, g_k[KO].fp, KC, EXP)
+          == 0, "STAKE consent signs");
+    {
+        char *t = NULL;
+        size_t tl = 0;
+        CHECK(nodus_v2_consent_text_encode(&c, &t, &tl) == NODUS_V2_SPEND_OK &&
+              nodus_v2_consent_text_parse(t, tl, &cr) == NODUS_V2_SPEND_OK,
+              "through the container");
+        free(t);
+    }
+
+    const uint64_t coin = SMIN + 9000000000ULL;
+    coin_set(coin);
+    nodus_v2_stake_req_t r;
+    req_gen4(&r, NODUS_V2_STAKE_OP_STAKE, &cr);
+    nodus_v2_stake_built_t b;
+    nodus_v2_stake_err_t e;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "generation-4 STAKE builds");
+    CHECK(b.dec.op == DNA_SYSRULE_STAKE && b.dec.gen4 == 1 &&
+          b.dec.amount == SMIN && b.dec.commission_bps == BPS &&
+          memcmp(b.dec.identity_pk, g_k[KO].pk, PK_LEN) == 0 &&
+          memcmp(b.dec.owner_fp, g_k[KO].fp, 64) == 0 &&
+          memcmp(b.dec.consensus_pk, g_k[KC].pk, PK_LEN) == 0 &&
+          memcmp(b.dec.consent_sig, c.sig, SIG_LEN) == 0 &&
+          b.dec.consent_expiry == EXP && b.n_in == 1 &&
+          b.change == coin - SMIN - b.fee,
+          "read-back: op 1, the owner signs, consent fields, bond, change");
+
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    CHECK(v != NULL, "view alloc");
+    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 && v->leg_count == 2 &&
+          v->leg[0].domain_id == DNA_DOMAIN_SYSTEM &&
+          v->leg[0].runtime_op == DNA_SYSRULE_STAKE &&
+          v->leg[1].runtime_op == DNA_CORERULE_SYSFUND,
+          "two legs: SYSTEM op 1 + CORE SYSFUND");
+    {   /* test_hf6_stake.c stake2_call's layout, restated */
+        static uint8_t want[STK_LEN];
+        size_t off = 0;
+        memcpy(want, g_k[KO].fp, 64);                    off += 64;
+        memcpy(want + off, g_k[KC].pk, PK_LEN);          off += PK_LEN;
+        memcpy(want + off, c.sig, SIG_LEN);              off += SIG_LEN;
+        put64(want + off, EXP);                          off += 8;
+        want[off++] = (uint8_t)(BPS >> 8);
+        want[off++] = (uint8_t)BPS;
+        put64(want + off, SMIN);                         off += 8;
+        CHECK(off == STK_LEN && v->leg[0].call_len == STK_LEN &&
+              memcmp(v->buf + v->call_off[0], want, STK_LEN) == 0,
+              "call = owner_fp ‖ consensus_pk ‖ consent_sig ‖ expiry ‖ "
+              "commission ‖ bond (7301 bytes)");
+    }
+
+    /* S2 — the plan names the validator_id nodus-cli prints */
+    ctx_set(KO, b.intent_id);
+    uint8_t vid_cli[64], vid_rest[64], kh[64];
+    CHECK(dna_validator_id_new(vid_cli, g_chain32, b.intent_id) == 0,
+          "dna_validator_id_new (what nodus-cli prints)");
+    {
+        uint8_t pre[112];
+        memset(pre, 0, 16);
+        memcpy(pre, "NDS.VALID.v1", 12);
+        memcpy(pre + 16, g_chain32, 32);
+        memcpy(pre + 48, b.intent_id, 64);
+        CHECK(qgp_sha3_512(pre, sizeof(pre), vid_rest) == 0 &&
+              memcmp(vid_rest, vid_cli, 64) == 0,
+              "== the §6.2 restatement");
+    }
+    CHECK(qgp_sha3_512(g_k[KC].pk, PK_LEN, kh) == 0, "key hash");
+    {
+        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+        uint16_t n = 0;
+        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == 0 &&
+              n == 3 && rq[0].op_id == OP_STATS &&
+              rq[1].op_id == OP_VAL2 && rq[1].key_len == 64 &&
+              memcmp(rq[1].key, vid_cli, 64) == 0 &&
+              rq[2].op_id == OP_KEYRES &&
+              memcmp(rq[2].key, kh, 64) == 0,
+              "plan [op 7][op 13 = the printed validator_id][op 17 key]");
+        CHECK(nodus_rt_system_read_plan(s3, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == -1,
+              "the generation-3 runtime refuses the 7301-byte STAKE");
+    }
+
+    /* S3 — the exec verifies the real consent and applies */
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;                     /* active_count 7    */
+        g_reads[0].value_len = 8;
+        put64(g_reads[0].value, 7);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 3, &ev) == 0 && ev.effect_count == 3,
+              "STAKE exec applies: consent verified, three effects");
+        const uint8_t *v0 = ev.buf + ev.val_off[0];
+        CHECK(ev.eff[0].op_id == OP_VAL2 &&
+              ev.eff[0].effect_kind == DNA_EFFECT_CREATE &&
+              ev.eff[0].value_len == V2_REC_LEN &&
+              memcmp(ev.buf + ev.key_off[0], vid_cli, 64) == 0 &&
+              memcmp(v0, vid_cli, 64) == 0 &&
+              memcmp(v0 + V2_OWNER_OFF, g_k[KO].fp, 64) == 0 &&
+              memcmp(v0 + V2_CPK_OFF, g_k[KC].pk, PK_LEN) == 0 &&
+              get64(v0 + V2_SELF_OFF) == SMIN &&
+              v0[V2_COMM_OFF] == (uint8_t)(BPS >> 8) &&
+              v0[V2_COMM_OFF + 1] == (uint8_t)BPS &&
+              v0[V2_STAT_OFF] == (uint8_t)DNAC_VALIDATOR_ACTIVE,
+              "the op-13 row: validator_id, owner, consensus key, bond, "
+              "commission, ACTIVE");
+        memcpy(g_vid, vid_cli, 64);
+        memcpy(g_row, v0, V2_REC_LEN);
+        ctx_set(KX, b.intent_id);
+        CHECK(sys_exec(s4, v, 3, NULL) == -1,
+              "a signer other than the owner is refused");
+        ctx_set(KO, b.intent_id);
+    }
+    /* S4 — the funding leg: Σin == change + fee + bond */
+    {
+        uint16_t nr = fund_reads(v, coin);
+        CHECK(core_exec(c4, v, nr) == 0, "funding balances, lock = bond");
+        nr = fund_reads(v, coin + 1u);
+        CHECK(core_exec(c4, v, nr) == -1,
+              "one raw unit more on the input breaks the equation");
+    }
+
+    /* D1 — decode binds owner_fp to the signer */
+    {
+        nodus_v2_stake_decoded_t *d = calloc(1, sizeof(*d));
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(d && bad, "alloc");
+        CHECK(nodus_v2_stake_decode(b.env, b.env_len, d) == NODUS_V2_SPEND_OK
+              && d->gen4 == 1, "the untouched envelope decodes");
+        memcpy(bad, b.env, b.env_len);
+        bad[v->call_off[0] + 0] ^= 0x01;           /* owner_fp byte 0   */
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "an owner_fp that is not SHA3-512(signer) is refused");
+        free(bad);
+        free(d);
+    }
+    free(v);
+    nodus_v2_stake_built_free(&b);
+    return 0;
+}
+
+/* ══ R1 — no ROTATE in the client (HF-6 D2) ═════════════════════════ */
+
+/* The khan removed key rotation from HF-6 (decision 2026-10-13-kurultay-
+ * 18-summary.md item 1); the chain refuses op 10 everywhere
+ * (test_hf6_rotate). HF-6 D2 removes it from the shared builder too: the
+ * runtime_op 10 is no op this module builds, at any generation, kind 1
+ * or kind 3. */
+static int t_rotate(void) {
+    static const uint8_t zero64[64] = { 0 };
+    nodus_v2_consent_t c;
+    CHECK(consent_make(&c, DNA_VALBIND_OP_STAKE, zero64, g_k[KO].fp, KN, EXP)
+          == 0, "a consent to carry");
+    coin_set(5000000000ULL);
+    nodus_v2_stake_req_t r;
+    nodus_v2_stake_built_t b;
+    nodus_v2_stake_err_t e;
+    req_gen4(&r, (nodus_v2_stake_op_t)DNA_SYSRULE_ROTATE_CONSENSUS_KEY, &c);
+    r.validator_id = g_vid;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_OP,
+          "op 10 at generation 4: no such operation (ERR_OP)");
+    r.generation = 0;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_OP,
+          "op 10 at generation 0: ERR_OP");
+    return 0;
+}
+
+/* ══ G1 — generation awareness and refusals ═════════════════════════ */
+
+static int t_generation(void) {
+    static const uint8_t zero64[64] = { 0 };
+    coin_set(DNAC_SELF_STAKE_AMOUNT + 9000000000ULL);
+
+    /* the legacy STAKE at generation 0 and at GEN_EVM: one byte stream */
+    nodus_v2_stake_req_t r;
+    memset(&r, 0, sizeof(r));
+    r.rs = &g_rs3;
+    r.op = NODUS_V2_STAKE_OP_STAKE;
+    r.chain32 = g_chain32;
+    r.tip = TIP;
+    r.expiry_height = TIP + 50u;
+    r.pk = g_k[KO].pk;
+    r.sk = g_k[KO].sk;
+    r.amount = DNAC_SELF_STAKE_AMOUNT;
+    r.commission_bps = BPS;
+    r.dest_fp = g_k[KO].fp;
+    r.coins = &g_coin;
+    r.n_coins = 1;
+    nodus_v2_stake_built_t b0, b3;
+    nodus_v2_stake_err_t e;
+    CHECK(nodus_v2_stake_build(&r, &b0, &e) == NODUS_V2_SPEND_OK,
+          "legacy STAKE, generation 0");
+    r.generation = NODUS_RT_GEN_EVM;
+    CHECK(nodus_v2_stake_build(&r, &b3, &e) == NODUS_V2_SPEND_OK,
+          "legacy STAKE, generation 3");
+    CHECK(b0.dec.gen4 == 0 && b3.dec.gen4 == 0 &&
+          b0.env_len == b3.env_len &&
+          memcmp(b0.intent_id, b3.intent_id, 64) == 0,
+          "same length, same intent_id");
+    {
+        dna_env_view_t *v0 = calloc(1, sizeof(*v0));
+        CHECK(v0 != NULL, "alloc");
+        CHECK(dna_env_decode(b0.env, b0.env_len, v0) == 0 &&
+              v0->leg[0].call_len == NODUS_V2_STAKE_CALL_LEN,
+              "the 2666-byte legacy call");
+        size_t a0 = v0->auth_off[0], a1 = v0->auth_off[1];
+        size_t al = v0->leg[0].auth_len;
+        int same = 1;
+        for (size_t i = 0; i < b0.env_len; i++) {
+            if ((i >= a0 && i < a0 + al) || (i >= a1 && i < a1 + al)) continue;
+            if (b0.env[i] != b3.env[i]) { same = 0; break; }
+        }
+        CHECK(same, "byte-identical outside the two (hedged) auth blobs");
+        free(v0);
+    }
+    nodus_v2_stake_built_free(&b0);
+    nodus_v2_stake_built_free(&b3);
+
+    /* refusals */
+    nodus_v2_consent_t c;
+    CHECK(consent_make(&c, DNA_VALBIND_OP_STAKE, zero64, g_k[KO].fp, KC, EXP)
+          == 0, "consent");
+    nodus_v2_stake_built_t b;
+    req_gen4(&r, NODUS_V2_STAKE_OP_STAKE, &c);
+    coin_set(SMIN + 9000000000ULL);
+    r.amount = 0;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_BOND,
+          "gen-4 bond 0");
+    r.amount = (uint64_t)INT64_MAX + 1u;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_BOND,
+          "gen-4 bond INT64_MAX + 1");
+    r.amount = SMIN;
+    r.commission_bps = (uint32_t)DNAC_COMMISSION_BPS_MAX + 1u;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_COMMISSION,
+          "gen-4 commission above the bound");
+    r.commission_bps = BPS;
+    r.consent_sig = NULL;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "gen-4 STAKE without a consent");
+    r.consent_sig = c.sig;
+    r.consensus_pk = NULL;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "gen-4 STAKE without the consensus key");
+
+    /* HF-6 slice 7b: ops 2-5 at generation 4 need a validator_id; op 5
+     * has no layout below generation 4 */
+    const nodus_v2_stake_op_t role_ops[4] = {
+        NODUS_V2_STAKE_OP_DELEGATE, NODUS_V2_STAKE_OP_UNDELEGATE,
+        NODUS_V2_STAKE_OP_UNSTAKE, NODUS_V2_STAKE_OP_VALIDATOR_UPDATE
+    };
+    for (int i = 0; i < 4; i++) {
+        req_gen4(&r, role_ops[i], &c);
+        r.amount = DNAC_MIN_DELEGATION;
+        r.validator_pk = g_k[KC].pk;        /* the legacy target: unused */
+        r.validator_id = NULL;
+        CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+              "gen-4 ops 2-5 without a validator_id");
+        r.validator_id = zero64;
+        CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+              "gen-4 ops 2-5 with an all-zero validator_id");
+    }
+    req_gen4(&r, NODUS_V2_STAKE_OP_DELEGATE, &c);
+    r.validator_id = g_vid;
+    r.amount = 0;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_AMOUNT,
+          "gen-4 DELEGATE amount 0");
+    req_gen4(&r, NODUS_V2_STAKE_OP_VALIDATOR_UPDATE, &c);
+    r.validator_id = g_vid;
+    r.commission_bps = (uint32_t)DNAC_COMMISSION_BPS_MAX + 1u;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_COMMISSION,
+          "gen-4 VALIDATOR_UPDATE commission above the bound");
+    r.commission_bps = BPS;
+    r.generation = NODUS_RT_GEN_EVM;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
+          "VALIDATOR_UPDATE below generation 4");
+    r.generation = 0;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
+          "VALIDATOR_UPDATE at generation 0");
+
+    /* HF-6 slice 7b: the legacy ops 2-4 at generation 0 and GEN_EVM — the
+     * restated legacy call, one byte stream across the two generations */
+    const nodus_v2_stake_op_t legacy_ops[3] = {
+        NODUS_V2_STAKE_OP_DELEGATE, NODUS_V2_STAKE_OP_UNDELEGATE,
+        NODUS_V2_STAKE_OP_UNSTAKE
+    };
+    coin_set(DNAC_MIN_DELEGATION + 9000000000ULL);
+    for (int i = 0; i < 3; i++) {
+        const int unst = legacy_ops[i] == NODUS_V2_STAKE_OP_UNSTAKE;
+        memset(&r, 0, sizeof(r));
+        r.rs = &g_rs3;
+        r.op = legacy_ops[i];
+        r.chain32 = g_chain32;
+        r.tip = TIP;
+        r.expiry_height = TIP + 50u;
+        r.pk = g_k[KO].pk;
+        r.sk = g_k[KO].sk;
+        r.amount = DNAC_MIN_DELEGATION;
+        r.validator_pk = unst ? NULL : g_k[KC].pk;
+        r.coins = &g_coin;
+        r.n_coins = 1;
+        CHECK(nodus_v2_stake_build(&r, &b0, &e) == NODUS_V2_SPEND_OK,
+              "legacy op 2/3/4, generation 0");
+        r.generation = NODUS_RT_GEN_EVM;
+        CHECK(nodus_v2_stake_build(&r, &b3, &e) == NODUS_V2_SPEND_OK,
+              "legacy op 2/3/4, generation 3");
+        CHECK(b0.dec.gen4 == 0 && b3.dec.gen4 == 0 &&
+              b0.env_len == b3.env_len &&
+              memcmp(b0.intent_id, b3.intent_id, 64) == 0,
+              "legacy op 2/3/4: same length, same intent_id");
+        dna_env_view_t *v0 = calloc(1, sizeof(*v0));
+        CHECK(v0 != NULL, "alloc");
+        CHECK(dna_env_decode(b0.env, b0.env_len, v0) == 0, "decode");
+        {
+            static uint8_t want[NODUS_V2_DELEG_CALL_LEN];
+            size_t wl;
+            memcpy(want, g_k[KO].pk, PK_LEN);
+            if (unst) {
+                wl = PK_LEN;                     /* the signer's own key */
+            } else {
+                memcpy(want + PK_LEN, g_k[KC].pk, PK_LEN);
+                put64(want + 2 * PK_LEN, DNAC_MIN_DELEGATION);
+                wl = 2 * PK_LEN + 8;
+            }
+            CHECK(v0->leg[0].call_len == wl &&
+                  memcmp(v0->buf + v0->call_off[0], want, wl) == 0,
+                  "legacy call = delegator_pk ‖ validator_pk ‖ amount "
+                  "(5192) / the validator pk (2592)");
+        }
+        size_t a0 = v0->auth_off[0], a1 = v0->auth_off[1];
+        size_t al = v0->leg[0].auth_len;
+        int same = 1;
+        for (size_t k = 0; k < b0.env_len; k++) {
+            if ((k >= a0 && k < a0 + al) || (k >= a1 && k < a1 + al)) continue;
+            if (b0.env[k] != b3.env[k]) { same = 0; break; }
+        }
+        CHECK(same, "legacy op 2/3/4: byte-identical outside the auth blobs");
+        free(v0);
+        nodus_v2_stake_built_free(&b0);
+        nodus_v2_stake_built_free(&b3);
+    }
+    return 0;
+}
+
+/* ══ W1-W5 — the generation-4 DELEGATE / UNDELEGATE / UNSTAKE /
+ *    VALIDATOR_UPDATE (HF-6 slice 7b) against the row S3 created ═════ */
+
+/* a generation-4 request for ops 2-5 signed by key `k` */
+static void req_role(nodus_v2_stake_req_t *r, nodus_v2_stake_op_t op, int k,
+                     uint64_t amount, uint32_t bps) {
+    memset(r, 0, sizeof(*r));
+    r->rs = &g_rs4;
+    r->op = op;
+    r->chain32 = g_chain32;
+    r->tip = TIP;
+    r->expiry_height = TIP + 50u;
+    r->pk = g_k[k].pk;
+    r->sk = g_k[k].sk;
+    r->amount = amount;
+    r->commission_bps = bps;
+    r->coins = &g_coin;
+    r->n_coins = 1;
+    r->generation = NODUS_RT_GEN_STORAGE;
+    r->validator_id = g_vid;
+}
+
+static int t_role2(void) {
+    const nodus_domain_runtime_t *s4 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *c4 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_CORE);
+    CHECK(s4 && c4, "generation 4 compiled");
+    const uint64_t AMT = DNAC_MIN_DELEGATION;
+    nodus_v2_stake_req_t r;
+    nodus_v2_stake_built_t b;
+    nodus_v2_stake_err_t e;
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    nodus_v2_stake_decoded_t *d = calloc(1, sizeof(*d));
+    CHECK(v && d, "alloc");
+    uint8_t dkey[128];
+    memcpy(dkey, g_k[KD].fp, 64);
+    memcpy(dkey + 64, g_vid, 64);
+    static uint8_t vrow_after[V2_REC_LEN], drow_after[DEL2_REC_LEN];
+
+    /* ── W1. DELEGATE ──────────────────────────────────────────────── */
+    uint64_t coin = AMT + 7000000000ULL;
+    coin_set(coin);
+    req_role(&r, NODUS_V2_STAKE_OP_DELEGATE, KD, AMT, 0);
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "gen-4 DELEGATE builds");
+    CHECK(b.dec.op == DNA_SYSRULE_DELEGATE && b.dec.gen4 == 1 &&
+          b.dec.amount == AMT &&
+          memcmp(b.dec.identity_pk, g_k[KD].pk, PK_LEN) == 0 &&
+          memcmp(b.dec.owner_fp, g_k[KD].fp, 64) == 0 &&
+          memcmp(b.dec.validator_id, g_vid, 64) == 0 &&
+          b.change == coin - AMT - b.fee,
+          "read-back: op 2, delegator_fp = SHA3-512(KD), validator_id, "
+          "amount, change = coin - amount - fee");
+    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 && v->leg_count == 2 &&
+          v->leg[0].runtime_op == DNA_SYSRULE_DELEGATE &&
+          v->leg[1].runtime_op == DNA_CORERULE_SYSFUND, "two legs");
+    {   /* design §2: delegator_fp ‖ validator_id ‖ amount u64 */
+        uint8_t want[DLG_LEN];
+        memcpy(want, g_k[KD].fp, 64);
+        memcpy(want + 64, g_vid, 64);
+        put64(want + 128, AMT);
+        CHECK(v->leg[0].call_len == DLG_LEN &&
+              memcmp(v->buf + v->call_off[0], want, DLG_LEN) == 0,
+              "call = delegator_fp ‖ validator_id ‖ amount (136 bytes)");
+    }
+    ctx_set(KD, b.intent_id);
+    {
+        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+        uint16_t n = 0;
+        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == 0 &&
+              n == 3 && rq[0].op_id == OP_VAL2 &&
+              memcmp(rq[0].key, g_vid, 64) == 0 &&
+              rq[1].op_id == OP_DELEG2 && rq[1].key_len == 128 &&
+              memcmp(rq[1].key, dkey, 128) == 0 &&
+              rq[2].op_id == OP_DELEGCNT2 &&
+              memcmp(rq[2].key, g_vid, 64) == 0,
+              "plan [op 13 vid][op 14 dfp ‖ vid][op 15 vid]");
+    }
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;                    /* the S3 row        */
+        g_reads[0].value_len = V2_REC_LEN;
+        memcpy(g_reads[0].value, g_row, V2_REC_LEN);
+        g_reads[2].present = 1;                    /* 0 delegators      */
+        g_reads[2].value_len = 8;
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 3, &ev) == 0 && ev.effect_count == 2,
+              "DELEGATE exec applies: two effects");
+        const uint8_t *d0 = ev.buf + ev.val_off[0];
+        const uint8_t *v1 = ev.buf + ev.val_off[1];
+        CHECK(ev.eff[0].op_id == OP_DELEG2 &&
+              ev.eff[0].effect_kind == DNA_EFFECT_CREATE &&
+              ev.eff[0].value_len == DEL2_REC_LEN &&
+              memcmp(ev.buf + ev.key_off[0], dkey, 128) == 0 &&
+              memcmp(d0, dkey, 128) == 0 &&
+              get64(d0 + DEL2_AMT_OFF) == AMT &&
+              get64(d0 + DEL2_AT_OFF) == H_EXEC,
+              "CREATE op 14: delegator_fp, validator_id, amount, h");
+        CHECK(ev.eff[1].op_id == OP_VAL2 &&
+              ev.eff[1].effect_kind == DNA_EFFECT_SET &&
+              ev.eff[1].value_len == V2_REC_LEN &&
+              get64(v1 + V2_TOTDEL_OFF) == get64(g_row + V2_TOTDEL_OFF) + AMT &&
+              get64(v1 + V2_EXTDEL_OFF) == get64(g_row + V2_EXTDEL_OFF) + AMT,
+              "SET op 13: total and external delegated + amount");
+        memcpy(drow_after, d0, DEL2_REC_LEN);
+        memcpy(vrow_after, v1, V2_REC_LEN);
+        ctx_set(KX, b.intent_id);
+        CHECK(sys_exec(s4, v, 3, NULL) == -1, "a foreign signer is refused");
+        ctx_set(KO, b.intent_id);
+        CHECK(sys_exec(s4, v, 3, NULL) == -1,
+              "the validator's owner is not the delegator: refused");
+        ctx_set(KD, b.intent_id);
+    }
+    {
+        uint16_t nr = fund_reads_k(v, coin, KD);
+        CHECK(core_exec(c4, v, nr) == 0, "DELEGATE funding: lock = amount");
+        nr = fund_reads_k(v, coin + 1u, KD);
+        CHECK(core_exec(c4, v, nr) == -1, "+1 on the input refused");
+    }
+    {   /* W5 — the delegator_fp is bound to the signer */
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(bad != NULL, "alloc");
+        CHECK(nodus_v2_stake_decode(b.env, b.env_len, d) == NODUS_V2_SPEND_OK
+              && d->gen4 == 1, "the untouched DELEGATE decodes");
+        memcpy(bad, b.env, b.env_len);
+        bad[v->call_off[0] + 0] ^= 0x01;           /* delegator_fp byte 0 */
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "a delegator_fp that is not SHA3-512(signer) is refused");
+        free(bad);
+    }
+    nodus_v2_stake_built_free(&b);
+
+    /* ── W2. UNDELEGATE (all of it) ────────────────────────────────── */
+    coin = 6000000000ULL;
+    coin_set(coin);
+    req_role(&r, NODUS_V2_STAKE_OP_UNDELEGATE, KD, AMT, 0);
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "gen-4 UNDELEGATE builds");
+    CHECK(b.dec.op == DNA_SYSRULE_UNDELEGATE && b.dec.gen4 == 1 &&
+          b.dec.amount == AMT &&
+          memcmp(b.dec.owner_fp, g_k[KD].fp, 64) == 0 &&
+          memcmp(b.dec.validator_id, g_vid, 64) == 0 &&
+          b.change == coin - b.fee,
+          "read-back: op 4, fee-only change");
+    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 &&
+          v->leg[0].runtime_op == DNA_SYSRULE_UNDELEGATE, "decode");
+    {
+        uint8_t want[DLG_LEN];
+        memcpy(want, g_k[KD].fp, 64);
+        memcpy(want + 64, g_vid, 64);
+        put64(want + 128, AMT);
+        CHECK(v->leg[0].call_len == DLG_LEN &&
+              memcmp(v->buf + v->call_off[0], want, DLG_LEN) == 0,
+              "call = the same 136-byte layout under op 4");
+    }
+    ctx_set(KD, b.intent_id);
+    {
+        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+        uint16_t n = 0;
+        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == 0 &&
+              n == 2 && rq[0].op_id == OP_VAL2 &&
+              rq[1].op_id == OP_DELEG2 &&
+              memcmp(rq[1].key, dkey, 128) == 0,
+              "plan [op 13 vid][op 14 dfp ‖ vid]");
+    }
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;                    /* W1's rows         */
+        g_reads[0].value_len = V2_REC_LEN;
+        memcpy(g_reads[0].value, vrow_after, V2_REC_LEN);
+        g_reads[1].present = 1;
+        g_reads[1].value_len = DEL2_REC_LEN;
+        memcpy(g_reads[1].value, drow_after, DEL2_REC_LEN);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 2, &ev) == 0 && ev.effect_count == 2,
+              "UNDELEGATE exec applies: two effects");
+        CHECK(ev.eff[0].op_id == OP_VAL2 &&
+              ev.eff[0].effect_kind == DNA_EFFECT_SET &&
+              get64(ev.buf + ev.val_off[0] + V2_TOTDEL_OFF) ==
+                  get64(g_row + V2_TOTDEL_OFF) &&
+              ev.eff[1].op_id == OP_DELEG2 &&
+              ev.eff[1].effect_kind == DNA_EFFECT_DELETE &&
+              memcmp(ev.buf + ev.key_off[1], dkey, 128) == 0,
+              "SET op 13 back to the S3 total, DELETE op 14");
+        ctx_set(KX, b.intent_id);
+        CHECK(sys_exec(s4, v, 2, NULL) == -1, "a foreign signer is refused");
+        ctx_set(KD, b.intent_id);
+    }
+    {
+        dna_effect_view_t ev;
+        uint16_t nr = fund_reads_k(v, coin, KD);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(core_exec_ev(c4, v, nr, &ev) == 0,
+              "UNDELEGATE funding is fee-only");
+        int rel = 0;
+        for (uint32_t i = 0; i < ev.effect_count; i++) {
+            const uint8_t *val = ev.buf + ev.val_off[i];
+            if (ev.eff[i].effect_kind == DNA_EFFECT_CREATE &&
+                ev.eff[i].op_id == OP_UTXO &&
+                ev.eff[i].value_len == UTXO_REC_LEN &&
+                memcmp(val, g_k[KD].hex, 128) == 0 &&
+                get64(val + UTXO_AMT_OFF) == AMT &&
+                get64(val + UTXO_UNL_OFF) > H_EXEC)
+                rel++;
+        }
+        CHECK(rel == 1, "one release coin: owner hex(SHA3-512(KD)), the "
+              "amount, locked past h");
+        nr = fund_reads_k(v, coin + 1u, KD);
+        CHECK(core_exec(c4, v, nr) == -1, "+1 on the input refused");
+    }
+    nodus_v2_stake_built_free(&b);
+
+    /* ── W3. UNSTAKE by the owner ──────────────────────────────────── */
+    coin = 5000000000ULL;
+    coin_set(coin);
+    req_role(&r, NODUS_V2_STAKE_OP_UNSTAKE, KO, 777, 0);  /* amount ignored */
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "gen-4 UNSTAKE builds");
+    CHECK(b.dec.op == DNA_SYSRULE_UNSTAKE && b.dec.gen4 == 1 &&
+          b.dec.amount == 0 &&
+          memcmp(b.dec.owner_fp, g_k[KO].fp, 64) == 0 &&
+          memcmp(b.dec.validator_id, g_vid, 64) == 0 &&
+          b.change == coin - b.fee,
+          "read-back: op 3, validator_id, the signer, fee only");
+    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 &&
+          v->leg[0].call_len == UNS_LEN &&
+          memcmp(v->buf + v->call_off[0], g_vid, 64) == 0 &&
+          memcmp(v->buf + v->call_off[0] + 64, g_k[KO].fp, 64) == 0,
+          "call = validator_id ‖ owner_fp = SHA3-512(signer) (128 bytes, "
+          "C2)");
+    ctx_set(KO, b.intent_id);
+    {
+        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+        uint16_t n = 0;
+        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == 0 &&
+              n == 1 && rq[0].op_id == OP_VAL2 &&
+              memcmp(rq[0].key, g_vid, 64) == 0, "plan [op 13 vid]");
+    }
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;
+        g_reads[0].value_len = V2_REC_LEN;
+        memcpy(g_reads[0].value, g_row, V2_REC_LEN);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 1, &ev) == 0 && ev.effect_count == 1 &&
+              ev.eff[0].op_id == OP_VAL2 &&
+              ev.eff[0].effect_kind == DNA_EFFECT_SET &&
+              (ev.buf + ev.val_off[0])[V2_STAT_OFF] ==
+                  (uint8_t)DNAC_VALIDATOR_RETIRING &&
+              get64(ev.buf + ev.val_off[0] + V2_UCOMMIT_OFF) == H_EXEC,
+              "UNSTAKE exec by the owner: SET op 13 RETIRING since h");
+        ctx_set(KX, b.intent_id);
+        CHECK(sys_exec(s4, v, 1, NULL) == -1,
+              "a signer other than the row's owner is refused");
+        ctx_set(KO, b.intent_id);
+    }
+    {
+        uint16_t nr = fund_reads(v, coin);
+        CHECK(core_exec(c4, v, nr) == 0, "UNSTAKE funding is fee-only");
+        nr = fund_reads(v, coin + 1u);
+        CHECK(core_exec(c4, v, nr) == -1, "+1 on the input refused");
+    }
+    {   /* W5 — a zero validator_id is refused by the decoder; so is an
+         * owner_fp that is not the signer's (C2) */
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(bad != NULL, "alloc");
+        memcpy(bad, b.env, b.env_len);
+        memset(bad + v->call_off[0], 0, 64);
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "an UNSTAKE naming an all-zero validator_id is refused");
+        memcpy(bad, b.env, b.env_len);
+        bad[v->call_off[0] + 64] ^= 0x01;
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "an UNSTAKE whose owner_fp is not the signer's is refused");
+        free(bad);
+    }
+    {   /* C2 on the chain: the call names KX as the owner — the exec
+         * refuses it even signed by KX (not the row's owner) and by KO
+         * (the row's owner, but not the call's) */
+        static uint8_t call[UNS_LEN];
+        memcpy(call, g_vid, 64);
+        memcpy(call + 64, g_k[KX].fp, 64);
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(bad != NULL, "alloc");
+        memcpy(bad, b.env, b.env_len);
+        memcpy(bad + v->call_off[0], call, UNS_LEN);
+        dna_env_view_t *bv = calloc(1, sizeof(*bv));
+        CHECK(bv && dna_env_decode(bad, b.env_len, bv) == 0, "decode");
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;
+        g_reads[0].value_len = V2_REC_LEN;
+        memcpy(g_reads[0].value, g_row, V2_REC_LEN);
+        ctx_set(KX, b.intent_id);
+        CHECK(sys_exec(s4, bv, 1, NULL) == -1,
+              "C2: a call naming KX refused, KX signing");
+        ctx_set(KO, b.intent_id);
+        CHECK(sys_exec(s4, bv, 1, NULL) == -1,
+              "C2: a call naming KX refused, the row's owner KO signing");
+        free(bv);
+        free(bad);
+    }
+    nodus_v2_stake_built_free(&b);
+
+    /* ── W4. VALIDATOR_UPDATE by the owner ─────────────────────────── */
+    const uint32_t bps_lo = BPS - 100u, bps_hi = BPS + 100u;
+    for (int up = 0; up < 2; up++) {
+        const uint32_t nb = up ? bps_hi : bps_lo;
+        coin_set(coin);
+        req_role(&r, NODUS_V2_STAKE_OP_VALIDATOR_UPDATE, KO, 777, nb);
+        CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+              "VALIDATOR_UPDATE builds at generation 4");
+        CHECK(b.dec.op == DNA_SYSRULE_VALIDATOR_UPDATE && b.dec.gen4 == 1 &&
+              b.dec.amount == 0 && b.dec.commission_bps == nb &&
+              memcmp(b.dec.owner_fp, g_k[KO].fp, 64) == 0 &&
+              memcmp(b.dec.validator_id, g_vid, 64) == 0 &&
+              b.change == coin - b.fee,
+              "read-back: op 5, validator_id, commission, fee only");
+        CHECK(dna_env_decode(b.env, b.env_len, v) == 0, "decode");
+        {
+            uint8_t want[VUP_LEN];
+            memcpy(want, g_vid, 64);
+            memcpy(want + 64, g_k[KO].fp, 64);
+            want[128] = (uint8_t)(nb >> 8);
+            want[129] = (uint8_t)nb;
+            CHECK(v->leg[0].runtime_op == DNA_SYSRULE_VALIDATOR_UPDATE &&
+                  v->leg[0].call_len == VUP_LEN &&
+                  memcmp(v->buf + v->call_off[0], want, VUP_LEN) == 0,
+                  "call = validator_id ‖ owner_fp ‖ commission u16 (130 "
+                  "bytes, C2)");
+        }
+        ctx_set(KO, b.intent_id);
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;
+        g_reads[0].value_len = V2_REC_LEN;
+        memcpy(g_reads[0].value, g_row, V2_REC_LEN);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 1, &ev) == 0 && ev.effect_count == 1 &&
+              ev.eff[0].op_id == OP_VAL2 &&
+              ev.eff[0].effect_kind == DNA_EFFECT_SET,
+              "VALIDATOR_UPDATE exec by the owner applies");
+        const uint8_t *v0 = ev.buf + ev.val_off[0];
+        const uint32_t cur = ((uint32_t)v0[V2_COMM_OFF] << 8) |
+                             v0[V2_COMM_OFF + 1];
+        const uint32_t pend = ((uint32_t)v0[V2_PCOMM_OFF] << 8) |
+                              v0[V2_PCOMM_OFF + 1];
+        if (up)
+            CHECK(cur == BPS && pend == nb &&
+                  get64(v0 + V2_PEFF_OFF) == H_EXEC + 2u * E_LEN &&
+                  get64(v0 + V2_LASTUPD_OFF) == H_EXEC,
+                  "an increase is pending until h + 2E, Rule K stamp h");
+        else
+            CHECK(cur == nb && pend == 0 && get64(v0 + V2_PEFF_OFF) == 0 &&
+                  get64(v0 + V2_LASTUPD_OFF) == H_EXEC,
+                  "a decrease applies at once, Rule K stamp h");
+        ctx_set(KX, b.intent_id);
+        CHECK(sys_exec(s4, v, 1, NULL) == -1,
+              "a signer other than the row's owner is refused");
+        ctx_set(KO, b.intent_id);
+        uint16_t nr = fund_reads(v, coin);
+        CHECK(core_exec(c4, v, nr) == 0, "VALIDATOR_UPDATE funding is "
+              "fee-only");
+        if (up) {   /* W5 — the decoder's bps bound */
+            uint8_t *bad = malloc(b.env_len);
+            CHECK(bad != NULL, "alloc");
+            memcpy(bad, b.env, b.env_len);
+            bad[v->call_off[0] + 128] = 0xFF;
+            bad[v->call_off[0] + 129] = 0xFF;
+            CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                      NODUS_V2_SPEND_ERR_DECODE,
+                  "a VALIDATOR_UPDATE commission of 0xFFFF is refused");
+            memcpy(bad, b.env, b.env_len);
+            bad[v->call_off[0] + 70] ^= 0x01;
+            CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                      NODUS_V2_SPEND_ERR_DECODE,
+                  "a VALIDATOR_UPDATE whose owner_fp is not the signer's is "
+                  "refused (C2)");
+            free(bad);
+        }
+        nodus_v2_stake_built_free(&b);
+    }
+    free(d);
+    free(v);
+    return 0;
+}
+
+/* ══ T1-T3 — the generation-4 storage calls (HF-6 slice 6b) ═════════ */
+
+static int t_storage(void) {
+    static const uint8_t zero64[64] = { 0 };
+    const nodus_domain_runtime_t *s4 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *c4 =
+        nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_CORE);
+    CHECK(s4 && c4, "generation 4 compiled");
+
+    /* the storage node KS consents (op 3) to KO owning it; KO reads it */
+    nodus_v2_consent_t c, cr;
+    CHECK(consent_make(&c, DNA_VALBIND_OP_STORAGE_REGISTER, zero64,
+                       g_k[KO].fp, KS, EXP) == 0, "op-3 consent signs");
+    {
+        char *t = NULL;
+        size_t tl = 0;
+        CHECK(nodus_v2_consent_text_encode(&c, &t, &tl) == NODUS_V2_SPEND_OK &&
+              nodus_v2_consent_text_parse(t, tl, &cr) == NODUS_V2_SPEND_OK,
+              "through the container");
+        free(t);
+    }
+
+    /* ── T1. REGISTER ──────────────────────────────────────────────── */
+    const uint64_t coin = SBOND + 9000000000ULL;
+    coin_set(coin);
+    nodus_v2_stake_req_t r;
+    req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_REGISTER, &cr);
+    r.amount = SBOND;
+    nodus_v2_stake_built_t b;
+    nodus_v2_stake_err_t e;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "STORAGE_REGISTER builds at generation 4");
+    CHECK(b.dec.op == DNA_SYSRULE_STORAGE_REGISTER && b.dec.gen4 == 1 &&
+          b.dec.amount == SBOND &&
+          memcmp(b.dec.identity_pk, g_k[KO].pk, PK_LEN) == 0 &&
+          memcmp(b.dec.owner_fp, g_k[KO].fp, 64) == 0 &&
+          memcmp(b.dec.consensus_pk, g_k[KS].pk, PK_LEN) == 0 &&
+          memcmp(b.dec.node_fp, g_k[KS].fp, 64) == 0 &&
+          memcmp(b.dec.consent_sig, c.sig, SIG_LEN) == 0 &&
+          b.dec.consent_expiry == EXP && b.n_in == 1 &&
+          b.change == coin - SBOND - b.fee,
+          "read-back: op 7, the owner signs, node key + node_fp, consent, "
+          "bond, change");
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    CHECK(v != NULL, "view alloc");
+    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 && v->leg_count == 2 &&
+          v->leg[0].runtime_op == DNA_SYSRULE_STORAGE_REGISTER &&
+          v->leg[1].runtime_op == DNA_CORERULE_SYSFUND,
+          "two legs: SYSTEM op 7 + CORE SYSFUND");
+    {   /* design §2 / §11.3, restated */
+        static uint8_t want[SRG_LEN];
+        size_t off = 0;
+        memcpy(want, g_k[KO].fp, 64);                    off += 64;
+        memcpy(want + off, g_k[KS].pk, PK_LEN);          off += PK_LEN;
+        memcpy(want + off, c.sig, SIG_LEN);              off += SIG_LEN;
+        put64(want + off, EXP);                          off += 8;
+        put64(want + off, SBOND);                        off += 8;
+        CHECK(off == SRG_LEN && v->leg[0].call_len == SRG_LEN &&
+              memcmp(v->buf + v->call_off[0], want, SRG_LEN) == 0,
+              "call = owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond "
+              "(7299 bytes)");
+    }
+    ctx_set(KO, b.intent_id);
+    {
+        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+        uint16_t n = 0;
+        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == 0 &&
+              n == 2 && rq[0].op_id == OP_STOR && rq[0].key_len == 64 &&
+              memcmp(rq[0].key, g_k[KS].fp, 64) == 0 &&
+              rq[1].op_id == OP_STORCNT && rq[1].key_len == 1 &&
+              rq[1].key[0] == 1u,
+              "plan [op 8 SHA3-512(node_pk)][op 9 live count]");
+    }
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[1].present = 1;                     /* live count 0      */
+        g_reads[1].value_len = 8;
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 2, &ev) == 0 && ev.effect_count == 1,
+              "REGISTER exec applies: the op-3 consent verified under the "
+              "node key");
+        const uint8_t *rec = ev.buf + ev.val_off[0];
+        CHECK(ev.eff[0].op_id == OP_STOR &&
+              ev.eff[0].effect_kind == DNA_EFFECT_CREATE &&
+              ev.eff[0].value_len == STOR_REC_LEN &&
+              memcmp(ev.buf + ev.key_off[0], g_k[KS].fp, 64) == 0 &&
+              memcmp(rec, g_k[KS].pk, PK_LEN) == 0 &&
+              memcmp(rec + STOR_OWNER_OFF, g_k[KO].fp, 64) == 0 &&
+              get64(rec + STOR_BOND_OFF) == SBOND &&
+              rec[STOR_STAT_OFF] == 1u &&
+              get64(rec + STOR_REGH_OFF) == H_EXEC,
+              "CREATE op 8: node key, the OWNER in the payee_fp column, "
+              "bond, ACTIVE since h");
+        ctx_set(KS, b.intent_id);
+        CHECK(sys_exec(s4, v, 2, NULL) == -1,
+              "the node key as the signer is not the owner: refused");
+        ctx_set(KO, b.intent_id);
+    }
+    {
+        uint16_t nr = fund_reads(v, coin);
+        CHECK(core_exec(c4, v, nr) == 0, "funding balances, lock = bond");
+        nr = fund_reads(v, coin + 1u);
+        CHECK(core_exec(c4, v, nr) == -1, "+1 on the input refused");
+    }
+    {
+        nodus_v2_stake_decoded_t *d = calloc(1, sizeof(*d));
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(d && bad, "alloc");
+        memcpy(bad, b.env, b.env_len);
+        bad[v->call_off[0] + 0] ^= 0x01;           /* owner_fp byte 0   */
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, d) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "a REGISTER owner_fp that is not SHA3-512(signer) refused");
+        free(bad);
+        free(d);
+    }
+    free(v);
+    nodus_v2_stake_built_free(&b);
+
+    /* ── T2. EXIT ──────────────────────────────────────────────────── */
+    coin_set(5000000000ULL);
+    req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_EXIT, &cr);
+    r.consensus_pk = NULL;                         /* not part of EXIT   */
+    r.consent_sig = NULL;
+    r.node_fp = g_k[KS].fp;
+    r.amount = 777;                                /* must be ignored    */
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "STORAGE_EXIT builds at generation 4");
+    CHECK(b.dec.op == DNA_SYSRULE_STORAGE_EXIT && b.dec.gen4 == 1 &&
+          b.dec.amount == 0 &&
+          memcmp(b.dec.owner_fp, g_k[KO].fp, 64) == 0 &&
+          memcmp(b.dec.node_fp, g_k[KS].fp, 64) == 0 &&
+          b.change == 5000000000ULL - b.fee,
+          "read-back: op 8, node_fp, the signer as owner, fee only");
+    v = calloc(1, sizeof(*v));
+    CHECK(v != NULL, "view alloc");
+    CHECK(dna_env_decode(b.env, b.env_len, v) == 0 &&
+          v->leg[0].call_len == SEX_LEN &&
+          memcmp(v->buf + v->call_off[0], g_k[KS].fp, 64) == 0 &&
+          memcmp(v->buf + v->call_off[0] + 64, g_k[KO].fp, 64) == 0,
+          "call = node_fp ‖ owner_fp = SHA3-512(signer) (128 bytes, C2)");
+    ctx_set(KO, b.intent_id);
+    {
+        nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+        uint16_t n = 0;
+        CHECK(nodus_rt_system_read_plan(s4, v, 0, &g_ctx, rq,
+                                        NODUS_RT_MAX_READS, &n) == 0 &&
+              n == 1 && rq[0].op_id == OP_STOR &&
+              memcmp(rq[0].key, g_k[KS].fp, 64) == 0,
+              "plan [op 8 keyed by the call]");
+    }
+    {
+        dna_effect_view_t ev;
+        memset(g_reads, 0, sizeof(g_reads));
+        g_reads[0].present = 1;
+        g_reads[0].value_len = STOR_REC_LEN;
+        uint8_t *rec = g_reads[0].value;
+        memcpy(rec, g_k[KS].pk, PK_LEN);
+        memcpy(rec + STOR_OWNER_OFF, g_k[KO].fp, 64);
+        put64(rec + STOR_BOND_OFF, SBOND);
+        rec[STOR_STAT_OFF] = 1u;                    /* ACTIVE            */
+        put64(rec + STOR_REGH_OFF, 2);
+        memset(&ev, 0, sizeof(ev));
+        CHECK(sys_exec(s4, v, 1, &ev) == 0 && ev.effect_count == 1 &&
+              ev.eff[0].effect_kind == DNA_EFFECT_SET &&
+              (ev.buf + ev.val_off[0])[STOR_STAT_OFF] == 2u &&
+              get64(ev.buf + ev.val_off[0] + STOR_EXITH_OFF) == H_EXEC,
+              "EXIT exec by the row's owner applies: EXITING since h");
+        ctx_set(KS, b.intent_id);
+        CHECK(sys_exec(s4, v, 1, NULL) == -1,
+              "the node key is not the owner: refused");
+        ctx_set(KO, b.intent_id);
+    }
+    {
+        uint16_t nr = fund_reads(v, 5000000000ULL);
+        CHECK(core_exec(c4, v, nr) == 0, "EXIT funding is fee-only");
+    }
+    {   /* C2: the decoder refuses an owner_fp that is not the signer's */
+        nodus_v2_stake_decoded_t *dx = calloc(1, sizeof(*dx));
+        uint8_t *bad = malloc(b.env_len);
+        CHECK(dx && bad, "alloc");
+        memcpy(bad, b.env, b.env_len);
+        bad[v->call_off[0] + 64] ^= 0x01;
+        CHECK(nodus_v2_stake_decode(bad, b.env_len, dx) ==
+                  NODUS_V2_SPEND_ERR_DECODE,
+              "a STORAGE_EXIT whose owner_fp is not the signer's is refused");
+        free(bad);
+        free(dx);
+    }
+    free(v);
+    nodus_v2_stake_built_free(&b);
+
+    /* ── T3. refusals ──────────────────────────────────────────────── */
+    coin_set(SBOND + 9000000000ULL);
+    for (int g = 0; g < 2; g++) {
+        const uint32_t gen = g == 0 ? 0u : (uint32_t)NODUS_RT_GEN_EVM;
+        req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_REGISTER, &cr);
+        r.amount = SBOND;
+        r.generation = gen;
+        CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
+              "REGISTER below generation 4 (no other layout)");
+        req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_EXIT, &cr);
+        r.node_fp = g_k[KS].fp;
+        r.generation = gen;
+        CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_GEN,
+              "EXIT below generation 4 (no other layout)");
+    }
+    req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_REGISTER, &cr);
+    r.amount = 0;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_STORAGE_BOND,
+          "REGISTER bond 0");
+    r.amount = (uint64_t)INT64_MAX + 1u;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_STAKE_ERR_STORAGE_BOND,
+          "REGISTER bond INT64_MAX + 1");
+    r.amount = SBOND;
+    r.consensus_pk = NULL;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "REGISTER without the node key");
+    r.consensus_pk = cr.consensus_pk;
+    r.consent_sig = NULL;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "REGISTER without the consent");
+    req_gen4(&r, NODUS_V2_STAKE_OP_STORAGE_EXIT, &cr);
+    r.node_fp = NULL;
+    CHECK(nodus_v2_stake_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "EXIT without node_fp");
+    return 0;
+}
+
+int main(void) {
+    if (keys_make() != 0) {
+        fprintf(stderr, "key generation failed\n");
+        return 1;
+    }
+    if (rs_from(NODUS_RT_GEN_STORAGE, &g_rs4) != 0 ||
+        rs_from(NODUS_RT_GEN_EVM, &g_rs3) != 0) {
+        fprintf(stderr, "generations 3 / 4 missing from the table\n");
+        return 1;
+    }
+    memset(g_chain32, 0x5C, sizeof(g_chain32));
+    if (t_consent() != 0) return 1;
+    if (t_stake2() != 0) return 1;
+    if (t_rotate() != 0) return 1;
+    if (t_generation() != 0) return 1;
+    if (t_role2() != 0) return 1;       /* HF-6 slice 7b, after S3 */
+    if (t_storage() != 0) return 1;
+    printf("test_v2_stake_client: %d checks passed\n", g_checks);
+    return 0;
+}
