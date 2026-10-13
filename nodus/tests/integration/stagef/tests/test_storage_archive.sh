@@ -547,7 +547,8 @@ D4_DEC="${D4_DEC%%$'\n'*}"
 [ "$D_DEC" -gt 0 ] 2>/dev/null && [ "$D4_DEC" -gt 0 ] 2>/dev/null || die "a vote literal is not a positive int64 (D '$D_DEC', D4 '$D4_DEC')"
 D_HEX=$(printf '%016x' "$D_DEC"); D4_HEX=$(printf '%016x' "$D4_DEC")
 st_usage=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" storage 2>&1 || true)
-[[ "$st_usage" == *"storage status [--fp <hex128>]"* ]] || {
+# prefix match: HF-6 7a appended " | --owner <hex128>" inside the brackets
+[[ "$st_usage" == *"storage status [--fp <hex128>"* ]] || {
     printf '%s\n' "$st_usage" >&2; die "the CLI has no 'storage' command (B2b-CLI)"; }
 # 6b-3: the owner-side commands (nodus-cli.c cli_storage_usage)
 [[ "$st_usage" == *"storage consent --owner"* && "$st_usage" == *"storage register --keys"* && \
