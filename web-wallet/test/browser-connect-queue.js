@@ -62,7 +62,7 @@ try {
       nc_profile_get: args => profile(args[0]),
       nc_contacts_get: () => ({ outcome: 'found', why: 'none', invalid: '0', timestamp: '1', contacts: [{ fp: B, salt: SALT }] }),
       nc_contacts_add: () => ({ status: 'unchanged', outcome: 'found', why: 'none', created: false, count_before: '1', count_after: '1', salt_kept: '0', put_rc: 0 }),
-      nc_requests_get: () => ({ outcome: 'empty', why: 'none', partial: true, truncated: false, dropped: {}, requests: [] }),
+      nc_requests_get: () => { window.__requestReads = (window.__requestReads || 0) + 1; return { outcome: 'empty', why: 'none', partial: true, truncated: false, dropped: {}, requests: [] }; },
       nc_salt_reconcile: () => ({ status: 'nothing_to_write', outcome: 'found', why: 'none', wrong_pair: '0', choice: 'keep_local', salt: SALT, put_rc: 0 }),
       nc_contact_reads: args => ({ contacts: JSON.parse(args[0]).map(c => ({ ack: { outcome: 'empty', why: 'none' }, days: c.days.map(x => day(x.day, x.day === TODAY ? inbox : [])) })) }),
       nc_outbox_send: args => { window.__sent.push(JSON.parse(args[2]).map(m => m.text)); return { day: TODAY, alg: 1, count: String(JSON.parse(args[2]).length) }; },
@@ -125,6 +125,15 @@ try {
     client.state = 'ready';
     walletExtension.nodusReady({ client });
   });
+  await page.waitForFunction(() => document.querySelector('.messenger-sync')?.textContent.startsWith('Last checked'));
+  // 0.1.115: the page shown again starts a check round at once (a phone or
+  // browser pauses a hidden page's timers). The clock is frozen here, so the
+  // 30-second timer cannot fire: a new requests read can only come from the
+  // visibilitychange handler.
+  const readsBefore = await page.evaluate(() => window.__requestReads);
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { value: false, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.waitForFunction(n => window.__requestReads > n, readsBefore, { timeout: 2000 })
+    .catch(() => { throw new Error('a page shown again starts a check round at once: it does not'); });
   await page.waitForFunction(() => document.querySelector('.messenger-sync')?.textContent.startsWith('Last checked'));
   await page.locator('.contact-row').first().click();
   const bubble = page.locator('.message-in', { hasText: 'hello from B' }).locator('.message-bubble');
