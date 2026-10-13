@@ -4,11 +4,13 @@
  * decisions/2026-10-13-kurultay-19-summary.md; Kurultay #17 item 4,
  * decisions/2026-10-12-kurultay-17-summary.md).
  *
- * STAGE 1: not used by the pages yet. The page keeps its in-memory state in
- * the v1 shape until P3 (design §2.0); this codec turns it into the v2
- * records on save (PROJECTION) and back on open (LOAD). The commit protocol
- * (reservation, one commit in flight, baseline, diff) is the platform
- * backend's (§2.0, §2.3) and is NOT here.
+ * STAGE 2 (rev 2.1): used by the web storage backend, src/connect/store.js,
+ * through the wasm exports nc_state_project / nc_state_load (nc_wasm.c).
+ * The page keeps its in-memory state in the v1 shape until P3 (design
+ * §2.0); this codec turns it into the v2 records on save (PROJECTION) and
+ * back on open (LOAD). The commit protocol (reservation, one commit in
+ * flight, baseline, diff) is the platform backend's (§2.0, §2.3) and is
+ * NOT here.
  *
  * Pure: no I/O, no clock (D4), no keys, no randomness, no global state.
  * JSON is read with nc_jsjson.h (JSON.parse exact) and written by hand in
@@ -27,27 +29,47 @@
  *      "1,2", an object is "[object Object]"). A refusal is
  *      reason "checkState" (the page's 'The stored contact list is
  *      damaged.').
- *   2. REPRESENTABILITY: checkState leaves fields unchecked that v2 has to
- *      give a typed destination (§2.1). Each is refused, fail closed, with
- *      reason "unrepresentable <field>" — never dropped, never guessed:
+ *   2. DROPPED (design rev 2.1 item 1: a v1 state that passes checkState
+ *      ALWAYS migrates, G5). checkState leaves fields unchecked that v2
+ *      has to give a typed destination (§2.1). A key no code reads is
+ *      left out; a known field whose value v2 cannot hold takes the
+ *      field's default; an entry that has no default is left out whole.
+ *      Each is listed in the result's "dropped" (below) — never refused:
  *        - top level: a key other than the v1 keys (emptyState,
- *          store.js:230) and listTaken (messages.js:524/535);
- *        - contacts[i]: an object of keys {fp, salt, listed} only; fp 128
- *          lowercase hex; salt absent | null | 64 lowercase hex; listed
- *          absent | boolean (the values messages.js:500 / text.js:534
- *          write);
- *        - outgoing[i]: an object of keys {fp, salt, at} only; fp as above;
- *          salt absent | null | 64 hex; at present and U64 by String()
- *          (messages.js:2478);
- *        - declined[i] that is an object: keys {fp, at} only;
- *        - acks: an object (an EMPTY array, which checkState lets through,
- *          is read as {}); acks / ackSent: keys 128 hex, values U64 by
- *          String() (messages.js:1003, :1084 write U64 strings);
- *        - profileCache / dmSync: keys 128 hex (checkState checks only the
- *          values, :262-264); profileCache values keys {id, at, name} only;
- *        - chainNames values keys {name, at} only; vaults / groups values
- *          keys {id, at} only;
- *        - listTaken: absent | boolean.
+ *          store.js:230) and listTaken (messages.js:524/535) -> "<key>";
+ *        - contacts[i] / outgoing[i] that is not an object with a 128
+ *          lowercase hex fp: the entry -> "contacts[i]" (no default exists
+ *          for an ID);
+ *        - contacts[i]: a key other than {fp, salt, listed} ->
+ *          "contacts[i].<key>"; salt not absent / null / 64 lowercase hex
+ *          -> none (null), "contacts[i].salt"; listed not absent / boolean
+ *          -> false, "contacts[i].listed" (the values messages.js:500 /
+ *          text.js:534 write);
+ *        - outgoing[i]: a key other than {fp, salt, at}; salt as above;
+ *          at not U64 by String() -> "0", "outgoing[i].at" (messages.js:2478
+ *          writes it; NO page code reads it — messages.js pendingOf :480 and
+ *          the "Sent by you" list :1870 use fp and salt — so the request
+ *          and its salt are kept rather than lost; "0" is no clock, D4);
+ *        - declined[i] that is an object: a key other than {fp, at};
+ *        - acks: a NON-EMPTY array (checkState lets an array through; an
+ *          empty one is simply {}) -> {}, "acks";
+ *        - acks / ackSent: an entry whose key is not 128 hex or whose value
+ *          is not U64 by String() (messages.js:1003, :1084 write U64
+ *          strings) -> absent, "acks[j]"; profileCache / dmSync: an entry
+ *          whose key is not 128 hex (checkState checks only the values,
+ *          store.js:262-264) -> absent, "profileCache[j]" — j is the
+ *          entry's position among the map's keys in input order, NOT the
+ *          key: a key is an ID, and these paths go to the session log;
+ *        - a key other than {id, at, name} in a profileCache value, {name,
+ *          at} in a chainNames value, {id, at} in a vaults / groups value
+ *          -> "profileCache[j].<key>" (likewise);
+ *        - listTaken not absent / boolean -> absent (false), "listTaken".
+ *      "dropped" is sorted ascending by bytes ("contacts[10]" before
+ *      "contacts[2]") with each path once. The checks are made for every
+ *      entry, also one the dedup below then does not keep.
+ *      The ONLY refusals of a JSON state are therefore "checkState" — plus
+ *      "map" (the previous map, not the state) and "nextSeq" (an
+ *      allocation past 10^20 − 1), below.
  *   3. The dedup rules of the page, verbatim (§2.2 item 2, D1):
  *        contacts — the FIRST entry of an fp wins (contactOf,
  *        messages.js:469); outgoing — `new Map(outgoing.map(o => [o.fp,
@@ -69,9 +91,10 @@
  *      7-day / 200 rule (text.js declinedNow) needs a clock and stays where
  *      it is applied today; a bare-ID entry stays a bare ID.
  * Output: { "status": "ok", "nextSeq": "<advanced>", "header": "<text>",
- *   "records": [ { "id": "c…", "fp": "<128 hex>", "json": "<text>" }, … ] }
- *   with the records ascending by id, or { "status": "invalid",
- *   "reason": "…" }.
+ *   "records": [ { "id": "c…", "fp": "<128 hex>", "json": "<text>" }, … ],
+ *   "dropped": [ "<path>", … ] } with the records ascending by id, or
+ *   { "status": "invalid", "reason": "…" } — reason "json" (the input is
+ *   not JSON), "checkState", "map" or "nextSeq".
  *
  * ── CANONICAL BYTES (D2) ───────────────────────────────────────────────
  * No whitespace; the §2.1 field order; an absent optional is left out;
@@ -110,9 +133,12 @@
  *   "duplicate fp"   two listed records have the same fp;
  *   "not canonical"  the v1 object rebuilt from the records, projected
  *                    again with the loaded fp -> id map, does not give back
- *                    the stored header and records byte for byte (any bad
- *                    field, unknown field, wrong order, a record holding
- *                    only its fp, a removed list over the cap, …).
+ *                    the stored header and records byte for byte, or drops
+ *                    anything (any bad field, unknown field, wrong order, a
+ *                    record holding only its fp, a removed list over the
+ *                    cap, a pending flag without its time, …). Load never
+ *                    applies the DROPPED defaults: they are for the v1 →
+ *                    v2 migration only.
  * Otherwise { "status": "ok", "state": <the canonical v1 object>,
  *             "map": { "<fp>": "c…", … } }.
  * The canonical v1 object: the keys of emptyState in its order
@@ -153,6 +179,15 @@ extern "C" {
 int nc_state_project_json(const char *state, size_t state_len,
                           const char *map, size_t map_len,
                           char **out, size_t *out_len);
+
+/* The same, both inputs in ONE text: { "state": "<the v1 state as JSON
+ * text>", "map": "<the map as JSON text>" } — two JSON STRINGS, so that
+ * the wasm export (nc_wasm.c nc_state_project, one heap input buffer)
+ * answers exactly what nc_state_project_json answers for those two texts,
+ * the shared vectors included. Not that shape -> "invalid" with reason
+ * "json" (not an object, or "state" not a string) or "map" ("map" not a
+ * string). Same return convention. */
+int nc_state_project_wrapped_json(const char *in, size_t in_len, char **out, size_t *out_len);
 
 /* The v2 records -> the v1 state and the fp -> id map, or "damaged". Same
  * return convention. */

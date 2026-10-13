@@ -129,12 +129,18 @@ typedef struct {
     size_t      header_len;
     prec_t     *rec;
     size_t      n_rec;
+    char      **drop;                /* the dropped paths, sorted, distinct  */
+    size_t     *drop_len;
+    size_t      n_drop;
 } proj_t;
 
 static void proj_free(proj_t *p) {
     free(p->header);
     for (size_t i = 0; i < p->n_rec; i++) free(p->rec[i].json);
     free(p->rec);
+    for (size_t i = 0; i < p->n_drop; i++) free(p->drop[i]);
+    free(p->drop);
+    free(p->drop_len);
     memset(p, 0, sizeof(*p));
 }
 
@@ -236,78 +242,161 @@ static int check_state(nc_sb_t *t, const nc_jv_t *root) {
     return 1;
 }
 
-/* ── 2. representability (nc_state.h) ───────────────────────────────── */
+/* ── 2. what v2 cannot represent: dropped and listed (nc_state.h) ────── */
 
-/* Every live key of `o` is one of `keys`. */
-static int keys_only(const nc_jv_t *o, const char *const *keys, size_t nk) {
-    for (size_t i = 0; i < o->len; i++) {
-        if (!live(o, i)) continue;
-        size_t j = 0;
-        while (j < nk && !key_is(o, i, keys[j])) j++;
-        if (j == nk) return 0;
+/* The paths of what the projection left out (design rev 2.1 item 1). */
+typedef struct {
+    char  **s;
+    size_t *n;
+    size_t  len, cap;
+    int     oom;
+} drops_t;
+
+static void drops_free(drops_t *d) {
+    for (size_t i = 0; i < d->len; i++) free(d->s[i]);
+    free(d->s);
+    free(d->n);
+    memset(d, 0, sizeof(*d));
+}
+
+/* Appends <base>[<idx>].<key> — the index only when has_idx, the key only
+ * when key != NULL. */
+static void drop_add(drops_t *d, const char *base, size_t bn, int has_idx, size_t idx,
+                     const char *key, size_t kn) {
+    if (d->oom) return;
+    if (d->len == d->cap) {
+        size_t cap = d->cap ? d->cap * 2 : 8;
+        char **s = realloc(d->s, cap * sizeof(*s));
+        if (s) d->s = s;
+        size_t *n = s ? realloc(d->n, cap * sizeof(*n)) : NULL;
+        if (n) d->n = n;
+        if (!s || !n) { d->oom = 1; return; }
+        d->cap = cap;
     }
-    return 1;
+    nc_sb_t b;
+    nc_sb_init(&b);
+    nc_sb_put(&b, base, bn);
+    if (has_idx) { nc_sb_putc(&b, '['); nc_u128_to_string((u128)idx, &b); nc_sb_putc(&b, ']'); }
+    if (key) { nc_sb_putc(&b, '.'); nc_sb_put(&b, key, kn); }
+    size_t len = 0;
+    char *s = nc_sb_take(&b, &len);
+    if (!s) { d->oom = 1; return; }
+    d->s[d->len] = s;
+    d->n[d->len] = len;
+    d->len++;
 }
-#define KEYS_ONLY(o, ...) keys_only((o), (const char *const[]){ __VA_ARGS__ }, \
-                                    sizeof((const char *const[]){ __VA_ARGS__ }) / sizeof(const char *))
+#define DROP(d, lit, has_idx, idx, key, kn) drop_add((d), (lit), strlen(lit), (has_idx), (idx), (key), (kn))
 
-/* absent | null | 64 lowercase hex */
-static int salt_ok(const nc_jv_t *v) { return !v || v->kind == NC_JV_NULL || str_hex(v, SALT_LEN); }
-/* the salt as stored (NULL = none) */
-static const nc_jv_t *salt_of(const nc_jv_t *v) { return is_str(v) ? v : NULL; }
+/* Whether `key` (kn bytes) is one of `keys`. */
+static int key_in(const char *key, size_t kn, const char *const *keys, size_t nk) {
+    for (size_t j = 0; j < nk; j++) if (nc_js_str_eq(key, kn, keys[j])) return 1;
+    return 0;
+}
+#define N_OF(a) (sizeof(a) / sizeof((a)[0]))
 
-/* A per-ID map: every live key 128 hex; `u64` = every value U64 by String(). */
-static int id_map_ok(nc_sb_t *t, const nc_jv_t *m, int u64) {
-    for (size_t i = 0; i < m->len; i++) {
-        if (!live(m, i)) continue;
-        if (!hex_n(m->k[i], m->kn[i], FP_LEN)) return 0;
-        if (u64 && !u64_of(t, m->v[i])) return 0;
+/* Every live key of entry `o` not in `keys`: <base>[idx].<key>. */
+static void drop_extra_keys(drops_t *d, const char *base, size_t idx, const nc_jv_t *o,
+                            const char *const *keys, size_t nk) {
+    for (size_t i = 0; i < o->len; i++)
+        if (live(o, i) && !key_in(o->k[i], o->kn[i], keys, nk)) DROP(d, base, 1, idx, o->k[i], o->kn[i]);
+}
+
+/* A contacts[] / outgoing[] entry v2 can hold: an object with a 128-hex fp.
+ * Any other is dropped whole (no default exists for an ID). */
+static int entry_ok(const nc_jv_t *e) { return is_obj(e) && str_hex(nc_jv_get(e, "fp"), FP_LEN); }
+
+/* the salt kept: 64 lowercase hex, else none (the default, null) */
+static const nc_jv_t *salt_of(const nc_jv_t *v) { return str_hex(v, SALT_LEN) ? v : NULL; }
+
+/* The six per-ID maps of v1 (§2.2 item 3), in a fixed order. */
+#define N_ID_MAPS 6
+static const char *const ID_MAPS[N_ID_MAPS] = {
+    "acks", "ackSent", "profileCache", "dmSync", "chainNames", "chainNoName"
+};
+/* Their values are U64 by String() (acks, ackSent: checkState does not look
+ * at them; messages.js:1003, :1084 write U64 strings). The others' values
+ * are checked by checkState. */
+static int id_map_u64(int m) { return m == 0 || m == 1; }
+
+/* Entry i of per-ID map m is kept: a live 128-hex key and, for acks /
+ * ackSent, a U64 value. A dropped one is absent — the default. */
+static int id_entry_ok(nc_sb_t *t, int m, const nc_jv_t *map, size_t i) {
+    return live(map, i) && hex_n(map->k[i], map->kn[i], FP_LEN) && (!id_map_u64(m) || u64_of(t, map->v[i]));
+}
+
+/* The per-ID maps after checkState's defaults; acks as an array (which
+ * checkState lets through) reads as {} — dropped when it is not empty. */
+static void id_maps(const nc_jv_t *root, const nc_jv_t *maps[N_ID_MAPS]) {
+    for (int m = 0; m < N_ID_MAPS; m++) {
+        maps[m] = field(root, ID_MAPS[m]);
+        if (is_arr(maps[m])) maps[m] = &EMPTY_OBJ;
     }
-    return 1;
 }
 
-/* Every value of `m` (already an object of objects) has only `keys`. */
-static int values_keys_only(const nc_jv_t *m, const char *const *keys, size_t nk) {
-    for (size_t i = 0; i < m->len; i++)
-        if (live(m, i) && !keys_only(m->v[i], keys, nk)) return 0;
-    return 1;
-}
+static const char *const V1_KEYS[] = {
+    "version", "nextSeq", "contacts", "outgoing", "declined", "removed", "acks", "ackSent",
+    "profileCache", "dmSync", "chainNames", "chainNoName", "vaults", "groups", "seenOwn", "listTaken"
+};
+static const char *const CONTACT_KEYS[] = { "fp", "salt", "listed" };
+static const char *const OUTGOING_KEYS[] = { "fp", "salt", "at" };
+static const char *const DECLINED_KEYS[] = { "fp", "at" };
+static const char *const PROFILE_KEYS[] = { "id", "at", "name" };
+static const char *const CHAIN_NAME_KEYS[] = { "name", "at" };
+static const char *const INDEX_KEYS[] = { "id", "at" };
 
-static const char *represent(nc_sb_t *t, const nc_jv_t *root) {
-    if (!KEYS_ONLY(root, "version", "nextSeq", "contacts", "outgoing", "declined", "removed", "acks",
-                   "ackSent", "profileCache", "dmSync", "chainNames", "chainNoName", "vaults", "groups",
-                   "seenOwn", "listTaken")) return "unrepresentable key";
+/* Lists every path the projection leaves out or replaces by its default
+ * (nc_state.h "DROPPED"). Runs after the v1 gate, so every shape
+ * checkState tests is already known good. Never refuses. */
+static void scan_drops(nc_sb_t *t, const nc_jv_t *root, drops_t *d) {
+    for (size_t i = 0; i < root->len; i++)
+        if (live(root, i) && !key_in(root->k[i], root->kn[i], V1_KEYS, N_OF(V1_KEYS)))
+            drop_add(d, root->k[i], root->kn[i], 0, 0, NULL, 0);
     const nc_jv_t *contacts = nc_jv_get(root, "contacts");
     for (size_t i = 0; i < contacts->len; i++) {
-        const nc_jv_t *c = contacts->v[i], *listed = nc_jv_get(c, "listed");
-        if (!is_obj(c) || !KEYS_ONLY(c, "fp", "salt", "listed") || !str_hex(nc_jv_get(c, "fp"), FP_LEN) ||
-            !salt_ok(nc_jv_get(c, "salt")) || (listed && !is_bool(listed))) return "unrepresentable contacts";
+        const nc_jv_t *c = contacts->v[i], *listed;
+        if (!entry_ok(c)) { DROP(d, "contacts", 1, i, NULL, 0); continue; }
+        drop_extra_keys(d, "contacts", i, c, CONTACT_KEYS, N_OF(CONTACT_KEYS));
+        const nc_jv_t *s = nc_jv_get(c, "salt");
+        if (s && s->kind != NC_JV_NULL && !salt_of(s)) DROP(d, "contacts", 1, i, "salt", 4);
+        if ((listed = nc_jv_get(c, "listed")) != NULL && !is_bool(listed)) DROP(d, "contacts", 1, i, "listed", 6);
     }
     const nc_jv_t *outgoing = nc_jv_get(root, "outgoing");
     for (size_t i = 0; i < outgoing->len; i++) {
         const nc_jv_t *o = outgoing->v[i];
-        if (!is_obj(o) || !KEYS_ONLY(o, "fp", "salt", "at") || !str_hex(nc_jv_get(o, "fp"), FP_LEN) ||
-            !salt_ok(nc_jv_get(o, "salt")) || !u64_of(t, nc_jv_get(o, "at"))) return "unrepresentable outgoing";
+        if (!entry_ok(o)) { DROP(d, "outgoing", 1, i, NULL, 0); continue; }
+        drop_extra_keys(d, "outgoing", i, o, OUTGOING_KEYS, N_OF(OUTGOING_KEYS));
+        const nc_jv_t *s = nc_jv_get(o, "salt");
+        if (s && s->kind != NC_JV_NULL && !salt_of(s)) DROP(d, "outgoing", 1, i, "salt", 4);
+        if (!u64_of(t, nc_jv_get(o, "at"))) DROP(d, "outgoing", 1, i, "at", 2);
     }
     const nc_jv_t *declined = nc_jv_get(root, "declined");
     for (size_t i = 0; i < declined->len; i++)
-        if (is_obj(declined->v[i]) && !KEYS_ONLY(declined->v[i], "fp", "at")) return "unrepresentable declined";
+        if (is_obj(declined->v[i])) drop_extra_keys(d, "declined", i, declined->v[i], DECLINED_KEYS, N_OF(DECLINED_KEYS));
     const nc_jv_t *acks = nc_jv_get(root, "acks");
-    if (is_arr(acks) ? acks->len != 0 : !id_map_ok(t, acks, 1)) return "unrepresentable acks";
-    if (!id_map_ok(t, field(root, "ackSent"), 1)) return "unrepresentable ackSent";
-    const nc_jv_t *pc = field(root, "profileCache");
-    if (!id_map_ok(t, pc, 0) || !values_keys_only(pc, (const char *const[]){ "id", "at", "name" }, 3))
-        return "unrepresentable profileCache";
-    if (!id_map_ok(t, field(root, "dmSync"), 0)) return "unrepresentable dmSync";
-    if (!values_keys_only(field(root, "chainNames"), (const char *const[]){ "name", "at" }, 2))
-        return "unrepresentable chainNames";
-    if (!values_keys_only(field(root, "vaults"), (const char *const[]){ "id", "at" }, 2))
-        return "unrepresentable vaults";
-    if (!values_keys_only(field(root, "groups"), (const char *const[]){ "id", "at" }, 2))
-        return "unrepresentable groups";
+    if (is_arr(acks) && acks->len != 0) DROP(d, "acks", 0, 0, NULL, 0);
+    const nc_jv_t *maps[N_ID_MAPS];
+    id_maps(root, maps);
+    for (int m = 0; m < N_ID_MAPS; m++) {
+        size_t j = 0;                                /* the live entry's position */
+        for (size_t i = 0; i < maps[m]->len; i++) {
+            if (!live(maps[m], i)) continue;
+            if (!id_entry_ok(t, m, maps[m], i)) DROP(d, ID_MAPS[m], 1, j, NULL, 0);
+            else if (m == 2) drop_extra_keys(d, ID_MAPS[m], j, maps[m]->v[i], PROFILE_KEYS, N_OF(PROFILE_KEYS));
+            else if (m == 4) drop_extra_keys(d, ID_MAPS[m], j, maps[m]->v[i], CHAIN_NAME_KEYS, N_OF(CHAIN_NAME_KEYS));
+            j++;
+        }
+    }
+    static const char *const INDEX_MAPS[] = { "vaults", "groups" };
+    for (size_t k = 0; k < N_OF(INDEX_MAPS); k++) {
+        const nc_jv_t *m = field(root, INDEX_MAPS[k]);
+        size_t j = 0;
+        for (size_t i = 0; i < m->len; i++) {
+            if (!live(m, i)) continue;
+            drop_extra_keys(d, INDEX_MAPS[k], j++, m->v[i], INDEX_KEYS, N_OF(INDEX_KEYS));
+        }
+    }
     const nc_jv_t *lt = nc_jv_get(root, "listTaken");
-    if (lt && !is_bool(lt)) return "unrepresentable listTaken";
-    return NULL;
+    if (lt && !is_bool(lt)) DROP(d, "listTaken", 0, 0, NULL, 0);
 }
 
 /* ── sorting (stable merge sort over indices; never qsort) ──────────── */
@@ -497,7 +586,12 @@ static void w_record(nc_sb_t *b, const ent_t *x) {
     nc_sb_putc(b, '{');
     w_key(b, "fp"); nc_js_write_string(b, x->fp, FP_LEN);
     if (x->contact) nc_sb_puts(b, ",\"contact\":{}");
-    if (x->pending) { nc_sb_puts(b, ",\"pending\":{"); w_key(b, "at"); w_u64(b, x->o_at); nc_sb_putc(b, '}'); }
+    if (x->pending) {
+        nc_sb_puts(b, ",\"pending\":{");
+        w_key(b, "at");
+        if (x->o_at) w_u64(b, x->o_at); else nc_sb_puts(b, "\"0\"");   /* dropped: the default */
+        nc_sb_putc(b, '}');
+    }
     if (x->profile) {
         nc_sb_puts(b, ",\"profile\":{");
         w_key(b, "id"); w_str(b, nc_jv_get(x->profile, "id"));
@@ -532,16 +626,40 @@ static void w_record(nc_sb_t *b, const ent_t *x) {
 
 /* ── 3-5. the projection ────────────────────────────────────────────── */
 
-/* The six per-ID maps of v1 (§2.2 item 3), in a fixed order. */
-#define N_ID_MAPS 6
-static const char *const ID_MAPS[N_ID_MAPS] = {
-    "acks", "ackSent", "profileCache", "dmSync", "chainNames", "chainNoName"
-};
+static int cmp_drop(const void *ctx, size_t a, size_t b) {
+    const drops_t *d = ctx;
+    return cmp_bytes(d->s[a], d->n[a], d->s[b], d->n[b]);
+}
+
+/* The dropped paths into p, ascending by bytes, each once. 0, or -1 when
+ * out of memory. */
+static int take_drops(drops_t *d, proj_t *p) {
+    if (d->oom) return -1;
+    size_t *idx = sorted_index(d->len, cmp_drop, d);
+    p->drop = malloc((d->len ? d->len : 1) * sizeof(*p->drop));
+    p->drop_len = malloc((d->len ? d->len : 1) * sizeof(*p->drop_len));
+    if (!idx || !p->drop || !p->drop_len) { free(idx); return -1; }
+    for (size_t j = 0; j < d->len; j++) {
+        size_t i = idx[j];
+        if (p->n_drop && cmp_bytes(p->drop[p->n_drop - 1], p->drop_len[p->n_drop - 1], d->s[i], d->n[i]) == 0) {
+            free(d->s[i]);
+        } else {
+            p->drop[p->n_drop] = d->s[i];
+            p->drop_len[p->n_drop] = d->n[i];
+            p->n_drop++;
+        }
+        d->s[i] = NULL;
+    }
+    free(idx);
+    return 0;
+}
 
 static int project_tree(const nc_jv_t *root, const nc_jv_t *map, proj_t *p) {
     memset(p, 0, sizeof(*p));
     nc_sb_t t;
     nc_sb_init(&t);
+    drops_t d;
+    memset(&d, 0, sizeof(d));
     ent_t *e = NULL;
     const char **all = NULL;
     size_t *idx = NULL, *order = NULL, *by_seq = NULL, *pos = NULL;
@@ -549,26 +667,27 @@ static int project_tree(const nc_jv_t *root, const nc_jv_t *map, proj_t *p) {
     int rc = -1;
 
     if (!check_state(&t, root)) { p->why = t.oom ? NULL : "checkState"; rc = t.oom ? -1 : 0; goto out; }
-    p->why = represent(&t, root);
-    if (t.oom) goto out;
-    if (p->why) { rc = 0; goto out; }
+    scan_drops(&t, root, &d);
+    if (t.oom || d.oom) goto out;
 
+    /* Below, every entry scan_drops dropped whole is skipped by the same
+     * tests (entry_ok, id_entry_ok), in both passes. */
     const nc_jv_t *contacts = nc_jv_get(root, "contacts"), *outgoing = nc_jv_get(root, "outgoing");
     const nc_jv_t *maps[N_ID_MAPS];
-    for (int m = 0; m < N_ID_MAPS; m++) {
-        maps[m] = field(root, ID_MAPS[m]);
-        if (is_arr(maps[m])) maps[m] = &EMPTY_OBJ;        /* acks: an empty array (represent) */
-    }
+    id_maps(root, maps);
 
     /* every fp, then the distinct ones ascending */
     size_t cap = contacts->len + outgoing->len, k = 0;
     for (int m = 0; m < N_ID_MAPS; m++) cap += maps[m]->len;
     all = malloc((cap ? cap : 1) * sizeof(*all));
     if (!all) goto out;
-    for (size_t i = 0; i < contacts->len; i++) all[k++] = nc_jv_get(contacts->v[i], "fp")->s;
-    for (size_t i = 0; i < outgoing->len; i++) all[k++] = nc_jv_get(outgoing->v[i], "fp")->s;
+    for (size_t i = 0; i < contacts->len; i++)
+        if (entry_ok(contacts->v[i])) all[k++] = nc_jv_get(contacts->v[i], "fp")->s;
+    for (size_t i = 0; i < outgoing->len; i++)
+        if (entry_ok(outgoing->v[i])) all[k++] = nc_jv_get(outgoing->v[i], "fp")->s;
     for (int m = 0; m < N_ID_MAPS; m++)
-        for (size_t i = 0; i < maps[m]->len; i++) if (live(maps[m], i)) all[k++] = maps[m]->k[i];
+        for (size_t i = 0; i < maps[m]->len; i++) if (id_entry_ok(&t, m, maps[m], i)) all[k++] = maps[m]->k[i];
+    if (t.oom) goto out;
     idx = sorted_index(k, cmp_fp_ptr, all);
     e = calloc(k ? k : 1, sizeof(*e));
     if (!idx || !e) goto out;
@@ -580,6 +699,7 @@ static int project_tree(const nc_jv_t *root, const nc_jv_t *map, proj_t *p) {
     size_t n_c = 0, n_o = 0;
     for (size_t i = 0; i < contacts->len; i++) {
         const nc_jv_t *c = contacts->v[i];
+        if (!entry_ok(c)) continue;
         ent_t *x = ent_find(e, n, nc_jv_get(c, "fp")->s);
         if (x->contact) continue;
         const nc_jv_t *listed = nc_jv_get(c, "listed");
@@ -591,14 +711,15 @@ static int project_tree(const nc_jv_t *root, const nc_jv_t *map, proj_t *p) {
     /* outgoing: the Map of messages.js:317 — first position, last value */
     for (size_t i = 0; i < outgoing->len; i++) {
         const nc_jv_t *o = outgoing->v[i];
+        if (!entry_ok(o)) continue;
         ent_t *x = ent_find(e, n, nc_jv_get(o, "fp")->s);
         if (!x->pending) { x->pending = 1; x->o_rank = n_o++; }
         x->o_salt = salt_of(nc_jv_get(o, "salt"));
-        x->o_at = nc_jv_get(o, "at");
+        x->o_at = u64_of(&t, nc_jv_get(o, "at")) ? nc_jv_get(o, "at") : NULL;   /* NULL: "0" */
     }
     for (int m = 0; m < N_ID_MAPS; m++)
         for (size_t i = 0; i < maps[m]->len; i++) {
-            if (!live(maps[m], i)) continue;
+            if (!id_entry_ok(&t, m, maps[m], i)) continue;
             ent_t *x = ent_find(e, n, maps[m]->k[i]);
             const nc_jv_t *v = maps[m]->v[i];
             switch (m) {
@@ -690,6 +811,7 @@ static int project_tree(const nc_jv_t *root, const nc_jv_t *map, proj_t *p) {
         p->n_rec++;
     }
     p->next = next;
+    if (take_drops(&d, p) != 0) goto out;
     rc = 0;
 out:
     if (t.oom) rc = -1;
@@ -698,6 +820,7 @@ out:
         proj_free(p);
         p->why = rc == 0 ? why : NULL;
     }
+    drops_free(&d);
     nc_sb_free(&t);
     free(e);
     free(all);
@@ -760,10 +883,33 @@ int nc_state_project_json(const char *state, size_t state_len,
         w_key(&b, "json"); nc_js_write_string(&b, p.rec[i].json, p.rec[i].json_len);
         nc_sb_putc(&b, '}');
     }
+    nc_sb_puts(&b, "],\"dropped\":[");
+    for (size_t i = 0; i < p.n_drop; i++) {
+        if (i) nc_sb_putc(&b, ',');
+        nc_js_write_string(&b, p.drop[i], p.drop_len[i]);
+    }
     nc_sb_puts(&b, "]}");
     proj_free(&p);
     *out = nc_sb_take(&b, out_len);
     return *out ? 0 : -1;
+}
+
+int nc_state_project_wrapped_json(const char *in, size_t in_len, char **out, size_t *out_len) {
+    if (!out || !out_len) return -1;
+    *out = NULL;
+    *out_len = 0;
+    if (!in) return -1;
+    nc_jv_t *w = NULL;
+    nc_js_parse_t pr = nc_js_parse(in, in_len, &w);
+    if (pr == NC_JS_NOMEM) return -1;
+    const nc_jv_t *st = pr == NC_JS_OK ? nc_jv_get(w, "state") : NULL;
+    const nc_jv_t *mp = pr == NC_JS_OK ? nc_jv_get(w, "map") : NULL;
+    int rc;
+    if (!is_obj(w) || !is_str(st)) rc = w_refusal("invalid", "json", out, out_len);
+    else if (!is_str(mp)) rc = w_refusal("invalid", "map", out, out_len);
+    else rc = nc_state_project_json(st->s, st->n, mp->s, mp->n, out, out_len);
+    nc_jv_free(w);
+    return rc;
 }
 
 /* ── LOAD ───────────────────────────────────────────────────────────── */
@@ -952,7 +1098,8 @@ int nc_state_load_json(const char *in, size_t in_len, char **out, size_t *out_le
     if (pr == NC_JS_NOMEM) goto out;
     if (pr != NC_JS_OK) { why = "not canonical"; goto refuse; }
     if (project_tree(v1, mtree, &p) != 0) goto out;
-    int same = !p.why && p.header_len == hs->n && memcmp(p.header, hs->s, hs->n) == 0 && p.n_rec == n;
+    /* nothing dropped: a stored record holds only what v2 represents */
+    int same = !p.why && p.n_drop == 0 && p.header_len == hs->n && memcmp(p.header, hs->s, hs->n) == 0 && p.n_rec == n;
     for (size_t i = 0; same && i < n; i++) {
         const nc_jv_t *js = nc_jv_get(in_find(list, idx, ids->v[i]), "json");
         same = memcmp(p.rec[i].id, ids->v[i]->s, 1 + ID_DIGITS) == 0 &&

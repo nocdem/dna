@@ -308,7 +308,13 @@ async function openLocal(gen) {
     // answers must not hold it. On expiry Messages closes with
     // HISTORY_SLOW_TEXT (retry offered), nothing half-loaded is kept and a
     // late database handle is closed (store.js bounded).
-    const opened = vaultId ? await openHistoryStore({ core, vaultId, signal: AbortSignal.timeout(HISTORY_OPEN_MS) }) : memoryHistoryStore();
+    // A history kept before P7 is updated to the new layout once, after the
+    // bounded read (store.js onMigrate; design §2.2); what the update could
+    // not keep — stored fields no code reads — is written to the session log
+    // as paths, never values (store.js onDropped).
+    const opened = vaultId ? await openHistoryStore({ core, vaultId, signal: AbortSignal.timeout(HISTORY_OPEN_MS),
+      onMigrate: step => { if (step === 'start' && gen === generation) showState('Opening Messages', 'Updating your message history…', false); },
+      onDropped: paths => logCheck(`Message history: ${paths.length} stored field(s) could not be kept: ${paths.join(', ')}`, true) }) : memoryHistoryStore();
     if (gen !== generation) { opened.close(); return; }
     store = opened;
     state = structuredClone(store.state);

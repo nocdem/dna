@@ -2,10 +2,12 @@
 // encoding (src/connect/store.js, decision 2026-09-30-nodus-connect-thin-core.md
 // Ek 2: separate id / nonce / ct / tag fields, one decimal counter record per
 // vault) and the UI helpers (src/connect/ui/text.js, design rev 5 §1.9).
-// NOT COVERED ANYWHERE YET: the IndexedDB transactions of openHistoryStore
-// (readAll / writeAll / oncomplete / onabort, the counter record written in
-// the same transaction). fake-indexeddb is not a dependency and no browser
-// test opens the Messages page, so those paths have no automated test.
+// The IndexedDB transactions of openHistoryStore (readAll / writeAll /
+// oncomplete / onabort, the counter record in the same transaction, the P7
+// migration and commit) are covered since web 0.1.115 by
+// test/connect-store.test.js (a fake IndexedDB at the transaction level —
+// fake-indexeddb is not a dependency) and test/browser-connect-state.js
+// (Chromium's real IndexedDB, the real module).
 // deleteVaultHistory is covered below against a minimal stub of
 // indexedDB.deleteDatabase (the request's events only, not a database).
 import test from 'node:test';

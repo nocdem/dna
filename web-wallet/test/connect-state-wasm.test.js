@@ -1,23 +1,25 @@
-// P7 stage 1 — the state schema v2 codec (connect/nc_state.h; design
-// docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2) against the
-// shared hand-specified vectors of test/vectors/connect-state/ — the same
-// files native ctest test_nc_state runs (connect/tests/test_nc_state.c).
+// P7 — the state schema v2 codec (connect/nc_state.h; design
+// docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2 + 2.1) against
+// the shared hand-specified vectors of test/vectors/connect-state/ — the
+// same files native ctest test_nc_state runs (connect/tests/test_nc_state.c).
 //
 // What it proves:
 //   - always: the v1 gate of the C codec is store.js checkState — for every
 //     "project" vector, the REAL checkState (src/connect/store.js) throws
 //     exactly when the vector expects reason "checkState" (a vector whose
 //     state is not JSON, reason "json", is not run through it: JSON.parse
-//     itself refuses). So every "unrepresentable …", "map" and "nextSeq"
-//     refusal is of a state the page's checkState accepts, and every "ok"
-//     vector is one it accepts too;
+//     itself refuses). So every "dropped" vector (rev 2.1: migrated, never
+//     refused) and every "map" / "nextSeq" refusal is of a state the page's
+//     checkState accepts, and every "ok" vector is one it accepts too;
 //   - with NODUS_SEND_PARITY_OUT (`scripts/build-nodus-send-wasm.sh parity`;
 //     otherwise SKIP — a skip is not a pass): the release-flags node build
 //     (send-node.mjs) answers every vector byte for byte through the real
 //     exports nc_state_project / nc_state_load, the input crossing through
-//     the heap input buffer (nc_group_in_alloc) as src/connect/core.js
-//     sends it; a "project" vector with "v1" also loads back to that v1 and
-//     map, and that v1 projects to the same records again (the round trip).
+//     the state input buffer (nc_state_in_alloc) in the form
+//     src/connect/core.js sends ({"state":"<text>","map":"<text>"} for a
+//     projection); a "project" vector with "v1" also loads back to that v1
+//     and map, and that v1 projects to the same records again with
+//     "dropped": [] (the round trip).
 // Tokens (#A#, #c7#, …) and fills: see the "doc" entry of project.json.
 // Requires: the vector files — none is a FAILURE, not a skip.
 // Leaves behind: nothing.
@@ -76,11 +78,13 @@ function loadVectors() {
 // The bytes the codec must answer (connect/nc_state.h), assembled from the
 // vector's texts with JSON.stringify's string form — as test_nc_state.c does.
 const s = JSON.stringify;
-function projectResult(v) {
+// `dropped`: the paths the vector names ([] when it names none; the round
+// trip, which drops nothing, passes []).
+function projectResult(v, dropped = v.expect.dropped ?? []) {
   const e = v.expect;
   if (e.status !== 'ok') return `{"status":"invalid","reason":${s(e.reason)}}`;
   const records = e.records.map(r => `{"id":${s(r.id)},"fp":${s(r.fp)},"json":${s(fill(r.json, v.fills))}}`).join(',');
-  return `{"status":"ok","nextSeq":${s(e.nextSeq)},"header":${s(fill(e.header, v.fills))},"records":[${records}]}`;
+  return `{"status":"ok","nextSeq":${s(e.nextSeq)},"header":${s(fill(e.header, v.fills))},"records":[${records}],"dropped":${s(dropped)}}`;
 }
 function loadResult(e, fills) {
   if (e.status !== 'ok') return `{"status":"damaged","reason":${s(e.reason)}}`;
@@ -105,18 +109,21 @@ test('connect state: the wasm module (nc_state_project / nc_state_load) answers 
   assert.ok(existsSync(path), `${path} is missing — run build-nodus-send-wasm.sh parity`);
   const { default: create } = await import(pathToFileURL(path).href);
   const M = await create();
+  // The state input buffer (nc_state_in_alloc, P7 stage 2), as
+  // src/connect/core.js putState fills it.
   const putIn = text => {
     const bytes = new TextEncoder().encode(text);
-    const at = M.ccall('nc_group_in_alloc', 'number', ['number'], [bytes.length]);
-    if (bytes.length) { assert.ok(at, 'nc_group_in_alloc'); M.HEAPU8.set(bytes, at); }
+    const at = M.ccall('nc_state_in_alloc', 'number', ['number'], [bytes.length]);
+    if (bytes.length) { assert.ok(at, 'nc_state_in_alloc'); M.HEAPU8.set(bytes, at); }
   };
-  const call = (name, args) => {
-    const rc = M.ccall(name, 'number', args.map(() => 'string'), args);
+  const call = name => {
+    const rc = M.ccall(name, 'number', [], []);
     assert.equal(rc, 0, `${name}: ${M.ccall('nc_error', 'string', [], [])}`);
     return M.ccall('nc_result', 'string', [], []);
   };
-  const project = (state, map) => { putIn(state); return call('nc_state_project', [map]); };
-  const load = (header, records) => { putIn(JSON.stringify({ header, records })); return call('nc_state_load', []); };
+  // core.js stateProject's input: both texts as JSON strings in one object.
+  const project = (state, map) => { putIn(JSON.stringify({ state, map })); return call('nc_state_project'); };
+  const load = (header, records) => { putIn(JSON.stringify({ header, records })); return call('nc_state_load'); };
 
   let ran = 0;
   for (const v of loadVectors()) {
@@ -130,7 +137,7 @@ test('connect state: the wasm module (nc_state_project / nc_state_load) answers 
         const map = Object.fromEntries(e.records.map(r => [r.fp, r.id]));
         const records = e.records.map(r => ({ id: r.id, json: fill(r.json, v.fills) }));
         assert.equal(load(fill(e.header, v.fills), records), loadResult({ status: 'ok', state: v1, map }), `${v.where} (round trip: load)`);
-        assert.equal(project(v1, s(map)), want, `${v.where} (round trip: project again)`);
+        assert.equal(project(v1, s(map)), projectResult(v, []), `${v.where} (round trip: project again)`);
       }
     } else {
       const records = v.records.map(r => ({ id: r.id, json: fill(r.json, v.fills) }));

@@ -174,12 +174,15 @@
 //   heap input buffer (nc_group_in_alloc), filled and consumed in ONE queue
 //   slot.
 //
-// STATE SCHEMA v2 (P7 stage 1; connect/nc_state.h, design
-// docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2). Synchronous,
-// no session key, no network; NOT used by the pages yet (stage 2 wires them
-// into store.js). The input crosses through the heap input buffer (1 MiB).
+// STATE SCHEMA v2 (P7; connect/nc_state.h, design
+// docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2 + 2.1).
+// Synchronous, no session key, no network; used by src/connect/store.js
+// (stage 2). The input crosses through the module's state input buffer
+// (nc_state_in_alloc, 8 MiB).
 //   core.stateProject(v1State, prevMap = {}) -> { status: 'ok', nextSeq,
-//     header, records: [{ id, fp, json }] } | { status: 'invalid', reason }
+//     header, records: [{ id, fp, json }], dropped: [path] } |
+//     { status: 'invalid', reason }   dropped: what v2 could not keep
+//     (nc_state.h DROPPED; paths, no values)
 //     v1State: the page's v1 state object (JSON.stringify'd here, the bytes
 //     store.js seals today); prevMap: fp -> 'c' + 20 digits from the last
 //     stateLoad ({} = the v1 -> v2 migration). header / json: the exact
@@ -318,21 +321,20 @@ function putIn(b, bytes) {
   if (!at) throw new Error('Out of memory.');
   b.heap().set(bytes, at);
 }
-// ── state schema v2 (P7 stage 1) ───────────────────────────────────────
-// The previous fp -> id map crosses nc_state_project as a ccall string,
-// which Emscripten copies onto the module's 1 MiB C stack: capped at
-// 256 KiB (about 1,650 known IDs), as a group bucket argument is
-// (connect/nc_wasm.c NC_GROUP_BKT_IN_MAX).
-const STATE_MAP_MAX = 262144;
+// ── state schema v2 (P7) ───────────────────────────────────────────────
+// Every state input — the v1 state with the previous map, or the records
+// to load — crosses into the module's STATE input buffer (connect/nc_wasm.c
+// nc_state_in_alloc, NC_STATE_IN_MAX; P7 stage 2, rev 2.1 item 2): no ccall
+// string, so nothing is copied onto the module's 1 MiB C stack and the
+// state as a whole has no 1 MiB cap. Consumed by the nc_state_* export
+// called next in the same synchronous slot.
+const STATE_IN_MAX = 8388608;
 const STATE_RECORD_ID = /^c\d{20}$/;
-// A state input into the module's heap input buffer (nc_group_in_alloc,
-// GROUP_IN_MAX); consumed by the nc_state_* export called next in the same
-// slot.
 function putState(b, text) {
   const bytes = new TextEncoder().encode(text);
-  if (bytes.length === 0 || bytes.length > GROUP_IN_MAX) throw new Error('The message state is too large for this version.');
-  const at = b.num('nc_group_in_alloc', ['number'], [bytes.length]);
-  if (!at) throw new Error('Out of memory.');
+  if (bytes.length === 0 || bytes.length > STATE_IN_MAX) throw new Error('The message state is too large for this version.');
+  const at = b.num('nc_state_in_alloc', ['number'], [bytes.length]);
+  if (!at) { bytes.fill(0); throw new Error('Out of memory.'); }
   b.heap().set(bytes, at);
   bytes.fill(0);
 }
@@ -554,16 +556,17 @@ export function createNodusConnectCore({ nodus } = {}) {
       return sync(b => { b.check(b.num('nc_group_accept', ['string', 'string'], [hexN(gid, 64, 'group id'), hexN(inviteId, 32, 'invite')])); return b.result().json; });
     },
     groupLeaveJson(gid) { return sync(b => { b.check(b.num('nc_group_leave', ['string'], [hexN(gid, 64, 'group id')])); return b.result().json; }); },
-    // ── state schema v2 (P7 stage 1): synchronous ──
+    // ── state schema v2 (P7): synchronous ──
+    // Both texts cross as JSON strings inside one input (connect/nc_state.h
+    // nc_state_project_wrapped_json), so the module answers exactly what
+    // the native codec answers for them.
     stateProject(v1State, prevMap = {}) {
       if (!plainObject(v1State)) throw new Error('Invalid message state.');
       if (!plainObject(prevMap) || Object.entries(prevMap).some(([key, id]) => !HEX128.test(key) || typeof id !== 'string' || !STATE_RECORD_ID.test(id))) throw new Error('Invalid message state map.');
-      const map = JSON.stringify(prevMap);
-      if (map.length > STATE_MAP_MAX) throw new Error('The message state is too large for this version.');
-      const text = JSON.stringify(v1State);
+      const text = JSON.stringify({ state: JSON.stringify(v1State), map: JSON.stringify(prevMap) });
       return sync(b => {
         putState(b, text);
-        b.check(b.num('nc_state_project', ['string'], [map]));
+        b.check(b.num('nc_state_project'));
         return b.result();
       });
     },

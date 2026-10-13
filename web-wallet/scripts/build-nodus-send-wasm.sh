@@ -426,11 +426,11 @@ exports_common=(
   # nc_group_bucket_send, nc_group_bucket_fetch.
   nc_group_in_alloc nc_group_random nc_group_leave
   nc_group_get nc_group_put nc_group_bucket_send nc_group_bucket_fetch
-  # P7 stage 1 (connect/nc_wasm.c "state schema v2 codec"): synchronous and
-  # pure — no network, no session, outside the op bracket, like
-  # nc_salt_pick. Each takes its input from the heap input buffer
-  # (nc_group_in_alloc); not used by the pages yet.
-  nc_state_project nc_state_load
+  # P7 (connect/nc_wasm.c "state schema v2 codec"): synchronous and pure —
+  # no network, no session, outside the op bracket, like nc_salt_pick. Each
+  # takes its input from the state input buffer (nc_state_in_alloc, up to
+  # 8 MiB, P7 stage 2); used by src/connect/store.js through core.js.
+  nc_state_in_alloc nc_state_project nc_state_load
   nc_lock
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match

@@ -72,12 +72,24 @@ try {
       // Since 0.1.112 the record's bytes come through the heap input buffer
       // (nc_group_in_alloc), not as an argument (BUGS W-15).
       nc_hist_encrypt: args => ({ nonce: '00'.repeat(12), ct: takeIn(), tag: '00'.repeat(16), counter: String(BigInt(args[2]) + 1n) }),
-      nc_hist_decrypt: () => ({ pt: takeIn() })
+      nc_hist_decrypt: () => ({ pt: takeIn() }),
+      // P7 stage 2: store.js keeps the state as schema v2 through the core
+      // (core.stateProject / stateLoad, the state input buffer). A FAKE that
+      // is merely reversible, not the real codec (that is
+      // test/browser-connect-state.js and the vectors): the "header" carries
+      // the whole v1 state, no known-ID record is made, nothing is dropped.
+      nc_state_project: () => {
+        const v1 = JSON.parse(takeState().state);
+        return { status: 'ok', nextSeq: String(v1.nextSeq), header: JSON.stringify({ version: 2, nextSeq: String(v1.nextSeq), ids: [], v1 }), records: [], dropped: [] };
+      },
+      nc_state_load: () => ({ status: 'ok', state: JSON.parse(takeState().header).v1, map: {} })
     };
-    // The module's heap and its one input buffer (src/connect/core.js putHistory).
-    const HEAP = new Uint8Array(1 << 21), IN_AT = 1024;
-    let inLen = 0;
+    // The module's heap, its one input buffer (src/connect/core.js
+    // putHistory) and the state input buffer (core.js putState).
+    const HEAP = new Uint8Array(1 << 21), IN_AT = 1024, STATE_AT = 1 << 20;
+    let inLen = 0, stateLen = 0;
     const takeIn = () => { const h = Array.from(HEAP.subarray(IN_AT, IN_AT + inLen), b => b.toString(16).padStart(2, '0')).join(''); inLen = 0; return h; };
+    const takeState = () => { const t = new TextDecoder().decode(HEAP.subarray(STATE_AT, STATE_AT + stateLen)); stateLen = 0; return JSON.parse(t); };
     // One api object per call, so a call that waits keeps its own result.
     function api() {
       let last, lastArgs;
@@ -88,6 +100,7 @@ try {
       return {
         num: (name, types, args) => {
           if (name === 'nc_group_in_alloc') { inLen = args[0]; return IN_AT; }
+          if (name === 'nc_state_in_alloc') { stateLen = args[0]; return STATE_AT; }
           last = name; lastArgs = args; return name === 'nc_words_alloc' ? 64 : 0;
         },
         call: async (name, types, args) => {

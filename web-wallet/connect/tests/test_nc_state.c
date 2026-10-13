@@ -1,5 +1,5 @@
-/* P7 stage 1 — the state schema v2 codec against the shared vectors,
- * natively (docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2,
+/* P7 — the state schema v2 codec against the shared vectors, natively
+ * (docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2 + 2.1,
  * "Test plan"; connect/nc_state.h).
  *
  * WHAT IT PROVES: for every vector of every .json file of
@@ -7,13 +7,18 @@
  * test/connect-state-wasm.test.js runs through the wasm module):
  *   - kind "project": nc_state_project_json(state, map) returns byte for
  *     byte the result the vector names — {"status":"ok","nextSeq",
- *     "header","records":[{"id","fp","json"}]} with the header and record
- *     TEXTS exactly as given, or {"status":"invalid","reason"};
+ *     "header","records":[{"id","fp","json"}],"dropped":[…]} with the
+ *     header and record TEXTS exactly as given and the dropped paths
+ *     (rev 2.1: [] when the vector names none), or
+ *     {"status":"invalid","reason"}; and the wrapped form
+ *     nc_state_project_wrapped_json({"state":"<text>","map":"<text>"}),
+ *     which the wasm export takes, returns the same bytes;
  *   - a "project" vector with "v1" (the round trip, design §2.1): loading
  *     the expected records gives {"status":"ok","state":<v1>,"map":{fp:
  *     id, … in record order}}, and projecting that v1 with that map gives
- *     the same records again (v1 -> v2 -> v1 is the identity on the
- *     canonical form, and the canonical form is a fixed point);
+ *     the same records again with "dropped":[] (v1 -> v2 -> v1 is the
+ *     identity on the canonical form, and the canonical form is a fixed
+ *     point that drops nothing);
  *   - kind "load": nc_state_load_json({header, records}) returns
  *     {"status":"ok","state","map"} or {"status":"damaged","reason"} as
  *     named (fail closed, design §2.5).
@@ -26,8 +31,8 @@
  * removed-cap vector needs 1,001 entries). The short tokens of the files
  * (#A# = 128 'a', #c7# = c00000000000000000007, … — project.json "doc")
  * are expanded in the whole file text before it is parsed.
- * Then direct cases: NULL arguments, a non-JSON input, a load wrapper that
- * is not one, nesting deeper than the parser takes.
+ * Then direct cases: NULL arguments, a non-JSON input, a project or load
+ * wrapper that is not one, nesting deeper than the parser takes.
  *
  * WHAT IT REQUIRES: the vector files (none = FAIL, never a skip). Built with
  * -fsanitize=address,undefined (connect/tests/CMakeLists.txt), so a memory
@@ -202,8 +207,8 @@ static int run_project(const char *where, const nc_jv_t *v) {
     const nc_jv_t *st = jstrv(v, "state"), *mp = jstrv(v, "map"), *ex = nc_jv_get(v, "expect");
     const nc_jv_t *status = jstrv(ex, "status");
     if (!st || !mp || !status) { printf("FAIL %s: malformed vector\n", where); g_fail++; return 0; }
-    size_t sl, el = 0;
-    char *state = xv(st, fills, &sl), *want = NULL;
+    size_t sl, el = 0, el0 = 0;
+    char *state = xv(st, fills, &sl), *want = NULL, *want0 = NULL;
     nc_sb_t lw, mapb;
     nc_sb_init(&lw);
     nc_sb_init(&mapb);
@@ -250,10 +255,23 @@ static int run_project(const char *where, const nc_jv_t *v) {
             nc_js_write_string(&mapb, id->s, id->n);
             free(j);
         }
-        nc_sb_puts(&b, "]}");
+        nc_sb_puts(&b, "],\"dropped\":[");
         nc_sb_puts(&lw, "]}");
         nc_sb_putc(&mapb, '}');
         free(h);
+        /* the round trip drops nothing: the same text with "dropped":[] */
+        nc_sb_t b0;
+        nc_sb_init(&b0);
+        if (b.p) nc_sb_put(&b0, b.p, b.len);
+        nc_sb_puts(&b0, "]}");
+        want0 = nc_sb_take(&b0, &el0);
+        const nc_jv_t *dr = nc_jv_get(ex, "dropped");
+        for (size_t i = 0; dr && dr->kind == NC_JV_ARR && i < dr->len; i++) {
+            if (i) nc_sb_putc(&b, ',');
+            if (dr->v[i]->kind == NC_JV_STR) nc_js_write_string(&b, dr->v[i]->s, dr->v[i]->n);
+        }
+        if (dr && dr->kind != NC_JV_ARR) { printf("FAIL %s: malformed dropped\n", where); g_fail++; }
+        nc_sb_puts(&b, "]}");
         want = nc_sb_take(&b, &el);
         const nc_jv_t *v1v = jstrv(ex, "v1");
         if (v1v) v1 = xv(v1v, fills, &v1l);
@@ -271,6 +289,24 @@ static int run_project(const char *where, const nc_jv_t *v) {
         compare(where, got, gl, want, el);
     }
     free(got);
+    if (state && want) {
+        /* the wrapped form (the wasm export nc_state_project's input: both
+         * texts as JSON strings) answers exactly the same */
+        char where1[600];
+        snprintf(where1, sizeof(where1), "%s (wrapped)", where);
+        nc_sb_t wr;
+        nc_sb_init(&wr);
+        nc_sb_puts(&wr, "{\"state\":");
+        nc_js_write_string(&wr, state, sl);
+        nc_sb_puts(&wr, ",\"map\":");
+        nc_js_write_string(&wr, mp->s, mp->n);
+        nc_sb_putc(&wr, '}');
+        got = NULL;
+        if (wr.oom || nc_state_project_wrapped_json(wr.p, wr.len, &got, &gl) != 0 || !got) { printf("FAIL %s: no result\n", where1); g_fail++; }
+        else compare(where1, got, gl, want, el);
+        free(got);
+        nc_sb_free(&wr);
+    }
     if (v1 && !lw.oom && !mapb.oom) {
         /* the round trip: load gives v1 and the map ... */
         nc_sb_t lx;
@@ -293,13 +329,14 @@ static int run_project(const char *where, const nc_jv_t *v) {
         /* ... and v1 with that map projects to the same records */
         snprintf(where2, sizeof(where2), "%s (round trip: project again)", where);
         got = NULL;
-        if (nc_state_project_json(v1, v1l, mapb.p, mapb.len, &got, &gl) != 0 || !got) { printf("FAIL %s: no result\n", where2); g_fail++; }
-        else compare(where2, got, gl, want, el);
+        if (!want0 || nc_state_project_json(v1, v1l, mapb.p, mapb.len, &got, &gl) != 0 || !got) { printf("FAIL %s: no result\n", where2); g_fail++; }
+        else compare(where2, got, gl, want0, el0);
         free(got);
     }
     free(v1);
     free(state);
     free(want);
+    free(want0);
     nc_sb_free(&lw);
     nc_sb_free(&mapb);
     return 1;
@@ -463,6 +500,24 @@ static void direct_cases(void) {
     got = NULL;
     expect_text("project: embedded NUL", nc_state_project_json("{}\0", 3, "{}", 2, &got, &gl), &got,
                 "{\"status\":\"invalid\",\"reason\":\"json\"}");
+    /* the wrapped form: { "state": "<text>", "map": "<text>" } */
+    if (nc_state_project_wrapped_json(NULL, 0, &got, &gl) != -1 || got) { printf("FAIL wrapped NULL\n"); g_fail++; } else g_pass++;
+    if (nc_state_project_wrapped_json("{}", 2, NULL, &gl) != -1) { printf("FAIL wrapped NULL out\n"); g_fail++; } else g_pass++;
+    got = NULL;
+    expect_text("wrapped: not JSON", nc_state_project_wrapped_json("{", 1, &got, &gl), &got,
+                "{\"status\":\"invalid\",\"reason\":\"json\"}");
+    got = NULL;
+    static const char W_ARRAY[] = "[\"{}\",\"{}\"]";
+    expect_text("wrapped: an array", nc_state_project_wrapped_json(W_ARRAY, strlen(W_ARRAY), &got, &gl), &got,
+                "{\"status\":\"invalid\",\"reason\":\"json\"}");
+    got = NULL;
+    static const char W_OBJ_STATE[] = "{\"state\":{\"version\":1},\"map\":\"{}\"}";
+    expect_text("wrapped: state an object, not a text", nc_state_project_wrapped_json(W_OBJ_STATE, strlen(W_OBJ_STATE), &got, &gl), &got,
+                "{\"status\":\"invalid\",\"reason\":\"json\"}");
+    got = NULL;
+    static const char W_NO_MAP[] = "{\"state\":\"{}\"}";
+    expect_text("wrapped: no map", nc_state_project_wrapped_json(W_NO_MAP, strlen(W_NO_MAP), &got, &gl), &got,
+                "{\"status\":\"invalid\",\"reason\":\"map\"}");
     got = NULL;
     expect_text("load: empty input", nc_state_load_json("", 0, &got, &gl), &got,
                 "{\"status\":\"damaged\",\"reason\":\"input\"}");

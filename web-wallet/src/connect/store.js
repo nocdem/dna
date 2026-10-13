@@ -16,19 +16,32 @@
 //     put/delete; completion is oncomplete, and onerror/onabort are surfaced;
 //     a failed load keeps Messages closed and writes nothing; deleting the
 //     history from this device takes the storage Web Lock.
+//   docs/plans/2026-10-13-connect-core-p7-state-design.md rev 2 + 2.1 (P7
+//     stage 2; Kurultay #19, decisions/2026-10-13-kurultay-19-summary.md):
+//     the state is kept as schema v2 (§2.1) — a header and one record per
+//     known ID, their canonical bytes made by the core (connect/nc_state.h);
+//     a v1 state is migrated once after the open (§2.2); every save is ONE
+//     commit (§2.3): snapshot at the call, diff against the last COMMITTED
+//     records at the run, a counter reservation before the first seal, one
+//     transaction, aborted when queuing it throws; the header and the
+//     known-ID records fail closed (§2.5).
 //
 // Naming: database = the vault id as 32 lowercase hex characters (the same 16
 // bytes as the vault's base64 `id`). Object stores: 'messages' (one record per
-// message, id 'm' + 20-digit local sequence), 'state' (the record id 'state':
-// contacts, salts, pending requests, the contacts removed on this device,
-// ACK times, the next local sequence,
-// the profile cache index and the message-check times; plus one record per
-// kept contact profile, id 'p' + 20-digit local sequence, one per shared
-// vault, id 'v' + 20-digit local sequence — src/vaults/ — and the group
-// records 'g' / 'k' / 'x' + 20 digits — src/connect/groups/), 'meta' (the
-// counter record). Record ids are opaque on purpose: who you talk
-// to is inside the ciphertext, not in an id or the AAD. The counter is also
-// kept in localStorage ('nodus.connect.counter.v1.<database name>', a
+// message, id 'm' + 20-digit local sequence), 'state' (since P7 schema v2:
+// the record id 'state' is the HEADER — the known-ID ids, the next local
+// sequence, removed / declined, the vault and group indexes, the own-record
+// latches — and one record per known ID, 'c' + 20 digits: its contact flag,
+// pending request, kept-profile index, chain name, salts, ACK and check
+// times (nc_state.h); a v1 database holds the whole v1 state in 'state'
+// instead; plus one record per kept contact profile, id 'p' + 20-digit
+// local sequence, one per shared vault, id 'v' + 20-digit local sequence —
+// src/vaults/ — and the group records 'g' / 'k' / 'x' + 20 digits —
+// src/connect/groups/), 'meta' (the counter record). Record ids are opaque
+// on purpose: who you talk to is inside the ciphertext, not in an id or the
+// AAD (the NUMBER of 'c' records shows how many IDs this wallet keeps
+// something for — the khan's decision 2026-10-13, design G1). The counter is
+// also kept in localStorage ('nodus.connect.counter.v1.<database name>', a
 // decimal string) so deleting the history does not restart it (NC-RT2 D).
 //
 // Core calls used (src/connect/core.js, NC-4b):
@@ -39,6 +52,10 @@
 //     (nc_wasm.c NC_HIST_PT_MAX); counter: decimal string in, the new value
 //     out (checked here to be exactly in + 1); nonce / ct / tag: Uint8Array
 //   core.historyDecrypt({ store, id, nonce, ct, tag }) -> { plaintext: Uint8Array }
+//   core.stateProject(v1State, idMap) -> { status, nextSeq, header, records:
+//     [{ id, fp, json }], dropped }   synchronous (P7)
+//   core.stateLoad({ header, records: [{ id, json }] }) -> { status, state, map }
+//     synchronous (P7)
 
 // Every failure of this file is a StorageError whose message is plain words
 // meant for the user (§1.7: onerror/onabort are shown, not hidden behind a
@@ -60,10 +77,19 @@ export const MAX_INVOCATIONS = 2n ** 32n;
 // The core seals at most this many plaintext bytes per record (nc_wasm.c
 // NC_HIST_PT_MAX). 64 KiB until web 0.1.112: the one 'state' record (every
 // contact's entries in one record, ~1 KB per contact) outgrew it at about 60
-// contacts and every save failed (BUGS W-15). Splitting the state record is
-// package P7 (docs/plans/2026-10-12-connect-core-migration-plan.md).
+// contacts and every save failed (BUGS W-15). P7 (stage 2) splits it: a
+// header and one record of ~1 KB per known ID, each under this cap.
 export const PLAINTEXT_MAX = 1048576;
 const U64 = /^(0|[1-9]\d{0,19})$/;
+// A known-ID record of the state schema v2 (connect/nc_state.h).
+export const KNOWN_ID_RECORD_ID = /^c\d{20}$/;
+// The schema version of the header record 'state' (nc_state.h NC_STATE_VERSION).
+const STATE_SCHEMA_V2 = 2;
+export const DAMAGED_STATE_TEXT = 'The stored contact list is damaged.';
+const SAVE_PREPARE_TEXT = 'Message history could not be saved: the contact list could not be prepared.';
+const SEAL_TEXT = 'Message history could not be saved: the message could not be sealed.';
+const BUDGET_TEXT = 'This device has stored the maximum number of messages for this wallet. Nothing more can be saved here.';
+const READ_TEXT = 'A stored message could not be read.';
 
 function bytesToHex(bytes) {
   let out = '';
@@ -264,8 +290,63 @@ export function checkState(value) {
       Object.values(value.dmSync).some(t => !U64.test(String(t))) ||
       Object.entries(value.chainNames).some(([fp, e]) => !HEX128_KEY.test(fp) || !isMap(e) || !chainNameOk(e.name) || !U64.test(String(e.at))) ||
       Object.entries(value.chainNoName).some(([fp, at]) => !HEX128_KEY.test(fp) || !U64.test(String(at))) ||
-      Object.entries(value.vaults).some(([addr, e]) => !HEX128_KEY.test(addr) || !isMap(e) || typeof e.id !== 'string' || !VAULT_RECORD_ID.test(e.id) || !U64.test(String(e.at)))) throw new StorageError('The stored contact list is damaged.');
+      Object.entries(value.vaults).some(([addr, e]) => !HEX128_KEY.test(addr) || !isMap(e) || typeof e.id !== 'string' || !VAULT_RECORD_ID.test(e.id) || !U64.test(String(e.at)))) throw new StorageError(DAMAGED_STATE_TEXT);
   return value;
+}
+
+// ── state schema v2 (P7 stage 2) ───────────────────────────────────────
+// A SNAPSHOT of the state: the canonical text of every state record the
+// core projects it to — 'state' (the header) first, then the 'c…' records
+// ascending — with the fp -> id map, the advanced nextSeq and the paths the
+// projection left out (nc_state.h DROPPED). Synchronous: taken when save()
+// is called, so nothing the page changes afterwards leaks into that commit
+// (design §2.3 item 1). `idMap`: fp -> id of the newest snapshot (ids stay
+// stable, §2.1).
+export function stateSnapshot(core, v1State, idMap) {
+  let r;
+  try { r = core.stateProject(v1State, idMap); }
+  catch (error) { throw error instanceof StorageError ? error : new StorageError(SAVE_PREPARE_TEXT); }
+  if (r?.status === 'invalid' && r.reason === 'checkState') throw new StorageError(DAMAGED_STATE_TEXT);
+  if (!r || r.status !== 'ok' || typeof r.header !== 'string' || typeof r.nextSeq !== 'string' || !U64.test(r.nextSeq) ||
+      !Array.isArray(r.records) || !Array.isArray(r.dropped) || r.dropped.some(p => typeof p !== 'string')) throw new StorageError(SAVE_PREPARE_TEXT);
+  const texts = new Map([[STATE_ID, r.header]]), map = {};
+  for (const rec of r.records) {
+    if (!rec || typeof rec.id !== 'string' || !KNOWN_ID_RECORD_ID.test(rec.id) || typeof rec.fp !== 'string' || !HEX128_KEY.test(rec.fp) ||
+        typeof rec.json !== 'string' || texts.has(rec.id) || Object.hasOwn(map, rec.fp)) throw new StorageError(SAVE_PREPARE_TEXT);
+    texts.set(rec.id, rec.json);
+    map[rec.fp] = rec.id;
+  }
+  return { texts, map, nextSeq: r.nextSeq, dropped: r.dropped };
+}
+
+// What one commit writes to the 'state' store (design §2.3 item 2): every
+// record of the snapshot whose text differs from the last COMMITTED one, or
+// is new, is put; every known-ID record of the committed baseline the
+// snapshot no longer has is deleted (§2.1 Lifetime). The header is always
+// in a snapshot, so it is never deleted. `baseline`, `texts`: Map id -> text.
+export function stateDiff(baseline, texts) {
+  const puts = [], deletes = [];
+  for (const [id, text] of texts) if (baseline.get(id) !== text) puts.push({ id, text });
+  for (const id of baseline.keys()) if (!texts.has(id) && KNOWN_ID_RECORD_ID.test(id)) deletes.push(id);
+  deletes.sort();
+  return { puts, deletes };
+}
+
+// The v2 records -> { state (the canonical v1 object), map }, or a
+// StorageError: fail closed (design §2.5).
+export function stateLoaded(core, header, records) {
+  let r;
+  try { r = core.stateLoad({ header, records }); }
+  catch (error) { throw error instanceof StorageError ? error : new StorageError(DAMAGED_STATE_TEXT); }
+  if (!r || r.status !== 'ok' || !isMap(r.state) || !isMap(r.map)) throw new StorageError(DAMAGED_STATE_TEXT);
+  return { state: checkState(r.state), map: r.map };
+}
+
+// A record text -> the plaintext bytes handed to the core (UTF-8).
+export function textBytes(text) {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length === 0 || bytes.length > PLAINTEXT_MAX) throw new StorageError('This is too large to save on this device.');
+  return bytes;
 }
 
 // A kept vault record: { address, value } — `value` is checked by the
@@ -338,8 +419,13 @@ function readAll(db) {
   });
 }
 
-// `puts`: [{ store, record }] — every byte already prepared; the body only puts.
-function writeAll(db, puts) {
+// ONE readwrite transaction (design §2.3 items 5-6). `puts`: [{ store,
+// record }], `deletes`: [{ store, id }] — every byte already prepared; the
+// body only puts and deletes. Resolves on oncomplete (= Committed). A
+// synchronous throw while the requests are queued aborts the transaction,
+// so the requests queued before it never commit without the rest (Kurultay
+// #19 item 13).
+export function writeAll(db, puts, deletes = []) {
   return new Promise((resolve, reject) => {
     let tx;
     try { tx = db.transaction([STORE_MESSAGES, STORE_STATE, STORE_META], 'readwrite'); }
@@ -347,36 +433,137 @@ function writeAll(db, puts) {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(txError(tx, 'Message history could not be saved'));
     tx.onabort = () => reject(txError(tx, 'Message history could not be saved'));
-    for (const { store, record } of puts) tx.objectStore(store).put(record);
+    try {
+      for (const { store, record } of puts) tx.objectStore(store).put(record);
+      for (const { store, id } of deletes) tx.objectStore(store).delete(id);
+    } catch (error) {
+      try { tx.abort(); } catch { /* already finished */ }
+      reject(new StorageError(`Message history could not be saved: ${error?.message || 'the browser refused the change'}.`));
+    }
   });
 }
 
 // The persistent store of a saved wallet. Resolves once the whole history
 // has been read and decrypted; rejects (Messages stays closed) on any error.
-// Returns { persistent: true, state, messages, save(state, newMessages), close(), erase() }.
+// Returns { persistent: true, state, messages, profiles, vaults,
+// groupRecords, groupMessages, dropped, save(state, newMessages, …),
+// close(), erase() }.
 // `signal` (optional): bounds the IndexedDB open and read, which resolve only
 // when the browser answers — once it aborts the open rejects with a
 // StorageError (HISTORY_SLOW_TEXT); a database handle that arrives later is
-// closed and dropped, nothing is written.
-export async function openHistoryStore({ core, vaultId, storage = globalThis.localStorage, signal }) {
+// closed and dropped, nothing is written. The bound covers the open and the
+// read, not the opening of the records or the migration (design §2.2 item 1).
+// `onMigrate(phase)` (optional): 'start' when a v1 state is about to be
+// migrated (after the bounded read; the page shows its status line), 'done'
+// once the migration's commit completed. `onDropped(paths)` (optional): the
+// paths a projection left out (nc_state.h DROPPED — paths, never values),
+// from the migration (also in the result's `dropped`) or from a save.
+export async function openHistoryStore({ core, vaultId, storage = globalThis.localStorage, signal, onMigrate, onDropped }) {
   const name = databaseNameForVault(vaultId);
   await sealing(() => core.historyKey(name), 'The key for your message history could not be prepared.');
   const db = await bounded(openDatabase(name), signal, late => late.close());
   db.onversionchange = () => db.close();
   let counter, state, messages, profiles, vaults, groupRecords, groupMessages;
+  // The last COMMITTED state records (Map id -> canonical text) and the fp
+  // -> id map of the newest snapshot (design §2.3 item 2, §2.1).
+  let baseline = new Map(), idMap = {}, dropped = [];
+  const reportDropped = paths => { if (paths.length) { try { onDropped?.([...paths]); } catch { /* the page's log */ } } };
+
+  // ONE reservation for `entries` ([{ store, id, bytes }]), then the seals
+  // (design §2.3 item 4, Kurultay #19 item 5): the counter copy is advanced
+  // by the number of seals BEFORE the first one, and the budget is tested on
+  // that reserved value. A failure keeps the reservation: the numbers not
+  // used are burned, never reused. The bytes are wiped on every path.
+  // Returns the records to put, the counter record last.
+  async function sealAll(entries) {
+    try {
+      if (!budgetAllows(counter, entries.length)) throw new StorageError(BUDGET_TEXT);
+      const reserved = counter + BigInt(entries.length);
+      writeStoredCounter(storage, name, reserved);
+      let at = counter;
+      counter = reserved;
+      const puts = [];
+      for (const entry of entries) {
+        const sealed = await sealing(() => core.historyEncrypt({ store: entry.store, id: entry.id, plaintext: entry.bytes, counter: at.toString() }), SEAL_TEXT);
+        at = nextCounter(at, sealed.counter);
+        puts.push({ store: entry.store, record: encodeRecord(entry.id, sealed) });
+      }
+      if (at !== reserved) throw new StorageError('Message history could not be saved (counter mismatch).');
+      puts.push({ store: STORE_META, record: encodeCounter(reserved) });
+      return puts;
+    } finally { for (const entry of entries) entry.bytes.fill(0); }
+  }
+  // [{ store, id, value | text }] -> [{ store, id, bytes }]; every plaintext
+  // is built and size-checked before the first seal (wiped if one fails).
+  function plainEntries(list) {
+    const out = [];
+    try {
+      for (const e of list) out.push({ store: e.store, id: e.id, bytes: e.text !== undefined ? textBytes(e.text) : plaintextBytes(e.value) });
+      return out;
+    } catch (error) { for (const e of out) e.bytes.fill(0); throw error; }
+  }
+
   try {
     const raw = await bounded(readAll(db), signal);
     // The larger of the database record and the copy that survives a
     // history delete (counterStorageKey above).
     counter = openingCounter(decodeCounter(raw.counter), readStoredCounter(storage, name));
-    const open = async (store, record) => {
+    const openBytes = async (store, record) => {
       const args = decodeRecord(record);
       const { plaintext } = await sealing(() => core.historyDecrypt({ store, ...args }), 'A stored message could not be opened. It may be damaged or from a different wallet.');
-      return parsePlaintext(plaintext);
+      return plaintext;
+    };
+    const open = async (store, record) => parsePlaintext(await openBytes(store, record));
+    // The exact text (the v2 load compares bytes).
+    const openText = async (store, record) => {
+      const bytes = await openBytes(store, record);
+      try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+      catch { throw new StorageError(READ_TEXT); }
+      finally { bytes.fill(0); }
     };
     const stateRecords = raw.stateRecords || [];
     const stateRecord = stateRecords.find(r => r?.id === STATE_ID);
-    state = stateRecord === undefined ? emptyState() : checkState(await open(STORE_STATE, stateRecord));
+    if (stateRecord === undefined) {
+      // Nothing kept yet: the first save writes the header.
+      state = emptyState();
+    } else {
+      const header = await openText(STORE_STATE, stateRecord);
+      let parsed;
+      try { parsed = JSON.parse(header); } catch { throw new StorageError(READ_TEXT); }
+      if (isMap(parsed) && parsed.version === STATE_SCHEMA_V2) {
+        // v2: the header and EVERY known-ID record it lists; one that is
+        // missing or does not open keeps Messages closed (design §2.5) —
+        // the core refuses a missing one, a duplicate fp, anything not
+        // canonical. Records the header does not list are not opened.
+        const byId = new Map();
+        for (const r of stateRecords) if (r && typeof r.id === 'string' && KNOWN_ID_RECORD_ID.test(r.id)) byId.set(r.id, r);
+        const records = [];
+        for (const id of Array.isArray(parsed.ids) ? parsed.ids : []) {
+          const record = typeof id === 'string' ? byId.get(id) : undefined;
+          if (record) records.push({ id, json: await openText(STORE_STATE, record) });
+        }
+        ({ state, map: idMap } = stateLoaded(core, header, records));
+        baseline = new Map([[STATE_ID, header], ...records.map(r => [r.id, r.json])]);
+      } else {
+        // v1 (anything else is refused here as damaged): migrated once,
+        // after the bounded read (design §2.2) — the projection with no
+        // previous map, ONE commit of the header and every known-ID record
+        // (N+1 seals), nothing deleted. The state handed to the page is
+        // what loading those records gives (the canonical v1 form, with the
+        // advanced nextSeq).
+        const v1 = checkState(parsed);
+        try { onMigrate?.('start'); } catch { /* the page's status line */ }
+        const snap = stateSnapshot(core, v1, {});
+        const loaded = stateLoaded(core, snap.texts.get(STATE_ID), [...snap.texts].filter(([id]) => id !== STATE_ID).map(([id, json]) => ({ id, json })));
+        const puts = await sealAll(plainEntries([...snap.texts].map(([id, text]) => ({ store: STORE_STATE, id, text }))));
+        await writeAll(db, puts);
+        ({ state, map: idMap } = loaded);
+        baseline = snap.texts;
+        dropped = snap.dropped;
+        reportDropped(dropped);
+        try { onMigrate?.('done'); } catch { /* the page's status line */ }
+      }
+    }
     // Only the profile records the state still points to are opened; one
     // that fails is dropped (the profile is read from the network again),
     // it does not keep Messages closed.
@@ -429,19 +616,44 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   // the store for good: a save already sealing must not write the counter
   // copy back after the delete (Connect RT2 L3 F1).
   db.onversionchange = () => { closed = true; db.close(); };
-  // Writes are serialised so the counter only ever grows. A transaction that
-  // fails after encryption leaves the in-memory counter advanced (the
-  // encryptions happened; counting them keeps the 2^32 budget conservative);
-  // the next successful write stores it.
+  // ONE commit per save (design §2.3), serialised: one in flight.
+  //   At the call, synchronously, before anything yields: the state is
+  //   projected (stateSnapshot — the canonical text of every state record,
+  //   ids kept from the newest snapshot's map, new ids from nextSeq) and the
+  //   advanced nextSeq is written into `nextState`, which the page's local
+  //   sequence shares (messages.js takeSeq). A mutation of the state after
+  //   the call cannot leak into this commit (store.js:441 before P7).
+  //   At the run (after the commits before it): the snapshot is diffed
+  //   against the last COMMITTED records (stateDiff): changed or new records
+  //   are put, known-ID records no longer projected are deleted; plus the
+  //   new messages, kept profiles, vaults and group records as before P7.
+  //   One reservation for every seal (sealAll), then ONE transaction of the
+  //   puts, the deletes and the counter record (writeAll). On its
+  //   oncomplete the baseline becomes this snapshot. On a failure the
+  //   reservation stays used, the baseline is unchanged (the next save diffs
+  //   against what is really committed, so nothing a failed commit carried
+  //   is lost from a later one) and the error propagates.
   // `keptProfiles`: [{ id, fp, record }] written to the 'state' store next
   // to the state that points to them (state.profileCache).
   // `keptVaults`: [{ id, address, value }] likewise (state.vaults).
   // `keptGroups`: [{ id, value }] group / key version / staged packet piece
   // records (GROUP_RECORD_ID; state.groups, src/connect/groups/).
   function save(nextState, newMessages = [], keptProfiles = [], keptVaults = [], keptGroups = []) {
+    let snap;
+    try {
+      if (closed) throw new StorageError('Message history is closed.');
+      checkState(nextState);
+      snap = stateSnapshot(core, nextState, idMap);
+      nextState.nextSeq = snap.nextSeq;
+      idMap = snap.map;
+    } catch (error) {
+      return Promise.reject(error instanceof StorageError ? error : new StorageError(SAVE_PREPARE_TEXT));
+    }
+    reportDropped(snap.dropped);
     const run = async () => {
       if (closed) throw new StorageError('Message history is closed.');
-      const entries = [
+      const diff = stateDiff(baseline, snap.texts);
+      const list = [
         ...newMessages.map(m => ({ store: STORE_MESSAGES, id: messageRecordId(String(m.seq)), value: m })),
         ...keptProfiles.map(p => {
           if (typeof p?.id !== 'string' || !PROFILE_RECORD_ID.test(p.id)) throw new StorageError('Invalid profile record.');
@@ -455,27 +667,20 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
           if (typeof g?.id !== 'string' || !GROUP_RECORD_ID.test(g.id) || !isMap(g.value)) throw new StorageError('Invalid group record.');
           return { store: STORE_STATE, id: g.id, value: g.value };
         }),
-        { store: STORE_STATE, id: STATE_ID, value: checkState(nextState) }
+        ...diff.puts.map(p => ({ store: STORE_STATE, id: p.id, text: p.text }))
       ];
-      if (!budgetAllows(counter, entries.length)) throw new StorageError('This device has stored the maximum number of messages for this wallet. Nothing more can be saved here.');
-      // Every plaintext is built (and size-checked) before the first seal.
-      const plains = entries.map(entry => plaintextBytes(entry.value));
-      const puts = [];
-      try {
-        for (const [i, entry] of entries.entries()) {
-          const sealed = await sealing(() => core.historyEncrypt({ store: entry.store, id: entry.id, plaintext: plains[i], counter: counter.toString() }), 'Message history could not be saved: the message could not be sealed.');
-          counter = nextCounter(counter, sealed.counter);
-          puts.push({ store: entry.store, record: encodeRecord(entry.id, sealed) });
-        }
-      } finally { for (const bytes of plains) bytes.fill(0); }
+      const deletes = diff.deletes.map(id => ({ store: STORE_STATE, id }));
+      // Nothing changed: nothing is sealed or written.
+      if (list.length === 0 && deletes.length === 0) return;
+      // The reservation is written before the first seal (sealAll); closed
+      // was checked just above, with nothing awaited in between.
+      const puts = await sealAll(plainEntries(list));
       // Closed while sealing (lock, or the history deleted by another tab):
-      // nothing is written, not even the counter copy.
+      // nothing is written to the database (the counter copy already holds
+      // the reservation: conservative).
       if (closed) throw new StorageError('Message history is closed.');
-      // The copy first: if the tab dies between here and the commit, the
-      // encryptions already made are still counted.
-      writeStoredCounter(storage, name, counter);
-      puts.push({ store: STORE_META, record: encodeCounter(counter) });
-      await writeAll(db, puts);
+      await writeAll(db, puts, deletes);
+      baseline = snap.texts;
     };
     const result = queue.then(run, run);
     queue = result.catch(() => {});
@@ -490,7 +695,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     if (!navigator.locks) throw new StorageError('This browser cannot safely delete saved data.');
     await navigator.locks.request('nodus.wallet.storage', () => deleteDatabase(name));
   }
-  return { persistent: true, state, messages, profiles, vaults, groupRecords, groupMessages, save, close, erase };
+  return { persistent: true, state, messages, profiles, vaults, groupRecords, groupMessages, dropped, save, close, erase };
 }
 
 // An unsaved wallet (words typed in, or a new account): nothing is written
