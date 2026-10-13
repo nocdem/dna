@@ -129,8 +129,12 @@ int nodus_validator_active_count(nodus_witness_t *w, int *count_out);
  *   filter_status >= 0 : rows where status == filter_status.
  *
  * Results are ordered by (self_stake + external_delegated) DESC,
- * pubkey ASC — identical to top_n so rankings remain stable across
- * calls regardless of filter.
+ * pubkey ASC, pubkey_hash ASC — the first two keys as top_n, the last
+ * one (the PRIMARY KEY) making the order total when two rows carry one
+ * consensus pubkey (the HF-6 generation: an UNSTAKED row and a later
+ * STAKE's row; validators.pubkey is not UNIQUE). Below the HF-6
+ * generation pubkey_hash is a function of pubkey, so the extra key never
+ * reorders a row.
  *
  * On success *count_out holds the number of rows written to `out`, and
  * *total_out holds the total row count matching the filter (ignoring
@@ -145,6 +149,25 @@ int nodus_validator_list_paged(nodus_witness_t *w,
                                 dnac_validator_record_t *out,
                                 int *count_out,
                                 int *total_out);
+
+/**
+ * nodus_validator_list_paged plus each row's key: key_out[i] (capacity
+ * `limit`; NULL = not wanted) receives row i's validators.pubkey_hash —
+ * under the HF-6 generation that value IS the validator_id
+ * (v2_validator_roles.validator_id), the one key that tells two rows with
+ * one consensus pubkey apart. A key that is not 64 bytes is -1.
+ * nodus_validator_list_paged is this call with key_out NULL.
+ *
+ * @return 0 on success, -1 on error.
+ */
+int nodus_validator_list_paged_keys(nodus_witness_t *w,
+                                     int filter_status,
+                                     int offset,
+                                     int limit,
+                                     dnac_validator_record_t *out,
+                                     uint8_t (*key_out)[64],
+                                     int *count_out,
+                                     int *total_out);
 
 /* ══ HF-6 sub-slice 3a — the v2 validator row (INERT) ═══════════════════
  *
@@ -168,7 +191,7 @@ int nodus_validator_list_paged(nodus_witness_t *w,
  * "absent" (1) — a DB failure or an inconsistency is never a value.
  *
  * CALLERS (sub-slice 3d, every one behind a generation-4 test): the
- * distribution's v1-snapshot bridge (get_by_pubkey, nodus_witness_v2_
+ * distribution (get by validator_id since slice 5c, nodus_witness_v2_
  * econ.c), the graduation (get + update, nodus_witness_v2_epoch.c), the
  * committee (bonded_tenured, nodus_witness_committee.c) and the v5 root's
  * validator leaves (scan + leaf_encode below, nodus_witness_merkle.c).
@@ -208,19 +231,6 @@ typedef struct {
 int nodus_validator_v2_get(nodus_witness_t *w,
                            const uint8_t validator_id[NODUS_V2_VALIDATOR_ID_LEN],
                            nodus_v2_validator_row_t *out);
-
-/**
- * Fetch the v2 row whose consensus pubkey (validators.pubkey) is `pubkey`
- * (DNAC_PUBKEY_SIZE bytes). `pubkey` carries no UNIQUE constraint, so the
- * scan continues past the first hit: a SECOND matching row is a fault.
- *
- * @return 0 found (*out set); 1 no validators row holds the pubkey;
- *         -1 fault — SQLite error, two rows with the pubkey, a malformed
- *         row, or a validators row without its roles row.
- */
-int nodus_validator_v2_get_by_pubkey(nodus_witness_t *w,
-                                     const uint8_t *pubkey,
-                                     nodus_v2_validator_row_t *out);
 
 /**
  * Write a v2 row back: the 13 mutable `validators` columns (the
@@ -359,7 +369,12 @@ int nodus_validator_v2_scan(nodus_witness_t *w,
  * graduation (step 2) and the sweep (step 3d) of that boundary, inside its
  * transaction); role 2 for every non-zero pending_consensus_pubkey. A count of role-1
  * rows equals the count of non-UNSTAKED rows only outside every such
- * window. Writers: the generation-4 edge (nodus_witness_v2_migrate.c),
+ * window. The previous key is derivable from rooted state (the key the
+ * stored S(U−E) seats the validator under) EXCEPT for a validator S(U−E)
+ * does not seat (khan A3): its row here is the only committed record of
+ * that key. Every generation-4 boundary re-derives the table and compares
+ * (nodus_witness_v2_keyres_diff; the boundary step only logs).
+ * Writers: the generation-4 edge (nodus_witness_v2_migrate.c),
  * the generation-4 STAKE and ROTATE (SYSTEM adapter op 17,
  * nodus_witness_rt_native.c — STAKE role 1, ROTATE role 2), the swap
  * (nodus_validator_v2_rotate_apply: the new key role 2 → 1) and the

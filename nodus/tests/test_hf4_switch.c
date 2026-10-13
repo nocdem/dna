@@ -52,15 +52,17 @@
  *     reward-v1-design.md rev 2.2 §6 / D5; numbering in main merge order,
  *     K10 in 2026-10-05-storage-reward-is-for-archive.md) — the storage
  *     edge, production runtimes, EVM-enabled build, HF-2 on from 1,
- *     param 9 at H9 = 3, param 14 (EVM_ACTIVE) at HE = 5 and param 16
- *     (the storage vote literal) at H14 = 8 committed at genesis, idle
+ *     param 9 at H9 = 3, param 14 (EVM_ACTIVE) at HE = 5 and param 18
+ *     (RULESET_GEN_ROLES = D4, the generation-4 vote since HF-6 slice
+ *     8c; param 16 RETIRED) at H14 = 8 committed at genesis, idle
  *     blocks: at blocks 1..6 (generation 1, 2 from the end of block 2,
  *     the EVM generation from the end of block 4) the committed SYSTEM
  *     root equals nodus_witness_system_root_v2 ("NDS.SYS.v4") and no
  *     validator is migrated — PRE-ACTIVATION the storage code adds
  *     nothing to the root; block 7 (= H14-1) is the GENERATION-4 EDGE
- *     (HF-6 sub-slice 3b: the param-16 RULESET_EDGES row moved into
- *     phase_6b_gen4_edge, which switches AND runs the validator
+ *     (HF-6 sub-slice 3b: the former param-16 RULESET_EDGES row moved
+ *     into phase_6b_gen4_edge — keyed on param 18 since slice 8c — which
+ *     switches AND runs the validator
  *     migration — the seven genesis validators get roles rows and 8M
  *     self-delegations, pinned row by row in test_hf6_migrate.c); it
  *     switches the EVM
@@ -73,13 +75,14 @@
  *     the empty registry equals the empty storage leg (four tagged-empty
  *     trees); block 8 (= H14, idle) does not switch again and stays v5.
  *  F2. the storage edge with a registry still at generation 2 (param 9
- *     at 3, no EVM_ACTIVE row, param 16 at 6): block 5 is a node FAULT
+ *     at 3, no EVM_ACTIVE row, param 18 at 6): block 5 is a node FAULT
  *     ("registry is not generation 3"), the DB byte-unchanged — the
- *     state the vote's rule (d) keeps out of reach of transactions.
+ *     state the vote's rule (c) keeps out of reach of transactions.
  *  F3. K10 — the storage edge and the EVM edge in the SAME block (params
- *     14 and 16 both effective at 6): phase 6b' (storage) runs before
- *     6b'' (EVM), so block 5 is a node FAULT ("registry is not generation
- *     3"), the DB byte-unchanged — the engine-level half of the rule-(d)
+ *     14 and 18 both effective at 6): phase 6b''' (generation 4) runs
+ *     before 6b'' (EVM), so block 5 is a node FAULT ("registry is not
+ *     generation 3"), the DB byte-unchanged — the engine-level half of
+ *     the rule-(c)
  *     ordering test in test_hf4_params.c section 4.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
@@ -109,10 +112,10 @@
  *  - The "unreadable param-9 history → FAULT" branch of 6b' and of the
  *    ctx fill is not induced here (no fault-injection hook reaches the
  *    chain_config read).
- *  - F / F2 (storage): the GEN_STORAGE pins and the storage vote literal
+ *  - F / F2 (storage): the GEN_STORAGE pins and the generation-4 vote D4
  *    are independent-oracle literals (STORAGE-ORACLE, filled from
  *    shared/dnac/tests/storage_oracle.py over the generation-4
- *    preimages); they do not run in a build without NODUS_EVM_ENABLED;
+ *    preimages; D4 from hf6_vote_oracle.py); they do not run in a build without NODUS_EVM_ENABLED;
  *    if they ever stop re-deriving, the runtime selfcheck fails, the
  *    seeded genesis refuses, and EVERY engine case in this file fails at
  *    fx_open — not a pass, not a skip. F pins the v4 / v5 roots by
@@ -900,7 +903,8 @@ static int t_refused_leg_gas_invariant(void) {
 }
 
 /* ══ F. storage reward v1 — the second edge: the EVM generation ->
- *       GEN_STORAGE at H14-1 (param 16; H14 names the storage edge), and
+ *       GEN_STORAGE at H14-1 (param 18 since HF-6 slice 8c; H14 names the
+ *       storage edge), and
  *       the SYSTEM root composition v4 -> v5 with it. EVM-enabled build
  *       only (K10: GEN_STORAGE is compiled only there) ════════════════ */
 #ifdef NODUS_EVM_ENABLED
@@ -924,8 +928,8 @@ static int head_root(nodus_witness_t *w, uint32_t dom, uint8_t out[64]) {
 }
 
 /* HF-2 on from 1; param 9 at `h9` (0 = none); param 14 (the EVM_ACTIVE
- * literal) at `he` (0 = none); param 16 (the storage vote literal) at
- * `hs` — all before the engine genesis (fx_open's shape with the extra
+ * literal) at `he` (0 = none); param 18 (the D4 literal) at `hs` — all
+ * before the engine genesis (fx_open's shape with the extra
  * rows). */
 static int fx_open_storage(fixture_t *fx, const char *tag, uint64_t h9,
                            uint64_t he, uint64_t hs) {
@@ -946,8 +950,8 @@ static int fx_open_storage(fixture_t *fx, const char *tag, uint64_t h9,
     if (he && cc_row(fx->w, DNAC_CFG_EVM_ACTIVE,
                      (uint64_t)DNAC_CFG_EVM_ACTIVE_D, he, 14) != 0)
         return -1;
-    if (cc_row(fx->w, DNAC_CFG_RULESET_GEN_STORAGE,
-               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, hs, 13) != 0)
+    if (cc_row(fx->w, DNAC_CFG_RULESET_GEN_ROLES,
+               (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, hs, 13) != 0)
         return -1;
     return v2x_seed_genesis(fx->w, fx->chain16, 0, NULL, 0, NULL);
 }
@@ -955,7 +959,7 @@ static int fx_open_storage(fixture_t *fx, const char *tag, uint64_t h9,
 static int t_storage_switch(void) {
     fixture_t fx;
     nodus_v2_block_t b;
-    const uint64_t H9 = 3, HE = 5, H14 = 8;    /* H14: the param-16 edge */
+    const uint64_t H9 = 3, HE = 5, H14 = 8;    /* H14: the param-18 edge */
     const nodus_domain_runtime_t *gEs =
         nodus_runtime_for_generation(NODUS_RT_GEN_EVM, DNA_DOMAIN_SYSTEM);
     const nodus_domain_runtime_t *gEc =
@@ -968,7 +972,7 @@ static int t_storage_switch(void) {
     CHECK(E_LEN > H14, "no epoch boundary among heights 1..H14");
 
     CHECK(fx_open_storage(&fx, "stor", H9, HE, H14) == 0,
-          "seeded chain (HF-2 on, param 9 at 3, param 14 at 5, param 16 "
+          "seeded chain (HF-2 on, param 9 at 3, param 14 at 5, param 18 "
           "at 8)");
 
     /* blocks 1..6: generation 1, generation 2 (end of 2), the EVM
@@ -1110,14 +1114,14 @@ static int t_storage_switch(void) {
 }
 
 /* F2 — the storage edge reached while the registry is still generation 2
- * (param 9 at 3, NO EVM_ACTIVE row): a node FAULT. The vote's rule (d)
- * (judged under exactly the EVM generation) makes this state unreachable
- * through transactions; the row here is inserted by hand. */
+ * (param 9 at 3, NO EVM_ACTIVE row): a node FAULT. The param-18 vote's
+ * rule (c) (judged under exactly the EVM generation) makes this state
+ * unreachable through transactions; the row here is inserted by hand. */
 static int t_storage_switch_not_evm_faults(void) {
     fixture_t fx;
     nodus_v2_block_t b;
     CHECK(fx_open_storage(&fx, "stnev", 3, 0, 6) == 0,
-          "seeded chain (param 9 at 3, no param 14, param 16 at 6)");
+          "seeded chain (param 9 at 3, no param 14, param 18 at 6)");
     for (uint64_t h = 1; h <= 4; h++) {
         mk_block(&b, h, NULL, 0);
         CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "idle block");
@@ -1132,17 +1136,18 @@ static int t_storage_switch_not_evm_faults(void) {
 }
 
 /* F3 — K10: the storage edge and the EVM edge in the SAME block (param 14
- * and param 16 both effective at 6, inserted by hand — the vote's rule (d)
- * refuses every storage vote judged before the EVM generation, so no
- * transaction can reach this). Phase 6b' (the storage row) runs BEFORE
- * phase 6b'' (the EVM edge), so at block 5 the registry is still
+ * and param 18 both effective at 6, inserted by hand — the param-18
+ * vote's rule (c) refuses every vote judged before the EVM generation, so
+ * no transaction can reach this). Phase 6b''' (the generation-4 edge)
+ * runs BEFORE phase 6b'' (the EVM edge), so at block 5 the registry is
+ * still
  * generation 2: a node FAULT, the DB byte-unchanged — never a silent
  * 2 -> 4 or a storage switch after the EVM one in one block. */
 static int t_storage_and_evm_same_block_faults(void) {
     fixture_t fx;
     nodus_v2_block_t b;
     CHECK(fx_open_storage(&fx, "same", 3, 6, 6) == 0,
-          "seeded chain (param 9 at 3, params 14 and 16 both at 6)");
+          "seeded chain (param 9 at 3, params 14 and 18 both at 6)");
     for (uint64_t h = 1; h <= 4; h++) {
         mk_block(&b, h, NULL, 0);
         CHECK(v2x_cmt_apply_ok(fx.w, &b) == 0, "idle block");

@@ -45,6 +45,22 @@ _Static_assert(DNA_VSET_HASH_LEN == DNA_V2_ROOT_LEN,
 _Static_assert(DNAC_HF6_POWER_CAP_BPS_DEFAULT >= DNA_POWER_CAP_BPS_MIN &&
                DNAC_HF6_POWER_CAP_BPS_DEFAULT <= DNA_POWER_CAP_BPS_MAX,
                "DNAC_HF6_POWER_CAP_BPS_DEFAULT outside [500, 3000]");
+/* HF-6 slice 8a: param 20's vote range (dnac.h, the client mirror's and
+ * the scalar rule's pair) IS the water-fill's own legal range, so a legal
+ * vote can never make dna_power_cap_counted refuse. */
+_Static_assert(DNAC_CFG_MIN_POWER_CAP_BPS == DNA_POWER_CAP_BPS_MIN &&
+               DNAC_CFG_MAX_POWER_CAP_BPS == DNA_POWER_CAP_BPS_MAX,
+               "param 20's range drifted from power_cap.h");
+/* HF-6 slice 8a (plan §1.7): the frozen-ratio premise. A param-20 row
+ * that governs snapshot(X) has effective <= X and was committed at
+ * c <= effective - grace; with grace >= DNAC_EPOCH_LENGTH that is at or
+ * before boundary X - E, whose items run before that boundary builds
+ * snapshot(X) — so the builder and every later consumer of snapshot(X)
+ * (the Comet diffs, Rule N, the distribution, the storage settlement)
+ * read ONE ratio for it. A grace below E would let a row land between the
+ * build and a consumption. */
+_Static_assert(DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS >= DNAC_EPOCH_LENGTH,
+               "POWER_CAP_BPS's grace must cover an epoch (frozen ratio)");
 /* The snapshot's validator_id is the 64-byte id the cap tie-breaks on. */
 _Static_assert(DNA_VSET_VALIDATOR_ID_LEN == 64,
                "snapshot validator_id width != power-cap id width");
@@ -546,6 +562,96 @@ static int vset_rot_fits(uint64_t P, uint64_t R, uint64_t p) {
     return (P - (R + p)) > P * 2 / 3 ? 1 : 0;
 }
 
+/* HF-6 khan A7 (2026-10-13, design §3 "(A7) Birikimli bütçe"; BUGS Z-27):
+ * the predecessor party R_F of the freeze of S(f + E) starts from the
+ * counted power (pf[j]) of the entries of sf = S(f) whose key differs from
+ * the same validator_id's entry in sf's own predecessor S(f − E) — the
+ * party the previous freeze already admitted into sf. An entry of sf with
+ * no seat in S(f − E) is not counted (a new entrant is not a rotation).
+ * A ruleset-1 S(f − E) has no ids: its entries are matched through the
+ * migrated-id bridge (dna_validator_id_migrated(chain, entry pubkey)),
+ * exactly as the candidate loop matches a ruleset-1 sf — the first
+ * generation-4 freeze accepts rotations against the ruleset-1 set, and
+ * the next freeze must carry them. The carry is 0, with nothing read,
+ * when sf is ruleset 1 or f < E (no S(f − E)); 0 when S(f − E) is ABSENT
+ * — the resolver's terminal rc 1, which every node answers alike:
+ * validator_set_snapshots is a leg of system_state_root
+ * (nodus_witness_roots_v2.c). An unreadable S(f − E), an unreadable chain
+ * id or an underivable bridge id is a fault (-1), never a 0. The sum is
+ * order-independent and checked like vset_rot_total. 0 / -1. */
+static int vset_rot_carried(nodus_witness_t *w,
+                            const dna_vset_snapshot_t *sf,
+                            const uint64_t *pf, uint64_t f,
+                            uint64_t *r_out) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    *r_out = 0;
+    if (sf->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) return 0;
+    if (f < E) return 0;                  /* no S(f − E) is defined     */
+
+    dna_vset_snapshot_t *sp = NULL;
+    int prc = nodus_witness_v2_epoch_authority_for_epoch(w, f - E, &sp,
+                                                         NULL, NULL);
+    if (prc == 1) return 0;               /* S(f − E) absent (terminal) */
+    if (prc != 0 || !sp) {
+        QGP_LOG_ERROR(LOG_TAG, "rotation pass: S(%llu), the predecessor of "
+                      "S(%llu), is unreadable (rc=%d) — the carried party "
+                      "cannot be judged", (unsigned long long)(f - E),
+                      (unsigned long long)f, prc);
+        return -1;
+    }
+    int ret = -1;
+    uint64_t r = 0;
+    /* the id each S(f − E) entry is matched by: its own (ruleset 2) or
+     * the migrated-id bridge over its key (ruleset 1) — the same
+     * derivation the candidate loop of vset_rotation_pass uses for sf */
+    uint8_t (*pid)[DNA_VSET_VALIDATOR_ID_LEN] = NULL;
+    if (sp->selection_ruleset == DNA_VSET_RULESET_TOPN_V1) {
+        uint8_t chain32[DNA_CHAIN_ID_LEN];
+        if (nodus_witness_v2_chain_id(w, chain32) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: the chain id of "
+                          "the carried party's ruleset-1 bridge is "
+                          "unreadable");
+            goto out;
+        }
+        pid = malloc((size_t)sp->active_count * sizeof(*pid));
+        if (!pid) goto out;
+        for (uint16_t i = 0; i < sp->active_count; i++) {
+            if (dna_validator_id_migrated(pid[i], chain32,
+                                          sp->entries[i].pubkey) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "%s", "rotation pass: a v1 entry's "
+                              "migrated validator_id did not derive "
+                              "(carried party)");
+                goto out;
+            }
+        }
+    } else if (sp->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
+        QGP_LOG_ERROR(LOG_TAG, "rotation pass: S(%llu) carries ruleset %u",
+                      (unsigned long long)(f - E),
+                      (unsigned)sp->selection_ruleset);
+        goto out;
+    }
+    for (uint16_t j = 0; j < sf->active_count; j++) {
+        for (uint16_t i = 0; i < sp->active_count; i++) {
+            if (memcmp(pid ? pid[i] : sp->entries[i].validator_id,
+                       sf->entries[j].validator_id,
+                       DNA_VSET_VALIDATOR_ID_LEN) != 0)
+                continue;
+            if (memcmp(sp->entries[i].pubkey, sf->entries[j].pubkey,
+                       DNA_VSET_PUBKEY_LEN) != 0) {
+                if (r > UINT64_MAX - pf[j]) goto out;
+                r += pf[j];
+            }
+            break;
+        }
+    }
+    *r_out = r;
+    ret = 0;
+out:
+    free(pid);
+    dna_vset_free(&sp);
+    return ret;
+}
+
 static int vset_rotation_pass(nodus_witness_t *w,
                               nodus_committee_member_t *members,
                               dna_vset_snapshot_t *snap) {
@@ -567,7 +673,7 @@ static int vset_rotation_pass(nodus_witness_t *w,
     int ret = -1;
     dna_vset_snapshot_t *sf = NULL;
     uint64_t pu[DNA_MAX_ACTIVE_VALIDATORS], pf[DNA_MAX_ACTIVE_VALIDATORS];
-    uint64_t P_U = 0, P_F = 0, R_U = 0, R_F = 0;
+    uint64_t P_U = 0, P_F = 0, R_U = 0, R_F = 0, R_F0 = 0;
     uint8_t chain32[DNA_CHAIN_ID_LEN];
     unsigned n_acc = 0, n_wait = 0;
     int arc = -1;
@@ -604,6 +710,21 @@ static int vset_rotation_pass(nodus_witness_t *w,
                       (unsigned long long)f, (unsigned)sf->selection_ruleset);
         goto done;
     }
+    /* khan A7: the predecessor's party starts from the rotations S(f)
+     * already carries. The previous freeze admitted exactly that party
+     * against these same counted powers (the ratio of S(f) is frozen by
+     * the POWER_CAP_BPS grace, see nodus_witness_power_cap_bps_for_epoch),
+     * so it fits; a carry that does not is a broken invariant — the
+     * freeze is refused like a party exceeding its set. */
+    if (vset_rot_carried(w, sf, pf, f, &R_F0) != 0) goto done;
+    if (vset_rot_fits(P_F, 0, R_F0) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "rotation pass: the party S(%llu) carries "
+                      "(%llu of %llu) exceeds its budget — refusing the "
+                      "freeze", (unsigned long long)f,
+                      (unsigned long long)R_F0, (unsigned long long)P_F);
+        goto done;
+    }
+    R_F = R_F0;
 
     for (size_t c = 0; c < n_cand; c++) {
         /* the successor seat (by validator_id) */
@@ -662,10 +783,12 @@ static int vset_rotation_pass(nodus_witness_t *w,
     }
     if (n_acc > 0 || n_wait > 0)
         QGP_LOG_INFO(LOG_TAG, "snapshot(%llu): %u rotation(s) accepted, %u "
-                     "waiting (P_U %llu R_U %llu, P_F %llu R_F %llu)",
+                     "waiting (P_U %llu R_U %llu, P_F %llu R_F %llu, "
+                     "carried %llu)",
                      (unsigned long long)snap->epoch, n_acc, n_wait,
                      (unsigned long long)P_U, (unsigned long long)R_U,
-                     (unsigned long long)P_F, (unsigned long long)R_F);
+                     (unsigned long long)P_F, (unsigned long long)R_F,
+                     (unsigned long long)R_F0);
     ret = 0;
 done:
     free(cand);
@@ -698,7 +821,9 @@ done:
  *
  * HF-6 slice 6d: at key_gen >= NODUS_RT_GEN_STORAGE the entries of the
  * rotations the budget accepts carry the PENDING key (vset_rotation_pass
- * above) — the one core keeps Rule N's preview equal to the stored row. */
+ * above; its predecessor budget is cumulative since khan A7 — it starts
+ * from the rotations S(F) already carries) — the one core keeps Rule N's
+ * preview equal to the stored row. */
 static int vset_build_snapshot(nodus_witness_t *w, uint64_t epoch_start,
                                int max_active, uint32_t key_gen,
                                dna_vset_snapshot_t **snap_out) {
@@ -1197,11 +1322,33 @@ int nodus_witness_power_cap_bps_for_epoch(nodus_witness_t *w,
                                           uint64_t epoch_start,
                                           uint32_t *ratio_out) {
     if (!w || !ratio_out) return -1;
-    /* Slice 8 replaces this body with the fail-closed param-20 read at
-     * `epoch_start` (nodus_witness_committee.c committee_target_for_epoch
-     * pattern); until then the compiled default is the only value. */
-    (void)epoch_start;
-    *ratio_out = DNAC_HF6_POWER_CAP_BPS_DEFAULT;
+    /* HF-6 slice 8a: chain_config param 20 at the snapshot's EPOCH START
+     * (the committee_target_for_epoch pattern, nodus_witness_committee.c),
+     * the compiled default with no row. A read fault is -1, never the
+     * default. A stored value outside [500, 3000] is this node's storage
+     * disagreeing with every writer (the scalar rule admits nothing
+     * else) — -1 too, checked on the u64 BEFORE the narrowing to
+     * uint32_t, so no out-of-range value can wrap into the range. */
+    uint64_t v = 0;
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_POWER_CAP_BPS,
+                                   epoch_start,
+                                   (uint64_t)DNAC_HF6_POWER_CAP_BPS_DEFAULT,
+                                   &v) < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: POWER_CAP_BPS is unreadable — "
+                      "refusing to derive voting power from a guessed "
+                      "ratio", (unsigned long long)epoch_start);
+        return -1;
+    }
+    if (v < (uint64_t)DNAC_CFG_MIN_POWER_CAP_BPS ||
+        v > (uint64_t)DNAC_CFG_MAX_POWER_CAP_BPS) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: POWER_CAP_BPS reads %llu, a "
+                      "value no committed row can hold — this node's "
+                      "chain_config storage is inconsistent",
+                      (unsigned long long)epoch_start,
+                      (unsigned long long)v);
+        return -1;
+    }
+    *ratio_out = (uint32_t)v;
     return 0;
 }
 

@@ -28,8 +28,10 @@
  *      same ascending scan.
  *   A2 the generation-4 SYSTEM policy prices op 10 at weight 1; no
  *      earlier one does; the compiled table passes its selfcheck (every
- *      pin and DNAC_CFG_RULESET_GEN_STORAGE_D re-derive — the oracle
- *      literals of shared/dnac/tests/storage_oracle.py).
+ *      pin re-derives — the oracle literals of shared/dnac/tests/
+ *      storage_oracle.py) and the param-18 vote value D4
+ *      (DNAC_CFG_RULESET_GEN_ROLES_D, hf6_vote_oracle.py) re-derives
+ *      from the generation-4 hashes through nodus_runtime_gen4_vote_digest.
  *   A3 the SYSTEM read plan and exec of generations 1..3 and of a NULL
  *      runtime refuse op 10 (-1, never -2).
  *  H. HOOKS — the generation-4 SYSTEM / CORE runtimes over fabricated
@@ -61,7 +63,8 @@
  *      read-only describer describes both legs (SYSTEM: no record kind).
  *  B. ENGINE (twin seeded chains, EVM-enabled build — the test_hf6_stake
  *     fixture: V0..V6 ACTIVE 10M since 1; param 9 at 2, param 14 at 3,
- *     param 16 — the generation-4 dev trigger — at 4, so the edge runs in
+ *     param 18 (RULESET_GEN_ROLES = D4, the generation-4 vote) at 4, so
+ *     the edge runs in
  *     block 3):
  *   B1 block 3 (generation 3): a 2-leg {SYSTEM op 10, CORE SYSFUND}
  *      envelope is refused at ADMISSION (the live gate is
@@ -145,12 +148,17 @@
  *      KEYRES 1/1); the third untouched with F = 3E kept; Rule N on duty
  *      S(3E) by id on the OLD keys — o0 (signed) counter 0, o1 (absent)
  *      counter 1; S(5E) carries the two new keys (U's freeze copies them)
- *      and the third's (accepted at its next freeze, 94M).
+ *      and the third's OLD key — khan A7 (the BUGS Z-27 case): S(4E)
+ *      already carries o0 / o1's rotations (24M against S(3E)), so the
+ *      third's 12M would make 36M, 70M ≤ 70666666: it waits again;
+ *      preview_next(4E) == stored S(5E).
  *   D5 boundary 5E: KO paid again; (a) the sweep deletes the two old
  *      voters' attendance rows (credited at 4E+1, 4E+2) and their role-1
- *      rows; Rule N 0 on the new keys; the third swapped, its old key kept
- *      (swapped at this boundary). D6 boundary 6E: the third's old key
- *      and attendance row released. (i) the twins agree.
+ *      rows; Rule N 0 on the new keys; the third not swapped (F = 3E
+ *      kept) and accepted into S(6E) (S(5E) vs S(4E): no key change,
+ *      carry 0, 94M). D6 boundary 6E: the third swapped, its old key kept,
+ *      Rule N 0 on its old key. D7 boundary 7E: the third's old key and
+ *      attendance row released. (i) the twins agree.
  *   D-F (slice 6e, plan §5 B2) the two rotation fault stages, on twin A
  *      alone: boundary 4E with F61 (V2AP_FAIL_AFTER_ROTATE_SWAP) and
  *      boundary 5E with F62 (V2AP_FAIL_AFTER_ROTATE_SWEEP) are node FAULTS
@@ -174,6 +182,37 @@
  *     sweep back together; the clean 5E: UNSTAKED under KN, KC1's
  *     attendance row gone, no reservation naming the validator (KN by the
  *     graduation, KC1 by the sweep's graduated arm), A == B.
+ *  F. KHAN A7 (2026-10-13, BUGS Z-27) — the cumulative predecessor budget
+ *     over the seven genesis seats ([10M × 7], P = 70M), rolled-back
+ *     preview probes (the C1c device; full list above t_cumulative):
+ *     f = 3E — no carry: both candidates accepted (the pre-A7 answer);
+ *     S(3E) carrying V0, V1 re-keyed against S(2E) (2/7): both WAIT;
+ *     carrying V0 alone: one accepted, one waits; V0 without a seat in
+ *     S(2E): not counted; S(2E) absent: carry 0; S(2E) unreadable: FAULT
+ *     with candidates, builds without; a carry of 3/7: FAULT with
+ *     candidates, builds without. f = 2E — S(E) ruleset 1: matched through
+ *     the migrated-id bridge, carry 2/7 both wait, 1/7 one waits.
+ *  K. THE KEY-RESERVATION SELF-CHECK (nodus_witness_v2_keyres_diff, the
+ *     core of the log-only boundary step 7):
+ *   K1 every generation-4 boundary of C, D, E and F that apply_both
+ *      commits: the check compares on both twins and finds 0 differences
+ *      (rc 0, n 0) — through the normal rotation (D: swap at U, previous
+ *      keys DERIVED from S(F), released at U+E), the A3 rotation (C:
+ *      previous keys no snapshot names, tolerated one per validator), the
+ *      graduation of a swapped validator (C at 4E, E) and the ruleset-1
+ *      bridge boundary (2E); counted per case (2 per boundary).
+ *   K2 (D4k, at 4E, A only, ROLLED BACK) each single-row corruption is
+ *      exactly one difference: a derived previous key deleted, a current
+ *      key and a pending key in the other role, a previous key naming
+ *      another validator, a spare role-1 row for a validator with a seat
+ *      in S(F); rolled back: 0, A == B.
+ *   K3 (C6k, at 3E) the A3 tolerance is ONE row: a second spare row on
+ *      an A3 rotator, or a spare row on a validator both snapshots seat,
+ *      is one difference; deleting an A3 previous key is NOT seen (the
+ *      pinned blind spot — nothing rooted names that key).
+ *   K4 (F2k, at 2E) the ruleset-1 bridge: S(2E)'s V0 entry re-keyed (A
+ *      only, ROLLED BACK) makes the bridge match V0 in S(E) under another
+ *      key, deriving V0's own key a second time: one difference.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generation 4 exists only there; the
@@ -182,7 +221,7 @@
  * harness 15). Environment: none.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
- * Two /tmp/test_hf6_rotate_* directories per engine case (B, C, D, E),
+ * Two /tmp/test_hf6_rotate_* directories per engine case (B, C, D, E, F),
  * removed at the end of the case (left behind when a CHECK aborts).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
@@ -222,8 +261,8 @@
  *  - The Comet side of a rotation is test_cmt_app's
  *    t_val_updates_rotation (a hand-written S(E)), not driven from here:
  *    this fixture has no host pipeline.
- *  - C runs ~4E blocks per twin, D ~6E, E ~5E (2880 / 4320 / 3600 at the
- *    production E = 720).
+ *  - C runs ~4E blocks per twin, D ~7E, E ~5E, F ~3E (2880 / 5040 / 3600
+ *    / 2160 at the production E = 720).
  *  - C7b applies a FAULTING boundary on twin A and then continues on A:
  *    the digest check after it covers the database only. In-memory
  *    state the aborted apply may have left in A's witness handle is not
@@ -232,6 +271,13 @@
  *    and the decided block re-applied).
  *  - B's genesis UTXOs are SEEDED (V2X_SEED_NOT_REAL_UTXOS); the reward
  *    pool is non-zero by hand (the test_v2_econ device).
+ *  - K calls the self-check's core directly after each committed block;
+ *    that the boundary's log-only wrapper calls the same core, and that
+ *    it logs rather than returns, is read from the source
+ *    (nodus_witness_v2_epoch.c step 7), not observed — no log is
+ *    captured. K2-K4 corrupt the table / a snapshot inside a rolled-back
+ *    transaction and call the core there; they prove the comparison, not
+ *    that any writer could produce that state.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -247,6 +293,7 @@
 #include "witness/nodus_witness_runtime.h"
 #include "witness/nodus_witness_rt_native.h"
 #include "witness/nodus_witness_vset.h"
+#include "witness/nodus_witness_v2_epoch.h"
 #include "nodus/nodus_chain_config.h"
 
 #include "dnac/dnac.h"
@@ -682,12 +729,10 @@ static int t_table(void) {
               s4->descriptor.rule_ids[9] == OP,
               "SYSTEM v9 rules {1..10}");
         uint64_t d = 0;
-        CHECK(dna_ruleset_gen_digest(NODUS_RT_GEN_STORAGE,
-                                     s4->ruleset_hash, c4->ruleset_hash,
-                                     DNAC_RULESET_SWITCH_SPEC_VERSION,
-                                     &d) == 0 &&
-              d == (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D,
-              "the dev vote literal re-derives from the re-pinned hashes");
+        CHECK(nodus_runtime_gen4_vote_digest(&d) == 0 &&
+              d == (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D,
+              "the generation-4 vote D4 re-derives from the re-pinned "
+              "hashes (HF-6 slice 8c: the param-18 vote)");
     }
 
     /* A3: below generation 4 every SYSTEM hook refuses op 10 */
@@ -990,7 +1035,7 @@ static uint64_t g_amt[N_COINS];
 
 #define H9   2u
 #define HE   3u
-#define H14  4u       /* param 16: the gen-4 edge runs in block H14 − 1 */
+#define H14  4u       /* param 18: the gen-4 edge runs in block H14 − 1 */
 
 static int coin_nul(int c, uint8_t out[64]) {
     uint8_t pre[160];
@@ -1068,8 +1113,8 @@ static int fx_open(fixture_t *fx, const char *tag) {
                H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE,
-               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES,
+               (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, H14, 13) != 0)
         return -1;
     uint64_t total = 0;
     for (int i = 0; i < N_VAL; i++) {
@@ -1122,8 +1167,41 @@ static void mk_block(nodus_v2_block_t *b, uint64_t h,
     }
 }
 
+/* HF-6 key-reservation self-check (nodus_witness_v2_keyres_diff): the
+ * count of differences at boundary `h`, or -1 when it did not compare
+ * (rc != 0: generation < 4, an unreadable input, a bad argument). */
+static long kr_diff(nodus_witness_t *w, uint64_t h) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    size_t n = 0;
+    if (nodus_witness_v2_chain_id(w, chain32) != 0 ||
+        nodus_witness_v2_keyres_diff(w, h, chain32, &n) != 0)
+        return -1;
+    return (long)n;
+}
+
+/* every generation-4 boundary apply_both commits: the self-check
+ * compares (rc 0) and finds no difference. Below generation 4 it must
+ * answer "not applicable" (rc 1). 0 / -1. */
+static int g_kr_runs = 0;      /* boundaries the self-check compared at */
+static int kr_boundary(nodus_witness_t *w, uint64_t h) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    size_t n = 0;
+    if (nodus_witness_v2_chain_id(w, chain32) != 0) return -1;
+    int rc = nodus_witness_v2_keyres_diff(w, h, chain32, &n);
+    if (rc == 1) return 0;
+    if (rc != 0 || n != 0) {
+        fprintf(stderr, "boundary %llu: key-reservation self-check rc %d, "
+                "%zu difference(s)\n", (unsigned long long)h, rc, n);
+        return -1;
+    }
+    g_kr_runs++;
+    return 0;
+}
+
 /* one block on both twins (0 or 1 envelope); the item codes agree and the
- * committed global roots agree. *code = the item's code. 0 / -1. */
+ * committed global roots agree; at an epoch boundary the key-reservation
+ * self-check finds no difference on either twin (kr_boundary). *code =
+ * the item's code. 0 / -1. */
 static int apply_both(fixture_t *a, fixture_t *b, uint64_t h,
                       const uint8_t *env, size_t len, uint32_t *code) {
     nodus_v2_envelope_t v[1] = { { env, len } };
@@ -1152,6 +1230,9 @@ static int apply_both(fixture_t *a, fixture_t *b, uint64_t h,
                 (unsigned long long)h);
         return -1;
     }
+    if ((h % E_LEN) == 0 &&
+        (kr_boundary(a->w, h) != 0 || kr_boundary(b->w, h) != 0))
+        return -1;
     return 0;
 }
 
@@ -1622,6 +1703,41 @@ static int keys_naming(nodus_witness_t *w, const uint8_t vid[64],
     return out;
 }
 
+/* One ROLLED-BACK edit on `w` (`sql` binds ?1 / ?2 to the 64-byte blobs
+ * b1 / b2 when non-NULL; EXACTLY one row must change), then the
+ * key-reservation self-check's count at boundary `h` inside the same
+ * transaction. The count / -1 (the edit did not apply as written, the
+ * check did not compare, or the rollback failed). */
+static long kr_probe(nodus_witness_t *w, uint64_t h, const char *sql,
+                     const uint8_t *b1, const uint8_t *b2) {
+    if (v2x_sql(w->db, "BEGIN IMMEDIATE") != 0) return -1;
+    sqlite3_stmt *st = NULL;
+    int ok = sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) == SQLITE_OK &&
+             (!b1 || sqlite3_bind_blob(st, 1, b1, 64, SQLITE_TRANSIENT)
+                         == SQLITE_OK) &&
+             (!b2 || sqlite3_bind_blob(st, 2, b2, 64, SQLITE_TRANSIENT)
+                         == SQLITE_OK) &&
+             sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(w->db) == 1;
+    if (st) sqlite3_finalize(st);
+    long n = ok ? kr_diff(w, h) : -1;
+    if (v2x_sql(w->db, "ROLLBACK") != 0) n = -1;
+    w->cached_committee_epoch_start = UINT64_MAX;
+    return n;
+}
+
+#define KR_SQL_ADD  "INSERT INTO v2_consensus_keys (consensus_pk_hash, " \
+                    "validator_id, role) VALUES (?1, ?2, 1)"
+#define KR_SQL_DEL  "DELETE FROM v2_consensus_keys WHERE consensus_pk_hash = ?1"
+#define KR_SQL_ROLE "UPDATE v2_consensus_keys SET role = 3 - role " \
+                    "WHERE consensus_pk_hash = ?1"
+#define KR_SQL_VID  "UPDATE v2_consensus_keys SET validator_id = ?2 " \
+                    "WHERE consensus_pk_hash = ?1"
+
+/* SHA3-512(g_k[key].pk) — the reservation's key column */
+static int kh_of(int key, uint8_t out[64]) {
+    return qgp_sha3_512(g_k[key].pk, PK_LEN, out);
+}
+
 /* the v2 row of `vid`: (status, consensus key == key `ck`, pending ==
  * key `pk` or all-zero when pk < 0, effective epoch, missed counter) */
 typedef struct {
@@ -1814,6 +1930,7 @@ static int t_swap(void) {
     uint8_t chain32[DNA_CHAIN_ID_LEN], d0[64], d1[64], got[64], intent[64];
     uint8_t vid0[64], role = 0;
     uint64_t h = 0;
+    const int kr0 = g_kr_runs;
     rowv_t rv;
 
     CHECK(E_LEN >= 12, "the fixture's edge precedes the first boundary");
@@ -2247,6 +2364,38 @@ static int t_swap(void) {
           rv.status == DNAC_VALIDATOR_RETIRING,
           "V_B deferred at 3E by validator_id: still RETIRING");
 
+    /* ── C6k. the key-reservation self-check at 3E (khan A3 tolerance) ─
+     * The three rotators hold their previous keys KC1 / KC2 / KC3 — keys
+     * no committed snapshot names (S(2E) never seated them). Each is
+     * seated in S(3E) under its row's current key with no seat in S(2E),
+     * so each may hold ONE role-1 row beyond the derived set: 0
+     * differences. A SECOND such row naming V_A is one difference; a
+     * spare row naming V0 (seated in S(2E) and S(3E) under one key: its
+     * reservations are fully derivable) is one difference. Deleting KC1's
+     * row is NOT seen — the tolerance bounds the A3 previous key by count
+     * only (the known blind spot: nothing rooted names that key). All on
+     * A, ROLLED BACK. */
+    {
+        uint8_t junk[64], kc1[64];
+        memset(junk, 0x5A, sizeof(junk));
+        CHECK(kh_of(KC1, kc1) == 0, "KC1's hash");
+        CHECK(kr_diff(A.w, 3 * E_LEN) == 0 && kr_diff(B.w, 3 * E_LEN) == 0,
+              "self-check at 3E: 0 differences (three A3 previous keys "
+              "tolerated)");
+        CHECK(kr_probe(A.w, 3 * E_LEN, KR_SQL_ADD, junk, g_rid[RA]) == 1,
+              "a second extra role-1 row on an A3 rotator: 1 difference");
+        CHECK(kr_probe(A.w, 3 * E_LEN, KR_SQL_ADD, junk, vid0) == 1,
+              "an extra role-1 row on a validator S(2E) seats: 1 "
+              "difference");
+        CHECK(kr_probe(A.w, 3 * E_LEN, KR_SQL_DEL, kc1, NULL) == 0,
+              "KNOWN BLIND SPOT: V_A's A3 previous key deleted — not "
+              "derivable, not seen");
+        uint8_t da[64], db[64];
+        CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
+              memcmp(da, db, 64) == 0 && kr_diff(A.w, 3 * E_LEN) == 0,
+              "C6k rolled back: A == B, 0 differences");
+    }
+
     /* ── C7. (3E, 4E]: V_C's seated key KN1 signs from block 3E+3 (the
      * commit of 3E+2 — cometbft applies S(U) at U+2); KN (V_A) never
      * signs. The host hands the engine any vote list (no address check
@@ -2366,6 +2515,9 @@ static int t_swap(void) {
         CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
               memcmp(da, db, 64) == 0, "twin databases byte-identical");
     }
+    CHECK(g_kr_runs - kr0 == 2 * (int)(h / E_LEN),
+          "the key-reservation self-check compared, and found nothing, at "
+          "every boundary on both twins");
     votes_reset();
     fx_close(&A);
     fx_close(&B);
@@ -2384,8 +2536,14 @@ static int t_swap(void) {
  * in BOTH sets (all three are seated in S(F) = S(3E) as well, so the
  * predecessor binds exactly like the successor) — o0, o1, o2 the three in
  * validator_id ASC. ROTATEs in (2E, 3E] give F = 3E for all three. At 4E
- * o2 is re-evaluated with its F kept: S(F) = S(4E) seats it (old key),
- * party {o2}: 94M > 70666666 — accepted.
+ * o2 is re-evaluated with its F kept, and — khan A7 (2026-10-13, the
+ * BUGS Z-27 case itself) — it WAITS AGAIN: S(F) = S(4E) carries o0 and
+ * o1 under their new keys, changed against S(3E), so the predecessor
+ * party starts at 24M and {o0,o1 carried, o2} leaves 70M ≤ 70666666.
+ * Before A7 it was accepted here (94M) — two parties sharing S(4E)'s
+ * third. At 5E S(5E) carries no key change against S(4E) (the swap at 4E
+ * copied the keys S(4E) already had), the carry is 0, o2 is accepted
+ * (94M); U = 6E, U+E = 7E.
  *
  * Votes (the host hands the engine any list): the three STAKEd keys sign
  * from block 3E+3 (S(3E) takes effect at 3E, Comet applies it at 3E+2).
@@ -2393,8 +2551,8 @@ static int t_swap(void) {
  * judges duty S(3E) by validator_id on the OLD keys: o0 counter 0 (a
  * read of the new key would miss), o1 counter 1 (a "no duty" reading
  * would reset it to 0). The old keys of o0 / o1 sign the precommits of 4E
- * and 4E+1 (credited at 4E+1, 4E+2), their new keys from 4E+3; o2 the
- * same one epoch later. */
+ * and 4E+1 (credited at 4E+1, 4E+2), their new keys from 4E+3; o2's old
+ * key signs through 6E+1, its new key from 6E+3. */
 static int64_t ko_value(nodus_witness_t *w) {
     uint64_t acc = 0, utx = 0;
     sqlite3_stmt *st = NULL;
@@ -2447,6 +2605,7 @@ static int t_budget(void) {
     uint8_t chain32[DNA_CHAIN_ID_LEN], got[64], intent[64], role = 0;
     const uint64_t BIG = 12000000ULL * (uint64_t)DNAC_DECIMAL_UNIT;
     uint64_t h = 0;
+    const int kr0 = g_kr_runs;
     int o[N_ROT];                      /* indices into g_rid, id ASC */
     rowv_t rv;
 
@@ -2595,6 +2754,38 @@ static int t_budget(void) {
     CHECK(row_view(A.w, g_rid[o[2]], g_ck[o[2]], g_tk[o[2]], &rv) == 0 &&
           rv.cur_is && rv.pend_is && rv.epoch == 3 * E_LEN,
           "the waiting third: not swapped, its F (3E) not rewritten");
+    /* ── D4k. the key-reservation self-check at 4E, every row derivable ─
+     * o0 / o1 were seated in S(3E) under their old keys and S(4E) seats
+     * them under the new ones: their previous keys are DERIVED (S(3E)'s
+     * keys), o2's pending key is derived from its roles row. Each
+     * single-row corruption — on A, ROLLED BACK — is exactly one
+     * difference: o0's previous key deleted (missing), o0's current key
+     * flipped to role 2 (other role), o2's pending key flipped to role 1
+     * (other role), o1's previous key re-assigned to o2 (other validator),
+     * a spare role-1 row naming o2 (extra; o2 has a seat in S(3E), so no
+     * A3 tolerance applies). */
+    {
+        uint8_t prev0[64], cur0[64], pend2[64], prev1[64], junk[64];
+        memset(junk, 0x3C, sizeof(junk));
+        CHECK(kh_of(g_ck[o[0]], prev0) == 0 && kh_of(g_tk[o[0]], cur0) == 0 &&
+              kh_of(g_tk[o[2]], pend2) == 0 && kh_of(g_ck[o[1]], prev1) == 0,
+              "the probed key hashes");
+        CHECK(kr_diff(A.w, 4 * E_LEN) == 0 && kr_diff(B.w, 4 * E_LEN) == 0,
+              "self-check at 4E: 0 differences (two derived previous "
+              "keys, one pending key)");
+        CHECK(kr_probe(A.w, 4 * E_LEN, KR_SQL_DEL, prev0, NULL) == 1,
+              "o0's previous key deleted: 1 difference (missing)");
+        CHECK(kr_probe(A.w, 4 * E_LEN, KR_SQL_ROLE, cur0, NULL) == 1,
+              "o0's current key as role 2: 1 difference");
+        CHECK(kr_probe(A.w, 4 * E_LEN, KR_SQL_ROLE, pend2, NULL) == 1,
+              "o2's pending key as role 1: 1 difference");
+        CHECK(kr_probe(A.w, 4 * E_LEN, KR_SQL_VID, prev1, g_rid[o[2]]) == 1,
+              "o1's previous key naming o2: 1 difference");
+        CHECK(kr_probe(A.w, 4 * E_LEN, KR_SQL_ADD, junk, g_rid[o[2]]) == 1,
+              "a spare role-1 row naming o2: 1 difference (extra)");
+        CHECK(twins_equal(&A, &B) == 0 && kr_diff(A.w, 4 * E_LEN) == 0,
+              "D4k rolled back: A == B, 0 differences");
+    }
     CHECK(row_view(A.w, g_rid[o[0]], g_tk[o[0]], -1, &rv) == 0 &&
           rv.missed == 0,
           "(a) Rule N at U: o0 judged on its OLD key (signed) — counter 0");
@@ -2605,9 +2796,21 @@ static int t_budget(void) {
     CHECK(seats_under(A.w, 5 * E_LEN, g_rid[o[0]], g_tk[o[0]]) == 1 &&
           seats_under(A.w, 5 * E_LEN, g_rid[o[1]], g_tk[o[1]]) == 1,
           "U's freeze copied the NEW keys into S(5E)");
-    CHECK(seats_under(A.w, 5 * E_LEN, g_rid[o[2]], g_tk[o[2]]) == 1,
-          "(b) the third accepted at the next freeze (party {o2}: 94M > "
-          "70666666 in S(4E) and S(5E))");
+    CHECK(seats_under(A.w, 5 * E_LEN, g_rid[o[2]], g_ck[o[2]]) == 1 &&
+          seats_under(A.w, 5 * E_LEN, g_rid[o[2]], g_tk[o[2]]) == 0,
+          "(b) A7: the third WAITS again — S(4E) carries o0 / o1's "
+          "rotations (24M), + 12M leaves 70M <= 70666666");
+    {
+        uint8_t *pb = NULL, *sb = NULL;
+        size_t pl = 0, sl = 0;
+        int ok = preview_bytes(A.w, 4 * E_LEN, &pb, &pl) == 0 &&
+                 stored_bytes(A.w, 5 * E_LEN, &sb, &sl) == 0 &&
+                 pl == sl && memcmp(pb, sb, pl) == 0;
+        free(pb);
+        free(sb);
+        CHECK(ok, "preview_next(4E) == stored S(5E), byte for byte (the "
+              "carry is read alike by both)");
+    }
 
     /* ── votes for (4E, 5E]: old keys of o0 / o1 sign 4E+1, 4E+2 ──────── */
     CHECK(vote_slot(1, g_ck[o[1]], (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT)
@@ -2621,11 +2824,12 @@ static int t_budget(void) {
     CHECK(att_rows(A.w, g_ck[o[0]]) == 1 && att_rows(A.w, g_ck[o[1]]) == 1,
           "the old voters' attendance rows exist before U+E");
 
-    /* ── D5. boundary 5E (U+E of o0, o1; U of o2) ──────────────────────
+    /* ── D5. boundary 5E (U+E of o0, o1; F again for o2) ───────────────
      * F62 first (HF-6 6e): on A alone, boundary 5E with a fault injected
      * after the sweep step — rolled back whole (the old voters' attendance
-     * rows and role-1 rows still there, o2 not swapped); the clean 5E then
-     * applies on both twins and A equals B. */
+     * rows and role-1 rows still there); the clean 5E then applies on both
+     * twins and A equals B. o2 is not swapped at 5E on either path (A7: it
+     * waited at 4E, so S(5E) seats its old key). */
     CHECK(inject_boundary(&A, 5 * E_LEN, V2AP_FAIL_AFTER_ROTATE_SWEEP) == 0,
           "F62: boundary 5E faults after the sweep and rolls back whole");
     CHECK(att_rows(A.w, g_ck[o[0]]) == 1 && att_rows(A.w, g_ck[o[1]]) == 1 &&
@@ -2633,8 +2837,8 @@ static int t_budget(void) {
           keys_naming(A.w, g_rid[o[1]], NODUS_V2_KEY_ROLE_ACTIVE) == 2,
           "F62: the sweep's deletes did not survive the rollback");
     CHECK(row_view(A.w, g_rid[o[2]], g_ck[o[2]], g_tk[o[2]], &rv) == 0 &&
-          rv.cur_is && rv.pend_is,
-          "F62: o2's swap at 5E rolled back with the block");
+          rv.cur_is && rv.pend_is && rv.epoch == 3 * E_LEN,
+          "F62: o2 untouched — still pending, F = 3E");
     {
         int64_t v0 = ko_value(A.w);
         CHECK(v0 >= 0, "KO's value before 5E");
@@ -2655,26 +2859,48 @@ static int t_budget(void) {
         CHECK(row_view(A.w, g_rid[k], g_tk[k], -1, &rv) == 0 &&
               rv.missed == 0, "Rule N at U+E: the new key signed");
     }
+    CHECK(row_view(A.w, g_rid[o[2]], g_ck[o[2]], g_tk[o[2]], &rv) == 0 &&
+          rv.cur_is && rv.pend_is && rv.epoch == 3 * E_LEN &&
+          keys_naming(A.w, g_rid[o[2]], NODUS_V2_KEY_ROLE_ACTIVE) == 1 &&
+          keys_naming(A.w, g_rid[o[2]], NODUS_V2_KEY_ROLE_PENDING) == 1,
+          "o2 not swapped at 5E (S(5E) seats its old key), its F (3E) not "
+          "rewritten");
+    CHECK(seats_under(A.w, 6 * E_LEN, g_rid[o[2]], g_tk[o[2]]) == 1,
+          "(b) A7: accepted at 5E — S(5E) carries no key change against "
+          "S(4E), carry 0, party {o2}: 94M > 70666666");
+
+    /* ── votes for (5E, 6E]: o2's OLD key keeps signing (S(5E) duty) ─── */
+    CHECK(run_to(&A, &B, &h, 6 * E_LEN - 1) == 0, "to block 6E-1");
+
+    /* ── D6. boundary 6E (U of o2) ───────────────────────────────────── */
+    CHECK(run_to(&A, &B, &h, 6 * E_LEN) == 0, "boundary 6E");
     CHECK(row_view(A.w, g_rid[o[2]], g_tk[o[2]], -1, &rv) == 0 &&
           rv.cur_is && rv.pend_is && rv.epoch == 0 &&
           keys_naming(A.w, g_rid[o[2]], NODUS_V2_KEY_ROLE_ACTIVE) == 2,
-          "o2 swapped at 5E; the sweep at 5E keeps its old key (swapped at "
+          "o2 swapped at 6E; the sweep at 6E keeps its old key (swapped at "
           "this boundary)");
+    CHECK(rv.missed == 0,
+          "Rule N at 6E: o2 judged on S(5E) by id, its OLD key signed");
 
-    /* ── votes for (5E, 6E] and D6. boundary 6E: o2's sweep ──────────── */
-    CHECK(run_to(&A, &B, &h, 5 * E_LEN + 2) == 0, "blocks 5E+1, 5E+2");
+    /* ── votes for (6E, 7E] and D7. boundary 7E: o2's sweep ──────────── */
+    CHECK(run_to(&A, &B, &h, 6 * E_LEN + 2) == 0, "blocks 6E+1, 6E+2");
     CHECK(vote_slot(2, g_tk[o[2]], (int32_t)CMT_PB_BLOCK_ID_FLAG_COMMIT)
-              == 0, "o2: the new key signs from 5E+3");
-    CHECK(run_to(&A, &B, &h, 6 * E_LEN) == 0, "boundary 6E");
+              == 0, "o2: the new key signs from 6E+3");
+    CHECK(run_to(&A, &B, &h, 7 * E_LEN) == 0, "boundary 7E");
     CHECK(att_rows(A.w, g_ck[o[2]]) == 0 &&
           key_of(A.w, g_k[g_ck[o[2]]].pk, got, &role) == 1 &&
           keys_naming(A.w, g_rid[o[2]], NODUS_V2_KEY_ROLE_ACTIVE) == 1,
-          "o2's old key and attendance row released at its U+E");
+          "o2's old key and attendance row released at its U+E (7E)");
+    CHECK(row_view(A.w, g_rid[o[2]], g_tk[o[2]], -1, &rv) == 0 &&
+          rv.missed == 0, "Rule N at 7E: o2's new key signed");
     {
         uint8_t da[64], db[64];
         CHECK(v2x_db_digest(A.w, da) == 0 && v2x_db_digest(B.w, db) == 0 &&
               memcmp(da, db, 64) == 0, "(i) twin databases byte-identical");
     }
+    CHECK(g_kr_runs - kr0 == 2 * (int)(h / E_LEN),
+          "the key-reservation self-check compared, and found nothing, at "
+          "every boundary on both twins");
     votes_reset();
     fx_close(&A);
     fx_close(&B);
@@ -2703,6 +2929,7 @@ static int t_grad_sweep(void) {
     uint8_t role = 0;
     const uint64_t BIG = 12000000ULL * (uint64_t)DNAC_DECIMAL_UNIT;
     uint64_t h = 0;
+    const int kr0 = g_kr_runs;
     rowv_t rv;
 
     CHECK(E_LEN >= 12, "the fixture's edge precedes the first boundary");
@@ -2792,7 +3019,307 @@ static int t_grad_sweep(void) {
           "no reservation survives: KN by the graduation, KC1 by the sweep");
     CHECK(twins_equal(&A, &B) == 0,
           "twin databases byte-identical (the faulted 5E replayed on A)");
+    CHECK(g_kr_runs - kr0 == 2 * (int)(h / E_LEN),
+          "the key-reservation self-check compared, and found nothing, at "
+          "every boundary on both twins");
     votes_reset();
+    fx_close(&A);
+    fx_close(&B);
+    return 0;
+}
+
+/* ══ F. khan A7 — the cumulative predecessor budget (BUGS Z-27) ════════
+ *
+ * Design §3 "(A7) Birikimli bütçe" (khan 2026-10-13): at the freeze of
+ * S(f + E) the predecessor party R_F starts from the counted power of the
+ * entries of S(f) whose key differs from the same validator_id's entry in
+ * S(f − E) — a ruleset-1 S(f − E) matched through the migrated-id bridge
+ * (dna_validator_id_migrated over its entry keys); 0 when S(f − E) is
+ * absent; an unreadable S(f − E) is a fault. The seven genesis seats of a fresh twin (no STAKE) are
+ * [10M × 7] in every snapshot: P = 70M, floor(2P/3) = 46666666 — a party
+ * of 2 seats leaves 50M (fits), of 3 leaves 40M (does not).
+ *
+ * Genesis seats are Foundation-owned (no test can sign their ROTATE), so
+ * every probe is the C1c device on twin A inside a ROLLED-BACK
+ * transaction: S(f)'s stored entries re-keyed (snap_rekey — a rotation
+ * the previous freeze "accepted"), two pending rows planted with F = f,
+ * and the freeze of S(f + E) PREVIEWED (the core commit_next runs). Then
+ * A == B, byte for byte.
+ *   F1 f = 3E (S(3E), S(2E) both ruleset 2):
+ *      (a) no re-key: both candidates accepted — carry 0, the pre-A7
+ *          answer;
+ *      (b) V0, V1 re-keyed in S(3E) (carry 20M = 2/7): both WAIT
+ *          (20M + 10M leaves 40M) — the Z-27 scenario;
+ *      (c) V0 alone re-keyed (carry 10M): the id-smaller candidate is
+ *          accepted (20M), the other waits (30M) — exactly as much as the
+ *          carry leaves (A3: skip, keep walking);
+ *      (d) V0, V1 re-keyed in S(3E) AND V0's seat removed from S(2E):
+ *          carry 10M (V1 only — an entry with no seat in S(f − E) is not a
+ *          rotation): as (c);
+ *      (e) V0, V1 re-keyed in S(3E), S(2E) DELETED: carry 0 (absent ⇒ 0),
+ *          both accepted;
+ *      (f) V0, V1 re-keyed, S(2E)'s stored hash broken: with candidates the
+ *          freeze FAULTS (unreadable ≠ absent); with none it builds (the
+ *          pass reads nothing then);
+ *      (g) V0, V1, V2 re-keyed in S(3E) (carry 30M = 3/7, 40M left ≤
+ *          46666666 — a carry over its budget, the broken invariant):
+ *          with candidates the freeze FAULTS; with none it builds.
+ *   F2 f = 2E (S(2E) ruleset 2, its predecessor S(E) the genesis ruleset
+ *      1 — the first generation-4 freeze accepts rotations into S(2E)
+ *      against it through the bridge, C1c): V0, V1 re-keyed in S(2E) —
+ *      the bridge matches them in S(E), carry 2/7, both candidates WAIT;
+ *      V0 alone — carry 1/7, the id-smaller accepted, the other waits.
+ *
+ * HOW IT CAN LIE: the re-keyed snapshots are hand-written (the hash
+ * re-derived): they prove the pass on those bytes, not that a chain
+ * reaches them (D does that for (b)). F1 (d) and (e) assume the committee
+ * compute of S(4E) does not read S(2E) (as C4b (f) shows for S(3E) with
+ * S(2E) deleted); if it did, they would fault rather than pass. */
+
+/* the roles row of `vid`: pending := g_k[key].pk, F := ep. 0 / -1 */
+static int plant_pending(nodus_witness_t *w, const uint8_t vid[64], int key,
+                         uint64_t ep) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "UPDATE v2_validator_roles SET pending_consensus_pubkey = ?1, "
+            "consensus_key_effective_epoch = ?2 WHERE validator_id = ?3",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int ok = sqlite3_bind_blob(st, 1, g_k[key].pk, (int)PK_LEN,
+                               SQLITE_TRANSIENT) == SQLITE_OK &&
+             sqlite3_bind_int64(st, 2, (sqlite3_int64)ep) == SQLITE_OK &&
+             sqlite3_bind_blob(st, 3, vid, 64, SQLITE_TRANSIENT)
+                 == SQLITE_OK &&
+             sqlite3_step(st) == SQLITE_DONE &&
+             sqlite3_changes(w->db) == 1;
+    sqlite3_finalize(st);
+    return ok ? 0 : -1;
+}
+
+/* the STORED S(epoch) without the seat of `vid` (order kept). 0 / -1 */
+static int snap_drop(nodus_witness_t *w, uint64_t epoch,
+                     const uint8_t vid[64]) {
+    dna_vset_snapshot_t *s = NULL, *d = NULL;
+    if (nodus_witness_vset_get(w, epoch, &s, NULL) != 0 || !s) return -1;
+    int ok = -1, j = snap_idx(s, vid);
+    if (j >= 0 && s->active_count > 1 &&
+        (d = dna_vset_alloc((uint16_t)(s->active_count - 1))) != NULL) {
+        d->epoch = s->epoch;
+        d->selection_ruleset = s->selection_ruleset;
+        memcpy(d->sortition_seed, s->sortition_seed, DNA_VSET_SEED_LEN);
+        uint16_t n = 0;
+        for (uint16_t i = 0; i < s->active_count; i++)
+            if ((int)i != j) d->entries[n++] = s->entries[i];
+        ok = snap_store(w, d);
+    }
+    dna_vset_free(&d);
+    dna_vset_free(&s);
+    return ok;
+}
+
+/* the predecessor S(f − E) edits a probe makes before the preview */
+enum { CUM_PRED_KEEP, CUM_PRED_DROP_V0, CUM_PRED_DELETE, CUM_PRED_BREAK };
+
+/* One rolled-back probe on twin A: re-key `nrk` seats of S(f) (vids
+ * rk[0..nrk) to KC1, KC2, KC3; nrk <= 3), edit S(f − E) per `pred`, plant the pending
+ * keys KN / KN2 on cand[0] / cand[1] with F = f (ncand of them), preview
+ * the freeze of S(f + E). *rc = the preview's rc; acc[c] = 1 the
+ * candidate's S(f + E) entry carries its pending key / 0 its current key
+ * (= vk[c]) / -1 neither. 0 the probe ran (and rolled back) / -1. */
+static int cum_probe(nodus_witness_t *w, uint64_t f,
+                     const uint8_t (*rk)[64], int nrk, int pred,
+                     const uint8_t (*cand)[64], const int *vk, int ncand,
+                     int *rc, int acc[2]) {
+    static const int rkey[3] = { KC1, KC2, KC3 };
+    static const int pkey[2] = { KN, KN2 };
+    dna_vset_snapshot_t *pv = NULL;
+    int ok = 1;
+    acc[0] = acc[1] = -1;
+    if (v2x_sql(w->db, "BEGIN IMMEDIATE") != 0) return -1;
+    for (int i = 0; ok && i < nrk; i++)
+        ok = snap_rekey(w, f, rk[i], rkey[i]) == 0;
+    if (ok && pred == CUM_PRED_DROP_V0)
+        ok = snap_drop(w, f - E_LEN, rk[0]) == 0;
+    if (ok && pred == CUM_PRED_DELETE) {
+        char sql[160];
+        snprintf(sql, sizeof(sql), "DELETE FROM validator_set_snapshots "
+                 "WHERE epoch_start = %llu",
+                 (unsigned long long)(f - E_LEN));
+        ok = v2x_sql(w->db, sql) == 0 && sqlite3_changes(w->db) == 1;
+    }
+    if (ok && pred == CUM_PRED_BREAK) {
+        char sql[160];
+        snprintf(sql, sizeof(sql), "UPDATE validator_set_snapshots SET "
+                 "snapshot_hash = zeroblob(64) WHERE epoch_start = %llu",
+                 (unsigned long long)(f - E_LEN));
+        ok = v2x_sql(w->db, sql) == 0 && sqlite3_changes(w->db) == 1;
+    }
+    w->cached_committee_epoch_start = UINT64_MAX;
+    for (int c = 0; ok && c < ncand; c++)
+        ok = plant_pending(w, cand[c], pkey[c], f) == 0;
+    if (ok) {
+        *rc = nodus_witness_vset_preview_next(w, f, NODUS_RT_GEN_STORAGE,
+                                              &pv);
+        for (int c = 0; *rc == 0 && pv && c < ncand; c++) {
+            int j = snap_idx(pv, cand[c]);
+            if (j < 0) continue;
+            if (memcmp(pv->entries[j].pubkey, g_k[pkey[c]].pk, PK_LEN) == 0)
+                acc[c] = 1;
+            else if (memcmp(pv->entries[j].pubkey, g_k[vk[c]].pk,
+                            PK_LEN) == 0)
+                acc[c] = 0;
+        }
+        dna_vset_free(&pv);
+    }
+    if (v2x_sql(w->db, "ROLLBACK") != 0) ok = 0;
+    w->cached_committee_epoch_start = UINT64_MAX;
+    return ok ? 0 : -1;
+}
+
+static int t_cumulative(void) {
+    fixture_t A, B;
+    uint8_t chain32[DNA_CHAIN_ID_LEN], vid[N_VAL][64];
+    uint8_t rk[3][64], cd[2][64];
+    int vk[2], acc[2], rc = 0;
+    uint64_t h = 0;
+    const int kr0 = g_kr_runs;
+
+    CHECK(E_LEN >= 12, "the fixture's edge precedes the first boundary");
+    for (int c = 0; c < N_COINS; c++) g_amt[c] = FEE;
+    for (int c = 0; c < N_COINS; c++)
+        CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
+    CHECK(fx_open(&A, "fa") == 0 && fx_open(&B, "fb") == 0,
+          "twin seeded chains (edge in block H14 - 1)");
+    CHECK(nodus_witness_v2_chain_id(A.w, chain32) == 0, "chain id");
+    for (int i = 0; i < N_VAL; i++)
+        CHECK(dna_validator_id_migrated(vid[i], chain32, g_k[V0 + i].pk)
+                  == 0, "genesis seat's migrated validator_id");
+    /* the re-keyed seats V0, V1; the candidates V2, V3 in validator_id
+     * ASC (cd[0] the smaller), vk[] their current keys */
+    memcpy(rk[0], vid[0], 64);
+    memcpy(rk[1], vid[1], 64);
+    memcpy(rk[2], vid[2], 64);              /* (g) only: three re-keys */
+    {
+        const int lo = memcmp(vid[2], vid[3], 64) < 0 ? 2 : 3;
+        const int hi = lo == 2 ? 3 : 2;
+        memcpy(cd[0], vid[lo], 64);
+        memcpy(cd[1], vid[hi], 64);
+        vk[0] = V0 + lo;
+        vk[1] = V0 + hi;
+    }
+
+    /* ── F2. f = 2E: S(f − E) = S(E) is the genesis ruleset-1 set ────── */
+    CHECK(run_to(&A, &B, &h, 2 * E_LEN) == 0, "to boundary 2E");
+    {
+        dna_vset_snapshot_t *x = NULL;
+        CHECK(nodus_witness_vset_get(A.w, E_LEN, &x, NULL) == 0 && x &&
+              x->selection_ruleset == DNA_VSET_RULESET_TOPN_V1,
+              "FIXTURE GUARD: S(E) is ruleset 1");
+        dna_vset_free(&x);
+        for (int s = 2; s <= 3; s++) {
+            uint64_t pw[DNA_MAX_ACTIVE_VALIDATORS], P = 0;
+            dna_vset_snapshot_t *y = NULL;
+            CHECK(nodus_witness_vset_get(A.w, (uint64_t)s * E_LEN, &y, NULL)
+                      == 0 && y &&
+                  y->selection_ruleset == DNA_VSET_RULESET_TOPN_V2 &&
+                  y->active_count == N_VAL &&
+                  nodus_witness_vset_powers(A.w, y, pw) == 0,
+                  "FIXTURE GUARD: S(2E) / S(3E) ruleset 2, seven seats");
+            for (uint16_t j = 0; j < y->active_count; j++) {
+                CHECK(pw[j] == 10000000ULL,
+                      "FIXTURE GUARD: counted [10M x 7]");
+                P += pw[j];
+            }
+            dna_vset_free(&y);
+            CHECK(P == 70000000ULL && P * 2 / 3 == 46666666ULL &&
+                  P - 20000000ULL > P * 2 / 3 &&
+                  !(P - 30000000ULL > P * 2 / 3),
+                  "P = 70M: a party of two fits, of three does not");
+        }
+    }
+    CHECK(cum_probe(A.w, 2 * E_LEN, (const uint8_t (*)[64])rk, 2,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == 0,
+          "F2: probe ran, preview built");
+    CHECK(acc[0] == 0 && acc[1] == 0,
+          "F2: the bridge finds V0, V1 in the ruleset-1 S(E) — carry 2/7, "
+          "both WAIT");
+    CHECK(cum_probe(A.w, 2 * E_LEN, (const uint8_t (*)[64])rk, 1,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == 0 && acc[0] == 1 && acc[1] == 0,
+          "F2: V0 alone through the bridge — carry 1/7, the id-smaller "
+          "accepted, the other waits");
+    CHECK(twins_equal(&A, &B) == 0, "F2 rolled back: A == B");
+
+    /* ── F2k. the self-check's ruleset-1 bridge (S(E) has no ids) ───────
+     * At 2E, S(2E) (ruleset 2) against S(E) (ruleset 1, matched through
+     * dna_validator_id_migrated). On A, ROLLED BACK: S(2E)'s V0 entry
+     * re-keyed to KX. The bridge finds V0 in S(E) under a DIFFERENT key,
+     * so S(E)'s key (V0's own, still its current role-1 key) is derived a
+     * second time as a previous key: exactly one difference (a key derived
+     * twice). Without the bridge V0 would have no S(E) seat and — KX not
+     * being its row's key — no tolerance either: 0 differences. */
+    {
+        CHECK(kr_diff(A.w, 2 * E_LEN) == 0,
+              "self-check at 2E: 0 differences");
+        long n = -1;
+        if (v2x_sql(A.w->db, "BEGIN IMMEDIATE") == 0) {
+            if (snap_rekey(A.w, 2 * E_LEN, vid[0], KX) == 0)
+                n = kr_diff(A.w, 2 * E_LEN);
+            if (v2x_sql(A.w->db, "ROLLBACK") != 0) n = -1;
+            A.w->cached_committee_epoch_start = UINT64_MAX;
+        }
+        CHECK(n == 1, "F2k: the bridge matched V0 in the ruleset-1 S(E): "
+              "1 difference");
+        CHECK(twins_equal(&A, &B) == 0 && kr_diff(A.w, 2 * E_LEN) == 0,
+              "F2k rolled back: A == B, 0 differences");
+    }
+
+    /* ── F1. f = 3E: S(3E), S(2E) both ruleset 2 ──────────────────────── */
+    CHECK(run_to(&A, &B, &h, 3 * E_LEN) == 0, "boundary 3E");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 0,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == 0 && acc[0] == 1 && acc[1] == 1,
+          "(a) no rotation carried: both accepted (carry 0, as before A7)");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 2,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == 0 && acc[0] == 0 && acc[1] == 0,
+          "(b) S(3E) carries V0, V1 (2/7): + one more is 3/7 — both WAIT");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 1,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == 0 && acc[0] == 1 && acc[1] == 0,
+          "(c) carry 1/7: the id-smaller candidate accepted, the other "
+          "waits");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 2,
+                    CUM_PRED_DROP_V0, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == 0 && acc[0] == 1 && acc[1] == 0,
+          "(d) V0 has no seat in S(2E): not counted — carry 1/7 (V1)");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 2,
+                    CUM_PRED_DELETE, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == 0 && acc[0] == 1 && acc[1] == 1,
+          "(e) S(2E) absent: carry 0, both accepted");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 2,
+                    CUM_PRED_BREAK, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == -1,
+          "(f) S(2E) unreadable, with candidates: the freeze FAULTS");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 2,
+                    CUM_PRED_BREAK, (const uint8_t (*)[64])cd, vk, 0, &rc,
+                    acc) == 0 && rc == 0,
+          "(f) S(2E) unreadable, no candidate: builds (nothing read)");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 3,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 2, &rc,
+                    acc) == 0 && rc == -1,
+          "(g) a carry of 3/7 exceeds its budget: with candidates the "
+          "freeze FAULTS");
+    CHECK(cum_probe(A.w, 3 * E_LEN, (const uint8_t (*)[64])rk, 3,
+                    CUM_PRED_KEEP, (const uint8_t (*)[64])cd, vk, 0, &rc,
+                    acc) == 0 && rc == 0,
+          "(g) the same S(3E), no candidate: builds (nothing read)");
+    CHECK(twins_equal(&A, &B) == 0, "F1 rolled back: A == B");
+    CHECK(g_kr_runs - kr0 == 2 * (int)(h / E_LEN),
+          "the key-reservation self-check compared, and found nothing, at "
+          "every boundary on both twins");
+
     fx_close(&A);
     fx_close(&B);
     return 0;
@@ -2809,6 +3336,7 @@ int main(void) {
         { "swap_by_validator_id",  t_swap },
         { "freeze_budget_sweep",   t_budget },
         { "graduate_prev_key",     t_grad_sweep },
+        { "cumulative_budget_a7",  t_cumulative },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     if (keys_make() != 0 || desc_make() != 0) {

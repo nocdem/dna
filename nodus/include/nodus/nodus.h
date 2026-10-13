@@ -1039,6 +1039,18 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
                                 nodus_dnac_fee_info_t *result_out);
 
 /**
+ * @brief The dnac_fee_info raw-reply decoder nodus_client_dnac_fee_info
+ *        uses, exported for tests (no network). Zeroes *result_out, then
+ *        fills each known key whose value is an unsigned integer
+ *        (base_fee, mempool, min_fee, gas_price, token_create_fee and —
+ *        HF-6 slice 8a — stake_min, storage_bond, power_cap_bps); unknown
+ *        keys are skipped, an absent key leaves its field 0.
+ * @return 0; -1 on NULL arguments or a reply the CBOR decoder cannot walk.
+ */
+int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
+                               nodus_dnac_fee_info_t *result_out);
+
+/**
  * Query UTXOs by owner fingerprint.
  * Caller must free result_out->entries when done.
  *
@@ -1235,6 +1247,15 @@ void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *resul
  */
 int nodus_client_dnac_committee(nodus_client_t *client,
                                   nodus_dnac_committee_result_t *result_out);
+
+/** Its raw-reply decoder, exported for tests (no network). Lenient as
+ *  before (a key of the wrong type is ignored, unknown keys skipped,
+ *  entries past the struct's capacity dropped); a repeated top-level key
+ *  is refused. Each entry's "power" sets power + has_power = 1; an entry
+ *  without it (an older node) decodes with has_power = 0, power = 0.
+ *  @return 0 / -1 malformed (result zeroed). */
+int nodus_dnac_committee_decode(const uint8_t *raw, size_t raw_len,
+                                nodus_dnac_committee_result_t *result_out);
 
 /* ── Governance approvals collected by the proposer's OWN node ────────
  * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)

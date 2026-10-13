@@ -72,7 +72,7 @@
  *     every boundary and every block with an envelope each committed
  *     SYSTEM head equals its runtime's recomputation): seven seeded
  *     validators with REAL keys (every block carries their COMMIT votes),
- *     treasury pool 1 = 10^16, param 9 at 2, param 14 at 3, param 16 at 4
+ *     treasury pool 1 = 10^16, param 9 at 2, param 14 at 3, param 18 at 4
  *     (the generation-4 edge runs in block 3), eight segments PRE-SEEDED
  *     (published at 1). KN is the storage node key, KO its first owner, KP
  *     the second; KN never signs a leg, it only consents.
@@ -105,15 +105,28 @@
  *         KP, registered 3E + 1, exit 0, fail_streak 0, grace_until 0;
  *         KO's accrual unchanged; one bond in the supply term; the CORE
  *         invariant holds on both twins.
+ *       HF-6 slice 8a — block 3E + 2, with a committed param-21
+ *         (STORAGE_BOND) row of 10^13 effective there: KN2 registered
+ *         with the compiled 1M is REFUSED, KN3 with exactly 10^13
+ *         APPLIES (its row records 10^13 on both twins) — the engine
+ *         reads the row, not the constant.
+ *       HF-6 slice 8a — block 3E + 3 on twin A, with an out-of-range
+ *         param-21 row (10^14 + 1, which no vote can commit) effective
+ *         there: the block FAILS WHOLE — a node fault whose reason is
+ *         env_storage_bond's range check, never a verdict and never the
+ *         default; the last block stays 3E + 2.
+ *  A3 also (HF-6 slice 8a): the exact bond is the engine fact
+ *     ctx.storage_bond — at 10^13 the bond 10^13 applies and the compiled
+ *     1M is refused; a ctx carrying 0 (never engine-filled) is -2.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: an EVM-enabled (standalone, non-Windows) build —
  * generation 4 exists only there; the CMake target is registered only
  * then. DNAC_EPOCH_LENGTH >= 8 (checked: no boundary among heights 1..7);
  * every height is derived from it, so the production 720 and the harness
- * 15 both work. Environment: none. Cost: section B applies 3E + 1 blocks
+ * 15 both work. Environment: none. Cost: section B applies 3E + 2 blocks
  * to each of two fixtures (≈ 4 300 block applications at E = 720), each
- * followed by a global-root compare.
+ * followed by a global-root compare, plus one aborted block on one.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * Two /tmp/test_storage_reg_* directories, removed at the end (left
@@ -126,8 +139,12 @@
  *    are REAL signatures, verified by the exec.
  *  - The cap (256 live rows) is proven at hook level only (a fabricated
  *    count of 255 / 256); no 256-node chain is built.
- *  - STORAGE_BOND is the compiled DNAC_HF6_STORAGE_BOND_DEFAULT (the
- *    slice-8 seam rtn_storage_bond_at); a voted value is slice 8's.
+ *  - The param-21 rows of the HF-6 slice 8a steps are written straight
+ *    into chain_config_history (cc_row), not voted: the vote's rules
+ *    (range, grace, generation 4) are test_hf4_params.c's. The legal row
+ *    is planted right before a block whose applied item touches SYSTEM;
+ *    the out-of-range row's fault aborts its block before phase 8. A
+ *    fault for another reason would fail the reason check.
  *  - B's genesis UTXOs, validator rows and segments are SEEDED
  *    (V2X_SEED_NOT_REAL_UTXOS; segments published at 1, a state the chain
  *    never writes — the test_storage_b2 device). The validators are
@@ -197,7 +214,7 @@ static int g_checks = 0;
 
 #define E_LEN    ((uint64_t)DNAC_EPOCH_LENGTH)
 #define D2       ((uint64_t)DNAC_CFG_RULESET_GEN2_D2)
-#define DS       ((uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
+#define D4       ((uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D)
 #define FEE      ((uint64_t)DNAC_MIN_FEE_RAW)
 #define BOND     ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 #define CHG      700000000ULL
@@ -257,8 +274,10 @@ typedef struct {
 
 /* V0..V6 the validators (section B); KN the storage node key; KO its
  * first owner, KP its second (A2); KX a foreign key; K1..K3 the multisig
- * keys of the 2-of-3 owner M. */
-enum { V0, V1, V2, V3, V4, V5, V6, KN, KO, KP, KX, K1, K2, K3, N_KEYS };
+ * keys of the 2-of-3 owner M; KN2 / KN3 / KN4 the HF-6 slice 8a storage
+ * node keys (section B, the param-21 steps). */
+enum { V0, V1, V2, V3, V4, V5, V6, KN, KO, KP, KX, K1, K2, K3, KN2, KN3,
+       KN4, N_KEYS };
 #define N_VAL 7
 static sk_key_t g_k[N_KEYS];
 
@@ -480,6 +499,10 @@ static void ctx_at(uint64_t height) {
     g_ctx.auth_context_commit = g_dig;
     g_ctx.leg_auth_digest = g_dig;
     g_ctx.auth = &g_av;
+    /* HF-6 slice 8a: the engine facts every ctx carries — params 19 / 21
+     * with no row (env_stake_min / env_storage_bond's defaults) */
+    g_ctx.stake_min = (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+    g_ctx.storage_bond = BOND;
 }
 
 /* kind-1 verdict: `key` alone, or `key` + KX when `two` */
@@ -737,6 +760,28 @@ static int t_hooks(void) {
             CHECK(rc == -1, "a bond other than STORAGE_BOND is a verdict");
         }
     }
+    /* HF-6 slice 8a: STORAGE_BOND is the ENGINE FACT ctx.storage_bond
+     * (param 21 at the item's height): at the vote range's lower end
+     * (10^13) exactly that bond applies and the compiled 1M default is
+     * refused; a ctx carrying 0 (never engine-filled) is a NODE fault */
+    {
+        const uint64_t BMIN = (uint64_t)DNAC_HF6_STORAGE_BOND_MIN;
+        g_ctx.storage_bond = BMIN;
+        CHECK(try_reg(s4, &e, call, g_k[KO].fp, H, EXP, BMIN, CS_OK,
+                      NODUS_RT_AUTHKIND_DSA87_MULTI_V1) == 0,
+              "storage_bond fact 10^13: bond 10^13 applies");
+        CHECK(try_reg(s4, &e, call, g_k[KO].fp, H, EXP, BOND, CS_OK,
+                      NODUS_RT_AUTHKIND_DSA87_MULTI_V1) == -1,
+              "storage_bond fact 10^13: the compiled 1M bond refused");
+        g_ctx.storage_bond = 0;
+        CHECK(try_reg(s4, &e, call, g_k[KO].fp, H, EXP, BOND, CS_OK,
+                      NODUS_RT_AUTHKIND_DSA87_MULTI_V1) == -2,
+              "storage_bond 0 (not engine-filled): -2");
+        CHECK(try_reg(s4, &e, call, g_k[KO].fp, H, EXP, 0, CS_OK,
+                      NODUS_RT_AUTHKIND_DSA87_MULTI_V1) == -2,
+              "storage_bond 0 and bond 0: still the fault, never a match");
+        g_ctx.storage_bond = BOND;
+    }
     CHECK(try_reg(s4, &e, call, g_k[KO].fp, H, H - 1, BOND, CS_OK,
                   NODUS_RT_AUTHKIND_DSA87_MULTI_V1) == -1,
           "expiry h - 1 refused");
@@ -972,7 +1017,7 @@ typedef struct {
 
 typedef struct { int key; uint8_t seed; uint64_t amount; } coin_def_t;
 enum { CO0, CO1, CO4, CO5, CO6, CO7, CO8, CO9, CO2, CO3, CP1, CP2,
-       N_COINS };
+       CQ1, CQ2, CQ3, N_COINS };
 static const coin_def_t COINS[N_COINS] = {
     [CO0] = { KO, 0xA0, BOND + FEE },        /* KO at 2 (generation 2)  */
     [CO1] = { KO, 0xA1, BOND + FEE + CHG },  /* KO registers KN at 4    */
@@ -986,6 +1031,11 @@ static const coin_def_t COINS[N_COINS] = {
     [CO3] = { KO, 0xA3, BOND + FEE },        /* KO again at 3E          */
     [CP1] = { KP, 0xB1, BOND + FEE },        /* KP at 3E                */
     [CP2] = { KP, 0xB2, BOND + FEE },        /* KP at 3E + 1            */
+    /* HF-6 slice 8a — the param-21 steps (STORAGE_BOND voted to 10^13) */
+    [CQ1] = { KO, 0xC1, BOND + FEE },        /* KN2, bond 1M, 3E + 2    */
+    [CQ2] = { KO, 0xC2, DNAC_HF6_STORAGE_BOND_MIN + FEE },
+                                             /* KN3, bond 10^13, 3E + 2 */
+    [CQ3] = { KO, 0xC3, BOND + FEE },        /* KN4, the fault, 3E + 3  */
 };
 static uint8_t g_nul[N_COINS][64];
 
@@ -1043,7 +1093,7 @@ static int seg_root(uint64_t k, uint8_t out[64]) {
 #define H9   2u
 #define HE   3u       /* EVM_ACTIVE (param 14): GEN_STORAGE is built on the
                        * EVM generation (K10) */
-#define H14  4u       /* param 16: the generation-4 edge runs in block 3 */
+#define H14  4u       /* param 18: the generation-4 edge runs in block 3 */
 
 static void fx_close(fixture_t *fx) {
     if (!fx->w) return;
@@ -1073,7 +1123,7 @@ static int fx_open(fixture_t *fx, const char *tag) {
         cc_row(w, DNAC_CFG_RULESET_GEN2, D2, H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE, DS, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES, D4, H14, 13) != 0)
         return -1;
     uint64_t bonds = 0, coins = 0;
     for (int i = 0; i < N_VAL; i++) {
@@ -1356,18 +1406,42 @@ static int st_env(nodus_witness_t *w, uint64_t height, uint32_t op,
 /* KN's REGISTER owned by `owner` (kind 1, signed by `sys_signer`), KN's
  * consent `variant` against the ENGINE's chain id, funded by coin `c`
  * (signed by its owner), at `height`. @return 0 / -1. */
-static int reg_env(fixture_t *fx, uint64_t height, int owner, int c,
-                   uint64_t bond, int variant, int sys_signer,
-                   uint8_t **out, size_t *out_len) {
+static int reg_env_node(fixture_t *fx, uint64_t height, int node, int owner,
+                        int c, uint64_t bond, int variant, int sys_signer,
+                        uint8_t **out, size_t *out_len) {
     static uint8_t call[STREG_LEN];
     uint8_t chain32[DNA_CHAIN_ID_LEN];
     if (nodus_witness_v2_chain_id(fx->w, chain32) != 0) return -1;
-    if (streg_call(call, chain32, g_k[owner].fp, KN, height + 10u, bond,
+    if (streg_call(call, chain32, g_k[owner].fp, node, height + 10u, bond,
                    variant) != STREG_LEN)
         return -1;
     return st_env(fx->w, height, DNA_SYSRULE_STORAGE_REGISTER, call,
                   STREG_LEN, c, bond, sys_signer, COINS[c].key, out,
                   out_len);
+}
+
+static int reg_env(fixture_t *fx, uint64_t height, int owner, int c,
+                   uint64_t bond, int variant, int sys_signer,
+                   uint8_t **out, size_t *out_len) {
+    return reg_env_node(fx, height, KN, owner, c, bond, variant, sys_signer,
+                        out, out_len);
+}
+
+/* the bond of node `node`'s registry row: 0 found / 1 absent / -1 */
+static int node_bond(nodus_witness_t *w, int node, uint64_t *bond) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT bond FROM v2_storage_nodes "
+                           "WHERE node_fp = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(st, 1, g_k[node].fp, 64, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st), ret = -1;
+    if (rc == SQLITE_DONE) ret = 1;
+    else if (rc == SQLITE_ROW) {
+        *bond = (uint64_t)sqlite3_column_int64(st, 0);
+        ret = 0;
+    }
+    sqlite3_finalize(st);
+    return ret;
 }
 
 /* The STORAGE_REPORT call body (bytes §3). */
@@ -1821,6 +1895,70 @@ static int t_engine(void) {
           n == 1, "still one registry row (revived, not duplicated)");
     CHECK(core_invariant(A.w) == 0 && core_invariant(B.w) == 0,
           "the CORE invariant holds on both twins");
+
+    /* ── HF-6 slice 8a: a committed param-21 (STORAGE_BOND) row IS the
+     * exact bond. A row of 10^13 (the vote range's lower end) effective
+     * at 3E + 2 is written into BOTH twins before block 3E + 2, whose
+     * second item applies and so TOUCHES SYSTEM — the committed SYSTEM
+     * root absorbs the row in that very block (phase 8's untouched-
+     * domain guard never sees a root it did not commit; the SYSTEM head
+     * recomputes after it). In block 3E + 2: KN2 with the compiled 1M is
+     * REFUSED, KN3 with 10^13 APPLIES. */
+    {
+        const uint64_t BMIN = (uint64_t)DNAC_HF6_STORAGE_BOND_MIN;
+        const uint64_t HQ = R0 + 2;
+        uint64_t bq = 0;
+        CHECK(cc_row(A.w, DNAC_CFG_STORAGE_BOND, BMIN, HQ, 21) == 0 &&
+              cc_row(B.w, DNAC_CFG_STORAGE_BOND, BMIN, HQ, 21) == 0,
+              "param-21 row 10^13 @ 3E + 2 on both twins");
+        CHECK(reg_env_node(&A, HQ, KN2, KO, CQ1, BOND, CS_OK, KO, &e[0],
+                           &l[0]) == 0 &&
+              reg_env_node(&A, HQ, KN3, KO, CQ2, BMIN, CS_OK, KO, &e[1],
+                           &l[1]) == 0, "KN2 (1M) and KN3 (10^13)");
+        CHECK(submit(&A, &B, HQ, e, l, 2, codes) == 0, "block 3E + 2");
+        CHECK(codes[0] == NODUS_V2_TX_ERR_EXEC,
+              "the compiled 1M bond is refused under the voted 10^13");
+        CHECK(codes[1] == NODUS_V2_TX_OK,
+              "a bond of exactly the voted 10^13 applies");
+        h = HQ;
+        CHECK(node_bond(A.w, KN2, &bq) == 1, "no row for KN2");
+        CHECK(node_bond(A.w, KN3, &bq) == 0 && bq == BMIN &&
+              node_bond(B.w, KN3, &bq) == 0 && bq == BMIN,
+              "KN3's row records the bond it paid, 10^13, on both twins");
+        CHECK(core_invariant(A.w) == 0 && core_invariant(B.w) == 0,
+              "the CORE invariant holds on both twins");
+    }
+
+    /* ── HF-6 slice 8a: a stored param-21 value no vote can produce
+     * (10^14 + 1, above the khan's 1M ceiling) FAULTs the item's ctx fill
+     * — never a default, never a verdict. Twin A only; the block aborts
+     * whole at the authorization stage's fill (before phase 8) and its
+     * reason names the param. */
+    {
+        const uint64_t HF = R0 + 3;
+        uint64_t tip = 0;
+        CHECK(cc_row(A.w, DNAC_CFG_STORAGE_BOND,
+                     (uint64_t)DNAC_HF6_STORAGE_BOND_MAX + 1u, HF, 22) == 0,
+              "an out-of-range param-21 row @ 3E + 3 on twin A");
+        CHECK(reg_env_node(&A, HF, KN4, KO, CQ3, BOND, CS_OK, KO, &e[0],
+                           &l[0]) == 0, "KN4's registration");
+        nodus_v2_envelope_t v[1] = { { e[0], l[0] } };
+        nodus_v2_tx_result_t ra[1];
+        nodus_v2_block_t ba;
+        memset(ra, 0, sizeof(ra));
+        mk_block(&ba, HF, v, 1);
+        ba.cmt.results = ra;
+        ba.cmt.results_cap = 1;
+        CHECK(v2x_cmt_apply(A.w, &ba) != 0,
+              "3E + 3: the block does not apply (a node FAULT)");
+        CHECK(strstr(ba.out_reason, "FAULT") != NULL &&
+              strstr(ba.out_reason, "STORAGE_BOND") != NULL &&
+              strstr(ba.out_reason, "no committed row can hold") != NULL,
+              "the fault reason is the param-21 range check");
+        free(e[0]); e[0] = NULL;
+        CHECK(q_u64(A.w, "SELECT MAX(global_height) FROM v2_blocks", &tip)
+              == 0 && tip == R0 + 2, "twin A's last block is still 3E + 2");
+    }
 
     fx_close(&A);
     fx_close(&B);

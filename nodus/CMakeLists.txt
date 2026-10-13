@@ -2913,11 +2913,13 @@ register_witness_test(test_hf4_names_engine)
 # re-registration under a new owner. A new file: no
 # existing test owns a chain that crosses both rule-set edges with real
 # 2-leg storage envelopes. The generation switch GEN_EVM -> GEN_STORAGE and
-# the v4 -> v5 root edge live in test_hf4_switch (cases F / F2 / F3); param 16 in
+# the v4 -> v5 root edge live in test_hf4_switch (cases F / F2 / F3); the
+# generation-4 vote (param 18, param 16 retired — HF-6 slice 8c) in
 # test_hf4_params; the GEN_STORAGE table in test_hf4_table. The engine
 # halves seed genesis through the runtime selfcheck, which needs the
 # STORAGE-ORACLE pins (shared/dnac/tests/storage_oracle.py, filled in
-# nodus_witness_runtime.c and dnac.h DNAC_CFG_RULESET_GEN_STORAGE_D).
+# nodus_witness_runtime.c) and the D4 literal (dnac.h
+# DNAC_CFG_RULESET_GEN_ROLES_D, shared/dnac/tests/hf6_vote_oracle.py).
 # GEN_STORAGE is generation 4, built on the EVM generation and compiled only
 # where the EVM runtime is (decision 2026-10-05-storage-reward-is-for-
 # archive.md K10), so the GEN_STORAGE tests (test_storage_reg / _b2 / _cli)
@@ -3022,6 +3024,20 @@ register_witness_test(test_storage_by_owner)
 # network, no environment.
 if(NODUS_EVM_ENABLED)
 register_witness_test(test_v2_stake_client)
+endif()
+
+# HF-6 — a multisig (auth_kind 3) OWNER for the generation-4 owner
+# operations (decision 2026-09-29-general-multisig.md, addendum "çok
+# bacaklı ortak imza dosyası v2"; design rev 6 §1.3): the shared builder's
+# UNSIGNED two-leg envelope for a 2-of-3 address (STAKE v2, ROTATE,
+# STORAGE_REGISTER), the v2 export / signature texts, review2, combine2,
+# then the chain's OWN auth hook on each leg and the GEN_STORAGE exec hooks
+# over fabricated reads — applied; one signer below M and a foreign signer
+# (assembled by hand) refused; all-or-nothing signatures; the kind-1 path
+# and the v1 / v2 format separation. Generation 4 is compiled only with
+# the EVM runtime. No database, no network, no environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf6_msig_owner)
 endif()
 
 # Web wallet package (c2) — the shared CORE SPEND builder

@@ -6129,6 +6129,12 @@ by the row's owner; the `payee_fp` column holds the owner; a RELEASED row revive
 re-registration line. The registry table, the record, the leaf, the root composition, the adapter and
 the GEN_STORAGE generation below are unchanged.
 
+**Superseded by HF-6 slice 8 (design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev
+6 §8; section "HF-6 slice 8c" below):** generation 4 — storage AND the validator owner/node roles — is
+voted by chain_config **param 18** `RULESET_GEN_ROLES` with the D4 value; **param 16 is RETIRED** and
+its vote literal deleted; the storage boundary gate reads param 18. Everything below that names param
+16 or its literal as the storage vote is history of the storage-only package.
+
 **Renumbered onto main (2026-10-06, main merge order — decision
 `docs/plans/decisions/2026-10-04-storage-reward-approved.md`; Nodus EVM merged first; K10 in
 `2026-10-05-storage-reward-is-for-archive.md`).** Where the text below says generation 3, param 14,
@@ -6185,7 +6191,9 @@ Selfcheck re-derives the generation's pins and the new vote literal. At this ste
 generated `nodus/include/nodus/nodus_ruleset_pins.h` must be regenerated after the fill
 (`regen_ruleset_pins`; `test_ruleset_pins` byte-compares it).
 
-**The vote (chain_config param 14 `DNAC_CFG_RULESET_GEN_STORAGE`, `dnac.h`).** Value EXACTLY the
+*(History — superseded: since HF-6 slice 8c the generation-4 vote is param 18 `RULESET_GEN_ROLES`
+and param 16 is retired; section "HF-6 slice 8c".)* **The vote (chain_config param 14
+`DNAC_CFG_RULESET_GEN_STORAGE`, `dnac.h`).** Value EXACTLY the
 compiled literal (`dna_ruleset_gen_digest(3, SYSTEM v8 hash, CORE v6 hash, spec 1)` — the switch
 procedure is HF-4's, so `DNAC_RULESET_SWITCH_SPEC_VERSION` stays 1); grace ERGONOMIC. Stateful rules
 (`nodus_chain_config_stateful_rules`, the ONE authority the exec and the 0x71 responder share): (d)
@@ -6807,8 +6815,9 @@ this sub-slice).
 `nodus_v2_validator_row_t` (`nodus_witness_validator.h`) = `dnac_validator_record_t` + `validator_id`
 + `owner_fp` + `pending_consensus_pubkey` + `consensus_key_effective_epoch` (witness-local — the
 client header `dnac/include/dnac/validator.h` is not extended). `nodus_validator_v2_get`,
-`nodus_validator_v2_get_by_pubkey` (a second row with the pubkey is a fault; no production caller
-since slice 5c),
+(`nodus_validator_v2_get_by_pubkey` — the read by consensus pubkey — had no production caller
+since slice 5c and is DELETED in the HF-6 red-team round 1 close-out; every reader resolves by
+validator_id),
 `nodus_validator_v2_update` (both tables, inside the caller's transaction; validator_id, consensus
 pubkey and owner_fp are immutable and checked; the single "no pending key" encoding is enforced),
 `nodus_validator_v2_bonded_tenured` (the gen-4 arm: the v1 filters and pubkey ASC order, each
@@ -6839,9 +6848,10 @@ switched by `phase_6b_gen4_edge` (phase 6b‴), run after 6b′ and BEFORE 6b″
 edge row held — an EVM edge and a generation-4 edge in the same block therefore still FAULT, the
 registry not yet at generation 3; `test_hf4_switch` F3) and before the 6c re-scan, inside the block's
 transaction, at the end of block H−1:
-1. trigger — during development the existing param-16 row with `DNAC_CFG_RULESET_GEN_STORAGE_D`,
-   present at H and absent at H−1 (design §10 item 2; slice 8 moves it to param 18 / D4); another
-   value is a FAULT; a build without `NODUS_EVM_ENABLED` FAULTs (the 6b″ rule);
+1. trigger — since HF-6 slice 8c the param-18 (`RULESET_GEN_ROLES`) row with
+   `DNAC_CFG_RULESET_GEN_ROLES_D` (D4), present at H and absent at H−1 (until 8c: the development
+   param-16 row with the storage literal, design §10 item 2); another value is a FAULT; a build
+   without `NODUS_EVM_ENABLED` FAULTs (the 6b″ rule);
 2. schema exactly S18, else FAULT;
 3. `nodus_witness_domreg_generation_switch(NODUS_RT_GEN_STORAGE_BASE, NODUS_RT_GEN_STORAGE)` — the
    procedure the removed row ran; "registry is not generation 3" is a FAULT;
@@ -7202,9 +7212,9 @@ removed). **By design, not a port of the legacy STAKE:** validator_id =
 "revive an UNSTAKED row" has no analogue — a re-stake after graduation opens a new validator_id
 (§4); no unstake destination (the bond resolves to owner_fp, §1.5).
 
-**STAKE_MIN.** `rtn_stake_min_at(ctx)` is THE ONE read: today the compiled
-`DNAC_HF6_STAKE_MIN_DEFAULT` (2M NODUS — param 19 does not exist yet); slice 8 replaces its body with
-the committed param-19 value at the block height (an engine fact on the ctx) and nothing else.
+**STAKE_MIN.** `rtn_stake_min_at(ctx)` is THE ONE read: at this slice the compiled
+`DNAC_HF6_STAKE_MIN_DEFAULT` (2M NODUS). Since slice 8a it is the committed param-19 value at the
+block height — the engine fact `ctx->stake_min` (section "HF-6 slice 8a").
 
 **Read plan** (`rtn_stake2_read_plan`): `[op 7 active_count] [op 13 validator_id] [op 17
 SHA3-512(consensus_pk)]` — ascending (op, key).
@@ -7219,10 +7229,12 @@ database already at 18 gets it only from the base schema's `CREATE TABLE IF NOT 
 status is NOT UNSTAKED, in SHA3-512(pk) order), the STAKE (op 17 CREATE), the graduation
 (`nodus_validator_v2_key_release` in `v2ep_graduate`'s generation-4 arm — the role-1 row must exist,
 else FAULT — then any other row of the validator). Accessors in `nodus_witness_validator.{h,c}`
-(`nodus_validator_v2_key_get / _insert / _release`). It is a pure function of committed state
-(role 1 = every validators row not UNSTAKED, key = SHA3-512(validators.pubkey); role 2 = every
-non-zero pending key), both inputs already in the SYSTEM root — so NO root leg was added (the
-question whether to add one is left to the ORCHESTRATOR).
+(`nodus_validator_v2_key_get / _insert / _release`). Its content derives from rooted state (role 1
+= every validators row not UNSTAKED, key = SHA3-512(validators.pubkey); role 2 = every non-zero
+pending key; since slice 6 also the previous key a swap keeps until U+E, read from the stored
+snapshots — except for a validator the predecessor snapshot does not seat, khan A3) — so NO root leg
+was added. Every generation-4 boundary compares it with that derivation, log-only: "HF-6 — the
+key-reservation self-check" below.
 
 **SYSTEM adapter ops**: **17 `RTN_SYS_OP_KEYRES`** (CREATE / ABSENT, key 64, value 65 =
 validator_id ‖ role; probe / read / mutate arms); op 13 gains CREATE / ABSENT (`rtn_sys_val2_create`:
@@ -7272,10 +7284,10 @@ power of every entry of a snapshot, in its entry order, by the snapshot's OWN ru
 `p_i = total_stake / DNAC_DECIMAL_UNIT`, any `p_i == 0` → -1, then `dna_power_cap_counted(p,
 validator_id, n, ratio)` (`shared/dnac/power_cap.h`, slice 5a); any other ruleset → -1. The ratio
 comes from the ONE seam `nodus_witness_power_cap_bps_for_epoch(w, snap->epoch)` — keyed on the
-snapshot's epoch start like the committee target — which today returns the compiled
+snapshot's epoch start like the committee target — which at this slice returned the compiled
 `DNAC_HF6_POWER_CAP_BPS_DEFAULT` (3000, `dnac/include/dnac/dnac.h`; range pinned by a
-`_Static_assert` against `DNA_POWER_CAP_BPS_MIN/_MAX`); slice 8 replaces only its body with the
-fail-closed param-20 read. Every caller treats -1 as a node fault. The snapshot is never modified;
+`_Static_assert` against `DNA_POWER_CAP_BPS_MIN/_MAX`); slice 8a replaced only its body with the
+fail-closed param-20 read (section "HF-6 slice 8a"). Every caller treats -1 as a node fault. The snapshot is never modified;
 `entry.total_stake` stays raw.
 
 **Consumers** (each byte-identical for a ruleset-1 snapshot — the only ruleset the 5b store/read
@@ -7366,8 +7378,8 @@ UNSTAKED row may share it with a later STAKE of the same key):
 
 The ruleset-2 refusal is removed; a ruleset-2 governing snapshot paid below generation 4 is a
 broken invariant (-2). Attendance stays keyed by the entry pubkey; shares by counted power over
-Σcounted, inner split on raw amounts (5b, K2). `nodus_validator_v2_get_by_pubkey` has no production
-caller after this (only tests) — not removed here (outside 5c's files).
+Σcounted, inner split on raw amounts (5b, K2). `nodus_validator_v2_get_by_pubkey` had no production
+caller after this (only tests); it was deleted in the HF-6 red-team round 1 close-out.
 
 **5d blocker found in 5c — CLOSED in slice 5d** (phase 0a now hashes the governing snapshot with
 `dna_vset_hash_ex(…, DNA_VSET_RULESET_TOPN_V2, …)`; see "HF-6 slice 5d"). The 5c tests never let a
@@ -7489,8 +7501,9 @@ independent oracle `shared/dnac/tests/storage_oracle.py` (rules {1..10}, ops 1..
 
 Generations 1-3 and every pin of theirs are byte-identical (the oracle's control legs C1-C12 reproduce
 them before it emits). `nodus_witness_runtime_selfcheck` re-derives the new pins and literal on every
-start, so a build whose table and literal disagree refuses to start. S4 is still the DEVELOPMENT
-trigger (param 16); slice 8 replaces it with the D4 construction (§8.1). Op 10 is owned and priced but
+start, so a build whose table and literal disagree refuses to start. S4 was still the DEVELOPMENT
+trigger (param 16); slice 8c deleted it with the param (the oracle's S4 leg, the dnac.h literal and
+its selfcheck row) — generation 4 is voted with D4 (§8.1, sections "HF-6 slice 8b" / "8c"). Op 10 is owned and priced but
 NOT executable in 6a — the SYSTEM read plan and exec refuse it (−1, the un-migrated-op default) until
 6b. **Admission:** the live gate for a V2 leg is `rt_owns_runtime_op` in `env_admit_legs`
 (`nodus_witness_v2_apply.c`, the committed descriptor's rule list); `rt_admit_common` judges only
@@ -7719,13 +7732,16 @@ voter's attendance row deleted at U+E after that epoch's settlement and digest c
 **The p2p pending set** (`bonded_add_pending`, `nodus_witness_p2p.c`, called by
 `nodus_witness_p2p_refresh_bonded` between the validators read and the two committee reads, before the
 sort). One ordered statement: `SELECT r.pending_consensus_pubkey FROM v2_validator_roles r JOIN
-validators v ON v.pubkey_hash = r.validator_id WHERE v.status IN (ACTIVE, ELIGIBLE) AND
-r.pending_consensus_pubkey != zeroblob(2592) ORDER BY r.validator_id`. From the ROTATE's commit on, the
+validators v ON v.pubkey_hash = r.validator_id WHERE r.pending_consensus_pubkey != zeroblob(2592)
+ORDER BY r.validator_id` (no status filter since red-team round 1, Z-31). From the ROTATE's commit on, the
 node that will sign under the pending key from U + 2 is bonded: its connections bypass the inbound cap,
 it is dialed without being abandoned, its signed ADDR record is verified against that key
 (`h_bonded_pubkey`) and an unsigned one is refused. Below generation 4 the roles table is empty — no
-change. A RETIRING / AUTO_RETIRED / UNSTAKED row's pending key is not added. At the swap (U) the key
-becomes the row's own and stays bonded through the validators read. A failure of the statement is
+change. The status is not read: a row that UNSTAKEs after its rotation was accepted (RETIRING, or
+AUTO_RETIRED by Rule N) keeps the pending key and the swap at U seats it under the new key regardless
+of status, so its new node stays bonded; an UNSTAKED row carries no pending key (the graduation zeroes
+it). At the swap (U) the key becomes the row's own and stays bonded through the validators read while
+the row is ACTIVE / ELIGIBLE, and through the committee reads while a snapshot seats it. A failure of the statement is
 logged and the set is built from the other three sources (the validators read's rule). Node-local: the
 set decides connections only. The inbound job queue (`inbound_depth`) follows the listener limit,
 which grows by the pending keys (`cmt_p2p_transport_max_incoming` = cap + unconditional + bonded).
@@ -7835,8 +7851,8 @@ the owner signs and pays).
   MIGRATED validator's id is `dna_validator_id_migrated(chain id, its pre-H pubkey)` — not printed by
   this CLI; the validator-list reply carries `vid` under generation 4 but the client SDK does not decode
   it yet.
-- **Not built:** a kind-3 (multisig) owner — the msig export path carries single-leg CORE SPENDs only
-  (`nodus_v2_msig_leg_open`); the generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE
+- **Not built here:** a kind-3 (multisig) owner — built since the v2 co-sign files (section "HF-6
+  multisig owner"); the generation-4 DELEGATE / UNDELEGATE / UNSTAKE / VALIDATOR_UPDATE
   (built since slice 7b — section "HF-6 slice 7b").
 
 **Tests** (written, NOT run by the author). `test_v2_stake_client` (EVM-enabled builds): the codec
@@ -7874,9 +7890,9 @@ the 3 → 4 edge holds zero rows (design §11.8).
 `_Static_assert` (the values, and 0 < MIN ≤ DEFAULT ≤ MAX ≤ INT64_MAX). `DNAC_STORAGE_STAKE_MIN` (the
 storage-reward-v1 exact bond, the same 10^14) is removed with its asserts; every consumer moved.
 
-**The seam.** `rtn_storage_bond_at(ctx)` is THE ONE read of STORAGE_BOND: today the compiled default;
-slice 8 replaces its body with the committed param-21 value active at `ctx->global_height`,
-fail-closed — the `rtn_stake_min_at` pattern.
+**The seam.** `rtn_storage_bond_at(ctx)` is THE ONE read of STORAGE_BOND: at this slice the compiled
+default; since slice 8a the committed param-21 value active at `ctx->global_height`, fail-closed —
+the engine fact `ctx->storage_bond` (section "HF-6 slice 8a").
 
 **Calls** (`nodus_witness_rt_native.c`, design §2). STORAGE_REGISTER (op 7) = `owner_fp[64] ‖
 node_pk[2592] ‖ consent_sig[4627] ‖ consent_expiry u64 ‖ bond u64` = 7299 B
@@ -8071,7 +8087,8 @@ function and one container either way.
 
 **`storage register | exit`** — routed by `main` into `cmd_v2_stake` (the owner-signed two-leg flow
 `v2-envelope stake2 | rotate` already use; `argv[cmd_start]` = "storage"). One session as the `--keys`
-identity (the owner, kind 1 — the CLI builds no kind-3 owner), in this order: the consent file parsed
+identity (the owner, kind 1 — a kind-3 owner takes `--msig`, section "HF-6 multisig owner"), in this
+order: the consent file parsed
 before any I/O (register; the node fp = SHA3-512 of its consensus_pk) or `--node-fp` parsed (exit) →
 chain id → `cli_select_runtimes` → **the storage generation gate** (`storage registration exists only
 from generation 4` / `storage exit …`, BEFORE the consent re-check, so a valid request below generation 4
@@ -8080,7 +8097,7 @@ refuses ACTIVE / EXITING and a RELEASED row before h = (⌊(x−1)/E⌋ + 2)·E 
 exit refuses no row / not ACTIVE / a row owner ≠ SHA3-512(--keys pk); a failed query warns and the chain
 decides) → gas price → the owner's coins and the tip → `cli_consent_check` with op 3 (`cli_consent_op_name`
 now names op 3 in its mismatch message) → `nodus_v2_stake_build` (op 7: amount =
-`DNAC_HF6_STORAGE_BOND_DEFAULT`, the value of the chain's `rtn_storage_bond_at` seam until slice 8;
+`DNAC_HF6_STORAGE_BOND_DEFAULT` at this slice — since slice 8a the node's `dnac_fee_info` "storage_bond";
 op 8: `req.node_fp`, fee only) → printed: node, owner, bond and consequences, sizes, `wire_id`,
 `intent_id` → `--dry-run` self-check line (`SYSTEM STORAGE_REGISTER` / `STORAGE_EXIT`) or submit on the
 same session. `cmd_storage_tx_refused` (the 6b-1 stub) is deleted. `cli_storage_usage` is the one
@@ -8162,8 +8179,7 @@ layouts byte for byte; op 5 is refused (`ERR_GEN`) — its legacy 2594-byte layo
 `nodus_v2_stake_decode` tells the layouts of ops 2-4 apart by length (136 / 64 vs 5192 / 2592,
 disjoint — the chain's `rtn_sys_call_gen_of` does the same), reads op 5 only at 66 bytes, and refuses a
 delegator_fp that is not SHA3-512 of the signer, an all-zero validator_id and a commission above the
-bound. A kind-3 (multisig) owner or delegator is not built (the msig export path carries single-leg
-CORE SPENDs only).
+bound. A kind-3 (multisig) owner or delegator: section "HF-6 multisig owner".
 
 **nodus-cli.** `v2-envelope delegate | undelegate` take `--validator <validator_id hex128>` when the node
 names generation 4 and `<hex5184 pubkey>` below; `unstake` takes `--validator <validator_id hex128>` at
@@ -8191,6 +8207,312 @@ validator's owner as a DELEGATE signer); the CORE funding leg balances (lock = a
 refused) and an UNDELEGATE's carries the release coin to the delegator; the decoder refusals. G1: the
 legacy DELEGATE / UNDELEGATE / UNSTAKE equal the restated legacy calls and are byte-identical at
 generations 0 and 3 outside the hedged auth blobs; the generation-4 argument refusals.
+
+### HF-6 slice 8a — params 19 STAKE_MIN / 20 POWER_CAP_BPS / 21 STORAGE_BOND; the three seams become chain reads (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §1.5 (STAKE_MIN), §5
+(POWER_CAP_BPS, read at the snapshot's epoch start), §8 (the new params; 18-21 ERGONOMIC), §11.3
+(STORAGE_BOND exact); decisions `docs/plans/decisions/2026-10-08-kurultay-14-hf6-summary.md` K5
+([500, 3000]) and K9 (STAKE_MIN [100k NODUS, INT64_MAX], default 2M — also
+`2026-10-03-role-stake-amounts.md`), `2026-10-09-kurultay-16-hf6-storage-summary.md` khan 3
+(STORAGE_BOND [100k, 1M] NODUS, default 1M) and "4 ok" (ERGONOMIC); plan `tasks/hf6-slice8-plan.md`
+§2 "8a". Param 18 (the generation-4 vote) is NOT assigned here — slice 8c; until then
+`dnac_cfg_param_read_by_consensus(18)` is false and both rule sides refuse it like any unknown id.
+
+| id | name | range (inclusive) | no-row value | grace | stateful rule | reader |
+|---|---|---|---|---|---|---|
+| 19 | `STAKE_MIN` | [`DNAC_HF6_STAKE_MIN_MIN` = 10^13, `INT64_MAX`] raw | `DNAC_HF6_STAKE_MIN_DEFAULT` = 2·10^14 | ERGONOMIC | judging generation ≥ 4 | `env_stake_min` → `ctx->stake_min` → `rtn_stake_min_at` (generation-4 STAKE: bond < floor → -1) |
+| 20 | `POWER_CAP_BPS` | [500, 3000] bps | 3000 | ERGONOMIC | judging generation ≥ 4 | `nodus_witness_power_cap_bps_for_epoch(w, epoch_start)` → every ruleset-2 power consumer |
+| 21 | `STORAGE_BOND` | [10^13, 10^14] raw | 10^14 | ERGONOMIC | judging generation ≥ 4 | `env_storage_bond` → `ctx->storage_bond` → `rtn_storage_bond_at` (REGISTER: bond ≠ value → -1) |
+
+**Scalar rules** (`nodus_chain_config_scalar_rules`, mirrored by `dnac/src/transaction/verify.c`).
+Each range is ONE constant pair shared with the readers (`_Static_assert`ed `CC_*` == `DNAC_*`, and
+param 20's == `DNA_POWER_CAP_BPS_MIN/_MAX`), so a value a vote can commit never trips a reader. Param
+19 is the first whose range reaches the int64 ceiling: its case bounds `new_value ≤ INT64_MAX` itself,
+because the shared int64 tail bounds the nonce and the three heights, never `new_value` — a 2^63 value
+would be stored negative by the int64 cast and every node's reader would FAULT at the next STAKE
+(decision `2026-09-30-chain-config-int64-bounds.md`). **Stateful:** votable only while generation 4
+judges the vote (the NAME_PRICE shape); no single-use rule; no other fact is read. **Exec:** a 19-21
+leg CREATEs exactly one history row (param ‖ effective); the read plan stays empty.
+
+**Readers.** 19 and 21 are per-item ENGINE FACTS (the hooks are pure): `env_stake_min` /
+`env_storage_bond` read the committed row active at the block's height (tip + 1 on the CheckTx dry
+run, so CheckTx and FinalizeBlock agree) through the three-valued `nodus_chain_config_get_u64`, once per
+item, and fill them on EVERY ctx the engine builds (`exec_one_env`, `env_authorize_legs`). An
+unreadable row, or a stored value outside the range (a corrupt or foreign DB — no vote can commit it),
+is a node FAULT (-2), never a default; the block aborts whole. The hooks refuse a ctx carrying 0 (never
+engine-filled) as a node fault, not as "no floor". UNMETERED: no committed block's `gas_used` moves.
+Param 20 is read directly at the snapshot's EPOCH START (the `committee_target_for_epoch` pattern): a
+read fault or a stored value outside [500, 3000] (checked on the u64 before narrowing) answers -1, which
+every consumer treats as a fault; a row effective at `epoch_start + 1` governs the next snapshot, not
+this one. `_Static_assert(DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS >= DNAC_EPOCH_LENGTH)`
+(`nodus_witness_vset.c`) pins the frozen-ratio premise: a row that governs snapshot(X) is effective ≤ X
+and was committed ≥ the grace earlier, i.e. at or before boundary X − E that builds snapshot(X), so the
+builder and every later consumer read one ratio for it. A storage registration keeps the bond it paid
+(the exit refunds the recorded bond, `nodus_witness_v2_storage.c`), so a later param-21 vote never
+touches an existing row.
+
+**`dnac_fee_info`** gains three additive keys — `stake_min`, `storage_bond`, `power_cap_bps` — the
+values in force at tip + 1 (power_cap_bps: the row active at tip + 1; consensus keys each snapshot on
+its own epoch start). An unreadable or out-of-range value answers `INTERNAL_ERROR`. The client decoder
+is now `nodus_dnac_fee_info_decode` (exported; `nodus_dnac_fee_info_t` grows three fields at its end, 0
+= an older server); `nodus-cli storage register` builds the bond from `storage_bond` and the `stake2`
+warning compares with `stake_min` (each the compiled default when the server predates the key);
+`chain-config propose` names the three params. The explorer labels ids 19-21.
+
+**Byte-identical.** Descriptors, pins, the pins header, D2, the EVM D and the storage dev literal are
+untouched; with no 19 / 20 / 21 row every reader answers the compiled default, so generations 1-4 run
+exactly as before until a vote takes effect.
+
+**Tests** (written, NOT run by the builder). `test_hf4_params` (ids, read list, the scalar bounds incl.
+INT64_MAX accepted and INT64_MAX + 1 / UINT64_MAX refused by param 19's own case, grace, stateful by
+generation, the exec hook at generations 1/2/3/NULL vs 4, slots 18-21, 18 still refused);
+`test_hf6_stake` (A5: the fact moves the floor, 0 → -2; B7: a committed 10^13 row lets a 10^13 bond
+apply and refuses 10^13 − 1; B8: an out-of-range row faults the block with the param-19 reason);
+`test_storage_reg` (A3: the fact is the exact bond, 0 → -2; 3E + 2: a committed 10^13 row refuses the
+1M bond and applies 10^13; 3E + 3: an out-of-range row faults); `test_hf6_power` case 5 (the epoch-start
+key, 499 / 3001 / a negative stored value → -1, no row → 3000); `test_v2_gas_price` (adjacency);
+`test_hf4_names` (the fee_info decoder); `test_explorer` (names); `dnac/tests/test_chain_config_verify`
+(the mirror's ranges, 18 refused).
+
+### HF-6 slice 8b — the generation-4 vote value D4: constructor, constants, literal, selfcheck row (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §8.1 (the crypto gate,
+APPROVED by the operator 2026-10-09; the 296-byte sum fixed by the khan 2026-10-13); decision
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md`; plan `tasks/hf6-slice8-plan.md`
+§2 "8b". Inert on chain: the literal is compiled and re-derived at start, but nothing votes it or
+compares a committed row with it until slice 8c (param 18 `RULESET_GEN_ROLES`, the generation-4 edge
+and the storage gate on 18 / D4, param 16 retired).
+
+**The value.** D4 = the first 8 bytes, big-endian, top bit cleared (so D4 ≤ INT64_MAX, the
+`chain_config_history` int64 column), of SHA3-512 over a 296-byte preimage:
+
+| offset | len | field |
+|---|---|---|
+| 0 | 16 | `"NDS.ROLEGEN.v1"` zero-padded (`DNA_ROLEGEN_TAG`) |
+| 16 | 4 | generation u32 BE = 4 (`NODUS_RT_GEN_STORAGE`) |
+| 20 | 4 | base generation u32 BE = 3 (`NODUS_RT_GEN_STORAGE_BASE`, GEN_EVM) |
+| 24 | 64 | generation-4 SYSTEM `ruleset_hash` (binds the meter policy) |
+| 88 | 64 | generation-4 CORE `ruleset_hash` |
+| 152 | 4 | spec version u32 BE = 1 (`DNAC_HF6_SWITCH_SPEC_VERSION`: the 3 → 4 phase code) |
+| 156 | 64 | Foundation owner, raw (`DNAC_HF6_FOUNDATION_OWNER`, K8) |
+| 220 | 4 | n_consts u32 BE = 9 |
+| 224 | 72 | 9 × u64 BE: STAKE_MIN default / lower, POWER_CAP_BPS default / lower / upper, STORAGE_BOND default / lower / upper, consent window 720 |
+
+The constructor is `dna_rolegen_vote_digest` (`shared/dnac/domain_wire.c`, the
+`dna_evm_activation_digest` shape with the EVM ruleset / manifest slots replaced by the owner); it
+refuses NULL inputs, `n_consts > 64`, and any preimage whose length is not
+`DNA_ROLEGEN_PREIMAGE_LEN(n)`. The witness wrapper `nodus_runtime_gen4_vote_digest`
+(`nodus_witness_runtime.c`, EVM builds) feeds it the compiled generation-4 pins, the compiled owner
+and `GEN4_VOTE_CONSTS` (the nine NAMED constants in §8.1's order, `_Static_assert` count 9). The
+literal `DNAC_CFG_RULESET_GEN_ROLES_D` = `0x4dc61072d5982acd` (5604184871704996557) is the `D4 =` line
+of the INDEPENDENT oracle `shared/dnac/tests/hf6_vote_oracle.py` (S2 / S3 from `storage_oracle.py`,
+owner K8) — never this build's encoder; the plan author's separate scratch derivation gave the same
+number. Two binaries that differ in a generation-4 pin, the 3 → 4 procedure, the owner or one of the
+nine constants cannot carry one D4.
+
+**Selfcheck.** `nodus_witness_runtime_selfcheck` re-derives D4 on every start of an EVM build and
+refuses to start when it differs from the compiled literal. The storage development row
+(`DNAC_CFG_RULESET_GEN_STORAGE_D` through `dna_ruleset_gen_digest`) stays beside it until 8c retires the
+param-16 trigger (done: deleted in 8c, section "HF-6 slice 8c").
+
+**Test builds — two flags.** Both `DNAC_HF6_FOUNDATION_OWNER` and `DNAC_CFG_RULESET_GEN_ROLES_D` are
+`#ifndef`-guarded. Because D4 binds the compiled owner, a build that overrides the owner must override
+the literal with that owner's D4, and a build that overrides only one refuses to start on every node
+(the selfcheck row). `nodus/tests/integration/stagef/stagef_hf6_owner.sh` prints both flags; it takes
+the D4 from `hf6_vote_oracle.py --owner <fp>` and never computes it in bash (the 2026-10-12 harness
+owner `2cca88c4…ee196b93` → `0x4fc24934a9155c64`). Production defines neither.
+
+**Byte-identical.** Every descriptor, pin, the pins header, D2, the EVM D, the storage dev literal,
+every chain-config rule and every committed block: nothing on the vote path or in the engine reads
+the new literal yet.
+
+**Tests** (written, NOT run by the builder). `test_hf4_table` section 6'': constructor over the
+compiled pins + compiled owner + the test's own nine-constant array == the wrapper == the literal, and
+— only under `DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT` — == `0x4dc61072d5982acd`; the harness owner passed
+explicitly == `0x4fc24934a9155c64` in every build; `DNA_ROLEGEN_PREIMAGE_LEN(9) == 296`; NULL and
+`n_consts > 64` refused; generation, base, either hash, spec, `n_consts`, one owner byte and each
+constant move the value; D4 differs from D2, the EVM D and the storage D. `test_v2_native` K7: the K8
+literal (owner-default builds). Both prove the C constructor agrees with the oracle, not that §8.1 is
+the right layout (that is the approved crypto gate).
+
+### HF-6 slice 8c — the flip: param 18 RULESET_GEN_ROLES = D4 triggers generation 4; param 16 retired (branch `hf6` only — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §8 ("Oy = yeni param 18
+`RULESET_GEN_ROLES`", khan 2026-10-13; "Param 16 EMEKLİ"; the stateful rule; "Storage sınır kapısı
+param 18'i okur"), §8.1 (D4); decision `docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md`
+item 1 (khan "1 onaylıyorum", "4 ok", "6 ok"); plan `tasks/hf6-slice8-plan.md` §1, §2 "8c". ONE atomic
+change: the moment 16 is retired every fixture and both harness scenarios reach generation 4 through 18.
+
+**Param 18 `DNAC_CFG_RULESET_GEN_ROLES` (`dnac.h`).** On the read list
+(`dnac_cfg_param_read_by_consensus`); scalar rule EXACTLY `DNAC_CFG_RULESET_GEN_ROLES_D` (D4,
+`0x4dc61072d5982acd`) in `nodus_chain_config_scalar_rules` and the client mirror
+(`dnac_tx_verify_chain_config_rules`); grace ERGONOMIC (its own case); `CC_PARAM_RULESET_GEN_ROLES`
+`_Static_assert`ed to the dnac id. Stateful (`nodus_chain_config_stateful_rules_ex`, its own case —
+not a fall-through into param 9's), each a −1 verdict:
+- (a) `facts->ruleset_gen_roles_voted` — any committed param-18 row, any height (single use);
+- (a′) `facts->ruleset_gen_storage_voted` — any committed param-16 row, any height (K16: a 16 row is
+  a refusal condition, never ignored; a read fault is a node FAULT, distinct from absence);
+- (b) HF-2 active at the vote height;
+- (c) judging generation EXACTLY `NODUS_RT_GEN_STORAGE_BASE` (3) — the `domreg_generation_switch`
+  3 → 4 FAULT at H−1 stays unreachable, and the generation-4 edge never shares the EVM edge's block;
+- (d) effective ≠ 0 and effective − 1 not a nonzero multiple of `DNAC_EPOCH_LENGTH`;
+- (e) effective not a multiple of `DNAC_EPOCH_LENGTH` (H itself off a boundary — the clause 18 adds
+  over the old param-16 rule).
+The test-only 5-argument wrapper sets the param-9 AND param-18 single-use facts from its 4th argument
+and leaves the param-16 fact 0.
+
+**The facts.** `nodus_cc_state_facts_t.ruleset_gen_roles_voted` (new) beside
+`ruleset_gen_storage_voted` (kept, re-purposed as rule (a′)); the engine reads both once per item at
+`INT64_MAX` with the three-valued accessor (`env_ruleset_gen_roles_voted` /
+`env_ruleset_gen_storage_voted`, `nodus_witness_v2_apply.c`; −1 = node FAULT) into
+`nodus_rt_exec_ctx_t` at BOTH ctx sites (exec and the authorization stage); the SYSTEM CHAIN_CONFIG
+exec (`nodus_witness_rt_native.c`) copies them into the facts; the 0x71 responder
+(`cc_appr_rules_chain_config`) reads r16 and r18 the same way. UNMETERED (no mediated read; the
+CHAIN_CONFIG read plan stays empty), so no committed block's `gas_used` moves.
+
+**Param 16 RETIRED (the id-1 way).** The enum value stays (never reused) with a RETIRED comment; off
+the read list, so both rule sides refuse it before any bound; its scalar and stateful cases are
+removed (stateful answers −1 through `default`); grace `UINT64_MAX`; the nodus-cli name table drops
+it; the explorer keeps its label (committed rows keep their names). `DNAC_CFG_RULESET_GEN_STORAGE_D`,
+its `_Static_assert`, the selfcheck's RSGEN generation-4 row and `storage_oracle.py`'s S4 leg are
+DELETED (never active on any chain). Slot 16 of the chain-config cache stays: the engine still reads
+the retired id's history (rule (a′)).
+
+**The edge and the gate.** `phase_6b_gen4_edge` fires on param 18 present at H and absent at H−1 and
+requires its value to be D4 (anything else: FAULT — reachable only through a corrupted DB); the rest
+of the phase is unchanged. Its INFO line (pinned by `test_hf6_edge.sh` HF6_LINE and
+`test_storage_archive.sh` STOR_LINE): `HF-6: rule-set generation 3 -> 4 and the validator migration at
+the end of height <H−1> (param 18 RULESET_GEN_ROLES, D4 0x<D4>); height <H> is judged under generation
+4`. The storage boundary gate (`nodus_witness_storage_boundary_apply`, `nodus_witness_v2_storage.c`)
+reads param 18 at B — the same id as the edge, so it opens at the first boundary ≥ H. The startup
+banner (`nodus_witness.c`) reads `HF-6 rule-set generation 4 vote D4 0x<D4> (param 18
+RULESET_GEN_ROLES, switch spec v1), built from git commit <c>` — the runbook's 7/7 pre-vote line and
+what both harness scripts cross-check against the CLI's usage.
+
+**Mixed fleet (operational, not code — plan §1.8-1.9).** A binary without 8c does not know id 18: it
+refuses to approve a param-18 proposal (scalar rules) and, at the block that commits one, its exec
+returns −1 where the new binaries create the row — it diverges at that block. Conversely a param-16
+proposal is accepted by old binaries and refused by new ones. A committed param-16 row (any height)
+refuses every param-18 vote forever. Closed by procedure: 7/7 on the new binary, no param-16 row on
+7/7, then the vote (`DEPLOY_RUNBOOK.md` §2.2 HF-6 row).
+
+**Byte-identical.** Generations 1-3; every descriptor, pin and the pins header; D2 and the EVM D; a
+chain with no param-16 / param-18 row (neither the edge nor the gate fires; both facts read 0; the
+chain-config root and every committed block unchanged).
+
+**Tests** (written, NOT run by the builder). `test_hf4_params`: 16 off the read list and refused by
+the scalar rules for every probed value, grace 16 `UINT64_MAX`, stateful 16 −1; 18 exactly D4 (± 1, 0,
+D2, the EVM D, UINT64_MAX refused); grace 18 ERGONOMIC; the 18 matrix — accepted only with no 18 row
+AND no 16 row AND HF-2 AND generation 3 AND H, H−1 off a boundary (0, E, E+1, 2E, 2E+1 refused; 1 and
+E+2 accepted), generations 0/1/2/4 refused; the 16 fact gates 18 only, the 18 fact gates neither 9
+nor 14; K10 under the EVM base; the exec hook refuses an 18 leg under generations 1/2/4 and NULL,
+creates exactly one row keyed (18 ‖ H) under 3, refuses on each fact / HF-2 off / either boundary, a
+16 leg under every runtime; the read plan empty; slot 18 and slot 16 read. `test_chain_config_verify`
+(client mirror): 16 refused for every value, 18 exactly D4, the read list. `test_v2_gas_price`: id
+adjacency 15-16-17-18-19, 16 off the list. `test_hf4_table` / `test_hf6_rotate` / `test_v2_native`:
+the storage literal's checks removed, D4's stand. Nine engine fixtures (`test_hf4_switch`,
+`test_hf6_migrate`, `test_hf6_readers`, `test_hf6_rotate`, `test_hf6_stake`, `test_hf6_calls`,
+`test_storage_b2`, `test_storage_empty`, `test_storage_reg`) seed a param-18 row with D4 instead of
+the param-16 row. `test_explorer`: the 18 label and the retired 16 label.
+
+### HF-6 — the key-reservation self-check, log-only (branch `hf6` only — not versioned, not voted)
+
+`v2_consensus_keys` (design rev 6 §4, goal G7) is in no root: a node whose table drifted would answer
+STAKE / ROTATE's KEYRES read (op 17) differently from its peers and nothing would flag it before a
+block diverged. Step **7** of `nodus_witness_v2_epoch_boundary_apply` (generation ≥ 4, after the
+balance copy) re-derives the table and compares it row for row (`nodus_witness_v2_epoch.c`
+`v2ep_keyres_compare`, ORDER BY `consensus_pk_hash`).
+
+**Derivation** (read from the writers — `key_insert` / `key_release` / `rotate_apply` /
+`key_sweep_previous`, the migration, `v2ep_rotate_swap` / `v2ep_rotate_sweep`):
+- role 1, current key: SHA3-512(pubkey) of every v2 row (`nodus_validator_v2_scan`) not UNSTAKED;
+- role 2: SHA3-512 of every non-zero `pending_consensus_pubkey`;
+- role 1, previous key (khan A2): after boundary h only the validators swapped AT h hold one (the
+  sweep at h released the swap of h − E's). Swapped at h ⇔ S(h) seats the pending key; the key
+  before the swap is the one S(h − E) seats. So for every entry of a ruleset-2 S(h) whose key
+  differs from the same validator_id's entry in S(h − E) (a ruleset-1 S(h − E) through
+  `dna_validator_id_migrated`), SHA3-512 of the S(h − E) key.
+
+**The one underivable row (khan A3).** A rotation is accepted for a validator with no seat in S(F)
+(`vset_rotation_pass`); its previous key is in no committed snapshot and its kept role-1 row is the
+only committed record of it — and in rooted state such a validator looks exactly like a new entrant.
+So a validator seated in S(h) under its row's current key, not UNSTAKED and with no seat in S(h − E)
+may hold ONE further role-1 row: counted as *unverified*, not as a difference. Deleting such a row is
+not detected (pinned as the known blind spot in `test_hf6_rotate` C6k).
+
+**Differences**: missing, extra, another validator_id, another role, a key derived twice, a
+malformed row. **Result = LOG ONLY**: one `QGP_LOG_ERROR` per reported difference (up to 4: kind,
+8-byte prefixes of the key hash and the validator_id, expected / found role) and a summary line; a
+read failure of the check is a `QGP_LOG_WARN`. Nothing is returned to the boundary, nothing written,
+no fault stage — a defect in the checker would fire identically on every node, and as a fault it
+would halt the chain (ORCHESTRATOR design decision). **Position**: the table's last writer in the
+boundary is the sweep (3d); the flips move only ACTIVE ↔ ELIGIBLE, commit_next writes S(h+E) (the
+derivation reads S(h) / S(h−E)), the balance copy its own table — after step 6 every input is final.
+**Cost**: one v2 row scan, two snapshot reads, one table scan, two sorts; no table or column added.
+
+Test-facing core: `nodus_witness_v2_keyres_diff` (`nodus_witness_v2_epoch.h`, 0 compared / 1
+generation < 4 / -1 unreadable). Tests: `test_hf6_rotate` section K — every generation-4 boundary
+`apply_both` commits in C / D / E / F compares with 0 differences on both twins; rolled-back
+corruptions D4k (each single-row change exactly one difference), C6k (the A3 tolerance is one row),
+F2k (the ruleset-1 bridge).
+
+### HF-6 multisig owner — kind-3 owner operations and the v2 co-sign files (branch `hf6-msig` only — not versioned, not voted)
+
+Decision `docs/plans/decisions/2026-09-29-general-multisig.md`, addendum "çok bacaklı ortak imza dosyası
+v2" (operator 2026-10-13, "1 ile devam edelim"; option 2 — every key on one machine — rejected: the
+Foundation 2-of-3 is held by separate people); design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md`
+rev 6 §1.3. **No consensus change:** the generation-4 SYSTEM allowlist already admits auth_kind 3 and
+`rtn_sys_owner_auth` already judges it (one descriptor, ≥ M signed, no foreign signer —
+`msig_signers_in_desc` bit 0 —, its address == the owner); the CORE SYSFUND leg's inputs are owned
+through `rtn_input_owned` (a satisfied descriptor owns its address's coins). This section is the client.
+
+**Why a second file format.** An owner operation (STAKE v2, ROTATE, UNSTAKE / VALIDATOR_UPDATE /
+DELEGATE / UNDELEGATE at generation 4, STORAGE_REGISTER v2 / EXIT v2) is TWO legs, and each leg's auth
+digest is its own (`env_preflight.c` step 8: `dna_env_auth_digest(auth_context_commit, i, domain, op)`),
+so a multisig owner's co-signers sign two digests: leg 0 proves the owner, leg 1 spends the address's
+coins. The v1 export / signature files carry ONE digest and accept one CORE SPEND leg only
+(`nodus_v2_msig_leg_open`); they are unchanged (the wallet's vaults and `spend --msig` use them).
+
+**Builder** (`nodus/src/client/nodus_v2_stake.c`). A request with `msig_desc` (+ `msig_desc_len`,
+`msig_signers` = K) builds any generation-4 layout for the address SHA3-512(descriptor): owner_fp /
+delegator_fp / the change owner = the address; both legs auth_kind 3 = K zero slots ‖ dcount 1 ‖ dlen ‖
+the descriptor (the `nodus_v2_msig_unsigned_auth` shape, written locally — this file links no
+`msig_wire.c`: the web wallet's native vector compiles it alone, so only the descriptor's header bounds
+are checked here, M ≤ K ≤ N); the envelope is encoded and preflighted ONCE and returned UNSIGNED with
+`leg_digest[0..1]` and a zero `wire_id` (auth bytes reach the wire id only — env_wire.h — so the intent
+id and the digests do not move when the signatures are written). The decoder reads kind 3 on both legs
+(same K, descriptor and slot keys; zero slots accepted) for the generation-4 layouts only.
+
+**v2 files** (`nodus/src/client/nodus_v2_msig.c`). Export: `nodus-msig-export v2` / `chain_id` / `tip` /
+`signers` / `digests <k>` / k × `digest <leg_index> <128 hex>` / `envelope <hex>`; signature:
+`nodus-msig-sig v2` / `pubkey` / k × (`digest <i>` + `sig <i>`). Read strictly in line order (the
+`digest` key repeats). `legs_open2` (every leg kind 3, the same descriptor and K on each), `digests2`
+(the positional per-leg ruleset contexts), `review2` (membership, every digest re-derived and equal,
+the tip + 90 window, the owner operation decoded through `nodus_v2_stake_decode`), `sig2_check` (all
+or nothing: exactly the export's legs and digests, every signature verifies), `assemble2` (ascending
+keys into every leg), `combine2`. `nodus_v2_msig.c` now includes `client/nodus_v2_stake.h` (any build
+of it must compile `nodus_v2_stake.c` too — the wallet's `send.wasm` does); the native vector compiles
+`nodus_v2_stake.c` without `nodus_v2_msig.c`, and the builder change links nothing new.
+
+**nodus-cli.** `v2-envelope stake2 | rotate | unstake | validator-update | delegate | undelegate` and
+`storage register | exit` take `--msig <descriptor> --in <nullifier>:<amount> ... [--signers <K>]
+--export <file>`: the `--keys` identity is the session only (chain id, tip, gas price, the rows), the
+owner every check compares (the consent's owner, the validator row's, the storage row's) is the address,
+and the coins are the named ones (`dnac_utxo` answers the session's own fingerprint only — the
+`spend --msig` rule; the chain checks each input). `msig sign` and `msig combine` recognise a v2 export
+by its first line: sign prints both legs decoded (op, validator_id, owner / delegator, key hashes, the
+consent expiry, commission, bond / amount, inputs, change, digests, the inputs-not-verified WARNING)
+and signs every digest; combine checks every signature, assembles, runs `nodus_rt_auth_dsa87_v1` on
+every leg (satisfied; the SYSTEM leg also no foreign signer) and submits. `validator consent` /
+`storage consent` take `--msig <descriptor>` as the owner (exactly one of `--owner` / `--msig`).
+
+**Tests.** `nodus/tests/test_hf6_msig_owner.c` (EVM builds): a 2-of-3 owner through the library path
+for STAKE v2, ROTATE and STORAGE_REGISTER, the REAL auth-hook verdicts fed to the GEN_STORAGE exec
+hooks (applied; the funding balances from the address's coins), one signer below M and a foreign
+signer assembled by hand (refused by the owner rule; the funding below M refused too), the
+all-or-nothing and text refusals, the kind-1 path and the v1 / v2 separation. `test_v2_msig.c` (v1
+byte vectors) is unchanged.
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 
@@ -9617,46 +9939,32 @@ peers and form the BFT consensus group for DNAC transaction processing.
 
 ### `witness`
 
-Shows the current witness roster and BFT consensus status by querying the DHT `"nodus:pk"` registry.
+Shows the committee that governs the NEXT block (tip + 1), as the connected node's chain states it,
+over the `dnac_committee_query` RPC (`nodus-cli.c` `cmd_witness`; server
+`nodus_witness_handlers.c` `handle_dnac_committee_query`). Read-only. (The DHT `"nodus:pk"` roster this
+command used to read is deleted — P2P-PORT F6.)
 
 ```bash
 nodus-cli -s <server_ip> witness
 ```
 
-**Output for each witness:**
-- `node_id` — first 32 bytes of SHA3-512(pubkey), hex
-- `address` — IP:port (TCP 4002 inter-node)
-- `sig` — VALID/INVALID (Dilithium5 signature on DHT value)
-- `seq` — sequence number (monotonic, used for value replacement)
-- `expires` — seconds until DHT entry expires (re-published every 10 minutes)
+**RPC entry fields** (`"r".committee[]`, one map per seat, resolution order): `pk` (2592-byte key),
+`stake` (the ranked total), `comm` (commission bps), `status` (validator status — at key generation 4
+read by the seat's validator_id, Z-30a), `addr` (the seat's signed 4004 address, or empty), and —
+since the HF-6 red-team round 1 close-out — `power`: the seat's VOTING power as the engine counts it
+(`nodus_committee_member_t.power`: ruleset 1 `total / 10^8`, ruleset 2 the counted, capped power,
+`nodus_witness_vset_powers`). An older node sends no `power`; the client decoder
+(`nodus_dnac_committee_decode`) then reports `has_power = 0`.
 
-**BFT summary:**
-- `Valid witnesses` — total nodes with valid, non-expired DHT entries
-- `Server index` — index of the connected server in the sorted roster
-- `Consensus` — ACTIVE (>= 5 witnesses) or DISABLED
-- `f_tolerance` — max faulty nodes tolerated: (n-1)/3
-- `Quorum` — votes needed: 2f+1
+**Output for each seat:** `fingerprint` (first 16 bytes of SHA3-512(pubkey), hex), `p2p id`, `address`,
+`status`, `stake`, `commission`, and `power` when the node sent it.
 
-**Example:**
-```
-Witness Roster (from DHT "nodus:pk")
-=====================================
-Total entries: 6
-
-[0] (CONNECTED)
-    node_id:  03499d1fae35f9e9...
-    address:  154.38.182.161:4002
-    sig:      VALID
-    seq:      1773464845
-    expires:  553s from now
-...
-─────────────────────────────────
-Valid witnesses: 6
-Server index:    0
-Consensus:       ACTIVE
-f_tolerance:     1
-Quorum:          3
-```
+**Summary:** `Committee size`; `Quorum (seats)` — `dna_bft_quorum(n)`, the governance approval rule
+below the HF-2 height; and one power line:
+- every seat carries `power` → `Voting power: Σ (need > floor(2Σ/3))` — the consensus count (capped
+  per validator from HF-6) and the same integer > 2/3 rule the approval selection uses;
+- otherwise (an older node) → `Stake power:` the UNCAPPED sum of `floor(stake / 10^8)`, with no
+  threshold (an uncapped threshold would be wrong after HF-6, Z-30b).
 
 ### `addr-history`
 

@@ -1176,15 +1176,19 @@ static int row_key_of(sqlite3 *db, int k, uint8_t out[64]) {
     return ok ? 0 : -1;
 }
 
-/* (2a'') HF-6 slice 6e — the pending consensus keys of bonded rows
- * (design 2026-10-03-hf5-validator-owner-stake rev 6 §3; plan
- * tasks/hf6-slice6-plan.md §2 "6e"). Inside ONE transaction on B's chain
+/* (2a'') HF-6 slice 6e — the pending consensus keys of every row holding
+ * one (design 2026-10-03-hf5-validator-owner-stake rev 6 §3; plan
+ * tasks/hf6-slice6-plan.md §2 "6e"; no status filter since red-team round
+ * 1, Z-31). Inside ONE transaction on B's chain
  * database, rolled back at the end: genesis row 2 gets a roles row with
  * pending key K_R (+ its role-2 reservation), genesis row 3 one with
  * pending key K_S. Neither K_R nor K_S is in any committee or validators
  * row, so the pending statement is the only way either can be bonded.
- *   - row 3 RETIRING → K_S not bonded; UNSTAKED → not bonded; ACTIVE →
- *     bonded (the control: the K_S roles row is well formed);
+ *   - row 3 RETIRING → K_S bonded (a row that UNSTAKEs after its accepted
+ *     rotation is still seated under the new key at U); ACTIVE → bonded;
+ *     then the graduation's state — UNSTAKED with the pending key zeroed
+ *     (an UNSTAKED row never carries one in production) → not bonded. The
+ *     rule pinned is "every row holding a pending key", status unread;
  *   - row 2 ACTIVE → K_R bonded;
  *   - the swap (nodus_validator_v2_rotate_apply — the writer the boundary
  *     uses): row 2's key becomes K_R, its pending field zero → K_R still
@@ -1238,18 +1242,26 @@ static int part2_pending(gfx_t *g, nodus_witness_p2p_t *B, int nb) {
     nodus_witness_p2p_refresh_bonded(B);
     CHECK(nodus_witness_p2p_is_bonded(B, idr),
           "(2a'') an ACTIVE row's pending key is bonded");
-    CHECK(!nodus_witness_p2p_is_bonded(B, ids),
-          "(2a'') a RETIRING row's pending key is not bonded");
-    CHECK(sql_one(db, set_status, vid3, 64, (int)DNAC_VALIDATOR_UNSTAKED) == 0,
-          "(2a'') row 3 UNSTAKED");
-    nodus_witness_p2p_refresh_bonded(B);
-    CHECK(!nodus_witness_p2p_is_bonded(B, ids),
-          "(2a'') an UNSTAKED row's pending key is not bonded");
+    CHECK(nodus_witness_p2p_is_bonded(B, ids),
+          "(2a'') a RETIRING row's pending key is bonded (Z-31: the swap "
+          "at U seats it regardless of status)");
     CHECK(sql_one(db, set_status, vid3, 64, (int)DNAC_VALIDATOR_ACTIVE) == 0,
           "(2a'') row 3 ACTIVE again");
     nodus_witness_p2p_refresh_bonded(B);
     CHECK(nodus_witness_p2p_is_bonded(B, ids),
-          "(2a'') control: the same roles row under an ACTIVE row is bonded");
+          "(2a'') the same roles row under an ACTIVE row is bonded");
+    /* the graduation's state: UNSTAKED, and the pending key zeroed with
+     * it (nodus_witness_v2_epoch.c — an UNSTAKED row never carries one) */
+    CHECK(sql_one(db, set_status, vid3, 64, (int)DNAC_VALIDATOR_UNSTAKED) == 0,
+          "(2a'') row 3 UNSTAKED");
+    CHECK(sql_one(db, "UPDATE v2_validator_roles SET pending_consensus_pubkey "
+                      "= zeroblob(?2), consensus_key_effective_epoch = 0 "
+                      "WHERE validator_id = ?1", vid3, 64,
+                  (int)DNAC_PUBKEY_SIZE) == 0,
+          "(2a'') ... its pending key zeroed, as the graduation does");
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(!nodus_witness_p2p_is_bonded(B, ids),
+          "(2a'') a graduated (UNSTAKED, no pending key) row adds nothing");
 
     CHECK(nodus_validator_v2_rotate_apply(g->w, vid2, g_ks[2].pk,
                                           g_ks[K_R].pk) == 0,

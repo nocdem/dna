@@ -70,8 +70,8 @@
  *      → still satisfied (CORE's fact unchanged) but the bit CLEAR; two
  *      descriptors each get their own bit.
  *  B. ENGINE (one seeded chain, EVM-enabled build, HF-2 on from 1, param 9
- *     at 2, param 14 at 3, param 16 — the dev trigger of the generation-4
- *     edge — at 6, every block through the cometbft host):
+ *     at 2, param 14 at 3, param 18 — the generation-4 vote (D4) — at
+ *     6, every block through the cometbft host):
  *   B1 block 3 (generation 3): a legacy 2666-B STAKE and a legacy 5192-B
  *      DELEGATE APPLY.
  *   B2 block 5 = H-1: the edge (generation 4) migrates both rows.
@@ -1300,7 +1300,7 @@ static int cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
 
 #define H9   2u
 #define HE   3u
-#define HS   6u       /* param 16 (the generation-4 dev trigger): H-1 = 5 */
+#define HS   6u       /* param 18 (the generation-4 vote): H-1 = 5 */
 
 static int fx_open(fixture_t *fx, const char *tag) {
     memset(fx, 0, sizeof(*fx));
@@ -1318,8 +1318,8 @@ static int fx_open(fixture_t *fx, const char *tag) {
                (uint64_t)DNAC_CFG_RULESET_GEN2_D2, H9, 12) != 0 ||
         cc_row(fx->w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D,
                HE, 14) != 0 ||
-        cc_row(fx->w, DNAC_CFG_RULESET_GEN_STORAGE,
-               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, HS, 13) != 0)
+        cc_row(fx->w, DNAC_CFG_RULESET_GEN_ROLES,
+               (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, HS, 13) != 0)
         return -1;
     for (int c = 0; c < N_COINS; c++)
         if (seed_coin(fx->w, c) != 0) return -1;
@@ -1596,7 +1596,7 @@ static int t_engine(void) {
     for (int c = 0; c < N_COINS; c++)
         CHECK(coin_nul(c, g_nul[c]) == 0, "coin nullifier");
     CHECK(fx_open(&F, "eng") == 0,
-          "seeded chain (param 9 at 2, param 14 at 3, param 16 at 6)");
+          "seeded chain (param 9 at 2, param 14 at 3, param 18 at 6)");
     {
         sqlite3_stmt *st = NULL;
         CHECK(sqlite3_prepare_v2(F.w->db, "SELECT pubkey FROM validators "

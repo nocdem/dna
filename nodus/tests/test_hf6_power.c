@@ -11,10 +11,11 @@
  * hf6-summary.md K1 / K2 / K5; plan tasks/hf6-slice5-plan.md §2 "5b".
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
- *  1. The seam answers the compiled DNAC_HF6_POWER_CAP_BPS_DEFAULT (3000)
- *     for any epoch start, and refuses a NULL output. (The default's
- *     range is pinned at compile time by a _Static_assert in
- *     nodus_witness_vset.c — this binary would not link without it.)
+ *  1. With no param-20 row the ratio is the compiled
+ *     DNAC_HF6_POWER_CAP_BPS_DEFAULT (3000) for any epoch start, and a
+ *     NULL output / witness is refused. (The default's range is pinned at
+ *     compile time by a _Static_assert in nodus_witness_vset.c — this
+ *     binary would not link without it.)
  *  2. The design's twin vectors through the helper on hand-built
  *     RULESET-2 snapshots, amounts as raw stake (whole × 10^8):
  *     [88,2×6] → [5,2×6]; [45,45,10] → [10,10,10]; [10]×7 → unchanged —
@@ -30,6 +31,17 @@
  *  4. Fail-closed: a ruleset-2 entry below one whole coin → -1 with the
  *     output untouched; ruleset 0 and ruleset 3 → -1; NULL witness /
  *     snapshot / output → -1.
+ *  5. HF-6 slice 8a — the ratio is chain_config param 20 read at the
+ *     snapshot's EPOCH START: a row of 500 effective at 10E answers 500
+ *     at 10E and 11E and the default at 10E - 1; a row effective at
+ *     12E + 1 does NOT count for the snapshot starting at 12E (it answers
+ *     from 13E); the helper's output for a ruleset-2 snapshot at 10E
+ *     equals dna_power_cap_counted at 500 (and differs from the 3000
+ *     answer — non-vacuous); a stored 499, 3001 or a value stored
+ *     negative (2^63) answers -1 with the output untouched and every
+ *     ruleset-2 power computation over that epoch refuses, while a
+ *     ruleset-1 snapshot (which never reads the ratio) is unaffected; no
+ *     open DB answers -1, never the default.
  *
  * ── WHAT IT DOES NOT PROVE (the consumers — where they are covered) ────
  * The consumers on a STORED RULESET-2 snapshot (slice 5c made the store /
@@ -57,16 +69,19 @@
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * One /tmp/test_hf6_power_* directory (a chain DB the witness handle
- * owns, so the helper runs against a real handle — slice 8 makes the
- * seam a chain-config read), removed at the end (left behind when a
- * CHECK aborts).
+ * owns — the ratio is a chain-config read since HF-6 slice 8a), removed
+ * at the end (left behind when a CHECK aborts).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
  *  - The expected vectors are design §5's own examples (reproduced in
  *    power_cap.h and pinned by test_power_cap against the oracle), not a
  *    new independent oracle run.
- *  - Until slice 8 the seam is a constant: case 1 proves the plumbing and
- *    the compiled value, not a chain-config read.
+ *  - Case 5 writes the param-20 rows straight into chain_config_history
+ *    (the test_hf4_params.c direct_insert device), not through a voted
+ *    CHAIN_CONFIG envelope: it proves the read, its key and its range
+ *    check, not the vote (test_hf4_params.c covers the vote's rules) nor
+ *    the frozen-ratio timing at a real boundary (the grace >= epoch
+ *    premise is a _Static_assert in nodus_witness_vset.c).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -174,6 +189,29 @@ static void expect_refused(nodus_witness_t *w, dna_vset_snapshot_t *s) {
         CHECK(out[i] == 0xA5A5A5A5A5A5A5A5ULL);
 }
 
+/* HF-6 slice 8a: one chain_config_history row written straight into the
+ * table (the test_hf4_params.c device) — how a row the scalar rule never
+ * admits can exist at all (a corrupt / foreign DB); the cache is dropped
+ * so the next read sees it. */
+static void direct_insert(nodus_witness_t *w, uint8_t param, uint64_t value,
+                          uint64_t effective) {
+    uint8_t tx_hash[64];
+    memset(tx_hash, (int)(effective & 0xFF), sizeof(tx_hash));
+    sqlite3_stmt *st = NULL;
+    CHECK(sqlite3_prepare_v2(w->db,
+              "INSERT INTO chain_config_history (param_id, new_value, "
+              "effective_block, commit_block, tx_hash, proposal_nonce, "
+              "created_at_unix) VALUES (?1, ?2, ?3, 1, ?4, 1, 0)",
+              -1, &st, NULL) == SQLITE_OK);
+    sqlite3_bind_int(st, 1, param);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)value);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)effective);
+    sqlite3_bind_blob(st, 4, tx_hash, 64, SQLITE_TRANSIENT);
+    CHECK(sqlite3_step(st) == SQLITE_DONE);
+    sqlite3_finalize(st);
+    w->chain_config_cache_warm = false;
+}
+
 int main(void) {
     char data_path[] = "/tmp/test_hf6_power_XXXXXX";
     CHECK(mkdtemp(data_path) != NULL);
@@ -187,7 +225,7 @@ int main(void) {
     CHECK(nodus_witness_create_chain_db(&w, chain_id) == 0);
 
     /* ── 1. the ratio seam ─────────────────────────────────────────── */
-    printf("  (1) POWER_CAP_BPS seam = compiled default\n");
+    printf("  (1) POWER_CAP_BPS with no row = compiled default\n");
     {
         uint32_t r = 0;
         CHECK(DNAC_HF6_POWER_CAP_BPS_DEFAULT == 3000u);
@@ -285,6 +323,90 @@ int main(void) {
         CHECK(nodus_witness_vset_powers(&w, NULL, out) == -1);
         CHECK(nodus_witness_vset_powers(&w, s, NULL) == -1);
         dna_vset_free(&s);
+    }
+
+    /* ── 5. HF-6 slice 8a: the ratio is chain_config param 20 at the
+     *       snapshot's EPOCH START ─────────────────────────────────── */
+    printf("  (5) POWER_CAP_BPS = param 20 at the epoch start; "
+           "out-of-range rows refused\n");
+    {
+        const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+        uint32_t r = 0;
+        /* a committed 500 effective at 10E governs the snapshot whose
+         * epoch start is 10E, and every later one until the next row */
+        direct_insert(&w, 20, 500u, 10 * E);
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 10 * E - 1, &r) == 0
+              && r == DNAC_HF6_POWER_CAP_BPS_DEFAULT);
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 10 * E, &r) == 0 &&
+              r == 500u);
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 11 * E, &r) == 0 &&
+              r == 500u);
+        /* the epoch-start key: a row effective at epoch_start + 1 does NOT
+         * count for that snapshot (it governs the next one) */
+        direct_insert(&w, 20, 1000u, 12 * E + 1);
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 12 * E, &r) == 0 &&
+              r == 500u);
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 13 * E, &r) == 0 &&
+              r == 1000u);
+        /* the helper applies THAT ratio: equal to the water-fill at 500 */
+        {
+            const uint64_t a_raw[7] = { 88 * U, 2 * U, 2 * U, 2 * U, 2 * U,
+                                        2 * U, 2 * U };
+            dna_vset_snapshot_t *s = mk_snap(DNA_VSET_RULESET_TOPN_V2,
+                                             10 * E, a_raw, 7);
+            uint64_t p[7], direct[7], via[7], dflt[7];
+            uint8_t ids[7][64];
+            for (int i = 0; i < 7; i++) {
+                p[i] = a_raw[i] / U;
+                memcpy(ids[i], s->entries[i].validator_id, 64);
+            }
+            CHECK(dna_power_cap_counted(p, (const uint8_t (*)[64])ids, 7,
+                                        500u, direct) == 0);
+            CHECK(dna_power_cap_counted(p, (const uint8_t (*)[64])ids, 7,
+                                        DNAC_HF6_POWER_CAP_BPS_DEFAULT,
+                                        dflt) == 0);
+            CHECK(nodus_witness_vset_powers(&w, s, via) == 0);
+            CHECK(memcmp(direct, via, sizeof(via)) == 0);
+            /* non-vacuity: the 500 answer differs from the 3000 one here */
+            CHECK(memcmp(direct, dflt, sizeof(dflt)) != 0);
+            dna_vset_free(&s);
+        }
+        /* a stored value the scalar rule never admits (this node's
+         * storage disagreeing with every writer) is a refusal, never the
+         * default and never a clamp: 499, 3001, and a value stored
+         * NEGATIVE (2^63 through the int64 cast) */
+        direct_insert(&w, 20, 499u, 14 * E);
+        r = 777;
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 14 * E, &r) == -1);
+        CHECK(r == 777);                         /* untouched on -1      */
+        {
+            const uint64_t c_raw[7] = { 10 * U, 10 * U, 10 * U, 10 * U,
+                                        10 * U, 10 * U, 10 * U };
+            dna_vset_snapshot_t *s = mk_snap(DNA_VSET_RULESET_TOPN_V2,
+                                             14 * E, c_raw, 7);
+            expect_refused(&w, s);               /* every consumer faults */
+            /* a ruleset-1 snapshot never reads the ratio */
+            s->selection_ruleset = DNA_VSET_RULESET_TOPN_V1;
+            uint64_t out[DNA_MAX_ACTIVE_VALIDATORS];
+            CHECK(nodus_witness_vset_powers(&w, s, out) == 0);
+            dna_vset_free(&s);
+        }
+        direct_insert(&w, 20, 3001u, 15 * E);
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 15 * E, &r) == -1);
+        direct_insert(&w, 20, (uint64_t)INT64_MAX + 1u, 16 * E);
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 16 * E, &r) == -1);
+        /* a legal row after them answers again */
+        direct_insert(&w, 20, 3000u, 17 * E);
+        CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 17 * E, &r) == 0 &&
+              r == 3000u);
+        /* no open database: "cannot determine", never the default */
+        {
+            sqlite3 *keep = w.db;
+            w.db = NULL;
+            w.chain_config_cache_warm = false;
+            CHECK(nodus_witness_power_cap_bps_for_epoch(&w, 0, &r) == -1);
+            w.db = keep;
+        }
     }
 
     sqlite3_close(w.db);

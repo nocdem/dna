@@ -15,8 +15,9 @@
 # Governing records: design docs/plans/2026-10-03-hf5-validator-owner-
 # stake-design.md rev 6 §7 (migration steps 1-6, 10), §1.6 (base +
 # commission to owner_fp), §8 (one generation, H−1 and H off a boundary),
-# §10 item 2 (the development trigger: param 16 + the storage literal until
-# slice 8); decisions docs/plans/decisions/2026-10-08-kurultay-14-hf6-
+# §8.1 (the vote value D4) — since HF-6 slice 8c the edge's trigger is the
+# real one: param 18 RULESET_GEN_ROLES = D4, param 16 RETIRED (plan
+# tasks/hf6-slice8-plan.md §2 "8c"); decisions docs/plans/decisions/2026-10-08-kurultay-14-hf6-
 # summary.md (K4 accrual merge, K8 Foundation address) and docs/plans/
 # decisions/2026-10-09-kurultay-16-hf6-storage-summary.md (D2 (a): owner =
 # Foundation for every row with active_since_block <= 1); plan
@@ -26,17 +27,17 @@
 # require_gen); the pump is stagef_env.sh's stagef_cmt_pump_to (1-in/1-out,
 # --no-dust-sweep); every new part is marked "hf6:".
 #
-# WHY FIVE VOTES, NOT TWO: the generation-4 edge is triggered (on this
-# development branch) by the param-16 row with DNAC_CFG_RULESET_GEN_STORAGE_D
-# (nodus_witness_v2_apply.c phase_6b_gen4_edge). Param 16 is votable only
-# while generation 3 (the EVM generation) judges the vote
-# (nodus_witness_chain_config.c CC_PARAM_RULESET_GEN_STORAGE rule (d)), and
-# the EVM vote needs HF-2, HF-3 and generation 2 — so HF2_ACTIVE (7),
-# HF3_ACTIVE (8), RULESET_GEN2 (9), EVM_ACTIVE (14) and RULESET_GEN_STORAGE
-# (16) are all voted, in that order, exactly as test_storage_archive.sh does.
+# WHY FIVE VOTES, NOT TWO: the generation-4 edge is triggered by the
+# param-18 row with DNAC_CFG_RULESET_GEN_ROLES_D (D4)
+# (nodus_witness_v2_apply.c phase_6b_gen4_edge). Param 18 is votable only
+# while generation 3 (the EVM generation) judges the vote, with HF-2 on
+# (nodus_witness_chain_config.c CC_PARAM_RULESET_GEN_ROLES rules (b), (c)),
+# and the EVM vote needs HF-2, HF-3 and generation 2 — so HF2_ACTIVE (7),
+# HF3_ACTIVE (8), RULESET_GEN2 (9), EVM_ACTIVE (14) and RULESET_GEN_ROLES
+# (18) are all voted, in that order, exactly as test_storage_archive.sh does.
 #
-# WHY H % E == 8: rule (c) forbids H−1 on a boundary; design §8 keeps H off
-# a boundary too. With H % E == 8 the last boundary before H is H − 8 and
+# WHY H % E == 8: rules (d) and (e) forbid H−1 and H on a boundary (design
+# §8 "H−1 VE H sınır değil"). With H % E == 8 the last boundary before H is H − 8 and
 # the first after it is B1 = H + 7, so the pre-edge read (tip in
 # [H − 8, H − 2]) and the post-edge read (tip in [H, H + 6]) each sit in a
 # window no boundary writes into. H − 8 is also stepped off a payday, so the
@@ -97,9 +98,13 @@
 # WHAT IT PROVES — each item would be false if it failed
 #   0. Capability gate (FAIL): the server and the CLI print one version
 #      banner; the CLI's chain-config usage names "EVM_ACTIVE exactly <D>"
-#      and "RULESET_GEN_STORAGE exactly <DS>" (compiled literals, never a
+#      and "RULESET_GEN_ROLES exactly <D4>" (compiled literals, never a
 #      script literal); node 1's database has v2_validator_roles (schema
-#      S18 — an HF-6 build).
+#      S18 — an HF-6 build); and (step 0) every node's NEWEST start logged
+#      the startup banner "HF-6 rule-set generation 4 vote D4 0x<D4>
+#      (param 18 RULESET_GEN_ROLES, switch spec v1), built from git commit
+#      …" with the CLI's D4 — the runbook's 7/7 pre-vote comparison
+#      (nodus_witness.c), so the server's compiled D4 is the one voted.
 #   1. Preconditions on a fresh chain: 7 validator rows, one per harness
 #      node (matched by the raw nodus.pk bytes), each ACTIVE/ELIGIBLE,
 #      active_since_block <= 1 (the D2 (a) predicate that makes them
@@ -114,7 +119,7 @@
 #      height h_d); 7/7: the delegation row holds 50M, node 2's
 #      total_delegated = external_delegated = 50M. C_D = the first boundary
 #      >= h_d (the copy that first holds it).
-#   3. RULESET_GEN_STORAGE = DS voted at H (H % E == 8, H − 8 not a
+#   3. RULESET_GEN_ROLES = D4 voted at H (H % E == 8, H − 8 not a
 #      payday, H >= C_D + E + 8 — header "THE SWITCH"): round 1 7/7, row
 #      identical 7/7, committed < H; generation 3 on 7/7 before the edge.
 #   4. Pre-edge snapshot on EACH node, one SQL statement each, tip in
@@ -125,8 +130,8 @@
 #      aside).
 #   5. Crossing H (pumped to H − 7, idle after): 7/7 identical blocks AT
 #      H − 1, H, H + 1; every node logged "HF-6: rule-set generation 3 -> 4
-#      and the validator migration at the end of height H−1 (dev trigger:
-#      storage vote literal 0x<DS>)" and "HF-6 migration: 7 validators
+#      and the validator migration at the end of height H−1 (param 18
+#      RULESET_GEN_ROLES, D4 0x<D4>)" and "HF-6 migration: 7 validators
 #      re-keyed (7 Foundation-owned), 7 consensus keys reserved, 8
 #      delegations (1 before)"; `ruleset-info` 7/7 = generation 4.
 #   6. Post-edge snapshot on EACH node, tip in [H, B1 − 1]:
@@ -300,7 +305,10 @@
 #       the flag and the exports below);
 #     - the build ALSO compiled with that identity as the owner:
 #       -DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}" inside CMAKE_C_FLAGS (64
-#       bytes, no spaces — the helper prints it; dnac.h's override);
+#       bytes, no spaces — the helper prints it; dnac.h's override) AND
+#       with that owner's D4, -DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL (the
+#       helper prints it from hf6_vote_oracle.py --owner; a build with one
+#       and not the other refuses to start — the runtime selfcheck);
 #     - STAGEF_HF6_OWNER_FP_HEX = SHA3-512 of that nodus.pk (checked here)
 #       and != the K8 address;
 #     - STAGEF_HF6_OWNER_KEYS = that identity directory (nodus.pk + .sk);
@@ -314,7 +322,8 @@
 #     bash $S/stagef_hf6_owner.sh /tmp/hf6-owner    # prints O=… and the FP
 #     F='-DDNAC_EPOCH_LENGTH=15 -DDNAC_BLOCKS_PER_YEAR=20 -DDNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS=15 -DDNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS=15'
 #     O='-DDNAC_HF6_FOUNDATION_OWNER="{0x..,…}"'    # the helper's exact line
-#     cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf6rot -DCMAKE_C_FLAGS="$F $O"
+#     D='-DDNAC_CFG_RULESET_GEN_ROLES_D=0x…ULL'      # the helper's exact line
+#     cmake -S <TREE>/nodus -B <TREE>/nodus/build-hf6rot -DCMAKE_C_FLAGS="$F $O $D"
 #     make -C <TREE>/nodus/build-hf6rot -j"$(nproc)" nodus-server nodus-cli
 #     export STAGEF_NODUS_BIN=<TREE>/nodus/build-hf6rot/nodus-server
 #     export STAGEF_NODUSCLI_BIN=<TREE>/nodus/build-hf6rot/nodus-cli
@@ -344,7 +353,7 @@
 #   tool missing, any split STAGEF_MODE (ruleset-info and the CLI vote path
 #   were not checked through a split core). A skip is not a pass.
 #   FAIL (rc 1) on the capability gate, on a chain that already holds a
-#   param 7 / 8 / 9 / 14 / 16 row, a delegation or a roles row (single-use
+#   param 7 / 8 / 9 / 14 / 16 / 18 row, a delegation or a roles row (single-use
 #   — needs a fresh bring-up), and on STAGEF_HF6_OWNER_FP_HEX malformed.
 #   (6f-2) FAIL (rc 1) at the gate when STAGEF_HF6_OWNER_KEYS is set but:
 #   it holds no nodus.pk (2592 B) / nodus.sk, SHA3-512(nodus.pk) differs
@@ -356,7 +365,7 @@
 # WHAT IT LEAVES BEHIND
 #   HF-2 ACTIVE, HF-3 ACTIVE, rule-set generation 2, the EVM generation 3 +
 #   EVM domain and generation 4 (HF-6) — all one-way; five
-#   chain_config_history rows (params 7, 8, 9, 14, 16). The validator rows
+#   chain_config_history rows (params 7, 8, 9, 14, 18). The validator rows
 #   re-keyed to validator_id with 2M bonds, seven 8M self-delegations owned
 #   by the Foundation owner, seven v2_validator_roles rows, every node-key
 #   accrual merged into the Foundation row (then grown by every boundary; a
@@ -368,7 +377,7 @@
 #   Node 3's genesis leaf claimed by the pump and every pump fee (and
 #   v2user's two fees) in the reward pool. $BASE_DIR/hf6/ (CLI logs).
 #   Nothing killed or restarted. Tear down with stagef_down.sh before
-#   re-running (params 9 / 14 / 16 and the v2user leaf are single-use).
+#   re-running (params 9 / 14 / 18 and the v2user leaf are single-use).
 #   (6f-2, rotation phase only) An EIGHTH running process: cand1
 #   (nodus-server, $BASE_DIR/cand1/{data,nodus.log,derive.log}, ports
 #   14100-14104, its pid appended to pids.txt so stagef_down.sh stops it);
@@ -384,10 +393,19 @@
 #   - **E = 15, grace 15/15, BPY 20 prove the LOGIC**, nothing about the
 #     production 720 / 720 / 6 307 200 (README "WHAT A GREEN HARNESS RUN
 #     DOES NOT PROVE").
-#   - **The trigger is the development one** (param 16 + the storage
-#     literal, design §10 item 2). Slice 8 moves it to param 18 / D4; this
-#     scenario does not exercise that vote, its stateful rule or the mixed
-#     fleet refusing param 16.
+#   - **The trigger is the real one** (param 18 RULESET_GEN_ROLES = D4,
+#     HF-6 slice 8c) — but this scenario votes it ONCE, the legal way: it
+#     does not exercise the stateful rule's refusals (a second param-18
+#     vote, a chain holding a param-16 row, HF-2 off, a vote judged under
+#     another generation, H or H−1 on a boundary — test_hf4_params.c's
+#     matrix), nor a param-16 proposal (the CLI cannot name it), nor a
+#     mixed fleet (every node runs one build: an old binary refusing the
+#     param-18 proposal, or accepting a param-16 one, is not here).
+#   - **D4 here is the K8-owner value** unless the build overrides the
+#     owner (stagef_hf6_owner.sh passes both flags); either way the CLI's
+#     usage and the server's banner must print the same D4, which step 0
+#     checks — it does NOT check that D4 is the oracle's number (that is
+#     test_hf4_table.c's KAT and the runtime selfcheck).
 #   - **Every node runs the same binary**: a gen-4 reader forgotten
 #     UNIFORMLY computes the same wrong value on all seven, and 7/7 identity
 #     cannot see it. What this scenario does see: a forgotten reader that
@@ -515,7 +533,8 @@ PARAM_HF2=7                # DNAC_CFG_HF2_ACTIVE (dnac.h), value exactly 1
 PARAM_HF3=8                # DNAC_CFG_HF3_ACTIVE (dnac.h), value exactly 1
 PARAM_GEN2=9               # DNAC_CFG_RULESET_GEN2 (dnac.h), value exactly D2
 PARAM_EVM=14               # DNAC_CFG_EVM_ACTIVE (dnac.h), value exactly D
-PARAM_STOR=16              # DNAC_CFG_RULESET_GEN_STORAGE — hf6: the dev trigger
+PARAM_HF6=18               # DNAC_CFG_RULESET_GEN_ROLES (dnac.h), value exactly D4
+PARAM_RET16=16             # DNAC_CFG_RULESET_GEN_STORAGE — RETIRED; a row refuses PARAM_HF6
 GEN_2=2                    # NODUS_RT_GEN_2
 GEN_EVM=3                  # NODUS_RT_GEN_EVM (= NODUS_RT_GEN_STORAGE_BASE)
 GEN_4=4                    # NODUS_RT_GEN_STORAGE — hf6: THE HF-6 generation
@@ -670,18 +689,18 @@ done
 usage_out=$(timeout 60 "$CLI" -s 127.0.0.1 -p "$PROBE_PORT" chain-config propose 2>&1 || true)
 D_DEC=$(sed -n 's/^  EVM_ACTIVE  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
 D_DEC="${D_DEC%%$'\n'*}"
-DS_DEC=$(sed -n 's/^  RULESET_GEN_STORAGE  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
-DS_DEC="${DS_DEC%%$'\n'*}"
-[ -n "$D_DEC" ] && [ -n "$DS_DEC" ] || {
+D4_DEC=$(sed -n 's/^  RULESET_GEN_ROLES  *exactly \([0-9][0-9]*\) .*/\1/p' <<< "$usage_out")
+D4_DEC="${D4_DEC%%$'\n'*}"
+[ -n "$D_DEC" ] && [ -n "$D4_DEC" ] || {
     printf '%s\n' "$usage_out" >&2
-    die "the CLI's chain-config usage does not name both 'EVM_ACTIVE exactly <D>' and 'RULESET_GEN_STORAGE exactly <DS>'"; }
-[ "$D_DEC" -gt 0 ] 2>/dev/null && [ "$DS_DEC" -gt 0 ] 2>/dev/null || die "a vote literal is not a positive int64 (D '$D_DEC', DS '$DS_DEC')"
-D_HEX=$(printf '%016x' "$D_DEC"); DS_HEX=$(printf '%016x' "$DS_DEC")
+    die "the CLI's chain-config usage does not name both 'EVM_ACTIVE exactly <D>' and 'RULESET_GEN_ROLES exactly <D4>'"; }
+[ "$D_DEC" -gt 0 ] 2>/dev/null && [ "$D4_DEC" -gt 0 ] 2>/dev/null || die "a vote literal is not a positive int64 (D '$D_DEC', D4 '$D4_DEC')"
+D_HEX=$(printf '%016x' "$D_DEC"); D4_HEX=$(printf '%016x' "$D4_DEC")
 # hf6: schema S18 — the roles table exists only in an HF-6 build's database
 has_roles=$(sqlite3 "$ref_db0" \
     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='v2_validator_roles';" 2>/dev/null || echo ERR)
 [ "$has_roles" = 1 ] || die "node1's database has no v2_validator_roles table (schema S18) — not an HF-6 build"
-echo "[ok] capability gate: one build v$SRV_VER; EVM D = $D_DEC (0x$D_HEX), dev trigger DS = $DS_DEC (0x$DS_HEX); schema S18"
+echo "[ok] capability gate: one build v$SRV_VER; EVM D = $D_DEC (0x$D_HEX), HF-6 D4 = $D4_DEC (0x$D4_HEX); schema S18"
 
 # ── script-local helpers (test_storage_archive.sh's, unless "hf6:") ─
 db_of()  { stagef_node_chain_db "$1"; }
@@ -992,7 +1011,16 @@ same_on_all() {
 for n in $(seq 1 "$N"); do
     node_runs_srv "$n" || die "node$n is not running STAGEF_NODUS_BIN ($(readlink -f "$SRV")) — bring the cluster up with it"
 done
-for p in "$PARAM_HF2" "$PARAM_HF3" "$PARAM_GEN2" "$PARAM_EVM" "$PARAM_STOR"; do
+# hf6 (8c): every node's newest start printed the CLI's D4 in its startup
+# banner (nodus_witness.c — the runbook's 7/7 pre-vote comparison)
+for n in $(seq 1 "$N"); do
+    bl=$(grep -o 'HF-6 rule-set generation 4 vote D4 0x[0-9a-f]* (param 18 RULESET_GEN_ROLES, switch spec v[0-9]*)' \
+            "$(node_log "$n")" | tail -1 || true)
+    [ "$bl" = "HF-6 rule-set generation 4 vote D4 0x$D4_HEX (param 18 RULESET_GEN_ROLES, switch spec v1)" ] || die \
+        "node$n's startup banner D4 line is '${bl:-none}', not the CLI's D4 0x$D4_HEX (param 18, switch spec v1)"
+done
+echo "[ok] 7/7 startup banners name param 18 and the CLI's D4 0x$D4_HEX"
+for p in "$PARAM_HF2" "$PARAM_HF3" "$PARAM_GEN2" "$PARAM_EVM" "$PARAM_RET16" "$PARAM_HF6"; do
     [ "$(sqlite3 "$ref_db0" "SELECT COUNT(*) FROM chain_config_history WHERE param_id = $p;" 2>/dev/null || echo ERR)" = 0 ] \
         || die "node1 already holds a param-$p row — this scenario needs a fresh bring-up"
 done
@@ -1142,7 +1170,7 @@ U_AT=$(sqlite3 "$(db_of 1)" \
 case "$U_AT" in ''|*[!0-9]*) die "could not read the delegation's delegated_at_block ('$U_AT')" ;; esac
 echo "[ok] 7/7: v2user delegated $DELEG_AMT raw (50M) to node$DELEG_NODE at height $H_D (dated $U_AT); first in copy($C_D)"
 
-# ── 3. hf6: the generation-4 vote (the dev trigger), H % E == 8 ─────
+# ── 3. hf6: the generation-4 vote (param 18 = D4), H % E == 8 ───────
 # 5d: H >= C_D + E + H_MOD so the delegation is in copy(H − 8 − E), the
 # copy snapshot(B1) is built from (header "THE SWITCH")
 cc_guard 1
@@ -1155,10 +1183,10 @@ done
 B0=$(( H - H_MOD ))        # the last boundary before H (not a payday)
 B1=$(( B0 + E ))           # the first boundary after H
 [ $(( (H - 1) % E )) != 0 ] && [ $(( H % E )) != 0 ] || die "internal: H=$H or H-1 is a boundary"
-echo "[ok] tip $CCG_TIP — node1 proposes RULESET_GEN_STORAGE=$DS_DEC effective H=$H (last boundary before $B0, first after $B1)"
-propose RULESET_GEN_STORAGE "$DS_DEC" "$H" "$LOGD/propose_hf6.log"
-wait_cc_row "$PARAM_STOR" "$H" "$DS_DEC" 20
-[ "$CC_CB" -lt "$H" ] || die "the RULESET_GEN_STORAGE row committed at $CC_CB, not before its effective height $H"
+echo "[ok] tip $CCG_TIP — node1 proposes RULESET_GEN_ROLES=$D4_DEC effective H=$H (last boundary before $B0, first after $B1)"
+propose RULESET_GEN_ROLES "$D4_DEC" "$H" "$LOGD/propose_hf6.log"
+wait_cc_row "$PARAM_HF6" "$H" "$D4_DEC" 20
+[ "$CC_CB" -lt "$H" ] || die "the RULESET_GEN_ROLES row committed at $CC_CB, not before its effective height $H"
 for n in $(seq 1 "$N"); do require_gen "$n" "$GEN_EVM" "$H4"; done
 echo "[ok] generation $GEN_EVM on 7/7 before the edge"
 
@@ -1204,7 +1232,7 @@ for n in $(seq 1 "$N"); do
 done
 stagef_sentinel TARGET_REACHED
 for x in $(( H - 1 )) "$H" $(( H + 1 )); do diff_at "$x" "hf6-at-height-$x"; done
-HF6_LINE="HF-6: rule-set generation $GEN_EVM -> $GEN_4 and the validator migration at the end of height $(( H - 1 )) (dev trigger: storage vote literal 0x$DS_HEX)"
+HF6_LINE="HF-6: rule-set generation $GEN_EVM -> $GEN_4 and the validator migration at the end of height $(( H - 1 )) (param $PARAM_HF6 RULESET_GEN_ROLES, D4 0x$D4_HEX); height $H is judged under generation $GEN_4"
 # 5d: the line's current text (nodus_witness_v2_migrate.c — slice 4 added
 # the consensus-key count; the delegation count now includes v2user's)
 MIG_LINE="HF-6 migration: $N validators re-keyed ($N Foundation-owned), $N consensus keys reserved, $(( N + 1 )) delegations (1 before)"

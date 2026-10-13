@@ -1853,7 +1853,7 @@ static int test_vote_rules(void) {
                                           1, ok_eff + 10, ok_eff, 1) == -1,
           "EVM_BLOCK_GAS_LIMIT range"); OK();
     CHECK(nodus_chain_config_scalar_rules(16, 1, 1, ok_eff + 10, ok_eff, 1)
-              == -1, "id 16 unknown"); OK();
+              == -1, "id 16 refused (retired by HF-6 8c)"); OK();
     CHECK(nodus_chain_config_grace_for_param(14) ==
               (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS &&
           nodus_chain_config_grace_for_param(15) ==

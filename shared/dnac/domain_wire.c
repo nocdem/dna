@@ -299,6 +299,47 @@ int dna_evm_activation_digest(uint32_t evm_generation,
     return 0;
 }
 
+/* HF-6 — the generation-4 vote digest D4 (layout: domain_wire.h). */
+int dna_rolegen_vote_digest(uint32_t generation,
+                            uint32_t base_generation,
+                            const uint8_t sys_ruleset_hash[DNA_DOM_HASH_LEN],
+                            const uint8_t core_ruleset_hash[DNA_DOM_HASH_LEN],
+                            uint32_t spec_version,
+                            const uint8_t foundation_owner[DNA_ROLEGEN_OWNER_LEN],
+                            const uint64_t *consts, uint32_t n_consts,
+                            uint64_t *out) {
+    static const char tag_src[] = DNA_ROLEGEN_TAG;
+    _Static_assert(sizeof(tag_src) - 1 < TAG_LEN,
+                   "the ROLEGEN tag must fit 16 bytes with padding");
+    _Static_assert(DNA_ROLEGEN_PREIMAGE_LEN(9) == 296,
+                   "design §8.1: the nine-constant preimage is 296 bytes");
+    if (!sys_ruleset_hash || !core_ruleset_hash || !foundation_owner ||
+        !out || n_consts > DNA_ROLEGEN_MAX_CONSTS ||
+        (n_consts > 0 && !consts))
+        return -1;
+    uint8_t pre[DNA_ROLEGEN_PREIMAGE_LEN(DNA_ROLEGEN_MAX_CONSTS)];
+    uint8_t *p = pre;
+    memset(p, 0, TAG_LEN);
+    memcpy(p, tag_src, sizeof(tag_src) - 1);         p += TAG_LEN;
+    put_be32(generation, p);                         p += 4;
+    put_be32(base_generation, p);                    p += 4;
+    memcpy(p, sys_ruleset_hash, DNA_DOM_HASH_LEN);   p += DNA_DOM_HASH_LEN;
+    memcpy(p, core_ruleset_hash, DNA_DOM_HASH_LEN);  p += DNA_DOM_HASH_LEN;
+    put_be32(spec_version, p);                       p += 4;
+    memcpy(p, foundation_owner, DNA_ROLEGEN_OWNER_LEN);
+                                                     p += DNA_ROLEGEN_OWNER_LEN;
+    put_be32(n_consts, p);                           p += 4;
+    for (uint32_t i = 0; i < n_consts; i++) {
+        put_be64(consts[i], p);                      p += 8;
+    }
+    if ((size_t)(p - pre) != DNA_ROLEGEN_PREIMAGE_LEN(n_consts)) return -1;
+
+    uint8_t h[DNA_DOM_HASH_LEN];
+    if (qgp_sha3_512(pre, (size_t)(p - pre), h) != 0) return -1;
+    *out = get_be64(h) & 0x7FFFFFFFFFFFFFFFULL;
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * 3. DomainRegistryRecord v1
  * ════════════════════════════════════════════════════════════════════ */

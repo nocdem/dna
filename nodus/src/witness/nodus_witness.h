@@ -239,8 +239,9 @@ typedef struct {
  *                      is shape-checked on every open — a meaning
  *                      change, no byte change
  *   bond               the registration bond, EXACTLY the STORAGE_BOND in
- *                      force at the registration (today the compiled
- *                      DNAC_HF6_STORAGE_BOND_DEFAULT; refunded as stored
+ *                      force at the registration (param 21, HF-6 8a — the
+ *                      compiled DNAC_HF6_STORAGE_BOND_DEFAULT while no row
+ *                      exists; refunded as stored
  *                      even if the parameter later moves), counted in
  *                      supply while ACTIVE or EXITING
  *   status             1 ACTIVE / 2 EXITING / 3 RELEASED

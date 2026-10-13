@@ -35,6 +35,12 @@
  * validator_id) and VALIDATOR_UPDATE (op 5, 66 B, validator_id ‖
  * commission) are built in their generation-4 layouts; below it ops 2-4
  * keep the legacy layouts byte-identical and op 5 is refused (ERR_GEN).
+ * HF-6 kind-3 owner (decision 2026-09-29-general-multisig.md addendum
+ * "çok bacaklı ortak imza dosyası v2"): with req->msig_desc every
+ * generation-4 layout is built for the multisig address SHA3-512(desc) —
+ * both legs auth_kind 3, K zero slots, UNSIGNED, returned with its two leg
+ * auth digests (the co-signers sign them through nodus_v2_msig.c's v2
+ * files); the decoder reads both kinds. The kind-1 path is unchanged.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -192,6 +198,47 @@ static int all_zero(const uint8_t *p, size_t n) {
     return acc == 0;
 }
 
+/* HF-6 kind-3 owner — a descriptor's header bounds, read from its bytes
+ * WITHOUT the descriptor codec (shared/dnac/msig_wire.c is not linked
+ * where this file is — see the header): its length is exactly
+ * DNA_MSIG_DESC_LEN(N), 2 <= N <= DNA_MSIG_MAX_N, 1 <= M <= N, and the
+ * signer count K satisfies M <= K <= N. The tag and the key order are the
+ * codec's (the chain's rtn_auth_msig and nodus_v2_msig_review2 judge
+ * them). @return 0 / -1. */
+static int v2k_desc_bounds(const uint8_t *d, size_t dl, uint32_t k,
+                           uint8_t *m_out, uint8_t *n_out) {
+    if (!d || dl < DNA_MSIG_HDR_LEN || dl > DNA_MSIG_MAX_DESC_LEN) return -1;
+    const uint8_t m = d[DNA_MSIG_TAG_LEN];
+    const uint8_t n = d[DNA_MSIG_TAG_LEN + 1u];
+    if (n < DNA_MSIG_MIN_N || n > DNA_MSIG_MAX_N || m < 1 || m > n ||
+        dl != DNA_MSIG_DESC_LEN(n) || k < m || k > n)
+        return -1;
+    if (m_out) *m_out = m;
+    if (n_out) *n_out = n;
+    return 0;
+}
+
+/* The kind-3 auth blob of leg L (rtn_auth_msig's layout, one descriptor):
+ * count K ‖ K × (pk ‖ sig) ‖ dcount 1 ‖ dlen u16 BE ‖ descriptor, consumed
+ * exactly; nothing is read before its length is proved. The slots are not
+ * judged (all zero in an unsigned export). @return 0 / -1. */
+static int v2k_msig_blob(const dna_env_view_t *v, int L, uint32_t *k_out,
+                         const uint8_t **desc_out, size_t *dlen_out) {
+    const uint8_t *a = v->buf + v->auth_off[L];
+    const uint64_t alen = v->leg[L].auth_len;
+    if (alen < 1) return -1;
+    const uint32_t k = a[0];
+    if (k < 1 || k > NODUS_RT_AUTH_MAX_SIGNERS) return -1;
+    const uint64_t off = 1u + (uint64_t)k * NODUS_RT_AUTH_SIGNER_LEN;
+    if (alen < off + 3u || a[off] != 1) return -1;
+    const size_t dl = ((size_t)a[off + 1] << 8) | a[off + 2];
+    if (alen != off + 3u + dl) return -1;
+    *k_out = k;
+    *desc_out = a + off + 3;
+    *dlen_out = dl;
+    return 0;
+}
+
 /* ── the ruleset identity from the generated pins header ───────────── */
 
 int nodus_v2_stake_ruleset_from_pins_gen(uint32_t generation,
@@ -235,11 +282,42 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
         v->leg[1].domain_id != DNA_DOMAIN_CORE ||
         v->leg[1].runtime_op != DNA_CORERULE_SYSFUND)
         goto done;
+    /* the auth kind: 1 (one signer) or — HF-6 kind-3 owner — 3 on BOTH
+     * legs (the same owner proves the record and owns the funding) */
+    const uint8_t akind = v->leg[0].auth_kind;
+    if (akind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1 &&
+        akind != NODUS_RT_AUTHKIND_DSA87_MSIG_V1)
+        goto done;
+    const int is_msig = akind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1;
     for (int L = 0; L < 2; L++)
         if (v->leg[L].access_mode != DNA_ENV_ACCESS_INVOKE ||
-            v->leg[L].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1 ||
-            v->leg[L].auth_len != V2K_AUTH_LEN)
+            v->leg[L].auth_kind != akind ||
+            (!is_msig && v->leg[L].auth_len != V2K_AUTH_LEN))
             goto done;
+    if (is_msig) {
+        /* one descriptor, the same K, descriptor bytes and slot keys on
+         * both legs; the signature bytes are each leg's own */
+        uint32_t k0 = 0, k1 = 0;
+        const uint8_t *d0 = NULL, *d1 = NULL;
+        size_t dl0 = 0, dl1 = 0;
+        if (v2k_msig_blob(v, 0, &k0, &d0, &dl0) != 0 ||
+            v2k_msig_blob(v, 1, &k1, &d1, &dl1) != 0 ||
+            k0 != k1 || dl0 != dl1 || memcmp(d0, d1, dl0) != 0 ||
+            v2k_desc_bounds(d0, dl0, k0, &out->msig_m, &out->msig_n) != 0)
+            goto done;
+        const uint8_t *a0 = v->buf + v->auth_off[0];
+        const uint8_t *a1 = v->buf + v->auth_off[1];
+        for (uint32_t i = 0; i < k0; i++)
+            if (memcmp(a0 + 1 + (size_t)i * NODUS_RT_AUTH_SIGNER_LEN,
+                       a1 + 1 + (size_t)i * NODUS_RT_AUTH_SIGNER_LEN,
+                       V2K_PK_LEN) != 0)
+                goto done;
+        if (qgp_sha3_512(d0, dl0, out->msig_addr) != 0) {
+            rc = NODUS_V2_SPEND_ERR_HASH;
+            goto done;
+        }
+        out->msig_signers = k0;
+    }
     if (v->leg[0].res_max_effects != NODUS_V2_STAKE_SYS_EFFECTS ||
         v->leg[0].res_max_effect_bytes != NODUS_V2_STAKE_SYS_EFFECT_BYTES ||
         v->leg[1].res_max_effects != NODUS_V2_STAKE_FUND_EFFECTS ||
@@ -266,15 +344,21 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
         /* HF-6 6f-1 / 6b / 7b — the generation-4 layouts (the storage ops
          * and VALIDATOR_UPDATE have no other here): the call carries no
          * key, so the record identity is the leg-0 signer (the owner /
-         * delegator, rtn_sys_owner_auth kind 1); the loop below binds both
-         * legs to it. auth_len == V2K_AUTH_LEN was proved above. */
-        const uint8_t *a0 = v->buf + v->auth_off[0];
-        if (a0[0] != 1) goto done;
-        memcpy(out->identity_pk, a0 + 1, V2K_PK_LEN);
+         * delegator, rtn_sys_owner_auth kind 1; the loop below binds both
+         * legs to it — auth_len == V2K_AUTH_LEN was proved above) or, kind
+         * 3, the descriptor's address (rtn_sys_owner_auth kind 3; both
+         * blobs proved alike above). `signer_fp` is that identity. */
         uint8_t signer_fp[64];
-        if (qgp_sha3_512(out->identity_pk, V2K_PK_LEN, signer_fp) != 0) {
-            rc = NODUS_V2_SPEND_ERR_HASH;
-            goto done;
+        if (is_msig) {
+            memcpy(signer_fp, out->msig_addr, 64);
+        } else {
+            const uint8_t *a0 = v->buf + v->auth_off[0];
+            if (a0[0] != 1) goto done;
+            memcpy(out->identity_pk, a0 + 1, V2K_PK_LEN);
+            if (qgp_sha3_512(out->identity_pk, V2K_PK_LEN, signer_fp) != 0) {
+                rc = NODUS_V2_SPEND_ERR_HASH;
+                goto done;
+            }
         }
         out->gen4 = 1;
         if (op == DNA_SYSRULE_STAKE) {
@@ -285,8 +369,9 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
             out->commission_bps = ((uint32_t)s[V2K_S2_COMM_OFF] << 8) |
                                   s[V2K_S2_COMM_OFF + 1];
             out->amount = get_u64(s + V2K_S2_BOND_OFF);
-            /* kind 1: the owner IS the signer — an envelope naming another
-             * owner is not one this module builds */
+            /* the owner IS the identity (kind 1: the signer; kind 3: the
+             * descriptor's address) — an envelope naming another owner is
+             * not one this module builds */
             if (memcmp(out->owner_fp, signer_fp, 64) != 0) goto done;
         } else if (op == DNA_SYSRULE_STORAGE_REGISTER) {
             /* owner_fp ‖ node_pk ‖ consent_sig ‖ expiry ‖ bond
@@ -344,6 +429,11 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
             out->consent_expiry = get_u64(s + V2K_R_EXP_OFF);
             memcpy(out->owner_fp, signer_fp, 64);
         }
+    } else if (is_msig) {
+        goto done;                       /* a legacy layout has no kind-3
+                                          * owner (rtn_sys_stake_auth: one
+                                          * signer, and the generation 1-3
+                                          * SYSTEM allowlist has no kind 3) */
     } else if (op == DNA_SYSRULE_STAKE) {
         if (slen != NODUS_V2_STAKE_CALL_LEN) goto done;
         memcpy(out->identity_pk, s, V2K_PK_LEN);
@@ -365,7 +455,7 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
     /* both auth blobs: exactly one signer, and it is the record identity
      * (rtn_sys_stake_auth binds leg0's signer to the call's identity; the
      * funding coins are the same key's) */
-    for (int L = 0; L < 2; L++) {
+    for (int L = 0; L < 2 && !is_msig; L++) {
         const uint8_t *a = v->buf + v->auth_off[L];
         if (a[0] != 1 || memcmp(a + 1, out->identity_pk, V2K_PK_LEN) != 0)
             goto done;
@@ -405,6 +495,7 @@ int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,
         }
     }
     out->op                   = op;
+    out->auth_kind            = akind;
     out->n_in                 = nin;
     out->n_out                = nout;
     out->expiry_height        = v->expiry_height;
@@ -434,9 +525,12 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     err_reset(err);
     if (!out) return NODUS_V2_SPEND_ERR_ARG;
     memset(out, 0, sizeof(*out));
-    if (!req || !req->rs || !req->chain32 || !req->pk || !req->sk ||
+    if (!req || !req->rs || !req->chain32 ||
         req->n_coins < 0 || (req->n_coins > 0 && !req->coins))
         return NODUS_V2_SPEND_ERR_ARG;
+    /* HF-6 kind-3 owner: the descriptor replaces the signing key */
+    const int is_msig = req->msig_desc != NULL;
+    if (!is_msig && (!req->pk || !req->sk)) return NODUS_V2_SPEND_ERR_ARG;
     const nodus_v2_stake_op_t op = req->op;
     const int is_stake = op == NODUS_V2_STAKE_OP_STAKE;
     const int is_streg = op == NODUS_V2_STAKE_OP_STORAGE_REGISTER;
@@ -466,6 +560,16 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     const int is_role2 = gen4 && (is_deleg || is_unstake || is_vupd);
     /* the owner-signed, node-consented calls (design §2, §11.3) */
     const int is_consented = is_stake2 || is_rotate || is_streg;
+    /* HF-6 kind-3 owner: the generation-4 layouts only (a legacy layout's
+     * authority is one signer, rtn_sys_stake_auth), and the descriptor's
+     * header bounds with M <= K <= N */
+    if (is_msig) {
+        if (!is_consented && !is_stexit && !is_role2)
+            return NODUS_V2_STAKE_ERR_GEN;
+        if (v2k_desc_bounds(req->msig_desc, req->msig_desc_len,
+                            req->msig_signers, NULL, NULL) != 0)
+            return NODUS_V2_SPEND_ERR_ARG;
+    }
     if (is_consented) {
         if (!req->consensus_pk || !req->consent_sig ||
             (is_rotate && !req->validator_id))
@@ -490,8 +594,9 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     } else if (is_stake2) {
         /* rtn_stake2_exec's call-alone rules: the commission bound and the
          * INTEGER bound of the bond (design §1.5). The STAKE_MIN floor is
-         * chain state (rtn_stake_min_at — a chain_config value from slice
-         * 8), the consent and its expiry window the caller's. */
+         * chain state (rtn_stake_min_at — chain_config param 19, reported
+         * by dnac_fee_info "stake_min"), the consent and its expiry window
+         * the caller's. */
         if (req->commission_bps > (uint32_t)DNAC_COMMISSION_BPS_MAX)
             return NODUS_V2_STAKE_ERR_COMMISSION;
         if (req->amount < 1 || req->amount > (uint64_t)INT64_MAX)
@@ -504,8 +609,8 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         /* rtn_storage_register_exec's call-alone rules (design §11.3, G13):
          * 0 < bond <= INT64_MAX. The EXACT value is chain state (the
          * STORAGE_BOND in force, rtn_storage_bond_at — chain_config param
-         * 21 from slice 8), the consent and its expiry window the
-         * caller's. */
+         * 21, reported by dnac_fee_info "storage_bond"), the consent and
+         * its expiry window the caller's. */
         if (req->amount < 1 || req->amount > (uint64_t)INT64_MAX)
             return NODUS_V2_STAKE_ERR_STORAGE_BOND;
     } else if (is_stake) {
@@ -610,10 +715,15 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     const uint64_t change = sum_in - need;
 
     /* ── leg0 — the SYSTEM record call ─────────────────────────────── */
-    /* SHA3-512 of the signing key: the funding coins' owner and the change
-     * owner (leg1); for the generation-4 STAKE also the call's owner_fp */
+    /* SHA3-512 of the signing key — or, HF-6 kind-3 owner, of the
+     * descriptor (the multisig address, dna_msig_address's derivation):
+     * the funding coins' owner and the change owner (leg1); for the
+     * generation-4 STAKE / STORAGE_REGISTER also the call's owner_fp, for
+     * DELEGATE / UNDELEGATE its delegator_fp */
     uint8_t signer_raw[64];
-    if (qgp_sha3_512(req->pk, V2K_PK_LEN, signer_raw) != 0) {
+    if ((is_msig ? qgp_sha3_512(req->msig_desc, req->msig_desc_len,
+                                signer_raw)
+                 : qgp_sha3_512(req->pk, V2K_PK_LEN, signer_raw)) != 0) {
         rc = NODUS_V2_SPEND_ERR_HASH;
         goto done;
     }
@@ -752,11 +862,35 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     }
     const uint32_t fcall_len = (uint32_t)off;
 
-    /* ── two legs, kind-1 single signer each ───────────────────────── */
-    auth0 = calloc(1, V2K_AUTH_LEN);
-    auth1 = calloc(1, V2K_AUTH_LEN);
+    /* ── two legs, kind-1 single signer each — or, HF-6 kind-3 owner,
+     *    the same unsigned kind-3 blob on each: K zero slots ‖ dcount 1 ‖
+     *    dlen u16 BE ‖ descriptor (rtn_auth_msig; the shape of
+     *    nodus_v2_msig_unsigned_auth, restated: that file is not linked
+     *    where this one is) ─────────────────────────────────────────── */
+    const uint8_t akind = is_msig ? NODUS_RT_AUTHKIND_DSA87_MSIG_V1
+                                  : NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    const uint32_t alen = is_msig
+        ? (uint32_t)(1u + (size_t)req->msig_signers * NODUS_RT_AUTH_SIGNER_LEN +
+                     3u + req->msig_desc_len)
+        : V2K_AUTH_LEN;
+    auth0 = calloc(1, alen);
+    auth1 = calloc(1, alen);
     pf    = calloc(1, sizeof(*pf));
     if (!auth0 || !auth1 || !pf) goto done;
+    if (is_msig) {
+        /* v2k_desc_bounds proved 1 <= K <= DNA_MSIG_MAX_N and dlen <=
+         * DNA_MSIG_MAX_DESC_LEN (< 65536) above */
+        uint8_t *ab[2] = { auth0, auth1 };
+        const size_t toff = 1u + (size_t)req->msig_signers *
+                                 NODUS_RT_AUTH_SIGNER_LEN;
+        for (int L = 0; L < 2; L++) {
+            ab[L][0] = (uint8_t)req->msig_signers;
+            ab[L][toff]     = 1;                       /* dcount          */
+            ab[L][toff + 1] = (uint8_t)(req->msig_desc_len >> 8);
+            ab[L][toff + 2] = (uint8_t)req->msig_desc_len;
+            memcpy(ab[L] + toff + 3, req->msig_desc, req->msig_desc_len);
+        }
+    }
 
     dna_env_leg_in_t legs[2];
     memset(legs, 0, sizeof(legs));
@@ -764,9 +898,9 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     legs[0].hdr.runtime_op           = (uint32_t)op;
     legs[0].hdr.ruleset_version      = req->rs->sys_ruleset_version;
     legs[0].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
-    legs[0].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    legs[0].hdr.auth_kind            = akind;
     legs[0].hdr.call_len             = scall_len;
-    legs[0].hdr.auth_len             = V2K_AUTH_LEN;
+    legs[0].hdr.auth_len             = alen;
     legs[0].hdr.res_max_effects      = NODUS_V2_STAKE_SYS_EFFECTS;
     legs[0].hdr.res_max_effect_bytes = NODUS_V2_STAKE_SYS_EFFECT_BYTES;
     legs[0].call_data = scall;
@@ -775,9 +909,9 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     legs[1].hdr.runtime_op           = DNA_CORERULE_SYSFUND;
     legs[1].hdr.ruleset_version      = req->rs->core_ruleset_version;
     legs[1].hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
-    legs[1].hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    legs[1].hdr.auth_kind            = akind;
     legs[1].hdr.call_len             = fcall_len;
-    legs[1].hdr.auth_len             = V2K_AUTH_LEN;
+    legs[1].hdr.auth_len             = alen;
     legs[1].hdr.res_max_effects      = NODUS_V2_STAKE_FUND_EFFECTS;
     legs[1].hdr.res_max_effect_bytes = NODUS_V2_STAKE_FUND_EFFECT_BYTES;
     legs[1].call_data = fcall;
@@ -800,9 +934,29 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     lctx[1].ruleset_version = req->rs->core_ruleset_version;
     memcpy(lctx[1].ruleset_hash, req->rs->core_ruleset_hash, 64);
 
-    /* one key signs BOTH legs: it is the record identity AND the owner of
-     * the funding inputs */
-    {
+    if (is_msig) {
+        /* HF-6 kind-3 owner: NOTHING is signed here. The unsigned
+         * envelope and its pass-1 leg auth digests (what each co-signer
+         * signs — the slots and auth_len are fixed, so they do not move
+         * when the signatures are written) */
+        rc = NODUS_V2_SPEND_ERR_ENCODE;
+        if (dna_env_encoded_size(legs, 2, &env_len) != 0) goto done;
+        env_bytes = malloc(env_len);
+        if (!env_bytes) { rc = NODUS_V2_SPEND_ERR_ALLOC; goto done; }
+        size_t used = 0;
+        if (dna_env_encode(&env_in, env_bytes, env_len, &used) != 0 ||
+            used != env_len)
+            goto done;
+        if (dna_env_preflight(env_bytes, env_len, req->chain32, req->tip + 1,
+                              lctx, 2, pf) != DNA_ENV_PF_OK) {
+            rc = NODUS_V2_SPEND_ERR_PREFLIGHT1;
+            goto done;
+        }
+        memcpy(out->leg_digest[0], pf->auth_digest[0], 64);
+        memcpy(out->leg_digest[1], pf->auth_digest[1], 64);
+    } else {
+        /* one key signs BOTH legs: it is the record identity AND the
+         * owner of the funding inputs */
         uint8_t *auths[2] = { auth0, auth1 };
         nodus_v2_spend_err_t se;
         memset(&se, 0, sizeof(se));
@@ -826,7 +980,11 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
             d->expiry_height != req->expiry_height ||
             d->sys_ruleset_version != req->rs->sys_ruleset_version ||
             d->core_ruleset_version != req->rs->core_ruleset_version ||
-            memcmp(d->identity_pk, req->pk, V2K_PK_LEN) != 0 ||
+            d->auth_kind != akind ||
+            (is_msig
+                 ? (d->msig_signers != req->msig_signers ||
+                    memcmp(d->msig_addr, signer_raw, 64) != 0)
+                 : memcmp(d->identity_pk, req->pk, V2K_PK_LEN) != 0) ||
             (!is_unstake && !is_stexit && !is_rotate && !is_vupd &&
              d->amount != req->amount) ||
             d->n_in != n_in ||
@@ -879,8 +1037,12 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
             goto done;
     }
 
-    memcpy(out->wire_id, pf->wire_id, 64);
+    /* kind 3: the unsigned envelope's wire_id is not the one that will be
+     * submitted — left all zero (msig combine prints the final one); its
+     * intent_id is (the intent excludes the auth blobs) */
+    if (!is_msig) memcpy(out->wire_id, pf->wire_id, 64);
     memcpy(out->intent_id, pf->intent_id, 64);
+    out->auth_kind = akind;
     out->fee     = fee;
     out->sum_in  = sum_in;
     out->change  = change;

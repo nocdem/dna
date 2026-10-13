@@ -284,6 +284,10 @@ static void ctx_set(int signer) {
     g_ctx.auth_context_commit = g_dig;
     g_ctx.leg_auth_digest = g_dig;
     g_ctx.auth = &g_av;
+    /* HF-6 8a: the engine fills these from params 19 / 21 (no row → the
+     * compiled defaults); a hand-built ctx sets the defaults itself */
+    g_ctx.stake_min = (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+    g_ctx.storage_bond = (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
 }
 
 /* the funding leg's mediated reads: one fabricated UTXO row per input

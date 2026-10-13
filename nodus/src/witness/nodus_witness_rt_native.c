@@ -5689,12 +5689,8 @@ static int rtn_vupd2_exec(const dna_env_view_t *env, uint16_t leg_index,
  * (rtn_sys_call_flow).
  * ════════════════════════════════════════════════════════════════════ */
 
-/* DNAC_HF6_STAKE_MIN_DEFAULT is the compiled floor until slice 8; K9's
- * domain is [100,000 NODUS, INT64_MAX raw] — pinned so a drifted constant
- * cannot leave it. */
-_Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT >= 100000ULL * 100000000ULL &&
-                   DNAC_HF6_STAKE_MIN_DEFAULT <= (uint64_t)INT64_MAX,
-               "the compiled STAKE_MIN left the K9 domain");
+/* The K9 domain of STAKE_MIN, [DNAC_HF6_STAKE_MIN_MIN, INT64_MAX] raw, and
+ * its default's place in it are pinned in dnac.h (HF-6 slice 8a). */
 _Static_assert(DNA_VALBIND_CHAIN_LEN == DNA_CHAIN_ID_LEN &&
                    DNA_VALBIND_INTENT_ID_LEN == 64u &&
                    DNA_VALBIND_ID_LEN == RTN_VAL2_KEY_LEN &&
@@ -5703,18 +5699,22 @@ _Static_assert(DNA_VALBIND_CHAIN_LEN == DNA_CHAIN_ID_LEN &&
 
 /**
  * STAKE_MIN — THE ONE READ of the generation-4 bond floor (design rev 6
- * §1.5; K9 domain [100,000 NODUS, INT64_MAX]).
- * ⚠ SLICE-8 SEAM, LABELED: chain_config param 19 (STAKE_MIN) does not
- * exist yet (slice 8 adds params 18-21, Kurultay #16 item 7). Until then
- * the floor is the compiled DNAC_HF6_STAKE_MIN_DEFAULT (2M NODUS). Slice 8
- * replaces THIS BODY with the committed param-19 value active at
- * ctx->global_height — an engine fact on the ctx (the token_create_fee
- * discipline: read by the engine, a read fault a node FAULT, never a
- * default) — and nothing else changes. Pure.
+ * §1.5; K9 domain [100,000 NODUS, INT64_MAX]): the engine fact
+ * ctx->stake_min, i.e. the committed chain_config param 19 (STAKE_MIN)
+ * active at ctx->global_height, or the compiled
+ * DNAC_HF6_STAKE_MIN_DEFAULT with no row (HF-6 slice 8a). The ENGINE reads
+ * it (nodus_witness_v2_apply.c env_stake_min — the token_create_fee
+ * discipline: a read fault, or a stored value outside the K9 domain, is a
+ * node FAULT, never a default) and fills it on every ctx, so this hook
+ * stays pure. 0 is never a value the engine fills (the domain starts at
+ * 100k NODUS): a ctx carrying it was not built by the engine, and is
+ * refused as a node fault (-2) rather than read as "no floor".
+ * @return 0 (*out written) / -2.
  */
-static uint64_t rtn_stake_min_at(const nodus_rt_exec_ctx_t *ctx) {
-    (void)ctx;
-    return (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+static int rtn_stake_min_at(const nodus_rt_exec_ctx_t *ctx, uint64_t *out) {
+    if (ctx->stake_min == 0) return -2;
+    *out = ctx->stake_min;
+    return 0;
 }
 
 /* The new validator's id (§6.2) from the ENGINE-derived chain id and
@@ -5779,8 +5779,13 @@ static int rtn_stake2_exec(const dna_env_view_t *env, uint16_t leg_index,
     /* ── scalar rules ───────────────────────────────────────────────── */
     if (c.commission_bps > DNAC_COMMISSION_BPS_MAX)
         return -1;                       /* rtn_stake_exec's bound       */
-    if (c.bond < rtn_stake_min_at(ctx))
-        return -1;                       /* §1.5: below STAKE_MIN        */
+    {
+        uint64_t floor_raw = 0;
+        if (rtn_stake_min_at(ctx, &floor_raw) != 0)
+            return -2;                   /* engine fact absent: NODE fault */
+        if (c.bond < floor_raw)
+            return -1;                   /* §1.5: below STAKE_MIN        */
+    }
     if (c.bond > (uint64_t)INT64_MAX)
         return -1;                       /* §1.5: the INTEGER bound, a
                                           * VERDICT (never the mutate
@@ -6135,11 +6140,11 @@ static int rtn_rotate2_exec(const dna_env_view_t *env, uint16_t leg_index,
 /* Defined with the SYSTEM adapter below (the rtn_val_rec_ok shape). */
 static int rtn_stor_rec_ok(const uint8_t *v, const uint8_t *key);
 
-/* DNAC_HF6_STORAGE_BOND_DEFAULT is the compiled STORAGE_BOND until slice
- * 8; the vote range is [DNAC_HF6_STORAGE_BOND_MIN, _MAX] (Kurultay #16
- * khan decision 3) — pinned so a drifted constant cannot leave it, and so
- * the exec's "0 < bond <= INT64_MAX" verdicts can never contradict the
- * exact rule. */
+/* STORAGE_BOND's vote range is [DNAC_HF6_STORAGE_BOND_MIN, _MAX] (Kurultay
+ * #16 khan decision 3), its no-row value DNAC_HF6_STORAGE_BOND_DEFAULT —
+ * pinned so a drifted constant cannot leave it, and so the exec's
+ * "0 < bond <= INT64_MAX" verdicts can never contradict the exact rule
+ * for any value the engine can fill (env_storage_bond range-checks). */
 _Static_assert(DNAC_HF6_STORAGE_BOND_DEFAULT >= DNAC_HF6_STORAGE_BOND_MIN &&
                    DNAC_HF6_STORAGE_BOND_DEFAULT <= DNAC_HF6_STORAGE_BOND_MAX &&
                    DNAC_HF6_STORAGE_BOND_MIN > 0 &&
@@ -6148,17 +6153,20 @@ _Static_assert(DNAC_HF6_STORAGE_BOND_DEFAULT >= DNAC_HF6_STORAGE_BOND_MIN &&
 
 /**
  * STORAGE_BOND — THE ONE READ of the exact storage registration bond
- * (design rev 6 §11.3 "Bond == STORAGE_BOND(h) tam eşit").
- * ⚠ SLICE-8 SEAM, LABELED: chain_config param 21 (STORAGE_BOND) does not
- * exist yet (slice 8 adds params 18-21, Kurultay #16 item 7). Until then
- * the value is the compiled DNAC_HF6_STORAGE_BOND_DEFAULT (1M NODUS).
- * Slice 8 replaces THIS BODY with the committed param-21 value active at
- * ctx->global_height, fail-closed (a read fault a node FAULT, never a
- * default) — and nothing else changes. Pure.
+ * (design rev 6 §11.3 "Bond == STORAGE_BOND(h) tam eşit"): the engine
+ * fact ctx->storage_bond, i.e. the committed chain_config param 21
+ * (STORAGE_BOND) active at ctx->global_height, or the compiled
+ * DNAC_HF6_STORAGE_BOND_DEFAULT with no row (HF-6 slice 8a; the engine's
+ * nodus_witness_v2_apply.c env_storage_bond — a read fault, or a stored
+ * value outside [MIN, MAX], is a node FAULT, never a default). Pure. 0 is
+ * never a value the engine fills: a ctx carrying it is refused as a node
+ * fault (-2). @return 0 (*out written) / -2.
  */
-static uint64_t rtn_storage_bond_at(const nodus_rt_exec_ctx_t *ctx) {
-    (void)ctx;
-    return (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+static int rtn_storage_bond_at(const nodus_rt_exec_ctx_t *ctx,
+                               uint64_t *out) {
+    if (ctx->storage_bond == 0) return -2;
+    *out = ctx->storage_bond;
+    return 0;
 }
 
 /* REGISTER: the row (op 8, key node_fp = SHA3-512(call.node_pk),
@@ -6256,8 +6264,13 @@ static int rtn_storage_register_exec(const dna_env_view_t *env,
         return -1;                       /* not the owner                */
 
     /* ── the bond: exact, and both INTEGER ends (G13) ───────────────── */
-    if (c.bond != rtn_storage_bond_at(ctx))
-        return -1;                       /* §11.3: not STORAGE_BOND(h)   */
+    {
+        uint64_t want = 0;
+        if (rtn_storage_bond_at(ctx, &want) != 0)
+            return -2;                   /* engine fact absent: NODE fault */
+        if (c.bond != want)
+            return -1;                   /* §11.3: not STORAGE_BOND(h)   */
+    }
     if (c.bond == 0)
         return -1;                       /* §11.3: 0 < bond              */
     if (c.bond > (uint64_t)INT64_MAX)
@@ -7805,10 +7818,12 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
      * runtime's own generation; 0 for a synthetic runtime). A refusal
      * here is the same verdict class, at the same point (no reads, no
      * effect charged), as the scalar refusal above.
-     * Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md
-     * rev 2.2 §6): a param-16 vote's single-use fact is
-     * ctx->ruleset_gen_storage_voted (the same UNMETERED engine fact
-     * class); only the param-16 rule reads it. */
+     * HF-6 slice 8c (design docs/plans/2026-10-03-hf5-validator-owner-
+     * stake-design.md rev 6 §8): the param-18 vote reads two facts of the
+     * same UNMETERED engine class — its single-use fact
+     * ctx->ruleset_gen_roles_voted (rule (a)) and "any param-16 row"
+     * ctx->ruleset_gen_storage_voted (RETIRED id 16, rule (a')); only the
+     * param-18 rule reads either. */
     {
         /* Nodus EVM: + the EVM_ACTIVE facts (hf3_active / gas_price_on /
          * evm_active_voted — UNMETERED engine facts like the two above);
@@ -7821,6 +7836,7 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         facts.ruleset_gen2_voted = ctx->ruleset_gen2_voted;
         facts.evm_active_voted = ctx->evm_active_voted;
         facts.ruleset_gen_storage_voted = ctx->ruleset_gen_storage_voted;
+        facts.ruleset_gen_roles_voted = ctx->ruleset_gen_roles_voted;
         facts.chain_initial_height = ctx->chain_initial_height; /* F5 */
         facts.judging_generation = rt ? rt->generation : 0u;
         if (nodus_chain_config_stateful_rules_ex(c.param_id, c.effective,
@@ -8436,8 +8452,13 @@ static nodus_adapter_status_t rtn_sys_val2_set(nodus_witness_t *w,
  * unstake_destination_fp = hex(owner_fp) (128 lowercase hex: the bond
  * resolves to owner_fp, §1.5) and unstake_destination_pubkey = 2592 ×
  * 0x00, written FULL-LENGTH because the v1 validator leaf loader
- * (nodus_witness_merkle.c load_validator_leaves — still composed by
- * nodus_witness_global_root_v2 after the edge) refuses any other length.
+ * (nodus_witness_merkle.c load_validator_leaves) refuses any other length
+ * and is still composed by the helpers that take no generation input —
+ * nodus_witness_system_root_v2 and nodus_witness_system_payload_root_v2
+ * (nodus_witness_roots_v2.c). The production SYSTEM root at generation 4
+ * is the v5 composition over the §6.3 leaves (nodus_rt_system_state_root);
+ * nodus_witness_global_root_v2 has no production caller in nodus/src (its
+ * callers are tests).
  * `v2_validator_roles`: (validator_id, owner_fp, pending key, effective
  * epoch) — the record's own values (the "no pending key" encoding).
  * @return NODUS_ADAPTER_OK / NODUS_ADAPTER_ERR_STORAGE_FAULT. */

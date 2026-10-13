@@ -9,8 +9,9 @@
  * placement", §2 "3b", §4 (risks); decisions docs/plans/decisions/
  * 2026-10-08-kurultay-14-hf6-summary.md (K4 accrual merge, K8 Foundation
  * address) and 2026-10-09-kurultay-16-hf6-storage-summary.md (D2: the
- * Foundation rows are exactly active_since_block <= 1). Development
- * trigger: param 16 + the storage vote literal (design §10 item 2, D7).
+ * Foundation rows are exactly active_since_block <= 1). Trigger since
+ * HF-6 slice 8c: param 18 RULESET_GEN_ROLES + the D4 literal (design §8,
+ * §8.1; param 16 RETIRED).
  *
  * ── WHAT IT PROVES ──────────────────────────────────────────────────────
  *  A. DIRECT (nodus_witness_v2_roles_migrate on a hand-built DB, inside a
@@ -45,7 +46,7 @@
  *       row; a stray v2_consensus_keys row (slice 4: the table must be
  *       empty).
  *  B. ENGINE (the seeded fixture of test_hf4_switch, EVM-enabled build,
- *     param 9 at 3, param 14 at 5, param 16 (storage vote literal) at 8 —
+ *     param 9 at 3, param 14 at 5, param 18 (the D4 literal) at 8 —
  *     every row before the engine genesis, idle blocks):
  *   B1. blocks 1..6 leave v2_validator_roles empty; block 7 (= H-1)
  *       switches the registry to generation 4 (both runtimes resolve
@@ -667,7 +668,7 @@ static int t_direct_faults(void) {
 
 #define H9   3u
 #define HE   5u
-#define HS   8u      /* param 16 effective: the edge runs in block HS-1 */
+#define HS   8u      /* param 18 effective: the edge runs in block HS-1 */
 
 static int cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
                   uint64_t effective, uint64_t nonce) {
@@ -689,7 +690,7 @@ static int cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
 }
 
 /* test_hf4_switch fx_open_storage's shape: HF-2 on from 1, param 9 at
- * H9, param 14 at HE, param 16 at HS — all before the engine genesis */
+ * H9, param 14 at HE, param 18 at HS — all before the engine genesis */
 static int fxe_open(fixture_t *fx, const char *tag) {
     memset(fx, 0, sizeof(*fx));
     fx->w = calloc(1, sizeof(*fx->w));
@@ -706,8 +707,8 @@ static int fxe_open(fixture_t *fx, const char *tag) {
                (uint64_t)DNAC_CFG_RULESET_GEN2_D2, H9, 12) != 0 ||
         cc_row(fx->w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D,
                HE, 14) != 0 ||
-        cc_row(fx->w, DNAC_CFG_RULESET_GEN_STORAGE,
-               (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D, HS, 13) != 0)
+        cc_row(fx->w, DNAC_CFG_RULESET_GEN_ROLES,
+               (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D, HS, 13) != 0)
         return -1;
     return v2x_seed_genesis(fx->w, fx->chain16, 0, NULL, 0, NULL);
 }
@@ -764,7 +765,7 @@ static int t_engine_edge(void) {
     (void)hexval;
 #endif
 
-    CHECK(fxe_open(&fx, "edge") == 0, "seeded chain (param 16 at HS)");
+    CHECK(fxe_open(&fx, "edge") == 0, "seeded chain (param 18 at HS)");
     CHECK(run_to(&fx, HS - 2u) == 0, "idle blocks 1..HS-2");
     sqlite3_int64 n = -1, sup0 = -1, copy0 = -1;
     CHECK(count_q(fx.w, "SELECT COUNT(*) FROM v2_validator_roles", &n) == 0

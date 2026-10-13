@@ -57,9 +57,9 @@
  *     each committed SYSTEM head equals its runtime's recomputation):
  *     seven seeded validators with REAL keys (every block carries their
  *     COMMIT votes, so Rule N retires nobody), treasury pool 1 = 10^16,
- *     param 9 at 2, param 14 (EVM_ACTIVE) at 3, param 16 (the storage
- *     vote — GEN_STORAGE is built on the EVM generation, so this is an
- *     EVM-enabled-build test) at 4, eight segments PRE-SEEDED (k = 1..8,
+ *     param 9 at 2, param 14 (EVM_ACTIVE) at 3, param 18 (the
+ *     generation-4 vote RULESET_GEN_ROLES = D4 — generation 4 is built on
+ *     the EVM generation, so this is an EVM-enabled-build test) at 4, eight segments PRE-SEEDED (k = 1..8,
  *     published_height 1 — see HOW IT CAN LIE). A, B, C and D (= validator
  *     0's key: the dual-role node) register at 4; X at E + 5. Since HF-6
  *     slice 6b-1 every registration is the generation-4 STORAGE_REGISTER
@@ -212,9 +212,9 @@
  * (left behind when a CHECK aborts).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
- *  - The GEN_STORAGE pins and the storage vote literal are independent-
- *    oracle literals (shared/dnac/tests/storage_oracle.py,
- *    nodus_witness_runtime.c / dnac.h). If they stop re-deriving, the
+ *  - The GEN_STORAGE pins and the generation-4 vote D4 are independent-
+ *    oracle literals (shared/dnac/tests/storage_oracle.py /
+ *    hf6_vote_oracle.py, nodus_witness_runtime.c / dnac.h). If they stop re-deriving, the
  *    runtime selfcheck fails and section D FAILS at its seeded genesis.
  *    Sections A, B and C do not consult the pins.
  *  - Section D's eight segments are PRE-SEEDED rows (roots = SHA3-512 of
@@ -324,7 +324,7 @@ static int g_checks = 0;
 #define E_LEN    ((uint64_t)DNAC_EPOCH_LENGTH)
 #define P_LEN    ((uint64_t)DNA_V2_SEGMENT_BLOCKS)
 #define D2       ((uint64_t)DNAC_CFG_RULESET_GEN2_D2)
-#define DS       ((uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D)
+#define D4       ((uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D)
 #define FEE      ((uint64_t)DNAC_MIN_FEE_RAW)
 #define BOND     ((uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT)
 #define POOL1    10000000000000000ULL          /* 10^16 raw (pool 1)     */
@@ -1478,8 +1478,8 @@ static int cc_row(nodus_witness_t *w, unsigned param, uint64_t value,
 #define H9   2u
 #define HE   3u       /* EVM_ACTIVE (param 14): GEN_STORAGE is built on the
                        * EVM generation (main merge order, K10) */
-#define H14  4u       /* RULESET_GEN_STORAGE (param 16): H14 names the
-                       * storage edge, not the param id */
+#define H14  4u       /* RULESET_GEN_ROLES (param 18): H14 names the
+                       * generation-4 edge, not the param id */
 
 /* the pre-seeded segment root of k (HOW IT CAN LIE) */
 static int seg_root(uint64_t k, uint8_t out[64]) {
@@ -1497,7 +1497,7 @@ static int fx_open(fixture_t *fx, const char *tag) {
         cc_row(w, DNAC_CFG_RULESET_GEN2, D2, H9, 12) != 0 ||
         cc_row(w, DNAC_CFG_EVM_ACTIVE, (uint64_t)DNAC_CFG_EVM_ACTIVE_D, HE,
                14) != 0 ||
-        cc_row(w, DNAC_CFG_RULESET_GEN_STORAGE, DS, H14, 13) != 0)
+        cc_row(w, DNAC_CFG_RULESET_GEN_ROLES, D4, H14, 13) != 0)
         return -1;
     /* the committee: seven genesis seats with REAL keys */
     uint64_t bonds = 0;

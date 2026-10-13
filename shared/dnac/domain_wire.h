@@ -369,6 +369,51 @@ int dna_evm_activation_digest(uint32_t evm_generation,
                               const uint64_t *consts, uint32_t n_consts,
                               uint64_t *out);
 
+/**
+ * HF-6 — the generation-4 vote digest D4 (design docs/plans/2026-10-03-
+ * hf5-validator-owner-stake-design.md rev 6 §8.1, crypto gate APPROVED by
+ * the operator 2026-10-09; the 296-byte sum fixed by the khan 2026-10-13;
+ * decision docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-
+ * summary.md). The dna_evm_activation_digest shape with the EVM ruleset /
+ * manifest slots replaced by the 64-byte Foundation owner:
+ *
+ *   offset  len  field
+ *        0   16  DNA_ROLEGEN_TAG (zero-padded to 16 bytes)
+ *       16    4  generation u32 BE              (4)
+ *       20    4  base_generation u32 BE         (3, GEN_EVM)
+ *       24   64  sys_ruleset_hash               (commits the SYSTEM meter
+ *                                                policy)
+ *       88   64  core_ruleset_hash
+ *      152    4  spec_version u32 BE            (the 3→4 phase code)
+ *      156   64  foundation_owner               (raw 64 bytes)
+ *      220    4  n_consts u32 BE
+ *      224  8·n  n_consts × u64 BE              (the order is the caller's,
+ *                                                nodus_witness_runtime.c
+ *                                                GEN4_VOTE_CONSTS)
+ *
+ * — DNA_ROLEGEN_PREIMAGE_LEN(n) bytes, 296 for n = 9. *out = the first 8
+ * digest bytes read big-endian, top bit cleared (so *out <= INT64_MAX).
+ * Tag collision scan "NDS.ROLEGEN": no other use (design §8.1). Consumers:
+ * nodus_runtime_gen4_vote_digest (selfcheck) — the vote path compares only
+ * against the compiled literal dnac.h DNAC_CFG_RULESET_GEN_ROLES_D.
+ * @return 0 / -1 (NULL hash, owner or out; n_consts > 64; consts NULL
+ *         with n_consts > 0; hash backend failure — *out untouched).
+ */
+#define DNA_ROLEGEN_TAG "NDS.ROLEGEN.v1"
+#define DNA_ROLEGEN_OWNER_LEN 64
+#define DNA_ROLEGEN_MAX_CONSTS 64u
+#define DNA_ROLEGEN_PREIMAGE_LEN(n)                                     \
+    ((size_t)(16 + 4 + 4 + 2 * DNA_DOM_HASH_LEN + 4 +                   \
+              DNA_ROLEGEN_OWNER_LEN + 4) + (size_t)8 * (size_t)(n))
+int dna_rolegen_vote_digest(uint32_t generation,
+                            uint32_t base_generation,
+                            const uint8_t sys_ruleset_hash[DNA_DOM_HASH_LEN],
+                            const uint8_t core_ruleset_hash[DNA_DOM_HASH_LEN],
+                            uint32_t spec_version,
+                            const uint8_t foundation_owner[DNA_ROLEGEN_OWNER_LEN],
+                            const uint64_t *consts, uint32_t n_consts,
+                            uint64_t *out);
+
 /* ══════════════════════════════════════════════════════════════════════
  * 3. DomainRegistryRecord v1
  * ════════════════════════════════════════════════════════════════════ */

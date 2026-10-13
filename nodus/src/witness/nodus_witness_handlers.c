@@ -50,6 +50,8 @@
 #include "witness/nodus_witness_runtime.h"      /* HF-4: generation      */
 #include "witness/nodus_witness_v2_storage.h"   /* dnac_storage_status   */
 #include "witness/nodus_witness_v2_epoch.h"     /* HF-6 3e: key generation */
+#include "witness/nodus_witness_vset.h"         /* Z-30a: the seat's id   */
+#include "dnac/valbind_wire.h"                  /* Z-30a: migrated id     */
 #include "dnac/env_wire.h"
 #include "dnac/manifest_wire.h"
 #include "dnac/msig_wire.h"                 /* dnac_msig_* member gate */
@@ -444,8 +446,13 @@ static void handle_dnac_supply(nodus_witness_t *w,
 /* ══════════════════════���═════════════════════════════════════════════
  * dnac_fee_info — Return current dynamic fee parameters
  *
- * Response: { base_fee, mempool, min_fee, gas_price, token_create_fee }
+ * Response: { base_fee, mempool, min_fee, gas_price, token_create_fee,
+ *             stake_min, storage_bond, power_cap_bps, np, ns }
  * Client uses min_fee directly when building TX.
+ *
+ * stake_min / storage_bond / power_cap_bps (HF-6 slice 8a): chain_config
+ * params 19 / 21 / 20 active at tip + 1, compiled defaults with no row
+ * (see the read below).
  *
  * token_create_fee (final pre-testnet wipe W-C, decision 2026-09-28-
  * token-create-fee-governance.md) = the committed TOKEN_CREATE_FEE_RAW
@@ -570,15 +577,63 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
         }
     }
 
-    /* 7 keys: the 5 scalar keys (well inside 256 bytes) + "np" (4 × 9)
-     * + "ns" (up to NODUS_DNAC_NAME_SCHED_MAX × ~25 bytes); the rlen
-     * check below still refuses an overflow rather than sending a
-     * truncated map. */
+    /* HF-6 slice 8a: the three generation-4 role parameters at tip + 1 —
+     * stake_min (param 19, the STAKE bond floor), storage_bond (param 21,
+     * the EXACT STORAGE_REGISTER bond) and power_cap_bps (param 20) — each
+     * the committed row active at tip + 1 or its compiled default, so a
+     * client builds a bond the chain accepts after a vote instead of a
+     * compiled constant. Same fault rule as gas_price; in addition a
+     * stored value outside the param's vote range answers an error (the
+     * engine FAULTs on it — env_stake_min / env_storage_bond,
+     * nodus_witness_power_cap_bps_for_epoch), never a value. NOTE
+     * power_cap_bps: consensus keys the ratio on each SNAPSHOT's epoch
+     * start (nodus_witness_power_cap_bps_for_epoch); this key is the value
+     * in force at tip + 1, which governs from the first snapshot whose
+     * epoch start is at or above that row's effective height. Older
+     * clients skip the three unknown keys; an older server sends none
+     * (the client then reads 0 = "not reported"). */
+    uint64_t stake_min    = (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+    uint64_t storage_bond = (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+    uint64_t power_cap    = (uint64_t)DNAC_HF6_POWER_CAP_BPS_DEFAULT;
+    if (w->db) {
+        if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_STAKE_MIN,
+                                       tip + 1, stake_min, &stake_min) < 0 ||
+            stake_min < (uint64_t)DNAC_HF6_STAKE_MIN_MIN ||
+            stake_min > (uint64_t)INT64_MAX) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "stake minimum unreadable");
+            return;
+        }
+        if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_STORAGE_BOND,
+                                       tip + 1, storage_bond,
+                                       &storage_bond) < 0 ||
+            storage_bond < (uint64_t)DNAC_HF6_STORAGE_BOND_MIN ||
+            storage_bond > (uint64_t)DNAC_HF6_STORAGE_BOND_MAX) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "storage bond unreadable");
+            return;
+        }
+        if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_POWER_CAP_BPS,
+                                       tip + 1, power_cap, &power_cap) < 0 ||
+            power_cap < (uint64_t)DNAC_CFG_MIN_POWER_CAP_BPS ||
+            power_cap > (uint64_t)DNAC_CFG_MAX_POWER_CAP_BPS) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                       "power cap unreadable");
+            return;
+        }
+    }
+
+    /* 10 keys. Worst case: the response envelope 31 bytes + the 5 scalar
+     * keys (<= 97) + the 3 HF-6 keys (stake_min 19, storage_bond 22,
+     * power_cap_bps 17) = 186, inside the 256; "np" 3 + 1 + 4 × 9 = 40,
+     * inside the 64; "ns" 4 + NODUS_DNAC_NAME_SCHED_MAX × 26, inside
+     * the × 32. The rlen check below still refuses an overflow rather
+     * than sending a truncated map. */
     uint8_t buf[256 + 64 + NODUS_DNAC_NAME_SCHED_MAX * 32];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
 
-    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 7);
+    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 10);
     cbor_encode_cstr(&enc, "base_fee");
     cbor_encode_uint(&enc, base_fee);
     cbor_encode_cstr(&enc, "mempool");
@@ -589,6 +644,12 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
     cbor_encode_uint(&enc, gas_price);
     cbor_encode_cstr(&enc, "token_create_fee");
     cbor_encode_uint(&enc, token_create_fee);
+    cbor_encode_cstr(&enc, "stake_min");
+    cbor_encode_uint(&enc, stake_min);
+    cbor_encode_cstr(&enc, "storage_bond");
+    cbor_encode_uint(&enc, storage_bond);
+    cbor_encode_cstr(&enc, "power_cap_bps");
+    cbor_encode_uint(&enc, power_cap);
     cbor_encode_cstr(&enc, "np");
     cbor_encode_array(&enc, 4);
     for (size_t len_i = 3; len_i <= 6; len_i++)
@@ -3896,9 +3957,14 @@ static void handle_dnac_token_info(nodus_witness_t *w,
  *                 "epoch_start":  u64,
  *                 "committee": [
  *                   {"pk": bstr(2592), "stake": u64,
- *                    "comm": u16, "status": u8, "addr": tstr},
+ *                    "comm": u16, "status": u8, "addr": tstr,
+ *                    "power": u64},
  *                   ... one entry per seat of the epoch's active set
  *                 ]}
+ * "power" (added with the HF-6 red-team round 1 close-out) is the seat's
+ * voting power as the engine counts it (nodus_committee_member_t.power;
+ * capped under ruleset 2). An older node sends the five other keys only;
+ * the client decoder reports that as has_power = 0.
  *
  * S3: the array is COUNT-DRIVEN on the wire, so a governance-widened
  * committee needs no wire change here — the encoder emits `count`
@@ -3909,6 +3975,86 @@ static void handle_dnac_token_info(nodus_witness_t *w,
  * nodus-cli were all heapified in the same change), so every seat of a
  * governance-widened set is visible end-to-end.
  * ════════════════════════════════════════════════════════════════════ */
+
+/* Red-team round 1 (Z-30a): each seat's status at key generation >= 4.
+ * nodus_validator_get keys its read by the pre-HF-6 tagged hash of the
+ * pubkey, which no generation-4 row carries (the edge re-keyed every row
+ * to its validator_id), so the legacy read missed and every seat showed
+ * ACTIVE. Here the seat's validator_id comes from the epoch's snapshot —
+ * the set nodus_committee_get_for_block served `m` from, in the same
+ * order (it never carries the ids itself: committee.h, "NOT CACHED") —
+ * and the status from that row (nodus_validator_v2_get, the PRIMARY KEY
+ * read):
+ *   ruleset 2  the entry's validator_id (a re-STAKE after graduation
+ *              opens a NEW id, design rev 6 §4 — the migrated bridge
+ *              would name the old row);
+ *   ruleset 1  dna_validator_id_migrated(chain32, entry pubkey), the
+ *              bridge v2ep_member_in_snapshot uses for a pre-edge set.
+ * No snapshot, a snapshot that is not the served set, another ruleset, a
+ * seat whose row is absent (no path deletes a validators row) or a read
+ * fault is -1: the caller sends an error reply — a status that cannot be
+ * read is never shown as ACTIVE. Node-local display read. */
+static int cq_v2_statuses(nodus_witness_t *w, uint64_t epoch_start,
+                          const nodus_committee_member_t *m, int count,
+                          uint8_t *status_out) {
+    dna_vset_snapshot_t *snap = NULL;
+    nodus_v2_validator_row_t *row = NULL;
+    uint8_t chain32[DNA_VALBIND_CHAIN_LEN];
+    int ret = -1;
+
+    if (nodus_witness_vset_get(w, epoch_start, &snap, NULL) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "committee_query: the snapshot of epoch %llu "
+                      "is absent or unreadable",
+                      (unsigned long long)epoch_start);
+        return -1;
+    }
+    if ((int)snap->active_count != count) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "committee_query: the snapshot is not "
+                      "the served set");
+        goto done;
+    }
+    if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V1) {
+        if (nodus_witness_v2_chain_id(w, chain32) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "committee_query: the chain id of "
+                          "the ruleset-1 bridge is unreadable");
+            goto done;
+        }
+    } else if (snap->selection_ruleset != DNA_VSET_RULESET_TOPN_V2) {
+        QGP_LOG_ERROR(LOG_TAG, "committee_query: ruleset %u",
+                      (unsigned)snap->selection_ruleset);
+        goto done;
+    }
+    row = malloc(sizeof(*row));                     /* ~5.4 KB */
+    if (!row) goto done;
+    for (int i = 0; i < count; i++) {
+        if (memcmp(snap->entries[i].pubkey, m[i].pubkey,
+                   DNAC_PUBKEY_SIZE) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "committee_query: the snapshot is "
+                          "not the served set");
+            goto done;
+        }
+        uint8_t vid[NODUS_V2_VALIDATOR_ID_LEN];
+        if (snap->selection_ruleset == DNA_VSET_RULESET_TOPN_V2) {
+            memcpy(vid, snap->entries[i].validator_id, sizeof(vid));
+        } else if (dna_validator_id_migrated(vid, chain32,
+                                             snap->entries[i].pubkey) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "committee_query: a v1 entry's "
+                          "migrated validator_id did not derive");
+            goto done;
+        }
+        if (nodus_validator_v2_get(w, vid, row) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "committee_query: a seat's validator "
+                          "row is absent or unreadable");
+            goto done;
+        }
+        status_out[i] = row->rec.status;
+    }
+    ret = 0;
+done:
+    free(row);
+    dna_vset_free(&snap);
+    return ret;
+}
 
 static void handle_dnac_committee_query(nodus_witness_t *w,
                                           struct nodus_tcp_conn *conn,
@@ -3929,6 +4075,31 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
         return;
     }
 
+    /* Z-30a: at key generation >= 4 every seat's status is read by its
+     * validator_id before a byte is encoded (cq_v2_statuses); a read that
+     * fails is an error reply. Below it the legacy per-pubkey read in the
+     * loop is unchanged. */
+    int gen4 = 0;
+    if (hf6_registry_roles(w, &gen4) != 0) {
+        free(committee);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "the registry does not resolve one compiled generation");
+        return;
+    }
+    uint8_t *v2_status = NULL;
+    if (gen4 && count > 0) {
+        v2_status = calloc((size_t)count, sizeof(*v2_status));
+        if (!v2_status ||
+            cq_v2_statuses(w, epoch_start, committee, count,
+                           v2_status) != 0) {
+            free(v2_status);
+            free(committee);
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "committee status read failed");
+            return;
+        }
+    }
+
     /* Response: 3 top-level keys; each committee entry packs ~2700 bytes
      * (2592 pubkey + address 256 + overhead).
      *
@@ -3942,6 +4113,7 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
     size_t buf_size = 512 + (size_t)DNAC_MAX_ACTIVE_VALIDATORS * 3200;
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
+        free(v2_status);
         free(committee);
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "alloc failed");
@@ -3962,11 +4134,16 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        /* Status defaults to ACTIVE (0); pull real status from validator row. */
+        /* Generation 4: the status read by validator_id above. Below it:
+         * defaults to ACTIVE (0); pull real status from validator row. */
         uint8_t status = (uint8_t)DNAC_VALIDATOR_ACTIVE;
-        dnac_validator_record_t v_rec;
-        if (nodus_validator_get(w, committee[i].pubkey, &v_rec) == 0) {
-            status = v_rec.status;
+        if (v2_status) {
+            status = v2_status[i];
+        } else {
+            dnac_validator_record_t v_rec;
+            if (nodus_validator_get(w, committee[i].pubkey, &v_rec) == 0) {
+                status = v_rec.status;
+            }
         }
 
         /* Endpoint lookup (P2P-PORT F5): the roster's own rule
@@ -3976,7 +4153,7 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
         char addr[CMT_P2P_NETADDR_STR_MAX];
         witness_reply_addr(w, committee[i].pubkey, addr, sizeof(addr));
 
-        cbor_encode_map(&enc, 5);
+        cbor_encode_map(&enc, 6);
         cbor_encode_cstr(&enc, "pk");
         cbor_encode_bstr(&enc, committee[i].pubkey, DNAC_PUBKEY_SIZE);
         cbor_encode_cstr(&enc, "stake");
@@ -3987,6 +4164,15 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
         cbor_encode_uint(&enc, status);
         cbor_encode_cstr(&enc, "addr");
         cbor_encode_cstr(&enc, addr);
+        /* HF-6 red-team round 1 close-out: the seat's VOTING power as the
+         * engine counts it — member.power from the same
+         * nodus_committee_get_for_block lookup (nodus_witness_vset_powers
+         * over the served snapshot: ruleset 1 total / DNAC_DECIMAL_UNIT,
+         * ruleset 2 the counted, capped power; the recompute arm total /
+         * DNAC_DECIMAL_UNIT), the value the CLI's approval selection
+         * reads. */
+        cbor_encode_cstr(&enc, "power");
+        cbor_encode_uint(&enc, committee[i].power);
     }
 
     size_t rlen = cbor_encoder_len(&enc);
@@ -3998,6 +4184,7 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
     }
 
     free(buf);
+    free(v2_status);
     free(committee);
 }
 
@@ -4041,41 +4228,42 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
  * sürüm boyunca pk da)" — minimal arm; the full client work is slice 7):
  * under the HF-6 generation (hf6_registry_roles) every entry carries two
  * more keys, "vid" bstr(64) = validator_id and "owner" bstr(64) = owner_fp
- * (the validator's address), read from the row's v2_validator_roles JOIN
- * (vl_v2_ids); "pk" stays (it is the consensus key — validators.pubkey —
+ * (the validator's address), read from the row's v2 row (vl_v2_ids);
+ * "pk" stays (it is the consensus key — validators.pubkey —
  * kept one version), and "dlg" counts the rows keyed by validator_id
  * (nodus_delegation_v2_count_by_validator — the legacy count hashes the
  * pubkey, which no generation-4 row is keyed by). A row without its roles
  * row is an error reply (vl_v2_ids). Older clients skip both new keys.
+ *
+ * Red-team round 1 (Z-29): the generation-4 arm is keyed by each listed
+ * row's OWN key (validators.pubkey_hash, returned by
+ * nodus_validator_list_paged_keys), never by its consensus pubkey. Two
+ * rows may carry one pubkey — a graduated UNSTAKED row and the row a
+ * later STAKE opens (design rev 6 §4: a re-STAKE after graduation opens a
+ * new validator_id; validators.pubkey is not UNIQUE) — and a pubkey-keyed
+ * read answered "two rows", which failed the whole list.
  * ════════════════════════════════════════════════════════════════════ */
 
 /* HF-6 3e: the validator_id and owner_fp of the generation-4 validators
- * row holding consensus pubkey `pk` — the roles JOIN rtn_sys_val2_fetch
- * uses (r.validator_id = v.pubkey_hash). EXACTLY one row must answer; no
- * row, two rows or a malformed column is -1 (the caller's error reply).
- * Node-local display read. */
-static int vl_v2_ids(nodus_witness_t *w, const uint8_t *pk,
+ * row whose key (validators.pubkey_hash = v2_validator_roles.validator_id)
+ * is `key` — nodus_validator_v2_get, the PRIMARY KEY read. The row must
+ * still hold consensus pubkey `pk` (the list and this read are separate
+ * statements); no row, a malformed row, a row without its roles row or a
+ * different pubkey is -1 (the caller's error reply). Node-local display
+ * read. */
+static int vl_v2_ids(nodus_witness_t *w, const uint8_t key[64],
+                     const uint8_t *pk,
                      uint8_t vid_out[64], uint8_t owner_out[64]) {
-    sqlite3_stmt *st = NULL;
+    nodus_v2_validator_row_t *row = malloc(sizeof(*row));   /* ~5.4 KB */
+    if (!row) return -1;
     int out = -1;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT r.validator_id, r.owner_fp FROM validators v "
-            "JOIN v2_validator_roles r ON r.validator_id = v.pubkey_hash "
-            "WHERE v.pubkey = ?1", -1, &st, NULL) != SQLITE_OK)
-        return -1;
-    if (sqlite3_bind_blob(st, 1, pk, DNAC_PUBKEY_SIZE,
-                          SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {
-        const uint8_t *vid = sqlite3_column_blob(st, 0);
-        const uint8_t *own = sqlite3_column_blob(st, 1);
-        if (vid && sqlite3_column_bytes(st, 0) == 64 &&
-            own && sqlite3_column_bytes(st, 1) == 64) {
-            memcpy(vid_out, vid, 64);
-            memcpy(owner_out, own, 64);
-            if (sqlite3_step(st) == SQLITE_DONE) out = 0;   /* exactly one */
-        }
+    if (nodus_validator_v2_get(w, key, row) == 0 &&
+        memcmp(row->rec.pubkey, pk, DNAC_PUBKEY_SIZE) == 0) {
+        memcpy(vid_out, row->validator_id, 64);
+        memcpy(owner_out, row->owner_fp, 64);
+        out = 0;
     }
-    sqlite3_finalize(st);
+    free(row);
     return out;
 }
 
@@ -4133,9 +4321,19 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
         return;
     }
 
+    /* each listed row's key (validators.pubkey_hash): the generation-4
+     * arm below reads the row's ids by it (Z-29) */
+    uint8_t (*keys)[64] = calloc((size_t)limit, sizeof(*keys));
+    if (!keys) {
+        free(vals);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
+        return;
+    }
+
     int count = 0, total = 0;
-    if (nodus_validator_list_paged(w, filter_status, offset, limit,
-                                     vals, &count, &total) != 0) {
+    if (nodus_validator_list_paged_keys(w, filter_status, offset, limit,
+                                         vals, keys, &count, &total) != 0) {
+        free(keys);
         free(vals);
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "validator list query failed");
@@ -4145,6 +4343,7 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
     /* HF-6 3e: the generation-4 arm (block comment) */
     int gen4 = 0;
     if (hf6_registry_roles(w, &gen4) != 0) {
+        free(keys);
         free(vals);
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "the registry does not resolve one compiled generation");
@@ -4162,6 +4361,7 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
         if (!dlg || (gen4 && !ids)) {
             free(ids);
             free(dlg);
+            free(keys);
             free(vals);
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
             return;
@@ -4170,7 +4370,7 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
     for (int i = 0; i < count; i++) {
         int rc;
         if (gen4) {
-            rc = vl_v2_ids(w, vals[i].pubkey, ids[i][0], ids[i][1]);
+            rc = vl_v2_ids(w, keys[i], vals[i].pubkey, ids[i][0], ids[i][1]);
             if (rc == 0)
                 rc = nodus_delegation_v2_count_by_validator(w, ids[i][0],
                                                             &dlg[i]);
@@ -4183,12 +4383,15 @@ static void handle_dnac_validator_list_query(nodus_witness_t *w,
                           "validator_list: delegator count read failed");
             free(ids);
             free(dlg);
+            free(keys);
             free(vals);
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "delegator count query failed");
             return;
         }
     }
+    free(keys);   /* every key-keyed read is done */
+    keys = NULL;
 
     /* Each entry ships pubkey (2592B) + 8 small ints. Budget 2800B;
      * + "vid"/"owner" (2 × (5 + 2 + 64) B) under generation 4. */

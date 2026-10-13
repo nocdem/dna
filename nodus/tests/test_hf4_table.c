@@ -53,17 +53,37 @@
  *       v9) also owns op 10 ROTATE_CONSENSUS_KEY — rules {1..10} — and
  *       its policy prices ops 1..10, i.e. exactly the EVM generation's op
  *       set plus 10 (owned by no earlier generation); CORE v7 unchanged.
- *   6'. the storage vote literal re-derives from the GEN_STORAGE pins.
+ *   6'. (deleted in HF-6 slice 8c with param 16: the storage vote
+ *       literal it re-derived no longer exists.)
+ *   6''. HF-6 slice 8b (design 2026-10-03-hf5-validator-owner-stake-
+ *       design.md rev 6 §8.1): dna_rolegen_vote_digest over the compiled
+ *       generation-4 pins + the compiled owner + the nine named constants
+ *       (the test's own array) == nodus_runtime_gen4_vote_digest ==
+ *       DNAC_CFG_RULESET_GEN_ROLES_D, and — only under
+ *       DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT — == 0x4dc61072d5982acd, the
+ *       K8 value of shared/dnac/tests/hf6_vote_oracle.py; the harness test
+ *       owner 2cca88c4…ee196b93 passed explicitly gives the oracle's
+ *       --owner value 0x4fc24934a9155c64 in every build; the preimage is
+ *       296 bytes for n = 9 (DNA_ROLEGEN_PREIMAGE_LEN, which the
+ *       constructor checks before hashing); NULL pointers and n_consts >
+ *       64 are refused; generation, base, either hash, the spec version,
+ *       n_consts, one owner byte and each constant move the value.
+ *       HOW IT CAN LIE: the KAT numbers come from the Python oracle; this
+ *       section proves the C constructor agrees with it, not that §8.1 is
+ *       the right layout (that is the crypto gate's, approved 2026-10-09).
+ *       In a test build that overrides the owner (stagef_hf6_owner.sh) the
+ *       K8 KAT line is compiled out; the triangle and the harness-owner
+ *       KAT still run.
  *   8.  the storage ops are refused (-1, never -2) by the generation-1,
  *       generation-2 and NULL SYSTEM hooks (read_plan and exec); with no
  *       call bytes GEN_STORAGE refuses them too (op 9 unconditionally —
  *       package B2); the generation-2 and NULL CORE read_plan refuse a
  *       SYSFUND leg paired with a storage op.
- *  HOW IT CAN LIE (storage): the GEN_STORAGE pins and the storage vote
- *  literal are independent-oracle literals (shared/dnac/tests/
- *  storage_oracle.py, nodus_witness_runtime.c / dnac.h); section 5
- *  (selfcheck) and the 6' re-derivation prove the C encoders agree with
- *  that oracle, not that the PROVISIONAL generation number / op ids /
+ *  HOW IT CAN LIE (storage): the GEN_STORAGE pins are independent-oracle
+ *  literals (shared/dnac/tests/storage_oracle.py, nodus_witness_runtime.c)
+ *  and D4 is hf6_vote_oracle.py's (dnac.h); section 5 (selfcheck) and the
+ *  6'' re-derivation prove the C encoders agree with those oracles, not
+ *  that the PROVISIONAL generation number / op ids /
  *  versions (main merge order) are final. Section 8 feeds views without
  *  call bytes, so its GEN_STORAGE case proves only the parse / B2
  *  refusals; the register /
@@ -98,6 +118,8 @@
 #include "dnac/res_meter.h"
 #include "dnac/env_wire.h"
 #include "dnac/ledger_ids.h"
+#include "dnac/power_cap.h"      /* HF-6 8b: D4 consts[3..4] */
+#include "dnac/valbind_wire.h"   /* HF-6 8b: D4 consts[8]    */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -376,17 +398,153 @@ int main(void) {
                                      DNAC_RULESET_SWITCH_SPEC_VERSION,
                                      &d) == 0);
         CHECK(d == (uint64_t)DNAC_CFG_RULESET_GEN2_D2);
-#ifdef NODUS_EVM_ENABLED
-        /* storage reward v1: the storage vote literal re-derives from the
-         * compiled GEN_STORAGE pins (both oracle-filled — header "HOW IT
-         * CAN LIE"; STORAGE-ORACLE: shared/dnac/tests/storage_oracle.py) */
-        CHECK(dna_ruleset_gen_digest(NODUS_RT_GEN_STORAGE,
-                                     gS[0].ruleset_hash, gS[1].ruleset_hash,
-                                     DNAC_RULESET_SWITCH_SPEC_VERSION,
-                                     &d) == 0);
-        CHECK(d == (uint64_t)DNAC_CFG_RULESET_GEN_STORAGE_D);
-#endif
+        /* (the storage-reward v1 RSGEN literal that re-derived here from
+         * the GEN_STORAGE pins is deleted with param 16 — HF-6 slice 8c;
+         * generation 4's vote value is 6'' below) */
     }
+
+    /* ── 6''. HF-6 slice 8b: the generation-4 vote value D4 (design rev 6
+     *        §8.1) — the constructor over the compiled pins, owner and the
+     *        nine named constants re-derives the literal and the wrapper;
+     *        the K8 number only where the owner is K8; the harness owner's
+     *        number through an explicit owner argument; refusals; every
+     *        input moves the value (EVM-enabled build: generation 4 exists
+     *        only there) ─────────────────────────────────────────────── */
+#ifdef NODUS_EVM_ENABLED
+    {
+        /* the test's OWN copy of the §8.1 constants, from the named macros
+         * (not the runtime's static array) */
+        uint64_t k[9] = {
+            DNAC_HF6_STAKE_MIN_DEFAULT, DNAC_HF6_STAKE_MIN_MIN,
+            DNAC_HF6_POWER_CAP_BPS_DEFAULT, DNA_POWER_CAP_BPS_MIN,
+            DNA_POWER_CAP_BPS_MAX, DNAC_HF6_STORAGE_BOND_DEFAULT,
+            DNAC_HF6_STORAGE_BOND_MIN, DNAC_HF6_STORAGE_BOND_MAX,
+            DNA_VALBIND_MAX_EXPIRY_BLOCKS
+        };
+        /* §8.1's numbers, so a renamed or re-valued macro is caught here
+         * and not only by the KAT */
+        CHECK(k[0] == 200000000000000ULL && k[1] == 10000000000000ULL &&
+              k[2] == 3000u && k[3] == 500u && k[4] == 3000u &&
+              k[5] == 100000000000000ULL && k[6] == 10000000000000ULL &&
+              k[7] == 100000000000000ULL && k[8] == 720u);
+        uint8_t own[64];
+        {
+            static const uint8_t compiled_owner[] = DNAC_HF6_FOUNDATION_OWNER;
+            _Static_assert(sizeof(compiled_owner) == 64,
+                           "the compiled owner is 64 bytes");
+            memcpy(own, compiled_owner, sizeof(own));
+        }
+        /* the preimage length: 296 bytes for n = 9 (design §8.1, khan
+         * 2026-10-13); the constructor refuses to hash any other length */
+        _Static_assert(DNA_ROLEGEN_PREIMAGE_LEN(9) == 296,
+                       "D4 preimage is 296 bytes");
+        CHECK(DNA_ROLEGEN_PREIMAGE_LEN(0) == 224);
+        CHECK(DNAC_HF6_SWITCH_SPEC_VERSION == 1u);
+        CHECK(NODUS_RT_GEN_STORAGE == 4u && NODUS_RT_GEN_STORAGE_BASE == 3u);
+
+        uint64_t d0 = 0, d = 0, w = 0;
+        CHECK(dna_rolegen_vote_digest(NODUS_RT_GEN_STORAGE,
+                                      NODUS_RT_GEN_STORAGE_BASE,
+                                      gS[0].ruleset_hash, gS[1].ruleset_hash,
+                                      DNAC_HF6_SWITCH_SPEC_VERSION, own,
+                                      k, 9, &d0) == 0);
+        CHECK(d0 <= (uint64_t)INT64_MAX);
+        /* triangle: constructor == wrapper == compiled literal */
+        CHECK(nodus_runtime_gen4_vote_digest(&w) == 0 && w == d0);
+        CHECK(d0 == (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D);
+        CHECK(nodus_runtime_gen4_vote_digest(NULL) == -1);
+#ifdef DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT
+        /* KAT: owner K8 → D4 of shared/dnac/tests/hf6_vote_oracle.py
+         * (hf6_vote_oracle_out.txt: 0x4dc61072d5982acd =
+         * 5604184871704996557) */
+        CHECK(d0 == 0x4dc61072d5982acdULL);
+#endif
+        /* KAT: the harness test owner (stagef_hf6_owner.sh's identity of
+         * the 2026-10-12 rotation run, SHA3-512 of its nodus.pk
+         * 2cca88c4…ee196b93) passed EXPLICITLY → the oracle's
+         * `hf6_vote_oracle.py --owner 2cca88c4…ee196b93` value
+         * 0x4fc24934a9155c64 (5747236565002050660). A KAT vector, not a
+         * project fixture: no build carries this owner by default. */
+        {
+            static const uint8_t harness_owner[64] = {
+                0x2c, 0xca, 0x88, 0xc4, 0x51, 0x7e, 0xc1, 0xb7,
+                0x84, 0xaf, 0xfa, 0xc2, 0x5f, 0xc0, 0x03, 0x4a,
+                0x7f, 0xaf, 0x2b, 0x22, 0xee, 0x99, 0x35, 0x19,
+                0x7d, 0x1a, 0x59, 0xce, 0xaf, 0xae, 0xa1, 0xe9,
+                0x61, 0x82, 0x11, 0x40, 0x05, 0x33, 0xd8, 0x33,
+                0x2d, 0xde, 0x3c, 0xbb, 0xb6, 0xcd, 0x80, 0x91,
+                0x4b, 0x3c, 0xa5, 0x03, 0xc4, 0x5a, 0x89, 0x15,
+                0xbc, 0xd8, 0xd9, 0xf1, 0xee, 0x19, 0x6b, 0x93
+            };
+            CHECK(dna_rolegen_vote_digest(NODUS_RT_GEN_STORAGE,
+                                          NODUS_RT_GEN_STORAGE_BASE,
+                                          gS[0].ruleset_hash,
+                                          gS[1].ruleset_hash,
+                                          DNAC_HF6_SWITCH_SPEC_VERSION,
+                                          harness_owner, k, 9, &d) == 0);
+            CHECK(d == 0x4fc24934a9155c64ULL);
+        }
+        /* refusals: every pointer, n_consts > 64, NULL consts with n > 0 */
+        CHECK(dna_rolegen_vote_digest(4, 3, NULL, gS[1].ruleset_hash, 1,
+                                      own, k, 9, &d) == -1);
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash, NULL, 1,
+                                      own, k, 9, &d) == -1);
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 1, NULL, k, 9,
+                                      &d) == -1);
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 1, own, k, 9,
+                                      NULL) == -1);
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 1, own, NULL, 9,
+                                      &d) == -1);
+        {
+            static uint64_t many[DNA_ROLEGEN_MAX_CONSTS + 1];
+            CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                          gS[1].ruleset_hash, 1, own, many,
+                                          DNA_ROLEGEN_MAX_CONSTS + 1,
+                                          &d) == -1);
+            CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                          gS[1].ruleset_hash, 1, own, many,
+                                          DNA_ROLEGEN_MAX_CONSTS, &d) == 0);
+        }
+        /* every input moves the value */
+        CHECK(dna_rolegen_vote_digest(5, 3, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 1, own, k, 9,
+                                      &d) == 0 && d != d0);
+        CHECK(dna_rolegen_vote_digest(4, 2, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 1, own, k, 9,
+                                      &d) == 0 && d != d0);
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[1].ruleset_hash,
+                                      gS[0].ruleset_hash, 1, own, k, 9,
+                                      &d) == 0 && d != d0);
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 2, own, k, 9,
+                                      &d) == 0 && d != d0);
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 1, own, k, 8,
+                                      &d) == 0 && d != d0);
+        own[63] ^= 1u;                      /* one owner byte */
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 1, own, k, 9,
+                                      &d) == 0 && d != d0);
+        own[63] ^= 1u;
+        for (size_t i = 0; i < 9; i++) {    /* each constant */
+            k[i] += 1u;
+            CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                          gS[1].ruleset_hash, 1, own, k, 9,
+                                          &d) == 0 && d != d0);
+            k[i] -= 1u;
+        }
+        /* restored inputs give the same value again */
+        CHECK(dna_rolegen_vote_digest(4, 3, gS[0].ruleset_hash,
+                                      gS[1].ruleset_hash, 1, own, k, 9,
+                                      &d) == 0 && d == d0);
+        /* distinct from every other vote value */
+        CHECK(d0 != (uint64_t)DNAC_CFG_RULESET_GEN2_D2 &&
+              d0 != (uint64_t)DNAC_CFG_EVM_ACTIVE_D);
+    }
+#endif
 
     /* ── 8. storage reward v1: the storage ops are refused as a VERDICT
      *       (-1), never a fault, by the SYSTEM hooks of generations 1, 2

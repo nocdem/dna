@@ -138,13 +138,31 @@
  *     authorized by the ROW's owner_fp (rtn_unstake2_exec / rtn_vupd2_exec),
  *     which the bytes do not carry — the chain decides. Below generation 4
  *     ops 2-4 keep the legacy pubkey layouts above, byte-identical. A
- *     kind-3 (multisig) owner or delegator is NOT built by this module.
+ *     kind-3 (multisig) owner or delegator: see "KIND-3 OWNER" below.
  *     The storage ops exist ONLY at generation 4 (the chain owns
  *     them nowhere else) and have no other layout: below it they are
  *     refused (ERR_GEN). The builder refuses for STORAGE_REGISTER only
  *     what the call bytes decide — a bond outside [1, INT64_MAX]
  *     (ERR_STORAGE_BOND); the EXACT value is chain state (the STORAGE_BOND
  *     in force, rtn_storage_bond_at), checked by the chain.
+ *   KIND-3 OWNER (decision docs/plans/decisions/2026-09-29-general-
+ *   multisig.md, addendum "çok bacaklı ortak imza dosyası v2", 2026-10-13;
+ *   design rev 6 §1.3): every generation-4 layout above may be owned by an
+ *   M-of-N multisig address. The request then carries the DESCRIPTOR
+ *   (req->msig_desc) and the final signer count K (req->msig_signers); the
+ *   owner / delegator / change owner is the address SHA3-512(descriptor)
+ *   (shared/dnac/msig_wire.h — computed here with qgp_sha3_512, the
+ *   descriptor codec is NOT linked: the web wallet's native vector
+ *   compiles this file without it), both legs carry auth_kind 3 =
+ *   K zero signer slots ‖ dcount 1 ‖ dlen u16 BE ‖ descriptor (the chain's
+ *   rtn_auth_msig layout, the nodus_v2_msig_unsigned_auth shape), and the
+ *   envelope is returned UNSIGNED with its two leg auth digests
+ *   (nodus_v2_stake_built_t.leg_digest): the co-signers sign them through
+ *   the v2 export / signature files of nodus_v2_msig.h. The chain's rule
+ *   (rtn_sys_owner_auth kind 3): one descriptor, >= M of its keys signed,
+ *   no foreign signer, its address == the owner; the funding coins are the
+ *   address's (rtn_input_owned). Legacy layouts have no kind-3 form
+ *   (ERR_GEN).
  *   This module never calls the consent codec (shared/dnac/valbind_wire.c):
  *   the web wallet's WASM module and native vector compile this file
  *   without it. Signing, verifying and the validator_id derivation are the
@@ -162,6 +180,8 @@
 
 #include "nodus/nodus_v2_spend.h"   /* rc values, widths, sign_one_key */
 #include "dnac/valbind_wire.h"      /* HF-6 consent WIDTHS only — no call */
+#include "dnac/msig_wire.h"         /* kind-3 descriptor WIDTHS only — no
+                                     * call (see "KIND-3 OWNER")          */
 
 #ifdef __cplusplus
 extern "C" {
@@ -304,6 +324,17 @@ typedef struct {
     /* ── HF-6 slice 6b (zero in every older caller) ─────────────────── */
     const uint8_t *node_fp;          /* STORAGE_EXIT: the registry key
                                       * SHA3-512(node_pk) (64 raw B)        */
+    /* ── HF-6 kind-3 owner (zero in every older caller — "KIND-3 OWNER"
+     *    above) ──────────────────────────────────────────────────────── */
+    const uint8_t *msig_desc;        /* non-NULL: the owner / delegator is
+                                      * the multisig address SHA3-512(this
+                                      * descriptor); `pk` / `sk` are then
+                                      * unused (may be NULL) and the
+                                      * envelope is built UNSIGNED          */
+    size_t         msig_desc_len;    /* DNA_MSIG_DESC_LEN(N), 2 <= N <= 7    */
+    uint32_t       msig_signers;     /* K, M <= K <= N: the FINAL signer
+                                      * count (auth_len is signed, so K is
+                                      * fixed here)                         */
 } nodus_v2_stake_req_t;
 
 /** Fill `out` with the SYSTEM and CORE tuples of the generated
@@ -378,16 +409,37 @@ typedef struct {
     uint8_t  node_fp[64];                /* STORAGE_REGISTER: SHA3-512(
                                           * node_pk); STORAGE_EXIT: the
                                           * call                            */
+    /* ── HF-6 kind-3 owner ("KIND-3 OWNER" above) ───────────────────── */
+    uint8_t  auth_kind;                  /* 1 (NODUS_RT_AUTHKIND_DSA87_
+                                          * MULTI_V1) or 3 (_MSIG_V1); the
+                                          * same on both legs               */
+    uint32_t msig_signers;               /* kind 3: K (slots per leg)       */
+    uint8_t  msig_m, msig_n;             /* kind 3: the descriptor header's
+                                          * M and N (its full validation —
+                                          * tag, key order — is the msig
+                                          * library's / the chain's)        */
+    uint8_t  msig_addr[64];              /* kind 3: SHA3-512(descriptor) —
+                                          * then also owner_fp; identity_pk
+                                          * is all zero (no single signer)  */
 } nodus_v2_stake_decoded_t;
 
 typedef struct {
     uint8_t                 *env;        /* heap; nodus_v2_stake_built_free */
     size_t                   env_len;
-    uint8_t                  wire_id[64];
+    uint8_t                  wire_id[64];/* kind 3: all zero — the unsigned
+                                          * envelope has no final wire_id
+                                          * (msig combine prints it)        */
     uint8_t                  intent_id[64];
     uint64_t                 fee, sum_in, change;
     int                      n_in;
     nodus_v2_stake_decoded_t dec;        /* read back from `env`           */
+    /* ── HF-6 kind-3 owner ──────────────────────────────────────────── */
+    uint8_t                  auth_kind;  /* 1 = signed (kind 1); 3 = the
+                                          * UNSIGNED kind-3 envelope        */
+    uint8_t                  leg_digest[2][64]; /* kind 3: the pass-1 leg
+                                          * auth digests of leg 0 (SYSTEM)
+                                          * and leg 1 (CORE SYSFUND) — what
+                                          * every co-signer signs           */
 } nodus_v2_stake_built_t;
 
 /**
@@ -410,8 +462,9 @@ typedef struct {
  *   gen-4 STAKE / ROTATE (generation >= NODUS_RT_GEN_STORAGE): owner_fp =
  *            SHA3-512(pk); the builder refuses only what the call bytes
  *            decide — STAKE: commission <= DNAC_COMMISSION_BPS_MAX, 1 <=
- *            bond <= INT64_MAX (ERR_BOND; STAKE_MIN is the chain's — a
- *            chain_config value from slice 8); ROTATE: a non-zero
+ *            bond <= INT64_MAX (ERR_BOND; STAKE_MIN is the chain's —
+ *            chain_config param 19, dnac_fee_info "stake_min"); ROTATE:
+ *            a non-zero
  *            validator_id; STAKE / ROTATE / STORAGE_REGISTER: consensus_pk
  *            and consent_sig present; STORAGE_REGISTER: 1 <= bond <=
  *            INT64_MAX (ERR_STORAGE_BOND; the exact STORAGE_BOND is the
@@ -421,6 +474,16 @@ typedef struct {
  *   inputs = eligible coins ascending by nullifier, taken until their sum
  *            covers `need`, at most NODUS_V2_SPEND_MAX_IN;
  *   change = sum − need, one native output to the signer when > 0.
+ * KIND-3 OWNER (req->msig_desc non-NULL): only the generation-4 layouts
+ * (else ERR_GEN); the descriptor's length must be DNA_MSIG_DESC_LEN(N)
+ * with 2 <= N <= DNA_MSIG_MAX_N and 1 <= M <= N read from its header, and
+ * M <= K <= N (else ERR_ARG — the tag and the key order are not checked
+ * here: the chain refuses a malformed descriptor, and nodus_v2_msig_
+ * review2 checks it before anyone signs); the owner, the delegator and the
+ * change owner are SHA3-512(descriptor); both legs are auth_kind 3 with K
+ * zero slots; NOTHING is signed: the envelope is encoded, preflighted once
+ * (pass 1) and returned with out->leg_digest[0..1] = its leg auth digests,
+ * out->auth_kind = 3 and out->wire_id all zero.
  * @return NODUS_V2_SPEND_OK or a refusal (`err` may be NULL).
  */
 int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
@@ -436,12 +499,21 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
  *  bytes) are the generation-4 layouts; their record identity is the one
  *  signer of both legs, and a STAKE or STORAGE_REGISTER whose owner_fp is
  *  not SHA3-512 of that signer is refused (kind 1: the owner IS the
- *  signer — the only shape this module builds). HF-6 slice 7b: ops 2 / 4
+ *  signer; kind 3 below). HF-6 slice 7b: ops 2 / 4
  *  with a 136-byte call, op 3 with a 64-byte call and op 5 (66 bytes — the
  *  only op-5 layout this module reads) are the generation-4 layouts; a
  *  DELEGATE / UNDELEGATE whose delegator_fp is not SHA3-512 of the signer
  *  is refused, an all-zero validator_id or a VALIDATOR_UPDATE commission
  *  above DNAC_COMMISSION_BPS_MAX too (the chain's decoder rules).
+ *  KIND-3 OWNER: both legs auth_kind 3, a generation-4 layout only; each
+ *  blob is K slots (1 <= K <= NODUS_RT_AUTH_MAX_SIGNERS) ‖ dcount 1 ‖ dlen
+ *  ‖ ONE descriptor of exactly DNA_MSIG_DESC_LEN(N) bytes (2 <= N <=
+ *  DNA_MSIG_MAX_N, 1 <= M <= K <= N from its header); the two legs carry
+ *  the same K, the same descriptor bytes and the same public key in every
+ *  slot (the signature bytes differ per leg; all-zero slots — the
+ *  unsigned export — are accepted). The record identity is the address
+ *  SHA3-512(descriptor): a STAKE / STORAGE_REGISTER owner_fp or a DELEGATE /
+ *  UNDELEGATE delegator_fp that is not it is refused.
  *  @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / _ERR_DECODE /
  *  _ERR_HASH. */
 int nodus_v2_stake_decode(const uint8_t *env, size_t env_len,

@@ -72,13 +72,15 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 17 —
- * HF-8's DELEGATE_NAME_REQUIRED = 17, after storage reward v1's
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 21 —
+ * HF-6's RULESET_GEN_ROLES = 18, STAKE_MIN = 19, POWER_CAP_BPS = 20,
+ * STORAGE_BOND = 21, after HF-8's DELEGATE_NAME_REQUIRED = 17,
+ * storage reward v1's (RETIRED by HF-6)
  * RULESET_GEN_STORAGE = 16 and Nodus EVM's
  * EVM_ACTIVE = 14 / EVM_BLOCK_GAS_LIMIT = 15, HF-4's
  * RULESET_GEN2 = 9 and NAME_PRICE_3P..6P = 10-13, HF-3's
  * HF3_ACTIVE = 8, HF-2's HF2_ACTIVE = 7, W-C's TOKEN_CREATE_FEE_RAW = 6
- * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 182 free
+ * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 178 free
  * governance ids; a future allocation that reaches
  * this band collides with THIS COMMENT rather than silently overwriting a
  * committed economic parameter. The ids fit uint8_t, which is what the
@@ -263,11 +265,12 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
  * nodus_chain_config_scalar_rules, which the caller runs first).
  *
  * The 4th argument is the SINGLE-USE fact OF THE PARAM BEING VOTED: "any
- * committed param-9 row" for a param-9 vote, "any committed param-16 row"
- * for a param-16 vote (storage reward v1, design 2026-10-04-storage-
- * reward-v1-design.md rev 2.2 §6) — this form fills BOTH
- * nodus_cc_state_facts_t single-use members from it. The caller passes
- * the fact matching `param_id`:
+ * committed param-9 row" for a param-9 vote, "any committed param-18 row"
+ * for a param-18 vote (HF-6, design docs/plans/2026-10-03-hf5-validator-
+ * owner-stake-design.md rev 6 §8) — this form fills BOTH of those
+ * nodus_cc_state_facts_t members from it; its "any param-16 row" fact is
+ * 0 (only the _ex form sets it). TEST-ONLY. The caller passes the fact
+ * matching `param_id`:
  *   - param 9 RULESET_GEN2: refused if (a) the 4th argument is set (any
  *     param-9 row is committed — single use), (b) !`hf2_active` (HF-2
  *     not active at the vote height), or (c) effective - 1 is an epoch
@@ -275,12 +278,13 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
  *   - params 10-13 NAME_PRICE_*: refused unless `judging_generation` >= 2
  *     (the runtime that judges the vote; 0 for a synthetic or unresolved
  *     runtime);
- *   - param 16 RULESET_GEN_STORAGE: see the _ex form below;
+ *   - param 18 RULESET_GEN_ROLES: see the _ex form below;
  *   - ids 1-8: no stateful rule (0);
- *   - any other id: -1.
+ *   - any other id (RETIRED 16 included): -1.
  * THREE sites apply it with the same facts: the SYSTEM CHAIN_CONFIG exec
  * (engine-filled ctx.hf2_active, ctx.ruleset_gen2_voted (param 9) /
- * ctx.ruleset_gen_storage_voted (param 16) and the resolved runtime's
+ * ctx.ruleset_gen_roles_voted (param 18) / ctx.ruleset_gen_storage_voted
+ * (any param-16 row) and the resolved runtime's
  * generation — CheckTx reaches it through the dry run's exec), and the
  * 0x71 approval responder at its candidate height (its own reads of the
  * same facts).
@@ -307,8 +311,12 @@ typedef struct {
     uint8_t  gas_price_on;        /* a NON-ZERO param-5 row active there  */
     uint8_t  ruleset_gen2_voted;  /* any param-9 row, any height          */
     uint8_t  evm_active_voted;    /* any param-14 row, any height         */
-    uint8_t  ruleset_gen_storage_voted; /* storage reward v1: any param-16
-                                   * row, any height                      */
+    uint8_t  ruleset_gen_storage_voted; /* any param-16 (RETIRED
+                                   * RULESET_GEN_STORAGE) row, any
+                                   * height — a refusal condition of the
+                                   * param-18 vote (HF-6 rule (a'))       */
+    uint8_t  ruleset_gen_roles_voted; /* HF-6: any param-18 row, any
+                                   * height — the param-18 single use     */
     uint32_t judging_generation;  /* the SYSTEM runtime judging the vote
                                    * (0 = synthetic / unresolved)         */
     /* red-team 1 F5: the chain's FIRST block height, derived from the
@@ -341,19 +349,32 @@ typedef struct {
  *     effective - 1], and every height of it must have a block, or every
  *     node FAULTs there (v2rd_blockhash); later windows only move up;
  *   - param 15 EVM_BLOCK_GAS_LIMIT: no stateful rule (0);
- *   - param 16 RULESET_GEN_STORAGE (storage reward v1): refused if (d)
- *     `judging_generation` is not NODUS_RT_GEN_STORAGE_BASE (the EVM
- *     generation — the switch it schedules is GEN_EVM -> GEN_STORAGE, so
- *     a storage vote can never be judged before the EVM edge has passed,
- *     and the two edges never fall in the same block), then (a)-(c)
- *     exactly as param 9, (a) over `ruleset_gen_storage_voted`;
+ *   - param 16 RULESET_GEN_STORAGE: RETIRED (HF-6 slice 8c) — no case,
+ *     -1 (the scalar rules refuse it first);
+ *   - param 18 RULESET_GEN_ROLES (HF-6, design docs/plans/2026-10-03-
+ *     hf5-validator-owner-stake-design.md rev 6 §8): refused if (a)
+ *     `ruleset_gen_roles_voted` (single use), (a') `ruleset_gen_storage_
+ *     voted` (a param-16 row is committed at any height), (b)
+ *     !`hf2_active`, (c) `judging_generation` is not
+ *     NODUS_RT_GEN_STORAGE_BASE (exactly 3 — the switch it schedules is
+ *     GEN_EVM -> generation 4, so the vote can never be judged before the
+ *     EVM edge has passed, and the two edges never fall in the same
+ *     block), (d) effective == 0 or effective - 1 is an epoch boundary,
+ *     or (e) effective itself is an epoch boundary (nonzero multiple of
+ *     DNAC_EPOCH_LENGTH);
  *   - param 17 DELEGATE_NAME_REQUIRED (HF-8, design 2026-10-07-delegate-
  *     name-required-design.md rev 2 §1): refused unless
  *     `judging_generation` >= 2 (the NAME_PRICE rule — names must exist).
- *     No single-use rule (the value domain {1} is one-way already).
- * The 5-argument function above is this with hf3 / gas price / EVM-voted
- * all 0 and both upgrade single-use facts set from its 4th argument (so it
- * refuses every EVM_ACTIVE vote). Pure. @return 0 / -1.
+ *     No single-use rule (the value domain {1} is one-way already);
+ *   - params 19 STAKE_MIN / 20 POWER_CAP_BPS / 21 STORAGE_BOND (HF-6,
+ *     design 2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8):
+ *     refused unless `judging_generation` >= NODUS_RT_GEN_STORAGE (4 —
+ *     the generation with the owner/node roles). No single-use rule, no
+ *     other fact read.
+ * The 5-argument function above is this with hf3 / gas price / EVM-voted /
+ * param-16-row all 0 and the param-9 and param-18 single-use facts set
+ * from its 4th argument (so it refuses every EVM_ACTIVE vote). Pure.
+ * @return 0 / -1.
  */
 int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
                                          uint64_t effective_block_height,
