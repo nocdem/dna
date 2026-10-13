@@ -248,10 +248,12 @@ extern "C" {
 /** Storage reward v1 (design 2026-10-04-storage-reward-v1-design.md rev
  *  2.2 §6; numbering in main merge order, decision 2026-10-04-storage-
  *  reward-approved.md — QEVM merged first): the generation built ON the
- *  EVM generation — SYSTEM v9 (the EVM generation's ops 1..6 +
+ *  EVM generation — SYSTEM v10 (the EVM generation's ops 1..6 +
  *  STORAGE_REGISTER / STORAGE_EXIT / STORAGE_REPORT, SYSTEM state root
- *  "NDS.SYS.v5") / CORE v7 (the EVM generation's rules {1..9}, SYSFUND
- *  pairs with the two storage record ops); the EVM domain is unchanged
+ *  "NDS.SYS.v5") / CORE v8 (the EVM generation's rules {1..9}, SYSFUND
+ *  pairs with the two storage record ops); v9 / v7 until HF-6 D2 (khan
+ *  decision 2026-10-13-kurultay-18-summary.md item 3); the EVM domain is
+ *  unchanged
  *  (its v1 entry stays the EVM generation's — the generation carries no
  *  EVM slot, since one exact tuple names ONE entry). Code names it
  *  GEN_STORAGE, never "4". Since HF-6 (design docs/plans/2026-10-03-hf5-

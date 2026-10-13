@@ -104,14 +104,17 @@ K8_OWNER_HEX = (
     "8eff7f418ab7a4432118ff99e21f2c3d1baf186200c148a3bba7d274499386ac"
     "970e267a9c9b3bbc05bfff1c62a72d63f72a555db780feeaaad4fb49ba9f7b89")
 
-# storage_oracle.py S2 / S3 as emitted at 3ef75a40 (checked, not trusted:
-# the run below must reproduce them)
+# storage_oracle.py S2 / S3 as emitted after HF-6 D2 (SYSTEM v10 rules
+# {1..9}, CORE v8 — khan decision 2026-10-13-kurultay-18-summary.md items
+# 1 and 3; checked, not trusted: the run below must reproduce them). The
+# previous pins (SYSTEM v9 {1..10} c347ddd7…, CORE v7 fb25e5c4…, D4
+# 0x4dc61072d5982acd) never activated and are dead.
 PIN_S2 = (
-    "c347ddd7b30730b17fe62583a663356a303c548dd2fc0dab7fa8dfdfea63140b"
-    "25c1f496590a66c8373c3e50d23cbaa5f5730097ee041eca50ed377a1f924b00")
+    "a012cc08bbf96524fa2dace331921f9d39107aa52643fc99392c14146ef09159"
+    "a54d11502d538d424f1e5bde9a493e2abab2738bf20c3e261fe5627c09bb662a")
 PIN_S3 = (
-    "fb25e5c41d600f0ed4e8979fb434d735b62ffe9aca0332770f95a94b338d1073"
-    "ec3ec3b5aa59303467cc83fddca2b8baf1002dcab2c6c304974c06381437f060")
+    "db32614f1eb4818d7609e15f0130dec652362196a1d416a7b8ea4546a64abf9a"
+    "c08b0b76cc9c0b62e1a47a3a7cf04b0982d299501cbf800f12849f64a0f991d1")
 
 # vote literals D4 must not collide with
 D2_LITERAL = 0x44dfbe7ad3c75adf        # generation 2, param 9

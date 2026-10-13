@@ -468,7 +468,7 @@ static int hk_build(hk_env_t *e, uint32_t op, const uint8_t *call,
     memset(legs, 0, sizeof(legs));
     legs[0].hdr.domain_id = DNA_DOMAIN_SYSTEM;
     legs[0].hdr.runtime_op = op;
-    legs[0].hdr.ruleset_version = 9;
+    legs[0].hdr.ruleset_version = 10;   /* the generation-4 SYSTEM (D2) */
     legs[0].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[0].hdr.auth_kind = sys_kind;
     legs[0].hdr.call_len = call_len;
@@ -479,7 +479,7 @@ static int hk_build(hk_env_t *e, uint32_t op, const uint8_t *call,
     legs[0].auth_data = e->auth[0];
     legs[1].hdr.domain_id = DNA_DOMAIN_CORE;
     legs[1].hdr.runtime_op = core_op;
-    legs[1].hdr.ruleset_version = 7;
+    legs[1].hdr.ruleset_version = 8;    /* the generation-4 CORE (D2)   */
     legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[1].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
     legs[1].hdr.call_len = fl;

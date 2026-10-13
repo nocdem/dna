@@ -20,15 +20,13 @@
  *   A1 DNA_SYSRULE_ROTATE_CONSENSUS_KEY keeps the reserved id 10; NO
  *      generation's SYSTEM or CORE descriptor owns op 10 (the list
  *      rt_owns_runtime_op walks, restated as the same ascending scan) and
- *      no SYSTEM meter policy prices it; the generation-4 SYSTEM (still v9)
- *      owns exactly {1..9}.
+ *      no SYSTEM meter policy prices it; the generation-4 SYSTEM (v10 since
+ *      HF-6 D2, decision item 3) owns exactly {1..9} and the generation-4
+ *      CORE is v8.
  *   A2 the compiled table passes its selfcheck and the param-18 vote value
- *      D4 re-derives through nodus_runtime_gen4_vote_digest.
- *      ⚠ EXPECTED RED until the next package (D2): the pinned SYSTEM hash,
- *      policy digest, nodus_ruleset_pins.h and DNAC_CFG_RULESET_GEN_ROLES_D
- *      still carry the {1..10} values (decision item 3: SYSTEM 9 -> 10,
- *      CORE 7 -> 8 and an oracle re-pin). Every engine case below opens a
- *      chain through the same selfcheck, so they are red with it.
+ *      D4 re-derives through nodus_runtime_gen4_vote_digest (the pins and
+ *      D4 re-derived by the independent oracles in HF-6 D2 —
+ *      shared/dnac/tests/storage_oracle.py, hf6_vote_oracle.py).
  *  H. HOOKS (fabricated engine facts, a real committed-row shape):
  *   H1 for a NULL runtime and generations 1..4 the SYSTEM read plan and
  *      exec of a 2-leg {SYSTEM op 10, CORE SYSFUND} envelope return -1 —
@@ -258,14 +256,17 @@ static int t_table(void) {
         const nodus_domain_runtime_t *s4 =
             nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
                                          DNA_DOMAIN_SYSTEM);
-        CHECK(s4->ruleset_version == 9,
-              "the generation-4 SYSTEM version is still 9 (the bump is "
-              "the next package's)");
-        CHECK(s4->descriptor.rule_count == 9, "SYSTEM v9 rules {1..9}");
+        const nodus_domain_runtime_t *c4 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE,
+                                         DNA_DOMAIN_CORE);
+        CHECK(s4->ruleset_version == 10 && c4 && c4->ruleset_version == 8,
+              "the generation-4 versions are SYSTEM 10 / CORE 8 (HF-6 D2, "
+              "decision item 3)");
+        CHECK(s4->descriptor.rule_count == 9, "SYSTEM v10 rules {1..9}");
         for (uint32_t i = 0; i < 9; i++)
             CHECK(s4->descriptor.rule_ids[i] == i + 1u, "ascending 1..9");
     }
-    /* A2 — ⚠ RED until the next package re-pins (header) */
+    /* A2 */
     CHECK(nodus_witness_runtime_selfcheck() == 0,
           "the compiled table passes its selfcheck (every pin re-derives)");
     {
@@ -297,7 +298,7 @@ static int hk_build(hk_env_t *e, const uint8_t *call, uint32_t call_len) {
     memset(legs, 0, sizeof(legs));
     legs[0].hdr.domain_id = DNA_DOMAIN_SYSTEM;
     legs[0].hdr.runtime_op = DNA_SYSRULE_ROTATE_CONSENSUS_KEY;
-    legs[0].hdr.ruleset_version = 9;
+    legs[0].hdr.ruleset_version = 10;   /* the generation-4 SYSTEM (D2) */
     legs[0].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[0].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
     legs[0].hdr.call_len = call_len;
@@ -308,7 +309,7 @@ static int hk_build(hk_env_t *e, const uint8_t *call, uint32_t call_len) {
     legs[0].auth_data = e->auth[0];
     legs[1].hdr.domain_id = DNA_DOMAIN_CORE;
     legs[1].hdr.runtime_op = DNA_CORERULE_SYSFUND;
-    legs[1].hdr.ruleset_version = 7;
+    legs[1].hdr.ruleset_version = 8;    /* the generation-4 CORE (D2)   */
     legs[1].hdr.access_mode = DNA_ENV_ACCESS_INVOKE;
     legs[1].hdr.auth_kind = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
     legs[1].hdr.call_len = fl;
