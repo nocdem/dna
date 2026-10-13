@@ -57,6 +57,29 @@
  * thread waits on its own slot. At most NODUS_MAX_PENDING (64) requests
  * are in flight per client, so T <= 64 threads share one client safely.
  *
+ * PIPELINE (non-waiting) MODE — `--pipeline N` (spend-invalid only). A
+ * client that does not wait for answers: ONE sender thread per session
+ * encodes the SAME dnac_spend request as spend-invalid (same envelope /
+ * tx_hash / pk / sig) with a FRESH txn id each time (atomic_fetch_add on
+ * client->next_txn), using the SAME bytes the SDK emits (enc_dnac_query +
+ * five args, nodus_client.c:3142-3199, replicated in encode_spend_frame),
+ * and sends it with nodus_tcp_send under client->send_mutex — the body of
+ * the SDK's own send_request (nodus_client.c:237) — WITHOUT a pending slot
+ * and WITHOUT waiting. The node still answers (one CheckTx-refusal error
+ * frame per request); the SDK reader thread receives each, finds NO
+ * pending slot for its txn, logs ONE WARN and discards it (client_on_frame
+ * :654). So ANSWERS CANNOT BE COUNTED in pipeline mode (no public hook, no
+ * counter) — it counts ONLY frames sent and send failures (nodus_tcp_send
+ * != 0). The nodus standalone log shim (nodus_log_shim.c) has no level
+ * setter — its threshold is hardcoded at INFO — so to stop the per-frame
+ * WARN from flooding, the tool redirects its own stderr to /dev/null for
+ * the flood (after the proof has printed to stdout). The send rate is paced OPEN-LOOP
+ * to `--rate R` frames/s per session in bursts of N (the SDK cannot report
+ * the node's drain rate, so the node's inbound queue is driven at a KNOWN
+ * rate, not held at a measured outstanding depth). It exercises the core's
+ * per-session read budget (NODUS_TCP_READ_BUDGET_FRAMES = 256,
+ * nodus_tcp.h:38) and the core->witness IPC queue bound (nodus_witness_ipc.h).
+ *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
@@ -83,6 +106,8 @@
 #include "witness/nodus_witness_runtime.h"  /* compiled ruleset table       */
 #include "dnac/ledger_ids.h"                /* DNA_DOMAIN_*, DNA_CHAIN_ID_LEN*/
 #include "dnac/dnac.h"                       /* DNAC_MIN_FEE_RAW, PUBKEY_SIZE*/
+#include "transport/nodus_tcp.h"             /* nodus_tcp_send (pipeline mode)*/
+#include "protocol/nodus_cbor.h"             /* cbor_encode_* (pipeline mode) */
 
 /* Output-seed randomness for the shared builder — never a global RNG; the
  * builder fills `len` bytes through this (nodus_v2_rand_fn). */
@@ -105,12 +130,13 @@ enum rpc_mode { MODE_SPEND_INVALID, MODE_V3_BLOCK, MODE_BALANCE };
 #define RPC_V3_BUDGET        ((uint32_t)(1u << 20))          /* 1 MiB         */
 
 struct counters {
-    uint64_t sent;
+    uint64_t sent;        /* requests sent (pipeline mode: frames sent)      */
     uint64_t answered;    /* a definite answer from the node                 */
     uint64_t refused;     /* spend-invalid: a CheckTx refusal (expected)     */
     uint64_t accepted;    /* spend-invalid: CheckTx APPROVED (unexpected)    */
     uint64_t errors;      /* transport / protocol / rate-limit / other       */
     uint64_t timeouts;    /* no answer within the SDK's per-request wait      */
+    uint64_t send_fail;   /* pipeline mode: nodus_tcp_send != 0              */
 };
 
 struct worker {
@@ -126,6 +152,10 @@ struct worker {
     /* v3-block / balance */
     uint64_t           height;
     const char        *owner_hex;
+    /* pipeline (non-waiting) mode */
+    int                is_pipeline;
+    uint64_t           pipeline;       /* N: send burst size per session     */
+    uint64_t           rate;           /* R: average frames/s per session    */
     struct counters    c;
 };
 
@@ -361,6 +391,75 @@ static void *worker_main(void *arg) {
     return NULL;
 }
 
+/* ── pipeline (non-waiting) sender ────────────────────────────────────── */
+
+#define PIPELINE_BUF_SIZE (64 * 1024)   /* env ~7.6KB + pk 2592 + sig 4627  */
+
+/* Encode ONE dnac_spend T2 request — the EXACT bytes
+ * nodus_client_dnac_spend_ex emits (enc_dnac_query header, nodus_client.c
+ * :3142-3151, then its five args :3190-3199) — with a fresh txn. 0 on a
+ * buffer overrun (cbor_encoder_len is 0 when the encoder overflowed). */
+static size_t encode_spend_frame(nodus_client_t *client, uint32_t txn,
+                                 const struct worker *w,
+                                 uint8_t *buf, size_t cap) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 5);                    /* t, y, q, tok, a */
+    cbor_encode_cstr(&enc, "t");   cbor_encode_uint(&enc, txn);
+    cbor_encode_cstr(&enc, "y");   cbor_encode_cstr(&enc, "q");
+    cbor_encode_cstr(&enc, "q");   cbor_encode_cstr(&enc, "dnac_spend");
+    cbor_encode_cstr(&enc, "tok"); cbor_encode_bstr(&enc, client->token, NODUS_SESSION_TOKEN_LEN);
+    cbor_encode_cstr(&enc, "a");   cbor_encode_map(&enc, 5);  /* tx,hash,pk,sig,fee */
+    cbor_encode_cstr(&enc, "tx");   cbor_encode_bstr(&enc, w->env, (size_t)w->env_len);
+    cbor_encode_cstr(&enc, "hash"); cbor_encode_bstr(&enc, w->wire_id, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(&enc, "pk");   cbor_encode_bstr(&enc, w->spk->bytes, NODUS_PK_BYTES);
+    cbor_encode_cstr(&enc, "sig");  cbor_encode_bstr(&enc, w->ssig->bytes, NODUS_SIG_BYTES);
+    cbor_encode_cstr(&enc, "fee");  cbor_encode_uint(&enc, 0);   /* fee is in the envelope */
+    return cbor_encoder_len(&enc);
+}
+
+/* send_request's body (nodus_client.c:237): nodus_tcp_send under send_mutex,
+ * with NO pending slot and NO wait. */
+static int pipeline_send(nodus_client_t *client, const uint8_t *buf, size_t len) {
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
+    if (!conn) return -1;
+    pthread_mutex_lock(&client->send_mutex);
+    int rc = nodus_tcp_send(conn, buf, len);
+    pthread_mutex_unlock(&client->send_mutex);
+    return rc;
+}
+
+static void *pipeline_sender_main(void *arg) {
+    struct worker *w = (struct worker *)arg;
+    uint8_t *buf = malloc(PIPELINE_BUF_SIZE);
+    if (!buf) return NULL;
+    const uint64_t burst = w->pipeline ? w->pipeline : 1;
+    const uint64_t rate  = w->rate ? w->rate : 1;
+    const uint64_t interval_ns = burst * 1000000000ULL / rate;   /* per burst */
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    while (atomic_load(&g_running) && !g_sig_stop) {
+        for (uint64_t i = 0; i < burst; i++) {
+            if (!atomic_load(&g_running) || g_sig_stop) break;
+            uint32_t txn = atomic_fetch_add(&w->client->next_txn, 1);
+            size_t len = encode_spend_frame(w->client, txn, w, buf, PIPELINE_BUF_SIZE);
+            if (len == 0) { w->c.send_fail++; continue; }
+            if (pipeline_send(w->client, buf, len) != 0) w->c.send_fail++;
+            else w->c.sent++;
+        }
+        /* pace to the average rate R: the next burst at next += interval.
+         * TIMER_ABSTIME with a time already past returns at once, so a
+         * sender that cannot keep up never sleeps negative — it just runs
+         * flat out (the honest ceiling of this host + one TCP socket). */
+        next.tv_sec  += (time_t)(interval_ns / 1000000000ULL);
+        next.tv_nsec += (long)(interval_ns % 1000000000ULL);
+        if (next.tv_nsec >= 1000000000L) { next.tv_sec++; next.tv_nsec -= 1000000000L; }
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+    }
+    free(buf);
+    return NULL;
+}
+
 /* ── usage / args ────────────────────────────────────────────────────── */
 
 static void usage(void) {
@@ -372,6 +471,11 @@ static void usage(void) {
       "                        [--seconds D (default 20)]\n"
       "                        [--height H (v3-block; default the tip)]\n"
       "                        [--owner HEX128 (balance; required)]\n"
+      "                        [--pipeline N (1..4096; non-waiting mode,\n"
+      "                           spend-invalid only — fire frames, do not\n"
+      "                           wait; answers are NOT counted)]\n"
+      "                        [--rate R (pipeline frames/s per session,\n"
+      "                           default 2000)]\n"
       "                        [--stats-file PATH]\n"
       "  TEST-ONLY localhost load. Asserts no threshold; it MEASURES.\n");
 }
@@ -392,6 +496,7 @@ int main(int argc, char **argv) {
     const char *host = "127.0.0.1";
     const char *mode_s = NULL, *owner_hex = NULL, *stats_path = NULL;
     uint64_t port = 0, sessions = 19, threads = 32, seconds = 20, height = 0;
+    uint64_t pipeline = 0, rate = 2000;
     int have_height = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -404,6 +509,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--seconds")  && i + 1 < argc) { if (parse_u64(argv[++i], &seconds))  { usage(); return 1; } }
         else if (!strcmp(a, "--height")   && i + 1 < argc) { if (parse_u64(argv[++i], &height))   { usage(); return 1; } have_height = 1; }
         else if (!strcmp(a, "--owner")    && i + 1 < argc) owner_hex = argv[++i];
+        else if (!strcmp(a, "--pipeline") && i + 1 < argc) { if (parse_u64(argv[++i], &pipeline)) { usage(); return 1; } }
+        else if (!strcmp(a, "--rate")     && i + 1 < argc) { if (parse_u64(argv[++i], &rate))     { usage(); return 1; } }
         else if (!strcmp(a, "--stats-file") && i + 1 < argc) stats_path = argv[++i];
         else { fprintf(stderr, "unknown or incomplete argument: %s\n", a); usage(); return 1; }
     }
@@ -421,6 +528,14 @@ int main(int argc, char **argv) {
     if (mode == MODE_BALANCE && (!owner_hex || strlen(owner_hex) != 128)) {
         fprintf(stderr, "balance mode needs --owner <128 lowercase hex>\n");
         return 1;
+    }
+    if (pipeline != 0) {
+        if (mode != MODE_SPEND_INVALID) {
+            fprintf(stderr, "--pipeline is spend-invalid only (it fires the dnac_spend frame non-waiting)\n");
+            return 1;
+        }
+        if (pipeline > 4096) { fprintf(stderr, "--pipeline N must be 1..4096\n"); return 1; }
+        if (rate < 1) { fprintf(stderr, "--rate R must be >= 1\n"); return 1; }
     }
 
     const uint64_t S = sessions, T = threads;
@@ -539,22 +654,41 @@ int main(int argc, char **argv) {
     }
 
     /* ── launch the load ─────────────────────────────────────────────── */
+    /* pipeline mode: ONE sender thread per session; waiting modes: T worker
+     * threads per session (S*T total). */
     const uint64_t W = S * T;
-    struct worker *workers = calloc(W, sizeof(*workers));
+    const uint64_t NW = pipeline ? S : W;
+    struct worker *workers = calloc(NW, sizeof(*workers));
     if (!workers) { fprintf(stderr, "out of memory\n"); goto cleanup; }
-    for (uint64_t s = 0; s < S; s++) {
-        for (uint64_t t = 0; t < T; t++) {
-            struct worker *w = &workers[s * T + t];
-            w->client = &clients[s];
-            w->mode   = mode;
-            w->height = height;
-            w->owner_hex = owner_hex;
-            if (mode == MODE_SPEND_INVALID) {
-                w->env     = builts[s].env;
-                w->env_len = builts[s].env_len;
-                w->wire_id = builts[s].wire_id;
-                w->spk     = &spks[s];
-                w->ssig    = &ssigs[s];
+    if (pipeline) {
+        for (uint64_t s = 0; s < S; s++) {
+            struct worker *w = &workers[s];
+            w->client      = &clients[s];
+            w->mode        = mode;              /* spend-invalid (enforced)   */
+            w->is_pipeline = 1;
+            w->pipeline    = pipeline;
+            w->rate        = rate;
+            w->env     = builts[s].env;
+            w->env_len = builts[s].env_len;
+            w->wire_id = builts[s].wire_id;
+            w->spk     = &spks[s];
+            w->ssig    = &ssigs[s];
+        }
+    } else {
+        for (uint64_t s = 0; s < S; s++) {
+            for (uint64_t t = 0; t < T; t++) {
+                struct worker *w = &workers[s * T + t];
+                w->client = &clients[s];
+                w->mode   = mode;
+                w->height = height;
+                w->owner_hex = owner_hex;
+                if (mode == MODE_SPEND_INVALID) {
+                    w->env     = builts[s].env;
+                    w->env_len = builts[s].env_len;
+                    w->wire_id = builts[s].wire_id;
+                    w->spk     = &spks[s];
+                    w->ssig    = &ssigs[s];
+                }
             }
         }
     }
@@ -565,18 +699,33 @@ int main(int argc, char **argv) {
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT,  &sa, NULL);
 
+    /* pipeline mode: the SDK reader thread logs one WARN per answer it
+     * cannot correlate (no pending slot — nodus_client.c client_on_frame
+     * :654), and the nodus standalone log shim (nodus_log_shim.c) has NO
+     * level setter — its threshold is hardcoded at INFO, so WARN always
+     * prints to stderr. At R frames/s per session that floods. The proof
+     * (above) has already printed to STDOUT, so redirect THIS process's
+     * stderr to /dev/null for the flood: it silences the SDK WARN flood at
+     * the source (and, as a documented tradeoff, any genuine SDK ERROR the
+     * reader thread might emit during the load — stdout keeps the stats). */
+    if (pipeline) {
+        fflush(stdout);
+        if (!freopen("/dev/null", "w", stderr)) { /* keep going if it fails */ }
+    }
+
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     atomic_store(&g_running, true);
     uint64_t launched = 0;
-    for (uint64_t i = 0; i < W; i++) {
-        if (pthread_create(&workers[i].tid, NULL, worker_main, &workers[i]) != 0) {
+    for (uint64_t i = 0; i < NW; i++) {
+        void *(*fn)(void *) = pipeline ? pipeline_sender_main : worker_main;
+        if (pthread_create(&workers[i].tid, NULL, fn, &workers[i]) != 0) {
             fprintf(stderr, "pthread_create failed at worker %" PRIu64 "\n", i);
             break;
         }
         launched++;
     }
-    if (launched != W) {
+    if (launched != NW) {
         atomic_store(&g_running, false);
         for (uint64_t i = 0; i < launched; i++) pthread_join(workers[i].tid, NULL);
         free(workers);
@@ -594,7 +743,7 @@ int main(int argc, char **argv) {
         nanosleep(&nap, NULL);
     }
     atomic_store(&g_running, false);
-    for (uint64_t i = 0; i < W; i++) pthread_join(workers[i].tid, NULL);
+    for (uint64_t i = 0; i < NW; i++) pthread_join(workers[i].tid, NULL);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double elapsed = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
     if (elapsed < 1e-3) elapsed = 1e-3;
@@ -602,13 +751,14 @@ int main(int argc, char **argv) {
     /* ── aggregate ───────────────────────────────────────────────────── */
     struct counters tot;
     memset(&tot, 0, sizeof(tot));
-    for (uint64_t i = 0; i < W; i++) {
-        tot.sent     += workers[i].c.sent;
-        tot.answered += workers[i].c.answered;
-        tot.refused  += workers[i].c.refused;
-        tot.accepted += workers[i].c.accepted;
-        tot.errors   += workers[i].c.errors;
-        tot.timeouts += workers[i].c.timeouts;
+    for (uint64_t i = 0; i < NW; i++) {
+        tot.sent      += workers[i].c.sent;
+        tot.answered  += workers[i].c.answered;
+        tot.refused   += workers[i].c.refused;
+        tot.accepted  += workers[i].c.accepted;
+        tot.errors    += workers[i].c.errors;
+        tot.timeouts  += workers[i].c.timeouts;
+        tot.send_fail += workers[i].c.send_fail;
     }
     free(workers);
 
@@ -619,13 +769,17 @@ int main(int argc, char **argv) {
     int n = snprintf(out, sizeof(out),
         "mode=%s\n""host=%s\n""port=%" PRIu64 "\n""sessions=%" PRIu64 "\n"
         "threads_per_session=%" PRIu64 "\n""identities=%" PRIu64 "\n"
+        "pipeline=%" PRIu64 "\n""rate=%" PRIu64 "\n""answers_counted=%d\n"
         "seconds_requested=%" PRIu64 "\n""seconds_elapsed=%.3f\n"
         "sent=%" PRIu64 "\n""answered=%" PRIu64 "\n""refused=%" PRIu64 "\n"
         "accepted=%" PRIu64 "\n""errors=%" PRIu64 "\n""timeouts=%" PRIu64 "\n"
+        "send_failures=%" PRIu64 "\n"
         "sent_per_s=%.1f\n""answered_per_s=%.1f\n""stopped_by_signal=%d\n",
-        mode_s, host, port, S, T, n_ident, seconds, elapsed,
+        mode_s, host, port, S, (pipeline ? (uint64_t)1 : T), n_ident,
+        pipeline, (pipeline ? rate : (uint64_t)0), (pipeline ? 0 : 1),
+        seconds, elapsed,
         tot.sent, tot.answered, tot.refused, tot.accepted, tot.errors,
-        tot.timeouts, sent_ps, ans_ps, (int)g_sig_stop);
+        tot.timeouts, tot.send_fail, sent_ps, ans_ps, (int)g_sig_stop);
     if (n < 0) n = 0;
     fputs(out, stdout);
     if (stats_path) {

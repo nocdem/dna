@@ -58,6 +58,14 @@
 #     STAGEF_FLOOD_HEIGHTS   window length in committed heights (default
 #                            30). A LENGTH, never a correctness bound:
 #                            every wait inside is progress-bounded.
+#     STAGEF_FLOOD_PIPELINE  empty = off (default). N (1..4096) turns on the
+#                            tool's NON-WAITING mode (spend-invalid only):
+#                            one sender thread per session fires dnac_spend
+#                            frames without waiting for answers, in bursts
+#                            of N. Answers are NOT counted in this mode (the
+#                            SDK discards an answer with no pending slot);
+#                            the tool reports frames sent and send failures.
+#     STAGEF_FLOOD_RATE      pipeline frames/s per session (default 2000).
 #     STAGEF_FLOOD_BIN       default nodus/build/stagef_rpc_flood.
 #   A Comet cluster from stagef_up_v2.sh (v2_blocks table + a pump-ready
 #   funder leaf), else exit 99. Nothing is exported before bring-up; this
@@ -117,6 +125,16 @@
 #     run unless the node answered with a CheckTx refusal ("CheckTx code
 #     N"); if that proof fails the tool exits non-zero and this bench fails
 #     the phase. v3-block / balance do read work regardless.
+#   - **Pipeline mode does not count answers.** With STAGEF_FLOOD_PIPELINE
+#     the tool fires dnac_spend frames and never reads the reply (no pending
+#     slot), so it reports frames SENT and send failures only — never how
+#     many the node answered or refused. The send rate is OPEN-LOOP
+#     (STAGEF_FLOOD_RATE frames/s/session in bursts of N), so "sent" is what
+#     the client pushed, not what the node processed; whether the node kept
+#     up is read from the SAME per-window signals (sec/height, attendance,
+#     tip lag) as the waiting modes. The SDK logs one WARN per uncorrelated
+#     answer; the tool redirects its own stderr to /dev/null during the
+#     flood to stop that flood (and any genuine SDK ERROR with it).
 #   - **A skip is not a pass.** rc 99 = not a Comet cluster / no pump leaf:
 #     nothing was measured.
 #   - **Pump drift.** If the funder's leaf was already spent down to the
@@ -135,6 +153,8 @@ MODE="${STAGEF_FLOOD_MODE:-spend-invalid}"
 SESSIONS="${STAGEF_FLOOD_SESSIONS:-19}"
 THREADS="${STAGEF_FLOOD_THREADS:-32}"
 HEIGHTS="${STAGEF_FLOOD_HEIGHTS:-30}"
+PIPELINE="${STAGEF_FLOOD_PIPELINE:-}"   # empty = off; N = non-waiting burst size
+RATE="${STAGEF_FLOOD_RATE:-2000}"       # pipeline frames/s per session
 BIN="${STAGEF_FLOOD_BIN:-$STAGEF_REPO_ROOT/nodus/build/stagef_rpc_flood}"
 C="$STAGEF_COMMITTEE_SIZE"
 FEE="$STAGEF_PUMP_FEE_RAW"
@@ -155,6 +175,13 @@ case "$HEIGHTS"  in ''|*[!0-9]*) die "STAGEF_FLOOD_HEIGHTS must be an integer (g
 [ "$THREADS"  -ge 1 ] && [ "$THREADS"  -le 64 ] || die "STAGEF_FLOOD_THREADS must be 1..64"
 [ "$HEIGHTS"  -ge 2 ] || die "STAGEF_FLOOD_HEIGHTS must be >= 2 (a window needs an interval)"
 case "$MODE" in spend-invalid|v3-block|balance) ;; *) die "STAGEF_FLOOD_MODE must be spend-invalid | v3-block | balance" ;; esac
+if [ -n "$PIPELINE" ]; then
+    case "$PIPELINE" in ''|*[!0-9]*) die "STAGEF_FLOOD_PIPELINE must be an integer 1..4096 (got '$PIPELINE')" ;; esac
+    [ "$PIPELINE" -ge 1 ] && [ "$PIPELINE" -le 4096 ] || die "STAGEF_FLOOD_PIPELINE must be 1..4096"
+    [ "$MODE" = spend-invalid ] || die "STAGEF_FLOOD_PIPELINE (non-waiting mode) is spend-invalid only (it fires the dnac_spend frame); unset it or set STAGEF_FLOOD_MODE=spend-invalid"
+    case "$RATE" in ''|*[!0-9]*) die "STAGEF_FLOOD_RATE must be an integer >= 1 (got '$RATE')" ;; esac
+    [ "$RATE" -ge 1 ] || die "STAGEF_FLOOD_RATE must be >= 1"
+fi
 [ -x "$BIN" ] || die "no stagef_rpc_flood at $BIN (build it: cd nodus/build && make stagef_rpc_flood)"
 
 # the pump drives the chain from the funder + submit nodes; they must not
@@ -285,6 +312,11 @@ run_phase() {
             funder_fp=$(cat "$BASE_DIR/node$STAGEF_PUMP_FUNDER_NODE/identity/nodus.fp" 2>/dev/null || true)
             [ "${#funder_fp}" = 128 ] || die "$P: could not read funder fp for balance mode"
             extra=(--owner "$funder_fp")
+        fi
+        # non-waiting pipeline mode (spend-invalid only): fire frames at
+        # RATE/s per session in bursts of PIPELINE; answers are not counted
+        if [ -n "$PIPELINE" ]; then
+            extra+=(--pipeline "$PIPELINE" --rate "$RATE")
         fi
         "$BIN" --host 127.0.0.1 --port "$VICTIM_PORT" --mode "$MODE" \
                --sessions "$SESSIONS" --threads "$THREADS" \
@@ -440,7 +472,12 @@ summary="$FLOOD_DIR/summary.txt"
 {
     echo "bench_rpc_flood — $(date -u +%Y-%m-%dT%H:%M:%SZ), BASE_DIR $BASE_DIR"
     echo "parameters: victim node$VICTIM (client port $VICTIM_PORT), reference node$REF,"
-    echo "            mode $MODE, sessions $SESSIONS x threads $THREADS,"
+    if [ -n "$PIPELINE" ]; then
+        echo "            mode $MODE PIPELINE (non-waiting), sessions $SESSIONS x 1 sender,"
+        echo "            pipeline burst $PIPELINE, rate $RATE frames/s/session (answers NOT counted),"
+    else
+        echo "            mode $MODE, sessions $SESSIONS x threads $THREADS,"
+    fi
     echo "            window $HEIGHTS committed heights, STAGEF_MODE $(stagef_mode),"
     echo "            epoch length $STAGEF_EPOCH_LENGTH, pump funder node$STAGEF_PUMP_FUNDER_NODE / submit node$STAGEF_PUMP_SUBMIT_NODE, fee $FEE raw"
     echo ""
