@@ -8434,12 +8434,12 @@ balance copy) re-derives the table and compares it row for row (`nodus_witness_v
   differs from the same validator_id's entry in S(h − E) (a ruleset-1 S(h − E) through
   `dna_validator_id_migrated`), SHA3-512 of the S(h − E) key.
 
-**The one underivable row (khan A3).** A rotation is accepted for a validator with no seat in S(F)
-(`vset_rotation_pass`); its previous key is in no committed snapshot and its kept role-1 row is the
-only committed record of it — and in rooted state such a validator looks exactly like a new entrant.
-So a validator seated in S(h) under its row's current key, not UNSTAKED and with no seat in S(h − E)
-may hold ONE further role-1 row: counted as *unverified*, not as a difference. Deleting such a row is
-not detected (pinned as the known blind spot in `test_hf6_rotate` C6k).
+**Fully derivable since khan A8 (2026-10-13).** A rotation is accepted for a validator with no seat
+in S(F) (khan A3, `vset_rotation_pass`); its previous key is in no committed snapshot. Until A8 that
+key's role-1 row stayed until U + E with no rooted record of it, so the check tolerated ONE extra
+role-1 row per such validator ("unverified") and could not see it deleted. A8 releases that key in
+the swap at U (see "HF-6 khan A8" below), so such a validator holds exactly a new entrant's rows and
+there is **no tolerance**: every table row not derived is a difference, for every validator.
 
 **Differences**: missing, extra, another validator_id, another role, a key derived twice, a
 malformed row. **Result = LOG ONLY**: one `QGP_LOG_ERROR` per reported difference (up to 4: kind,
@@ -8454,8 +8454,59 @@ derivation reads S(h) / S(h−E)), the balance copy its own table — after step
 Test-facing core: `nodus_witness_v2_keyres_diff` (`nodus_witness_v2_epoch.h`, 0 compared / 1
 generation < 4 / -1 unreadable). Tests: `test_hf6_rotate` section K — every generation-4 boundary
 `apply_both` commits in C / D / E / F compares with 0 differences on both twins; rolled-back
-corruptions D4k (each single-row change exactly one difference), C6k (the A3 tolerance is one row),
-F2k (the ruleset-1 bridge).
+corruptions D4k (each single-row change exactly one difference), C6k (no tolerance: an A3 rotator's
+released previous key put back is one difference), F2k (the ruleset-1 bridge).
+
+### HF-6 khan A8 — the previous key of a validator S(F) does not seat is released in the swap at U (branch `hf6-a8` — not versioned, not voted)
+
+Design `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §3 "(A8)" (khan 2026-10-13:
+"Burada bir güvenlik açığı oluşturmayalım boşu boşuna … liveness açığı, güvenlik açığı, bunlar önemli
+şeyler"). A2 keeps a rotated validator's old key reserved from U to U + E because that key still
+signs U and U + 1 (Comet applies S(U) at U + 2) under S(F)'s duty. A validator khan A3 accepted with
+no seat in S(F) has no such duty: its old key is in no set that signs from F + 2 on.
+
+**The rule** (`v2ep_rotate_swap`, step 1d). After each row switch
+(`nodus_validator_v2_rotate_apply`), S(F) = S(U − E) is read (once per boundary, only when a row
+swaps) and the validator is looked up by validator_id — `v2ep_member_in_snapshot`: the id in a
+ruleset-2 S(F), `dna_validator_id_migrated(chain id, entry.pubkey)` in a ruleset-1 S(F) — the same
+mapping as the freeze's candidate loop and `vset_rot_carried`, so "no seat" is exactly the
+"none ⇒ 0" the freeze applied. **Seated** ⇒ unchanged (A2: the sweep at U + E). **Not seated** ⇒
+`nodus_validator_v2_key_release_previous` deletes exactly the role-1 row (SHA3-512(old key),
+validator_id, role 1) in the boundary transaction; any other change count is a FAULT. S(F)
+unreadable or a mapping fault ⇒ FAULT (never "not seated", which would free a key whose old node
+still signs). S(F) absent (the resolver's terminal rc 1) ⇒ "not seated": no committed set names the
+old key and the self-check derives no previous key against an absent S(h − E) either; it cannot
+arise from a committed freeze (`vset_rotation_pass` faults a pass with candidates when S(F) is
+absent; no production path deletes a stored snapshot).
+
+**The previous voter's attendance row.** A8's premise "the old key signed nothing" holds for U and
+U + 1, not for the key's whole life: a validator seated in S(F − E) or earlier, out of S(F) and back
+in S(U), may ROTATE (A5 needs ACTIVE / ELIGIBLE only), and its old voter's `v2_attendance` row
+survives every reset (the reset zeroes `signed_count`, never deletes) with its last credits (heights
+F, F + 1, credited at F + 1 / F + 2) inside the epoch (F, U] that THIS boundary's digest (3b) folds.
+Deleting it at 1d would change that digest (design §3: delete after the epoch's digest consumers).
+So the swap records the voter_id (`v2ep_a8_rel_t`, 32 bytes per seat of S(U), on the boundary's
+stack) and the sweep step (3d, after 3b / 3c) deletes the row — 0 or 1 row, the sweep's own rule.
+No credit can re-create it after U. Compared with pre-A8 (deleted at U + E), the digest at U + E no
+longer folds that (zeroed) row.
+
+**Consequences.** The released key can be STAKEd again (with its own consent — design §3 G2) from
+U + 1, where before A8 that STAKE was refused until U + E; a seated rotator's old key stays refused
+until U + E. `v2_consensus_keys` is fully derivable and the self-check lost its A3 tolerance. The
+sweep's candidates are now exactly the swapped validators S(U − E) seated (an A8 validator holds one
+role-1 row after its swap; graduating at U + E, `key_release` takes its current key and it holds
+none). Graduation at U itself is impossible for a swapped validator (it is seated in S(U), so its
+graduation is deferred). The sweep cannot tell a stray second role-1 row on an A8 validator from an
+A2 residue (it would release it as a previous key); the boundary self-check (log-only) reports such
+a row as an extra. Fault stages unchanged: F61 after 1d (now including the A8 deletes), F62 after
+3d.
+
+**Tests** (written, NOT run by the author). `test_hf6_rotate` case C: an old voter's attendance row
+planted on both twins (C6a); F62 at 3E rolls the swap's A8 deletes back; the swap at 3E leaves each
+unseated rotator ONE role-1 row and the sweep deletes the planted row (C6); the self-check without
+tolerance (C6k); a STAKE under a released key APPLIES at 3E + 1 (C6s); the sweep fault now needs
+three role-1 rows (C7c); C8's releases moved to 3E. Case D: a STAKE under a seated rotator's old key
+is REFUSED at 4E + 1 (D4s) and the same call APPLIES at 5E + 1 (D5s).
 
 ### Read queries for Nodus Scan on version 3: `dnac_v3_block`, `dnac_balance` (0.20.3)
 

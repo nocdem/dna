@@ -63,8 +63,12 @@
  *      of the freeze at H−E accepted it) switches to it through
  *      nodus_validator_v2_rotate_apply (validators.pubkey := pending,
  *      pending := 0, effective epoch := 0, the new key's reservation
- *      role 2 → 1; the previous key stays role 1 until 3d at H+E). No
- *      pending row ⇒ nothing else is read. AFTER 1b (the distribution
+ *      role 2 → 1). The previous key stays role 1 until 3d at H+E when
+ *      snapshot(H−E) seats the validator (khan A2); otherwise its role-1
+ *      row is deleted here (khan A8, nodus_validator_v2_key_release_
+ *      previous) and its voter_id handed to 3d of this boundary for the
+ *      attendance row. No pending row ⇒ nothing else is read; snapshot(H−E)
+ *      is read only once a row swaps. AFTER 1b (the distribution
  *      compares snapshot(H−E)'s old keys with the rows), BEFORE 2, 3 and 5
  *      (they must see the row as snapshot(H) names it; commit_next copies
  *      the new key into snapshot(H+E)). Fault stage
@@ -142,18 +146,19 @@
  *      boundary needs). MUST run AFTER 3b: resetting before hashing would
  *      digest all zeros and hide every divergence the leg exists to
  *      catch.
- *   3d. ROTATION SWEEP (HF-6 slice 6d; design rev 6 §3, khan A2) —
- *      generation 4 only: for every validator swapped at H−E (it holds
- *      two role-1 reservations — or, graduated at step 2 of this
- *      boundary, only the previous one (HF-6 slice 6e) — and
- *      snapshot(H−E) seats it under its current key) the previous key's
- *      role-1 reservation and its attendance row are deleted: the ONE
- *      release site of a previous key. Candidates come from the
- *      reservation table (the only committed record of the previous key
- *      of a validator snapshot(H−2E) did not seat — khan A3); none ⇒ no
- *      snapshot is read. AFTER 3b/3c, BEFORE 4 and 5; writes only
- *      v2_consensus_keys and v2_attendance. Fault stage
- *      NODUS_V2_EPST_ROTATE_SWEEP after the step (HF-6 slice 6e).
+ *   3d. ROTATION SWEEP (HF-6 slice 6d; design rev 6 §3, khan A2 / A8) —
+ *      generation 4 only: first the attendance rows (0 or 1 each) of the
+ *      previous voters step 1d released (khan A8); then, for every
+ *      validator swapped at H−E (it holds two role-1 reservations — or,
+ *      graduated at step 2 of this boundary, only the previous one (HF-6
+ *      slice 6e) — and snapshot(H−E) seats it under its current key) the
+ *      previous key's role-1 reservation and its attendance row are
+ *      deleted: the A2 release site. Candidates come from the reservation
+ *      table (since A8 they are exactly the swapped validators
+ *      snapshot(H−2E) seated); none ⇒ no snapshot is read. AFTER 3b/3c,
+ *      BEFORE 4 and 5; writes only v2_consensus_keys and v2_attendance.
+ *      Fault stage NODUS_V2_EPST_ROTATE_SWEEP after the step (HF-6 slice
+ *      6e).
  *   4. BOUNDARY FLIPS — nodus_witness_vset_apply_boundary_flips(w, H).
  *   5. NEXT SNAPSHOT — nodus_witness_vset_commit_next(w, H).
  *   6. BALANCE COPY (tokenomics-v3 P2, P2-5) —
@@ -517,10 +522,9 @@ int nodus_witness_v2_key_generation(nodus_witness_t *w, uint32_t *gen_out);
  *            the same validator_id's entry in S(h − E) (ruleset-1
  *            S(h − E): the migrated-id bridge), SHA3-512 of the S(h − E)
  *            key (the previous key kept by the swap at h, khan A2).
- * A validator seated in S(h) under its row's current key, not UNSTAKED
- * and with no seat in S(h − E) may hold ONE further role-1 row (khan A3:
- * its previous key is in no committed snapshot) — counted as
- * unverified, not as a difference.
+ * Every row is derivable (khan A8, 2026-10-13: a validator with no seat
+ * in S(h − E) loses its previous key in the swap at h), so there is no
+ * tolerance: any table row not derived is a difference.
  * Read-only; no transaction of its own (valid inside the boundary
  * transaction and in autocommit).
  *

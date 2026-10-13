@@ -867,12 +867,13 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w);
  * A key appears at most once, whatever its role. Its content: role 1 =
  * every validators row whose status is not UNSTAKED (key =
  * SHA3-512(validators.pubkey), value = its pubkey_hash = validator_id),
- * plus the previous key of a validator swapped at the last boundary
- * (khan A2); role 2 = every non-zero
+ * plus the previous key of a validator swapped at the last boundary that
+ * the predecessor snapshot seats (khan A2); role 2 = every non-zero
  * v2_validator_roles.pending_consensus_pubkey. All of it derives from
- * rooted state (the rows and the stored snapshots) except the previous
- * key of a validator the predecessor snapshot does not seat (khan A3) —
- * full rule and writers: nodus_witness_validator.h. No root reads it;
+ * rooted state (the rows and the stored snapshots) — fully derivable
+ * since khan A8 (the swap releases the previous key of a validator the
+ * predecessor snapshot does not seat, khan A3) — full rule and writers:
+ * nodus_witness_validator.h. No root reads it;
  * every generation-4 boundary compares it with the derivation, log-only
  * (nodus_witness_v2_keyres_diff). Not a bundle table. A database
  * already at 18 before this change gets the table from the base schema's
