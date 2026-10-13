@@ -252,6 +252,13 @@ test('consent check through the JS bridge: the pinned chain, the wallet\'s own o
   assert.equal(o.ok, false); assert.deepEqual(o.checks.filter(c => !c.ok).map(c => c.id), ['owner']);
   // no rotate consent action (Kurultay #18 item 1)
   assert.throws(() => api.consentCheck({ op: 'rotate', text: stake.text, tip: HF6.tip }), /Unknown consent action/);
+  // a paste over 16384 bytes is refused in JS, before the ccall copies it
+  // onto the module's 1 MiB C stack (red-team round 1, Astra F2) — 2 MiB
+  // would overflow that stack; the module stays usable afterwards
+  const huge = `${stake.text}${'x'.repeat(2 * 1024 * 1024)}`;
+  assert.throws(() => api.consentCheck({ op: 'stake', text: huge, tip: HF6.tip }), /too long/);
+  assert.throws(() => api.consentCheck({ op: 'stake', text: 'é'.repeat(8193), tip: HF6.tip }), /too long/, 'counted in UTF-8 bytes');
+  assert.equal(api.consentCheck({ op: 'stake', text: stake.text, tip: HF6.tip }).ok, true);
   // the screens' values
   assert.deepEqual({ ...api.hf6Rules }, { stakeMin: '200000000000000', storageBond: '100000000000000', consentWindow: '720', generation: 4 });
   api.lock();

@@ -53,9 +53,16 @@ const HF6_CONSENT_OPS = Object.freeze({ stake: 1, storageRegister: 3 });
 // one final '\n' (nodus_v2_stake.h's container ends every line with '\n';
 // a pasted text often lacks the last one). Nothing else is changed: the
 // module parses the result strictly and verifies the node's signature.
+// The module refuses more than NSW_CONSENT_TEXT_MAX (16384) bytes, but a
+// ccall string is copied onto the module's 1 MiB C stack BEFORE the C code
+// runs, so a longer paste is refused here, before any call (HF-6 Connect
+// red-team round 1, Astra F2; the class of BUGS W-15).
+const CONSENT_TEXT_MAX = 16384;
 const consentText = text => {
   if (typeof text !== 'string') throw new Error('Paste the consent the node printed.');
-  return `${text.replace(/\r\n?/g, '\n').trim()}\n`;
+  const out = `${text.replace(/\r\n?/g, '\n').trim()}\n`;
+  if (new TextEncoder().encode(out).length > CONSENT_TEXT_MAX) throw new Error('This is not a consent from a Nodus node: it is too long.');
+  return out;
 };
 // Shared vaults (nodus-send-wasm.c "VAULTS"): at most 7 members
 // (shared/dnac/msig_wire.h DNA_MSIG_MAX_N), a vault code is 18 + N × 2592

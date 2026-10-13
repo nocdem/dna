@@ -239,7 +239,7 @@ try {
   assert.ok(stop.includes('To move a witness to a new key, stop it here and become a witness again from the new node (a new witness ID; delegators delegate again).'), stop);
   assert.ok(!/\bdays?\b|\bhours?\b/.test(stop), 'block counts only, never hours or days');
   assert.equal(await root.locator('.roles-review .roles-fp').count(), 0, 'no node key block');
-  assert.deepEqual(await root.locator('.roles-review .roles-kv dt').allInnerTexts(), ['Network fee', 'Balance after', 'Valid until block'], 'no bond, no consent line: fee only');
+  assert.deepEqual(await root.locator('.roles-review .roles-kv dt').allInnerTexts(), ['Network fee', 'Change back to you', 'Balance after', 'Valid until block'], 'no bond, no consent line: fee and the signed change only');
   await noSideways('stop being a witness review');
   await root.locator('[data-action="confirm"]').click();
   await root.locator('.roles-status').waitFor();

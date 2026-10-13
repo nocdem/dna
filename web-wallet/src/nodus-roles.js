@@ -488,6 +488,9 @@ function reviewCard() {
   if (d.bond > 0n) pair('Bond', nodus(d.bond));
   if (kind === 'stake') pair('Commission', `${Number(d.commissionBps) / 100}%`);
   pair('Network fee', nodus(d.fee));
+  // the change output read back from the signed bytes (to this wallet;
+  // HF-6 Connect red-team round 1, Astra F5)
+  pair('Change back to you', nodus(d.change));
   pair('Balance after', nodus(t.balanceAfter));
   if (d.consentExpiry !== null) pair('Consent valid until block', block(d.consentExpiry));
   pair('Valid until block', block(d.expiryHeight));
