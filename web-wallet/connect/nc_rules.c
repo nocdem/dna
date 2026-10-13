@@ -1067,7 +1067,7 @@ static int newest_cmp(const void *ctx, size_t a, size_t b) {
     return sv_cmp(&v[a].fp, &v[b].fp);
 }
 /* has: the contact has a counted message (time, seq); the sort of
- * text.js:329-334 — with one first, time descending, seq descending, then
+ * text.js:334-339 — with one first, time descending, seq descending, then
  * list index. */
 typedef struct { size_t index; int has; int64_t time; nc_u128_t seq; } ord_t;
 static int ord_cmp(const void *ctx, size_t a, size_t b) {

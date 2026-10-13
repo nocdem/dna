@@ -1050,7 +1050,7 @@ export function rulesCases() {
     add('fullDays', {});
   }
 
-  // ── checkOrder (text.js:319, web 0.1.111): contacts with a counted
+  // ── checkOrder (text.js:320, web 0.1.111): contacts with a counted
   // message first, by the message's shown time (shownAt) descending, then
   // seq descending; then the rest; ties in list order. A message counts only
   // with a string fp, a U64 String(seq) and an `at` that is a Number and a

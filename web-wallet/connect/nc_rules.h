@@ -252,7 +252,7 @@ int nc_recent_days(const nc_val_t *today, nc_u128_t days[8], size_t *n_days, con
 int nc_contact_days(const nc_val_t *fp, const nc_rmap_t *dm_sync, const nc_val_t *now,
                     const nc_val_t *today, nc_u128_t days[8], size_t *n_days, const char **msg);
 
-/* checkOrder (text.js:319, web 0.1.111): contacts (elem, fp read) and
+/* checkOrder (text.js:320, web 0.1.111): contacts (elem, fp read) and
  * messages (elem, fp, seq, at, dir, senderTs read). A message counts when
  * its fp is a string, String(seq) passes U64 and `at` is a Number that is
  * a safe integer (|at| <= 2^53 - 1); its time is shownAt (text.js:257):
