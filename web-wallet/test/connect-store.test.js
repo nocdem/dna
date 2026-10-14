@@ -45,7 +45,8 @@
 //     it); a held record that could not be read at the open stops every
 //     reachability delete of that session; a group record that cannot be
 //     walked keeps every 'k' / 'x' record; an id the commit puts is never
-//     deleted.
+//     deleted; decision 14: a key version record goes only once its gid left
+//     the index (a rebuilt group record that no longer lists it keeps it).
 // Requires: nothing (pure node).
 // Leaves behind: nothing.
 // How it can lie: the core is a fake — its "projection" is a reversible
@@ -702,4 +703,36 @@ test('W-18 unreachableRecords: an indexed group that cannot be walked keeps ever
   assert.deepEqual(unreachableRecords({ present, index: indexRefs(st), groupValue: () => ({ kind: 'nodus-group' }) }), [G2, P2], 'refused by checkGroup: k / x kept');
   assert.deepEqual(unreachableRecords({ present, index: indexRefs(st), groupValue: () => groupRec(GID2, { 1: K1 }) }), [G2, P2], 'another gid: k / x kept');
   assert.deepEqual(unreachableRecords({ present, index: indexRefs(st), groupValue: walk, putting: new Set([P2]) }), [G2, X1], 'put in the same commit: kept');
+  // decision 14: a key version no group record lists goes only once its gid left the index
+  const K2 = rid('k', 7), K3 = rid('k', 8), K4 = rid('k', 9);
+  const gidOf = new Map([[K1, GID1], [K2, GID1], [K3, GID2]]);
+  const withKeys = new Set([G1, K1, K2, K3, K4]);
+  assert.deepEqual(unreachableRecords({ present: withKeys, index: indexRefs(st), groupValue: walk, keyGid: id => gidOf.get(id) }), [K3],
+    'K2 (gid indexed, not listed) and K4 (gid not known) kept; K3 (gid not indexed) deleted');
+});
+
+test('W-18 / decision 14: a group record rebuilt for the SAME gid without its old key versions keeps them; they go with the gid', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const state = structuredClone(store.state);
+    const G1 = rid('g', 1), K1 = rid('k', 2), K2 = rid('k', 3);
+    state.groups[GID1] = { id: G1, at: '1' };
+    await store.save(state, [], [], [], [{ id: G1, value: groupRec(GID1, { 1: K1, 2: K2 }) }, { id: K1, value: keyRec(GID1, 1) }, { id: K2, value: keyRec(GID1, 2) }]);
+    log.length = 0;
+    await store.save(state, [], [], [], [{ id: G1, value: groupRec(GID1, {}) }]);
+    assert.deepEqual(commits(log), [[`put state/${G1}`, 'put meta/counter']], 'nothing deleted: the gid is still indexed');
+    // the same after a reopen (the gids come from the records that opened)
+    store.close();
+    const again = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const s2 = structuredClone(again.state);
+    s2.seenOwn.profile = '5';
+    log.length = 0;
+    await again.save(s2);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter']]);
+    assert.deepEqual(heldIds(idb), [G1, K1, K2]);
+    log.length = 0;
+    delete s2.groups[GID1];
+    await again.save(s2);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter', `delete state/${G1}`, `delete state/${K1}`, `delete state/${K2}`]]);
+  });
 });

@@ -384,9 +384,14 @@ export function indexRefs(state) {
 // unreachable: they go. Fail safe: an indexed group record whose value is
 // unknown or refused (model.js checkGroup, or another gid) cannot be walked,
 // so no 'k' / 'x' record is deleted by this commit. An id this same commit
-// puts is never deleted. Sorted ascending.
-export function unreachableRecords({ present, index, groupValue, putting = new Set() }) {
+// puts is never deleted. Decision 14 (a saved wallet keeps ALL old key
+// versions of a group): a key version record ('k') goes only once its
+// group's gid has left the index — `keyGid(id)` is the gid the record holds
+// (undefined: not known, kept), so a key version a rebuilt group record no
+// longer lists is still kept while its gid is indexed. Sorted ascending.
+export function unreachableRecords({ present, index, groupValue, keyGid = () => undefined, putting = new Set() }) {
   const keep = new Set([...index.profiles, ...index.vaults]);
+  const gids = new Set(index.groups.map(([gid]) => gid));
   let walked = true;
   for (const [gid, id] of index.groups) {
     keep.add(id);
@@ -399,6 +404,7 @@ export function unreachableRecords({ present, index, groupValue, putting = new S
   for (const id of present) {
     if (!HELD_RECORD_ID.test(id) || keep.has(id) || putting.has(id)) continue;
     if (!walked && (id[0] === 'k' || id[0] === 'x')) continue;
+    if (id[0] === 'k') { const gid = keyGid(id); if (typeof gid !== 'string' || gids.has(gid)) continue; }
     out.push(id);
   }
   return out.sort();
@@ -547,8 +553,10 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   // whether reachability deletes may run in this session (BUGS W-18,
   // unreachableRecords): false once any held record failed to open or to
   // pass its check at the open — what it pointed to is unknown, so nothing
-  // is deleted (fail safe = keep).
-  const present = new Set(), groupValues = new Map();
+  // is deleted (fail safe = keep). `keyGids`: key version record id -> the
+  // gid it holds (decision 14: a 'k' record goes only with its gid).
+  const present = new Set(), groupValues = new Map(), keyGids = new Map();
+  const noteKey = (id, value) => { if (id[0] === 'k' && isMap(value) && typeof value.gid === 'string') keyGids.set(id, value.gid); };
   let cleanupSafe = true;
   const reportDropped = paths => { if (paths.length) { try { onDropped?.([...paths]); } catch { /* the page's log */ } } };
 
@@ -683,6 +691,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
         if (isMap(kept)) {
           groupRecords.push({ id: record.id, value: kept });
           if (record.id[0] === 'g') groupValues.set(record.id, structuredClone(kept));
+          noteKey(record.id, kept);
         } else cleanupSafe = false;
       } catch { cleanupSafe = false; /* not used */ }
     }
@@ -828,6 +837,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     const orphans = cleanupSafe ? unreachableRecords({
       present, index: snap.index,
       groupValue: id => (writing.has(id) ? writing.get(id) : groupValues.get(id)),
+      keyGid: id => keyGids.get(id),
       putting: new Set(held.map(e => e.id))
     }) : [];
     const deletes = [...diff.deletes, ...orphans].sort().map(id => ({ store: STORE_STATE, id }));
@@ -845,9 +855,10 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     // what is on disk now (the deletes run after the puts in writeAll)
     for (const e of held) present.add(e.id);
     for (const [id, value] of writing) groupValues.set(id, structuredClone(value));
-    for (const id of orphans) { present.delete(id); groupValues.delete(id); }
+    for (const e of held) noteKey(e.id, e.value);
+    for (const id of orphans) { present.delete(id); groupValues.delete(id); keyGids.delete(id); }
   }
-  function close() { closed = true; db.close(); present.clear(); groupValues.clear(); }
+  function close() { closed = true; db.close(); present.clear(); groupValues.clear(); keyGids.clear(); }
   // Delete-from-this-device under the wallet's storage Web Lock (§1.7). The
   // counter copy in localStorage is KEPT: K does not change, so its count
   // must not restart (NC-RT2 D).

@@ -41,7 +41,11 @@
 //     change of the same group made while it waited stands (web 0.1.118);
 //   - W-16 (web 0.1.125): an accept that could not be kept for sending puts
 //     the record back to the same invitation, saved, and Join works again;
-//     a newer invitation that arrived meanwhile is not overwritten.
+//     a newer invitation that arrived meanwhile is not overwritten;
+//   - decision 14: leave -> re-invite -> re-join keeps every earlier key
+//     version record (the invitation carries the old keyIds forward); after
+//     a reload the earlier version is held but inert (buckets of the new
+//     membership only, an old unsent message not published under it).
 //
 // How it can lie: the mock core is NOT the module. Its "packets", "records",
 // "HEADs" and "items" are JSON in hex, its digests SHA-512 of that hex, its
@@ -339,6 +343,49 @@ test('leave (decision 13): hidden at once, the owner told; listed as leaving unt
   // a second leave from someone no longer a member is ignored
   await A.engine.onDirect(FB, JSON.stringify({ type: 'nodus_group_leave', v: 1, group_id: gid }));
   assert.deepEqual(A.engine.group(gid).removals, []);
+});
+
+test('decision 14: leave -> re-invite -> re-join keeps every earlier key version on the device; an earlier membership\'s unsent message stays unsent', async () => {
+  const net = world();
+  const B = party(net, FB, { contacts: [FA] });
+  const { A, gid } = await groupOf(net, [B]);
+  const first = structuredClone(B.engine.group(gid).keyIds);
+  assert.deepEqual(Object.keys(first), ['2']);
+  // an own message kept but not published (the network could not be read), then leave
+  net.unreadable = true;
+  assert.equal(await B.engine.send(gid, 'old unsent'), 'kept');
+  net.unreadable = false;
+  await B.engine.leave(gid);
+  await deliver(B, A);
+  await A.engine.syncAll();                                  // version 3 without B
+  await A.engine.invite(gid, FB);
+  await deliver(A, B);
+  const rec = B.state.groups[gid].id;
+  assert.equal(B.engine.group(gid).status, 'invited');
+  assert.deepEqual(B.db.get(rec).keyIds, first, 'the fresh invitation record still lists the earlier key version');
+  await B.engine.acceptInvite(gid);
+  await deliver(B, A);
+  await A.engine.syncAll();                                  // version 4 with B, welcome
+  await deliver(A, B);
+  await B.engine.syncAll();
+  const b = B.engine.group(gid);
+  assert.equal(b.status, 'active');
+  assert.equal(b.first, 4);
+  const saved = B.db.get(rec).keyIds;
+  assert.deepEqual(Object.keys(saved).sort(), ['2', '4']);
+  assert.equal(saved[2], first[2], 'the earlier key version id is the same record');
+  for (const id of Object.values(saved)) assert.ok(B.db.has(id), `key version record ${id} kept`);
+  // reloaded: the earlier version is held again but stays inert — buckets of
+  // the new membership only, the old unsent message is not published under it
+  const again = createGroupsEngine({ ...B.deps });
+  again.load({ records: [...B.db.entries()].map(([id, value]) => ({ id, value })), messages: [...B.kept.values()] });
+  const g = again.group(gid);
+  assert.ok(g.keys.has(2) && g.keys.has(4));
+  assert.equal(g.problem ?? null, null);
+  assert.deepEqual(bucketVersions(g), [4]);
+  net.log.length = 0;
+  await again.syncAll();
+  assert.deepEqual(net.log.filter(e => e.startsWith('put:bucket') && e.endsWith(':b2')), [], 'nothing published under the earlier membership\'s key');
 });
 
 test('removal: never shown as removed before the HEAD is out; the removed member finds no entry', async () => {

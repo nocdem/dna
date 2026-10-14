@@ -307,6 +307,17 @@ export function createGroupsEngine(deps) {
     }
     if (g?.status === 'invited' && g.invite?.id === r.invite_id) return;
     const next = newGroup({ gid: r.group_id, owner: from, name: r.name, role: 'member', status: 'invited', invite: { id: r.invite_id, at: seconds() } });
+    // Decision 14: a saved wallet keeps ALL old key versions of a group.
+    // The fresh record of a group this device already knows (left, removed,
+    // a refused join) carries the old record's key version ids forward, so
+    // they stay reachable (store.js unreachableRecords: a group's 'k'
+    // records go only when the gid leaves the index). They are inert here:
+    // every use of a key is of hw.v (current, ownerSync, send, view), of
+    // bucketVersions (never below `first`, which the re-join sets), of the
+    // walk above hw.v (catchUp), or of a pending own message's version,
+    // which publishPending skips below `first`. Not put into `keys` now;
+    // load() reads them back like any listed version.
+    if (g) next.keyIds = { ...g.keyIds };
     next.keys = new Map();
     await commit(r.group_id, next);
   }
@@ -546,7 +557,10 @@ export function createGroupsEngine(deps) {
     if (expired.length) await updateMessages(expired.map(m => ({ ...m, failed: true })));
     for (const { v, day } of buckets) {
       const K = keyOf(g, v);
-      if (!K) continue;
+      // a version below the first one this membership joined at is an
+      // earlier membership's key (kept, decision 14; onInvite): its unsent
+      // messages are not published under it
+      if (!K || v < (g.first || 1)) continue;
       const items = bucketItems(messages, gid, v, day).slice(-BUCKET_ITEMS_MAX);
       const r = await core.groupBucketSend({ gid, salt: saltOf(gid, K.key, v), v: String(v), day, items });
       const mine = messages.filter(m => m.group === gid && m.dir === 'out' && m.v === v && m.day === day && m.published !== true);
