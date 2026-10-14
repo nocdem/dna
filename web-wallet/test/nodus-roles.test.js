@@ -145,7 +145,8 @@ test('roles: the consent request code and the one node command', () => {
   for (const expiry of ['0', '01', '-1', '1.5', ' 1710', '', 0n, -5n, 1710, null]) {
     assert.throws(() => consentRequestCode({ ...ok, expiry }), /Invalid expiry/, String(expiry));
   }
-  for (const chainId of [CHAIN.toUpperCase(), CHAIN.slice(2), `${CHAIN}00`, '', undefined]) {
+  // CHAIN is digits only, so its upper case is itself: the upper-case refusal needs letters
+  for (const chainId of ['AB'.repeat(32), CHAIN.slice(2), `${CHAIN}00`, '', undefined]) {
     assert.throws(() => consentRequestCode({ ...ok, chainId }), /Invalid chain/, String(chainId));
   }
 });
