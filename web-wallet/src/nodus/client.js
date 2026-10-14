@@ -366,6 +366,20 @@ export const NODUS_CONNECT_BOUND_MS = 30000;
 // and is not matched.
 export const NODUS_SESSION_LOST_TEXT = 'Nodus connection is not ready. Try again shortly.';
 
+// A module error marked `busy` (web 0.1.119): the node answered
+// NODUS_ERR_RATE_LIMITED — nodus 0.26.1's per-session chain budget on the
+// client port (nodus/docs/ARCHITECTURE.md §5 "Client port front door"),
+// or the DHT's own limit, which answers with the same code. Nothing was
+// forwarded, so the same request may simply be made again (Kurultay #20
+// item 4: RATE_LIMITED with retry, never a fabricated answer). The flag
+// comes from the module (send-module.js failure: nsw_error_busy;
+// src/connect/core.js: nc_error_busy), never from the English text, which
+// is NODUS_BUSY_TEXT. A user action shows the text and leaves its form as
+// it was; a background read treats it as transient (no error shown; its
+// next round asks again) — no retry loop or timer is added for it.
+export const NODUS_BUSY_TEXT = 'The network is busy right now. Try again in a few seconds.';
+export const isNodusBusy = error => error?.busy === true;
+
 // `steps` (optional): { begin(name) -> { end(outcome, error) } } — told when
 // each connection step starts and how it ended ('ok' / 'failed' /
 // 'timed out'), for the session log (src/session-log.js stepLog). Step

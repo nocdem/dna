@@ -60,6 +60,7 @@ import {
   buildTransfer, parseTransfer, transferVerdict, nodusUnits, validNodusCard, copyCards
 } from './actions.js';
 import { parseNameOf } from '../../nodus/names.js';
+import { isNodusBusy } from '../../nodus/client.js';
 import { keptChainName as keptNameOf, chainLookupNeeded, chainNameAfterLookup, chainNoNameFresh, chainNoNameAfterLookup, resolveContactName, NAME_CHECK_TEXT } from './chain-names.js';
 import { newDiag, diagSalt, diagDay, errorText, diagText } from './diag.js';
 // The session log (memory only, cleared on lock): Messages' failures as
@@ -281,10 +282,11 @@ export async function openMessages({ client, phrase, vaultId: id = null, fresh: 
   } finally { words?.fill(0); }
 }
 
-// Our own plain-words errors (Closed, a storage failure) are shown as they
-// are; anything else gets the caller's plain-words fallback.
+// Our own plain-words errors (Closed, a storage failure) and the module's
+// "network is busy" text (isNodusBusy, web 0.1.119) are shown as they are;
+// anything else gets the caller's plain-words fallback.
 function explain(error, fallback) {
-  const shown = error instanceof Closed || error instanceof StorageError ? error.message : fallback;
+  const shown = error instanceof Closed || error instanceof StorageError || isNodusBusy(error) ? error.message : fallback;
   logFailure(shown, error);
   return shown;
 }
@@ -775,7 +777,10 @@ async function sync() {
     // (diags) and the check goes on with the next contact: a failure must
     // not leave every contact after it in the list unchecked, round after
     // round. A close / reset meanwhile still ends the check.
-    let syncMoved = false, failed = 0, storageFailure, arrivedTotal = 0;
+    // `deferred` (web 0.1.119): contacts whose check met a busy node
+    // (isNodusBusy) — not a failure: no "could not be checked" note, their
+    // sync mark does not move, and the next round checks them again.
+    let syncMoved = false, failed = 0, deferred = 0, storageFailure, arrivedTotal = 0;
     // Check order (web 0.1.111, text.js checkOrder): the contacts we last
     // wrote with first, by the message's time; then everyone else in list
     // order — a copy; state.contacts keeps its order.
@@ -869,6 +874,12 @@ async function sync() {
           complete = e.reads ? await finishContactCheck(e, gen) : false;
         } catch (error) {
           if (gen !== generation) return;
+          if (isNodusBusy(error)) {
+            deferred++;
+            arrivedTotal += incomingCount(contact.fp) - e.before;
+            logCheck(`A contact (${shortId(contact.fp)}) was not checked: the network is busy; it is checked again on the next round`);
+            continue;
+          }
           failed++;
           if (error instanceof StorageError) storageFailure = error;
           const diag = diags.get(contact.fp);
@@ -918,7 +929,8 @@ async function sync() {
     if (gen === generation) { fillOwnAvatar(); fillNameLine(); }
     if (gen === generation) {
       const notChecked = (failed ? ` ${failed} contact${failed === 1 ? '' : 's'} could not be checked (see Details in the conversation).` : '') +
-        (groupsFailed ? ` ${groupsFailed} group${groupsFailed === 1 ? '' : 's'} could not be checked.` : '');
+        (groupsFailed ? ` ${groupsFailed} group${groupsFailed === 1 ? '' : 's'} could not be checked.` : '') +
+        (deferred ? ` The network was busy: ${deferred} contact${deferred === 1 ? ' is' : 's are'} checked again on the next round.` : '');
       ui.sync.textContent = storageFailure
         ? `${storageFailure.message}${notChecked}`
         : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
@@ -928,7 +940,13 @@ async function sync() {
       void checkTransfers(gen);
     }
   } catch (error) {
-    if (gen === generation) ui.sync.textContent = explain(error, 'The network could not be reached. Checking again automatically.');
+    // A busy node (web 0.1.119) is not a failure: this round stops, the
+    // next one (every 30 seconds) asks again.
+    if (gen !== generation) return;
+    if (isNodusBusy(error)) {
+      logFailure('The message check met a busy network; checking again automatically', error);
+      ui.sync.textContent = 'The network is busy right now. Checking again automatically.';
+    } else ui.sync.textContent = explain(error, 'The network could not be reached. Checking again automatically.');
   } finally { if (gen === generation) syncing = false; }
 }
 

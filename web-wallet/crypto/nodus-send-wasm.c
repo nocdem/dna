@@ -238,17 +238,66 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
 /* ── error text ─────────────────────────────────────────────────────── */
 
 static char g_error[256];
+/* 1 while g_error is the "network is busy" text of nsw_fail_rc: the node
+ * answered NODUS_ERR_RATE_LIMITED (nodus 0.26.1 client front door — a
+ * per-session chain budget; the DHT side has its own limit with the same
+ * code), so nothing was forwarded and the same request may simply be made
+ * again (nodus/docs/ARCHITECTURE.md §5 "Client port front door"; Kurultay
+ * #20 item 4: RATE_LIMITED with retry, never a fabricated answer). The page
+ * reads it through nsw_error_busy() instead of parsing the English text
+ * (src/nodus/send-module.js failure: error.busy). Every nsw_fail clears it;
+ * nsw_begin clears it with g_error. */
+static int g_error_busy;
 
 const char *nsw_error(void) { return g_error; }
+int nsw_error_busy(void)    { return g_error_busy; }
 
 static int nsw_fail(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(g_error, sizeof(g_error), fmt, ap);
     va_end(ap);
+    g_error_busy = 0;
     QGP_LOG_WARN(LOG_TAG, "%s", g_error);
     return -1;
 }
+
+#define NSW_BUSY_TEXT \
+    "The network is busy right now. Try again in a few seconds."
+
+/* The failure of a NODE request whose answer code is `rc` (a nodus client
+ * return: 0 / NODUS_ERR_* / a negative transport code). RATE_LIMITED gives
+ * the busy text and sets g_error_busy; every other rc gives `fmt` exactly as
+ * nsw_fail would (the site's own text, its "rc=%d" included). Never used for
+ * a builder / codec rc (NODUS_V2_*_ERR_* are all negative, a separate code
+ * space). @return -1. */
+__attribute__((format(printf, 2, 3)))
+static int nsw_fail_rc(int rc, const char *fmt, ...) {
+    if (rc == NODUS_ERR_RATE_LIMITED) {
+        snprintf(g_error, sizeof(g_error), "%s", NSW_BUSY_TEXT);
+        g_error_busy = 1;
+        QGP_LOG_WARN(LOG_TAG, "%s (rc=%d)", g_error, rc);
+        return -1;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_error, sizeof(g_error), fmt, ap);
+    va_end(ap);
+    g_error_busy = 0;
+    QGP_LOG_WARN(LOG_TAG, "%s", g_error);
+    return -1;
+}
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build, never shipped — build-nodus-send-wasm.sh
+ * exports_test): nsw_fail_rc on a given rc with one real site's text
+ * (nsw_balance), so the busy mapping is pinned without a node
+ * (test/nodus-send-wasm.test.js). @return -1; the text in nsw_error, the
+ * flag in nsw_error_busy. */
+int nsw_test_fail_rc(int rc) {
+    return nsw_fail_rc(rc, "Balance unavailable (rc=%d).", rc);
+}
+#endif
 
 /* ── strict text codecs (amounts and heights cross as decimal strings) ─ */
 
@@ -2379,6 +2428,7 @@ static int nsw_begin(void) {
     if (g_busy) return nsw_fail("Another Nodus operation is still running.");
     g_busy = 1;
     g_error[0] = '\0';
+    g_error_busy = 0;
     return 0;
 }
 
@@ -2401,7 +2451,7 @@ static int nsw_check_chain(void) {
     uint8_t c[DNA_CHAIN_ID_LEN];
     int rc = nodus_client_dnac_chain_id32(&g_client, &has, c);
     if (rc != 0)
-        return nsw_fail("Could not read the Nodus chain id (rc=%d).", rc);
+        return nsw_fail_rc(rc, "Could not read the Nodus chain id (rc=%d).", rc);
     if (!has) {
         nsw_fail("This Nodus node does not serve the expected chain.");
         return -2;
@@ -2445,9 +2495,9 @@ static int nsw_select_generation(nsw_gen_t *out) {
     memset(&ri, 0, sizeof(ri));
     int rc = nodus_client_dnac_ruleset_info(&g_client, &ri);
     if (rc != 0)
-        return nsw_fail("This Nodus node did not say which transaction rules "
-                        "it runs (an older node, or an unreadable answer; "
-                        "rc=%d). Nothing was built.", rc);
+        return nsw_fail_rc(rc, "This Nodus node did not say which transaction "
+                           "rules it runs (an older node, or an unreadable "
+                           "answer; rc=%d). Nothing was built.", rc);
     const uint32_t gen = nsw_gen_match(ri.sys_version, ri.sys_hash,
                                        ri.core_version, ri.core_hash);
     if (gen != 0) {
@@ -2599,7 +2649,7 @@ int nsw_balance(void) {
     nodus_dnac_balance_result_t res;
     memset(&res, 0, sizeof(res));
     int rc = nodus_client_dnac_balance(&g_client, g_fp_hex, &res);
-    if (rc != 0) return nsw_end(nsw_fail("Balance unavailable (rc=%d).", rc));
+    if (rc != 0) return nsw_end(nsw_fail_rc(rc, "Balance unavailable (rc=%d).", rc));
     static const uint8_t zero64[64] = {0};
     uint64_t total = 0, spendable = 0;      /* an empty "tk" is a real zero
                                              * (nodus.h dnac_balance)       */
@@ -2631,7 +2681,7 @@ int nsw_list(void) {
                                     NODUS_DNAC_MAX_UTXO_RESULTS, &res);
     if (rc != 0) {
         nodus_client_free_utxo_result(&res);
-        return nsw_end(nsw_fail("Your coin list could not be read (rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "Your coin list could not be read (rc=%d).", rc));
     }
     static const uint8_t zero64[64] = {0};
     int bad = res.count < 0 || res.count > (int)NODUS_DNAC_MAX_UTXO_RESULTS ||
@@ -2703,8 +2753,8 @@ int nsw_build_and_sign(const char *to_hex, const char *amount_dec,
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
     if (rc != 0)                             /* a failed query is not price 0
                                               * (nodus-cli cmd_v2_spend)     */
-        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
-                                "was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "The network fee is unknown (rc=%d). "
+                                   "Nothing was built.", rc));
     if (g_cancel) return nsw_end(-1);
     rc = nsw_build_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
                         fi.gas_price, to_raw, amount, expiry, nsw_rand_csprng,
@@ -2780,9 +2830,10 @@ int nsw_submit(void) {
             rc = nsw_fail("The Nodus node refused this transfer, or its "
                           "answer could not be read (code %d). Check the "
                           "activity before sending again.", src);
-        else if (src != 0)
-            rc = nsw_fail("The Nodus node did not answer the submission "
-                          "(rc=%d).", src);
+        else if (src != 0)                  /* RATE_LIMITED: nothing was
+                                             * forwarded (nsw_fail_rc)      */
+            rc = nsw_fail_rc(src, "The Nodus node did not answer the "
+                             "submission (rc=%d).", src);
         else if (!approved) {
             nsw_fail("The Nodus network refused this transfer.");
             rc = 1;
@@ -2820,7 +2871,8 @@ static int nsw_claim_tip_window(uint64_t *tip, int *window) {
     bool has = false;
     int rc = nodus_client_dnac_supply_tip(&g_client, &has, tip);
     if (rc != 0 || !has || *tip == 0 || *tip == UINT64_MAX)
-        return nsw_fail("The current Nodus block height is unknown (rc=%d).", rc);
+        return nsw_fail_rc(rc, "The current Nodus block height is unknown "
+                           "(rc=%d).", rc);
     const uint64_t next = *tip + 1;
     *window = next < g_cd.m.claim_start_height ? 1
             : next > g_cd.m.claim_end_height   ? 2 : 0;
@@ -2862,7 +2914,8 @@ int nsw_claim_status(void) {
     memset(&b, 0, sizeof(b));
     int rc = nodus_client_dnac_supply_buckets(&g_client, &b);
     if (rc != 0)
-        return nsw_end(nsw_fail("The allocation state could not be read (rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "The allocation state could not be "
+                                   "read (rc=%d).", rc));
     g_cs.found   = 1;
     g_cs.window  = window;
     g_cs.claimed = !b.has ? 2 : b.unclaimed < amount ? 1 : 0;
@@ -2910,8 +2963,14 @@ int nsw_claim_submit(void) {
         int src = nsw_dnac_spend(g_cb.tx_hash, g_cb.bytes, g_cb.len, &approved);
         if (src < 0)
             rc = -1;
-        else if (src == NODUS_ERR_TIMEOUT || src > NODUS_ERR_CIRCUIT_CLOSED)
-            rc = nsw_fail("The Nodus node did not answer the claim (rc=%d).", src);
+        else if (src == NODUS_ERR_TIMEOUT || src > NODUS_ERR_CIRCUIT_CLOSED ||
+                 src == NODUS_ERR_RATE_LIMITED)
+            /* RATE_LIMITED is not a refusal: the node's front door
+             * forwarded nothing (nodus/docs/ARCHITECTURE.md §5 "Client
+             * port front door"), so it is the retryable -1 with the busy
+             * text, never the refused 1 below. */
+            rc = nsw_fail_rc(src, "The Nodus node did not answer the claim "
+                             "(rc=%d).", src);
         else if (src == NODUS_ERR_PROTOCOL_ERROR) {
             /* code 7 is BOTH the server's CheckTx refusal (an already-claimed
              * allocation included) AND the client's "the reply could not be
@@ -2980,8 +3039,8 @@ int nsw_scan(const char *intent_hex, const char *from_dec, const char *to_dec) {
     uint64_t tip = 0;
     int rc = nodus_client_dnac_supply_tip(&g_client, &has_tip, &tip);
     if (rc != 0 || !has_tip)
-        return nsw_end(nsw_fail("The current Nodus block height is unknown "
-                                "(rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "The current Nodus block height is "
+                                   "unknown (rc=%d).", rc));
     uint64_t *next = nsw_memo_slot(intent);
     uint64_t h = *next > from ? *next : from;
     const uint64_t last = tip < to ? tip : to;
@@ -2994,8 +3053,9 @@ int nsw_scan(const char *intent_hex, const char *from_dec, const char *to_dec) {
             memset(&page, 0, sizeof(page));
             rc = nodus_client_dnac_v3_block(&g_client, h, idx, 0, &page);
             if (rc != 0)
-                return nsw_end(nsw_fail("Block %llu could not be read "
-                                        "(rc=%d).", (unsigned long long)h, rc));
+                return nsw_end(nsw_fail_rc(rc, "Block %llu could not be read "
+                                           "(rc=%d).", (unsigned long long)h,
+                                           rc));
             int bad = page.height != h;
             for (size_t i = 0; !bad && i < page.count; i++) {
                 const nodus_dnac_v3_item_t *it = &page.items[i];
@@ -3120,7 +3180,8 @@ int nsw_validators(void) {
         if (rc != 0) {
             nodus_client_free_validator_list_result(&page);
             g_vals.n = 0;
-            return nsw_end(nsw_fail("The witness list could not be read (rc=%d).", rc));
+            return nsw_end(nsw_fail_rc(rc, "The witness list could not be read "
+                                       "(rc=%d).", rc));
         }
         int bad = page.count < 0 || page.count > NSW_VAL_PAGE ||
                   (page.count > 0 && !page.entries) || page.total < 0 ||
@@ -3202,7 +3263,8 @@ int nsw_delegations(void) {
                                            &res);
     if (rc != 0) {
         nodus_client_free_delegations_result(&res);
-        return nsw_end(nsw_fail("Your delegations could not be read (rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "Your delegations could not be read "
+                                   "(rc=%d).", rc));
     }
     int bad = res.count < 0 || res.count > NSW_MAX_DELEGATIONS ||
               (res.count > 0 && !res.entries);
@@ -3318,8 +3380,8 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     memset(&fi, 0, sizeof(fi));
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
     if (rc != 0)
-        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
-                                "was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "The network fee is unknown (rc=%d). "
+                                   "Nothing was built.", rc));
     if (g_cancel) return nsw_end(-1);
     /* the listing may have been replaced only by another export, and none
      * can run while this one does (nsw_begin) — vi still names the row */
@@ -3357,8 +3419,8 @@ int nsw_hf6_bonds(void) {
     memset(&fi, 0, sizeof(fi));
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
     if (rc != 0)
-        return nsw_end(nsw_fail("The network's bond amounts could not be "
-                                "read (rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "The network's bond amounts could not "
+                                   "be read (rc=%d).", rc));
     if (g_cancel) return nsw_end(-1);
     uint64_t stake_min = 0, storage_bond = 0;
     if (nsw_hf6_bonds_of(fi.stake_min, fi.storage_bond, &stake_min,
@@ -3465,8 +3527,8 @@ int nsw_hf6_build(int op, const char *consent_text, const char *target_hex,
     memset(&fi, 0, sizeof(fi));
     rc = nodus_client_dnac_fee_info(&g_client, &fi);
     if (rc != 0) {
-        rc = nsw_fail("The network fee is unknown (rc=%d). Nothing was "
-                      "built.", rc);
+        rc = nsw_fail_rc(rc, "The network fee is unknown (rc=%d). Nothing "
+                         "was built.", rc);
         goto out;
     }
     rc = -1;
@@ -3562,9 +3624,9 @@ int nsw_name_lookup(const char *name) {
     memset(&r, 0, sizeof(r));
     int rc = nodus_client_dnac_name_lookup(&g_client, name, &r);
     if (rc != 0)
-        return nsw_end(nsw_fail("The chain name could not be looked up (an "
-                                "older node, or no readable answer; rc=%d).",
-                                rc));
+        return nsw_end(nsw_fail_rc(rc, "The chain name could not be looked up "
+                                   "(an older node, or no readable answer; "
+                                   "rc=%d).", rc));
     uint8_t tmp[64];
     if (r.found && nsw_parse_hex(r.owner, tmp, sizeof(tmp)) != 0)
         return nsw_end(nsw_fail("The Nodus node returned an invalid owner."));
@@ -3585,9 +3647,9 @@ int nsw_name_of(const char *owner_hex) {
     memset(&r, 0, sizeof(r));
     int rc = nodus_client_dnac_name_of(&g_client, owner_hex, &r);
     if (rc != 0)
-        return nsw_end(nsw_fail("The chain name of this ID could not be read "
-                                "(an older node, or no readable answer; "
-                                "rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "The chain name of this ID could not be "
+                                   "read (an older node, or no readable "
+                                   "answer; rc=%d).", rc));
     nsw_name_keep(&r);
     if (g_nm.found) memcpy(g_nm.owner, owner_hex, 129);
     return nsw_end(0);
@@ -3905,9 +3967,9 @@ int nsw_name_prices(void) {
     memset(&np, 0, sizeof(np));
     int rc = nodus_client_dnac_name_prices(&g_client, &np);
     if (rc != 0)
-        return nsw_end(nsw_fail("The Nodus node did not give name prices (an "
-                                "older node, or no readable answer; rc=%d).",
-                                rc));
+        return nsw_end(nsw_fail_rc(rc, "The Nodus node did not give name "
+                                   "prices (an older node, or no readable "
+                                   "answer; rc=%d).", rc));
     int bad = np.n_sched > NODUS_DNAC_NAME_SCHED_MAX;
     for (int i = 0; !bad && i < 4; i++)
         if (!nsw_price_in_range(np.price[i])) bad = 1;
@@ -3975,8 +4037,8 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
     memset(&r, 0, sizeof(r));
     int rc = nodus_client_dnac_name_lookup(&g_client, name, &r);
     if (rc != 0)
-        return nsw_end(nsw_fail("Could not check whether the name is free "
-                                "(rc=%d). Nothing was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "Could not check whether the name is "
+                                   "free (rc=%d). Nothing was built.", rc));
     if (r.found)
         return nsw_end(nsw_fail("The name \"%s\" is already registered. "
                                 "Nothing was built.", name));
@@ -3984,8 +4046,9 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
     memset(&r, 0, sizeof(r));
     rc = nodus_client_dnac_name_of(&g_client, g_fp_hex, &r);
     if (rc != 0)
-        return nsw_end(nsw_fail("Could not check whether this wallet already "
-                                "has a name (rc=%d). Nothing was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "Could not check whether this wallet "
+                                   "already has a name (rc=%d). Nothing was "
+                                   "built.", rc));
     if (r.found)
         return nsw_end(nsw_fail("This wallet already has the chain name \"%s\"."
                                 " Each ID can hold one name. Nothing was "
@@ -3995,8 +4058,8 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
     memset(&np, 0, sizeof(np));
     rc = nodus_client_dnac_name_prices(&g_client, &np);
     if (rc != 0)                             /* never a guessed price      */
-        return nsw_end(nsw_fail("The Nodus node did not give the name price "
-                                "(rc=%d). Nothing was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "The Nodus node did not give the name "
+                                   "price (rc=%d). Nothing was built.", rc));
     uint64_t price = 0;
     if (nodus_v2_name_price_for(np.price, strlen(name), &price) != 0 ||
         !nsw_price_in_range(price))
@@ -4007,8 +4070,8 @@ int nsw_name_build(const char *name, const char *expiry_dec) {
     memset(&fi, 0, sizeof(fi));
     rc = nodus_client_dnac_fee_info(&g_client, &fi);
     if (rc != 0)
-        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
-                                "was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "The network fee is unknown (rc=%d). "
+                                   "Nothing was built.", rc));
     if (g_cancel) return nsw_end(-1);
     rc = nsw_name_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
                        fi.gas_price, name, price, expiry, nsw_rand_csprng,
@@ -4346,7 +4409,9 @@ int nsw_msig_balance(void) {
     nodus_dnac_balance_result_t res;
     memset(&res, 0, sizeof(res));
     int rc = nodus_client_dnac_balance(&g_client, g_ms.addr_hex, &res);
-    if (rc != 0) return nsw_end(nsw_fail("The vault balance is unavailable (rc=%d).", rc));
+    if (rc != 0)
+        return nsw_end(nsw_fail_rc(rc, "The vault balance is unavailable "
+                                   "(rc=%d).", rc));
     static const uint8_t zero64[64] = {0};
     uint64_t total = 0, spendable = 0;
     for (size_t i = 0; i < res.count; i++)
@@ -4383,10 +4448,8 @@ static int nsw_ms_query_fail(int rc, const char *what) {
     if (rc == NODUS_ERR_NOT_FOUND)
         return nsw_fail("This Nodus node serves no vault %s for this chain.",
                         what);
-    if (rc == NODUS_ERR_RATE_LIMITED)
-        return nsw_fail("The Nodus node is busy; try again in a moment.");
-    return nsw_fail("The vault %s could not be read from the Nodus node "
-                    "(rc=%d).", what, rc);
+    return nsw_fail_rc(rc, "The vault %s could not be read from the Nodus "
+                       "node (rc=%d).", what, rc);
 }
 
 /* dnac_msig_utxo for the vault in use: its native coins with an amount,
@@ -4706,14 +4769,14 @@ int nsw_msig_build(const char *to_hex, const char *amount_dec) {
     memset(&fi, 0, sizeof(fi));
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
     if (rc != 0)
-        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
-                                "was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "The network fee is unknown (rc=%d). "
+                                   "Nothing was built.", rc));
     bool has_tip = false;
     uint64_t tip = 0;
     rc = nodus_client_dnac_supply_tip(&g_client, &has_tip, &tip);
     if (rc != 0 || !has_tip)
-        return nsw_end(nsw_fail("The current Nodus block height is unknown "
-                                "(rc=%d). Nothing was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "The current Nodus block height is "
+                                   "unknown (rc=%d). Nothing was built.", rc));
     uint64_t expiry = 0;
     if (nsw_expiry_for(tip, &gen, &expiry) != 0) return nsw_end(-1);
     if (g_cancel) return nsw_end(-1);
@@ -4798,8 +4861,8 @@ int nsw_msig_review(void) {
     uint64_t tip = 0;
     int rc = nodus_client_dnac_supply_tip(&g_client, &has_tip, &tip);
     if (rc != 0 || !has_tip || tip == 0)
-        return nsw_end(nsw_fail("The current Nodus block height is unknown "
-                                "(rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "The current Nodus block height is "
+                                   "unknown (rc=%d).", rc));
     return nsw_end(nsw_ms_review_now(tip));
 }
 
@@ -4991,9 +5054,10 @@ int nsw_msig_submit(void) {
             rc = nsw_fail("The Nodus node refused this vault payment, or its "
                           "answer could not be read (code %d). Check the "
                           "vault history before sending again.", src);
-        else if (src != 0)
-            rc = nsw_fail("The Nodus node did not answer the submission "
-                          "(rc=%d).", src);
+        else if (src != 0)                  /* RATE_LIMITED: nothing was
+                                             * forwarded (nsw_fail_rc)      */
+            rc = nsw_fail_rc(src, "The Nodus node did not answer the "
+                             "submission (rc=%d).", src);
         else if (!approved) {
             nsw_fail("The Nodus network refused this vault payment.");
             rc = 1;
@@ -5752,8 +5816,8 @@ static int nsw_evm_net(dna_evm_call_t *call, const char *units_dec,
     memset(&fi, 0, sizeof(fi));
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
     if (rc != 0)
-        return nsw_end(nsw_fail("The network fee is unknown (rc=%d). Nothing "
-                                "was built.", rc));
+        return nsw_end(nsw_fail_rc(rc, "The network fee is unknown (rc=%d). "
+                                   "Nothing was built.", rc));
     if (g_cancel) return nsw_end(-1);
     if (nsw_expiry_check(g_list.tip, &gen, expiry) != 0) return nsw_end(-1);
     nodus_v2_ruleset_id_t rs;
@@ -6092,12 +6156,9 @@ int nsw_evm_query(const char *method, int len) {
         if (rc == NODUS_ERR_NOT_FOUND)
             return nsw_end(nsw_fail("Smart contracts are not active on this "
                                     "Nodus network yet."));
-        if (rc == NODUS_ERR_RATE_LIMITED)
-            return nsw_end(nsw_fail("The Nodus node is busy; try again in a "
-                                    "moment."));
-        return nsw_end(nsw_fail("The smart-contract request failed (an older "
-                                "node, a refused request, or no readable "
-                                "answer; rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "The smart-contract request failed (an "
+                                   "older node, a refused request, or no "
+                                   "readable answer; rc=%d).", rc));
     }
     nsw_jb_t jb;
     memset(&jb, 0, sizeof(jb));
@@ -6273,15 +6334,13 @@ int nsw_addr_history(const char *before_dec, const char *bi_dec,
         if (rc == NODUS_ERR_NOT_FOUND)
             return nsw_end(nsw_fail("This Nodus node serves no account "
                                     "history for this chain."));
-        if (rc == NODUS_ERR_RATE_LIMITED)
-            return nsw_end(nsw_fail("The Nodus node is busy; try again in a "
-                                    "moment."));
         /* an older node answers "unknown DNAC method" as PROTOCOL_ERROR,
          * the same code the client returns for a reply its decoder
-         * refuses (an unknown row kind included) */
-        return nsw_end(nsw_fail("This Nodus node did not return an account "
-                                "history (an older node, or an unreadable "
-                                "answer; rc=%d).", rc));
+         * refuses (an unknown row kind included); RATE_LIMITED -> the busy
+         * text (nsw_fail_rc) */
+        return nsw_end(nsw_fail_rc(rc, "This Nodus node did not return an "
+                                   "account history (an older node, or an "
+                                   "unreadable answer; rc=%d).", rc));
     }
     int jrc = nsw_ah_page_json(&res, limit, &g_ah_json);
     nodus_client_free_addr_history_result(&res);
@@ -6403,9 +6462,9 @@ int nsw_storage_by_owner(void) {
         /* an older node answers "unknown DNAC method" as PROTOCOL_ERROR,
          * the same code the client returns for a reply its decoder refuses
          * (an entry of another owner included) */
-        return nsw_end(nsw_fail("Your storage nodes could not be read (an "
-                                "older node, or an unreadable answer; "
-                                "rc=%d).", rc));
+        return nsw_end(nsw_fail_rc(rc, "Your storage nodes could not be read "
+                                   "(an older node, or an unreadable answer; "
+                                   "rc=%d).", rc));
     }
     int jrc = nsw_sbo_json(&res, &g_sbo_json);
     nodus_dnac_storage_by_owner_free(&res);
@@ -6699,6 +6758,10 @@ done:
 int nc_host_begin(void)            { return nsw_begin(); }
 int nc_host_end(void)              { g_busy = 0; return (g_locked || g_cancel) ? 1 : 0; }
 const char *nc_host_error(void)    { return g_error; }
+/* nsw_error_busy for the Messages exports: nc_wasm.c copies the host's
+ * reason with its busy mark (declared there, next to its use — nc_core.h
+ * is outside this change). */
+int nc_host_error_busy(void)       { return g_error_busy; }
 /* The client only once CONNECTED (session open, chain checked). */
 nodus_client_t *nc_host_client(void) {
     return (g_unlocked && !g_locked && !g_cancel) ? &g_client : NULL;

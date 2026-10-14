@@ -73,7 +73,9 @@ const ENTRY_POINTS = [
   'nsw_built_name', 'nsw_built_price', 'nsw_name_offline_build', 'nsw_name_prices', 'nsw_np_price', 'nsw_np_sched_count',
   'nsw_np_sched_param', 'nsw_np_sched_value', 'nsw_np_sched_effective', 'nsw_name_build',
   // account history (0.1.78): one dnac_addr_history page of this wallet's address
-  'nsw_addr_history', 'nsw_addr_history_json'
+  'nsw_addr_history', 'nsw_addr_history_json',
+  // 0.1.119: the "network is busy" mark of nsw_error / nc_error (a node's RATE_LIMITED)
+  'nsw_error_busy', 'nc_error_busy'
 ];
 
 test('the shipped send.wasm exports the module entry points and no test-only one', () => {
@@ -632,4 +634,29 @@ test('claim data: the embedded testnet data seals in the shipped module; a wrong
   mod.M.HEAPU8.set(CLAIM.seed, mod.num('nsw_seed_buf'));
   assert.notEqual(mod.num('nsw_claim_offline_build', ['string'], [NODUS_SEND_NETWORK.chainId]), 0);
   assert.match(mod.str('nsw_error'), /no allocation/);
+});
+
+// ── a busy node (web 0.1.119) ────────────────────────────────────────────
+// nodus 0.26.1 answers a session over its chain budget NODUS_ERR_RATE_LIMITED
+// (4) and forwards nothing (nodus/docs/ARCHITECTURE.md §5 "Client port front
+// door"). nsw_fail_rc (crypto/nodus-send-wasm.c) gives that rc the "network
+// is busy" text and the nsw_error_busy mark, and every other rc the site's
+// own text, unchanged. nsw_test_fail_rc runs it with nsw_balance's text, in
+// the TEST parity build only (no node needed).
+test('busy: rc 4 gives the busy text and mark; other rcs keep their text, unmarked', { skip: skipNameParity }, async () => {
+  const { num, str } = await loadParity('send-test-node.mjs', true);
+  assert.equal(num('nsw_test_fail_rc', ['number'], [4]), -1);
+  assert.equal(str('nsw_error'), 'The network is busy right now. Try again in a few seconds.');
+  assert.equal(num('nsw_error_busy'), 1);
+  assert.doesNotMatch(str('nsw_error'), /rc=/);
+  for (const rc of [-1, 1, 2, 5, 6, 7, 8]) {
+    assert.equal(num('nsw_test_fail_rc', ['number'], [rc]), -1);
+    assert.equal(str('nsw_error'), `Balance unavailable (rc=${rc}).`);
+    assert.equal(num('nsw_error_busy'), 0, `rc ${rc} is not busy`);
+  }
+  // A later failure of any other kind clears the mark (nsw_fail).
+  num('nsw_test_fail_rc', ['number'], [4]);
+  assert.equal(num('nsw_error_busy'), 1);
+  assert.notEqual(num('nsw_req_add_coin', ['string', 'string'], ['zz', '1']), 0);
+  assert.equal(num('nsw_error_busy'), 0);
 });

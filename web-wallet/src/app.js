@@ -14,7 +14,7 @@ import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
 import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
-import { createNodusClient, NODUS_CONNECT_BOUND_MS } from './nodus/client.js';
+import { createNodusClient, NODUS_CONNECT_BOUND_MS, isNodusBusy } from './nodus/client.js';
 import { nodusHistoryRow, nodusHistoryStatus, NODUS_HISTORY_LIMIT } from './nodus/history.js';
 import { parseNameOf } from './nodus/names.js';
 import { netLevelFor, netStatusView } from './net-status.js';
@@ -383,6 +383,10 @@ async function loadNodusHistory({ manual = false, force = false } = {}) {
   } catch (error) {
     // No error wall: the note says it, and "Sent from here" lists every
     // record of this tab again (no node page to show them as).
+    // A busy node on a read nobody pressed for (web 0.1.119, isNodusBusy):
+    // transient — the page read before stays, no note; the next read
+    // (opening Activity, a confirmed transaction, Refresh) asks again.
+    if (nodusHistoryJob === job && !manual && isNodusBusy(error)) return;
     if (nodusHistoryJob === job) { nodusHistory = null; nodusHistoryError = String(error?.message || 'the read failed.'); }
   } finally {
     if (nodusHistoryJob === job) { nodusHistoryJob = null; renderHistory(); renderActivity(false); }
