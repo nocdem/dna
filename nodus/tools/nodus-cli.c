@@ -81,6 +81,7 @@
 #include "client/nodus_v2_stake.h"             /* the shared stake builder   */
 #include "client/nodus_v2_name.h"              /* the shared name builder    */
 #include "client/nodus_v2_msig.h"              /* the shared msig library    */
+#include "client/nodus_consent_req.h"          /* `consent <code>`           */
 #ifdef NODUS_EVM_ENABLED
 #include "client/nodus_v2_evm.h"               /* Nodus EVM: the shared EVM
                                                  * envelope builder         */
@@ -3849,6 +3850,10 @@ static int cli_storage_row_check(nodus_client_t *client, int is_exit,
  * nodus_v2_stake.h — the 9254-hex signature and 5184-hex key dominate). */
 #define CLI_CONSENT_FILE_MAX 16384u
 
+/* `consent <code>`: the node config the key and port are found through
+ * (decision 2026-10-14-consent-request-code.md) */
+#define CLI_CONSENT_DEFAULT_CONFIG "/etc/nodus.conf"
+
 /* Read and parse a consent file. @return 0 / -1 (message printed). */
 static int cli_consent_load(const char *path, nodus_v2_consent_t *c) {
     uint8_t *raw = NULL;
@@ -6926,6 +6931,163 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
     }
     fflush(stdout);
     free(text);
+    return rc;
+}
+
+static void cli_consent_code_usage(void) {
+    fprintf(stderr,
+        "Usage: sudo nodus-cli consent <code> [--config <file>] [--yes]\n"
+        "  <code>: the one-line request code Nodus Connect shows\n"
+        "          (nodus-consent-v1:<storage|witness>:<owner>:<expiry>:"
+        "<chain id>).\n"
+        "  Signs the consent with THIS node's key, found through "
+        "\"identity_path\" in\n"
+        "  --config (default %s); -i <dir> overrides it. The node is "
+        "-s (default\n"
+        "  127.0.0.1) on -p / -s host:port, else the config's "
+        "\"tcp_port\", else %u.\n"
+        "  Shows what it will sign and asks first (--yes: do not ask). "
+        "stdout carries\n"
+        "  only the consent text — paste it back into Nodus Connect.\n",
+        CLI_CONSENT_DEFAULT_CONFIG, (unsigned)NODUS_DEFAULT_TCP_PORT);
+}
+
+/* `consent <code> [--config <file>] [--yes]` — decision
+ * docs/plans/decisions/2026-10-14-consent-request-code.md.
+ *
+ * The node operator runs one fixed command with the request code Nodus
+ * Connect shows. This finds the node key itself (-i, else the config's
+ * identity_path), shows what will be signed — role, owner, valid-until
+ * block, chain id and THIS node's fingerprint — on stderr, asks (unless
+ * --yes), and then hands the code's values to cmd_validator_consent as the
+ * existing `storage consent` / `validator consent --op stake` arguments.
+ * Nothing about the consent itself is decided here: that function reads
+ * the node's chain id and tip, refuses a chain other than the code's
+ * (--chain-id), judges the expiry window, signs through the valbind codec,
+ * verifies and prints the unchanged consent text on stdout.
+ *
+ * The prompt is the guard: the code is unsigned, so a code pasted from
+ * someone else would register this node under THEIR owner — the operator
+ * is the last one to see the owner before the node key signs.
+ *
+ * The node key directory is loaded READ-ONLY (nodus_identity_load_
+ * readonly): under sudo it is the live node's identity_path, and only
+ * nodus-core writes identity files (decision 2026-10-01-nodus-component-
+ * split item 10). */
+static int cmd_consent_code(const char *server_ip, uint16_t server_port,
+                            int port_given, const char *identity_dir,
+                            int argc, char **argv, int cmd_start) {
+    const char *code = NULL;
+    const char *config_path = CLI_CONSENT_DEFAULT_CONFIG;
+    int config_given = 0, assume_yes = 0;
+    for (int i = cmd_start + 1; i < argc; i++) {   /* skip "consent" */
+        const char *a = argv[i];
+        if (!strcmp(a, "--config") && i + 1 < argc) {
+            config_path = argv[++i];
+            config_given = 1;
+        } else if (!strcmp(a, "--yes")) {
+            assume_yes = 1;
+        } else if (a[0] != '-' && !code) {
+            code = a;
+        } else {
+            cli_consent_code_usage();
+            return 1;
+        }
+    }
+    if (!code) {
+        cli_consent_code_usage();
+        return 1;
+    }
+
+    nodus_consent_req_t req;
+    char err[512];
+    if (nodus_consent_req_parse(code, &req, err, sizeof(err)) != 0) {
+        fprintf(stderr, "%s — nothing signed\n", err);
+        return 1;
+    }
+
+    /* the node key directory and the port: -i / -p / -s first, then the
+     * node config */
+    char cfg_identity[512];
+    uint16_t cfg_port = NODUS_DEFAULT_TCP_PORT;
+    const char *key_dir = identity_dir;
+    if (!identity_dir || !port_given) {
+        const int crc = nodus_consent_req_read_config(
+            config_path, cfg_identity, sizeof(cfg_identity), &cfg_port,
+            err, sizeof(err));
+        if (crc != 0 && (!identity_dir || config_given)) {
+            fprintf(stderr, "cannot find this node's key: %s\n"
+                    "  (config %s) — give -i <node identity dir> or "
+                    "--config <file>; nothing signed\n", err, config_path);
+            return 1;
+        }
+        if (crc != 0) {
+            /* -i named the key; the default config only supplied the port */
+            fprintf(stderr, "note: %s — using port %u\n", err,
+                    (unsigned)NODUS_DEFAULT_TCP_PORT);
+            cfg_port = NODUS_DEFAULT_TCP_PORT;
+        }
+        if (!identity_dir) key_dir = cfg_identity;
+        if (!port_given) server_port = cfg_port;
+    }
+    if (!server_ip) server_ip = "127.0.0.1";
+
+    if (nodus_identity_load_readonly(key_dir, &identity) != 0) {
+        fprintf(stderr, "cannot load the node key from %s (run with sudo? "
+                "nodus.pk, nodus.sk and the KEM key files must be there) "
+                "— nothing signed\n", key_dir);
+        nodus_identity_clear(&identity);
+        return 1;
+    }
+
+    /* what will be signed, before it is — stderr: stdout is the consent */
+    fprintf(stderr,
+            "Consent request from Nodus Connect\n"
+            "  role:            %s\n"
+            "  owner:           %s\n"
+            "  valid until:     block %s\n"
+            "  chain id:        %s\n"
+            "  this node's key: %s\n"
+            "This node's key will consent to being registered under the "
+            "owner above.\n"
+            "Sign only if you asked Nodus Connect for this code yourself.\n",
+            req.storage ? "storage node" : "witness",
+            req.owner_hex, req.expiry_dec, req.chain_hex,
+            identity.fingerprint);
+    if (!assume_yes) {
+        char line[64];
+        fprintf(stderr, "Sign this consent? [y/N] ");
+        fflush(stderr);
+        if (!fgets(line, sizeof(line), stdin) ||
+            !nodus_consent_req_answer_yes(line)) {
+            fprintf(stderr, "nothing signed\n");
+            nodus_identity_clear(&identity);
+            return 1;
+        }
+    }
+    fflush(stderr);
+
+    /* the existing path, with the code's values as its arguments; its loop
+     * starts at cmd_start + 2 = 3 */
+    char *a2[12];
+    int n2 = 0;
+    a2[n2++] = argv[0];
+    a2[n2++] = req.storage ? "storage" : "validator";
+    a2[n2++] = "consent";
+    if (!req.storage) {
+        a2[n2++] = "--op";
+        a2[n2++] = "stake";
+    }
+    a2[n2++] = "--owner";
+    a2[n2++] = req.owner_hex;
+    a2[n2++] = "--expiry";
+    a2[n2++] = req.expiry_dec;
+    a2[n2++] = "--chain-id";
+    a2[n2++] = req.chain_hex;
+    a2[n2]   = NULL;
+    const int rc = cmd_validator_consent(server_ip, server_port, n2, a2, 1,
+                                         req.storage);
+    nodus_identity_clear(&identity);
     return rc;
 }
 
@@ -10596,6 +10758,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  validator consent --op stake (--owner <hex128> | --msig <descriptor>)\n");
     fprintf(stderr, "           --expiry <h> [--out <f>]\n");
     fprintf(stderr, "                                   HF-6: the -i node key consents (needs -i)\n");
+    fprintf(stderr, "  consent <code> [--config <file>] [--yes]\n");
+    fprintf(stderr, "                                   sign the consent Nodus Connect asks for, with this\n");
+    fprintf(stderr, "                                   node's key (found in /etc/nodus.conf); no -s/-i needed\n");
     fprintf(stderr, "  v2-envelope stake2 --keys <owner dir> --consent <file> --bond <raw>\n");
     fprintf(stderr, "           [--commission <bps>] (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   HF-6 generation-4 STAKE; prints validator_id\n");
@@ -10636,6 +10801,7 @@ static void usage(const char *prog) {
 int main(int argc, char **argv) {
     const char *server_ip = NULL;
     uint16_t server_port = NODUS_DEFAULT_TCP_PORT;
+    int port_given = 0;     /* -p or -s host:port named the port */
     const char *identity_dir = NULL;
     int opt;
 
@@ -10655,12 +10821,13 @@ int main(int argc, char **argv) {
                 host_buf[hlen] = '\0';
                 server_ip = host_buf;
                 server_port = (uint16_t)atoi(colon + 1);
+                port_given = 1;
             } else {
                 server_ip = optarg;
             }
             break;
         }
-        case 'p': server_port = (uint16_t)atoi(optarg); break;
+        case 'p': server_port = (uint16_t)atoi(optarg); port_given = 1; break;
         case 'i': identity_dir = optarg; break;
         case 'h':
         default:
@@ -10707,6 +10874,16 @@ int main(int argc, char **argv) {
                                     optind);
         fprintf(stderr, "Usage: msig (address | sign | combine) ...\n");
         return 1;
+    }
+
+    /* `consent <code>` (decision 2026-10-14-consent-request-code.md):
+     * needs no -s (127.0.0.1) and no -i (the config's identity_path) —
+     * handled before both checks below; it loads the node key itself */
+    if (strcmp(command, "consent") == 0) {
+        signal(SIGINT, sighandler);
+        signal(SIGPIPE, SIG_IGN);
+        return cmd_consent_code(server_ip, server_port, port_given,
+                                identity_dir, argc, argv, optind);
     }
 #endif
 

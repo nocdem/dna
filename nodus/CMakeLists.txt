@@ -171,6 +171,11 @@ set(NODUS_SOURCES
     # I/O-free like the builders above; the web wallet's WASM module
     # compiles the same file (its vaults).
     src/client/nodus_v2_msig.c
+    # The consent request code (decision 2026-10-14-consent-request-
+    # code.md): `nodus-cli consent <code>` parses the line Nodus Connect
+    # shows and reads identity_path / tcp_port from the node config.
+    # Parsing only — the signing stays cmd_validator_consent's.
+    src/client/nodus_consent_req.c
     # nodus_cc_client.c (the CLI's short-lived 4004 p2p peer) is DELETED:
     # governance approvals are collected by the proposer's own node
     # (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md,
@@ -1223,6 +1228,14 @@ add_executable(test_cbor tests/test_cbor.c)
 target_link_libraries(test_cbor nodus)
 add_test(NAME test_cbor COMMAND test_cbor)
 
+# The consent request code + node config reader behind `nodus-cli consent
+# <code>` (src/client/nodus_consent_req.c, decision 2026-10-14-consent-
+# request-code.md): valid codes, every refusal, the config keys. Temp
+# files under /tmp only; no network.
+add_executable(test_consent_req tests/test_consent_req.c)
+target_link_libraries(test_consent_req nodus)
+add_test(NAME test_consent_req COMMAND test_consent_req)
+
 # Phase-C C1 — shielded ZK verify stack linkage gate (pulls the whole
 # consensus verify chain out of libnodus.a; a missing zk source in
 # NODUS_SOURCES is a LINK error here, not a C2/C3 surprise).
@@ -2069,6 +2082,13 @@ add_executable(test_v2_qc_alloc_fault tests/test_v2_qc_alloc_fault.c)
 target_link_libraries(test_v2_qc_alloc_fault nodus dsa nodus crypto)
 target_link_options(test_v2_qc_alloc_fault PRIVATE
                     -Wl,--wrap=malloc -Wl,--wrap=calloc)
+# --wrap sees only real calls: at -O2 (a Release build) GCC removes the test's
+# own malloc/free pair in its interposer self-check (section 8), the
+# interposer never sees it and the check fails although nothing is wrong
+# (read in the disassembly, 2026-10-14). The allocation built-ins are off
+# for this test's own translation unit only; the library is unchanged.
+target_compile_options(test_v2_qc_alloc_fault PRIVATE
+                       -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-free)
 add_test(NAME test_v2_qc_alloc_fault COMMAND test_v2_qc_alloc_fault)
 
 # Ledger V2 O15A — obligation 5: the state validated for migration must be

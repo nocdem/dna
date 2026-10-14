@@ -554,9 +554,21 @@ int main(int argc, char **argv) {
     }
 
     /* ── one client per session, connected and authenticated ─────────── */
+    /* everything `cleanup` frees is declared here, before the first goto:
+     * a session that fails to connect jumps there before the spend-mode
+     * buffers below are set (Release -Wmaybe-uninitialized, 2026-10-14) */
+    nodus_v2_spend_built_t *builts = NULL;
+    nodus_pubkey_t *spks = NULL;
+    nodus_sig_t    *ssigs = NULL;
     nodus_client_t *clients = calloc(S, sizeof(*clients));
     int *connected = calloc(S, sizeof(*connected));
-    if (!clients || !connected) { fprintf(stderr, "out of memory\n"); return 1; }
+    if (!clients || !connected) {
+        fprintf(stderr, "out of memory\n");
+        free(clients); free(connected);
+        for (uint64_t i = 0; i < n_ident; i++) nodus_identity_clear(&ids[i]);
+        free(ids);
+        return 1;
+    }
     int setup_rc = 1;
     for (uint64_t s = 0; s < S; s++) {
         nodus_client_config_t cfg;
@@ -579,9 +591,6 @@ int main(int argc, char **argv) {
 
     /* ── mode-specific setup ─────────────────────────────────────────── */
     uint8_t chain32[DNA_CHAIN_ID_LEN];
-    nodus_v2_spend_built_t *builts = NULL;
-    nodus_pubkey_t *spks = NULL;
-    nodus_sig_t    *ssigs = NULL;
 
     if (mode == MODE_SPEND_INVALID) {
         bool has32 = false;

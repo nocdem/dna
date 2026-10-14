@@ -1484,6 +1484,25 @@ OWNER's key directory (`nodus.pk` + `nodus.sk` — a wallet identity, kind 1) �
 owner (kind 3), the descriptor file and each co-signer's own key directory ("Multisig owner" below).
 The node's secret key never leaves the node; the owner's never leaves the owner.
 
+**The consent from a Nodus Connect request code** (decision
+`docs/plans/decisions/2026-10-14-consent-request-code.md`). Nodus Connect's "Become a storage node" /
+"Become a witness" screen shows one line,
+`nodus-consent-v1:<storage|witness>:<owner hex128>:<expiry>:<chain id hex64>`. On the node run
+
+```bash
+sudo nodus-cli consent '<code>'
+```
+
+It reads the node key directory from `identity_path` in `/etc/nodus.conf` (`--config <file>` for
+another file, `-i <dir>` to name the directory; the key is only read, never written) and asks
+`127.0.0.1` on the config's `tcp_port` (default 4001; `-s` / `-p` override). Before signing it prints
+on stderr the role, the owner, the valid-until block, the chain id and THIS node's fingerprint, and
+asks `Sign this consent? [y/N]` — check that the owner is the wallet you are registering from; a
+pasted code from someone else would register the node under their owner. Then it signs exactly as
+`storage consent` (role `storage`) or `validator consent --op stake` (role `witness`) below, with the
+code's chain id pinned (a node on another chain signs nothing), and prints the consent text on stdout:
+paste it back into Connect. `--yes` skips the question. The commands below are unchanged.
+
 ```bash
 # on the storage node — its fingerprint (the registry key) and its consent
 nodus-cli -i /var/lib/nodus/identity whoami
