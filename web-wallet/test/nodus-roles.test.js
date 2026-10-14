@@ -13,7 +13,10 @@
 // line is "free" only against the complete witness list (BUGS W-21); the
 // role bonds are the node's (hf6Bonds): what prepareHf6 builds, a failed
 // read builds nothing (BUGS W-20); leaving storage only for a listed,
-// storing node (W-21); the earliest heights
+// storing node (W-21); the node is given one request code
+// (nodus-consent-v1:<role>:<owner>:<expiry>:<chain>) in one fixed command
+// `sudo nodus-cli consent <code>`, and a code with a bad kind, owner, expiry
+// or chain is never made (W-22); the earliest heights
 // of the timing facts (witness join, storage exit); the validator list keeps the generation-4 ids and
 // refuses all-zero ones; the storage list's shape rules; prepareHf6 refuses
 // below the HF-6 generation and refuses a signed transaction whose node key
@@ -34,7 +37,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  suggestExpiry, EXPIRY_MARGIN, percentToBps, gateOpen, ownWitnesses, consentMarginLine, keyCheckLine, consentCommand,
+  suggestExpiry, EXPIRY_MARGIN, percentToBps, gateOpen, ownWitnesses, consentMarginLine, keyCheckLine, consentRequestCode, consentRequestCommand,
   epochStartAtOrAfter, witnessJoinFrom, storageExitHeights, canStopWitness, lockBlocks
 } from '../src/nodus-roles.js';
 import * as roles from '../src/nodus-roles.js';
@@ -122,9 +125,30 @@ test('roles: the node-key line is free only against the complete witness list', 
   assert.equal(keyCheckLine({ rows, truncated: true, error: '' }, NODE).state, 'taken', 'a key found in a partial list is taken');
 });
 
-test('roles: the node commands are the forms nodus-cli accepts', () => {
-  assert.equal(consentCommand({ kind: 'stake', owner: OWN, expiry: '1710' }), `nodus-cli -i ~/.nodus -s 127.0.0.1 validator consent --op stake --owner ${OWN} --expiry 1710`);
-  assert.equal(consentCommand({ kind: 'storageRegister', owner: OWN, expiry: '1710' }), `nodus-cli -i ~/.nodus -s 127.0.0.1 storage consent --owner ${OWN} --expiry 1710`);
+// BUGS W-22, decision 2026-10-14-consent-request-code.md: the page gives one
+// request code and one fixed command; the node finds its own key.
+test('roles: the consent request code and the one node command', () => {
+  const CHAIN = '77'.repeat(32);
+  assert.equal(consentRequestCode({ kind: 'stake', owner: OWN, expiry: '1710', chainId: CHAIN }), `nodus-consent-v1:witness:${OWN}:1710:${CHAIN}`);
+  assert.equal(consentRequestCode({ kind: 'storageRegister', owner: OWN, expiry: '1710', chainId: CHAIN }), `nodus-consent-v1:storage:${OWN}:1710:${CHAIN}`);
+  assert.equal(consentRequestCode({ kind: 'stake', owner: OWN, expiry: 1710n, chainId: CHAIN }), `nodus-consent-v1:witness:${OWN}:1710:${CHAIN}`, 'a BigInt expiry');
+  const code = consentRequestCode({ kind: 'storageRegister', owner: OWN, expiry: 1710n, chainId: CHAIN });
+  assert.ok(/^[0-9a-z:-]+$/.test(code), 'no space, no shell character');
+  assert.equal(consentRequestCommand(code), `sudo nodus-cli consent nodus-consent-v1:storage:${OWN}:1710:${CHAIN}`);
+  const ok = { kind: 'stake', owner: OWN, expiry: '1710', chainId: CHAIN };
+  for (const kind of ['storageExit', 'unstake', 'rotate', '', undefined, 'toString']) {
+    assert.throws(() => consentRequestCode({ ...ok, kind }), /Unknown consent action/, String(kind));
+  }
+  for (const owner of [OWN.toUpperCase(), OWN.slice(2), `${OWN}00`, '', undefined]) {
+    assert.throws(() => consentRequestCode({ ...ok, owner }), /Invalid owner/, String(owner));
+  }
+  for (const expiry of ['0', '01', '-1', '1.5', ' 1710', '', 0n, -5n, 1710, null]) {
+    assert.throws(() => consentRequestCode({ ...ok, expiry }), /Invalid expiry/, String(expiry));
+  }
+  // CHAIN is digits only, so its upper case is itself: the upper-case refusal needs letters
+  for (const chainId of ['AB'.repeat(32), CHAIN.slice(2), `${CHAIN}00`, '', undefined]) {
+    assert.throws(() => consentRequestCode({ ...ok, chainId }), /Invalid chain/, String(chainId));
+  }
 });
 
 // Kurultay #18 item 1 (decision 2026-10-13-kurultay-18-summary.md): no key

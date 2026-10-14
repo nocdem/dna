@@ -149,7 +149,7 @@ try {
   await root.locator('[data-role="witness"]').click();
   await root.locator('.roles-cmd').waitFor();
   const command = await root.locator('.roles-cmd').innerText();
-  assert.ok(command.includes(`validator consent --op stake --owner ${'1a'.repeat(64)} --expiry 1710`), command);
+  assert.equal(command, `sudo nodus-cli consent nodus-consent-v1:witness:${'1a'.repeat(64)}:1710:${'77'.repeat(32)}`);
   assert.equal(await root.locator('input[data-field="bond"]').inputValue(), '1500000.0', 'the bond starts at the node\'s minimum');
   await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nop 1\nexpiry 1700\n');
   await root.locator('.roles-checks li[data-check="key"][data-ok="true"]').waitFor();
