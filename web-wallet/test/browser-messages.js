@@ -516,6 +516,18 @@ try {
   await page.locator(`.contact-row[data-fp="${B}"]`).click();
   await page.waitForFunction(() => document.title === 'Messages (harness)');
 
+  // B's conversation stays open while the page is hidden (another browser
+  // tab): a new message of B is NOT marked read — the title counts it —
+  // and showing the page again marks it read (messages.js render +
+  // visibilitychange). document.hidden is overridden on the page; the
+  // event the test sends is what a browser sends.
+  await page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }));
+  await arrive(1);
+  await checkUntil(1);
+  assert.equal(await page.title(), '(1) Messages (harness)', "the open conversation's message counts while the page is hidden");
+  await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
+  await page.waitForFunction(() => document.title === 'Messages (harness)');
+
   // The module alone, with a fake clock (the stub still counts).
   const unit = await page.evaluate(async () => {
     const { createMessageAlert, CHIME_GAP_MS } = await import('/src/connect/ui/alert.js');

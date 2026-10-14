@@ -399,9 +399,11 @@ function goOnline(gen) {
 // hidden page's timers, so after coming back the next round could wait for
 // the 30-second timer. A round starts at once instead, whichever tab is
 // shown. `sync` keeps its own guards (open, network started, one at a time).
-// A reconnect already starts one (nodusReady -> goOnline).
+// A reconnect already starts one (nodusReady -> goOnline). The open
+// conversation is marked read only now (render; web 0.1.122): a message
+// that came while the page was hidden counted in the title and chimed.
 if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) void sync(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (ui) render(); void sync(); } });
 }
 
 // The own profile on the network (was the gate of opening Messages; now
@@ -1193,6 +1195,9 @@ function newestSeq(fp) {
   return newest;
 }
 function markRead(fp) { lastRead.set(fp, newestSeq(fp)); }
+// The page is not being seen (another browser tab, a minimised window, a
+// phone's screen off): the open conversation is not marked read (render).
+function pageHidden() { return typeof document !== 'undefined' && document.hidden === true; }
 function unreadCount(fp) {
   const seen = lastRead.get(fp) ?? -1n;
   return messages.filter(m => m.fp === fp && m.dir === 'in' && !isControl(m) && BigInt(m.seq) > seen).length;
@@ -1832,7 +1837,10 @@ function render({ scroll = false } = {}) {
   ui.contactsView.hidden = screen !== 'contacts';
   ui.profileView.hidden = screen !== 'profile';
   for (const control of [ui.requestsAction, ui.profileAction]) control.disabled = !open;
-  if (open && screen === 'conversation' && !groupOpen) markRead(selectedFp);
+  // Read only while the page is seen (web 0.1.122): a message arriving in
+  // the open conversation of a hidden page stays unread — the tab title
+  // counts it and it chimes (alert.js) — until the page is shown again.
+  if (open && screen === 'conversation' && !groupOpen && !pageHidden()) markRead(selectedFp);
   // The group conversation is drawn first, so its read mark counts below.
   if (groupOpen) groupsView.renderView({ scroll });
   groupsView.view.hidden = !groupOpen;
