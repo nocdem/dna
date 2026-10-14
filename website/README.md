@@ -50,7 +50,10 @@ only the supported read endpoints. The browser makes same-origin requests.
   table — HF-1 gas price (param 5, set by the genesis document: a fixed row,
   value 121, effective at block 0), HF-2 governance by stake weight (param 7),
   HF-3 consensus-only block bounds (param 8), HF-4 rule-set generation 2 +
-  on-chain names (param 9), each with its rule in one sentence (from
+  on-chain names (param 9), HF-5 rule-set generation 3 + Nodus EVM (param 14),
+  HF-6 rule-set generation 4: node owners + storage nodes (param 18 — the
+  explorer reports `param_name` null for 18, so the row carries its own name
+  `RULESET_GEN_ROLES`), each with its rule in one sentence (from
   `nodus/docs/DEPLOY_RUNBOOK.md` §2.2 "Live hard forks"), vote block,
   effective block and status — Active when the reported `tip` ≥ the effective
   block, else Pending with the blocks left and a time estimate at ~60 s per
@@ -739,3 +742,25 @@ lines of this README, whose texts come from `build-portals.mjs` /
 this change.
 
 2026-10-07, tokenomics "Who receives what" (`tokenomics.html#pools`, `app.js` `tok.*`, page-scoped `.tok-*` styles): the old "How the genesis holds it" list became three card groups — rewards paid by the protocol, programmes distributed by the Foundation, other allocations — each with source, status badge and how it starts; the storage reward text now says block archive, proportional, HF-7.
+
+2026-10-14, HF-6 is live (voted in block 175,307, effective 176,100 — read from Scan's
+`/api/governance` and `nodus-cli ruleset-info`, generation 4) and new users can run storage
+nodes. Roadmap: the two planned items "LATER · HF-6" and "NEXT · HF-7" became one built item
+`history.hf6.*` dated 13 October 2026 (the HF-7 number is retired — the storage reward came with
+HF-6). Tokenomics: the storage stream is Active; "How to earn" lists three ways (new
+`tok.earnStorage`); the witness section says the bond is at least 2,000,000 with an owner wallet,
+adds `tok.validatorCap` (30%, votable 5-30% — `dnac.h` `DNAC_HF6_POWER_CAP_BPS_DEFAULT`,
+`DNAC_CFG_MIN/MAX_POWER_CAP_BPS`), and Nodus Connect as the tool; the roles table column is
+"Stake" (`tok.colStake`, `tok.roleValidatorStake`, `tok.roleComputeStake`,
+`tok.roleBandwidthStake`); "Planned changes" keeps compute / bandwidth roles and HF-8
+(`tok.plannedDelegateName`) and says what HF-6 delivered (`tok.plannedDone`); removed keys
+`tok.badgeBuilt`, `tok.plannedBond`, `tok.plannedCap`, `tok.plannedKeys`, `tok.plannedStorage`,
+`tok.colPlannedStake`, `tok.roleValidatorPlanned` and the unused `.tok-badge-built` style. Wiki:
+"Running a node" describes the three-process layout all seven nodes run; new section "Run a
+storage node" (`network.html#storage-node`) with the network file — the seven witnesses' p2p ids
+and addresses, read from the chain with `nodus-cli witness` on 2026-10-14, published by operator
+decision — and a link to `nodus/docs/STORAGE_NODE.md`; the hard fork list gains HF-6; "Earn NODUS"
+lists the storage node and the 2,000,000 bond; "Planned, not live" keeps compute / bandwidth and
+HF-8. Scan: `scan/app.js` `hardForks` gains HF-6 (param 18, with `paramName`), and the planned
+list in `build-portals.mjs` drops HF-6 / HF-7. `npm run build:portals` and `npm run check` were
+run; browser validation has not been run for this change.

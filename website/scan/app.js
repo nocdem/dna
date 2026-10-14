@@ -699,7 +699,9 @@
     { fork: 'HF-4', param: 9, name: t('Rule-set generation 2 + on-chain names', 'Kural seti nesil 2 + zincir üstü isimler'),
       rule: t('The rule registry switches to generation 2 at the end of the block before activation; on-chain name registration and the name-price parameters 10–13 are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 2. nesle geçer; zincir üstü isim kaydı ve 10–13 isim fiyatı parametreleri etkinleşmeden itibaren geçerlidir.') },
     { fork: 'HF-5', param: 14, name: t('Rule-set generation 3 + Nodus EVM', 'Kural seti nesil 3 + Nodus EVM'),
-      rule: t('The rule registry switches to generation 3 at the end of the block before activation and the EVM domain becomes active; smart contracts, the NODUS bridge to EVM accounts and the EVM block gas limit (parameter 15) are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 3. nesle geçer ve EVM alanı etkin olur; akıllı kontratlar, EVM hesaplarına NODUS köprüsü ve EVM blok gas sınırı (15. parametre) etkinleşmeden itibaren geçerlidir.') }
+      rule: t('The rule registry switches to generation 3 at the end of the block before activation and the EVM domain becomes active; smart contracts, the NODUS bridge to EVM accounts and the EVM block gas limit (parameter 15) are in force from activation.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 3. nesle geçer ve EVM alanı etkin olur; akıllı kontratlar, EVM hesaplarına NODUS köprüsü ve EVM blok gas sınırı (15. parametre) etkinleşmeden itibaren geçerlidir.') },
+    { fork: 'HF-6', param: 18, paramName: 'RULESET_GEN_ROLES', name: t('Rule-set generation 4: node owners + storage nodes', 'Kural seti nesil 4: düğüm sahipleri + storage düğümleri'),
+      rule: t('The rule registry switches to generation 4 at the end of the block before activation and the witnesses are migrated (each bond becomes a 2,000,000 NODUS bond plus a self-delegation); from activation a witness or storage node is registered by its owner wallet with the node’s consent, the witness bond is at least 2,000,000 NODUS, voting power per witness is capped (30%), and storage nodes with a 1,000,000 NODUS bond are paid from the Storage pool for keeping the block archive.', 'Kural kaydı, etkinleşmeden önceki bloğun sonunda 4. nesle geçer ve witness’lar taşınır (her bağ 2.000.000 NODUS bağ artı kendine delegasyon olur); etkinleşmeden itibaren bir witness ya da storage düğümü, düğümün onayıyla sahibi olan cüzdan tarafından kaydedilir, witness bağı en az 2.000.000 NODUS’tur, witness başına oy gücüne tavan (%30) konur ve 1.000.000 NODUS bağlı storage düğümleri blok arşivini tuttukları için Storage havuzundan ödenir.') }
   ];
   const idleBlockSeconds = 60;
   function duration(seconds) {
@@ -734,8 +736,9 @@
         continue;
       }
       const votes = records.filter(r => r.param_id === f.param);
-      if (!votes.length) forkRows.push(row([f.fork + ' · ' + f.name, f.rule, recordParam({ param_id: f.param }), el('span', t('Not voted yet', 'Henüz oylanmadı'), 'muted'), '—', el('span', '—', 'muted')]));
-      for (const r of votes) forkRows.push(row([f.fork + ' · ' + f.name, f.rule, recordParam(r) + ' = ' + recordValue(r), voteCell(r), Number.isSafeInteger(r.effective_height) ? r.effective_height : '—', forkStatus(r.effective_height, tip)]));
+      // f.paramName: a param the explorer does not name yet (it reports param_name null for id 18)
+      if (!votes.length) forkRows.push(row([f.fork + ' · ' + f.name, f.rule, recordParam({ param_id: f.param, param_name: f.paramName }), el('span', t('Not voted yet', 'Henüz oylanmadı'), 'muted'), '—', el('span', '—', 'muted')]));
+      for (const r of votes) forkRows.push(row([f.fork + ' · ' + f.name, f.rule, recordParam({ ...r, param_name: r.param_name || f.paramName }) + ' = ' + recordValue(r), voteCell(r), Number.isSafeInteger(r.effective_height) ? r.effective_height : '—', forkStatus(r.effective_height, tip)]));
     }
     const other = records.filter(r => !forkParams.has(r.param_id)).map(r => row([recordParam(r), recordValue(r), voteCell(r), time(r.time), Number.isSafeInteger(r.effective_height) ? r.effective_height : '—', forkStatus(r.effective_height, tip)]));
     content.replaceChildren(

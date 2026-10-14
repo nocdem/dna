@@ -1512,11 +1512,6 @@ h2 {
   color: var(--lime)
 }
 
-.docs-content .tok-badge-built {
-  border-color: #8fae5e;
-  color: #c8e698
-}
-
 .docs-content .tok-badge-planned {
   border-style: dashed
 }
