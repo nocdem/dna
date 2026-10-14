@@ -39,6 +39,31 @@ const ADDR_HISTORY_MAX_LIMIT = 100;          // nodus/include/nodus/nodus.h NODU
 // The staking ops and their SYSTEM runtime_op (nodus_witness_runtime.h
 // DNA_SYSRULE_STAKE / _DELEGATE / _UNDELEGATE).
 const STAKE_OPS = Object.freeze({ stake: 1, delegate: 2, undelegate: 4 });
+// HF-6 (design docs/plans/2026-10-12-connect-hf6-screens-design.md): the
+// generation-4 envelope ops and their SYSTEM runtime_op (nodus_v2_stake.h
+// NODUS_V2_STAKE_OP_STAKE / _STORAGE_REGISTER / _STORAGE_EXIT / _UNSTAKE),
+// and the node-consent op each screen expects (valbind_wire.h
+// DNA_VALBIND_OP_*; STORAGE_EXIT and UNSTAKE carry no consent). No ROTATE
+// (op 10, consent op 2): removed from HF-6 by the khan (decision
+// 2026-10-13-kurultay-18-summary.md item 1) — a witness moves to a new key
+// by UNSTAKE and a new STAKE.
+const HF6_OPS = Object.freeze({ stake: 1, storageRegister: 7, storageExit: 8, unstake: 3 });
+const HF6_CONSENT_OPS = Object.freeze({ stake: 1, storageRegister: 3 });
+// The pasted consent: line ends made '\n', surrounding blank space dropped,
+// one final '\n' (nodus_v2_stake.h's container ends every line with '\n';
+// a pasted text often lacks the last one). Nothing else is changed: the
+// module parses the result strictly and verifies the node's signature.
+// The module refuses more than NSW_CONSENT_TEXT_MAX (16384) bytes, but a
+// ccall string is copied onto the module's 1 MiB C stack BEFORE the C code
+// runs, so a longer paste is refused here, before any call (HF-6 Connect
+// red-team round 1, Astra F2; the class of BUGS W-15).
+const CONSENT_TEXT_MAX = 16384;
+const consentText = text => {
+  if (typeof text !== 'string') throw new Error('Paste the consent the node printed.');
+  const out = `${text.replace(/\r\n?/g, '\n').trim()}\n`;
+  if (new TextEncoder().encode(out).length > CONSENT_TEXT_MAX) throw new Error('This is not a consent from a Nodus node: it is too long.');
+  return out;
+};
 // Shared vaults (nodus-send-wasm.c "VAULTS"): at most 7 members
 // (shared/dnac/msig_wire.h DNA_MSIG_MAX_N), a vault code is 18 + N × 2592
 // bytes, 64 coins of the node's member query (NSW_MS_MAX_COINS), 15 approvals
@@ -655,20 +680,30 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     // the module from the key), selfStake, delegated (raw), commissionBps,
     // status (0 active, 1 retiring, 2 unstaked, 3 auto-retired, 4 eligible),
     // delegators (filled delegator slots; -1 = the node's answer carries no
-    // count — an older node — unknown, never 0) }] }
+    // count — an older node — unknown, never 0), hasV2, validatorId,
+    // ownerFp (HF-6: a generation-4 node's "vid" / "owner" for the row, 128
+    // lowercase hex; '' for both and hasV2 false when the node's entry
+    // carries neither) }] }
     async validators() {
       check(await call('nsw_validators'));
       const validators = [];
       for (let i = 0, n = num('nsw_val_count'); i < n; i++) {
+        const hasV2 = num('nsw_val_has_v2', ['number'], [i]) === 1;
         validators.push({
           fingerprint: str('nsw_val_fp', ['number'], [i]), selfStake: str('nsw_val_self', ['number'], [i]),
           delegated: str('nsw_val_delegated', ['number'], [i]), commissionBps: num('nsw_val_commission', ['number'], [i]),
-          status: num('nsw_val_status', ['number'], [i]), delegators: num('nsw_val_delegators', ['number'], [i])
+          status: num('nsw_val_status', ['number'], [i]), delegators: num('nsw_val_delegators', ['number'], [i]),
+          hasV2, validatorId: hasV2 ? str('nsw_val_vid', ['number'], [i]) : '', ownerFp: hasV2 ? str('nsw_val_owner', ['number'], [i]) : ''
         });
       }
       return { truncated: num('nsw_val_truncated') === 1, validators };
     },
-    // delegations() -> [{ validator: 128 hex fingerprint, amount, block }]
+    // delegations() -> [{ validator: 128 hex, amount, block }] — `validator`
+    // is the node's value: the validator's key fingerprint below the HF-6
+    // generation, its validator_id under it (nodus-send-wasm.c
+    // nsw_delegations; src/adapters/nodus.js stakingOverview joins both).
+    // stakeBuild below takes the FINGERPRINT in both generations; the
+    // module takes the generation-4 validator_id from the same list row.
     async delegations() {
       check(await call('nsw_delegations'));
       const rows = [];
@@ -679,9 +714,12 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
     },
     // stakeBuild({ op: 'stake' | 'delegate' | 'undelegate', validator (128
     // hex, '' for stake), amount, commissionBps (stake), expiryHeight, coins })
-    // -> { envelope, intentId, decoded: { op, validator, amount,
+    // -> { envelope, intentId, decoded: { op, validator, validatorId, amount,
     // commissionBps, fee, change, expiryHeight, chainId, inputs } }, `decoded`
-    // read back from the signed bytes by the C side. Submitted with submit().
+    // read back from the signed bytes by the C side. validatorId: the
+    // validator_id a generation-4 DELEGATE / UNDELEGATE call names — the
+    // witness the chain credits (nodus-send-wasm.c nsw_stake_core, BUGS
+    // W-19); '' below generation 4 and for stake. Submitted with submit().
     async stakeBuild({ op, validator = '', amount, commissionBps = '0', expiryHeight, coins } = {}) {
       const code = typeof op === 'string' && Object.hasOwn(STAKE_OPS, op) ? STAKE_OPS[op] : 0;
       if (!code) throw new Error('Unknown staking action.');
@@ -703,9 +741,135 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
         intentId: str('nsw_built_intent'),
         wireId: str('nsw_built_wire'),
         decoded: {
-          op: opName, validator: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
+          op: opName, validator: str('nsw_built_recipient'),
+          validatorId: num('nsw_built_gen4') === 1 ? str('nsw_built_validator_id') : '', amount: str('nsw_built_amount'),
           commissionBps: op === 'stake' ? str('nsw_built_commission') : '0', fee: str('nsw_built_fee'),
           change: str('nsw_built_change'), expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
+        }
+      };
+    },
+    // HF-6 — become a witness, become a storage node, change a witness's
+    // node key, leave storage (nodus-send-wasm.c "HF-6: NODE CONSENT";
+    // design docs/plans/2026-10-12-connect-hf6-screens-design.md). The
+    // values the screens use, read from the module, never restated:
+    // consentWindow — the most blocks ahead a consent may expire (720,
+    // fixed by the chain); generation — the rule-set generation that
+    // carries these calls: compare it with rulesetInfo().generation; below
+    // it the module builds nothing. The two bonds are chain parameters
+    // (params 19 / 21): hf6Bonds() reads them from the node.
+    hf6Rules: Object.freeze({
+      consentWindow: str('nsw_const_consent_window'), generation: num('nsw_hf6_generation')
+    }),
+    // hf6Bonds() -> { stakeMin, storageBond } (raw decimal): the witness
+    // bond floor and the exact storage bond in force at the node's tip + 1
+    // (dnac_fee_info "stake_min" / "storage_bond"; nodus-send-wasm.c
+    // nsw_hf6_bonds — 0 from an older node is the compiled default, a value
+    // outside the network's range rejects). The same rule hf6Build applies
+    // to its own read, so what the page shows is what the build checks
+    // (BUGS W-20). ONE node's answer.
+    async hf6Bonds() {
+      check(await call('nsw_hf6_bonds'));
+      return { stakeMin: str('nsw_hb_stake_min'), storageBond: str('nsw_hb_storage_bond') };
+    },
+    // hf6Timing: the timing multipliers of the screens' Review lines (design
+    // "Timing facts"), raw decimal from dnac.h — minTenureBlocks
+    // (DNAC_MIN_TENURE_BLOCKS: a new witness is a candidate for an epoch
+    // start only this many blocks after its stake), storageExitLockEpochs
+    // (DNAC_STORAGE_EXIT_LOCK_EPOCHS: a left storage bond's lock, in epochs)
+    // and validatorUnbondEpochs (DNAC_VALIDATOR_UNBOND_EPOCHS: a witness
+    // bond left by UNSTAKE is locked this many epochs after the witness
+    // leaves the set). ./client.js adds them to its hf6Rules.
+    hf6Timing: Object.freeze({
+      minTenureBlocks: str('nsw_const_min_tenure_blocks'), storageExitLockEpochs: str('nsw_const_storage_exit_lock_epochs'),
+      validatorUnbondEpochs: str('nsw_const_validator_unbond_epochs')
+    }),
+    // storageByOwner() -> { tip, total, epochStart, set, setCount, nodes:
+    // [{ fp, status (1 active, 2 leaving, 3 released), bond, failStreak,
+    // graceUntil, registered, exit, member, segments }] } — the storage
+    // nodes THIS wallet registered (dnac_storage_by_owner; the module asks
+    // for its own session's fingerprint, never a caller's), every u64 a
+    // decimal string, at most 256 nodes (total > nodes.length: the node's
+    // list stops there). ONE node's committed tables (design G4).
+    // ./client.js checks the answer.
+    async storageByOwner() {
+      check(await call('nsw_storage_by_owner'));
+      const r = JSON.parse(str('nsw_storage_by_owner_json'));
+      return {
+        tip: r.tip, total: r.total, epochStart: r.epoch_start, set: r.set, setCount: r.set_count,
+        nodes: Array.isArray(r.nodes) ? r.nodes.map(n => ({
+          fp: n?.fp, status: n?.status, bond: n?.bond, failStreak: n?.fail_streak, graceUntil: n?.grace_until,
+          registered: n?.registered, exit: n?.exit, member: n?.member, segments: n?.segments
+        })) : null
+      };
+    },
+    // consentCheck({ op: 'stake' | 'storageRegister', text, tip, window? })
+    // -> { ok, checks: [{ id: 'format' | 'op' | 'chain' | 'owner' |
+    // 'subject' | 'expiry' | 'signature', ok, detail }], nodeFp (SHA3-512
+    // of the node key, '' if the text did not parse), expiry ('' likewise) }.
+    // Synchronous and pure in the module (no network, no secret; safe while
+    // another operation waits): the chain is this build's pinned chain, the
+    // owner this wallet's own fingerprint (identify/unlock first), the
+    // subject 64 zero bytes (a new registration — the only subject of both
+    // ops), `tip` the block height the caller last read (decimal) and
+    // `window` (decimal, default consentWindow) can only narrow the chain's
+    // 720-block rule. `ok` is true only when every check passed. Does NOT
+    // check that a stake's key is not already a witness's (design §2 item
+    // 7) — the page does that from the witness list; the chain refuses it.
+    consentCheck({ op, text, tip, window } = {}) {
+      const code = typeof op === 'string' && Object.hasOwn(HF6_CONSENT_OPS, op) ? HF6_CONSENT_OPS[op] : 0;
+      if (!code) throw new Error('Unknown consent action.');
+      const owner = str('nsw_fingerprint');
+      if (!HEX128.test(owner)) throw new Error('The wallet is not unlocked.');
+      raw(tip, 'block height');
+      const w = window === undefined ? str('nsw_const_consent_window') : raw(window, 'validity window');
+      const result = JSON.parse(str('nsw_hf6_consent_check', ['number', 'string', 'string', 'string', 'string', 'string'],
+        [code, consentText(text), net.chainId, owner, tip, w]));
+      if (result.error) throw new Error(result.error);
+      return { ok: result.ok === true, checks: result.checks, nodeFp: result.node_fp, expiry: result.expiry };
+    },
+    // hf6Build({ op: 'stake' | 'storageRegister' | 'storageExit' |
+    // 'unstake', consent (the pasted text; not for storageExit / unstake),
+    // validatorId (128 hex, not all zero: unstake — the witness),
+    // nodeFp (128 hex, storageExit), amount (raw: stake >= the node's
+    // stakeMin, storageRegister == its storageBond — hf6Bonds(), checked
+    // again against the build's own dnac_fee_info read — else '0'), commissionBps
+    // (stake), expiryHeight, coins }) -> { envelope, intentId, wireId,
+    // decoded: { op, owner, nodeFp, validatorId, bond, commissionBps,
+    // consentExpiry, fee, change, expiryHeight, chainId, inputs } }.
+    // The module re-checks the consent (every consentCheck line, with this
+    // wallet's own fingerprint, the pinned chain and the coin listing's
+    // tip) and builds only for a generation >= hf6Rules.generation the node
+    // runs; `decoded` is read back from the signed bytes by the C side —
+    // show THAT to the user (bond, fee, node key fingerprint). Every call
+    // names its owner: STAKE / STORAGE_REGISTER first, STORAGE_EXIT /
+    // UNSTAKE after their 64-byte target (128-byte calls, Kurultay #18
+    // "C2"); the module checks it is this wallet's fingerprint (`owner`).
+    // Submitted with submit().
+    async hf6Build({ op, consent = '', validatorId = '', nodeFp = '', amount = '0', commissionBps = '0', expiryHeight, coins } = {}) {
+      const code = typeof op === 'string' && Object.hasOwn(HF6_OPS, op) ? HF6_OPS[op] : 0;
+      if (!code) throw new Error('Unknown witness or storage action.');
+      const byWitness = op === 'unstake', noConsent = op === 'storageExit' || op === 'unstake';
+      if (byWitness ? typeof validatorId !== 'string' || !HEX128.test(validatorId) || validatorId === '0'.repeat(128) : validatorId !== '') throw new Error('Invalid witness.');
+      if (op === 'storageExit' ? typeof nodeFp !== 'string' || !HEX128.test(nodeFp) : nodeFp !== '') throw new Error('Invalid storage node.');
+      if (noConsent && consent !== '') throw new Error(op === 'unstake' ? 'Stopping a witness takes no consent.' : 'Leaving storage takes no consent.');
+      const text = noConsent ? '' : consentText(consent);
+      raw(amount, 'amount'); raw(commissionBps, 'commission'); raw(expiryHeight, 'validity height');
+      loadCoins(coins);
+      check(await call('nsw_hf6_build', ['number', 'string', 'string', 'string', 'string', 'string'],
+        [code, text, byWitness ? validatorId : nodeFp, amount, commissionBps, expiryHeight]));
+      if (num('nsw_built_gen4') !== 1 || num('nsw_built_op') !== code) throw new Error('The built transaction does not match the request.');
+      const at = num('nsw_built_env'), length = num('nsw_built_env_len');
+      const inputs = [];
+      for (let i = 0, n = num('nsw_built_n_in'); i < n; i++) inputs.push(str('nsw_built_in', ['number'], [i]));
+      return {
+        envelope: M.HEAPU8.slice(at, at + length),
+        intentId: str('nsw_built_intent'),
+        wireId: str('nsw_built_wire'),
+        decoded: {
+          op, owner: str('nsw_built_recipient'), nodeFp: str('nsw_built_node_fp'), validatorId: str('nsw_built_validator_id'),
+          bond: str('nsw_built_amount'), commissionBps: op === 'stake' ? str('nsw_built_commission') : '0',
+          consentExpiry: str('nsw_built_consent_expiry'), fee: str('nsw_built_fee'), change: str('nsw_built_change'),
+          expiryHeight: str('nsw_built_expiry'), chainId: str('nsw_built_chain'), inputs
         }
       };
     },

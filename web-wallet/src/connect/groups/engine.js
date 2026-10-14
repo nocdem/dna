@@ -213,8 +213,13 @@ export function createGroupsEngine(deps) {
     const st = state();
     const before = st.groups[gid];
     const id = recIds.get(gid) || newId('g');
-    st.groups[gid] = { id, at: seconds() };
-    const undo = () => { if (before) st.groups[gid] = before; else delete st.groups[gid]; };
+    const entry = { id, at: seconds() };
+    st.groups[gid] = entry;
+    // only this call's own change is taken back: a commit or forget of the
+    // same gid that ran during the save stands as it left it
+    const undo = () => {
+      if (st.groups[gid] === entry) { if (before) st.groups[gid] = before; else delete st.groups[gid]; }
+    };
     await saveAll({ records: [{ id, value: storedGroup(next) }, ...keys, ...pieces], messages: msgs, undo });
     recIds.set(gid, id);
     groups.set(gid, next);
@@ -223,7 +228,8 @@ export function createGroupsEngine(deps) {
   async function forget(gid) {
     const st = state(), before = st.groups[gid];
     delete st.groups[gid];
-    await saveAll({ records: [], messages: [], undo: () => { if (before) st.groups[gid] = before; } });
+    // put back only while the gid is still absent (a commit during the save stands)
+    await saveAll({ records: [], messages: [], undo: () => { if (before && !Object.hasOwn(st.groups, gid)) st.groups[gid] = before; } });
     groups.delete(gid); recIds.delete(gid); stagePackets.delete(gid); stageKeys.delete(gid);
   }
   function note(gid, text) { if (text) notes.set(gid, text); else notes.delete(gid); }

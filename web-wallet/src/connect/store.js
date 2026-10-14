@@ -314,10 +314,18 @@ export function checkState(value) {
 // is called, so nothing the page changes afterwards leaks into that commit
 // (design §2.3 item 1). `idMap`: fp -> id of the newest snapshot (ids stay
 // stable, §2.1).
+// The text core.js putState throws for a state input over its 8 MiB bound
+// (src/connect/core.js STATE_IN_MAX): the history is too large to save,
+// not a contact list that could not be prepared — mapped to
+// HISTORY_TOO_LARGE_TEXT; every other projection error stays SAVE_PREPARE_TEXT.
+const STATE_INPUT_TOO_LARGE = 'The message state is too large for this version.';
 export function stateSnapshot(core, v1State, idMap) {
   let r;
   try { r = core.stateProject(v1State, idMap); }
-  catch (error) { throw error instanceof StorageError ? error : new StorageError(SAVE_PREPARE_TEXT); }
+  catch (error) {
+    if (error instanceof StorageError) throw error;
+    throw new StorageError(error?.message === STATE_INPUT_TOO_LARGE ? HISTORY_TOO_LARGE_TEXT : SAVE_PREPARE_TEXT);
+  }
   if (r?.status === 'invalid' && r.reason === 'checkState') throw new StorageError(DAMAGED_STATE_TEXT);
   if (!r || r.status !== 'ok' || typeof r.header !== 'string' || typeof r.nextSeq !== 'string' || !U64.test(r.nextSeq) ||
       !Array.isArray(r.records) || !Array.isArray(r.dropped) || r.dropped.some(p => typeof p !== 'string')) throw new StorageError(SAVE_PREPARE_TEXT);

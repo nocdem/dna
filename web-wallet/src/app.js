@@ -437,6 +437,8 @@ function renderActivity(save = true) {
       : row.kind === 'undelegate' ? ['Undelegation', `back from witness ${row.to} (returned locked)`]
       : row.kind === 'stake' ? ['Witness bond']
       : row.kind === 'name' ? ['Chain name registration', row.name ? `"${row.name}"` : 'for your address']
+      // HF-6 (Nodus Connect "Nodus" page, src/nodus-roles.js): this tab only
+      : row.kind === 'role' ? [row.roleTitle || 'Witness or storage node']
       : [`→ ${row.to}`];
     // A smart-contract row: the NODUS moved and the fee on their own
     // (src/activity.js evmActivityText), not the stored amount + fee sum.
@@ -579,7 +581,7 @@ const message = (text, { category = 'wallet', error = false } = {}) => {
   if (text) sessionLog.log(category, text, { error });
 };
 // The session-log category of a review's transaction (transfer.kind).
-const logCategoryFor = kind => (['delegate', 'undelegate', 'stake'].includes(kind) ? 'stake' : kind === 'name' ? 'names' : kind === 'claim' ? 'wallet' : 'send');
+const logCategoryFor = kind => (['delegate', 'undelegate', 'stake', 'role'].includes(kind) ? 'stake' : kind === 'name' ? 'names' : kind === 'claim' ? 'wallet' : 'send');
 function explorerLink(chain, hash) {
   const link = document.createElement('a'); link.href = CHAINS[chain].explorer + encodeURIComponent(hash); link.textContent = `View transaction ${hash}`; link.target = '_blank'; link.rel = 'noopener noreferrer';
   return link;
@@ -1073,7 +1075,10 @@ async function connectNodus(source, address, client, markReady) {
       client, phrase: source.recoveryPhrase, vaultId: activitySession?.id ?? null, fresh: walletFresh,
       lockedInputs: () => (wallet === source ? adapters.nodus.lockedInputs(history.filter(row => row.address === source.addresses.nodus)) : new Set()),
       evmRecord: (details, what) => recordEvmActivity(source, details, what),
-      evmPending: () => evmPendingRows(source)
+      evmPending: () => evmPendingRows(source),
+      // roleRecorder(transfer, title): the HF-6 page's (src/nodus-roles.js)
+      // Activity record of one prepared transaction — recordRoleActivity.
+      roleRecorder: (transfer, title) => recordRoleActivity(source, transfer, title)
     });
   } catch (error) {
     if (!current()) return;
@@ -1163,6 +1168,46 @@ function evmPendingRows(source) {
   const own = source.addresses.nodus;
   return history.filter(row => row.chain === NODUS_ASSET.chain && row.address === own && !terminal(row.status) && !adapters.nodus.isClaimRow(row)
     && (row.kind === 'evm' || (row.kind === undefined && row.to === own))).map(row => ({ hash: row.hash, expiryHeight: row.expiryHeight }));
+}
+// HF-6 (Nodus Connect "Nodus" page, src/nodus-roles.js; design
+// docs/plans/2026-10-12-connect-hf6-screens-design.md §1 "followed in
+// Activity"): a witness bond, a node-key change, a storage bond or a
+// storage exit is recorded EXACTLY as a staking transaction is by the
+// confirm-send handler below — recordActivity's NODUS row (so
+// adapters.nodus.lockedInputs holds its coins and checkRow resolves it),
+// durable before the envelope leaves the browser, then tracked and followed
+// on the status line. The page shows its own review, so it calls these
+// itself: broadcast(details) is the onBroadcast of the prepared
+// transaction's confirm() (src/adapters/nodus.js prepareHf6); settled(ok)
+// after confirm() resolved or threw. `kind` 'role' and `roleTitle` are kept
+// in this tab only (src/activity-storage.js does not store them: reloaded,
+// the row reads as a NODUS transfer to this wallet's own address, like a
+// staking or name row).
+function recordRoleActivity(source, transfer, title) {
+  let record;
+  const current = revision, what = typeof title === 'string' && title ? title : 'Witness or storage transaction';
+  return {
+    async broadcast(details) {
+      if (wallet !== source || source.locked) throw new Error('The wallet was locked. Nothing was sent.');
+      // Activity lists the selected network's records: show NODUS, where
+      // the transaction is tracked (as startStake does).
+      if ($('chain').value !== NODUS_ASSET.chain) { $('chain').value = NODUS_ASSET.chain; selectChain(); }
+      record = recordActivity(transfer, details);
+      record.kind = 'role'; record.roleTitle = what;
+      history.push(record); if (current === revision) renderActivity(false);
+      // The signed hash must be durable before the first network submission.
+      await persistActivity({ required: true });
+    },
+    settled(ok) {
+      if (!record) return;
+      if (ok) record.note = 'Broadcast submitted; awaiting confirmation.';
+      else { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; }
+      if (current !== revision) return;
+      trackActivity();
+      submissionFollow = { record, what, idLabel: 'Transaction ID', link: false, shown: null };
+      followSubmission();
+    }
+  };
 }
 // "1234567.5" -> "1,234,567.5" (display only).
 function groupDigits(text) { const [whole, fraction] = text.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : ''); }

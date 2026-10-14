@@ -66,6 +66,20 @@
 //     validators() / delegations() / stakeBuild({ ... }) + stakingRules
 //                                OPTIONAL (0.1.29, staking — shapes in
 //                                src/nodus/send-module.js), same rule.
+//     consentCheck({ ... }) / hf6Build({ ... }) / storageByOwner() /
+//     hf6Bonds() + hf6Rules (+ hf6Timing, optional)
+//                                OPTIONAL (HF-6 screens: become a witness, a
+//                                storage node, leave storage, stop being a
+//                                witness — shapes in
+//                                src/nodus/send-module.js;
+//                                design docs/plans/2026-10-12-connect-hf6-
+//                                screens-design.md), their own group, same
+//                                rule. consentCheck is SYNCHRONOUS and pure
+//                                in the module (no network, never reaches
+//                                emscripten_sleep): this client runs it at
+//                                once, outside the queue, once identified.
+//                                hf6Build envelopes are submitted with
+//                                submit().
 //     connect(run) / connectSync(run)
 //                                OPTIONAL (NC-4b, Messages — shapes in
 //                                src/nodus/send-module.js), same rule. The
@@ -179,6 +193,14 @@ const CLAIM_OPS = ['claimStatus', 'claimBuild', 'claimSubmit'];
 // answers every staking call "not available". Staking envelopes are
 // submitted with submit().
 const STAKE_OPS = ['validators', 'delegations', 'stakeBuild'];
+// OPTIONAL (HF-6 screens — shapes in src/nodus/send-module.js): a module
+// without all four (and a valid `hf6Rules`) still unlocks; this client then
+// answers every HF-6 call "not available". consentCheck never waits (see the
+// contract above); hf6Build, storageByOwner and hf6Bonds (the two role bonds
+// the node reports — chain parameters, BUGS W-20; a module without it would
+// show compiled values, so it is part of the group) are queued like every
+// other operation.
+const HF6_OPS = ['consentCheck', 'hf6Build', 'storageByOwner', 'hf6Bonds'];
 // OPTIONAL (NC-4b, Messages — shapes in src/nodus/send-module.js):
 // connect(run) is an asynchronous operation of THIS queue (the Messages
 // exports share the module, its one session and its one Asyncify state);
@@ -287,6 +309,26 @@ const RAW_RULE = /^[1-9]\d{0,19}$/;
 function validRules(rules) {
   return !!rules && ['minDelegation', 'selfStake', 'commissionMaxBps', 'undelegateLockEpochs', 'epochLength', 'maxDelegators'].every(key => typeof rules[key] === 'string' && RAW_RULE.test(rules[key]) && BigInt(rules[key]) < 2n ** 64n);
 }
+// The HF-6 values (send-module.js hf6Rules): consentWindow raw decimal above
+// 0, generation a positive integer. The bonds are not among them: they are
+// chain parameters the page reads with hf6Bonds() (BUGS W-20).
+const rawRuleOk = value => typeof value === 'string' && RAW_RULE.test(value) && BigInt(value) < 2n ** 64n;
+function validHf6Rules(rules) {
+  return !!rules && rawRuleOk(rules.consentWindow) && Number.isSafeInteger(rules.generation) && rules.generation > 0;
+}
+// The module's hf6Timing (minTenureBlocks, storageExitLockEpochs) is
+// optional: a module without it (or with a malformed one) makes the screens
+// state no height for those lines. Added to this client's hf6Rules.
+// validatorUnbondEpochs (the UNSTAKE bond lock) is checked on its own, so a
+// module without it keeps the other two: the "Stop being a witness" Review
+// then states no block count for the lock.
+function hf6TimingOf(timing) {
+  if (!timing) return {};
+  const out = ['minTenureBlocks', 'storageExitLockEpochs'].every(key => rawRuleOk(timing[key]))
+    ? { minTenureBlocks: timing.minTenureBlocks, storageExitLockEpochs: timing.storageExitLockEpochs } : {};
+  if (rawRuleOk(timing.validatorUnbondEpochs)) out.validatorUnbondEpochs = timing.validatorUnbondEpochs;
+  return out;
+}
 const lockedError = () => new Error('Wallet is locked.');
 // CONNECT WATCHDOG (operator 2026-10-07: "sometimes when I open Connect it
 // stays in 'connecting'"). A connection step that never settles left the
@@ -336,7 +378,7 @@ export const NODUS_SESSION_LOST_TEXT = 'Nodus connection is not ready. Try again
 // 'session lost', error } — for the session log only.
 export function createNodusClient({ factory, onState, steps, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval, setTimeout: after = globalThis.setTimeout, clearTimeout: stopAfter = globalThis.clearTimeout } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false, historyReadable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, hf6able = false, hf6Rules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false, historyReadable = false;
   // The connection step running now ({ name, handle }) and whether the first
   // keepalive after 'ready' is still to be logged.
   let currentStep, firstTick = false;
@@ -507,6 +549,8 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     claimable = CLAIM_OPS.every(name => typeof loaded[name] === 'function');
     stakeable = STAKE_OPS.every(name => typeof loaded[name] === 'function') && validRules(loaded.stakingRules);
     stakingRules = stakeable ? Object.freeze({ ...loaded.stakingRules }) : undefined;
+    hf6able = HF6_OPS.every(name => typeof loaded[name] === 'function') && validHf6Rules(loaded.hf6Rules);
+    hf6Rules = hf6able ? Object.freeze({ consentWindow: loaded.hf6Rules.consentWindow, generation: loaded.hf6Rules.generation, ...hf6TimingOf(loaded.hf6Timing) }) : undefined;
     connectable = CONNECT_OPS.every(name => typeof loaded[name] === 'function');
     nameable = NAME_OPS.every(name => typeof loaded[name] === 'function');
     registrable = nameable && NAME_REG_OPS.every(name => typeof loaded[name] === 'function');
@@ -609,6 +653,8 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
   const call = op => (args, options) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(op, args, options); };
   const claimCall = op => (args, options) => claimable ? call(op)(args, options) : Promise.reject(new Error('Claiming is not available in this wallet version.'));
   const stakeCall = op => (args, options) => stakeable ? call(op)(args, options) : Promise.reject(new Error('Staking is not available in this wallet version.'));
+  const noHf6 = () => new Error('Witness and storage roles are not available in this wallet version.');
+  const hf6Call = op => (args, options) => hf6able ? call(op)(args, options) : Promise.reject(noHf6());
   const noMessages = () => new Error('Messages is not available in this wallet version.');
   const nameCall = op => (args, options) => nameable ? call(op)(args, options) : Promise.reject(new Error('Chain names are not available in this wallet version.'));
   const registerCall = op => (args, options) => registrable ? call(op)(args, options) : Promise.reject(new Error('Registering a chain name is not available in this wallet version.'));
@@ -704,6 +750,25 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     validators: (options) => stakeCall('validators')(undefined, options),
     delegations: (options) => stakeCall('delegations')(undefined, options),
     stakeBuild: stakeCall('stakeBuild'),
+    // HF-6 screens (HF6_OPS): whether the loaded module offers them, its
+    // values (consentWindow, generation, and — when the module carries its
+    // hf6Timing — minTenureBlocks, storageExitLockEpochs and
+    // validatorUnbondEpochs; all from the module's own build), the consent
+    // check (synchronous: run now, never queued — it needs the identity
+    // only), the build, this wallet's storage nodes and the two role bonds
+    // the node reports (hf6Bonds -> { stakeMin, storageBond }, raw decimal;
+    // src/adapters/nodus.js hf6Bonds checks them) (queued).
+    get hf6able() { return hf6able && state === 'ready'; },
+    get hf6Rules() { return hf6able && identified() ? hf6Rules : undefined; },
+    consentCheck(args) {
+      if (stopped || !module) throw lockedError();
+      if (!hf6able) throw noHf6();
+      if (!identified()) throw new Error('Nodus connection is not ready.');
+      return module.consentCheck(args);
+    },
+    hf6Build: hf6Call('hf6Build'),
+    storageByOwner: (options) => hf6Call('storageByOwner')(undefined, options),
+    hf6Bonds: (options) => hf6Call('hf6Bonds')(undefined, options),
     // Messages (NC-4b): whether the loaded module carries the Nodus Connect
     // exports; connect(run) runs `run` in this queue on the module's
     // session; connectSync(run) runs it now (non-waiting exports only; also

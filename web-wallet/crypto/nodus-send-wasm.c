@@ -45,6 +45,14 @@
  * STAKING (nsw_stake_*, nsw_validators, nsw_delegations, 0.1.29) is
  * nodus-cli's `v2-envelope stake | delegate | undelegate` over the shared
  * builder nodus/src/client/nodus_v2_stake.c — see "STAKING".
+ * HF-6 (nsw_hf6_*) is nodus-cli's `v2-envelope stake2 | unstake` and
+ * `storage register | exit` over the same builder at rule-set generation 4,
+ * with the node consent checked by the codec shared/dnac/valbind_wire.c —
+ * see "HF-6: NODE CONSENT". The validator list also carries each row's
+ * generation-4 validator_id and owner (nsw_val_has_v2 / _vid / _owner),
+ * and nsw_storage_by_owner lists this wallet's own storage nodes
+ * (nodus-cli `storage status --owner`) — see "HF-6: THIS wallet's storage
+ * nodes".
  * VAULTS (nsw_msig_*) are nodus-cli's `msig address`, `v2-envelope spend
  * --msig`, `msig sign` and `msig combine` over the shared library
  * nodus/src/client/nodus_v2_msig.c — see "VAULTS".
@@ -104,6 +112,8 @@
 
 #include "nodus/nodus_v2_spend.h"
 #include "client/nodus_v2_stake.h"         /* the shared staking builder    */
+#include "dnac/valbind_wire.h"              /* HF-6 node-consent codec (see
+                                             * "HF-6: NODE CONSENT")        */
 #include "client/nodus_v2_name.h"          /* the shared name registration
                                              * builder (networked builds
                                              * only — see "CHAIN NAME
@@ -379,6 +389,21 @@ typedef struct {
      * address (the owner), `amount` the price. */
     char     name[DNAC_NAME_MAX_LEN + 1];
     char     price[NSW_U64_DEC];
+    /* HF-6 (nsw_hf6_core): 1 for a generation-4 layout — then `op` is the
+     * runtime_op 1 STAKE (owner + node consent), 7 STORAGE_REGISTER,
+     * 8 STORAGE_EXIT or 3 UNSTAKE, `recipient` this wallet's own address
+     * (the owner), `amount` the bond (0 for STORAGE_EXIT / UNSTAKE).
+     * node_fp: SHA3-512 of the consenting node key read from the call
+     * (STORAGE_EXIT: the call's node_fp; UNSTAKE: "" — its call carries
+     * no key); validator_id: UNSTAKE's target;
+     * consent_expiry: the consent expiry the call carries.
+     * HF-6 slice 7b (nsw_stake_core): a generation-4 DELEGATE /
+     * UNDELEGATE sets gen4 = 1 and validator_id = the call's target too;
+     * its `op` (2 / 4), `recipient` (the validator's fingerprint) and
+     * `amount` keep their staking meaning above, node_fp stays "". */
+    int      gen4;
+    char     node_fp[129], validator_id[129];
+    char     consent_expiry[NSW_U64_DEC];
 } nsw_built_t;
 
 static nsw_built_t g_built;
@@ -406,6 +431,10 @@ int nsw_built_op(void)              { return g_built.op; }
 const char *nsw_built_commission(void) { return g_built.commission; }
 const char *nsw_built_name(void)    { return g_built.name; }
 const char *nsw_built_price(void)   { return g_built.price; }
+int nsw_built_gen4(void)            { return g_built.gen4; }
+const char *nsw_built_node_fp(void) { return g_built.node_fp; }
+const char *nsw_built_validator_id(void) { return g_built.validator_id; }
+const char *nsw_built_consent_expiry(void) { return g_built.consent_expiry; }
 const char *nsw_built_in(int i) {
     return (i >= 0 && i < g_built.n_in) ? g_built.in_hex[i] : "";
 }
@@ -813,6 +842,12 @@ static const char *nsw_stake_reason(int rc, int op) {
     case NODUS_V2_STAKE_ERR_COMMISSION:  return "The commission is above the maximum (50%).";
     case NODUS_V2_STAKE_ERR_AMOUNT:      return "Amount is out of range.";
     case NODUS_V2_STAKE_ERR_OP:          return "Unknown staking action.";
+    /* the shared builder's "no layout at this generation" (nodus_v2_
+     * stake.h ERR_GEN): since HF-6 slice 7b it builds DELEGATE /
+     * UNDELEGATE at every generation, and nsw_stake_core refuses a
+     * generation-4 STAKE itself, so this is not expected from Earn */
+    case NODUS_V2_STAKE_ERR_GEN:
+        return "This action is not available under the network's new rules yet. Nothing was built.";
     case NODUS_V2_SPEND_ERR_OVERFLOW:
     case NODUS_V2_SPEND_ERR_INPUT_SUM:   return "Amount is out of range.";
     case NODUS_V2_SPEND_ERR_GAS_OVERFLOW: return "The network fee is out of range.";
@@ -821,30 +856,67 @@ static const char *nsw_stake_reason(int rc, int op) {
     }
 }
 
+/* Earn's own STAKE under generation 4: the generation-4 STAKE is the
+ * owner + node-consent layout (nodus_v2_stake.h "HF-6 6f-1"), built only
+ * by nsw_hf6_build — the Nodus Connect "Nodus" page (design 2026-10-12-
+ * connect-hf6-screens §3). src/adapters/nodus.js prepareStake shows the
+ * same text (HF6_STAKE_CONSENT_TEXT). */
+#define NSW_STAKE_NEEDS_CONSENT \
+    "Becoming a witness now needs your node's consent. Open Nodus " \
+    "Connect \xe2\x86\x92 More \xe2\x86\x92 Nodus."
+
 /*
- * Build + sign + read back ONE staking envelope from g_req_coins.
- * `validator_pk` (2592 B): the DELEGATE / UNDELEGATE target, NULL for
- * STAKE (whose unstake destination is this wallet's own address). On
- * success g_built holds the envelope and the fields DECODED FROM ITS BYTES
- * (nodus_v2_stake_built_t.dec), each checked here against the request:
- * the op, the record identity = this key, the validator key / the bond,
- * commission and destination, every input from the request, and
- * Σinputs = lock + fee + change (lock = the amount for STAKE / DELEGATE,
- * 0 for UNDELEGATE — rtn_sys_call_flow), the change to this wallet.
- * Large structs are heap: this runs after every network wait of the
- * networked caller, never across one. `g`: as for nsw_build_core.
+ * Build + sign + read back ONE staking envelope from g_req_coins, for the
+ * rule-set generation `g` names (HF-6 slice 7b: req.generation — the
+ * envelope is built only in the layout of the generation the node runs,
+ * design 2026-10-12-connect-hf6-screens §3).
+ * `validator_pk` (2592 B): the DELEGATE / UNDELEGATE target's key, NULL
+ * for STAKE (whose unstake destination is this wallet's own address).
+ * `validator_id` (64 raw B): the SAME target's validator_id — required for
+ * DELEGATE / UNDELEGATE at generation >= NODUS_RT_GEN_STORAGE, where the
+ * call is delegator_fp ‖ validator_id ‖ amount (136 B, nodus_v2_stake.h
+ * "HF-6 slice 7b"); NULL below it, where the call stays the legacy
+ * delegator_pk ‖ validator_pk ‖ amount (5192 B), byte-identical. Both come
+ * from one validator-list row in the networked caller (nsw_stake_build).
+ * A generation-4 STAKE is refused here (NSW_STAKE_NEEDS_CONSENT): nothing
+ * is built. On success g_built holds the envelope and the fields DECODED
+ * FROM ITS BYTES (nodus_v2_stake_built_t.dec), each checked here against
+ * the request: the layout's generation, the op, the record identity = this
+ * key, the validator key (legacy) or the validator_id and delegator_fp =
+ * SHA3-512(this key) (generation 4), the bond, commission and destination
+ * (STAKE), every input from the request, and Σinputs = lock + fee + change
+ * (lock = the amount for STAKE / DELEGATE, 0 for UNDELEGATE —
+ * rtn_sys_call_flow, the same in both generations), the change to this
+ * wallet. g_built.recipient is the validator's fingerprint SHA3-512(
+ * validator_pk) in both generations (the generation-4 call carries no key:
+ * it is hashed from the request's key, the list row's). Large structs are
+ * heap: this runs after every network wait of the networked caller, never
+ * across one. `g`: as for nsw_build_core.
  */
 static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
                           const uint8_t chain32[DNA_CHAIN_ID_LEN],
                           uint64_t tip, uint64_t gas_price, int op,
-                          const uint8_t *validator_pk, uint64_t amount,
+                          const uint8_t *validator_pk,
+                          const uint8_t *validator_id, uint64_t amount,
                           uint32_t commission, uint64_t expiry,
                           const nsw_gen_t *g) {
     nsw_built_clear();
+    static const uint8_t zero64[64];
+    const int gen4 = g->gen >= NODUS_RT_GEN_STORAGE;
     if (op != NODUS_V2_STAKE_OP_STAKE && op != NODUS_V2_STAKE_OP_DELEGATE &&
         op != NODUS_V2_STAKE_OP_UNDELEGATE)
         return nsw_fail("Unknown staking action.");
     if ((op == NODUS_V2_STAKE_OP_STAKE) != (validator_pk == NULL))
+        return nsw_fail("Invalid staking request.");
+    if (op == NODUS_V2_STAKE_OP_STAKE && gen4)
+        return nsw_fail("%s Nothing was built.", NSW_STAKE_NEEDS_CONSENT);
+    if (op != NODUS_V2_STAKE_OP_STAKE && gen4 &&
+        (!validator_id || memcmp(validator_id, zero64, 64) == 0))
+        return nsw_fail("This witness's entry in the witness list does not "
+                        "carry its identity under the network's new rules. "
+                        "Refresh the witness list and try again. Nothing "
+                        "was built.");
+    if (!gen4 && validator_id != NULL)
         return nsw_fail("Invalid staking request.");
     if (nsw_expiry_check(tip, g, expiry) != 0) return -1;
     if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
@@ -888,7 +960,12 @@ static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
     req.amount         = amount;
     req.commission_bps = commission;
     req.dest_fp        = op == NODUS_V2_STAKE_OP_STAKE ? own_raw : NULL;
-    req.validator_pk   = validator_pk;
+    /* the generation decides the layout (nodus_v2_stake.h "HF-6 slice
+     * 7b"): generation 4 names the target by validator_id, below it by
+     * its key */
+    req.generation     = g->gen;
+    req.validator_pk   = gen4 ? NULL : validator_pk;
+    req.validator_id   = gen4 ? validator_id : NULL;
     req.gas_price      = gas_price;
     req.coins          = coins;
     req.n_coins        = g_req_n;
@@ -902,7 +979,7 @@ static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
     /* ── check the read-back against the request (G1) ── */
     const nodus_v2_stake_decoded_t *d = &built->dec;
     const uint64_t lock = op == NODUS_V2_STAKE_OP_UNDELEGATE ? 0 : amount;
-    int ok = d->op == (uint32_t)op &&
+    int ok = d->op == (uint32_t)op && d->gen4 == gen4 &&
              memcmp(d->identity_pk, pk, NSW_PK_LEN) == 0 &&
              d->amount == amount && d->expiry_height == expiry &&
              d->fee == built->fee && d->n_in >= 1 &&
@@ -910,6 +987,12 @@ static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
     if (ok && op == NODUS_V2_STAKE_OP_STAKE)
         ok = d->commission_bps == commission &&
              memcmp(d->dest_fp, own_raw, 64) == 0;
+    else if (ok && gen4)
+        /* delegator_fp ‖ validator_id ‖ amount: the call's delegator is
+         * this key, its target the requested id (the decoded legacy
+         * validator_pk is all zero in this layout) */
+        ok = memcmp(d->validator_id, validator_id, 64) == 0 &&
+             memcmp(d->owner_fp, own_raw, 64) == 0;
     else if (ok)
         ok = memcmp(d->validator_pk, validator_pk, NSW_PK_LEN) == 0;
     uint64_t change = 0;
@@ -950,13 +1033,21 @@ static int nsw_stake_core(const uint8_t *pk, const uint8_t *sk,
         memcpy(g_built.recipient, own_hex, 129);
         nsw_fmt_u64(d->commission_bps, g_built.commission);
     } else {
+        /* the validator's fingerprint: legacy — of the key the call
+         * carries; generation 4 — of the request's key (the call carries
+         * none; the networked caller's key and id are one list row's) */
         uint8_t vfp[64];
-        if (qgp_sha3_512(d->validator_pk, NSW_PK_LEN, vfp) != 0) {
+        if (qgp_sha3_512(gen4 ? validator_pk : d->validator_pk, NSW_PK_LEN,
+                         vfp) != 0) {
             nsw_built_clear();
             rc = nsw_fail("The staking transaction could not be built (hash).");
             goto done;
         }
         nsw_fmt_hex(vfp, 64, g_built.recipient);
+        if (gen4) {
+            g_built.gen4 = 1;
+            nsw_fmt_hex(d->validator_id, 64, g_built.validator_id);
+        }
     }
     nsw_fmt_u64(d->amount, g_built.amount);
     nsw_fmt_u64(d->fee, g_built.fee);
@@ -979,26 +1070,35 @@ done:
 
 /* OFFLINE staking build (parity, like nsw_offline_build): the identity
  * from nsw_seed_buf (wiped here), the candidate coins (nsw_req_*), the
- * chain id, tip and gas price as a node would report them, the validator's
- * public key as 5184 lowercase hex ("" for STAKE). No output seeds: the
- * builder draws none. */
-int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
-                            const char *gas_dec, const char *validator_hex,
+ * rule-set generation `gen` (>= 1; HF-6 slice 7b), the chain id, tip and
+ * gas price as a node would report them, the validator's public key as
+ * 5184 lowercase hex ("" for STAKE) and its validator_id as 128 lowercase
+ * hex — DELEGATE / UNDELEGATE at generation >= NODUS_RT_GEN_STORAGE only,
+ * "" otherwise (nsw_stake_core's rule; an all-zero id is refused there).
+ * No output seeds: the builder draws none. */
+int nsw_stake_offline_build(int gen, int op, const char *chain_hex,
+                            const char *tip_dec, const char *gas_dec,
+                            const char *validator_hex,
+                            const char *validator_id_hex,
                             const char *amount_dec, const char *commission_dec,
                             const char *expiry_dec) {
-    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    uint8_t chain32[DNA_CHAIN_ID_LEN], vid[64];
     uint64_t tip = 0, gas = 0, amount = 0, commission = 0, expiry = 0;
     uint8_t *vpk = NULL, *pk = NULL, *sk = NULL;
     int rc = -1;
     const int is_stake = op == NODUS_V2_STAKE_OP_STAKE;
-    if (nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
+    const int has_vid = validator_id_hex && validator_id_hex[0] != '\0';
+    if (gen < 1 ||
+        nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
         nsw_parse_u64(tip_dec, &tip) != 0 ||
         nsw_parse_u64(gas_dec, &gas) != 0 ||
         nsw_parse_u64(amount_dec, &amount) != 0 ||
         nsw_parse_u64(commission_dec, &commission) != 0 ||
         commission > 0xffffu ||
         nsw_parse_u64(expiry_dec, &expiry) != 0 ||
-        !validator_hex || (is_stake && validator_hex[0] != '\0')) {
+        !validator_hex || (is_stake && validator_hex[0] != '\0') ||
+        !validator_id_hex || (is_stake && has_vid) ||
+        (has_vid && nsw_parse_hex(validator_id_hex, vid, sizeof(vid)) != 0)) {
         rc = nsw_fail("Invalid offline staking input.");
         goto done;
     }
@@ -1016,9 +1116,12 @@ int nsw_stake_offline_build(int op, const char *chain_hex, const char *tip_dec,
         rc = nsw_fail("Out of memory.");
     else if (qgp_dsa87_keypair_derand(pk, sk, g_seed) != 0)
         rc = nsw_fail("Key derivation failed.");
-    else
-        rc = nsw_stake_core(pk, sk, chain32, tip, gas, op, vpk, amount,
-                            (uint32_t)commission, expiry, &NSW_GEN_OFFLINE);
+    else {
+        const nsw_gen_t g = { (uint32_t)gen, 0u, 0u };
+        rc = nsw_stake_core(pk, sk, chain32, tip, gas, op, vpk,
+                            has_vid ? vid : NULL, amount,
+                            (uint32_t)commission, expiry, &g);
+    }
 done:
     nsw_wipe(g_seed, sizeof(g_seed));
     if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
@@ -1026,6 +1129,781 @@ done:
     free(vpk);
     return rc;
 }
+
+/* ═══ HF-6: NODE CONSENT, WITNESS AND STORAGE ENVELOPES ═══════════════════
+ *
+ * Design docs/plans/2026-10-12-connect-hf6-screens-design.md rev 1 §2 (the
+ * consent checks), §3 (gates), G1-G4; docs/plans/2026-10-03-hf5-validator-
+ * owner-stake-design.md rev 6 §6.1 (the consent message), §9, §11.3 /
+ * §11.5 (storage owner / node split); decisions/2026-10-09-kurultay-16-
+ * hf6-storage-summary.md.
+ *
+ * THE CONSENT is the text a node prints with nodus-cli `validator consent`
+ * / `storage consent` (format: nodus_v2_stake.h "the node-consent
+ * CONTAINER"). It is parsed by the shared nodus_v2_consent_text_parse and
+ * checked the way nodus-cli's cli_consent_check checks it before it builds
+ * (nodus-cli.c:3700-3751), one result per check:
+ *   format     the container parses (exact lines in order, exact widths,
+ *              lowercase hex, canonical decimal, the op/subject rule)
+ *   op         the screen's op (1 STAKE, 3 STORAGE_REGISTER)
+ *   chain      the connected chain
+ *   owner      this wallet's fingerprint
+ *   subject    64 x 0x00 (a new registration: the only subject of both
+ *              ops)
+ *   expiry     expiry > tip, expiry - tip <= the caller's window, AND the
+ *              codec's own rule at the next height,
+ *              dna_valbind_expiry_ok(tip + 1, expiry) (the CLI's) — so a
+ *              caller's window can only narrow the chain's fixed 720
+ *              (DNA_VALBIND_MAX_EXPIRY_BLOCKS), never widen it
+ *   signature  dna_valbind_consent_verify over the message REBUILT with
+ *              dna_valbind_consent_msg from the consent's own fields (ctx
+ *              "nodus.valbind.v1", under the key the consent carries) —
+ *              the codec of shared/dnac/valbind_wire.c; nothing of the
+ *              message or the signature is restated here.
+ * NOT checked here (design §2 item 7): that a STAKE's key is not already a
+ * witness's — it needs the generation-4 validator list (validator_id,
+ * owner, key), which the page reads, not this check. The chain refuses it
+ * by itself.
+ *
+ * NO KEY ROTATION: the khan removed ROTATE (op 10, consent op 2) from HF-6
+ * (decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1;
+ * nodus_v2_stake.h builds no op 10, its consent container refuses op 2). A
+ * consensus key used once is never usable again; a witness moves to a new
+ * key by UNSTAKE and a NEW STAKE from the new node (a new validator_id).
+ *
+ * THE ENVELOPES are nodus-cli's `v2-envelope stake2 | unstake` and `storage
+ * register | exit` (cmd_v2_stake) over the shared builder
+ * nodus_v2_stake_build at generation >= NODUS_RT_GEN_STORAGE:
+ *   STAKE (op 1)              bond >= STAKE_MIN, commission <= the maximum,
+ *                             the node's consent (op 1); lock = bond
+ *   STORAGE_REGISTER (op 7)   bond == STORAGE_BOND exactly, the storage
+ *                             node's consent (op 3); lock = bond
+ *   STORAGE_EXIT (op 8)       node_fp ‖ owner_fp (128 bytes), no consent;
+ *                             fee only
+ *   UNSTAKE (op 3)            validator_id ‖ owner_fp (128 bytes), no
+ *                             consent; fee only (nodus_v2_stake.h "HF-6
+ *                             slice 7b", C2). The chain requires the call's
+ *                             owner_fp to equal the ROW's owner and refuses
+ *                             a row that is not ACTIVE or ELIGIBLE
+ *                             (rtn_unstake2_exec) — the page offers it only
+ *                             for this wallet's own active / eligible
+ *                             witnesses (src/adapters/nodus.js prepareHf6).
+ *                             The exec only marks the row RETIRING; the
+ *                             bond comes back at the graduating boundary,
+ *                             locked DNAC_VALIDATOR_UNBOND_EPOCHS epochs, to
+ *                             the row's owner (nodus_witness_v2_epoch.c
+ *                             v2ep_graduate) — this builder writes no
+ *                             release output
+ * The owner_fp of STORAGE_EXIT and UNSTAKE (Kurultay #18 item 2, "C2") is
+ * not a request field: the shared builder writes SHA3-512 of the signing
+ * key into the call and its decoder refuses any other value; the read-back
+ * below checks it once more against this wallet's own fingerprint.
+ * STAKE_MIN and STORAGE_BOND are chain parameters (HF-6 slice 8a:
+ * chain_config params 19 / 21, read by the chain at each item's height —
+ * nodus_witness_rt_native.c rtn_stake_min_at / rtn_storage_bond_at). The
+ * build takes them from the SAME dnac_fee_info answer as its gas price
+ * ("stake_min" / "storage_bond", the values in force at tip + 1), exactly
+ * as nodus-cli cmd_v2_stake does: 0 = a server that predates the keys, so
+ * the compiled default DNAC_HF6_STAKE_MIN_DEFAULT /
+ * DNAC_HF6_STORAGE_BOND_DEFAULT (dnac.h) is the value in force there; a
+ * value outside the range the node's handler answers with is refused
+ * (nsw_hf6_bonds_of; BUGS W-20). nsw_hf6_bonds gives the page the same
+ * two values for its screens. The owner is THIS wallet's
+ * key (kind 1: owner_fp = SHA3-512 of the signing key; a multisig owner is
+ * not built — design §3). The consent is RE-CHECKED inside the build with
+ * that owner and the build's own chain id and tip, whatever the page
+ * checked before (G1, G4). Below generation 4 nothing is built. */
+
+/* nodus-cli CLI_CONSENT_FILE_MAX: the consent text's size bound */
+#define NSW_CONSENT_TEXT_MAX 16384u
+/* 1 NODUS in raw units (dnac.h: every amount above is "x 10^8 raw") */
+#define NSW_RAW_PER_NODUS    100000000ULL
+
+_Static_assert(DNAC_HF6_STAKE_MIN_DEFAULT <= (uint64_t)INT64_MAX &&
+               DNAC_HF6_STORAGE_BOND_DEFAULT <= (uint64_t)INT64_MAX,
+               "the HF-6 bonds are inside the builder's integer bound");
+_Static_assert(DNAC_HF6_STAKE_MIN_MIN <= DNAC_HF6_STAKE_MIN_DEFAULT &&
+               DNAC_HF6_STORAGE_BOND_MIN <= DNAC_HF6_STORAGE_BOND_DEFAULT &&
+               DNAC_HF6_STORAGE_BOND_DEFAULT <= DNAC_HF6_STORAGE_BOND_MAX,
+               "a compiled default passes the range nsw_hf6_bonds_of checks");
+
+/* A raw amount as NODUS text for a message: whole NODUS, then up to 8
+ * decimals without trailing zeros ("2000000", "150000.5"). A voted bond
+ * need not be whole NODUS (params 19 / 21 are raw values). */
+#define NSW_NODUS_TEXT 32
+static void nsw_fmt_nodus(uint64_t raw, char out[NSW_NODUS_TEXT]) {
+    char whole[NSW_U64_DEC];
+    nsw_fmt_u64(raw / NSW_RAW_PER_NODUS, whole);
+    uint64_t frac = raw % NSW_RAW_PER_NODUS;
+    if (frac == 0) { snprintf(out, NSW_NODUS_TEXT, "%s", whole); return; }
+    char f[9];
+    for (int i = 7; i >= 0; i--) { f[i] = (char)('0' + (frac % 10u)); frac /= 10u; }
+    int n = 8;
+    while (n > 1 && f[n - 1] == '0') n--;
+    f[n] = '\0';
+    snprintf(out, NSW_NODUS_TEXT, "%s.%s", whole, f);
+}
+
+/* The two role bonds a node reported in dnac_fee_info (HF-6 slice 8a,
+ * nodus_witness_handlers.c handle_dnac_fee_info: chain_config params 19
+ * STAKE_MIN and 21 STORAGE_BOND at tip + 1), as the build uses them:
+ * 0 = a server that predates the keys (nodus_client.c leaves 0 for an
+ * absent key), so the value in force there is the compiled default —
+ * nodus-cli cmd_v2_stake's rule. Any other value must lie inside the range
+ * that handler answers with — it sends an error, never a value, for a
+ * stored stake_min outside [DNAC_HF6_STAKE_MIN_MIN, INT64_MAX] or a
+ * storage_bond outside [DNAC_HF6_STORAGE_BOND_MIN,
+ * DNAC_HF6_STORAGE_BOND_MAX] (dnac.h: each param's vote range) — else it
+ * is refused and nothing is built. @return 0 / -1 (reason in nsw_error). */
+static int nsw_hf6_bonds_of(uint64_t rep_stake_min, uint64_t rep_storage_bond,
+                            uint64_t *stake_min, uint64_t *storage_bond) {
+    const uint64_t smin = rep_stake_min != 0
+                              ? rep_stake_min
+                              : (uint64_t)DNAC_HF6_STAKE_MIN_DEFAULT;
+    const uint64_t sbond = rep_storage_bond != 0
+                               ? rep_storage_bond
+                               : (uint64_t)DNAC_HF6_STORAGE_BOND_DEFAULT;
+    if (smin < (uint64_t)DNAC_HF6_STAKE_MIN_MIN || smin > (uint64_t)INT64_MAX)
+        return nsw_fail("The node reported a witness bond minimum outside "
+                        "the network's range; nothing is built with it.");
+    if (sbond < (uint64_t)DNAC_HF6_STORAGE_BOND_MIN ||
+        sbond > (uint64_t)DNAC_HF6_STORAGE_BOND_MAX)
+        return nsw_fail("The node reported a storage bond outside the "
+                        "network's range; nothing is built with it.");
+    *stake_min = smin;
+    *storage_bond = sbond;
+    return 0;
+}
+
+enum { NSW_CC_FORMAT, NSW_CC_OP, NSW_CC_CHAIN, NSW_CC_OWNER, NSW_CC_SUBJECT,
+       NSW_CC_EXPIRY, NSW_CC_SIG, NSW_CC_N };
+/* The ids the page names the checks by (stable: the UI localises by id). */
+static const char *const NSW_CC_ID[NSW_CC_N] = {
+    "format", "op", "chain", "owner", "subject", "expiry", "signature"
+};
+
+typedef struct {
+    int  ok[NSW_CC_N];
+    char detail[NSW_CC_N][224];   /* plain text: no '"' and no '\' (it is
+                                   * written into JSON as is)              */
+} nsw_cc_t;
+
+static void nsw_cc_set(nsw_cc_t *r, int id, int ok, const char *fmt, ...) {
+    va_list ap;
+    r->ok[id] = ok;
+    va_start(ap, fmt);
+    vsnprintf(r->detail[id], sizeof(r->detail[id]), fmt, ap);
+    va_end(ap);
+}
+
+static const char *nsw_consent_what(uint8_t op) {
+    return op == DNA_VALBIND_OP_STAKE  ? "becoming a witness"
+         : op == DNA_VALBIND_OP_STORAGE_REGISTER ? "becoming a storage node"
+                                                 : "an unknown action";
+}
+
+/* The consent checks (header above), each with its result line. `text`:
+ * NUL-terminated; `window` >= 1. A text that does not parse fails
+ * "format" and every other check as not run. *c receives the parsed
+ * consent (zeroed when it does not parse). Never touches g_error: the
+ * synchronous check export may run while an asynchronous export waits.
+ * @return the number of failed checks (0 = all passed). */
+static int nsw_consent_eval(const char *text, uint8_t want_op,
+                            const uint8_t chain32[DNA_VALBIND_CHAIN_LEN],
+                            const uint8_t owner_fp[DNA_VALBIND_OWNER_FP_LEN],
+                            uint64_t tip, uint64_t window,
+                            nodus_v2_consent_t *c, nsw_cc_t *r) {
+    memset(r, 0, sizeof(*r));
+    const size_t len = text ? strnlen(text, NSW_CONSENT_TEXT_MAX + 1u) : 0;
+    if (!text || len > NSW_CONSENT_TEXT_MAX ||
+        nodus_v2_consent_text_parse(text, len, c) != NODUS_V2_SPEND_OK) {
+        memset(c, 0, sizeof(*c));
+        nsw_cc_set(r, NSW_CC_FORMAT, 0, "This is not a consent from a Nodus "
+                   "node. Copy the whole text the node printed (8 lines, the "
+                   "first one 'nodus-valbind-consent v1') and paste it again.");
+        for (int i = NSW_CC_OP; i < NSW_CC_N; i++)
+            nsw_cc_set(r, i, 0, "Not checked: the consent could not be read.");
+        return NSW_CC_N;
+    }
+    nsw_cc_set(r, NSW_CC_FORMAT, 1, "The consent text is complete.");
+
+    if (c->op == want_op)
+        nsw_cc_set(r, NSW_CC_OP, 1, "The consent is for %s.",
+                   nsw_consent_what(want_op));
+    else
+        nsw_cc_set(r, NSW_CC_OP, 0, "This consent is for %s, not for %s. Run "
+                   "the command shown on this screen on the node.",
+                   nsw_consent_what(c->op), nsw_consent_what(want_op));
+
+    if (memcmp(c->chain32, chain32, DNA_VALBIND_CHAIN_LEN) == 0)
+        nsw_cc_set(r, NSW_CC_CHAIN, 1, "The consent is for this Nodus network.");
+    else
+        nsw_cc_set(r, NSW_CC_CHAIN, 0, "This consent is for another Nodus "
+                   "network. Run the command on a node of this network.");
+
+    if (memcmp(c->owner_fp, owner_fp, DNA_VALBIND_OWNER_FP_LEN) == 0)
+        nsw_cc_set(r, NSW_CC_OWNER, 1, "The consent names this wallet as the "
+                   "owner.");
+    else
+        nsw_cc_set(r, NSW_CC_OWNER, 0, "This consent names another wallet as "
+                   "the owner. Run the command shown on this screen: it "
+                   "carries this wallet's address.");
+
+    static const uint8_t zero_subject[DNA_VALBIND_SUBJECT_LEN];
+    if (memcmp(c->subject, zero_subject, DNA_VALBIND_SUBJECT_LEN) == 0)
+        nsw_cc_set(r, NSW_CC_SUBJECT, 1,
+                   "The consent is for a new registration, as it must be.");
+    else
+        nsw_cc_set(r, NSW_CC_SUBJECT, 0,
+                   "This consent is for an existing witness, not for a new "
+                   "registration. Run the command shown on this screen.");
+
+    const uint64_t shown = window < DNA_VALBIND_MAX_EXPIRY_BLOCKS
+                         ? window : DNA_VALBIND_MAX_EXPIRY_BLOCKS;
+    if (tip == 0)
+        nsw_cc_set(r, NSW_CC_EXPIRY, 0, "The current Nodus block height is "
+                   "unknown, so the consent's validity cannot be judged. Try "
+                   "again shortly.");
+    else if (c->expiry <= tip)
+        nsw_cc_set(r, NSW_CC_EXPIRY, 0, "This consent expired at block %llu "
+                   "(the network is at block %llu). Run the command on the "
+                   "node again for a new consent.",
+                   (unsigned long long)c->expiry, (unsigned long long)tip);
+    else if (c->expiry - tip > window ||
+             !dna_valbind_expiry_ok(tip + 1u, c->expiry))   /* tip < expiry:
+                                                              * no wrap      */
+        nsw_cc_set(r, NSW_CC_EXPIRY, 0, "This consent is valid until block "
+                   "%llu, more than %llu blocks ahead of the network (block "
+                   "%llu), and is refused. Run the command shown on this "
+                   "screen again.", (unsigned long long)c->expiry,
+                   (unsigned long long)shown, (unsigned long long)tip);
+    else
+        nsw_cc_set(r, NSW_CC_EXPIRY, 1, "Valid until block %llu.",
+                   (unsigned long long)c->expiry);
+
+    uint8_t *msg = malloc(DNA_VALBIND_MSG_LEN);
+    if (!msg)
+        nsw_cc_set(r, NSW_CC_SIG, 0, "The node's signature could not be "
+                   "checked (out of memory).");
+    else if (dna_valbind_consent_msg(msg, c->chain32, c->op, c->subject,
+                                     c->owner_fp, c->consensus_pk,
+                                     c->expiry) == 0 &&
+             dna_valbind_consent_verify(c->sig, DNA_VALBIND_SIG_LEN, msg) == 0)
+        nsw_cc_set(r, NSW_CC_SIG, 1, "The node's signature is valid.");
+    else
+        nsw_cc_set(r, NSW_CC_SIG, 0, "The node's signature on this consent is "
+                   "not valid. Copy the text again exactly as the node "
+                   "printed it.");
+    free(msg);
+
+    int failed = 0;
+    for (int i = 0; i < NSW_CC_N; i++)
+        if (!r->ok[i]) failed++;
+    return failed;
+}
+
+/* ── the consent check for the page: pure, synchronous, no network, no
+ *    session secret ──
+ * nsw_hf6_consent_check(op, text, chain, owner, tip, window):
+ * op 1 STAKE / 3 STORAGE_REGISTER (the consent op; op 2, the removed
+ * ROTATE, is refused — see "NO KEY ROTATION"); the subject a consent must
+ * carry is 64 x 0x00 for both, so it is not an argument; `chain` 64 hex;
+ * `owner` this wallet's 128-hex
+ * fingerprint; `tip` and `window` decimal (window >= 1; above 720 it
+ * cannot widen the chain's rule). Returns JSON (one static buffer, valid
+ * until the next call):
+ *   {"ok":bool,"error":"","checks":[{"id":..,"ok":bool,"detail":".."} x7],
+ *    "node_fp":"<128 hex>"|"","expiry":"<decimal>"|""}
+ * "ok" is true only when every check passed; node_fp (SHA3-512 of the
+ * consenting key) and expiry are given whenever the text parsed. Invalid
+ * ARGUMENTS (not the consent) give "error" non-empty and no checks. */
+
+static char g_cc_json[4096];
+
+static int nsw_cc_put(size_t *pos, const char *fmt, ...) {
+    if (*pos >= sizeof(g_cc_json)) return -1;
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(g_cc_json + *pos, sizeof(g_cc_json) - *pos, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof(g_cc_json) - *pos) return -1;
+    *pos += (size_t)n;
+    return 0;
+}
+
+static const char *nsw_cc_error(const char *what) {
+    snprintf(g_cc_json, sizeof(g_cc_json), "{\"ok\":false,\"error\":\"%s\","
+             "\"checks\":[],\"node_fp\":\"\",\"expiry\":\"\"}", what);
+    return g_cc_json;
+}
+
+const char *nsw_hf6_consent_check(int op, const char *text,
+                                  const char *chain_hex, const char *owner_hex,
+                                  const char *tip_dec, const char *window_dec) {
+    uint8_t chain32[DNA_VALBIND_CHAIN_LEN], owner[64];
+    uint64_t tip = 0, window = 0;
+    if (op != DNA_VALBIND_OP_STAKE && op != DNA_VALBIND_OP_STORAGE_REGISTER)
+        return nsw_cc_error("Unknown consent action.");
+    if (nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0)
+        return nsw_cc_error("Invalid chain id.");
+    if (nsw_parse_hex(owner_hex, owner, sizeof(owner)) != 0)
+        return nsw_cc_error("Invalid wallet address.");
+    if (nsw_parse_u64(tip_dec, &tip) != 0 ||
+        nsw_parse_u64(window_dec, &window) != 0 || window == 0)
+        return nsw_cc_error("Invalid block height or validity window.");
+
+    nodus_v2_consent_t *c = malloc(sizeof(*c));
+    nsw_cc_t *r = malloc(sizeof(*r));
+    if (!c || !r) {
+        free(c);
+        free(r);
+        return nsw_cc_error("Out of memory.");
+    }
+    const int failed = nsw_consent_eval(text, (uint8_t)op, chain32, owner,
+                                        tip, window, c, r);
+    char node_fp[129] = "", expiry[NSW_U64_DEC] = "";
+    if (r->ok[NSW_CC_FORMAT]) {
+        uint8_t fp[64];
+        if (qgp_sha3_512(c->consensus_pk, DNA_VALBIND_PUBKEY_LEN, fp) == 0)
+            nsw_fmt_hex(fp, 64, node_fp);
+        nsw_fmt_u64(c->expiry, expiry);
+    }
+    size_t pos = 0;
+    int bad = nsw_cc_put(&pos, "{\"ok\":%s,\"error\":\"\",\"checks\":[",
+                         failed == 0 && node_fp[0] ? "true" : "false");
+    for (int i = 0; !bad && i < NSW_CC_N; i++)
+        bad = nsw_cc_put(&pos, "{\"id\":\"%s\",\"ok\":%s,\"detail\":\"%s\"}%s",
+                         NSW_CC_ID[i], r->ok[i] ? "true" : "false",
+                         r->detail[i], i + 1 < NSW_CC_N ? "," : "");
+    if (!bad)
+        bad = nsw_cc_put(&pos, "],\"node_fp\":\"%s\",\"expiry\":\"%s\"}",
+                         node_fp, expiry);
+    free(c);
+    free(r);
+    return bad ? nsw_cc_error("The consent check result does not fit.")
+               : g_cc_json;
+}
+
+/* The consent window the HF-6 screens pre-check with, as a decimal string
+ * (valbind_wire.h), and the rule-set generation that carries the HF-6
+ * calls (nodus_witness_runtime.h NODUS_RT_GEN_STORAGE) — the page compares
+ * rulesetInfo().generation with it to enable sending. The two bonds are
+ * chain parameters, not constants: the page reads them from the node
+ * (nsw_hf6_bonds, BUGS W-20). */
+const char *nsw_const_consent_window(void) {
+    return nsw_const(DNA_VALBIND_MAX_EXPIRY_BLOCKS);
+}
+int nsw_hf6_generation(void) { return (int)NODUS_RT_GEN_STORAGE; }
+/* The two multipliers of the HF-6 screens' timing lines (design 2026-10-12-
+ * connect-hf6-screens "Timing facts"), from dnac.h so the page never
+ * restates them: a new witness is a candidate for an epoch start only
+ * DNAC_MIN_TENURE_BLOCKS after its stake; a storage bond left by
+ * STORAGE_EXIT comes back as a coin locked DNAC_STORAGE_EXIT_LOCK_EPOCHS
+ * epochs past its release boundary. */
+const char *nsw_const_min_tenure_blocks(void) {
+    return nsw_const((uint64_t)DNAC_MIN_TENURE_BLOCKS);
+}
+const char *nsw_const_storage_exit_lock_epochs(void) {
+    return nsw_const((uint64_t)DNAC_STORAGE_EXIT_LOCK_EPOCHS);
+}
+/* The third: a witness's bond left by UNSTAKE comes back as a coin locked
+ * DNAC_VALIDATOR_UNBOND_EPOCHS epochs past the boundary it graduates at
+ * (dnac.h; nodus_witness_v2_epoch.c v2ep_graduate). */
+const char *nsw_const_validator_unbond_epochs(void) {
+    return nsw_const((uint64_t)DNAC_VALIDATOR_UNBOND_EPOCHS);
+}
+
+static const char *nsw_hf6_reason(int rc, int op) {
+    switch (rc) {
+    case NODUS_V2_SPEND_ERR_INSUFFICIENT:
+        return (op == NODUS_V2_STAKE_OP_STAKE ||
+                op == NODUS_V2_STAKE_OP_STORAGE_REGISTER)
+            ? "Insufficient NODUS balance for the bond plus the network fee (at most 15 coins are used)."
+            : "Not enough spendable NODUS to pay the network fee.";
+    case NODUS_V2_STAKE_ERR_BOND:         return "The witness bond is out of range.";
+    case NODUS_V2_STAKE_ERR_STORAGE_BOND: return "The storage bond is out of range.";
+    case NODUS_V2_STAKE_ERR_COMMISSION:   return "The commission is above the maximum (50%).";
+    case NODUS_V2_STAKE_ERR_GEN:          return "This action is not available under the network's current rules.";
+    case NODUS_V2_STAKE_ERR_OP:           return "Unknown witness or storage action.";
+    case NODUS_V2_SPEND_ERR_OVERFLOW:
+    case NODUS_V2_SPEND_ERR_INPUT_SUM:    return "Amount is out of range.";
+    case NODUS_V2_SPEND_ERR_GAS_OVERFLOW: return "The network fee is out of range.";
+    case NODUS_V2_SPEND_ERR_EXPIRY:       return "The current Nodus block height is unknown.";
+    default:                              return "The transaction could not be built.";
+    }
+}
+
+/* The consent op of an HF-6 envelope op; 0 for STORAGE_EXIT and UNSTAKE
+ * (no consent) and for anything else. */
+static uint8_t nsw_hf6_consent_op(int op) {
+    return op == NODUS_V2_STAKE_OP_STAKE  ? DNA_VALBIND_OP_STAKE
+         : op == NODUS_V2_STAKE_OP_STORAGE_REGISTER
+                                          ? DNA_VALBIND_OP_STORAGE_REGISTER
+                                          : 0;
+}
+
+static int nsw_hf6_op_ok(int op) {
+    return op == NODUS_V2_STAKE_OP_STAKE ||
+           op == NODUS_V2_STAKE_OP_STORAGE_REGISTER ||
+           op == NODUS_V2_STAKE_OP_STORAGE_EXIT ||
+           op == NODUS_V2_STAKE_OP_UNSTAKE;
+}
+
+/* The ops whose call names a 64-byte target (the owner_fp after it is the
+ * builder's): UNSTAKE the witness's validator_id, STORAGE_EXIT the node's
+ * fingerprint. */
+static int nsw_hf6_targeted(int op) {
+    return op == NODUS_V2_STAKE_OP_STORAGE_EXIT ||
+           op == NODUS_V2_STAKE_OP_UNSTAKE;
+}
+
+/* The generation gate (design §3): an HF-6 envelope only for a generation
+ * that carries the HF-6 calls. @return 0 / -1 (reason in nsw_error). */
+static int nsw_hf6_gen_ok(const nsw_gen_t *g) {
+    if (g->gen >= NODUS_RT_GEN_STORAGE) return 0;
+    return nsw_fail("Not yet available: the Nodus network does not run the "
+                    "rules for wallet-owned witnesses and storage nodes yet "
+                    "(it runs generation %u, generation %u is needed). "
+                    "Nothing was built.", (unsigned)g->gen,
+                    (unsigned)NODUS_RT_GEN_STORAGE);
+}
+
+/*
+ * Build + sign + read back ONE generation-4 envelope from g_req_coins
+ * (op: NODUS_V2_STAKE_OP_STAKE / _STORAGE_REGISTER / _STORAGE_EXIT /
+ * _UNSTAKE). `consent_text`: the node's consent (NUL-terminated; NULL for
+ * STORAGE_EXIT and UNSTAKE) — re-checked here against op, `chain32`, the
+ * owner SHA3-512(pk), the zero subject and `tip` with the chain's window,
+ * and nothing is built unless every check passes. `target`: UNSTAKE the
+ * validator_id (never all zero), STORAGE_EXIT the node_fp (64 raw bytes),
+ * NULL otherwise.
+ * `amount`: STAKE the bond (>= `stake_min`), STORAGE_REGISTER the bond
+ * (== `storage_bond`), 0 otherwise; `commission`: STAKE only (else 0).
+ * `stake_min` / `storage_bond`: the values nsw_hf6_bonds_of resolved from
+ * the node's report (the chain's params 19 / 21).
+ * On success g_built holds the envelope and the fields DECODED FROM ITS
+ * BYTES (nodus_v2_stake_built_t.dec), each checked here against the
+ * request: generation-4 layout, the op, the signer = this key, the call's
+ * owner_fp = SHA3-512(this key) (every op: STAKE / STORAGE_REGISTER carry
+ * it first, STORAGE_EXIT / UNSTAKE after their target since C2), the bond,
+ * the commission, the consent key / signature / expiry, the validator_id /
+ * node_fp, every input from the request, and Σinputs = lock + fee + change
+ * (lock = the bond for STAKE / STORAGE_REGISTER, 0 for STORAGE_EXIT /
+ * UNSTAKE — rtn_sys_call_flow), the change to this wallet. UNSTAKE carries
+ * no node key: its node_fp stays "". Large structs are heap: this runs
+ * after every network wait of the networked caller, never across one.
+ */
+static int nsw_hf6_core(const uint8_t *pk, const uint8_t *sk,
+                        const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                        uint64_t tip, uint64_t gas_price, int op,
+                        const char *consent_text, const uint8_t *target,
+                        uint64_t amount, uint32_t commission, uint64_t expiry,
+                        uint64_t stake_min, uint64_t storage_bond,
+                        const nsw_gen_t *g) {
+    nsw_built_clear();
+    const uint8_t cop = nsw_hf6_consent_op(op);
+    const int is_stake  = op == NODUS_V2_STAKE_OP_STAKE;
+    const int is_streg  = op == NODUS_V2_STAKE_OP_STORAGE_REGISTER;
+    const int is_stexit = op == NODUS_V2_STAKE_OP_STORAGE_EXIT;
+    const int is_unstake = op == NODUS_V2_STAKE_OP_UNSTAKE;
+    if (!nsw_hf6_op_ok(op))
+        return nsw_fail("Unknown witness or storage action.");
+    if (nsw_hf6_targeted(op) != (target != NULL) ||
+        (cop != 0) != (consent_text != NULL) ||
+        (!is_stake && commission != 0) ||
+        (nsw_hf6_targeted(op) && amount != 0))
+        return nsw_fail("Invalid witness or storage request.");
+    if (nsw_hf6_gen_ok(g) != 0) return -1;
+    /* no legal validator_id is all zero (nodus_v2_stake.h: the builder
+     * refuses one with ERR_ARG; rtn_val2_rec_ok) — said plainly here */
+    if (is_unstake) {
+        static const uint8_t zero_id[64];
+        if (memcmp(target, zero_id, 64) == 0)
+            return nsw_fail("Invalid witness: choose one of your witnesses.");
+    }
+    /* the bond rules the builder leaves to the chain (section header),
+     * with the values the node reported for them */
+    if (is_stake && (amount < stake_min || amount > (uint64_t)INT64_MAX)) {
+        char t[NSW_NODUS_TEXT];
+        nsw_fmt_nodus(stake_min, t);
+        return nsw_fail("A witness bond must be at least %s NODUS.", t);
+    }
+    if (is_streg && amount != storage_bond) {
+        char t[NSW_NODUS_TEXT];
+        nsw_fmt_nodus(storage_bond, t);
+        return nsw_fail("A storage bond must be exactly %s NODUS.", t);
+    }
+    if (is_stake && commission > (uint32_t)DNAC_COMMISSION_BPS_MAX)
+        return nsw_fail("The commission is above the maximum (50%%).");
+    if (nsw_expiry_check(tip, g, expiry) != 0) return -1;
+    if (g_req_n < 1) return nsw_fail("Insufficient NODUS balance.");
+
+    /* the pinned policy digest of the generation (fail-closed, as for a
+     * send) and that generation's two ruleset tuples */
+    {
+        nodus_v2_ruleset_id_t rs;
+        dna_meter_policy_t pol;
+        if (nsw_ruleset(g->gen, &rs, &pol) != 0) return -1;
+    }
+    nodus_v2_stake_ruleset_t srs;
+    if (nodus_v2_stake_ruleset_from_pins_gen(g->gen, &srs) != NODUS_V2_SPEND_OK)
+        return nsw_fail("This wallet's staking rules could not be loaded.");
+
+    uint8_t own_raw[64];
+    char own_hex[129];
+    if (qgp_sha3_512(pk, NSW_PK_LEN, own_raw) != 0)
+        return nsw_fail("The transaction could not be built (hash).");
+    nsw_fmt_hex(own_raw, 64, own_hex);
+
+    nodus_v2_consent_t *c = calloc(1, sizeof(*c));
+    nsw_cc_t *r = calloc(1, sizeof(*r));
+    nodus_v2_stake_coin_t *coins = calloc((size_t)g_req_n, sizeof(*coins));
+    nodus_v2_stake_built_t *built = calloc(1, sizeof(*built));
+    int rc = -1;
+    if (!c || !r || !coins || !built) { rc = nsw_fail("Out of memory."); goto done; }
+
+    /* ── the consent, re-checked against THIS build (design §2, G1) ── */
+    if (cop != 0) {
+        if (nsw_consent_eval(consent_text, cop, chain32, own_raw, tip,
+                             DNA_VALBIND_MAX_EXPIRY_BLOCKS, c, r) != 0) {
+            int i = 0;
+            while (i < NSW_CC_N - 1 && r->ok[i]) i++;
+            rc = nsw_fail("%s Nothing was built.", r->detail[i]);
+            goto done;
+        }
+    }
+
+    for (int i = 0; i < g_req_n; i++) {        /* native, unlocked: g_list  */
+        memcpy(coins[i].nul, g_req_coins[i].nul, 64);
+        coins[i].amount = g_req_coins[i].amount;
+    }
+    nodus_v2_stake_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.rs             = &srs;
+    req.op             = (nodus_v2_stake_op_t)op;
+    req.chain32        = chain32;
+    req.tip            = tip;
+    req.expiry_height  = expiry;
+    req.pk             = pk;
+    req.sk             = sk;
+    req.amount         = amount;
+    req.commission_bps = commission;
+    req.gas_price      = gas_price;
+    req.coins          = coins;
+    req.n_coins        = g_req_n;
+    req.generation     = g->gen;
+    if (cop != 0) {
+        req.consensus_pk   = c->consensus_pk;
+        req.consent_sig    = c->sig;
+        req.consent_expiry = c->expiry;
+    }
+    /* the owner_fp of the STORAGE_EXIT / UNSTAKE call is not a request
+     * field: the builder writes SHA3-512(req.pk) — this wallet's own
+     * fingerprint, a kind-1 owner (nodus_v2_stake.c, C2) */
+    if (is_unstake) req.validator_id = target;
+    if (is_stexit) req.node_fp = target;
+    nodus_v2_stake_err_t err;
+    int brc = nodus_v2_stake_build(&req, built, &err);
+    if (brc != NODUS_V2_SPEND_OK) {
+        rc = nsw_fail("%s (build rc=%d)", nsw_hf6_reason(brc, op), brc);
+        goto done;
+    }
+
+    /* ── check the read-back against the request (G1, G3) ── */
+    const nodus_v2_stake_decoded_t *d = &built->dec;
+    const int bonded = is_stake || is_streg;
+    const uint64_t lock = bonded ? amount : 0;
+    uint8_t node_fp[64];
+    /* the one signer is this key (kind 1), and the owner_fp the CALL bytes
+     * carry — read back from them for every op, STORAGE_EXIT and UNSTAKE
+     * included since C2 — is SHA3-512 of it: the chain refuses the
+     * envelope unless that is the row's owner */
+    int ok = d->gen4 == 1 && d->op == (uint32_t)op &&
+             d->auth_kind == NODUS_RT_AUTHKIND_DSA87_MULTI_V1 &&
+             memcmp(d->identity_pk, pk, NSW_PK_LEN) == 0 &&
+             memcmp(d->owner_fp, own_raw, 64) == 0 &&
+             d->amount == lock && d->expiry_height == expiry &&
+             d->fee == built->fee && d->n_in >= 1 &&
+             d->n_in <= (int)NODUS_V2_SPEND_MAX_IN && d->n_out <= 1;
+    if (ok && cop != 0)
+        ok = memcmp(d->consensus_pk, c->consensus_pk, NSW_PK_LEN) == 0 &&
+             memcmp(d->consent_sig, c->sig, DNA_VALBIND_SIG_LEN) == 0 &&
+             d->consent_expiry == c->expiry;
+    if (ok && is_stake)  ok = d->commission_bps == commission;
+    if (ok && is_unstake)
+        ok = memcmp(d->validator_id, target, 64) == 0;
+    if (ok && is_stexit) {
+        ok = memcmp(d->node_fp, target, 64) == 0;
+        memcpy(node_fp, target, 64);
+    } else if (ok && is_unstake) {
+        /* validator_id ‖ owner_fp carries no key: no node fingerprint */
+        memset(node_fp, 0, sizeof(node_fp));
+    } else if (ok) {
+        /* the consenting key's fingerprint, from the signed call */
+        ok = qgp_sha3_512(d->consensus_pk, NSW_PK_LEN, node_fp) == 0;
+        if (ok && is_streg) ok = memcmp(d->node_fp, node_fp, 64) == 0;
+    }
+    uint64_t change = 0;
+    if (ok && d->n_out == 1) {
+        ok = memcmp(d->change_owner, own_hex, 128) == 0;
+        change = d->change_amount;
+    }
+    uint64_t in_sum = 0;
+    for (int i = 0; ok && i < d->n_in; i++) {
+        int found = 0;
+        for (int k = 0; k < g_req_n && !found; k++)
+            if (memcmp(g_req_coins[k].nul, d->in_nul[i], 64) == 0) {
+                found = 1;
+                if (g_req_coins[k].amount > UINT64_MAX - in_sum) ok = 0;
+                else in_sum += g_req_coins[k].amount;
+            }
+        if (!found) ok = 0;
+    }
+    if (ok && (lock > UINT64_MAX - d->fee ||
+               lock + d->fee > UINT64_MAX - change ||
+               lock + d->fee + change != in_sum || built->change != change))
+        ok = 0;
+    if (!ok) {
+        rc = nsw_fail("The built transaction does not match the request; "
+                      "nothing was signed for sending.");
+        goto done;
+    }
+
+    g_built.env = built->env;                /* ownership moves here */
+    g_built.env_len = built->env_len;
+    built->env = NULL;
+    memcpy(g_built.wire_id, built->wire_id, 64);
+    memcpy(g_built.intent_id, built->intent_id, 64);
+    nsw_fmt_hex(built->intent_id, 64, g_built.intent_hex);
+    nsw_fmt_hex(built->wire_id, 64, g_built.wire_hex);
+    nsw_fmt_hex(chain32, DNA_CHAIN_ID_LEN, g_built.chain_hex);
+    memcpy(g_built.recipient, own_hex, 129);
+    if (is_stake) nsw_fmt_u64(d->commission_bps, g_built.commission);
+    nsw_fmt_u64(d->amount, g_built.amount);
+    nsw_fmt_u64(d->fee, g_built.fee);
+    nsw_fmt_u64(change, g_built.change);
+    nsw_fmt_u64(d->expiry_height, g_built.expiry);
+    g_built.n_in = d->n_in;
+    for (int i = 0; i < d->n_in; i++)
+        nsw_fmt_hex(d->in_nul[i], 64, g_built.in_hex[i]);
+    g_built.op = op;
+    g_built.gen4 = 1;
+    if (!is_unstake) nsw_fmt_hex(node_fp, 64, g_built.node_fp);
+    if (is_unstake) nsw_fmt_hex(d->validator_id, 64, g_built.validator_id);
+    if (cop != 0) nsw_fmt_u64(d->consent_expiry, g_built.consent_expiry);
+    rc = 0;
+
+done:
+    if (built) {
+        nodus_v2_stake_built_free(built);
+        free(built);
+    }
+    free(coins);
+    free(r);
+    free(c);
+    return rc;
+}
+
+/* OFFLINE HF-6 build (parity, like nsw_stake_offline_build): the identity
+ * from nsw_seed_buf (wiped here), the candidate coins (nsw_req_*), the
+ * rule-set generation, chain id, tip and gas price as a node would report
+ * them. `consent_text` "" for STORAGE_EXIT and UNSTAKE, else the node's
+ * consent; `target_hex` 128 hex — UNSTAKE the validator_id, STORAGE_EXIT
+ * the node_fp — "" for STAKE and STORAGE_REGISTER. `stake_min_dec` /
+ * `storage_bond_dec`: dnac_fee_info's "stake_min" / "storage_bond" as a
+ * node would report them ("0" = not reported), resolved by the same
+ * nsw_hf6_bonds_of as the networked build. No output
+ * seeds: the builder draws none. */
+int nsw_hf6_offline_build(int gen, int op, const char *chain_hex,
+                          const char *tip_dec, const char *gas_dec,
+                          const char *consent_text, const char *target_hex,
+                          const char *amount_dec, const char *commission_dec,
+                          const char *expiry_dec, const char *stake_min_dec,
+                          const char *storage_bond_dec) {
+    uint8_t chain32[DNA_CHAIN_ID_LEN], target[64];
+    uint64_t tip = 0, gas = 0, amount = 0, commission = 0, expiry = 0;
+    uint64_t rep_smin = 0, rep_sbond = 0, stake_min = 0, storage_bond = 0;
+    uint8_t *pk = NULL, *sk = NULL;
+    int rc = -1;
+    const int targeted = nsw_hf6_targeted(op);
+    const int consented = nsw_hf6_consent_op(op) != 0;
+    /* a refusal below (invalid input, bonds out of range) must not leave the
+     * previous build's envelope readable — as nsw_hf6_build clears first */
+    nsw_built_clear();
+    if (gen < 1 || !nsw_hf6_op_ok(op) ||
+        nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) != 0 ||
+        nsw_parse_u64(tip_dec, &tip) != 0 ||
+        nsw_parse_u64(gas_dec, &gas) != 0 ||
+        nsw_parse_u64(amount_dec, &amount) != 0 ||
+        nsw_parse_u64(commission_dec, &commission) != 0 ||
+        commission > 0xffffu ||
+        nsw_parse_u64(expiry_dec, &expiry) != 0 ||
+        nsw_parse_u64(stake_min_dec, &rep_smin) != 0 ||
+        nsw_parse_u64(storage_bond_dec, &rep_sbond) != 0 ||
+        !consent_text || (consented != (consent_text[0] != '\0')) ||
+        !target_hex ||
+        (targeted ? nsw_parse_hex(target_hex, target, sizeof(target)) != 0
+                  : target_hex[0] != '\0')) {
+        rc = nsw_fail("Invalid offline witness or storage input.");
+        goto done;
+    }
+    if (nsw_hf6_bonds_of(rep_smin, rep_sbond, &stake_min, &storage_bond) != 0)
+        goto done;
+    pk = malloc(NSW_PK_LEN);
+    sk = malloc(NSW_SK_LEN);
+    if (!pk || !sk)
+        rc = nsw_fail("Out of memory.");
+    else if (qgp_dsa87_keypair_derand(pk, sk, g_seed) != 0)
+        rc = nsw_fail("Key derivation failed.");
+    else {
+        const nsw_gen_t g = { (uint32_t)gen, 0u, 0u };
+        rc = nsw_hf6_core(pk, sk, chain32, tip, gas, op,
+                          consented ? consent_text : NULL,
+                          targeted ? target : NULL, amount,
+                          (uint32_t)commission, expiry, stake_min,
+                          storage_bond, &g);
+    }
+done:
+    nsw_wipe(g_seed, sizeof(g_seed));
+    if (sk) { nsw_wipe(sk, NSW_SK_LEN); free(sk); }
+    free(pk);
+    return rc;
+}
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build, never shipped — build-nodus-send-wasm.sh
+ * exports_test): SHA3-512 hex of the 2765-byte consent message the codec
+ * builds from these fields (dna_valbind_consent_msg) — so the module's
+ * message is pinned against the independent oracle
+ * shared/dnac/tests/valbind_oracle_out.txt ("consent_*.sha3_512"). ""
+ * when the codec refuses the fields. */
+static char g_test_msg_sha3[129];
+
+const char *nsw_test_valbind_msg_sha3(int op, const char *chain_hex,
+                                      const char *subject_hex,
+                                      const char *owner_hex,
+                                      const char *pk_hex,
+                                      const char *expiry_dec) {
+    uint8_t chain32[DNA_VALBIND_CHAIN_LEN], subject[64], owner[64], h[64];
+    uint64_t expiry = 0;
+    uint8_t *pk = malloc(DNA_VALBIND_PUBKEY_LEN);
+    uint8_t *msg = malloc(DNA_VALBIND_MSG_LEN);
+    g_test_msg_sha3[0] = '\0';
+    if (pk && msg && op >= 0 && op <= 255 &&
+        nsw_parse_hex(chain_hex, chain32, sizeof(chain32)) == 0 &&
+        nsw_parse_hex(subject_hex, subject, sizeof(subject)) == 0 &&
+        nsw_parse_hex(owner_hex, owner, sizeof(owner)) == 0 &&
+        nsw_parse_hex(pk_hex, pk, DNA_VALBIND_PUBKEY_LEN) == 0 &&
+        nsw_parse_u64(expiry_dec, &expiry) == 0 &&
+        dna_valbind_consent_msg(msg, chain32, (uint8_t)op, subject, owner, pk,
+                                expiry) == 0 &&
+        qgp_sha3_512(msg, DNA_VALBIND_MSG_LEN, h) == 0)
+        nsw_fmt_hex(h, 64, g_test_msg_sha3);
+    free(msg);
+    free(pk);
+    return g_test_msg_sha3;
+}
+#endif
 
 /* ═══ GENESIS CLAIM ══════════════════════════════════════════════════════
  *
@@ -2182,6 +3060,13 @@ static struct {
     /* the reply's optional "dlg" (filled delegator slots); -1 = the node
      * predates the key (has_delegator_count 0) = unknown, never 0 */
     int      delegators[NSW_MAX_VALIDATORS];
+    /* HF-6 slice 7a: the reply's "vid" / "owner" (nodus_types.h
+     * nodus_dnac_validator_list_entry_t has_v2) as 128 lowercase hex, ""
+     * when the node's entry carries neither (has_v2 0: a node before
+     * generation 4) */
+    int      has_v2[NSW_MAX_VALIDATORS];
+    char     vid_hex[NSW_MAX_VALIDATORS][129];
+    char     owner_hex[NSW_MAX_VALIDATORS][129];
 } g_vals;
 
 static struct {
@@ -2201,6 +3086,10 @@ int nsw_val_commission(int i)        { return nsw_val_ok(i) ? g_vals.commission[
 int nsw_val_status(int i)            { return nsw_val_ok(i) ? g_vals.status[i] : -1; }
 /* -1: unknown (an older node's reply carries no count) */
 int nsw_val_delegators(int i)        { return nsw_val_ok(i) ? g_vals.delegators[i] : -1; }
+/* HF-6: 1 = the row carries its validator_id and owner (generation 4) */
+int nsw_val_has_v2(int i)            { return nsw_val_ok(i) ? g_vals.has_v2[i] : 0; }
+const char *nsw_val_vid(int i)       { return nsw_val_ok(i) ? g_vals.vid_hex[i] : ""; }
+const char *nsw_val_owner(int i)     { return nsw_val_ok(i) ? g_vals.owner_hex[i] : ""; }
 
 int nsw_del_count(void) { return g_dels.valid ? g_dels.n : 0; }
 static int nsw_del_ok(int i) { return g_dels.valid && i >= 0 && i < g_dels.n; }
@@ -2239,16 +3128,26 @@ int nsw_validators(void) {
         if (!bad) total = page.total;
         for (int i = 0; !bad && i < page.count; i++) {
             const nodus_dnac_validator_list_entry_t *e = &page.entries[i];
+            /* a generation-4 entry: neither id may be all zero (both are
+             * SHA3-512 outputs in every legal state — design rev 6 §6.5
+             * "Ek kural"); has_v2 is 0 or 1 (nodus_types.h) */
             if (memcmp(e->pubkey, zero_pk, NSW_PK_LEN) == 0 || e->status > 4 ||
                 e->commission_bps > DNAC_COMMISSION_BPS_MAX ||
-                (e->has_delegator_count && e->delegator_count > INT32_MAX)) { bad = 1; break; }
+                (e->has_delegator_count && e->delegator_count > INT32_MAX) ||
+                e->has_v2 > 1 ||
+                (e->has_v2 && (memcmp(e->validator_id, zero_pk, 64) == 0 ||
+                               memcmp(e->owner_fp, zero_pk, 64) == 0))) { bad = 1; break; }
             if (g_vals.n >= NSW_MAX_VALIDATORS) { g_vals.truncated = 1; break; }
             uint8_t fp[64];
-            char fp_hex[129];
+            char fp_hex[129], vid_hex[129] = "";
             if (qgp_sha3_512(e->pubkey, NSW_PK_LEN, fp) != 0) { bad = 1; break; }
             nsw_fmt_hex(fp, 64, fp_hex);
+            if (e->has_v2) nsw_fmt_hex(e->validator_id, 64, vid_hex);
+            /* a repeated key, or a repeated validator_id */
             for (int k = 0; k < g_vals.n; k++)
-                if (memcmp(g_vals.fp_hex[k], fp_hex, 128) == 0) bad = 1;
+                if (memcmp(g_vals.fp_hex[k], fp_hex, 128) == 0 ||
+                    (e->has_v2 && g_vals.has_v2[k] &&
+                     memcmp(g_vals.vid_hex[k], vid_hex, 128) == 0)) bad = 1;
             if (bad) break;
             const int n = g_vals.n++;
             memcpy(g_vals.pk[n], e->pubkey, NSW_PK_LEN);
@@ -2259,6 +3158,10 @@ int nsw_validators(void) {
             g_vals.status[n] = e->status;
             g_vals.delegators[n] = e->has_delegator_count
                                    ? (int)e->delegator_count : -1;
+            g_vals.has_v2[n] = e->has_v2 ? 1 : 0;
+            memcpy(g_vals.vid_hex[n], vid_hex, sizeof(vid_hex));
+            if (e->has_v2) nsw_fmt_hex(e->owner_fp, 64, g_vals.owner_hex[n]);
+            else g_vals.owner_hex[n][0] = '\0';
         }
         const int got = page.count;
         nodus_client_free_validator_list_result(&page);
@@ -2278,8 +3181,15 @@ int nsw_validators(void) {
 }
 
 /* dnac_delegations for this wallet's own key (the node checks it against
- * the session). A row whose validator fingerprint is not 128 lowercase hex,
- * a zero amount or a repeated validator makes the answer invalid. */
+ * the session). A row whose validator is not 128 lowercase hex, a zero
+ * amount or a repeated validator makes the answer invalid. The row's
+ * validator is the node's "validator" key: below the HF-6 generation the
+ * validator's fingerprint SHA3-512(key); under it the validator_id
+ * (nodus/src/witness/nodus_witness_handlers.c dlg_v2_reply — the key name
+ * kept, its value the id; the extra "vid" / "owner" keys are skipped by the
+ * client decoder, nodus_client.c nodus_client_dnac_delegations). Which of
+ * the two it is, src/adapters/nodus.js stakingOverview resolves against
+ * the validator list. */
 int nsw_delegations(void) {
     if (nsw_begin() != 0) return -1;
     g_dels.valid = 0;
@@ -2322,7 +3232,11 @@ int nsw_delegations(void) {
 
 /* Build one staking envelope for review. `op`: 1 STAKE, 2 DELEGATE,
  * 4 UNDELEGATE. `validator_fp_hex`: the target, resolved to its key from
- * the last nsw_validators listing ("" for STAKE). The candidate coins must
+ * the last nsw_validators listing ("" for STAKE) — and, when the node runs
+ * generation >= NODUS_RT_GEN_STORAGE (HF-6 slice 7b), to that SAME row's
+ * validator_id; a row without one (has_v2 0: a listing read before the
+ * switch) builds nothing. A generation-4 STAKE builds nothing either
+ * (nsw_stake_core). The candidate coins must
  * come from the LAST nsw_list, and expiry must be nsw_expiry_for's value
  * for its tip — the same gates as nsw_build_and_sign, including the
  * rule-set generation chosen from the node's answer on this call. A DELEGATE target must be bonded and
@@ -2384,6 +3298,22 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     if (nsw_check_chain() != 0) return nsw_end(-1);
     nsw_gen_t gen;                           /* HF-4, as nsw_build_and_sign */
     if (nsw_select_generation(&gen) != 0) return nsw_end(-1);
+    /* HF-6 slice 7b: under generation 4 the target is named by the
+     * validator_id of the row whose key was found above (ONE row: key and
+     * id never come from two places) */
+    uint8_t vid[64];
+    const int gen4 = gen.gen >= NODUS_RT_GEN_STORAGE;
+    if (gen4 && op != NODUS_V2_STAKE_OP_STAKE) {
+        if (!g_vals.has_v2[vi])
+            return nsw_end(nsw_fail("This witness's entry in the witness "
+                                    "list does not carry its identity under "
+                                    "the network's new rules. Refresh the "
+                                    "witness list and try again. Nothing "
+                                    "was built."));
+        if (nsw_parse_hex(g_vals.vid_hex[vi], vid, sizeof(vid)) != 0)
+            return nsw_end(nsw_fail("The witness list is invalid. Nothing "
+                                    "was built."));
+    }
     nodus_dnac_fee_info_t fi;
     memset(&fi, 0, sizeof(fi));
     int rc = nodus_client_dnac_fee_info(&g_client, &fi);
@@ -2396,7 +3326,162 @@ int nsw_stake_build(int op, const char *validator_fp_hex, const char *amount_dec
     rc = nsw_stake_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
                         fi.gas_price, op,
                         op == NODUS_V2_STAKE_OP_STAKE ? NULL : g_vals.pk[vi],
+                        (gen4 && op != NODUS_V2_STAKE_OP_STAKE) ? vid : NULL,
                         amount, (uint32_t)commission, expiry, &gen);
+    return nsw_end(rc);
+}
+
+/* ── HF-6: the two role bonds in force (BUGS W-20) ──
+ * nsw_hf6_bonds: dnac_fee_info on this session, its "stake_min" and
+ * "storage_bond" resolved by nsw_hf6_bonds_of — the rule nsw_hf6_build
+ * applies to its own answer (0 → the compiled default, out of the node
+ * handler's range → refused) — so the figures the Nodus page shows and
+ * the amount it asks for are the values the build checks against. ONE
+ * node's answer at tip + 1; a vote taking effect between this read and a
+ * build makes the build refuse (it reads again). Getters: decimal raw
+ * strings, "" until a read succeeded. Waits on the network (ccall
+ * { async: true }); the result is two small static strings written after
+ * the last wait. */
+static struct {
+    char stake_min[NSW_U64_DEC], storage_bond[NSW_U64_DEC];
+} g_hb;
+
+const char *nsw_hb_stake_min(void)    { return g_hb.stake_min; }
+const char *nsw_hb_storage_bond(void) { return g_hb.storage_bond; }
+
+int nsw_hf6_bonds(void) {
+    if (nsw_begin() != 0) return -1;
+    memset(&g_hb, 0, sizeof(g_hb));
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_fee_info_t fi;
+    memset(&fi, 0, sizeof(fi));
+    int rc = nodus_client_dnac_fee_info(&g_client, &fi);
+    if (rc != 0)
+        return nsw_end(nsw_fail("The network's bond amounts could not be "
+                                "read (rc=%d).", rc));
+    if (g_cancel) return nsw_end(-1);
+    uint64_t stake_min = 0, storage_bond = 0;
+    if (nsw_hf6_bonds_of(fi.stake_min, fi.storage_bond, &stake_min,
+                         &storage_bond) != 0)
+        return nsw_end(-1);
+    nsw_fmt_u64(stake_min, g_hb.stake_min);
+    nsw_fmt_u64(storage_bond, g_hb.storage_bond);
+    return nsw_end(0);
+}
+
+/* ── HF-6: become a witness / a storage node, leave storage, stop being a
+ *    witness (section "HF-6: NODE CONSENT") ──
+ * nsw_hf6_build(op, consent, target, amount, commission, expiry): `op`
+ * 1 STAKE, 7 STORAGE_REGISTER, 8 STORAGE_EXIT, 3 UNSTAKE (the runtime_op;
+ * 10, the removed ROTATE, is refused); `consent` the node's consent text
+ * ("" for STORAGE_EXIT and UNSTAKE); `target` 128 lowercase hex — UNSTAKE
+ * the witness's validator_id, STORAGE_EXIT the node's fingerprint — ""
+ * otherwise;
+ * `amount` the bond (STAKE >=
+ * STAKE_MIN, STORAGE_REGISTER == STORAGE_BOND) or "0"; `commission` basis
+ * points (STAKE) or "0"; `expiry` nsw_expiry_for's value. The same gates
+ * as nsw_stake_build: the candidate coins come from the LAST nsw_list,
+ * the chain id is re-read on this session, the generation is chosen from
+ * the node's answer on this call — below generation 4 nothing is built
+ * (checked before the consent, as nodus-cli does) — and the fee, STAKE_MIN
+ * and STORAGE_BOND from ONE dnac_fee_info answer (nsw_hf6_bonds_of: 0 →
+ * the compiled default, out of range → nothing built; BUGS W-20). The
+ * consent is re-checked in nsw_hf6_core with this
+ * wallet's own fingerprint, the pinned chain id and the listing's tip.
+ * The submission is nsw_submit (only the envelope built last). The consent
+ * text is copied to the heap before the first wait; the other locals are
+ * small (Asyncify), the build runs in nsw_hf6_core after the last wait. */
+int nsw_hf6_build(int op, const char *consent_text, const char *target_hex,
+                  const char *amount_dec, const char *commission_dec,
+                  const char *expiry_dec) {
+    if (nsw_begin() != 0) return -1;
+    nsw_built_clear();
+    uint8_t target[64];
+    uint64_t amount = 0, commission = 0, expiry = 0;
+    char *consent = NULL;
+    int rc = -1;
+    const int targeted = nsw_hf6_targeted(op);
+    const int consented = nsw_hf6_consent_op(op) != 0;
+    if (!nsw_hf6_op_ok(op)) {
+        rc = nsw_fail("Unknown witness or storage action.");
+        goto out;
+    }
+    if (nsw_parse_u64(amount_dec, &amount) != 0) {
+        rc = nsw_fail("Invalid amount.");
+        goto out;
+    }
+    if (nsw_parse_u64(commission_dec, &commission) != 0 || commission > 0xffffu) {
+        rc = nsw_fail("Invalid commission.");
+        goto out;
+    }
+    if (nsw_parse_u64(expiry_dec, &expiry) != 0) {
+        rc = nsw_fail("Invalid validity height.");
+        goto out;
+    }
+    if (!target_hex || (targeted ? nsw_parse_hex(target_hex, target, sizeof(target)) != 0
+                                 : target_hex[0] != '\0')) {
+        rc = nsw_fail(op == NODUS_V2_STAKE_OP_STORAGE_EXIT
+                      ? "Invalid storage node." : "Invalid witness.");
+        goto out;
+    }
+    if (!consent_text || consented != (consent_text[0] != '\0')) {
+        rc = nsw_fail("Invalid witness or storage request.");
+        goto out;
+    }
+    if (consented) {
+        const size_t n = strnlen(consent_text, NSW_CONSENT_TEXT_MAX + 1u);
+        if (n > NSW_CONSENT_TEXT_MAX) {
+            rc = nsw_fail("This is not a consent from a Nodus node (too long).");
+            goto out;
+        }
+        consent = malloc(n + 1);
+        if (!consent) { rc = nsw_fail("Out of memory."); goto out; }
+        memcpy(consent, consent_text, n);
+        consent[n] = '\0';
+    }
+    if (!g_list.valid || g_list.tip == 0) {
+        rc = nsw_fail("The current Nodus block height is unknown. Nothing was "
+                      "sent; try again later.");
+        goto out;
+    }
+    for (int i = 0; i < g_req_n; i++) {
+        int found = 0;
+        for (int k = 0; k < g_list.n && !found; k++)
+            if (memcmp(g_list.nul[k], g_req_coins[i].nul, 64) == 0 &&
+                g_list.amount[k] == g_req_coins[i].amount)
+                found = 1;
+        if (!found) {
+            rc = nsw_fail("The request names a coin that is not in your "
+                          "current coin list.");
+            goto out;
+        }
+    }
+    if (nsw_session_ok() != 0) goto out;
+    if (nsw_check_chain() != 0) goto out;
+    nsw_gen_t gen;                           /* HF-4, as nsw_build_and_sign */
+    if (nsw_select_generation(&gen) != 0) goto out;
+    if (nsw_hf6_gen_ok(&gen) != 0) goto out;
+    nodus_dnac_fee_info_t fi;
+    memset(&fi, 0, sizeof(fi));
+    rc = nodus_client_dnac_fee_info(&g_client, &fi);
+    if (rc != 0) {
+        rc = nsw_fail("The network fee is unknown (rc=%d). Nothing was "
+                      "built.", rc);
+        goto out;
+    }
+    rc = -1;
+    if (g_cancel) goto out;
+    /* the bonds from the same answer as the gas price (BUGS W-20) */
+    uint64_t stake_min = 0, storage_bond = 0;
+    if (nsw_hf6_bonds_of(fi.stake_min, fi.storage_bond, &stake_min,
+                         &storage_bond) != 0)
+        goto out;
+    rc = nsw_hf6_core(g_id.pk.bytes, g_id.sk.bytes, g_net.chain, g_list.tip,
+                      fi.gas_price, op, consent, targeted ? target : NULL,
+                      amount, (uint32_t)commission, expiry, stake_min,
+                      storage_bond, &gen);
+out:
+    free(consent);
     return nsw_end(rc);
 }
 
@@ -5206,6 +6291,130 @@ int nsw_addr_history(const char *before_dec, const char *bi_dec,
     return nsw_end(0);
 }
 
+/* ── HF-6: THIS wallet's storage nodes (dnac_storage_by_owner) ──────────
+ *
+ * Design docs/plans/2026-10-12-connect-hf6-screens-design.md §1 ("Your
+ * storage nodes"), chain-side request 2 (answered by HF-6 slice 7a:
+ * nodus.h nodus_client_dnac_storage_by_owner). The owner is ALWAYS this
+ * session's own fingerprint (g_fp_hex) — never a caller's argument — so
+ * the client's decoder also refuses an entry whose owner ("payee", which
+ * holds the owner since HF-6 6b) is anyone else. ONE node's committed
+ * tables, for display (design G4); the chain decides a STORAGE_EXIT
+ * against the row it holds.
+ *
+ * The answer goes to JS as JSON (the convention of nsw_addr_history:
+ * every u64 a decimal string, byte strings lowercase hex):
+ *   {"tip":"N","total":"N","epoch_start":"N","set":bool,"set_count":n,
+ *    "nodes":[{"fp","status":1..3,"bond","fail_streak":n,"grace_until",
+ *              "registered","exit","member":bool,"segments"}...]}
+ * at most NODUS_DNAC_STORAGE_SET_MAX (256) nodes, node fp strictly
+ * ascending (the decoder's rule); total > the nodes listed = the list
+ * stops at that cap (no paging). status: 1 ACTIVE, 2 EXITING, 3 RELEASED
+ * (nodus.h dnac_storage_status "st"). An owner without rows: total "0",
+ * no nodes (not an error). An older node answers "unknown DNAC method".
+ * Asyncify: the one wait runs in the export's own frame; the answer struct
+ * (a count and a heap pointer) has its address taken (C stack), the nodes
+ * are heap and the JSON is built after the wait. */
+
+static char *g_sbo_json;
+
+/* The JSON of the last successful nsw_storage_by_owner ("" otherwise). */
+const char *nsw_storage_by_owner_json(void) { return g_sbo_json ? g_sbo_json : ""; }
+
+/* One decoded answer -> the JSON above in a new heap string (*out, the
+ * caller frees). `r` is NOT freed here. @return 0 / -1. */
+static int nsw_sbo_json(const nodus_dnac_storage_by_owner_t *r, char **out) {
+    *out = NULL;
+    if (r->count > NODUS_DNAC_STORAGE_SET_MAX || (r->count > 0 && !r->nodes))
+        return -1;
+    const nodus_dnac_storage_status_t *first = r->count ? &r->nodes[0].st : NULL;
+    nsw_jb_t jb;
+    memset(&jb, 0, sizeof(jb));
+    char n[NSW_U64_DEC];
+    nsw_jb_put(&jb, "{", 1);
+    nsw_jb_u64(&jb, "tip", r->committed_height);
+    nsw_jb_put(&jb, ",", 1);
+    nsw_jb_u64(&jb, "total", r->total);
+    nsw_jb_put(&jb, ",", 1);
+    nsw_jb_u64(&jb, "epoch_start", first ? first->epoch_start : 0);
+    nsw_jb_put(&jb, ",\"set\":", 7);
+    nsw_jb_put(&jb, first && first->set_exists ? "true" : "false",
+               first && first->set_exists ? 4 : 5);
+    nsw_fmt_u64(first ? first->set_count : 0, n);
+    nsw_jb_put(&jb, ",\"set_count\":", 13);
+    nsw_jb_put(&jb, n, strlen(n));
+    nsw_jb_put(&jb, ",\"nodes\":[", 10);
+    for (size_t k = 0; k < r->count; k++) {
+        const nodus_dnac_storage_node_t *e = &r->nodes[k];
+        const nodus_dnac_storage_status_t *s = &e->st;
+        if (strnlen(e->node_fp, sizeof(e->node_fp)) != 128 || !s->found ||
+            s->status < 1 || s->status > 3) {
+            jb.bad = 1;
+            break;
+        }
+        nsw_jb_put(&jb, k ? ",{\"fp\":" : "{\"fp\":", k ? 7 : 6);
+        nsw_jb_str(&jb, e->node_fp, 128);
+        nsw_fmt_u64(s->status, n);
+        nsw_jb_put(&jb, ",\"status\":", 10);
+        nsw_jb_put(&jb, n, strlen(n));
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "bond", s->bond);
+        nsw_fmt_u64(s->fail_streak, n);
+        nsw_jb_put(&jb, ",\"fail_streak\":", 15);
+        nsw_jb_put(&jb, n, strlen(n));
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "grace_until", s->grace_until);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "registered", s->registered_height);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "exit", s->exit_height);
+        nsw_jb_put(&jb, ",\"member\":", 10);
+        nsw_jb_put(&jb, s->member ? "true" : "false", s->member ? 4 : 5);
+        nsw_jb_put(&jb, ",", 1);
+        nsw_jb_u64(&jb, "segments", s->n_segments);
+        nsw_jb_put(&jb, "}", 1);
+    }
+    nsw_jb_put(&jb, "]}", 2);
+    if (jb.bad || !jb.p) {
+        free(jb.p);
+        return -1;
+    }
+    *out = jb.p;
+    return 0;
+}
+
+/* The storage nodes this wallet registered. Waits on the network (ccall
+ * { async: true }). @return 0 (nsw_storage_by_owner_json) / -1 (reason in
+ * nsw_error). */
+int nsw_storage_by_owner(void) {
+    if (nsw_begin() != 0) return -1;
+    free(g_sbo_json);
+    g_sbo_json = NULL;
+    if (nsw_session_ok() != 0) return nsw_end(-1);
+    nodus_dnac_storage_by_owner_t res;
+    memset(&res, 0, sizeof(res));
+    int rc = nodus_client_dnac_storage_by_owner(&g_client, g_fp_hex, &res);
+    if (g_cancel) {
+        nodus_dnac_storage_by_owner_free(&res);
+        return nsw_end(-1);
+    }
+    if (rc != 0) {
+        nodus_dnac_storage_by_owner_free(&res);
+        /* an older node answers "unknown DNAC method" as PROTOCOL_ERROR,
+         * the same code the client returns for a reply its decoder refuses
+         * (an entry of another owner included) */
+        return nsw_end(nsw_fail("Your storage nodes could not be read (an "
+                                "older node, or an unreadable answer; "
+                                "rc=%d).", rc));
+    }
+    int jrc = nsw_sbo_json(&res, &g_sbo_json);
+    nodus_dnac_storage_by_owner_free(&res);
+    if (jrc != 0)
+        return nsw_end(nsw_fail("The Nodus node returned an invalid storage "
+                                "node list."));
+    return nsw_end(0);
+}
+
 /* ── a shared vault's history (VAULTS "history"): dnac_msig_addr_history
  *    for the vault in use — the member gate of nsw_msig_coins, the page in
  *    the JSON shape above (src/nodus/history.js parseAddrHistory checks
@@ -5576,6 +6785,8 @@ void nsw_lock(void) {
         g_ah_json = NULL;
         free(g_mh_json);                    /* a vault's history page       */
         g_mh_json = NULL;
+        free(g_sbo_json);                   /* this wallet's storage nodes  */
+        g_sbo_json = NULL;
     }
     nc_session_wipe();                      /* the Messages keys and caches */
     g_unlocked = 0;

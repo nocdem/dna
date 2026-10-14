@@ -34,12 +34,16 @@ import { readFileSync } from 'node:fs';
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 const app = read('../src/app.js');
 const connectMain = read('../src/connect-main.js');
-const SITES = [['index.html', read('../index.html')], ['connect-site/index.html', read('../connect-site/index.html')]];
-// page name → the panel it holds
-const PAGES = {
+// page name → the panel it holds; Nodus Connect alone has the Nodus page
+// (HF-6 screens, src/nodus-roles.js — design 2026-10-12-connect-hf6-screens).
+const COMMON_PAGES = {
   earn: 'stake-panel', vaults: 'vault-panel', contracts: 'evm-panel', 'wallet-activity': 'activity-panel',
   'address-book': 'address-book-panel', settings: 'device-panel', logs: 'logs-panel'
 };
+const SITES = [
+  ['index.html', read('../index.html'), COMMON_PAGES],
+  ['connect-site/index.html', read('../connect-site/index.html'), { ...COMMON_PAGES, 'nodus-roles': 'nodus-roles-panel' }]
+];
 
 // The element (outer HTML) whose opening tag starts at `start`, by counting
 // nested tags of the same name.
@@ -60,7 +64,7 @@ const byId = (html, id) => {
 };
 const openingTag = outer => outer.match(/^<[^>]*>/)[0];
 
-for (const [site, html] of SITES) {
+for (const [site, html, PAGES] of SITES) {
   test(`${site}: the wallet view holds Portfolio and Send / Receive only`, () => {
     const home = byId(html, 'wallet-home');
     assert.ok(home, '#wallet-home exists');

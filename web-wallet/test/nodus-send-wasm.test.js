@@ -328,22 +328,27 @@ test('claim parity: the shipped wasm (hedged signature) has the same identity, d
 // SHA3-512 of the inputs), so only the two hedged signatures consume
 // signing randomness: 2 × 32 bytes. Selection is ascending by nullifier
 // (cmd_v2_stake's), taken until lock + fee is covered.
+// HF-6 slice 7b: every build names its rule-set generation (`gen`, default
+// 1 — the envelope these tests always built); a generation-4 delegate /
+// undelegate also names the validator_id (STAKE.validatorId, synthetic).
 const STAKE = {
   seed: fill(32, 5), chain: '33'.repeat(32), tip: '2000', expiry: '2090', gas: '3', signRandom: fill(64, 60),
-  validator: hex(fill(2592, 17)),
+  validator: hex(fill(2592, 17)), validatorId: hex(fill(64, 41)),
   deleg: { amount: '10000000000', coins: [['d4'.repeat(64), '6000000000'], ['e5'.repeat(64), '6000000000'], ['f6'.repeat(64), '2000000']] },
   undeleg: { amount: '5000000000', coins: [['d4'.repeat(64), '6000000000'], ['e5'.repeat(64), '6000000000']] },
   bond: { amount: '1000000000000000', commission: '1250', coins: [['a7'.repeat(64), '1000000100000000']] }
 };
 const OPS = { stake: 1, delegate: 2, undelegate: 4 };
-const stakeCase = op => op === 'stake'
-  ? { validator: '', amount: STAKE.bond.amount, commission: STAKE.bond.commission, coins: STAKE.bond.coins }
-  : { validator: STAKE.validator, amount: STAKE[op === 'delegate' ? 'deleg' : 'undeleg'].amount, commission: '0', coins: STAKE[op === 'delegate' ? 'deleg' : 'undeleg'].coins };
-function nativeStake(op) {
-  const c = stakeCase(op);
-  const args = ['stake', '--op', op, '--seed', hex(STAKE.seed), '--chain', STAKE.chain, '--tip', STAKE.tip, '--gas', STAKE.gas,
+const HF6_GEN = 4;   // nodus_witness_runtime.h NODUS_RT_GEN_STORAGE
+const stakeCase = (op, gen = 1) => op === 'stake'
+  ? { validator: '', validatorId: '', amount: STAKE.bond.amount, commission: STAKE.bond.commission, coins: STAKE.bond.coins }
+  : { validator: STAKE.validator, validatorId: gen >= HF6_GEN ? STAKE.validatorId : '', amount: STAKE[op === 'delegate' ? 'deleg' : 'undeleg'].amount, commission: '0', coins: STAKE[op === 'delegate' ? 'deleg' : 'undeleg'].coins };
+function nativeStake(op, gen = 1) {
+  const c = stakeCase(op, gen);
+  const args = ['stake', '--op', op, '--gen', String(gen), '--seed', hex(STAKE.seed), '--chain', STAKE.chain, '--tip', STAKE.tip, '--gas', STAKE.gas,
     '--amount', c.amount, '--commission', c.commission, '--expiry', STAKE.expiry, '--sign-random', hex(STAKE.signRandom)];
   if (c.validator) args.push('--validator', c.validator);
+  if (c.validatorId) args.push('--validator-id', c.validatorId);
   for (const [nullifier, amount] of c.coins) args.push('--coin', `${nullifier}:${amount}`);
   const out = { input: [] };
   for (const line of execFileSync(VECTOR_BIN, args, { encoding: 'utf8' }).trim().split('\n')) {
@@ -352,8 +357,10 @@ function nativeStake(op) {
   }
   return out;
 }
-async function wasmStake(file, { fixedRandom }, op) {
-  const c = stakeCase(op), { M, num, str } = await loadParity(file, fixedRandom);
+// nsw_stake_offline_build(gen, op, chain, tip, gas, validator, validatorId, amount, commission, expiry)
+const STAKE_OFFLINE_TYPES = ['number', 'number', 'string', 'string', 'string', 'string', 'string', 'string', 'string', 'string'];
+async function wasmStake(file, { fixedRandom }, op, gen = 1) {
+  const c = stakeCase(op, gen), { M, num, str } = await loadParity(file, fixedRandom);
   M.HEAPU8.set(STAKE.seed, num('nsw_seed_buf'));
   if (fixedRandom) {
     M.HEAPU8.set(STAKE.signRandom, num('nsw_test_random_buf'));
@@ -361,14 +368,15 @@ async function wasmStake(file, { fixedRandom }, op) {
   }
   num('nsw_req_reset');
   for (const [nullifier, amount] of c.coins) assert.equal(num('nsw_req_add_coin', ['string', 'string'], [nullifier, amount]), 0, str('nsw_error'));
-  const rc = num('nsw_stake_offline_build', ['number', 'string', 'string', 'string', 'string', 'string', 'string', 'string'],
-    [OPS[op], STAKE.chain, STAKE.tip, STAKE.gas, c.validator, c.amount, c.commission, STAKE.expiry]);
+  const rc = num('nsw_stake_offline_build', STAKE_OFFLINE_TYPES,
+    [gen, OPS[op], STAKE.chain, STAKE.tip, STAKE.gas, c.validator, c.validatorId, c.amount, c.commission, STAKE.expiry]);
   assert.equal(rc, 0, str('nsw_error'));
   const at = num('nsw_built_env'), length = num('nsw_built_env_len'), input = [];
   for (let i = 0; i < num('nsw_built_n_in'); i++) input.push(str('nsw_built_in', ['number'], [i]));
   return {
     envelope: hex(M.HEAPU8.subarray(at, at + length)), wire_id: str('nsw_built_wire'), intent_id: str('nsw_built_intent'),
-    chain_id: str('nsw_built_chain'), op: String(num('nsw_built_op')), recipient: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
+    chain_id: str('nsw_built_chain'), op: String(num('nsw_built_op')), gen4: String(num('nsw_built_gen4')), validator_id: str('nsw_built_validator_id'),
+    recipient: str('nsw_built_recipient'), amount: str('nsw_built_amount'),
     commission: str('nsw_built_commission'), fee: str('nsw_built_fee'), change: str('nsw_built_change'), expiry: str('nsw_built_expiry'), input
   };
 }
@@ -378,6 +386,7 @@ for (const op of ['delegate', 'undelegate', 'stake']) {
     const c = stakeCase(op), native = nativeStake(op), wasm = await wasmStake('send-test-node.mjs', { fixedRandom: true }, op);
     assert.deepEqual(wasm, native);
     assert.equal(native.op, String(OPS[op]));
+    assert.equal(native.gen4, '0'); assert.equal(native.validator_id, '');
     assert.equal(native.amount, c.amount);
     assert.equal(native.expiry, STAKE.expiry);
     assert.equal(native.chain_id, STAKE.chain);
@@ -394,11 +403,107 @@ for (const op of ['delegate', 'undelegate', 'stake']) {
   test(`staking parity (${op}): the shipped wasm has the same intent_id, a different wire_id`, { skip: skipParity }, async () => {
     assert.ok(readFileSync(join(PARITY_OUT, 'send-node.wasm')).equals(wasmBytes), 'send-node.wasm is not the shipped send.wasm — rebuild both');
     const native = nativeStake(op), wasm = await wasmStake('send-node.mjs', { fixedRandom: false }, op);
-    for (const key of ['intent_id', 'chain_id', 'op', 'recipient', 'amount', 'commission', 'fee', 'change', 'expiry', 'input']) assert.deepEqual(wasm[key], native[key], key);
+    for (const key of ['intent_id', 'chain_id', 'op', 'gen4', 'validator_id', 'recipient', 'amount', 'commission', 'fee', 'change', 'expiry', 'input']) assert.deepEqual(wasm[key], native[key], key);
     assert.notEqual(wasm.wire_id, native.wire_id);
     assert.equal(wasm.envelope.length, native.envelope.length);
   });
 }
+
+// ── generation-4 DELEGATE / UNDELEGATE (HF-6 slice 7b) ──────────────────
+// The layout (nodus/src/client/nodus_v2_stake.h "HF-6 slice 7b"; design
+// docs/plans/2026-10-03-hf5-validator-owner-stake-design.md rev 6 §2):
+// SYSTEM call = delegator_fp ‖ validator_id ‖ amount u64 BE = 136 bytes,
+// delegator_fp = SHA3-512 of the signing key. The hf6 branch restates the
+// same 136 bytes in nodus/tests/test_v2_stake_client.c W1 / W2 (:1196-1204,
+// fabricated keys) and pins NO fixed intent_id for it (:153 — pinning
+// needs a run of the code), so no expected envelope value is pinned here
+// either: these prove TEST wasm == native vector and the call bytes.
+// The wallet's own fingerprint comes from the native vector's hf6-consent
+// mode (--owner-seed: SHA3-512 of that seed's ML-DSA-87 key, derived by the
+// vector itself, not by the module under test).
+function ownFingerprint() {
+  return vectorLines(['hf6-consent', '--op', 'stake', '--node-seed', hex(fill(32, 21)), '--chain', STAKE.chain, '--expiry', '1',
+    '--owner-seed', hex(STAKE.seed), '--sign-random', hex(fill(32, 77))]).owner;
+}
+const u64be = value => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(value)); return b; };
+
+for (const op of ['delegate', 'undelegate']) {
+  test(`staking parity, generation 4 (${op}): TEST wasm and the native vector build the same 136-byte-call envelope`, { skip: skipParity }, async () => {
+    const c = stakeCase(op, HF6_GEN), native = nativeStake(op, HF6_GEN), wasm = await wasmStake('send-test-node.mjs', { fixedRandom: true }, op, HF6_GEN);
+    assert.deepEqual(wasm, native);
+    assert.equal(native.op, String(OPS[op]));
+    assert.equal(native.gen4, '1');
+    assert.equal(native.validator_id, STAKE.validatorId);
+    // the recipient the page shows stays the validator's key fingerprint
+    assert.equal(native.recipient, createHash('sha3-512').update(Buffer.from(c.validator, 'hex')).digest('hex'));
+    assert.equal(native.amount, c.amount);
+    assert.equal(native.fee, '1200000');
+    const inSum = native.input.reduce((sum, n) => sum + BigInt(c.coins.find(([nul]) => nul === n)[1]), 0n);
+    const lock = op === 'undelegate' ? 0n : BigInt(c.amount);
+    assert.equal(inSum, lock + BigInt(native.fee) + BigInt(native.change), 'inputs = lock + fee + change');
+    // the call: SHA3-512(own key) ‖ validator_id ‖ amount, and NOT the
+    // legacy layout (no validator key anywhere in the envelope)
+    const env = Buffer.from(native.envelope, 'hex');
+    const call = Buffer.concat([Buffer.from(ownFingerprint(), 'hex'), Buffer.from(STAKE.validatorId, 'hex'), u64be(c.amount)]);
+    assert.equal(call.length, 136);
+    assert.ok(env.includes(call), 'delegator_fp ‖ validator_id ‖ amount in the envelope');
+    assert.ok(!env.includes(Buffer.from(c.validator, 'hex')), 'no validator key in a generation-4 envelope');
+  });
+  test(`staking parity, generation 4 (${op}): the shipped wasm has the same intent_id, a different wire_id`, { skip: skipParity }, async () => {
+    assert.ok(readFileSync(join(PARITY_OUT, 'send-node.wasm')).equals(wasmBytes), 'send-node.wasm is not the shipped send.wasm — rebuild both');
+    const native = nativeStake(op, HF6_GEN), wasm = await wasmStake('send-node.mjs', { fixedRandom: false }, op, HF6_GEN);
+    for (const key of ['intent_id', 'chain_id', 'op', 'gen4', 'validator_id', 'recipient', 'amount', 'commission', 'fee', 'change', 'expiry', 'input']) assert.deepEqual(wasm[key], native[key], key);
+    assert.notEqual(wasm.wire_id, native.wire_id);
+    assert.equal(wasm.envelope.length, native.envelope.length);
+  });
+}
+
+// Generation 3 (the last before HF-6): the legacy layout, unchanged by
+// slice 7b — delegator_pk ‖ validator_pk ‖ amount (5192 bytes), no
+// validator_id. What this proves: the generation-3 build is the legacy
+// layout and both builds agree; NOT byte identity with a build made before
+// this change (no pre-change vector was pinned — it would need a run).
+test('staking parity, generation 3 (delegate): the legacy key layout, no validator_id', { skip: skipParity }, async () => {
+  const c = stakeCase('delegate', 3), native = nativeStake('delegate', 3), wasm = await wasmStake('send-test-node.mjs', { fixedRandom: true }, 'delegate', 3);
+  assert.equal(c.validatorId, '');
+  assert.deepEqual(wasm, native);
+  assert.equal(native.gen4, '0'); assert.equal(native.validator_id, '');
+  assert.equal(native.recipient, createHash('sha3-512').update(Buffer.from(c.validator, 'hex')).digest('hex'));
+  const env = Buffer.from(native.envelope, 'hex');
+  assert.ok(env.includes(Buffer.concat([Buffer.from(c.validator, 'hex'), u64be(c.amount)])), 'validator_pk ‖ amount in the call');
+  // No generation-4 call (own fingerprint ‖ validator_id ‖ amount). Not "the
+  // id's 64 bytes are absent": fill(2592, 17) contains fill(64, 41) at offset
+  // 40 (17 + 7·40 ≡ 41 mod 256), so the id's bytes occur inside the key.
+  assert.ok(!env.includes(Buffer.concat([Buffer.from(ownFingerprint(), 'hex'), Buffer.from(STAKE.validatorId, 'hex'), u64be(c.amount)])), 'no generation-4 call');
+  // against the generation-1 build of the same request: the same decoded
+  // fields, inputs, fee and change, the same envelope length (the two are
+  // signed under different rule-set tuples, so their bytes differ)
+  const g1 = nativeStake('delegate', 1);
+  for (const key of ['op', 'recipient', 'amount', 'fee', 'change', 'expiry', 'input', 'gen4', 'validator_id']) assert.deepEqual(native[key], g1[key], key);
+  assert.equal(native.envelope.length, g1.envelope.length);
+});
+
+test('staking refusals, generation 4: Earn\'s own STAKE needs a node consent; a delegation needs the validator_id; nothing built', { skip: skipParity }, async () => {
+  const { M, num, str } = await loadParity('send-node.mjs', false);
+  const build = (gen, op, validator, validatorId, amount, commission, coins) => {
+    M.HEAPU8.set(STAKE.seed, num('nsw_seed_buf'));
+    num('nsw_req_reset');
+    for (const [nullifier, value] of coins) num('nsw_req_add_coin', ['string', 'string'], [nullifier, value]);
+    return num('nsw_stake_offline_build', STAKE_OFFLINE_TYPES,
+      [gen, op, STAKE.chain, STAKE.tip, STAKE.gas, validator, validatorId, amount, commission, STAKE.expiry]);
+  };
+  const refused = (rc, pattern) => { assert.notEqual(rc, 0); assert.match(str('nsw_error'), pattern); assert.equal(num('nsw_built_env_len'), 0, 'nothing built'); };
+  // the exact text src/adapters/nodus.js HF6_STAKE_CONSENT_TEXT shows
+  refused(build(HF6_GEN, 1, '', '', STAKE.bond.amount, '0', STAKE.bond.coins), /^Becoming a witness now needs your node's consent\. Open Nodus Connect → More → Nodus\. Nothing was built\.$/);
+  // generation 4 without an id, with an all-zero id
+  refused(build(HF6_GEN, 2, STAKE.validator, '', STAKE.deleg.amount, '0', STAKE.deleg.coins), /does not carry its identity/);
+  refused(build(HF6_GEN, 4, STAKE.validator, '00'.repeat(64), STAKE.undeleg.amount, '0', STAKE.undeleg.coins), /does not carry its identity/);
+  // an id below generation 4, an id for STAKE, a malformed id, generation 0
+  refused(build(3, 2, STAKE.validator, STAKE.validatorId, STAKE.deleg.amount, '0', STAKE.deleg.coins), /Invalid staking request/);
+  refused(build(HF6_GEN, 1, '', STAKE.validatorId, STAKE.bond.amount, '0', STAKE.bond.coins), /Invalid offline staking input/);
+  refused(build(HF6_GEN, 2, STAKE.validator, 'AB'.repeat(64), STAKE.deleg.amount, '0', STAKE.deleg.coins), /Invalid offline staking input/);
+  refused(build(0, 2, STAKE.validator, '', STAKE.deleg.amount, '0', STAKE.deleg.coins), /Invalid offline staking input/);
+});
 
 test('staking refusals in the module: a wrong bond, a commission above 50%, an UNSTAKE op, a validator key for STAKE', { skip: skipParity }, async () => {
   const { M, num, str } = await loadParity('send-node.mjs', false);
@@ -406,8 +511,8 @@ test('staking refusals in the module: a wrong bond, a commission above 50%, an U
     M.HEAPU8.set(STAKE.seed, num('nsw_seed_buf'));
     num('nsw_req_reset');
     for (const [nullifier, value] of coins) num('nsw_req_add_coin', ['string', 'string'], [nullifier, value]);
-    return num('nsw_stake_offline_build', ['number', 'string', 'string', 'string', 'string', 'string', 'string', 'string'],
-      [op, STAKE.chain, STAKE.tip, STAKE.gas, validator, amount, commission, STAKE.expiry]);
+    return num('nsw_stake_offline_build', STAKE_OFFLINE_TYPES,
+      [1, op, STAKE.chain, STAKE.tip, STAKE.gas, validator, '', amount, commission, STAKE.expiry]);
   };
   assert.notEqual(build(1, '', '999999999999999', '0', STAKE.bond.coins), 0); assert.match(str('nsw_error'), /exactly 10,000,000/);
   assert.notEqual(build(1, '', STAKE.bond.amount, '5001', STAKE.bond.coins), 0); assert.match(str('nsw_error'), /commission/i);
