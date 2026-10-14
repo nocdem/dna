@@ -29,7 +29,12 @@
 //     inside the queue on a failure, and every save queued behind a failed
 //     one is rebuilt from the state (§2.3 item 3); a save first checks that
 //     this build could load what it commits; a cut `removed` list is
-//     reported and written back.
+//     reported and written back. Rev 2.2 item 4, built with the groups
+//     stage (web 0.1.125, BUGS W-18): a save also deletes, in the same
+//     transaction, the kept profile / vault / group / key version / packet
+//     piece records nothing reachable from the current index points to
+//     (unreachableRecords) — never during the migration (§2.2 item 5),
+//     never when a held record could not be read (fail safe = keep).
 //
 // Naming: database = the vault id as 32 lowercase hex characters (the same 16
 // bytes as the vault's base64 `id`). Object stores: 'messages' (one record per
@@ -67,6 +72,7 @@
 // network message). A failed core seal/open is reported the same way; the
 // core's own error text is not shown.
 import { chainNameOk } from '../nodus/names.js';
+import { checkGroup } from './groups/model.js';
 
 export class StorageError extends Error {}
 const sealing = async (run, what) => {
@@ -352,6 +358,52 @@ export function stateDiff(baseline, texts) {
   return { puts, deletes };
 }
 
+// ── reachability deletes (design §2.3 item 2; BUGS W-18) ───────────────
+// The records the state points to, outside the header and the known-ID
+// records: kept profiles 'p', shared vaults 'v', groups 'g', group key
+// versions 'k', staged key packet pieces 'x'.
+export const HELD_RECORD_ID = /^[pvgkx]\d{20}$/;
+// What the state's index points to, taken with the snapshot (at the call,
+// or again when a save is rebuilt): profileCache -> 'p', vaults -> 'v',
+// groups -> [gid, 'g'].
+export function indexRefs(state) {
+  return {
+    profiles: Object.values(state.profileCache).map(e => e.id),
+    vaults: Object.values(state.vaults).map(e => e.id),
+    groups: Object.entries(state.groups).map(([gid, e]) => [gid, e.id]).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  };
+}
+// The held records ('p' / 'v' / 'g' / 'k' / 'x') a commit deletes: those on
+// disk (`present`) that nothing reachable from the CURRENT index points to.
+// Reachable: every 'p', 'v' and 'g' id of `index` (indexRefs); from each
+// indexed group record (`groupValue(id)`: the value it holds once this
+// commit is written) every key version it lists (`keyIds` — decision 14
+// keeps every old key, so an active group's older versions are never
+// deleted) and, while a change is staged, the staged key version and its
+// packet pieces. A finished rotation (stage null) leaves its pieces
+// unreachable: they go. Fail safe: an indexed group record whose value is
+// unknown or refused (model.js checkGroup, or another gid) cannot be walked,
+// so no 'k' / 'x' record is deleted by this commit. An id this same commit
+// puts is never deleted. Sorted ascending.
+export function unreachableRecords({ present, index, groupValue, putting = new Set() }) {
+  const keep = new Set([...index.profiles, ...index.vaults]);
+  let walked = true;
+  for (const [gid, id] of index.groups) {
+    keep.add(id);
+    const g = groupValue(id);
+    if (!isMap(g) || checkGroup(g) === null || g.gid !== gid) { walked = false; continue; }
+    for (const k of Object.values(g.keyIds)) keep.add(k);
+    if (g.stage) { keep.add(g.stage.keyId); for (const x of g.stage.pieceIds) keep.add(x); }
+  }
+  const out = [];
+  for (const id of present) {
+    if (!HELD_RECORD_ID.test(id) || keep.has(id) || putting.has(id)) continue;
+    if (!walked && (id[0] === 'k' || id[0] === 'x')) continue;
+    out.push(id);
+  }
+  return out.sort();
+}
+
 // The v2 records -> { state (the canonical v1 object), map }, or a
 // StorageError: fail closed (design §2.5).
 export function stateLoaded(core, header, records) {
@@ -490,6 +542,14 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   // The last COMMITTED state records (Map id -> canonical text) and the fp
   // -> id map of the newest snapshot (design §2.3 item 2, §2.1).
   let baseline = new Map(), idMap = {}, dropped = [];
+  // The held records ('p' / 'v' / 'g' / 'k' / 'x') on disk as last
+  // COMMITTED, the value of every group record among them that opened, and
+  // whether reachability deletes may run in this session (BUGS W-18,
+  // unreachableRecords): false once any held record failed to open or to
+  // pass its check at the open — what it pointed to is unknown, so nothing
+  // is deleted (fail safe = keep).
+  const present = new Set(), groupValues = new Map();
+  let cleanupSafe = true;
   const reportDropped = paths => { if (paths.length) { try { onDropped?.([...paths]); } catch { /* the page's log */ } } };
 
   // ONE reservation for `entries` ([{ store, id, bytes }]), then the seals
@@ -597,7 +657,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
       try {
         const kept = checkProfileRecord(await open(STORE_STATE, record));
         if (kept.fp === wanted.get(record.id)) profiles.push({ id: record.id, fp: kept.fp, record: kept.record });
-      } catch { /* not used */ }
+      } catch { cleanupSafe = false; /* not used */ }
     }
     // The vault records the state points to, likewise: one that fails is
     // dropped (the vault is added again from its message), it does not keep
@@ -609,7 +669,7 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
       try {
         const kept = checkVaultRecord(await open(STORE_STATE, record));
         if (kept.address === wantedVaults.get(record.id)) vaults.push({ id: record.id, address: kept.address, value: kept.value });
-      } catch { /* not used */ }
+      } catch { cleanupSafe = false; /* not used */ }
     }
     // Group records (state.groups): every 'g' / 'k' / 'x' record that opens
     // is handed over; the groups module keeps those its group records point
@@ -620,9 +680,15 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
       if (!record || typeof record.id !== 'string' || !GROUP_RECORD_ID.test(record.id)) continue;
       try {
         const kept = await open(STORE_STATE, record);
-        if (isMap(kept)) groupRecords.push({ id: record.id, value: kept });
-      } catch { /* not used */ }
+        if (isMap(kept)) {
+          groupRecords.push({ id: record.id, value: kept });
+          if (record.id[0] === 'g') groupValues.set(record.id, structuredClone(kept));
+        } else cleanupSafe = false;
+      } catch { cleanupSafe = false; /* not used */ }
     }
+    // Every held record on disk, opened or not (W-18: deleted only once
+    // nothing reachable points to it, never in the migration's commit).
+    for (const record of stateRecords) if (record && typeof record.id === 'string' && HELD_RECORD_ID.test(record.id)) present.add(record.id);
     messages = [];
     groupMessages = [];
     for (const record of raw.messages || []) {
@@ -666,6 +732,8 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     if (snap.dropped.includes('removed')) nextState.removed = nextState.removed.slice(-STATE_REMOVED_MAX);
     idMap = snap.map;
     reportDropped(snap.dropped);
+    // what the index points to, with this snapshot (W-18)
+    snap.index = indexRefs(nextState);
     return snap;
   }
   // The caller's rollback, run at most once; its own throw never replaces
@@ -682,7 +750,11 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
   //   item 6; otherwise the call-time snapshot is used. It is diffed
   //   against the last COMMITTED records (stateDiff): changed or new records
   //   are put, known-ID records no longer projected are deleted; plus the
-  //   new messages, kept profiles, vaults and group records as before P7.
+  //   new messages, kept profiles, vaults and group records as before P7;
+  //   plus the deletes of the held 'p' / 'v' / 'g' / 'k' / 'x' records
+  //   nothing reachable from the snapshot's index points to any more
+  //   (unreachableRecords, BUGS W-18) — never in the migration's commit,
+  //   never in a session whose open could not read every held record.
   //   One reservation for every seal (sealAll), then ONE transaction of the
   //   puts, the deletes and the counter record (writeAll). On its
   //   oncomplete the baseline becomes this snapshot. On a failure (any throw
@@ -746,7 +818,19 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
       }),
       ...diff.puts.map(p => ({ store: STORE_STATE, id: p.id, text: p.text }))
     ];
-    const deletes = diff.deletes.map(id => ({ store: STORE_STATE, id }));
+    // W-18: the held records nothing reachable from this snapshot's index
+    // points to, in the same transaction (design §2.3 item 2). The group
+    // records this commit writes are read as they will be (the last one of
+    // an id wins), the others as last committed. None in a session whose
+    // open could not read every held record (cleanupSafe).
+    const held = list.filter(e => e.store === STORE_STATE && HELD_RECORD_ID.test(e.id));
+    const writing = new Map(held.filter(e => e.id[0] === 'g').map(e => [e.id, e.value]));
+    const orphans = cleanupSafe ? unreachableRecords({
+      present, index: snap.index,
+      groupValue: id => (writing.has(id) ? writing.get(id) : groupValues.get(id)),
+      putting: new Set(held.map(e => e.id))
+    }) : [];
+    const deletes = [...diff.deletes, ...orphans].sort().map(id => ({ store: STORE_STATE, id }));
     // Nothing changed: nothing is sealed or written.
     if (list.length === 0 && deletes.length === 0) return;
     // The reservation is written before the first seal (sealAll); closed
@@ -758,8 +842,12 @@ export async function openHistoryStore({ core, vaultId, storage = globalThis.loc
     if (closed) throw new StorageError('Message history is closed.');
     await writeAll(db, puts, deletes);
     baseline = snap.texts;
+    // what is on disk now (the deletes run after the puts in writeAll)
+    for (const e of held) present.add(e.id);
+    for (const [id, value] of writing) groupValues.set(id, structuredClone(value));
+    for (const id of orphans) { present.delete(id); groupValues.delete(id); }
   }
-  function close() { closed = true; db.close(); }
+  function close() { closed = true; db.close(); present.clear(); groupValues.clear(); }
   // Delete-from-this-device under the wallet's storage Web Lock (§1.7). The
   // counter copy in localStorage is KEPT: K does not change, so its count
   // must not restart (NC-RT2 D).

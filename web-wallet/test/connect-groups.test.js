@@ -38,7 +38,10 @@
 //     shows the same group, versions and messages;
 //   - the store's `groups` index and the split of group messages from 1:1;
 //   - a failed save's undo takes back only its own index entry: a second
-//     change of the same group made while it waited stands (web 0.1.118).
+//     change of the same group made while it waited stands (web 0.1.118);
+//   - W-16 (web 0.1.125): an accept that could not be kept for sending puts
+//     the record back to the same invitation, saved, and Join works again;
+//     a newer invitation that arrived meanwhile is not overwritten.
 //
 // How it can lie: the mock core is NOT the module. Its "packets", "records",
 // "HEADs" and "items" are JSON in hex, its digests SHA-512 of that hex, its
@@ -54,7 +57,7 @@ import { createHash } from 'node:crypto';
 import { createGroupsEngine } from '../src/connect/groups/engine.js';
 import {
   controlType, acceptRule, nextMembers, rotationDue, keyIsOld, bucketVersions, orderIncoming, pendingBuckets,
-  splitPieces, BLOB_PIECE, checkGroup, newGroup, storedGroup, textProblem, nameProblem, ROTATE_MS, DAY_MS
+  splitPieces, BLOB_PIECE, checkGroup, newGroup, storedGroup, textProblem, nameProblem, ROTATE_MS, DAY_MS, GroupError
 } from '../src/connect/groups/model.js';
 import { emptyState, checkState, memoryHistoryStore, GROUP_RECORD_ID } from '../src/connect/store.js';
 
@@ -196,7 +199,9 @@ function party(net, fp, { contacts = [], kem = () => true } = {}) {
   const outbox = [];
   // holdNext: { wait, fail } — the NEXT save waits for `wait`, then fails
   // (fail true) or goes on; other saves run meanwhile.
-  const p = { fp, state, db, kept, outbox, contacts: [...contacts], failSave: false, holdNext: null };
+  // failSend: the next 1:1 control message is NOT kept (sendControl's
+  // offline / no salt / failed save: it throws); a function runs first.
+  const p = { fp, state, db, kept, outbox, contacts: [...contacts], failSave: false, holdNext: null, failSend: false };
   p.deps = {
     core: fakeCore(net, fp), ownFp: fp, now: () => net.clock.t, state: () => state,
     takeSeq: () => { const s = state.nextSeq; state.nextSeq = String(BigInt(s) + 1n); return s; },
@@ -210,7 +215,9 @@ function party(net, fp, { contacts = [], kem = () => true } = {}) {
       for (const r of records) db.set(r.id, structuredClone(r.value));
       for (const m of messages) kept.set(m.seq, structuredClone(m));
     },
-    sendDirect: async (to, text) => { outbox.push({ to, text }); net.log.push(`send:${JSON.parse(text).type.replace('nodus_group_', '')}:${fp.slice(0, 2)}->${to.slice(0, 2)}`); },
+    sendDirect: async (to, text) => {
+      if (p.failSend) { const before = p.failSend; p.failSend = false; if (typeof before === 'function') await before(); throw new Error('Sending opens once Messages is connected to the network.'); }
+      outbox.push({ to, text }); net.log.push(`send:${JSON.parse(text).type.replace('nodus_group_', '')}:${fp.slice(0, 2)}->${to.slice(0, 2)}`); },
     isContact: x => p.contacts.includes(x),
     ensureProfile: async () => true,
     reloadProfile: async () => true,
@@ -508,6 +515,44 @@ test('who may send which: an invite not from its owner, a non-contact\'s invite,
   // a text that only claims a group type is still taken off the chat
   assert.equal(await B.engine.onDirect(FA, '{"type":"nodus_group_invite","v":2}'), true);
   assert.equal(await B.engine.onDirect(FA, 'hello'), false);
+});
+
+test('W-16: an accept that could not be kept for sending puts the invitation back (saved); Join works again', async () => {
+  const net = world();
+  const B = party(net, FB, { contacts: [FA] });
+  const A = party(net, FA, { contacts: [FB] });
+  const { gid } = await A.engine.create('Team', [FB]);
+  await deliver(A, B);
+  const invited = B.engine.group(gid).invite.id;
+  B.failSend = true;
+  await assert.rejects(B.engine.acceptInvite(gid), err => err instanceof GroupError && err.message === 'Could not send — try again.');
+  const rec = B.state.groups[gid].id;
+  assert.equal(B.engine.group(gid).status, 'invited');
+  assert.equal(B.db.get(rec).status, 'invited', 'the way back is saved, not only in memory');
+  assert.equal(B.db.get(rec).invite.id, invited, 'the same invitation');
+  assert.deepEqual(B.engine.invitations().map(i => i.gid), [gid], 'listed again: Join is offered');
+  assert.equal(B.outbox.length, 0, 'nothing was kept for sending');
+  // Join again: the success path is unchanged
+  await B.engine.acceptInvite(gid);
+  assert.equal(B.engine.group(gid).status, 'accepting');
+  assert.equal(B.db.get(rec).status, 'accepting');
+  assert.deepEqual(B.outbox.map(m => controlType(m.text)), ['accept']);
+  await deliver(B, A);
+  assert.deepEqual(A.engine.view(gid).joining, [FB]);
+});
+
+test('W-16: a new invitation that reopened the group while the accept failed stands (no way back over it)', async () => {
+  const net = world();
+  const B = party(net, FB, { contacts: [FA] });
+  const A = party(net, FA, { contacts: [FB] });
+  const { gid } = await A.engine.create('Team', [FB]);
+  await deliver(A, B);
+  const fresh = 'cd'.repeat(16);
+  B.failSend = () => B.engine.onDirect(FA, JSON.stringify({ type: 'nodus_group_invite', v: 1, group_id: gid, owner: FA, name: 'Team', invite_id: fresh }));
+  await assert.rejects(B.engine.acceptInvite(gid), err => err instanceof GroupError && /Could not send/.test(err.message));
+  assert.equal(B.engine.group(gid).status, 'invited');
+  assert.equal(B.engine.group(gid).invite.id, fresh, 'the newer invitation is kept');
+  assert.equal(B.db.get(B.state.groups[gid].id).invite.id, fresh);
 });
 
 test('a joiner without the key type groups need is refused in plain words; the others still join', async () => {

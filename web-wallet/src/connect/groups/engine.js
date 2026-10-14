@@ -35,7 +35,8 @@
 //                    caller's rollback of the state) before it rejects
 //   sendDirect(fp, text)   a 1:1 message carrying an invite / accept /
 //                    welcome / leave: kept on the device and published by the
-//                    1:1 outbox (src/connect/ui/messages.js)
+//                    1:1 outbox (src/connect/ui/messages.js); it throws only
+//                    when the message was NOT kept (acceptInvite relies on it)
 //   isContact(fp)    a contact whose 1:1 messaging is ready (decision 8)
 //   ensureProfile(fp)    the verified profile, read once per session
 //   reloadProfile(fp)    a fresh owner-filtered profile read (puts the keys
@@ -70,6 +71,8 @@
 //           invited --ignore--> (record deleted)
 //           accepting --a new invite_id from the pinned owner (the join was
 //           refused, never welcomed)--> invited
+//           accepting --the accept could not be kept for sending (W-16)-->
+//           invited (the same invitation; Join works again)
 //           accepting | joining | active --leave--> left (hidden; the owner
 //           is told, decision 13)
 //   owner:  active from creation (hw empty until version 1's HEAD is out);
@@ -695,8 +698,23 @@ export function createGroupsEngine(deps) {
     const json = core.groupAcceptJson(gid, g.invite.id);
     const next = clone(g);
     next.status = 'accepting';
-    await commit(gid, next);
-    await sendDirect(g.owner, json);
+    const accepting = await commit(gid, next);
+    // BUGS W-16: sendDirect throws only when the accept was NOT kept on this
+    // device (src/connect/ui/messages.js sendControl: offline, no salt yet, or
+    // its save failed; after the save it throws only once Messages closed,
+    // when the store refuses any write, so nothing below can land). A kept
+    // accept is published by the 1:1 outbox, so 'accepting' stands. One not
+    // kept would leave 'accepting' with nothing to wake it (syncAll resends
+    // nothing for it): the record goes back to the invitation it was — one
+    // commit, the same record shape — so Join works again. Only while it is
+    // still this call's 'accepting' record: a new invite that reopened the
+    // group meanwhile (onInvite) stands. A failed revert leaves 'accepting'
+    // (as before this fix) and its error reaches the screen.
+    try { await sendDirect(g.owner, json); }
+    catch {
+      if (groups.get(gid) === accepting) await commit(gid, clone(g));
+      throw new GroupError('Could not send — try again.');
+    }
   }
   // Decline = no reply (design §7): the invitation is forgotten here.
   async function ignoreInvite(gid) {

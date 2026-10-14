@@ -34,7 +34,18 @@
 //   - rev 2.2 item 3: a `removed` cut is reported and written back;
 //   - stateSnapshot: a projection refused past core.js's 8 MiB state input
 //     bound reads HISTORY_TOO_LARGE_TEXT, any other projection error the
-//     "could not be prepared" text (web 0.1.118).
+//     "could not be prepared" text (web 0.1.118);
+//   - BUGS W-18 (web 0.1.125, rev 2.2 item 4, §2.3 item 2): forgetting a
+//     profile or dropping a vault deletes exactly its record, in the commit
+//     that drops its index entry; a staged rotation keeps its pieces, the
+//     finished one deletes exactly them and keeps every key version the
+//     group lists (the old one included); forgetting a group deletes its
+//     record and every key version, another group untouched; a migration
+//     commit deletes nothing (orphans are deleted by the first save after
+//     it); a held record that could not be read at the open stops every
+//     reachability delete of that session; a group record that cannot be
+//     walked keeps every 'k' / 'x' record; an id the commit puts is never
+//     deleted.
 // Requires: nothing (pure node).
 // Leaves behind: nothing.
 // How it can lie: the core is a fake — its "projection" is a reversible
@@ -47,8 +58,9 @@ import assert from 'node:assert/strict';
 import {
   openHistoryStore, stateDiff, writeAll, StorageError, DAMAGED_STATE_TEXT, emptyState, counterStorageKey,
   MAX_INVOCATIONS, STATE_ID, STORE_STATE, STORE_MESSAGES, STORE_META, COUNTER_ID,
-  HISTORY_TOO_LARGE_TEXT, STATE_REMOVED_MAX, stateSnapshot
+  HISTORY_TOO_LARGE_TEXT, STATE_REMOVED_MAX, stateSnapshot, unreachableRecords, indexRefs
 } from '../src/connect/store.js';
+import { newGroup, storedGroup } from '../src/connect/groups/model.js';
 
 const A = 'aa'.repeat(64), B = 'bb'.repeat(64), C = 'cc'.repeat(64);
 const VAULT = btoa(String.fromCharCode(...new Uint8Array(16).fill(7)));
@@ -528,4 +540,166 @@ test('stateSnapshot: a projection refused for its 8 MiB input bound is "too larg
   // a StorageError from the core passes through unchanged
   const own = new StorageError('own');
   assert.throws(() => stateSnapshot({ stateProject() { throw own; } }, emptyState(), {}), err => err === own);
+});
+
+// ── BUGS W-18: reachability deletes (rev 2.2 item 4, §2.3 item 2) ──────
+const rid = (kind, n) => `${kind}${String(n).padStart(20, '0')}`;
+const GID1 = 'e1'.repeat(32), GID2 = 'e2'.repeat(32), VADDR2 = '98'.repeat(64);
+// The held records ('p' / 'v' / 'g' / 'k' / 'x') on the fake disk.
+const heldIds = idb => [...idb.dbs.get(NAME).stores.get(STORE_STATE).keys()].filter(id => /^[pvgkx]\d{20}$/.test(id)).sort();
+// A group record as the groups engine stores it (model.js newGroup /
+// storedGroup), listing `keyIds` and, while staged, its key and pieces.
+function groupRec(gid, keyIds, stage = null) {
+  const g = newGroup({ gid, owner: A, name: 'Team', role: 'owner', status: 'active' });
+  g.keyIds = keyIds;
+  g.stage = stage;
+  return storedGroup(g);
+}
+const stageOf = (keyId, pieceIds) => ({
+  v: 2, members: [A], record: 'aa', head: 'bb', rdigest: 'ab'.repeat(64), pdigest: 'cd'.repeat(64), keyId, pieceIds,
+  done: { record: false, packet: false, head: false }, joined: [], removed: []
+});
+const keyRec = (gid, v) => ({ kind: 'nodus-group-key', gid, v });
+const pieceRec = gid => ({ kind: 'nodus-group-piece', gid, v: 2, data: 'ab' });
+
+test('W-18: forgetting a profile or dropping a vault deletes exactly its record, in the commit that drops its index entry', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const state = structuredClone(store.state);
+    const P1 = rid('p', 1), P2 = rid('p', 2), V1 = rid('v', 3), V2 = rid('v', 4);
+    state.profileCache[A] = { id: P1, at: '1', name: '' };
+    state.profileCache[B] = { id: P2, at: '1', name: '' };
+    state.vaults[VADDR] = { id: V1, at: '1' };
+    state.vaults[VADDR2] = { id: V2, at: '1' };
+    await store.save(state, [], [{ id: P1, fp: A, record: '{"row":1}' }, { id: P2, fp: B, record: '{"row":2}' }],
+      [{ id: V1, address: VADDR, value: {} }, { id: V2, address: VADDR2, value: {} }]);
+    assert.deepEqual(heldIds(idb), [P1, P2, V1, V2]);
+    log.length = 0;
+    delete state.profileCache[A];                              // messages.js forgetProfile
+    await store.save(state);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter', `delete state/${P1}`]]);
+    log.length = 0;
+    delete state.vaults[VADDR];                                // messages.js dropVault
+    await store.save(state);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter', `delete state/${V1}`]]);
+    assert.deepEqual(heldIds(idb), [P2, V2], 'the others stay');
+    // nothing unreachable: nothing deleted
+    log.length = 0;
+    state.seenOwn.profile = '5';
+    await store.save(state);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter']]);
+  });
+});
+
+test('W-18: a staged rotation keeps its pieces; the finished one deletes exactly them and keeps every key version; forgetting a group deletes its record and keys', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const state = structuredClone(store.state);
+    const G1 = rid('g', 1), K1 = rid('k', 2), G2 = rid('g', 3), K2 = rid('k', 4), K3 = rid('k', 5), X1 = rid('x', 6), X2 = rid('x', 7);
+    state.groups[GID1] = { id: G1, at: '1' };
+    state.groups[GID2] = { id: G2, at: '1' };
+    await store.save(state, [], [], [], [
+      { id: G1, value: groupRec(GID1, { 1: K1 }) }, { id: K1, value: keyRec(GID1, 1) },
+      { id: G2, value: groupRec(GID2, { 1: K2 }) }, { id: K2, value: keyRec(GID2, 1) }
+    ]);
+    // the owner stages version 2: its key and packet pieces with the group record
+    log.length = 0;
+    await store.save(state, [], [], [], [
+      { id: G1, value: groupRec(GID1, { 1: K1 }, stageOf(K3, [X1, X2])) }, { id: K3, value: keyRec(GID1, 2) },
+      { id: X1, value: pieceRec(GID1) }, { id: X2, value: pieceRec(GID1) }
+    ]);
+    assert.deepEqual(commits(log), [[`put state/${G1}`, `put state/${K3}`, `put state/${X1}`, `put state/${X2}`, 'put meta/counter']], 'nothing deleted while staged');
+    // the HEAD is out: version 2 applied, stage null (engine.js continueStage)
+    log.length = 0;
+    await store.save(state, [], [], [], [{ id: G1, value: groupRec(GID1, { 1: K1, 2: K3 }) }]);
+    assert.deepEqual(commits(log), [[`put state/${G1}`, 'put meta/counter', `delete state/${X1}`, `delete state/${X2}`]]);
+    // a later save walks the committed group record: the old key version stays
+    log.length = 0;
+    state.seenOwn.profile = '5';
+    await store.save(state);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter']]);
+    assert.deepEqual(heldIds(idb), [G1, K1, G2, K2, K3].sort());
+    // forgotten (engine.js forget): its record and every key version go; the other group stays
+    log.length = 0;
+    delete state.groups[GID1];
+    await store.save(state);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter', `delete state/${G1}`, `delete state/${K1}`, `delete state/${K3}`]]);
+    assert.deepEqual(heldIds(idb), [G2, K2]);
+    // reopened: the group records that opened are walked; nothing more goes
+    store.close();
+    const again = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const s2 = structuredClone(again.state);
+    log.length = 0;
+    s2.seenOwn.list = '6';
+    await again.save(s2);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter']]);
+    assert.deepEqual(heldIds(idb), [G2, K2]);
+  });
+});
+
+test('W-18: the migration commit deletes nothing; the first save after it deletes the records nothing points to', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    seedV1(idb, { ...emptyState(), nextSeq: '5', contacts: [contact(A)], profileCache: { [A]: { id: 'p00000000000000000003', at: '1', name: '' } } });
+    const st = idb.dbs.get(NAME).stores.get(STORE_STATE);
+    const G = rid('g', 7), K = rid('k', 8), P = rid('p', 9), V = rid('v', 10), X = rid('x', 11);
+    st.set(G, sealedRecord(G, groupRec(GID1, { 1: K })));
+    st.set(K, sealedRecord(K, keyRec(GID1, 1)));
+    st.set(P, sealedRecord(P, { fp: B, record: '{"row":2}' }));
+    st.set(V, sealedRecord(V, { address: VADDR, value: {} }));
+    st.set(X, sealedRecord(X, pieceRec(GID1)));
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    assert.deepEqual(commits(log), [['put state/state', `put state/${cid(5)}`, 'put meta/counter']], 'the migration: puts only');
+    assert.deepEqual(heldIds(idb), ['p00000000000000000003', G, K, P, V, X].sort(), 'every held record survives the migration');
+    log.length = 0;
+    const state = structuredClone(store.state);
+    state.dmSync[A] = '9';
+    await store.save(state);
+    assert.deepEqual(commits(log), [[`put state/${cid(5)}`, 'put meta/counter', ...[G, K, P, V, X].sort().map(id => `delete state/${id}`)]]);
+    assert.deepEqual(heldIds(idb), ['p00000000000000000003'], 'the indexed profile stays');
+  });
+});
+
+test('W-18: a held record that could not be read at the open stops every reachability delete of that session', async () => {
+  await withFake(async ({ log, idb, core, storage }) => {
+    const store = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const state = structuredClone(store.state);
+    const P1 = rid('p', 1), G1 = rid('g', 2), K1 = rid('k', 3);
+    state.profileCache[A] = { id: P1, at: '1', name: '' };
+    state.groups[GID1] = { id: G1, at: '1' };
+    await store.save(state, [], [{ id: P1, fp: A, record: '{"row":1}' }], [], [{ id: G1, value: groupRec(GID1, { 1: K1 }) }, { id: K1, value: keyRec(GID1, 1) }]);
+    store.close();
+    core.tamper.add(G1);                                       // the group record does not open
+    const again = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const s2 = structuredClone(again.state);
+    delete s2.profileCache[A];
+    delete s2.groups[GID1];
+    log.length = 0;
+    await again.save(s2);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter']], 'nothing deleted');
+    assert.deepEqual(heldIds(idb), [P1, G1, K1].sort());
+    again.close();
+    // readable again: the next session deletes them
+    core.tamper.clear();
+    const third = await openHistoryStore({ core, vaultId: VAULT, storage });
+    const s3 = structuredClone(third.state);
+    s3.seenOwn.profile = '5';
+    log.length = 0;
+    await third.save(s3);
+    assert.deepEqual(commits(log), [['put state/state', 'put meta/counter', `delete state/${G1}`, `delete state/${K1}`, `delete state/${P1}`]]);
+    assert.deepEqual(heldIds(idb), []);
+  });
+});
+
+test('W-18 unreachableRecords: an indexed group that cannot be walked keeps every k / x; an id being put is never deleted; other ids are never touched', () => {
+  const G1 = rid('g', 1), K1 = rid('k', 2), X1 = rid('x', 3), P1 = rid('p', 4), P2 = rid('p', 5), G2 = rid('g', 6);
+  const st = emptyState();
+  st.groups[GID1] = { id: G1, at: '1' };
+  st.profileCache[A] = { id: P1, at: '1', name: '' };
+  const present = new Set([G1, K1, X1, P1, P2, G2, cid(1), STATE_ID, 'm00000000000000000001']);
+  const walk = id => (id === G1 ? groupRec(GID1, { 1: K1 }) : undefined);
+  assert.deepEqual(unreachableRecords({ present, index: indexRefs(st), groupValue: walk }), [G2, P2, X1]);
+  assert.deepEqual(unreachableRecords({ present, index: indexRefs(st), groupValue: () => undefined }), [G2, P2], 'unknown group value: k / x kept');
+  assert.deepEqual(unreachableRecords({ present, index: indexRefs(st), groupValue: () => ({ kind: 'nodus-group' }) }), [G2, P2], 'refused by checkGroup: k / x kept');
+  assert.deepEqual(unreachableRecords({ present, index: indexRefs(st), groupValue: () => groupRec(GID2, { 1: K1 }) }), [G2, P2], 'another gid: k / x kept');
+  assert.deepEqual(unreachableRecords({ present, index: indexRefs(st), groupValue: walk, putting: new Set([P2]) }), [G2, X1], 'put in the same commit: kept');
 });
