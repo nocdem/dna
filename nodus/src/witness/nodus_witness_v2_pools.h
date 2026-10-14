@@ -6,13 +6,11 @@
  *        the public aggregate pool balance and the REAL pools_root
  *        (INACTIVE).
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * No live consensus path calls anything here. Tests (and later the
- * Ledger V2 devnet reset) drive it. Type 11 admission remains an
- * unconditional consensus REJECT (C3 stop); tx types 12-14 stay
- * UNASSIGNED; no proof result, no transaction-supplied anchor and no
- * wallet/delivery path reaches any mutation below. S7 is state
- * infrastructure only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Reached on every node that opens a chain database: the post-open gate
+ * runs the pools startup check (nodus_witness.c:1063,
+ * witness_post_open_gate ← nodus_witness_scan_chain_db ←
+ * nodus_witness_init :2891).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── Ownership / genericity ────────────────────────────────────────────

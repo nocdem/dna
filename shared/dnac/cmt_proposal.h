@@ -2,9 +2,13 @@
  * @file shared/dnac/cmt_proposal.h
  * @brief cometbft @v0.38.26 `types/proposal.go` ported to C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-B of the cometbft → C consensus port. Additive only; nothing in
- * the running chain calls anything here.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-B of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the state
+ * machine builds its proposals here (cmt_cs.c:2324 `cmt_new_proposal`,
+ * in cmt_cs_default_decide_proposal) and checks received ones
+ * (cmt_cs.c:3186 `cmt_proposal_sign_bytes`, in
+ * cmt_cs_default_set_proposal).
  * ════════════════════════════════════════════════════════════════════════
  *
  * A Proposal names a block by its BlockID and, when POLRound >= 0, says

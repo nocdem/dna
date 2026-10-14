@@ -9,10 +9,11 @@
  * through an explicit lifecycle state machine, with global and per-domain
  * block-budget accounting.
  *
- * ACTIVATION: INACTIVE. No live consensus path calls anything here. The
- * active chain keeps the legacy V2 wire, the v3 five-input state_root and
- * the V1 block hash byte-identical; Type 11 stays REJECT. This module
- * activates only with the Ledger V2 devnet reset.
+ * STATUS: LIVE. The apply engine reserves a committed block's envelope
+ * units here (nodus/src/witness/nodus_witness_v2_apply.c:5518
+ * `dna_meter_reserve_ex`, in v2_apply_block_body ←
+ * nodus_witness_v2_apply_block ← nodus_witness_cmt_app.c:2731), and
+ * PrepareProposal packs by it (nodus_witness_cmt_app.c:1762).
  *
  * ── AUTHORITY MODEL (the whole point of the file) ─────────────────────
  *

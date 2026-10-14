@@ -2,10 +2,12 @@
  * @file shared/dnac/cmt_merkle.h
  * @brief cometbft @v0.38.26 `crypto/merkle` (RFC 6962) ported to C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-A of the cometbft → C consensus port. No consensus path calls
- * anything here yet; the module is additive only. The live witness BFT,
- * QC V2 and the T3 wave-1 modules are byte-identically untouched.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-A of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): every block
+ * header hash is a Merkle root built here (cmt_block.c:409, in
+ * cmt_header_hash), and the handshake uses it directly
+ * (nodus/src/witness/nodus_witness_cmt_node.c:871).
  * ════════════════════════════════════════════════════════════════════════
  *
  * This is the tree that produces DataHash, LastCommitHash, ValidatorsHash,

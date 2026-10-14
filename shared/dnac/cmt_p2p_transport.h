@@ -5,11 +5,12 @@
  *        filters, the upgrade (secret connection + NodeInfo exchange +
  *        compatibility) and dialing.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Phase F3 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
- * row "transport.go", §9). Constructed only by the switch (same phase)
- * and its tests; the nodus glue that owns the 4004 sockets is F5.
- * Additive only; 4001/4002 and today's 4004 path are untouched.
+ * row "transport.go", §9). Constructed by the 4004 p2p host, which owns
+ * the sockets (nodus/src/witness/nodus_witness_p2p.c:3508
+ * `cmt_p2p_transport_init`, in nodus_witness_p2p_new ←
+ * nodus_witness.c:2954) since P2P-PORT F5 (1e9285922, v0.20.0).
  * ════════════════════════════════════════════════════════════════════════
  *
  * Governing records: docs/plans/decisions/2026-09-26-witness-port-session.md

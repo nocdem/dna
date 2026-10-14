@@ -3,11 +3,13 @@
  * @brief cometbft @v0.38.26 `types/block.go` ported to C — block, header,
  *        BlockID, commit and every hash they carry.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-B of the cometbft → C consensus port. Nothing in the running
- * chain calls anything in this file; it is additive only. The live witness
- * BFT, the QC V2 path and the T3 wave-1 modules (tm_commit, tm_vote,
- * tm_wal) are byte-identically untouched.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-B of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): e.g. the
+ * block executor hashes blocks through it
+ * (nodus/src/witness/nodus_witness_cmt_host.c:693 `cmt_block_hash`, in
+ * block_hash_of) and the consensus state machine compares the locked
+ * block (cmt_cs.c:2649, cmt_cs_enter_precommit).
  * ════════════════════════════════════════════════════════════════════════
  *
  * THIS FILE PRODUCES THE BLOCK HASH. Header.Hash is the Merkle root of

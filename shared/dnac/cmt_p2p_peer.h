@@ -5,11 +5,13 @@
  *        the peer (MConnection + NodeInfo + flags), the peer set and the
  *        connection set.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Phase F3 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
- * row "peer.go, peer_set.go, conn_set.go", §9). Constructed only by
- * cmt_p2p_transport / cmt_p2p_switch (same phase); nothing in the running
- * node does yet. Additive only.
+ * row "peer.go, peer_set.go, conn_set.go", §9). Constructed by
+ * cmt_p2p_transport (cmt_p2p_transport.c:1229 `cmt_p2p_peer_new`, in
+ * cmt_p2p_transport_wrap_peer) for every 4004 peer of the p2p host
+ * (nodus/src/witness/nodus_witness_p2p.c) since P2P-PORT F5 (1e9285922,
+ * v0.20.0).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── THE CONNECTION (`cmt_p2p_conn_t`) ──────────────────────────────────

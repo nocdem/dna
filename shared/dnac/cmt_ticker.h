@@ -3,9 +3,11 @@
  * @brief cometbft @v0.38.26 `consensus/ticker.go` in C — the timeout
  *        ticker's DECISION, without its goroutine.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-B of the cometbft → C consensus port. Nothing in the running
- * chain calls anything here yet; additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R2-B of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the state
+ * machine owns one (cmt_cs.c:4703 `cmt_ticker_init`, in cmt_cs_init) and
+ * schedules every round timeout through it (cmt_cs.c:965).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT THE REFERENCE IS, AND WHAT IS PORTED ──────────────────────────

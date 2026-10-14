@@ -3,9 +3,12 @@
  * @brief cometbft @v0.38.26 `libs/clist/clist.go` ported to C — the
  *        linked list the Flood mempool keeps its transactions in.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R3-M of the cometbft → C consensus port. The only user is
- * cmt_mem.c; nothing in the running chain reaches it yet.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R3-M of the cometbft → C consensus port. Users: cmt_mem.c (e.g.
+ * :1610, mem_recheck_txs) and cmt_memr.c (:537). Reached on every
+ * version-3 node through the mempool `nodus_cmt_node_init` builds
+ * (nodus/src/witness/nodus_witness_cmt_node.c:2092 `cmt_mem_init`) since
+ * THE LIVE FLIP (4a43e3a96, v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * The reference is a goroutine-safe doubly linked list whose elements can

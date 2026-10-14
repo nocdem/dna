@@ -3,9 +3,12 @@
  * @brief cometbft @v0.38.26 `types/canonical.go` ported to C — the shapes
  *        that get SIGNED.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-B of the cometbft → C consensus port. Additive only; nothing in
- * the running chain calls anything here.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-B of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): vote and
+ * proposal sign bytes are built from it (cmt_vote.c:213 in
+ * cmt_vote_sign_bytes ← cmt_privval.c:416; cmt_proposal.c:116 in
+ * cmt_proposal_sign_bytes ← cmt_cs.c:3186).
  * ════════════════════════════════════════════════════════════════════════
  *
  * A validator never signs a Vote or a Proposal. It signs the CANONICAL

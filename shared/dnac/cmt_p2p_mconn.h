@@ -5,11 +5,13 @@
  *        SecretConnection, with packet split / reassembly, ping / pong,
  *        a throttled flush and send / receive rate limits.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Phase F2 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
- * row 2, §9). Nothing in the running node constructs a `cmt_p2p_mconn_t`
- * yet — the peer (F3, cmt_p2p_peer) is its first consumer. Additive only;
- * 4001/4002 and today's 4004 path are untouched.
+ * row 2, §9). Every 4004 peer owns one: the peer constructs it
+ * (cmt_p2p_peer.c:392 `cmt_p2p_mconn_init`, in cmt_p2p_peer_new ←
+ * cmt_p2p_transport.c:1229). Reached on every node running the 4004 p2p
+ * host (nodus/src/witness/nodus_witness_p2p.c) since P2P-PORT F5
+ * (1e9285922, v0.20.0).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHERE IT SITS ──────────────────────────────────────────────────────

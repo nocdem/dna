@@ -4,10 +4,12 @@
  *        and its methods — and `consensus/types/peer_round_state.go:15-43`
  *        — `PeerRoundState` — ported to C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Wave R3-A of the cometbft → C consensus port. The consumer is
- * `cmt_conr` (the reactor), which nothing in the running chain constructs
- * yet; additive only. The live witness BFT is untouched.
+ * `cmt_conr` (the reactor; e.g. cmt_conr.c:873
+ * `cmt_ps_apply_new_round_step_message`, in cmt_conr_receive), which
+ * every version-3 node constructs (nodus/src/witness/nodus_witness.c:2335)
+ * since THE LIVE FLIP (4a43e3a96, v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * The receiver in the reference is `ps`, so every function is `cmt_ps_*`:

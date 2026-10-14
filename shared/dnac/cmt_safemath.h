@@ -2,8 +2,10 @@
  * @file shared/dnac/cmt_safemath.h
  * @brief cometbft @v0.38.26 `libs/math/safemath.go` ported to C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-A of the cometbft → C consensus port. Additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-A of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): e.g.
+ * cmt_cs.c:1979 `cmt_safe_add_int32`, in cmt_cs_enter_new_round.
  * ════════════════════════════════════════════════════════════════════════
  *
  * Five overflow-checked conversions. In the reference three of them PANIC

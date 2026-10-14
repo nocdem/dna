@@ -5,10 +5,12 @@
  *        `dbm.DB`, plus the `Block` wire DECODER `state.go:2000-2014`
  *        needs and cmt_pb.h deliberately left out.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * FLEET-TM-R3 wave W1, package R3-B. Nothing in the running chain calls
- * anything here; `nodus_witness_cmt_store.c` and
- * `nodus_witness_cmt_host.c` are the consumers, themselves inactive.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * FLEET-TM-R3 wave W1, package R3-B. Consumers: the block store
+ * (nodus/src/witness/nodus_witness_cmt_store.c:540
+ * `cmt_pb_block_unmarshal`, in nodus_cmt_block_decode) and the block sync
+ * reactor (cmt_bsync_reactor.c:551). Reached on every version-3 node
+ * since THE LIVE FLIP (4a43e3a96, v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT THIS FILE IS ──────────────────────────────────────────────────

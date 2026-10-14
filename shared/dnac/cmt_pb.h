@@ -2,11 +2,12 @@
  * @file shared/dnac/cmt_pb.h
  * @brief cometbft @v0.38.26's proto3 wire encoding, reproduced in C (K-1).
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-A of the cometbft → C consensus port. No consensus path calls
- * anything here yet; additive only. The live witness BFT, QC V2 and the
- * T3 wave-1 modules (tm_commit, tm_vote, tm_wal) are byte-identically
- * untouched.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-A of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): e.g. the
+ * block header hash marshals its leaves here (cmt_block.c:374
+ * `cmt_pb_block_id_marshal`, in cmt_header_hash) and blocks are
+ * marshalled here (cmt_block.c:1627, cmt_block_marshal).
  * ════════════════════════════════════════════════════════════════════════
  *
  * These are THE BYTES THAT GET HASHED AND SIGNED. Every header leaf, every

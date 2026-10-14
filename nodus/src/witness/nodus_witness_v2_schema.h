@@ -3,13 +3,13 @@
  * @brief Ledger V2 Season 5 — versioned schema + atomic migration for the
  *        INACTIVE V2 persistence layer.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * No live consensus path runs this migration or reads any v2_* table.
- * Tests (and, later, the Ledger V2 devnet reset) drive it. A migrated DB
- * remains fully usable by the current V1 software: every added structure
- * is new-table or additive-column, every existing INSERT uses an explicit
- * column list (verified: nodus_witness_bft.c:3061, nodus_witness_db.c:172),
- * and no V1 root computation reads the new column.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Reached on every node that opens a chain database: the post-open gate
+ * reads the schema version (nodus_witness.c:1000
+ * `nodus_witness_db_schema_version`, in witness_open_migrate_s18 ←
+ * witness_post_open_gate ← nodus_witness_scan_chain_db ←
+ * nodus_witness_init :2891) and runs the S18 rung on an S16/S17
+ * version-3 database (nodus_witness.c:1023).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── Schema versioning ─────────────────────────────────────────────────

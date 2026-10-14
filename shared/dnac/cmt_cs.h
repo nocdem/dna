@@ -3,10 +3,11 @@
  * @brief cometbft @v0.38.26 `consensus/state.go` ported to C — the
  *        consensus state machine itself.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-C of the cometbft → C consensus port. Nothing in the running
- * chain constructs a `cmt_cs_t` yet; additive only. The live witness BFT
- * and the QC V2 path are untouched.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R2-C of the cometbft → C consensus port. THE consensus state
+ * machine of every version-3 node: constructed by `nodus_cmt_node_init`
+ * (nodus/src/witness/nodus_witness_cmt_node.c:2226 `cmt_cs_init`) since
+ * THE LIVE FLIP (4a43e3a96, v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * The receiver in `consensus/state.go` is `cs`, so every function here is

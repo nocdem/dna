@@ -2,12 +2,13 @@
  * @file shared/dnac/cmt_tmhash.h
  * @brief cometbft @v0.38.26 `crypto/tmhash` ported to the DNA hash.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-A of the cometbft → C consensus port. Nothing in the running
- * chain calls anything in this file; it is additive only. The live witness
- * BFT and the QC V2 path are byte-identically untouched. (The T3 wave-1
- * modules tm_commit / tm_vote / tm_wal that R1 left in place were deleted
- * in R2 — atlas-dec-a309a65984f1709149b40db9cb5b38a7.)
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-A of the cometbft → C consensus port. Header-only (static
+ * inline): the consensus Merkle leaf and inner hashes are computed here
+ * (cmt_merkle.c:40 cmt_merkle_leaf_hash, :59 cmt_merkle_inner_hash), on
+ * every version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61). (The T3
+ * wave-1 modules tm_commit / tm_vote / tm_wal that R1 left in place were
+ * deleted in R2 — atlas-dec-a309a65984f1709149b40db9cb5b38a7.)
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── The one substitution ───────────────────────────────────────────────

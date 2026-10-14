@@ -3,11 +3,13 @@
  * @brief cometbft @v0.38.26 `p2p/netaddress.go`, `p2p/key.go` (the ID)
  *        and `p2p/errors.go` ported to C — peer addresses `id@ip:port`.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Phase F3 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
  * row "netaddress.go, key.go, errors.go", §9). Consumers: the NodeInfo,
- * peer, transport and switch of the same phase; nothing in the running
- * node constructs one yet. Additive only.
+ * peer, transport and switch of the same phase, and the 4004 p2p host
+ * itself (nodus/src/witness/nodus_witness_p2p.c:396 `cmt_p2p_ip_parse`,
+ * in nodus_p2p_io_listen ← nodus_witness_p2p_new :3402) since P2P-PORT F5
+ * (1e9285922, v0.20.0).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── THE ID (key.go:34-44) ──────────────────────────────────────────────

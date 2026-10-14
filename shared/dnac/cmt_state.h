@@ -3,10 +3,12 @@
  * @brief cometbft @v0.38.26 `state/state.go` ported to C — the committed
  *        state, the block constructor and BFT-time's median.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-D of the cometbft → C consensus port. No consensus path calls
- * anything here yet; the module is additive only. The live witness BFT,
- * QC V2 and the T3 wave-1 modules are byte-identically untouched.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-D of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): e.g. the
+ * block executor initialises its state scratch here
+ * (nodus/src/witness/nodus_witness_cmt_host.c:502 `cmt_state_init`, in
+ * nodus_cmt_blockexec_init ← nodus_witness_cmt_node.c:2156).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT THIS FILE IS ──────────────────────────────────────────────────

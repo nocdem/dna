@@ -3,10 +3,13 @@
  * @brief cometbft @v0.38.26 `consensus/msgs.go` and the nine reactor
  *        message types of `consensus/reactor.go:1536-1821`, in C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-B of the cometbft → C consensus port. Nothing in the running
- * chain calls anything here yet; additive only. The live witness BFT and
- * the QC V2 path are untouched.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R2-B of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the consensus
+ * reactor decodes every received message through it (cmt_conr.c:781, in
+ * cmt_conr_receive), and the consensus WAL validates every message it
+ * decodes through it (nodus/src/witness/nodus_witness_cmt_wal.c:631, in
+ * wal_decode).
  * ════════════════════════════════════════════════════════════════════════
  *
  * This file is the KODEK half of the consensus package: the conversion

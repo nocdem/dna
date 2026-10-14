@@ -10,10 +10,14 @@
  * consults the mutable validators table.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * No consensus path calls anything in this file. The LEGACY 144-byte
- * certificate path (nodus/src/witness/nodus_witness_cert.{h,c}) remains the
- * live finalization mechanism and is byte-identically untouched by this
- * module. QC V2 activates only with the Ledger V2 devnet reset.
+ * No caller in the running node (checked 2026-10-14, git grep dna_qc_v2_:
+ * only nodus/tests/test_qc_v2.c). Its one in-tree consumer,
+ * blockmsg_v2.{h,c}, uses only DNA_QC_V2_MAX_ENC_LEN, and
+ * dnac_blkmsg_v2_* itself has no caller outside its tests. The legacy
+ * certificate path this banner used to name
+ * (nodus/src/witness/nodus_witness_cert.{h,c}) was deleted in R3 wave W4
+ * (e72d8cb5c); blocks are finalized by the cometbft commit
+ * (cmt_vote_set / cmt_validation).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── TAG ────────────────────────────────────────────────────────────────

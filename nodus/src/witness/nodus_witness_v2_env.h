@@ -4,11 +4,11 @@
  *        place the engine turns candidate envelope bytes into DERIVED
  *        transaction identities (INACTIVE).
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * No live consensus path calls anything here. The active chain keeps the
- * legacy V2 wire, the v3 five-input state_root and the V1 block hash
- * byte-identical; Type 11 stays REJECT. Tests drive this module, and the
- * V2 devnet reset is what activates it.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Reached on every version-3 node: the application's CheckTx preflights
+ * each envelope through it (nodus_witness_cmt_app.c:727
+ * `nodus_witness_v2_env_preflight_batch`, in
+ * nodus_cmt_app_entry_identity ← nodus_cmt_app_check_tx :1175).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── Why this module exists ────────────────────────────────────────────

@@ -3,9 +3,14 @@
  * @brief cometbft @v0.38.26 `proto/tendermint/mempool` — the two wire
  *        messages of the Flood mempool, in C under K-1 rev 2.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R3-M of the cometbft → C consensus port. No transport delivers
- * these bytes yet (the tier3 verb is R3-C2's); additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R3-M of the cometbft → C consensus port. The mempool reactor
+ * decodes every received mempool message here (cmt_memr.c:445
+ * `cmt_pb_mempool_message_unmarshal`, in cmt_memr_receive); the reactor
+ * is built on every version-3 node
+ * (nodus/src/witness/nodus_witness.c:2343) since THE LIVE FLIP
+ * (4a43e3a96, v0.19.61), and since P2P-PORT F5 (1e9285922, v0.20.0) the
+ * bytes arrive over the 4004 p2p host.
  * ════════════════════════════════════════════════════════════════════════
  *
  * types.proto:1-14 declares exactly two messages:

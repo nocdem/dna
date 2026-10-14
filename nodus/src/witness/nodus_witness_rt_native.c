@@ -3,12 +3,12 @@
  * @brief Ledger V2 — native authorization + the first PRODUCTION
  *        SYSTEM/DNA_CORE runtime vertical slices (INACTIVE).
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * No live consensus path calls anything here. The compiled production
- * runtime table (nodus_witness_runtime.c) binds these hooks; only the
- * (still inactive) V2 apply engine invokes them, and only tests drive
- * that engine. Types 11/12/13 stay REJECT-unconditional and type 14
- * stays unassigned — nothing in this file touches shielded state.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * The compiled production runtime table binds these hooks
+ * (nodus_witness_runtime.c:815 `.exec = nodus_rt_core_exec`), and the V2
+ * apply engine invokes them on every committed block
+ * (nodus_witness_v2_apply.c:2704 `rt->exec`, in exec_one_env ←
+ * nodus_witness_v2_apply_block ← nodus_witness_cmt_app.c:2731).
  * ════════════════════════════════════════════════════════════════════════
  *
  * WHAT IS IMPLEMENTED (source-existing operations only — the burn season

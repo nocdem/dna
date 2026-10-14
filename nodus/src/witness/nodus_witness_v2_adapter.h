@@ -4,15 +4,14 @@
  *        domain runtime's typed effects and that domain's own storage
  *        (INACTIVE).
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Nothing in live consensus calls anything here, and the S5 apply engine
- * is deliberately NOT re-based onto this boundary this season — it still
- * executes `op->sql` (nodus_witness_v2_apply.h). This header exists so it
- * becomes STRUCTURALLY POSSIBLE for a future domain runtime to return
- * bounded, deterministic, domain-scoped typed effects instead of raw SQL.
- * The production runtime table carries NO adapter and
- * nodus_witness_runtime_selfcheck() enforces that (the apply_reserved
- * discipline).
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * The production runtime table carries adapters
+ * (nodus_witness_runtime.c:758 `.adapter = &NODUS_RT_SYSTEM_ADAPTER`,
+ * :822 `&NODUS_RT_CORE_ADAPTER`), nodus_witness_runtime_selfcheck() checks
+ * them through nodus_adapter_selfcheck (nodus_witness_runtime.c:1527),
+ * and the apply engine applies every runtime's typed effects through
+ * this boundary (nodus_witness_v2_apply.c:2836
+ * `nodus_witness_v2_effects_apply_ex`, in exec_one_env).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── AUTHORITY MODEL (the whole point of the file) ─────────────────────

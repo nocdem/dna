@@ -3,9 +3,12 @@
  * @brief cometbft @v0.38.26 `types/genesis.go` ported to C — the genesis
  *        document's validation and its validator hash.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-C of the cometbft → C consensus port. No consensus path calls
- * anything here yet; the module is additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-C of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the genesis
+ * document is validated here
+ * (nodus/src/witness/nodus_witness_v2_gen.c:2552, in
+ * nodus_witness_v2_gen_to_cmt_doc ← nodus_witness_cmt_node.c:1736).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── What is ported, and what is the host's ─────────────────────────────
