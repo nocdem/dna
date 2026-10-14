@@ -17,6 +17,7 @@ import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient, NODUS_CONNECT_BOUND_MS, isNodusBusy } from './nodus/client.js';
 import { nodusHistoryRow, nodusHistoryStatus, NODUS_HISTORY_LIMIT } from './nodus/history.js';
 import { parseNameOf } from './nodus/names.js';
+import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, busyReadyText } from './nodus/resubmit.js';
 import { netLevelFor, netStatusView } from './net-status.js';
 // The session log (memory only, cleared on lock; the Logs page).
 import { sessionLog, stepLog, logPageErrors, mountSessionLogView } from './session-log.js';
@@ -458,12 +459,20 @@ function renderActivity(save = true) {
     const where = el('small', '', `${networkFor(row.chain)?.name ?? row.chain} · `); where.append(when);
     side.append(badge, where);
     const footer = el('div', 'activity-footer');
-    div.append(main, side, el('p', 'activity-note', row.readError || row.note), footer);
+    // A NODUS transaction the node answered "busy" at Confirm (web 0.1.124,
+    // src/nodus/resubmit.js): its signed bytes are kept on the row in this
+    // tab until it is final; it says so and offers "Try again" (the same
+    // bytes). Read from the kept bytes, never from the note, which the
+    // tracker rewrites on every check.
+    dropSettledEnvelope(row);
+    const ready = row.chain === NODUS_ASSET.chain && canResubmit(row);
+    div.append(main, side, el('p', 'activity-note', ready ? busyReadyText(row.kind) : row.readError || row.note), footer);
     // NODUS has no explorer link in the first delivery (design §1.4).
     if (CHAINS[row.chain]) {
       const link = document.createElement('a');
       link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
     } else footer.append(el('span', 'activity-id', `${claim ? 'Claim ID' : row.kind ? 'Transaction ID' : 'Transfer ID'} ${row.hash}`));
+    if (ready) footer.append(tryAgainButton(row));
     // A NODUS send always resolves: included, or 'expired' once the chain passes
     // its expiry block. Its coins stay held until then (src/adapters/nodus.js
     // lockedInputs), so it is never marked abandoned by hand.
@@ -2176,6 +2185,16 @@ $('confirm-send').onclick = async () => {
     }
     follow();
   } catch (error) {
+    // The node answered "busy" (web 0.1.124, src/nodus/resubmit.js): nothing
+    // was forwarded. The record keeps the signed bytes and stays pending;
+    // "Try again" sends exactly those bytes (its coins are held for them).
+    if (record && keepBusyEnvelope(record, error)) {
+      if (current === revision) trackActivity();
+      closeReview();
+      if (STAKE_KINDS.includes(transfer.kind)) closeStakeRow();
+      if (current === revision) { showBusyReady(record); follow(); }
+      return;
+    }
     if (record) { record.status = 'unknown'; record.note = 'Broadcast outcome uncertain. Tracking the signed transaction; do not resend automatically.'; if (current === revision) trackActivity(); }
     closeReview();
     if (transfer.kind === 'claim') void refreshClaim();
@@ -2191,6 +2210,55 @@ $('confirm-send').onclick = async () => {
     if (current === revision) { message(record ? `${error.message} ${uncertain}` : error.message, { category: logCategoryFor(transfer.kind), error: true }); follow(); }
   } finally { busy = false; $('cancel-send').disabled = false; }
 };
+// ── "Try again" after a busy answer (web 0.1.124, src/nodus/resubmit.js) ──
+// Offered on the Activity row (renderActivity) and on the status line, for a
+// NODUS record that keeps its signed bytes: a transfer from the Send review,
+// a delegation / undelegation / witness bond (Earn) or a chain-name
+// registration — the transactions the confirm-send handler above submits.
+// The action's name as the confirm-send handler words it.
+const rowAction = row => (row.kind === 'delegate' ? 'Delegation' : row.kind === 'undelegate' ? 'Undelegation' : row.kind === 'stake' ? 'Witness bond'
+  : row.kind === 'name' ? `Registration of the chain name "${row.name}"` : 'Transfer');
+function tryAgainButton(row) {
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary small';
+  button.textContent = row._resubmitting ? 'Sending…' : 'Try again';
+  button.disabled = !!row._resubmitting;
+  button.onclick = () => void resubmitRow(row);
+  return button;
+}
+function showBusyReady(row) {
+  message(busyReadyText(row.kind), { category: logCategoryFor(row.kind) });
+  $('wallet-status').append(' ', tryAgainButton(row));
+}
+async function resubmitRow(row) {
+  if (busy || !wallet || !canResubmit(row) || row.address !== wallet.addresses.nodus) return;
+  const client = nodusClient, current = revision;
+  if (!client || client.state !== 'ready') {
+    message(`Not connected to the Nodus network right now. Your ${row.kind ? 'transaction' : 'payment'} is still ready; press Try again once the connection is back.`, { category: logCategoryFor(row.kind), error: true });
+    return;
+  }
+  busy = true; row._resubmitting = true; renderActivity(false);
+  let result;
+  try { result = await resubmitKept(row, envelope => client.submit({ envelope })); }
+  finally { busy = false; delete row._resubmitting; }
+  // The row's new state is shown and saved while its wallet is open (the
+  // tracker, already following every unresolved row, keeps checking it).
+  if (!wallet || row.address !== wallet.addresses.nodus) return;
+  renderActivity();
+  if (current !== revision) return;
+  const what = rowAction(row), idLabel = row.kind ? 'Transaction ID' : 'Transfer ID';
+  if (result.outcome === 'busy') { showBusyReady(row); return; }
+  if (result.outcome === 'sent') {
+    // A plain NODUS transfer the network accepted: Nodus Connect's Messages
+    // may post its payment card (as the confirm-send handler does).
+    if (!row.kind && typeof row.wire === 'string') raise('nodusSent', { to: row.to, amount: row.amount, wire: row.wire, intentId: row.hash });
+    if (STAKE_KINDS.includes(row.kind)) closeStakeRow();
+    message(`${what} submitted; confirmation is pending. ${idLabel} ${row.hash}. Its status is tracked in Activity.`, { category: logCategoryFor(row.kind) });
+  } else if (result.outcome === 'refused') {
+    const why = result.error?.message || `The Nodus network did not accept this ${row.kind ? 'transaction' : 'transfer'}.${result.message ? ` ${result.message}` : ''}`;
+    message(`${why} The outcome is tracked in Activity; its coins stay held until it is included or its expiry block passes.`, { category: logCategoryFor(row.kind), error: true });
+  } else return;
+  submissionFollow = { record: row, what, idLabel, link: false, shown: null }; followSubmission();
+}
 function updateVaultUI() {
   try {
     const saved = localStorage.getItem(VAULT_KEY);

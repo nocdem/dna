@@ -52,7 +52,13 @@ export function createMockNodusModule() {
     history: { enabled: true, from_height: '1', entries: [] }, historyError: null, lastHistory: null, wireId: null,
     // web 0.1.119: names of the operations the node answers "busy"
     // (busyError) until the test removes them.
-    busy: new Set()
+    busy: new Set(),
+    // web 0.1.124: every envelope handed to submit(), in order — busy
+    // answers included (a copy of the bytes at the call). `hedged`: each
+    // build returns different bytes (a fourth byte counting the builds),
+    // as the real module's hedged signature does; off = the fixed three
+    // bytes the older tests compare.
+    submissions: [], hedged: false, builds: 0
   };
   const bytes = () => new Uint8Array(memory.buffer);
   async function op(name, fn) {
@@ -91,14 +97,15 @@ export function createMockNodusModule() {
       }
       if (sum < need) throw new Error('Insufficient NODUS balance.');
       const decoded = { recipient: request.to, amount: request.amount, fee: FEE, change: (sum - need).toString(), expiryHeight: request.expiryHeight, chainId: state.chainId, inputs };
-      return { envelope: Uint8Array.of(1, 2, 3), intentId: INTENT_ID, ...(state.wireId ? { wireId: state.wireId } : {}), decoded: { ...decoded, ...(state.tamper || {}) } };
+      state.builds++;
+      return { envelope: state.hedged ? Uint8Array.of(1, 2, 3, state.builds) : Uint8Array.of(1, 2, 3), intentId: INTENT_ID, ...(state.wireId ? { wireId: state.wireId } : {}), decoded: { ...decoded, ...(state.tamper || {}) } };
     }),
     addrHistory: request => op('addrHistory', async () => {
       state.lastHistory = request;
       if (state.historyError) throw state.historyError;
       return JSON.parse(JSON.stringify(state.history));
     }),
-    submit: ({ envelope }) => op('submit', async () => { state.submitted = envelope; return { accepted: state.accepted }; }),
+    submit: ({ envelope }) => { state.submissions.push(envelope instanceof Uint8Array ? envelope.slice() : envelope); return op('submit', async () => { state.submitted = envelope; return { accepted: state.accepted }; }); },
     scanConfirm: request => op('scanConfirm', async () => { state.lastScan = request; return state.scan; }),
     tick: () => op('tick', async () => { if (state.tickFails) throw new Error('session closed'); }),
     rulesetInfo: () => op('rulesetInfo', async () => { if (state.rulesetError) throw state.rulesetError; return { ...state.ruleset }; }),

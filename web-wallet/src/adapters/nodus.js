@@ -28,6 +28,7 @@
 import { amountUnits, formatUnits } from '../core.js';
 import { NODUS_ASSET } from '../nodus/network.js';
 import { chainName, chainNameOk, parseNameOf } from '../nodus/names.js';
+import { isNodusBusy } from '../nodus/client.js';
 
 const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/, RAW = /^(0|[1-9]\d{0,19})$/;
 const ZERO128 = '0'.repeat(128);
@@ -50,6 +51,23 @@ const DECIMALS = NODUS_ASSET.decimals;
 // show a send once when the node's history lists it (src/nodus/history.js).
 // A module without it (older build, test mock): absent — never invented.
 const builtWire = built => (typeof built?.wireId === 'string' && HEX128.test(built.wireId) ? { wire: built.wireId } : {});
+// Submits one signed envelope (dnac_spend). A node that answered "busy"
+// (web 0.1.119, isNodusBusy) forwarded nothing, so its error carries the
+// SAME signed bytes and their intent id (web 0.1.124): the wallet keeps them
+// with the pending record and sends exactly them again on "Try again"
+// (src/nodus/resubmit.js). A new signing would give different bytes (hedged
+// signature) and could not use the coins the record holds. `refused(result)`
+// is the text of a refusal; any other failure is thrown as it came.
+async function submitSigned(client, envelope, intentId, refused) {
+  let result;
+  try { result = await client.submit({ envelope }); }
+  catch (error) {
+    if (isNodusBusy(error)) Object.assign(error, { envelope, intentId });
+    throw error;
+  }
+  if (!result || result.accepted !== true) throw new Error(refused(result));
+}
+const refusalDetail = result => (typeof result?.message === 'string' && result.message ? ` ${result.message}` : '');
 
 // A raw-unit decimal integer string from the module -> BigInt within uint64.
 export function rawUnits(value, what) {
@@ -311,8 +329,7 @@ export async function prepare({ client, from, to, amount, locked = new Set(), in
       if (used) throw new Error('This review is already closed.');
       used = true;
       await onBroadcast({ hash: decoded.intentId, expiryHeight: decoded.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...decoded.inputs], ...(decoded.wire ? { wire: decoded.wire } : {}) });
-      const result = await client.submit({ envelope: decoded.envelope });
-      if (!result || result.accepted !== true) throw new Error('The Nodus network did not accept this transfer. Its coins stay held until the transfer expires.');
+      await submitSigned(client, decoded.envelope, decoded.intentId, () => 'The Nodus network did not accept this transfer. Its coins stay held until the transfer expires.');
       return decoded.intentId;
     }
   };
@@ -608,8 +625,7 @@ export async function prepareStake({ client, from, kind, validator, amount, comm
       // The record is durable before the envelope leaves the browser; its
       // inputs are held like a send's (lockedInputs) until it resolves.
       await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs], ...(d.wire ? { wire: d.wire } : {}) });
-      const result = await client.submit({ envelope: d.envelope });
-      if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this transaction. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
+      await submitSigned(client, d.envelope, d.intentId, result => `The Nodus network did not accept this transaction. Its coins stay held until it expires.${refusalDetail(result)}`);
       return d.intentId;
     }
   };
@@ -878,8 +894,7 @@ export async function prepareHf6({ client, from, kind, consent = '', validatorId
       // The record is durable before the envelope leaves the browser; its
       // inputs are held like a send's (lockedInputs) until it resolves.
       await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs], ...(d.wire ? { wire: d.wire } : {}) });
-      const result = await client.submit({ envelope: d.envelope });
-      if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this transaction. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
+      await submitSigned(client, d.envelope, d.intentId, result => `The Nodus network did not accept this transaction. Its coins stay held until it expires.${refusalDetail(result)}`);
       return d.intentId;
     }
   };
@@ -1020,8 +1035,7 @@ export async function prepareName({ client, from, name: typed, locked = new Set(
       // The record is durable before the envelope leaves the browser; its
       // inputs are held like a send's (lockedInputs) until it resolves.
       await onBroadcast({ hash: d.intentId, expiryHeight: d.expiryHeight.toString(), fromHeight: (tip + 1n).toString(), inputs: [...d.inputs], ...(d.wire ? { wire: d.wire } : {}) });
-      const result = await client.submit({ envelope: d.envelope });
-      if (!result || result.accepted !== true) throw new Error(`The Nodus network did not accept this registration. Its coins stay held until it expires.${typeof result?.message === 'string' && result.message ? ` ${result.message}` : ''}`);
+      await submitSigned(client, d.envelope, d.intentId, result => `The Nodus network did not accept this registration. Its coins stay held until it expires.${refusalDetail(result)}`);
       return d.intentId;
     }
   };
