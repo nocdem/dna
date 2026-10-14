@@ -3321,6 +3321,27 @@ target_compile_definitions(nodus-cli PRIVATE
     NODUS_CLI_HAS_DNAC=1
     DNAC_TX_BUILDER_ONLY=1)
 
+# stagef_rpc_flood — TEST-ONLY localhost load tool for the Genesis
+# Protocol harness (nodus/tests/integration/stagef). NOT installed, NOT a
+# ctest: a measurement driver the operator/ORCHESTRATOR runs by hand
+# through bench_rpc_flood.sh, never part of genesis_protocol_v2.sh. It
+# links libnodus exactly as nodus-cli does — the shared CORE SPEND builder
+# (nodus_v2_spend_*) and the compiled ruleset table live there — plus the
+# DNAC build-only includes/defs so dnac/dnac.h (fee/size constants) and
+# dnac/env_wire.h resolve the same way. It does NOT compile the DNAC tx
+# wire sources: it builds no legacy DNAC transaction, only version-3 CORE
+# envelopes (through libnodus).
+add_executable(stagef_rpc_flood
+    tests/integration/stagef/tools/rpc_flood.c)
+target_link_libraries(stagef_rpc_flood nodus dsa nodus Threads::Threads)
+target_compile_options(stagef_rpc_flood PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_include_directories(stagef_rpc_flood PRIVATE
+    ${MONOREPO_ROOT}/dnac/include
+    ${MONOREPO_ROOT}/messenger/include)
+target_compile_definitions(stagef_rpc_flood PRIVATE
+    NODUS_CLI_HAS_DNAC=1
+    DNAC_TX_BUILDER_ONLY=1)
+
 # Yol 2 (decision 2026-09-25-web-wallet-nodus-send-transport.md, addendum
 # 2026-09-29): the browser wallet reads the CORE ruleset identity and the
 # SYSTEM metering policy from a header GENERATED from this node's compiled
