@@ -90,7 +90,7 @@ function badge(id, count) {
 const YOUR_ID_TEXT = 'Your ID';
 let walletNameAnswer = null;             // { name } once the wallet's lookup answered, else null
 
-function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAvatar, shownOwnName, profileEntryText, reportOwnIdentity = () => {} }) {
+function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAvatar, shownOwnName, profileEntryText, messageAlert, reportOwnIdentity = () => {} }) {
   const navigate = target => messagesNavigate(target);
 
   function openFromMore(target) {
@@ -314,12 +314,14 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
       if (!lastAvatar && typeof avatar === 'string') lastAvatar = avatar;
       showIdentity();
     },
-    locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; messagesClosed = false; walletId = null; lastName = ''; lastAvatar = ''; ownNameAnswered = false; showIdentity(); }
+    locked() { walletNameAnswer = null; ownId = null; ownName = ''; ownAvatar = ''; messagesClosed = false; walletId = null; lastName = ''; lastAvatar = ''; ownNameAnswered = false; showIdentity(); messageAlert.reset(); }
   };
 
   // Messages' host callbacks (src/connect/ui/messages.js mountMessages).
   const host = {
-    onUnread(count) { badge('nav-chats-count', count); },
+    // The badge, and (web 0.1.122, src/connect/ui/alert.js) the count in the
+    // tab title and the chime for a new message once caughtUp.
+    onUnread(count, caughtUp = false) { badge('nav-chats-count', count); messageAlert.unread(count, caughtUp); },
     onRequests(count) { for (const id of ['nav-more-count', 'more-contacts-count', 'more-requests-count']) badge(id, count); },
     onIdentity(fp, name = '', avatarBase64 = '', closed = false, answered = false) { ownId = fp; ownName = fp ? name : ''; ownAvatar = fp ? avatarBase64 : ''; messagesClosed = !fp && closed === true; if (fp) ownNameAnswered = answered === true; showIdentity(); },
     onScreen(screen) {
@@ -356,11 +358,19 @@ function wireShell({ messagesNavigate, ownIdText, nodusSymbol, initials, fillAva
 }
 
 try {
-  const [{ configureSite, registerExtension, reportOwnIdentity }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }, { mountSmartContracts, smartContractExtension }, { mountNodusRoles, nodusRolesExtension }] = await Promise.all([
-    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js'), import('./evm/ui.js'), import('./nodus-roles.js')
+  const [{ configureSite, registerExtension, reportOwnIdentity }, { mountMessages, messagesNavigate, walletExtension, initials, vaultHost, ownIdText }, { NODUS_ASSET }, { fillAvatar }, { mountVaults, vaultExtension }, { shownOwnName, profileEntryText }, { mountSmartContracts, smartContractExtension }, { mountNodusRoles, nodusRolesExtension }, { createMessageAlert, wireSoundSwitch }] = await Promise.all([
+    import('./wallet-extensions.js'), import('./connect/ui/messages.js'), import('./nodus/network.js'), import('./connect/ui/dom.js'), import('./vaults/ui.js'), import('./connect/ui/chain-names.js'), import('./evm/ui.js'), import('./nodus-roles.js'), import('./connect/ui/alert.js')
   ]);
   configureSite('connect');
-  const { host, nameExtension } = wireShell({ messagesNavigate, ownIdText, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar, shownOwnName, profileEntryText, reportOwnIdentity });
+  // New messages (web 0.1.122): the count in the tab title and a chime; the
+  // "Sound for new messages" switch sits in Device & settings with the other
+  // per-browser choices. Reading the localStorage property itself throws
+  // where the browser blocks site data (as src/app.js autoLockStorage).
+  const messageAlert = createMessageAlert();
+  let soundStorage;
+  try { soundStorage = globalThis.localStorage; } catch { soundStorage = undefined; }
+  wireSoundSwitch({ box: $('message-sound'), note: $('message-sound-note'), alert: messageAlert, storage: soundStorage });
+  const { host, nameExtension } = wireShell({ messagesNavigate, ownIdText, nodusSymbol: NODUS_ASSET.symbol, initials, fillAvatar, shownOwnName, profileEntryText, messageAlert, reportOwnIdentity });
   mountMessages($('nc-root'), host);
   registerExtension(walletExtension);
   registerExtension(nameExtension);

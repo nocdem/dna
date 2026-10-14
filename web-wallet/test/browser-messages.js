@@ -39,6 +39,20 @@
 // arrives after the dialog was closed does not reopen or redraw it; an
 // answer for B that arrives while the dialog shows a second contact C is
 // not drawn into C's dialog (B's read is held by the fake until released).
+// 0.1.122 (new-message alert, src/connect/ui/alert.js): the host's onUnread
+// feeds the alert as src/connect-main.js does, with the page's AudioContext
+// replaced by a stub that counts chimes (oscillator starts). The messages of
+// the first check arrive with caughtUp false — the title shows
+// "(N) Messages (harness)", no chime; at the end three new messages for B in
+// one check chime once and show "(3) …"; with the switch off (the same
+// wireSoundSwitch Device & settings uses, on a checkbox the test adds) one
+// more message raises the title but does not chime; opening B's
+// conversation brings the page's own title back. With a fake clock, on the
+// module alone: catch-up values and the first value after caughtUp never
+// chime, a growth chimes, a second growth within 2 s does not, one 2.1 s
+// later does, a falling total does not, switched off does not, and after
+// reset() the next first value does not. The switch survives a reload
+// (localStorage nodus.connect.sound.v1 '0', then '1').
 //
 // How it can lie: every answer is the fake's — nothing proves a real node
 // stores or returns these records (the C side is the native tests'
@@ -47,6 +61,9 @@
 // profile refresh's keep (keepProfile, saved wallets only) never runs here.
 // The fake has no chain names (nameOf throws, no `nameable`), so the
 // refresh's chain-name recheck is a no-op in this test.
+// The alert's sound is the stub's: no real audio output is checked, and the
+// real Device & settings page (connect-site/index.html #message-sound) is
+// not loaded here — only the same wiring function on a test checkbox.
 //
 // Run: npm run test:messages (CHROMIUM_PATH = a Chromium binary if
 // Playwright's own is not installed; SCREENSHOT_DIR = where the PNGs go —
@@ -127,6 +144,9 @@ try {
       { seq: '5', sender_ts: T(5), text_hex: hex(buildReaction(contentHash(B, OWN, first, T(1)), '❤️', 'add')), kind: 'reaction' }
     ];
     window.__hashFirst = contentHash(B, OWN, first, T(1));
+    // 0.1.122: the test adds B's new messages to this same list.
+    window.__inbox = inbox;
+    window.__T = T;
     // 0.1.121: a second contact C (no messages), and B's profile as the
     // test changes it (window.__peer: name / bio replacing the first ones).
     const C = '3c'.repeat(64);
@@ -183,7 +203,24 @@ try {
     };
     window.__paid = [];
     window.__walletExtension = walletExtension;
-    mountMessages(document.getElementById('nc-root'), { payContact: fp => window.__paid.push(fp) });
+    // 0.1.122: a sound context that counts chimes (an oscillator started),
+    // installed before the alert makes its own; and the alert fed as
+    // src/connect-main.js feeds it, every onUnread call recorded.
+    window.__chimes = 0;
+    const param = () => ({ setValueAtTime() {}, exponentialRampToValueAtTime() {} });
+    window.AudioContext = class {
+      constructor() { this.state = 'running'; this.currentTime = 0; this.destination = {}; }
+      async resume() { this.state = 'running'; }
+      createOscillator() { return { type: '', frequency: param(), connect() {}, disconnect() {}, start() { window.__chimes++; }, stop() {}, onended: null }; }
+      createGain() { return { gain: param(), connect() {}, disconnect() {} }; }
+    };
+    const { createMessageAlert } = await import('/src/connect/ui/alert.js');
+    window.__alert = createMessageAlert();
+    window.__unread = [];
+    mountMessages(document.getElementById('nc-root'), {
+      payContact: fp => window.__paid.push(fp),
+      onUnread: (count, caughtUp) => { window.__unread.push([count, caughtUp]); window.__alert.unread(count, caughtUp); }
+    });
     await Promise.all(walletExtension.nodusIdentified({ client, phrase: 'alpha beta gamma', vaultId: null, fresh: false }));
     client.state = 'ready';
     walletExtension.nodusReady({ client });
@@ -191,6 +228,18 @@ try {
 
   // The contact row appears once the first check round stored B's day.
   await page.waitForFunction(() => document.querySelector('.contact-row .contact-preview')?.textContent.includes('yes indeed') || document.querySelector('.contact-row'));
+  // 0.1.122: the first check finished (caughtUp); what it brought (the
+  // messages that arrived while away) is unread and counted in the title,
+  // and none of it chimed — whether the total grew in renders before
+  // caughtUp or only in the first render with it.
+  await page.waitForFunction(() => window.__unread.some(([, caughtUp]) => caughtUp === true));
+  const firstCheck = await page.evaluate(() => {
+    const at = window.__unread.findIndex(([, caughtUp]) => caughtUp === true);
+    return { settled: window.__unread[at][0], last: window.__unread.at(-1)[0], title: document.title, chimes: window.__chimes };
+  });
+  assert.ok(firstCheck.settled > 0, "B's messages of the first check are unread");
+  assert.equal(firstCheck.title, `(${firstCheck.last}) Messages (harness)`, 'the unread total in the tab title');
+  assert.equal(firstCheck.chimes, 0, 'the first check (messages that arrived while away) does not chime');
   await page.locator(`.contact-row[data-fp="${'2b'.repeat(64)}"]`).click();
   await page.waitForFunction(() => document.querySelectorAll('.message-list .message').length >= 3);
   // W-10 (0.1.100): B's keys were gone from the module at the first read;
@@ -414,6 +463,101 @@ try {
   assert.equal(await peerDialog.locator('.peer-bio').count(), 0, "B's bio is not drawn into C's dialog");
   assert.doesNotMatch(await peerDialog.innerText(), /Fourth bio|Bee Four/);
   await page.keyboard.press('Escape');
+
+  // 0.1.122 — new-message alert. C's conversation is open; B's is read.
+  // The "Sound for new messages" switch: the same wiring Device & settings
+  // uses (alert.js wireSoundSwitch), on a checkbox added here; nothing
+  // stored yet, so it starts on.
+  const mountSwitch = () => page.evaluate(async () => {
+    const { createMessageAlert, wireSoundSwitch } = await import('/src/connect/ui/alert.js');
+    const box = document.createElement('input'), note = document.createElement('p');
+    box.type = 'checkbox'; box.id = 'message-sound'; note.id = 'message-sound-note';
+    document.body.append(box, note);
+    wireSoundSwitch({ box, note, alert: window.__alert || (window.__alert = createMessageAlert()), storage: localStorage });
+    return { checked: box.checked, stored: localStorage.getItem('nodus.connect.sound.v1') };
+  });
+  assert.deepEqual(await mountSwitch(), { checked: true, stored: null }, 'sound is on by default');
+  assert.equal(await page.evaluate(() => window.__chimes), 0, 'nothing new arrived since the first check: no chime');
+  // B's new messages (new seq numbers in B's day bucket). A check round is
+  // started as the page's own "shown again" handler starts one
+  // (messages.js visibilitychange); sync() runs one round at a time, so an
+  // event while a round runs does nothing and the next poll starts it.
+  let nextSeq = 20;
+  const arrive = async count => {
+    await page.evaluate(([n, from]) => {
+      const hex = s => Array.from(new TextEncoder().encode(s), b => b.toString(16).padStart(2, '0')).join('');
+      for (let i = 0; i < n; i++) window.__inbox.push({ seq: String(from + i), sender_ts: window.__T(from + i), text_hex: hex(`new message ${from + i}`), kind: 'chat' });
+    }, [count, nextSeq]);
+    nextSeq += count;
+  };
+  const checkUntil = (total, timeout = 60000) => page.waitForFunction(n => {
+    document.dispatchEvent(new Event('visibilitychange'));
+    const last = window.__unread.at(-1);
+    return last[1] === true && last[0] === n;
+  }, total, { polling: 500, timeout });
+  await arrive(3);
+  await checkUntil(3);
+  assert.equal(await page.title(), '(3) Messages (harness)');
+  await page.waitForFunction(() => window.__chimes === 1);
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.__chimes), 1, 'three new messages in one check: one chime');
+
+  // Switched off (more than the 2 s gap later, so the gap is not what stops it).
+  await page.waitForTimeout(2100);
+  await page.evaluate(() => document.getElementById('message-sound').click());
+  assert.equal(await page.evaluate(() => localStorage.getItem('nodus.connect.sound.v1')), '0');
+  await arrive(1);
+  await checkUntil(4);
+  assert.equal(await page.title(), '(4) Messages (harness)');
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.__chimes), 1, 'sound off: no chime');
+
+  // Read: the page's own title again.
+  await page.locator(`.contact-row[data-fp="${B}"]`).click();
+  await page.waitForFunction(() => document.title === 'Messages (harness)');
+
+  // The module alone, with a fake clock (the stub still counts).
+  const unit = await page.evaluate(async () => {
+    const { createMessageAlert, CHIME_GAP_MS } = await import('/src/connect/ui/alert.js');
+    let t = 100000;
+    const doc = { title: 'Page' };
+    const a = createMessageAlert({ doc, now: () => t });
+    const start = window.__chimes;
+    const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+    const out = {};
+    a.unread(2, false); a.unread(5, false); await tick();
+    out.catchUp = [window.__chimes - start, doc.title];
+    a.unread(5, true); await tick();
+    out.firstSettled = window.__chimes - start;
+    a.unread(6, true); await tick();
+    out.growth = window.__chimes - start;
+    t += 500; a.unread(7, true); await tick();
+    out.burst = window.__chimes - start;
+    t += CHIME_GAP_MS + 100; a.unread(8, true); await tick();
+    out.later = window.__chimes - start;
+    a.unread(3, true); a.unread(3, true); await tick();
+    out.falling = [window.__chimes - start, doc.title];
+    t += CHIME_GAP_MS + 100; a.setSound(false); a.unread(9, true); await tick();
+    out.off = window.__chimes - start;
+    a.setSound(true); a.reset();
+    out.reset = doc.title;
+    t += CHIME_GAP_MS + 100; a.unread(4, false); a.unread(4, true); await tick();
+    out.afterReset = window.__chimes - start;
+    a.unread(0, true);
+    out.zero = doc.title;
+    return out;
+  });
+  assert.deepEqual(unit, {
+    catchUp: [0, '(5) Page'], firstSettled: 0, growth: 1, burst: 1, later: 2,
+    falling: [2, '(3) Page'], off: 2, reset: 'Page', afterReset: 2, zero: 'Page'
+  });
+
+  // The switch survives a reload (localStorage), both ways.
+  await page.reload();
+  assert.deepEqual(await mountSwitch(), { checked: false, stored: '0' }, 'off after a reload');
+  await page.evaluate(() => document.getElementById('message-sound').click());
+  await page.reload();
+  assert.deepEqual(await mountSwitch(), { checked: true, stored: '1' }, 'on again after a reload');
 
   assert.deepEqual(errors, [], 'no page error');
   assert.deepEqual(refused, [], 'no CSP refusal');

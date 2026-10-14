@@ -174,6 +174,9 @@ let netStarted = false;                  // the network phase started (client re
 let online = false;                      // own account checked on the network
                                          // (read, or a fresh one published):
                                          // nothing is sent before
+let caughtUp = false;                    // the first message check of this
+                                         // session finished (web 0.1.122):
+                                         // host.onUnread's second argument
 
 // ── view state ─────────────────────────────────────────────────────────
 // The screens follow the DNA Connect app (messenger/dna_messenger_flutter):
@@ -205,7 +208,7 @@ function wipe() {
   eraseArmed = false; profileTaken = false; mlkemRepublishTried = false; ownNameConfirmed = false; removeArmed = undefined; addResolved = undefined;
   replyTo = undefined; menuFor = undefined; jumpNew = 0;
   payFor = undefined; transferCheckAt = 0; transferChecking = false; transferAgain = false;
-  netStarted = false; online = false; groups = undefined;
+  netStarted = false; online = false; caughtUp = false; groups = undefined;
   for (const set of [profiles, kept, blobs, received, unpublished, saltChecked, dropped, others, lastRead, diags, chainNames, chainAsked, chainTried, vaultRecs, drawnUpTo, hashCache, transferVerdicts]) set.clear();
   notifyVaultHost();
   if (!ui) return;
@@ -935,6 +938,9 @@ async function sync() {
         ? `${storageFailure.message}${notChecked}`
         : `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. New messages are checked every 30 seconds.${notChecked}`;
       logCheck(roundDoneLine(round, { ms: Date.now() - roundAt, fresh: arrivedTotal, failed }));
+      // What arrived while away is in by now (web 0.1.122): from here on a
+      // growing unread total is a new message (the host's chime, alert.js).
+      caughtUp = true;
       render();
       // Payment cards not settled yet (web 0.1.90): this device's history.
       void checkTransfers(gen);
@@ -1453,7 +1459,12 @@ export function ownIdText({ id = null, name = '', closed = false } = {}) {
 
 // ── view: the one-time DOM ─────────────────────────────────────────────
 // root: an empty element of the host page. Every host callback is optional:
-//   onUnread(n)      the total of unread messages (a navigation badge);
+//   onUnread(n, caughtUp)   the total of unread messages (a navigation
+//                    badge, the tab title); caughtUp (web 0.1.122): the
+//                    first message check of this session has finished —
+//                    before it, a growing total is what arrived while away,
+//                    after it a new message (the host's chime, alert.js);
+//                    false while Messages is not open;
 //   onRequests(n)    contact requests waiting for an answer;
 //   onIdentity(fp, name, avatarBase64, closed, answered)   (answered, 0.1.96:
 //                    this session's own name lookup answered — '' is then a
@@ -1834,7 +1845,7 @@ function render({ scroll = false } = {}) {
     if (screen === 'contacts') renderContacts();
     if (screen === 'conversation' && !groupOpen) renderConversation(scroll);
   }
-  host.onUnread?.(unread);
+  host.onUnread?.(unread, open && caughtUp);
   host.onRequests?.(waiting);
   const id = open ? ownFp : null;
   // The own CHAIN name (HF-4, dnac_name_of) travels with the ID; the
