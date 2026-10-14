@@ -401,7 +401,8 @@ try {
   await hold(B);
   await page.locator('.conversation-who').click();
   await page.keyboard.press('Escape');
-  await page.locator('.conversation-head:has(.conversation-who) .nc-back').click();
+  // At 1280 px the list stands beside the conversation (messenger.css hides
+  // the Back button there): C's row is clicked directly.
   await page.locator(`.contact-row[data-fp="${C}"]`).click();
   await page.locator('.conversation-who').click();
   assert.equal(await peerDialog.locator('.peer-id .own-id').innerText(), C);
