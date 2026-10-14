@@ -144,14 +144,33 @@ export function keyCheckLine(witnesses, nodeFp) {
   if (!Array.isArray(witnesses.rows) || witnesses.truncated !== false) return unknown('the network listed only part of the witnesses.');
   return { id: 'key', ok: true, state: 'free', detail: 'This node key is not a witness’s key yet.' };
 }
-// The command the node runs (nodus/tools/nodus-cli.c cmd_validator_consent
-// usage: `validator consent --op stake --owner <hex128> --expiry <h>`,
-// `storage consent --owner <hex128> --expiry <h>`; -i the node identity,
-// -s the node it asks for the chain id and tip).
-export function consentCommand({ kind, owner, expiry }) {
-  const head = 'nodus-cli -i ~/.nodus -s 127.0.0.1';
-  if (kind === 'storageRegister') return `${head} storage consent --owner ${owner} --expiry ${expiry}`;
-  return `${head} validator consent --op stake --owner ${owner} --expiry ${expiry}`;
+// The one-line request code the node signs from (decision
+// docs/plans/decisions/2026-10-14-consent-request-code.md, BUGS W-22):
+// `nodus-consent-v1:<role>:<owner>:<expiry>:<chain>` — role `witness` (a
+// stake) or `storage` (a storage registration), owner this wallet's
+// fingerprint (128 lowercase hex), expiry the block the consent lasts until
+// (decimal), chain the 32-byte id of the chain this page talks to (64
+// lowercase hex). No space and no shell character: it is pasted as the one
+// argument of `sudo nodus-cli consent <code>`, which finds the node's own key
+// in the node's configuration (no -i to get wrong), shows what it is about to
+// sign and the node's fingerprint, and asks before it signs. Anything else
+// throws: the page never shows a code it did not check.
+const CONSENT_ROLES = Object.freeze({ stake: 'witness', storageRegister: 'storage' });
+const HEX128 = /^[0-9a-f]{128}$/, HEX64 = /^[0-9a-f]{64}$/;
+export function consentRequestCode({ kind, owner, expiry, chainId } = {}) {
+  const role = Object.hasOwn(CONSENT_ROLES, kind) ? CONSENT_ROLES[kind] : null;
+  if (!role) throw new Error('Unknown consent action.');
+  if (typeof owner !== 'string' || !HEX128.test(owner)) throw new Error('Invalid owner for the consent request.');
+  let h = null;
+  if (typeof expiry === 'bigint') h = expiry > 0n ? expiry.toString() : null;
+  else if (typeof expiry === 'string' && /^[1-9]\d{0,19}$/.test(expiry)) h = expiry;
+  if (h === null) throw new Error('Invalid expiry block for the consent request.');
+  if (typeof chainId !== 'string' || !HEX64.test(chainId)) throw new Error('Invalid chain for the consent request.');
+  return `nodus-consent-v1:${role}:${owner}:${h}:${chainId}`;
+}
+// The command the node owner runs, the code as its one argument.
+export function consentRequestCommand(code) {
+  return `sudo nodus-cli consent ${code}`;
 }
 // The first epoch start (a multiple of E) at or after block h.
 export function epochStartAtOrAfter(h, E) { return ((h + E - 1n) / E) * E; }
@@ -175,7 +194,6 @@ export function storageExitHeights(tip, E, lockEpochs) {
 // ── the page ────────────────────────────────────────────────────────────
 
 const ACTIVITY_TITLES = Object.freeze({ stake: 'Witness bond', storageRegister: 'Storage node bond', storageExit: 'Leaving storage', unstake: 'Leaving the witnesses' });
-const WHOAMI = 'nodus-cli -i ~/.nodus whoami';
 
 // Host hooks (src/app.js nodusReady): lockedInputs() — coins of pending
 // NODUS transactions; roleRecorder(transfer, title) — the Activity record of
@@ -391,19 +409,24 @@ function consentFlow(kind) {
   if (form.prepared) return [];
   const out = [];
   const owner = client.fingerprint;
-  // 1 · the command
+  // 1 · the command: one request code (owner, expiry, chain) in one fixed
+  // command; the chain is the id this client's module took with the wallet's
+  // identity (src/nodus/client.js takeIdentity) — no code without it
   const cmdNodes = [];
+  const chainId = client.chainId;
   if (form.expiry === null) cmdNodes.push(el('p', { className: 'hint', text: 'The command appears once the network’s current block height is read.' }));
+  else if (typeof chainId !== 'string' || !HEX64.test(chainId)) cmdNodes.push(el('p', { className: 'hint', text: 'The command appears once the network’s chain is read.' }));
   else {
-    const command = consentCommand({ kind, owner, expiry: form.expiry.toString() });
+    const command = consentRequestCommand(consentRequestCode({ kind, owner, expiry: form.expiry, chainId }));
     const copyNote = el('span', { className: 'roles-copy-note' });
     cmdNodes.push(
-      el('p', { className: 'hint', text: `On the computer that runs your ${kind === 'stake' ? 'witness' : 'storage'} node, run this. It prints a consent for this wallet, valid until block ${block(form.expiry)}.` }),
+      el('p', { className: 'hint', text: `On the computer that runs your ${kind === 'stake' ? 'witness' : 'storage'} node, run this command. It shows what it is about to sign and your node’s fingerprint, asks you to confirm, and then prints a consent for this wallet, valid until block ${block(form.expiry)}. Paste that consent below.` }),
       el('code', { className: 'roles-cmd', text: command }),
       el('div', { className: 'roles-actions' }, btn('Copy command', async () => {
         try { await navigator.clipboard.writeText(command); copyNote.textContent = 'Copied.'; } catch { copyNote.textContent = 'Copy is unavailable here; select the command and copy it.'; }
       }), copyNote),
-      el('p', { className: 'hint', text: `Your node’s key fingerprint, to compare on the Review: ${WHOAMI}` }));
+      el('p', { className: 'hint', text: 'If the node says the command is unknown, update the node’s software.' }),
+      el('p', { className: 'hint', text: 'On the Review, the node key fingerprint must match the node fingerprint this command printed on your node before it signed.' }));
   }
   out.push(card('1 · Prepare your node', ...cmdNodes));
   // 2 · paste and checks
@@ -542,7 +565,7 @@ function reviewCard() {
   const fpBlock = kind === 'storageExit' || kind === 'unstake' ? null : el('div', { className: 'roles-fp' },
     el('p', { className: 'roles-fp-label', text: 'Node key fingerprint' }),
     el('code', { className: 'roles-fp-value', text: d.nodeFp }),
-    el('p', { className: 'roles-fp-note', text: `Check that this matches the fingerprint your node printed (${WHOAMI} on that node). If it does not, cancel: someone else’s node would get this role.` }));
+    el('p', { className: 'roles-fp-note', text: 'Check that this matches the fingerprint your node printed: the node fingerprint the consent command showed on your node before it signed. If it does not, cancel: someone else’s node would get this role.' }));
   const kv = el('dl', { className: 'roles-kv' });
   const pair = (k, v) => kv.append(el('dt', { text: k }), el('dd', { text: v }));
   if (d.bond > 0n) pair('Bond', nodus(d.bond));
