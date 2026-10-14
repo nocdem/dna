@@ -18,7 +18,9 @@
 //                               recovery phrase; vaultId: the saved wallet's
 //                               id when the wallet was opened by unlocking
 //                               the saved copy, else null; fresh: true only
-//                               for words generated in this tab and verified
+//                               for words generated in this tab (typed again,
+//                               or not typed again after the 0.1.123 skip
+//                               warning — app.js walletFresh)
 //                               (decision 2026-09-30-nodus-connect-thin-core
 //                               Q1). lockedInputs(): the coins of the open
 //                               wallet's pending NODUS transactions (a Set
