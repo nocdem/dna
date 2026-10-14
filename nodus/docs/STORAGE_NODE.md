@@ -110,8 +110,14 @@ public IP):
 }
 ```
 
-Do **not** add `retain_blocks`. A storage node keeps every block until its segment files are
+Do **not** add `retain_blocks` yet. A storage node keeps every block until its segment files are
 complete; pruning early makes it fail its checks ([runbook §2.6](DEPLOY_RUNBOOK.md) step 1a).
+**When you may prune** (same source): the node's log shows, for the current epoch,
+`W_STHOLD epoch H=<H>: <N> segment(s) to hold, 0 not complete yet`; `ls /var/lib/nodus/data/segments`
+lists `seg-<k>.ok` for every segment it holds; and one more full epoch has passed without
+`W_STHOLD` / `W_STSEG` errors. Then set `"retain_blocks": 120960` and restart. If you set it too
+early the node warns at start and every epoch (`W_STHOLD retain_blocks=… is set while N assigned
+segment(s) are not complete`) — set it back to 0 and wait.
 
 ## 4. Install and start
 
