@@ -176,11 +176,6 @@ set(NODUS_SOURCES
     # shows and reads identity_path / tcp_port from the node config.
     # Parsing only — the signing stays cmd_validator_consent's.
     src/client/nodus_consent_req.c
-    # `nodus-cli status`: the network-free half — the node config fields
-    # it shows, the network file's peer hosts, /proc parsing, the chain
-    # database and segment directory sizes, the disk, a fixed-argv runner.
-    # Read-only; the RPCs stay in nodus-cli.c.
-    src/client/nodus_node_status.c
     # nodus_cc_client.c (the CLI's short-lived 4004 p2p peer) is DELETED:
     # governance approvals are collected by the proposer's own node
     # (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md,
@@ -583,6 +578,13 @@ set(NODUS_SOURCES
 # Server-only sources: Linux only (UDP uses epoll, server/witness are Linux-only)
 if(NOT WIN32)
     list(APPEND NODUS_SOURCES
+        # `nodus-cli status`: the network-free half — the node config
+        # fields it shows, the network file's peer hosts, /proc parsing,
+        # the chain database and segment directory sizes, the disk, a
+        # fixed-argv runner. Read-only; the RPCs stay in nodus-cli.c.
+        # POSIX only (fork/exec, statvfs, /proc) — the messenger tree's
+        # Windows build compiles this source list too, so it sits here.
+        src/client/nodus_node_status.c
         src/transport/nodus_udp.c
         # WebSocket entry of the client port (RFC 6455 handshake + frame
         # codec; pure, no sockets). Server-side only, like the listener

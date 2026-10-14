@@ -7109,8 +7109,10 @@ static int cmd_consent_code(const char *server_ip, uint16_t server_port,
  * consent-request-code.md): the config (default /etc/nodus.conf) names
  * identity_path and tcp_port; -i / -s / -p override. The node key is
  * loaded READ-ONLY (nodus_identity_load_readonly — only nodus-core writes
- * identity files); without it (not root) the sessions use a random
- * identity and the fingerprint-bound rows print as unknown.
+ * identity files) only for its fingerprint and public key; without it
+ * (not root) the rows bound to it print as unknown. Every session —
+ * local and remote — authenticates with a throwaway identity generated
+ * for this run, never with the node key (reason in cmd_status).
  *
  * Sources:
  *   - tip, rule-set generation: dnac_ruleset_info (the same RPC on this
@@ -7318,24 +7320,38 @@ static int cmd_status(const char *server_ip, uint16_t server_port,
     if (!port_given) server_port = cfg_port;
     if (!server_ip) server_ip = "127.0.0.1";
 
+    /* The node key is read only for what the screen shows about it — its
+     * fingerprint and public key — and cleared at once. No session
+     * authenticates with it: a tier-2 auth registers presence for the
+     * authenticating fingerprint on the node it reaches
+     * (nodus_auth.c:202 nodus_presence_add_local), and a read-only status
+     * screen must not announce this node on another one. None of the
+     * RPCs used here is bound to the session's fingerprint
+     * (nodus_witness_handlers.c: dnac_storage_status takes the fp as an
+     * argument, :3834-3844; dnac_committee, :4229, dnac_ruleset_info,
+     * :3390, and dnac_supply, :361, take none; the "owner must match
+     * authenticated session fingerprint" gates, :762 and :2503, belong to
+     * RPCs not called here), so every session — local and remote — runs
+     * on one throwaway identity generated for this run. */
     bool have_key = false;
+    char node_fp[NODUS_KEY_HEX_LEN];
+    uint8_t node_pk[NODUS_PK_BYTES];
     if (key_dir) {
         if (nodus_identity_load_readonly(key_dir, &identity) == 0) {
             have_key = true;
+            memcpy(node_fp, identity.fingerprint, sizeof(node_fp));
+            memcpy(node_pk, identity.pk.bytes, sizeof(node_pk));
         } else {
-            nodus_identity_clear(&identity);
             snprintf(key_err, sizeof(key_err), "cannot load the node key "
                      "from %s — run with sudo", key_dir);
         }
+        nodus_identity_clear(&identity);
     }
-    if (!have_key) {
-        /* the sessions still need an identity: a random one, as every
-         * command without -i uses */
-        if (nodus_identity_generate(&identity) != 0) {
-            cli_status_restore_stderr(saved_stderr);
-            fprintf(stderr, "cannot create a session identity\n");
-            return 1;
-        }
+    if (nodus_identity_generate(&identity) != 0) {
+        nodus_identity_clear(&identity);
+        cli_status_restore_stderr(saved_stderr);
+        fprintf(stderr, "cannot create a session identity\n");
+        return 1;
     }
 
     printf("Nodus node status — %s:%u, config %s\n", server_ip,
@@ -7354,9 +7370,9 @@ static int cmd_status(const char *server_ip, uint16_t server_port,
                   "installed by install-node.sh?)", CLI_STATUS_INSTALL_COMMIT);
     }
     if (have_key) {
-        st_kv("fingerprint", NULL, "%s", identity.fingerprint);
+        st_kv("fingerprint", NULL, "%s", node_fp);
         char p2p_id[CMT_P2P_ID_CAP];
-        if (cmt_p2p_pubkey_to_id(identity.pk.bytes, p2p_id) == CMT_OK)
+        if (cmt_p2p_pubkey_to_id(node_pk, p2p_id) == CMT_OK)
             st_kv("P2P ID", NULL, "%s", p2p_id);
         else
             st_kv("P2P ID", NULL, "unknown (derivation failed)");
@@ -7559,7 +7575,7 @@ static int cmd_status(const char *server_ip, uint16_t server_port,
         nodus_dnac_storage_status_t ss;
         memset(&ss, 0, sizeof(ss));
         const int q = nodus_client_dnac_storage_status(&lc,
-                                                       identity.fingerprint,
+                                                       node_fp,
                                                        &ss);
         if (q != 0) {
             st_kv("storage node", NULL, "unknown (dnac_storage_status "
@@ -7624,7 +7640,7 @@ static int cmd_status(const char *server_ip, uint16_t server_port,
         } else {
             int seat = -1;
             for (int i = 0; i < c->count; i++) {
-                if (memcmp(c->entries[i].pubkey, identity.pk.bytes,
+                if (memcmp(c->entries[i].pubkey, node_pk,
                            sizeof(c->entries[i].pubkey)) == 0) {
                     seat = i;
                     break;
