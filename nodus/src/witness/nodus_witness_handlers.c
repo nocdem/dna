@@ -5577,9 +5577,14 @@ int nodus_witness_v3_block_build(nodus_witness_t *w, nodus_cmt_store_t *store,
         v3b_fail(&c, NODUS_ERR_INTERNAL_ERROR, "allocation failed");
         goto done;
     }
+    /* the intent row is looked up through the UNIQUE tx_id autoindex
+     * ((global_height, global_index) has no index on v2_intent_index, so a
+     * join led by it scans the whole table once per item); the position
+     * columns are a consistency filter on the row found */
     if (sqlite3_prepare_v2(w->db,
             "SELECT t.tx_id, i.tx_id, i.intent_id FROM v2_tx_index t "
-            "JOIN v2_intent_index i ON i.global_height = t.global_height "
+            "JOIN v2_intent_index i ON i.tx_id = t.tx_id "
+            "AND i.global_height = t.global_height "
             "AND i.global_index = t.global_index "
             "WHERE t.global_height = ?1 AND t.global_index = ?2",
             -1, &c.st_ids, NULL) != SQLITE_OK ||
