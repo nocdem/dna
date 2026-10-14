@@ -2082,6 +2082,13 @@ add_executable(test_v2_qc_alloc_fault tests/test_v2_qc_alloc_fault.c)
 target_link_libraries(test_v2_qc_alloc_fault nodus dsa nodus crypto)
 target_link_options(test_v2_qc_alloc_fault PRIVATE
                     -Wl,--wrap=malloc -Wl,--wrap=calloc)
+# --wrap sees only real calls: at -O2 (a Release build) GCC removes the test's
+# own malloc/free pair in its interposer self-check (section 8), the
+# interposer never sees it and the check fails although nothing is wrong
+# (read in the disassembly, 2026-10-14). The allocation built-ins are off
+# for this test's own translation unit only; the library is unchanged.
+target_compile_options(test_v2_qc_alloc_fault PRIVATE
+                       -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-free)
 add_test(NAME test_v2_qc_alloc_fault COMMAND test_v2_qc_alloc_fault)
 
 # Ledger V2 O15A — obligation 5: the state validated for migration must be

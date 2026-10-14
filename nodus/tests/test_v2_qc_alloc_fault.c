@@ -63,9 +63,14 @@ static int checks;
 void *__real_malloc(size_t n);
 void *__real_calloc(size_t n, size_t sz);
 
-static int      g_armed;      /* 0 = pass everything through            */
-static long     g_countdown;  /* fail the allocation that hits zero     */
-static long     g_seen;       /* allocations observed while armed       */
+/* volatile: the compiler sees calls to malloc / calloc and library
+ * functions, never to the __wrap_ versions the LINKER substitutes, so to it
+ * nothing can change these statics between arm() and disarm(); at -O2 it
+ * folded disarm()'s count to 0 (a Release build failed section 8; read in
+ * the disassembly, 2026-10-14). Every access must be a real one. */
+static volatile int  g_armed;      /* 0 = pass everything through       */
+static volatile long g_countdown;  /* fail the allocation that hits zero */
+static volatile long g_seen;       /* allocations observed while armed  */
 
 void *__wrap_malloc(size_t n) {
     if (g_armed) {
