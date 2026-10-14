@@ -85,7 +85,11 @@ for (const slug of scanPages) {
     // the thin bar and the share are circulating as a share of the total.
     + keyCard('supply-details', 'key-supply', ['Supply', 'Arz'], `<div class="key-value mono supply-pair"><span class="supply-circ" id="stat-circulating">—</span><span class="supply-of"><span class="supply-slash">/</span><span id="stat-total">—</span></span></div>`
       + `<div class="key-share"><div class="share-bar key-bar" id="stat-supply-bar" aria-hidden="true"></div><span class="mono" id="stat-supply-share">—</span></div>`,
-      keySub('Circulating / total supply · NODUS', 'Dolaşımdaki / toplam arz · NODUS'), ['Supply details ↓', 'Arz ayrıntıları ↓'])
+      keySub('Circulating / total supply · NODUS', 'Dolaşımdaki / toplam arz · NODUS')
+      // Reward pools (operator 2026-10-14): the buckets after circulating, same labels as the table
+      // below; amounts filled by scan/app.js displaySupply. No link inside — the card stays one link.
+      + `<div class="key-pools">${text('Reward pools', 'Ödül havuzları', 'div', 'class="key-label"')}${supplyBuckets.slice(1).map(([id,en,tr]) => `<div class="key-pool"><span class="key-pool-name"><span class="swatch sw-${id}" aria-hidden="true"></span>${text(en,tr)}</span><span class="mono key-pool-value" id="pool-${id}">—</span></div>`).join('')}</div>`,
+      ['Supply details ↓', 'Arz ayrıntıları ↓'])
     + keyCard('throughput', 'key-small', ['Throughput now', 'Anlık işlem hızı'], keyValue('tps-minute'), keySub('Last minute', 'Son dakika'), ['Throughput details ↓', 'İşlem hızı ayrıntıları ↓'])
     + keyCard('staking', 'key-small', ['Witnesses', 'Witness’lar'], keyValue('stake-validators'), '<div class="key-sub" id="stake-active">—</div>', ['Staking details ↓', 'Stake ayrıntıları ↓'])
     + keyCard('rewards', 'key-small', ['Next payday', 'Sonraki ödeme günü'], keyValue('payday-blocks'), '<div class="key-sub" id="payday-eta">—</div>', ['Rewards details ↓', 'Ödül ayrıntıları ↓'])

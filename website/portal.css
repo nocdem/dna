@@ -26,6 +26,8 @@
 [data-page=stats] .key-share{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted)}[data-page=stats] .key-share .key-bar{flex:1;height:6px;border:0;border-radius:3px}[data-page=stats] .key-bar .bar-seg{stroke-width:0}
 [data-page=stats] .key-sub{font-size:11px;color:var(--muted);margin-top:auto;min-height:1.65em}
 [data-page=stats] .key-go{font-size:11px;color:#c3d6a3;transition:color .15s}
+[data-page=stats] .key-pools{display:flex;flex-direction:column;gap:5px;border-top:1px solid var(--line);padding-top:10px}[data-page=stats] .key-pools .key-label{margin-bottom:2px}
+[data-page=stats] .key-pool{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:12px;font-size:12px}[data-page=stats] .key-pool-name{display:inline-flex;align-items:center;min-width:0;color:var(--muted)}[data-page=stats] .key-pool-value{margin-left:auto;text-align:right;overflow-wrap:anywhere}[data-page=stats] .key-pool-value .frac{color:var(--muted)}
 [data-page=stats] .stats-block{margin-top:64px;scroll-margin-top:16px}
 [data-page=stats] .stats-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px 28px;padding-bottom:16px;margin-bottom:22px;border-bottom:1px solid var(--line)}
 [data-page=stats] .stats-head .section-title{margin:0}[data-page=stats] .stats-sub{font-size:12px;color:var(--muted);max-width:560px}

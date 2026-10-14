@@ -764,3 +764,15 @@ lists the storage node and the 2,000,000 bond; "Planned, not live" keeps compute
 HF-8. Scan: `scan/app.js` `hardForks` gains HF-6 (param 18, with `paramName`), and the planned
 list in `build-portals.mjs` drops HF-6 / HF-7. `npm run build:portals` and `npm run check` were
 run; browser validation has not been run for this change.
+
+2026-10-14, Scan Statistics "Reward pools" (operator: under circulating supply, show the reward
+pools): the Supply key card gains a "Reward pools" / "Ödül havuzları" block under its
+"Circulating / total supply" line — one line per pool with its swatch, in the table's order and
+with the table's labels (`supplyBuckets` after circulating in `build-portals.mjs`): Witness
+rewards remaining (`reward_pool`), Storage, Compute, Bandwidth, Future services (`treasury`
+pools 1-4). `scan/app.js` `displaySupply` fills `#pool-*` with the same grouped amount as the
+card's pair (`bigAmount`, fraction smaller), "—" for null. The block holds no link, so the card
+stays one link to `#supply-details`; lines wrap at phone width (`.key-pool*` in `portal.css`).
+`npm run build:portals` (all pages re-stamped: only the `?v=` values changed outside
+`scan/stats.html`) and `npm run check` were run; browser validation has not been run for this
+change.

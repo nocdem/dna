@@ -344,6 +344,8 @@
     const circulating = rawUnits(stats.circulating);
     if ($('stat-supply-bar')) shareBar($('stat-supply-bar'), [['sw-circulating', circulating]], total);
     if ($('stat-supply-share')) $('stat-supply-share').textContent = percent(share(circulating, total));
+    // Key card "Reward pools": every bucket after circulating, in the table's order.
+    for (const id of supplyIds.slice(1)) if ($('pool-' + id)) bigAmount($('pool-' + id), raw[id]);
     for (const id of supplyIds) {
       $('bucket-' + id).textContent = groupedAmount(raw[id]);
       $('share-' + id).textContent = percent(share(rawUnits(raw[id]), total));
