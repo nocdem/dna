@@ -138,8 +138,11 @@
 #     admitted under the inbound cap because the fleet has 8 nodes, far
 #     below max_num_inbound_peers — the cap-crowding risk khan decision 3
 #     names (and its storage-registry exemption) is NOT exercised.
-#   - **NOT RUN YET.** Written against the source; no line has run on a
-#     cluster.
+#   - **Run once, PASS (2026-10-14, main 0bdbac29e):** standalone on a
+#     fresh combined bring-up, default build, production constants
+#     (epoch 720), STAGEF_V2_CANDIDATES=1, one machine — claim at height 2,
+#     spend at height 4, 7/7 state_root identical and cand1's block 4
+#     equal to node 1's. Not run in any split mode (it SKIPs there).
 #   - **rc=99 is not a pass.**
 #
 # EXIT: 0 pass (every step asserted), 99 skip, anything else fail.
