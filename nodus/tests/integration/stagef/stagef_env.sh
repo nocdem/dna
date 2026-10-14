@@ -1618,8 +1618,11 @@ NJ
 # PER-NODE CONFIG (block pruning — decision 2026-10-03-block-pruning-7-
 # paydays.md; test_cmt_prune.sh)
 #
-# `retain_blocks` is a NODE-LOCAL nodus.json key (nodus_node_config.c,
-# default 0 = archive), so a mixed-retention cluster needs one config per
+# `retain_blocks` is a NODE-LOCAL nodus.json key (nodus_node_config.c;
+# since decision 2026-10-14-role-based-pruning: absent = AUTO by role — a
+# validator or storage node keeps 7 × 24 × E blocks, and only when that
+# exceeds the chain's evidence window, otherwise everything; explicit 0 =
+# archive), so a mixed-retention cluster needs one config per
 # node. When $BASE_DIR/node<N>/nodus.json exists, EVERY spawn of node N
 # passes it with -c instead of the shared $BASE_DIR/nodus.json: the core
 # (stagef_core_cmd — so stagef_spawn_core and test_v2_partial_wipe.sh's
@@ -1655,7 +1658,8 @@ stagef_node_config() {
 # names retain_blocks (a second key would leave the winner to the JSON
 # parser). Takes effect at node N's NEXT start. RETAIN 0 writes an
 # explicit archive file; stagef_remove_node_config returns the node to
-# the shared file.
+# the shared file — which has no retain_blocks, so that node is then AUTO
+# (by role), no longer an archive.
 stagef_write_node_config() {
     local n="$1" rb="$2" shared out tmp body
     shared="$BASE_DIR/nodus.json"

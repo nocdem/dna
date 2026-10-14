@@ -7775,15 +7775,21 @@ static int cmd_status(const char *server_ip, uint16_t server_port,
           cfg.has_data_path ? "" : " (default)");
     st_kv("network_file", NULL, "%s",
           cfg.network_file[0] ? cfg.network_file : "(not set)");
-    if (cfg.has_retain_blocks)
-        st_kv("retain_blocks", NULL, "%lld%s — a storage node must not "
-              "prune before its segments are complete: %s",
-              (long long)cfg.retain_blocks,
-              cfg.retain_blocks == 0 ? " (keeps every block)" : "",
-              CLI_STATUS_WIKI_STORAGE);
+    /* decision 2026-10-14-role-based-pruning (nodus_witness_role_prune.c):
+     * absent = AUTO by role, 0 = archive, N = N; a storage node never
+     * prunes a block whose segment file is not complete */
+    if (cfg.has_retain_blocks && cfg.retain_blocks == 0)
+        st_kv("retain_blocks", NULL, "0 — archive: every block is kept");
+    else if (cfg.has_retain_blocks)
+        st_kv("retain_blocks", NULL, "%lld — the last %lld blocks are kept "
+              "(a storage node keeps blocks until their segment file is "
+              "complete)", (long long)cfg.retain_blocks,
+              (long long)cfg.retain_blocks);
     else
-        st_kv("retain_blocks", NULL, "not set (keeps every block) — before "
-              "setting it on a storage node: %s", CLI_STATUS_WIKI_STORAGE);
+        st_kv("retain_blocks", NULL, "not set — automatic by role: a witness "
+              "or storage node keeps the last 7 paydays (a storage node keeps "
+              "blocks until their segment file is complete); a node with no "
+              "role keeps every block: %s", CLI_STATUS_WIKI_STORAGE);
 
     fflush(stdout);
     nodus_identity_clear(&identity);

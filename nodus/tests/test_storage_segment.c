@@ -120,8 +120,10 @@
  * checkpoint (LoadValidators' walk back to the last checkpoint) is not
  * exercised, only a checkpoint row; the 4004 transport (0x73 on a live
  * host, peer rotation, timeouts), the holder's tick (its export → fetch
- * switch, its rotate on a refused set) and the retain_blocks warning run
- * only on a live node (no harness scenario in this package);
+ * switch, its rotate on a refused set) run only on a live node (no harness
+ * scenario in this package); the retain_blocks warning that used to sit
+ * here is gone — the role-based prune guard (nodus_witness_role_prune.c)
+ * replaced it;
  * nodus_witness_sthold_on_msg itself (the serving side's message entry)
  * is not driven here.
  *
