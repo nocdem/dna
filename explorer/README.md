@@ -7,6 +7,13 @@ JSON API. The Nodus Scan frontend (`scan.nodusnetwork.io`) lives in
 `website/scan/` (see `website/deploy/README.md`); the legacy
 `scan.cpunk.io` frontend is no longer in this repository.
 
+**Version 0.2.6** names the HF-6 chain-config params in `/api/governance`:
+18 `RULESET_GEN_ROLES` (the HF-6 vote of 2026-10-13, block 175,307, was shown
+with `param_name` null by 0.2.5), 19 `STAKE_MIN`, 20 `POWER_CAP_BPS` and 21
+`STORAGE_BOND`; retired 16 keeps its label `RULESET_GEN_STORAGE` (a committed
+row keeps its name). The names were already in the source (HF-6 slices 8a /
+8c); 0.2.6 is the first deployed build carrying them. Nothing else changes.
+
 **Version 0.2.5** adds the `staking` object to `/api/stats` (bonded
 validators, their self-stake, the NODUS delegated to them and the number of
 delegation positions — definitions below) and, with HF-8, names chain-config
