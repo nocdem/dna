@@ -153,19 +153,24 @@ when the two are close (a few blocks apart).
 
 1. Open [Nodus Connect](https://connect.nodusnetwork.io) with the wallet that will own the
    node. Go to **More → Nodus → Become a storage node**.
-2. The page shows a command. **Change one thing before you run it**: the page writes
-   `-i ~/.nodus`. Your node's key is in `/var/lib/nodus/identity`, so on the node run:
+2. The page shows one command with a request code in it. Copy it and run it on the node as is:
 
    ```bash
-   sudo nodus-cli -i /var/lib/nodus/identity -s 127.0.0.1 storage consent \
-       --owner <the owner shown by the page> --expiry <the block shown by the page>
+   sudo nodus-cli consent nodus-consent-v1:storage:<owner>:<block>:<chain id>
    ```
 
-   It prints a consent beginning `nodus-valbind-consent v1`. The consent contains no secret.
-3. Paste the consent into the page. The page checks it and shows your node's fingerprint;
-   compare it with `sudo nodus-cli -i /var/lib/nodus/identity whoami` on the node — it must
-   be the same. If it is not, cancel.
+   The command finds the node's key itself (through `identity_path` in `/etc/nodus.conf`;
+   `--config <file>` if yours is elsewhere), shows what it is about to sign — the role, the
+   owner, the last valid block, the chain and **this node's fingerprint** — and asks
+   `Sign this consent? [y/N]`. Answer `y` only if you asked Nodus Connect for this code
+   yourself. It then prints a consent beginning `nodus-valbind-consent v1`. The consent
+   contains no secret.
+3. Paste the consent into the page. The page checks it and shows the node's fingerprint;
+   it must be the fingerprint the command printed on the node. If it is not, cancel.
 4. Review and confirm. The wallet locks the bond (exactly 1 000 000 NODUS) and pays the fee.
+
+If the node answers that `consent` is an unknown command, its `nodus-cli` is older than this
+guide: rebuild from the current source (step 2).
 
 The consent is valid only until the block it names (at most 720 blocks ahead), so do the
 steps in one go. If it expires, run the command again for a fresh one.
