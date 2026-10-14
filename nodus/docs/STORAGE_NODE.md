@@ -10,6 +10,21 @@ takes you from an empty machine to a registered node. The full mechanism — pro
 grace, settlement — is in [`DEPLOY_RUNBOOK.md` §2.6](DEPLOY_RUNBOOK.md); this page links to
 it wherever a detail matters.
 
+> **The quick way — steps 2 to 4 in one command.** On a Debian/Ubuntu x86-64 server:
+>
+> ```bash
+> curl -fsSL https://nodusnetwork.io/install-node.sh | sudo bash
+> ```
+>
+> It checks the machine (root, OS, AVX/BMI2/ADX), installs the build tools, downloads the
+> latest `main` and builds it, packages it with `deploy/make-dist.sh`, asks for the public IP,
+> writes `/etc/nodus-network.json` and `/etc/nodus.conf` exactly as in step 3, offers to open
+> TCP 4004 in ufw, installs with the package's `install.sh --layout split` and prints the node's
+> fingerprint. Run again on the same machine it **updates** the node (key, settings and chain
+> data are kept; the installed commit is in `/var/lib/nodus/install-commit`). Options:
+> `--help`. The script is `website/install-node.sh` in this repository; its SHA-256 is on the
+> Wiki page. Then continue with step 5. The steps below are what it does, for doing it by hand.
+
 > **Two words that look alike.** The `nodus-storage` *program* is the DHT half of a node. It
 > is **not** what makes a storage node. The storage-node role is held by the process that
 > keeps the chain (`nodus-witness` in the layout below). You install all three programs

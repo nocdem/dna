@@ -776,3 +776,15 @@ stays one link to `#supply-details`; lines wrap at phone width (`.key-pool*` in 
 `npm run build:portals` (all pages re-stamped: only the `?v=` values changed outside
 `scan/stats.html`) and `npm run check` were run; browser validation has not been run for this
 change.
+
+2026-10-14, one-command node installer (`install-node.sh`, decision
+`docs/plans/decisions/2026-10-14-node-install-script.md`): the script is published at
+`https://nodusnetwork.io/install-node.sh` (`public-files.mjs`, `text/plain`). It installs a
+testnet node on Debian/Ubuntu x86-64 (checks, apt build tools, latest `main` from GitHub, Release
+build, `nodus/deploy/make-dist.sh`, settings with the seven witnesses, optional ufw 4004,
+`install.sh --layout split`) and, run again, updates it in place. The Wiki "Run a storage node"
+section now starts with that command and the script's SHA-256; **every edit of the script must
+update that hash in `wiki/content.mjs` in the same commit.** Checked: `bash -n`; a
+`--build-only` run as a normal user (latest main 9c30f0d7, 0 warnings, package
+nodus-0.26.2-linux-x86_64.tar.gz, tree clean). The install and update paths have not run on a
+fresh machine yet. `npm run build:portals` and `npm run check` were run.
