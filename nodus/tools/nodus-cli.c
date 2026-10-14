@@ -30,6 +30,7 @@
                                              * voting-power unit          */
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,6 +83,9 @@
 #include "client/nodus_v2_name.h"              /* the shared name builder    */
 #include "client/nodus_v2_msig.h"              /* the shared msig library    */
 #include "client/nodus_consent_req.h"          /* `consent <code>`           */
+#include "client/nodus_node_status.h"          /* `status`                   */
+#include "witness/nodus_witness_network_file.h" /* `status`: network file    */
+#include <fcntl.h>                             /* `status`: quiet stderr     */
 #ifdef NODUS_EVM_ENABLED
 #include "client/nodus_v2_evm.h"               /* Nodus EVM: the shared EVM
                                                  * envelope builder         */
@@ -7091,6 +7095,686 @@ static int cmd_consent_code(const char *server_ip, uint16_t server_port,
     return rc;
 }
 
+/* ── `status [--config <file>]` — the whole node on one screen ────────
+ *
+ * Run ON the node (`sudo nodus-cli status`). READ-ONLY: it signs nothing,
+ * submits nothing, writes no file; it opens client sessions (to this node,
+ * and to at most CLI_STATUS_REMOTE_MAX witnesses of the network file),
+ * reads files and runs `systemctl` / `timedatectl` with fixed arguments.
+ * Every value it cannot get prints as "unknown (<reason>)"; the exit code
+ * is 0 whenever the screen was printed, 1 only for bad arguments or a node
+ * config that cannot be read at all.
+ *
+ * Finding the node is `consent <code>`'s rule (decision 2026-10-14-
+ * consent-request-code.md): the config (default /etc/nodus.conf) names
+ * identity_path and tcp_port; -i / -s / -p override. The node key is
+ * loaded READ-ONLY (nodus_identity_load_readonly — only nodus-core writes
+ * identity files); without it (not root) the sessions use a random
+ * identity and the fingerprint-bound rows print as unknown.
+ *
+ * Sources:
+ *   - tip, rule-set generation: dnac_ruleset_info (the same RPC on this
+ *     node and on the asked witnesses, so the two tips are one quantity);
+ *   - chain id: dnac_supply's chain_id32 (nodus_client_dnac_chain_id32 —
+ *     the version-3 id CheckTx binds envelopes to and the network file's
+ *     v2_genesis_pin names). NOT the status RPC's chain_id field: that is
+ *     the witness's legacy 16-byte id padded to 32 (nodus_witness.c
+ *     nodus_witness_set_chain_id → nodus_witness_ipc.c status_fill);
+ *   - nodus-core uptime, cluster peers, wall clock: the tier-2 `status`
+ *     RPC (nodus_server.c handle_t2_status) — nodus-core's own values;
+ *   - storage row: dnac_storage_status (what `storage status` reads);
+ *   - witness seat: dnac_committee (what `witness` reads), the committee
+ *     for tip + 1, matched on this node's public key. */
+#define CLI_STATUS_REMOTE_MAX        3
+#define CLI_STATUS_REMOTE_CONNECT_MS 3000
+#define CLI_STATUS_REMOTE_REQUEST_MS 4000
+#define CLI_STATUS_INSTALL_COMMIT    "/var/lib/nodus/install-commit"
+#define CLI_STATUS_WIKI_STORAGE      \
+    "https://wiki.nodusnetwork.io/network.html#storage-node"
+
+static void cli_status_usage(void) {
+    fprintf(stderr,
+        "Usage: sudo nodus-cli status [--config <file>]\n"
+        "  Everything about THIS node on one screen: version, services, "
+        "height against\n"
+        "  the network, chain id, storage / witness role, disk, memory, "
+        "clock, config.\n"
+        "  Read-only. The node is found through --config (default %s);\n"
+        "  -i <dir> / -s <host[:port]> / -p <port> override it. Without "
+        "sudo the node key\n"
+        "  cannot be read and the rows bound to it show as unknown.\n",
+        CLI_CONSENT_DEFAULT_CONFIG);
+}
+
+/* "  label:   value   [MARK]" — one aligned line; mark NULL = none */
+static void st_kv(const char *label, const char *mark, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+
+static void st_kv(const char *label, const char *mark, const char *fmt, ...) {
+    char val[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(val, sizeof(val), fmt, ap);
+    va_end(ap);
+    char lab[64];
+    snprintf(lab, sizeof(lab), "%s:", label);
+    if (mark)
+        printf("  %-22s %s   [%s]\n", lab, val, mark);
+    else
+        printf("  %-22s %s\n", lab, val);
+}
+
+static void st_section(const char *title) {
+    fflush(stdout);
+    printf("\n%s\n", title);
+}
+
+/* human size: GiB / MiB / KiB / bytes, one decimal */
+static void st_size(uint64_t b, char *out, size_t cap) {
+    const double gib = 1024.0 * 1024.0 * 1024.0;
+    if (b >= (uint64_t)1 << 30)
+        snprintf(out, cap, "%.1f GiB", (double)b / gib);
+    else if (b >= (uint64_t)1 << 20)
+        snprintf(out, cap, "%.1f MiB", (double)b / (1024.0 * 1024.0));
+    else if (b >= (uint64_t)1 << 10)
+        snprintf(out, cap, "%.1f KiB", (double)b / 1024.0);
+    else
+        snprintf(out, cap, "%llu bytes", (unsigned long long)b);
+}
+
+static void st_hex(const uint8_t *b, size_t n, char *out) {
+    static const char hd[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        out[2 * i]     = hd[b[i] >> 4];
+        out[2 * i + 1] = hd[b[i] & 0x0F];
+    }
+    out[2 * n] = '\0';
+}
+
+/* One read-only session with bounded waits; the reason in err on failure.
+ * @return 0 (close owed) / -1. */
+static int st_session(nodus_client_t *client, const char *ip, uint16_t port,
+                      int connect_ms, int request_ms, char *err,
+                      size_t errcap) {
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", ip);
+    cfg.servers[0].port       = port;
+    cfg.server_count          = 1;
+    cfg.auto_reconnect        = false;
+    cfg.connect_timeout_ms    = connect_ms;
+    cfg.request_timeout_ms    = request_ms;
+    if (nodus_client_init(client, &cfg, &identity) != 0) {
+        snprintf(err, errcap, "client init failed");
+        return -1;
+    }
+    if (nodus_client_connect(client) != 0) {
+        snprintf(err, errcap, "no connection to %s:%u", ip, (unsigned)port);
+        nodus_client_close(client);
+        return -1;
+    }
+    return 0;
+}
+
+/* tip + chain id of one node over `client`. *has_chain false when the node
+ * names no version-3 chain id. @return 0 / -1 (reason in err). */
+static int st_chain_of(nodus_client_t *client, nodus_dnac_ruleset_info_t *ri,
+                       bool *has_chain, uint8_t chain32[32], char *err,
+                       size_t errcap) {
+    memset(ri, 0, sizeof(*ri));
+    *has_chain = false;
+    int q = nodus_client_dnac_ruleset_info(client, ri);
+    if (q != 0) {
+        snprintf(err, errcap, "dnac_ruleset_info failed (rc=%d)", q);
+        return -1;
+    }
+    if (ri->tip == 0) {
+        /* the node-reported tip is 0 on a height read fault (FAIL-OPEN,
+         * nodus_witness_db.c nodus_witness_block_height) — never a real
+         * version-3 tip */
+        snprintf(err, errcap, "the node reported tip 0 (no chain yet, or "
+                 "its height read faulted)");
+        return -1;
+    }
+    q = nodus_client_dnac_chain_id32(client, has_chain, chain32);
+    if (q != 0) {
+        snprintf(err, errcap, "dnac_supply failed (rc=%d)", q);
+        return -1;
+    }
+    return 0;
+}
+
+/* systemctl is-active / is-enabled <unit>; "" when systemctl did not run */
+static void st_unit(const char *unit, char *active, size_t acap,
+                    char *enabled, size_t ecap) {
+    int code = 0;
+    const char *const a[] = { "systemctl", "is-active", unit, NULL };
+    const char *const e[] = { "systemctl", "is-enabled", unit, NULL };
+    if (nodus_node_status_run(a, active, acap, &code) != 0 || code == 127)
+        active[0] = '\0';
+    if (nodus_node_status_run(e, enabled, ecap, &code) != 0 || code == 127)
+        enabled[0] = '\0';
+}
+
+/* stderr back from /dev/null (cmd_status) */
+static void cli_status_restore_stderr(int saved) {
+    if (saved < 0) return;
+    fflush(stderr);
+    dup2(saved, STDERR_FILENO);
+    close(saved);
+}
+
+static int cmd_status(const char *server_ip, uint16_t server_port,
+                      int port_given, const char *identity_dir,
+                      int argc, char **argv, int cmd_start) {
+    const char *config_path = CLI_CONSENT_DEFAULT_CONFIG;
+    for (int i = cmd_start + 1; i < argc; i++) {   /* skip "status" */
+        if (!strcmp(argv[i], "--config") && i + 1 < argc) {
+            config_path = argv[++i];
+        } else {
+            cli_status_usage();
+            return 1;
+        }
+    }
+
+    /* the node config: without it there is no node to describe */
+    nodus_node_status_config_t cfg;
+    char err[512];
+    if (nodus_node_status_read_config(config_path, &cfg, err,
+                                      sizeof(err)) != 0) {
+        fprintf(stderr, "cannot read the node config: %s\n"
+                "  (run with sudo, or give --config <file>)\n", err);
+        return 1;
+    }
+
+    /* Every failure below is a line on the screen (stdout), not a log
+     * line. The client library logs each session's connect / auth steps
+     * at INFO to stderr, and the standalone build has no level control
+     * (src/nodus_log_shim.c prints INFO and above unconditionally), so
+     * stderr goes to /dev/null while the screen is gathered and is
+     * restored before returning. */
+    fflush(stderr);
+    const int saved_stderr = dup(STDERR_FILENO);
+    {
+        const int nul = open("/dev/null", O_WRONLY);
+        if (nul >= 0) {
+            dup2(nul, STDERR_FILENO);
+            close(nul);
+        }
+    }
+
+    /* the node key directory and the port: -i / -p / -s first, then the
+     * config (the consent path's reader, the same rule) */
+    char cfg_identity[512];
+    char key_err[640] = "";
+    uint16_t cfg_port = cfg.tcp_port;
+    const char *key_dir = identity_dir;
+    if (!identity_dir) {
+        if (nodus_consent_req_read_config(config_path, cfg_identity,
+                                          sizeof(cfg_identity), &cfg_port,
+                                          key_err, sizeof(key_err)) == 0)
+            key_dir = cfg_identity;
+    }
+    if (!port_given) server_port = cfg_port;
+    if (!server_ip) server_ip = "127.0.0.1";
+
+    bool have_key = false;
+    if (key_dir) {
+        if (nodus_identity_load_readonly(key_dir, &identity) == 0) {
+            have_key = true;
+        } else {
+            nodus_identity_clear(&identity);
+            snprintf(key_err, sizeof(key_err), "cannot load the node key "
+                     "from %s — run with sudo", key_dir);
+        }
+    }
+    if (!have_key) {
+        /* the sessions still need an identity: a random one, as every
+         * command without -i uses */
+        if (nodus_identity_generate(&identity) != 0) {
+            cli_status_restore_stderr(saved_stderr);
+            fprintf(stderr, "cannot create a session identity\n");
+            return 1;
+        }
+    }
+
+    printf("Nodus node status — %s:%u, config %s\n", server_ip,
+           (unsigned)server_port, config_path);
+
+    /* ── 1. Node ── */
+    st_section("Node");
+    st_kv("nodus-cli version", NULL, "%s", NODUS_VERSION_STRING);
+    {
+        char commit[128];
+        if (nodus_node_status_first_line(CLI_STATUS_INSTALL_COMMIT, commit,
+                                         sizeof(commit)) == 0)
+            st_kv("installed commit", NULL, "%s", commit);
+        else
+            st_kv("installed commit", NULL, "unknown (%s not readable — not "
+                  "installed by install-node.sh?)", CLI_STATUS_INSTALL_COMMIT);
+    }
+    if (have_key) {
+        st_kv("fingerprint", NULL, "%s", identity.fingerprint);
+        char p2p_id[CMT_P2P_ID_CAP];
+        if (cmt_p2p_pubkey_to_id(identity.pk.bytes, p2p_id) == CMT_OK)
+            st_kv("P2P ID", NULL, "%s", p2p_id);
+        else
+            st_kv("P2P ID", NULL, "unknown (derivation failed)");
+    } else {
+        st_kv("fingerprint", NULL, "unknown (%s)",
+              key_err[0] ? key_err : "no identity_path");
+        st_kv("P2P ID", NULL, "unknown (no node key)");
+    }
+
+    /* ── 2. Services ── */
+    st_section("Services");
+    {
+        static const char *const units[] = {
+            "nodus-core", "nodus-storage", "nodus-witness"
+        };
+        for (size_t i = 0; i < sizeof(units) / sizeof(units[0]); i++) {
+            char act[64], en[64];
+            st_unit(units[i], act, sizeof(act), en, sizeof(en));
+            if (!act[0]) {
+                st_kv(units[i], NULL, "unknown (systemctl did not run)");
+                continue;
+            }
+            const int active = !strcmp(act, "active");
+            const int enabled = !strcmp(en, "enabled");
+            st_kv(units[i], active ? "OK" : enabled ? "WARN" : NULL,
+                  "%s, %s", act, en[0] ? en : "unknown");
+        }
+        /* the single-process unit, only when it is enabled (the split
+         * layout disables it) */
+        char act[64], en[64];
+        st_unit("nodus", act, sizeof(act), en, sizeof(en));
+        if (!strcmp(en, "enabled"))
+            st_kv("nodus (single)", strcmp(act, "active") ? "WARN" : "OK",
+                  "%s, %s", act[0] ? act : "unknown", en);
+    }
+
+    /* ── 3. Chain / sync ── */
+    st_section("Chain");
+    nodus_client_t lc;
+    char lerr[256] = "";
+    const int lc_ok = st_session(&lc, server_ip, server_port, 5000, 10000,
+                                 lerr, sizeof(lerr)) == 0;
+    nodus_dnac_ruleset_info_t lri;
+    bool l_has_chain = false;
+    uint8_t l_chain[32];
+    int l_chain_ok = 0;
+    if (lc_ok) {
+        l_chain_ok = st_chain_of(&lc, &lri, &l_has_chain, l_chain, lerr,
+                                 sizeof(lerr)) == 0;
+    }
+    if (l_chain_ok)
+        st_kv("this node's height", NULL, "%llu (rule-set generation %u)",
+              (unsigned long long)lri.tip, (unsigned)lri.generation);
+    else
+        st_kv("this node's height", NULL, "unknown (%s)", lerr);
+    char l_chain_hex[65] = "";
+    if (l_chain_ok && l_has_chain) {
+        st_hex(l_chain, 32, l_chain_hex);
+        st_kv("chain id", NULL, "%s", l_chain_hex);
+    } else if (l_chain_ok) {
+        st_kv("chain id", NULL, "unknown (the node names no version-3 chain "
+              "id)");
+    } else {
+        st_kv("chain id", NULL, "unknown (%s)", lerr);
+    }
+
+    /* nodus-core's own view: the tier-2 status RPC */
+    {
+        cluster_node_status_t row;
+        memset(&row, 0, sizeof(row));
+        if (cluster_status_query_one(server_ip, server_port, &row) == 0) {
+            char up[32];
+            const uint64_t s = row.uptime_sec;
+            snprintf(up, sizeof(up), "%llud %02lluh %02llum",
+                     (unsigned long long)(s / 86400),
+                     (unsigned long long)(s % 86400 / 3600),
+                     (unsigned long long)(s % 3600 / 60));
+            st_kv("nodus-core uptime", NULL, "%s", up);
+            st_kv("nodus-core peers", NULL, "%u (DHT cluster peers on TCP "
+                  "%u; 0 is normal without seed_nodes)",
+                  (unsigned)row.peer_count, (unsigned)cfg.peer_port);
+            const int64_t skew = (int64_t)row.wall_clock -
+                                 (int64_t)time(NULL);
+            st_kv("nodus-core clock", NULL, "%+lld s against this "
+                  "command's clock (unix seconds)", (long long)skew);
+        } else {
+            st_kv("nodus-core status", NULL, "unknown (no answer to the "
+                  "status RPC on %s:%u)", server_ip, (unsigned)server_port);
+        }
+    }
+
+    /* the network: the first CLI_STATUS_REMOTE_MAX witnesses of the
+     * network file, on the client port */
+    {
+#ifdef NODUS_HAS_JSONC
+        bool have_pin = false;
+        uint8_t pin[32];
+        nodus_network_file_t *nf = NULL;
+        if (!cfg.network_file[0]) {
+            st_kv("network height", NULL, "unknown (no network_file in the "
+                  "config)");
+        } else if (!(nf = calloc(1, sizeof(*nf)))) {
+            st_kv("network height", NULL, "unknown (out of memory)");
+        } else if (nodus_network_file_load(cfg.network_file, nf) != 0) {
+            st_kv("network height", NULL, "unknown (%s is missing or "
+                  "malformed)", cfg.network_file);
+        } else {
+            have_pin = nf->has_pin;
+            if (have_pin) memcpy(pin, nf->pin, 32);
+            /* the first CLI_STATUS_REMOTE_MAX entries in file order; the
+             * remote client port is the network's, 4001, whatever this
+             * node's own tcp_port is */
+            int asked = 0, answered = 0, chain_differs = 0;
+            uint64_t best = 0;
+            char rerr[256] = "";
+            fflush(stdout);
+            for (int i = 0; i < nf->n_peers && asked < CLI_STATUS_REMOTE_MAX;
+                 i++) {
+                char host[128];
+                if (nodus_node_status_peer_host(nf->peers[i], host,
+                                                sizeof(host)) != 0)
+                    continue;
+                asked++;
+                nodus_client_t rc;
+                if (st_session(&rc, host, NODUS_DEFAULT_TCP_PORT,
+                               CLI_STATUS_REMOTE_CONNECT_MS,
+                               CLI_STATUS_REMOTE_REQUEST_MS, rerr,
+                               sizeof(rerr)) != 0)
+                    continue;
+                nodus_dnac_ruleset_info_t rri;
+                bool r_has = false;
+                uint8_t r_chain[32];
+                const int ok = st_chain_of(&rc, &rri, &r_has, r_chain, rerr,
+                                           sizeof(rerr)) == 0;
+                nodus_client_close(&rc);
+                if (!ok) continue;
+                answered++;
+                if (rri.tip > best) best = rri.tip;
+                if (l_chain_ok && l_has_chain &&
+                    (!r_has || memcmp(r_chain, l_chain, 32) != 0))
+                    chain_differs = 1;
+            }
+            if (answered == 0) {
+                st_kv("network height", NULL, "unknown (asked %d witness(es) "
+                      "of %s, none answered; last: %s)", asked,
+                      cfg.network_file, rerr[0] ? rerr : "no usable entry");
+            } else {
+                st_kv("network height", NULL, "%llu (highest of %d answer(s); "
+                      "asked %d)", (unsigned long long)best, answered, asked);
+                if (l_chain_ok) {
+                    const uint64_t behind = best > lri.tip ? best - lri.tip
+                                                           : 0;
+                    st_kv("behind by",
+                          nodus_node_status_in_sync(lri.tip, best) ? "OK"
+                                                                   : "WARN",
+                          "%llu block(s)", (unsigned long long)behind);
+                } else {
+                    st_kv("behind by", NULL, "unknown (this node's height "
+                          "is unknown)");
+                }
+            }
+            if (!have_pin) {
+                st_kv("chain id check", NULL, "unknown (%s has no "
+                      "v2_genesis_pin)", cfg.network_file);
+            } else if (!(l_chain_ok && l_has_chain)) {
+                st_kv("chain id check", NULL, "unknown (this node's chain id "
+                      "is unknown)");
+            } else {
+                const int pin_ok = memcmp(pin, l_chain, 32) == 0;
+                if (!pin_ok || chain_differs)
+                    st_kv("chain id check", "WARN", "%s",
+                          !pin_ok ? "this node's chain id is NOT the network "
+                                    "file's v2_genesis_pin"
+                                  : "a witness reports another chain id");
+                else if (answered == 0)
+                    st_kv("chain id check", "OK", "this node = the network "
+                          "file's pin (no witness answered to compare)");
+                else
+                    st_kv("chain id check", "OK", "this node = the network "
+                          "file's pin = the %d witness(es) that answered",
+                          answered);
+            }
+        }
+        free(nf);
+#else
+        st_kv("network height", NULL, "unknown (this build cannot read the "
+              "network file)");
+#endif
+    }
+
+    /* ── 4. Roles ── */
+    st_section("Roles");
+    if (!have_key) {
+        st_kv("storage node", NULL, "unknown (no node key — run with sudo)");
+        st_kv("witness", NULL, "unknown (no node key — run with sudo)");
+    } else if (!lc_ok) {
+        st_kv("storage node", NULL, "unknown (%s)", lerr);
+        st_kv("witness", NULL, "unknown (%s)", lerr);
+    } else {
+        nodus_dnac_storage_status_t ss;
+        memset(&ss, 0, sizeof(ss));
+        const int q = nodus_client_dnac_storage_status(&lc,
+                                                       identity.fingerprint,
+                                                       &ss);
+        if (q != 0) {
+            st_kv("storage node", NULL, "unknown (dnac_storage_status "
+                  "failed, rc=%d)", q);
+        } else if (!ss.found) {
+            st_kv("storage node", NULL, "not registered");
+        } else {
+            char bond[64];
+            snprintf(bond, sizeof(bond), "%llu raw",
+                     (unsigned long long)ss.bond);
+            st_kv("storage node", NULL, "%s, bond %s, registered at %llu%s",
+                  cli_storage_status_name(ss.status), bond,
+                  (unsigned long long)ss.registered_height,
+                  ss.exit_height ? ", exit requested" : "");
+            st_kv("  owner", NULL, "%s", ss.payee);
+            /* STORAGE_NODE.md §7: a failed epoch raises fail_streak; at
+             * DNA_V2_STORAGE_FAIL_LIMIT the node is skipped */
+            st_kv("  fail_streak", ss.fail_streak ? "WARN" : "OK", "%u%s",
+                  (unsigned)ss.fail_streak,
+                  ss.fail_streak >= DNA_V2_STORAGE_FAIL_LIMIT
+                      ? " (skipped for segment placement until it recovers)"
+                      : "");
+            if (ss.grace_until == 0)
+                st_kv("  grace_until", NULL, "0 (never in grace)");
+            else if (ss.epoch_start != 0 && ss.epoch_start < ss.grace_until)
+                st_kv("  grace_until", NULL, "%llu — IN GRACE this epoch: "
+                      "fetching segments, not probed, earns nothing",
+                      (unsigned long long)ss.grace_until);
+            else
+                st_kv("  grace_until", NULL, "%llu (grace over)",
+                      (unsigned long long)ss.grace_until);
+        }
+        if (q == 0) {
+            if (ss.epoch_start == 0)
+                st_kv("  storage set", NULL, "none yet (no epoch boundary)");
+            else if (!ss.set_exists)
+                st_kv("  storage set", NULL, "none for epoch (%llu, %llu]",
+                      (unsigned long long)ss.epoch_start,
+                      (unsigned long long)(ss.epoch_start +
+                                           (uint64_t)DNAC_EPOCH_LENGTH));
+            else
+                st_kv("  storage set", NULL, "epoch (%llu, %llu]: %u "
+                      "member(s), this node %s",
+                      (unsigned long long)ss.epoch_start,
+                      (unsigned long long)(ss.epoch_start +
+                                           (uint64_t)DNAC_EPOCH_LENGTH),
+                      (unsigned)ss.set_count,
+                      ss.member ? "IS a member" : "is NOT a member");
+            if (ss.member)
+                st_kv("  eligible segments", NULL, "%llu (%llu blocks)",
+                      (unsigned long long)ss.n_segments,
+                      (unsigned long long)(ss.n_segments *
+                                           (uint64_t)DNA_V2_SEGMENT_BLOCKS));
+        }
+
+        /* ~370 KB — heap, never stack (nodus_types.h) */
+        nodus_dnac_committee_result_t *c = calloc(1, sizeof(*c));
+        if (!c) {
+            st_kv("witness", NULL, "unknown (out of memory)");
+        } else if (nodus_client_dnac_committee(&lc, c) != 0) {
+            st_kv("witness", NULL, "unknown (dnac_committee failed)");
+        } else {
+            int seat = -1;
+            for (int i = 0; i < c->count; i++) {
+                if (memcmp(c->entries[i].pubkey, identity.pk.bytes,
+                           sizeof(c->entries[i].pubkey)) == 0) {
+                    seat = i;
+                    break;
+                }
+            }
+            if (seat >= 0)
+                st_kv("witness", NULL, "in the committee for block %llu "
+                      "(seat %d of %d)",
+                      (unsigned long long)c->block_height, seat + 1,
+                      c->count);
+            else
+                st_kv("witness", NULL, "not in the committee for block %llu "
+                      "(%d seat(s))", (unsigned long long)c->block_height,
+                      c->count);
+        }
+        free(c);
+    }
+    if (lc_ok) nodus_client_close(&lc);
+
+    /* ── 5. Resources ── */
+    st_section("Resources");
+    {
+        char a[32], t[32];
+        uint64_t av = 0, tot = 0;
+        if (nodus_node_status_disk(cfg.data_path, &av, &tot) == 0) {
+            st_size(av, a, sizeof(a));
+            st_size(tot, t, sizeof(t));
+            st_kv("data disk",
+                  av < NODUS_NODE_STATUS_DISK_WARN_BYTES ? "WARN" : "OK",
+                  "%s free of %s (%s)", a, t, cfg.data_path);
+        } else {
+            st_kv("data disk", NULL, "unknown (statvfs %s: %s)",
+                  cfg.data_path, strerror(errno));
+        }
+
+        char dbname[128];
+        uint64_t dbb = 0;
+        const int dr = nodus_node_status_chain_db(cfg.data_path, dbname,
+                                                  sizeof(dbname), &dbb);
+        if (dr == 0) {
+            st_size(dbb, a, sizeof(a));
+            st_kv("chain database", NULL, "%s (%s with -wal/-shm)", a,
+                  dbname);
+        } else if (dr == 1) {
+            st_kv("chain database", NULL, "none in %s yet", cfg.data_path);
+        } else {
+            st_kv("chain database", NULL, "unknown (cannot read %s — run "
+                  "with sudo)", cfg.data_path);
+        }
+
+        char segdir[600];
+        int sn = snprintf(segdir, sizeof(segdir), "%s/%s", cfg.data_path,
+                          cfg.segment_dir);
+        uint64_t nok = 0, segb = 0;
+        if (sn < 0 || (size_t)sn >= sizeof(segdir)) {
+            st_kv("segments", NULL, "unknown (path too long)");
+        } else {
+            const int sr = nodus_node_status_segments(segdir, &nok, &segb);
+            if (sr == 0) {
+                st_size(segb, a, sizeof(a));
+                st_kv("segments", NULL, "%llu complete (seg-*.ok), %s in %s",
+                      (unsigned long long)nok, a, segdir);
+            } else if (sr == 1) {
+                st_kv("segments", NULL, "none (%s does not exist)", segdir);
+            } else {
+                st_kv("segments", NULL, "unknown (cannot read %s — run with "
+                      "sudo)", segdir);
+            }
+        }
+
+        double l[3];
+        const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+        if (nodus_node_status_loadavg("/proc/loadavg", l) == 0)
+            st_kv("load average", NULL, "%.2f %.2f %.2f (%ld CPU(s))", l[0],
+                  l[1], l[2], ncpu);
+        else
+            st_kv("load average", NULL, "unknown (/proc/loadavg)");
+
+        uint64_t mt = 0, ma = 0;
+        if (nodus_node_status_meminfo("/proc/meminfo", &mt, &ma) == 0) {
+            st_size(ma * 1024u, a, sizeof(a));
+            st_size(mt * 1024u, t, sizeof(t));
+            st_kv("memory", NULL, "%s available of %s", a, t);
+        } else {
+            st_kv("memory", NULL, "unknown (/proc/meminfo)");
+        }
+
+        static const char *const procs[] = {
+            "nodus-core", "nodus-storage", "nodus-witness", "nodus-server"
+        };
+        for (size_t i = 0; i < sizeof(procs) / sizeof(procs[0]); i++) {
+            uint64_t rss = 0;
+            int pid = 0;
+            if (nodus_node_status_proc_rss("/proc", procs[i], &rss,
+                                           &pid) != 0)
+                continue;          /* not running here: no line */
+            char lab[48];
+            snprintf(lab, sizeof(lab), "%s memory", procs[i]);
+            st_size(rss * 1024u, a, sizeof(a));
+            st_kv(lab, NULL, "%s resident (pid %d)", a, pid);
+        }
+    }
+
+    /* ── 6. Clock ── */
+    st_section("Clock");
+    {
+        const char *const tv[] = { "timedatectl", "show", "-p",
+                                   "NTPSynchronized", "--value", NULL };
+        char out[64];
+        int code = 0;
+        const int yn = nodus_node_status_run(tv, out, sizeof(out), &code) == 0
+                       ? nodus_node_status_yes_no(out) : -1;
+        if (yn == 1)
+            st_kv("NTP synchronized", "OK", "yes");
+        else if (yn == 0)
+            st_kv("NTP synchronized", "WARN", "no — turn NTP on (witness "
+                  "questions carry a 10 s deadline)");
+        else
+            st_kv("NTP synchronized", NULL, "unknown (timedatectl did not "
+                  "answer)");
+    }
+
+    /* ── 7. Config ── */
+    st_section("Config");
+    st_kv("external_ip", NULL, "%s",
+          cfg.external_ip[0] ? cfg.external_ip : "(not set)");
+    st_kv("ports", NULL, "udp %u, tcp %u, peer %u, witness %u (TCP %u must "
+          "be reachable)", (unsigned)cfg.udp_port, (unsigned)cfg.tcp_port,
+          (unsigned)cfg.peer_port, (unsigned)cfg.witness_port,
+          (unsigned)cfg.witness_port);
+    st_kv("data_path", NULL, "%s%s", cfg.data_path,
+          cfg.has_data_path ? "" : " (default)");
+    st_kv("network_file", NULL, "%s",
+          cfg.network_file[0] ? cfg.network_file : "(not set)");
+    if (cfg.has_retain_blocks)
+        st_kv("retain_blocks", NULL, "%lld%s — a storage node must not "
+              "prune before its segments are complete: %s",
+              (long long)cfg.retain_blocks,
+              cfg.retain_blocks == 0 ? " (keeps every block)" : "",
+              CLI_STATUS_WIKI_STORAGE);
+    else
+        st_kv("retain_blocks", NULL, "not set (keeps every block) — before "
+              "setting it on a storage node: %s", CLI_STATUS_WIKI_STORAGE);
+
+    fflush(stdout);
+    nodus_identity_clear(&identity);
+    cli_status_restore_stderr(saved_stderr);
+    return 0;
+}
+
 /* `name lookup <name>` / `name of <fp128>`. */
 static int cmd_name_query(const char *server_ip, uint16_t server_port,
                           int is_of, const char *arg) {
@@ -10761,6 +11445,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  consent <code> [--config <file>] [--yes]\n");
     fprintf(stderr, "                                   sign the consent Nodus Connect asks for, with this\n");
     fprintf(stderr, "                                   node's key (found in /etc/nodus.conf); no -s/-i needed\n");
+    fprintf(stderr, "  status [--config <file>]         run on the node (sudo): version, services, height\n");
+    fprintf(stderr, "                                   vs the network, chain id, roles, disk, memory,\n");
+    fprintf(stderr, "                                   clock, config — read-only; no -s/-i needed\n");
     fprintf(stderr, "  v2-envelope stake2 --keys <owner dir> --consent <file> --bond <raw>\n");
     fprintf(stderr, "           [--commission <bps>] (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   HF-6 generation-4 STAKE; prints validator_id\n");
@@ -10884,6 +11571,16 @@ int main(int argc, char **argv) {
         signal(SIGPIPE, SIG_IGN);
         return cmd_consent_code(server_ip, server_port, port_given,
                                 identity_dir, argc, argv, optind);
+    }
+
+    /* `status [--config <file>]`: the whole node on one screen — finds
+     * the node like `consent` (no -s, no -i needed) and loads the node
+     * key itself, read-only; handled before both checks below */
+    if (strcmp(command, "status") == 0) {
+        signal(SIGINT, sighandler);
+        signal(SIGPIPE, SIG_IGN);
+        return cmd_status(server_ip, server_port, port_given, identity_dir,
+                          argc, argv, optind);
     }
 #endif
 

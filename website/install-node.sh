@@ -565,6 +565,7 @@ EOF
     if [ "$mode" = "update" ]; then
         say "Update done: ${old_commit:-<not recorded>} -> $new_commit"
         say "The node keeps its key, its settings and its chain data."
+        say "Its state on one screen: sudo nodus-cli status"
         say "Logs: journalctl -u nodus-witness -f"
         exit 0
     fi
@@ -572,8 +573,12 @@ EOF
 The Nodus node is installed (commit $new_commit).
 
 It now downloads the whole chain. This takes a while. To watch it:
-  nodus-cli -s 127.0.0.1 ruleset-info     (first line: tip=<height>)
-and compare the height with the latest block on https://scan.nodusnetwork.io
+  sudo nodus-cli status
+It shows the whole node on one screen; under "Chain", "behind by" is how
+many blocks it still lacks against the network (OK at 2 or less).
+Or compare the first line of
+  nodus-cli -s 127.0.0.1 ruleset-info     (tip=<height>)
+with the latest block on https://scan.nodusnetwork.io
 
 When the two are close, register the node:
   1. Open https://connect.nodusnetwork.io with the wallet that will own it.

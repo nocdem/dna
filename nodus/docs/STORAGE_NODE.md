@@ -160,15 +160,22 @@ journalctl -u nodus-witness -n 50     # look for "cometbft lane LIVE"
 
 ## 5. Wait until the node has caught up
 
-The node now downloads the whole chain from the witnesses. This takes a while. Compare its
-height with the chain's:
+The node now downloads the whole chain from the witnesses. This takes a while. To see how far
+it is:
 
 ```bash
-nodus-cli -s 127.0.0.1 ruleset-info      # first line: tip=<height> generation=4
+sudo nodus-cli status
 ```
 
-and the latest block on [scan.nodusnetwork.io](https://scan.nodusnetwork.io). Register only
-when the two are close (a few blocks apart).
+It prints the whole node on one screen. Under **Chain**, `this node's height` is your node's
+latest block, `network height` the highest block of the first three witnesses in
+`/etc/nodus-network.json` that answered, and `behind by` the difference — `[OK]` at 2 blocks or
+less. `chain id check` must say `[OK]`. The same screen shows the services, the disk, the clock
+(NTP) and the storage role; a value it cannot read is printed as `unknown (<reason>)`.
+
+Or by hand: `nodus-cli -s 127.0.0.1 ruleset-info` (first line: `tip=<height> generation=4`) and
+the latest block on [scan.nodusnetwork.io](https://scan.nodusnetwork.io). Register only when
+the two are close (a few blocks apart).
 
 ## 6. Register the node (Nodus Connect)
 
@@ -202,11 +209,17 @@ with `nodus-cli storage consent | register` — [runbook §2.6](DEPLOY_RUNBOOK.m
 ## 7. After registration
 
 ```bash
-sudo nodus-cli -i /var/lib/nodus/identity -s 127.0.0.1 storage status
+sudo nodus-cli status
 ```
 
-shows your row: status, bond, owner, `fail_streak`, and whether the node is in the storage set
-this epoch.
+shows your row under **Roles**: status, bond, owner, `fail_streak` (`[WARN]` above 0),
+`grace_until`, whether the node is in the storage set this epoch and how many segments it is
+eligible for; under **Resources** the number of complete segments (`seg-<k>.ok`) on disk. The
+full row, with the eligible segment numbers, is also printed by
+
+```bash
+sudo nodus-cli -i /var/lib/nodus/identity -s 127.0.0.1 storage status
+```
 
 - **The first epoch boundary.** The node joins the storage set at the next epoch boundary
   (every 720 blocks, about an hour).

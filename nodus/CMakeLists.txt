@@ -176,6 +176,11 @@ set(NODUS_SOURCES
     # shows and reads identity_path / tcp_port from the node config.
     # Parsing only — the signing stays cmd_validator_consent's.
     src/client/nodus_consent_req.c
+    # `nodus-cli status`: the network-free half — the node config fields
+    # it shows, the network file's peer hosts, /proc parsing, the chain
+    # database and segment directory sizes, the disk, a fixed-argv runner.
+    # Read-only; the RPCs stay in nodus-cli.c.
+    src/client/nodus_node_status.c
     # nodus_cc_client.c (the CLI's short-lived 4004 p2p peer) is DELETED:
     # governance approvals are collected by the proposer's own node
     # (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md,
@@ -1235,6 +1240,15 @@ add_test(NAME test_cbor COMMAND test_cbor)
 add_executable(test_consent_req tests/test_consent_req.c)
 target_link_libraries(test_consent_req nodus)
 add_test(NAME test_consent_req COMMAND test_consent_req)
+
+# The network-free helpers behind `nodus-cli status`
+# (src/client/nodus_node_status.c): the config reader, network-file peer
+# hosts, /proc parsers on fixture files, the segment directory and chain
+# database sizes, the fixed-argv runner. Fixtures under a mkdtemp
+# directory in /tmp only; no network.
+add_executable(test_node_status tests/test_node_status.c)
+target_link_libraries(test_node_status nodus)
+add_test(NAME test_node_status COMMAND test_node_status)
 
 # Phase-C C1 — shielded ZK verify stack linkage gate (pulls the whole
 # consensus verify chain out of libnodus.a; a missing zk source in
