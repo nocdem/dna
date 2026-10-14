@@ -16,7 +16,7 @@ import { setTimeout } from 'node:timers/promises';
 const url = process.env.WALLET_URL || 'http://127.0.0.1:4173';
 const server = process.env.WALLET_URL ? null : await startPreview(['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '4173', '--strictPort'], 4173);
 import { chromium } from 'playwright';
-import { Transaction, Interface } from 'ethers';
+import { Transaction, Interface, HDNodeWallet } from 'ethers';
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
 const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
@@ -526,7 +526,13 @@ try {
   assert.equal(await page.locator('#vault-confirm-password').inputValue(), '');
   await page.locator('#welcome').waitFor({ state: 'visible' }); assert.equal(await page.locator('#receive-address').innerText(), '');
   assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
-  await page.locator('#create').click(); const created = await readPhrase(page); assert.equal(created.split(' ').length, 24); await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  await page.locator('#create').click(); const created = await readPhrase(page); assert.equal(created.split(' ').length, 24);
+  // 0.1.123: the skip choice is shown, unticked, on the words screen; left
+  // unticked the flow is today's: the re-typing step appears, without the choice.
+  assert.equal(await page.locator('#skip-verify-row').isVisible(), true); assert.equal(await page.locator('#skip-verify').isChecked(), false);
+  await page.locator('#backup-confirm').check(); await page.locator('#phrase-submit').click();
+  assert.equal(await page.locator('#phrase-label').innerText(), 'Re-enter your saved recovery phrase');
+  assert.equal(await page.locator('#skip-verify-row').isVisible(), false); assert.equal(await page.locator('#skip-verify-dialog').isVisible(), false);
   // E-4 blocks paste on this verify step by design, so the backup check below
   // types each word into its own box instead of pasting the full phrase.
   const boxes = page.locator('#phrase-grid input');
@@ -537,6 +543,37 @@ try {
   await page.selectOption('#chain', 'nodus');
   await page.waitForFunction(() => /^[0-9a-f]{128}$/.test(document.querySelector('#receive-address').textContent));
   await page.locator('#lock').click(); assert.equal(await page.locator('#receive-address').textContent(), ''); assert.equal(await qrEmpty(), true); assert.equal(await page.locator('#nodus-address-status').textContent(), '');
+  // 0.1.123 (operator: someone who saved the words, e.g. as a screenshot, may
+  // skip typing them again): ticked, the continue button asks first. "Go back"
+  // keeps the same words and the tick; "Yes, skip checking" opens the wallet of
+  // the shown words without the re-typing step. The choice itself sends nothing
+  // and keeps nothing in this browser.
+  await page.locator('#welcome').waitFor({ state: 'visible' }); await sessionReleased(); assert.equal(await page.locator('#skip-verify-row').isVisible(), false);
+  await page.locator('#create').click(); const skipped = await readPhrase(page); assert.equal(skipped.split(' ').length, 24); assert.notEqual(skipped, created);
+  assert.equal(await page.locator('#skip-verify').isChecked(), false);
+  const callsBeforeSkip = calls.length;
+  await page.locator('#skip-verify').check(); await page.locator('#backup-confirm').check();
+  assert.equal(await page.locator('#phrase-submit').innerText(), 'I saved it — open wallet');
+  await page.locator('#phrase-submit').click(); await page.locator('#skip-verify-dialog').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#skip-verify-title').innerText(), 'Skip checking your recovery words?');
+  assert.match(await page.locator('#skip-verify-text').innerText(), /cannot be restored/);
+  await page.locator('#skip-verify-back').click(); await page.locator('#skip-verify-dialog').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#phrase-form').isVisible(), true); assert.equal(await page.locator('#wallet-open').isVisible(), false);
+  assert.equal(await readPhrase(page), skipped); assert.equal(await page.locator('#skip-verify').isChecked(), true);
+  assert.notEqual(await page.locator('#phrase-label').innerText(), 'Re-enter your saved recovery phrase');
+  assert.equal(calls.length, callsBeforeSkip, 'the skip choice and its dialog make no request');
+  assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
+  await page.locator('#phrase-submit').click(); await page.locator('#skip-verify-dialog').waitFor({ state: 'visible' });
+  await page.locator('#skip-verify-yes').click(); await page.locator('#wallet-open').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#phrase-form').isVisible(), false); assert.equal(await page.locator('#skip-verify-dialog').isVisible(), false);
+  await page.selectOption('#chain', 'ethereum');
+  await page.waitForFunction(() => /^0x[0-9a-fA-F]{40}$/.test(document.querySelector('#receive-address').textContent));
+  assert.equal(await page.locator('#receive-address').innerText(), HDNodeWallet.fromPhrase(skipped, undefined, "m/44'/60'/0'/0/0").address);
+  await page.locator('#lock').click(); await page.locator('#welcome').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#skip-verify').isChecked(), false);
+  assert.equal(await page.evaluate(k => Object.keys(localStorage).filter(x => x !== k).length + sessionStorage.length, SHOW_ZERO_KEY), 0);
+  const storedAfterSkip = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage })); assert.ok(!storedAfterSkip.includes(skipped));
+  assert.ok(!JSON.stringify(calls).includes(skipped), 'the skipped words never reached a request');
   await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   // Third-party license notices ship at the dist root and are linked from the footer.
   assert.equal(await page.locator('.wallet-footer a[href="/THIRD-PARTY-LICENSES.txt"]').innerText(), 'Licenses');
@@ -555,5 +592,5 @@ try {
   const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(await page.locator('.wallet-footer .app-version').innerText(), `Version ${version}`);
   assert.deepEqual(errors, []);
-  console.log('Browser smoke passed: create/backup/restore, NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, one Send / Receive panel whose heading follows the selected network and whose QR decodes to exactly the shown address (Nodus, Ethereum, BNB Smart Chain, Solana, TRON) and clears on lock, holding-row click/keyboard selection, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, state-specific save/unlock/change/delete controls, matching password confirmation, phrase-only saved-copy guard, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout with the QR shown, third-party license file served. No external request reached a blockchain.');
+  console.log('Browser smoke passed: create/backup/restore, create with the re-typing skipped after the warning (Go back keeps the words, Yes opens the shown words\' wallet, nothing sent or kept),NODUS first and default-selected (receive-only row, no balance shown, no Send), Nodus native address/copy/lock/reopen, 4 external chain addresses, one Send / Receive panel whose heading follows the selected network and whose QR decodes to exactly the shown address (Nodus, Ethereum, BNB Smart Chain, Solana, TRON) and clears on lock, holding-row click/keyboard selection, ETH/ERC20 signed mocked broadcasts, wrong-network guard, automatic Cellframe address derivation + CPUNK balance display/error, send disabled on Cellframe, finalized scoped activity, state-specific save/unlock/change/delete controls, matching password confirmation, phrase-only saved-copy guard, encrypted save/unlock/change/reload/delete, KDF cancellation, temporary storage behavior, mobile layout with the QR shown, third-party license file served. No external request reached a blockchain.');
 } catch (error) { console.error('UI status:', await page.locator('#wallet-status').textContent(), 'Cellframe:', await page.locator('#cellframe-address-status').textContent(), 'Page errors:', errors, 'Methods:', calls.map(c => c?.method)); throw error; } finally { await browser.close(); server?.stop(); }

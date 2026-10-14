@@ -66,6 +66,7 @@ const phraseFields = createPhraseFields($('phrase-grid'), $('phrase-error'));
 // block further down for why that distinction matters for bundle size.
 const CPUNK_ENABLED = import.meta.env.VITE_ENABLE_CPUNK !== 'false';
 let wallet, pending, generatedPhrase, phraseStep, revision = 0, busy = false, lockTimer, idleDeadline = 0, confirmEnableTimer;
+const BACKUP_SUBMIT_TEXT = 'I saved it — verify backup';
 const DEFAULT_PHRASE_ENTRY_HELP = '24 words, in order. Paste your full phrase into any box to fill all 24. Start typing for local word suggestions; choose with the arrow keys and Enter, or tap a word.';
 let cellframeDerivation, cellframeReader, nodusDerivation;
 // The NODUS send module's client for the open wallet (src/nodus/client.js);
@@ -86,8 +87,9 @@ const addressStatus = { nodus: $('nodus-address-status'), cellframe: $('cellfram
 // index.html's #send-disabled-note text is Cellframe's; a network may carry its own `sendNote`.
 const DEFAULT_SEND_DISABLED_NOTE = $('send-disabled-note').textContent;
 let activitySession = null, activityBlocked = false, historyWrites = Promise.resolve(), vaultOperation = 0;
-// True only while the open wallet's words were generated in this tab and
-// verified (the create flow); handed to extensions (src/wallet-extensions.js
+// True only while the open wallet's words were generated in this tab (the
+// create flow: typed again, or — the user's choice, 0.1.123 — not typed again
+// after the skip warning); handed to extensions (src/wallet-extensions.js
 // nodusReady, decision 2026-09-30-nodus-connect-thin-core Q1).
 let walletFresh = false;
 // Cross-site rule (src/site-lock.js, decision 2026-10-01-connect-own-origin):
@@ -1609,6 +1611,7 @@ function lock(event) {
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; latestKept = null; clearHistory(); clearAddressBook(); idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   releaseSession(); $('session-conflict').hidden = true;
   $('discard-activity').hidden = true;
+  $('skip-verify-dialog').close(); $('skip-verify').checked = false;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   resetWalletPages({ keepHash: event?.type === 'pagehide' });
   history.length = 0; $('account-explorer').removeAttribute('href');
@@ -1628,11 +1631,13 @@ function phraseForm(create) {
   phraseStep = create ? 'backup' : 'restore';
   generatedPhrase = create ? newPhrase() : undefined;
   $('welcome').hidden = true; $('phrase-form').hidden = false; $('backup-confirm').checked = false;
+  // The skip choice is offered only on the create flow's words screen.
+  $('skip-verify').checked = false; $('skip-verify-row').hidden = !create;
   phraseFields.set(generatedPhrase || '', create);
   $('phrase-label').textContent = create ? 'Write down your 24-word recovery phrase privately' : 'Enter your 24-word Nodus recovery phrase';
   $('phrase-entry-help').textContent = DEFAULT_PHRASE_ENTRY_HELP;
   $('phrase-help').textContent = 'This phrase controls your funds. It stays local; an encrypted copy is stored only if you choose to save it. Keep an offline backup. This screen clears after 10 minutes of inactivity.';
-  $('phrase-submit').textContent = create ? 'I saved it — verify backup' : 'Open wallet'; message('');
+  $('phrase-submit').textContent = create ? BACKUP_SUBMIT_TEXT : 'Open wallet'; message('');
   // Show the recovery warning before focusing a word field, including on narrow screens.
   $('recovery-warning-title').focus({ preventScroll: true });
   $('recovery-warning').scrollIntoView({ block: 'start' });
@@ -1641,20 +1646,46 @@ function phraseForm(create) {
 $('create').onclick = () => phraseForm(true);
 $('restore').onclick = () => phraseForm(false);
 $('phrase-cancel').onclick = lock;
+// 0.1.123 (operator: someone who already saved the words, e.g. as a
+// screenshot, may go on without typing them again): an unticked box keeps
+// the words → re-type flow unchanged. Ticked, the continue button first asks
+// in #skip-verify-dialog; "Yes" opens the wallet through openPhraseWallet,
+// the one open path the re-typed words take too. Nothing is kept, sent or
+// logged because of the choice.
+$('skip-verify').onchange = () => { if (phraseStep === 'backup') $('phrase-submit').textContent = $('skip-verify').checked ? 'I saved it — open wallet' : BACKUP_SUBMIT_TEXT; };
+$('skip-verify-back').onclick = () => $('skip-verify-dialog').close();
+$('skip-verify-yes').onclick = () => {
+  $('skip-verify-dialog').close();
+  // A lock while the dialog was open (auto-lock, pagehide) cleared the words.
+  if (phraseStep !== 'backup' || !generatedPhrase || !$('skip-verify').checked) return;
+  const phrase = generatedPhrase;
+  void openPhraseWallet(true, () => phrase);
+};
 $('phrase-form').onsubmit = async event => {
   event.preventDefault();
   if (phraseStep === 'backup') {
-    phraseStep = 'verify'; phraseFields.set(undefined, false, { allowPaste: false });
+    if ($('skip-verify').checked) { $('skip-verify-dialog').showModal(); return; }
+    phraseStep = 'verify'; phraseFields.set(undefined, false, { allowPaste: false }); $('skip-verify-row').hidden = true;
     $('phrase-label').textContent = 'Re-enter your saved recovery phrase'; $('phrase-submit').textContent = 'Open wallet';
     $('phrase-entry-help').textContent = 'Type each word from your written backup; pasting is disabled here.';
     phraseFields.focus(); return;
   }
+  // Only the create flow reaches 'verify': words generated in this tab.
+  const fresh = phraseStep === 'verify';
+  await openPhraseWallet(fresh, () => {
+    const phrase = phraseFields.read();
+    if (fresh && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
+    return phrase;
+  });
+};
+// Opens the wallet from recovery words: typed (restore), typed again (the
+// create flow's check) or, after the skip warning, the words generated in
+// this tab. fresh: the words were generated in this tab (walletFresh);
+// readPhrase returns the words or throws the message to show.
+async function openPhraseWallet(fresh, readPhrase) {
   const operation = ++vaultOperation; let claimed = false;
   try {
-    const phrase = phraseFields.read();
-    // Only the create flow reaches 'verify': words generated in this tab.
-    const fresh = phraseStep === 'verify';
-    if (fresh && normalizePhrase(phrase) !== generatedPhrase) throw new Error('The phrase does not match. Re-enter your saved backup.');
+    const phrase = readPhrase();
     // The other site (src/site-lock.js) must not have a wallet open.
     const otherSite = siteLock.otherOpen();
     if (otherSite) throw new Error(otherSite);
@@ -1671,7 +1702,7 @@ $('phrase-form').onsubmit = async event => {
     focusOpenWallet();
   } catch (error) { if (operation === vaultOperation) message(error.message, { error: true }); }
   finally { if (claimed) unclaimSession(); }
-};
+}
 // The Nodus address is shown in the receive panel when Nodus is the selected
 // network, like Cellframe's and Ixios's below. It is stored on the wallet
 // (source.addresses.nodus) only once current() passes, so #copy-address finds
