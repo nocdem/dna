@@ -6,10 +6,11 @@
  *        application, mempool and evidence-pool interface tables the
  *        BlockExecutor talks to.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * FLEET-TM-R3 wave W1, package R3-B. Nothing in the running chain calls
- * anything here; R3-C2 constructs `nodus_cmt_blockexec_t`, calls
- * `nodus_cmt_host_build` and hands the table to `cmt_cs_init`.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * FLEET-TM-R3 wave W1, package R3-B. Reached on every version-3 node:
+ * `nodus_cmt_node_init` constructs the `nodus_cmt_blockexec_t`
+ * (nodus_witness_cmt_node.c:2156) since THE LIVE FLIP (4a43e3a96,
+ * v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── THE OBJECT ─────────────────────────────────────────────────────────

@@ -2,11 +2,12 @@
  * @file shared/dnac/cmt_part_set.h
  * @brief cometbft @v0.38.26 `types/part_set.go` ported to C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-B of the cometbft → C consensus port. Nothing in the running
- * chain calls anything in this file; it is additive only. The live witness
- * BFT, the QC V2 path and the T3 wave-1 modules (tm_commit, tm_vote,
- * tm_wal) are byte-identically untouched.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-B of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the state
+ * machine assembles every proposal block from its parts here
+ * (cmt_cs.c:3283 `cmt_part_set_add_part`, in
+ * cmt_cs_add_proposal_block_part).
  * ════════════════════════════════════════════════════════════════════════
  *
  * A PartSet is how a block travels: the marshalled block is cut into

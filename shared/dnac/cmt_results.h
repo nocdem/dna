@@ -3,9 +3,13 @@
  * @brief cometbft @v0.38.26 `types/results.go` ported to C — the ABCI
  *        result list whose Merkle root is LastResultsHash.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-C of the cometbft → C consensus port. No consensus path calls
- * anything here yet; the module is additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-C of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the block
+ * executor hashes each block's tx results here
+ * (nodus/src/witness/nodus_witness_cmt_store.c:2183 `cmt_new_results`,
+ * :2187 `cmt_abci_results_hash`, in nodus_cmt_ss_tx_results_hash ←
+ * nodus_witness_cmt_host.c:1471).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── What this produces ─────────────────────────────────────────────────

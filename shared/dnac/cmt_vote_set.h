@@ -3,10 +3,11 @@
  * @brief cometbft @v0.38.26 `types/vote_set.go` ported to C, plus the three
  *        `types/block.go` functions that build a VoteSet.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-A of the cometbft → C consensus port. Additive only; nothing in
- * the running chain calls anything here. The live witness BFT, QC V2 and
- * the T3 wave-1 modules are byte-identically untouched.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R2-A of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the state
+ * machine tallies votes here (cmt_cs.c:3688 `cmt_vote_set_add_vote`, in
+ * cs_add_vote_last_commit; and through cmt_hvs for the round's votes).
  * ════════════════════════════════════════════════════════════════════════
  *
  * A VoteSet collects the signatures of one (height, round, vote type) and

@@ -6,10 +6,10 @@
  *        engine — cometbft @v0.38.26 `abci/types/application.go:11-34`
  *        method set, D-23 rev 5.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * FLEET-TM-R3 wave W2, package R3-C1a. Nothing in the running chain calls
- * anything here. The tests drive it; R3-C1c (the startup table) is the
- * first production constructor.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * FLEET-TM-R3 wave W2, package R3-C1a. Reached on every version-3 node:
+ * the startup table builds it (nodus_witness_cmt_node.c:1901-1903,
+ * nodus_cmt_node_init) since THE LIVE FLIP (4a43e3a96, v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT IS HERE ───────────────────────────────────────────────────────

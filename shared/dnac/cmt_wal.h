@@ -3,9 +3,12 @@
  * @brief cometbft @v0.38.26 `consensus/wal.go`'s RECORD TYPES and the
  *        WAL codec of `consensus/msgs.go:240-347`, in C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-B of the cometbft → C consensus port. Nothing in the running
- * chain calls anything here yet; additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R2-B of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the node's
+ * consensus WAL encodes and decodes its records here
+ * (nodus/src/witness/nodus_witness_cmt_wal.c:402
+ * `cmt_timed_wal_message_encode`, in wal_frame; :616 decode).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT THIS FILE IS, AND WHAT IT DELIBERATELY IS NOT ─────────────────

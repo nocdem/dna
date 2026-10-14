@@ -3,9 +3,11 @@
  * @brief Ledger V2 Season 5 — the INACTIVE atomic global-block apply
  *        engine, V2 genesis, and the V2 supply-conservation gate.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * No live consensus path calls anything here. Tests (and later the V2
- * devnet reset) drive it. The caller-shaped raw-SQL op scaffold
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Reached on every version-3 node: the application's FinalizeBlock
+ * applies each committed block here (nodus_witness_cmt_app.c:2731,
+ * nodus_cmt_app_finalize_block → nodus_witness_v2_apply_block) since THE
+ * LIVE FLIP (4a43e3a96, v0.19.61). The caller-shaped raw-SQL op scaffold
  * (nodus_v2_op_t.sql) is RETIRED: a block carries ENVELOPES
  * (nodus_v2_envelope_t — bytes and length, nothing else), and every
  * state transition they cause runs through ONE typed, mediated, metered

@@ -7,12 +7,14 @@
  *        (the Handshaker) with `consensus/replay_stubs.go:60-79` (the
  *        mock application), and `consensus/state.go:318-405` (OnStart).
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * FLEET-TM-R3 wave W2, package R3-C1c. Nothing in the running chain calls
- * anything here; `nodus-server` still starts the legacy BFT lane. This is
- * nevertheless the FIRST PRODUCTION CALLER of `cmt_cs_init` (D-23 rev 5
- * (8)) — the object it builds is a complete, startable consensus node
- * minus the reactor and the tick, which are W3's.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * FLEET-TM-R3 wave W2, package R3-C1c; the FIRST PRODUCTION CALLER of
+ * `cmt_cs_init` (D-23 rev 5 (8)). Reached on every version-3 node:
+ * `nodus_witness_cmt_live_init` calls `nodus_cmt_node_init`
+ * (nodus_witness.c:2295) and `nodus_cmt_node_start` (nodus_witness.c:2363)
+ * since THE LIVE FLIP (4a43e3a96, v0.19.61). The object it builds is the
+ * consensus node minus the reactors and the tick, which
+ * `nodus_witness_cmt_live_init` adds (nodus_witness.c:2335-2349).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT IS HERE, IN THE REFERENCE'S ORDER ─────────────────────────────

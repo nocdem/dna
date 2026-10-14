@@ -13,10 +13,12 @@
  * derived is a forgery surface, so the type system simply does not offer
  * one — for either identity.
  *
- * ACTIVATION: INACTIVE. No live consensus path calls anything here; the
- * active chain keeps the legacy V2 wire, the v3 five-input state_root and
- * the V1 block hash byte-identical. This module activates only with the
- * Ledger V2 devnet reset.
+ * STATUS: LIVE. The apply engine preflights a committed block's envelopes
+ * here (nodus/src/witness/nodus_witness_v2_apply.c:5397, in
+ * v2_apply_block_body ← nodus_witness_v2_apply_block ←
+ * nodus_witness_cmt_app.c:2731), and CheckTx does too
+ * (nodus_witness_v2_env.c:144, in nodus_witness_v2_env_preflight_batch ←
+ * nodus_witness_cmt_app.c:727).
  *
  * ── What this module is ────────────────────────────────────────────────
  * It adds NO new preimage and NO new hash. Every digest it produces comes

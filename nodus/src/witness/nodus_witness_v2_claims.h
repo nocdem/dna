@@ -5,12 +5,10 @@
  *        accounting, generic runtime resolution and the generic claim
  *        verify/apply pipeline (INACTIVE).
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * No live consensus path calls anything here. Tests (and later the
- * Ledger V2 devnet reset) drive it. Transaction types 12-14 remain
- * UNASSIGNED and inert: a claim is NOT a live wire transaction — the
- * codec/verify/apply entrypoints live entirely behind the inactive V2
- * boundary and the existing live wire-v2 behavior is unchanged.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Reached on every version-3 node: the application's InitChain reads the
+ * chain id through it (nodus_witness_cmt_app.c:1287,
+ * nodus_cmt_app_init_chain, bound at nodus_witness_cmt_app.c:629).
  * ════════════════════════════════════════════════════════════════════════
  *
  * GENERICITY (locked): everything here is consumer-neutral AND

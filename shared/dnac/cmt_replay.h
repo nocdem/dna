@@ -4,8 +4,12 @@
  *        C — which of the reference's twelve branches a node is in.
  *
  * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-B of the cometbft → C consensus port. Nothing in the running
- * chain calls anything here yet; additive only.
+ * Wave R2-B of the cometbft → C consensus port. No caller in the running
+ * node (checked 2026-10-14, git grep cmt_replay_: only
+ * nodus/tests/test_cmt_replay.c). The running node's handshake is
+ * `nodus_cmt_handshaker_handshake`
+ * (nodus/src/witness/nodus_witness_cmt_node.c:1141), which does not call
+ * this file.
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT IS HERE ───────────────────────────────────────────────────────

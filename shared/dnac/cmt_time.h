@@ -2,9 +2,14 @@
  * @file shared/dnac/cmt_time.h
  * @brief cometbft @v0.38.26 `types/time/time.go` ported to C — BFT-time.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-A of the cometbft → C consensus port. Additive only. NOTHING IN
- * THIS FILE READS A CLOCK — see "The clock" below.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-A of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): e.g. the
+ * host's `now` row canonicalises through it
+ * (nodus/src/witness/nodus_witness.c:1834 `cmt_time_canonical`, in
+ * witness_cmt_now) and block time is the weighted median computed here
+ * (cmt_state.c:221). NOTHING IN THIS FILE READS A CLOCK — see "The
+ * clock" below.
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── The time value ─────────────────────────────────────────────────────

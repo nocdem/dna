@@ -3,9 +3,10 @@
  * @brief cometbft @v0.38.26 `consensus/types/height_vote_set.go` ported
  *        to C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-A of the cometbft → C consensus port. Additive only; nothing in
- * the running chain calls anything here.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R2-A of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): the state
+ * machine adds every vote through it (cmt_cs.c:4035, cs_add_vote).
  * ════════════════════════════════════════════════════════════════════════
  *
  * A HeightVoteSet is every VoteSet of one height: prevotes and precommits

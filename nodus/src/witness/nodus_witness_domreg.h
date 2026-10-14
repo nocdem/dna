@@ -8,11 +8,12 @@
  * exactly SYSTEM (0) and DNA_CORE (1); a third native domain is one more
  * row + one more compiled runtime entry — no BlockHeader change, ever.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * No live consensus path (PREVOTE / COMMIT / finalize_block / admission)
- * calls anything in this file. Tests and the S4 harness drive it. The
- * registry activates only with the Ledger V2 devnet reset; live V1
- * state_root, block hashes and Type-11 rejection are byte-unchanged.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Reached on every version-3 node: the application's CheckTx and
+ * PrepareProposal read the registry (nodus_witness_cmt_app.c:796, via
+ * app_generation_not_in_force ← nodus_cmt_app_check_tx; :2042 in
+ * nodus_cmt_app_prepare_proposal), and the apply engine switches
+ * generations through it (nodus_witness_v2_apply.c:4456).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── Staged activation policy (LOCKED by the S4 season charter;

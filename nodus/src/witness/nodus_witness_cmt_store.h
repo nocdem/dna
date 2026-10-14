@@ -6,10 +6,11 @@
  *        `types/block_meta.go` and the block decode step the BlockStore
  *        and the host share.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * FLEET-TM-R3 wave W1, package R3-B. Nothing in the running chain calls
- * anything here; `nodus_witness_cmt_host.c` binds the block-store rows
- * of `cmt_cs_host_t` to it and R3-C1 flips the live path.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * FLEET-TM-R3 wave W1, package R3-B. Reached on every version-3 node:
+ * `nodus_cmt_node_init` reads the store (nodus_witness_cmt_node.c:2197)
+ * and `nodus_witness_cmt_host.c` binds the block-store rows of
+ * `cmt_cs_host_t` to it; live since THE LIVE FLIP (4a43e3a96, v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── THE MAPPING (D-17 rev 6, APPROVED 2026-09-14; rev 5 ruled 2026-09-11) ─

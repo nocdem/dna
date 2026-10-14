@@ -5,11 +5,15 @@
  *        reactor on channel 0x00, plus the signed ADDR records of
  *        R-P2P-4.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE (when PEX is on — the default) ════════════════════════
  * Phase F4 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
- * row "p2p/pex/ *", §9). Only its tests construct one; the nodus glue (F5)
- * registers it on the switch and calls `cmt_p2p_pex_tick` every pass.
- * Additive only.
+ * row "p2p/pex/ *", §9). The 4004 p2p host constructs it and registers it
+ * on the switch (nodus/src/witness/nodus_witness_p2p.c:3590
+ * `cmt_p2p_pex_new`, :3595, in nodus_witness_p2p_new) and calls
+ * `cmt_p2p_pex_tick` every poll (:3796, nodus_witness_p2p_poll) since
+ * P2P-PORT F5 (1e9285922, v0.20.0) — inside `if (p->cfg.pex)` (:3554);
+ * pex defaults to true (:68) and the node config can turn it off
+ * (nodus/tools/nodus_node_config.c:236).
  * ════════════════════════════════════════════════════════════════════════
  *
  * Governing records: docs/plans/decisions/2026-09-26-witness-port-session.md

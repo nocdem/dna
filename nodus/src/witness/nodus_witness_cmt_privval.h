@@ -5,10 +5,11 @@
  *        `libs/tempfile.WriteFileAtomic` (:76-129), the state half of
  *        `loadFilePV` (:198-233), and the `libs/json` shape of the file.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * FLEET-TM-R3 wave W1, package R3-B. Nothing in the running chain calls
- * anything here; R3-C2 binds `nodus_cmt_privval_save_lss` into the
- * `cmt_file_pv_t.save_last_sign_state` row.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * FLEET-TM-R3 wave W1, package R3-B. Reached on every version-3 node:
+ * `nodus_cmt_node_init` opens the privval state file
+ * (nodus_witness_cmt_node.c:1958) since THE LIVE FLIP (4a43e3a96,
+ * v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT THIS FILE IS ──────────────────────────────────────────────────

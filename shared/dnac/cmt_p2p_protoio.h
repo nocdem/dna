@@ -4,9 +4,13 @@
  *        uvarint-delimited message READER the MConnection receives its
  *        packets with, as a byte-fed parser.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Phase F2 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
- * row 4). Its only consumer is cmt_p2p_mconn (same phase). Additive only.
+ * row 4). Consumers: cmt_p2p_mconn (cmt_p2p_mconn.c:1250) and the
+ * transport's NodeInfo exchange (cmt_p2p_transport.c:428, in
+ * step_node_info). Reached on every node
+ * running the 4004 p2p host (nodus/src/witness/nodus_witness_p2p.c) since
+ * P2P-PORT F5 (1e9285922, v0.20.0).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHY A NEW FILE (the design's "executor checks") ────────────────────

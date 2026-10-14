@@ -3,11 +3,12 @@
  * @brief cometbft @v0.38.26 `mempool/reactor.go` ported to C — the Flood
  *        gossip of the mempool, receiver `memR`.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R3-M of the cometbft → C consensus port. No transport calls this
- * yet: R3-C2 binds `cmt_memr_receive` to the tier3 verb for channel 0x30,
- * `cmt_memr_tick` to the host's tick, and the host table to the witness
- * peer table. Additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R3-M of the cometbft → C consensus port. Constructed on every
+ * version-3 node by `nodus_witness_cmt_live_init`
+ * (nodus/src/witness/nodus_witness.c:2343 `cmt_memr_init`) since THE LIVE
+ * FLIP (4a43e3a96, v0.19.61); its peers come from the 4004 p2p host
+ * (nodus_witness_p2p.c:2166 `cmt_memr_add_peer`).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT IT DOES ───────────────────────────────────────────────────────

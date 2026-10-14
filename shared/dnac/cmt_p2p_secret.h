@@ -4,11 +4,14 @@
  *        the authenticated, encrypted connection every 4004 peer link runs
  *        inside.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Phase F1 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md
- * §2 row 1, §9). Nothing in the running node constructs a
- * `cmt_p2p_sc_t` yet — the transport (F3, cmt_p2p_transport) is its first
- * consumer. Additive only; 4001/4002 and today's 4004 path are untouched.
+ * §2 row 1, §9). Every 4004 connection runs this handshake: the
+ * transport constructs a `cmt_p2p_sc_t` per connection
+ * (cmt_p2p_transport.c:766 responder, :862 initiator), and the transport
+ * is built by the p2p host (nodus/src/witness/nodus_witness_p2p.c:3508
+ * `cmt_p2p_transport_init`) since P2P-PORT F5 (1e9285922, v0.20.0).
+ * 4001/4002 do not use it.
  * ════════════════════════════════════════════════════════════════════════
  *
  * Governing records: docs/plans/decisions/2026-09-26-witness-port-session.md

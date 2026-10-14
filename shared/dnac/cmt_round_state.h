@@ -2,9 +2,12 @@
  * @file shared/dnac/cmt_round_state.h
  * @brief cometbft @v0.38.26 `consensus/types/round_state.go` ported to C.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-A of the cometbft → C consensus port. Additive only; nothing in
- * the running chain reads or writes a `cmt_round_state_t` yet.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R2-A of the cometbft → C consensus port. Types only (no .c): the
+ * `cmt_round_state_t` is embedded in every `cmt_cs_t` (cmt_cs.h `rs`
+ * member) and read/written by the state machine on every step (e.g.
+ * cmt_cs.c:2649, cmt_cs_enter_precommit) on every version-3 node since
+ * THE LIVE FLIP (4a43e3a96, v0.19.61).
  * ════════════════════════════════════════════════════════════════════════
  *
  * The consensus state machine's variables: where we are (height, round,

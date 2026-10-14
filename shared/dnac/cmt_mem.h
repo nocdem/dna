@@ -5,13 +5,14 @@
  *        `mempool.go` and the mempool section of `config/config.go` —
  *        ported to C as ONE synchronous module.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R3-M of the cometbft → C consensus port. Nothing in the running
- * chain constructs a `cmt_mem_t` yet: R3-C1 binds the ledger's admission
- * check as the application, R3-B's BlockExecutor calls Update/Reap, and
- * R3-C2 wires the reactor (cmt_memr.h) to the transport. The old
- * fee-sorted `nodus_witness_mempool.{h,c}` is untouched by this wave and
- * is deleted by R3-D. Additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R3-M of the cometbft → C consensus port. Constructed on every
+ * version-3 node by `nodus_cmt_node_init`
+ * (nodus/src/witness/nodus_witness_cmt_node.c:2092 `cmt_mem_init`) since
+ * THE LIVE FLIP (4a43e3a96, v0.19.61); spend submissions enter through
+ * it (nodus_witness_handlers.c:3210 `cmt_mem_check_tx`, in
+ * handle_dnac_spend). The old
+ * fee-sorted `nodus_witness_mempool.{h,c}` no longer exists in the tree.
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT THIS IS (D-4 rev 3, atlas-dec-d5ddcba654eb48d861c03a0ecd170718)

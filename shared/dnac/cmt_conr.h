@@ -4,12 +4,13 @@
  *        consensus REACTOR: what the state machine says to its peers and
  *        what it hears from them.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Wave R3-A of the cometbft → C consensus port: the FIRST LIVE CONSUMER
- * of `cmt_cs` (cmt_cs.h). Nothing in the running chain constructs a
- * `cmt_conr_t` yet — the host glue (tier3 verbs, the server tick, the
- * peer manager, the block store) is R3-C2's; additive only. The live
- * witness BFT is untouched.
+ * of `cmt_cs` (cmt_cs.h). Constructed on every version-3 node by
+ * `nodus_witness_cmt_live_init`
+ * (nodus/src/witness/nodus_witness.c:2335 `cmt_conr_init`) since THE LIVE
+ * FLIP (4a43e3a96, v0.19.61); its peers come from the 4004 p2p host
+ * (nodus_witness_p2p.c:2151 `cmt_conr_add_peer`).
  * ════════════════════════════════════════════════════════════════════════
  *
  * The receiver in the reference is `conR`, so every function is

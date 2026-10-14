@@ -4,10 +4,13 @@
  *        to C — the transfer-rate Monitor the MConnection throttles its
  *        send and receive routines with.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Phase F2 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
- * row 3, §9). Its only consumer is cmt_p2p_mconn (the same phase), which
- * nothing in the running node constructs yet. Additive only.
+ * row 3, §9). Consumers: cmt_p2p_mconn (cmt_p2p_mconn.c:431, in
+ * cmt_p2p_mconn_init) and the block sync pool (cmt_bsync_pool.c:107).
+ * Reached on every node running the 4004 p2p host
+ * (nodus/src/witness/nodus_witness_p2p.c) since P2P-PORT F5 (1e9285922,
+ * v0.20.0).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT IS PORTED ─────────────────────────────────────────────────────

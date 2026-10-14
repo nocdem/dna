@@ -5,10 +5,12 @@
  *        (transport.go:541-581), its `Validate`, its `CompatibleWith`, and
  *        the `tendermint.p2p.DefaultNodeInfo` protobuf codec.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
  * Phase F3 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
- * row "node_info.go", §9). First consumer: cmt_p2p_transport (same phase).
- * Additive only.
+ * row "node_info.go", §9). The 4004 p2p host builds this node's NodeInfo
+ * (nodus/src/witness/nodus_witness_p2p.c:3473 `cmt_p2p_node_info_make`,
+ * in nodus_witness_p2p_new) and the transport checks every peer's against
+ * it (cmt_p2p_transport.c:370), since P2P-PORT F5 (1e9285922, v0.20.0).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WIRE (DEVIATION R-P2P-2: the tree's own codec, byte-identical field

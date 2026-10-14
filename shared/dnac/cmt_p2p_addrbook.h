@@ -5,11 +5,13 @@
  *        ported to C — the address book, plus the signed ADDR record of
  *        R-P2P-4.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
+ * ═══ STATUS: LIVE (when PEX is on — the default) ════════════════════════
  * Phase F4 of fleet P2P-PORT (docs/plans/2026-09-26-p2p-port-design.md §2
- * row "p2p/pex/ *", §9). Only its tests and the PEX reactor of the same
- * phase construct one; the nodus glue (F5) owns the host table. Additive
- * only.
+ * row "p2p/pex/ *", §9). Constructed by the 4004 p2p host
+ * (nodus/src/witness/nodus_witness_p2p.c:3575 `cmt_p2p_addrbook_new`, in
+ * nodus_witness_p2p_new) since P2P-PORT F5 (1e9285922, v0.20.0), inside
+ * `if (p->cfg.pex)` (:3554); pex defaults to true (:68) and the node
+ * config can turn it off (nodus/tools/nodus_node_config.c:236).
  * ════════════════════════════════════════════════════════════════════════
  *
  * Governing records: docs/plans/decisions/2026-09-26-witness-port-session.md

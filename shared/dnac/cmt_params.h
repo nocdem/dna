@@ -3,9 +3,12 @@
  * @brief cometbft @v0.38.26 `types/params.go` ported to C — the consensus
  *        parameters and the ConsensusHash.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R1-C of the cometbft → C consensus port. No consensus path calls
- * anything here yet; the module is additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R1-C of the cometbft → C consensus port. Reached on every
+ * version-3 node since THE LIVE FLIP (4a43e3a96, v0.19.61): block
+ * validation hashes the consensus params through it
+ * (nodus/src/witness/nodus_witness_cmt_host.c:1050
+ * `cmt_consensus_params_hash`, in nodus_cmt_validate_block).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── ConsensusHash is FLAT, not Merkle ──────────────────────────────────

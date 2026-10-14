@@ -3,9 +3,12 @@
  * @brief cometbft @v0.38.26 `privval/file.go`'s SIGNING LOGIC in C — the
  *        double-sign guard, without the two JSON files.
  *
- * ═══ ACTIVATION: INACTIVE ═══════════════════════════════════════════════
- * Wave R2-B of the cometbft → C consensus port. Nothing in the running
- * chain calls anything here yet; additive only.
+ * ═══ STATUS: LIVE ═══════════════════════════════════════════════════════
+ * Wave R2-B of the cometbft → C consensus port. Reached on every
+ * version-3 validator since THE LIVE FLIP (4a43e3a96, v0.19.61): the
+ * host's sign rows sign through it
+ * (nodus/src/witness/nodus_witness_cmt_host.c:2161
+ * `cmt_pv_sign_vote_adapter`, in host_sign_vote; :2172 proposals).
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── WHAT THIS FILE IS ──────────────────────────────────────────────────
