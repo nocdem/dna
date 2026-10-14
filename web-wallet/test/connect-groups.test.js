@@ -39,9 +39,14 @@
 //   - the store's `groups` index and the split of group messages from 1:1;
 //   - a failed save's undo takes back only its own index entry: a second
 //     change of the same group made while it waited stands (web 0.1.118);
-//   - W-16 (web 0.1.125): an accept that could not be kept for sending puts
-//     the record back to the same invitation, saved, and Join works again;
-//     a newer invitation that arrived meanwhile is not overwritten;
+//   - W-16 / P7 design §2.6: accept, invite, leave and welcome each make
+//     exactly ONE save holding both the group record and the 1:1 control
+//     message; a crash right after that save (the outbox never reached)
+//     leaves the message kept and selected by the 1:1 outbox (text.js
+//     hasUndelivered / pendingOutbox, which messages.js uses after a
+//     reload); one that cannot be prepared (offline, no salt) saves nothing
+//     and leaves the state as it was (accept: still 'invited', Join works);
+//     a failed accept save leaves a newer invitation committed meanwhile;
 //   - decision 14: leave -> re-invite -> re-join keeps every earlier key
 //     version record (the invitation carries the old keyIds forward); after
 //     a reload the earlier version is held but inert (buckets of the new
@@ -64,6 +69,7 @@ import {
   splitPieces, BLOB_PIECE, checkGroup, newGroup, storedGroup, textProblem, nameProblem, ROTATE_MS, DAY_MS, GroupError
 } from '../src/connect/groups/model.js';
 import { emptyState, checkState, memoryHistoryStore, GROUP_RECORD_ID } from '../src/connect/store.js';
+import { hasUndelivered, pendingOutbox } from '../src/connect/ui/text.js';
 
 const FA = 'a1'.repeat(64), FB = 'b2'.repeat(64), FC = 'c3'.repeat(64), FD = 'd4'.repeat(64);
 const T0 = Date.UTC(2026, 9, 5, 12, 0, 0);
@@ -203,9 +209,14 @@ function party(net, fp, { contacts = [], kem = () => true } = {}) {
   const outbox = [];
   // holdNext: { wait, fail } — the NEXT save waits for `wait`, then fails
   // (fail true) or goes on; other saves run meanwhile.
-  // failSend: the next 1:1 control message is NOT kept (sendControl's
-  // offline / no salt / failed save: it throws); a function runs first.
-  const p = { fp, state, db, kept, outbox, contacts: [...contacts], failSave: false, holdNext: null, failSend: false };
+  // failSend: the next 1:1 control message cannot be prepared
+  // (messages.js prepareControl: Messages closed, offline, no salt — it
+  // throws, nothing is kept).
+  // crash: every save resolves (written) but the page dies before the
+  // control message is handed to the 1:1 outbox (kept() never runs) — the
+  // W-16 window between "kept" and "published".
+  // saves: every saveAll call, in order: { records: [ids], messages: [copies] }.
+  const p = { fp, state, db, kept, outbox, contacts: [...contacts], failSave: false, holdNext: null, failSend: false, crash: false, saves: [] };
   p.deps = {
     core: fakeCore(net, fp), ownFp: fp, now: () => net.clock.t, state: () => state,
     takeSeq: () => { const s = state.nextSeq; state.nextSeq = String(BigInt(s) + 1n); return s; },
@@ -216,12 +227,23 @@ function party(net, fp, { contacts = [], kem = () => true } = {}) {
       p.holdNext = null;
       if (hold) { await hold.wait; if (hold.fail) { undo?.(); throw new Error('save failed'); } }
       if (p.failSave) { undo?.(); throw new Error('save failed'); }
+      p.saves.push({ records: records.map(r => r.id), messages: messages.map(m => structuredClone(m)) });
       for (const r of records) db.set(r.id, structuredClone(r.value));
       for (const m of messages) kept.set(m.seq, structuredClone(m));
     },
-    sendDirect: async (to, text) => {
-      if (p.failSend) { const before = p.failSend; p.failSend = false; if (typeof before === 'function') await before(); throw new Error('Sending opens once Messages is connected to the network.'); }
-      outbox.push({ to, text }); net.log.push(`send:${JSON.parse(text).type.replace('nodus_group_', '')}:${fp.slice(0, 2)}->${to.slice(0, 2)}`); },
+    // The shape of messages.js prepareControl: a 1:1 record (no `group`)
+    // flagged `control`, `ts` in unix seconds; kept() = the 1:1 outbox.
+    prepareDirect: (to, text) => {
+      if (p.failSend) { p.failSend = false; throw new Error('Sending opens once Messages is connected to the network.'); }
+      const message = { seq: p.deps.takeSeq(), fp: to, dir: 'out', text, ts: String(Math.floor(net.clock.t / 1000)), at: net.clock.t, control: true };
+      return {
+        message,
+        kept: async () => {
+          if (p.crash) return;
+          outbox.push({ to, text }); net.log.push(`send:${JSON.parse(text).type.replace('nodus_group_', '')}:${fp.slice(0, 2)}->${to.slice(0, 2)}`);
+        }
+      };
+    },
     isContact: x => p.contacts.includes(x),
     ensureProfile: async () => true,
     reloadProfile: async () => true,
@@ -564,42 +586,182 @@ test('who may send which: an invite not from its owner, a non-contact\'s invite,
   assert.equal(await B.engine.onDirect(FA, 'hello'), false);
 });
 
-test('W-16: an accept that could not be kept for sending puts the invitation back (saved); Join works again', async () => {
+// W-16 / P7 design §2.6: a transition and the 1:1 control message it implies
+// are ONE save. `controlsIn(save)`: the 1:1 control messages a save carried.
+const controlsIn = save => save.messages.filter(m => m.group === undefined && m.control === true);
+const keptControls = p => [...p.kept.values()].filter(m => m.group === undefined && m.control === true);
+const nowSec = net => String(Math.floor(net.clock.t / 1000));
+
+test('W-16: an accept that cannot be prepared commits nothing; the invitation stays and Join works again', async () => {
   const net = world();
   const B = party(net, FB, { contacts: [FA] });
   const A = party(net, FA, { contacts: [FB] });
   const { gid } = await A.engine.create('Team', [FB]);
   await deliver(A, B);
   const invited = B.engine.group(gid).invite.id;
+  const rec = B.state.groups[gid].id;
+  const indexBefore = B.state.groups[gid];
+  const savesBefore = B.saves.length;
   B.failSend = true;
   await assert.rejects(B.engine.acceptInvite(gid), err => err instanceof GroupError && err.message === 'Could not send — try again.');
-  const rec = B.state.groups[gid].id;
+  assert.equal(B.saves.length, savesBefore, 'nothing was saved: no "accepting" without its message');
   assert.equal(B.engine.group(gid).status, 'invited');
-  assert.equal(B.db.get(rec).status, 'invited', 'the way back is saved, not only in memory');
+  assert.equal(B.db.get(rec).status, 'invited', 'the device still holds the invitation');
   assert.equal(B.db.get(rec).invite.id, invited, 'the same invitation');
-  assert.deepEqual(B.engine.invitations().map(i => i.gid), [gid], 'listed again: Join is offered');
-  assert.equal(B.outbox.length, 0, 'nothing was kept for sending');
-  // Join again: the success path is unchanged
+  assert.equal(B.state.groups[gid], indexBefore, 'the state index is untouched');
+  assert.deepEqual(B.engine.invitations().map(i => i.gid), [gid], 'listed: Join is offered');
+  assert.deepEqual(keptControls(B), [], 'nothing was kept for sending');
+  assert.equal(B.outbox.length, 0);
+  // Join again: the group record and the accept go out in ONE save
   await B.engine.acceptInvite(gid);
-  assert.equal(B.engine.group(gid).status, 'accepting');
+  assert.equal(B.saves.length, savesBefore + 1, 'exactly one save for the accept');
+  const save = B.saves.at(-1);
+  assert.deepEqual(save.records, [rec], 'the save carries the group record');
+  assert.deepEqual(controlsIn(save).map(m => [m.fp, controlType(m.text)]), [[FA, 'accept']], 'and the accept message, in the same save');
   assert.equal(B.db.get(rec).status, 'accepting');
-  assert.deepEqual(B.outbox.map(m => controlType(m.text)), ['accept']);
+  assert.deepEqual(B.outbox.map(m => controlType(m.text)), ['accept'], 'handed to the 1:1 outbox after the save');
   await deliver(B, A);
   assert.deepEqual(A.engine.view(gid).joining, [FB]);
 });
 
-test('W-16: a new invitation that reopened the group while the accept failed stands (no way back over it)', async () => {
+test('W-16: a crash right after the accept\'s save leaves the accept kept and pending: the 1:1 outbox publishes it after the reload', async () => {
+  const net = world();
+  const B = party(net, FB, { contacts: [FA] });
+  const A = party(net, FA, { contacts: [FB] });
+  const { gid } = await A.engine.create('Team', [FB]);
+  await deliver(A, B);
+  B.crash = true;                          // the page dies before kept() runs
+  await B.engine.acceptInvite(gid);
+  assert.equal(B.outbox.length, 0, 'never handed to the outbox in that session');
+  const rec = B.state.groups[gid].id;
+  assert.equal(B.db.get(rec).status, 'accepting');
+  const controls = keptControls(B);
+  assert.deepEqual(controls.map(m => [m.fp, m.dir, controlType(m.text)]), [[FA, 'out', 'accept']], 'the accept is on the device');
+  assert.notEqual(controls[0].published, true, 'not published yet');
+  // after the reload: messages.js openLocal marks every contact with an
+  // undelivered own message `unpublished` (text.js hasUndelivered) and the
+  // check publishes the contact's pending set (publishOutbox -> pendingOutbox)
+  const oneToOne = [...B.kept.values()].filter(m => m.group === undefined);
+  assert.equal(hasUndelivered(oneToOne, FA, nowSec(net)), true);
+  assert.deepEqual(pendingOutbox(oneToOne, FA, nowSec(net)).map(m => m.seq), [controls[0].seq]);
+  // and the group, loaded again, still waits as 'accepting' for its welcome
+  const again = createGroupsEngine({ ...B.deps });
+  again.load({ records: [...B.db.entries()].map(([id, value]) => ({ id, value })), messages: [...B.kept.values()] });
+  assert.equal(again.group(gid).status, 'accepting');
+  assert.deepEqual(again.messages(), [], 'the 1:1 control message is not a group message');
+  // the republished accept is honoured by the owner, and the welcome joins B
+  await A.engine.onDirect(FB, controls[0].text);
+  assert.deepEqual(A.engine.view(gid).joining, [FB]);
+  await A.engine.syncAll();
+  for (const m of A.outbox.filter(x => x.to === FB)) await again.onDirect(FA, m.text);
+  assert.equal(again.group(gid).status, 'joining');
+});
+
+test('W-16: a failed accept save commits nothing; a new invitation committed during it stands', async () => {
   const net = world();
   const B = party(net, FB, { contacts: [FA] });
   const A = party(net, FA, { contacts: [FB] });
   const { gid } = await A.engine.create('Team', [FB]);
   await deliver(A, B);
   const fresh = 'cd'.repeat(16);
-  B.failSend = () => B.engine.onDirect(FA, JSON.stringify({ type: 'nodus_group_invite', v: 1, group_id: gid, owner: FA, name: 'Team', invite_id: fresh }));
-  await assert.rejects(B.engine.acceptInvite(gid), err => err instanceof GroupError && /Could not send/.test(err.message));
+  let release;
+  B.holdNext = { wait: new Promise(resolve => { release = resolve; }), fail: true };
+  const accepting = B.engine.acceptInvite(gid);           // its save waits, then fails
+  // the accept reaches its save after its name checks (microtasks only, the
+  // mocked core does no I/O): the hold is taken by the accept's save, not
+  // by the invite's below
+  for (let i = 0; B.holdNext && i < 100; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(B.holdNext, null, 'the accept\'s save is the one held');
+  await B.engine.onDirect(FA, JSON.stringify({ type: 'nodus_group_invite', v: 1, group_id: gid, owner: FA, name: 'Team', invite_id: fresh }));
+  release();
+  await assert.rejects(accepting, /save failed/);
   assert.equal(B.engine.group(gid).status, 'invited');
   assert.equal(B.engine.group(gid).invite.id, fresh, 'the newer invitation is kept');
   assert.equal(B.db.get(B.state.groups[gid].id).invite.id, fresh);
+  assert.deepEqual(keptControls(B), [], 'no accept was kept');
+  assert.equal(B.outbox.length, 0);
+});
+
+test('§2.6: invite — the pending invite and its message are one save; one that cannot be prepared records no invite', async () => {
+  const net = world();
+  const A = party(net, FA, { contacts: [FB, FC] });
+  const { gid } = await A.engine.create('Team', []);
+  const before = A.saves.length;
+  A.failSend = true;
+  await assert.rejects(A.engine.invite(gid, FB), /connected to the network/);
+  assert.equal(A.saves.length, before, 'nothing saved');
+  assert.deepEqual(A.engine.group(gid).invites, [], 'no invitation recorded without its message');
+  assert.deepEqual(keptControls(A), []);
+  await A.engine.invite(gid, FB);
+  assert.equal(A.saves.length, before + 1, 'exactly one save');
+  const save = A.saves.at(-1);
+  assert.deepEqual(save.records, [A.state.groups[gid].id]);
+  assert.deepEqual(controlsIn(save).map(m => [m.fp, controlType(m.text)]), [[FB, 'invite']]);
+  assert.deepEqual(A.db.get(A.state.groups[gid].id).invites.map(i => i.fp), [FB]);
+  // crash after the save: the invite is kept and pending for the outbox
+  A.crash = true;
+  await A.engine.invite(gid, FC);
+  assert.equal(A.outbox.filter(m => m.to === FC).length, 0);
+  const oneToOne = [...A.kept.values()].filter(m => m.group === undefined);
+  assert.equal(hasUndelivered(oneToOne, FC, nowSec(net)), true);
+  assert.deepEqual(pendingOutbox(oneToOne, FC, nowSec(net)).map(m => controlType(m.text)), ['invite']);
+});
+
+test('§2.6: leave — "left" and the leave message are one save; one that cannot be prepared changes nothing', async () => {
+  const net = world();
+  const B = party(net, FB, { contacts: [FA] });
+  const { A, gid } = await groupOf(net, [B]);
+  const before = B.saves.length;
+  B.failSend = true;
+  await assert.rejects(B.engine.leave(gid), /connected to the network/);
+  assert.equal(B.saves.length, before, 'nothing saved');
+  assert.equal(B.engine.group(gid).status, 'active', 'still a member');
+  assert.equal(B.db.get(B.state.groups[gid].id).status, 'active');
+  B.crash = true;
+  await B.engine.leave(gid);
+  assert.equal(B.saves.length, before + 1, 'exactly one save');
+  const save = B.saves.at(-1);
+  assert.deepEqual(save.records, [B.state.groups[gid].id]);
+  assert.deepEqual(controlsIn(save).map(m => [m.fp, controlType(m.text)]), [[FA, 'leave']]);
+  assert.equal(B.db.get(B.state.groups[gid].id).status, 'left');
+  assert.equal(B.outbox.length, 0, 'the page died before the outbox');
+  const oneToOne = [...B.kept.values()].filter(m => m.group === undefined);
+  assert.deepEqual(pendingOutbox(oneToOne, FA, nowSec(net)).filter(m => controlType(m.text) === 'leave').length, 1, 'the leave is pending for the outbox');
+  // the republished leave reaches the owner
+  await A.engine.onDirect(FB, save.messages.find(m => m.control).text);
+  assert.deepEqual(A.engine.view(gid).leaving, [FB]);
+});
+
+test('§2.6: welcome — it leaves the owner\'s queue in the save that keeps its message; one that cannot be prepared stays queued', async () => {
+  const net = world();
+  const B = party(net, FB, { contacts: [FA] });
+  const A = party(net, FA, { contacts: [FB] });
+  const { gid } = await A.engine.create('Team', [FB]);
+  await deliver(A, B);
+  await B.engine.acceptInvite(gid);
+  await deliver(B, A);
+  // the rotation is published, then the welcome cannot be prepared
+  A.failSend = true;
+  assert.equal(await A.engine.syncAll(), 1, 'the check reports this group');
+  assert.deepEqual(A.engine.group(gid).welcomes.map(w => w.fp), [FB], 'still queued');
+  assert.deepEqual(A.db.get(A.state.groups[gid].id).welcomes.map(w => w.fp), [FB], 'queued on the device');
+  assert.deepEqual(keptControls(A).filter(m => controlType(m.text) === 'welcome'), []);
+  // next check: one save drops it from the queue AND keeps its message; the page dies after it
+  A.crash = true;
+  const before = A.saves.length;
+  await A.engine.syncAll();
+  const withWelcome = A.saves.slice(before).filter(s => controlsIn(s).length);
+  assert.equal(withWelcome.length, 1, 'exactly one save carries the welcome');
+  assert.deepEqual(withWelcome[0].records, [A.state.groups[gid].id], 'together with the group record');
+  assert.deepEqual(controlsIn(withWelcome[0]).map(m => [m.fp, controlType(m.text)]), [[FB, 'welcome']]);
+  assert.deepEqual(A.db.get(A.state.groups[gid].id).welcomes, [], 'the queue is empty on the device');
+  assert.equal(A.outbox.length, 0, 'the page died before the outbox');
+  const oneToOne = [...A.kept.values()].filter(m => m.group === undefined);
+  const pending = pendingOutbox(oneToOne, FB, nowSec(net)).filter(m => controlType(m.text) === 'welcome');
+  assert.equal(pending.length, 1, 'the welcome is pending for the outbox');
+  // the republished welcome joins the member
+  await B.engine.onDirect(FA, pending[0].text);
+  assert.equal(B.engine.group(gid).status, 'joining');
 });
 
 test('a joiner without the key type groups need is refused in plain words; the others still join', async () => {

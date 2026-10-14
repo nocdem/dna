@@ -333,8 +333,9 @@ async function openLocal(gen) {
     // no network until the network phase.
     groups = createGroupsEngine({
       core, ownFp, state: () => state, takeSeq,
-      saveAll: ({ records = [], messages: groupMessages = [], undo }) => store.save(state, groupMessages, [], [], records, { undo }),
-      sendDirect: sendControl,
+      // `messages`: group messages and 1:1 control messages (prepareControl)
+      saveAll: ({ records = [], messages: newMessages = [], undo }) => store.save(state, newMessages, [], [], records, { undo }),
+      prepareDirect: prepareControl,
       isContact: fp => !!contactOf(fp)?.salt,
       ensureProfile: fp => ensureProfile(fp, !!contactOf(fp)),
       reloadProfile,
@@ -2188,8 +2189,8 @@ async function copyMessage(m) {
 }
 
 // A reaction or a delete notice to this contact: a record of its `kind`,
-// published with the contact's pending set like any message (sendControl's
-// path), applied here at once.
+// published with the contact's pending set like any message (the group
+// control messages' path, prepareControl), applied here at once.
 // `stored` is called once the record is in `messages` (before the publish).
 async function sendAction(fp, text, kind, stored) {
   if (!isOpen()) throw new Error('Messages is not open.');
@@ -2785,20 +2786,33 @@ async function sendPayload(fp, text) {
 }
 
 // ── the groups module's use of Messages (src/connect/groups/) ──────────
-// A group invite / accept / welcome / leave to one contact: kept on this
-// device as a 1:1 message flagged `control` (never shown), then published
-// with that contact's pending set — the 30-second check publishes it again
-// until it is delivered, as any 1:1 message.
-async function sendControl(fp, text) {
+// A group invite / accept / welcome / leave to one contact: a 1:1 message
+// flagged `control` (never shown), kept on this device in the SAME save as
+// the group change it belongs to (groups/engine.js commit `direct`; P7
+// design §2.6, BUGS W-16), then published with that contact's pending set —
+// the 30-second check publishes it again until it is delivered, as any 1:1
+// message, and after a reload too (openLocal: hasUndelivered).
+// Synchronous: it checks and builds the record and keeps nothing; a throw
+// means nothing was changed. The local sequence number is taken last; when
+// the group's save then fails it stays used (never reused, as in send).
+// `kept()` runs once the group's save resolved.
+function prepareControl(fp, text) {
   if (!isOpen()) throw new Error('Messages is not open.');
   if (!online) throw new Error(OFFLINE_SEND_TEXT);
   const gen = generation, contact = contactOf(fp);
   if (!contact?.salt) throw new Error('Messaging with this contact is not ready yet.');
   if (typeof text !== 'string' || !text || text.length > PAYLOAD_TEXT_MAX) throw new Error('Invalid group message.');
   const message = { seq: takeSeq(), fp, dir: 'out', text, ts: nowSeconds(), at: Date.now(), control: true };
-  await persist([message]);
-  if (gen !== generation) throw new Error('Messages is not open.');
-  messages.push(message); unpublished.add(fp);
+  return { message, kept: () => controlKept(message, contact, gen) };
+}
+// The kept control message joins this session's 1:1 list and is published.
+// It never throws: a failed publish is retried by the check (unpublished).
+// Messages closed meanwhile (another generation): a saved wallet holds the
+// message already, and the next open finds it undelivered and publishes it
+// (an unsaved wallet keeps nothing across a close, as for any message).
+async function controlKept(message, contact, gen) {
+  if (gen !== generation) return;
+  messages.push(message); unpublished.add(message.fp);
   try { await publishOutbox(contact, gen); } catch { /* retried by sync */ }
 }
 // A fresh owner-filtered read of a profile: its keys go back into the

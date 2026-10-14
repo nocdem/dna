@@ -29,14 +29,23 @@
 //                    `groups` index and `nextSeq` live there
 //   takeSeq()        the next local sequence (state.nextSeq)
 //   saveAll({ records, messages, undo })   one store.save of the state, these
-//                    group records ({ id, value }) and group messages;
+//                    group records ({ id, value }) and messages — group
+//                    messages (with `group`) and 1:1 control messages
+//                    (without; store.js keeps the two apart on load);
 //                    resolves once written (or kept in memory: unsaved wallet);
 //                    on a failure it runs `undo` (optional, synchronous: the
 //                    caller's rollback of the state) before it rejects
-//   sendDirect(fp, text)   a 1:1 message carrying an invite / accept /
-//                    welcome / leave: kept on the device and published by the
-//                    1:1 outbox (src/connect/ui/messages.js); it throws only
-//                    when the message was NOT kept (acceptInvite relies on it)
+//   prepareDirect(fp, text)   synchronous: a 1:1 message carrying an invite /
+//                    accept / welcome / leave, prepared but NOT kept yet
+//                    (src/connect/ui/messages.js prepareControl). It throws
+//                    when it cannot be sent (Messages closed, offline, no
+//                    salt yet, a bad text) — then nothing was changed. It
+//                    returns { message, kept }: `message` goes into the SAME
+//                    saveAll as the group change it belongs to (commit
+//                    `direct`, P7 design §2.6, BUGS W-16); `kept()` runs once
+//                    that save resolved — it hands the message to the 1:1
+//                    outbox, which publishes it now and again after a reload
+//                    until delivered; it never throws
 //   isContact(fp)    a contact whose 1:1 messaging is ready (decision 8)
 //   ensureProfile(fp)    the verified profile, read once per session
 //   reloadProfile(fp)    a fresh owner-filtered profile read (puts the keys
@@ -71,8 +80,9 @@
 //           invited --ignore--> (record deleted)
 //           accepting --a new invite_id from the pinned owner (the join was
 //           refused, never welcomed)--> invited
-//           accepting --the accept could not be kept for sending (W-16)-->
-//           invited (the same invitation; Join works again)
+//           (accept: 'accepting' and the accept message are ONE commit —
+//           P7 design §2.6, BUGS W-16; an accept that cannot be prepared
+//           commits nothing, the invitation stays and Join works again)
 //           accepting | joining | active --leave--> left (hidden; the owner
 //           is told, decision 13)
 //   owner:  active from creation (hw empty until version 1's HEAD is out);
@@ -111,7 +121,7 @@ const clone = g => structuredClone(g);
 export const needsProfile = error => /profile first/i.test(String(error?.message || ''));
 
 export function createGroupsEngine(deps) {
-  const { core, ownFp, now = () => Date.now(), state, takeSeq, saveAll, sendDirect, isContact, ensureProfile, reloadProfile, hasKemKey, nameStatus, lookupName } = deps;
+  const { core, ownFp, now = () => Date.now(), state, takeSeq, saveAll, prepareDirect, isContact, ensureProfile, reloadProfile, hasKemKey, nameStatus, lookupName } = deps;
   const groups = new Map();                // gid -> group (with `keys`: Map v -> key record)
   const recIds = new Map();                // gid -> its 'g' record id
   const stagePackets = new Map();          // gid -> staged key packet (hex), from its pieces
@@ -212,7 +222,12 @@ export function createGroupsEngine(deps) {
   // The index rollback is handed to saveAll (`undo`): the store runs it on a
   // failure, inside its queue, before the error reaches here (store.js
   // save, P7 rev 2.2 item 1) — exactly once, never again here.
-  async function commit(gid, next, { keys = [], pieces = [], messages: msgs = [] } = {}) {
+  // `direct`: the prepared 1:1 control messages this change implies
+  // (prepareDirect): kept in the SAME save as the group record (P7 design
+  // §2.6, BUGS W-16), handed to the 1:1 outbox only after it resolved. A
+  // crash in between leaves both kept: the outbox publishes the message
+  // after the reload (src/connect/ui/messages.js openLocal hasUndelivered).
+  async function commit(gid, next, { keys = [], pieces = [], messages: msgs = [], direct = [] } = {}) {
     const st = state();
     const before = st.groups[gid];
     const id = recIds.get(gid) || newId('g');
@@ -223,9 +238,10 @@ export function createGroupsEngine(deps) {
     const undo = () => {
       if (st.groups[gid] === entry) { if (before) st.groups[gid] = before; else delete st.groups[gid]; }
     };
-    await saveAll({ records: [{ id, value: storedGroup(next) }, ...keys, ...pieces], messages: msgs, undo });
+    await saveAll({ records: [{ id, value: storedGroup(next) }, ...keys, ...pieces], messages: [...msgs, ...direct.map(d => d.message)], undo });
     recIds.set(gid, id);
     groups.set(gid, next);
+    for (const d of direct) await d.kept();
     return next;
   }
   async function forget(gid) {
@@ -470,14 +486,17 @@ export function createGroupsEngine(deps) {
     }
     await sendWelcomes(gid);
   }
+  // Each welcome leaves the queue in the same commit that keeps its 1:1
+  // message (P7 design §2.6): never one without the other. One that cannot
+  // be prepared (offline, no salt) stays queued for the next check.
   async function sendWelcomes(gid) {
     for (const w of [...groups.get(gid).welcomes]) {
       const g = groups.get(gid);
       const json = await core.groupWelcome({ gid, addr: g.addr, v: String(w.v), digest: w.digest, inviteId: w.id });
-      await sendDirect(w.fp, json);
+      const direct = prepareDirect(w.fp, json);
       const next = clone(groups.get(gid));
       next.welcomes = next.welcomes.filter(x => x.id !== w.id);
-      await commit(gid, next);
+      await commit(gid, next, { direct: [direct] });
     }
   }
 
@@ -694,11 +713,13 @@ export function createGroupsEngine(deps) {
     if (named === 'none') throw new GroupError('Only contacts with a chain name can be invited to a group. This contact has none yet.');
     if (named !== 'found') throw new GroupError('This contact\'s chain name could not be checked right now. Try again in a minute.');
     const r = await core.groupInvite(gid, g.name);
+    // the pending invite and its 1:1 message are one commit (P7 design
+    // §2.6); one that cannot be prepared records no invite
+    const direct = prepareDirect(fp, r.json);
     const next = clone(g);
     next.invites = [...next.invites.filter(i => i.fp !== fp), { fp, id: r.invite_id, at: seconds() }];
     next.refused = (next.refused || []).filter(x => x !== fp);
-    await commit(gid, next);
-    await sendDirect(fp, r.json);
+    await commit(gid, next, { direct: [direct] });
   }
   async function acceptInvite(gid) {
     const g = groups.get(gid);
@@ -710,25 +731,21 @@ export function createGroupsEngine(deps) {
     if (owner !== 'found') throw new GroupError('The chain name of the person who invited you could not be checked right now. Try again in a minute.');
     await needOwnName('join');
     const json = core.groupAcceptJson(gid, g.invite.id);
+    // BUGS W-16, P7 design §2.6: 'accepting' and the accept message are ONE
+    // commit. 'accepting' has nothing else to wake it (syncAll resends
+    // nothing for it), so it must never be kept without its message; the
+    // kept message is published by the 1:1 outbox, again after a reload,
+    // until delivered. An accept that cannot be prepared (Messages closed,
+    // offline, no salt yet) commits nothing: the invitation stays, Join works
+    // again. A failed save commits nothing either (its undo takes back the
+    // index entry; a newer invitation committed meanwhile stands) and its
+    // error reaches the screen like any other save's.
+    let direct;
+    try { direct = prepareDirect(g.owner, json); }
+    catch { throw new GroupError('Could not send — try again.'); }
     const next = clone(g);
     next.status = 'accepting';
-    const accepting = await commit(gid, next);
-    // BUGS W-16: sendDirect throws only when the accept was NOT kept on this
-    // device (src/connect/ui/messages.js sendControl: offline, no salt yet, or
-    // its save failed; after the save it throws only once Messages closed,
-    // when the store refuses any write, so nothing below can land). A kept
-    // accept is published by the 1:1 outbox, so 'accepting' stands. One not
-    // kept would leave 'accepting' with nothing to wake it (syncAll resends
-    // nothing for it): the record goes back to the invitation it was — one
-    // commit, the same record shape — so Join works again. Only while it is
-    // still this call's 'accepting' record: a new invite that reopened the
-    // group meanwhile (onInvite) stands. A failed revert leaves 'accepting'
-    // (as before this fix) and its error reaches the screen.
-    try { await sendDirect(g.owner, json); }
-    catch {
-      if (groups.get(gid) === accepting) await commit(gid, clone(g));
-      throw new GroupError('Could not send — try again.');
-    }
+    await commit(gid, next, { direct: [direct] });
   }
   // Decline = no reply (design §7): the invitation is forgotten here.
   async function ignoreInvite(gid) {
@@ -738,15 +755,18 @@ export function createGroupsEngine(deps) {
   }
   // Leave (decision 13): hidden here at once; the owner is told and removes
   // this member at its next rotation (until then the owner's list still
-  // shows it).
+  // shows it). 'left' and the leave message are one commit (P7 design
+  // §2.6): a leave that cannot be prepared (Messages closed, offline)
+  // changes nothing. With an owner who is no longer a contact there is no
+  // 1:1 channel to tell it: the group is left without a message.
   async function leave(gid) {
     const g = groups.get(gid);
     if (!g || g.role !== 'member' || !['accepting', 'joining', 'active'].includes(g.status)) throw new GroupError('You cannot leave this group.');
     const json = core.groupLeaveJson(gid);
+    const direct = isContact(g.owner) ? [prepareDirect(g.owner, json)] : [];
     const next = clone(g);
     next.status = 'left';
-    await commit(gid, next);
-    if (isContact(g.owner)) await sendDirect(g.owner, json);
+    await commit(gid, next, { direct });
   }
   // Owner: remove a member (or withdraw an invitation). Applied at the next
   // rotation, HEAD last; until then the member is still listed.

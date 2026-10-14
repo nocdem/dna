@@ -178,7 +178,12 @@ function party(net, fp, { contacts = [] } = {}) {
     core: fakeCore(net, fp), ownFp: fp, now: () => net.clock.t, state: () => state,
     takeSeq: () => { const s = state.nextSeq; state.nextSeq = String(BigInt(s) + 1n); return s; },
     saveAll: async () => {},
-    sendDirect: async (to, text) => { outbox.push({ to, text }); net.log.push(`send:${JSON.parse(text).type.replace('nodus_group_', '')}:${fp.slice(0, 2)}->${to.slice(0, 2)}`); },
+    // groups/engine.js prepareDirect: the message goes into the commit's
+    // save (a no-op here); kept() hands it to the 1:1 outbox
+    prepareDirect: (to, text) => ({
+      message: { seq: p.deps.takeSeq(), fp: to, dir: 'out', text, ts: String(Math.floor(net.clock.t / 1000)), control: true },
+      kept: async () => { outbox.push({ to, text }); net.log.push(`send:${JSON.parse(text).type.replace('nodus_group_', '')}:${fp.slice(0, 2)}->${to.slice(0, 2)}`); }
+    }),
     isContact: x => p.contacts.includes(x),
     ensureProfile: async () => true,
     reloadProfile: async () => true,
