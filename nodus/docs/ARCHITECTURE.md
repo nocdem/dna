@@ -9463,7 +9463,8 @@ numbered register row (R-P2P-n) in the local design doc
   descriptors); two nodus channels (R-P2P-5): **0x70** genesis bundle (the
   pinned joiner accepts a response only from the peer and offset it asked,
   R-P2P-60; serving is gated per requester) and **0x71** governance approval
-  (a requester outside the bonded set is dropped silently; a bonded attempt
+  (a requester outside the validator subset of the bonded set — storage-only
+  identities included — is dropped silently; a validator-bonded attempt
   holds its 5 s cooldown slot whatever the verdict, R-P2P-61).
 - **Governance approvals via the proposer's own node.** `nodus-cli
   chain-config propose` no longer dials 4004: it sends one `dnac_cc_collect`
@@ -9473,9 +9474,42 @@ numbered register row (R-P2P-n) in the local design doc
   `nodus_cc_client.c` and `test_cc_client` are deleted.
 - **Admission and discovery.** Reference limits (`max_num_inbound_peers` 40,
   `max_num_outbound_peers` 10, duplicate ID refused, `LimitListener`); the
-  chain's bonded set (ACTIVE ∪ ELIGIBLE ∪ the committees at tip ± 1) is added
-  to the unconditional IDs at run time (R-P2P-7). PEX address entries for a
-  bonded identity must carry an ADDR record signed by that validator under the
+  chain's bonded set (ACTIVE ∪ ELIGIBLE validators ∪ the `node_pk` of every
+  member of the frozen storage sets S(H) and S(H − E) ∪ the committees at
+  tip ± 1) is added to the unconditional IDs at run time (R-P2P-7). Storage
+  nodes joined the set by khan decision `2026-10-14-kurultay-22-summary.md`
+  item 3(a) (they hold a bond; node-local admission, no chain change, no hard
+  fork); WHICH storage nodes is the DHT v2 design's membership rule (§2 "4004
+  admission" and "One eligibility function"; operator decision 2026-10-14,
+  "Evet"): H is the boundary of the committed tip's epoch, derived as the
+  archive derives it (`nodus_stprobe_epoch_for_tip`: H = ⌊tip / E⌋ · E, none
+  below E; S(H − E) only when H > E — `nodus_witness_sthold_must_hold`), each
+  set read with the archive's reader `nodus_witness_storage_set_get` (stored
+  S(H) re-checked against its members), each member's `node_pk` taken from
+  `v2_storage_nodes` by `node_fp` whatever the row's status. Membership
+  decides, not status: an EXITING member stays exempt until the boundary that
+  drops it; a newly ACTIVE registry row is not exempt until the next boundary
+  freezes it into S(H); before the storage activation there is no set and no
+  storage exemption; a set holds at most 256 members. A member without a
+  registry row (a committed set never has one) is skipped with one WARN line
+  per process. A storage node gets this connection-admission treatment
+  (unconditional, listener limit, signed-record address rules, PEX own-record
+  push) and nothing else: the 4001 `dnac_roster` reply lists, and the 0x71
+  bonded gate admits, only the VALIDATOR subset — the validators rows and
+  the tip ± 1 committees (`nodus_witness_p2p_is_validator_bonded`; a key that
+  is both a storage-set member and a validator / committee member counts as a
+  validator). **Validator priority** (operator decision 2026-10-14, "Tamam,
+  muaf olsun. Dediğin gibi olsun"; DHT v2 design §2 "4004 admission"): a node
+  has `CMT_CONR_MAX_PEERS` = 128 consensus / mempool peer indices, and
+  cap-exempt storage peers can fill them. When all are in use and a
+  validator-bonded peer connects, the lowest index held by a peer that is
+  not validator-bonded, not a configured persistent peer and not a configured
+  unconditional ID is freed — that peer is disconnected through
+  `StopPeerForError` (reason 440) — and given to the validator; one INFO line
+  names both IDs (`lane_slot_evict_for`). An index whose peer already left the
+  switch is reused first, disconnecting nobody. A non-validator connecting to
+  a full table stays connected without an index, as before. PEX address entries for a
+  bonded identity must carry an ADDR record signed by that identity under the
   strict purpose 0x0B (R-P2P-4); a bonded ID is never banned and its stale
   unsigned entries are purged when it bonds (R-P2P-62). Handshake crypto runs on
   a bounded worker thread (R-P2P-8); the event loop never blocks on it.

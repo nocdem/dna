@@ -33,6 +33,9 @@
 #include "dnac/cmt_part_set.h"      /* CMT_BLOCK_PART_SIZE_BYTES     */
 #include "dnac/cmt_mem.h"           /* CMT_MEM_CHANNEL, mempool cfg  */
 #include "dnac/validator.h"         /* DNAC_VALIDATOR_ACTIVE / ELIGIBLE */
+#include "witness/nodus_witness_v2_storage.h"  /* frozen storage sets    */
+#include "witness/nodus_witness_v2_produce.h"  /* v2 tip height          */
+#include "witness/nodus_witness_storage_probe.h" /* epoch_for_tip        */
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -903,6 +906,10 @@ typedef struct wjob {
 typedef struct {
     char    id[CMT_P2P_ID_CAP];
     uint8_t pk[NODUS_PK_BYTES];
+    /* true: added from the `validators` query or a tip ± 1 committee;
+     * false: ONLY a member of the frozen storage set S(H) or S(H − E)
+     * (cap-exempt, nothing else — nodus_witness_p2p_is_validator_bonded). */
+    bool    validator;
 } p2p_bonded_t;
 
 /** The largest StatusResponse `bs_receive` keeps before the lane is live:
@@ -951,6 +958,11 @@ typedef struct {
 #define NODUS_P2P_STOP_DECODE_0X72  422
 #define NODUS_P2P_STOP_DECODE_0X73  423
 #define NODUS_P2P_STOP_BSYNC_BASE   430   /* + cmt_bsync_stop_reason_t     */
+/* Validator priority on a full index table (lane_slot_evict_for; operator
+ * decision 2026-10-14, docs/plans/2026-10-14-dht-v2-design.md §2 "4004
+ * admission"). No reference counterpart: the reference has no index
+ * table (a peer is a map key, consensus/reactor.go). */
+#define NODUS_P2P_STOP_LANE_EVICT   440
 
 struct nodus_witness_p2p {
     nodus_witness_t            *w;
@@ -1002,6 +1014,9 @@ struct nodus_witness_p2p {
     /* IDs that JOINED the set, summed over every refresh (the purge's
      * input, bonded_purge_new) — nodus_witness_p2p_bonded_joined_total */
     uint64_t                    bonded_joined_total;
+    /* a frozen storage-set member without a registry row was skipped and
+     * logged once (bonded_add_storage_set) */
+    bool                        storage_orphan_warned;
 
     /* 0x70 — the joiner's ONE outstanding genesis-bundle request
      * (nodus_witness_p2p_gb_request / _gb_take) and the serving side's
@@ -1331,9 +1346,11 @@ static const p2p_bonded_t *bonded_find(const nodus_witness_p2p_t *p,
 }
 
 /* One pubkey into the scratch set being built (unsorted while filling;
- * duplicates skipped). */
+ * duplicates skipped). `validator` is ORed into a duplicate: a key that is
+ * both a storage-set member and a validator / committee member is a validator
+ * whatever the add order. */
 static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
-                       const uint8_t pk[NODUS_PK_BYTES])
+                       const uint8_t pk[NODUS_PK_BYTES], bool validator)
 {
     char id[CMT_P2P_ID_CAP];
     int i;
@@ -1343,6 +1360,7 @@ static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
     }
     for (i = 0; i < *n; i++) {
         if (strcmp((*set)[i].id, id) == 0) {
+            (*set)[i].validator = (*set)[i].validator || validator;
             return;
         }
     }
@@ -1358,6 +1376,7 @@ static void bonded_add(p2p_bonded_t **set, int *n, int *cap,
     }
     memcpy((*set)[*n].id, id, sizeof(id));
     memcpy((*set)[*n].pk, pk, NODUS_PK_BYTES);
+    (*set)[*n].validator = validator;
     (*n)++;
 }
 
@@ -1371,10 +1390,75 @@ static void bonded_add_committee(nodus_witness_p2p_t *p, p2p_bonded_t **set,
 
     if (nodus_committee_get_for_block_alloc(p->w, height, &cm, &k) == 0) {
         for (i = 0; i < k; i++) {
-            bonded_add(set, n, cap, cm[i].pubkey);
+            bonded_add(set, n, cap, cm[i].pubkey, true);
         }
     }
     free(cm);
+}
+
+/* The members of the frozen storage set S(epoch_start), added with
+ * validator = false. The set is read with nodus_witness_storage_set_get —
+ * the archive's own reader (nodus_witness_storage_holder.c
+ * nodus_witness_sthold_must_hold), which re-checks the stored S(H)
+ * against its member rows and returns them node_fp ascending. Each
+ * member's node_pk comes from the registry by node_fp WHATEVER the row's
+ * status: membership decides, not status (an EXITING member still holds
+ * its segments until the boundary that drops it). rc 1 (no such set) adds
+ * nothing; a fault (-1, already logged by the reader) adds nothing from
+ * that set. A member with no registry row (a committed set never has
+ * one) is skipped and logged once per process. */
+static void bonded_add_storage_set(nodus_witness_p2p_t *p, p2p_bonded_t **set,
+                                   int *n, int *cap, uint64_t epoch_start)
+{
+    nodus_storage_set_t *ss;
+    sqlite3_stmt *st = NULL;
+    uint32_t i;
+
+    ss = (nodus_storage_set_t *)calloc(1, sizeof(*ss));
+    if (ss == NULL) {
+        return;
+    }
+    if (nodus_witness_storage_set_get(p->w, epoch_start, ss) != 0 ||
+        ss->count == 0) {
+        free(ss);
+        return;
+    }
+    if (sqlite3_prepare_v2(p->w->db,
+                           "SELECT node_pk FROM v2_storage_nodes WHERE node_fp = ?1",
+                           -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_WARN(LOG_TAG, "v2_storage_nodes table unreadable: %s",
+                     sqlite3_errmsg(p->w->db));
+        free(ss);
+        return;
+    }
+    for (i = 0; i < ss->count; i++) {
+        int rc;
+
+        sqlite3_reset(st);
+        if (sqlite3_bind_blob(st, 1, ss->fps[i], 64, SQLITE_STATIC) != SQLITE_OK) {
+            break;
+        }
+        rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) {
+            if (sqlite3_column_bytes(st, 0) == NODUS_PK_BYTES) {
+                bonded_add(set, n, cap,
+                           (const uint8_t *)sqlite3_column_blob(st, 0), false);
+            }
+        } else if (rc == SQLITE_DONE) {
+            if (!p->storage_orphan_warned) {
+                p->storage_orphan_warned = true;
+                QGP_LOG_WARN(LOG_TAG, "storage set %llu: a member has no "
+                             "v2_storage_nodes row — skipped (logged once)",
+                             (unsigned long long)epoch_start);
+            }
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "v2_storage_nodes read failed: %s",
+                         sqlite3_errmsg(p->w->db));
+            break;
+        }
+    }
+    sqlite3_finalize(st);
+    free(ss);
 }
 
 /*
@@ -1461,13 +1545,44 @@ void nodus_witness_p2p_refresh_bonded(nodus_witness_p2p_t *p)
         while (sqlite3_step(st) == SQLITE_ROW) {
             if (sqlite3_column_bytes(st, 0) == NODUS_PK_BYTES) {
                 bonded_add(&nb, &n_new, &cap_new,
-                           (const uint8_t *)sqlite3_column_blob(st, 0));
+                           (const uint8_t *)sqlite3_column_blob(st, 0), true);
             }
         }
         sqlite3_finalize(st);
     } else {
         QGP_LOG_WARN(LOG_TAG, "validators table unreadable: %s",
                      sqlite3_errmsg(p->w->db));
+    }
+    /* The members of the frozen storage sets S(H) and S(H − E) are
+     * cap-exempt too (khan decision docs/plans/decisions/2026-10-14-
+     * kurultay-22-summary.md item 3(a) — node-local admission, no chain
+     * change — with the membership rule of docs/plans/2026-10-14-dht-v2-
+     * design.md §2 "4004 admission" and "One eligibility function",
+     * operator decision 2026-10-14 "Evet"). H is the boundary of the
+     * epoch the committed tip is in, derived exactly as the archive
+     * derives it: nodus_witness_v2_tip_height + nodus_stprobe_epoch_for_tip
+     * (H = floor(tip / E) · E, none below E; nodus_witness_storage_holder.c
+     * worker tick, nodus_witness_storage_fetch.c serve), and S(H − E)
+     * only when H > E (nodus_witness_sthold_must_hold). Consequences:
+     * before the storage activation there is no set and no storage
+     * exemption; a node registered ACTIVE but not yet in S(H) is NOT
+     * exempt until the boundary that freezes it in; a node that left
+     * S(H) stays exempt while it is in S(H − E). node_pk is the storage
+     * node's 4004 identity key. Added with validator = false: a storage
+     * member gets the connection admission treatment ONLY — it is not
+     * listed in the 4001 dnac_roster and does not pass the 0x71 approval
+     * gate (nodus_witness_p2p_is_validator_bonded). */
+    {
+        const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+        uint64_t v2_tip = 0, H = 0;
+
+        if (nodus_witness_v2_tip_height(p->w, &v2_tip) == 0 &&
+            nodus_stprobe_epoch_for_tip(v2_tip, E, &H) == 0) {
+            bonded_add_storage_set(p, &nb, &n_new, &cap_new, H);
+            if (H > E) {
+                bonded_add_storage_set(p, &nb, &n_new, &cap_new, H - E);
+            }
+        }
     }
     bonded_add_committee(p, &nb, &n_new, &cap_new, tip + 1);
     if (tip >= 1) {
@@ -1508,6 +1623,13 @@ static void bonded_maybe_refresh(nodus_witness_p2p_t *p)
 bool nodus_witness_p2p_is_bonded(nodus_witness_p2p_t *p, const char *id)
 {
     return p != NULL && bonded_find(p, id) != NULL;
+}
+
+bool nodus_witness_p2p_is_validator_bonded(nodus_witness_p2p_t *p, const char *id)
+{
+    const p2p_bonded_t *b = p != NULL ? bonded_find(p, id) : NULL;
+
+    return b != NULL && b->validator;
 }
 
 int nodus_witness_p2p_bonded_count(nodus_witness_p2p_t *p)
@@ -2016,6 +2138,8 @@ static int lane_find(const nodus_witness_p2p_t *p, const cmt_p2p_peer_t *peer)
     return -1;
 }
 
+static int lane_slot_evict_for(nodus_witness_p2p_t *p, cmt_p2p_peer_t *peer);
+
 static int lane_slot_for(nodus_witness_p2p_t *p, cmt_p2p_peer_t *peer)
 {
     int i = lane_find(p, peer);
@@ -2029,6 +2153,10 @@ static int lane_slot_for(nodus_witness_p2p_t *p, cmt_p2p_peer_t *peer)
             p->slots[i].peer = peer;
             return i;
         }
+    }
+    i = lane_slot_evict_for(p, peer);                  /* validator priority */
+    if (i >= 0) {
+        return i;
     }
     QGP_LOG_WARN(LOG_TAG, "peer %s gets no consensus index (all %d in use)",
                  cmt_p2p_peer_id(peer), (int)CMT_CONR_MAX_PEERS);
@@ -2056,6 +2184,102 @@ static void lane_slot_clear(nodus_witness_p2p_t *p, int i)
                         "memr RemovePeer", NULL, i);
     }
     memset(&p->slots[i], 0, sizeof(p->slots[i]));
+}
+
+/* Whether `id` is in this node's CONFIGURED unconditional_peer_ids. Not
+ * cmt_p2p_switch_is_peer_unconditional: that one also answers true for
+ * every bonded ID, storage-set members included (cmt_p2p_switch.c,
+ * R-P2P-7). */
+static bool cfg_unconditional(const nodus_witness_p2p_t *p, const char *id)
+{
+    int k;
+
+    for (k = 0; k < p->cfg.n_unconditional_peer_ids; k++) {
+        if (strcmp(p->cfg.unconditional_peer_ids[k], id) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The index table is full and `peer` (not indexed yet) arrives. VALIDATOR
+ * PRIORITY (operator decision 2026-10-14 "Tamam, muaf olsun. Dediğin gibi
+ * olsun", docs/plans/2026-10-14-dht-v2-design.md §2 "4004 admission"):
+ * when `peer` is validator-bonded (nodus_witness_p2p_is_validator_bonded),
+ * a peer that is NOT is disconnected and its index goes to `peer`.
+ * @return the index now holding `peer`, or -1 (nothing changed).
+ *
+ * Runs inside the switch's addPeer, in CONSENSUS's InitPeer — the first
+ * registered reactor, so no reactor has seen `peer` yet, and `peer` is
+ * not in the peer set yet (cmt_p2p_switch.c add_peer: InitPeer before
+ * peer_set_add). StopPeerForError is synchronous there: transport
+ * cleanup, every reactor's RemovePeer (cons_remove_peer / mem_remove_peer
+ * release the index), removal from the peer set; the memory is freed at
+ * the end of the tick (bury). The switch does the same inside addPeer for
+ * a cross-dial (filter_peer stops the older connection).
+ *
+ * The choice, in index order (deterministic for this node's table; node-
+ * local — an index never enters a block, a vote or state):
+ *   1. an index whose peer is no longer in the switch's peer set (a failed
+ *      addPeer dropped it; lane_gc would clear it after the tick) is
+ *      cleared and taken — nobody is disconnected. Its pointer is
+ *      compared, never dereferenced.
+ *   2. else the LOWEST index whose peer is not validator-bonded, not a
+ *      configured persistent peer (cmt_p2p_peer_is_persistent — the switch
+ *      would redial it at once) and not a configured unconditional ID (the
+ *      operator named it). That peer is stopped. */
+static int lane_slot_evict_for(nodus_witness_p2p_t *p, cmt_p2p_peer_t *peer)
+{
+    const cmt_p2p_peer_set_t *ps;
+    const char *vid = cmt_p2p_peer_id(peer);
+    char        eid[CMT_P2P_ID_CAP];
+    int         i, k, victim = -1;
+
+    if (!nodus_witness_p2p_is_validator_bonded(p, vid)) {
+        return -1;
+    }
+    ps = cmt_p2p_switch_peers(&p->sw);
+    for (i = 0; i < CMT_CONR_MAX_PEERS; i++) {
+        const cmt_p2p_peer_t *q = p->slots[i].peer;
+        bool in_set = false;
+
+        if (q == NULL || q == peer) {
+            continue;
+        }
+        for (k = 0; k < ps->n; k++) {
+            if (ps->list[k] == q) {
+                in_set = true;
+                break;
+            }
+        }
+        if (!in_set) {                                   /* rule 1 */
+            lane_slot_clear(p, i);
+            p->slots[i].peer = peer;
+            return i;
+        }
+        if (victim < 0 &&
+            !nodus_witness_p2p_is_validator_bonded(p, cmt_p2p_peer_id(q)) &&
+            !cmt_p2p_peer_is_persistent(q) &&
+            !cfg_unconditional(p, cmt_p2p_peer_id(q))) {
+            victim = i;                                  /* rule 2 */
+        }
+    }
+    if (victim < 0) {
+        return -1;
+    }
+    snprintf(eid, sizeof(eid), "%s", cmt_p2p_peer_id(p->slots[victim].peer));
+    cmt_p2p_switch_stop_peer_for_error(&p->sw, p->slots[victim].peer,
+                                       NODUS_P2P_STOP_LANE_EVICT);
+    if (p->slots[victim].peer != NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "index %d still held after stopping %s — "
+                      "validator %s gets no consensus index", victim, eid, vid);
+        return -1;
+    }
+    p->slots[victim].peer = peer;                        /* released: zeroed */
+    QGP_LOG_INFO(LOG_TAG, "all %d consensus indices in use: non-validator %s "
+                 "disconnected, its index %d given to validator %s",
+                 (int)CMT_CONR_MAX_PEERS, eid, victim, vid);
+    return victim;
 }
 
 /* After the switch's tick every indexed peer must be in the peer set;
@@ -3848,6 +4072,17 @@ bool nodus_witness_p2p_has_peer(const nodus_witness_p2p_t *p, const char *peer_i
 {
     return p != NULL && peer_id != NULL &&
            cmt_p2p_peer_set_get(cmt_p2p_switch_peers(&p->sw), peer_id) != NULL;
+}
+
+int nodus_witness_p2p_lane_index(const nodus_witness_p2p_t *p, const char *peer_id)
+{
+    const cmt_p2p_peer_t *peer;
+
+    if (p == NULL || peer_id == NULL ||
+        (peer = cmt_p2p_peer_set_get(cmt_p2p_switch_peers(&p->sw), peer_id)) == NULL) {
+        return -1;
+    }
+    return lane_find(p, peer);
 }
 
 bool nodus_witness_p2p_send(nodus_witness_p2p_t *p, const char *peer_id,

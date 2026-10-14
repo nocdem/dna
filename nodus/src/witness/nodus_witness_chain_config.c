@@ -1636,9 +1636,13 @@ static int cc_appr_verdict(nodus_witness_t *w,
     /* (v-a) the BONDED gate, before any DB work (red-team H1). Only a
      * committee seat may make this node sign (decision
      * 2026-09-26-cc-approval-via-own-node.md (5)), and every seat of the
-     * committee at the tip is in the p2p host's in-memory bonded set
-     * (ACTIVE ∪ ELIGIBLE ∪ the committees at tip ± 1,
-     * nodus_witness_p2p_refresh_bonded). A requester outside it is
+     * committee at the tip is in the VALIDATOR subset of the p2p host's
+     * in-memory bonded set (ACTIVE ∪ ELIGIBLE ∪ the committees at tip ± 1,
+     * nodus_witness_p2p_refresh_bonded; the caller asks
+     * nodus_witness_p2p_is_validator_bonded). An identity bonded ONLY by an
+     * ACTIVE storage registry row is cap-exempt on 4004 and nothing else
+     * (khan decision docs/plans/decisions/2026-10-14-kurultay-22-summary.md
+     * item 3(a)): it is outside this gate. A requester outside it is
      * DROPPED: no reply, no committee resolution, nothing recorded, and
      * NOT stopped — the set is refreshed once per poll and can be one
      * poll stale for a seat that just bonded (fix proposals 2026-09-27
@@ -1647,7 +1651,7 @@ static int cc_appr_verdict(nodus_witness_t *w,
      * requester is recorded only after this gate. */
     if (!requester_bonded) {
         QGP_LOG_DEBUG(LOG_TAG, "0x71 approval request from a requester "
-                      "outside the bonded set — dropped, no reply");
+                      "outside the validator-bonded set — dropped, no reply");
         return NODUS_CC_APPR_DROPPED;
     }
 
@@ -1658,7 +1662,9 @@ static int cc_appr_verdict(nodus_witness_t *w,
      * H1; previously only a SENT approval was recorded). The requesting
      * CLI waits the window out before its round 2 (nodus-cli.c). The
      * table has NODUS_CC_RATE_LIMIT_MAX_PROPOSERS = 128 slots (pinned to
-     * the active-validator ceiling above); a bonded set larger than that
+     * the active-validator ceiling above; storage-only identities never
+     * reach this record, the gate above drops them); a validator subset
+     * larger than that
      * evicts the least recently recorded (nodus_cc_rate_limit_record). */
     nodus_cc_rate_limit_record(&w->cc_rate_limit, peer_wid, now_ms);
 
@@ -1846,7 +1852,8 @@ int nodus_witness_cc_appr_answer(nodus_witness_t *w,
      * 2026-09-27-p2p-fix-2.md (2); nodus_tier3.h `rq`): SHA3-512 of the
      * envelope bytes asked about, the same bytes the collector hashed
      * (nodus_witness_cc_collect_start). Hashed only here, after the
-     * verdict: a DROPPED request (outside the bonded set) costs no hash,
+     * verdict: a DROPPED request (outside the validator-bonded set)
+     * costs no hash,
      * and the rate-limit check still precedes every expensive step. */
     if (arc < 0 || arc == NODUS_CC_APPR_DROPPED) return arc;
     /* an empty `e` is hashed as the empty string (qgp_sha3_512 refuses a
@@ -1867,10 +1874,11 @@ int nodus_witness_handle_cc_appr_req(nodus_witness_t *w,
     if (!w || !peer_id || !peer_wid || !ireq) return -1;
 
     nodus_t3_cc_appr_rsp_t rsp;
-    /* The bonded set is the p2p host's, in memory (a bsearch); the
-     * verdict takes the answer as an argument so it stays callable
-     * without a host (test_cc_appr). */
-    bool bonded = nodus_witness_p2p_is_bonded(w->p2p, peer_id);
+    /* The bonded set is the p2p host's, in memory (a bsearch); only its
+     * VALIDATOR subset passes (a storage-only identity is dropped — the
+     * verdict's gate (v-a)). The verdict takes the answer as an argument
+     * so it stays callable without a host (test_cc_appr). */
+    bool bonded = nodus_witness_p2p_is_validator_bonded(w->p2p, peer_id);
     int arc = nodus_witness_cc_appr_answer(w, peer_wid, bonded,
                                            (const nodus_t3_cc_appr_req_t *)ireq,
                                            &rsp);

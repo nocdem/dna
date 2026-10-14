@@ -59,14 +59,49 @@
  *     of an older build does not list 0x40; nothing is ever sent to it on
  *     that channel (cmt_p2p_peer.c peer_has_channel, peer.go:309-325).
  *   · the BONDED SET (K2 / N5): the local chain's `validators` rows with
- *     status ACTIVE (0) or ELIGIBLE (4), plus the members of the
- *     committees for tip + 1 and tip − 1 (the two committees the deleted
- *     B1 IDENT gate consulted) — recomputed whenever the local tip moves.
+ *     status ACTIVE (0) or ELIGIBLE (4), plus the `node_pk` (from
+ *     `v2_storage_nodes`, by node_fp, whatever the row's status) of every
+ *     member of the frozen storage sets S(H) and S(H − E), H the boundary
+ *     of the committed tip's epoch as the archive derives it
+ *     (nodus_stprobe_epoch_for_tip; S(H − E) only when H > E) — khan
+ *     decision docs/plans/decisions/2026-10-14-kurultay-22-summary.md
+ *     item 3(a) (node-local admission, no chain change) with the
+ *     membership rule of docs/plans/2026-10-14-dht-v2-design.md §2
+ *     "4004 admission" / "One eligibility function" (operator decision
+ *     2026-10-14, "Evet"). Membership decides, not status: an EXITING
+ *     member stays until the boundary that drops it; a newly ACTIVE
+ *     registry row is not a member until the next boundary freezes it in;
+ *     before the storage activation there is no set (each set holds at
+ *     most DNA_V2_STORAGE_SET_MAX = 256 members) — plus the
+ *     members of the committees for tip + 1 and tip − 1 (the two
+ *     committees the deleted B1 IDENT gate consulted) — recomputed
+ *     whenever the local tip moves.
  *     (HF-6 slice 6e's pending consensus keys are gone with ROTATE — khan
- *     decision 2026-10-13-kurultay-18-summary.md item 1.) It is the
- *     switch's `is_bonded` (unconditional, R-P2P-7), the transport's
- *     `bonded_count` (the listener limit, R-P2P-27) and the address book's
- *     `bonded_pubkey` (R-P2P-4).
+ *     decision 2026-10-13-kurultay-18-summary.md item 1.)
+ *     The FULL set is the switch's `is_bonded` (unconditional, R-P2P-7),
+ *     the transport's `bonded_count` (the listener limit, R-P2P-27), the
+ *     address book's `bonded_pubkey` (R-P2P-4) and PEX's own-record push
+ *     (a bonded node pushes its signed ADDR record).
+ *     Only the VALIDATOR subset — the `validators` rows and the tip ± 1
+ *     committees, every entry not added SOLELY as a storage-set member (a
+ *     key that is both is a validator) — is the 4001 `dnac_roster` reply's
+ *     list (nodus_witness_handlers.c handle_dnac_roster) and the 0x71
+ *     governance-approval bonded gate (nodus_witness_chain_config.c
+ *     nodus_witness_handle_cc_appr_req):
+ *     `nodus_witness_p2p_is_validator_bonded`. A storage node gets the
+ *     connection-admission treatment and nothing else (the same khan
+ *     decision, item 3(a): "node-local admission").
+ *     VALIDATOR PRIORITY (operator decision 2026-10-14, "Tamam, muaf
+ *     olsun. Dediğin gibi olsun"; docs/plans/2026-10-14-dht-v2-design.md
+ *     §2 "4004 admission", the validator-priority paragraph): cap-exempt
+ *     storage peers can fill all CMT_CONR_MAX_PEERS consensus / mempool
+ *     indices (THE CONSENSUS SEAM below). When they are full and a
+ *     validator-bonded peer arrives, a peer that is NOT validator-bonded
+ *     is disconnected and its index goes to the validator — the lowest
+ *     such index, never a configured persistent peer or a configured
+ *     unconditional ID (nodus_witness_p2p.c lane_slot_evict_for). A
+ *     non-validator that arrives to a full table is connected without an
+ *     index, as before.
  *   · our own signed ADDR record (N7 ADDR bytes, purpose 0x0B): its `seq`
  *     is persisted next to the identity BEFORE anything is signed; at
  *     start seq = max(stored, the highest own seq the book has seen) + 1.
@@ -117,7 +152,11 @@
  * This host keeps one table of that size: a peer the switch admits gets
  * the lowest free index; the index is released when the switch removes the
  * peer (the switch frees the peer at the end of the next tick — the table
- * drops its pointer at removal). `send` / `try_send` → the peer's
+ * drops its pointer at removal). A full table gives a validator-bonded
+ * arrival the index of a non-validator peer, which is stopped first
+ * (VALIDATOR PRIORITY, the bonded-set bullet above); any other arrival to
+ * a full table holds no index (its consensus / mempool messages are
+ * dropped). `send` / `try_send` → the peer's
  * Send / TrySend (Send ≡ TrySend, R-P2P-19); `stop_peer_for_error` →
  * `cmt_p2p_switch_stop_peer_for_error`, deferred until the reactor call
  * that raised it has returned (cmt_memr.h: a host row must not re-enter
@@ -444,6 +483,10 @@ bool nodus_witness_p2p_peer_id_at(const nodus_witness_p2p_t *p, int i,
                                   char out[CMT_P2P_ID_CAP]);
 /** Whether `peer_id` is in the switch's peer set now (a connected peer). */
 bool nodus_witness_p2p_has_peer(const nodus_witness_p2p_t *p, const char *peer_id);
+/** The consensus / mempool index (0 .. CMT_CONR_MAX_PEERS−1) the connected
+ *  peer `peer_id` holds, or -1 (not connected, or connected without an
+ *  index — THE CONSENSUS SEAM's full table). Read-only (tests). */
+int  nodus_witness_p2p_lane_index(const nodus_witness_p2p_t *p, const char *peer_id);
 /** Send `msg` to the connected peer `peer_id` on channel `ch` (Send ≡
  *  TrySend, R-P2P-19). @return true when the channel's queue took it. */
 bool nodus_witness_p2p_send(nodus_witness_p2p_t *p, const char *peer_id,
@@ -482,10 +525,20 @@ bool nodus_witness_p2p_gb_bundle(nodus_witness_p2p_t *p, const uint8_t chain[32]
 bool nodus_witness_p2p_gb_bundle_keep(nodus_witness_p2p_t *p, const uint8_t chain[32],
                                       uint8_t *bytes, size_t len);
 
-/** K2 / N5 — the bonded set (file header). */
+/** K2 / N5 — the bonded set (file header): the FULL set, storage-set
+ *  members included. Connection admission only. */
 bool nodus_witness_p2p_is_bonded(nodus_witness_p2p_t *p, const char *id);
+/** `id` is bonded AND in the validator subset (file header): a
+ *  `validators` row or a tip ± 1 committee member — never an identity
+ *  bonded only as a member of the frozen storage set S(H) or S(H − E).
+ *  The 4001
+ *  `dnac_roster` list and the 0x71 approval gate use this. */
+bool nodus_witness_p2p_is_validator_bonded(nodus_witness_p2p_t *p, const char *id);
 int  nodus_witness_p2p_bonded_count(nodus_witness_p2p_t *p);
-/** The bonded set, sorted by ID: the i-th entry's ID and chain pubkey.
+/** The FULL bonded set, sorted by ID: the i-th entry's ID and chain
+ *  pubkey. A caller that wants only the validator subset (the
+ *  `dnac_roster` reply) takes the ID and asks
+ *  nodus_witness_p2p_is_validator_bonded.
  *  @return false outside the set. */
 bool nodus_witness_p2p_bonded_at(nodus_witness_p2p_t *p, int i,
                                  char id[CMT_P2P_ID_CAP],

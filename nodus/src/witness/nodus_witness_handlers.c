@@ -1697,14 +1697,22 @@ static void handle_dnac_ledger_range(nodus_witness_t *w,
  *   · THIS node is always listed, at its configured address —
  *     external_ip, else bind_ip, with the witness port (HEAD
  *     nodus_witness_peer.c:300-313, the same expression);
- *   · every BONDED identity (validators ACTIVE / ELIGIBLE ∪ the tip ± 1
- *     committees, nodus_witness_p2p.h) is listed, with the address its
+ *   · every VALIDATOR-bonded identity (validators ACTIVE / ELIGIBLE ∪ the
+ *     tip ± 1 committees, nodus_witness_p2p.h
+ *     nodus_witness_p2p_is_validator_bonded) is listed, with the address its
  *     validator-signed ADDR record names (R-P2P-4) — or an EMPTY address
  *     when this node holds no record for it, as HEAD listed a registry
  *     entry without ip/port (HEAD :396-398);
  *   · the list is sorted by witness id (HEAD roster_cmp, :473-476 — the
  *     self-first insertion there is re-sorted too, so "first" was the
  *     build order, never the reply order).
+ * A STORAGE node (an ACTIVE `v2_storage_nodes` row) is in the p2p host's
+ * bonded set only for connection admission (khan decision
+ * docs/plans/decisions/2026-10-14-kurultay-22-summary.md item 3(a):
+ * "node-local admission") and is NOT listed: every row here is answered
+ * `active=true` as a witness, and a client reads this list as witnesses.
+ * A key that is both a storage row and a validator / committee member is
+ * listed (the p2p host ORs the flag). This node itself is always listed.
  * Same reply shape (wid, pk, addr "ip:port", active=true), at most
  * NODUS_T3_MAX_WITNESSES entries (the client's array bound,
  * nodus_types.h nodus_dnac_roster_result_t). `version` is the chain height
@@ -1764,13 +1772,16 @@ static void handle_dnac_roster(nodus_witness_t *w,
             n_rows++;
         }
     }
-    /* Every bonded identity (self already listed). */
+    /* Every validator-bonded identity (self already listed; storage-only
+     * entries skipped, header above). */
     if (w->p2p) {
         int nb = nodus_witness_p2p_bonded_count(w->p2p);
         for (int i = 0; i < nb && n_rows < NODUS_T3_MAX_WITNESSES; i++) {
             roster_row_t *r = &rows[n_rows];
+            char bid[CMT_P2P_ID_CAP];
             uint8_t fp[64];
-            if (!nodus_witness_p2p_bonded_at(w->p2p, i, NULL, r->pk) ||
+            if (!nodus_witness_p2p_bonded_at(w->p2p, i, bid, r->pk) ||
+                !nodus_witness_p2p_is_validator_bonded(w->p2p, bid) ||
                 (w->host && memcmp(r->pk, w->host->identity->pk.bytes,
                                      NODUS_PK_BYTES) == 0) ||
                 qgp_sha3_512(r->pk, NODUS_PK_BYTES, fp) != 0)

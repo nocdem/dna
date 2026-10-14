@@ -988,15 +988,18 @@ void nodus_witness_cc_collect_tick(nodus_witness_t *w, int64_t now_ms);
 void nodus_witness_cc_collect_abort(nodus_witness_t *w);
 
 /** nodus_witness_cc_appr_answer: the request is DROPPED — no reply at all
- *  (a requester outside the bonded set, red-team H1). */
+ *  (a requester outside the VALIDATOR subset of the bonded set, red-team
+ *  H1; a storage-only member is dropped too). */
 #define NODUS_CC_APPR_DROPPED 2
 
 /**
  * The 0x71 responder's verdict WITHOUT the send (nodus_chain_config.h
  * nodus_witness_handle_cc_appr_req is this plus the send). `peer_wid` is
  * the requester's authenticated witness id (first 32 bytes of SHA3-512 of
- * its key); `requester_bonded` is whether its p2p ID is in the p2p host's
- * in-memory bonded set (nodus_witness_p2p_is_bonded — the caller asks).
+ * its key); `requester_bonded` is whether its p2p ID is in the VALIDATOR
+ * subset of the p2p host's in-memory bonded set
+ * (nodus_witness_p2p_is_validator_bonded — the caller asks; a member
+ * bonded only as a storage-set member is not in it).
  * Order: the per-proposer rate limit → the bonded gate (a non-bonded
  * requester is dropped before any DB work) → the rate-limit slot is
  * RECORDED for this attempt → committee resolution → the seat gate → the

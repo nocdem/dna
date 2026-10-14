@@ -36,7 +36,8 @@
  * all-zero signature field — never a signature. The requester case also
  * checks that the refused (bonded) attempt IS recorded in the rate-limit
  * table (red-team H1) and that a SEAT requester is still served by the
- * same witness; a requester outside the bonded set is DROPPED with no
+ * same witness; a requester outside the validator-bonded set (a
+ * storage-only identity included) is DROPPED with no
  * reply and nothing recorded (t_requester_not_bonded_dropped). Both an
  * approval and a (rate-limited) refusal carry the REQUEST IDENTITY
  * `rq` = SHA3-512 of the envelope asked about (decision
@@ -90,8 +91,10 @@
  *     responder signed for a non-seat requester (ok == true).
  *  5. The 0x71 TRANSPORT is not exercised here: the verdict is called
  *     directly, so the channel's CBOR, the send, and the handler's
- *     bonded-set lookup (nodus_witness_p2p_is_bonded — this file passes
- *     its answer as `bonded`) are outside this file. The rate-limit
+ *     bonded-set lookup (nodus_witness_p2p_is_validator_bonded — a
+ *     storage-only identity answers false; this file passes its answer
+ *     as `bonded`, and the lookup itself is pinned by test_witness_p2p
+ *     (2a''')) are outside this file. The rate-limit
  *     record IS inside the verdict since red-team H1. The transport
  *     half is test_witness_p2p (2d)
  *     (a 0x71 request and its reply over real sockets) and test_cc_collect
@@ -338,7 +341,7 @@ static void bind_identity(gfx_t *g, int k) {
  * bytes of SHA3-512 of its key (`voter` — the host's peer_wid
  * derivation). `bonded` is the p2p host's in-memory bonded-set answer the
  * handler passes (nodus_witness_handle_cc_appr_req asks
- * nodus_witness_p2p_is_bonded; this fixture has no p2p host).
+ * nodus_witness_p2p_is_validator_bonded; this fixture has no p2p host).
  * @return nodus_witness_cc_appr_answer's rc: 1 signed, 0 refused,
  * NODUS_CC_APPR_DROPPED dropped (no reply), -1 bad arguments. */
 static int ask_b(gfx_t *g, int requester, bool bonded, const uint8_t *e,

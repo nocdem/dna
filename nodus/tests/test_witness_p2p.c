@@ -64,6 +64,20 @@
  *       a RETIRING row; the set size stays the chain's. It can lie only if
  *       the forged state differs from what a buggy writer would produce —
  *       it pins that the host never reads the column.
+ *  (2a''') FROZEN STORAGE-SET MEMBERS ARE BONDED (khan decision 2026-10-14-
+ *       kurultay-22-summary.md item 3(a), membership rule of the DHT v2
+ *       design §2 "4004 admission", operator decision 2026-10-14 "Evet"):
+ *       with a synthetic tip planted at 3E + 1 (rolled back), the members
+ *       of S(3E) and S(2E) are bonded — an EXITING or RELEASED registry
+ *       row does not matter — and an ACTIVE registry row in neither set,
+ *       a member of S(E) only and a member without a registry row are
+ *       not; a member that is already a validator stays validator-bonded.
+ *       It can lie if the planted sets / rows differ from what the
+ *       storage boundary and the register exec write (the set hash is
+ *       re-derived by the reader, so a wrong hash FAILS the test, it does
+ *       not pass it), and the tip ± 1 committees at the planted epoch 3E
+ *       are whatever the legacy recompute yields on this fixture — every
+ *       count is taken relative to the set re-measured at the planted tip.
  *  (2b) THE INBOUND CAP BINDS THE UNBONDED ONLY (K2): with
  *       max_num_inbound_peers = 1, an unbonded C gets in, a second unbonded
  *       D is refused, and a BONDED A still gets in (B then has 2 inbound
@@ -113,15 +127,39 @@
  *       another. The request C sends names a pin B does not run, so B
  *       answers nothing; the take is driven directly (the joiner's
  *       handle_gbundle_r path is (2e)'s).
+ * Part 3 — VALIDATOR PRIORITY ON A FULL INDEX TABLE (operator decision
+ *  2026-10-14, docs/plans/2026-10-14-dht-v2-design.md §2 "4004
+ *  admission"; nodus_witness_p2p.c lane_slot_evict_for), a fresh seat B
+ *  (key 1) on its own derived chain and CMT_CONR_MAX_PEERS (128) unbonded
+ *  filler hosts, each with its own ML-DSA-87 key:
+ *  (3)  FIXTURE: F0 is B's CONFIGURED persistent peer (B dials it at
+ *       start) and holds index 0; the other 127 dial B (inbound cap raised
+ *       above 128) — then every one of the 128 holds an index: the table
+ *       is full.
+ *  (3a) A VALIDATOR TAKES A NON-VALIDATOR'S INDEX: V (committee key 0,
+ *       validator-bonded at B) dials B. V is admitted with index 1; the
+ *       filler that held index 1 (the lowest non-validator, non-persistent
+ *       one) is disconnected; F0 (persistent, index 0) is NOT chosen; every
+ *       other filler keeps its connection and index; B's peer count stays
+ *       128 — exactly one peer was stopped.
+ *  (3b) A NON-VALIDATOR EVICTS NOBODY: the stopped filler dials B again, is
+ *       admitted, holds NO index (today's behaviour, unchanged) and nobody
+ *       is disconnected (129 peers, V and F0 keep theirs).
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * Compile flags: none beyond a default build (CMT_SOFTWARE_VERSION, which
  * every cmt_* target gets). Environment: none. Loopback TCP on 127.0.0.1
  * (ephemeral ports), /proc/self/task (Linux), SQLite >= 3.35.0 (the S14
- * rung the chain derivation needs, as test_cc_appr).
+ * rung the chain derivation needs, as test_cc_appr). Part 3 holds ~131
+ * hosts at once: about 650 file descriptors (each host an epoll fd, an
+ * eventfd and a listener; each of the ~130 loopback connections two ends
+ * in this process) and ~132 worker threads (one per filler, two for B
+ * and for V) — below the usual 1024
+ * `ulimit -n`; a lower limit fails a part 3 host or connection check.
  *
  * ── WHAT IT LEAVES BEHIND ──────────────────────────────────────────────
- * One /tmp/test_witness_p2p_XXXXXX directory, removed at the end. A run
+ * One /tmp/test_witness_p2p_XXXXXX directory (part 3 adds B3/, V3/ and
+ * F000/..F127/ inside it), removed at the end. A run
  * that fails a check leaves it behind (and its sockets die with the
  * process).
  *
@@ -170,6 +208,20 @@
  *     (lane_fault_note / the flag) but are covered by reading, not by this
  *     test. That the witness stops on the lane tick's CMT_FAULT
  *     (nodus_witness.c witness_cmt_tick) is not exercised here either.
+ *  9. Part 3 runs with B's lane NOT live (no consensus / mempool reactor
+ *     bound): it proves the index table and the disconnect, not that the
+ *     reactors' RemovePeer / InitPeer on the reused index leave a clean
+ *     PeerState for V (that is the same RemovePeer-then-reuse any freed
+ *     index already sees). The fillers are UNBONDED peers under a raised
+ *     inbound cap, not ACTIVE storage rows: the eviction rule reads only
+ *     "validator-bonded or not", which both are not. Neither "every index
+ *     held by validators or protected peers → the validator gets none",
+ *     a configured unconditional ID being skipped, nor rule 1 (an index
+ *     whose peer already left the switch is reused without a disconnect)
+ *     is exercised. Which filler sits at index 1 is the inbound arrival
+ *     order; the test reads it from B and does not fix it.
+ *     The 30 s bound covers 127 loopback handshakes and the switch's dial
+ *     randomizer (up to 3 s); it is not tuned to a measurement.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -215,6 +267,7 @@
 #include "dnac/cmt_msgs.h"
 #include "dnac/cmt_pb.h"
 #include "dnac/cmt_p2p_peer.h"
+#include "dnac/ledger_roots_v2.h"     /* DNA_V2_STORAGE_* (2a''')    */
 
 #include "test_cmt_common.h"
 
@@ -1016,13 +1069,14 @@ typedef struct {
     uint8_t          chain32[32];
 } gfx_t;
 
-/* The seat: the derived chain opened as a successor, identity key `k`. */
-static int gfx_open(gfx_t *g, int k) {
+/* The seat: the derived chain opened as a successor, identity key `k`,
+ * in the fresh directory `tag` under g_root. */
+static int gfx_open(gfx_t *g, int k, const char *tag) {
     char path[600];
     memset(g, 0, sizeof(*g));
     if (cfg_make_v3_real(&g->box) != 0) return -1;
     if (nodus_witness_v2_gen_v3_validate(g->box.cfg) != 0) return -1;
-    if (subdir("B", g->dir, sizeof(g->dir)) != 0) return -1;
+    if (subdir(tag, g->dir, sizeof(g->dir)) != 0) return -1;
     if (nodus_witness_v2_gen_derive_v3(g->dir, g->box.cfg, g->chain32) != 0)
         return -1;
     {
@@ -1261,6 +1315,270 @@ out:
     return rc;
 }
 
+/* (2a''') — one v2_storage_nodes row for identity key `k` (node_fp =
+ * SHA3-512(node_pk), as the registry keys it) with `status`. 0 / -1. */
+static int plant_storage_row(sqlite3 *db, int k, int status) {
+    sqlite3_stmt *st = NULL;
+    uint8_t fp[64], payee[64];
+    int ok;
+
+    memset(payee, 0x5D, sizeof(payee));
+    if (qgp_sha3_512(g_ks[k].pk, QGP_DSA87_PUBLICKEYBYTES, fp) != 0) return -1;
+    ok = sqlite3_prepare_v2(db,
+             "INSERT INTO v2_storage_nodes (node_fp, node_pk, payee_fp, "
+             "bond, status, registered_height, exit_height, "
+             "fail_streak, grace_until) "
+             "VALUES (?1, ?2, ?3, 1000000, ?4, 1, 0, 0, 0)",
+             -1, &st, NULL) == SQLITE_OK &&
+         sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT) == SQLITE_OK &&
+         sqlite3_bind_blob(st, 2, g_ks[k].pk, QGP_DSA87_PUBLICKEYBYTES,
+                           SQLITE_TRANSIENT) == SQLITE_OK &&
+         sqlite3_bind_blob(st, 3, payee, 64, SQLITE_TRANSIENT) == SQLITE_OK &&
+         sqlite3_bind_int(st, 4, status) == SQLITE_OK &&
+         sqlite3_step(st) == SQLITE_DONE;
+    if (st) sqlite3_finalize(st);
+    return ok ? 0 : -1;
+}
+
+static int fp64_cmp(const void *a, const void *b) {
+    return memcmp(a, b, 64);
+}
+
+/* (2a''') — the frozen storage set S(H) over identity keys keys[0..n):
+ * the member rows (fail_streak 0, grace_until 0) and the header row whose
+ * set_hash is S(H) over the node_fps ascending — the derivation
+ * nodus_witness_storage_set_get re-checks (a wrong hash makes the reader
+ * fail, which fails the assertions below, never passes them). 0 / -1. */
+static int plant_storage_set(sqlite3 *db, uint64_t H, const int *keys, int n) {
+    uint8_t fps[8][64], sh[64];
+    sqlite3_stmt *st = NULL;
+    int ok;
+
+    if (n < 1 || n > 8) return -1;
+    for (int i = 0; i < n; i++)
+        if (qgp_sha3_512(g_ks[keys[i]].pk, QGP_DSA87_PUBLICKEYBYTES, fps[i]) != 0)
+            return -1;
+    qsort(fps, (size_t)n, sizeof(fps[0]), fp64_cmp);
+    if (dna_v2_storage_set_hash(H, (const uint8_t (*)[64])fps, (size_t)n, sh) != 0)
+        return -1;
+    ok = sqlite3_prepare_v2(db,
+             "INSERT INTO v2_storage_sets (epoch_start, set_hash, member_count) "
+             "VALUES (?1, ?2, ?3)", -1, &st, NULL) == SQLITE_OK &&
+         sqlite3_bind_int64(st, 1, (sqlite3_int64)H) == SQLITE_OK &&
+         sqlite3_bind_blob(st, 2, sh, 64, SQLITE_TRANSIENT) == SQLITE_OK &&
+         sqlite3_bind_int(st, 3, n) == SQLITE_OK &&
+         sqlite3_step(st) == SQLITE_DONE;
+    if (st) sqlite3_finalize(st);
+    if (!ok) return -1;
+    for (int i = 0; i < n && ok; i++) {
+        st = NULL;
+        ok = sqlite3_prepare_v2(db,
+                 "INSERT INTO v2_storage_set_members (epoch_start, node_fp, "
+                 "fail_streak, grace_until) VALUES (?1, ?2, 0, 0)",
+                 -1, &st, NULL) == SQLITE_OK &&
+             sqlite3_bind_int64(st, 1, (sqlite3_int64)H) == SQLITE_OK &&
+             sqlite3_bind_blob(st, 2, fps[i], 64, SQLITE_TRANSIENT) == SQLITE_OK &&
+             sqlite3_step(st) == SQLITE_DONE;
+        if (st) sqlite3_finalize(st);
+    }
+    return ok ? 0 : -1;
+}
+
+/* (2a''') — a synthetic v2_blocks row at `height` (the column shape the
+ * block apply writes, nodus_witness_v2_apply.c phase 13; the same
+ * synthetic form test_storage_b2.c pub_seed_blocks plants): the committed
+ * tip both nodus_witness_block_height_checked and
+ * nodus_witness_v2_tip_height read (MAX(global_height)). 0 / -1. */
+static int plant_tip_block(sqlite3 *db, uint64_t height) {
+    sqlite3_stmt *st = NULL;
+    uint8_t id[64];
+    int ok;
+
+    memset(id, 0xB7, sizeof(id));
+    ok = sqlite3_prepare_v2(db,
+             "INSERT INTO v2_blocks (global_height, block_id, prev_block_id, "
+             "epoch, tx_root, domain_updates_root, domains_root, global_root, "
+             "vset_hash, tx_count) VALUES (?1, ?2, zeroblob(64), 0, "
+             "zeroblob(64), zeroblob(64), zeroblob(64), zeroblob(64), "
+             "zeroblob(64), 0)", -1, &st, NULL) == SQLITE_OK &&
+         sqlite3_bind_int64(st, 1, (sqlite3_int64)height) == SQLITE_OK &&
+         sqlite3_bind_blob(st, 2, id, 64, SQLITE_TRANSIENT) == SQLITE_OK &&
+         sqlite3_step(st) == SQLITE_DONE;
+    if (st) sqlite3_finalize(st);
+    return ok ? 0 : -1;
+}
+
+/* (2a''') — the members of the frozen storage sets S(H) and S(H − E) join
+ * the bonded (cap-exempt) set, whatever their registry status; nothing
+ * else from the storage leg does (khan decision docs/plans/decisions/
+ * 2026-10-14-kurultay-22-summary.md item 3(a), membership rule of docs/
+ * plans/2026-10-14-dht-v2-design.md §2 "4004 admission" / "One
+ * eligibility function", operator decision 2026-10-14 "Evet").
+ * The fixture is a freshly derived chain: its tip is below the first
+ * boundary E (asserted), so no set can be in force at it. Inside ONE
+ * transaction on B's chain database, rolled back at the end:
+ *   - registry rows: K_C, K_D, K_R, K_P, key 1 ACTIVE, K_S EXITING; K_Q
+ *     none. At the fixture's tip → none of them is bonded and the set is
+ *     `nb` (an ACTIVE registry row alone bonds nothing);
+ *   - a synthetic tip at 3E + 1 → H = 3E. The set is RE-MEASURED there
+ *     (`nb2`): the tip ± 1 committees now resolve at epoch 3E, which has
+ *     no snapshot row on this fixture (legacy recompute,
+ *     nodus_witness_committee.c) — the test does not assume it equals
+ *     `nb`. Still none of the storage keys is bonded (no set yet);
+ *   - S(E) = {K_P}, S(2E) = {K_C, K_D}, S(3E) = {K_C, K_S, key 1, K_Q}:
+ *       K_C (S(3E) and S(2E)) → bonded, once;
+ *       K_D (S(2E) = S(H − E) only) → bonded;
+ *       K_S (S(3E), row EXITING) → bonded — membership, not status;
+ *       K_R (ACTIVE row, in no set) → NOT bonded;
+ *       K_P (S(E) only — older than H − E) → NOT bonded;
+ *       K_Q (S(3E), no registry row) → NOT bonded (skipped, one WARN);
+ *       the set is exactly `nb2 + 3`;
+ *     and the admission is ALL they get (the 4001 dnac_roster list and
+ *     the 0x71 gate read nodus_witness_p2p_is_validator_bonded): none of
+ *     K_C / K_D / K_S is validator-bonded, the roster walk finds exactly
+ *     `nb2` validator entries, and key 1 — a genesis `validators` row,
+ *     member of S(3E) with an ACTIVE registry row — stays validator-
+ *     bonded (the flag is ORed);
+ *   - K_D's row RELEASED → K_D still bonded, set still `nb2 + 3`;
+ *   - rolled back → the chain's set again (`nb`), key 1 validator-bonded.
+ * The joins bump bonded_joined_total, which the rollback does not undo;
+ * (2a') asserts on that counter BEFORE this part runs, so keep the order.
+ * B runs without PEX (no book, (2a')), so the joins purge nothing. */
+static int part2_storage(gfx_t *g, nodus_witness_p2p_t *B, int nb) {
+    int rc = 0, nb2 = 0;
+    bool in_tx = false;
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    uint64_t tip0 = 0;
+    char idc[CMT_P2P_ID_CAP], idd[CMT_P2P_ID_CAP], idr[CMT_P2P_ID_CAP];
+    char ids[CMT_P2P_ID_CAP], idp[CMT_P2P_ID_CAP], idq[CMT_P2P_ID_CAP];
+    char id1[CMT_P2P_ID_CAP];
+    uint8_t fpd[64];
+    sqlite3 *db = g->w->db;
+    static const int set_e[]  = { K_P };
+    static const int set_2e[] = { K_C, K_D };
+    static const int set_3e[] = { K_C, K_S, 1, K_Q };
+    static const char *set_status =
+        "UPDATE v2_storage_nodes SET status = ?2 WHERE node_fp = ?1";
+
+    CHECK(key_id(K_C, idc) == 0 && key_id(K_D, idd) == 0 &&
+          key_id(K_R, idr) == 0 && key_id(K_S, ids) == 0 &&
+          key_id(K_P, idp) == 0 && key_id(K_Q, idq) == 0 &&
+          key_id(1, id1) == 0, "(2a''') ids");
+    CHECK(qgp_sha3_512(g_ks[K_D].pk, QGP_DSA87_PUBLICKEYBYTES, fpd) == 0,
+          "(2a''') K_D's node fingerprint");
+    CHECK(!nodus_witness_p2p_is_bonded(B, idc) &&
+          !nodus_witness_p2p_is_bonded(B, idd) &&
+          !nodus_witness_p2p_is_bonded(B, idr) &&
+          !nodus_witness_p2p_is_bonded(B, ids) &&
+          !nodus_witness_p2p_is_bonded(B, idp) &&
+          !nodus_witness_p2p_is_bonded(B, idq) &&
+          nodus_witness_p2p_is_validator_bonded(B, id1) &&
+          nodus_witness_p2p_bonded_count(B) == nb,
+          "(2a''') FIXTURE GUARD: the six storage keys are outside the set, "
+          "key 1 a validator inside");
+    CHECK(nodus_witness_v2_tip_height(g->w, &tip0) == 0 && tip0 < E,
+          "(2a''') FIXTURE GUARD: the fixture's tip is below the first "
+          "storage boundary E");
+    CHECK(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a''') begin");
+    in_tx = true;
+    CHECK(plant_storage_row(db, K_C, (int)DNA_V2_STORAGE_ACTIVE) == 0 &&
+          plant_storage_row(db, K_D, (int)DNA_V2_STORAGE_ACTIVE) == 0 &&
+          plant_storage_row(db, K_R, (int)DNA_V2_STORAGE_ACTIVE) == 0 &&
+          plant_storage_row(db, K_S, (int)DNA_V2_STORAGE_EXITING) == 0 &&
+          plant_storage_row(db, K_P, (int)DNA_V2_STORAGE_ACTIVE) == 0 &&
+          plant_storage_row(db, 1, (int)DNA_V2_STORAGE_ACTIVE) == 0,
+          "(2a''') registry rows planted (K_Q has none)");
+
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(!nodus_witness_p2p_is_bonded(B, idc) &&
+          !nodus_witness_p2p_is_bonded(B, idd) &&
+          !nodus_witness_p2p_is_bonded(B, idr) &&
+          nodus_witness_p2p_bonded_count(B) == nb,
+          "(2a''') no frozen set at the fixture's tip: an ACTIVE registry "
+          "row alone bonds nothing");
+
+    CHECK(plant_tip_block(db, 3 * E + 1) == 0, "(2a''') tip planted at 3E + 1");
+    nodus_witness_p2p_refresh_bonded(B);
+    nb2 = nodus_witness_p2p_bonded_count(B);
+    CHECK(!nodus_witness_p2p_is_bonded(B, idc) &&
+          !nodus_witness_p2p_is_bonded(B, idd) &&
+          !nodus_witness_p2p_is_bonded(B, idr) &&
+          !nodus_witness_p2p_is_bonded(B, ids) &&
+          !nodus_witness_p2p_is_bonded(B, idp) &&
+          !nodus_witness_p2p_is_bonded(B, idq) &&
+          nodus_witness_p2p_is_validator_bonded(B, id1) && nb2 > 0,
+          "(2a''') at the planted tip, before any set: no storage key bonded");
+
+    CHECK(plant_storage_set(db, E, set_e, 1) == 0 &&
+          plant_storage_set(db, 2 * E, set_2e, 2) == 0 &&
+          plant_storage_set(db, 3 * E, set_3e, 4) == 0,
+          "(2a''') S(E), S(2E), S(3E) planted");
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(nodus_witness_p2p_is_bonded(B, idc),
+          "(2a''') a member of S(H) (and S(H - E)) is bonded");
+    CHECK(nodus_witness_p2p_is_bonded(B, idd),
+          "(2a''') a member of S(H - E) only is bonded");
+    CHECK(nodus_witness_p2p_is_bonded(B, ids),
+          "(2a''') a member of S(H) whose registry row is EXITING is bonded");
+    CHECK(!nodus_witness_p2p_is_bonded(B, idr),
+          "(2a''') an ACTIVE registry row in neither set is NOT bonded");
+    CHECK(!nodus_witness_p2p_is_bonded(B, idp),
+          "(2a''') a member of a set older than H - E is NOT bonded");
+    CHECK(!nodus_witness_p2p_is_bonded(B, idq),
+          "(2a''') a member without a registry row is NOT bonded");
+    CHECK(nodus_witness_p2p_bonded_count(B) == nb2 + 3,
+          "(2a''') the set grew by exactly the three members (K_C once)");
+    CHECK(!nodus_witness_p2p_is_validator_bonded(B, idc) &&
+          !nodus_witness_p2p_is_validator_bonded(B, idd) &&
+          !nodus_witness_p2p_is_validator_bonded(B, ids) &&
+          nodus_witness_p2p_is_validator_bonded(B, id1),
+          "(2a''') storage-only members are NOT validator-bonded; key 1 "
+          "(a validator and an S(H) member) stays validator-bonded");
+    {
+        /* the roster's view: the full set filtered by the validator flag */
+        int n_val = 0, n_all = nodus_witness_p2p_bonded_count(B);
+        bool saw_storage = false;
+
+        for (int i = 0; i < n_all; i++) {
+            char bid[CMT_P2P_ID_CAP];
+
+            CHECK(nodus_witness_p2p_bonded_at(B, i, bid, NULL),
+                  "(2a''') bonded_at inside the set");
+            if (nodus_witness_p2p_is_validator_bonded(B, bid)) {
+                n_val++;
+                if (strcmp(bid, idc) == 0 || strcmp(bid, idd) == 0 ||
+                    strcmp(bid, ids) == 0)
+                    saw_storage = true;
+            }
+        }
+        CHECK(n_val == nb2 && !saw_storage,
+              "(2a''') the validator subset is the set re-measured at the "
+              "planted tip, no storage-only member in it");
+    }
+    CHECK(sql_one(db, set_status, fpd, 64, (int)DNA_V2_STORAGE_RELEASED) == 0,
+          "(2a''') K_D's row RELEASED");
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(nodus_witness_p2p_is_bonded(B, idd) &&
+          nodus_witness_p2p_bonded_count(B) == nb2 + 3,
+          "(2a''') membership decides, not status: K_D (RELEASED) still bonded");
+
+    CHECK(sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
+          "(2a''') rollback");
+    in_tx = false;
+    nodus_witness_p2p_refresh_bonded(B);
+    CHECK(!nodus_witness_p2p_is_bonded(B, idc) &&
+          !nodus_witness_p2p_is_bonded(B, idd) &&
+          !nodus_witness_p2p_is_bonded(B, ids) &&
+          nodus_witness_p2p_bonded_count(B) == nb,
+          "(2a''') rolled back: the chain's set again");
+    CHECK(nodus_witness_p2p_is_validator_bonded(B, id1),
+          "(2a''') rolled back: key 1 still validator-bonded");
+out:
+    if (in_tx) (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    return rc;
+}
+
 static int part2(void) {
     int rc = 0;
     gfx_t g;
@@ -1281,7 +1599,7 @@ static int part2(void) {
     int nd;
 
     memset(&g, 0, sizeof(g));
-    CHECK(gfx_open(&g, 1) == 0, "the derived version-3 chain (seat = key 1)");
+    CHECK(gfx_open(&g, 1, "B") == 0, "the derived version-3 chain (seat = key 1)");
     CHECK(ident_make(&idA, 0) == 0 && ident_make(&idC, K_C) == 0 &&
           ident_make(&idD, K_D) == 0 && ident_make(&idE, K_E) == 0, "identities");
     CHECK(key_id(0, ida) == 0 && key_id(K_C, idc) == 0 && key_id(K_D, idd) == 0 &&
@@ -1302,7 +1620,12 @@ static int part2(void) {
         char id[CMT_P2P_ID_CAP];
         CHECK(key_id(k, id) == 0 && nodus_witness_p2p_is_bonded(B, id),
               "(2a) every committee key is bonded");
+        CHECK(nodus_witness_p2p_is_validator_bonded(B, id),
+              "(2a) every committee key is validator-bonded");
     }
+    CHECK(!nodus_witness_p2p_is_validator_bonded(B, idc) &&
+          !nodus_witness_p2p_is_validator_bonded(B, idd),
+          "(2a) an outside key is not validator-bonded");
     CHECK(!nodus_witness_p2p_is_bonded(B, idc) && !nodus_witness_p2p_is_bonded(B, idd),
           "(2a) an outside key is not bonded");
 
@@ -1333,6 +1656,9 @@ static int part2(void) {
     /* (2a'') HF-6 D1 — no pending consensus key is bonded (part2_pending) */
     CHECK(part2_pending(&g, B, nodus_witness_p2p_bonded_count(B)) == 0,
           "(2a'') no pending key bonded");
+    /* (2a''') frozen storage-set members are bonded (part2_storage) */
+    CHECK(part2_storage(&g, B, nodus_witness_p2p_bonded_count(B)) == 0,
+          "(2a''') S(H) / S(H - E) members bonded");
 
     cfg_local(&cfgX);
     /* A is seat key 0 WITH a witness on the same chain (a second
@@ -1640,6 +1966,191 @@ out:
     return rc;
 }
 
+/* ══ PART 3 — validator priority on a full index table ═════════════════
+ * (operator decision 2026-10-14, docs/plans/2026-10-14-dht-v2-design.md §2
+ * "4004 admission"; nodus_witness_p2p.c lane_slot_evict_for). */
+
+#define N_FILL ((int)CMT_CONR_MAX_PEERS)   /* F0 (persistent) + the rest */
+
+static nodus_identity_t g_fill_id[N_FILL];
+static nodus_witness_p2p_t *g_fill[N_FILL];
+
+/* Filler `j`'s identity: its own deterministic ML-DSA-87 pair (a seed no
+ * g_ks key uses — those are one repeated byte) and ML-KEM pair. */
+static int fill_ident(int j) {
+    nodus_identity_t *id = &g_fill_id[j];
+    uint8_t seed[32], coins[QGP_MLKEM1024_COINS_BYTES];
+
+    memset(id, 0, sizeof(*id));
+    memset(seed, 0xF7, sizeof(seed));
+    seed[0] = (uint8_t)j;
+    seed[1] = 0xA5;
+    if (qgp_dsa87_keypair_derand(id->pk.bytes, id->sk.bytes, seed) != 0)
+        return -1;
+    if (qgp_sha3_512(id->pk.bytes, NODUS_PK_BYTES, id->node_id.bytes) != 0)
+        return -1;
+    memset(coins, 0x3C, sizeof(coins));
+    coins[0] = (uint8_t)j;
+    if (qgp_mlkem1024_keypair_derand(id->mlkem_pk, id->mlkem_sk, coins) != 0)
+        return -1;
+    id->has_mlkem = true;
+    return 0;
+}
+
+/* Poll B, the fillers and V until `pred` holds or `budget_ms` passes. B
+ * waits up to 1 ms per pass, every other host 0 ms (a 1 ms wait on each of
+ * ~130 hosts would make one pass ~130 ms). */
+static bool drive3(nodus_witness_p2p_t *B, nodus_witness_p2p_t *V,
+                   pred_fn pred, void *ctx, int64_t budget_ms) {
+    int64_t end = mono_ms() + budget_ms;
+
+    for (;;) {
+        nodus_witness_p2p_poll(B, 1);
+        for (int j = 0; j < N_FILL; j++) {
+            if (g_fill[j] != NULL) nodus_witness_p2p_poll(g_fill[j], 0);
+        }
+        if (V != NULL) nodus_witness_p2p_poll(V, 0);
+        if (pred(ctx)) return true;
+        if (mono_ms() > end) return false;
+    }
+}
+
+static bool pred_full(void *ctx) {
+    return nodus_witness_p2p_peer_count((nodus_witness_p2p_t *)ctx) == N_FILL;
+}
+
+/* (3b) the host holds no peer (its side of a stopped connection closed). */
+static bool pred_alone(void *ctx) {
+    return nodus_witness_p2p_peer_count((nodus_witness_p2p_t *)ctx) == 0;
+}
+
+static int part3(void) {
+    int rc = 0;
+    gfx_t g;
+    static nodus_identity_t idV;
+    static dial_obs_t fobs[N_FILL];
+    nodus_witness_p2p_t *B = NULL, *V = NULL;
+    nodus_p2p_config_t cfgB, cfgX;
+    char fid[N_FILL][CMT_P2P_ID_CAP], idv[CMT_P2P_ID_CAP], dir[128];
+    char s[CMT_P2P_NETADDR_STR_MAX];
+    int x = -1;
+    dial_obs_t obs;
+
+    memset(&g, 0, sizeof(g));
+    CHECK(gfx_open(&g, 1, "B3") == 0, "(3) the derived version-3 chain (seat = key 1)");
+    CHECK(ident_make(&idV, 0) == 0 && key_id(0, idv) == 0, "(3) V = committee key 0");
+    cfg_local(&cfgX);
+    for (int j = 0; j < N_FILL; j++) {
+        char tag[16];
+
+        snprintf(tag, sizeof(tag), "F%03d", j);
+        CHECK(fill_ident(j) == 0 &&
+              cmt_p2p_pubkey_to_id(g_fill_id[j].pk.bytes, fid[j]) == CMT_OK,
+              "(3) filler identity");
+        CHECK(subdir(tag, dir, sizeof(dir)) == 0, "(3) filler dir");
+        g_fill[j] = host_new(NULL, &g_fill_id[j], g.chain32, &cfgX, dir, 1);
+        CHECK(g_fill[j] != NULL, "(3) filler host");
+    }
+
+    /* B: F0 is a CONFIGURED persistent peer (B dials it at start); the
+     * unbonded fillers fit under the inbound cap. */
+    cfg_local(&cfgB);
+    cfgB.max_num_inbound_peers = N_FILL + 8;
+    dial_str(g_fill[0], s, sizeof(s));
+    CHECK(nodus_p2p_config_add_persistent(&cfgB, s) == 0, "(3) F0 persistent at B");
+    B = host_new(g.w, &g.srv->identity, g.chain32, &cfgB, g.dir, 0);
+    CHECK(B != NULL, "(3) host B");
+    g.w->p2p = B;
+    CHECK(nodus_witness_p2p_is_validator_bonded(B, idv), "(3) FIXTURE GUARD: V is a validator");
+    for (int j = 0; j < N_FILL; j++) {
+        CHECK(!nodus_witness_p2p_is_bonded(B, fid[j]), "(3) FIXTURE GUARD: fillers unbonded");
+    }
+
+    {
+        has_t h = { B, fid[0] };
+        CHECK(drive3(B, NULL, pred_has, &h, WAIT_MS), "(3) B dialed its persistent F0");
+        CHECK(nodus_witness_p2p_lane_index(B, fid[0]) == 0,
+              "(3) FIXTURE GUARD: F0 holds index 0");
+        CHECK(cmt_p2p_peer_is_persistent(cmt_p2p_peer_set_get(
+                  cmt_p2p_switch_peers(nodus_witness_p2p_switch(B)), fid[0])),
+              "(3) FIXTURE GUARD: B marks F0 persistent");
+    }
+    for (int j = 1; j < N_FILL; j++) {
+        dial_str(B, s, sizeof(s));
+        {
+            const char *list[1] = { s };
+            memset(&fobs[j], 0, sizeof(fobs[j]));
+            cmt_p2p_switch_set_dial_observer(nodus_witness_p2p_switch(g_fill[j]),
+                                             on_dial, &fobs[j]);
+            CHECK(cmt_p2p_switch_dial_peers_async(nodus_witness_p2p_switch(g_fill[j]),
+                                                  list, 1) == CMT_P2P_ERR_NONE,
+                  "(3) filler dials B");
+        }
+    }
+    CHECK(drive3(B, NULL, pred_full, B, WAIT_MS), "(3) all fillers connected to B");
+    /* The table is full: N_FILL connected peers, each holding an index
+     * (lane_find maps one pointer to one index, so N_FILL indexed peers
+     * are N_FILL distinct indices = all of them). */
+    for (int j = 0; j < N_FILL; j++) {
+        int i = nodus_witness_p2p_lane_index(B, fid[j]);
+
+        CHECK(i >= 0, "(3) every filler holds an index: the table is full");
+        if (i == 1) x = j;
+    }
+    CHECK(x > 0, "(3) the filler at index 1 (the expected victim) found");
+
+    /* (3a) a validator arrives to the full table */
+    {
+        has_t h = { B, idv };
+        CHECK(subdir("V3", dir, sizeof(dir)) == 0, "(3a) V dir");
+        V = host_new(NULL, &idV, g.chain32, &cfgX, dir, 0);
+        CHECK(V != NULL, "(3a) host V");
+        CHECK(dial_once(V, B, &obs) == 0, "(3a) V dials B");
+        CHECK(drive3(B, V, pred_has, &h, WAIT_MS), "(3a) V admitted");
+    }
+    CHECK(nodus_witness_p2p_lane_index(B, idv) == 1,
+          "(3a) the validator holds the evicted index 1");
+    CHECK(!nodus_witness_p2p_has_peer(B, fid[x]),
+          "(3a) the non-validator at index 1 was disconnected");
+    CHECK(nodus_witness_p2p_has_peer(B, fid[0]) &&
+          nodus_witness_p2p_lane_index(B, fid[0]) == 0,
+          "(3a) the persistent F0 at index 0 was NOT chosen");
+    for (int j = 0; j < N_FILL; j++) {
+        if (j == x) continue;
+        CHECK(nodus_witness_p2p_has_peer(B, fid[j]) &&
+              nodus_witness_p2p_lane_index(B, fid[j]) >= 0,
+              "(3a) every other filler kept its connection and index");
+    }
+    CHECK(nodus_witness_p2p_peer_count(B) == N_FILL,
+          "(3a) exactly one peer stopped (N_FILL - 1 fillers + V)");
+
+    /* (3b) a NON-validator arriving to the full table evicts nobody: the
+     * victim re-dials and is connected without an index (unchanged). */
+    CHECK(drive3(B, V, pred_alone, g_fill[x], WAIT_MS),
+          "(3b) the victim saw its connection to B close");
+    {
+        has_t h = { B, fid[x] };
+        memset(&fobs[x], 0, sizeof(fobs[x]));
+        CHECK(dial_once(g_fill[x], B, &fobs[x]) == 0, "(3b) the victim re-dials B");
+        CHECK(drive3(B, V, pred_has, &h, WAIT_MS), "(3b) the victim admitted again");
+    }
+    CHECK(nodus_witness_p2p_lane_index(B, fid[x]) == -1,
+          "(3b) a non-validator to a full table holds no index");
+    CHECK(nodus_witness_p2p_peer_count(B) == N_FILL + 1 &&
+          nodus_witness_p2p_lane_index(B, idv) == 1 &&
+          nodus_witness_p2p_lane_index(B, fid[0]) == 0,
+          "(3b) nobody was disconnected for it");
+
+out:
+    nodus_witness_p2p_free(V);
+    for (int j = 0; j < N_FILL; j++) {
+        nodus_witness_p2p_free(g_fill[j]);
+        g_fill[j] = NULL;
+    }
+    gfx_close(&g);                        /* frees B */
+    return rc;
+}
+
 int main(void) {
     int rc = 0;
 
@@ -1654,6 +2165,7 @@ int main(void) {
     }
     if (part1() != 0) rc = 1;
     if (rc == 0 && part2() != 0) rc = 1;
+    if (rc == 0 && part3() != 0) rc = 1;
     if (rc == 0) {
         rmrf(g_root);
         fprintf(stderr, "test_witness_p2p: all %d checks passed\n", g_checks);
