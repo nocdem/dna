@@ -371,11 +371,14 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg,
     }
 
     /* Node-local block retention (nodus_witness.h nodus_witness_config_t
-     * retain_blocks; decision 2026-10-03-block-pruning-7-paydays.md).
-     * Default 0 = archive. A non-integer or negative value refuses the
-     * start; the floor against the chain's evidence window is checked
-     * where the chain's consensus params are loaded
-     * (nodus_cmt_node_init, nodus_cmt_node_check_retain_blocks). */
+     * retain_blocks / retain_blocks_auto; decisions 2026-10-03-block-
+     * pruning-7-paydays.md, 2026-10-14-role-based-pruning.md). Absent =
+     * AUTO (the default set by nodus_node_config_parse: the node's role
+     * decides, nodus_witness_role_prune.h); 0 = archive; N > 0 = the last
+     * N blocks. A non-integer or negative value refuses the start; the
+     * floor against the chain's evidence window is checked where the
+     * chain's consensus params are loaded (nodus_cmt_node_init,
+     * nodus_cmt_node_check_retain_blocks). */
     if (json_object_object_get_ex(root, "retain_blocks", &val)) {
         int64_t rb = json_object_get_int64(val);
         if (!json_object_is_type(val, json_type_int) || rb < 0) {
@@ -385,6 +388,7 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg,
             return -1;
         }
         cfg->witness.retain_blocks = rb;
+        cfg->witness.retain_blocks_auto = false;
     }
 
     /* Storage reward package B2b-2 — the archive segment directory under
@@ -473,6 +477,9 @@ int nodus_node_config_parse(int argc, char **argv, const char *title,
     /* DHT Package A (rev 2 item 10): 4002 peer auth is ON unless the JSON
      * config sets "require_peer_auth": false explicitly. */
     config.require_peer_auth = true;
+    /* Block retention: AUTO unless the JSON sets "retain_blocks"
+     * (decision 2026-10-14-role-based-pruning.md). */
+    config.witness.retain_blocks_auto = true;
 
     const char *config_file = NULL;
     /* O16A / D1 — held as a LOCAL, exactly like config_file, and for the
@@ -543,6 +550,8 @@ int nodus_node_config_parse(int argc, char **argv, const char *title,
         if (w)
             w->p2p_default(&file_cfg.p2p);
         file_cfg.require_peer_auth = true;   /* default; the JSON may set false */
+        file_cfg.witness.retain_blocks_auto = true;  /* AUTO unless the JSON
+                                                      * sets retain_blocks */
 
         if (load_config_json(config_file, &file_cfg, w) != 0)
             return 1;

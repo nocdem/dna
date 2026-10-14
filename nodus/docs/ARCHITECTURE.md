@@ -6671,8 +6671,9 @@ heights per pass, the raw P:h:i values, then validators(k·17280) from the STATE
 (`nodus_seg_valset_from_store`), then the raw C:k·17280, all through the verification; else (or when the
 export stops because the store pruned meanwhile — including a state table that no longer has
 validators(k·17280): `nodus_cmt_ss_prune_states` runs with block pruning) FETCH the rest, the set
-included. **retain_blocks warning:** at every assignment (start,
-then once per epoch) `retain_blocks > 0` while an assigned segment is incomplete logs a WARN.
+included. **Block retention reads this list** (2026-10-14, "Block retention" below): the Commit's
+retain height never passes the first height of the lowest must-hold segment without a valid `.ok`; the
+former `retain_blocks` WARN at every assignment is removed (the guard makes its case impossible).
 
 **Channel 0x73 — the fetch (APPROVED 2026-10-07, decision K6b: the byte, the layouts, the codes and the
 bounds below, as built; the approved list is 0x70 / 0x71, K6 adds 0x72, K6b adds 0x73).** Descriptor: priority
@@ -6730,8 +6731,8 @@ byte, truncated / empty / past the bound); the same commit with round 1 (same Co
 signatures; markers with flags 0 or an unknown bit not held; the 0xFFFFFFFE selector, its shape rule, the
 set from store and file; a torn or on-disk-tampered set record cut at the commit record; an export
 without validators(17280) finished by fetching the set. Not covered: a set at the 128 cap, a non-checkpoint
-ValidatorsInfo row, the live 0x73 transport (rotation, timeouts), the tick and the retain_blocks warning,
-the message handler `nodus_witness_sthold_on_msg` itself.
+ValidatorsInfo row, the live 0x73 transport (rotation, timeouts), the tick, the retention guard's reads
+(`nodus_role_prune_commit`; `test_role_prune` covers only the pure decision), the message handler `nodus_witness_sthold_on_msg` itself.
 
 ### HF-8 — delegation requires an on-chain name (2026-10-07, branch only — not versioned, not voted; INERT until a param-17 vote)
 
@@ -9642,7 +9643,8 @@ Decision `docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md` (operator:
 payday tutsa"). Both halves are NODE-LOCAL: no block, vote, app_hash, state root or
 consensus byte depends on them, so nodes may run with different settings (no hard fork).
 
-**Retention — `retain_blocks` (nodus.json, default 0 = archive).** The cometbft
+**Retention — `retain_blocks` (nodus.json; until 2026-10-14 absent = 0 = archive, since
+then absent = AUTO by role, below).** The cometbft
 pruning path was already ported and wired: the application's Commit returns
 `retain_height` → `applyBlock` (execution.go:340-347, `nodus_witness_cmt_host.c`) →
 `nodus_cmt_blockexec_prune_blocks` (execution.go:804-820) → `nodus_cmt_bs_prune_blocks`
@@ -9654,6 +9656,36 @@ exactly N blocks [H − N + 1, H] remain (pinned by `test_cmt_node`
 (7 paydays × 17280 blocks). H is the height of the last successful FinalizeBlock
 (`nodus_cmt_app_ledger_t.fb_height`) — a pure function of the committed height and the
 node's setting, no clock.
+
+**Role-based retention (2026-10-14, decision `docs/plans/decisions/2026-10-14-role-based-
+pruning.md`; `src/witness/nodus_witness_role_prune.{h,c}`).** The setting is now
+three-valued: **absent = AUTO** (`nodus_witness_config_t.retain_blocks_auto`, set by the
+config loader `tools/nodus_node_config.c` only — a zero-initialised config is ARCHIVE),
+**0 = ARCHIVE**, **N > 0 = explicit**. The Commit asks `nodus_role_prune_commit(w,
+&ctx->prune_rt, fb_height)` instead of calling `nodus_cmt_app_retain_height` directly; the
+pure decision `nodus_role_prune_retain_height` is:
+- ARCHIVE, or any read fault → **0**;
+- base = N (explicit); AUTO: base = `NODUS_PRUNE_AUTO_RETAIN` = 7 × `DNA_V2_SEGMENT_BLOCKS`
+  (= 120 960 at E = 720, `_Static_assert`ed) when this node's key is a **bonded validator**
+  (a `validators` row with that `pubkey` — the column, since under HF-6 `pubkey_hash` is
+  the validator_id — status ACTIVE or ELIGIBLE) or a **storage member** (`v2_storage_nodes`
+  row node_fp = SHA3-512(pk), status ACTIVE or EXITING); AUTO with no role → 0 (keep all);
+- R = `nodus_cmt_app_retain_height(H, base)`;
+- storage member: R = min(R, (k−1)·P + 1 for the lowest k of `nodus_witness_sthold_must_hold`
+  at epoch ⌊H/E⌋·E without a valid `seg-<k>.ok` (`nodus_seg_held`), max_published_k·P + 1);
+  no frozen storage_set(H) or H below the first epoch → keep all; R ≤ 1 → 0.
+Roles and the published list are read from committed state at every Commit (they change
+mid-epoch: STAKE / STORAGE_REGISTER are ordinary transactions). The must-hold list is cached
+keyed by (H, max published k) — every row it derives from is written only at an epoch
+boundary, so a miss computes what a hit returns; inside it a cursor skips files already found
+complete and re-checks the first incomplete one at every Commit (a file that goes bad
+mid-epoch is noticed at the next epoch). Every read failure answers 0 for that Commit
+(fail closed for data), logged at most once per epoch; mode changes log one `W_PRUNE` INFO
+line. AUTO is held to the evidence-window floor below without refusing the start: when
+7 paydays ≤ `max_age_num_blocks` (only a short-epoch build) `nodus_cmt_node_init` leaves
+`prune_rt.auto_blocks` at 0 and AUTO keeps everything. Pinned by `test_role_prune` (the
+pure decision only; the reads run on a live node). Node-local like the rest of this section:
+no consensus byte, app_hash input or clock.
 
 *Floor.* `nodus_cmt_node_init` refuses to start (`nodus_cmt_node_check_retain_blocks`)
 unless N = 0 or N > the chain's `evidence.max_age_num_blocks` (default 100 000,
@@ -9674,7 +9706,8 @@ results read), and validator / consensus-param rows the reference does not keep.
 `H:` and commits `C:`/`EC:` stay until the evidence window expires. A pruned node
 therefore cannot serve old blocks to block sync (`cmt_bsync_pool.c` skips a peer whose
 base is above the wanted height) or to consensus catch-up, nor old blocks / tx results
-to the explorer. Archive nodes (N = 0) keep everything; the runbook names them.
+to the explorer. Archive nodes (`"retain_blocks": 0` — since 2026-10-14 an ABSENT key is
+AUTO, not archive) keep everything; the runbook names them.
 
 *Exception — block 1's meta row `H:1` is never pruned* (decision item 5, operator
 2026-10-03). ⚠ DOCUMENTED DEVIATION from cometbft v0.38.26 `PruneBlocks`

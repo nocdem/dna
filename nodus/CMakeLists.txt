@@ -699,6 +699,11 @@ if(NOT WIN32)
         src/witness/nodus_witness_storage_segment.c
         src/witness/nodus_witness_storage_fetch.c
         src/witness/nodus_witness_storage_holder.c
+        # Role-based block retention (decision 2026-10-14-role-based-
+        # pruning.md): the Commit's retain height from the setting, this
+        # node's roles and — for a storage member — its segment files
+        # (reads the holder's must-hold list). Node-local.
+        src/witness/nodus_witness_role_prune.c
     )
 
     # ── Phase-C C1 (2026-07-21): shielded-pool ZK verify stack ─────────
@@ -3021,6 +3026,14 @@ register_witness_test(test_storage_probe)
 # file after the store is pruned. Writes under a mkdtemp directory in
 # $TMPDIR (removed at the end); in-memory databases; no environment.
 register_witness_test(test_storage_segment)
+
+# Role-based block retention (src/witness/nodus_witness_role_prune.c;
+# decision 2026-10-14-role-based-pruning.md) — the PURE decision only:
+# every row of the table (ARCHIVE / AUTO by role / explicit N), the
+# storage guard below / above the retain height, none, the unpublished-
+# period clamp, a fault → 0, AUTO below the evidence-window floor. No
+# database, no files, no network, no environment.
+register_witness_test(test_role_prune)
 
 # Storage reward v1, package B2b-CLI — `nodus-cli storage register | exit
 # | status`: the shared builder's STORAGE_REGISTER / STORAGE_EXIT envelopes

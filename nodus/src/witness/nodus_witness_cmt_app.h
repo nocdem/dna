@@ -89,6 +89,7 @@
  * lane: nothing in this file used a mempool.h symbol. */
 #include "witness/nodus_witness_v2_apply.h"   /* the Comet apply lane   */
 #include "witness/nodus_witness_v2_env.h"     /* nodus_v2_envelope_t    */
+#include "witness/nodus_witness_role_prune.h" /* nodus_role_prune_rt_t  */
 
 #ifdef __cplusplus
 extern "C" {
@@ -374,6 +375,14 @@ typedef struct {
      * input to `nodus_cmt_app_retain_height`. 0 before the first
      * FinalizeBlock (Commit then asks for no pruning). */
     int64_t                         fb_height;
+
+    /* Role-based retention (decision 2026-10-14-role-based-pruning.md;
+     * nodus_witness_role_prune.h): the must-hold cache and the mode log
+     * of `nodus_role_prune_commit`. NODE-LOCAL. Zeroed by
+     * nodus_cmt_app_ledger_init (AUTO disabled); nodus_cmt_node_init
+     * sets `prune_rt.auto_blocks` against the evidence window; its cache
+     * is freed by nodus_cmt_app_ledger_release. */
+    nodus_role_prune_rt_t           prune_rt;
 } nodus_cmt_app_ledger_t;
 
 /**
@@ -490,8 +499,10 @@ int nodus_cmt_app_finalize_block(void *ctx,
 
 /** abci/types/application.go's `Commit` — the COMMIT of the host's ONE
  *  transaction (D-23 rev 5 (5)). `retain_height` =
- *  `nodus_cmt_app_retain_height(fb_height, w->config.retain_blocks)` —
- *  0 on an archive node (decision 2026-10-03-block-pruning-7-paydays.md).
+ *  `nodus_role_prune_commit(w, &prune_rt, fb_height)` — the setting, this
+ *  node's roles and its segment files decide; 0 on an archive node
+ *  (decisions 2026-10-03-block-pruning-7-paydays.md, 2026-10-14-role-
+ *  based-pruning.md; nodus_witness_role_prune.h).
  *  CHECKTX-P1: after the COMMIT, clears the pending conflict set and
  *  sweeps the verified-auth cache (node-local; see the context fields). */
 int nodus_cmt_app_commit(void *ctx, nodus_abci_response_commit_t *resp);
@@ -500,10 +511,11 @@ int nodus_cmt_app_commit(void *ctx, nodus_abci_response_commit_t *resp);
  * The Commit response's `retain_height` for a node that keeps the last
  * `retain_blocks` blocks (decision 2026-10-03-block-pruning-7-paydays.md).
  * `PruneBlocks(R)` keeps [R, height], so R = height − retain_blocks + 1
- * leaves exactly `retain_blocks` blocks. Pure: no clock, no state.
+ * leaves exactly `retain_blocks` blocks. Pure: no clock, no state. The
+ * base it is given comes from nodus_role_prune_retain_height.
  *
  * @param height        the height being committed.
- * @param retain_blocks this node's setting; 0 (or negative) = archive.
+ * @param retain_blocks the base to keep; 0 (or negative) = keep all.
  * @return 0 (no pruning) when `retain_blocks <= 0` or
  *         `height <= retain_blocks`; else `height - retain_blocks + 1`.
  */

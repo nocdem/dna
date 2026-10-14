@@ -2,8 +2,8 @@
  * @file nodus_witness_storage_holder.c
  * @brief Storage reward v1 rev 4 (the ARCHIVE reward), package B2b-2 —
  *        the holder's runtime: must-hold, export, the 0x73 fetch client
- *        and serving side, deletion after the overlap, the retain_blocks
- *        warning. Contract: nodus_witness_storage_holder.h.
+ *        and serving side, deletion after the overlap. Contract:
+ *        nodus_witness_storage_holder.h.
  *
  * Single-threaded: everything runs on the witness thread — the tick from
  * nodus_witness_tick, a message from the 4004 host's receive callback
@@ -310,8 +310,7 @@ static void mark_held(struct nodus_sthold_rt *rt, uint64_t k) {
         if (rt->want[i] == k) rt->held[i] = 1;
 }
 
-/* Recompute must-hold for epoch H, delete what is no longer held, warn
- * about retain_blocks. */
+/* Recompute must-hold for epoch H, delete what is no longer held. */
 static void assign(nodus_witness_t *w, struct nodus_sthold_rt *rt,
                    const char *dir, uint64_t H, const uint8_t me[64]) {
     uint64_t *ks = calloc(NODUS_STHOLD_MAX_SEGS, sizeof(*ks));
@@ -351,18 +350,11 @@ static void assign(nodus_witness_t *w, struct nodus_sthold_rt *rt,
 
     QGP_LOG_INFO(LOG_TAG, "epoch H=%" PRIu64 ": %zu segment(s) to hold, %zu "
                  "not complete yet", H, n, n_missing);
-    if (w->config.retain_blocks > 0 && n_missing > 0) {
-        uint64_t first = 0;
-        for (size_t i = 0; i < n; i++)
-            if (!held[i]) { first = ks[i]; break; }
-        QGP_LOG_WARN(LOG_TAG, "retain_blocks=%" PRId64 " is set while %zu "
-                     "assigned segment(s) are not complete (first: %" PRIu64
-                     ") — a pruned block of an incomplete segment fails "
-                     "every probe of it until the segment is fetched "
-                     "(decision 2026-10-03-block-pruning-7-paydays.md, "
-                     "rollout change)", w->config.retain_blocks, n_missing,
-                     first);
-    }
+    /* The retain_blocks warning that stood here is gone: the Commit's
+     * retain height never passes the first block of an assigned segment
+     * whose file is not complete (nodus_witness_role_prune.h, decision
+     * 2026-10-14-role-based-pruning.md). Blocks pruned BEFORE a segment
+     * was assigned are fetched during its grace, as designed. */
 }
 
 /* ── the fetch client ────────────────────────────────────────────────── */

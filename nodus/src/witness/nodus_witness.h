@@ -87,16 +87,24 @@ typedef struct {
      * from an older binary must still refuse a silent boot — but nothing
      * in this tree can set safety_halt or arm a new sentinel again. */
     char     _reserved;
-    /* Node-local block retention (decision docs/plans/decisions/
-     * 2026-10-03-block-pruning-7-paydays.md). nodus.json "retain_blocks";
-     * 0 (default) = archive, nothing pruned. N > 0: the application's
-     * Commit asks the block executor to keep the last N blocks
-     * (nodus_cmt_app_retain_height). Refused at start unless 0 or
-     * greater than the chain's evidence window `max_age_num_blocks`
-     * (nodus_cmt_node_check_retain_blocks). Recommended 120960 =
-     * 7 paydays × 17280 blocks. No consensus byte depends on it — the
-     * value may differ per node. */
+    /* Node-local block retention (decisions docs/plans/decisions/
+     * 2026-10-03-block-pruning-7-paydays.md, 2026-10-14-role-based-
+     * pruning.md; nodus_witness_role_prune.h). nodus.json
+     * "retain_blocks", three meanings:
+     *   absent (retain_blocks_auto true, retain_blocks 0) — AUTO: a bonded
+     *     validator or a storage member keeps the last 7 paydays
+     *     (NODUS_PRUNE_AUTO_RETAIN), a storage member GUARDED by its
+     *     segment files; a node with no role keeps everything;
+     *   0 (retain_blocks_auto false) — ARCHIVE: nothing is pruned;
+     *   N > 0 — the last N blocks (the storage guard still applies).
+     *     Refused at start unless greater than the chain's evidence
+     *     window `max_age_num_blocks` (nodus_cmt_node_check_retain_blocks).
+     * retain_blocks_auto is set only by the config loader
+     * (tools/nodus_node_config.c), so a zero-initialised config is
+     * ARCHIVE, as before. No consensus byte depends on either field —
+     * nodes may differ. */
     int64_t  retain_blocks;
+    bool     retain_blocks_auto;
     /* Storage reward package B2b-2 — the directory, UNDER the witness
      * data path, that holds this node's archive segment files
      * (nodus_witness_storage_segment.h). nodus.json "segment_dir": one

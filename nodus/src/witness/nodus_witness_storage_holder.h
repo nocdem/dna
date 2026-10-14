@@ -4,8 +4,8 @@
  *        the HOLDER's runtime on a live node: which segments this node
  *        must hold, exporting them from its own block store, fetching
  *        them over channel 0x73 when it cannot, deleting them once the
- *        handoff overlap has passed, the retain_blocks warning, and the
- *        0x73 serving side's message handling.
+ *        handoff overlap has passed, and the 0x73 serving side's message
+ *        handling.
  *        File layout: nodus_witness_storage_segment.h; the 0x73 wire and
  *        admission: nodus_witness_storage_fetch.h.
  *
@@ -73,13 +73,14 @@
  *   client's one request in flight and the connection's send / recv
  *   rate limit.
  *
- * ── THE retain_blocks WARNING ─────────────────────────────────────────
- *   At every assignment (the first pass after start, then once per
- *   epoch): retain_blocks > 0 while a must-hold segment is not complete
- *   → WARN (decision 2026-10-03-block-pruning-7-paydays.md, rollout
- *   change: pruning a storage node before its segments are complete
- *   makes it fail every probe of a pruned block). The prune loop itself
- *   is unchanged.
+ * ── BLOCK RETENTION ────────────────────────────────────────────────────
+ *   The block store's pruning consults this list: the Commit's retain
+ *   height never passes the first block of a must-hold segment whose
+ *   file is not complete, nor the first block of the period not yet
+ *   published (nodus_witness_role_prune.h; decision 2026-10-14-role-
+ *   based-pruning.md). It replaces the retain_blocks warning this
+ *   runtime used to log (decision 2026-10-03-block-pruning-7-paydays.md,
+ *   rollout change).
  *
  * ── DETERMINISM (design rev 4 §7 D3, D4) ──────────────────────────────
  * Nothing here writes the database or is read by the state machine:

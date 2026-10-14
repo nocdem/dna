@@ -480,6 +480,8 @@ void nodus_cmt_app_ledger_release(nodus_cmt_app_ledger_t *ctx)
     ctx->acache     = NULL;
     ctx->acache_n   = 0;
     ctx->acache_cap = 0;
+    /* Role-based retention — the must-hold cache. */
+    nodus_role_prune_rt_free(&ctx->prune_rt);
 }
 
 int nodus_cmt_app_ledger_init(nodus_cmt_app_ledger_t *ctx, nodus_witness_t *w,
@@ -3098,14 +3100,16 @@ int nodus_cmt_app_commit(void *vctx, nodus_abci_response_commit_t *resp)
      * `mem_recheck_txs`). The auth cache advances one generation. */
     pend_clear(ctx);
     acache_sweep(ctx);
-    /* Node-local block retention (decision 2026-10-03-block-pruning-7-
-     * paydays.md): with `retain_blocks` N > 0 the block executor's
+    /* Node-local block retention (decisions 2026-10-03-block-pruning-7-
+     * paydays.md, 2026-10-14-role-based-pruning.md): the block executor's
      * `pruneBlocks` (execution.go:340-347; nodus_witness_cmt_host.c
-     * `nodus_cmt_blockexec_prune_blocks`) keeps the last N blocks; with 0
-     * (archive) it is not entered. A pure function of the committed
-     * height and this node's setting — no clock, no consensus byte. */
-    resp->retain_height = nodus_cmt_app_retain_height(
-        ctx->fb_height, ctx->w->config.retain_blocks);
+     * `nodus_cmt_blockexec_prune_blocks`) keeps [retain_height, tip];
+     * with 0 it is not entered. Decided from this node's setting, its
+     * roles in the state just COMMITTED and — for a storage member — its
+     * segment files (nodus_witness_role_prune.h). No clock, no consensus
+     * byte; a read fault answers 0 (nothing pruned). */
+    resp->retain_height = nodus_role_prune_commit(ctx->w, &ctx->prune_rt,
+                                                  ctx->fb_height);
     return CMT_OK;
 }
 

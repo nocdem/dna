@@ -1250,35 +1250,60 @@ opened and nothing else changes.
 
 ---
 
-## 2.5 Block retention — pruned validators and archive nodes — per node, no chain impact
+## 2.5 Block retention — automatic by role; archive nodes set 0 — per node, no chain impact
 
-Decision: `docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md` (operator: a
-validator keeps the last 7 paydays; two archive nodes keep everything). Design:
-`docs/ARCHITECTURE.md` "Block retention (pruning) and the SeenCommit cleanup". No
-consensus byte, block, app_hash or state root depends on it, so nodes may differ and
-no hard fork is involved; a rolling restart of one node at a time is enough. **Turning
-it on on any node needs the operator's explicit permission like every deploy.**
+Decisions: `docs/plans/decisions/2026-10-03-block-pruning-7-paydays.md` (operator: a
+validator keeps the last 7 paydays; two archive nodes keep everything) and
+`docs/plans/decisions/2026-10-14-role-based-pruning.md` (pruning follows the node's role;
+a storage node prunes only what its segment files already hold; an explicit setting
+wins). Design: `docs/ARCHITECTURE.md` "Block retention (pruning) and the SeenCommit
+cleanup"; code `src/witness/nodus_witness_role_prune.h`. No consensus byte, block,
+app_hash or state root depends on it, so nodes may differ and no hard fork is involved;
+a rolling restart of one node at a time is enough. **Deploying the build that carries
+it needs the operator's explicit permission like every deploy.**
 
-**Two kinds of node.**
+> **⚠ DEPLOY PREREQUISITE — write `"retain_blocks": 0` into `/etc/nodus.conf` on EU-6 and
+> US-1 BEFORE the first build with role-based retention is deployed there.** From that
+> build on, a node WITHOUT the key prunes automatically when it is a validator or a
+> storage node. EU-6 and US-1 are validators: without the explicit 0 they start pruning at
+> their first Commit, and until state sync exists a joining node can no longer block-sync
+> from height 1 (decision 2026-10-14 "Deploy önkoşulu"). Check after the restart: the start
+> log shows `block retention: ARCHIVE (retain_blocks 0) — every block is kept` and
+> `W_PRUNE retain: ARCHIVE (retain_blocks 0)`.
 
-| Kind | `retain_blocks` | Keeps | Who (default; the operator may change) |
-|---|---|---|---|
-| Archive | `0` (or absent) | every block, every FinalizeBlock response | **EU-6 and US-1** |
-| Pruned validator | `120960` (= 7 paydays × 17 280 blocks) | the last 120 960 blocks | every other node |
+**The setting (`retain_blocks` in nodus.json) has three meanings.**
 
-**1. Config** — add to the pruned node's `/etc/nodus.conf` (nodus.json format), and
-make sure both archive nodes are in its witness-port `persistent_peers` (or in the
-network file's list) so block sync always has a peer that holds old blocks:
+| `retain_blocks` | Mode | Keeps |
+|---|---|---|
+| absent | **AUTO** — the role decides (table below) | see below |
+| `0` | **ARCHIVE** | every block, every FinalizeBlock response, whatever the roles |
+| `N > 0` | explicit | the last N blocks; on a storage node never below an incomplete segment file (below) |
+
+**AUTO (no key) by role** — read from the node's committed chain state at every Commit:
+
+| Role of this node's key | Keeps |
+|---|---|
+| bonded validator (status ACTIVE or ELIGIBLE) | the last **120 960** blocks (7 paydays × 17 280) |
+| storage node (registry status ACTIVE or EXITING), with or without the validator role | the last 120 960 blocks, **guarded**: never a block of an assigned segment whose file is not complete (`seg-<k>.ok`), never a block of the period not yet published as a segment |
+| neither (e.g. a node still syncing, before it registers) | every block |
+
+A RETIRING / UNSTAKED / AUTO_RETIRED validator row and a RELEASED storage row are not a
+role. **Who runs what (default; the operator may change):** **EU-6 and US-1 =
+`"retain_blocks": 0`** (the full archives); every other node has no key (AUTO).
+
+**1. Config** — on an archive node add `"retain_blocks": 0` to `/etc/nodus.conf`
+(nodus.json format). On every node make sure both archive nodes are in its witness-port
+`persistent_peers` (or in the network file's list) so block sync always has a peer that
+holds old blocks:
 
 ```json
 {
-    "retain_blocks": 120960,
     "persistent_peers": ["<EU-6 p2p id>@<EU-6 ip>:4004", "<US-1 p2p id>@<US-1 ip>:4004", "..."]
 }
 ```
 
 A value that is not an integer ≥ 0 refuses the start at config load — the parser is
-`load_config_json` in `tools/nodus_node_config.c` (:379-388, called at :526), the ONE
+`load_config_json` in `tools/nodus_node_config.c` (:382-392, called at :556), the ONE
 file every binary links (`nodus/CMakeLists.txt`: nodus-server, nodus-witness,
 nodus-storage, nodus-core), so a malformed value refuses **nodus-core, nodus-storage,
 nodus-witness and nodus-server alike**. A valid value is used only by the process that
@@ -1286,11 +1311,25 @@ runs the chain (nodus-server's in-process witness, or nodus-witness); nodus-core
 nodus-storage link no witness object and ignore it. A value from 1 up
 to the chain's evidence window `max_age_num_blocks` (100 000 unless the genesis set
 another) refuses the start too, with `retain_blocks <N> refused: it must be 0 (keep
-every block) or greater than this chain's evidence window …`. At start a pruned node
-logs `block retention: the last <N> blocks are kept (evidence window <M> blocks)`.
+every block) or greater than this chain's evidence window …`. AUTO is held to the same
+floor without refusing the start: when 7 paydays do not exceed the evidence window (only
+a short-epoch harness build, where 7 paydays are 7 × 24 × E blocks) AUTO keeps every block
+and logs `block retention: AUTO by role is OFF — …`. **Start log, one line per mode:**
+explicit N → `block retention: the last <N> blocks are kept (evidence window <M> blocks)`;
+no key → `block retention: AUTO by role (retain_blocks not set) — …`; 0 →
+`block retention: ARCHIVE (retain_blocks 0) — every block is kept`. **Then, at the first
+Commit and whenever the effective mode changes,** one `W_PRUNE` line says what the node
+does now, e.g. `W_PRUNE retain: AUTO (validator) 120960`, `W_PRUNE retain: AUTO (storage)
+120960, guarded: segment <k> incomplete, keep from height <X> (unpublished period from
+<Y>)`, `W_PRUNE retain: AUTO (no role) keeps everything`, `W_PRUNE retain: ARCHIVE
+(retain_blocks 0) — every block is kept`. A read that fails (the role or the segment files)
+logs `W_PRUNE retain: … — nothing is pruned until it reads` at most once per epoch, and
+that Commit prunes nothing.
 
-**2. What happens.** Nothing until the chain is taller than N. From then on every
-Commit prunes the blocks below `tip − N + 1`: their parts, their FinalizeBlock
+**2. What happens.** Nothing until the chain is taller than N (AUTO: 120 960). From
+then on every Commit prunes the blocks below `tip − N + 1` — on a storage node never
+above the first block of its lowest assigned segment without a complete file, nor above
+the first block of the period not yet published: their parts, their FinalizeBlock
 responses and their seen commits. Block meta and commits stay until the evidence
 window has passed. The FIRST commit after enabling it on a node with long history
 walks every height from genesis up to `tip − N + 1` in one go (flushed every 1 000
@@ -1310,7 +1349,9 @@ pass height **120 961** (the first height at which `tip − 120 960 + 1` is abov
 the first real prune has run), then **restart EU-5** and check that it still admits
 transactions (submit one through EU-5 and see it accepted; the start log must not say
 `Ledger V2 NOT ACTIVATED` or `Ledger V2 ingress remains CLOSED`). Only then enable it on
-the other pruned nodes, one at a time.
+the other pruned nodes, one at a time. With role-based retention "enabling" is deploying
+the build to a node that has no `retain_blocks` key (or removing an explicit value from
+it); the archive prerequisite at the top of this section comes first.
 
 **3. Consequences — read before choosing which nodes prune.**
 - **Joining / catching up needs an archive peer.** Block sync skips a peer whose
@@ -1330,8 +1371,8 @@ the other pruned nodes, one at a time.
   written before the build that carries it stay until that height is pruned (never,
   on an archive node).
 
-**Rollback:** remove `retain_blocks` (or set it to 0) and restart. That only **stops
-further pruning**; it does **not** restore any row already pruned — the node stays
+**Rollback:** set `"retain_blocks": 0` and restart (**removing the key no longer stops
+pruning** — absent means AUTO). That only **stops further pruning**; it does **not** restore any row already pruned — the node stays
 based at the height it last pruned to. There is no in-place way to restore full history
 on that node; history is read from the archive nodes.
 
@@ -1343,7 +1384,12 @@ from height 1, and that a restarted pruned node still admits transactions. Expec
 on f8ecb5ac and later (decision item 5: block 1's meta `H:1` is never pruned, because the
 Ledger V2 preflight reads it at every open, `nodus_witness_v2_preflight.c:334-349`); on
 605b748b, which pruned it, a restarted pruned node logged `Ledger V2 NOT ACTIVATED …
-INSPECTION_FAULT` and refused transactions (measured).
+INSPECTION_FAULT` and refused transactions (measured). ⚠ That scenario's "five archive
+nodes" are nodes WITHOUT a `retain_blocks` key; under role-based retention they are AUTO
+validators. They prune only once the chain passes 7 paydays (7 × 24 × E blocks) AND that
+exceeds the run's evidence window — otherwise they keep everything, as the scenario
+assumes. A run that reaches both no longer has five archive nodes; the scenario has not
+been re-proven since role-based retention.
 
 ## 2.6 Storage node (archive reward) — operator steps — LIVE since HF-6 (block 176100, nodus 0.26.0)
 
@@ -1383,34 +1429,39 @@ power: it earns nothing (its fail_streak does not move either). Register storage
 different owner than the validators that probe them (design §11.6; the operator's own choice for the
 Foundation: storage from a personal account, Kurultay #16 khan 2).
 
-**1. Keep the archive — until the node's segment files are complete.** A probe is answered from the
-node's own block store (the header of h+1, the sampled part and its proof) while the store has the
-block, and — package B2b-2 (`docs/ARCHITECTURE.md` "package B2b-2") — from the node's SEGMENT FILE once
-the store no longer has it. A storage node keeps one file per assigned payday segment in
-`<data dir>/segments` (nodus.json `"segment_dir"`: one directory name under the data dir, default
-`segments`), exported from its own block store when the segment is published, or fetched over channel
-0x73 from other holders / any node that still has the blocks. Without B2b-2 (or before its files are
-complete) a pruned node answers `NOT_HELD` for every block below its base and is NOT OK for that epoch.
+**1. The segment files hold the history; the block store keeps only what they do not hold yet.** A
+probe is answered from the node's own block store (the header of h+1, the sampled part and its proof)
+while the store has the block, and — package B2b-2 (`docs/ARCHITECTURE.md` "package B2b-2") — from the
+node's SEGMENT FILE once the store no longer has it. A storage node keeps one file per assigned payday
+segment in `<data dir>/segments` (nodus.json `"segment_dir"`: one directory name under the data dir,
+default `segments`), exported from its own block store when the segment is published, or fetched over
+channel 0x73 from other holders / any node that still has the blocks. A block of a segment whose file
+is not complete is answered `NOT_HELD` once the block store no longer has it, and the node is NOT OK for
+that epoch — which is why the node's pruning is guarded by its files (1a).
 
-**1a. When a storage node may enable pruning (`retain_blocks`, §2.5).** Only when ALL of these hold
-(decision `2026-10-03-block-pruning-7-paydays.md`, rollout change 2026-10-05: EU-1 and EU-4 do not
-prune until this package is live):
-- every node in the storage role AND the full archives EU-6 / US-1 run a build with package B2b-2 (0x72
-  serving from files, the 0x73 channel — an older peer neither serves nor fetches files, and the full
-  archives are the fetch source of last resort for a newly assigned segment);
-- this node's log shows, for the CURRENT epoch, `W_STHOLD epoch H=<H>: <N> segment(s) to hold, 0 not
-  complete yet` (logged once per epoch; the count of incomplete segments falls only at the next
-  epoch's line — `W_STSEG segment <k> complete and published` marks each one as it finishes), and `ls <data dir>/segments` lists `seg-<k>.ok` for every assigned k (a segment is held
-  only with its `.ok` marker);
-- the node has run at least one full epoch after that line without `W_STHOLD` / `W_STSEG` errors.
-Then set `retain_blocks` 120960 (§2.5) and restart. **A startup warning tells you when this is not the
-case:** with `retain_blocks` > 0 and an assigned segment not complete the node logs
-`W_STHOLD retain_blocks=… is set while N assigned segment(s) are not complete (first: k)` at start and
-at every epoch — revert to `retain_blocks` 0 or wait for the fetch to finish. The prune loop itself is
-unchanged; it does not consult the segment files. A segment newly assigned to a pruned node (a holder
-displaced elsewhere, a new member) is FETCHED during its grace (1b) — over 0x73 from the other holders
-or from the full archives (EU-6, US-1), which keep everything in v1. **Pruning on EU-6 / US-1 stays
-forbidden** (Kurultay #7: no history-replay path for v1).
+**1a. Pruning on a storage node is automatic and guarded — do not set `retain_blocks`** (§2.5;
+decision `2026-10-14-role-based-pruning.md`, which replaces the manual steps of the 2026-10-05 rollout
+change of `2026-10-03-block-pruning-7-paydays.md`). With no `retain_blocks` key a node whose key is in
+the storage registry (ACTIVE or EXITING) keeps the last 120 960 blocks, and its Commit never prunes:
+- a block of the lowest segment this node must hold (`nodus_witness_sthold_must_hold`: assigned now, or
+  in the overlap epoch) whose file has no valid `seg-<k>.ok` — it keeps everything from that segment's
+  first height `(k − 1) × 17 280 + 1`; the guard moves up as each file completes;
+- a block of the period not yet published as a segment (heights above the last published segment);
+- anything at all while no storage set is frozen for the current epoch, or while a read of the role,
+  the must-hold list or a marker fails (`W_PRUNE retain: … — nothing is pruned until it reads`, at most
+  once per epoch).
+The node logs the guard whenever it changes: `W_PRUNE retain: AUTO (storage) 120960, guarded: segment
+<k> incomplete, keep from height <X> (unpublished period from <Y>)`, then `…, guarded: every assigned
+segment complete, keep from height <Y> at the latest (the period not yet published)`. An explicit
+`"retain_blocks": N` is guarded the same way; `"retain_blocks": 0` keeps everything. The holder's old
+`W_STHOLD retain_blocks=… is set while N assigned segment(s) are not complete` warning is removed: the
+guard makes the case it warned about impossible from the moment a segment is assigned. A segment newly
+assigned to a node that already pruned its blocks (a holder displaced elsewhere, a new member) is
+FETCHED during its grace (1b) — over 0x73 from the other holders or from the full archives (EU-6,
+US-1), which keep everything in v1 (`"retain_blocks": 0`, §2.5 prerequisite). **Pruning on EU-6 /
+US-1 stays forbidden** (Kurultay #7: no history-replay path for v1). The guard reads the files only
+through their markers; a marker found valid is not re-read until the next epoch, so a file that goes
+bad mid-epoch is noticed at the next epoch (the holder then re-fetches it).
 
 **1b. The grace — why a node earns nothing for a while after it takes over segments (decisions K9,
 K9a).** At every epoch boundary the chain looks at which segments each storage node holds now and which

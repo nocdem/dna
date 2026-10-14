@@ -1915,6 +1915,38 @@ int nodus_cmt_node_init(nodus_cmt_node_t *n, nodus_witness_t *w,
                       "are on different SQLite connections");
         goto fail;
     }
+    /* Role-based retention (decision 2026-10-14-role-based-pruning.md;
+     * nodus_witness_role_prune.h): AUTO's 7 paydays against the same
+     * evidence-window floor an explicit value must clear. Below it
+     * (reached only by a short-epoch build) AUTO keeps everything rather
+     * than refusing the start — fail closed for data, and a start
+     * refusal would stop every unconfigured node at once. Before the
+     * handshake, whose block replay already prunes. */
+    if (w->config.retain_blocks == 0 && w->config.retain_blocks_auto) {
+        const int64_t max_age =
+            n->state->consensus_params.evidence.max_age_num_blocks;
+        if (NODUS_PRUNE_AUTO_RETAIN > max_age) {
+            n->app_ctx->prune_rt.auto_blocks = NODUS_PRUNE_AUTO_RETAIN;
+            QGP_LOG_INFO(LOG_TAG, "block retention: AUTO by role "
+                         "(retain_blocks not set) — a bonded validator or a "
+                         "storage member keeps the last %" PRId64 " blocks "
+                         "(7 paydays; a storage member never below an "
+                         "incomplete segment file), a node with no role "
+                         "keeps everything (evidence window %" PRId64
+                         " blocks)", NODUS_PRUNE_AUTO_RETAIN, max_age);
+        } else {
+            n->app_ctx->prune_rt.auto_blocks = 0;
+            QGP_LOG_WARN(LOG_TAG, "block retention: AUTO by role is OFF — "
+                         "7 paydays (%" PRId64 " blocks at this build's "
+                         "epoch length) does not exceed this chain's "
+                         "evidence window max_age_num_blocks %" PRId64
+                         "; every block is kept",
+                         NODUS_PRUNE_AUTO_RETAIN, max_age);
+        }
+    } else if (w->config.retain_blocks == 0) {
+        QGP_LOG_INFO(LOG_TAG, "%s", "block retention: ARCHIVE "
+                     "(retain_blocks 0) — every block is kept");
+    }
 
     /* ── 4. node.go:331-345 — the private validator ───────────────────
      * FilePVKey (privval/file.go:47-53) is not ported: this chain never

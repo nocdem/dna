@@ -32,7 +32,9 @@ it wherever a detail matters.
 
 ## How it works, in five lines
 
-1. Your node syncs the whole chain and keeps it (it never prunes).
+1. Your node syncs the whole chain. Once registered it keeps the history in its segment files
+   (point 3) and deletes old blocks from its chain database by itself — never a block whose
+   segment file is not complete yet.
 2. You — the **owner** — register the node with your wallet. The wallet pays the bond and
    later receives the rewards. The node itself only signs a *consent*: "I agree to be
    registered under this wallet".
@@ -125,14 +127,15 @@ public IP):
 }
 ```
 
-Do **not** add `retain_blocks` yet. A storage node keeps every block until its segment files are
-complete; pruning early makes it fail its checks ([runbook §2.6](DEPLOY_RUNBOOK.md) step 1a).
-**When you may prune** (same source): the node's log shows, for the current epoch,
-`W_STHOLD epoch H=<H>: <N> segment(s) to hold, 0 not complete yet`; `ls /var/lib/nodus/data/segments`
-lists `seg-<k>.ok` for every segment it holds; and one more full epoch has passed without
-`W_STHOLD` / `W_STSEG` errors. Then set `"retain_blocks": 120960` and restart. If you set it too
-early the node warns at start and every epoch (`W_STHOLD retain_blocks=… is set while N assigned
-segment(s) are not complete`) — set it back to 0 and wait.
+Do **not** add `retain_blocks`. A storage node prunes by itself: without the key it keeps the last
+120 960 blocks (7 paydays), but never deletes a block of a segment it must hold whose file is not
+complete yet (`seg-<k>.ok`), nor a block of the current period that is not a segment yet
+([runbook §2.5 and §2.6](DEPLOY_RUNBOOK.md) step 1a). The history lives in the segment files under
+`/var/lib/nodus/data/segments`; the chain database does not keep a second copy. The log says what it
+does, e.g. `W_PRUNE retain: AUTO (storage) 120960, guarded: segment <k> incomplete, keep from height
+<X> …` while a file is still being built. `"retain_blocks": 0` would keep every block forever (only the
+two full archive nodes run that way); any other number (it must be above the chain's evidence window —
+100 000 blocks unless the genesis set another — or the node does not start) works like the automatic value with that number of blocks, still guarded by the files.
 
 ## 4. Install and start
 
