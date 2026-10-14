@@ -734,6 +734,36 @@ The server allows certain messages without authentication:
 All other methods return `NODUS_ERR_NOT_AUTHENTICATED` (code 1) if the session is not
 authenticated.
 
+### Client port front door (2026-10-14, Kurultay #20 package 1, the operator's simple version)
+
+Four node-local limits on the client port (4001 and the WebSocket entry). None touches a consensus input;
+all are in core except the witness IPC read budget, which is a count.
+
+- **Failed auth closes.** An `auth` whose signature does not verify, or an `auth` with no pending challenge,
+  is answered with its error and the connection is closed (`dispatch_t2`; the deferred close is safe inside
+  the client poll).
+- **Pre-auth frame cap.** Every connection carries `max_payload` (0 = `NODUS_MAX_FRAME_TCP`).
+  `try_parse_frames` checks the length a frame header declares as soon as the 7-byte header is in and closes
+  the connection when it is over the cap — before the payload is buffered. The client pool sets
+  `NODUS_PREAUTH_PAYLOAD_MAX` (sig 4627 + pk 2592 + fp 64 + 1024 = 8307 bytes) on accept; auth success clears
+  it. Other pools keep `NODUS_MAX_FRAME_TCP`.
+- **Per-session chain budget.** Every request routed to the chain (`dnac_*`, `evm_*`) is charged to the
+  session: a fixed 10 s window on core's monotonic clock, 300 units per window (`NODUS_CHAIN_RATE_*`,
+  `nodus_server.h`; a JUDGMENT value). `dnac_spend` costs ⌈T2 payload bytes / 4627⌉ (one unit per
+  signature-sized span; a 1 MiB envelope costs ≤ 229), every other request 1. Over budget →
+  `NODUS_ERR_RATE_LIMITED` (4), nothing forwarded; the SDK returns rc 4 to the caller. `dnac_cc_collect`
+  from any identity other than this node's own is refused in core (the witness keeps its own check).
+  There is no per-IP or node-wide limit: many sessions / IPs can still load a node's witness — the
+  structural fix is read RPCs on their own threads (Kurultay #20 khan decision 1b).
+- **Witness IPC read budget.** `nodus_tcp_t.read_budget_frames` (0 = 256) is set to 8 on the witness IPC
+  transport, so one session socket hands the witness at most 8 frames per poll pass.
+
+Measured (harness, split mode, E = 720, one 4-CPU host, one IP flooding node 2 with 19 sessions × 32
+threads of invalid spends): before — victim witness CPU 97 %, ~680 CheckTx/s, an honest balance query
+~960 ms (with three victims); after — victim witness CPU 24 %, ~150 CheckTx/s reach the witness (3.5 M
+requests refused in core), honest query ~60 ms (idle ~55 ms), block time 4.52 → 4.57 s, every validator
+signed 30/30, 7/7 identical. Tool and script: `tests/integration/stagef/bench_rpc_flood.sh`.
+
 ---
 
 ## 6. Core Data Structures

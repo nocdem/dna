@@ -161,6 +161,9 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
     sess->conn->peer_id = sess->client_fp;
     sess->conn->peer_pk = sess->client_pk;
     sess->conn->peer_id_set = true;
+    /* D-20: authenticated — the pre-auth frame cap set on accept
+     * (NODUS_PREAUTH_PAYLOAD_MAX) gives way to the transport's own. */
+    sess->conn->max_payload = 0;
 
     sess->auth_seq = ++srv->next_auth_seq;
 

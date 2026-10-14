@@ -227,6 +227,12 @@ typedef struct {
     /* Client protocol version (0=legacy, 2=channel encryption support) */
     uint32_t                proto_version;
 
+    /* Chain-method budget (nodus_session_chain_charge): start of the
+     * current window on nodus_time_mono_ms() and the units spent in it.
+     * session_clear zeroes both. */
+    uint64_t                chain_window_start_ms;
+    uint32_t                chain_units_used;
+
     /* Channel encryption (Kyber handshake).
      * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
      * Read via sess->conn->channel_crypto. */
@@ -600,6 +606,54 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
  * conn != NULL; sessions[i] is slot i. Inter-node sessions (4002/4004)
  * are a different table and are not affected. */
 #define NODUS_MAX_SESSIONS_PER_IDENTITY 4
+
+/* ── Client port front door (decision 2026-10-14-kurultay-20-summary.md;
+ *    operator's simple version, rpc-front-door design) ────────────────
+ *
+ * Pre-auth frame cap (conn->max_payload, set on accept, cleared at auth
+ * success). Before authentication a client may send only `hello` (pk
+ * NODUS_PK_BYTES 2592 + fp NODUS_KEY_BYTES 64 + a small CBOR map) and
+ * `auth` (sig NODUS_SIG_BYTES 4627 + a small CBOR map), nodus_tier2.c
+ * nodus_t2_hello / nodus_t2_auth. The cap is the sum of all three byte
+ * strings plus 1 KiB for the CBOR envelope and method strings — above
+ * either message with room to spare; key_init is post-auth and is not
+ * covered. */
+#define NODUS_PREAUTH_PAYLOAD_MAX \
+    ((uint32_t)(NODUS_SIG_BYTES + NODUS_PK_BYTES + NODUS_KEY_BYTES + 1024))
+_Static_assert(NODUS_PREAUTH_PAYLOAD_MAX >=
+               NODUS_SIG_BYTES + NODUS_PK_BYTES + 1024,
+               "pre-auth cap must hold hello and auth with CBOR overhead");
+_Static_assert(NODUS_PREAUTH_PAYLOAD_MAX <= 16384,
+               "pre-auth cap must stay small");
+
+/* Per-session budget for chain methods (every request for which
+ * nodus_chain_method_routed() is true): a fixed window of
+ * NODUS_CHAIN_RATE_WINDOW_MS on core's monotonic clock, at most
+ * NODUS_CHAIN_RATE_BUDGET units in it; over → NODUS_ERR_RATE_LIMITED, the
+ * request is not forwarded. JUDGMENT, not measured: the largest legal
+ * envelope is 1 MiB (DNA_ENV_MAX_TOTAL_LEN) → ⌈1048576 / 4627⌉ = 227
+ * units, so one spend always fits a fresh window (core charges the T2
+ * payload length, which adds the request's hash / pk / sig / fee ≈ 7.4 KB:
+ * ≤ 229 units for a 1 MiB envelope); a wallet's 100-page scan
+ * and an explorer catch-up stay below it. Node-local: core's clock,
+ * never the witness's consensus paths. */
+#define NODUS_CHAIN_RATE_WINDOW_MS  10000u
+#define NODUS_CHAIN_RATE_BUDGET     300u
+/* One unit of a dnac_spend = the bytes of one ML-DSA-87 signature. */
+#define NODUS_CHAIN_RATE_UNIT_BYTES 4627u
+_Static_assert(NODUS_CHAIN_RATE_UNIT_BYTES == NODUS_SIG_BYTES,
+               "spend unit is one signature's bytes");
+
+/** Units a dnac_spend of `len` bytes costs: ⌈len / 4627⌉, at least 1. */
+uint32_t nodus_chain_spend_units(size_t len);
+
+/** Charge `units` to the session's chain budget at monotonic time
+ *  `now_ms` (rate_check_put shape): a window older than
+ *  NODUS_CHAIN_RATE_WINDOW_MS starts over; if the units do not fit what is
+ *  left of NODUS_CHAIN_RATE_BUDGET nothing is charged and false is
+ *  returned. */
+bool nodus_session_chain_charge(nodus_session_t *sess, uint32_t units,
+                                uint64_t now_ms);
 
 /** Number of live sessions in sessions[0..n) authenticated as `fp`, not
  *  counting `exclude` (NULL = count all). */

@@ -611,6 +611,24 @@ static parse_rc_t try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn,
          * which is the actual gate (false → true on init). */
         bool established_before = conn->channel_crypto.established;
 
+        /* Declared length against this connection's cap, as soon as the
+         * header is in — before any of the payload is buffered. Same bytes
+         * nodus_frame_decode reads (little-endian, offset 3). */
+        {
+            uint32_t declared = (uint32_t)conn->rbuf[3] |
+                                ((uint32_t)conn->rbuf[4] << 8) |
+                                ((uint32_t)conn->rbuf[5] << 16) |
+                                ((uint32_t)conn->rbuf[6] << 24);
+            uint32_t cap = conn->max_payload ? conn->max_payload
+                                             : (uint32_t)NODUS_MAX_FRAME_TCP;
+            if (declared > cap) {
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_free(tcp, conn);
+                return PARSE_CLOSED;
+            }
+        }
+
         nodus_frame_t frame;
         int rc = nodus_frame_decode(conn->rbuf, conn->rlen, &frame);
 
@@ -865,7 +883,9 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     conn->read_active      = true;
     conn->read_gen         = tcp->poll_gen;
     conn->read_bytes_left  = NODUS_TCP_READ_BUDGET_BYTES;
-    conn->read_frames_left = NODUS_TCP_READ_BUDGET_FRAMES;
+    conn->read_frames_left = tcp->read_budget_frames > 0
+                           ? tcp->read_budget_frames
+                           : NODUS_TCP_READ_BUDGET_FRAMES;
 
     read_rc_t rc;
 #ifdef NODUS_TCP_EPOLL

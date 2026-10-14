@@ -252,6 +252,14 @@ typedef struct nodus_tcp_conn {
     uint64_t               read_gen;
     size_t                 read_bytes_left;
     int                    read_frames_left;
+
+    /* Largest payload length a frame header may declare on this connection;
+     * 0 = NODUS_MAX_FRAME_TCP. Checked as soon as the 7-byte header is in
+     * rbuf (try_parse_frames), so an over-cap frame closes the connection
+     * before its payload is read. The client server sets a small pre-auth
+     * cap on accept and clears it at auth success (nodus_server.c,
+     * nodus_auth.c). */
+    uint32_t               max_payload;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
@@ -359,6 +367,10 @@ typedef struct nodus_tcp {
     int                       read_count;
     uint64_t                  poll_gen;
     uint64_t                  poll_gen_last;
+    /* Frame budget of one connection per nodus_tcp_poll call for THIS
+     * transport; 0 = NODUS_TCP_READ_BUDGET_FRAMES. Set by the owner after
+     * nodus_tcp_init (the witness IPC sets a small one, nodus_witness_ipc.c). */
+    int                       read_budget_frames;
 
     /* Write-side lock hook (nodus_tcp_set_write_lock). NULL = no lock: the
      * server does all of its I/O on one thread. A user that sends on one
