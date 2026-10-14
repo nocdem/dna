@@ -37,6 +37,11 @@
 
 #define LOG_TAG "WITNESS_IPC"
 
+/* Frames one IPC connection may hand the witness per poll pass (the
+ * transport's read_budget_frames): one session socket cannot take a whole
+ * pass. A count only — no clock on the witness side. */
+#define NODUS_WITNESS_IPC_READ_BUDGET_FRAMES  8
+
 /* ── Status (shared with the in-process backend) ─────────────────── */
 
 void nodus_witness_status_fill(nodus_witness_t *w,
@@ -371,6 +376,7 @@ nodus_witness_ipc_t *nodus_witness_ipc_new(const nodus_witness_ipc_handlers_t *h
     ipc->tcp.on_frame      = ipc_on_frame;
     ipc->tcp.on_disconnect = ipc_on_disconnect;
     ipc->tcp.cb_ctx        = ipc;
+    ipc->tcp.read_budget_frames = NODUS_WITNESS_IPC_READ_BUDGET_FRAMES;
     return ipc;
 }
 

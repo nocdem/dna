@@ -104,8 +104,30 @@ static void inter_session_clear(nodus_inter_session_t *sess,
 }
 
 static void session_clear(nodus_session_t *sess) {
-    memset(sess, 0, sizeof(*sess));
+    memset(sess, 0, sizeof(*sess));   /* also resets the chain budget */
     nodus_circuit_table_init(&sess->circuits);
+}
+
+/* ── Chain-method budget (nodus_server.h) ────────────────────────── */
+
+uint32_t nodus_chain_spend_units(size_t len) {
+    uint64_t units = ((uint64_t)len + NODUS_CHAIN_RATE_UNIT_BYTES - 1) /
+                     NODUS_CHAIN_RATE_UNIT_BYTES;
+    if (units == 0) units = 1;
+    if (units > UINT32_MAX) units = UINT32_MAX;
+    return (uint32_t)units;
+}
+
+bool nodus_session_chain_charge(nodus_session_t *sess, uint32_t units,
+                                uint64_t now_ms) {
+    if (now_ms - sess->chain_window_start_ms >= NODUS_CHAIN_RATE_WINDOW_MS) {
+        sess->chain_window_start_ms = now_ms;
+        sess->chain_units_used = 0;
+    }
+    if (units > NODUS_CHAIN_RATE_BUDGET - sess->chain_units_used)
+        return false;
+    sess->chain_units_used += units;
+    return true;
 }
 
 /* Find the session a circuit to identity `fp` lands on (local circuit
@@ -1856,7 +1878,17 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             sess->proto_version = msg.proto_version;
             nodus_auth_handle_hello(srv, sess, &msg.pk, &msg.fp, msg.txn_id);
         } else if (strcmp(msg.method, "auth") == 0) {
-            nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id);
+            /* D-18: an invalid signature, or `auth` with no pending
+             * challenge, is answered (inside the handler) and then closes
+             * the connection. Safe here: dispatch_t2 runs from on_frame
+             * inside nodus_tcp_poll (poll_depth > 0), so conn_free only
+             * parks the conn and rbuf (which `payload` points into) lives
+             * until the poll returns; try_parse_frames stops on
+             * close_pending. The disconnect clears `sess` (session_clear);
+             * after it only the stack-local `msg` is touched. */
+            if (nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id) != 0 &&
+                sess->conn)
+                nodus_tcp_disconnect(&srv->tcp, sess->conn);
         } else {
             size_t rlen = 0;
             nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
@@ -1907,7 +1939,42 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
      * receives the requesting session's identity, because it is served
      * only to this node's own identity key (checked by the witness,
      * nodus_witness_cc_collect_start). Every other dnac_* method takes the
-     * generic route below, unchanged. */
+     * generic route below, unchanged.
+     *
+     * Front door (decision 2026-10-14-kurultay-20-summary.md, simple
+     * version): every chain method is charged to the session's budget
+     * first — dnac_spend by its size, any other one unit — and refused
+     * RATE_LIMITED, not forwarded, when it does not fit. Then
+     * dnac_cc_collect from any identity but this node's own is refused (the
+     * witness keeps its own check, nodus_witness_cc_collect_start). The
+     * frame payload length stands in for the tx length: core's T2 decode
+     * does not expose the `tx` argument, and the payload holds it. */
+    if (nodus_chain_method_routed(msg.method)) {
+        uint32_t units = strcmp(msg.method, "dnac_spend") == 0
+                       ? nodus_chain_spend_units(len) : 1;
+        if (!nodus_session_chain_charge(sess, units, nodus_time_mono_ms())) {
+            size_t rlen = 0;
+            nodus_t2_error(msg.txn_id, NODUS_ERR_RATE_LIMITED,
+                            "chain request budget exceeded, retry later",
+                            resp_buf, sizeof(resp_buf), &rlen);
+            nodus_tcp_send(sess->conn, resp_buf, rlen);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+        if (strcmp(msg.method, "dnac_cc_collect") == 0 && srv->chain &&
+            memcmp(sess->client_pk.bytes, srv->identity.pk.bytes,
+                   NODUS_PK_BYTES) != 0) {
+            size_t rlen = 0;
+            nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                            "dnac_cc_collect is served only to this "
+                            "node's own identity",
+                            resp_buf, sizeof(resp_buf), &rlen);
+            nodus_tcp_send(sess->conn, resp_buf, rlen);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+    }
+
     if (strcmp(msg.method, "dnac_cc_collect") == 0 && srv->chain) {
         srv->chain->ops->cc_collect(srv->chain, sess->conn,
                                     sess->client_pk.bytes, sess->token,
@@ -2085,6 +2152,10 @@ static void session_dht_closed(nodus_server_t *srv, nodus_tcp_conn_t *conn,
 
 static void on_tcp_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
+    /* D-20: until auth succeeds only hello / auth may arrive; a frame
+     * declaring more than NODUS_PREAUTH_PAYLOAD_MAX closes the connection
+     * at its header. nodus_auth_handle_auth clears the cap (0). */
+    conn->max_payload = NODUS_PREAUTH_PAYLOAD_MAX;
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
         session_chain_closed(srv, conn);

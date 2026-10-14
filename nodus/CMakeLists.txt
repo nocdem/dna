@@ -1622,6 +1622,15 @@ add_executable(test_tcp_read_budget tests/test_tcp_read_budget.c)
 target_link_libraries(test_tcp_read_budget nodus dsa nodus)
 add_test(NAME test_tcp_read_budget COMMAND test_tcp_read_budget)
 
+# Client-port front door (operator's simple version, 2026-10-14): the
+# dnac_spend cost formula and the per-session chain budget with an injected
+# monotonic time; conn->max_payload closing a connection at an over-cap
+# header; nodus_tcp_t.read_budget_frames honoured. Listens on 127.0.0.1:0
+# (kernel-chosen port), no environment.
+add_executable(test_rpc_front_door tests/test_rpc_front_door.c)
+target_link_libraries(test_rpc_front_door nodus dsa kem nodus)
+add_test(NAME test_rpc_front_door COMMAND test_rpc_front_door)
+
 # Component split S2: the transport's Unix domain socket entry (decision
 # 2026-10-01-nodus-component-split item 7) — socket file mode 0600, frame
 # round-trip both ways, SO_PEERCRED refusal of a wrong uid (real accept
