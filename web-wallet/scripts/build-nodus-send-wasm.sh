@@ -315,7 +315,9 @@ sources=(
 )
 
 exports_common=(
-  nsw_error nsw_seed_buf nsw_req_reset nsw_req_add_coin
+  # nsw_error_busy (web 0.1.119): 1 when nsw_error is the "network is busy"
+  # text of a node's RATE_LIMITED answer (nodus-send-wasm.c nsw_fail_rc)
+  nsw_error nsw_error_busy nsw_seed_buf nsw_req_reset nsw_req_add_coin
   nsw_out_seed_buf nsw_out_seed_load nsw_offline_build
   nsw_built_env nsw_built_env_len nsw_built_intent nsw_built_wire
   nsw_built_chain nsw_built_recipient nsw_built_amount nsw_built_fee
@@ -441,7 +443,9 @@ exports_common=(
   # ccall
   # { async: true }; nc_unlock is too (harmless for a call that does not
   # suspend).
-  nc_error nc_result nc_words_alloc nc_unlock
+  # nc_error_busy (web 0.1.119): nc_error's busy mark (connect/nc_wasm.c
+  # fail_rc / fail_host); synchronous, like nc_error
+  nc_error nc_error_busy nc_result nc_words_alloc nc_unlock
   nc_profile_get nc_profile_load nc_profile_update
   nc_requests_get nc_request_new nc_request_approve nc_request_withdraw
   nc_salt_get nc_salt_pick nc_salt_reconcile
@@ -485,6 +489,9 @@ exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_t
   # HF-6: the consent message's SHA3-512, pinned against the oracle
   # (shared/dnac/tests/valbind_oracle_out.txt). Synchronous, no network.
   nsw_test_valbind_msg_sha3
+  # web 0.1.119: nsw_fail_rc on a given rc (the busy mapping without a
+  # node; test/nodus-send-wasm.test.js). Synchronous, no network.
+  nsw_test_fail_rc
   # P1 rules' vector entry (connect/nc_wasm.c, compiled only with
   # NODUS_SEND_TEST_FIXED_RANDOM; test/connect-rules-vectors.test.js).
   # Synchronous, no network, no session.

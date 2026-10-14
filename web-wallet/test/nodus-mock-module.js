@@ -11,6 +11,11 @@ export const INTENT_ID = '9'.repeat(128);
 export const FEE = '1000';
 export const coin = (digit, amount) => ({ nullifier: String(digit).repeat(128), amount });
 const SEED_AT = 4096;
+// The module's error for a node's RATE_LIMITED answer (web 0.1.119,
+// src/nodus/send-module.js failure: the text of nsw_fail_rc, `busy` from
+// nsw_error_busy).
+export const BUSY_TEXT = 'The network is busy right now. Try again in a few seconds.';
+export const busyError = () => Object.assign(new Error(BUSY_TEXT), { busy: true });
 
 export function createMockNodusModule() {
   const log = [];
@@ -44,7 +49,10 @@ export function createMockNodusModule() {
     // JSON form, send-module.js addrHistory), or an Error the module would
     // raise; the last request; a wire id the builds return (null = none,
     // like a module without nsw_built_wire).
-    history: { enabled: true, from_height: '1', entries: [] }, historyError: null, lastHistory: null, wireId: null
+    history: { enabled: true, from_height: '1', entries: [] }, historyError: null, lastHistory: null, wireId: null,
+    // web 0.1.119: names of the operations the node answers "busy"
+    // (busyError) until the test removes them.
+    busy: new Set()
   };
   const bytes = () => new Uint8Array(memory.buffer);
   async function op(name, fn) {
@@ -54,6 +62,7 @@ export function createMockNodusModule() {
     try {
       const gate = gates[name]?.shift();
       if (gate) await gate;
+      if (state.busy.has(name)) throw busyError();
       return await fn();
     } finally { active--; log.push(`${name}:end`); }
   }

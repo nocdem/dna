@@ -278,7 +278,15 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
   const num = (name, types = [], args = []) => M.ccall(name, 'number', types, args);
   const str = (name, types = [], args = []) => M.ccall(name, 'string', types, args);
   const call = (name, types = [], args = []) => M.ccall(name, 'number', types, args, { async: true });
-  const failure = () => new Error(str('nsw_error') || 'The Nodus send module failed.');
+  // `busy` (web 0.1.119): the node answered RATE_LIMITED (nodus 0.26.1
+  // client front door) — nothing was forwarded and the same request may be
+  // made again; the text is the module's "network is busy" one. Read from
+  // nsw_error_busy, never from the English text (isNodusBusy, ./client.js).
+  const failure = () => {
+    const error = new Error(str('nsw_error') || 'The Nodus send module failed.');
+    if (num('nsw_error_busy') === 1) error.busy = true;
+    return error;
+  };
   const check = rc => { if (rc !== 0) throw failure(); };
 
   check(num('nsw_net_reset'));

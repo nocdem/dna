@@ -357,7 +357,15 @@ export function createNodusConnectCore({ nodus } = {}) {
   const pending = new Set();
 
   const bridge = api => {
-    const failure = () => new Error(api.str('nc_error') || 'The Messages module failed.');
+    // `busy` (web 0.1.119): nc_error is the "network is busy" text of a
+    // node's RATE_LIMITED answer (connect/nc_wasm.c fail_rc / fail_host);
+    // read from nc_error_busy, never from the text (isNodusBusy,
+    // src/nodus/client.js).
+    const failure = () => {
+      const error = new Error(api.str('nc_error') || 'The Messages module failed.');
+      if (api.num('nc_error_busy') === 1) error.busy = true;
+      return error;
+    };
     const check = rc => { if (rc !== 0) throw failure(); };
     const result = () => JSON.parse(api.str('nc_result'));
     return { ...api, check, result };

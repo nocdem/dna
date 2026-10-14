@@ -134,8 +134,19 @@ const char *qgp_platform_home_dir(void) {
 static char  g_error[256];
 static char *g_result;
 static size_t g_result_len;
+/* 1 while g_error is the "network is busy" text: a send's node answered
+ * NODUS_ERR_RATE_LIMITED (fail_rc), or the host's reason copied in
+ * (fail_host) carried the send module's busy mark (nsw_error_busy). Read by
+ * src/connect/core.js through nc_error_busy() (error.busy) instead of the
+ * English text. Every fail() clears it; nc_begin clears it with g_error. */
+static int   g_error_busy;
+
+/* nodus-send-wasm.c "Messages host": the busy mark of nc_host_error()
+ * (declared here, not in nc_core.h, which is outside this change). */
+int nc_host_error_busy(void);
 
 const char *nc_error(void)  { return g_error; }
+int nc_error_busy(void)     { return g_error_busy; }
 const char *nc_result(void) { return g_result ? g_result : "{}"; }
 
 static void result_drop(void) {
@@ -149,7 +160,38 @@ static int fail(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(g_error, sizeof(g_error), fmt, ap);
     va_end(ap);
+    g_error_busy = 0;
     QGP_LOG_WARN(LOG_TAG, "%s", g_error);
+    return -1;
+}
+
+/* A send whose library rc may be a node's answer code (nc_put returns
+ * nodus_client_put_ex's rc unchanged, nc_read.c nc_put; the NC_ERR_* codes
+ * are negative). NODUS_ERR_RATE_LIMITED -> the wallet's busy text (the same
+ * words as nodus-send-wasm.c NSW_BUSY_TEXT) and the busy mark; any other rc
+ * -> `fmt` exactly as fail() would. @return -1. */
+__attribute__((format(printf, 2, 3)))
+static int fail_rc(int rc, const char *fmt, ...) {
+    if (rc == NODUS_ERR_RATE_LIMITED) {
+        snprintf(g_error, sizeof(g_error), "%s",
+                 "The network is busy right now. Try again in a few seconds.");
+        g_error_busy = 1;
+        QGP_LOG_WARN(LOG_TAG, "%s (rc=%d)", g_error, rc);
+        return -1;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_error, sizeof(g_error), fmt, ap);
+    va_end(ap);
+    g_error_busy = 0;
+    QGP_LOG_WARN(LOG_TAG, "%s", g_error);
+    return -1;
+}
+
+/* The host's reason (nc_host_error) as this export's, with its busy mark. */
+static int fail_host(void) {
+    fail("%s", nc_host_error());
+    g_error_busy = nc_host_error_busy();
     return -1;
 }
 
@@ -270,9 +312,10 @@ static int g_hist_ok;                   /* g_hist_key holds K               */
 
 static int nc_begin(void) {
     if (g_closed) return fail("Messages is locked.");
-    if (nc_host_begin() != 0) return fail("%s", nc_host_error());
+    if (nc_host_begin() != 0) return fail_host();
     g_inside = 1;
     g_error[0] = '\0';
+    g_error_busy = 0;
     result_drop();
     // The library reads no clock (nc_ctx_t now): the browser entry gives it
     // the page's time once per export, as the library's own time(NULL) calls
@@ -296,7 +339,7 @@ static int nc_end(int rc) {
  * own exports run (nc_host_session_ok) gates every send. */
 static int session_ok(void) {
     if (!g_unlocked) return fail("Messages is not connected.");
-    if (nc_host_session_ok() != 0) return fail("%s", nc_host_error());
+    if (nc_host_session_ok() != 0) return fail_host();
     nodus_client_t *client = nc_host_client();
     if (!client || !nodus_client_is_ready(client))
         return fail("Nodus connection is not ready. Try again shortly.");
@@ -574,7 +617,7 @@ int nc_request_new(const char *fp, const char *message) {
     int rc = nc_request_send(&g_ctx, fp, message && message[0] ? message : NULL, salt);
     if (rc != 0) {
         nc_wipe(salt, sizeof(salt));
-        return nc_end(fail("Contact request was not sent (%d).", rc));
+        return nc_end(fail_rc(rc, "Contact request was not sent (%d).", rc));
     }
     json_object *o = json_object_new_object();
     json_object_object_add(o, "salt", jhex(salt, sizeof(salt)));
@@ -593,7 +636,7 @@ int nc_request_approve(const char *fp, const char *salt_hex) {
     }
     int rc = nc_request_accept(&g_ctx, fp, sp);
     nc_wipe(salt, sizeof(salt));
-    if (rc != 0) return nc_end(fail("Acceptance was not sent (%d).", rc));
+    if (rc != 0) return nc_end(fail_rc(rc, "Acceptance was not sent (%d).", rc));
     return nc_end(set_result(json_object_new_object()));
 }
 
@@ -601,7 +644,7 @@ int nc_request_withdraw(const char *fp) {
     if (nc_begin() != 0) return -1;
     if (session_ok() != 0) return nc_end(-1);
     int rc = nc_request_cancel(&g_ctx, fp);
-    if (rc != 0) return nc_end(fail("Request was not withdrawn (%d).", rc));
+    if (rc != 0) return nc_end(fail_rc(rc, "Request was not withdrawn (%d).", rc));
     return nc_end(set_result(json_object_new_object()));
 }
 
@@ -807,7 +850,7 @@ int nc_outbox_send(const char *fp, const char *salt_hex, const char *msgs_json) 
     free(m);
     json_object_put(arr);
     nc_wipe(salt, sizeof(salt));
-    if (rc != 0) return nc_end(fail("Messages were not sent (%d).", rc));
+    if (rc != 0) return nc_end(fail_rc(rc, "Messages were not sent (%d).", rc));
     json_object *o = json_object_new_object();
     json_object_object_add(o, "day", jstr_u64(day));
     json_object_object_add(o, "alg", json_object_new_int(alg));
@@ -962,7 +1005,7 @@ int nc_ack_send(const char *fp, const char *salt_hex, const char *ack_ts_dec) {
     if (parse_salt(salt_hex, salt) != 0) return nc_end(fail("Invalid salt."));
     int rc = nc_ack_publish(&g_ctx, fp, salt, ack_ts);
     nc_wipe(salt, sizeof(salt));
-    if (rc != 0) return nc_end(fail("Delivery confirmation was not sent (%d).", rc));
+    if (rc != 0) return nc_end(fail_rc(rc, "Delivery confirmation was not sent (%d).", rc));
     return nc_end(set_result(json_object_new_object()));
 }
 
