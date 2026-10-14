@@ -31,11 +31,22 @@
 // first." (B's keys gone from the module's 64-entry cache) until B's profile
 // is read again; the round must read it again and recover — on 0.1.99 the
 // messages never arrive and the test times out.
+// 0.1.121 (profile refresh): opening B's profile shows the copy held at
+// once with "Checking for changes…", reads B's profile exactly once, and a
+// changed answer is drawn in the dialog (line removed) and in the
+// conversation head and Chats row; a busy node and a failed read keep the
+// copy shown with "Could not check for changes right now."; an answer that
+// arrives after the dialog was closed does not reopen or redraw it; an
+// answer for B that arrives while the dialog shows a second contact C is
+// not drawn into C's dialog (B's read is held by the fake until released).
 //
 // How it can lie: every answer is the fake's — nothing proves a real node
 // stores or returns these records (the C side is the native tests'
 // test_nc_classify K1-K12; the hash the oracle test). The memory-only
-// history (no vault id) is used; IndexedDB is not exercised.
+// history (no vault id) is used; IndexedDB is not exercised — so the
+// profile refresh's keep (keepProfile, saved wallets only) never runs here.
+// The fake has no chain names (nameOf throws, no `nameable`), so the
+// refresh's chain-name recheck is a no-op in this test.
 //
 // Run: npm run test:messages (CHROMIUM_PATH = a Chromium binary if
 // Playwright's own is not installed; SCREENSHOT_DIR = where the PNGs go —
@@ -116,13 +127,18 @@ try {
       { seq: '5', sender_ts: T(5), text_hex: hex(buildReaction(contentHash(B, OWN, first, T(1)), '❤️', 'add')), kind: 'reaction' }
     ];
     window.__hashFirst = contentHash(B, OWN, first, T(1));
+    // 0.1.121: a second contact C (no messages), and B's profile as the
+    // test changes it (window.__peer: name / bio replacing the first ones).
+    const C = '3c'.repeat(64);
+    window.__peer = {};
+    window.__profileReads = {};
     const profile = fp => ({ outcome: 'found', why: 'none', foreign: '0', record: '{}',
-      profile: { fingerprint: fp, claimed_name: '', bio: fp === B ? 'Building on Nodus.\nLikes quiet chains.' : '', location: fp === B ? 'Istanbul' : '', website: fp === B ? 'https://nodusnetwork.io' : '', avatar_base64: '', wallets: {}, socials: {}, has_mlkem: true, version: '3', timestamp: '1' } });
+      profile: { fingerprint: fp, ...(fp === B && window.__peer.name ? { name: window.__peer.name } : {}), claimed_name: '', bio: fp === B ? (window.__peer.bio || 'Building on Nodus.\nLikes quiet chains.') : '', location: fp === B ? 'Istanbul' : '', website: fp === B ? 'https://nodusnetwork.io' : '', avatar_base64: '', wallets: {}, socials: {}, has_mlkem: true, version: '3', timestamp: '1' } });
     const day = (d, messages = []) => ({ outcome: messages.length ? 'found' : 'empty', why: 'none', day: d, blob: messages.length ? 'ab'.repeat(32) : undefined, unchanged: false, dropped: '0', other: '0', messages });
     const answers = {
       nc_unlock: () => ({ fingerprint: OWN, fresh: false }),
       nc_profile_get: args => { if (window.__evicted && args[0] === B) window.__evicted = false; return profile(args[0]); },
-      nc_contacts_get: () => ({ outcome: 'found', why: 'none', invalid: '0', timestamp: '1', contacts: [{ fp: B, salt: SALT }] }),
+      nc_contacts_get: () => ({ outcome: 'found', why: 'none', invalid: '0', timestamp: '1', contacts: [{ fp: B, salt: SALT }, { fp: C, salt: SALT }] }),
       nc_contacts_add: () => ({ status: 'unchanged', outcome: 'found', why: 'none', created: false, count_before: '1', count_after: '1', salt_kept: '0', put_rc: 0 }),
       nc_requests_get: () => ({ outcome: 'empty', why: 'none', partial: true, truncated: false, dropped: {}, requests: [] }),
       nc_salt_reconcile: () => ({ status: 'nothing_to_write', outcome: 'found', why: 'none', wrong_pair: '0', choice: 'keep_local', salt: SALT, put_rc: 0 }),
@@ -132,16 +148,29 @@ try {
       nc_contact_reads: args => {
         if (window.__evicted === undefined) window.__evicted = true;
         if (window.__evicted) { window.__evictedReads = (window.__evictedReads || 0) + 1; return { contacts: JSON.parse(args[0]).map(() => ({ error: "Load this contact's profile first." })) }; }
-        return { contacts: JSON.parse(args[0]).map(c => ({ ack: { outcome: 'empty', why: 'none' }, days: c.days.map(x => day(x.day, x.day === TODAY ? inbox : [])) })) };
+        return { contacts: JSON.parse(args[0]).map(c => ({ ack: { outcome: 'empty', why: 'none' }, days: c.days.map(x => day(x.day, x.day === TODAY && c.fp === B ? inbox : [])) })) };
       },
       nc_outbox_send: args => ({ day: TODAY, alg: 1, count: String(JSON.parse(args[2]).length) }),
       nc_ack_send: () => ({})
     };
     window.__published = [];
     let last, lastArgs;
+    // 0.1.121: every profile read is counted per ID; a read of the ID in
+    // window.__holdFp waits for window.__hold (a promise the test resolves);
+    // a read of the ID in window.__failFp fails (rc 1), as a busy node's
+    // when window.__busy (nc_error_busy = 1).
     const api = {
-      num: (name, types, args) => { last = name; lastArgs = args; return name === 'nc_words_alloc' ? 64 : 0; },
-      call: async (name, types, args) => { last = name; lastArgs = args; if (name === 'nc_outbox_send') window.__published.push(JSON.parse(args[2])); return 0; },
+      num: (name, types, args) => { last = name; lastArgs = args; return name === 'nc_words_alloc' ? 64 : name === 'nc_error_busy' ? (window.__busy ? 1 : 0) : 0; },
+      call: async (name, types, args) => {
+        last = name; lastArgs = args;
+        if (name === 'nc_outbox_send') window.__published.push(JSON.parse(args[2]));
+        if (name === 'nc_profile_get') {
+          window.__profileReads[args[0]] = (window.__profileReads[args[0]] || 0) + 1;
+          if (window.__holdFp === args[0] && window.__hold) { await window.__hold; last = name; lastArgs = args; }
+          if (window.__failFp === args[0]) return 1;
+        }
+        return 0;
+      },
       str: name => (name === 'nc_result' ? JSON.stringify(answers[last] ? answers[last](lastArgs || []) : {}) : name === 'nc_day_today' ? TODAY : ''),
       heap: () => new Uint8Array(4096)
     };
@@ -162,7 +191,7 @@ try {
 
   // The contact row appears once the first check round stored B's day.
   await page.waitForFunction(() => document.querySelector('.contact-row .contact-preview')?.textContent.includes('yes indeed') || document.querySelector('.contact-row'));
-  await page.locator('.contact-row').first().click();
+  await page.locator(`.contact-row[data-fp="${'2b'.repeat(64)}"]`).click();
   await page.waitForFunction(() => document.querySelectorAll('.message-list .message').length >= 3);
   // W-10 (0.1.100): B's keys were gone from the module at the first read;
   // the same round read B's profile again and read again — one failed read.
@@ -317,6 +346,73 @@ try {
   // Sets are republished whole: count the distinct cards, not the sends.
   assert.equal(new Set((await page.evaluate(() => window.__published.flat())).filter(m => m.text.includes('"type":"token_transfer"')).map(m => m.text)).size, 1, 'exactly one card');
   assert.ok(!(await page.evaluate(() => window.__published.flat())).some(m => m.text.includes('e4e4')), 'one card per "Send NODUS"');
+
+  // 0.1.121 (operator: "profile basıldığında karşı tarafın refresh etmesi
+  // lazım"): opening B's profile shows the copy held at once, reads B's
+  // profile again exactly once, and draws a changed one in the dialog and
+  // the conversation head.
+  const B = '2b'.repeat(64), C = '3c'.repeat(64);
+  const peerDialog = page.locator('#nc-peer-dialog');
+  const reads = fp => page.evaluate(f => window.__profileReads[f] || 0, fp);
+  const hold = fp => page.evaluate(f => { window.__holdFp = f; window.__hold = new Promise(resolve => { window.__release = resolve; }); }, fp);
+  const release = () => page.evaluate(() => { window.__holdFp = undefined; window.__hold = undefined; window.__release(); });
+  const peerStatus = () => peerDialog.locator('.peer-refresh').innerText();
+  let readsB = await reads(B);
+  await page.evaluate(() => { window.__peer = { name: 'Bee', bio: 'Moved to Ankara.' }; });
+  await hold(B);
+  await page.locator('.conversation-who').click();
+  assert.equal(await peerDialog.isVisible(), true);
+  assert.equal(await peerDialog.locator('.peer-bio').innerText(), 'Building on Nodus.\nLikes quiet chains.', 'the copy held is shown at once');
+  assert.equal(await peerStatus(), 'Checking for changes…');
+  await release();
+  await page.waitForFunction(() => document.querySelector('#nc-peer-dialog .peer-bio')?.innerText === 'Moved to Ankara.');
+  assert.equal(await peerStatus(), '', 'the checking line is removed once the read answered');
+  assert.equal(await reads(B), readsB + 1, 'one profile read per open');
+  await page.waitForFunction(() => document.querySelector('.conversation-who')?.innerText.includes('Bee'));
+  await page.waitForFunction(b => document.querySelector(`.contact-row[data-fp="${b}"]`)?.innerText.includes('Bee'), B);
+  await page.keyboard.press('Escape');
+
+  // A busy node, then a failed read: the copy shown stays, and says so.
+  for (const busy of [true, false]) {
+    readsB = await reads(B);
+    await page.evaluate(([b, isBusy]) => { window.__failFp = b; window.__busy = isBusy; }, [B, busy]);
+    await page.locator('.conversation-who').click();
+    await page.waitForFunction(() => document.querySelector('#nc-peer-dialog .peer-refresh')?.innerText === 'Could not check for changes right now.');
+    assert.equal(await peerDialog.locator('.peer-bio').innerText(), 'Moved to Ankara.', 'a failed read keeps the copy shown');
+    assert.equal(await reads(B), readsB + 1);
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => { window.__failFp = undefined; window.__busy = false; });
+  }
+
+  // Closed before the answer: a closed dialog is not drawn again (nor
+  // reopened); the head still shows the change.
+  await page.evaluate(() => { window.__peer = { name: 'Bee Three', bio: 'Third bio.' }; });
+  await hold(B);
+  await page.locator('.conversation-who').click();
+  await page.keyboard.press('Escape');
+  assert.equal(await peerDialog.isVisible(), false);
+  await release();
+  await page.waitForFunction(() => document.querySelector('.conversation-who')?.innerText.includes('Bee Three'));
+  assert.equal(await page.evaluate(() => document.getElementById('nc-peer-dialog').open), false, 'a late answer does not reopen the dialog');
+  assert.equal(await peerDialog.locator('.peer-bio').textContent(), 'Moved to Ankara.', 'a closed dialog is not drawn again');
+
+  // Now open on another person: B's late answer never draws into C's dialog.
+  await page.evaluate(() => { window.__peer = { name: 'Bee Four', bio: 'Fourth bio.' }; });
+  await hold(B);
+  await page.locator('.conversation-who').click();
+  await page.keyboard.press('Escape');
+  await page.locator('.conversation-head:has(.conversation-who) .nc-back').click();
+  await page.locator(`.contact-row[data-fp="${C}"]`).click();
+  await page.locator('.conversation-who').click();
+  assert.equal(await peerDialog.locator('.peer-id .own-id').innerText(), C);
+  await page.waitForFunction(() => document.querySelector('#nc-peer-dialog .peer-refresh')?.innerText === '');
+  await release();
+  await page.waitForFunction(b => document.querySelector(`.contact-row[data-fp="${b}"]`)?.innerText.includes('Bee Four'), B);
+  assert.equal(await peerDialog.isVisible(), true);
+  assert.equal(await peerDialog.locator('.peer-id .own-id').innerText(), C, 'the dialog still shows C');
+  assert.equal(await peerDialog.locator('.peer-bio').count(), 0, "B's bio is not drawn into C's dialog");
+  assert.doesNotMatch(await peerDialog.innerText(), /Fourth bio|Bee Four/);
+  await page.keyboard.press('Escape');
 
   assert.deepEqual(errors, [], 'no page error');
   assert.deepEqual(refused, [], 'no CSP refusal');

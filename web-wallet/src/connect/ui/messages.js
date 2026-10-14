@@ -222,7 +222,7 @@ function wipe() {
   showAddResolved();
   if (ui.addDialog.open) ui.addDialog.close();
   if (ui.peerDialog.open) ui.peerDialog.close();
-  ui.peerTitle.textContent = ''; ui.peerBody.replaceChildren();
+  ui.peerTitle.textContent = ''; ui.peerBody.replaceChildren(); ui.peerStatus.textContent = ''; peerFp = undefined;
   screen = 'list'; hubTab = 'contacts'; filter = 'all';
 }
 
@@ -1345,9 +1345,57 @@ function dayLabel(date) {
 // verified name) or else the profile's own name — marked as someone else's
 // text, as everywhere (dom.js untrusted) — the full ID with Copy, and the
 // profile's bio, location and website. All of it from the signature-checked
-// profile this session holds (profiles); nothing is read for it.
+// profile this session holds (profiles), drawn at once; then (0.1.121,
+// operator: "profile basıldığında karşı tarafın refresh etmesi lazım") the
+// profile is read again from the network (refreshPeer) and the dialog is
+// drawn again if it changed.
 function showPeer(fp) {
   if (!isOpen() || !HEX128.test(fp)) return;
+  peerFp = fp;
+  const token = ++peerOpened;
+  ui.peerStatus.textContent = fp === ownFp ? '' : PEER_CHECKING_TEXT;
+  drawPeer(fp);
+  if (!ui.peerDialog.open) ui.peerDialog.showModal();
+  if (fp !== ownFp) void refreshPeer(fp, token);
+}
+const PEER_CHECKING_TEXT = 'Checking for changes…';
+const PEER_CHECK_FAILED_TEXT = 'Could not check for changes right now.';
+let peerFp;                              // the ID the profile dialog was last opened on
+let peerOpened = 0;                      // counts the dialog's opens (refreshPeer's guard)
+// What the dialog and the head draw from a profile, to tell a changed one.
+const PEER_FIELDS = ['name', 'claimed_name', 'avatar_base64', 'bio', 'location', 'website'];
+const peerShown = fp => {
+  const p = profiles.get(fp);
+  return JSON.stringify([chainNameOf(fp), ...PEER_FIELDS.map(k => (p ? p[k] : null))]);
+};
+// The profile read again for the opened dialog (reloadProfile — the owner
+// filtered read of the check round — kept for a contact of a saved wallet,
+// as ensureProfile keeps one), and the chain name asked again by the same
+// rules as an opened conversation (ensureChainName, `opened`). Nothing is
+// sent. A failed read, a busy node (web 0.1.119) or no profile found keeps
+// the copy shown and says so; the copy is never cleared or forgotten here.
+// The dialog is drawn again only while it is still open on the SAME ID and
+// this is its latest open (`token`): a late answer never draws over another
+// person's profile or reopens a closed dialog. A change is also drawn in
+// the conversation head and the lists (render).
+async function refreshPeer(fp, token) {
+  const gen = generation, before = peerShown(fp);
+  let read = false;
+  try { read = await reloadProfile(fp, { keep: !!contactOf(fp) }); }
+  catch (error) { if (gen === generation && !isNodusBusy(error)) logFailure(`A profile (${shortId(fp)}) could not be read again`, error); }
+  if (gen !== generation || !isOpen()) return;
+  let moved = false;
+  try { moved = await ensureChainName(fp, !!contactOf(fp), true); } catch { /* the shown name stays */ }
+  if (gen !== generation || !isOpen()) return;
+  if (moved) { try { await persist(); } catch { /* shown this session; the next save keeps it */ } }
+  if (gen !== generation || !isOpen()) return;
+  const changed = peerShown(fp) !== before;
+  if (changed) render();
+  if (!ui.peerDialog.open || peerFp !== fp || token !== peerOpened) return;
+  ui.peerStatus.textContent = read ? '' : PEER_CHECK_FAILED_TEXT;
+  if (changed) drawPeer(fp);
+}
+function drawPeer(fp) {
   const p = profiles.get(fp), n = namesOf(fp), chain = chainNameOf(fp);
   // Head: the picture, the name, how it is known, and where they stand.
   ui.peerTitle.replaceChildren(n.verified ? el('span', { className: 'chain-name', text: n.title }) : titleContent(n));
@@ -1379,8 +1427,9 @@ function showPeer(fp) {
       try { await navigator.clipboard.writeText(fp); copyStatus.textContent = 'Their ID was copied.'; }
       catch { copyStatus.textContent = 'Copy is unavailable. Select the ID and copy it.'; }
     }, 'secondary small'), copyStatus));
+  // Whether the copy shown is being checked, or could not be checked.
+  parts.push(ui.peerStatus);
   ui.peerBody.replaceChildren(...parts);
-  if (!ui.peerDialog.open) ui.peerDialog.showModal();
 }
 
 async function copyOwnId(statusNode) {
@@ -1505,6 +1554,7 @@ export function mountMessages(root, options = {}) {
   // Their profile, read-only (showPeer).
   u.peerTitle = el('h2', { id: 'nc-peer-title' });
   u.peerBody = el('div', { className: 'peer-profile' });
+  u.peerStatus = statusLine('hint peer-refresh');   // "Checking for changes…" (refreshPeer)
   u.peerDialog = setAttrs(el('dialog', { className: 'nc-dialog peer-dialog' }, u.peerBody,
     el('div', { className: 'nc-dialog-actions' }, button('Close', () => u.peerDialog.close(), 'secondary'))), { 'aria-labelledby': 'nc-peer-title' });
   u.peerDialog.id = 'nc-peer-dialog';
@@ -2734,12 +2784,15 @@ async function sendControl(fp, text) {
 }
 // A fresh owner-filtered read of a profile: its keys go back into the
 // module's verified cache (64 entries, connect/nc_wasm.c) before a group
-// key packet is built or a sender's messages are checked.
-async function reloadProfile(fp) {
+// key packet is built or a sender's messages are checked. `keep` (0.1.121,
+// the opened profile dialog, refreshPeer): a found profile is also kept for
+// the next session, as ensureProfile keeps a contact's (saved wallet only).
+async function reloadProfile(fp, { keep = false } = {}) {
   if (fp === ownFp) return true;
   const result = await core.profileGet(fp);
   if (result.outcome !== 'found') return false;
   profiles.set(fp, result.profile);
+  if (keep) await keepProfile(fp, result);
   return true;
 }
 
