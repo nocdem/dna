@@ -788,3 +788,9 @@ update that hash in `wiki/content.mjs` in the same commit.** Checked: `bash -n`;
 `--build-only` run as a normal user (latest main 9c30f0d7, 0 warnings, package
 nodus-0.26.2-linux-x86_64.tar.gz, tree clean). The install and update paths have not run on a
 fresh machine yet. `npm run build:portals` and `npm run check` were run.
+
+2026-10-14, `nodus-cli status` (nodus 0.26.3): the install script's final messages and the Wiki
+"Run a storage node" step 2 (EN+TR) point operators to `sudo nodus-cli status` — the node on one
+screen (height against the network, services, storage / witness registration, disk, memory,
+clock). install-node.sh changed only in those messages; its SHA-256 in `wiki/content.mjs` is
+6e6e9cdb…ae5af. `npm run build:portals` and `npm run check` were run.
