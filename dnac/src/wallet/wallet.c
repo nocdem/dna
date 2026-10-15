@@ -21,7 +21,6 @@
 
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
-#include "dnac/crypto_helpers.h"
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define LOG_TAG "DNAC_WALLET"
@@ -33,8 +32,6 @@ struct dnac_context {
     dna_engine_t *dna_engine;           /* libdna engine */
     sqlite3 *db;                         /* SQLite database */
     char owner_fingerprint[129];         /* Owner's fingerprint */
-    dnac_payment_cb_t payment_cb;
-    void *payment_cb_data;
     uint8_t chain_id[32];               /* Chain ID from witness */
     bool chain_id_loaded;               /* Whether chain_id has been fetched */
     int initialized;
@@ -50,76 +47,10 @@ struct dnac_context {
  * Lifecycle Functions
  * ========================================================================== */
 
-/**
- * Audit C6 (2026-04-22) — Bootstrap anchored trust state via quorum.
- *
- * The hardcoded DNAC_KNOWN_CHAINS[0].chain_id anchor was removed. Trust
- * now derives from a BFT quorum across the bootstrap peer set: all
- * configured bootstrap nodes are queried for the genesis block, each
- * response's block_hash is computed locally, and the chain_id is
- * accepted only when DNAC_GENESIS_QUORUM_THRESHOLD (2f+1 = 5/7) peers
- * agree on the same hash. A single compromised bootstrap returning a
- * forged chain_id is out-voted by the honest majority.
- *
- * Tri-state outcome:
- *   - VERIFIED : quorum reached → trusted_state populated
- *   - PENDING  : too few peers responded (network / cold-cluster) → the
- *                wallet continues without trust, sync retries later
- *   - REJECTED : enough peers responded but they diverge below the
- *                quorum threshold → attack signal, trust left empty so
- *                DNAC ops refuse to proceed (messaging unaffected)
- */
-static void bootstrap_trusted_state(dnac_context_t *ctx) {
-    if (!ctx) return;
-
-    dnac_block_t genesis;
-    memset(&genesis, 0, sizeof(genesis));
-    int verified = 0;
-    int total = 0;
-    int rc = dnac_request_genesis_quorum(ctx, &genesis, &verified, &total);
-
-    if (rc == DNAC_ERROR_TIMEOUT) {
-        QGP_LOG_WARN(LOG_TAG,
-            "trust: PENDING — only %d peers responded (need >= %d); "
-            "DNAC ops deferred, will retry on next sync",
-            total, DNAC_GENESIS_QUORUM_THRESHOLD);
-        return;
-    }
-
-    if (rc == DNAC_ERROR_WITNESS_FAILED) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "trust: REJECTED — %d/%d peers disagree below quorum (%d); "
-            "possible compromised bootstrap or chain divergence, "
-            "DNAC ops disabled",
-            verified, total, DNAC_GENESIS_QUORUM_THRESHOLD);
-        return;
-    }
-
-    if (rc != DNAC_SUCCESS) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "trust: quorum bootstrap failed rc=%d, DNAC ops deferred", rc);
-        return;
-    }
-
-    dnac_trusted_state_t trust;
-    memset(&trust, 0, sizeof(trust));
-    memcpy(trust.chain_id, genesis.block_hash, DNAC_BLOCK_HASH_SIZE);
-    memcpy(&trust.chain_def, &genesis.chain_def, sizeof(genesis.chain_def));
-    /* latest_verified_anchor intentionally zeroed — populated on first
-     * anchor_verify in the sync path. */
-
-    if (dnac_set_current_trusted_state(&trust) != 0) {
-        QGP_LOG_ERROR(LOG_TAG,
-            "trust: dnac_set_current_trusted_state failed, DNAC ops deferred");
-        return;
-    }
-
-    QGP_LOG_INFO(LOG_TAG,
-        "trust: VERIFIED — %d/%d peers agree on genesis; chain='%s', "
-        "%u witnesses",
-        verified, total, trust.chain_def.chain_name,
-        (unsigned)trust.chain_def.witness_count);
-}
+/* Audit C6's genesis-quorum trust bootstrap (bootstrap_trusted_state) is
+ * deleted with the dnac_genesis RPC it fetched from (2026-10-15): that RPC
+ * read the legacy `blocks` table, which no version-3 chain writes, so the
+ * quorum never reached VERIFIED and the trusted state was never set by it. */
 
 dnac_context_t* dnac_init(void *dna_engine) {
     if (!dna_engine) return NULL;
@@ -172,11 +103,6 @@ dnac_context_t* dnac_init(void *dna_engine) {
 
     ctx->initialized = 1;
 
-    /* Phase 12 — bootstrap anchored trust state. Best-effort: failure is
-     * logged and the wallet continues in degraded mode (UTXOs stay
-     * verified=false). */
-    bootstrap_trusted_state(ctx);
-
     return ctx;
 }
 
@@ -190,14 +116,6 @@ void dnac_shutdown(dnac_context_t *ctx) {
 
     ctx->initialized = 0;
     free(ctx);
-}
-
-void dnac_set_payment_callback(dnac_context_t *ctx,
-                               dnac_payment_cb_t callback,
-                               void *user_data) {
-    if (!ctx) return;
-    ctx->payment_cb = callback;
-    ctx->payment_cb_data = user_data;
 }
 
 /* ============================================================================
@@ -226,20 +144,6 @@ const uint8_t *dnac_get_chain_id(dnac_context_t *ctx) {
         return NULL;
 
     return ctx->chain_id;
-}
-
-/* ============================================================================
- * Listener Functions (no-op: witness-based polling replaces DHT listener)
- * ========================================================================== */
-
-int dnac_start_listening(dnac_context_t *ctx) {
-    (void)ctx;
-    return DNAC_SUCCESS;
-}
-
-int dnac_stop_listening(dnac_context_t *ctx) {
-    (void)ctx;
-    return DNAC_SUCCESS;
 }
 
 /* ============================================================================
@@ -349,15 +253,6 @@ int dnac_sync_tokens(dnac_context_t *ctx) {
     return DNAC_SUCCESS;
 }
 
-int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
-    if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
-
-    /* recover is now just sync (which clears + rebuilds from authoritative sources) */
-    int rc = dnac_sync_wallet(ctx);
-    if (recovered_count) *recovered_count = 0;
-    return rc;
-}
-
 /* ============================================================================
  * Send Functions
  * ========================================================================== */
@@ -394,9 +289,8 @@ int dnac_send_token(dnac_context_t *ctx,
     /* Fix #4 B: before building a brand-new TX, check for an active
      * pending broadcast with the same (recipient, amount, token_id).
      * If found, re-broadcast that cached TX instead — this preserves
-     * tx_hash across retries so a subsequent dnac_witness_replay can
-     * recover the committed receipt (or the server can idempotently
-     * recognize the re-submission as the already-committed spend). */
+     * tx_hash across retries so the server can idempotently recognize
+     * the re-submission as the already-submitted spend. */
     {
         sqlite3 *db = dnac_get_db(ctx);
         if (db) {

@@ -1,4 +1,4 @@
-/* Test: Merkle leaf key / value hash / empty root helpers produce
+/* Test: Merkle leaf key / empty root helpers produce
  * deterministic, tree-tagged SHA3-512 outputs. Pinned byte vectors
  * lock the F-CRYPTO-04 domain-separation contract. Any change to
  * these bytes invalidates every computed state_root.
@@ -138,37 +138,7 @@ int main(void) {
         return 1;
     }
 
-    /* ---- 3. leaf_value_hash KAT.
-     * Computed with:
-     *   python3 -c "import hashlib; print(hashlib.sha3_512(bytes([0x02]) + b'hello').hexdigest())"
-     * = 36c354f4d18c0a2ad831ac882ac1fae0847d10723fa86acfd8f074cc0c8ce4db
-     *   46bc778a4c5ecc8167760985ce7362dd7c7688ecb63c43eb762d7e6998ed61d4
-     */
-    const uint8_t sample_cbor[5] = { 'h', 'e', 'l', 'l', 'o' };
-    uint8_t want_lvh_validator_hello[64] = {
-        0x36, 0xc3, 0x54, 0xf4, 0xd1, 0x8c, 0x0a, 0x2a,
-        0xd8, 0x31, 0xac, 0x88, 0x2a, 0xc1, 0xfa, 0xe0,
-        0x84, 0x7d, 0x10, 0x72, 0x3f, 0xa8, 0x6a, 0xcf,
-        0xd8, 0xf0, 0x74, 0xcc, 0x0c, 0x8c, 0xe4, 0xdb,
-        0x46, 0xbc, 0x77, 0x8a, 0x4c, 0x5e, 0xcc, 0x81,
-        0x67, 0x76, 0x09, 0x85, 0xce, 0x73, 0x62, 0xdd,
-        0x7c, 0x76, 0x88, 0xec, 0xb6, 0x3c, 0x43, 0xeb,
-        0x76, 0x2d, 0x7e, 0x69, 0x98, 0xed, 0x61, 0xd4,
-    };
-    nodus_merkle_leaf_value_hash(NODUS_TREE_TAG_VALIDATOR, sample_cbor, 5, out);
-    if (check_bytes("leaf_value_hash(VALIDATOR, \"hello\")", out, want_lvh_validator_hello)) return 1;
-
-    /* Cross-tree property for leaf_value_hash too: same CBOR bytes,
-     * different tags must diverge. */
-    uint8_t lvh_utxo[64], lvh_val[64];
-    nodus_merkle_leaf_value_hash(NODUS_TREE_TAG_UTXO,      sample_cbor, 5, lvh_utxo);
-    nodus_merkle_leaf_value_hash(NODUS_TREE_TAG_VALIDATOR, sample_cbor, 5, lvh_val);
-    if (memcmp(lvh_utxo, lvh_val, 64) == 0) {
-        fprintf(stderr, "test_merkle_leaf_helpers: FAIL - leaf_value_hash collides across tags\n");
-        return 1;
-    }
-
-    /* ---- 4. Determinism: calling the same helper twice gives the
+    /* ---- 3. Determinism: calling the same helper twice gives the
      * same output. (Guards against accidental RNG / timestamp leakage.) */
     uint8_t a[64], b[64];
     nodus_merkle_leaf_key(NODUS_TREE_TAG_VALIDATOR, pubkey_bytes, sizeof(pubkey_bytes), a);
@@ -178,7 +148,7 @@ int main(void) {
         return 1;
     }
 
-    /* ---- 5. Zero-length raw input is accepted (no NULL deref for n=0). */
+    /* ---- 4. Zero-length raw input is accepted (no NULL deref for n=0). */
     nodus_merkle_leaf_key(NODUS_TREE_TAG_VALIDATOR, NULL, 0, out);
     /* Should equal SHA3-512(0x02) — just check it didn't crash and
      * diverges from the empty-root which is SHA3-512(0x02 || 0x00). */

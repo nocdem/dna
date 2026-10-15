@@ -20,43 +20,6 @@ extern "C" {
  * ========================================================================== */
 
 /**
- * @brief Initialize wallet subsystem
- *
- * Called internally by dnac_init().
- *
- * @param ctx DNAC context
- * @param db_path Path to wallet database
- * @return DNAC_SUCCESS or error code
- */
-int dnac_wallet_init(dnac_context_t *ctx, const char *db_path);
-
-/**
- * @brief Shutdown wallet subsystem
- */
-void dnac_wallet_shutdown(dnac_context_t *ctx);
-
-/**
- * @brief Store received UTXO
- *
- * @param ctx DNAC context
- * @param utxo UTXO to store
- * @return DNAC_SUCCESS or error code
- */
-int dnac_wallet_store_utxo(dnac_context_t *ctx, const dnac_utxo_t *utxo);
-
-/**
- * @brief Mark UTXO as spent
- *
- * @param ctx DNAC context
- * @param nullifier Nullifier of spent UTXO
- * @param spent_in_tx Transaction that spent it
- * @return DNAC_SUCCESS or error code
- */
-int dnac_wallet_mark_spent(dnac_context_t *ctx,
-                           const uint8_t *nullifier,
-                           const uint8_t *spent_in_tx);
-
-/**
  * @brief Get unspent UTXOs for spending
  *
  * Returns UTXOs sorted by amount (smallest first for privacy).

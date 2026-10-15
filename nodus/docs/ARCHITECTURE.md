@@ -3456,18 +3456,30 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 | Method | Direction | Description |
 |--------|-----------|-------------|
 | `dnac_spend` | Client→Witness | Submit spend TX for BFT consensus |
-| `dnac_nullifier` | Client→Witness | Check if nullifier is spent |
 | `dnac_supply` | Client→Witness | Query supply state (version 3 adds `chain_id32`, `tip` and the supply buckets `reward_pool` / `treasury` / `unclaimed` — see "Supply buckets for Nodus Scan") |
 | `dnac_utxo` | Client→Witness | Query UTXOs by owner. `owner` = exactly 128 lowercase hex (else `PROTOCOL_ERROR`, never truncated) and == the session fingerprint (C11, else `NOT_AUTHENTICATED`); a coin-store or chain-height read fault is `INTERNAL_ERROR` ("coin list unreadable" / "chain height unreadable"), never an empty list or `block_height` 0 (BUGS.md Z-11). At most 100 coins (`max` 1..100, by design) |
 | `dnac_msig_utxo` | Client→Witness | A multisig vault MEMBER's query of the vault address's coins: `dnac_utxo`'s answer plus `trunc`; with `"nul"` exactly the named coins plus the `"nul"` marker (see "Vault-member queries") |
 | `dnac_msig_addr_history` | Client→Witness | A multisig vault MEMBER's query of the vault address's history: `dnac_addr_history`'s answer (see "Vault-member queries") |
 | `dnac_utxo_proof` | Client→Witness | Query UTXO existence proof |
-| `dnac_ledger` | Client→Witness | Query ledger entry by hash |
-| `dnac_ledger_range` | Client→Witness | Query ledger entries by range |
-| `dnac_tx` | Client→Witness | Query full TX data by hash |
-| `dnac_block` | Client→Witness | Query block by height |
-| `dnac_block_range` | Client→Witness | Query block range |
 | `dnac_validator_list_query` | Client→Witness | Paged validator table {status, limit ≤ 256, offset}; per entry `pk`, `self`, `total`, `ext`, `comm`, `status`, `since` and (added after 0.23.12) `dlg` — the validator's delegator count, i.e. how many of its `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/include/nodus/nodus_types.h`) slots are filled. `dlg` is `nodus_delegation_count_by_validator`, the same `COUNT(*) FROM delegations WHERE validator_hash = ?` the DELEGATE cap is decided from (`nodus_witness_rt_native.c` `rtn_sys_delegcnt_fetch`); a count that cannot be read fails the reply (never a 0). Old clients skip the unknown entry key; the client SDK reports an older node's reply as `has_delegator_count = 0` (unknown, not 0). Node-local read; no consensus path reads it. HF-6 generation 4 (sub-slice 3e): + `vid` / `owner` bstr(64) per entry, `dlg` counted by validator_id (see "HF-6 sub-slice 3e"); since slice 7a the client SDK decodes them into `validator_id` / `owner_fp` with `has_v2` (see "HF-6 slice 7a"). |
+
+**Deleted 2026-10-15 (operator decision, dead-code scan "Chain side (witness)" /
+"Cascade (round 2)"):** `dnac_nullifier`, `dnac_ledger`, `dnac_ledger_range`, `dnac_tx`,
+`dnac_spend_replay`, `dnac_block`, `dnac_block_range`, `dnac_genesis`, `dnac_history`. They
+read the legacy tables `nullifiers`, `ledger_entries`, `committed_transactions`,
+`tx_outputs`, `blocks` (genesis row) and `commit_certificates`, which no version-3 chain
+writes, so every answer was empty; no live client (web wallet, explorer, nodus-cli, sdk/js)
+called them. A request for one of these names now gets the dispatcher's ordinary
+unknown-method error (`NODUS_ERR_PROTOCOL_ERROR`, `NODUS_DNAC_UNKNOWN_METHOD_MSG`). Removed
+with them: the witness readers `nodus_witness_ledger_get_by_hash` / `_get_range` / `_count`,
+`nodus_witness_block_get_range`, `nodus_witness_block_get_genesis`,
+`nodus_witness_tx_by_owner`, `nodus_witness_tx_get`, `nodus_witness_get_committed_coords`,
+`nodus_witness_cert_get`, `nodus_witness_merkle_build_tx_proof`; the uncalled writers
+`nodus_witness_nullifier_add` and `nodus_witness_tx_output_add`; the client SDK functions of
+the same names and their result types; libdna's `dnac_witness_replay`,
+`dnac_request_genesis[_quorum]`, `dnac_get_remote_history`; and the DNA Connect CLI's
+`dna lookup-tx`. The tables' `CREATE TABLE` statements and the legacy-DB refusal gate stay;
+`nodus_witness_block_get` and `nodus_witness_nullifier_exists` stay (consensus callers).
 
 ### cometbft envelope verbs 35-39 and the transport glue (R3 W3 C2b, 2026-09-16 — protocol version 7)
 
@@ -3933,7 +3945,7 @@ W3 closed the legacy lane; W4-D deletes it (OBLIGATION `atlas-dec-71525f3b4918f7
 
 **Gone (20 files, `git rm`):** `nodus_witness_bft.{c,h}` + `bft_internal.h` (the PBFT round, view change, NEW_VIEW, forward-to-leader, the replay-nonce cache, the V1 `apply_tx_to_state`/`commit_batch`/`finalize_block`/`replay_block` path, the retained batch, the parked PROPOSE, the C5 binding), `nodus_witness_sync.{c,h}` (legacy block sync, halt recovery, the recovery sentinel's writer), `nodus_witness_cert.{c,h}` (the 144-byte cert preimage and the sync-cert verifiers), `nodus_witness_bootstrap.{c,h}` (the DISCOVER / FETCH_GENESIS / HAVE_CHAIN state machine — a version-3 node's role is decided once by the post-open gate; the pinned joiner is armed by `nodus_witness_v2_join_arm` and driven by `nodus_witness_v2_join_tick`), `nodus_witness_mempool.{c,h}` (the fee-sorted local pool — the Comet mempool is `cmt_mem`), `nodus_witness_v2_finalize.{c,h}` / `v2_qc.{c,h}` / `v2_ingress.{c,h}` (the pre-Comet Ledger V2 acceptance seam, QC pool and block ingress), `nodus_witness_o15h_diag.{c,h}`, `nodus_witness_fault.c` (+ CMake's `QGP_FAULT_INJECT`). **Gone from surviving files:** the legacy tick body, `handle_dnac_spend`'s leader/forward/receipt path (the version-3 CheckTx answer is the handler's only lane; a non-version-3 chain is answered with one `send_error`), `nodus_witness_pool_local_demand`, `send_spend_result`, the FWD_REQ/FWD_RSP intakes and `nodus_witness_peer_current_set` in peer.c, `cert_store` / `block_add` / `genesis_set` / `genesis_exists` / `compute_block_hash(_ex)` / the `pbft_state` save-load and its CREATE TABLE in db.c, `produce_commit` / `cert_note` / `qc_try_attach` / the mempool-entry `batch_check(_ex)` in produce.c, verbs 20-23 and `sync_tick` / `serve_block` / `apply_range` / `restart_check` in sync2.c, tier-3 verbs 1-8 / 12-13 / 16-23 / 26-27 with their structs, codecs and method rows, `--cold-bootstrap` and `halt_auto_recover`, the ADMISSION-mode fee surge and pending-pool dedup in verify.c (both read the deleted pool; `cmt_app` calls verify in ADMISSION mode with a pool that was always empty on this lane — an observable no-op), every `nodus_witness_t` field only the deleted code read (`round_state`, `mempool`, `bft_config`, `current_view`, `view_changes`, `pending_forwards`, `retained_batch`, `parked_propose`, `reproposal_*`, `bootstrap_*`, `safety_halt`, …). `nodus_witness.h` 2 032 → 770 lines.
 
-**Moved, kept, converted:** `nodus_witness_roster_find` / `_add` moved verbatim from bft.c into `nodus_witness_peer.{c,h}` (their PROVEN callers are the mesh: `dispatch_t3`, `peer_ensure`, `rebuild_roster_from_peers`, `handle_ident`, `handle_rost_r`); the recovery sentinel's READ half moved into nodus_witness.c as a static boot gate (a sentinel left by an older binary still refuses to boot; nothing can write one now); `witness_chain_quorum_observe` gained its declaration in `nodus_witness_peer.h`. The tick is `poll → witness_mesh_tick (unconditional: both roles need identified peers) → version-3: witness_cmt_tick | pre-genesis: nodus_witness_v2_join_tick`. The IDENT frame is byte-identical (its `current_view` field is written 0 and received-but-ignored); protocol version 7 stands. KEPT and named: `nodus_witness_cert_get` + the `commit_certificates` table (read by the `dnac_block` query handler — the hub/spoke query surface over the legacy tables `blocks`/`genesis_state`/`committed_transactions`, which a version-3 chain never fills, is a product question, recorded), the four legacy base tables, verbs 14/15's codec (the chain_config governance RPC — the operator chose to RE-WIRE it onto this lane, package W4-CC; until then the dispatcher drops it as W3 did), and the version-2 genesis path (`nodus_witness_v2_gen_derive`, `nodus_witness_v2_genesis_ex`, the height-0 row readers, apply.c's non-cmt branch — the ledger-engine unit tests' shared fixture `tests/v2_genesis_fixture.h` sits on it; package W4-G, the obligation's second half, needs the operator's whitelist). **tokenomics-v3 P4 update:** the DERIVATION half is deleted — `nodus_witness_v2_gen_derive`, `nodus_witness_v2_gen_config_encode`, `nodus_witness_v2_gen_source_commit`, version 2 in `gen_plan_build` and in the config parser (a file must say `config_version = 3`); `test_v2_seam_linked` now also proves their absence from `nodus-server`. **tokenomics-v3 P4, second half (the ENGINE half — obligation closed; 2026-09-24, nodus 0.19.74):** `nodus_witness_v2_genesis_ex` and its wrapper `nodus_witness_v2_genesis` are deleted, and with them the whole legacy (non-cmt) lane of `nodus_witness_v2_apply_block` — the engine's own BEGIN/COMMIT/ROLLBACK, the whole-batch pre-BEGIN stage (batch preflight + reserve, replay guard, admission, committee snapshot, authorization, claim and pool pre-scans), the SYSTEM → cross-domain → domain-local phase order, the in-block S7 pool phase 6p, the rc 1 idempotent replay, the rc 2 post-commit window, the dna_bh2 header build / derived BlockID / `expect_block_id` compare, the S9-S12 schema gate, the 12-column `v2_blocks` insert with `header`/`qc`; the fault points that only that lane could fire (2-5, 14, 15, 19-28, 34-36, 46, 47) are RETIRED (numbers reserved); the block fields `qc_bytes`/`qc_len`, `fail_domain_batch`, `fail_pool_index` and `out_header` are gone. A block without `cmt.on` is now refused as a node FAULT without being judged. The height-0-row branch of `nodus_witness_v2_chain_id` (the identity is the stored genesis document only) and the height-0 probe of `nodus_rt_core_invariant` (the stored document decides "a genesis exists") are deleted too. `test_v2_seam_linked` now also fails if `nodus_witness_v2_genesis_ex` or `nodus_witness_v2_genesis` is linked into `nodus-server`. Every ledger-engine test runs on a version-3 chain through the cometbft lane: `tests/v2_genesis_fixture.h` drops `v2x_genesis_min` / `v2x_seed_authority` / `v2x_block_id_at` and carries TIER A `v2x_chain_open` (derive_v3 + the production open path), TIER B `v2x_seed_prepare` / `v2x_seed_rows` / `v2x_seed_genesis` (the derivation's own steps around genesis rows a version-3 config cannot express — every such row written BEFORE the genesis is committed) and the host `v2x_cmt_apply` (BEGIN IMMEDIATE, a real Comet block-store record per block — the successor committee seed reads it at the lookback height — the engine, COMMIT / ROLLBACK) with per-item verdict helpers. KEPT, named: the `!v2_successor` branch of the committee seed (`nodus_witness_committee.c`, reachable in production only on a database with no version-3 genesis; unit tests that drive the committee on such databases — `test_v2_committee_seed` §7 and `test_v2_epoch`'s bare fixture; the other committee/vset suites were not audited for it — still exercise it), `nodus_witness_v2_pool_apply` (its only production caller was phase 6p; `nodus_witness_v2_pools.c` was outside the package's whitelist), and the `expect_*` identity-assertion fields (the entry's refusal of them stays tested). **Chain-halt fix in the same package:** phase 12b wrote the wire bytes of EVERY carried envelope — refused ones included — into `v2_tx_bytes`, whose `tx_id` is UNIQUE; a byte-identical envelope carried again in a later block (a proposer only has to include an old one; ProcessProposal checks no persistent identity) failed that insert, the block became a FAULT and every node halted on the same height. The table had no reader (its consumer, BlockMessage v1 sync, was deleted in W4-D). Phase 12b, the table and fail point 48 are gone; S11 is now an empty rung that only moves `user_version` to 11. A re-carried envelope is refused per item by the existing committed-intent REPLAY guard inside the item's SAVEPOINT and the block commits (`test_v2_native` `test_resubmission_no_halt`).
+**Moved, kept, converted:** `nodus_witness_roster_find` / `_add` moved verbatim from bft.c into `nodus_witness_peer.{c,h}` (their PROVEN callers are the mesh: `dispatch_t3`, `peer_ensure`, `rebuild_roster_from_peers`, `handle_ident`, `handle_rost_r`); the recovery sentinel's READ half moved into nodus_witness.c as a static boot gate (a sentinel left by an older binary still refuses to boot; nothing can write one now); `witness_chain_quorum_observe` gained its declaration in `nodus_witness_peer.h`. The tick is `poll → witness_mesh_tick (unconditional: both roles need identified peers) → version-3: witness_cmt_tick | pre-genesis: nodus_witness_v2_join_tick`. The IDENT frame is byte-identical (its `current_view` field is written 0 and received-but-ignored); protocol version 7 stands. KEPT and named: `nodus_witness_cert_get` + the `commit_certificates` table (read by the `dnac_block` query handler — the hub/spoke query surface over the legacy tables `blocks`/`genesis_state`/`committed_transactions`, which a version-3 chain never fills, is a product question, recorded; answered 2026-10-15: `cert_get` and that query surface are deleted, the table stays), the four legacy base tables, verbs 14/15's codec (the chain_config governance RPC — the operator chose to RE-WIRE it onto this lane, package W4-CC; until then the dispatcher drops it as W3 did), and the version-2 genesis path (`nodus_witness_v2_gen_derive`, `nodus_witness_v2_genesis_ex`, the height-0 row readers, apply.c's non-cmt branch — the ledger-engine unit tests' shared fixture `tests/v2_genesis_fixture.h` sits on it; package W4-G, the obligation's second half, needs the operator's whitelist). **tokenomics-v3 P4 update:** the DERIVATION half is deleted — `nodus_witness_v2_gen_derive`, `nodus_witness_v2_gen_config_encode`, `nodus_witness_v2_gen_source_commit`, version 2 in `gen_plan_build` and in the config parser (a file must say `config_version = 3`); `test_v2_seam_linked` now also proves their absence from `nodus-server`. **tokenomics-v3 P4, second half (the ENGINE half — obligation closed; 2026-09-24, nodus 0.19.74):** `nodus_witness_v2_genesis_ex` and its wrapper `nodus_witness_v2_genesis` are deleted, and with them the whole legacy (non-cmt) lane of `nodus_witness_v2_apply_block` — the engine's own BEGIN/COMMIT/ROLLBACK, the whole-batch pre-BEGIN stage (batch preflight + reserve, replay guard, admission, committee snapshot, authorization, claim and pool pre-scans), the SYSTEM → cross-domain → domain-local phase order, the in-block S7 pool phase 6p, the rc 1 idempotent replay, the rc 2 post-commit window, the dna_bh2 header build / derived BlockID / `expect_block_id` compare, the S9-S12 schema gate, the 12-column `v2_blocks` insert with `header`/`qc`; the fault points that only that lane could fire (2-5, 14, 15, 19-28, 34-36, 46, 47) are RETIRED (numbers reserved); the block fields `qc_bytes`/`qc_len`, `fail_domain_batch`, `fail_pool_index` and `out_header` are gone. A block without `cmt.on` is now refused as a node FAULT without being judged. The height-0-row branch of `nodus_witness_v2_chain_id` (the identity is the stored genesis document only) and the height-0 probe of `nodus_rt_core_invariant` (the stored document decides "a genesis exists") are deleted too. `test_v2_seam_linked` now also fails if `nodus_witness_v2_genesis_ex` or `nodus_witness_v2_genesis` is linked into `nodus-server`. Every ledger-engine test runs on a version-3 chain through the cometbft lane: `tests/v2_genesis_fixture.h` drops `v2x_genesis_min` / `v2x_seed_authority` / `v2x_block_id_at` and carries TIER A `v2x_chain_open` (derive_v3 + the production open path), TIER B `v2x_seed_prepare` / `v2x_seed_rows` / `v2x_seed_genesis` (the derivation's own steps around genesis rows a version-3 config cannot express — every such row written BEFORE the genesis is committed) and the host `v2x_cmt_apply` (BEGIN IMMEDIATE, a real Comet block-store record per block — the successor committee seed reads it at the lookback height — the engine, COMMIT / ROLLBACK) with per-item verdict helpers. KEPT, named: the `!v2_successor` branch of the committee seed (`nodus_witness_committee.c`, reachable in production only on a database with no version-3 genesis; unit tests that drive the committee on such databases — `test_v2_committee_seed` §7 and `test_v2_epoch`'s bare fixture; the other committee/vset suites were not audited for it — still exercise it), `nodus_witness_v2_pool_apply` (its only production caller was phase 6p; `nodus_witness_v2_pools.c` was outside the package's whitelist), and the `expect_*` identity-assertion fields (the entry's refusal of them stays tested). **Chain-halt fix in the same package:** phase 12b wrote the wire bytes of EVERY carried envelope — refused ones included — into `v2_tx_bytes`, whose `tx_id` is UNIQUE; a byte-identical envelope carried again in a later block (a proposer only has to include an old one; ProcessProposal checks no persistent identity) failed that insert, the block became a FAULT and every node halted on the same height. The table had no reader (its consumer, BlockMessage v1 sync, was deleted in W4-D). Phase 12b, the table and fail point 48 are gone; S11 is now an empty rung that only moves `user_version` to 11. A re-carried envelope is refused per item by the existing committed-intent REPLAY guard inside the item's SAVEPOINT and the block commits (`test_v2_native` `test_resubmission_no_halt`).
 
 **Tests:** 72 deleted (their subject was the old lane; two coverage notes for the operator — "a RETIRING validator stays in the frozen committee until the boundary" is structural on this lane and has no direct test; the V1 supply gate's fail-close test lost its subject, the version-3 counterpart is `test_v2_gen` L2-F1 + `test_v2_pools`), 12 trimmed, 10 converted: `test_v2_restart_gate` / `test_v2_gate` keep their live post-open-gate and arm/is_armed cases; `test_vset_boundary` §4 asserts `dna_bft_quorum(n)` directly; `test_witness_protocol_version_gate` now proves every retired method string is REFUSED by `nodus_t3_decode` (a control on `w_rost_q` decodes; the live verb-35 gate is `test_cmt_live`'s); `test_v2_epoch`'s `fx_reopen` reopens its pre-Comet fixture RAW (the production gate refuses it by design — the fixture is W4-G's); `test_v2_econ_params`'s five reopening cases derive VERSION-3 chains (`cfg_make_v3` + `derive_v3`; the band rows are written by the same `gen_seed_state`). `test_v2_seam_linked` is now an `nm` ABSENCE gate: no `nodus_witness_bft_|_sync_|_bootstrap_|_mempool_|cert_store|v2_finalize_|v2_qc_|produce_commit|sync_tick|ingress_block` symbol may be linked into `nodus-server`. ctest 260 → 188, all green.
 
@@ -7338,10 +7350,9 @@ path carries; the ruleset-2 arm becomes reachable with 5c's `_ex` store and 5d's
 | `nodus-cli` local approval selection | `committee[].total_stake / UNIT` | `committee[].power` |
 | `nodus-cli` committee display (RPC `"stake"`) | raw | unchanged (D2 → 5e) |
 
-**Known gap (outside 5b's file whitelist):** `nodus_witness_genesis_seed_validators`
-(`nodus_witness_genesis_seed.c`) writes the committee cache arrays directly and does not fill
-`cached_committee_powers`; `git grep` finds no caller of that function, so no live cache is seeded
-by it.
+**Former gap, closed by deletion:** the legacy genesis seeder (`nodus_witness_genesis_seed.c`)
+wrote the committee cache arrays directly without filling `cached_committee_powers`. It had no
+caller and has been deleted as dead code, so no path seeds the committee cache that way.
 
 **Tests.** New `test_hf6_power` (EVM builds): the seam's value; the design's §5 vectors through the
 helper on hand-built ruleset-2 snapshots (`[88,2×6]` → `[5,2×6]`, `[45,45,10]` → `[10,10,10]`,
@@ -7454,7 +7465,6 @@ and `key_gen` reaches it from ONE place per path:
 | the same boundary → `nodus_witness_vset_commit_next(w, B, key_gen)` → `vset_build_and_store` → `nodus_witness_vset_build_for_epoch(…, key_gen, …)` → `vset_build_snapshot` → `nodus_committee_compute_for_epoch(w, e, key_gen, …)` | the same read |
 | `nodus_witness_vset_commit_genesis` (snapshots 0 and E) | `NODUS_RT_GEN_1` (a chain born on this binary starts at generation 1 — design §8) |
 | `nodus_committee_get_for_block`'s miss-path recompute | its own one read (already there since 5b, D5 — it faults at ≥ 4 before reaching the core, so it always passes < 4) |
-| `nodus_witness_genesis_seed_validators` (e_start 0 — the bootstrap path, which reads no `key_gen`) | its own one read (the function has no caller in the tree) |
 
 The committee core no longer reads the registry itself: candidates, tiebreak, emitted ids and the
 ruleset are consequences of one value, so the preview Rule N judges and the snapshot `commit_next`
@@ -8510,7 +8520,8 @@ version-3 lane never writes (`ledger_entries` has no writer).
   rule) and the coin count, summed in C with overflow checks (SQL SUM switches
   to floating point on overflow in some SQLite versions). No coin list, no
   history: `dnac_utxo` / `dnac_history` keep the C11 session-owner gate
-  (`d40b89d1`). Never extended to a shielded pool.
+  (`d40b89d1`; `dnac_history` itself is deleted since 2026-10-15). Never
+  extended to a shielded pool.
 - **`dnac_supply`** gains an optional `tip` key.
 - **Explorer (`dna-explorerd` 0.2.0):** walks heights, one sqlite transaction
   per height, index schema v2 (rebuilt from height 1 on first start),
@@ -8628,7 +8639,8 @@ writes, so a wallet had no history of its own address from a node.
   entry's `(h, i, q)`; `before` alone means every row below that height (a
   height-only cursor would skip the rest of a height cut inside a page). Store
   fault or malformed row → `INTERNAL_ERROR`, never a partial list. Wire spec:
-  `nodus.h` beside `nodus_client_dnac_addr_history`. `dnac_history` is unchanged.
+  `nodus.h` beside `nodus_client_dnac_addr_history`. `dnac_history` was left
+  unchanged then; it is deleted since 2026-10-15 (see the §15 method table note).
 - **Client / CLI:** `nodus_client_dnac_addr_history` + the strict
   `nodus_dnac_addr_history_decode`; `nodus-cli addr-history [--before H[:I:Q]]
   [--limit N]` (the CLI identity's own history).
@@ -8970,10 +8982,14 @@ entry "Root'a girsin" (2026-09-24) in
   legacy `cached_state_root` branch is gone (a non-successor witness
   reports the zeroed field it already reported). KEPT: the leaf function,
   the utxo / validator / delegation subtrees (the V2 roots compose them),
-  `build_tx_proof` / `verify_proof` and their RFC 6962 helpers, and the
-  cold archive combiners `combine_state_root` / `_v1_legacy` / `_v2`
-  (not the K3 subject; still used by `test_state_root_4subtree` and
-  `test_chain_config_witness`). `NODUS_TREE_TAG_EPOCH_STATE` (0x06) stays
+  `build_tx_proof` / `verify_proof` and their RFC 6962 helpers
+  (`build_tx_proof` and its helpers deleted 2026-10-15 with `dnac_history`;
+  `verify_proof` stays, now with no caller and no test), and the
+  cold archive combiners `combine_state_root_v1_legacy` / `_v2` (not the
+  K3 subject; `_v1_legacy` is used by `test_state_root_4subtree` and
+  `test_chain_config_witness`, `_v2` by `test_chain_config_witness`). The
+  unversioned alias `nodus_merkle_combine_state_root` had no caller and
+  was deleted (dead-code pruning 2026-10-15). `NODUS_TREE_TAG_EPOCH_STATE` (0x06) stays
   DEFINED as retired, following the 0x07 precedent, so the byte is never
   reused.
 - **Tests.** Deleted (their only subject was deleted):
@@ -9882,10 +9898,10 @@ checks (`nodus_witness_tick`, `nodus_witness.c:2767`;
 
 ---
 
-## 16. Hub/Spoke Query Protocol (v0.10.0)
+## 16. Hub/Spoke Query Protocol (v0.10.0) — DELETED 2026-10-15
 
-The hub/spoke model allows lightweight clients to trust witnesses and query the full
-blockchain view without local verification.
+Historical: the hub/spoke model let lightweight clients trust witnesses and query the full
+blockchain view without local verification. Its query methods are deleted (status below).
 
 ### Architecture
 
@@ -9907,48 +9923,19 @@ blockchain view without local verification.
 └──────────────────────────────────────────────────────────┘
 ```
 
-### Message Types (CBOR over Nodus Tier 2 TCP)
+### Status: DELETED (2026-10-15)
 
-| Message | ID | CBOR Method | Description |
-|---------|----|-------------|-------------|
-| TX_QUERY | 144 | `dnac_tx` | Query full TX by hash |
-| TX_RESPONSE | 145 | — | Returns tx_data blob, tx_type, block_height, timestamp |
-| BLOCK_QUERY | 146 | `dnac_block` | Query block by height |
-| BLOCK_RESPONSE | 147 | — | Returns tx_root (legacy key `hash` + explicit key `tx_root` since v0.18.22), tx_count, timestamp, proposer_id, prev_hash, state_root (v0.18.18+), commit_cert |
-| BLOCK_RANGE_QUERY | 148 | `dnac_block_range` | Query block range |
-| BLOCK_RANGE_RESPONSE | 149 | — | Returns array of blocks (max 100); per-block keys as BLOCK_RESPONSE minus state_root/commit_cert, `tx_root` since v0.18.22 |
-
-### Client SDK Functions
-
-```c
-// Query full transaction by hash (caller frees tx_data)
-int nodus_client_dnac_tx(nodus_client_t *client, const uint8_t *tx_hash,
-                          nodus_dnac_tx_result_t *result);
-void nodus_client_free_tx_result(nodus_dnac_tx_result_t *result);
-
-// Query block by height
-int nodus_client_dnac_block(nodus_client_t *client, uint64_t height,
-                             nodus_dnac_block_result_t *result);
-
-// Query block range (caller frees blocks array)
-int nodus_client_dnac_block_range(nodus_client_t *client,
-                                    uint64_t from_height, uint64_t to_height,
-                                    nodus_dnac_block_range_result_t *result);
-void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *result);
-```
-
-### TX Storage in BFT Commit
-
-During `do_commit_db()`, after nullifier and UTXO set updates, the full serialized
-`tx_data` is stored in the `committed_transactions` table:
-
-```sql
-INSERT OR IGNORE INTO committed_transactions
-    (tx_hash, tx_type, tx_data, tx_len, block_height) VALUES (?,?,?,?,?);
-```
-
-This ensures every committed transaction is queryable by hash, enabling clients to
-retrieve full transaction details without maintaining a local copy of the blockchain.
+The hub/spoke query methods `dnac_tx` (TX_QUERY 144 / 145), `dnac_block` (146 / 147) and
+`dnac_block_range` (148 / 149), their client SDK functions (`nodus_client_dnac_tx`,
+`nodus_client_dnac_block`, `nodus_client_dnac_block_range` and their free functions /
+result types) and the witness readers behind them (`nodus_witness_tx_get`,
+`nodus_witness_get_committed_coords`, `nodus_witness_tx_by_owner` with its memo lookup,
+`nodus_witness_merkle_build_tx_proof`, `nodus_witness_block_get_range`,
+`nodus_witness_cert_get`) are deleted — see the note under the §15 method table. The
+legacy commit lane's `committed_transactions` write (`nodus_witness_tx_store`) was removed
+earlier with that lane, so on the version-3 chain these methods only ever answered empty.
+The `committed_transactions` / `blocks` / `commit_certificates` tables stay in the schema.
+For version-3 blocks use `dnac_v3_block`; for an address's history `dnac_addr_history`.
 
 ---
 

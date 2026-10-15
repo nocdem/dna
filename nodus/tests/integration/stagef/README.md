@@ -179,8 +179,8 @@ ZERO on this lane — the version-3 response carries only `status`
 "status")` answer after CheckTx), and `nodus_client_dnac_spend` `memset`s
 the result struct to zero before decoding it (`nodus_client.c:2065-2076`),
 so nothing ever overwrote those two fields. It now prints `"accepted:
-mempool CheckTx approved (query dnac_tx for the eventual commit
-height)"` instead — what the field actually answers, not a fabricated
+mempool CheckTx approved (inclusion follows in a later block)"`
+instead (its parenthetical named the `dnac_tx` RPC until that RPC was deleted, 2026-10-15) — what the field actually answers, not a fabricated
 commit position. **No Comet-lane scenario THIS RUNNER RUNS parses that
 line for a height** (`test_v2_claim.sh`, `test_v2_stake.sh`,
 `test_cmt_mempool_flood.sh` all say so in their own headers and use the

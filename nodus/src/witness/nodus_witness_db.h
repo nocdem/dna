@@ -25,8 +25,6 @@ extern "C" {
 /* ── Nullifier operations ────────────────────────────────────────── */
 
 bool nodus_witness_nullifier_exists(nodus_witness_t *w, const uint8_t *nullifier);
-int  nodus_witness_nullifier_add(nodus_witness_t *w, const uint8_t *nullifier,
-                                  const uint8_t *tx_hash);
 
 /* ── UTXO set operations ─────────────────────────────────────────── */
 
@@ -75,9 +73,6 @@ int  nodus_witness_utxo_add_locked(nodus_witness_t *w, const uint8_t *nullifier,
                                      uint64_t block_height,
                                      const uint8_t *token_id,
                                      uint64_t unlock_block);
-int  nodus_witness_utxo_remove(nodus_witness_t *w, const uint8_t *nullifier);
-int  nodus_witness_utxo_count(nodus_witness_t *w, uint64_t *count_out);
-int  nodus_witness_utxo_sum(nodus_witness_t *w, uint64_t *sum_out);
 
 /**
  * Sum UTXO amounts for a specific token_id.
@@ -166,12 +161,6 @@ int  nodus_witness_utxo_balance_by_owner(nodus_witness_t *w,
 
 /* ── Token registry operations ──────────────────────────────────── */
 
-int  nodus_witness_token_add(nodus_witness_t *w, const uint8_t *token_id,
-                               const char *name, const char *symbol,
-                               uint8_t decimals, uint64_t supply,
-                               const char *creator_fp, uint8_t flags,
-                               uint64_t block_height);
-int  nodus_witness_token_exists(nodus_witness_t *w, const uint8_t *token_id);
 int  nodus_witness_token_get(nodus_witness_t *w, const uint8_t *token_id,
                                char *name_out, char *symbol_out,
                                uint8_t *decimals_out, uint64_t *supply_out,
@@ -200,37 +189,6 @@ int  nodus_witness_token_list(nodus_witness_t *w,
                                 nodus_witness_token_entry_t *out,
                                 int max_entries, int *count_out);
 
-/* ── Ledger operations ───────────────────────────────────────────── */
-
-typedef struct {
-    uint64_t    sequence;
-    uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t     tx_type;
-    uint64_t    epoch;
-    uint64_t    timestamp;
-    uint8_t     nullifier_count;
-} nodus_witness_ledger_entry_t;
-
-/* PR 3 (2026-05-05) — block_height + block_timestamp added to thread
- * deterministic context through to the row insert. Pre-fix used
- * time(NULL) at every node's local insert moment, producing different
- * ledger_entries.{epoch,timestamp} across BFT-original vs sync-replay
- * paths (the bootstrap-recovered node observed different wall-clock
- * vs the cluster). Cluster-wide consensus state must derive only
- * from values agreed on the wire. */
-int  nodus_witness_ledger_add(nodus_witness_t *w, const uint8_t *tx_hash,
-                                uint8_t tx_type, uint8_t nullifier_count,
-                                uint64_t block_height,
-                                uint64_t block_timestamp);
-int  nodus_witness_ledger_get(nodus_witness_t *w, uint64_t seq,
-                                nodus_witness_ledger_entry_t *out);
-int  nodus_witness_ledger_get_by_hash(nodus_witness_t *w, const uint8_t *tx_hash,
-                                        nodus_witness_ledger_entry_t *out);
-int  nodus_witness_ledger_get_range(nodus_witness_t *w, uint64_t from, uint64_t to,
-                                      nodus_witness_ledger_entry_t *out,
-                                      int max_entries, int *count_out);
-uint64_t nodus_witness_ledger_count(nodus_witness_t *w);
-
 /* ── Block operations ────────────────────────────────────────────── */
 
 typedef struct {
@@ -245,29 +203,13 @@ typedef struct {
 
 /* R3 W4 — nodus_witness_block_add (the legacy commit path's block-row
  * writer) is DELETED with the closed consensus lane: zero surviving
- * callers. The getters below are hub/spoke query handlers and stay,
- * reading whatever row this build's active writer populated. */
+ * callers. block_get below stays, reading whatever row this build's
+ * active writer populated (committee lookback / genesis read,
+ * nodus_witness_committee.c). block_get_latest had no caller and is
+ * deleted; block_get_range and block_get_genesis are deleted with the
+ * dnac_block_range / dnac_genesis client RPCs they served. */
 int  nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
                                nodus_witness_block_t *out);
-int  nodus_witness_block_get_latest(nodus_witness_t *w,
-                                      nodus_witness_block_t *out);
-int  nodus_witness_block_get_range(nodus_witness_t *w,
-                                      uint64_t from_height, uint64_t to_height,
-                                      nodus_witness_block_t *out,
-                                      int max_entries, int *count_out);
-/* Phase 2 / Task 36 — genesis block fetch with chain_def_blob.
- *
- * Returns the genesis block row (height == 0) including the
- * chain_def_blob column. The blob is returned via malloc'd
- * *blob_out; caller owns and must free(). If the row has no
- * chain_def_blob, *blob_out = NULL and *blob_len_out = 0.
- *
- * Returns 0 on success, -1 on error / not found.
- */
-int  nodus_witness_block_get_genesis(nodus_witness_t *w,
-                                       nodus_witness_block_t *out,
-                                       uint8_t **blob_out,
-                                       size_t *blob_len_out);
 /**
  * The chain height, WITH the DB fault kept distinguishable from it.
  *
@@ -327,17 +269,12 @@ uint64_t nodus_witness_block_height(nodus_witness_t *w);
 
 /* ── Genesis state ───────────────────────────────────────────────── */
 
-typedef struct {
-    uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint64_t    total_supply;
-    uint64_t    timestamp;
-} nodus_witness_genesis_t;
-
 /* R3 W4 — nodus_witness_genesis_exists and nodus_witness_genesis_set
  * (the legacy genesis-row writer and its existence guard) are DELETED
- * with the closed consensus lane: zero surviving callers. */
-int  nodus_witness_genesis_get(nodus_witness_t *w,
-                                 nodus_witness_genesis_t *out);
+ * with the closed consensus lane: zero surviving callers. The reader
+ * nodus_witness_genesis_get and its nodus_witness_genesis_t had no
+ * caller either and are deleted (dead-code pruning 2026-10-15); the
+ * genesis_state table schema is unchanged. */
 
 /* ── Supply tracking ─────────────────────────────────────────────── */
 
@@ -466,113 +403,10 @@ int  nodus_witness_supply_view_get(nodus_witness_t *w,
  * absolute SET (nodus_witness_rt_native.c) and the distribution's own
  * bound pool update (nodus_witness_v2_econ.c). */
 
-/* ── Transaction history by owner ────────────────────────────────── */
-
-#define NODUS_WITNESS_MAX_TX_OUTPUTS 8
-#define NODUS_WITNESS_MEMO_MAX       256
-
-typedef struct {
-    char        owner_fp[129];
-    uint64_t    amount;
-    uint32_t    output_index;
-    uint8_t     token_id[64];
-    /* Memo attached to this output. Not persisted in the tx_outputs
-     * table — re-parsed from the raw TX blob stored via
-     * nodus_witness_tx_store() whenever a history query asks for it. */
-    char        memo[NODUS_WITNESS_MEMO_MAX];
-    uint8_t     memo_len;
-} nodus_witness_tx_output_t;
-
-typedef struct {
-    uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t     tx_type;
-    char        sender_fp[129];
-    uint64_t    fee;
-    uint64_t    block_height;
-    uint64_t    timestamp;
-    nodus_witness_tx_output_t outputs[NODUS_WITNESS_MAX_TX_OUTPUTS];
-    int         output_count;
-} nodus_witness_tx_history_entry_t;
-
-int  nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
-                                 nodus_witness_tx_history_entry_t *out,
-                                 int max_entries, int *count_out);
-
-/* ── TX output storage ──────────────────────────────────────────── */
-
-int  nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
-                                   uint32_t output_index, const char *owner_fp,
-                                   uint64_t amount, const uint8_t *token_id);
-
-/* ── Committed transaction storage ───────────────────────────────── */
-
-/* PR 3 (2026-05-05) — block_timestamp added; pre-fix used time(NULL)
- * inside which caused the same wall-clock divergence as ledger_add.
- * Both now take the consensus-agreed block timestamp from the
- * proposer's header (or sync_rsp echo). */
-int  nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
-                              uint8_t tx_type, const uint8_t *tx_data,
-                              uint32_t tx_len, uint64_t block_height,
-                              uint64_t block_timestamp,
-                              const char *sender_fp, uint64_t fee,
-                              const uint8_t *client_pubkey,
-                              const uint8_t *client_sig);
-int  nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
-                            uint8_t *tx_type_out, uint8_t **tx_data_out,
-                            uint32_t *tx_len_out, uint64_t *block_height_out);
-
-/* Lookup (block_height, tx_index) for a committed tx_hash — used by
- * dnac_spend_replay to reconstruct a fresh spndrslt receipt without
- * pulling the tx_data blob. Returns 0 on found, -1 otherwise. */
-int  nodus_witness_get_committed_coords(nodus_witness_t *w,
-                                         const uint8_t *tx_hash,
-                                         uint64_t *block_height_out,
-                                         uint32_t *tx_index_out);
-
-/* Phase 11 / Task 11.1 — multi-tx block fetch.
- *
- * Single TX-row fetched from committed_transactions ordered by tx_index.
- * tx_data is heap-allocated; caller frees each entry via
- * nodus_witness_block_tx_row_free(). */
-typedef struct {
-    uint8_t   tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t   tx_type;
-    uint8_t  *tx_data;
-    uint32_t  tx_len;
-    /* Phase 11 follow-up — heap-allocated client_pubkey + client_sig
-     * if present in committed_transactions, NULL otherwise. Sync replay
-     * serves zero pad when NULL. */
-    uint8_t  *client_pubkey;   /* NODUS_PK_BYTES if non-NULL */
-    uint8_t  *client_sig;      /* NODUS_SIG_BYTES if non-NULL */
-} nodus_witness_block_tx_row_t;
-
-/** Free heap fields on a single block_tx_row. Idempotent on NULL. */
-void nodus_witness_block_tx_row_free(nodus_witness_block_tx_row_t *row);
-
-/**
- * Fetch all committed TXs for a given block_height, ordered by
- * tx_index. The caller passes a fixed-size array (NODUS_W_MAX_BLOCK_TXS
- * is the natural ceiling) and the function fills it up to
- * max_entries.
- *
- * On success, *count_out is the number of rows populated. Each row's
- * tx_data is malloc'd; the caller MUST free each via
- * nodus_witness_block_tx_row_free() (or rely on a sweep wrapper).
- *
- * Returns 0 on success, -1 on DB error.
- */
-int  nodus_witness_block_txs_get(nodus_witness_t *w, uint64_t block_height,
-                                   nodus_witness_block_tx_row_t *out,
-                                   int max_entries, int *count_out);
-
-/* ── Commit certificate operations ──────────────────────────────── */
-
-/* R3 W4 — nodus_witness_cert_store (the writer) deleted with the closed
- * consensus lane; nodus_witness_cert_get (the reader) stays for
- * handle_dnac_block (nodus_witness_handlers.c) — see nodus_witness_db.c. */
-int  nodus_witness_cert_get(nodus_witness_t *w, uint64_t block_height,
-                              nodus_witness_vote_record_t *votes_out,
-                              int max_votes, int *count_out);
+/* The legacy-table query readers (tx_by_owner, tx_get,
+ * get_committed_coords, cert_get) and the uncalled tx_output_add writer
+ * are deleted with the dnac_history / dnac_tx / dnac_spend_replay /
+ * dnac_block client RPCs — see nodus_witness_db.c. */
 
 /* ── DB transaction wrappers ─────────────────────────────────────── */
 

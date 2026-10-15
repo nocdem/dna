@@ -119,9 +119,9 @@ int dnac_db_store_transaction(sqlite3 *db,
 /**
  * @brief Upsert a history entry from remote with explicit timestamp
  *
- * Used by dnac_get_remote_history to persist remote-seen entries
- * (especially incoming TXs that the local wallet never produced) into
- * the local history cache. INSERT OR REPLACE — safe to call repeatedly.
+ * Written for dnac_get_remote_history (deleted 2026-10-15 with the
+ * dnac_history RPC; this function has no caller now) to persist
+ * remote-seen entries into the local history cache. INSERT OR REPLACE — safe to call repeatedly.
  * Unlike dnac_db_store_transaction, this preserves the TX's real
  * timestamp instead of writing "now".
  *
@@ -136,29 +136,6 @@ int dnac_db_upsert_history_entry(sqlite3 *db,
                                   int64_t amount_delta,
                                   uint64_t amount_fee,
                                   int64_t tx_timestamp);
-
-/**
- * @brief Get transaction by hash
- *
- * @param db SQLite database handle
- * @param tx_hash Transaction hash
- * @param raw_tx_out Output serialized transaction (caller must free)
- * @param raw_tx_len_out Output length
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_get_transaction(sqlite3 *db,
-                             const uint8_t *tx_hash,
-                             uint8_t **raw_tx_out,
-                             size_t *raw_tx_len_out);
-
-/**
- * @brief Mark transaction as confirmed
- *
- * @param db SQLite database handle
- * @param tx_hash Transaction hash
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_confirm_transaction(sqlite3 *db, const uint8_t *tx_hash);
 
 /**
  * @brief Get transaction history
@@ -193,38 +170,6 @@ int dnac_db_store_pending_spend(sqlite3 *db,
                                  const uint8_t *nullifier,
                                  int witnesses_needed,
                                  uint64_t expires_at);
-
-/**
- * @brief Update pending spend with new witness signature
- *
- * @param db SQLite database handle
- * @param tx_hash Transaction hash
- * @param witness_sig Witness signature to append
- * @param witness_sig_len Signature length
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_update_pending_witness(sqlite3 *db,
-                                   const uint8_t *tx_hash,
-                                   const uint8_t *witness_sig,
-                                   size_t witness_sig_len);
-
-/**
- * @brief Get pending spend info
- *
- * @param db SQLite database handle
- * @param tx_hash Transaction hash
- * @param witnesses_received Output witnesses received (can be NULL)
- * @param witnesses_needed Output witnesses needed (can be NULL)
- * @param witness_sigs Output signatures (caller must free, can be NULL)
- * @param witness_sigs_len Output signatures length (can be NULL)
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_get_pending_spend(sqlite3 *db,
-                               const uint8_t *tx_hash,
-                               int *witnesses_received,
-                               int *witnesses_needed,
-                               uint8_t **witness_sigs,
-                               size_t *witness_sigs_len);
 
 /**
  * @brief Mark pending spend as complete
@@ -291,90 +236,9 @@ int dnac_db_find_active_broadcast(sqlite3 *db,
  */
 int dnac_db_store_token(sqlite3 *db, const dnac_token_t *token);
 
-/**
- * @brief Get a token by its ID
- *
- * @param db SQLite database handle
- * @param token_id Token ID (64 bytes)
- * @param out Output token struct
- * @return DNAC_SUCCESS, DNAC_ERROR_NOT_FOUND, or error code
- */
-int dnac_db_get_token(sqlite3 *db, const uint8_t *token_id, dnac_token_t *out);
-
-/**
- * @brief List all known tokens
- *
- * @param db SQLite database handle
- * @param out Output array (caller-allocated)
- * @param max Maximum entries to return
- * @param count Output count of entries written
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_list_tokens(sqlite3 *db, dnac_token_t *out, int max, int *count);
-
-/* ============================================================================
- * P0-4 (v0.7.0): Confirmation Tracking Functions
- * ========================================================================== */
-
-/**
- * @brief Update transaction confirmation data from ledger
- *
- * @param db SQLite database handle
- * @param tx_hash Transaction hash
- * @param ledger_seq Ledger sequence number
- * @param ledger_epoch Epoch when committed
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_update_tx_confirmation(sqlite3 *db, const uint8_t *tx_hash,
-                                    uint64_t ledger_seq, uint64_t ledger_epoch);
-
-/**
- * @brief Get transaction confirmation data
- *
- * @param db SQLite database handle
- * @param tx_hash Transaction hash
- * @param ledger_seq_out Output sequence number (can be NULL)
- * @param ledger_epoch_out Output epoch (can be NULL)
- * @return DNAC_SUCCESS, DNAC_ERROR_NOT_FOUND if not confirmed, or error code
- */
-int dnac_db_get_tx_confirmation(sqlite3 *db, const uint8_t *tx_hash,
-                                 uint64_t *ledger_seq_out, uint64_t *ledger_epoch_out);
-
-/**
- * @brief Update UTXO confirmation data from ledger
- *
- * @param db SQLite database handle
- * @param tx_hash Transaction hash that created the UTXO
- * @param output_index Output index within the transaction
- * @param ledger_seq Ledger sequence number
- * @param ledger_epoch Epoch when committed
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_update_utxo_confirmation(sqlite3 *db, const uint8_t *tx_hash,
-                                      uint32_t output_index,
-                                      uint64_t ledger_seq, uint64_t ledger_epoch);
-
 /* ============================================================================
  * Wallet Config Functions (Gap 22: v0.6.0)
  * ========================================================================== */
-
-/**
- * @brief Get owner salt from wallet config
- *
- * @param db SQLite database handle
- * @param salt_out Output salt buffer (32 bytes)
- * @return DNAC_SUCCESS, DNAC_ERROR_NOT_FOUND if not set, or error code
- */
-int dnac_db_get_owner_salt(sqlite3 *db, uint8_t *salt_out);
-
-/**
- * @brief Set owner salt in wallet config
- *
- * @param db SQLite database handle
- * @param salt Salt to store (32 bytes)
- * @return DNAC_SUCCESS or error code
- */
-int dnac_db_set_owner_salt(sqlite3 *db, const uint8_t *salt);
 
 /**
  * @brief Get stored chain_id from wallet config

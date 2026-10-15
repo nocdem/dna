@@ -7,20 +7,10 @@
 #include "qgp.h"
 #include "crypto/utils/qgp_types.h"  // For qgp_base64_encode/decode
 #include "crypto/utils/qgp_log.h"
-#include <time.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define LOG_TAG "ARMOR"
-
-/* v0.6.47: Thread-safe gmtime wrapper (security fix) */
-static inline struct tm *safe_gmtime(const time_t *timer, struct tm *result) {
-#ifdef _WIN32
-    return (gmtime_s(result, timer) == 0) ? result : NULL;
-#else
-    return gmtime_r(timer, result);
-#endif
-}
 
 #define ARMOR_LINE_LENGTH 64  // Standard base64 line length
 
@@ -292,64 +282,4 @@ cleanup:
     }
 
     return ret;
-}
-
-/*
- * Get signature algorithm name for headers
- */
-const char* get_signature_algorithm_name(const qgp_signature_t *signature) {
-    if (!signature) {
-        return "Unknown";
-    }
-
-    switch (signature->type) {
-        case QGP_SIG_TYPE_DILITHIUM:
-            return "Dilithium";
-        default:
-            return "Unknown";
-    }
-}
-
-/*
- * Build headers for signature armor
- * Returns: number of headers created
- */
-size_t build_signature_headers(const qgp_signature_t *signature, const char **headers, size_t max_headers) {
-    size_t count = 0;
-    static char header_buf[10][128];  // Static buffers for headers
-
-    if (count < max_headers) {
-        snprintf(header_buf[count], sizeof(header_buf[count]), "Version: qgp 1.1");
-        headers[count] = header_buf[count];
-        count++;
-    }
-
-    if (count < max_headers) {
-        snprintf(header_buf[count], sizeof(header_buf[count]), "Algorithm: %s",
-                 get_signature_algorithm_name(signature));
-        headers[count] = header_buf[count];
-        count++;
-    }
-
-    if (count < max_headers) {
-        snprintf(header_buf[count], sizeof(header_buf[count]), "Hash: SHA3-256");
-        headers[count] = header_buf[count];
-        count++;
-    }
-
-    if (count < max_headers) {
-        time_t now = time(NULL);
-        struct tm tm_buf;
-        char time_str[64];
-        if (safe_gmtime(&now, &tm_buf)) {
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S UTC", &tm_buf);
-        } else {
-            strncpy(time_str, "0000-00-00 00:00:00 UTC", sizeof(time_str));
-        }
-        snprintf(header_buf[count], sizeof(header_buf[count]), "Created: %s", time_str);
-        headers[count] = header_buf[count];
-        count++;
-    }
-
-    return count;
 }

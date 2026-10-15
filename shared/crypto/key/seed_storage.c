@@ -309,28 +309,6 @@ bool seed_storage_exists(const char *identity_dir) {
     return false;
 }
 
-int seed_storage_delete(const char *identity_dir) {
-    if (!identity_dir) {
-        return -1;
-    }
-
-    char seed_path[512];
-    if (build_seed_path(identity_dir, seed_path, sizeof(seed_path)) != 0) {
-        return -1;
-    }
-
-    if (remove(seed_path) != 0) {
-        if (errno != ENOENT) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to delete seed file: %s (%s)",
-                          seed_path, strerror(errno));
-            return -1;
-        }
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Seed file deleted: %s", seed_path);
-    return 0;
-}
-
 /* ============================================================================
  * MNEMONIC STORAGE IMPLEMENTATION
  * ============================================================================ */

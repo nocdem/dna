@@ -458,17 +458,6 @@ int bip32_get_public_key(
     return 0;
 }
 
-int bip32_get_public_key_compressed(
-    const bip32_extended_key_t *key,
-    uint8_t pubkey_out[33]
-) {
-    if (!key || !pubkey_out) {
-        return -1;
-    }
-
-    return get_compressed_pubkey(key->private_key, pubkey_out);
-}
-
 void bip32_clear_key(bip32_extended_key_t *key) {
     if (key) {
         qgp_secure_memzero(key, sizeof(*key));

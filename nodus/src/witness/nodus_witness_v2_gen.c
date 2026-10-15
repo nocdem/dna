@@ -1085,8 +1085,9 @@ static int gen_seed_state(nodus_witness_t *w2,
      * parallel SQL shape. Every field is explicit: no schema default
      * decides a committed value.
      *
-     * active_since_block = 1 mirrors the legacy genesis seeder
-     * (nodus_witness_genesis_seed.c:116); the attendance watermarks are
+     * active_since_block = 1: the genesis validators are active from the
+     * first block (height 1 — blocks.height starts there); the attendance
+     * watermarks are
      * 0 because a chain born at height 0 has no attendance history. (The
      * removed activation seam had to RESET these on the rows it
      * transplanted, for the same reason; here there is nothing to reset,
@@ -1123,9 +1124,8 @@ static int gen_seed_state(nodus_witness_t *w2,
     }
 
     /* validator_stats.active_count — the row exists from
-     * create_chain_db (nodus_witness.c:285, seeded 0); the legacy
-     * genesis seeder UPDATEs it the same way
-     * (nodus_witness_genesis_seed.c:139-149). Carried in the genesis
+     * create_chain_db (nodus_witness.c:285, seeded 0) and is UPDATEd
+     * here to the genesis validator count. Carried in the genesis
      * bundle since O15J L1-F1. */
     {
         char sql[160];

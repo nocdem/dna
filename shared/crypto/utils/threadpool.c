@@ -226,33 +226,6 @@ void threadpool_destroy(threadpool_t *pool) {
     QGP_LOG_DEBUG(LOG_TAG, "Thread pool destroyed");
 }
 
-int threadpool_parallel_exec(
-    threadpool_task_fn *tasks,
-    void **args,
-    size_t count,
-    int num_threads
-) {
-    if (!tasks || !args || count == 0) {
-        return -1;
-    }
-
-    threadpool_t *pool = threadpool_create(num_threads);
-    if (!pool) {
-        return -1;
-    }
-
-    for (size_t i = 0; i < count; i++) {
-        if (threadpool_submit(pool, tasks[i], args[i]) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Failed to submit task %zu", i);
-        }
-    }
-
-    threadpool_wait(pool);
-    threadpool_destroy(pool);
-
-    return 0;
-}
-
 int threadpool_map(
     threadpool_task_fn task,
     void **args,

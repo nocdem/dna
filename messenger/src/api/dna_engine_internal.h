@@ -1116,7 +1116,6 @@ void dna_handle_sync_contacts_from_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_groups_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_group_by_uuid(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task);
 
 /* Wall (personal wall posts, v0.6.135+) */

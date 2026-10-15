@@ -163,7 +163,7 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_dnac_get_balance(dna_engine_t*, dna_task_t*)` | Get balance handler |
 | `void dna_handle_dnac_send(dna_engine_t*, dna_task_t*)` | Send payment handler |
 | `void dna_handle_dnac_sync(dna_engine_t*, dna_task_t*)` | Wallet sync handler |
-| `void dna_handle_dnac_get_history(dna_engine_t*, dna_task_t*)` | Transaction history handler |
+| `void dna_handle_dnac_get_history(dna_engine_t*, dna_task_t*)` | Transaction history handler — local DB only since 2026-10-15 (the witness fetch `dnac_get_remote_history` is deleted with the `dnac_history` RPC) |
 | `void dna_handle_dnac_get_utxos(dna_engine_t*, dna_task_t*)` | UTXO list handler |
 | `void dna_handle_dnac_estimate_fee(dna_engine_t*, dna_task_t*)` | Fee estimate handler |
 | `void dna_handle_dnac_token_list(dna_engine_t*, dna_task_t*)` | List custom tokens handler |

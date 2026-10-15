@@ -275,9 +275,3 @@ void dnac_free_witness_list(dnac_witness_info_t *servers, int count) {
     (void)count;
     free(servers);
 }
-
-int dnac_check_nullifier(dnac_context_t *ctx,
-                         const uint8_t *nullifier,
-                         bool *is_spent) {
-    return dnac_witness_check_nullifier(ctx, nullifier, is_spent);
-}

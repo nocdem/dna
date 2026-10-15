@@ -177,13 +177,10 @@ static const char *WITNESS_DB_SCHEMA =
     ");"
     /* R3 W4 — this table's only WRITER (nodus_witness_cert_store) is
      * deleted with the closed consensus lane: nothing commits a row to
-     * it again. The table itself stays: nodus_witness_cert_get, the
-     * READER, is still called by handle_dnac_block (dnac_block query
-     * handler, explicitly kept — the client query surface, not
-     * consensus), so the table must still exist for that query to run
-     * (rather than fail) — it answers an empty cert list on every
-     * version-3 chain, which is the honest legacy-table answer the
-     * hub/spoke handlers are recorded as giving. */
+     * it again. Its reader (nodus_witness_cert_get) is deleted with the
+     * dnac_block client RPC. The CREATE stays: the schema is unchanged
+     * (operator decision 2026-10-15, legacy-table RPC removal — tables
+     * kept, readers removed). */
     "CREATE TABLE IF NOT EXISTS commit_certificates ("
     "  block_height INTEGER NOT NULL,"
     "  voter_id BLOB NOT NULL,"

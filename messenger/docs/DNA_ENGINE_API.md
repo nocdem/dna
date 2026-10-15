@@ -2393,7 +2393,11 @@ dna_request_id_t dna_engine_dnac_get_history(
 );
 ```
 
-Get DNAC transaction history.
+Get DNAC transaction history from the local wallet database. Since
+2026-10-15 this no longer queries the witnesses: the `dnac_history` RPC it
+used is deleted (it read legacy tables no version-3 chain writes and always
+answered zero entries), so it returns the same rows as
+`dna_engine_dnac_get_history_local` — this wallet's own outgoing record.
 
 **Memory:** Free with `dna_engine_dnac_free_history(history, count)`.
 

@@ -84,28 +84,10 @@ void threadpool_destroy(threadpool_t *pool);
 int threadpool_optimal_size(void);
 
 /**
- * Execute tasks in parallel and wait for completion (convenience function)
- *
- * Creates a temporary thread pool, submits all tasks, waits, and destroys.
- * Use for one-shot parallel operations.
- *
- * @param tasks Array of task functions
- * @param args Array of arguments (one per task)
- * @param count Number of tasks
- * @param num_threads Number of threads (0 = auto)
- * @return 0 on success, -1 on error
- */
-int threadpool_parallel_exec(
-    threadpool_task_fn *tasks,
-    void **args,
-    size_t count,
-    int num_threads
-);
-
-/**
  * Execute same function on multiple arguments in parallel (convenience)
  *
- * Simpler version when all tasks use the same function.
+ * Creates a temporary thread pool, submits one task per argument, waits,
+ * and destroys the pool. Use for one-shot parallel operations.
  *
  * @param task Task function to execute for each arg
  * @param args Array of arguments

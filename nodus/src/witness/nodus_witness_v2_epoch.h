@@ -550,8 +550,7 @@ int nodus_witness_v2_keyres_diff(nodus_witness_t *w, size_t *n_diff_out);
  * rank <= 0x3FFFFFFF. The whole band sits BELOW 2^31 so every reader
  * that narrows output_index through a signed 32-bit int
  * (sqlite3_column_int in nodus_witness_merkle.c load_utxo_leaves and
- * nodus_witness_db.c; sqlite3_bind_int in nodus_witness_tx_output_add)
- * sees the exact value. (The P3 first cut used [2^31, 2^32); whether
+ * nodus_witness_db.c) sees the exact value. (The P3 first cut used [2^31, 2^32); whether
  * those indices survived a signed-int reader depended on how
  * sqlite3_column_int narrows a value above INT32_MAX — the P3 fix round
  * moved the band below 2^31, which removes that dependence.)

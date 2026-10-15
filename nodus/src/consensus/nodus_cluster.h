@@ -92,34 +92,12 @@ void nodus_cluster_tick(nodus_cluster_t *cluster);
 
 /**
  * Called when a PONG is received from a peer.
- * Updates last_seen, may promote DEAD/SUSPECT -> ALIVE.
- */
-void nodus_cluster_on_heartbeat(nodus_cluster_t *cluster,
-                                  const nodus_key_t *node_id);
-
-/**
- * Called when a PONG is received from a peer.
  * Uses IP to match seed peers whose node_id was a placeholder,
  * then updates to the real node_id from the PONG.
  */
 void nodus_cluster_on_pong(nodus_cluster_t *cluster,
                              const nodus_key_t *real_node_id,
                              const char *from_ip, uint16_t from_port);
-
-/**
- * Get the current leader's node_id.
- */
-const nodus_key_t *nodus_cluster_leader(const nodus_cluster_t *cluster);
-
-/**
- * Check if this node is the leader.
- */
-bool nodus_cluster_is_leader(const nodus_cluster_t *cluster);
-
-/**
- * Get the number of alive nodes in the cluster.
- */
-int nodus_cluster_alive_count(const nodus_cluster_t *cluster);
 
 /**
  * Get seconds since a peer was last seen (by node_id).

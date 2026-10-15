@@ -113,33 +113,10 @@ int nodus_witness_merkle_verify_proof(const uint8_t *leaf,
  */
 int nodus_witness_merkle_tx_root(const uint8_t *tx_hashes, size_t n, uint8_t out[64]);
 
-/**
- * @brief Build an inclusion proof for a TX hash within a specific block's tx_root.
- *
- * Operates on the block-scoped tx_root tree. The caller supplies a block_height; this
- * function fetches the committed TX hashes for that block in commit
- * order (tx_index ASC), builds the RFC 6962 Merkle tree, and returns
- * the proof for target_tx_hash. The raw tx_hash is leaf-tagged
- * internally to match nodus_witness_merkle_tx_root().
- *
- * @param w               Witness context (uses w->db)
- * @param block_height    Block whose tx_root we're proving against
- * @param target_tx_hash  64-byte TX hash to prove (raw, pre-tag)
- * @param siblings_out    [out] Flat sibling buffer (max_depth * 64 bytes)
- * @param positions_out   [out] Position bitfield (matches verify_proof convention)
- * @param max_depth       Capacity of siblings_out in units of NODUS_MERKLE_HASH_LEN
- * @param depth_out       [out] Actual depth written
- * @param root_out        [out] Optional 64-byte tx_root (may be NULL)
- * @return 0 on success, -1 on error (target not found, DB error, too deep, etc.)
- */
-int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
-                                          uint64_t block_height,
-                                          const uint8_t *target_tx_hash,
-                                          uint8_t *siblings_out,
-                                          uint32_t *positions_out,
-                                          int max_depth,
-                                          int *depth_out,
-                                          uint8_t *root_out);
+/* nodus_witness_merkle_build_tx_proof (a per-block tx_root inclusion
+ * proof read from committed_transactions, served only by the dnac_history
+ * client RPC) is deleted with that RPC. It computed no root a block
+ * commits to; nodus_witness_merkle_tx_root above is unchanged. */
 
 /* ── Tree-tag domain-separated leaf helpers (witness stake v1) ──────
  *
@@ -166,20 +143,6 @@ int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
 void nodus_merkle_leaf_key(uint8_t tree_tag,
                            const uint8_t *raw_key, size_t raw_len,
                            uint8_t out_key[64]);
-
-/**
- * Produce the Merkle leaf VALUE HASH for a given tree.
- * Formula: SHA3-512(tree_tag || cbor_serialized_record)
- * This is what goes into the Merkle tree as the leaf value.
- *
- * @param tree_tag  One of NODUS_TREE_TAG_{UTXO,VALIDATOR,DELEGATION,REWARD}
- * @param cbor      CBOR-serialized record bytes (may be NULL if cbor_len == 0)
- * @param cbor_len  Length of cbor in bytes (may be 0)
- * @param out_hash  [out] 64-byte value hash
- */
-void nodus_merkle_leaf_value_hash(uint8_t tree_tag,
-                                  const uint8_t *cbor, size_t cbor_len,
-                                  uint8_t out_hash[64]);
 
 /**
  * Produce the canonical "empty tree" root for a given subtree.
@@ -214,8 +177,9 @@ int nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]);
  *                           reward_root)
  *
  * Per-subtree domain separation is baked at the LEAF level via the
- * NODUS_TREE_TAG_* prefixes (see nodus_merkle_leaf_key /
- * nodus_merkle_leaf_value_hash). The outer combiner therefore does
+ * NODUS_TREE_TAG_* prefixes (see nodus_merkle_leaf_key and the
+ * tag-first leaf hashing in nodus_witness_merkle.c's subtree loaders).
+ * The outer combiner therefore does
  * NOT add any additional tag byte — positional order alone provides
  * domain separation at the state_root level. Swapping any two subtree
  * roots MUST produce a different state_root.
@@ -228,12 +192,19 @@ int nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]);
  */
 
 /**
- * Combine four subtree roots into the chain-level state_root.
+ * Combine four subtree roots into the chain-level state_root (legacy
+ * pre-Hard-Fork-v1 formula, no version byte).
  * Pure function — no allocation, no DB, no logging. Safe to call
  * from any thread.
  *
  * Order is fixed: utxo, validator, delegation, reward. ALL callers
  * must use this order; any deviation is a consensus fork.
+ *
+ * Retained for archive-replay / forensic use (Q3 / CC-OPS-007
+ * mitigation). Marked __attribute__((cold)) in the implementation —
+ * not on the hot path post-activation. New code paths MUST use
+ * nodus_merkle_combine_state_root_v2 (5-input, 0x02 version byte).
+ * See CC-AUDIT-002 / design §5.7.
  *
  * @param utxo_root        64-byte UTXO subtree root
  * @param validator_root   64-byte validator subtree root
@@ -241,18 +212,6 @@ int nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]);
  * @param reward_root      64-byte reward subtree root
  * @param out_state_root   [out] 64-byte composite state_root
  */
-/* Hard-Fork v1: this name remains a source-compat alias for the legacy
- * 4-input formula. New code paths MUST use nodus_merkle_combine_state_root_v2
- * (5-input, 0x02 version byte). See CC-AUDIT-002 / design §5.7. */
-void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
-                                     const uint8_t validator_root[64],
-                                     const uint8_t delegation_root[64],
-                                     const uint8_t reward_root[64],
-                                     uint8_t out_state_root[64]);
-
-/* Legacy 4-input combiner retained for archive-replay / forensic use
- * (Q3 / CC-OPS-007 mitigation). Marked __attribute__((cold)) in the
- * implementation — not on the hot path post-activation. */
 void nodus_merkle_combine_state_root_v1_legacy(const uint8_t utxo_root[64],
                                                 const uint8_t validator_root[64],
                                                 const uint8_t delegation_root[64],

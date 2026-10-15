@@ -83,10 +83,7 @@ static int verify_genesis_rules(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_TX_TYPE;
     }
 
-    /* GENESIS creates coins — no inputs allowed. dnac_tx_verify_full
-     * also enforces this via the rule dispatch, but the rule helper
-     * re-checks for defense in depth and so the unit test can exercise
-     * it directly. */
+    /* GENESIS creates coins — no inputs allowed. */
     if (tx->input_count != 0) {
         QGP_LOG_ERROR(LOG_TAG, "GENESIS: input_count=%d != 0", tx->input_count);
         return DNAC_ERROR_INVALID_PROOF;
@@ -122,11 +119,10 @@ static int verify_genesis_rules(const dnac_transaction_t *tx) {
          *
          * S1 (Ledger V2, Addendum #2 B1): the supply side of this rule now
          * reads the PER-CHAIN committed value tx->chain_def.initial_supply_raw
-         * instead of the DNA-mainnet macro. This RESTORES client↔witness
-         * consistency — the witness-side Rule P.2 has validated against the
-         * chain_def value all along (nodus_witness_bft.c: cd_supply from
-         * nodus_witness_parse_cd_supply, expected = cd_supply − stake_locked)
-         * and seeds supply_tracking.genesis_supply from it. For the official
+         * instead of the DNA-mainnet macro, the value the legacy lane's
+         * witness-side Rule P.2 checked against (that check left with the
+         * legacy lane's nodus_witness_bft.c; the chain_def supply parser it
+         * used was later deleted as dead code). For the official
          * DNA chain_def (initial_supply_raw = 10^17, genesis_prepare.c) the
          * accepted set is byte-identical.
          *
@@ -188,10 +184,6 @@ static int verify_genesis_rules(const dnac_transaction_t *tx) {
 int dnac_tx_verify_genesis_rules(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
     if (tx->type != DNAC_TX_GENESIS) return DNAC_ERROR_INVALID_TX_TYPE;
-    return verify_genesis_rules(tx);
-}
-
-int dnac_tx_verify_genesis_rules_internal(const dnac_transaction_t *tx) {
     return verify_genesis_rules(tx);
 }
 
@@ -452,65 +444,6 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
                  (unsigned long long)total_supply, tx->output_count);
 
     free(tx_buffer);
-    return DNAC_SUCCESS;
-}
-
-/* ============================================================================
- * Genesis State Query Functions
- * ========================================================================== */
-
-int dnac_genesis_check_exists(dnac_context_t *ctx, bool *exists_out) {
-    if (!ctx || !exists_out) {
-        return DNAC_ERROR_INVALID_PARAM;
-    }
-
-    /* Query witnesses for supply state - if genesis exists, supply will be non-zero */
-    uint64_t genesis_supply = 0;
-    int rc = dnac_ledger_get_supply(ctx, &genesis_supply, NULL, NULL);
-    if (rc == DNAC_SUCCESS && genesis_supply > 0) {
-        *exists_out = true;
-    } else {
-        *exists_out = false;
-    }
-    return DNAC_SUCCESS;
-}
-
-int dnac_genesis_get_state(dnac_context_t *ctx, dnac_genesis_state_t *state_out) {
-    if (!ctx || !state_out) {
-        return DNAC_ERROR_INVALID_PARAM;
-    }
-
-    /* Query witnesses for supply state */
-    uint64_t genesis_supply = 0;
-    uint64_t total_burned = 0;
-    uint64_t current_supply = 0;
-    int rc = dnac_ledger_get_supply(ctx, &genesis_supply, &total_burned, &current_supply);
-    if (rc != DNAC_SUCCESS) {
-        return DNAC_ERROR_NO_GENESIS;
-    }
-
-    if (genesis_supply == 0) {
-        return DNAC_ERROR_NO_GENESIS;
-    }
-
-    memset(state_out, 0, sizeof(*state_out));
-    state_out->total_supply = genesis_supply;
-    /* Note: genesis_hash and genesis_commitment would require ledger query */
-    return DNAC_SUCCESS;
-}
-
-int dnac_genesis_get_total_supply(dnac_context_t *ctx, uint64_t *supply_out) {
-    if (!ctx || !supply_out) {
-        return DNAC_ERROR_INVALID_PARAM;
-    }
-
-    dnac_genesis_state_t state;
-    int rc = dnac_genesis_get_state(ctx, &state);
-    if (rc != DNAC_SUCCESS) {
-        return rc;
-    }
-
-    *supply_out = state.total_supply;
     return DNAC_SUCCESS;
 }
 

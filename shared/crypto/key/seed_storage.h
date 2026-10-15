@@ -108,16 +108,6 @@ int seed_storage_load(
  */
 bool seed_storage_exists(const char *identity_dir);
 
-/**
- * Delete encrypted seed file
- *
- * Securely removes the encrypted seed file.
- *
- * @param identity_dir  Directory path (e.g., ~/.dna/)
- * @return              0 on success, -1 on error
- */
-int seed_storage_delete(const char *identity_dir);
-
 /* ============================================================================
  * MNEMONIC STORAGE
  * ============================================================================

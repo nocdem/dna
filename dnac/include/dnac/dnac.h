@@ -1605,23 +1605,6 @@ typedef struct {
     uint8_t token_id[DNAC_TOKEN_ID_SIZE]; /**< Token ID (zeros = native DNAC) */
 } dnac_tx_history_t;
 
-/**
- * @brief Transaction confirmation depth (v0.7.0)
- *
- * Tracks how deeply a transaction is embedded in the ledger.
- * Deeper transactions are more final and harder to reverse.
- */
-typedef struct {
-    uint64_t ledger_sequence;            /**< TX sequence number in ledger */
-    uint64_t ledger_epoch;               /**< Epoch when TX was committed */
-    uint64_t current_sequence;           /**< Current latest sequence */
-    uint64_t current_epoch;              /**< Current epoch */
-    uint64_t sequence_depth;             /**< current_seq - tx_seq */
-    uint64_t epoch_depth;                /**< current_epoch - tx_epoch */
-    bool is_confirmed;                   /**< Has ledger confirmation */
-    bool is_final;                       /**< epoch_depth >= 2 (considered final) */
-} dnac_confirmation_t;
-
 /* ============================================================================
  * Callbacks
  * ========================================================================== */
@@ -1630,11 +1613,6 @@ typedef struct {
  * @brief Callback for async operations
  */
 typedef void (*dnac_callback_t)(int result, void *data, void *user_data);
-
-/**
- * @brief Payment received callback
- */
-typedef void (*dnac_payment_cb_t)(const dnac_utxo_t *utxo, const char *memo, void *user_data);
 
 /* ============================================================================
  * Lifecycle Functions
@@ -1659,17 +1637,6 @@ dnac_context_t* dnac_init(void *dna_engine);
  * @param ctx DNAC context
  */
 void dnac_shutdown(dnac_context_t *ctx);
-
-/**
- * @brief Set payment received callback
- *
- * Called when a payment is received from another user.
- *
- * @param ctx DNAC context
- * @param callback Function to call on payment receipt
- * @param user_data User data passed to callback
- */
-void dnac_set_payment_callback(dnac_context_t *ctx, dnac_payment_cb_t callback, void *user_data);
 
 /* ============================================================================
  * Wallet Functions
@@ -1738,39 +1705,6 @@ int dnac_sync_wallet(dnac_context_t *ctx);
  * @return DNAC_SUCCESS or error code
  */
 int dnac_sync_tokens(dnac_context_t *ctx);
-
-/**
- * @brief Start listening for incoming payments
- *
- * Subscribes to DHT inbox key for real-time payment notifications.
- * When payments arrive, the payment callback is invoked automatically.
- *
- * @param ctx DNAC context
- * @return DNAC_SUCCESS or error code
- */
-int dnac_start_listening(dnac_context_t *ctx);
-
-/**
- * @brief Stop listening for incoming payments
- *
- * Cancels the DHT inbox subscription.
- *
- * @param ctx DNAC context
- * @return DNAC_SUCCESS or error code
- */
-int dnac_stop_listening(dnac_context_t *ctx);
-
-/**
- * @brief Recover wallet from DHT
- *
- * Clears existing UTXOs and scans DHT inbox for all payments.
- * Use this after restoring identity from seed phrase.
- *
- * @param ctx DNAC context
- * @param recovered_count Output number of UTXOs recovered (can be NULL)
- * @return DNAC_SUCCESS or error code
- */
-int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count);
 
 /* ============================================================================
  * Send Functions
@@ -1982,62 +1916,6 @@ int dnac_validator_update(dnac_context_t *ctx,
                           dnac_callback_t callback,
                           void *user_data);
 
-/**
- * @brief Submit a DNAC_TX_CHAIN_CONFIG TX (Hard-Fork v1 Stage E).
- *
- * Committee-voted consensus parameter change. Caller has already
- * collected enough Dilithium5 signatures from distinct committee members
- * over the proposal preimage (typically via the Stage C.2 w_cc_vote_req
- * RPC or the Stage C local sign primitive for the proposer's own vote).
- *
- * "Enough" is decided witness-side: dna_bft_quorum(committee_count) over
- * the committee governing the signing height. This client entry only
- * enforces the SHAPE bounds [DNAC_CHAIN_CONFIG_MIN_SIGS,
- * DNAC_CHAIN_CONFIG_MAX_SIGS]; a proposal that satisfies them can still be
- * rejected for missing quorum. At the DNA chain's 7 seats the quorum is 5,
- * which is what the shape floor already demands.
- *
- * Fee-only TX with no non-change outputs; the override row is written
- * to chain_config_history by the witness at state-apply time.
- *
- * @param ctx              DNAC context
- * @param param_id         dnac_chain_config_param_id_t value
- *                         (1..DNAC_CFG_PARAM_MAX_ID)
- * @param new_value        Per-param range-checked in dnac_tx_verify_chain_config_rules
- * @param effective_block  Block height at which override activates
- *                         (witness enforces >= commit + grace tier)
- * @param proposal_nonce   Preimage entropy (a random value <= INT64_MAX;
- *                         larger is refused — decision
- *                         2026-09-30-chain-config-int64-bounds.md)
- * @param signed_at_block  Sign-time anchor (committee members signed
- *                         against this height)
- * @param valid_before     Freshness expiry (witness rejects if
- *                         commit_block > this)
- * @param votes            Array of collected (witness_id, signature) tuples
- * @param vote_count       Number of votes — must be in
- *                         [DNAC_CHAIN_CONFIG_MIN_SIGS,
- *                          DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 128]
- * @param callback         Completion callback (can be NULL)
- * @param user_data        Callback user data
- * @return DNAC_SUCCESS or error code
- */
-typedef struct {
-    uint8_t witness_id[32];
-    uint8_t signature[DNAC_SIGNATURE_SIZE];
-} dnac_chain_config_collected_vote_t;
-
-int dnac_chain_config_propose(dnac_context_t *ctx,
-                               uint8_t  param_id,
-                               uint64_t new_value,
-                               uint64_t effective_block,
-                               uint64_t proposal_nonce,
-                               uint64_t signed_at_block,
-                               uint64_t valid_before,
-                               const dnac_chain_config_collected_vote_t *votes,
-                               uint8_t  vote_count,
-                               dnac_callback_t callback,
-                               void *user_data);
-
 /* ============================================================================
  * Stake & Delegation — Client-side Query API (Phase 7 Tasks 38, 39)
  *
@@ -2245,37 +2123,9 @@ void dnac_free_transaction(dnac_transaction_t *tx);
 int dnac_get_history(dnac_context_t *ctx, dnac_tx_history_t **history, int *count);
 
 /**
- * @brief Fetch transaction history from Nodus witnesses (remote).
- *
- * Clears local transaction cache and repopulates from the authoritative
- * remote source. Local DB is cache only.
- *
- * @param ctx DNAC context
- * @param history Output array (caller must free with dnac_free_history)
- * @param count Output count
- * @return DNAC_SUCCESS or error code
- */
-int dnac_get_remote_history(dnac_context_t *ctx, dnac_tx_history_t **history, int *count);
-
-/**
  * @brief Free history array
  */
 void dnac_free_history(dnac_tx_history_t *history, int count);
-
-/**
- * @brief Get confirmation depth for a transaction (v0.7.0)
- *
- * Returns how deeply embedded a transaction is in the ledger.
- * A transaction is considered "final" when epoch_depth >= 2.
- *
- * @param ctx DNAC context
- * @param tx_hash Transaction hash to check
- * @param confirmation_out Output confirmation info
- * @return DNAC_SUCCESS or error code
- */
-int dnac_get_confirmation(dnac_context_t *ctx,
-                          const uint8_t *tx_hash,
-                          dnac_confirmation_t *confirmation_out);
 
 /* ============================================================================
  * Witness Functions
@@ -2295,80 +2145,6 @@ int dnac_get_witness_list(dnac_context_t *ctx, dnac_witness_info_t **servers, in
  * @brief Free witness list
  */
 void dnac_free_witness_list(dnac_witness_info_t *servers, int count);
-
-/**
- * @brief Check if nullifier has been spent
- *
- * Queries witness servers to verify a nullifier hasn't been used.
- *
- * @param ctx DNAC context
- * @param nullifier Nullifier to check (DNAC_NULLIFIER_SIZE bytes)
- * @param is_spent Output: true if already spent
- * @return DNAC_SUCCESS or error code
- */
-int dnac_check_nullifier(dnac_context_t *ctx, const uint8_t *nullifier, bool *is_spent);
-
-/* ============================================================================
- * Query Functions (v0.10.0 hub/spoke)
- * ========================================================================== */
-
-/**
- * @brief Query full transaction data from witnesses
- *
- * Returns the complete serialized transaction for the given hash.
- * Caller must free *tx_data_out when done.
- *
- * @param ctx DNAC context
- * @param tx_hash Transaction hash (DNAC_TX_HASH_SIZE bytes)
- * @param tx_data_out Output: serialized transaction data (heap-allocated)
- * @param tx_len_out Output: length of tx_data
- * @param tx_type_out Output: transaction type (can be NULL)
- * @param block_height_out Output: block height (can be NULL)
- * @return DNAC_SUCCESS or error code
- */
-int dnac_query_transaction(dnac_context_t *ctx,
-                            const uint8_t *tx_hash,
-                            uint8_t **tx_data_out,
-                            uint32_t *tx_len_out,
-                            uint8_t *tx_type_out,
-                            uint64_t *block_height_out);
-
-/**
- * @brief Query block by height from witnesses
- *
- * @param ctx DNAC context
- * @param height Block height to query
- * @param tx_hash_out Output: transaction hash in block (DNAC_TX_HASH_SIZE bytes)
- * @param tx_type_out Output: transaction type
- * @param timestamp_out Output: block timestamp
- * @param proposer_out Output: proposer witness ID (32 bytes, can be NULL)
- * @return DNAC_SUCCESS or error code
- */
-int dnac_query_block(dnac_context_t *ctx,
-                      uint64_t height,
-                      uint8_t *tx_hash_out,
-                      uint8_t *tx_type_out,
-                      uint64_t *timestamp_out,
-                      uint8_t *proposer_out);
-
-/**
- * @brief Query block range from witnesses
- *
- * Returns blocks in [from_height, to_height] range.
- * Caller must free *tx_hashes_out when done.
- *
- * @param ctx DNAC context
- * @param from_height Start height (inclusive)
- * @param to_height End height (inclusive)
- * @param count_out Output: number of blocks returned
- * @param total_out Output: total blocks on witness (can be NULL)
- * @return DNAC_SUCCESS or error code
- */
-int dnac_query_block_range(dnac_context_t *ctx,
-                            uint64_t from_height,
-                            uint64_t to_height,
-                            int *count_out,
-                            uint64_t *total_out);
 
 /* ============================================================================
  * Token Functions

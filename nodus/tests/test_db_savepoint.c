@@ -56,12 +56,25 @@ static void cleanup_witness(nodus_witness_t *w) {
     memset(w, 0, sizeof(*w));
 }
 
+/* The marker row is written with raw SQL: the subject here is the
+ * savepoint wrappers, and the legacy writer nodus_witness_nullifier_add
+ * (no production caller) is deleted. */
 static int insert_marker_nullifier(nodus_witness_t *w, uint8_t marker) {
     uint8_t nf[NULLIFIER_LEN];
     uint8_t tx[NULLIFIER_LEN];
     memset(nf, marker, NULLIFIER_LEN);
     memset(tx, marker ^ 0xFF, NULLIFIER_LEN);
-    return nodus_witness_nullifier_add(w, nf, tx);
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO nullifiers (nullifier, tx_hash) VALUES (?, ?)",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(stmt, 1, nf, NULLIFIER_LEN, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 2, tx, NULLIFIER_LEN, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE ? 0 : -1;
 }
 
 static bool marker_present(nodus_witness_t *w, uint8_t marker) {

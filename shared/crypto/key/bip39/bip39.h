@@ -132,16 +132,6 @@ int bip39_mnemonic_to_seed(
 );
 
 /**
- * Get BIP39 wordlist
- *
- * @return Pointer to BIP39 English wordlist (2048 words)
- *
- * Returns a pointer to the embedded BIP39 English wordlist.
- * The wordlist is sorted alphabetically.
- */
-const char **bip39_get_wordlist(void);
-
-/**
  * Get word index in BIP39 wordlist
  *
  * @param word Word to search for
@@ -265,10 +255,5 @@ DNA_API int qgp_derive_mlkem1024_coins(
  * Prints mnemonic with word numbers for easy verification and backup.
  */
 void qgp_display_mnemonic(const char *mnemonic);
-
-/**
- * Test HMAC-SHA512 (for debugging)
- */
-void test_hmac_sha512(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len, uint8_t output[64]);
 
 #endif /* QGP_BIP39_H */

@@ -400,7 +400,7 @@ One-directional follow system. No approval needed, private to owner.
 | `dna_request_id_t dna_engine_dnac_get_balance(dna_engine_t *engine, dna_dnac_balance_cb callback, void *user_data)` | Get DNAC wallet balance (confirmed/pending/locked) |
 | `dna_request_id_t dna_engine_dnac_send(dna_engine_t *engine, const char *recipient_fingerprint, uint64_t amount, const char *memo, dna_completion_cb callback, void *user_data)` | Send DNAC payment |
 | `dna_request_id_t dna_engine_dnac_sync(dna_engine_t *engine, dna_completion_cb callback, void *user_data)` | Sync wallet from witnesses |
-| `dna_request_id_t dna_engine_dnac_get_history(dna_engine_t *engine, dna_dnac_history_cb callback, void *user_data)` | Get transaction history |
+| `dna_request_id_t dna_engine_dnac_get_history(dna_engine_t *engine, dna_dnac_history_cb callback, void *user_data)` | Get transaction history from the local DB (no witness fetch since 2026-10-15 — the `dnac_history` RPC is deleted) |
 | `dna_request_id_t dna_engine_dnac_get_utxos(dna_engine_t *engine, dna_dnac_utxos_cb callback, void *user_data)` | Get UTXO list |
 | `dna_request_id_t dna_engine_dnac_estimate_fee(dna_engine_t *engine, uint64_t amount, dna_dnac_fee_cb callback, void *user_data)` | Estimate transaction fee |
 | `void dna_engine_dnac_free_history(dna_dnac_history_t *history, int count)` | Free history array from callback |

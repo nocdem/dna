@@ -130,9 +130,7 @@ re-hosted on the new ML-KEM K-PKE primitives (§6). Removal: Faz 3
 | `int keccak256(const uint8_t *data, size_t len, uint8_t hash_out[32])` | Compute Keccak-256 hash (Ethereum variant) |
 | `int keccak256_hex(const uint8_t *data, size_t len, char hex_out[65])` | Compute Keccak-256 as hex string |
 | `int eth_address_from_pubkey(const uint8_t pubkey[65], uint8_t addr[20])` | Derive Ethereum address from public key |
-| `int eth_address_from_pubkey_hex(...)` | Derive checksummed address as hex string |
 | `int eth_address_checksum(const char*, char[41])` | Apply EIP-55 checksum |
-| `int eth_address_verify_checksum(const char *address)` | Validate Ethereum address checksum |
 
 ### 5.11 Seed Storage (`crypto/key/seed_storage.h`)
 
@@ -141,7 +139,6 @@ re-hosted on the new ML-KEM K-PKE primitives (§6). Removal: Faz 3
 | `int seed_storage_save(...)` | Save master seed encrypted with Kyber1024 KEM |
 | `int seed_storage_load(...)` | Load master seed decrypted with Kyber1024 KEM |
 | `bool seed_storage_exists(const char *identity_dir)` | Check if encrypted seed file exists |
-| `int seed_storage_delete(const char *identity_dir)` | Delete encrypted seed file |
 | `int mnemonic_storage_save(...)` | Save mnemonic encrypted with Kyber1024 round-3 KEM (legacy, `mnemonic.enc`) |
 | `int mnemonic_storage_load(...)` | Load mnemonic decrypted with Kyber1024 round-3 KEM (legacy). **0.11.22:** a file starting with the `KEY_ENC_MAGIC` ("DNAK") password header is refused with an explicit "password-wrapped, needs repair" error instead of a misleading decrypt failure |
 | `int mnemonic_storage_repair_password_wrap(const char *identity_dir, const char *password)` | **NEW (0.11.22).** Unwraps a `mnemonic.enc` that a pre-0.11.22 password change wrapped in the KEY_ENC header (`key_change_password` → `key_save_encrypted`) and rewrites the raw KEM blob atomically (temp + fsync + rename, owner-only). Returns 1 repaired, 0 nothing to do (absent/raw), -1 error (no/wrong password, malformed — file untouched). Called at identity load right after the password is verified, and by `dna_engine_change_password_sync` with the old password |
@@ -235,12 +232,9 @@ for type 3 — `shared/crypto/key/qgp_key.c`'s per-type size table gained a row
 | `void qgp_log_set_level(qgp_log_level_t level)` | Set minimum log level |
 | `qgp_log_level_t qgp_log_get_level(void)` | Get current log level |
 | `void qgp_log_set_filter_mode(qgp_log_filter_mode_t)` | Set filter mode (whitelist/blacklist) |
-| `qgp_log_filter_mode_t qgp_log_get_filter_mode(void)` | Get current filter mode |
 | `void qgp_log_enable_tag(const char *tag)` | Enable logging for tag |
-| `void qgp_log_disable_tag(const char *tag)` | Disable logging for tag |
 | `void qgp_log_clear_filters(void)` | Clear all tag filters |
 | `bool qgp_log_should_log(qgp_log_level_t, const char*)` | Check if tag should be logged |
-| `void qgp_log_print(qgp_log_level_t, const char*, const char*, ...)` | Print log message |
 | `void qgp_log_ring_enable(bool enabled)` | Enable/disable ring buffer storage |
 | `bool qgp_log_ring_is_enabled(void)` | Check if ring buffer is enabled |
 | `int qgp_log_ring_get_entries(qgp_log_entry_t*, int)` | Get log entries from ring buffer |
@@ -249,10 +243,7 @@ for type 3 — `shared/crypto/key/qgp_key.c`'s per-type size table gained a row
 | `int qgp_log_export_to_file(const char *filepath)` | Export ring buffer to file |
 | `void qgp_log_ring_add(qgp_log_level_t, const char*, const char*, ...)` | Add entry to ring buffer |
 | `void qgp_log_file_enable(bool enabled)` | Enable/disable persistent file logging |
-| `bool qgp_log_file_is_enabled(void)` | Check if file logging is enabled |
 | `void qgp_log_file_set_options(int max_size_kb, int max_files)` | Set rotation options |
-| `void qgp_log_file_close(void)` | Flush and close log file |
-| `const char* qgp_log_file_get_path(void)` | Get current log file path |
 | `void qgp_log_file_write(qgp_log_level_t, const char*, const char*, ...)` | Write entry to log file |
 
 ---
@@ -546,7 +537,6 @@ BIP39 mnemonic generation and BIP32 hierarchical deterministic key derivation.
 | `int bip39_generate_mnemonic(int word_count, char*, size_t)` | Generate random mnemonic (12-24 words) |
 | `bool bip39_validate_mnemonic(const char *mnemonic)` | Validate mnemonic checksum and words |
 | `int bip39_mnemonic_to_seed(const char*, const char*, uint8_t[64])` | Derive 512-bit seed from mnemonic |
-| `const char** bip39_get_wordlist(void)` | Get BIP39 English wordlist (2048 words) |
 | `int bip39_word_index(const char *word)` | Get word index in wordlist (0-2047) |
 | `int bip39_pbkdf2_hmac_sha512(...)` | PBKDF2-HMAC-SHA512 for seed derivation |
 
@@ -559,7 +549,6 @@ BIP39 mnemonic generation and BIP32 hierarchical deterministic key derivation.
 | `int qgp_derive_shielded_enc_seed(const char *mnemonic, const char *passphrase, uint8_t shielded_enc_seed[32])` | Derive the dual-mode shielded-pool viewing seed (`qgp-shielded-enc-v1`) |
 | `int qgp_derive_mlkem1024_coins(const uint8_t master_seed[64], uint8_t coins[64])` | **NEW (KEM Faz 1, 2026-09-23).** `coins = SHAKE256(master_seed \|\| "nodus-mlkem-1024", 64)` — same block shape as the signing-seed/encryption-seed derivations above, but takes an already-derived master_seed directly (every call site already has one) rather than re-deriving from a mnemonic. Feeds `qgp_mlkem1024_keypair_derand()` (`crypto/enc/qgp_mlkem.h`) directly. |
 | `void qgp_display_mnemonic(const char *mnemonic)` | Display mnemonic with word numbers |
-| `void test_hmac_sha512(...)` | Test HMAC-SHA512 implementation |
 
 ### 8.3 BIP32 HD Derivation (`bip32.h`)
 
@@ -571,5 +560,4 @@ BIP39 mnemonic generation and BIP32 hierarchical deterministic key derivation.
 | `int bip32_derive_path(const uint8_t*, size_t, const char*, bip32_extended_key_t*)` | Derive key from path string |
 | `int bip32_derive_ethereum(const uint8_t*, size_t, bip32_extended_key_t*)` | Derive Ethereum key (m/44'/60'/0'/0/0) |
 | `int bip32_get_public_key(const bip32_extended_key_t*, uint8_t[65])` | Get uncompressed secp256k1 public key |
-| `int bip32_get_public_key_compressed(const bip32_extended_key_t*, uint8_t[33])` | Get compressed public key |
 | `void bip32_clear_key(bip32_extended_key_t*)` | Securely clear key from memory |

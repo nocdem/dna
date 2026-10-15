@@ -71,20 +71,6 @@ int eth_address_from_pubkey(
 );
 
 /**
- * Derive Ethereum address and format as hex string with checksum
- *
- * Returns address in EIP-55 checksummed format: "0xAbCd..."
- *
- * @param pubkey_uncompressed   65-byte uncompressed public key
- * @param address_hex_out       Output: checksummed address string (43 bytes min)
- * @return                      0 on success, -1 on error
- */
-int eth_address_from_pubkey_hex(
-    const uint8_t pubkey_uncompressed[65],
-    char address_hex_out[43]
-);
-
-/**
  * Apply EIP-55 checksum to Ethereum address
  *
  * Converts lowercase hex address to mixed-case checksummed format.
@@ -97,14 +83,6 @@ int eth_address_checksum(
     const char *address_lowercase,
     char address_checksummed[41]
 );
-
-/**
- * Validate Ethereum address checksum (EIP-55)
- *
- * @param address   Address string with or without "0x" prefix
- * @return          1 if valid checksum, 0 if invalid or all lowercase
- */
-int eth_address_verify_checksum(const char *address);
 
 #ifdef __cplusplus
 }

@@ -203,19 +203,6 @@ int messenger_register_name(
  */
 int messenger_restore_keys(messenger_context_t *ctx, const char *identity);
 
-/**
- * Restore key pair from file containing BIP39 recovery seed
- *
- * File format: "word1 word2 word3 ... word24 [passphrase]"
- * Passphrase is optional (on same line after 24 words).
- *
- * @param ctx: Messenger context
- * @param identity: Identity name (e.g., "alice")
- * @param seed_file: Path to file containing seed phrase
- * @return: 0 on success, -1 on error
- */
-int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *identity, const char *seed_file);
-
 // ============================================================================
 // FINGERPRINT UTILITIES (Phase 4: Fingerprint-First Identity)
 // ============================================================================

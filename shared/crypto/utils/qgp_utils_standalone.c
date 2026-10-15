@@ -55,21 +55,6 @@ void qgp_hash_to_hex(const qgp_hash_t *hash, char *hex_out, size_t hex_size) {
     hex_out[128] = '\0';
 }
 
-/**
- * Compute SHA3-512 hash of public key (for identification / fingerprinting)
- *
- * @param public_key: Public key bytes
- * @param key_size: Public key size
- * @param hash_out: Output hash (64 bytes)
- */
-void qgp_pubkey_hash(const uint8_t *public_key, size_t key_size, qgp_hash_t *hash_out) {
-    if (!public_key || !hash_out) {
-        return;
-    }
-
-    qgp_hash_from_bytes(hash_out, public_key, key_size);
-}
-
 // ============================================================================
 // BASE64 UTILITIES
 // ============================================================================
@@ -164,62 +149,4 @@ uint8_t* qgp_base64_decode(const char *base64_str, size_t *out_len) {
 
     BIO_free_all(bio_b64);
     return result;
-}
-
-// ============================================================================
-// STRING UTILITIES
-// ============================================================================
-
-/**
- * Convert bytes to hex string
- * Utility for debugging and display
- *
- * @param data: Input bytes
- * @param len: Data length
- * @param hex_out: Output hex string (must be at least len*2+1 bytes)
- */
-void qgp_bytes_to_hex(const uint8_t *data, size_t len, char *hex_out) {
-    if (!data || !hex_out) {
-        return;
-    }
-
-    for (size_t i = 0; i < len; i++) {
-        snprintf(&hex_out[i * 2], 3, "%02x", data[i]);
-    }
-    hex_out[len * 2] = '\0';
-}
-
-/**
- * Convert hex string to bytes
- * Utility for parsing hex input
- *
- * @param hex_str: Input hex string
- * @param data_out: Output bytes (caller must allocate)
- * @param max_len: Maximum bytes to write
- * @return: Bytes written, or -1 on error
- */
-int qgp_hex_to_bytes(const char *hex_str, uint8_t *data_out, size_t max_len) {
-    if (!hex_str || !data_out) {
-        return -1;
-    }
-
-    size_t hex_len = strlen(hex_str);
-    if (hex_len % 2 != 0) {
-        return -1;  // Hex string must have even length
-    }
-
-    size_t byte_len = hex_len / 2;
-    if (byte_len > max_len) {
-        return -1;  // Output buffer too small
-    }
-
-    for (size_t i = 0; i < byte_len; i++) {
-        unsigned int byte;
-        if (sscanf(&hex_str[i * 2], "%2x", &byte) != 1) {
-            return -1;  // Invalid hex character
-        }
-        data_out[i] = (uint8_t)byte;
-    }
-
-    return byte_len;
 }

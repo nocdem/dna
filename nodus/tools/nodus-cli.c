@@ -2278,8 +2278,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                     srv_rc, (int)sres.status);
             goto done;
         }
-        printf("proposal accepted: mempool CheckTx approved (query "
-              "dnac_tx for the eventual commit height)\n");
+        printf("proposal accepted: mempool CheckTx approved (inclusion "
+              "follows in a later block)\n");
     }
     rc = 0;
 
@@ -2871,8 +2871,8 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
          * 1836-1910); this path never routed through t6_submit_on (it
          * is its own inline connect/submit/close), so it needed its own
          * fix rather than inheriting delta 4's. */
-        printf("accepted: mempool CheckTx approved (query dnac_tx for the "
-               "eventual commit height)\n");
+        printf("accepted: mempool CheckTx approved (inclusion follows in a "
+               "later block)\n");
     }
     rc = 0;
 
@@ -3012,8 +3012,8 @@ static int t6_submit_on(nodus_client_t *client, nodus_identity_t *id,
      * "committed: height=... index=..." wording printed those zeros as
      * if they were a real commit position. Printed as what it actually
      * is: mempool admission, not inclusion. */
-    printf("accepted: mempool CheckTx approved (query dnac_tx for the "
-           "eventual commit height)\n");
+    printf("accepted: mempool CheckTx approved (inclusion follows in a "
+           "later block)\n");
     return 0;
 }
 

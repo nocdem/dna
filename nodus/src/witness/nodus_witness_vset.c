@@ -876,9 +876,11 @@ int nodus_witness_vset_commit_genesis(nodus_witness_t *w,
      * height 0 has no row. The ALL-ZERO seed branch therefore fires here
      * on every node and on every replay, which is exactly the property
      * this hook needs: the same branch, the same bytes, everywhere. (The
-     * seeded validators themselves were just written by
-     * nodus_witness_genesis_seed_validators, inside this same
-     * transaction, so they are visible to the builder.)
+     * genesis validators are already in the validators table when this
+     * runs: both callers write them first — gen_seed_state in
+     * nodus_witness_v2_gen.c, or the genesis bundle's transferred
+     * validators table in nodus_witness_v2_bundle.c — so they are
+     * visible to the builder.)
      *
      * No chain_config_history row for DNAC_CFG_TARGET_ACTIVE_COUNT can
      * exist at genesis, so both targets resolve to the default,

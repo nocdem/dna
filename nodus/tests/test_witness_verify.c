@@ -245,10 +245,21 @@ static int add_utxo(nodus_witness_t *w, const uint8_t *nullifier,
     return nodus_witness_utxo_add(w, nullifier, owner, amount, fake_hash, 0, 0, NULL);
 }
 
-/* Add a spent nullifier to the witness DB */
+/* Add a spent nullifier to the witness DB. Raw SQL: the subject is the
+ * verify path's nodus_witness_nullifier_exists read, and the legacy
+ * writer nodus_witness_nullifier_add (no production caller) is deleted. */
 static int add_nullifier(nodus_witness_t *w, const uint8_t *nullifier) {
     uint8_t fake_hash[64] = {0};
-    return nodus_witness_nullifier_add(w, nullifier, fake_hash);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT INTO nullifiers (nullifier, tx_hash) VALUES (?, ?)",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_blob(stmt, 1, nullifier, NULLIFIER_LEN, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 2, fake_hash, sizeof(fake_hash), SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE ? 0 : -1;
 }
 
 /* ══════════════════════════════════════════════════════════════════

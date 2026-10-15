@@ -7,14 +7,12 @@
  */
 
 #include "dnac/transaction.h"
-#include "dnac/nodus.h"
 #include "dnac/dnac.h"
 #include "dnac/safe_math.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include <pthread.h>
 
 /* libdna crypto utilities */
 #include "crypto/sign/qgp_dilithium.h"
@@ -81,7 +79,7 @@ static int verify_stake_rules(const dnac_transaction_t *tx) {
 
     /* Σ DNAC input >= DNAC_SELF_STAKE_AMOUNT + Σ DNAC output.
      * Filter to native DNAC token (token_id == zeros); other tokens are
-     * not part of the self-stake accounting and pass through verify_balance_per_token. */
+     * not part of the self-stake accounting and are not checked here. */
     uint64_t dnac_in = 0;
     uint64_t dnac_out = 0;
     for (int i = 0; i < tx->input_count; i++) {
@@ -129,17 +127,10 @@ static int verify_stake_rules(const dnac_transaction_t *tx) {
 /* Public entry point for STAKE rule verification.
  *
  * Exposed so unit tests can exercise the rule layer without assembling
- * real Dilithium5 signer signatures and witness attestations. The normal
- * verify path (dnac_tx_verify_full) also calls verify_stake_rules
- * internally for STAKE-typed TXs. */
+ * real Dilithium5 signer signatures and witness attestations. */
 int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
     if (tx->type != DNAC_TX_STAKE) return DNAC_ERROR_INVALID_TX_TYPE;
-    return verify_stake_rules(tx);
-}
-
-/* Internal linkage for transaction.c's dnac_tx_verify to dispatch into. */
-int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx) {
     return verify_stake_rules(tx);
 }
 
@@ -232,10 +223,6 @@ int dnac_tx_verify_delegate_rules(const dnac_transaction_t *tx) {
     return verify_delegate_rules(tx);
 }
 
-int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx) {
-    return verify_delegate_rules(tx);
-}
-
 /**
  * @brief Verify UNSTAKE-type rules (design §2.4, Phase 6 Task 24).
  *
@@ -275,10 +262,6 @@ static int verify_unstake_rules(const dnac_transaction_t *tx) {
 int dnac_tx_verify_unstake_rules(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
     if (tx->type != DNAC_TX_UNSTAKE) return DNAC_ERROR_INVALID_TX_TYPE;
-    return verify_unstake_rules(tx);
-}
-
-int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx) {
     return verify_unstake_rules(tx);
 }
 
@@ -330,10 +313,6 @@ static int verify_undelegate_rules(const dnac_transaction_t *tx) {
 int dnac_tx_verify_undelegate_rules(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
     if (tx->type != DNAC_TX_UNDELEGATE) return DNAC_ERROR_INVALID_TX_TYPE;
-    return verify_undelegate_rules(tx);
-}
-
-int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx) {
     return verify_undelegate_rules(tx);
 }
 
@@ -397,10 +376,6 @@ static int verify_validator_update_rules(const dnac_transaction_t *tx) {
 int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
     if (tx->type != DNAC_TX_VALIDATOR_UPDATE) return DNAC_ERROR_INVALID_TX_TYPE;
-    return verify_validator_update_rules(tx);
-}
-
-int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx) {
     return verify_validator_update_rules(tx);
 }
 
@@ -843,167 +818,6 @@ int dnac_tx_verify_chain_config_rules(const dnac_transaction_t *tx) {
     return verify_chain_config_rules(tx);
 }
 
-int dnac_tx_verify_chain_config_rules_internal(const dnac_transaction_t *tx) {
-    return verify_chain_config_rules(tx);
-}
-
-/**
- * @brief Per-token balance verification
- *
- * For each distinct token_id across inputs and outputs:
- *   sum(inputs[token]) >= sum(outputs[token])
- *
- * GENESIS: no inputs, outputs create coins (skip).
- * TOKEN_CREATE: mixed tokens expected (skip — witness handles).
- */
-static int verify_balance_per_token(const dnac_transaction_t *tx) {
-    if (tx->type == DNAC_TX_GENESIS) {
-        if (tx->input_count != 0) return DNAC_ERROR_INVALID_PROOF;
-        return DNAC_SUCCESS;
-    }
-    if (tx->type == DNAC_TX_TOKEN_CREATE) return DNAC_SUCCESS;
-
-    /* Collect unique token_ids */
-    uint8_t tokens[32][DNAC_TOKEN_ID_SIZE];
-    int token_count = 0;
-
-    for (int i = 0; i < tx->input_count; i++) {
-        bool found = false;
-        for (int t = 0; t < token_count; t++) {
-            if (memcmp(tokens[t], tx->inputs[i].token_id, DNAC_TOKEN_ID_SIZE) == 0) {
-                found = true; break;
-            }
-        }
-        if (!found && token_count < 32)
-            memcpy(tokens[token_count++], tx->inputs[i].token_id, DNAC_TOKEN_ID_SIZE);
-    }
-    for (int i = 0; i < tx->output_count; i++) {
-        bool found = false;
-        for (int t = 0; t < token_count; t++) {
-            if (memcmp(tokens[t], tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE) == 0) {
-                found = true; break;
-            }
-        }
-        if (!found && token_count < 32)
-            memcpy(tokens[token_count++], tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE);
-    }
-
-    for (int t = 0; t < token_count; t++) {
-        uint64_t sum_in = 0, sum_out = 0;
-        for (int i = 0; i < tx->input_count; i++) {
-            if (memcmp(tx->inputs[i].token_id, tokens[t], DNAC_TOKEN_ID_SIZE) == 0) {
-                if (safe_add_u64(sum_in, tx->inputs[i].amount, &sum_in) != 0)
-                    return DNAC_ERROR_OVERFLOW;
-            }
-        }
-        for (int i = 0; i < tx->output_count; i++) {
-            if (memcmp(tx->outputs[i].token_id, tokens[t], DNAC_TOKEN_ID_SIZE) == 0) {
-                if (safe_add_u64(sum_out, tx->outputs[i].amount, &sum_out) != 0)
-                    return DNAC_ERROR_OVERFLOW;
-            }
-        }
-        if (sum_in < sum_out) return DNAC_ERROR_INVALID_PROOF;
-    }
-    return DNAC_SUCCESS;
-}
-
-/**
- * @brief Verify witness signatures
- *
- * Each witness contains the server's public key. We verify the signature
- * over: tx_hash || witness_id || timestamp
- *
- * With BFT consensus, 1 valid witness attestation proves quorum was reached
- * (the witness only signs after 2f+1 agreement). We require at least 1 valid.
- *
- * C-06: After signature verification, the witness pubkey is checked against
- * the cached roster from DHT discovery. This prevents forged attestations
- * from arbitrary Dilithium5 keypairs.
- */
-
-/* C-06: Check if a pubkey belongs to a known witness from the DHT roster */
-static bool is_known_witness_pubkey(const uint8_t *pubkey) {
-    extern dnac_witness_info_t *g_witness_servers;
-    extern int g_witness_count;
-    extern pthread_mutex_t g_witness_cache_mutex;
-
-    bool found = false;
-    pthread_mutex_lock(&g_witness_cache_mutex);
-    if (g_witness_servers && g_witness_count > 0) {
-        for (int i = 0; i < g_witness_count; i++) {
-            if (memcmp(g_witness_servers[i].pubkey, pubkey, DNAC_PUBKEY_SIZE) == 0) {
-                found = true;
-                break;
-            }
-        }
-    } else {
-        /* C13 fix: No roster cached yet — FAIL CLOSED. The empty-roster
-         * TOFU fallback previously returned found=true, allowing any
-         * Dilithium5 keypair to impersonate a witness on cold-start and
-         * enabling fund theft (audit chain X-5). Callers must ensure
-         * dnac_discover_witnesses() populates the roster BEFORE the
-         * first verify. */
-        found = false;
-    }
-    pthread_mutex_unlock(&g_witness_cache_mutex);
-    return found;
-}
-
-int verify_witnesses(const dnac_transaction_t *tx) {
-    /* BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
-    if (tx->witness_count < 1) {
-        return DNAC_ERROR_WITNESS_FAILED;
-    }
-
-    /* Phase 12 follow-up — the witness sig in serialized TXs CANNOT be
-     * Dilithium5-verified after this phase: the on-chain TX format
-     * (serialize.c) only persists witness_id/signature/timestamp/
-     * server_pubkey, but the witness now signs a 221-byte spndrslt
-     * preimage that ALSO binds chain_id, block_height, tx_index, and
-     * SHA3-512(server_pubkey). Without those receipt-only fields the
-     * verifier cannot reconstruct the preimage.
-     *
-     * Mitigation: trust the local mempool / nullifier check on nodus
-     * and the witness quorum that committed the block. A node receiving
-     * a serialized TX from peers verifies it against chain state, not
-     * by re-checking individual witness sigs.
-     *
-     * Fresh-receipt verification (where chain_id / block_height /
-     * tx_index ARE known from the receipt) lives in builder.c step 4
-     * via the spndrslt preimage reconstruction.
-     *
-     * This function now sanity-checks roster membership and pubkey
-     * non-zero, but does not Dilithium-verify the sig over a synthetic
-     * legacy preimage that would always fail. */
-    int valid_witnesses = 0;
-
-    for (int i = 0; i < tx->witness_count; i++) {
-        const dnac_witness_sig_t *witness = &tx->witnesses[i];
-
-        bool is_all_zeros = true;
-        for (int k = 0; k < DNAC_PUBKEY_SIZE && is_all_zeros; k++) {
-            if (witness->server_pubkey[k] != 0) is_all_zeros = false;
-        }
-        if (is_all_zeros) {
-            QGP_LOG_DEBUG(LOG_TAG, "  skipping witness with zero pubkey");
-            continue;
-        }
-
-        if (!is_known_witness_pubkey(witness->server_pubkey)) {
-            QGP_LOG_WARN(LOG_TAG, "  witness %d pubkey not in roster", i);
-            continue;
-        }
-
-        valid_witnesses++;
-    }
-
-    if (valid_witnesses >= 1) return DNAC_SUCCESS;
-
-    QGP_LOG_ERROR(LOG_TAG, "failed: no roster-known witnesses (count %d)",
-                  tx->witness_count);
-    return DNAC_ERROR_WITNESS_FAILED;
-}
-
 /**
  * @brief Verify all signers' Dilithium5 signatures over tx_hash
  */
@@ -1020,29 +834,5 @@ int verify_signers(const dnac_transaction_t *tx) {
             return DNAC_ERROR_INVALID_SIGNATURE;
         }
     }
-    return DNAC_SUCCESS;
-}
-
-/**
- * @brief Full transaction verification
- */
-int dnac_tx_verify_full(const dnac_transaction_t *tx) {
-    int rc;
-    if (!tx) return DNAC_ERROR_INVALID_PARAM;
-
-    /* 1. Per-token balance */
-    rc = verify_balance_per_token(tx);
-    if (rc != DNAC_SUCCESS) return rc;
-
-    /* 2. Witnesses */
-    rc = verify_witnesses(tx);
-    if (rc != DNAC_SUCCESS) return rc;
-
-    /* 3. Signer signatures (skip for genesis) */
-    if (tx->type != DNAC_TX_GENESIS) {
-        rc = verify_signers(tx);
-        if (rc != DNAC_SUCCESS) return rc;
-    }
-
     return DNAC_SUCCESS;
 }

@@ -86,28 +86,6 @@ size_t qgp_signature_get_size(const qgp_signature_t *sig) {
 }
 
 /**
- * Verify signature structure size
- *
- * @param sig: Signature structure
- * @param expected_size: Expected total size
- * @return: 0 if valid, -1 if invalid
- */
-int qgp_signature_verify_size(const qgp_signature_t *sig, size_t expected_size) {
-    if (!sig) {
-        return -1;
-    }
-
-    size_t actual_size = qgp_signature_get_size(sig);
-    if (actual_size != expected_size) {
-        QGP_LOG_ERROR(LOG_TAG, "verify_size: Size mismatch (expected %zu, got %zu)",
-                expected_size, actual_size);
-        return -1;
-    }
-
-    return 0;
-}
-
-/**
  * Serialize signature to buffer
  *
  * Format v0.07: [type(1) | sig_size(2) | signature]

@@ -385,13 +385,6 @@ int nodus_hash(const uint8_t *data, size_t data_len, nodus_key_t *hash_out) {
     return qgp_sha3_512(data, data_len, hash_out->bytes);
 }
 
-int nodus_hash_hex(const uint8_t *data, size_t data_len, char *hex_out) {
-    if (!data || !hex_out)
-        return -1;
-
-    return qgp_sha3_512_hex(data, data_len, hex_out, NODUS_KEY_HEX_LEN);
-}
-
 int nodus_fingerprint(const nodus_pubkey_t *pk, nodus_key_t *fp_out) {
     if (!pk || !fp_out)
         return -1;

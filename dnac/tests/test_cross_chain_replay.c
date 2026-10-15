@@ -15,10 +15,9 @@
  *   5. Mutate tx.chain_id to chain B; recompute tx_hash.
  *   6. Do NOT re-sign. verify_signers must now fail.
  *
- * The test does NOT exercise the full dnac_tx_verify_full path (that
- * path pulls in witness attestations + balance checks that are not
- * the subject of this test). verify_signers is the narrowest,
- * highest-signal primitive for this specific defense.
+ * verify_signers is the narrowest, highest-signal primitive for this
+ * specific defense: it checks only the signers' Dilithium5 signatures
+ * over tx_hash.
  */
 
 #include "dnac/transaction.h"

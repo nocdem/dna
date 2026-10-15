@@ -158,20 +158,6 @@ int bip32_get_public_key(
 );
 
 /**
- * Get compressed public key from extended private key
- *
- * Computes the secp256k1 compressed public key (33 bytes).
- *
- * @param key           Extended key with private key
- * @param pubkey_out    Output: 33-byte compressed public key
- * @return              0 on success, -1 on error
- */
-int bip32_get_public_key_compressed(
-    const bip32_extended_key_t *key,
-    uint8_t pubkey_out[33]
-);
-
-/**
  * Securely clear extended key from memory
  *
  * Zeros out all key material to prevent leakage.

@@ -385,208 +385,13 @@ int nodus_witness_merkle_compute_utxo_root(nodus_witness_t *w,
     return rc;
 }
 
-/* ── Proof generation (RFC 6962, Phase 2 / Task 2.6) ──────────────────
- *
- * Used by nodus_witness_merkle_build_tx_proof. (The UTXO-set proof
- * builder nodus_witness_merkle_build_proof is DELETED — root-layout round
+/* Proof generation (RFC 6962 §2.1.1 inclusion paths) is DELETED: its two
+ * builders are gone — nodus_witness_merkle_build_proof (root-layout round
  * K3: it anchored to the legacy five-input state_root, which no block
- * header carries; the dnac_utxo response now always sends depth 0.)
- *
- * The proof structure follows RFC 6962 §2.1.1: walk the recursive split
- * from root to leaf, recording the OPPOSITE subtree's root at every
- * level. The verifier walks the same path bottom-up, combining current
- * with each sibling via inner_hash.
- *
- * Position bit i (LSB = leaf level): 1 means "sibling on the left, we
- * are right", 0 means "sibling on the right, we are left". The bit
- * order matches verify_proof.
- */
-
-/* Recursive helper: walks the RFC 6962 split for `idx` in `leaves[0..n]`,
- * appending one sibling per level to siblings_out and one bit per level
- * to *positions_out. Depth grows as we recurse INTO a subtree; the leaf
- * level is the deepest call. We collect siblings on the way IN so that
- * the verifier (which walks bottom-up) sees them in the right order.
- *
- * Returns 0 on success. The caller must zero *depth_out / *positions_out
- * before the first call.
- */
-static int rfc6962_path(const uint8_t *leaves, size_t n, size_t idx,
-                         uint8_t *siblings_out, uint32_t *positions_out,
-                         int *depth_out, int max_depth) {
-    if (n <= 1) return 0;  /* leaf level — nothing to record */
-
-    if (*depth_out >= max_depth) return -1;
-
-    size_t k = 1;
-    while (k * 2 < n) k *= 2;
-
-    /* The current level's split point is k. The opposite subtree is the
-     * sibling for THIS level. We record it as MTH of that subtree. */
-    uint8_t sibling[64];
-    int sibling_is_left;
-    int rc;
-
-    if (idx < k) {
-        /* Target is in the left subtree; sibling = MTH(leaves[k..n]). */
-        rc = merkle_root_rfc6962(leaves + k * 64, n - k, sibling);
-        sibling_is_left = 0;
-    } else {
-        /* Target is in the right subtree; sibling = MTH(leaves[0..k]). */
-        rc = merkle_root_rfc6962(leaves, k, sibling);
-        sibling_is_left = 1;
-    }
-    if (rc != 0) return -1;
-
-    int level = *depth_out;
-    memcpy(siblings_out + level * 64, sibling, 64);
-    if (sibling_is_left) *positions_out |= (1u << level);
-    (*depth_out)++;
-
-    /* Recurse into the subtree containing the target. */
-    if (idx < k) {
-        return rfc6962_path(leaves, k, idx,
-                            siblings_out, positions_out, depth_out, max_depth);
-    } else {
-        return rfc6962_path(leaves + k * 64, n - k, idx - k,
-                            siblings_out, positions_out, depth_out, max_depth);
-    }
-}
-
-/* The position bits collected by rfc6962_path are root-to-leaf, but
- * verify_proof walks leaf-to-root, so we reverse the bit order before
- * returning. Same for the sibling array. */
-static void reverse_proof(uint8_t *siblings, uint32_t *positions, int depth) {
-    /* Reverse sibling array in place */
-    for (int i = 0, j = depth - 1; i < j; i++, j--) {
-        uint8_t tmp[64];
-        memcpy(tmp, siblings + i * 64, 64);
-        memcpy(siblings + i * 64, siblings + j * 64, 64);
-        memcpy(siblings + j * 64, tmp, 64);
-    }
-    /* Reverse the bit field across `depth` bits */
-    uint32_t in = *positions;
-    uint32_t out = 0;
-    for (int i = 0; i < depth; i++) {
-        if (in & (1u << i)) out |= (1u << (depth - 1 - i));
-    }
-    *positions = out;
-}
-
-/* ── Public: build inclusion proof for a TX in a block's tx_root ─────
- *
- * Scoped to a single block's tx_root tree. Fetches committed TX hashes
- * for block_height
- * in commit order (tx_index ASC) — mirrors the ordering used by
- * nodus_witness_block_txs_get() and therefore by tx_root computation.
- * Applies the RFC 6962 leaf domain tag (0x00 prefix) to each raw
- * tx_hash, locates target_tx_hash, and drives the rfc6962_path
- * recursion above.
- */
-int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
-                                          uint64_t block_height,
-                                          const uint8_t *target_tx_hash,
-                                          uint8_t *siblings_out,
-                                          uint32_t *positions_out,
-                                          int max_depth,
-                                          int *depth_out,
-                                          uint8_t *root_out) {
-    if (!w || !w->db || !target_tx_hash || !siblings_out || !positions_out ||
-        !depth_out || max_depth <= 0) return -1;
-
-    *depth_out = 0;
-    *positions_out = 0;
-
-    /* Load raw tx_hashes for the block in commit order. Cap at
-     * NODUS_W_MAX_BLOCK_TXS so the leaves stack buffer stays bounded
-     * (10 * 64 = 640 bytes). */
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT tx_hash FROM committed_transactions "
-        "WHERE block_height = ? "
-        "ORDER BY tx_index ASC",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "%s: build_tx_proof prepare failed: %s\n",
-                LOG_TAG, sqlite3_errmsg(w->db));
-        return -1;
-    }
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)block_height);
-
-    uint8_t leaves[NODUS_W_MAX_BLOCK_TXS][64];
-    size_t n = 0;
-    ssize_t target_idx = -1;
-
-    /* rc carries the step result out of the loop — see load_utxo_leaves.
-     * A truncated TX list yields a proof against a tx_root the block
-     * never had. */
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        if (n >= NODUS_W_MAX_BLOCK_TXS) {
-            sqlite3_finalize(stmt);
-            return -1; /* block exceeds per-block cap */
-        }
-        /* Fail close, never skip. Skipping a row shifts every LATER leaf
-         * down one index, so the proof would be built against a leaf
-         * ordering the block never had — the emitted proof verifies
-         * against nothing, or worse, against a tx_root a peer computed
-         * from the intact table. Same class as the three loader fixes
-         * above; committed_transactions.tx_hash is always written
-         * full-length, so a short blob is corruption, not a legal state. */
-        const void *hash_blob = sqlite3_column_blob(stmt, 0);
-        int hash_len = sqlite3_column_bytes(stmt, 0);
-        if (!hash_blob || hash_len != 64) {
-            QGP_LOG_ERROR(LOG_TAG, "build_tx_proof: malformed tx_hash "
-                          "(len=%d) at index %zu — refusing to build a proof "
-                          "over a re-indexed leaf set", hash_len, n);
-            sqlite3_finalize(stmt);
-            return -1;
-        }
-
-        /* Match target against the raw tx_hash BEFORE leaf-tagging so
-         * the caller-provided hash is compared in its natural form. */
-        if (target_idx < 0 &&
-            memcmp(hash_blob, target_tx_hash, 64) == 0) {
-            target_idx = (ssize_t)n;
-        }
-
-        if (leaf_hash((const uint8_t *)hash_blob, 64, leaves[n]) != 0) {
-            sqlite3_finalize(stmt);
-            return -1;
-        }
-        n++;
-    }
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "build_tx_proof step failed rc=%d — TX list "
-                      "truncated, refusing to build a proof", rc);
-        return -1;
-    }
-
-    if (n == 0 || target_idx < 0) return -1;
-
-    /* Single-leaf tree: empty proof, root == the one leaf. */
-    if (n == 1) {
-        if (root_out) memcpy(root_out, leaves[0], 64);
-        return 0;
-    }
-
-    if (rfc6962_path((const uint8_t *)leaves, n, (size_t)target_idx,
-                      siblings_out, positions_out, depth_out, max_depth) != 0) {
-        return -1;
-    }
-
-    /* rfc6962_path collects root-to-leaf; flip to leaf-to-root for the
-     * verifier (the convention nodus_witness_merkle_verify_proof reads). */
-    reverse_proof(siblings_out, positions_out, *depth_out);
-
-    if (root_out) {
-        if (merkle_root_rfc6962((const uint8_t *)leaves, n, root_out) != 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
+ * header carries; the dnac_utxo response always sends depth 0) and
+ * nodus_witness_merkle_build_tx_proof (a committed_transactions reader for
+ * the deleted dnac_history client RPC). The verifier
+ * (nodus_witness_merkle_verify_proof, below) is unchanged. */
 
 /* ── Tree-tag domain-separated leaf helpers (witness stake v1) ──────
  *
@@ -625,27 +430,6 @@ void nodus_merkle_leaf_key(uint8_t tree_tag,
     }
     if (sha3_512_final(md, out_key) != 0) {
         merkle_tag_hash_zero_on_fail(out_key);
-    }
-}
-
-void nodus_merkle_leaf_value_hash(uint8_t tree_tag,
-                                  const uint8_t *cbor, size_t cbor_len,
-                                  uint8_t out_hash[64]) {
-    if (!out_hash) return;
-    EVP_MD_CTX *md = NULL;
-    if (sha3_512_init(&md) != 0) {
-        merkle_tag_hash_zero_on_fail(out_hash);
-        return;
-    }
-    if (EVP_DigestUpdate(md, &tree_tag, 1) != 1 ||
-        (cbor_len > 0 && cbor != NULL &&
-         EVP_DigestUpdate(md, cbor, cbor_len) != 1)) {
-        EVP_MD_CTX_free(md);
-        merkle_tag_hash_zero_on_fail(out_hash);
-        return;
-    }
-    if (sha3_512_final(md, out_hash) != 0) {
-        merkle_tag_hash_zero_on_fail(out_hash);
     }
 }
 
@@ -712,20 +496,6 @@ void nodus_merkle_combine_state_root_v1_legacy(const uint8_t utxo_root[64],
     if (sha3_512_final(md, out_state_root) != 0) {
         merkle_tag_hash_zero_on_fail(out_state_root);
     }
-}
-
-/* Source-compat alias so older callers / tests referring to the unversioned
- * name resolve to the legacy formula. New code MUST call the _v2 variant
- * below (prefixed with the NODUS_STATE_ROOT_VERSION_V1 version byte would
- * break the legacy byte-for-byte KAT, so the alias points at _v1_legacy). */
-void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
-                                     const uint8_t validator_root[64],
-                                     const uint8_t delegation_root[64],
-                                     const uint8_t reward_root[64],
-                                     uint8_t out_state_root[64]) {
-    nodus_merkle_combine_state_root_v1_legacy(utxo_root, validator_root,
-                                                delegation_root, reward_root,
-                                                out_state_root);
 }
 
 /* ── Composite state_root combiner — 5-input (Hard-Fork v1) ──────────
@@ -927,11 +697,11 @@ static int load_validator_leaves(nodus_witness_t *w,
          * for a validator that never requested unstaking is
          * unstake_destination_pubkey (nodus_witness_bft.c:1458-1465) —
          * see its own check below.
-         * The one production path that yields an empty fp is a genesis
-         * chain_def whose iv_fp begins with a NUL byte: the seeder copies
-         * it verbatim (nodus_witness_genesis_seed.c:117) and
-         * nodus_witness_validator.c:64-66 binds it with length -1
-         * (strlen), storing an empty TEXT value. That row must keep
+         * The empty-fp case is kept for rows written by older code
+         * paths: the legacy genesis seeder (since removed) copied a
+         * chain_def iv_fp verbatim, and one beginning with a NUL byte was
+         * bound by nodus_witness_validator.c:64-66 with length -1
+         * (strlen), storing an empty TEXT value. Such a row must keep
          * loading, and it hashes to the same 128 zeros it always did — no
          * honest leaf changes value here. */
         uint8_t fp_buf[128];

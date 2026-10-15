@@ -800,14 +800,6 @@ int nodus_seg_build_next(const nodus_seg_build_t *b, uint64_t *h_out,
     return 1;
 }
 
-int nodus_seg_build_cur_header(const nodus_seg_build_t *b,
-                               const uint8_t **hdr, size_t *len) {
-    if (!b || !hdr || !len || !b->have_hdr) return -1;
-    *hdr = b->hdr;
-    *len = b->hdr_len;
-    return 0;
-}
-
 nodus_seg_v_t nodus_seg_build_put_header(nodus_seg_build_t *b, uint64_t h,
                                          const uint8_t *hdr, size_t len) {
     if (!b || !hdr) return NODUS_SEG_V_FAULT;

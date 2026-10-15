@@ -7845,8 +7845,9 @@ static int rtn_sys_cc_fetch(nodus_witness_t *w, const uint8_t *key,
  * with the LIVE legacy lane, whose writers never faced this slice's
  * write rules. A legacy chain can hold rows the V2 mutate side would
  * refuse (a commission_bps above 10000 — apply_stake never bounded it;
- * an unstake_destination_fp that is not 128 lowercase hex — the genesis
- * seeder copies a chain_def iv_fp verbatim, genesis_seed.c:117). Such
+ * an unstake_destination_fp that is not 128 lowercase hex — the former
+ * legacy genesis seeder, since deleted, copied a chain_def iv_fp verbatim).
+ * Such
  * rows still READ (the fetch side deliberately enforces only the SHAPE
  * bounds the merkle leaf loader enforces, so the mediated read can serve
  * exactly what the state root already commits) but cannot be rewritten

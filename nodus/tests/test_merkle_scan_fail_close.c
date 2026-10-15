@@ -291,10 +291,10 @@ static int validator_rows(nodus_witness_t *w, const char *table,
         } else if (faulty && fault_kind == VF_LONG_FP) {
             sqlite3_bind_text(stmt, 2, long_fp, -1, SQLITE_STATIC);
         } else if (faulty && fault_kind == VF_EMPTY_FP) {
-            /* An EMPTY (not NULL) text value — what the genesis seeder
-             * stores when a chain_def's iv_fp begins with a NUL byte:
-             * nodus_witness_genesis_seed.c:117 copies it verbatim and
-             * nodus_witness_validator.c:64-66 binds it with length -1
+            /* An EMPTY (not NULL) text value — kept for rows written by
+             * older code paths: the legacy genesis seeder (since removed)
+             * copied a chain_def iv_fp beginning with a NUL byte verbatim
+             * and nodus_witness_validator.c:64-66 bound it with length -1
              * (strlen). This must keep loading. */
             sqlite3_bind_text(stmt, 2, "", -1, SQLITE_STATIC);
         } else {
@@ -522,9 +522,10 @@ static void run_case(const char *name, fixture_fn fixture, root_fn root) {
     PASS();
 }
 
-/* An EMPTY unstake_destination_fp is a reachable honest value — a genesis
- * chain_def whose iv_fp starts with a NUL byte produces one
- * (nodus_witness_genesis_seed.c:117) — and it must keep loading. The fp
+/* An EMPTY unstake_destination_fp is kept for rows written by older code
+ * paths — the legacy genesis seeder (since removed) stored one for a
+ * chain_def whose iv_fp started with a NUL byte — and it must keep
+ * loading. The fp
  * fail-close rejects a SQL NULL and an over-long value, NOT an empty one.
  * Without this pin, tightening the check to `!fp` would reject that
  * genesis shape outright, which is a total consensus halt rather than the

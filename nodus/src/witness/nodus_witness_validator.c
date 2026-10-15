@@ -312,7 +312,8 @@ int nodus_validator_top_n(nodus_witness_t *w,
          * nodus_witness_committee.c; the old lookback anchor made the
          * gap epochs (E, 3E] unsatisfiable even for the seed set).
          * Genesis-seeded validators (active_since_block <= 1, written by
-         * genesis_seed at block 1) are the constitutional seed set and
+         * the version-3 genesis derivation, nodus_witness_v2_gen.c) are
+         * the constitutional seed set and
          * are always tenured — Rule R gates LATER joiners. */
         "  AND (active_since_block + ? <= ? OR active_since_block <= 1) "
         "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "

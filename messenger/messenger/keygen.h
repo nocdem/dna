@@ -82,19 +82,6 @@ int messenger_register_name(
  */
 int messenger_restore_keys(messenger_context_t *ctx, const char *identity);
 
-/**
- * Restore identity from seed file
- *
- * Reads BIP39 seed from file and regenerates keys.
- * Useful for automated recovery or backup restoration.
- *
- * @param ctx: Messenger context
- * @param identity: Display name (optional)
- * @param seed_file: Path to file containing BIP39 seed phrase
- * @return: 0 on success, -1 on error
- */
-int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *identity, const char *seed_file);
-
 #ifdef __cplusplus
 }
 #endif

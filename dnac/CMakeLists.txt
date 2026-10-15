@@ -100,12 +100,10 @@ set(DNAC_SOURCES
     src/transaction/serialize.c
     src/transaction/verify.c
     src/transaction/genesis.c
-    src/transaction/nullifier.c
     src/transaction/token_create.c
     src/transaction/stake.c
     src/transaction/delegate.c
     src/transaction/validator_update.c
-    src/transaction/chain_config.c
     src/transaction/validator_queries.c
 
     # Nodus

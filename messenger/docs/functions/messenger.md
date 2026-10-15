@@ -26,7 +26,6 @@ Core messenger functionality including identity management, key generation, mess
 | `int messenger_register_name(...)` | Register human-readable name for fingerprint. **Behavior CHANGED (KEM Faz 1):** loads `identity.mlkem` beside `identity.kem` (absent -> NULL, no error) and passes its pubkey to `dht_keyserver_publish` and `keyserver_cache_put` |
 | `int messenger_restore_keys(messenger_context_t*, const char*)` | Restore keypair from BIP39 mnemonic (prompts via stdin) — calls `cmd_restore_key_from_seed` below |
 | `int cmd_restore_key_from_seed(const char *name, const char *algo, const char *output_dir)` | Restore `<name>.dsa`/`<name>.kem` from a BIP39 mnemonic entered via stdin. **Signature UNCHANGED. Behavior CHANGED (KEM Faz 1):** now uses `qgp_derive_seeds_with_master()` (was `qgp_derive_seeds_from_mnemonic()`) to also obtain `master_seed`, and ALSO generates + saves `<name>.mlkem` (ML-KEM-1024) alongside; non-fatal on ML-KEM failure |
-| `int messenger_restore_keys_from_file(...)` | Restore keys from seed file |
 
 ### 3.3 Fingerprint Utilities
 

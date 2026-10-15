@@ -3,7 +3,6 @@
 #include "crypto/enc/qgp_kyber.h"
 #include "crypto/enc/qgp_aes.h"
 #include "crypto/hash/qgp_sha3.h"
-#include "crypto/utils/qgp_random.h"
 
 static void write_be16(uint8_t *dst, uint16_t v) {
     dst[0] = (uint8_t)(v >> 8);

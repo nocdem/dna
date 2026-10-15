@@ -5,12 +5,7 @@
  * constant. This test pins the S1 state of that boundary:
  *   1. The official DNA fixture values: 1B supply (10^17 raw), 10M self-bond
  *      (10^15 raw) = exactly 1% of the DNA genesis supply.
- *   2. A synthetic third-party chain_def with a DIFFERENT committed supply
- *      flows through the SAME generic paths: the consensus-side supply
- *      parser (nodus_witness_parse_cd_supply — the value Rule P.2 and
- *      supply_tracking seeding actually consume) returns the committed
- *      per-chain value, not the DNA constant.
- *   3. Manifest-bound identity: changing initial_supply_raw changes the
+ *   2. Manifest-bound identity: changing initial_supply_raw changes the
  *      genesis block hash (= chain_id), because the chain_def is part of
  *      the genesis BlockID preimage.
  *
@@ -25,7 +20,6 @@
 #include "dnac/dnac.h"
 #include "dnac/block.h"
 #include "dnac/chain_def_codec.h"
-#include "witness/nodus_witness_genesis_seed.h"   /* nodus_witness_parse_cd_supply */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,33 +64,14 @@ int main(void) {
     CHECK(DNAC_SELF_STAKE_AMOUNT == DNAC_DEFAULT_TOTAL_SUPPLY / 100,
           "self-bond != 1%% of DNA genesis supply"); OK();
 
-    /* 2. Generic per-chain supply boundary (consensus-side parser). */
+    /* Two chain_defs with different committed supplies (used by 2). */
     dnac_chain_definition_t *cd_dna = malloc(sizeof(*cd_dna));
     dnac_chain_definition_t *cd_3p  = malloc(sizeof(*cd_3p));
     CHECK(cd_dna && cd_3p, "alloc");
     make_cd(cd_dna, "dna-fixture", DNAC_DEFAULT_TOTAL_SUPPLY);
     make_cd(cd_3p,  "third-party", 42ULL * 100000000ULL);   /* 42 tokens */
 
-    uint8_t blob[8192];
-    size_t blob_len = 0;
-    uint64_t supply = 0;
-    uint8_t vcount = 0;
-
-    CHECK(dnac_chain_def_encode(cd_dna, blob, sizeof(blob), &blob_len) == 0,
-          "encode dna cd");
-    CHECK(nodus_witness_parse_cd_supply(blob, blob_len, &supply, &vcount) == 0,
-          "parse dna cd");
-    CHECK(supply == DNAC_DEFAULT_TOTAL_SUPPLY,
-          "dna fixture supply not resolved through the generic path"); OK();
-
-    CHECK(dnac_chain_def_encode(cd_3p, blob, sizeof(blob), &blob_len) == 0,
-          "encode 3p cd");
-    CHECK(nodus_witness_parse_cd_supply(blob, blob_len, &supply, &vcount) == 0,
-          "parse 3p cd");
-    CHECK(supply == 42ULL * 100000000ULL,
-          "third-party supply not resolved through the generic path"); OK();
-
-    /* 3. Manifest-bound identity: supply is committed into the genesis
+    /* 2. Manifest-bound identity: supply is committed into the genesis
      *    BlockID (= chain_id) — two chains differing only in supply are
      *    different chains. */
     dnac_block_t *b1 = calloc(1, sizeof(*b1));

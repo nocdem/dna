@@ -25,10 +25,6 @@
  *   qgp_log_enable_tag("DHT");
  *   qgp_log_enable_tag("P2P");
  *
- *   // Disable specific tags (blacklist mode - default)
- *   qgp_log_set_filter_mode(QGP_LOG_FILTER_BLACKLIST);
- *   qgp_log_disable_tag("VERBOSE_TAG");
- *
  *   // Set minimum log level
  *   qgp_log_set_level(QGP_LOG_LEVEL_WARN);  // Only WARN and ERROR
  */
@@ -61,17 +57,12 @@ void qgp_log_set_level(qgp_log_level_t level);
 qgp_log_level_t qgp_log_get_level(void);
 
 void qgp_log_set_filter_mode(qgp_log_filter_mode_t mode);
-qgp_log_filter_mode_t qgp_log_get_filter_mode(void);
 
 void qgp_log_enable_tag(const char *tag);
-void qgp_log_disable_tag(const char *tag);
 void qgp_log_clear_filters(void);
 
 /* Check if a tag should be logged at given level */
 bool qgp_log_should_log(qgp_log_level_t level, const char *tag);
-
-/* Internal logging functions (use macros instead) */
-void qgp_log_print(qgp_log_level_t level, const char *tag, const char *fmt, ...);
 
 /* ============================================================================
  * Ring Buffer API - For in-app log viewing (Flutter debug screen)
@@ -125,13 +116,6 @@ void qgp_log_ring_add(qgp_log_level_t level, const char *tag, const char *fmt, .
 void qgp_log_file_enable(bool enabled);
 
 /**
- * Check if file logging is enabled
- *
- * @return true if file logging is active
- */
-bool qgp_log_file_is_enabled(void);
-
-/**
  * Set file logging rotation options
  *
  * @param max_size_kb  Maximum file size in KB before rotation (default: 5120 = 5MB)
@@ -139,20 +123,6 @@ bool qgp_log_file_is_enabled(void);
  *                     e.g., max_files=3 keeps: dna.log, dna.1.log, dna.2.log, dna.3.log
  */
 void qgp_log_file_set_options(int max_size_kb, int max_files);
-
-/**
- * Flush and close the log file
- *
- * Call this before app shutdown to ensure all logs are written.
- */
-void qgp_log_file_close(void);
-
-/**
- * Get the current log file path
- *
- * @return Path to current log file, or NULL if file logging is disabled
- */
-const char* qgp_log_file_get_path(void);
 
 /* Internal: write entry to log file (called by macros) */
 void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt, ...);

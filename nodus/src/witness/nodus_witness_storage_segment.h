@@ -356,12 +356,6 @@ int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights);
 int nodus_seg_build_next(const nodus_seg_build_t *b, uint64_t *h_out,
                          uint32_t *part_out, bool *header_needed);
 
-/** The verified header(h+1) proto of the height the build is on, so a
- *  fetch can resume a block whose header it already holds. @return 0
- *  (*hdr, *len point into the build) / -1 none held. */
-int nodus_seg_build_cur_header(const nodus_seg_build_t *b,
-                               const uint8_t **hdr, size_t *len);
-
 /** Add header(h+1) for the height the build is on (header "WHAT IS
  *  VERIFIED"); written with the record's prefix only when it verifies. */
 nodus_seg_v_t nodus_seg_build_put_header(nodus_seg_build_t *b, uint64_t h,

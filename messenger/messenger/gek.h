@@ -64,17 +64,6 @@ extern "C" {
  * ============================================================================ */
 
 /**
- * GEK entry structure (local storage)
- */
-typedef struct {
-    char group_uuid[37];       // UUID v4 (36 + null terminator)
-    uint32_t gek_version;      // Rotation counter (0, 1, 2, ...)
-    uint8_t gek[GEK_KEY_SIZE]; // AES-256 key
-    uint64_t created_at;       // Unix timestamp (seconds)
-    uint64_t expires_at;       // created_at + GEK_DEFAULT_EXPIRY
-} gek_entry_t;
-
-/**
  * Member entry for IKP building
  *
  * KEM Faz 1 (R8): mlkem_pubkey is nullable — the caller populates it from

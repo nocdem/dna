@@ -29,7 +29,6 @@
 #include "../database/keyserver_cache.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/enc/qgp_aes.h"
-#include "crypto/utils/qgp_random.h"
 #include "crypto/enc/aes_keywrap.h"
 #include "../message_backup.h"
 #include "../messenger_transport.h"

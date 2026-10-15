@@ -68,8 +68,6 @@ int write_armored_file(const char *output_path, const char *type,
 int read_armored_file(const char *input_path, char **type_out,
                       uint8_t **data_out, size_t *data_size_out,
                       char ***headers_out, size_t *header_count_out);
-const char* get_signature_algorithm_name(const qgp_signature_t *signature);
-size_t build_signature_headers(const qgp_signature_t *signature, const char **headers, size_t max_headers);
 
 // Configuration (config.c)
 int qgp_config_load(void);

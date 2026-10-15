@@ -393,36 +393,9 @@ _Static_assert(DNAC_TARGET_ACTIVE_DEFAULT == NODUS_V2_ACTIVE_SET_MAX,
 _Static_assert(DNAC_COMMITTEE_SIZE <= NODUS_V2_ACTIVE_SET_MAX,
                "the governed minimum must fit under the V2 ceiling");
 
-/* ── Vote types ──────────────────────────────────────────────────── */
-
-typedef enum {
-    NODUS_W_VOTE_APPROVE = 0,
-    NODUS_W_VOTE_REJECT  = 1,
-} nodus_witness_vote_t;
-
-/* ── Vote record ─────────────────────────────────────────────────── */
-
-typedef struct {
-    uint8_t     voter_id[NODUS_T3_WITNESS_ID_LEN];
-    nodus_witness_vote_t vote;
-    uint8_t     signature[NODUS_SIG_BYTES];
-    /* F17 A1 — voter's Dilithium5 public key. In-memory only; NOT
-     * persisted to the commit_certificates table nor carried on the T3
-     * wire format (both fields remain witness_id + signature only).
-     * Populated at vote-record-write time:
-     *   - self-votes: from w->host->identity->pk.bytes
-     *   - incoming votes: from gossip roster's pubkey map at handle_vote
-     *     time (safe because witness_id = H(pubkey) per
-     *     nodus_chain_config.h:157, see F17 design A15).
-     * Cert reads from DB (nodus_witness_cert_get) leave this field
-     * ZERO — callers on the read path MUST NOT trust pubkey. R3 W4 — the
-     * sync verification path that used to resolve pubkey separately
-     * (nodus_witness_verify_sync_certs) is deleted with the closed
-     * consensus lane; the one surviving reader, handle_dnac_block
-     * (nodus_witness_handlers.c), never reads this field at all — it
-     * encodes only voter_id and signature to the client. */
-    uint8_t     pubkey[DNAC_PUBKEY_SIZE];
-} nodus_witness_vote_record_t;
+/* The legacy vote record (nodus_witness_vote_t / nodus_witness_vote_record_t)
+ * is deleted with its last reader, nodus_witness_cert_get, and the
+ * dnac_block client RPC that called it. */
 
 /* R3 W4 — the out-of-order vote buffer (nodus_witness_pending_vote_t,
  * NODUS_W_VOTE_BUFFER_ROUND_AHEAD/_VIEW_AHEAD/_CAP), the round state
@@ -494,20 +467,15 @@ typedef struct nodus_witness {
     const struct nodus_domain_runtime *v2_runtime_table;
     size_t                             v2_runtime_table_n;
 
-    /* CC-OPS-005 / Q17 — chain_config observability counters.
+    /* CC-OPS-005 / Q17 — chain_config cache observability counters.
      *
      * Framework-agnostic: plain uint64_t counters on the witness struct,
-     * bumped by the apply path. Ops can poll these via the existing
-     * nodus-status surface or a periodic journal dump (see
-     * nodus_witness_chain_config_log_stats). Matches the
-     * CHAIN_CONFIG_PROPOSAL log literal used as a tripwire elsewhere;
-     * these counters provide the "how many" alongside each log line's
-     * "which".
+     * bumped by nodus_chain_config_get_u64 on a cache hit / miss.
+     * The former proposals_committed / proposals_rejected counters are
+     * DELETED: no path ever wrote them.
      *
      * Not atomic — nodus witness thread model treats these as single-
-     * writer from the apply path. */
-    uint64_t    chain_config_proposals_committed;   /* INSERT success */
-    uint64_t    chain_config_proposals_rejected;    /* apply path rejected */
+     * writer from the witness thread. */
     uint64_t    chain_config_cache_hits;            /* get_u64 cache hit */
     uint64_t    chain_config_cache_misses;          /* get_u64 cache miss / warm-up */
     /* P2P-PORT F5 — chain_config_peer_schema_mismatch (CC-OPS-002) is

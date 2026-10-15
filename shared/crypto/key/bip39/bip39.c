@@ -285,10 +285,3 @@ bool bip39_validate_mnemonic(const char *mnemonic) {
 
     return valid;
 }
-
-/**
- * Get BIP39 wordlist
- */
-const char **bip39_get_wordlist(void) {
-    return BIP39_WORDLIST;
-}

@@ -38,9 +38,6 @@ extern "C" {
  *  The leader returns 1 attestation representing full quorum agreement. */
 #define DNAC_GENESIS_MIN_ATTESTATIONS   1
 
-/** Genesis commitment size (SHA3-512 hash of genesis data) */
-#define DNAC_GENESIS_COMMITMENT_SIZE    64
-
 /* ============================================================================
  * Data Types
  * ========================================================================== */
@@ -52,16 +49,6 @@ typedef struct {
     char fingerprint[DNAC_FINGERPRINT_SIZE];  /**< Recipient's identity fingerprint */
     uint64_t amount;                           /**< Amount to allocate */
 } dnac_genesis_recipient_t;
-
-/**
- * @brief Genesis state (stored by witnesses)
- */
-typedef struct {
-    uint8_t genesis_hash[DNAC_TX_HASH_SIZE];   /**< Genesis transaction hash */
-    uint64_t total_supply;                      /**< Total tokens created */
-    uint64_t genesis_timestamp;                 /**< Unix timestamp of genesis */
-    uint8_t genesis_commitment[DNAC_GENESIS_COMMITMENT_SIZE]; /**< Commitment hash */
-} dnac_genesis_state_t;
 
 /* ============================================================================
  * Genesis Transaction Functions
@@ -113,80 +100,6 @@ int dnac_tx_authorize_genesis(dnac_context_t *ctx, dnac_transaction_t *tx);
  *         - DNAC_ERROR_NETWORK: DHT broadcast failed
  */
 int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx);
-
-/* ============================================================================
- * Genesis State Query Functions
- * ========================================================================== */
-
-/**
- * @brief Check if genesis has occurred
- *
- * Queries witnesses to determine if the system has been initialized.
- *
- * @param ctx DNAC context
- * @param exists_out Output: true if genesis exists
- * @return DNAC_SUCCESS or error code
- */
-int dnac_genesis_check_exists(dnac_context_t *ctx, bool *exists_out);
-
-/**
- * @brief Get genesis state information
- *
- * Retrieves the genesis state from witnesses if genesis has occurred.
- *
- * @param ctx DNAC context
- * @param state_out Output genesis state
- * @return DNAC_SUCCESS or error code:
- *         - DNAC_ERROR_NO_GENESIS: Genesis has not occurred
- */
-int dnac_genesis_get_state(dnac_context_t *ctx, dnac_genesis_state_t *state_out);
-
-/**
- * @brief Get total supply from genesis
- *
- * Returns the total token supply established at genesis.
- *
- * @param ctx DNAC context
- * @param supply_out Output total supply
- * @return DNAC_SUCCESS or error code:
- *         - DNAC_ERROR_NO_GENESIS: Genesis has not occurred
- */
-int dnac_genesis_get_total_supply(dnac_context_t *ctx, uint64_t *supply_out);
-
-/* ============================================================================
- * Witness-Side Genesis Functions (Internal)
- * ========================================================================== */
-
-/**
- * @brief Check if genesis exists in witness database
- *
- * Used by witness servers to check pre-authorization.
- *
- * @return true if genesis has occurred
- */
-bool witness_genesis_exists(void *user_data);
-
-/**
- * @brief Record genesis in witness database
- *
- * Called when GENESIS transaction is committed.
- *
- * @param tx_hash Genesis transaction hash
- * @param total_supply Total tokens created
- * @param commitment Genesis commitment hash
- * @return 0 on success, -1 on error
- */
-int witness_genesis_set(const uint8_t *tx_hash,
-                        uint64_t total_supply,
-                        const uint8_t *commitment, void *user_data);
-
-/**
- * @brief Get genesis state from witness database
- *
- * @param state_out Output genesis state
- * @return 0 on success, -1 if no genesis
- */
-int witness_genesis_get(dnac_genesis_state_t *state_out, void *user_data);
 
 /* ============================================================================
  * Two-Phase Genesis Flow (v0.11.0 - Chain ID)

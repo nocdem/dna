@@ -92,10 +92,6 @@ void qgp_log_set_filter_mode(qgp_log_filter_mode_t mode) {
     g_filter_mode = mode;
 }
 
-qgp_log_filter_mode_t qgp_log_get_filter_mode(void) {
-    return g_filter_mode;
-}
-
 /* Enable a tag (for whitelist mode) */
 void qgp_log_enable_tag(const char *tag) {
     if (!tag || g_enabled_count >= QGP_LOG_MAX_TAGS) {
@@ -122,37 +118,6 @@ void qgp_log_enable_tag(const char *tag) {
                 memcpy(g_disabled_tags[j], g_disabled_tags[j + 1], sizeof(g_disabled_tags[j]));
             }
             g_disabled_count--;
-            break;
-        }
-    }
-}
-
-/* Disable a tag (for blacklist mode) */
-void qgp_log_disable_tag(const char *tag) {
-    if (!tag || g_disabled_count >= QGP_LOG_MAX_TAGS) {
-        return;
-    }
-
-    /* Check if already in list */
-    for (int i = 0; i < g_disabled_count; i++) {
-        if (strcmp(g_disabled_tags[i], tag) == 0) {
-            return;  /* Already disabled */
-        }
-    }
-
-    /* Add to disabled list */
-    strncpy(g_disabled_tags[g_disabled_count], tag, QGP_LOG_MAX_TAG_LEN - 1);
-    g_disabled_tags[g_disabled_count][QGP_LOG_MAX_TAG_LEN - 1] = '\0';
-    g_disabled_count++;
-
-    /* Also remove from enabled list if present */
-    for (int i = 0; i < g_enabled_count; i++) {
-        if (strcmp(g_enabled_tags[i], tag) == 0) {
-            /* Shift remaining tags */
-            for (int j = i; j < g_enabled_count - 1; j++) {
-                memcpy(g_enabled_tags[j], g_enabled_tags[j + 1], sizeof(g_enabled_tags[j]));
-            }
-            g_enabled_count--;
             break;
         }
     }
@@ -205,51 +170,6 @@ bool qgp_log_should_log(qgp_log_level_t level, const char *tag) {
         /* Blacklist mode: show all except disabled tags */
         return !is_tag_disabled(tag);
     }
-}
-
-/* Generic print function (for potential future use) */
-void qgp_log_print(qgp_log_level_t level, const char *tag, const char *fmt, ...) {
-    if (!qgp_log_should_log(level, tag)) {
-        return;
-    }
-
-    va_list args;
-    va_start(args, fmt);
-
-    const char *level_str;
-    FILE *out = stdout;
-
-    switch (level) {
-        case QGP_LOG_LEVEL_DEBUG:
-            level_str = "DEBUG";
-            break;
-        case QGP_LOG_LEVEL_INFO:
-            level_str = "";
-            break;
-        case QGP_LOG_LEVEL_WARN:
-            level_str = "WARN";
-            out = stderr;
-            break;
-        case QGP_LOG_LEVEL_ERROR:
-            level_str = "ERROR";
-            out = stderr;
-            break;
-        default:
-            level_str = "";
-            break;
-    }
-
-    if (level_str[0] != '\0') {
-        fprintf(out, "[%s] %s: ", tag, level_str);
-    } else {
-        fprintf(out, "[%s] ", tag);
-    }
-
-    vfprintf(out, fmt, args);
-    fprintf(out, "\n");
-    fflush(out);
-
-    va_end(args);
 }
 
 /* ============================================================================
@@ -684,10 +604,6 @@ void qgp_log_file_enable(bool enabled) {
     pthread_mutex_unlock(&g_file_mutex);
 }
 
-bool qgp_log_file_is_enabled(void) {
-    return g_file_logging_enabled;
-}
-
 void qgp_log_file_set_options(int max_size_kb, int max_files) {
     pthread_mutex_lock(&g_file_mutex);
     if (max_size_kb > 0) {
@@ -697,36 +613,6 @@ void qgp_log_file_set_options(int max_size_kb, int max_files) {
         g_file_max_files = max_files;
     }
     pthread_mutex_unlock(&g_file_mutex);
-}
-
-void qgp_log_file_close(void) {
-    pthread_mutex_lock(&g_file_mutex);
-    if (g_log_file) {
-        /* Write shutdown marker - v0.6.47: Use thread-safe localtime */
-        time_t now = time(NULL);
-        struct tm tm_buf;
-        struct tm *tm_info = safe_localtime(&now, &tm_buf);
-        char time_buf[32];
-        if (tm_info) {
-            strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
-        } else {
-            strncpy(time_buf, "0000-00-00 00:00:00", sizeof(time_buf));
-        }
-        fprintf(g_log_file, "=== DNA Connect Log Closed: %s ===\n\n", time_buf);
-
-        fflush(g_log_file);
-        fclose(g_log_file);
-        g_log_file = NULL;
-    }
-    g_file_init_attempted = false;
-    pthread_mutex_unlock(&g_file_mutex);
-}
-
-const char* qgp_log_file_get_path(void) {
-    if (!g_file_logging_enabled || g_log_file_path[0] == '\0') {
-        return NULL;
-    }
-    return g_log_file_path;
 }
 
 void qgp_log_file_write(qgp_log_level_t level, const char *tag, const char *fmt, ...) {

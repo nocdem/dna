@@ -974,27 +974,10 @@ int nodus_client_dnac_spend_ex(nodus_client_t *client,
                                  nodus_dnac_spend_result_t *result_out,
                                  char *err_msg, size_t err_cap);
 
-/**
- * Check if a nullifier has been spent.
- *
- * @param nullifier  64-byte nullifier to check
- * @param result_out  Nullifier check result
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_nullifier(nodus_client_t *client,
-                                  const uint8_t *nullifier,
-                                  nodus_dnac_nullifier_result_t *result_out);
-
-/**
- * Query ledger entry by transaction hash.
- *
- * @param tx_hash     64-byte transaction hash
- * @param result_out  Ledger entry result
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_ledger(nodus_client_t *client,
-                               const uint8_t *tx_hash,
-                               nodus_dnac_ledger_result_t *result_out);
+/* nodus_client_dnac_nullifier / _ledger / _ledger_range / _history / _tx /
+ * _spend_replay / _block / _block_range / _genesis and their result
+ * types are deleted with the dnac_* RPCs of the same names (2026-10-15):
+ * those RPCs read legacy tables no version-3 chain writes. */
 
 /**
  * Query supply state.
@@ -1067,34 +1050,6 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
  * nodus_client_dnac_msig_utxo (beside dnac_addr_history below). */
 
 /**
- * Query ledger entries in a sequence range.
- * Caller must free result_out->entries when done.
- *
- * @param from_seq    Start sequence (inclusive)
- * @param to_seq      End sequence (inclusive)
- * @param result_out  Ledger range result
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_ledger_range(nodus_client_t *client,
-                                     uint64_t from_seq, uint64_t to_seq,
-                                     nodus_dnac_range_result_t *result_out);
-
-/**
- * Query transaction history for an owner fingerprint.
- * Returns transactions where the owner is sender OR receiver.
- * Caller must free result_out with nodus_client_free_history_result().
- *
- * @param owner       Owner fingerprint string (128 hex chars)
- * @param limit       Maximum entries to return (capped at 100)
- * @param result_out  History query result
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_history(nodus_client_t *client,
-                                const char *owner,
-                                int limit,
-                                nodus_dnac_history_result_t *result_out);
-
-/**
  * Query witness roster.
  *
  * @param result_out  Roster result
@@ -1102,84 +1057,6 @@ int nodus_client_dnac_history(nodus_client_t *client,
  */
 int nodus_client_dnac_roster(nodus_client_t *client,
                                nodus_dnac_roster_result_t *result_out);
-
-/**
- * Query full transaction data by hash.
- * Caller must free result_out->tx_data when done.
- *
- * @param tx_hash     64-byte transaction hash
- * @param result_out  Transaction data result
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_tx(nodus_client_t *client,
-                           const uint8_t *tx_hash,
-                           nodus_dnac_tx_result_t *result_out);
-
-/**
- * Request a fresh spndrslt receipt for a previously-committed TX.
- *
- * Used by DNAC clients to recover from a dnac_spend timeout: if the
- * first spend was actually committed but the response was lost, the
- * client calls spend_replay to re-obtain a valid witness signature +
- * ledger coordinates. The server re-signs the same canonical preimage
- * over the committed (block_height, tx_index) with a fresh timestamp;
- * the on-chain position is identical to the original commit.
- *
- * Returns:
- *   0                        — committed; result_out populated
- *   NODUS_ERR_NOT_FOUND      — tx_hash is not in the committed ledger
- *   NODUS_ERR_TIMEOUT / ...  — transport errors as usual
- *
- * @param tx_hash     64-byte committed transaction hash to replay
- * @param result_out  Same shape as nodus_client_dnac_spend() receipt
- */
-int nodus_client_dnac_spend_replay(nodus_client_t *client,
-                                     const uint8_t *tx_hash,
-                                     nodus_dnac_spend_result_t *result_out);
-
-/**
- * Query block by height.
- *
- * @param height      Block height
- * @param result_out  Block result
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_block(nodus_client_t *client,
-                              uint64_t height,
-                              nodus_dnac_block_result_t *result_out);
-
-/**
- * Query the genesis block (Phase 2 / Task 36).
- *
- * Fetches the height-0 block including the serialized chain_def blob
- * so the client can reassemble a dnac_block_t, recompute the block
- * hash, and compare against its hardcoded chain_id. Caller must free
- * result_out with nodus_client_free_genesis_result().
- *
- * @param result_out  Genesis result
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_genesis(nodus_client_t *client,
-                                nodus_dnac_genesis_result_t *result_out);
-
-/** Free heap-allocated chain_def_blob from dnac_genesis result. */
-void nodus_client_free_genesis_result(nodus_dnac_genesis_result_t *result);
-
-/** Free heap-allocated commit_cert from dnac_block result. */
-void nodus_client_free_block_result(nodus_dnac_block_result_t *result);
-
-/**
- * Query blocks in a height range.
- * Caller must free result_out->blocks when done.
- *
- * @param from_height Start height (inclusive)
- * @param to_height   End height (inclusive)
- * @param result_out  Block range result
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_block_range(nodus_client_t *client,
-                                    uint64_t from_height, uint64_t to_height,
-                                    nodus_dnac_block_range_result_t *result_out);
 
 /**
  * List all registered tokens.
@@ -1211,26 +1088,6 @@ void nodus_client_free_token_list_result(nodus_dnac_token_list_result_t *result)
  * Free UTXO entries from nodus_client_dnac_utxo().
  */
 void nodus_client_free_utxo_result(nodus_dnac_utxo_result_t *result);
-
-/**
- * Free history entries from nodus_client_dnac_history().
- */
-void nodus_client_free_history_result(nodus_dnac_history_result_t *result);
-
-/**
- * Free range entries from nodus_client_dnac_ledger_range().
- */
-void nodus_client_free_range_result(nodus_dnac_range_result_t *result);
-
-/**
- * Free TX data from nodus_client_dnac_tx().
- */
-void nodus_client_free_tx_result(nodus_dnac_tx_result_t *result);
-
-/**
- * Free block range from nodus_client_dnac_block_range().
- */
-void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *result);
 
 /* ── Phase 14 / stake-delegation v1 RPCs ───────────────────────────── */
 
@@ -1868,7 +1725,7 @@ int nodus_client_dnac_supply_buckets(nodus_client_t *client,
  * (decision docs/plans/decisions/2026-09-28-scan-v3-query.md item 3a)
  *
  * PUBLIC: any session may ask about any owner (no session-owner gate —
- * unlike dnac_utxo / dnac_history, which keep theirs, C11). It answers
+ * unlike dnac_utxo, which keeps its own, C11). It answers
  * totals only: no coin ids, no history. TRANSPARENT coins only — the
  * CORE-domain rows of utxo_set; never a shielded pool's notes (never to
  * be extended there).
@@ -1955,7 +1812,7 @@ void nodus_client_free_balance_result(nodus_dnac_balance_result_t *result);
  * answer differently for heights one of them did not index.
  *
  * C11: the owner MUST be the authenticated session's own fingerprint
- * (the dnac_history rule) — nobody reads another owner's history.
+ * (the C11 session-owner rule) — nobody reads another owner's history.
  *
  * Request  "a": {"owner": tstr — exactly 128 lowercase hex,
  *                "limit": uint 1..NODUS_DNAC_ADDR_HISTORY_MAX_LIMIT,

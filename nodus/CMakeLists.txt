@@ -680,7 +680,6 @@ if(NOT WIN32)
         # (INACTIVE). Placed here, not in the common list, because it
         # calls nodus_committee_compute_for_epoch directly.
         src/witness/nodus_witness_vset.c
-        src/witness/nodus_witness_genesis_seed.c
         src/witness/nodus_witness_chain_config.c
         # Archive reward, package B2b-1 — the archive probe's runtime: the
         # reporter (a seated validator probes every other storage member
@@ -1542,13 +1541,6 @@ target_link_libraries(circuit_latency_probe nodus dsa nodus pthread)
 add_executable(test_media_tier2 tests/test_media_tier2.c)
 target_link_libraries(test_media_tier2 nodus dsa nodus)
 add_test(NAME test_media_tier2 COMMAND test_media_tier2)
-
-# Batch forward live tests (not in ctest — requires running server)
-add_executable(test_batch_forward_live tests/test_batch_forward_live.c)
-target_link_libraries(test_batch_forward_live nodus dsa nodus)
-
-add_executable(test_batch_real_data tests/test_batch_real_data.c)
-target_link_libraries(test_batch_real_data nodus dsa nodus)
 
 # Tier 3 protocol test (BFT CBOR)
 add_executable(test_tier3 tests/test_tier3.c)
@@ -3172,18 +3164,12 @@ add_test(NAME test_merkle_scan_fail_close COMMAND test_merkle_scan_fail_close)
 
 # Root-layout round (K3): test_merkle_proof (the UTXO-set build_proof
 # round-trip) is DELETED with nodus_witness_merkle_build_proof, its only
-# subject; verify_proof keeps coverage through test_merkle_tx_proof.
-
-# RFC 6962 tx_root inclusion proof tests (anchored-merkle-proofs / Tasks 32-35)
-add_executable(test_merkle_tx_proof tests/test_merkle_tx_proof.c)
-target_link_libraries(test_merkle_tx_proof nodus dsa nodus)
-add_test(NAME test_merkle_tx_proof COMMAND test_merkle_tx_proof)
+# subject. test_merkle_tx_proof (the tx_root inclusion-proof round-trip)
+# is DELETED with nodus_witness_merkle_build_tx_proof and the dnac_history
+# RPC (2026-10-15); nodus_witness_merkle_verify_proof has no test left.
 
 # P2P-PORT F5 — test_witness_peer_dedup (the deleted 4004 peer table) is
 # DELETED; one connection per identity is the switch's (test_p2p_switch).
-
-# Phase 11 follow-up — block_txs_get DB query test
-register_witness_test(test_block_txs_get)
 
 # "My Delegations" query — DB layer test backing dnac_delegations T3 RPC
 register_witness_test(test_witness_delegations_query)
@@ -3240,11 +3226,6 @@ target_compile_definitions(test_chain_config_failclose PRIVATE
                            NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_chain_config_failclose
          COMMAND test_chain_config_failclose)
-
-# Spend replay DB helper test (Fix #4 B)
-add_executable(test_spend_replay tests/test_spend_replay.c)
-target_link_libraries(test_spend_replay nodus dsa nodus)
-add_test(NAME test_spend_replay COMMAND test_spend_replay)
 
 # Replication phase tests
 add_executable(test_put_if_newer tests/test_put_if_newer.c ${NODUS_TEST_STORAGE_HELPER})
@@ -3601,9 +3582,6 @@ register_witness_test(test_committee_cache)
 
 # Tasks 55 + 57 integration/genesis-seed tests retired in v0.16 stage A.3
 # (exercised the old reward-table seeding + auto-claim paths).
-
-# 2026-04-19 — Genesis ghost-stake fix: parse_cd_supply helper for Rule P.2
-register_witness_test(test_parse_cd_supply)
 
 # P2P-PORT F5 — test_witness_protocol_version_gate (the tier-3 header's
 # NODUS_T3_BFT_PROTOCOL_VER gate) is DELETED with the envelope; a peer on

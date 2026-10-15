@@ -406,56 +406,13 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
 
     rc = dnac_witness_request(ctx, &request, witnesses, &witness_count);
 
-    /* Fix #4 B: on timeout, the TX may or may not have been committed
-     * before the response was lost. Probe via dnac_witness_replay to
-     * recover a fresh spndrslt receipt bound to the committed (block,
-     * tx_index). If recovered, treat as success and fall through to
-     * the witness-verify + local-state-update path. */
-    if (rc == DNAC_ERROR_TIMEOUT) {
-        struct timespec ts = { .tv_sec = 2, .tv_nsec = 0 };
-        nanosleep(&ts, NULL);
-
-        dnac_witness_sig_t replayed;
-        int replay_rc = dnac_witness_replay(ctx, tx->tx_hash, &replayed);
-        if (replay_rc == DNAC_SUCCESS) {
-            QGP_LOG_WARN(LOG_TAG,
-                "dnac_spend timed out but replay recovered a committed "
-                "receipt (block=%llu, tx_index=%u) — treating as success",
-                (unsigned long long)replayed.block_height,
-                replayed.tx_index);
-            witnesses[0] = replayed;
-            witness_count = 1;
-            rc = DNAC_SUCCESS;
-        }
-        /* else: genuinely timed out, TX is not in ledger — fall through
-         * to the error branch below. */
-    }
+    /* The Fix #4 B receipt recovery on TIMEOUT / DOUBLE_SPEND
+     * (dnac_witness_replay over the dnac_spend_replay RPC) is deleted with
+     * that RPC (2026-10-15): it read committed_transactions, which no
+     * version-3 chain writes, so it never recovered a receipt. */
 
     /* BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
     if (rc != DNAC_SUCCESS || witness_count < 1) {
-        /* Fix #4 B: on DOUBLE_SPEND, the nullifiers are committed but we
-         * don't know if OUR tx_hash is the committing one. Call
-         * dnac_witness_replay with our tx_hash — if it matches a
-         * committed TX, we are the committer (this is the "retry of
-         * cached pending broadcast" path) and should recover the
-         * receipt instead of reporting failure. Otherwise, it's a
-         * genuine double-spend from a different TX. */
-        if (rc == DNAC_ERROR_DOUBLE_SPEND) {
-            dnac_witness_sig_t replayed;
-            int replay_rc = dnac_witness_replay(ctx, tx->tx_hash, &replayed);
-            if (replay_rc == DNAC_SUCCESS) {
-                QGP_LOG_WARN(LOG_TAG,
-                    "DOUBLE_SPEND on our tx_hash — recovered via replay "
-                    "(block=%llu, tx_index=%u), treating as success",
-                    (unsigned long long)replayed.block_height,
-                    replayed.tx_index);
-                witnesses[0] = replayed;
-                witness_count = 1;
-                rc = DNAC_SUCCESS;
-                goto receipt_ok;  /* Fall into Step 4 below */
-            }
-        }
-
         /* Mark pending spends as failed */
         dnac_db_expire_pending_spends(db);
 
@@ -474,7 +431,6 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
          * instead of masking it as generic witness failure. */
         return (rc != DNAC_SUCCESS) ? rc : DNAC_ERROR_WITNESS_FAILED;
     }
-receipt_ok:;
 
     /* Step 4: Verify and add witnesses to transaction.
      *

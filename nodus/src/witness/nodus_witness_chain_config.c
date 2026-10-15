@@ -2193,20 +2193,6 @@ void nodus_witness_cc_collect_abort(nodus_witness_t *w) {
     w->cc_collect = NULL;
 }
 
-/* Q17 / CC-OPS-005 — observability dump. Single-line structured log
- * so external scrapers / grafana agents can tail journalctl. */
-void nodus_chain_config_log_stats(nodus_witness_t *w) {
-    if (!w) return;
-    QGP_LOG_INFO(LOG_TAG,
-        "CHAIN_CONFIG_STATS committed=%llu rejected=%llu "
-        "cache_hits=%llu cache_misses=%llu rate_limited=%llu",
-        (unsigned long long)w->chain_config_proposals_committed,
-        (unsigned long long)w->chain_config_proposals_rejected,
-        (unsigned long long)w->chain_config_cache_hits,
-        (unsigned long long)w->chain_config_cache_misses,
-        (unsigned long long)w->cc_rate_limit.rate_limited_count);
-}
-
 /* HF-4 review (L1 F1): nodus_chain_config_apply — the legacy CHAIN_CONFIG
  * tx apply, with its private parse / rule / digest helpers — is DELETED:
  * it had no caller in nodus/src or in any test since R3 W4 closed the

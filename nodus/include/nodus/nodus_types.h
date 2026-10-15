@@ -26,8 +26,8 @@ extern "C" {
  * long time. Bump BOTH, together, every time. */
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  26
-#define NODUS_VERSION_PATCH  5
-#define NODUS_VERSION_STRING "0.26.5"
+#define NODUS_VERSION_PATCH  6
+#define NODUS_VERSION_STRING "0.26.6"
 
 /* Mempool lifetime ceiling (docs/plans/decisions/2026-09-25-mempool-
  * policy.md, decision 1 — "100 block yeterli"): CheckTx (new AND
@@ -192,13 +192,11 @@ extern "C" {
 #define NODUS_T3_MAX_TX_SIZE        65536   /* 64 KB serialized TX */
 #define NODUS_T3_MAX_TX_INPUTS      16
 #define NODUS_T3_MAX_TX_OUTPUTS     16
-#define NODUS_T3_MAX_TX_WITNESSES   3
 /* R3 W4 — NODUS_T3_ROUND_TIMEOUT_MS and NODUS_T3_VIEWCHG_TIMEOUT_MS are
  * DELETED with the closed consensus lane: their only reader, the legacy
  * PBFT round/view-change timeout check (nodus_witness_bft_check_timeout),
  * is deleted. O15H's NODUS_T3_MAX_VIEW_CHANGES removal note, which cited
  * that same function, is superseded by this same deletion. */
-#define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 /* NODUS_T3_BFT_PROTOCOL_VER — DELETED in P2P-PORT F5 (last value 7).
  *
  * It travelled, signed, in every tier-3 envelope header and was the
@@ -367,13 +365,6 @@ extern "C" {
  * identifies exactly one formula, forever. */
 #define NODUS_STATE_ROOT_VERSION_V4 0x04u
 
-/* CC-OPS-002 / Q14 — Chain-config schema version advertised in w_ident
- * handshake so binary skew (6-of-7 new binary + 1 old) is detected at
- * connect time with a pinned "PEER SCHEMA MISMATCH" log literal instead
- * of silently degrading via state_root divergence. Bump when any on-disk
- * or on-wire consensus-affecting schema changes materially. */
-#define NODUS_CHAIN_CONFIG_SCHEMA_VERSION  1u
-
 /* Burn address: all-zero fingerprint (128 hex zero = 64 bytes zero)
  * Fee UTXOs are recorded here. Unspendable — no private key exists. */
 #define DNAC_BURN_ADDRESS \
@@ -526,9 +517,6 @@ typedef enum {
 /** Maximum UTXO entries per query */
 #define NODUS_DNAC_MAX_UTXO_RESULTS   100
 
-/** Maximum ledger range entries per query */
-#define NODUS_DNAC_MAX_RANGE_RESULTS  100
-
 /** DNAC spend status */
 typedef enum {
     NODUS_DNAC_APPROVED  = 0,
@@ -550,22 +538,6 @@ typedef struct {
     uint32_t tx_index;            /* Phase 13 — ti wire key */
     uint8_t  chain_id[32];        /* Phase 13 — cid wire key */
 } nodus_dnac_spend_result_t;
-
-/** Nullifier check result */
-typedef struct {
-    bool     is_spent;
-} nodus_dnac_nullifier_result_t;
-
-/** Ledger entry query result */
-typedef struct {
-    bool     found;
-    uint64_t sequence;
-    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t  tx_type;
-    uint64_t epoch;
-    uint64_t timestamp;
-    uint64_t nullifier_count;
-} nodus_dnac_ledger_result_t;
 
 /** Supply state result */
 typedef struct {
@@ -666,78 +638,12 @@ typedef struct {
 /** UTXO query result.
  *
  * Phase 7 (Task 38) adds `block_height` — the latest committed block height
- * at the time of the query, so clients can fetch the matching block anchor
- * via nodus_client_dnac_block() and verify each UTXO's proof against it. */
+ * at the time of the query (the proof anchor target). */
 typedef struct {
     int count;
     nodus_dnac_utxo_entry_t *entries;   /* Heap-allocated, caller frees */
     uint64_t block_height;              /* Latest committed height (anchor target) */
 } nodus_dnac_utxo_result_t;
-
-/** Ledger range entry */
-typedef struct {
-    uint64_t sequence;
-    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t  tx_type;
-    uint64_t epoch;
-    uint64_t timestamp;
-    uint64_t nullifier_count;
-} nodus_dnac_range_entry_t;
-
-/** Ledger range query result */
-typedef struct {
-    uint64_t total_entries;
-    int      count;
-    nodus_dnac_range_entry_t *entries;  /* Heap-allocated, caller frees */
-} nodus_dnac_range_result_t;
-
-/** Transaction output in history entry */
-typedef struct {
-    char     owner_fp[129];
-    uint64_t amount;
-    uint32_t output_index;
-    uint8_t  token_id[64];          /* zeros = native DNAC */
-    /* Optional memo attached to this output (Gap: v0.12.10).
-     * Wire protocol carries it as an optional "memo" CBOR key — older
-     * witness nodes leave memo_len at 0, which is backward compatible. */
-    char     memo[256];
-    uint8_t  memo_len;
-} nodus_dnac_history_output_t;
-
-#define NODUS_DNAC_MAX_TX_OUTPUTS 8
-
-/** Transaction history entry (per-owner query).
- *
- * Phase 2 / Task 39 (2026-04-16) — each TX ships with an anchored tx_root
- * inclusion proof against block_height. proof_depth=0 means the witness
- * did not ship a proof (or could not build one); verifier rejects. */
-typedef struct {
-    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t  tx_type;
-    char     sender_fp[129];
-    uint64_t fee;
-    uint64_t block_height;
-    uint64_t timestamp;
-    nodus_dnac_history_output_t outputs[NODUS_DNAC_MAX_TX_OUTPUTS];
-    int      output_count;
-
-    /* Anchored Merkle proof (Task 39). Empty/zero if the witness did not
-     * ship a proof (backward compat with pre-Phase 7 servers). */
-    uint8_t  proof_siblings[NODUS_DNAC_PROOF_MAX_DEPTH *
-                              NODUS_DNAC_PROOF_HASH_LEN];
-    uint32_t proof_positions;       /* bitfield: bit i = direction at level i */
-    uint32_t proof_depth;            /* number of sibling levels (0 = missing) */
-    uint8_t  proof_root[NODUS_DNAC_PROOF_HASH_LEN]; /* tx_root */
-} nodus_dnac_history_entry_t;
-
-/** Transaction history query result */
-typedef struct {
-    int      count;
-    nodus_dnac_history_entry_t *entries;  /* Heap-allocated, caller frees */
-} nodus_dnac_history_result_t;
-
-/** Max history entries per query */
-#define NODUS_DNAC_MAX_HISTORY_RESULTS 100
 
 /** Delegation entry in "my delegations" query (one per active position).
  *
@@ -779,79 +685,7 @@ typedef struct {
     nodus_dnac_roster_entry_t entries[NODUS_T3_MAX_WITNESSES];
 } nodus_dnac_roster_result_t;
 
-/** Full transaction query result (v0.10.0 hub/spoke) */
-typedef struct {
-    bool     found;
-    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t  tx_type;
-    uint8_t  *tx_data;      /* Heap-allocated, caller frees */
-    uint32_t tx_len;
-    uint64_t block_height;
-    uint64_t timestamp;
-} nodus_dnac_tx_result_t;
-
-/** Commit certificate entry — one 2f+1 PRECOMMIT APPROVE signature. */
-typedef struct {
-    uint8_t signer_id[NODUS_T3_WITNESS_ID_LEN];
-    uint8_t signature[NODUS_SIG_BYTES];
-} nodus_dnac_commit_sig_t;
-
-/** Block query result (v0.10.0 hub/spoke).
- *
- * Phase 2 / Task 37 (2026-04-16) — extended with full header fields
- * (prev_hash, state_root, tx_root, tx_count) and the BFT commit_cert
- * (2f+1 PRECOMMIT signatures) so clients can construct a
- * dnac_block_anchor_t from any block without trusting a single witness.
- * commit_cert is heap-allocated and must be freed with
- * nodus_client_free_block_result(). */
-typedef struct {
-    bool     found;
-    uint64_t height;
-    /* Legacy single-TX field — for multi-TX blocks this now carries the
-     * block's tx_root (see handle_dnac_block doxygen). */
-    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t  tx_type;
-    uint64_t timestamp;
-    uint8_t  proposer_id[NODUS_T3_WITNESS_ID_LEN];
-
-    /* Phase 7 Task 37 extensions */
-    uint8_t  prev_hash[NODUS_T3_TX_HASH_LEN];    /* Parent block hash */
-    uint8_t  state_root[NODUS_T3_TX_HASH_LEN];   /* SHA3-512 over UTXO set */
-    uint8_t  tx_root[NODUS_T3_TX_HASH_LEN];      /* RFC 6962 Merkle root */
-    uint32_t tx_count;
-
-    /* Heap-allocated commit certificate (2f+1 PRECOMMIT sigs). NULL / 0
-     * if the block has no stored cert (e.g. seeded genesis). */
-    nodus_dnac_commit_sig_t *commit_cert;
-    int                      commit_cert_count;
-} nodus_dnac_block_result_t;
-
-/** Genesis block query result (Phase 2 / Task 36).
- *
- * Returned by nodus_client_dnac_genesis(). Carries the raw header fields
- * plus the serialized chain_def blob; the caller reassembles a
- * dnac_block_t, computes the block hash, and compares against the
- * hardcoded chain_id.
- *
- * chain_def_blob is heap-allocated; free with
- * nodus_client_free_genesis_result(). */
-typedef struct {
-    bool     found;
-    uint64_t height;
-    uint8_t  prev_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t  state_root[NODUS_T3_TX_HASH_LEN];
-    uint8_t  tx_root[NODUS_T3_TX_HASH_LEN];
-    uint32_t tx_count;
-    uint64_t timestamp;
-    uint8_t  proposer_id[NODUS_T3_WITNESS_ID_LEN];
-
-    uint8_t  *chain_def_blob;       /* heap-allocated, caller frees */
-    size_t    chain_def_blob_len;
-} nodus_dnac_genesis_result_t;
-
 /** Token info (returned by token_list / token_info queries) */
-#define NODUS_DNAC_MAX_TOKEN_RESULTS  100
-
 typedef struct {
     uint8_t  token_id[64];
     char     name[64];
@@ -866,13 +700,6 @@ typedef struct {
     int count;
     nodus_dnac_token_info_t *tokens;   /* Heap-allocated, caller frees */
 } nodus_dnac_token_list_result_t;
-
-/** Block range query result (v0.10.0 hub/spoke) */
-typedef struct {
-    uint64_t total_blocks;
-    int      count;
-    nodus_dnac_block_result_t *blocks;  /* Heap-allocated, caller frees */
-} nodus_dnac_block_range_result_t;
 
 /* ── Phase 14 / Stake-delegation v1 query results ─────────────────── */
 

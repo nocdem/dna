@@ -256,7 +256,6 @@ int nodus_verify_view_ok(const nodus_sig_t *sig,
 /* ───── Hash / identity helpers (unchanged) ─────────────────────────── */
 
 int nodus_hash(const uint8_t *data, size_t data_len, nodus_key_t *hash_out);
-int nodus_hash_hex(const uint8_t *data, size_t data_len, char *hex_out);
 int nodus_fingerprint(const nodus_pubkey_t *pk, nodus_key_t *fp_out);
 int nodus_fingerprint_hex(const nodus_pubkey_t *pk, char *hex_out);
 int nodus_random(uint8_t *buf, size_t len);

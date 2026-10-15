@@ -442,15 +442,6 @@ int nodus_chain_config_derive_witness_id(const uint8_t pubkey[NODUS_CC_PUBKEY_SI
                                           uint8_t out_witness_id[NODUS_CC_WITNESS_ID_SIZE]);
 
 /**
- * Log a single-line summary of chain_config observability counters
- * (Q17 / CC-OPS-005). Call from any periodic tick (e.g., per epoch,
- * per heartbeat) or on-demand via a signal handler. Framework-agnostic
- * — produces a structured log line that downstream grafana/prometheus
- * scrapers can parse if needed. Safe to call at any time.
- */
-void nodus_chain_config_log_stats(nodus_witness_t *w);
-
-/**
  * Handle an incoming governance approval request (D-16 rev 7, W4-CC;
  * since P2P-PORT F5 a message on the 4004 channel 0x71, the former verb
  * w_cc_appr_req). Peer-side of the

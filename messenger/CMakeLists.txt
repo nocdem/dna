@@ -244,7 +244,6 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/serialize.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/genesis.c
-        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/nullifier.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/block.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/chain_def_codec.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_prepare.c
@@ -258,7 +257,6 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/stake.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
-        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
         # Ledger V2 S1 correction #3 — libdna OWNS its compile of the shared
         # TX codec (one source file, one compile unit per library; the same
         # source sits in NODUS_SOURCES). dnac_tx_compute_hash delegates to
@@ -425,7 +423,6 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/serialize.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/genesis.c
-        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/nullifier.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/block.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/chain_def_codec.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_prepare.c
@@ -439,7 +436,6 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/stake.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
-        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
         # Ledger V2 S1 correction #3 — libdna OWNS its compile of the shared
         # TX codec (one source file, one compile unit per library; the same
         # source sits in NODUS_SOURCES). dnac_tx_compute_hash delegates to

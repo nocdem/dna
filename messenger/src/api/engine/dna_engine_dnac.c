@@ -229,15 +229,11 @@ void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task) {
     dnac_tx_history_t *history = NULL;
     int count = 0;
 
-    /* Authoritative path: fetch from witnesses (blocks up to 10s).
-     * dnac_get_remote_history persists each entry to local DB as a side
-     * effect, so subsequent get_history_local calls see incoming TXs. */
-    int ret = dnac_get_remote_history(ctx, &history, &count);
-    if (ret != DNAC_SUCCESS) {
-        QGP_LOG_WARN(LOG_TAG, "remote history failed (%d), falling back to local",
-                     ret);
-        ret = dnac_get_history(ctx, &history, &count);
-    }
+    /* Local DB only: the witness fetch (dnac_get_remote_history over the
+     * dnac_history RPC) is deleted with that RPC (2026-10-15) — it read
+     * legacy tables no version-3 chain writes and always answered zero
+     * entries. This handler now returns what get_history_local returns. */
+    int ret = dnac_get_history(ctx, &history, &count);
     if (ret != DNAC_SUCCESS) {
         QGP_LOG_ERROR(LOG_TAG, "dnac_get_history failed: %d (%s)",
                       ret, dnac_error_string(ret));
@@ -252,8 +248,8 @@ void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task) {
 /* Local-only history read: returns immediately from the local DB cache,
  * never touches the witness network. Used by the history screen's
  * stale-while-revalidate pattern — Flutter calls this first to populate
- * the UI, then fires dna_engine_dnac_get_history in the background to
- * refresh from witnesses (which also persists new incoming TXs). */
+ * the UI, then fires dna_engine_dnac_get_history in the background (which
+ * since 2026-10-15 also reads only the local DB — see above). */
 void dna_handle_dnac_get_history_local(dna_engine_t *engine, dna_task_t *task) {
     dnac_context_t *ctx = ensure_dnac_init(engine);
     if (!ctx) {

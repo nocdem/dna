@@ -192,21 +192,6 @@ void nodus_cluster_tick(nodus_cluster_t *cluster) {
         elect_leader(cluster);
 }
 
-void nodus_cluster_on_heartbeat(nodus_cluster_t *cluster,
-                                  const nodus_key_t *node_id) {
-    nodus_cluster_peer_t *peer = find_peer(cluster, node_id);
-    if (!peer) return;
-
-    nodus_node_state_t old_state = peer->state;
-    peer->last_seen = nodus_time_now();
-
-    if (old_state != NODUS_NODE_ALIVE) {
-        peer->state = NODUS_NODE_ALIVE;
-        sync_ring(cluster, peer, old_state);
-        elect_leader(cluster);
-    }
-}
-
 void nodus_cluster_on_pong(nodus_cluster_t *cluster,
                              const nodus_key_t *real_node_id,
                              const char *from_ip, uint16_t from_port) {
@@ -250,23 +235,6 @@ void nodus_cluster_on_pong(nodus_cluster_t *cluster,
         fprintf(stderr, "CLUSTER: injected %s:%d into routing table\n",
                 peer->ip, peer->udp_port);
     }
-}
-
-const nodus_key_t *nodus_cluster_leader(const nodus_cluster_t *cluster) {
-    return &cluster->leader_id;
-}
-
-bool nodus_cluster_is_leader(const nodus_cluster_t *cluster) {
-    return cluster->is_leader;
-}
-
-int nodus_cluster_alive_count(const nodus_cluster_t *cluster) {
-    int count = 1;  /* Self is always alive */
-    for (int i = 0; i < cluster->peer_count; i++) {
-        if (cluster->peers[i].state == NODUS_NODE_ALIVE)
-            count++;
-    }
-    return count;
 }
 
 uint64_t nodus_cluster_peer_offline_secs(const nodus_cluster_t *cluster,

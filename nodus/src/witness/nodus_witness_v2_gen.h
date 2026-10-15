@@ -225,9 +225,9 @@ extern "C" {
  *  than carry an unbounded list inside a ~255 KB config struct. */
 #define NODUS_V2_GEN_MAX_GENOUTS         64u
 
-/** The 16-byte zero-padded tag of the genesis-output coin identity:
- *  "NDS.GENOUT.v1" (13 chars + 3 zero bytes). */
-#define NODUS_V2_GEN_GENOUT_TAG          "NDS.GENOUT.v1"
+/* The 16-byte zero-padded tag of the genesis-output coin identity,
+ * "NDS.GENOUT.v1" (13 chars + 3 zero bytes), is GEN_TAG_GENOUT in
+ * nodus_witness_v2_gen.c. */
 
 /**
  * One GENESIS OUTPUT (general multisig, decision ONAY 2): a coin that
