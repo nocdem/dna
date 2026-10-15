@@ -50,7 +50,7 @@ it wherever a detail matters.
 | | |
 |---|---|
 | Machine | Linux, x86-64. The CPU must have **AVX, BMI2 and ADX** — the node runs a self-test of the EVM precompiles at start and refuses to start without them. |
-| Disk | The whole chain plus the segment files you are given. The chain database was about **15 GB** in mid-October 2026 (measured: 15.2 GiB at height 201 809) and grows with every block until the node takes a role and prunes to 7 paydays; one segment file is estimated at ≈ 1.7 GB. Leave plenty of room — 50 GB free is a sensible start (a recommendation, not a measured limit). |
+| Disk | The whole chain plus the segment files you are given. The chain database was about **15 GB** in mid-October 2026 (measured: 15.2 GiB at height 201 809) and grows with every block until the node takes a role and prunes to 7 paydays. Required: at least **150 GB** free — 50 GB for the node and 100 GB for segment files; **200 GB recommended** (operator requirement 2026-10-15). One segment file was ≈ 0.7 GB in mid-October 2026 (17 280 blocks; EU-6: 11 files, 7.8 GB). |
 | Network | A public IP that stays the same. **TCP 4004** must be reachable from the internet: the witnesses talk to your node on that port. |
 | Clock | NTP must be on (`timedatectl` shows `System clock synchronized: yes`). A witness's question carries a deadline 10 s ahead; a node whose clock is off by a few seconds starts missing answers. |
 | Wallet | A Nodus wallet with **1 000 000 NODUS + the fee** (≈ 0.5 NODUS at today's gas price). [Nodus Connect](https://connect.nodusnetwork.io) does the registration for you. |

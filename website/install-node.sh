@@ -270,7 +270,7 @@ main() {
     if avail_kib=$(df -Pk /var/lib 2>/dev/null | awk 'NR == 2 { print $4 }') && [ -n "$avail_kib" ]; then
         avail_gib=$((avail_kib / 1024 / 1024))
         if [ "$avail_gib" -lt "$MIN_FREE_GIB" ]; then
-            warn "only $avail_gib GiB free under /var/lib. The chain grows with every block; $MIN_FREE_GIB GiB free is a sensible start."
+            warn "only $avail_gib GiB free under /var/lib. A node needs at least $MIN_FREE_GIB GiB; a storage node needs at least 150 GiB (200 GiB recommended)."
         else
             say "Free disk under /var/lib: $avail_gib GiB."
         fi

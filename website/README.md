@@ -803,3 +803,12 @@ archive) instead of "do not switch on pruning yet"; the chain-size figure is ≈
 201,809) instead of ≈ 10 GB. `npm run build:portals`, `npm run check`, `npm run package` run; only
 `network.html` and `search-index.json` changed and were copied to wiki.nodusnetwork.io by SCP (backup of the live
 pair in `/root/wiki-bak-20261015/` on the web host); live hashes verified equal to the package.
+
+2026-10-15, disk requirements (operator: node 50 GB; storage +100 GB; 200 GB recommended): the Wiki "Running a node"
+paragraph says a node needs at least 50 GB free; "Run a storage node" requirements (EN+TR) say at least 150 GB free
+(50 for the node + 100 for segment files), 200 GB recommended; `nodus/docs/STORAGE_NODE.md` the same, plus the
+measured segment size (≈ 0.7 GB per 17,280-block file; EU-6 11 files, 7.8 GB) replacing the old ≈ 1.7 GB estimate.
+`install-node.sh` keeps `MIN_FREE_GIB=50`; only its low-disk warning text changed (node 50 GiB, storage node 150 GiB,
+200 recommended) → new SHA-256 538183d3…1108b, updated in `wiki/content.mjs`. Built, checked, packaged; three
+changed files (wiki network.html + search-index.json, site install-node.sh) copied by SCP, previous ones backed up
+in `/root/wiki-bak-20261015b/` on the web host; live hashes equal the package.
