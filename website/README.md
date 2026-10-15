@@ -794,3 +794,12 @@ fresh machine yet. `npm run build:portals` and `npm run check` were run.
 screen (height against the network, services, storage / witness registration, disk, memory,
 clock). install-node.sh changed only in those messages; its SHA-256 in `wiki/content.mjs` is
 6e6e9cdb…ae5af. `npm run build:portals` and `npm run check` were run.
+
+2026-10-15, role-based block retention (nodus 0.26.5, decision `2026-10-14-role-based-pruning.md`): the Wiki
+"Running a node" block-retention paragraph and the "Run a storage node" requirements and step 2 (EN+TR) now say
+the node prunes by itself by role (witness or storage node: last 7 paydays; no role: every block; a storage node
+never drops a block of an unfinished archive file or of the unpublished period; `"retain_blocks": 0` = full
+archive) instead of "do not switch on pruning yet"; the chain-size figure is ≈ 15 GB (measured 15.2 GiB at height
+201,809) instead of ≈ 10 GB. `npm run build:portals`, `npm run check`, `npm run package` run; only
+`network.html` and `search-index.json` changed and were copied to wiki.nodusnetwork.io by SCP (backup of the live
+pair in `/root/wiki-bak-20261015/` on the web host); live hashes verified equal to the package.
