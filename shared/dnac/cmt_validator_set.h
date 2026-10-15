@@ -149,6 +149,7 @@
 #include "cmt_merkle.h"    /* cmt_merkle_item_t                               */
 #include "cmt_pb.h"        /* cmt_pb_public_key_t, cmt_pb_validator_t, sizes  */
 #include "ledger_ids.h"    /* DNA_MAX_ACTIVE_VALIDATORS                       */
+#include "cmt_fraction.h"  /* cmt_fraction_t — VerifyCommitLightTrusting*     */
 
 #ifdef __cplusplus
 extern "C" {
@@ -990,6 +991,33 @@ int cmt_validator_set_verify_commit_light_all_signatures(
         size_t chain_id_len, const cmt_pb_block_id_t *block_id,
         int64_t height, const cmt_pb_commit_t *commit, cmt_vs_error_t *err);
 
+/**
+ * cometbft@v0.38.26 types/validator_set.go:777-786 —
+ * `(vals *ValidatorSet) VerifyCommitLightTrusting()`: the method form of
+ * `types.VerifyCommitLightTrusting` and nothing more (:785). Its reference
+ * caller is light/verifier.go:58 (`VerifyNonAdjacent`), ported as
+ * cmt_light_verifier.c. Same parameter spelling rule as
+ * `cmt_validator_set_verify_commit`; the implementation delegates to
+ * `cmt_verify_commit_light_trusting` (cmt_validation.h).
+ * @return CMT_OK, CMT_REJECT, CMT_FAULT.
+ */
+int cmt_validator_set_verify_commit_light_trusting(
+        cmt_validator_set_t *vals, const uint8_t *chain_id,
+        size_t chain_id_len, const cmt_pb_commit_t *commit,
+        cmt_fraction_t trust_level, cmt_vs_error_t *err);
+
+/**
+ * cometbft@v0.38.26 types/validator_set.go:788-797 —
+ * `(vals *ValidatorSet) VerifyCommitLightTrustingAllSignatures()`: the
+ * method form of `types.VerifyCommitLightTrustingAllSignatures` (:796);
+ * delegates to `cmt_verify_commit_light_trusting_all_signatures`.
+ * @return CMT_OK, CMT_REJECT, CMT_FAULT.
+ */
+int cmt_validator_set_verify_commit_light_trusting_all_signatures(
+        cmt_validator_set_t *vals, const uint8_t *chain_id,
+        size_t chain_id_len, const cmt_pb_commit_t *commit,
+        cmt_fraction_t trust_level, cmt_vs_error_t *err);
+
 /* ── the codec side (KODEK rows) ────────────────────────────────────── */
 
 /**
@@ -1070,14 +1098,15 @@ int cmt_validator_set_from_existing_validators(cmt_validator_set_t *vals,
  *       (2026-09-29) as `cmt_validator_set_verify_commit_light` /
  *       `_light_all_signatures` above; their caller
  *       blocksync/reactor.go:496 is now built. No longer a hole. (709fd12b; at v0.38.26 blocksync calls VerifyCommit / VerifyCommitExtended instead, reactor.go:581, :591.)
- *   · :780-797 `VerifyCommitLightTrusting`,
+ *   · :777-797 `VerifyCommitLightTrusting`,
  *              `VerifyCommitLightTrustingAllSignatures`
- *                                     — YOK by the port map's scope rule
- *       (REV 3 ~892, REV 3.1 ~950): the pair wraps the Trusting half of
- *       the light-client family of types/validation.go (:126-193), whose
- *       only callers are `light/` and the evidence pool. It additionally
- *       needs `cmtmath.Fraction` and a trust level, which nothing in
- *       scope supplies.
+ *                                     — PORTED with the light verifier
+ *       (2026-10-16, bandwidth / storage light clients,
+ *       docs/plans/2026-10-16-bandwidth-role-design.md §1 B9) as
+ *       `cmt_validator_set_verify_commit_light_trusting` /
+ *       `_trusting_all_signatures` above, with `cmtmath.Fraction` as
+ *       `cmt_fraction_t` (cmt_fraction.h). Until then YOK by the port
+ *       map's scope rule (REV 3 ~892, REV 3.1 ~950). No longer a hole.
  *   · :862-864 `ErrNotEnoughVotingPowerSigned.Error` — display only; the
  *       VALUE it formats is `cmt_vs_error_t` above.
  *   · :871-896 `String` / `StringIndented` — display only.

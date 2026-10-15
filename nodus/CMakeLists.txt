@@ -458,6 +458,10 @@ set(NODUS_SOURCES
     # cometbft @709fd12b → C port, wave R1-D (types/validation.go,
     # types/evidence.go, state/state.go helpers). Still zero consumers.
     ${SHARED_DIR}/dnac/cmt_validation.c
+    # light/verifier.go + types/light.go SignedHeader (2026-10-16, the
+    # bandwidth / storage light clients). No node caller yet; in the
+    # common list so it compiles on Windows.
+    ${SHARED_DIR}/dnac/cmt_light_verifier.c
     ${SHARED_DIR}/dnac/cmt_evidence.c
     ${SHARED_DIR}/dnac/cmt_state.c
     # cometbft @709fd12b → C port, wave R2-A (FLEET-TM-R2): types/vote_set.go,
@@ -1867,6 +1871,13 @@ add_test(NAME test_cmt_genesis COMMAND test_cmt_genesis)
 add_executable(test_cmt_validation tests/test_cmt_validation.c)
 target_link_libraries(test_cmt_validation nodus dsa nodus crypto)
 add_test(NAME test_cmt_validation COMMAND test_cmt_validation)
+
+# light/verifier.go + the VerifyCommitLightTrusting family (2026-10-16).
+# The file header states what it proves / requires / leaves behind / how
+# it can lie.
+add_executable(test_cmt_light_verifier tests/test_cmt_light_verifier.c)
+target_link_libraries(test_cmt_light_verifier nodus dsa nodus crypto)
+add_test(NAME test_cmt_light_verifier COMMAND test_cmt_light_verifier)
 
 add_executable(test_cmt_evidence tests/test_cmt_evidence.c)
 target_link_libraries(test_cmt_evidence nodus dsa nodus crypto)

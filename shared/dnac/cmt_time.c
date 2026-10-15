@@ -72,6 +72,55 @@ int64_t cmt_time_unix_nano(cmt_time_t t)
     return (int64_t)ns;
 }
 
+/** Go `time.Time.After` — strictly later. (Moved from cmt_cs.c's static
+ *  cs_time_after, body unchanged; see cmt_time.h.) */
+bool cmt_time_after(cmt_time_t a, cmt_time_t b)
+{
+    if (a.seconds != b.seconds) {
+        return a.seconds > b.seconds;
+    }
+    return a.nanos > b.nanos;
+}
+
+/** Go `time.Time.Before` — strictly earlier: b is after a. */
+bool cmt_time_before(cmt_time_t a, cmt_time_t b)
+{
+    return cmt_time_after(b, a);
+}
+
+/**
+ * Go `t.Add(d)` for a nanosecond duration, with the carry `cmt_time_t`
+ * needs (nanos always in [0, 1e9) — cmt_time.h:80-81). The arithmetic is
+ * formed in unsigned words because Go's int64 arithmetic wraps and C's
+ * signed overflow is undefined; the value is identical wherever the
+ * reference is itself well defined. Same shape as cmt_config.h:205-231.
+ * (Moved from cmt_cs.c's static cs_time_add_ns, body unchanged.)
+ */
+cmt_time_t cmt_time_add_ns(cmt_time_t t, int64_t ns)
+{
+    cmt_time_t out;
+    int64_t    add_secs;
+    int64_t    add_nanos;
+    uint64_t   secs;
+    int64_t    nanos;
+
+    add_secs  = ns / (int64_t)1000000000;
+    add_nanos = ns % (int64_t)1000000000;
+
+    secs  = (uint64_t)t.seconds + (uint64_t)add_secs;
+    nanos = (int64_t)t.nanos + add_nanos;
+    if (nanos >= (int64_t)CMT_TIME_NANOS_PER_SECOND) {
+        nanos -= (int64_t)CMT_TIME_NANOS_PER_SECOND;
+        secs  += 1u;
+    } else if (nanos < 0) {
+        nanos += (int64_t)CMT_TIME_NANOS_PER_SECOND;
+        secs  -= 1u;
+    }
+    out.seconds = (int64_t)secs;
+    out.nanos   = (int32_t)nanos;
+    return out;
+}
+
 /* cometbft@v0.38.26 types/time/time.go:27-32 — NewWeightedTime() */
 int cmt_new_weighted_time(cmt_time_t t, int64_t weight,
                           cmt_weighted_time_t *out)

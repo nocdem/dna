@@ -1369,6 +1369,30 @@ int cmt_validator_set_verify_commit_light_all_signatures(
                                                   commit, err);    /* :774 */
 }
 
+/* :777-786 (vals *ValidatorSet) VerifyCommitLightTrusting() — the whole
+ * body is the one delegation at :785. */
+int cmt_validator_set_verify_commit_light_trusting(
+        cmt_validator_set_t *vals, const uint8_t *chain_id,
+        size_t chain_id_len, const cmt_pb_commit_t *commit,
+        cmt_fraction_t trust_level, cmt_vs_error_t *err)
+{
+    return cmt_verify_commit_light_trusting(chain_id, chain_id_len, vals,
+                                            commit, trust_level,
+                                            err);                 /* :785 */
+}
+
+/* :788-797 (vals *ValidatorSet) VerifyCommitLightTrustingAllSignatures()
+ * — the one delegation at :796. */
+int cmt_validator_set_verify_commit_light_trusting_all_signatures(
+        cmt_validator_set_t *vals, const uint8_t *chain_id,
+        size_t chain_id_len, const cmt_pb_commit_t *commit,
+        cmt_fraction_t trust_level, cmt_vs_error_t *err)
+{
+    return cmt_verify_commit_light_trusting_all_signatures(
+            chain_id, chain_id_len, vals, commit, trust_level,
+            err);                                                 /* :796 */
+}
+
 /* :91-113 ValidateBasic() */
 int cmt_validator_set_validate_basic(const cmt_validator_set_t *vals)
 {

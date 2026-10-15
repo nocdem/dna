@@ -86,46 +86,10 @@ void cmt_cs_fail_point(void)
  * C-only helpers
  * ══════════════════════════════════════════════════════════════════════ */
 
-/** Go `time.Time.After` — strictly later. */
-static bool cs_time_after(cmt_time_t a, cmt_time_t b)
-{
-    if (a.seconds != b.seconds) {
-        return a.seconds > b.seconds;
-    }
-    return a.nanos > b.nanos;
-}
-
-/**
- * Go `t.Add(d)` for a nanosecond duration, with the carry `cmt_time_t`
- * needs (nanos always in [0, 1e9) — cmt_time.h:80-81). The arithmetic is
- * formed in unsigned words because Go's int64 arithmetic wraps and C's
- * signed overflow is undefined; the value is identical wherever the
- * reference is itself well defined. Same shape as cmt_config.h:205-231.
- */
-static cmt_time_t cs_time_add_ns(cmt_time_t t, int64_t ns)
-{
-    cmt_time_t out;
-    int64_t    add_secs;
-    int64_t    add_nanos;
-    uint64_t   secs;
-    int64_t    nanos;
-
-    add_secs  = ns / (int64_t)1000000000;
-    add_nanos = ns % (int64_t)1000000000;
-
-    secs  = (uint64_t)t.seconds + (uint64_t)add_secs;
-    nanos = (int64_t)t.nanos + add_nanos;
-    if (nanos >= (int64_t)CMT_TIME_NANOS_PER_SECOND) {
-        nanos -= (int64_t)CMT_TIME_NANOS_PER_SECOND;
-        secs  += 1u;
-    } else if (nanos < 0) {
-        nanos += (int64_t)CMT_TIME_NANOS_PER_SECOND;
-        secs  -= 1u;
-    }
-    out.seconds = (int64_t)secs;
-    out.nanos   = (int32_t)nanos;
-    return out;
-}
+/* Go `time.Time.After` and `t.Add(d)` were static here as cs_time_after /
+ * cs_time_add_ns; they moved, bodies unchanged, to cmt_time.{h,c} as
+ * cmt_time_after / cmt_time_add_ns so the light verifier
+ * (cmt_light_verifier.c) uses the same two functions. */
 
 /**
  * Go `a.Sub(b)` as a nanosecond count — state.go:558 and :1028.
@@ -4097,14 +4061,14 @@ int cmt_cs_vote_time(cmt_cs_t *cs, cmt_time_t *out)
     /* :2413 — `const timeIota = time.Millisecond`, the minimum increment
      * between blocks. :2414-2415 carries the reference's own TODO. */
     if (cs->rs.locked_block != NULL) {                           /* :2416 */
-        min_vote_time = cs_time_add_ns(cs->rs.locked_block->header.time,
-                                       CMT_CS_TIME_IOTA_NS);     /* :2419 */
+        min_vote_time = cmt_time_add_ns(cs->rs.locked_block->header.time,
+                                        CMT_CS_TIME_IOTA_NS);    /* :2419 */
     } else if (cs->rs.proposal_block != NULL) {                  /* :2420 */
-        min_vote_time = cs_time_add_ns(cs->rs.proposal_block->header.time,
-                                       CMT_CS_TIME_IOTA_NS);     /* :2421 */
+        min_vote_time = cmt_time_add_ns(cs->rs.proposal_block->header.time,
+                                        CMT_CS_TIME_IOTA_NS);    /* :2421 */
     }
 
-    if (cs_time_after(now, min_vote_time)) {                     /* :2424 */
+    if (cmt_time_after(now, min_vote_time)) {                    /* :2424 */
         *out = now;                                              /* :2425 */
         return CMT_OK;
     }

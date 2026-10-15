@@ -34,7 +34,7 @@
  * function that returns false with the citation, and the batch routine is
  * NOT ported: see the taşınmadı list.
  *
- * ── THE LIGHT FAMILY: `VerifyCommitLight` IS PORTED, Trusting IS NOT ──
+ * ── THE LIGHT FAMILY: `VerifyCommitLight` AND Trusting ARE PORTED ─────
  * `VerifyCommitLight` / `VerifyCommitLightAllSignatures` /
  * `verifyCommitLightInternal` (:62-116) are PORTED (blocksync port,
  * 2026-09-29), for their then caller `blocksync/reactor.go:496` @709fd12b
@@ -47,18 +47,25 @@
  * cmt_bsync_reactor.c process_first), so the light pair has NO
  * production caller today — only its tests. The wrappers at
  * `validator_set.go:763-775` are ported with them
- * (cmt_validator_set.h). `VerifyCommitLightTrusting*` (:126-193) stay YOK
- * by the port map's REV 3/3.1 scope rule (map ~892, ~950): their callers
- * are `light/` and the evidence pool, which this port does not build.
+ * (cmt_validator_set.h). `VerifyCommitLightTrusting` /
+ * `VerifyCommitLightTrustingAllSignatures` /
+ * `verifyCommitLightTrustingInternal` (:118-193) were YOK by the port
+ * map's REV 3/3.1 scope rule (map ~892, ~950) until 2026-10-16, when the
+ * bandwidth / storage roles became light clients
+ * (docs/plans/2026-10-16-bandwidth-role-design.md §1 B9; decision
+ * docs/plans/decisions/2026-10-16-relay-port-4003-bandwidth-role.md). They
+ * are now PORTED below, with `cmtmath.Fraction` as `cmt_fraction_t`
+ * (cmt_fraction.h). Their reference callers are light/verifier.go:58
+ * (ported as cmt_light_verifier.c) and the evidence pool (NOT ported);
+ * no node path calls them today.
  *
  * `verifyCommitSingle` keeps BOTH of its lookup branches and both of its
  * predicate parameters, because they are that function's parameters and
  * dropping them would be a different function. `look_up_by_index = true`
  * is reachable from `cmt_verify_commit` (:52-53, CMT_SIG_POLICY_COMMIT)
  * and from `cmt_verify_commit_light*` (:114-115, CMT_SIG_POLICY_LIGHT);
- * the address branch is reachable only from the Trusting family, and it
- * is ported — with its double-vote check — so that the row is complete
- * and testable.
+ * the address branch is reachable from the Trusting family
+ * (`cmt_verify_commit_light_trusting*`, :191-192).
  *
  * ── Substitutions, and nothing else ────────────────────────────────────
  *  · signature ML-DSA-87 via `qgp_dsa87_verify`, exactly as `cmt_vote_verify`
@@ -86,7 +93,12 @@
  *   · the unnamed `fmt.Errorf` at :431-432 — wrong BlockID;
  *   · the unnamed `fmt.Errorf`s at :355 (a CommitSig that fails
  *     ValidateBasic), :379 (a double vote in the address branch), :385 (a
- *     validator with a nil PubKey) and :391 (a wrong signature).
+ *     validator with a nil PubKey) and :391 (a wrong signature);
+ *   · the Trusting family's unnamed `errors.New`s at :163 (a zero
+ *     trust-level Denominator) and :172 (int64 overflow computing the
+ *     voting power needed). Its nil-set and nil-commit errors (:160,
+ *     :166) are CMT_FAULT under R1B-10, as `verifyBasicValsAndCommit`'s
+ *     are.
  * ONLY `ErrNotEnoughVotingPowerSigned{Got, Needed}` (:407;
  * validator_set.go:855-860) survives as a value, because its two numbers
  * are the answer to "how far short was it" and no return code can carry
@@ -103,15 +115,9 @@
  * same commit and the same set reach the same verdict.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
- *   · :126-193 `VerifyCommitLightTrusting`,
- *              `VerifyCommitLightTrustingAllSignatures`,
- *              `verifyCommitLightTrustingInternal`
- *                                  — YOK, scope rule (light client /
- *       evidence pool); see above. `verifyCommitLightTrusting`
- *       additionally needs `cmtmath.Fraction` and a trust level, which no
- *       in-scope caller supplies.
  *   (:62-116, the `VerifyCommitLight` trio, were on this list until the
- *   blocksync port; they are ported below.)
+ *   blocksync port; :118-193, the `VerifyCommitLightTrusting` trio, until
+ *   the light-verifier port of 2026-10-16. Both are ported below.)
  *   · :197-205 `ValidateHash`       — ALREADY PORTED as `cmt_validate_hash`
  *       (cmt_part_set.h:128). Not duplicated; see above.
  *   · :215-323 `verifyCommitBatch`  — taşınmadı: ULAŞILMAZ (v0.38.21
@@ -155,6 +161,7 @@
 #include "cmt_tmhash.h"
 #include "cmt_block.h"          /* cmt_block_id_t, cmt_commit_t          */
 #include "cmt_validator_set.h"  /* cmt_validator_set_t, cmt_vs_error_t   */
+#include "cmt_fraction.h"       /* cmt_fraction_t — the Trusting family  */
 
 #ifdef __cplusplus
 extern "C" {
@@ -183,14 +190,17 @@ typedef enum {
      */
     CMT_SIG_POLICY_COMMIT = 0,
     /**
-     * validation.go:102, :105 — the light family's pair.
+     * validation.go:102, :105 — the light family's pair (repeated
+     * verbatim for the Trusting family at :177, :180).
      *   ignore: `BlockIDFlag != BlockIDFlagCommit`  (:102)
      *   count : always true                         (:105)
      * Passed by `cmt_verify_commit_light` and
      * `cmt_verify_commit_light_all_signatures` (:110, :114-115), which have
      * NO production caller since the v0.38.26 pin: block sync, their
      * caller @709fd12b (reactor.go:496), now calls the full
-     * `cmt_verify_commit` (v0.38.26 reactor.go:580-585). A NIL entry is
+     * `cmt_verify_commit` (v0.38.26 reactor.go:580-585); and by
+     * `cmt_verify_commit_light_trusting*` (:186-187, :191-192), whose
+     * caller is the light verifier (cmt_light_verifier.c). A NIL entry is
      * IGNORED here — not verified — which is the light path's difference
      * from CMT_SIG_POLICY_COMMIT.
      */
@@ -277,8 +287,9 @@ int cmt_verify_basic_vals_and_commit(const cmt_validator_set_t *vals,
  *        index (:361) and requires the addresses to match (:362-365);
  *        false looks it up BY ADDRESS (:367), skips a signature belonging
  *        to nobody in the set (:371-373) and refuses a validator who
- *        appears twice (:377-381). Only true is reachable from
- *        `cmt_verify_commit` and the `VerifyCommitLight` pair.
+ *        appears twice (:377-381). `cmt_verify_commit` and the
+ *        `VerifyCommitLight` pair pass true; the `VerifyCommitLightTrusting`
+ *        pair passes false (:187, :192).
  * @param err may be NULL. On CMT_REJECT it receives
  *        `ErrNotEnoughVotingPowerSigned` with `got`/`needed` when that is
  *        the reason, and `CMT_VS_ERR_NONE` for every other rejection — so
@@ -373,6 +384,59 @@ int cmt_verify_commit_light_all_signatures(const uint8_t *chain_id,
                                            int64_t height,
                                            const cmt_commit_t *commit,
                                            cmt_vs_error_t *err);
+
+/**
+ * cometbft@v0.38.26 types/validation.go:118-133 —
+ * `VerifyCommitLightTrusting()`.
+ *
+ * "Verifies that trustLevel of the validator set signed this commit. NOTE
+ * the given validators do not necessarily correspond to the validator set
+ * for this commit, but there may be some intersection. This method is
+ * primarily used by the light client and does NOT check all the
+ * signatures." (:118-125). It is `verifyCommitLightTrustingInternal(...,
+ * false)` (:132), which differs from the `VerifyCommitLight` pair in four
+ * ways, all the reference's:
+ *   · NO `verifyBasicValsAndCommit` — set size, height and BlockID are not
+ *     compared, because the set need not be the commit's (:121-122);
+ *   · the threshold is `TotalVotingPower * Numerator / Denominator`
+ *     (:170-174), with `safeMul` refusing an int64 overflow (:170-173), a
+ *     zero Denominator refused first (:162-164), and the comparison still
+ *     STRICT (`got <= needed` rejects, :406);
+ *   · signers are found BY ADDRESS (`look_up_by_index = false`,
+ *     :182-184, :191-192): a signature from someone not in the set is
+ *     skipped (:371-373), the same validator twice is refused (:377-381);
+ *   · `trust_level` is NOT range-checked here — `ValidateTrustLevel`
+ *     (light/verifier.go:197-204) is a separate function the caller runs.
+ *
+ * @param vals NOT const: TotalVotingPower writes the set's cache.
+ * @param trust_level by value, as the reference takes it (:130).
+ * @param err may be NULL; see `cmt_verify_commit_single`.
+ * @return CMT_OK; CMT_REJECT (zero Denominator, the overflow, or any
+ *         rejection of `cmt_verify_commit_single`); CMT_FAULT on a NULL
+ *         set or commit (R1B-10 — the reference returns "nil validator
+ *         set" / "nil commit" errors, :159-161, :165-167).
+ */
+int cmt_verify_commit_light_trusting(const uint8_t *chain_id,
+                                     size_t chain_id_len,
+                                     cmt_validator_set_t *vals,
+                                     const cmt_commit_t *commit,
+                                     cmt_fraction_t trust_level,
+                                     cmt_vs_error_t *err);
+
+/**
+ * cometbft@v0.38.26 types/validation.go:135-149 —
+ * `VerifyCommitLightTrustingAllSignatures()`:
+ * `verifyCommitLightTrustingInternal(..., true)` (:148) — the same as
+ * `cmt_verify_commit_light_trusting` with EVERY commit-flagged signature
+ * of a set member verified before the tally is compared.
+ * @return CMT_OK, CMT_REJECT, CMT_FAULT.
+ */
+int cmt_verify_commit_light_trusting_all_signatures(const uint8_t *chain_id,
+                                                    size_t chain_id_len,
+                                                    cmt_validator_set_t *vals,
+                                                    const cmt_commit_t *commit,
+                                                    cmt_fraction_t trust_level,
+                                                    cmt_vs_error_t *err);
 
 #ifdef __cplusplus
 }
