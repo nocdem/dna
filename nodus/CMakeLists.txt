@@ -1648,6 +1648,16 @@ add_executable(test_tcp_read_budget tests/test_tcp_read_budget.c)
 target_link_libraries(test_tcp_read_budget nodus dsa nodus)
 add_test(NAME test_tcp_read_budget COMMAND test_tcp_read_budget)
 
+# Portable TCP listener (bandwidth role, Windows light node): listen on
+# 127.0.0.1:0 with the bound port read back, accept, one frame each way,
+# close; and the plain listener's per-IP limit (NODUS_MAX_CONNS_PER_IP)
+# refusing the connection past it. Public API only, so the same source
+# also compiles with mingw against the Windows select() loop. Kernel-chosen
+# port, no environment, no files.
+add_executable(test_tcp_listen_portable tests/test_tcp_listen_portable.c)
+target_link_libraries(test_tcp_listen_portable nodus dsa nodus)
+add_test(NAME test_tcp_listen_portable COMMAND test_tcp_listen_portable)
+
 # Client-port front door (operator's simple version, 2026-10-14): the
 # dnac_spend cost formula and the per-session chain budget with an injected
 # monotonic time; conn->max_payload closing a connection at an over-cap
