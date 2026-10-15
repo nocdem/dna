@@ -1,6 +1,8 @@
 // Nodus Connect — the "Nodus" page (#nodus-roles; More → Nodus): become a
-// witness, become a storage node, leave storage, and stop being a witness
-// ("Your witnesses"; operator 2026-10-13 "Ekle"). There is no "change your
+// witness, become a storage node, and "My registered nodes" — this wallet's
+// witnesses and storage nodes on one screen, where it stops a witness
+// (operator 2026-10-13 "Ekle") or leaves storage (operator 2026-10-15: the
+// storage nodes moved there from "Become a storage node"). There is no "change your
 // node's key": the khan removed key ROTATE from HF-6 (decision
 // docs/plans/decisions/2026-10-13-kurultay-18-summary.md item 1 — a key
 // used once is never usable again); a witness moves to a new key by
@@ -117,6 +119,18 @@ export function lockBlocks(epochs, E) {
   if (typeof epochs !== 'bigint' || typeof E !== 'bigint' || E <= 0n) return null;
   return epochs * E;
 }
+// The lists each screen reads after the node's facts: becoming a witness
+// needs the witness list (the node-key check line, keyCheckLine); "My
+// registered nodes" shows both of this wallet's lists. Becoming a storage
+// node reads neither: its consent flow does not use the storage list, and
+// leaving storage (the only reader of that list, with its Review) is on
+// "My registered nodes".
+export const SCREEN_LISTS = Object.freeze({
+  home: Object.freeze({ witnesses: false, storage: false }),
+  witness: Object.freeze({ witnesses: true, storage: false }),
+  storage: Object.freeze({ witnesses: false, storage: false }),
+  nodes: Object.freeze({ witnesses: true, storage: true })
+});
 // The page's own consent check lines (BUGS W-21), added after the module's
 // seven; each fails closed — Review is offered only when every line passed.
 // consentMarginLine: the consent must last at least until the last block
@@ -215,8 +229,8 @@ let fieldCount = 0;
 
 function freshForm() {
   // kind: the consent kind of the screen ('stake' | 'storageRegister');
-  // reviewKind: the kind of the prepared transaction (a storage screen also
-  // prepares 'storageExit', the "Your witnesses" screen 'unstake');
+  // reviewKind: the kind of the prepared transaction (the "My registered
+  // nodes" screen prepares 'unstake' or 'storageExit');
   // exitNode / stopWitness: the storage node / witness the prepared leave
   // names; error / errorFor: the last failure and the kind it belongs to.
   return { kind: null, reviewKind: null, consent: '', check: null, checkError: '', bond: '', commission: '', exitNode: '', stopWitness: '', expiry: null, prepared: null, busy: false, status: '', error: '', errorFor: null };
@@ -273,8 +287,9 @@ async function readFacts() {
   if (form.kind === 'stake' && form.bond === '' && facts.bonds) form.bond = formatUnits(facts.bonds.stakeMin, NODUS_ASSET.decimals);
   if (form.consent) runCheck();
   render();
-  if (screen === 'witness' || screen === 'witnesses') await readWitnesses(seq, c);
-  if (screen === 'storage') await readStorage(seq, c, from);
+  const lists = SCREEN_LISTS[screen];
+  if (lists?.witnesses) await readWitnesses(seq, c);
+  if (lists?.storage) await readStorage(seq, c, from);
 }
 async function readWitnesses(seq, c) {
   if (!c.stakeable) { witnesses = { rows: [], truncated: true, error: 'The witness list is not available in this wallet version.' }; if (form.consent) runCheck(); render(); return; }
@@ -351,8 +366,8 @@ function view() {
   const out = [btn('← Nodus', () => goto('home'), 'secondary small roles-back')];
   out.push(...gateNotes());
   if (screen === 'witness') out.push(...consentFlow('stake'));
-  else if (screen === 'storage') out.push(...storageList(), ...consentFlow('storageRegister'));
-  else if (screen === 'witnesses') out.push(...witnessesView());
+  else if (screen === 'storage') out.push(...consentFlow('storageRegister'));
+  else if (screen === 'nodes') out.push(...witnessesView(), ...storageList());
   if (form.status) out.push(el('p', { className: 'roles-status', text: form.status }));
   return out;
 }
@@ -387,7 +402,7 @@ function homeView() {
     el('div', { className: 'roles-list' },
       row('Become a witness', `Run a witness node you control. ${b ? `Bond at least ${nodus(b.stakeMin)}.` : bondsMissingText()}`, () => goto('witness', { kind: 'stake', bond: b ? formatUnits(b.stakeMin, NODUS_ASSET.decimals) : '' }), 'witness'),
       row('Become a storage node', `Keep a copy of the chain’s archive. ${b ? `Bond ${nodus(b.storageBond)}.` : bondsMissingText()}`, () => goto('storage', { kind: 'storageRegister' }), 'storage'),
-      row('Your witnesses', 'See the witnesses this wallet owns, or stop being a witness and get the bond back. Fee only.', () => goto('witnesses'), 'witnesses'))
+      row('My registered nodes', 'See the witness and storage nodes this wallet owns; stop a witness or leave storage and get the bond back. Fee only.', () => goto('nodes'), 'nodes'))
   ];
 }
 
@@ -532,7 +547,7 @@ function reviewCard() {
     items.push('as the witness bond of the node below, owned by this wallet.', 'Rewards go to this wallet.');
     const join = witnessJoinFrom(t.tip, r.minTenureBlocks);
     items.push(join !== null ? `The node joins the witnesses at the first epoch start at or after block ${block(join)} — the earliest; later if this transaction is included later.` : 'The node joins the witnesses after the next epoch boundaries.');
-    items.push('The bond stays locked while the node is a witness. To take it back later, use “Your witnesses” → Stop being a witness on this page.');
+    items.push('The bond stays locked while the node is a witness. To take it back later, use “My registered nodes” → Stop being a witness on this page.');
   } else if (kind === 'unstake') {
     // design "Timing facts" (UNSTAKE → bond back); the chain: the exec marks
     // the row RETIRING (rtn_unstake2_exec), the boundary that graduates it
@@ -620,7 +635,12 @@ async function confirmPrepared() {
   }
 }
 
+// "Your storage nodes" (on "My registered nodes"): this wallet's storage
+// nodes, each active one with Leave. While the witnesses card's Review is
+// open this card is not shown (as consentFlow hides behind another kind's
+// Review): one prepared transaction at a time.
 function storageList() {
+  if (form.prepared && form.reviewKind !== 'storageExit') return [];
   const out = [];
   const head = el('p', { className: 'roles-step', text: 'Your storage nodes' });
   if (!storage) return [card(null, head, el('p', { className: 'hint', text: 'Reading your storage nodes…' }))];
@@ -646,10 +666,13 @@ function storageList() {
   return out;
 }
 
-// "Your witnesses": this wallet's generation-4 witnesses, each active /
-// eligible one with "Stop being a witness" (generation-4 UNSTAKE, fee only;
-// the adapter re-checks owner and status before anything is built).
+// "Your witnesses" (on "My registered nodes"): this wallet's generation-4
+// witnesses, each active / eligible one with "Stop being a witness"
+// (generation-4 UNSTAKE, fee only; the adapter re-checks owner and status
+// before anything is built). While the storage card's Review is open this
+// card is not shown, like storageList above.
 function witnessesView() {
+  if (form.prepared && form.reviewKind !== 'unstake') return [];
   const head = el('p', { className: 'roles-step', text: 'Your witnesses' });
   if (!witnesses) return [card(null, head, el('p', { className: 'hint', text: 'Reading your witnesses…' }))];
   if (witnesses.error) return [card(null, head, el('p', { className: 'hint', text: `Your witnesses could not be read: ${witnesses.error}` }))];

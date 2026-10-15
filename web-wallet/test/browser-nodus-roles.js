@@ -6,7 +6,7 @@
 //
 // What it proves:
 // - the page shows its three rows (Become a witness, Become a storage node,
-//   Your witnesses), with the bonds the NODE reports (hf6Bonds — values
+//   My registered nodes — operator 2026-10-15), with the bonds the NODE reports (hf6Bonds — values
 //   other than the compiled defaults here; BUGS W-20) — no
 //   "Change your node's key" (the khan removed key ROTATE from HF-6,
 //   decision 2026-10-13-kurultay-18-summary.md item 1);
@@ -21,8 +21,13 @@
 // - the Review shows the node key fingerprint the module read back from the
 //   signed bytes; Confirm records the transaction (the host
 //   recorder's broadcast runs BEFORE the submission) and says it is tracked;
+// - "Become a storage node" is the consent flow only: no storage list;
+// - "My registered nodes" shows both cards — "Your witnesses" and "Your
+//   storage nodes" — on one screen; while one card's Review is open the
+//   other card is not shown; after a submission the screen shows both again;
 // - "Your storage nodes" lists this wallet's nodes, with Leave on an active
-//   one only, and Leave opens a Review that says what leaving means;
+//   one only, and Leave opens a Review that says what leaving means; Confirm
+//   records "Leaving storage";
 // - "Your witnesses" lists this wallet's generation-4 witnesses, with "Stop
 //   being a witness" on an active or eligible one only (not on a leaving
 //   one, never on another wallet's); at generation 3 the amber note shows
@@ -45,6 +50,10 @@
 // answers the check lines from the pasted text); the harness is the panel
 // alone, not the whole Connect page, so the sideways-scroll check covers
 // this page's own content inside a plain body. All numbers are fixtures.
+// "No storage list on Become a storage node" is checked after the screen's
+// check lines have rendered (the storage list would have been read and drawn
+// right after the facts); test/nodus-roles.test.js SCREEN_LISTS pins that the
+// screen does not ask for the list at all.
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { startPreview } from './preview-server.js';
@@ -136,7 +145,9 @@ try {
 
   // The page and its three rows, the amber note at generation 3.
   await root.locator('.roles-row').first().waitFor();
-  assert.deepEqual(await root.locator('.roles-row strong').allInnerTexts(), ['Become a witness', 'Become a storage node', 'Your witnesses']);
+  assert.deepEqual(await root.locator('.roles-row strong').allInnerTexts(), ['Become a witness', 'Become a storage node', 'My registered nodes']);
+  assert.equal(await root.locator('[data-role="nodes"] small').innerText(), 'See the witness and storage nodes this wallet owns; stop a witness or leave storage and get the bond back. Fee only.');
+  assert.equal(await root.locator('[data-role="witnesses"]').count(), 0, 'no separate "Your witnesses" row');
   assert.equal(await root.locator('[data-role="rotate"]').count(), 0, 'no key change row');
   await page.waitForFunction(() => /NODUS/.test(document.querySelector('[data-role="storage"]')?.innerText || ''));
   assert.match(await root.locator('[data-role="witness"]').innerText(), /1,500,000\.0 NODUS/, 'the node\'s stake minimum');
@@ -202,22 +213,52 @@ try {
   assert.ok(events.indexOf(`record:Witness bond:${'cd'.repeat(64)}`) >= 0 && events.indexOf(`record:Witness bond:${'cd'.repeat(64)}`) < events.indexOf('submit'), `recorded before the submission: ${events}`);
   assert.ok(events.includes('settled:true'));
 
-  // Your storage nodes: Leave on the active one only; its Review.
+  // Become a storage node: the consent flow only — no storage list.
   await root.locator('.roles-back').click();          // "← Nodus" always goes home (goto('home'))
   await root.locator('[data-role="storage"]').click();
-  await root.locator('.roles-node').first().waitFor();
-  assert.equal(await root.locator('.roles-node').count(), 2);
+  await root.locator('.roles-cmd').waitFor();
+  await root.locator('textarea.roles-paste').fill('nodus-valbind-consent v1\nexpiry 1700\n');
+  await root.locator('.roles-checks li[data-check="margin"][data-ok="true"]').waitFor();
+  assert.equal(await root.locator('.roles-node').count(), 0, 'no storage list on Become a storage node');
+  assert.doesNotMatch(await root.innerText(), /Your storage nodes/);
+  assert.equal(await root.locator('[data-action="leave"]').count(), 0);
+
+  // My registered nodes: both cards on one screen. Your storage nodes:
+  // Leave on the active one only; its Review; Confirm records it and the
+  // screen shows both cards again.
+  await page.evaluate(() => { window.__t.events = []; });
+  await root.locator('.roles-back').click();
+  await root.locator('[data-role="nodes"]').click();
+  await root.locator('.roles-node[data-node]').first().waitFor();
+  await root.locator('.roles-node[data-witness]').first().waitFor();
+  assert.deepEqual(await root.locator('.roles-step').allTextContents(), ['Your witnesses', 'Your storage nodes']);
+  assert.equal(await root.locator('.roles-node[data-witness]').count(), 3, 'this wallet\'s three witnesses');
+  assert.equal(await root.locator('.roles-node[data-node]').count(), 2, 'this wallet\'s two storage nodes');
   assert.equal(await root.locator(`.roles-node[data-node="${'61'.repeat(64)}"] [data-action="leave"]`).count(), 1);
   assert.equal(await root.locator(`.roles-node[data-node="${'62'.repeat(64)}"] [data-action="leave"]`).count(), 0);
-  await noSideways('storage');
+  await page.waitForFunction(() => { const b = document.querySelector('[data-action="leave"]'); return !!b && !b.disabled; });
+  await noSideways('my registered nodes');
   await root.locator('[data-action="leave"]').click();
   await root.locator('.roles-review').waitFor();
   const leave = await root.locator('.roles-review').innerText();
   assert.match(leave, /no longer paid/);
+  assert.match(leave, /The 1,000,000\.0 NODUS bond comes back/, 'the node\'s own registered bond, from the storage list on this screen');
   assert.match(leave, /locked until block 10,080/);
   assert.match(leave, /two epoch boundaries/);
   assert.match(leave, /Turning the node off is not leaving/);
+  assert.equal(await root.locator('.roles-node[data-witness]').count(), 0, 'the witnesses card is not shown while the Leave Review is open');
+  assert.equal(await root.locator('[data-action="unstake"]').count(), 0);
   await noSideways('leave review');
+  await root.locator('[data-action="confirm"]').click();
+  await root.locator('.roles-status').waitFor();
+  assert.match(await root.locator('.roles-status').innerText(), /Leaving storage submitted/);
+  const leaveEvents = await page.evaluate(() => window.__t.events);
+  assert.ok(leaveEvents.includes('build:storageExit'), `${leaveEvents}`);
+  assert.ok(leaveEvents.indexOf(`record:Leaving storage:${'cd'.repeat(64)}`) >= 0 && leaveEvents.indexOf(`record:Leaving storage:${'cd'.repeat(64)}`) < leaveEvents.indexOf('submit'), `recorded before the submission: ${leaveEvents}`);
+  await root.locator('.roles-node[data-node]').first().waitFor();
+  await root.locator('.roles-node[data-witness]').first().waitFor();
+  assert.equal(await root.locator('.roles-review').count(), 0);
+  assert.deepEqual(await root.locator('.roles-step').allTextContents(), ['Your witnesses', 'Your storage nodes'], 'still on My registered nodes after the submission');
 
   // A partial witness list: the node-key line "could not be checked", no
   // Review (BUGS W-21).
@@ -256,13 +297,15 @@ try {
   assert.ok(await root.locator('[data-action="review"]').isDisabled(), 'no witness Review without the node\'s minimum');
   await page.evaluate(() => { window.__t.bondsFail = false; });
 
-  // Your witnesses at generation 3: this wallet's three witnesses listed,
-  // "Stop being a witness" on the active and the eligible one only, both
-  // disabled, the amber note shown.
+  // My registered nodes at generation 3: this wallet's three witnesses
+  // listed, "Stop being a witness" on the active and the eligible one only,
+  // both disabled, Leave disabled too, the amber note shown.
   await page.evaluate(() => { window.__t.generation = '3'; });
   await root.locator('.roles-back').click();
-  await root.locator('[data-role="witnesses"]').click();
+  await root.locator('[data-role="nodes"]').click();
   await root.locator('.roles-node[data-witness]').first().waitFor();
+  await root.locator('.roles-node[data-node]').first().waitFor();
+  assert.ok(await root.locator('[data-action="leave"]').isDisabled(), 'Leave disabled before the HF-6 generation');
   await root.locator('.roles-amber').waitFor();
   assert.deepEqual(await root.locator('.roles-node[data-witness]').evaluateAll(nodes => nodes.map(n => n.dataset.witness)), ['51'.repeat(64), '52'.repeat(64), '55'.repeat(64)], 'only this wallet\'s witnesses');
   const stopOn = vid => root.locator(`.roles-node[data-witness="${vid}"] [data-action="unstake"]`);
@@ -277,7 +320,7 @@ try {
   // At generation 4: the button opens the Review; Confirm records it.
   await page.evaluate(() => { window.__t.generation = '4'; window.__t.events = []; });
   await root.locator('.roles-back').click();
-  await root.locator('[data-role="witnesses"]').click();
+  await root.locator('[data-role="nodes"]').click();
   await page.waitForFunction(vid => { const b = document.querySelector(`.roles-node[data-witness="${vid}"] [data-action="unstake"]`); return !!b && !b.disabled; }, '51'.repeat(64));
   assert.equal(await root.locator('.roles-amber').count(), 0, 'no amber note at generation 4');
   await stopOn('51'.repeat(64)).click();
@@ -295,6 +338,8 @@ try {
   assert.ok(!/\bdays?\b|\bhours?\b/.test(stop), 'block counts only, never hours or days');
   assert.equal(await root.locator('.roles-review .roles-fp').count(), 0, 'no node key block');
   assert.deepEqual(await root.locator('.roles-review .roles-kv dt').allInnerTexts(), ['Network fee', 'Change back to you', 'Balance after', 'Valid until block'], 'no bond, no consent line: fee and the signed change only');
+  assert.equal(await root.locator('.roles-node[data-node]').count(), 0, 'the storage card is not shown while the Stop Review is open');
+  assert.equal(await root.locator('[data-action="leave"]').count(), 0);
   await noSideways('stop being a witness review');
   await root.locator('[data-action="confirm"]').click();
   await root.locator('.roles-status').waitFor();
@@ -302,10 +347,13 @@ try {
   const stopEvents = await page.evaluate(() => window.__t.events);
   assert.ok(stopEvents.includes('build:unstake'), `${stopEvents}`);
   assert.ok(stopEvents.indexOf(`record:Leaving the witnesses:${'cd'.repeat(64)}`) >= 0 && stopEvents.indexOf(`record:Leaving the witnesses:${'cd'.repeat(64)}`) < stopEvents.indexOf('submit'), `recorded before the submission: ${stopEvents}`);
+  await root.locator('.roles-node[data-witness]').first().waitFor();
+  await root.locator('.roles-node[data-node]').first().waitFor();
+  assert.deepEqual(await root.locator('.roles-step').allTextContents(), ['Your witnesses', 'Your storage nodes'], 'still on My registered nodes after the submission');
 
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
-  console.log('Nodus roles test passed: three rows (no key change), the generation gate, failing and passing consent checks, the Review with the node key and the expiry warning, the record before the submission, the storage list with Leave, your witnesses with Stop being a witness (gate, offered rows, Review with the new-key line, record), no sideways scroll at 390 / 320 px.');
+  console.log('Nodus roles test passed: three rows (no key change), the generation gate, failing and passing consent checks, the Review with the node key and the expiry warning, the record before the submission, no storage list on Become a storage node, My registered nodes with both cards: the storage list with Leave (Review, record, back on the screen), your witnesses with Stop being a witness (gate, offered rows, Review with the new-key line, record), no sideways scroll at 390 / 320 px.');
 } finally {
   await browser?.close();
   server.stop();

@@ -8,7 +8,9 @@
 // unknown tip); a percent commission becomes basis points and the chain's
 // maximum is a ceiling; sending opens only at the HF-6 generation and never
 // when the node did not say; "your witnesses" are the generation-4 rows
-// owned by this wallet only; a consent that expires before the transaction's
+// owned by this wallet only; "My registered nodes" reads both the witness
+// and the storage list, "Become a storage node" neither (SCREEN_LISTS);
+// a consent that expires before the transaction's
 // validity fails its check line and prepareHf6 refuses it, and the node-key
 // line is "free" only against the complete witness list (BUGS W-21); the
 // role bonds are the node's (hf6Bonds): what prepareHf6 builds, a failed
@@ -38,7 +40,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   suggestExpiry, EXPIRY_MARGIN, percentToBps, gateOpen, ownWitnesses, consentMarginLine, keyCheckLine, consentRequestCode, consentRequestCommand,
-  epochStartAtOrAfter, witnessJoinFrom, storageExitHeights, canStopWitness, lockBlocks
+  epochStartAtOrAfter, witnessJoinFrom, storageExitHeights, canStopWitness, lockBlocks, SCREEN_LISTS
 } from '../src/nodus-roles.js';
 import * as roles from '../src/nodus-roles.js';
 import {
@@ -92,6 +94,18 @@ test('roles: your witnesses are the generation-4 rows owned by this wallet', () 
   assert.deepEqual(ownWitnesses(rows, OWN).map(v => v.validatorId), [VID]);
   assert.deepEqual(ownWitnesses(rows, ''), []);
   assert.deepEqual(ownWitnesses(undefined, OWN), []);
+});
+
+// Operator 2026-10-15: "My registered nodes" shows this wallet's witnesses
+// AND storage nodes; "Become a storage node" is the consent flow only.
+test('roles: the lists each screen reads — both on My registered nodes, none on Become a storage node', () => {
+  assert.deepEqual(Object.keys(SCREEN_LISTS).sort(), ['home', 'nodes', 'storage', 'witness']);
+  assert.deepEqual({ ...SCREEN_LISTS.nodes }, { witnesses: true, storage: true });
+  assert.deepEqual({ ...SCREEN_LISTS.witness }, { witnesses: true, storage: false }, 'the node-key check line needs the witness list');
+  assert.deepEqual({ ...SCREEN_LISTS.storage }, { witnesses: false, storage: false });
+  assert.deepEqual({ ...SCREEN_LISTS.home }, { witnesses: false, storage: false });
+  assert.equal(SCREEN_LISTS.witnesses, undefined, 'the old "Your witnesses" screen is gone');
+  assert.ok(Object.isFrozen(SCREEN_LISTS) && Object.isFrozen(SCREEN_LISTS.nodes));
 });
 
 // BUGS W-21: a consent ending before the transaction's last valid block is a
