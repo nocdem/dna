@@ -53,7 +53,7 @@
  *    parameter here (the same wording as cmt_block.h:403-406).
  *  · Go's typed error VALUES become CMT_REJECT plus the optional
  *    `cmt_light_error_t` out-parameter, the pattern cmt_validation.h set
- *    with `cmt_vs_error_t` (cmt_validation.h:71-73). The three named
+ *    with `cmt_vs_error_t` (cmt_validation.h:78-80). The three named
  *    error types of light/errors.go that verifier.go returns —
  *    ErrOldHeaderExpired, ErrNewValSetCantBeTrusted, ErrInvalidHeader —
  *    are carried with their payloads; every unnamed `errors.New` /
@@ -69,7 +69,7 @@
  *    deviation register R1B-10 uses for NULL → FAULT ("cannot arrive from
  *    the wire") does not hold for them.
  *  · `untrustedVals.Hash()` (verifier.go:183) needs leaf scratch in this
- *    port (`cmt_validator_set_hash`, cmt_validator_set.h:700-723); it is
+ *    port (`cmt_validator_set_hash`, cmt_validator_set.h:703-724); it is
  *    heap-allocated inside the verifier and freed before return, as
  *    `cmt_validator_set_verify_commit_extended` does. So the non-adjacent,
  *    adjacent and verify entry points ALLOCATE; nothing else here does.
@@ -188,7 +188,7 @@ int cmt_signed_header_validate_basic(const cmt_signed_header_t *sh,
 
 /**
  * The reference's typed error values, as one out-parameter (the
- * `cmt_vs_error_t` pattern, cmt_validator_set.h:289-308). On CMT_OK and
+ * `cmt_vs_error_t` pattern, cmt_validator_set.h:294-315). On CMT_OK and
  * on CMT_FAULT `code` is CMT_LIGHT_ERR_NONE. On CMT_REJECT:
  *   · CMT_LIGHT_ERR_OLD_HEADER_EXPIRED — `at` (= trusted time +
  *     trustingPeriod) and `now`, errors.go:15-16 (verifier.go:47, :106);

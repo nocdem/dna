@@ -200,7 +200,7 @@ static int verify_new_header_and_vals(const cmt_signed_header_t *untrusted_heade
      * hash needs leaf scratch, sized as nodus_witness_storage_segment.c
      * sizes it. A member without a key PANICS in the reference
      * (validator.go:119-122, Validator.Bytes); `cmt_validator_set_hash`
-     * already returns that as CMT_REJECT (cmt_validator_set.h:717-718)
+     * already returns that as CMT_REJECT (cmt_validator_set.h:718-719)
      * and it is passed through as such. */
     if (untrusted_vals == NULL) {
         return CMT_FAULT;
