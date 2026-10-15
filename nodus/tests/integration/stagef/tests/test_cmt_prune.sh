@@ -10,6 +10,11 @@
 # WHAT IT PROVES
 #   That two pruning validators (nodes 4 and 5, nodus.json
 #   `retain_blocks` R) and five archive validators (1-3, 6, 7) run ONE
+#   (since decision 2026-10-14-role-based-pruning nodes 1-3 and 7 have no
+#   retain_blocks = AUTO by role: they keep every block here only because
+#   the chain stays far below 7 × 24 × E; the wiped joiner, node 6, is
+#   started with an explicit `"retain_blocks": 0` and must log the ARCHIVE
+#   line)
 #   chain: every node agrees 7/7 on block id and global root while the
 #   pruned nodes drop their old blocks, a pruned node survives kill -9 +
 #   restart, and a WIPED archive node rejoins by its pin and block-syncs
@@ -641,6 +646,10 @@ rm -rf "$ndj/data/archive"
 [ "$vlogj" = "$ndj/nodus.log" ] || : > "$vlogj"
 ls "$ndj/data/"witness_*.db >/dev/null 2>&1 && die "wipe did not remove node$JOINER's chain DB"
 echo "[ok] node$JOINER wiped (identity kept)"
+# Decision 2026-10-14-role-based-pruning: an ABSENT retain_blocks is AUTO by
+# role (a validator keeps 7 paydays), so an archive is now an EXPLICIT
+# `"retain_blocks": 0` — the joiner gets exactly that before its start.
+stagef_write_node_config "$JOINER" 0 || die "could not write node$JOINER's archive config"
 stagef_spawn_node "$JOINER" --v2-genesis-pin "$PIN" \
     || die "node$JOINER did not come up with its pin (the [FAIL] line above names the process)"
 adopted=0
@@ -669,7 +678,11 @@ synced_n=$(printf '%s\n' "$line" | sed -n 's/.*block sync done at height \([0-9]
 case "$synced_n" in ''|*[!0-9]*) die "could not parse the block-sync line: $line" ;; esac
 [ "$synced_n" -ge 1 ] || die "node$JOINER switched to consensus with 0 blocks synced"
 echo "[ok] node$JOINER: $line"
-! grep -q 'block retention:' "$vlogj" || die "node$JOINER logged a retention line — it must be an archive node"
+grep -q 'block retention: ARCHIVE (retain_blocks 0)' "$vlogj" \
+    || die "node$JOINER did not log 'block retention: ARCHIVE (retain_blocks 0)' — it must start as an explicit archive node"
+! grep -q 'block retention: the last\|block retention: AUTO' "$vlogj" \
+    || die "node$JOINER logged a pruning retention line — it must be an archive node"
+echo "[ok] node$JOINER started as an explicit archive (retain_blocks 0)"
 ft=$(fleet_tip)
 catch_up "$JOINER" "$ft" "join"
 check_archive "$JOINER" "after-join"
