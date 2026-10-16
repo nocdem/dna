@@ -44,8 +44,8 @@
  *
  * IDENTITIES ARE EPHEMERAL, generated in memory (nodus_identity_generate)
  * — never read from or written to any identity file. The server allows
- * NODUS_MAX_SESSIONS_PER_IDENTITY (4, nodus_server.h:602) sessions per
- * identity and NODUS_MAX_CONNS_PER_IP (20, nodus_tcp.c:1069) connections
+ * NODUS_MAX_SESSIONS_PER_IDENTITY (4, nodus_server.h:608) sessions per
+ * identity and NODUS_MAX_CONNS_PER_IP (20, nodus_tcp.h:29) connections
  * per IPv4 address, so the tool uses ceil(S/4) identities with <= 4
  * sessions each and refuses S > 19 (one connection left under the per-IP
  * cap).

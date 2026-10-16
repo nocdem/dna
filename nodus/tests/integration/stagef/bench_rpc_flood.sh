@@ -52,7 +52,8 @@
 #                            once otherwise.
 #     STAGEF_FLOOD_MODE      spend-invalid (default) | v3-block | balance.
 #     STAGEF_FLOOD_SESSIONS  S, 1..19 (default 19 — 20 connections per IP
-#                            is the server cap, nodus_tcp.c:1069).
+#                            is the server cap, NODUS_MAX_CONNS_PER_IP
+#                            in nodus_tcp.h:29).
 #     STAGEF_FLOOD_THREADS   T per session, 1..64 (default 32 — 64 is
 #                            NODUS_MAX_PENDING per client).
 #     STAGEF_FLOOD_HEIGHTS   window length in committed heights (default

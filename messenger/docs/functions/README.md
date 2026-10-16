@@ -24,7 +24,7 @@ This directory provides a function-level reference for the DNA Connect codebase.
 | **Transport** | [transport.md](transport.md) | DHT transport layer (presence, offline queue) |
 | **Database** | [database.md](database.md) | SQLite databases (contacts, cache, profiles) |
 | **Blockchain** | [blockchain.md](blockchain.md) | Multi-chain wallet (Cellframe, ETH, Solana, TRON) |
-| **DNA Chain ledger** | [ledger.md](ledger.md) | Tagged state-root hashing (`shared/dnac/ledger_roots_v2.h`, in libdna) + the nodus witness treasury / genesis entries it covers |
+| **DNA Chain ledger** | [ledger.md](ledger.md) | Tagged state-root hashing (`shared/dnac/ledger_roots_v2.h`, in libdna) + the nodus witness treasury / genesis entries it covers + §25 light client package 1 (`cmt_light_*`, `cmt_fraction.h`, the moved `cmt_time_*` helpers) |
 | **Nodus EVM** | [evm.md](evm.md) | EVM engine (`shared/evm/evm.h`, `evm_precompile.h`), node EVM runtime (`nodus_witness_rt_evm.h`), call wire codec (`shared/dnac/evm_call_wire.h`), envelope builder (`nodus_v2_evm.h`), S17 storage / log scan, apply-side EVM checks, client SDK `nodus_client_evm_*` |
 | **Engine** | [engine.md](engine.md) | Internal engine implementation |
 | **Calls** | [calls.md](calls.md) | PQ VoIP call subsystem (signaling, key agreement, FSM, orchestrator) |
