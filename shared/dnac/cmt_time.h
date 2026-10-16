@@ -202,6 +202,48 @@ int cmt_time_validate(cmt_time_t t);
  */
 int64_t cmt_time_unix_nano(cmt_time_t t);
 
+/**
+ * Go `time.Time.After` — strictly later.
+ *
+ * Moved here, body unchanged, from cmt_cs.c (where it was the static
+ * `cs_time_after`) so that the consensus state machine and the light
+ * verifier (cmt_light_verifier.c) share one definition. Callers:
+ * cmt_cs.c (consensus/state.go:2424, the validator's own vote stamp) and
+ * cmt_light_verifier.c (light/verifier.go:170, :209).
+ *
+ * Go's `Time.After` is in the Go standard library, which is NOT in the
+ * pinned cometbft tarball. For the record, the local go1.21.5 source
+ * (/usr/local/go/src/time/time.go:250-257 — not the pinned toolchain,
+ * go.mod says 1.22.11) compares seconds, then nanoseconds, when neither
+ * value carries a monotonic reading; a `cmt_time_t` never carries one.
+ */
+bool cmt_time_after(cmt_time_t a, cmt_time_t b);
+
+/**
+ * Go `time.Time.Before` — strictly earlier. Defined as
+ * `cmt_time_after(b, a)`: "a is before b" is "b is after a", and both are
+ * strict, so equal instants are neither before nor after each other.
+ *
+ * Same standard-library status as cmt_time_after: the local go1.21.5
+ * source (/usr/local/go/src/time/time.go:260-267, not the pinned
+ * toolchain) is the mirror image of After (:250-257). Callers:
+ * cmt_light_verifier.c (light/verifier.go:176, :230).
+ */
+bool cmt_time_before(cmt_time_t a, cmt_time_t b);
+
+/**
+ * Go `t.Add(d)` for a nanosecond duration, with the carry `cmt_time_t`
+ * needs (nanos always in [0, 1e9) — cmt_time.h:89-91). The arithmetic is
+ * formed in unsigned words because Go's int64 arithmetic wraps and C's
+ * signed overflow is undefined; the value is identical wherever the
+ * reference is itself well defined. Same shape as cmt_config.h:205-231.
+ *
+ * Moved here, body unchanged, from cmt_cs.c (where it was the static
+ * `cs_time_add_ns`). Callers: cmt_cs.c (consensus/state.go:2419, :2421)
+ * and cmt_light_verifier.c (light/verifier.go:47, :106, :176, :208).
+ */
+cmt_time_t cmt_time_add_ns(cmt_time_t t, int64_t ns);
+
 /** cometbft@v0.38.26 types/time/time.go:21-24 — `type WeightedTime`. */
 typedef struct {
     cmt_time_t time;      /* time.go:22 */

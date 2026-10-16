@@ -402,3 +402,122 @@ int cmt_verify_commit_light_all_signatures(const uint8_t *chain_id,
                                         block_id, height, commit,
                                         true, err);                   /* :82 */
 }
+
+/* ══ VerifyCommitLightTrusting family ═════════════════════════════════ */
+
+/* Go's `int64(u)` for a uint64 `u` — a bit-reinterpreting conversion in
+ * Go (values above MaxInt64 become negative). Implementation-defined in C
+ * before C23 but two's complement on every target this project builds
+ * for — the same note as cmt_time.c's cmt_time_unix_nano. */
+static int64_t go_int64_of_u64(uint64_t u)
+{
+    return (int64_t)u;
+}
+
+/* cometbft@v0.38.26 types/validation.go:151-193 —
+ * verifyCommitLightTrustingInternal() */
+static int verify_commit_light_trusting_internal(const uint8_t *chain_id,
+                                                 size_t chain_id_len,
+                                                 cmt_validator_set_t *vals,
+                                                 const cmt_commit_t *commit,
+                                                 cmt_fraction_t trust_level,
+                                                 bool count_all_signatures,
+                                                 cmt_vs_error_t *err)
+{
+    int64_t total;
+    int64_t total_mul_num;
+    int64_t den;
+    int64_t needed;
+    bool    overflow;
+    int     rc;
+
+    err_none(err);
+
+    /* :158-167 — the three sanity checks, in the reference's order. */
+    if (vals == NULL) {
+        return CMT_FAULT;                        /* :159-161; R1B-10     */
+    }
+    if (trust_level.denominator == 0u) {
+        return CMT_REJECT;          /* :162-164 "trustLevel has zero Denominator" */
+    }
+    if (commit == NULL) {
+        return CMT_FAULT;                        /* :165-167; R1B-10     */
+    }
+    /* NOTE: unlike verifyCommitLightInternal (:94-96) there is NO
+     * verifyBasicValsAndCommit here — the set need not be the commit's
+     * set, so neither the size, the height nor the BlockID is compared. */
+
+    /* :170 — `safeMul(vals.TotalVotingPower(), int64(trustLevel.Numerator))`.
+     * TotalVotingPower refuses a total above MaxTotalVotingPower
+     * (validator_set.go:319-321), as at cmt_verify_commit's :37 site. */
+    rc = cmt_validator_set_total_voting_power(vals, &total);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    overflow = cmt_vs_safe_mul(total,
+                               go_int64_of_u64(trust_level.numerator),
+                               &total_mul_num);
+    if (overflow) {
+        /* :171-173 "int64 overflow while calculating voting power needed.
+         * please provide smaller trustLevel numerator" */
+        return CMT_REJECT;
+    }
+    /* :174 — `totalVotingPowerMulByNumerator / int64(trustLevel.Denominator)`.
+     * The divisor is not zero (:162). The one quotient C leaves undefined
+     * is MinInt64 / -1; the Go specification defines it as MinInt64
+     * ("if the dividend x is the most negative value for the int type of
+     * x, the quotient q = x / -1 is equal to x" — read in the LOCAL
+     * go1.21.5 /usr/local/go/doc/go_spec.html:4914-4917, NOT the pinned
+     * toolchain, go.mod says 1.22.11). It is unreachable here: safeMul
+     * (validator_set.go:1093-1113) reports overflow before it can return
+     * MinInt64 for a non-negative total. The guard keeps the C defined
+     * and equal to Go if that ever stops being true. */
+    den = go_int64_of_u64(trust_level.denominator);
+    if (den == -1 && total_mul_num == INT64_MIN) {
+        needed = INT64_MIN;
+    } else {
+        needed = total_mul_num / den;
+    }
+
+    if (cmt_should_batch_verify(vals, commit)) {
+        /* :185-188 — the batch path. UNREACHABLE for the reason given at
+         * cmt_verify_commit's :46-49 site. */
+        return CMT_FAULT;
+    }
+    /* :191-192 — single verification with the light pair (:177, :180 —
+     * the same closures as :102, :105), the caller's countAllSignatures,
+     * and lookUpByIndex FALSE: "As the validator set doesn't necessarily
+     * correspond with the validator set that signed the block we need to
+     * look up by address rather than index." (:182-184) */
+    return cmt_verify_commit_single(chain_id, chain_id_len, vals, commit,
+                                    needed, CMT_SIG_POLICY_LIGHT,
+                                    count_all_signatures, false, err);
+}
+
+/* cometbft@v0.38.26 types/validation.go:126-133 —
+ * VerifyCommitLightTrusting() */
+int cmt_verify_commit_light_trusting(const uint8_t *chain_id,
+                                     size_t chain_id_len,
+                                     cmt_validator_set_t *vals,
+                                     const cmt_commit_t *commit,
+                                     cmt_fraction_t trust_level,
+                                     cmt_vs_error_t *err)
+{
+    return verify_commit_light_trusting_internal(chain_id, chain_id_len,
+                                                 vals, commit, trust_level,
+                                                 false, err);        /* :132 */
+}
+
+/* cometbft@v0.38.26 types/validation.go:142-149 —
+ * VerifyCommitLightTrustingAllSignatures() */
+int cmt_verify_commit_light_trusting_all_signatures(const uint8_t *chain_id,
+                                                    size_t chain_id_len,
+                                                    cmt_validator_set_t *vals,
+                                                    const cmt_commit_t *commit,
+                                                    cmt_fraction_t trust_level,
+                                                    cmt_vs_error_t *err)
+{
+    return verify_commit_light_trusting_internal(chain_id, chain_id_len,
+                                                 vals, commit, trust_level,
+                                                 true, err);         /* :148 */
+}
