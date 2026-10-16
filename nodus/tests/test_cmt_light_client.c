@@ -859,6 +859,10 @@ typedef struct {
     size_t      n;
     bool        init_err;
     bool        verify_err;     /* else: the detector hook (how it can lie, 1) */
+    /* verify_err rows: the exact error the port's trace of the row gives
+     * (0 = not pinned); `want_to` checks ErrVerificationFailed.To. */
+    int         want_code;
+    int64_t     want_to;
 } trow_t;
 
 /* NewClient(primary = mock(row), witnesses = {mock(row)}) — ADAPTED: two
@@ -905,6 +909,10 @@ static int run_row(const trow_t *r, int mode, cmt_time_t now,
     if (r->verify_err) {
         T(rc == CMT_REJECT &&
           e.code != CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED, r->name);
+        T(r->want_code == 0 || e.code == r->want_code, r->name);
+        T(r->want_to == 0 ||
+          (e.to == r->want_to && e.reason == CMT_LIGHT_CLIENT_REASON_VERIFIER &&
+           e.verify.code == CMT_LIGHT_ERR_INVALID_HEADER), r->name);
     } else {
         T(rc == CMT_REJECT &&
           e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED &&
@@ -929,25 +937,35 @@ static int t_sequential(void)
     rows[0] = (trow_t){ "seq good", { 1, 2, 3 },                 /* :135-141 */
                         { &F->h1, &F->h2, &F->h3 },
                         { &F->vals.vs, &F->vals2.vs, &F->vals3.vs }, 3,
-                        false, false };
+                        false, false, 0, 0 };
     rows[1] = (trow_t){ "seq bad: different first header", { 1 }, /* :142-154 */
-                        { &F->hdr1_alt }, { &F->vals.vs }, 1, true, false };
+                        { &F->hdr1_alt }, { &F->vals.vs }, 1, true, false, 0, 0 };
     rows[2] = (trow_t){ "seq bad: no first signed header", { 0 }, /* :155-163 */
-                        { NULL }, { NULL }, 0, true, true };
+                        { NULL }, { NULL }, 0, true, true, 0, 0 };
     rows[3] = (trow_t){ "seq bad: different first validator set", { 1 }, /* :164-174 */
-                        { &F->h1 }, { &F->different_vals.vs }, 1, true, true };
+                        { &F->h1 }, { &F->different_vals.vs }, 1, true, true, 0, 0 };
     rows[4] = (trow_t){ "seq bad: 1/3 signed interim header",    /* :175-190 */
                         { 1, 2, 3 }, { &F->h1, &F->seq13_2, &F->seq_3_full },
                         { &F->vals.vs, &F->vals2.vs, &F->vals3.vs }, 3,
-                        false, true };
+                        false, true, 0, 0 };
     rows[5] = (trow_t){ "seq bad: 1/3 signed last header",       /* :191-206 */
                         { 1, 2, 3 }, { &F->h1, &F->seq_2_full, &F->seq13_3 },
                         { &F->vals.vs, &F->vals2.vs, &F->vals3.vs }, 3,
-                        false, true };
+                        false, true, 0, 0 };
     rows[6] = (trow_t){ "seq bad: different validator set at height 3", /* :207-217 */
                         { 1, 2, 3 }, { &F->h1, &F->h2, &F->h3 },
                         { &F->vals.vs, &F->vals.vs, &F->new_vals.vs }, 3,
-                        false, true };
+                        false, true, 0, 0 };
+    /* The failure each bad row must stop at: interim 2 is not signed by
+     * 2/3 (VerifyAdjacent → ErrInvalidHeader, To 2; the replacement fails
+     * because the only witness cannot be removed, Q6); the last header is
+     * not (To 3, returned at :651-655); block 3's set is not its header's
+     * (both providers answer ErrBadLightBlock → lastError, :1126). */
+    rows[4].want_code = CMT_LIGHT_CLIENT_ERR_VERIFICATION_FAILED;
+    rows[4].want_to   = 2;
+    rows[5].want_code = CMT_LIGHT_CLIENT_ERR_VERIFICATION_FAILED;
+    rows[5].want_to   = 3;
+    rows[6].want_code = CMT_LIGHT_CLIENT_ERR_PROVIDER;
     for (i = 0; i < 7; i++) {
         if (run_row(&rows[i], CMT_LIGHT_CLIENT_MODE_SEQUENTIAL,
                     t_at(3 * HOUR), 3) != 0) {                   /* :249 */
@@ -968,18 +986,21 @@ static int t_skipping(void)
     memset(rows, 0, sizeof(rows));
     rows[0] = (trow_t){ "skip good", { 1, 3 },                   /* :275-286 */
                         { &F->h1, &F->h3 },
-                        { &F->vals.vs, &F->vals3.vs }, 2, false, false };
+                        { &F->vals.vs, &F->vals3.vs }, 2, false, false, 0, 0 };
     rows[1] = (trow_t){ "skip good, val set changes by 2/3",     /* :287-302 */
                         { 1, 3 }, { &F->h1, &F->transit3 },
-                        { &F->vals.vs, &F->transit_vals.vs }, 2, false, false };
+                        { &F->vals.vs, &F->transit_vals.vs }, 2, false, false, 0, 0 };
     rows[2] = (trow_t){ "skip good, val set changes 100% at 2",  /* :303-322 */
                         { 1, 2, 3 }, { &F->h1, &F->change2, &F->change3 },
                         { &F->vals.vs, &F->vals.vs, &F->new_vals.vs }, 3,
-                        false, false };
+                        false, false, 0, 0 };
     rows[3] = (trow_t){ "skip bad: interim header has no signers", /* :323-342 */
                         { 1, 2, 3 }, { &F->h1, &F->nosig2, &F->change3 },
                         { &F->vals.vs, &F->vals.vs, &F->new_vals.vs }, 3,
-                        false, true };
+                        false, true, 0, 0 };
+    /* The pivot 2 has no signers: Verify(1, 2) → ErrInvalidHeader, To 2. */
+    rows[3].want_code = CMT_LIGHT_CLIENT_ERR_VERIFICATION_FAILED;
+    rows[3].want_to   = 2;
     for (i = 0; i < 4; i++) {
         if (run_row(&rows[i], CMT_LIGHT_CLIENT_MODE_SKIPPING,
                     t_at(3 * HOUR), want[i]) != 0) {             /* :373 */
@@ -1453,7 +1474,12 @@ static int t_backwards(void)
         wp = peer_of(&w, "witness");
         T(new_client(&t3, &pp, &wp, 1, &s, &o, &c, &e) == CMT_OK, "init at 3");
         T(cmt_light_client_verify_light_block_at_height(c, 2,
-                t_at(HOUR + SECOND), g_out, &e) == CMT_REJECT, /* :884-885 */
+                t_at(HOUR + SECOND), g_out, &e) == CMT_REJECT && /* :884-885 */
+          /* VerifyBackwards' ErrInvalidHeader, returned as is (:962/:969);
+           * the replacement fails because the only witness cannot be
+           * removed (Q6). */
+          e.code == CMT_LIGHT_CLIENT_ERR_VERIFIER &&
+          e.verify.code == CMT_LIGHT_ERR_INVALID_HEADER,
           row == 7 ? "7) incorrect height" : "8) incorrect hash");
         T(!stored(&s, 2) && !stored(&s, 1), "nothing saved below 3");
         cmt_light_client_free(c);
@@ -1631,8 +1657,9 @@ static int t_ensure_valid(void)
               e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED,
               "row 0 → hook");
         } else {
-            T(rc == CMT_REJECT &&
-              e.code != CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED,
+            /* Every provider answers ErrBadLightBlock → lastError (:1126). */
+            T(rc == CMT_REJECT && e.code == CMT_LIGHT_CLIENT_ERR_PROVIDER &&
+              e.provider.code == CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK,
               "invalid block 3 refused");
         }
         ret = 0;
