@@ -3,7 +3,11 @@
  *
  * Cross-platform non-blocking TCP with connection pool and frame-based I/O.
  * Linux/Android: uses epoll for server (high-perf multi-connection).
- * Windows: uses select() (client SDK only — server is Linux-only).
+ * Windows: uses select() — client, and the plain TCP listener
+ *   (nodus_tcp_listen) with the same pool cap, per-IP limit, frame cap and
+ *   read budget as Linux. The WebSocket entry (nodus_tcp_ws_listen) and the
+ *   Unix socket entry (nodus_tcp_unix_listen / _unix_connect) are Linux-only.
+ * Browser (Emscripten): poll(), client only.
  *
  * @file nodus_tcp.h
  */
@@ -20,6 +24,9 @@ extern "C" {
 #endif
 
 #define NODUS_TCP_MAX_CONNS   1024
+/* CRIT-5: plain-listener connections per peer IP (handle_accept; WebSocket
+ * and Unix-socket connections are not counted). Same on Linux and Windows. */
+#define NODUS_MAX_CONNS_PER_IP  20
 #define NODUS_TCP_BUF_INIT    (64 * 1024)    /* Initial read/write buffer */
 #define NODUS_TCP_PENDING_MAX  (5 * 1024 * 1024)   /* 5MB auth pending queue cap */
 
@@ -392,7 +399,15 @@ typedef struct nodus_tcp {
  */
 int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd);
 
-/** Start listening for incoming connections (server only, Linux). */
+/**
+ * Start listening for incoming connections. Linux/Android and Windows
+ * (returns -1 in the browser build). port 0 = an ephemeral port, read back
+ * into tcp->port. Accepted connections are served by nodus_tcp_poll:
+ * pool cap NODUS_TCP_MAX_CONNS, at most NODUS_MAX_CONNS_PER_IP per peer IP.
+ * Windows binds with SO_EXCLUSIVEADDRUSE (never SO_REUSEADDR, which on
+ * Winsock lets another socket take over a listening port); Linux sets
+ * SO_REUSEADDR.
+ */
 int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port);
 
 /**

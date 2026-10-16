@@ -3,8 +3,24 @@
  *
  * Cross-platform non-blocking TCP with buffered frame I/O, connection pool.
  * Linux/Android: epoll (high-perf server + client)
- * Windows: select() (client SDK only)
+ * Windows: select() (server plain listener + client)
  */
+
+/* Windows event loop = select() over the whole pool plus the listener.
+ * Winsock's fd_set is { fd_count; SOCKET fd_array[FD_SETSIZE] } and
+ * FD_SETSIZE defaults to 64 (mingw psdk_inc/_fd_types.h), so a pool of
+ * NODUS_TCP_MAX_CONNS (1024) would be silently truncated by FD_SET. Defining
+ * it before <winsock2.h> is the documented Winsock way to grow the set; the
+ * size is checked against NODUS_TCP_MAX_CONNS + 1 below, once that constant
+ * is visible. fd_set is local to this file (no header carries one), so the
+ * larger size changes no other translation unit.
+ * select() rather than WSAPoll: the CONNECTING path relies on Winsock
+ * reporting a failed connect in the except set, and WSAPoll did not report
+ * a refused connect on older Windows 10 builds. The cost is three fd_sets of
+ * ~8 KiB each on nodus_tcp_poll's stack. */
+#if defined(_WIN32) && !defined(FD_SETSIZE)
+  #define FD_SETSIZE 1025
+#endif
 
 /* struct ucred (SO_PEERCRED, the Unix socket entry's peer check) is exposed
  * by glibc only under _GNU_SOURCE; -std=gnu11 gives _DEFAULT_SOURCE only.
@@ -110,16 +126,30 @@
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 /* Three event-loop builds of this file:
- *   Linux/Android  epoll, server + client (listen, accept, WebSocket entry)
- *   _WIN32         select() over the pool, client only
+ *   Linux/Android  epoll, server + client (plain listener, WebSocket entry,
+ *                  Unix socket entry)
+ *   _WIN32         select() over the pool, server + client: the plain TCP
+ *                  listener only (nodus_tcp_listen / handle_accept, same
+ *                  pool cap, per-IP limit, frame cap and read budget as
+ *                  Linux — the code is shared). No WebSocket entry, no
+ *                  Unix socket entry, no epoll: those stay Linux-only.
  *   __EMSCRIPTEN__ poll() over the pool, client only (browser wallet,
  *                  sockets are Emscripten SOCKFS over a WebSocket). No
  *                  listen / accept / WebSocket-server code is compiled.
- * NODUS_TCP_EPOLL marks everything that exists only in the first build. */
+ * NODUS_TCP_EPOLL marks everything that exists only in the first build;
+ * NODUS_TCP_LISTEN marks the plain listener, compiled in the first two. */
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
   #define NODUS_TCP_EPOLL 1
   #include <sys/un.h>     /* Unix socket entry (server side, like listen) */
   #include <sys/stat.h>
+#endif
+#if defined(NODUS_TCP_EPOLL) || defined(_WIN32)
+  #define NODUS_TCP_LISTEN 1
+#endif
+
+#ifdef _WIN32
+_Static_assert(FD_SETSIZE >= NODUS_TCP_MAX_CONNS + 1,
+               "FD_SETSIZE must hold the whole pool plus the listener");
 #endif
 
 #define MAX_EVENTS 64
@@ -189,6 +219,20 @@ static void set_nodelay(int fd) {
 static void set_reuseaddr(int fd) {
     int yes = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
+}
+#endif
+
+#ifdef _WIN32
+/* The Windows listener does NOT get SO_REUSEADDR: on Winsock it lets a
+ * second socket bind an address:port another socket is already listening
+ * on and take over its connections (Linux refuses that with EADDRINUSE and
+ * only relaxes TIME_WAIT). SO_EXCLUSIVEADDRUSE is the opposite: no other
+ * socket may bind this address:port while the listener holds it. Returns
+ * the setsockopt result. */
+static int set_exclusiveaddruse(int fd) {
+    int yes = 1;
+    return setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                      (const char *)&yes, sizeof(yes));
 }
 #endif
 
@@ -1028,7 +1072,7 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     }
 }
 
-#ifdef NODUS_TCP_EPOLL
+#ifdef NODUS_TCP_LISTEN
 static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 #endif
 
@@ -1084,14 +1128,16 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #endif
 }
 
-#ifdef NODUS_TCP_EPOLL
+#ifdef NODUS_TCP_LISTEN
 
-#define NODUS_MAX_CONNS_PER_IP  20   /* CRIT-5: Per-IP connection limit */
-
+/* The plain listener's accept: the same code on Linux/Android (one call per
+ * EPOLLIN of the level-triggered listener) and Windows (one call per poll in
+ * which select reports the listener readable). Only the event registration
+ * differs. NODUS_MAX_CONNS_PER_IP (CRIT-5) is in nodus_tcp.h. */
 static void handle_accept(nodus_tcp_t *tcp) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
-    int fd = accept(tcp->listen_fd, (struct sockaddr *)&addr, &addr_len);
+    int fd = (int)accept(tcp->listen_fd, (struct sockaddr *)&addr, &addr_len);
     if (fd < 0) return;
 
     if (tcp->count >= NODUS_TCP_MAX_CONNS) {
@@ -1136,7 +1182,10 @@ static void handle_accept(nodus_tcp_t *tcp) {
             "peer=%s:%u conn=%p\n",
             conn->slot, fd, new_ip, (unsigned)conn->port, (void *)conn);
 
+#ifdef NODUS_TCP_EPOLL
     epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
+#endif
+    /* (Windows: no registration — the select loop walks the pool.) */
 
     if (tcp->on_accept)
         tcp->on_accept(conn, tcp->cb_ctx);
@@ -1146,7 +1195,9 @@ static void handle_accept(nodus_tcp_t *tcp) {
         return;
 
     /* Edge-triggered: data may already be in buffer before epoll_add.
-     * Do an immediate read to avoid missing the initial EPOLLIN edge. */
+     * Do an immediate read to avoid missing the initial EPOLLIN edge.
+     * (Windows select is level-triggered; the read is harmless there — it
+     * returns WSAEWOULDBLOCK when nothing has arrived yet.) */
     handle_read_fwd(tcp, conn);
 }
 
@@ -1154,6 +1205,10 @@ static void handle_accept(nodus_tcp_t *tcp) {
 static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     handle_read(tcp, conn);
 }
+
+#endif /* NODUS_TCP_LISTEN */
+
+#ifdef NODUS_TCP_EPOLL
 
 /* ── WebSocket entry glue (RFC 6455; codec in nodus_ws.c) ────────────
  *
@@ -1781,17 +1836,29 @@ int nodus_tcp_init(nodus_tcp_t *tcp, int shared_epoll_fd) {
 }
 
 int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
-#ifndef NODUS_TCP_EPOLL
+#ifndef NODUS_TCP_LISTEN
     (void)tcp; (void)bind_ip; (void)port;
-    return -1;  /* Server is Linux-only (not Windows, not the browser) */
+    return -1;  /* No listener in the browser build */
 #else
     if (!tcp) return -1;
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = (int)socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
 
+#ifdef NODUS_TCP_EPOLL
     set_reuseaddr(fd);
     set_nonblocking(fd);
+#else
+    /* Windows: refuse to listen without exclusive use of the address (see
+     * set_exclusiveaddruse), and without a non-blocking socket — a blocking
+     * accept would stall the whole event loop. */
+    if (set_exclusiveaddruse(fd) != 0 || set_nonblocking(fd) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "listen: socket options failed (wsa=%d)",
+                      get_socket_error());
+        close(fd);
+        return -1;
+    }
+#endif
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -1819,11 +1886,14 @@ int nodus_tcp_listen(nodus_tcp_t *tcp, const char *bind_ip, uint16_t port) {
 
     tcp->listen_fd = fd;
 
+#ifdef NODUS_TCP_EPOLL
     struct epoll_event ev = {
         .events = EPOLLIN,
         .data.ptr = NULL  /* NULL data.ptr = listen socket marker */
     };
     epoll_ctl(tcp->epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+#endif
+    /* (Windows: nodus_tcp_poll puts listen_fd in its read set.) */
 
     return 0;
 #endif
@@ -2552,6 +2622,13 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
 
     int max_fd = -1;
 
+    /* Listener: readable = a connection is waiting in the accept queue.
+     * FD_SETSIZE holds the whole pool plus this one (see the top of file). */
+    if (tcp->listen_fd >= 0) {
+        FD_SET((SOCKET)tcp->listen_fd, &rfds);
+        max_fd = tcp->listen_fd;
+    }
+
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
         if (!c || c->fd < 0) continue;
@@ -2568,8 +2645,10 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     }
 
     if (max_fd < 0) {
-        /* No connections — just sleep. (The pending-read list holds only
-         * pool members, so it is empty here.) */
+        /* No listener and no connections — just sleep. (The pending-read
+         * list holds only pool members, so it is empty here.) Winsock
+         * select() with three empty sets fails with WSAEINVAL, so it is
+         * never called that way. */
         if (timeout_ms > 0) Sleep(timeout_ms);
         return 0;
     }
@@ -2617,6 +2696,18 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             handle_read(tcp, c);
             events++;
         }
+    }
+
+    /* Listener after the pool walk, so a connection accepted now never
+     * meets this call's fd sets (Winsock may hand a new socket the handle
+     * value of one closed earlier in this batch). One accept per call — the
+     * same pacing as the level-triggered Linux listener (one handle_accept
+     * per EPOLLIN); a queued backlog is reported again on the next call.
+     * Inside the depth window: on_accept may close another connection. */
+    if (n > 0 && tcp->listen_fd >= 0 &&
+        FD_ISSET((SOCKET)tcp->listen_fd, &rfds)) {
+        handle_accept(tcp);
+        events++;
     }
 
     events += read_pending_service(tcp);
