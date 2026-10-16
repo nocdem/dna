@@ -3,6 +3,9 @@
  * @brief cometbft @v0.38.26 light/client.go + light/trust_options.go — see
  *        cmt_light_client.h for the mapping, the deviations (D1-D19), the
  *        reproduced quirks (Q1-Q8) and the item-9 agreement rule (R1-R6).
+ *        The detector (light/detector.go) is cmt_light_detector.c; the
+ *        client struct and the few functions it shares with it are in the
+ *        INTERNAL section of cmt_light_detector.h.
  *
  * Every function names the reference lines it ports. Ownership: every
  * light block the client holds lives in a `cmt_light_block_buf_t` (above
@@ -15,7 +18,9 @@
  * SPDX-License-Identifier: MIT
  */
 
+#define CMT_LIGHT_CLIENT_INTERNAL
 #include "dnac/cmt_light_client.h"
+#include "dnac/cmt_light_detector.h"
 #include "dnac/cmt_validator_set.h"
 #include "dnac/cmt_block.h"
 
@@ -28,25 +33,10 @@
 
 /* ══ the client ═══════════════════════════════════════════════════════ */
 
-typedef struct {
-    cmt_light_provider_t p;
-    uint8_t              id[CMT_LIGHT_CLIENT_PEER_ID_MAX];
-    size_t               id_len;
-} peer_t;
-
-/* client.go:133-162 — `type Client struct`. */
-struct cmt_light_client {
-    uint8_t                    chain_id[CMT_PB_CHAINID_MAX];   /* :134 */
-    size_t                     chain_id_len;
-    int64_t                    trusting_period;                /* :135 */
-    cmt_light_client_options_t o;                              /* :136-140, :155-157 */
-    peer_t                     primary;                        /* :145 */
-    peer_t                    *witnesses;                      /* :147 */
-    size_t                     n_witnesses;
-    size_t                     witnesses_cap;   /* configured + 1 (:1086) */
-    cmt_light_store_t          store;                          /* :150 */
-    cmt_light_block_buf_t     *latest;          /* :152; NULL = nil */
-};
+/* `struct cmt_light_client` (client.go:133-162) and the provider slot are
+ * defined in the INTERNAL section of cmt_light_detector.h, which the
+ * detector shares. */
+typedef cmt_light_peer_t peer_t;
 
 /* ══ small helpers ════════════════════════════════════════════════════ */
 
@@ -205,36 +195,13 @@ static int buf_copy(cmt_light_block_buf_t *dst, const cmt_light_block_t *src)
     return CMT_OK;
 }
 
-/* K25-3 — the full proposer-priority vector, in validator order, length
- * included (instead of ProposerPriorityHash, detector.go:211-216, whose
- * hash writes every varint at offset 0, types/validator_set.go:392-398). */
-static bool priorities_equal(const cmt_validator_set_t *a,
-                             const cmt_validator_set_t *b)
-{
-    size_t i;
-
-    if (a == NULL || b == NULL) {
-        return a == b;
-    }
-    if (a->validators_len != b->validators_len) {
-        return false;
-    }
-    for (i = 0; i < a->validators_len; i++) {
-        if (a->validators[i].proposer_priority !=
-            b->validators[i].proposer_priority) {
-            return false;
-        }
-    }
-    return true;
-}
+/* K25-3's full-vector priority comparison is `cmt_light_priorities_equal`
+ * (cmt_light_detector.c): one implementation for init (item 9 R3) and for
+ * the detector (detector.go:211-216). */
 
 /* ══ the per-operation pool, the trace and the cache ══════════════════ */
 
-typedef struct {
-    cmt_light_block_buf_t **b;
-    size_t                  len;
-    size_t                  cap;
-} pool_t;
+typedef cmt_light_pool_t pool_t;
 
 static cmt_light_block_buf_t *pool_new(pool_t *p)
 {
@@ -277,12 +244,7 @@ static void pool_free(pool_t *p)
 
 /* An array of light-block pointers bounded by `limit` (the trace, D3, and
  * the bisection cache, D3). Not owning. */
-typedef struct {
-    const cmt_light_block_t **v;
-    size_t                    len;
-    size_t                    cap;
-    uint64_t                  limit;
-} lbvec_t;
+typedef cmt_light_trace_t lbvec_t;
 
 /* @return CMT_OK; CMT_REJECT when the push would pass `limit`;
  *         CMT_FAULT on allocation failure. */
@@ -548,41 +510,17 @@ static int light_block_from_primary(cmt_light_client_t *c, int64_t height,
 
 /*
  * The ONE place where the reference calls detectDivergence
- * (client.go:691-696, :815-822). Package 3 replaces the body below with
- * the port of light/detector.go:28-118.
- *
- * Its first check is detector.go:29-31 ("nil or single block primary
- * trace"), which the reference reaches with a nil trace through Q2.
- * After it: FAIL CLOSED. The verified block is not saved, the caller gets
- * CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED with the trace's length
- * and end heights. This function must never return CMT_OK until the
- * detector is ported.
+ * (client.go:691-696, :815-822): light/detector.go:28-110, ported in
+ * cmt_light_detector.c (D5). Its first check is detector.go:29-31 ("nil
+ * or single block primary trace"), which the reference reaches with a nil
+ * trace through Q2. Only CMT_OK lets the caller save the verified block;
+ * every other return — an attack (with its local record), a priority
+ * divergence, a witness behind, no witness that matched — saves nothing.
  */
 static int detect_divergence(cmt_light_client_t *c, const lbvec_t *trace,
                              cmt_time_t now, cmt_light_client_error_t *err)
 {
-    int64_t from = 0, to = 0;
-
-    (void)c;
-    (void)now;
-    if (trace->len < 2u) {                                       /* detector.go:29-31 */
-        return reject(err, CMT_LIGHT_CLIENT_ERR_SHORT_TRACE);
-    }
-    if (lb_height(trace->v[0], &from) != CMT_OK ||
-        lb_height(trace->v[trace->len - 1u], &to) != CMT_OK) {
-        return fault(err);
-    }
-    QGP_LOG_WARN(LOG_TAG, "detector not ported: verified %lld -> %lld "
-                 "(%zu blocks) is NOT trusted", (long long)from,
-                 (long long)to, trace->len);
-    if (err != NULL) {
-        err_clear(err);
-        err->code       = CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED;
-        err->trace_len  = trace->len;
-        err->trace_from = from;
-        err->trace_to   = to;
-    }
-    return CMT_REJECT;
+    return cmt_light_detect_divergence(c, trace, now, err);
 }
 
 /* ══ store use ════════════════════════════════════════════════════════ */
@@ -1416,7 +1354,7 @@ static int init_agreement(cmt_light_client_t *c, const cmt_light_block_t *l,
             }
             goto out;
         }
-        if (!priorities_equal(l->validator_set, b->lb.validator_set)) {
+        if (!cmt_light_priorities_equal(l->validator_set, b->lb.validator_set)) {
             QGP_LOG_ERROR(LOG_TAG, "init: witness #%zu reports conflicting "
                           "proposer priorities", i);         /* R5, R3, :1167-1171 */
             rc = reject(err, CMT_LIGHT_CLIENT_ERR_PROPOSER_PRIORITIES_DIVERGE);
@@ -1839,8 +1777,16 @@ void cmt_light_client_free(cmt_light_client_t *c)
         return;
     }
     cmt_light_block_buf_free(c->latest);
+    cmt_light_attack_record_free(c->attack);
     free(c->witnesses);
     free(c);
+}
+
+/* The local record of the last attack the detector found (DD3). */
+const cmt_light_attack_record_t *
+cmt_light_client_attack_record(const cmt_light_client_t *c)
+{
+    return c == NULL ? NULL : c->attack;
 }
 
 /* cometbft@v0.38.26 light/client.go:412-431 — compareWithLatestHeight(). */
@@ -2033,4 +1979,85 @@ int cmt_light_client_witness_id(const cmt_light_client_t *c, size_t i,
     *id     = c->witnesses[i].id;
     *id_len = c->witnesses[i].id_len;
     return CMT_OK;
+}
+
+/* ══ INTERNAL — what the detector shares (cmt_light_detector.h) ═══════
+ * Each is the static function of the same role above, unchanged. */
+
+cmt_light_block_buf_t *cmt_light_client_pool_new(cmt_light_pool_t *p)
+{
+    return p == NULL ? NULL : pool_new(p);
+}
+
+void cmt_light_client_pool_free(cmt_light_pool_t *p)
+{
+    if (p != NULL) {
+        pool_free(p);
+    }
+}
+
+void cmt_light_client_trace_free(cmt_light_trace_t *t)
+{
+    if (t != NULL) {
+        lbvec_free(t);
+    }
+}
+
+int cmt_light_client_lb_height(const cmt_light_block_t *lb, int64_t *out)
+{
+    return out == NULL ? CMT_FAULT : lb_height(lb, out);
+}
+
+int cmt_light_client_lb_hash(const cmt_light_block_t *lb,
+                             uint8_t out[CMT_TMHASH_SIZE], size_t *len)
+{
+    return (out == NULL || len == NULL) ? CMT_FAULT : lb_hash(lb, out, len);
+}
+
+int cmt_light_client_lb_hash_equal(const cmt_light_block_t *a,
+                                   const cmt_light_block_t *b, bool *eq)
+{
+    return eq == NULL ? CMT_FAULT : lb_hash_equal(a, b, eq);
+}
+
+int cmt_light_client_buf_copy(cmt_light_block_buf_t *dst,
+                              const cmt_light_block_t *src)
+{
+    return buf_copy(dst, src);
+}
+
+int cmt_light_client_fetch(const cmt_light_client_t *c,
+                           const cmt_light_peer_t *pr, int64_t height,
+                           cmt_light_block_buf_t *out,
+                           cmt_light_provider_error_t *perr)
+{
+    if (c == NULL || pr == NULL || out == NULL || perr == NULL) {
+        return CMT_FAULT;
+    }
+    return provider_light_block(c, pr, height, out, perr);
+}
+
+int cmt_light_client_verify_skipping(cmt_light_client_t *c,
+                                     const cmt_light_peer_t *source,
+                                     const cmt_light_block_t *trusted,
+                                     const cmt_light_block_t *new_lb,
+                                     cmt_time_t now, cmt_light_trace_t *trace,
+                                     cmt_light_pool_t *pool, uint64_t *steps,
+                                     cmt_light_client_error_t *err)
+{
+    if (c == NULL || source == NULL || trusted == NULL || new_lb == NULL ||
+        trace == NULL || pool == NULL || steps == NULL) {
+        return fault(err);
+    }
+    return verify_skipping(c, source, trusted, new_lb, now, trace, pool,
+                           steps, err);
+}
+
+int cmt_light_client_remove_witnesses(cmt_light_client_t *c, size_t *idx,
+                                      size_t k)
+{
+    if (c == NULL || (idx == NULL && k > 0u)) {
+        return CMT_FAULT;
+    }
+    return remove_witnesses(c, idx, k);
 }

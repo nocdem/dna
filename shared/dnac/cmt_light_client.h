@@ -5,24 +5,27 @@
  *        (sequential or skipping verification), between and backwards,
  *        over a primary provider, a list of witnesses and a light store.
  *
- * ═══ STATUS: NO PRODUCTION CALLER — AND IT CANNOT ADVANCE YET ═══════════
- * Package 2 of the light client (Kurultay #25 item 1, docs/plans/
+ * ═══ STATUS: NO PRODUCTION CALLER ══════════════════════════════════════
+ * Packages 2 and 3 of the light client (Kurultay #25 item 1, docs/plans/
  * decisions/2026-10-16-kurultay-25-summary.md: "LightBlock + ValidateBasic
  * → store → client → detector"). Nothing in a node opens a client yet.
  *
- * ⚠ THE DETECTOR IS NOT PORTED (it is package 3, Kurultay #25 item 2).
- * The reference calls `detectDivergence` after every FORWARD and every
- * BETWEEN verification (client.go:691-696 in verifySequential, :815-822
- * in verifySkippingAgainstPrimary). Here that call goes to ONE named hook
- * (`detect_divergence` in cmt_light_client.c) which, until package 3
- * lands, returns CMT_REJECT with code
- * CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED. It FAILS CLOSED: the
- * block that was verified is NOT saved, `Update` does not advance, and the
- * caller sees the error. The hook is not a caller-installable pointer, so
- * no caller can make it succeed. Consequence today: only initialisation
- * (which does not reach the detector, :360-393) and BACKWARDS verification
- * (:586-592 → `backwards`, :933-979, which does not reach it either) can
- * add a block to the store.
+ * THE DETECTOR (package 3, Kurultay #25 item 2) is light/detector.go,
+ * ported in cmt_light_detector.{c,h}. The reference calls
+ * `detectDivergence` after every FORWARD and every BETWEEN verification
+ * (client.go:691-696 in verifySequential, :815-822 in
+ * verifySkippingAgainstPrimary); here that call goes to ONE named hook
+ * (`detect_divergence` in cmt_light_client.c), which runs the detector. A
+ * verified block is saved ONLY when the detector returns CMT_OK: at least
+ * one witness holds the same block with the same proposer priorities
+ * (K25-3), and no witness proved a conflict. An attack — a conflicting
+ * header that verifies on both sides — STOPS the call with
+ * CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK; nothing is saved, and the
+ * local record of what the reference would have sent as evidence is
+ * readable through `cmt_light_client_attack_record`. Nothing is sent to
+ * any provider (cmt_light_detector.h DD3, DD4). Backwards verification
+ * (:586-592 → `backwards`, :933-979) and initialisation (:360-393) do not
+ * reach the detector, as in the reference.
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── TRUST ROOT AND TRUSTING PERIOD ARE THE CALLER'S ────────────────────
@@ -60,8 +63,9 @@
  *      199-203 → client.go:1161-1166). HEIGHT_TOO_HIGH is NOT followed by
  *      the reference's request for the witness's latest block, its time
  *      comparison and its `time.Sleep(2*drift + lag)` (detector.go:
- *      142-197): item 9 compares at the same height, and that lagging-
- *      witness logic is the detector's (package 3).
+ *      142-197): item 9 compares at the same height. That lagging-witness
+ *      logic belongs to the detector after init (cmt_light_detector.h
+ *      DD2), which runs it.
  *   R5 DISAGREEMENT STOPS — the first witness whose block has a different
  *      hash (CMT_LIGHT_CLIENT_ERR_CONFLICTING_HEADERS, :1156-1160) or the
  *      same hash and different priorities
@@ -122,7 +126,18 @@
  *  D4 The two recursions — verifySkippingAgainstPrimary calling itself
  *     after a replacement (:813) and backwards calling itself (:973) — are
  *     loops here, bounded by the caps of D3.
- *  D5 The detector hook (STATUS above) — fails closed.
+ *  D5 The detector hook (STATUS above) IS the detector now (package 3,
+ *     cmt_light_detector.{c,h}, which list their own deviations DD1-DD8
+ *     and quirks Q-D1..Q-D6). Until package 3 it failed closed with
+ *     CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED; that code is gone.
+ *     Reference behaviour now covered: detectDivergence (detector.go:
+ *     28-110), compareNewLightBlockWithWitness (:121-220, the sleep split
+ *     into two calls by the caller's `now` — DD2),
+ *     handleConflictingHeaders (:232-289), examineConflictingHeader-
+ *     AgainstTrace (:305-389), getTargetBlockOrLatest (:394-419) and
+ *     newLightClientAttackEvidence (:423-439) as a LOCAL RECORD (DD3).
+ *     Not covered: sendEvidence (:222-228) — nothing is sent (DD4). The
+ *     hook is still not a caller-installable pointer.
  *  D6 CMT_FAULT is not a Go error value: a provider or store call that
  *     returns CMT_FAULT ends the operation with CMT_FAULT. It never
  *     triggers a primary replacement or a witness removal (the CMT_FAULT
@@ -163,8 +178,8 @@
  *     store's 64-bit count (cmt_light_store.h D1). `MaxRetryAttempts`
  *     (:100) is kept as uint16 and, as in the reference, NEVER READ —
  *     `maxRetryAttempts` has no reader in any .go file of light/.
- *     `MaxBlockLag` (:122) is stored for the detector (its only reader is
- *     detector.go:168).
+ *     `MaxBlockLag` (:122) is read by the detector only (detector.go:168;
+ *     the recorded wait of cmt_light_detector.h DD2).
  *  D13 `ConfirmationFunction(fn func(action string) bool)` (:85) becomes
  *     a callback that receives an action CODE and two heights; no text.
  *     NULL is the reference default "No confirmation is required" (:232).
@@ -202,9 +217,11 @@
  *     chain (:246-252; a CMT_FAULT from its chain_id row is CMT_FAULT),
  *     the trust level (:254-257), restore (:259-261). NewClient checks
  *     TrustOptions.ValidateBasic before all of these (:183-185).
- *  D19 The detector hook does not read `now`. The reference's
- *     detectDivergence uses it to verify a conflicting witness trace
- *     (detector.go); that is package 3's.
+ *  D19 The detector reads the caller's `now` where the reference does —
+ *     to verify a conflicting witness's trace (detector.go:339, :370,
+ *     through verifySkipping) — and ONE place more: the recorded wait of
+ *     DD2 (cmt_light_detector.h) is measured against it, where the
+ *     reference sleeps. It never reads a clock.
  *
  * ── REFERENCE QUIRKS REPRODUCED AS-IS (recorded, not "fixed") ──────────
  *  Q1 verifySkipping appends a fetched pivot to the cache TWICE (:754 and
@@ -217,8 +234,8 @@
  *     verifySkippingAgainstPrimary's `errors.Unwrap(err)` is nil and takes
  *     the `case nil` branch (:814) with a nil trace, and detectDivergence
  *     refuses it ("nil or single block primary trace", detector.go:29-31).
- *     Here: CMT_LIGHT_CLIENT_ERR_SHORT_TRACE from the hook, whose first
- *     line ports detector.go:29-31.
+ *     Here: CMT_LIGHT_CLIENT_ERR_SHORT_TRACE from the detector's first
+ *     line (detector.go:29-31).
  *  Q3 `cleanupAfter` walks LightBlockBefore from the LATEST height down
  *     and never deletes the latest block itself (:882-899); the hash
  *     check that follows (:340-355) then removes everything.
@@ -238,7 +255,8 @@
  *     (:421-428).
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
- *  · detector.go — package 3 (the hook above).
+ *  · detector.go's sendEvidence (:222-228) — "stop + local record"
+ *    (cmt_light_detector.h DD4).
  *  · VerifyHeader (:525-556) — not in this package's dispatch.
  *  · `context.Context` — no counterpart (cmt_light_provider.h header): a
  *    provider that does not answer returns NO_RESPONSE.
@@ -255,7 +273,7 @@
  *   light/client.go         1190 lines
  *   light/trust_options.go    53 lines
  *   light/errors.go          121 lines (the client's error values)
- *   light/detector.go:28-31  (the first line of detectDivergence, Q2)
+ *   light/detector.go        439 lines (cmt_light_detector.{c,h})
  * Governing records: Kurultay #25 (above; K25-1, K25-2, K25-3, items 2, 7,
  * 8, 9); docs/plans/decisions/2026-10-16-relay-port-4003-bandwidth-
  * role.md (B9); pin decision
@@ -453,16 +471,27 @@ typedef struct {
 /** "refused to remove the stored light blocks despite hashes mismatch"
  *  (:353). */
 #define CMT_LIGHT_CLIENT_ERR_REFUSED_CLEANUP           20
-/** THE DETECTOR HOOK (D5): package 3 is not ported. `trace_len`,
- *  `trace_from`, `trace_to` describe the trace it was given. */
-#define CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED  21
+/** errors.go:66-72 — `ErrLightClientAttack` (detector.go:278, :288): a
+ *  witness's conflicting header verified; `witness_index` is that
+ *  witness and the LOCAL RECORD is `cmt_light_client_attack_record`.
+ *  Nothing was sent to any provider (cmt_light_detector.h DD4). (Code 21
+ *  was DETECTOR_NOT_IMPLEMENTED until package 3.) */
+#define CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK       21
 /** detector.go:29-31 — "nil or single block primary trace" (Q2). */
 #define CMT_LIGHT_CLIENT_ERR_SHORT_TRACE               22
-/** D3 caps. PROJECT. */
+/** D3 caps. PROJECT. A cap reached inside the detector is returned as
+ *  well (cmt_light_detector.h DD5). */
 #define CMT_LIGHT_CLIENT_ERR_CAP_TRACE                 23
 #define CMT_LIGHT_CLIENT_ERR_CAP_VERIFY_STEPS          24
 #define CMT_LIGHT_CLIENT_ERR_CAP_SKIPPING_CACHE        25
 #define CMT_LIGHT_CLIENT_ERR_CAP_BACKWARDS_STEPS       26
+/** errors.go:43-47 — `ErrFailedHeaderCrossReferencing` (detector.go:
+ *  108-109): no witness returned the same block. */
+#define CMT_LIGHT_CLIENT_ERR_FAILED_HEADER_CROSS_REFERENCING 27
+/** cmt_light_detector.h DD2 — a witness is behind where the reference
+ *  sleeps (detector.go:164-168): call again, for the same target, with a
+ *  `now` at least 2*max_clock_drift + max_block_lag later. PROJECT. */
+#define CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND            28
 
 /** Which nested field carries ErrVerificationFailed's Reason. */
 #define CMT_LIGHT_CLIENT_REASON_NONE           0
@@ -485,12 +514,14 @@ typedef struct {
     int                        reason;        /* CMT_LIGHT_CLIENT_REASON_* */
     cmt_light_error_t          verify;        /* the verifier's error    */
     cmt_light_provider_error_t provider;      /* the provider's error    */
-    size_t                     witness_index; /* WRONG_CHAIN, CONFLICTING, DIVERGE */
+    size_t                     witness_index; /* WRONG_CHAIN, CONFLICTING,
+                                                 DIVERGE, LIGHT_CLIENT_ATTACK */
     size_t                     agreeing;      /* INIT_AGREEMENT_SHORT    */
-    size_t                     trace_len;     /* DETECTOR_NOT_IMPLEMENTED */
-    int64_t                    trace_from;
-    int64_t                    trace_to;
 } cmt_light_client_error_t;
+
+/** The local record of a detected attack (cmt_light_detector.h DD3);
+ *  its fields are declared there. */
+typedef struct cmt_light_attack_record cmt_light_attack_record_t;
 
 /* ══ light/client.go:128-264 — the client and its constructors ════════ */
 
@@ -572,8 +603,7 @@ int cmt_light_client_first_trusted_height(cmt_light_client_t *c,
  * advance the state by downloading the latest light block and verifying
  * it". No trusted block (:442-445) or a latest block not above the trusted
  * one (:461): CMT_OK with `*advanced = false`. Otherwise the block is
- * verified (:453) — which, until package 3, ends at the detector hook
- * (file header): CMT_REJECT, DETECTOR_NOT_IMPLEMENTED.
+ * verified (:453), the detector included (file header), and saved.
  * @param out receives the new block when `*advanced` is true.
  */
 int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
@@ -599,6 +629,17 @@ int cmt_light_client_verify_light_block_at_height(cmt_light_client_t *c,
 /** client.go:871-877 — `Cleanup()`: forgets the trusted block and prunes
  *  the store to zero. */
 int cmt_light_client_cleanup(cmt_light_client_t *c);
+
+/**
+ * The local record of the LAST attack the detector found (a call that
+ * returned CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK), owned by the client;
+ * a later attack replaces it, cmt_light_client_free frees it. NULL when
+ * none was found, or on NULL. Its fields: cmt_light_detector.h. It was
+ * sent nowhere (DD4). PROJECT (the reference returns the error only and
+ * sends the evidence, detector.go:258, :286).
+ */
+const cmt_light_attack_record_t *
+cmt_light_client_attack_record(const cmt_light_client_t *c);
 
 /* ══ the providers (client.go:853-869, by identity) ═══════════════════ */
 

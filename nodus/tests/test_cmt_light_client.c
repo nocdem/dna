@@ -2,8 +2,10 @@
  * Nodus — cometbft @v0.38.26 C port: `light/client.go` and
  * `light/trust_options.go` (shared/dnac/cmt_light_client.{c,h}), through
  * the reference's mock provider (light/provider/mock/mock.go,
- * deadmock.go) and the SQLite light store. Light client package 2,
- * 2026-10-16 (Kurultay #25); no node path calls any of it yet.
+ * deadmock.go) and the SQLite light store. Light client packages 2 and 3
+ * (the detector), 2026-10-16 (Kurultay #25); no node path calls any of it
+ * yet. The detector's own cases (detector_test.go) are in
+ * test_cmt_light_detector.c.
  *
  * ── WHAT IT PROVES ─────────────────────────────────────────────────────
  *   · TrustOptions.ValidateBasic refuses a non-positive period, a
@@ -15,17 +17,24 @@
  *     header or different proposer priorities, does not count a silent
  *     witness or one with the primary's identity, and removes a witness
  *     that sends an invalid block;
- *   · sequential and skipping verification reach the detector hook on
- *     every reference "good" row (the code DETECTOR_NOT_IMPLEMENTED with
- *     the expected trace ends — any earlier failure gives another code)
- *     and stop with a verification error, never the hook's code, on every
- *     "bad" row; the hook FAILS CLOSED: nothing is saved;
- *   · a benign provider error at a bisection pivot ends at the hook's
+ *   · sequential and skipping verification SAVE the target on every
+ *     reference "good" row (the detector finds the witness holding the
+ *     same block) and stop with a verification error on every "bad" row,
+ *     saving nothing;
+ *   · the detector-dependent client_test.go rows: a witness with an
+ *     unverifiable conflicting header is removed and the block trusted; a
+ *     witness with a set that is not its header's is removed; a witness
+ *     whose priorities differ stops the call and stays; a lone witness
+ *     that is behind gives WITNESS_BEHIND first and, after the wait, the
+ *     reference's ErrFailedHeaderCrossReferencing (cmt_light_detector.h
+ *     DD2); bisection between two trusted blocks; pruning after Update;
+ *   · a benign provider error at a bisection pivot ends at the detector's
  *     short-trace refusal (quirk Q2, detector.go:29-31);
  *   · backwards verification saves the older blocks, refuses a primary
  *     whose header at the next height down is not the parent, and (D9)
  *     refuses a target the primary sent that is not the block the walk
- *     reaches (K25-8);
+ *     reaches (K25-8); steps 4b and 5 (between, and an expired closest
+ *     block);
  *   · the client enforces the provider contract itself (D15): a real
  *     header with a foreign validator set is refused and not stored, a
  *     header at another height than asked is refused and its provider
@@ -53,12 +62,13 @@
  * (and its journal). A crash mid-run can leave one behind.
  *
  * ── HOW IT CAN LIE ─────────────────────────────────────────────────────
- *  1. THE DETECTOR IS NOT PORTED (package 3). A reference row that
- *     expects a forward or between verification to SUCCEED is checked
- *     here as "reached the detector hook with the expected trace, and the
- *     store did not change". That proves the verification path ran to
- *     its end; it does not prove the block would be trusted once the
- *     detector exists.
+ *  1. Every "good" row's witness holds the SAME data as the primary, so
+ *     the detector's success there proves the matching path only; its
+ *     conflict, examine and attack paths are proved in
+ *     test_cmt_light_detector.c. The reference's 30-second sleep
+ *     (RemovesWitnessIfItSendsUsIncorrectHeader, second half) is two
+ *     calls here, the second with `now` 30 s later (DD2): the row proves
+ *     the port's two-pass decision, not a wait.
  *  2. ML-DSA-87 signing is HEDGED; no signature is frozen. Header hashes
  *     depend only on header fields, so two headers generated from the
  *     same arguments share a hash, as in the reference.
@@ -85,37 +95,29 @@
  *
  * ── REFERENCE CASES (light/client_test.go) ─────────────────────────────
  * PORTED: TestValidateTrustOptions (:73-116), TestMock (:118-121),
- * TestClient_SequentialVerification (:123-257, all 7 rows; "good" →
- * detector hook), TestClient_SkippingVerification (:259-381, all 4 rows),
- * TestClientLargeBisectionVerification (:383-408, → hook),
+ * TestClient_SequentialVerification (:123-257, all 7 rows),
+ * TestClient_SkippingVerification (:259-381, all 4 rows),
+ * TestClientLargeBisectionVerification (:383-408),
+ * TestClientBisectionBetweenTrustedHeaders (:410-436),
  * TestClient_Cleanup (:438-459), TestClientRestoresTrustedHeaderAfter-
- * Startup1/2/3 (:461-700), TestClient_Update (:702-721, → hook),
- * TestClientReplacesPrimaryWithWitnessIfPrimaryIsUnavailable (:764-782;
- * Update → hook, the provider assertions kept),
- * TestClient_BackwardsVerification (:784-888: steps 1-3 and rows 7-8; 4a
- * → hook), TestClient_NewClientFromTrustedStore (:890-910),
- * TestClientEnsureValidHeadersAndValSets (:1033-1102; row 0 → hook).
+ * Startup1/2/3 (:461-700), TestClient_Update (:702-721),
+ * TestClientReplacesPrimaryWithWitnessIfPrimaryIsUnavailable (:764-782),
+ * TestClient_BackwardsVerification (:784-888: steps 1-5 and rows 7-8),
+ * TestClient_NewClientFromTrustedStore (:890-910),
+ * TestClientRemovesWitnessIfItSendsUsIncorrectHeader (:912-971; the
+ * second half in two calls, how it can lie 1),
+ * TestClient_TrustedValidatorSet (:973-1008),
+ * TestClientPrunesHeadersAndValidatorSets (:1010-1031),
+ * TestClientEnsureValidHeadersAndValSets (:1033-1102),
+ * TestClientErrorsDifferentProposerPriorities (:1161-1212).
  * NOT PORTED, with the reason:
- *   · TestClientBisectionBetweenTrustedHeaders (:410-436) — needs a
- *     forward verification to be SAVED first; the detector is package 3.
- *   · TestClient_BackwardsVerification steps 4b and 5 (:823-833) — need
- *     step 4a (a forward verification) saved.
  *   · TestClient_Concurrency (:723-762) — goroutines; the client is
- *     single-threaded (D14), and it needs a forward verification saved.
- *   · TestClientRemovesWitnessIfItSendsUsIncorrectHeader (:912-971),
- *     TestClient_TrustedValidatorSet (:973-1008),
- *     TestClientErrorsDifferentProposerPriorities (:1161-1212) — what
- *     they assert happens in the detector (package 3). Their init part
- *     (witnesses agree / differ in priorities) is covered by the item-9
- *     rows below.
- *   · TestClientPrunesHeadersAndValidatorSets (:1010-1031) — needs Update
- *     to save; the pruning is checked through a backwards save instead
- *     (PROJECT row t_prune).
+ *     single-threaded (D14).
  *   · TestClientHandlesContexts (:1104-1159) — no context.Context.
  * PROJECT-AUTHORED: the item-9 rows (agree / disagree / silent / dedup /
- * bad witness / priorities), the fail-closed rows, the Q2 short-trace
- * row, the D9 row, the D15 provider-contract rows, the rollback-refused row, the cap rows and the option
- * rows.
+ * bad witness / priorities), the Q2 short-trace row, the D9 row, the D15
+ * provider-contract rows, the backwards prune row, the rollback-refused
+ * row, the cap rows and the option rows.
  *
  * @file test_cmt_light_client.c
  */
@@ -207,6 +209,10 @@ typedef struct {
     tvals_t lvals;        /* genMockNode's ToValidators(2, 0) */
     tsh_t   large[LARGE_N + 1];   /* index = height */
     tsh_t   fake5;        /* D9: a height-5 header with another app hash */
+    tsh_t   rw_bad2;      /* :916-917: (2, bTime+30m, vals2, vals2,
+                             app_hash2, 4, 4, LastBlockID h1) — no signer */
+    tsh_t   tvs_bad2;     /* :980-982: (2, bTime+30m, vals, vals,
+                             app_hash2, 0, 4, LastBlockID h1) */
 } tfix_t;
 
 static tfix_t *F;
@@ -523,6 +529,16 @@ static int build_fixture(tfix_t *f)
     if (sh_hash(&f->large[4], hh) != 0 ||
         gen_sh(&f->fake5, 5, t_at(5 * MINUTE), &f->lvals, &f->lvals,
                K_LARGE, 3, 0, 3, hh, "app_hash_fake", "cons_hash",
+               "results_hash") != 0) {
+        return 1;
+    }
+    /* client_test.go:916-917 and :980-982 — two height-2 headers on h1. */
+    if (sh_hash(&f->h1, hh) != 0 ||
+        gen_sh(&f->rw_bad2, 2, t_at(30 * MINUTE), &f->vals2, &f->vals2,
+               K_KEYS, 4, 4, 4, hh, "app_hash2", "cons_hash",
+               "results_hash") != 0 ||
+        gen_sh(&f->tvs_bad2, 2, t_at(30 * MINUTE), &f->vals, &f->vals,
+               K_KEYS, 4, 0, 4, hh, "app_hash2", "cons_hash",
                "results_hash") != 0) {
         return 1;
     }
@@ -848,6 +864,8 @@ static bool out_height_is(int64_t h)
            g_out->lb.signed_header->header->height == h;
 }
 
+static bool out_hash_is(const tsh_t *sh);
+
 /* ══ 1. TestValidateTrustOptions (client_test.go:73-116) ═════════════ */
 
 static int t_trust_options(void)
@@ -899,7 +917,7 @@ typedef struct {
     cmt_validator_set_t *vals[3];
     size_t      n;
     bool        init_err;
-    bool        verify_err;     /* else: the detector hook (how it can lie, 1) */
+    bool        verify_err;     /* else: block 3 is verified and saved */
     /* verify_err rows: the exact error the port's trace of the row gives
      * (0 = not pinned); `want_to` checks ErrVerificationFailed.To. */
     int         want_code;
@@ -908,8 +926,7 @@ typedef struct {
 
 /* NewClient(primary = mock(row), witnesses = {mock(row)}) — ADAPTED: two
  * instances, two identities — then VerifyLightBlockAtHeight(3, now). */
-static int run_row(const trow_t *r, int mode, cmt_time_t now,
-                   int64_t want_trace_len)
+static int run_row(const trow_t *r, int mode, cmt_time_t now)
 {
     tmock_t                    p, w;
     tstore_t                   s;
@@ -948,20 +965,18 @@ static int run_row(const trow_t *r, int mode, cmt_time_t now,
 
     rc = cmt_light_client_verify_light_block_at_height(c, 3, now, g_out, &e);
     if (r->verify_err) {
-        T(rc == CMT_REJECT &&
-          e.code != CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED, r->name);
+        T(rc == CMT_REJECT, r->name);
         T(r->want_code == 0 || e.code == r->want_code, r->name);
         T(r->want_to == 0 ||
           (e.to == r->want_to && e.reason == CMT_LIGHT_CLIENT_REASON_VERIFIER &&
            e.verify.code == CMT_LIGHT_ERR_INVALID_HEADER), r->name);
+        T(last_h(&s) == 1 && !stored(&s, 3), "nothing saved past the root");
     } else {
-        T(rc == CMT_REJECT &&
-          e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED &&
-          e.trace_from == 1 && e.trace_to == 3 &&
-          e.trace_len == (size_t)want_trace_len, r->name);
+        /* :249-251 / :373-375 — NoError; the witness holds the same block,
+         * so the detector trusts it. */
+        T(rc == CMT_OK && out_height_is(3), r->name);
+        T(last_h(&s) == 3 && stored(&s, 3), "block 3 saved");
     }
-    /* Fail closed: block 3 is never saved. */
-    T(last_h(&s) == 1 && !stored(&s, 3), "nothing saved past the root");
     ret = 0;
 out:
     cmt_light_client_free(c);
@@ -1009,7 +1024,7 @@ static int t_sequential(void)
     rows[6].want_code = CMT_LIGHT_CLIENT_ERR_PROVIDER;
     for (i = 0; i < 7; i++) {
         if (run_row(&rows[i], CMT_LIGHT_CLIENT_MODE_SEQUENTIAL,
-                    t_at(3 * HOUR), 3) != 0) {                   /* :249 */
+                    t_at(3 * HOUR)) != 0) {                      /* :249 */
             return 1;
         }
     }
@@ -1021,7 +1036,6 @@ static int t_sequential(void)
 static int t_skipping(void)
 {
     trow_t  rows[4];
-    int64_t want[4] = { 2, 2, 3, 0 };
     size_t  i;
 
     memset(rows, 0, sizeof(rows));
@@ -1044,7 +1058,7 @@ static int t_skipping(void)
     rows[3].want_to   = 2;
     for (i = 0; i < 4; i++) {
         if (run_row(&rows[i], CMT_LIGHT_CLIENT_MODE_SKIPPING,
-                    t_at(3 * HOUR), want[i]) != 0) {             /* :373 */
+                    t_at(3 * HOUR)) != 0) {                      /* :373 */
             return 1;
         }
     }
@@ -1086,11 +1100,11 @@ static int t_large_bisection(void)
     wp = peer_of(&w, "witness");
     opts_default(&o);                                            /* :400 */
     T(new_client(&t, &pp, &wp, 1, &s, &o, &c, &e) == CMT_OK, "init at 5");
-    /* :403 Update(bTime + 100 min) → the hook, with the trace 5 → 100. */
-    T(cmt_light_client_update(c, t_at(100 * MINUTE), g_out, &adv, &e) == CMT_REJECT &&
-      !adv && e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED &&
-      e.trace_from == 5 && e.trace_to == LARGE_N, "large bisection → hook");
-    T(last_h(&s) == 5, "nothing saved");
+    /* :403-407 Update(bTime + 100 min) → block 100, the provider's own. */
+    T(cmt_light_client_update(c, t_at(100 * MINUTE), g_out, &adv, &e) == CMT_OK &&
+      adv && out_height_is(LARGE_N) && out_hash_is(&F->large[LARGE_N]),
+      "large bisection → 100");
+    T(last_h(&s) == LARGE_N, "100 saved");
     ret = 0;
 out:
     cmt_light_client_free(c);
@@ -1314,7 +1328,7 @@ out:
     return ret;
 }
 
-/* ══ 8. TestClient_Update (client_test.go:702-721) — and fail closed ═ */
+/* ══ 8. TestClient_Update (client_test.go:702-721) ═══════════════════ */
 
 static int t_update(void)
 {
@@ -1338,24 +1352,24 @@ static int t_update(void)
     wp = peer_of(&w, "witness");
     opts_default(&o);
     T(new_client(&t, &pp, &wp, 1, &s, &o, &c, &e) == CMT_OK, "init");
-    /* :715 — "should result in downloading & verifying header #3":
-     * skipping 1 → 3 reaches the hook, which refuses (D5). */
-    T(cmt_light_client_update(c, t_at(2 * HOUR), g_out, &adv, &e) == CMT_REJECT &&
-      !adv && e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED &&
-      e.trace_len == 2 && e.trace_from == 1 && e.trace_to == 3,
-      "Update → hook");
-    /* FAIL CLOSED: nothing saved, block 3 is still unverified. */
-    T(last_h(&s) == 1 && !stored(&s, 3), "store unchanged");
-    T(cmt_light_client_trusted_light_block(c, 3, g_out, &e) == CMT_REJECT &&
-      e.code == CMT_LIGHT_CLIENT_ERR_UNVERIFIED_HEIGHT, "3 unverified");
-    /* Twice: the hook never turns into a success. */
+    /* :714-720 — "should result in downloading & verifying header #3". */
+    T(cmt_light_client_update(c, t_at(2 * HOUR), g_out, &adv, &e) == CMT_OK &&
+      adv && out_height_is(3) && out_hash_is(&F->h3), "Update → 3");
+    T(last_h(&s) == 3 && stored(&s, 3), "3 saved");
+    T(cmt_light_client_trusted_light_block(c, 3, g_out, &e) == CMT_OK &&
+      out_hash_is(&F->h3), "TrustedLightBlock(3) is h3");
+    /* Again: the latest is already trusted (:461) — no advance. */
+    T(cmt_light_client_update(c, t_at(2 * HOUR), g_out, &adv, &e) == CMT_OK &&
+      !adv, "Update again → nothing new");
+    /* A trusted height is returned as is (:479-485). */
     T(cmt_light_client_verify_light_block_at_height(c, 3, t_at(2 * HOUR),
-                                                    g_out, &e) == CMT_REJECT &&
-      e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED &&
-      g_out->lb.signed_header == NULL, "verify 3 → hook, out empty (D10)");
+                                                    g_out, &e) == CMT_OK &&
+      out_height_is(3), "verify 3 → already trusted");
     /* compareWithLatestHeight (:412-431): 0 = the latest; Q8. */
     T(cmt_light_client_trusted_light_block(c, 0, g_out, &e) == CMT_OK &&
-      out_height_is(1), "height 0 = latest");
+      out_height_is(3), "height 0 = latest");
+    T(cmt_light_client_trusted_light_block(c, 4, g_out, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_UNVERIFIED_HEIGHT, "4 unverified");
     T(cmt_light_client_trusted_light_block(c, -1, g_out, &e) == CMT_REJECT &&
       e.code == CMT_LIGHT_CLIENT_ERR_BAD_HEIGHT, "negative height");
     T(cmt_light_client_verify_light_block_at_height(c, 0, t_at(2 * HOUR),
@@ -1441,9 +1455,10 @@ static int t_replace_dead_primary(void)
     /* :1028-1031 — slot 0 takes the last (the dead one, appended). */
     T(id_is(c, false, 0, "dead") && id_is(c, false, 1, "full-2"),
       "removeWitnesses order (Q7)");
-    /* :777 Update → the hook (D5). */
-    T(cmt_light_client_update(c, t_at(2 * HOUR), g_out, &adv, &e) == CMT_REJECT &&
-      e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED, "Update → hook");
+    /* :777-778 Update → NoError (the dead witness is benign, full-2
+     * matches). */
+    T(cmt_light_client_update(c, t_at(2 * HOUR), g_out, &adv, &e) == CMT_OK &&
+      adv && out_height_is(3), "Update → 3");
     T(!id_is(c, true, 0, "dead"), "primary is not the dead node"); /* :780 */
     T(cmt_light_client_witness_count(c) == 2, "len(Witnesses) == 2"); /* :781 */
     ret = 0;
@@ -1490,10 +1505,27 @@ static int t_backwards(void)
       out_height_is(5), "3) already stored");
     T(stored(&s, 3) && stored(&s, 4) == false && stored(&s, 5) &&
       stored(&s, 6), "3, 5, 6 stored; 4 was only walked");
-    /* 4a) the latest (:819-821) → the hook (D5). */
+    /* 4a) the latest (:819-821). */
     T(cmt_light_client_verify_light_block_at_height(c, 9, t_at(9 * MINUTE),
+                                                    g_out, &e) == CMT_OK &&
+      out_height_is(9), "4a) forwards to 9");
+    /* 4b) between 6 and 9, by bisection from 6 (:823-828); 8 is not
+     *     verified on the way. */
+    T(cmt_light_client_verify_light_block_at_height(c, 7, t_at(9 * MINUTE),
+                                                    g_out, &e) == CMT_OK &&
+      out_height_is(7), "4b) between to 7");
+    T(cmt_light_client_trusted_light_block(c, 8, g_out, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_NOT_FOUND, "4b) 8 not trusted");
+    /* 5) the closest block below 8 is 7 (bTime + 7 min), expired at
+     *    bTime + 12 min with a 4-minute period (:830-833):
+     *    ErrVerificationFailed{ErrOldHeaderExpired} (verifier.go:47-50 →
+     *    client.go:769-770). */
+    T(cmt_light_client_verify_light_block_at_height(c, 8, t_at(12 * MINUTE),
                                                     g_out, &e) == CMT_REJECT &&
-      e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED, "4a) → hook");
+      e.code == CMT_LIGHT_CLIENT_ERR_VERIFICATION_FAILED &&
+      e.reason == CMT_LIGHT_CLIENT_REASON_VERIFIER &&
+      e.verify.code == CMT_LIGHT_ERR_OLD_HEADER_EXPIRED, "5) 7 expired");
+    T(!stored(&s, 8), "5) nothing saved");
     cmt_light_client_free(c);
     c = NULL;
     store_close(&s);
@@ -1657,9 +1689,10 @@ out:
     return ret;
 }
 
-/* PROJECT — prune via the light store (adapted from
- * TestClientPrunesHeadersAndValidatorSets, client_test.go:1010-1031):
- * PruningSize(1), a backwards save, then only the newest block remains. */
+/* PROJECT — prune after a BACKWARDS save (the reference's
+ * TestClientPrunesHeadersAndValidatorSets, which prunes after Update, is
+ * t_prunes_update): PruningSize(1), a backwards save, then only the newest
+ * block remains. */
 static int t_prune(void)
 {
     tmock_t                    p, w;
@@ -1776,9 +1809,7 @@ static int t_ensure_valid(void)
         rc = cmt_light_client_verify_light_block_at_height(c, 3,
                 t_at(2 * HOUR), g_out, &e);                      /* :1095 */
         if (row == 0) {
-            T(rc == CMT_REJECT &&
-              e.code == CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED,
-              "row 0 → hook");
+            T(rc == CMT_OK && out_height_is(3), "row 0 → NoError (:1046)");
         } else {
             /* Every provider answers ErrBadLightBlock → lastError (:1126). */
             T(rc == CMT_REJECT && e.code == CMT_LIGHT_CLIENT_ERR_PROVIDER &&
@@ -1795,6 +1826,235 @@ static int t_ensure_valid(void)
         }
     }
     return 0;
+}
+
+/* ══ 12b. TestClientBisectionBetweenTrustedHeaders (client_test.go:410-436) */
+
+static int t_bisection_between(void)
+{
+    tmock_t                    p, w;
+    tstore_t                   s;
+    cmt_light_client_peer_t    pp, wp;
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *c = NULL;
+    cmt_light_client_error_t   e;
+    uint8_t                    hh[CMT_TMHASH_SIZE];
+    cmt_light_trust_options_t  t = trust_of(4 * HOUR, 1, &F->h1, hh);
+    int                        ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    /* `fullNode, []provider.Provider{fullNode}` — ADAPTED: two instances,
+     * two identities (how it can lie, 3). */
+    mock_full_node(&p);
+    mock_full_node(&w);
+    pp = peer_of(&p, "primary");
+    wp = peer_of(&w, "witness");
+    opts_default(&o);                                            /* :420 skipping */
+    T(new_client(&t, &pp, &wp, 1, &s, &o, &c, &e) == CMT_OK, "init");
+    T(cmt_light_client_verify_light_block_at_height(c, 3, t_at(2 * HOUR),
+                                                    g_out, &e) == CMT_OK,
+      "verify 3");                                               /* :424-425 */
+    T(cmt_light_client_trusted_light_block(c, 2, g_out, &e) == CMT_REJECT,
+      "2 not yet trusted");                                      /* :427-429 */
+    T(cmt_light_client_verify_light_block_at_height(c, 2, t_at(HOUR),
+                                                    g_out, &e) == CMT_OK &&
+      out_height_is(2) && stored(&s, 2), "between → 2");         /* :431-434 */
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* ══ 12c. TestClientRemovesWitnessIfItSendsUsIncorrectHeader (:912-971) */
+
+static int t_removes_witness(void)
+{
+    tmock_t                    p, b1, b2;
+    tstore_t                   s;
+    cmt_light_client_peer_t    pp, ws[2];
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *c = NULL;
+    cmt_light_client_error_t   e;
+    uint8_t                    hh[CMT_TMHASH_SIZE];
+    cmt_light_trust_options_t  t = trust_of(4 * HOUR, 1, &F->h1, hh);
+    int                        ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_full_node(&p);                                          /* :948 fullNode */
+    mock_init(&b1, CHAIN);                                       /* :914-925 */
+    mock_add(&b1, 1, &F->h1, &F->vals.vs);
+    mock_add(&b1, 2, &F->rw_bad2, &F->vals2.vs);
+    mock_init(&b2, CHAIN);                                       /* :927-937 */
+    mock_add(&b2, 1, &F->h1, &F->vals.vs);
+    mock_add(&b2, 2, &F->h2, &F->vals2.vs);
+    pp    = peer_of(&p, "full");
+    ws[0] = peer_of(&b1, "bad-1");
+    ws[1] = peer_of(&b2, "bad-2");
+    opts_default(&o);
+    o.max_retry_attempts = 1;                                    /* :953 (never read) */
+    T(new_client(&t, &pp, ws, 2, &s, &o, &c, &e) == CMT_OK &&
+      cmt_light_client_witness_count(c) == 2, "init, two witnesses"); /* :955-957 */
+
+    /* :959-964 — bad-1's header 2 conflicts and cannot be verified (no
+     * signer): it is removed; bad-2 matches; block 2 is trusted. */
+    T(cmt_light_client_verify_light_block_at_height(c, 2, t_at(2 * HOUR),
+                                                    g_out, &e) == CMT_OK &&
+      out_height_is(2), "verify 2 → NoError");
+    T(cmt_light_client_witness_count(c) == 1 && id_is(c, false, 0, "bad-2"),
+      "bad-1 removed");
+
+    /* :966-970 — the remaining witness has no block 3. The reference mock
+     * answers ErrHeightTooHigh (mock.go:77-79), its latest block 2 is
+     * earlier than 3, so the reference sleeps 2*10 s + 10 s and asks
+     * again (detector.go:164-196). Here: WITNESS_BEHIND, then the same
+     * call 30 s later → ErrFailedHeaderCrossReferencing (DD2). */
+    T(cmt_light_client_verify_light_block_at_height(c, 3, t_at(2 * HOUR),
+                                                    g_out, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND, "verify 3 → behind");
+    T(!stored(&s, 3), "behind saves nothing");
+    T(cmt_light_client_verify_light_block_at_height(c, 3,
+            t_at(2 * HOUR + 30 * SECOND), g_out, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_FAILED_HEADER_CROSS_REFERENCING,
+      "after the wait → failed cross-referencing");
+    T(cmt_light_client_witness_count(c) == 1, "the witness stays"); /* :969-970 */
+    T(!stored(&s, 3), "nothing saved");
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* ══ 12d. TestClient_TrustedValidatorSet (client_test.go:973-1008) ═══ */
+
+static int t_trusted_valset(void)
+{
+    tmock_t                    p, bad, full;
+    tstore_t                   s;
+    cmt_light_client_peer_t    pp, ws[2];
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *c = NULL;
+    cmt_light_client_error_t   e;
+    uint8_t                    hh[CMT_TMHASH_SIZE];
+    cmt_light_trust_options_t  t = trust_of(4 * HOUR, 1, &F->h1, hh);
+    int                        ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_full_node(&p);
+    mock_init(&bad, CHAIN);                                      /* :975-990 */
+    mock_add(&bad, 1, &F->h1, &F->vals.vs);
+    mock_add(&bad, 2, &F->tvs_bad2, &F->different_vals.vs);
+    mock_add(&bad, 3, &F->h3, &F->different_vals.vs);
+    mock_full_node(&full);
+    pp    = peer_of(&p, "full");
+    ws[0] = peer_of(&bad, "bad-valset");
+    ws[1] = peer_of(&full, "full-2");
+    opts_default(&o);
+    T(new_client(&t, &pp, ws, 2, &s, &o, &c, &e) == CMT_OK &&
+      cmt_light_client_witness_count(c) == 2, "init, two witnesses"); /* :1001-1002 */
+    /* :1004-1007 — the bad node's set at 2 is not its header's: the
+     * client's ValidateBasic (D15) makes it ErrBadLightBlock →
+     * errBadWitness → removed. */
+    T(cmt_light_client_verify_light_block_at_height(c, 2,
+            t_at(2 * HOUR + SECOND), g_out, &e) == CMT_OK &&
+      out_height_is(2), "verify 2 → NoError");
+    T(cmt_light_client_witness_count(c) == 1 && id_is(c, false, 0, "full-2"),
+      "bad-valset removed");
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* ══ 12e. TestClientPrunesHeadersAndValidatorSets (client_test.go:1010-1031) */
+
+static int t_prunes_update(void)
+{
+    tmock_t                    p, w;
+    tstore_t                   s;
+    cmt_light_client_peer_t    pp, wp;
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *c = NULL;
+    cmt_light_client_error_t   e;
+    uint8_t                    hh[CMT_TMHASH_SIZE];
+    cmt_light_trust_options_t  t = trust_of(4 * HOUR, 1, &F->h1, hh);
+    bool                       adv = false;
+    int                        ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_full_node(&p);
+    mock_full_node(&w);
+    pp = peer_of(&p, "primary");
+    wp = peer_of(&w, "witness");
+    opts_default(&o);
+    o.pruning_size = 1u;                                         /* :1019 */
+    T(new_client(&t, &pp, &wp, 1, &s, &o, &c, &e) == CMT_OK, "init");
+    T(cmt_light_client_trusted_light_block(c, 1, g_out, &e) == CMT_OK,
+      "1 trusted");                                              /* :1022-1023 */
+    T(cmt_light_client_update(c, t_at(2 * HOUR), g_out, &adv, &e) == CMT_OK &&
+      adv && out_height_is(3), "Update → 3");                    /* :1025-1027 */
+    T(cmt_light_client_trusted_light_block(c, 1, g_out, &e) == CMT_REJECT,
+      "1 pruned");                                               /* :1029-1030 */
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* ══ 12f. TestClientErrorsDifferentProposerPriorities (:1161-1212) ═══ */
+
+static int t_diff_priorities(void)
+{
+    tmock_t                    p, w0, w1;
+    tstore_t                   s;
+    cmt_light_client_peer_t    pp, ws[2];
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *c = NULL;
+    cmt_light_client_error_t   e;
+    uint8_t                    hh[CMT_TMHASH_SIZE];
+    cmt_light_trust_options_t  t = trust_of(4 * HOUR, 1, &F->h1, hh);
+    int                        ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_full_node(&p);                                          /* :1197 fullNode */
+    mock_init(&w0, CHAIN);                                       /* :1164-1174 */
+    mock_add(&w0, 1, &F->h1, &F->vals.vs);
+    mock_add(&w0, 2, &F->h2, &F->vals2.vs);
+    mock_init(&w1, CHAIN);                                       /* :1175-1185 */
+    mock_add(&w1, 1, &F->h1, &F->vals.vs);
+    mock_add(&w1, 2, &F->h2, &F->vals.vs);
+    pp    = peer_of(&p, "full");
+    ws[0] = peer_of(&w0, "w-primary-data");
+    ws[1] = peer_of(&w1, "w-vals");
+    opts_default(&o);
+    T(new_client(&t, &pp, ws, 2, &s, &o, &c, &e) == CMT_OK &&
+      cmt_light_client_witness_count(c) == 2, "init, two witnesses"); /* :1203-1205 */
+    /* :1207-1211 — witness #1 holds h2 with `vals`' priorities: the
+     * detector stops (detector.go:83-86) and the witness stays (Q-D2). */
+    T(cmt_light_client_verify_light_block_at_height(c, 2, t_at(2 * HOUR),
+                                                    g_out, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_PROPOSER_PRIORITIES_DIVERGE &&
+      e.witness_index == 1, "priorities diverge → error");
+    T(cmt_light_client_witness_count(c) == 2, "witness left in the list");
+    T(!stored(&s, 2), "nothing saved");
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
 }
 
 /* ══ 13. PROJECT — the item-9 agreement rule at init ═════════════════ */
@@ -1956,7 +2216,7 @@ static int cap_case(const char *name, int mode, uint64_t trace,
     cmt_light_client_error_t   e;
     uint8_t                    hh[CMT_TMHASH_SIZE];
     cmt_light_trust_options_t  t = trust_of(4 * HOUR, 1, &F->h1, hh);
-    int                        ret = 1;
+    int                        rc, ret = 1;
 
     if (store_open(&s) != 0) {
         return 1;
@@ -1978,10 +2238,14 @@ static int cap_case(const char *name, int mode, uint64_t trace,
     o.max_verify_steps   = steps;
     o.max_skipping_cache = cache;
     T(new_client(&t, &pp, &wp, 1, &s, &o, &c, &e) == CMT_OK, name);
-    T(cmt_light_client_verify_light_block_at_height(c, 3, t_at(3 * HOUR),
-                                                    g_out, &e) == CMT_REJECT &&
-      e.code == want_code, name);
-    T(last_h(&s) == 1, "nothing saved");
+    rc = cmt_light_client_verify_light_block_at_height(c, 3, t_at(3 * HOUR),
+                                                       g_out, &e);
+    if (want_code == CMT_LIGHT_CLIENT_ERR_NONE) {
+        T(rc == CMT_OK && last_h(&s) == 3, name);
+    } else {
+        T(rc == CMT_REJECT && e.code == want_code, name);
+        T(last_h(&s) == 1, "nothing saved");
+    }
     ret = 0;
 out:
     cmt_light_client_free(c);
@@ -2002,16 +2266,16 @@ static int t_caps(void)
     int                        ret = 1;
     const int                  SK = CMT_LIGHT_CLIENT_MODE_SKIPPING;
     const int                  SQ = CMT_LIGHT_CLIENT_MODE_SEQUENTIAL;
-    const int                  HOOK = CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED;
+    const int                  OK = CMT_LIGHT_CLIENT_ERR_NONE;
 
-    if (cap_case("skip: exactly enough", SK, 3, 3, 3, HOOK) != 0 ||
+    if (cap_case("skip: exactly enough", SK, 3, 3, 3, OK) != 0 ||
         cap_case("skip: verify steps", SK, 3, 2, 3,
                  CMT_LIGHT_CLIENT_ERR_CAP_VERIFY_STEPS) != 0 ||
         cap_case("skip: cache (Q1 doubles it)", SK, 3, 3, 2,
                  CMT_LIGHT_CLIENT_ERR_CAP_SKIPPING_CACHE) != 0 ||
         cap_case("skip: trace", SK, 2, 3, 3,
                  CMT_LIGHT_CLIENT_ERR_CAP_TRACE) != 0 ||
-        cap_case("seq: exactly enough", SQ, 3, 2, 1, HOOK) != 0 ||
+        cap_case("seq: exactly enough", SQ, 3, 2, 1, OK) != 0 ||
         cap_case("seq: trace, before any fetch", SQ, 2, 2, 1,
                  CMT_LIGHT_CLIENT_ERR_CAP_TRACE) != 0 ||
         cap_case("seq: verify steps", SQ, 3, 1, 1,
@@ -2139,6 +2403,11 @@ int main(void)
     if (t_prune() != 0) goto out;
     if (t_from_trusted_store() != 0) goto out;
     if (t_ensure_valid() != 0) goto out;
+    if (t_bisection_between() != 0) goto out;
+    if (t_removes_witness() != 0) goto out;
+    if (t_trusted_valset() != 0) goto out;
+    if (t_prunes_update() != 0) goto out;
+    if (t_diff_priorities() != 0) goto out;
     if (t_init_agreement() != 0) goto out;
     if (t_caps() != 0) goto out;
     if (t_options() != 0) goto out;

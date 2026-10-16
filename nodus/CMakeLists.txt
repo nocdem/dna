@@ -469,10 +469,10 @@ set(NODUS_SOURCES
     ${SHARED_DIR}/dnac/cmt_light_block.c
     ${SHARED_DIR}/dnac/cmt_light_store.c
     # light/client.go + light/trust_options.go — light client package 2
-    # (2026-10-16, Kurultay #25). No node caller yet; the detector
-    # (package 3) is a fail-closed hook. In the common list so it compiles
-    # on Windows.
+    # (2026-10-16, Kurultay #25), and light/detector.go — package 3. No
+    # node caller yet. In the common list so they compile on Windows.
     ${SHARED_DIR}/dnac/cmt_light_client.c
+    ${SHARED_DIR}/dnac/cmt_light_detector.c
     ${SHARED_DIR}/dnac/cmt_evidence.c
     ${SHARED_DIR}/dnac/cmt_state.c
     # cometbft @709fd12b → C port, wave R2-A (FLEET-TM-R2): types/vote_set.go,
@@ -1903,15 +1903,24 @@ add_executable(test_cmt_light_store tests/test_cmt_light_store.c)
 target_link_libraries(test_cmt_light_store nodus dsa nodus crypto)
 add_test(NAME test_cmt_light_store COMMAND test_cmt_light_store)
 
-# light/client.go + light/trust_options.go — light client package 2
-# (2026-10-16): the client_test.go cases that need neither the detector
-# nor the network, plus the Kurultay #25 item-9 agreement, fail-closed
-# detector hook and cap rows (makes and removes temporary databases in
+# light/client.go + light/trust_options.go — light client packages 2-3
+# (2026-10-16): the client_test.go cases without goroutines or the
+# network, the detector-dependent ones included, plus the Kurultay #25
+# item-9 agreement and cap rows (makes and removes temporary databases in
 # the working directory). The file header states what it proves /
 # requires / leaves behind / how it can lie.
 add_executable(test_cmt_light_client tests/test_cmt_light_client.c)
 target_link_libraries(test_cmt_light_client nodus dsa nodus crypto)
 add_test(NAME test_cmt_light_client COMMAND test_cmt_light_client)
+
+# light/detector.go — light client package 3 (2026-10-16): the
+# detector_test.go cases without goroutines or evidence delivery, and the
+# project rows (K25-3 priority-only divergence, attack → local record,
+# witness behind, bounds). Same temporary databases; same file-header
+# contract.
+add_executable(test_cmt_light_detector tests/test_cmt_light_detector.c)
+target_link_libraries(test_cmt_light_detector nodus dsa nodus crypto)
+add_test(NAME test_cmt_light_detector COMMAND test_cmt_light_detector)
 
 add_executable(test_cmt_evidence tests/test_cmt_evidence.c)
 target_link_libraries(test_cmt_evidence nodus dsa nodus crypto)
