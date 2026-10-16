@@ -101,7 +101,8 @@ nodus/
 │   ├── transport/
 │   │   ├── nodus_tcp.c        # TCP transport (epoll, framing, connections; + the WS entry glue;
 │   │   │                      #   + the AF_UNIX entry nodus_tcp_unix_* — split S2; used by the S3
-│   │   │                      #   witness IPC, both ends)
+│   │   │                      #   witness IPC, both ends; + the plain listener on Windows, select
+│   │   │                      #   loop, 2026-10-16 — the WS and AF_UNIX entries stay Linux-only)
 │   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
 │   ├── crypto/
@@ -185,6 +186,7 @@ nodus/
 │   ├── test_channel_ring.c      # Ring management tests
 │   ├── test_channel_protocol.c  # Channel protocol message tests
 │   ├── test_tcp.c               # TCP transport tests
+│   ├── test_tcp_listen_portable.c # Plain listener through the public API only (127.0.0.1 port 0 read back, accept, one frame each way, close; NODUS_MAX_CONNS_PER_IP + 1 → one refused); same source meant for the Linux epoll and the mingw select loop
 │   ├── test_client.c          # Client SDK tests
 │   ├── test_client_pin.c      # Client server-key pin (fail-closed matrix, ML-KEM only) + monotonic timeouts
 │   ├── test_client_spend_status.c # dnac_spend reply without a uint "status" -> PROTOCOL_ERROR, never APPROVED
@@ -207,6 +209,9 @@ nodus/
 │   ├── test_cmt_params.c      # cometbft port R1-C: ConsensusParams flat hash, ValidateBasic / ValidateUpdate / Update
 │   ├── test_cmt_genesis.c     # cometbft port R1-C: GenesisDoc ValidateAndComplete (clock via callback), ValidatorHash
 │   ├── test_cmt_validation.c  # cometbft port R1-D: VerifyCommit with real signatures — +2/3 strict, NIL verified-not-counted, every signature checked
+│   ├── test_cmt_light_verifier.c # cometbft v0.38.26 light/verifier.go + VerifyCommitLightTrusting* + SignedHeader.ValidateBasic, real ML-DSA-87 signatures, fixed `now`: adjacent / non-adjacent / Verify / ValidateTrustLevel / VerifyBackwards, the error CLASS of each refusal (verifier_test.go, validation_test.go cases)
+│   ├── test_cmt_light_block.c # light client package 1: LightBlock.ValidateBasic, the SignedHeader / LightBlock proto round trip (same bytes), presence bytes `0a 00` / `12 00`, the provider interface through a port of light/provider/mock
+│   ├── test_cmt_light_store.c # light client package 1: light/store/db over SQLite — the reference cases + deviations D2-D7 (idempotent save, count = rows, per-prefix count, count checked at open, row height = key) and a failed COMMIT rolled back; temporary file in the working directory, removed
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
 │   ├── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
 │   ├── test_cmt_vote_set.c    # cometbft port R2-A: VoteSet — the seven vote_set_test.go scenarios, weight-vs-count, the C-only capacity bounds (128 peers, N+P blocks)
@@ -3091,6 +3096,57 @@ unsigned AUTH_OK) — messenger's `nodus_init.c` state callback reads it. Test:
 `tests/test_client_pin.c`. Design: `docs/plans/2026-09-25-web-wallet-nodus-send-design.md`
 rev 2 package (c1).
 
+### Windows build — the plain TCP listener (2026-10-16)
+
+Until 2026-10-16 the Windows build of `nodus_tcp.c` was client-only. It now also compiles
+the plain TCP listener, for the Windows bandwidth / storage node (decision
+`docs/plans/decisions/2026-10-16-relay-port-4003-bandwidth-role.md`: TCP 4003 relay port,
+the Windows app, light client B9). `nodus_tcp.c` has three event-loop builds, and two
+macros mark what each one contains:
+
+| Build | Event loop | Listener code |
+|---|---|---|
+| Linux / Android | epoll | `NODUS_TCP_EPOLL` + `NODUS_TCP_LISTEN`: plain listener, WebSocket entry (`nodus_tcp_ws_listen`), Unix socket entry (`nodus_tcp_unix_listen` / `_unix_connect`) |
+| `_WIN32` | `select()` over the pool + the listener | `NODUS_TCP_LISTEN` only: `nodus_tcp_listen` + `handle_accept`. `nodus_tcp_ws_listen` and `nodus_tcp_unix_listen` return -1, `nodus_tcp_unix_connect` NULL |
+| `__EMSCRIPTEN__` | `poll(…, 0)` | none: `nodus_tcp_listen` / `nodus_tcp_ws_listen` return -1 (below) |
+
+- **The same accept code as Linux.** `handle_accept` is shared: pool cap
+  `NODUS_TCP_MAX_CONNS` (1024), `NODUS_MAX_CONNS_PER_IP` (20, CRIT-5 — moved from
+  `nodus_tcp.c` to `nodus_tcp.h`; plain-listener connections only, WebSocket and
+  Unix-socket connections are not counted), and the same frame cap and read budget. Only
+  the event registration differs: Linux `epoll_add`s the accepted socket; Windows
+  registers nothing, because the select loop walks the pool.
+- **`FD_SETSIZE` 1025.** Winsock's `fd_set` holds 64 sockets by default, so a pool of
+  1024 would be silently truncated by `FD_SET`. `nodus_tcp.c` defines `FD_SETSIZE 1025`
+  before `<winsock2.h>` and `_Static_assert`s `FD_SETSIZE >= NODUS_TCP_MAX_CONNS + 1`.
+  `fd_set` is local to this file, so no other translation unit changes size.
+  `select()` and not `WSAPoll`: the CONNECTING path needs a failed connect reported in the
+  except set, which `WSAPoll` did not do on older Windows 10 builds.
+- **`SO_EXCLUSIVEADDRUSE`, never `SO_REUSEADDR`.** On Winsock `SO_REUSEADDR` lets a second
+  socket bind an address:port that another socket is already listening on, and take over
+  its connections. `nodus_tcp_listen` on Windows sets `SO_EXCLUSIVEADDRUSE` and a
+  non-blocking socket, and returns -1 (ERROR log with the WSA code) if either fails.
+  Linux keeps `SO_REUSEADDR`.
+- **One accept per `nodus_tcp_poll` call.** `listen_fd` goes into the read set. It is
+  checked AFTER the pool walk, so a connection accepted in this call never meets this
+  call's fd sets (Winsock may give a new socket the handle value of one closed earlier
+  in the same batch). This is the same pacing as the level-triggered Linux listener (one
+  `handle_accept` per EPOLLIN); a queued backlog is reported again on the next call. With
+  no listener and no connection the loop sleeps instead of calling `select()` with three
+  empty sets (Winsock fails that with `WSAEINVAL`).
+- **No Windows caller yet.** The callers of `nodus_tcp_listen` are `nodus_server.c` and
+  the channel server, and both are in the Linux-only source list (`nodus/CMakeLists.txt`,
+  `if(NOT WIN32)`). No Windows server, witness or 4004 host exists today (the 4004 host
+  port is Kurultay #25 decision K25-5, `docs/plans/decisions/2026-10-16-kurultay-25-summary.md`).
+
+Test: `test_tcp_listen_portable` (public API only, so the same source is meant to build
+with mingw against the select loop; ctest runs it on Linux). It listens on
+127.0.0.1 port 0 and reads the bound port back, does accept + one frame each way + close,
+and opens `NODUS_MAX_CONNS_PER_IP + 1` connections and checks that the server ran
+`on_accept` exactly 20 times and closed exactly one. Every wait is a bounded count of poll
+rounds, not a time. Case 3 counts callbacks, so it does not prove WHICH connection was
+refused.
+
 ### Browser build (`__EMSCRIPTEN__`)
 
 The same client and transport sources compile for the browser wallet with emcc
@@ -3101,9 +3157,12 @@ The same client and transport sources compile for the browser wallet with emcc
   socket completes on POLLOUT/POLLERR/POLLHUP through `handle_connect_complete`
   (`SO_ERROR`), a connected one flushes `wbuf` on POLLOUT and reads on
   POLLIN/POLLHUP/POLLERR, with the same deferred-close and read-budget rules. It never
-  waits: the page has one thread. Everything that exists only in the epoll build —
-  listen, accept, the WebSocket server entry — is under `NODUS_TCP_EPOLL` and not
-  compiled; `nodus_tcp_listen` / `nodus_tcp_ws_listen` return -1 there as on Windows.
+  waits: the page has one thread. No listener code is compiled: the plain listener
+  (listen, accept) is under `NODUS_TCP_LISTEN` (Linux/Android and Windows), and the
+  WebSocket and Unix-socket server entries are under `NODUS_TCP_EPOLL` (Linux/Android
+  only). `nodus_tcp_listen` and `nodus_tcp_ws_listen` return -1 in this build;
+  `nodus_tcp_ws_listen` also returns -1 on Windows, `nodus_tcp_listen` does not (see
+  "Windows build" above).
 - **Client** (`nodus_client.c`): no read thread (`start_read_thread` is a no-op);
   `wait_response` and `do_connect_one` poll directly and call `emscripten_sleep(10)`
   after each poll, and `nodus_client_poll(timeout > 0)` yields for the timeout — the
@@ -3705,7 +3764,7 @@ cannot decide). Return contract everywhere: 0 / −1 / −2, as in `qc_v2.h`.
 | `cmt_merkle.{h,c}` | `crypto/merkle` | RFC 6962 tree: `HashFromByteSlices`, proofs, empty root H("") |
 | `cmt_bits.{h,c}` | `libs/bits/bit_array.go` | `BitArray` and its wire form; the decoder enforces `Elems == (Bits+63)/64` (the reference's one unguarded read) |
 | `cmt_safemath.{h,c}` | `libs/math/safemath.go` | checked int64 arithmetic |
-| `cmt_time.{h,c}` | `types/time/time.go` | `{seconds, nanos}`; `CMT_TIME_ZERO` = year one, NOT the Unix epoch; `WeightedMedian` (stable sort); `is_zero`; the `cmt_now_fn` type |
+| `cmt_time.{h,c}` | `types/time/time.go` | `{seconds, nanos}`; `CMT_TIME_ZERO` = year one, NOT the Unix epoch; `WeightedMedian` (stable sort); `is_zero`; the `cmt_now_fn` type; since 2026-10-16 also `cmt_time_after` / `cmt_time_before` / `cmt_time_add_ns` (Go `Time.After` / `Before` / `Add`; `after` and `add_ns` moved, bodies unchanged, from `cmt_cs.c`'s statics `cs_time_after` / `cs_time_add_ns` so the light verifier shares them) |
 | `cmt_pb.{h,c}` | `proto/tendermint/*.pb.go` (generated) | proto3 encode/decode written from the GENERATED code's rules: omit-zero, `nullable=false` always-emit, `StdTime`, wrapper leaves; `MarshalDelimited` |
 | `cmt_canonical.{h,c}` | `types/canonical.go` | CanonicalVote / CanonicalProposal — the signed bytes |
 | `cmt_vote.{h,c}` | `types/vote.go`, `crypto/ed25519/ed25519.go` | Vote verify (ML-DSA-87), `ValidateBasic`, `SignAndCheckVote` through a host signer callback (adopts the signer's timestamp, vote.go:451) |
@@ -3716,14 +3775,17 @@ cannot decide). Return contract everywhere: 0 / −1 / −2, as in `qc_v2.h`.
 | `cmt_results.{h,c}` | `types/results.go` | ABCIResults root + proof |
 | `cmt_params.{h,c}` | `types/params.go` | ConsensusParams flat hash, `ValidateBasic` / `ValidateUpdate` / `Update`, defaults, pubkey type name `"mldsa87"` |
 | `cmt_genesis.{h,c}` | `types/genesis.go` | GenesisDoc `ValidateAndComplete` (addresses checked or derived; chain id ≤ 32 bytes by operator decision), `ValidatorHash` |
-| `cmt_validation.{h,c}` | `types/validation.go` | `VerifyCommit`: strictly more than 2/3, EVERY non-absent signature verified, NIL verified but not counted; batch path unreachable (no ML-DSA-87 batch verifier); `VerifyCommitLight` / `…AllSignatures` (validation.go:61-115, only COMMIT entries looked at, early exit past 2/3 unless all-signatures) ported with the blocksync reactor (2026-09-29); the Trusting half of the light family out of scope |
+| `cmt_validation.{h,c}` | `types/validation.go` | `VerifyCommit`: strictly more than 2/3, EVERY non-absent signature verified, NIL verified but not counted; batch path unreachable (no ML-DSA-87 batch verifier); `VerifyCommitLight` / `…AllSignatures` (validation.go:61-115, only COMMIT entries looked at, early exit past 2/3 unless all-signatures) ported with the blocksync reactor (2026-09-29); the Trusting half (`VerifyCommitLightTrusting` / `…AllSignatures`, v0.38.26 validation.go:118-193: no set/height/BlockID comparison, threshold `TotalVotingPower × trust_level`, signers looked up BY ADDRESS) ported with the light verifier on 2026-10-16, with `cmtmath.Fraction` as `cmt_fraction_t` (`cmt_fraction.h`) — no node caller, see "Light client package 1" |
 | `cmt_evidence.{h,c}` | `types/evidence.go` | DuplicateVoteEvidence — bare bytes, FLAT hash, canonical pair order; `EvidenceList.Hash` (the header's EvidenceHash), `Has`; wrapper codec (branch 1 only) |
 | `cmt_state.{h,c}` | `state/state.go` | `State`, `Copy`, `IsEmpty`, `MakeBlock`, `MedianTime` (weighted by voting power, address lookup), `MakeGenesisState` |
 
-Not ported, by rule: the light-client / evidence-pool callers (scope rule of
-the local port map), batch verification, JSON and file I/O (host). The blocksync
-caller was on this list until the blocksync port (2026-09-29, "Block sync" below)
-brought `VerifyCommitLight` in with it. Every departure from
+Not ported, by rule: the evidence-pool callers (scope rule of the local port map),
+batch verification, JSON and file I/O (host). The blocksync caller was on this list
+until the blocksync port (2026-09-29, "Block sync" below) brought `VerifyCommitLight`
+in with it; the light-client callers were on it until 2026-10-16, when the bandwidth /
+storage roles became light clients and `light/verifier.go` was ported (the light client
+itself, its detector and a network provider are still not ported — "Light client
+package 1" below). Every departure from
 the reference is enumerated in the local `tasks/reference-deviation-register.md` (rows
 R1A-*, R1B-*, R1C-*, R1D-*). Vectors come from four independent Python oracles under
 `shared/dnac/tests/` (`hashlib.sha3_512`, the K-1 rules, no port code imported) and from
@@ -9652,6 +9714,140 @@ peer), so a rolling upgrade takes two nodes back to back (decision record). Test
 `test_witness_p2p` (1b') for the held StatusResponse; harness `test_cmt_blocksync.sh`
 (in the sweep, between `test_v2_rewards.sh` and `test_cmt_rule_n_retire.sh`; its
 distance is capped at epoch/2 − 2 so the stopped node is never Rule-N-retired).
+
+### Light client package 1 — verifier, LightBlock, store, provider interface (cometbft @v0.38.26 `light/`; 2026-10-16, no node caller)
+
+Why it exists: the bandwidth and storage roles are to run on Windows as LIGHT clients —
+no block execution, no EVM (decision
+`docs/plans/decisions/2026-10-16-relay-port-4003-bandwidth-role.md`, "Light client —
+operatör", B9, storage included). Kurultay #25
+(`docs/plans/decisions/2026-10-16-kurultay-25-summary.md`) fixed the port order —
+"LightBlock + ValidateBasic → store → client → detector" (item 1) — and the khan took
+K25-1..7 the same day. What is in the tree is the first steps of that order: the
+verifier, the LightBlock type and codec, the store, and the provider INTERFACE. It is
+**not a light client**: there is no client, no detector, no network provider and no
+proof layer, so nothing here may be called a "reference-equivalent light client" or
+"proven RPC" (Kurultay #25 standing conditions; item 6). No node path calls any of it.
+
+Reference: cometbft v0.38.26 (pin decision
+`docs/plans/decisions/2026-09-30-cometbft-pin-v0.38.26.md`); each header records the
+SHA-256 / line count of the reference files it ports and its `taşınmadı` list.
+
+| File | Reference (v0.38.26) | What |
+|---|---|---|
+| `shared/dnac/cmt_fraction.h` | `libs/math/fraction.go:11-18` | `cmt_fraction_t {numerator, denominator}` (uint64), the type only — no range check (the functions that take one check what they need); `ParseFraction` / `String` not ported |
+| `shared/dnac/cmt_time.{h,c}` | Go `time.Time.After` / `Before` / `Add` | `cmt_time_after` / `cmt_time_before` / `cmt_time_add_ns` are now public: `after` and `add_ns` MOVED, bodies unchanged, from `cmt_cs.c`'s statics `cs_time_after` / `cs_time_add_ns` (the consensus vote-time clamp, state.go:2419-2424, now calls the public pair); `before` = `after(b, a)`. Consensus behaviour unchanged |
+| `shared/dnac/cmt_validation.{h,c}`, `cmt_validator_set.{h,c}` | `types/validation.go:118-193`, `types/validator_set.go:777-797` | `VerifyCommitLightTrusting` / `…AllSignatures` and their ValidatorSet method forms: no `verifyBasicValsAndCommit` (the set need not be the commit's), threshold `TotalVotingPower × Numerator / Denominator` with `safeMul` overflow refused and a zero Denominator refused first, still STRICT, signers looked up BY ADDRESS (a stranger's signature skipped, the same validator twice refused); the trust level is NOT range-checked here |
+| `shared/dnac/cmt_light_verifier.{h,c}` | `light/verifier.go`, `light/errors.go:11-41`, `types/light.go:116-162` | `SignedHeader` + `ValidateBasic`; `VerifyNonAdjacent` (≥ `trust_level` of the TRUSTED set and > 2/3 of the new set signed — the new-set check last, the reference's anti-DoS order), `VerifyAdjacent` (new ValidatorsHash = trusted NextValidatorsHash, > 2/3 signed), `Verify` (picks one by height), `ValidateTrustLevel` ([1/3, 1]), `HeaderExpired` (expiry == now is expired), `VerifyBackwards` (older header = parent of a trusted one; height not checked, as in the reference); `DefaultTrustLevel` 1/3; the three typed errors `ErrOldHeaderExpired` / `ErrNewValSetCantBeTrusted` / `ErrInvalidHeader` as `cmt_light_error_t` |
+| `shared/dnac/cmt_light_block.{h,c}` | `types/light.go:11-112`, `:183-226`; `proto/tendermint/types/types.proto:156-164`, `types.pb.go` | `LightBlock` + `ValidateBasic` (set hash = header's ValidatorsHash); `SignedHeader` / `LightBlock` proto codec with presence on the wire (`0a 00` = empty SignedHeader, `12 00` = empty ValidatorSet); ToProto / FromProto; `encode` / `decode` = the store's two steps. A decoded block lives in `cmt_light_block_buf_t`, above 1 MB (CMT_VALSET_MAX signatures + validators) — heap only |
+| `shared/dnac/cmt_light_store.{h,c}` | `light/store/store.go`, `light/store/errors.go`, `light/store/db/db.go` | the `Store` interface as a callback table + its database form over ONE SQLite file (tables `cmt_light_block (prefix, height, value)`, `cmt_light_size (prefix, size)`), deviations D1-D8 below |
+| `shared/dnac/cmt_light_provider.h` | `light/provider/provider.go:9-29`, `light/provider/errors.go` | the `Provider` interface ONLY (`chain_id`, `light_block`, `report_evidence`) and its four named errors; no implementation in `shared/` — the one implementation is the mock inside `nodus/tests/test_cmt_light_block.c` (`light/provider/mock/mock.go`) |
+
+**The clock.** No function in these files reads a clock. As in the reference, `now`
+and every duration (`trusting_period`, `max_clock_drift`, Go `time.Duration` = int64
+nanoseconds) are PARAMETERS. The verifier decides what ONE light client believes and
+is on no consensus path. The trusting period value is the khan's K25-2 (48 hours, an
+operational freshness limit, not a safety bound — nothing punishes a double signer
+today, BUGS Z-12). No source carries that value yet: the client that would pass it is
+not written.
+
+**Deviations the port types force (verifier and LightBlock).** `block_protocol` (the
+value `Version.Block` must equal) is a parameter wherever `Header.ValidateBasic` is
+reached, because `version.BlockProtocol` is a build constant of the reference binary
+and a chain parameter here. Go's typed error values become `CMT_REJECT` plus the
+optional `cmt_light_error_t` (the `cmt_vs_error_t` pattern); error text is not carried.
+A Go nil-pointer dereference (a panic) is `CMT_FAULT`; a nil header / commit / set
+INSIDE a signed header or light block is `CMT_REJECT`, because a peer can leave those
+optional proto fields out. The non-adjacent, adjacent and verify entry points allocate
+the leaf scratch of `ValidatorSet.Hash()` and free it before return. A duplicate nested
+`header` / `commit` / `validator_set` field REPLACES rather than merges (cmt_pb's
+public `_unmarshal` inits first; the same deviation as `cmt_pb_store.h`); the decoder
+refuses more than CMT_VALSET_MAX signatures or validators.
+
+**The store (Kurultay #25 item 7: "Do not copy the reference store's accounting").**
+- D1 the count is 64-bit (`Prune(uint64_t)` / `Size(uint64_t *)`), not the reference's
+  uint16 that wraps at 65 536;
+- D2 a save of a height already held REPLACES its bytes and leaves the count alone
+  (the reference adds 1 on every save);
+- D3 rows and count change in ONE transaction everywhere — also in Prune, where the
+  reference writes the count with a separate SetSync after the row batch;
+- D4 every count change is the number of rows the statement really inserted or
+  deleted (`sqlite3_changes`), not the number of calls or loop turns;
+- D5 the count is kept PER PREFIX (the reference's bare `size` key is shared by every
+  prefix in one DB);
+- D6 open refuses (`CMT_REJECT`) a file whose stored count differs from its rows;
+- D7 a row whose decoded block has no header, or a header height other than the row's
+  key, is `CMT_REJECT`;
+- D8 `block_protocol` is an open parameter (decoding a row reaches `HeaderFromProto`).
+
+Every write is `BEGIN IMMEDIATE` … `COMMIT` with `PRAGMA synchronous=FULL`. A COMMIT
+that FAILS (e.g. `SQLITE_BUSY` — SQLite leaves such a transaction open) is ROLLED BACK
+and the call returns `CMT_FAULT` — no retry, no busy timeout (`tx_finish`,
+`cmt_light_store.c`; commit `269f964f2`). The in-memory count changes only after a
+COMMIT succeeds, so `Size()` always equals the file. A SQLite failure is `CMT_FAULT`
+everywhere, also where the reference returns the database's error; "not found" is
+`CMT_OK` with `*found = false`. One owner, one event loop: not thread-safe (the
+reference's `mtx` is not ported). First / Last / Before / Prune each select by
+`ORDER BY height` with a LIMIT.
+
+**The provider interface.** `context.Context` has no counterpart (one event loop, the
+`cmt_mem_app_t` precedent): an implementation bounds its own call and answers
+`CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE` when it runs out. `report_evidence` keeps its slot,
+and its implementation is to be "local record only" (Kurultay #25 item 2, stop + local
+record). Its argument is `cmt_pb_evidence_t`, which cannot carry
+LightClientAttackEvidence — the one evidence the reference's light client reports — and
+that gap belongs to the detector package. A networked provider must ALWAYS be a pinned
+4001 session, "never an unpinned provider" (Kurultay #25 item 8).
+
+**Build.** All `.c` files are in nodus's COMMON source list next to
+`cmt_validation.c` (`nodus/CMakeLists.txt`, `NODUS_SOURCES`), outside the Linux-only
+`if(NOT WIN32)` list, so a Windows build compiles them. SQLite is already used from
+that list.
+
+**Not done yet — what the light client still needs** (each is a Kurultay #25 item or
+khan decision):
+- the client itself (`light/client.go`): trust options, sequential / skipping sync,
+  the trust root — K25-1 "both": a default checkpoint in the release plus a fresh one
+  the operator enters from any source; "≥ 2 peers agree" stays a consistency check,
+  never the root;
+- the detector, including the examine step (item 2), with the full-vector
+  proposer-priority comparison instead of the reference's ProposerPriorityHash (K25-3,
+  a recorded node-local deviation);
+- a networked provider (item 8, pinned 4001);
+- the proof layer: "proven RPC" waits for HF-7 / HF-8 and a tested proof API for each
+  method (item 6);
+- for light storage: the 4004 p2p host on Windows (K25-5), the execution-free block
+  downloader (K25-6), and assignment proofs — light storage waits for HF-7 (K25-7);
+- the evidence + penalty lane is a separate job before mainnet (K25-4). Until it lands
+  the honesty assumption is: more than 2/3 of the trusted set honest, at least one
+  provider honest, the root right, no economic punishment.
+
+**Tests** (default build; no compile flags, no environment, no clock; fixed-seed
+ML-DSA-87 keys; safe under `ctest -j`):
+- `test_cmt_light_verifier` — with real signatures over `Commit.VoteSignBytes`:
+  adjacent / non-adjacent acceptance and each refusal's error CLASS, the strict
+  future-time bound, expiry at `expiry == now`, `Verify`'s choice of path,
+  `ValidateTrustLevel` = [1/3, 1], the Trusting early exit vs the AllSignatures form,
+  overflow and zero-denominator refusals, the method forms, `SignedHeader.ValidateBasic`,
+  `VerifyBackwards`. Ports `light/verifier_test.go` and the Trusting cases of
+  `types/validation_test.go`. Can lie: no frozen hash / sign-bytes vector (it trusts
+  `cmt_header_hash`, `cmt_validator_set_hash` and `cmt_commit_vote_sign_bytes` to their
+  own tests); error text is not compared, only the class.
+- `test_cmt_light_block` — `LightBlock.ValidateBasic`, the round trip ToProto → Marshal
+  → Unmarshal → FromProto → ToProto → Marshal giving the same bytes, the literal
+  presence bytes, unknown-field / truncated / wrong-wire-type rows, and the mock
+  provider (height 0 = latest, ErrHeightTooHigh, ErrLightBlockNotFound,
+  ErrBadLightBlock, recorded evidence). Can lie: there is no frozen vector for the
+  LightBlock bytes beyond the three presence rows, so a symmetric encoder/decoder error
+  would pass.
+- `test_cmt_light_store` — the reference's `db_test.go` cases (Test_Concurrency not
+  ported, the store is single-owner), D2-D7, restart, two prefixes, the callback
+  table, and a FAILED COMMIT (a second connection's read lock makes COMMIT return
+  `SQLITE_BUSY`): CMT_FAULT, `Size()` unchanged, the row not visible, the next save
+  succeeds. It first PROBES that SQLite behaves that way and fails rather than pass
+  vacuously. Makes and removes `test_cmt_light_store.XXXXXX` files in the working
+  directory (a crash mid-case can leave one). Durability (`synchronous=FULL`) is not
+  exercised.
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 
