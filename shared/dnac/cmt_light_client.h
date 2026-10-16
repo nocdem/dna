@@ -77,6 +77,12 @@
  *     two witnesses besides the primary sets `min_init_agreement` to 3.
  *   This is a CONSISTENCY check, never the root (K25-1): the root is
  *   `options.hash`, which the primary's block must match first (:376-378).
+ *   DEADLINE — item 9 lists a deadline among the group rules. It is NOT in
+ *   this package: bounding how long a witness may take is the PROVIDER
+ *   implementation's job (cmt_light_provider.h). A witness that does not
+ *   answer within it returns NO_RESPONSE, which counts as silence (R4).
+ *   Every witness answer passes the client's own provider-contract checks
+ *   (D15) before R3 compares it.
  *
  * ── DEVIATIONS (each with its reason) ──────────────────────────────────
  *  D1 The init agreement rule above replaces :1131-1190 (item 9).
@@ -101,8 +107,18 @@
  *       max_skipping_cache— the bisection cache (:714, :754, :765).
  *       max_backwards_steps — headers fetched in one backwards walk,
  *                           re-runs after a replacement (:973) included.
- *     Astra (Kurultay #25) flagged the unbounded trace: each entry is a
- *     full light block (`cmt_light_block_buf_t`, above one megabyte).
+ *     Astra (Kurultay #25) flagged the unbounded trace. MEMORY is bounded
+ *     by `max_verify_steps`, not by the trace or the cache (those hold
+ *     pointers): every light block one forward / between verification
+ *     fetches — an interim block or a pivot (each preceded by a Verify
+ *     call) and a replacement primary's block (each after a failed
+ *     Verify) — gets its own `cmt_light_block_buf_t` in a per-operation
+ *     pool, so the pool holds at most about 2 × max_verify_steps buffers,
+ *     all freed when the public call returns. sizeof(cmt_light_block_buf_t)
+ *     = 945 856 bytes (x86_64 Linux gcc, CMT_VALSET_MAX = 128; read from
+ *     a compile-time diagnostic, not a run): about 1.8 MiB per verify
+ *     step. A backwards walk uses four buffers whatever its length, plus
+ *     one each for the trusted block and the target.
  *  D4 The two recursions — verifySkippingAgainstPrimary calling itself
  *     after a replacement (:813) and backwards calling itself (:973) — are
  *     loops here, bounded by the caps of D3.
@@ -129,9 +145,13 @@
  *     an unverified block stored as trusted. Here, after the walk, the
  *     reached header's hash must equal the target's, else
  *     CMT_LIGHT_CLIENT_ERR_VERIFICATION_FAILED (reason
- *     CMT_LIGHT_CLIENT_REASON_TARGET_MISMATCH). This TIGHTENS the
- *     reference and needs the operator's word to stay (recorded for the
- *     ORCHESTRATOR).
+ *     CMT_LIGHT_CLIENT_REASON_TARGET_MISMATCH). KEPT by the operator:
+ *     K25-8 (2026-10-16, docs/plans/decisions/2026-10-16-kurultay-25-
+ *     summary.md). The reference SPEC has this check: spec/light-client/
+ *     verification/README.md:442-444 — `if hash(untrustedHeader) !=
+ *     old.LastBlockID.Hash { return ErrInvalidAdjacentHeaders }` after
+ *     the walk — and client.go applies it on its own error path
+ *     (:966-971); only the success path of client.go lacks it.
  *  D10 `VerifyLightBlockAtHeight` returns the block it fetched TOGETHER
  *     with the verification error (:493). Here `out` holds the block only
  *     on CMT_OK; on any other return it is the empty light block.
@@ -151,6 +171,40 @@
  *  D14 `Logger` (:92) is the QGP_LOG macros; `quit` (:159) has no reader
  *     in client.go and is not ported; `providerMutex` (:143) is not ported
  *     — the client has ONE owner on one event loop and is NOT thread-safe.
+ *  D15 PROVIDER CONTRACT MOVED INTO THE CLIENT. The reference's provider
+ *     checks every answer before returning it: the header must be at the
+ *     requested height when that is not 0 (light/provider/http/http.go:
+ *     80-84) and `LightBlock.ValidateBasic(chainID)` must pass (:96-99),
+ *     which binds the set's hash to the header's ValidatorsHash
+ *     (types/light.go:21-44); either failure is ErrBadLightBlock. The C
+ *     provider interface (cmt_light_provider.h) does not oblige an
+ *     implementation to do this, so the client does it at its single
+ *     entry point (`provider_light_block`) with its own chain id and
+ *     block_protocol: a failure is BAD_LIGHT_BLOCK (reason CMT_REJECT),
+ *     the buffer is reset, and every caller treats it as a provider's own
+ *     ErrBadLightBlock. This restores the reference's behaviour; it is not
+ *     a new rule. Without it a backwards walk (which checks only headers,
+ *     :954) could store a real header with a foreign validator set — the
+ *     later trusted set — and init would compare unvalidated witness
+ *     blocks.
+ *  D16 A CMT_OK answer with no signed header, header, commit or set is
+ *     BAD_LIGHT_BLOCK (the first D15 check). In Go such a block is a nil
+ *     dereference in the verifier; a peer's answer must not reach one.
+ *  D17 cleanupAfter's walk (:884-899) has no option cap: each step reads a
+ *     strictly LOWER stored height (LightBlockBefore), so it ends within
+ *     the store's row count; it is counted against Size() + 1 and a store
+ *     that breaks its own order is CMT_FAULT.
+ *  D18 Constructor check order: CMT_FAULT for a NULL argument or a NULL
+ *     provider / store row first; then the project's option domains
+ *     (chain id length, mode, the D3 caps, min_init_agreement, the
+ *     identities — CMT_LIGHT_CLIENT_ERR_INVALID_OPTIONS); then the
+ *     reference's order: no witnesses (:242-244), a witness on another
+ *     chain (:246-252; a CMT_FAULT from its chain_id row is CMT_FAULT),
+ *     the trust level (:254-257), restore (:259-261). NewClient checks
+ *     TrustOptions.ValidateBasic before all of these (:183-185).
+ *  D19 The detector hook does not read `now`. The reference's
+ *     detectDivergence uses it to verify a conflicting witness trace
+ *     (detector.go); that is package 3's.
  *
  * ── REFERENCE QUIRKS REPRODUCED AS-IS (recorded, not "fixed") ──────────
  *  Q1 verifySkipping appends a fetched pivot to the cache TWICE (:754 and
@@ -358,10 +412,11 @@ typedef struct {
  *  in `verify`: verifySkipping's ErrNewValSetCantBeTrusted at :758 (Q2),
  *  and backwards' VerifyBackwards error (ErrInvalidHeader) at :962 / :969. */
 #define CMT_LIGHT_CLIENT_ERR_VERIFIER                  7
-/** A provider error passed through unwrapped: `lightBlockFromPrimary`'s
- *  `lastError` (:1126), and the wrapped fetch failures of backwards
- *  (:945-946) and checkTrustedHeaderUsingOptions (:307-310). `provider`
- *  carries it. */
+/** A provider error, `provider` carrying it: `lightBlockFromPrimary`'s
+ *  `lastError` (:1126), returned unwrapped by checkTrustedHeaderUsingOptions
+ *  (`return err`, :308-310) and initializeWithTrustOptions (:364-367); and
+ *  backwards' fetch failure (:945-946), which the reference wraps with
+ *  `fmt.Errorf("…: %w")` — the wrapped error is what is carried. */
 #define CMT_LIGHT_CLIENT_ERR_PROVIDER                  8
 /** initializeWithTrustOptions: the primary's block fails ValidateBasic
  *  (:372-374). */

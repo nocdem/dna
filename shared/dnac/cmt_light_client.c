@@ -1,7 +1,7 @@
 /**
  * @file shared/dnac/cmt_light_client.c
  * @brief cometbft @v0.38.26 light/client.go + light/trust_options.go — see
- *        cmt_light_client.h for the mapping, the deviations (D1-D14), the
+ *        cmt_light_client.h for the mapping, the deviations (D1-D19), the
  *        reproduced quirks (Q1-Q8) and the item-9 agreement rule (R1-R6).
  *
  * Every function names the reference lines it ports. Ownership: every
@@ -330,13 +330,37 @@ static int trace_push(lbvec_t *trace, const cmt_light_block_t *lb,
 
 /* ══ providers ════════════════════════════════════════════════════════ */
 
-/* provider.go:9-29 — `LightBlock(ctx, height)`, with the port's guard: a
- * CMT_OK whose block lacks its signed header, header, commit or set is
- * turned into BAD_LIGHT_BLOCK. Every reference provider validates what it
- * returns (mock.go:96-101), and a nil member here would be a Go panic in
- * the verifier, which must not be reachable from a peer's answer. */
-static int provider_light_block(const peer_t *pr, int64_t height,
-                                cmt_light_block_buf_t *out,
+/* Refuse an answer as the reference's provider would: BAD_LIGHT_BLOCK
+ * with reason REJECT, the buffer emptied. */
+static int bad_light_block(cmt_light_block_buf_t *out,
+                           cmt_light_provider_error_t *perr)
+{
+    (void)cmt_light_block_buf_reset(out);
+    perr->code   = CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK;
+    perr->reason = CMT_REJECT;
+    return CMT_REJECT;
+}
+
+/*
+ * provider.go:9-29 — `LightBlock(ctx, height)`: the ONE entry point
+ * through which every provider answer reaches the client. On a CMT_OK
+ * answer the client itself enforces what the reference's provider
+ * promises before it returns a block (D15, "provider contract moved into
+ * the client"):
+ *   1. every member is present (D16 — a nil one would be a Go panic in
+ *      the verifier, and must not be reachable from a peer's answer);
+ *   2. when `height != 0`, the header is at that height —
+ *      light/provider/http/http.go:80-84 (`height != 0 && sh.Height !=
+ *      height` → ErrBadLightBlock);
+ *   3. `LightBlock.ValidateBasic(chainID)` — http.go:96-99 (→
+ *      ErrBadLightBlock), which binds the set's hash to the header's
+ *      ValidatorsHash (types/light.go:21-44); here with the client's chain
+ *      id and block_protocol.
+ * A failure is BAD_LIGHT_BLOCK (reason REJECT) with `out` reset, exactly
+ * what a provider's own ErrBadLightBlock gets from every caller.
+ */
+static int provider_light_block(const cmt_light_client_t *c, const peer_t *pr,
+                                int64_t height, cmt_light_block_buf_t *out,
                                 cmt_light_provider_error_t *perr)
 {
     int rc;
@@ -358,11 +382,22 @@ static int provider_light_block(const peer_t *pr, int64_t height,
     if (out->lb.signed_header == NULL ||
         out->lb.signed_header->header == NULL ||
         out->lb.signed_header->commit == NULL ||
-        out->lb.validator_set == NULL) {
+        out->lb.validator_set == NULL) {                         /* 1, D16 */
+        return bad_light_block(out, perr);
+    }
+    if (height != 0 &&
+        out->lb.signed_header->header->height != height) {      /* 2, http.go:80-84 */
+        return bad_light_block(out, perr);
+    }
+    rc = cmt_light_block_validate_basic(&out->lb, c->chain_id,   /* 3, http.go:96-99 */
+                                        c->chain_id_len,
+                                        c->o.block_protocol);
+    if (rc == CMT_FAULT) {
         (void)cmt_light_block_buf_reset(out);
-        perr->code   = CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK;
-        perr->reason = CMT_REJECT;
-        return CMT_REJECT;
+        return CMT_FAULT;            /* this process could not decide (D6) */
+    }
+    if (rc != CMT_OK) {
+        return bad_light_block(out, perr);
     }
     return CMT_OK;
 }
@@ -434,7 +469,7 @@ static int find_new_primary(cmt_light_client_t *c, int64_t height,
     }
 
     for (i = 0; i < c->n_witnesses; i++) {
-        rc = provider_light_block(&c->witnesses[i], height, out, &perr);
+        rc = provider_light_block(c, &c->witnesses[i], height, out, &perr);
         if (rc == CMT_FAULT) {                                   /* D6 */
             free(to_remove);
             return fault(err);
@@ -492,7 +527,7 @@ static int light_block_from_primary(cmt_light_client_t *c, int64_t height,
     cmt_light_provider_error_t perr;
     int                        rc;
 
-    rc = provider_light_block(&c->primary, height, out, &perr);
+    rc = provider_light_block(c, &c->primary, height, out, &perr);
     if (rc == CMT_OK) {
         return CMT_OK;
     }
@@ -624,17 +659,18 @@ static int update_trusted_light_block(cmt_light_client_t *c,
         return fault(err);
     }
     if (c->latest == NULL || h > lh) {                           /* :923-925 */
-        if (c->latest == NULL) {
-            c->latest = cmt_light_block_buf_new();
-            if (c->latest == NULL) {
-                return fault(err);
-            }
-        }
-        if (buf_copy(c->latest, l) != CMT_OK) {
-            cmt_light_block_buf_free(c->latest);
-            c->latest = NULL;
+        /* Copy into a NEW buffer and swap only on success: a failed copy
+         * (allocation) leaves `c->latest` as it was — the block is saved,
+         * the next restore or a higher save picks it up — and the call is
+         * CMT_FAULT. */
+        cmt_light_block_buf_t *nb = cmt_light_block_buf_new();
+
+        if (nb == NULL || buf_copy(nb, l) != CMT_OK) {
+            cmt_light_block_buf_free(nb);
             return fault(err);
         }
+        cmt_light_block_buf_free(c->latest);
+        c->latest = nb;
     }
     return CMT_OK;
 }
@@ -973,7 +1009,7 @@ static int verify_skipping(cmt_light_client_t *c, const peer_t *source,
                     rc = fault(err);
                     goto out;
                 }
-                rc = provider_light_block(source, pivot, b, &perr); /* :751 */
+                rc = provider_light_block(c, source, pivot, b, &perr); /* :751 */
                 if (rc == CMT_FAULT) {
                     rc = fault(err);
                     goto out;
@@ -1351,7 +1387,7 @@ static int init_agreement(cmt_light_client_t *c, const cmt_light_block_t *l,
         const peer_t *w = &c->witnesses[i];
         bool          dup = false;
 
-        rc = provider_light_block(w, height, b, &perr); /* R1: the same height */
+        rc = provider_light_block(c, w, height, b, &perr); /* R1: the same height */
         if (rc == CMT_FAULT) {
             rc = fault(err);
             goto out;

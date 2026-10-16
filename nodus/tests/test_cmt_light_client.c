@@ -25,7 +25,12 @@
  *   · backwards verification saves the older blocks, refuses a primary
  *     whose header at the next height down is not the parent, and (D9)
  *     refuses a target the primary sent that is not the block the walk
- *     reaches;
+ *     reaches (K25-8);
+ *   · the client enforces the provider contract itself (D15): a real
+ *     header with a foreign validator set is refused and not stored, a
+ *     header at another height than asked is refused and its provider
+ *     dropped as for ErrBadLightBlock, and an init witness with an
+ *     inconsistent set is removed and not counted;
  *   · restoring from the store, with the trust options at, above and
  *     below the stored height (rollback, re-root, cleanup), as the
  *     reference's three Startup tests;
@@ -65,6 +70,18 @@
  *     instance twice would be one identity and refused).
  *  4. The mock's 10 ms `time.After` and mutex (mock.go:68-73, :18) are not
  *     ported (no clock, one thread).
+ *  5. THE MOCK DOES NOT VALIDATE. The reference mock refuses a nil member
+ *     and runs ValidateBasic itself (mock.go:96-101); this one returns
+ *     exactly what it holds, so every invalid answer — a missing member,
+ *     a set that is not the header's, an empty set, a header at another
+ *     height — is refused by the CLIENT's provider-contract check
+ *     (cmt_light_client.h D15) or not at all. An earlier revision
+ *     validated in the mock, which made those rows pass while the client
+ *     itself checked nothing; t_provider_contract and the "bad witness"
+ *     row exist so that this cannot come back unnoticed. Conversely,
+ *     reference row BackwardsVerification 7 now fails at the fetch
+ *     (wrong height, as the reference's http provider refuses it,
+ *     http.go:80-84) instead of in the walk.
  *
  * ── REFERENCE CASES (light/client_test.go) ─────────────────────────────
  * PORTED: TestValidateTrustOptions (:73-116), TestMock (:118-121),
@@ -97,7 +114,7 @@
  *   · TestClientHandlesContexts (:1104-1159) — no context.Context.
  * PROJECT-AUTHORED: the item-9 rows (agree / disagree / silent / dedup /
  * bad witness / priorities), the fail-closed rows, the Q2 short-trace
- * row, the D9 row, the rollback-refused row, the cap rows and the option
+ * row, the D9 row, the D15 provider-contract rows, the rollback-refused row, the cap rows and the option
  * rows.
  *
  * @file test_cmt_light_client.c
@@ -576,7 +593,51 @@ static void prov_err(cmt_light_provider_error_t *err, int code, int reason)
     }
 }
 
-/* mock.go:64-103 LightBlock; deadmock.go:23-25. */
+/* Copy what the mock was given into the caller's buffer AS IS — no
+ * validation; an absent member stays absent, an empty set stays empty.
+ * Go returns the mock's own pointers. */
+static int mock_copy(cmt_light_block_buf_t *out, const cmt_light_block_t *lb)
+{
+    const cmt_signed_header_t *sh = lb->signed_header;
+
+    if (cmt_light_block_buf_reset(out) != CMT_OK) {
+        return CMT_FAULT;
+    }
+    if (sh != NULL) {
+        if (sh->header != NULL) {
+            out->header               = *sh->header;
+            out->signed_header.header = &out->header;
+        }
+        if (sh->commit != NULL) {
+            if (sh->commit->signatures_len > (size_t)CMT_VALSET_MAX) {
+                return CMT_FAULT;
+            }
+            out->commit                = *sh->commit;
+            out->commit.signatures     = out->sigs;
+            out->commit.signatures_cap = (size_t)CMT_VALSET_MAX;
+            if (sh->commit->signatures_len > 0u) {
+                memcpy(out->sigs, sh->commit->signatures,
+                       sh->commit->signatures_len * sizeof(out->sigs[0]));
+            }
+            out->signed_header.commit = &out->commit;
+        }
+        out->lb.signed_header = &out->signed_header;
+    }
+    if (lb->validator_set != NULL) {
+        if (cmt_validator_set_copy(lb->validator_set,
+                                   &out->validator_set) != CMT_OK) {
+            return CMT_FAULT;
+        }
+        out->lb.validator_set = &out->validator_set;
+    }
+    return CMT_OK;
+}
+
+/* mock.go:64-103 LightBlock; deadmock.go:23-25. ADAPTED: the reference
+ * mock refuses a nil member (:96-98) and runs ValidateBasic (:99-101);
+ * this one returns what it was told, so every invalid answer reaches the
+ * client's own provider-contract check (cmt_light_client.h D15) — the
+ * check under test. */
 static int mock_light_block(void *ctx, int64_t height,
                             cmt_light_block_buf_t *out,
                             cmt_light_provider_error_t *err)
@@ -585,9 +646,6 @@ static int mock_light_block(void *ctx, int64_t height,
     cmt_light_block_t lb;
     size_t            i;
     bool              have = false;
-    uint8_t          *bz = NULL;
-    size_t            bz_len = 0u;
-    int               rc;
 
     prov_err(err, CMT_LIGHT_PROVIDER_ERR_NONE, CMT_OK);
     if (m == NULL || out == NULL || height < 0) {
@@ -624,25 +682,8 @@ static int mock_light_block(void *ctx, int64_t height,
         prov_err(err, CMT_LIGHT_PROVIDER_ERR_LIGHT_BLOCK_NOT_FOUND, CMT_OK);
         return CMT_REJECT;
     }
-    if (lb.signed_header == NULL || lb.validator_set == NULL ||  /* :96-98 */
-        lb.signed_header->header == NULL) {
-        prov_err(err, CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK, CMT_REJECT);
-        return CMT_REJECT;
-    }
-    rc = cmt_light_block_validate_basic(&lb,                     /* :99-101 */
-                                        lb.signed_header->header->chain_id,
-                                        lb.signed_header->header->chain_id_len,
-                                        CMT_BLOCK_PROTOCOL);
-    if (rc != CMT_OK) {
-        prov_err(err, CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK, rc);
-        return CMT_REJECT;
-    }
-    rc = cmt_light_block_encode(&lb, &bz, &bz_len);
-    if (rc == CMT_OK) {
-        rc = cmt_light_block_decode(bz, bz_len, CMT_BLOCK_PROTOCOL, out);
-    }
-    free(bz);
-    return rc == CMT_OK ? CMT_OK : CMT_FAULT;                    /* :102 */
+    /* :96-101 NOT done here (see above). */
+    return mock_copy(out, &lb);                                  /* :102 */
 }
 
 /* mock.go:105-108 / deadmock.go:27-29 — no caller in package 2. */
@@ -1475,11 +1516,19 @@ static int t_backwards(void)
         T(new_client(&t3, &pp, &wp, 1, &s, &o, &c, &e) == CMT_OK, "init at 3");
         T(cmt_light_client_verify_light_block_at_height(c, 2,
                 t_at(HOUR + SECOND), g_out, &e) == CMT_REJECT && /* :884-885 */
-          /* VerifyBackwards' ErrInvalidHeader, returned as is (:962/:969);
-           * the replacement fails because the only witness cannot be
-           * removed (Q6). */
-          e.code == CMT_LIGHT_CLIENT_ERR_VERIFIER &&
-          e.verify.code == CMT_LIGHT_ERR_INVALID_HEADER,
+          (row == 7
+           /* 7: a height-1 header answered for height 2 — refused at the
+            * fetch by the client's provider-contract check (D15,
+            * http.go:80-84), from the primary and then the witness, so
+            * lastError (:1126). The reference's mock does not check the
+            * height; its http provider does. */
+           ? (e.code == CMT_LIGHT_CLIENT_ERR_PROVIDER &&
+              e.provider.code == CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK)
+           /* 8: VerifyBackwards' ErrInvalidHeader, returned as is
+            * (:962/:969); the replacement fails because the only witness
+            * cannot be removed (Q6). */
+           : (e.code == CMT_LIGHT_CLIENT_ERR_VERIFIER &&
+              e.verify.code == CMT_LIGHT_ERR_INVALID_HEADER)),
           row == 7 ? "7) incorrect height" : "8) incorrect hash");
         T(!stored(&s, 2) && !stored(&s, 1), "nothing saved below 3");
         cmt_light_client_free(c);
@@ -1527,6 +1576,80 @@ static int t_backwards_target_mismatch(void)
       e.reason == CMT_LIGHT_CLIENT_REASON_TARGET_MISMATCH && e.to == 5,
       "D9: the target is not the block reached");
     T(p.flip_left == 0 && !stored(&s, 5), "the fake was served, not saved");
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* PROJECT — D15, the provider contract enforced by the client. The mock
+ * returns what it is told; the client must refuse (i) a real header with
+ * a foreign validator set as a backwards target, and (ii) a header at
+ * another height than asked — and treat each as the provider's own
+ * ErrBadLightBlock (the primary is dropped, :1009-1015). Row (iii), a
+ * witness with an inconsistent set at init, is in t_init_agreement
+ * ("bad witness removed"). */
+static int t_provider_contract(void)
+{
+    tmock_t                    p, w1, w2;
+    tstore_t                   s;
+    cmt_light_client_peer_t    pp, ws[2];
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *c = NULL;
+    cmt_light_client_error_t   e;
+    uint8_t                    hh[CMT_TMHASH_SIZE];
+    cmt_light_trust_options_t  t = trust_of(4 * MINUTE, 6, &F->large[6], hh);
+    int                        ret = 1;
+
+    memset(&s, 0, sizeof(s));
+    opts_default(&o);
+
+    /* (i) block 5 = the chain's header with a foreign set, from every
+     * provider. Without D15 the backwards walk (headers only) would store
+     * it, and that set would become a trusted set. */
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_large(&p, 10);
+    p.vals[4] = &F->different_vals.vs;          /* entry 4 = height 5 */
+    w1 = p;
+    pp    = peer_of(&p, "primary");
+    ws[0] = peer_of(&w1, "witness");
+    T(new_client(&t, &pp, ws, 1, &s, &o, &c, &e) == CMT_OK, "(i) init at 6");
+    T(cmt_light_client_verify_light_block_at_height(c, 5, t_at(6 * MINUTE),
+                                                    g_out, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_PROVIDER &&
+      e.provider.code == CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK &&
+      e.provider.reason == CMT_REJECT, "(i) foreign set refused");
+    T(!stored(&s, 5) && last_h(&s) == 6 && g_out->lb.signed_header == NULL,
+      "(i) nothing stored");
+    cmt_light_client_free(c);
+    c = NULL;
+    store_close(&s);
+
+    /* (ii) the primary answers height 5 with block 4. Two honest
+     * witnesses: the primary is dropped as for ErrBadLightBlock
+     * (findNewPrimary(remove = true)), witness #0 takes over, and the
+     * walk then stores the chain's block 5. */
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_large(&p, 10);
+    p.headers[4] = &F->large[4].sh;             /* height 5 → a height-4 header */
+    mock_large(&w1, 10);
+    mock_large(&w2, 10);
+    pp    = peer_of(&p, "primary");
+    ws[0] = peer_of(&w1, "honest-1");
+    ws[1] = peer_of(&w2, "honest-2");
+    T(new_client(&t, &pp, ws, 2, &s, &o, &c, &e) == CMT_OK, "(ii) init at 6");
+    T(cmt_light_client_verify_light_block_at_height(c, 5, t_at(6 * MINUTE),
+                                                    g_out, &e) == CMT_OK &&
+      out_height_is(5) && out_hash_is(&F->large[5]),
+      "(ii) wrong height refused, witness block stored");
+    T(stored(&s, 5) && id_is(c, true, 0, "honest-1") &&
+      cmt_light_client_witness_count(c) == 1 &&
+      id_is(c, false, 0, "honest-2"), "(ii) the primary was dropped");
     ret = 0;
 out:
     cmt_light_client_free(c);
@@ -1789,7 +1912,9 @@ static int t_init_agreement(void)
     ids[1] = "w-b";
     T(init_with(wm, ids, 2, "primary", 3, &s, &c, &e) == CMT_OK, "min 3 ok");
 
-    /* BAD WITNESS (R4): an invalid block → removed, not counted. */
+    /* BAD WITNESS (R4) — D15 row (iii): the witness's set is not its
+     * header's. The mock does not validate; the client's own
+     * ValidateBasic (http.go:96-99) refuses it → removed, not counted. */
     FRESH();
     mock_init(&wm[0], CHAIN);
     mock_add(&wm[0], 1, &F->h1, &F->new_vals.vs);   /* set ≠ header */
@@ -2010,6 +2135,7 @@ int main(void)
     if (t_replace_dead_primary() != 0) goto out;
     if (t_backwards() != 0) goto out;
     if (t_backwards_target_mismatch() != 0) goto out;
+    if (t_provider_contract() != 0) goto out;
     if (t_prune() != 0) goto out;
     if (t_from_trusted_store() != 0) goto out;
     if (t_ensure_valid() != 0) goto out;
