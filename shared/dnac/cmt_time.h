@@ -233,7 +233,7 @@ bool cmt_time_before(cmt_time_t a, cmt_time_t b);
 
 /**
  * Go `t.Add(d)` for a nanosecond duration, with the carry `cmt_time_t`
- * needs (nanos always in [0, 1e9) — cmt_time.h:80-81). The arithmetic is
+ * needs (nanos always in [0, 1e9) — cmt_time.h:89-91). The arithmetic is
  * formed in unsigned words because Go's int64 arithmetic wraps and C's
  * signed overflow is undefined; the value is identical wherever the
  * reference is itself well defined. Same shape as cmt_config.h:205-231.

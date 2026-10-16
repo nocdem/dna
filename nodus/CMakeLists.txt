@@ -462,6 +462,12 @@ set(NODUS_SOURCES
     # bandwidth / storage light clients). No node caller yet; in the
     # common list so it compiles on Windows.
     ${SHARED_DIR}/dnac/cmt_light_verifier.c
+    # types/light.go LightBlock + its proto codec, and light/store (the
+    # Store interface + db.go over SQLite) — light client package 1
+    # (2026-10-16, Kurultay #25). No node caller yet; in the common list
+    # so it compiles on Windows.
+    ${SHARED_DIR}/dnac/cmt_light_block.c
+    ${SHARED_DIR}/dnac/cmt_light_store.c
     ${SHARED_DIR}/dnac/cmt_evidence.c
     ${SHARED_DIR}/dnac/cmt_state.c
     # cometbft @709fd12b → C port, wave R2-A (FLEET-TM-R2): types/vote_set.go,
@@ -1878,6 +1884,19 @@ add_test(NAME test_cmt_validation COMMAND test_cmt_validation)
 add_executable(test_cmt_light_verifier tests/test_cmt_light_verifier.c)
 target_link_libraries(test_cmt_light_verifier nodus dsa nodus crypto)
 add_test(NAME test_cmt_light_verifier COMMAND test_cmt_light_verifier)
+
+# types/light.go LightBlock (ValidateBasic, proto round trip) and the
+# light/provider mock; light/store/db over SQLite (makes and removes a
+# temporary database in the working directory). Light client package 1
+# (2026-10-16). Each file header states what it proves / requires /
+# leaves behind / how it can lie.
+add_executable(test_cmt_light_block tests/test_cmt_light_block.c)
+target_link_libraries(test_cmt_light_block nodus dsa nodus crypto)
+add_test(NAME test_cmt_light_block COMMAND test_cmt_light_block)
+
+add_executable(test_cmt_light_store tests/test_cmt_light_store.c)
+target_link_libraries(test_cmt_light_store nodus dsa nodus crypto)
+add_test(NAME test_cmt_light_store COMMAND test_cmt_light_store)
 
 add_executable(test_cmt_evidence tests/test_cmt_evidence.c)
 target_link_libraries(test_cmt_evidence nodus dsa nodus crypto)

@@ -86,7 +86,14 @@
  * ErrorsOnOverflow (:297-310).
  * PROJECT-AUTHORED (the reference ships none for them): the zero-
  * denominator and NULL rows of the Trusting family, the method-form
- * equivalence, SignedHeader.ValidateBasic's rows and VerifyBackwards.
+ * equivalence, and VerifyBackwards.
+ * SignedHeader.ValidateBasic: the reference DOES ship a test for it —
+ * types/light_test.go:113-166 TestSignedHeaderValidateBasic, three cases
+ * (a valid signed header, a nil header, a nil commit). The first three
+ * rows here are those three cases over this file's own fixture (the
+ * reference's MaxInt64 timestamp / 4-byte chain id are not used); the
+ * wrong block protocol, the height mismatch and the commit for another
+ * block are PROJECT-AUTHORED.
  *
  * @file test_cmt_light_verifier.c
  */
