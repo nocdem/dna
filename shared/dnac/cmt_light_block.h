@@ -276,7 +276,9 @@ int cmt_signed_header_from_proto(const cmt_pb_signed_header_t *shp,
  * `has_signed_header` iff `lb->signed_header` is non-NULL (:73-75);
  * `has_validator_set` iff `lb->validator_set` is non-NULL (:76-81,
  * `ValidatorSet.ToProto` — an empty set is an EMPTY message, not an
- * error, and the cached total is zeroed; cmt_validator_set.h:1023-1037).
+ * error, and the PROTO's `total_voting_power` field is written as 0 —
+ * validator_set.go:954-956; the set's own cached total is untouched;
+ * cmt_validator_set.h:1023-1037).
  *
  * @param out `out->validator_set.validators` must point at caller
  *        storage of at least `lb->validator_set->validators_len` slots.

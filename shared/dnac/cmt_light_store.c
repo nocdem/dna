@@ -108,11 +108,6 @@ static int tx_begin(cmt_light_store_db_t *s)
     return db_exec(s, "BEGIN IMMEDIATE");
 }
 
-static int tx_commit(cmt_light_store_db_t *s)
-{
-    return db_exec(s, "COMMIT");
-}
-
 static void tx_rollback(cmt_light_store_db_t *s)
 {
     char *msg = NULL;
@@ -124,6 +119,29 @@ static void tx_rollback(cmt_light_store_db_t *s)
                       msg != NULL ? msg : "?");
     }
     sqlite3_free(msg);
+}
+
+/* End the transaction `tx_begin` opened: COMMIT when `rc` is CMT_OK,
+ * ROLLBACK otherwise. A COMMIT that FAILS does not end the transaction —
+ * SQLite documents a BUSY COMMIT as retryable, i.e. still open (sqlite3.h,
+ * sqlite3_step: "If the statement is a [COMMIT] … then you can retry the
+ * statement"; /usr/include/sqlite3.h:4810-4815 on this host) — so it is
+ * rolled back here and the result is CMT_FAULT. Without this the open
+ * transaction would make every later BEGIN IMMEDIATE fail and let reads
+ * on this connection see the uncommitted rows. NO RETRY and no busy
+ * timeout: the failure is reported, never masked. The caller updates its
+ * in-memory state only on CMT_OK, so `s->size` stays the file's. */
+static int tx_finish(cmt_light_store_db_t *s, int rc)
+{
+    if (rc != CMT_OK) {
+        tx_rollback(s);
+        return rc;
+    }
+    if (db_exec(s, "COMMIT") != CMT_OK) {
+        tx_rollback(s);
+        return CMT_FAULT;
+    }
+    return CMT_OK;
 }
 
 /* The stored count for this prefix. `*present` false when no row. */
@@ -304,11 +322,7 @@ int cmt_light_store_db_open(const char *path,
                     rc = CMT_REJECT;               /* D6 */
                 }
             }
-            if (rc == CMT_OK) {
-                rc = tx_commit(s);
-            } else {
-                tx_rollback(s);
-            }
+            rc = tx_finish(s, rc);
         }
     }
     if (rc != CMT_OK) {
@@ -423,11 +437,7 @@ int cmt_light_store_db_save_light_block(cmt_light_store_db_t *s,
     if (rc == CMT_OK && added) {
         rc = write_count(s, s->size + 1u);
     }
-    if (rc == CMT_OK) {
-        rc = tx_commit(s);                                  /* :68 */
-    } else {
-        tx_rollback(s);
-    }
+    rc = tx_finish(s, rc);                                  /* :68 */
     free(bz);
     if (rc != CMT_OK) {
         return rc;
@@ -479,11 +489,7 @@ int cmt_light_store_db_delete_light_block(cmt_light_store_db_t *s,
     if (rc == CMT_OK && removed != 0u) {
         rc = write_count(s, s->size - removed);
     }
-    if (rc == CMT_OK) {
-        rc = tx_commit(s);                                  /* :96 */
-    } else {
-        tx_rollback(s);
-    }
+    rc = tx_finish(s, rc);                                  /* :96 */
     if (rc != CMT_OK) {
         return rc;
     }
@@ -715,11 +721,7 @@ int cmt_light_store_db_prune(cmt_light_store_db_t *s, uint64_t size)
     if (rc == CMT_OK) {
         rc = write_count(s, s->size - pruned);
     }
-    if (rc == CMT_OK) {
-        rc = tx_commit(s);                                  /* :262 */
-    } else {
-        tx_rollback(s);
-    }
+    rc = tx_finish(s, rc);                                  /* :262 */
     if (rc != CMT_OK) {
         return rc;
     }

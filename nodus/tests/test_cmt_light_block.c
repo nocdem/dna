@@ -8,7 +8,9 @@
  * ── WHAT IT PROVES ─────────────────────────────────────────────────────
  *   · LightBlock.ValidateBasic accepts a consistent block and refuses a
  *     set whose hash is not the header's ValidatorsHash, a set whose
- *     proposer is not a member, and a signed header whose commit is for
+ *     proposer is the empty Validator (it fails Proposer.ValidateBasic,
+ *     validator_set.go:103-105, before the membership check), and a
+ *     signed header whose commit is for
  *     another block; a missing signed header / set is CMT_REJECT and a
  *     NULL light block CMT_FAULT;
  *   · the proto round trip (ToProto → Marshal → Unmarshal → FromProto →
@@ -394,7 +396,9 @@ static int t_validate_basic(tfix_t *f)
           "hashes don't match");
     OK();
 
-    /* :41 "invalid validator set" — the proposer is not a member. */
+    /* :41 "invalid validator set" — the proposer is the empty Validator,
+     * which fails Proposer.ValidateBasic (validator_set.go:103-105) before
+     * the membership check (:106-112) is reached. */
     lb.validator_set = &f->vals3.vs;
     CHECK(cmt_light_block_validate_basic(&lb, chain, clen,
                                          CMT_BLOCK_PROTOCOL) == CMT_REJECT,

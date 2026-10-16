@@ -18,7 +18,15 @@
  *     file keep separate counts (D5); a file whose stored count was
  *     altered is refused at open (D6); a row whose block is not the
  *     height it is stored under is refused (D7);
- *   · the Store callback table reaches the same functions.
+ *   · the Store callback table reaches the same functions;
+ *   · a FAILED COMMIT (a second connection holds a read lock, so COMMIT
+ *     cannot take the EXCLUSIVE lock and returns SQLITE_BUSY) is rolled
+ *     back: the save is CMT_FAULT, Size() is unchanged, the row is not
+ *     visible on the store's own connection, and once the lock is gone
+ *     the next save succeeds. With the pre-fix code (COMMIT failure left
+ *     the transaction open) the row WOULD be visible on the store's
+ *     connection and the next save's BEGIN IMMEDIATE would fail — so this
+ *     row tells the two apart.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no
@@ -46,6 +54,16 @@
  *  2. The D6 and D7 rows write the file through a SECOND SQLite
  *     connection while the store is idle (D7) or closed (D6). They prove
  *     the store's checks, not that an outside writer is impossible.
+ *  2a. The failed-COMMIT row relies on SQLite's rollback-journal locking
+ *     (the store leaves journal_mode at its DELETE default): a reader's
+ *     SHARED lock does not block BEGIN IMMEDIATE (RESERVED) but does block
+ *     COMMIT (EXCLUSIVE), and no busy timeout is set on either side. The
+ *     row first PROBES that on a third connection in the same lock state
+ *     (BEGIN IMMEDIATE ok, write ok, COMMIT == SQLITE_BUSY) and fails —
+ *     rather than passing vacuously — if this SQLite build behaves
+ *     otherwise. The store's own CMT_FAULT is then attributed to COMMIT by
+ *     that probe plus the "row not visible" check; the store does not
+ *     expose which statement failed.
  *  3. Durability (`PRAGMA synchronous=FULL`) is NOT exercised: a restart
  *     here is close + reopen, not a power cut.
  *  4. Test_Concurrency (db_test.go:130-170) is NOT ported: the port's
@@ -56,7 +74,8 @@
  * Test_SaveLightBlock (:46-73), Test_LightBlockBefore (:75-91 — the
  * `assert.Panics` row is CMT_FAULT), Test_Prune (:93-128).
  * NOT PORTED: Test_Concurrency (:130-170), see 4 above.
- * PROJECT-AUTHORED: every deviation row, restart, prefixes, the callback
+ * PROJECT-AUTHORED: every deviation row, restart, prefixes, the failed
+ * COMMIT, the callback
  * table, the NULL rows.
  *
  * @file test_cmt_light_store.c
@@ -619,6 +638,82 @@ fail:
     return 1;
 }
 
+/* A COMMIT that fails is rolled back (cmt_light_store.c tx_finish). */
+static int t_commit_fails(void)
+{
+    char                  path[64];
+    cmt_light_store_db_t *s      = NULL;
+    sqlite3              *reader = NULL;
+    sqlite3              *probe  = NULL;
+    int64_t               h      = 0;
+    int                   prc;
+
+    if (temp_path(path, sizeof(path)) != 0) {
+        return 1;
+    }
+    CHECK(cmt_light_store_db_open(path, NULL, 0, BP, &s) == CMT_OK, "open");
+    CHECK(save_h(s, 1) == CMT_OK && size_of(s) == 1u, "save 1");
+
+    /* A second connection opens a read transaction and keeps its SHARED
+     * lock until it commits. */
+    CHECK(sqlite3_open(path, &reader) == SQLITE_OK, "open reader");
+    CHECK(sqlite3_exec(reader, "BEGIN; SELECT COUNT(*) FROM cmt_light_block;",
+                       NULL, NULL, NULL) == SQLITE_OK, "reader lock");
+
+    /* PROBE (see header 2a): in this lock state BEGIN IMMEDIATE and a
+     * write succeed, and COMMIT is SQLITE_BUSY. */
+    CHECK(sqlite3_open(path, &probe) == SQLITE_OK, "open probe");
+    CHECK(sqlite3_exec(probe, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK,
+          "probe: BEGIN IMMEDIATE is not blocked by a reader");
+    CHECK(sqlite3_exec(probe, "INSERT INTO cmt_light_size (prefix, size)"
+                              " VALUES (x'7a7a', 0)", NULL, NULL, NULL)
+              == SQLITE_OK, "probe: write");
+    prc = sqlite3_exec(probe, "COMMIT", NULL, NULL, NULL);
+    (void)sqlite3_exec(probe, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_close(probe);
+    probe = NULL;
+    CHECK(prc == SQLITE_BUSY,
+          "probe: COMMIT is SQLITE_BUSY under a reader (else this row "
+          "cannot exercise the failed-COMMIT path)");
+    OK();
+
+    /* The store's save reaches COMMIT, which fails: FAULT, nothing kept. */
+    CHECK(save_h(s, 2) == CMT_FAULT, "save under a reader is FAULT");
+    CHECK(size_of(s) == 1u, "Size unchanged");
+    CHECK(cmt_light_store_db_last_light_block_height(s, &h) == CMT_OK &&
+          h == 1, "the uncommitted row is not visible");
+    OK();
+
+    /* Release the lock; the store is usable again. */
+    CHECK(sqlite3_exec(reader, "COMMIT", NULL, NULL, NULL) == SQLITE_OK,
+          "reader release");
+    sqlite3_close(reader);
+    reader = NULL;
+    CHECK(save_h(s, 2) == CMT_OK && size_of(s) == 2u, "next save succeeds");
+    CHECK(cmt_light_store_db_last_light_block_height(s, &h) == CMT_OK &&
+          h == 2, "row 2 now visible");
+    /* The count on disk agrees (D6 would refuse the reopen otherwise). */
+    cmt_light_store_db_close(s);
+    s = NULL;
+    CHECK(cmt_light_store_db_open(path, NULL, 0, BP, &s) == CMT_OK &&
+          size_of(s) == 2u, "reopen");
+    OK();
+    cmt_light_store_db_close(s);
+    remove_db(path);
+    return 0;
+fail:
+    if (probe != NULL) {
+        sqlite3_close(probe);
+    }
+    if (reader != NULL) {
+        (void)sqlite3_exec(reader, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(reader);
+    }
+    cmt_light_store_db_close(s);
+    remove_db(path);
+    return 1;
+}
+
 /* The Store table (store.go:5-48) and the reference's panics as FAULT. */
 static int t_table_and_faults(void)
 {
@@ -710,6 +805,7 @@ int main(void)
     if (t_prefix_and_count_check() != 0) goto out;
     if (t_height_mismatch() != 0) goto out;
     if (t_table_and_faults() != 0) goto out;
+    if (t_commit_fails() != 0) goto out;
 
     printf("test_cmt_light_store: %d checks OK\n", g_checks);
     rc = 0;
