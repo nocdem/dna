@@ -8,6 +8,7 @@
 #include "randombytes.h"
 #include "symmetric.h"
 #include "fips202.h"
+#include "secure_clear.h"
 
 /*************************************************
 * Name:        crypto_sign_keypair
@@ -19,7 +20,7 @@
 *              - uint8_t *sk: pointer to output private key (allocated
 *                             array of CRYPTO_SECRETKEYBYTES bytes)
 *
-* Returns 0 (success)
+* Returns 0 on success or -1 if randomness is unavailable (outputs cleared).
 **************************************************/
 int crypto_sign_keypair(uint8_t *pk, uint8_t *sk) {
   uint8_t seedbuf[2*SEEDBYTES + CRHBYTES];
@@ -30,7 +31,12 @@ int crypto_sign_keypair(uint8_t *pk, uint8_t *sk) {
   polyveck s2, t1, t0;
 
   /* Get randomness for rho, rhoprime and key */
-  randombytes(seedbuf, SEEDBYTES);
+  if(randombytes(seedbuf, SEEDBYTES) != 0) {
+    dilithium_secure_clear(seedbuf, sizeof(seedbuf));
+    dilithium_secure_clear(pk, CRYPTO_PUBLICKEYBYTES);
+    dilithium_secure_clear(sk, CRYPTO_SECRETKEYBYTES);
+    return -1;
+  }
   seedbuf[SEEDBYTES+0] = K;
   seedbuf[SEEDBYTES+1] = L;
   shake256(seedbuf, 2*SEEDBYTES + CRHBYTES, seedbuf, SEEDBYTES+2);
@@ -64,6 +70,11 @@ int crypto_sign_keypair(uint8_t *pk, uint8_t *sk) {
   shake256(tr, TRBYTES, pk, CRYPTO_PUBLICKEYBYTES);
   pack_sk(sk, rho, tr, key, &t0, &s1, &s2);
 
+  dilithium_secure_clear(seedbuf, sizeof(seedbuf));
+  dilithium_secure_clear(&s1, sizeof(s1));
+  dilithium_secure_clear(&s1hat, sizeof(s1hat));
+  dilithium_secure_clear(&s2, sizeof(s2));
+  dilithium_secure_clear(&t0, sizeof(t0));
   return 0;
 }
 
@@ -124,6 +135,11 @@ int crypto_sign_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed)
   shake256(tr, TRBYTES, pk, CRYPTO_PUBLICKEYBYTES);
   pack_sk(sk, rho, tr, key, &t0, &s1, &s2);
 
+  dilithium_secure_clear(seedbuf, sizeof(seedbuf));
+  dilithium_secure_clear(&s1, sizeof(s1));
+  dilithium_secure_clear(&s1hat, sizeof(s1hat));
+  dilithium_secure_clear(&s2, sizeof(s2));
+  dilithium_secure_clear(&t0, sizeof(t0));
   return 0;
 }
 
@@ -246,6 +262,14 @@ rej:
   /* Write signature */
   pack_sig(sig, sig, &z, &h);
   *siglen = CRYPTO_BYTES;
+  dilithium_secure_clear(seedbuf, sizeof(seedbuf));
+  dilithium_secure_clear(&s1, sizeof(s1));
+  dilithium_secure_clear(&s2, sizeof(s2));
+  dilithium_secure_clear(&t0, sizeof(t0));
+  dilithium_secure_clear(&y, sizeof(y));
+  dilithium_secure_clear(&w0, sizeof(w0));
+  dilithium_secure_clear(&w1, sizeof(w1));
+  dilithium_secure_clear(&state, sizeof(state));
   return 0;
 }
 
@@ -262,7 +286,8 @@ rej:
 *              - size_t ctxlen:  length of contex string
 *              - uint8_t *sk:    pointer to bit-packed secret key
 *
-* Returns 0 (success) or -1 (context string too long)
+* Returns 0 on success or -1 (context too long or randomness unavailable).
+* On failure siglen is zero; RNG failure also clears the signature buffer.
 **************************************************/
 int crypto_sign_signature(uint8_t *sig,
                           size_t *siglen,
@@ -275,7 +300,9 @@ int crypto_sign_signature(uint8_t *sig,
   size_t i;
   uint8_t pre[257];
   uint8_t rnd[RNDBYTES];
+  int ret;
 
+  *siglen = 0;
   if(ctxlen > 255)
     return -1;
 
@@ -286,14 +313,19 @@ int crypto_sign_signature(uint8_t *sig,
     pre[2 + i] = ctx[i];
 
 #ifdef DILITHIUM_RANDOMIZED_SIGNING
-  randombytes(rnd, RNDBYTES);
+  if(randombytes(rnd, RNDBYTES) != 0) {
+    dilithium_secure_clear(rnd, sizeof(rnd));
+    dilithium_secure_clear(sig, CRYPTO_BYTES);
+    return -1;
+  }
 #else
   for(i=0;i<RNDBYTES;i++)
     rnd[i] = 0;
 #endif
 
-  crypto_sign_signature_internal(sig,siglen,m,mlen,pre,2+ctxlen,rnd,sk);
-  return 0;
+  ret = crypto_sign_signature_internal(sig,siglen,m,mlen,pre,2+ctxlen,rnd,sk);
+  dilithium_secure_clear(rnd, sizeof(rnd));
+  return ret;
 }
 
 /*************************************************
@@ -312,7 +344,8 @@ int crypto_sign_signature(uint8_t *sig,
 *              - size_t ctxlen: length of context string
 *              - const uint8_t *sk: pointer to bit-packed secret key
 *
-* Returns 0 (success) or -1 (context string too long)
+* Returns 0 on success or -1 (context too long or randomness unavailable).
+* On failure smlen is zero.
 **************************************************/
 int crypto_sign(uint8_t *sm,
                 size_t *smlen,
@@ -328,6 +361,10 @@ int crypto_sign(uint8_t *sm,
   for(i = 0; i < mlen; ++i)
     sm[CRYPTO_BYTES + mlen - 1 - i] = m[mlen - 1 - i];
   ret = crypto_sign_signature(sm, smlen, sm + CRYPTO_BYTES, mlen, ctx, ctxlen, sk);
+  if(ret != 0) {
+    *smlen = 0;
+    return ret;
+  }
   *smlen += mlen;
   return ret;
 }
@@ -505,3 +542,4 @@ badsig:
 
   return -1;
 }
+

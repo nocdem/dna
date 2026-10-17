@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "params.h"
 #include "poly.h"
+#include "secure_clear.h"
 #include "ntt.h"
 #include "reduce.h"
 #include "rounding.h"
@@ -450,6 +451,8 @@ void poly_uniform_eta(poly *a,
     stream256_squeezeblocks(buf, 1, &state);
     ctr += rej_eta(a->coeffs + ctr, N - ctr, buf, STREAM256_BLOCKBYTES);
   }
+  dilithium_secure_clear(buf, sizeof(buf));
+  dilithium_secure_clear(&state, sizeof(state));
 }
 
 /*************************************************
@@ -474,6 +477,8 @@ void poly_uniform_gamma1(poly *a,
   stream256_init(&state, seed, nonce);
   stream256_squeezeblocks(buf, POLY_UNIFORM_GAMMA1_NBLOCKS, &state);
   polyz_unpack(a, buf);
+  dilithium_secure_clear(buf, sizeof(buf));
+  dilithium_secure_clear(&state, sizeof(state));
 }
 
 /*************************************************
@@ -557,6 +562,7 @@ void polyeta_pack(uint8_t *r, const poly *a) {
   }
 #endif
 
+  dilithium_secure_clear(t, sizeof(t));
   DBENCH_STOP(*tpack);
 }
 
@@ -698,6 +704,7 @@ void polyt0_pack(uint8_t *r, const poly *a) {
     r[13*i+12]  =  t[7] >>  5;
   }
 
+  dilithium_secure_clear(t, sizeof(t));
   DBENCH_STOP(*tpack);
 }
 
@@ -905,3 +912,4 @@ void polyw1_pack(uint8_t *r, const poly *a) {
 
   DBENCH_STOP(*tpack);
 }
+

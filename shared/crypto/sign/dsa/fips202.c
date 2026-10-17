@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "fips202.h"
+#include "secure_clear.h"
 
 #define NROUNDS 24
 #define ROL(a, offset) ((a << offset) ^ (a >> (64-offset)))
@@ -731,6 +732,7 @@ void shake256(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen)
   outlen -= nblocks*SHAKE256_RATE;
   out += nblocks*SHAKE256_RATE;
   shake256_squeeze(out, outlen, &state);
+  dilithium_secure_clear(&state, sizeof(state));
 }
 
 /*************************************************
@@ -772,3 +774,4 @@ void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen)
   for(i=0;i<8;i++)
     store64(h+8*i,s[i]);
 }
+
