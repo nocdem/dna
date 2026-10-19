@@ -590,6 +590,18 @@ set(NODUS_SOURCES
     # same ownership pattern as ledger_roots_v2.c.
     ${SHARED_DIR}/dnac/domain_wire.c
 
+    # DHT v2 package 1 — the record codec (design 2026-10-14-dht-v2-design.md
+    # rev 5 §3.1, §3.2, §4.2, §13 rows 1, 3-6, 22, 23): strict DAG-CBOR,
+    # the IPNS-v2 signed record + canonical envelope, `_id` / address,
+    # Select, nearest_R, RFC 0002 envelopes and the owner-signed LIST
+    # request. Pure, no I/O; no caller yet. In the common list so it
+    # compiles on Windows (the browser / Connect core will use it too).
+    ${SHARED_DIR}/dht2/dht2_cbor.c
+    ${SHARED_DIR}/dht2/dht2_time.c
+    ${SHARED_DIR}/dht2/dht2_record.c
+    ${SHARED_DIR}/dht2/dht2_place.c
+    ${SHARED_DIR}/dht2/dht2_envelope.c
+
     # Shared crypto (standalone only — messenger tree provides these via dht_lib)
     ${SHARED_CRYPTO_SOURCES}
 )
@@ -1857,6 +1869,14 @@ add_test(NAME test_cmt_time COMMAND test_cmt_time)
 add_executable(test_cmt_pb tests/test_cmt_pb.c)
 target_link_libraries(test_cmt_pb nodus dsa nodus crypto)
 add_test(NAME test_cmt_pb COMMAND test_cmt_pb)
+
+# DHT v2 package 1 — the record codec's row-22 vectors (design
+# 2026-10-14-dht-v2-design.md rev 5). Default build, no network, no files,
+# no clock; nothing left behind. What it proves / how it can lie: the
+# header of tests/test_dht2_codec.c.
+add_executable(test_dht2_codec tests/test_dht2_codec.c)
+target_link_libraries(test_dht2_codec nodus dsa nodus crypto)
+add_test(NAME test_dht2_codec COMMAND test_dht2_codec)
 
 add_executable(test_cmt_block tests/test_cmt_block.c)
 target_link_libraries(test_cmt_block nodus dsa nodus crypto)
