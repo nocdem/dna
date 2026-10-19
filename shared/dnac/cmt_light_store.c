@@ -5,7 +5,8 @@
  *        taşınmadı list.
  *
  * NOTHING HERE READS A CLOCK, DRAWS RANDOMNESS OR ITERATES A MAP. Every
- * query that picks a row by position says ORDER BY height.
+ * query that picks a row by position says ORDER BY height (ORDER BY seq
+ * for the attack records of D9).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -47,6 +48,15 @@ static const char SQL_CREATE_SIZE[] =
     "CREATE TABLE IF NOT EXISTS cmt_light_size ("
     " prefix BLOB NOT NULL PRIMARY KEY,"
     " size   INTEGER NOT NULL)";
+
+/* D9 (K25-10) — the attack records. */
+static const char SQL_CREATE_ATTACK[] =
+    "CREATE TABLE IF NOT EXISTS cmt_light_attack ("
+    " prefix  BLOB NOT NULL,"
+    " seq     INTEGER NOT NULL,"
+    " cleared INTEGER NOT NULL,"
+    " value   BLOB NOT NULL,"
+    " PRIMARY KEY (prefix, seq))";
 
 static int db_exec(cmt_light_store_db_t *s, const char *sql)
 {
@@ -303,6 +313,9 @@ int cmt_light_store_db_open(const char *path,
     }
     if (rc == CMT_OK) {
         rc = db_exec(s, SQL_CREATE_SIZE);
+    }
+    if (rc == CMT_OK) {
+        rc = db_exec(s, SQL_CREATE_ATTACK);                  /* D9 */
     }
     if (rc == CMT_OK) {
         rc = tx_begin(s);
@@ -740,6 +753,236 @@ int cmt_light_store_db_size(cmt_light_store_db_t *s, uint64_t *out)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+ * D9 (K25-10) — the attack records. PROJECT: no reference counterpart.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* Bind `bz` as parameter `idx` (the caller checked len <= INT_MAX). */
+static int bind_value(cmt_light_store_db_t *s, sqlite3_stmt *st, int idx,
+                      const uint8_t *bz, size_t len)
+{
+    if (sqlite3_bind_blob(st, idx, bz, (int)len, SQLITE_STATIC) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "bind failed: %s", sqlite3_errmsg(s->db));
+        return CMT_FAULT;
+    }
+    return CMT_OK;
+}
+
+int cmt_light_store_db_save_attack_record(cmt_light_store_db_t *s,
+                                          const uint8_t *bz, size_t len,
+                                          uint64_t *seq)
+{
+    sqlite3_stmt *st = NULL;
+    int64_t       found_seq = 0, max_seq = 0;
+    bool          dup = false, any = false;
+    int           rc;
+
+    if (seq != NULL) {
+        *seq = 0u;
+    }
+    if (s == NULL || bz == NULL || seq == NULL) {
+        return CMT_FAULT;
+    }
+    if (len == 0u || len > (size_t)INT_MAX) {
+        return CMT_REJECT;
+    }
+    rc = tx_begin(s);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    /* D9 — identical bytes on a record still in force: nothing new. */
+    rc = db_prepare(s, "SELECT seq FROM cmt_light_attack WHERE prefix = ?1"
+                       " AND cleared = 0 AND value = ?2"
+                       " ORDER BY seq ASC LIMIT 1", &st);
+    if (rc == CMT_OK) {
+        rc = bind_prefix(s, st, 1);
+    }
+    if (rc == CMT_OK) {
+        rc = bind_value(s, st, 2, bz, len);
+    }
+    if (rc == CMT_OK) {
+        int sr = sqlite3_step(st);
+
+        if (sr == SQLITE_ROW) {
+            found_seq = (int64_t)sqlite3_column_int64(st, 0);
+            dup       = true;
+        } else if (sr != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "step failed: %s", sqlite3_errmsg(s->db));
+            rc = CMT_FAULT;
+        }
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+
+    if (rc == CMT_OK && !dup) {
+        rc = select_height(s, "SELECT seq FROM cmt_light_attack"
+                              " WHERE prefix = ?1 ORDER BY seq DESC LIMIT 1",
+                           NULL, &max_seq, &any);
+        if (rc == CMT_OK && any && (max_seq < 0 || max_seq == INT64_MAX)) {
+            rc = CMT_REJECT;    /* the seq would not fit an SQLite INTEGER */
+        }
+        if (rc == CMT_OK) {
+            found_seq = any ? max_seq + 1 : 1;
+            rc = db_prepare(s, "INSERT INTO cmt_light_attack"
+                               " (prefix, seq, cleared, value)"
+                               " VALUES (?1, ?2, 0, ?3)", &st);
+        }
+        if (rc == CMT_OK) {
+            rc = bind_prefix(s, st, 1);
+        }
+        if (rc == CMT_OK) {
+            rc = bind_i64(s, st, 2, found_seq);
+        }
+        if (rc == CMT_OK) {
+            rc = bind_value(s, st, 3, bz, len);
+        }
+        if (rc == CMT_OK) {
+            rc = step_done(s, st);
+        }
+        sqlite3_finalize(st);
+    }
+    rc = tx_finish(s, rc);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    *seq = (uint64_t)found_seq;
+    return CMT_OK;
+}
+
+int cmt_light_store_db_attack_records(cmt_light_store_db_t *s,
+                                      uint64_t *total, uint64_t *uncleared)
+{
+    sqlite3_stmt *st = NULL;
+    int           rc;
+
+    if (total != NULL) {
+        *total = 0u;
+    }
+    if (uncleared != NULL) {
+        *uncleared = 0u;
+    }
+    if (s == NULL || total == NULL || uncleared == NULL) {
+        return CMT_FAULT;
+    }
+    rc = db_prepare(s, "SELECT COUNT(*), COALESCE(SUM(cleared = 0), 0)"
+                       " FROM cmt_light_attack WHERE prefix = ?1", &st);
+    if (rc == CMT_OK) {
+        rc = bind_prefix(s, st, 1);
+    }
+    if (rc == CMT_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            int64_t t = (int64_t)sqlite3_column_int64(st, 0);
+            int64_t u = (int64_t)sqlite3_column_int64(st, 1);
+
+            if (t < 0 || u < 0 || u > t) {
+                rc = CMT_FAULT;     /* COUNT / SUM cannot do this */
+            } else {
+                *total     = (uint64_t)t;
+                *uncleared = (uint64_t)u;
+            }
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "step failed: %s", sqlite3_errmsg(s->db));
+            rc = CMT_FAULT;
+        }
+    }
+    sqlite3_finalize(st);
+    return rc;
+}
+
+int cmt_light_store_db_clear_attack_records(cmt_light_store_db_t *s)
+{
+    sqlite3_stmt *st = NULL;
+    int           rc;
+
+    if (s == NULL) {
+        return CMT_FAULT;
+    }
+    rc = tx_begin(s);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    rc = db_prepare(s, "UPDATE cmt_light_attack SET cleared = 1"
+                       " WHERE prefix = ?1 AND cleared = 0", &st);
+    if (rc == CMT_OK) {
+        rc = bind_prefix(s, st, 1);
+    }
+    if (rc == CMT_OK) {
+        rc = step_done(s, st);
+    }
+    sqlite3_finalize(st);
+    return tx_finish(s, rc);
+}
+
+int cmt_light_store_db_attack_record(cmt_light_store_db_t *s, uint64_t seq,
+                                     uint8_t **out, size_t *len,
+                                     bool *cleared, bool *found)
+{
+    sqlite3_stmt  *st = NULL;
+    const uint8_t *bz;
+    int            bz_len;
+    int            sr;
+    int            rc;
+
+    if (out != NULL) {
+        *out = NULL;
+    }
+    if (len != NULL) {
+        *len = 0u;
+    }
+    if (cleared != NULL) {
+        *cleared = false;
+    }
+    if (found != NULL) {
+        *found = false;
+    }
+    if (s == NULL || out == NULL || len == NULL || cleared == NULL ||
+        found == NULL) {
+        return CMT_FAULT;
+    }
+    if (seq == 0u || seq > (uint64_t)INT64_MAX) {
+        return CMT_OK;          /* no record has that seq */
+    }
+    rc = db_prepare(s, "SELECT value, cleared FROM cmt_light_attack"
+                       " WHERE prefix = ?1 AND seq = ?2", &st);
+    if (rc == CMT_OK) {
+        rc = bind_prefix(s, st, 1);
+    }
+    if (rc == CMT_OK) {
+        rc = bind_i64(s, st, 2, (int64_t)seq);
+    }
+    if (rc != CMT_OK) {
+        sqlite3_finalize(st);
+        return rc;
+    }
+    sr = sqlite3_step(st);
+    if (sr == SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return CMT_OK;
+    }
+    if (sr != SQLITE_ROW) {
+        QGP_LOG_ERROR(LOG_TAG, "step failed: %s", sqlite3_errmsg(s->db));
+        sqlite3_finalize(st);
+        return CMT_FAULT;
+    }
+    bz     = (const uint8_t *)sqlite3_column_blob(st, 0);
+    bz_len = sqlite3_column_bytes(st, 0);
+    if (bz == NULL || bz_len <= 0) {
+        sqlite3_finalize(st);
+        return CMT_FAULT;       /* a save never writes an empty record */
+    }
+    *out = malloc((size_t)bz_len);
+    if (*out == NULL) {
+        sqlite3_finalize(st);
+        return CMT_FAULT;
+    }
+    memcpy(*out, bz, (size_t)bz_len);
+    *len     = (size_t)bz_len;
+    *cleared = sqlite3_column_int64(st, 1) != 0;
+    *found   = true;
+    sqlite3_finalize(st);
+    return CMT_OK;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
  * The Store table (store.go:5-48) over this implementation
  * ══════════════════════════════════════════════════════════════════════ */
 
@@ -785,6 +1028,22 @@ static int vt_size(void *ctx, uint64_t *out)
     return cmt_light_store_db_size(ctx, out);
 }
 
+static int vt_save_attack(void *ctx, const uint8_t *bz, size_t len,
+                          uint64_t *seq)
+{
+    return cmt_light_store_db_save_attack_record(ctx, bz, len, seq);
+}
+
+static int vt_attacks(void *ctx, uint64_t *total, uint64_t *uncleared)
+{
+    return cmt_light_store_db_attack_records(ctx, total, uncleared);
+}
+
+static int vt_clear_attacks(void *ctx)
+{
+    return cmt_light_store_db_clear_attack_records(ctx);
+}
+
 void cmt_light_store_db_bind(cmt_light_store_db_t *s, cmt_light_store_t *out)
 {
     if (out == NULL) {
@@ -799,4 +1058,7 @@ void cmt_light_store_db_bind(cmt_light_store_db_t *s, cmt_light_store_t *out)
     out->light_block_before       = vt_before;
     out->prune                    = vt_prune;
     out->size                     = vt_size;
+    out->save_attack_record       = vt_save_attack;          /* D9 */
+    out->attack_records           = vt_attacks;
+    out->clear_attack_records     = vt_clear_attacks;
 }

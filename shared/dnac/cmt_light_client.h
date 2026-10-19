@@ -23,7 +23,10 @@
  * CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK; nothing is saved, and the
  * local record of what the reference would have sent as evidence is
  * readable through `cmt_light_client_attack_record`. Nothing is sent to
- * any provider (cmt_light_detector.h DD3, DD4). Backwards verification
+ * any provider (cmt_light_detector.h DD3, DD4). The attack also LOCKS the
+ * client until the operator clears it, and its record is written to the
+ * light store, which reloads the lock after a restart (K25-10; D20 below,
+ * cmt_light_detector.h DD9). Backwards verification
  * (:586-592 → `backwards`, :933-979) and initialisation (:360-393) do not
  * reach the detector, as in the reference.
  * ════════════════════════════════════════════════════════════════════════
@@ -127,7 +130,7 @@
  *     after a replacement (:813) and backwards calling itself (:973) — are
  *     loops here, bounded by the caps of D3.
  *  D5 The detector hook (STATUS above) IS the detector now (package 3,
- *     cmt_light_detector.{c,h}, which list their own deviations DD1-DD8
+ *     cmt_light_detector.{c,h}, which list their own deviations DD1-DD10
  *     and quirks Q-D1..Q-D6). Until package 3 it failed closed with
  *     CMT_LIGHT_CLIENT_ERR_DETECTOR_NOT_IMPLEMENTED; that code is gone.
  *     Reference behaviour now covered: detectDivergence (detector.go:
@@ -222,6 +225,24 @@
  *     through verifySkipping) — and ONE place more: the recorded wait of
  *     DD2 (cmt_light_detector.h) is measured against it, where the
  *     reference sleeps. It never reads a clock.
+ *  D20 THE ATTACK LOCK (K25-10, operator 2026-10-19, "1"; docs/plans/
+ *     decisions/2026-10-16-kurultay-25-summary.md). The reference has no
+ *     latch (detector.go:72, client.go:820-821): its attack error ends
+ *     one call. Here a call that returns LIGHT_CLIENT_ATTACK LOCKS the
+ *     client and writes the record to the store (cmt_light_store.h D9;
+ *     the byte form is cmt_light_detector.h DD9). While locked,
+ *     cmt_light_client_update, cmt_light_client_verify_light_block_at_height
+ *     and cmt_light_client_cleanup return CMT_REJECT with
+ *     CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED and touch neither the providers
+ *     nor the store; the store write of updateTrustedLightBlock refuses
+ *     too. Reads (TrustedLightBlock, the heights, the identities, the
+ *     record) still answer. cmt_light_client_new_from_trusted_store loads
+ *     the lock from the store (an uncleared record → locked);
+ *     cmt_light_client_new refuses a locked store with ATTACK_LOCKED,
+ *     because its next steps (checkTrustedHeaderUsingOptions,
+ *     initializeWithTrustOptions) change the trusted store. The operator
+ *     unlocks with `cmt_light_client_attack_clear`, which marks every
+ *     record cleared and deletes none.
  *
  * ── REFERENCE QUIRKS REPRODUCED AS-IS (recorded, not "fixed") ──────────
  *  Q1 verifySkipping appends a fetched pivot to the cache TWICE (:754 and
@@ -492,6 +513,9 @@ typedef struct {
  *  sleeps (detector.go:164-168): call again, for the same target, with a
  *  `now` at least 2*max_clock_drift + max_block_lag later. PROJECT. */
 #define CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND            28
+/** D20 (K25-10) — an attack was detected and not yet cleared by the
+ *  operator: the client verifies and saves nothing. PROJECT. */
+#define CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED             29
 
 /** Which nested field carries ErrVerificationFailed's Reason. */
 #define CMT_LIGHT_CLIENT_REASON_NONE           0
@@ -541,8 +565,9 @@ typedef struct cmt_light_client cmt_light_client_t;
  * @param store copied; its ctx must outlive the client.
  * @param out receives the client; free it with cmt_light_client_free.
  * @param err may be NULL.
- * @return CMT_OK; CMT_REJECT with `err->code`; CMT_FAULT on NULL, an
- *         allocation failure, or a provider / store CMT_FAULT (D6).
+ * @return CMT_OK; CMT_REJECT with `err->code` — ATTACK_LOCKED when the
+ *         store holds an uncleared attack record (D20); CMT_FAULT on NULL,
+ *         an allocation failure, or a provider / store CMT_FAULT (D6).
  */
 int cmt_light_client_new(const uint8_t *chain_id, size_t chain_id_len,
                          const cmt_light_trust_options_t *trust,
@@ -560,8 +585,12 @@ int cmt_light_client_new(const uint8_t *chain_id, size_t chain_id_len,
  * witness (:242-244), every witness on `chain_id` (:246-252, Q4),
  * ValidateTrustLevel (:254-257), and restoreTrustedLightBlock (:259-261,
  * :266-283). `trusting_period` is the caller's (K25-2); like the
- * reference, it is not range-checked here.
- * @return as for cmt_light_client_new.
+ * reference, it is not range-checked here. Every store row is required,
+ * the three attack-record rows included (cmt_light_store.h D9). The
+ * client starts LOCKED when the store holds an uncleared attack record
+ * (D20); this constructor writes nothing, so it is the one an operator
+ * uses to inspect and clear.
+ * @return as for cmt_light_client_new (never ATTACK_LOCKED).
  */
 int cmt_light_client_new_from_trusted_store(
         const uint8_t *chain_id, size_t chain_id_len,
@@ -604,6 +633,7 @@ int cmt_light_client_first_trusted_height(cmt_light_client_t *c,
  * it". No trusted block (:442-445) or a latest block not above the trusted
  * one (:461): CMT_OK with `*advanced = false`. Otherwise the block is
  * verified (:453), the detector included (file header), and saved.
+ * While locked (D20): CMT_REJECT with ATTACK_LOCKED, before any read.
  * @param out receives the new block when `*advanced` is true.
  */
 int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
@@ -618,7 +648,8 @@ int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
  * from the latest trusted block, backwards from the first, or between,
  * from the closest trusted block below it. On success it is saved and the
  * store pruned (`updateTrustedLightBlock`, :910-928). `out` holds the
- * block on CMT_OK only (D10).
+ * block on CMT_OK only (D10). While locked (D20): CMT_REJECT with
+ * ATTACK_LOCKED, before any read.
  */
 int cmt_light_client_verify_light_block_at_height(cmt_light_client_t *c,
                                                   int64_t height,
@@ -627,19 +658,35 @@ int cmt_light_client_verify_light_block_at_height(cmt_light_client_t *c,
                                                   cmt_light_client_error_t *err);
 
 /** client.go:871-877 — `Cleanup()`: forgets the trusted block and prunes
- *  the store to zero. */
+ *  the store to zero. CMT_REJECT, changing nothing, while locked (D20). */
 int cmt_light_client_cleanup(cmt_light_client_t *c);
 
 /**
- * The local record of the LAST attack the detector found (a call that
+ * The record of the LAST attack THIS client object found (a call that
  * returned CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK), owned by the client;
  * a later attack replaces it, cmt_light_client_free frees it. NULL when
  * none was found, or on NULL. Its fields: cmt_light_detector.h. It was
- * sent nowhere (DD4). PROJECT (the reference returns the error only and
- * sends the evidence, detector.go:258, :286).
+ * sent nowhere (DD4). Every record is also in the store, durably, when
+ * its `durable` is true (D20; cmt_light_store_db_attack_record reads
+ * them back). PROJECT (the reference returns the error only and sends
+ * the evidence, detector.go:258, :286).
  */
 const cmt_light_attack_record_t *
 cmt_light_client_attack_record(const cmt_light_client_t *c);
+
+/** D20 — true while an attack is not cleared (found by this client, or
+ *  loaded from the store at construction). False on NULL. */
+bool cmt_light_client_attack_locked(const cmt_light_client_t *c);
+
+/**
+ * D20 — the operator's clear: every attack record in the store becomes
+ * cleared (none is deleted) and the client unlocks. The in-memory record
+ * (cmt_light_client_attack_record) stays readable. Calling it unlocked is
+ * CMT_OK.
+ * @return CMT_OK; CMT_FAULT on NULL or a store failure (the client then
+ *         stays locked).
+ */
+int cmt_light_client_attack_clear(cmt_light_client_t *c);
 
 /* ══ the providers (client.go:853-869, by identity) ═══════════════════ */
 

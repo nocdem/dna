@@ -19,6 +19,10 @@
  *     altered is refused at open (D6); a row whose block is not the
  *     height it is stored under is refused (D7);
  *   · the Store callback table reaches the same functions;
+ *   · D9 (K25-10) — the attack records: seq per prefix, an idempotent
+ *     save while a record is in force and a new row after a clear, the
+ *     clear keeps every record, a restart keeps records and flags, a
+ *     second prefix is separate, Size() / Prune ignore them;
  *   · a FAILED COMMIT (a second connection holds a read lock, so COMMIT
  *     cannot take the EXCLUSIVE lock and returns SQLITE_BUSY) is rolled
  *     back: the save is CMT_FAULT, Size() is unchanged, the row is not
@@ -76,7 +80,7 @@
  * NOT PORTED: Test_Concurrency (:130-170), see 4 above.
  * PROJECT-AUTHORED: every deviation row, restart, prefixes, the failed
  * COMMIT, the callback
- * table, the NULL rows.
+ * table, the NULL rows, the D9 attack-record row.
  *
  * @file test_cmt_light_store.c
  */
@@ -785,6 +789,134 @@ fail:
     return 1;
 }
 
+/* ══ D9 (K25-10) — the attack records. PROJECT. ═══════════════════════ */
+
+static bool attacks_are(cmt_light_store_db_t *s, uint64_t total,
+                        uint64_t uncleared)
+{
+    uint64_t t = 99u, u = 99u;
+
+    return cmt_light_store_db_attack_records(s, &t, &u) == CMT_OK &&
+           t == total && u == uncleared;
+}
+
+/*
+ * PROVES (cmt_light_store.h D9): records get seq 1, 2, … per prefix; the
+ * same bytes on a record still in force are not written twice
+ * (idempotent), but after a clear they are a new row; the clear marks
+ * every record cleared and deletes none; records and their cleared flags
+ * survive a restart; another prefix in the same file sees none of them;
+ * the callback table reaches the same functions; light-block Size() and
+ * Prune do not see or touch them; the refusals (empty record) and NULL
+ * arguments.
+ */
+static int t_attack_records(void)
+{
+    static const uint8_t A[3] = { 0x01, 0x02, 0x03 };
+    static const uint8_t B[4] = { 0x0B, 0x0B, 0x0B, 0x0B };
+    char                  path[64];
+    cmt_light_store_db_t *s = NULL, *other = NULL;
+    cmt_light_store_t     st;
+    uint8_t              *got = NULL;
+    size_t                got_len = 0u;
+    uint64_t              seq = 0u, t = 0u, u = 0u;
+    bool                  cleared = true, found = false;
+
+    if (temp_path(path, sizeof(path)) != 0) {
+        return 1;
+    }
+    CHECK(cmt_light_store_db_open(path, (const uint8_t *)"atk", 3, BP, &s)
+              == CMT_OK, "open");
+    CHECK(attacks_are(s, 0, 0), "empty");
+    CHECK(cmt_light_store_db_save_attack_record(s, A, sizeof(A), &seq)
+              == CMT_OK && seq == 1u, "A → seq 1");
+    CHECK(cmt_light_store_db_save_attack_record(s, A, sizeof(A), &seq)
+              == CMT_OK && seq == 1u && attacks_are(s, 1, 1),
+          "A again → seq 1, not written twice");
+    CHECK(cmt_light_store_db_save_attack_record(s, B, sizeof(B), &seq)
+              == CMT_OK && seq == 2u && attacks_are(s, 2, 2), "B → seq 2");
+    CHECK(save_h(s, 1) == CMT_OK && size_of(s) == 1u,
+          "a light block: Size() counts blocks only");
+    OK();
+
+    CHECK(cmt_light_store_db_clear_attack_records(s) == CMT_OK &&
+          attacks_are(s, 2, 0), "clear: two kept, none in force");
+    CHECK(cmt_light_store_db_clear_attack_records(s) == CMT_OK &&
+          attacks_are(s, 2, 0), "clear again: nothing to do");
+    CHECK(cmt_light_store_db_save_attack_record(s, A, sizeof(A), &seq)
+              == CMT_OK && seq == 3u && attacks_are(s, 3, 1),
+          "A after the clear → a new row, seq 3");
+    CHECK(cmt_light_store_db_prune(s, 0) == CMT_OK && size_of(s) == 0u &&
+          attacks_are(s, 3, 1), "Prune leaves the records alone");
+    OK();
+
+    /* Restart: the records and their flags stay. */
+    cmt_light_store_db_close(s);
+    s = NULL;
+    CHECK(cmt_light_store_db_open(path, (const uint8_t *)"atk", 3, BP, &s)
+              == CMT_OK && attacks_are(s, 3, 1), "after restart 3 / 1");
+    CHECK(cmt_light_store_db_attack_record(s, 1, &got, &got_len, &cleared,
+                                           &found) == CMT_OK &&
+          found && cleared && got_len == sizeof(A) &&
+          memcmp(got, A, sizeof(A)) == 0, "record 1: A, cleared");
+    free(got);
+    got = NULL;
+    CHECK(cmt_light_store_db_attack_record(s, 3, &got, &got_len, &cleared,
+                                           &found) == CMT_OK &&
+          found && !cleared && got_len == sizeof(A), "record 3: A, in force");
+    free(got);
+    got = NULL;
+    CHECK(cmt_light_store_db_attack_record(s, 4, &got, &got_len, &cleared,
+                                           &found) == CMT_OK &&
+          !found && got == NULL, "record 4: none");
+    CHECK(cmt_light_store_db_attack_record(s, 0, &got, &got_len, &cleared,
+                                           &found) == CMT_OK && !found,
+          "seq 0: none");
+    OK();
+
+    /* Another prefix in the same file sees none of them. */
+    CHECK(cmt_light_store_db_open(path, (const uint8_t *)"other", 5, BP,
+                                  &other) == CMT_OK &&
+          attacks_are(other, 0, 0), "other prefix: none");
+    CHECK(cmt_light_store_db_clear_attack_records(other) == CMT_OK &&
+          attacks_are(s, 3, 1), "its clear does not touch this prefix");
+    cmt_light_store_db_close(other);
+    other = NULL;
+
+    /* The callback table reaches the same functions. */
+    cmt_light_store_db_bind(s, &st);
+    CHECK(st.save_attack_record(st.ctx, B, sizeof(B), &seq) == CMT_OK &&
+          seq == 4u, "table save");
+    CHECK(st.attack_records(st.ctx, &t, &u) == CMT_OK && t == 4u && u == 2u,
+          "table count");
+    CHECK(st.clear_attack_records(st.ctx) == CMT_OK && attacks_are(s, 4, 0),
+          "table clear");
+    OK();
+
+    /* Refusals and NULL. */
+    CHECK(cmt_light_store_db_save_attack_record(s, A, 0, &seq) == CMT_REJECT,
+          "empty record refused");
+    CHECK(cmt_light_store_db_save_attack_record(NULL, A, 1, &seq) == CMT_FAULT &&
+          cmt_light_store_db_save_attack_record(s, NULL, 1, &seq) == CMT_FAULT &&
+          cmt_light_store_db_save_attack_record(s, A, 1, NULL) == CMT_FAULT &&
+          cmt_light_store_db_attack_records(s, NULL, &u) == CMT_FAULT &&
+          cmt_light_store_db_clear_attack_records(NULL) == CMT_FAULT &&
+          cmt_light_store_db_attack_record(s, 1, NULL, &got_len, &cleared,
+                                           &found) == CMT_FAULT,
+          "NULL → FAULT");
+    CHECK(attacks_are(s, 4, 0), "refusals wrote nothing");
+    OK();
+    cmt_light_store_db_close(s);
+    remove_db(path);
+    return 0;
+fail:
+    free(got);
+    cmt_light_store_db_close(other);
+    cmt_light_store_db_close(s);
+    remove_db(path);
+    return 1;
+}
+
 int main(void)
 {
     int rc = 1;
@@ -806,6 +938,7 @@ int main(void)
     if (t_height_mismatch() != 0) goto out;
     if (t_table_and_faults() != 0) goto out;
     if (t_commit_fails() != 0) goto out;
+    if (t_attack_records() != 0) goto out;
 
     printf("test_cmt_light_store: %d checks OK\n", g_checks);
     rc = 0;

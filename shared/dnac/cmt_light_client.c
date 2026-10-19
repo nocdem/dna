@@ -1,7 +1,7 @@
 /**
  * @file shared/dnac/cmt_light_client.c
  * @brief cometbft @v0.38.26 light/client.go + light/trust_options.go — see
- *        cmt_light_client.h for the mapping, the deviations (D1-D19), the
+ *        cmt_light_client.h for the mapping, the deviations (D1-D20), the
  *        reproduced quirks (Q1-Q8) and the item-9 agreement rule (R1-R6).
  *        The detector (light/detector.go) is cmt_light_detector.c; the
  *        client struct and the few functions it shares with it are in the
@@ -520,7 +520,39 @@ static int light_block_from_primary(cmt_light_client_t *c, int64_t height,
 static int detect_divergence(cmt_light_client_t *c, const lbvec_t *trace,
                              cmt_time_t now, cmt_light_client_error_t *err)
 {
-    return cmt_light_detect_divergence(c, trace, now, err);
+    cmt_light_client_error_t e;
+    uint8_t                 *bz = NULL;
+    size_t                   bz_len = 0u;
+    uint64_t                 seq = 0u;
+    int                      rc;
+
+    rc = cmt_light_detect_divergence(c, trace, now, &e);
+    if (rc == CMT_REJECT && e.code == CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK) {
+        /* D20 (K25-10) — lock, then write the record. A failed write
+         * keeps the lock in memory and the attack result (DD9). */
+        c->locked = true;
+        if (c->attack != NULL) {
+            c->attack->durable = false;
+            if (cmt_light_attack_record_encode(c->attack, &bz, &bz_len) == CMT_OK &&
+                c->store.save_attack_record(c->store.ctx, bz, bz_len,
+                                            &seq) == CMT_OK) {
+                c->attack->durable = true;
+                QGP_LOG_ERROR(LOG_TAG, "light client LOCKED: attack record "
+                              "#%llu written to the store",
+                              (unsigned long long)seq);
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "light client LOCKED in memory only: "
+                              "the attack record could NOT be written to "
+                              "the store — a restart will not reload the "
+                              "lock");
+            }
+            free(bz);
+        }
+    }
+    if (err != NULL) {
+        *err = e;
+    }
+    return rc;
 }
 
 /* ══ store use ════════════════════════════════════════════════════════ */
@@ -580,6 +612,9 @@ static int update_trusted_light_block(cmt_light_client_t *c,
     int64_t h = 0, lh = 0;
     int     rc;
 
+    if (c->locked) {                                 /* D20, second guard */
+        return reject(err, CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED);
+    }
     if (lb_height(l, &h) != CMT_OK) {
         return fault(err);
     }
@@ -618,6 +653,10 @@ int cmt_light_client_cleanup(cmt_light_client_t *c)
 {
     if (c == NULL || c->store.prune == NULL) {
         return CMT_FAULT;
+    }
+    if (c->locked) {                                             /* D20 */
+        QGP_LOG_ERROR(LOG_TAG, "cleanup refused: an attack is not cleared");
+        return CMT_REJECT;
     }
     QGP_LOG_INFO(LOG_TAG, "removing all the data");             /* :874 */
     cmt_light_block_buf_free(c->latest);                         /* :875 */
@@ -1633,7 +1672,9 @@ int cmt_light_client_new_from_trusted_store(
         store->last_light_block_height == NULL ||
         store->first_light_block_height == NULL ||
         store->light_block_before == NULL || store->prune == NULL ||
-        store->size == NULL || !peer_rows_ok(primary)) {
+        store->size == NULL || store->save_attack_record == NULL ||
+        store->attack_records == NULL ||
+        store->clear_attack_records == NULL || !peer_rows_ok(primary)) {
         return CMT_FAULT;
     }
     for (i = 0; i < n_witnesses; i++) {
@@ -1705,6 +1746,24 @@ int cmt_light_client_new_from_trusted_store(
     c->n_witnesses = n_witnesses;
     c->store       = *store;                                 /* :230 */
 
+    /* D20 (K25-10) — an uncleared attack record locks the new client. */
+    {
+        uint64_t total = 0u, uncleared = 0u;
+
+        rc = c->store.attack_records(c->store.ctx, &total, &uncleared);
+        if (rc != CMT_OK) {
+            cmt_light_client_free(c);
+            return store_rc(rc, err);
+        }
+        c->locked = uncleared > 0u;
+        if (c->locked) {
+            QGP_LOG_ERROR(LOG_TAG, "light client LOCKED: the store holds "
+                          "%llu uncleared attack record(s) of %llu",
+                          (unsigned long long)uncleared,
+                          (unsigned long long)total);
+        }
+    }
+
     rc = restore_trusted_light_block(c, err);                /* :259-261 */
     if (rc != CMT_OK) {
         cmt_light_client_free(c);
@@ -1747,6 +1806,10 @@ int cmt_light_client_new(const uint8_t *chain_id, size_t chain_id_len,
     if (rc != CMT_OK) {
         return rc;
     }
+    if (c->locked) {             /* D20: the next steps change the store */
+        cmt_light_client_free(c);
+        return reject(err, CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED);
+    }
     if (c->latest != NULL) {                                 /* :192-197 */
         QGP_LOG_INFO(LOG_TAG, "checking trusted light block using options");
         rc = check_trusted_header_using_options(c, trust, err);
@@ -1787,6 +1850,32 @@ const cmt_light_attack_record_t *
 cmt_light_client_attack_record(const cmt_light_client_t *c)
 {
     return c == NULL ? NULL : c->attack;
+}
+
+/* D20 (K25-10). */
+bool cmt_light_client_attack_locked(const cmt_light_client_t *c)
+{
+    return c != NULL && c->locked;
+}
+
+/* D20 (K25-10) — the operator's clear. */
+int cmt_light_client_attack_clear(cmt_light_client_t *c)
+{
+    int rc;
+
+    if (c == NULL) {
+        return CMT_FAULT;
+    }
+    rc = c->store.clear_attack_records(c->store.ctx);
+    if (rc != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "attack clear failed: the client stays locked");
+        return CMT_FAULT;
+    }
+    if (c->locked) {
+        QGP_LOG_INFO(LOG_TAG, "attack lock cleared by the operator");
+    }
+    c->locked = false;
+    return CMT_OK;
 }
 
 /* cometbft@v0.38.26 light/client.go:412-431 — compareWithLatestHeight(). */
@@ -1879,6 +1968,9 @@ int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
     }
     *advanced = false;
     (void)cmt_light_block_buf_reset(out);
+    if (c->locked) {                                         /* D20 */
+        return reject(err, CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED);
+    }
     rc = c->store.last_light_block_height(c->store.ctx, &last); /* :437-440 */
     if (rc != CMT_OK) {
         return store_rc(rc, err);
@@ -1924,6 +2016,9 @@ int cmt_light_client_verify_light_block_at_height(cmt_light_client_t *c,
         return CMT_FAULT;
     }
     (void)cmt_light_block_buf_reset(out);
+    if (c->locked) {                                         /* D20 */
+        return reject(err, CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED);
+    }
     if (height <= 0) {                                       /* :475-477 */
         return reject(err, CMT_LIGHT_CLIENT_ERR_BAD_HEIGHT);
     }

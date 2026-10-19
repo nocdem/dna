@@ -35,7 +35,19 @@
  *     witness kept, no record (DD5); one more step and the same fixture
  *     is an attack with no evidence against the witness (Q-D4);
  *   · newLightClientAttackEvidence's three branches (lunatic,
- *     equivocation, amnesia) on direct calls.
+ *     equivocation, amnesia) on direct calls;
+ *   · (BUGS Z-42, DD6/DD10) an equivocating block with one more COMMIT
+ *     signature past the 2/3 point whose address is in no set still
+ *     verifies, and the attack is still LIGHT_CLIENT_ATTACK with its
+ *     record kept: four equivocators named, one unknown signer counted;
+ *   · (DD2) witnesses found bad in a pass that ends WITNESS_BEHIND are
+ *     removed before it returns (detector.go:98-100), and the same
+ *     target is trusted after the wait;
+ *   · (K25-10, DD9 / client D20) an attack LOCKS the client: Update,
+ *     verify and Cleanup are refused, the record is in the store byte for
+ *     byte, a restart stays locked, the operator's clear unlocks and keeps
+ *     the record, a second attack writes a second record, and after a
+ *     clear an honest primary's block is verified and saved.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no
@@ -65,6 +77,14 @@
  *  5. The same mock passed as primary AND witness becomes two instances
  *     with the same data and two identities (item 9 counts identities).
  *  6. ML-DSA-87 signing is HEDGED; no signature is frozen.
+ *  7. The unknown-signer row needs the foreign signature AFTER the 2/3
+ *     point; it re-signs block 6 in the set's index order and checks that
+ *     slot 4 was the absent one before replacing it. Its 64 signature
+ *     bytes are a pattern, never verified (that is the point).
+ *  8. The lock row's "restart" is close + re-open of the store file, not
+ *     a power cut (durability itself is PRAGMA synchronous=FULL,
+ *     cmt_light_store.h, and is not exercised). The Z-41 moving-target
+ *     case is NOT here: it is open (cmt_light_detector.h DD2).
  *
  * ── REFERENCE CASES (light/detector_test.go) ───────────────────────────
  * PORTED: TestLightClientAttackEvidence_Lunatic (:21-91),
@@ -80,7 +100,9 @@
  * (`LightClientAttackEvidence.Hash`, types/evidence.go:321-331: the
  * conflicting block's hash and the common height).
  * PROJECT-AUTHORED: the K25-3 non-last-validator row, the attack/cap
- * (bounds) row, the wait-gating row, the direct evidence-builder rows.
+ * (bounds) row, the wait-gating row, the direct evidence-builder rows,
+ * the unknown-signer row (12), the behind-removes-bad row (13), the
+ * attack-lock rows (14, and the clear inside the forward-lunatic row).
  *
  * @file test_cmt_light_detector.c
  */
@@ -1060,6 +1082,14 @@ static int t_forward_lunatic(void)
      * the attack stands without evidence against the witness. */
     T(!r->has_against_witness, "no evidence against the witness");
 
+    /* K25-10 (DD9) — the attack locked the client: the reference's next
+     * call (:277-283) is refused until the operator clears. */
+    T(cmt_light_client_attack_locked(c) &&
+      cmt_light_client_verify_light_block_at_height(c, 12, now, g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED, "locked → refused");
+    T(cmt_light_client_attack_clear(c) == CMT_OK &&
+      !cmt_light_client_attack_locked(c), "operator clear");
     /* :277-283 — the witness now has 11 at once: attack without a wait. */
     T(cmt_light_client_verify_light_block_at_height(c, 12, now, g_out,
                                                     &e) == CMT_REJECT &&
@@ -1476,6 +1506,336 @@ out:
     return ret;
 }
 
+/* ══ 12. PROJECT — an unknown signer past the 2/3 point (BUGS Z-42) ══ */
+
+/*
+ * PROVES: an equivocating primary whose block 6 carries, AFTER the 2/3
+ * point, one more COMMIT signature whose address names no validator of
+ * the set (a) still verifies — the commit check stops counting at more
+ * than 2/3 (types/validation.go:401-403, cmt_validation.c:264-266) and
+ * never looks at it — and (b) is still reported as LIGHT_CLIENT_ATTACK
+ * with its record kept: the signature is skipped and counted
+ * (n_unknown_signers = 1), the four real equivocators are named. Before
+ * the Z-42 fix the evidence builder returned CMT_FAULT here and the call
+ * discarded the record and returned a local fault.
+ */
+static int t_equivocation_unknown_signer(void)
+{
+    tmock_t                          p, w[1];
+    tstore_t                         s;
+    cmt_light_client_options_t       o;
+    cmt_light_client_t              *c = NULL;
+    cmt_light_client_error_t         e;
+    const cmt_light_attack_record_t *r;
+    const char                      *wid[1] = { "witness" };
+    tsh_t                           *mod6;
+    cmt_pb_bytes_t                   tx;
+    cmt_data_t                       txs;
+    cmt_commit_sig_t                *x;
+    int                              keys[VALSZ];
+    uint8_t                          ha[CMT_TMHASH_SIZE], hb[CMT_TMHASH_SIZE];
+    int32_t                          idx40 = 0;
+    size_t                           i;
+    int64_t                          h;
+    int                              ret = 1;
+
+    memset(&s, 0, sizeof(s));
+    mod6 = calloc(1, sizeof(*mod6));
+    if (mod6 == NULL) {
+        return 1;
+    }
+    if (store_open(&s) != 0) {
+        free(mod6);
+        return 1;
+    }
+    /* F->equ[6]'s header, re-signed with the keys in the SET's index
+     * order: slots 0..3 sign, slot 4 (the last) is absent. Four of five
+     * (power 8 of 10) is past 2/3 at slot 3, so slot 4 is never read. */
+    for (i = 0; i < VALSZ; i++) {
+        keys[i] = key_of_address(F->a.vals[6].vs.validators[i].address,
+                                 F->a.vals[6].vs.validators[i].address_len);
+        T(keys[i] >= 0, "a key of the set");
+    }
+    tx.data     = (const uint8_t *)"abcd";
+    tx.len      = 4;
+    txs.txs     = &tx;
+    txs.txs_cap = 1;
+    txs.txs_len = 1;
+    T(gen_sh(mod6, 6, t_at(6 * MINUTE), &txs, &F->a.vals[6], &F->a.vals[7],
+             keys, VALSZ, 0, VALSZ - 1, NULL, "app_hash") == 0, "build 6");
+    T(sh_hash(mod6, ha) == 0 && sh_hash(&F->equ[6], hb) == 0 &&
+      memcmp(ha, hb, CMT_TMHASH_SIZE) == 0, "the same header as equ[6]");
+    x = &mod6->sigs[VALSZ - 1];
+    T(x->block_id_flag == (int32_t)CMT_BLOCK_ID_FLAG_ABSENT, "slot 4 absent");
+    /* Slot 4: a COMMIT signature from key 40, which is in no set here. */
+    memset(x, 0, sizeof(*x));
+    x->block_id_flag = (int32_t)CMT_BLOCK_ID_FLAG_COMMIT;
+    memcpy(x->validator_address, g_addr[40], CMT_ADDRESS_SIZE);
+    x->validator_address_len = CMT_ADDRESS_SIZE;
+    x->timestamp.seconds     = VOTE_SECONDS;
+    x->timestamp.nanos       = 0;
+    pat(x->signature, 64u, 0xA5);
+    x->signature_len         = 64u;
+    T(cmt_validator_set_get_by_address(&F->a.vals[6].vs, g_addr[40],
+                                       CMT_ADDRESS_SIZE, &idx40,
+                                       NULL) == CMT_OK && idx40 < 0,
+      "key 40 is not in the set");
+
+    mock_chain(&w[0], &F->a, 12);
+    mock_init(&p);
+    for (h = 1; h <= 10; h++) {
+        if (h < 6) {
+            mock_add(&p, h, &F->a.sh[h], &F->a.vals[h].vs);
+        } else if (h == 6) {
+            mock_add(&p, h, mod6, &F->a.vals[h].vs);
+        } else {
+            mock_add(&p, h, &F->equ[h], &F->a.vals[h].vs);
+        }
+    }
+    opts_default(&o);
+    o.verification_mode = CMT_LIGHT_CLIENT_MODE_SEQUENTIAL;
+    T(new_client(&p, "primary", w, wid, 1, &o, &s, &c, &e) == CMT_OK, "init");
+    T(cmt_light_client_verify_light_block_at_height(c, 10, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK,
+      "verify 10 → attack, not a fault");
+    T(last_h(&s) == 1, "nothing saved");
+    r = cmt_light_client_attack_record(c);
+    T(r != NULL && r->missing == 0u &&
+      ev_is(&r->against_primary, &F->equ[6], 6), "record kept: 6 / 6");
+    T(r->against_primary.attack == CMT_LIGHT_ATTACK_EQUIVOCATION &&
+      r->against_primary.n_byzantine == 4 &&
+      r->against_primary.n_unknown_signers == 1,
+      "four equivocators named, one unknown signer skipped");
+    T(cmt_light_client_attack_locked(c) && r->durable, "locked, durable");
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    free(mod6);
+    return ret;
+}
+
+/* ══ 13. PROJECT — bad witnesses go in a WITNESS_BEHIND pass ═════════ */
+
+/*
+ * PROVES: in a detection that ends WITNESS_BEHIND, a witness already
+ * found bad in the same pass (here: a conflicting block 10 its own chain
+ * cannot back, detector.go:74-75) is removed BEFORE the call returns, as
+ * the reference removes it once its sleeping comparison returns
+ * (detector.go:98-100) — while another witness remains. After the wait
+ * the same target is trusted: the matching witness matches and the
+ * behind one is benign (:196).
+ */
+static int t_behind_removes_bad(void)
+{
+    tmock_t                    p, ws[3];
+    tstore_t                   s;
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *c = NULL;
+    cmt_light_client_error_t   e;
+    const char                *wid[3] = { "bad-10", "behind", "match" };
+    const uint8_t             *id = NULL;
+    size_t                     id_len = 0u;
+    cmt_time_t                 now = t_at(HOUR);
+    int64_t                    wait;
+    int64_t                    h;
+    int                        ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_chain(&p, &F->a, 10);
+    mock_init(&ws[0]);
+    for (h = 1; h <= 9; h++) {
+        mock_add(&ws[0], h, &F->a.sh[h], &F->a.vals[h].vs);
+    }
+    mock_add(&ws[0], 10, &F->b.sh[10], &F->b.vals[10].vs);
+    mock_chain(&ws[1], &F->a, 9);
+    mock_chain(&ws[2], &F->a, 10);
+    opts_default(&o);
+    wait = 2 * o.max_clock_drift + o.max_block_lag;
+    T(new_client(&p, "primary", ws, wid, 3, &o, &s, &c, &e) == CMT_OK, "init");
+
+    T(cmt_light_client_verify_light_block_at_height(c, 10, now, g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND, "1st pass → behind");
+    T(last_h(&s) == 1, "behind: nothing saved");
+    /* removeWitnesses swaps the last witness into the freed slot (Q7). */
+    T(cmt_light_client_witness_count(c) == 2, "the bad witness is gone");
+    T(cmt_light_client_witness_id(c, 0, &id, &id_len) == CMT_OK &&
+      id_len == 5 && memcmp(id, "match", 5) == 0 &&
+      cmt_light_client_witness_id(c, 1, &id, &id_len) == CMT_OK &&
+      id_len == 6 && memcmp(id, "behind", 6) == 0, "match, behind remain");
+
+    T(cmt_light_client_verify_light_block_at_height(c, 10,
+            cmt_time_add_ns(now, wait), g_out, &e) == CMT_OK,
+      "after the wait → verified");
+    T(last_h(&s) == 10 && cmt_light_client_witness_count(c) == 2,
+      "10 saved, both remain");
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* ══ 14. PROJECT — the attack lock and its durable records (K25-10) ═══ */
+
+/* Close and re-open the same store file (a restart; nothing unlinked). */
+static int store_reopen(tstore_t *s)
+{
+    cmt_light_store_db_close(s->db);
+    s->db = NULL;
+    if (cmt_light_store_db_open(s->path, (const uint8_t *)CHAIN, strlen(CHAIN),
+                                CMT_BLOCK_PROTOCOL, &s->db) != CMT_OK) {
+        return 1;
+    }
+    cmt_light_store_db_bind(s->db, &s->st);
+    return 0;
+}
+
+static bool records_are(tstore_t *s, uint64_t total, uint64_t uncleared)
+{
+    uint64_t t = 99u, u = 99u;
+
+    return cmt_light_store_db_attack_records(s->db, &t, &u) == CMT_OK &&
+           t == total && u == uncleared;
+}
+
+/* The lunatic primary of TestLightClientAttackEvidence_Lunatic (:36-46). */
+static void mock_lunatic_primary(tmock_t *m)
+{
+    int64_t h;
+
+    mock_init(m);
+    for (h = 1; h <= 10; h++) {
+        if (h < 6) {
+            mock_add(m, h, &F->a.sh[h], &F->a.vals[h].vs);
+        } else {
+            mock_add(m, h, &F->lun[h], &F->lun_vals.vs);
+        }
+    }
+}
+
+/*
+ * PROVES (K25-10, cmt_light_detector.h DD9, cmt_light_client.h D20):
+ *   · an attack LOCKS the client; while locked, Update, a verify of the
+ *     attacked height, a verify of another height and Cleanup are all
+ *     refused (ATTACK_LOCKED / CMT_REJECT) and the store is unchanged;
+ *   · the record is in the store, byte-equal to its encoding, uncleared;
+ *   · a RESTART (store closed and re-opened, a new client) stays locked:
+ *     NewClient refuses, NewClientFromTrustedStore comes up locked;
+ *   · the operator's clear unlocks and keeps the record (cleared); the
+ *     same attacking primary is then caught AGAIN — a second durable
+ *     record (two in all), the client locked again;
+ *   · after a second clear, an honest primary's block is verified and
+ *     saved: the client works again.
+ */
+static int t_attack_lock(void)
+{
+    tmock_t                          p, w[1];
+    tstore_t                         s;
+    cmt_light_client_options_t       o;
+    cmt_light_client_t              *c = NULL;
+    cmt_light_client_error_t         e;
+    cmt_light_client_peer_t          pp, wp[1];
+    const cmt_light_attack_record_t *r;
+    const char                      *wid[1] = { "witness" };
+    uint8_t                         *bz = NULL, *got = NULL;
+    size_t                           bz_len = 0u, got_len = 0u;
+    bool                             cleared = true, found = false, adv = true;
+    int                              ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_chain(&w[0], &F->a, 10);
+    mock_lunatic_primary(&p);
+    opts_default(&o);
+    T(new_client(&p, "primary", w, wid, 1, &o, &s, &c, &e) == CMT_OK, "init");
+    T(!cmt_light_client_attack_locked(c) && records_are(&s, 0, 0),
+      "unlocked, no record");
+
+    /* The attack locks; the record is durable and byte-equal. */
+    T(cmt_light_client_verify_light_block_at_height(c, 10, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK, "attack");
+    r = cmt_light_client_attack_record(c);
+    T(r != NULL && r->durable && r->missing == 0u &&
+      cmt_light_client_attack_locked(c), "locked, durable");
+    T(records_are(&s, 1, 1), "one record, uncleared");
+    T(cmt_light_attack_record_encode(r, &bz, &bz_len) == CMT_OK &&
+      cmt_light_store_db_attack_record(s.db, 1, &got, &got_len, &cleared,
+                                       &found) == CMT_OK &&
+      found && !cleared && got_len == bz_len &&
+      memcmp(got, bz, bz_len) == 0, "the stored bytes are the record's");
+    free(got);
+    got = NULL;
+
+    /* Every later verification / save is refused and changes nothing. */
+    T(cmt_light_client_update(c, t_at(HOUR), g_out, &adv, &e) == CMT_REJECT &&
+      !adv && e.code == CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED, "Update refused");
+    T(cmt_light_client_verify_light_block_at_height(c, 10, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED, "verify 10 refused");
+    T(cmt_light_client_verify_light_block_at_height(c, 5, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED, "verify 5 refused");
+    T(cmt_light_client_cleanup(c) == CMT_REJECT, "Cleanup refused");
+    T(last_h(&s) == 1 && records_are(&s, 1, 1), "store unchanged");
+
+    /* Restart: the lock is reloaded from the store. */
+    cmt_light_client_free(c);
+    c = NULL;
+    T(store_reopen(&s) == 0, "re-open the store");
+    T(new_client(&p, "primary", w, wid, 1, &o, &s, &c, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED && c == NULL,
+      "NewClient refuses a locked store");
+    pp    = peer_of(&p, "primary");
+    wp[0] = peer_of(&w[0], "witness");
+    T(cmt_light_client_new_from_trusted_store((const uint8_t *)CHAIN,
+                                              strlen(CHAIN), 4 * HOUR, &pp,
+                                              wp, 1, &s.st, &o, &c,
+                                              &e) == CMT_OK &&
+      cmt_light_client_attack_locked(c), "restarted client is locked");
+    T(cmt_light_client_verify_light_block_at_height(c, 10, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED, "still refused");
+
+    /* Clear: unlocked, the record kept (cleared); the same primary is
+     * caught again — a second durable record. */
+    T(cmt_light_client_attack_clear(c) == CMT_OK &&
+      !cmt_light_client_attack_locked(c) && records_are(&s, 1, 0),
+      "clear: unlocked, one record, cleared");
+    T(cmt_light_store_db_attack_record(s.db, 1, &got, &got_len, &cleared,
+                                       &found) == CMT_OK && found && cleared,
+      "record 1 kept, cleared");
+    free(got);
+    got = NULL;
+    T(cmt_light_client_verify_light_block_at_height(c, 10,
+            t_at(HOUR + MINUTE), g_out, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK, "second attack");
+    T(cmt_light_client_attack_locked(c) && records_are(&s, 2, 1),
+      "locked again, two records");
+
+    /* Clear again, an honest primary: verified and saved. */
+    T(cmt_light_client_attack_clear(c) == CMT_OK && records_are(&s, 2, 0),
+      "second clear");
+    mock_chain(&p, &F->a, 10);
+    T(cmt_light_client_verify_light_block_at_height(c, 10,
+            t_at(HOUR + 2 * MINUTE), g_out, &e) == CMT_OK &&
+      last_h(&s) == 10, "works again: 10 saved");
+    T(p.evidence_calls == 0 && w[0].evidence_calls == 0, "nothing sent");
+    ret = 0;
+out:
+    free(bz);
+    free(got);
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
 int main(void)
 {
     int rc = 1;
@@ -1500,6 +1860,9 @@ int main(void)
     if (t_priorities() != 0) goto out;
     if (t_bounds() != 0) goto out;
     if (t_evidence_build() != 0) goto out;
+    if (t_equivocation_unknown_signer() != 0) goto out;
+    if (t_behind_removes_bad() != 0) goto out;
+    if (t_attack_lock() != 0) goto out;
 
     printf("test_cmt_light_detector: %d checks OK\n", g_checks);
     rc = 0;

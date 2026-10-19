@@ -14,7 +14,7 @@
  *
  * ── THE MAPPING ────────────────────────────────────────────────────────
  *   dbm.DB + prefix  → one SQLite FILE this module opens and owns, with
- *                      two tables:
+ *                      two tables (and the PROJECT table of D9):
  *                        cmt_light_block (prefix BLOB, height INTEGER,
  *                                         value BLOB, PRIMARY KEY
  *                                         (prefix, height))
@@ -93,6 +93,27 @@
  *     Version.Block with `version.BlockProtocol` — a build-time constant
  *     of the reference binary and a chain parameter here
  *     (cmt_light_verifier.h:47-53).
+ *  D9 THE ATTACK RECORDS (K25-10, operator 2026-10-19, docs/plans/
+ *     decisions/2026-10-16-kurultay-25-summary.md: "every attack record is
+ *     kept durably in the light store … and survives a restart, which
+ *     reloads the lock"). The reference's store has no such table (its
+ *     Store interface is store.go:5-48, light blocks only) and its client
+ *     has no latch (detector.go:72, client.go:820-821). A third table
+ *                        cmt_light_attack (prefix BLOB, seq INTEGER,
+ *                                          cleared INTEGER, value BLOB,
+ *                                          PRIMARY KEY (prefix, seq))
+ *     holds each record the light client wrote, as OPAQUE bytes (their
+ *     layout is cmt_light_detector.h DD9; this module never parses them).
+ *     `seq` is 1, 2, … per prefix, in the order of the saves. A record is
+ *     never deleted: the operator's clear sets `cleared = 1` on every
+ *     record of the prefix, and the LOCK is "at least one record with
+ *     cleared = 0". The rules of D2-D5 carry over: one save, or one
+ *     clear, is ONE transaction; saving bytes identical to a record that
+ *     is NOT cleared adds nothing and returns that record's seq (the save
+ *     is idempotent while the lock it set is in force; after a clear the
+ *     same bytes are a new event and a new row); everything is per
+ *     prefix. Records are not counted in Size() and Prune never touches
+ *     them.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
  *   · `mtx` (db.go:23, every "Safe for concurrent use" method) — the
@@ -172,6 +193,21 @@ typedef struct {
 
     /** store.go:46-47 — `Size()` — 64-bit, D1. */
     int (*size)(void *ctx, uint64_t *out);
+
+    /* ── PROJECT (D9, K25-10) — the attack records ─────────────────── */
+
+    /** Save one attack record (`len` > 0 opaque bytes); `*seq` receives
+     *  its sequence number. Idempotent while not cleared (D9). */
+    int (*save_attack_record)(void *ctx, const uint8_t *bz, size_t len,
+                              uint64_t *seq);
+
+    /** The records this prefix holds (`*total`) and how many of them are
+     *  not cleared (`*uncleared`; > 0 is the lock). */
+    int (*attack_records)(void *ctx, uint64_t *total, uint64_t *uncleared);
+
+    /** The operator's clear: every record of the prefix becomes cleared;
+     *  none is deleted. */
+    int (*clear_attack_records)(void *ctx);
 } cmt_light_store_t;
 
 /* ══ light/store/db/db.go — the SQLite store ══════════════════════════ */
@@ -184,8 +220,9 @@ typedef struct cmt_light_store_db cmt_light_store_db_t;
 
 /**
  * cometbft@v0.38.26 light/store/db/db.go:27-37 — `New(db, prefix)`.
- * Opens (creating if absent) the SQLite file at `path`, creates the two
- * tables if absent, and loads the count for `prefix` (:30-34) — checking
+ * Opens (creating if absent) the SQLite file at `path`, creates the three
+ * tables if absent (D9's included, so a file written before D9 gains an
+ * empty one), and loads the count for `prefix` (:30-34) — checking
  * it against the rows (D6). A fresh prefix starts at 0.
  *
  * @param prefix may be NULL with `prefix_len` 0 (the empty prefix).
@@ -259,6 +296,42 @@ int cmt_light_store_db_prune(cmt_light_store_db_t *s, uint64_t size);
  *  changes only after a COMMIT succeeds, so it always equals the file's.
  *  @return CMT_OK; CMT_FAULT on NULL. */
 int cmt_light_store_db_size(cmt_light_store_db_t *s, uint64_t *out);
+
+/* ══ D9 — the attack records (K25-10). PROJECT. ═══════════════════════ */
+
+/**
+ * Save one attack record in ONE transaction. If a record of this prefix
+ * that is NOT cleared holds exactly these bytes, nothing is written and
+ * `*seq` is its seq; otherwise the record is inserted with seq = the
+ * prefix's highest seq + 1 (1 for the first) and cleared = 0.
+ * @return CMT_OK; CMT_REJECT for `len` 0, `len` above INT_MAX (an SQLite
+ *         bind takes an int) or a seq that would pass INT64_MAX; CMT_FAULT
+ *         on NULL or any SQLite failure.
+ */
+int cmt_light_store_db_save_attack_record(cmt_light_store_db_t *s,
+                                          const uint8_t *bz, size_t len,
+                                          uint64_t *seq);
+
+/** The number of records of this prefix, and of those not cleared.
+ *  @return CMT_OK; CMT_FAULT on NULL or any SQLite failure. */
+int cmt_light_store_db_attack_records(cmt_light_store_db_t *s,
+                                      uint64_t *total, uint64_t *uncleared);
+
+/** Mark every record of this prefix cleared, in ONE transaction; none is
+ *  deleted. Nothing to clear is CMT_OK.
+ *  @return CMT_OK; CMT_FAULT on NULL or any SQLite failure. */
+int cmt_light_store_db_clear_attack_records(cmt_light_store_db_t *s);
+
+/**
+ * Read record `seq` of this prefix. On (CMT_OK, `*found`) `*out` is a
+ * malloc'd copy of its `*len` bytes (free() it) and `*cleared` its flag;
+ * otherwise `*out` is NULL. An absent seq is CMT_OK with `*found = false`.
+ * @return CMT_OK; CMT_FAULT on NULL, an allocation failure or any SQLite
+ *         failure.
+ */
+int cmt_light_store_db_attack_record(cmt_light_store_db_t *s, uint64_t seq,
+                                     uint8_t **out, size_t *len,
+                                     bool *cleared, bool *found);
 
 #ifdef __cplusplus
 }

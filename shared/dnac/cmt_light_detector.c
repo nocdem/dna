@@ -1,7 +1,7 @@
 /**
  * @file shared/dnac/cmt_light_detector.c
  * @brief cometbft @v0.38.26 light/detector.go — see cmt_light_detector.h
- *        for the mapping, the deviations (DD1-DD8) and the reproduced
+ *        for the mapping, the deviations (DD1-DD10) and the reproduced
  *        quirks (Q-D1 .. Q-D6).
  *
  * Every function names the reference lines it ports. Ownership: the
@@ -158,14 +158,15 @@ static int byz_push(cmt_validator_t *list, size_t *n, const cmt_validator_t *v)
 /*
  * cometbft@v0.38.26 types/evidence.go:252-298 — GetByzantineValidators(
  * commonVals, trusted). `list` has CMT_VALSET_MAX slots; on CMT_OK it holds
- * `*n` validators in ValidatorsByVotingPower order and `*kind` names the
- * branch taken.
+ * `*n` validators in ValidatorsByVotingPower order, `*kind` names the
+ * branch taken and `*n_unknown` counts the equivocation-branch signers
+ * that are not in the conflicting set (DD6).
  */
 static int get_byzantine_validators(const cmt_light_block_t *conflicting,
                                     const cmt_validator_set_t *common_vals,
                                     const cmt_signed_header_t *trusted,
                                     cmt_validator_t *list, size_t *n,
-                                    int *kind)
+                                    int *kind, size_t *n_unknown)
 {
     const cmt_commit_t *cc = conflicting->signed_header->commit;
     const cmt_commit_t *tc = trusted->commit;
@@ -174,7 +175,8 @@ static int get_byzantine_validators(const cmt_light_block_t *conflicting,
     size_t              i;
     int                 rc;
 
-    *n = 0u;
+    *n         = 0u;
+    *n_unknown = 0u;
     if (cc == NULL || tc == NULL || trusted->header == NULL ||
         cc->signatures_len > (size_t)CMT_VALSET_MAX ||
         (cc->signatures_len > 0u && cc->signatures == NULL)) {
@@ -227,9 +229,17 @@ static int get_byzantine_validators(const cmt_light_block_t *conflicting,
             if (cmt_validator_set_get_by_address(conflicting->validator_set, /* :288 */
                                                  a->validator_address,
                                                  a->validator_address_len,
-                                                 &idx, &val) != CMT_OK ||
-                idx < 0) {
-                return CMT_FAULT;          /* :289 nil appended (DD6) */
+                                                 &idx, &val) != CMT_OK) {
+                return CMT_FAULT;
+            }
+            if (idx < 0) {
+                /* :289 — Go appends a nil and the sort at :291 panics.
+                 * Reachable: a signature past the commit check's 2/3
+                 * early stop (types/validation.go:289-291, :401-403) is
+                 * never checked, so its address may name nobody. Skipped
+                 * and counted (DD6, BUGS Z-42). */
+                (*n_unknown)++;
+                continue;
             }
             if (byz_push(list, n, &val) != CMT_OK) {                  /* :289 */
                 return CMT_FAULT;
@@ -276,7 +286,7 @@ int cmt_light_attack_evidence_build(const cmt_light_block_t *conflicted,
 {
     const cmt_light_block_t *src;
     cmt_validator_t         *list = NULL;
-    size_t                   n = 0u;
+    size_t                   n = 0u, n_unknown = 0u;
     int                      kind = 0;
     int64_t                  total = 0;
 
@@ -316,18 +326,207 @@ int cmt_light_attack_evidence_build(const cmt_light_block_t *conflicted,
     /* :437 — ev.GetByzantineValidators(common.ValidatorSet, trusted.SignedHeader). */
     if (get_byzantine_validators(conflicted, common->validator_set,
                                  trusted->signed_header, list, &n,
-                                 &kind) != CMT_OK) {
+                                 &kind, &n_unknown) != CMT_OK) {
         free(list);
         cmt_light_attack_evidence_release(out);
         return CMT_FAULT;
     }
-    out->attack = kind;
+    out->attack            = kind;
+    out->n_unknown_signers = n_unknown;
     if (n == 0u) {
         free(list);
         list = NULL;
     }
     out->byzantine_validators = list;
     out->n_byzantine          = n;
+    return CMT_OK;
+}
+
+/* ══ DD9 — the durable form of a record ═══════════════════════════════ */
+
+/* A growing byte buffer; `fail` sticks after the first failure. */
+typedef struct {
+    uint8_t *b;
+    size_t   len;
+    size_t   cap;
+    bool     fail;
+} wbuf_t;
+
+static void w_bytes(wbuf_t *w, const uint8_t *p, size_t n)
+{
+    if (w->fail || n == 0u) {
+        return;
+    }
+    if (n > SIZE_MAX - w->len) {
+        w->fail = true;
+        return;
+    }
+    if (w->len + n > w->cap) {
+        size_t   cap = w->cap == 0u ? 4096u : w->cap;
+        uint8_t *nb;
+
+        while (cap < w->len + n) {
+            if (cap > SIZE_MAX / 2u) {
+                cap = w->len + n;
+                break;
+            }
+            cap *= 2u;
+        }
+        nb = realloc(w->b, cap);
+        if (nb == NULL) {
+            w->fail = true;
+            return;
+        }
+        w->b   = nb;
+        w->cap = cap;
+    }
+    memcpy(w->b + w->len, p, n);
+    w->len += n;
+}
+
+static void w_u64(wbuf_t *w, uint64_t v)
+{
+    uint8_t b[8];
+    int     i;
+
+    for (i = 7; i >= 0; i--) {
+        b[i] = (uint8_t)(v & 0xFFu);
+        v >>= 8;
+    }
+    w_bytes(w, b, sizeof(b));
+}
+
+static void w_u32(wbuf_t *w, uint32_t v)
+{
+    uint8_t b[4];
+
+    b[0] = (uint8_t)(v >> 24);
+    b[1] = (uint8_t)(v >> 16);
+    b[2] = (uint8_t)(v >> 8);
+    b[3] = (uint8_t)v;
+    w_bytes(w, b, sizeof(b));
+}
+
+static void w_u8(wbuf_t *w, uint8_t v)
+{
+    w_bytes(w, &v, 1u);
+}
+
+/* A length that must fit its length field, else the encode faults. */
+static void w_len8(wbuf_t *w, size_t n)
+{
+    if (n > 0xFFu) {
+        w->fail = true;
+        return;
+    }
+    w_u8(w, (uint8_t)n);
+}
+
+static void w_len32(wbuf_t *w, size_t n)
+{
+    if (n > 0xFFFFFFFFu) {
+        w->fail = true;
+        return;
+    }
+    w_u32(w, (uint32_t)n);
+}
+
+static void w_time(wbuf_t *w, cmt_time_t t)
+{
+    w_u64(w, (uint64_t)t.seconds);
+    w_u32(w, (uint32_t)t.nanos);
+}
+
+/* EVIDENCE (cmt_light_detector.h, DD9). */
+static int w_evidence(wbuf_t *w, const cmt_light_attack_evidence_t *ev)
+{
+    uint8_t *bz = NULL;
+    size_t   bz_len = 0u, i;
+    int      rc;
+
+    if (ev->conflicting_block == NULL ||
+        (ev->n_byzantine > 0u && ev->byzantine_validators == NULL)) {
+        return CMT_FAULT;
+    }
+    rc = cmt_light_block_encode(&ev->conflicting_block->lb, &bz, &bz_len);
+    if (rc != CMT_OK) {
+        return rc;
+    }
+    w_len32(w, bz_len);
+    w_bytes(w, bz, bz_len);
+    free(bz);
+    w_u64(w, (uint64_t)ev->common_height);
+    w_u64(w, (uint64_t)ev->total_voting_power);
+    w_time(w, ev->timestamp);
+    w_u32(w, (uint32_t)ev->attack);
+    w_len32(w, ev->n_unknown_signers);
+    w_len32(w, ev->n_byzantine);
+    for (i = 0; i < ev->n_byzantine; i++) {
+        const cmt_validator_t *v = &ev->byzantine_validators[i];
+
+        if (v->address_len > sizeof(v->address)) {
+            return CMT_FAULT;
+        }
+        w_len8(w, v->address_len);
+        w_bytes(w, v->address, v->address_len);
+        w_u8(w, v->pub_key.present ? 1u : 0u);
+        if (v->pub_key.present) {
+            w_bytes(w, v->pub_key.key, sizeof(v->pub_key.key));
+        }
+        w_u64(w, (uint64_t)v->voting_power);
+        w_u64(w, (uint64_t)v->proposer_priority);
+    }
+    return CMT_OK;
+}
+
+int cmt_light_attack_record_encode(const cmt_light_attack_record_t *r,
+                                   uint8_t **out, size_t *out_len)
+{
+    wbuf_t  w = { NULL, 0u, 0u, false };
+    uint8_t flags = 0u;
+    int     rc = CMT_OK;
+
+    if (out != NULL) {
+        *out = NULL;
+    }
+    if (out_len != NULL) {
+        *out_len = 0u;
+    }
+    if (r == NULL || out == NULL || out_len == NULL ||
+        r->primary_id_len > sizeof(r->primary_id) ||
+        r->witness_id_len > sizeof(r->witness_id) || r->missing > 0xFFu) {
+        return CMT_FAULT;
+    }
+    if (r->has_against_witness) {
+        flags |= 1u;
+    }
+    if (r->commit_rounds_differ) {
+        flags |= 2u;
+    }
+    w_u8(&w, 1u);                                   /* version */
+    w_time(&w, r->now);
+    w_u64(&w, (uint64_t)r->witness_index);
+    w_len8(&w, r->primary_id_len);
+    w_bytes(&w, r->primary_id, r->primary_id_len);
+    w_len8(&w, r->witness_id_len);
+    w_bytes(&w, r->witness_id, r->witness_id_len);
+    w_u8(&w, flags);
+    w_u8(&w, (uint8_t)r->missing);
+    if ((r->missing & CMT_LIGHT_ATTACK_MISSING_AGAINST_PRIMARY) == 0u) {
+        rc = w_evidence(&w, &r->against_primary);
+    }
+    if (rc == CMT_OK && r->has_against_witness) {
+        rc = w_evidence(&w, &r->against_witness);
+    }
+    if (rc == CMT_OK && w.fail) {
+        rc = CMT_FAULT;
+    }
+    if (rc != CMT_OK) {
+        free(w.b);
+        return rc;
+    }
+    *out     = w.b;
+    *out_len = w.len;
     return CMT_OK;
 }
 
@@ -655,7 +854,9 @@ static void copy_id(uint8_t *dst, size_t *dst_len, const cmt_light_peer_t *p)
  * @return CMT_OK when the witness's header did not verify (:247-250 —
  *         "return nil": the caller removes the witness, :74-75);
  *         CMT_REJECT with LIGHT_CLIENT_ATTACK (:278, :288; the record in
- *         `c->attack`) or with a cap's code (DD5); CMT_FAULT.
+ *         `c->attack`, kept whatever its evidence build did — DD10) or
+ *         with a cap's code (DD5); CMT_FAULT before the attack is
+ *         established, or when the record cannot be allocated (DD10).
  */
 static int handle_conflicting_headers(cmt_light_client_t *c,
                                       const cmt_light_trace_t *primary_trace,
@@ -671,6 +872,7 @@ static int handle_conflicting_headers(cmt_light_client_t *c,
     const cmt_header_t        *pbh, *tbh;
     cmt_light_attack_record_t *rec = NULL;
     cmt_light_client_error_t   e;
+    bool                       trace_ok;
     int                        rc;
 
     wtrace.limit = c->o.max_trace_len;
@@ -695,21 +897,16 @@ static int handle_conflicting_headers(cmt_light_client_t *c,
         rc = CMT_OK;
         goto out;
     }
-    if (wtrace.len == 0u || primary_block == NULL) {
-        rc = fault(err);                                  /* :254 index (DD6) */
-        goto out;
-    }
-    pbh = lb_header(primary_block);
-    tbh = lb_header(wtrace.v[wtrace.len - 1u]);
-    if (pbh == NULL || tbh == NULL ||
-        primary_block->signed_header->commit == NULL ||
-        wtrace.v[wtrace.len - 1u]->signed_header->commit == NULL) {
-        rc = fault(err);                                  /* D7 / DD6 */
-        goto out;
-    }
-
+    /* The witness's conflicting header verified (:240-250 passed): the
+     * attack is ESTABLISHED. From here every path keeps the record and
+     * returns LIGHT_CLIENT_ATTACK (DD10); only the record's own
+     * allocation failing is CMT_FAULT, and the client is locked anyway. */
     rec = calloc(1, sizeof(*rec));
     if (rec == NULL) {
+        c->locked = true;                                        /* DD9 */
+        QGP_LOG_ERROR(LOG_TAG, "ATTEMPTED ATTACK DETECTED: witness #%zu — "
+                      "the record could not be allocated; locked in memory "
+                      "only", witness_index);
         rc = fault(err);
         goto out;
     }
@@ -718,21 +915,44 @@ static int handle_conflicting_headers(cmt_light_client_t *c,
     copy_id(rec->primary_id, &rec->primary_id_len, &c->primary);
     copy_id(rec->witness_id, &rec->witness_id_len, supporting);
 
+    /* :254 — the witness trace's last block, and both commits (read at
+     * :260). An empty trace or a nil member is the Go index / nil panic
+     * (DD6); here it only means the evidence cannot be built (DD10). */
+    pbh = lb_header(primary_block);
+    tbh = wtrace.len > 0u ? lb_header(wtrace.v[wtrace.len - 1u]) : NULL;
+    trace_ok = pbh != NULL && tbh != NULL &&
+               primary_block->signed_header->commit != NULL &&
+               wtrace.v[wtrace.len - 1u]->signed_header->commit != NULL;
+
     /* :252-255 — the witness as the source of truth: evidence against the
      * primary, from the witness trace's common and trusted blocks. */
-    if (cmt_light_attack_evidence_build(primary_block,
-                                        wtrace.v[wtrace.len - 1u],
-                                        wtrace.v[0],
-                                        &rec->against_primary) != CMT_OK) {
-        rc = fault(err);
-        goto out;
+    if (!trace_ok) {
+        rec->missing |= CMT_LIGHT_ATTACK_MISSING_AGAINST_PRIMARY;
+        QGP_LOG_ERROR(LOG_TAG, "witness #%zu: the examined trace is "
+                      "malformed — evidence against the primary NOT built "
+                      "(DD10)", witness_index);
+    } else if (cmt_light_attack_evidence_build(primary_block,
+                                               wtrace.v[wtrace.len - 1u],
+                                               wtrace.v[0],
+                                               &rec->against_primary) != CMT_OK) {
+        rec->missing |= CMT_LIGHT_ATTACK_MISSING_AGAINST_PRIMARY;
+        QGP_LOG_ERROR(LOG_TAG, "witness #%zu: evidence against the primary "
+                      "could not be built (DD10)", witness_index);
     }
     QGP_LOG_ERROR(LOG_TAG, "ATTEMPTED ATTACK DETECTED: witness #%zu holds a "
                   "verified header conflicting with the primary's at %lld "
                   "(common height %lld) — recorded locally, NOT sent",
-                  witness_index, (long long)pbh->height,
-                  (long long)rec->against_primary.common_height); /* :256-258, DD4 */
+                  witness_index, pbh != NULL ? (long long)pbh->height : -1LL,
+                  (rec->missing & CMT_LIGHT_ATTACK_MISSING_AGAINST_PRIMARY) != 0u
+                      ? -1LL
+                      : (long long)rec->against_primary.common_height); /* :256-258, DD4 */
 
+    if (!trace_ok) {
+        /* No primary block to examine from: the second examine cannot
+         * run, and that is not Q-D4. */
+        rec->missing |= CMT_LIGHT_ATTACK_MISSING_AGAINST_WITNESS;
+        goto keep;
+    }
     if (primary_block->signed_header->commit->round !=           /* :260-264 */
         wtrace.v[wtrace.len - 1u]->signed_header->commit->round) {
         rec->commit_rounds_differ = true;
@@ -744,29 +964,36 @@ static int handle_conflicting_headers(cmt_light_client_t *c,
     rc = examine_trace(c, &wtrace, primary_block, &c->primary, now,
                        &pool, &ptrace, &witness_block, &e);
     if (rc == CMT_FAULT) {
-        rc = fault(err);
-        goto out;
-    }
-    if (rc == CMT_OK) {
-        if (ptrace.len == 0u || witness_block == NULL) {
-            rc = fault(err);                              /* :282 index (DD6) */
-            goto out;
+        rec->missing |= CMT_LIGHT_ATTACK_MISSING_AGAINST_WITNESS;
+        QGP_LOG_ERROR(LOG_TAG, "witness #%zu: the reverse examine faulted — "
+                      "evidence against the witness NOT built, the attack "
+                      "stands (DD10)", witness_index);
+    } else if (rc == CMT_OK) {
+        if (ptrace.len == 0u || witness_block == NULL) {         /* :282 (DD6) */
+            rec->missing |= CMT_LIGHT_ATTACK_MISSING_AGAINST_WITNESS;
+            QGP_LOG_ERROR(LOG_TAG, "witness #%zu: the primary's trace is "
+                          "empty — evidence against the witness NOT built "
+                          "(DD10)", witness_index);
+        } else if (cmt_light_attack_evidence_build(witness_block, /* :281-283 */
+                                                   ptrace.v[ptrace.len - 1u],
+                                                   ptrace.v[0],
+                                                   &rec->against_witness)
+                   != CMT_OK) {
+            rec->missing |= CMT_LIGHT_ATTACK_MISSING_AGAINST_WITNESS;
+            QGP_LOG_ERROR(LOG_TAG, "witness #%zu: evidence against the "
+                          "witness could not be built (DD10)", witness_index);
+        } else {
+            rec->has_against_witness = true;
+            QGP_LOG_ERROR(LOG_TAG, "the primary's trace also verifies: "
+                          "evidence against witness #%zu recorded locally, "
+                          "NOT sent", witness_index);           /* :284-286, DD4 */
         }
-        if (cmt_light_attack_evidence_build(witness_block,      /* :281-283 */
-                                            ptrace.v[ptrace.len - 1u],
-                                            ptrace.v[0],
-                                            &rec->against_witness) != CMT_OK) {
-            rc = fault(err);
-            goto out;
-        }
-        rec->has_against_witness = true;
-        QGP_LOG_ERROR(LOG_TAG, "the primary's trace also verifies: evidence "
-                      "against witness #%zu recorded locally, NOT sent",
-                      witness_index);                           /* :284-286, DD4 */
     } else {
         QGP_LOG_INFO(LOG_TAG, "error validating the primary's divergent "
                      "header — the attack stands (Q-D4)");      /* :276-279 */
     }
+
+keep:
 
     cmt_light_attack_record_free(c->attack);
     c->attack = rec;
@@ -915,6 +1142,14 @@ int cmt_light_detect_divergence(cmt_light_client_t *c,
     }
 
     if (behind) {                                                /* DD2 */
+        /* :98-100 — the witnesses already marked bad in this pass go now,
+         * as the reference removes them once its sleeping comparison has
+         * returned. The behind witness is never marked, so the Q-D3
+         * refusal cannot fire here; it is kept, as NO_WITNESSES. */
+        if (cmt_light_client_remove_witnesses(c, to_remove, n_remove) != CMT_OK) {
+            rc = reject(err, CMT_LIGHT_CLIENT_ERR_NO_WITNESSES);
+            goto out;
+        }
         if (!wait_is_for(c, height, hash, hash_len)) {
             c->wait.pending  = true;
             c->wait.height   = height;

@@ -25,6 +25,7 @@
  *  examineConflictingHeaderAgainstTrace :305-389          examine_trace (.c)
  *  getTargetBlockOrLatest            :394-419             get_target_block_or_latest (.c)
  *  newLightClientAttackEvidence      :423-439             cmt_light_attack_evidence_build
+ *  (none — K25-10 lock, DD9)                              cmt_light_attack_record_encode
  *  LightClientAttackEvidence.ConflictingHeaderIsInvalid
  *                                    types/evidence.go:304-310
  *                                                         cmt_light_conflicting_header_is_invalid
@@ -80,12 +81,53 @@
  *          wait per witness would not make the two runs identical either:
  *          between two calls every witness may answer differently, which
  *          is network timing in the reference too.
- *        · the record is ONE target; the next detection that ends for any
- *          reason other than WITNESS_BEHIND — for this target or another —
- *          forgets it (the reference's sleep belongs to one detection).
+ *        · the record is ONE target. What keeps it and what clears it, as
+ *          cmt_light_detect_divergence does it:
+ *            - KEPT, untouched, by the returns that come before any
+ *              witness is asked: a NULL argument (CMT_FAULT), SHORT_TRACE
+ *              (:29-31), a fault reading the target's height or hash, and
+ *              NO_WITNESSES with an empty list (:44-46);
+ *            - KEPT (or written, when none is recorded for this target —
+ *              a record for another target is then replaced, `since` =
+ *              this `now`) by WITNESS_BEHIND;
+ *            - CLEARED by every other return: a fault while comparing,
+ *              an attack, a cap, a fault or any other result of
+ *              handleConflictingHeaders, PROPOSER_PRIORITIES_DIVERGE,
+ *              NO_WITNESSES from removeWitnesses (:98-100), CMT_OK and
+ *              FAILED_HEADER_CROSS_REFERENCING (the reference's sleep
+ *              belongs to one detection).
  *          Calls that do not reach the detector (backwards verification,
  *          a trusted-height lookup, Cleanup) leave it as it is; it only
  *          ever applies to a detection of the same height AND hash.
+ *        · the witnesses marked bad in a pass that ends WITNESS_BEHIND
+ *          (a conflicting header that did not verify, :74-75; an
+ *          errBadWitness, :77-82) are REMOVED before WITNESS_BEHIND is
+ *          returned, as the reference removes them once its sleeping
+ *          comparison has returned (:98-100). The Q-D3 refusal cannot
+ *          fire there — the behind witness is never marked, so fewer
+ *          than all are removed — but it is kept and is NO_WITNESSES.
+ *          The record is a (height, hash) pair, so the re-indexing of
+ *          removeWitnesses (Q7, cmt_light_client.h) does not touch it.
+ *      ⚠ OPEN (BUGS Z-41): because the record is keyed to the TARGET, a
+ *      caller whose target moves between the two calls — Update, which
+ *      asks the primary for its LATEST block every call (cmt_light_client.c,
+ *      `cmt_light_client_update`) — starts a new wait on every call while
+ *      a witness stays behind and the primary keeps producing, and gets
+ *      WITNESS_BEHIND every time. Keying the wait to the WITNESS instead
+ *      (one `since` per witness, whatever the target) was considered and
+ *      NOT done: the reference's sleep runs AFTER the target was fetched,
+ *      so the target's time is at most `now + max_clock_drift` of the
+ *      first ask (light/verifier.go:176-181; cmt_light_verifier.c:193-196)
+ *      and the second ask comes `2*drift + lag` later — late enough for
+ *      an honest witness to hold a block that is not before it (:184).
+ *      A per-witness `since` taken at an EARLIER target gives a NEW
+ *      target no such margin: a primary could serve a fresh block timed
+ *      just under `now + drift` once the witness's wait has run, the
+ *      honest witness's latest block is still before it (:196, benign),
+ *      and an accomplice witness's match trusts it — the attack the wait
+ *      exists to expose. Fixing Z-41 without that gap needs the caller to
+ *      verify the RECORDED target once the wait has run (BUGS Z-41's
+ *      second option) — a change of Update's target, not made here.
  *      The liveness note at :193-195 ("If the clock drift / lag has been
  *      miscalibrated … may allow for a malicious primary to attack it")
  *      applies unchanged: a witness that stays behind after the wait is
@@ -99,9 +141,12 @@
  *      and the timestamp — the last as the reference sets it, from the
  *      common or trusted BLOCK's time (:430, :434), never a clock. The
  *      record adds, labelled PROJECT, the caller's `now` of the detection,
- *      the two providers' identities and the witness index. It is returned
- *      to the caller (cmt_light_client_attack_record) and is never put on
- *      any wire: there is no proto, no codec and no hash for it.
+ *      the two providers' identities, the witness index, which evidence
+ *      is missing (DD10) and whether it was written durably (DD9). It is
+ *      returned to the caller (cmt_light_client_attack_record), written
+ *      to the light store in the byte form of
+ *      `cmt_light_attack_record_encode` (DD9), and is never put on any
+ *      wire: there is no proto and no hash for it.
  *  DD4 ReportEvidence IS NOT CALLED. The reference sends the evidence
  *      against the primary to the witness and the evidence against the
  *      witness to the primary (`sendEvidence`, :222-228, :258, :286). The
@@ -130,12 +175,21 @@
  *          buffer size), plus the record's two deep copies on an attack.
  *  DD6 A Go nil dereference or index panic is CMT_FAULT (the client's D7):
  *      `previouslyVerifiedBlock` nil at :338, an empty witness trace at
- *      :254, `trusted.Commit.Signatures[i]` out of range and a nil
+ *      :254, and `trusted.Commit.Signatures[i]` out of range in the
+ *      equivocation branch (evidence.go:283). None is reachable with two
+ *      verified traces (the last needs two sets with one hash, i.e. one
+ *      size and one order, and verifyBasicValsAndCommit makes each
+ *      commit as long as its set); none is a verdict on a peer.
+ *      ONE CASE IS REACHABLE AND IS NOT A FAULT (BUGS Z-42): a nil
  *      validator from GetByAddress in the equivocation branch
- *      (evidence.go:283, :288-289 — Go appends the nil and the sort at
- *      :291 dereferences it). None is reachable with two verified
- *      traces (the second needs two sets with one hash, i.e. one size and
- *      one order); none is a verdict on a peer.
+ *      (evidence.go:288-289 — Go appends the nil and the sort at :291
+ *      dereferences it). The commit check stops counting once more than
+ *      2/3 has signed (types/validation.go:289-291 batch, :401-403
+ *      single; the port cmt_validation.c:264-266), so a COMMIT signature
+ *      AFTER that point is never looked at: its address may name no
+ *      validator of the set, and the block still verifies. Here such a
+ *      signature is SKIPPED and counted (`n_unknown_signers`); the
+ *      validators that did sign are named as before.
  *  DD7 Witnesses are compared in INDEX ORDER (the client's D2) where the
  *      reference starts one goroutine per witness and handles the results
  *      in ARRIVAL order (:50-95). An early return (an attack, a priority
@@ -144,6 +198,45 @@
  *  DD8 `context.Canceled` / `DeadlineExceeded` (:90-92, :134, :171-173)
  *      have no counterpart (cmt_light_provider.h): a provider that ran out
  *      of its own deadline answers NO_RESPONSE.
+ *  DD9 THE ATTACK LOCK (K25-10, operator 2026-10-19, "1"; docs/plans/
+ *      decisions/2026-10-16-kurultay-25-summary.md: "after
+ *      LIGHT_CLIENT_ATTACK the client refuses every further verification /
+ *      save until an explicit operator clear; every attack record is kept
+ *      durably in the light store … and survives a restart, which reloads
+ *      the lock"). The reference has NO latch: the attack error ends that
+ *      one call (detector.go:72 → client.go:820-821) and the next call
+ *      verifies again. Here, when a detection returns
+ *      LIGHT_CLIENT_ATTACK, the client's hook (cmt_light_client.c,
+ *      `detect_divergence`) LOCKS the client and writes the record's bytes
+ *      (`cmt_light_attack_record_encode`) to the store
+ *      (cmt_light_store.h D9). A failed write still locks the client in
+ *      memory and still returns the attack; the record's `durable` is then
+ *      false and the failure is logged (a restart would not reload that
+ *      lock). While locked, cmt_light_client_update,
+ *      cmt_light_client_verify_light_block_at_height and
+ *      cmt_light_client_cleanup refuse with
+ *      CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED and change nothing; so does the
+ *      store write of updateTrustedLightBlock (a second guard). A client
+ *      made over a store holding an uncleared record starts locked
+ *      (cmt_light_client_new_from_trusted_store), and cmt_light_client_new
+ *      refuses it (its next steps would change the trusted store). Only
+ *      `cmt_light_client_attack_clear` (or the store's own
+ *      cmt_light_store_db_clear_attack_records) unlocks; it marks the
+ *      records cleared and deletes none. Node-local: no wire, block, root
+ *      or consensus rule changes. Cost the operator accepted: a false
+ *      alarm halts that light client until the operator looks.
+ *  DD10 AN ESTABLISHED ATTACK IS NEVER DOWNGRADED (BUGS Z-42). Once the
+ *      witness's conflicting header has verified (:240-250 passed), the
+ *      call returns LIGHT_CLIENT_ATTACK and keeps the record whatever
+ *      happens while the evidence is built: a malformed trace, an
+ *      evidence build that fails, a second examine that faults. What
+ *      could not be built is named in `missing`
+ *      (CMT_LIGHT_ATTACK_MISSING_AGAINST_PRIMARY / _AGAINST_WITNESS) and
+ *      logged; Q-D4 — the second examine REJECTING — stays what it is in
+ *      the reference: `has_against_witness` false, nothing in `missing`.
+ *      The one exception is an allocation failure of the record itself,
+ *      which leaves nothing to keep or to write: the call is CMT_FAULT,
+ *      and the client is still LOCKED, in memory only (DD9).
  *
  * ── REFERENCE QUIRKS REPRODUCED AS-IS ──────────────────────────────────
  *  Q-D1 Before the sleep, an error from getTargetBlockOrLatest goes to the
@@ -187,7 +280,7 @@
  *   light/detector.go   439 lines
  *   light/errors.go     121 lines
  *   types/evidence.go   :204-318 (LightClientAttackEvidence, the parts read)
- * Governing records: Kurultay #25 (items 2, K25-3, K25-4, K25-8) —
+ * Governing records: Kurultay #25 (items 2, K25-3, K25-4, K25-8, K25-10) —
  * docs/plans/decisions/2026-10-16-kurultay-25-summary.md; K24 D3 —
  * docs/plans/decisions/2026-10-15-kurultay-24-summary.md; B9 —
  * docs/plans/decisions/2026-10-16-relay-port-4003-bandwidth-role.md; pin —
@@ -245,7 +338,21 @@ typedef struct {
     int64_t                total_voting_power;   /* :214                    */
     cmt_time_t             timestamp;            /* :215 — a BLOCK's time   */
     int                    attack;               /* CMT_LIGHT_ATTACK_*      */
+    /** PROJECT (DD6, BUGS Z-42): equivocation branch only — COMMIT
+     *  signatures of the conflicting commit whose address is NOT in the
+     *  conflicting set, skipped (evidence.go:288-289 appends a nil there
+     *  and the sort at :291 panics). Such a signature lies past the 2/3
+     *  point the commit check stopped at, so nothing ever checked it. */
+    size_t                 n_unknown_signers;
 } cmt_light_attack_evidence_t;
+
+/** `cmt_light_attack_record.missing` — which evidence the record does NOT
+ *  hold although the attack is established (DD10). PROJECT. */
+#define CMT_LIGHT_ATTACK_MISSING_AGAINST_PRIMARY 1u  /* :252-255 not built  */
+#define CMT_LIGHT_ATTACK_MISSING_AGAINST_WITNESS 2u  /* :281-283 not built,
+                                                        although the second
+                                                        examine succeeded or
+                                                        faulted (not Q-D4)  */
 
 /**
  * What one detected attack leaves behind (DD3). `against_primary` is the
@@ -265,7 +372,40 @@ struct cmt_light_attack_record {
     bool                        has_against_witness; /* :276-279, Q-D4     */
     cmt_light_attack_evidence_t against_witness;     /* :283               */
     bool                        commit_rounds_differ;/* :260-264, Q-D5     */
+    uint32_t                    missing;        /* PROJECT: CMT_LIGHT_ATTACK_MISSING_* (DD10) */
+    /** PROJECT (DD9): the store's save of this record's bytes returned
+     *  CMT_OK. False = the lock holds in memory only; a restart loses it. */
+    bool                        durable;
 };
+
+/**
+ * DD9 — the durable form of a record: what the light client hands the
+ * store (cmt_light_store.h D9). All integers big-endian; a record encodes
+ * to the same bytes every time (no clock, no padding, no pointer).
+ *   u8  version = 1
+ *   i64 now.seconds   i32 now.nanos
+ *   u64 witness_index
+ *   u8  primary_id_len, primary_id   u8 witness_id_len, witness_id
+ *   u8  flags: bit 0 has_against_witness, bit 1 commit_rounds_differ
+ *   u8  missing (CMT_LIGHT_ATTACK_MISSING_*)
+ *   EVIDENCE against_primary — present unless MISSING_AGAINST_PRIMARY
+ *   EVIDENCE against_witness — present iff has_against_witness
+ * EVIDENCE:
+ *   u32 n, then n bytes: `cmt_light_block_encode` of the conflicting block
+ *   i64 common_height   i64 total_voting_power
+ *   i64 timestamp.seconds   i32 timestamp.nanos   i32 attack
+ *   u32 n_unknown_signers
+ *   u32 n_byzantine, then per validator: u8 address_len, address,
+ *       u8 pub_key.present, the 2592 key bytes when present,
+ *       i64 voting_power, i64 proposer_priority
+ * `durable` is not encoded (it describes the write). `*out` is malloc'd.
+ * @return CMT_OK; CMT_REJECT when the conflicting block does not encode
+ *         (cmt_light_block_encode); CMT_FAULT on NULL, a present evidence
+ *         without its conflicting block, a field too long for its length
+ *         byte, or an allocation failure.
+ */
+int cmt_light_attack_record_encode(const cmt_light_attack_record_t *r,
+                                   uint8_t **out, size_t *out_len);
 
 /**
  * cometbft@v0.38.26 types/evidence.go:304-310 —
@@ -290,10 +430,13 @@ bool cmt_light_conflicting_header_is_invalid(const cmt_header_t *trusted,
  *     COMMIT in both commits at the same index (evidence.go:272-290,
  *     Q-D6); different rounds → none (amnesia, :294-297);
  *   · sorted by ValidatorsByVotingPower (evidence.go:270, :291).
+ * In the equivocation branch a COMMIT signer whose address is not in the
+ * conflicting set is SKIPPED and counted in `n_unknown_signers` (DD6).
  * `out` is zeroed first; on any failure it holds nothing.
  * @return CMT_OK; CMT_FAULT on NULL, a missing member, an allocation
  *         failure, a total-power overflow (TotalVotingPower panics,
- *         validator_set.go:344-345) or the DD6 index / nil cases.
+ *         validator_set.go:344-345), an address lookup that faults, or
+ *         the DD6 index case (evidence.go:283).
  */
 int cmt_light_attack_evidence_build(const cmt_light_block_t *conflicted,
                                     const cmt_light_block_t *trusted,
@@ -348,6 +491,7 @@ struct cmt_light_client {
     cmt_light_block_buf_t     *latest;          /* :152; NULL = nil */
     cmt_light_detector_wait_t  wait;            /* DD2 */
     cmt_light_attack_record_t *attack;          /* DD3; the last attack */
+    bool                       locked;          /* DD9 (K25-10) */
 };
 
 /** The per-operation pool of light-block buffers (cmt_light_client.h D3). */
