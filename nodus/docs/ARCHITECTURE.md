@@ -10213,6 +10213,33 @@ trailing label because the two lists are in different orders there; EU-6 is not 
 `endpoints` because it runs no WebSocket entry, but its pin is in `pins`). The wallet's
 port 443 is replaced by 4001.
 
+**The node-list refresh (0.26.12; Kurultay #25 K25-11, operator 2026-10-19).** 30 s
+after start and then every 600 s (`NODUS_LIGHT_REFRESH_FIRST_S` / `_EVERY_S`) `run`
+asks ONE connected pinned node (rotating) for `dnac_roster` (`handle_dnac_roster`:
+wid, ML-DSA-87 key, the validator's own signed address, active). A row is ADDED only
+if its full 2592-byte key is a member of the validator set of the light client's
+CURRENT trusted block (`valset_has_key`) — the set the client verified against > 2/3
+signatures, never the answering node's word, so a lying node cannot fill the witness
+list with its own nodes (the K25-4 "one honest provider" assumption). Pin =
+SHA3-512(key). Host = the address's IPv4 literal (no name lookup in the client;
+`0.0.0.0` refused); client port = the row's witness port minus 3 (the node default
+layout, 4004 → 4001, and the harness stride, 14004 → 14001; a node with another
+offset is reached only through `--node`). The compiled list, the `--node` entries
+and every added node are never removed while the program runs. After an addition
+the program REBUILDS its light client from the same store
+(`cmt_light_client_new_from_trusted_store`; the reference has no runtime
+AddProvider, `R/light/client.go:856-869`, so the library is unchanged): the old
+object is freed first (one object per store, D20), the K25-10 lock and records come
+back from the store, a rebuild is postponed while an attack record is not yet
+durable or an Update is in a recorded wait (D21), and a failed rebuild falls back to
+the previous list (then stops if that fails too). Storage-only nodes are NOT
+discovered: their membership is chain state with no root leg and no proof API yet
+(HF-7). Verified (ORCHESTRATOR, 2026-10-19, local harness, production constants):
+started with 2 nodes, the first refresh read 7 rows — 5 added, 2 already listed,
+0 outside the verified set — and the rebuilt client verified heights 2-3 with 6
+witnesses. Not exercised: a roster row outside the verified set (no harness way to
+inject one), a rebuild while locked.
+
 **The light-client caps** (the library has no defaults, cmt_light_client.h D3; the
 program's choice, `:108-142`): `max_verify_steps` 32 (memory ≈ 1.8 MiB per step →
 ≈ 58 MiB per Update at most), `max_trace_len` 64, `max_skipping_cache` 64,

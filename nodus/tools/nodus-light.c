@@ -66,9 +66,10 @@
  * (nodus_client.c pin_check_auth_ok) — a node that cannot be reached,
  * never one that is trusted wrongly. The host part of the address is
  * kept (an IPv4 literal only — the client does no name lookup,
- * roster_addr_host), its witness port dropped, and the client port
- * NODUS_DEFAULT_TCP_PORT (4001) used: a validator serving clients on
- * another port, or listed by a hostname, is reached only through --node. The compiled list and the
+ * roster_addr_host); the client port is the row's witness port minus the
+ * default offset (4004 → 4001; the harness's 14004 → 14001): a validator
+ * using another offset, or listed by a hostname, is reached only through
+ * --node. The compiled list and the
  * --node entries are never removed; added nodes are never removed either
  * (until the program stops). The light client is then REBUILT over the
  * same store (light_rebuild) — the reference has no runtime AddProvider
@@ -873,16 +874,18 @@ static bool is_ipv4_literal(const char *s, size_t len)
 }
 
 /* The host of a roster address "<host>:<port>" (handle_dnac_roster →
- * witness_reply_addr writes "%s:%u"). The port must be 1..5 digits and is
- * dropped (it is the 4004 witness port). The host must be a dotted IPv4
+ * witness_reply_addr writes "%s:%u"). The port must be 1..5 digits; it is
+ * the node's WITNESS port, returned in *wport (the caller derives the client
+ * port from it — see light_refresh). The host must be a dotted IPv4
  * literal: the client connects to IPv4 literals only (nodus_tcp.c
  * nodus_tcp_connect, inet_pton AF_INET, no name lookup), so a hostname or
  * an IPv6 address would only fill a slot that can never connect; such a
  * validator is reached through --node. Anything else is refused as
  * malformed. */
 static int roster_addr_host(const char *addr, size_t addr_cap,
-                            char host[NODUS_LIGHT_HOST_MAX])
+                            char host[NODUS_LIGHT_HOST_MAX], uint16_t *wport)
 {
+    uint32_t    pv = 0;
     size_t      len = 0;
     const char *colon = NULL;
     size_t      host_len;
@@ -903,7 +906,10 @@ static int roster_addr_host(const char *addr, size_t addr_cap,
     }
     for (size_t i = host_len + 1u; i < len; i++) {
         if (addr[i] < '0' || addr[i] > '9') return -1;
+        pv = pv * 10u + (uint32_t)(addr[i] - '0');
     }
+    if (pv == 0 || pv > 65535u) return -1;
+    *wport = (uint16_t)pv;
     memcpy(host, addr, host_len);
     host[host_len] = '\0';
     /* A node with no external_ip lists ITS OWN row with its bind address
@@ -979,6 +985,7 @@ static size_t light_refresh(cmt_light_client_t *c, light_net_t *net,
         const nodus_dnac_roster_entry_t *e = &roster->entries[r];
         nodus_key_t                      fp;
         char                             host[NODUS_LIGHT_HOST_MAX];
+        uint16_t                         wport = 0;
         light_node_t                    *nd;
         size_t                           slot;
 
@@ -995,7 +1002,16 @@ static size_t light_refresh(cmt_light_client_t *c, light_net_t *net,
             listed++;
             continue;
         }
-        if (roster_addr_host(e->address, sizeof(e->address), host) != 0) {
+        /* The client port is derived from the WITNESS port in the row: the
+         * node default layout puts the client port 3 below the witness port
+         * (NODUS_DEFAULT_TCP_PORT 4001 / NODUS_DEFAULT_WITNESS_PORT 4004,
+         * nodus_types.h; the Genesis Protocol harness keeps the same offset
+         * in its 10-port stride, 14001 / 14004 …). A node configured with
+         * another offset is reached only through --node. */
+        if (roster_addr_host(e->address, sizeof(e->address), host,
+                             &wport) != 0 ||
+            wport <= (uint16_t)(NODUS_DEFAULT_WITNESS_PORT -
+                                NODUS_DEFAULT_TCP_PORT)) {
             bad_addr++;
             continue;
         }
@@ -1010,7 +1026,8 @@ static size_t light_refresh(cmt_light_client_t *c, light_net_t *net,
         snprintf(nd->label, sizeof(nd->label), "roster:%02x%02x%02x%02x",
                  fp.bytes[0], fp.bytes[1], fp.bytes[2], fp.bytes[3]);
         snprintf(nd->host, sizeof(nd->host), "%s", host);
-        nd->port = NODUS_DEFAULT_TCP_PORT;
+        nd->port = (uint16_t)(wport - (NODUS_DEFAULT_WITNESS_PORT -
+                                       NODUS_DEFAULT_TCP_PORT));
         nd->pin  = fp;
         if (net_init_slot(net, slot) != 0) {
             if (net->inited[slot]) nodus_client_close(&net->clients[slot]);
