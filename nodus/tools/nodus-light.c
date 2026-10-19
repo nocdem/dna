@@ -24,7 +24,9 @@
  *   · the session's own identity is a fresh ML-DSA-87 key generated in
  *     memory for each run and never written: it only authenticates THIS
  *     client to the node; trust comes from the pins and the light client's
- *     checks, never from it.
+ *     checks, never from it. It is kept in memory for the run (a node
+ *     added by the refresh below opens its session with it) and cleared
+ *     when the program stops.
  *
  * ── GOVERNING RECORDS ──────────────────────────────────────────────────
  * docs/plans/decisions/2026-10-16-kurultay-25-summary.md:
@@ -43,7 +45,34 @@
  *     `clear-attack`; `run` keeps calling Update while locked, because a
  *     record whose store write failed is written again at the start of
  *     every locked call (cmt_light_client.h D20).
+ *   · K25-11 the node list is refreshed from the VERIFIED validator set
+ *     only (THE NODE-LIST REFRESH below).
  * docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md — the RPC.
+ *
+ * ── THE NODE-LIST REFRESH (K25-11, operator 2026-10-19) ────────────────
+ * Every NODUS_LIGHT_REFRESH_EVERY_S (first NODUS_LIGHT_REFRESH_FIRST_S
+ * after start) `run` asks ONE connected node — rotating over the table —
+ * for `dnac_roster` (nodus_witness_handlers.c handle_dnac_roster: per row
+ * the ML-DSA-87 key, the validator's own signed "<host>:<witness port>"
+ * address). A row is ADDED only when its key is, byte for byte, the key
+ * of a validator in the validator set of the light client's latest
+ * trusted light block — a set this client verified itself (> 2/3 of the
+ * trusted power signed it), never the answering node's word. The pin of
+ * the added node is SHA3-512 of that verified key (= nodus_fingerprint,
+ * nodus_sign.c; the consensus key IS the node identity key,
+ * nodus_witness_cmt_node.c `memcpy(n->pv->pub_key,
+ * w->host->identity->pk.bytes`). The address is still the node's word:
+ * a wrong one gives a session that fails the pin check
+ * (nodus_client.c pin_check_auth_ok) — a node that cannot be reached,
+ * never one that is trusted wrongly. The host part of the address is
+ * kept (an IPv4 literal only — the client does no name lookup,
+ * roster_addr_host), its witness port dropped, and the client port
+ * NODUS_DEFAULT_TCP_PORT (4001) used: a validator serving clients on
+ * another port, or listed by a hostname, is reached only through --node. The compiled list and the
+ * --node entries are never removed; added nodes are never removed either
+ * (until the program stops). The light client is then REBUILT over the
+ * same store (light_rebuild) — the reference has no runtime AddProvider
+ * (light/client.go:856-869), and the library is not changed.
  *
  * ── THE STORE ──────────────────────────────────────────────────────────
  * <dir>/light.db, one SQLite file; the store prefix is the 32-byte chain
@@ -83,6 +112,8 @@
 #include "dnac/cmt_light_detector.h"        /* the attack record's fields  */
 #include "dnac/cmt_light_store.h"
 #include "dnac/cmt_time.h"
+#include "dnac/cmt_pb.h"                    /* CMT_PB_PUBKEY_LEN           */
+#include "crypto/hash/qgp_sha3.h"           /* qgp_sha3_512 — the pin      */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_safe_string.h"   /* unsafe-string poison guard  */
@@ -159,6 +190,27 @@
 #define NODUS_LIGHT_STORE_FILE          "light.db"
 /** Header-hash bytes shown in a status line (hex 16 characters). */
 #define NODUS_LIGHT_HASH_PREFIX_BYTES   8u
+
+/** K25-11 — the node-list refresh period, seconds. 600 s: an epoch is
+ *  DNAC_EPOCH_LENGTH = 720 blocks (dnac.h), about an hour at the ~5 s
+ *  pace used above, so a validator that has entered the verified set is
+ *  found within a fraction of an epoch; the cost is ONE dnac_roster
+ *  request per 10 minutes to one node. Nothing depends on the value for
+ *  safety: a row is added only from the verified set, whatever the
+ *  period. */
+#define NODUS_LIGHT_REFRESH_EVERY_S     600u
+/** The first refresh, seconds after start: after the first Updates, so
+ *  the set it reads is that of a recent trusted block, and soon enough
+ *  that a client started from the short compiled list widens it early. */
+#define NODUS_LIGHT_REFRESH_FIRST_S     30u
+/** Pin bytes shown in an added node's label: "roster:" + 8 hex = 15
+ *  characters, the whole of light_node_t.label[16]. */
+#define NODUS_LIGHT_LABEL_PIN_BYTES     4u
+
+/* A roster row's key is compared with a verified validator's key byte for
+ * byte; the two sizes must be the same 2592 (nodus_types.h, cmt_pb.h). */
+_Static_assert(NODUS_PK_BYTES == CMT_PB_PUBKEY_LEN,
+               "roster key and validator key differ in size");
 
 /* ── stop flag ───────────────────────────────────────────────────────── */
 
@@ -560,8 +612,14 @@ static void print_block_line(const char *what, const cmt_light_block_buf_t *b,
 
 /* ── the network side: one pinned client + provider per node ─────────── */
 
+/* Every array is allocated at NODUS_LIGHT_MAX_NODES slots once and never
+ * moved: a started client's read thread points into `clients`, and each
+ * provider table the light client copied points at `providers[i]` as its
+ * ctx, so a node added by the refresh takes the next free slot instead of
+ * a reallocation. `nodes` is the args' fixed table of the same size, so
+ * the pin each client config points at never moves either. */
 typedef struct {
-    size_t                   n;
+    size_t                   n;         /* slots in use                  */
     light_node_t            *nodes;     /* borrowed: the args' table     */
     nodus_client_t          *clients;
     bool                    *inited;
@@ -571,7 +629,14 @@ typedef struct {
     cmt_light_client_peer_t *witnesses; /* every node but the primary   */
     cmt_light_client_peer_t  primary;
     size_t                   primary_idx;
+    size_t                   n_witnesses; /* used entries of `witnesses` */
     uint64_t                 last_retry_ms;
+    nodus_identity_t        *id;        /* the session key, memory only */
+    uint8_t                  chain_id[NODUS_LIGHT_CHAIN_ID_LEN];
+    /* K25-11: slots added by a refresh that are not yet in the light
+     * client object (its rebuild was postponed or failed). */
+    bool                    *pending;
+    size_t                   roster_next; /* rotation over the slots    */
 } light_net_t;
 
 static void net_free(light_net_t *net)
@@ -581,75 +646,91 @@ static void net_free(light_net_t *net)
             if (net->inited[i]) nodus_client_close(&net->clients[i]);
         }
     }
+    if (net->id) {
+        nodus_identity_clear(net->id);
+        free(net->id);
+    }
     free(net->clients);
     free(net->inited);
     free(net->started);
     free(net->providers);
     free(net->tables);
     free(net->witnesses);
+    free(net->pending);
     memset(net, 0, sizeof(*net));
+}
+
+/* Initialise the client and provider of slot `i` (net->nodes[i]); nothing
+ * connects here. */
+static int net_init_slot(light_net_t *net, size_t i)
+{
+    light_node_t         *nd = &net->nodes[i];
+    nodus_client_config_t cfg;
+    int                   prc;
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", nd->host);
+    cfg.servers[0].port        = nd->port;
+    cfg.server_count           = 1;
+    cfg.auto_reconnect         = true;
+    cfg.pinned_server_fps      = &nd->pin;   /* item 8 */
+    cfg.pinned_server_fp_count = 1;
+    if (nodus_client_init(&net->clients[i], &cfg, net->id) != 0) {
+        fprintf(stderr, "%s (%s:%u): client init failed\n", nd->label,
+                nd->host, (unsigned)nd->port);
+        return -1;
+    }
+    net->inited[i] = true;
+    prc = nodus_light_provider_init(&net->providers[i], &net->clients[i],
+                                    net->chain_id, NODUS_LIGHT_CHAIN_ID_LEN,
+                                    CMT_BLOCK_PROTOCOL, &net->tables[i]);
+    if (prc != CMT_OK) {
+        fprintf(stderr, "%s: the light provider refused the client "
+                "(rc %d)\n", nd->label, prc);
+        return -1;
+    }
+    return 0;
 }
 
 /* Initialise every client and provider; nothing connects here. */
 static int net_init(light_net_t *net, light_node_t *nodes, size_t n,
                     const uint8_t chain_id[NODUS_LIGHT_CHAIN_ID_LEN])
 {
-    nodus_identity_t *id;
-    int               rc = -1;
+    const size_t cap = NODUS_LIGHT_MAX_NODES;
+    int          rc  = -1;
 
     memset(net, 0, sizeof(*net));
+    if (n > cap) {
+        fprintf(stderr, "internal: %u nodes, at most %u\n", (unsigned)n,
+                (unsigned)cap);
+        return -1;
+    }
     net->n         = n;
     net->nodes     = nodes;
-    net->clients   = calloc(n, sizeof(*net->clients));
-    net->inited    = calloc(n, sizeof(*net->inited));
-    net->started   = calloc(n, sizeof(*net->started));
-    net->providers = calloc(n, sizeof(*net->providers));
-    net->tables    = calloc(n, sizeof(*net->tables));
-    net->witnesses = calloc(n, sizeof(*net->witnesses));
-    id             = calloc(1, sizeof(*id));
+    memcpy(net->chain_id, chain_id, NODUS_LIGHT_CHAIN_ID_LEN);
+    net->clients   = calloc(cap, sizeof(*net->clients));
+    net->inited    = calloc(cap, sizeof(*net->inited));
+    net->started   = calloc(cap, sizeof(*net->started));
+    net->providers = calloc(cap, sizeof(*net->providers));
+    net->tables    = calloc(cap, sizeof(*net->tables));
+    net->witnesses = calloc(cap, sizeof(*net->witnesses));
+    net->pending   = calloc(cap, sizeof(*net->pending));
+    net->id        = calloc(1, sizeof(*net->id));
     if (!net->clients || !net->inited || !net->started || !net->providers ||
-        !net->tables || !net->witnesses || !id) {
+        !net->tables || !net->witnesses || !net->pending || !net->id) {
         fprintf(stderr, "out of memory\n");
         goto out;
     }
     /* The session key: in memory only (see the file header). */
-    if (nodus_identity_generate(id) != 0) {
+    if (nodus_identity_generate(net->id) != 0) {
         fprintf(stderr, "could not generate the session key\n");
         goto out;
     }
     for (size_t i = 0; i < n; i++) {
-        nodus_client_config_t cfg;
-        int                   prc;
-
-        memset(&cfg, 0, sizeof(cfg));
-        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s",
-                 nodes[i].host);
-        cfg.servers[0].port        = nodes[i].port;
-        cfg.server_count           = 1;
-        cfg.auto_reconnect         = true;
-        cfg.pinned_server_fps      = &nodes[i].pin;   /* item 8 */
-        cfg.pinned_server_fp_count = 1;
-        if (nodus_client_init(&net->clients[i], &cfg, id) != 0) {
-            fprintf(stderr, "%s (%s:%u): client init failed\n",
-                    nodes[i].label, nodes[i].host, (unsigned)nodes[i].port);
-            goto out;
-        }
-        net->inited[i] = true;
-        prc = nodus_light_provider_init(&net->providers[i], &net->clients[i],
-                                        chain_id, NODUS_LIGHT_CHAIN_ID_LEN,
-                                        CMT_BLOCK_PROTOCOL, &net->tables[i]);
-        if (prc != CMT_OK) {
-            fprintf(stderr, "%s: the light provider refused the client "
-                    "(rc %d)\n", nodes[i].label, prc);
-            goto out;
-        }
+        if (net_init_slot(net, i) != 0) goto out;
     }
     rc = 0;
 out:
-    if (id) {
-        nodus_identity_clear(id);
-        free(id);
-    }
     if (rc != 0) net_free(net);
     return rc;
 }
@@ -671,6 +752,7 @@ static void net_assign(light_net_t *net, size_t p)
         net->witnesses[w].id_len   = sizeof(net->nodes[i].pin.bytes);
         w++;
     }
+    net->n_witnesses = w;
 }
 
 /* Connect every node in table order; the first that connects is the
@@ -731,6 +813,244 @@ static const char *net_label_of_id(const light_net_t *net, const uint8_t *id,
         }
     }
     return "?";
+}
+
+/* The slot whose pin is `id`, or net->n when none. */
+static size_t net_slot_of_id(const light_net_t *net, const uint8_t *id,
+                             size_t id_len)
+{
+    for (size_t i = 0; i < net->n; i++) {
+        if (id_len == sizeof(net->nodes[i].pin.bytes) &&
+            memcmp(id, net->nodes[i].pin.bytes, id_len) == 0) {
+            return i;
+        }
+    }
+    return net->n;
+}
+
+static bool net_slot_ready(const light_net_t *net, size_t i)
+{
+    return i < net->n && net->started[i] &&
+           nodus_client_is_ready(&net->clients[i]);
+}
+
+/* ── K25-11: the node-list refresh (file header) ─────────────────────── */
+
+/* True when `pk` is, byte for byte, the key of a validator of `vs`. */
+static bool valset_has_key(const cmt_validator_set_t *vs,
+                           const uint8_t pk[NODUS_PK_BYTES])
+{
+    for (size_t j = 0; j < vs->validators_len; j++) {
+        const cmt_pb_public_key_t *k = &vs->validators[j].pub_key;
+        if (k->present && memcmp(k->key, pk, CMT_PB_PUBKEY_LEN) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* True when s[0..len) is a dotted IPv4 literal: four groups of 1..3
+ * decimal digits, each 0..255. */
+static bool is_ipv4_literal(const char *s, size_t len)
+{
+    size_t   groups = 0, digits = 0;
+    unsigned value  = 0;
+
+    for (size_t i = 0; i <= len; i++) {
+        if (i == len || s[i] == '.') {
+            if (digits == 0 || value > 255u) return false;
+            groups++;
+            digits = 0;
+            value  = 0;
+        } else if (s[i] >= '0' && s[i] <= '9') {
+            if (++digits > 3u) return false;
+            value = value * 10u + (unsigned)(s[i] - '0');
+        } else {
+            return false;
+        }
+    }
+    return groups == 4u;
+}
+
+/* The host of a roster address "<host>:<port>" (handle_dnac_roster →
+ * witness_reply_addr writes "%s:%u"). The port must be 1..5 digits and is
+ * dropped (it is the 4004 witness port). The host must be a dotted IPv4
+ * literal: the client connects to IPv4 literals only (nodus_tcp.c
+ * nodus_tcp_connect, inet_pton AF_INET, no name lookup), so a hostname or
+ * an IPv6 address would only fill a slot that can never connect; such a
+ * validator is reached through --node. Anything else is refused as
+ * malformed. */
+static int roster_addr_host(const char *addr, size_t addr_cap,
+                            char host[NODUS_LIGHT_HOST_MAX])
+{
+    size_t      len = 0;
+    const char *colon = NULL;
+    size_t      host_len;
+    size_t      port_len;
+
+    while (len < addr_cap && addr[len] != '\0') len++;
+    if (len == 0 || len == addr_cap) return -1;
+    for (size_t i = 0; i < len; i++) {
+        if (addr[i] == ':') colon = &addr[i];
+    }
+    if (colon == NULL) return -1;
+    host_len = (size_t)(colon - addr);
+    port_len = len - host_len - 1u;
+    if (host_len == 0 || host_len >= NODUS_LIGHT_HOST_MAX ||
+        port_len == 0 || port_len > 5u ||
+        !is_ipv4_literal(addr, host_len)) {
+        return -1;
+    }
+    for (size_t i = host_len + 1u; i < len; i++) {
+        if (addr[i] < '0' || addr[i] > '9') return -1;
+    }
+    memcpy(host, addr, host_len);
+    host[host_len] = '\0';
+    /* A node with no external_ip lists ITS OWN row with its bind address
+     * (witness_reply_addr), which may be the unspecified 0.0.0.0. */
+    if (strcmp(host, "0.0.0.0") == 0) return -1;
+    return 0;
+}
+
+/* Ask ONE ready node (rotating) for dnac_roster and append every row that
+ * passes the K25-11 rule to the table: initialised, connected (a node that
+ * does not connect now is retried by net_retry_unstarted) and marked
+ * `pending` for the next rebuild. `vbuf` is scratch for the trusted light
+ * block. The compiled and --node entries are never touched. Returns the
+ * number of nodes added. */
+static size_t light_refresh(cmt_light_client_t *c, light_net_t *net,
+                            cmt_light_block_buf_t *vbuf)
+{
+    cmt_light_client_error_t     err;
+    nodus_dnac_roster_result_t  *roster = NULL;
+    const cmt_validator_set_t   *vs;
+    size_t                       ask = net->n;
+    size_t                       added = 0, not_in_set = 0, listed = 0;
+    size_t                       bad_addr = 0, full = 0;
+    int64_t                      height = 0;
+    int                          rows;
+    int                          rc;
+
+    for (size_t k = 0; k < net->n; k++) {
+        size_t i = (net->roster_next + k) % net->n;
+        if (net_slot_ready(net, i)) {
+            ask = i;
+            break;
+        }
+    }
+    if (ask == net->n) {
+        QGP_LOG_INFO(LOG_TAG, "node-list refresh: no node is connected; "
+                     "next try in %u s", (unsigned)NODUS_LIGHT_REFRESH_EVERY_S);
+        return 0;
+    }
+    net->roster_next = (ask + 1u) % net->n;
+
+    /* The verified set: the validator set of the latest trusted light
+     * block (reads answer while locked too, cmt_light_client.h D20). */
+    memset(&err, 0, sizeof(err));
+    if (cmt_light_client_trusted_light_block(c, 0, vbuf, &err) != CMT_OK ||
+        vbuf->lb.validator_set == NULL || vbuf->lb.signed_header == NULL ||
+        vbuf->lb.signed_header->header == NULL) {
+        QGP_LOG_WARN(LOG_TAG, "node-list refresh: the trusted light block "
+                     "cannot be read (code %d); skipped", err.code);
+        return 0;
+    }
+    vs     = vbuf->lb.validator_set;
+    height = vbuf->lb.signed_header->header->height;
+
+    roster = calloc(1, sizeof(*roster));   /* ~370 KB: never the stack */
+    if (roster == NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "node-list refresh: out of memory");
+        return 0;
+    }
+    rc = nodus_client_dnac_roster(&net->clients[ask], roster);
+    if (rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "node-list refresh: %s gave no roster (rc %d); "
+                     "next try in %u s", net->nodes[ask].label, rc,
+                     (unsigned)NODUS_LIGHT_REFRESH_EVERY_S);
+        free(roster);
+        return 0;
+    }
+    rows = roster->count;
+    if (rows < 0) rows = 0;
+    if (rows > NODUS_T3_MAX_WITNESSES) rows = NODUS_T3_MAX_WITNESSES;
+
+    for (int r = 0; r < rows; r++) {
+        const nodus_dnac_roster_entry_t *e = &roster->entries[r];
+        nodus_key_t                      fp;
+        char                             host[NODUS_LIGHT_HOST_MAX];
+        light_node_t                    *nd;
+        size_t                           slot;
+
+        /* K25-11: a member of the set THIS client verified, by key. */
+        if (!valset_has_key(vs, e->pubkey)) {
+            not_in_set++;
+            continue;
+        }
+        if (qgp_sha3_512(e->pubkey, NODUS_PK_BYTES, fp.bytes) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "node-list refresh: SHA3-512 failed");
+            break;
+        }
+        if (net_slot_of_id(net, fp.bytes, sizeof(fp.bytes)) < net->n) {
+            listed++;
+            continue;
+        }
+        if (roster_addr_host(e->address, sizeof(e->address), host) != 0) {
+            bad_addr++;
+            continue;
+        }
+        if (net->n >= NODUS_LIGHT_MAX_NODES) {
+            full++;
+            continue;
+        }
+
+        slot = net->n;
+        nd   = &net->nodes[slot];
+        memset(nd, 0, sizeof(*nd));
+        snprintf(nd->label, sizeof(nd->label), "roster:%02x%02x%02x%02x",
+                 fp.bytes[0], fp.bytes[1], fp.bytes[2], fp.bytes[3]);
+        snprintf(nd->host, sizeof(nd->host), "%s", host);
+        nd->port = NODUS_DEFAULT_TCP_PORT;
+        nd->pin  = fp;
+        if (net_init_slot(net, slot) != 0) {
+            if (net->inited[slot]) nodus_client_close(&net->clients[slot]);
+            net->inited[slot] = false;
+            memset(nd, 0, sizeof(*nd));
+            continue;
+        }
+        net->n++;
+        net->pending[slot] = true;
+        added++;
+        printf("node added: %s %s:%u (a validator of the trusted block at "
+               "height %lld; roster from %s)\n", nd->label, nd->host,
+               (unsigned)nd->port, (long long)height, net->nodes[ask].label);
+        if (!g_stop && nodus_client_connect(&net->clients[slot]) == 0) {
+            net->started[slot] = true;
+            printf("connected: %s %s:%u (pinned)\n", nd->label, nd->host,
+                   (unsigned)nd->port);
+        } else {
+            printf("not reachable now: %s %s:%u (will retry)\n", nd->label,
+                   nd->host, (unsigned)nd->port);
+        }
+        fflush(stdout);
+    }
+    QGP_LOG_INFO(LOG_TAG, "node-list refresh from %s: %d rows, %u added, "
+                 "%u not in the verified set of height %lld, %u already "
+                 "listed, %u malformed address, %u over the %u-node cap",
+                 net->nodes[ask].label, rows, (unsigned)added,
+                 (unsigned)not_in_set, (long long)height, (unsigned)listed,
+                 (unsigned)bad_addr, (unsigned)full,
+                 (unsigned)NODUS_LIGHT_MAX_NODES);
+    free(roster);
+    return added;
+}
+
+static bool net_any_pending(const light_net_t *net)
+{
+    for (size_t i = 0; i < net->n; i++) {
+        if (net->pending[i]) return true;
+    }
+    return false;
 }
 
 /* ── store + directory lock ──────────────────────────────────────────── */
@@ -875,7 +1195,7 @@ static void print_construct_error(const char *what,
         break;
     case CMT_LIGHT_CLIENT_ERR_CONFLICTING_HEADERS:
     case CMT_LIGHT_CLIENT_ERR_PROPOSER_PRIORITIES_DIVERGE:
-        if (e->witness_index < net->n - 1u) {
+        if (e->witness_index < net->n_witnesses) {
             const cmt_light_client_peer_t *w = &net->witnesses[e->witness_index];
             fprintf(stderr, "Disagreeing node: %s. Nothing was saved; decide "
                     "which source to trust.\n",
@@ -898,6 +1218,196 @@ static void print_construct_error(const char *what,
     }
 }
 
+/* light_rebuild's outcomes. */
+#define LIGHT_REBUILD_DONE       0   /* the new object holds the new nodes */
+#define LIGHT_REBUILD_POSTPONED  1   /* nothing changed; try later        */
+#define LIGHT_REBUILD_KEPT_OLD   2   /* rebuilt over the previous list    */
+#define LIGHT_REBUILD_NO_CLIENT  3   /* no object could be built: stop    */
+
+/* Fill `primary` / `witnesses` from slot list `slots` with slot `p` as the
+ * primary; `p` must be in the list. */
+static size_t peers_from_slots(const light_net_t *net, const size_t *slots,
+                               size_t n_slots, size_t p,
+                               cmt_light_client_peer_t *primary,
+                               cmt_light_client_peer_t *witnesses)
+{
+    size_t w = 0;
+
+    primary->provider = net->tables[p];
+    primary->id       = net->nodes[p].pin.bytes;
+    primary->id_len   = sizeof(net->nodes[p].pin.bytes);
+    for (size_t k = 0; k < n_slots; k++) {
+        size_t i = slots[k];
+        if (i == p) continue;
+        witnesses[w].provider = net->tables[i];
+        witnesses[w].id       = net->nodes[i].pin.bytes;
+        witnesses[w].id_len   = sizeof(net->nodes[i].pin.bytes);
+        w++;
+    }
+    return w;
+}
+
+/*
+ * K25-11 — rebuild the light client object with the `pending` slots added
+ * (the reference has no runtime AddProvider, light/client.go:856-869).
+ *
+ * WHICH NODES. The new object gets the OLD OBJECT's primary and witnesses
+ * (read through cmt_light_client_primary_id / _witness_id, so a witness
+ * the library removed for bad answers stays removed and a replaced
+ * primary stays replaced), then the pending slots in table order. The
+ * primary stays the old object's primary while it is connected, else the
+ * first connected node of that list.
+ *
+ * ONE OBJECT PER STORE (item 9 / D20). The old object is FREED BEFORE the
+ * new one is constructed, so two objects are never alive at once. The
+ * constructor is always cmt_light_client_new_from_trusted_store over the
+ * SAME store: it restores the trusted block, loads the K25-10 lock from
+ * the store (an uncleared record → locked) and writes nothing — exactly
+ * what a restart does. If it fails, the object is built again over the
+ * previous list (KEPT_OLD; the pending slots stay pending and are retried
+ * at the next refresh). The constructor asks a provider only for its
+ * configured chain id, which is this program's, so after the first failure
+ * only a store read or an allocation can fail the second; if it does,
+ * there is no object and the caller stops (NO_CLIENT) — the same outcome
+ * as a restart that cannot open the store.
+ *
+ * THE LOCK SURVIVES. A lock whose record is NOT yet in the store (its
+ * write failed; cmt_light_client.h D20 retries it on every call) lives
+ * only in the old object and would be lost by the free. So while the old
+ * object is locked the rebuild runs only when the store itself holds an
+ * uncleared record; otherwise it is POSTPONED. After a rebuild a new
+ * object that is unlocked where the old one was locked is refused
+ * (NO_CLIENT) — it cannot happen after that check, and the program must
+ * not continue unlocked if it did.
+ */
+static int light_rebuild(cmt_light_client_t **cp, light_net_t *net,
+                         const light_store_t *st,
+                         const cmt_light_client_options_t *opts)
+{
+    cmt_light_client_t      *old = *cp;
+    cmt_light_client_t      *nc  = NULL;
+    cmt_light_client_error_t err;
+    cmt_light_client_peer_t  prim, old_prim;
+    cmt_light_client_peer_t  wit[NODUS_LIGHT_MAX_NODES];
+    cmt_light_client_peer_t  old_wit[NODUS_LIGHT_MAX_NODES];
+    size_t                   slots[NODUS_LIGHT_MAX_NODES];
+    size_t                   n_slots = 0, n_old, n_wit, old_p, p;
+    const uint8_t           *id = NULL;
+    size_t                   id_len = 0;
+    bool                     was_locked = cmt_light_client_attack_locked(old);
+    int                      rc;
+    int                      outcome = LIGHT_REBUILD_DONE;
+
+    if (was_locked) {
+        uint64_t total = 0, uncleared = 0;
+        if (cmt_light_store_db_attack_records(st->db, &total,
+                                              &uncleared) != CMT_OK ||
+            uncleared == 0) {
+            QGP_LOG_WARN(LOG_TAG, "rebuild postponed: the client is locked "
+                         "and its record is not yet in the store");
+            return LIGHT_REBUILD_POSTPONED;
+        }
+    }
+
+    /* The old object's list, before it is freed (it owns the ids). */
+    if (cmt_light_client_primary_id(old, &id, &id_len) != CMT_OK ||
+        (old_p = net_slot_of_id(net, id, id_len)) >= net->n) {
+        QGP_LOG_ERROR(LOG_TAG, "rebuild postponed: the primary is not in "
+                      "the node table");
+        return LIGHT_REBUILD_POSTPONED;
+    }
+    slots[n_slots++] = old_p;
+    for (size_t k = 0; k < cmt_light_client_witness_count(old); k++) {
+        size_t s;
+        if (cmt_light_client_witness_id(old, k, &id, &id_len) != CMT_OK ||
+            (s = net_slot_of_id(net, id, id_len)) >= net->n) {
+            QGP_LOG_ERROR(LOG_TAG, "rebuild postponed: witness %u is not in "
+                          "the node table", (unsigned)k);
+            return LIGHT_REBUILD_POSTPONED;
+        }
+        slots[n_slots++] = s;
+    }
+    n_old = n_slots;
+    for (size_t i = 0; i < net->n && n_slots < NODUS_LIGHT_MAX_NODES; i++) {
+        if (net->pending[i]) slots[n_slots++] = i;
+    }
+    if (n_slots == n_old) return LIGHT_REBUILD_POSTPONED;   /* nothing new */
+
+    p = old_p;
+    if (!net_slot_ready(net, p)) {
+        for (size_t k = 0; k < n_slots; k++) {
+            if (net_slot_ready(net, slots[k])) { p = slots[k]; break; }
+        }
+    }
+    n_wit = peers_from_slots(net, slots, n_slots, p, &prim, wit);
+    (void)peers_from_slots(net, slots, n_old, old_p, &old_prim, old_wit);
+
+    /* D20: never two objects — the old one goes first. */
+    cmt_light_client_free(old);
+    *cp = NULL;
+
+    memset(&err, 0, sizeof(err));
+    rc = cmt_light_client_new_from_trusted_store(
+            net->chain_id, sizeof(net->chain_id),
+            NODUS_LIGHT_TRUSTING_PERIOD_NS, &prim, wit, n_wit, &st->store,
+            opts, &nc, &err);
+    if (rc != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "rebuild with %u nodes refused (rc %d, code "
+                      "%d: %s); rebuilding over the previous %u nodes",
+                      (unsigned)n_slots, rc, err.code,
+                      client_err_name(err.code), (unsigned)n_old);
+        fprintf(stderr, "node list: the light client could not be rebuilt "
+                "with the new node(s) (%s); keeping the previous list\n",
+                client_err_name(err.code));
+        memset(&err, 0, sizeof(err));
+        nc = NULL;
+        rc = cmt_light_client_new_from_trusted_store(
+                net->chain_id, sizeof(net->chain_id),
+                NODUS_LIGHT_TRUSTING_PERIOD_NS, &old_prim, old_wit,
+                n_old - 1u, &st->store, opts, &nc, &err);
+        if (rc != CMT_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "rebuild over the previous list refused "
+                          "too (rc %d, code %d)", rc, err.code);
+            fprintf(stderr, "the light client could not be rebuilt over the "
+                    "previous node list either (%s); stopping\n",
+                    client_err_name(err.code));
+            return LIGHT_REBUILD_NO_CLIENT;
+        }
+        outcome = LIGHT_REBUILD_KEPT_OLD;
+        p       = old_p;
+        n_slots = n_old;
+        prim    = old_prim;
+        n_wit   = n_old - 1u;
+        memcpy(wit, old_wit, n_wit * sizeof(wit[0]));
+    }
+    if (was_locked && !cmt_light_client_attack_locked(nc)) {
+        QGP_LOG_ERROR(LOG_TAG, "rebuilt client is unlocked where the old "
+                      "one was locked; stopping (K25-10)");
+        fprintf(stderr, "the rebuilt light client lost its attack lock; "
+                "stopping\n");
+        cmt_light_client_free(nc);
+        return LIGHT_REBUILD_NO_CLIENT;
+    }
+
+    *cp              = nc;
+    net->primary     = prim;
+    net->primary_idx = p;
+    memcpy(net->witnesses, wit, n_wit * sizeof(wit[0]));
+    net->n_witnesses = n_wit;
+    if (outcome == LIGHT_REBUILD_DONE) {
+        for (size_t k = n_old; k < n_slots; k++) net->pending[slots[k]] = false;
+        printf("node list: the light client now uses %u nodes (primary %s, "
+               "%u witness(es))\n", (unsigned)n_slots, net->nodes[p].label,
+               (unsigned)n_wit);
+        fflush(stdout);
+    }
+    QGP_LOG_INFO(LOG_TAG, "light client rebuilt over the same store: %u "
+                 "nodes, primary %s%s", (unsigned)n_slots,
+                 net->nodes[p].label,
+                 cmt_light_client_attack_locked(nc) ? ", LOCKED" : "");
+    return outcome;
+}
+
 static int cmd_run(int argc, char **argv)
 {
     light_args_t               *a;
@@ -915,6 +1425,7 @@ static int cmd_run(int argc, char **argv)
     cmt_light_client_t         *c = NULL;
     cmt_light_client_error_t    err;
     cmt_light_block_buf_t      *out = NULL;
+    cmt_light_block_buf_t      *vbuf = NULL;   /* the refresh's verified set */
     int64_t                     stored_last = -1;
     int                         ret = 1;
     int                         rc;
@@ -1004,8 +1515,9 @@ static int cmd_run(int argc, char **argv)
     opts.confirm             = confirm_reroot;
     opts.confirm_ctx         = NULL;
 
-    out = cmt_light_block_buf_new();
-    if (out == NULL) {
+    out  = cmt_light_block_buf_new();
+    vbuf = cmt_light_block_buf_new();
+    if (out == NULL || vbuf == NULL) {
         fprintf(stderr, "out of memory\n");
         goto done;
     }
@@ -1019,13 +1531,14 @@ static int cmd_run(int argc, char **argv)
     memset(&err, 0, sizeof(err));
     if (use_trust) {
         rc = cmt_light_client_new(chain_id, sizeof(chain_id), &trust,
-                                  &net.primary, net.witnesses, net.n - 1u,
-                                  &st.store, &opts, &c, &err);
+                                  &net.primary, net.witnesses,
+                                  net.n_witnesses, &st.store, &opts, &c,
+                                  &err);
     } else {
         rc = cmt_light_client_new_from_trusted_store(
                 chain_id, sizeof(chain_id), NODUS_LIGHT_TRUSTING_PERIOD_NS,
-                &net.primary, net.witnesses, net.n - 1u, &st.store, &opts,
-                &c, &err);
+                &net.primary, net.witnesses, net.n_witnesses, &st.store,
+                &opts, &c, &err);
     }
     if (rc != CMT_OK) {
         if (rc == CMT_REJECT) {
@@ -1062,6 +1575,12 @@ static int cmd_run(int argc, char **argv)
         const uint8_t *pid = NULL;
         size_t  pid_len   = 0;
         const char *last_primary = net.nodes[net.primary_idx].label;
+        /* K25-11 — the refresh timer (monotonic, decides nothing about
+         * trust) and whether added nodes wait for a rebuild. */
+        uint64_t next_refresh_ms = nodus_time_mono_ms() +
+                                   (uint64_t)NODUS_LIGHT_REFRESH_FIRST_S * 1000u;
+        bool     rebuild_due     = false;
+        bool     told_postponed  = false;
 
         while (!g_stop) {
             cmt_time_t now;
@@ -1150,6 +1669,43 @@ static int cmd_run(int argc, char **argv)
             last_code = (rc == CMT_REJECT) ? err.code : CMT_LIGHT_CLIENT_ERR_NONE;
             last_wc   = wc;
 
+            /* K25-11 — the node-list refresh (file header). */
+            if (!g_stop && nodus_time_mono_ms() >= next_refresh_ms) {
+                next_refresh_ms = nodus_time_mono_ms() +
+                                  (uint64_t)NODUS_LIGHT_REFRESH_EVERY_S * 1000u;
+                (void)light_refresh(c, &net, vbuf);
+                /* Also a rebuild that failed or was postponed earlier. */
+                rebuild_due = net_any_pending(&net);
+            }
+            /* The rebuild waits while this Update returned WITNESS_BEHIND:
+             * the object then holds a recorded wait (cmt_light_client.h
+             * D21) that lives in memory only, and a new object would drop
+             * it and start the wait again on a newly fetched target — safe
+             * (nothing is trusted on it) but slower. The wait is 2 x drift
+             * + lag = 30 s, the refresh period 600 s, so the deferral is
+             * short; once an Update returns anything else, the judged
+             * record is cleared (D21) and the rebuild runs. */
+            if (rebuild_due && !g_stop) {
+                if (rc == CMT_REJECT &&
+                    err.code == CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND) {
+                    if (!told_postponed) {
+                        QGP_LOG_INFO(LOG_TAG, "rebuild postponed: a "
+                                     "witness-behind wait is recorded");
+                        told_postponed = true;
+                    }
+                } else {
+                    int out_rc = light_rebuild(&c, &net, &st, &opts);
+                    told_postponed = false;
+                    rebuild_due    = false;   /* retried at the next refresh */
+                    if (out_rc == LIGHT_REBUILD_NO_CLIENT) goto done;
+                    if (out_rc == LIGHT_REBUILD_DONE ||
+                        out_rc == LIGHT_REBUILD_KEPT_OLD) {
+                        last_wc      = cmt_light_client_witness_count(c);
+                        last_primary = net.nodes[net.primary_idx].label;
+                    }
+                }
+            }
+
             for (uint64_t slept = 0;
                  !g_stop && slept < a->interval_s * 1000u;
                  slept += NODUS_LIGHT_SLEEP_SLICE_MS) {
@@ -1164,6 +1720,7 @@ done:
     cmt_light_client_free(c);
     if (net_up) net_free(&net);
     cmt_light_block_buf_free(out);
+    cmt_light_block_buf_free(vbuf);
     if (st_open) store_close(&st);
     qgp_platform_release_identity_lock(lk);
     free(a);
@@ -1333,8 +1890,8 @@ static int cmd_clear_attack(int argc, char **argv)
     memset(&err, 0, sizeof(err));
     rc = cmt_light_client_new_from_trusted_store(
             chain_id, sizeof(chain_id), NODUS_LIGHT_TRUSTING_PERIOD_NS,
-            &net.primary, net.witnesses, net.n - 1u, &st.store, &opts, &c,
-            &err);
+            &net.primary, net.witnesses, net.n_witnesses, &st.store, &opts,
+            &c, &err);
     if (rc != CMT_OK) {
         if (rc == CMT_REJECT) {
             print_construct_error("opening the light client", &err, &net,
