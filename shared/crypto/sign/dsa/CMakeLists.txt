@@ -32,6 +32,7 @@ set(DILITHIUM_HEADERS
     randombytes.h
     reduce.h
     rounding.h
+    secure_clear.h
     sign.h
     symmetric.h
 )
@@ -72,3 +73,4 @@ install(TARGETS dsa
 install(FILES ${DILITHIUM_HEADERS}
     DESTINATION include/dsa
 )
+

@@ -6,6 +6,7 @@
 #include "crypto/sign/dsa/polyvec.h"
 #include "crypto/sign/dsa/poly.h"
 #include "crypto/sign/dsa/fips202.h"
+#include "crypto/sign/dsa/secure_clear.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -77,6 +78,11 @@ int qgp_dsa87_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed)
     shake256(tr, TRBYTES, pk, CRYPTO_PUBLICKEYBYTES);
     pack_sk(sk, rho, tr, key, &t0, &s1, &s2);
 
+    dilithium_secure_clear(seedbuf, sizeof(seedbuf));
+    dilithium_secure_clear(&s1, sizeof(s1));
+    dilithium_secure_clear(&s1hat, sizeof(s1hat));
+    dilithium_secure_clear(&s2, sizeof(s2));
+    dilithium_secure_clear(&t0, sizeof(t0));
     return 0;
 }
 
@@ -161,3 +167,4 @@ int qgp_dsa87_verify_ctx(const uint8_t *sig, size_t siglen,
     QGP_BENCH_END(QGP_BENCH_DILITHIUM_VERIFY);
     return _rc;
 }
+

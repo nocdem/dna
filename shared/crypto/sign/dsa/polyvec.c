@@ -2,6 +2,7 @@
 #include "params.h"
 #include "polyvec.h"
 #include "poly.h"
+#include "secure_clear.h"
 
 /*************************************************
 * Name:        expand_mat
@@ -122,6 +123,7 @@ void polyvecl_pointwise_acc_montgomery(poly *w,
     poly_pointwise_montgomery(&t, &u->vec[i], &v->vec[i]);
     poly_add(w, w, &t);
   }
+  dilithium_secure_clear(&t, sizeof(t));
 }
 
 /*************************************************
@@ -387,3 +389,4 @@ void polyveck_pack_w1(uint8_t r[K*POLYW1_PACKEDBYTES], const polyveck *w1) {
   for(i = 0; i < K; ++i)
     polyw1_pack(&r[i*POLYW1_PACKEDBYTES], &w1->vec[i]);
 }
+
