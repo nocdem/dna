@@ -3525,7 +3525,7 @@ Tier 3 uses the same CBOR wire format as T1/T2 but with DNAC-specific method nam
 | `dnac_msig_utxo` | Client→Witness | A multisig vault MEMBER's query of the vault address's coins: `dnac_utxo`'s answer plus `trunc`; with `"nul"` exactly the named coins plus the `"nul"` marker (see "Vault-member queries") |
 | `dnac_msig_addr_history` | Client→Witness | A multisig vault MEMBER's query of the vault address's history: `dnac_addr_history`'s answer (see "Vault-member queries") |
 | `dnac_utxo_proof` | Client→Witness | Query UTXO existence proof |
-| `dnac_light_block` | Client→Witness | One cometbft `LightBlock` for the light client (decision `docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md`, APPROVED B1-B4). Request `{"h": u64}`, 0 = the latest stored block; response `{"h": u64 resolved height (never 0), "lb": bstr — the `tendermint.types.LightBlock` proto, ≤ `NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES` (1 MiB)}`; the commit is the SEEN commit at the latest height, the canonical one below it. Errors: `HEIGHT_TOO_HIGH` (22, above the latest stored block), `NOT_FOUND` (pruned / not held, or no version-3 chain), `INTERNAL_ERROR` (read or encode fault), `PROTOCOL_ERROR` (malformed request). Answered to any authenticated session; the pinned-only rule is the client provider's. A peer's word, not a proven RPC (see "Light client packages 2 and 3") |
+| `dnac_light_block` | Client→Witness | One cometbft `LightBlock` for the light client (decision `docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md`, APPROVED B1-B4). Request `{"h": u64}`, 0 = the latest stored block; response `{"h": u64 resolved height (never 0), "lb": bstr — the `tendermint.types.LightBlock` proto, ≤ `NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES` (1 MiB)}`; the commit is the SEEN commit at the latest height, the canonical one below it. Errors: `HEIGHT_TOO_HIGH` (22, above the latest stored block), `NOT_FOUND` (pruned / not held, or no version-3 chain), `INTERNAL_ERROR` (read or encode fault, or an unreadable monotonic clock), `PROTOCOL_ERROR` (malformed request), `RATE_LIMITED` (4, the node-wide limit of `NODUS_LIGHT_BLOCK_RATE_PER_SEC` = 4 builds per second, refused before any store read). Answered to any authenticated session; the pinned-only rule is the client provider's. A peer's word, not a proven RPC (see "Light client packages 2 and 3") |
 | `dnac_validator_list_query` | Client→Witness | Paged validator table {status, limit ≤ 256, offset}; per entry `pk`, `self`, `total`, `ext`, `comm`, `status`, `since` and (added after 0.23.12) `dlg` — the validator's delegator count, i.e. how many of its `NODUS_MAX_DELEGATORS_PER_VALIDATOR` (2048, `nodus/include/nodus/nodus_types.h`) slots are filled. `dlg` is `nodus_delegation_count_by_validator`, the same `COUNT(*) FROM delegations WHERE validator_hash = ?` the DELEGATE cap is decided from (`nodus_witness_rt_native.c` `rtn_sys_delegcnt_fetch`); a count that cannot be read fails the reply (never a 0). Old clients skip the unknown entry key; the client SDK reports an older node's reply as `has_delegator_count = 0` (unknown, not 0). Node-local read; no consensus path reads it. HF-6 generation 4 (sub-slice 3e): + `vid` / `owner` bstr(64) per entry, `dlg` counted by validator_id (see "HF-6 sub-slice 3e"); since slice 7a the client SDK decodes them into `validator_id` / `owner_fp` with `has_v2` (see "HF-6 slice 7a"). |
 
 **Deleted 2026-10-15 (operator decision, dead-code scan "Chain side (witness)" /
@@ -9819,17 +9819,21 @@ that list.
 khan decision). The client (`light/client.go`, item 9's init agreement rule), the
 detector with its examine step and the full-vector priority comparison (item 2, K25-3)
 and a pinned networked provider over `dnac_light_block` (item 8) are now in the tree —
-"Light client packages 2 and 3" below. Still missing:
+"Light client packages 2 and 3" below, with the fix rounds of 0.26.10 (the pinned wait
+target, the attack lock with durable records, the established attack never downgraded,
+the node-wide `dnac_light_block` limiter — BUGS Z-41 … Z-44 and part of Z-45, see
+"Status after the fix rounds" there). Still missing:
 - a production CALLER: nothing in a node or a client opens a light client or a light
-  provider yet;
+  provider yet, and no program in the tree runs one (on Windows or elsewhere);
 - the trust root's sources (K25-1 "both"): the default checkpoint in the release and
   the operator's own entry. The client takes the root as its caller's
   `cmt_light_trust_options_t` and embeds none; no release checkpoint and no operator
   input path exist in the tree. The trusting period (K25-2, 48 h) is likewise only a
   caller parameter;
-- the front-door weight of one `dnac_light_block` request (decision B4: "set only
-  after a measurement"); until then it is charged one unit like any non-spend chain
-  method;
+- the `dnac_light_block` RPC is in the tree but on no live node. Its cost was measured
+  and is bounded by the node-wide 4/s limiter (packages 2 and 3 below); the front door
+  still charges it one unit like any non-spend chain method, and no decision file yet
+  records the 4/s choice against decision B4;
 - the proof layer: "proven RPC" waits for HF-7 / HF-8 and a tested proof API for each
   method (item 6);
 - for light storage: the 4004 p2p host on Windows (K25-5), the execution-free block
@@ -9870,7 +9874,7 @@ ML-DSA-87 keys; safe under `ctest -j`):
 The next steps of Kurultay #25's order ("… → client → detector", item 1), plus the
 block source item 8 asks for. Governing records: Kurultay #25
 (`docs/plans/decisions/2026-10-16-kurultay-25-summary.md`: items 2, 6, 7, 8, 9, K25-1..4,
-K25-8), the RPC decision `docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md`
+K25-8, K25-10), the RPC decision `docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md`
 (APPROVED B1-B4), and the pin `docs/plans/decisions/2026-09-30-cometbft-pin-v0.38.26.md`.
 **Status: NO PRODUCTION CALLER** — nothing in a node or a client opens a light client
 or a light provider (`cmt_light_client.h:8-11`, `cmt_light_detector.h:10-17`,
@@ -9882,31 +9886,32 @@ light client's own checks make usable (Kurultay #25 item 6 and standing conditio
 
 | File | Reference (v0.38.26) | What |
 |---|---|---|
-| `shared/dnac/cmt_light_client.{h,c}` | `light/client.go` (1190 lines), `light/trust_options.go` (53), `light/errors.go` | `TrustOptions` + `ValidateBasic`; `NewClient` / `NewClientFromTrustedStore`; `TrustedLightBlock`, `Last/FirstTrustedHeight`, `Update(now)`, `VerifyLightBlockAtHeight(now)` (forwards sequential / skipping, between, backwards), `Cleanup`; witness identities; the local attack record. Deviations D1-D19, quirks Q1-Q8 in the header |
-| `shared/dnac/cmt_light_detector.{h,c}` | `light/detector.go` (439), `types/evidence.go:204-318` | `detectDivergence` and everything it reaches except `sendEvidence`; `cmt_light_priorities_equal` (K25-3); `ConflictingHeaderIsInvalid`; `newLightClientAttackEvidence` + `GetByzantineValidators` as a local record. Deviations DD1-DD8, quirks Q-D1..Q-D6 |
-| `nodus/src/witness/nodus_witness_handlers.c` | `rpc/core/blocks.go:153-174`, `rpc/core/consensus.go:20-45`, `rpc/core/env.go:173-191` | `nodus_witness_light_block_build` + `handle_dnac_light_block`: the server side of `dnac_light_block` |
+| `shared/dnac/cmt_light_client.{h,c}` | `light/client.go` (1190 lines), `light/trust_options.go` (53), `light/errors.go` | `TrustOptions` + `ValidateBasic`; `NewClient` / `NewClientFromTrustedStore`; `TrustedLightBlock`, `Last/FirstTrustedHeight`, `Update(now)`, `VerifyLightBlockAtHeight(now)` (forwards sequential / skipping, between, backwards), `Cleanup`; witness identities; the local attack record; the attack LOCK (`cmt_light_client_attack_locked` / `_attack_clear`, K25-10) and the pinned wait target (D21). Deviations D1-D21, quirks Q1-Q8 in the header |
+| `shared/dnac/cmt_light_detector.{h,c}` | `light/detector.go` (439), `types/evidence.go:204-318` | `detectDivergence` and everything it reaches except `sendEvidence`; `cmt_light_priorities_equal` (K25-3); `ConflictingHeaderIsInvalid`; `newLightClientAttackEvidence` + `GetByzantineValidators` as a local record; `cmt_light_attack_record_encode`, the record's durable byte form (PROJECT). Deviations DD1-DD10, quirks Q-D1..Q-D6 |
+| `shared/dnac/cmt_light_store.{h,c}` (package 1, extended) | `light/store/db/db.go` (no counterpart for D9) | D9: the `cmt_light_attack` table and `cmt_light_store_db_save_attack_record` / `_attack_records` / `_clear_attack_records` / `_attack_record` (K25-10) |
+| `nodus/src/witness/nodus_witness_handlers.{h,c}` | `rpc/core/blocks.go:153-174`, `rpc/core/consensus.go:20-45`, `rpc/core/env.go:173-191` | `nodus_witness_light_block_build` (prototype in the `.h`) + `handle_dnac_light_block`: the server side of `dnac_light_block`; the node-wide limiter `NODUS_LIGHT_BLOCK_RATE_PER_SEC`, `nodus_witness_light_block_admit` / `_serve` (no reference counterpart) |
 | `nodus/include/nodus/nodus.h`, `nodus/src/client/nodus_client.c` | `light/provider/http/http.go:70-74` | `nodus_client_dnac_light_block`, `nodus_dnac_light_block_request_encode` / `_decode`, `NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES`; `NODUS_ERR_HEIGHT_TOO_HIGH = 22` in `nodus_types.h` |
 | `nodus/src/client/nodus_light_provider.{h,c}` | `light/provider/provider.go:9-29`, `light/provider/errors.go`, `http.go` | the pinned `cmt_light_provider_t` implementation over `nodus_client_t` |
 
 **The client (package 2).** Trust root and trusting period are the CALLER's: the
 library embeds no checkpoint (K25-1) and hard-codes no period (K25-2: 48 h in
-production, passed by the caller) (`cmt_light_client.h:31-37`). At init the reference's
+production, passed by the caller) (`cmt_light_client.h:34-40`). At init the reference's
 lenient witness comparison (client.go:1131-1190, which ignores every benign error, so a
 client whose witnesses stay silent initialises on the primary's word alone) is replaced
-by Kurultay #25 item 9's rule (`:39-89`): each witness asked once at the same height, in
+by Kurultay #25 item 9's rule (`:42-92`): each witness asked once at the same height, in
 index order; agreement counted over DISTINCT provider identities (the pinned key, for a
 networked provider), the primary's included; agree = same header hash and the same
 proposer-priority vector; silence (NO_RESPONSE, LIGHT_BLOCK_NOT_FOUND, HEIGHT_TOO_HIGH)
 is not agreement; a different hash or priorities stops the init with nothing saved; at
 least `min_init_agreement` (≥ 2) distinct identities must agree. ⚠ That the primary
 counts as one of the two is the port's READING of item 9, written in the header as such
-(`:79-81`); a caller wanting two witnesses besides the primary sets 3. The root is
+(`:82-84`); a caller wanting two witnesses besides the primary sets 3. The root is
 `options.hash`; the agreement is a consistency check only (K25-1). Every loop has a cap
 with no default (`max_trace_len`, `max_verify_steps`, `max_skipping_cache`,
 `max_backwards_steps`; a zero cap is refused at construction; reaching one is a named
 CMT_REJECT) — Astra flagged the unbounded trace at Kurultay #25 (D3). Memory is bounded
 by `max_verify_steps` (about 2 buffers per step, ~1.8 MiB per step on x86_64; the
-header's figure is "read from a compile-time diagnostic, not a run", `:121-123`).
+header's figure is "read from a compile-time diagnostic, not a run", `:124-126`).
 **D9 ⚠ security, kept by the operator as K25-8:** the reference's `backwards` walk never
 checks that the header it reached IS the target the primary sent first, yet saves that
 target; a primary answering the same height differently twice gets an unverified block
@@ -9935,8 +9940,48 @@ this client has no clock and one event loop, so the first pass returns
 `CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND` (nothing saved) and records the target, and a later
 call for the SAME target with `now` at least that far past the recorded `now` is the
 post-sleep pass. The caller must call again no earlier than the wait it would have
-slept. DD5: a cap reached inside the detector fails closed — nothing saved, the witness
-NOT removed. DD7: witnesses in index order (the reference: arrival order).
+slept. Witnesses found bad in a pass that ends WITNESS_BEHIND are removed before it
+returns (detector.go:98-100). **D21, the pinned target (BUGS Z-41):** because the
+record is keyed to the target and `Update` asks the primary for its LATEST block, a
+primary that kept producing used to restart the wait on every call, forever. Now the
+record holds a deep copy of the target light block itself; while it is recorded,
+`Update` (record above the trusted height) and `VerifyLightBlockAtHeight` (record at
+exactly its height) return WITNESS_BEHIND without fetching until the wait has run, then
+verify the STORED block — never a re-fetched one, as the reference keeps the same block
+across its sleep — save it on success, and clear the record whatever the verdict; the
+next `Update` moves to the latest. Keying the wait per witness instead was rejected: a
+per-witness `since` taken at an earlier target gives a new target no `2*drift + lag`
+margin (`cmt_light_detector.h:119-142`). DD5: a cap reached inside the detector fails
+closed — nothing saved, the witness NOT removed. DD7: witnesses in index order (the
+reference: arrival order).
+
+**The attack lock (K25-10, operator 2026-10-19, "1"; BUGS Z-43).** The reference has no
+latch: its attack error ends one call (detector.go:72, client.go:820-821), so after an
+attack the honest conflicting witness could go silent while an accomplice matched and
+the next call would save the primary's block. Here (client D20, detector DD9) a call
+that returns LIGHT_CLIENT_ATTACK LOCKS the client and writes the record to the light
+store — a third table, `cmt_light_attack` (prefix, seq, cleared, value), one row per
+record in the byte form of `cmt_light_attack_record_encode`, never deleted
+(`cmt_light_store.h` D9). While locked, `Update` and `VerifyLightBlockAtHeight` return
+`CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED` (29) and `Cleanup` CMT_REJECT, touching neither the
+providers nor the store; reads still answer. A restart reloads the lock:
+`cmt_light_client_new_from_trusted_store` comes up locked over an uncleared record, and
+`cmt_light_client_new` refuses such a store. Only the operator's
+`cmt_light_client_attack_clear` unlocks; it marks every record cleared and deletes none.
+What makes it hold: ONE client object per store prefix, and as a second guard the save
+re-reads the store's uncleared records right before every write and refuses (F2); a
+record whose write failed (`durable` false) is retried at the start of every locked call
+and the clear REFUSES until it is written (F3). Node-local; no wire, block, root or
+consensus change. Cost the operator accepted: a false alarm halts that light client
+until the operator looks. **DD10 (BUGS Z-42):** once the witness's conflicting header
+has verified, the call returns the attack and keeps the record whatever happens while
+the evidence is built; what could not be built is named in `missing`. In the
+equivocation branch a COMMIT signature past the 2/3 point whose address names no
+validator — the commit check stops counting there (types/validation.go:289-291), so
+nothing checked it — is skipped and counted (`n_unknown_signers`) instead of failing the
+build. ⚠ The byzantine-validator list is the validators the two commits CLAIM signed,
+not ones proven to have signed (DD6 F4, `cmt_light_detector.h:205-214`): the future
+K25-4 evidence work must verify each named signature before it blames anyone.
 
 **The RPC and the provider.** `dnac_light_block` (wire in `nodus.h:1656-1680`; method
 row in §15): request `{"h"}`, 0 = latest; response `{"h", "lb"}` with `"lb"` the
@@ -9950,23 +9995,64 @@ read: no write, no clock, no cache; bounded by `NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES
 the codec bound for a full set is 949 929 bytes per `nodus.h:1682-1691`, checked by the
 node before it answers), and a `_Static_assert` keeps the reply under
 `NODUS_MAX_FRAME_TCP`. Front-door cost: one unit, like every routed chain method except
-`dnac_spend` (`nodus_server.c:1944-1954`) — decision B4's weight is not measured yet.
-The client call refuses a reply at another height than asked (`http.go:70-74`) and
+`dnac_spend` (`nodus_server.c:1944-1954`) — unchanged. **The node-wide limiter (BUGS
+Z-44):** one build can replay `cmt_validator_set_increment_proposer_priority` up to
+99,999 times inside `nodus_cmt_ss_load_validators`, on the witness loop consensus runs
+on, and a per-session charge does not bound that loop (free identities open more
+sessions). The ORCHESTRATOR's measurement, recorded in the header (-O2, one worst-case
+build, the replay from the farthest height): 15 ms at 7 validators, 57 ms at 32, 220 ms
+at 128 (`nodus_witness_handlers.h:137-145`). In front of the build sits ONE node-wide
+token bucket, `NODUS_LIGHT_BLOCK_RATE_PER_SEC` = 4 (burst 4, then one every 250 ms,
+whoever asks) in its GCRA form (`nodus_witness_light_block_admit`, integer nanoseconds,
+a refusal leaves it unchanged); above it the answer is `NODUS_ERR_RATE_LIMITED` (4) at
+once, before any decode or store read (`nodus_witness_light_block_serve`). At 4/s the
+worst case holds the witness loop ~60 ms of every second at 7 validators and ~230 ms at
+32. No queue, no cache. The handler reads the node's MONOTONIC wait clock (`n->mono`)
+for that admission only, never the wall clock; an unreadable clock answers
+INTERNAL_ERROR without touching the limiter or the store. The header names the 4/s value
+"Operator decision 2026-10-19"; the RPC decision file still describes B4 as a pending
+front-door weight. The client call refuses a reply at another height than asked (`http.go:70-74`) and
 checks nothing else. `nodus_light_provider_init` REFUSES a client with no server-key pin
 (Kurultay #25 item 8; a pinned session authenticates the server with ML-DSA-87 and runs
 ML-KEM-1024 only, `nodus_light_provider.h:16-21`) and re-checks the pin on every call;
 `chain_id` is the configured value, never the server's; errors map NOT_FOUND →
-LIGHT_BLOCK_NOT_FOUND, HEIGHT_TOO_HIGH → HEIGHT_TOO_HIGH, other node errors → unnamed,
-timeout / transport → NO_RESPONSE, a refused reply or an undecodable `"lb"` →
-BAD_LIGHT_BLOCK; `report_evidence` is a local record only (a WARN line and a counter).
+LIGHT_BLOCK_NOT_FOUND, HEIGHT_TOO_HIGH → HEIGHT_TOO_HIGH, RATE_LIMITED → NO_RESPONSE,
+other node errors → unnamed, timeout / not connected / local failure (rc -1) →
+NO_RESPONSE, a refused reply or an undecodable `"lb"` → BAD_LIGHT_BLOCK. Two of these are
+named deviations (BUGS Z-45, `nodus_light_provider.h:53-69`): RATE_LIMITED → NO_RESPONSE,
+because an unnamed error is outside the light client's benign set (light/client.go:757-763,
+:1106-1112) and would remove an honest node that is merely at its limit — the
+reference's only transient refusal, a timed-out request, ends in ErrNoResponse
+(http.go:200-210); and rc -1 → NO_RESPONSE, where the reference's default branch returns
+the raw error (http.go:205-207), so a provider whose session is down is kept. No retry is
+done in the provider: the client asks another one; `report_evidence` is a local record only (a WARN line and a counter).
 The provider does NOT run `LightBlock.ValidateBasic` itself (a deviation from
 `http.go:91-95`): the client does, D15.
 
-**Determinism.** No clock anywhere in these files (`now` is the caller's; the provider's
-deadline is the client's `request_timeout_ms`), no randomness, no map, no floating
-point; witnesses in index order; byzantine validators sorted by power descending,
-address ascending. What one light client trusts is node-local and is never part of any
-consensus value. The RPC answer is a function of the committed block and state stores.
+**Determinism.** No clock in the light client, the detector, the store or the RPC
+builder (`now` is the caller's; the provider's deadline is the client's
+`request_timeout_ms`); the ONE clock read is `handle_dnac_light_block`'s monotonic wait
+clock for the limiter's admission — node-local scheduling of whether THIS node answers a
+client now; nothing it reads or keeps reaches a block, the state, a vote or replication,
+so two nodes disagreeing about it cannot split the chain (`nodus_witness_handlers.c:4753-4769`).
+No randomness, no map, no floating point; witnesses in index order; byzantine validators
+sorted by power descending, address ascending; an attack record encodes to the same
+bytes every time. What one light client trusts, and every attack record, is node-local
+and is never part of any consensus value. The RPC answer is a function of the committed
+block and state stores.
+
+**Status after the fix rounds L1 / L4 (nodus 0.26.10).** Closed in code: the moving-target
+wait (BUGS Z-41 — D21, the stored target is judged); the attack that was downgraded to a
+local fault (Z-42 — DD6 / DD10); the call-only "stop" (Z-43 — K25-10's lock and durable
+records); the unbounded validator-set replay cost (Z-44 — the 4/s node-wide limiter, with
+its measurement). Partly: Z-45 — the RATE_LIMITED and rc -1 classes now map to
+NO_RESPONSE as named deviations; its other parts (the empty-store / missing-row error
+classes, the per-call pin check that reads only the client's config, the untested rows)
+are not touched by these rounds. Still open: NO production caller of the light client or the provider; no
+source for the trust root (no release checkpoint, no operator input path, K25-1); no
+program that runs a light client, on Windows or elsewhere; the RPC is not deployed to
+any live node. The ledger records (root `BUGS.md`) are the place where each item's
+remaining parts are tracked.
 
 **Build.** `cmt_light_client.c` and `cmt_light_detector.c` are in nodus's COMMON source
 list beside `cmt_light_store.c`; `nodus_light_provider.c` is in the common Client SDK
@@ -9988,20 +10074,43 @@ list beside `nodus_client.c` (`nodus/CMakeLists.txt`), so a Windows build compil
   evidence fields; the DD2 wait gated to the nanosecond; benign silent witnesses;
   unverifiable conflicts removed (Q-D3 when last); K25-3's non-last-validator
   divergence the reference hash misses; caps fail closed (DD5) and Q-D4; the three
-  evidence branches. Can lie: the wait is proven as a two-pass decision, not as timing;
-  the cap row's step count (13) is derived by hand; TestClientDivergentHeadersNoTraces
-  runs once (the reference repeats it 100 times for a goroutine race).
+  evidence branches. Added by the L1 fix rounds: the Z-42 unknown signer past the 2/3
+  point (the attack still reported, four equivocators named, one unknown signer
+  counted); bad witnesses removed in a pass that ends WITNESS_BEHIND; the K25-10 lock
+  (Update / verify / Cleanup refused, the record in the store byte for byte, a restart
+  stays locked, the clear unlocks and keeps the record, a second attack writes a second
+  record, an honest block saved after a clear); the Z-41 moving target (a primary that
+  advances does not restart the wait, the RECORDED block is saved, a different block
+  served at that height meanwhile has no effect); DD10 (a provider fault after the
+  attack is established keeps the record with `missing` set); F3 (a store write failed
+  under SQLITE_BUSY is retried by the next locked call, the clear refuses until then);
+  F2 (a second client object on the same prefix cannot save after the first locked).
+  Can lie: the wait is proven as a two-pass decision, not as timing; the cap row's step
+  count (13) is derived by hand; TestClientDivergentHeadersNoTraces runs once (the
+  reference repeats it 100 times for a goroutine race); the lock row's "restart" is a
+  close + re-open of the store file, not a power cut; the moving-target row shows "no
+  re-fetch" by outcome, not by counting fetches; the not-durable row relies on SQLite's
+  rollback-journal locking, probed by `test_cmt_light_store`'s t_commit_fails, not here.
+- `test_cmt_light_store` (package 1's test, extended) — adds the D9 attack-record row:
+  seq 1, 2, … per prefix, an idempotent save while a record is in force and a new row
+  after a clear, the clear keeps every record, records and flags survive a restart, a
+  second prefix sees none, Size() / Prune ignore them, the refusals and NULL arguments.
 - `test_light_block_rpc` — over a REAL derived version-3 chain through the real host
   pipeline: empty store, h = 0 ≡ tip (same bytes; two builds identical), canonical vs
   seen commit, every `"lb"` decodes and passes ValidateBasic, HEIGHT_TOO_HIGH, NOT_FOUND
   for a deleted commit and below a pruned base, PROTOCOL_ERROR for malformed requests,
-  INTERNAL_ERROR under an open transaction, the ceiling; the client decoder's
-  refusals; the provider's pin refusal and error mapping. Requires
-  `NODUS_WITNESS_INTERNAL_API` (set by its CMake target) and SQLite ≥ 3.35.0; leaves a
-  `/tmp/test_lbrpc_*` directory per fixture, removed at close. Can lie: the handler
-  layer, the front-door charge and the client call's network half are not driven; the
-  tip's seen commit is written by the test; the builder is declared by a local extern
-  (no header prototype); its author did not run it (file header).
+  INTERNAL_ERROR under an open transaction, the ceiling; admission through the serve
+  seam (four requests at one `now` reach the build, the fifth answers RATE_LIMITED
+  without reaching the store; served again after one interval); the limiter alone
+  (burst of exactly 4, refusal leaves the bucket unchanged, refill per interval, capped
+  at 4, partial progress kept, bad `now` refused); the client decoder's refusals; the
+  provider's pin refusal and error mapping (RATE_LIMITED → NO_RESPONSE included). Five
+  cases. Requires `NODUS_WITNESS_INTERNAL_API` (set by its CMake target) and SQLite ≥
+  3.35.0; leaves a `/tmp/test_lbrpc_*` directory per fixture, removed at close. Can lie:
+  the handler layer (the `n->mono` read, the node's file-static limiter, the send), the
+  front-door charge and the client call's network half are not driven; the tip's seen
+  commit is written by the test; "no store read" on a refusal is shown by outcome, not
+  by counting store calls; its author did not run it (file header).
 
 ### DHT v2 package 1 — record codec (no caller yet) (2026-10-19, nodus 0.26.9)
 
