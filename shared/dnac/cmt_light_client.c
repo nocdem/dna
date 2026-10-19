@@ -517,13 +517,45 @@ static int light_block_from_primary(cmt_light_client_t *c, int64_t height,
  * every other return — an attack (with its local record), a priority
  * divergence, a witness behind, no witness that matched — saves nothing.
  */
+/* D20 (K25-10, F3) — write the client's attack record to the store if it
+ * is not there yet. Called when the attack is found and again at the
+ * start of every call while locked and before attack_clear, until the
+ * write succeeds. An encode failure and a store failure are logged
+ * apart; either leaves `durable` false and the lock in memory. */
+static void persist_attack(cmt_light_client_t *c)
+{
+    uint8_t *bz = NULL;
+    size_t   bz_len = 0u;
+    uint64_t seq = 0u;
+    int      rc;
+
+    if (c->attack == NULL || c->attack->durable) {
+        return;
+    }
+    rc = cmt_light_attack_record_encode(c->attack, &bz, &bz_len);
+    if (rc != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "light client LOCKED in memory only: the "
+                      "attack record could NOT be ENCODED (%d)", rc);
+        return;
+    }
+    rc = c->store.save_attack_record(c->store.ctx, bz, bz_len, &seq);
+    free(bz);
+    if (rc != CMT_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "light client LOCKED in memory only: the "
+                      "STORE refused the attack record (%d) — retried on "
+                      "the next call; a restart now would not reload the "
+                      "lock", rc);
+        return;
+    }
+    c->attack->durable = true;
+    QGP_LOG_ERROR(LOG_TAG, "light client LOCKED: attack record #%llu "
+                  "written to the store", (unsigned long long)seq);
+}
+
 static int detect_divergence(cmt_light_client_t *c, const lbvec_t *trace,
                              cmt_time_t now, cmt_light_client_error_t *err)
 {
     cmt_light_client_error_t e;
-    uint8_t                 *bz = NULL;
-    size_t                   bz_len = 0u;
-    uint64_t                 seq = 0u;
     int                      rc;
 
     rc = cmt_light_detect_divergence(c, trace, now, &e);
@@ -533,20 +565,7 @@ static int detect_divergence(cmt_light_client_t *c, const lbvec_t *trace,
         c->locked = true;
         if (c->attack != NULL) {
             c->attack->durable = false;
-            if (cmt_light_attack_record_encode(c->attack, &bz, &bz_len) == CMT_OK &&
-                c->store.save_attack_record(c->store.ctx, bz, bz_len,
-                                            &seq) == CMT_OK) {
-                c->attack->durable = true;
-                QGP_LOG_ERROR(LOG_TAG, "light client LOCKED: attack record "
-                              "#%llu written to the store",
-                              (unsigned long long)seq);
-            } else {
-                QGP_LOG_ERROR(LOG_TAG, "light client LOCKED in memory only: "
-                              "the attack record could NOT be written to "
-                              "the store — a restart will not reload the "
-                              "lock");
-            }
-            free(bz);
+            persist_attack(c);
         }
     }
     if (err != NULL) {
@@ -615,6 +634,24 @@ static int update_trusted_light_block(cmt_light_client_t *c,
     if (c->locked) {                                 /* D20, second guard */
         return reject(err, CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED);
     }
+    /* F2 — another client object on the same store prefix may have locked
+     * since this one was made (one object per prefix is the rule, D20):
+     * the store's uncleared records are read again right before a save. */
+    {
+        uint64_t total = 0u, uncleared = 0u;
+
+        rc = c->store.attack_records(c->store.ctx, &total, &uncleared);
+        if (rc != CMT_OK) {
+            return store_rc(rc, err);
+        }
+        if (uncleared > 0u) {
+            c->locked = true;
+            QGP_LOG_ERROR(LOG_TAG, "save refused: the store holds %llu "
+                          "uncleared attack record(s) — locked",
+                          (unsigned long long)uncleared);
+            return reject(err, CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED);
+        }
+    }
     if (lb_height(l, &h) != CMT_OK) {
         return fault(err);
     }
@@ -655,6 +692,7 @@ int cmt_light_client_cleanup(cmt_light_client_t *c)
         return CMT_FAULT;
     }
     if (c->locked) {                                             /* D20 */
+        persist_attack(c);                                       /* F3 retry */
         QGP_LOG_ERROR(LOG_TAG, "cleanup refused: an attack is not cleared");
         return CMT_REJECT;
     }
@@ -1841,6 +1879,7 @@ void cmt_light_client_free(cmt_light_client_t *c)
     }
     cmt_light_block_buf_free(c->latest);
     cmt_light_attack_record_free(c->attack);
+    cmt_light_detector_wait_clear(c);           /* DD2 — the stored target */
     free(c->witnesses);
     free(c);
 }
@@ -1865,6 +1904,15 @@ int cmt_light_client_attack_clear(cmt_light_client_t *c)
 
     if (c == NULL) {
         return CMT_FAULT;
+    }
+    /* F3 — a record not yet in the store is written first; while it is
+     * not, the clear refuses (the lock must not end before the record
+     * that justified it is durable). */
+    persist_attack(c);
+    if (c->attack != NULL && !c->attack->durable) {
+        QGP_LOG_ERROR(LOG_TAG, "attack clear refused: the record is not "
+                      "yet written to the store; the client stays locked");
+        return CMT_REJECT;
     }
     rc = c->store.clear_attack_records(c->store.ctx);
     if (rc != CMT_OK) {
@@ -1953,6 +2001,63 @@ int cmt_light_client_first_trusted_height(cmt_light_client_t *c, int64_t *out)
     return c->store.first_light_block_height(c->store.ctx, out);
 }
 
+/*
+ * D21 — the target a recorded wait pins. `for_update`: a record above
+ * `last` (the trusted height) applies; otherwise a record at exactly
+ * `height` (VerifyLightBlockAtHeight's own target). A record whose height
+ * is already IN THE STORE is stale and is dropped (Update only — Verify
+ * returns a stored height before it gets here). No record applies →
+ * CMT_OK, `*pinned` false. The wait has not run → CMT_REJECT with
+ * WITNESS_BEHIND, nothing fetched. It has run → CMT_OK, `*pinned` true
+ * and `*out` the STORED target, taken out of the record (the caller owns
+ * and frees it, and clears the record after judging it).
+ */
+static int pinned_target(cmt_light_client_t *c, bool for_update,
+                         int64_t height, int64_t last, cmt_time_t now,
+                         cmt_light_block_buf_t **out, bool *pinned,
+                         cmt_light_client_error_t *err)
+{
+    *out    = NULL;
+    *pinned = false;
+    if (!c->wait.pending) {
+        return CMT_OK;
+    }
+    if (for_update && c->wait.height <= last) {
+        cmt_light_block_buf_t *t = cmt_light_block_buf_new();
+        bool                   found = false;
+        int                    rc;
+
+        if (t == NULL) {
+            return fault(err);
+        }
+        rc = c->store.light_block(c->store.ctx, c->wait.height, t, &found);
+        cmt_light_block_buf_free(t);
+        if (rc != CMT_OK) {
+            return store_rc(rc, err);
+        }
+        if (found) {
+            cmt_light_detector_wait_clear(c);   /* stale: already trusted */
+        }
+        return CMT_OK;   /* below the tip: VerifyLightBlockAtHeight's (F5) */
+    }
+    if (!for_update && c->wait.height != height) {
+        return CMT_OK;
+    }
+    if (!cmt_light_detector_wait_elapsed(c, now)) {
+        /* The reference is still asleep for this target: no fetch, and a
+         * newer block cannot restart the wait. */
+        return reject(err, CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND);
+    }
+    if (c->wait.target == NULL) {
+        cmt_light_detector_wait_clear(c);   /* cannot happen; fail safe */
+        return CMT_OK;
+    }
+    *out           = c->wait.target;         /* the block of the first ask */
+    c->wait.target = NULL;
+    *pinned        = true;
+    return CMT_OK;
+}
+
 /* cometbft@v0.38.26 light/client.go:433-462 — Update(now). */
 int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
                             cmt_light_block_buf_t *out, bool *advanced,
@@ -1970,6 +2075,7 @@ int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
     *advanced = false;
     (void)cmt_light_block_buf_reset(out);
     if (c->locked) {                                         /* D20 */
+        persist_attack(c);                                   /* F3 retry */
         return reject(err, CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED);
     }
     rc = c->store.last_light_block_height(c->store.ctx, &last); /* :437-440 */
@@ -1979,45 +2085,20 @@ int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
     if (last == -1) {                                        /* :442-445 */
         return CMT_OK;
     }
-    /* D21 — a recorded wait PINS the target. A record at or below the
-     * trusted height is stale (that height is already trusted): drop it. */
-    if (c->wait.pending && c->wait.height <= last) {
-        memset(&c->wait, 0, sizeof(c->wait));
+    /* D21 — a recorded wait above the trusted height PINS the target. */
+    rc = pinned_target(c, true, 0, last, now, &b, &pinned, err);
+    if (rc != CMT_OK) {
+        return rc;                      /* WITNESS_BEHIND, or a fault */
     }
-    pinned = c->wait.pending;
-    if (pinned && !cmt_light_detector_wait_elapsed(c, now)) {
-        /* The reference is still asleep for this target: no fetch, and a
-         * newer latest block cannot restart the wait. */
-        return reject(err, CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND);
+    if (!pinned) {
+        b = cmt_light_block_buf_new();
+        if (b == NULL) {
+            return CMT_FAULT;
+        }
+        rc = light_block_from_primary(c, 0, b, err);         /* :447-450 */
     }
-    b = cmt_light_block_buf_new();
-    if (b == NULL) {
-        return CMT_FAULT;
-    }
-    /* :447-450 — the latest block; or, pinned, the RECORDED height. */
-    rc = light_block_from_primary(c, pinned ? c->wait.height : 0, b, err);
     if (rc == CMT_OK && lb_height(&b->lb, &h) != CMT_OK) {
         rc = fault(err);
-    }
-    if (rc == CMT_OK && pinned) {
-        uint8_t hh[CMT_TMHASH_SIZE];
-        size_t  hl = 0u;
-
-        if (lb_hash(&b->lb, hh, &hl) != CMT_OK) {
-            rc = fault(err);
-        } else if (!bytes_equal(hh, hl, c->wait.hash, c->wait.hash_len)) {
-            /* The primary answers the recorded height with ANOTHER block
-             * than the one the wait was for: fail closed, save nothing
-             * (the D9 / K25-8 rule for a target that changed). The record
-             * is dropped — the target it describes is gone — so the next
-             * Update starts again from the latest block with a new wait. */
-            QGP_LOG_ERROR(LOG_TAG, "primary changed its block at %lld "
-                          "during the wait — refused", (long long)h);
-            memset(&c->wait, 0, sizeof(c->wait));
-            rc = verification_failed(err, last, h,
-                                     CMT_LIGHT_CLIENT_REASON_TARGET_MISMATCH,
-                                     NULL, NULL);
-        }
     }
     if (rc == CMT_OK && h > last) {                          /* :452-459 */
         rc = verify_light_block(c, &b->lb, now, err);
@@ -2030,6 +2111,12 @@ int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
             }
         }
     }
+    if (pinned) {
+        /* The judged target's wait is spent whatever the verdict: on any
+         * return the detector did not reach, the next call starts again
+         * from a freshly fetched target with a new wait (D21). */
+        cmt_light_detector_wait_clear(c);
+    }
     cmt_light_block_buf_free(b);
     return rc;                                               /* :461 */
 }
@@ -2041,7 +2128,8 @@ int cmt_light_client_verify_light_block_at_height(cmt_light_client_t *c,
                                                   cmt_light_block_buf_t *out,
                                                   cmt_light_client_error_t *err)
 {
-    cmt_light_block_buf_t *b;
+    cmt_light_block_buf_t *b = NULL;
+    bool                   pinned = false;
     int                    rc;
 
     err_clear(err);
@@ -2050,6 +2138,7 @@ int cmt_light_client_verify_light_block_at_height(cmt_light_client_t *c,
     }
     (void)cmt_light_block_buf_reset(out);
     if (c->locked) {                                         /* D20 */
+        persist_attack(c);                                   /* F3 retry */
         return reject(err, CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED);
     }
     if (height <= 0) {                                       /* :475-477 */
@@ -2064,16 +2153,27 @@ int cmt_light_client_verify_light_block_at_height(cmt_light_client_t *c,
     if (rc == CMT_FAULT) {                                   /* D11 */
         return CMT_FAULT;
     }
-    b = cmt_light_block_buf_new();
-    if (b == NULL) {
-        return CMT_FAULT;
+    (void)cmt_light_block_buf_reset(out);
+    /* D21 — a recorded wait for THIS height pins its stored block. */
+    rc = pinned_target(c, false, height, 0, now, &b, &pinned, err);
+    if (rc != CMT_OK) {
+        return rc;                      /* WITNESS_BEHIND, or a fault */
     }
-    rc = light_block_from_primary(c, height, b, err);        /* :487-491 */
+    if (!pinned) {
+        b = cmt_light_block_buf_new();
+        if (b == NULL) {
+            return CMT_FAULT;
+        }
+        rc = light_block_from_primary(c, height, b, err);    /* :487-491 */
+    }
     if (rc == CMT_OK) {
         rc = verify_light_block(c, &b->lb, now, err);        /* :493 */
     }
     if (rc == CMT_OK && buf_copy(out, &b->lb) != CMT_OK) {   /* D10 */
         rc = fault(err);
+    }
+    if (pinned) {
+        cmt_light_detector_wait_clear(c);   /* the judged wait is spent */
     }
     cmt_light_block_buf_free(b);
     return rc;

@@ -248,31 +248,49 @@
  *     initializeWithTrustOptions) change the trusted store. The operator
  *     unlocks with `cmt_light_client_attack_clear`, which marks every
  *     record cleared and deletes none.
+ *     RULES THAT MAKE THE LOCK HOLD:
+ *       · ONE client object per store prefix. The lock lives in the
+ *         object and in the store; a second object on the same prefix
+ *         loads it only at construction. As a second guard,
+ *         updateTrustedLightBlock reads the store's uncleared records
+ *         right before every save (one query on the prefix key) and
+ *         refuses — and locks — when there is one, so a second object
+ *         cannot save after the first one locked.
+ *       · A record NOT YET DURABLE (its `durable` false: the encode or
+ *         the store write failed) is written again at the start of every
+ *         call while locked and before a clear; the clear REFUSES
+ *         (CMT_REJECT, still locked) until the write succeeded. Encode
+ *         and store failures are logged apart. A record whose encode
+ *         fails every time can only be released at the store
+ *         (cmt_light_store_db_clear_attack_records) with a new client.
  *  D21 UPDATE KEEPS THE TARGET OF A RECORDED WAIT (BUGS Z-41). The
  *     reference's Update fetches the latest block once and then, if a
  *     witness is behind, sleeps inside the call and trusts THAT block
  *     (client.go:447-459 → detector.go:164-197). Here the sleep is the
  *     caller's next call (cmt_light_detector.h DD2), and Update would
  *     otherwise fetch a NEW latest block on every call, so a primary that
- *     keeps producing restarted the wait forever. So, when a wait is
- *     recorded for a height above the trusted one (written by Update or
- *     by VerifyLightBlockAtHeight):
- *       · before the wait has run (`now` < since + 2*drift + lag) Update
- *         returns WITNESS_BEHIND without fetching anything;
- *       · once it has run, Update fetches the RECORDED height from the
- *         primary (not the latest), requires its hash to equal the
- *         recorded hash, and verifies it — the detector's post-sleep
- *         pass (DD2). On success that block is saved (the client may be
- *         behind the tip) and the record is cleared; the NEXT Update
- *         moves to the latest block as usual;
- *       · a different hash at the recorded height is refused —
- *         VERIFICATION_FAILED with reason TARGET_MISMATCH, nothing saved
- *         (the K25-8 / D9 rule for a block that changed under the
- *         client) — and the record is dropped, so the next Update starts
- *         again from the latest block with a new wait.
- *     A record at or below the trusted height is stale and dropped. The
- *     target of every detection stays the block the first ask returned,
- *     as in the reference: a fresh block never inherits an older wait.
+ *     keeps producing restarted the wait forever. The record therefore
+ *     holds the target LIGHT BLOCK ITSELF (a deep copy taken when the wait
+ *     is recorded, cmt_light_detector.h DD2), and the primary is never
+ *     asked for the target a second time — the reference keeps the same
+ *     block across its sleep and does not re-ask either. A record PINS:
+ *       · Update, when its height is above the trusted one;
+ *       · VerifyLightBlockAtHeight, for exactly its height.
+ *     Pinned, before the wait has run (`now` < since + 2*drift + lag) the
+ *     call returns WITNESS_BEHIND without fetching anything; once it has
+ *     run, the call verifies THE STORED BLOCK (the detector's post-sleep
+ *     pass, DD2) and, on success, saves it — the client may then be
+ *     behind the tip; the NEXT Update moves to the latest as usual.
+ *     Whatever the verdict, the judged record is then cleared: a
+ *     verification that failed before the detector ended this call as the
+ *     reference's call would end, and the next call starts from a newly
+ *     fetched target with a new wait. What the primary serves at that
+ *     height in the meantime has no effect on the judged block.
+ *     A record is STALE only when its height is already IN THE STORE
+ *     (Update drops it then); a record below the tip that is not stored —
+ *     VerifyLightBlockAtHeight's — is left for that call. The record is
+ *     still ONE target: a later behind detection for another target
+ *     replaces it (DD2).
  *
  * ── REFERENCE QUIRKS REPRODUCED AS-IS (recorded, not "fixed") ──────────
  *  Q1 verifySkipping appends a fetched pivot to the cache TWICE (:754 and
@@ -666,7 +684,7 @@ int cmt_light_client_first_trusted_height(cmt_light_client_t *c,
  * verified (:453), the detector included (file header), and saved.
  * While locked (D20): CMT_REJECT with ATTACK_LOCKED, before any read.
  * While a wait is recorded (D21): WITNESS_BEHIND until it has run, then
- * the RECORDED block, not the latest, is verified and saved.
+ * the STORED target block, not the latest, is verified and saved.
  * @param out receives the new block when `*advanced` is true.
  */
 int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
@@ -682,7 +700,8 @@ int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
  * from the closest trusted block below it. On success it is saved and the
  * store pruned (`updateTrustedLightBlock`, :910-928). `out` holds the
  * block on CMT_OK only (D10). While locked (D20): CMT_REJECT with
- * ATTACK_LOCKED, before any read.
+ * ATTACK_LOCKED, before any read. A recorded wait for this height pins
+ * its stored block (D21).
  */
 int cmt_light_client_verify_light_block_at_height(cmt_light_client_t *c,
                                                   int64_t height,
@@ -715,9 +734,10 @@ bool cmt_light_client_attack_locked(const cmt_light_client_t *c);
  * D20 — the operator's clear: every attack record in the store becomes
  * cleared (none is deleted) and the client unlocks. The in-memory record
  * (cmt_light_client_attack_record) stays readable. Calling it unlocked is
- * CMT_OK.
- * @return CMT_OK; CMT_FAULT on NULL or a store failure (the client then
- *         stays locked).
+ * CMT_OK. A record not yet written to the store is written first (D20).
+ * @return CMT_OK; CMT_REJECT while that record still cannot be written
+ *         (the client stays locked); CMT_FAULT on NULL or a store failure
+ *         of the clear (the client stays locked).
  */
 int cmt_light_client_attack_clear(cmt_light_client_t *c);
 

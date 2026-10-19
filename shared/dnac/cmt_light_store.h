@@ -113,7 +113,10 @@
  *     is idempotent while the lock it set is in force; after a clear the
  *     same bytes are a new event and a new row); everything is per
  *     prefix. Records are not counted in Size() and Prune never touches
- *     them.
+ *     them. ONE light-client object per prefix is the rule
+ *     (cmt_light_client.h D20): the lock is loaded at construction, and a
+ *     second object on the same prefix is stopped only by the client's
+ *     re-read of the uncleared records right before each save.
  *
  * ── taşınmadı (not ported), with the reason ────────────────────────────
  *   · `mtx` (db.go:23, every "Safe for concurrent use" method) — the

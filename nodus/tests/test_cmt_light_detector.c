@@ -51,7 +51,14 @@
  *   · (BUGS Z-41, client D21) a primary that advances between Update
  *     calls does not restart the wait: after it, the RECORDED block is
  *     verified and saved, the next Update moves to the latest; a primary
- *     that answers the recorded height with another block is refused.
+ *     that serves another block at the recorded height meanwhile has no
+ *     effect (the STORED block is judged) and later Updates converge;
+ *   · (DD10) a provider fault after the attack is established keeps the
+ *     record with `missing` set and still returns the attack;
+ *   · (F3) a record whose store write failed (SQLITE_BUSY) is written by
+ *     the next locked call, and the clear refuses until then;
+ *   · (F2) a second client object on the same prefix cannot save after
+ *     the first locked; a store with only cleared records does not lock.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no
@@ -91,6 +98,17 @@
  *  9. The moving-target row (15) shows that the wait is not restarted by
  *     the result of call 2 (still WITNESS_BEHIND) and by what call 3
  *     saves (10, not 11); it cannot observe that call 2 made no fetch.
+ *     Its "no re-fetch" leg shows it by outcome: the primary's new
+ *     block 10 would conflict, yet chain A's 10 is saved.
+ * 10. The DD10 row's fault is armed by the witness's FIRST request after
+ *     init; it relies on the reverse examine being the first thing that
+ *     asks the primary after that (detector.go:266-275 — the forward
+ *     verification has already finished).
+ * 11. The not-durable row relies on SQLite's rollback-journal locking (a
+ *     reader's SHARED lock blocks COMMIT, not BEGIN IMMEDIATE), which
+ *     test_cmt_light_store.c's t_commit_fails probes on this build; this
+ *     row does not probe it again, and fails (not passes) if the COMMIT
+ *     succeeds, at "locked, NOT durable".
  *
  * ── REFERENCE CASES (light/detector_test.go) ───────────────────────────
  * PORTED: TestLightClientAttackEvidence_Lunatic (:21-91),
@@ -128,6 +146,8 @@
 #include "dnac/cmt_tmhash.h"
 
 #include "crypto/sign/qgp_dilithium.h"
+
+#include <sqlite3.h>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -582,7 +602,7 @@ static int build_fixture(tfix_t *f)
 
 #define MOCK_MAX 16
 
-typedef struct {
+typedef struct tmock {
     const char                *chain_id;
     bool                       dead;
     int64_t                    heights[MOCK_MAX];
@@ -591,6 +611,11 @@ typedef struct {
     size_t                     n;
     int64_t                    latest_height;
     size_t                     evidence_calls;   /* must stay 0 (DD4) */
+    /* PROJECT (the DD10 row): when this mock is first asked for a block,
+     * `arm->fault_armed` is set; an armed mock answers CMT_FAULT (a local
+     * failure of the provider, D6) to every request. */
+    struct tmock              *arm;
+    bool                       fault_armed;
 } tmock_t;
 
 static void mock_init(tmock_t *m)
@@ -705,6 +730,12 @@ static int mock_light_block(void *ctx, int64_t height,
         return CMT_FAULT;
     }
     (void)cmt_light_block_buf_reset(out);
+    if (m->arm != NULL) {                                        /* PROJECT */
+        m->arm->fault_armed = true;
+    }
+    if (m->fault_armed) {
+        return CMT_FAULT;
+    }
     if (m->dead) {                                               /* deadmock.go:24 */
         prov_err(err, CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE);
         return CMT_REJECT;
@@ -1701,9 +1732,11 @@ out:
  *            through the matching witness, the behind one is benign
  *            (detector.go:196), 10 is saved;
  *   call 4 — the next Update moves to the latest block, 11.
- * Then a second client: after call 1 the primary answers the recorded
- * height with ANOTHER block 10 — the call after the wait is refused
- * (VERIFICATION_FAILED, TARGET_MISMATCH) and nothing is saved.
+ * Then a second client: after call 1 the primary serves ANOTHER block 10
+ * — it has no effect: the STORED block 10 (chain A's) is the one judged
+ * and saved, as the reference judges the block it fetched before its
+ * sleep; the next Updates converge (11: a new wait, then saved) instead
+ * of an endless WITNESS_BEHIND.
  */
 static int t_update_moving_target(void)
 {
@@ -1714,6 +1747,7 @@ static int t_update_moving_target(void)
     cmt_light_client_error_t   e;
     const char                *wid[2] = { "behind", "match" };
     cmt_time_t                 now = t_at(HOUR);
+    uint8_t                    h_got[CMT_TMHASH_SIZE], h_want[CMT_TMHASH_SIZE];
     int64_t                    wait;
     bool                       adv = true;
     int                        ret = 1;
@@ -1775,12 +1809,30 @@ static int t_update_moving_target(void)
       e.code == CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND, "behind (10)");
     mock_add(&p, 10, &F->div1, &F->a.vals[10].vs);   /* another block 10 */
     mock_add(&p, 11, &F->a.sh[11], &F->a.vals[11].vs);
+    mock_add(&ws[1], 11, &F->a.sh[11], &F->a.vals[11].vs);
+    /* After the wait the STORED block 10 (chain A's) is judged — the
+     * primary is not asked for 10 again, so its new block 10 has no
+     * effect: the matching witness matches, the behind one is benign,
+     * chain A's 10 is saved (the reference's outcome for the block it
+     * fetched before its sleep). */
     T(cmt_light_client_update(c, cmt_time_add_ns(now, wait), g_out, &adv,
-                              &e) == CMT_REJECT && !adv &&
-      e.code == CMT_LIGHT_CLIENT_ERR_VERIFICATION_FAILED &&
-      e.reason == CMT_LIGHT_CLIENT_REASON_TARGET_MISMATCH &&
-      e.from == 1 && e.to == 10, "another hash at 10 → refused");
-    T(last_h(&s) == 1, "nothing saved");
+                              &e) == CMT_OK && adv &&
+      g_out->lb.signed_header != NULL &&
+      g_out->lb.signed_header->header != NULL &&
+      cmt_header_hash(g_out->lb.signed_header->header, h_got) == CMT_OK &&
+      sh_hash(&F->a.sh[10], h_want) == 0 &&
+      memcmp(h_got, h_want, CMT_TMHASH_SIZE) == 0,
+      "the stored block 10 is judged and saved, not the new one");
+    T(last_h(&s) == 10, "chain A's 10 saved");
+    /* Updates after the trick converge: 11 is a new target (the behind
+     * witness → a new wait), then it is saved — no endless BEHIND. */
+    T(cmt_light_client_update(c, cmt_time_add_ns(now, wait + SECOND), g_out,
+                              &adv, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND, "11: a new wait");
+    T(cmt_light_client_update(c, cmt_time_add_ns(now, 2 * wait + SECOND),
+                              g_out, &adv, &e) == CMT_OK && adv &&
+      g_out->lb.signed_header->header->height == 11 && last_h(&s) == 11,
+      "11 saved after its wait");
     ret = 0;
 out:
     cmt_light_client_free(c);
@@ -1935,11 +1987,186 @@ static int t_attack_lock(void)
             t_at(HOUR + 2 * MINUTE), g_out, &e) == CMT_OK &&
       last_h(&s) == 10, "works again: 10 saved");
     T(p.evidence_calls == 0 && w[0].evidence_calls == 0, "nothing sent");
+
+    /* A store holding only CLEARED records does not lock: NewClient works. */
+    cmt_light_client_free(c);
+    c = NULL;
+    T(new_client(&p, "primary", w, wid, 1, &o, &s, &c, &e) == CMT_OK &&
+      !cmt_light_client_attack_locked(c) && records_are(&s, 2, 0),
+      "NewClient over cleared records → unlocked");
     ret = 0;
 out:
     free(bz);
     free(got);
     cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* ══ 16. PROJECT — an established attack with missing evidence (DD10) ═ */
+
+/*
+ * PROVES (cmt_light_detector.h DD10, client D6's exception): the lunatic
+ * attack of row 1, but the primary's provider FAULTS from the moment the
+ * detector first asks the witness (`arm`). The witness's trace verifies
+ * (the attack is established, evidence against the primary is built),
+ * then the reverse examine asks the primary and gets CMT_FAULT. The call
+ * still returns LIGHT_CLIENT_ATTACK, the record is kept with
+ * `missing` = AGAINST_WITNESS (not Q-D4: has_against_witness false AND
+ * the bit set), the client is locked and the record durable.
+ */
+static int t_missing_evidence(void)
+{
+    tmock_t                          p, w[1];
+    tstore_t                         s;
+    cmt_light_client_options_t       o;
+    cmt_light_client_t              *c = NULL;
+    cmt_light_client_error_t         e;
+    const cmt_light_attack_record_t *r;
+    const char                      *wid[1] = { "witness" };
+    int                              ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_chain(&w[0], &F->a, 10);
+    mock_lunatic_primary(&p);
+    opts_default(&o);
+    T(new_client(&p, "primary", w, wid, 1, &o, &s, &c, &e) == CMT_OK, "init");
+    w[0].arm = &p;          /* after init: armed by the detector's first ask */
+    T(cmt_light_client_verify_light_block_at_height(c, 10, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK,
+      "a provider fault after the attack is established → still the attack");
+    T(p.fault_armed, "the primary was armed (the detector asked the witness)");
+    r = cmt_light_client_attack_record(c);
+    T(r != NULL &&
+      r->missing == CMT_LIGHT_ATTACK_MISSING_AGAINST_WITNESS &&
+      !r->has_against_witness &&
+      ev_is(&r->against_primary, &F->lun[10], 4),
+      "record kept: against the primary, the witness's side missing");
+    T(cmt_light_client_attack_locked(c) && r->durable &&
+      records_are(&s, 1, 1), "locked, durable");
+    T(last_h(&s) == 1, "nothing saved");
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* ══ 17. PROJECT — a record that is not yet durable (F3) ═════════════ */
+
+/*
+ * PROVES (client D20, F3): a second SQLite connection holds a read lock,
+ * so the store's COMMIT of the attack record fails (SQLITE_BUSY, the
+ * mechanism t_commit_fails in test_cmt_light_store.c probes): the attack
+ * still returns LIGHT_CLIENT_ATTACK and locks, `durable` is false and the
+ * store holds no record; the clear REFUSES (CMT_REJECT, still locked)
+ * while the write keeps failing; once the read lock is gone the next
+ * locked call writes the record (durable, 1 uncleared) and only then
+ * does the clear succeed.
+ */
+static int t_attack_not_durable(void)
+{
+    tmock_t                          p, w[1];
+    tstore_t                         s;
+    cmt_light_client_options_t       o;
+    cmt_light_client_t              *c = NULL;
+    cmt_light_client_error_t         e;
+    const cmt_light_attack_record_t *r;
+    const char                      *wid[1] = { "witness" };
+    sqlite3                         *reader = NULL;
+    bool                             adv = true;
+    int                              ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_chain(&w[0], &F->a, 10);
+    mock_lunatic_primary(&p);
+    opts_default(&o);
+    T(new_client(&p, "primary", w, wid, 1, &o, &s, &c, &e) == CMT_OK, "init");
+    T(sqlite3_open(s.path, &reader) == SQLITE_OK &&
+      sqlite3_exec(reader, "BEGIN; SELECT COUNT(*) FROM cmt_light_block;",
+                   NULL, NULL, NULL) == SQLITE_OK, "a reader holds SHARED");
+
+    T(cmt_light_client_verify_light_block_at_height(c, 10, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK, "attack");
+    r = cmt_light_client_attack_record(c);
+    T(r != NULL && !r->durable && cmt_light_client_attack_locked(c),
+      "locked, NOT durable (COMMIT was BUSY)");
+    T(records_are(&s, 0, 0), "no record in the store");
+    T(cmt_light_client_attack_clear(c) == CMT_REJECT &&
+      cmt_light_client_attack_locked(c), "clear refused while not durable");
+
+    T(sqlite3_exec(reader, "COMMIT", NULL, NULL, NULL) == SQLITE_OK,
+      "the reader lets go");
+    sqlite3_close(reader);
+    reader = NULL;
+    T(cmt_light_client_update(c, t_at(HOUR), g_out, &adv, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED, "a locked call");
+    T(r->durable && records_are(&s, 1, 1), "…which wrote the record");
+    T(cmt_light_client_attack_clear(c) == CMT_OK &&
+      !cmt_light_client_attack_locked(c) && records_are(&s, 1, 0),
+      "now the clear works");
+    ret = 0;
+out:
+    if (reader != NULL) {
+        (void)sqlite3_exec(reader, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(reader);
+    }
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
+/* ══ 18. PROJECT — a second client object on the same prefix (F2) ════ */
+
+/*
+ * PROVES (client D20, F2): two client objects on ONE store prefix (the
+ * rule says one; this is the guard for breaking it). Client B is made
+ * before client A finds an attack, so B starts unlocked. After A locks,
+ * B's own verification of an honest block reaches the save — and
+ * updateTrustedLightBlock reads the store's uncleared record, refuses
+ * with ATTACK_LOCKED and locks B; nothing is saved.
+ */
+static int t_two_clients_one_prefix(void)
+{
+    tmock_t                    pa, wa[1], pb, wb[1];
+    tstore_t                   s;
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *a = NULL, *b = NULL;
+    cmt_light_client_error_t   e;
+    const char                *wid[1] = { "witness" };
+    int                        ret = 1;
+
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_lunatic_primary(&pa);
+    mock_chain(&wa[0], &F->a, 10);
+    mock_chain(&pb, &F->a, 10);
+    mock_chain(&wb[0], &F->a, 10);
+    opts_default(&o);
+    T(new_client(&pa, "primary", wa, wid, 1, &o, &s, &a, &e) == CMT_OK,
+      "client A");
+    T(new_client(&pb, "primary", wb, wid, 1, &o, &s, &b, &e) == CMT_OK &&
+      !cmt_light_client_attack_locked(b), "client B, unlocked");
+    T(cmt_light_client_verify_light_block_at_height(a, 10, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_LIGHT_CLIENT_ATTACK &&
+      cmt_light_client_attack_locked(a), "A: attack, locked");
+    T(cmt_light_client_verify_light_block_at_height(b, 10, t_at(HOUR), g_out,
+                                                    &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED &&
+      cmt_light_client_attack_locked(b), "B: the save is refused, B locks");
+    T(last_h(&s) == 1, "nothing saved");
+    ret = 0;
+out:
+    cmt_light_client_free(a);
+    cmt_light_client_free(b);
     store_close(&s);
     return ret;
 }
@@ -1972,6 +2199,9 @@ int main(void)
     if (t_behind_removes_bad() != 0) goto out;
     if (t_attack_lock() != 0) goto out;
     if (t_update_moving_target() != 0) goto out;
+    if (t_missing_evidence() != 0) goto out;
+    if (t_attack_not_durable() != 0) goto out;
+    if (t_two_clients_one_prefix() != 0) goto out;
 
     printf("test_cmt_light_detector: %d checks OK\n", g_checks);
     rc = 0;
