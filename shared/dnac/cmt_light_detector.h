@@ -61,7 +61,8 @@
  *          sleep makes the whole detection return CMT_REJECT with
  *          CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND ("re-check later") AFTER
  *          every other witness was handled — nothing is saved, and the
- *          client records (target height, target hash, `now`);
+ *          client records (target height, target hash, `now`) and a deep
+ *          copy of the target light block itself;
  *        · a later call that verifies the SAME target (height and hash)
  *          with `now >= recorded now + 2*max_clock_drift + max_block_lag`
  *          is the post-sleep pass: a witness that is still too high goes
@@ -98,10 +99,14 @@
  *              belongs to one detection).
  *          Calls that do not reach the detector (backwards verification,
  *          a trusted-height lookup, Cleanup) leave it as it is — except
- *          Update, which drops a record at or below the trusted height
- *          and one whose height the primary now answers with another hash
- *          (cmt_light_client.h D21); it only ever applies to a detection
- *          of the same height AND hash.
+ *          Update, which drops a record whose height is already in the
+ *          store, and a pinned call (Update or VerifyLightBlockAtHeight,
+ *          cmt_light_client.h D21), which clears the record after it
+ *          judged the stored block, whatever the verdict; it only ever
+ *          applies to a detection of the same height AND hash. Every
+ *          clear or replacement frees the stored block
+ *          (`cmt_light_detector_wait_clear`), and so does
+ *          cmt_light_client_free.
  *        · the witnesses marked bad in a pass that ends WITNESS_BEHIND
  *          (a conflicting header that did not verify, :74-75; an
  *          errBadWitness, :77-82) are REMOVED before WITNESS_BEHIND is
@@ -118,9 +123,10 @@
  *      keeps producing, and get WITNESS_BEHIND every time. The fix is in
  *      Update (cmt_light_client.h D21), as the reference's outcome: while
  *      a wait is recorded, Update returns WITNESS_BEHIND without fetching
- *      until the wait has run, then verifies the RECORDED height and hash
- *      (a different hash there is refused, nothing saved), and only the
- *      next Update moves to the latest block. Keying the wait to the
+ *      until the wait has run, then verifies the STORED target block —
+ *      the primary is not asked for it again, so what it serves at that
+ *      height meanwhile changes nothing — and only the next Update moves
+ *      to the latest block. Keying the wait to the
  *      WITNESS instead (one `since` per witness, whatever the target) was
  *      considered and REJECTED: the reference's sleep runs AFTER the target was fetched,
  *      so the target's time is at most `now + max_clock_drift` of the
@@ -196,6 +202,16 @@
  *      validator of the set, and the block still verifies. Here such a
  *      signature is SKIPPED and counted (`n_unknown_signers`); the
  *      validators that did sign are named as before.
+ *      ⚠ CLAIMED, NOT VERIFIED (F4): for the same reason, a COMMIT entry
+ *      past the 2/3 stop point whose address DOES name a validator was
+ *      never signature-checked either. `byzantine_validators` therefore
+ *      lists the validators the two commits CLAIM signed, in both
+ *      branches (the lunatic branch reads the conflicting commit's
+ *      COMMIT flags the same way, evidence.go:257-268), not validators
+ *      proven to have signed. The reference's evidence is the same list
+ *      (it, too, reads flags only). Any later use that punishes or blames
+ *      a validator — the future K25-4 evidence work — must verify each
+ *      named signature against its sign bytes first.
  *  DD7 Witnesses are compared in INDEX ORDER (the client's D2) where the
  *      reference starts one goroutine per witness and handles the results
  *      in ARRIVAL order (:50-95). An early return (an attack, a priority
@@ -218,7 +234,9 @@
  *      (cmt_light_store.h D9). A failed write still locks the client in
  *      memory and still returns the attack; the record's `durable` is then
  *      false and the failure is logged (a restart would not reload that
- *      lock). While locked, cmt_light_client_update,
+ *      lock); the write is retried at the start of every call while
+ *      locked and before a clear, which refuses until it succeeded
+ *      (cmt_light_client.h D20). While locked, cmt_light_client_update,
  *      cmt_light_client_verify_light_block_at_height and
  *      cmt_light_client_cleanup refuse with
  *      CMT_LIGHT_CLIENT_ERR_ATTACK_LOCKED and change nothing; so does the
@@ -474,14 +492,25 @@ typedef struct {
 } cmt_light_peer_t;
 
 /** DD2 — the one recorded wait: a witness reached the sleep (:164-168)
- *  while the client verified `height` / `hash`, at the caller's `since`. */
+ *  while the client verified `height` / `hash`, at the caller's `since`.
+ *  `target` is a deep copy of THAT light block (owned; NULL only while the
+ *  client has taken it out to judge it, cmt_light_client.h D21): after
+ *  the wait the client judges this block, never a re-fetched one, as the
+ *  reference keeps the same block across its sleep. One buffer (about
+ *  0.9 MiB, cmt_light_client.h D3) at most. Release with
+ *  `cmt_light_detector_wait_clear`. */
 typedef struct {
-    bool       pending;
-    int64_t    height;
-    uint8_t    hash[CMT_TMHASH_SIZE];
-    size_t     hash_len;
-    cmt_time_t since;
+    bool                   pending;
+    int64_t                height;
+    uint8_t                hash[CMT_TMHASH_SIZE];
+    size_t                 hash_len;
+    cmt_time_t             since;
+    cmt_light_block_buf_t *target;
 } cmt_light_detector_wait_t;
+
+/** Forget the recorded wait: free its target and zero it. NULL is a
+ *  no-op. Every path that clears or replaces the record calls this. */
+void cmt_light_detector_wait_clear(cmt_light_client_t *c);
 
 /* client.go:133-162 — `type Client struct`. */
 struct cmt_light_client {

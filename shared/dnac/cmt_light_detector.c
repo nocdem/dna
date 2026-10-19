@@ -1021,6 +1021,16 @@ static int64_t wait_ns(const cmt_light_client_t *c)
                                 c->o.max_block_lag);
 }
 
+/* DD2 — forget the recorded wait and free its stored target. */
+void cmt_light_detector_wait_clear(cmt_light_client_t *c)
+{
+    if (c == NULL) {
+        return;
+    }
+    cmt_light_block_buf_free(c->wait.target);
+    memset(&c->wait, 0, sizeof(c->wait));
+}
+
 /* DD2 — a wait is recorded and the caller's `now` is at or past
  * since + 2*drift + lag (Update's pinned target, cmt_light_client.h D21). */
 bool cmt_light_detector_wait_elapsed(const cmt_light_client_t *c,
@@ -1159,12 +1169,23 @@ int cmt_light_detect_divergence(cmt_light_client_t *c,
             rc = reject(err, CMT_LIGHT_CLIENT_ERR_NO_WITNESSES);
             goto out;
         }
-        if (!wait_is_for(c, height, hash, hash_len)) {
+        if (!wait_is_for(c, height, hash, hash_len) || c->wait.target == NULL) {
+            /* Record THIS target and a deep copy of its block (D21): the
+             * block judged after the wait is this one, never re-fetched. */
+            cmt_light_block_buf_t *t = cmt_light_block_buf_new();
+
+            if (t == NULL || cmt_light_client_buf_copy(t, last) != CMT_OK) {
+                cmt_light_block_buf_free(t);
+                rc = fault(err);
+                goto out;
+            }
+            cmt_light_detector_wait_clear(c);       /* the old one, if any */
             c->wait.pending  = true;
             c->wait.height   = height;
             memcpy(c->wait.hash, hash, hash_len);
             c->wait.hash_len = hash_len;
             c->wait.since    = now;
+            c->wait.target   = t;
         }
         rc = reject(err, CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND);
         goto out_keep_wait;
@@ -1182,7 +1203,7 @@ int cmt_light_detect_divergence(cmt_light_client_t *c,
 out:
     /* Every outcome but WITNESS_BEHIND ends this detection: the recorded
      * wait, if any, is spent. */
-    memset(&c->wait, 0, sizeof(c->wait));
+    cmt_light_detector_wait_clear(c);
 out_keep_wait:
     cmt_light_block_buf_free(buf);
     free(to_remove);
