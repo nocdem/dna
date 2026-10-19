@@ -7,9 +7,11 @@
  *
  * Usage:
  *   nodus-light run --data <dir> [--trust-height H --trust-hash HEX]
- *                   [--node host:port:pinfp]... [--interval S]
- *   nodus-light status --data <dir>
- *   nodus-light clear-attack --data <dir> [--node host:port:pinfp]...
+ *                   [--node host:port:pinfp]... [--interval S] [--chain-id HEX]
+ *   nodus-light status --data <dir> [--chain-id HEX]
+ *   nodus-light clear-attack --data <dir> [--node host:port:pinfp]... [--chain-id HEX]
+ *   (--chain-id: 64 hex; default the compiled testnet chain — another chain,
+ *    e.g. a local harness or a new genesis, passes its id with its --node list)
  *
  * ── WHAT IT IS BUILT ON ────────────────────────────────────────────────
  *   · the light client (cmt_light_client.{h,c}) with its detector, the
@@ -345,6 +347,7 @@ typedef struct {
     bool         have_trust_height;
     uint64_t     trust_height;
     const char  *trust_hash_hex;
+    const char  *chain_id_hex;     /* --chain-id, else the compiled testnet id */
     light_node_t nodes[NODUS_LIGHT_MAX_NODES];
     size_t       n_nodes;
     uint64_t     interval_s;
@@ -370,7 +373,9 @@ static void usage(void)
         "                    a store whose block is older than 48 h\n"
         "  --node H:P:FP     a node (host, TCP port, 128-hex server key pin);\n"
         "                    repeat; default: the %u compiled testnet nodes on 4001\n"
-        "  --interval S      seconds between updates (default %u)\n",
+        "  --interval S      seconds between updates (default %u)\n"
+        "  --chain-id HEX    the chain id (64 hex); default: the compiled testnet\n"
+        "                    chain. Pass the matching --node list with it.\n",
         (unsigned)NODUS_LIGHT_DEFAULT_NODE_COUNT,
         (unsigned)NODUS_LIGHT_DEFAULT_INTERVAL_S);
 }
@@ -380,7 +385,8 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
                       light_args_t *a)
 {
     memset(a, 0, sizeof(*a));
-    a->interval_s = NODUS_LIGHT_DEFAULT_INTERVAL_S;
+    a->interval_s   = NODUS_LIGHT_DEFAULT_INTERVAL_S;
+    a->chain_id_hex = NODUS_LIGHT_CHAIN_ID_HEX;
 
     for (int i = first; i < argc; i++) {
         const char *opt = argv[i];
@@ -388,6 +394,8 @@ static int parse_args(int argc, char **argv, int first, bool allow_trust,
 
         if (strcmp(opt, "--data") == 0 && val) {
             a->data_dir = val; i++;
+        } else if (strcmp(opt, "--chain-id") == 0 && val) {
+            a->chain_id_hex = val; i++;
         } else if (allow_trust && strcmp(opt, "--trust-height") == 0 && val) {
             if (parse_u64(val, (uint64_t)INT64_MAX, &a->trust_height) != 0 ||
                 a->trust_height == 0) {
@@ -922,9 +930,9 @@ static int cmd_run(int argc, char **argv)
         free(a);
         return 2;
     }
-    if (hex_decode_exact(NODUS_LIGHT_CHAIN_ID_HEX, chain_id,
+    if (hex_decode_exact(a->chain_id_hex, chain_id,
                          sizeof(chain_id)) != 0) {
-        fprintf(stderr, "internal: the compiled chain id does not decode\n");
+        fprintf(stderr, "--chain-id: 64 hex characters (32 bytes) required\n");
         goto done;
     }
     if (a->trust_hash_hex != NULL &&
@@ -1186,7 +1194,7 @@ static int cmd_status(int argc, char **argv)
         free(a);
         return 2;
     }
-    if (hex_decode_exact(NODUS_LIGHT_CHAIN_ID_HEX, chain_id,
+    if (hex_decode_exact(a->chain_id_hex, chain_id,
                          sizeof(chain_id)) != 0) {
         goto done;
     }
@@ -1292,7 +1300,7 @@ static int cmd_clear_attack(int argc, char **argv)
         free(a);
         return 2;
     }
-    if (hex_decode_exact(NODUS_LIGHT_CHAIN_ID_HEX, chain_id,
+    if (hex_decode_exact(a->chain_id_hex, chain_id,
                          sizeof(chain_id)) != 0) {
         goto done;
     }
