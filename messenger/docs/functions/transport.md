@@ -69,7 +69,7 @@ Presence is handled natively by Nodus server (v0.9.0+). The legacy `transport_re
 
 ## Nodus network readiness layer (`nodus/src/net/nodus_net_poll.h`, nodus 0.26.14)
 
-Net-layer package N1 (decision `docs/plans/decisions/2026-10-19-kurultay-26b-summary.md`, local). One readiness backend for the nodus ports 4000-4004 plus socket shims; no framing, no crypto, no policy — each caller keeps its own dispatch rule. Backends: Linux / Android epoll; Windows `select` (run under Wine only — `nodus/tests/test_net_poll_win.c`; never on native Windows); Emscripten refused by `#error` in `nodus_net_poll.c:27-29`. Only user today: the 4004 host's io seam (`nodus_witness_p2p.c`). Mechanism: `nodus/docs/ARCHITECTURE.md` "Network readiness layer (`nodus_net_poll`)". Other nodus transport entries (`nodus_tcp_*`) are in [dht.md](dht.md) §12.6-12.10.
+Net-layer package N1 (decision `docs/plans/decisions/2026-10-19-kurultay-26b-summary.md`, local). One readiness backend for the nodus ports 4000-4004 plus socket shims; no framing, no crypto, no policy — each caller keeps its own dispatch rule. Backends: Linux / Android epoll; Windows `select` (run under Wine only — `nodus/tests/test_net_poll_win.c`; never on native Windows); Emscripten refused by `#error` in `nodus_net_poll.c:27-29`. Only user today: the 4004 host's io seam (`nodus/src/net/nodus_p2p_host.c` since nodus 0.26.15 / N3; `nodus_witness_p2p.c` before). Mechanism: `nodus/docs/ARCHITECTURE.md` "Network readiness layer (`nodus_net_poll`)". Other nodus transport entries (`nodus_tcp_*`) are in [dht.md](dht.md) §12.6-12.10.
 
 **Threads:** one thread (the loop owner) owns a set; only `nodus_net_poll_wake` may be called from another thread, and it must not overlap `nodus_net_poll_free` (join every waker first).
 
@@ -100,7 +100,7 @@ Net-layer package N1 (decision `docs/plans/decisions/2026-10-19-kurultay-26b-sum
 | `int nodus_net_poll_del(nodus_net_poll_t *p, nodus_sock_t s)` | **NEW.** Unregister `s` (call before closing it). Returns 0 or -1 (Linux: `EINVAL` for `p == NULL`, else `epoll_ctl`'s errno; Windows: `WSAEINVAL` for a bad argument or a socket not registered). |
 | `int nodus_net_poll_wait(nodus_net_poll_t *p, int timeout_ms, nodus_net_event_t *out, int cap)` | **NEW.** Wait up to `timeout_ms` (< 0 without limit, 0 no block); write at most `cap` ready sockets to `out`; a fired wake is drained here and NOT reported. Linux: one `epoll_wait(epfd, …, cap, timeout_ms)`, `cap ≤ NODUS_NET_POLL_MAX_BATCH`, the wake occupies one of the `cap` slots. Windows: one `select` over the whole set (wake not counted in `cap`); fair rotation — every socket that stays ready is reported within ⌈n / cap⌉ consecutive calls; on `WSAENOTSOCK` up to `cap` stale entries are evicted and reported once as `ERR\|HUP` (if none is stale: -1 with `WSAENOTSOCK`); a reused handle value is not detected. Returns the number written (0 on timeout, on a wake alone, or — Linux, cap 1 — when the wake took the only slot), or -1 (Linux: `EINVAL` for a bad argument, else `epoll_wait`'s errno, e.g. `EINTR`; Windows: `WSAEINVAL` for a bad argument or a wait without limit on an empty set, else `select`'s error). |
 | `void nodus_net_poll_wake(nodus_net_poll_t *p)` | **NEW.** Make a blocked or the next `_wait` return. Thread-safe against `_wait`; the ONLY call allowed off the loop thread; must NOT overlap `_free`. No-op on a set opened without wake. |
-| `int nodus_net_probe_connect(nodus_sock_t s)` | **NEW.** Has the non-blocking connect on `s` finished (either way)? Does not block. Linux: `poll({s, POLLOUT}, 1, 0)`; Windows: a one-socket `select` on the write and except sets. Returns > 0 finished, 0 still connecting, < 0 error (Linux `poll`'s -1, Windows `select`'s `SOCKET_ERROR`) — a caller must NOT read < 0 as "still connecting". Success (`SO_ERROR`, `getpeername`) is the caller's check. p2p's caller tests `<= 0` (Linux-only; revisited in package N3). |
+| `int nodus_net_probe_connect(nodus_sock_t s)` | **NEW.** Has the non-blocking connect on `s` finished (either way)? Does not block. Linux: `poll({s, POLLOUT}, 1, 0)`; Windows: a one-socket `select` on the write and except sets. Returns > 0 finished, 0 still connecting, < 0 error (Linux `poll`'s -1, Windows `select`'s `SOCKET_ERROR`) — a caller must NOT read < 0 as "still connecting". Success (`SO_ERROR`, `getpeername`) is the caller's check. p2p's caller (`io_connect_done`, `nodus_p2p_host.c:708`) still tests `<= 0` at nodus 0.26.15 — correct on Linux only; the header's "revisited in package N3" (`nodus_net_poll.h:225-226`) did not happen in N3. |
 
 ### Socket shims
 
@@ -125,17 +125,86 @@ Net-layer package N1 (decision `docs/plans/decisions/2026-10-19-kurultay-26b-sum
 | `NODUS_NET_IS_EINPROGRESS(e)` | `EINPROGRESS` | `WSAEWOULDBLOCK` |
 | `NODUS_NET_IS_EINTR_IO(e)` | `EINTR` | never (`0 && (e)`; the sockets are non-blocking) |
 | `NODUS_NET_IS_PEER_GONE(e)` | `EPIPE`, `ECONNRESET`, `ENOTCONN`, `ESHUTDOWN` | `WSAECONNRESET`, `WSAECONNABORTED`, `WSAESHUTDOWN`, `WSAENOTCONN` |
-| `NODUS_NET_IS_CONNABORTED(e)` | `ECONNABORTED` (accept: retry) | `WSAECONNRESET` or `WSAECONNABORTED` — ⚠ NOT GROUNDED in this tree (no Windows accept path exists yet); not used by any Windows build in N1; re-read before N3 (`nodus_net_poll.h:280-284`) |
+| `NODUS_NET_IS_CONNABORTED(e)` | `ECONNABORTED` (accept: retry) | `WSAECONNRESET` or `WSAECONNABORTED` — ⚠ NOT GROUNDED in this tree (no Windows accept path exists yet); not used by any Windows build in N1; since N3 (0.26.15) the 4004 host's accept path uses it (`nodus_p2p_host.c:753`) and that file compiles for Windows, while the header still says "re-read before N3" (`nodus_net_poll.h:281-285`) — no Windows program runs the host |
 
-### Changed fields of the 4004 host's io seam (`nodus/src/witness/nodus_witness_p2p.h`)
+### Changed fields of the 4004 host's io seam (N1, 0.26.14; declared in `nodus/src/net/nodus_p2p_host.h` since N3, 0.26.15 — `nodus_witness_p2p.h` before)
 
-No `nodus_p2p_io_*` function signature changed; the structs it works on did.
+No `nodus_p2p_io_*` function signature changed in N1; the structs it works on did. The full current declarations are in "Nodus witness-free 4004 host" below.
 
 | Field | Description |
 |-------|-------------|
 | `nodus_sock_t fd;` (`nodus_p2p_sock_t`) | **CHANGED** from `int fd` (-1 = none) to `nodus_sock_t` (`NODUS_SOCK_INVALID` = none). `events` / `ready` now hold `NODUS_NET_*` bits (same values as the `EPOLL*` bits they held). |
 | `nodus_net_poll_t poll;` (`nodus_p2p_io_t`) | **NEW.** The readiness set + the wake when asked; replaces the removed `int epfd` and `int wake_fd` fields. |
 | `nodus_sock_t listen_fd;` (`nodus_p2p_io_t`) | **CHANGED** from `int` (-1 = none) to `nodus_sock_t` (`NODUS_SOCK_INVALID` = none). |
+
+---
+
+## Nodus witness-free 4004 host (`nodus/src/net/nodus_p2p_host.h`, nodus 0.26.15)
+
+Net-layer package N3 (decision `docs/plans/decisions/2026-10-19-kurultay-26b-summary.md`, local; design `docs/plans/2026-10-19-net-layer-design.md` §11, local). The part of the 4004 cometbft p2p host that needs no witness — sockets, handshake / ADDR-verify worker, clocks, identity, own ADDR record, address-book file, NodeInfo, transport, switch, PEX — moved out of `nodus/src/witness/nodus_witness_p2p.c` with its logic unchanged; the witness embeds it by value and supplies the policy rows. In the common source list (compiles for Windows; never run there). Caller today: the witness only (`nodus_witness_p2p_new` / `_poll` / `_free`); no witness-free program calls it yet. Mechanism, caller obligations, lifecycle and Windows arms: `nodus/docs/ARCHITECTURE.md` "The witness-free 4004 host (`nodus_p2p_host`)".
+
+**`nodus_witness_p2p_*` public API: unchanged.** Every `nodus_witness_p2p_*` function in `nodus/src/witness/nodus_witness_p2p.h` keeps its signature; `nodus_witness_p2p_new` / `_poll` / `_free` now call the host's `_init` / `_start`, the poll steps and `_free`, and `nodus_witness_p2p_listen_port` / `_id` / `_switch` / `_peer_count` / `_peer_id_at` / `_has_peer` / `_send` forward to the `nodus_p2p_host_*` accessor of the same name (`nodus_witness_p2p.c:2317-2363`). The config type, the socket host, the clocks and the 0x0A sign / verify below were declared in `nodus_witness_p2p.h` before N3; that header now includes `net/nodus_p2p_host.h` (`nodus_witness_p2p.h:213`), and `nodus_server.h`, `nodus_witness_host.h` and `nodus_witness_network_file.h` include it directly.
+
+**Threads:** every host call from ONE thread; never `nodus_p2p_host_free` or `nodus_p2p_host_start` from inside a reactor or policy callback. The worker threads touch only handshake and ADDR-verification jobs.
+
+### Config (moved from `nodus_witness_p2p.h`, unchanged)
+
+| Declaration | Description |
+|-------------|-------------|
+| `#define NODUS_P2P_MAX_PEER_LIST 64` | **MOVED.** The capacity of each of the three peer lists. |
+| `typedef struct { … } nodus_p2p_config_t;` | **MOVED.** The P2P section of the node's config, reference `config.go` key names: `persistent_peers[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_NETADDR_STR_MAX]` + `n_persistent_peers`, `unconditional_peer_ids[…][CMT_P2P_ID_CAP]` + `n_unconditional_peer_ids`, `private_peer_ids[…][CMT_P2P_ID_CAP]` + `n_private_peer_ids`, `bool pex`, `bool addr_book_strict`, `bool allow_duplicate_ip`, `int max_num_inbound_peers`, `int max_num_outbound_peers`, `int64_t flush_throttle_timeout_ms`, `int max_packet_msg_payload_size`, `int64_t send_rate`, `int64_t recv_rate`, `int64_t handshake_timeout_ms`, `int64_t dial_timeout_ms` (0 = the transport's own 3 s / 1 s constants), `char moniker[64]` (empty = `"nodus-"` + the first 16 characters of the node ID). |
+| `void nodus_p2p_config_default(nodus_p2p_config_t *c)` | **MOVED.** The reference defaults. |
+| `int nodus_p2p_config_add_persistent(nodus_p2p_config_t *c, const char *s)` | **MOVED.** Append one `"id@ip:port"` entry. Returns 0; -1 when the list is full or the entry does not fit. |
+| `int nodus_p2p_config_add_unconditional(nodus_p2p_config_t *c, const char *id)` | **MOVED.** Append one ID. Returns 0 or -1 (as above). |
+| `int nodus_p2p_config_add_private(nodus_p2p_config_t *c, const char *id)` | **MOVED.** Append one ID (never gossiped). Returns 0 or -1 (as above). |
+
+### Socket host (moved from `nodus_witness_p2p.c`, unchanged except the Windows arms)
+
+| Declaration | Description |
+|-------------|-------------|
+| `#define NODUS_P2P_ACCEPT_BUDGET CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS` | **MOVED.** The most `accept(2)` calls one pass makes, refused and interrupted ones included; ⚠ NOT GROUNDED as a number (no reference counterpart — the reference's accept goroutine has no bound). A backlog left over wakes the next wait (level-triggered `NODUS_NET_IN`); nothing is refused because of the budget. |
+| `typedef struct { nodus_sock_t fd; uint64_t gen; bool connecting; bool failed; uint32_t events; uint32_t ready; } nodus_p2p_sock_t;` | **MOVED.** One transport slot's socket (`fd` `NODUS_SOCK_INVALID` = none; `events` / `ready` are `NODUS_NET_*` bits). |
+| `typedef struct { cmt_p2p_transport_t *t; nodus_net_poll_t poll; nodus_sock_t listen_fd; bool listen_armed; nodus_p2p_sock_t *socks; int n_socks; int last_served; } nodus_p2p_io_t;` | **MOVED.** Non-blocking sockets for one transport, indexed by its slot, on their own readiness set. `last_served` -1 = none yet (the next pump starts just past it). |
+| `int nodus_p2p_io_init(nodus_p2p_io_t *io, bool with_wake)` | **MOVED.** Zero `io`, open its readiness set (with the worker's wake when asked). Returns 0 or -1. |
+| `void nodus_p2p_io_free(nodus_p2p_io_t *io)` | **MOVED.** Close every slot socket and the listener, then the set (wake first); `io` is zeroed with the set left "not open". |
+| `int nodus_p2p_io_listen(nodus_p2p_io_t *io, const char *ip, uint16_t port)` | **MOVED; CHANGED (Windows only).** Bind + listen on an IP literal: Linux `SO_REUSEADDR`, Windows `SO_EXCLUSIVEADDRUSE` (N3-FIX). Returns 0 or -1 with the failure's code kept (Linux `errno`; Windows `nodus_net_errno()`; a bad address sets `EINVAL` and, on Windows, `WSAEINVAL`). |
+| `int nodus_p2p_io_dial(nodus_p2p_io_t *io, int slot, uint64_t gen, const cmt_p2p_netaddr_t *addr)` | **MOVED.** The transport's `dial` row body: a non-blocking `connect(2)` to `addr`'s IP literal. Returns 0 connecting; -1 failed at once. |
+| `void nodus_p2p_io_close(nodus_p2p_io_t *io, int slot, uint64_t gen)` | **MOVED.** The transport's `close` row body; ignores a stale (slot, gen). |
+| `void nodus_p2p_io_wait(nodus_p2p_io_t *io, int timeout_ms)` | **MOVED.** Re-arm `NODUS_NET_IN` on every socket whose `read_buf` has room again, then one `nodus_net_poll_wait` (batch 64) up to `timeout_ms`. |
+| `void nodus_p2p_io_pump(nodus_p2p_io_t *io)` | **MOVED.** One I/O pass: accept while `can_accept` (at most `NODUS_P2P_ACCEPT_BUDGET`), finish the connects, then per socket the continuous read and the continuous write. Reactor callbacks run inside this call. |
+| `void nodus_p2p_io_flush(nodus_p2p_io_t *io)` | **MOVED.** The continuous write of every socket (the pass's last step); delivers no message. |
+| `int64_t nodus_p2p_mono_ns(void *ctx)` | **MOVED.** Monotonic clock, ns (every p2p deadline). |
+| `int64_t nodus_p2p_wall_ns(void *ctx)` | **MOVED.** Wall clock, ns (address-book timestamps only). |
+| `int64_t nodus_p2p_rand_int63n(void *ctx, int64_t n)` | **MOVED.** [0, n) from OS randomness. |
+| `int nodus_p2p_sc_sign(void *ctx, const uint8_t *msg, size_t msg_len, uint8_t sig_out[CMT_P2P_SC_SIG_SIZE])` | **MOVED.** The secret connection's sign under purpose 0x0A, `ctx` = the `nodus_identity_t *`; safe on a worker thread. |
+| `int nodus_p2p_sc_verify(void *ctx, const uint8_t sig[CMT_P2P_SC_SIG_SIZE], const uint8_t *msg, size_t msg_len, const uint8_t pk[CMT_P2P_SC_DSA_PK_SIZE])` | **MOVED.** The matching verify under purpose 0x0A. |
+
+### The host (NEW in N3)
+
+| Declaration | Description |
+|-------------|-------------|
+| `#define NODUS_P2P_WQ_N 3` | **NEW.** Worker queues: outbound handshakes, inbound handshakes, ADDR verifications. |
+| `#define NODUS_P2P_WORKERS_DEFAULT 2` | **NEW.** Worker threads when `n_workers` is 0. |
+| `#define NODUS_P2P_WORKERS_MAX 8` | **NEW.** Cap on worker threads (a larger `n_workers` is clamped). |
+| `typedef struct { void *ctx; bool (*is_bonded)(void *ctx, const char *id); int (*bonded_count)(void *ctx); bool (*bonded_pubkey)(void *ctx, const char *id, uint8_t pk[QGP_DSA87_PUBLICKEYBYTES]); bool (*may_receive)(void *ctx); bool (*recv_near_full)(void *ctx); uint64_t (*queue_mark)(void *ctx); } nodus_p2p_host_policy_t;` | **NEW.** The embedder's answers. NULL row meanings: `is_bonded` → false; `bonded_count` → 0; `bonded_pubkey` → no key for any ID (no signed ADDR record verifies), and `nodus_p2p_host_init` REFUSES `cfg->pex` on with this row NULL; `may_receive` → true; `recv_near_full` → false; `queue_mark` → the transport gets NO `queue_mark` row (every delivered message counts as a peer's turn), not a constant 0. |
+| `typedef struct { const nodus_identity_t *identity; const uint8_t *chain_id; const nodus_p2p_config_t *cfg; const char *listen_ip; uint16_t listen_port; const char *external_ip; const char *data_path; const char *seq_dir; bool open_listener; int n_workers; const uint8_t *channels; size_t n_channels; const cmt_p2p_reactor_t *reactors; int n_reactors; nodus_p2p_host_policy_t policy; } nodus_p2p_host_params_t;` | **NEW.** What the host is built from; every pointer borrowed. `identity` needs `has_mlkem`; `chain_id` 32 bytes; `external_ip` `""`/NULL = none; `open_listener` false = no accept (tests); `n_workers` 0 = 2; `channels` in NodeInfo order, at most `CMT_P2P_MAX_NUM_CHANNELS − 1` (PEX 0x00 appended by the host when `cfg->pex`); `reactors` registered in this order (copied), before PEX — each `get_channels` array must outlive the host. |
+| `typedef struct { … } nodus_p2p_host_t;` | **NEW.** The host, a complete type so it can be embedded by value. Must NOT be moved or copied after `_init` (it points into itself). An embedder reads its fields and writes only `bool self_bonded` (PEX pushes the own record only while true; a witness-free host leaves it false). Lifecycle fields `bool init_ok` (end of a successful `_init`) and `bool started` (set on entry to `_start`); `char data_path[256]`, `char seq_dir[256]` bound the path lengths. |
+| `int nodus_p2p_host_init(nodus_p2p_host_t *h, const nodus_p2p_host_params_t *prm)` | **NEW.** Zero `h`, then build: listener, own address, NodeInfo, transport, switch, the caller's reactors, address book + PEX (when `cfg->pex`), the configured peer lists. Returns 0 (`init_ok` set), or -1 (logged) — then call `nodus_p2p_host_free(h)`. Refused before anything is built: a NULL required parameter; `n_channels` over `CMT_P2P_MAX_NUM_CHANNELS − 1` or a count without a list; `n_reactors < 0` or a count without a list; a peer-list count outside [0, `NODUS_P2P_MAX_PEER_LIST`]; a `data_path` / `seq_dir` that does not fit 256 bytes with its NUL; PEX on without `policy.bonded_pubkey`; no ML-KEM key; a listen address that is not an IP literal. Refused after the reactors are registered: a NodeInfo channel set (`channels` + PEX) that is not exactly the union of the registered reactors' channels. Only on a fresh (zeroed) or freed host. |
+| `int nodus_p2p_host_start(nodus_p2p_host_t *h)` | **NEW.** Worker threads, switch start (PEX loads the address book), own ADDR record, persistent-peer dial, the `p2p on …` INFO line. Returns 0, or -1 (logged) — then call `nodus_p2p_host_free(h)`. -1 with no side effect when the host is not `init_ok` or was already started (`started` is set on entry, so a failed `_start` is not retried — only `_free` recovers). |
+| `int nodus_p2p_host_poll(nodus_p2p_host_t *h, int timeout_ms)` | **NEW.** One whole pass for a witness-free caller: `_poll_io`, `_pex_tick`, `_own_record_check`, `_flush`. Returns 0; -1 with nothing done when the host is not running (not `init_ok`, not started, or freed). |
+| `void nodus_p2p_host_poll_io(nodus_p2p_host_t *h, int timeout_ms)` | **NEW.** Worker results, the socket wait (≤ `timeout_ms`), worker results, the I/O pass, the switch tick. No-op unless `init_ok`. |
+| `void nodus_p2p_host_pex_tick(nodus_p2p_host_t *h)` | **NEW.** PEX's tick (no-op without PEX or unless `init_ok`). |
+| `void nodus_p2p_host_own_record_check(nodus_p2p_host_t *h)` | **NEW.** When the address book has seen a record of ours at a seq above ours, or at our seq with different bytes, sign a new one at that seq + 1 and tell PEX (an `UINT64_MAX` seq is logged once and not exceeded). No-op without an address book, without an own record, or unless `init_ok`. |
+| `void nodus_p2p_host_flush(nodus_p2p_host_t *h)` | **NEW.** Final write of everything the pass produced (`nodus_p2p_io_flush`). No-op unless `init_ok`. |
+| `void nodus_p2p_host_free(nodus_p2p_host_t *h)` | **NEW.** Switch stop (the book is saved; reactors' `remove_peer` rows run), worker stop, PEX, switch, transport, book, sockets, mutex, NodeInfo; clears `init_ok` / `started` last. NULL-safe; safe after a failed `_init` / `_start` and twice; does not free `h`. |
+| `uint16_t nodus_p2p_host_listen_port(const nodus_p2p_host_t *h)` | **NEW.** The port actually listened on (0 = none or not `init_ok`). |
+| `const char *nodus_p2p_host_id(const nodus_p2p_host_t *h)` | **NEW.** This node's p2p ID (`""` unless `init_ok`). |
+| `cmt_p2p_switch_t *nodus_p2p_host_switch(nodus_p2p_host_t *h)` | **NEW.** The switch (NULL unless `init_ok`). |
+| `int nodus_p2p_host_peer_count(const nodus_p2p_host_t *h)` | **NEW.** Connected peers, in the switch's peer-set order (0 unless `init_ok`). |
+| `bool nodus_p2p_host_peer_id_at(const nodus_p2p_host_t *h, int i, char out[CMT_P2P_ID_CAP])` | **NEW.** The i-th connected peer's ID. Returns false outside the set or unless `init_ok`. |
+| `bool nodus_p2p_host_has_peer(const nodus_p2p_host_t *h, const char *peer_id)` | **NEW.** Whether `peer_id` is in the switch's peer set now. |
+| `bool nodus_p2p_host_send(nodus_p2p_host_t *h, const char *peer_id, uint8_t ch, const uint8_t *msg, size_t len)` | **NEW.** Send `msg` to the connected peer on channel `ch` (Send ≡ TrySend, R-P2P-19). Returns true when the channel's queue took it; false unless `init_ok`. |
+| `bool nodus_p2p_host_signed_addr(nodus_p2p_host_t *h, const uint8_t pk[NODUS_PK_BYTES], char *out, size_t cap)` | **NEW.** The `"ip:port"` named by the verified signed ADDR record of the identity with chain key `pk` (our own identity answers from our own record). Returns true and `out`, or false (no record held). The witness's signed-address lookup forwards here. |
 
 ---
 

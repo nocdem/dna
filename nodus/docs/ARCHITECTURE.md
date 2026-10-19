@@ -106,9 +106,15 @@ nodus/
 │   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
 │   ├── net/
-│   │   └── nodus_net_poll.c/h # Socket readiness (epoll / Windows select) + socket shims for
-│   │                          #   ports 4000-4004 — net-layer package N1 (0.26.14); user today:
-│   │                          #   the 4004 host's io seam only (§15 "Network readiness layer")
+│   │   ├── nodus_net_poll.c/h # Socket readiness (epoll / Windows select) + socket shims for
+│   │   │                      #   ports 4000-4004 — net-layer package N1 (0.26.14); user today:
+│   │   │                      #   the 4004 host's io seam only (§15 "Network readiness layer")
+│   │   └── nodus_p2p_host.c/h # The witness-free 4004 p2p host — net-layer package N3 (0.26.15):
+│   │                          #   sockets (nodus_p2p_io_*), handshake / ADDR-verify worker, clocks,
+│   │                          #   identity, own ADDR record, address-book file, NodeInfo, transport,
+│   │                          #   switch, PEX; moved out of nodus_witness_p2p.c, which embeds it.
+│   │                          #   Common source list (compiles for Windows); no program but the
+│   │                          #   witness calls it yet (§15 "The witness-free 4004 host")
 │   ├── crypto/
 │   │   ├── nodus_sign.c       # Dilithium5 sign/verify/hash wrappers
 │   │   └── nodus_identity.c   # Identity generation, save/load, seed derivation
@@ -166,7 +172,7 @@ nodus/
 │       │                            #   glue — the ONLY consensus lane since R3 W3; the legacy PBFT
 │       │                            #   lane (nodus_witness_bft/sync/cert/bootstrap/mempool) was
 │       │                            #   DELETED in R3 W4
-│       ├── nodus_witness_p2p.c/h    # 4004 p2p glue: the cometbft switch (cmt_p2p_*), reactor host rows, bonded set (0.20.0; replaced nodus_witness_peer.c/h)
+│       ├── nodus_witness_p2p.c/h    # 4004 p2p witness bindings: bonded set, consensus seam, the seven reactors, M4, cc tick, genesis bundle; embeds net/nodus_p2p_host (which owns the cometbft switch since N3, 0.26.15) (0.20.0; replaced nodus_witness_peer.c/h)
 │       ├── nodus_witness_handlers.c/h # DNAC message dispatch (spend, query, block)
 │       ├── nodus_witness_verify.c/h # TX verification (hash, sig, balance, fee, nullifiers)
 │       └── nodus_witness_v2_schema.c/h # Ledger V2 versioned schema S5..S13 (S13 = tm_wal, tm_state, v2_blocks.commit_cert;
@@ -1605,7 +1611,8 @@ fill again.
 
 **`nodus.addr_seq` does not move in the combined binary.** The p2p address-record
 sequence file (`NODUS_P2P_ADDR_SEQ_FILE` = `"nodus.addr_seq"`,
-`nodus_witness_p2p.c:1775`) is written under `seq_dir`;
+`nodus/src/net/nodus_p2p_host.c:1372` since N3, 0.26.15 — it was in `nodus_witness_p2p.c`
+before) is written under `seq_dir` (`nodus_p2p_host.c:1415`, `:1441`);
 `nodus_server_witness_host_config` fills `seq_dir = identity_path`
 (`nodus_server.h:371`) and the witness falls back to `data_path` only when `seq_dir`
 is empty (`nodus_witness.c:2696-2698`) — the same directory as before S1. The decision
@@ -3146,11 +3153,14 @@ macros mark what each one contains:
   empty sets (Winsock fails that with `WSAEINVAL`).
 - **No Windows caller yet.** The callers of `nodus_tcp_listen` are `nodus_server.c` and
   the channel server, and both are in the Linux-only source list (`nodus/CMakeLists.txt`,
-  `if(NOT WIN32)`). No Windows server, witness or 4004 host exists today (the 4004 host
-  port is Kurultay #25 decision K25-5, `docs/plans/decisions/2026-10-16-kurultay-25-summary.md`).
+  `if(NOT WIN32)`). No Windows server or witness exists today. Since nodus 0.26.15 the
+  witness-free 4004 host (`nodus/src/net/nodus_p2p_host.c`, package N3) is in the common
+  source list and COMPILES for Windows, but no Windows program calls it and it has never
+  run on Windows (the 4004 host port is Kurultay #25 decision K25-5,
+  `docs/plans/decisions/2026-10-16-kurultay-25-summary.md`).
   Since nodus 0.26.14 a second, separate select backend exists — `nodus/src/net/nodus_net_poll.c`
-  with its own file-local `FD_SETSIZE 1026` — used today only by the Linux 4004 host; this
-  listener still runs on `nodus_tcp.c`'s own loop until package N2a. See "Network readiness
+  with its own file-local `FD_SETSIZE 1026` — used today only by the 4004 host (run on Linux
+  only); this listener still runs on `nodus_tcp.c`'s own loop until package N2a. See "Network readiness
   layer (`nodus_net_poll`)" in §15.
 
 Test: `test_tcp_listen_portable` (public API only, so the same source is meant to build
@@ -9534,12 +9544,15 @@ numbered register row (R-P2P-n) in the local design doc
   split/merge, ping/pong), `cmt_flowrate`, `cmt_p2p_protoio`,
   `cmt_p2p_transport` (listener limit, handshake worker, dial, upgrade),
   `cmt_p2p_switch`, `cmt_p2p_peer`, `cmt_p2p_nodeinfo`, `cmt_p2p_netaddr`,
-  `cmt_p2p_pex` + `cmt_p2p_addrbook`; nodus glue
-  `nodus/src/witness/nodus_witness_p2p.{c,h}` (owns the switch, maps the
+  `cmt_p2p_pex` + `cmt_p2p_addrbook`; nodus glue in two files since nodus
+  0.26.15 (package N3, "The witness-free 4004 host (`nodus_p2p_host`)"
+  below): `nodus/src/net/nodus_p2p_host.{c,h}` owns the sockets
+  (`nodus_p2p_io_*`, on the portable readiness layer since 0.26.14 — see
+  "Network readiness layer (`nodus_net_poll`)" below), the worker, NodeInfo,
+  the transport, the switch, the address book and PEX;
+  `nodus/src/witness/nodus_witness_p2p.{c,h}` embeds that host, maps the
   consensus and mempool reactor host rows onto `Send`/`TrySend`/
-  `StopPeerForError`, supplies the bonded set; since nodus 0.26.14 its
-  socket seam `nodus_p2p_io_*` runs on the portable readiness layer — see
-  "Network readiness layer (`nodus_net_poll`)" below). The old glue
+  `StopPeerForError` and supplies the bonded set as the host's policy rows. The old glue
   `nodus_witness_cmt_net.c`, `nodus_witness_peer.{c,h}`, the DHT
   `nodus:pk` roster and the chain-quorum quarantine are deleted.
   `NODUS_T3_BFT_PROTOCOL_VER` is deleted (last value 7); the p2p protocol
@@ -9728,28 +9741,31 @@ translation unit; `fd_set` never leaves either file (`nodus_net_poll.h:61-66`,
 **What it is NOT.** It knows nothing about frames, peers, budgets, admission or crypto; each
 caller keeps its own policy and its own DISPATCH rule for `ERR` / `HUP` / `RDHUP`
 (`nodus_net_poll.h:7-10`). Framing stays per port: 4004 is still cometbft's raw byte stream
-into `cmt_p2p_mconn` (`nodus_witness_p2p.h:22-27` — nodus_tcp's frame layer is not used on
-4004); 4001 / 4002 keep the nodus frame. No session crypto is added or changed (the DHT v2
+into `cmt_p2p_mconn` (`nodus/src/net/nodus_p2p_host.h:20-32` since N3 — nodus_tcp's frame
+layer is not used on 4004); 4001 / 4002 keep the nodus frame. No session crypto is added or changed (the DHT v2
 session package is a later user of this layer). Nothing here touches consensus state; no wire
 byte changes.
 
-**Who uses it today.** Only the 4004 host's socket seam, `nodus_p2p_io_*` in
-`nodus_witness_p2p.c`: `nodus_p2p_io_t` embeds a `nodus_net_poll_t poll` in place of the old
-`epfd` / `wake_fd` pair, and `listen_fd` / `nodus_p2p_sock_t.fd` are `nodus_sock_t` with
-`NODUS_SOCK_INVALID` for "none" (`nodus_witness_p2p.h:362-391`). The listener is registered
-under `IO_TAG_LISTEN` (`UINT64_MAX - 1`, `nodus_witness_p2p.c:204`) with `NODUS_NET_IN`; a
-dialing slot is registered `NODUS_NET_OUT | NODUS_NET_IN | NODUS_NET_CONNECT` (the Linux arm
-strips `CONNECT`, so `epoll_ctl` sees `EPOLLOUT | EPOLLIN` as before), a connected one
+**Who uses it today.** Only the 4004 host's socket seam, `nodus_p2p_io_*` — since N3
+(0.26.15) in `nodus/src/net/nodus_p2p_host.c`, before that in `nodus_witness_p2p.c`:
+`nodus_p2p_io_t` embeds a `nodus_net_poll_t poll` in place of the old `epfd` / `wake_fd`
+pair, and `listen_fd` / `nodus_p2p_sock_t.fd` are `nodus_sock_t` with `NODUS_SOCK_INVALID`
+for "none" (`nodus_p2p_host.h:231-259`). The listener is registered under `IO_TAG_LISTEN`
+(`UINT64_MAX - 1`, `nodus_p2p_host.c:205`, `:397`) with `NODUS_NET_IN`; a dialing slot is
+registered `NODUS_NET_OUT | NODUS_NET_IN | NODUS_NET_CONNECT` (the Linux arm strips
+`CONNECT`, so `epoll_ctl` sees `EPOLLOUT | EPOLLIN` as before; `:298-322`), a connected one
 `NODUS_NET_IN`; `nodus_p2p_io_wait` waits through `nodus_net_poll_wait(…, evs, 64)` (batch 64
-unchanged, `:441`, `:468`); the worker's wake is `nodus_net_poll_wake(&p->io.poll)` (`:1042`);
-the connect probe is `nodus_net_probe_connect` (`:693`). The 4004 host itself is still
-Linux-only: `nodus_witness_p2p.c` is in the `if(NOT WIN32)` source list
-(`nodus/CMakeLists.txt:614`, `:698`). `nodus_tcp`, `nodus_udp`, the DHT server's bf set and the
+unchanged, `:455`, `:482`); the worker's wake is `nodus_net_poll_wake(&p->io.poll)` (`:885`);
+the connect probe is `nodus_net_probe_connect` (`:708`). Since N3 the host file is in the
+common source list (`nodus/CMakeLists.txt:138-143`) and compiles for Windows; the witness
+bindings `nodus_witness_p2p.c` stay in the `if(NOT WIN32)` list (`nodus/CMakeLists.txt:620`,
+`:704`). `nodus_tcp`, `nodus_udp`, the DHT server's bf set and the
 4002 inter-node dialer do NOT use the layer yet — they move in packages N2a (tcp / client SDK /
 inter-dial) and N2b (udp / bf), each merging alone (design §9 R8). The witness-free 4004 host
-(light storage node) is package N3; three Windows gaps of the 4004 host were moved to N3, not
-landed in N1 (design §10): the address-book atomic replace, `getsockname` of the listener, and
-the probe caller below.
+is package N3 (next subsection). Design §10 moved three Windows gaps of the 4004 host from N1
+to N3: the address-book atomic replace and `getsockname` of the listener landed in N3
+(`nodus_p2p_host.c:1240-1322`, `:1710-1713`); the probe caller below did NOT — at `88284e668`
+it still tests `<= 0` (`nodus_p2p_host.c:708`).
 
 **Thread rule.** One thread owns a set — the loop owner. Only `nodus_net_poll_wake` may be
 called from another thread; it is safe concurrently with `_wait` but must NOT overlap `_free`:
@@ -9764,7 +9780,7 @@ order as before (K25-5 "Linux behaviour unchanged"; `nodus_net_poll.h:16-19`). T
 deviation is on an error path only (`nodus_net_poll.h:20-23`, design §10, accepted):
 `nodus_net_set_nonblocking` returns -1 WITHOUT calling `F_SETFL` when `F_GETFL` fails
 (`nodus_net_poll.c:236-244`); before N1 the 4004 accept path ran `F_SETFL` with
-`-1 | O_NONBLOCK`. p2p's accept then closes the fd (`nodus_witness_p2p.c:742-744`).
+`-1 | O_NONBLOCK`. p2p's accept then closes the fd (`nodus_p2p_host.c:758-761` since N3).
 `nodus_net_close` additionally keeps `errno` across the `close` (`nodus_net_poll.c:261-267`),
 which replaces the callers' own save / restore. Evidence (ORCHESTRATOR, ledger 2026-10-19/20):
 after N1-FIX the Linux arm's preprocessed translation unit is byte-identical to `d2b146494`'s.
@@ -9793,9 +9809,12 @@ layer. Today no Windows caller of the layer exists, so the gap is not reachable.
 
 **Connect probe and its Linux-only caller.** `nodus_net_probe_connect` returns > 0 finished,
 0 still connecting, < 0 error (Linux `poll`'s -1, Windows `select`'s `SOCKET_ERROR`); a caller
-must NOT read < 0 as "still connecting" (`nodus_net_poll.h:218-228`). p2p's caller tests
-`<= 0` (`nodus_witness_p2p.c:693`) — correct only on Linux, where it is the probe it ran before
-N1; it is revisited in N3 (`nodus_net_poll.h:225-226`).
+must NOT read < 0 as "still connecting" (`nodus_net_poll.h:218-229`). p2p's caller tests
+`<= 0` (`nodus_p2p_host.c:708`, `io_connect_done`) — correct only on Linux, where it is the
+probe it ran before N1. The header still says it "is revisited in package N3"
+(`nodus_net_poll.h:225-226`) and design §10 assigned it to N3, but N3 did NOT change it: on a
+Windows build a probe error (< 0) is read as "still connecting". No Windows program runs the
+host today, so the path is not reached.
 
 **The Windows arm has run under Wine only, never on native Windows.** `nodus/tests/test_net_poll_win.c`
 (a Windows-only executable, built by the README's cross build, no ctest entry) exercises the select
@@ -9806,15 +9825,191 @@ ORCHESTRATOR run 2026-10-20 under Wine 8.0: 3 runs, 9/9 each. Under Wine the Win
 Wine's emulation; native Windows has not been seen. The fair rotation replaces Kurultay #26b item 7's
 "every ready socket at once" by the operator's word (2026-10-20).
 
-**Test.** `test_net_poll` (9 cases, `main` at `nodus/tests/test_net_poll.c:628-642`; ctest `TIMEOUT 120`
-as a hang guard only, `nodus/CMakeLists.txt:2197-2202`) exercises the Linux epoll arm:
+**Test.** `test_net_poll` (9 cases, `main` at `nodus/tests/test_net_poll.c:629-643`; ctest `TIMEOUT 120`
+as a hang guard only, `nodus/CMakeLists.txt:2219-2224`) exercises the Linux epoll arm:
 add / mod / del, level vs edge, `RDHUP` / `HUP` / `ERR` kept apart, the wake from another
 thread (a wait without limit, which only the wake can end) and its drain, a wake and a ready
 socket in one wait, the connect probe (refused and succeeded), the wait cap (2 of 3; 64
 accepted; 0 and 65 refused) and the shims. What it proves, requires, leaves behind and how it
-can lie: its file header (`:6-75`) and `nodus/README.md` row 0.26.14. It does NOT prove that
-`nodus_witness_p2p.c` issues the same syscalls as before — that rests on reading the diff and
+can lie: its file header (`:6-76`) and `nodus/README.md` row 0.26.14. It does NOT prove that
+the 4004 host (`nodus_p2p_host.c` since N3, `nodus_witness_p2p.c` before) issues the same
+syscalls as before — that rests on reading the diff and
 the preprocessed-TU comparison; `test_p2p_switch`'s loopback cases drive the host itself.
+
+### The witness-free 4004 host (`nodus_p2p_host`) — package N3 of the one network layer (nodus 0.26.15, 2026-10-20)
+
+Governing records: `docs/plans/decisions/2026-10-19-kurultay-26b-summary.md` (local; APPROVED
+2026-10-19, order N1 → N3, item 8), Kurultay #25 K25-5 (the Linux behaviour of the 4004 host
+does not change; `docs/plans/decisions/2026-10-16-kurultay-25-summary.md`), the 4004 port
+records of `docs/plans/decisions/2026-09-26-witness-port-session.md`; design
+`docs/plans/2026-10-19-net-layer-design.md` §11 (local). Files:
+`nodus/src/net/nodus_p2p_host.{h,c}` (common source list, `nodus/CMakeLists.txt:138-143`);
+function reference: `messenger/docs/functions/transport.md` "Nodus witness-free 4004 host".
+
+**What moved, what stayed.** The part of the 4004 host that needs no witness moved out of
+`nodus_witness_p2p.c` into `nodus_p2p_host.c` with its statements unchanged (file header
+`nodus_p2p_host.c:7-13`): the P2P config type and its helpers (`nodus_p2p_config_t`,
+`nodus_p2p_config_default`, `_add_persistent` / `_add_unconditional` / `_add_private`), the
+host clocks / OS randomness / the purpose-0x0A sign and verify, the socket host
+(`nodus_p2p_io_*`), the handshake and ADDR-verification worker (three queues, N pthreads),
+the dial / close rows, the address-book file rows (atomic write, read), the own ADDR record
+(`seq` file `nodus.addr_seq`, sign, start, check), the signed-address lookup, the peer
+accessors, and the build / start / poll / free sequences. `LOG_TAG` stays `"W_P2P"`
+(`nodus_p2p_host.c:58-59`), so the moved log lines — including the `p2p on … persistent
+peer(s)` INFO line the harness greps (`:2010-2012`) — are the lines the witness printed.
+`nodus_witness_p2p.c` KEEPS the bonded set (K2 / N5), the consensus seam and the lanes, the
+seven reactors and their channel descriptors (`fill_descs`; CONSENSUS 0x20-0x23, MEMPOOL 0x30,
+BLOCKSYNC 0x40, GBUNDLE 0x70, CCAPPR 0x71, STPROBE 0x72, STFETCH 0x73 —
+`nodus_witness_p2p.c:2126`, `:2161-2174`), M4 (`no_peer_check`), the approval-collection
+tick and the genesis bundle; it EMBEDS the host by value (`nodus_witness_p2p.c:123`) and
+writes only `host.self_bonded` (the bonded-set refresh, `:405-482`). Every public
+`nodus_witness_p2p_*` keeps its signature; the accessors forward to the host's
+(`:2317-2363`). The other users of the config type (`nodus_server.h`,
+`nodus_witness_host.h`, `nodus_witness_network_file.h`) now include `net/nodus_p2p_host.h`
+directly.
+
+**The policy rows** (`nodus_p2p_host_policy_t`, `nodus_p2p_host.h:313-339`) are what only an
+embedder knows. Each row takes `ctx`; a NULL row is the answer the shared layer itself gives
+to a NULL row (trampolines `pol_*`, `nodus_p2p_host.c:1117-1160`):
+
+| Row | Feeds | NULL means |
+|---|---|---|
+| `is_bonded(ctx, id)` | switch `is_bonded` (unconditional, R-P2P-7) | not bonded |
+| `bonded_count(ctx)` | transport `bonded_count` (listener limit, R-P2P-27) | 0 |
+| `bonded_pubkey(ctx, id, pk)` | address book `bonded_pubkey` (R-P2P-4) | no key for any ID — no signed ADDR record can verify, so `_init` REFUSES a host with `cfg->pex` on and this row NULL (`nodus_p2p_host.c:1645-1655`) |
+| `may_receive(ctx)` | transport `may_receive` (the receive gate) | true |
+| `recv_near_full(ctx)` | transport `recv_near_full` | false (never contended) |
+| `queue_mark(ctx)` | transport `queue_mark` | the transport gets NO `queue_mark` row: every delivered message counts as a peer's turn (`nodus_p2p_host.c:1783-1789`) — not a constant 0, which would mean no message ever counts |
+
+The witness passes its six `h_*` functions with `ctx` = its binding
+(`nodus_witness_p2p.c:2191-2197`). A witness-free host given an all-NULL policy is not bonded
+to anyone, has no listener exemption, and must run with PEX off; `self_bonded` stays false, so
+PEX would never push its own record either (`nodus_p2p_host.h:416-419`).
+
+**Two-step start** (`nodus_p2p_host.h:65-72`), split so the witness keeps its order:
+`nodus_p2p_host_init` builds — listener, own address, NodeInfo, transport, switch, the
+caller's reactors in the caller's order, address book + PEX (only with `cfg->pex`), the
+configured peer lists (`nodus_p2p_host.c:1579-1957`); `nodus_p2p_host_start` runs — worker
+threads (`n_workers`, 0 = `NODUS_P2P_WORKERS_DEFAULT` 2, capped at `NODUS_P2P_WORKERS_MAX` 8),
+switch start (PEX → address-book load, R-P2P-38), own record, persistent-peer dial, the
+`p2p on …` INFO line (`:1959-2017`). The witness calls `_init` →
+`nodus_witness_p2p_refresh_bonded` → `_start` → M4 `no_peer_check(p, true)`
+(`nodus_witness_p2p.c:2200-2212`), the sequence `nodus_witness_p2p_new` had before N3.
+
+**NodeInfo.** network = the 32-byte chain id in hex, P2P version 8, the caller's channels in
+the caller's order, then PEX 0x00 when `cfg->pex` (`nodus_p2p_host.c:1739-1746`), moniker
+`cfg->moniker` or `"nodus-"` + the first 16 characters of the node ID (`:1747-1751`),
+`version` = `NODUS_VERSION_STRING`, an IP-literal listen address (external IP when set). The
+witness lists 0x40, 0x20-0x23, 0x30, 0x70, 0x71, 0x72, 0x73 (`nodus_witness_p2p.c:2150-2159`).
+**Channel-set check:** after the reactors (and PEX) are registered, `_init` refuses unless the
+NodeInfo channel set (the caller's list + PEX) equals exactly the set of channels the
+registered reactors serve — same count, no duplicate, every listed channel served
+(`nodus_p2p_host.c:1892-1917`): an advertised channel with no reactor is one a peer may send
+on and this host cannot handle; a served channel not advertised is one no peer will use.
+
+**Poll in steps** (`nodus_p2p_host.h:73-75`). `nodus_p2p_host_poll_io` = worker results, the
+socket wait (at most `timeout_ms`), worker results, the I/O pass, the switch tick
+(`nodus_p2p_host.c:2068-2080`); `nodus_p2p_host_pex_tick`; `nodus_p2p_host_own_record_check`;
+`nodus_p2p_host_flush`. A witness-free caller calls `nodus_p2p_host_poll`, which runs the four
+in that order and returns 0, or -1 with nothing done when the host is not running
+(`:2103-2113`). The witness calls the steps itself with its own in between
+(`nodus_witness_p2p.c:2293-2313`): `poll_io` → `lane_gc` → `pex_tick` →
+`process_pending_stops` → `bonded_maybe_refresh` → `own_record_check` → `no_peer_check` (M4)
+→ the approval-collection tick → `flush` — the order its poll had before N3.
+
+**Free order** (`nodus_p2p_host.c:2019-2064`): switch stop (the reactors' `remove_peer` rows
+run; the book is saved) → worker stop (every job completed or dropped) → PEX → switch →
+transport (close + free) → address book → sockets (`nodus_p2p_io_free`) → mutex / cond →
+NodeInfo; the own record is wiped; `init_ok` and `started` are cleared LAST, because the
+switch stop still runs reactor rows that may call the accessors. NULL-safe; `h` itself is the
+caller's. It must also be called after a FAILED `_init` or `_start`: it releases exactly what
+was built (the `io_init` / `mu_init` / `t_init` / `sw_init` flags and the pointers), nothing
+twice. The witness's free is lane unbind → approval-collection abort → `nodus_p2p_host_free`
+→ its own memory (`nodus_witness_p2p.c:2220-2242`).
+
+**Lifecycle flags and refusals** (`nodus_p2p_host.h:80-87`, `:421-423`). `init_ok` is set at
+the end of a successful `_init` (`nodus_p2p_host.c:1952`); `started` on ENTRY to `_start`
+(`:1971`), so a `_start` that fails part-way leaves the host refusing a second `_start` — only
+`_free` recovers it. `_start` on a host not `init_ok` or already started returns -1 with no
+side effect (`:1964-1970`). Unless `init_ok`: `_poll_io`, `_pex_tick`, `_own_record_check`,
+`_flush` do nothing; `_send` and the accessors answer the neutral value (0, `""`, NULL,
+false) (`:2068-2171`). `nodus_p2p_host_poll` answers -1 unless `init_ok` AND `started`.
+`_init` zeroes `h` first and refuses, logged and before anything is built: a NULL required
+parameter (`h`, `prm`, `identity`, `chain_id`, `cfg`, `listen_ip`, `data_path`, `seq_dir`);
+`n_channels` over `CMT_P2P_MAX_NUM_CHANNELS − 1` or a non-zero count with a NULL list;
+`n_reactors < 0` or a non-zero count with a NULL list; a persistent / unconditional /
+private peer-list count outside `[0, NODUS_P2P_MAX_PEER_LIST]` (64); a `data_path` or
+`seq_dir` that does not fit the host's 256-byte buffer, NUL included; PEX on without
+`policy.bonded_pubkey`; an identity without ML-KEM; a listen address that is not an IP
+literal (`:1595-1665`). Later refusals (after some resources exist, so `_free` is required):
+an external address that is not an IP literal, the listener, NodeInfo, transport, switch,
+reactor registration, address book, PEX, the channel-set check, the peer lists.
+
+**The caller's obligations** (`nodus_p2p_host.h:89-112`):
+(a) the host points into itself (the transport's, switch's, book's and PEX's host rows take
+`h` as `ctx`; `io.t = &h->t`) — it must not be moved or copied after `_init`: embed it or hold
+it by pointer; (b) `identity`, `policy.ctx`, and every reactor's `ctx`, `name` and
+`get_channels` array must outlive `_free` (the switch stop inside `_free` still calls the
+reactors' `remove_peer` rows); (c) every host call from ONE thread, and never `_free` or
+`_start` from inside a reactor or policy callback (they run inside `_poll_io`, `_start` and
+`_free`) — the worker threads touch only handshake and ADDR-verification jobs; (d) `_init`
+only on a fresh (zeroed) host or one `_free` has released — `_init` on a live host leaks it;
+(e) PEX requires `policy.bonded_pubkey` (above) — a host without it runs with PEX off and
+dials its persistent list (K25-11); (f) NULL policy rows mean what the table above says;
+(g) `data_path` and `seq_dir` are UTF-8 and must fit the
+host's buffers. Files: the address book is `data_path/p2p_addrbook.pb` (`data_path` empty →
+`.`; `nodus_p2p_host.c:1374-1378`), the own-record sequence `seq_dir/nodus.addr_seq`
+(`:1372`, `:1415`).
+
+**Windows arms — compiled, never run.** The host file compiles with the Windows cross build
+(llvm-mingw) and carries these Windows-only arms; there is NO Windows test of the host
+(`test_p2p_host` is Linux-only, `nodus/tests/test_p2p_host.c` header "REQUIREMENTS"), so none
+of them has run, on Windows or under Wine:
+- atomic replace of the address book (`nodus_p2p_host.c:1240-1322`): the UTF-8 path is
+  converted with `MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, …)` (`win_widen`,
+  `:1249-1254`), the temporary file written in full through `_wopen` / `_write`, flushed with
+  `_commit`, closed, then `MoveFileExW(…, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`
+  (WRITE_THROUGH doing the POSIX directory fsync's job); on failure the temporary file is
+  removed, the first failing step's `errno` is kept (EIO for a Win32 step) and the move's
+  `GetLastError()` is logged. The POSIX arm is the pre-N3 code: `open` / `write` / `fsync` /
+  `close` / `rename` / directory `fsync` (`:1182-1239`);
+- read of the address book: the same `win_widen` conversion, then `_wfopen(…, L"rb")`
+  (`:1324-1369`), so reader and writer open the same file for every UTF-8 path;
+- the listener: `SO_EXCLUSIVEADDRUSE` on Windows (Windows' `SO_REUSEADDR` would let another
+  socket bind the same port over it), `SO_REUSEADDR` on Linux (`:383-391`); a bad address sets
+  `WSAEINVAL` as well as `errno` (`:368-375`); the listen failure is logged with the Winsock
+  code `nodus_net_errno()` on Windows, `strerror(errno)` on Linux (`:1699-1707`); the bound
+  port is read back with `getsockname` (`:1710-1713`).
+Not covered by N3: the connect-probe caller (`:708`, see "Connect probe and its Linux-only
+caller" above) and the ⚠ NOT GROUNDED Winsock pair of `NODUS_NET_IS_CONNABORTED`
+(`nodus_net_poll.h:281-285`), which the accept path (`nodus_p2p_host.c:753`) now uses in the
+Windows build too.
+
+**The witness's Linux behaviour is unchanged** (K25-5). Every moved body keeps its statements;
+the N3-FIX commit `5f018cf64` states that every new `_init` check is one the witness already
+satisfies (it lists exactly its seven reactors' channels, `nodus_witness_p2p.c:2150-2159`, and
+passes `bonded_pubkey`, `:2194`); the witness calls the steps in its old order. Evidence (ORCHESTRATOR-reported, ledger 2026-10-20):
+`test_witness_p2p` and `test_p2p_switch` pass at `88284e668`; 8 review lenses at `ff81e4c44`
+found 0 high / medium on the witness path.
+
+**No program uses a witness-free host yet.** The witness is the only caller of
+`nodus_p2p_host_init` in the tree. `nodus-light` calls none of it (no `nodus_p2p_host`
+reference in `nodus/tools/`). Per design §11 "Not in N3", the light storage node gets it only
+when there is a channel to serve — after HF-7, in the storage packages. Two link gates hold
+this: the nodus-storage gate FORBIDS the global symbol `nodus_p2p_host_init`
+(`nodus/tests/storage_linked.cmake:30-43`), and the nodus-witness gate REQUIRES it
+(`nodus/tests/split_linked.cmake:31-38`).
+
+**Test.** `test_p2p_host` (`nodus/tests/test_p2p_host.c`; ctest `nodus/CMakeLists.txt:2272-2280`):
+two witness-free hosts with fresh REAL ML-DSA-87 / ML-KEM-1024 identities and an all-NULL
+policy on 127.0.0.1 (kernel-chosen ports), PEX off; the persistent dial connects with
+key-derived IDs; a caller's reactor on test channel 0x7E carries a 37-byte and a 1500-byte
+payload plus a sentinel each way, exactly once; A is freed and rebuilt with the same identity,
+data directory and port and B's redial reconnects; lifecycle refusals; `_free` twice after an
+init refused before anything is built and after one refused with a listener and mutex built;
+the temporary directory's removal is checked. What it proves, requires, leaves behind and how
+it can lie: its file header (`:1-95`) and `nodus/README.md` row 0.26.15. It does not exercise
+PEX, the address-book file, an inbound limit, a bonded peer, backpressure or Windows.
 
 ### Block sync — `blocksync/` of cometbft @709fd12b on channel 0x40 (2026-09-29)
 
