@@ -1234,6 +1234,21 @@ if(WIN32)
     target_link_options(nodus-light PRIVATE -static)
 endif()
 
+# Net-layer package N1 — the nodus_net_poll readiness backend on WINDOWS
+# (select): startup reference counting, add / mod / del refusals, level IN,
+# fair rotation (design §10, R7 amended), the wake from another thread,
+# the connect probe, WSAENOTSOCK eviction, the empty set. Windows-only: a
+# Linux configure does not see it. Not a ctest (a Windows configure stops
+# before enable_testing()); run by hand, natively or under Wine — the file
+# header says what Wine cannot prove and how it can lie. Linked like
+# nodus-light: one self-contained .exe.
+if(WIN32)
+    add_executable(test_net_poll_win tests/test_net_poll_win.c)
+    target_link_libraries(test_net_poll_win nodus dsa nodus ws2_32)
+    target_compile_options(test_net_poll_win PRIVATE -Wall -Wextra)
+    target_link_options(test_net_poll_win PRIVATE -static)
+endif()
+
 # Everything below — the ctest suite, benches, the Genesis Protocol
 # harness tools, the server / witness / storage / core binaries, nodus-cli
 # and the fuzz targets — is Linux-only: it links Threads::Threads
