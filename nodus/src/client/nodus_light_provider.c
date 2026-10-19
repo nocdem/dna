@@ -49,10 +49,16 @@ int nodus_light_provider_map_error(int rc, int server_err,
         code = CMT_LIGHT_PROVIDER_ERR_LIGHT_BLOCK_NOT_FOUND; /* errors.go:12-15 */
     } else if (server_err == NODUS_ERR_HEIGHT_TOO_HIGH) {
         code = CMT_LIGHT_PROVIDER_ERR_HEIGHT_TOO_HIGH;       /* errors.go:9-11  */
+    } else if (server_err == NODUS_ERR_RATE_LIMITED) {
+        /* DEVIATION (header): a busy node's refusal is the benign class —
+         * the reference's only transient-refusal path, the timed-out retry
+         * loop, ends in ErrNoResponse (http.go:200-210, errors.go:16-18) */
+        code = CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE;
     } else if (server_err != 0) {
         code = CMT_LIGHT_PROVIDER_ERR_NONE;      /* the node refused: unnamed */
     } else if (rc == NODUS_ERR_TIMEOUT || rc == -1) {
-        code = CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE;           /* errors.go:16-18 */
+        /* errors.go:16-18; rc == -1 here is a DEVIATION (header) */
+        code = CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE;
     } else if (rc == NODUS_ERR_PROTOCOL_ERROR) {
         code = CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK;       /* errors.go:21-29 */
     } else {

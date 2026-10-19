@@ -4744,15 +4744,34 @@ static void handle_dnac_v3_block(nodus_witness_t *w,
  * nodus_witness_cmt_store.h:477). A read fault (CMT_FAULT) or an encode
  * failure → NODUS_ERR_INTERNAL_ERROR, never a partial answer.
  *
- * PURE READ: no write, no clock, no cache; the answer is a function of
- * the committed block and state stores. BOUNDED: the encoder sizes its
- * buffer from cmt_pb_light_block_upper_bound (cmt_light_block.c, encode)
- * and the frame adds only the envelope; a frame above
+ * THE BUILD IS A PURE READ: no write, no clock, no cache; the answer is a
+ * function of the committed block and state stores. BOUNDED: the encoder
+ * sizes its buffer from cmt_pb_light_block_upper_bound (cmt_light_block.c,
+ * encode) and the frame adds only the envelope; a frame above
  * NODUS_MAX_FRAME_TCP is refused INTERNAL. Every large struct is heap.
- * Front-door cost: nodus_server.c charges every chain method one unit
- * except dnac_spend, so this request costs what one dnac_v3_block page
- * costs (decision item B4, until measured).
+ *
+ * ADMISSION (decision item B4, the step after the measurement; operator
+ * decision 2026-10-19, BUGS.md Z-44): one build can replay
+ * cmt_validator_set_increment_proposer_priority up to 99,999 times inside
+ * nodus_cmt_ss_load_validators, on the witness loop — the loop consensus
+ * runs on. The front door still charges this method one unit per session
+ * (nodus_server.c, every chain method but dnac_spend), which does not
+ * bound the loop: free identities open more sessions. So, in front of the
+ * build, ONE node-wide limiter (nodus_witness_light_block_admit) admits at
+ * most NODUS_LIGHT_BLOCK_RATE_PER_SEC builds per second, whoever asks;
+ * above it the answer is NODUS_ERR_RATE_LIMITED at once, without a store
+ * read, and the client goes to another provider. No queue, no cache.
+ * The handler reads the node's MONOTONIC wait clock (n->mono, decision
+ * 2026-09-30-monotonic-waits.md) for that admission only — the build
+ * stays clockless. Node-local: the limiter decides only whether THIS node
+ * answers a client now; nothing it reads or keeps reaches a block, the
+ * state, a vote or replication, so two nodes disagreeing about it cannot
+ * split the chain.
  * ════════════════════════════════════════════════════════════════════ */
+
+_Static_assert(NODUS_LIGHT_BLOCK_RATE_PER_SEC > 0 &&
+                   1000000000LL % NODUS_LIGHT_BLOCK_RATE_PER_SEC == 0,
+               "the light block interval must be a whole number of ns");
 
 /* The T2 envelope ("t", "y", "q" = "dnac_light_block", "r") plus "h" and
  * the bstr head of "lb": under 100 bytes; 256 leaves headroom. */
@@ -4987,9 +5006,66 @@ done:
     return rc;
 }
 
+/* The bucket in its GCRA form (theoretical arrival time): `tat_ns` is the
+ * instant at which the bucket would be full again. A request at `now` is
+ * admitted while that instant lies at most RATE - 1 intervals ahead —
+ * i.e. while at least one of the RATE tokens is left — and moves it one
+ * interval on; a refusal changes nothing. A zeroed limiter is a full
+ * bucket. Integer nanoseconds only: no rounding, and progress shorter
+ * than one interval is kept, not lost. */
+bool nodus_witness_light_block_admit(nodus_light_block_limiter_t *lim,
+                                     int64_t now_ns)
+{
+    /* tat never runs more than RATE intervals past `now`; one more keeps
+     * `tat + interval` representable */
+    const int64_t horizon = (int64_t)(NODUS_LIGHT_BLOCK_RATE_PER_SEC + 1) *
+                            NODUS_LIGHT_BLOCK_INTERVAL_NS;
+    int64_t       tat;
+
+    if (!lim || now_ns < 0 || now_ns > INT64_MAX - horizon)
+        return false;
+    tat = lim->tat_ns > now_ns ? lim->tat_ns : now_ns;
+    if (tat - now_ns > (int64_t)(NODUS_LIGHT_BLOCK_RATE_PER_SEC - 1) *
+                           NODUS_LIGHT_BLOCK_INTERVAL_NS)
+        return false;
+    lim->tat_ns = tat + NODUS_LIGHT_BLOCK_INTERVAL_NS;
+    return true;
+}
+
+int nodus_witness_light_block_serve(nodus_light_block_limiter_t *lim,
+                                    int64_t now_ns,
+                                    nodus_cmt_store_t *store,
+                                    const uint8_t *payload, size_t len,
+                                    uint32_t txn_id,
+                                    uint8_t **out, size_t *out_len,
+                                    int *err_code, char *err_msg,
+                                    size_t err_cap)
+{
+    if (out) *out = NULL;
+    if (out_len) *out_len = 0;
+    if (!lim || !out || !out_len || !err_code || !err_msg || err_cap == 0)
+        return -1;
+    /* admission FIRST: a refused request reaches no store and no decode */
+    if (!nodus_witness_light_block_admit(lim, now_ns))
+        return lbk_fail(err_code, err_msg, err_cap, 0,
+                        NODUS_ERR_RATE_LIMITED,
+                        "light block rate limit reached, ask another node");
+    return nodus_witness_light_block_build(store, payload, len, txn_id, out,
+                                           out_len, err_code, err_msg,
+                                           err_cap);
+}
+
+/* The node's ONE limiter: node-wide, whoever asks (file comment above).
+ * Read and written only by handle_dnac_light_block, which runs on the
+ * witness loop (nodus_witness.c, the sole nodus_witness_handle_dnac call
+ * site) — one thread, one witness per process in split and combined mode
+ * alike. Zero = a full bucket. */
+static nodus_light_block_limiter_t g_light_block_limiter;
+
 /* Request:  "a": {"h": u64}
  * Response: the frame nodus_witness_light_block_build encodes; an error
- *           reply when it refuses. */
+ *           reply when it refuses, NODUS_ERR_RATE_LIMITED when the node's
+ *           limiter refuses first. */
 static void handle_dnac_light_block(nodus_witness_t *w,
                                     struct nodus_tcp_conn *conn,
                                     const uint8_t *payload, size_t len,
@@ -5000,13 +5076,24 @@ static void handle_dnac_light_block(nodus_witness_t *w,
     size_t   frame_len = 0;
     int      ecode = 0;
     char     emsg[128];
+    int64_t  now_ns = 0;
 
     if (!w->v2_successor || !n || !n->store_ready) {
         send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
                    "this node serves no version-3 chain");
         return;
     }
-    if (nodus_witness_light_block_build(&n->store, payload, len, txn_id,
+    /* The wait clock, never the wall clock: admission is node-local
+     * scheduling. A clock fault refuses without touching the limiter or
+     * the store (never the silent 0 that would read as "long ago"). */
+    if (!n->mono || n->mono(n->mono_ctx, &now_ns) != CMT_OK) {
+        QGP_LOG_WARN(LOG_TAG, "%s", "dnac_light_block: monotonic clock "
+                     "unreadable, request refused");
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "internal error");
+        return;
+    }
+    if (nodus_witness_light_block_serve(&g_light_block_limiter, now_ns,
+                                        &n->store, payload, len, txn_id,
                                         &frame, &frame_len, &ecode, emsg,
                                         sizeof(emsg)) != 0) {
         send_error(conn, txn_id, ecode ? ecode : NODUS_ERR_INTERNAL_ERROR,
