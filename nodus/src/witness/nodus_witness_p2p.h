@@ -20,7 +20,9 @@
  * The shared/dnac p2p layer is socket-free, clock-free and thread-free:
  * it is DRIVEN. This module is what drives it on a live node:
  *   · the 4004 SOCKETS (`nodus_p2p_io_t`): non-blocking TCP listen /
- *     accept / connect / read / write on its own epoll set, RAW byte
+ *     accept / connect / read / write on its own readiness set
+ *     (`nodus_net_poll_t`, nodus/src/net/nodus_net_poll.h: epoll on
+ *     Linux, level-triggered), RAW byte
  *     streams into and out of `cmt_p2p_transport_read_buf` /
  *     `_write_buf` — nodus_tcp's frame layer is NOT used on 4004.
  *     `can_accept` is asked before every accept(2) (LimitListener,
@@ -200,6 +202,7 @@
 #include "dnac/cmt_time.h"
 
 #include "nodus/nodus_types.h"
+#include "net/nodus_net_poll.h"
 #include "witness/nodus_witness_cmt_store.h"
 
 #ifdef __cplusplus
@@ -350,7 +353,8 @@ int nodus_p2p_config_add_private(nodus_p2p_config_t *c, const char *id);
  * ⚠ NOT GROUNDED as a number: the default inbound limit
  * (CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS, config.go:630) — a full
  * reconnect of the default inbound set is still taken in one pass. The
- * listener stays in the epoll set with EPOLLIN (level-triggered), so a
+ * listener stays in the readiness set with NODUS_NET_IN (EPOLLIN,
+ * level-triggered), so a
  * backlog left behind wakes the next wait at once and the next pass
  * continues: nothing is refused because of the budget, only deferred.
  */
@@ -358,25 +362,26 @@ int nodus_p2p_config_add_private(nodus_p2p_config_t *c, const char *id);
 
 /** One transport slot's socket. */
 typedef struct {
-    int      fd;             /* -1 = none                                */
+    nodus_sock_t fd;         /* NODUS_SOCK_INVALID = none                */
     uint64_t gen;
     bool     connecting;     /* non-blocking connect(2) in progress      */
     bool     failed;         /* conn_failed reported; no more I/O        */
-    uint32_t events;         /* what the epoll set watches for it        */
-    uint32_t ready;          /* what the last epoll_wait reported        */
+    uint32_t events;         /* NODUS_NET_* mask the set watches for it  */
+    uint32_t ready;          /* NODUS_NET_* bits the last wait reported  */
 } nodus_p2p_sock_t;
 
 /**
  * Non-blocking sockets for one `cmt_p2p_transport_t`, indexed by the
- * transport's slot. Linux (epoll); a host built with `open_listener`
- * false runs it without a listener.
+ * transport's slot, on one readiness set of their own (nodus_net_poll:
+ * Linux epoll, level-triggered; its wake is the eventfd the worker
+ * writes). A host built with `open_listener` false runs it without a
+ * listener.
  */
 typedef struct {
     cmt_p2p_transport_t *t;         /* set after cmt_p2p_transport_init  */
-    int                  epfd;
-    int                  listen_fd; /* -1 = none                         */
+    nodus_net_poll_t     poll;      /* the set, + the wake when asked    */
+    nodus_sock_t         listen_fd; /* NODUS_SOCK_INVALID = none         */
     bool                 listen_armed;
-    int                  wake_fd;   /* eventfd the worker writes, or -1  */
     nodus_p2p_sock_t    *socks;
     int                  n_socks;
     /** The socket slot nodus_p2p_io_pump last SERVED (read >= 1 byte);
@@ -395,8 +400,9 @@ int  nodus_p2p_io_dial(nodus_p2p_io_t *io, int slot, uint64_t gen,
                        const cmt_p2p_netaddr_t *addr);
 /** The transport host's `close` row body. */
 void nodus_p2p_io_close(nodus_p2p_io_t *io, int slot, uint64_t gen);
-/** Wait up to `timeout_ms` for socket / wake events (epoll_wait). First
- *  re-arms EPOLLIN on every socket whose `read_buf` has room again (it
+/** Wait up to `timeout_ms` for socket / wake events (nodus_net_poll_wait,
+ *  batch 64 — on Linux one epoll_wait). First re-arms NODUS_NET_IN
+ *  (EPOLLIN) on every socket whose `read_buf` has room again (it
  *  was cleared at backpressure), so buffered socket bytes never sleep
  *  through the wait. */
 void nodus_p2p_io_wait(nodus_p2p_io_t *io, int timeout_ms);

@@ -131,6 +131,10 @@ set(NODUS_SOURCES
 
     # Transport — TCP is cross-platform (epoll on Linux, select on Windows)
     src/transport/nodus_tcp.c
+    # Socket readiness + socket shims for the ports 4000-4004 (net-layer
+    # design 2026-10-19, package N1): epoll on Linux/Android, select on
+    # Windows. Today's user: the 4004 host (nodus_witness_p2p.c).
+    src/net/nodus_net_poll.c
 
     # Crypto
     src/crypto/nodus_sign.c
@@ -2184,6 +2188,15 @@ add_test(NAME test_p2p_mconn COMMAND test_p2p_mconn)
 add_executable(test_p2p_switch tests/test_p2p_switch.c)
 target_link_libraries(test_p2p_switch nodus dsa kem nodus crypto)
 add_test(NAME test_p2p_switch COMMAND test_p2p_switch)
+
+# Net-layer package N1 — the nodus_net_poll readiness backend on Linux
+# (epoll): add / mod / del, level vs edge, RDHUP / HUP / ERR kept apart,
+# the wake from another thread + its drain, the connect probe (refused and
+# succeeded), the wait cap. Loopback sockets only; the file header says
+# how it can lie.
+add_executable(test_net_poll tests/test_net_poll.c)
+target_link_libraries(test_net_poll nodus)
+add_test(NAME test_net_poll COMMAND test_net_poll)
 
 # cometbft @709fd12b → C port, fleet P2P-PORT phase F4 —
 # p2p/pex/addrbook_test.go + pex_reactor_test.go's single-threaded cases:

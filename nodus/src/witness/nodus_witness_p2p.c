@@ -42,13 +42,10 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -202,8 +199,9 @@ int nodus_p2p_sc_verify(void *ctx, const uint8_t sig_in[CMT_P2P_SC_SIG_SIZE],
 
 /* ══ the socket host ══════════════════════════════════════════════════ */
 
+/* The listener's tag in the readiness set. The wake's is the backend's
+ * own (NODUS_NET_TAG_WAKE, UINT64_MAX - 2); slots are 0..n_socks-1. */
 #define IO_TAG_LISTEN ((uint64_t)UINT64_MAX - 1)
-#define IO_TAG_WAKE   ((uint64_t)UINT64_MAX - 2)
 
 static int ip_to_sockaddr(const cmt_p2p_ip_t *ip, uint16_t port,
                           struct sockaddr_storage *ss, socklen_t *sl)
@@ -276,7 +274,7 @@ static nodus_p2p_sock_t *io_slot(nodus_p2p_io_t *io, int slot, bool grow)
         }
         for (i = io->n_socks; i < n; i++) {
             memset(&ns[i], 0, sizeof(ns[i]));
-            ns[i].fd = -1;
+            ns[i].fd = NODUS_SOCK_INVALID;
         }
         io->socks = ns;
         io->n_socks = n;
@@ -287,39 +285,37 @@ static nodus_p2p_sock_t *io_slot(nodus_p2p_io_t *io, int slot, bool grow)
 static void io_set_events(nodus_p2p_io_t *io, int slot, uint32_t events)
 {
     nodus_p2p_sock_t *s = &io->socks[slot];
-    struct epoll_event ev;
 
-    if (s->fd < 0 || s->events == events) {
+    if (s->fd == NODUS_SOCK_INVALID || s->events == events) {
         return;
     }
-    memset(&ev, 0, sizeof(ev));
-    ev.events = events;
-    ev.data.u64 = (uint64_t)slot;
-    if (epoll_ctl(io->epfd, EPOLL_CTL_MOD, s->fd, &ev) == 0) {
+    if (nodus_net_poll_mod(&io->poll, s->fd, (uint64_t)slot, events) == 0) {
         s->events = events;
     }
 }
 
-static int io_register(nodus_p2p_io_t *io, int slot, int fd, uint64_t gen,
-                       bool connecting)
+static int io_register(nodus_p2p_io_t *io, int slot, nodus_sock_t fd,
+                       uint64_t gen, bool connecting)
 {
     nodus_p2p_sock_t *s = io_slot(io, slot, true);
-    struct epoll_event ev;
+    /* A connecting socket also carries NODUS_NET_CONNECT (Windows: watch
+     * the except set for a refused connect); the Linux backend removes it,
+     * so epoll_ctl sees EPOLLOUT|EPOLLIN as before. */
+    uint32_t events = connecting ? (NODUS_NET_OUT | NODUS_NET_IN |
+                                    NODUS_NET_CONNECT)
+                                 : NODUS_NET_IN;
 
     if (s == NULL) {
         return -1;
     }
-    memset(&ev, 0, sizeof(ev));
-    ev.events = connecting ? (EPOLLOUT | EPOLLIN) : EPOLLIN;
-    ev.data.u64 = (uint64_t)slot;
-    if (epoll_ctl(io->epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+    if (nodus_net_poll_add(&io->poll, fd, (uint64_t)slot, events) != 0) {
         return -1;
     }
     s->fd = fd;
     s->gen = gen;
     s->connecting = connecting;
     s->failed = false;
-    s->events = ev.events;
+    s->events = events;
     s->ready = 0;
     return 0;
 }
@@ -330,34 +326,9 @@ int nodus_p2p_io_init(nodus_p2p_io_t *io, bool with_wake)
         return -1;
     }
     memset(io, 0, sizeof(*io));
-    io->listen_fd = -1;
-    io->wake_fd = -1;
+    io->listen_fd = NODUS_SOCK_INVALID;
     io->last_served = -1;
-    io->epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (io->epfd < 0) {
-        return -1;
-    }
-    if (with_wake) {
-        struct epoll_event ev;
-
-        io->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-        if (io->wake_fd < 0) {
-            close(io->epfd);
-            io->epfd = -1;
-            return -1;
-        }
-        memset(&ev, 0, sizeof(ev));
-        ev.events = EPOLLIN;
-        ev.data.u64 = IO_TAG_WAKE;
-        if (epoll_ctl(io->epfd, EPOLL_CTL_ADD, io->wake_fd, &ev) != 0) {
-            close(io->wake_fd);
-            close(io->epfd);
-            io->wake_fd = -1;
-            io->epfd = -1;
-            return -1;
-        }
-    }
-    return 0;
+    return nodus_net_poll_init(&io->poll, with_wake);
 }
 
 void nodus_p2p_io_free(nodus_p2p_io_t *io)
@@ -368,24 +339,22 @@ void nodus_p2p_io_free(nodus_p2p_io_t *io)
         return;
     }
     for (i = 0; i < io->n_socks; i++) {
-        if (io->socks[i].fd >= 0) {
-            close(io->socks[i].fd);
+        if (io->socks[i].fd != NODUS_SOCK_INVALID) {
+            (void)nodus_net_close(io->socks[i].fd);
         }
     }
     free(io->socks);
-    if (io->listen_fd >= 0) {
-        close(io->listen_fd);
+    if (io->listen_fd != NODUS_SOCK_INVALID) {
+        (void)nodus_net_close(io->listen_fd);
     }
-    if (io->wake_fd >= 0) {
-        close(io->wake_fd);
+    nodus_net_poll_free(&io->poll);         /* the wake, then the set */
+    {
+        nodus_net_poll_t closed = io->poll; /* _free left it "not open" */
+
+        memset(io, 0, sizeof(*io));
+        io->poll = closed;
     }
-    if (io->epfd >= 0) {
-        close(io->epfd);
-    }
-    memset(io, 0, sizeof(*io));
-    io->epfd = -1;
-    io->listen_fd = -1;
-    io->wake_fd = -1;
+    io->listen_fd = NODUS_SOCK_INVALID;
 }
 
 int nodus_p2p_io_listen(nodus_p2p_io_t *io, const char *ip, uint16_t port)
@@ -393,34 +362,26 @@ int nodus_p2p_io_listen(nodus_p2p_io_t *io, const char *ip, uint16_t port)
     cmt_p2p_ip_t a;
     struct sockaddr_storage ss;
     socklen_t sl = 0;
-    struct epoll_event ev;
-    int fd, one = 1;
+    nodus_sock_t fd;
+    int one = 1;
 
     if (io == NULL || ip == NULL || !cmt_p2p_ip_parse(ip, strlen(ip), &a) ||
         ip_to_sockaddr(&a, port, &ss, &sl) != 0) {
         errno = EINVAL;
         return -1;
     }
-    fd = socket(ss.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
+    fd = nodus_net_socket(ss.ss_family, SOCK_STREAM);
+    if (fd == NODUS_SOCK_INVALID) {
         return -1;
     }
     (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    /* nodus_net_close keeps errno: the caller reports the failure hit. */
     if (bind(fd, (struct sockaddr *)&ss, sl) != 0 || listen(fd, 128) != 0) {
-        int e = errno;
-
-        close(fd);
-        errno = e;
+        (void)nodus_net_close(fd);
         return -1;
     }
-    memset(&ev, 0, sizeof(ev));
-    ev.events = EPOLLIN;
-    ev.data.u64 = IO_TAG_LISTEN;
-    if (epoll_ctl(io->epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
-        int e = errno;
-
-        close(fd);
-        errno = e;
+    if (nodus_net_poll_add(&io->poll, fd, IO_TAG_LISTEN, NODUS_NET_IN) != 0) {
+        (void)nodus_net_close(fd);
         return -1;
     }
     io->listen_fd = fd;
@@ -434,23 +395,25 @@ int nodus_p2p_io_dial(nodus_p2p_io_t *io, int slot, uint64_t gen,
 {
     struct sockaddr_storage ss;
     socklen_t sl = 0;
-    int fd, one = 1;
+    nodus_sock_t fd;
+    int one = 1;
 
     if (io == NULL || addr == NULL ||
         ip_to_sockaddr(&addr->ip, addr->port, &ss, &sl) != 0) {
         return -1;
     }
-    fd = socket(ss.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
+    fd = nodus_net_socket(ss.ss_family, SOCK_STREAM);
+    if (fd == NODUS_SOCK_INVALID) {
         return -1;
     }
     (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    if (connect(fd, (struct sockaddr *)&ss, sl) != 0 && errno != EINPROGRESS) {
-        close(fd);
+    if (connect(fd, (struct sockaddr *)&ss, sl) != 0 &&
+        !NODUS_NET_IS_EINPROGRESS(nodus_net_errno())) {
+        (void)nodus_net_close(fd);
         return -1;
     }
     if (io_register(io, slot, fd, gen, true) != 0) {
-        close(fd);
+        (void)nodus_net_close(fd);
         return -1;
     }
     return 0;
@@ -460,13 +423,13 @@ void nodus_p2p_io_close(nodus_p2p_io_t *io, int slot, uint64_t gen)
 {
     nodus_p2p_sock_t *s;
 
-    if (io == NULL || (s = io_slot(io, slot, false)) == NULL || s->fd < 0 ||
-        s->gen != gen) {
+    if (io == NULL || (s = io_slot(io, slot, false)) == NULL ||
+        s->fd == NODUS_SOCK_INVALID || s->gen != gen) {
         return;
     }
-    (void)epoll_ctl(io->epfd, EPOLL_CTL_DEL, s->fd, NULL);
-    close(s->fd);
-    s->fd = -1;
+    (void)nodus_net_poll_del(&io->poll, s->fd);
+    (void)nodus_net_close(s->fd);
+    s->fd = NODUS_SOCK_INVALID;
     s->connecting = false;
     s->failed = false;
     s->events = 0;
@@ -475,13 +438,13 @@ void nodus_p2p_io_close(nodus_p2p_io_t *io, int slot, uint64_t gen)
 
 void nodus_p2p_io_wait(nodus_p2p_io_t *io, int timeout_ms)
 {
-    struct epoll_event evs[64];
+    nodus_net_event_t evs[64];
     int n, i;
 
-    if (io == NULL || io->epfd < 0) {
+    if (io == NULL || !nodus_net_poll_is_open(&io->poll)) {
         return;
     }
-    /* Re-arm EPOLLIN on every socket whose read_buf has room again: io_read
+    /* Re-arm IN on every socket whose read_buf has room again: io_read
      * cleared it at true backpressure, and the transport may have consumed
      * since (the switch's tick, a returned handshake job). Without this a
      * socket holding unread bytes would sleep through the whole wait. */
@@ -490,27 +453,22 @@ void nodus_p2p_io_wait(nodus_p2p_io_t *io, int timeout_ms)
             nodus_p2p_sock_t *s = &io->socks[i];
             size_t room = 0;
 
-            if (s->fd < 0 || s->failed || s->connecting ||
-                (s->events & (uint32_t)EPOLLIN) != 0) {
+            if (s->fd == NODUS_SOCK_INVALID || s->failed || s->connecting ||
+                (s->events & NODUS_NET_IN) != 0) {
                 continue;
             }
             if (cmt_p2p_transport_read_buf(io->t, i, s->gen, &room) != NULL &&
                 room > 0) {
-                io_set_events(io, i, s->events | EPOLLIN);
+                io_set_events(io, i, s->events | NODUS_NET_IN);
             }
         }
     }
-    n = epoll_wait(io->epfd, evs, 64, timeout_ms < 0 ? 0 : timeout_ms);
+    /* The wake, when it fired, is drained inside the wait (the backend's
+     * read-until-it-stops loop) and not returned. */
+    n = nodus_net_poll_wait(&io->poll, timeout_ms < 0 ? 0 : timeout_ms, evs, 64);
     for (i = 0; i < n; i++) {
-        if (evs[i].data.u64 == IO_TAG_WAKE) {
-            uint64_t v;
-
-            while (read(io->wake_fd, &v, sizeof(v)) == (ssize_t)sizeof(v)) {
-                /* drained */
-            }
-        } else if (evs[i].data.u64 != IO_TAG_LISTEN &&
-                   evs[i].data.u64 < (uint64_t)io->n_socks) {
-            io->socks[evs[i].data.u64].ready |= evs[i].events;
+        if (evs[i].tag != IO_TAG_LISTEN && evs[i].tag < (uint64_t)io->n_socks) {
+            io->socks[evs[i].tag].ready |= evs[i].ready;
         }
     }
 }
@@ -524,7 +482,8 @@ static bool io_sock_live(const nodus_p2p_io_t *io, int slot, uint64_t gen)
 {
     const nodus_p2p_sock_t *s = &io->socks[slot];
 
-    return s->fd >= 0 && s->gen == gen && !s->failed && !s->connecting;
+    return s->fd != NODUS_SOCK_INVALID && s->gen == gen && !s->failed &&
+           !s->connecting;
 }
 
 /*
@@ -552,7 +511,8 @@ static void io_write(nodus_p2p_io_t *io, int slot)
         nodus_p2p_sock_t *s;
         size_t len = 0;
         const uint8_t *b;
-        ssize_t n;
+        long n;
+        int e;
 
         if (!io_sock_live(io, slot, gen)) {
             return;
@@ -565,20 +525,21 @@ static void io_write(nodus_p2p_io_t *io, int slot)
                 stepped = true;
                 continue;               /* re-check: the step may close it */
             }
-            io_set_events(io, slot, s->events & ~(uint32_t)EPOLLOUT);
+            io_set_events(io, slot, s->events & ~NODUS_NET_OUT);
             return;
         }
-        n = send(s->fd, b, len, MSG_NOSIGNAL);
+        n = nodus_net_send(s->fd, b, len);     /* Linux: MSG_NOSIGNAL */
         if (n > 0) {
             cmt_p2p_transport_write_done(io->t, slot, gen, (size_t)n);
             stepped = false;
             continue;
         }
-        if (n < 0 && errno == EINTR) {
+        e = n < 0 ? nodus_net_errno() : 0;
+        if (n < 0 && NODUS_NET_IS_EINTR_IO(e)) {
             continue;
         }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            io_set_events(io, slot, s->events | EPOLLOUT);
+        if (n < 0 && NODUS_NET_IS_EAGAIN(e)) {
+            io_set_events(io, slot, s->events | NODUS_NET_OUT);
             return;
         }
         s->failed = true;
@@ -654,7 +615,8 @@ static bool io_read(nodus_p2p_io_t *io, int slot)
         nodus_p2p_sock_t *s;
         size_t room = 0;
         uint8_t *b;
-        ssize_t n;
+        long n;
+        int e;
 
         if (!io_sock_live(io, slot, gen)) {
             return taken > 0;
@@ -685,27 +647,28 @@ static bool io_read(nodus_p2p_io_t *io, int slot)
             }
             /* Backpressure (a full rbuf is a blocked Read): stop watching
              * for input until the transport has consumed some. */
-            io_set_events(io, slot, s->events & ~(uint32_t)EPOLLIN);
+            io_set_events(io, slot, s->events & ~NODUS_NET_IN);
             return taken > 0;
         }
-        io_set_events(io, slot, s->events | EPOLLIN);
+        io_set_events(io, slot, s->events | NODUS_NET_IN);
         if (taken >= budget) {
             return true;
         }
         if (room > budget - taken) {
             room = budget - taken;
         }
-        n = recv(s->fd, b, room, 0);
+        n = nodus_net_recv(s->fd, b, room);
         if (n > 0) {
             cmt_p2p_transport_read_done(io->t, slot, gen, (size_t)n);
             taken += (size_t)n;
             stepped = false;
             continue;
         }
-        if (n < 0 && errno == EINTR) {
+        e = n < 0 ? nodus_net_errno() : 0;
+        if (n < 0 && NODUS_NET_IS_EINTR_IO(e)) {
             continue;
         }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (n < 0 && NODUS_NET_IS_EAGAIN(e)) {
             return taken > 0;
         }
         s->failed = true;                                  /* EOF or error */
@@ -718,7 +681,6 @@ static bool io_read(nodus_p2p_io_t *io, int slot)
 static void io_connect_done(nodus_p2p_io_t *io, int slot)
 {
     nodus_p2p_sock_t *s = &io->socks[slot];
-    struct pollfd pfd;
     int err = 0;
     socklen_t el = (socklen_t)sizeof(err);
     struct sockaddr_storage ss;
@@ -727,10 +689,8 @@ static void io_connect_done(nodus_p2p_io_t *io, int slot)
     uint16_t port = 0;
     uint64_t gen = s->gen;
 
-    pfd.fd = s->fd;
-    pfd.events = POLLOUT;
-    pfd.revents = 0;
-    if (poll(&pfd, 1, 0) <= 0) {
+    /* R4: Linux = poll({fd, POLLOUT}, 1, 0); the outcome is read below. */
+    if (nodus_net_probe_connect(s->fd) <= 0) {
         return;                                            /* still connecting */
     }
     if (getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &el) != 0 || err != 0 ||
@@ -742,7 +702,7 @@ static void io_connect_done(nodus_p2p_io_t *io, int slot)
         return;
     }
     s->connecting = false;
-    io_set_events(io, slot, EPOLLIN);
+    io_set_events(io, slot, NODUS_NET_IN);
     cmt_p2p_transport_dial_connected(io->t, slot, gen, &ip, port);
 }
 
@@ -751,10 +711,9 @@ static void io_connect_done(nodus_p2p_io_t *io, int slot)
  * NODUS_P2P_ACCEPT_BUDGET accept(2) calls per pass (header). */
 static void io_accept(nodus_p2p_io_t *io)
 {
-    struct epoll_event ev;
     int calls = 0;
 
-    if (io->listen_fd < 0) {
+    if (io->listen_fd == NODUS_SOCK_INVALID) {
         return;
     }
     for (;;) {
@@ -762,7 +721,8 @@ static void io_accept(nodus_p2p_io_t *io)
         socklen_t sl = (socklen_t)sizeof(ss);
         cmt_p2p_ip_t ip;
         uint16_t port = 0;
-        int fd, slot = -1, rc;
+        nodus_sock_t fd;
+        int slot = -1, rc;
         uint64_t gen = 0;
 
         if (!cmt_p2p_transport_can_accept(io->t) ||
@@ -770,20 +730,22 @@ static void io_accept(nodus_p2p_io_t *io)
             break;
         }
         calls++;
-        fd = accept(io->listen_fd, (struct sockaddr *)&ss, &sl);
-        if (fd < 0) {
-            if (errno == EINTR || errno == ECONNABORTED) {
+        fd = nodus_net_accept(io->listen_fd, (struct sockaddr *)&ss, &sl);
+        if (fd == NODUS_SOCK_INVALID) {
+            int e = nodus_net_errno();
+
+            if (NODUS_NET_IS_EINTR_IO(e) || NODUS_NET_IS_CONNABORTED(e)) {
                 continue;
             }
             break;                                         /* EAGAIN / error */
         }
-        if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) != 0 ||
-            fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
-            close(fd);
+        if (nodus_net_set_nonblocking(fd) != 0 ||
+            nodus_net_set_cloexec(fd) != 0) {
+            (void)nodus_net_close(fd);
             continue;
         }
         if (sockaddr_to_ip(&ss, &ip, &port) != 0) {
-            close(fd);
+            (void)nodus_net_close(fd);
             continue;
         }
         rc = cmt_p2p_transport_accept(io->t, &ip, port, 0, &slot, &gen);
@@ -793,11 +755,11 @@ static void io_accept(nodus_p2p_io_t *io)
             (void)cmt_p2p_ip_string(&ip, ipb, sizeof(ipb));
             QGP_LOG_DEBUG(LOG_TAG, "inbound %s:%u refused: %s", ipb,
                           (unsigned)port, cmt_p2p_err_str(rc));
-            close(fd);
+            (void)nodus_net_close(fd);
             continue;
         }
         if (io_register(io, slot, fd, gen, false) != 0) {
-            close(fd);
+            (void)nodus_net_close(fd);
             cmt_p2p_transport_conn_failed(io->t, slot, gen);
         }
     }
@@ -807,13 +769,10 @@ static void io_accept(nodus_p2p_io_t *io)
     {
         bool want = cmt_p2p_transport_can_accept(io->t);
 
-        if (want != io->listen_armed) {
-            memset(&ev, 0, sizeof(ev));
-            ev.events = want ? EPOLLIN : 0;
-            ev.data.u64 = IO_TAG_LISTEN;
-            if (epoll_ctl(io->epfd, EPOLL_CTL_MOD, io->listen_fd, &ev) == 0) {
-                io->listen_armed = want;
-            }
+        if (want != io->listen_armed &&
+            nodus_net_poll_mod(&io->poll, io->listen_fd, IO_TAG_LISTEN,
+                               want ? NODUS_NET_IN : 0) == 0) {
+            io->listen_armed = want;
         }
     }
 }
@@ -843,7 +802,7 @@ void nodus_p2p_io_pump(nodus_p2p_io_t *io)
         int slot = (start + k) % n;
         nodus_p2p_sock_t *s = &io->socks[slot];
 
-        if (s->fd < 0) {
+        if (s->fd == NODUS_SOCK_INVALID) {
             continue;
         }
         s->ready = 0;
@@ -866,7 +825,7 @@ void nodus_p2p_io_flush(nodus_p2p_io_t *io)
         return;
     }
     for (slot = 0; slot < io->n_socks; slot++) {
-        if (io->socks[slot].fd >= 0) {
+        if (io->socks[slot].fd != NODUS_SOCK_INVALID) {
             io_write(io, slot);
         }
     }
@@ -1079,11 +1038,8 @@ struct nodus_witness_p2p {
 
 static void wake(nodus_witness_p2p_t *p)
 {
-    uint64_t one = 1;
-
-    if (p->io.wake_fd >= 0) {
-        (void)!write(p->io.wake_fd, &one, sizeof(one));
-    }
+    /* Linux: write(eventfd, 1, 8); a no-op without the wake. */
+    nodus_net_poll_wake(&p->io.poll);
 }
 
 static void *worker_main(void *arg)
@@ -4034,7 +3990,7 @@ void nodus_witness_p2p_poll(nodus_witness_p2p_t *p, int timeout_ms)
 
 uint16_t nodus_witness_p2p_listen_port(const nodus_witness_p2p_t *p)
 {
-    return p != NULL && p->io.listen_fd >= 0 ? p->listen_port : 0;
+    return p != NULL && p->io.listen_fd != NODUS_SOCK_INVALID ? p->listen_port : 0;
 }
 
 const char *nodus_witness_p2p_id(const nodus_witness_p2p_t *p)
