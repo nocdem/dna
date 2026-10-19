@@ -14,18 +14,35 @@
  *     epoll_ctl unchanged (the NODUS_NET_* bits below ARE the EPOLL*
  *     values, checked at compile time in the .c), the caller's `cap` is
  *     epoll_wait's maxevents, the wake is an eventfd. A caller that moves
- *     onto this layer issues the same syscalls with the same arguments in
- *     the same order as before (K25-5 "Linux behaviour unchanged",
- *     decisions/2026-10-16-kurultay-25-summary.md).
+ *     onto this layer issues, on every SUCCESS path, the same syscalls
+ *     with the same arguments in the same order as before (K25-5 "Linux
+ *     behaviour unchanged", decisions/2026-10-16-kurultay-25-summary.md).
+ *     One stated deviation, on an error path only (design §10):
+ *     nodus_net_set_nonblocking returns -1 WITHOUT calling F_SETFL when
+ *     F_GETFL fails (before N1, F_SETFL ran with -1 | O_NONBLOCK); p2p's
+ *     accept then closes the fd.
  *   · Windows — select over a per-instance registry. LEVEL-triggered only:
  *     NODUS_NET_EDGE is ignored (design §2 rev 1). The wake is a loopback
  *     TCP socket pair. Capacity NODUS_NET_POLL_WIN_CAPACITY sockets per set,
- *     wake included; _add beyond it fails, never truncates (G2).
+ *     wake included; _add beyond it fails, never truncates (G2). HUP and
+ *     RDHUP are never produced by readiness here: a peer close shows as IN
+ *     and then recv() returning 0; the one place HUP appears is an entry
+ *     evicted after WSAENOTSOCK (see _wait), reported ERR|HUP.
  *   · Browser (Emscripten) — NOT in N1. nodus_tcp keeps its own poll()
- *     loop until package N2; this file refuses to compile there.
+ *     loop until package N2. The `#error` that refuses it sits in
+ *     nodus_net_poll.c; this header itself compiles under Emscripten
+ *     (POSIX arm), so including it there is not an error by itself.
  *
  * Threads (R5, G3): one thread owns a set — the loop owner. Only
- * nodus_net_poll_wake may be called from any other thread.
+ * nodus_net_poll_wake may be called from any other thread. _wake is safe
+ * concurrently with _wait, but must NOT overlap _free: join every thread
+ * that may call _wake before _free (design R5 free order: quiesce senders
+ * → stop → wake → join → del → close → free).
+ *
+ * Windows startup: a set holds one nodus_net_startup reference from _init
+ * to _free. WSACleanup at the LAST reference resets every socket still
+ * open in the process — close sockets before the last _free / _cleanup.
+ * nodus_net_socket takes NO startup reference of its own.
  *
  * One set per transport instance (R1): nothing is shared between two
  * nodus_net_poll_t, and _init takes no foreign descriptor.
@@ -128,24 +145,37 @@ typedef struct {
  * EFD_NONBLOCK|EFD_CLOEXEC registered IN under NODUS_NET_TAG_WAKE;
  * Windows: a loopback TCP pair — _init fails closed when it cannot be
  * built). Windows: takes one nodus_net_startup reference, released by
- * _free. @return 0, or -1 with nothing left open.
+ * _free. @return 0, or -1 with nothing left open (error in
+ * nodus_net_errno(); Windows: WSAEINVAL for p == NULL, WSAENOBUFS when the
+ * registry cannot be allocated, else the Winsock error of the step that
+ * failed).
  */
 int  nodus_net_poll_init(nodus_net_poll_t *p, bool with_wake);
 /** Close the wake and the set. Sockets still registered are NOT closed
- *  (they are the caller's). Safe on a set that is not open. */
+ *  (they are the caller's). Safe after a failed _init and after _free
+ *  (twice is a no-op). NOT safe on a struct _init has never seen: on
+ *  Linux a zeroed struct holds epfd 0, which _free would close — callers
+ *  must _init first. Must not overlap a _wake (see Threads above). */
 void nodus_net_poll_free(nodus_net_poll_t *p);
 /** True between a successful _init and _free. */
 bool nodus_net_poll_is_open(const nodus_net_poll_t *p);
 
 /** Register `s` under `tag` watching `mask` (NODUS_NET_IN / OUT, plus
  *  EDGE / RDHUP / CONNECT flags; 0 = registered, watching nothing).
- *  @return 0 or -1 (Linux: errno from epoll_ctl; Windows: full set). */
+ *  @return 0 or -1, error in nodus_net_errno() (Linux: EINVAL for p ==
+ *  NULL or the reserved tag, else epoll_ctl's errno; Windows: WSAEINVAL
+ *  for a bad argument, the reserved tag or a socket already registered,
+ *  WSAENOBUFS for a full set). */
 int  nodus_net_poll_add(nodus_net_poll_t *p, nodus_sock_t s, uint64_t tag,
                         uint32_t mask);
-/** Replace the tag and mask of a registered socket. @return 0 or -1. */
+/** Replace the tag and mask of a registered socket. @return 0 or -1
+ *  (Linux: as _add; Windows: WSAEINVAL for a bad argument, the reserved
+ *  tag or a socket not registered). */
 int  nodus_net_poll_mod(nodus_net_poll_t *p, nodus_sock_t s, uint64_t tag,
                         uint32_t mask);
-/** Unregister `s` (call before closing it). @return 0 or -1. */
+/** Unregister `s` (call before closing it). @return 0 or -1 (Linux:
+ *  EINVAL for p == NULL, else epoll_ctl's errno; Windows: WSAEINVAL for a
+ *  bad argument or a socket not registered). */
 int  nodus_net_poll_del(nodus_net_poll_t *p, nodus_sock_t s);
 
 /**
@@ -153,23 +183,36 @@ int  nodus_net_poll_del(nodus_net_poll_t *p, nodus_sock_t s);
  * write at most `cap` ready sockets to `out`. The wake, when it fired, is
  * drained here (read until it would block) and NOT reported.
  * Linux: one epoll_wait(epfd, …, cap, timeout_ms); entries in the order
- * epoll returns them; cap ≤ NODUS_NET_POLL_MAX_BATCH.
- * Windows: one select; entries in registration-array order, the first
- * `cap` ready ones written; nothing is carried between calls. ⚠ With
- * more ready sockets than `cap`, the ones past `cap` are not reported by
- * this call — and, while the earlier ones stay ready, by no later call
- * either (no rotation). A Windows caller that acts on the result per
- * socket passes cap >= NODUS_NET_POLL_WIN_CAPACITY; whether the backend
- * should rotate instead is open for package N2 (R7 "no spill").
- * @return the number written (0 on timeout or a wake alone), or -1
- *         (Linux: epoll_wait's errno, e.g. EINTR).
+ * epoll returns them; cap ≤ NODUS_NET_POLL_MAX_BATCH. The wake's eventfd
+ * is one of epoll's `cap` entries (as in p2p before N1): a call in which
+ * the wake fired returns at most cap - 1 sockets, and with a small cap it
+ * may return fewer sockets than are ready because the wake took a slot —
+ * the rest are reported by the next call (level) as before.
+ * Windows: one select over the whole set (the wake is not one of the
+ * `cap` entries there). Fair rotation (design §10, R7 amended): the scan
+ * of the registry starts just past the entry the previous call reported
+ * last and wraps around, so with more ready sockets than `cap` every
+ * socket that stays ready is reported within ceil(n / cap) consecutive
+ * calls (n = registered sockets); _del keeps the rotation position.
+ * Windows, WSAENOTSOCK from select (a registered socket was closed
+ * without _del): up to `cap` stale entries are evicted and each evicted
+ * tag is reported ONCE as NODUS_NET_ERR | NODUS_NET_HUP (no readiness is
+ * reported in that call); if none is stale, -1 with WSAENOTSOCK. ⚠ A
+ * handle value Windows already reused for a new socket is not detected.
+ * @return the number written (0 on timeout, on a wake alone, or — Linux,
+ *         cap 1 — when the wake took the only slot), or -1,
+ *         error in nodus_net_errno() (Linux: EINVAL for a bad argument,
+ *         else epoll_wait's errno, e.g. EINTR; Windows: WSAEINVAL for a
+ *         bad argument or a wait without limit on an empty set, else
+ *         select's error).
  */
 #define NODUS_NET_POLL_MAX_BATCH 64
 int  nodus_net_poll_wait(nodus_net_poll_t *p, int timeout_ms,
                          nodus_net_event_t *out, int cap);
 
-/** Make a blocked or the next _wait return. Thread-safe; the ONLY call
- *  allowed off the loop thread. No-op on a set opened without wake. */
+/** Make a blocked or the next _wait return. Thread-safe against _wait;
+ *  the ONLY call allowed off the loop thread; must NOT overlap _free
+ *  (join every waker first). No-op on a set opened without wake. */
 void nodus_net_poll_wake(nodus_net_poll_t *p);
 
 /**
@@ -177,20 +220,27 @@ void nodus_net_poll_wake(nodus_net_poll_t *p);
  * block. Linux: poll({s, POLLOUT}, 1, 0) — the probe nodus_witness_p2p.c
  * ran before N1. Windows: a one-socket select on the write and except
  * sets (R4). Whether it SUCCEEDED (SO_ERROR, getpeername) is the
- * caller's check. @return > 0 finished, 0 still connecting, < 0 error.
+ * caller's check. @return > 0 finished, 0 still connecting, < 0 error
+ * (Linux: poll's -1; Windows: select's SOCKET_ERROR). A caller must NOT
+ * read < 0 as "still connecting". p2p's caller tests `<= 0` today; it is
+ * Linux-only and is revisited in package N3 (design §10).
  */
 int  nodus_net_probe_connect(nodus_sock_t s);
 
 /* ── socket shims (R3) ─────────────────────────────────────────────── */
 
 /** Winsock owner: checked, reference-counted, synchronized WSAStartup /
- *  WSACleanup (R7). No-op elsewhere. @return 0 or -1. */
+ *  WSACleanup (R7). No-op elsewhere. The last _cleanup resets every
+ *  socket still open in the process (see "Windows startup" above).
+ *  @return 0 or -1 (Windows: WSAStartup's code in nodus_net_errno()). */
 int  nodus_net_startup(void);
 void nodus_net_cleanup(void);
 
 /** A non-blocking, close-on-exec socket. Linux:
  *  socket(family, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0). Windows:
- *  socket + FIONBIO, not inheritable. @return the socket or
+ *  socket + FIONBIO, then HANDLE_FLAG_INHERIT cleared — a failure of that
+ *  last step is logged (QGP_LOG_WARN) and the socket is still returned.
+ *  Takes no nodus_net_startup reference. @return the socket or
  *  NODUS_SOCK_INVALID (error in nodus_net_errno()). */
 nodus_sock_t nodus_net_socket(int family, int type);
 /** accept(2), nothing added: the caller makes the result non-blocking
@@ -198,7 +248,9 @@ nodus_sock_t nodus_net_socket(int family, int type);
 nodus_sock_t nodus_net_accept(nodus_sock_t l, struct sockaddr *sa,
                               nodus_socklen_t *sl);
 /** Linux: fcntl(F_GETFL) then fcntl(F_SETFL, flags | O_NONBLOCK) — the
- *  nodus_tcp.c set_nonblocking. Windows: FIONBIO. @return 0 or -1. */
+ *  nodus_tcp.c set_nonblocking; when F_GETFL fails, -1 WITHOUT calling
+ *  F_SETFL (the one stated Linux deviation, see Backends above).
+ *  Windows: FIONBIO. @return 0 or -1. */
 int  nodus_net_set_nonblocking(nodus_sock_t s);
 /** Linux: fcntl(F_SETFD, FD_CLOEXEC). Windows: clears HANDLE_FLAG_INHERIT.
  *  @return 0 or -1. */

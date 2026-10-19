@@ -2197,6 +2197,9 @@ add_test(NAME test_p2p_switch COMMAND test_p2p_switch)
 add_executable(test_net_poll tests/test_net_poll.c)
 target_link_libraries(test_net_poll nodus)
 add_test(NAME test_net_poll COMMAND test_net_poll)
+# Hang guard only (the wake case waits without a time limit; only the
+# wake ends it) — no assertion depends on this bound.
+set_tests_properties(test_net_poll PROPERTIES TIMEOUT 120)
 
 # cometbft @709fd12b → C port, fleet P2P-PORT phase F4 —
 # p2p/pex/addrbook_test.go + pex_reactor_test.go's single-threaded cases:

@@ -17,6 +17,13 @@
   #define FD_SETSIZE 1026
 #endif
 
+/* Windows: SRWLOCK (the Winsock startup lock below) needs Vista (0x0600)
+ * or later from the SDK headers; set before any windows / winsock include.
+ * A build that already sets a higher _WIN32_WINNT keeps its own value. */
+#if defined(_WIN32) && !defined(_WIN32_WINNT)
+  #define _WIN32_WINNT 0x0600
+#endif
+
 #ifdef __EMSCRIPTEN__
   #error "nodus_net_poll: the browser arm is package N2 (nodus_tcp keeps its own poll loop until then)"
 #endif
@@ -287,6 +294,10 @@ typedef struct {
 struct nodus_net_poll_win {
     net_entry_t e[NODUS_NET_POLL_WIN_CAPACITY];
     int         n;                       /* registration order, no holes */
+    int         next;                    /* where the next _wait's scan
+                                          * starts: just past the entry the
+                                          * last _wait reported last; always
+                                          * 0 <= next < n, or 0 when n == 0 */
     SOCKET      wake_rd;                 /* in the read set, or INVALID   */
     SOCKET      wake_wr;                 /* written by _wake              */
 };
@@ -305,22 +316,31 @@ int nodus_net_startup(void)
         WSADATA d;
         int w = WSAStartup(MAKEWORD(2, 2), &d);
 
+        /* WSAStartup returns its error instead of setting the thread's
+         * last error; it is stored with WSASetLastError so that
+         * nodus_net_errno() carries it. Whether WSASetLastError is honoured
+         * before a successful WSAStartup is NOT verified against the
+         * Microsoft documentation either way. */
         if (w != 0) {
             QGP_LOG_ERROR(LOG_TAG, "WSAStartup failed: %d", w);
-            rc = -1;
+            rc = w;
         } else if (LOBYTE(d.wVersion) != 2 || HIBYTE(d.wVersion) != 2) {
             QGP_LOG_ERROR(LOG_TAG, "Winsock 2.2 not available (got %u.%u)",
                           (unsigned)LOBYTE(d.wVersion),
                           (unsigned)HIBYTE(d.wVersion));
             WSACleanup();
-            rc = -1;
+            rc = WSAVERNOTSUPPORTED;
         }
     }
     if (rc == 0) {
         g_wsa_refs++;
     }
     ReleaseSRWLockExclusive(&g_wsa_lock);
-    return rc;
+    if (rc != 0) {
+        WSASetLastError(rc);
+        return -1;
+    }
+    return 0;
 }
 
 void nodus_net_cleanup(void)
@@ -350,6 +370,23 @@ int nodus_net_set_cloexec(nodus_sock_t s)
                ? 0 : -1;
 }
 
+/* Clear HANDLE_FLAG_INHERIT on a socket this file creates. A failure is
+ * logged and the socket is kept: whether SetHandleInformation can fail on
+ * a fresh Winsock handle (e.g. under a layered service provider), and
+ * whether such a socket is then inherited, is NOT verified against the
+ * Microsoft documentation either way — so it is neither a hard failure
+ * nor silent. The thread's last error is kept as it was. */
+static void net_no_inherit(SOCKET s, const char *what)
+{
+    int e = WSAGetLastError();
+
+    if (nodus_net_set_cloexec((nodus_sock_t)s) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "%s: cannot clear HANDLE_FLAG_INHERIT (%lu); "
+                     "kept", what, (unsigned long)GetLastError());
+    }
+    WSASetLastError(e);
+}
+
 nodus_sock_t nodus_net_socket(int family, int type)
 {
     SOCKET s = socket(family, type, 0);
@@ -357,14 +394,14 @@ nodus_sock_t nodus_net_socket(int family, int type)
     if (s == INVALID_SOCKET) {
         return NODUS_SOCK_INVALID;
     }
-    if (nodus_net_set_nonblocking((nodus_sock_t)s) != 0 ||
-        nodus_net_set_cloexec((nodus_sock_t)s) != 0) {
+    if (nodus_net_set_nonblocking((nodus_sock_t)s) != 0) {
         int e = WSAGetLastError();
 
         closesocket(s);
         WSASetLastError(e);
         return NODUS_SOCK_INVALID;
     }
+    net_no_inherit(s, "socket");
     return (nodus_sock_t)s;
 }
 
@@ -406,58 +443,98 @@ int nodus_net_errno(void)
 
 /* ── the wake: a loopback TCP pair ─────────────────────────────────── */
 
-/* listen(127.0.0.1:0) → connect → accept → close the listener. The
- * accepted end must be OUR connector (another local process could reach
- * the ephemeral listener first): its peer address is compared with the
- * connector's own address, and a mismatch fails closed. */
+/* listen(127.0.0.1:0) → connect → accept → close the listener.
+ *  · The listener is bound SO_EXCLUSIVEADDRUSE, so no other socket can
+ *    bind the same address and port while it exists.
+ *  · The connect is blocking: when it returns 0 the handshake is complete
+ *    and the connection is queued on the listener. The accept then runs
+ *    with the listener NON-blocking — it either takes the queued
+ *    connection at once or fails; any failure, WOULDBLOCK included, fails
+ *    closed (no wait, no timeout).
+ *  · The accepted end must be OUR connector (another local process could
+ *    reach the ephemeral listener first): its peer address is compared
+ *    with the connector's own address, and a mismatch fails closed.
+ *  · Every socket here is made non-inheritable (net_no_inherit).
+ * On failure the thread's last error holds the cause, logged once. */
 static int wake_pair(SOCKET *rd, SOCKET *wr)
 {
     struct sockaddr_in a, mine, peer;
     int al = (int)sizeof(a), ml = (int)sizeof(mine), pl = (int)sizeof(peer);
     SOCKET l = INVALID_SOCKET, c = INVALID_SOCKET, r = INVALID_SOCKET;
-    BOOL one = TRUE;
+    BOOL one = TRUE, excl = TRUE;
+    u_long nb = 1;
+    const char *why;
+    int err;
 
     memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     a.sin_port = 0;
+    why = "listener socket";
     l = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (l == INVALID_SOCKET ||
-        bind(l, (struct sockaddr *)&a, (int)sizeof(a)) != 0 ||
+    if (l == INVALID_SOCKET) {
+        goto fail_wsa;
+    }
+    net_no_inherit(l, "wake listener");
+    why = "listener SO_EXCLUSIVEADDRUSE";
+    if (setsockopt(l, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&excl,
+                   (int)sizeof(excl)) != 0) {
+        goto fail_wsa;
+    }
+    why = "listener bind / listen / getsockname";
+    if (bind(l, (struct sockaddr *)&a, (int)sizeof(a)) != 0 ||
         listen(l, 1) != 0 ||
         getsockname(l, (struct sockaddr *)&a, &al) != 0) {
-        goto fail;
+        goto fail_wsa;
     }
+    why = "loopback connect";
     c = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (c == INVALID_SOCKET ||
-        connect(c, (struct sockaddr *)&a, (int)sizeof(a)) != 0) {
-        goto fail;
+    if (c == INVALID_SOCKET) {
+        goto fail_wsa;
+    }
+    net_no_inherit(c, "wake writer");
+    if (connect(c, (struct sockaddr *)&a, (int)sizeof(a)) != 0) {
+        goto fail_wsa;
+    }
+    why = "non-blocking accept of the queued connection";
+    if (ioctlsocket(l, FIONBIO, &nb) != 0) {
+        goto fail_wsa;
     }
     r = accept(l, (struct sockaddr *)&peer, &pl);
-    if (r == INVALID_SOCKET ||
-        getsockname(c, (struct sockaddr *)&mine, &ml) != 0 ||
-        peer.sin_family != AF_INET || mine.sin_family != AF_INET ||
+    if (r == INVALID_SOCKET) {
+        goto fail_wsa;
+    }
+    net_no_inherit(r, "wake reader");
+    why = "connector getsockname";
+    if (getsockname(c, (struct sockaddr *)&mine, &ml) != 0) {
+        goto fail_wsa;
+    }
+    if (peer.sin_family != AF_INET || mine.sin_family != AF_INET ||
         peer.sin_port != mine.sin_port ||
         peer.sin_addr.s_addr != mine.sin_addr.s_addr) {
-        QGP_LOG_ERROR(LOG_TAG, "wake pair: the accepted end is not ours");
+        why = "the accepted end is not ours";
+        /* No Winsock call failed here: WSAEACCES is CHOSEN as the closest
+         * "not permitted" code, so that nodus_net_errno() is not stale. */
+        err = WSAEACCES;
         goto fail;
     }
     closesocket(l);
     l = INVALID_SOCKET;
     (void)setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char *)&one,
                      (int)sizeof(one));
+    why = "FIONBIO on the pair";
     if (nodus_net_set_nonblocking((nodus_sock_t)r) != 0 ||
-        nodus_net_set_nonblocking((nodus_sock_t)c) != 0 ||
-        nodus_net_set_cloexec((nodus_sock_t)r) != 0 ||
-        nodus_net_set_cloexec((nodus_sock_t)c) != 0) {
-        goto fail;
+        nodus_net_set_nonblocking((nodus_sock_t)c) != 0) {
+        goto fail_wsa;
     }
     *rd = r;
     *wr = c;
     return 0;
 
+fail_wsa:
+    err = WSAGetLastError();
 fail:
-    QGP_LOG_ERROR(LOG_TAG, "wake pair cannot be built: %d", WSAGetLastError());
+    QGP_LOG_ERROR(LOG_TAG, "wake pair cannot be built: %s (%d)", why, err);
     if (r != INVALID_SOCKET) {
         closesocket(r);
     }
@@ -467,6 +544,7 @@ fail:
     if (l != INVALID_SOCKET) {
         closesocket(l);
     }
+    WSASetLastError(err);
     return -1;
 }
 
@@ -476,23 +554,29 @@ int nodus_net_poll_init(nodus_net_poll_t *p, bool with_wake)
 {
     struct nodus_net_poll_win *w;
 
+    int e;
+
     if (p == NULL) {
+        WSASetLastError(WSAEINVAL);
         return -1;
     }
     p->w = NULL;
     if (nodus_net_startup() != 0) {
-        return -1;
+        return -1;                       /* last error set by startup */
     }
     w = (struct nodus_net_poll_win *)calloc(1, sizeof(*w));
     if (w == NULL) {
         nodus_net_cleanup();
+        WSASetLastError(WSAENOBUFS);
         return -1;
     }
     w->wake_rd = INVALID_SOCKET;
     w->wake_wr = INVALID_SOCKET;
     if (with_wake && wake_pair(&w->wake_rd, &w->wake_wr) != 0) {
+        e = WSAGetLastError();           /* WSACleanup may overwrite it */
         free(w);
         nodus_net_cleanup();
+        WSASetLastError(e);
         return -1;
     }
     p->w = w;
@@ -532,10 +616,20 @@ static int net_find(const struct nodus_net_poll_win *w, SOCKET s)
     return -1;
 }
 
+/* Remove entry i, keeping registration order. The scan cursor keeps
+ * pointing at the same next entry: an entry removed before it shifts it
+ * down by one; a cursor left at or past the end wraps to 0. Both _del and
+ * the WSAENOTSOCK eviction go through here. */
 static void net_remove(struct nodus_net_poll_win *w, int i)
 {
     memmove(&w->e[i], &w->e[i + 1], (size_t)(w->n - i - 1) * sizeof(w->e[0]));
     w->n--;
+    if (i < w->next) {
+        w->next--;
+    }
+    if (w->next >= w->n) {
+        w->next = 0;
+    }
 }
 
 int nodus_net_poll_add(nodus_net_poll_t *p, nodus_sock_t s, uint64_t tag,
@@ -546,11 +640,13 @@ int nodus_net_poll_add(nodus_net_poll_t *p, nodus_sock_t s, uint64_t tag,
 
     if (p == NULL || (w = p->w) == NULL || s == NODUS_SOCK_INVALID ||
         tag == NODUS_NET_TAG_WAKE || net_find(w, (SOCKET)s) >= 0) {
+        WSASetLastError(WSAEINVAL);
         return -1;
     }
     room = NODUS_NET_POLL_WIN_CAPACITY - (w->wake_rd != INVALID_SOCKET ? 1 : 0);
     if (w->n >= room) {
         QGP_LOG_WARN(LOG_TAG, "select set full (%d sockets)", w->n);
+        WSASetLastError(WSAENOBUFS);
         return -1;
     }
     w->e[w->n].s = (SOCKET)s;
@@ -567,6 +663,7 @@ int nodus_net_poll_mod(nodus_net_poll_t *p, nodus_sock_t s, uint64_t tag,
 
     if (p == NULL || p->w == NULL || tag == NODUS_NET_TAG_WAKE ||
         (i = net_find(p->w, (SOCKET)s)) < 0) {
+        WSASetLastError(WSAEINVAL);
         return -1;
     }
     p->w->e[i].tag = tag;
@@ -579,6 +676,7 @@ int nodus_net_poll_del(nodus_net_poll_t *p, nodus_sock_t s)
     int i;
 
     if (p == NULL || p->w == NULL || (i = net_find(p->w, (SOCKET)s)) < 0) {
+        WSASetLastError(WSAEINVAL);
         return -1;
     }
     net_remove(p->w, i);
@@ -586,24 +684,35 @@ int nodus_net_poll_del(nodus_net_poll_t *p, nodus_sock_t s)
 }
 
 /* select failed with WSAENOTSOCK: a registered handle was closed without
- * _del (nodus_client_force_disconnect, BUGS.md C-06; R5). Evict every
- * handle Winsock no longer knows, log each, keep the rest. */
-static void net_evict_invalid(struct nodus_net_poll_win *w)
+ * _del (nodus_client_force_disconnect, BUGS.md C-06; R5). Evict up to
+ * `cap` handles Winsock no longer knows and report each evicted entry's
+ * tag once in `out` as ERR|HUP, so its owner learns the socket is gone;
+ * the rest stay registered (a further stale one fails the next select
+ * again and is evicted then). ⚠ A handle VALUE that Windows has already
+ * reused for a new socket passes the SO_TYPE check and is not evicted —
+ * the C-06 fix is the gate for that (design §10).
+ * @return the number of entries evicted and written (0 = none found). */
+static int net_evict_invalid(struct nodus_net_poll_win *w,
+                             nodus_net_event_t *out, int cap)
 {
-    int i = 0;
+    int i = 0, k = 0;
 
-    while (i < w->n) {
+    while (i < w->n && k < cap) {
         int t = 0, tl = (int)sizeof(t);
 
         if (getsockopt(w->e[i].s, SOL_SOCKET, SO_TYPE, (char *)&t, &tl) != 0 &&
             WSAGetLastError() == WSAENOTSOCK) {
             QGP_LOG_WARN(LOG_TAG, "evicted a closed socket still registered "
                          "(tag %llu)", (unsigned long long)w->e[i].tag);
+            out[k].tag = w->e[i].tag;
+            out[k].ready = NODUS_NET_ERR | NODUS_NET_HUP;
+            k++;
             net_remove(w, i);
             continue;
         }
         i++;
     }
+    return k;
 }
 
 int nodus_net_poll_wait(nodus_net_poll_t *p, int timeout_ms,
@@ -612,9 +721,10 @@ int nodus_net_poll_wait(nodus_net_poll_t *p, int timeout_ms,
     struct nodus_net_poll_win *w;
     fd_set rs, ws, xs;
     struct timeval tv, *tvp = NULL;
-    int i, k = 0, watched = 0, rc;
+    int i, t, k = 0, last = -1, watched = 0, rc;
 
     if (p == NULL || (w = p->w) == NULL || out == NULL || cap <= 0) {
+        WSASetLastError(WSAEINVAL);
         return -1;
     }
     FD_ZERO(&rs);
@@ -658,8 +768,19 @@ int nodus_net_poll_wait(nodus_net_poll_t *p, int timeout_ms,
     rc = select(0, &rs, &ws, &xs, tvp);
     if (rc == SOCKET_ERROR) {
         if (WSAGetLastError() == WSAENOTSOCK) {
-            net_evict_invalid(w);
-            return 0;
+            k = net_evict_invalid(w, out, cap);
+            if (k == 0) {
+                /* select named a non-socket, yet every registered handle
+                 * still answers SO_TYPE (the wake pair, or a reused handle
+                 * value): nothing to evict — report the failure. */
+                QGP_LOG_ERROR(LOG_TAG, "select: WSAENOTSOCK, but no "
+                              "registered socket is stale");
+                WSASetLastError(WSAENOTSOCK);
+                return -1;
+            }
+            QGP_LOG_WARN(LOG_TAG, "select: WSAENOTSOCK, %d stale socket(s) "
+                         "evicted and reported as ERR|HUP", k);
+            return k;
         }
         return -1;
     }
@@ -670,9 +791,15 @@ int nodus_net_poll_wait(nodus_net_poll_t *p, int timeout_ms,
             /* drained (until WOULDBLOCK) */
         }
     }
-    for (i = 0; i < w->n && k < cap; i++) {
+    /* Fair rotation (design §10, R7 amended): the scan starts at w->next —
+     * just past the entry the previous call reported last — and wraps, so
+     * a ready entry that did not fit in `cap` this time is ahead of the
+     * scan next time: every entry that stays ready is reported within
+     * ceil(n / cap) consecutive waits. */
+    for (t = 0; t < w->n && k < cap; t++) {
         uint32_t r = 0;
 
+        i = (w->next + t) % w->n;
         if (FD_ISSET(w->e[i].s, &rs)) {
             r |= NODUS_NET_IN;
         }
@@ -689,7 +816,11 @@ int nodus_net_poll_wait(nodus_net_poll_t *p, int timeout_ms,
             out[k].tag = w->e[i].tag;
             out[k].ready = r;
             k++;
+            last = i;
         }
+    }
+    if (last >= 0) {
+        w->next = (last + 1) % w->n;
     }
     return k;
 }
