@@ -9756,7 +9756,7 @@ registered `NODUS_NET_OUT | NODUS_NET_IN | NODUS_NET_CONNECT` (the Linux arm str
 `CONNECT`, so `epoll_ctl` sees `EPOLLOUT | EPOLLIN` as before; `:298-322`), a connected one
 `NODUS_NET_IN`; `nodus_p2p_io_wait` waits through `nodus_net_poll_wait(…, evs, 64)` (batch 64
 unchanged, `:455`, `:482`); the worker's wake is `nodus_net_poll_wake(&p->io.poll)` (`:885`);
-the connect probe is `nodus_net_probe_connect` (`:708`). Since N3 the host file is in the
+the connect probe is `nodus_net_probe_connect` (`:707-738`; Windows arm `:712`, Linux arm `:723`). Since N3 the host file is in the
 common source list (`nodus/CMakeLists.txt:138-143`) and compiles for Windows; the witness
 bindings `nodus_witness_p2p.c` stay in the `if(NOT WIN32)` list (`nodus/CMakeLists.txt:620`,
 `:704`). `nodus_tcp`, `nodus_udp`, the DHT server's bf set and the
@@ -9765,8 +9765,8 @@ inter-dial) and N2b (udp / bf), each merging alone (design §9 R8). The witness-
 is package N3 (next subsection). Design §10 moved three Windows gaps of the 4004 host from N1
 to N3: the address-book atomic replace got its Windows arm in N3 (`nodus_p2p_host.c:1240-1322`);
 `getsockname` of the listener is the pre-N3 call, compiled in the Windows build unchanged with
-no shim added (`:1710-1713`); the probe caller below did NOT change — at `88284e668`
-it still tests `<= 0` (`nodus_p2p_host.c:708`).
+no shim added (`:1710-1713`); the probe caller below got its Windows arm in N3-FIX2
+(`nodus_p2p_host.c:707-738`).
 
 **Thread rule.** One thread owns a set — the loop owner. Only `nodus_net_poll_wake` may be
 called from another thread; it is safe concurrently with `_wait` but must NOT overlap `_free`:
@@ -9810,12 +9810,11 @@ layer. Today no Windows caller of the layer exists, so the gap is not reachable.
 
 **Connect probe and its Linux-only caller.** `nodus_net_probe_connect` returns > 0 finished,
 0 still connecting, < 0 error (Linux `poll`'s -1, Windows `select`'s `SOCKET_ERROR`); a caller
-must NOT read < 0 as "still connecting" (`nodus_net_poll.h:218-229`). p2p's caller tests
-`<= 0` (`nodus_p2p_host.c:708`, `io_connect_done`) — correct only on Linux, where it is the
-probe it ran before N1. The header still says it "is revisited in package N3"
-(`nodus_net_poll.h:225-226`) and design §10 assigned it to N3, but N3 did NOT change it: on a
-Windows build a probe error (< 0) is read as "still connecting". No Windows program runs the
-host today, so the path is not reached.
+must NOT read < 0 as "still connecting" (`nodus_net_poll.h:218-230`). p2p's caller
+(`nodus_p2p_host.c:707-738`, `io_connect_done`): on Linux it tests `<= 0`, the probe it ran
+before N1 (unchanged); on Windows since N3-FIX2 a probe error (< 0) goes to the existing
+failed-connect branch (`conn_failed`) and only 0 means still connecting. The Windows arm compiles
+and has never run (no Windows program runs the host today).
 
 **The Windows arm has run under Wine only, never on native Windows.** `nodus/tests/test_net_poll_win.c`
 (a Windows-only executable, built by the README's cross build, no ctest entry) exercises the select
@@ -9981,10 +9980,11 @@ of them has run, on Windows or under Wine:
   `WSAEINVAL` as well as `errno` (`:368-375`); the listen failure is logged with the Winsock
   code `nodus_net_errno()` on Windows, `strerror(errno)` on Linux (`:1699-1707`); the bound
   port is read back with `getsockname` (`:1710-1713`, the pre-N3 call, no shim added).
-Not covered by N3: the connect-probe caller (`:708`, see "Connect probe and its Linux-only
-caller" above) and the ⚠ NOT GROUNDED Winsock pair of `NODUS_NET_IS_CONNABORTED`
-(`nodus_net_poll.h:281-285`), which the accept path (`nodus_p2p_host.c:753`) now uses in the
-Windows build too.
+The connect-probe caller's Windows arm landed in N3-FIX2 (`:707-738`, see "Connect probe and
+its Linux-only caller" above). Still ⚠ NOT GROUNDED: the Winsock pair of
+`NODUS_NET_IS_CONNABORTED` (`nodus_net_poll.h:284-293`), which the accept path
+(`nodus_p2p_host.c:773`) uses in the Windows build too — the header states what happens if
+the mapping is wrong.
 
 **The witness's Linux behaviour is unchanged** (K25-5). Every moved body keeps its statements;
 the N3-FIX commit `5f018cf64` states that every new `_init` check is one the witness already
