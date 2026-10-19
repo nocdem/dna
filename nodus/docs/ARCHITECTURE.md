@@ -9728,7 +9728,7 @@ translation unit; `fd_set` never leaves either file (`nodus_net_poll.h:61-66`,
 **What it is NOT.** It knows nothing about frames, peers, budgets, admission or crypto; each
 caller keeps its own policy and its own DISPATCH rule for `ERR` / `HUP` / `RDHUP`
 (`nodus_net_poll.h:7-10`). Framing stays per port: 4004 is still cometbft's raw byte stream
-into `cmt_p2p_mconn` (`nodus_witness_p2p.h:22-28` — nodus_tcp's frame layer is not used on
+into `cmt_p2p_mconn` (`nodus_witness_p2p.h:22-27` — nodus_tcp's frame layer is not used on
 4004); 4001 / 4002 keep the nodus frame. No session crypto is added or changed (the DHT v2
 session package is a later user of this layer). Nothing here touches consensus state; no wire
 byte changes.
