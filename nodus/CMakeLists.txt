@@ -868,6 +868,21 @@ if(NODUS_STANDALONE AND NOT WIN32)
     list(APPEND NODUS_SOURCES src/witness/nodus_witness_rt_evm.c)
 endif()
 
+# Windows: five witness-server sources in the common list use POSIX-only
+# file calls (O_CLOEXEC / O_DIRECTORY / O_SYNC, fsync, pread, fstatat,
+# dirfd, the 2-argument mkdir) — the consensus WAL and its file group, the
+# privval last-sign-state file, the genesis derivation and the join
+# scratch. A Windows build (the nodus-light light client) never runs a
+# witness, so they leave the Windows list only; Linux is unchanged.
+if(WIN32)
+    list(REMOVE_ITEM NODUS_SOURCES
+        src/witness/nodus_witness_cmt_autofile.c
+        src/witness/nodus_witness_cmt_wal.c
+        src/witness/nodus_witness_cmt_privval.c
+        src/witness/nodus_witness_v2_gen.c
+        src/witness/nodus_witness_v2_join.c)
+endif()
+
 add_library(nodus STATIC ${NODUS_SOURCES})
 
 if(NODUS_EVM_ENABLED)
@@ -1209,6 +1224,11 @@ endif()
 add_executable(nodus-light tools/nodus-light.c)
 target_link_libraries(nodus-light nodus dsa nodus)
 target_compile_options(nodus-light PRIVATE -Wall -Wextra)
+if(WIN32)
+    # One self-contained .exe: winpthreads and the toolchain runtime are
+    # linked in, so only Windows system DLLs are imported.
+    target_link_options(nodus-light PRIVATE -static)
+endif()
 
 # Everything below — the ctest suite, benches, the Genesis Protocol
 # harness tools, the server / witness / storage / core binaries, nodus-cli

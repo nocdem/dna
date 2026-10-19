@@ -12,7 +12,16 @@
 
 /* Lowercase hex alphabet. Matches the project convention (128 lowercase
  * hex characters for fingerprints). */
-static const char qgp_fp_hex_digits[16] = "0123456789abcdef";
+#if defined(__has_attribute)
+#  if __has_attribute(nonstring)
+#    define QGP_FP_NONSTRING __attribute__((nonstring))
+#  endif
+#endif
+#ifndef QGP_FP_NONSTRING
+#  define QGP_FP_NONSTRING
+#endif
+/* 16 bytes, no NUL: a lookup table, not a string. */
+static const char qgp_fp_hex_digits[16] QGP_FP_NONSTRING = "0123456789abcdef";
 
 void qgp_fp_raw_to_hex(const uint8_t raw[QGP_FP_RAW_BYTES],
                        char out[QGP_FP_HEX_BUFFER]) {

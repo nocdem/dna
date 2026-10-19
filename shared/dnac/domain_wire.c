@@ -31,7 +31,16 @@ static const uint8_t TAG_DUPD[TAG_LEN]    = "NDS.DUPD.v1\0\0\0\0";
 static const uint8_t TAG_DUNODE[TAG_LEN]  = "NDS.DUNODE.v1\0\0";
 static const uint8_t TAG_E_DUPD[TAG_LEN]  = "NDS.E.DUPD.v1\0\0";
 static const uint8_t TAG_DTXB[TAG_LEN]    = "NDS.DTXB.v1\0\0\0\0";
-static const uint8_t TAG_E_DUPDPRV[TAG_LEN] = "NDS.E.DUPDPRV.v1";
+/* Exactly TAG_LEN bytes with no NUL — a fixed-width tag, not a string. */
+#if defined(__has_attribute)
+#  if __has_attribute(nonstring)
+#    define DW_NONSTRING __attribute__((nonstring))
+#  endif
+#endif
+#ifndef DW_NONSTRING
+#  define DW_NONSTRING
+#endif
+static const uint8_t TAG_E_DUPDPRV[TAG_LEN] DW_NONSTRING = "NDS.E.DUPDPRV.v1";
 
 static void put_be16(uint16_t v, uint8_t out[2]) {
     out[0] = (uint8_t)(v >> 8); out[1] = (uint8_t)v;
