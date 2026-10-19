@@ -69,7 +69,7 @@ Presence is handled natively by Nodus server (v0.9.0+). The legacy `transport_re
 
 ## Nodus network readiness layer (`nodus/src/net/nodus_net_poll.h`, nodus 0.26.14)
 
-Net-layer package N1 (decision `docs/plans/decisions/2026-10-19-kurultay-26b-summary.md`, local). One readiness backend for the nodus ports 4000-4004 plus socket shims; no framing, no crypto, no policy — each caller keeps its own dispatch rule. Backends: Linux / Android epoll; Windows `select` (built, never run — no Windows test); Emscripten refused by `#error` in `nodus_net_poll.c:27-29`. Only user today: the 4004 host's io seam (`nodus_witness_p2p.c`). Mechanism: `nodus/docs/ARCHITECTURE.md` "Network readiness layer (`nodus_net_poll`)". Other nodus transport entries (`nodus_tcp_*`) are in [dht.md](dht.md) §12.6-12.10.
+Net-layer package N1 (decision `docs/plans/decisions/2026-10-19-kurultay-26b-summary.md`, local). One readiness backend for the nodus ports 4000-4004 plus socket shims; no framing, no crypto, no policy — each caller keeps its own dispatch rule. Backends: Linux / Android epoll; Windows `select` (run under Wine only — `nodus/tests/test_net_poll_win.c`; never on native Windows); Emscripten refused by `#error` in `nodus_net_poll.c:27-29`. Only user today: the 4004 host's io seam (`nodus_witness_p2p.c`). Mechanism: `nodus/docs/ARCHITECTURE.md` "Network readiness layer (`nodus_net_poll`)". Other nodus transport entries (`nodus_tcp_*`) are in [dht.md](dht.md) §12.6-12.10.
 
 **Threads:** one thread (the loop owner) owns a set; only `nodus_net_poll_wake` may be called from another thread, and it must not overlap `nodus_net_poll_free` (join every waker first).
 

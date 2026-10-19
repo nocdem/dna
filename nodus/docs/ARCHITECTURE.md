@@ -9797,10 +9797,14 @@ must NOT read < 0 as "still connecting" (`nodus_net_poll.h:218-228`). p2p's call
 `<= 0` (`nodus_witness_p2p.c:693`) — correct only on Linux, where it is the probe it ran before
 N1; it is revisited in N3 (`nodus_net_poll.h:225-226`).
 
-**The Windows arm has never run.** No Windows machine was available: the select backend, its
-fair rotation, its WSAENOTSOCK eviction and its wake pair are compiled (llvm-mingw cross
-build, ORCHESTRATOR) but not executed by any test (`nodus/tests/test_net_poll.c:72-75`). Its
-only claim is that it compiles.
+**The Windows arm has run under Wine only, never on native Windows.** `nodus/tests/test_net_poll_win.c`
+(a Windows-only executable, built by the README's cross build, no ctest entry) exercises the select
+backend: startup reference counting, refusals, level IN, fair rotation (10 ready, cap 3; a delete
+mid-rotation), the wake pair from another thread, wake + a ready socket, the connect probe for a
+succeeded and a refused connect, WSAENOTSOCK eviction reported once as ERR|HUP, an empty set.
+ORCHESTRATOR run 2026-10-20 under Wine 8.0: 3 runs, 9/9 each. Under Wine the Winsock behaviours are
+Wine's emulation; native Windows has not been seen. The fair rotation replaces Kurultay #26b item 7's
+"every ready socket at once" by the operator's word (2026-10-20).
 
 **Test.** `test_net_poll` (9 cases, `main` at `nodus/tests/test_net_poll.c:628-642`; ctest `TIMEOUT 120`
 as a hang guard only, `nodus/CMakeLists.txt:2197-2202`) exercises the Linux epoll arm:
