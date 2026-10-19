@@ -9822,18 +9822,20 @@ and a pinned networked provider over `dnac_light_block` (item 8) are now in the 
 "Light client packages 2 and 3" below, with the fix rounds of 0.26.10 (the pinned wait
 target, the attack lock with durable records, the established attack never downgraded,
 the node-wide `dnac_light_block` limiter — BUGS Z-41 … Z-44 and part of Z-45, see
-"Status after the fix rounds" there). Still missing:
-- a production CALLER: nothing in a node or a client opens a light client or a light
-  provider yet, and no program in the tree runs one (on Windows or elsewhere);
-- the trust root's sources (K25-1 "both"): the default checkpoint in the release and
-  the operator's own entry. The client takes the root as its caller's
-  `cmt_light_trust_options_t` and embeds none; no release checkpoint and no operator
-  input path exist in the tree. The trusting period (K25-2, 48 h) is likewise only a
-  caller parameter;
+"Status after the fix rounds" there). Since 0.26.11 the program `nodus-light` runs one
+("nodus-light — the light client program" below). Still missing:
+- a node-side caller: nothing in a node opens a light client or a light provider;
+  `nodus-light` (a separate program, Linux and Windows) is the only one that does, and
+  its Windows `.exe` has not been run on Windows;
+- the release half of the trust root (K25-1 "both"): the library still embeds no root
+  (it takes the caller's `cmt_light_trust_options_t`); `nodus-light` supplies the
+  operator's entry (`--trust-height` / `--trust-hash`) and the 48 h trusting period
+  (K25-2), but its release default checkpoint is EMPTY until a real block has been read
+  through the live RPC;
 - the `dnac_light_block` RPC is in the tree but on no live node. Its cost was measured
   and is bounded by the node-wide 4/s limiter (packages 2 and 3 below); the front door
-  still charges it one unit like any non-spend chain method, and no decision file yet
-  records the 4/s choice against decision B4;
+  still charges it one unit like any non-spend chain method — the RPC decision file
+  records this as B4 SET (operator 2026-10-19);
 - the proof layer: "proven RPC" waits for HF-7 / HF-8 and a tested proof API for each
   method (item 6);
 - for light storage: the 4004 p2p host on Windows (K25-5), the execution-free block
@@ -9879,7 +9881,8 @@ K25-8, K25-10), the RPC decision `docs/plans/decisions/2026-10-16-dnac-light-blo
 **Status: NO PRODUCTION CALLER** — nothing in a node or a client opens a light client
 or a light provider (`cmt_light_client.h:8-11`, `cmt_light_detector.h:10-17`,
 `nodus_light_provider.h:8-14`). The `dnac_light_block` handler itself is reachable on
-4001 in any node built from this tree, but no client in the tree asks for it. There is
+4001 in any node built from this tree; since 0.26.11 the separate program `nodus-light`
+(section below) is the one client in the tree that asks for it. There is
 still no proof layer: none of this is a "reference-equivalent light client", and
 `dnac_light_block` is NOT a "proven RPC" — its answer is a peer's word that only the
 light client's own checks make usable (Kurultay #25 item 6 and standing conditions).
@@ -10010,8 +10013,8 @@ worst case holds the witness loop ~60 ms of every second at 7 validators and ~23
 32. No queue, no cache. The handler reads the node's MONOTONIC wait clock (`n->mono`)
 for that admission only, never the wall clock; an unreadable clock answers
 INTERNAL_ERROR without touching the limiter or the store. The header names the 4/s value
-"Operator decision 2026-10-19"; the RPC decision file still describes B4 as a pending
-front-door weight. The client call refuses a reply at another height than asked (`http.go:70-74`) and
+"Operator decision 2026-10-19"; the RPC decision file records it as "B4 SET (operator
+2026-10-19)", with the front-door weight left at 1 unit. The client call refuses a reply at another height than asked (`http.go:70-74`) and
 checks nothing else. `nodus_light_provider_init` REFUSES a client with no server-key pin
 (Kurultay #25 item 8; a pinned session authenticates the server with ML-DSA-87 and runs
 ML-KEM-1024 only, `nodus_light_provider.h:16-21`) and re-checks the pin on every call;
@@ -10048,10 +10051,12 @@ records); the unbounded validator-set replay cost (Z-44 — the 4/s node-wide li
 its measurement). Partly: Z-45 — the RATE_LIMITED and rc -1 classes now map to
 NO_RESPONSE as named deviations; its other parts (the empty-store / missing-row error
 classes, the per-call pin check that reads only the client's config, the untested rows)
-are not touched by these rounds. Still open: NO production caller of the light client or the provider; no
-source for the trust root (no release checkpoint, no operator input path, K25-1); no
-program that runs a light client, on Windows or elsewhere; the RPC is not deployed to
-any live node. The ledger records (root `BUGS.md`) are the place where each item's
+are not touched by these rounds. Still open at 0.26.10: NO production caller of the light
+client or the provider; no source for the trust root (no release checkpoint, no operator
+input path, K25-1); no program that runs a light client, on Windows or elsewhere; the RPC
+is not deployed to any live node. 0.26.11 adds the program `nodus-light` with the
+operator-input root (section below); the release default checkpoint is still empty, the
+RPC is still on no live node, and the `.exe` has not been run on Windows. The ledger records (root `BUGS.md`) are the place where each item's
 remaining parts are tracked.
 
 **Build.** `cmt_light_client.c` and `cmt_light_detector.c` are in nodus's COMMON source
@@ -10111,6 +10116,184 @@ list beside `nodus_client.c` (`nodus/CMakeLists.txt`), so a Windows build compil
   front-door charge and the client call's network half are not driven; the tip's seen
   commit is written by the test; "no store read" on a refusal is shown by outcome, not
   by counting store calls; its author did not run it (file header).
+
+### nodus-light — the light client program (0.26.11)
+
+`nodus/tools/nodus-light.c` (+ its compiled table `nodus/tools/nodus_light_checkpoint.h`)
+is the first PROGRAM in the tree that runs the light client of the two sections above.
+It follows the chain over pinned TCP 4001 sessions — header, commit and validator set
+per block through `dnac_light_block` — and checks them with `cmt_light_client` and its
+detector; it executes no block and keeps no state but its light store
+(`nodus-light.c:1-6`, `:16-27`). Governing records: Kurultay #25
+(`docs/plans/decisions/2026-10-16-kurultay-25-summary.md`: K25-1, K25-2, K25-10, items 8
+and 9) and the RPC decision `docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md`.
+It is not a node-side caller: nothing in `nodus-server` / `nodus-core` / `nodus-witness`
+opens a light client, and the RPC it needs is on no live node yet (below).
+
+**Commands** (`nodus-light.c:8-14`, `main` `:1379-1395`):
+
+| Command | What it does |
+|---|---|
+| `run --data DIR [--trust-height H --trust-hash HEX] [--node host:port:pinfp]... [--interval S] [--chain-id HEX]` | Opens `DIR/light.db`, picks the trust root (order below), connects the nodes, then calls `Update` every interval until Ctrl-C / SIGTERM (Windows: the console control handler), printing a line when the trusted block or the witness count changes (`cmd_run`, `:899-1170`). |
+| `status --data DIR [--chain-id HEX]` | Read-only: store path, chain id prefix, trusted height + full header hash, block time, "trusted until" (block time + 48 h, marked EXPIRED when past), stored block count and range, the lock, the attack record counts. It does NOT create a store: with no `DIR/light.db` it prints `no light store in DIR` and exits 0 (`cmd_status`, `:1174-1271`, the check at `:1201-1207`). Takes no directory lock and opens no session. |
+| `clear-attack --data DIR [--node host:port:pinfp]... [--chain-id HEX]` | The operator's clear of an attack lock (K25-10) through `cmt_light_client_attack_clear`: refused while a record is not yet durable; every record is kept, marked cleared. The clients are initialised but NEVER connected — the constructor asks a provider only for its configured chain id — so nothing is sent (`cmd_clear_attack`, `:1275-1375`, comment `:1318-1321`). |
+
+`-h`, `--help`, `help` print the usage and exit 0; a usage error exits 2
+(`:1379-1395`, `:928-932`). (The usage text, `usage()` `:356-381`, lists `--chain-id`
+only under its options block, not on the `status` / `clear-attack` lines; the parser
+accepts it for all three commands, `parse_args` `:395-398`.)
+
+**Options** (`parse_args`, `:383-455`; constants `:103-161`):
+- `--data DIR` — required; `run` creates DIR if missing (`:947-951`). The store is
+  `DIR/light.db` (`NODUS_LIGHT_STORE_FILE`), one SQLite file whose store prefix is the
+  32-byte chain id, so a file is bound to one chain (`:48-50`).
+- `--trust-height H` (≥ 1) and `--trust-hash HEX` (128 hex = the SHA3-512 header hash of
+  block H) — `run` only, and only together (`:399-406`, `:440-443`, `:938-945`).
+- `--node host:port:pinfp` — repeatable, at most `NODUS_LIGHT_MAX_NODES` = 16; parsed from
+  the right so a host may contain colons; the pin is 128 hex (SHA3-512 of the node's
+  server key). With no `--node` the compiled default table is used. At least
+  `NODUS_LIGHT_MIN_NODES` = 2 (a primary and one witness; the library refuses zero
+  witnesses and item 9 needs two agreeing identities) (`:153-156`, `:285-320`,
+  `:408-422`, `:444-453`).
+- `--interval S` — seconds between `Update` calls, 1..86400, default 10
+  (`NODUS_LIGHT_DEFAULT_INTERVAL_S`, `NODUS_LIGHT_MAX_INTERVAL_S`, `:144-146`,
+  `:423-430`).
+- `--chain-id HEX` — 64 hex (32 bytes); default the compiled testnet chain
+  `a48d1a78…6114` (`NODUS_LIGHT_CHAIN_ID_HEX`, `nodus_light_checkpoint.h:47-49`). Another
+  chain (a local harness, a new genesis) passes its own id WITH its own `--node` list
+  (`:13-14`, `:376-378`).
+
+**The trust root (K25-1, "both")** — `cmd_run`, `:961-995`, in this order:
+1. `--trust-height` / `--trust-hash` given → that root ("operator input", from any source
+   the operator chooses; no approval from us, no new release). On a store that already
+   holds blocks the light client's re-root confirmation is answered yes, because the
+   command line is the confirmation (`confirm_reroot`, `:839-853`).
+2. else the store holds a block → `cmt_light_client_new_from_trusted_store` ("the light
+   store").
+3. else the release default checkpoint, if one is compiled in.
+4. else REFUSED before any network call, exit 2, with the message to pass
+   `--trust-height` / `--trust-hash`.
+
+**The release default checkpoint is EMPTY in this build** (`NODUS_LIGHT_RELEASE_CHECKPOINT
+= { 0, "" }`, `nodus_light_checkpoint.h:90-113`; height 0 means "no default"). It is to be
+filled at release from a real block read through `dnac_light_block` once that RPC is live;
+no such block has been read, and a height + hash typed in without that read would be an
+invented trust root. So today step 3 never applies: an empty store always needs operator
+input. The "≥ 2 nodes agree" init rule (item 9) stays a consistency check inside the
+library, never the root (`:31-35`); its refusal prints how many distinct nodes agreed
+(`:867-873`). The trusting period is K25-2's 48 h (`NODUS_LIGHT_TRUSTING_PERIOD_NS`,
+`:103-106`); an expired trusted block is reported with the re-root command (`:1122-1127`).
+
+**One client per store (item 9 / client D20).** `run` and `clear-attack` hold an exclusive
+lock on DIR for their whole life — `qgp_platform_acquire_identity_lock(DIR)`, the file
+`DIR/identity.lock` (`flock` on Linux, `qgp_platform_linux.c:528-578`; `LockFileEx` on
+Windows, `qgp_platform_windows.c:523-597`) — so two processes never open two client
+objects on the same store; a second one is refused with "one light client per store"
+(`dir_lock`, `nodus-light.c:776-786`). `status` takes no lock.
+
+**The network side.** One `nodus_client_t` per node, each with exactly ONE server and
+that server's pin (`pinned_server_fps`, count 1, `auto_reconnect` on), and one
+`nodus_light_provider_t` over it — the provider refuses an unpinned client (item 8,
+"never an unpinned provider") (`net_init`, `:592-653`). The identity the light client
+counts agreement by is the node's pin (`net_assign`, `:657-672`). The session's own
+identity is a fresh ML-DSA-87 key generated in memory per run and never written; it only
+authenticates this client to the node, trust comes from the pins and the light client's
+checks (`:24-27`, `:613-617`). Nodes are connected in table order; the first that
+connects is the primary, every other node is a witness; a node unreachable at start is
+retried at most every 60 s (`NODUS_LIGHT_RETRY_CONNECT_MS`), and if none connects `run`
+stops (`net_connect` / `net_retry_unstarted`, `:677-720`). If every witness gets removed
+for bad answers, `run` stops ("a restart rebuilds the node list", `:1116-1120`).
+
+**The default node table** (`NODUS_LIGHT_DEFAULT_NODES`, `nodus_light_checkpoint.h:61-85`):
+the 7 Nodus testnet nodes on the client port 4001 — EU-5 164.68.116.180, US-1
+154.38.182.161, EU-1 161.97.85.25, EU-2 156.67.24.125, EU-3 156.67.25.251, EU-4
+164.68.105.227, EU-6 75.119.141.51 — each with its pin, copied from the web wallet's
+`web-wallet/src/nodus/send-module.js:88-110` (`endpoints` + `pins`, matched by their
+trailing label because the two lists are in different orders there; EU-6 is not in
+`endpoints` because it runs no WebSocket entry, but its pin is in `pins`). The wallet's
+port 443 is replaced by 4001.
+
+**The light-client caps** (the library has no defaults, cmt_light_client.h D3; the
+program's choice, `:108-142`): `max_verify_steps` 32 (memory ≈ 1.8 MiB per step →
+≈ 58 MiB per Update at most), `max_trace_len` 64, `max_skipping_cache` 64,
+`max_backwards_steps` 1024 (`run` only calls Update, which never walks backwards); clock
+drift and block lag stay the reference defaults, 10 s each, so a lagging witness is
+judged after 2 × 10 + 10 = 30 s (`:139-142`, the message at `:1100-1104`).
+
+**Attack.** A detected attack prints the record (primary and witness by label and pin
+prefix, common height, byzantine validators named, whether the record is already
+durable) and how to clear it; `run` keeps calling `Update` while locked, because a record
+whose store write failed is written again at the start of every locked call (`:42-45`,
+`print_attack` `:810-835`, `:1105-1115`). Nothing is sent to any node.
+
+**The clock.** `now` for the light client is this machine's wall clock (C11
+`timespec_get`, UTC) — what the reference light client takes from `time.Now()`; it
+decides only what THIS light client trusts. The loop's waits are on the monotonic clock
+(`nodus_time_mono_ms`) or plain sleeps. Nothing the program does enters a block, a vote,
+a state root or replication (`:52-63`).
+
+**Build.** One CMake target, `add_executable(nodus-light tools/nodus-light.c)` linked to
+`nodus` + `dsa`, `-Wall -Wextra`, built on Linux AND Windows from the common source list
+only (`nodus/CMakeLists.txt`, the `nodus-light` block after `if(NOT NODUS_STANDALONE)
+… return()`). On Windows (a cross build with llvm-mingw):
+- five witness-server sources leave the WIN32 source list only (`list(REMOVE_ITEM …)`
+  under `if(WIN32)`): `nodus_witness_cmt_autofile.c`, `nodus_witness_cmt_wal.c`,
+  `nodus_witness_cmt_privval.c`, `nodus_witness_v2_gen.c`, `nodus_witness_v2_join.c`.
+  They use POSIX-only file calls (`O_CLOEXEC` / `O_DIRECTORY` / `O_SYNC`, `fsync`,
+  `pread`, `fstatat`, `dirfd`, the 2-argument `mkdir`) and a Windows build never runs a
+  witness. The Linux source list is unchanged.
+- the `nodus` library links `ws2_32`, `bcrypt` and `Threads::Threads` (winpthreads) on
+  WIN32; `nodus-light` links with `-static`, so the `.exe` imports only Windows system
+  DLLs.
+- a Windows configure `return()`s right after the `nodus-light` target: the ctest suite,
+  benches, harness tools, `nodus-server` / `-witness` / `-storage` / `-core`, `nodus-cli`
+  and the fuzz targets are Linux-only and are not generated.
+- two fixed-width byte arrays without a NUL got `__attribute__((nonstring))` (behind
+  `__has_attribute(nonstring)`, empty elsewhere) because clang 21 warns on them:
+  `TAG_E_DUPDPRV` in `shared/dnac/domain_wire.c` and `qgp_fp_hex_digits` in
+  `shared/crypto/utils/qgp_fingerprint.c`. Sizes and bytes are unchanged; no warning is
+  silenced.
+- the configure line (the one the build of 2026-10-19 ran; `<sysroot>` =
+  `<llvm-mingw>/x86_64-w64-mingw32`, which must already hold cross-built OpenSSL, SQLite3
+  and json-c, the three packages `nodus/CMakeLists.txt:35-42` looks for; both
+  `PKG_CONFIG_*` variables are required — without them the host `pkg-config` leaks
+  `-I/usr/include/json-c -L/usr/lib/x86_64-linux-gnu -ljson-c` into the cross build):
+
+  ```bash
+  PKG_CONFIG_LIBDIR=<sysroot>/lib/pkgconfig:<sysroot>/lib64/pkgconfig PKG_CONFIG_PATH= \
+  cmake -S nodus -B nodus/build-win \
+    -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
+    -DCMAKE_C_COMPILER=<llvm-mingw>/bin/x86_64-w64-mingw32-clang \
+    -DCMAKE_RC_COMPILER=<llvm-mingw>/bin/x86_64-w64-mingw32-windres \
+    -DCMAKE_FIND_ROOT_PATH=<sysroot> \
+    -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+    -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
+    -DOPENSSL_ROOT_DIR=<sysroot>
+  cmake --build nodus/build-win -j$(nproc)
+  ```
+
+  How the three libraries were cross-built into the sysroot is not recorded in the tree.
+
+**What was verified (ORCHESTRATOR run 2026-10-19).** Linux build: 0 warnings. Windows
+build with llvm-mingw 20251118: a statically linked `nodus-light.exe`, 12 133 888 bytes,
+PE32+ x86-64 console, importing only Windows system DLLs (KERNEL32, WS2_32, bcrypt,
+USER32, ADVAPI32 and the UCRT `api-ms-win-crt-*` set). End to end on a local 7-node
+Genesis Protocol harness chain (bring-up only, production constants, combined mode):
+7 pinned sessions; trust root height 2 from operator input; advanced to height 5 in
+150 s; the stored hash at height 5 equals the nodes' `block_id`; no lock; 0 attack
+records. **Not verified:** the `.exe` was NOT run on Windows (no Windows host); no unit
+test covers `nodus-light.c` (none was in scope); the testnet nodes do not serve
+`dnac_light_block` yet, so the default node table has not been exercised against them.
+
+**Still open for the light client.** The `dnac_light_block` RPC is deployed to no live
+node, so against the testnet `nodus-light` cannot follow anything today; the release
+default checkpoint is empty (to be filled from a real block once the RPC is live,
+K25-1); the `.exe` has not been run on Windows; no node-side caller; the proof layer
+(item 6), the 4004 Windows host (K25-5), the execution-free downloader (K25-6), light
+storage (K25-7) and the evidence + penalty lane (K25-4) as listed in package 1's "Not
+done yet".
 
 ### DHT v2 package 1 — record codec (no caller yet) (2026-10-19, nodus 0.26.9)
 

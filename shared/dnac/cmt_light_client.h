@@ -5,10 +5,11 @@
  *        (sequential or skipping verification), between and backwards,
  *        over a primary provider, a list of witnesses and a light store.
  *
- * ═══ STATUS: NO PRODUCTION CALLER ══════════════════════════════════════
+ * ═══ STATUS: ONE CALLER — the nodus-light program ══════════════════════
  * Packages 2 and 3 of the light client (Kurultay #25 item 1, docs/plans/
  * decisions/2026-10-16-kurultay-25-summary.md: "LightBlock + ValidateBasic
- * → store → client → detector"). Nothing in a node opens a client yet.
+ * → store → client → detector"). Nothing in a NODE opens a client yet; the
+ * one caller is the stand-alone program nodus/tools/nodus-light.c (0.26.11).
  *
  * THE DETECTOR (package 3, Kurultay #25 item 2) is light/detector.go,
  * ported in cmt_light_detector.{c,h}. The reference calls

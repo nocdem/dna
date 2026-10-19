@@ -5,12 +5,12 @@
  *        shared/dnac/cmt_light_provider.h) implemented over a
  *        `nodus_client_t` and the `dnac_light_block` RPC on 4001.
  *
- * ═══ STATUS: NO PRODUCTION CALLER ═══════════════════════════════════════
+ * ═══ STATUS: ONE CALLER — the nodus-light program ═══════════════════════
  * Light client package 2's block source (decision docs/plans/decisions/
  * 2026-10-16-dnac-light-block-rpc.md, APPROVED; Kurultay #25,
  * docs/plans/decisions/2026-10-16-kurultay-25-summary.md). Nothing in a
- * node or a client calls it yet; it sits in nodus's COMMON source list so
- * that it compiles on Windows.
+ * node calls it; the one caller is nodus/tools/nodus-light.c (0.26.11). It
+ * sits in nodus's COMMON source list so that it compiles on Windows.
  * ════════════════════════════════════════════════════════════════════════
  *
  * ── PINNED ONLY (Kurultay #25 item 8: "never an unpinned provider") ───

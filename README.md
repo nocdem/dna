@@ -167,7 +167,7 @@ dna/
 │   ├── src/                   #   Server, client SDK, protocol, routing, storage
 │   ├── src/witness/           #   Embedded Nodus Chain validator (Ledger V2 engine + CometBFT host)
 │   ├── include/               #   Public headers
-│   ├── tools/                 #   nodus-server, nodus-cli, nodus-circ sources; genesis ceremony template
+│   ├── tools/                 #   nodus-server, nodus-cli, nodus-circ, nodus-light sources; genesis ceremony template
 │   └── tests/                 #   Unit + integration tests (Genesis Protocol harness)
 ├── shared/
 │   ├── crypto/                # Post-quantum crypto primitives
@@ -202,7 +202,7 @@ Source identifiers keep their older `dna` / `dnac` names (`libdna`,
 
 | Component | Version | Version file |
 |-----------|---------|--------------|
-| Nodus | v0.26.10 | `nodus/include/nodus/nodus_types.h` |
+| Nodus | v0.26.11 | `nodus/include/nodus/nodus_types.h` |
 | Nodus Chain client (DNAC) | v0.22.1 | `dnac/include/dnac/version.h` |
 | C library (libdna) | v0.11.35 | `messenger/include/dna/version.h` |
 | Nodus Web Wallet | v0.1.127 | `web-wallet/package.json` |
