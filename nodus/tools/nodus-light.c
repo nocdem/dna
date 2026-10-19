@@ -1291,7 +1291,7 @@ static int light_rebuild(cmt_light_client_t **cp, light_net_t *net,
     cmt_light_client_peer_t  wit[NODUS_LIGHT_MAX_NODES];
     cmt_light_client_peer_t  old_wit[NODUS_LIGHT_MAX_NODES];
     size_t                   slots[NODUS_LIGHT_MAX_NODES];
-    size_t                   n_slots = 0, n_old, n_wit, old_p, p;
+    size_t                   n_slots = 0, n_old, n_wit, n_old_wit, old_p, p;
     const uint8_t           *id = NULL;
     size_t                   id_len = 0;
     bool                     was_locked = cmt_light_client_attack_locked(old);
@@ -1299,8 +1299,10 @@ static int light_rebuild(cmt_light_client_t **cp, light_net_t *net,
     int                      outcome = LIGHT_REBUILD_DONE;
 
     if (was_locked) {
+        const cmt_light_attack_record_t *r = cmt_light_client_attack_record(old);
         uint64_t total = 0, uncleared = 0;
-        if (cmt_light_store_db_attack_records(st->db, &total,
+        if ((r != NULL && !r->durable) ||
+            cmt_light_store_db_attack_records(st->db, &total,
                                               &uncleared) != CMT_OK ||
             uncleared == 0) {
             QGP_LOG_WARN(LOG_TAG, "rebuild postponed: the client is locked "
@@ -1340,7 +1342,7 @@ static int light_rebuild(cmt_light_client_t **cp, light_net_t *net,
         }
     }
     n_wit = peers_from_slots(net, slots, n_slots, p, &prim, wit);
-    (void)peers_from_slots(net, slots, n_old, old_p, &old_prim, old_wit);
+    n_old_wit = peers_from_slots(net, slots, n_old, old_p, &old_prim, old_wit);
 
     /* D20: never two objects — the old one goes first. */
     cmt_light_client_free(old);
@@ -1364,7 +1366,7 @@ static int light_rebuild(cmt_light_client_t **cp, light_net_t *net,
         rc = cmt_light_client_new_from_trusted_store(
                 net->chain_id, sizeof(net->chain_id),
                 NODUS_LIGHT_TRUSTING_PERIOD_NS, &old_prim, old_wit,
-                n_old - 1u, &st->store, opts, &nc, &err);
+                n_old_wit, &st->store, opts, &nc, &err);
         if (rc != CMT_OK) {
             QGP_LOG_ERROR(LOG_TAG, "rebuild over the previous list refused "
                           "too (rc %d, code %d)", rc, err.code);
@@ -1377,7 +1379,7 @@ static int light_rebuild(cmt_light_client_t **cp, light_net_t *net,
         p       = old_p;
         n_slots = n_old;
         prim    = old_prim;
-        n_wit   = n_old - 1u;
+        n_wit   = n_old_wit;
         memcpy(wit, old_wit, n_wit * sizeof(wit[0]));
     }
     if (was_locked && !cmt_light_client_attack_locked(nc)) {
