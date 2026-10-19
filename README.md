@@ -75,7 +75,8 @@ its message codecs (`messenger/codec/`).
   Kyber1024 round-3 otherwise.
 - The WebSocket entry listens on `127.0.0.1` only; a local TLS proxy serves it
   to browsers (`nodus/README.md`, "Configuration").
-- TCP 4003 (channels) is defined but the channel server is compiled out.
+- TCP 4003 is the planned relay port of the bandwidth role (approved 2026-10-16),
+  not opened yet; the old channel server on it is compiled out.
 
 ### Nodus Chain
 
