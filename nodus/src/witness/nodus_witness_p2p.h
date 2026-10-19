@@ -18,7 +18,14 @@
  *
  * ── WHAT THE HOST IS ───────────────────────────────────────────────────
  * The shared/dnac p2p layer is socket-free, clock-free and thread-free:
- * it is DRIVEN. This module is what drives it on a live node:
+ * it is DRIVEN. This module is what drives it on a live node. Since the
+ * net-layer package N3 (design 2026-10-19 §11) the part that needs no
+ * witness — the sockets, the worker, the clocks, the identity, the own
+ * ADDR record, the address book file, NodeInfo, transport, switch and
+ * PEX — is the embedded host net/nodus_p2p_host.{h,c}; this module keeps
+ * the bonded set, the consensus seam, the seven reactors and their
+ * channel descriptors, M4, the approval-collection tick and the genesis
+ * bundle, and hands the host its policy rows. Together:
  *   · the 4004 SOCKETS (`nodus_p2p_io_t`): non-blocking TCP listen /
  *     accept / connect / read / write on its own readiness set
  *     (`nodus_net_poll_t`, nodus/src/net/nodus_net_poll.h: epoll on
@@ -203,6 +210,7 @@
 
 #include "nodus/nodus_types.h"
 #include "net/nodus_net_poll.h"
+#include "net/nodus_p2p_host.h"      /* the witness-free host (N3)      */
 #include "witness/nodus_witness_cmt_store.h"
 
 #ifdef __cplusplus
@@ -275,162 +283,10 @@ struct nodus_witness;
  *  one answer per request. ⚠ NOT GROUNDED. */
 #define NODUS_P2P_STFETCH_SEND_QUEUE   4
 
-/* ══ config (reference config.go:562-639 names; nodus.json keys) ══════ */
-
-#define NODUS_P2P_MAX_PEER_LIST   64
-
-/**
- * The P2P section of the node's config. Every field is a reference
- * config.go P2P key under the same name (design §4). Defaults are the
- * reference's (`nodus_p2p_config_default`), except where the reference's
- * transport does not read its own config key — noted per field.
- */
-typedef struct {
-    /** config.go:580 `persistent_peers` — "id@ip:port", IP literals only
-     *  (R-P2P-24). Dialed on every start (node.go:562-563) and redialed
-     *  on loss (switch.go:344-358). */
-    char     persistent_peers[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_NETADDR_STR_MAX];
-    int      n_persistent_peers;
-    /** config.go:594 `unconditional_peer_ids` (the bonded set is added at
-     *  run time, R-P2P-7). */
-    char     unconditional_peer_ids[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_ID_CAP];
-    int      n_unconditional_peer_ids;
-    /** config.go:603 `private_peer_ids` — never gossiped. */
-    char     private_peer_ids[NODUS_P2P_MAX_PEER_LIST][CMT_P2P_ID_CAP];
-    int      n_private_peer_ids;
-    /** config.go:597 `pex` (default true). */
-    bool     pex;
-    /** config.go:569 `addr_book_strict` (default true; false admits
-     *  private / loopback addresses — the localhost harness). */
-    bool     addr_book_strict;
-    /** config.go:609 `allow_duplicate_ip` (default false; test only). */
-    bool     allow_duplicate_ip;
-    /** config.go:572 / :575 (defaults 40 / 10). */
-    int      max_num_inbound_peers;
-    int      max_num_outbound_peers;
-    /** config.go:585 `flush_throttle_timeout` (default 100 ms). */
-    int64_t  flush_throttle_timeout_ms;
-    /** config.go:588 `max_packet_msg_payload_size` (default 1024). */
-    int      max_packet_msg_payload_size;
-    /** config.go:591 / :592 `send_rate` / `recv_rate` (default 5 120 000 B/s). */
-    int64_t  send_rate;
-    int64_t  recv_rate;
-    /** config.go:613 `handshake_timeout` / :614 `dial_timeout`. NOT read by
-     *  the reference's transport (it uses its own 3 s and 1 s constants,
-     *  transport.go:20/:22 — design §5 "Correction"); here 0 = those
-     *  constants (the default), a positive value overrides them. */
-    int64_t  handshake_timeout_ms;
-    int64_t  dial_timeout_ms;
-    /** config.go base `moniker`; empty = "nodus-" + the first 16 hex
-     *  digits of this node's ID. */
-    char     moniker[64];
-} nodus_p2p_config_t;
-
-void nodus_p2p_config_default(nodus_p2p_config_t *c);
-
-/**
- * Parse one "id@ip:port" / plain ID list entry into `c` (the config
- * loaders' shared helper). @return 0; -1 when the list is full or the
- * entry does not fit.
- */
-int nodus_p2p_config_add_persistent(nodus_p2p_config_t *c, const char *s);
-int nodus_p2p_config_add_unconditional(nodus_p2p_config_t *c, const char *id);
-int nodus_p2p_config_add_private(nodus_p2p_config_t *c, const char *id);
-
-/* ══ the socket host ══════════════════════════════════════════════════ */
-
-/**
- * The most accept(2) calls ONE pass makes (nodus_p2p_io_pump's accept
- * step) — every call counts, the refused and the interrupted ones
- * included (Codex 1). The reference's acceptPeers (transport.go:268
- * `go mt.acceptPeers()`, :286-353) is its own goroutine and accepts
- * without end; here the listener shares the one loop with every
- * connection and the consensus lane, and a peer that keeps the backlog
- * full of connections the filters refuse (a duplicate IP, a known
- * address — each refused AFTER accept(2) returned it) would hold the loop
- * there. No reference counterpart: the bound exists only because the
- * goroutine does not.
- * ⚠ NOT GROUNDED as a number: the default inbound limit
- * (CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS, config.go:630) — a full
- * reconnect of the default inbound set is still taken in one pass. The
- * listener stays in the readiness set with NODUS_NET_IN (EPOLLIN,
- * level-triggered), so a
- * backlog left behind wakes the next wait at once and the next pass
- * continues: nothing is refused because of the budget, only deferred.
- */
-#define NODUS_P2P_ACCEPT_BUDGET CMT_P2P_DEFAULT_MAX_NUM_INBOUND_PEERS
-
-/** One transport slot's socket. */
-typedef struct {
-    nodus_sock_t fd;         /* NODUS_SOCK_INVALID = none                */
-    uint64_t gen;
-    bool     connecting;     /* non-blocking connect(2) in progress      */
-    bool     failed;         /* conn_failed reported; no more I/O        */
-    uint32_t events;         /* NODUS_NET_* mask the set watches for it  */
-    uint32_t ready;          /* NODUS_NET_* bits the last wait reported  */
-} nodus_p2p_sock_t;
-
-/**
- * Non-blocking sockets for one `cmt_p2p_transport_t`, indexed by the
- * transport's slot, on one readiness set of their own (nodus_net_poll:
- * Linux epoll, level-triggered; its wake is the eventfd the worker
- * writes). A host built with `open_listener` false runs it without a
- * listener.
- */
-typedef struct {
-    cmt_p2p_transport_t *t;         /* set after cmt_p2p_transport_init  */
-    nodus_net_poll_t     poll;      /* the set, + the wake when asked    */
-    nodus_sock_t         listen_fd; /* NODUS_SOCK_INVALID = none         */
-    bool                 listen_armed;
-    nodus_p2p_sock_t    *socks;
-    int                  n_socks;
-    /** The socket slot nodus_p2p_io_pump last SERVED (read >= 1 byte);
-     *  the next pump starts just past it (atlas-dec-efa4d29c's
-     *  round-robin form). -1 = none yet. */
-    int                  last_served;
-} nodus_p2p_io_t;
-
-int  nodus_p2p_io_init(nodus_p2p_io_t *io, bool with_wake);
-void nodus_p2p_io_free(nodus_p2p_io_t *io);
-/** Bind + listen on an IP literal. @return 0 or -1 (errno kept). */
-int  nodus_p2p_io_listen(nodus_p2p_io_t *io, const char *ip, uint16_t port);
-/** The transport host's `dial` row body: a non-blocking connect(2) to
- *  `addr`'s IP literal. @return 0 connecting; -1 failed at once. */
-int  nodus_p2p_io_dial(nodus_p2p_io_t *io, int slot, uint64_t gen,
-                       const cmt_p2p_netaddr_t *addr);
-/** The transport host's `close` row body. */
-void nodus_p2p_io_close(nodus_p2p_io_t *io, int slot, uint64_t gen);
-/** Wait up to `timeout_ms` for socket / wake events (nodus_net_poll_wait,
- *  batch 64 — on Linux one epoll_wait). First re-arms NODUS_NET_IN
- *  (EPOLLIN) on every socket whose `read_buf` has room again (it
- *  was cleared at backpressure), so buffered socket bytes never sleep
- *  through the wait. */
-void nodus_p2p_io_wait(nodus_p2p_io_t *io, int timeout_ms);
-/** One I/O pass in slot order: accept while `can_accept`, finish the
- *  connects, then per socket the continuous read (read → the connection's
- *  step → read …) and the continuous write (write → step → write …) —
- *  file header. The steps run the connection's MConnection, so reactor
- *  callbacks run inside this call. */
-void nodus_p2p_io_pump(nodus_p2p_io_t *io);
-/** The continuous write of every socket (the pass's last step): what
- *  `write_buf` holds and whatever the connection's SEND step produces
- *  next (no message is delivered here), until send(2) would block or
- *  nothing is left. */
-void nodus_p2p_io_flush(nodus_p2p_io_t *io);
-
-/** The host clocks (file header). Nanoseconds. */
-int64_t nodus_p2p_mono_ns(void *ctx);
-int64_t nodus_p2p_wall_ns(void *ctx);
-/** [0, n) from OS randomness (D4). */
-int64_t nodus_p2p_rand_int63n(void *ctx, int64_t n);
-/** The secret connection's sign / verify under purpose 0x0A, with the
- *  `nodus_identity_t *` given as `ctx` (sign) — safe on a worker thread
- *  (nodus_sign.c: per-call buffers; qgp_dilithium.c: no static state). */
-int nodus_p2p_sc_sign(void *ctx, const uint8_t *msg, size_t msg_len,
-                      uint8_t sig_out[CMT_P2P_SC_SIG_SIZE]);
-int nodus_p2p_sc_verify(void *ctx, const uint8_t sig[CMT_P2P_SC_SIG_SIZE],
-                        const uint8_t *msg, size_t msg_len,
-                        const uint8_t pk[CMT_P2P_SC_DSA_PK_SIZE]);
+/* The config (nodus_p2p_config_t and its helpers), the socket host
+ * (nodus_p2p_io_t, NODUS_P2P_ACCEPT_BUDGET), the host clocks and the
+ * 0x0A sign / verify are the witness-free host's: net/nodus_p2p_host.h
+ * (net-layer design 2026-10-19 §11, package N3), included above. */
 
 /* ══ the witness host ═════════════════════════════════════════════════ */
 

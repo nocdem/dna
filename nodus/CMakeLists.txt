@@ -133,8 +133,14 @@ set(NODUS_SOURCES
     src/transport/nodus_tcp.c
     # Socket readiness + socket shims for the ports 4000-4004 (net-layer
     # design 2026-10-19, package N1): epoll on Linux/Android, select on
-    # Windows. Today's user: the 4004 host (nodus_witness_p2p.c).
+    # Windows. Today's user: the 4004 host (nodus_p2p_host.c below).
     src/net/nodus_net_poll.c
+    # The witness-free 4004 p2p host (net-layer design 2026-10-19 §11,
+    # package N3): sockets, handshake / ADDR-verify worker threads,
+    # NodeInfo, transport, switch, address book, PEX, own ADDR record —
+    # moved out of nodus_witness_p2p.c (Linux-only list below), which
+    # embeds it. In the common list so it compiles on Windows (K25-5).
+    src/net/nodus_p2p_host.c
 
     # Crypto
     src/crypto/nodus_sign.c
@@ -1173,7 +1179,7 @@ endif()
 if(NOT WIN32)
     target_link_libraries(nodus PUBLIC m)
     # P2P-PORT F5: the 4004 p2p host's handshake / ADDR-verify worker
-    # threads (nodus_witness_p2p.c, R-P2P-8 / R-P2P-43). Threads::Threads,
+    # threads (net/nodus_p2p_host.c since N3, R-P2P-8 / R-P2P-43). Threads::Threads,
     # not a literal `pthread`: Android's bionic has no separate libpthread
     # (messenger/CMakeLists.txt links `pthread` for Linux only for the same
     # reason), and FindThreads resolves to nothing there.
@@ -1183,7 +1189,8 @@ else()
     # Windows: the system libraries the common sources call — Winsock
     # (nodus_tcp.c: socket, WSAStartup, …), BCryptGenRandom
     # (qgp_platform_windows.c qgp_platform_random) and winpthreads (the
-    # client SDK's read thread and mutexes, nodus_client.c / nodus.h).
+    # client SDK's read thread and mutexes, nodus_client.c / nodus.h; the
+    # 4004 host's worker threads, net/nodus_p2p_host.c).
     find_package(Threads REQUIRED)
     target_link_libraries(nodus PUBLIC ws2_32 bcrypt Threads::Threads)
 endif()
@@ -2261,6 +2268,16 @@ add_test(NAME test_cmt_live COMMAND test_cmt_live)
 add_executable(test_witness_p2p tests/test_witness_p2p.c)
 target_link_libraries(test_witness_p2p nodus dsa kem nodus crypto pthread)
 add_test(NAME test_witness_p2p COMMAND test_witness_p2p)
+
+# Net-layer package N3 — the witness-free 4004 host (net/nodus_p2p_host):
+# two hosts with no witness on 127.0.0.1 (REAL keys, sockets, worker
+# threads, PEX off), one dialing the other as its persistent peer, one
+# message each way through a caller's test reactor on channel 0x7E, then
+# free; a host refused at init (no ML-KEM key) frees cleanly. Needs
+# loopback TCP (kernel-chosen ports); the file header says how it can lie.
+add_executable(test_p2p_host tests/test_p2p_host.c)
+target_link_libraries(test_p2p_host nodus dsa kem nodus crypto pthread)
+add_test(NAME test_p2p_host COMMAND test_p2p_host)
 
 # Ledger V2 O15A — obligation 1: an allocation failure in or beneath the
 # QC path is a NODE FAULT, never a consensus verdict. malloc/calloc are
