@@ -87,8 +87,15 @@
  *      the primary still confirms is kept; one it does not is removed,
  *      confirm_reroot). From the root on every block is verified by the
  *      light client itself.
- *   Requests: two to the primary (latest, then T) and one to each other
- *   node per attempt — below a node's 4/s dnac_light_block limit.
+ *   Requests: this step sends two to the primary (latest, then T) and one
+ *   to each other node per attempt; cmt_light_client_new then asks the
+ *   primary for T again (and, on an expired store, for the stored height
+ *   first) and the witnesses for T. A node's dnac_light_block limit is a
+ *   NODE-WIDE token bucket of 4, refilled 4/s, shared by every client
+ *   (nodus_witness_handlers.h NODUS_LIGHT_BLOCK_RATE_PER_SEC): a node at
+ *   its limit answers RATE_LIMITED, which the provider maps to
+ *   NO_RESPONSE (nodus_light_provider.h, BUGS Z-45) — silence here, and
+ *   retried (auto_construct_retryable).
  *
  * ── THE NODE-LIST REFRESH (K25-11, operator 2026-10-19) ────────────────
  * Every NODUS_LIGHT_REFRESH_EVERY_S (first NODUS_LIGHT_REFRESH_FIRST_S
@@ -1307,8 +1314,12 @@ static void print_construct_error(const char *what,
     case CMT_LIGHT_CLIENT_ERR_PROVIDER:
         if (is_auto) {
             fprintf(stderr, "A node did not deliver a block needed to "
-                    "start: %s (provider error %d).\n",
-                    provider_err_name(e->provider.code), e->provider.code);
+                    "start: %s (provider error %d).%s\n",
+                    provider_err_name(e->provider.code), e->provider.code,
+                    e->provider.code ==
+                            CMT_LIGHT_PROVIDER_ERR_LIGHT_BLOCK_NOT_FOUND
+                        ? " The stored blocks may be older than the nodes "
+                          "keep; contact the operator." : "");
         } else {
             fprintf(stderr, "The primary did not deliver the trust-height "
                     "block: %s (provider error %d).%s\n",
@@ -1697,16 +1708,28 @@ static int root_auto(light_net_t *net, size_t n_pinned,
 }
 
 /* An automatic-root construction refusal that means "not enough nodes
- * answered just now" — the step is tried again, as for LIGHT_AUTO_SHORT.
- * On either refusal the new root is not saved (cmt_light_client.h R6;
- * a primary that does not deliver the root block saves nothing). Any
- * other refusal stops the program. */
+ * answered just now" — the step is tried again, as for LIGHT_AUTO_SHORT:
+ *   · INIT_AGREEMENT_SHORT — the library's own ≥ 2 agreement (R6) was
+ *     not reached; nothing is saved.
+ *   · PROVIDER with NO_RESPONSE or HEIGHT_TOO_HIGH — no node delivered a
+ *     block the constructor asked for: light_block_from_primary
+ *     (cmt_light_client.c:485-507) replaces a silent primary through
+ *     find_new_primary (:414-476), which asks every witness and, when
+ *     none answers, returns PROVIDER with the LAST witness's error
+ *     (:470-474). A node at its dnac_light_block limit is NO_RESPONSE
+ *     through the provider's mapping (nodus_light_provider.h, BUGS Z-45).
+ * PROVIDER with LIGHT_BLOCK_NOT_FOUND is NOT retried: the target was just
+ * served by ≥ 2 nodes, so the missing block is most likely the expired
+ * store's old height, which check_trusted_header_using_options asks the
+ * primary for first (cmt_light_client.c:1559-1572) and which waiting does
+ * not bring back. Any other refusal stops the program too. */
 static bool auto_construct_retryable(int rc, const cmt_light_client_error_t *e)
 {
     return rc == CMT_REJECT &&
            (e->code == CMT_LIGHT_CLIENT_ERR_INIT_AGREEMENT_SHORT ||
             (e->code == CMT_LIGHT_CLIENT_ERR_PROVIDER &&
-             e->provider.code == CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE));
+             (e->provider.code == CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE ||
+              e->provider.code == CMT_LIGHT_PROVIDER_ERR_HEIGHT_TOO_HIGH)));
 }
 
 static int cmd_run(int argc, char **argv)
