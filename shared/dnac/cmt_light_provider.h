@@ -51,8 +51,15 @@
  *
  * ── Determinism ────────────────────────────────────────────────────────
  * The interface itself holds no state. What a provider ANSWERS is a
- * peer's word and is never trusted: the light client verifies every
- * block it is given (light/verifier.go, cmt_light_verifier.h).
+ * peer's word and is never trusted: the light client
+ * (cmt_light_client.c, `provider_light_block`) checks every answer as the
+ * reference's provider would — every member present, the header at the
+ * requested height, LightBlock.ValidateBasic against the client's chain
+ * id (cmt_light_client.h D15; light/provider/http/http.go:80-84, :96-99)
+ * — and then verifies it (light/verifier.go, cmt_light_verifier.h). So an
+ * implementation need not validate, but it MUST bound its own wait: a
+ * call that gets no answer within the implementation's deadline returns
+ * NO_RESPONSE (the client has no clock and sets no deadline itself).
  *
  * Reference @v0.38.26:
  *   light/provider/provider.go  29 lines
