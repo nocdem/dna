@@ -1,7 +1,7 @@
 /**
  * @file shared/dnac/cmt_light_client.c
  * @brief cometbft @v0.38.26 light/client.go + light/trust_options.go — see
- *        cmt_light_client.h for the mapping, the deviations (D1-D20), the
+ *        cmt_light_client.h for the mapping, the deviations (D1-D21), the
  *        reproduced quirks (Q1-Q8) and the item-9 agreement rule (R1-R6).
  *        The detector (light/detector.go) is cmt_light_detector.c; the
  *        client struct and the few functions it shares with it are in the
@@ -1960,6 +1960,7 @@ int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
 {
     cmt_light_block_buf_t *b;
     int64_t                last = -1, h = 0;
+    bool                   pinned;
     int                    rc;
 
     err_clear(err);
@@ -1978,13 +1979,45 @@ int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,
     if (last == -1) {                                        /* :442-445 */
         return CMT_OK;
     }
+    /* D21 — a recorded wait PINS the target. A record at or below the
+     * trusted height is stale (that height is already trusted): drop it. */
+    if (c->wait.pending && c->wait.height <= last) {
+        memset(&c->wait, 0, sizeof(c->wait));
+    }
+    pinned = c->wait.pending;
+    if (pinned && !cmt_light_detector_wait_elapsed(c, now)) {
+        /* The reference is still asleep for this target: no fetch, and a
+         * newer latest block cannot restart the wait. */
+        return reject(err, CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND);
+    }
     b = cmt_light_block_buf_new();
     if (b == NULL) {
         return CMT_FAULT;
     }
-    rc = light_block_from_primary(c, 0, b, err);             /* :447-450 */
+    /* :447-450 — the latest block; or, pinned, the RECORDED height. */
+    rc = light_block_from_primary(c, pinned ? c->wait.height : 0, b, err);
     if (rc == CMT_OK && lb_height(&b->lb, &h) != CMT_OK) {
         rc = fault(err);
+    }
+    if (rc == CMT_OK && pinned) {
+        uint8_t hh[CMT_TMHASH_SIZE];
+        size_t  hl = 0u;
+
+        if (lb_hash(&b->lb, hh, &hl) != CMT_OK) {
+            rc = fault(err);
+        } else if (!bytes_equal(hh, hl, c->wait.hash, c->wait.hash_len)) {
+            /* The primary answers the recorded height with ANOTHER block
+             * than the one the wait was for: fail closed, save nothing
+             * (the D9 / K25-8 rule for a target that changed). The record
+             * is dropped — the target it describes is gone — so the next
+             * Update starts again from the latest block with a new wait. */
+            QGP_LOG_ERROR(LOG_TAG, "primary changed its block at %lld "
+                          "during the wait — refused", (long long)h);
+            memset(&c->wait, 0, sizeof(c->wait));
+            rc = verification_failed(err, last, h,
+                                     CMT_LIGHT_CLIENT_REASON_TARGET_MISMATCH,
+                                     NULL, NULL);
+        }
     }
     if (rc == CMT_OK && h > last) {                          /* :452-459 */
         rc = verify_light_block(c, &b->lb, now, err);

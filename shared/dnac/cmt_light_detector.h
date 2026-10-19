@@ -97,8 +97,11 @@
  *              FAILED_HEADER_CROSS_REFERENCING (the reference's sleep
  *              belongs to one detection).
  *          Calls that do not reach the detector (backwards verification,
- *          a trusted-height lookup, Cleanup) leave it as it is; it only
- *          ever applies to a detection of the same height AND hash.
+ *          a trusted-height lookup, Cleanup) leave it as it is — except
+ *          Update, which drops a record at or below the trusted height
+ *          and one whose height the primary now answers with another hash
+ *          (cmt_light_client.h D21); it only ever applies to a detection
+ *          of the same height AND hash.
  *        · the witnesses marked bad in a pass that ends WITNESS_BEHIND
  *          (a conflicting header that did not verify, :74-75; an
  *          errBadWitness, :77-82) are REMOVED before WITNESS_BEHIND is
@@ -108,14 +111,18 @@
  *          than all are removed — but it is kept and is NO_WITNESSES.
  *          The record is a (height, hash) pair, so the re-indexing of
  *          removeWitnesses (Q7, cmt_light_client.h) does not touch it.
- *      ⚠ OPEN (BUGS Z-41): because the record is keyed to the TARGET, a
- *      caller whose target moves between the two calls — Update, which
- *      asks the primary for its LATEST block every call (cmt_light_client.c,
- *      `cmt_light_client_update`) — starts a new wait on every call while
- *      a witness stays behind and the primary keeps producing, and gets
- *      WITNESS_BEHIND every time. Keying the wait to the WITNESS instead
- *      (one `since` per witness, whatever the target) was considered and
- *      NOT done: the reference's sleep runs AFTER the target was fetched,
+ *      THE MOVING TARGET (BUGS Z-41). Because the record is keyed to the
+ *      TARGET, a caller whose target moved between the two calls — Update,
+ *      which asks the primary for its LATEST block — would start a new
+ *      wait on every call while a witness stays behind and the primary
+ *      keeps producing, and get WITNESS_BEHIND every time. The fix is in
+ *      Update (cmt_light_client.h D21), as the reference's outcome: while
+ *      a wait is recorded, Update returns WITNESS_BEHIND without fetching
+ *      until the wait has run, then verifies the RECORDED height and hash
+ *      (a different hash there is refused, nothing saved), and only the
+ *      next Update moves to the latest block. Keying the wait to the
+ *      WITNESS instead (one `since` per witness, whatever the target) was
+ *      considered and REJECTED: the reference's sleep runs AFTER the target was fetched,
  *      so the target's time is at most `now + max_clock_drift` of the
  *      first ask (light/verifier.go:176-181; cmt_light_verifier.c:193-196)
  *      and the second ask comes `2*drift + lag` later — late enough for
@@ -125,9 +132,8 @@
  *      just under `now + drift` once the witness's wait has run, the
  *      honest witness's latest block is still before it (:196, benign),
  *      and an accomplice witness's match trusts it — the attack the wait
- *      exists to expose. Fixing Z-41 without that gap needs the caller to
- *      verify the RECORDED target once the wait has run (BUGS Z-41's
- *      second option) — a change of Update's target, not made here.
+ *      exists to expose. D21 keeps that margin: the block verified after
+ *      the wait is the one whose first ask started it.
  *      The liveness note at :193-195 ("If the clock drift / lag has been
  *      miscalibrated … may allow for a malicious primary to attack it")
  *      applies unchanged: a witness that stays behind after the wait is
@@ -537,6 +543,11 @@ int  cmt_light_client_verify_skipping(cmt_light_client_t *c,
 /** client.go:1018-1034 — removeWitnesses. */
 int  cmt_light_client_remove_witnesses(cmt_light_client_t *c, size_t *idx,
                                        size_t k);
+
+/** DD2 — true when a wait is recorded and `now` is at or past its
+ *  `since` + 2*max_clock_drift + max_block_lag. False on NULL. */
+bool cmt_light_detector_wait_elapsed(const cmt_light_client_t *c,
+                                     cmt_time_t now);
 
 /**
  * cometbft@v0.38.26 light/detector.go:28-110 — detectDivergence(): see the

@@ -145,7 +145,12 @@
  *     returns CMT_FAULT ends the operation with CMT_FAULT. It never
  *     triggers a primary replacement or a witness removal (the CMT_FAULT
  *     contract, cmt_tmhash.h:105-110: "a caller MUST NOT count -2 as …
- *     invalid input").
+ *     invalid input"). ONE EXCEPTION, inside the detector: once an attack
+ *     is established (the witness's conflicting header verified), a
+ *     provider or examine CMT_FAULT while its evidence is built does NOT
+ *     end the call with CMT_FAULT — the call returns LIGHT_CLIENT_ATTACK,
+ *     the record names the evidence it could not build in `missing`
+ *     (cmt_light_detector.h DD10) and the client locks (D20).
  *  D7 A Go nil-pointer dereference is CMT_FAULT: a verify call while no
  *     block is trusted (`c.latestTrustedBlock` nil at :582 after Cleanup),
  *     a light block without its signed header, header or set where the
@@ -243,6 +248,31 @@
  *     initializeWithTrustOptions) change the trusted store. The operator
  *     unlocks with `cmt_light_client_attack_clear`, which marks every
  *     record cleared and deletes none.
+ *  D21 UPDATE KEEPS THE TARGET OF A RECORDED WAIT (BUGS Z-41). The
+ *     reference's Update fetches the latest block once and then, if a
+ *     witness is behind, sleeps inside the call and trusts THAT block
+ *     (client.go:447-459 → detector.go:164-197). Here the sleep is the
+ *     caller's next call (cmt_light_detector.h DD2), and Update would
+ *     otherwise fetch a NEW latest block on every call, so a primary that
+ *     keeps producing restarted the wait forever. So, when a wait is
+ *     recorded for a height above the trusted one (written by Update or
+ *     by VerifyLightBlockAtHeight):
+ *       · before the wait has run (`now` < since + 2*drift + lag) Update
+ *         returns WITNESS_BEHIND without fetching anything;
+ *       · once it has run, Update fetches the RECORDED height from the
+ *         primary (not the latest), requires its hash to equal the
+ *         recorded hash, and verifies it — the detector's post-sleep
+ *         pass (DD2). On success that block is saved (the client may be
+ *         behind the tip) and the record is cleared; the NEXT Update
+ *         moves to the latest block as usual;
+ *       · a different hash at the recorded height is refused —
+ *         VERIFICATION_FAILED with reason TARGET_MISMATCH, nothing saved
+ *         (the K25-8 / D9 rule for a block that changed under the
+ *         client) — and the record is dropped, so the next Update starts
+ *         again from the latest block with a new wait.
+ *     A record at or below the trusted height is stale and dropped. The
+ *     target of every detection stays the block the first ask returned,
+ *     as in the reference: a fresh block never inherits an older wait.
  *
  * ── REFERENCE QUIRKS REPRODUCED AS-IS (recorded, not "fixed") ──────────
  *  Q1 verifySkipping appends a fetched pivot to the cache TWICE (:754 and
@@ -511,7 +541,8 @@ typedef struct {
 #define CMT_LIGHT_CLIENT_ERR_FAILED_HEADER_CROSS_REFERENCING 27
 /** cmt_light_detector.h DD2 — a witness is behind where the reference
  *  sleeps (detector.go:164-168): call again, for the same target, with a
- *  `now` at least 2*max_clock_drift + max_block_lag later. PROJECT. */
+ *  `now` at least 2*max_clock_drift + max_block_lag later (Update keeps
+ *  that target by itself, D21). PROJECT. */
 #define CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND            28
 /** D20 (K25-10) — an attack was detected and not yet cleared by the
  *  operator: the client verifies and saves nothing. PROJECT. */
@@ -634,6 +665,8 @@ int cmt_light_client_first_trusted_height(cmt_light_client_t *c,
  * one (:461): CMT_OK with `*advanced = false`. Otherwise the block is
  * verified (:453), the detector included (file header), and saved.
  * While locked (D20): CMT_REJECT with ATTACK_LOCKED, before any read.
+ * While a wait is recorded (D21): WITNESS_BEHIND until it has run, then
+ * the RECORDED block, not the latest, is verified and saved.
  * @param out receives the new block when `*advanced` is true.
  */
 int cmt_light_client_update(cmt_light_client_t *c, cmt_time_t now,

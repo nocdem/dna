@@ -47,7 +47,11 @@
  *     verify and Cleanup are refused, the record is in the store byte for
  *     byte, a restart stays locked, the operator's clear unlocks and keeps
  *     the record, a second attack writes a second record, and after a
- *     clear an honest primary's block is verified and saved.
+ *     clear an honest primary's block is verified and saved;
+ *   · (BUGS Z-41, client D21) a primary that advances between Update
+ *     calls does not restart the wait: after it, the RECORDED block is
+ *     verified and saved, the next Update moves to the latest; a primary
+ *     that answers the recorded height with another block is refused.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no
@@ -83,8 +87,10 @@
  *     bytes are a pattern, never verified (that is the point).
  *  8. The lock row's "restart" is close + re-open of the store file, not
  *     a power cut (durability itself is PRAGMA synchronous=FULL,
- *     cmt_light_store.h, and is not exercised). The Z-41 moving-target
- *     case is NOT here: it is open (cmt_light_detector.h DD2).
+ *     cmt_light_store.h, and is not exercised).
+ *  9. The moving-target row (15) shows that the wait is not restarted by
+ *     the result of call 2 (still WITNESS_BEHIND) and by what call 3
+ *     saves (10, not 11); it cannot observe that call 2 made no fetch.
  *
  * ── REFERENCE CASES (light/detector_test.go) ───────────────────────────
  * PORTED: TestLightClientAttackEvidence_Lunatic (:21-91),
@@ -102,7 +108,8 @@
  * PROJECT-AUTHORED: the K25-3 non-last-validator row, the attack/cap
  * (bounds) row, the wait-gating row, the direct evidence-builder rows,
  * the unknown-signer row (12), the behind-removes-bad row (13), the
- * attack-lock rows (14, and the clear inside the forward-lunatic row).
+ * attack-lock rows (14, and the clear inside the forward-lunatic row),
+ * the moving-target Update row (15).
  *
  * @file test_cmt_light_detector.c
  */
@@ -1680,6 +1687,107 @@ out:
     return ret;
 }
 
+/* ══ 15. PROJECT — Update keeps the target of a recorded wait (Z-41) ═ */
+
+/*
+ * PROVES (cmt_light_client.h D21, BUGS Z-41): the primary advances
+ * between Update calls while one witness stays behind.
+ *   call 1 — WITNESS_BEHIND, the latest block (10) becomes the recorded
+ *            target;
+ *   call 2 — the primary's latest is now 11, the wait has not run: still
+ *            WITNESS_BEHIND, nothing saved (a fresh latest block does NOT
+ *            restart the wait — before D21 every call did, forever);
+ *   call 3 — the wait has run: block 10 (NOT the latest, 11) is verified
+ *            through the matching witness, the behind one is benign
+ *            (detector.go:196), 10 is saved;
+ *   call 4 — the next Update moves to the latest block, 11.
+ * Then a second client: after call 1 the primary answers the recorded
+ * height with ANOTHER block 10 — the call after the wait is refused
+ * (VERIFICATION_FAILED, TARGET_MISMATCH) and nothing is saved.
+ */
+static int t_update_moving_target(void)
+{
+    tmock_t                    p, ws[2];
+    tstore_t                   s;
+    cmt_light_client_options_t o;
+    cmt_light_client_t        *c = NULL;
+    cmt_light_client_error_t   e;
+    const char                *wid[2] = { "behind", "match" };
+    cmt_time_t                 now = t_at(HOUR);
+    int64_t                    wait;
+    bool                       adv = true;
+    int                        ret = 1;
+
+    memset(&s, 0, sizeof(s));
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_chain(&p, &F->a, 10);
+    mock_chain(&ws[0], &F->a, 9);
+    mock_chain(&ws[1], &F->a, 10);
+    opts_default(&o);
+    wait = 2 * o.max_clock_drift + o.max_block_lag;
+    T(new_client(&p, "primary", ws, wid, 2, &o, &s, &c, &e) == CMT_OK, "init");
+
+    T(cmt_light_client_update(c, now, g_out, &adv, &e) == CMT_REJECT && !adv &&
+      e.code == CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND, "call 1 → behind (10)");
+    T(last_h(&s) == 1, "call 1: nothing saved");
+
+    /* The primary (and the matching witness) produce block 11. */
+    mock_add(&p, 11, &F->a.sh[11], &F->a.vals[11].vs);
+    mock_add(&ws[1], 11, &F->a.sh[11], &F->a.vals[11].vs);
+    T(cmt_light_client_update(c, cmt_time_add_ns(now, wait - 1), g_out, &adv,
+                              &e) == CMT_REJECT && !adv &&
+      e.code == CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND,
+      "call 2, latest moved, wait not run → still behind");
+    T(last_h(&s) == 1, "call 2: nothing saved");
+
+    T(cmt_light_client_update(c, cmt_time_add_ns(now, wait), g_out, &adv,
+                              &e) == CMT_OK && adv &&
+      g_out->lb.signed_header != NULL &&
+      g_out->lb.signed_header->header->height == 10,
+      "call 3, after the wait → the RECORDED block 10");
+    T(last_h(&s) == 10, "call 3: 10 saved, not 11");
+
+    /* The behind witness catches up; the next Update takes the latest. */
+    mock_add(&ws[0], 10, &F->a.sh[10], &F->a.vals[10].vs);
+    mock_add(&ws[0], 11, &F->a.sh[11], &F->a.vals[11].vs);
+    T(cmt_light_client_update(c, cmt_time_add_ns(now, wait + SECOND), g_out,
+                              &adv, &e) == CMT_OK && adv &&
+      g_out->lb.signed_header != NULL &&
+      g_out->lb.signed_header->header->height == 11,
+      "call 4 → the latest, 11");
+    T(last_h(&s) == 11, "call 4: 11 saved");
+    cmt_light_client_free(c);
+    c = NULL;
+    store_close(&s);
+
+    /* The primary changes its block at the recorded height. */
+    if (store_open(&s) != 0) {
+        return 1;
+    }
+    mock_chain(&p, &F->a, 10);
+    mock_chain(&ws[0], &F->a, 9);
+    mock_chain(&ws[1], &F->a, 10);
+    T(new_client(&p, "primary", ws, wid, 2, &o, &s, &c, &e) == CMT_OK,
+      "init (changed answer)");
+    T(cmt_light_client_update(c, now, g_out, &adv, &e) == CMT_REJECT &&
+      e.code == CMT_LIGHT_CLIENT_ERR_WITNESS_BEHIND, "behind (10)");
+    mock_add(&p, 10, &F->div1, &F->a.vals[10].vs);   /* another block 10 */
+    mock_add(&p, 11, &F->a.sh[11], &F->a.vals[11].vs);
+    T(cmt_light_client_update(c, cmt_time_add_ns(now, wait), g_out, &adv,
+                              &e) == CMT_REJECT && !adv &&
+      e.code == CMT_LIGHT_CLIENT_ERR_VERIFICATION_FAILED &&
+      e.reason == CMT_LIGHT_CLIENT_REASON_TARGET_MISMATCH &&
+      e.from == 1 && e.to == 10, "another hash at 10 → refused");
+    T(last_h(&s) == 1, "nothing saved");
+    ret = 0;
+out:
+    cmt_light_client_free(c);
+    store_close(&s);
+    return ret;
+}
+
 /* ══ 14. PROJECT — the attack lock and its durable records (K25-10) ═══ */
 
 /* Close and re-open the same store file (a restart; nothing unlinked). */
@@ -1863,6 +1971,7 @@ int main(void)
     if (t_equivocation_unknown_signer() != 0) goto out;
     if (t_behind_removes_bad() != 0) goto out;
     if (t_attack_lock() != 0) goto out;
+    if (t_update_moving_target() != 0) goto out;
 
     printf("test_cmt_light_detector: %d checks OK\n", g_checks);
     rc = 0;

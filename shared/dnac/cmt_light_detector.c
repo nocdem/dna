@@ -1021,6 +1021,15 @@ static int64_t wait_ns(const cmt_light_client_t *c)
                                 c->o.max_block_lag);
 }
 
+/* DD2 — a wait is recorded and the caller's `now` is at or past
+ * since + 2*drift + lag (Update's pinned target, cmt_light_client.h D21). */
+bool cmt_light_detector_wait_elapsed(const cmt_light_client_t *c,
+                                     cmt_time_t now)
+{
+    return c != NULL && c->wait.pending &&
+           !cmt_time_before(now, cmt_time_add_ns(c->wait.since, wait_ns(c)));
+}
+
 /* DD2 — the recorded wait is for this target (height AND hash). */
 static bool wait_is_for(const cmt_light_client_t *c, int64_t height,
                         const uint8_t *hash, size_t hash_len)
