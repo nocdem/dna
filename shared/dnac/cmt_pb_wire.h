@@ -10,7 +10,10 @@
  * codec (`shared/dnac/cmt_p2p_nodeinfo.c`, P2P-PORT F3) and the p2p
  * NetAddress / PEX message / address-book file codecs
  * (`shared/dnac/cmt_p2p_netaddr.c`, `cmt_p2p_pex.c`, `cmt_p2p_addrbook.c`,
- * P2P-PORT F4) includes it, and no consumer of the
+ * P2P-PORT F4) and the DHT v2 record / RFC 0002 envelope codecs
+ * (`shared/dht2/dht2_record.c`, `dht2_envelope.c`, DHT v2 package 1 —
+ * the IPNS envelope is proto3 and reuses this one reader rather than a
+ * copy) includes it, and no consumer of the
  * codecs needs it: it holds the backward writer and the forward reader
  * helpers that every generated-encoder port repeats — varint, tag, bytes,
  * skip, length-delimited payload, arena copy.

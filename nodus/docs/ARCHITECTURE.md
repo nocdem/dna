@@ -215,6 +215,7 @@ nodus/
 │   ├── test_cmt_light_client.c # light client package 2: light/client.go + trust_options.go through the reference mock provider — the client_test.go cases without goroutines or network, the Kurultay #25 item-9 init agreement rows, D9 backwards target check, D15 provider-contract rows, every D3 cap; temporary SQLite file in the working directory, removed
 │   ├── test_cmt_light_detector.c # light client package 3: light/detector.go — lunatic / equivocation / forward-lunatic attacks → LIGHT_CLIENT_ATTACK + local record, the DD2 two-pass wait, K25-3 non-last-validator priority divergence, caps fail closed; temporary SQLite file, removed
 │   ├── test_light_block_rpc.c # dnac_light_block: the node's answer over a real derived version-3 chain, the client request encoder / reply decoder, the pinned light provider (unpinned refused, error mapping); `/tmp/test_lbrpc_*` per fixture, removed
+│   ├── test_dht2_codec.c      # DHT v2 package 1 (shared/dht2/): pinned data-map bytes per class, canonical envelope, every row-22 strict-decode reject, §3.2 identifiers against hand-assembled preimages, §4.1 code order, row-5 matrix + class max, §4.2 A/B two-arrival order, nearest_R, Validity, the owner-signed LIST request; default build, nothing left behind
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
 │   ├── test_cmt_state.c       # cometbft port R1-D: MedianTime (voting-power weights), MakeGenesisState, Copy, MakeBlock
 │   ├── test_cmt_vote_set.c    # cometbft port R2-A: VoteSet — the seven vote_set_test.go scenarios, weight-vs-count, the C-only capacity bounds (128 peers, N+P blocks)
@@ -10001,6 +10002,56 @@ list beside `nodus_client.c` (`nodus/CMakeLists.txt`), so a Windows build compil
   layer, the front-door charge and the client call's network half are not driven; the
   tip's seen commit is written by the test; the builder is declared by a local extern
   (no header prototype); its author did not run it (file header).
+
+### DHT v2 package 1 — record codec (no caller yet) (2026-10-19, nodus 0.26.9)
+
+What it is: the byte layer of DHT v2, the storage-node DHT for Nodus Connect
+(design `docs/plans/2026-10-14-dht-v2-design.md` rev 5, FROZEN — §2, §3.1, §3.2,
+§4.2, §13 rows 1, 3-7, 15, 21-23; governing records
+`docs/plans/decisions/2026-10-14-kurultay-21-summary.md`, `…-22-summary.md`,
+`…-23-summary.md`; all LOCAL-only). It lives in `shared/dht2/` and is in the
+common `NODUS_SOURCES` list (`nodus/CMakeLists.txt:593-603`, outside the
+Linux-only list, so it compiles on Windows). **Nothing in a node or a client calls
+it yet** — the only caller is `tests/test_dht2_codec.c`. No wire, port, consensus,
+block or state-root change: the existing DHT (TCP 4001 / 4002, `nodus_value` /
+`nodus_storage`) is untouched.
+
+| File | What |
+|---|---|
+| `shared/dht2/dht2_types.h` | sizes (envelope ≤ 262,144 B, R = 4, set ≤ 256), `_class` 1-5, ValidityType 0 / 1, class-max seconds, the row-7 `DHT2_E_*` codes plus `DHT2_E_MALFORMED_REQ` (−2) and `DHT2_E_ARG` (−1), the FIPS 204 ctx / RFC 0002 domains (`nodus.dht.record.v1`, `.answer.v1`, `.addr.v1`, `.list.v1`), the one-slash payload types (`/nodus/dht/…/v1`, first byte 0x2f = the multicodec "path" code), the §3.2 `_id` labels |
+| `shared/dht2/dht2_cbor.{h,c}` | STRICT DAG-CBOR (ipld `dag-cbor/spec.md:46-66`, relaxed decoding not offered): shortest integers and lengths, no indefinite lengths, no tags (42 unused), major type 7 = `true` only, no negative integers, text keys strictly ascending length-first then bytewise, no trailing byte; a writer with WRITE / COUNT / COMPARE modes over one emission path (COMPARE = the re-encode identity check without a second buffer). Not `nodus_cbor.h`, which does not enforce shortest form or key order (§13 row 22) |
+| `shared/dht2/dht2_time.{h,c}` | `Validity` = exactly `YYYY-MM-DDTHH:MM:SSZ` (1970-9999, no fraction, no leap second) ↔ seconds; pure arithmetic, no libc time function |
+| `shared/dht2/dht2_record.{h,c}` | the IPNS v2 record: protobuf envelope `pubKey` 7 (the tree's ML-DSA-87 PublicKey branch) / `signatureV2` 8 / `data` 9; ML-DSA-87 over `data` with ctx `nodus.dht.record.v1`, hedged; strict DAG-CBOR data map (`Sequence` ≥ 1, `TTL` 0, `Validity`, `ValidityType`, `Value` empty, `_chain`, `_id`, `_class`, `_del`, `_data`, `_prev`) re-encoded and compared byte for byte; the row-5 class matrix and class max; the CANONICAL stored envelope (fields 7, 8, 9 only, in order, unknown dropped); `_id` = SHA3-512(label ‖ chain ‖ params), feed entry = SHA3-512(topic ‖ index BE8), address = SHA3-512(`_id` ‖ owner fp); §4.2 Select (Sequence → later expiry → canonical data bytes → signature bytes); the placement key (the inbox id for classes 4 / 5) |
+| `shared/dht2/dht2_place.{h,c}` | `nearest_R` (the R = 4 members nearest a key by raw 512-bit XOR, nearest first; a repeated fp refused) and `eligible` = nearest_R(S(H)) ∪ nearest_R(S(H − E)) |
+| `shared/dht2/dht2_envelope.{h,c}` | libp2p RFC 0002 Signed Envelope (fields 1 / 2 / 3 / 5; signed buffer = uvarint-framed domain ‖ payload type ‖ payload; domain = FIPS 204 ctx) and the owner-signed LIST request of row 23 (`{op "list", n, c, inbox, cursor?}`; the holder recomputes the inbox id from the signer key → `not-owner` (17) otherwise) |
+
+**Contract.** Only `dht2_record_verify`, `dht2_env_verify` and `dht2_list_req_open`
+check a signature; parse / decode / canonical / compare / placement key run on
+UNVERIFIED bytes (`dht2_record.h:63-70`, `dht2_envelope.h:31-35`). Admission must
+follow design §4.1's full order — size, decode, chain, owner, address, holder check,
+class rules, expiry, signature, then Select and store. Parsed structs point INTO the
+input buffer (zero-copy). No clock (chain time is a parameter), no global state, no
+randomness except hedged signing. Function reference, return codes per function,
+named deviations: `messenger/docs/functions/dht2.md`.
+
+**Later packages (not here):** the holder check against the frozen storage set, the
+`witness.sock` `ipc_dht` snapshot, storage of the canonical form and the journal,
+quotas and pools (§6, rows 8, 16), pull-sync (§4.5, row 12), the client / node
+sessions and requests (§7, rows 13-14), and the answer / receipt / refusal payload
+maps (row 18) (`dht2_envelope.h:45-46`; `test_dht2_codec.c:80-81`).
+
+**Test** — `test_dht2_codec` (`nodus/CMakeLists.txt:1873-1879`; default build, no
+flags, no environment, no network, no files, no clock; fixed-seed ML-DSA-87 keys;
+nothing left behind; safe under `ctest -j`): the row-22 vectors — pinned data-map
+bytes per class, canonical-envelope round trip, every strict-decode reject, the §3.2
+identifiers against hand-assembled preimages, §4.1's first codes in order, the row-5
+matrix and class max at their edges, the §4.2 A/B two-arrival case (two holders,
+opposite orders, same stored bytes), the strict reader on non-shortest heads, proto3
+merge rules, `nearest_R` over a fixed set, Validity round trips, and row 23. Can lie
+(file header): the pinned bytes are hand-written from the design and the spec —
+self-consistent, not an independent oracle (the design's C ↔ WASM cross-check will
+ground them); the Validity instants come from one external source; admission across
+the holder check, quota, storage and pull-sync is not exercised.
 
 ### Block retention (pruning) and the SeenCommit cleanup (2026-10-03)
 

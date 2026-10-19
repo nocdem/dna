@@ -1,6 +1,6 @@
 # DNA Connect Function Reference
 
-**Library version:** 0.11.18 (entries are updated in the same commit as signature changes — see `git log -- messenger/docs/functions/` for deltas)
+**Library version:** 0.11.35 (entries are updated in the same commit as signature changes — see `git log -- messenger/docs/functions/` for deltas)
 **Last full audit sweep:** 2026-04-24 (triage via code-hit grep)
 **Scope:** Public + static/internal function signatures, organized by module.
 
@@ -25,6 +25,7 @@ This directory provides a function-level reference for the DNA Connect codebase.
 | **Database** | [database.md](database.md) | SQLite databases (contacts, cache, profiles) |
 | **Blockchain** | [blockchain.md](blockchain.md) | Multi-chain wallet (Cellframe, ETH, Solana, TRON) |
 | **DNA Chain ledger** | [ledger.md](ledger.md) | Tagged state-root hashing (`shared/dnac/ledger_roots_v2.h`, in libdna) + the nodus witness treasury / genesis entries it covers + §25 light client packages 1-3 (`cmt_light_*`, `cmt_fraction.h`, the moved `cmt_time_*` helpers; §25.9 the client `cmt_light_client.h`, §25.10 the detector `cmt_light_detector.h`) + §26 the `dnac_light_block` RPC (server builder, client SDK `nodus_client_dnac_light_block` + codec, `NODUS_ERR_HEIGHT_TOO_HIGH`, the pinned provider `nodus_light_provider.h`) |
+| **DHT v2 record codec** | [dht2.md](dht2.md) | DHT v2 package 1 (`shared/dht2/`, in nodus's common sources, no production caller yet): strict DAG-CBOR reader / writer (`dht2_cbor.h`), `Validity` text ↔ seconds (`dht2_time.h`), the IPNS v2 signed record — data map, class matrix, canonical stored envelope, `_id` / address, §4.2 Select, placement key (`dht2_record.h`), `nearest_R` / `eligible` (`dht2_place.h`), the RFC 0002 Signed Envelope + the owner-signed LIST request (`dht2_envelope.h`), the `DHT2_E_*` result codes and domain / label strings (`dht2_types.h`) |
 | **Nodus EVM** | [evm.md](evm.md) | EVM engine (`shared/evm/evm.h`, `evm_precompile.h`), node EVM runtime (`nodus_witness_rt_evm.h`), call wire codec (`shared/dnac/evm_call_wire.h`), envelope builder (`nodus_v2_evm.h`), S17 storage / log scan, apply-side EVM checks, client SDK `nodus_client_evm_*` |
 | **Engine** | [engine.md](engine.md) | Internal engine implementation |
 | **Calls** | [calls.md](calls.md) | PQ VoIP call subsystem (signaling, key agreement, FSM, orchestrator) |
