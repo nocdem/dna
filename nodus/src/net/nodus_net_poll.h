@@ -154,9 +154,13 @@ int  nodus_net_poll_del(nodus_net_poll_t *p, nodus_sock_t s);
  * drained here (read until it would block) and NOT reported.
  * Linux: one epoll_wait(epfd, …, cap, timeout_ms); entries in the order
  * epoll returns them; cap ≤ NODUS_NET_POLL_MAX_BATCH.
- * Windows: one select; entries in registration-array order. More ready
- * sockets than `cap`: the rest stay ready (level) and are reported by the
- * next wait — nothing is carried between calls.
+ * Windows: one select; entries in registration-array order, the first
+ * `cap` ready ones written; nothing is carried between calls. ⚠ With
+ * more ready sockets than `cap`, the ones past `cap` are not reported by
+ * this call — and, while the earlier ones stay ready, by no later call
+ * either (no rotation). A Windows caller that acts on the result per
+ * socket passes cap >= NODUS_NET_POLL_WIN_CAPACITY; whether the backend
+ * should rotate instead is open for package N2 (R7 "no spill").
  * @return the number written (0 on timeout or a wake alone), or -1
  *         (Linux: epoll_wait's errno, e.g. EINTR).
  */
