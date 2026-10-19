@@ -6,12 +6,15 @@
  *        no block.
  *
  * Usage:
+ *   nodus-light run --data <dir>          ← the normal case: nothing else
  *   nodus-light run --data <dir> [--trust-height H --trust-hash HEX]
  *                   [--node host:port:pinfp]... [--interval S] [--chain-id HEX]
  *   nodus-light status --data <dir> [--chain-id HEX]
  *   nodus-light clear-attack --data <dir> [--node host:port:pinfp]... [--chain-id HEX]
  *   (--chain-id: 64 hex; default the compiled testnet chain — another chain,
  *    e.g. a local harness or a new genesis, passes its id with its --node list)
+ *   --trust-height / --trust-hash are an operator's own root (K25-1); an
+ *   ordinary user never types them (K25-12, THE TRUST ROOT below).
  *
  * ── WHAT IT IS BUILT ON ────────────────────────────────────────────────
  *   · the light client (cmt_light_client.{h,c}) with its detector, the
@@ -30,11 +33,13 @@
  *
  * ── GOVERNING RECORDS ──────────────────────────────────────────────────
  * docs/plans/decisions/2026-10-16-kurultay-25-summary.md:
- *   · K25-1 trust root = BOTH the release default checkpoint
- *     (nodus_light_checkpoint.h — empty in this build) AND operator input
- *     (--trust-height / --trust-hash, from any source the operator
- *     chooses). The "≥ 2 peers agree" init rule is a consistency check
- *     inside the library, never the root.
+ *   · K25-12 (operator 2026-10-19), AMENDING K25-1: the end user types
+ *     nothing — with no operator root and no usable stored block, the
+ *     root comes from the pinned nodes (THE TRUST ROOT below). Operator
+ *     input (--trust-height / --trust-hash, from any source the operator
+ *     chooses) stays, K25-1. The release default checkpoint of K25-1 is
+ *     not carried (nodus_light_checkpoint.h). The library's own "≥ 2
+ *     peers agree" init rule still runs on every root.
  *   · K25-2 trusting period 48 h (NODUS_LIGHT_TRUSTING_PERIOD_NS).
  *   · item 8 pinned 4001 providers only.
  *   · item 9 / D20 ONE client object per store prefix: `run` and
@@ -48,6 +53,42 @@
  *   · K25-11 the node list is refreshed from the VERIFIED validator set
  *     only (THE NODE-LIST REFRESH below).
  * docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md — the RPC.
+ *
+ * ── THE TRUST ROOT (K25-1 operator input, K25-12 automatic) ────────────
+ * `run` picks its root in this order (root_pick):
+ *   1. --trust-height / --trust-hash given → that root (operator input).
+ *   2. the store holds an UNCLEARED attack record → the store, locked: no
+ *      new root is taken over a lock (K25-10); the operator runs
+ *      `clear-attack` first. (cmt_light_client_new would refuse the
+ *      locked store anyway, cmt_light_client.h D20.)
+ *   3. the store's latest block is still inside the 48 h trusting period
+ *      (cmt_light_header_expired, the reference's HeaderExpired) → resume
+ *      from it.
+ *   4. otherwise — an empty store, or a stored block that has expired —
+ *      the AUTOMATIC ROOT (root_auto): the primary (the first pinned node
+ *      that connected) gives its latest light block, height H; the target
+ *      is T = H − 2 (H when H ≤ 2), a little below the tip so every node
+ *      holds it; EVERY connected node of the compiled / --node list —
+ *      never a node added by the refresh (none exists yet: the refresh
+ *      runs only after the client is built) — is asked for the light
+ *      block at T, decoded by its provider (cmt_light_block_decode with
+ *      CMT_BLOCK_PROTOCOL), and its header hash taken (cmt_header_hash).
+ *        · ≥ 2 answers, all the same hash → the root is (T, that hash).
+ *        · fewer than 2 answers → nothing is taken; the whole step runs
+ *          again after the update interval (the user does not restart).
+ *        · ANY two different hashes → the program STOPS, non-zero. No
+ *          majority is taken.
+ *      Silence (no answer, not found, too high) and an answer that does
+ *      not decode are not answers; they count neither for nor against.
+ *      The client is then built with cmt_light_client_new over (T, hash)
+ *      exactly as for operator input, so the library checks the
+ *      primary's block at T against the hash, runs its own ≥ 2 agreement
+ *      and handles an expired store as the reference does (a stored block
+ *      the primary still confirms is kept; one it does not is removed,
+ *      confirm_reroot). From the root on every block is verified by the
+ *      light client itself.
+ *   Requests: two to the primary (latest, then T) and one to each other
+ *   node per attempt — below a node's 4/s dnac_light_block limit.
  *
  * ── THE NODE-LIST REFRESH (K25-11, operator 2026-10-19) ────────────────
  * Every NODUS_LIGHT_REFRESH_EVERY_S (first NODUS_LIGHT_REFRESH_FIRST_S
@@ -112,6 +153,7 @@
 #include "dnac/cmt_light_client.h"
 #include "dnac/cmt_light_detector.h"        /* the attack record's fields  */
 #include "dnac/cmt_light_store.h"
+#include "dnac/cmt_light_verifier.h"        /* cmt_light_header_expired    */
 #include "dnac/cmt_time.h"
 #include "dnac/cmt_pb.h"                    /* CMT_PB_PUBKEY_LEN           */
 #include "crypto/hash/qgp_sha3.h"           /* qgp_sha3_512 — the pin      */
@@ -207,6 +249,15 @@
 /** Pin bytes shown in an added node's label: "roster:" + 8 hex = 15
  *  characters, the whole of light_node_t.label[16]. */
 #define NODUS_LIGHT_LABEL_PIN_BYTES     4u
+
+/** K25-12 — the automatic root's target is this many blocks below the
+ *  primary's latest height, so every node that is close to the tip holds
+ *  it ("a few blocks below the tip"). At or below this height the latest
+ *  block itself is the target. */
+#define NODUS_LIGHT_AUTO_ROOT_BELOW_TIP 2
+/** K25-12 — at least this many nodes must answer, all with the same
+ *  hash, before a block is taken as the automatic root. */
+#define NODUS_LIGHT_AUTO_ROOT_MIN_ANSWERS 2u
 
 /* A roster row's key is compared with a verified validator's key byte for
  * byte; the two sizes must be the same 2592 (nodus_types.h, cmt_pb.h). */
@@ -410,6 +461,10 @@ static void usage(void)
 {
     fprintf(stderr,
         "Usage:\n"
+        "  nodus-light run --data <dir>\n"
+        "      the normal case: nothing else is needed. The first start (and\n"
+        "      a start after more than 48 h off) takes its starting block\n"
+        "      from the built-in nodes when they all agree.\n"
         "  nodus-light run --data <dir> [--trust-height H --trust-hash HEX]\n"
         "                  [--node host:port:pinfp]... [--interval S]\n"
         "                  [--chain-id HEX]\n"
@@ -422,10 +477,10 @@ static void usage(void)
         "  clear-attack  the operator's clear of an attack lock\n"
         "\n"
         "  --data DIR        the light store directory (DIR/" NODUS_LIGHT_STORE_FILE ")\n"
-        "  --trust-height H  the trust root: a block height you trust ...\n"
-        "  --trust-hash HEX  ... and its header hash (128 hex), from any source\n"
-        "                    you choose; needed on an empty store, and to re-root\n"
-        "                    a store whose block is older than 48 h\n"
+        "  --trust-height H  optional, for an operator: your own starting\n"
+        "  --trust-hash HEX  block — its height and header hash (128 hex),\n"
+        "                    from any source you choose — instead of the one\n"
+        "                    the nodes agree on\n"
         "  --node H:P:FP     a node (host, TCP port, 128-hex server key pin);\n"
         "                    repeat; default: the %u compiled testnet nodes on 4001\n"
         "  --interval S      seconds between updates (default %u)\n"
@@ -1175,14 +1230,23 @@ static void print_attack(const cmt_light_client_t *c, const light_net_t *net)
 
 /* ── run ─────────────────────────────────────────────────────────────── */
 
+/* `ctx` points at a bool: true when the root is the automatic one
+ * (K25-12), false for operator input. */
 static bool confirm_reroot(void *ctx, int action, int64_t a, int64_t b)
 {
-    (void)ctx;
-    /* The operator gave this trust root on the command line, which is
-     * the confirmation (client.go:320-324, :344-347). */
+    bool is_auto = ctx != NULL && *(const bool *)ctx;
+
+    /* Operator input: the root given on the command line is the
+     * confirmation (client.go:320-324, :344-347). The automatic root: the
+     * agreement of every answering pinned node is (K25-12), as it is for
+     * the root itself. */
     if (action == CMT_LIGHT_CLIENT_ACTION_ROLLBACK) {
-        printf("re-rooting: removing stored blocks above %lld (up to %lld)\n",
-               (long long)a, (long long)b);
+        printf("new starting point: removing stored blocks above %lld (up "
+               "to %lld)\n", (long long)a, (long long)b);
+    } else if (is_auto) {
+        printf("new starting point: the network no longer confirms the "
+               "stored block at %lld; removing all stored blocks\n",
+               (long long)a);
     } else {
         printf("re-rooting: the stored block at %lld does not match the "
                "given root; removing all stored blocks\n", (long long)a);
@@ -1191,9 +1255,12 @@ static bool confirm_reroot(void *ctx, int action, int64_t a, int64_t b)
     return true;
 }
 
+/* `is_auto`: the root is the automatic one (K25-12) — the messages then
+ * speak of the nodes' starting block, not of a hash the user gave. */
 static void print_construct_error(const char *what,
                                   const cmt_light_client_error_t *e,
-                                  const light_net_t *net, const char *dir)
+                                  const light_net_t *net, const char *dir,
+                                  bool is_auto)
 {
     fprintf(stderr, "%s refused: %s (code %d)\n", what,
             client_err_name(e->code), e->code);
@@ -1204,31 +1271,52 @@ static void print_construct_error(const char *what,
                 "nodus-light clear-attack --data %s first.\n", dir, dir);
         break;
     case CMT_LIGHT_CLIENT_ERR_INIT_AGREEMENT_SHORT:
-        fprintf(stderr, "Only %u distinct node(s) returned the same block at "
-                "the trust height; at least %u are needed (a consistency "
-                "check, the root is your hash). Retry when more nodes are "
-                "reachable.\n", (unsigned)e->agreeing,
-                (unsigned)CMT_LIGHT_CLIENT_MIN_INIT_AGREEMENT);
+        if (is_auto) {
+            fprintf(stderr, "Only %u node(s) returned the starting block; at "
+                    "least %u are needed.\n", (unsigned)e->agreeing,
+                    (unsigned)CMT_LIGHT_CLIENT_MIN_INIT_AGREEMENT);
+        } else {
+            fprintf(stderr, "Only %u distinct node(s) returned the same block "
+                    "at the trust height; at least %u are needed (a "
+                    "consistency check, the root is your hash). Retry when "
+                    "more nodes are reachable.\n", (unsigned)e->agreeing,
+                    (unsigned)CMT_LIGHT_CLIENT_MIN_INIT_AGREEMENT);
+        }
         break;
     case CMT_LIGHT_CLIENT_ERR_CONFLICTING_HEADERS:
     case CMT_LIGHT_CLIENT_ERR_PROPOSER_PRIORITIES_DIVERGE:
         if (e->witness_index < net->n_witnesses) {
             const cmt_light_client_peer_t *w = &net->witnesses[e->witness_index];
-            fprintf(stderr, "Disagreeing node: %s. Nothing was saved; decide "
-                    "which source to trust.\n",
-                    net_label_of_id(net, w->id, w->id_len));
+            fprintf(stderr, "Disagreeing node: %s. Nothing was saved; %s\n",
+                    net_label_of_id(net, w->id, w->id_len),
+                    is_auto ? "not starting; contact the operator."
+                            : "decide which source to trust.");
         }
         break;
     case CMT_LIGHT_CLIENT_ERR_HASH_MISMATCH:
-        fprintf(stderr, "The primary's block at --trust-height has another "
-                "hash than --trust-hash. Check the root you were given.\n");
+        if (is_auto) {
+            fprintf(stderr, "A node answered the starting block differently "
+                    "when it was asked again. Not starting; contact the "
+                    "operator.\n");
+        } else {
+            fprintf(stderr, "The primary's block at --trust-height has "
+                    "another hash than --trust-hash. Check the root you were "
+                    "given.\n");
+        }
         break;
     case CMT_LIGHT_CLIENT_ERR_PROVIDER:
-        fprintf(stderr, "The primary did not deliver the trust-height block: "
-                "%s (provider error %d).%s\n",
-                provider_err_name(e->provider.code), e->provider.code,
-                e->provider.code == CMT_LIGHT_PROVIDER_ERR_LIGHT_BLOCK_NOT_FOUND
-                    ? " Choose a more recent trust root." : "");
+        if (is_auto) {
+            fprintf(stderr, "A node did not deliver a block needed to "
+                    "start: %s (provider error %d).\n",
+                    provider_err_name(e->provider.code), e->provider.code);
+        } else {
+            fprintf(stderr, "The primary did not deliver the trust-height "
+                    "block: %s (provider error %d).%s\n",
+                    provider_err_name(e->provider.code), e->provider.code,
+                    e->provider.code ==
+                            CMT_LIGHT_PROVIDER_ERR_LIGHT_BLOCK_NOT_FOUND
+                        ? " Choose a more recent trust root." : "");
+        }
         break;
     default:
         break;
@@ -1427,13 +1515,208 @@ static int light_rebuild(cmt_light_client_t **cp, light_net_t *net,
     return outcome;
 }
 
+/* ── the trust root (file header, THE TRUST ROOT) ────────────────────── */
+
+/* root_pick's answers: where the root comes from. */
+#define LIGHT_ROOT_OPERATOR  0   /* --trust-height / --trust-hash        */
+#define LIGHT_ROOT_STORE     1   /* the stored block (or a locked store) */
+#define LIGHT_ROOT_AUTO      2   /* K25-12, root_auto                    */
+
+/*
+ * Steps 1-4 of THE TRUST ROOT, before any network call. `buf` is scratch
+ * for the stored block. Returns 0 with *mode set; -1 when the store or
+ * the clock cannot be read (the reason is printed).
+ */
+static int root_pick(const light_args_t *a, light_store_t *st,
+                     int64_t stored_last, cmt_light_block_buf_t *buf,
+                     int *mode)
+{
+    uint64_t   total = 0, uncleared = 0;
+    bool       found = false, expired = false;
+    cmt_time_t now;
+
+    if (a->have_trust_height) {                              /* step 1 */
+        *mode = LIGHT_ROOT_OPERATOR;
+        return 0;
+    }
+    if (cmt_light_store_db_attack_records(st->db, &total,
+                                          &uncleared) != CMT_OK) {
+        fprintf(stderr, "the light store cannot be read\n");
+        return -1;
+    }
+    if (stored_last > 0) {
+        if (cmt_light_store_db_light_block(st->db, stored_last, buf,
+                                           &found) != CMT_OK || !found ||
+            buf->lb.signed_header == NULL) {
+            fprintf(stderr, "the stored block at %lld cannot be read\n",
+                    (long long)stored_last);
+            return -1;
+        }
+        if (wall_now(&now) != 0) {
+            fprintf(stderr, "the wall clock cannot be read\n");
+            return -1;
+        }
+        /* The reference's HeaderExpired (verifier.go:206-210): an expiry
+         * equal to `now` has expired. */
+        if (cmt_light_header_expired(buf->lb.signed_header,
+                                     NODUS_LIGHT_TRUSTING_PERIOD_NS, now,
+                                     &expired) != CMT_OK) {
+            fprintf(stderr, "the stored block at %lld cannot be read\n",
+                    (long long)stored_last);
+            return -1;
+        }
+        if (!expired) {                                      /* step 3 */
+            *mode = LIGHT_ROOT_STORE;
+            return 0;
+        }
+    }
+    if (uncleared > 0) {                         /* step 2 (K25-10) */
+        printf("The light client is locked by an attack record, so it takes "
+               "no new starting point until the operator clears it.\n");
+        fflush(stdout);
+        *mode = LIGHT_ROOT_STORE;
+        return 0;
+    }
+    if (stored_last > 0) {
+        printf("The last trusted block is older than 48 hours: taking a new "
+               "starting point from the network.\n");
+    } else {
+        printf("First start: taking a starting point from the network.\n");
+    }
+    fflush(stdout);
+    *mode = LIGHT_ROOT_AUTO;                                 /* step 4 */
+    return 0;
+}
+
+/* root_auto's outcomes. */
+#define LIGHT_AUTO_OK        0   /* *t_out / hash_out hold the root      */
+#define LIGHT_AUTO_SHORT     1   /* fewer than 2 answers: try again      */
+#define LIGHT_AUTO_DISAGREE  2   /* two answers differ: STOP             */
+#define LIGHT_AUTO_FAULT     3   /* a local fault: stop                  */
+
+/*
+ * K25-12 — step 4 of THE TRUST ROOT. Only slots below `n_pinned` (the
+ * compiled / --node list) are asked. The primary is the first of them
+ * that is connected now, in table order; when that is not the current
+ * primary the assignment is redone (net_assign), so the client is built
+ * with the same primary. `buf` is scratch, reused for every node (the
+ * provider resets it on entry). On LIGHT_AUTO_OK `*answers_out` is the
+ * number of agreeing nodes.
+ */
+static int root_auto(light_net_t *net, size_t n_pinned,
+                     cmt_light_block_buf_t *buf, int64_t *t_out,
+                     uint8_t hash_out[CMT_TMHASH_SIZE], size_t *answers_out)
+{
+    cmt_light_provider_error_t perr;
+    uint8_t                    hash[CMT_TMHASH_SIZE];
+    cmt_time_t                 bt;
+    size_t                     p = n_pinned, first = n_pinned, answers = 0;
+    int64_t                    h_latest = 0, h = 0, target;
+    int                        prc;
+
+    for (size_t i = 0; i < n_pinned; i++) {
+        if (net_slot_ready(net, i)) { p = i; break; }
+    }
+    if (p == n_pinned) {
+        QGP_LOG_INFO(LOG_TAG, "automatic root: no pinned node is connected");
+        return LIGHT_AUTO_SHORT;
+    }
+    if (p != net->primary_idx || net->primary.provider.light_block == NULL) {
+        net_assign(net, p);
+    }
+
+    /* The primary's latest light block (height 0 = the latest). */
+    memset(&perr, 0, sizeof(perr));
+    prc = net->tables[p].light_block(net->tables[p].ctx, 0, buf, &perr);
+    if (prc == CMT_FAULT) {
+        QGP_LOG_ERROR(LOG_TAG, "automatic root: local fault asking %s for "
+                      "its latest block", net->nodes[p].label);
+        return LIGHT_AUTO_FAULT;
+    }
+    if (prc != CMT_OK || block_summary(buf, &h_latest, hash, &bt) != 0 ||
+        h_latest <= 0) {
+        QGP_LOG_INFO(LOG_TAG, "automatic root: %s gave no latest block "
+                     "(rc %d: %s)", net->nodes[p].label, prc,
+                     provider_err_name(perr.code));
+        return LIGHT_AUTO_SHORT;
+    }
+    target = h_latest > NODUS_LIGHT_AUTO_ROOT_BELOW_TIP
+             ? h_latest - NODUS_LIGHT_AUTO_ROOT_BELOW_TIP : h_latest;
+
+    /* Every connected pinned node, the primary included, at `target`. */
+    for (size_t i = 0; i < n_pinned && !g_stop; i++) {
+        if (!net_slot_ready(net, i)) continue;
+        memset(&perr, 0, sizeof(perr));
+        prc = net->tables[i].light_block(net->tables[i].ctx, target, buf,
+                                         &perr);
+        if (prc == CMT_FAULT) {
+            QGP_LOG_ERROR(LOG_TAG, "automatic root: local fault asking %s "
+                          "for block %lld", net->nodes[i].label,
+                          (long long)target);
+            return LIGHT_AUTO_FAULT;
+        }
+        if (prc != CMT_OK) {
+            /* Silence, or a block that does not decode: not an answer. */
+            QGP_LOG_INFO(LOG_TAG, "automatic root: %s gave no block %lld: %s",
+                         net->nodes[i].label, (long long)target,
+                         provider_err_name(perr.code));
+            continue;
+        }
+        if (block_summary(buf, &h, hash, &bt) != 0 || h != target) {
+            QGP_LOG_WARN(LOG_TAG, "automatic root: %s sent a block that is "
+                         "not block %lld; not counted", net->nodes[i].label,
+                         (long long)target);
+            continue;
+        }
+        if (answers == 0) {
+            memcpy(hash_out, hash, CMT_TMHASH_SIZE);
+            first = i;
+        } else if (memcmp(hash_out, hash, CMT_TMHASH_SIZE) != 0) {
+            /* No majority is taken (K25-12). */
+            QGP_LOG_ERROR(LOG_TAG, "automatic root: %s and %s hold different "
+                          "blocks at %lld", net->nodes[first].label,
+                          net->nodes[i].label, (long long)target);
+            fprintf(stderr, "The network nodes disagree about block %lld — "
+                    "not starting; contact the operator.\n"
+                    "(%s and %s answered with different blocks.)\n",
+                    (long long)target, net->nodes[first].label,
+                    net->nodes[i].label);
+            return LIGHT_AUTO_DISAGREE;
+        }
+        answers++;
+    }
+    if (answers < NODUS_LIGHT_AUTO_ROOT_MIN_ANSWERS) {
+        QGP_LOG_INFO(LOG_TAG, "automatic root: %u node(s) answered block "
+                     "%lld, %u needed", (unsigned)answers, (long long)target,
+                     (unsigned)NODUS_LIGHT_AUTO_ROOT_MIN_ANSWERS);
+        return LIGHT_AUTO_SHORT;
+    }
+    *t_out       = target;
+    *answers_out = answers;
+    return LIGHT_AUTO_OK;
+}
+
+/* An automatic-root construction refusal that means "not enough nodes
+ * answered just now" — the step is tried again, as for LIGHT_AUTO_SHORT.
+ * On either refusal the new root is not saved (cmt_light_client.h R6;
+ * a primary that does not deliver the root block saves nothing). Any
+ * other refusal stops the program. */
+static bool auto_construct_retryable(int rc, const cmt_light_client_error_t *e)
+{
+    return rc == CMT_REJECT &&
+           (e->code == CMT_LIGHT_CLIENT_ERR_INIT_AGREEMENT_SHORT ||
+            (e->code == CMT_LIGHT_CLIENT_ERR_PROVIDER &&
+             e->provider.code == CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE));
+}
+
 static int cmd_run(int argc, char **argv)
 {
     light_args_t               *a;
     uint8_t                     chain_id[NODUS_LIGHT_CHAIN_ID_LEN];
     uint8_t                     trust_hash[CMT_TMHASH_SIZE];
     cmt_light_trust_options_t   trust;
-    bool                        use_trust = false;
+    int                         root_mode = LIGHT_ROOT_STORE;
+    bool                        is_auto = false;  /* confirm_reroot's ctx */
     const char                 *root_source = NULL;
     intptr_t                    lk = -1;
     light_store_t               st;
@@ -1490,50 +1773,6 @@ static int cmd_run(int argc, char **argv)
         goto done;
     }
 
-    /* The trust root (K25-1): the operator's, else the stored block, else
-     * the release default — refused before any network call. */
-    if (a->have_trust_height) {
-        use_trust   = true;
-        root_source = "operator input";
-        trust.height = (int64_t)a->trust_height;
-        trust.hash   = trust_hash;
-    } else if (stored_last > 0) {
-        root_source = "the light store";
-    } else if (NODUS_LIGHT_RELEASE_CHECKPOINT.height > 0) {
-        if (hex_decode_exact(NODUS_LIGHT_RELEASE_CHECKPOINT.hash_hex,
-                             trust_hash, sizeof(trust_hash)) != 0) {
-            fprintf(stderr, "internal: the release checkpoint hash does not "
-                    "decode\n");
-            goto done;
-        }
-        use_trust    = true;
-        root_source  = "the release default checkpoint";
-        trust.height = NODUS_LIGHT_RELEASE_CHECKPOINT.height;
-        trust.hash   = trust_hash;
-    } else {
-        fprintf(stderr,
-            "The light store in %s is empty and this build carries no "
-            "default checkpoint.\n"
-            "Give a trust root from a source you choose:\n"
-            "  nodus-light run --data %s --trust-height <H> --trust-hash "
-            "<128-hex header hash of block H>\n",
-            a->data_dir, a->data_dir);
-        ret = 2;
-        goto done;
-    }
-    if (use_trust) {
-        trust.period   = NODUS_LIGHT_TRUSTING_PERIOD_NS;   /* K25-2 */
-        trust.hash_len = sizeof(trust_hash);
-    }
-
-    cmt_light_client_options_default(&opts);
-    opts.max_trace_len       = NODUS_LIGHT_MAX_TRACE_LEN;
-    opts.max_verify_steps    = NODUS_LIGHT_MAX_VERIFY_STEPS;
-    opts.max_skipping_cache  = NODUS_LIGHT_MAX_SKIPPING_CACHE;
-    opts.max_backwards_steps = NODUS_LIGHT_MAX_BACKWARDS_STEPS;
-    opts.confirm             = confirm_reroot;
-    opts.confirm_ctx         = NULL;
-
     out  = cmt_light_block_buf_new();
     vbuf = cmt_light_block_buf_new();
     if (out == NULL || vbuf == NULL) {
@@ -1541,33 +1780,125 @@ static int cmd_run(int argc, char **argv)
         goto done;
     }
 
+    /* The trust root (file header, THE TRUST ROOT): where it comes from
+     * is decided before any network call; the automatic root itself needs
+     * the nodes, so it is fetched after they connect. */
+    if (root_pick(a, &st, stored_last, out, &root_mode) != 0) goto done;
+    is_auto = (root_mode == LIGHT_ROOT_AUTO);
+    if (root_mode == LIGHT_ROOT_OPERATOR) {
+        root_source  = "operator input";
+        trust.height = (int64_t)a->trust_height;
+    } else if (root_mode == LIGHT_ROOT_STORE) {
+        root_source  = "the light store";
+    } else {
+        root_source  = "the network nodes";
+    }
+    trust.hash     = trust_hash;
+    trust.period   = NODUS_LIGHT_TRUSTING_PERIOD_NS;   /* K25-2 */
+    trust.hash_len = sizeof(trust_hash);
+
+    cmt_light_client_options_default(&opts);
+    opts.max_trace_len       = NODUS_LIGHT_MAX_TRACE_LEN;
+    opts.max_verify_steps    = NODUS_LIGHT_MAX_VERIFY_STEPS;
+    opts.max_skipping_cache  = NODUS_LIGHT_MAX_SKIPPING_CACHE;
+    opts.max_backwards_steps = NODUS_LIGHT_MAX_BACKWARDS_STEPS;
+    opts.confirm             = confirm_reroot;
+    opts.confirm_ctx         = &is_auto;
+
     light_install_stop_handlers();
     if (net_init(&net, a->nodes, a->n_nodes, chain_id) != 0) goto done;
     net_up = true;
-    if (net_connect(&net) != 0) goto done;
+    /* The automatic root retries until nodes answer (below), so no node
+     * reachable yet does not end the program on that path. */
+    if (net_connect(&net) != 0 && !is_auto) goto done;
     if (g_stop) { ret = 0; goto done; }
 
-    memset(&err, 0, sizeof(err));
-    if (use_trust) {
-        rc = cmt_light_client_new(chain_id, sizeof(chain_id), &trust,
-                                  &net.primary, net.witnesses,
-                                  net.n_witnesses, &st.store, &opts, &c,
-                                  &err);
-    } else {
-        rc = cmt_light_client_new_from_trusted_store(
-                chain_id, sizeof(chain_id), NODUS_LIGHT_TRUSTING_PERIOD_NS,
-                &net.primary, net.witnesses, net.n_witnesses, &st.store,
-                &opts, &c, &err);
-    }
-    if (rc != CMT_OK) {
-        if (rc == CMT_REJECT) {
-            print_construct_error("starting the light client", &err, &net,
-                                  a->data_dir);
-        } else {
-            fprintf(stderr, "starting the light client failed (a local "
-                    "fault: store, allocation or provider)\n");
+    if (is_auto) {
+        /* K25-12: try until a root is taken or the nodes disagree. */
+        bool told_short = false;
+
+        for (;;) {
+            int64_t target = 0;
+            size_t  answers = 0;
+            int     arc = root_auto(&net, a->n_nodes, out, &target,
+                                    trust_hash, &answers);
+
+            if (g_stop) { ret = 0; goto done; }
+            if (arc == LIGHT_AUTO_DISAGREE) goto done;
+            if (arc == LIGHT_AUTO_FAULT) {
+                fprintf(stderr, "starting failed (a local fault); see the "
+                        "log\n");
+                goto done;
+            }
+            if (arc == LIGHT_AUTO_OK) {
+                trust.height = target;
+                memset(&err, 0, sizeof(err));
+                rc = cmt_light_client_new(chain_id, sizeof(chain_id), &trust,
+                                          &net.primary, net.witnesses,
+                                          net.n_witnesses, &st.store, &opts,
+                                          &c, &err);
+                if (rc == CMT_OK) {
+                    printf("starting point: block %lld taken from %u nodes "
+                           "that all agree\n", (long long)target,
+                           (unsigned)answers);
+                    fflush(stdout);
+                    break;
+                }
+                if (!auto_construct_retryable(rc, &err)) {
+                    if (rc == CMT_REJECT) {
+                        print_construct_error("starting the light client",
+                                              &err, &net, a->data_dir, true);
+                    } else {
+                        fprintf(stderr, "starting the light client failed (a "
+                                "local fault: store, allocation or "
+                                "provider)\n");
+                    }
+                    goto done;
+                }
+                QGP_LOG_INFO(LOG_TAG, "automatic root at %lld refused by the "
+                             "light client (code %d: %s); trying again",
+                             (long long)target, err.code,
+                             client_err_name(err.code));
+            }
+            if (!told_short) {
+                printf("could not reach enough nodes to start; check the "
+                       "internet connection (trying again every %llu s)\n",
+                       (unsigned long long)a->interval_s);
+                fflush(stdout);
+                told_short = true;
+            }
+            for (uint64_t slept = 0;
+                 !g_stop && slept < a->interval_s * 1000u;
+                 slept += NODUS_LIGHT_SLEEP_SLICE_MS) {
+                qgp_platform_sleep_ms(NODUS_LIGHT_SLEEP_SLICE_MS);
+            }
+            if (g_stop) { ret = 0; goto done; }
+            net_retry_unstarted(&net);
         }
-        goto done;
+    } else {
+        memset(&err, 0, sizeof(err));
+        if (root_mode == LIGHT_ROOT_OPERATOR) {
+            rc = cmt_light_client_new(chain_id, sizeof(chain_id), &trust,
+                                      &net.primary, net.witnesses,
+                                      net.n_witnesses, &st.store, &opts, &c,
+                                      &err);
+        } else {
+            rc = cmt_light_client_new_from_trusted_store(
+                    chain_id, sizeof(chain_id),
+                    NODUS_LIGHT_TRUSTING_PERIOD_NS, &net.primary,
+                    net.witnesses, net.n_witnesses, &st.store, &opts, &c,
+                    &err);
+        }
+        if (rc != CMT_OK) {
+            if (rc == CMT_REJECT) {
+                print_construct_error("starting the light client", &err,
+                                      &net, a->data_dir, false);
+            } else {
+                fprintf(stderr, "starting the light client failed (a local "
+                        "fault: store, allocation or provider)\n");
+            }
+            goto done;
+        }
     }
     QGP_LOG_INFO(LOG_TAG, "light client started: root from %s, %u nodes",
                  root_source, (unsigned)net.n);
@@ -1660,11 +1991,10 @@ static int cmd_run(int argc, char **argv)
                     goto done;
                 default:
                     if (err_is_expired(&err)) {
-                        printf("the trusted block is older than the 48 h "
-                               "trusting period. Re-root with a fresh trust "
-                               "root from a source you choose:\n"
-                               "  nodus-light run --data %s --trust-height "
-                               "<H> --trust-hash <HEX>\n", a->data_dir);
+                        printf("the last trusted block is older than 48 "
+                               "hours. Restart nodus-light: it then takes a "
+                               "new starting point from the network by "
+                               "itself.\n");
                     } else {
                         printf("update refused: %s (code %d",
                                client_err_name(err.code), err.code);
@@ -1825,8 +2155,9 @@ static int cmd_status(int argc, char **argv)
         /* HeaderExpired: expiry == now is already expired. */
         if (wall_now(&now) == 0) {
             printf("trusted until:  %s (48 h trusting period)%s\n", until_s,
-                   cmt_time_after(until, now) ? "" : " — EXPIRED, re-root "
-                   "with --trust-height/--trust-hash");
+                   cmt_time_after(until, now) ? "" : " — EXPIRED; the next "
+                   "`run` takes a new starting point from the network "
+                   "(not while locked)");
         } else {
             printf("trusted until:  %s (48 h trusting period)\n", until_s);
         }
@@ -1914,7 +2245,7 @@ static int cmd_clear_attack(int argc, char **argv)
     if (rc != CMT_OK) {
         if (rc == CMT_REJECT) {
             print_construct_error("opening the light client", &err, &net,
-                                  a->data_dir);
+                                  a->data_dir, false);
         } else {
             fprintf(stderr, "opening the light client failed (a local "
                     "fault: store or allocation)\n");

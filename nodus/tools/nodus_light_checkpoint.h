@@ -1,16 +1,19 @@
 /**
  * @file nodus/tools/nodus_light_checkpoint.h
- * @brief nodus-light's compiled network table: the chain id, the default
- *        pinned nodes (TCP 4001) and the RELEASE DEFAULT CHECKPOINT.
+ * @brief nodus-light's compiled network table: the chain id and the
+ *        default pinned nodes (TCP 4001).
  *
  * Governing records: docs/plans/decisions/2026-10-16-kurultay-25-summary.md
- *   · K25-1 (operator 2026-10-16, "3"): the trust root is BOTH a default
- *     checkpoint carried by the release AND operator input from any source
- *     the operator chooses (`nodus-light run --trust-height H --trust-hash
- *     HEX`), with no approval from us and no new release needed. The
- *     "≥ 2 peers agree" check of item 9 is a consistency check only, never
- *     the root.
+ *   · K25-12 (operator 2026-10-19), which AMENDS K25-1: with no operator
+ *     root and no usable stored block, nodus-light takes its starting
+ *     block from the pinned nodes of THIS table (or the --node list) when
+ *     at least 2 answer and all agree (nodus-light.c, THE TRUST ROOT). The
+ *     release default checkpoint K25-1 described — a height and hash
+ *     compiled here, usable only for 48 h — is therefore not carried; it
+ *     was never filled. Operator input (`nodus-light run --trust-height H
+ *     --trust-hash HEX`) stays.
  *   · item 8: a light provider is a PINNED 4001 session, never unpinned.
+ * The file keeps its name: it is the release's compiled network table.
  * Nothing in this file is a consensus value: it decides what ONE light
  * client asks and starts from.
  *
@@ -86,30 +89,5 @@ static const nodus_light_default_node_t NODUS_LIGHT_DEFAULT_NODES[] = {
 
 #define NODUS_LIGHT_DEFAULT_NODE_COUNT \
     (sizeof(NODUS_LIGHT_DEFAULT_NODES) / sizeof(NODUS_LIGHT_DEFAULT_NODES[0]))
-
-/**
- * THE RELEASE DEFAULT CHECKPOINT (K25-1, "the release carries a default
- * checkpoint") — EMPTY in this build.
- *
- * Filled at release from a real block after the RPC is live; K25-1. The
- * `dnac_light_block` RPC is on no live node yet, so no block has been read
- * through it and no value may be written here: a height and hash typed in
- * without that read would be an invented trust root.
- *
- * `height == 0` means "no default": `nodus-light run` on an empty store
- * then refuses and tells the operator to pass --trust-height and
- * --trust-hash. When filled, `hash_hex` is the 128-hex header hash
- * (SHA3-512, cmt_header_hash) of the block at `height` on the chain of
- * NODUS_LIGHT_CHAIN_ID_HEX.
- */
-typedef struct {
-    int64_t     height;
-    const char *hash_hex;
-} nodus_light_checkpoint_t;
-
-static const nodus_light_checkpoint_t NODUS_LIGHT_RELEASE_CHECKPOINT = {
-    0,      /* no default — see above */
-    ""
-};
 
 #endif /* NODUS_LIGHT_CHECKPOINT_H */
