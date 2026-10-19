@@ -24,6 +24,10 @@
  * mempool, for the CheckTx-immediate client-submit lane. */
 #include "witness/nodus_witness_cmt_node.h"
 #include "dnac/cmt_mem.h"
+/* dnac_light_block — the LightBlock proto codec (light client package 1)
+ * and the block / state store accessors it is built from. */
+#include "dnac/cmt_light_block.h"
+#include "witness/nodus_witness_cmt_store.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_tier3.h"   /* nodus_t3_tx_size_limit (was via peer.h) */
@@ -4708,6 +4712,312 @@ static void handle_dnac_v3_block(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_light_block — one LightBlock for the light client (pinned 4001)
+ *
+ * Decision docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md
+ * (APPROVED; B1-B4); Kurultay #25 item 8 (transport = pinned 4001). The
+ * wire is specified ONCE in include/nodus/nodus.h beside the client call
+ * (nodus_client_dnac_light_block); this comment names where each part
+ * comes from, against cometbft @v0.38.26:
+ *
+ *   height   "h" = 0 → BlockStore.Height(); otherwise h, refused above
+ *            the store height (NODUS_ERR_HEIGHT_TOO_HIGH) and below its
+ *            base (NODUS_ERR_NOT_FOUND) — rpc/core/env.go:173-191
+ *            getHeight, in that order; the reference provider maps the
+ *            two refusals to ErrHeightTooHigh / ErrLightBlockNotFound
+ *            (light/provider/http/http.go:194-198).
+ *   header   BlockMeta.Header (nodus_cmt_bs_load_block_meta) —
+ *            rpc/core/blocks.go:159-163.
+ *   commit   at the store height the SEEN commit
+ *            (nodus_cmt_bs_load_seen_commit), below it the canonical one
+ *            from block h+1 (nodus_cmt_bs_load_block_commit) —
+ *            blocks.go:166-174.
+ *   set      StateStore.LoadValidators(h) (nodus_cmt_ss_load_validators)
+ *            — rpc/core/consensus.go:31, at the signed header's own height
+ *            as the reference provider asks for it (http.go:84). Sent
+ *            whole, not paged (decision item 3; at most CMT_VALSET_MAX).
+ *   "lb"     cmt_light_block_encode — tendermint.types.LightBlock
+ *            (types.proto:161-164), package 1's codec.
+ *
+ * Absent (pruned / not held) → NODUS_ERR_NOT_FOUND: a missing BlockMeta,
+ * a missing commit, and LoadValidators' ErrNoValSetForHeight (CMT_REJECT,
+ * nodus_witness_cmt_store.h:477). A read fault (CMT_FAULT) or an encode
+ * failure → NODUS_ERR_INTERNAL_ERROR, never a partial answer.
+ *
+ * PURE READ: no write, no clock, no cache; the answer is a function of
+ * the committed block and state stores. BOUNDED: the encoder sizes its
+ * buffer from cmt_pb_light_block_upper_bound (cmt_light_block.c, encode)
+ * and the frame adds only the envelope; a frame above
+ * NODUS_MAX_FRAME_TCP is refused INTERNAL. Every large struct is heap.
+ * Front-door cost: nodus_server.c charges every chain method one unit
+ * except dnac_spend, so this request costs what one dnac_v3_block page
+ * costs (decision item B4, until measured).
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* The T2 envelope ("t", "y", "q" = "dnac_light_block", "r") plus "h" and
+ * the bstr head of "lb": under 100 bytes; 256 leaves headroom. */
+#define NODUS_LIGHT_BLOCK_ENVELOPE_MAX 256u
+
+_Static_assert((size_t)NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES +
+                   NODUS_LIGHT_BLOCK_ENVELOPE_MAX <
+               (size_t)NODUS_MAX_FRAME_TCP,
+               "a dnac_light_block reply must fit the tier-2 frame");
+
+/* Record the refusal and return -1 — v3b_fail's logging rule: a node-side
+ * fault at WARN, a refusal the client caused only at DEBUG. */
+static int lbk_fail(int *err_code, char *err_msg, size_t err_cap,
+                    uint64_t h, int code, const char *msg)
+{
+    *err_code = code;
+    snprintf(err_msg, err_cap, "%s", msg);
+    if (code == NODUS_ERR_INTERNAL_ERROR)
+        QGP_LOG_WARN(LOG_TAG, "dnac_light_block h=%llu: %s",
+                     (unsigned long long)h, msg);
+    else
+        QGP_LOG_DEBUG(LOG_TAG, "dnac_light_block h=%llu: %s",
+                      (unsigned long long)h, msg);
+    return -1;
+}
+
+int nodus_witness_light_block_build(nodus_cmt_store_t *store,
+                                    const uint8_t *payload, size_t len,
+                                    uint32_t txn_id,
+                                    uint8_t **out, size_t *out_len,
+                                    int *err_code, char *err_msg,
+                                    size_t err_cap)
+{
+    cbor_decoder_t          dec;
+    size_t                  args_count = 0;
+    uint64_t                h = 0;
+    bool                    have_h = false;
+    int64_t                 bs_height, bs_base;
+    nodus_cmt_block_meta_t *meta = NULL;
+    cmt_commit_sig_t       *sigs = NULL;
+    cmt_validator_t        *vals_storage = NULL;
+    cmt_commit_t            commit;
+    cmt_validator_set_t     vals;
+    cmt_signed_header_t     sh;
+    cmt_light_block_t       lb;
+    uint8_t                *lb_bytes = NULL, *frame = NULL;
+    size_t                  lb_len = 0;
+    bool                    found = false;
+    int                     crc;
+    int                     rc = -1;
+
+    if (out) *out = NULL;
+    if (out_len) *out_len = 0;
+    if (!store || !store->db || !payload || !out || !out_len ||
+        !err_code || !err_msg || err_cap == 0)
+        return -1;
+    *err_code = 0;
+    err_msg[0] = '\0';
+
+    /* the request: "a": {"h": u64}, "h" exactly once */
+    if (decode_args(payload, len, &dec, &args_count) != 0)
+        return lbk_fail(err_code, err_msg, err_cap, 0,
+                        NODUS_ERR_PROTOCOL_ERROR, "missing args map");
+    for (size_t k = 0; k < args_count; k++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type == CBOR_ITEM_END || key.type == CBOR_ITEM_ERROR)
+            return lbk_fail(err_code, err_msg, err_cap, 0,
+                            NODUS_ERR_PROTOCOL_ERROR, "truncated args map");
+        if (key_match(&key, "h")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type != CBOR_ITEM_UINT || have_h)
+                return lbk_fail(err_code, err_msg, err_cap, 0,
+                                NODUS_ERR_PROTOCOL_ERROR,
+                                "height is not one unsigned integer");
+            h = val.uint_val;
+            have_h = true;
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+    if (dec.error || !have_h)
+        return lbk_fail(err_code, err_msg, err_cap, 0,
+                        NODUS_ERR_PROTOCOL_ERROR, "missing or invalid height");
+
+    /* Only COMMITTED state is an answer (nodus_witness_v3_block_build's
+     * rule): an open transaction on the borrowed connection would let the
+     * reads below see a block that is not committed yet. */
+    if (sqlite3_get_autocommit(store->db) == 0)
+        return lbk_fail(err_code, err_msg, err_cap, h,
+                        NODUS_ERR_INTERNAL_ERROR,
+                        "a ledger transaction is in progress");
+
+    /* rpc/core/env.go:173-191 getHeight, with h = 0 as the nil pointer */
+    bs_height = nodus_cmt_bs_height(store);
+    bs_base   = nodus_cmt_bs_base(store);
+    if (h == 0) {
+        if (bs_height <= 0)
+            return lbk_fail(err_code, err_msg, err_cap, h,
+                            NODUS_ERR_NOT_FOUND, "no block stored");
+        h = (uint64_t)bs_height;                       /* env.go:190      */
+    } else {
+        if (bs_height < 0 || h > (uint64_t)bs_height)  /* env.go:179-182  */
+            return lbk_fail(err_code, err_msg, err_cap, h,
+                            NODUS_ERR_HEIGHT_TOO_HIGH,
+                            "height above the latest stored block");
+        if (h < (uint64_t)(bs_base > 0 ? bs_base : 0)) /* env.go:183-187  */
+            return lbk_fail(err_code, err_msg, err_cap, h,
+                            NODUS_ERR_NOT_FOUND,
+                            "height below the lowest stored block");
+    }
+
+    meta         = calloc(1, sizeof(*meta));
+    sigs         = calloc(CMT_VALSET_MAX, sizeof(*sigs));
+    vals_storage = calloc(CMT_VALSET_MAX, sizeof(*vals_storage));
+    if (!meta || !sigs || !vals_storage) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                 "allocation failed");
+        goto done;
+    }
+
+    /* blocks.go:159-163 — the header */
+    crc = nodus_cmt_bs_load_block_meta(store, (int64_t)h, meta, &found);
+    if (crc != CMT_OK) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                 "block meta unreadable");
+        goto done;
+    }
+    if (!found) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_NOT_FOUND,
+                 "block not held");
+        goto done;
+    }
+
+    /* blocks.go:166-174 — the seen commit at the store height, the
+     * canonical commit (from block h+1) below it */
+    memset(&commit, 0, sizeof(commit));
+    if (h == (uint64_t)bs_height)
+        crc = nodus_cmt_bs_load_seen_commit(store, (int64_t)h, sigs,
+                                            CMT_VALSET_MAX, &commit, &found);
+    else
+        crc = nodus_cmt_bs_load_block_commit(store, (int64_t)h, sigs,
+                                             CMT_VALSET_MAX, &commit, &found);
+    if (crc != CMT_OK) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                 "commit unreadable");
+        goto done;
+    }
+    if (!found) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_NOT_FOUND,
+                 "commit not held");
+        goto done;
+    }
+
+    /* consensus.go:31 — LoadValidators(h) */
+    if (cmt_validator_set_init(&vals, vals_storage, CMT_VALSET_MAX)
+        != CMT_OK) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                 "validator set init failed");
+        goto done;
+    }
+    crc = nodus_cmt_ss_load_validators(store, (int64_t)h, &vals);
+    if (crc == CMT_REJECT) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_NOT_FOUND,
+                 "validator set not held");
+        goto done;
+    }
+    if (crc != CMT_OK) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                 "validator set unreadable");
+        goto done;
+    }
+
+    /* the LightBlock proto (types/light.go:65-84 ToProto + Marshal) */
+    sh.header        = &meta->header;
+    sh.commit        = &commit;
+    lb.signed_header = &sh;
+    lb.validator_set = &vals;
+    /* the wire ceiling (nodus.h) must hold the codec's own bound for a
+     * full set — a constant check, so a later change of either is caught
+     * here and not by a client refusing a valid block */
+    if (cmt_pb_light_block_upper_bound(CMT_VALSET_MAX, CMT_VALSET_MAX) >
+        NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                 "wire ceiling below the light block bound");
+        goto done;
+    }
+    if (cmt_light_block_encode(&lb, &lb_bytes, &lb_len) != CMT_OK) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                 "light block encode failed");
+        goto done;
+    }
+    if (lb_len > NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES) {
+        lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                 "light block exceeds the wire ceiling");
+        goto done;
+    }
+
+    /* the frame: {"t","y":"r","q","r": {"h": u64, "lb": bstr}} */
+    {
+        size_t         cap = lb_len + NODUS_LIGHT_BLOCK_ENVELOPE_MAX;
+        cbor_encoder_t fe;
+        size_t         flen;
+
+        frame = malloc(cap);
+        if (!frame) {
+            lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                     "allocation failed");
+            goto done;
+        }
+        cbor_encoder_init(&fe, frame, cap);
+        enc_dnac_response(&fe, txn_id, "dnac_light_block", 2);
+        cbor_encode_cstr(&fe, "h");  cbor_encode_uint(&fe, h);
+        cbor_encode_cstr(&fe, "lb"); cbor_encode_bstr(&fe, lb_bytes, lb_len);
+        flen = cbor_encoder_len(&fe);
+        if (flen == 0) {
+            lbk_fail(err_code, err_msg, err_cap, h, NODUS_ERR_INTERNAL_ERROR,
+                     "response buffer overflow");
+            goto done;
+        }
+        *out = frame;
+        *out_len = flen;
+        frame = NULL;
+    }
+    rc = 0;
+
+done:
+    free(frame);
+    free(lb_bytes);
+    free(vals_storage);
+    free(sigs);
+    free(meta);
+    return rc;
+}
+
+/* Request:  "a": {"h": u64}
+ * Response: the frame nodus_witness_light_block_build encodes; an error
+ *           reply when it refuses. */
+static void handle_dnac_light_block(nodus_witness_t *w,
+                                    struct nodus_tcp_conn *conn,
+                                    const uint8_t *payload, size_t len,
+                                    uint32_t txn_id)
+{
+    nodus_cmt_node_t *n = (nodus_cmt_node_t *)w->cmt_node;
+    uint8_t *frame = NULL;
+    size_t   frame_len = 0;
+    int      ecode = 0;
+    char     emsg[128];
+
+    if (!w->v2_successor || !n || !n->store_ready) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "this node serves no version-3 chain");
+        return;
+    }
+    if (nodus_witness_light_block_build(&n->store, payload, len, txn_id,
+                                        &frame, &frame_len, &ecode, emsg,
+                                        sizeof(emsg)) != 0) {
+        send_error(conn, txn_id, ecode ? ecode : NODUS_ERR_INTERNAL_ERROR,
+                   ecode ? emsg : "internal error");
+        return;
+    }
+    nodus_tcp_send(conn, frame, frame_len);
+    free(frame);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_cc_collect — the node-side governance approval collection
  * (decision docs/plans/decisions/2026-09-26-cc-approval-via-own-node.md)
  *
@@ -5874,6 +6184,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_roster(w, conn, txn_id);
     } else if (strcmp(method, "dnac_v3_block") == 0) {
         handle_dnac_v3_block(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_light_block") == 0) {
+        handle_dnac_light_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_addr_history") == 0) {
         handle_dnac_addr_history(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_msig_addr_history") == 0) {
