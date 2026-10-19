@@ -111,8 +111,9 @@ struct sockaddr;
 #define NODUS_NET_CONNECT (1u << 27)
 
 /** The tag the backend's own wake registration carries (Linux: the
- *  epoll_event.data.u64 of the eventfd — the value nodus_witness_p2p.c
- *  used before N1). Reserved: never pass it to _add / _mod. */
+ *  epoll_event.data.u64 of the eventfd — the value the 4004 host, then in
+ *  nodus_witness_p2p.c and now net/nodus_p2p_host.c, used before N1).
+ *  Reserved: never pass it to _add / _mod. */
 #define NODUS_NET_TAG_WAKE ((uint64_t)UINT64_MAX - 2)
 
 /** One ready socket. `ready` holds IN / OUT / ERR / HUP / RDHUP, each
@@ -217,8 +218,8 @@ void nodus_net_poll_wake(nodus_net_poll_t *p);
 
 /**
  * Has the non-blocking connect on `s` finished (either way)? Does not
- * block. Linux: poll({s, POLLOUT}, 1, 0) — the probe nodus_witness_p2p.c
- * ran before N1. Windows: a one-socket select on the write and except
+ * block. Linux: poll({s, POLLOUT}, 1, 0) — the probe the 4004 host (then
+ * nodus_witness_p2p.c, now net/nodus_p2p_host.c) ran before N1. Windows: a one-socket select on the write and except
  * sets (R4). Whether it SUCCEEDED (SO_ERROR, getpeername) is the
  * caller's check. @return > 0 finished, 0 still connecting, < 0 error
  * (Linux: poll's -1; Windows: select's SOCKET_ERROR). A caller must NOT

@@ -28,10 +28,13 @@ set(_FORBIDDEN
 # The witness's own — present, so a pass cannot come from an empty symbol
 # table, the wrong file, or an `nm` that silently failed.
 # nodus_witness_v2_gen_derive_v3: --derive-v2-genesis is served by this
-# binary too (tools/nodus_node_config.c).
+# binary too (tools/nodus_node_config.c). nodus_p2p_host_init: the
+# witness-free 4004 host the witness embeds (net/nodus_p2p_host.c, net-layer
+# N3).
 set(_REQUIRED
     nodus_witness_init
     nodus_witness_p2p_new
+    nodus_p2p_host_init
     nodus_witness_v2_gen_derive_v3)
 
 find_program(NM_EXE NAMES nm)

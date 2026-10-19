@@ -27,6 +27,9 @@ cmake_minimum_required(VERSION 3.10)
 #   nodus_presence_tick — presence (core);
 #   nodus_witness_init / nodus_witness_p2p_new — the witness and its 4004
 #     host;
+#   nodus_p2p_host_init — the witness-free 4004 host (net/nodus_p2p_host.c,
+#     net-layer N3) the witness embeds: not wired into storage (design
+#     2026-10-19 §11 "Not in N3"), so it must not be linked here either;
 #   nodus_dht_backend_inproc_new — core's in-process door to the DHT.
 set(_FORBIDDEN
     nodus_server_init
@@ -36,6 +39,7 @@ set(_FORBIDDEN
     nodus_presence_tick
     nodus_witness_init
     nodus_witness_p2p_new
+    nodus_p2p_host_init
     nodus_dht_backend_inproc_new)
 
 # The storage process's own — present, so a pass cannot come from an empty

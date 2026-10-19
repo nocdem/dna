@@ -25,7 +25,7 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "witness/nodus_witness.h"          /* nodus_witness_config_t */
-#include "witness/nodus_witness_p2p.h"      /* nodus_p2p_config_t (P2P-PORT F5) */
+#include "net/nodus_p2p_host.h"             /* nodus_p2p_config_t (P2P-PORT F5) */
 #include "witness/nodus_witness_host.h"     /* the witness's host view (S1) */
 #include "witness/nodus_witness_network_file.h" /* nodus_network_file_target_t */
 #include "server/nodus_chain_backend.h"     /* srv->chain */
@@ -70,7 +70,7 @@ typedef struct {
     bool        require_peer_auth;
 
     /* P2P-PORT F5 — the witness port 4004's p2p section (reference
-     * config.go P2P key names; nodus_witness_p2p.h). */
+     * config.go P2P key names; net/nodus_p2p_host.h). */
     nodus_p2p_config_t p2p;
 
     /* R3 W4 — is_cold_bootstrap (the PR 3 Yol B / C-2 cold-DR escape) is

@@ -66,7 +66,7 @@
  *     backoff 3^i s + jitter, and reconnects when the peer is back.
  *   · a cross-dial ends with ONE connection on both ends — the one dialed
  *     by the lower ID (R-P2P-23).
- *   · the nodus 4004 SOCKET HOST (nodus_p2p_io, nodus_witness_p2p.c) reads
+ *   · the nodus 4004 SOCKET HOST (nodus_p2p_io, net/nodus_p2p_host.c) reads
  *     and writes CONTINUOUSLY within one pass (R-P2P-17, the reference's
  *     recvRoutine / sendRoutine, connection.go:590-694 / :429-507): one
  *     256 KiB reactor message crosses real loopback TCP between two
@@ -152,7 +152,8 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #ifdef __linux__
-#include "witness/nodus_witness_p2p.h"      /* the 4004 socket host (epoll) */
+#include "witness/nodus_witness_p2p.h"      /* -> net/nodus_p2p_host.h: the
+                                               4004 socket host (nodus_p2p_io) */
 #endif
 
 #include <stdio.h>

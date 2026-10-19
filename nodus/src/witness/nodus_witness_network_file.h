@@ -16,7 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "witness/nodus_witness_p2p.h"      /* nodus_p2p_config_t, list caps */
+#include "net/nodus_p2p_host.h"             /* nodus_p2p_config_t, list caps */
 
 #ifdef __cplusplus
 extern "C" {

@@ -25,7 +25,7 @@
 
 #include "nodus/nodus_types.h"
 #include "crypto/nodus_identity.h"
-#include "witness/nodus_witness_p2p.h"      /* nodus_p2p_config_t */
+#include "net/nodus_p2p_host.h"             /* nodus_p2p_config_t */
 
 #ifdef __cplusplus
 extern "C" {

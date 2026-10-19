@@ -44,7 +44,8 @@
  *   reported them IN; connects are non-blocking and wait for OUT.
  *
  * HOW IT CAN LIE:
- *   · It tests the backend, NOT that nodus_witness_p2p.c issues the same
+ *   · It tests the backend, NOT that the 4004 host (net/nodus_p2p_host.c,
+ *     moved out of nodus_witness_p2p.c in N3) issues the same
  *     syscalls as before N1 — that claim rests on reading the diff (and
  *     an strace comparison, if one is made); test_p2p_switch's loopback
  *     cases drive the host itself.
