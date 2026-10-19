@@ -9827,12 +9827,11 @@ the node-wide `dnac_light_block` limiter — BUGS Z-41 … Z-44 and part of Z-45
 - a node-side caller: nothing in a node opens a light client or a light provider;
   `nodus-light` (a separate program, Linux and Windows) is the only one that does, and
   its Windows `.exe` has not been run on Windows;
-- the release half of the trust root (K25-1 "both"): the library still embeds no root
-  (it takes the caller's `cmt_light_trust_options_t`); `nodus-light` supplies the
-  operator's entry (`--trust-height` / `--trust-hash`) and the 48 h trusting period
-  (K25-2), but its release default checkpoint is EMPTY until a real block has been read
-  through the live RPC;
-- the `dnac_light_block` RPC is in the tree but on no live node. Its cost was measured
+- the trust root: the library still embeds no root (it takes the caller's
+  `cmt_light_trust_options_t`); since 0.26.13 `nodus-light` takes it from the pinned nodes
+  by itself (K25-12, "The trust root" in the nodus-light section) or from the operator's
+  `--trust-*`, with the 48 h trusting period (K25-2);
+- the `dnac_light_block` RPC: LIVE on all 7 testnet nodes since nodus 0.26.12 (2026-10-19). Its cost was measured
   and is bounded by the node-wide 4/s limiter (packages 2 and 3 below); the front door
   still charges it one unit like any non-spend chain method — the RPC decision file
   records this as B4 SET (operator 2026-10-19);
@@ -10055,8 +10054,9 @@ are not touched by these rounds. Still open at 0.26.10: NO production caller of 
 client or the provider; no source for the trust root (no release checkpoint, no operator
 input path, K25-1); no program that runs a light client, on Windows or elsewhere; the RPC
 is not deployed to any live node. 0.26.11 adds the program `nodus-light` with the
-operator-input root (section below); the release default checkpoint is still empty, the
-RPC is still on no live node, and the `.exe` has not been run on Windows. The ledger records (root `BUGS.md`) are the place where each item's
+operator-input root (section below); 0.26.12 deploys the RPC to all 7 testnet nodes and
+adds the node-list refresh; 0.26.13 takes the root from the pinned nodes by itself
+(K25-12), so an end user types nothing. Still open: the `.exe` has not been run on Windows. The ledger records (root `BUGS.md`) are the place where each item's
 remaining parts are tracked.
 
 **Build.** `cmt_light_client.c` and `cmt_light_detector.c` are in nodus's COMMON source
@@ -10163,26 +10163,27 @@ accepts it for all three commands, `parse_args` `:395-398`.)
   chain (a local harness, a new genesis) passes its own id WITH its own `--node` list
   (`:13-14`, `:376-378`).
 
-**The trust root (K25-1, "both")** — `cmd_run`, `:961-995`, in this order:
-1. `--trust-height` / `--trust-hash` given → that root ("operator input", from any source
-   the operator chooses; no approval from us, no new release). On a store that already
-   holds blocks the light client's re-root confirmation is answered yes, because the
-   command line is the confirmation (`confirm_reroot`, `:839-853`).
-2. else the store holds a block → `cmt_light_client_new_from_trusted_store` ("the light
-   store").
-3. else the release default checkpoint, if one is compiled in.
-4. else REFUSED before any network call, exit 2, with the message to pass
-   `--trust-height` / `--trust-hash`.
-
-**The release default checkpoint is EMPTY in this build** (`NODUS_LIGHT_RELEASE_CHECKPOINT
-= { 0, "" }`, `nodus_light_checkpoint.h:90-113`; height 0 means "no default"). It is to be
-filled at release from a real block read through `dnac_light_block` once that RPC is live;
-no such block has been read, and a height + hash typed in without that read would be an
-invented trust root. So today step 3 never applies: an empty store always needs operator
-input. The "≥ 2 nodes agree" init rule (item 9) stays a consistency check inside the
-library, never the root (`:31-35`); its refusal prints how many distinct nodes agreed
-(`:867-873`). The trusting period is K25-2's 48 h (`NODUS_LIGHT_TRUSTING_PERIOD_NS`,
-`:103-106`); an expired trusted block is reported with the re-root command (`:1122-1127`).
+**The trust root (0.26.13: K25-12, operator 2026-10-19, amending K25-1)** — `root_pick`,
+in this order: (1) `--trust-height` / `--trust-hash` given → that root (operator input; the
+re-root confirmation is answered yes, `confirm_reroot`); (2) the store holds a block still
+inside the 48 h trusting period (`cmt_light_header_expired`) → resume from it; (3) the store
+carries an uncleared attack record → resume LOCKED, never a new root (K25-10); (4) otherwise
+— empty store, or the stored block expired — the AUTOMATIC ROOT (`root_auto`): ask the
+primary for the latest height H, take T = H − 2, ask EVERY connected node of the compiled /
+`--node` list (never a node learned by the K25-11 refresh) for block T; if at least 2 answer
+and every decoded block has the same `cmt_header_hash`, (T, hash) is the root and the client
+is built with `cmt_light_client_new` exactly as for operator input; fewer than 2 answers →
+retry every `--interval` (no exit); two different hashes → STOP, exit 1, "the network nodes
+disagree" (no majority is taken). The end user therefore types nothing: `nodus-light run
+--data DIR`. Why acceptable: the release already carries these nodes' pinned keys, so the
+starting block moves no trust anywhere new; every later block is verified by the light
+client against > 2/3 signatures. The never-filled release-default checkpoint is REMOVED
+(K25-12 replaces it). Verified (ORCHESTRATOR, 2026-10-19, LIVE testnet, nodus 0.26.12 on all
+7 nodes): `run --data DIR` alone — "starting point: block 263171 taken from 7 nodes that all
+agree", followed to 263178 with 6 witnesses, the refresh added the 8th validator; a second
+`run --data DIR` resumed "from the light store" and kept advancing. Not exercised: the
+disagreement stop, the expired-store re-root, the locked-store path. Open: a trusted block
+that expires while `run` is already running tells the user to restart (no in-place re-root).
 
 **One client per store (item 9 / client D20).** `run` and `clear-attack` hold an exclusive
 lock on DIR for their whole life — `qgp_platform_acquire_identity_lock(DIR)`, the file
