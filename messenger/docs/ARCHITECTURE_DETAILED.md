@@ -375,6 +375,14 @@ int crypto_sign_verify(const uint8_t *sig, size_t siglen,
                        const uint8_t *pk);
 ```
 
+Return values: `crypto_sign_keypair` returns 0, or -1 when randomness is unavailable
+(`pk` / `sk` cleared); `crypto_sign_signature` returns 0, or -1 when the context is
+longer than 255 bytes or (hedged signing, `DILITHIUM_RANDOMIZED_SIGNING` in
+`dsa/config.h`) randomness is unavailable — `*siglen` is 0 on failure and an RNG failure
+clears the signature buffer. Before commit `908f76102` an RNG failure was ignored and
+both reported success. Secret temporaries are cleared with `dilithium_secure_clear`
+(`dsa/secure_clear.h`); that does not cover register spills.
+
 **Usage**: Message signing, identity authentication, DHT value signing.
 
 ### 4.3 AES-256-GCM

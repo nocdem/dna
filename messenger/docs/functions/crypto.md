@@ -57,11 +57,11 @@ this is Faz 0 of (port only — no caller uses this API yet).
 
 | Function | Description |
 |----------|-------------|
-| `int qgp_dsa87_keypair(uint8_t *pk, uint8_t *sk)` | Generate DSA-87 keypair |
-| `int qgp_dsa87_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed)` | Generate keypair from seed |
-| `int qgp_dsa87_sign(uint8_t *sig, size_t *siglen, ...)` | Sign message (detached signature) |
+| `int qgp_dsa87_keypair(uint8_t *pk, uint8_t *sk)` | Generate DSA-87 keypair. 0; -1 on NULL, or (since `908f76102`) when `qgp_randombytes` fails — the return of `crypto_sign_keypair` (§7.1), which then clears `pk` and `sk`. |
+| `int qgp_dsa87_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed)` | Generate keypair from seed. Draws no randomness; -1 only on NULL. Since `908f76102` clears its secret temporaries (seed buffer, s1, s1hat, s2, t0) before returning. |
+| `int qgp_dsa87_sign(uint8_t *sig, size_t *siglen, const uint8_t *m, size_t mlen, const uint8_t *sk)` | Sign message (detached signature, hedged — `DILITHIUM_RANDOMIZED_SIGNING`, `dsa/config.h:6`). 0; -1 on NULL, or (since `908f76102`) when `qgp_randombytes` fails — the return of `crypto_sign_signature` (§7.1): `*siglen` = 0 and the `CRYPTO_BYTES` signature buffer cleared. `qgp_dsa87_sign_ctx` returns the same on RNG failure. |
 | `int qgp_dsa87_verify(const uint8_t *sig, size_t siglen, ...)` | Verify signature |
-| `int qgp_dsa87_sign_ctx(uint8_t *sig, size_t *siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *sk)` | **NEW (HF-6 slice 1).** ML-DSA-87 sign with a FIPS 204 context: ctx/ctxlen go straight to the library, which forms `0 ‖ ctxlen ‖ ctx` (`dsa/sign.c:279-284`); ctx is never prepended to `m`. Rejects NULL args, `ctx == NULL && ctxlen > 0`, `ctxlen > QGP_DSA87_CTX_MAX_BYTES` (255). Hedged (randomized) signing, like `qgp_dsa87_sign`. |
+| `int qgp_dsa87_sign_ctx(uint8_t *sig, size_t *siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *sk)` | **NEW (HF-6 slice 1).** ML-DSA-87 sign with a FIPS 204 context: ctx/ctxlen go straight to the library, which forms `0 ‖ ctxlen ‖ ctx` (`dsa/sign.c:310-313`); ctx is never prepended to `m`. Rejects NULL args, `ctx == NULL && ctxlen > 0`, `ctxlen > QGP_DSA87_CTX_MAX_BYTES` (255). Hedged (randomized) signing, like `qgp_dsa87_sign`. |
 | `int qgp_dsa87_verify_ctx(const uint8_t *sig, size_t siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *pk)` | **NEW (HF-6 slice 1).** Verify under exactly that ctx; no fallback to the empty-ctx verify. Same argument rejects. 0 = valid. |
 
 ### 5.4b secp256k1 ECDSA (`crypto/sign/secp256k1_sign.h`)
@@ -390,14 +390,15 @@ Internal Dilithium5 (ML-DSA-87) implementation from pq-crystals reference.
 
 | Function | Description |
 |----------|-------------|
-| `int crypto_sign_keypair(uint8_t *pk, uint8_t *sk)` | Generate signing keypair |
-| `int crypto_sign_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed)` | Generate keypair from 32-byte seed (deterministic, v0.3.0+) |
-| `int crypto_sign_signature(uint8_t *sig, size_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*)` | Create detached signature |
-| `int crypto_sign(uint8_t *sm, size_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*)` | Sign message (attached) |
+| `int crypto_sign_keypair(uint8_t *pk, uint8_t *sk)` | Generate signing keypair. Returns 0 on success or -1 if randomness is unavailable (`randombytes` = `qgp_randombytes`, `randombytes.h:9`): the seed buffer, `pk` (`CRYPTO_PUBLICKEYBYTES`) and `sk` (`CRYPTO_SECRETKEYBYTES`) are cleared (since `908f76102`; before it the RNG return was ignored and 0 was always returned). On success the secret temporaries (seed buffer, s1, s1hat, s2, t0) are cleared. |
+| `int crypto_sign_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed)` | Generate keypair from 32-byte seed (deterministic, v0.3.0+). Draws no randomness; returns 0. Since `908f76102` clears the same secret temporaries. |
+| `int crypto_sign_signature(uint8_t *sig, size_t *siglen, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *sk)` | Create detached signature. `*siglen` is set to 0 on entry. Returns 0 on success or -1 (context longer than 255 bytes, or — with `DILITHIUM_RANDOMIZED_SIGNING`, defined in `dsa/config.h:6` — randomness unavailable). On failure `*siglen` stays 0; an RNG failure also clears the `rnd` buffer and `CRYPTO_BYTES` of `sig`. Since `908f76102` it returns `crypto_sign_signature_internal`'s result (was: always 0) and clears `rnd` after use. |
+| `int crypto_sign(uint8_t *sm, size_t *smlen, const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *sk)` | Sign message (attached). Returns `crypto_sign_signature`'s 0 / -1; on failure `*smlen` = 0 (since `908f76102`). |
 | `int crypto_sign_verify(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*)` | Verify detached signature |
 | `int crypto_sign_open(uint8_t*, size_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*)` | Verify and open signed message |
 | `int crypto_sign_signature_internal(...)` | Internal signature with randomness |
 | `int crypto_sign_verify_internal(...)` | Internal verification |
+| `static inline void dilithium_secure_clear(void *ptr, size_t len)` (`secure_clear.h`, NEW in `908f76102`) | Zeroes `len` bytes through volatile stores so the compiler keeps the cleanup. Header-only so the native library and the standalone, import-free WASM builds share it. Clears named memory buffers; does NOT promise erasure of register spills (the header's own words). Used by `sign.c`, `fips202.c`, `poly.c`, `polyvec.c` and `qgp_dilithium.c`. Regression test `dsa/test/test_rng_failure.c` is standalone (build command in its header) and is linked into no CMake target — BUGS.md K-04. |
 
 ### 7.2 Level-Specific API (`api.h`)
 
