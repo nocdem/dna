@@ -870,7 +870,7 @@ static size_t build_reply(int mode, const uint8_t *lb, size_t lb_len,
     if (mode == R_DUP_H) {
         cbor_encode_cstr(&e, "h"); cbor_encode_uint(&e, 5);
     }
-    if (mode != R_NO_LB && mode != R_DUP_H) {
+    if (mode != R_NO_LB) {   /* R_DUP_H: h, h, lb — three whole pairs */
         cbor_encode_cstr(&e, "lb");
         if (mode == R_LB_TEXT) cbor_encode_cstr(&e, "x");
         else if (mode == R_LB_EMPTY) cbor_encode_bstr(&e, lb, 0);
