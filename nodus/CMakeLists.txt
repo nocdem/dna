@@ -2004,6 +2004,19 @@ add_executable(test_cmt_light_detector tests/test_cmt_light_detector.c)
 target_link_libraries(test_cmt_light_detector nodus dsa nodus crypto)
 add_test(NAME test_cmt_light_detector COMMAND test_cmt_light_detector)
 
+# nodus-light's start-up / trust-root paths — light client package L9
+# (2026-10-19, K25-12 / K25-10 / K25-2 / K25-11): the test INCLUDES
+# tools/nodus-light.c (NODUS_LIGHT_NO_MAIN) and drives root_pick_at,
+# root_auto and the construction over mock pinned nodes serving real
+# signed light blocks, with the program's light store in a temporary
+# directory (removed). Same warnings as nodus-light. The file header
+# states what it proves / requires / leaves behind / how it can lie.
+add_executable(test_nodus_light tests/test_nodus_light.c)
+target_include_directories(test_nodus_light PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(test_nodus_light nodus dsa nodus crypto)
+target_compile_options(test_nodus_light PRIVATE -Wall -Wextra)
+add_test(NAME test_nodus_light COMMAND test_nodus_light)
+
 add_executable(test_cmt_evidence tests/test_cmt_evidence.c)
 target_link_libraries(test_cmt_evidence nodus dsa nodus crypto)
 add_test(NAME test_cmt_evidence COMMAND test_cmt_evidence)
