@@ -30,8 +30,15 @@
  *    nodus_light_provider_map_error:
  *      node NODUS_ERR_NOT_FOUND        → LIGHT_BLOCK_NOT_FOUND
  *      node NODUS_ERR_HEIGHT_TOO_HIGH  → HEIGHT_TOO_HIGH
- *      any other node error            → NONE (an unnamed error)
- *      no reply in time / transport    → NO_RESPONSE
+ *      node NODUS_ERR_RATE_LIMITED     → NO_RESPONSE (DEVIATION below)
+ *      any other node error            → NONE (an unnamed error; this
+ *                                        includes INTERNAL_ERROR and a
+ *                                        node-sent PROTOCOL_ERROR — the
+ *                                        reference's default branch,
+ *                                        http.go:205-207)
+ *      no reply in time                → NO_RESPONSE
+ *      not connected / local failure
+ *      (rc == -1)                      → NO_RESPONSE (DEVIATION below)
  *      reply refused by the RPC decoder,
  *      or the wrong height             → BAD_LIGHT_BLOCK (reason REJECT)
  *      "lb" that does not decode       → BAD_LIGHT_BLOCK (reason REJECT)
@@ -43,6 +50,23 @@
  *    provider does NOT — the light client does it on every block it is
  *    given (decision item 5, D15). The height match (http.go:70-74) IS
  *    checked, by nodus_client_dnac_light_block.
+ *    DEVIATION (BUGS.md Z-45): a node's NODUS_ERR_RATE_LIMITED answer
+ *    maps to NO_RESPONSE, the benign class the light client does not
+ *    remove a provider for. The reference RPC has no "busy" refusal; its
+ *    only transient one — a timed-out request, retried with backoff —
+ *    ends in ErrNoResponse (http.go:200-210, errors.go:16-18). An
+ *    unnamed error is outside the light client's benign set
+ *    (light/client.go:757-763, :1106-1112) and would remove an honest
+ *    node that is merely at its node-wide dnac_light_block limit
+ *    (nodus_witness_handlers.h,
+ *    NODUS_LIGHT_BLOCK_RATE_PER_SEC). No retry is done here: the client
+ *    asks another provider.
+ *    DEVIATION (BUGS.md Z-45): rc == -1 from nodus_client_dnac_light_block
+ *    (the client is not connected, or a local allocation / send failure)
+ *    maps to NO_RESPONSE. The reference's default branch returns the raw
+ *    error for a refused connection or a cancelled context (http.go:
+ *    205-207), which falls outside the light client's benign set; here it
+ *    is the benign class, so a provider whose session is down is kept.
  *  · report_evidence — LOCAL RECORD ONLY (Kurultay #25 item 2; the
  *    interface's header): the evidence is logged at WARN and counted in
  *    `evidence_recorded`; nothing is sent.

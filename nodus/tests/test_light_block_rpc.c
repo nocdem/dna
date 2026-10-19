@@ -38,7 +38,21 @@
  *        "h") answers PROTOCOL_ERROR; an open transaction on the
  *        connection answers INTERNAL_ERROR;
  *      · the wire ceiling NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES holds the
- *        codec's bound for a full set.
+ *        codec's bound for a full set;
+ *      · ADMISSION (nodus_witness_light_block_serve, BUGS.md Z-44): with
+ *        an open transaction on the connection — the build's FIRST store
+ *        touch, the autocommit check, then answers INTERNAL_ERROR — four
+ *        requests at one `now` reach the build (INTERNAL_ERROR) and the
+ *        fifth answers RATE_LIMITED with no frame: it never reached the
+ *        store; a NULL store behind an empty bucket answers RATE_LIMITED
+ *        too; after ROLLBACK and one interval a request is served whole.
+ *  t_limiter — nodus_witness_light_block_admit alone: the rate is 4/s
+ *    (operator decision 2026-10-19); a burst of exactly 4 at one `now`,
+ *    the 5th refused and the refusal leaves the bucket unchanged; one
+ *    interval later exactly one more; 10 s later the bucket holds 4, not
+ *    more; 200 ms steps (shorter than an interval) still refill — partial
+ *    progress is kept; NULL, a negative and an unrepresentable `now` are
+ *    refused.
  *  t_decoder — the client decoder on hand-built replies: a valid reply
  *    decodes (and an unknown key carrying a map is skipped); h = 0, a
  *    missing "h" or "lb", a duplicate key, a non-uint "h", a text "lb", an
@@ -51,8 +65,8 @@
  *    refused; light_block on a client whose pin was removed after init is
  *    CMT_FAULT.
  *  t_provider_errors — nodus_light_provider_map_error over every class
- *    (NOT_FOUND, HEIGHT_TOO_HIGH, another node error, timeout, transport,
- *    a refused reply, success); light_block on a pinned client that is
+ *    (NOT_FOUND, HEIGHT_TOO_HIGH, RATE_LIMITED → NO_RESPONSE, another node
+ *    error, timeout, transport, a refused reply, success); light_block on a pinned client that is
  *    not connected answers NO_RESPONSE through the REAL client call; a
  *    negative height is CMT_FAULT; report_evidence records locally and
  *    refuses NULL.
@@ -68,9 +82,10 @@
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
  *  1. The handler's own layer (the w->cmt_node lookup, the "no version-3
- *     chain" refusal, the send) is NOT driven: the builder is called with
- *     the fixture's store. The front-door charge (nodus_server.c) is not
- *     driven either.
+ *     chain" refusal, the n->mono read, the node's ONE file-static limiter,
+ *     the send) is NOT driven: the builder and the serve seam are called
+ *     with the fixture's store and the test's own limiter and `now`. The
+ *     front-door charge (nodus_server.c) is not driven either.
  *  2. nodus_client_dnac_light_block's network half (send, wait, the
  *     height-match refusal, the copy) is NOT driven — no socket; only its
  *     "not ready" exit is. Its decoder and encoder are driven directly.
@@ -79,10 +94,9 @@
  *     missing C:3 is a row the test DELETED. The blocks are empty.
  *  4. A validator set that is absent at a held height (ErrNoValSetForHeight
  *     → NOT_FOUND) is not constructed here.
- *  5. The declaration of nodus_witness_light_block_build is a LOCAL extern
- *     below: nodus_witness_handlers.h was outside this package's file
- *     whitelist. If the definition's signature changes and this copy does
- *     not, the link still succeeds and the call is undefined behaviour.
+ *  5. "No store read" on a refusal is shown by OUTCOME (RATE_LIMITED, not
+ *     the INTERNAL_ERROR the store's first check would answer), not by a
+ *     counter of store calls.
  *  6. Nothing here was RUN by its author (BUILDER: compile only). Every
  *     expectation is an expectation.
  *
@@ -128,16 +142,6 @@
 #include "dnac/cmt_part_set.h"
 #include "dnac/cmt_light_block.h"
 #include "dnac/cmt_light_provider.h"
-
-/* nodus_witness_handlers.c — the dnac_light_block answer without its send.
- * LOCAL declaration: nodus_witness_handlers.h was outside this package's
- * whitelist ("HOW IT CAN LIE" 5). */
-int nodus_witness_light_block_build(nodus_cmt_store_t *store,
-                                    const uint8_t *payload, size_t len,
-                                    uint32_t txn_id,
-                                    uint8_t **out, size_t *out_len,
-                                    int *err_code, char *err_msg,
-                                    size_t err_cap);
 
 #define CHECK(cond, msg) do {                                              \
     if (!(cond)) {                                                         \
@@ -607,6 +611,26 @@ static int ask(nodus_cmt_store_t *store, uint64_t h, uint8_t **frame,
                                            sizeof(emsg));
 }
 
+/** As ask(), through the admission seam with the caller's limiter. */
+static int serve(nodus_light_block_limiter_t *lim, int64_t now_ns,
+                 nodus_cmt_store_t *store, uint64_t h, uint8_t **frame,
+                 size_t *frame_len, int *ecode)
+{
+    uint8_t req[512];
+    size_t  req_len = 0;
+    char    emsg[128];
+
+    *frame = NULL;
+    *frame_len = 0;
+    *ecode = 0;
+    if (nodus_dnac_light_block_request_encode(7, TOKEN, h, req, sizeof(req),
+                                              &req_len) != 0)
+        return -2;
+    return nodus_witness_light_block_serve(lim, now_ns, store, req, req_len,
+                                           7, frame, frame_len, ecode, emsg,
+                                           sizeof(emsg));
+}
+
 /** A hand-built request whose args map is `args_body` (raw CBOR, `n`
  *  entries); with n < 0 the "a" key is left out. */
 static int ask_raw(nodus_cmt_store_t *store, int n,
@@ -807,6 +831,41 @@ static int t_server(void)
     CHECK(sqlite3_exec(g.w->db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK,
           "rollback");
 
+    /* ADMISSION: the limiter refuses BEFORE the store. With an open
+     * transaction the build's first store touch answers INTERNAL_ERROR; a
+     * request that never reaches the store answers RATE_LIMITED. */
+    {
+        nodus_light_block_limiter_t lim;
+        const int64_t               t0 = 7LL * 1000000000LL;
+
+        memset(&lim, 0, sizeof(lim));
+        CHECK(sqlite3_exec(g.w->db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK,
+              "begin (admission)");
+        for (int i = 0; i < NODUS_LIGHT_BLOCK_RATE_PER_SEC; i++)
+            CHECK(serve(&lim, t0, x.store, 2, &f, &fl, &ecode) != 0 &&
+                  ecode == NODUS_ERR_INTERNAL_ERROR && f == NULL,
+                  "an admitted request reaches the store");
+        CHECK(serve(&lim, t0, x.store, 2, &f, &fl, &ecode) != 0 &&
+              ecode == NODUS_ERR_RATE_LIMITED && f == NULL && fl == 0,
+              "the 5th at one now is RATE_LIMITED without a store read");
+        CHECK(NODUS_ERR_RATE_LIMITED == 4, "the code is 4");
+        CHECK(serve(&lim, t0, NULL, 2, &f, &fl, &ecode) != 0 &&
+              ecode == NODUS_ERR_RATE_LIMITED && f == NULL,
+              "an empty bucket refuses even with no store at all");
+        CHECK(sqlite3_exec(g.w->db, "ROLLBACK", NULL, NULL, NULL)
+                  == SQLITE_OK, "rollback (admission)");
+        CHECK(serve(&lim, t0, x.store, 2, &f, &fl, &ecode) != 0 &&
+              ecode == NODUS_ERR_RATE_LIMITED,
+              "still refused at the same now with the store usable");
+        CHECK(serve(&lim, t0 + NODUS_LIGHT_BLOCK_INTERVAL_NS, x.store, 2,
+                    &f, &fl, &ecode) == 0 && f != NULL,
+              "one interval later a request is served");
+        if (check_lb(f, fl, 2, g.chain32, (size_t)N_KEYS, buf) != 0)
+            return 1;
+        free(f);
+        f = NULL;
+    }
+
     /* a missing commit row at a held height → NOT_FOUND */
     CHECK(nodus_cmt_store_delete(x.store, false, "C:3") == CMT_OK,
           "C:3 deleted");
@@ -833,6 +892,74 @@ static int t_server(void)
     cmt_light_block_buf_free(buf);
     exec_free(&x);
     gfx_close(&g);
+    return 0;
+}
+
+/* ══ t_limiter — the node-wide admission alone ═══════════════════════ */
+
+static int t_limiter(void)
+{
+    nodus_light_block_limiter_t lim, before;
+    const int64_t               t0 = 1000LL * 1000000000LL;
+    const int64_t               iv = NODUS_LIGHT_BLOCK_INTERVAL_NS;
+    int                         n;
+
+    /* the operator's numbers (2026-10-19): 4 per second, capacity 4 */
+    CHECK(NODUS_LIGHT_BLOCK_RATE_PER_SEC == 4, "rate is 4/s");
+    CHECK(iv == 250000000LL, "one token per 250 ms");
+
+    /* a zeroed limiter is a full bucket: exactly 4 at one now */
+    memset(&lim, 0, sizeof(lim));
+    for (int i = 0; i < 4; i++)
+        CHECK(nodus_witness_light_block_admit(&lim, t0), "burst admitted");
+    before = lim;
+    CHECK(!nodus_witness_light_block_admit(&lim, t0), "the 5th is refused");
+    CHECK(memcmp(&before, &lim, sizeof(lim)) == 0,
+          "a refusal leaves the bucket unchanged");
+    CHECK(!nodus_witness_light_block_admit(&lim, t0 + iv - 1),
+          "1 ns short of an interval: still refused");
+
+    /* one interval later: exactly one more */
+    CHECK(nodus_witness_light_block_admit(&lim, t0 + iv), "refilled one");
+    CHECK(!nodus_witness_light_block_admit(&lim, t0 + iv), "and only one");
+
+    /* a long pause: the bucket is full, never more than 4 */
+    n = 0;
+    for (int i = 0; i < 10; i++)
+        if (nodus_witness_light_block_admit(&lim, t0 + 10LL * 1000000000LL))
+            n++;
+    CHECK(n == 4, "after 10 s the bucket holds 4, not 40");
+
+    /* steps shorter than one interval accumulate (no progress lost) */
+    {
+        const int64_t s0 = t0 + 100LL * 1000000000LL;
+        const int64_t step = 200000000LL;              /* 200 ms < 250 ms */
+
+        memset(&lim, 0, sizeof(lim));
+        for (int i = 0; i < 4; i++)
+            CHECK(nodus_witness_light_block_admit(&lim, s0), "drain");
+        CHECK(!nodus_witness_light_block_admit(&lim, s0 + step),
+              "200 ms: not yet a token");
+        CHECK(nodus_witness_light_block_admit(&lim, s0 + 2 * step),
+              "400 ms: one token (250 ms passed)");
+        CHECK(!nodus_witness_light_block_admit(&lim, s0 + 2 * step),
+              "400 ms: only one");
+        /* only 200 ms since the last admission, but the second token was
+         * due at 500 ms: a limiter that restarted its clock at each
+         * admission would refuse here */
+        CHECK(nodus_witness_light_block_admit(&lim, s0 + 3 * step),
+              "600 ms: the token due at 500 ms");
+        CHECK(!nodus_witness_light_block_admit(&lim, s0 + 3 * step),
+              "600 ms: only that one");
+    }
+
+    /* refused inputs */
+    memset(&lim, 0, sizeof(lim));
+    CHECK(!nodus_witness_light_block_admit(NULL, t0), "NULL refused");
+    CHECK(!nodus_witness_light_block_admit(&lim, -1), "negative now refused");
+    CHECK(!nodus_witness_light_block_admit(&lim, INT64_MAX),
+          "an unrepresentable now refused");
+    CHECK(lim.tat_ns == 0, "refused inputs change nothing");
     return 0;
 }
 
@@ -1051,8 +1178,10 @@ static int t_provider_errors(void)
           CMT_LIGHT_PROVIDER_ERR_HEIGHT_TOO_HIGH },
         { NODUS_ERR_INTERNAL_ERROR, NODUS_ERR_INTERNAL_ERROR, CMT_REJECT,
           CMT_LIGHT_PROVIDER_ERR_NONE },
+        /* a busy node (the node-wide limiter): the benign class, so the
+         * light client keeps the provider (BUGS.md Z-45; header DEVIATION) */
         { NODUS_ERR_RATE_LIMITED, NODUS_ERR_RATE_LIMITED, CMT_REJECT,
-          CMT_LIGHT_PROVIDER_ERR_NONE },
+          CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE },
         /* the node ANSWERED protocol error (e.g. an older node without
          * the method): unnamed, not a bad block */
         { NODUS_ERR_PROTOCOL_ERROR, NODUS_ERR_PROTOCOL_ERROR, CMT_REJECT,
@@ -1127,6 +1256,7 @@ int main(void)
         int (*fn)(void);
     } cases[] = {
         { "server",          t_server },
+        { "limiter",         t_limiter },
         { "decoder",         t_decoder },
         { "provider_pin",    t_provider_pin },
         { "provider_errors", t_provider_errors },
