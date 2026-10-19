@@ -1160,6 +1160,13 @@ if(NOT WIN32)
     # reason), and FindThreads resolves to nothing there.
     find_package(Threads REQUIRED)
     target_link_libraries(nodus PUBLIC Threads::Threads)
+else()
+    # Windows: the system libraries the common sources call — Winsock
+    # (nodus_tcp.c: socket, WSAStartup, …), BCryptGenRandom
+    # (qgp_platform_windows.c qgp_platform_random) and winpthreads (the
+    # client SDK's read thread and mutexes, nodus_client.c / nodus.h).
+    find_package(Threads REQUIRED)
+    target_link_libraries(nodus PUBLIC ws2_32 bcrypt Threads::Threads)
 endif()
 # P2P-PORT F6: the published network file (nodus_witness_network_file.c
 # nodus_network_file_*) is parsed with json-c, as nodus-server's own
@@ -1190,6 +1197,27 @@ endif()
 # When built within the messenger tree, tests/tools use the standalone
 # build in /opt/dna/nodus/build instead.
 if(NOT NODUS_STANDALONE)
+    return()
+endif()
+
+# nodus-light — the light client as a program (light client package L5):
+# follows the chain over pinned 4001 sessions with the cometbft light
+# client port, executing no block. Built on Linux AND Windows; it needs
+# only the common source list (client SDK, light client, light store,
+# pinned provider). Governing: docs/plans/decisions/2026-10-16-kurultay-25-
+# summary.md (K25-1, K25-2, K25-10, items 8 and 9).
+add_executable(nodus-light tools/nodus-light.c)
+target_link_libraries(nodus-light nodus dsa nodus)
+target_compile_options(nodus-light PRIVATE -Wall -Wextra)
+
+# Everything below — the ctest suite, benches, the Genesis Protocol
+# harness tools, the server / witness / storage / core binaries, nodus-cli
+# and the fuzz targets — is Linux-only: it links Threads::Threads
+# (find_package(Threads) runs in the non-WIN32 branch above) or the
+# Linux-only source list (epoll, UDP, the witness). A Windows configure
+# stops here, so it generates the library and nodus-light only; a Linux
+# configure is unchanged.
+if(WIN32)
     return()
 endif()
 
