@@ -214,6 +214,7 @@ nodus/
 │   ├── test_cmt_light_store.c # light client package 1: light/store/db over SQLite — the reference cases + deviations D2-D7 (idempotent save, count = rows, per-prefix count, count checked at open, row height = key) and a failed COMMIT rolled back; temporary file in the working directory, removed
 │   ├── test_cmt_light_client.c # light client package 2: light/client.go + trust_options.go through the reference mock provider — the client_test.go cases without goroutines or network, the Kurultay #25 item-9 init agreement rows, D9 backwards target check, D15 provider-contract rows, every D3 cap; temporary SQLite file in the working directory, removed
 │   ├── test_cmt_light_detector.c # light client package 3: light/detector.go — lunatic / equivocation / forward-lunatic attacks → LIGHT_CLIENT_ATTACK + local record, the DD2 two-pass wait, K25-3 non-last-validator priority divergence, caps fail closed; temporary SQLite file, removed
+│   ├── test_nodus_light.c # nodus-light's start-up / trust-root paths (K25-12/K25-10/K25-2/K25-11) over mock pinned nodes and a real light store
 │   ├── test_light_block_rpc.c # dnac_light_block: the node's answer over a real derived version-3 chain, the client request encoder / reply decoder, the pinned light provider (unpinned refused, error mapping); `/tmp/test_lbrpc_*` per fixture, removed
 │   ├── test_dht2_codec.c      # DHT v2 package 1 (shared/dht2/): pinned data-map bytes per class, canonical envelope, every row-22 strict-decode reject, §3.2 identifiers against hand-assembled preimages, §4.1 code order, row-5 matrix + class max, §4.2 A/B two-arrival order, nearest_R, Validity, the owner-signed LIST request; default build, nothing left behind
 │   ├── test_cmt_evidence.c    # cometbft port R1-D: DuplicateVoteEvidence bare bytes / flat hash / canonical order, EvidenceList root
@@ -10181,8 +10182,17 @@ client against > 2/3 signatures. The never-filled release-default checkpoint is 
 (K25-12 replaces it). Verified (ORCHESTRATOR, 2026-10-19, LIVE testnet, nodus 0.26.12 on all
 7 nodes): `run --data DIR` alone — "starting point: block 263171 taken from 7 nodes that all
 agree", followed to 263178 with 6 witnesses, the refresh added the 8th validator; a second
-`run --data DIR` resumed "from the light store" and kept advancing. Not exercised: the
-disagreement stop, the expired-store re-root, the locked-store path. Open: a trusted block
+`run --data DIR` resumed "from the light store" and kept advancing. Unit test
+`tests/test_nodus_light.c` (74 checks; includes the program source with
+`NODUS_LIGHT_NO_MAIN`, a clock seam `root_pick_at`, mock pinned nodes over real ML-DSA-87
+signed light blocks, a real light store): agreement → root at H − 2; disagreement → stop
+with nothing stored, no majority even when two of three agree; one answer → retry, then
+recovery; the 48 h boundary (expired exactly at block time + 48 h) and the re-root that
+drops an unconfirmed old block; a locked store keeps its lock and takes no new root; a
+refresh-learned slot is never asked; which construction refusals are retried. Mutation
+proof (ORCHESTRATOR, 2026-10-19): disabling the disagreement stop, the lock check or the
+pinned-only bound each turns a named check red. Not covered: `cmd_run`'s own loop and the
+real network calls (exercised on the live testnet instead). Open: a trusted block
 that expires while `run` is already running tells the user to restart (no in-place re-root).
 
 **One client per store (item 9 / client D20).** `run` and `clear-attack` hold an exclusive
