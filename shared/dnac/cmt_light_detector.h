@@ -80,8 +80,12 @@
  *          wait per witness would not make the two runs identical either:
  *          between two calls every witness may answer differently, which
  *          is network timing in the reference too.
- *        · the record is ONE target; verifying another target forgets it
- *          (the reference's sleep belongs to one detection).
+ *        · the record is ONE target; the next detection that ends for any
+ *          reason other than WITNESS_BEHIND — for this target or another —
+ *          forgets it (the reference's sleep belongs to one detection).
+ *          Calls that do not reach the detector (backwards verification,
+ *          a trusted-height lookup, Cleanup) leave it as it is; it only
+ *          ever applies to a detection of the same height AND hash.
  *      The liveness note at :193-195 ("If the clock drift / lag has been
  *      miscalibrated … may allow for a malicious primary to attack it")
  *      applies unchanged: a witness that stays behind after the wait is

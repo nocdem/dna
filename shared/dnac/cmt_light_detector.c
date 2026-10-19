@@ -699,6 +699,14 @@ static int handle_conflicting_headers(cmt_light_client_t *c,
         rc = fault(err);                                  /* :254 index (DD6) */
         goto out;
     }
+    pbh = lb_header(primary_block);
+    tbh = lb_header(wtrace.v[wtrace.len - 1u]);
+    if (pbh == NULL || tbh == NULL ||
+        primary_block->signed_header->commit == NULL ||
+        wtrace.v[wtrace.len - 1u]->signed_header->commit == NULL) {
+        rc = fault(err);                                  /* D7 / DD6 */
+        goto out;
+    }
 
     rec = calloc(1, sizeof(*rec));
     if (rec == NULL) {
@@ -722,18 +730,9 @@ static int handle_conflicting_headers(cmt_light_client_t *c,
     QGP_LOG_ERROR(LOG_TAG, "ATTEMPTED ATTACK DETECTED: witness #%zu holds a "
                   "verified header conflicting with the primary's at %lld "
                   "(common height %lld) — recorded locally, NOT sent",
-                  witness_index,
-                  (long long)lb_header(primary_block)->height,
+                  witness_index, (long long)pbh->height,
                   (long long)rec->against_primary.common_height); /* :256-258, DD4 */
 
-    pbh = lb_header(primary_block);
-    tbh = lb_header(wtrace.v[wtrace.len - 1u]);
-    if (pbh == NULL || tbh == NULL ||
-        primary_block->signed_header->commit == NULL ||
-        wtrace.v[wtrace.len - 1u]->signed_header->commit == NULL) {
-        rc = fault(err);
-        goto out;
-    }
     if (primary_block->signed_header->commit->round !=           /* :260-264 */
         wtrace.v[wtrace.len - 1u]->signed_header->commit->round) {
         rec->commit_rounds_differ = true;
