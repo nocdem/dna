@@ -369,6 +369,9 @@ int nodus_p2p_io_listen(nodus_p2p_io_t *io, const char *ip, uint16_t port)
     if (io == NULL || ip == NULL || !cmt_p2p_ip_parse(ip, strlen(ip), &a) ||
         ip_to_sockaddr(&a, port, &ss, &sl) != 0) {
         errno = EINVAL;
+#ifdef _WIN32
+        WSASetLastError(WSAEINVAL);     /* the code the caller logs there */
+#endif
         return -1;
     }
     fd = nodus_net_socket(ss.ss_family, SOCK_STREAM);
@@ -377,7 +380,15 @@ int nodus_p2p_io_listen(nodus_p2p_io_t *io, const char *ip, uint16_t port)
     }
     /* (const void *): Winsock's optval is const char *; POSIX's const
      * void * — the same pointer either way. */
+#ifdef _WIN32
+    /* Windows' SO_REUSEADDR lets ANOTHER socket bind the same port over
+     * this listener; SO_EXCLUSIVEADDRUSE refuses that (Linux keeps
+     * SO_REUSEADDR: rebinding past TIME_WAIT, never port sharing). */
+    (void)setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const void *)&one,
+                     sizeof(one));
+#else
     (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const void *)&one, sizeof(one));
+#endif
     /* nodus_net_close keeps errno: the caller reports the failure hit. */
     if (bind(fd, (struct sockaddr *)&ss, sl) != 0 || listen(fd, 128) != 0) {
         (void)nodus_net_close(fd);
@@ -1273,23 +1284,36 @@ static int write_file_atomic(const char *path, const uint8_t *bytes, size_t len)
         }
         w = _write(fd, bytes + off, (unsigned int)want);
         if (w <= 0) {
+            /* The write's code, kept across the cleanup calls. */
+            int e = w < 0 ? errno : EIO;
+
             _close(fd);
             _wunlink(wtmp);
+            errno = e;
             return -1;
         }
         off += (size_t)w;
     }
     {
         int frc = _commit(fd);
+        int e = frc != 0 ? errno : 0;   /* the first failure's code */
         int crc = _close(fd);
 
+        if (frc == 0 && crc != 0) {
+            e = errno;
+        }
         if (frc != 0 || crc != 0) {
             _wunlink(wtmp);
+            errno = e;
             return -1;
         }
     }
     if (!MoveFileExW(wtmp, wpath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DWORD le = GetLastError();      /* before _wunlink can replace it */
+
         _wunlink(wtmp);
+        QGP_LOG_ERROR(LOG_TAG, "replacing %s failed: Windows error %lu", path,
+                      (unsigned long)le);
         errno = EIO;
         return -1;
     }
@@ -1300,12 +1324,26 @@ static int write_file_atomic(const char *path, const uint8_t *bytes, size_t len)
 /* @return 1 no file; 0 read (`*bytes` malloc'd); -1 error. */
 static int read_file(const char *path, uint8_t **bytes, size_t *len)
 {
+#ifdef _WIN32
+    /* The writer's name conversion (win_widen, UTF-8 → UTF-16): reader
+     * and writer open the same file for every UTF-8 path. */
+    wchar_t wpath[600];
+    FILE *f = NULL;
+#else
     FILE *f = fopen(path, "rb");
+#endif
     long sz;
     uint8_t *b;
 
     *bytes = NULL;
     *len = 0;
+#ifdef _WIN32
+    if (win_widen(path, wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    f = _wfopen(wpath, L"rb");
+#endif
     if (f == NULL) {
         return errno == ENOENT ? 1 : -1;
     }
@@ -1519,7 +1557,7 @@ bool nodus_p2p_host_signed_addr(nodus_p2p_host_t *p,
     cmt_p2p_addr_rec_t r;
     cmt_p2p_netaddr_t na;
 
-    if (p == NULL || pk == NULL || out == NULL || cap == 0 ||
+    if (p == NULL || !p->init_ok || pk == NULL || out == NULL || cap == 0 ||
         cmt_p2p_pubkey_to_id(pk, id) != CMT_OK) {
         return false;
     }
@@ -1555,15 +1593,64 @@ int nodus_p2p_host_init(nodus_p2p_host_t *h, const nodus_p2p_host_params_t *prm)
     int i;
 
     if (p == NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "host init: no host");
         return -1;
     }
     memset(p, 0, sizeof(*p));
+    /* The parameter checks: each refuses before anything is built
+     * (nodus_p2p_host.h nodus_p2p_host_init). */
     if (prm == NULL || prm->identity == NULL || prm->chain_id == NULL ||
         prm->cfg == NULL || prm->listen_ip == NULL || prm->data_path == NULL ||
-        prm->seq_dir == NULL ||
-        (prm->n_channels > 0 && prm->channels == NULL) ||
-        prm->n_channels > (size_t)CMT_P2P_MAX_NUM_CHANNELS - 1 ||
-        prm->n_reactors < 0 || (prm->n_reactors > 0 && prm->reactors == NULL)) {
+        prm->seq_dir == NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "host init: a required parameter is NULL");
+        return -1;
+    }
+    if ((prm->n_channels > 0 && prm->channels == NULL) ||
+        prm->n_channels > (size_t)CMT_P2P_MAX_NUM_CHANNELS - 1) {
+        QGP_LOG_ERROR(LOG_TAG, "host init: %zu channel(s) (list %s) — at most "
+                      "%d, and a non-empty count needs a list", prm->n_channels,
+                      prm->channels != NULL ? "given" : "NULL",
+                      CMT_P2P_MAX_NUM_CHANNELS - 1);
+        return -1;
+    }
+    if (prm->n_reactors < 0 || (prm->n_reactors > 0 && prm->reactors == NULL)) {
+        QGP_LOG_ERROR(LOG_TAG, "host init: %d reactor(s) (list %s)",
+                      prm->n_reactors, prm->reactors != NULL ? "given" : "NULL");
+        return -1;
+    }
+    /* The peer lists are copied into fixed arrays of
+     * NODUS_P2P_MAX_PEER_LIST below (the switch's lists, the start dial):
+     * a count outside it would overrun them. */
+    if (prm->cfg->n_persistent_peers < 0 ||
+        prm->cfg->n_persistent_peers > NODUS_P2P_MAX_PEER_LIST ||
+        prm->cfg->n_unconditional_peer_ids < 0 ||
+        prm->cfg->n_unconditional_peer_ids > NODUS_P2P_MAX_PEER_LIST ||
+        prm->cfg->n_private_peer_ids < 0 ||
+        prm->cfg->n_private_peer_ids > NODUS_P2P_MAX_PEER_LIST) {
+        QGP_LOG_ERROR(LOG_TAG, "host init: peer-list counts %d / %d / %d "
+                      "(persistent / unconditional / private) — each must be "
+                      "0..%d", prm->cfg->n_persistent_peers,
+                      prm->cfg->n_unconditional_peer_ids,
+                      prm->cfg->n_private_peer_ids, NODUS_P2P_MAX_PEER_LIST);
+        return -1;
+    }
+    if (strlen(prm->data_path) >= sizeof(p->data_path) ||
+        strlen(prm->seq_dir) >= sizeof(p->seq_dir)) {
+        QGP_LOG_ERROR(LOG_TAG, "host init: data_path (%zu bytes, at most %zu) "
+                      "or seq_dir (%zu bytes, at most %zu) does not fit the "
+                      "host's buffer", strlen(prm->data_path),
+                      sizeof(p->data_path) - 1, strlen(prm->seq_dir),
+                      sizeof(p->seq_dir) - 1);
+        return -1;
+    }
+    /* Without bonded_pubkey the address book can verify no signed ADDR
+     * record (cmt_p2p_addrbook.c: a record is believed only under the key
+     * the row returns), so PEX would run on unsigned entries alone
+     * (nodus_p2p_host.h (e)). */
+    if (prm->cfg->pex && prm->policy.bonded_pubkey == NULL) {
+        QGP_LOG_ERROR(LOG_TAG, "host init: pex is on but the policy has no "
+                      "bonded_pubkey row — no signed ADDR record could be "
+                      "verified; run this host with pex off");
         return -1;
     }
     if (!prm->identity->has_mlkem) {
@@ -1609,8 +1696,15 @@ int nodus_p2p_host_init(nodus_p2p_host_t *h, const nodus_p2p_host_params_t *prm)
         uint16_t bport = 0;
 
         if (nodus_p2p_io_listen(&p->io, p->listen_ip, p->listen_port) != 0) {
+#ifdef _WIN32
+            /* Winsock reports through WSAGetLastError, not errno. */
+            QGP_LOG_ERROR(LOG_TAG, "cannot listen on %s:%u: Winsock error %d",
+                          p->listen_ip, (unsigned)p->listen_port,
+                          nodus_net_errno());
+#else
             QGP_LOG_ERROR(LOG_TAG, "cannot listen on %s:%u: %s", p->listen_ip,
                           (unsigned)p->listen_port, strerror(errno));
+#endif
             goto fail;
         }
         if (getsockname(p->io.listen_fd, (struct sockaddr *)&ss, &sl) == 0 &&
@@ -1686,7 +1780,13 @@ int nodus_p2p_host_init(nodus_p2p_host_t *h, const nodus_p2p_host_params_t *prm)
     th.bonded_count = pol_bonded_count;
     th.may_receive = pol_may_receive;
     th.recv_near_full = pol_recv_near_full;
-    th.queue_mark = pol_queue_mark;
+    /* queue_mark: a NULL row means "every delivered message counts"
+     * (cmt_p2p_peer.c gate_entered) — not what a constant 0 from the
+     * trampoline would mean (no message ever counts). So the transport
+     * gets the row only when the embedder set it. The other five rows'
+     * trampolines answer exactly what the shared layer does with NULL
+     * (nodus_p2p_host.h nodus_p2p_host_policy_t). */
+    th.queue_mark = p->policy.queue_mark != NULL ? pol_queue_mark : NULL;
     memset(&tc, 0, sizeof(tc));
     tc.dsa_pk = p->identity->pk.bytes;
     tc.kem_pk = p->identity->mlkem_pk;
@@ -1789,6 +1889,33 @@ int nodus_p2p_host_init(nodus_p2p_host_t *h, const nodus_p2p_host_params_t *prm)
         }
     }
 
+    /* The NodeInfo channel set (the caller's list + PEX) must be exactly
+     * the channels the registered reactors serve: a channel advertised
+     * with no reactor is one a peer may send on and this host cannot
+     * handle; a reactor channel not advertised is one no peer will use.
+     * Read from the switch's own table (add_reactor already refused a
+     * channel two reactors claim, cmt_p2p_switch.c), so no reactor row is
+     * called again here. */
+    {
+        bool seen[256];
+        bool ok = (int)n_chans == p->sw.n_ch_descs;
+        size_t k;
+
+        memset(seen, 0, sizeof(seen));
+        for (k = 0; ok && k < n_chans; k++) {
+            if (seen[chans[k]] || p->sw.reactor_by_ch[chans[k]] < 0) {
+                ok = false;
+            }
+            seen[chans[k]] = true;
+        }
+        if (!ok) {
+            QGP_LOG_ERROR(LOG_TAG, "host init: the NodeInfo lists %zu "
+                          "channel(s), the reactors serve %d — the two sets "
+                          "must be equal", n_chans, p->sw.n_ch_descs);
+            goto fail;
+        }
+    }
+
     /* setup.go:432-440 — the configured peer lists. */
     {
         const char *list[NODUS_P2P_MAX_PEER_LIST];
@@ -1822,6 +1949,7 @@ int nodus_p2p_host_init(nodus_p2p_host_t *h, const nodus_p2p_host_params_t *prm)
             goto fail;
         }
     }
+    p->init_ok = true;
     return 0;
 
 fail:
@@ -1833,9 +1961,14 @@ int nodus_p2p_host_start(nodus_p2p_host_t *h)
     nodus_p2p_host_t *p = h;
     int i;
 
-    if (p == NULL || !p->sw_init) {
+    if (p == NULL || !p->init_ok || p->started) {
+        QGP_LOG_ERROR(LOG_TAG, "host start refused: %s",
+                      p == NULL ? "no host" :
+                      !p->init_ok ? "the host was not built (_init)" :
+                      "already started");
         return -1;
     }
+    p->started = true;                   /* a second _start is refused */
     /* The worker (R-P2P-8). */
     {
         int n = p->n_workers > 0 ? p->n_workers : NODUS_P2P_WORKERS_DEFAULT;
@@ -1924,6 +2057,10 @@ void nodus_p2p_host_free(nodus_p2p_host_t *h)
     p->ni = NULL;
     memset(p->own_rec, 0, sizeof(p->own_rec));
     p->have_own_rec = false;
+    /* Last: the switch stop above still runs the reactors' remove_peer
+     * rows, which may use the accessors on a host that is still init_ok. */
+    p->init_ok = false;
+    p->started = false;
 }
 
 /* ── one pass (the witness calls the steps with its own in between) ── */
@@ -1932,7 +2069,7 @@ void nodus_p2p_host_poll_io(nodus_p2p_host_t *h, int timeout_ms)
 {
     nodus_p2p_host_t *p = h;
 
-    if (p == NULL) {
+    if (p == NULL || !p->init_ok) {
         return;
     }
     worker_drain(p);
@@ -1944,56 +2081,59 @@ void nodus_p2p_host_poll_io(nodus_p2p_host_t *h, int timeout_ms)
 
 void nodus_p2p_host_pex_tick(nodus_p2p_host_t *h)
 {
-    if (h != NULL && h->pex != NULL) {
+    if (h != NULL && h->init_ok && h->pex != NULL) {
         cmt_p2p_pex_tick(h->pex);
     }
 }
 
 void nodus_p2p_host_own_record_check(nodus_p2p_host_t *h)
 {
-    if (h != NULL) {
+    if (h != NULL && h->init_ok) {
         own_record_check(h);
     }
 }
 
 void nodus_p2p_host_flush(nodus_p2p_host_t *h)
 {
-    if (h != NULL) {
+    if (h != NULL && h->init_ok) {
         nodus_p2p_io_flush(&h->io);
     }
 }
 
-void nodus_p2p_host_poll(nodus_p2p_host_t *h, int timeout_ms)
+int nodus_p2p_host_poll(nodus_p2p_host_t *h, int timeout_ms)
 {
-    if (h == NULL) {
-        return;
+    if (h == NULL || !h->init_ok || !h->started) {
+        return -1;
     }
     nodus_p2p_host_poll_io(h, timeout_ms);
     nodus_p2p_host_pex_tick(h);
     nodus_p2p_host_own_record_check(h);
     nodus_p2p_host_flush(h);
+    return 0;
 }
 
-/* ── accessors ─────────────────────────────────────────────────────── */
+/* ── accessors (the neutral answer unless init_ok; header STATE) ───── */
 
 uint16_t nodus_p2p_host_listen_port(const nodus_p2p_host_t *p)
 {
-    return p != NULL && p->io.listen_fd != NODUS_SOCK_INVALID ? p->listen_port : 0;
+    return p != NULL && p->init_ok && p->io.listen_fd != NODUS_SOCK_INVALID
+               ? p->listen_port : 0;
 }
 
 const char *nodus_p2p_host_id(const nodus_p2p_host_t *p)
 {
-    return p != NULL ? p->self_id : "";
+    return p != NULL && p->init_ok ? p->self_id : "";
 }
 
 cmt_p2p_switch_t *nodus_p2p_host_switch(nodus_p2p_host_t *p)
 {
-    return p != NULL ? &p->sw : NULL;
+    return p != NULL && p->init_ok ? &p->sw : NULL;
 }
 
 int nodus_p2p_host_peer_count(const nodus_p2p_host_t *p)
 {
-    return p != NULL ? cmt_p2p_peer_set_size(cmt_p2p_switch_peers(&p->sw)) : 0;
+    return p != NULL && p->init_ok
+               ? cmt_p2p_peer_set_size(cmt_p2p_switch_peers(&p->sw)) : 0;
 }
 
 bool nodus_p2p_host_peer_id_at(const nodus_p2p_host_t *p, int i,
@@ -2001,7 +2141,7 @@ bool nodus_p2p_host_peer_id_at(const nodus_p2p_host_t *p, int i,
 {
     const cmt_p2p_peer_set_t *ps;
 
-    if (p == NULL || out == NULL) {
+    if (p == NULL || !p->init_ok || out == NULL) {
         return false;
     }
     ps = cmt_p2p_switch_peers(&p->sw);
@@ -2014,7 +2154,7 @@ bool nodus_p2p_host_peer_id_at(const nodus_p2p_host_t *p, int i,
 
 bool nodus_p2p_host_has_peer(const nodus_p2p_host_t *p, const char *peer_id)
 {
-    return p != NULL && peer_id != NULL &&
+    return p != NULL && p->init_ok && peer_id != NULL &&
            cmt_p2p_peer_set_get(cmt_p2p_switch_peers(&p->sw), peer_id) != NULL;
 }
 
@@ -2023,7 +2163,7 @@ bool nodus_p2p_host_send(nodus_p2p_host_t *p, const char *peer_id,
 {
     cmt_p2p_peer_t *peer;
 
-    if (p == NULL || peer_id == NULL) {
+    if (p == NULL || !p->init_ok || peer_id == NULL) {
         return false;
     }
     peer = cmt_p2p_peer_set_get(cmt_p2p_switch_peers(&p->sw), peer_id);

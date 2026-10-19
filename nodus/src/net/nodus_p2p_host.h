@@ -77,6 +77,39 @@
  *            transport, book, sockets, mutex, NodeInfo. Must also be
  *            called after a FAILED _init / _start (it releases exactly
  *            what was built, nothing twice); does not free `h` itself.
+ *   STATE  — `init_ok` is set at the end of a successful _init, `started`
+ *            on entry to _start; _free clears both, last. _start runs only
+ *            on an init_ok host not yet started (a second call, or a call
+ *            after a failed _init, is refused with -1 and no side effect).
+ *            _poll_io, _pex_tick, _own_record_check, _flush, _send and the
+ *            accessors do nothing / answer the neutral value (0, "", NULL,
+ *            false) unless init_ok; nodus_p2p_host_poll answers -1 unless
+ *            the host is init_ok AND started.
+ *
+ * ── THE CALLER'S OBLIGATIONS ──────────────────────────────────────────
+ *   (a) The host points into itself (the transport's, switch's, book's
+ *       and PEX's host rows take `h` as ctx; io.t = &h->t): it must not be
+ *       moved or copied after _init — embed it, or hold it by pointer.
+ *   (b) `identity`, `policy.ctx`, and every reactor's `ctx` and `name`
+ *       (and its `get_channels` array) must outlive _free: the switch stop
+ *       inside _free still calls the reactors' remove_peer rows.
+ *   (c) Every host call from ONE thread. Never call _free or _start from
+ *       inside a reactor or policy callback (they run inside _poll_io,
+ *       _start and _free). The worker threads touch only handshake and
+ *       ADDR-verification jobs, never the host's state.
+ *   (d) _init only on a fresh (zeroed) host or one _free has released;
+ *       _init on a live host leaks it (it is overwritten).
+ *   (e) A host without `policy.bonded_pubkey` can verify no signed ADDR
+ *       record (the book believes only a record signed by the key the row
+ *       returns, R-P2P-4): _init refuses such a host with `cfg->pex` on —
+ *       unsigned PEX entries could then poison a validator's ID until it is
+ *       banned. Run it with PEX off (K25-11: the light host dials its
+ *       verified persistent list).
+ *   (f) NULL policy rows: nodus_p2p_host_policy_t, per row.
+ *   (g) Paths (`data_path`, `seq_dir`) are UTF-8; on Windows the reader
+ *       and the writer both convert them to UTF-16 for the wide calls. Each
+ *       must fit the host's buffer (sizeof data_path / seq_dir, NUL
+ *       included) — _init refuses a longer one.
  *
  * ── DETERMINISM ────────────────────────────────────────────────────────
  * Nothing here is consensus state (p2p-port design §6 D1). Peers and
@@ -227,7 +260,9 @@ typedef struct {
 
 int  nodus_p2p_io_init(nodus_p2p_io_t *io, bool with_wake);
 void nodus_p2p_io_free(nodus_p2p_io_t *io);
-/** Bind + listen on an IP literal. @return 0 or -1 (errno kept). */
+/** Bind + listen on an IP literal (Linux SO_REUSEADDR, Windows
+ *  SO_EXCLUSIVEADDRUSE). @return 0 or -1 (the failure's code kept: Linux
+ *  errno; Windows nodus_net_errno()). */
 int  nodus_p2p_io_listen(nodus_p2p_io_t *io, const char *ip, uint16_t port);
 /** The transport host's `dial` row body: a non-blocking connect(2) to
  *  `addr`'s IP literal. @return 0 connecting; -1 failed at once. */
@@ -277,23 +312,29 @@ int nodus_p2p_sc_verify(void *ctx, const uint8_t sig[CMT_P2P_SC_SIG_SIZE],
 
 /**
  * The embedder's answers (file header, "the POLICY"). Every row takes
- * `ctx`; a NULL row is the neutral answer given after it.
+ * `ctx`; a NULL row means what the shared layer itself means by a NULL
+ * row (given after each).
  */
 typedef struct {
     void *ctx;
-    /** Switch `is_bonded` (R-P2P-7) and the own-record gate. NULL: false. */
+    /** Switch `is_bonded` (R-P2P-7) and the own-record gate. NULL: false
+     *  (cmt_p2p_switch.c is_bonded). */
     bool     (*is_bonded)(void *ctx, const char *id);
     /** Transport `bonded_count` (the listener limit, R-P2P-27). NULL: 0. */
     int      (*bonded_count)(void *ctx);
-    /** Address book `bonded_pubkey` (R-P2P-4). NULL: false (no key). */
+    /** Address book `bonded_pubkey` (R-P2P-4). NULL: no key for any ID —
+     *  no signed ADDR record verifies, so _init refuses NULL with PEX on
+     *  (file header (e)). */
     bool     (*bonded_pubkey)(void *ctx, const char *id,
                               uint8_t pk[QGP_DSA87_PUBLICKEYBYTES]);
     /** Transport `may_receive` (cmt_p2p_peer.h "THE RECEIVE GATE").
      *  NULL: true. */
     bool     (*may_receive)(void *ctx);
-    /** Transport `recv_near_full`. NULL: false. */
+    /** Transport `recv_near_full`. NULL: false (never contended). */
     bool     (*recv_near_full)(void *ctx);
-    /** Transport `queue_mark`. NULL: 0. */
+    /** Transport `queue_mark`. NULL: the transport gets NO queue_mark row
+     *  — every delivered message counts as a peer's turn
+     *  (cmt_p2p_transport.h `queue_mark`, cmt_p2p_peer.c gate_entered). */
     uint64_t (*queue_mark)(void *ctx);
 } nodus_p2p_host_policy_t;
 
@@ -376,20 +417,32 @@ typedef struct {
      *  record only then (cmt_p2p_pex.h). Written by the embedder (the
      *  witness's bonded-set refresh); false for a witness-free host. */
     bool                        self_bonded;
+
+    /* lifecycle (file header, STATE) */
+    bool                        init_ok;       /* _init succeeded        */
+    bool                        started;       /* _start was entered     */
 } nodus_p2p_host_t;
 
 /**
  * Build the host into `h` (zeroed here first): _init in the file
- * header. @return 0, or -1 (logged where today's host logged) — then
- * call nodus_p2p_host_free(h).
+ * header. @return 0, or -1 (logged) — then call nodus_p2p_host_free(h).
+ * Refused before anything is built (logged): a NULL required parameter,
+ * n_channels over CMT_P2P_MAX_NUM_CHANNELS − 1, n_reactors < 0, a peer-list
+ * count outside [0, NODUS_P2P_MAX_PEER_LIST], a data_path / seq_dir that
+ * does not fit the host's buffer, `cfg->pex` without
+ * `policy.bonded_pubkey`. Refused after the reactors are registered: a
+ * NodeInfo channel set (`channels` + PEX) that is not exactly the union of
+ * the registered reactors' channels.
  */
 int  nodus_p2p_host_init(nodus_p2p_host_t *h, const nodus_p2p_host_params_t *prm);
 /** Start a built host: _start in the file header. @return 0, or -1
- *  (logged) — then call nodus_p2p_host_free(h). */
+ *  (logged) — then call nodus_p2p_host_free(h). -1 with no side effect
+ *  when the host is not init_ok or was already started. */
 int  nodus_p2p_host_start(nodus_p2p_host_t *h);
 /** One whole pass for a witness-free caller: _poll_io, _pex_tick,
- *  _own_record_check, _flush. */
-void nodus_p2p_host_poll(nodus_p2p_host_t *h, int timeout_ms);
+ *  _own_record_check, _flush. @return 0; -1 (nothing done) when the host
+ *  is not running (not init_ok, not started, or freed). */
+int  nodus_p2p_host_poll(nodus_p2p_host_t *h, int timeout_ms);
 /** The pass's steps (file header, LIFECYCLE). */
 void nodus_p2p_host_poll_io(nodus_p2p_host_t *h, int timeout_ms);
 void nodus_p2p_host_pex_tick(nodus_p2p_host_t *h);
