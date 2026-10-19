@@ -9763,8 +9763,9 @@ bindings `nodus_witness_p2p.c` stay in the `if(NOT WIN32)` list (`nodus/CMakeLis
 4002 inter-node dialer do NOT use the layer yet — they move in packages N2a (tcp / client SDK /
 inter-dial) and N2b (udp / bf), each merging alone (design §9 R8). The witness-free 4004 host
 is package N3 (next subsection). Design §10 moved three Windows gaps of the 4004 host from N1
-to N3: the address-book atomic replace and `getsockname` of the listener landed in N3
-(`nodus_p2p_host.c:1240-1322`, `:1710-1713`); the probe caller below did NOT — at `88284e668`
+to N3: the address-book atomic replace got its Windows arm in N3 (`nodus_p2p_host.c:1240-1322`);
+`getsockname` of the listener is the pre-N3 call, compiled in the Windows build unchanged with
+no shim added (`:1710-1713`); the probe caller below did NOT change — at `88284e668`
 it still tests `<= 0` (`nodus_p2p_host.c:708`).
 
 **Thread rule.** One thread owns a set — the loop owner. Only `nodus_net_poll_wake` may be
@@ -9979,7 +9980,7 @@ of them has run, on Windows or under Wine:
   socket bind the same port over it), `SO_REUSEADDR` on Linux (`:383-391`); a bad address sets
   `WSAEINVAL` as well as `errno` (`:368-375`); the listen failure is logged with the Winsock
   code `nodus_net_errno()` on Windows, `strerror(errno)` on Linux (`:1699-1707`); the bound
-  port is read back with `getsockname` (`:1710-1713`).
+  port is read back with `getsockname` (`:1710-1713`, the pre-N3 call, no shim added).
 Not covered by N3: the connect-probe caller (`:708`, see "Connect probe and its Linux-only
 caller" above) and the ⚠ NOT GROUNDED Winsock pair of `NODUS_NET_IS_CONNABORTED`
 (`nodus_net_poll.h:281-285`), which the accept path (`nodus_p2p_host.c:753`) now uses in the
@@ -9988,12 +9989,13 @@ Windows build too.
 **The witness's Linux behaviour is unchanged** (K25-5). Every moved body keeps its statements;
 the N3-FIX commit `5f018cf64` states that every new `_init` check is one the witness already
 satisfies (it lists exactly its seven reactors' channels, `nodus_witness_p2p.c:2150-2159`, and
-passes `bonded_pubkey`, `:2194`); the witness calls the steps in its old order. Evidence (ORCHESTRATOR-reported, ledger 2026-10-20):
+passes `bonded_pubkey`, `:2194`); the witness calls the steps in its old order. Evidence (ORCHESTRATOR-reported):
 `test_witness_p2p` and `test_p2p_switch` pass at `88284e668`; 8 review lenses at `ff81e4c44`
 found 0 high / medium on the witness path.
 
-**No program uses a witness-free host yet.** The witness is the only caller of
-`nodus_p2p_host_init` in the tree. `nodus-light` calls none of it (no `nodus_p2p_host`
+**No program uses a witness-free host yet.** `git grep nodus_p2p_host_init` at `88284e668`
+finds two callers: the witness (`nodus_witness_p2p.c:2200`) and the test
+(`nodus/tests/test_p2p_host.c:258`). `nodus-light` calls none of it (no `nodus_p2p_host`
 reference in `nodus/tools/`). Per design §11 "Not in N3", the light storage node gets it only
 when there is a channel to serve — after HF-7, in the storage packages. Two link gates hold
 this: the nodus-storage gate FORBIDS the global symbol `nodus_p2p_host_init`
