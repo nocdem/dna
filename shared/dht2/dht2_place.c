@@ -35,12 +35,12 @@ int dht2_nearest_r(const uint8_t key[DHT2_HASH_LEN],
     size_t i, j;
 
     if (key == NULL || (set == NULL && n != 0) ||
-        (out_idx == NULL && n != 0)) {
+        (out_idx == NULL && n != 0) || n > DHT2_SET_MAX) {
         return -1;
     }
     /* A repeated fp would make two members equidistant: refuse the set
-     * (D1 claims no ties). O(n²) over a set of at most a few hundred
-     * registry rows. */
+     * (D1 claims no ties). O(n²) over n ≤ DHT2_SET_MAX (256) —
+     * at most 32,640 comparisons. */
     for (i = 0; i < n; i++) {
         for (j = i + 1; j < n; j++) {
             if (memcmp(set[i], set[j], DHT2_FP_LEN) == 0) {

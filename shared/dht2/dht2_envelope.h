@@ -26,7 +26,21 @@
  *   · the domain string is used BOTH inside RFC 0002's signed buffer AND
  *     as the FIPS 204 ctx of the ML-DSA-87 signature (§4.4);
  *   · the owner-signed LIST request (row 23) is ours.
- * See dht2_types.h for the PENDING byte reading of the payload types.
+ * Payload types: dht2_types.h DHT2_PT_* (RFC 0002 :50-54, one slash).
+ *
+ * ⚠ API CONTRACT: dht2_env_decode does NOT verify the signature; a decoded
+ * envelope's payload and fp are unproven until dht2_env_verify returns
+ * DHT2_OK. dht2_list_req_open runs the full order itself (verify before
+ * the owner check). Holder admission of anything carried in an envelope
+ * follows design §4.1's full order — verify before use or store.
+ *
+ * READING (kept as written): dht2_list_req_open's DHT2_E_BAD_CHAIN (3) and
+ * DHT2_E_BAD_SIGNATURE (9) are INTERNAL results; only `not-owner` (17) is
+ * a decided LIST answer (row 23). How a holder answers 3 / 9 on a LIST
+ * request is decided in the holder package.
+ *
+ * Allocates only the RFC 0002 signed buffer (seal / verify), freed on
+ * every path.
  *
  * Only the envelope layer and the LIST request live here: the answer /
  * receipt / refusal payload maps (row 18) are a later package.
@@ -74,7 +88,8 @@ int dht2_env_seal(const char *domain,
                   const uint8_t *sk, const uint8_t pk[DHT2_PUBKEY_LEN],
                   uint8_t *out, size_t cap, size_t *out_len);
 
-/** Decode (no signature check). `max_len` bounds `len` BEFORE decoding.
+/** Decode. Does NOT verify the signature — call dht2_env_verify before
+ *  trusting payload or fp. `max_len` bounds `len` BEFORE decoding.
  *  @return DHT2_OK, DHT2_E_TOO_LARGE, DHT2_E_BAD_ENCODING (incl. a
  *  missing or non-ML-DSA-87 key). */
 int dht2_env_decode(const uint8_t *in, size_t len, size_t max_len,
@@ -122,8 +137,8 @@ int dht2_list_req_build(const dht2_list_req_t *req, const uint8_t *sk,
  *   signature under `nodus.dht.list.v1`          → DHT2_E_BAD_SIGNATURE
  *   SHA3-512(`nodus.dht.inbox.v1` ‖ c ‖ SHA3-512(signer key)) = `inbox`
  *                                                → DHT2_E_NOT_OWNER (17)
- * Only 17 is decided by row 23; the codes for a chain mismatch and a bad
- * signature on a LIST request are this file's readings (reported).
+ * Only 17 is decided by row 23; 3 and 9 here are internal results (see
+ * the header's READING).
  * On DHT2_OK `req` holds the request and `owner_fp` (may be NULL) the
  * signer's fp.
  */

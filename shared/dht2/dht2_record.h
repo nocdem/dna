@@ -51,9 +51,28 @@
  *     row-15 control list, an inbox control `_id` ≠ the signer's own;
  *   · no-expiry (ValidityType 1) where the class max is finite →
  *     `too-long` (8).
+ * READINGS of the design's rules (kept as written):
+ *   · a NAMED writer's class 1 / 3 / 5 record may carry a finite expiry
+ *     (ValidityType 0) with no upper bound — row 5 "no expiry allowed
+ *     (ValidityType 1) with a name" read as "the class max is unbounded";
+ *   · an empty `_data` (length 0) is valid for classes 1, 2, 4 — row 5
+ *     requires the key, not a length;
+ *   · a ValidityType ⇔ Validity mismatch is `bad-encoding` (2), not
+ *     `bad-class` — it is a byte-form rule of §3.1 / row 6.
  *
- * Nothing here allocates, reads a clock, draws randomness (except inside
- * qgp_dsa87_sign_ctx's hedged signing, FIPS 204 §3.4) or keeps state.
+ * ⚠ API CONTRACT — NO FUNCTION HERE EXCEPT dht2_record_verify CHECKS THE
+ * SIGNATURE. dht2_record_parse, dht2_data_decode, dht2_record_canonical,
+ * dht2_record_compare and dht2_record_placement_key operate on UNVERIFIED
+ * bytes. Admission must run design §4.1's full order — size, decode,
+ * chain, owner, address, holder check, class rules, expiry, SIGNATURE
+ * (dht2_record_verify), then Select and store; a record must never be
+ * stored, compared against a held version or hashed into a receipt before
+ * dht2_record_verify returned DHT2_OK.
+ *
+ * Reads no clock, keeps no state, draws no randomness except inside
+ * qgp_dsa87_sign_ctx's hedged signing (FIPS 204 §3.4). One function
+ * allocates: dht2_id (its preimage, freed before it returns; every
+ * failure path frees it too).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -105,7 +124,7 @@ int dht2_data_encode(const dht2_data_t *d, uint8_t *out, size_t cap,
 
 /** Strict decode + re-encode identity check (design §3.1, §13 rows 5-6,
  *  22). @return DHT2_OK or DHT2_E_BAD_ENCODING. Class rules are NOT
- *  applied here (dht2_record_check_class). */
+ *  applied here (dht2_record_check_class), nor is any signature. */
 int dht2_data_decode(const uint8_t *in, size_t len, dht2_data_t *d);
 
 /* ── the envelope (§3.1, §13 row 4) ────────────────────────────────── */
@@ -134,6 +153,7 @@ typedef struct {
  * after, from the functions below, in that order. `rec` points into `in`.
  * Envelope decode follows the generated Unmarshal: fields in any order,
  * unknown fields skipped by wire type, a repeated field last-one-wins.
+ * Does NOT verify the signature (see the API CONTRACT above).
  */
 int dht2_record_parse(const uint8_t *in, size_t len,
                       const uint8_t local_chain[DHT2_CHAIN_LEN],
@@ -157,7 +177,10 @@ int dht2_record_verify(const dht2_record_t *rec);
 
 /** §3.1 "Stored form" / row 4: fields 7, 8, 9 only, in field order, each
  *  once, proto3 emission rules (cmt_pb.h:22), unknown fields dropped.
- *  `out` NULL → only *out_len. @return DHT2_OK or DHT2_E_ARG. */
+ *  `out` NULL → only *out_len. Does NOT verify the signature; it REFUSES
+ *  (DHT2_E_BAD_SIGNATURE) a record whose signature is not exactly the
+ *  ML-DSA-87 size (4627 B), so no canonical form exists for a record that
+ *  could never verify. @return DHT2_OK, DHT2_E_BAD_SIGNATURE, DHT2_E_ARG. */
 int dht2_record_canonical(const dht2_record_t *rec, uint8_t *out, size_t cap,
                           size_t *out_len);
 
@@ -174,14 +197,18 @@ int dht2_record_build(const dht2_data_t *d, const uint8_t *sk,
 /** §4.2 order of two versions AT THE SAME ADDRESS: larger `Sequence` →
  *  later expiry (no expiry above any expiry) → larger canonical data bytes
  *  → larger signature bytes ("larger bytes" = Go bytes.Compare: first
- *  differing byte, then the shorter is smaller). @return > 0 if `a` wins,
- *  < 0 if `b` wins, 0 if both are the same version. */
+ *  differing byte, then the shorter is smaller). Does NOT verify either
+ *  signature: both must have passed dht2_record_verify. A NULL side is
+ *  "nothing held" and loses to a present one (both NULL → 0).
+ *  @return > 0 if `a` wins, < 0 if `b` wins, 0 if both are the same
+ *  version. */
 int dht2_record_compare(const dht2_record_t *a, const dht2_record_t *b);
 
 /** §2 placement key: the INBOX id for classes 4 and 5 (class 4: its
  *  `_id`; class 5: SHA3-512(`nodus.dht.inbox.v1` ‖ `_chain` ‖ signer fp)
- *  — the inbox its signer owns), the record's address otherwise.
- *  @return DHT2_OK or DHT2_E_ARG. */
+ *  — the inbox its signer owns), the record's address otherwise. Does NOT
+ *  verify the signature: on an unverified record the signer fp is a
+ *  claim. @return DHT2_OK, DHT2_E_ARG, DHT2_E_HOLDER_FAULT. */
 int dht2_record_placement_key(const dht2_record_t *rec,
                               uint8_t out[DHT2_HASH_LEN]);
 

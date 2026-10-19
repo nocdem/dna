@@ -30,8 +30,18 @@
  *     signature, data signed under another ctx);
  *   · row 5's matrix and class max refuse what they must (bad-class,
  *     expired, too-long) and accept the edges exactly;
- *   · §4.2: the A/B two-arrival case selects the same winner on both
- *     holders, and every tie-break step decides in the stated order;
+ *   · §4.2: the A/B two-arrival case — two simulated holders, each with
+ *     its OWN store, admitting in opposite orders — ends with the same
+ *     stored bytes (B's canonical envelope), and every tie-break step
+ *     decides in the stated order;
+ *   · the strict READER itself refuses every non-shortest integer / length
+ *     head (not only the re-encode check behind it); proto3 merge rules
+ *     hold (IPNS field 7 last-one-wins incl. a trailing empty one; RFC
+ *     0002 field 1 merged — a later empty PublicKey keeps the key);
+ *     non-canonical PublicKey bytes collapse to the canonical form; every
+ *     prefix of an envelope and of a data map is refused; canonical
+ *     refuses a non-4627-byte signature; a set over 256 members is
+ *     refused; LIST unsorted / duplicate keys are malformed;
  *   · nearest_R over a fixed set returns the pinned members nearest
  *     first, all members when fewer than R, and refuses a repeated fp;
  *   · the Validity text ↔ seconds conversion matches fixed instants and
@@ -62,9 +72,11 @@
  *  2. The Validity instants were computed with GNU `date -u -d … +%s`
  *     (coreutils on this host), one external source; the month-boundary
  *     sweep is a round trip of this codec against itself.
- *  3. The payload-type bytes of RFC 0002 envelopes follow ONE of two
- *     readings of the design text (dht2_types.h DHT2_PT_*); this file
- *     cannot tell which the design meant.
+ *  3. The payload-type bytes are the ASCII path whose leading '/' is the
+ *     0x2f "path" multicodec (RFC/0002-signed-envelopes.md:50-54, design
+ *     §13 row 1); this file checks the first byte is 0x2f and that the
+ *     whole string is what DHT2_PT_* says, not another implementation's
+ *     output.
  *  4. Nothing here exercises admission order across the holder check,
  *     quota, storage or pull-sync — those are later packages.
  *
@@ -1011,7 +1023,9 @@ static void test_class_max(void)
               (perm ? DHT2_OK : DHT2_E_TOO_LONG), "VT1 named");
         CHECK(expiry_of(c, 1, 0, now, false) == DHT2_E_TOO_LONG,
               "VT1 unnamed is too-long");
-        /* lower bound: expiry > now (boxo validation.go:72-74) */
+        /* lower bound: design §4.1 "expiry > holder chain time". NAMED:
+         * boxo validation.go:73 (`time.Now().After(eol)`) still accepts
+         * eol == now; ours is one second stricter. */
         CHECK(expiry_of(c, 0, now, now, true) == DHT2_E_EXPIRED,
               "expiry == now is expired");
         CHECK(expiry_of(c, 0, now - 1, now, false) == DHT2_E_EXPIRED,
@@ -1143,12 +1157,44 @@ static void synth(dht2_record_t *r, uint64_t seq, uint64_t vt, uint64_t exp,
     r->sig_len = slen;
 }
 
-/* A holder keeps the winner of the held version and the incoming one
- * (Validate → Select → store; kad-dht value_store.go:131-150). */
-static const dht2_record_t *hold(const dht2_record_t *held,
-                                 const dht2_record_t *incoming)
+/* A simulated holder with its OWN store: it keeps the canonical bytes of
+ * the winner of the held version and the incoming one (Validate → Select
+ * → store; kad-dht value_store.go:131-150). Nothing it holds points into
+ * the arriving buffer. */
+typedef struct {
+    uint8_t      *buf;          /* DHT2_ENVELOPE_MAX bytes */
+    size_t        len;
+    bool          has;
+    dht2_record_t rec;          /* parsed from buf */
+} holder_t;
+
+static int holder_admit(holder_t *h, const uint8_t *in, size_t len,
+                        const uint8_t *chain)
 {
-    return (dht2_record_compare(incoming, held) > 0) ? incoming : held;
+    dht2_record_t *tmp = (dht2_record_t *)malloc(sizeof(*tmp));
+    size_t         n = 0;
+    int            rc = -1;
+
+    if (tmp == NULL) {
+        return -1;
+    }
+    if (dht2_record_parse(in, len, chain, NULL, tmp) != DHT2_OK ||
+        dht2_record_verify(tmp) != DHT2_OK) {
+        goto out;
+    }
+    if (!h->has || dht2_record_compare(tmp, &h->rec) > 0) {
+        if (dht2_record_canonical(tmp, h->buf, DHT2_ENVELOPE_MAX, &n)
+            != DHT2_OK ||
+            dht2_record_parse(h->buf, n, chain, NULL, &h->rec) != DHT2_OK) {
+            goto out;
+        }
+        h->len = n;
+        h->has = true;
+    }
+    rc = 0;
+out:
+    free(tmp);
+    return rc;
 }
 
 static void test_order(fixture_t *fx)
@@ -1162,7 +1208,7 @@ static void test_order(fixture_t *fx)
     dht2_record_t  x, y;
     dht2_data_t    d;
     size_t         env_len = 0, env2_len = 0, ca = 0, cb = 0;
-    const dht2_record_t *h1, *h2;
+    holder_t      *h1, *h2;
 
     if (A == NULL || B == NULL) {
         CHECK(0, "malloc");
@@ -1191,19 +1237,43 @@ static void test_order(fixture_t *fx)
     CHECK(memcmp(A->address, B->address, DHT2_HASH_LEN) == 0, "same address");
     CHECK(dht2_record_compare(B, A) > 0 && dht2_record_compare(A, B) < 0,
           "B (seq s+1) beats A despite the earlier expiry");
-    h1 = hold(A, B);                          /* holder 1: A then B */
-    h2 = hold(B, A);                          /* holder 2: B then A */
-    CHECK(h1 == B && h2 == B, "both arrival orders keep B");
-    CHECK(dht2_record_canonical(h1, fx->canon, sizeof(fx->canon), &ca)
-          == DHT2_OK, "canon h1");
-    {
-        uint8_t *c2 = (uint8_t *)malloc(DHT2_ENVELOPE_MAX);
-
-        CHECK(c2 != NULL && dht2_record_canonical(h2, c2, DHT2_ENVELOPE_MAX,
-                                                  &cb) == DHT2_OK &&
-              eq(fx->canon, ca, c2, cb), "both holders store the same bytes");
-        free(c2);
+    /* Two holders, two arrival orders, each with its own store: A's bytes
+     * live in env2, B's in env. */
+    h1 = (holder_t *)calloc(1, sizeof(*h1));
+    h2 = (holder_t *)calloc(1, sizeof(*h2));
+    if (h1 != NULL) {
+        h1->buf = (uint8_t *)malloc(DHT2_ENVELOPE_MAX);
     }
+    if (h2 != NULL) {
+        h2->buf = (uint8_t *)malloc(DHT2_ENVELOPE_MAX);
+    }
+    if (h1 != NULL && h2 != NULL && h1->buf != NULL && h2->buf != NULL) {
+        CHECK(holder_admit(h1, fx->env2, env_len, d.chain) == 0 &&
+              holder_admit(h1, fx->env, env2_len, d.chain) == 0,
+              "holder 1: A then B");
+        CHECK(holder_admit(h2, fx->env, env2_len, d.chain) == 0 &&
+              holder_admit(h2, fx->env2, env_len, d.chain) == 0,
+              "holder 2: B then A");
+        CHECK(h1->has && h2->has && eq(h1->buf, h1->len, h2->buf, h2->len),
+              "both holders store the SAME bytes");
+        CHECK(dht2_record_canonical(B, fx->canon, sizeof(fx->canon), &ca)
+              == DHT2_OK && eq(h1->buf, h1->len, fx->canon, ca),
+              "and those bytes are B's canonical envelope");
+        CHECK(h1->rec.d.sequence == 6 && h2->rec.d.sequence == 6,
+              "the stored winner is seq s+1");
+        cb = h2->len;
+        CHECK(cb == ca, "same length");
+    } else {
+        CHECK(0, "malloc");
+    }
+    if (h1 != NULL) {
+        free(h1->buf);
+    }
+    if (h2 != NULL) {
+        free(h2->buf);
+    }
+    free(h1);
+    free(h2);
 
     /* Each tie-break step, on synthetic versions. */
     synth(&x, 2, 0, 100, da, 2, sa, 3);
@@ -1464,6 +1534,272 @@ static void test_envelopes_and_list(fixture_t *fx)
     }
 }
 
+/* ══ 9. hardening vectors (audit round) ═════════════════════════════════ */
+
+/* (b) The strict READER itself refuses non-shortest heads — the refusal
+ * does not depend on the re-encode check that runs after it. Each vector
+ * is fed straight to dht2_cbor_rd_*; the shortest form of the same value
+ * is accepted beside it. */
+static void test_reader_shortest(void)
+{
+    static const struct { const char *hex; int ok; uint64_t v; } ints[] = {
+        { "17",                  1, 23 },
+        { "1817",                0, 0 },     /* 23 in 1 byte */
+        { "1818",                1, 24 },
+        { "1800",                0, 0 },
+        { "1900ff",              0, 0 },     /* 255 in 2 bytes */
+        { "190100",              1, 256 },
+        { "1a0000ffff",          0, 0 },     /* 65535 in 4 bytes */
+        { "1a00010000",          1, 65536 },
+        { "1b00000000ffffffff",  0, 0 },     /* 2^32-1 in 8 bytes */
+        { "1b0000000100000000",  1, 4294967296ull },
+        { "1c",                  0, 0 },     /* reserved */
+        { "1f",                  0, 0 },     /* indefinite */
+    };
+    asm_t          a;
+    dht2_cbor_rd_t r;
+    uint64_t       v;
+    const uint8_t *p, *k;
+    size_t         n, kl, i;
+
+    for (i = 0; i < sizeof(ints) / sizeof(ints[0]); i++) {
+        int rc;
+
+        a_init(&a);
+        a_hex(&a, ints[i].hex);
+        dht2_cbor_rd_init(&r, a.b, a.n);
+        rc = dht2_cbor_rd_uint(&r, &v);
+        CHECK(ints[i].ok ? (rc == 0 && v == ints[i].v && dht2_cbor_rd_done(&r))
+                         : (rc != 0), ints[i].hex);
+    }
+    /* long-form byte-string length: 58 03 vs 43 */
+    a_init(&a);
+    a_hex(&a, "5803 010203");
+    dht2_cbor_rd_init(&r, a.b, a.n);
+    CHECK(dht2_cbor_rd_bytes(&r, &p, &n) != 0, "reader: bstr len 3 in 1 byte");
+    a_init(&a);
+    a_hex(&a, "43 010203");
+    dht2_cbor_rd_init(&r, a.b, a.n);
+    CHECK(dht2_cbor_rd_bytes(&r, &p, &n) == 0 && n == 3 &&
+          dht2_cbor_rd_done(&r), "reader: bstr len 3 short form");
+    /* long-form map count and key length */
+    a_init(&a);
+    a_hex(&a, "b801");
+    dht2_cbor_rd_init(&r, a.b, a.n);
+    CHECK(dht2_cbor_rd_map(&r, &v) != 0, "reader: map count 1 in 1 byte");
+    a_init(&a);
+    a_hex(&a, "7803 616263");
+    dht2_cbor_rd_init(&r, a.b, a.n);
+    CHECK(dht2_cbor_rd_key(&r, NULL, 0, &k, &kl) != 0,
+          "reader: key length 3 in 1 byte");
+    /* a sticky error: after one refusal, nothing more is read */
+    a_init(&a);
+    a_hex(&a, "1800 01");
+    dht2_cbor_rd_init(&r, a.b, a.n);
+    CHECK(dht2_cbor_rd_uint(&r, &v) != 0 && dht2_cbor_rd_uint(&r, &v) != 0 &&
+          !dht2_cbor_rd_done(&r), "reader error is sticky");
+}
+
+static void test_hardening(fixture_t *fx)
+{
+    static const uint8_t p3[3] = { 1, 2, 3 };
+    dht2_data_t    d, e;
+    dht2_record_t *r1 = (dht2_record_t *)malloc(sizeof(*r1));
+    dht2_record_t *r2 = (dht2_record_t *)malloc(sizeof(*r2));
+    cmt_pb_public_key_t pkv;
+    uint8_t        pkm_a[3 + DHT2_PUBKEY_LEN], pkm_b[3 + DHT2_PUBKEY_LEN];
+    uint8_t       *inner = (uint8_t *)malloc(2 * (4 + DHT2_PUBKEY_LEN));
+    size_t         env_len = 0, pa_len = 0, pb_len = 0, off, cn = 0, k;
+    dht2_env_t     env;
+    asm_t          a;
+    int            all;
+
+    if (r1 == NULL || r2 == NULL || inner == NULL) {
+        CHECK(0, "malloc");
+        goto done;
+    }
+    data_base(&d, DHT2_CLASS_OWNER);
+    d.has_data = true;
+    d.data = p3;
+    d.data_len = 3;
+    CHECK(build_parse(fx, &d, fx->sk_a, fx->pk_a, r1, &env_len) == DHT2_OK,
+          "build + parse");
+    pkv.present = true;
+    memcpy(pkv.key, fx->pk_a, DHT2_PUBKEY_LEN);
+    CHECK(cmt_pb_public_key_marshal(&pkv, pkm_a, sizeof(pkm_a), &pa_len)
+          == CMT_OK, "pk A msg");
+    memcpy(pkv.key, fx->pk_b, DHT2_PUBKEY_LEN);
+    CHECK(cmt_pb_public_key_marshal(&pkv, pkm_b, sizeof(pkm_b), &pb_len)
+          == CMT_OK, "pk B msg");
+
+    /* (c) IPNS field 7 is `bytes`: last-one-wins. B then A → A; A then B
+     * → B (and the signature no longer matches); A then an EMPTY 7 → no
+     * key at all → bad-encoding. */
+    off = pb_ld(fx->env2, 0, 7, pkm_b, pb_len);
+    off = pb_ld(fx->env2, off, 7, pkm_a, pa_len);
+    off = pb_ld(fx->env2, off, 8, r1->sig, r1->sig_len);
+    off = pb_ld(fx->env2, off, 9, r1->data, r1->data_len);
+    CHECK(dht2_record_parse(fx->env2, off, d.chain, NULL, r2) == DHT2_OK &&
+          memcmp(r2->fp, fx->fp_a, DHT2_FP_LEN) == 0 &&
+          dht2_record_verify(r2) == DHT2_OK, "field 7 B then A: A wins");
+    CHECK(dht2_record_canonical(r2, fx->canon, sizeof(fx->canon), &cn)
+          == DHT2_OK && eq(fx->canon, cn, fx->env, env_len),
+          "repeated field 7 collapses to the canonical form");
+    off = pb_ld(fx->env2, 0, 7, pkm_a, pa_len);
+    off = pb_ld(fx->env2, off, 7, pkm_b, pb_len);
+    off = pb_ld(fx->env2, off, 8, r1->sig, r1->sig_len);
+    off = pb_ld(fx->env2, off, 9, r1->data, r1->data_len);
+    CHECK(dht2_record_parse(fx->env2, off, d.chain, NULL, r2) == DHT2_OK &&
+          memcmp(r2->fp, fx->fp_b, DHT2_FP_LEN) == 0 &&
+          dht2_record_verify(r2) == DHT2_E_BAD_SIGNATURE,
+          "field 7 A then B: B wins and does not verify");
+    off = pb_ld(fx->env2, 0, 7, pkm_a, pa_len);
+    off = pb_ld(fx->env2, off, 8, r1->sig, r1->sig_len);
+    off = pb_ld(fx->env2, off, 9, r1->data, r1->data_len);
+    fx->env2[off++] = 0x3a;                   /* field 7, length 0 */
+    fx->env2[off++] = 0x00;
+    CHECK(dht2_record_parse(fx->env2, off, d.chain, NULL, r2)
+          == DHT2_E_BAD_ENCODING, "a trailing EMPTY field 7 erases the key");
+
+    /* (d) non-canonical PublicKey bytes inside field 7: a repeated inner
+     * field 9 (B then A → A) and a non-minimal inner length (2592 as the
+     * 3-byte uvarint a0 94 00) both collapse to the one canonical form. */
+    memcpy(inner, pkm_b, pb_len);
+    memcpy(inner + pb_len, pkm_a, pa_len);
+    off = pb_ld(fx->env2, 0, 7, inner, pb_len + pa_len);
+    off = pb_ld(fx->env2, off, 8, r1->sig, r1->sig_len);
+    off = pb_ld(fx->env2, off, 9, r1->data, r1->data_len);
+    CHECK(dht2_record_parse(fx->env2, off, d.chain, NULL, r2) == DHT2_OK &&
+          memcmp(r2->fp, fx->fp_a, DHT2_FP_LEN) == 0 &&
+          dht2_record_canonical(r2, fx->canon, sizeof(fx->canon), &cn)
+          == DHT2_OK && eq(fx->canon, cn, fx->env, env_len),
+          "repeated inner field 9 collapses to canonical");
+    inner[0] = 0x4a;
+    inner[1] = 0xa0;
+    inner[2] = 0x94;
+    inner[3] = 0x00;
+    memcpy(inner + 4, fx->pk_a, DHT2_PUBKEY_LEN);
+    off = pb_ld(fx->env2, 0, 7, inner, 4 + DHT2_PUBKEY_LEN);
+    off = pb_ld(fx->env2, off, 8, r1->sig, r1->sig_len);
+    off = pb_ld(fx->env2, off, 9, r1->data, r1->data_len);
+    CHECK(dht2_record_parse(fx->env2, off, d.chain, NULL, r2) == DHT2_OK &&
+          dht2_record_canonical(r2, fx->canon, sizeof(fx->canon), &cn)
+          == DHT2_OK && eq(fx->canon, cn, fx->env, env_len),
+          "non-minimal inner length collapses to canonical");
+
+    /* canonical refuses a signature that is not 4627 B (item 5) */
+    *r2 = *r1;
+    r2->sig_len = DHT2_SIG_LEN - 1;
+    CHECK(dht2_record_canonical(r2, fx->canon, sizeof(fx->canon), &cn)
+          == DHT2_E_BAD_SIGNATURE, "canonical refuses a 4626-byte signature");
+    r2->sig_len = 0;
+    CHECK(dht2_record_canonical(r2, NULL, 0, &cn) == DHT2_E_BAD_SIGNATURE,
+          "canonical refuses an absent signature");
+    CHECK(dht2_record_compare(NULL, r1) < 0 && dht2_record_compare(r1, NULL) > 0
+          && dht2_record_compare(NULL, NULL) == 0, "compare with NULL");
+
+    /* (c) RFC 0002 field 1 is an embedded message: MERGED. A later EMPTY
+     * PublicKey keeps the key; a later key B replaces A. */
+    CHECK(dht2_env_seal(DHT2_DOMAIN_ANSWER, (const uint8_t *)DHT2_PT_ANSWER,
+                        strlen(DHT2_PT_ANSWER), p3, sizeof(p3), fx->sk_a,
+                        fx->pk_a, fx->env2, sizeof(fx->env2), &off) == DHT2_OK,
+          "seal");
+    fx->env2[off++] = 0x0a;                   /* field 1, empty message */
+    fx->env2[off++] = 0x00;
+    CHECK(dht2_env_decode(fx->env2, off, DHT2_ENVELOPE_MAX, &env) == DHT2_OK &&
+          memcmp(env.fp, fx->fp_a, DHT2_FP_LEN) == 0 &&
+          dht2_env_verify(&env, DHT2_DOMAIN_ANSWER) == DHT2_OK,
+          "field 1: a later empty PublicKey keeps the key");
+    off -= 2;
+    off = pb_ld(fx->env2, off, 1, pkm_b, pb_len);
+    CHECK(dht2_env_decode(fx->env2, off, DHT2_ENVELOPE_MAX, &env) == DHT2_OK &&
+          memcmp(env.fp, fx->fp_b, DHT2_FP_LEN) == 0 &&
+          dht2_env_verify(&env, DHT2_DOMAIN_ANSWER) == DHT2_E_BAD_SIGNATURE,
+          "field 1: a later key replaces it (and does not verify)");
+    off = 0;
+    fx->env2[off++] = 0x0a;
+    fx->env2[off++] = 0x00;
+    CHECK(dht2_env_decode(fx->env2, off, DHT2_ENVELOPE_MAX, &env)
+          == DHT2_E_BAD_ENCODING, "only an empty PublicKey: no key");
+
+    /* (e) truncation sweep: every proper prefix of a class-1 envelope and
+     * of its data map is refused, none crashes. */
+    all = 1;
+    for (k = 0; k < env_len; k++) {
+        if (dht2_record_parse(fx->env, k, d.chain, NULL, r2) == DHT2_OK) {
+            all = 0;
+        }
+    }
+    CHECK(all, "every envelope prefix refused");
+    kat1(&a, V_OK);
+    all = 1;
+    for (k = 0; k < a.n; k++) {
+        if (dht2_data_decode(a.b, k, &e) == DHT2_OK) {
+            all = 0;
+        }
+    }
+    CHECK(all, "every data-map prefix refused");
+
+    /* (f) LIST payload: unsorted keys ("n" before "c") and a duplicate
+     * key ("c" twice). */
+    {
+        dht2_list_req_t got;
+        uint8_t         inbox[DHT2_ID_LEN];
+
+        memset(inbox, 0x44, sizeof(inbox));
+        a_init(&a);
+        a_hex(&a, "a4 616e 5820");
+        a_fill(&a, 0x5a, 32);
+        a_hex(&a, "6163 5820");
+        a_raw(&a, fx->chain, 32);
+        a_hex(&a, "626f70 646c697374 65696e626f78 5840");
+        a_raw(&a, inbox, 64);
+        CHECK(dht2_list_payload_decode(a.b, a.n, &got) == DHT2_E_MALFORMED_REQ,
+              "LIST unsorted keys");
+        a_init(&a);
+        a_hex(&a, "a5 6163 5820");
+        a_raw(&a, fx->chain, 32);
+        a_hex(&a, "6163 5820");
+        a_raw(&a, fx->chain, 32);
+        a_hex(&a, "616e 5820");
+        a_fill(&a, 0x5a, 32);
+        a_hex(&a, "626f70 646c697374 65696e626f78 5840");
+        a_raw(&a, inbox, 64);
+        CHECK(dht2_list_payload_decode(a.b, a.n, &got) == DHT2_E_MALFORMED_REQ,
+              "LIST duplicate key");
+    }
+
+    /* item 7: a set over DHT2_SET_MAX is refused */
+    {
+        uint8_t (*big)[DHT2_FP_LEN] =
+            (uint8_t (*)[DHT2_FP_LEN])calloc(DHT2_SET_MAX + 1, DHT2_FP_LEN);
+        uint8_t key[DHT2_HASH_LEN];
+        size_t  idx[DHT2_R];
+
+        memset(key, 0, sizeof(key));
+        if (big != NULL) {
+            for (k = 0; k <= DHT2_SET_MAX; k++) {
+                big[k][0] = (uint8_t)(k & 0xff);
+                big[k][1] = (uint8_t)(k >> 8);
+            }
+            CHECK(dht2_nearest_r(key, (const uint8_t (*)[DHT2_FP_LEN])big,
+                                 DHT2_SET_MAX, idx) == (int)DHT2_R,
+                  "256 members accepted");
+            CHECK(dht2_nearest_r(key, (const uint8_t (*)[DHT2_FP_LEN])big,
+                                 DHT2_SET_MAX + 1, idx) == -1,
+                  "257 members refused");
+            free(big);
+        } else {
+            CHECK(0, "malloc");
+        }
+    }
+
+done:
+    free(inner);
+    free(r1);
+    free(r2);
+}
+
 int main(void)
 {
     fixture_t *fx = (fixture_t *)malloc(sizeof(*fx));
@@ -1502,6 +1838,8 @@ int main(void)
     test_order(fx);
     test_placement();
     test_envelopes_and_list(fx);
+    test_reader_shortest();
+    test_hardening(fx);
     QGP_LOG_INFO(LOG_TAG, "=== Results: %d passed, %d failed ===",
                  g_pass, g_fail);
 

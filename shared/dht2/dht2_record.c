@@ -575,8 +575,10 @@ int dht2_record_check_expiry(const dht2_record_t *rec, uint64_t chain_now,
     if (d->validity_type == DHT2_VT_NONE) {
         return unbounded ? DHT2_OK : DHT2_E_TOO_LONG;
     }
-    /* Lower bound: expiry > holder chain time (boxo validation.go:72-74,
-     * ErrExpiredRecord). */
+    /* Lower bound — the rule is design §4.1 "expiry > holder chain time".
+     * NAMED: boxo validation.go:73 refuses only `time.Now().After(eol)`,
+     * i.e. it still accepts eol == now; ours refuses eol == chain time, one
+     * second stricter (whole-second chain time). */
     if (d->expiry <= chain_now) {
         return DHT2_E_EXPIRED;
     }
@@ -653,6 +655,11 @@ int dht2_record_canonical(const dht2_record_t *rec, uint8_t *out, size_t cap,
     if (rec == NULL || out_len == NULL || !rec->pk.present) {
         return DHT2_E_ARG;
     }
+    /* A signature that is not ML-DSA-87-sized can never verify: there is
+     * no stored form for it. */
+    if (rec->sig == NULL || rec->sig_len != DHT2_SIG_LEN) {
+        return DHT2_E_BAD_SIGNATURE;
+    }
     if (cmt_pb_public_key_marshal(&rec->pk, pkm, sizeof(pkm), &pkm_len)
         != CMT_OK) {
         return DHT2_E_ARG;
@@ -685,6 +692,11 @@ int dht2_record_build(const dht2_data_t *d, const uint8_t *sk,
     rc = dht2_data_encode(d, NULL, 0, &dlen);
     if (rc != DHT2_OK) {
         return rc;
+    }
+    /* Refuse before any size arithmetic: the sum below then stays far
+     * from SIZE_MAX. */
+    if (dlen > DHT2_ENVELOPE_MAX) {
+        return DHT2_E_TOO_LARGE;
     }
     pkv.present = true;
     memcpy(pkv.key, pk, DHT2_PUBKEY_LEN);
@@ -752,6 +764,9 @@ int dht2_record_compare(const dht2_record_t *a, const dht2_record_t *b)
     bool a_none, b_none;
     int  c;
 
+    if (a == NULL || b == NULL) {           /* NULL = nothing held */
+        return (a == b) ? 0 : (a == NULL ? -1 : 1);
+    }
     if (a->d.sequence != b->d.sequence) {                /* record.go:683-687 */
         return (a->d.sequence > b->d.sequence) ? 1 : -1;
     }

@@ -6,8 +6,7 @@
  *
  * Design: docs/plans/2026-10-14-dht-v2-design.md rev 5 (FROZEN) — §3.1,
  * §3.2, §4.4, §13 rows 1, 5, 6, 7, 23. Every string below is copied from
- * that text; none is ours. Where the design text admits two byte readings
- * the constant says so (DHT2_PT_*).
+ * that text (and, for the payload types, RFC 0002 :50-54); none is ours.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -92,18 +91,13 @@ extern "C" {
 #define DHT2_DOMAIN_LIST   "nodus.dht.list.v1"
 
 /* ── RFC 0002 payload types (§13 rows 1, 2, 12, 18, 23) ────────────────
- * ⚠ BYTE READING PENDING ORCHESTRATOR CONFIRMATION. The design says
- * "the 'path' multicodec (0x2f, multicodec table.csv:29) followed by the
- * ASCII path, as RFC 0002 suggests" (row 1) and "multicodec 'path' 0x2f +
- * `/nodus/dht/list/v1`" (row 23). RFC 0002 (libp2p-specs 78e75c6f,
- * RFC/0002-signed-envelopes.md:48-54) says path payload types have "the
- * form `/some/thing`, using the namespace multicodec whose binary value
- * is equivalent to the UTF-8 `/` character" — i.e. the path's own
- * leading '/' IS the 0x2f code. That is the reading written here:
- *     bytes = "/nodus/dht/list/v1"   (first byte 0x2f, ONE slash)
- * The other literal reading, 0x2f ‖ "/nodus/dht/list/v1" (= two leading
- * slashes), is NOT used. Every payload type lives in this one block, so
- * the answer changes one place. */
+ * The "path" multicodec 0x2f (multicodec table.csv:29) IS the path's own
+ * leading '/': RFC 0002 (libp2p-specs 78e75c6f,
+ * RFC/0002-signed-envelopes.md:50-54) — path payload types have "the form
+ * `/some/thing`, using the namespace multicodec whose binary value is
+ * equivalent to the UTF-8 `/` character". So each payload type is exactly
+ * its ASCII path, first byte 0x2f, ONE slash (design §13 row 1):
+ *     bytes = "/nodus/dht/list/v1" = 2f 6e 6f 64 75 73 … */
 #define DHT2_PT_ANSWER        "/nodus/dht/answer/v1"
 #define DHT2_PT_RECEIPT       "/nodus/dht/receipt/v1"
 #define DHT2_PT_REFUSAL       "/nodus/dht/refusal/v1"
@@ -126,6 +120,11 @@ extern "C" {
 
 /** §2 / design rev 5: R = 4 holders per record (scope 4f). */
 #define DHT2_R                 4u
+
+/** Largest storage set nearest_R / eligible accept: the registry bound
+ *  design §13 row 13 states ("≤ 256, nodus_witness_rt_native.c:6252").
+ *  Keeps the O(n²) duplicate scan bounded. */
+#define DHT2_SET_MAX           256u
 
 #ifdef __cplusplus
 }
