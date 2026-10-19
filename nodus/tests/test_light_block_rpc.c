@@ -883,7 +883,7 @@ static int t_decoder(void)
 {
     uint8_t        lb[16];
     uint8_t        frame[256];
-    uint8_t        req[64];
+    uint8_t        req[512];
     size_t         len, req_len = 0;
     uint64_t       h = 0;
     const uint8_t *out = NULL;
