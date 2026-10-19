@@ -2271,10 +2271,16 @@ add_test(NAME test_witness_p2p COMMAND test_witness_p2p)
 
 # Net-layer package N3 — the witness-free 4004 host (net/nodus_p2p_host):
 # two hosts with no witness on 127.0.0.1 (REAL keys, sockets, worker
-# threads, PEX off), one dialing the other as its persistent peer, one
-# message each way through a caller's test reactor on channel 0x7E, then
-# free; a host refused at init (no ML-KEM key) frees cleanly. Needs
-# loopback TCP (kernel-chosen ports); the file header says how it can lie.
+# threads, PEX off, all-NULL policy), one dialing the other as its
+# persistent peer; a payload (37 B one way, 1500 B — split and
+# reassembled — the other) plus a sentinel each way through a caller's
+# test reactor on channel 0x7E, each received exactly once; one host freed
+# and rebuilt with the same identity, data dir and port, redialed by the
+# other, and the exchange repeated; a second _start, _start after a failed
+# init and _poll after free refused; inits refused before anything is
+# built (no ML-KEM key) and after the listener exists (external_ip "x")
+# each freed twice; the temp directory's removal checked. Needs loopback
+# TCP (kernel-chosen ports); the file header says how it can lie.
 add_executable(test_p2p_host tests/test_p2p_host.c)
 target_link_libraries(test_p2p_host nodus dsa kem nodus crypto pthread)
 add_test(NAME test_p2p_host COMMAND test_p2p_host)

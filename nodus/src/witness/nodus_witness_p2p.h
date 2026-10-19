@@ -41,7 +41,7 @@
  *     again — until recv(2) would block, the step frees no room (true
  *     backpressure: the recv flowrate Monitor, connection.go:598, or the
  *     MConnection refuses), or one recv-Monitor sample's quota was taken
- *     (⚠ NOT GROUNDED per-call cap, nodus_witness_p2p.c io_read_budget);
+ *     (⚠ NOT GROUNDED per-call cap, nodus_p2p_host.c io_read_budget);
  *     writes likewise refill `write_buf` from the step — its SEND half
  *     only: the write path delivers no message (decision
  *     2026-09-27-p2p-fix-2.md (4)) — between send(2)s until send would

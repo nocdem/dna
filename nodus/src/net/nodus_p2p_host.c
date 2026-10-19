@@ -705,13 +705,33 @@ static void io_connect_done(nodus_p2p_io_t *io, int slot)
     uint64_t gen = s->gen;
 
     /* R4: Linux = poll({fd, POLLOUT}, 1, 0); the outcome is read below. */
+#ifdef _WIN32
+    /* Windows: select's SOCKET_ERROR (-1, e.g. a dead handle) means the
+     * probe itself failed — a FAILED connect, the same branch as a
+     * non-zero SO_ERROR below; only 0 is "still connecting" (net-layer
+     * design §10, N3-FIX2). */
+    {
+        int probe = nodus_net_probe_connect(s->fd);
+
+        if (probe == 0) {
+            return;                                        /* still connecting */
+        }
+        if (probe < 0) {
+            goto connect_failed;
+        }
+    }
+#else
     if (nodus_net_probe_connect(s->fd) <= 0) {
         return;                                            /* still connecting */
     }
+#endif
     /* (void *): Winsock's optval is char *; POSIX's void *. */
     if (getsockopt(s->fd, SOL_SOCKET, SO_ERROR, (void *)&err, &el) != 0 || err != 0 ||
         getpeername(s->fd, (struct sockaddr *)&ss, &sl) != 0 ||
         sockaddr_to_ip(&ss, &ip, &port) != 0) {
+#ifdef _WIN32
+connect_failed:
+#endif
         s->connecting = false;
         s->failed = true;
         cmt_p2p_transport_conn_failed(io->t, slot, gen);

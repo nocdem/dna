@@ -223,8 +223,11 @@ void nodus_net_poll_wake(nodus_net_poll_t *p);
  * sets (R4). Whether it SUCCEEDED (SO_ERROR, getpeername) is the
  * caller's check. @return > 0 finished, 0 still connecting, < 0 error
  * (Linux: poll's -1; Windows: select's SOCKET_ERROR). A caller must NOT
- * read < 0 as "still connecting". p2p's caller tests `<= 0` today; it is
- * Linux-only and is revisited in package N3 (design §10).
+ * read < 0 as "still connecting". p2p's caller (nodus_p2p_host.c
+ * io_connect_done), since package N3: the Windows build reads < 0 as a
+ * FAILED connect (the SO_ERROR != 0 branch: conn_failed) and 0 as still
+ * connecting; the Linux build keeps its `<= 0` = still-connecting test,
+ * unchanged (design §10).
  */
 int  nodus_net_probe_connect(nodus_sock_t s);
 
@@ -279,9 +282,15 @@ int  nodus_net_errno(void);
 #define NODUS_NET_IS_PEER_GONE(e)   ((e) == WSAECONNRESET || (e) == WSAECONNABORTED || \
                                      (e) == WSAESHUTDOWN  || (e) == WSAENOTCONN)
 /** accept(2) returned a connection the peer already aborted: retry.
- *  ⚠ NOT GROUNDED in this tree (no Windows accept path exists yet): the
- *  reset/abort pair Winsock documents for a connection dropped before
- *  accept. Not used by any Windows build in N1; re-read before N3. */
+ *  Used by the Windows build since N3: nodus_p2p_host.c io_accept reads
+ *  it as "retry this accept" (continue; the pass still stops at
+ *  NODUS_P2P_ACCEPT_BUDGET calls). ⚠ NOT VERIFIED against Microsoft's
+ *  documentation: WSAECONNRESET || WSAECONNABORTED is assumed to be what
+ *  Winsock's accept returns for a connection reset before it was
+ *  accepted. If wrong: an error this pair misses ends io_accept's loop
+ *  for this pass (break, as EAGAIN does) and the next pass accepts the
+ *  rest of the backlog; an error it wrongly includes is retried, at most
+ *  until the pass's accept budget is spent. */
 #define NODUS_NET_IS_CONNABORTED(e) ((e) == WSAECONNRESET || (e) == WSAECONNABORTED)
 #else
 #define NODUS_NET_IS_EAGAIN(e)      ((e) == EAGAIN || (e) == EWOULDBLOCK)
