@@ -486,6 +486,22 @@ static const char *client_err_name(int code)
     }
 }
 
+static const char *provider_err_name(int code)
+{
+    switch (code) {
+    case CMT_LIGHT_PROVIDER_ERR_HEIGHT_TOO_HIGH:
+        return "the node has no block at that height yet";
+    case CMT_LIGHT_PROVIDER_ERR_LIGHT_BLOCK_NOT_FOUND:
+        return "the node does not hold that block (pruned or not held)";
+    case CMT_LIGHT_PROVIDER_ERR_NO_RESPONSE:
+        return "no answer (unreachable, timed out or at its rate limit)";
+    case CMT_LIGHT_PROVIDER_ERR_BAD_LIGHT_BLOCK:
+        return "the node sent an invalid light block";
+    default:
+        return "the node refused";
+    }
+}
+
 static bool err_is_expired(const cmt_light_client_error_t *e)
 {
     return (e->code == CMT_LIGHT_CLIENT_ERR_VERIFICATION_FAILED &&
@@ -861,8 +877,11 @@ static void print_construct_error(const char *what,
                 "hash than --trust-hash. Check the root you were given.\n");
         break;
     case CMT_LIGHT_CLIENT_ERR_PROVIDER:
-        fprintf(stderr, "The primary did not deliver the trust-height block "
-                "(provider error %d).\n", e->provider.code);
+        fprintf(stderr, "The primary did not deliver the trust-height block: "
+                "%s (provider error %d).%s\n",
+                provider_err_name(e->provider.code), e->provider.code,
+                e->provider.code == CMT_LIGHT_PROVIDER_ERR_LIGHT_BLOCK_NOT_FOUND
+                    ? " Choose a more recent trust root." : "");
         break;
     default:
         break;
@@ -1103,7 +1122,8 @@ static int cmd_run(int argc, char **argv)
                                client_err_name(err.code), err.code);
                         if (err.code == CMT_LIGHT_CLIENT_ERR_PROVIDER ||
                             err.reason == CMT_LIGHT_CLIENT_REASON_PROVIDER) {
-                            printf(", provider error %d", err.provider.code);
+                            printf(", provider: %s",
+                                   provider_err_name(err.provider.code));
                         }
                         printf("); retrying every %llu s\n",
                                (unsigned long long)a->interval_s);

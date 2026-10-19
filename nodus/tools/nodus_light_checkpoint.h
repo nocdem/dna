@@ -25,10 +25,15 @@
  *
  * ── THE CHAIN ID ───────────────────────────────────────────────────────
  * send-module.js:88 `chainId`, 64 hex characters = the 32-byte version-3
- * chain id. The cometbft header's chain_id on that chain is those 32 RAW
- * bytes (the genesis document copies cfg->chain_id, 32 bytes:
- * nodus_witness_v2_gen.c `out->chain_id_len = NODUS_V2_GEN_CHAIN_ID_LEN`),
- * so nodus-light decodes the hex before handing it to the light client.
+ * chain id the node reports as dnac_supply "chain_id32" (send-module.js:
+ * 11) — w->v2_chain32 (nodus_witness_handlers.c, handle_dnac_supply),
+ * read from the stored genesis document's chain_id field
+ * (nodus_witness_v2_gen_stored_chain_id). The cometbft genesis document
+ * is projected from that same stored document (nodus_witness_cmt_node.c
+ * node_load_genesis_doc → nodus_witness_v2_gen_to_cmt_doc), which copies
+ * the 32 RAW bytes as chain_id (nodus_witness_v2_gen.c `out->chain_id_len
+ * = NODUS_V2_GEN_CHAIN_ID_LEN`), so every header carries those bytes and
+ * nodus-light decodes the hex before handing it to the light client.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
