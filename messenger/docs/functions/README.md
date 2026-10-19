@@ -21,7 +21,7 @@ This directory provides a function-level reference for the DNA Connect codebase.
 | **Messenger** | [messenger.md](messenger.md) | Core messenger + message backup |
 | **Cryptography** | [crypto.md](crypto.md) | Utils, KEM (Kyber), DSA (Dilithium), BIP39/BIP32 |
 | **DHT** | [dht.md](dht.md) | Core, Shared, and Client DHT operations |
-| **Transport** | [transport.md](transport.md) | DHT transport layer (presence, offline queue) |
+| **Transport** | [transport.md](transport.md) | DHT transport layer (presence, offline queue) + the nodus network readiness layer `nodus_net_poll` (`nodus/src/net/nodus_net_poll.h`, net-layer package N1: readiness set, connect probe, socket shims, `NODUS_NET_IS_*` error classes) and the 4004 host io-seam fields it changed |
 | **Database** | [database.md](database.md) | SQLite databases (contacts, cache, profiles) |
 | **Blockchain** | [blockchain.md](blockchain.md) | Multi-chain wallet (Cellframe, ETH, Solana, TRON) |
 | **DNA Chain ledger** | [ledger.md](ledger.md) | Tagged state-root hashing (`shared/dnac/ledger_roots_v2.h`, in libdna) + the nodus witness treasury / genesis entries it covers + §25 light client packages 1-3 (`cmt_light_*`, `cmt_fraction.h`, the moved `cmt_time_*` helpers; §25.9 the client `cmt_light_client.h`, §25.10 the detector `cmt_light_detector.h`) + §26 the `dnac_light_block` RPC (server builder, client SDK `nodus_client_dnac_light_block` + codec, `NODUS_ERR_HEIGHT_TOO_HIGH`, the pinned provider `nodus_light_provider.h`, the node-wide limiter `nodus_witness_light_block_admit` / `_serve`) + the K25-10 attack lock (`cmt_light_client_attack_locked` / `_attack_clear`, the light store's attack records §25.6) |
@@ -86,6 +86,7 @@ DHT-based transport layer.
 - DHT presence system
 - Offline message queue
 - Messenger transport integration
+- Nodus network readiness layer (`nodus_net_poll`: epoll / Windows select, wake, connect probe, socket shims)
 
 ### 7. Database ([database.md](database.md))
 Local SQLite databases.

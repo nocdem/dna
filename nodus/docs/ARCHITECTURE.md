@@ -105,6 +105,10 @@ nodus/
 │   │   │                      #   loop, 2026-10-16 — the WS and AF_UNIX entries stay Linux-only)
 │   │   ├── nodus_ws.c         # WebSocket entry codec (RFC 6455 handshake + frames; no sockets)
 │   │   └── nodus_udp.c        # UDP transport (non-blocking recvfrom)
+│   ├── net/
+│   │   └── nodus_net_poll.c/h # Socket readiness (epoll / Windows select) + socket shims for
+│   │                          #   ports 4000-4004 — net-layer package N1 (0.26.14); user today:
+│   │                          #   the 4004 host's io seam only (§15 "Network readiness layer")
 │   ├── crypto/
 │   │   ├── nodus_sign.c       # Dilithium5 sign/verify/hash wrappers
 │   │   └── nodus_identity.c   # Identity generation, save/load, seed derivation
@@ -3144,6 +3148,10 @@ macros mark what each one contains:
   the channel server, and both are in the Linux-only source list (`nodus/CMakeLists.txt`,
   `if(NOT WIN32)`). No Windows server, witness or 4004 host exists today (the 4004 host
   port is Kurultay #25 decision K25-5, `docs/plans/decisions/2026-10-16-kurultay-25-summary.md`).
+  Since nodus 0.26.14 a second, separate select backend exists — `nodus/src/net/nodus_net_poll.c`
+  with its own file-local `FD_SETSIZE 1026` — used today only by the Linux 4004 host; this
+  listener still runs on `nodus_tcp.c`'s own loop until package N2a. See "Network readiness
+  layer (`nodus_net_poll`)" in §15.
 
 Test: `test_tcp_listen_portable` (public API only, so the same source is meant to build
 with mingw against the select loop; ctest runs it on Linux). It listens on
@@ -9529,7 +9537,9 @@ numbered register row (R-P2P-n) in the local design doc
   `cmt_p2p_pex` + `cmt_p2p_addrbook`; nodus glue
   `nodus/src/witness/nodus_witness_p2p.{c,h}` (owns the switch, maps the
   consensus and mempool reactor host rows onto `Send`/`TrySend`/
-  `StopPeerForError`, supplies the bonded set). The old glue
+  `StopPeerForError`, supplies the bonded set; since nodus 0.26.14 its
+  socket seam `nodus_p2p_io_*` runs on the portable readiness layer — see
+  "Network readiness layer (`nodus_net_poll`)" below). The old glue
   `nodus_witness_cmt_net.c`, `nodus_witness_peer.{c,h}`, the DHT
   `nodus:pk` roster and the chain-quorum quarantine are deleted.
   `NODUS_T3_BFT_PROTOCOL_VER` is deleted (last value 7); the p2p protocol
@@ -9687,6 +9697,120 @@ numbered register row (R-P2P-n) in the local design doc
 - Verified: ctest 189/189; harness short-epoch 15/0/0, production 11 PASS /
   4 SKIP / 0 FAIL, stop-all with the signed-at-next-height precondition PASS and
   its negative control halting, GROW-7-32 PASS.
+
+### Network readiness layer (`nodus_net_poll`) — package N1 of the one network layer (nodus 0.26.14, 2026-10-20)
+
+Governing record: `docs/plans/decisions/2026-10-19-kurultay-26b-summary.md` (local;
+APPROVED by the operator 2026-10-19, order N1 → N3); design
+`docs/plans/2026-10-19-net-layer-design.md` rev 1 §9 and the N1 review outcome §10 (local).
+Files: `nodus/src/net/nodus_net_poll.{h,c}` (in the common `NODUS_SOURCES` list,
+`nodus/CMakeLists.txt:134-137`, so it compiles on every platform); function reference:
+`messenger/docs/functions/transport.md` "Nodus network readiness layer".
+
+**What it is.** One portable answer to "which registered sockets are ready for what", plus
+the few socket shims every caller needs (`nodus_net_poll.h:6-10`): a readiness set
+(`nodus_net_poll_t`, `_init` / `_free` / `_add` / `_mod` / `_del` / `_wait` / `_wake`), a
+connect probe, socket create / accept / send / recv / close / non-blocking / close-on-exec
+shims, the Winsock startup owner and the error classes `NODUS_NET_IS_*`. One backend per
+platform:
+
+| Platform | Backend | Wake | Notes |
+|---|---|---|---|
+| Linux / Android | epoll (`nodus_net_poll.c:55-272`) | `eventfd(0, EFD_NONBLOCK \| EFD_CLOEXEC)` registered `EPOLLIN` under `NODUS_NET_TAG_WAKE` (`UINT64_MAX - 2`), drained inside `_wait` and never reported (`:89-108`, `:179-187`) | The `NODUS_NET_*` bits ARE the `EPOLL*` bits (`_Static_assert`s `:60-65`), so a caller's mask reaches `epoll_ctl` unchanged; `NODUS_NET_CONNECT` (`1u << 27`, no epoll bit, `:67-74`) is stripped before `epoll_ctl` (`:142`). The caller's `cap` is `epoll_wait`'s `maxevents`, `cap ≤ NODUS_NET_POLL_MAX_BATCH` (64); the wake is one of those `cap` entries (`nodus_net_poll.h:185-190`). |
+| Windows | `select` over a per-instance registry (`nodus_net_poll.c:274-852`) | a loopback TCP pair: `127.0.0.1:0` listener bound `SO_EXCLUSIVEADDRUSE`, blocking connect, then a NON-blocking accept of the queued connection; the accepted end's peer address must equal the connector's own address; every socket non-inheritable; any failure fails `_init` closed (`:444-549`) | `FD_SETSIZE 1026` defined before `<winsock2.h>` in this translation unit only (`:16-18`), `_Static_assert(FD_SETSIZE >= NODUS_NET_POLL_WIN_CAPACITY)` (`:277-280`); capacity `NODUS_NET_POLL_WIN_CAPACITY` = 1026 sockets per set, wake included (`nodus_net_poll.h:125-127`) — `_add` beyond it fails with `WSAENOBUFS`, never truncates (`:646-651`). LEVEL-triggered only: `NODUS_NET_EDGE` is ignored. `HUP` / `RDHUP` are never produced by readiness (a peer close is `IN` then `recv` = 0). `NODUS_NET_CONNECT` adds the socket to the except set, where Winsock reports a refused connect; a hit there is reported as `NODUS_NET_ERR` (`:746-748`, `:809-814`). Winsock startup is checked, reference-counted and SRWLOCK-synchronized (`:305-356`; `_WIN32_WINNT 0x0600` set when the build has none, `:23-25`); a set holds one reference from `_init` to `_free`, and the LAST `WSACleanup` resets every socket still open in the process (`nodus_net_poll.h:42-45`). |
+| Browser (Emscripten) | none in N1 | — | `nodus_net_poll.c:27-29` refuses the build with `#error` ("the browser arm is package N2"); the header itself compiles under Emscripten (POSIX arm), so including it there is not an error by itself (`nodus_net_poll.h:31-34`). `nodus_tcp` keeps its own `poll()` loop until N2. |
+
+The two `FD_SETSIZE` definitions — `nodus_tcp.c` 1025 (`nodus_tcp.c:21-22`, see "Windows build
+— the plain TCP listener") and `nodus_net_poll.c` 1026 — are each local to their own
+translation unit; `fd_set` never leaves either file (`nodus_net_poll.h:61-66`,
+`nodus_net_poll.c:10-15`). They do not conflict.
+
+**What it is NOT.** It knows nothing about frames, peers, budgets, admission or crypto; each
+caller keeps its own policy and its own DISPATCH rule for `ERR` / `HUP` / `RDHUP`
+(`nodus_net_poll.h:7-10`). Framing stays per port: 4004 is still cometbft's raw byte stream
+into `cmt_p2p_mconn` (`nodus_witness_p2p.h:22-28` — nodus_tcp's frame layer is not used on
+4004); 4001 / 4002 keep the nodus frame. No session crypto is added or changed (the DHT v2
+session package is a later user of this layer). Nothing here touches consensus state; no wire
+byte changes.
+
+**Who uses it today.** Only the 4004 host's socket seam, `nodus_p2p_io_*` in
+`nodus_witness_p2p.c`: `nodus_p2p_io_t` embeds a `nodus_net_poll_t poll` in place of the old
+`epfd` / `wake_fd` pair, and `listen_fd` / `nodus_p2p_sock_t.fd` are `nodus_sock_t` with
+`NODUS_SOCK_INVALID` for "none" (`nodus_witness_p2p.h:362-391`). The listener is registered
+under `IO_TAG_LISTEN` (`UINT64_MAX - 1`, `nodus_witness_p2p.c:204`) with `NODUS_NET_IN`; a
+dialing slot is registered `NODUS_NET_OUT | NODUS_NET_IN | NODUS_NET_CONNECT` (the Linux arm
+strips `CONNECT`, so `epoll_ctl` sees `EPOLLOUT | EPOLLIN` as before), a connected one
+`NODUS_NET_IN`; `nodus_p2p_io_wait` waits through `nodus_net_poll_wait(…, evs, 64)` (batch 64
+unchanged, `:441`, `:468`); the worker's wake is `nodus_net_poll_wake(&p->io.poll)` (`:1042`);
+the connect probe is `nodus_net_probe_connect` (`:693`). The 4004 host itself is still
+Linux-only: `nodus_witness_p2p.c` is in the `if(NOT WIN32)` source list
+(`nodus/CMakeLists.txt:614`, `:698`). `nodus_tcp`, `nodus_udp`, the DHT server's bf set and the
+4002 inter-node dialer do NOT use the layer yet — they move in packages N2a (tcp / client SDK /
+inter-dial) and N2b (udp / bf), each merging alone (design §9 R8). The witness-free 4004 host
+(light storage node) is package N3; three Windows gaps of the 4004 host were moved to N3, not
+landed in N1 (design §10): the address-book atomic replace, `getsockname` of the listener, and
+the probe caller below.
+
+**Thread rule.** One thread owns a set — the loop owner. Only `nodus_net_poll_wake` may be
+called from another thread; it is safe concurrently with `_wait` but must NOT overlap `_free`:
+join every thread that may call `_wake` before `_free` (free order: quiesce senders → stop →
+wake → join → del → close → free; `nodus_net_poll.h:36-40`, `:213-216`). `_free` is safe after a
+failed `_init` and twice, but NOT on a struct `_init` has never seen (a zeroed Linux struct
+holds `epfd` 0, which `_free` would close; `:154-159`).
+
+**Linux equivalence — the promise and its one stated deviation.** A caller that moves onto the
+layer issues, on every SUCCESS path, the same syscalls with the same arguments in the same
+order as before (K25-5 "Linux behaviour unchanged"; `nodus_net_poll.h:16-19`). The one stated
+deviation is on an error path only (`nodus_net_poll.h:20-23`, design §10, accepted):
+`nodus_net_set_nonblocking` returns -1 WITHOUT calling `F_SETFL` when `F_GETFL` fails
+(`nodus_net_poll.c:236-244`); before N1 the 4004 accept path ran `F_SETFL` with
+`-1 | O_NONBLOCK`. p2p's accept then closes the fd (`nodus_witness_p2p.c:742-744`).
+`nodus_net_close` additionally keeps `errno` across the `close` (`nodus_net_poll.c:261-267`),
+which replaces the callers' own save / restore. Evidence (ORCHESTRATOR, ledger 2026-10-19/20):
+after N1-FIX the Linux arm's preprocessed translation unit is byte-identical to `d2b146494`'s.
+
+**Windows fair rotation.** `_wait` scans the registry from a per-set cursor just past the entry
+the previous call reported last and wraps, so with more ready sockets than `cap` every socket
+that stays ready is reported within ⌈n / cap⌉ consecutive calls (n = registered sockets);
+`_del` and the eviction keep the cursor on the same next entry (`nodus_net_poll.c:297-300`,
+`:619-633`, `:794-824`; `nodus_net_poll.h:191-196`). This amends design R7's "return every
+ready socket" (design §10): the Linux arm keeps `cap ≤ 64`, so a 1026-socket Windows set cannot
+be read in one call. The wake is NOT one of the `cap` entries on Windows (it is on Linux).
+
+**WSAENOTSOCK eviction.** When `select` fails with `WSAENOTSOCK` (a registered socket was closed
+without `_del`), up to `cap` registered handles that `getsockopt(SO_TYPE)` answers
+`WSAENOTSOCK` for are evicted and each evicted tag is reported ONCE as
+`NODUS_NET_ERR | NODUS_NET_HUP`, no readiness being reported in that call; if none is stale,
+`_wait` returns -1 with `WSAENOTSOCK` and logs it (`nodus_net_poll.c:686-716`, `:769-785`;
+`nodus_net_poll.h:197-201`). This is the one place `HUP` appears on Windows.
+
+**Known gap — a reused handle value.** A handle VALUE that Windows has already reused for a new
+socket passes the `SO_TYPE` check and is not evicted (`nodus_net_poll.c:691-693`,
+`nodus_net_poll.h:200-201`). The known source of "closed without `_del`" is
+`nodus_client_force_disconnect`, which closes the socket outside the transport (root `BUGS.md`
+C-06). Per design §10, fixing C-06 is the gate before package N2a moves `nodus_tcp` onto the
+layer. Today no Windows caller of the layer exists, so the gap is not reachable.
+
+**Connect probe and its Linux-only caller.** `nodus_net_probe_connect` returns > 0 finished,
+0 still connecting, < 0 error (Linux `poll`'s -1, Windows `select`'s `SOCKET_ERROR`); a caller
+must NOT read < 0 as "still connecting" (`nodus_net_poll.h:218-228`). p2p's caller tests
+`<= 0` (`nodus_witness_p2p.c:693`) — correct only on Linux, where it is the probe it ran before
+N1; it is revisited in N3 (`nodus_net_poll.h:225-226`).
+
+**The Windows arm has never run.** No Windows machine was available: the select backend, its
+fair rotation, its WSAENOTSOCK eviction and its wake pair are compiled (llvm-mingw cross
+build, ORCHESTRATOR) but not executed by any test (`nodus/tests/test_net_poll.c:72-75`). Its
+only claim is that it compiles.
+
+**Test.** `test_net_poll` (9 cases, `main` at `nodus/tests/test_net_poll.c:628-642`; ctest `TIMEOUT 120`
+as a hang guard only, `nodus/CMakeLists.txt:2197-2202`) exercises the Linux epoll arm:
+add / mod / del, level vs edge, `RDHUP` / `HUP` / `ERR` kept apart, the wake from another
+thread (a wait without limit, which only the wake can end) and its drain, a wake and a ready
+socket in one wait, the connect probe (refused and succeeded), the wait cap (2 of 3; 64
+accepted; 0 and 65 refused) and the shims. What it proves, requires, leaves behind and how it
+can lie: its file header (`:6-75`) and `nodus/README.md` row 0.26.14. It does NOT prove that
+`nodus_witness_p2p.c` issues the same syscalls as before — that rests on reading the diff and
+the preprocessed-TU comparison; `test_p2p_switch`'s loopback cases drive the host itself.
 
 ### Block sync — `blocksync/` of cometbft @709fd12b on channel 0x40 (2026-09-29)
 
