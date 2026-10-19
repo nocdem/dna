@@ -51,6 +51,10 @@
  *   · The HUP case relies on Linux tcp_poll reporting EPOLLHUP once both
  *     shutdown directions are set; a kernel that reported it differently
  *     would fail the case, not pass it wrongly.
+ *   · The level/edge and cap cases let the bytes arrive BEFORE the
+ *     sockets join the set and rely on epoll reporting a socket that is
+ *     already ready at EPOLL_CTL_ADD, EPOLLET included (once). A kernel
+ *     that did not would FAIL those cases, not pass them wrongly.
  *   · The refused-connect case assumes a non-blocking loopback connect to
  *     a bound, not-listening port returns EINPROGRESS (the RST is handled
  *     after connect returns). A kernel that processed the RST inside the
