@@ -139,6 +139,10 @@ set(NODUS_SOURCES
 
     # Client SDK
     src/client/nodus_client.c
+    # The light client's PINNED provider over dnac_light_block (decision
+    # 2026-10-16-dnac-light-block-rpc.md; Kurultay #25 item 8). No caller
+    # yet; in the common list so it compiles on Windows.
+    src/client/nodus_light_provider.c
     src/client/nodus_singleton.c
     src/client/nodus_republish.c
     # Web wallet package (c2): the shared version-3 CORE SPEND builder —
@@ -2475,6 +2479,15 @@ add_executable(test_v3_block_query tests/test_v3_block_query.c)
 target_link_libraries(test_v3_block_query nodus dsa kem nodus crypto pthread)
 target_compile_definitions(test_v3_block_query PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_v3_block_query COMMAND test_v3_block_query)
+
+# dnac_light_block (decision 2026-10-16-dnac-light-block-rpc.md): the node's
+# answer over a REAL derived chain, the client's request encoder / reply
+# decoder, and the pinned light provider (refusal of an unpinned client,
+# error mapping). Default build, no environment, no network, no port.
+add_executable(test_light_block_rpc tests/test_light_block_rpc.c)
+target_link_libraries(test_light_block_rpc nodus dsa kem nodus crypto pthread)
+target_compile_definitions(test_light_block_rpc PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_light_block_rpc COMMAND test_light_block_rpc)
 
 # Node-local address history index (decision 2026-10-01-node-address-
 # history-index.md): rows per applied item / claim over a REAL derived

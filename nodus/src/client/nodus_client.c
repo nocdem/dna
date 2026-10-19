@@ -5326,6 +5326,146 @@ int nodus_client_dnac_v3_block(nodus_client_t *client, uint64_t height,
     return 0;
 }
 
+/* ── dnac_light_block (light client; wire: nodus.h) ───────────────────
+ *
+ * The v3d_* hostile-reply discipline above: every read checks END /
+ * ERROR, a container never claims more entries than bytes remain, a
+ * duplicate key refuses the reply, unknown keys are skipped by a walker
+ * that refuses truncation, and the "lb" length is bounded BEFORE it is
+ * used. The bytes inside "lb" are NOT decoded here — the light provider
+ * decodes them (nodus_light_provider.c) and the light client verifies
+ * them. */
+
+int nodus_dnac_light_block_request_encode(uint32_t txn,
+                                          const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                          uint64_t height,
+                                          uint8_t *buf, size_t cap,
+                                          size_t *len_out)
+{
+    cbor_encoder_t enc;
+    size_t         len;
+
+    if (len_out) *len_out = 0;
+    if (!token || !buf || cap == 0 || !len_out) return -1;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_dnac_query(&enc, txn, token, "dnac_light_block", 1);
+    cbor_encode_cstr(&enc, "h");
+    cbor_encode_uint(&enc, height);
+    len = cbor_encoder_len(&enc);
+    if (len == 0) return -1;
+    *len_out = len;
+    return 0;
+}
+
+int nodus_dnac_light_block_decode(const uint8_t *raw, size_t raw_len,
+                                  uint64_t *height_out,
+                                  const uint8_t **lb_out, size_t *lb_len_out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k;
+    uint64_t       h = 0;
+    const uint8_t *lb = NULL;
+    size_t         lb_len = 0;
+    unsigned       have = 0;
+
+    if (height_out) *height_out = 0;
+    if (lb_out) *lb_out = NULL;
+    if (lb_len_out) *lb_len_out = 0;
+    if (!raw || !height_out || !lb_out || !lb_len_out) return -1;
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "h")) {
+            if (v3d_u64(&dec, UINT64_MAX, &h) != 0 || h == 0) return -1;
+            have |= 1u;
+        } else if (KEY_EQ(k, "lb")) {
+            cbor_item_t b;
+            if (v3d_next(&dec, &b) != 0 || b.type != CBOR_ITEM_BSTR ||
+                b.bstr.len == 0 ||
+                b.bstr.len > NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES ||
+                b.bstr.len > raw_len)
+                return -1;
+            lb = b.bstr.ptr;
+            lb_len = b.bstr.len;
+            have |= 2u;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            return -1;
+        }
+    }
+    if (dec.error || have != 3u) return -1;
+    *height_out = h;
+    *lb_out = lb;
+    *lb_len_out = lb_len;
+    return 0;
+}
+
+int nodus_client_dnac_light_block(nodus_client_t *client, uint64_t height,
+                                  uint64_t *height_out,
+                                  uint8_t **lb_out, size_t *lb_len_out,
+                                  int *server_err_out)
+{
+    if (server_err_out) *server_err_out = 0;
+    if (height_out) *height_out = 0;
+    if (lb_out) *lb_out = NULL;
+    if (lb_len_out) *lb_len_out = 0;
+    if (!nodus_client_is_ready(client) || !height_out || !lb_out ||
+        !lb_len_out)
+        return -1;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    size_t len = 0;
+    if (nodus_dnac_light_block_request_encode(txn, client->token, height,
+                                              buf, CLIENT_BUF_SIZE,
+                                              &len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = client_error_rc(resp);
+        free_pending(client, req);
+        if (server_err_out) *server_err_out = rc;
+        return rc;
+    }
+
+    uint64_t       h = 0;
+    const uint8_t *lb = NULL;
+    size_t         lb_len = 0;
+    if (nodus_dnac_light_block_decode(req->raw_response,
+                                      req->raw_response_len,
+                                      &h, &lb, &lb_len) != 0 ||
+        (height != 0 && h != height)) {
+        /* malformed, or not the height asked for (http.go:70-74) */
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+    uint8_t *copy = malloc(lb_len);
+    if (!copy) { free_pending(client, req); return -1; }
+    memcpy(copy, lb, lb_len);
+    free_pending(client, req);
+    *height_out = h;
+    *lb_out = copy;
+    *lb_len_out = lb_len;
+    return 0;
+}
+
 /* ── HF-4 queries (wire: nodus.h) — the v3d_* hostile-reply discipline:
  *    duplicate keys, truncation and wrong types refuse the reply ─────── */
 

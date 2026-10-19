@@ -1653,6 +1653,95 @@ int nodus_dnac_v3_block_decode(const uint8_t *raw, size_t raw_len,
  *  zeroed). */
 void nodus_client_free_v3_block_result(nodus_dnac_v3_block_result_t *result);
 
+/* ── dnac_light_block — one LightBlock for the light client ────────────
+ * (decision docs/plans/decisions/2026-10-16-dnac-light-block-rpc.md,
+ * APPROVED B1-B4; Kurultay #25 item 8: served over a PINNED 4001 session
+ * only on the client side — nodus_light_provider.h refuses an unpinned
+ * client)
+ *
+ * Request  "a": {"h": u64 — the height; 0 = the node's latest stored
+ *                block (cometbft rpc/core/env.go:173-191, the nil
+ *                height)}
+ * Response "r": {"h":  u64  the resolved height (never 0),
+ *                "lb": bstr the `tendermint.types.LightBlock` proto
+ *                      (types.proto:161-164) — cmt_light_block_encode of
+ *                      {SignedHeader{BlockMeta.Header, commit},
+ *                       LoadValidators(h)}; the commit is the SEEN commit
+ *                      at the node's latest height and the canonical one
+ *                      (from block h+1) below it (rpc/core/blocks.go:
+ *                      166-174); at most NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES}
+ * Errors:  NODUS_ERR_HEIGHT_TOO_HIGH  h above the latest stored block
+ *          NODUS_ERR_NOT_FOUND        pruned / not held (below the base,
+ *                                     no meta, no commit, no validator
+ *                                     set) or no version-3 chain served
+ *          NODUS_ERR_INTERNAL_ERROR   a read or encode fault
+ *          NODUS_ERR_PROTOCOL_ERROR   a malformed request
+ * The answer is a peer's word: nothing here verifies it beyond the wire
+ * shape; the light client does (ValidateBasic + verification).
+ */
+
+/** Ceiling of "lb": 1 MiB. The LightBlock of a full set (CMT_VALSET_MAX
+ *  = 128 validators and as many commit signatures) is at most
+ *  cmt_pb_light_block_upper_bound(128, 128) = 949 929 bytes
+ *  (shared/dnac/cmt_light_block.c); the node checks that bound against
+ *  this one before it answers, and test_light_block_rpc.c pins it. A
+ *  constant here, not that call, so this client file does not link the
+ *  cmt codec (the web wallet's WASM build compiles nodus_client.c
+ *  without it). */
+#define NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES  (1024u * 1024u)
+
+/**
+ * Encode the `dnac_light_block` request frame (the T2 query map with the
+ * session token) into `buf` — the encoder nodus_client_dnac_light_block
+ * uses, exported for tests.
+ * @return 0 and `*len_out` set; -1 on NULL arguments or a buffer too
+ *         small.
+ */
+int nodus_dnac_light_block_request_encode(uint32_t txn,
+                                          const uint8_t token[NODUS_SESSION_TOKEN_LEN],
+                                          uint64_t height,
+                                          uint8_t *buf, size_t cap,
+                                          size_t *len_out);
+
+/**
+ * Decode a raw `dnac_light_block` response message (the T2 map the node
+ * sends) — the decoder nodus_client_dnac_light_block uses, exported for
+ * tests. STRICT: "h" (u64, non-zero) and "lb" (bstr, 1 ..
+ * NODUS_DNAC_LIGHT_BLOCK_MAX_BYTES bytes) are both required, a duplicate
+ * key or a truncated message is refused, unknown keys are skipped.
+ * `*lb_out` points INTO `raw` (valid while `raw` is).
+ * @return 0; -1 malformed (outputs zeroed).
+ */
+int nodus_dnac_light_block_decode(const uint8_t *raw, size_t raw_len,
+                                  uint64_t *height_out,
+                                  const uint8_t **lb_out, size_t *lb_len_out);
+
+/**
+ * Fetch one LightBlock (dnac_light_block, above). Bounded by the
+ * client's request_timeout_ms.
+ *
+ * @param height      0 = the node's latest; otherwise the node must
+ *                    answer exactly this height (anything else is
+ *                    refused NODUS_ERR_PROTOCOL_ERROR — the reference
+ *                    provider's check, light/provider/http/http.go:70-74)
+ * @param height_out  the resolved height
+ * @param lb_out      malloc'd copy of the "lb" bytes; the caller frees it
+ *                    with free(). NULL on every non-zero return.
+ * @param server_err_out  the NODUS_ERR_* code of the node's ERROR reply,
+ *                    0 when the node did not answer with one (success,
+ *                    timeout, transport failure, a reply refused here).
+ *                    May be NULL.
+ * @return 0; the node's NODUS_ERR_* code (also in *server_err_out);
+ *         NODUS_ERR_TIMEOUT when no reply came in time;
+ *         NODUS_ERR_PROTOCOL_ERROR for a reply refused here; -1 on
+ *         invalid arguments, a client that is not ready, or an encode /
+ *         send / allocation failure.
+ */
+int nodus_client_dnac_light_block(nodus_client_t *client, uint64_t height,
+                                  uint64_t *height_out,
+                                  uint8_t **lb_out, size_t *lb_len_out,
+                                  int *server_err_out);
+
 /**
  * Read the node's committed version-3 tip through the dnac_supply RPC
  * (scan-v3 — the ADDITIVE "tip" key; the nodus_client_dnac_chain_id32

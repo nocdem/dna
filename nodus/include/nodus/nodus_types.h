@@ -495,7 +495,8 @@ typedef enum {
     NODUS_ERR_PEER_OFFLINE      = 18,  /* Target peer not connected to any nodus */
     NODUS_ERR_CIRCUIT_CLOSED    = 19,  /* Peer torn down circuit */
     NODUS_ERR_STALE             = 20,  /* PUT seq lower than the stored row's (same key, owner, value_id) */
-    NODUS_ERR_UNAVAILABLE       = 21   /* Server could not look (no forward slot / all forwards failed) — not "not found" */
+    NODUS_ERR_UNAVAILABLE       = 21,  /* Server could not look (no forward slot / all forwards failed) — not "not found" */
+    NODUS_ERR_HEIGHT_TOO_HIGH   = 22   /* Height above this node's latest stored block (dnac_light_block; light/provider/errors.go:9-11 ErrHeightTooHigh) */
 } nodus_error_t;
 
 /** Cluster phases */
