@@ -178,7 +178,7 @@ static int data_emit(const dht2_data_t *d, dht2_cbor_wr_t *w)
     nkeys += (d->del ? 1u : 0u) + (d->has_data ? 1u : 0u) +
              (d->has_prev ? 1u : 0u);
 
-    /* dag-cbor/spec.md:54 order — length first, then bytewise. */
+    /* dag-cbor/spec.md:58 order — length first, then bytewise. */
     dht2_cbor_wr_map(w, nkeys);
     dht2_cbor_wr_key(w, K_TTL);
     dht2_cbor_wr_uint(w, 0);                        /* row 6: TTL = 0 */
@@ -349,7 +349,7 @@ int dht2_data_decode(const uint8_t *in, size_t len, dht2_data_t *d)
         }
     }
     if (!dht2_cbor_rd_done(&r)) {
-        return DHT2_E_BAD_ENCODING;             /* trailing byte, spec :61-62 */
+        return DHT2_E_BAD_ENCODING;             /* trailing byte, spec :66 */
     }
     if (!seen_ttl || !seen_id || !seen_value || !seen_chain || !seen_class ||
         !seen_seq || !seen_validity || !seen_vt) {
@@ -763,7 +763,7 @@ int dht2_record_compare(const dht2_record_t *a, const dht2_record_t *b)
     if (!a_none && a->d.expiry != b->d.expiry) {         /* record.go:699-702 */
         return (a->d.expiry > b->d.expiry) ? 1 : -1;
     }
-    /* bytes.Compare tie-breaks (validation.go:249-251), on the canonical
+    /* bytes.Compare tie-breaks (validation.go:247-249), on the canonical
      * data bytes, then on the signature bytes. */
     c = dht2_bytes_compare(a->data, a->data_len, b->data, b->data_len);
     if (c != 0) {

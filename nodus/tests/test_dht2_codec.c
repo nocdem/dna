@@ -10,7 +10,7 @@
  *   · the data map of every class (owner record, feed entry, feed head,
  *     inbox entry, inbox control, tombstone) encodes to EXACTLY the bytes
  *     pinned here, key order TTL, _id, _del, Value, _data, _prev, _chain,
- *     _class, Sequence, Validity, ValidityType (dag-cbor/spec.md:54);
+ *     _class, Sequence, Validity, ValidityType (dag-cbor/spec.md:58);
  *   · a record built and signed with ctx `nodus.dht.record.v1` parses,
  *     verifies, and its canonical envelope (fields 7, 8, 9 only, row 4)
  *     is the built bytes; an envelope with reordered / repeated / unknown
@@ -20,6 +20,11 @@
  *     indefinite length (map and string), tag 42, float, trailing byte,
  *     negative int, `_prev` of 63 B, an unknown key — plus the row-6
  *     range edges (Sequence 0, TTL ≠ 0, ValidityType 2, Validity forms);
+ *   · every §3.2 / §3.1 identifier is the SHA3-512 of exactly the
+ *     preimage the design writes (label ASCII without NUL ‖ chain ‖ params;
+ *     feed entry = topic ‖ index BE8 with no label; address = `_id` ‖
+ *     owner fp; fp = SHA3-512(raw key)) — checked against hand-assembled
+ *     preimages, not against the functions themselves;
  *   · §4.1's first codes come in its order: too-large before decode,
  *     bad-chain before a bad key, bad-address, bad-signature (tampered
  *     signature, data signed under another ctx);
@@ -36,7 +41,7 @@
  *     `bad-signature`; another domain is `bad-signature`; the RFC 0002
  *     signed buffer is EXACTLY uvarint(len)‖domain‖uvarint(len)‖type‖
  *     uvarint(len)‖payload (verified here with an independently built
- *     buffer, RFC/0002-signed-envelopes.md:104-116).
+ *     buffer, RFC/0002-signed-envelopes.md:111-122).
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build. No compile flags, no environment variables, no network,
@@ -647,6 +652,112 @@ static void test_class_kats(fixture_t *fx)
     free(rec);
 }
 
+/* ══ 2b. §3.2 / §3.1 preimages, assembled by hand ═══════════════════════
+ * Each identifier is recomputed here from its preimage bytes written out
+ * literally (label ASCII with no NUL ‖ chain ‖ params; topic ‖ index BE8
+ * with NO label or chain; `_id` ‖ owner fp; the raw 2592-byte key), hashed
+ * with qgp_sha3_512 directly, and compared with the dht2 function. */
+
+static void test_preimages(fixture_t *fx)
+{
+    static const uint8_t salt[5] = { 's', 'a', 'l', 't', '!' };
+    uint8_t  topic[DHT2_HASH_LEN], want[DHT2_HASH_LEN], got[DHT2_HASH_LEN];
+    uint8_t  id[DHT2_ID_LEN], fpb[DHT2_FP_LEN];
+    uint8_t *pre = (uint8_t *)malloc(DHT2_PUBKEY_LEN);
+    asm_t    a;
+
+    if (pre == NULL) {
+        CHECK(0, "malloc");
+        return;
+    }
+    memset(topic, 0x77, sizeof(topic));
+    memset(id, 0x11, sizeof(id));
+
+    /* owner fp = SHA3-512(raw key) */
+    memcpy(pre, fx->pk_b, DHT2_PUBKEY_LEN);
+    CHECK(qgp_sha3_512(pre, DHT2_PUBKEY_LEN, want) == 0 &&
+          dht2_fp(fx->pk_b, fpb) == 0 && memcmp(want, fpb, 64) == 0,
+          "fp preimage = the raw 2592-byte key");
+
+    /* address = SHA3-512(_id ‖ owner fp) */
+    a_init(&a);
+    a_fill(&a, 0x11, 64);
+    a_raw(&a, fpb, 64);
+    CHECK(a.err == 0 && qgp_sha3_512(a.b, a.n, want) == 0 &&
+          dht2_address(id, fpb, got) == 0 && memcmp(want, got, 64) == 0,
+          "address preimage = _id || owner fp");
+
+    /* profile: label ‖ chain, no params */
+    a_init(&a);
+    a_raw(&a, "nodus.dht.profile.v1", 20);
+    a_raw(&a, fx->chain, 32);
+    CHECK(a.err == 0 && qgp_sha3_512(a.b, a.n, want) == 0 &&
+          dht2_id(DHT2_LABEL_PROFILE, fx->chain, NULL, 0, got) == 0 &&
+          memcmp(want, got, 64) == 0, "profile _id preimage");
+
+    /* contact list */
+    a_init(&a);
+    a_raw(&a, "nodus.dht.contactlist.v1", 24);
+    a_raw(&a, fx->chain, 32);
+    CHECK(a.err == 0 && qgp_sha3_512(a.b, a.n, want) == 0 &&
+          dht2_id(DHT2_LABEL_CONTACTLIST, fx->chain, NULL, 0, got) == 0 &&
+          memcmp(want, got, 64) == 0, "contact list _id preimage");
+
+    /* 1:1 topic: label ‖ chain ‖ recipient fp ‖ salt (salt as given) */
+    a_init(&a);
+    a_raw(&a, "nodus.dht.dm.v1", 15);
+    a_raw(&a, fx->chain, 32);
+    a_raw(&a, fpb, 64);
+    a_raw(&a, salt, sizeof(salt));
+    CHECK(a.err == 0 && qgp_sha3_512(a.b, a.n, want) == 0, "dm want");
+    {
+        uint8_t params[64 + sizeof(salt)];
+
+        memcpy(params, fpb, 64);
+        memcpy(params + 64, salt, sizeof(salt));
+        CHECK(dht2_id(DHT2_LABEL_DM, fx->chain, params, sizeof(params),
+                      got) == 0 && memcmp(want, got, 64) == 0,
+              "dm topic preimage");
+    }
+
+    /* feed entry: topic ‖ index 8 B BE — no label, no chain */
+    a_init(&a);
+    a_raw(&a, topic, 64);
+    a_hex(&a, "00 00 00 00 00 00 01 05");
+    CHECK(a.err == 0 && qgp_sha3_512(a.b, a.n, want) == 0 &&
+          dht2_id_feed_entry(topic, 0x105u, got) == 0 &&
+          memcmp(want, got, 64) == 0, "feed entry _id = H(topic || BE8)");
+
+    /* feed head: "nodus.dht.head.v1" ‖ chain ‖ topic (§3.2 resolved form) */
+    a_init(&a);
+    a_raw(&a, "nodus.dht.head.v1", 17);
+    a_raw(&a, fx->chain, 32);
+    a_raw(&a, topic, 64);
+    CHECK(a.err == 0 && qgp_sha3_512(a.b, a.n, want) == 0 &&
+          dht2_id_feed_head(fx->chain, topic, got) == 0 &&
+          memcmp(want, got, 64) == 0, "feed head _id preimage");
+
+    /* inbox id */
+    a_init(&a);
+    a_raw(&a, "nodus.dht.inbox.v1", 18);
+    a_raw(&a, fx->chain, 32);
+    a_raw(&a, fpb, 64);
+    CHECK(a.err == 0 && qgp_sha3_512(a.b, a.n, want) == 0 &&
+          dht2_id_inbox(fx->chain, fpb, got) == 0 &&
+          memcmp(want, got, 64) == 0, "inbox id preimage");
+
+    /* inbox control */
+    a_init(&a);
+    a_raw(&a, "nodus.dht.inbox.ctl.v1", 22);
+    a_raw(&a, fx->chain, 32);
+    a_raw(&a, fpb, 64);
+    CHECK(a.err == 0 && qgp_sha3_512(a.b, a.n, want) == 0 &&
+          dht2_id_inbox_ctl(fx->chain, fpb, got) == 0 &&
+          memcmp(want, got, 64) == 0, "inbox control _id preimage");
+
+    free(pre);
+}
+
 /* ══ 3. envelope: canonical form, §4.1 code order ═══════════════════════ */
 
 /* tag ‖ uvarint(n) ‖ bytes — a test-local proto writer for hand-made
@@ -1206,7 +1317,7 @@ static void test_envelopes_and_list(fixture_t *fx)
     CHECK(dht2_env_decode(fx->env, n, DHT2_ENVELOPE_MAX, &env) == DHT2_OK,
           "decode again");
 
-    /* RFC 0002 :104-116, built independently: 13 'nodus.dht.answer.v1'
+    /* RFC 0002 :111-122, built independently: 13 'nodus.dht.answer.v1'
      * … — and ctx = the domain (§4.4 deviation). */
     sb = (uint8_t *)malloc(64 + sizeof(payload));
     if (sb != NULL) {
@@ -1383,6 +1494,7 @@ int main(void)
     QGP_LOG_INFO(LOG_TAG, "=== DHT v2 record codec (package 1) ===");
     test_strict_decode();
     test_class_kats(fx);
+    test_preimages(fx);
     test_envelope(fx);
     test_matrix(fx);
     test_class_max();

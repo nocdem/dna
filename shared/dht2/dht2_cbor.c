@@ -38,8 +38,9 @@ static int rd_fail(dht2_cbor_rd_t *r)
 }
 
 /* Read one item head: major type and argument, enforcing the shortest
- * form of dag-cbor/spec.md :51-53 and refusing indefinite lengths (:55)
- * and the reserved additional-information values 28-30 (RFC 8949 §3). */
+ * form of dag-cbor/spec.md :55-56 and refusing indefinite lengths (:59,
+ * additional information 31). Additional information 28-30 has no
+ * argument width at all and is refused with it. */
 static int rd_head(dht2_cbor_rd_t *r, unsigned *mt, uint64_t *arg)
 {
     uint8_t  ib;
@@ -75,7 +76,7 @@ static int rd_head(dht2_cbor_rd_t *r, unsigned *mt, uint64_t *arg)
     r->pos += n;
 
     /* Shortest form: each width only for values the narrower one cannot
-     * hold (spec :51-53). */
+     * hold (spec :55-56). */
     if ((n == 1 && v < 24u) ||
         (n == 2 && v <= 0xFFu) ||
         (n == 4 && v <= 0xFFFFu) ||
@@ -83,8 +84,9 @@ static int rd_head(dht2_cbor_rd_t *r, unsigned *mt, uint64_t *arg)
         return rd_fail(r);
     }
     /* Major type 7 with a 1-byte argument is a "simple value"; with 2/4/8
-     * bytes it is a float. dag-cbor allows neither here (:56-57; no DHT
-     * v2 schema carries a float). */
+     * bytes it is a float. dag-cbor's simple values are only false /
+     * true / null (:60-61) and no DHT v2 schema of this package carries a
+     * float — refused; `true` is read by dht2_cbor_rd_true alone. */
     if (*mt == MT_7) {
         return rd_fail(r);
     }
@@ -157,7 +159,7 @@ int dht2_cbor_rd_key(dht2_cbor_rd_t *r, const uint8_t *prev, size_t prev_len,
     }
     /* "sorted in (byte-wise) lexical order, including their major type 3
      * and length. Therefore, the keys are sorted by length first"
-     * (spec :54). With shortest-form heads, comparing (length, bytes) is
+     * (spec :58). With shortest-form heads, comparing (length, bytes) is
      * the same as comparing the encoded keys. STRICTLY ascending, so a
      * repeated key is refused. */
     if (prev != NULL) {
@@ -284,7 +286,7 @@ static void wr_raw(dht2_cbor_wr_t *w, const uint8_t *p, size_t n)
 }
 
 /* The shortest head for (major type, argument) — the encoder half of
- * dag-cbor/spec.md :51-53. */
+ * dag-cbor/spec.md :55-56. */
 static void wr_head(dht2_cbor_wr_t *w, unsigned mt, uint64_t v)
 {
     uint8_t tmp[9];

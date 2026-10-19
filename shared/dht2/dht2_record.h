@@ -14,7 +14,7 @@
  *
  * References (pinned, /home/nocdem/refs):
  *   · IPNS record — ipfs-specs 3000be69 src/ipns/ipns-record.md:195-238
- *     (IpnsEntry: pubKey 7, signatureV2 8, data 9), :150-191 (data keys);
+ *     (IpnsEntry: pubKey 7, signatureV2 8, data 9), :139-191 (fields);
  *   · DAG-CBOR — ipld bfd348aa specs/codecs/dag-cbor/spec.md:46-66;
  *   · boxo v0.43.0 ipns/validation.go:242-256 (selectRecord, bytes.Compare
  *     tie-break), ipns/record.go:662-705 (compare: Sequence, then

@@ -17,19 +17,21 @@
  * RULES ENFORCED ON DECODE (ipld bfd348aa specs/codecs/dag-cbor/spec.md
  * "Strictness" :46-66; the relaxed decoding of :68-78 is NOT offered):
  *   · integers and lengths of major types 0, 2-5 in their SHORTEST form
- *     (:51-53);
- *   · no indefinite lengths, no break token (:55);
+ *     (:55-56);
+ *   · no indefinite lengths, no break token (:59);
  *   · no tags at all — tag 42 is not used by any DHT v2 schema (Kurultay
  *     #21 "Strict decode": "no tags (42 not used)"), so every major type 6
- *     is refused (:47-49, :54);
- *   · major type 7: only false (0xf4), true (0xf5), null (0xf6) (:56-57);
- *     floats are not used by any schema and are refused;
+ *     is refused (:52, :57);
+ *   · major type 7: the spec allows false / true / null and 64-bit floats
+ *     (:60-65); no DHT v2 schema of this package carries a float, false
+ *     or null, so the reader offers `true` only (0xf5, `_del`) and every
+ *     other major-type-7 item is refused;
  *   · major type 1 (negative integer) refused — design §13 row 6 "major
  *     type 0 only" (named deviation, row 21);
- *   · map keys: text only (spec "Map Keys"), strictly ascending by their
- *     encoded bytes, i.e. length first then bytewise (:54) — strict, so a
- *     duplicate key is refused too;
- *   · one top-level object, no trailing byte (:61-62) — the schema caller
+ *   · map keys: text only (spec "Map Keys" :42-44), strictly ascending by
+ *     their encoded bytes, i.e. length first then bytewise (:58) — strict,
+ *     so a duplicate key is refused too;
+ *   · one top-level object, no trailing byte (:66) — the schema caller
  *     checks dht2_cbor_rd_done() at the end.
  * The schemas ALSO re-encode what they parsed and compare it byte for
  * byte with the input (design §3.1 "re-encode check").
@@ -89,7 +91,7 @@ int dht2_cbor_rd_text(dht2_cbor_rd_t *r, const uint8_t **p, size_t *n);
 /** Exactly 0xf5 (true). 0 / -1. */
 int dht2_cbor_rd_true(dht2_cbor_rd_t *r);
 
-/** True when every byte was consumed without error (spec :61-62). */
+/** True when every byte was consumed without error (spec :66). */
 bool dht2_cbor_rd_done(const dht2_cbor_rd_t *r);
 
 /** Key equality helper for the schema parsers. */

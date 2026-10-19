@@ -10,9 +10,9 @@
  *
  * Reference: libp2p-specs 78e75c6f RFC/0002-signed-envelopes.md —
  * Envelope { PublicKey public_key = 1; bytes payload_type = 2;
- * bytes payload = 3; bytes signature = 5; } (:76-100); signed buffer =
+ * bytes payload = 3; bytes signature = 5; } (:77-93); signed buffer =
  * uvarint(len domain) ‖ domain ‖ uvarint(len payload_type) ‖ payload_type
- * ‖ uvarint(len payload) ‖ payload (:104-116), uvarints per the
+ * ‖ uvarint(len payload) ‖ payload (:111-122), uvarints per the
  * multiformats unsigned-varint spec (unsigned-varint dd184f1c README.md
  * :19-27, minimal encoding). Envelope encoding / decoding follows the
  * tree's proto3 rules (shared/dnac/cmt_pb.h:22-52): emitted canonically

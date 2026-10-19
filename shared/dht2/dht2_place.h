@@ -4,7 +4,8 @@
  *
  * Design rev 5 §2 "Placement (4f, R = 4)" and "One eligibility function":
  * a record is held by the R = 4 members of S(H) nearest its placement key
- * by XOR (libp2p-specs 78e75c6f kad-dht/README.md:175 — XOR distance; R = 4
+ * by XOR (libp2p-specs 78e75c6f kad-dht/README.md:51 XOR distance, :175
+ * the k closest peers hold a value — the design's citation; R = 4
  * is ours, scope 4f); fewer than R members → all of them.
  *   eligible(key) = nearest_R(key, S(H)) ∪ nearest_R(key, S(H − E)).
  * §9 D1: holders are a pure function of (key, set); XOR over DISTINCT fps

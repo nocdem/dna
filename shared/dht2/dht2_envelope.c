@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* RFC/0002-signed-envelopes.md:76-100 field numbers. */
+/* RFC/0002-signed-envelopes.md:77-93 field numbers. */
 #define ENV_F_PUBKEY   1u
 #define ENV_F_TYPE     2u
 #define ENV_F_PAYLOAD  3u
@@ -38,7 +38,7 @@
  * 32; "op" 3 + "list" 5; "inbox" 6 + 2 + 64; "cursor" 7 + 2 + 64. */
 #define LIST_PAYLOAD_MAX (1u + 36u + 36u + 8u + 72u + 73u)
 
-/* ══ the signed buffer (RFC 0002 :104-116) ═════════════════════════════ */
+/* ══ the signed buffer (RFC 0002 :111-122) ═════════════════════════════ */
 
 /* uvarint(len domain) ‖ domain ‖ uvarint(len type) ‖ type ‖ uvarint(len
  * payload) ‖ payload, into a fresh heap buffer the caller frees. */
@@ -252,7 +252,7 @@ int dht2_env_decode(const uint8_t *in, size_t len, size_t max_len,
             break;
         }
     }
-    /* RFC 0002 :96 — the recipient derives the signer from this key. */
+    /* RFC 0002 :96-98 — the recipient derives the signer from this key. */
     if (!env->pk.present) {
         return DHT2_E_BAD_ENCODING;
     }
