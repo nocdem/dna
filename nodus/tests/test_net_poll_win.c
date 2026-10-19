@@ -83,8 +83,15 @@
  *     that completed or refused inside connect() FAILS the case (with a
  *     note) — a false FAIL, never a false PASS.
  *   · Case 8 relies on no new socket being created between closesocket and
- *     the wait (none is, and the backend's own log does not create one);
- *     the eviction of a REUSED handle value is not tested.
+ *     the wait (the test creates none; the backend's stale check —
+ *     getsockopt SO_TYPE — runs before its eviction log line); the
+ *     eviction of a REUSED handle value is not tested.
+ *   · Case 4 deletes index 5 with the cursor where the earlier waits left
+ *     it: at index 9 when the first readiness wait already reported all 10
+ *     (then only the "removed entry before the cursor" branch of the
+ *     backend's cursor update runs); elsewhere if earlier readiness waits
+ *     returned fewer. The test does not choose the branch, and "cursor
+ *     wraps to 0" is not deliberately exercised.
  *   · It tests the backend only; no caller (nodus_tcp, p2p) uses the
  *     Windows arm in N1.
  */
