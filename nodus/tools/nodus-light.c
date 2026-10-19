@@ -1535,12 +1535,15 @@ static int light_rebuild(cmt_light_client_t **cp, light_net_t *net,
 
 /*
  * Steps 1-4 of THE TRUST ROOT, before any network call. `buf` is scratch
- * for the stored block. Returns 0 with *mode set; -1 when the store or
- * the clock cannot be read (the reason is printed).
+ * for the stored block. `now_fn` reads `now` (root_pick passes wall_now;
+ * the unit test tests/test_nodus_light.c passes a fixed clock); it is
+ * called only when the store holds a block, at the same point as before.
+ * Returns 0 with *mode set; -1 when the store or the clock cannot be read
+ * (the reason is printed).
  */
-static int root_pick(const light_args_t *a, light_store_t *st,
-                     int64_t stored_last, cmt_light_block_buf_t *buf,
-                     int *mode)
+static int root_pick_at(const light_args_t *a, light_store_t *st,
+                        int64_t stored_last, cmt_light_block_buf_t *buf,
+                        int (*now_fn)(cmt_time_t *out), int *mode)
 {
     uint64_t   total = 0, uncleared = 0;
     bool       found = false, expired = false;
@@ -1563,7 +1566,7 @@ static int root_pick(const light_args_t *a, light_store_t *st,
                     (long long)stored_last);
             return -1;
         }
-        if (wall_now(&now) != 0) {
+        if (now_fn(&now) != 0) {
             fprintf(stderr, "the wall clock cannot be read\n");
             return -1;
         }
@@ -1597,6 +1600,14 @@ static int root_pick(const light_args_t *a, light_store_t *st,
     fflush(stdout);
     *mode = LIGHT_ROOT_AUTO;                                 /* step 4 */
     return 0;
+}
+
+/* root_pick_at with this machine's wall clock (file header, THE CLOCK). */
+static int root_pick(const light_args_t *a, light_store_t *st,
+                     int64_t stored_last, cmt_light_block_buf_t *buf,
+                     int *mode)
+{
+    return root_pick_at(a, st, stored_last, buf, wall_now, mode);
 }
 
 /* root_auto's outcomes. */
@@ -2308,6 +2319,10 @@ done:
 
 /* ── main ────────────────────────────────────────────────────────────── */
 
+/* tests/test_nodus_light.c includes this file with NODUS_LIGHT_NO_MAIN
+ * defined, to call the static functions above; the program itself is
+ * built without it. */
+#ifndef NODUS_LIGHT_NO_MAIN
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -2326,3 +2341,4 @@ int main(int argc, char **argv)
     usage();
     return 2;
 }
+#endif /* NODUS_LIGHT_NO_MAIN */
