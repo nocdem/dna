@@ -224,7 +224,7 @@ void nodus_net_poll_wake(nodus_net_poll_t *p);
  * caller's check. @return > 0 finished, 0 still connecting, < 0 error
  * (Linux: poll's -1; Windows: select's SOCKET_ERROR). A caller must NOT
  * read < 0 as "still connecting". p2p's caller (nodus_p2p_host.c
- * io_connect_done), since package N3: the Windows build reads < 0 as a
+ * io_connect_done), since N3-FIX2: the Windows build reads < 0 as a
  * FAILED connect (the SO_ERROR != 0 branch: conn_failed) and 0 as still
  * connecting; the Linux build keeps its `<= 0` = still-connecting test,
  * unchanged (design §10).
