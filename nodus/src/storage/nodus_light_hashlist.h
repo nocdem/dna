@@ -65,7 +65,8 @@
  * moves to the next peer (index + 1 mod n); an accepted header keeps the
  * same peer. A full round of n peers without an accepted header ends the
  * step with NODUS_LHL_STEP_ROUND; the caller waits (the holder waits
- * NODUS_STFETCH_RETRY_MS) and steps again, from the next peer. The
+ * NODUS_STFETCH_RETRY_MS) and steps again — after n rotations the next
+ * request goes to the peer the round began with. The
  * transport is the caller's (nodus_light_fetch_t) — this file opens no
  * socket, reads no clock and never sleeps.
  *
