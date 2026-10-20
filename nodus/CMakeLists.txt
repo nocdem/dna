@@ -142,6 +142,12 @@ set(NODUS_SOURCES
     # embeds it. In the common list so it compiles on Windows (K25-5).
     src/net/nodus_p2p_host.c
 
+    # Portable file layer (windows-light-storage design 2026-10-19 §3 B4):
+    # positional 64-bit I/O, fsync, atomic rename-replace, unlink, mkdir,
+    # UTF-8 paths. POSIX: the segment file's own calls, unchanged; Windows:
+    # CreateFileW / ReadFile / WriteFile / MoveFileExW over wide paths.
+    src/storage/nodus_fs.c
+
     # Crypto
     src/crypto/nodus_sign.c
     src/crypto/nodus_identity.c

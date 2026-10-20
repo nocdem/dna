@@ -16,6 +16,7 @@
  */
 
 #include "witness/nodus_witness_storage_segment.h"
+#include "storage/nodus_fs.h"
 
 #include "dnac/cmt_merkle.h"
 #include "dnac/cmt_pb.h"
@@ -25,13 +26,10 @@
 #include "crypto/utils/qgp_log.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #define LOG_TAG "W_STSEG"
 
@@ -73,64 +71,21 @@ static void tag16(const char *tag, uint8_t out[NODUS_SEG_TAG_LEN]) {
     memcpy(out, tag, strlen(tag));
 }
 
-/* ── file helpers ────────────────────────────────────────────────────── */
-
-/* @return 0 all written / -1 */
-static int pwrite_all(int fd, const uint8_t *p, size_t n, uint64_t off) {
-    while (n > 0) {
-        ssize_t w = pwrite(fd, p, n, (off_t)off);
-        if (w < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (w == 0) return -1;
-        p += w;
-        n -= (size_t)w;
-        off += (uint64_t)w;
-    }
-    return 0;
-}
-
-/* @return 0 all read / 1 end of file first / -1 */
-static int pread_all(int fd, uint8_t *p, size_t n, uint64_t off) {
-    while (n > 0) {
-        ssize_t r = pread(fd, p, n, (off_t)off);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (r == 0) return 1;
-        p += r;
-        n -= (size_t)r;
-        off += (uint64_t)r;
-    }
-    return 0;
-}
-
-static int fsync_dir(const char *dir) {
-    int fd = open(dir, O_RDONLY | O_DIRECTORY);
-    if (fd < 0) return -1;
-    int rc = fsync(fd);
-    close(fd);
-    return rc == 0 ? 0 : -1;
-}
+/* ── file helpers (every file call goes through storage/nodus_fs.h: on
+ *    POSIX the same calls, flags and modes as before it existed) ──────── */
 
 /* Write `path` with exactly `len` bytes and fsync it. @return 0 / -1 */
 static int write_file_sync(const char *path, const uint8_t *p, size_t len) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = nodus_fs_open_write_trunc(path);
     if (fd < 0) return -1;
-    int ok = pwrite_all(fd, p, len, 0) == 0 && fsync(fd) == 0;
-    if (close(fd) != 0) ok = 0;
+    int ok = nodus_fs_pwrite_all(fd, p, len, 0) == 0 &&
+             nodus_fs_fsync(fd) == 0;
+    if (nodus_fs_close(fd) != 0) ok = 0;
     return ok ? 0 : -1;
 }
 
-static int file_exists(const char *path) {
-    struct stat st;
-    return stat(path, &st) == 0;
-}
-
 static int unlink_quiet(const char *path) {
-    if (unlink(path) == 0 || errno == ENOENT) return 0;
+    if (nodus_fs_unlink_if_exists(path) == 0) return 0;
     QGP_LOG_WARN(LOG_TAG, "unlink %s: %s", path, strerror(errno));
     return -1;
 }
@@ -188,10 +143,10 @@ int nodus_seg_name_parse(const char *name, uint64_t *k_out) {
 }
 
 int nodus_seg_dir_ensure(const char *dir) {
-    struct stat st;
     if (!dir || !dir[0]) return -1;
-    if (stat(dir, &st) == 0) return S_ISDIR(st.st_mode) ? 0 : -1;
-    if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+    const int isdir = nodus_fs_is_dir(dir);
+    if (isdir >= 0) return isdir == 1 ? 0 : -1;
+    if (nodus_fs_mkdir(dir) != 0 && errno != EEXIST) {
         QGP_LOG_ERROR(LOG_TAG, "segment directory %s: %s", dir,
                       strerror(errno));
         return -1;
@@ -292,7 +247,7 @@ uint64_t nodus_seg_build_k(const nodus_seg_build_t *b) {
 
 static void build_close(nodus_seg_build_t *b) {
     if (!b) return;
-    if (b->fd >= 0) close(b->fd);
+    if (b->fd >= 0) nodus_fs_close(b->fd);
     free(b->io);
     free(b->arena);
     free(b->part);
@@ -369,10 +324,10 @@ int nodus_seg_build_open_src(const char *dir, uint64_t k,
     if (nodus_seg_path(dir, k, NODUS_SEG_F_IDX_TMP, p, sizeof(p)) != 0 ||
         unlink_quiet(p) != 0)
         return -1;
-    if (file_exists(dat)) {
-        if (file_exists(tmp)) {
+    if (nodus_fs_exists(dat)) {
+        if (nodus_fs_exists(tmp)) {
             if (unlink_quiet(dat) != 0) return -1;
-        } else if (rename(dat, tmp) != 0) {
+        } else if (nodus_fs_rename(dat, tmp) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": %s → %s: %s", k,
                           dat, tmp, strerror(errno));
             return -1;
@@ -402,33 +357,33 @@ int nodus_seg_build_open_src(const char *dir, uint64_t k,
         !b->vs_proto || !b->vs_storage)
         goto fail;
 
-    b->fd = open(tmp, O_RDWR | O_CREAT, 0600);
+    b->fd = nodus_fs_open_rw_create(tmp);
     if (b->fd < 0) {
         QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": open %s: %s", k, tmp,
                       strerror(errno));
         goto fail;
     }
-    struct stat st;
-    if (fstat(b->fd, &st) != 0) goto fail;
+    uint64_t fsize = 0;
+    if (nodus_fs_size(b->fd, &fsize) != 0) goto fail;
 
     uint8_t want[NODUS_SEG_DATA_HDR_LEN], have[NODUS_SEG_DATA_HDR_LEN];
     data_hdr(k, want);
     int fresh = 1;
-    if ((uint64_t)st.st_size >= NODUS_SEG_DATA_HDR_LEN &&
-        pread_all(b->fd, have, sizeof(have), 0) == 0 &&
+    if (fsize >= NODUS_SEG_DATA_HDR_LEN &&
+        nodus_fs_pread_all(b->fd, have, sizeof(have), 0) == 0 &&
         memcmp(have, want, sizeof(want)) == 0)
         fresh = 0;
     if (fresh) {
-        if (ftruncate(b->fd, 0) != 0 ||
-            pwrite_all(b->fd, want, sizeof(want), 0) != 0)
+        if (nodus_fs_truncate(b->fd, 0) != 0 ||
+            nodus_fs_pwrite_all(b->fd, want, sizeof(want), 0) != 0)
             goto fail;
         b->scanning = false;
     } else {
-        b->scanning = (uint64_t)st.st_size > NODUS_SEG_DATA_HDR_LEN;
+        b->scanning = fsize > NODUS_SEG_DATA_HDR_LEN;
         if (b->scanning)
             QGP_LOG_INFO(LOG_TAG, "segment %" PRIu64 ": resuming a partial "
                          "file of %lld bytes (every record re-verified)", k,
-                         (long long)st.st_size);
+                         (long long)fsize);
     }
     b->size = NODUS_SEG_DATA_HDR_LEN;
     *out = b;
@@ -654,7 +609,7 @@ static void height_done(nodus_seg_build_t *b) {
 static void scan_cut(nodus_seg_build_t *b, uint64_t at, const char *why) {
     QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": partial file cut at byte "
                  "%" PRIu64 " (height %" PRIu64 ": %s)", b->k, at, b->h, why);
-    if (ftruncate(b->fd, (off_t)at) != 0)
+    if (nodus_fs_truncate(b->fd, at) != 0)
         QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": ftruncate: %s", b->k,
                       strerror(errno));
     b->size = at;
@@ -669,15 +624,15 @@ static void scan_cut(nodus_seg_build_t *b, uint64_t at, const char *why) {
  * fault (the node, not the file). */
 static int resume_tail(nodus_seg_build_t *b) {
     const uint64_t at = b->size;
-    struct stat st;
-    if (fstat(b->fd, &st) != 0) return -1;
-    if ((uint64_t)st.st_size <= at) {   /* nothing after the heights */
+    uint64_t fsize = 0;
+    if (nodus_fs_size(b->fd, &fsize) != 0) return -1;
+    if (fsize <= at) {                  /* nothing after the heights */
         b->scanning = false;
         return 1;
     }
     uint64_t off = at;
     uint8_t pre[4];
-    int r = pread_all(b->fd, pre, 4, off);
+    int r = nodus_fs_pread_all(b->fd, pre, 4, off);
     if (r < 0) return -1;
     const uint32_t clen = r == 0 ? get32(pre) : 0;
     if (r > 0 || clen == 0 || clen > NODUS_SEG_COMMIT_MAX) {
@@ -685,11 +640,11 @@ static int resume_tail(nodus_seg_build_t *b) {
         return 1;
     }
     off += 4;
-    r = pread_all(b->fd, b->io, clen, off);
+    r = nodus_fs_pread_all(b->fd, b->io, clen, off);
     if (r < 0) return -1;
     if (r > 0) { scan_cut(b, at, "short commit"); return 1; }
     off += clen;
-    r = pread_all(b->fd, pre, 4, off);
+    r = nodus_fs_pread_all(b->fd, pre, 4, off);
     if (r < 0) return -1;
     const uint32_t vlen = r == 0 ? get32(pre) : 0;
     if (r > 0 || vlen == 0 || vlen > NODUS_SEG_VALSET_MAX) {
@@ -699,7 +654,7 @@ static int resume_tail(nodus_seg_build_t *b) {
     off += 4;
     uint8_t *vb = malloc(vlen);
     if (!vb) return -1;
-    r = pread_all(b->fd, vb, vlen, off);
+    r = nodus_fs_pread_all(b->fd, vb, vlen, off);
     if (r < 0) { free(vb); return -1; }
     if (r > 0) { free(vb); scan_cut(b, at, "short validator set"); return 1; }
     nodus_seg_v_t v = check_valset(b, vb, vlen);
@@ -716,11 +671,11 @@ static int resume_tail(nodus_seg_build_t *b) {
     b->valset_len = vlen;
     b->size = off + vlen;
     b->commit_done = true;
-    if ((uint64_t)st.st_size > b->size) {
+    if (fsize > b->size) {
         QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": %" PRIu64 " bytes after "
                      "the validator-set record cut", b->k,
-                     (uint64_t)st.st_size - b->size);
-        if (ftruncate(b->fd, (off_t)b->size) != 0) return -1;
+                     fsize - b->size);
+        if (nodus_fs_truncate(b->fd, b->size) != 0) return -1;
     }
     b->scanning = false;
     return 1;
@@ -734,7 +689,7 @@ int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights) {
         const uint64_t at = b->size;
         uint64_t off = at;
         uint8_t pre[12];
-        int r = pread_all(b->fd, pre, sizeof(pre), off);
+        int r = nodus_fs_pread_all(b->fd, pre, sizeof(pre), off);
         if (r < 0) return -1;
         if (r > 0) { scan_cut(b, at, "end of the partial file"); return 1; }
         if (get64(pre) != b->h) { scan_cut(b, at, "height"); return 1; }
@@ -744,7 +699,7 @@ int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights) {
             scan_cut(b, at, "header length");
             return 1;
         }
-        r = pread_all(b->fd, b->io, hl, off);
+        r = nodus_fs_pread_all(b->fd, b->io, hl, off);
         if (r < 0) return -1;
         if (r > 0) { scan_cut(b, at, "short header"); return 1; }
         off += hl;
@@ -760,7 +715,7 @@ int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights) {
             return 1;
         }
         uint8_t np[4];
-        r = pread_all(b->fd, np, 4, off);
+        r = nodus_fs_pread_all(b->fd, np, 4, off);
         if (r < 0) return -1;
         if (r > 0 || get32(np) != b->total) {
             scan_cut(b, at, "part count");
@@ -769,7 +724,7 @@ int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights) {
         off += 4;
         for (uint32_t i = 0; i < b->total; i++) {
             uint8_t pl[4];
-            r = pread_all(b->fd, pl, 4, off);
+            r = nodus_fs_pread_all(b->fd, pl, 4, off);
             if (r < 0) return -1;
             uint32_t plen = r == 0 ? get32(pl) : 0;
             if (r > 0 || plen == 0 || plen > NODUS_SEG_PART_PROTO_MAX) {
@@ -777,7 +732,7 @@ int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights) {
                 return 1;
             }
             off += 4;
-            r = pread_all(b->fd, b->io, plen, off);
+            r = nodus_fs_pread_all(b->fd, b->io, plen, off);
             if (r < 0) return -1;
             if (r > 0) { scan_cut(b, at, "short part"); return 1; }
             off += plen;
@@ -834,7 +789,7 @@ nodus_seg_v_t nodus_seg_build_put_header(nodus_seg_build_t *b, uint64_t h,
     put32(w + 8, (uint32_t)len);
     memcpy(w + 12, hdr, len);
     put32(w + 12 + len, b->total);
-    if (pwrite_all(b->fd, w, 16 + len, b->size) != 0) {
+    if (nodus_fs_pwrite_all(b->fd, w, 16 + len, b->size) != 0) {
         b->have_hdr = false;
         return NODUS_SEG_V_IO;
     }
@@ -846,7 +801,7 @@ nodus_seg_v_t nodus_seg_build_put_header(nodus_seg_build_t *b, uint64_t h,
 /* Write the verified part proto in b->io[4 ..) of `len` bytes. */
 static nodus_seg_v_t write_part(nodus_seg_build_t *b, size_t len) {
     put32(b->io, (uint32_t)len);
-    if (pwrite_all(b->fd, b->io, 4 + len, b->size) != 0)
+    if (nodus_fs_pwrite_all(b->fd, b->io, 4 + len, b->size) != 0)
         return NODUS_SEG_V_IO;
     b->size += 4 + len;
     b->next_part++;
@@ -923,12 +878,12 @@ nodus_seg_v_t nodus_seg_build_put_commit(nodus_seg_build_t *b,
     uint8_t pre[4];
     const uint64_t at = b->size;
     put32(pre, (uint32_t)len);
-    if (pwrite_all(b->fd, pre, 4, at) != 0 ||
-        pwrite_all(b->fd, commit, len, at + 4u) != 0)
+    if (nodus_fs_pwrite_all(b->fd, pre, 4, at) != 0 ||
+        nodus_fs_pwrite_all(b->fd, commit, len, at + 4u) != 0)
         return NODUS_SEG_V_IO;
     put32(pre, b->vs_len);
-    if (pwrite_all(b->fd, pre, 4, at + 4u + len) != 0 ||
-        pwrite_all(b->fd, b->vs_proto, b->vs_len, at + 8u + len) != 0)
+    if (nodus_fs_pwrite_all(b->fd, pre, 4, at + 4u + len) != 0 ||
+        nodus_fs_pwrite_all(b->fd, b->vs_proto, b->vs_len, at + 8u + len) != 0)
         return NODUS_SEG_V_IO;
     b->commit_off = at + 4u;
     b->commit_len = (uint32_t)len;
@@ -979,12 +934,15 @@ int nodus_seg_build_finish(nodus_seg_build_t *b) {
     mark[40] = NODUS_SEG_FLAG_SIGS;
     if (qgp_sha3_512(x, NODUS_SEG_INDEX_LEN, mark + 41) != 0) return -1;
 
-    if (ftruncate(b->fd, (off_t)b->size) != 0 || fsync(b->fd) != 0 ||
+    if (nodus_fs_truncate(b->fd, b->size) != 0 ||
+        nodus_fs_fsync(b->fd) != 0 ||
         write_file_sync(idx_tmp, x, NODUS_SEG_INDEX_LEN) != 0 ||
-        rename(dat_tmp, dat) != 0 || rename(idx_tmp, idx) != 0 ||
-        fsync_dir(b->dir) != 0 ||
+        nodus_fs_rename(dat_tmp, dat) != 0 ||
+        nodus_fs_rename(idx_tmp, idx) != 0 ||
+        nodus_fs_dir_sync(b->dir) != 0 ||
         write_file_sync(ok_tmp, mark, sizeof(mark)) != 0 ||
-        rename(ok_tmp, ok) != 0 || fsync_dir(b->dir) != 0) {
+        nodus_fs_rename(ok_tmp, ok) != 0 ||
+        nodus_fs_dir_sync(b->dir) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": publish failed: %s",
                       b->k, strerror(errno));
         return -1;
@@ -1181,7 +1139,7 @@ struct nodus_seg_reader {
 
 void nodus_seg_reader_close(nodus_seg_reader_t *r) {
     if (!r) return;
-    if (r->fd >= 0) close(r->fd);
+    if (r->fd >= 0) nodus_fs_close(r->fd);
     free(r->idx);
     free(r);
 }
@@ -1200,13 +1158,13 @@ int nodus_seg_reader_open(const char *dir, uint64_t k,
         return -1;
 
     uint8_t mark[NODUS_SEG_DONE_LEN + 1];
-    int fd = open(okp, O_RDONLY);
+    int fd = nodus_fs_open_read(okp);
     if (fd < 0) return errno == ENOENT ? 1 : -1;
-    ssize_t n = read(fd, mark, sizeof(mark));
-    close(fd);
+    int64_t n = nodus_fs_read_once(fd, mark, sizeof(mark));
+    nodus_fs_close(fd);
     uint8_t want_tag[NODUS_SEG_TAG_LEN];
     tag16(NODUS_SEG_DONE_TAG, want_tag);
-    if (n != (ssize_t)NODUS_SEG_DONE_LEN ||
+    if (n != (int64_t)NODUS_SEG_DONE_LEN ||
         memcmp(mark, want_tag, NODUS_SEG_TAG_LEN) != 0 ||
         get64(mark + 16) != k ||
         get64(mark + 32) != (uint64_t)NODUS_SEG_INDEX_LEN ||
@@ -1225,16 +1183,16 @@ int nodus_seg_reader_open(const char *dir, uint64_t k,
     if (!r->idx) { nodus_seg_reader_close(r); return -1; }
 
     int ret = 1;
-    struct stat st;
-    fd = open(idxp, O_RDONLY);
+    uint64_t fsize = 0;
+    fd = nodus_fs_open_read(idxp);
     if (fd < 0) { ret = errno == ENOENT ? 1 : -1; goto bad; }
-    if (fstat(fd, &st) != 0 ||
-        (uint64_t)st.st_size != (uint64_t)NODUS_SEG_INDEX_LEN ||
-        pread_all(fd, r->idx, NODUS_SEG_INDEX_LEN, 0) != 0) {
-        close(fd);
+    if (nodus_fs_size(fd, &fsize) != 0 ||
+        fsize != (uint64_t)NODUS_SEG_INDEX_LEN ||
+        nodus_fs_pread_all(fd, r->idx, NODUS_SEG_INDEX_LEN, 0) != 0) {
+        nodus_fs_close(fd);
         goto bad;
     }
-    close(fd);
+    nodus_fs_close(fd);
     {
         uint8_t hx[64];
         if (qgp_sha3_512(r->idx, NODUS_SEG_INDEX_LEN, hx) != 0) {
@@ -1263,9 +1221,9 @@ int nodus_seg_reader_open(const char *dir, uint64_t k,
             r->data_size - r->valset_off != r->valset_len)
             goto bad;
     }
-    r->fd = open(datp, O_RDONLY);
+    r->fd = nodus_fs_open_read(datp);
     if (r->fd < 0) { ret = errno == ENOENT ? 1 : -1; goto bad; }
-    if (fstat(r->fd, &st) != 0 || (uint64_t)st.st_size != r->data_size)
+    if (nodus_fs_size(r->fd, &fsize) != 0 || fsize != r->data_size)
         goto bad;
     *out = r;
     return 0;
@@ -1301,17 +1259,17 @@ int nodus_seg_reader_get(nodus_seg_reader_t *r, uint64_t h,
     if (n == 0 || n > CMT_PART_SET_MAX_PARTS || off >= r->data_size)
         return -1;
     uint8_t pre[12];
-    if (pread_all(r->fd, pre, 12, off) != 0 || get64(pre) != h) return -1;
+    if (nodus_fs_pread_all(r->fd, pre, 12, off) != 0 || get64(pre) != h) return -1;
     const uint32_t hl = get32(pre + 8);
     if (hl == 0 || hl > NODUS_SEG_HEADER_MAX) return -1;
     off += 12;
     if (hdr) {
-        if (!hdr_len || pread_all(r->fd, hdr, hl, off) != 0) return -1;
+        if (!hdr_len || nodus_fs_pread_all(r->fd, hdr, hl, off) != 0) return -1;
         *hdr_len = hl;
     }
     off += hl;
     uint8_t np[4];
-    if (pread_all(r->fd, np, 4, off) != 0 || get32(np) != n) return -1;
+    if (nodus_fs_pread_all(r->fd, np, 4, off) != 0 || get32(np) != n) return -1;
     off += 4;
     *n_parts = n;
     if (!part) return 0;
@@ -1319,14 +1277,14 @@ int nodus_seg_reader_get(nodus_seg_reader_t *r, uint64_t h,
     if (part_i >= n) return 1;
     for (uint32_t j = 0;; j++) {
         uint8_t pl[4];
-        if (pread_all(r->fd, pl, 4, off) != 0) return -1;
+        if (nodus_fs_pread_all(r->fd, pl, 4, off) != 0) return -1;
         const uint32_t plen = get32(pl);
         if (plen == 0 || plen > NODUS_SEG_PART_PROTO_MAX ||
             off + 4u + plen > r->data_size)
             return -1;
         off += 4;
         if (j == part_i) {
-            if (pread_all(r->fd, part, plen, off) != 0) return -1;
+            if (nodus_fs_pread_all(r->fd, part, plen, off) != 0) return -1;
             *part_len = plen;
             return 0;
         }
@@ -1337,7 +1295,7 @@ int nodus_seg_reader_get(nodus_seg_reader_t *r, uint64_t h,
 int nodus_seg_reader_commit(nodus_seg_reader_t *r, uint8_t *out, size_t cap,
                             size_t *len) {
     if (!r || !out || !len || cap < r->commit_len) return -1;
-    if (pread_all(r->fd, out, r->commit_len, r->commit_off) != 0) return -1;
+    if (nodus_fs_pread_all(r->fd, out, r->commit_len, r->commit_off) != 0) return -1;
     *len = r->commit_len;
     return 0;
 }
@@ -1347,9 +1305,9 @@ int nodus_seg_reader_valset(nodus_seg_reader_t *r, uint8_t *out, size_t cap,
     if (!r || !out || !len || cap < r->valset_len) return -1;
     uint8_t pre[4];
     /* the record's own prefix must agree with the index */
-    if (pread_all(r->fd, pre, 4, r->valset_off - 4u) != 0 ||
+    if (nodus_fs_pread_all(r->fd, pre, 4, r->valset_off - 4u) != 0 ||
         get32(pre) != r->valset_len ||
-        pread_all(r->fd, out, r->valset_len, r->valset_off) != 0)
+        nodus_fs_pread_all(r->fd, out, r->valset_len, r->valset_off) != 0)
         return -1;
     *len = r->valset_len;
     return 0;
@@ -1435,6 +1393,6 @@ int nodus_seg_delete(const char *dir, uint64_t k) {
             unlink_quiet(p) != 0)
             ret = -1;
     }
-    if (fsync_dir(dir) != 0) ret = -1;
+    if (nodus_fs_dir_sync(dir) != 0) ret = -1;
     return ret;
 }
