@@ -44,8 +44,15 @@
  *      descriptor is closed — either a new file holding the new bytes, or
  *      -1 with an errno other than ENOENT / EEXIST, and once the holder
  *      is closed the create succeeds; the holder still reads the old
- *      bytes either way. A crash or a mix (0 but the old bytes, -1 but
- *      the source gone) FAILS.
+ *      bytes either way (the POSIX answer; nodus_fs's Windows unlink moves
+ *      the file to "<name>.deleted.<pid>.<n>" before deleting it so that
+ *      the name is free and the holder keeps the old file). A crash or a
+ *      mix (0 but the old bytes, -1 but the source gone) FAILS. (3) the
+ *      unlinked file there is named "seg-7.dat": while it is held, every
+ *      "*.deleted.*" entry the work directory lists — and the aside name
+ *      form after each of the six segment suffixes — is refused by
+ *      nodus_seg_name_parse (a crash leftover is never read as a segment);
+ *      the count of listed entries is printed.
  *  11. offsets at and above 2^32 (OffsetHigh != 0) on a SPARSE file
  *      (FSCTL_SET_SPARSE): 16 bytes across 2^32 written and read back
  *      (also from 2^32 itself), size 2^32 + 8, end of file at 2^32 + 8,
@@ -114,7 +121,11 @@
  *     claimed (design §3 B4: "interrupted-publication + restart test on
  *     Windows before claiming Windows"). Case 10's outcome lines in
  *     particular describe Wine's sharing / delete-pending emulation, not
- *     NTFS's.
+ *     NTFS's — including whether the move-aside unlink frees the name and
+ *     whether the aside entry is still listed while held. Case 10 (3)'s
+ *     directory scan can see 0 aside entries (a platform that stops
+ *     listing delete-pending names): then only the name-form checks ran;
+ *     the printed count says which.
  *   · The directory flush (case 7, and every publish in cases 9 and 12)
  *     may be refused under Wine — a -1 there is then Wine's answer, and
  *     reads as a FAIL that is not a Windows result; under Wine it may
@@ -427,6 +438,59 @@ static const char *en_name(int e) {
     }
 }
 
+/* Case 10 (3): the Windows unlink's aside names never parse as segment
+ * files. First the name form itself, for every segment suffix; then every
+ * "*" NODUS_FS_ASIDE_TAG "*" entry in the work directory. Prints how many
+ * entries were seen (0 is possible: a platform may stop listing a
+ * delete-pending name). @return the count / -1 a check failed */
+static int aside_entries_unparsed(void) {
+    static const char *const sfx[6] = {
+        ".dat.tmp", ".dat", ".idx.tmp", ".idx", ".ok.tmp", ".ok"
+    };
+    uint64_t k = 0;
+    char nm[96];
+    for (size_t i = 0; i < 6; i++) {
+        snprintf(nm, sizeof(nm), "seg-7%s" NODUS_FS_ASIDE_TAG "%lu.%lu",
+                 sfx[i], 4294967295ul, 1ul);
+        if (nodus_seg_name_parse(nm, &k) == 0) {
+            printf("\n    aside name parsed as a segment: %s", nm);
+            return -1;
+        }
+        snprintf(nm, sizeof(nm), "seg-7%s", sfx[i]);
+        if (nodus_seg_name_parse(nm, &k) != 0 || k != 7) {
+            printf("\n    segment name not parsed: %s", nm);
+            return -1;
+        }
+    }
+    wchar_t pat[WPATH_MAX];
+    char pu[PATH_CAP];
+    if (work_path(pu, "*") != 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, pu, -1, pat,
+                            WPATH_MAX) <= 0)
+        return -1;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    int seen = 0, bad = 0;
+    do {
+        char u[3 * MAX_PATH + 1];
+        if (WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, u, sizeof(u),
+                                NULL, NULL) <= 0) {
+            bad = 1;
+            continue;
+        }
+        if (!strstr(u, NODUS_FS_ASIDE_TAG)) continue;
+        seen++;
+        if (nodus_seg_name_parse(u, &k) == 0) {
+            printf("\n    aside leftover parsed as a segment: %s", u);
+            bad = 1;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    printf("\n    aside entries listed while the file is held: %d", seen);
+    return bad ? -1 : seen;
+}
+
 /* 10. Two orders the segment code can meet on Windows, where the answer
  * is the platform's: either outcome passes when it is CONSISTENT (a clean
  * -1 with an errno that is not "absent" / "exists", or a success whose
@@ -436,9 +500,11 @@ static void t_open_target(void) {
     char a[PATH_CAP], b[PATH_CAP], c[PATH_CAP];
     uint8_t r[16];
     TEST("10 rename onto an open target; re-create a pending unlink");
+    /* (2)'s file carries a segment name, so its aside leftover is one a
+     * segment directory could hold */
     CHECK(work_path(a, "held-target.bin") == 0 &&
           work_path(b, "held-source.bin") == 0 &&
-          work_path(c, "pending.bin") == 0);
+          work_path(c, "seg-7.dat") == 0);
     /* (1) rename onto a target another descriptor holds open */
     CHECK(put_file(a, "old-old", 7) == 0 && put_file(b, "new", 3) == 0);
     int ft = nodus_fs_open_read(a);
@@ -472,6 +538,10 @@ static void t_open_target(void) {
     int fh = nodus_fs_open_read(c);
     CHECK(fh >= 0);
     CHECK(nodus_fs_unlink_if_exists(c) == 0);
+    /* (3) the unlink's aside leftovers are not segment files: every
+     * "*.deleted.*" entry in the work directory now (the held file's, if
+     * the platform still lists it) is refused by the segment name parser */
+    CHECK(aside_entries_unparsed() >= 0);
     errno = 0;
     int f2 = nodus_fs_open_write_trunc(c);
     e = errno;

@@ -37,6 +37,36 @@
  *    REPLACE_EXISTING is POSIX rename's replace, WRITE_THROUGH returns
  *    only once the move is on disk (the job the directory fsync does after
  *    a rename on POSIX).
+ *    A rename onto a target ANOTHER descriptor holds open is NOT given the
+ *    unlink's move-aside below: it stays one MoveFileExW, and where
+ *    Windows refuses it the caller gets -1 (test_seg_file_win case 10
+ *    prints which). No caller needs more: the segment build renames onto
+ *    names it has just unlinked (.ok, .idx, .dat — nodus_seg_build_open)
+ *    or never created, and the unlink below frees those names even while a
+ *    reader holds the files. A move-aside of the target would open a
+ *    window in which the published name is absent; not taken without a
+ *    caller that needs it.
+ *  - Unlink: "free the name first". MoveFileExW(path → a sibling
+ *    "<path>.deleted.<pid>.<n>" in the same directory, flags 0 — no
+ *    replace; <n> a process counter), then DeleteFileW on the moved name.
+ *    Why: a file unlinked while another handle holds it (FILE_SHARE_DELETE)
+ *    becomes delete-pending UNDER ITS NAME until the last close, so the
+ *    name could not be created again as a new file — under Wine 8.0 a
+ *    re-create even reached the held file (its holder read the new bytes;
+ *    observed by the ORCHESTRATOR, test_seg_file_win case 10). After the
+ *    move the name is free and a holder keeps the old bytes, as POSIX
+ *    unlink. The delete then succeeds (delete-pending under the aside name,
+ *    gone at the last close); if it is refused the aside file stays and
+ *    the answer is still 0 (the name is free). Source absent → 0 (ENOENT,
+ *    as before); an aside name already taken → the next counter, at most
+ *    FS_ASIDE_TRIES times; any other move failure, an aside name that does
+ *    not fit, or a directory → the previous direct _wunlink with its
+ *    errno. The aside name is logged at DEBUG only. Leftovers: a crash
+ *    between the move and the last close (or a refused delete) can leave
+ *    "*.deleted.*" files. Nothing reads them: nodus_seg_name_parse accepts
+ *    only "seg-<k>" followed by EXACTLY one of its six suffixes
+ *    (nodus_witness_storage_segment.c), so "seg-<k>.dat.deleted.…" is not
+ *    a segment file; no startup cleanup removes them.
  *  - Directory fsync: the directory opened with CreateFileW(GENERIC_WRITE,
  *    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS) and FlushFileBuffers on
  *    that handle; an open or flush failure is -1 with errno (the publish
@@ -50,7 +80,7 @@
  *    reader's marker / size / index-hash checks and is not held
  *    (nodus_seg_reader_open).
  *  - Errors: Win32 codes → errno in win_errno (its comment has the
- *    delete-pending case). _wunlink, _wmkdir, _wstat64, _commit,
+ *    delete-pending case). _wunlink (the unlink's fallback), _wmkdir, _wstat64, _commit,
  *    _fstat64 and _chsize_s set errno through the CRT's OWN mapping, not
  *    win_errno — that mapping is NOT verified (no CRT source in the
  *    tree).
@@ -487,11 +517,74 @@ int nodus_fs_rename(const char *from, const char *to) {
     return 0;
 }
 
-int nodus_fs_unlink_if_exists(const char *path) {
-    wchar_t w[FS_WPATH_MAX];
-    if (widen(path, w) != 0) return -1;
+/* Attempts at a free aside name before falling back to _wunlink: a name
+ * is only taken when a crashed earlier process with the same pid left it
+ * (file header "Unlink"). */
+#define FS_ASIDE_TRIES 8
+
+/* Today's unlink: _wunlink, ENOENT accepted (its errno is the CRT's). */
+static int unlink_direct(const wchar_t *w) {
     if (_wunlink(w) == 0 || errno == ENOENT) return 0;
     return -1;
+}
+
+int nodus_fs_unlink_if_exists(const char *path) {
+    /* Free the NAME first (file header "Unlink"): move the file to a
+     * sibling "<path>.deleted.<pid>.<n>", then delete that. A descriptor
+     * still holding the file keeps reading its bytes; the name can be
+     * created again at once, as a NEW file. */
+    static volatile LONG counter = 0;
+    wchar_t w[FS_WPATH_MAX], wa[FS_WPATH_MAX];
+    if (widen(path, w) != 0) return -1;
+
+    /* a directory keeps today's answer (_wunlink refuses it) — the move
+     * below would otherwise rename it aside and leave it there */
+    DWORD attr = GetFileAttributesW(w);
+    if (attr != INVALID_FILE_ATTRIBUTES &&
+        (attr & FILE_ATTRIBUTE_DIRECTORY))
+        return unlink_direct(w);
+
+    const size_t plen = strlen(path);
+    char *aside = malloc(plen + 64);
+    if (!aside) return unlink_direct(w);
+
+    for (int t = 0; t < FS_ASIDE_TRIES; t++) {
+        unsigned long n = (unsigned long)InterlockedIncrement(&counter);
+        int len = snprintf(aside, plen + 64, "%s" NODUS_FS_ASIDE_TAG
+                           "%lu.%lu", path,
+                           (unsigned long)GetCurrentProcessId(), n);
+        if (len < 0 || (size_t)len >= plen + 64 || widen(aside, wa) != 0)
+            break;                      /* no aside name: today's unlink */
+        if (MoveFileExW(w, wa, 0)) {
+            QGP_LOG_DEBUG(LOG_TAG, "unlink %s: moved aside to %s", path,
+                          aside);
+            /* With FILE_SHARE_DELETE on every handle this layer opens, a
+             * held file is marked delete-pending under the aside name and
+             * goes at its last close. A refusal (an opener without
+             * FILE_SHARE_DELETE — this layer has none) leaves the aside
+             * file; the name is free either way, so the answer is 0. */
+            if (!DeleteFileW(wa))
+                QGP_LOG_DEBUG(LOG_TAG, "unlink %s: delete of %s: Windows "
+                              "error %lu", path, aside,
+                              (unsigned long)GetLastError());
+            free(aside);
+            return 0;
+        }
+        DWORD e = GetLastError();
+        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) {
+            free(aside);
+            win_errno(e, "unlink", path);       /* ENOENT, as _wunlink */
+            return 0;
+        }
+        if (e != ERROR_ALREADY_EXISTS && e != ERROR_FILE_EXISTS) {
+            QGP_LOG_DEBUG(LOG_TAG, "unlink %s: move aside: Windows error "
+                          "%lu — direct unlink", path, (unsigned long)e);
+            break;
+        }
+        /* the aside name is taken (a crash leftover): the next counter */
+    }
+    free(aside);
+    return unlink_direct(w);
 }
 
 int nodus_fs_exists(const char *path) {

@@ -24,7 +24,9 @@
  * On Windows the descriptor wraps a HANDLE opened with CreateFileW and
  * FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, so a file may be
  * renamed or unlinked while a descriptor on it is still open — the segment
- * build renames its data file before it closes it, as on POSIX.
+ * build renames its data file before it closes it, as on POSIX. An unlink
+ * moves the file aside before deleting it, so its name is free at once
+ * (nodus_fs_unlink_if_exists).
  *
  * PATHS are UTF-8 on both platforms. On Windows every call that takes a
  * path (open, rename, unlink, stat, mkdir) converts it to UTF-16 with
@@ -128,8 +130,21 @@ int nodus_fs_dir_sync(const char *dir);
  *  MOVEFILE_WRITE_THROUGH). @return 0 / -1. */
 int nodus_fs_rename(const char *from, const char *to);
 
+/** The tag of the aside name the Windows unlink moves a file to before it
+ *  deletes it: "<path>" NODUS_FS_ASIDE_TAG "<pid>.<n>". Never a segment
+ *  file name (nodus_seg_name_parse wants one of its six suffixes exactly
+ *  after "seg-<k>"). */
+#define NODUS_FS_ASIDE_TAG ".deleted."
+
 /** Remove `path`; a file that does not exist is not an error. POSIX
- *  unlink (ENOENT accepted); Windows _wunlink (ENOENT accepted).
+ *  unlink (ENOENT accepted). Windows: the NAME is freed first — the file
+ *  is moved to "<path>.deleted.<pid>.<n>" (MoveFileExW, no replace) and
+ *  that is deleted (DeleteFileW; a file still held is delete-pending under
+ *  the aside name and goes at its last close), so the name can be created
+ *  again at once while a holder keeps reading the old bytes, as on POSIX;
+ *  absent → 0 (ENOENT); a move refused for another reason, or a directory
+ *  → _wunlink (ENOENT accepted), as before. A crash can leave
+ *  "*.deleted.*" files; nothing reads them (nodus_fs.c "Unlink").
  *  @return 0 removed or absent / -1 (errno). */
 int nodus_fs_unlink_if_exists(const char *path);
 
