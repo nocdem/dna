@@ -21,6 +21,9 @@
 //     that test SKIPS (a skip is not a pass).
 // What it does NOT prove: the real module's network path (no node), the
 // banner inside the two real pages (src/app.js wiring; no browser here).
+// Of the refusals before the query (locked, busy, no session) only "no
+// session" is pinned (the parity module never connects); the other two
+// pass the same first statement of nsw_ruleset_info.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -165,4 +168,10 @@ test('the module decides with nodus_ruleset_compat and its own max generation', 
   assert.equal(read(max, 0, '0', '1000').outcome, 0);
   assert.equal(keep(1, 0, 'x', '1000'), -1);
   assert.equal(json(), '');                                  // a refused input keeps nothing
+  // A ruleset query refused before it reaches the node (here: no session)
+  // clears the kept answer — never an earlier answer read as this one's.
+  read(max + 1, 0, '0', '1000');
+  assert.equal(await M.ccall('nsw_ruleset_info', 'number', [], [], { async: true }), -1);
+  assert.match(M.ccall('nsw_error', 'string', [], []), /not ready/);
+  assert.equal(json(), '');
 });

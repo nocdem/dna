@@ -3647,6 +3647,9 @@ const char *nsw_ri_tip(void) { return g_ri.tip; }
 const char *nsw_ri_h(void)   { return g_ri.h; }
 
 int nsw_ruleset_info(void) {
+    /* first: a call refused before the query (locked, busy, no session)
+     * must not leave an earlier answer readable as this one's */
+    memset(&g_rc, 0, sizeof(g_rc));
     if (nsw_begin() != 0) return -1;
     memset(&g_ri, 0, sizeof(g_ri));
     if (nsw_session_ok() != 0) return nsw_end(-1);
