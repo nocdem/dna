@@ -43,7 +43,13 @@
  *     outcome is the one without it);
  *   · auto_construct_retryable: INIT_AGREEMENT_SHORT and PROVIDER with
  *     NO_RESPONSE / HEIGHT_TOO_HIGH are retried; LIGHT_BLOCK_NOT_FOUND,
- *     another refusal and a local fault are not.
+ *     another refusal and a local fault are not;
+ *   · light_compat_judge (update-required warning, design
+ *     docs/plans/2026-10-20-update-required-warning-design.md §1 B): the
+ *     log line is due once per distinct (outcome, generation, next
+ *     generation, next height), never for an OK answer, and again when a
+ *     state comes back after an OK answer. The dnac_ruleset_info call
+ *     around it (light_compat_check) is not driven.
  *
  * ── WHAT IT REQUIRES ───────────────────────────────────────────────────
  * A default build (the target includes nodus/tools/ for the program
@@ -1026,6 +1032,81 @@ out:
     return ret;
 }
 
+/* ══ 8. light_compat_judge — the update-required log line ═════════════ */
+
+/* Proves (design docs/plans/2026-10-20-update-required-warning-design.md
+ * §1 B, nodus-light "a log line at start and on each refresh"): the line
+ * is logged once per distinct (outcome, generation, next generation, next
+ * height) — never again for the same state, even when the tip (and so
+ * the "in N blocks" text) moves; a new switch height, a new outcome or a
+ * state that comes back after an OK answer is logged again; an OK answer
+ * is never logged. The RPC half (light_compat_check) is not driven: it
+ * needs a live session (HOW IT CAN LIE 2). */
+static int t_compat_judge(void)
+{
+    light_compat_state_t      st;
+    nodus_dnac_ruleset_info_t ri;
+    char                      msg[NODUS_LIGHT_COMPAT_MSG_MAX];
+    int                       ret = 1;
+
+    memset(&st, 0, sizeof(st));
+    memset(&ri, 0, sizeof(ri));
+    ri.tip        = 900;
+    ri.generation = 5;
+    T(!light_compat_judge(&st, &ri, 5, msg, sizeof(msg)), "compat: OK not logged");
+    T(msg[0] == '\0', "compat: OK has no message");
+
+    ri.next_generation = 5;   /* a switch this build carries */
+    ri.next_height     = 1000;
+    T(!light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
+      "compat: a carried switch is not logged");
+
+    ri.next_generation = 6;   /* a switch this build does not carry */
+    T(light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
+      "compat: update-before logged");
+    T(strstr(msg, "generation 6") != NULL && strstr(msg, "block 1000") != NULL,
+      "compat: update-before names generation and block");
+    T(strstr(msg, "Update soon") != NULL &&
+      strstr(msg, "in 100 blocks") != NULL &&
+      strstr(msg, "this nodus-light knows up to 5") != NULL,
+      "compat: update-before is nodus-light's own line");
+    T(strstr(msg, "stop") == NULL && strstr(msg, "transaction") == NULL,
+      "compat: the line claims nothing about what stops working");
+    ri.tip = 950;
+    T(!light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
+      "compat: same state, later tip, not logged again");
+    ri.next_height = 1100;
+    T(light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
+      "compat: a new switch height is logged");
+    T(!light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
+      "compat: and only once");
+
+    ri.generation = 6;        /* the switch happened */
+    ri.tip        = 1200;
+    T(light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
+      "compat: update-required logged");
+    T(strstr(msg, "Update required") != NULL &&
+      strstr(msg, "generation 6") != NULL,
+      "compat: update-required names the generation");
+    T(strstr(msg, "this nodus-light knows up to 5") != NULL,
+      "compat: update-required names what nodus-light knows");
+    T(NODUS_LIGHT_GEN_MAX == NODUS_RT_GEN_ROOTS,
+      "compat: nodus-light judges by the roots generation");
+    T(!light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
+      "compat: update-required only once");
+
+    T(!light_compat_judge(&st, &ri, 6, msg, sizeof(msg)),
+      "compat: a build that carries it is OK");
+    T(light_compat_judge(&st, &ri, 5, msg, sizeof(msg)),
+      "compat: the state after an OK answer is logged again");
+
+    T(!light_compat_judge(NULL, &ri, 5, msg, sizeof(msg)), "compat: NULL state");
+    T(!light_compat_judge(&st, NULL, 5, msg, sizeof(msg)), "compat: NULL answer");
+    ret = 0;
+out:
+    return ret;
+}
+
 /* The program's functions this test does not call, referenced so the
  * included source builds without unused-function warnings. */
 static void keep_program_functions(void)
@@ -1060,6 +1141,7 @@ int main(void)
     if (t_locked() != 0) goto out;
     if (t_pinned_only() != 0) goto out;
     if (t_retryable() != 0) goto out;
+    if (t_compat_judge() != 0) goto out;
 
     printf("test_nodus_light: %d checks OK\n", g_checks);
     rc = 0;

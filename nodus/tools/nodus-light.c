@@ -123,6 +123,16 @@
  * same store (light_rebuild) — the reference has no runtime AddProvider
  * (light/client.go:856-869), and the library is not changed.
  *
+ * ── THE UPDATE-REQUIRED WARNING (design 2026-10-20 §1 B) ───────────────
+ * At start (on the primary) and on each node-list refresh (on the node
+ * the refresh asks) `run` sends one `dnac_ruleset_info` and judges it
+ * with nodus_ruleset_compat against NODUS_LIGHT_GEN_MAX, the newest
+ * rule-set generation this program knows. "Update required" (the network
+ * runs a newer generation) or "Update soon" (a switch to one is
+ * committed), in nodus-light's own words, is logged as a WARN line once per
+ * distinct (outcome, generation, next generation, next height)
+ * (light_compat_judge). One node's word; it decides nothing here.
+ *
  * ── THE STORE ──────────────────────────────────────────────────────────
  * <dir>/light.db, one SQLite file; the store prefix is the 32-byte chain
  * id, so a file is bound to one chain.
@@ -154,6 +164,7 @@
 #include "crypto/nodus_identity.h"
 #include "client/nodus_light_provider.h"
 #include "transport/nodus_tcp.h"            /* nodus_time_mono_ms          */
+#include "witness/nodus_witness_runtime.h"  /* NODUS_RT_GEN_* (macros only) */
 #include "dnac/cmt_block.h"                 /* CMT_BLOCK_PROTOCOL,
                                                cmt_header_hash            */
 #include "dnac/cmt_light_block.h"
@@ -265,6 +276,26 @@
 /** K25-12 — at least this many nodes must answer, all with the same
  *  hash, before a block is taken as the automatic root. */
 #define NODUS_LIGHT_AUTO_ROOT_MIN_ANSWERS 2u
+
+/** The update-required line's buffer (one English line of under 300
+ *  characters; snprintf truncates to fit). */
+#define NODUS_LIGHT_COMPAT_MSG_MAX      384u
+
+/** The newest rule-set generation whose root composition this nodus-light
+ *  knows — the maximum the update-required warning judges by. A macro
+ *  from the header, independent of the EVM flag: a build without
+ *  NODUS_EVM_ENABLED (every Windows build) compiles only generations 1-2
+ *  of the runtime table (nodus_witness_runtime.c GEN_SLICES), and that
+ *  table does not link into the Windows program, so its count is not
+ *  used here. */
+#define NODUS_LIGHT_GEN_MAX             NODUS_RT_GEN_ROOTS
+#ifdef NODUS_EVM_ENABLED
+/* The EVM build's newest compiled generation is NODUS_RT_GEN_MAX: a new
+ * generation stops this build until the line above is decided again. */
+_Static_assert(NODUS_RT_GEN_MAX == NODUS_LIGHT_GEN_MAX,
+               "a new rule-set generation: decide what nodus-light knows "
+               "(NODUS_LIGHT_GEN_MAX)");
+#endif
 
 /* A roster row's key is compared with a verified validator's key byte for
  * byte; the two sizes must be the same 2592 (nodus_types.h, cmt_pb.h). */
@@ -673,6 +704,80 @@ static void print_block_line(const char *what, const cmt_light_block_buf_t *b,
     fflush(stdout);
 }
 
+/* ── the update-required warning ─────────────────────────────────────── */
+
+/* Design docs/plans/2026-10-20-update-required-warning-design.md §1 B:
+ * nodus-light logs, at start and on each node-list refresh, whether the
+ * network runs (2) or has committed a switch to (1) a rule-set generation
+ * this build does not carry (nodus_ruleset_compat, nodus.h). The answer
+ * is one node's word (design §3: it can show or hide the line); the line
+ * decides nothing — nodus-light builds no transaction, and the light
+ * client's verification does not read it. The last judged state, so the
+ * same line is logged once, not on every refresh. */
+typedef struct {
+    bool     seen;              /* a state has been judged               */
+    int      outcome;           /* nodus_ruleset_compat: 0 / 1 / 2       */
+    uint32_t generation;
+    uint32_t next_generation;
+    uint64_t next_height;
+} light_compat_state_t;
+
+/* Judge one dnac_ruleset_info answer against the newest generation `max`
+ * this program knows and record it in `st`. The outcome is
+ * nodus_ruleset_compat's; the line is nodus-light's own — it builds no
+ * transaction, so it names what it knows and claims nothing about what
+ * stops working. The key is (outcome, generation, next generation, next
+ * height) — never the text, whose "in N blocks" changes with the tip.
+ * Pure: no network, no clock.
+ * @return true when `msg` holds a line to log now (outcome 1 or 2, and a
+ *         state other than the last one judged); false otherwise (msg ""). */
+static bool light_compat_judge(light_compat_state_t *st,
+                               const nodus_dnac_ruleset_info_t *ri,
+                               uint32_t max, char *msg, size_t msg_len)
+{
+    int  outcome;
+    bool same;
+
+    if (msg != NULL && msg_len > 0) msg[0] = '\0';
+    if (st == NULL || ri == NULL) return false;
+    outcome = nodus_ruleset_compat(ri, max, NULL, 0);
+    if (outcome < 0) return false;
+    if (msg != NULL && msg_len > 0) {
+        if (outcome == 2) {
+            snprintf(msg, msg_len,
+                     "Update required: the Nodus network runs rule-set "
+                     "generation %u; this nodus-light knows up to %u. "
+                     "Install the current release.",
+                     (unsigned)ri->generation, (unsigned)max);
+        } else if (outcome == 1) {
+            const uint64_t left = ri->next_height - ri->tip;   /* >= 1 */
+            snprintf(msg, msg_len,
+                     "Update soon: the Nodus network switches to rule-set "
+                     "generation %u at block %llu (in %llu %s); this "
+                     "nodus-light knows up to %u. Install the current "
+                     "release.",
+                     (unsigned)ri->next_generation,
+                     (unsigned long long)ri->next_height,
+                     (unsigned long long)left,
+                     left == 1u ? "block" : "blocks", (unsigned)max);
+        }
+    }
+    same = st->seen && st->outcome == outcome &&
+           st->generation == ri->generation &&
+           st->next_generation == ri->next_generation &&
+           st->next_height == ri->next_height;
+    st->seen            = true;
+    st->outcome         = outcome;
+    st->generation      = ri->generation;
+    st->next_generation = ri->next_generation;
+    st->next_height     = ri->next_height;
+    if (outcome == 0 || same) {
+        if (msg != NULL && msg_len > 0) msg[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
 /* ── the network side: one pinned client + provider per node ─────────── */
 
 /* Every array is allocated at NODUS_LIGHT_MAX_NODES slots once and never
@@ -700,6 +805,8 @@ typedef struct {
      * client object (its rebuild was postponed or failed). */
     bool                    *pending;
     size_t                   roster_next; /* rotation over the slots    */
+    /* The update-required warning's last judged state. */
+    light_compat_state_t     compat;
 } light_net_t;
 
 static void net_free(light_net_t *net)
@@ -897,6 +1004,23 @@ static bool net_slot_ready(const light_net_t *net, size_t i)
            nodus_client_is_ready(&net->clients[i]);
 }
 
+/* The update-required check (light_compat_judge above) over slot `i`'s
+ * session: one dnac_ruleset_info request. A slot that is not connected,
+ * a node older than the method, a storage-only node or no answer logs
+ * nothing (the next refresh asks again). */
+static void light_compat_check(light_net_t *net, size_t i)
+{
+    nodus_dnac_ruleset_info_t ri;
+    char                      msg[NODUS_LIGHT_COMPAT_MSG_MAX];
+
+    if (!net_slot_ready(net, i)) return;
+    if (nodus_client_dnac_ruleset_info(&net->clients[i], &ri) != 0) return;
+    if (light_compat_judge(&net->compat, &ri, NODUS_LIGHT_GEN_MAX, msg,
+                           sizeof(msg))) {
+        QGP_LOG_WARN(LOG_TAG, "%s (answer of %s)", msg, net->nodes[i].label);
+    }
+}
+
 /* ── K25-11: the node-list refresh (file header) ─────────────────────── */
 
 /* True when `pk` is, byte for byte, the key of a validator of `vs`. */
@@ -1012,6 +1136,9 @@ static size_t light_refresh(cmt_light_client_t *c, light_net_t *net,
         return 0;
     }
     net->roster_next = (ask + 1u) % net->n;
+    /* The update-required warning rides on the refresh (design
+     * 2026-10-20 §1 B), over the same node. */
+    light_compat_check(net, ask);
 
     /* The verified set: the validator set of the latest trusted light
      * block (reads answer while locked too, cmt_light_client.h D20). */
@@ -1846,6 +1973,9 @@ static int cmd_run(int argc, char **argv)
      * reachable yet does not end the program on that path. */
     if (net_connect(&net) != 0 && !is_auto) goto done;
     if (g_stop) { ret = 0; goto done; }
+    /* The update-required warning at start (design 2026-10-20 §1 B), on
+     * the primary; with no node connected yet it waits for the refresh. */
+    light_compat_check(&net, net.primary_idx);
 
     if (is_auto) {
         /* K25-12: try until a root is taken or the nodes disagree. */

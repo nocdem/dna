@@ -5716,9 +5716,19 @@ composition tag stays `"NDS.CORE.v2"`.
   another node never reuses it. `ruleset-info` adds `next switch: …` and `compatibility: …`
   lines; `status` (whose stderr is silenced while the screen is gathered) shows the verdict
   as its `this CLI:` line under Chain. The DHT verbs on the CLI's raw session (`ping`, `put`,
-  `get`, `listen`, …) do not check. nodus-light is not wired yet: `nodus_runtime_generation_count`
-  does not link into the Windows build, and a build without the EVM (`NODUS_EVM_ENABLED`, OFF
-  on Windows) compiles generations 1-2 only, so the maximum it would judge by is open.
+  `get`, `listen`, …) do not check. **nodus-light** (`tools/nodus-light.c`
+  `light_compat_check` / `light_compat_judge`): at start on the primary and on each node-list
+  refresh on the node the refresh asks, one `dnac_ruleset_info`; the outcome of
+  `nodus_ruleset_compat` against `NODUS_LIGHT_GEN_MAX` (= `NODUS_RT_GEN_ROOTS`, a header macro:
+  `nodus_runtime_generation_count` does not link into the Windows build, and a build without
+  `NODUS_EVM_ENABLED` — every Windows build — compiles generations 1-2 only; the EVM build
+  `_Static_assert`s `NODUS_RT_GEN_MAX == NODUS_LIGHT_GEN_MAX`, so a new generation stops the
+  Linux build until the value is decided again). The line is nodus-light's own (it builds no
+  transaction): "Update required: the Nodus network runs rule-set generation N; this
+  nodus-light knows up to M. Install the current release." / "Update soon: … switches to
+  rule-set generation N at block H (in K blocks); this nodus-light knows up to M. Install the
+  current release.", plus "(answer of <node>)", logged WARN once per distinct (outcome,
+  generation, next generation, next height). A failed request logs nothing.
 - `dnac_name_lookup {name}` (lowercase only; the byte rule, else `PROTOCOL_ERROR`) →
   `{found, owner (128 hex), rh, ch}`; `dnac_name_of {owner}` (exactly 128 lowercase hex) →
   `{found, name, rh, ch}` — `rh` = registered_height, `ch` = the committed height the answer is
