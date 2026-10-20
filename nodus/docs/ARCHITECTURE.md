@@ -7125,7 +7125,7 @@ transaction, at the end of block H−1:
    `DNAC_CFG_RULESET_GEN_ROLES_D` (D4), present at H and absent at H−1 (until 8c: the development
    param-16 row with the storage literal, design §10 item 2); another value is a FAULT; a build
    without `NODUS_EVM_ENABLED` FAULTs (the 6b″ rule);
-2. schema exactly S18, else FAULT;
+2. schema S18 (since HF-7 P1b: S18 or S19 — "HF-7 P1b — schema S19" below), else FAULT;
 3. `nodus_witness_domreg_generation_switch(NODUS_RT_GEN_STORAGE_BASE, NODUS_RT_GEN_STORAGE)` — the
    procedure the removed row ran; "registry is not generation 3" is a FAULT;
 4. `nodus_witness_v2_roles_migrate(w, H, chain32 = nodus_witness_v2_chain_id, DNAC_HF6_FOUNDATION_OWNER)`;

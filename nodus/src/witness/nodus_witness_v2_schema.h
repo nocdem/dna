@@ -775,8 +775,8 @@ int nodus_witness_db_migrate_v2s16_ex(nodus_witness_t *w,
  * 17 (a node opened by an older build mid-upgrade is still S16 until its
  * next open); every other gate (preflight, pools, the genesis gate)
  * accepts 17 — the one-rung precedent of S15 -> S16. (HF-6 sub-slice 3a:
- * S18 below is now the live rung; S17 stays accepted wherever 17 was.)
- * Version 19+ fails closed. */
+ * S18 below is now the live rung; S17 stays accepted wherever 17 was;
+ * HF-7 P1b: S19 after it.) Version 20+ fails closed. */
 #define NODUS_V2_SCHEMA_VERSION_S17  17u
 
 typedef enum {
