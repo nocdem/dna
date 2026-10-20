@@ -6468,7 +6468,10 @@ cmt_claim_failed:
              * boundary that credits nothing and pays nothing moves none
              * of them and must NOT declare CORE: phase 9 rejects a
              * declared no-op as hard as phase 8 rejects an undeclared
-             * mutation. The balance copy is out of every root. */
+             * mutation. The balance copy is out of every root below the
+             * roots generation; from NODUS_RT_GEN_ROOTS it is SYSTEM v6
+             * leg S1 (HF-7) — the epoch boundary declares SYSTEM touched
+             * above, so its writes are covered there. */
             /* General multisig (decision 2026-09-29-general-multisig.md)
              * withdrew W-A's genesis-seat refund into the Foundation
              * treasury pool: EVERY graduate again releases its bond as a
