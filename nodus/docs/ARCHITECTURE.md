@@ -11039,7 +11039,8 @@ joiner's `apply_table` column count is unaffected. `v2_replay` is on the genesis
 
 **INERT.** Nothing in this build writes or reads `v2_replay` or `last_upd_hash`: the writers (the applied
 item's savepoint, the prune, the edge's head seed) and the readers (the replay guards, `replay_root`, the
-head's previous-update read) arrive with HF-7 P1c. No root, invariant or verdict moves.
+head's previous-update read) arrive with HF-7 P1c. No root, invariant or verdict moves. (Since P1c-1 —
+section below — the readers and the head-column writers exist, gated on generation ROOTS.)
 
 **Gates widened** (each accepts 19 wherever it accepted 18, so a node migrated at open still replays
 every historical fork): every builder migrates to S19 (`nodus_witness_v2_join.c`,
@@ -11060,6 +11061,70 @@ another type; S16 → S19 in one call; version 20 refused; the S18 rung refuses 
 ensure step at S19); `test_v2_evm` (at-open rung S16 → S19 and a previous-build S17 → S19, with the S19
 objects dropped first so the climb is real), `test_v2_gen` (derived chain at S19, `v2_replay` empty, no
 `last_upd_hash`) and `test_v2_schema`'s S12 fixture check updated. Written, NOT run by the author.
+
+### HF-7 P1c-1 — the HF-7 roots wired into the witness (2026-10-20, branch `hf7-p1c1` only — not versioned, not voted; INERT until P1d)
+
+Normative bytes: snapshot design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §8.9 S1-S8
+(APPROVED 2026-10-15). Timing and lifecycle: §10.2 item 8, the transition matrix §10.3, rev 1 §10.9, the
+khan decisions §10.11; Kurultay #24 summary item 7; Kurultay #27 summary items 7 (DomainHead lifecycle)
+and 8 (every GLOBAL site moves together). Function list: `messenger/docs/functions/ledger.md` §1.3.
+
+**The gate.** Every new behaviour is selected by the SYSTEM runtime's generation `>= NODUS_RT_GEN_ROOTS`
+(5). No registry reaches 5 before package P1d (no compiled table entry, `NODUS_RT_GEN_MAX` unchanged), so
+on every chain every root, byte and verdict is today's. Inside the apply engine the gate is one static
+reader, `doms_roots_on` (`nodus_witness_v2_apply.c`): the generation of the runtime the working set's
+SYSTEM domain resolved to (`doms_load` → `nodus_witness_v2_runtime_for`) — the same `rt->generation` phase
+8's SYSTEM state-root hook (`nodus_rt_system_state_root`) reads. After the 6c lifecycle re-scan this is the
+generation the phase-6b edge switched TO, so block A−1's roots are already the new ones (the HF-4 / HF-6
+edge rule; matrix §10.3 row "SYSTEM root … phase 8 runs after 6b"). `doms_load` decides it at SYSTEM
+(domain 0, loaded first) before it loads any head, so the head column is selected under ROOTS only — the
+pre-ROOTS statement also runs on an S16-S18 database, which has no such column. A SYSTEM without a
+resolved runtime answers "not ROOTS" (the hook's NULL rule: the older composition, never a guessed newer
+one).
+
+**What changes under ROOTS** (matrix column "block A−1" onward):
+- SYSTEM state root `"NDS.SYS.v6"` (`nodus_witness_system_root_v6`): the nine v5 legs, the storage leg's
+  segments as v2 leaves (S5 — every already-published segment re-tags, so segments / storage / SYSTEM
+  roots move at A−1 with no publication), then the balance copy (S1, every retained `v2_balance_copy`
+  row), `validator_stats.active_count` (S2, absent row = fault) and the storage members (S3). Each leg
+  loader checks every column's storage class and every integer's range BEFORE narrowing — a negative or
+  out-of-range stored value is a fault, never a cast — and reads in the SQL order of the stated key
+  (the shared function re-checks strict ascent).
+- DomainHead v2, head-authoritative. `v2_domain_heads.last_upd_hash` is the authority for the previous
+  update hash. Lifecycle: the edge seeds every head (`nodus_witness_v2_domain_heads_seed_last_upd` — today's
+  history query, the latest `v2_domain_updates` hash or the genesis sentinel; written and unit-tested here,
+  CALLED by P1d's edge in phase 6b, before the 6c re-scan and phase 9); phase 9 reads the head's column
+  (`nodus_witness_v2_head_last_upd`) and checks it against the mirror row — `v2_root_history` at
+  (domain_id, the head's domain_height), the history row bound to the head's own coordinates, never "the
+  latest row"; a disagreeing row or an unseeded column is a node FAULT; an ABSENT row leaves the head's
+  value standing (JUDGMENT — no Kurultay text writes the absent case: G4 stops the node on a row that
+  DISAGREES, and a snapshot restore (P5) that ships no history must still execute); phase 10 writes the
+  new update hash for a touched head and leaves an untouched head's value; a head activated under ROOTS
+  stores the genesis sentinel; `head_store` always names the column under ROOTS (an `INSERT OR REPLACE`
+  that omitted it would null the seed). Phase 13 faults on an untouched head without a valid value.
+- GLOBAL v2 = SHA3-512("NDS.GLOBAL.v2" ‖ domains_root v2 ‖ replay_root), the replay leg read in phase 13,
+  after phase 12 (and the replay package's prune). At A−1 the relation is empty (no row is inserted before
+  A) — the S7 empty root. ONE composer, `nodus_witness_global_compose`, serves every GLOBAL site: phase 13,
+  the no-block-row recompute (`nodus_witness_v2_committed_global_root`), the Comet genesis, and
+  `nodus_witness_global_root_v2`'s committed-heads branch (the head-less pre-S5 fixture branch keeps v1).
+
+**Not in this package.** The replay relation's writes, guards, prune and the expiry rule (P1c-2); the
+edge, param 22, the D5 literal and the generation-5 pins (P1d). A genesis under ROOTS is not reachable
+today (the genesis registry is generation 1) and would need one more change before it can be: the epoch-0
+balance copy is written AFTER the genesis roots (`nodus_witness_v2_genesis_cmt`), while S1 makes it a
+SYSTEM leg — the SYSTEM head would not equal the first block's recomputation.
+
+**Tests.** `test_hf7_wiring` (EVM builds): the four leg loaders and the v2 segments root against the pure
+functions over hand-written rows (out-of-order inserts, the empty roots, kind 2 / negative amount /
+negative or absent active_count refused); on test_hf6_migrate's seeded fixture — generation 4 at E−1
+byte-identical to the pre-HF-7 formula with every column NULL; the seed (autocommit refused, every head =
+today's query, a never-updated domain = the sentinel, idempotent, a different value refused); then a
+scripted table naming the generation-4 SYSTEM / CORE tuples generation ROOTS: the boundary block E with a
+tampered mirror row FAULTs, restored it commits with SYSTEM == v6 over the twelve legs, touched / untouched
+head columns as above, GLOBAL v2 over the empty relation (and `nodus_witness_global_root_v2` equal), then
+GLOBAL v2 over three hand-written replay rows at E+1; the head read directly (agree, disagree, absent row,
+NULL column). It reaches ROOTS by swapping the table between blocks, not through the edge (P1d). Written,
+NOT run by the author.
 
 ### Witness Database Schema
 

@@ -838,9 +838,16 @@ int nodus_witness_v2_claim_state_update(nodus_witness_t *w,
  * BEFORE the 6c re-scan reloads the runtimes — so the first root composed
  * as v5 is H-1's own post-state, committed in H-1's app_hash: the HF-4
  * edge. A NULL runtime is a caller fault (the engine never passes one);
- * it keeps the v4 answer rather than guessing a newer composition. */
+ * it keeps the v4 answer rather than guessing a newer composition.
+ * HF-7 P1c-1 (snapshot design §8.9 S4, matrix §10.3): GEN_ROOTS or later
+ * composes "NDS.SYS.v6" (the nine v5 legs, segment leaves v2, + balance
+ * copy, active count, storage members). The same edge rule: the HF-7 edge
+ * (P1d) rewrites the registry in phase 6b of block A−1, the 6c re-scan
+ * resolves the ROOTS runtimes, so A−1's own SYSTEM root is already v6. */
 int nodus_rt_system_state_root(const nodus_domain_runtime_t *rt,
                                struct nodus_witness *w, uint8_t out[64]) {
+    if (rt && rt->generation >= NODUS_RT_GEN_ROOTS)
+        return nodus_witness_system_root_v6((nodus_witness_t *)w, out);
     if (rt && rt->generation >= NODUS_RT_GEN_STORAGE)
         return nodus_witness_system_root_v5((nodus_witness_t *)w, out);
     return nodus_witness_system_root_v2((nodus_witness_t *)w, out);

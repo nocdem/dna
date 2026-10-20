@@ -1596,6 +1596,56 @@ int nodus_witness_v2_claim_nullifier(nodus_witness_t *w, const uint8_t *bytes,
 int nodus_witness_v2_committed_global_root(nodus_witness_t *w,
                                            uint8_t out[64]);
 
+/* ── HF-7 P1c-1: DomainHead v2 head-authoritative last_upd_hash ────────
+ * Snapshot design docs/plans/2026-09-11-nodus-ledger-snapshot-design.md
+ * §8.9 S6, §10.2 item 8, §10.3 (matrix), §10.7 G4; Kurultay #24 summary
+ * item 7, Kurultay #27 summary item 7. Under the ROOTS generation
+ * (NODUS_RT_GEN_ROOTS) the column v2_domain_heads.last_upd_hash (schema
+ * S19) is the AUTHORITY for a domain's previous DomainUpdate hash and a
+ * DomainHead v2 input; v2_root_history (domain_id, domain_height) is its
+ * MIRROR. Lifecycle: the edge seeds every head (below); phase 10 writes
+ * the new update hash for touched heads, untouched heads keep theirs; a
+ * head activated under ROOTS carries the genesis sentinel
+ * (dna_dupd_prev_genesis). Below ROOTS the column is neither read nor
+ * written. */
+
+#define NODUS_V2_LUH_OK        0   /* the head's value (mirror agrees or
+                                    * the history row is absent)         */
+#define NODUS_V2_LUH_UNSEEDED  1   /* the column is NULL                  */
+#define NODUS_V2_LUH_MIRROR    2   /* the history row at the head's
+                                    * domain_height disagrees            */
+
+/**
+ * The previous-update hash execution uses under the ROOTS generation
+ * (phase 9's read): domain `domain_id`'s head row's last_upd_hash into
+ * `out`, checked against the mirror row v2_root_history (domain_id,
+ * domain_height = the head's domain_height). An ABSENT mirror row leaves
+ * the head's value standing (JUDGMENT: G4 stops the node on a row that
+ * DISAGREES; a restore that ships no history must still execute — no
+ * Kurultay text writes the absent case). Reads only.
+ * @return NODUS_V2_LUH_OK with `out` filled; NODUS_V2_LUH_UNSEEDED;
+ *         NODUS_V2_LUH_MIRROR; -1 on a fault (no head row, a column that
+ *         is neither NULL nor a 64-byte BLOB, a malformed mirror row, a
+ *         read fault). `out` is written only on NODUS_V2_LUH_OK.
+ */
+int nodus_witness_v2_head_last_upd(nodus_witness_t *w, uint32_t domain_id,
+                                   uint8_t out[64]);
+
+/**
+ * The one-time seed of the head column, for the HF-7 edge (P1d calls it
+ * in phase 6b of block A−1, BEFORE the 6c re-scan and phase 9 read the
+ * heads; this package only provides it). For EVERY v2_domain_heads row
+ * (domain_id ASC — range-checked 0..UINT32_MAX before narrowing) the value
+ * is TODAY'S history query (the latest v2_domain_updates upd_hash, or the
+ * genesis sentinel for a domain that never had an update), cross-checked
+ * against the mirror row at the head's domain_height (disagreement →
+ * fault; absent → accepted). A row already carrying exactly that value is
+ * left as it is (idempotent); a row carrying a DIFFERENT value is a fault.
+ * Must run inside the caller's transaction (autocommit → -1); an empty
+ * head table is a fault. @return 0 / -1 (the caller rolls back).
+ */
+int nodus_witness_v2_domain_heads_seed_last_upd(nodus_witness_t *w);
+
 /**
  * ENGINE-INTERNAL, exposed for direct test: find `wire_id` (the
  * FULL-WIRE identity) in a domain's per-block ordered id list. A MISS

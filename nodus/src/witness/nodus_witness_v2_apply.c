@@ -206,19 +206,33 @@ int nodus_witness_v2_supply_check(nodus_witness_t *w) {
 
 /* ── DomainHead persistence ─────────────────────────────────────────── */
 
-static int head_store(nodus_witness_t *w, const dna_v2_domain_head_t *h) {
+/* HF-7 P1c-1 (DomainHead v2 head-authoritative — snapshot design §10.2
+ * item 8, §10.9; Kurultay #27 summary item 7): `last_upd_hash` NULL = the
+ * statement before HF-7, byte for byte (the column is not named, so the
+ * REPLACE leaves it NULL exactly as today — every generation below ROOTS
+ * passes NULL); non-NULL = the ROOTS generation's write, which ALWAYS
+ * names and binds the column — an INSERT OR REPLACE that omitted it would
+ * delete the row and re-insert it with the column NULL, destroying the
+ * edge's seed on the first touched head. */
+static int head_store(nodus_witness_t *w, const dna_v2_domain_head_t *h,
+                      const uint8_t *last_upd_hash) {
     uint8_t enc[DNA_V2_DOMHEAD_ENC_LEN];
     if (dna_v2_domain_head_encode(h, enc) != 0) return -1;
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "INSERT OR REPLACE INTO v2_domain_heads "
-            "(domain_id, head, domain_height, last_updated_global) "
-            "VALUES (?1, ?2, ?3, ?4)", -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(w->db, last_upd_hash
+            ? "INSERT OR REPLACE INTO v2_domain_heads "
+              "(domain_id, head, domain_height, last_updated_global, "
+              "last_upd_hash) VALUES (?1, ?2, ?3, ?4, ?5)"
+            : "INSERT OR REPLACE INTO v2_domain_heads "
+              "(domain_id, head, domain_height, last_updated_global) "
+              "VALUES (?1, ?2, ?3, ?4)", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)h->domain_id);
     sqlite3_bind_blob(st, 2, enc, DNA_V2_DOMHEAD_ENC_LEN, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 3, (sqlite3_int64)h->domain_height);
     sqlite3_bind_int64(st, 4, (sqlite3_int64)h->last_updated_global_height);
+    if (last_upd_hash)
+        sqlite3_bind_blob(st, 5, last_upd_hash, 64, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE ? 0 : -1;
@@ -242,13 +256,32 @@ static void head_decode(const uint8_t enc[DNA_V2_DOMHEAD_ENC_LEN],
     h->status = enc[88];
 }
 
-/* 0 found (validated blob + mirror agreement), 1 absent, -1 fault. */
+/* The state of a head row's last_upd_hash column as head_load read it
+ * (HF-7 P1c-1). Only the ROOTS generation acts on it; below it the column
+ * is never selected and the state stays LUH_UNREAD. */
+#define LUH_UNREAD   0     /* not selected (generation below ROOTS)      */
+#define LUH_NULL     1     /* selected, NULL — never seeded              */
+#define LUH_OK       2     /* selected, a 64-byte BLOB                   */
+#define LUH_BAD      3     /* selected, any other storage class / length */
+
+/* 0 found (validated blob + mirror agreement), 1 absent, -1 fault.
+ * HF-7 P1c-1: `luh_on` (the ROOTS generation) additionally selects the
+ * last_upd_hash column into `luh` / `*luh_state` (LUH_*); a NULL or
+ * malformed column is reported, not judged — the reader that needs it
+ * (phase 9, phase 13) faults. `luh_on` == 0 runs the statement before
+ * HF-7, byte for byte (it also runs on an S16-S18 database, which has no
+ * such column). */
 static int head_load(nodus_witness_t *w, uint32_t domain_id,
-                     dna_v2_domain_head_t *out) {
+                     dna_v2_domain_head_t *out, int luh_on,
+                     uint8_t luh[64], int *luh_state) {
+    *luh_state = LUH_UNREAD;
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT head, domain_height, last_updated_global "
-            "FROM v2_domain_heads WHERE domain_id = ?1", -1, &st, NULL)
+    if (sqlite3_prepare_v2(w->db, luh_on
+            ? "SELECT head, domain_height, last_updated_global, "
+              "last_upd_hash, typeof(last_upd_hash) "
+              "FROM v2_domain_heads WHERE domain_id = ?1"
+            : "SELECT head, domain_height, last_updated_global "
+              "FROM v2_domain_heads WHERE domain_id = ?1", -1, &st, NULL)
         != SQLITE_OK)
         return -1;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)domain_id);
@@ -265,19 +298,37 @@ static int head_load(nodus_witness_t *w, uint32_t domain_id,
             h.last_updated_global_height == ml) {
             *out = h;
             out_rc = 0;
+            if (luh_on) {
+                const char *t = (const char *)sqlite3_column_text(st, 4);
+                if (t && strcmp(t, "null") == 0) {
+                    *luh_state = LUH_NULL;
+                } else if (t && strcmp(t, "blob") == 0 &&
+                           sqlite3_column_bytes(st, 3) == 64) {
+                    memcpy(luh, sqlite3_column_blob(st, 3), 64);
+                    *luh_state = LUH_OK;
+                } else {
+                    *luh_state = LUH_BAD;
+                }
+            }
         }
     }
     sqlite3_finalize(st);
     return out_rc;
 }
 
+/* TODAY'S HISTORY QUERY (before HF-7 the previous-update authority; from
+ * the ROOTS generation only the one-time seed of the head column reads
+ * it — nodus_witness_v2_domain_heads_seed_last_upd). ONE string for both
+ * readers. */
+#define PREV_UPDATE_SQL                                                   \
+    "SELECT upd_hash FROM v2_domain_updates WHERE domain_id = ?1 "        \
+    "ORDER BY global_height DESC LIMIT 1"
+
 /* Latest committed update hash for a domain (genesis sentinel if none). */
 static int prev_update_hash(nodus_witness_t *w, uint32_t domain_id,
                             uint8_t out[64]) {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "SELECT upd_hash FROM v2_domain_updates WHERE domain_id = ?1 "
-            "ORDER BY global_height DESC LIMIT 1", -1, &st, NULL)
+    if (sqlite3_prepare_v2(w->db, PREV_UPDATE_SQL, -1, &st, NULL)
         != SQLITE_OK)
         return -1;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)domain_id);
@@ -293,6 +344,142 @@ static int prev_update_hash(nodus_witness_t *w, uint32_t domain_id,
     }
     sqlite3_finalize(st);
     return out_rc;
+}
+
+/* ── HF-7 P1c-1: the head-authoritative previous-update read ───────────
+ * Snapshot design §10.2 item 8 / §10.7 G4, Kurultay #24 item 7, Kurultay
+ * #27 summary item 7. THE MIRROR is the history row bound to the head's
+ * OWN coordinates — v2_root_history (domain_id, domain_height =
+ * head.domain_height), PRIMARY KEY, whose upd_hash is the update that
+ * produced exactly this head: phase 11 writes d->upd_hash at the new
+ * height, head_activate the genesis sentinel at height 0 — never "the
+ * latest row" of a table (Astra r1 #6: an arbitrary latest row must not
+ * regain authority). JUDGMENT (no Kurultay text names the row): the
+ * choice of v2_root_history, and the ABSENT row = the head stands (G4:
+ * "a history row DISAGREEING with it stops the node"; absent is not
+ * disagreeing, and head-authority exists so a restore (P5) that ships no
+ * history can execute). @return 0 agree, 1 absent, 2 disagree, -1 fault
+ * (a malformed row, a read fault, a height outside the INTEGER range). */
+static int head_history_mirror(nodus_witness_t *w, uint32_t domain_id,
+                               uint64_t domain_height,
+                               const uint8_t luh[64]) {
+    if (domain_height > (uint64_t)INT64_MAX) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT upd_hash, typeof(upd_hash) FROM v2_root_history "
+            "WHERE domain_id = ?1 AND domain_height = ?2", -1, &st, NULL)
+        != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)domain_id);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)domain_height);
+    int rc = sqlite3_step(st);
+    int out = -1;
+    if (rc == SQLITE_DONE) {
+        out = 1;
+    } else if (rc == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(st, 1);
+        if (t && strcmp(t, "blob") == 0 &&
+            sqlite3_column_bytes(st, 0) == 64)
+            out = memcmp(sqlite3_column_blob(st, 0), luh, 64) == 0 ? 0 : 2;
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* Contract: nodus_witness_v2_apply.h. */
+int nodus_witness_v2_head_last_upd(nodus_witness_t *w, uint32_t domain_id,
+                                   uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    dna_v2_domain_head_t h;
+    uint8_t luh[64];
+    int st = LUH_UNREAD;
+    int hrc = head_load(w, domain_id, &h, /*luh_on=*/1, luh, &st);
+    if (hrc != 0) return -1;            /* absent head or fault          */
+    if (st == LUH_NULL) return NODUS_V2_LUH_UNSEEDED;
+    if (st != LUH_OK) return -1;        /* not a 64-byte BLOB            */
+    int m = head_history_mirror(w, domain_id, h.domain_height, luh);
+    if (m < 0) return -1;
+    if (m == 2) return NODUS_V2_LUH_MIRROR;
+    memcpy(out, luh, 64);               /* agree (0) or absent (1)       */
+    return NODUS_V2_LUH_OK;
+}
+
+/* Contract: nodus_witness_v2_apply.h. */
+int nodus_witness_v2_domain_heads_seed_last_upd(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+    if (sqlite3_get_autocommit(w->db) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "last_upd_hash seed: called outside a "
+                      "transaction — refusing (it is one step of a block)");
+        return -1;
+    }
+    uint32_t ids[MAX_DOMS];
+    dna_v2_domain_head_t heads[MAX_DOMS];
+    size_t n = 0;
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT domain_id, typeof(domain_id) FROM v2_domain_heads "
+                "ORDER BY domain_id ASC", -1, &st, NULL) != SQLITE_OK)
+            return -1;
+        int rc, bad = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            const char *t = (const char *)sqlite3_column_text(st, 1);
+            sqlite3_int64 v = sqlite3_column_int64(st, 0);
+            /* P1a audit finding A: range-check before the u32 narrowing */
+            if (n >= MAX_DOMS || !t || strcmp(t, "integer") != 0 ||
+                v < 0 || v > (sqlite3_int64)UINT32_MAX) {
+                bad = 1;
+                break;
+            }
+            ids[n++] = (uint32_t)v;
+        }
+        sqlite3_finalize(st);
+        if (bad || rc != SQLITE_DONE || n == 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "last_upd_hash seed: the head table "
+                          "is unreadable, malformed or empty");
+            return -1;
+        }
+    }
+    for (size_t i = 0; i < n; i++) {
+        uint8_t have[64], want[64];
+        int st = LUH_UNREAD;
+        if (head_load(w, ids[i], &heads[i], /*luh_on=*/1, have, &st) != 0 ||
+            (st != LUH_NULL && st != LUH_OK))
+            return -1;
+        /* today's history query: the latest DomainUpdate, the genesis
+         * sentinel for a domain that never had one */
+        if (prev_update_hash(w, ids[i], want) != 0) return -1;
+        int m = head_history_mirror(w, ids[i], heads[i].domain_height, want);
+        if (m < 0 || m == 2) {
+            QGP_LOG_ERROR(LOG_TAG, "last_upd_hash seed: domain %u's latest "
+                          "update disagrees with its head-height history "
+                          "row (or the row is unreadable)",
+                          (unsigned)ids[i]);
+            return -1;
+        }
+        if (st == LUH_OK) {
+            if (memcmp(have, want, 64) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "last_upd_hash seed: domain %u "
+                              "already carries a different value",
+                              (unsigned)ids[i]);
+                return -1;
+            }
+            continue;                   /* already this value: idempotent */
+        }
+        sqlite3_stmt *up = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "UPDATE v2_domain_heads SET last_upd_hash = ?1 "
+                "WHERE domain_id = ?2 AND last_upd_hash IS NULL", -1, &up,
+                NULL) != SQLITE_OK)
+            return -1;
+        sqlite3_bind_blob(up, 1, want, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(up, 2, (sqlite3_int64)ids[i]);
+        int rc = sqlite3_step(up);
+        int ch = sqlite3_changes(w->db);
+        sqlite3_finalize(up);
+        if (rc != SQLITE_DONE || ch != 1) return -1;
+    }
+    return 0;
 }
 
 /* ── The registered-domain working set ──────────────────────────────── */
@@ -336,7 +523,31 @@ typedef struct {
     dna_v2_domain_head_t newhead;
     dna_domain_update_t upd;
     uint8_t  upd_hash[64];
+    /* HF-7 P1c-1 (DomainHead v2): the head row's last_upd_hash as loaded
+     * (`head`'s, LUH_* state — LUH_UNREAD below the ROOTS generation) and
+     * the value phase 10 gives `newhead` (touched: this block's update
+     * hash; untouched: `luh` unchanged). Read only under ROOTS. */
+    int      luh_state;
+    uint8_t  luh[64];
+    uint8_t  newluh[64];
 } dom_ctx_t;
+
+/* HF-7 P1c-1 — THE generation gate of every root phase (8-13, the
+ * recompute, the genesis): 1 when the working set's SYSTEM domain resolved
+ * (doms_load → nodus_witness_v2_runtime_for) to a runtime of generation
+ * >= NODUS_RT_GEN_ROOTS. It is the same input phase 8's SYSTEM state-root
+ * hook reads (nodus_rt_system_state_root: rt->generation), and after the
+ * 6c re-scan it is the generation the edge of phase 6b switched TO — so
+ * block A−1's roots are under the new generation, as the matrix (§10.3)
+ * says. A SYSTEM without a resolved runtime answers 0: the hook's own
+ * NULL rule (the older composition, never a guessed newer one). */
+static int doms_roots_on(const dom_ctx_t *doms, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (doms[i].domain_id == DNA_DOMAIN_SYSTEM)
+            return doms[i].rt != NULL &&
+                   doms[i].rt->generation >= NODUS_RT_GEN_ROOTS;
+    return 0;
+}
 
 /**
  * Free a `doms`/`post` array allocated by `calloc(MAX_DOMS, sizeof(*doms))`
@@ -393,6 +604,10 @@ static int doms_load(nodus_witness_t *w, dom_ctx_t *doms, size_t *n_out,
     if (rc != SQLITE_DONE) return -1;
     if (n == 0) return -1;              /* V2 apply needs a registry     */
 
+    int luh_on = 0;                     /* HF-7: decided by SYSTEM (i = 0,
+                                         * ORDER BY domain_id ASC — SYSTEM
+                                         * is domain 0) before any head is
+                                         * loaded: doms_roots_on's rule   */
     for (size_t i = 0; i < n; i++) {
         dom_ctx_t *d = &doms[i];
         dna_domreg_record_t rec;
@@ -416,8 +631,10 @@ static int doms_load(nodus_witness_t *w, dom_ctx_t *doms, size_t *n_out,
         d->status = rec.status;
         d->pre_status = rec.status;
         (void)nodus_witness_v2_runtime_for(w, d->domain_id, 0, &d->rt);
+        if (i == 0) luh_on = doms_roots_on(doms, 1);
 
-        int hrc = head_load(w, d->domain_id, &d->head);
+        int hrc = head_load(w, d->domain_id, &d->head, luh_on, d->luh,
+                            &d->luh_state);
         if (hrc < 0) return -1;
         d->has_head = (hrc == 0);
         if (!d->has_head) {
@@ -468,9 +685,15 @@ static int doms_load(nodus_witness_t *w, dom_ctx_t *doms, size_t *n_out,
  * Also appends the height-0 root-history row (upd_hash = the genesis
  * linkage sentinel — no DomainUpdate exists for an activation). Runs
  * INSIDE the caller's transaction. @return 0 / -1 (nothing partial).
+ *
+ * HF-7 P1c-1: `luh_on` (the ROOTS generation, doms_roots_on) also gives
+ * the new head its last_upd_hash = the SAME genesis sentinel (Kurultay #27
+ * summary item 7: "genesis sentinel for never-updated / new domains") and
+ * stores it with the head, so the height-0 history row it writes below is
+ * the head's mirror. Below ROOTS the column stays NULL, as today.
  */
 static int head_activate(nodus_witness_t *w, dom_ctx_t *d,
-                         uint64_t global_height) {
+                         uint64_t global_height, int luh_on) {
     if (!d || !d->rt || d->status != DNA_DOMST_ACTIVE) return -1;
 
     /* S7: the runtime's activation-time state initialization (if any)
@@ -505,10 +728,14 @@ static int head_activate(nodus_witness_t *w, dom_ctx_t *d,
     d->head.last_updated_global_height = global_height;
     d->head.ruleset_version = d->man.ruleset_version;
     d->head.status = DNA_DOMST_ACTIVE;
-    if (head_store(w, &d->head) != 0) return -1;
 
     uint8_t sentinel[64];
     if (dna_dupd_prev_genesis(sentinel) != 0) return -1;
+    if (luh_on) {
+        memcpy(d->luh, sentinel, 64);
+        d->luh_state = LUH_OK;
+    }
+    if (head_store(w, &d->head, luh_on ? sentinel : NULL) != 0) return -1;
     sqlite3_stmt *hs = NULL;
     if (sqlite3_prepare_v2(w->db,
             "INSERT INTO v2_root_history (domain_id, domain_height, "
@@ -5993,7 +6220,8 @@ cmt_claim_failed:
                         doms_free(post);
                         goto fail;
                     }
-                    if (head_activate(w, p, blk->global_height) != 0) {
+                    if (head_activate(w, p, blk->global_height,
+                                      doms_roots_on(post, n_post)) != 0) {
                         /* Reason FIRST — p points into `post`. */
                         V2AP_VERDICT("phase 6c: activation head for "
                                      "domain %u could not be built at "
@@ -6308,8 +6536,39 @@ cmt_claim_failed:
             d->upd.res_verify_cost = d->res_cost;   /* ACTUAL consumed
                                          * units (env legs; claims/pools
                                          * ride their own accounting)   */
-            if (prev_update_hash(w, d->domain_id,
-                                 d->upd.prev_update_hash) != 0) {
+            /* HF-7 P1c-1 (DomainHead v2 head-authoritative, §10.2 item
+             * 8): under the ROOTS generation the previous update hash is
+             * the HEAD's committed column (under the state root, S6) —
+             * never today's history query — and the history row at the
+             * head's own height mirrors it: a disagreeing row, or a
+             * column the edge never seeded, stops THIS node (G4). Below
+             * ROOTS the read is exactly today's. */
+            if (doms_roots_on(doms, n_dom)) {
+                int lrc = nodus_witness_v2_head_last_upd(
+                              w, d->domain_id, d->upd.prev_update_hash);
+                if (lrc == NODUS_V2_LUH_UNSEEDED) {
+                    V2AP_FAULT("phase 9: domain %u's head carries no "
+                               "last_upd_hash under the roots generation "
+                               "(the HF-7 edge did not seed it)",
+                               (unsigned)d->domain_id);
+                    goto fail_fault;
+                }
+                if (lrc == NODUS_V2_LUH_MIRROR) {
+                    V2AP_FAULT("phase 9: domain %u's head last_upd_hash "
+                               "disagrees with its history mirror row at "
+                               "domain height %llu",
+                               (unsigned)d->domain_id,
+                               (unsigned long long)d->head.domain_height);
+                    goto fail_fault;
+                }
+                if (lrc != NODUS_V2_LUH_OK) {
+                    V2AP_FAULT("phase 9: domain %u's head last_upd_hash is "
+                               "unreadable or malformed on this node",
+                               (unsigned)d->domain_id);
+                    goto fail_fault;
+                }
+            } else if (prev_update_hash(w, d->domain_id,
+                                        d->upd.prev_update_hash) != 0) {
                 V2AP_FAULT("phase 9: previous DomainUpdate hash for "
                            "domain %u is unreadable on this node",
                            (unsigned)d->domain_id);
@@ -6357,17 +6616,26 @@ cmt_claim_failed:
     }
     FAIL_POINT(V2AP_FAIL_AFTER_UPDATES);
 
-    /* 10. heads */
+    /* 10. heads
+     * HF-7 P1c-1 (Kurultay #27 summary item 7): under the ROOTS generation
+     * a touched head's last_upd_hash becomes THIS block's update hash
+     * (phase 9) and is stored with the head; an untouched head keeps its
+     * loaded value (no write — the row is not rewritten). Below ROOTS the
+     * store is exactly today's (column not named). */
     for (size_t i = 0; i < n_dom; i++) {
         dom_ctx_t *d = &doms[i];
         d->newhead = d->head;
+        memcpy(d->newluh, d->luh, 64);
         if (d->touched) {
             memcpy(d->newhead.domain_state_root, d->root_now, 64);
             d->newhead.domain_height = d->head.domain_height + 1;
             d->newhead.last_updated_global_height = blk->global_height;
             d->newhead.status = d->status;
             d->newhead.ruleset_version = d->man.ruleset_version;
-            if (head_store(w, &d->newhead) != 0) {
+            const int luh_on = doms_roots_on(doms, n_dom);
+            if (luh_on) memcpy(d->newluh, d->upd_hash, 64);
+            if (head_store(w, &d->newhead, luh_on ? d->newluh : NULL)
+                != 0) {
                 V2AP_FAULT("phase 10: DomainHead write for domain %u "
                            "(domain height %llu) failed",
                            (unsigned)d->domain_id,
@@ -6665,21 +6933,41 @@ cmt_claim_failed:
             goto fail_fault;
         }
 
+        /* HF-7 P1c-1: ONE composer for every GLOBAL site
+         * (nodus_witness_global_compose — Kurultay #27 summary item 8).
+         * Below ROOTS: dna_v2_domains_root + dna_v2_global_root, the bytes
+         * before HF-7. Under ROOTS: DomainHead v2 over each head's
+         * newluh (phase 10) and GLOBAL v2 with the replay leg, read HERE —
+         * after phase 12 and the replay relation's prune (P1c-2); at
+         * block A−1 the relation is empty (matrix §10.3), the S7 empty
+         * root. A head whose column is not a 64-byte value under ROOTS
+         * (an unseeded or malformed untouched head) is this node's FAULT. */
+        const int roots_v2 = doms_roots_on(doms, n_dom);
         dna_v2_domain_head_t root_heads[MAX_DOMS];
+        uint8_t root_luh[MAX_DOMS][64];
         size_t n_heads = 0;
-        for (size_t i = 0; i < n_dom; i++)
-            if (doms[i].has_head)
-                root_heads[n_heads++] = doms[i].newhead;
-        if (dna_v2_domains_root(root_heads, n_heads,
-                                blk->out_domains_root) != 0) {
-            V2AP_FAULT("phase 13: domains_root over %llu heads could not "
-                       "be computed", (unsigned long long)n_heads);
-            goto fail_fault;
+        for (size_t i = 0; i < n_dom; i++) {
+            if (!doms[i].has_head) continue;
+            if (roots_v2 && !doms[i].touched &&
+                doms[i].luh_state != LUH_OK) {
+                V2AP_FAULT("phase 13: untouched domain %u's head carries "
+                           "no valid last_upd_hash under the roots "
+                           "generation (state %d)",
+                           (unsigned)doms[i].domain_id,
+                           doms[i].luh_state);
+                goto fail_fault;
+            }
+            root_heads[n_heads] = doms[i].newhead;
+            memcpy(root_luh[n_heads], doms[i].newluh, 64);
+            n_heads++;
         }
-        if (dna_v2_global_root(blk->out_domains_root,
-                               blk->out_global_root) != 0) {
-            V2AP_FAULT("phase 13: global_root could not be computed from "
-                       "domains_root");
+        if (nodus_witness_global_compose(w, roots_v2, root_heads,
+                                         (const uint8_t (*)[64])root_luh,
+                                         n_heads, blk->out_domains_root,
+                                         blk->out_global_root) != 0) {
+            V2AP_FAULT("phase 13: domains_root / global_root over %llu "
+                       "heads could not be computed (roots generation %d)",
+                       (unsigned long long)n_heads, roots_v2);
             goto fail_fault;
         }
 
@@ -6946,21 +7234,34 @@ int nodus_witness_v2_committed_global_root(nodus_witness_t *w,
         return -1;
     }
     heads = calloc(n_dom ? n_dom : 1, sizeof(*heads));
-    if (!heads) {
+    uint8_t (*luh)[64] = calloc(n_dom ? n_dom : 1, sizeof(*luh));
+    if (!heads || !luh) {
+        free(heads);
+        free(luh);
         doms_free(doms);
         return -1;
     }
+    /* HF-7 P1c-1: the genesis composition of the SAME generation — the
+     * one composer (nodus_witness_global_compose), gated as phase 13 is
+     * (doms_roots_on); under ROOTS every head's column must be a valid
+     * value (head_activate stored the sentinel) or there is no root. */
+    const int roots_v2 = doms_roots_on(doms, n_dom);
+    int bad = 0;
     for (i = 0; i < n_dom; i++) {
         if (doms[i].status == DNA_DOMST_ACTIVE && doms[i].has_head) {
+            if (roots_v2 && doms[i].luh_state != LUH_OK) bad = 1;
+            memcpy(luh[n_heads], doms[i].luh, 64);
             heads[n_heads++] = doms[i].head;
         }
     }
-    if (n_heads > 0 &&
-        dna_v2_domains_root(heads, n_heads, domains_root) == 0 &&
-        dna_v2_global_root(domains_root, out) == 0) {
+    if (!bad && n_heads > 0 &&
+        nodus_witness_global_compose(w, roots_v2, heads,
+                                     (const uint8_t (*)[64])luh, n_heads,
+                                     domains_root, out) == 0) {
         ret = 0;
     }
     free(heads);
+    free(luh);
     doms_free(doms);
     return ret;
 }
@@ -7170,26 +7471,50 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
             return NODUS_V2_INTERNAL_FAULT;
         }
 
+        /* HF-7 P1c-1: the genesis generation decides the composition the
+         * same way phase 13 does (doms_roots_on — doms[0] is SYSTEM,
+         * checked above). Today the registry genesis is generation 1
+         * (nodus_witness_domreg_init_genesis), so this is 0 and the bytes
+         * are today's; a genesis of the ROOTS generation activates every
+         * head with the sentinel column and composes DomainHead v2 +
+         * GLOBAL v2 over the (empty) replay relation. */
+        const int roots_v2 = doms_roots_on(doms, n_dom);
+        uint8_t (*gluh)[64] = calloc(n_dom, sizeof(*gluh));
+        if (!gluh) {
+            doms_free(doms);
+            (void)exec_sql(w, "ROLLBACK");
+            free(heads);
+            return NODUS_V2_INTERNAL_FAULT;
+        }
         int all_ok = 1;
         size_t n_heads = 0;
         for (size_t i = 0; i < n_dom; i++) {
             if (doms[i].status != DNA_DOMST_ACTIVE) continue;
             if (doms[i].has_head) { all_ok = 0; break; }   /* impossible
                                          * pre-genesis — fail closed     */
-            if (head_activate(w, &doms[i], 0) != 0) { all_ok = 0; break; }
+            if (head_activate(w, &doms[i], 0, roots_v2) != 0) {
+                all_ok = 0;
+                break;
+            }
+            memcpy(gluh[n_heads], doms[i].luh, 64);
             heads[n_heads++] = doms[i].head;
         }
-        if (!all_ok || n_heads == 0) { doms_free(doms); break; }
+        if (!all_ok || n_heads == 0) {
+            free(gluh);
+            doms_free(doms);
+            break;
+        }
 
         /* :761-769 — the roots, over the heads just activated and in the
          * order they were activated (domain_id ASC, doms_load's ORDER
          * BY). This is the value that becomes the document's app_hash. */
         uint8_t domains_root[64];
-        if (dna_v2_domains_root(heads, n_heads, domains_root) != 0) {
-            doms_free(doms);
-            break;
-        }
-        if (dna_v2_global_root(domains_root, global_root) != 0) {
+        int crc = nodus_witness_global_compose(w, roots_v2, heads,
+                                               (const uint8_t (*)[64])gluh,
+                                               n_heads, domains_root,
+                                               global_root);
+        free(gluh);
+        if (crc != 0) {
             doms_free(doms);
             break;
         }

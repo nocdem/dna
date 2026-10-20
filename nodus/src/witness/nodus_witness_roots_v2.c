@@ -18,6 +18,7 @@
 #include "witness/nodus_witness_v2_claims.h"
 #include "witness/nodus_witness_v2_pools.h"
 #include "witness/nodus_witness_v2_storage.h"   /* archive-leg loaders */
+#include "witness/nodus_witness_runtime.h"      /* HF-7: NODUS_RT_GEN_ROOTS */
 #include "nodus/nodus_chain_config.h"
 #include "dnac/dnac.h"                  /* DNAC_PUBKEY_SIZE (storage rows) */
 #include "crypto/hash/qgp_sha3.h"       /* storage rows: node_fp check     */
@@ -568,7 +569,12 @@ int nodus_witness_storage_bond_total(nodus_witness_t *w, uint64_t *out) {
     return ret;
 }
 
-int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]) {
+/* The body of both storage_root variants: `seg_v2` 0 = the v1 segment
+ * leaves (every generation before the ROOTS one — byte-identical to
+ * before HF-7), 1 = the §8.9 S5 v2 leaves (published_height in the leaf).
+ * The composition "NDS.STOR.v2" and the other three legs are shared. */
+static int storage_root_impl(nodus_witness_t *w, int seg_v2,
+                             uint8_t out[64]) {
     if (!w || !w->db || !out) return -1;
     uint8_t reg[64], sets[64], reps[64], segs[64];
     /* archive reward (bytes 2026-10-05 item 5): the four legs in the
@@ -577,8 +583,21 @@ int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]) {
     if (nodus_witness_storage_registry_root(w, reg) != 0) return -1;
     if (nodus_witness_storage_sets_root(w, sets) != 0) return -1;
     if (nodus_witness_storage_reports_root(w, reps) != 0) return -1;
-    if (nodus_witness_storage_segments_root(w, segs) != 0) return -1;
+    if (seg_v2) {
+        if (nodus_witness_storage_segments_root_v2(w, segs) != 0) return -1;
+    } else {
+        if (nodus_witness_storage_segments_root(w, segs) != 0) return -1;
+    }
     return dna_v2_storage_root(reg, sets, reps, segs, out);
+}
+
+int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]) {
+    return storage_root_impl(w, 0, out);
+}
+
+/* HF-7 P1c-1 — contract: nodus_witness_roots_v2.h. */
+int nodus_witness_storage_root_segv2(nodus_witness_t *w, uint8_t out[64]) {
+    return storage_root_impl(w, 1, out);
 }
 
 /* ── attendance_root (tokenomics-v3 P1, D-4 / S-2) ─────────────────────
@@ -822,6 +841,262 @@ int nodus_witness_system_root_v5(nodus_witness_t *w, uint8_t out[64]) {
                                  storage, out);
 }
 
+/* ── HF-7 P1c-1: the three new SYSTEM legs and the replay leg ──────────
+ * Snapshot design §8.9 S1-S3 / S7 (APPROVED 2026-10-15). The storage
+ * registry's fail-closed shape: every column's storage class is checked
+ * (typeof), every integer is range-checked HERE, before it reaches a
+ * narrower field or the shared layer — a negative or out-of-range value
+ * is a FAULT of this node's state, never a cast — and the strict key
+ * order the SQL ORDER BY produces is re-checked by the shared function
+ * (an equal or descending neighbour refuses). No sqlite_master probe:
+ * v2_balance_copy, validator_stats and v2_storage_set_members are in the
+ * base schema (nodus_witness.c / nodus_witness.h), v2_replay is S19 —
+ * the only generation that reads these legs requires S19 — so a missing
+ * table is a fault, never the empty state. */
+
+/* typeof() of `n` columns starting at `first`, against `want`. */
+static int col_types_are(sqlite3_stmt *st, int first, int n,
+                         const char *const *want) {
+    for (int c = 0; c < n; c++) {
+        const char *t = (const char *)sqlite3_column_text(st, first + c);
+        if (!t || strcmp(t, want[c]) != 0) return 0;
+    }
+    return 1;
+}
+
+int nodus_witness_bcopy_root(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    static const char *const want[5] = {
+        "integer", "blob", "blob", "integer", "integer"
+    };
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT epoch_start, validator_fp, owner_fp, kind, amount, "
+            "typeof(epoch_start), typeof(validator_fp), typeof(owner_fp), "
+            "typeof(kind), typeof(amount) FROM v2_balance_copy "
+            "ORDER BY epoch_start ASC, validator_fp ASC, owner_fp ASC, "
+            "kind ASC", -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "balance-copy scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    size_t cap = 16, n = 0;
+    dna_v2_bcopy_row_t *r = malloc(cap * sizeof(*r));
+    if (!r) { sqlite3_finalize(st); return -1; }
+    int rc, fail = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (n >= cap) {
+            dna_v2_bcopy_row_t *nr = realloc(r, cap * 2 * sizeof(*r));
+            if (!nr) { fail = 1; break; }
+            r = nr;
+            cap *= 2;
+        }
+        sqlite3_int64 es = sqlite3_column_int64(st, 0);
+        sqlite3_int64 kd = sqlite3_column_int64(st, 3);
+        sqlite3_int64 am = sqlite3_column_int64(st, 4);
+        const uint8_t *vfp = sqlite3_column_blob(st, 1);
+        const uint8_t *ofp = sqlite3_column_blob(st, 2);
+        /* §8.9 S1 ranges: epoch_start 0..2^63−1, kind {0, 1}, amount
+         * 0..2^63−1 (an int64 is never above 2^63−1) */
+        int ok = col_types_are(st, 5, 5, want) && vfp && ofp &&
+                 sqlite3_column_bytes(st, 1) == 64 &&
+                 sqlite3_column_bytes(st, 2) == 64 &&
+                 es >= 0 && (kd == 0 || kd == 1) && am >= 0;
+        if (!ok) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_balance_copy row %zu malformed "
+                          "(epoch_start %lld, kind %lld, amount %lld) — "
+                          "failing root", n, (long long)es, (long long)kd,
+                          (long long)am);
+            fail = 1;
+            break;
+        }
+        r[n].epoch_start = (uint64_t)es;
+        memcpy(r[n].validator_fp, vfp, 64);
+        memcpy(r[n].owner_fp, ofp, 64);
+        r[n].kind = (uint64_t)kd;
+        r[n].amount = (uint64_t)am;
+        n++;
+    }
+    if (!fail && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "balance-copy scan aborted mid-stream "
+                      "(rc=%d) — failing root", rc);
+        fail = 1;
+    }
+    sqlite3_finalize(st);
+    int ret = fail ? -1 : dna_v2_bcopy_root(r, n, out);
+    free(r);
+    return ret;
+}
+
+int nodus_witness_vstat_hash(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT value, typeof(value) FROM validator_stats "
+            "WHERE key = 'active_count'", -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "active_count read prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    int rc = sqlite3_step(st);
+    int ret = -1;
+    if (rc == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(st, 1);
+        sqlite3_int64 v = sqlite3_column_int64(st, 0);
+        /* §8.9 S2: active_count 0..2^63−1 */
+        if (t && strcmp(t, "integer") == 0 && v >= 0) {
+            uint64_t ac = (uint64_t)v;
+            ret = dna_v2_vstat_hash(&ac, out);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "validator_stats 'active_count' is not "
+                          "a non-negative INTEGER — failing root");
+        }
+    } else if (rc == SQLITE_DONE) {
+        /* §8.9 S2: the row is MANDATORY — absent is an ERROR, never 0 */
+        QGP_LOG_ERROR(LOG_TAG, "%s", "validator_stats 'active_count' row "
+                      "is absent — failing root");
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "active_count read failed (rc=%d) — failing "
+                      "root", rc);
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+int nodus_witness_stmem_root(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    static const char *const want[4] = {
+        "integer", "blob", "integer", "integer"
+    };
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT epoch_start, node_fp, fail_streak, grace_until, "
+            "typeof(epoch_start), typeof(node_fp), typeof(fail_streak), "
+            "typeof(grace_until) FROM v2_storage_set_members "
+            "ORDER BY epoch_start ASC, node_fp ASC", -1, &st, NULL)
+        != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "storage-member scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    size_t cap = 16, n = 0;
+    dna_v2_stmem_row_t *r = malloc(cap * sizeof(*r));
+    if (!r) { sqlite3_finalize(st); return -1; }
+    int rc, fail = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (n >= cap) {
+            dna_v2_stmem_row_t *nr = realloc(r, cap * 2 * sizeof(*r));
+            if (!nr) { fail = 1; break; }
+            r = nr;
+            cap *= 2;
+        }
+        sqlite3_int64 es = sqlite3_column_int64(st, 0);
+        sqlite3_int64 fs = sqlite3_column_int64(st, 2);
+        sqlite3_int64 gu = sqlite3_column_int64(st, 3);
+        const uint8_t *fp = sqlite3_column_blob(st, 1);
+        /* §8.9 S3 ranges: epoch_start 1..2^63−1, fail_streak 0..2^32−1,
+         * grace_until 0..2^63−1 */
+        int ok = col_types_are(st, 4, 4, want) && fp &&
+                 sqlite3_column_bytes(st, 1) == 64 &&
+                 es >= 1 && fs >= 0 && fs <= (sqlite3_int64)UINT32_MAX &&
+                 gu >= 0;
+        if (!ok) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_storage_set_members row %zu "
+                          "malformed — failing root", n);
+            fail = 1;
+            break;
+        }
+        r[n].epoch_start = (uint64_t)es;
+        memcpy(r[n].node_fp, fp, 64);
+        r[n].fail_streak = (uint64_t)fs;
+        r[n].grace_until = (uint64_t)gu;
+        n++;
+    }
+    if (!fail && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "storage-member scan aborted mid-stream "
+                      "(rc=%d) — failing root", rc);
+        fail = 1;
+    }
+    sqlite3_finalize(st);
+    int ret = fail ? -1 : dna_v2_stmem_root(r, n, out);
+    free(r);
+    return ret;
+}
+
+int nodus_witness_replay_root(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    static const char *const want[3] = { "blob", "blob", "integer" };
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT tx_id, intent_id, expiry_height, typeof(tx_id), "
+            "typeof(intent_id), typeof(expiry_height) FROM v2_replay "
+            "ORDER BY tx_id ASC", -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "replay scan prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    size_t cap = 16, n = 0;
+    dna_v2_replay_row_t *r = malloc(cap * sizeof(*r));
+    if (!r) { sqlite3_finalize(st); return -1; }
+    int rc, fail = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (n >= cap) {
+            dna_v2_replay_row_t *nr = realloc(r, cap * 2 * sizeof(*r));
+            if (!nr) { fail = 1; break; }
+            r = nr;
+            cap *= 2;
+        }
+        const uint8_t *tx = sqlite3_column_blob(st, 0);
+        const uint8_t *in = sqlite3_column_blob(st, 1);
+        sqlite3_int64 ex = sqlite3_column_int64(st, 2);
+        /* §8.9 S7: expiry_height 1..2^64−1; a stored INTEGER is at most
+         * 2^63−1, and a negative one is refused here — never cast into
+         * the upper half of the u64 domain (P1a audit finding B: the S19
+         * CHECK is the first guard, this is the second) */
+        int ok = col_types_are(st, 3, 3, want) && tx && in &&
+                 sqlite3_column_bytes(st, 0) == 64 &&
+                 sqlite3_column_bytes(st, 1) == 64 && ex >= 1;
+        if (!ok) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_replay row %zu malformed — failing "
+                          "root", n);
+            fail = 1;
+            break;
+        }
+        memcpy(r[n].tx_id, tx, 64);
+        memcpy(r[n].intent_id, in, 64);
+        r[n].expiry_height = (uint64_t)ex;
+        n++;
+    }
+    if (!fail && rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "replay scan aborted mid-stream (rc=%d) — "
+                      "failing root", rc);
+        fail = 1;
+    }
+    sqlite3_finalize(st);
+    int ret = fail ? -1 : dna_v2_replay_root(r, n, out);
+    free(r);
+    return ret;
+}
+
+/* HF-7 P1c-1 (§8.9 S4) — contract: nodus_witness_roots_v2.h. The nine v5
+ * legs read EXACTLY as nodus_witness_system_root_v5 reads them (the
+ * generation-4 leaves), except the storage leg's segments, which are the
+ * S5 v2 leaves; then the three new legs. */
+int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]) {
+    if (!w || !out) return -1;
+    sys_legs_v4_t l;
+    uint8_t storage[64], bcopy[64], vstat[64], stmem[64];
+    if (system_legs_v4(w, &l, /*v2_leaves=*/1) != 0) return -1;
+    if (nodus_witness_storage_root_segv2(w, storage) != 0) return -1;
+    if (nodus_witness_bcopy_root(w, bcopy) != 0) return -1;
+    if (nodus_witness_vstat_hash(w, vstat) != 0) return -1;
+    if (nodus_witness_stmem_root(w, stmem) != 0) return -1;
+    return dna_v2_system_root_v6(l.validator_root, l.delegation_root,
+                                 l.chain_config_root, l.vset, l.domreg,
+                                 l.manifest, l.attendance, l.treasury,
+                                 storage, bcopy, vstat, stmem, out);
+}
+
 /* The body of both CORE root variants: `with_evm_reserve` 0 = every
  * generation before the EVM one (the supply leg exactly
  * nodus_witness_supply_root_v2 — byte-identical to before Nodus EVM), 1 = the
@@ -913,6 +1188,45 @@ static void head_blob_decode(const uint8_t enc[DNA_V2_DOMHEAD_ENC_LEN],
     h->status = enc[88];
 }
 
+/* HF-7 P1c-1 — contract: nodus_witness_roots_v2.h. THE one GLOBAL
+ * composition every site uses (phase 13, the no-block-row recompute, the
+ * genesis, nodus_witness_global_root_v2), so the sites cannot move apart:
+ * a generation below ROOTS composes exactly dna_v2_domains_root +
+ * dna_v2_global_root (the bytes before HF-7; last_upd_hashes unread), the
+ * ROOTS generation dna_v2_domains_root_v2 over the head-authoritative
+ * last_upd_hash column + the replay leg read NOW (phase 13 calls it after
+ * phase 12, so after the replay relation's prune). */
+int nodus_witness_global_compose(nodus_witness_t *w, int roots_v2,
+                                 const dna_v2_domain_head_t *heads,
+                                 const uint8_t (*last_upd_hashes)[64],
+                                 size_t n, uint8_t out_domains[64],
+                                 uint8_t out_global[64]) {
+    if (!w || !heads || !out_domains || !out_global) return -1;
+    if (!roots_v2) {
+        if (dna_v2_domains_root(heads, n, out_domains) != 0) return -1;
+        return dna_v2_global_root(out_domains, out_global);
+    }
+    if (!last_upd_hashes) return -1;
+    uint8_t replay[64];
+    if (dna_v2_domains_root_v2(heads, last_upd_hashes, n, out_domains) != 0)
+        return -1;
+    if (nodus_witness_replay_root(w, replay) != 0) return -1;
+    return dna_v2_global_root_v2(out_domains, replay, out_global);
+}
+
+/* 1 = the committed SYSTEM registry row resolves to a runtime of the
+ * ROOTS generation or later, 0 = an older one OR no resolvable runtime —
+ * the SYSTEM state-root hook's own NULL rule (nodus_rt_system_state_root
+ * keeps the older answer for a NULL runtime rather than guessing a newer
+ * composition). */
+static int roots_generation_on(nodus_witness_t *w) {
+    const nodus_domain_runtime_t *rt = NULL;
+    if (nodus_witness_v2_runtime_for(w, DNA_DOMAIN_SYSTEM, 0, &rt) != 0 ||
+        !rt)
+        return 0;
+    return rt->generation >= NODUS_RT_GEN_ROOTS;
+}
+
 int nodus_witness_global_root_v2(nodus_witness_t *w,
                                  uint8_t out_global[64],
                                  uint8_t out_domains[64],
@@ -953,37 +1267,70 @@ int nodus_witness_global_root_v2(nodus_witness_t *w,
     }
 
     if (have_heads) {
+        /* HF-7 P1c-1: under the ROOTS generation the heads are DomainHead
+         * v2 (+ the head-authoritative last_upd_hash column) and GLOBAL
+         * is v2 (+ the replay leg) — the same composer phase 13 uses.
+         * Below it the SELECT and the bytes are exactly the old ones. */
+        const int roots_v2 = roots_generation_on(w);
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(w->db,
-                "SELECT head FROM v2_domain_heads ORDER BY domain_id ASC",
+        if (sqlite3_prepare_v2(w->db, roots_v2
+                ? "SELECT head, last_upd_hash, typeof(last_upd_hash) "
+                  "FROM v2_domain_heads ORDER BY domain_id ASC"
+                : "SELECT head FROM v2_domain_heads ORDER BY domain_id ASC",
                 -1, &st, NULL) != SQLITE_OK)
             return -1;
         size_t cap = 4, n = 0;
         dna_v2_domain_head_t *heads = malloc(cap * sizeof(*heads));
-        if (!heads) { sqlite3_finalize(st); return -1; }
+        uint8_t (*luh)[64] = malloc(cap * sizeof(*luh));
+        if (!heads || !luh) {
+            free(heads); free(luh); sqlite3_finalize(st);
+            return -1;
+        }
         int rc, fail = 0;
         while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
             if (n >= cap) {
                 size_t nc = cap * 2;
                 dna_v2_domain_head_t *nh =
                     realloc(heads, nc * sizeof(*nh));
-                if (!nh) { free(heads); sqlite3_finalize(st); return -1; }
-                heads = nh; cap = nc;
+                if (nh) heads = nh;
+                uint8_t (*nl)[64] = nh ? realloc(luh, nc * sizeof(*nl))
+                                       : NULL;
+                if (nl) luh = nl;
+                if (!nh || !nl) {
+                    free(heads); free(luh); sqlite3_finalize(st);
+                    return -1;
+                }
+                cap = nc;
             }
             if (sqlite3_column_bytes(st, 0) != DNA_V2_DOMHEAD_ENC_LEN) {
                 fail = 1;
                 break;
             }
             head_blob_decode(sqlite3_column_blob(st, 0), &heads[n]);
+            if (roots_v2) {
+                /* the column is mandatory under the ROOTS generation: NULL
+                 * means the edge never seeded it — a fault, never a
+                 * fallback to the history table */
+                const char *t = (const char *)sqlite3_column_text(st, 2);
+                if (!t || strcmp(t, "blob") != 0 ||
+                    sqlite3_column_bytes(st, 1) != 64) {
+                    fail = 1;
+                    break;
+                }
+                memcpy(luh[n], sqlite3_column_blob(st, 1), 64);
+            }
             n++;
         }
         if (!fail && rc != SQLITE_DONE) fail = 1;
         sqlite3_finalize(st);
         int ret = -1;
-        if (!fail && dna_v2_domains_root(heads, n, domains) == 0 &&
-            dna_v2_global_root(domains, out_global) == 0)
+        if (!fail &&
+            nodus_witness_global_compose(w, roots_v2, heads,
+                                         (const uint8_t (*)[64])luh, n,
+                                         domains, out_global) == 0)
             ret = 0;
         free(heads);
+        free(luh);
         if (ret != 0) return -1;
     } else {
         /* Pre-S5 fixture composition (frozen S2 KAT behavior). */

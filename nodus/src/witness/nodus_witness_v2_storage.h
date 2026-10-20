@@ -274,6 +274,16 @@ int nodus_witness_storage_reports_root(nodus_witness_t *w, uint8_t out[64]);
 int nodus_witness_storage_segments_root(nodus_witness_t *w,
                                         uint8_t out[64]);
 
+/** HF-7 P1c-1 (snapshot design §8.9 S5): segments_root over the v2 leaves
+ *  ("NDS.STSGLEAF.v2" ‖ k ‖ Root(k) ‖ published_height), the same rows and
+ *  row checks as nodus_witness_storage_segments_root (k ASC, contiguous
+ *  1..n, published_height 1..INT64_MAX); inner tag and empty root
+ *  unchanged. Selected only by the ROOTS generation's SYSTEM composition
+ *  (nodus_witness_system_root_v6); the v1 root above is unchanged.
+ *  @return 0 / -1. */
+int nodus_witness_storage_segments_root_v2(nodus_witness_t *w,
+                                           uint8_t out[64]);
+
 /** storage_set(epoch_start) with its members, their frozen fail_streaks
  *  and grace_until values (the latter as after the K9 update at
  *  epoch_start; the stored set_hash re-checked against the members).

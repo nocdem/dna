@@ -425,6 +425,37 @@ int nodus_witness_storage_segments_root(nodus_witness_t *w,
     return ret;
 }
 
+/* HF-7 P1c-1 (snapshot design §8.9 S5; contract: nodus_witness_v2_
+ * storage.h). The SAME scan as the v1 root above (st_segments_load: typed
+ * columns, k and published_height each 1..INT64_MAX, k exactly 1..n), so
+ * the two can never disagree on which rows are well-formed; only the leaf
+ * gains published_height. */
+int nodus_witness_storage_segments_root_v2(nodus_witness_t *w,
+                                           uint8_t out[64]) {
+    if (!w || !w->db || !out) return -1;
+    st_seg_t *s = NULL;
+    size_t n = 0;
+    if (st_segments_load(w, UINT64_MAX, &s, &n) != 0) return -1;
+    uint64_t *ks = n ? malloc(n * sizeof(*ks)) : NULL;
+    uint64_t *phs = n ? malloc(n * sizeof(*phs)) : NULL;
+    uint8_t (*rs)[64] = n ? malloc(n * sizeof(*rs)) : NULL;
+    int ret = -1;
+    if (n == 0 || (ks && phs && rs)) {
+        for (size_t i = 0; i < n; i++) {
+            ks[i] = s[i].k;
+            phs[i] = s[i].published_height;
+            memcpy(rs[i], s[i].root, 64);
+        }
+        ret = dna_v2_segments_root_v2(ks, (const uint8_t (*)[64])rs, phs,
+                                      n, out);
+    }
+    free(rs);
+    free(phs);
+    free(ks);
+    free(s);
+    return ret;
+}
+
 int nodus_witness_storage_segment_root_compute(nodus_witness_t *w,
                                                uint64_t k, uint8_t out[64]) {
     if (!w || !w->db || !out) return -1;

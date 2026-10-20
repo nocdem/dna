@@ -150,6 +150,14 @@ int nodus_witness_storage_bond_total(nodus_witness_t *w, uint64_t *out);
  *  nodus_witness_v2_storage.h). @return 0 / -1. */
 int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]);
 
+/** HF-7 P1c-1 (snapshot design §8.9 S5): storage_root with the SAME
+ *  "NDS.STOR.v2" composition and the same registry / sets / reports legs,
+ *  whose segments leg is the v2 segments root
+ *  (nodus_witness_storage_segments_root_v2, published_height in the leaf).
+ *  Read only by nodus_witness_system_root_v6; nodus_witness_storage_root_v2
+ *  above is unchanged. @return 0 / -1. */
+int nodus_witness_storage_root_segv2(nodus_witness_t *w, uint8_t out[64]);
+
 /** system_state_root v5 ("NDS.SYS.v5", bytes doc item 4): the 8 legs of
  *  nodus_witness_system_root_v2 in the same order + storage_root. The
  *  SYSTEM state-root hook selects it when the resolved runtime is
@@ -164,6 +172,69 @@ int nodus_witness_storage_root_v2(nodus_witness_t *w, uint8_t out[64]);
  *  inside its own block): on a pre-edge database the validators rows have
  *  no v2_validator_roles rows and this returns -1. */
 int nodus_witness_system_root_v5(nodus_witness_t *w, uint8_t out[64]);
+
+/* ── HF-7 P1c-1 — the ROOTS generation's SYSTEM legs and composition ───
+ * Snapshot design docs/plans/2026-09-11-nodus-ledger-snapshot-design.md
+ * §8.9 S1-S4 / S7 (APPROVED by the operator 2026-10-15), §10.3 (the
+ * transition matrix), §10.9 / §10.11; Kurultay #24 / #27 summaries.
+ * Every loader: SQL ORDER BY on the stated key (the shared function
+ * re-checks strict ascent), typeof() on every column, every integer
+ * range-checked BEFORE it is narrowed or handed on — a negative or
+ * out-of-range stored value is a FAULT (-1), never a cast; a scan fault
+ * is never a shorter table. */
+
+/** S1 bcopy_root over EVERY retained `v2_balance_copy` row, ORDER BY
+ *  (epoch_start, validator_fp, owner_fp, kind): epoch_start >= 0, both
+ *  fingerprints 64-byte BLOBs, kind in {0, 1}, amount >= 0. Empty table →
+ *  DNA_V2_EMPTY_BCOPY. @return 0 / -1. */
+int nodus_witness_bcopy_root(nodus_witness_t *w, uint8_t out[64]);
+
+/** S2 vstat over `validator_stats` key 'active_count' (an INTEGER >= 0).
+ *  The row is MANDATORY: absent → -1 (§8.9 S2 "absent = ERROR"; no empty
+ *  tag). @return 0 / -1. */
+int nodus_witness_vstat_hash(nodus_witness_t *w, uint8_t out[64]);
+
+/** S3 stmem_root over EVERY `v2_storage_set_members` row, ORDER BY
+ *  (epoch_start, node_fp): epoch_start >= 1, node_fp a 64-byte BLOB,
+ *  fail_streak 0..UINT32_MAX, grace_until >= 0. Empty table →
+ *  DNA_V2_EMPTY_STMEM. @return 0 / -1. */
+int nodus_witness_stmem_root(nodus_witness_t *w, uint8_t out[64]);
+
+/** S7 replay_root over EVERY `v2_replay` row (schema S19), ORDER BY tx_id:
+ *  tx_id and intent_id 64-byte BLOBs, expiry_height an INTEGER >= 1 (a
+ *  negative stored value is refused here, never cast into u64). A repeated
+ *  intent_id refuses (dna_v2_replay_root). Empty table → the S7 empty root
+ *  DNA_V2_EMPTY_REPLAY — the value of block A−1 (matrix §10.3: no row is
+ *  inserted before A). Reads only; the relation's writes and its prune
+ *  belong to the replay package (P1c-2). @return 0 / -1. */
+int nodus_witness_replay_root(nodus_witness_t *w, uint8_t out[64]);
+
+/** S4 system_state_root v6 ("NDS.SYS.v6"): the nine v5 legs read as
+ *  nodus_witness_system_root_v5 reads them (the generation-4 validator /
+ *  delegation leaves), with the storage leg's segments as v2 leaves (S5,
+ *  nodus_witness_storage_root_segv2), then bcopy_root ‖ vstat ‖
+ *  stmem_root. Selected ONLY by the SYSTEM state-root hook of a runtime of
+ *  generation >= NODUS_RT_GEN_ROOTS (nodus_rt_system_state_root,
+ *  nodus_witness_v2_claims.c). @return 0 / -1. */
+int nodus_witness_system_root_v6(nodus_witness_t *w, uint8_t out[64]);
+
+/** THE GLOBAL composition (HF-7 P1c-1, Kurultay #27 summary item 8 — every
+ *  composition site calls this one function, so they move together):
+ *    roots_v2 == 0: dna_v2_domains_root(heads) → dna_v2_global_root — the
+ *                   bytes before HF-7; last_upd_hashes is not read (may be
+ *                   NULL);
+ *    roots_v2 == 1: dna_v2_domains_root_v2(heads, last_upd_hashes) (§8.9
+ *                   S6) → dna_v2_global_root_v2(domains_root,
+ *                   nodus_witness_replay_root(w)) (§8.9 S8);
+ *                   last_upd_hashes[i] belongs to heads[i] and is required.
+ *  `roots_v2` is the caller's generation answer (the SYSTEM runtime's
+ *  generation >= NODUS_RT_GEN_ROOTS). The replay leg is read at the call,
+ *  so phase 13 reads it after phase 12. @return 0 / -1. */
+int nodus_witness_global_compose(nodus_witness_t *w, int roots_v2,
+                                 const dna_v2_domain_head_t *heads,
+                                 const uint8_t (*last_upd_hashes)[64],
+                                 size_t n, uint8_t out_domains[64],
+                                 uint8_t out_global[64]);
 
 /** attendance_root (tokenomics-v3 P1, D-4 / S-2) over `v2_attendance_epoch`
  *  rows, epoch_start ASC. Fail-closed: a
@@ -231,7 +302,14 @@ int nodus_witness_system_payload_root_v2(nodus_witness_t *w,
  *  re-keyed rows' stored pubkeys — every migrated and every
  *  migration-created delegation row carries 2592-byte *_pubkey columns),
  *  so a caller using the committed heads (the have_heads branch) keeps
- *  working; out_system is then a value of no consensus meaning. */
+ *  working; out_system is then a value of no consensus meaning.
+ *  HF-7 P1c-1: in the have_heads branch, when the committed SYSTEM row
+ *  resolves to a runtime of generation >= NODUS_RT_GEN_ROOTS, the heads
+ *  are read with their last_upd_hash column (NULL or not a 64-byte BLOB →
+ *  -1) and composed through nodus_witness_global_compose(roots_v2 = 1) —
+ *  DomainHead v2 + GLOBAL v2 with the replay leg; any other answer
+ *  (older generation, unresolvable runtime) keeps the old bytes. The
+ *  head-less pre-S5 fixture branch is unchanged. */
 int nodus_witness_global_root_v2(nodus_witness_t *w,
                                  uint8_t out_global[64],
                                  uint8_t out_domains[64],

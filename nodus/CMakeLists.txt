@@ -2522,6 +2522,20 @@ if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf6_migrate)
 endif()
 
+# HF-7 P1c-1 — the HF-7 roots wired into the witness (snapshot design
+# docs/plans/2026-09-11-nodus-ledger-snapshot-design.md §8.9, §10.2-§10.3;
+# Kurultay #27 summary items 7-8): the SYSTEM v6 legs / segment leaf v2 /
+# replay leg loaders against the pure functions over hand-written rows,
+# then the engine on test_hf6_migrate's seeded fixture — generation 4
+# byte-identical at E-1, the last_upd_hash seed, the mirror FAULT, block E
+# under a scripted ROOTS-generation table (SYSTEM v6, DomainHead v2 head
+# lifecycle, GLOBAL v2 over an empty and a non-empty replay relation).
+# Generation 4 is compiled only with the EVM runtime, so built only with
+# NODUS_EVM_ENABLED. Runs E+1 idle blocks. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf7_wiring)
+endif()
+
 # HF-6 sub-slice 3c — owner authority and the generation-4 call layouts of
 # the SYSTEM validator-record ops 2..5, STAKE refused under generation 4
 # (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.3/§2; plan
