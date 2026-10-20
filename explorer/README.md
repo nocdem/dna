@@ -7,7 +7,7 @@ JSON API. The Nodus Scan frontend (`scan.nodusnetwork.io`) lives in
 `website/scan/` (see `website/deploy/README.md`); the legacy
 `scan.cpunk.io` frontend is no longer in this repository.
 
-**HF-7 (2026-10-20, version number not yet assigned)** names chain-config
+**0.2.7 (2026-10-20, HF-7)** names chain-config
 param 22 `RULESET_GEN_ROOTS` in `/api/governance` — the HF-7 vote for rule-set
 generation 5 (block 281,957, in force from 282,684), shown with `param_name`
 null by 0.2.6. Nothing else changes.

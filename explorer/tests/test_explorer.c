@@ -1971,8 +1971,8 @@ static void test_route_governance(void) {
     if (exp_http_route(&ctx, "GET", "/api/governance", &body, &status) != 0) { FAIL("route"); exp_db_close(db); return; }
     int ok = (status == 200);
     for (int i = 0; ok && needles[i]; i++) if (!strstr(body.buf, needles[i])) ok = 0;
-    /* exactly eight records — the delegate record and the refused item are not listed */
-    if (ok && count_substr(body.buf, "\"param_id\":") != 8) ok = 0;
+    /* exactly nine records (HF-7 added param 22) — the delegate record and the refused item are not listed */
+    if (ok && count_substr(body.buf, "\"param_id\":") != 9) ok = 0;
     /* (height, index) ascending */
     if (ok) {
         const char *a = strstr(body.buf, "\"position\":\"1:1\"");
