@@ -1290,8 +1290,10 @@ endif()
 # and the fuzz targets — is Linux-only: it links Threads::Threads
 # (find_package(Threads) runs in the non-WIN32 branch above) or the
 # Linux-only source list (epoll, UDP, the witness). A Windows configure
-# stops here, so it generates the library and nodus-light only; a Linux
-# configure is unchanged.
+# stops here, so it generates the library, nodus-light and the Windows-only
+# test executables declared above (test_net_poll_win, test_seg_file_win —
+# run natively or under Wine, no ctest entry); a Linux configure is
+# unchanged.
 if(WIN32)
     return()
 endif()
