@@ -82,14 +82,17 @@ int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
     if (!b || !store || nodus_seg_build_next(b, &h, &part, &hdr_needed) < 0)
         return -1;
     const uint64_t last = nodus_seg_build_k(b) * SEG_P;
+    /* every scratch allocated here, in one place: an out-of-memory step
+     * fails before it touches the build (as the build's own I/O scratch
+     * was allocated when the build was opened) */
     nodus_cmt_block_meta_t *meta = malloc(sizeof(*meta));
     uint8_t *hb = malloc(NODUS_SEG_HEADER_MAX);
-    uint8_t *tail = NULL;
+    uint8_t *tail = malloc(EXPORT_TAIL_CAP);
     int ret = -1;
     nodus_seg_v_t v = NODUS_SEG_V_OK;
     uint64_t at_h = last + 1u;          /* the build's height, for the log */
     char key[NODUS_CMT_STORE_KEY_MAX];
-    if (!meta || !hb) goto done;
+    if (!meta || !hb || !tail) goto done;
 
     for (uint32_t n = 0; n < max_heights &&
                          on_height(b, &h, &part, &hdr_needed); n++) {
@@ -139,8 +142,6 @@ int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
         /* validators(k·P) from the state table (K8a); a pruned state store
          * cannot finish the export — the holder fetches the set */
         size_t vl = 0;
-        tail = malloc(EXPORT_TAIL_CAP);
-        if (!tail) goto done;
         int r = nodus_seg_valset_from_store(store, last, tail,
                                             EXPORT_TAIL_CAP, &vl);
         if (r < 0) goto done;
@@ -171,10 +172,17 @@ int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
          * scratch all the same, so no store call can ever move it (the set
          * is already held in the build's own buffer). */
         if (vl > EXPORT_TAIL_CAP) { v = NODUS_SEG_V_BOUNDS; goto done; }
-        if (!tail && !(tail = malloc(EXPORT_TAIL_CAP))) goto done;
         memcpy(tail, val, vl);
         v = nodus_seg_build_put_commit(b, tail, vl);
         if (v != NODUS_SEG_V_OK) goto done;
+    }
+    /* complete only when the build says so (unreachable otherwise: every
+     * height, the set and the commit were added above) */
+    if (nodus_seg_build_next(b, &h, &part, &hdr_needed) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": export added every "
+                      "piece but the build is not complete",
+                      nodus_seg_build_k(b));
+        goto done;
     }
     ret = 1;
 done:
