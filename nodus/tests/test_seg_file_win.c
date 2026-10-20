@@ -108,7 +108,11 @@
  * LEAVES BEHIND: nothing on success — the work directory
  *   (%TEMP%\nodus_seg_win_<pid>) and everything in it are removed; on a
  *   failure the directory is kept and its path printed. The fixture
- *   directory is only read.
+ *   directory is only read. Exception: if the platform refuses the
+ *   unlink's DeleteFileW on an aside name ("*.deleted.*", nodus_fs.c
+ *   "Unlink"), that file stays, the work directory cannot be removed and
+ *   the run prints "note: work directory not removed" — still exit 0
+ *   (the unlink answers 0 by design: the name is free). Read the output.
  *
  * HOW IT CAN LIE:
  *   · WINE IS NOT WINDOWS. Under Wine, CreateFileW sharing modes,

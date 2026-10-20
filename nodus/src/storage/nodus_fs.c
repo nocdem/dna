@@ -61,7 +61,11 @@
  *    as before); an aside name already taken → the next counter, at most
  *    FS_ASIDE_TRIES times; any other move failure, an aside name that does
  *    not fit, or a directory → the previous direct _wunlink with its
- *    errno. The aside name is logged at DEBUG only. Leftovers: a crash
+ *    errno. One answer differs from _wunlink (this file's reading, not
+ *    verified): a READ-ONLY file was refused (-1) and is now moved aside,
+ *    its delete refused, and 0 returned with the aside file left; this
+ *    layer never creates one (FILE_ATTRIBUTE_NORMAL). The aside name is
+ *    logged at DEBUG only. Leftovers: a crash
  *    between the move and the last close (or a refused delete) can leave
  *    "*.deleted.*" files. Nothing reads them: nodus_seg_name_parse accepts
  *    only "seg-<k>" followed by EXACTLY one of its six suffixes
