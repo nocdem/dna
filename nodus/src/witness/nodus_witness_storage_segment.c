@@ -6,7 +6,8 @@
  *        nodus_witness_storage_segment.h.
  *
  * Nothing here reads a clock, draws randomness or writes the database:
- * the ledger is READ (v2_blocks.block_id), the cmt state store is READ
+ * the trusted block hashes are READ through the build's hash source (the
+ * ledger source: v2_blocks.block_id), the cmt state store is READ
  * (validators at k·17280, by the export only — the set record, K8a), and
  * the only writes are this node's own files in its segment directory.
  *
@@ -203,11 +204,13 @@ uint64_t nodus_seg_of_height(uint64_t h) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- * The ledger
+ * The ledger hash source
  * ════════════════════════════════════════════════════════════════════ */
 
-/* v2_blocks.block_id at h. @return 0 / 1 absent or not 64 bytes / -1 */
-static int ledger_hash(sqlite3 *db, uint64_t h, uint8_t out[64]) {
+/* v2_blocks.block_id at h; ctx is the sqlite3 *.
+ * @return 0 / 1 absent or not 64 bytes / -1 */
+static int ledger_hash(void *ctx, uint64_t h, uint8_t out[64]) {
+    sqlite3 *db = (sqlite3 *)ctx;
     sqlite3_stmt *st = NULL;
     if (!db || h == 0 || h > (uint64_t)INT64_MAX) return -1;
     if (sqlite3_prepare_v2(db,
@@ -231,6 +234,11 @@ static int ledger_hash(sqlite3 *db, uint64_t h, uint8_t out[64]) {
     return ret;
 }
 
+nodus_seg_hash_src_t nodus_seg_hash_src_ledger(sqlite3 *db) {
+    nodus_seg_hash_src_t s = { db, ledger_hash };
+    return s;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  * The build
  * ════════════════════════════════════════════════════════════════════ */
@@ -238,8 +246,8 @@ static int ledger_hash(sqlite3 *db, uint64_t h, uint8_t out[64]) {
 struct nodus_seg_build {
     char      dir[NODUS_SEG_PATH_MAX];
     uint64_t  k, first, last;           /* last = k·17280                */
-    sqlite3  *ledger;
-    int       fd;                       /* .dat.tmp                      */
+    nodus_seg_hash_src_t src;           /* the trusted hashes (a copy)    */
+    int       fd;                      /* .dat.tmp                      */
     uint64_t  size;                     /* verified bytes = write offset  */
 
     bool      scanning;                 /* the resume scan is not over    */
@@ -323,7 +331,17 @@ int nodus_seg_build_open(const char *dir, uint64_t k, sqlite3 *ledger,
                          nodus_seg_build_t **out) {
     if (!out) return -1;
     *out = NULL;
-    if (!dir || !ledger || k == 0 ||
+    if (!ledger) return -1;
+    nodus_seg_hash_src_t src = nodus_seg_hash_src_ledger(ledger);
+    return nodus_seg_build_open_src(dir, k, &src, out);
+}
+
+int nodus_seg_build_open_src(const char *dir, uint64_t k,
+                             const nodus_seg_hash_src_t *src,
+                             nodus_seg_build_t **out) {
+    if (!out) return -1;
+    *out = NULL;
+    if (!dir || !src || !src->hash_at || k == 0 ||
         k > ((uint64_t)INT64_MAX - 1u) / SEG_P - 1u ||
         strlen(dir) >= NODUS_SEG_PATH_MAX - 40u)
         return -1;
@@ -370,7 +388,7 @@ int nodus_seg_build_open(const char *dir, uint64_t k, sqlite3 *ledger,
     b->k = k;
     b->first = (k - 1u) * SEG_P + 1u;
     b->last = k * SEG_P;
-    b->ledger = ledger;
+    b->src = *src;
     b->h = b->first;
     b->idx = calloc(1, NODUS_SEG_INDEX_LEN);
     b->hdec = malloc(sizeof(*b->hdec));
@@ -427,8 +445,8 @@ static nodus_seg_v_t check_header(nodus_seg_build_t *b, uint64_t h,
                                   const uint8_t *hdr, size_t len) {
     uint8_t hh[64], hh1[64], got[CMT_TMHASH_SIZE];
     if (len == 0 || len > NODUS_SEG_HEADER_MAX) return NODUS_SEG_V_BOUNDS;
-    int r0 = ledger_hash(b->ledger, h, hh);
-    int r1 = ledger_hash(b->ledger, h + 1u, hh1);
+    int r0 = b->src.hash_at(b->src.ctx, h, hh);
+    int r1 = b->src.hash_at(b->src.ctx, h + 1u, hh1);
     if (r0 < 0 || r1 < 0) return NODUS_SEG_V_FAULT;
     if (r0 != 0 || r1 != 0) return NODUS_SEG_V_NO_LEDGER;
 
@@ -1092,7 +1110,8 @@ done:
     if (ret < 0 && v != NODUS_SEG_V_OK)
         QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": export refused at "
                       "height %" PRIu64 " (%s) — this node's block store "
-                      "disagrees with its v2_blocks", b->k, b->h,
+                      "disagrees with the build's trusted block hashes "
+                      "(v2_blocks on the ledger source)", b->k, b->h,
                       nodus_seg_v_str(v));
     if (why_out) *why_out = v;
     free(hb);

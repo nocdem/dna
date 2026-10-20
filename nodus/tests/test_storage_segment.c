@@ -43,7 +43,26 @@
  *                   9000, 17280 — single and two-part blocks);
  *                   header(h+1) equals the marshalled meta; the commit
  *                   equals C:17280, the set the expected record; held == 1.
- *  completeness     nothing is written for a piece that fails: a tampered
+ *  hash_src         the build's hash source (design 2026-10-19-windows-
+ *                   light-storage §3 B1): a source that is NOT the ledger
+ *                   (the fixture's in-memory hash array G.v2, the same
+ *                   hashes v2_blocks holds) and the explicit
+ *                   nodus_seg_hash_src_ledger source each export segment
+ *                   1 into .dat / .idx / .ok byte-identical to the
+ *                   nodus_seg_build_open export; NULL source / NULL
+ *                   hash_at / NULL ledger refused; a wrong hash at height
+ *                   2 refuses header(2) with V_HEADER_HASH, at height 1
+ *                   with V_BLOCK_ID — the same verdict a tampered
+ *                   v2_blocks row gives, nothing written; "absent" (1)
+ *                   gives V_NO_LEDGER exactly as a deleted v2_blocks row,
+ *                   "fault" (-1) V_FAULT exactly as v2_blocks being
+ *                   unreadable (the table renamed away); on the resume
+ *                   scan of a partial file (heights 1 … 3) an absent or
+ *                   faulting hash at 2 — array or ledger — returns -1
+ *                   and leaves the file uncut; the honest source then
+ *                   resumes at height 4. The ledger rows / table are
+ *                   restored before each check.
+ *  completeness    nothing is written for a piece that fails: a tampered
  *                   part (V_PROOF), a part with another index, a header
  *                   of another height / another chain position; K8a: the
  *                   set comes BEFORE the commit (a commit without it is
@@ -1613,6 +1632,259 @@ static int t_resume(void) {
     return 0;
 }
 
+/* ══ hash_src ══════════════════════════════════════════════════════════ */
+
+/* A hash source that is not the ledger: the fixture's G.v2 array (the
+ * same hashes the fixture wrote to v2_blocks). One height may be
+ * answered wrong (first byte flipped), absent (1) or as a fault (-1);
+ * 0 = no such height. */
+typedef struct {
+    uint8_t (*v2)[64];
+    uint64_t top;                       /* the highest height it knows    */
+    uint64_t wrong_at, absent_at, fault_at;
+    uint64_t calls;
+} arr_src_t;
+
+static int arr_hash_at(void *ctx, uint64_t h, uint8_t out[64]) {
+    arr_src_t *s = ctx;
+    if (!s) return -1;
+    s->calls++;
+    if (h == s->fault_at) return -1;
+    if (h == 0 || h > s->top || h == s->absent_at) return 1;
+    memcpy(out, s->v2[h], 64);
+    if (h == s->wrong_at) out[0] ^= 0x01;
+    return 0;
+}
+
+static arr_src_t arr_honest(void) {
+    arr_src_t a = { G.v2, P_LEN + 1, 0, 0, 0, 0 };
+    return a;
+}
+
+/* Export segment 1 into `dir` through nodus_seg_build_open_src, finish. */
+static int export_all_src(const char *dir, const nodus_seg_hash_src_t *src) {
+    nodus_seg_build_t *b = NULL;
+    if (nodus_seg_build_open_src(dir, 1, src, &b) != 0) return -1;
+    while (nodus_seg_build_resume_step(b, 4096) == 0) { }
+    for (;;) {
+        int rc = nodus_seg_export_step(b, &G.store, 4096, NULL);
+        if (rc == 1) break;
+        if (rc < 0) { nodus_seg_build_free(b); return -1; }
+    }
+    return nodus_seg_build_finish(b);
+}
+
+/* The three published files of segment 1 in `dir` equal the export's. */
+static int same_as_export(const char *dir) {
+    static const nodus_seg_file_t f[3] = {
+        NODUS_SEG_F_DAT, NODUS_SEG_F_IDX, NODUS_SEG_F_OK };
+    char a[NODUS_SEG_PATH_MAX], e[NODUS_SEG_PATH_MAX];
+    for (int i = 0; i < 3; i++) {
+        if (nodus_seg_path(dir, 1, f[i], a, sizeof(a)) != 0 ||
+            nodus_seg_path(G.export_dir, 1, f[i], e, sizeof(e)) != 0 ||
+            !files_equal(a, e))
+            return 0;
+    }
+    return 1;
+}
+
+/* A fresh build of segment 1 in `dir` (through `src`, or through the
+ * ledger `G.db` when src is NULL) offered header(2) for height 1: the
+ * verdict and the .dat.tmp size after it. The build is discarded. */
+static int first_header(const char *dir, const nodus_seg_hash_src_t *src,
+                        const uint8_t *hb, size_t hl, nodus_seg_v_t *v,
+                        uint64_t *size) {
+    char p[NODUS_SEG_PATH_MAX];
+    struct stat st;
+    nodus_seg_build_t *b = NULL;
+    int rc = src ? nodus_seg_build_open_src(dir, 1, src, &b)
+                 : nodus_seg_build_open(dir, 1, G.db, &b);
+    if (rc != 0) return -1;
+    if (nodus_seg_build_resume_step(b, 1) != 1) {
+        nodus_seg_build_discard(b);
+        return -1;
+    }
+    *v = nodus_seg_build_put_header(b, 1, hb, hl);
+    rc = nodus_seg_path(dir, 1, NODUS_SEG_F_DAT_TMP, p, sizeof(p)) == 0 &&
+         stat(p, &st) == 0 ? 0 : -1;
+    *size = rc == 0 ? (uint64_t)st.st_size : 0;
+    nodus_seg_build_discard(b);
+    return rc;
+}
+
+/* The ledger row v2_blocks[h]: replaced by `id`, or deleted (id NULL). */
+static int ledger_row(uint64_t h, const uint8_t *id) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(G.db, "DELETE FROM v2_blocks WHERE "
+                           "global_height = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return id ? v2_put(G.db, h, id) : 0;
+}
+
+/* The ledger read fault: v2_blocks renamed away (on) and back (off). */
+static int ledger_fault(bool on) {
+    return sqlite3_exec(G.db, on ? "ALTER TABLE v2_blocks RENAME TO "
+                                   "v2_blocks_off"
+                                 : "ALTER TABLE v2_blocks_off RENAME TO "
+                                   "v2_blocks", NULL, NULL, NULL)
+               == SQLITE_OK ? 0 : -1;
+}
+
+static int t_hash_src(void) {
+    char d1[512], d2[512], d3[512], d4[512];
+    nodus_seg_build_t *b = NULL;
+    CHECK(mk_sub("src_array", d1, sizeof(d1)) == 0 &&
+          mk_sub("src_ledger", d2, sizeof(d2)) == 0 &&
+          mk_sub("src_refuse", d3, sizeof(d3)) == 0 &&
+          mk_sub("src_resume", d4, sizeof(d4)) == 0, "dirs");
+
+    /* NULL sources are refused before anything is touched */
+    nodus_seg_hash_src_t none = { NULL, NULL };
+    CHECK(nodus_seg_build_open_src(d3, 1, NULL, &b) == -1 && b == NULL,
+          "NULL source");
+    CHECK(nodus_seg_build_open_src(d3, 1, &none, &b) == -1 && b == NULL,
+          "NULL hash_at");
+    CHECK(nodus_seg_build_open(d3, 1, NULL, &b) == -1 && b == NULL,
+          "NULL ledger");
+
+    /* (1) the array source and the explicit ledger source build files
+     * byte-identical to the export through nodus_seg_build_open */
+    arr_src_t a = arr_honest();
+    nodus_seg_hash_src_t sa = { &a, arr_hash_at };
+    CHECK(export_all_src(d1, &sa) == 0, "export through the array source");
+    CHECK(a.calls > 0, "the array source was asked");
+    CHECK(nodus_seg_held(d1, 1) == 1 && same_as_export(d1),
+          "array source: .dat / .idx / .ok byte-identical to the ledger "
+          "build");
+    nodus_seg_hash_src_t sl = nodus_seg_hash_src_ledger(G.db);
+    CHECK(sl.ctx == (void *)G.db && sl.hash_at != NULL, "ledger source");
+    CHECK(export_all_src(d2, &sl) == 0 && nodus_seg_held(d2, 1) == 1 &&
+          same_as_export(d2),
+          "explicit ledger source: byte-identical to the ledger build");
+
+    /* (2) a wrong hash refuses the honest header exactly as a wrong
+     * ledger row does; nothing is written */
+    uint8_t hb[NODUS_SEG_HEADER_MAX], bad[64];
+    size_t hl = 0;
+    nodus_seg_v_t v = NODUS_SEG_V_OK, vl = NODUS_SEG_V_OK;
+    uint64_t sz = 0, szl = 0;
+    CHECK(piece(1, 0, hb, &hl, NULL, NULL) == 0, "header(2)");
+    a = arr_honest();
+    CHECK(first_header(d3, &sa, hb, hl, &v, &sz) == 0 &&
+          v == NODUS_SEG_V_OK && sz == NODUS_SEG_DATA_HDR_LEN + 16u + hl,
+          "control: the honest source accepts header(2) and writes it");
+    for (uint64_t wh = 1; wh <= 2; wh++) {
+        /* wh = 2: cmt_header_hash(header(2)) != the hash at 2;
+         * wh = 1: header(2).last_block_id != the hash at 1 */
+        const nodus_seg_v_t want = wh == 2 ? NODUS_SEG_V_HEADER_HASH
+                                           : NODUS_SEG_V_BLOCK_ID;
+        a = arr_honest();
+        a.wrong_at = wh;
+        int r = first_header(d3, &sa, hb, hl, &v, &sz);
+        CHECK(r == 0 && v == want && sz == NODUS_SEG_DATA_HDR_LEN,
+              "a wrong hash refuses the header, nothing written");
+        memcpy(bad, G.v2[wh], 64);
+        bad[0] ^= 0x01;
+        int t = ledger_row(wh, bad);
+        r = t == 0 ? first_header(d3, NULL, hb, hl, &vl, &szl) : -1;
+        int u = ledger_row(wh, G.v2[wh]);             /* restore first */
+        CHECK(t == 0 && u == 0, "ledger row tamper + restore");
+        CHECK(r == 0 && vl == v && szl == sz,
+              "a wrong ledger row: the same verdict, nothing written");
+    }
+
+    /* (3) absent (1) and fault (-1): the ledger's no-row and read-fault
+     * paths — on a put, and on the resume scan */
+    for (uint64_t wh = 1; wh <= 2; wh++) {
+        a = arr_honest();
+        a.absent_at = wh;
+        CHECK(first_header(d3, &sa, hb, hl, &v, &sz) == 0 &&
+              v == NODUS_SEG_V_NO_LEDGER && sz == NODUS_SEG_DATA_HDR_LEN,
+              "absent: V_NO_LEDGER, nothing written");
+        int t = ledger_row(wh, NULL);
+        int r = t == 0 ? first_header(d3, NULL, hb, hl, &vl, &szl) : -1;
+        int u = ledger_row(wh, G.v2[wh]);
+        CHECK(t == 0 && u == 0, "ledger row delete + restore");
+        CHECK(r == 0 && vl == v && szl == sz,
+              "no ledger row: the same verdict");
+
+        a = arr_honest();
+        a.fault_at = wh;
+        CHECK(first_header(d3, &sa, hb, hl, &v, &sz) == 0 &&
+              v == NODUS_SEG_V_FAULT && sz == NODUS_SEG_DATA_HDR_LEN,
+              "fault: V_FAULT, nothing written");
+    }
+    {
+        int t = ledger_fault(true);
+        int r = t == 0 ? first_header(d3, NULL, hb, hl, &vl, &szl) : -1;
+        int u = t == 0 ? ledger_fault(false) : 0;
+        CHECK(t == 0 && u == 0, "ledger table off + back");
+        CHECK(r == 0 && vl == NODUS_SEG_V_FAULT &&
+              szl == NODUS_SEG_DATA_HDR_LEN,
+              "a ledger read fault: the same verdict");
+    }
+
+    /* the resume scan: a partial file (heights 1 … 3) is the node's
+     * problem, not the file's, when the source is absent or faults —
+     * -1, the file is not cut */
+    uint8_t *ans = malloc(NODUS_STFETCH_MSG_MAX);
+    CHECK(ans != NULL, "alloc");
+    a = arr_honest();
+    CHECK(nodus_seg_build_open_src(d4, 1, &sa, &b) == 0 &&
+          nodus_seg_build_resume_step(b, 1) == 1, "open");
+    for (;;) {
+        uint64_t h = 0;
+        uint32_t part = 0;
+        bool nh = false;
+        CHECK(nodus_seg_build_next(b, &h, &part, &nh) == 0, "next");
+        if (h == 4) break;
+        CHECK(fetch_one(b, G.export_dir, NULL, ans, 0) == 0, "fetch");
+    }
+    nodus_seg_build_free(b);
+    free(ans);
+    char p[NODUS_SEG_PATH_MAX];
+    struct stat st;
+    CHECK(nodus_seg_path(d4, 1, NODUS_SEG_F_DAT_TMP, p, sizeof(p)) == 0 &&
+          stat(p, &st) == 0, "partial file");
+    const off_t partial = st.st_size;
+    for (int mode = 0; mode < 4; mode++) {
+        /* 0 array absent, 1 array fault, 2 ledger no row, 3 ledger fault */
+        int t = 0, rc = 0;
+        a = arr_honest();
+        if (mode == 0) a.absent_at = 2;
+        if (mode == 1) a.fault_at = 2;
+        if (mode == 2) t = ledger_row(2, NULL);
+        if (mode == 3) t = ledger_fault(true);
+        b = NULL;
+        int o = t == 0 ? (mode < 2 ? nodus_seg_build_open_src(d4, 1, &sa, &b)
+                                   : nodus_seg_build_open(d4, 1, G.db, &b))
+                       : -1;
+        if (o == 0) rc = nodus_seg_build_resume_step(b, 4096);
+        nodus_seg_build_free(b);
+        int u = 0;
+        if (mode == 2) u = ledger_row(2, G.v2[2]);
+        if (mode == 3 && t == 0) u = ledger_fault(false);
+        CHECK(t == 0 && u == 0, "ledger change + restore");
+        CHECK(o == 0 && rc == -1, "the resume scan returns -1");
+        CHECK(stat(p, &st) == 0 && st.st_size == partial,
+              "the partial file is not cut");
+    }
+    a = arr_honest();
+    CHECK(nodus_seg_build_open_src(d4, 1, &sa, &b) == 0, "reopen");
+    int rc;
+    while ((rc = nodus_seg_build_resume_step(b, 4096)) == 0) { }
+    uint64_t nh_h = 0;
+    CHECK(rc == 1 && nodus_seg_build_next(b, &nh_h, &(uint32_t){0},
+                                          &(bool){false}) == 0 &&
+          nh_h == 4, "the honest source resumes at height 4");
+    nodus_seg_build_discard(b);
+    return 0;
+}
+
 /* ══ the witness fixture (serve_refusals, overlap_delete) ══════════════ */
 
 static int w_open(nodus_witness_t **out) {
@@ -2015,6 +2287,7 @@ int main(void) {
         int (*fn)(void);
     } cases[] = {
         { "roundtrip",       t_roundtrip },
+        { "hash_src",        t_hash_src },
         { "completeness",    t_completeness },
         { "fetch_wire",      t_fetch_wire },
         { "fetch_e2e",       t_fetch_e2e },

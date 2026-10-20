@@ -25,9 +25,10 @@
  * A segment file is NODE-LOCAL. Nothing here is read by the state
  * machine, by a root, by a vote or by replication; whether a file exists,
  * how far a build got and what a disk holds never change state. The only
- * consensus-fixed input is READ: `v2_blocks.block_id` (the ledger's
- * per-height header hash, never pruned) — every piece is verified against
- * it before it is written.
+ * consensus-fixed input is READ: the trusted block hash at each height,
+ * from the build's HASH SOURCE (nodus_seg_hash_src_t below) — on a full
+ * node `v2_blocks.block_id` (the ledger's per-height header hash, never
+ * pruned). Every piece is verified against it before it is written.
  *
  * ── THE FILES (in the segment directory, nodus_witness.h
  *    NODUS_SEG_DIR_DEFAULT under the witness data path) ────────────────
@@ -101,6 +102,8 @@
  *
  * ── WHAT IS VERIFIED BEFORE ANY BYTE IS WRITTEN (bytes doc §6 chain, the
  *    0x72 reporter's checks, nodus_witness_storage_probe.h "THE CHECKS")
+ *   (v2_blocks[h] below = the hash source's trusted hash at h — on a full
+ *   node the ledger row itself.)
  *   header(h+1): decodes; cmt_header_hash == v2_blocks[h+1]; height ==
  *     h+1; last_block_id.hash == v2_blocks[h]; part total 1 …
  *     CMT_PART_SET_MAX_PARTS with a 64-byte part-set hash.
@@ -252,11 +255,13 @@ typedef enum {
     NODUS_SEG_V_OK = 0,
     NODUS_SEG_V_ORDER,          /* not the piece the build needs next     */
     NODUS_SEG_V_BOUNDS,         /* a length outside its bound             */
-    NODUS_SEG_V_NO_LEDGER,      /* v2_blocks has no 64-byte row at h/h+1  */
+    NODUS_SEG_V_NO_LEDGER,      /* the hash source has no hash at h/h+1
+                                 * (ledger: no 64-byte v2_blocks row)     */
     NODUS_SEG_V_HEADER_DECODE,
-    NODUS_SEG_V_HEADER_HASH,    /* != v2_blocks[h+1]                      */
+    NODUS_SEG_V_HEADER_HASH,    /* != trusted hash at h+1 (v2_blocks)     */
     NODUS_SEG_V_HEADER_HEIGHT,  /* != h+1                                 */
-    NODUS_SEG_V_BLOCK_ID,       /* last_block_id.hash != v2_blocks[h]     */
+    NODUS_SEG_V_BLOCK_ID,       /* last_block_id.hash != trusted hash at
+                                 * h (v2_blocks)                          */
     NODUS_SEG_V_PART_TOTAL,     /* 0 / above the cap / no 64-byte root    */
     NODUS_SEG_V_PART_DECODE,    /* the part proto does not decode         */
     NODUS_SEG_V_PART_INDEX,     /* part / proof index != the one needed   */
@@ -310,15 +315,61 @@ uint64_t nodus_seg_of_height(uint64_t h);
 typedef struct nodus_seg_build nodus_seg_build_t;
 
 /**
- * Open the build of segment k in `dir`, reading the ledger hashes from
- * `ledger` (the witness database: SELECT block_id FROM v2_blocks). A
+ * THE HASH SOURCE — where a build takes the trusted block hash at a
+ * height (design 2026-10-19-windows-light-storage-design.md §3 B1).
+ *
+ * hash_at(ctx, h, out) answers the block hash at height h:
+ *   0  found — out[0..63] is the hash;
+ *   1  absent — the source has no hash at h (out undefined);
+ *  -1  fault — the source could not answer (a read error, a NULL ctx …).
+ * Exactly the contract of the ledger source (v2_blocks.block_id: 1 = no
+ * row or not 64 bytes).
+ *
+ * TRUSTED means: the caller vouches that every hash the source returns
+ * with 0 is the canonical block hash at h (on a full node the ledger's
+ * own row; on a light node a hash it authenticated itself). The build
+ * does not weaken any check because of it: every header, part, set and
+ * commit is re-verified against these hashes exactly as against the
+ * ledger (header "WHAT IS VERIFIED"). A source that answers a wrong hash
+ * makes the build refuse the honest piece at that height (V_HEADER_HASH
+ * at h+1, V_BLOCK_ID at h); absent → NODUS_SEG_V_NO_LEDGER on a put and
+ * -1 from the resume scan; fault → NODUS_SEG_V_FAULT on a put and -1
+ * from the resume scan.
+ *
+ * The build stores a COPY of this struct; `ctx` itself is NOT copied and
+ * must stay valid (and answer the same hashes) until the build is freed,
+ * discarded or finished. hash_at is called only from the build calls on
+ * the caller's thread. `ctx` may be NULL if hash_at accepts it.
+ */
+typedef struct {
+    void *ctx;
+    int (*hash_at)(void *ctx, uint64_t h, uint8_t out[64]);
+} nodus_seg_hash_src_t;
+
+/** The ledger source: ctx = `db` (the witness database), hash_at =
+ *  SELECT block_id FROM v2_blocks WHERE global_height = h. A NULL `db`
+ *  gives a source whose every answer is -1. */
+nodus_seg_hash_src_t nodus_seg_hash_src_ledger(sqlite3 *db);
+
+/**
+ * Open the build of segment k in `dir`, taking the trusted hashes from
+ * `src` (copied; src->ctx must outlive the build). A
  * published .dat without a valid marker is moved back to .dat.tmp first
  * (header "ATOMIC PUBLISH"); an existing .dat.tmp is resumed — run
  * nodus_seg_build_resume_step until it returns 1 before adding pieces. A
  * .dat.tmp whose data header names another k or count is started over.
  * *out is heap (nodus_seg_build_free).
  * @return 0 / -1 (the segment is already held — nothing is touched —,
- *         I/O, NULL).
+ *         I/O, NULL src or NULL src->hash_at).
+ */
+int nodus_seg_build_open_src(const char *dir, uint64_t k,
+                             const nodus_seg_hash_src_t *src,
+                             nodus_seg_build_t **out);
+
+/**
+ * nodus_seg_build_open_src over nodus_seg_hash_src_ledger(ledger): the
+ * ledger hashes from `ledger` (the witness database: SELECT block_id FROM
+ * v2_blocks). @return as nodus_seg_build_open_src; -1 for a NULL ledger.
  */
 int nodus_seg_build_open(const char *dir, uint64_t k, sqlite3 *ledger,
                          nodus_seg_build_t **out);
@@ -338,7 +389,8 @@ uint64_t nodus_seg_build_k(const nodus_seg_build_t *b);
  * after the last height, as one unit), cutting the file at the first
  * record that is short or fails. @return 1 the scan is over (pieces may
  * be added), 0 more to
- * scan, -1 fault (I/O, a ledger read fault). A build opened over no
+ * scan, -1 fault (I/O, a hash-source fault, or the source has no hash
+ * for a record's height). A build opened over no
  * temporary returns 1 at once.
  */
 int nodus_seg_build_resume_step(nodus_seg_build_t *b, uint32_t max_heights);
@@ -423,8 +475,9 @@ bool nodus_seg_store_has(const nodus_cmt_store_t *store, uint64_t k);
  * @return 1 the build is complete (nodus_seg_build_finish), 0 more to
  *         do, -1 a piece is missing or failed (*why_out, may be NULL;
  *         NODUS_SEG_V_OK for a missing piece or a store read fault) — the
- *         caller drops the export (a store that disagrees with v2_blocks
- *         is a node fault, logged).
+ *         caller drops the export (a store that disagrees with the
+ *         build's trusted hashes — v2_blocks on the ledger source — is a
+ *         node fault, logged).
  */
 int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
                           uint32_t max_heights, nodus_seg_v_t *why_out);
