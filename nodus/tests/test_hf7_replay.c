@@ -82,8 +82,9 @@
  *  - A real chain reaches generation 5 through the HF-7 edge (P1d) at the
  *    end of block A − 1; this file never crosses an edge, so the A − 1
  *    cell of the transition matrix (index-table guard, no rows, today's
- *    expiry rule, edge at the end) is NOT exercised here — it is P1e's
- *    harness scenario. The block-start reading is pinned only indirectly:
+ *    expiry rule, edge at the end) is NOT exercised here — the engine
+ *    edge is test_hf7_edge.c's (HF-7 P1d), 7/7 is P1e's harness
+ *    scenario. The block-start reading is pinned only indirectly:
  *    every gate reads the context's generation, built before phase 6b.
  *  - The SYSTEM / CORE root compositions are pinned to generation 1's
  *    (above), so no domain-root rule of generation >= 4 is exercised here.

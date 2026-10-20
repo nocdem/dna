@@ -69,9 +69,9 @@
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
  *  - Generation ROOTS is reached by a SCRIPTED table swapped in between
- *    blocks E−1 and E, NOT by the HF-7 edge (P1d does not exist yet): the
- *    phase-6b edge, its seeding call site and the A−1 timing are not
- *    exercised here — only that, once the registry resolves to ROOTS,
+ *    blocks E−1 and E, NOT by the HF-7 edge (written when P1d did not
+ *    exist; the edge, its seeding call site and the A−1 timing are
+ *    test_hf7_edge.c's since P1d): they are not exercised here — only that, once the registry resolves to ROOTS,
  *    phases 8-13 compose as §8.9 says. The seed is called by the test.
  *  - The "new domain under ROOTS" lifecycle case (head_activate storing
  *    the sentinel) is NOT exercised: no domain activates after the switch

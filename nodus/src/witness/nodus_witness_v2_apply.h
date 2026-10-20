@@ -1576,8 +1576,9 @@ int nodus_witness_v2_replay_guard(nodus_witness_t *w,
  * value is 720 — equal to DNA_VALBIND_MAX_EXPIRY_BLOCKS (shared/dnac/
  * valbind_wire.h), but a SEPARATE constant on purpose: that one is the
  * validator-binding consent window, and a change to it must not move this
- * consensus rule. The HF-7 vote literal (HF7_VOTE_CONSTS, P1d) binds this
- * value; the node-local mempool window NODUS_CMT_APP_MAX_EXPIRY_AHEAD
+ * consensus rule. The HF-7 vote literal D5 binds this value (HF-7 P1d:
+ * nodus_witness_runtime.c GEN5_VOTE_CONSTS = { NODUS_RT_GEN5_VOTE_EXPIRY_
+ * WINDOW }, pinned equal to this constant in nodus_witness_v2_apply.c); the node-local mempool window NODUS_CMT_APP_MAX_EXPIRY_AHEAD
  * (100) is NOT this constant and is not in the vote.
  */
 #define NODUS_V2_EXPIRY_WINDOW_BLOCKS ((uint64_t)720)
@@ -1693,9 +1694,10 @@ int nodus_witness_v2_head_last_upd(nodus_witness_t *w, uint32_t domain_id,
                                    uint8_t out[64]);
 
 /**
- * The one-time seed of the head column, for the HF-7 edge (P1d calls it
- * in phase 6b of block A−1, BEFORE the 6c re-scan and phase 9 read the
- * heads; this package only provides it). For EVERY v2_domain_heads row
+ * The one-time seed of the head column, for the HF-7 edge: its production
+ * caller is phase_6b_gen5_edge (nodus_witness_v2_apply.c, HF-7 P1d), in
+ * phase 6b of block A−1, after the registry switch 4 → 5 and BEFORE the
+ * 6c re-scan and phase 9 read the heads. For EVERY v2_domain_heads row
  * (domain_id ASC — range-checked 0..UINT32_MAX before narrowing) the value
  * is TODAY'S history query (the latest v2_domain_updates upd_hash, or the
  * genesis sentinel for a domain that never had an update), cross-checked

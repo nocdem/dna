@@ -11064,7 +11064,7 @@ ensure step at S19); `test_v2_evm` (at-open rung S16 → S19 and a previous-buil
 objects dropped first so the climb is real), `test_v2_gen` (derived chain at S19, `v2_replay` empty, no
 `last_upd_hash`) and `test_v2_schema`'s S12 fixture check updated. Written, NOT run by the author.
 
-### HF-7 P1c-1 — the HF-7 roots wired into the witness (2026-10-20, branch `hf7-p1c1` only — not versioned, not voted; INERT until P1d)
+### HF-7 P1c-1 — the HF-7 roots wired into the witness (2026-10-20, branch `hf7-p1c1` only — not versioned, not voted; inert until a param-22 vote — P1d, below, compiled generation 5 and its edge)
 
 Normative bytes: snapshot design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §8.9 S1-S8
 (APPROVED 2026-10-15). Timing and lifecycle: §10.2 item 8, the transition matrix §10.3, rev 1 §10.9, the
@@ -11072,8 +11072,9 @@ khan decisions §10.11; Kurultay #24 summary item 7; Kurultay #27 summary items 
 and 8 (every GLOBAL site moves together). Function list: `messenger/docs/functions/ledger.md` §1.3.
 
 **The gate.** Every new behaviour is selected by the SYSTEM runtime's generation `>= NODUS_RT_GEN_ROOTS`
-(5). No registry reaches 5 before package P1d (no compiled table entry, `NODUS_RT_GEN_MAX` unchanged), so
-on every chain every root, byte and verdict is today's. Inside the apply engine the gate is one static
+(5). No registry reaches 5 without a committed param-22 row (HF-7 P1d compiled generation 5 and its edge,
+"HF-7 P1d" below; no chain carries such a row), so on every chain every root, byte and verdict is today's.
+Inside the apply engine the gate is one static
 reader, `doms_roots_on` (`nodus_witness_v2_apply.c`): the generation of the runtime the working set's
 SYSTEM domain resolved to (`doms_load` → `nodus_witness_v2_runtime_for`) — the same `rt->generation` phase
 8's SYSTEM state-root hook (`nodus_rt_system_state_root`) reads. After the 6c lifecycle re-scan this is the
@@ -11128,7 +11129,7 @@ GLOBAL v2 over three hand-written replay rows at E+1; the head read directly (ag
 NULL column). It reaches ROOTS by swapping the table between blocks, not through the edge (P1d). Written,
 NOT run by the author.
 
-### HF-7 P1c-2 — the replay relation and the D2 expiry rule (2026-10-20, branch `hf7-p1c2` only — not versioned, not voted; INERT until P1d)
+### HF-7 P1c-2 — the replay relation and the D2 expiry rule (2026-10-20, branch `hf7-p1c2` only — not versioned, not voted; inert until a param-22 vote — P1d, below, compiled generation 5 and its edge)
 
 Design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §10.2 items 5-7, §10.3 (matrix rows
 "replay guard tables", "`v2_replay` rows", "expiry block rule", "CheckTx expiry"), §10.9 (rev 1), §10.11
@@ -11146,8 +11147,8 @@ rule). Every gate below is `generation >= NODUS_RT_GEN_ROOTS`; nothing re-reads 
 pre-commit paths read the generation of the block they judge (tip + 1): the dry run and the seam from the
 context they already build at tip + 1, CheckTx's two node-local checks through
 `nodus_witness_v2_key_generation` (the committed registry). Below generation 5 every verdict and table is
-byte-identical to before. Generation 5 has no compiled table entry yet (`NODUS_RT_GEN_MAX` unchanged), so
-no chain reaches any of this before P1d.
+byte-identical to before. Generation 5 is compiled since HF-7 P1d ("HF-7 P1d" below) and reached only
+through a committed param-22 row's edge, so no chain reaches any of this before that vote.
 
 **The relation.** For every APPLIED envelope item of a block at generation 5, `cmt_item_index` writes, after
 the two index rows and inside the same item SAVEPOINT, `v2_replay (tx_id = the wire realization id,
