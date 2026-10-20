@@ -69,10 +69,10 @@
  *    a drift, not that the selfcheck function itself runs the comparison —
  *    that is the source read (nodus_witness_runtime.c, the D5 row).
  *  - Section 4 calls the rule functions with hand-set facts. Which facts
- *    the block path actually passes is the engine's: the SYSTEM
- *    CHAIN_CONFIG exec does NOT yet fill ruleset_gen_roots_voted (HF-7 P1d
- *    report), so on the block path the single-use rule (a) is enforced
- *    only by the 0x71 approval responder today.
+ *    the block path actually passes is the engine's: since HF-7 P1d-FIX
+ *    the engine fills ctx.ruleset_gen_roots_voted and the SYSTEM
+ *    CHAIN_CONFIG exec copies it into the facts — proven on the block
+ *    path by test_hf7_edge.c case D, not here.
  *  - Section 5 drives preflight directly with the context the engine
  *    builds from the registry; it does not apply a block (the engine
  *    half is test_hf7_edge.c and the P1e harness case).

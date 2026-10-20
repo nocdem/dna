@@ -23,7 +23,10 @@
  *       the same rows; the empty table is the shared empty root in both.
  *   A5. nodus_witness_replay_root: the empty relation is
  *       DNA_V2_EMPTY_REPLAY (the A−1 value); three rows inserted out of
- *       order == dna_v2_replay_root over the tx_id order.
+ *       order == dna_v2_replay_root over the tx_id order; 21 rows (above
+ *       the old doubling's initial 16, not a power of two — the loader
+ *       counts first and allocates once since the P1c review F4 fix,
+ *       §10.12) == dna_v2_replay_root too.
  *  B. ENGINE (test_hf6_migrate's seeded fixture: HF-2 on, param 9 at 3,
  *     EVM at 5, the HF-6 edge at block 7; idle blocks):
  *   B1. GENERATION 4 BYTE-IDENTICAL: at block E−1 (generation 4) every
@@ -87,6 +90,10 @@
  *    their literal KATs in test_roots_v2.
  *  - The legs in B4 are read with the same loaders the engine uses; A1-A5
  *    prove those loaders against the pure functions over hand-built rows.
+ *  - The count-first loaders' "scan count != counted rows" FAULT (F4) is
+ *    NOT induced: it needs a writer between the COUNT and the scan, which
+ *    a single test connection cannot interleave. Covered by reading only;
+ *    A5's 21 rows prove only that a matching count gives the pure root.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -409,6 +416,29 @@ static int t_legs_replay(void) {
           nodus_witness_replay_root(fx.w, got) == 0 &&
           memcmp(got, want, 64) == 0,
           "A5 replay_root == dna_v2_replay_root over the tx_id order");
+    /* P1c review F4 (§10.12): the loader counts first and allocates once.
+     * 18 more rows → 21, a count above the old doubling's initial 16 and
+     * not a power of two — the one input whose path differs from the
+     * doubling's; the root is still the pure function's. */
+    {
+        enum { NX = 18, NT = 3 + NX };
+        dna_v2_replay_row_t all[NT];
+        replay_rows(all, 1000);
+        for (int i = 0; i < NX; i++) {
+            /* tx_id bytes 0x80.. sort after 0x7F; intents 0xA0.. are
+             * distinct from 0x93 / 0x71 / 0x15 and from each other */
+            CHECK(put_replay(fx.w, (uint8_t)(0x80 + i), (uint8_t)(0xA0 + i),
+                             2000u + (uint64_t)i) == 0, "extra row");
+            memset(all[3 + i].tx_id, 0x80 + i, 64);
+            memset(all[3 + i].intent_id, 0xA0 + i, 64);
+            all[3 + i].expiry_height = 2000u + (uint64_t)i;
+        }
+        CHECK(dna_v2_replay_root(all, NT, want) == 0 &&
+              nodus_witness_replay_root(fx.w, got) == 0 &&
+              memcmp(got, want, 64) == 0,
+              "A5 21 rows (count-first, one allocation) == "
+              "dna_v2_replay_root over the tx_id order");
+    }
     fx_close(&fx);
     return 0;
 }

@@ -864,11 +864,51 @@ static int col_types_are(sqlite3_stmt *st, int first, int n,
     return 1;
 }
 
+/* HF-7 P1c review F4 (snapshot design §10.12): the row count of one S1 /
+ * S3 / S7 relation, read on the SAME connection immediately before the
+ * row scan, so the three loaders below allocate their row buffer exactly
+ * once instead of doubling it (the S7 worst case, ≈ 2.2 M rows, would
+ * otherwise hold ≈ 570 MB plus a realloc peak). The callers that matter
+ * (phase 13, the genesis) run inside the block transaction, so the count
+ * and the scan see one snapshot; every loader still FAULTs if the scan
+ * yields a different number of rows than counted (a row past the count is
+ * refused before it is written), so a count that disagrees with the scan
+ * is a node-local -1, never a shorter or longer table. A negative count or
+ * one whose buffer size overflows size_t is a FAULT. @return 0 / -1. */
+static int scan_count(nodus_witness_t *w, const char *sql, size_t elem,
+                      size_t *out) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "row count prepare failed: %s",
+                      sqlite3_errmsg(w->db));
+        return -1;
+    }
+    int ret = -1;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        sqlite3_int64 c = sqlite3_column_int64(st, 0);
+        if (c >= 0 && (uint64_t)c <= (uint64_t)(SIZE_MAX / elem)) {
+            *out = (size_t)c;
+            ret = 0;
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "row count %lld out of range — failing "
+                          "root", (long long)c);
+        }
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "%s", "row count read failed — failing root");
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
 int nodus_witness_bcopy_root(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !w->db || !out) return -1;
     static const char *const want[5] = {
         "integer", "blob", "blob", "integer", "integer"
     };
+    size_t cnt = 0;
+    if (scan_count(w, "SELECT COUNT(*) FROM v2_balance_copy",
+                   sizeof(dna_v2_bcopy_row_t), &cnt) != 0)
+        return -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT epoch_start, validator_fp, owner_fp, kind, amount, "
@@ -880,16 +920,16 @@ int nodus_witness_bcopy_root(nodus_witness_t *w, uint8_t out[64]) {
                       sqlite3_errmsg(w->db));
         return -1;
     }
-    size_t cap = 16, n = 0;
-    dna_v2_bcopy_row_t *r = malloc(cap * sizeof(*r));
+    size_t n = 0;
+    dna_v2_bcopy_row_t *r = malloc((cnt ? cnt : 1) * sizeof(*r));
     if (!r) { sqlite3_finalize(st); return -1; }
     int rc, fail = 0;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        if (n >= cap) {
-            dna_v2_bcopy_row_t *nr = realloc(r, cap * 2 * sizeof(*r));
-            if (!nr) { fail = 1; break; }
-            r = nr;
-            cap *= 2;
+        if (n >= cnt) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_balance_copy scan yields more than "
+                          "the %zu counted rows — failing root", cnt);
+            fail = 1;
+            break;
         }
         sqlite3_int64 es = sqlite3_column_int64(st, 0);
         sqlite3_int64 kd = sqlite3_column_int64(st, 3);
@@ -920,6 +960,11 @@ int nodus_witness_bcopy_root(nodus_witness_t *w, uint8_t out[64]) {
     if (!fail && rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "balance-copy scan aborted mid-stream "
                       "(rc=%d) — failing root", rc);
+        fail = 1;
+    }
+    if (!fail && n != cnt) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_balance_copy scan read %zu rows, %zu "
+                      "counted — failing root", n, cnt);
         fail = 1;
     }
     sqlite3_finalize(st);
@@ -968,6 +1013,10 @@ int nodus_witness_stmem_root(nodus_witness_t *w, uint8_t out[64]) {
     static const char *const want[4] = {
         "integer", "blob", "integer", "integer"
     };
+    size_t cnt = 0;
+    if (scan_count(w, "SELECT COUNT(*) FROM v2_storage_set_members",
+                   sizeof(dna_v2_stmem_row_t), &cnt) != 0)
+        return -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT epoch_start, node_fp, fail_streak, grace_until, "
@@ -979,16 +1028,16 @@ int nodus_witness_stmem_root(nodus_witness_t *w, uint8_t out[64]) {
                       sqlite3_errmsg(w->db));
         return -1;
     }
-    size_t cap = 16, n = 0;
-    dna_v2_stmem_row_t *r = malloc(cap * sizeof(*r));
+    size_t n = 0;
+    dna_v2_stmem_row_t *r = malloc((cnt ? cnt : 1) * sizeof(*r));
     if (!r) { sqlite3_finalize(st); return -1; }
     int rc, fail = 0;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        if (n >= cap) {
-            dna_v2_stmem_row_t *nr = realloc(r, cap * 2 * sizeof(*r));
-            if (!nr) { fail = 1; break; }
-            r = nr;
-            cap *= 2;
+        if (n >= cnt) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_storage_set_members scan yields more "
+                          "than the %zu counted rows — failing root", cnt);
+            fail = 1;
+            break;
         }
         sqlite3_int64 es = sqlite3_column_int64(st, 0);
         sqlite3_int64 fs = sqlite3_column_int64(st, 2);
@@ -1017,6 +1066,11 @@ int nodus_witness_stmem_root(nodus_witness_t *w, uint8_t out[64]) {
                       "(rc=%d) — failing root", rc);
         fail = 1;
     }
+    if (!fail && n != cnt) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_storage_set_members scan read %zu rows, "
+                      "%zu counted — failing root", n, cnt);
+        fail = 1;
+    }
     sqlite3_finalize(st);
     int ret = fail ? -1 : dna_v2_stmem_root(r, n, out);
     free(r);
@@ -1026,6 +1080,10 @@ int nodus_witness_stmem_root(nodus_witness_t *w, uint8_t out[64]) {
 int nodus_witness_replay_root(nodus_witness_t *w, uint8_t out[64]) {
     if (!w || !w->db || !out) return -1;
     static const char *const want[3] = { "blob", "blob", "integer" };
+    size_t cnt = 0;
+    if (scan_count(w, "SELECT COUNT(*) FROM v2_replay",
+                   sizeof(dna_v2_replay_row_t), &cnt) != 0)
+        return -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(w->db,
             "SELECT tx_id, intent_id, expiry_height, typeof(tx_id), "
@@ -1035,16 +1093,16 @@ int nodus_witness_replay_root(nodus_witness_t *w, uint8_t out[64]) {
                       sqlite3_errmsg(w->db));
         return -1;
     }
-    size_t cap = 16, n = 0;
-    dna_v2_replay_row_t *r = malloc(cap * sizeof(*r));
+    size_t n = 0;
+    dna_v2_replay_row_t *r = malloc((cnt ? cnt : 1) * sizeof(*r));
     if (!r) { sqlite3_finalize(st); return -1; }
     int rc, fail = 0;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-        if (n >= cap) {
-            dna_v2_replay_row_t *nr = realloc(r, cap * 2 * sizeof(*r));
-            if (!nr) { fail = 1; break; }
-            r = nr;
-            cap *= 2;
+        if (n >= cnt) {
+            QGP_LOG_ERROR(LOG_TAG, "v2_replay scan yields more than the %zu "
+                          "counted rows — failing root", cnt);
+            fail = 1;
+            break;
         }
         const uint8_t *tx = sqlite3_column_blob(st, 0);
         const uint8_t *in = sqlite3_column_blob(st, 1);
@@ -1070,6 +1128,11 @@ int nodus_witness_replay_root(nodus_witness_t *w, uint8_t out[64]) {
     if (!fail && rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "replay scan aborted mid-stream (rc=%d) — "
                       "failing root", rc);
+        fail = 1;
+    }
+    if (!fail && n != cnt) {
+        QGP_LOG_ERROR(LOG_TAG, "v2_replay scan read %zu rows, %zu counted "
+                      "— failing root", n, cnt);
         fail = 1;
     }
     sqlite3_finalize(st);

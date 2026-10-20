@@ -2792,6 +2792,22 @@ int nodus_witness_init(nodus_witness_t *witness,
                  (unsigned)DNAC_CFG_RULESET_GEN_ROLES,
                  (unsigned)DNAC_HF6_SWITCH_SPEC_VERSION,
                  NODUS_BUILD_GIT_COMMIT);
+    /* HF-7 P1d (snapshot design docs/plans/2026-09-11-nodus-ledger-
+     * snapshot-design.md §10.2 item 1, §10.11 C): the generation-5 vote
+     * literal D5 (chain_config param 22 RULESET_GEN_ROOTS) — an EVM-
+     * enabled build's selfcheck just re-derived it from the generation-5 pins, the 4 -> 5
+     * spec version, the compiled Foundation owner and the expiry window —
+     * for the same 7/7 comparison before THAT vote (DEPLOY_RUNBOOK §2.2).
+     * Its own line, so the HF-6 line above keeps the exact text
+     * test_hf6_edge.sh and test_storage_archive.sh grep. */
+    QGP_LOG_INFO(LOG_TAG, "HF-7 rule-set generation %u vote D5 0x%016llx "
+                 "(param %u RULESET_GEN_ROOTS, switch spec v%u), built from "
+                 "git commit %s",
+                 (unsigned)NODUS_RT_GEN_ROOTS,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_ROOTS_D,
+                 (unsigned)DNAC_CFG_RULESET_GEN_ROOTS,
+                 (unsigned)DNAC_HF7_SWITCH_SPEC_VERSION,
+                 NODUS_BUILD_GIT_COMMIT);
     /* HF-4 review (L1 F2): the compile-time constants consensus depends
      * on and that a harness build overrides (#ifndef in dnac.h /
      * nodus_witness_emission.h), plus whether the fault-injection hooks

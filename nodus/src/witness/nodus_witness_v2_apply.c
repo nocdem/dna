@@ -1239,6 +1239,31 @@ static int env_ruleset_gen_roles_voted(nodus_witness_t *w, uint8_t *voted,
     return 0;
 }
 
+/* HF-7 (design docs/plans/2026-09-11-nodus-ledger-snapshot-design.md
+ * §10.2 item 1 "Stateful vote rules as param 18"): has ANY chain_config
+ * param-22 (RULESET_GEN_ROOTS) row been committed, at any effective
+ * height? env_ruleset_gen2_voted's contract verbatim — into
+ * ctx.ruleset_gen_roots_voted, the param-22 single-use rule (a): a second
+ * row whose A'-1 edge found the registry already at generation 5 would
+ * FAULT every node there. @return 0 (*voted = 0/1) / -2. */
+static int env_ruleset_gen_roots_voted(nodus_witness_t *w, uint8_t *voted,
+                                       char *reason, size_t reason_size)
+{
+    uint64_t v = 0;
+    int rc = nodus_chain_config_get_u64(w,
+                                        (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS,
+                                        (uint64_t)INT64_MAX, 0ULL, &v);
+
+    if (rc < 0) {
+        V2AP_ENV_FAULT("%s", "HF-7: the RULESET_GEN_ROOTS history is "
+                       "unreadable on this node - refusing to judge a "
+                       "vote's single-use rule against a guess");
+        return -2;
+    }
+    *voted = (rc == 0) ? 1u : 0u;
+    return 0;
+}
+
 /* HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2
  * Price): the four NAME_REGISTER price tiers at `height` — chain_config
  * params 10..13 (NAME_PRICE_3P..6P), each the committed row active at
@@ -2712,6 +2737,12 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
     if (env_ruleset_gen_roles_voted(w, &gen_roles_voted, reason,
                                     reason_size) != 0)
         return -2;
+    /* HF-7: "any param-22 row" (the param-22 vote's single use), the same
+     * discipline */
+    uint8_t gen_roots_voted = 0;
+    if (env_ruleset_gen_roots_voted(w, &gen_roots_voted, reason,
+                                    reason_size) != 0)
+        return -2;
     /* HF-4: the name price tiers at this block's height, once per item */
     uint64_t name_price[4];
     if (env_name_prices(w, blk->global_height, name_price, reason,
@@ -2780,6 +2811,7 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.ruleset_gen2_voted  = gen2_voted;
         ctx.ruleset_gen_storage_voted = gen_storage_voted;
         ctx.ruleset_gen_roles_voted = gen_roles_voted;
+        ctx.ruleset_gen_roots_voted = gen_roots_voted;
         ctx.delegate_name_required = dlg_name;
         memcpy(ctx.name_price, name_price, sizeof(ctx.name_price));
         ctx.stake_min           = stake_min;
@@ -3724,6 +3756,7 @@ static int env_authorize_legs(nodus_witness_t *w,
     uint8_t  gen2_voted = 0;
     uint8_t  gen_storage_voted = 0;
     uint8_t  gen_roles_voted = 0;
+    uint8_t  gen_roots_voted = 0;
     uint64_t name_price[4];
     uint64_t stake_min = 0, storage_bond = 0;
 
@@ -3733,8 +3766,9 @@ static int env_authorize_legs(nodus_witness_t *w,
      * partly zero. Same read, same fault rule as exec_one_env. HF-2's
      * switch rides along for the same reason (the auth hook computes the
      * power sums unconditionally and does not read it), and so do
-     * HF-4's single-use fact and HF-6's two generation-4 vote facts (no
-     * auth hook reads any of them), and HF-8's name rule (read_plan/exec only — no auth hook
+     * HF-4's single-use fact, HF-6's two generation-4 vote facts and
+     * HF-7's param-22 single-use fact (no auth hook reads any of them),
+     * and HF-8's name rule (read_plan/exec only — no auth hook
      * reads it), and HF-6's STAKE floor and storage bond (exec only). */
     if (env_token_create_fee(w, height, &tc_fee, reason, reason_size) != 0)
         return -2;
@@ -3749,6 +3783,9 @@ static int env_authorize_legs(nodus_witness_t *w,
                                       reason_size) != 0)
         return -2;
     if (env_ruleset_gen_roles_voted(w, &gen_roles_voted, reason,
+                                    reason_size) != 0)
+        return -2;
+    if (env_ruleset_gen_roots_voted(w, &gen_roots_voted, reason,
                                     reason_size) != 0)
         return -2;
     if (env_name_prices(w, height, name_price, reason, reason_size) != 0)
@@ -3813,6 +3850,7 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.ruleset_gen2_voted  = gen2_voted;
         actx.ruleset_gen_storage_voted = gen_storage_voted;
         actx.ruleset_gen_roles_voted = gen_roles_voted;
+        actx.ruleset_gen_roots_voted = gen_roots_voted;
         memcpy(actx.name_price, name_price, sizeof(actx.name_price));
         actx.stake_min           = stake_min;
         actx.storage_bond        = storage_bond;

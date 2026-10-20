@@ -286,7 +286,8 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
  * THREE sites apply it with the same facts: the SYSTEM CHAIN_CONFIG exec
  * (engine-filled ctx.hf2_active, ctx.ruleset_gen2_voted (param 9) /
  * ctx.ruleset_gen_roles_voted (param 18) / ctx.ruleset_gen_storage_voted
- * (any param-16 row) and the resolved runtime's
+ * (any param-16 row) / ctx.ruleset_gen_roots_voted (param 22) and the
+ * resolved runtime's
  * generation — CheckTx reaches it through the dry run's exec), and the
  * 0x71 approval responder at its candidate height (its own reads of the
  * same facts).
@@ -321,14 +322,12 @@ typedef struct {
                                    * height — the param-18 single use     */
     uint8_t  ruleset_gen_roots_voted; /* HF-7: any param-22 row, any
                                    * height — the param-22 single use.
-                                   * Filled today by the 0x71 approval
-                                   * responder only (nodus_witness_chain_
-                                   * config.c); the SYSTEM CHAIN_CONFIG
-                                   * exec's fill is NOT wired (HF-7 P1d
-                                   * left it to the ORCHESTRATOR: the
-                                   * engine ctx fill lives outside that
-                                   * package) — until it is, the exec
-                                   * reads 0 here                         */
+                                   * Filled by the 0x71 approval
+                                   * responder (nodus_witness_chain_
+                                   * config.c) and, since HF-7 P1d-FIX,
+                                   * by the SYSTEM CHAIN_CONFIG exec from
+                                   * ctx.ruleset_gen_roots_voted (engine
+                                   * env_ruleset_gen_roots_voted)         */
     uint32_t judging_generation;  /* the SYSTEM runtime judging the vote
                                    * (0 = synthetic / unresolved)         */
     /* red-team 1 F5: the chain's FIRST block height, derived from the

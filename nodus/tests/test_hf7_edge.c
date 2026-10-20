@@ -48,6 +48,15 @@
  *  C. a param-22 row whose value is not this build's D5 (inserted by hand
  *     — the scalar rules admit nothing else): the edge block is a node
  *     FAULT naming the generation-5 vote D5.
+ *  D. the param-22 single-use rule (a) on the BLOCK path (HF-7 P1d-FIX;
+ *     test_hf4_switch case D's shape for param 9): params 9 / 14 / 18 at
+ *     3 / 5 / 8, NO param-22 row; at block 10 (generation 4) two param-22
+ *     (D5) votes in ONE block — the first applies, the second is refused
+ *     NODUS_V2_TX_ERR_EXEC, the engine handed the exec
+ *     ctx.ruleset_gen_roots_voted 0 then 1 (re-read per item), exactly one
+ *     param-22 row; at block 11 a third vote is refused the same way
+ *     (fact 1 from the committed row), still one row, the registry still
+ *     generation 4.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: NODUS_EVM_ENABLED (generations 3-5 exist only there; the
@@ -61,9 +70,16 @@
  * end (left behind when a CHECK aborts).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
- *  - The param-22 / -18 / -14 / -9 rows are written by hand BEFORE the
- *    genesis, so no vote is cast: the vote rules are test_hf7_activation.c
- *    section 4's, not exercised here.
+ *  - In A-C the param-22 / -18 / -14 / -9 rows are written by hand BEFORE
+ *    the genesis, so no vote is cast: the vote rules are
+ *    test_hf7_activation.c section 4's. D casts param-22 votes through the
+ *    block path, but only rule (a) is exercised there ((b)-(e) are
+ *    section 4's); D fabricates the committee quorum inside a probe of the
+ *    generation-4 SYSTEM exec (the A3 pattern), and the refusal is
+ *    observed as the item code ERR_EXEC — the probe's record of the fact
+ *    is what ties that code to rule (a). The CheckTx / authorization-
+ *    stage fill (env_authorize_legs) is not observed: no auth hook reads
+ *    the fact.
  *  - A3 / A4 fabricate the committee quorum inside a probe SYSTEM exec
  *    (the test_hf4_switch D/E pattern: the fixture's validators have no
  *    secret keys); the auth hook still verifies the real submitter
@@ -346,12 +362,20 @@ static int block_global(nodus_witness_t *w, uint64_t h, uint8_t out[64]) {
 
 /* ══ the probe SYSTEM exec (test_hf4_switch D/E): a quorum verdict ═════ */
 
+/* the param-22 single-use fact the engine handed each probed exec, in
+ * call order (case D; test_hf4_switch case D's g_seen) */
+#define PROBE_MAX 8
+static uint8_t g_seen[PROBE_MAX];
+static int     g_n_seen;
+
 static int probe_exec(const nodus_domain_runtime_t *rt,
                       const dna_env_view_t *env, uint16_t leg_index,
                       const nodus_rt_exec_ctx_t *ctx,
                       const nodus_rt_read_res_t *reads, uint16_t n_reads,
                       uint8_t *res_out, size_t res_cap, size_t *res_len_out) {
     if (!ctx || !ctx->auth) return -2;
+    if (g_n_seen < PROBE_MAX)
+        g_seen[g_n_seen++] = ctx->ruleset_gen_roots_voted;
     nodus_rt_auth_verdict_t av = *ctx->auth;
     av.n_approvals = 7;
     av.committee_n = 7;
@@ -365,10 +389,10 @@ static int probe_exec(const nodus_domain_runtime_t *rt,
 
 static nodus_domain_runtime_t *g_probe = NULL;
 
-/* the compiled table, copied, with ONLY the generation-5 SYSTEM exec
+/* the compiled table, copied, with ONLY the generation-`gen` SYSTEM exec
  * replaced; every tuple unchanged, so the committed registry resolves
  * onto the same entries */
-static int probe_install(nodus_witness_t *w) {
+static int probe_install(nodus_witness_t *w, uint32_t gen) {
     size_t n = 0;
     const nodus_domain_runtime_t *all = nodus_runtime_all_table(&n);
     if (!all || n == 0) return -1;
@@ -378,7 +402,7 @@ static int probe_install(nodus_witness_t *w) {
     memcpy(g_probe, all, n * sizeof(*g_probe));
     int hit = 0;
     for (size_t i = 0; i < n; i++)
-        if (g_probe[i].generation == NODUS_RT_GEN_ROOTS &&
+        if (g_probe[i].generation == gen &&
             g_probe[i].domain_id == DNA_DOMAIN_SYSTEM) {
             g_probe[i].exec = probe_exec;
             hit++;
@@ -386,6 +410,7 @@ static int probe_install(nodus_witness_t *w) {
     if (hit != 1) return -1;
     w->v2_runtime_table = g_probe;
     w->v2_runtime_table_n = n;
+    g_n_seen = 0;
     return 0;
 }
 
@@ -612,7 +637,8 @@ static int t_edge(void) {
     }
 
     /* ── A3. block A under generation 5 ── */
-    CHECK(probe_install(fx.w) == 0, "probe runtime table (gen-5 SYSTEM)");
+    CHECK(probe_install(fx.w, NODUS_RT_GEN_ROOTS) == 0,
+          "probe runtime table (gen-5 SYSTEM)");
     {
         uint8_t d0[64], d1[64];
         cc_env_t bad;
@@ -705,6 +731,101 @@ static int t_edge_wrong_value_faults(void) {
     return 0;
 }
 
+/* ══ D. the param-22 vote's single use on the BLOCK path ═════════════ */
+
+/* the smallest effective >= floor_h whose A-1 and A are both off an epoch
+ * boundary (the param-22 rules (d) and (e)) */
+static uint64_t eff_ok(uint64_t floor_h) {
+    uint64_t e = floor_h;
+    for (;;) {
+        int b1 = ((e - 1u) != 0) && ((e - 1u) % E_LEN) == 0;
+        int b0 = (e % E_LEN) == 0;
+        if (!b1 && !b0) return e;
+        e++;
+    }
+}
+
+static sqlite3_int64 n_param22(nodus_witness_t *w) {
+    sqlite3_int64 n = -1;
+    if (count_q(w, "SELECT COUNT(*) FROM chain_config_history WHERE "
+                "param_id = 22", &n) != 0)
+        return -1;
+    return n;
+}
+
+static int t_param22_single_use_block_path(void) {
+    fixture_t fx;
+    nodus_v2_block_t b;
+    cc_env_t e1, e2, e3;
+    const uint8_t P = (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS;
+    const uint64_t D5 = (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D;
+    const uint64_t h = HS + 2u;                    /* 10: under generation 4 */
+    CHECK(E_LEN > h + 2u, "no epoch boundary among heights 1..h+1");
+
+    /* params 9 / 14 / 18 at 3 / 5 / 8, NO param-22 row */
+    CHECK(fx_open(&fx, "once", H9, HE, HS, 0, 0) == 0,
+          "seeded chain (generation 4 from 8, no param-22 row)");
+    CHECK(run_idle(&fx, 1, h - 1u) == 0, "idle blocks 1..h-1");
+    {
+        dna_domain_manifest_t ms;
+        CHECK(reg_man(fx.w, DNA_DOMAIN_SYSTEM, &ms) == 0 &&
+              ms.ruleset_version == 10,
+              "the registry is generation 4 (SYSTEM v10) — the only one "
+              "whose exec accepts a param-22 vote (rule (c))");
+    }
+    CHECK(n_param22(fx.w) == 0, "no param-22 row before the votes");
+    CHECK(probe_install(fx.w, NODUS_RT_GEN_STORAGE) == 0,
+          "probe runtime table (gen-4 SYSTEM)");
+
+    const uint64_t eff1 = eff_ok(h + GRACE_E);
+    const uint64_t eff2 = eff_ok(eff1 + 3u);
+    const uint64_t eff3 = eff_ok(eff2 + 3u);
+    CHECK(cc_env_build(fx.w, h, P, D5, eff1, 31, 0, &e1) == 0,
+          "first param-22 envelope");
+    CHECK(cc_env_build(fx.w, h, P, D5, eff2, 32, 0, &e2) == 0,
+          "second param-22 envelope");
+
+    /* D1. two votes in ONE block: the engine re-reads the fact per item,
+     * so the second sees the row the first wrote */
+    {
+        nodus_v2_envelope_t envs[2] = { { e1.bytes, e1.len },
+                                        { e2.bytes, e2.len } };
+        mk_block(&b, h, envs, 2);
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0, "block h commits");
+        CHECK(b.cmt.results[0].code == NODUS_V2_TX_OK,
+              "the first param-22 vote applies");
+        CHECK(b.cmt.results[1].code == NODUS_V2_TX_ERR_EXEC,
+              "the second param-22 vote is refused in exec (rule (a))");
+        CHECK(g_n_seen == 2 && g_seen[0] == 0 && g_seen[1] == 1,
+              "the engine filled ctx.ruleset_gen_roots_voted per item "
+              "(0, then 1)");
+        CHECK(n_param22(fx.w) == 1, "exactly one param-22 row");
+    }
+
+    /* D2. a vote in a LATER block: the committed row refuses it */
+    CHECK(cc_env_build(fx.w, h + 1u, P, D5, eff3, 33, 0, &e3) == 0,
+          "third param-22 envelope");
+    {
+        nodus_v2_envelope_t envs[1] = { { e3.bytes, e3.len } };
+        g_n_seen = 0;
+        mk_block(&b, h + 1u, envs, 1);
+        CHECK(v2x_cmt_apply(fx.w, &b) == 0, "block h+1 commits");
+        CHECK(b.cmt.results[0].code == NODUS_V2_TX_ERR_EXEC,
+              "a param-22 vote after a committed row is refused");
+        CHECK(g_n_seen == 1 && g_seen[0] == 1,
+              "the engine handed the exec the committed row's fact");
+        CHECK(n_param22(fx.w) == 1, "still exactly one param-22 row");
+        dna_domain_manifest_t ms;
+        CHECK(reg_man(fx.w, DNA_DOMAIN_SYSTEM, &ms) == 0 &&
+              ms.ruleset_version == 10, "no switch: still generation 4");
+    }
+    free(e1.bytes);
+    free(e2.bytes);
+    free(e3.bytes);
+    fx_close(&fx);
+    return 0;
+}
+
 int main(void) {
     static const struct {
         const char *name;
@@ -713,6 +834,7 @@ int main(void) {
         { "gen5_edge_a_minus_1_and_a", t_edge },
         { "gen5_edge_not_gen4_faults", t_edge_not_gen4_faults },
         { "gen5_edge_wrong_value",     t_edge_wrong_value_faults },
+        { "param22_single_use_block",  t_param22_single_use_block_path },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     {

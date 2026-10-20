@@ -679,6 +679,14 @@ typedef struct {
      * for the same reason. One consumer: the SYSTEM CHAIN_CONFIG exec,
      * the param-18 single-use rule (a). */
     uint8_t        ruleset_gen_roles_voted;
+    /* HF-7 (design docs/plans/2026-09-11-nodus-ledger-snapshot-design.md
+     * §10.2 item 1): 1 when ANY chain_config param-22 (RULESET_GEN_ROOTS)
+     * row exists, at any effective height, else 0 — the
+     * ruleset_gen2_voted contract above, verbatim
+     * (nodus_witness_v2_apply.c env_ruleset_gen_roots_voted). UNMETERED
+     * for the same reason. One consumer: the SYSTEM CHAIN_CONFIG exec,
+     * the param-22 single-use rule (a). */
+    uint8_t        ruleset_gen_roots_voted;
     /* HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md
      * rev 2 §1): 1 when the COMMITTED chain_config param 17
      * (DELEGATE_NAME_REQUIRED) is active at `global_height`, else 0. Read
