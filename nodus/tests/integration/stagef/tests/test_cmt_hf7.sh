@@ -265,8 +265,12 @@
 #     path of test_hf6_edge.sh without its delegation and boundaries
 #     (≈ 300), the param-22 grace and the idle crossing (≈ 35), and ≈ 100
 #     pumped blocks to the prune height — on the order of 1.5-2 h.
-#   - Run results: none — written against the source, NOT run by its
-#     author.
+#   - Run results: 2026-10-20 PASS (ORCHESTRATOR, fresh bring-up, tree
+#     18d6892fe, E15 / grace 15 / BPY 20): HF-7 A = 323; blocks A−1/A/A+1
+#     identical 7/7; P applied at A+1 (the block-A column with an applied
+#     item was NOT exercised); the prune read overshot to the expiry
+#     height itself, so "present before expiry" was not observed for P.
+#     Final floor 416 (wall time not measured).
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
