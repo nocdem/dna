@@ -70,6 +70,34 @@
  *                   and leaves the file uncut; the honest source then
  *                   resumes at height 4. The ledger rows / table are
  *                   restored before each check.
+ *  light_hashlist  the light node's hash list (storage package P-B2,
+ *                   storage/nodus_light_hashlist.h; design 2026-10-19-
+ *                   windows-light-storage §3 B2): anchored at header(P+1),
+ *                   the backward header pass over fake 0x73 peers whose
+ *                   honest answer is nodus_stfetch_answer_build over the
+ *                   fixture store. (i) one honest peer: exactly P − 1
+ *                   requests, all accepted; bounded steps (10 headers);
+ *                   an unfinished list answers "absent"; the finished
+ *                   list equals v2_blocks.block_id (G.v2) at every height
+ *                   1 … P+1 and answers nothing at 0 or P+2. (iii) a
+ *                   segment built with nodus_seg_build_open_src over the
+ *                   list, every piece fetched as 0x73 answers, publishes
+ *                   .dat / .idx / .ok byte-identical to the full node's
+ *                   export (17 300 pieces). (ii) two peers, the FIRST
+ *                   answer for ten requests bad — silent, not an answer,
+ *                   another request's answer, a refusal, no header, an
+ *                   undecodable header, header(h+2), a changed chain id
+ *                   (the last request, header(2)), a later time, a changed
+ *                   app_hash — each refused for its own reason (the last
+ *                   three by VerifyBackwards), the other peer asked, one
+ *                   request more each, the list still equal; the top
+ *                   request (header(P)) included. One lying peer alone:
+ *                   NODUS_LHL_STEP_ROUND and no progress; three bad peers:
+ *                   each asked once, then ROUND; an honest peer joining
+ *                   restores progress; a transport fault stops the step;
+ *                   the constructor refuses k = 0, an anchor of another
+ *                   height (k = 2), k·P+1 beyond int64, NULLs and an
+ *                   anchor without a 64-byte last_block_id.
  *  completeness    nothing is written for a piece that fails: a tampered
  *                   part (V_PROOF), a part with another index, a header
  *                   of another height / another chain position; K8a: the
@@ -152,11 +180,17 @@
  * here is gone — the role-based prune guard (nodus_witness_role_prune.c)
  * replaced it;
  * nodus_witness_sthold_on_msg itself (the serving side's message entry)
- * is not driven here. hash_src: the only non-ledger source is an
- * in-memory array holding the SAME hashes v2_blocks holds — a real
- * light-node hash list (design §3 B2) is not built, and a source whose
- * answer at one height changes between two calls is not exercised (the
- * contract forbids it, nothing enforces it).
+ * is not driven here. hash_src: a source whose answer at one height
+ * changes between two calls is not exercised (the contract forbids it,
+ * nothing enforces it). light_hashlist: the anchor is header(P+1) taken
+ * from the fixture, NOT verified by a light client here
+ * (nodus_light_hashlist_new_from_client — the light client's call — is
+ * not driven; the light client is test_cmt_light_client's subject); the
+ * fixture chain is a fixed four-validator set with headers one second
+ * apart, so the file's own hash and block_id checks (refusal reasons HASH
+ * and BLOCK_ID) are never reached — VerifyBackwards refuses every changed
+ * header first — and a pass at P = 17 280 over a real 4004 transport
+ * (timeouts, a peer that answers late) is not run.
  *
  * Requirements: a default build; no environment (NODUS_SEG_WIN_FIXTURE is
  * optional, win_fixture above — it leaves its <dir> behind). Writes under a fresh
@@ -174,6 +208,7 @@
 #include "witness/nodus_witness_storage_holder.h"
 #include "witness/nodus_witness_storage_probe.h"
 #include "witness/nodus_witness_v2_storage.h"
+#include "storage/nodus_light_hashlist.h"
 
 #include "dnac/dnac.h"
 #include "dnac/cmt_block.h"
@@ -2035,6 +2070,355 @@ static int t_hash_src(void) {
     return 0;
 }
 
+/* ══ light_hashlist (storage package P-B2) ═════════════════════════════
+ * The light node's hash list (storage/nodus_light_hashlist.h): the anchor
+ * header(P+1), the backward header pass over FAKE 0x73 peers whose honest
+ * answer is the serving side's own (nodus_stfetch_answer_build over the
+ * fixture store, exactly the bytes a full node sends), and a segment
+ * built over the finished list. */
+
+#define LP_PEERS 3
+
+typedef enum {
+    LP_HONEST = 0,
+    LP_SILENT,      /* no answer                                        */
+    LP_GARBAGE,     /* three bytes: not a 0x73 answer                   */
+    LP_OTHER_RQ,    /* the honest answer to ANOTHER request             */
+    LP_REFUSE,      /* NOT_HELD                                         */
+    LP_NO_HDR,      /* right rq, the header left out (cont = 0 shape)   */
+    LP_HDR_GARBAGE, /* right rq, a header field 1 longer than the bytes */
+    LP_HEIGHT,      /* right rq, header(h+2) instead of header(h+1)     */
+    LP_CHAIN,       /* header(h+1) with one chain-id byte changed       */
+    LP_TIME,        /* header(h+1) 10 s LATER than the header above it  */
+    LP_FIELD,       /* header(h+1) with one app_hash byte changed       */
+    LP_FAULT        /* the transport reports a local fault (-1)         */
+} lp_kind_t;
+
+typedef struct {
+    lp_kind_t        kind[LP_PEERS];   /* each peer's standing behaviour   */
+    uint64_t         at_h[16];         /* the FIRST answer for request h    */
+    lp_kind_t        at_kind[16];      /* (whichever peer gets it) is this  */
+    bool             at_used[16];
+    size_t           n_at;
+    uint64_t         calls[LP_PEERS];
+    uint8_t         *tmp;              /* NODUS_STFETCH_MSG_MAX             */
+    cmt_pb_header_t *hd;
+} lp_ctx_t;
+
+/* The honest answer to `r` from the fixture store into `out`. */
+static int lp_honest(const nodus_stfetch_req_t *r, uint8_t *out, size_t cap,
+                     size_t *len) {
+    return nodus_stfetch_answer_build(&G.store, NULL, r, out, cap, len) ==
+           NODUS_STFETCH_OK ? 0 : -1;
+}
+
+/* Re-encode an OK answer in `ans` with header `hdr` (the body and the
+ * proof kept). */
+static int lp_reencode(lp_ctx_t *c, uint8_t *ans, size_t cap, size_t *len,
+                       const uint8_t *hdr, size_t hl) {
+    nodus_stfetch_ans_view_t a;
+    if (nodus_stfetch_ans_decode(ans, *len, &a) != 0) return -1;
+    memcpy(c->tmp, ans, *len);              /* the view points into ans */
+    const size_t bo = (size_t)(a.body - ans), po = (size_t)(a.proof - ans);
+    uint8_t rq[64];
+    memcpy(rq, a.rq, 64);
+    return nodus_stfetch_ans_encode(rq, hdr, hl,
+                                    a.body_len ? c->tmp + bo : NULL,
+                                    a.body_len,
+                                    a.proof_len ? c->tmp + po : NULL,
+                                    a.proof_len, ans, cap, len);
+}
+
+static int lp_request(void *ctx, size_t peer, const uint8_t *req,
+                      size_t req_len, uint8_t *ans, size_t cap,
+                      size_t *ans_len) {
+    lp_ctx_t *c = ctx;
+    nodus_stfetch_req_t r;
+    if (!c || peer >= LP_PEERS ||
+        nodus_stfetch_req_decode(req, req_len, &r) != 0)
+        return -1;
+    c->calls[peer]++;
+    lp_kind_t k = c->kind[peer];
+    for (size_t i = 0; i < c->n_at; i++)
+        if (!c->at_used[i] && c->at_h[i] == r.h) {
+            c->at_used[i] = true;
+            k = c->at_kind[i];
+            break;
+        }
+    if (k == LP_FAULT) return -1;
+    if (k == LP_SILENT) return 1;
+    if (k == LP_GARBAGE) {
+        ans[0] = NODUS_STFETCH_KIND_ANS; ans[1] = 0x55; ans[2] = 0xAA;
+        *ans_len = 3;
+        return 0;
+    }
+    if (k == LP_OTHER_RQ) {
+        nodus_stfetch_req_t o = r;
+        o.h = r.h > 1 ? r.h - 1u : r.h + 1u;
+        return lp_honest(&o, ans, cap, ans_len) == 0 ? 0 : -1;
+    }
+    if (k == LP_REFUSE) {
+        uint8_t rq[64];
+        if (nodus_stfetch_req_id(&r, rq) != 0 ||
+            nodus_stfetch_ans_refusal(rq, NODUS_STFETCH_REF_NOT_HELD, ans) != 0)
+            return -1;
+        *ans_len = NODUS_STFETCH_REFUSAL_LEN;
+        return 0;
+    }
+    if (lp_honest(&r, ans, cap, ans_len) != 0) return -1;
+    if (k == LP_HONEST) return 0;
+    if (k == LP_NO_HDR) return lp_reencode(c, ans, cap, ans_len, NULL, 0);
+    if (k == LP_HDR_GARBAGE) {
+        static const uint8_t bad[2] = { 0x0A, 0x7F };  /* field 1, 127 bytes
+                                                        * announced, none */
+        return lp_reencode(c, ans, cap, ans_len, bad, sizeof(bad));
+    }
+    uint8_t hb[NODUS_SEG_HEADER_MAX];
+    size_t hl = 0;
+    if (k == LP_HEIGHT) {
+        nodus_stfetch_req_t up = r;           /* h + 1 <= last: brings   */
+        up.h = r.h + 1u;                      /* header(h + 2)           */
+        nodus_stfetch_ans_view_t a;
+        size_t l2 = 0;
+        if (lp_honest(&up, c->tmp, NODUS_STFETCH_MSG_MAX, &l2) != 0 ||
+            nodus_stfetch_ans_decode(c->tmp, l2, &a) != 0 ||
+            a.hdr_len > sizeof(hb))
+            return -1;
+        memcpy(hb, a.hdr, a.hdr_len);
+        hl = a.hdr_len;
+    } else {
+        nodus_stfetch_ans_view_t a;
+        if (nodus_stfetch_ans_decode(ans, *ans_len, &a) != 0) return -1;
+        cmt_pb_header_init(c->hd);
+        if (cmt_pb_header_unmarshal(a.hdr, a.hdr_len, c->hd) != CMT_OK)
+            return -1;
+        if (k == LP_CHAIN) c->hd->chain_id[0] ^= 0x01;
+        else if (k == LP_TIME) c->hd->time.seconds += 10;
+        else if (k == LP_FIELD) c->hd->app_hash[0] ^= 0x01;
+        if (cmt_pb_header_marshal(c->hd, hb, sizeof(hb), &hl) != CMT_OK)
+            return -1;
+    }
+    return lp_reencode(c, ans, cap, ans_len, hb, hl);
+}
+
+/* Step `hl` to the end. @return the last step code. */
+static int lp_run(nodus_light_hashlist_t *hl, lp_ctx_t *c, size_t n_peers) {
+    const nodus_light_fetch_t f = { c, n_peers, lp_request };
+    int rc;
+    while ((rc = nodus_light_hashlist_step(hl, &f, 1000)) ==
+           NODUS_LHL_STEP_MORE) { }
+    return rc;
+}
+
+/* The finished list answers G.v2[h] over [1, P+1] and nothing outside. */
+static int lp_list_ok(const nodus_light_hashlist_t *hl) {
+    const nodus_seg_hash_src_t s = nodus_light_hashlist_src(hl);
+    uint8_t out[64];
+    for (uint64_t h = 1; h <= P_LEN + 1u; h++)
+        if (s.hash_at(s.ctx, h, out) != 0 || memcmp(out, G.v2[h], 64) != 0)
+            return 0;
+    return s.hash_at(s.ctx, 0, out) == 1 &&
+           s.hash_at(s.ctx, P_LEN + 2u, out) == 1;
+}
+
+static int t_light_hashlist(void) {
+    char dir[512];
+    uint8_t *ans = malloc(NODUS_STFETCH_MSG_MAX);
+    lp_ctx_t c;
+    memset(&c, 0, sizeof(c));
+    c.tmp = malloc(NODUS_STFETCH_MSG_MAX);
+    c.hd = calloc(1, sizeof(*c.hd));
+    cmt_pb_header_t *anchor = calloc(1, sizeof(*anchor));
+    cmt_pb_header_t *bad = calloc(1, sizeof(*bad));
+    CHECK(ans && c.tmp && c.hd && anchor && bad, "alloc");
+
+    /* the anchor: header(P+1), the header the light client would verify
+     * (here taken from the fixture; the light client's own verification
+     * is test_cmt_light_client's subject) */
+    {
+        const nodus_stfetch_req_t r = { 1, P_LEN, 0, NODUS_STFETCH_CONT_FIRST };
+        nodus_stfetch_ans_view_t a;
+        size_t len = 0;
+        CHECK(lp_honest(&r, ans, NODUS_STFETCH_MSG_MAX, &len) == 0 &&
+              nodus_stfetch_ans_decode(ans, len, &a) == 0 && a.hdr_len > 0,
+              "header(P+1) from the serving side");
+        cmt_pb_header_init(anchor);
+        CHECK(cmt_pb_header_unmarshal(a.hdr, a.hdr_len, anchor) == CMT_OK &&
+              anchor->height == (int64_t)P_LEN + 1, "the anchor decodes");
+    }
+
+    /* refusals of the constructor */
+    nodus_light_hashlist_t *hl = NULL;
+    CHECK(nodus_light_hashlist_new(0, anchor, CMT_BLOCK_PROTOCOL, &hl) == -1 &&
+          hl == NULL, "k = 0 refused");
+    CHECK(nodus_light_hashlist_new(2, anchor, CMT_BLOCK_PROTOCOL, &hl) == -1,
+          "an anchor that is not header(k·P+1) refused (k = 2)");
+    CHECK(nodus_light_hashlist_new(UINT64_MAX / P_LEN, anchor,
+                                   CMT_BLOCK_PROTOCOL, &hl) == -1,
+          "k·P+1 outside int64 refused");
+    CHECK(nodus_light_hashlist_new(1, NULL, CMT_BLOCK_PROTOCOL, &hl) == -1 &&
+          nodus_light_hashlist_new(1, anchor, CMT_BLOCK_PROTOCOL, NULL) == -1,
+          "NULL refused");
+    memcpy(bad, anchor, sizeof(*bad));
+    bad->last_block_id.hash_len = 0;
+    CHECK(nodus_light_hashlist_new(1, bad, CMT_BLOCK_PROTOCOL, &hl) == -1,
+          "an anchor without a 64-byte last_block_id refused");
+
+    /* (i) one honest peer: P − 1 requests, the list == v2_blocks */
+    CHECK(nodus_light_hashlist_new(1, anchor, CMT_BLOCK_PROTOCOL, &hl) == 0 &&
+          nodus_light_hashlist_k(hl) == 1 &&
+          nodus_light_hashlist_next_height(hl) == P_LEN - 1u, "new");
+    {
+        const nodus_light_fetch_t f = { &c, 1, lp_request };
+        const nodus_seg_hash_src_t s = nodus_light_hashlist_src(hl);
+        uint8_t out[64];
+        CHECK(nodus_light_hashlist_step(hl, &f, 10) == NODUS_LHL_STEP_MORE &&
+              nodus_light_hashlist_next_height(hl) == P_LEN - 11u,
+              "ten headers per bounded step");
+        CHECK(s.hash_at(s.ctx, P_LEN + 1u, out) == 1 &&
+              s.hash_at(s.ctx, P_LEN, out) == 1,
+              "an unfinished list answers nothing (absent)");
+        CHECK(s.hash_at(NULL, 1, out) == -1, "a NULL ctx is a fault");
+    }
+    CHECK(lp_run(hl, &c, 1) == NODUS_LHL_STEP_DONE &&
+          nodus_light_hashlist_next_height(hl) == 0, "complete");
+    {
+        const nodus_lhl_stats_t st = nodus_light_hashlist_stats(hl);
+        uint64_t refused = 0;
+        for (int i = 0; i < NODUS_LHL_R_COUNT; i++) refused += st.refused[i];
+        CHECK(st.requests == P_LEN - 1u && st.accepted == P_LEN - 1u &&
+              refused == 0, "P − 1 requests, every one accepted");
+    }
+    CHECK(lp_list_ok(hl), "the list equals v2_blocks.block_id over "
+          "[first, last + 1]");
+    {
+        const nodus_light_fetch_t f = { &c, 1, lp_request };
+        CHECK(nodus_light_hashlist_step(hl, &f, 10) == NODUS_LHL_STEP_DONE,
+              "a complete list stays complete");
+    }
+
+    /* (iii) the segment built over the light list, its pieces fetched
+     * over 0x73 from the serving side, is byte-identical to the full
+     * node's export (design §5 — same supplied record bytes) */
+    {
+        CHECK(mk_sub("light", dir, sizeof(dir)) == 0, "dir");
+        const nodus_seg_hash_src_t s = nodus_light_hashlist_src(hl);
+        nodus_seg_build_t *b = NULL;
+        CHECK(nodus_seg_build_open_src(dir, 1, &s, &b) == 0 &&
+              nodus_seg_build_resume_step(b, 1) == 1, "open over the list");
+        int rc, n = 0;
+        while ((rc = fetch_one(b, NULL, &G.store, ans, 0)) == 0) n++;
+        CHECK(rc == -1 && nodus_seg_build_next(b, &(uint64_t){0},
+                                               &(uint32_t){0},
+                                               &(bool){false}) == 1,
+              "every piece fetched and verified against the light list");
+        CHECK(n == 17280 + 18 + 2, "one request per part, the set, the "
+              "commit");
+        CHECK(nodus_seg_build_finish(b) == 0, "published");
+        CHECK(same_as_export(dir), "the light-built .dat / .idx / .ok equal "
+              "the full node's export");
+    }
+    nodus_light_hashlist_free(hl);
+    hl = NULL;
+
+    /* (ii) a wrong answer at any height is refused and the next peer asked:
+     * the first answer for each listed request is the bad one */
+    {
+        static const struct { uint64_t h; lp_kind_t k; } bad_at[] = {
+            { P_LEN - 1u, LP_SILENT },     /* the first request (header P)  */
+            { P_LEN - 2u, LP_GARBAGE },
+            { 9000,       LP_OTHER_RQ },
+            { 8000,       LP_REFUSE },
+            { 7000,       LP_NO_HDR },
+            { 6000,       LP_HDR_GARBAGE },
+            { 5000,       LP_HEIGHT },
+            { 3000,       LP_FIELD },
+            { 2,          LP_TIME },
+            { 1,          LP_CHAIN },      /* the last request (header 2)   */
+        };
+        memset(c.calls, 0, sizeof(c.calls));
+        c.n_at = sizeof(bad_at) / sizeof(bad_at[0]);
+        for (size_t i = 0; i < c.n_at; i++) {
+            c.at_h[i] = bad_at[i].h;
+            c.at_kind[i] = bad_at[i].k;
+            c.at_used[i] = false;
+        }
+        CHECK(nodus_light_hashlist_new(1, anchor, CMT_BLOCK_PROTOCOL, &hl) == 0,
+              "new");
+        CHECK(lp_run(hl, &c, 2) == NODUS_LHL_STEP_DONE, "complete despite "
+              "ten bad answers (two peers: never a full round without one)");
+        for (size_t i = 0; i < c.n_at; i++)
+            CHECK(c.at_used[i], "every bad answer was sent");
+        const nodus_lhl_stats_t st = nodus_light_hashlist_stats(hl);
+        CHECK(st.accepted == P_LEN - 1u && st.requests == P_LEN - 1u + 10u,
+              "each bad answer cost one request more");
+        CHECK(st.refused[NODUS_LHL_R_SILENT] == 1 &&
+              st.refused[NODUS_LHL_R_ANSWER] == 1 &&
+              st.refused[NODUS_LHL_R_RQ] == 1 &&
+              st.refused[NODUS_LHL_R_REFUSED] == 1 &&
+              st.refused[NODUS_LHL_R_SHAPE] == 1 &&
+              st.refused[NODUS_LHL_R_HDR_DECODE] == 1 &&
+              st.refused[NODUS_LHL_R_HEIGHT] == 1 &&
+              st.refused[NODUS_LHL_R_BACKWARDS] == 3 &&
+              st.refused[NODUS_LHL_R_HASH] == 0 &&
+              st.refused[NODUS_LHL_R_BLOCK_ID] == 0,
+              "each refused for its reason (chain id, time and a changed "
+              "field: VerifyBackwards)");
+        CHECK(c.calls[0] > 0 && c.calls[1] > 0, "the peers rotated");
+        CHECK(lp_list_ok(hl), "the list still equals v2_blocks");
+        nodus_light_hashlist_free(hl);
+        hl = NULL;
+        c.n_at = 0;
+    }
+
+    /* a lying peer can delay, never inject (G1): alone it makes no
+     * progress; a full round of peers without a header is reported */
+    {
+        c.kind[0] = LP_CHAIN;
+        const nodus_light_fetch_t f1 = { &c, 1, lp_request };
+        CHECK(nodus_light_hashlist_new(1, anchor, CMT_BLOCK_PROTOCOL, &hl) == 0,
+              "new");
+        CHECK(nodus_light_hashlist_step(hl, &f1, 1000) == NODUS_LHL_STEP_ROUND &&
+              nodus_light_hashlist_next_height(hl) == P_LEN - 1u,
+              "one lying peer: a round without progress");
+        uint8_t out[64];
+        const nodus_seg_hash_src_t s = nodus_light_hashlist_src(hl);
+        CHECK(s.hash_at(s.ctx, P_LEN, out) == 1, "nothing is answered");
+
+        c.kind[0] = LP_SILENT;
+        c.kind[1] = LP_REFUSE;
+        c.kind[2] = LP_TIME;
+        const nodus_light_fetch_t f3 = { &c, 3, lp_request };
+        nodus_lhl_stats_t st0 = nodus_light_hashlist_stats(hl);
+        CHECK(nodus_light_hashlist_step(hl, &f3, 1000) == NODUS_LHL_STEP_ROUND,
+              "three bad peers: a round");
+        nodus_lhl_stats_t st1 = nodus_light_hashlist_stats(hl);
+        CHECK(st1.requests == st0.requests + 3u && st1.accepted == 0 &&
+              nodus_light_hashlist_next_height(hl) == P_LEN - 1u,
+              "each asked once, nothing accepted");
+
+        c.kind[1] = LP_HONEST;                   /* one honest peer joins */
+        CHECK(nodus_light_hashlist_step(hl, &f3, 5) == NODUS_LHL_STEP_MORE &&
+              nodus_light_hashlist_next_height(hl) == P_LEN - 6u,
+              "an honest peer: progress again");
+        c.kind[1] = LP_FAULT;
+        CHECK(nodus_light_hashlist_step(hl, &f3, 5) == NODUS_LHL_STEP_FAULT,
+              "a transport fault stops the step");
+        CHECK(nodus_light_hashlist_step(hl, NULL, 5) == NODUS_LHL_STEP_FAULT &&
+              nodus_light_hashlist_step(NULL, &f3, 5) == NODUS_LHL_STEP_FAULT,
+              "NULL");
+        nodus_light_hashlist_free(hl);
+        for (int i = 0; i < LP_PEERS; i++) c.kind[i] = LP_HONEST;
+    }
+
+    free(bad);
+    free(anchor);
+    free(c.hd);
+    free(c.tmp);
+    free(ans);
+    return 0;
+}
+
 /* ══ the witness fixture (serve_refusals, overlap_delete) ══════════════ */
 
 static int w_open(nodus_witness_t **out) {
@@ -2439,6 +2823,7 @@ int main(void) {
         { "roundtrip",       t_roundtrip },
         { "win_fixture",     t_win_fixture },
         { "hash_src",        t_hash_src },
+        { "light_hashlist",  t_light_hashlist },
         { "completeness",    t_completeness },
         { "fetch_wire",      t_fetch_wire },
         { "fetch_e2e",       t_fetch_e2e },

@@ -116,10 +116,14 @@ nodus/
 │   │                          #   Common source list (compiles for Windows); no program but the
 │   │                          #   witness calls it yet (§15 "The witness-free 4004 host")
 │   ├── storage/
-│   │   └── nodus_fs.c/h       # Portable FILE layer of the segment files — storage P-B4 (0.26.16):
-│   │                          #   POSIX = the segment code's former calls; Windows CreateFileW /
-│   │                          #   ReadFile / WriteFile / MoveFileExW over UTF-8→UTF-16 paths.
-│   │                          #   Common source list (§15 "package B2b-2", "Portable segment files")
+│   │   ├── nodus_fs.c/h       # Portable FILE layer of the segment files — storage P-B4 (0.26.16):
+│   │   │                      #   POSIX = the segment code's former calls; Windows CreateFileW /
+│   │   │                      #   ReadFile / WriteFile / MoveFileExW over UTF-8→UTF-16 paths.
+│   │   │                      #   Common source list (§15 "package B2b-2", "Portable segment files")
+│   │   └── nodus_light_hashlist.c/h # The light hash list of one historical segment — storage P-B2:
+│   │                          #   backward header chaining over 0x73 from one light-verified header,
+│   │                          #   the segment build's hash source without a ledger. Common source
+│   │                          #   list; no caller yet (§15 "The light hash list")
 │   ├── crypto/
 │   │   ├── nodus_sign.c       # Dilithium5 sign/verify/hash wrappers
 │   │   └── nodus_identity.c   # Identity generation, save/load, seed derivation
@@ -6749,8 +6753,9 @@ terminal commit and the signatures are always verified), `2026-10-05-archive-rew
 `docs/plans/2026-10-05-archive-reward-design.md` rev 4 §2 (handoff), §3. Code:
 `nodus_witness_storage_segment.{h,c}` (the file — portable since nodus 0.26.16, its file I/O through
 `nodus/src/storage/nodus_fs.{h,c}`; the store-backed export in `nodus_witness_storage_segment_export.c`,
-see "Portable segment files" below), `nodus_witness_storage_fetch.{h,c}` (the 0x73 wire and
-serving side), `nodus_witness_storage_holder.{h,c}` (the runtime), channel 0x73 in
+see "Portable segment files" below), `nodus_witness_storage_fetch.{h,c}` (the 0x73 serving side;
+the wire's encode / decode since storage P-B2 in the portable `nodus_witness_storage_fetch_wire.c`,
+see "The light hash list" below), `nodus_witness_storage_holder.{h,c}` (the runtime), channel 0x73 in
 `nodus_witness_p2p.{h,c}`, the tick / close hooks in `nodus_witness.c`, the 0x72 serving side's file
 fallback in `nodus_witness_storage_reporter.c`, config key `segment_dir`. NODE-LOCAL: no file, no fetch
 and no clock here is ever a consensus input (design §7 D3, D4); every byte written is first verified
@@ -6897,8 +6902,9 @@ for HF-7: its assignment comes from proofs only). Intent: design `docs/plans/202
 **Why.** In the design, the Windows light storage node holds HISTORICAL segments: it builds a segment
 file from pieces fetched over 0x73, checked against block hashes it verified itself, without a witness
 database (design §3). Two things stood in the way: the builder took its trusted block hashes only from the
-witness's `v2_blocks` table, and every file call was POSIX. Neither the light storage node nor its
-hash list (design §3 B2, package P-B2) exists yet; nothing on Windows calls the builder today.
+witness's `v2_blocks` table, and every file call was POSIX. The light storage node does not exist
+yet (its hash list, design §3 B2, is package P-B2 below, with no caller); nothing on Windows calls the
+builder today.
 
 **P-B1 — the hash source.** The build no longer reads `v2_blocks` itself: `nodus_seg_build_open_src(dir,
 k, src, out)` takes a `nodus_seg_hash_src_t { ctx; hash_at(ctx, h, out[64]) }` answering the canonical
@@ -6925,7 +6931,7 @@ code is mapped (`ENOENT`, `EEXIST`, `EACCES`, `EBUSY` for a pending delete, `ENA
 **What is portable, what is Linux-only.** `nodus_witness_storage_segment.c` — the layout, the build from
 verified pieces, the resume scan, the atomic publish, the reader, the deletion — moved to the COMMON
 source list (`nodus/CMakeLists.txt:354`) and compiles for Windows. Its store- / witness-backed half moved
-to `nodus_witness_storage_segment_export.c`, in the Linux-only list (`nodus/CMakeLists.txt:754`):
+to `nodus_witness_storage_segment_export.c`, in the Linux-only list (`nodus/CMakeLists.txt:765` as of P-B2):
 `nodus_seg_store_has`, `nodus_seg_export_step` (export from this node's block store),
 `nodus_seg_valset_from_store` (validators(k·17280) from the state store) and `nodus_seg_probe_sample`
 (the 0x72 sample from a held file, through the witness's probe module). The declarations stay in one
@@ -6933,7 +6939,8 @@ header; a Windows build links none of the four, so calling one there is a link e
 `nodus_seg_export_step` was rewritten to drive the build only through its public calls
 (`nodus_seg_build_next`, `nodus_seg_build_put_header` / `_put_part_proto` / `_put_valset` /
 `_put_commit`), with its own scratch allocated at entry, and it reports "complete" only when
-`nodus_seg_build_next` says so. The 0x73 fetch, the holder runtime and the reporter stay Linux-only.
+`nodus_seg_build_next` says so. The 0x73 serving side, the holder runtime and the reporter stay
+Linux-only (since P-B2 the 0x73 wire's encode / decode is portable, "The light hash list" below).
 
 **Windows crash and durability notes** (`nodus_fs.c` header; every Windows API behaviour there is the
 file's own reading — NOT checked against Microsoft's documentation, NOT run on native Windows; it has run
@@ -6969,7 +6976,7 @@ only under Wine 8.0, and Wine is not Windows):
   only under Wine.
 
 **Who is meant to use it.** The light storage node, by design: it builds HISTORICAL segments from 0x73
-pieces against a hash list it verified (package P-B2 — in the design, not built). Not part of these packages and not built: the fresh
+pieces against a hash list it verified (package P-B2, "The light hash list" below). Not part of these packages and not built: the fresh
 downloader of new blocks (K25-6, package B5, not designed yet), the light node's own assignment (K25-7)
 and its serving of 0x72 / 0x73 — both wait for HF-7, because the chain context they need (the frozen
 storage set, membership, publication) must come from proofs. Until then a file existing on a light node
@@ -6983,6 +6990,54 @@ nothing). `test_seg_file_win` (Windows-only executable, no ctest entry): the fil
 over the Linux fixture, the reader, an interrupted build + republish, and a torn record, all byte-identical
 to the fixture. Its requirements, exit codes (2 = something did not run, NOT a pass) and how it can lie:
 `nodus/README.md` row 0.26.16 and the file header.
+
+#### The light hash list — storage package P-B2 (branch `stor-b2`, not versioned)
+
+Governing: the same records as above (`2026-10-19-kurultay-26b-summary.md` item 9 — the historical-segment
+builder only, serving later; `2026-10-16-kurultay-25-summary.md` K25-9 one light client, K25-12 its trust
+root = the pinned nodes). Intent: design `docs/plans/2026-10-19-windows-light-storage-design.md` §3 B2 and
+its "Rev 1 corrections" (the B2 verification contract and cost), §5, §6 G1 / G4. Node-local; no wire,
+consensus or state-root change — it speaks the existing 0x73 wire as a client. Functions:
+`messenger/docs/functions/ledger.md` §24.12.
+
+**What it builds.** The segment build of k asks the trusted hash at every height of [first, last + 1]
+(first = (k−1)·P + 1, last = k·P). `nodus/src/storage/nodus_light_hashlist.{h,c}` builds exactly those
+P + 1 hashes from ONE header the light client verified — header(k·P + 1), the anchor (the caller passes it,
+or `nodus_light_hashlist_new_from_client` asks the light client for it: `cmt_light_client_verify_light_block_at_height`)
+— by hash chaining backwards: the anchor's own hash is hash(last + 1), its `last_block_id.hash` is hash(last);
+then for h = last − 1 down to first one 0x73 request `(k, h, part 0, cont 0)` brings header(h + 1) (and part
+0 of block h, dropped — design §3 B3), and header(h + 1)'s `last_block_id.hash` becomes hash(h) once the
+header passed, in order: the answer decodes, answers this request (rq), is OK and has the cont-0 shape; the
+header decodes; its height is exactly h + 1 (the light verifier does not check heights); the reference's
+VerifyBackwards (`cmt_light_verify_backwards`: ValidateBasic, the same chain id, a strictly earlier time,
+its hash = the trusted header's `last_block_id.hash`); its hash equals the list's hash at h + 1 (this file's
+own check); its `last_block_id.hash` is 64 bytes. No block is executed and no signature is checked per
+height: one light-verified header authenticates every header below it by hashes. P − 1 requests per
+segment (17 279 at P = 17 280), each answer up to ≈ 64 KB of part the pass drops (design "B2 cost corrected").
+The list is then `nodus_light_hashlist_src(hl)`, a `nodus_seg_hash_src_t`, for the unchanged
+`nodus_seg_build_open_src`; it answers "absent" until the pass is over, so a build never sees a half list.
+
+**Peers.** The holder's rule: one request outstanding to one peer; silence, a refusal, a malformed answer or
+a failed check moves to the next peer; an accepted header keeps the peer; a full round of peers without a
+header returns `NODUS_LHL_STEP_ROUND` and the caller waits before it steps again. A lying peer can delay the
+list, never put a hash in it (design G1). The transport is a callback (`nodus_light_fetch_t`): the file
+opens no socket, reads no clock, writes no file. Memory: (P + 1) × 64 bytes (1.1 MB), two decoded headers,
+one answer buffer — heap only; a restart starts the pass again.
+
+**Portable.** The light node runs on Windows, so the list and the 0x73 wire it speaks are in the COMMON
+source list (`nodus/CMakeLists.txt:359`, `:365`): the wire's encode / decode (`nodus_stfetch_req_*`,
+`nodus_stfetch_ans_*`, the shape rule and the field rule `nodus_stfetch_req_valid`, formerly a file-static)
+moved unchanged out of `nodus_witness_storage_fetch.c` into `nodus_witness_storage_fetch_wire.c`; the serving
+side (the piece from a block / state store or a held file, the admission) stays Linux-only (`:766`).
+
+**Not here.** No caller yet: the light node's 0x73 transport (the 4004 host on Windows), its assignment and
+its serving of 0x72 / 0x73 wait for HF-7 (K25-7); no `nodus-light` command (it speaks 4001 only and has no
+4004 host); the fresh downloader is package B5 (K25-6). Test: `test_storage_segment` case `light_hashlist`
+(fake 0x73 peers answering with the serving side's own bytes; the finished list equals `v2_blocks`; a
+segment built over it is byte-identical to the full node's export; every kind of bad answer refused for its
+own reason; a lone lying peer makes no progress). How it can lie: the anchor there is taken from the fixture,
+not light-verified; the file's own hash / block-id checks are never reached (VerifyBackwards refuses every
+changed header first); no real 4004 transport.
 
 ### HF-7 P1a — root functions (inert, no caller) (2026-10-20, branch `hf7-p1a` only — not versioned, not voted)
 

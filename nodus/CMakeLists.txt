@@ -352,6 +352,17 @@ set(NODUS_SOURCES
     # storage design 2026-10-19 §3 B4). The store-backed export is
     # nodus_witness_storage_segment_export.c (Linux-only list below).
     src/witness/nodus_witness_storage_segment.c
+    # The channel 0x73 WIRE alone (request / answer encode + decode, the
+    # request id, the shape rule), moved out of the Linux-only
+    # nodus_witness_storage_fetch.c (the serving side) by storage package
+    # P-B2 so the light node's header pass compiles on Windows.
+    src/witness/nodus_witness_storage_fetch_wire.c
+    # Storage package P-B2 (windows-light-storage design 2026-10-19 §3
+    # B2): the light hash list of one historical segment — backward
+    # header chaining over 0x73 from one light-verified header, the
+    # segment build's hash source on a node without a ledger. No socket,
+    # no clock, no file; no caller yet (serving waits for HF-7).
+    src/storage/nodus_light_hashlist.c
     src/witness/nodus_witness_v2_preflight.c
     # R3 W4 — nodus_witness_v2_qc.c and nodus_witness_v2_finalize.c are
     # DELETED with the closed consensus lane: QC assembly and the legacy
@@ -3318,8 +3329,12 @@ register_witness_test(test_storage_probe)
 # piece byte-identical to the export; resume after a torn partial file
 # and cut at a tampered record; the serving side's refusals; must-hold and
 # deletion over the one-epoch overlap; the 0x72 probe answered from the
-# file after the store is pruned. Writes under a mkdtemp directory in
-# $TMPDIR (removed at the end); in-memory databases; no environment.
+# file after the store is pruned; storage package P-B2's light hash list
+# (src/storage/nodus_light_hashlist.c, _fetch_wire.c) built by the backward
+# header pass over fake 0x73 peers, every bad answer refused, and a
+# segment over the list byte-identical to the export. Writes under a
+# mkdtemp directory in $TMPDIR (removed at the end); in-memory databases;
+# no environment.
 register_witness_test(test_storage_segment)
 
 # Role-based block retention (src/witness/nodus_witness_role_prune.c;

@@ -175,6 +175,18 @@ typedef struct {
     uint8_t  cont;
 } nodus_stfetch_req_t;
 
+/* The wire calls below (request and answer) are defined in
+ * nodus_witness_storage_fetch_wire.c, which is in the COMMON source list
+ * (it compiles on Windows: the light node's header pass speaks it,
+ * storage/nodus_light_hashlist.h). The serving side further down is
+ * nodus_witness_storage_fetch.c, Linux-only (a full node's stores). */
+
+/** The decoded-field rule decode applies (k >= 1 with k·17280 + 1 inside
+ *  int64, h in segment k, COMMIT / VALSET only at k·17280, any other part
+ *  below CMT_PART_SET_MAX_PARTS, cont 0 or 1). @return true / false (also
+ *  for NULL). */
+bool nodus_stfetch_req_valid(const nodus_stfetch_req_t *req);
+
 /** Encode a REQUEST message. Refuses what decode would refuse.
  *  @return 0 / -1. */
 int nodus_stfetch_req_encode(const nodus_stfetch_req_t *req,
