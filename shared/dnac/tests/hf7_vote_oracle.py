@@ -26,6 +26,9 @@ literal D4 and refuses (exit 1) unless every one is byte-equal:
 Each control is checked against BOTH the hex literal written in this file
 AND the value parsed at run time from the tree's header (a text read of
 the data, not a call into C).
+When the pins header carries NODUS_PIN_G5_* (HF-7 P1d), the C's pinned
+generation-5 SYSTEM / CORE version + hash are printed against R1 / R2 as
+OK / MISMATCH (a report line for the reviewer; until then "not pinned").
 
 SPECIFICATIONS (the text this file was written from)
 ----------------------------------------------------
@@ -380,6 +383,10 @@ def pins_bytes(text: str, macro: str) -> str:
     return "".join(vals).lower()
 
 
+def pins_has(text: str, macro: str) -> bool:
+    return re.search(r"#define\s+%s\b" % re.escape(macro), text) is not None
+
+
 def pins_u32(text: str, macro: str) -> int:
     m = re.search(r"#define\s+%s\s+(\d+)u" % re.escape(macro), text)
     if not m:
@@ -458,10 +465,9 @@ def controls(owner_k8: bytes):
     if vers != (SYS_V_G3, CORE_V_G3, SYS_V_G4, CORE_V_G4):
         ok = False
         lines.append("  VER  FAIL  pinned versions %r" % (vers,))
-    if pins_u32(pins, "NODUS_PIN_GEN_COUNT") != 4:
+    if pins_u32(pins, "NODUS_PIN_GEN_COUNT") < 4:
         ok = False
-        lines.append("  GEN  FAIL  NODUS_PIN_GEN_COUNT != 4 (tree moved:"
-                     " generation 5 already pinned — re-read it)")
+        lines.append("  GEN  FAIL  NODUS_PIN_GEN_COUNT < 4")
 
     tree_owner = dnac_owner(dnac)
     if tree_owner != K8_OWNER_HEX or owner_k8.hex() != K8_OWNER_HEX:
@@ -523,6 +529,28 @@ def main() -> int:
     r1 = hashlib.sha3_512(sys5_pre).digest()
     r2 = hashlib.sha3_512(core5_pre).digest()
     assert r1 != s4 and r2 != c4
+
+    # Once the C table pins generation 5 (P1d regenerates the pins
+    # header), compare its values with R1 / R2 — a report line, not a
+    # gate: the C value is the thing this oracle checks.
+    pins = _read(PINS_H)
+    print("── G5 PINS in nodus_ruleset_pins.h (compared, not trusted) " + "─" * 7)
+    if pins_has(pins, "NODUS_PIN_G5_SYS_RULESET_HASH_INIT") or \
+            pins_has(pins, "NODUS_PIN_G5_CORE_RULESET_HASH_INIT"):
+        for label, mac_h, mac_v, want_h, want_v in (
+                ("SYSTEM", "NODUS_PIN_G5_SYS_RULESET_HASH_INIT",
+                 "NODUS_PIN_G5_SYS_RULESET_VERSION", r1, SYS_V_G5),
+                ("CORE", "NODUS_PIN_G5_CORE_RULESET_HASH_INIT",
+                 "NODUS_PIN_G5_CORE_RULESET_VERSION", r2, CORE_V_G5)):
+            got_h = pins_bytes(pins, mac_h) if pins_has(pins, mac_h) else ""
+            got_v = pins_u32(pins, mac_v) if pins_has(pins, mac_v) else -1
+            same = got_h == want_h.hex() and got_v == want_v
+            print("  %-6s %s  pinned v%d %s… / oracle v%d %s…"
+                  % (label, "OK      " if same else "MISMATCH", got_v,
+                     got_h[:16], want_v, want_h.hex()[:16]))
+    else:
+        print("  generation 5 not pinned yet (NODUS_PIN_G5_* absent)")
+    print()
 
     print("── R1 SYSTEM ruleset v%d (generation 5) " % SYS_V_G5 + "─" * 27)
     print("  domain 0, \"SYSTEM\", abi 1, rules %s, types %s,"

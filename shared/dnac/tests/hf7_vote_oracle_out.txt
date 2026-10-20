@@ -6,6 +6,9 @@
   C5   OK    964f300629cdbea0…
   C6   OK    D4 = 0x642af9b4bf735409 (shipped 0x642af9b4bf735409, dnac.h 0x642af9b4bf735409, preimage 296 B)
 
+── G5 PINS in nodus_ruleset_pins.h (compared, not trusted) ───────
+  generation 5 not pinned yet (NODUS_PIN_G5_* absent)
+
 ── R1 SYSTEM ruleset v11 (generation 5) ───────────────────────────
   domain 0, "SYSTEM", abi 1, rules [1, 2, 3, 4, 5, 6, 7, 8, 9], types [4, 5, 6, 7, 9, 10],
   meter_policy_digest = C1 (ops 1..9 weight 1) 0aa4c690a05af8827a322912a402d87b2642c99edc1db83f2871af64da18c3f8b74a6e5c870edc3450ae0474a3c8d7279efb884df8b285c8848beffb25922766
