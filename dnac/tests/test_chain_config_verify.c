@@ -113,9 +113,9 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 22 (Nodus EVM 14-15, storage reward v1 16 (retired), HF-8 17, HF-6 18-21) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 23 (Nodus EVM 14-15, storage reward v1 16 (retired), HF-8 17, HF-6 18-21, HF-7 22) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 22);
+    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 23);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 
@@ -208,6 +208,53 @@ int main(void) {
     CHECK(DNAC_CFG_RULESET_GEN_ROLES_D != DNAC_CFG_RULESET_GEN2_D2);
     CHECK(DNAC_CFG_RULESET_GEN_ROLES_D <= (uint64_t)INT64_MAX);
 
+    /* 5a''''. HF-7 P1d (design docs/plans/2026-09-11-nodus-ledger-
+     * snapshot-design.md §10.2 item 1, §10.11). RULESET_GEN_ROOTS (id 22)
+     * accepts EXACTLY the dnac.h literal D5 — the 5a''' param-18 shape:
+     * D5 ± 1, 0, D2, the EVM D, D4 and UINT64_MAX refuse; params 9 and 18
+     * refuse D5. The literal is pinned to the INDEPENDENT oracle's value
+     * (shared/dnac/tests/hf7_vote_oracle_out.txt: "D5 = 0x6f4c60640dd57094
+     * ULL", decimal 8019891019285098644, owner K8) — only where the build
+     * compiles the K8 owner (a test-owner build carries that owner's D5).
+     * The witness's stateful rules are NOT mirrored. MUTANT KILLED:
+     * dropping the 22 case (default refuses D5), comparing 22 against D4,
+     * leaving 22 off the read list (every value refused), a re-typed
+     * literal. */
+    CHECK(DNAC_CFG_RULESET_GEN_ROOTS == 22);
+    CHECK(DNAC_HF7_SWITCH_SPEC_VERSION == 1u);
+#ifdef DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT
+    CHECK(DNAC_CFG_RULESET_GEN_ROOTS_D == 0x6f4c60640dd57094ULL);
+    CHECK(DNAC_CFG_RULESET_GEN_ROOTS_D == 8019891019285098644ULL);
+#endif
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS,
+                             DNAC_CFG_RULESET_GEN_ROOTS_D);
+    CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
+    {
+        const uint64_t bad22[] = { DNAC_CFG_RULESET_GEN_ROOTS_D + 1u,
+                                   DNAC_CFG_RULESET_GEN_ROOTS_D - 1u, 0,
+                                   DNAC_CFG_RULESET_GEN2_D2,
+                                   DNAC_CFG_EVM_ACTIVE_D,
+                                   DNAC_CFG_RULESET_GEN_ROLES_D,
+                                   UINT64_MAX };
+        for (size_t k = 0; k < sizeof(bad22) / sizeof(bad22[0]); k++) {
+            build_valid_chain_config(&tx,
+                                     (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS,
+                                     bad22[k]);
+            CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+        }
+    }
+    /* and params 9 / 18 refuse D5 */
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN2,
+                             DNAC_CFG_RULESET_GEN_ROOTS_D);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    build_valid_chain_config(&tx, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES,
+                             DNAC_CFG_RULESET_GEN_ROOTS_D);
+    CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
+    CHECK(DNAC_CFG_RULESET_GEN_ROOTS_D != DNAC_CFG_RULESET_GEN_ROLES_D &&
+          DNAC_CFG_RULESET_GEN_ROOTS_D != DNAC_CFG_RULESET_GEN2_D2 &&
+          DNAC_CFG_RULESET_GEN_ROOTS_D != DNAC_CFG_EVM_ACTIVE_D);
+    CHECK(DNAC_CFG_RULESET_GEN_ROOTS_D <= (uint64_t)INT64_MAX);
+
     /* 5a''. NAME_PRICE_3P..6P (ids 10-13, HF-4): [10^8, 10^15] — both
      * ends inclusive, one past either end refuses; and the compiled
      * no-row defaults are 10^11 / 5*10^10 / 10^10 / 10^8 (decision
@@ -240,7 +287,7 @@ int main(void) {
         CHECK(DNAC_NAME_PRICE_6P_DEFAULT == 100000000ULL);
     }
 
-    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13, 14, 15, 17, 18, 19, 20, 21} of the governed
+    /* 5b. The read list itself: exactly {4, 5, 6, 7, 8, 9..13, 14, 15, 17, 18, 19, 20, 21, 22} of the governed
      * id space are read by the running consensus (id 8 = HF3_ACTIVE, read
      * by the engine's env_hf3_active — HF-3, 2026-10-02; id 7 =
      * HF2_ACTIVE, read by the engine's env_hf2_active, 2026-09-30).
@@ -285,11 +332,17 @@ int main(void) {
                             * env_storage_bond */
                            id == DNAC_CFG_STAKE_MIN ||
                            id == DNAC_CFG_POWER_CAP_BPS ||
-                           id == DNAC_CFG_STORAGE_BOND);
+                           id == DNAC_CFG_STORAGE_BOND ||
+                           /* HF-7 P1d: 22 read by phase 6b'''' (the
+                            * generation-5 edge) and the approval
+                            * responder's single-use read */
+                           id == DNAC_CFG_RULESET_GEN_ROOTS);
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) == want);
     }
     CHECK(!dnac_cfg_param_read_by_consensus(16));
     CHECK(dnac_cfg_param_read_by_consensus(18));
+    CHECK(dnac_cfg_param_read_by_consensus(22));
+    CHECK(!dnac_cfg_param_read_by_consensus(23));
 
     /* 5c. HF-6 slice 8a — params 19-21 on the client mirror (design
      * 2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8; ranges

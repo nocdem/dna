@@ -283,15 +283,34 @@ extern "C" {
  *  (§8.9 S4), segment leaf v2 (S5), DomainHead v2 head-authoritative (S6),
  *  GLOBAL v2 with the replay leg (S7/S8), the replay relation v2_replay
  *  and the whole-block expiry rule. Code names it GEN_ROOTS, never "5".
- *  Built ON the storage generation. INERT until HF-7 P1d adds its
- *  compiled table entry, pins, edge and raises NODUS_RT_GEN_MAX: no
- *  registry reaches it before then, so every `>= NODUS_RT_GEN_ROOTS` test
- *  is false on every chain. */
+ *  Built ON the storage generation: SYSTEM v11 / CORE v10 — the
+ *  generation-4 descriptors with ONLY ruleset_version bumped (rule lists,
+ *  type lists and the SYSTEM policy digest unchanged; no EVM slot, EVM v2
+ *  of the EVM generation stays the EVM domain's one tuple). HF-7 P1d
+ *  compiled it (nodus_witness_runtime.c), the vote literal D5 (dnac.h
+ *  DNAC_CFG_RULESET_GEN_ROOTS_D, chain_config param 22) and its edge
+ *  (nodus_witness_v2_apply.c phase_6b_gen5_edge, end of block A-1). EVM-
+ *  ONLY like generations 3 and 4: a build without NODUS_EVM_ENABLED never
+ *  passes the EVM edge, so it never reaches this one. The number is
+ *  defined in every build (every `>= NODUS_RT_GEN_ROOTS` test names it);
+ *  on a chain with no committed param-22 row no registry reaches it, so
+ *  each such test is false there. */
 #define NODUS_RT_GEN_ROOTS           ((uint32_t)5)
-/** The generation the roots generation is built on and switches FROM. */
+/** The generation the roots generation is built on and switches FROM.
+ *  ONE definition; committed by the vote literal (D5's base_generation
+ *  field); a param-22 vote is refused unless the registry is at this
+ *  generation (nodus_chain_config_stateful_rules_ex, param-22 rule (c)). */
 #define NODUS_RT_GEN_ROOTS_BASE      NODUS_RT_GEN_STORAGE
+/** The ONE constant the generation-5 vote binds (D5's consts[0], khan
+ *  decision C 2026-10-20: the vote carries 720 only): the D2 expiry window
+ *  in blocks. A RESTATEMENT for this module, which stays free of the
+ *  engine's witness/db headers: the authority is the engine's
+ *  NODUS_V2_EXPIRY_WINDOW_BLOCKS (nodus_witness_v2_apply.h), and
+ *  nodus_witness_v2_apply.c pins the two equal with a _Static_assert, so
+ *  a window change that skips this line does not compile. */
+#define NODUS_RT_GEN5_VOTE_EXPIRY_WINDOW ((uint64_t)720)
 #ifdef NODUS_EVM_ENABLED
-#define NODUS_RT_GEN_MAX             NODUS_RT_GEN_STORAGE
+#define NODUS_RT_GEN_MAX             NODUS_RT_GEN_ROOTS
 #else
 #define NODUS_RT_GEN_MAX             NODUS_RT_GEN_2
 #endif
@@ -1224,7 +1243,19 @@ nodus_runtime_for_generation(uint32_t generation, uint32_t domain_id);
  *   - HF-6 slice 8b (EVM-enabled build): the compiled generation-4 vote
  *     literal DNAC_CFG_RULESET_GEN_ROLES_D (D4) re-derives through
  *     nodus_runtime_gen4_vote_digest — so a build whose Foundation owner
- *     and D4 literal disagree refuses to start.
+ *     and D4 literal disagree refuses to start;
+ *   - HF-7 P1d (EVM-enabled build): the compiled generation-5 vote literal
+ *     DNAC_CFG_RULESET_GEN_ROOTS_D (D5) re-derives through
+ *     nodus_runtime_gen5_vote_digest (same owner coupling), and every
+ *     domain whose envelopes can carry a leg of its own leaves generation
+ *     4 for generation 5 dead (Kurultay #27 summary item 1): SYSTEM and
+ *     CORE carry a generation-5 entry whose ruleset_version exceeds
+ *     generation 4's, and the EVM domain — which has NO generation-5 entry
+ *     (its EVM-generation tuple stays the one its registry record names) —
+ *     is covered only through the EVM pair rule (nodus_rt_evm_pair_check:
+ *     every EVM envelope is exactly [CORE EVMFUND] + [EVM op], so its
+ *     CORE leg carries the bumped CORE version); any other domain in the
+ *     table without a bumped generation-5 entry refuses the start.
  * @return 0 healthy, -1 on the first violation.
  */
 int nodus_witness_runtime_selfcheck(void);
@@ -1288,6 +1319,21 @@ int nodus_runtime_evm_activation_digest(uint64_t *d_out,
  * @return 0 / -1 (NULL d_out, a generation-4 entry missing, digest failure).
  */
 int nodus_runtime_gen4_vote_digest(uint64_t *d_out);
+
+/**
+ * HF-7 P1d (design docs/plans/2026-09-11-nodus-ledger-snapshot-design.md
+ * §10.2 item 1, §10.11 C): the generation-5 vote value D5 — what the
+ * RULESET_GEN_ROOTS vote must name (dnac.h DNAC_CFG_RULESET_GEN_ROOTS_D)
+ * — re-derived through dna_rolegen_vote_digest from the compiled table:
+ * generation NODUS_RT_GEN_ROOTS (5), base NODUS_RT_GEN_ROOTS_BASE (4),
+ * that generation's SYSTEM and CORE ruleset hashes,
+ * DNAC_HF7_SWITCH_SPEC_VERSION, the compiled DNAC_HF6_FOUNDATION_OWNER and
+ * the ONE GEN5_VOTE_CONSTS entry (nodus_witness_runtime.c: the D2 expiry
+ * window, 720). Selfcheck compares it with the literal; nothing in the
+ * vote path calls it. The nodus_runtime_gen4_vote_digest shape.
+ * @return 0 / -1 (NULL d_out, a generation-5 entry missing, digest failure).
+ */
+int nodus_runtime_gen5_vote_digest(uint64_t *d_out);
 #endif
 
 /* ── Nodus EVM: the ONE call-head decoder and the ONE pairing rule ──────────

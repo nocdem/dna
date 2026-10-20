@@ -11206,6 +11206,67 @@ whose `generation` is patched before a seeded genesis (the database climbed to S
 HF-6 edge writes) — no edge, so the A−1 cell is P1e's harness case.
 Written, NOT run by the builder.
 
+### HF-7 P1d — the activation: param 22, D5, generation 5, the edge (2026-10-20, branch `hf7-p1d` only — not versioned, not voted, NOT active)
+
+Design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §10.2 items 1-3, §10.3, §10.9, §10.11 (khan
+decisions B: param 22's grace is ERGONOMIC, 720 blocks; C: the vote binds the 720-block expiry window only);
+Kurultay #27 summary `docs/plans/decisions/2026-10-20-kurultay-27-hf7-p1-summary.md` items 1, 2, 7, 10. The
+HF-6 param-18 / D4 mechanism ("HF-6 slice 8b" / "8c" above), mirrored site by site; P1a-P1c built every rule
+this switch turns on.
+
+**The vote.** chain_config param 22 `RULESET_GEN_ROOTS` (`dnac.h`), on the consensus read list; scalar rule:
+EXACTLY `DNAC_CFG_RULESET_GEN_ROOTS_D` = D5 = `0x6f4c60640dd57094` (owner K8) — the independent oracle
+`shared/dnac/tests/hf7_vote_oracle.py`'s literal, = the HF-6 ROLEGEN constructor (`dna_rolegen_vote_digest`)
+over generation 5 / base 4, the generation-5 SYSTEM and CORE ruleset hashes, spec version
+`DNAC_HF7_SWITCH_SPEC_VERSION` 1, the compiled Foundation owner and ONE constant, the D2 window 720 (the
+node-local mempool window 100 is NOT bound). Grace ERGONOMIC. Stateful rules (`nodus_chain_config_stateful_rules_ex`,
+param 18's): single use (any param-22 row), HF-2 active, judged under generation EXACTLY 4, A ≠ 0, neither A−1
+nor A an epoch boundary. The client mirror (`verify.c`) applies exactly-D5 only. `nodus-cli chain-config propose
+RULESET_GEN_ROOTS` names it. **Gap:** the single-use fact `ruleset_gen_roots_voted` is read by the 0x71 approval
+responder; the SYSTEM CHAIN_CONFIG exec (block path) does not yet receive it from the engine ctx (the fill lives in
+`nodus_witness_v2_apply.c` / `nodus_witness_rt_native.c`, outside P1d), so on the block path rule (a) reads 0.
+
+**Generation 5 compiled** (`nodus_witness_runtime.c`, EVM-enabled builds only, like generations 3 and 4): slots
+9-10, SYSTEM v11 / CORE v10 = generation 4's descriptors with ONLY the version moved — same rule lists, type
+lists, SYSTEM policy (its own sealed object, digest 0aa4c690… = the oracle's C1), hooks, adapters and
+allowlists; no EVM slot (EVM v2 of the EVM generation stays the EVM domain's one tuple). `NODUS_RT_GEN_MAX` =
+`NODUS_RT_GEN_ROOTS`. The pins `SYS_RULESET_HASH_GRT` / `CORE_RULESET_HASH_GRT` are the oracle's R1 / R2. The
+version bump IS the rule that kills every pre-A envelope at A (summary item 1): preflight compares each leg's
+ruleset_version with the registry's (`env_preflight.h` step 5) — a SYSTEM / CORE leg signed for generation 4
+names v10 / v9; an EVM envelope is exactly [CORE EVMFUND] + [EVM op] (the pair rule `nodus_rt_evm_pair_check`,
+applied from both sides), so its CORE leg names v9 and dies the same way although EVM's own version is
+unchanged.
+
+**The selfcheck** (every start of an EVM-enabled build) re-derives D5 from the compiled generation 5 and refuses
+to start on a mismatch, and refuses unless every domain of the table either has a generation-5 entry whose
+version exceeds its generation-4 one or is the EVM domain covered by the pair rule (CORE's version moved). A test
+build that overrides `DNAC_HF6_FOUNDATION_OWNER` must therefore pass that owner's D5 too
+(`-DDNAC_CFG_RULESET_GEN_ROOTS_D`, printed by `stagef_hf6_owner.sh` from `hf7_vote_oracle.py --owner`).
+
+**The edge — phase 6b'''' (`phase_6b_gen5_edge`, `nodus_witness_v2_apply.c`).** At the END of block A−1 — after
+6b''' (the HF-6 edge), before 6b'' and 6c — when the param-22 row is present at A and absent at A−1: the value
+must be this build's D5, the build must carry generation 5, the schema must be EXACTLY S19 (each a node FAULT
+otherwise); then `nodus_witness_domreg_generation_switch(4, 5)` ("registry is not generation 4" FAULT), then the
+one-time `nodus_witness_v2_domain_heads_seed_last_upd` (every head's `last_upd_hash` from today's history
+query, before 6c reloads the heads and phase 9 reads the column), then SYSTEM and CORE touched (their roots
+move — SYSTEM v5 → v6 — and phase 8's untouched-domain guard would otherwise refuse the block). Transition
+(§10.3): items of A−1 are judged by generation 4 (index-table guard, no `v2_replay` row, today's expiry rule);
+A−1's roots are generation 5's (SYSTEM v6, segment leaf v2, DomainHead v2, GLOBAL v2 over the EMPTY replay root);
+from A every item is generation 5's (the `v2_replay` guard, the D2 whole-block rule). This order does not make a
+same-block coincidence of the generation-4 and generation-5 edges FAULT (the HF-6 edge would switch 3 → 4 and
+this one 4 → 5); the vote's rule (c) makes that block unreachable (a vote judged at generation 4 commits at or
+after the generation-4 edge's H, so its A−1 ≥ H). INFO line: `HF-7: rule-set generation 4 -> 5 and the head
+last_upd_hash seed at the end of height <A−1> (param 22 RULESET_GEN_ROOTS, D5 0x<D5>); height <A> is judged
+under generation 5`.
+
+**Not in P1d (stated):** the generated pins header `nodus_ruleset_pins.h` is still generation 1-4 (it is
+regenerated by running `regen_ruleset_pins`, a built binary); the client pins table `nodus_v2_spend.c`
+`PINS_GEN`, the startup banner line for D5 (`nodus_witness.c`, the 7/7 pre-vote comparison) and the explorer's
+param-name table are outside the package. **Tests:** `test_hf7_activation` (table vs oracle R1/R2/C1, D5 KAT and
+triangle, drift sensitivity, the vote rules, a generation-4-signed EVM envelope refused at A), `test_hf7_edge`
+(the edge on a seeded S19 chain at A−1, block A's D2 FAULT and `v2_replay` row, block A+1's REPLAY, the
+not-generation-4 and wrong-value FAULTs). Written, NOT run by the builder.
+
 ### Witness Database Schema
 
 SQLite tables managed by the witness module (`nodus_witness_db.c`):

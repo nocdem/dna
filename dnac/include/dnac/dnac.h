@@ -890,7 +890,43 @@ typedef enum {
                                           *   registration keeps the bond
                                           *   it paid: a later vote never
                                           *   touches an existing row. */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_STORAGE_BOND
+    DNAC_CFG_RULESET_GEN_ROOTS     = 22, /**< HF-7 (design docs/plans/
+                                          *   2026-09-11-nodus-ledger-
+                                          *   snapshot-design.md §10.2
+                                          *   item 1, §10.9, §10.11; the
+                                          *   name is ours): the vote for
+                                          *   rule-set generation 5 — the
+                                          *   ROOTS generation (SYSTEM
+                                          *   root v6, segment leaf v2,
+                                          *   DomainHead v2, GLOBAL v2
+                                          *   with the replay leg, the
+                                          *   v2_replay relation, the
+                                          *   whole-block expiry rule).
+                                          *   Its effective block A is
+                                          *   the first block judged
+                                          *   under it; the engine
+                                          *   switches the SYSTEM and
+                                          *   CORE registry records 4 ->
+                                          *   5 and seeds every head's
+                                          *   last_upd_hash at the end of
+                                          *   block A-1 (phase 6b'''').
+                                          *   Value domain EXACTLY
+                                          *   DNAC_CFG_RULESET_GEN_
+                                          *   ROOTS_D (D5). Single use;
+                                          *   HF-2 active; judged under
+                                          *   generation EXACTLY 4
+                                          *   (NODUS_RT_GEN_ROOTS_BASE);
+                                          *   neither A-1 nor A an epoch
+                                          *   boundary — witness-side
+                                          *   stateful rules the client
+                                          *   mirror cannot apply. Grace
+                                          *   class ERGONOMIC (khan
+                                          *   decision B, 2026-10-20,
+                                          *   docs/plans/decisions/2026-
+                                          *   10-20-kurultay-27-hf7-p1-
+                                          *   summary.md: "720 blok
+                                          *   (≈ 100 dk)"). */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_RULESET_GEN_ROOTS
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -963,7 +999,13 @@ typedef enum {
  *    - STORAGE_BOND (21, HF-6): nodus_witness_v2_apply.c env_storage_bond
  *      (into nodus_rt_exec_ctx_t.storage_bond — the exact STORAGE_REGISTER
  *      bond, nodus_witness_rt_native.c rtn_storage_bond_at),
- *      nodus_witness_handlers.c (dnac_fee_info).
+ *      nodus_witness_handlers.c (dnac_fee_info);
+ *    - RULESET_GEN_ROOTS (22, HF-7): nodus_witness_v2_apply.c phase
+ *      6b'''' (phase_6b_gen5_edge — the edge trigger that switches the
+ *      registry generation 4 -> 5 and seeds the heads' last_upd_hash at
+ *      the end of block A-1) and the 0x71 approval responder's "any
+ *      param-22 row" read (nodus_witness_chain_config.c, the single-use
+ *      vote rule).
  *  No other governed id is votable: 1, 3 and 16 are RETIRED (above), 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane. RETIRED 16
  *  (RULESET_GEN_STORAGE) is off this list, so no new param-16 row can be
@@ -998,7 +1040,8 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_RULESET_GEN_ROLES ||
            param_id == (uint8_t)DNAC_CFG_STAKE_MIN ||
            param_id == (uint8_t)DNAC_CFG_POWER_CAP_BPS ||
-           param_id == (uint8_t)DNAC_CFG_STORAGE_BOND;
+           param_id == (uint8_t)DNAC_CFG_STORAGE_BOND ||
+           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -1176,8 +1219,10 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
  *    cmake -DCMAKE_C_FLAGS='-DDNAC_HF6_FOUNDATION_OWNER="{0x01,0x02,...}"'
  *  (exactly 64 bytes). Production builds never define it. Since slice 8b
  *  such a build must ALSO define DNAC_CFG_RULESET_GEN_ROLES_D (below) to
- *  that owner's D4, or it refuses to start (the runtime selfcheck);
- *  nodus/tests/integration/stagef/stagef_hf6_owner.sh prints both flags.
+ *  that owner's D4, and since HF-7 P1d DNAC_CFG_RULESET_GEN_ROOTS_D to
+ *  that owner's D5 (D5 binds the same owner), or it refuses to start (the
+ *  runtime selfcheck); nodus/tests/integration/stagef/stagef_hf6_owner.sh
+ *  prints all three flags.
  *  DNAC_HF6_FOUNDATION_OWNER_IS_DEFAULT is defined only when the compiled
  *  value is this K8 address (tests pin the bytes only then). */
 #ifndef DNAC_HF6_FOUNDATION_OWNER
@@ -1325,6 +1370,62 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
 #define DNAC_CFG_RULESET_GEN_ROLES_D     0x642af9b4bf735409ULL /* D4 of shared/dnac/tests/hf6_vote_oracle.py, owner K8 (7217855907516077065) */
 #endif
 
+/** HF-7 — the generation-5 switch procedure version (design docs/plans/
+ *  2026-09-11-nodus-ledger-snapshot-design.md §10.2 item 1: the vote's
+ *  spec_version field; value 1 = shared/dnac/tests/hf7_vote_oracle.py
+ *  HF7_SWITCH_SPEC_VERSION). It names the phase code the engine runs at
+ *  the end of block A-1 of the generation-5 vote (nodus_witness_v2_apply.c
+ *  phase_6b_gen5_edge: the registry switch 4 -> 5, then the one-time seed
+ *  of every head's last_upd_hash). It is hashed into
+ *  DNAC_CFG_RULESET_GEN_ROOTS_D, so two binaries that run a different
+ *  4 -> 5 procedure cannot share a vote value; any change to that phase
+ *  bumps it, and with it D5. DNAC_RULESET_SWITCH_SPEC_VERSION (D2's) and
+ *  DNAC_HF6_SWITCH_SPEC_VERSION (D4's) do NOT change. */
+#define DNAC_HF7_SWITCH_SPEC_VERSION     1u
+
+/** RULESET_GEN_ROOTS value domain (HF-7, the generation-5 vote, param_id
+ *  22): EXACTLY this literal, D5 = the first 8 bytes, big-endian, top bit
+ *  cleared, of the ROLEGEN constructor (shared/dnac/domain_wire.h
+ *  dna_rolegen_vote_digest — the HF-6 constructor reused, no new hash
+ *  construction; design §10.2 item 1):
+ *    SHA3-512( TAG16("NDS.ROLEGEN.v1")
+ *              ‖ u32 BE NODUS_RT_GEN_ROOTS (5)
+ *              ‖ u32 BE NODUS_RT_GEN_ROOTS_BASE (4, GEN_STORAGE)
+ *              ‖ generation-5 SYSTEM ruleset_hash[64] (v11)
+ *              ‖ generation-5 CORE ruleset_hash[64] (v10)
+ *              ‖ u32 BE DNAC_HF7_SWITCH_SPEC_VERSION (1)
+ *              ‖ DNAC_HF6_FOUNDATION_OWNER[64]
+ *              ‖ u32 BE 1
+ *              ‖ 1 × u64 BE: NODUS_V2_EXPIRY_WINDOW_BLOCKS (720) )
+ *  — a 232-byte preimage. The constants bind the expiry window ONLY: the
+ *  node-local mempool window (100) is NOT in the vote (khan decision C,
+ *  docs/plans/decisions/2026-10-20-kurultay-27-hf7-p1-summary.md). Two
+ *  binaries that differ in a generation-5 pin, the 4 -> 5 procedure, the
+ *  Foundation owner or the window cannot carry one D5.
+ *
+ *  The value is the literal of the INDEPENDENT oracle
+ *  shared/dnac/tests/hf7_vote_oracle.py (hf7_vote_oracle_out.txt, owner
+ *  K8: "D5 = 0x6f4c60640dd57094ULL", decimal 8019891019285098644) — never
+ *  this build's encoder. nodus_witness_runtime_selfcheck re-derives it
+ *  through dna_rolegen_vote_digest from the COMPILED generation-5 pins,
+ *  owner and window on every start of an EVM-enabled build; nothing in the
+ *  vote path hashes. Its three comparers: the witness scalar rule
+ *  (nodus_witness_chain_config.c), the client mirror (dnac/src/
+ *  transaction/verify.c) and the generation-5 edge (nodus_witness_v2_
+ *  apply.c phase_6b_gen5_edge).
+ *
+ *  TEST-BUILD OVERRIDE ONLY, and only TOGETHER with
+ *  DNAC_HF6_FOUNDATION_OWNER (and DNAC_CFG_RULESET_GEN_ROLES_D): D5 binds
+ *  the compiled owner, so a build that overrides the owner must pass that
+ *  owner's D5 too, e.g. -DDNAC_CFG_RULESET_GEN_ROOTS_D=0x…ULL, printed by
+ *  nodus/tests/integration/stagef/stagef_hf6_owner.sh from
+ *  hf7_vote_oracle.py --owner <fp>. A build that overrides one and not the
+ *  other refuses to start (the selfcheck row). Production builds never
+ *  define it. */
+#ifndef DNAC_CFG_RULESET_GEN_ROOTS_D
+#define DNAC_CFG_RULESET_GEN_ROOTS_D     0x6f4c60640dd57094ULL /* D5 of shared/dnac/tests/hf7_vote_oracle.py, owner K8 (8019891019285098644) */
+#endif
+
 /** HF-4 NAME_REGISTER price range (params 10-13), both inclusive:
  *  [10^8, 10^15] raw = [1 NODUS, 10 000 000 NODUS] (design §2 Price). */
 #define DNAC_CFG_MIN_NAME_PRICE             100000000ULL
@@ -1432,6 +1533,13 @@ _Static_assert(DNAC_EVM_BLOCK_GAS_LIMIT_DEFAULT >= DNAC_CFG_MIN_EVM_BLOCK_GAS &&
                "the EVM block gas default must be a votable value");
 _Static_assert(DNAC_CFG_RULESET_GEN_ROLES_D <= 0x7FFFFFFFFFFFFFFFULL,
                "D4 must fit SQLite int64 (top bit cleared by construction)");
+_Static_assert(DNAC_CFG_RULESET_GEN_ROOTS_D <= 0x7FFFFFFFFFFFFFFFULL,
+               "D5 must fit SQLite int64 (top bit cleared by construction)");
+_Static_assert(DNAC_CFG_RULESET_GEN_ROOTS_D != DNAC_CFG_RULESET_GEN2_D2 &&
+               DNAC_CFG_RULESET_GEN_ROOTS_D != DNAC_CFG_EVM_ACTIVE_D &&
+               DNAC_CFG_RULESET_GEN_ROOTS_D != DNAC_CFG_RULESET_GEN_ROLES_D,
+               "D5 differs from every earlier vote literal (D2, EVM_ACTIVE, "
+               "D4) — one value can never trigger two edges");
 _Static_assert(DNAC_HF6_STORAGE_BOND_DEFAULT == 100000000000000ULL &&
                DNAC_HF6_STORAGE_BOND_MIN == 10000000000000ULL &&
                DNAC_HF6_STORAGE_BOND_MAX == 100000000000000ULL,
@@ -1464,6 +1572,9 @@ _Static_assert(DNAC_CFG_RULESET_GEN_ROLES == 18 &&
                DNAC_CFG_STAKE_MIN == 19 && DNAC_CFG_POWER_CAP_BPS == 20 &&
                DNAC_CFG_STORAGE_BOND == 21,
                "HF-6 param ids (design rev 6 §8)");
+_Static_assert(DNAC_CFG_RULESET_GEN_ROOTS == 22 &&
+               DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_RULESET_GEN_ROOTS,
+               "HF-7 param id (snapshot design §10.1: next free id 22)");
 _Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
                DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
                DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&

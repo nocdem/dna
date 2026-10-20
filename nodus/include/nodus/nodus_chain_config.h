@@ -72,15 +72,15 @@ typedef struct nodus_witness nodus_witness_t;
  * checked on every block, nodus_witness_v2_econ_params_load.)
  *
  * WHY 200+. The band must never collide with a future
- * DNAC_CFG_* allocation, which grows upward from 1 (currently 21 —
- * HF-6's RULESET_GEN_ROLES = 18, STAKE_MIN = 19, POWER_CAP_BPS = 20,
+ * DNAC_CFG_* allocation, which grows upward from 1 (currently 22 —
+ * HF-7's RULESET_GEN_ROOTS = 22, HF-6's RULESET_GEN_ROLES = 18, STAKE_MIN = 19, POWER_CAP_BPS = 20,
  * STORAGE_BOND = 21, after HF-8's DELEGATE_NAME_REQUIRED = 17,
  * storage reward v1's (RETIRED by HF-6)
  * RULESET_GEN_STORAGE = 16 and Nodus EVM's
  * EVM_ACTIVE = 14 / EVM_BLOCK_GAS_LIMIT = 15, HF-4's
  * RULESET_GEN2 = 9 and NAME_PRICE_3P..6P = 10-13, HF-3's
  * HF3_ACTIVE = 8, HF-2's HF2_ACTIVE = 7, W-C's TOKEN_CREATE_FEE_RAW = 6
- * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 178 free
+ * and HF-1's GAS_PRICE_RAW_PER_UNIT = 5). Starting at 200 leaves 177 free
  * governance ids; a future allocation that reaches
  * this band collides with THIS COMMENT rather than silently overwriting a
  * committed economic parameter. The ids fit uint8_t, which is what the
@@ -267,7 +267,8 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
  * The 4th argument is the SINGLE-USE fact OF THE PARAM BEING VOTED: "any
  * committed param-9 row" for a param-9 vote, "any committed param-18 row"
  * for a param-18 vote (HF-6, design docs/plans/2026-10-03-hf5-validator-
- * owner-stake-design.md rev 6 §8) — this form fills BOTH of those
+ * owner-stake-design.md rev 6 §8), "any committed param-22 row" for a
+ * param-22 vote (HF-7 P1d) — this form fills ALL THREE of those
  * nodus_cc_state_facts_t members from it; its "any param-16 row" fact is
  * 0 (only the _ex form sets it). TEST-ONLY. The caller passes the fact
  * matching `param_id`:
@@ -278,7 +279,8 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
  *   - params 10-13 NAME_PRICE_*: refused unless `judging_generation` >= 2
  *     (the runtime that judges the vote; 0 for a synthetic or unresolved
  *     runtime);
- *   - param 18 RULESET_GEN_ROLES: see the _ex form below;
+ *   - param 18 RULESET_GEN_ROLES, param 22 RULESET_GEN_ROOTS: see the _ex
+ *     form below;
  *   - ids 1-8: no stateful rule (0);
  *   - any other id (RETIRED 16 included): -1.
  * THREE sites apply it with the same facts: the SYSTEM CHAIN_CONFIG exec
@@ -317,6 +319,16 @@ typedef struct {
                                    * param-18 vote (HF-6 rule (a'))       */
     uint8_t  ruleset_gen_roles_voted; /* HF-6: any param-18 row, any
                                    * height — the param-18 single use     */
+    uint8_t  ruleset_gen_roots_voted; /* HF-7: any param-22 row, any
+                                   * height — the param-22 single use.
+                                   * Filled today by the 0x71 approval
+                                   * responder only (nodus_witness_chain_
+                                   * config.c); the SYSTEM CHAIN_CONFIG
+                                   * exec's fill is NOT wired (HF-7 P1d
+                                   * left it to the ORCHESTRATOR: the
+                                   * engine ctx fill lives outside that
+                                   * package) — until it is, the exec
+                                   * reads 0 here                         */
     uint32_t judging_generation;  /* the SYSTEM runtime judging the vote
                                    * (0 = synthetic / unresolved)         */
     /* red-team 1 F5: the chain's FIRST block height, derived from the
@@ -370,10 +382,20 @@ typedef struct {
  *     design 2026-10-03-hf5-validator-owner-stake-design.md rev 6 §8):
  *     refused unless `judging_generation` >= NODUS_RT_GEN_STORAGE (4 —
  *     the generation with the owner/node roles). No single-use rule, no
- *     other fact read.
+ *     other fact read;
+ *   - param 22 RULESET_GEN_ROOTS (HF-7, design docs/plans/2026-09-11-
+ *     nodus-ledger-snapshot-design.md §10.2 item 1, §10.11): param 18's
+ *     rules over the generation-5 facts — refused if (a)
+ *     `ruleset_gen_roots_voted` (single use), (b) !`hf2_active`, (c)
+ *     `judging_generation` is not NODUS_RT_GEN_ROOTS_BASE (exactly 4 —
+ *     the switch it schedules is GEN_STORAGE -> generation 5), (d)
+ *     effective == 0 or effective - 1 is an epoch boundary, or (e)
+ *     effective itself is an epoch boundary. Param 18's (a') has no
+ *     analogue.
  * The 5-argument function above is this with hf3 / gas price / EVM-voted /
- * param-16-row all 0 and the param-9 and param-18 single-use facts set
- * from its 4th argument (so it refuses every EVM_ACTIVE vote). Pure.
+ * param-16-row all 0 and the param-9, param-18 and param-22 single-use
+ * facts set from its 4th argument (so it refuses every EVM_ACTIVE vote).
+ * Pure.
  * @return 0 / -1.
  */
 int nodus_chain_config_stateful_rules_ex(uint8_t param_id,

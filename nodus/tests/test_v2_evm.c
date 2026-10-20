@@ -1344,8 +1344,10 @@ static int test_shape(void) {
     CHECK(nodus_witness_runtime_selfcheck() == 0,
           "selfcheck (generations 1-3, the D literal)"); OK();
     /* storage reward v1 (main merge order, QEVM first): GEN_STORAGE (4)
-     * is built on the EVM generation and is the newest compiled one */
-    CHECK(nodus_runtime_generation_count() == NODUS_RT_GEN_STORAGE &&
+     * is built on the EVM generation; HF-7 P1d: GEN_ROOTS (5), built on
+     * GEN_STORAGE, is the newest compiled one */
+    CHECK(nodus_runtime_generation_count() == NODUS_RT_GEN_ROOTS &&
+          NODUS_RT_GEN_ROOTS == NODUS_RT_GEN_STORAGE + 1u &&
           NODUS_RT_GEN_STORAGE == NODUS_RT_GEN_EVM + 1u &&
           NODUS_RT_GEN_EVM == 3u && NODUS_RT_GEN_EVM_BASE == NODUS_RT_GEN_2,
           "the EVM generation is 3 on base 2 in this tree"); OK();

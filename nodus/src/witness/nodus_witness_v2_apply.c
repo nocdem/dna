@@ -5134,6 +5134,183 @@ static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
 #endif
 }
 
+/* The ONE constant D5 binds (dnac.h DNAC_CFG_RULESET_GEN_ROOTS_D) is the
+ * runtime module's restatement of this engine's D2 window: pinned equal
+ * here, the one TU that sees both (nodus_witness_runtime.h). */
+_Static_assert(NODUS_RT_GEN5_VOTE_EXPIRY_WINDOW ==
+                   NODUS_V2_EXPIRY_WINDOW_BLOCKS,
+               "D5 must bind the expiry window the engine enforces");
+
+/*
+ * PHASE 6b'''' — HF-7: THE GENERATION-5 EDGE (design docs/plans/2026-09-
+ * 11-nodus-ledger-snapshot-design.md §10.2 items 1-3, §10.3, §10.9,
+ * §10.11; decision docs/plans/decisions/2026-10-20-kurultay-27-hf7-p1-
+ * summary.md items 1, 2, 7).
+ *
+ * TRIGGER: the param-22 (RULESET_GEN_ROOTS) row with this build's
+ * DNAC_CFG_RULESET_GEN_ROOTS_D (D5) literal, effective at A = h+1 and
+ * absent at h — the phase-6b''' shape, read exactly as phase_6b_gen4_edge
+ * reads param 18. Then, in this order, inside the block's transaction:
+ *   1. the row's value must be this build's D5 (the scalar rules admit
+ *      nothing else; another value is this node's storage) and this build
+ *      must carry generation 5 (NODUS_EVM_ENABLED) — else FAULT;
+ *   2. the schema must be EXACTLY S19 (v2_replay and
+ *      v2_domain_heads.last_upd_hash exist) — a node-local shape, so
+ *      FAULT, never a verdict;
+ *   3. SYSTEM and CORE switch from NODUS_RT_GEN_ROOTS_BASE (4) to
+ *      NODUS_RT_GEN_ROOTS (5) through nodus_witness_domreg_generation_
+ *      switch; "not at generation 4" is a FAULT (the vote's stateful rule
+ *      (c) refused every vote judged away from generation 4);
+ *   4. nodus_witness_v2_domain_heads_seed_last_upd: every head's
+ *      last_upd_hash is filled ONCE from today's history query (the
+ *      latest DomainUpdate, the genesis sentinel for a domain that never
+ *      had one) — BEFORE the 6c re-scan reloads the heads and phase 9
+ *      reads the column under the new generation;
+ *   5. SYSTEM and CORE are declared touched — the HF-6 edge's step 5:
+ *      their roots move (SYSTEM v5 -> v6 composition; the registry is a
+ *      SYSTEM leg), and phase 8's untouched-domain guard would otherwise
+ *      refuse A-1 on every node (an untouched domain's recomputed root
+ *      must equal its head's).
+ *
+ * TRANSITION TABLE (§10.3; the edge runs at the END of block A-1):
+ *   item                  | block A-1 (this edge)          | block A on
+ *   ----------------------+--------------------------------+---------------
+ *   items' judge          | generation 4 (block start)     | generation 5
+ *   registry generation   | 4 -> 5 here, step 3            | 5
+ *   SYSTEM / CORE version | v10 / v9 -> v11 / v10 here     | v11 / v10
+ *   SYSTEM state root     | v6 (phase 8 runs after 6b/6c)  | v6
+ *   segment leaves        | v2 (re-tag, no publication)    | v2
+ *   DomainHead            | v2: column seeded here, step 4 | v2, head read
+ *   GLOBAL                | v2, replay_root = S7 EMPTY root| v2
+ *   replay guard          | the two index tables           | v2_replay only
+ *   v2_replay rows        | NONE (A-1's items judged by 4) | inserted; prune
+ *                         |                                | expiry <= H
+ *   expiry block rule     | today's (expired = failed item)| D2 whole-block
+ * Why A-1's replay set is empty: the edge precedent plus D5 (summary item
+ * 2; snapshot design §10.9) — A-1's items were admitted under generation
+ * 4, and from A every pre-A envelope is dead anyway (its SYSTEM / CORE
+ * legs name v10 / v9; an EVM envelope's mandatory CORE EVMFUND leg names
+ * CORE v9 — the selfcheck refuses a generation 5 that does not bump them).
+ *
+ * Runs as 6b'''': after 6b''' (phase_6b_gen4_edge — one edge timing for
+ * every HF, §10.2 item 2) and BEFORE 6b'' and 6c. Unlike 6b''' before
+ * 6b'' this order does NOT make a same-block coincidence of the two
+ * generation edges FAULT (the generation-4 edge would switch 3 -> 4 and
+ * this one 4 -> 5 in one block); that block is unreachable through
+ * transactions by the param-22 vote's rule (c): a vote judged at
+ * generation 4 is committed at or after the generation-4 edge's H, so its
+ * own A-1 >= H, strictly above that edge's block H-1. A faulted block is
+ * rolled back whole by the host, so the edge (switch + seed) is atomic and
+ * a replay of A-1 re-runs it exactly once (the 6b' argument). Not the
+ * edge → nothing (two unmetered chain_config reads per block).
+ * @return 0 / -2 node FAULT (reason written).
+ */
+static int phase_6b_gen5_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
+                              dom_ctx_t *doms, size_t n_dom) {
+    const uint64_t h = blk->global_height;
+    uint64_t h_next = 0, v_next = 0, v_h = 0;
+    int at_next, at_h;
+
+    if (dna_ck_add_u64(h, 1u, &h_next) != 0 ||
+        h_next > (uint64_t)INT64_MAX) {
+        V2AP_FAULT("phase 6b'''': height %llu + 1 leaves the int64 range "
+                   "of chain_config effective heights",
+                   (unsigned long long)h);
+        return -2;
+    }
+    at_next = nodus_chain_config_get_u64(w,
+                                         (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS,
+                                         h_next, 0ULL, &v_next);
+    at_h = nodus_chain_config_get_u64(w,
+                                      (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS,
+                                      h, 0ULL, &v_h);
+    if (at_next < 0 || at_h < 0) {
+        V2AP_FAULT("phase 6b'''': RULESET_GEN_ROOTS at heights %llu/%llu "
+                   "is unreadable on this node - refusing to decide the "
+                   "generation-5 edge on a guess", (unsigned long long)h_next,
+                   (unsigned long long)h);
+        return -2;
+    }
+    if (!(at_next == 0 && at_h == 1))
+        return 0;                       /* not the A-1 edge: nothing     */
+    if (v_next != (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D) {
+        V2AP_FAULT("phase 6b'''': the RULESET_GEN_ROOTS row effective at "
+                   "%llu reads 0x%016llx, not this build's generation-5 "
+                   "vote D5 0x%016llx - a value no committed row can hold "
+                   "here", (unsigned long long)h_next,
+                   (unsigned long long)v_next,
+                   (unsigned long long)DNAC_CFG_RULESET_GEN_ROOTS_D);
+        return -2;
+    }
+#ifndef NODUS_EVM_ENABLED
+    (void)doms;
+    (void)n_dom;
+    V2AP_FAULT("phase 6b'''': the generation-5 edge is at height %llu but "
+               "this build does not carry generation 5 (built without "
+               "NODUS_EVM_ENABLED)", (unsigned long long)h);
+    return -2;
+#else
+    {
+        uint32_t ver = 0;
+        /* EXACTLY S19: v2_replay (the generation-5 replay relation) and
+         * v2_domain_heads.last_upd_hash (the column step 4 seeds) */
+        if (nodus_witness_db_schema_version(w, &ver) != 0 ||
+            ver != NODUS_V2_SCHEMA_VERSION_S19) {
+            V2AP_FAULT("phase 6b'''': the generation-5 edge needs schema "
+                       "S19; this node's database is at %u", (unsigned)ver);
+            return -2;
+        }
+    }
+    int src = nodus_witness_domreg_generation_switch(
+        w, NODUS_RT_GEN_ROOTS_BASE, NODUS_RT_GEN_ROOTS);
+    if (src == 1) {
+        V2AP_FAULT("phase 6b'''': the generation-%u vote reaches its edge "
+                   "at height %llu but the registry is not generation %u",
+                   (unsigned)NODUS_RT_GEN_ROOTS, (unsigned long long)h,
+                   (unsigned)NODUS_RT_GEN_ROOTS_BASE);
+        return -2;
+    }
+    if (src != 0) {
+        V2AP_FAULT("phase 6b'''': the registry rewrite to generation %u "
+                   "failed on this node at height %llu (read, precondition "
+                   "or write)", (unsigned)NODUS_RT_GEN_ROOTS,
+                   (unsigned long long)h);
+        return -2;
+    }
+    if (nodus_witness_v2_domain_heads_seed_last_upd(w) != 0) {
+        V2AP_FAULT("phase 6b'''': the one-time last_upd_hash seed of the "
+                   "domain heads failed on this node at height %llu (an "
+                   "unreadable or empty head table, a head disagreeing "
+                   "with its history mirror, or a write fault — reason in "
+                   "the log)", (unsigned long long)h);
+        return -2;
+    }
+    {
+        dom_ctx_t *dsys = dom_for(doms, n_dom, DNA_DOMAIN_SYSTEM);
+        dom_ctx_t *dcore = dom_for(doms, n_dom, DNA_DOMAIN_CORE);
+        if (!dsys || !dcore) {
+            V2AP_FAULT("phase 6b'''': SYSTEM or CORE is absent from the "
+                       "block-start working set at height %llu",
+                       (unsigned long long)h);
+            return -2;
+        }
+        dsys->touched = 1;
+        dcore->touched = 1;
+    }
+    QGP_LOG_INFO(LOG_TAG, "HF-7: rule-set generation %u -> %u and the "
+                 "head last_upd_hash seed at the end of height %llu (param "
+                 "%u RULESET_GEN_ROOTS, D5 0x%016llx); height %llu is "
+                 "judged under generation %u",
+                 (unsigned)NODUS_RT_GEN_ROOTS_BASE,
+                 (unsigned)NODUS_RT_GEN_ROOTS, (unsigned long long)h,
+                 (unsigned)DNAC_CFG_RULESET_GEN_ROOTS,
+                 (unsigned long long)DNAC_CFG_RULESET_GEN_ROOTS_D,
+                 (unsigned long long)h_next,
+                 (unsigned)NODUS_RT_GEN_ROOTS);
+    return 0;
+#endif
+}
+
 static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
     /* A NULL/misused argument is a LOCAL programming fault, not a
      * statement about a block — there is no block here to judge.
@@ -6257,6 +6434,16 @@ cmt_claim_failed:
      * line). BEFORE 6c, so the re-scan reloads the generation-4 runtimes
      * and the roots below commit the migration. */
     if (phase_6b_gen4_edge(w, blk, doms, n_dom) != 0)
+        goto fail_fault;               /* the helper wrote the reason     */
+
+    /* 6b''''. HF-7 — the GENERATION-5 EDGE, at the end of block A-1 of the
+     * param-22 (RULESET_GEN_ROOTS) vote only (phase_6b_gen5_edge above):
+     * the registry 4 -> 5, the one-time head last_upd_hash seed, SYSTEM +
+     * CORE touched. After 6b''' (one edge timing, after the HF-6 edge) and
+     * BEFORE 6c, so the re-scan reloads the generation-5 runtimes and the
+     * seeded heads, and phases 8-13 commit A-1's roots under generation 5
+     * (SYSTEM v6, GLOBAL v2 over the EMPTY replay root). */
+    if (phase_6b_gen5_edge(w, blk, doms, n_dom) != 0)
         goto fail_fault;               /* the helper wrote the reason     */
 
     /* 6b''. Nodus EVM — the EVM ACTIVATION EDGE, at the end of block H-1 of the

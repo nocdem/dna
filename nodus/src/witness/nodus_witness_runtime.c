@@ -62,6 +62,17 @@
  * (output: storage_oracle_out.txt); selfcheck re-derives them on every
  * start.
  *
+ * HF-7 P1d (design docs/plans/2026-09-11-nodus-ledger-snapshot-design.md
+ * §10, §10.9, §10.11; decision docs/plans/decisions/2026-10-20-kurultay-
+ * 27-hf7-p1-summary.md): generation 5, GEN_ROOTS (SYSTEM v11 / CORE v10 —
+ * the generation-4 descriptors with only the version moved; no EVM slot),
+ * reached from GEN_STORAGE by the phase-6b'''' switch on the chain_config
+ * param-22 RULESET_GEN_ROOTS vote. EVM-only like generations 3 and 4. Its
+ * pins, policy digest and the vote literal D5 (dnac.h) are INDEPENDENT-
+ * oracle literals (HF7-ORACLE markers) from shared/dnac/tests/
+ * hf7_vote_oracle.py (output hf7_vote_oracle_out.txt); selfcheck re-
+ * derives them on every start.
+ *
  * @file nodus_witness_runtime.c
  */
 
@@ -312,6 +323,31 @@ static const uint8_t SYS_METER_POLICY_DIGEST_GST[DNA_DOM_HASH_LEN] = {
      * param-14 literal first. Equal to the EVM generation's 0aa4c690…
      * (same op set — see above). The ops-1..10 value (e5d96b4a…, HF-6
      * slice 6a) is dead. */
+    0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
+    0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
+    0x26, 0x42, 0xc9, 0x9e, 0xdc, 0x1d, 0xb8, 0x3f,
+    0x28, 0x71, 0xaf, 0x64, 0xda, 0x18, 0xc3, 0xf8,
+    0xb7, 0x4a, 0x6e, 0x5c, 0x87, 0x0e, 0xdc, 0x34,
+    0x50, 0xae, 0x04, 0x74, 0xa3, 0xc8, 0xd7, 0x27,
+    0x9e, 0xfb, 0x88, 0x4d, 0xf8, 0xb2, 0x85, 0xc8,
+    0x84, 0x8b, 0xef, 0xfb, 0x25, 0x92, 0x27, 0x66
+};
+
+/* HF-7 P1d — the GEN_ROOTS SYSTEM (v11) metering policy: generation 4's
+ * policy unchanged (shape v2, seven scalar weights 1, the 2 MiB
+ * max_block_env_bytes, ops 1..9 at weight 1 — the generation-5 SYSTEM and
+ * CORE rule lists are generation 4's). Its own sealed object and pinned
+ * literal per generation, because selfcheck requires each SYSTEM entry's
+ * policy to be ITS generation's; the bytes equal SYS_METER_POLICY_DIGEST_GST
+ * (the same op set). Digest = C1 of the INDEPENDENT oracle
+ * shared/dnac/tests/hf7_vote_oracle.py (hf7_vote_oracle_out.txt, "R1 …
+ * meter_policy_digest = C1 (ops 1..9 weight 1)"), never this build's
+ * serializer; selfcheck re-derives it on every start. */
+#define SYS_POLICY_MAX_OP_GRT 9u
+static dna_meter_policy_t g_sys_policy_grt;
+static int g_sys_policy_grt_ready = 0;
+static const uint8_t SYS_METER_POLICY_DIGEST_GRT[DNA_DOM_HASH_LEN] = {
+    /* HF7-ORACLE: C1 of hf7_vote_oracle.py (= storage_oracle.py S1) */
     0x0a, 0xa4, 0xc6, 0x90, 0xa0, 0x5a, 0xf8, 0x82,
     0x7a, 0x32, 0x29, 0x12, 0xa4, 0x02, 0xd8, 0x7b,
     0x26, 0x42, 0xc9, 0x9e, 0xdc, 0x1d, 0xb8, 0x3f,
@@ -619,6 +655,46 @@ static const uint8_t CORE_RULESET_HASH_GST[DNA_DOM_HASH_LEN] = {
     0x44, 0x02, 0xfd, 0x19, 0x9c, 0xca, 0xd6, 0x97,
     0xa3, 0xbf, 0xb6, 0xcc, 0x68, 0xef, 0x7f, 0x10,
     0x2d, 0x8c, 0x1f, 0xad, 0x4c, 0xb0, 0xaa, 0xc0
+};
+
+/* HF-7 P1d — the GEN_ROOTS pins (design docs/plans/2026-09-11-nodus-
+ * ledger-snapshot-design.md §10.2 item 3, §10.9; Kurultay #27 summary item
+ * 1: generation 5 MUST bump SYSTEM and CORE, so every pre-A SYSTEM / CORE
+ * leg fails preflight at A and an EVM envelope dies through its mandatory
+ * CORE EVMFUND leg). Preimages (RulesetDescriptor v2, shared/dnac/
+ * domain_wire.h) = the GEN_STORAGE ones with ONLY ruleset_version moved:
+ *   SYSTEM v11: version 2, domain 0, "SYSTEM", abi 1, ruleset_version 11,
+ *              rules {1..9}, types {4,5,6,7,9,10},
+ *              meter_policy_digest = SYS_METER_POLICY_DIGEST_GRT;
+ *   CORE v10:  version 2, domain 1, "DNA_CORE", abi 1, ruleset_version 10,
+ *              rules {1..9}, types {1,2,3,11,12,13}, policy 64 zeros.
+ * No EVM slot (the EVM domain's EVM-generation v2 entry stays its one
+ * tuple). Vote literal: dnac.h DNAC_CFG_RULESET_GEN_ROOTS_D (D5, param
+ * 22). Both are R1 / R2 of the INDEPENDENT oracle shared/dnac/tests/
+ * hf7_vote_oracle.py (hf7_vote_oracle_out.txt), never this build's
+ * encoder; selfcheck re-derives them on every start, so a build whose
+ * tables disagree with them refuses to start. */
+static const uint8_t SYS_RULESET_HASH_GRT[DNA_DOM_HASH_LEN] = {
+    /* HF7-ORACLE: GEN_ROOTS SYSTEM v11 ruleset_hash — R1 (bbd0a18d…71ae9) */
+    0xbb, 0xd0, 0xa1, 0x8d, 0x8b, 0x78, 0x1d, 0x01,
+    0x23, 0x19, 0x5e, 0x5a, 0xb4, 0x81, 0x70, 0x64,
+    0xaf, 0xb8, 0x31, 0x7f, 0x12, 0x4f, 0xdb, 0xbf,
+    0xbc, 0x71, 0x84, 0x22, 0x5b, 0xad, 0xd1, 0x6c,
+    0xd3, 0x16, 0xdc, 0x16, 0x1f, 0x00, 0xe3, 0x8d,
+    0x30, 0x73, 0x19, 0x0e, 0x71, 0xdb, 0xb0, 0xe4,
+    0x9e, 0x32, 0x54, 0x64, 0x1d, 0x4f, 0x91, 0xbc,
+    0x41, 0x6d, 0x06, 0x03, 0x76, 0x67, 0x1a, 0xe9
+};
+static const uint8_t CORE_RULESET_HASH_GRT[DNA_DOM_HASH_LEN] = {
+    /* HF7-ORACLE: GEN_ROOTS CORE v10 ruleset_hash — R2 (ff06f682…bb870) */
+    0xff, 0x06, 0xf6, 0x82, 0x7e, 0x66, 0xcc, 0xa2,
+    0x0c, 0x45, 0x1b, 0x76, 0x45, 0x3d, 0xf0, 0xa4,
+    0x6f, 0x2a, 0xdc, 0xf0, 0x3b, 0x9a, 0xa6, 0xed,
+    0x66, 0xf5, 0x6c, 0xbd, 0x58, 0xf0, 0xb2, 0xe2,
+    0xf4, 0x1e, 0x7f, 0x43, 0xcf, 0x89, 0xa7, 0x01,
+    0xdd, 0x23, 0x13, 0xd3, 0x98, 0x13, 0x6e, 0xdf,
+    0x52, 0x40, 0xd1, 0x85, 0xb5, 0x86, 0x25, 0x19,
+    0x0c, 0x39, 0x76, 0x02, 0x38, 0xbb, 0xb8, 0x70
 };
 #endif
 
@@ -1133,6 +1209,97 @@ static const nodus_domain_runtime_t BUILTIN[] = {
         .state_init  = nodus_rt_core_state_init,
         .adapter     = &NODUS_RT_CORE_ADAPTER,
         .meter_policy = NULL
+    },
+    /* ── HF-7 P1d — GEN_ROOTS (design docs/plans/2026-09-11-nodus-ledger-
+     * snapshot-design.md §10, §10.9, §10.11). Never seeded at genesis; it
+     * starts judging blocks when the engine's phase 6b'''' rewrites the
+     * SYSTEM and CORE registry records FROM GEN_STORAGE
+     * (NODUS_RT_GEN_ROOTS_BASE) at the end of block A-1 (A = the committed
+     * chain_config param-22 row's effective height). Every hook, adapter,
+     * auth implementation and allowlist is GEN_STORAGE's; the descriptors
+     * are GEN_STORAGE's with ONLY ruleset_version bumped (the oracle's
+     * preimages, SYS_RULESET_HASH_GRT above). What the generation changes
+     * lives in the readers of rt->generation (`>= NODUS_RT_GEN_ROOTS`):
+     * SYSTEM state root "NDS.SYS.v6", segment leaf v2, DomainHead v2,
+     * GLOBAL v2 with the replay leg, the v2_replay guard and the D2 expiry
+     * rule (HF-7 P1c). The version bump is itself a rule (Kurultay #27
+     * summary item 1): a pre-A SYSTEM / CORE leg names v10 / v9 and fails
+     * preflight at A. No EVM slot (selfcheck: exact-tuple uniqueness and
+     * strictly increasing versions keep EVM v2 the EVM domain's one entry). */
+    {
+        .domain_id       = DNA_DOMAIN_SYSTEM,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        /* ruleset_version 11 — GEN_STORAGE's v10 descriptor, version
+         * moved only (Kurultay #27 summary item 1) */
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
+        .ruleset_version = 11,
+        .generation      = NODUS_RT_GEN_ROOTS,
+        .ruleset_hash    = { 0 },   /* SYS_RULESET_HASH_GRT via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_SYSTEM,
+            .name = "SYSTEM",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
+            .ruleset_version = 11,
+            .rule_count = 9, .rule_ids = SYS_RULES_GST,
+            .tx_type_count = 6, .tx_types = SYS_TYPES
+        },
+        .admit = rt_admit_common,
+        .tx_cost = sys_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        /* GEN_STORAGE's {1,2,3} (selfcheck: SYSTEM {1,2,3} from
+         * generation 4 on) */
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_CC_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1),
+        .read_plan = nodus_rt_system_read_plan,
+        .exec      = nodus_rt_system_exec,
+        .state_root   = nodus_rt_system_state_root,  /* v6 by generation */
+        .payload_root = nodus_rt_system_payload_root,
+        .asset_check = NULL,
+        .claim_apply = NULL,
+        .invariant   = NULL,
+        .state_init  = NULL,
+        .adapter     = &NODUS_RT_SYSTEM_ADAPTER,
+        .meter_policy = NULL     /* &g_sys_policy_grt — bound in table_get */
+    },
+    {
+        .domain_id       = DNA_DOMAIN_CORE,
+        .runtime_kind    = DNA_RUNTIME_NATIVE_BUILTIN,
+        /* ruleset_version 10 — GEN_STORAGE's v9 descriptor, version
+         * moved only (Kurultay #27 summary item 1; an EVM envelope's
+         * mandatory CORE EVMFUND leg carries it, so a generation-4-signed
+         * EVM envelope fails preflight at A too) */
+        .runtime_abi     = NODUS_DOMAIN_RUNTIME_ABI_V1,
+        .ruleset_version = 10,
+        .generation      = NODUS_RT_GEN_ROOTS,
+        .ruleset_hash    = { 0 },   /* CORE_RULESET_HASH_GRT via table_get */
+        .descriptor = {
+            .descriptor_version = DNA_RULESET_DESC_VERSION,
+            .domain_id = DNA_DOMAIN_CORE,
+            .name = "DNA_CORE",
+            .runtime_abi = NODUS_DOMAIN_RUNTIME_ABI_V1,
+            .ruleset_version = 10,
+            .rule_count = 9, .rule_ids = CORE_RULES_GEVM,
+            .tx_type_count = 6, .tx_types = CORE_TYPES
+        },
+        .admit = rt_admit_common,
+        .tx_cost = core_cost,
+        .auth      = nodus_rt_auth_dsa87_v1,
+        .allowed_auth_kinds =
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MULTI_V1) |
+            NODUS_RT_AUTHKIND_BIT(NODUS_RT_AUTHKIND_DSA87_MSIG_V1),
+        .read_plan = nodus_rt_core_read_plan,
+        .exec      = nodus_rt_core_exec,
+        .state_root   = nodus_rt_core_state_root,
+        .payload_root = NULL,
+        .asset_check = nodus_rt_core_asset_check,
+        .claim_apply = nodus_rt_core_claim_apply,
+        .invariant   = nodus_rt_core_invariant,
+        .state_init  = nodus_rt_core_state_init,
+        .adapter     = &NODUS_RT_CORE_ADAPTER,
+        .meter_policy = NULL
     }
 #endif
 };
@@ -1155,6 +1322,8 @@ static const rt_gen_slice_t GEN_SLICES[] = {
     , { 4, 3 }                                    /* the EVM generation    */
     , { 7, 2 }                                    /* GEN_STORAGE (no EVM
                                                    * slot: EVM v1 unchanged) */
+    , { 9, 2 }                                    /* GEN_ROOTS (no EVM slot,
+                                                   * HF-7 P1d) */
 #endif
 };
 #define BUILTIN_GENS ((uint32_t)(sizeof(GEN_SLICES) / sizeof(GEN_SLICES[0])))
@@ -1169,8 +1338,13 @@ _Static_assert(NODUS_RT_GEN_STORAGE == 4u &&
                    NODUS_RT_GEN_STORAGE_BASE == NODUS_RT_GEN_EVM,
                "the GEN_STORAGE slice above is generation 4 on the EVM "
                "generation — a merge that renumbers it reorders the slices");
-_Static_assert(BUILTIN_COUNT == 9u,
-               "two 2-slot generations + the EVM one + GEN_STORAGE");
+_Static_assert(NODUS_RT_GEN_ROOTS == 5u &&
+                   NODUS_RT_GEN_ROOTS_BASE == NODUS_RT_GEN_STORAGE,
+               "the GEN_ROOTS slice above is generation 5 on GEN_STORAGE — "
+               "a merge that renumbers it reorders the slices");
+_Static_assert(BUILTIN_COUNT == 11u,
+               "two 2-slot generations + the EVM one + GEN_STORAGE + "
+               "GEN_ROOTS");
 #else
 _Static_assert(BUILTIN_COUNT == 4u, "two 2-slot generations");
 #endif
@@ -1183,6 +1357,7 @@ static const uint8_t *const BUILTIN_PINNED_HASH[] = {
     , SYS_RULESET_HASH_GEVM, CORE_RULESET_HASH_GEVM,
     EVM_RULESET_HASH_GEVM                         /* the EVM generation */
     , SYS_RULESET_HASH_GST, CORE_RULESET_HASH_GST /* GEN_STORAGE        */
+    , SYS_RULESET_HASH_GRT, CORE_RULESET_HASH_GRT /* GEN_ROOTS          */
 #endif
 };
 _Static_assert(sizeof(BUILTIN_PINNED_HASH) / sizeof(BUILTIN_PINNED_HASH[0])
@@ -1197,25 +1372,27 @@ static const uint8_t *builtin_pinned_hash(size_t i) {
 static dna_meter_policy_t *const GEN_SYS_POLICY[] = {
     &g_sys_policy, &g_sys_policy_g2
 #ifdef NODUS_EVM_ENABLED
-    , &g_sys_policy_gevm, &g_sys_policy_gst
+    , &g_sys_policy_gevm, &g_sys_policy_gst, &g_sys_policy_grt
 #endif
 };
 static int *const GEN_SYS_POLICY_READY[] = {
     &g_sys_policy_ready, &g_sys_policy_g2_ready
 #ifdef NODUS_EVM_ENABLED
-    , &g_sys_policy_gevm_ready, &g_sys_policy_gst_ready
+    , &g_sys_policy_gevm_ready, &g_sys_policy_gst_ready,
+    &g_sys_policy_grt_ready
 #endif
 };
 static const uint8_t *const GEN_SYS_POLICY_DIGEST[] = {
     SYS_METER_POLICY_DIGEST, SYS_METER_POLICY_DIGEST_G2
 #ifdef NODUS_EVM_ENABLED
-    , SYS_METER_POLICY_DIGEST_GEVM, SYS_METER_POLICY_DIGEST_GST
+    , SYS_METER_POLICY_DIGEST_GEVM, SYS_METER_POLICY_DIGEST_GST,
+    SYS_METER_POLICY_DIGEST_GRT
 #endif
 };
 static const uint32_t GEN_SYS_POLICY_MAX_OP[] = {
     SYS_POLICY_MAX_OP_G1, SYS_POLICY_MAX_OP_G2
 #ifdef NODUS_EVM_ENABLED
-    , SYS_POLICY_MAX_OP_GEVM, SYS_POLICY_MAX_OP_GST
+    , SYS_POLICY_MAX_OP_GEVM, SYS_POLICY_MAX_OP_GST, SYS_POLICY_MAX_OP_GRT
 #endif
 };
 _Static_assert(sizeof(GEN_SYS_POLICY_MAX_OP) /
@@ -1736,6 +1913,65 @@ int nodus_witness_runtime_selfcheck(void) {
                     (unsigned long long)DNAC_CFG_RULESET_GEN_ROLES_D,
                     (unsigned long long)d);
     }
+    /* HF-7 P1d: the compiled generation-5 vote literal D5 re-derives from
+     * the generation-5 pins, the 4 → 5 spec version, the compiled
+     * Foundation owner and GEN5_VOTE_CONSTS (snapshot design §10.2 item
+     * 1, §10.11 C) — dnac.h DNAC_CFG_RULESET_GEN_ROOTS_D. A test build
+     * that overrides the owner without that owner's D5 stops HERE (the
+     * D4 row's coupling). */
+    {
+        uint64_t d = 0;
+        if (nodus_runtime_gen5_vote_digest(&d) != 0)
+            SC_FAIL("selfcheck: the generation-5 vote digest D5 could not "
+                    "be derived");
+        if (d != (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D)
+            SC_FAIL("selfcheck: the compiled RULESET_GEN_ROOTS literal "
+                    "0x%016llx does not re-derive (0x%016llx) from the "
+                    "generation-5 pins, the compiled Foundation owner and "
+                    "the expiry window",
+                    (unsigned long long)DNAC_CFG_RULESET_GEN_ROOTS_D,
+                    (unsigned long long)d);
+    }
+    /* HF-7 P1d (Kurultay #27 summary item 1, the ORCHESTRATOR's addendum):
+     * every pre-A envelope is dead at A. An envelope carries one leg per
+     * domain and every leg names its domain's ruleset_version, which
+     * preflight compares with the registry's (shared/dnac/env_preflight.h
+     * step 5, ERR_CTX_VERSION). So every domain the table knows must, at
+     * generation 5, either carry an entry whose version exceeds its
+     * generation-4 one (SYSTEM, CORE — strict increase is already checked
+     * above; here PRESENCE in the generation-5 slice is required too), or
+     * be a domain whose every envelope also carries a CORE leg: the EVM
+     * domain, by the pair rule (nodus_rt_evm_pair_check: exactly [CORE
+     * EVMFUND] + [EVM op]; enforced from both sides, nodus_witness_rt_
+     * native.c rtn_evmfund_shape and nodus_witness_rt_evm.c). Any other
+     * domain without a bumped generation-5 entry refuses the start. */
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t dom = t[i].domain_id;
+        const nodus_domain_runtime_t *g5 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_ROOTS, dom);
+        const nodus_domain_runtime_t *g4 =
+            nodus_runtime_for_generation(NODUS_RT_GEN_ROOTS_BASE, dom);
+        if (g5 && g4 && g5->ruleset_version > g4->ruleset_version)
+            continue;                    /* bumped at generation 5        */
+        if (g5 && !g4)
+            continue;                    /* introduced by generation 5    */
+        if (!g5 && dom == DNA_DOMAIN_EVM) {
+            const nodus_domain_runtime_t *c5 =
+                nodus_runtime_for_generation(NODUS_RT_GEN_ROOTS,
+                                             DNA_DOMAIN_CORE);
+            const nodus_domain_runtime_t *c4 =
+                nodus_runtime_for_generation(NODUS_RT_GEN_ROOTS_BASE,
+                                             DNA_DOMAIN_CORE);
+            if (c5 && c4 && c5->ruleset_version > c4->ruleset_version)
+                continue;                /* covered by the pair rule      */
+        }
+        SC_FAIL("selfcheck: domain %u has no generation-%u entry with a "
+                "bumped ruleset_version and no pair rule that ties its "
+                "envelopes to one — its generation-%u envelopes would stay "
+                "valid at the generation-5 edge", (unsigned)dom,
+                (unsigned)NODUS_RT_GEN_ROOTS,
+                (unsigned)NODUS_RT_GEN_ROOTS_BASE);
+    }
 #endif
     return 0;
 }
@@ -1864,6 +2100,38 @@ int nodus_runtime_gen4_vote_digest(uint64_t *d_out) {
                                    foundation, GEN4_VOTE_CONSTS,
                                    (uint32_t)(sizeof(GEN4_VOTE_CONSTS) /
                                               sizeof(GEN4_VOTE_CONSTS[0])),
+                                   d_out);
+}
+
+/* HF-7 P1d — the compiled constants the generation-5 vote binds, in THIS
+ * order — shared/dnac/tests/hf7_vote_oracle.py lists the same ONE: the D2
+ * expiry window (khan decision C, docs/plans/decisions/2026-10-20-
+ * kurultay-27-hf7-p1-summary.md: "the vote carries 720"; the node-local
+ * mempool window 100 is NOT bound). Two binaries that judge the whole-
+ * block expiry rule with a different window cannot share a vote value. */
+static const uint64_t GEN5_VOTE_CONSTS[] = {
+    NODUS_RT_GEN5_VOTE_EXPIRY_WINDOW    /* 0 D2 expiry window (720 blocks) */
+};
+_Static_assert(sizeof(GEN5_VOTE_CONSTS) / sizeof(GEN5_VOTE_CONSTS[0]) == 1,
+               "snapshot design §10.11 C: D5 binds exactly one constant");
+
+int nodus_runtime_gen5_vote_digest(uint64_t *d_out) {
+    if (!d_out) return -1;
+    const nodus_domain_runtime_t *s =
+        nodus_runtime_for_generation(NODUS_RT_GEN_ROOTS, DNA_DOMAIN_SYSTEM);
+    const nodus_domain_runtime_t *c =
+        nodus_runtime_for_generation(NODUS_RT_GEN_ROOTS, DNA_DOMAIN_CORE);
+    if (!s || !c) return -1;
+    static const uint8_t foundation[] = DNAC_HF6_FOUNDATION_OWNER;
+    _Static_assert(sizeof(foundation) == DNA_ROLEGEN_OWNER_LEN,
+                   "DNAC_HF6_FOUNDATION_OWNER must be exactly 64 bytes");
+    return dna_rolegen_vote_digest(NODUS_RT_GEN_ROOTS,
+                                   NODUS_RT_GEN_ROOTS_BASE,
+                                   s->ruleset_hash, c->ruleset_hash,
+                                   DNAC_HF7_SWITCH_SPEC_VERSION,
+                                   foundation, GEN5_VOTE_CONSTS,
+                                   (uint32_t)(sizeof(GEN5_VOTE_CONSTS) /
+                                              sizeof(GEN5_VOTE_CONSTS[0])),
                                    d_out);
 }
 #endif

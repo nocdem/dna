@@ -192,8 +192,26 @@ The chain is implemented in three layers of the monorepo:
   applies the three ranges (id 19's upper end checked on the value
   itself); "generation 4 judges the vote" is the witness's. With no
   19 / 20 / 21 row every reader answers the compiled default, so a chain
-  without the votes behaves exactly as before.
-  The read list is therefore ids 4 through 15 and 17 through 21), GENESIS
+  without the votes behaves exactly as before. **HF-7 P1d (design
+  `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §10.2 item 1,
+  §10.11; decision `docs/plans/decisions/2026-10-20-kurultay-27-hf7-p1-summary.md`
+  khan B / C; the name is ours):** id 22 `RULESET_GEN_ROOTS`
+  (`DNAC_CFG_RULESET_GEN_ROOTS`) — the rule-set generation-5 vote (the
+  roots generation: SYSTEM root v6, DomainHead v2, GLOBAL v2 with the
+  replay leg, the replay relation and the whole-block expiry window):
+  EXACTLY `DNAC_CFG_RULESET_GEN_ROOTS_D` (D5 = 0x6f4c60640dd57094 =
+  8019891019285098644, the independent oracle
+  `shared/dnac/tests/hf7_vote_oracle.py`, owner K8 — generation 5 is
+  SYSTEM v11 / CORE v10, generation 4's descriptors with only the version
+  moved; D5 binds the 720-block expiry window only, never the node-local
+  mempool window 100), ERGONOMIC grace (720 blocks); the witness's
+  stateful rules (single use, HF-2 active, judged under generation
+  exactly 4, neither A−1 nor A an epoch boundary) need chain state the
+  `verify.c` mirror does not have — it applies exactly-D5.
+  `DNAC_CFG_PARAM_MAX_ID` 21 → 22. A build that overrides
+  `DNAC_HF6_FOUNDATION_OWNER` must pass that owner's D5 as well
+  (`-DDNAC_CFG_RULESET_GEN_ROOTS_D`, test builds only).
+  The read list is therefore ids 4 through 15 and 17 through 22), GENESIS
 - **Explicit committed fee** on the wire (v2 header) with a min-fee
   gate. **Since tokenomics-v3 P2 every fee goes to the chain's REWARD
   POOL** (`supply_tracking.reward_pool`) — it is neither burned nor paid

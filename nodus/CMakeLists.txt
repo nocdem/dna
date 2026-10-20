@@ -2536,6 +2536,24 @@ if(NODUS_EVM_ENABLED)
 register_witness_test(test_hf7_wiring)
 endif()
 
+# HF-7 P1d — the generation-5 activation (snapshot design docs/plans/
+# 2026-09-11-nodus-ledger-snapshot-design.md §10.2 items 1-3, §10.3, §10.9,
+# §10.11; Kurultay #27 summary items 1, 2, 7). test_hf7_activation (pure):
+# the compiled generation 5 against the independent oracle's R1 / R2 / C1
+# (shared/dnac/tests/hf7_vote_oracle_out.txt), the vote literal D5 and the
+# quantities its selfcheck row compares, the param-22 scalar / grace /
+# stateful rules, a generation-4-signed EVM envelope refused at A through
+# its CORE leg's version. test_hf7_edge (engine): the edge at the end of
+# block A-1 on a seeded S19 chain (registry 4 -> 5, every head seeded,
+# SYSTEM + CORE touched, SYSTEM v6, GLOBAL v2 over the empty replay root),
+# block A (D2 FAULT, a v2_replay row), block A+1 (REPLAY), and the two edge
+# FAULTs. Generations 3-5 are compiled only with the EVM runtime, so both
+# are built only with NODUS_EVM_ENABLED. No environment.
+if(NODUS_EVM_ENABLED)
+register_witness_test(test_hf7_activation)
+register_witness_test(test_hf7_edge)
+endif()
+
 # HF-6 sub-slice 3c — owner authority and the generation-4 call layouts of
 # the SYSTEM validator-record ops 2..5, STAKE refused under generation 4
 # (design 2026-10-03-hf5-validator-owner-stake rev 6 §1.3/§2; plan

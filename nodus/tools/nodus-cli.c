@@ -1604,6 +1604,12 @@ static int cc_param_name_to_id(const char *name, uint8_t *out_id) {
         { "power_cap_bps",        DNAC_CFG_POWER_CAP_BPS },
         { "STORAGE_BOND",         DNAC_CFG_STORAGE_BOND },
         { "storage_bond",         DNAC_CFG_STORAGE_BOND },
+        /* HF-7 (design docs/plans/2026-09-11-nodus-ledger-snapshot-
+         * design.md §10.2 item 1, §10.11) — param id 22, the generation-5
+         * vote, value exactly DNAC_CFG_RULESET_GEN_ROOTS_D (D5); votable
+         * once, while generation 4 judges the vote */
+        { "RULESET_GEN_ROOTS",    DNAC_CFG_RULESET_GEN_ROOTS },
+        { "ruleset_gen_roots",    DNAC_CFG_RULESET_GEN_ROOTS },
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++) {
         if (strcmp(name, map[i].n) == 0) { *out_id = map[i].id; return 0; }
@@ -1865,6 +1871,12 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             "  STORAGE_BOND           [%llu, %llu]   "
             "(HF-6: exact raw bond of a storage registration; generation "
             "4 must be in force)\n"
+            "  RULESET_GEN_ROOTS      exactly %llu   "
+            "(HF-7: rule-set generation 5 (the roots generation: replay "
+            "relation, whole-block expiry window) from --effective on; "
+            "once only; generation 4 must be in force; HF-2 must be "
+            "active; neither --effective nor --effective - 1 an epoch "
+            "boundary)\n"
             "BLOCK_INTERVAL_SEC is not read by the running consensus "
             "and is refused; RULESET_GEN_STORAGE (id 16) is retired.\n",
             (unsigned long long)DNAC_CFG_MIN_TARGET_ACTIVE,
@@ -1887,7 +1899,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
             (unsigned)DNAC_CFG_MIN_POWER_CAP_BPS,
             (unsigned)DNAC_CFG_MAX_POWER_CAP_BPS,
             (unsigned long long)DNAC_HF6_STORAGE_BOND_MIN,
-            (unsigned long long)DNAC_HF6_STORAGE_BOND_MAX);
+            (unsigned long long)DNAC_HF6_STORAGE_BOND_MAX,
+            (unsigned long long)DNAC_CFG_RULESET_GEN_ROOTS_D);
         return 1;
     }
     uint8_t param_id = 0;
@@ -1899,7 +1912,7 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
                 "NAME_PRICE_5P | NAME_PRICE_6P | EVM_ACTIVE | "
                 "EVM_BLOCK_GAS_LIMIT | DELEGATE_NAME_REQUIRED | "
                 "RULESET_GEN_ROLES | STAKE_MIN | POWER_CAP_BPS | "
-                "STORAGE_BOND "
+                "STORAGE_BOND | RULESET_GEN_ROOTS "
                 "(the parameters the running consensus reads)\n",
                 param_name);
         return 1;
@@ -11468,7 +11481,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "                        NAME_PRICE_5P | NAME_PRICE_6P |\n");
     fprintf(stderr, "                        EVM_ACTIVE | EVM_BLOCK_GAS_LIMIT |\n");
     fprintf(stderr, "                        DELEGATE_NAME_REQUIRED | RULESET_GEN_ROLES |\n");
-    fprintf(stderr, "                        STAKE_MIN | POWER_CAP_BPS | STORAGE_BOND\n");
+    fprintf(stderr, "                        STAKE_MIN | POWER_CAP_BPS | STORAGE_BOND |\n");
+    fprintf(stderr, "                        RULESET_GEN_ROOTS\n");
     fprintf(stderr, "                        (the parameters the running consensus reads)\n");
     fprintf(stderr, "                  run without --value for per-param ranges\n");
     fprintf(stderr, "  storage consent (--owner <hex128> | --msig <descriptor>) --expiry <h> [--out <f>]\n");

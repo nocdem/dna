@@ -389,7 +389,8 @@ int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx) {
  *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
  *   - dnac_cfg_param_read_by_consensus(param_id) (0.20.3) — the running
  *     consensus reads the parameter; today {4, 5, 6, 7, 8, 9, 10, 11,
- *     12, 13, 14, 15, 17, 18, 19, 20, 21} (16 RETIRED by HF-6 slice 8c)
+ *     12, 13, 14, 15, 17, 18, 19, 20, 21, 22} (16 RETIRED by HF-6 slice
+ *     8c)
  *   - chain_config_fields.new_value in per-param range (§5.2):
  *       MAX_TXS_PER_BLOCK      : RETIRED (R3 W4-C delta 2, operator
  *                                "kaldır" 2026-09-18;
@@ -453,6 +454,10 @@ int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx) {
  *                                (HF-6, param 21) — for 19-21 the
  *                                witness's "generation 4 judges the vote"
  *                                rule is not mirrored
+ *       RULESET_GEN_ROOTS      : exactly DNAC_CFG_RULESET_GEN_ROOTS_D (D5;
+ *                                HF-7, param 22; the RULESET_GEN_ROLES
+ *                                shape — the witness's stateful rules are
+ *                                not mirrored)
  *   - signed_at_block > 0             (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
@@ -616,6 +621,25 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               (unsigned long long)cc->new_value,
                               (unsigned long long)
                                   DNAC_CFG_RULESET_GEN_ROLES_D);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_RULESET_GEN_ROOTS:
+            /* HF-7 (design 2026-09-11-nodus-ledger-snapshot-design.md
+             * §10.2 item 1, §10.11), mirroring nodus_witness_chain_
+             * config.c's scalar_rules: EXACTLY the compiled generation-5
+             * vote literal D5 (the same dnac.h literal the witness
+             * compares against). The witness's stateful rules — single
+             * use, HF-2 active, judged under generation 4, A-1 and A not
+             * epoch boundaries — need chain state this mirror does not
+             * have (the param-18 divergence). */
+            if (cc->new_value != (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: RULESET_GEN_ROOTS=0x%016llx, "
+                              "only D5=0x%016llx is a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)
+                                  DNAC_CFG_RULESET_GEN_ROOTS_D);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

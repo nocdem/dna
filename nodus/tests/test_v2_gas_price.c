@@ -466,9 +466,13 @@ static int t_scalar_rule_matrix(void)
               DNAC_CFG_STAKE_MIN + 1 == DNAC_CFG_POWER_CAP_BPS &&
               DNAC_CFG_POWER_CAP_BPS + 1 == DNAC_CFG_STORAGE_BOND,
           "id 18 is followed by HF-6's ids 19-21");
-    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_STORAGE_BOND &&
-              DNAC_CFG_STORAGE_BOND == 21,
-          "21 is the last id");
+    CHECK(DNAC_CFG_STORAGE_BOND + 1 == DNAC_CFG_RULESET_GEN_ROOTS &&
+              DNAC_CFG_RULESET_GEN_ROOTS == 22 &&
+              dnac_cfg_param_read_by_consensus(
+                  (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS),
+          "id 21 is followed by HF-7's generation-5 vote id 22");
+    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_RULESET_GEN_ROOTS,
+          "22 is the last id");
     return 0;
 }
 

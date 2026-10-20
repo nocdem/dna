@@ -167,9 +167,11 @@ int main(void) {
     CHECK(NODUS_RT_GEN_STORAGE == NODUS_RT_GEN_EVM + 1u);
     CHECK(NODUS_RT_GEN_STORAGE_BASE == NODUS_RT_GEN_EVM);
 #ifdef NODUS_EVM_ENABLED
-    CHECK(nodus_runtime_generation_count() == 4);
-    CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_STORAGE);
-    const size_t n_all_want = 9;
+    /* HF-7 P1d: a fifth generation, GEN_ROOTS, on GEN_STORAGE — two slots
+     * (SYSTEM, CORE; no EVM slot) at 9-10, pinned by test_hf7_activation.c */
+    CHECK(nodus_runtime_generation_count() == 5);
+    CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_ROOTS);
+    const size_t n_all_want = 11;
 #else
     CHECK(nodus_runtime_generation_count() == 2);
     CHECK(NODUS_RT_GEN_MAX == NODUS_RT_GEN_2);
