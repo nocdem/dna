@@ -3129,6 +3129,13 @@ add_executable(test_chain_config_witness tests/test_chain_config_witness.c)
 target_link_libraries(test_chain_config_witness nodus dsa nodus)
 add_test(NAME test_chain_config_witness COMMAND test_chain_config_witness)
 
+# "Update required" (U4) — unknown chain_config param: predicate, startup
+# scan of chain_config_history, and the once-per-id warning at the scalar
+# refusal point (verdict unchanged)
+add_executable(test_cc_unknown_param tests/test_cc_unknown_param.c)
+target_link_libraries(test_cc_unknown_param nodus dsa nodus)
+add_test(NAME test_cc_unknown_param COMMAND test_cc_unknown_param)
+
 # Hard-Fork v1 Stage C — vote primitives (digest + sign + verify + derive)
 add_executable(test_chain_config_votes tests/test_chain_config_votes.c)
 target_link_libraries(test_chain_config_votes nodus dsa nodus)

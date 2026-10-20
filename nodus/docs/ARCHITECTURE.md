@@ -3679,6 +3679,28 @@ package refused to make. `test_cc_appr.c`'s `rate_limited_second_request` case p
 mechanism directly. It does NOT bite the all-accept path (round 2 runs only when some seat
 refused); which way to resolve it is the operator's product rule.
 
+**"Update required" — the node operator's line (design `2026-10-20-update-required-warning-
+design.md` §1 C, 2026-10-20).** A chain_config param id beyond this build's id space
+(`> CC_PARAM_MAX_ID`, outside the genesis economic band 200-202 —
+`nodus_chain_config_param_unknown`) is a newer release's vote. `nodus_chain_config_scalar_rules`
+refuses it exactly as before (`-1`), and at that refusal now logs once per id per process
+(`CHAIN_CONFIG`, ERROR): `UPDATE REQUIRED: a chain_config proposal names param <id>, which this
+build (nodus <ver>) does not know — the network has a newer release; install it
+(install-node.sh update). Until then this node cannot follow the chain past this block.` All
+three paths that judge a proposal pass through that refusal: the 0x71 approval responder above
+(after the bonded-requester and committee-seat gates), the CheckTx dry run, and the block apply's
+SYSTEM CHAIN_CONFIG exec (after the quorum checks) — so the earliest print is the approval request
+a seat on a newer binary sends before the vote. In the vote's block the item fails on this node
+(`NODUS_V2_TX_ERR_EXEC`, no history row) while the fleet commits it, and the next block fails
+`validateBlock`'s AppHash check (`nodus_witness_cmt_host.c`, "wrong Block.Header.AppHash.").
+At witness start `nodus_chain_config_scan_unknown_params` (`nodus_witness_init`, after the chain
+database opens) reads `SELECT DISTINCT param_id FROM chain_config_history ORDER BY param_id` and
+prints the same line for an unknown committed row (a downgraded binary, a copied data
+directory); it never changes or refuses the start. The once-per-id table is a static atomic
+array — no clock. Nothing here feeds a verdict, a root, a vote or block content. A build that
+knows the id but differs in its vote literal (the D2 / D4 / D5 case) does not print it.
+`test_cc_unknown_param`.
+
 **Tests:** `test_tier3` (+3 sections: both method tables both directions with 14/15 refused,
 verb 40/41 round trips incl. the maximal pre-auth envelope and both `ok` shapes, the
 `ok`-conditional strict key set incl. a duplicate `e` / `ok` / `i` refused — ORC-12, RED-first

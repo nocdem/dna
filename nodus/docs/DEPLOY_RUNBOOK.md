@@ -764,7 +764,12 @@ Read 2026-10-02: the HF-4 row on 7/7 (identical; proposed from EU-5, 7/7 approva
 seven nodes on 0.23.10 with identical D2/commit/consensus-constants startup lines, the web
 wallet, Connect, explorer and Scan released before the vote). The HF-3 row on 7/7 (identical; proposed from EU-5, 7/7 approvals); the
 HF-1 and HF-2 rows on EU-5 (the HF-2 row was read on 7/7 when it was voted, 2026-09-30). A node that was not on the introducing binary when a vote committed
-diverges at that block — recovery at the end of this section.
+diverges at that block — recovery at the end of this section. A binary that carries the
+"update required" log line (added 2026-10-20 on top of nodus 0.26.17's source; the first release
+number that ships it is set at release) says so in its own log when the vote
+names a param id it does not know: `UPDATE REQUIRED: a chain_config proposal names param <id> …`
+(where and when it is printed: the recovery list at the end of this section). Binaries before
+it print nothing of the kind.
 
 The HF-6 row was voted in 175307 and is in force from 176100 (design
 `docs/plans/2026-10-03-hf5-validator-owner-stake-design.md` rev 6 §8, §8.1; decisions
@@ -1097,6 +1102,21 @@ the nodus component split (item 13).
    `env_evm_block_gas_limit`).
 
 **A node that missed the vote (still on the old binary when R committed):**
+- **How it shows in the log.** When the vote names a param id beyond the old build's id space
+  (a param a newer release added), the old node logs, once per id per process, at ERROR, tag
+  `CHAIN_CONFIG`:
+  `UPDATE REQUIRED: a chain_config proposal names param <id>, which this build (nodus <ver>) does not know — the network has a newer release; install it (install-node.sh update). Until then this node cannot follow the chain past this block.`
+  It is printed where the old build refuses the id (`nodus_chain_config_scalar_rules`), so it can
+  appear as early as the 0x71 approval request a committee seat sends before the vote, then at
+  CheckTx and in the vote's block. What follows in that block: the item fails on this node
+  (`NODUS_V2_TX_ERR_EXEC`, no history row), the fleet commits it, and the next block is refused
+  with `wrong Block.Header.AppHash.` — a nil prevote, then a stop at the precommit step once +2/3
+  prevote it (`+2/3 prevoted for an invalid block`), or a peer ban in block sync. The same line
+  is printed at witness start (`nodus_chain_config_scan_unknown_params`) when the chain database
+  already HOLDS such a row (a downgraded binary, a copied data directory). It is NOT printed
+  after a restart of the node that refused the row (its database has no such row and the vote's
+  block is not re-executed), nor for a build that knows the id but carries a different vote
+  literal (the HF-4 D2 case below) — those show only the AppHash line.
 - Upgrading its binary and restarting does **NOT** recover it: the ABCI handshake at
   app == store == state height re-executes nothing, so the diverged state carries over
   (measured: stuck at R while the fleet advanced).

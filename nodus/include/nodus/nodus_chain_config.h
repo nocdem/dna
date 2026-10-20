@@ -259,6 +259,37 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
                                     uint64_t proposal_nonce);
 
 /**
+ * "Update required" (design docs/plans/2026-10-20-update-required-warning-
+ * design.md §1 C) — is `param_id` an id THIS BUILD does not know?
+ *
+ * Known = 1..CC_PARAM_MAX_ID (== DNAC_CFG_PARAM_MAX_ID: every id there is
+ * either read by the running consensus, dnac_cfg_param_read_by_consensus,
+ * or one this build names and refuses — 1, 2, 3, 16) plus the genesis
+ * economic band NODUS_CC_ECON_PARAM_MIN..MAX. 0 is not unknown (no build
+ * allocates it). Everything else — an id a newer release added — is
+ * unknown. Pure; node-local; no verdict reads it.
+ */
+bool nodus_chain_config_param_unknown(int64_t param_id);
+
+/**
+ * Startup scan of `chain_config_history` for committed rows whose param id
+ * this build does not know (nodus_chain_config_param_unknown). Each
+ * distinct unknown id gets the "UPDATE REQUIRED" QGP_LOG_ERROR line once
+ * per process (the same once-per-id limit as the refusal point in
+ * nodus_chain_config_scalar_rules). Read-only SQL; never refuses a start.
+ * Catches a database that holds a newer release's row — a downgraded
+ * binary, a copied data directory, a database delivered by a peer. A node
+ * that REFUSED the row in its own block apply holds no such row (the item
+ * failed) and is warned at the refusal point instead.
+ *
+ * @param w  Witness context (w->db must be open).
+ * @return number of distinct unknown param ids (0 = none, or no
+ *         chain_config_history table); -1 if the table could not be read
+ *         (NULL args, no open DB, SQLite failure).
+ */
+int nodus_chain_config_scan_unknown_params(nodus_witness_t *w);
+
+/**
  * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §1.2)
  * — the STATEFUL half of the CHAIN_CONFIG rules, over facts the caller
  * derives from committed state (the pure half is

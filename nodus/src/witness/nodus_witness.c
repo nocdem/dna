@@ -42,6 +42,7 @@
 #include "witness/nodus_witness_v2_produce.h"   /* classify_entry / tip  */
 #include "witness/nodus_witness_domreg.h"       /* contextual rulesets   */
 #include "witness/nodus_witness_runtime.h"      /* start-time selfcheck  */
+#include "nodus/nodus_chain_config.h"           /* unknown-param scan    */
 #ifdef NODUS_EVM_ENABLED
 #include "evm/evm_precompile.h"                 /* Nodus EVM F2: start KAT */
 #endif
@@ -2935,6 +2936,16 @@ int nodus_witness_init(nodus_witness_t *witness,
                     : "permanent fault",
                 witness->data_path);
         return -1;
+    }
+
+    /* "Update required" (design docs/plans/2026-10-20-update-required-
+     * warning-design.md §1 C): a chain database that holds a committed
+     * chain_config row whose param id this build does not know (a newer
+     * release's vote — a downgraded binary, a copied data directory)
+     * prints the UPDATE REQUIRED line once. Read-only; the result never
+     * refuses or changes the start. */
+    if (witness->db) {
+        (void)nodus_chain_config_scan_unknown_params(witness);
     }
 
     /* O15E Faz D — arm the pinned-genesis joiner if this fresh node has

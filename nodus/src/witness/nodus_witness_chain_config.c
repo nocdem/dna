@@ -49,6 +49,7 @@
 
 #include <openssl/evp.h>
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -656,6 +657,96 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]) {
     return result;
 }
 
+/* ── "Update required" (design docs/plans/2026-10-20-update-required-
+ * warning-design.md §1 C) ──────────────────────────────────────────────
+ * A node on an old binary meets a chain_config param id its build does not
+ * know — a newer release's hard-fork vote. The scalar rules below refuse it
+ * (unchanged), the node's block apply fails that item while the network
+ * commits it, and the node stops at the next block ("wrong
+ * Block.Header.AppHash.", nodus_witness_cmt_host.c). These helpers only
+ * tell the operator why, in plain words. Node-local: nothing here feeds a
+ * verdict, a root, a vote or block content. */
+bool nodus_chain_config_param_unknown(int64_t param_id) {
+    if (param_id >= 1 && param_id <= CC_PARAM_MAX_ID) return false;
+    if (param_id >= (int64_t)NODUS_CC_ECON_PARAM_MIN &&
+        param_id <= (int64_t)NODUS_CC_ECON_PARAM_MAX) return false;
+    if (param_id == 0) return false;
+    return true;
+}
+
+/* Once per param id per process: a CheckTx recheck, every 0x71 request and
+ * a block replay all reach the refusal point again, and the line must not
+ * flood the log. Indexed by the uint8 id; atomic so a concurrent caller can
+ * at worst lose the race, never print twice. No clock. An id outside the
+ * uint8 range (a corrupt row, scan only) is not rate-limited — the scan
+ * runs once per start and reads each distinct id once. */
+static atomic_uchar cc_unknown_param_warned[256];
+
+static void cc_warn_unknown_param(int64_t param_id) {
+    if (param_id >= 0 && param_id <= 255 &&
+        atomic_exchange(&cc_unknown_param_warned[param_id], 1) != 0)
+        return;
+    QGP_LOG_ERROR(LOG_TAG, "UPDATE REQUIRED: a chain_config proposal names "
+                  "param %lld, which this build (nodus %s) does not know — "
+                  "the network has a newer release; install it "
+                  "(install-node.sh update). Until then this node cannot "
+                  "follow the chain past this block.",
+                  (long long)param_id, NODUS_VERSION_STRING);
+}
+
+int nodus_chain_config_scan_unknown_params(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+
+    /* A database without the table (a pre-migration fixture) has nothing
+     * to report — the nodus_chain_config_get_u64 "absent" treatment. */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'chain_config_history'",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_WARN(LOG_TAG, "unknown-param scan: prepare failed: %s",
+                     sqlite3_errmsg(w->db));
+        return -1;
+    }
+    int has_table = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        has_table = sqlite3_column_int(st, 0) > 0;
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "unknown-param scan: step failed: %s",
+                     sqlite3_errmsg(w->db));
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    if (!has_table) return 0;
+
+    st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT DISTINCT param_id FROM chain_config_history "
+            "ORDER BY param_id ASC",
+            -1, &st, NULL) != SQLITE_OK) {
+        QGP_LOG_WARN(LOG_TAG, "unknown-param scan: prepare failed: %s",
+                     sqlite3_errmsg(w->db));
+        return -1;
+    }
+    int n_unknown = 0;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        int64_t id = (int64_t)sqlite3_column_int64(st, 0);
+        if (!nodus_chain_config_param_unknown(id)) continue;
+        n_unknown++;
+        cc_warn_unknown_param(id);
+    }
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_WARN(LOG_TAG, "unknown-param scan: step failed: %s",
+                     sqlite3_errmsg(w->db));
+        sqlite3_finalize(st);
+        return -1;
+    }
+    sqlite3_finalize(st);
+    return n_unknown;
+}
+
 /* The SCALAR half of the CHAIN_CONFIG local rules — param allowlist +
  * per-param value bounds + the signing/validity window shape. Exported
  * (nodus_chain_config.h) so the Ledger V2 native SYSTEM runtime
@@ -666,7 +757,16 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
                                     uint64_t valid_before_block,
                                     uint64_t effective_block_height,
                                     uint64_t proposal_nonce) {
-    if (param_id < 1 || param_id > CC_PARAM_MAX_ID) return -1;
+    if (param_id < 1 || param_id > CC_PARAM_MAX_ID) {
+        /* The one place an id this build does not know is refused: the
+         * 0x71 approval answer (a committee seat on a newer binary asks
+         * this node to sign the vote), the CheckTx dry run and the block
+         * apply's SYSTEM CHAIN_CONFIG exec all judge through here. The
+         * verdict is the -1 below, as before; the call only logs. */
+        if (nodus_chain_config_param_unknown(param_id))
+            cc_warn_unknown_param(param_id);
+        return -1;
+    }
     /* 0.20.3 (decision file 2026-09-23-height-activated-upgrades-before-
      * testnet.md item 1): a proposal for a parameter the RUNNING consensus
      * does not read is refused. The list is dnac.h's
