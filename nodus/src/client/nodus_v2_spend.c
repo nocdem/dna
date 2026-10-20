@@ -393,6 +393,17 @@ static const uint32_t PG4_OPS[NODUS_PIN_G4_SYS_METER_OP_COUNT] =
 static const uint64_t PG4_WTS[NODUS_PIN_G4_SYS_METER_OP_COUNT] =
     NODUS_PIN_G4_SYS_METER_OP_WEIGHTS_INIT;
 static const uint8_t PG4_DIG[64] = NODUS_PIN_G4_SYS_METER_POLICY_DIGEST_INIT;
+/* HF-7 — GEN_ROOTS (SYSTEM v11 / CORE v10, the generation-4 descriptors
+ * with only the ruleset version bumped), the same reason. The generator's
+ * output equals the independent oracle's R1 / R2 / C1
+ * (shared/dnac/tests/hf7_vote_oracle.py). */
+static const uint8_t PG5_CORE[64] = NODUS_PIN_G5_CORE_RULESET_HASH_INIT;
+static const uint8_t PG5_SYS[64]  = NODUS_PIN_G5_SYS_RULESET_HASH_INIT;
+static const uint32_t PG5_OPS[NODUS_PIN_G5_SYS_METER_OP_COUNT] =
+    NODUS_PIN_G5_SYS_METER_OPS_INIT;
+static const uint64_t PG5_WTS[NODUS_PIN_G5_SYS_METER_OP_COUNT] =
+    NODUS_PIN_G5_SYS_METER_OP_WEIGHTS_INIT;
+static const uint8_t PG5_DIG[64] = NODUS_PIN_G5_SYS_METER_POLICY_DIGEST_INIT;
 
 static const pins_gen_t PINS_GEN[] = {
     { NODUS_PIN_CORE_RULESET_VERSION, PG1_CORE,
@@ -431,6 +442,15 @@ static const pins_gen_t PINS_GEN[] = {
         NODUS_PIN_G4_SYS_METER_W_WRITE },
       NODUS_PIN_G4_SYS_METER_MAX_BLOCK_ENV_BYTES,
       NODUS_PIN_G4_SYS_METER_OP_COUNT, PG4_OPS, PG4_WTS, PG4_DIG },
+    { NODUS_PIN_G5_CORE_RULESET_VERSION, PG5_CORE,
+      NODUS_PIN_G5_SYS_RULESET_VERSION, PG5_SYS,
+      NODUS_PIN_G5_SYS_METER_POLICY_VERSION,
+      { NODUS_PIN_G5_SYS_METER_W_BASE, NODUS_PIN_G5_SYS_METER_W_CALLBYTE,
+        NODUS_PIN_G5_SYS_METER_W_AUTHBYTE, NODUS_PIN_G5_SYS_METER_W_EFFECT,
+        NODUS_PIN_G5_SYS_METER_W_EFFECTBYTE, NODUS_PIN_G5_SYS_METER_W_READ,
+        NODUS_PIN_G5_SYS_METER_W_WRITE },
+      NODUS_PIN_G5_SYS_METER_MAX_BLOCK_ENV_BYTES,
+      NODUS_PIN_G5_SYS_METER_OP_COUNT, PG5_OPS, PG5_WTS, PG5_DIG },
 };
 _Static_assert(sizeof(PINS_GEN) / sizeof(PINS_GEN[0]) == NODUS_PIN_GEN_COUNT,
                "one pins entry per generation in nodus_ruleset_pins.h");
