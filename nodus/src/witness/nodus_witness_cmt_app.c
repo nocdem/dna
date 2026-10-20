@@ -962,10 +962,25 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
      * run (env_preflight.c step 3), so every admitted envelope leaves
      * the mempool at the first recheck after its expiry, at most that
      * many blocks from admission. A mempool rule only: block validity
-     * (expiry 0 = "never") is unchanged. */
+     * (expiry 0 = "never") is unchanged.
+     *
+     * HF-7 P1c-2 (design docs/plans/2026-09-11-nodus-ledger-snapshot-
+     * design.md §10.3 "CheckTx expiry", §10.11 C; Kurultay #27 summary
+     * item 4): once the generation that judges the NEXT block (tip + 1 —
+     * the committed registry's, nodus_witness_v2_key_generation) is the
+     * roots generation, the window also names its lower bound:
+     * tip + 1 <= e <= tip + NODUS_CMT_APP_MAX_EXPIRY_AHEAD. Still
+     * NODE-LOCAL MEMPOOL POLICY, not consensus (the 100 is not in the
+     * HF-7 vote): the block rule is D2 (nodus_witness_v2_expiry_in_window,
+     * the seam and FinalizeBlock), and this window lies strictly inside
+     * D2 at tip + 1, so an honest admission is never dead on arrival.
+     * tip + 1 cannot wrap: tip is a committed v2_blocks height read as a
+     * non-negative int64. */
     {
         dna_env_view_t view;
         uint64_t       tip = 0;
+        uint32_t       next_gen = 0;
+        int            lower;
 
         memset(&view, 0, sizeof(view));
         if (dna_env_decode(tx, tx_len, &view) != 0) {
@@ -978,6 +993,24 @@ static int app_check_envelope(nodus_cmt_app_ledger_t *ctx,
             QGP_LOG_ERROR(LOG_TAG, "%s", "check_tx: the committed tip is "
                           "unreadable on this node");
             return CMT_FAULT;
+        }
+        if (nodus_witness_v2_key_generation(ctx->w, &next_gen) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s", "check_tx: the rule-set generation "
+                          "judging the next block is unreadable on this "
+                          "node");
+            return CMT_FAULT;
+        }
+        lower = next_gen >= NODUS_RT_GEN_ROOTS;
+        if (lower && view.expiry_height != 0 &&
+            view.expiry_height < tip + 1) {
+            QGP_LOG_DEBUG(LOG_TAG, "check_tx refused: expiry_height %" PRIu64
+                          " is below the next block %" PRIu64,
+                          view.expiry_height, tip + 1);
+            app_refuse_log(res, "expiry_height %" PRIu64 " is below the "
+                           "next block %" PRIu64, view.expiry_height,
+                           tip + 1);
+            *refused = true;
+            return CMT_OK;
         }
         if (view.expiry_height == 0 ||
             view.expiry_height >

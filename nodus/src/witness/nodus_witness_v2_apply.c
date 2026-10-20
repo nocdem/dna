@@ -905,6 +905,9 @@ static int block_ctx_from_doms(nodus_witness_t *w, uint64_t height,
             memcmp(pd, sys->rt->descriptor.meter_policy_digest, 64) != 0)
             return -2;
         ctx->policy = sys->rt->meter_policy;
+        /* HF-7 P1c-2: the block-start generation, from the SAME resolved
+         * SYSTEM runtime (nodus_witness_v2_env.h `generation`). */
+        ctx->generation = sys->rt->generation;
     }
 
     return 0;
@@ -3339,6 +3342,7 @@ static int committee_snapshot_for_height(nodus_witness_t *w, uint64_t height,
  */
 int nodus_witness_v2_replay_guard(nodus_witness_t *w,
                                   const dna_env_preflight_t *p,
+                                  uint32_t generation,
                                   size_t item, int *hit,
                                   char *reason, size_t reason_size)
 {
@@ -3346,6 +3350,16 @@ int nodus_witness_v2_replay_guard(nodus_witness_t *w,
         "SELECT 1 FROM v2_intent_index WHERE intent_id = ?1",
         "SELECT 1 FROM v2_tx_index WHERE tx_id = ?1"
     };
+    /* HF-7 P1c-2 (Kurultay #27 summary item 5, design §10.2 item 7): from
+     * the roots generation the guard is the rooted replay relation ONLY;
+     * the two index tables above stay node-local RPC indexes. Same
+     * order (intent, then wire), same binding, same fault texts. */
+    static const char *const guard_sql_roots[2] = {
+        "SELECT 1 FROM v2_replay WHERE intent_id = ?1",
+        "SELECT 1 FROM v2_replay WHERE tx_id = ?1"
+    };
+    const char *const *sqls = generation >= NODUS_RT_GEN_ROOTS
+                                  ? guard_sql_roots : guard_sql;
     const uint8_t *guard_id[2] = { p->intent_id, p->wire_id };
     int g;
 
@@ -3354,7 +3368,7 @@ int nodus_witness_v2_replay_guard(nodus_witness_t *w,
         sqlite3_stmt *st = NULL;
         int rc;
 
-        if (sqlite3_prepare_v2(w->db, guard_sql[g], -1, &st, NULL)
+        if (sqlite3_prepare_v2(w->db, sqls[g], -1, &st, NULL)
             != SQLITE_OK) {
             V2AP_ENV_FAULT("cometbft item %llu: the replay guard could not "
                            "be prepared on this node",
@@ -3377,11 +3391,46 @@ int nodus_witness_v2_replay_guard(nodus_witness_t *w,
 }
 
 static int env_replay_guard(nodus_witness_t *w, const dna_env_preflight_t *p,
-                            size_t item, int *hit,
+                            uint32_t generation, size_t item, int *hit,
                             char *reason, size_t reason_size)
 {
-    return nodus_witness_v2_replay_guard(w, p, item, hit, reason,
+    return nodus_witness_v2_replay_guard(w, p, generation, item, hit, reason,
                                          reason_size);
+}
+
+/* HF-7 P1c-2 — phase 12d. Contract: nodus_witness_v2_apply.h. */
+int nodus_witness_v2_replay_prune(nodus_witness_t *w, uint32_t generation,
+                                  uint64_t height, uint64_t *n_deleted,
+                                  char *reason, size_t reason_size)
+{
+    sqlite3_stmt *st = NULL;
+    int rc;
+
+    if (n_deleted) *n_deleted = 0;
+    if (generation < NODUS_RT_GEN_ROOTS) return 0;   /* below ROOTS: inert */
+    if (!w || !w->db || height > (uint64_t)INT64_MAX) {
+        V2AP_ENV_FAULT("phase 12d: the replay prune was handed no database "
+                       "or the height %llu, beyond the INTEGER range",
+                       (unsigned long long)height);
+        return -2;
+    }
+    if (sqlite3_prepare_v2(w->db,
+            "DELETE FROM v2_replay WHERE expiry_height <= ?1", -1, &st,
+            NULL) != SQLITE_OK) {
+        V2AP_ENV_FAULT("phase 12d: could not prepare the v2_replay prune "
+                       "at height %llu", (unsigned long long)height);
+        return -2;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        V2AP_ENV_FAULT("phase 12d: the v2_replay prune at height %llu failed "
+                       "(sqlite rc %d)", (unsigned long long)height, rc);
+        return -2;
+    }
+    if (n_deleted) *n_deleted = (uint64_t)sqlite3_changes(w->db);
+    return 0;
 }
 
 /**
@@ -4085,11 +4134,15 @@ int nodus_witness_v2_env_dry_run_ex(nodus_witness_t *w, const uint8_t *bytes,
         memcpy(out->leg_digest[l], s.pf->auth_digest[l], 64);
     }
 
-    /* ── replay: the committed intent / wire index ─────────────────── */
+    /* ── replay: the committed intent / wire index — from the roots
+     * generation the rooted v2_replay relation (HF-7 P1c-2), judged by
+     * the candidate block's (tip + 1) block-start generation, the
+     * context env_item_setup built at s.height ─────────────────────── */
     {
         int hit = 0;
 
-        ret = env_replay_guard(w, s.pf, 0, &hit, reason, reason_size);
+        ret = env_replay_guard(w, s.pf, s.bctx->generation, 0, &hit, reason,
+                               reason_size);
         if (ret != 0) {
             goto done;
         }
@@ -4478,11 +4531,22 @@ static int claim_execute_one(nodus_witness_t *w, const nodus_v2_block_t *blk,
  * this write disagree — an engine/storage fault on THIS node, never a
  * block property; every failure is therefore the caller's -2.
  *
+ * HF-7 P1c-2 (Kurultay #27 summary item 3, design §10.9): at
+ * `generation` >= NODUS_RT_GEN_ROOTS (the block-start generation) the
+ * item's REPLAY ROW follows the two index rows, in the same savepoint:
+ * v2_replay (tx_id = the wire realization id, intent_id, expiry_height).
+ * The ids are bound as BLOBs and the expiry as an INTEGER — the S19
+ * CHECKs refuse any other storage class. The two index tables keep being
+ * written as before (node-local RPC indexes, §10.2 item 5); nothing copies
+ * them into v2_replay. An expiry of 0 or beyond INT64_MAX cannot reach
+ * here at that generation (phase 0d FAULTs the whole block first); it is
+ * still refused as a node fault rather than stored.
+ *
  * @return 0; -1 with the reason written into (reason, reason_size).
  */
 static int cmt_item_index(nodus_witness_t *w, uint64_t global_height,
                           const dna_env_preflight_t *p, dom_ctx_t *doms,
-                          size_t n_dom, uint32_t gidx,
+                          size_t n_dom, uint32_t gidx, uint32_t generation,
                           char *reason, size_t reason_size)
 {
     const dna_env_view_t *v = &p->view;
@@ -4557,6 +4621,36 @@ static int cmt_item_index(nodus_witness_t *w, uint64_t global_height,
         V2AP_ENV_FAULT("index: v2_tx_index insert at global index %u "
                        "failed (sqlite rc %d)", (unsigned)gidx, rc);
         return -1;
+    }
+
+    /* v2_replay — HF-7 P1c-2, from the roots generation only (above). */
+    if (generation >= NODUS_RT_GEN_ROOTS) {
+        if (v->expiry_height == 0 ||
+            v->expiry_height > (uint64_t)INT64_MAX) {
+            V2AP_ENV_FAULT("index: the item at global index %u reached its "
+                           "replay row with expiry %llu, outside the D2 "
+                           "window phase 0d enforces", (unsigned)gidx,
+                           (unsigned long long)v->expiry_height);
+            return -1;
+        }
+        st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "INSERT INTO v2_replay (tx_id, intent_id, expiry_height) "
+                "VALUES (?1,?2,?3)", -1, &st, NULL) != SQLITE_OK) {
+            V2AP_ENV_FAULT("index: could not prepare the v2_replay insert "
+                           "at global index %u", (unsigned)gidx);
+            return -1;
+        }
+        sqlite3_bind_blob(st, 1, p->wire_id, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(st, 2, p->intent_id, 64, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)v->expiry_height);
+        rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) {
+            V2AP_ENV_FAULT("index: v2_replay insert at global index %u "
+                           "failed (sqlite rc %d)", (unsigned)gidx, rc);
+            return -1;
+        }
     }
 
     (void)doms;
@@ -5490,6 +5584,45 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
         }
     }
 
+    /* ── 0d. HF-7 P1c-2: THE D2 EXPIRY BLOCK RULE, re-checked (design
+     * docs/plans/2026-09-11-nodus-ledger-snapshot-design.md §10.2 item 6
+     * rev 1; Kurultay #27 summary item 4). From the roots generation —
+     * the BLOCK-START generation bctx.generation, so block A−1 keeps
+     * today's rule (an expired item is a failed item) — every envelope of
+     * a decided block must satisfy the ONE predicate
+     * nodus_witness_v2_expiry_in_window at the block's own height.
+     * ProcessProposal REJECTs a proposal that does not (the seam,
+     * nodus_witness_v2_produce.c), so a decided block that violates it
+     * was not decided by honest validators: this node stops (FAULT, with
+     * the envelope and both integers in the reason), never "fail the
+     * item". BEFORE any per-item work, as phase 0c. An envelope that does
+     * not decode has no expiry to judge — it stays the item loop's
+     * DECODE refusal, exactly as 0c skips it. Integers only, no clock. */
+    if (bctx.generation >= NODUS_RT_GEN_ROOTS) {
+        for (size_t i = 0; i < blk->n_envs; i++) {
+            dna_env_view_t ev;
+
+            memset(&ev, 0, sizeof(ev));
+            if (dna_env_decode(blk->envs[i].env_bytes, blk->envs[i].env_len,
+                               &ev) != 0)
+                continue;                /* the item loop's DECODE        */
+            if (!nodus_witness_v2_expiry_in_window(ev.expiry_height,
+                                                   blk->global_height)) {
+                V2AP_FAULT("phase 0d: envelope %llu carries expiry_height "
+                           "%llu, outside the D2 window [%llu, %llu + %llu] "
+                           "of block %llu (0 is refused) - ProcessProposal "
+                           "refuses such a block",
+                           (unsigned long long)i,
+                           (unsigned long long)ev.expiry_height,
+                           (unsigned long long)blk->global_height,
+                           (unsigned long long)blk->global_height,
+                           (unsigned long long)NODUS_V2_EXPIRY_WINDOW_BLOCKS,
+                           (unsigned long long)blk->global_height);
+                goto fail_fault_pre;
+            }
+        }
+    }
+
     /* ── 1. THE transaction ─────────────────────────────────────────
      * The HOST owns it (D-23 rev 5 (5)): `apply_verified_block` opened
      * one before `FinalizeBlock` and `app.commit` will close it, so this
@@ -5685,11 +5818,19 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
              * cmt_item_index, inside an APPLIED item's savepoint (a
              * refused item leaves no row), so a byte-identical copy of an
              * applied envelope is refused REPLAY here — no state effect —
-             * while a copy of a REFUSED one is judged afresh. */
+             * while a copy of a REFUSED one is judged afresh.
+             *
+             * HF-7 P1c-2: from the roots generation (bctx.generation, the
+             * BLOCK-START generation — block A−1 is still judged by the
+             * index tables) the guard reads v2_replay only; its rows are
+             * written by cmt_item_index inside the same applied-item
+             * savepoint, so the in-block and the rolled-back cases above
+             * hold for it unchanged. */
             {
                 int hit = 0;
 
-                if (env_replay_guard(w, &pf[i], i, &hit, blk->out_reason,
+                if (env_replay_guard(w, &pf[i], bctx.generation, i, &hit,
+                                     blk->out_reason,
                                      sizeof blk->out_reason) != 0) {
                     (void)cmt_savepoint_rollback(w, sp);
                     (void)cmt_savepoint_release(w, sp);
@@ -5822,7 +5963,7 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
              * a failed item" true rather than merely intended. The LOCAL
              * index rows follow in phase 12 — see cmt_item_index. */
             if (cmt_item_index(w, blk->global_height, &pf[i], doms, n_dom,
-                               gidx, blk->out_reason,
+                               gidx, bctx.generation, blk->out_reason,
                                sizeof blk->out_reason) != 0) {
                 (void)cmt_savepoint_rollback(w, sp);
                 (void)cmt_savepoint_release(w, sp);
@@ -6870,6 +7011,21 @@ cmt_claim_failed:
         }
     }
     FAIL_POINT(V2AP_FAIL_AFTER_CLAIM_BYTES);
+
+    /* 12d. HF-7 P1c-2 — THE REPLAY PRUNE (Kurultay #27 summary item 3,
+     * design §10.2 item 7 / §10.9): after every item, before phase 13, so
+     * the replay root phase 13 composes covers the PRUNED relation. Gated
+     * by the BLOCK-START generation (bctx.generation, not a re-read after
+     * a phase-6b edge in this block): block A−1 inserted nothing and
+     * prunes nothing; from block A `DELETE … WHERE expiry_height <= H`.
+     * A row whose expiry is H was inserted by this block's own item and
+     * leaves with this prune — it can never apply again at H + 1 (D2
+     * refuses e < H + 1 there). No clock: the integer height only. */
+    if (nodus_witness_v2_replay_prune(w, bctx.generation, blk->global_height,
+                                      NULL, blk->out_reason,
+                                      sizeof blk->out_reason) != 0) {
+        goto fail_fault;                 /* the helper owns the reason    */
+    }
 
     /* 13. block-level roots + expectation compare + metadata */
     {

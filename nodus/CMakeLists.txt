@@ -2656,6 +2656,20 @@ target_link_libraries(test_cmt_app nodus dsa nodus crypto)
 target_compile_definitions(test_cmt_app PRIVATE NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_cmt_app COMMAND test_cmt_app)
 
+# HF-7 P1c-2 — the rooted replay relation (v2_replay: a row per applied
+# item inside its savepoint, the phase-12d prune, the guard swap at all
+# four callers) and the D2 whole-block expiry rule (the seam's
+# PrepareProposal / ProcessProposal refusal, FinalizeBlock's phase-0d
+# FAULT, CheckTx's window), at the roots generation and at generation 4.
+# The roots generation is reached through a scripted runtime table whose
+# `generation` is patched BEFORE a seeded genesis (no edge — P1d); see the
+# file's "HOW IT CAN LIE". Default build, no environment; every created
+# row has amount 0, so no supply bypass is needed.
+add_executable(test_hf7_replay tests/test_hf7_replay.c)
+target_link_libraries(test_hf7_replay nodus dsa nodus crypto)
+target_compile_definitions(test_hf7_replay PRIVATE NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_hf7_replay COMMAND test_hf7_replay)
+
 # D-16 rev 7 (W4-CC) — the SYSTEM-governance approval-collection
 # responder's verdict (nodus_witness_cc_appr_answer — the channel-0x71
 # responder without its send) over a REAL derived version-3 chain with 7

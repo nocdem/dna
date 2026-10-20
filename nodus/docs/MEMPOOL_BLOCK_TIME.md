@@ -58,7 +58,11 @@ reservation against a fresh block budget, authorization — the stage
 `nodus_witness_v2_env_authorize` ran before it was deleted — read plan,
 reads, exec and a probe of every effect), a lifetime rule (`expiry_height`
 must be nonzero and ≤ tip + 100, `NODUS_CMT_APP_MAX_EXPIRY_AHEAD`,
-`docs/plans/decisions/2026-09-25-mempool-policy.md`) and a node-local
+`docs/plans/decisions/2026-09-25-mempool-policy.md`; from rule-set generation
+5 — HF-7, branch `hf7-p1c2`, inert until its edge — also ≥ tip + 1, so the
+window is `tip + 1 ≤ e ≤ tip + 100`: still node-local mempool policy, inside
+the consensus block rule D2 `H ≤ e ≤ H + 720`, `ARCHITECTURE.md` "HF-7
+P1c-2") and a node-local
 pending conflict set (an entry's intent, its DELETE rows, its
 `PRE_ABSENT` CREATE keys; a claim's nullifier) cleared at every commit and
 rebuilt by the recheck. Full account: `ARCHITECTURE.md`, CHECKTX-P1.

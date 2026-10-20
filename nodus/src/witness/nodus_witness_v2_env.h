@@ -310,6 +310,19 @@ typedef struct {
     uint8_t            evm_active;
     uint32_t           evm_domain_id;
     uint64_t           evm_block_gas_limit;
+    /* HF-7 P1c-2 (design docs/plans/2026-09-11-nodus-ledger-snapshot-
+     * design.md §10.3, §10.9; Kurultay #27 summary items 3-5): THE
+     * BLOCK-START GENERATION — the rule-set generation of the resolved
+     * SYSTEM runtime the builder already reads for the metering policy
+     * (the same registry tuple nodus_witness_v2_key_generation resolves).
+     * Resolved ONCE, before the block mutates anything, so block A−1
+     * (whose phase-6b edge runs at its END) is judged by generation 4 and
+     * block A by generation 5. Consumers, all `>= NODUS_RT_GEN_ROOTS`
+     * tests: the replay guard's table (nodus_witness_v2_replay_guard),
+     * the v2_replay insert and prune of the item loop / phase 12d, and
+     * the D2 expiry predicate at the seam and FinalizeBlock's phase 0d.
+     * No consumer re-reads the registry. */
+    uint32_t           generation;
 } nodus_witness_v2_block_ctx_t;
 
 /** Nodus EVM: the streamed leg of `v` under `ctx` for dna_meter_reserve_ex — 0

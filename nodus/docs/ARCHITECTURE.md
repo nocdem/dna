@@ -11126,6 +11126,82 @@ GLOBAL v2 over three hand-written replay rows at E+1; the head read directly (ag
 NULL column). It reaches ROOTS by swapping the table between blocks, not through the edge (P1d). Written,
 NOT run by the author.
 
+### HF-7 P1c-2 — the replay relation and the D2 expiry rule (2026-10-20, branch `hf7-p1c2` only — not versioned, not voted; INERT until P1d)
+
+Design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §10.2 items 5-7, §10.3 (matrix rows
+"replay guard tables", "`v2_replay` rows", "expiry block rule", "CheckTx expiry"), §10.9 (rev 1), §10.11
+(khan: no per-block cap; the mempool window stays 100, node-local; the expiry an INTEGER); Kurultay #27
+summary `docs/plans/decisions/2026-10-20-kurultay-27-hf7-p1-summary.md` items 3, 4, 5; decision
+`docs/plans/decisions/2026-09-25-mempool-policy.md` 1. The roots (SYSTEM v6, segment leaf v2, DomainHead v2,
+GLOBAL v2 and the `replay_root` read in phase 13) are the parallel package P1c-1, not this one.
+
+**The gate — the block-start generation.** `nodus_witness_v2_block_ctx_t` gains `generation`, set once by
+`block_ctx_from_doms` from the resolved SYSTEM runtime (the same `sys->rt` that supplies the metering
+policy, the tuple `nodus_witness_v2_key_generation` resolves). The engine builds that context in phase 0a,
+before anything mutates — so block A−1, whose phase-6b edge runs at its END, is judged by generation 4, and
+block A by generation 5 (matrix: A−1 keeps the index-table guard, inserts no row and keeps today's expiry
+rule). Every gate below is `generation >= NODUS_RT_GEN_ROOTS`; nothing re-reads the registry after 6b. The
+pre-commit paths read the generation of the block they judge (tip + 1): the dry run and the seam from the
+context they already build at tip + 1, CheckTx's two node-local checks through
+`nodus_witness_v2_key_generation` (the committed registry). Below generation 5 every verdict and table is
+byte-identical to before. Generation 5 has no compiled table entry yet (`NODUS_RT_GEN_MAX` unchanged), so
+no chain reaches any of this before P1d.
+
+**The relation.** For every APPLIED envelope item of a block at generation 5, `cmt_item_index` writes, after
+the two index rows and inside the same item SAVEPOINT, `v2_replay (tx_id = the wire realization id,
+intent_id, expiry_height)` (ids bound as BLOBs, the expiry as an INTEGER — the S19 CHECKs). A refused item's
+savepoint takes its row with it; a CLAIM never reaches this writer (claims keep their nullifier). The two
+index tables (`v2_intent_index`, `v2_tx_index`) keep being written exactly as before — they are node-local
+RPC indexes (§10.2 item 5) and nothing copies them into `v2_replay`.
+
+**The guard swap.** `nodus_witness_v2_replay_guard` takes the generation: below 5 it asks the index tables
+(unchanged statements), at 5+ `v2_replay` only (intent_id, then tx_id; either hit = replay). All four
+callers pass the generation of the block they judge: the item loop (`bctx.generation`), the CheckTx dry run
+(`s.bctx->generation`, built at tip + 1), the proposal seam (`bctx->generation`, inside the HF-3 block), and
+CheckTx's admission lane `verify_v2_successor_tx` (at 5+ it calls the guard — intent OR wire; below 5 its
+intent-only statement is unchanged). Because the item's row is written inside its savepoint, an in-block
+duplicate of an applied envelope is refused REPLAY by the next item, and a copy of a refused one is judged
+afresh — the same two properties the index guard had.
+
+**Phase 12d — the prune.** After every item and phase 12c, before phase 13:
+`nodus_witness_v2_replay_prune` = `DELETE FROM v2_replay WHERE expiry_height <= H` (bind_int64), at the
+block-start generation 5+ only. A row with expiry H is inserted and pruned in the same block (D2 refuses
+`e < H + 1` in the next one). Phase 13's replay root (P1c-1) therefore covers the pruned relation. No clock.
+
+**D2 — the whole-block expiry rule.** ONE predicate, `nodus_witness_v2_expiry_in_window(e, H)` =
+`e != 0 && e >= H && e - H <= 720` (`NODUS_V2_EXPIRY_WINDOW_BLOCKS`, its own constant — equal in value to
+`DNA_VALBIND_MAX_EXPIRY_BLOCKS` but not tied to the consent window; bound by the P1d vote literal), at two
+sites, both gated on the block-start generation:
+- the proposal seam (`produce_batch_check_impl`), the path PrepareProposal's drop loop and ProcessProposal
+  share: checked FIRST per envelope after a reservation-clean run; a violator is ENTRY_INVALID at its index,
+  so PrepareProposal never selects it and ProcessProposal REJECTs the proposal. This extends the refusal that
+  already existed for `e < H` (the preflight's ERR_EXPIRED inside the seam). The loop now runs at generation
+  5+ even with HF-3 off, so ProcessProposal and FinalizeBlock can never disagree; the HF-3 rules in it stay
+  HF-3-gated;
+- FinalizeBlock, phase 0d (after 0c, before the item loop): a decided block carrying a violator is a node
+  FAULT naming the envelope and both integers — never a failed item. An undecodable envelope has no expiry
+  and stays the item loop's DECODE refusal.
+Below generation 5 the old rule stands: an expired item is a FAILED item (env_preflight step 3), `e == 0`
+never expires.
+
+**CheckTx — node-local mempool policy, not consensus.** When the generation judging tip + 1 is 5+,
+`app_check_envelope` also refuses `e < tip + 1` (window `tip + 1 <= e <= tip + 100`; the 100,
+`NODUS_CMT_APP_MAX_EXPIRY_AHEAD`, is unchanged and not in the vote — khan decision C). The window lies inside
+D2 at tip + 1, so an admitted envelope is never dead on arrival. On the public CheckTx path the admission
+lane's preflight at tip + 1 already refuses `e < tip + 1` before the window runs; the explicit bound is a
+belt, recorded as such.
+
+**Pre-A envelopes** (summary item 1) die at A through the generation-5 ruleset versions (P1d); nothing here
+adds code for them.
+
+**Tests.** `test_hf7_replay` (seven cases, file header): the predicate's endpoints; rows / replays / the
+exact guard swap / the engine prune at generation 5; the direct prune; the D2 endpoints at the seam,
+ProcessProposal, PrepareProposal and FinalizeBlock (FAULT with the database byte-identical); the seam with
+HF-3 off; CheckTx's window; generation 4 unchanged (no row, the index-table guard at all four callers, e = 0
+and e = H + 721 applied, e = H − 1 a failed item). Generation 5 is reached through a scripted runtime table
+whose `generation` is patched before a seeded genesis — no edge, so the A−1 cell is P1e's harness case.
+Written, NOT run by the builder.
+
 ### Witness Database Schema
 
 SQLite tables managed by the witness module (`nodus_witness_db.c`):
@@ -11142,7 +11218,7 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
 | `v2_validator_roles` | HF-6 sub-slice 3a (schema S18, branch `hf6` only): `validator_id` BLOB PK 64, `owner_fp` 64, `pending_consensus_pubkey` 2592 (all-zero = none), `consensus_key_effective_epoch` (0 = none); joined on `validators.pubkey_hash` = validator_id under the HF-6 generation; in the BASE schema; EMPTY until the HF-6 edge, where `nodus_witness_v2_roles_migrate` (3b) writes one row per validator; the generation-4 validator leaf (§6.3, the "NDS.SYS.v5" root since 3d) joins it; NOT a genesis-bundle table |
-| `v2_replay` | HF-7 P1b (schema S19, branch `hf7-p1b` only): `tx_id` BLOB PK 64, `intent_id` BLOB UNIQUE 64, `expiry_height` INTEGER ≥ 1 (typed CHECKs), index `v2_replay_by_expiry`; created by the S19 rung only (NOT the base schema); EMPTY and unread in this build — HF-7 P1c makes it the rooted replay relation. S19 also adds the nullable `v2_domain_heads.last_upd_hash` (NULL until P1c); NOT a genesis-bundle table |
+| `v2_replay` | HF-7 P1b (schema S19, branch `hf7-p1b` only): `tx_id` BLOB PK 64, `intent_id` BLOB UNIQUE 64, `expiry_height` INTEGER ≥ 1 (typed CHECKs), index `v2_replay_by_expiry`; created by the S19 rung only (NOT the base schema); EMPTY and unread below rule-set generation 5 — from it (HF-7 P1c-2, branch `hf7-p1c2`) one row per applied envelope item, written inside the item's savepoint, pruned at `expiry_height <= H` in phase 12d, and the ONLY replay guard ("HF-7 P1c-2" above). S19 also adds the nullable `v2_domain_heads.last_upd_hash` (NULL until P1c); NOT a genesis-bundle table |
 | `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
 | `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`, `fail_streak` 0..2^32−1 (B2a); typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT and the storage epoch boundary (B2a: exit release, fail_streak); its registry root (leaf `NDS.STLEAF.v2`) is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
 | `v2_storage_sets` / `v2_storage_set_members` | archive reward (package B2a, branch only): the frozen storage sets S(H) — header (`epoch_start` PK, `set_hash`, `member_count` 0..256) and members (`epoch_start`, `node_fp`; `fail_streak` as frozen at H, not hashed by S(H)); written by the storage boundary (freeze at every storage boundary, prune below B−2E); `sets_root` leg of `storage_root` |

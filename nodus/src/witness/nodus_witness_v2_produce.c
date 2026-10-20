@@ -330,16 +330,36 @@ static int produce_batch_check_impl(
          * so the seam names the same first refusal the item loop would
          * record. The one price read precedes the loop (a fault there is
          * a FAULT for the whole run, as any read fault is). In-batch
-         * duplicates are already refused by the seam's own dedup. ───── */
+         * duplicates are already refused by the seam's own dedup.
+         *
+         * HF-7 P1c-2 (design docs/plans/2026-09-11-nodus-ledger-snapshot-
+         * design.md §10.2 item 6 rev 1; Kurultay #27 summary items 4-5):
+         * from the roots generation — bctx->generation, the block-start
+         * generation of `candidate` — every envelope must ALSO satisfy the
+         * D2 expiry predicate (nodus_witness_v2_expiry_in_window) at
+         * `candidate`, checked FIRST per envelope. This EXTENDS the
+         * whole-proposal refusal ProcessProposal already applies to
+         * `e < H` (the preflight's ERR_EXPIRED inside the seam above →
+         * ENTRY_INVALID → REJECT): a violator is ENTRY_INVALID at its
+         * index, so PrepareProposal's drop loop excludes it and repacks
+         * (it is never selected), and ProcessProposal REJECTs the whole
+         * proposal. The loop runs at the roots generation even with
+         * HF-3 off, so ProcessProposal and FinalizeBlock's phase 0d can
+         * never disagree; the HF-3 rules inside it stay HF-3-gated. The
+         * replay guard asks the table of the same generation
+         * (v2_replay from ROOTS). ───────────────────────────────────── */
         int hf3_rc = 0;                  /* 0 / -1 verdict / -2 fault     */
         size_t hf3_i = 0;
-        if (est == NODUS_V2_ENV_OK && gas_rc == 0 && bctx->hf3_active) {
+        const int roots = bctx->generation >= NODUS_RT_GEN_ROOTS;
+        if (est == NODUS_V2_ENV_OK && gas_rc == 0 &&
+            (bctx->hf3_active || roots)) {
             char     why[256];
             uint64_t price = 0;
             uint32_t code = 0;
 
             why[0] = '\0';
-            if (nodus_witness_v2_gas_price_at(w, candidate, &price, why,
+            if (bctx->hf3_active &&
+                nodus_witness_v2_gas_price_at(w, candidate, &price, why,
                                               sizeof why) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "batch pre-check: %s", why);
                 hf3_rc = -2;
@@ -347,8 +367,24 @@ static int produce_batch_check_impl(
             for (size_t i = 0; hf3_rc == 0 && i < (size_t)n_env; i++) {
                 int hit = 0;
 
-                if (nodus_witness_v2_replay_guard(w, &pf[i], i, &hit, why,
-                                                  sizeof why) != 0) {
+                if (roots &&
+                    !nodus_witness_v2_expiry_in_window(
+                        pf[i].view.expiry_height, candidate)) {
+                    QGP_LOG_WARN(LOG_TAG, "batch pre-check: HF-7 refused "
+                                 "envelope %zu: expiry_height %llu is "
+                                 "outside the D2 window of block %llu", i,
+                                 (unsigned long long)pf[i].view.expiry_height,
+                                 (unsigned long long)candidate);
+                    hf3_rc = -1;
+                    hf3_i  = i;
+                    break;
+                }
+                if (!bctx->hf3_active) {
+                    continue;            /* the HF-3 rules below are HF-3's */
+                }
+                if (nodus_witness_v2_replay_guard(w, &pf[i],
+                                                  bctx->generation, i, &hit,
+                                                  why, sizeof why) != 0) {
                     QGP_LOG_ERROR(LOG_TAG, "batch pre-check: %s", why);
                     hf3_rc = -2;
                     break;

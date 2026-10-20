@@ -1544,6 +1544,21 @@ int nodus_witness_v2_units_ceiling_check(const dna_env_view_t *v,
  * CheckTx dry run and the FinalizeBlock item loop call it (their order:
  * preflight → replay → admission → gas price), and from the HF-3 height
  * the proposal seam (nodus_witness_v2_produce.c) calls it too.
+ *
+ * HF-7 P1c-2 (design docs/plans/2026-09-11-nodus-ledger-snapshot-design.md
+ * §10.2 items 5/7, §10.9; Kurultay #27 summary item 5): the TABLE the
+ * guard asks is chosen by `generation` — the generation that judges the
+ * block the envelope is (or would be) in (the block-start context's
+ * `generation`, or nodus_witness_v2_key_generation on a pre-commit path):
+ *   generation <  NODUS_RT_GEN_ROOTS: the two index tables, exactly as
+ *     before (v2_intent_index.intent_id, then v2_tx_index.tx_id);
+ *   generation >= NODUS_RT_GEN_ROOTS: the rooted replay relation only
+ *     (v2_replay.intent_id, then v2_replay.tx_id — an intent OR a wire
+ *     hit is a replay). The two index tables are still written there,
+ *     as node-local RPC indexes, and are never read as a guard.
+ * Callers: the item loop and the CheckTx dry run (nodus_witness_v2_apply.c),
+ * the seam (nodus_witness_v2_produce.c), CheckTx's admission lane
+ * (nodus_witness_verify.c verify_v2_successor_tx, from ROOTS only).
  * @param item  an index, for the fault text only.
  * @return 0 with *hit set (1 = already committed); -2 a node-local read
  *         fault, reason written into (reason, reason_size) — never a
@@ -1551,7 +1566,53 @@ int nodus_witness_v2_units_ceiling_check(const dna_env_view_t *v,
  */
 int nodus_witness_v2_replay_guard(nodus_witness_t *w,
                                   const dna_env_preflight_t *p,
+                                  uint32_t generation,
                                   size_t item, int *hit,
+                                  char *reason, size_t reason_size);
+
+/**
+ * HF-7 P1c-2 — THE EXPIRY WINDOW (design §10.2 item 6 rev 1, §10.11 C;
+ * Kurultay #27 summary item 4): the block rule D2's width in blocks. The
+ * value is 720 — equal to DNA_VALBIND_MAX_EXPIRY_BLOCKS (shared/dnac/
+ * valbind_wire.h), but a SEPARATE constant on purpose: that one is the
+ * validator-binding consent window, and a change to it must not move this
+ * consensus rule. The HF-7 vote literal (HF7_VOTE_CONSTS, P1d) binds this
+ * value; the node-local mempool window NODUS_CMT_APP_MAX_EXPIRY_AHEAD
+ * (100) is NOT this constant and is not in the vote.
+ */
+#define NODUS_V2_EXPIRY_WINDOW_BLOCKS ((uint64_t)720)
+
+/**
+ * HF-7 P1c-2 — THE ONE D2 PREDICATE: is an envelope with expiry_height `e`
+ * acceptable in the block at height `h`? `e != 0 && e >= h &&
+ * e - h <= NODUS_V2_EXPIRY_WINDOW_BLOCKS` — overflow-safe as written (the
+ * subtraction runs only once e >= h, so it never wraps; no `h + 720`
+ * is formed). Integers only, no clock. PURE: the CALLER decides the
+ * generation (>= NODUS_RT_GEN_ROOTS, judged at the block start) and calls
+ * this only then — the proposal seam (PrepareProposal never selects a
+ * violator, ProcessProposal REJECTs the proposal) and FinalizeBlock's
+ * phase 0d (a violation is a node FAULT).
+ * @return 1 inside the window / 0 outside it.
+ */
+static inline int nodus_witness_v2_expiry_in_window(uint64_t e, uint64_t h)
+{
+    return e != 0 && e >= h && e - h <= NODUS_V2_EXPIRY_WINDOW_BLOCKS;
+}
+
+/**
+ * HF-7 P1c-2 — PHASE 12d, THE REPLAY PRUNE (Kurultay #27 summary item 3):
+ * `DELETE FROM v2_replay WHERE expiry_height <= height` (height bound with
+ * sqlite3_bind_int64 — the column is INTEGER, khan decision D), run by the
+ * engine after every item and before phase 13 (so the replay root is
+ * computed over the pruned relation). A no-op returning 0 below
+ * NODUS_RT_GEN_ROOTS (nothing is read or written). Exported so a test can
+ * prove a prune deletes exactly `expiry <= height`; the engine is its one
+ * production caller. Must run inside the caller's transaction.
+ * @param n_deleted  optional; rows the DELETE removed.
+ * @return 0 / -2 a node-local SQL fault (reason written).
+ */
+int nodus_witness_v2_replay_prune(nodus_witness_t *w, uint32_t generation,
+                                  uint64_t height, uint64_t *n_deleted,
                                   char *reason, size_t reason_size);
 
 /**

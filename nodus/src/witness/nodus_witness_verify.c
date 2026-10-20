@@ -51,6 +51,9 @@
 #include "witness/nodus_witness_v2_claims.h"  /* claim admit (class 201) */
 #include "witness/nodus_witness_v2_produce.h" /* class + nullifier helper*/
 #include "witness/nodus_witness_domreg.h"     /* committed ruleset ctx   */
+#include "witness/nodus_witness_v2_apply.h"   /* HF-7: the replay guard  */
+#include "witness/nodus_witness_v2_epoch.h"   /* HF-7: key generation    */
+#include "witness/nodus_witness_runtime.h"    /* NODUS_RT_GEN_ROOTS      */
 #include <sqlite3.h>                          /* v2_intent_index lookup  */
 
 #include <stdio.h>
@@ -770,6 +773,40 @@ static int verify_v2_successor_tx(nodus_witness_t *w,
         if (memcmp(tx_hash, pf->wire_id, NODUS_T3_TX_HASH_LEN) != 0) {
             snprintf(reject_reason, reason_size,
                      "submitted hash is not the envelope wire_id");
+            break;
+        }
+        /* HF-7 P1c-2 (Kurultay #27 summary item 5, design §10.9): from
+         * the roots generation — the committed registry's generation, the
+         * one that judges `candidate` (nodus_witness_v2_key_generation) —
+         * admission asks the engine's own guard, which then reads the
+         * rooted v2_replay relation (intent OR wire id). Below it, the
+         * intent-only statement underneath runs exactly as before. An
+         * unreadable generation is this node's fault, never "old rules". */
+        uint32_t judging_gen = 0;
+        if (nodus_witness_v2_key_generation(w, &judging_gen) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "rule-set generation unreadable on this node");
+            break;
+        }
+        if (judging_gen >= NODUS_RT_GEN_ROOTS) {
+            char why[192];
+            int  hit = 0;
+
+            why[0] = '\0';
+            if (nodus_witness_v2_replay_guard(w, pf, judging_gen, 0, &hit,
+                                              why, sizeof why) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "admission: %s", why);
+                snprintf(reject_reason, reason_size,
+                         "replay-relation lookup failed");
+                break;
+            }
+            if (hit) {
+                snprintf(reject_reason, reason_size,
+                         "intent or wire id already committed on this "
+                         "chain");
+                break;
+            }
+            rc = 0;
             break;
         }
         /* Committed-intent replay: refuse at admission what the engine
