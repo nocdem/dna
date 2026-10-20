@@ -160,6 +160,9 @@
 #ifndef NODUS_WITNESS_STORAGE_SEGMENT_H
 #define NODUS_WITNESS_STORAGE_SEGMENT_H
 
+/* nodus_cmt_store_t (the store-backed declarations below) — an untagged
+ * typedef, not forward-declarable; it is also reached through the probe
+ * header. Both compile on Windows (common source list). */
 #include "witness/nodus_witness_cmt_store.h"
 #include "witness/nodus_witness_storage_probe.h"   /* the §6 bounds        */
 #include "dnac/ledger_roots_v2.h"
@@ -452,6 +455,14 @@ nodus_seg_v_t nodus_seg_build_put_commit(nodus_seg_build_t *b,
 int nodus_seg_build_finish(nodus_seg_build_t *b);
 
 /* ── export from this node's block store ────────────────────────────── */
+
+/* STORE-BACKED (nodus_seg_store_has, nodus_seg_export_step and
+ * nodus_seg_valset_from_store below): defined in
+ * nodus_witness_storage_segment_export.c, which is in the LINUX-ONLY
+ * source list (a full node's block / state store). Everything else in this
+ * header is defined in nodus_witness_storage_segment.c, which is portable
+ * (package P-B4). A Windows build links none of the three; calling one
+ * there is a link error, never a silent stub. */
 
 /** Whether `store` holds everything segment k needs: blocks (k−1)·P+1 …
  *  k·P (their parts), the metas up to k·P+1 (the successor headers) and

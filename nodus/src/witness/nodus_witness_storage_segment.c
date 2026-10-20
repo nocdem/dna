@@ -7,9 +7,14 @@
  *
  * Nothing here reads a clock, draws randomness or writes the database:
  * the trusted block hashes are READ through the build's hash source (the
- * ledger source: v2_blocks.block_id), the cmt state store is READ
- * (validators at k·17280, by the export only — the set record, K8a), and
- * the only writes are this node's own files in its segment directory.
+ * ledger source: v2_blocks.block_id), and the only writes are this node's
+ * own files in its segment directory.
+ *
+ * PORTABLE (package P-B4, design 2026-10-19-windows-light-storage §3 B4):
+ * every file call goes through storage/nodus_fs.h, and this file is in the
+ * common source list (it compiles for Windows). The store-backed half —
+ * the export from the block store and validators(k·P) from the state
+ * store — is nodus_witness_storage_segment_export.c (Linux-only list).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -955,127 +960,9 @@ int nodus_seg_build_finish(nodus_seg_build_t *b) {
     return 0;
 }
 
-/* ══════════════════════════════════════════════════════════════════════
- * Export from the block store
- * ════════════════════════════════════════════════════════════════════ */
-
-bool nodus_seg_store_has(const nodus_cmt_store_t *store, uint64_t k) {
-    if (!store || k == 0 || k > ((uint64_t)INT64_MAX - 1u) / SEG_P - 1u)
-        return false;
-    const int64_t base = nodus_cmt_bs_base(store);
-    const int64_t height = nodus_cmt_bs_height(store);
-    return base >= 1 && (uint64_t)base <= (k - 1u) * SEG_P + 1u &&
-           height >= 1 && (uint64_t)height >= k * SEG_P + 1u;
-}
-
-/* A raw block-store value (the store's own key strings, store.go:632-640
- * as nodus_witness_cmt_store.h maps them). *v valid until the next get on
- * that table. @return 0 found / 1 absent / -1 */
-static int store_raw(nodus_cmt_store_t *s, const char *key,
-                     const uint8_t **v, size_t *n) {
-    if (nodus_cmt_store_get(s, false, key, v, n) != CMT_OK) return -1;
-    return *n == 0 ? 1 : 0;
-}
-
-int nodus_seg_export_step(nodus_seg_build_t *b, nodus_cmt_store_t *store,
-                          uint32_t max_heights, nodus_seg_v_t *why_out) {
-    if (why_out) *why_out = NODUS_SEG_V_OK;
-    if (!b || !store || b->scanning) return -1;
-    nodus_cmt_block_meta_t *meta = malloc(sizeof(*meta));
-    uint8_t *hb = malloc(NODUS_SEG_HEADER_MAX);
-    int ret = -1;
-    nodus_seg_v_t v = NODUS_SEG_V_OK;
-    char key[NODUS_CMT_STORE_KEY_MAX];
-    if (!meta || !hb) goto done;
-
-    for (uint32_t n = 0; n < max_heights && b->h <= b->last; n++) {
-        const uint64_t h = b->h;
-        if (!b->have_hdr) {
-            bool found = false;
-            size_t hl = 0;
-            if (nodus_cmt_bs_load_block_meta(store, (int64_t)(h + 1u), meta,
-                                             &found) != CMT_OK)
-                goto done;
-            if (!found) {
-                QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": block meta %"
-                             PRIu64 " not in the block store", b->k, h + 1u);
-                goto done;
-            }
-            if (cmt_pb_header_marshal(&meta->header, hb, NODUS_SEG_HEADER_MAX,
-                                      &hl) != CMT_OK || hl == 0)
-                goto done;
-            v = nodus_seg_build_put_header(b, h, hb, hl);
-            if (v != NODUS_SEG_V_OK) goto done;
-        }
-        while (b->h == h) {
-            const uint8_t *val = NULL;
-            size_t vl = 0;
-            snprintf(key, sizeof(key), "P:%" PRId64 ":%d", (int64_t)h,
-                     (int)b->next_part);
-            int r = store_raw(store, key, &val, &vl);
-            if (r < 0) goto done;
-            if (r > 0) {
-                QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": %s not in the "
-                             "block store", b->k, key);
-                goto done;
-            }
-            /* put copies the value into the build before any other get */
-            v = nodus_seg_build_put_part_proto(b, h, b->next_part, val, vl);
-            if (v != NODUS_SEG_V_OK) goto done;
-        }
-    }
-    if (b->h <= b->last) { ret = 0; goto done; }
-    if (!b->commit_done && !b->vs_held) {
-        /* validators(k·P) from the state table (K8a); a pruned state store
-         * cannot finish the export — the holder fetches the set */
-        size_t vl = 0;
-        int r = nodus_seg_valset_from_store(store, b->last, b->io, SEG_IO_CAP,
-                                            &vl);
-        if (r < 0) goto done;
-        if (r > 0) {
-            QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": validators(%" PRIu64
-                         ") not in this node's state store — the export "
-                         "cannot verify the terminal commit, the set is "
-                         "fetched", b->k, b->last);
-            goto done;
-        }
-        v = nodus_seg_build_put_valset(b, b->io, vl);
-        if (v != NODUS_SEG_V_OK) goto done;
-    }
-    if (!b->commit_done) {
-        const uint8_t *val = NULL;
-        size_t vl = 0;
-        snprintf(key, sizeof(key), "C:%" PRId64, (int64_t)b->last);
-        int r = store_raw(store, key, &val, &vl);
-        if (r < 0) goto done;
-        if (r > 0) {
-            QGP_LOG_WARN(LOG_TAG, "segment %" PRIu64 ": %s not in the block "
-                         "store", b->k, key);
-            goto done;
-        }
-        /* `val` points into the store's block-table copy buffer, valid
-         * until the next block-table get. Copied into the build's scratch
-         * all the same, so no store call can ever move it (put_commit
-         * does not use the scratch; the set is already held in the
-         * build's own buffer). */
-        if (vl > SEG_IO_CAP) { v = NODUS_SEG_V_BOUNDS; goto done; }
-        memcpy(b->io, val, vl);
-        v = nodus_seg_build_put_commit(b, b->io, vl);
-        if (v != NODUS_SEG_V_OK) goto done;
-    }
-    ret = 1;
-done:
-    if (ret < 0 && v != NODUS_SEG_V_OK)
-        QGP_LOG_ERROR(LOG_TAG, "segment %" PRIu64 ": export refused at "
-                      "height %" PRIu64 " (%s) — this node's block store "
-                      "disagrees with the build's trusted block hashes "
-                      "(v2_blocks on the ledger source)", b->k, b->h,
-                      nodus_seg_v_str(v));
-    if (why_out) *why_out = v;
-    free(hb);
-    free(meta);
-    return ret;
-}
+/* (Export from the block store — nodus_seg_store_has,
+ *  nodus_seg_export_step — and nodus_seg_valset_from_store: the
+ *  store-backed half, nodus_witness_storage_segment_export.c.) */
 
 /* ══════════════════════════════════════════════════════════════════════
  * The archive probe from a file
@@ -1344,40 +1231,6 @@ int nodus_seg_part_split(const uint8_t *proto, size_t len,
 done:
     free(ab);
     free(pt);
-    return ret;
-}
-
-int nodus_seg_valset_from_store(nodus_cmt_store_t *store, uint64_t height,
-                                uint8_t *out, size_t cap, size_t *len) {
-    if (!store || !out || !len || height == 0 ||
-        height > (uint64_t)INT64_MAX)
-        return -1;
-    int ret = -1;
-    cmt_validator_t        *vals = calloc(CMT_VALSET_MAX, sizeof(*vals));
-    cmt_pb_validator_t     *pbv = calloc(CMT_VALSET_MAX, sizeof(*pbv));
-    cmt_pb_validator_set_t *pb = calloc(1, sizeof(*pb));
-    cmt_validator_set_t vs;
-    if (!vals || !pbv || !pb ||
-        cmt_validator_set_init(&vs, vals, CMT_VALSET_MAX) != CMT_OK)
-        goto done;
-    /* LoadValidators (the port in nodus_witness_cmt_store.c): the set at
-     * `height`, also when its row is not a checkpoint */
-    int rc = nodus_cmt_ss_load_validators(store, (int64_t)height, &vs);
-    if (rc == CMT_FAULT) goto done;
-    if (rc != CMT_OK) { ret = 1; goto done; }
-    pb->validators = pbv;
-    pb->validators_cap = CMT_VALSET_MAX;
-    size_t n = 0;
-    if (cmt_validator_set_to_proto(&vs, pb) != CMT_OK ||
-        cmt_pb_validator_set_marshal(pb, out, cap, &n) != CMT_OK ||
-        n == 0 || n > NODUS_SEG_VALSET_MAX)
-        goto done;
-    *len = n;
-    ret = 0;
-done:
-    free(pb);
-    free(pbv);
-    free(vals);
     return ret;
 }
 

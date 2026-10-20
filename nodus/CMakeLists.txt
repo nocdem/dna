@@ -345,6 +345,13 @@ set(NODUS_SOURCES
     # archive-reward-design.md rev 4 §4; bytes doc §6). Off-chain: nothing
     # here is a consensus input.
     src/witness/nodus_witness_storage_probe.c
+    # Archive reward, package B2b-2 — the segment FILE: its layout, the
+    # build from verified pieces (a hash source, P-B1), the atomic publish,
+    # the resume scan, the reader, the deletion. All file I/O through
+    # src/storage/nodus_fs.c, so it compiles on Windows (windows-light-
+    # storage design 2026-10-19 §3 B4). The store-backed export is
+    # nodus_witness_storage_segment_export.c (Linux-only list below).
+    src/witness/nodus_witness_storage_segment.c
     src/witness/nodus_witness_v2_preflight.c
     # R3 W4 — nodus_witness_v2_qc.c and nodus_witness_v2_finalize.c are
     # DELETED with the closed consensus lane: QC assembly and the legacy
@@ -739,10 +746,12 @@ if(NOT WIN32)
         # payday segment k with its index and completeness marker, built
         # from verified pieces only, published atomically, resumable) and
         # the holder's runtime (assignment, export from the block store,
-        # the channel 0x73 fetch, deletion after the overlap epoch). POSIX
-        # file I/O; node-local, never a consensus input (design rev 4 §3,
-        # §7 D4).
-        src/witness/nodus_witness_storage_segment.c
+        # the channel 0x73 fetch, deletion after the overlap epoch).
+        # Node-local, never a consensus input (design rev 4 §3, §7 D4).
+        # The file format, build and reader (nodus_witness_storage_
+        # segment.c) are in the common list since P-B4; here: the export
+        # from this node's block / state store.
+        src/witness/nodus_witness_storage_segment_export.c
         src/witness/nodus_witness_storage_fetch.c
         src/witness/nodus_witness_storage_holder.c
         # Role-based block retention (decision 2026-10-14-role-based-
