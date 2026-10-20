@@ -1857,7 +1857,9 @@ static void cc_item(nodus_dnac_v3_item_t *it, uint32_t index, uint8_t tag,
  *             5604184871704996557 @ 4500 (HF-6 slice 8c; above 2^53: a
  *             string), item 6 applied chain_config RETIRED
  *             RULESET_GEN_STORAGE (16) = 7 @ 4600 (a committed row of a
- *             retired id keeps its label) */
+ *             retired id keeps its label), item 7 applied chain_config
+ *             HF-7 RULESET_GEN_ROOTS (22) = D5 8019891019285098644 @ 4700
+ *             (above 2^53: a string) */
 static int seed_governance(exp_db_t *db) {
     nodus_dnac_v3_block_result_t p;
     exp_block_batch_t b;
@@ -1890,9 +1892,9 @@ static int seed_governance(exp_db_t *db) {
     nodus_client_free_v3_block_result(&p);
     if (rc != 0) return rc;
 
-    page_header(&p, 2, 7, 7, 2);
-    p.count = 7;
-    p.items = calloc(7, sizeof(nodus_dnac_v3_item_t));
+    page_header(&p, 2, 8, 8, 2);
+    p.count = 8;
+    p.items = calloc(8, sizeof(nodus_dnac_v3_item_t));
     cc_item(&p.items[0], 0, 0x75, 9, 4962894749133920991ULL, 3151);
     cc_item(&p.items[1], 1, 0x77, 200, 5, 4000);
     cc_item(&p.items[2], 2, 0x79, 19, 10000000000000ULL, 5000);
@@ -1900,6 +1902,7 @@ static int seed_governance(exp_db_t *db) {
     cc_item(&p.items[4], 4, 0x7D, 21, 100000000000000ULL, 5000);
     cc_item(&p.items[5], 5, 0x81, 18, 5604184871704996557ULL, 4500);
     cc_item(&p.items[6], 6, 0x83, 16, 7, 4600);
+    cc_item(&p.items[7], 7, 0x85, 22, 8019891019285098644ULL, 4700);
     exp_block_batch_init(&b);
     rc = exp_extract_page(&p, &b);
     if (rc == 0) rc = exp_db_write_height(db, &b);
@@ -1954,6 +1957,8 @@ static void test_route_governance(void) {
         "\"effective_height\":4500,",
         "\"param_id\":16,\"param_name\":\"RULESET_GEN_STORAGE\",\"new_value\":\"7\","
         "\"effective_height\":4600,",
+        "\"param_id\":22,\"param_name\":\"RULESET_GEN_ROOTS\",\"new_value\":\"8019891019285098644\","
+        "\"effective_height\":4700,",
         "],\"truncated\":false}",
         NULL };
 

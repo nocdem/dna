@@ -53,7 +53,10 @@ only the supported read endpoints. The browser makes same-origin requests.
   on-chain names (param 9), HF-5 rule-set generation 3 + Nodus EVM (param 14),
   HF-6 rule-set generation 4: node owners + storage nodes (param 18 — the
   explorer reports `param_name` null for 18, so the row carries its own name
-  `RULESET_GEN_ROLES`), each with its rule in one sentence (from
+  `RULESET_GEN_ROLES`), HF-7 rule-set generation 5: the roots generation
+  (param 22 — `RULESET_GEN_ROOTS`, carried by the row for the same reason:
+  an explorer older than its HF-7 build reports `param_name` null for 22),
+  each with its rule in one sentence (from
   `nodus/docs/DEPLOY_RUNBOOK.md` §2.2 "Live hard forks"), vote block,
   effective block and status — Active when the reported `tip` ≥ the effective
   block, else Pending with the blocks left and a time estimate at ~60 s per
@@ -812,3 +815,13 @@ measured segment size (≈ 0.7 GB per 17,280-block file; EU-6 11 files, 7.8 GB) 
 200 recommended) → new SHA-256 538183d3…1108b, updated in `wiki/content.mjs`. Built, checked, packaged; three
 changed files (wiki network.html + search-index.json, site install-node.sh) copied by SCP, previous ones backed up
 in `/root/wiki-bak-20261015b/` on the web host; live hashes equal the package.
+
+2026-10-20, HF-7 is live (the roots generation, rule-set generation 5 — param 22 `RULESET_GEN_ROOTS`
+= D5 8019891019285098644, voted in block 281,957, in force from 282,684; nodus 0.26.17; numbering per
+decision `2026-10-05-hf-numbering-evm-hf5.md` addendum 2026-10-19: HF-7 = the state-sync root
+coverage). Roadmap: new built item `history.hf7.*` dated 20 October 2026 (`roadmap.html` + its
+Turkish keys in `app.js`). Wiki "Hard forks on the testnet" (`chain.html#forks`): seven active forks,
+the HF-7 item; "Planned, not live" no longer says the HF-7 number is retired. Scan: `scan/app.js`
+`hardForks` gains HF-7 (param 22, with `paramName`). The pages say the snapshot download for state
+sync is not built yet. `npm run build:portals` (Scan pages re-stamped: only the `?v=` values
+changed) and `npm run check` were run; browser validation has not been run for this change.

@@ -124,7 +124,8 @@ for (const slug of scanPages) {
   // docs/plans/decisions/2026-10-05-hf-numbering-evm-hf5.md (EVM = HF-5, role stake = HF-6,
   // delegation name rule = HF-8 — Ek 2026-10-07). HF-6 carried the storage reward too (the
   // HF-7 placeholder is retired) and is live since block 176100 — it is a row of scan/app.js
-  // hardForks now.
+  // hardForks now. HF-7 is now the roots generation (rule-set generation 5, param 22), live
+  // since block 282684 — also a row of scan/app.js hardForks.
   const planned = `<section aria-label="Planned hard forks" data-label-tr="Planlanan hard fork’lar">${text('Planned hard forks', 'Planlanan hard fork’lar', 'h2', 'class="section-title"')}`
     + text('Not on the chain yet. A planned fork has no date: it switches on at a block height only after every witness runs a release that knows it and the witnesses vote it in.', 'Henüz zincirde değil. Planlanan bir fork’un tarihi yoktur: ancak her witness onu bilen sürümü çalıştırdıktan ve witness’lar oyladıktan sonra bir blok yüksekliğinde devreye girer.', 'p', 'class="scan-explanation"')
     + `<ul class="scan-explanation">${[

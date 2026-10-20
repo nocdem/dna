@@ -255,6 +255,8 @@ static const char *param_name(uint32_t id) {
     case DNAC_CFG_STAKE_MIN:              return "STAKE_MIN";
     case DNAC_CFG_POWER_CAP_BPS:          return "POWER_CAP_BPS";
     case DNAC_CFG_STORAGE_BOND:           return "STORAGE_BOND";
+    /* HF-7 */
+    case DNAC_CFG_RULESET_GEN_ROOTS:      return "RULESET_GEN_ROOTS";
     default:                              return NULL;
     }
 }
