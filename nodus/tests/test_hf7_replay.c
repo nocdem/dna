@@ -678,6 +678,11 @@ static int t_rows_gen5(void) {
     return 0;
 }
 
+/* 63 zero bytes as hex (126 '0'), the prefix of the 64-byte ids below */
+#define H7_Z16 "0000000000000000"
+#define H7_Z63 H7_Z16 H7_Z16 H7_Z16 H7_Z16 H7_Z16 H7_Z16 H7_Z16 \
+               "00000000000000"
+
 /* ══ 3. the prune, directly ═════════════════════════════════════════ */
 static int t_prune_direct(void) {
     h7_fx_t fx;
@@ -688,9 +693,12 @@ static int t_prune_direct(void) {
     CHECK(run_sql(fx.w->db, "BEGIN") == 0 &&
           run_sql(fx.w->db,
                   "INSERT INTO v2_replay (tx_id, intent_id, expiry_height) "
-                  "VALUES (zeroblob(63) || x'05', zeroblob(63) || x'15', 5),"
-                  " (zeroblob(63) || x'06', zeroblob(63) || x'16', 6),"
-                  " (zeroblob(63) || x'07', zeroblob(63) || x'17', 7)") == 0,
+                  /* 64-byte BLOB literals: `zeroblob(63) || x'05'` is
+                   * TEXT in SQLite (|| always yields text), which the S19
+                   * typeof CHECK refuses */
+                  "VALUES (x'" H7_Z63 "05', x'" H7_Z63 "15', 5),"
+                  " (x'" H7_Z63 "06', x'" H7_Z63 "16', 6),"
+                  " (x'" H7_Z63 "07', x'" H7_Z63 "17', 7)") == 0,
           "three rows, expiry 5, 6, 7");
     CHECK(nodus_witness_v2_replay_prune(fx.w, NODUS_RT_GEN_STORAGE, 7, &n,
                                         why, sizeof(why)) == 0 && n == 0 &&
