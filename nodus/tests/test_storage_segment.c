@@ -144,7 +144,11 @@
  * here is gone — the role-based prune guard (nodus_witness_role_prune.c)
  * replaced it;
  * nodus_witness_sthold_on_msg itself (the serving side's message entry)
- * is not driven here.
+ * is not driven here. hash_src: the only non-ledger source is an
+ * in-memory array holding the SAME hashes v2_blocks holds — a real
+ * light-node hash list (design §3 B2) is not built, and a source whose
+ * answer at one height changes between two calls is not exercised (the
+ * contract forbids it, nothing enforces it).
  *
  * Requirements: a default build; no environment. Writes under a fresh
  * mkdtemp directory in $TMPDIR (or /tmp) and removes it at the end; the
@@ -1826,6 +1830,11 @@ static int t_hash_src(void) {
         CHECK(r == 0 && vl == NODUS_SEG_V_FAULT &&
               szl == NODUS_SEG_DATA_HDR_LEN,
               "a ledger read fault: the same verdict");
+        /* the ledger source over no database answers -1 everywhere */
+        nodus_seg_hash_src_t s0 = nodus_seg_hash_src_ledger(NULL);
+        CHECK(first_header(d3, &s0, hb, hl, &v, &sz) == 0 &&
+              v == NODUS_SEG_V_FAULT && sz == NODUS_SEG_DATA_HDR_LEN,
+              "ledger source over NULL: V_FAULT, nothing written");
     }
 
     /* the resume scan: a partial file (heights 1 … 3) is the node's
