@@ -95,6 +95,15 @@
 //                                reject for an older node or an unknown
 //                                generation ("this page is out of date").
 //                                REQUIRED: without it nothing is built.
+//     rulesetCompat()            OPTIONAL (update notice, design
+//                                2026-10-20-update-required-warning §1 B —
+//                                shape in src/nodus/send-module.js): the
+//                                module's compatibility with the node's
+//                                dnac_ruleset_info answer, also when it
+//                                carries no matching generation. A module
+//                                without it still unlocks; the page then
+//                                shows no notice (builds are gated by
+//                                rulesetInfo as before).
 //     nameLookup({ name }) / nameOf({ owner }) / profileAddress({ owner, field })
 //                                OPTIONAL (HF-4, chain names — shapes in
 //                                src/nodus/send-module.js), same rule as
@@ -233,6 +242,10 @@ const EVM_QUERY_OPS = ['evmQuery'];
 // module without it still unlocks; this client then answers "not available"
 // and Activity shows this tab's own records only.
 const ADDR_HISTORY_OPS = ['addrHistory'];
+// OPTIONAL (update notice — shape in src/nodus/send-module.js): a module
+// without it still unlocks; this client then answers "not available" and
+// the page shows no update notice (src/nodus/update-notice.js).
+const COMPAT_OPS = ['rulesetCompat'];
 const U32_DEC = /^(0|[1-9]\d{0,9})$/;
 // A page request, checked: `limit` 1..NODUS_HISTORY_MAX_LIMIT (default
 // NODUS_HISTORY_LIMIT); `before` (optional) the cursor { h, i, q } of
@@ -392,7 +405,7 @@ export const isNodusBusy = error => error?.busy === true;
 // 'session lost', error } — for the session log only.
 export function createNodusClient({ factory, onState, steps, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval, setTimeout: after = globalThis.setTimeout, clearTimeout: stopAfter = globalThis.clearTimeout } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, hf6able = false, hf6Rules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false, historyReadable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, hf6able = false, hf6Rules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false, historyReadable = false, compatReadable = false;
   // The connection step running now ({ name, handle }) and whether the first
   // keepalive after 'ready' is still to be logged.
   let currentStep, firstTick = false;
@@ -574,6 +587,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     evmBuildable = evmGen > 0 && EVM_BUILD_OPS.every(name => typeof loaded[name] === 'function');
     evmReadable = evmGen > 0 && EVM_QUERY_OPS.every(name => typeof loaded[name] === 'function');
     historyReadable = ADDR_HISTORY_OPS.every(name => typeof loaded[name] === 'function');
+    compatReadable = COMPAT_OPS.every(name => typeof loaded[name] === 'function');
   }
   // Smart contracts only where the node runs the EVM generation: a node
   // that has not voted the EVM in (or does not say) offers neither group
@@ -701,6 +715,10 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     submit: call('submit'),
     scanConfirm: call('scanConfirm'),
     rulesetInfo: (options) => call('rulesetInfo')(undefined, options),
+    // Update notice (COMPAT_OPS): the module's compatibility with the node's
+    // rule-set answer — never an input to a build.
+    get compatReadable() { return compatReadable && state === 'ready'; },
+    rulesetCompat: (options) => compatReadable ? call('rulesetCompat')(undefined, options) : Promise.reject(new Error('The update check is not available in this wallet version.')),
     // Whether the loaded module resolves chain names (NAME_OPS).
     get nameable() { return nameable && state === 'ready'; },
     nameLookup: nameCall('nameLookup'),

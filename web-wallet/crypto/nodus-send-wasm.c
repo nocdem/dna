@@ -2480,6 +2480,72 @@ static int nsw_session_ok(void) {
     return 0;
 }
 
+/* UPDATE NOTICE (design docs/plans/2026-10-20-update-required-warning-
+ * design.md §1 B): this module's compatibility with the node's last
+ * dnac_ruleset_info answer — nodus_ruleset_compat (nodus_client.c, the ONE
+ * rule the CLI and nodus-light use too) with the newest generation whose
+ * pins this module carries (nodus_v2_pins_generation_count). Kept by
+ * nsw_select_generation from every answer it reads, BEFORE the tuple
+ * match, so an answer this page cannot build for is still readable
+ * (nsw_ri_compat_json). For the wallet's notice only: no build reads it —
+ * every build asks the node again and is gated by the tuple match alone.
+ * `have` 0 = no answer was read by the last query (it failed, or none was
+ * made yet). */
+static struct {
+    int      have;
+    int      outcome;                   /* 0 OK / 1 update before / 2 required */
+    uint32_t gen, ng, max;
+    char     nh[NSW_U64_DEC], tip[NSW_U64_DEC];
+} g_rc;
+
+static char g_rc_json[160];
+
+static void nsw_compat_keep(const nodus_dnac_ruleset_info_t *ri) {
+    const uint32_t max = nodus_v2_pins_generation_count();
+    const int outcome = nodus_ruleset_compat(ri, max, NULL, 0);
+    if (outcome < 0) return;            /* ri == NULL: nothing to keep   */
+    g_rc.have = 1;
+    g_rc.outcome = outcome;
+    g_rc.gen = ri->generation;
+    g_rc.ng = ri->next_generation;
+    g_rc.max = max;
+    nsw_fmt_u64(ri->next_height, g_rc.nh);
+    nsw_fmt_u64(ri->tip, g_rc.tip);
+}
+
+/* {"outcome":N,"gen":N,"ng":N,"nh":"<u64>","tip":"<u64>","max":N} of the
+ * last answer, or "" when the last query read none. Synchronous, no
+ * network. */
+const char *nsw_ri_compat_json(void) {
+    g_rc_json[0] = '\0';
+    if (!g_rc.have) return g_rc_json;
+    snprintf(g_rc_json, sizeof(g_rc_json),
+             "{\"outcome\":%d,\"gen\":%u,\"ng\":%u,\"nh\":\"%s\","
+             "\"tip\":\"%s\",\"max\":%u}",
+             g_rc.outcome, (unsigned)g_rc.gen, (unsigned)g_rc.ng, g_rc.nh,
+             g_rc.tip, (unsigned)g_rc.max);
+    return g_rc_json;
+}
+
+#ifdef NODUS_SEND_TEST_FIXED_RANDOM
+/* TEST-only (parity build, never shipped): keep a given answer's
+ * (gen, ng, nh, tip) as nsw_select_generation would, so the notice
+ * decision is pinned without a node. @return 0 / -1 bad input. */
+int nsw_test_ri_compat(int gen, int ng, const char *nh_dec,
+                       const char *tip_dec) {
+    nodus_dnac_ruleset_info_t ri;
+    memset(&ri, 0, sizeof(ri));
+    memset(&g_rc, 0, sizeof(g_rc));
+    if (gen < 0 || ng < 0 || nsw_parse_u64(nh_dec, &ri.next_height) != 0 ||
+        nsw_parse_u64(tip_dec, &ri.tip) != 0)
+        return -1;
+    ri.generation = (uint32_t)gen;
+    ri.next_generation = (uint32_t)ng;
+    nsw_compat_keep(&ri);
+    return 0;
+}
+#endif
+
 /* HF-4 (design rev 4 §1.6; nodus-cli cli_select_runtimes): ask the node
  * which rule-set generation governs its tip + 1 and pick the PINNED
  * generation whose (SYSTEM, CORE) tuple EQUALS the answer — never by
@@ -2493,11 +2559,13 @@ static int nsw_session_ok(void) {
 static int nsw_select_generation(nsw_gen_t *out) {
     nodus_dnac_ruleset_info_t ri;
     memset(&ri, 0, sizeof(ri));
+    memset(&g_rc, 0, sizeof(g_rc));     /* no answer kept until one is read */
     int rc = nodus_client_dnac_ruleset_info(&g_client, &ri);
     if (rc != 0)
         return nsw_fail_rc(rc, "This Nodus node did not say which transaction "
                            "rules it runs (an older node, or an unreadable "
                            "answer; rc=%d). Nothing was built.", rc);
+    nsw_compat_keep(&ri);               /* before the match: see g_rc    */
     const uint32_t gen = nsw_gen_match(ri.sys_version, ri.sys_hash,
                                        ri.core_version, ri.core_hash);
     if (gen != 0) {
@@ -3553,7 +3621,9 @@ out:
  * facts its expiry is judged against (nsw_select_generation), for the
  * wallet to compute the expiry it requests (src/adapters/nodus.js
  * expiryHeightFor — the same rule as nsw_expiry_for). The builds do NOT
- * reuse this answer: each asks the node again.
+ * reuse this answer: each asks the node again. Its answer's compatibility
+ * (nsw_ri_compat_json, UPDATE NOTICE above) stays readable also when it
+ * returns -1 because no pinned generation matches.
  * nsw_name_lookup / nsw_name_of: dnac_name_lookup / dnac_name_of — ONE
  * node's committed state (decision 2026-10-02-onchain-names.md item 9,
  * accepted risk); the client's decoders refuse a malformed answer

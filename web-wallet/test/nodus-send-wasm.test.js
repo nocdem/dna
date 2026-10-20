@@ -69,6 +69,8 @@ const ENTRY_POINTS = [
   'nsw_name_ok', 'nsw_ruleset_info', 'nsw_ri_gen', 'nsw_ri_tip', 'nsw_ri_h', 'nsw_name_lookup', 'nsw_name_of',
   'nsw_name_found', 'nsw_name_owner', 'nsw_name_name', 'nsw_name_registered', 'nsw_name_committed',
   'nsw_profile_address', 'nsw_profile_addr',
+  // 0.1.129: the update notice — the last ruleset answer's compatibility
+  'nsw_ri_compat_json',
   // HF-4: chain-name registration (nodus-cli name register, shared builder nodus_v2_name.c)
   'nsw_built_name', 'nsw_built_price', 'nsw_name_offline_build', 'nsw_name_prices', 'nsw_np_price', 'nsw_np_sched_count',
   'nsw_np_sched_param', 'nsw_np_sched_value', 'nsw_np_sched_effective', 'nsw_name_build',

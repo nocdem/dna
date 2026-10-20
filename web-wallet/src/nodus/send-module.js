@@ -538,6 +538,23 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
       check(await call('nsw_ruleset_info'));
       return { tip: str('nsw_ri_tip'), generation: String(num('nsw_ri_gen')), gen2Height: str('nsw_ri_h') };
     },
+    // UPDATE NOTICE (design docs/plans/2026-10-20-update-required-warning-
+    // design.md §1 B). rulesetCompat() -> { outcome, generation,
+    // nextGeneration, nextHeight, tip, maxGeneration }: the module's own
+    // nodus_ruleset_compat on the node's dnac_ruleset_info answer
+    // (nodus-send-wasm.c nsw_ri_compat_json) — outcome 0 OK, 1 a switch to
+    // a generation this module does not carry is committed, 2 the network
+    // already runs one. Readable also when nsw_ruleset_info refuses because
+    // no pinned generation matches (that refusal is outcome 2's case).
+    // Rejects only when the node gave no readable answer. For the notice
+    // only: never an input to a build.
+    async rulesetCompat() {
+      const rc = await call('nsw_ruleset_info');
+      const text = str('nsw_ri_compat_json');
+      if (!text) { check(rc); throw new Error('The Nodus module returned invalid network rules.'); }
+      const r = JSON.parse(text);
+      return { outcome: r.outcome, generation: String(r.gen), nextGeneration: String(r.ng), nextHeight: r.nh, tip: r.tip, maxGeneration: String(r.max) };
+    },
     // ACCOUNT HISTORY (0.1.78; nodus-send-wasm.c "ACCOUNT HISTORY", decision
     // 2026-10-01-node-address-history-index.md item 6): one dnac_addr_history
     // page of THIS wallet's own address (the module always asks for its

@@ -18,6 +18,8 @@ import { createNodusClient, NODUS_CONNECT_BOUND_MS, isNodusBusy } from './nodus/
 import { nodusHistoryRow, nodusHistoryStatus, NODUS_HISTORY_LIMIT } from './nodus/history.js';
 import { parseNameOf } from './nodus/names.js';
 import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, busyReadyText } from './nodus/resubmit.js';
+import { updateNoticeOf, createUpdateNotice } from './nodus/update-notice.js';
+import { parseRulesetCompat } from './adapters/nodus.js';
 import { netLevelFor, netStatusView } from './net-status.js';
 // The session log (memory only, cleared on lock; the Logs page).
 import { sessionLog, stepLog, logPageErrors, mountSessionLogView } from './session-log.js';
@@ -1059,6 +1061,28 @@ async function startNodusSend(source, address) {
   await Promise.allSettled(opening.filter(step => typeof step?.then === 'function'));
   await connectNodus(source, address, client, () => { wasReady = true; });
 }
+// UPDATE NOTICE (web 0.1.129, src/nodus/update-notice.js): after every
+// successful connection — the first one and each reconnect, which is a new
+// client or a new connectNodus success — the module says whether this page
+// carries the network's rules (client.rulesetCompat) and the banner at the
+// top of the page follows. Both sites run this file (the wallet site and
+// Nodus Connect, src/connect-main.js). A failed check changes nothing shown
+// (no answer is not evidence either way); it goes to the session log. A
+// module without the check shows no notice.
+const updateNotice = createUpdateNotice();
+async function refreshUpdateNotice(client) {
+  if (!client.compatReadable) return;
+  let notice;
+  try {
+    notice = updateNoticeOf(parseRulesetCompat(await client.rulesetCompat()));
+  } catch (error) {
+    sessionLog.log('net', `update check failed (${error?.message || error})`);
+    return;
+  }
+  if (client !== nodusClient) return;
+  if (notice) sessionLog.log('net', `update check: ${notice.details}`, { error: notice.level === 'required' });
+  updateNotice.show(notice);
+}
 // One connection attempt of an identified client (startNodusSend). Success:
 // exactly what the first open always did. A failure that may be retried
 // keeps the client and the extensions' view (nodusConnectFailed) and tries
@@ -1077,6 +1101,7 @@ async function connectNodus(source, address, client, markReady) {
     $('nodus-address-status').textContent = 'Derived locally from this wallet’s recovery phrase.';
     setNodusReady(true);
     portfolio.setAddress(NODUS_ASSET.chain, address);
+    void refreshUpdateNotice(client);
     void refreshClaim();
     void refreshStaking();
     void refreshName();

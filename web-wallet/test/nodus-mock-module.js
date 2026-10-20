@@ -30,6 +30,10 @@ export function createMockNodusModule() {
     // HF-4: rulesetInfo's answer (generation 1, no switch), or an Error the
     // module would raise (an older node / an unknown generation).
     ruleset: { tip: '1000', generation: '1', gen2Height: '0' }, rulesetError: null,
+    // web 0.1.129: rulesetCompat's answer (the module's JS form,
+    // send-module.js rulesetCompat; outcome 0 = this module carries the
+    // node's rules), or an Error the module would raise (no readable answer).
+    compat: { outcome: 0, generation: '5', nextGeneration: '0', nextHeight: '0', tip: '1000', maxGeneration: '5' }, compatError: null,
     // HF-4 chain names: name -> owner fingerprint; owner -> { eth, bsc, sol,
     // trx } profile addresses; profileError: the module's refusal of an
     // unreadable / unsigned profile.
@@ -109,6 +113,7 @@ export function createMockNodusModule() {
     scanConfirm: request => op('scanConfirm', async () => { state.lastScan = request; return state.scan; }),
     tick: () => op('tick', async () => { if (state.tickFails) throw new Error('session closed'); }),
     rulesetInfo: () => op('rulesetInfo', async () => { if (state.rulesetError) throw state.rulesetError; return { ...state.ruleset }; }),
+    rulesetCompat: () => op('rulesetCompat', async () => { if (state.compatError) throw state.compatError; return { ...state.compat }; }),
     nameLookup: ({ name }) => op('nameLookup', async () => {
       if (state.nameError) throw state.nameError;
       const owner = state.names[name];

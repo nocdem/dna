@@ -377,6 +377,9 @@ exports_common=(
   # nsw_name_of and nsw_profile_address wait on the network (ccall
   # { async: true }); nsw_name_ok and the getters do not.
   nsw_name_ok nsw_ruleset_info nsw_ri_gen nsw_ri_tip nsw_ri_h
+  # update notice (design 2026-10-20-update-required-warning §1 B): the
+  # compatibility of the last ruleset answer as JSON; synchronous getter
+  nsw_ri_compat_json
   nsw_name_lookup nsw_name_of nsw_name_found nsw_name_owner nsw_name_name
   nsw_name_registered nsw_name_committed
   nsw_profile_address nsw_profile_addr
@@ -481,6 +484,9 @@ exports_common=(
   nc_lock
 )
 exports_test=(nsw_test_random_buf nsw_test_random_load nsw_test_pins_tuple nsw_test_gen_match
+  # update notice: a given (gen, ng, nh, tip) kept as a node answer would be
+  # (nsw_ri_compat_json then reads it). Synchronous, no network.
+  nsw_test_ri_compat
   nsw_test_msig_member_add_pk nsw_test_msig_build nsw_test_msig_review
   nsw_test_msig_seed_pk nsw_test_msig_seed_sign
   nsw_test_evm_call_hex nsw_test_evm_call_roundtrip nsw_test_evmfund_roundtrip

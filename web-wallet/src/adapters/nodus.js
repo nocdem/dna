@@ -97,6 +97,25 @@ export function parseRulesetInfo(result) {
   if (generation === 0n) throw new Error('The Nodus module returned invalid network rules.');
   return { generation, tip: rawUnits(result.tip, 'block height'), gen2Height: rawUnits(result.gen2Height, 'block height') };
 }
+// The module's rulesetCompat() answer (src/nodus/send-module.js), checked:
+// outcome 0 / 1 / 2 as the module decided it (nodus_ruleset_compat — the
+// rule is NOT repeated here), the generations as BigInt, the heights as
+// BigInt. Outcome 1 always names a switch above the tip. Throws on any
+// other shape. For the update notice only (src/nodus/update-notice.js).
+export function parseRulesetCompat(result) {
+  const bad = () => new Error('The Nodus module returned an invalid update check.');
+  if (!result || ![0, 1, 2].includes(result.outcome)) throw bad();
+  const out = {
+    outcome: result.outcome,
+    generation: rawUnits(result.generation, 'rule-set generation'),
+    nextGeneration: rawUnits(result.nextGeneration, 'rule-set generation'),
+    nextHeight: rawUnits(result.nextHeight, 'block height'),
+    tip: rawUnits(result.tip, 'block height'),
+    maxGeneration: rawUnits(result.maxGeneration, 'rule-set generation')
+  };
+  if (out.outcome === 1 && (out.nextGeneration === 0n || out.nextHeight <= out.tip)) throw bad();
+  return out;
+}
 // tip: the chain height the coin listing reported. 0 is what the node
 // answers on a read error (session-expiry note item 2), so 0 and "unknown"
 // both refuse. ruleset: parseRulesetInfo's result (required). The rule of
