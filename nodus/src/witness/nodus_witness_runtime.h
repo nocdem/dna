@@ -278,6 +278,18 @@ extern "C" {
  *  generation (nodus_chain_config_stateful_rules_ex, param-18 rule
  *  (c)). */
 #define NODUS_RT_GEN_STORAGE_BASE    NODUS_RT_GEN_EVM
+/** HF-7 (design docs/plans/2026-09-11-nodus-ledger-snapshot-design.md §10,
+ *  §10.9, §10.11): the ROOTS generation — SYSTEM state root "NDS.SYS.v6"
+ *  (§8.9 S4), segment leaf v2 (S5), DomainHead v2 head-authoritative (S6),
+ *  GLOBAL v2 with the replay leg (S7/S8), the replay relation v2_replay
+ *  and the whole-block expiry rule. Code names it GEN_ROOTS, never "5".
+ *  Built ON the storage generation. INERT until HF-7 P1d adds its
+ *  compiled table entry, pins, edge and raises NODUS_RT_GEN_MAX: no
+ *  registry reaches it before then, so every `>= NODUS_RT_GEN_ROOTS` test
+ *  is false on every chain. */
+#define NODUS_RT_GEN_ROOTS           ((uint32_t)5)
+/** The generation the roots generation is built on and switches FROM. */
+#define NODUS_RT_GEN_ROOTS_BASE      NODUS_RT_GEN_STORAGE
 #ifdef NODUS_EVM_ENABLED
 #define NODUS_RT_GEN_MAX             NODUS_RT_GEN_STORAGE
 #else
