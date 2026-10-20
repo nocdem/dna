@@ -11039,8 +11039,10 @@ joiner's `apply_table` column count is unaffected. `v2_replay` is on the genesis
 
 **INERT.** Nothing in this build writes or reads `v2_replay` or `last_upd_hash`: the writers (the applied
 item's savepoint, the prune, the edge's head seed) and the readers (the replay guards, `replay_root`, the
-head's previous-update read) arrive with HF-7 P1c. No root, invariant or verdict moves. (Since P1c-1 —
-section below — the readers and the head-column writers exist, gated on generation ROOTS.)
+head's previous-update read) arrive with HF-7 P1c. No root, invariant or verdict moves. (Superseded by
+"HF-7 P1c-1" and "HF-7 P1c-2" below: `replay_root`, the head-column reads and writes are P1c-1's; the
+savepoint writer, the phase-12d prune and the four guards are P1c-2's — all gated on rule-set generation
+ROOTS (5).)
 
 **Gates widened** (each accepts 19 wherever it accepted 18, so a node migrated at open still replays
 every historical fork): every builder migrates to S19 (`nodus_witness_v2_join.c`,
@@ -11199,7 +11201,9 @@ exact guard swap / the engine prune at generation 5; the direct prune; the D2 en
 ProcessProposal, PrepareProposal and FinalizeBlock (FAULT with the database byte-identical); the seam with
 HF-3 off; CheckTx's window; generation 4 unchanged (no row, the index-table guard at all four callers, e = 0
 and e = H + 721 applied, e = H − 1 a failed item). Generation 5 is reached through a scripted runtime table
-whose `generation` is patched before a seeded genesis — no edge, so the A−1 cell is P1e's harness case.
+whose `generation` is patched before a seeded genesis (the database climbed to S19 first; the SYSTEM / CORE
+`state_root` hooks pinned to the generation-1 compositions, because at ≥ 4 the native ones need rows only the
+HF-6 edge writes) — no edge, so the A−1 cell is P1e's harness case.
 Written, NOT run by the builder.
 
 ### Witness Database Schema

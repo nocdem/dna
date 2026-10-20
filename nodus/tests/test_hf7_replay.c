@@ -59,13 +59,19 @@
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  *  Compile flags: none beyond the default nodus build (NODUS_EVM_ENABLED
- *  not needed). Environment: none. The roots generation is reached
+ *  not needed). Environment: none. The seeded database is climbed to
+ *  schema S19 (nodus_witness_db_migrate_v2s19) before the genesis — the
+ *  seeding helper stops at S16. The roots generation is reached
  *  WITHOUT its edge: the scripted runtime table (v2_exec_fixture.h,
  *  builtin-copied SYSTEM/CORE entries) is copied per fixture with its
  *  `generation` field set to NODUS_RT_GEN_ROOTS (or NODUS_RT_GEN_STORAGE)
  *  BEFORE the seeded version-3 genesis, so the registry tuples resolve
  *  onto entries that report that generation from genesis on (lookup is
- *  by the five-axis tuple, never by generation). Every block stays in
+ *  by the five-axis tuple, never by generation). The two entries'
+ *  `state_root` hooks are pinned to the generation-1 compositions
+ *  (h7_sys_root / h7_core_root): at >= 4 the native hooks would compose
+ *  SYSTEM v5 over v2_validator_roles rows only the HF-6 edge writes, and a
+ *  CORE root the genesis registry row does not carry. Every block stays in
  *  epoch 0 (default DNAC_EPOCH_LENGTH 720), so no boundary runs.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
@@ -79,10 +85,13 @@
  *    expiry rule, edge at the end) is NOT exercised here — it is P1e's
  *    harness scenario. The block-start reading is pinned only indirectly:
  *    every gate reads the context's generation, built before phase 6b.
- *  - The patched generation also turns on every generation >= 4 rule of
- *    the native hooks (SYSTEM root v5, CORE root with the EVM reserve);
- *    after HF-7 P1c-1 merges, the SYSTEM v6 / GLOBAL v2 roots too. A
- *    failure there is not a replay/expiry defect — read the reason.
+ *  - The SYSTEM / CORE root compositions are pinned to generation 1's
+ *    (above), so no domain-root rule of generation >= 4 is exercised here.
+ *    The patched generation still reaches every engine-body gate on it:
+ *    after HF-7 P1c-1 merges, phase 13's GLOBAL v2 / replay_root and the
+ *    DomainHead v2 head-authoritative read run too, on a chain that never
+ *    crossed the edge that seeds `last_upd_hash`. A failure there is not
+ *    a replay/expiry defect — read the reason.
  *  - The scripted runtime ignores the fee and hashes any auth bytes, so
  *    "A' is the same intent under another authorization" is the intent /
  *    wire derivation's statement, not a second real signer.
@@ -168,6 +177,29 @@ typedef struct {
     nodus_domain_runtime_t  tab[2];
 } h7_fx_t;
 
+/* The genesis generation's root compositions, pinned on the patched
+ * entries: nodus_rt_system_state_root / nodus_rt_core_state_root
+ * (nodus_witness_v2_claims.c) choose the composition by rt->generation,
+ * and at >= 4 the SYSTEM root's validator leaf joins v2_validator_roles —
+ * rows only the HF-6 edge writes (nodus_witness_v2_roles_migrate), which a
+ * seeded genesis never runs — while the CORE root gains the EVM reserve
+ * leaf the registry's genesis_state_root (composed by the builtin
+ * generation-1 entry, nodus_witness_domreg_init_genesis) does not carry.
+ * Pinning the generation-1 compositions keeps the root legs out of what
+ * this file tests; the replay leg and the GLOBAL composition are phase
+ * 13's, not these hooks'. */
+static int h7_sys_root(const nodus_domain_runtime_t *rt,
+                       struct nodus_witness *w, uint8_t out[64]) {
+    (void)rt;
+    return nodus_witness_system_root_v2((nodus_witness_t *)w, out);
+}
+
+static int h7_core_root(const nodus_domain_runtime_t *rt,
+                        struct nodus_witness *w, uint8_t out[64]) {
+    (void)rt;
+    return nodus_witness_core_root_v2((nodus_witness_t *)w, out);
+}
+
 static int h7_open(h7_fx_t *fx, const char *tag, uint32_t gen, int hf3) {
     memset(fx, 0, sizeof(*fx));
     fx->w = calloc(1, sizeof(*fx->w));
@@ -178,10 +210,25 @@ static int h7_open(h7_fx_t *fx, const char *tag, uint32_t gen, int hf3) {
     snprintf(fx->w->data_path, sizeof(fx->w->data_path), "%s", fx->dir);
     memset(fx->chain_id16, 0x37, sizeof(fx->chain_id16));
     if (v2x_seed_prepare(fx->w, fx->chain_id16, 0) != 0) return -1;
+    /* v2x_seed_prepare leaves the chain at S16; v2_replay is an S19 table
+     * (HF-7 P1b), so climb the rungs before the genesis, as a node's
+     * at-open rung does (nodus_witness.c witness_open_migrate_s19) */
+    {
+        uint32_t ver = 0;
+        if (nodus_witness_db_migrate_v2s19(fx->w) != 0 ||
+            nodus_witness_db_schema_version(fx->w, &ver) != 0 ||
+            ver != NODUS_V2_SCHEMA_VERSION_S19)
+            return -1;
+    }
     if (v2x_table_init(fx->w) != 0) return -1;
     memcpy(fx->tab, g_v2x_table, sizeof(fx->tab));
+    if (fx->tab[0].domain_id != DNA_DOMAIN_SYSTEM ||
+        fx->tab[1].domain_id != DNA_DOMAIN_CORE)
+        return -1;                           /* PREMISE: SYSTEM, CORE    */
     fx->tab[0].generation = gen;
     fx->tab[1].generation = gen;
+    fx->tab[0].state_root = h7_sys_root;     /* SYSTEM (domain 0)        */
+    fx->tab[1].state_root = h7_core_root;    /* CORE   (domain 1)        */
     fx->w->v2_runtime_table   = fx->tab;
     fx->w->v2_runtime_table_n = 2;
     if (hf3) {
