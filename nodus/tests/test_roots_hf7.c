@@ -1324,6 +1324,14 @@ static int test_s7(void) {
     CHECK(dna_v2_replay_root(r, 2, h) == 0,
           "S7 tx_id == other intent_id accepted");
     OK();
+    /* A repeated intent_id on NON-ADJACENT rows (0 and 2, tx_ids still
+     * ascending) is refused too — the KAT's duplicate vector is n = 2,
+     * adjacent (P1a audit finding E). Asserts -1 only; no KAT value. */
+    CHECK(rp_rows(S7_R3, 3, r) == 0, "S7 fixture hex");
+    memcpy(r[2].intent_id, r[0].intent_id, 64);
+    CHECK(dna_v2_replay_root(r, 3, h) == -1,
+          "S7 non-adjacent duplicate intent_id refused");
+    OK();
     return 0;
 }
 

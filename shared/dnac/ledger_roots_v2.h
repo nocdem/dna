@@ -942,7 +942,13 @@ int dna_v2_system_payload_root(const uint8_t validator_root[64],
  *     Row integers are taken as uint64_t even where the preimage width is
  *     narrower (kind u8, fail_streak u32) so that the caller's SQLite
  *     INTEGER is passed through unnarrowed and this layer refuses it; a
- *     negative SQLite value cast to uint64_t is >= 2^63 and is refused;
+ *     negative SQLite value cast to uint64_t is >= 2^63 and is refused —
+ *     EXCEPT S7's expiry_height, whose stated range is 1..2^64-1 (a -1
+ *     cast to u64 is in range): the v2_replay CHECK (typeof integer AND
+ *     >= 1, schema S19) is the guard against a negative stored expiry;
+ *   - S6 reuses dna_v2_domain_head_t (uint32_t / uint8_t fields): the
+ *     CALLER range-checks domain_id, ruleset_version and status before
+ *     narrowing into it;
  *   - rows MUST arrive strictly ascending by the stated key (C5); an
  *     equal or descending neighbour is refused, never sorted silently;
  *   - Merkle per C6 (tagged_merkle — odd node carried up unchanged,
