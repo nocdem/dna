@@ -202,6 +202,7 @@ Usage (smart contracts, the EVM domain):
   evm logs --from-height <H> --to-height <H> [--address <a>]
            [--topic0..3 <t>] [--limit 1..1000]   (at most 10 000 blocks)
            [--cursor h:x:li]  resume a page (its "more: next" line)
+           [--pretty]  a readable layout (default: one line per log)
 Transactions (deploy / send / deposit / withdraw / redeem) take
   --keys <dir> (--dry-run | --submit ip:port) [--value <wei>] [--gas <N>]
   [--no-wait] [--force]   (--force: send even when the simulation fails)
@@ -220,6 +221,8 @@ ABI types: uint<M> int<M> bool address bytes<M> bytes string.
 ```
 
 (The default path is `EVM_SOLC_DEFAULT`, `tools/nodus-cli.c:6396`; the 32-byte-address Solidity compiler is built from `nodus/tools/evm/solc/` — see its README.)
+
+`evm logs --pretty` prints a readable layout — one block per log (block, item index, log index, contract, transaction, topics, the data split into 32-byte words) and an "N event log(s) found." footer; without it the output stays one `h=… x=… li=… address=… tx=…` line per log plus its `topic`/`data` lines and an `N log(s)` count, for scripts. Either way the "more: next --cursor" line follows when the node stopped early. The connection and debug lines (`Using random identity: …` when no `-i` is given, the client's `[NODUS_CLIENT] …` connect lines, the transport's `TCP_CONN: …` lines) go to stderr, so `2>/dev/null` hides them and leaves only the result on stdout.
 
 ## Run Tests
 

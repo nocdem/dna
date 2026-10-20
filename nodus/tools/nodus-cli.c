@@ -10837,6 +10837,7 @@ static void evm_usage(void) {
         "  evm logs --from-height <H> --to-height <H> [--address <a>]\n"
         "           [--topic0..3 <t>] [--limit 1..1000]   (at most 10 000 blocks)\n"
         "           [--cursor h:x:li]  resume a page (its \"more: next\" line)\n"
+        "           [--pretty]  a readable layout (default: one line per log)\n"
         "Transactions (deploy / send / deposit / withdraw / redeem) take\n"
         "  --keys <dir> (--dry-run | --submit ip:port) [--value <wei>] [--gas <N>]\n"
         "  [--no-wait] [--force]   (--force: send even when the simulation fails)\n"
@@ -10870,6 +10871,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
     const char *from = NULL, *to_fp = NULL, *addr_f = NULL;
     const char *topic_f[4] = { NULL, NULL, NULL, NULL };
     const char *cursor_f = NULL;            /* evm logs --cursor h:x:li */
+    int pretty = 0;                         /* evm logs --pretty */
     uint64_t fh = 0, th = 0, lim = 100;
     int has_fh = 0, has_th = 0;
 
@@ -10919,6 +10921,8 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             if (evm_u64(argv[++i], &lim) != 0) return 1;
         } else if (!strcmp(a, "--cursor") && more) {
             cursor_f = argv[++i];
+        } else if (!strcmp(a, "--pretty")) {
+            pretty = 1;
         } else if (a[0] == '-' && a[1] == '-') {
             fprintf(stderr, "unknown option %s\n", a);
             evm_usage();
@@ -11299,7 +11303,8 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
         memset(&lq, 0, sizeof(lq));
         if (!has_fh || !has_th || lim < 1 || lim > NODUS_EVM_LOGS_MAX_LIMIT) {
             fprintf(stderr, "evm logs --from-height <H> --to-height <H> "
-                    "[--limit 1..%u]\n", (unsigned)NODUS_EVM_LOGS_MAX_LIMIT);
+                    "[--limit 1..%u] [--pretty]\n",
+                    (unsigned)NODUS_EVM_LOGS_MAX_LIMIT);
             return 1;
         }
         lq.from_height = fh;
@@ -11356,7 +11361,40 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
                     qrc == -1 ? " — at most 10 000 blocks per query" : "");
             return 1;
         }
-        for (size_t i = 0; i < lr.n; i++) {
+        for (size_t i = 0; pretty && i < lr.n; i++) {
+            /* --pretty: a readable layout, one block per log */
+            const nodus_evm_log_t *l = &lr.logs[i];
+            if (i > 0) printf("\n");
+            printf("EVM event log\n");
+            printf("  Block:         %llu\n", (unsigned long long)l->height);
+            printf("  Item index:    %u\n", (unsigned)l->item);
+            printf("  Log index:     %u\n", (unsigned)l->log_index);
+            printf("\n  Contract:\n    0x");
+            evm_print_hex(l->addr, 32);
+            printf("\n\n  Transaction:\n    ");
+            evm_print_hex(l->intent_id, 64);
+            printf("\n\n  Topics:\n");
+            if (l->n_topics == 0) printf("    (none)\n");
+            for (uint8_t t = 0; t < l->n_topics; t++) {
+                printf("    [%u] 0x", (unsigned)t);
+                evm_print_hex(l->topics[t], 32);
+                printf("\n");
+            }
+            if (l->data_len == 0) {
+                printf("\n  Data: (empty)\n");
+                continue;
+            }
+            printf("\n  Data — 32-byte words:\n");
+            for (size_t w = 0; w * 32 < l->data_len; w++) {
+                size_t wl = l->data_len - w * 32;
+                if (wl > 32) wl = 32;
+                printf("    [%zu] ", w);
+                evm_print_hex(l->data + w * 32, wl);
+                if (wl < 32) printf(" (%zu bytes)", wl);
+                printf("\n");
+            }
+        }
+        for (size_t i = 0; !pretty && i < lr.n; i++) {
             const nodus_evm_log_t *l = &lr.logs[i];
             printf("h=%llu x=%u li=%u address=0x",
                    (unsigned long long)l->height, (unsigned)l->item,
@@ -11374,7 +11412,11 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             evm_print_hex(l->data, l->data_len);
             printf("\n");
         }
-        printf("%zu log(s)\n", lr.n);
+        if (pretty)
+            printf("%s%zu event log%s found.\n", lr.n ? "\n" : "", lr.n,
+                   lr.n == 1 ? "" : "s");
+        else
+            printf("%zu log(s)\n", lr.n);
         if (lr.more && lr.has_cursor)
             /* the node stopped before --to-height: the same query with
              * this cursor resumes exactly where it stopped */

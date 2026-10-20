@@ -59,6 +59,13 @@ nodus-cli -s <server> evm call <token> "balanceOf(address)(uint256)" <your-addre
 nodus-cli -s <server> evm send <token> "transfer(address,uint256)" <to> 1000000000000000000 \
     --keys <keys> --submit <ip:port>
 nodus-cli -s <server> evm logs --from-height <H> --to-height <H> --address <token>
+nodus-cli -s <server> evm logs --from-height <H> --to-height <H> --address <token> --pretty
 ```
+
+`evm logs --pretty` prints a readable layout (one block per log: block, contract,
+transaction, topics, the data in 32-byte words); the default stays one line per log
+for scripts. The connection and debug lines (`Using random identity: …`, the
+`[NODUS_CLIENT] …` and `TCP_CONN: …` lines) go to stderr, so `2>/dev/null` hides
+them and leaves only the result.
 
 Amounts are base units (`decimals` 18: 1 token = 10^18).
