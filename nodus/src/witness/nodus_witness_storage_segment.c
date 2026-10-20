@@ -247,7 +247,7 @@ struct nodus_seg_build {
     char      dir[NODUS_SEG_PATH_MAX];
     uint64_t  k, first, last;           /* last = k·17280                */
     nodus_seg_hash_src_t src;           /* the trusted hashes (a copy)    */
-    int       fd;                      /* .dat.tmp                      */
+    int       fd;                       /* .dat.tmp                      */
     uint64_t  size;                     /* verified bytes = write offset  */
 
     bool      scanning;                 /* the resume scan is not over    */
