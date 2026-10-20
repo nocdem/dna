@@ -13,10 +13,8 @@
  *      read starting at the end of the file says "end of file" (1), a read
  *      running past it says 1, nodus_fs_size is 2^31 + 8, fsync answers 0;
  *      nodus_fs_read_once on a fresh descriptor returns the first bytes.
- *      ⚠ An offset at or above 2^32 (OffsetHigh != 0) is NOT tested: on
- *      NTFS a write there allocates the whole 4 GiB unless the file is
- *      made sparse (another API, not used here) — the 2^31 case already
- *      allocates ≈ 2 GiB on NTFS for the duration of the case.
+ *      The 2^31 case allocates ≈ 2 GiB on NTFS for the duration of the
+ *      case (the file is not sparse). Offsets at and above 2^32: case 11.
  *   2. truncate cuts the file to the requested size.
  *   3. rename-replace: a rename onto an existing file replaces it (the
  *      target holds the source's bytes, the source is gone) — also when
@@ -34,7 +32,25 @@
  *      UTF-8 name; a path that is not valid UTF-8 is refused (-1, EINVAL).
  *   7. an absent file opened for reading is -1 with errno ENOENT — the
  *      segment reader's "not held" (1) versus "fault" (-1) rests on it;
- *      the directory sync answers 0 (a documented no-op on Windows).
+ *      the directory sync answers 0 (the directory handle opened and
+ *      flushed — a -1 there would also fail every publish).
+ *  10. two orders whose answer is the platform's, each passing when its
+ *      outcome is CONSISTENT, and printed: (1) a rename onto a target
+ *      another descriptor holds open — either 0 (the target holds the
+ *      source's bytes, the source is gone) or -1 with an errno other than
+ *      ENOENT / EEXIST (the target unchanged, the source still there);
+ *      (2) the name of a file unlinked while a descriptor still holds it
+ *      (a delete pending on Windows), created again before that
+ *      descriptor is closed — either a new file holding the new bytes, or
+ *      -1 with an errno other than ENOENT / EEXIST, and once the holder
+ *      is closed the create succeeds; the holder still reads the old
+ *      bytes either way. A crash or a mix (0 but the old bytes, -1 but
+ *      the source gone) FAILS.
+ *  11. offsets at and above 2^32 (OffsetHigh != 0) on a SPARSE file
+ *      (FSCTL_SET_SPARSE): 16 bytes across 2^32 written and read back
+ *      (also from 2^32 itself), size 2^32 + 8, end of file at 2^32 + 8,
+ *      truncate to 2^32 + 4. A file system that refuses the sparse flag
+ *      prints NOT COVERED — counted as a skip, never as a pass.
  *  B. the segment READER on a real segment file made on Linux (fixture):
  *   8. nodus_seg_held == 1, nodus_seg_reader_open == 0, flags 0x01; for
  *      every height in expected.bin: header(h+1) and every stored part
@@ -49,8 +65,15 @@
  *      before the marker): not held; a reopen moves .dat back to .dat.tmp
  *      (a rename), the resume scan finds it complete, finish publishes the
  *      same three files again, byte-identical.
+ *  12. a TORN record: segment k built up to height first + P/2 into a
+ *      fresh directory, the build freed, its .dat.tmp cut 3 bytes short
+ *      (inside the last height record); the reopened build's resume scan
+ *      leaves the file shorter than the tear and longer than the data
+ *      header (cut at a record start), asks for height first + P/2 again,
+ *      header first; finished, the three files are byte-identical to the
+ *      fixture's.
  *
- * THE FIXTURE (cases 8 and 9): a directory holding seg-<k>.dat, .idx, .ok
+ * THE FIXTURE (cases 8, 9 and 12): a directory holding seg-<k>.dat, .idx, .ok
  *   and expected.bin, made on Linux by the Linux test's producer case:
  *     cd nodus/build && NODUS_SEG_WIN_FIXTURE=/tmp/segfx ./test_storage_segment
  *   (case "win_fixture"; it copies segment 1 as the roundtrip case
@@ -68,10 +91,12 @@
  *   environment — none. Run natively on Windows or under Wine. Disk: ≈ 2 GiB
  *   free on NTFS for case 1 (see above), plus ≈ 2 × the fixture size.
  *
- * EXIT: 0 every case ran and passed; 1 a case failed; 2 the nodus_fs
- *   cases passed but no fixture was given — cases 8 and 9 print
- *   "SKIPPED: no fixture". A SKIP IS NOT A PASS: exit 2 means the segment
- *   file itself was not exercised on this platform.
+ * EXIT: 0 every case ran and passed; 1 a case failed; 2 nothing failed
+ *   but something did not run — no fixture (cases 8, 9 and 12 print
+ *   "SKIPPED: no fixture") and / or case 11 "NOT COVERED" (no sparse
+ *   file); the summary line counts them. A SKIP IS NOT A PASS: exit 2
+ *   means the segment file and / or offsets >= 2^32 were not exercised on
+ *   this platform.
  *
  * LEAVES BEHIND: nothing on success — the work directory
  *   (%TEMP%\nodus_seg_win_<pid>) and everything in it are removed; on a
@@ -87,9 +112,21 @@
  *     PASS under Wine proves the logic against Wine; cases 1, 3 and 4 in
  *     particular must be run on native Windows (NTFS) before Windows is
  *     claimed (design §3 B4: "interrupted-publication + restart test on
- *     Windows before claiming Windows").
- *   · Durability is not tested: fsync, WRITE_THROUGH and the directory-sync
- *     no-op are only called, never followed by a power cut.
+ *     Windows before claiming Windows"). Case 10's outcome lines in
+ *     particular describe Wine's sharing / delete-pending emulation, not
+ *     NTFS's.
+ *   · The directory flush (case 7, and every publish in cases 9 and 12)
+ *     may be refused under Wine — a -1 there is then Wine's answer, and
+ *     reads as a FAIL that is not a Windows result; under Wine it may
+ *     equally succeed as a no-op. Neither proves what NTFS does.
+ *   · Durability is not tested: fsync, WRITE_THROUGH and the directory
+ *     flush are only called, never followed by a power cut. Case 12's
+ *     tear is a truncate of a closed file, not a crash mid-write: it tests
+ *     the resume scan's cut on Windows, not what a real crash leaves.
+ *   · Case 10 accepts BOTH outcomes of each order: it can only fail on an
+ *     inconsistent result or an "absent" / "exists" errno — it does not
+ *     prove which outcome Windows gives. Case 11 can pass only where the
+ *     sparse flag is accepted; where it is not, it is NOT COVERED.
  *   · Case 9's HASH SOURCE is derived from the fixture's own headers
  *     (hash(h+1) = cmt_header_hash(header(h+1)), hash(first) =
  *     header(first+1).last_block_id.hash): the build's verification is
@@ -112,7 +149,9 @@
   #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <winioctl.h>                   /* FSCTL_SET_SPARSE (case 11)      */
 #include <direct.h>
+#include <io.h>                         /* _get_osfhandle (case 11)        */
 #include <wchar.h>
 
 #include "storage/nodus_fs.h"
@@ -371,6 +410,144 @@ static void t_absent(void) {
     DONE();
 }
 
+/* errno as a name for the outcome lines (the codes the layer maps to) */
+static const char *en_name(int e) {
+    switch (e) {
+    case 0:            return "0";
+    case ENOENT:       return "ENOENT";
+    case EEXIST:       return "EEXIST";
+    case EACCES:       return "EACCES";
+    case EBUSY:        return "EBUSY";
+    case ENAMETOOLONG: return "ENAMETOOLONG";
+    case ENOSPC:       return "ENOSPC";
+    case EINVAL:       return "EINVAL";
+    case EBADF:        return "EBADF";
+    case EIO:          return "EIO";
+    default:           return "other";
+    }
+}
+
+/* 10. Two orders the segment code can meet on Windows, where the answer
+ * is the platform's: either outcome passes when it is CONSISTENT (a clean
+ * -1 with an errno that is not "absent" / "exists", or a success whose
+ * files say so); the outcome is printed. */
+static void t_open_target(void) {
+    int ok = 1;
+    char a[PATH_CAP], b[PATH_CAP], c[PATH_CAP];
+    uint8_t r[16];
+    TEST("10 rename onto an open target; re-create a pending unlink");
+    CHECK(work_path(a, "held-target.bin") == 0 &&
+          work_path(b, "held-source.bin") == 0 &&
+          work_path(c, "pending.bin") == 0);
+    /* (1) rename onto a target another descriptor holds open */
+    CHECK(put_file(a, "old-old", 7) == 0 && put_file(b, "new", 3) == 0);
+    int ft = nodus_fs_open_read(a);
+    CHECK(ft >= 0);
+    errno = 0;
+    int rc = nodus_fs_rename(b, a);
+    int e = errno;
+    printf("\n    rename onto an open target: %s (errno %d %s)",
+           rc == 0 ? "replaced" : "refused", e, en_name(e));
+    if (rc == 0) {
+        size_t n = 0;
+        uint8_t *x = get_file(a, &n);
+        CHECK(!nodus_fs_exists(b));
+        CHECK(x && n == 3 && memcmp(x, "new", 3) == 0);
+        free(x);
+    } else {
+        size_t n = 0;
+        uint8_t *x = get_file(a, &n);
+        CHECK(rc == -1 && e != 0 && e != ENOENT && e != EEXIST);
+        CHECK(nodus_fs_exists(b));
+        CHECK(x && n == 7 && memcmp(x, "old-old", 7) == 0);
+        free(x);
+    }
+    if (ft >= 0) CHECK(nodus_fs_close(ft) == 0);
+    CHECK(nodus_fs_unlink_if_exists(a) == 0 &&
+          nodus_fs_unlink_if_exists(b) == 0);
+
+    /* (2) the name of a file unlinked while a descriptor still holds it,
+     * created again before that descriptor is closed */
+    CHECK(put_file(c, "first", 5) == 0);
+    int fh = nodus_fs_open_read(c);
+    CHECK(fh >= 0);
+    CHECK(nodus_fs_unlink_if_exists(c) == 0);
+    errno = 0;
+    int f2 = nodus_fs_open_write_trunc(c);
+    e = errno;
+    printf("\n    re-create while the unlinked file is held: %s (errno %d "
+           "%s)", f2 >= 0 ? "created" : "refused", e, en_name(e));
+    if (f2 >= 0) {
+        CHECK(nodus_fs_pwrite_all(f2, (const uint8_t *)"second", 6, 0) == 0);
+        CHECK(nodus_fs_close(f2) == 0);
+        size_t n = 0;
+        uint8_t *x = get_file(c, &n);
+        CHECK(x && n == 6 && memcmp(x, "second", 6) == 0);
+        free(x);
+    } else {
+        CHECK(e != 0 && e != ENOENT && e != EEXIST);
+    }
+    /* the held descriptor still reads the unlinked file's bytes */
+    if (fh >= 0) {
+        CHECK(nodus_fs_pread_all(fh, r, 5, 0) == 0 &&
+              memcmp(r, "first", 5) == 0);
+        CHECK(nodus_fs_close(fh) == 0);
+    }
+    if (f2 < 0) {
+        /* once the holder is closed, the name is free again */
+        f2 = nodus_fs_open_write_trunc(c);
+        CHECK(f2 >= 0);
+        if (f2 >= 0) CHECK(nodus_fs_close(f2) == 0);
+    }
+    CHECK(nodus_fs_unlink_if_exists(c) == 0 && !nodus_fs_exists(c));
+    DONE();
+}
+
+/* 11. Offsets at and above 2^32 (OffsetHigh != 0), on a SPARSE file so
+ * the case does not allocate 4 GiB. A file system that refuses
+ * FSCTL_SET_SPARSE leaves the case NOT COVERED (counted as a skip).
+ * @return 1 not covered / 0 ran */
+static int t_offsets_4g(void) {
+    int ok = 1;
+    char p[PATH_CAP];
+    const uint64_t g4 = (uint64_t)1 << 32;
+    uint8_t b[16], r[16];
+    for (int i = 0; i < 16; i++) b[i] = (uint8_t)(0x51 + i * 3);
+    TEST("11 positional I/O across 2^32 (sparse file)");
+    CHECK(work_path(p, "offsets4g.bin") == 0);
+    int fd = nodus_fs_open_rw_create(p);
+    CHECK(fd >= 0);
+    if (fd < 0) { DONE(); return 0; }
+    DWORD got = 0;
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE ||
+        !DeviceIoControl(h, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &got,
+                         NULL)) {
+        printf("NOT COVERED (FSCTL_SET_SPARSE refused, Windows error %lu)"
+               "\n", (unsigned long)GetLastError());
+        nodus_fs_close(fd);
+        nodus_fs_unlink_if_exists(p);
+        return 1;
+    }
+    uint64_t sz = 0;
+    CHECK(nodus_fs_pwrite_all(fd, b, sizeof(b), g4 - 8u) == 0);
+    CHECK(nodus_fs_size(fd, &sz) == 0 && sz == g4 + 8u);
+    memset(r, 0, sizeof(r));
+    CHECK(nodus_fs_pread_all(fd, r, 16, g4 - 8u) == 0 &&
+          memcmp(r, b, 16) == 0);
+    CHECK(nodus_fs_pread_all(fd, r, 8, g4) == 0 && memcmp(r, b + 8, 8) == 0);
+    CHECK(nodus_fs_pread_all(fd, r, 1, g4 + 8u) == 1);
+    CHECK(nodus_fs_truncate(fd, g4 + 4u) == 0);
+    CHECK(nodus_fs_size(fd, &sz) == 0 && sz == g4 + 4u);
+    CHECK(nodus_fs_pread_all(fd, r, 4, g4) == 0 && memcmp(r, b + 8, 4) == 0);
+    CHECK(nodus_fs_pread_all(fd, r, 5, g4) == 1);
+    CHECK(nodus_fs_truncate(fd, 0) == 0);
+    CHECK(nodus_fs_close(fd) == 0);
+    CHECK(nodus_fs_unlink_if_exists(p) == 0);
+    DONE();
+    return 0;
+}
+
 /* ══ B / C. the segment file (fixture) ═════════════════════════════════ */
 
 typedef struct {
@@ -620,6 +797,84 @@ static void t_build(const char *dir, const fx_t *fx) {
     DONE();
 }
 
+/* 12. A torn last record: the partial .dat.tmp cut 3 bytes into its last
+ * record (a stop in the middle of a write), the build reopened — the
+ * resume scan must cut the file back to the START of that record, ask
+ * for that height again (header first), and the finished files must be
+ * byte-identical to the fixture. */
+static void t_torn(const char *dir, const fx_t *fx) {
+    int ok = 1;
+    char out[PATH_CAP], tmp[PATH_CAP];
+    nodus_seg_reader_t *r = NULL;
+    nodus_seg_build_t *b = NULL;
+    hsrc_t hs;
+    memset(&hs, 0, sizeof(hs));
+    uint8_t *io = malloc(NODUS_SEG_COMMIT_MAX);
+    const uint64_t k = fx->k;
+    uint64_t torn = 0, cut = 0;
+    TEST("12 torn record: resume cuts at the record start, then identical");
+    CHECK(io != NULL);
+    CHECK(work_path(out, "torn") == 0);
+    CHECK(nodus_seg_path(out, k, NODUS_SEG_F_DAT_TMP, tmp, sizeof(tmp)) == 0);
+    CHECK(nodus_seg_reader_open(dir, k, &r) == 0);
+    CHECK(r && hsrc_build(r, k, &hs) == 0);
+    nodus_seg_hash_src_t src = { &hs, hsrc_at };
+    const uint64_t stop = hs.first + (uint64_t)NODUS_SEG_COUNT / 2u;
+    if (ok) {
+        /* heights first … stop written, the build dropped */
+        CHECK(nodus_seg_build_open_src(out, k, &src, &b) == 0);
+        CHECK(b && resume_all(b) == 0);
+        CHECK(b && feed(b, r, stop, io) == 0);
+        nodus_seg_build_free(b);
+        b = NULL;
+        /* tear the last record (height `stop`): 3 bytes short */
+        int fd = nodus_fs_open_rw_create(tmp);
+        uint64_t sz = 0;
+        CHECK(fd >= 0);
+        if (fd >= 0) {
+            CHECK(nodus_fs_size(fd, &sz) == 0 &&
+                  sz > (uint64_t)NODUS_SEG_DATA_HDR_LEN + 3u);
+            torn = sz - 3u;
+            CHECK(nodus_fs_truncate(fd, torn) == 0);
+            CHECK(nodus_fs_close(fd) == 0);
+        }
+    }
+    if (ok) {
+        CHECK(nodus_seg_build_open_src(out, k, &src, &b) == 0);
+        CHECK(b && resume_all(b) == 0);
+        /* the scan cut back to a record start below the tear, and the
+         * build asks for the torn height again, header first */
+        int fd = nodus_fs_open_read(tmp);
+        CHECK(fd >= 0);
+        if (fd >= 0) {
+            CHECK(nodus_fs_size(fd, &cut) == 0);
+            nodus_fs_close(fd);
+        }
+        CHECK(cut > (uint64_t)NODUS_SEG_DATA_HDR_LEN && cut < torn);
+        {
+            uint64_t h = 0;
+            uint32_t part = 0;
+            bool need = false;
+            CHECK(b && nodus_seg_build_next(b, &h, &part, &need) == 0 &&
+                  h == stop && part == 0 && need);
+        }
+        CHECK(b && feed(b, r, 0, io) == 0);
+        CHECK(b && nodus_seg_build_finish(b) == 0 && (b = NULL) == NULL);
+        CHECK(nodus_seg_held(out, k) == 1);
+        CHECK(same_three(dir, out, k));
+    }
+    if (!ok)
+        printf("\n    torn at %" PRIu64 ", cut at %" PRIu64, torn, cut);
+    nodus_seg_build_free(b);
+    nodus_seg_reader_close(r);
+    if (ok) {
+        CHECK(nodus_seg_delete(out, k) == 0 && rm_dir(out) == 0);
+    }
+    free(hs.h);
+    free(io);
+    DONE();
+}
+
 /* ── the work directory ──────────────────────────────────────────────── */
 
 static int work_make(void) {
@@ -649,14 +904,17 @@ int main(int argc, char **argv) {
     t_mkdir();
     t_utf8();
     t_absent();
+    t_open_target();
+    int skipped = t_offsets_4g();       /* 1: not covered */
 
-    int skipped = 0;
     if (argc < 2 || !argv[1][0]) {
         printf("  8 reader on the Linux fixture                              "
                "SKIPPED: no fixture\n");
         printf("  9 build on Windows                                         "
                "SKIPPED: no fixture\n");
-        skipped = 1;
+        printf("  12 torn record                                             "
+               "SKIPPED: no fixture\n");
+        skipped += 3;
     } else {
         fx_t fx;
         if (fx_load(argv[1], &fx) != 0) {
@@ -666,6 +924,7 @@ int main(int argc, char **argv) {
         } else {
             t_reader(argv[1], &fx);
             t_build(argv[1], &fx);
+            t_torn(argv[1], &fx);
         }
         free(fx.buf);
     }
@@ -676,8 +935,11 @@ int main(int argc, char **argv) {
     } else {
         printf("  work directory kept: %s\n", g_work);
     }
-    printf("\n%d passed, %d failed%s\n", passed, failed,
-           skipped ? ", 2 SKIPPED (no fixture) — NOT a pass" : "");
+    if (skipped)
+        printf("\n%d passed, %d failed, %d SKIPPED / NOT COVERED — NOT a "
+               "pass\n", passed, failed, skipped);
+    else
+        printf("\n%d passed, %d failed\n", passed, failed);
     if (failed) return 1;
     return skipped ? 2 : 0;
 }
