@@ -54,7 +54,9 @@
     #define WIN32_LEAN_AND_MEAN
   #endif
   #include <windows.h>
+  #include <direct.h>                   /* _wmkdir                       */
   #include <io.h>
+  #include <wchar.h>
   #include <fcntl.h>
   #include <sys/stat.h>
   #include <sys/types.h>

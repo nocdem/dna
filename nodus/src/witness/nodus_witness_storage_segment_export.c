@@ -1,11 +1,13 @@
 /**
  * @file nodus_witness_storage_segment_export.c
  * @brief Storage reward v1 rev 4 (the ARCHIVE reward), package B2b-2 —
- *        the STORE-BACKED half of the segment file: export a segment from
- *        this node's cometbft block store, and validators(k·P) from its
- *        state store (the K8a set record). Declared in
- *        nodus_witness_storage_segment.h ("export from this node's block
- *        store", "helpers shared with the wire").
+ *        the STORE- / WITNESS-BACKED half of the segment file: export a
+ *        segment from this node's cometbft block store, validators(k·P)
+ *        from its state store (the K8a set record), and the 0x72 sample
+ *        answered from a held file (through the witness's probe module).
+ *        Declared in nodus_witness_storage_segment.h ("export from this
+ *        node's block store", "the archive probe from a file", "helpers
+ *        shared with the wire").
  *
  * Split out of nodus_witness_storage_segment.c by package P-B4 (design
  * docs/plans/2026-10-19-windows-light-storage-design.md §3 "Rev 1
@@ -188,6 +190,57 @@ done:
     free(meta);
     return ret;
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ * The archive probe from a file (moved unchanged from
+ * nodus_witness_storage_segment.c: it answers 0x72 through the witness's
+ * probe module, nodus_stprobe_sample_put — Linux-only callers, the
+ * reporter's serving side)
+ * ════════════════════════════════════════════════════════════════════ */
+
+nodus_stprobe_code_t nodus_seg_probe_sample(const char *dir,
+                                            const uint8_t x[64], uint64_t B,
+                                            uint64_t h, uint8_t *out,
+                                            size_t cap, size_t *off) {
+    if (!dir || !x || !out || !off || B == 0 || h == 0)
+        return NODUS_STPROBE_REF_FAULT;
+    nodus_seg_reader_t *r = NULL;
+    int rc = nodus_seg_reader_open(dir, nodus_seg_of_height(h), &r);
+    if (rc == 1) return NODUS_STPROBE_REF_NOT_HELD;
+    if (rc != 0) return NODUS_STPROBE_REF_FAULT;
+
+    nodus_stprobe_code_t ret = NODUS_STPROBE_REF_FAULT;
+    uint8_t *hdr = malloc(NODUS_SEG_HEADER_MAX);
+    uint8_t *proto = malloc(NODUS_SEG_PART_PROTO_MAX);
+    uint8_t *part = malloc(CMT_BLOCK_PART_SIZE_BYTES);
+    uint8_t *proof = malloc(NODUS_STPROBE_PROOF_MAX);
+    size_t hl = 0, pl = 0, bl = 0, prl = 0;
+    uint32_t n = 0, pi = 0;
+    if (!hdr || !proto || !part || !proof) goto done;
+    /* the part count first (the index needs it), then the part */
+    if (nodus_seg_reader_get(r, h, NULL, NULL, &n, 0, NULL, NULL) != 0)
+        goto done;
+    if (dna_v2_storage_sample_index(x, B, n, NULL, &pi) != 0) goto done;
+    if (nodus_seg_reader_get(r, h, hdr, &hl, &n, pi, proto, &pl) != 0)
+        goto done;
+    if (nodus_seg_part_split(proto, pl, part, &bl, proof, &prl, NULL) != 0)
+        goto done;
+    if (nodus_stprobe_sample_put(out, cap, off, hdr, hl, part, bl, proof,
+                                 prl) != 0)
+        goto done;
+    ret = NODUS_STPROBE_OK;
+done:
+    free(proof);
+    free(part);
+    free(proto);
+    free(hdr);
+    nodus_seg_reader_close(r);
+    return ret;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * validators(k·P) from the state store
+ * ════════════════════════════════════════════════════════════════════ */
 
 int nodus_seg_valset_from_store(nodus_cmt_store_t *store, uint64_t height,
                                 uint8_t *out, size_t cap, size_t *len) {

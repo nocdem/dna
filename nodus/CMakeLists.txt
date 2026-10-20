@@ -1271,6 +1271,20 @@ if(WIN32)
     target_link_options(test_net_poll_win PRIVATE -static)
 endif()
 
+# Storage package P-B4 — the portable file layer (src/storage/nodus_fs.c)
+# and the segment file on WINDOWS: 64-bit positional I/O, rename-replace
+# (also of an open file), unlink, mkdir -p, UTF-8 names; with a fixture
+# directory made on Linux (test_storage_segment's win_fixture case) the
+# segment reader and an interrupted build + republish, byte-identical.
+# Windows-only, not a ctest (as test_net_poll_win); exit 2 = fixture
+# absent, which is NOT a pass. The file header says what Wine cannot prove.
+if(WIN32)
+    add_executable(test_seg_file_win tests/test_seg_file_win.c)
+    target_link_libraries(test_seg_file_win nodus dsa nodus ws2_32)
+    target_compile_options(test_seg_file_win PRIVATE -Wall -Wextra)
+    target_link_options(test_seg_file_win PRIVATE -static)
+endif()
+
 # Everything below — the ctest suite, benches, the Genesis Protocol
 # harness tools, the server / witness / storage / core binaries, nodus-cli
 # and the fuzz targets — is Linux-only: it links Threads::Threads

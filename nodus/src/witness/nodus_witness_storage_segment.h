@@ -456,13 +456,14 @@ int nodus_seg_build_finish(nodus_seg_build_t *b);
 
 /* ── export from this node's block store ────────────────────────────── */
 
-/* STORE-BACKED (nodus_seg_store_has, nodus_seg_export_step and
- * nodus_seg_valset_from_store below): defined in
- * nodus_witness_storage_segment_export.c, which is in the LINUX-ONLY
- * source list (a full node's block / state store). Everything else in this
- * header is defined in nodus_witness_storage_segment.c, which is portable
- * (package P-B4). A Windows build links none of the three; calling one
- * there is a link error, never a silent stub. */
+/* STORE- / WITNESS-BACKED (nodus_seg_store_has, nodus_seg_export_step,
+ * nodus_seg_probe_sample and nodus_seg_valset_from_store below): defined
+ * in nodus_witness_storage_segment_export.c, which is in the LINUX-ONLY
+ * source list (a full node's block / state store; the probe module's
+ * dependencies). Everything else in this header is defined in
+ * nodus_witness_storage_segment.c, which is portable (package P-B4). A
+ * Windows build links none of the four; calling one there is a link
+ * error, never a silent stub. */
 
 /** Whether `store` holds everything segment k needs: blocks (k−1)·P+1 …
  *  k·P (their parts), the metas up to k·P+1 (the successor headers) and

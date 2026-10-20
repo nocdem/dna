@@ -43,7 +43,15 @@
  *                   9000, 17280 — single and two-part blocks);
  *                   header(h+1) equals the marshalled meta; the commit
  *                   equals C:17280, the set the expected record; held == 1.
- *  hash_src         the build's hash source (design 2026-10-19-windows-
+ *  win_fixture      NOT a check: the producer of the Windows reader test's
+ *                   fixture (nodus/tests/test_seg_file_win.c, package
+ *                   P-B4). Only with NODUS_SEG_WIN_FIXTURE=<dir>: copies
+ *                   roundtrip's seg-1.{dat,idx,ok} into <dir> and writes
+ *                   <dir>/expected.bin from the fixture STORE (headers,
+ *                   raw parts of h = 1, 7, P/2, P; C:P; the set record).
+ *                   Unset (ctest): writes nothing, prints so, passes —
+ *                   it proves nothing either way.
+ *  hash_src        the build's hash source (design 2026-10-19-windows-
  *                   light-storage §3 B1): a source that is NOT the ledger
  *                   (the fixture's in-memory hash array G.v2, the same
  *                   hashes v2_blocks holds) and the explicit
@@ -150,7 +158,8 @@
  * answer at one height changes between two calls is not exercised (the
  * contract forbids it, nothing enforces it).
  *
- * Requirements: a default build; no environment. Writes under a fresh
+ * Requirements: a default build; no environment (NODUS_SEG_WIN_FIXTURE is
+ * optional, win_fixture above — it leaves its <dir> behind). Writes under a fresh
  * mkdtemp directory in $TMPDIR (or /tmp) and removes it at the end; the
  * databases are in memory. Run time: the fixture builds 17 280 blocks.
  *
@@ -179,6 +188,7 @@
 #include "crypto/sign/qgp_dilithium.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <sqlite3.h>
@@ -814,6 +824,137 @@ static int t_roundtrip(void) {
     free(mk);
     free(idx);
     free(dat);
+    return 0;
+}
+
+/* ══ win_fixture — the Windows reader test's input (P-B4) ══════════════
+ * Not a check of this file: a PRODUCER for nodus/tests/test_seg_file_win.c.
+ * With NODUS_SEG_WIN_FIXTURE=<dir> set, it copies the segment roundtrip
+ * published (seg-1.dat, seg-1.idx, seg-1.ok) into <dir> (created, one
+ * level, when absent) and writes <dir>/expected.bin from the FIXTURE STORE
+ * (not from the reader):
+ *   "NDS.SEGWINFX.v1" padded with 0x00 to 16 ‖ k u64 ‖ n u32 ‖
+ *   n × ( h u64 ‖ n_parts u32 ‖ hdr_len u32 ‖ header(h+1) [hdr_len] ‖
+ *         n_parts × ( plen u32 ‖ the raw stored P:h:i [plen] ) ) ‖
+ *   clen u32 ‖ C:P [clen] ‖ vlen u32 ‖ the set record proto [vlen]
+ * (big-endian), for h = 1, 7, P/2, P. Unset: nothing is written and the
+ * case says so. */
+
+#define WINFX_TAG "NDS.SEGWINFX.v1"
+
+static int winfx_app(uint8_t *b, size_t cap, size_t *off, const void *p,
+                     size_t n) {
+    if (n > cap - *off) return -1;
+    memcpy(b + *off, p, n);
+    *off += n;
+    return 0;
+}
+
+static int winfx_app32(uint8_t *b, size_t cap, size_t *off, uint32_t v) {
+    uint8_t x[4] = { (uint8_t)(v >> 24), (uint8_t)(v >> 16),
+                     (uint8_t)(v >> 8), (uint8_t)v };
+    return winfx_app(b, cap, off, x, 4);
+}
+
+static int winfx_app64(uint8_t *b, size_t cap, size_t *off, uint64_t v) {
+    uint8_t x[8];
+    for (int i = 7; i >= 0; i--) { x[i] = (uint8_t)v; v >>= 8; }
+    return winfx_app(b, cap, off, x, 8);
+}
+
+static int winfx_write(const char *path, const uint8_t *b, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    int ok = fwrite(b, 1, n, f) == n;
+    if (fclose(f) != 0) ok = 0;
+    return ok ? 0 : -1;
+}
+
+static int t_win_fixture(void) {
+    const char *dir = getenv("NODUS_SEG_WIN_FIXTURE");
+    if (!dir || !dir[0]) {
+        fprintf(stderr, "win_fixture: not requested (NODUS_SEG_WIN_FIXTURE "
+                "unset) — nothing written\n");
+        return 0;
+    }
+    CHECK(mkdir(dir, 0700) == 0 || errno == EEXIST, "fixture directory");
+
+    /* the three published files, byte for byte */
+    static const nodus_seg_file_t files[3] = {
+        NODUS_SEG_F_DAT, NODUS_SEG_F_IDX, NODUS_SEG_F_OK };
+    for (int i = 0; i < 3; i++) {
+        char src[NODUS_SEG_PATH_MAX], dst[NODUS_SEG_PATH_MAX];
+        size_t n = 0;
+        CHECK(nodus_seg_path(G.export_dir, 1, files[i], src, sizeof(src)) ==
+                  0 && nodus_seg_path(dir, 1, files[i], dst, sizeof(dst)) == 0,
+              "paths");
+        uint8_t *b = slurp(src, &n);
+        CHECK(b && winfx_write(dst, b, n) == 0, "copy a published file");
+        free(b);
+    }
+
+    /* expected.bin from the store */
+    const uint64_t hs[4] = { 1, 7, P_LEN / 2, P_LEN };
+    const size_t cap = 28u + 4u * (16u + NODUS_SEG_HEADER_MAX +
+                                   2u * (4u + NODUS_SEG_PART_PROTO_MAX)) +
+                       8u + NODUS_SEG_COMMIT_MAX + NODUS_SEG_VALSET_MAX;
+    uint8_t *x = malloc(cap);
+    uint8_t *hb = malloc(NODUS_SEG_HEADER_MAX);
+    uint8_t *pb = malloc(NODUS_SEG_PART_PROTO_MAX);
+    nodus_cmt_block_meta_t *m = malloc(sizeof(*m));
+    CHECK(x && hb && pb && m, "alloc");
+    size_t off = 0;
+    {
+        uint8_t tag[16] = { 0 };
+        memcpy(tag, WINFX_TAG, sizeof(WINFX_TAG) - 1);
+        CHECK(winfx_app(x, cap, &off, tag, 16) == 0 &&
+              winfx_app64(x, cap, &off, 1) == 0 &&
+              winfx_app32(x, cap, &off, 4) == 0, "head");
+    }
+    for (int i = 0; i < 4; i++) {
+        const uint64_t h = hs[i];
+        bool found = false;
+        size_t hl = 0;
+        CHECK(nodus_cmt_bs_load_block_meta(&G.store, (int64_t)(h + 1), m,
+                                           &found) == CMT_OK && found,
+              "meta h+1");
+        CHECK(cmt_pb_header_marshal(&m->header, hb, NODUS_SEG_HEADER_MAX,
+                                    &hl) == CMT_OK && hl > 0,
+              "header(h+1)");
+        const uint32_t np = m->header.last_block_id.part_set_header.total;
+        CHECK(np >= 1 && np <= 2, "the fixture's blocks have 1 or 2 parts");
+        CHECK(winfx_app64(x, cap, &off, h) == 0 &&
+              winfx_app32(x, cap, &off, np) == 0 &&
+              winfx_app32(x, cap, &off, (uint32_t)hl) == 0 &&
+              winfx_app(x, cap, &off, hb, hl) == 0, "height head");
+        for (uint32_t j = 0; j < np; j++) {
+            char key[NODUS_CMT_STORE_KEY_MAX];
+            size_t pl = 0;
+            snprintf(key, sizeof(key), "P:%" PRId64 ":%d", (int64_t)h,
+                     (int)j);
+            CHECK(raw_get(key, pb, NODUS_SEG_PART_PROTO_MAX, &pl) == 0,
+                  "raw part");
+            CHECK(winfx_app32(x, cap, &off, (uint32_t)pl) == 0 &&
+                  winfx_app(x, cap, &off, pb, pl) == 0, "part");
+        }
+    }
+    CHECK(winfx_app32(x, cap, &off, (uint32_t)G.commit_len) == 0 &&
+          winfx_app(x, cap, &off, G.commit, G.commit_len) == 0 &&
+          winfx_app32(x, cap, &off, (uint32_t)G.valset_len) == 0 &&
+          winfx_app(x, cap, &off, G.valset, G.valset_len) == 0,
+          "commit and set");
+    {
+        char ep[NODUS_SEG_PATH_MAX];
+        int n = snprintf(ep, sizeof(ep), "%s/expected.bin", dir);
+        CHECK(n > 0 && (size_t)n < sizeof(ep) &&
+              winfx_write(ep, x, off) == 0, "expected.bin");
+    }
+    fprintf(stderr, "win_fixture: segment 1 (P = %" PRIu64 ") and "
+            "expected.bin written to %s\n", (uint64_t)P_LEN, dir);
+    free(m);
+    free(pb);
+    free(hb);
+    free(x);
     return 0;
 }
 
@@ -2296,6 +2437,7 @@ int main(void) {
         int (*fn)(void);
     } cases[] = {
         { "roundtrip",       t_roundtrip },
+        { "win_fixture",     t_win_fixture },
         { "hash_src",        t_hash_src },
         { "completeness",    t_completeness },
         { "fetch_wire",      t_fetch_wire },
