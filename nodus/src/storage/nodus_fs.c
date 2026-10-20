@@ -72,6 +72,7 @@
 #include "crypto/utils/qgp_log.h"
 
 #include <errno.h>
+#include <stdio.h>                      /* rename                        */
 #include <stdlib.h>
 #include <string.h>
 
