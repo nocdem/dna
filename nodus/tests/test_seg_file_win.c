@@ -500,6 +500,7 @@ static void t_open_target(void) {
         if (f2 >= 0) CHECK(nodus_fs_close(f2) == 0);
     }
     CHECK(nodus_fs_unlink_if_exists(c) == 0 && !nodus_fs_exists(c));
+    printf("\n    case 10: ");               /* the verdict on its own line */
     DONE();
 }
 
