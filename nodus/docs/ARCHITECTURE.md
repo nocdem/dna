@@ -11005,6 +11005,62 @@ additionally keeps two conflicting entries out of one mempool — an
 admission filter, never a validity rule (see "CheckTx runs the item's
 own stages").
 
+### HF-7 P1b — schema S19 (`v2_replay`, `v2_domain_heads.last_upd_hash`) (2026-10-20, branch `hf7-p1b` only — not versioned, not voted; INERT)
+
+Design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §10.2 item 4, §10.9 (rev 1: "P1b widens
+every schema gate and replays the historical forks on S19"), §10.11 khan decision D (expiry an INTEGER
+with a CHECK on the range); Kurultay #27 summary `docs/plans/decisions/2026-10-20-kurultay-27-hf7-p1-summary.md`
+items 3 and 6.
+
+**Schema S19** (`nodus_witness_v2_schema.h`, `NODUS_V2_SCHEMA_VERSION_S19` = 19): S18 plus
+- `v2_replay (tx_id BLOB NOT NULL PRIMARY KEY CHECK(typeof(tx_id)='blob' AND length(tx_id)=64),
+  intent_id BLOB NOT NULL UNIQUE CHECK(typeof(intent_id)='blob' AND length(intent_id)=64),
+  expiry_height INTEGER NOT NULL CHECK(typeof(expiry_height)='integer' AND expiry_height >= 1))`,
+  created EMPTY — the rooted replay relation of HF-7 (one row per applied envelope item from the
+  activation height, pruned at `expiry_height <= H`). The `typeof` halves pin one storage class per
+  column, as the base-schema tables of `nodus_witness.h` do: an expiry stored as text or a blob would
+  compare above every integer, pass a bare `>= 1` and never meet the prune;
+- the index `v2_replay_by_expiry ON v2_replay(expiry_height)` (the prune's);
+- the column `v2_domain_heads.last_upd_hash BLOB` — nullable, NULL on every existing row (the
+  head-authoritative previous-update hash of HF-7).
+
+`nodus_witness_db_migrate_v2s19` / `_ex`: one `BEGIN IMMEDIATE`, versions below 18 cascade through the
+S18 rung first; the column is added only when absent (the S16 `reward_pool` precedent); five fault
+stages like S18; verified unconditionally — the table's stored `sqlite_master.sql` must equal what this
+build's SQLite stores for the same statement (types and CHECKs included; the
+`witness_ddl_shape_check` pattern, rung-local), the index must cover exactly `expiry_height`, the table
+must be empty, and `v2_domain_heads` must be the S5 shape with `last_upd_hash` (BLOB, nullable, no
+default) as its fifth column. `user_version` 19; 20+ fails closed. Unlike S18 the table is NOT in the
+base schema (`nodus_witness.c`): nothing needs it before the at-open rung has run, and the column cannot
+live there (`v2_domain_heads` is the S5 rung's table). Neither table is a genesis-bundle table, so a
+joiner's `apply_table` column count is unaffected. `v2_replay` is on the genesis `must_be_empty` list
+(`nodus_witness_v2_gen.c`); it is NOT on the preflight required-table list (mirroring
+`v2_validator_roles`: an accepted lower rung legitimately lacks it).
+
+**INERT.** Nothing in this build writes or reads `v2_replay` or `last_upd_hash`: the writers (the applied
+item's savepoint, the prune, the edge's head seed) and the readers (the replay guards, `replay_root`, the
+head's previous-update read) arrive with HF-7 P1c. No root, invariant or verdict moves.
+
+**Gates widened** (each accepts 19 wherever it accepted 18, so a node migrated at open still replays
+every historical fork): every builder migrates to S19 (`nodus_witness_v2_join.c`,
+`nodus_witness_v2_bundle.c`, `nodus_witness_v2_gen.c`); the at-open rung (`witness_open_migrate_s19`,
+renamed from `_s18`, `nodus_witness.c`) climbs a version-3 chain at S16, S17 or S18 to S19; the index
+ensure step runs at S17, S18 or S19; the EVM edge (phase 6b″) accepts S17, S18 or S19; the HF-6 edge
+(phase 6b‴) accepts S18 or S19 (was exactly S18); the block-apply lane and the Comet genesis
+(`nodus_witness_v2_apply.c`) and the preflight accept 16-19; the pool startup check and core state init
+(`nodus_witness_v2_pools.c`) gain 19 (without it an S19 database would SKIP the S7 startup check).
+**Consequence for a rollout:** the first binary carrying this opens every live database into S19, and
+the previous binary's block-apply gate does not accept 19 — a rollback needs the pre-S19 copy of the
+data directory (the S17 / S18 precedent).
+
+**Tests.** `test_v2_schema` `run_s19_rung` (0 → 19 cascade with shape, index, column and live CHECKs;
+every fault stage rolls back a byte-identical S18 database with no table / index / column leaked and an
+existing head row unchanged; drift refused — a constraint-free table, a populated table, a column of
+another type; S16 → S19 in one call; version 20 refused; the S18 rung refuses an S19 database; the index
+ensure step at S19); `test_v2_evm` (at-open rung S16 → S19 and a previous-build S17 → S19, with the S19
+objects dropped first so the climb is real), `test_v2_gen` (derived chain at S19, `v2_replay` empty, no
+`last_upd_hash`) and `test_v2_schema`'s S12 fixture check updated. Written, NOT run by the author.
+
 ### Witness Database Schema
 
 SQLite tables managed by the witness module (`nodus_witness_db.c`):
@@ -11021,6 +11077,7 @@ SQLite tables managed by the witness module (`nodus_witness_db.c`):
 | `v2_treasury` | final pre-testnet wipe W-A: the nine keyless, locked treasury pools (pool_id 1..9 → balance), seeded from the genesis document; a leg of `system_state_root` and `system_payload_root`; a term of the supply equation; no exit rule (parked) |
 | `v2_balance_copy` | tokenomics-v3 P2/P3: the stake frozen at each boundary (three copies kept since P3: H−2E, H−E, H); read by the selection (okuma B) and the reward split; out of every root. PK `(epoch_start, validator_fp, owner_fp, kind)` — `kind` 0 the bond, 1 a delegation (W-B: a self-delegation shares its owner with the bond) |
 | `v2_validator_roles` | HF-6 sub-slice 3a (schema S18, branch `hf6` only): `validator_id` BLOB PK 64, `owner_fp` 64, `pending_consensus_pubkey` 2592 (all-zero = none), `consensus_key_effective_epoch` (0 = none); joined on `validators.pubkey_hash` = validator_id under the HF-6 generation; in the BASE schema; EMPTY until the HF-6 edge, where `nodus_witness_v2_roles_migrate` (3b) writes one row per validator; the generation-4 validator leaf (§6.3, the "NDS.SYS.v5" root since 3d) joins it; NOT a genesis-bundle table |
+| `v2_replay` | HF-7 P1b (schema S19, branch `hf7-p1b` only): `tx_id` BLOB PK 64, `intent_id` BLOB UNIQUE 64, `expiry_height` INTEGER ≥ 1 (typed CHECKs), index `v2_replay_by_expiry`; created by the S19 rung only (NOT the base schema); EMPTY and unread in this build — HF-7 P1c makes it the rooted replay relation. S19 also adds the nullable `v2_domain_heads.last_upd_hash` (NULL until P1c); NOT a genesis-bundle table |
 | `v2_names` | HF-4: the on-chain names (`name` BLOB PK 3..36, `owner` BLOB UNIQUE 64, `registered_height` INTEGER ≥ 1, `WITHOUT ROWID`); in the BASE schema, its DDL checked byte-for-byte on every open; written only by CORE op 8 NAME_REGISTER (generation 2); the 5th leg of `core_state_root` (`name_root`, empty = `NDS.E.NAMES.v1`) |
 | `v2_storage_nodes` | storage reward v1 (package B1, branch only): the storage-node registry (`node_fp` BLOB PK 64 = SHA3-512(node_pk), `node_pk` BLOB 2592, `payee_fp` BLOB 64, `bond`, `status` 1 ACTIVE / 2 EXITING / 3 RELEASED, `registered_height` ≥ 1, `exit_height`, `fail_streak` 0..2^32−1 (B2a); typed CHECKs, `WITHOUT ROWID`); in the BASE schema, its DDL checked on every open; written only by the GEN_STORAGE SYSTEM ops STORAGE_REGISTER / STORAGE_EXIT and the storage epoch boundary (B2a: exit release, fail_streak); its registry root (leaf `NDS.STLEAF.v2`) is part of `storage_root`, the 9th leg of `system_state_root` under `NDS.SYS.v5`; Σ bond over ACTIVE + EXITING is a term of the supply equation |
 | `v2_storage_sets` / `v2_storage_set_members` | archive reward (package B2a, branch only): the frozen storage sets S(H) — header (`epoch_start` PK, `set_hash`, `member_count` 0..256) and members (`epoch_start`, `node_fp`; `fail_streak` as frozen at H, not hashed by S(H)); written by the storage boundary (freeze at every storage boundary, prune below B−2E); `sets_root` leg of `storage_root` |

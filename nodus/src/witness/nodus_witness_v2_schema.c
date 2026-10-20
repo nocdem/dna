@@ -2153,10 +2153,12 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
-    /* S17 or S18 (HF-6 3a: S18 = S17 + v2_validator_roles; the at-open
-     * rung reaches S18 before this step runs — header) */
+    /* S17, S18 or S19 (HF-6 3a: S18 = S17 + v2_validator_roles; HF-7
+     * P1b: S19 = S18 + v2_replay, its index and one column; the at-open
+     * rung reaches S19 before this step runs — header) */
     if (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S18) return 0;   /* not this rung */
+        ver != NODUS_V2_SCHEMA_VERSION_S18 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S19) return 0;   /* not this rung */
     int have = s17_log_indexes_ok(w);
     if (have < 0) return -1;
     if (have == 1) return 0;                            /* idempotent    */
@@ -2295,6 +2297,207 @@ int nodus_witness_db_migrate_v2s18_ex(nodus_witness_t *w,
 
 int nodus_witness_db_migrate_v2s18(nodus_witness_t *w) {
     return nodus_witness_db_migrate_v2s18_ex(w, V2S18MIG_FAIL_NONE);
+}
+
+/* ── S19 migration: HF-7 P1b, the replay relation + the head column ─────
+ * Contract: nodus_witness_v2_schema.h. The table is created EMPTY and the
+ * column NULL on every row; writers and readers arrive with HF-7 P1c. */
+
+/* The replay relation (design §10.2 item 4; khan decision D: expiry an
+ * INTEGER with a CHECK on the range). Each column holds ONE storage class
+ * (typeof), as the base-schema tables of nodus_witness.h do: an expiry
+ * stored as text or a blob would compare above every integer, pass a
+ * bare `>= 1` check and never meet the `expiry_height <= H` prune. */
+static const char *V2_S19_REPLAY_DDL =
+    "CREATE TABLE IF NOT EXISTS v2_replay ("
+    "  tx_id BLOB NOT NULL PRIMARY KEY"
+    "    CHECK(typeof(tx_id)='blob' AND length(tx_id)=64),"
+    "  intent_id BLOB NOT NULL UNIQUE"
+    "    CHECK(typeof(intent_id)='blob' AND length(intent_id)=64),"
+    "  expiry_height INTEGER NOT NULL"
+    "    CHECK(typeof(expiry_height)='integer' AND expiry_height >= 1)"
+    ")";
+
+/* The prune's index (Kurultay #27 item 3: `DELETE FROM v2_replay WHERE
+ * expiry_height <= H` every block). */
+static const char *V2_S19_REPLAY_INDEX_DDL =
+    "CREATE INDEX IF NOT EXISTS v2_replay_by_expiry "
+    "ON v2_replay(expiry_height)";
+
+/* 1 = `table`'s stored sqlite_master.sql equals what THIS build's SQLite
+ * stores for `ddl`, 0 = absent or another definition, -1 = fault. The
+ * reference text comes from executing the same statement into a private
+ * ":memory:" database — the same library answers both sides, so nothing
+ * is assumed about how SQLite normalizes stored DDL. Column names alone
+ * (table_cols_exact) cannot see a type, a CHECK or a UNIQUE: a
+ * pre-existing constraint-free table of the same name would otherwise
+ * migrate. The pattern of nodus_witness.c witness_ddl_shape_check, as a
+ * rung-local helper. */
+static int table_ddl_exact(nodus_witness_t *w, const char *table,
+                           const char *ddl) {
+    static const char *const q =
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1";
+    sqlite3 *mem = NULL;
+    sqlite3_stmt *a = NULL, *b = NULL;
+    int out = -1;
+    if (sqlite3_open(":memory:", &mem) != SQLITE_OK) {
+        if (mem) sqlite3_close(mem);
+        return -1;
+    }
+    if (sqlite3_exec(mem, ddl, NULL, NULL, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(mem, q, -1, &a, NULL) == SQLITE_OK &&
+        sqlite3_bind_text(a, 1, table, -1, SQLITE_STATIC) == SQLITE_OK &&
+        sqlite3_prepare_v2(w->db, q, -1, &b, NULL) == SQLITE_OK &&
+        sqlite3_bind_text(b, 1, table, -1, SQLITE_STATIC) == SQLITE_OK) {
+        int ra = sqlite3_step(a);
+        int rb = sqlite3_step(b);
+        if (ra != SQLITE_ROW) {
+            out = -1;                   /* the reference must exist       */
+        } else if (rb == SQLITE_DONE) {
+            out = 0;                    /* absent                         */
+        } else if (rb != SQLITE_ROW) {
+            out = -1;
+        } else {
+            const unsigned char *sa = sqlite3_column_text(a, 0);
+            const unsigned char *sb = sqlite3_column_text(b, 0);
+            int la = sqlite3_column_bytes(a, 0);
+            int lb = sqlite3_column_bytes(b, 0);
+            out = (sa && sb && la == lb &&
+                   memcmp(sa, sb, (size_t)la) == 0) ? 1 : 0;
+        }
+    }
+    sqlite3_finalize(a);
+    sqlite3_finalize(b);
+    sqlite3_close(mem);
+    return out;
+}
+
+/* 1 = v2_domain_heads is EXACTLY the S5 shape with last_upd_hash
+ * appended, and last_upd_hash is declared BLOB, nullable, no default, not
+ * a key column; 0 = another shape; -1 = fault. */
+static int s19_heads_shape_ok(nodus_witness_t *w) {
+    static const char *const cols[] = {
+        "domain_id", "head", "domain_height", "last_updated_global",
+        "last_upd_hash" };
+    int ex = table_cols_exact(w, "v2_domain_heads", cols,
+                              sizeof(cols) / sizeof(cols[0]));
+    if (ex != 1) return ex;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT type, \"notnull\", dflt_value IS NULL, pk "
+            "FROM pragma_table_info('v2_domain_heads') "
+            "WHERE name = 'last_upd_hash'", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    int rc = sqlite3_step(st);
+    int ok = 0;
+    if (rc == SQLITE_ROW) {
+        const unsigned char *ty = sqlite3_column_text(st, 0);
+        ok = (ty && strcmp((const char *)ty, "BLOB") == 0 &&
+              sqlite3_column_int(st, 1) == 0 &&
+              sqlite3_column_int(st, 2) == 1 &&
+              sqlite3_column_int(st, 3) == 0) ? 1 : 0;
+    } else if (rc != SQLITE_DONE) {
+        ok = -1;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
+                                      nodus_v2s19_mig_fail_t fail_at) {
+    if (!w || !w->db) return -1;
+
+    uint32_t ver = 0;
+    if (nodus_witness_db_schema_version(w, &ver) != 0) return -1;
+    if (ver == NODUS_V2_SCHEMA_VERSION_S19) return 0;    /* idempotent    */
+    if (ver != NODUS_V2_SCHEMA_VERSION_S18) {
+        /* the S9…S18 chain; an unknown version (20+) fails closed there */
+        if (nodus_witness_db_migrate_v2s18(w) != 0) return -1;
+        ver = NODUS_V2_SCHEMA_VERSION_S18;
+    }
+
+    if (exec_sql(w, "BEGIN IMMEDIATE") != 0) return -1;
+
+    int ok = 0;
+    int already = 0;
+    do {
+        if (fail_at == V2S19MIG_FAIL_AFTER_BEGIN) break;
+
+        /* O15B discipline: the pre-BEGIN read decided nothing. */
+        int rv = mig_revalidate_version(w, NODUS_V2_SCHEMA_VERSION_S18,
+                                        NODUS_V2_SCHEMA_VERSION_S19, "S19");
+        if (rv < 0) break;
+        if (rv == 0) { already = 1; break; }
+        if (fail_at == V2S19MIG_FAIL_AFTER_REVALIDATE) break;
+
+        if (exec_sql(w, V2_S19_REPLAY_DDL) != 0) break;
+        if (exec_sql(w, V2_S19_REPLAY_INDEX_DDL) != 0) break;
+        /* v2_domain_heads.last_upd_hash, WHEN ABSENT (the S16
+         * reward_pool precedent): NULLABLE and unwritten here, so every
+         * existing head row keeps its values and reads NULL. A probe
+         * FAULT (-1) is never "absent"; a column already present is
+         * accepted only through the shape check below. */
+        {
+            int cp = col_present(w, "v2_domain_heads", "last_upd_hash");
+            if (cp < 0) break;
+            if (cp == 0 &&
+                exec_sql(w, "ALTER TABLE v2_domain_heads ADD COLUMN "
+                            "last_upd_hash BLOB") != 0)
+                break;
+        }
+        if (fail_at == V2S19MIG_FAIL_AFTER_TABLES) break;
+
+        /* Verify: the table's whole stored definition (types, CHECKs,
+         * PRIMARY KEY, UNIQUE), the index's exact key column and the
+         * head table's exact column sequence — a DDL that silently did
+         * nothing, or a pre-existing object of another shape, is not a
+         * migrated schema. The table is EMPTY: nothing writes it before
+         * HF-7 P1c. */
+        {
+            static const char *const ix_cols[] = { "expiry_height" };
+            sqlite3_stmt *cs = NULL;
+            int empty = 0;
+            if (sqlite3_prepare_v2(w->db, "SELECT COUNT(*) FROM v2_replay",
+                                   -1, &cs, NULL) == SQLITE_OK &&
+                sqlite3_step(cs) == SQLITE_ROW &&
+                sqlite3_column_int64(cs, 0) == 0)
+                empty = 1;
+            sqlite3_finalize(cs);
+            if (table_ddl_exact(w, "v2_replay", V2_S19_REPLAY_DDL) != 1 ||
+                index_cols_exact(w, "v2_replay_by_expiry", "v2_replay",
+                                 ix_cols, 1) != 1 ||
+                s19_heads_shape_ok(w) != 1 || !empty) {
+                QGP_LOG_ERROR(LOG_TAG, "%s",
+                              "S19 replay-relation / domain-head schema "
+                              "shape drift — refusing");
+                break;
+            }
+        }
+        if (fail_at == V2S19MIG_FAIL_AFTER_VERIFY) break;
+
+        if (exec_sql(w, "PRAGMA user_version = 19") != 0) break;
+        if (fail_at == V2S19MIG_FAIL_BEFORE_COMMIT) break;
+
+        ok = 1;
+    } while (0);
+
+    if (already) {
+        (void)exec_sql(w, "ROLLBACK");
+        return 0;
+    }
+    if (!ok) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    if (exec_sql(w, "COMMIT") != 0) {
+        (void)exec_sql(w, "ROLLBACK");
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_migrate_v2s19(nodus_witness_t *w) {
+    return nodus_witness_db_migrate_v2s19_ex(w, V2S19MIG_FAIL_NONE);
 }
 
 /* ── the §18 evm_logs cursor scan (red-team 1 F4) ──────────────────────

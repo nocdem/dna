@@ -4575,13 +4575,16 @@ static int phase_6b_evm_activation(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
-        /* S17 or S18: a node replaying from genesis on this build is at
-         * S18 (the at-open rung) when it reaches the EVM edge */
+        /* S17, S18 or S19: a node replaying from genesis on this build
+         * is at S19 (the at-open rung) when it reaches the EVM edge;
+         * HF-7 P1b: S19 = S18 + the inert v2_replay, its index and
+         * v2_domain_heads.last_upd_hash — nothing this edge touches */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S17 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S18)) {
-            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17 or S18; "
-                       "this node's database is at %u", (unsigned)ver);
+             ver != NODUS_V2_SCHEMA_VERSION_S18 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+            V2AP_FAULT("phase 6b'': the EVM edge needs schema S17, S18 or "
+                       "S19; this node's database is at %u", (unsigned)ver);
             return -2;
         }
     }
@@ -4731,10 +4734,16 @@ static int phase_6b_gen4_edge(nodus_witness_t *w, nodus_v2_block_t *blk,
 #else
     {
         uint32_t ver = 0;
+        /* S18 or S19 (HF-7 P1b): a node replaying from genesis on this
+         * build is at S19 (the at-open rung) when it reaches the HF-6
+         * edge; S19 = S18 + the inert v2_replay, its index and
+         * v2_domain_heads.last_upd_hash — nothing this edge touches */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
-            ver != NODUS_V2_SCHEMA_VERSION_S18) {
+            (ver != NODUS_V2_SCHEMA_VERSION_S18 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
             V2AP_FAULT("phase 6b''': the generation-4 edge needs schema "
-                       "S18; this node's database is at %u", (unsigned)ver);
+                       "S18 or S19; this node's database is at %u",
+                       (unsigned)ver);
             return -2;
         }
     }
@@ -4869,18 +4878,24 @@ static int v2_apply_block_body(nodus_witness_t *w, nodus_v2_block_t *blk) {
          * at-open rung, nodus_witness.c, migrate to it). The EVM edge
          * itself (phase 6b'') FAULTs below S17. HF-6 3a: S18 = S17 + the
          * empty v2_validator_roles is the live rung; the lane writes the
-         * same rows at 16, 17 or 18. */
+         * same rows at 16, 17 or 18. HF-7 P1b: S19 = S18 + the inert
+         * v2_replay, its index and v2_domain_heads.last_upd_hash (nothing
+         * writes or reads them before HF-7 P1c) is the live rung; the
+         * lane writes the same rows at 16, 17, 18 or 19. */
         if (nodus_witness_db_schema_version(w, &ver) != 0 ||
             (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
              ver != NODUS_V2_SCHEMA_VERSION_S17 &&
-             ver != NODUS_V2_SCHEMA_VERSION_S18)) {
+             ver != NODUS_V2_SCHEMA_VERSION_S18 &&
+             ver != NODUS_V2_SCHEMA_VERSION_S19)) {
             V2AP_FAULT("cometbft lane: this node's schema version is %u, "
-                       "not %u, %u or %u - the Comet block row cannot be "
-                       "written here; nothing about the block was judged",
+                       "not %u, %u, %u or %u - the Comet block row cannot "
+                       "be written here; nothing about the block was "
+                       "judged",
                        (unsigned)ver,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S16,
                        (unsigned)NODUS_V2_SCHEMA_VERSION_S17,
-                       (unsigned)NODUS_V2_SCHEMA_VERSION_S18);
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S18,
+                       (unsigned)NODUS_V2_SCHEMA_VERSION_S19);
             return -2;
         }
         /* The HOST owns the transaction (D-23 rev 5 (5)): this entry
@@ -7055,14 +7070,18 @@ int nodus_witness_v2_genesis_cmt(nodus_witness_t *w,
      * fixtures and an S16 scratch database produce the identical
      * genesis). HF-6 3a: every live builder migrates to S18 first (S17 +
      * the empty v2_validator_roles, which no genesis step touches), so
-     * the gate accepts S18 too. */
+     * the gate accepts S18 too. HF-7 P1b: every live builder migrates to
+     * S19 first (S18 + the empty v2_replay, its index and the NULL
+     * v2_domain_heads.last_upd_hash — no genesis step writes or reads
+     * them), so the gate accepts S19 too. */
     uint32_t ver = 0;
     if (nodus_witness_db_schema_version(w, &ver) != 0 ||
         (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
          ver != NODUS_V2_SCHEMA_VERSION_S17 &&
-         ver != NODUS_V2_SCHEMA_VERSION_S18)) {
-        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, S17 or "
-                      "S18, the database is at %u — refusing",
+         ver != NODUS_V2_SCHEMA_VERSION_S18 &&
+         ver != NODUS_V2_SCHEMA_VERSION_S19)) {
+        QGP_LOG_ERROR(LOG_TAG, "cometbft genesis needs schema S16, S17, "
+                      "S18 or S19, the database is at %u — refusing",
                       (unsigned)ver);
         return -1;
     }

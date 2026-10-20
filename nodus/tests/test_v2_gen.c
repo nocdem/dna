@@ -2672,14 +2672,22 @@ static int test_v3_derive(void) {
 
     CHECK(memcmp(id16, chain32, 16) == 0,
           "the file name is the first 16 bytes of the chain id");
-    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S18,
-          "the chain is at schema S18 — the Comet stores, the "
+    CHECK(q1(db, "PRAGMA user_version") == (int64_t)NODUS_V2_SCHEMA_VERSION_S19,
+          "the chain is at schema S19 — the Comet stores, the "
           "out-of-root attendance tables (tokenomics-v3 P1), the "
           "reward tables (P2), the empty EVM tables + the CORE EVM "
-          "reserve row (Nodus EVM) and the empty v2_validator_roles "
-          "(HF-6 3a, the live rung) exist");
+          "reserve row (Nodus EVM), the empty v2_validator_roles "
+          "(HF-6 3a) and the empty v2_replay + the NULL "
+          "v2_domain_heads.last_upd_hash (HF-7 P1b, the live rung) "
+          "exist");
     CHECK(q1(db, "SELECT COUNT(*) FROM v2_validator_roles") == 0,
           "a genesis writes no validator role (must_be_empty)");
+    CHECK(q1(db, "SELECT COUNT(*) FROM v2_replay") == 0,
+          "a genesis writes no replay row (must_be_empty)");
+    CHECK(q1(db, "SELECT COUNT(*) FROM v2_domain_heads WHERE "
+                 "last_upd_hash IS NOT NULL") == 0,
+          "a genesis writes no head's last_upd_hash (inert before "
+          "HF-7 P1c)");
     CHECK(q1(db, "SELECT COUNT(*) FROM v2_blocks") == 0,
           "there is NO genesis block row — of any height (D-19 rev 6)");
     /* ⚠ THE KEY COLUMN IS A BLOB (schema S14: `key BLOB PRIMARY KEY`)

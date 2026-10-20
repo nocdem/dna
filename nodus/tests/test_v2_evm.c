@@ -1577,9 +1577,9 @@ static int test_edge(void) {
     {
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(A.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S18,
-              "the reopened seeded chain is S18 (the at-open rung since "
-              "HF-6 3a)"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S19,
+              "the reopened seeded chain is S19 (the at-open rung since "
+              "HF-7 P1b)"); OK();
     }
 
     /* heights 1..3: the twins agree on everything the vote row is not */
@@ -3644,7 +3644,7 @@ static int test_twin(void) {
     return 0;
 }
 
-/* ══ 10. S16 → S17 → S18 at open; generation 2 unchanged ═════════════ */
+/* ══ 10. S16 → S17 → S18 → S19 at open; generation 2 unchanged ══════ */
 
 static int test_upgrade(void) {
     /* (a) an S16 version-3 database: the EVM tables and the reserve do
@@ -3666,6 +3666,11 @@ static int test_upgrade(void) {
         }
         CHECK(sqlite3_exec(fx.w->db, "DROP TABLE v2_validator_roles", NULL,
                            NULL, NULL) == SQLITE_OK, "drop the S18 table");
+        /* HF-7 P1b: and the S19 objects (the index goes with its table) */
+        CHECK(sqlite3_exec(fx.w->db, "DROP TABLE v2_replay;"
+                           "ALTER TABLE v2_domain_heads DROP COLUMN "
+                           "last_upd_hash", NULL, NULL, NULL) == SQLITE_OK,
+              "drop the S19 table and column");
         CHECK(sqlite3_exec(fx.w->db, "PRAGMA user_version = 16", NULL, NULL,
                            NULL) == SQLITE_OK, "user_version 16");
         uint8_t g0[64], c0[64];
@@ -3674,10 +3679,21 @@ static int test_upgrade(void) {
         CHECK(fx_reopen(&fx) == 0, "the production open path"); OK();
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S18,
-              "migrated through S17 to S18"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S19,
+              "migrated through S17 and S18 to S19"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_validator_roles") == 0,
               "v2_validator_roles exists, empty"); OK();
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM v2_replay") == 0 &&
+              q1(fx.w, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                       "type='index' AND name='v2_replay_by_expiry' AND "
+                       "tbl_name='v2_replay'") == 1,
+              "v2_replay exists, empty, with its expiry index"); OK();
+        CHECK(q1(fx.w, "SELECT COUNT(*) FROM pragma_table_info("
+                       "'v2_domain_heads') WHERE name='last_upd_hash'") == 1 &&
+              q1(fx.w, "SELECT COUNT(*) FROM v2_domain_heads WHERE "
+                       "last_upd_hash IS NOT NULL") == 0 &&
+              q1(fx.w, "SELECT COUNT(*) FROM v2_domain_heads") > 0,
+              "every existing head row gained a NULL last_upd_hash"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM evm_meta") == 0 &&
               q1(fx.w, "SELECT COUNT(*) FROM evm_accounts") == 0 &&
               q1(fx.w, "SELECT COUNT(*) FROM v2_evm_reserve") == 1 &&
@@ -3702,9 +3718,10 @@ static int test_upgrade(void) {
     }
     /* (a2) red-team 1 F4 — a database ALREADY at S17 built before the
      * cursor-scan indexes existed (the S17 migration returns early at 17,
-     * v2_schema.c): the at-open rung climbs it to S18 (HF-6 3a) and the
-     * at-open ensure step (nodus_witness.c, after the rung — it runs at
-     * S17 or S18) creates both with their exact key columns, a receipt
+     * v2_schema.c): the at-open rung climbs it to S19 (HF-6 3a: S18;
+     * HF-7 P1b: S19) and the at-open ensure step (nodus_witness.c, after
+     * the rung — it runs at S17, S18 or S19) creates both with their
+     * exact key columns, a receipt
      * row and every root are untouched, the chain keeps applying; a
      * second open is a no-op. An index of the SAME NAME and another shape
      * refuses the database (fail closed). */
@@ -3714,7 +3731,9 @@ static int test_upgrade(void) {
         CHECK(fx_to(&fx, 4) == 0, "three blocks");
         CHECK(sqlite3_exec(fx.w->db,
                   "DROP INDEX evm_receipts_by_pos; DROP INDEX evm_logs_by_addr;"
-                  "DROP TABLE v2_validator_roles; PRAGMA user_version = 17;"
+                  "DROP TABLE v2_validator_roles; DROP TABLE v2_replay;"
+                  "ALTER TABLE v2_domain_heads DROP COLUMN last_upd_hash;"
+                  "PRAGMA user_version = 17;"
                   "INSERT INTO evm_receipts (intent_id, global_height, "
                   "item_index, receipt, digest) VALUES (zeroblob(64), 3, 0, "
                   "x'01', zeroblob(64))", NULL, NULL, NULL) == SQLITE_OK,
@@ -3726,7 +3745,7 @@ static int test_upgrade(void) {
         CHECK(fx_reopen(&fx) == 0, "the production open path"); OK();
         uint32_t ver = 0;
         CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
-              ver == NODUS_V2_SCHEMA_VERSION_S18, "climbed to S18"); OK();
+              ver == NODUS_V2_SCHEMA_VERSION_S19, "climbed to S19"); OK();
         CHECK(q1(fx.w, "SELECT COUNT(*) FROM pragma_index_info("
                        "'evm_receipts_by_pos')") == 2 &&
               q1(fx.w, "SELECT COUNT(*) FROM pragma_index_info("

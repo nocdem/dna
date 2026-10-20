@@ -131,10 +131,16 @@ int nodus_witness_v2_preflight(nodus_witness_t *w,
      * migrate there); S16 — S17 minus the empty EVM tables — stays
      * accepted for a database this build did not open itself.
      * HF-6 3a: the live rung is S18 (S17 + the empty v2_validator_roles);
-     * S16 and S17 stay accepted for the same reason. */
+     * S16 and S17 stay accepted for the same reason.
+     * HF-7 P1b: the live rung is S19 (S18 + the inert v2_replay, its
+     * index and v2_domain_heads.last_upd_hash); S16-S18 stay accepted for
+     * the same reason. v2_replay is NOT added to the required-table list
+     * below — mirroring v2_validator_roles, which S18 did not add: a
+     * database at an accepted lower rung legitimately lacks it. */
     if (ver != NODUS_V2_SCHEMA_VERSION_S16 &&
         ver != NODUS_V2_SCHEMA_VERSION_S17 &&
-        ver != NODUS_V2_SCHEMA_VERSION_S18)
+        ver != NODUS_V2_SCHEMA_VERSION_S18 &&
+        ver != NODUS_V2_SCHEMA_VERSION_S19)
         pf_add(out, NODUS_V2_PF_SCHEMA_UNSUPPORTED);
 
     /* ── 2. REQUIRED TABLES ───────────────────────────────────────── */

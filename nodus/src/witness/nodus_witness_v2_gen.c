@@ -1421,11 +1421,16 @@ static int gen_seed_state(nodus_witness_t *w2,
      *
      * HF-6 sub-slice 3a: `v2_validator_roles` joins the list — its only
      * writer is the HF-6 activation edge (3b), never a genesis; a row
-     * here would be a validator role no committed rule produced. */
+     * here would be a validator role no committed rule produced.
+     *
+     * HF-7 P1b: `v2_replay` joins the list — its only writer is the
+     * applied item of a block at or after the HF-7 activation height
+     * (P1c), never a genesis; a row here would be a replay entry no
+     * applied envelope produced. */
     {
         static const char *const must_be_empty[] = {
             "delegations", "v2_reward_accrual", "v2_balance_copy",
-            "v2_validator_roles"
+            "v2_validator_roles", "v2_replay"
         };
         for (size_t i = 0; i < sizeof(must_be_empty) /
                                sizeof(must_be_empty[0]); i++) {
@@ -2958,8 +2963,12 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * cascades through S16. HF-6 3a moves it S17 -> S18 (the empty
          * v2_validator_roles; no genesis step writes or reads it — it is
          * on the must_be_empty list of gen_seed_state); the S18 rung
-         * cascades through S17. */
-        if (nodus_witness_db_migrate_v2s18(w2) != 0) break;
+         * cascades through S17. HF-7 P1b moves it S18 -> S19 (the empty
+         * v2_replay, its index and the NULL v2_domain_heads.last_upd_hash;
+         * no genesis step writes or reads them — v2_replay is on the
+         * must_be_empty list of gen_seed_state); the S19 rung cascades
+         * through S18. */
+        if (nodus_witness_db_migrate_v2s19(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         /* ── 5. SYSTEM state, from the config — the SAME seeder. ────── */
@@ -3112,8 +3121,9 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
 
         /* ── 10. Post-conditions ─────────────────────────────────────
          *
-         * ALL OF THEM RUN AT THE LIVE RUNG (S18 since HF-6 sub-slice 3a;
-         * S16 from tokenomics-v3 P2, S17 from the Nodus EVM), and that is
+         * ALL OF THEM RUN AT THE LIVE RUNG (S19 since HF-7 P1b; S16 from
+         * tokenomics-v3 P2, S17 from the Nodus EVM, S18 from HF-6
+         * sub-slice 3a), and that is
          * checked, not assumed. A grep for
          * `nodus_witness_db_schema_version(` over nodus/src/witness finds
          * every schema-version GATE in the tree (re-derived for
@@ -3125,9 +3135,9 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
          * version-2 engine genesis and the legacy-lane block apply, the
          * two S9-S12 gates this list used to carry):
          *   v2_apply_block_body                 (Comet-lane block apply,
-         *                                        S16, S17 or S18)
+         *                                        S16, S17, S18 or S19)
          *   nodus_witness_v2_genesis_cmt        (this lane's genesis, S16,
-         *                                        S17 or S18)
+         *                                        S17, S18 or S19)
          *   nodus_witness_v2_pools_startup_check
          *   nodus_rt_core_state_init            (nodus_witness_v2_pools.c)
          *   nodus_witness_v2_preflight          (the equality gate)

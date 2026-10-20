@@ -461,11 +461,12 @@ static int run_s12_apply_matrix(void) {
               "present-distribution genesis"); OK();
         uint32_t sv = 0;
         /* Nodus EVM F3-C2 made S17 (empty EVM tables) the live rung;
-         * HF-6 3a moved it to S18 (+ the empty v2_validator_roles). S18
+         * HF-6 3a moved it to S18 (+ the empty v2_validator_roles); HF-7
+         * P1b to S19 (+ the empty v2_replay and last_upd_hash). S19
          * still carries the S12 claim tables this section checks. */
         CHECK(nodus_witness_db_schema_version(fx.w, &sv) == 0 &&
-              sv == NODUS_V2_SCHEMA_VERSION_S18,
-              "fixture DB at the live rung S18"); OK();
+              sv == NODUS_V2_SCHEMA_VERSION_S19,
+              "fixture DB at the live rung S19"); OK();
         CHECK(has_table(fx.w->db, "v2_claim_bytes") == 1 &&
               has_table(fx.w->db, "v2_claim_counts") == 1,
               "S12 claim tables present"); OK();
@@ -1190,7 +1191,8 @@ static int run_s18_rung(void) {
         fx_close(&fx);
     }
 
-    /* (d) unknown/newer version (19) fails closed — nothing changes */
+    /* (d) a newer version (19 — since HF-7 P1b the S19 rung's, still
+     * not the S18 rung's to touch) fails closed — nothing changes */
     {
         fixture_t fx;
         CHECK(fx_open(&fx) == 0, "s18 v19 fixture");
@@ -1205,6 +1207,341 @@ static int run_s18_rung(void) {
               has_table(fx.w->db, "v2_consensus_keys") == 0 &&
               has_table(fx.w->db, "evm_logs") == 0,
               "version 19 got a table"); OK();
+        fx_close(&fx);
+    }
+    return 0;
+}
+
+/* ══ HF-7 P1b — the S19 rung (v2_replay + v2_domain_heads.last_upd_hash) ═
+ *
+ * PROVES: (a) a fresh DB climbs 0 → 19 in one call (the cascade through
+ * S18) and ends with v2_replay of the exact shape — tx_id BLOB PK,
+ * intent_id BLOB NOT NULL UNIQUE, expiry_height INTEGER NOT NULL — EMPTY,
+ * its CHECKs live (a 63-byte id, a blob id stored as text, expiry 0 and
+ * an expiry stored as a blob are each refused; a well-formed row is
+ * accepted), the index v2_replay_by_expiry over exactly expiry_height,
+ * and v2_domain_heads.last_upd_hash (BLOB, nullable, no default) as the
+ * fifth column; a re-run is a no-op, the S18 rung refuses the S19
+ * database, and the at-open index ensure step still runs at S19;
+ * (b) from a valid S18 database holding a head row, EVERY fault stage
+ * rolls back to a byte-identical S18 database with no table, index or
+ * column leaked, and the rung then succeeds with the head row's values
+ * unchanged and its last_upd_hash NULL; (c) shape drift is refused: a
+ * constraint-free v2_replay with the same column names, a correctly
+ * shaped v2_replay that already holds a row, and a last_upd_hash of
+ * another type; (d) an S16 database climbs through S17 and S18 to S19 in
+ * one call; (e) an unknown version (20) fails closed, untouched.
+ * REQUIRES: a default build (no compile flag, no environment).
+ * LEAVES BEHIND: nothing — every fixture is a mkdtemp dir removed by
+ * fx_close.
+ * HOW IT CAN LIE: these are the rung's own calls on a non-chain fixture
+ * (nodus_witness_create_chain_db's at-open rung only runs on a version-3
+ * chain with a stored genesis document, which this fixture is not): the
+ * PRODUCTION open path climbing a live chain to S19 is covered by
+ * test_v2_evm.c's migrate cases (EVM builds only — a non-EVM build skips
+ * them). The rollback digest (v2x_db_digest) covers rows; the column and
+ * index absence are checked separately below. Nothing here reads or
+ * writes v2_replay through the engine — the relation is INERT until HF-7
+ * P1c. */
+static int s19_replay_shape_ok(sqlite3 *db) {
+    static const char *const cols[]  = { "tx_id", "intent_id",
+                                         "expiry_height" };
+    static const char *const types[] = { "BLOB", "BLOB", "INTEGER" };
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(\"v2_replay\")", -1, &st,
+                           NULL) != SQLITE_OK)
+        return -1;
+    size_t i = 0;
+    int ok = 1, rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const unsigned char *nm = sqlite3_column_text(st, 1);
+        const unsigned char *ty = sqlite3_column_text(st, 2);
+        int notnull = sqlite3_column_int(st, 3);
+        int pk = sqlite3_column_int(st, 5);
+        if (i >= 3 || !nm || !ty || strcmp((const char *)nm, cols[i]) != 0 ||
+            strcmp((const char *)ty, types[i]) != 0 || notnull != 1 ||
+            pk != (i == 0 ? 1 : 0))
+            ok = 0;
+        i++;
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) return -1;
+    return (ok && i == 3) ? 1 : 0;
+}
+
+/* 1 = v2_replay_by_expiry exists on v2_replay over exactly expiry_height */
+static int s19_index_ok(sqlite3 *db) {
+    int n = -1, m = -1;
+    if (count_q(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' "
+                    "AND name='v2_replay_by_expiry' AND tbl_name='v2_replay'",
+                &n) != 0)
+        return -1;
+    if (n != 1) return 0;
+    if (count_q(db, "SELECT COUNT(*) FROM pragma_index_info("
+                    "'v2_replay_by_expiry') WHERE seqno = 0 AND "
+                    "name = 'expiry_height'", &m) != 0 ||
+        count_q(db, "SELECT COUNT(*) FROM pragma_index_info("
+                    "'v2_replay_by_expiry')", &n) != 0)
+        return -1;
+    return (m == 1 && n == 1) ? 1 : 0;
+}
+
+/* 1 = last_upd_hash is the FIFTH v2_domain_heads column, BLOB, nullable,
+ * no default */
+static int s19_heads_col_ok(sqlite3 *db) {
+    int n = -1;
+    if (count_q(db, "SELECT COUNT(*) FROM pragma_table_info("
+                    "'v2_domain_heads') WHERE cid = 4 AND "
+                    "name = 'last_upd_hash' AND type = 'BLOB' AND "
+                    "\"notnull\" = 0 AND dflt_value IS NULL AND pk = 0",
+                &n) != 0)
+        return -1;
+    int total = -1;
+    if (count_q(db, "SELECT COUNT(*) FROM pragma_table_info("
+                    "'v2_domain_heads')", &total) != 0)
+        return -1;
+    return (n == 1 && total == 5) ? 1 : 0;
+}
+
+static int run_s19_rung(void) {
+    uint32_t ver = 0;
+    int n = -1;
+
+    /* (a) fresh 0 → 19, shape, CHECKs, idempotent */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s19 fresh fixture"); OK();
+        CHECK(has_table(fx.w->db, "v2_replay") == 0,
+              "v2_replay is not in the base schema"); OK();
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "0->19"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19, "version != 19"); OK();
+        CHECK(s19_replay_shape_ok(fx.w->db) == 1,
+              "v2_replay: tx_id BLOB PK, intent_id BLOB NOT NULL, "
+              "expiry_height INTEGER NOT NULL"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM pragma_index_list("
+                      "'v2_replay') WHERE \"unique\" = 1 AND origin = 'u'",
+                      &n) == 0 && n == 1, "intent_id carries the one "
+              "declared UNIQUE index"); OK();
+        CHECK(s19_index_ok(fx.w->db) == 1,
+              "v2_replay_by_expiry over exactly expiry_height"); OK();
+        CHECK(s19_heads_col_ok(fx.w->db) == 1,
+              "v2_domain_heads.last_upd_hash: fifth column, BLOB, "
+              "nullable, no default"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_replay", &n) == 0 &&
+              n == 0, "the table is created empty"); OK();
+        CHECK(has_table(fx.w->db, "v2_consensus_keys") == 1 &&
+              has_table(fx.w->db, "evm_logs") == 1,
+              "the cascade ran the S18 and S17 rungs"); OK();
+
+        /* the CHECKs (khan decision D: expiry an INTEGER, range-checked;
+         * one storage class per column) */
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(zeroblob(63), zeroblob(64), 5)") != 0,
+              "a 63-byte tx_id is refused"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(zeroblob(64), zeroblob(63), 5)") != 0,
+              "a 63-byte intent_id is refused"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(printf('%064d', 0), zeroblob(64), 5)") != 0,
+              "a 64-character TEXT tx_id is refused"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(zeroblob(64), zeroblob(64), 0)") != 0,
+              "expiry_height 0 is refused"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(zeroblob(64), zeroblob(64), x'05')") != 0,
+              "an expiry stored as a blob is refused"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(zeroblob(64), zeroblob(64), NULL)") != 0,
+              "a NULL expiry is refused"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(zeroblob(64), zeroblob(64), 1)") == 0,
+              "a well-formed row is accepted"); OK();
+        /* CAST(text AS BLOB) keeps the storage class BLOB (a `||`
+         * concatenation would yield TEXT and be refused by the CHECK, not
+         * by the UNIQUE this case is about) */
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(CAST(printf('%064d', 1) AS BLOB), zeroblob(64), 2)")
+              != 0, "a second row with the same intent_id is refused"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_replay VALUES "
+                      "(zeroblob(64), CAST(printf('%064d', 1) AS BLOB), 2)")
+              != 0, "a second row with the same tx_id is refused"); OK();
+        CHECK(run_sql(fx.w->db, "DELETE FROM v2_replay WHERE "
+                      "expiry_height <= 1") == 0 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM v2_replay", &n) == 0 &&
+              n == 0, "an integer-bound prune deletes the row"); OK();
+
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0 &&
+              nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19,
+              "re-run is a no-op"); OK();
+
+        /* the S18 rung must not touch an S19 database */
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == -1,
+              "migrate_v2s18 on an S19 DB fails closed"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19, "and leaves it at 19"); OK();
+
+        /* the evm_logs scan indexes are ensured at S19 too */
+        CHECK(run_sql(fx.w->db, "DROP INDEX evm_receipts_by_pos;"
+                                "DROP INDEX evm_logs_by_addr") == 0,
+              "drop the scan indexes");
+        CHECK(nodus_witness_db_ensure_v2s17_indexes(fx.w) == 0,
+              "ensure at S19"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master WHERE "
+                      "type='index' AND name IN ('evm_receipts_by_pos', "
+                      "'evm_logs_by_addr')", &n) == 0 && n == 2,
+              "ensure recreated both at S19"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19,
+              "ensure left the version at 19"); OK();
+        fx_close(&fx);
+    }
+
+    /* (b) S18 → S19: every fault stage rolls back byte-identically */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s19 cascade fixture");
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == 0, "0->18"); OK();
+        CHECK(run_sql(fx.w->db, "INSERT INTO v2_domain_heads (domain_id, "
+                      "head, domain_height, last_updated_global) VALUES "
+                      "(7, CAST(printf('%089d', 7) AS BLOB), 3, 11)") == 0,
+              "an existing head row");
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18, "base at 18"); OK();
+        CHECK(has_table(fx.w->db, "v2_replay") == 0 &&
+              has_col(fx.w->db, "v2_domain_heads", "last_upd_hash") == 0,
+              "an S18 database: no v2_replay, no last_upd_hash"); OK();
+        uint8_t d18[64];
+        CHECK(v2x_db_digest(fx.w, d18) == 0, "S18 digest"); OK();
+
+        for (int stage = V2S19MIG_FAIL_AFTER_BEGIN;
+             stage <= V2S19MIG_FAIL_BEFORE_COMMIT; stage++) {
+            CHECK(nodus_witness_db_migrate_v2s19_ex(fx.w,
+                      (nodus_v2s19_mig_fail_t)stage) == -1,
+                  "staged S19 failure did not fail");
+            CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+                  ver == NODUS_V2_SCHEMA_VERSION_S18,
+                  "failed S19 stage moved the version");
+            CHECK(has_table(fx.w->db, "v2_replay") == 0,
+                  "failed S19 stage left the table");
+            CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM sqlite_master "
+                          "WHERE name = 'v2_replay_by_expiry'", &n) == 0 &&
+                  n == 0, "failed S19 stage left the index");
+            CHECK(has_col(fx.w->db, "v2_domain_heads", "last_upd_hash") == 0,
+                  "failed S19 stage left the column");
+            uint8_t dnow[64];
+            CHECK(v2x_db_digest(fx.w, dnow) == 0, "post-stage digest");
+            CHECK(memcmp(d18, dnow, 64) == 0,
+                  "failed S19 stage mutated the DB");
+        }
+        OK();
+
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "18->19"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19,
+              "post-fault version != 19"); OK();
+        CHECK(s19_replay_shape_ok(fx.w->db) == 1 &&
+              s19_index_ok(fx.w->db) == 1 &&
+              s19_heads_col_ok(fx.w->db) == 1,
+              "post-fault shapes"); OK();
+        CHECK(count_q(fx.w->db, "SELECT COUNT(*) FROM v2_domain_heads WHERE "
+                      "domain_id = 7 AND "
+                      "head = CAST(printf('%089d', 7) AS BLOB) AND "
+                      "domain_height = 3 AND last_updated_global = 11 AND "
+                      "last_upd_hash IS NULL", &n) == 0 && n == 1,
+              "the existing head row keeps its values; last_upd_hash "
+              "NULL"); OK();
+        fx_close(&fx);
+    }
+
+    /* (c) shape drift is refused */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s19 drift fixture");
+        CHECK(nodus_witness_db_migrate_v2s18(fx.w) == 0, "0->18");
+        CHECK(run_sql(fx.w->db, "CREATE TABLE v2_replay ("
+                      "  tx_id BLOB NOT NULL PRIMARY KEY,"
+                      "  intent_id BLOB NOT NULL UNIQUE,"
+                      "  expiry_height INTEGER NOT NULL)") == 0,
+              "a constraint-free table of the same names");
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == -1,
+              "a table without the CHECKs is refused"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18,
+              "a refused rung leaves 18"); OK();
+        CHECK(has_col(fx.w->db, "v2_domain_heads", "last_upd_hash") == 0,
+              "and adds no column"); OK();
+        CHECK(run_sql(fx.w->db, "DROP TABLE v2_replay") == 0,
+              "drop the drifted table");
+
+        /* a correctly shaped table that already holds a row */
+        fixture_t fy;
+        CHECK(fx_open(&fy) == 0, "s19 drift fixture 2");
+        CHECK(nodus_witness_db_migrate_v2s19(fy.w) == 0, "0->19 (2)");
+        CHECK(run_sql(fy.w->db, "INSERT INTO v2_replay VALUES "
+                      "(zeroblob(64), zeroblob(64), 9);"
+                      "PRAGMA user_version = 18") == 0,
+              "a populated v2_replay at version 18");
+        CHECK(nodus_witness_db_migrate_v2s19(fy.w) == -1,
+              "a non-empty v2_replay is refused"); OK();
+        CHECK(nodus_witness_db_schema_version(fy.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18,
+              "a refused rung leaves 18 (populated)"); OK();
+        fx_close(&fy);
+
+        /* a last_upd_hash of another type */
+        CHECK(run_sql(fx.w->db, "ALTER TABLE v2_domain_heads ADD COLUMN "
+                      "last_upd_hash INTEGER") == 0,
+              "an INTEGER last_upd_hash");
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == -1,
+              "a last_upd_hash of another type is refused"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S18,
+              "a refused rung leaves 18 (column)"); OK();
+        CHECK(has_table(fx.w->db, "v2_replay") == 0,
+              "the refused rung rolled its table back"); OK();
+        fx_close(&fx);
+    }
+
+    /* (d) S16 → S19 in one call (through S17 and S18) */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s19 from-S16 fixture");
+        CHECK(nodus_witness_db_migrate_v2s16(fx.w) == 0, "0->16"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S16, "base at 16"); OK();
+        CHECK(has_table(fx.w->db, "evm_logs") == 0 &&
+              has_table(fx.w->db, "v2_replay") == 0,
+              "an S16 database: no EVM tables, no v2_replay"); OK();
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == 0, "16->19"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 &&
+              ver == NODUS_V2_SCHEMA_VERSION_S19, "climbed to 19"); OK();
+        CHECK(has_table(fx.w->db, "evm_logs") == 1 &&
+              has_table(fx.w->db, "v2_evm_reserve") == 1 &&
+              has_table(fx.w->db, "v2_validator_roles") == 1 &&
+              has_table(fx.w->db, "v2_consensus_keys") == 1,
+              "every rung on the way ran"); OK();
+        CHECK(s19_replay_shape_ok(fx.w->db) == 1 &&
+              s19_index_ok(fx.w->db) == 1 &&
+              s19_heads_col_ok(fx.w->db) == 1 &&
+              count_q(fx.w->db, "SELECT COUNT(*) FROM v2_replay", &n) == 0 &&
+              n == 0, "the S19 objects, empty"); OK();
+        fx_close(&fx);
+    }
+
+    /* (e) unknown/newer version (20) fails closed — nothing changes */
+    {
+        fixture_t fx;
+        CHECK(fx_open(&fx) == 0, "s19 v20 fixture");
+        CHECK(run_sql(fx.w->db, "PRAGMA user_version = 20") == 0, "set 20");
+        CHECK(nodus_witness_db_migrate_v2s19(fx.w) == -1,
+              "version 20 migrated"); OK();
+        CHECK(nodus_witness_db_schema_version(fx.w, &ver) == 0 && ver == 20,
+              "version 20 mutated"); OK();
+        CHECK(has_table(fx.w->db, "v2_replay") == 0 &&
+              has_table(fx.w->db, "evm_logs") == 0,
+              "version 20 got a table"); OK();
         fx_close(&fx);
     }
     return 0;
@@ -1705,6 +2042,9 @@ int main(void) {
 
     /* HF-6 sub-slice 3a: the S18 rung (v2_validator_roles). */
     if (run_s18_rung() != 0) return 1;
+
+    /* HF-7 P1b: the S19 rung (v2_replay + last_upd_hash). */
+    if (run_s19_rung() != 0) return 1;
 
     printf("test_v2_schema: ALL %d checks passed\n", g_checks);
     return 0;

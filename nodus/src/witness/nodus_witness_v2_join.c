@@ -259,8 +259,11 @@ static int join_adopt(nodus_witness_t *w) {
          * reads either before the EVM vote), cascading through S16.
          * HF-6 3a: the live rung is S18 (S17 + the empty
          * v2_validator_roles — not a bundle table, so the bundle below
-         * applies unchanged), cascading through S17. */
-        if (nodus_witness_db_migrate_v2s18(w2) != 0) break;
+         * applies unchanged), cascading through S17. HF-7 P1b: the live
+         * rung is S19 (S18 + the empty v2_replay, its index and the
+         * nullable v2_domain_heads.last_upd_hash — neither is a bundle
+         * table), cascading through S18. */
+        if (nodus_witness_db_migrate_v2s19(w2) != 0) break;
         if (nodus_chain_config_db_migrate(w2) != 0) break;
 
         if (nodus_witness_v2_bundle_apply(w2, bytes, len,

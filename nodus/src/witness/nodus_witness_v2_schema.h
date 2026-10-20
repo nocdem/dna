@@ -820,9 +820,12 @@ int nodus_witness_db_migrate_v2s17_ex(nodus_witness_t *w,
  *  to {S17, S18}: the at-open rung now climbs every chain database to
  *  S18 BEFORE this step runs, and S18 only adds v2_validator_roles — a
  *  database that reached S17 before the indexes existed would otherwise
- *  arrive here at S18 and never get them.
- *  @return 0 present / created / not S17 or S18; -1 fault, or an index of
- *  the same name with other key columns (refused, rolled back). */
+ *  arrive here at S18 and never get them. HF-7 P1b widened it again to
+ *  {S17, S18, S19} for the same reason: the at-open rung now climbs to
+ *  S19 first (S19 = S18 + v2_replay, its index and one column).
+ *  @return 0 present / created / not S17, S18 or S19; -1 fault, or an
+ *  index of the same name with other key columns (refused, rolled
+ *  back). */
 int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w);
 
 /* ── S18 migration: HF-6 sub-slice 3a — the validator-role side table
@@ -855,7 +858,8 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w);
  * unconditionally.
  *
  * HF-6 slice 4 (design rev 6 §4) adds a SECOND table to this same
- * unreleased rung (S18 exists on branch hf6 only — no S19):
+ * unreleased rung (S18 existed on branch hf6 only then; S19 is HF-7's,
+ * below):
  *
  *   v2_consensus_keys (consensus_pk_hash BLOB PRIMARY KEY [64],
  *                      validator_id BLOB NOT NULL [64],
@@ -884,7 +888,8 @@ int nodus_witness_db_ensure_v2s17_indexes(nodus_witness_t *w);
  * does not accept version 18 (its block-apply gate takes 16 or 17 only
  * and FAULTs; its migration ladder fails closed above 17), so a rollback
  * needs the pre-S18 copy of the data directory. Version 19+ fails
- * closed. */
+ * closed. (HF-7 P1b: S19 below is now the live rung; every gate that
+ * accepts 18 also accepts 19.) */
 #define NODUS_V2_SCHEMA_VERSION_S18  18u
 
 typedef enum {
@@ -907,6 +912,77 @@ int nodus_witness_db_migrate_v2s18(nodus_witness_t *w);
 /** Test variant: deterministic abort inside the 17 → 18 transaction. */
 int nodus_witness_db_migrate_v2s18_ex(nodus_witness_t *w,
                                       nodus_v2s18_mig_fail_t fail_at);
+
+/* ── S19 migration: HF-7 P1b — the rooted replay relation and the
+ *    head-authoritative update hash (design docs/plans/2026-09-11-nodus-
+ *    ledger-snapshot-design.md §10.2 item 4, §10.9, §10.11 decision D;
+ *    Kurultay #27 summary docs/plans/decisions/2026-10-20-kurultay-27-
+ *    hf7-p1-summary.md items 3, 6) ───────────────────────────────────────
+ *
+ * One rung, one table CREATED EMPTY, one index and one column:
+ *
+ *   v2_replay (tx_id BLOB NOT NULL PRIMARY KEY, length 64,
+ *              intent_id BLOB NOT NULL UNIQUE, length 64,
+ *              expiry_height INTEGER NOT NULL, >= 1)
+ *   v2_replay_by_expiry  v2_replay(expiry_height)   — the prune's index
+ *   v2_domain_heads.last_upd_hash BLOB              — nullable, NULL on
+ *                                                     every existing row
+ *
+ * expiry_height is an INTEGER (khan decision D, 2026-10-20): every STORED
+ * row is bounded by the HF-7 block rule (e <= H + 720), far inside the
+ * int64 range; the replay root function takes the u64 value. The CHECKs
+ * pin one storage class per column (typeof) as the base-schema tables of
+ * nodus_witness.h do, so an expiry stored as anything but an integer
+ * cannot pass the range check and silently escape the `expiry_height <=
+ * H` prune.
+ *
+ * INERT: nothing writes or reads any of it in this build — the writers
+ * (the applied item's savepoint, the prune, the head column at the HF-7
+ * edge) and the readers (the replay guards, replay_root, the head's
+ * previous-update read) arrive with HF-7 P1c. No root, invariant or
+ * verdict moves. Neither table is a genesis-bundle table
+ * (nodus_witness_v2_bundle.c BUNDLE_TABLES), so a joiner's column-count
+ * check is unaffected. Unlike S18 the new table is NOT in the base schema
+ * (nodus_witness.c): nothing needs it before the at-open rung has run,
+ * and the column cannot live there (v2_domain_heads is the S5 rung's
+ * table). The shape is verified unconditionally inside the rung: the
+ * table's stored definition (types and CHECKs included) must equal what
+ * this build's SQLite stores for the same statement, the index must cover
+ * exactly expiry_height, and v2_domain_heads must be the S5 shape with
+ * last_upd_hash (BLOB, nullable, no default) appended.
+ *
+ * REACHABILITY: S19 is THE LIVE RUNG. Every builder migrates to it (join,
+ * bundle, the genesis derivation) and an S16, S17 or S18 version-3 chain
+ * DB is migrated in place at OPEN (nodus_witness.c). Every gate that
+ * accepted 18 also accepts 19 (S19 = S18 + one empty table, its index and
+ * one nullable column), so a node migrated at open still replays every
+ * historical fork (the EVM edge, the HF-6 edge, the lane, the genesis).
+ * The previous binary does not accept version 19 (its block-apply gate
+ * takes 16, 17 or 18 and FAULTs; its ladder fails closed above 18), so a
+ * rollback needs the pre-S19 copy of the data directory. Version 20+
+ * fails closed. */
+#define NODUS_V2_SCHEMA_VERSION_S19  19u
+
+typedef enum {
+    V2S19MIG_FAIL_NONE = 0,
+    V2S19MIG_FAIL_AFTER_BEGIN,      /* after BEGIN, before any DDL        */
+    V2S19MIG_FAIL_AFTER_REVALIDATE, /* in-txn version re-read passed      */
+    V2S19MIG_FAIL_AFTER_TABLES,     /* v2_replay, its index and
+                                     * v2_domain_heads.last_upd_hash made */
+    V2S19MIG_FAIL_AFTER_VERIFY,     /* schema-shape verification passed   */
+    V2S19MIG_FAIL_BEFORE_COMMIT     /* user_version written, pre-COMMIT   */
+} nodus_v2s19_mig_fail_t;
+
+/** Atomic S19 migration. Versions below 18 run the S9…S18 chain first,
+ *  then 18 → 19 atomically with the in-transaction revalidation.
+ *  @return 0 migrated or already at 19 (idempotent); -1 failure (full
+ *  rollback of the running stage) — including an UNKNOWN user_version
+ *  (20+): fail closed. */
+int nodus_witness_db_migrate_v2s19(nodus_witness_t *w);
+
+/** Test variant: deterministic abort inside the 18 → 19 transaction. */
+int nodus_witness_db_migrate_v2s19_ex(nodus_witness_t *w,
+                                      nodus_v2s19_mig_fail_t fail_at);
 
 /* ── the §18 evm_logs CURSOR SCAN (Nodus EVM red-team 1 F4) ─────────────────
  *
