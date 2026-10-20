@@ -115,6 +115,11 @@ nodus/
 │   │                          #   switch, PEX; moved out of nodus_witness_p2p.c, which embeds it.
 │   │                          #   Common source list (compiles for Windows); no program but the
 │   │                          #   witness calls it yet (§15 "The witness-free 4004 host")
+│   ├── storage/
+│   │   └── nodus_fs.c/h       # Portable FILE layer of the segment files — storage P-B4 (0.26.16):
+│   │                          #   POSIX = the segment code's former calls; Windows CreateFileW /
+│   │                          #   ReadFile / WriteFile / MoveFileExW over UTF-8→UTF-16 paths.
+│   │                          #   Common source list (§15 "package B2b-2", "Portable segment files")
 │   ├── crypto/
 │   │   ├── nodus_sign.c       # Dilithium5 sign/verify/hash wrappers
 │   │   └── nodus_identity.c   # Identity generation, save/load, seed derivation
@@ -196,6 +201,7 @@ nodus/
 │   ├── test_channel_ring.c      # Ring management tests
 │   ├── test_channel_protocol.c  # Channel protocol message tests
 │   ├── test_tcp.c               # TCP transport tests
+│   ├── test_seg_file_win.c    # Windows-only (no ctest): nodus_fs + the segment reader / build on Windows over a Linux fixture (storage P-B4; exit 2 = not run, not a pass)
 │   ├── test_tcp_listen_portable.c # Plain listener through the public API only (127.0.0.1 port 0 read back, accept, one frame each way, close; NODUS_MAX_CONNS_PER_IP + 1 → one refused); same source meant for the Linux epoll and the mingw select loop
 │   ├── test_client.c          # Client SDK tests
 │   ├── test_client_pin.c      # Client server-key pin (fail-closed matrix, ML-KEM only) + monotonic timeouts
@@ -6702,12 +6708,15 @@ terminal commit and the signatures are always verified), `2026-10-05-archive-rew
 `2026-10-05-kurultay-7-archive-reward-summary.md` (items 2, 4, 5, 7), `2026-10-03-block-pruning-7-paydays.md`
 (the 2026-10-05 rollout change: storage nodes prune only once this package is live). Design
 `docs/plans/2026-10-05-archive-reward-design.md` rev 4 §2 (handoff), §3. Code:
-`nodus_witness_storage_segment.{h,c}` (the file), `nodus_witness_storage_fetch.{h,c}` (the 0x73 wire and
+`nodus_witness_storage_segment.{h,c}` (the file — portable since nodus 0.26.16, its file I/O through
+`nodus/src/storage/nodus_fs.{h,c}`; the store-backed export in `nodus_witness_storage_segment_export.c`,
+see "Portable segment files" below), `nodus_witness_storage_fetch.{h,c}` (the 0x73 wire and
 serving side), `nodus_witness_storage_holder.{h,c}` (the runtime), channel 0x73 in
 `nodus_witness_p2p.{h,c}`, the tick / close hooks in `nodus_witness.c`, the 0x72 serving side's file
 fallback in `nodus_witness_storage_reporter.c`, config key `segment_dir`. NODE-LOCAL: no file, no fetch
 and no clock here is ever a consensus input (design §7 D3, D4); every byte written is first verified
-against the consensus-fixed `v2_blocks.block_id`. The block-store prune loop is NOT changed.
+against the consensus-fixed `v2_blocks.block_id` (since 0.26.16 read through the build's hash source —
+the ledger source runs the same query; "Portable segment files" below). The block-store prune loop is NOT changed.
 
 **The segment file** (one per segment k = heights (k−1)·17280+1 … k·17280; `<data_path>/<segment_dir>`,
 default `segments`; all integers big-endian; ⚠ node-local layout, bytes doc §7 says only WHAT is held):
@@ -6755,7 +6764,10 @@ over an existing `.dat.tmp` re-verifies every record from the start (32 per pass
 first short, torn or failing record. After the last height the commit and set records are re-verified
 from the file as ONE unit (the set's hash, then the signatures against it — no state store involved): a
 short, torn or failing byte in either cuts the file at the START of the commit record (both are added
-again); bytes after a good pair are cut.
+again); bytes after a good pair are cut. The same order on Windows (since 0.26.16, through `nodus_fs`):
+fsync = `_commit`, every rename `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`, fsync(dir) = the directory
+opened with `FILE_FLAG_BACKUP_SEMANTICS` and `FlushFileBuffers` — durability NOT verified on native Windows
+("Portable segment files" below).
 
 **Must hold / deletion (holder runtime, `nodus_witness_sthold_tick`, every 200 ms while the lane is live
 and not block-syncing).** At H = ⌊tip/E⌋·E this node must hold k iff me ∈ holders(k, H), or
@@ -6833,6 +6845,105 @@ set from store and file; a torn or on-disk-tampered set record cut at the commit
 without validators(17280) finished by fetching the set. Not covered: a set at the 128 cap, a non-checkpoint
 ValidatorsInfo row, the live 0x73 transport (rotation, timeouts), the tick, the retention guard's reads
 (`nodus_role_prune_commit`; `test_role_prune` covers only the pure decision), the message handler `nodus_witness_sthold_on_msg` itself.
+
+#### Portable segment files — storage packages P-B1 (the hash source) and P-B4 (the file layer, the export split) (nodus 0.26.16, 2026-10-20)
+
+Governing: `docs/plans/decisions/2026-10-19-kurultay-26b-summary.md` item 9 (storage piece B is a
+HISTORICAL-segment builder only; the fresh downloader K25-6 is a separate, undesigned package B5; serving
+waits for HF-7) and `2026-10-16-kurultay-25-summary.md` K25-5 / K25-6 / K25-7 (the light storage node waits
+for HF-7: its assignment comes from proofs only). Intent: design `docs/plans/2026-10-19-windows-light-storage-design.md`
+§3 B1, B4 and "Rev 1 corrections". Node-local; no wire, consensus or state-root change. Functions:
+`messenger/docs/functions/ledger.md` §24.8 and §24.11.
+
+**Why.** In the design, the Windows light storage node holds HISTORICAL segments: it builds a segment
+file from pieces fetched over 0x73, checked against block hashes it verified itself, without a witness
+database (design §3). Two things stood in the way: the builder took its trusted block hashes only from the
+witness's `v2_blocks` table, and every file call was POSIX. Neither the light storage node nor its
+hash list (design §3 B2, package P-B2) exists yet; nothing on Windows calls the builder today.
+
+**P-B1 — the hash source.** The build no longer reads `v2_blocks` itself: `nodus_seg_build_open_src(dir,
+k, src, out)` takes a `nodus_seg_hash_src_t { ctx; hash_at(ctx, h, out[64]) }` answering the canonical
+block hash at h (0 found / 1 absent / -1 fault — the former `ledger_hash` contract). Every check the
+builder makes is unchanged; only where the trusted hash comes from changed. The full node keeps
+`nodus_seg_build_open(dir, k, ledger, out)`, now a thin wrapper over the ledger source
+(`nodus_seg_hash_src_ledger`, the same `SELECT block_id FROM v2_blocks`), so its files are byte-identical.
+The caller of a non-ledger source vouches that each 0-answer is the canonical hash and that the source
+answers the same until the build is freed, discarded or finished (the contract; nothing enforces it).
+
+**P-B4 — the file layer.** `nodus/src/storage/nodus_fs.{h,c}` (common source list,
+`nodus/CMakeLists.txt:149`): open (write-truncate / read-write-create / read), close, positional
+write-all / read-all with 64-bit offsets, one read, fsync, size, truncate, directory sync, rename-replace,
+unlink-if-exists, exists, is-dir, mkdir, mkdir -p. On Linux / Android each is the call, flags and mode
+(0600 files, 0700 directories) the segment code issued before — the one change: `nodus_fs.c` is compiled
+with `_FILE_OFFSET_BITS 64` and `_Static_assert`s an 8-byte `off_t`, so a 32-bit ABI (Android
+armeabi-v7a, built through messenger) does not truncate offsets ≥ 2 GiB; on 64-bit Linux the instructions
+are the same and only the libc symbol names change (`pread` → `pread64`, …). Paths are UTF-8 on both
+platforms; on Windows each path is converted to UTF-16 (`MB_ERR_INVALID_CHARS`; invalid → `EINVAL`, longer
+than 1024 UTF-16 units → `ENAMETOOLONG`; no `\\?\` prefix). Errors are -1 with errno; on Windows a Win32
+code is mapped (`ENOENT`, `EEXIST`, `EACCES`, `EBUSY` for a pending delete, `ENAMETOOLONG`, `ENOSPC`, else
+`EIO`), so the segment code's `errno == ENOENT` tests mean the same thing on both platforms.
+
+**What is portable, what is Linux-only.** `nodus_witness_storage_segment.c` — the layout, the build from
+verified pieces, the resume scan, the atomic publish, the reader, the deletion — moved to the COMMON
+source list (`nodus/CMakeLists.txt:354`) and compiles for Windows. Its store- / witness-backed half moved
+to `nodus_witness_storage_segment_export.c`, in the Linux-only list (`nodus/CMakeLists.txt:754`):
+`nodus_seg_store_has`, `nodus_seg_export_step` (export from this node's block store),
+`nodus_seg_valset_from_store` (validators(k·17280) from the state store) and `nodus_seg_probe_sample`
+(the 0x72 sample from a held file, through the witness's probe module). The declarations stay in one
+header; a Windows build links none of the four, so calling one there is a link error, never a stub.
+`nodus_seg_export_step` was rewritten to drive the build only through its public calls
+(`nodus_seg_build_next`, `nodus_seg_build_put_header` / `_put_part_proto` / `_put_valset` /
+`_put_commit`), with its own scratch allocated at entry, and it reports "complete" only when
+`nodus_seg_build_next` says so. The 0x73 fetch, the holder runtime and the reporter stay Linux-only.
+
+**Windows crash and durability notes** (`nodus_fs.c` header; every Windows API behaviour there is the
+file's own reading — NOT checked against Microsoft's documentation, NOT run on native Windows; it has run
+only under Wine 8.0, and Wine is not Windows):
+- **Opening with `FILE_SHARE_DELETE`** (with `FILE_SHARE_READ | FILE_SHARE_WRITE`) lets the build rename
+  `.dat.tmp` → `.dat` while its own descriptor is still open — the POSIX order is kept, not reordered.
+- **fsync** = `_commit` (the CRT's `FlushFileBuffers`). **Rename** = `MoveFileExW(MOVEFILE_REPLACE_EXISTING |
+  MOVEFILE_WRITE_THROUGH)`: replace like POSIX `rename`, and `WRITE_THROUGH` returns only once the move is on
+  disk (the job the directory fsync does after a rename on POSIX). A rename onto a target another
+  descriptor holds open is NOT special-cased; where Windows refuses it the caller gets -1. The segment
+  build only renames onto names it has just unlinked or never created.
+- **Directory flush** = the directory opened with `CreateFileW(GENERIC_WRITE, OPEN_EXISTING,
+  FILE_FLAG_BACKUP_SEMANTICS)` and `FlushFileBuffers`; a failure is -1 (the publish or the deletion then
+  fails — never a silent success). Whether NTFS makes directory entries (an unlink, a new file's entry
+  before its rename) durable through it is NOT verified; under Wine it may be a no-op. If it does not,
+  after a crash an unlinked segment file may reappear: a complete reappearing set (.ok, .idx, .dat) is the
+  segment exactly as published; a partial one fails the reader's marker / size / index-hash checks and is
+  not held.
+- **Unlink moves the file aside first.** A file unlinked while another handle holds it stays
+  delete-pending UNDER ITS NAME until the last close, so the name could not be created again — under
+  Wine 8.0 a re-create even reached the held file and its holder read the new bytes (observed by the
+  ORCHESTRATOR in `test_seg_file_win` case 10). So `nodus_fs_unlink_if_exists` first moves the file to
+  `<path>` `NODUS_FS_ASIDE_TAG` (`".deleted."`) `<pid>.<n>` in the same directory (no replace; up to 8
+  counters), then deletes that name; the original name is free at once and a holder keeps reading the old
+  bytes, as on POSIX. A refused delete still answers 0 (the name is free) and leaves the aside file; a
+  directory, or a move refused for another reason, falls back to `_wunlink`. Leftovers: a crash between
+  the move and the last close can leave `*.deleted.*` files. Nothing reads them —
+  `nodus_seg_name_parse` accepts only `seg-<k>` followed by exactly one of its six suffixes — and no
+  startup cleanup removes them.
+- **Durability itself is not tested anywhere:** fsync, `WRITE_THROUGH` and the directory flush are called,
+  never followed by a power cut. Design §3 B4 requires an interrupted-publication + restart test on
+  Windows before Windows is claimed; `test_seg_file_win` cases 9 and 12 are that test's logic, run so far
+  only under Wine.
+
+**Who is meant to use it.** The light storage node, by design: it builds HISTORICAL segments from 0x73
+pieces against a hash list it verified (package P-B2 — in the design, not built). Not part of these packages and not built: the fresh
+downloader of new blocks (K25-6, package B5, not designed yet), the light node's own assignment (K25-7)
+and its serving of 0x72 / 0x73 — both wait for HF-7, because the chain context they need (the frozen
+storage set, membership, publication) must come from proofs. Until then a file existing on a light node
+is never admission.
+
+**Tests.** `test_storage_segment` (Linux, ctest): case `hash_src` (a non-ledger source and the explicit
+ledger source give byte-identical files; wrong / absent / faulting hashes give the same verdicts as a
+tampered / deleted / unreadable `v2_blocks`) and case `win_fixture` (with `NODUS_SEG_WIN_FIXTURE=<dir>`, the
+producer of the Windows test's fixture; unset under ctest it writes nothing and passes — it proves
+nothing). `test_seg_file_win` (Windows-only executable, no ctest entry): the file layer on Windows and,
+over the Linux fixture, the reader, an interrupted build + republish, and a torn record, all byte-identical
+to the fixture. Its requirements, exit codes (2 = something did not run, NOT a pass) and how it can lie:
+`nodus/README.md` row 0.26.16 and the file header.
 
 ### HF-8 — delegation requires an on-chain name (2026-10-07, branch only — not versioned, not voted; INERT until a param-17 vote)
 
