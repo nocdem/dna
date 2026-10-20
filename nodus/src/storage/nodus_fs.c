@@ -1,9 +1,12 @@
 /**
  * @file nodus_fs.c
  * @brief The portable file layer (nodus_fs.h). POSIX arm: the calls the
- *        segment code made before this layer, moved here unchanged (same
- *        call, flags, mode, EINTR loops). Windows arm: the counterparts
- *        named in nodus_fs.h.
+ *        segment code made before this layer (same call, flags, mode,
+ *        EINTR loops), compiled with a 64-bit off_t (_FILE_OFFSET_BITS 64
+ *        below — the one change: their *64 forms on a 32-bit ABI).
+ *        nodus_fs_is_dir and nodus_fs_mkdir_p are compositions, not one
+ *        call (nodus_fs.h). Windows arm: the counterparts named in
+ *        nodus_fs.h.
  *
  * ── WINDOWS CHOICES (none of them run on native Windows yet; the API
  *    behaviours below are this file's reading, NOT checked against
@@ -34,20 +37,47 @@
  *    REPLACE_EXISTING is POSIX rename's replace, WRITE_THROUGH returns
  *    only once the move is on disk (the job the directory fsync does after
  *    a rename on POSIX).
- *  - Directory fsync: a no-op. The CRT has no directory descriptor to
- *    flush; the renames it follows are already WRITE_THROUGH. NOT covered:
- *    the durability of an UNLINK (nodus_seg_delete) and of a newly created
- *    file's directory entry before its rename — after a crash an unlinked
- *    segment file may reappear. Stated, not fixed: a reappearing complete
- *    set (.ok, .idx, .dat) is the segment exactly as it was published; a
- *    partial one fails the reader's marker / size / index-hash checks and
- *    is not held (nodus_seg_reader_open).
+ *  - Directory fsync: the directory opened with CreateFileW(GENERIC_WRITE,
+ *    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS) and FlushFileBuffers on
+ *    that handle; an open or flush failure is -1 with errno (the publish
+ *    and the deletion then fail — never a silent success). Whether NTFS
+ *    makes the directory's entries (an UNLINK, a new file's entry before
+ *    its rename) durable through that flush is NOT verified here; under
+ *    Wine the flush may be a no-op. The renames are WRITE_THROUGH on top.
+ *    If the entries are not durable, after a crash an unlinked segment
+ *    file may reappear: a reappearing complete set (.ok, .idx, .dat) is
+ *    the segment exactly as it was published; a partial one fails the
+ *    reader's marker / size / index-hash checks and is not held
+ *    (nodus_seg_reader_open).
+ *  - Errors: Win32 codes → errno in win_errno (its comment has the
+ *    delete-pending case). _wunlink, _wmkdir, _wstat64, _commit,
+ *    _fstat64 and _chsize_s set errno through the CRT's OWN mapping, not
+ *    win_errno — that mapping is NOT verified (no CRT source in the
+ *    tree).
+ *  - _open_osfhandle failure: the HANDLE is closed here (win_open says
+ *    why, and that the CRT's behaviour is NOT verified).
  *  - Modes: no POSIX mode on Windows; files and directories take their
  *    parent directory's ACL.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
+
+/* 64-bit off_t on every POSIX ABI — BEFORE any include, the only place
+ * the C library reads it. A 32-bit ABI (Android armeabi-v7a: messenger
+ * builds this file through add_subdirectory(nodus)) otherwise has a 32-bit
+ * off_t, and the (off_t) casts below would truncate every offset >= 2 GiB
+ * (the segment format addresses its .dat with u64 offsets — data_size
+ * u64, nodus_witness_storage_segment.h). With it, glibc / bionic declare
+ * pread / pwrite / ftruncate / fstat / stat / open under their *64 names.
+ * On 64-bit Linux (x86_64 glibc, checked for this file): the compiled
+ * instructions are the same, only the called symbol names change
+ * (open → open64, pread → pread64, ...), and each pair is the same libc
+ * entry point (one address, `nm -D libc.so.6`). Not on Windows: that arm
+ * names the 64-bit CRT calls itself (_fstat64, _wstat64, _chsize_s). */
+#if !defined(_WIN32) && !defined(_FILE_OFFSET_BITS)
+  #define _FILE_OFFSET_BITS 64
+#endif
 
 #ifdef _WIN32
   #ifndef WIN32_LEAN_AND_MEAN
@@ -83,6 +113,10 @@
 /* ══════════════════════════════════════════════════════════════════════
  * POSIX — the segment code's own calls, moved here unchanged
  * ════════════════════════════════════════════════════════════════════ */
+
+/* A build whose off_t stayed 32-bit (a _FILE_OFFSET_BITS set elsewhere)
+ * fails here instead of truncating offsets >= 2 GiB. */
+_Static_assert(sizeof(off_t) == 8, "nodus_fs needs a 64-bit off_t");
 
 int nodus_fs_open_write_trunc(const char *path) {
     return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -199,35 +233,58 @@ int nodus_fs_mkdir(const char *path) {
 #define FS_CHUNK_MAX ((size_t)1 << 30)
 
 /* errno from a Win32 error; the code is logged unless it is "not found"
- * or "exists" (ordinary answers on the segment paths). */
+ * or "exists" (ordinary answers on the segment paths). The log comes
+ * FIRST and errno is set LAST: the logger may itself open or create files
+ * and overwrite errno before the caller reads it.
+ *
+ * A name whose delete is pending (unlinked while another handle still
+ * holds it, FILE_SHARE_DELETE) answers ERROR_DELETE_PENDING → EBUSY, or —
+ * this file's reading, not verified — ERROR_ACCESS_DENIED → EACCES; the
+ * two cannot be told apart without the NTSTATUS (ntdll), which this layer
+ * does not read. Either way it is neither ENOENT nor EEXIST, so no caller
+ * reads it as "absent" or "already there". */
 static void win_errno(DWORD e, const char *what, const char *path) {
+    int en;
+    int quiet = 0;
     switch (e) {
     case ERROR_FILE_NOT_FOUND:
     case ERROR_PATH_NOT_FOUND:
-        errno = ENOENT;
-        return;
+        en = ENOENT;
+        quiet = 1;
+        break;
     case ERROR_ALREADY_EXISTS:
     case ERROR_FILE_EXISTS:
-        errno = EEXIST;
-        return;
+        en = EEXIST;
+        quiet = 1;
+        break;
     case ERROR_ACCESS_DENIED:
     case ERROR_SHARING_VIOLATION:
     case ERROR_LOCK_VIOLATION:
-        errno = EACCES;
+        en = EACCES;
+        break;
+    case ERROR_DELETE_PENDING:
+        en = EBUSY;
+        break;
+    case ERROR_FILENAME_EXCED_RANGE:
+        en = ENAMETOOLONG;
         break;
     case ERROR_DISK_FULL:
     case ERROR_HANDLE_DISK_FULL:
-        errno = ENOSPC;
+        en = ENOSPC;
         break;
     default:
-        errno = EIO;
+        en = EIO;
         break;
     }
-    QGP_LOG_DEBUG(LOG_TAG, "%s %s: Windows error %lu", what,
-                  path ? path : "(fd)", (unsigned long)e);
+    if (!quiet)
+        QGP_LOG_DEBUG(LOG_TAG, "%s %s: Windows error %lu", what,
+                      path ? path : "(fd)", (unsigned long)e);
+    errno = en;
 }
 
-/* UTF-8 → UTF-16 (the one conversion every path call uses). */
+/* UTF-8 → UTF-16 (the one conversion every path call uses). A path that
+ * does not fit FS_WPATH_MAX is ENAMETOOLONG, one that is not valid UTF-8
+ * EINVAL. */
 static int widen(const char *s, wchar_t out[FS_WPATH_MAX]) {
     if (!s) {
         errno = EINVAL;
@@ -236,7 +293,8 @@ static int widen(const char *s, wchar_t out[FS_WPATH_MAX]) {
     int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, out,
                                 FS_WPATH_MAX);
     if (n <= 0) {
-        errno = EINVAL;
+        errno = GetLastError() == ERROR_INSUFFICIENT_BUFFER ? ENAMETOOLONG
+                                                            : EINVAL;
         return -1;
     }
     return 0;
@@ -256,6 +314,14 @@ static int win_open(const char *path, DWORD access, DWORD disposition,
     }
     int fd = _open_osfhandle((intptr_t)h, crt_flags);
     if (fd < 0) {
+        /* Ownership on failure: NOT VERIFIED — the UCRT's source is not in
+         * the tree (the llvm-mingw sysroot carries only its headers and
+         * import libraries). This file's reading: a -1 from
+         * _open_osfhandle means no descriptor took the HANDLE, so it is
+         * still ours, and closing it is the choice that cannot leak it.
+         * The case this reading would get wrong: a CRT that CLOSES the
+         * handle itself before returning -1 — then this CloseHandle hits
+         * a closed (or, in a threaded process, reused) handle value. */
         int e = errno;                  /* the CRT's code, kept */
         CloseHandle(h);
         errno = e ? e : EMFILE;
@@ -384,9 +450,30 @@ int nodus_fs_truncate(int fd, uint64_t len) {
 }
 
 int nodus_fs_dir_sync(const char *dir) {
-    /* No-op on Windows (file header "Directory fsync"). */
-    (void)dir;
-    return 0;
+    /* The directory itself, flushed (file header "Directory fsync").
+     * FILE_FLAG_BACKUP_SEMANTICS is what lets CreateFileW open a
+     * directory; GENERIC_WRITE because FlushFileBuffers needs a handle
+     * with write access — both this file's reading, NOT verified against
+     * Microsoft's documentation, and under Wine the flush may be a no-op.
+     * A failure is -1 with errno, never a silent 0. */
+    wchar_t w[FS_WPATH_MAX];
+    if (widen(dir, w) != 0) return -1;
+    HANDLE h = CreateFileW(w, GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE |
+                               FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+                           NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        win_errno(GetLastError(), "open directory", dir);
+        return -1;
+    }
+    int ret = 0;
+    if (!FlushFileBuffers(h)) {
+        win_errno(GetLastError(), "flush directory", dir);
+        ret = -1;
+    }
+    CloseHandle(h);                     /* as the POSIX arm's close(fd) */
+    return ret;
 }
 
 int nodus_fs_rename(const char *from, const char *to) {
