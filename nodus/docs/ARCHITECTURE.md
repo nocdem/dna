@@ -5706,6 +5706,19 @@ composition tag stays `"NDS.CORE.v2"`.
   pending `ng` above the build's maximum, `nh > tip`; the message names the generation, the
   block and the distance in blocks — no clock) / 2 "Update required" (`gen` above the maximum,
   checked first). It is a warning only: what a client builds stays chosen by the tuple match.
+  **nodus-cli** (§1 B): every `nodus_client_t` session connects through `cli_client_connect`
+  (`tools/nodus-cli.c`), which on the FIRST session of the process asks `dnac_ruleset_info`
+  once and prints `WARNING: <nodus_ruleset_compat line>` to stderr for 1 / 2, with
+  `nodus_runtime_generation_count()` as the maximum; a failed request (an older node, a
+  storage-only node, no answer) prints nothing. The answer is handed ONCE to the same client
+  object's next `dnac_ruleset_info` (`cli_ruleset_info` — `cli_select_runtimes`, `ruleset-info`,
+  `status`, `storage status`, `validator consent`), so no command asks twice; a session to
+  another node never reuses it. `ruleset-info` adds `next switch: …` and `compatibility: …`
+  lines; `status` (whose stderr is silenced while the screen is gathered) shows the verdict
+  as its `this CLI:` line under Chain. The DHT verbs on the CLI's raw session (`ping`, `put`,
+  `get`, `listen`, …) do not check. nodus-light is not wired yet: `nodus_runtime_generation_count`
+  does not link into the Windows build, and a build without the EVM (`NODUS_EVM_ENABLED`, OFF
+  on Windows) compiles generations 1-2 only, so the maximum it would judge by is open.
 - `dnac_name_lookup {name}` (lowercase only; the byte rule, else `PROTOCOL_ERROR`) →
   `{found, owner (128 hex), rh, ch}`; `dnac_name_of {owner}` (exactly 128 lowercase hex) →
   `{found, name, rh, ch}` — `rh` = registered_height, `ch` = the committed height the answer is

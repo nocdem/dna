@@ -116,6 +116,18 @@
  * height H is committed; -1 (reason printed) when no valid expiry
  * remains (defined with cli_select_runtimes). */
 static int cli_env_expiry(uint64_t tip, uint64_t *expiry_out);
+/* Update-required warning (design docs/plans/2026-10-20-update-required-
+ * warning-design.md §1 B): nodus_client_connect + the once-per-process
+ * rule-set compatibility check; every nodus_client_t session of this CLI
+ * connects through it (defined with cli_select_runtimes). */
+#ifdef NODUS_CLI_HAS_DNAC
+static int cli_client_connect(nodus_client_t *client);
+#else
+/* without the chain half there is no compiled generation to judge by */
+static int cli_client_connect(nodus_client_t *client) {
+    return nodus_client_connect(client);
+}
+#endif
 
 /* ── Globals ─────────────────────────────────────────────────────── */
 
@@ -349,7 +361,7 @@ static int cmd_witness(const char *server_ip, uint16_t server_port) {
         fprintf(stderr, "client_init failed\n");
         return 1;
     }
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "client connect failed (%s:%u)\n", server_ip,
                 (unsigned)server_port);
         nodus_client_close(&client);
@@ -527,7 +539,7 @@ bad_before:
         fprintf(stderr, "client_init failed\n");
         return 1;
     }
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "client connect failed (%s:%u)\n", server_ip,
                 (unsigned)server_port);
         nodus_client_close(&client);
@@ -596,7 +608,7 @@ static int cmd_coins(const char *server_ip, uint16_t server_port) {
         fprintf(stderr, "client_init failed\n");
         return 1;
     }
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "client connect failed (%s:%u)\n", server_ip,
                 (unsigned)server_port);
         nodus_client_close(&client);
@@ -1314,6 +1326,63 @@ static int g_cli_local_valid = 0;
 static uint32_t g_cli_local_gen = 0;
 static uint64_t g_cli_local_h = 0;
 
+/* Update-required warning (design docs/plans/2026-10-20-update-required-
+ * warning-design.md §1 B). The first nodus_client_t session this process
+ * opens asks its node dnac_ruleset_info once (cli_client_connect) and
+ * judges the answer with nodus_ruleset_compat against the newest
+ * generation this CLI carries: 2 "Update required" (the node runs a
+ * generation this CLI does not carry) / 1 "Update soon" (a switch to one
+ * is committed) is printed to stderr as "WARNING: <line>". Reads go on;
+ * a build is still refused by cli_select_runtimes' tuple match, which is
+ * unchanged — the warning decides nothing (design §3 G1). An older node,
+ * a storage-only node or no answer prints nothing extra.
+ * The answer is kept for ONE later dnac_ruleset_info on the SAME client
+ * (cli_ruleset_info), so a command that asks again — cli_select_runtimes,
+ * ruleset-info, status — makes no second round trip; any other client
+ * object (status' peers, a second session) never reuses it. */
+static int g_cli_compat_done = 0;
+static nodus_dnac_ruleset_info_t g_cli_conn_ri;
+static const nodus_client_t *g_cli_conn_ri_client = NULL;
+
+/* nodus_ruleset_compat's line ("" for 0) into msg. @return its outcome. */
+static int cli_compat(const nodus_dnac_ruleset_info_t *ri, char *msg,
+                      size_t msg_len) {
+    return nodus_ruleset_compat(ri, nodus_runtime_generation_count(), msg,
+                                msg_len);
+}
+
+static int cli_client_connect(nodus_client_t *client) {
+    /* a new session on this client object: an earlier answer is stale */
+    if (client == g_cli_conn_ri_client) g_cli_conn_ri_client = NULL;
+    if (nodus_client_connect(client) != 0) return -1;
+    if (!g_cli_compat_done) {
+        nodus_dnac_ruleset_info_t ri;
+        char msg[384];
+        g_cli_compat_done = 1;
+        if (nodus_client_dnac_ruleset_info(client, &ri) == 0) {
+            g_cli_conn_ri = ri;
+            g_cli_conn_ri_client = client;
+            const int c = cli_compat(&ri, msg, sizeof(msg));
+            if (c == 1 || c == 2) fprintf(stderr, "WARNING: %s\n", msg);
+        }
+    }
+    return 0;
+}
+
+/* dnac_ruleset_info on `client`: the answer cli_client_connect already
+ * holds for this client (used once), else one request. Same returns as
+ * nodus_client_dnac_ruleset_info. */
+static int cli_ruleset_info(nodus_client_t *client,
+                            nodus_dnac_ruleset_info_t *out) {
+    if (client != NULL && out != NULL && client == g_cli_conn_ri_client &&
+        nodus_client_is_ready(client)) {
+        *out = g_cli_conn_ri;
+        g_cli_conn_ri_client = NULL;
+        return 0;
+    }
+    return nodus_client_dnac_ruleset_info(client, out);
+}
+
 /* HF-4 (design §1.6): ask the node which rule-set generation governs its
  * tip + 1 and pick the compiled generation whose (SYSTEM, CORE) tuple
  * EQUALS the answer — never by height. An older node (unknown method), a
@@ -1324,7 +1393,7 @@ static int cli_select_runtimes(nodus_client_t *client,
                                const nodus_domain_runtime_t **sys_rt,
                                const nodus_domain_runtime_t **core_rt) {
     nodus_dnac_ruleset_info_t ri;
-    int rc = nodus_client_dnac_ruleset_info(client, &ri);
+    int rc = cli_ruleset_info(client, &ri);
     if (rc != 0) {
         fprintf(stderr, "dnac_ruleset_info failed (rc=%d) — the node is "
                 "older than this CLI or did not answer; refusing to build "
@@ -1947,7 +2016,7 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         fprintf(stderr, "client_init failed\n");
         return 1;
     }
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "client_connect failed\n");
         nodus_client_close(&client);
         return 1;
@@ -2395,7 +2464,7 @@ static int cmd_stake(const char *server_ip, uint16_t server_port,
         fprintf(stderr, "client_init failed\n");
         return 1;
     }
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "client_connect failed\n");
         nodus_client_close(&client);
         return 1;
@@ -2856,7 +2925,7 @@ static int cmd_v2_envelope(const char *server_ip, uint16_t server_port,
         cfg.server_count    = 1;
         cfg.auto_reconnect  = false;
         if (nodus_client_init(&client, &cfg, &identity) != 0 ||
-            nodus_client_connect(&client) != 0) {
+            cli_client_connect(&client) != 0) {
             fprintf(stderr, "client connect failed\n");
             nodus_client_close(&client);
             goto done;
@@ -3381,7 +3450,7 @@ static int cmd_v2_claim(const char *server_ip, uint16_t server_port,
         scfg.server_count    = 1;
         scfg.auto_reconnect  = false;
         if (nodus_client_init(&sclient, &scfg, &keys[0]) != 0 ||
-            nodus_client_connect(&sclient) != 0) {
+            cli_client_connect(&sclient) != 0) {
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             nodus_client_close(&sclient);
             goto done;
@@ -4375,7 +4444,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             goto done;
         }
         connected = 1;                      /* init succeeded: close owed */
-        if (nodus_client_connect(&client) != 0) {
+        if (cli_client_connect(&client) != 0) {
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             goto done;
         }
@@ -5140,7 +5209,7 @@ static int cli_storage_session(nodus_client_t *client, int *connected,
         return -1;
     }
     *connected = 1;
-    if (nodus_client_connect(client) != 0) {
+    if (cli_client_connect(client) != 0) {
         fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
         return -1;
     }
@@ -5245,7 +5314,7 @@ static int cmd_storage_status_owner(const char *server_ip,
     {
         nodus_dnac_ruleset_info_t ri;
         memset(&ri, 0, sizeof(ri));
-        if (nodus_client_dnac_ruleset_info(&client, &ri) == 0)
+        if (cli_ruleset_info(&client, &ri) == 0)
             printf("rule-set generation %u (storage ops from generation "
                    "%u)\n", (unsigned)ri.generation,
                    (unsigned)NODUS_RT_GEN_STORAGE);
@@ -5318,7 +5387,7 @@ static int cmd_storage_status(const char *server_ip, uint16_t server_port,
     {
         nodus_dnac_ruleset_info_t ri;
         memset(&ri, 0, sizeof(ri));
-        if (nodus_client_dnac_ruleset_info(&client, &ri) == 0)
+        if (cli_ruleset_info(&client, &ri) == 0)
             printf("rule-set generation %u (storage ops from generation "
                    "%u)\n", (unsigned)ri.generation,
                    (unsigned)NODUS_RT_GEN_STORAGE);
@@ -5677,7 +5746,7 @@ static int cmd_v2_spend(const char *server_ip, uint16_t server_port,
         goto done;
     }
     connected = 1;                          /* init succeeded: close owed */
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
         goto done;
     }
@@ -6309,7 +6378,7 @@ static int cmd_v2_token_create(const char *server_ip, uint16_t server_port,
         goto done;
     }
     connected = 1;                          /* init succeeded: close owed */
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
         goto done;
     }
@@ -6652,7 +6721,7 @@ static int t8_session(nodus_client_t *client, const char *ip, uint16_t port) {
         fprintf(stderr, "client_init failed\n");
         return -1;
     }
-    if (nodus_client_connect(client) != 0) {
+    if (cli_client_connect(client) != 0) {
         fprintf(stderr, "client connect failed (%s:%u)\n", ip,
                 (unsigned)port);
         nodus_client_close(client);
@@ -6661,13 +6730,14 @@ static int t8_session(nodus_client_t *client, const char *ip, uint16_t port) {
     return 0;
 }
 
-/* `ruleset-info`: the generation the node runs, and whether this CLI
- * carries it. */
+/* `ruleset-info`: the generation the node runs, whether this CLI carries
+ * it, the pending switch the node reports ("ng" / "nh") and the
+ * update-required verdict (design 2026-10-20 §1 B). */
 static int cmd_ruleset_info(const char *server_ip, uint16_t server_port) {
     nodus_client_t client;
     if (t8_session(&client, server_ip, server_port) != 0) return 1;
     nodus_dnac_ruleset_info_t ri;
-    int qrc = nodus_client_dnac_ruleset_info(&client, &ri);
+    int qrc = cli_ruleset_info(&client, &ri);
     nodus_client_close(&client);
     if (qrc != 0) {
         fprintf(stderr, "dnac_ruleset_info failed (rc=%d) — an older node "
@@ -6704,6 +6774,18 @@ static int cmd_ruleset_info(const char *server_ip, uint16_t server_port) {
     }
     if (!carried)
         printf("  this CLI does NOT carry it — out of date, rebuild\n");
+    if (ri.next_generation != 0)
+        printf("  next switch: generation %u at block %llu\n",
+               (unsigned)ri.next_generation,
+               (unsigned long long)ri.next_height);
+    else
+        printf("  next switch: none\n");
+    char cmsg[384];
+    if (cli_compat(&ri, cmsg, sizeof(cmsg)) == 0)
+        printf("  compatibility: OK (this CLI carries rule-set generations "
+               "up to %u)\n", (unsigned)nodus_runtime_generation_count());
+    else
+        printf("  compatibility: %s\n", cmsg);
     return carried ? 0 : 1;
 }
 
@@ -6853,7 +6935,7 @@ static int cmd_validator_consent(const char *server_ip, uint16_t server_port,
     nodus_dnac_ruleset_info_t ri;
     memset(&ri, 0, sizeof(ri));
     const int rrc = crc == 0 && has_chain32
-                  ? nodus_client_dnac_ruleset_info(&client, &ri) : -1;
+                  ? cli_ruleset_info(&client, &ri) : -1;
     nodus_client_close(&client);
     if (crc != 0 || !has_chain32) {
         fprintf(stderr, "this node names no version-3 chain id (dnac_supply "
@@ -7223,7 +7305,7 @@ static int st_session(nodus_client_t *client, const char *ip, uint16_t port,
         snprintf(err, errcap, "client init failed");
         return -1;
     }
-    if (nodus_client_connect(client) != 0) {
+    if (cli_client_connect(client) != 0) {
         snprintf(err, errcap, "no connection to %s:%u", ip, (unsigned)port);
         nodus_client_close(client);
         return -1;
@@ -7238,7 +7320,7 @@ static int st_chain_of(nodus_client_t *client, nodus_dnac_ruleset_info_t *ri,
                        size_t errcap) {
     memset(ri, 0, sizeof(*ri));
     *has_chain = false;
-    int q = nodus_client_dnac_ruleset_info(client, ri);
+    int q = cli_ruleset_info(client, ri);
     if (q != 0) {
         snprintf(err, errcap, "dnac_ruleset_info failed (rc=%d)", q);
         return -1;
@@ -7441,6 +7523,16 @@ static int cmd_status(const char *server_ip, uint16_t server_port,
               (unsigned long long)lri.tip, (unsigned)lri.generation);
     else
         st_kv("this node's height", NULL, "unknown (%s)", lerr);
+    /* the update-required warning (design 2026-10-20 §1 B): stderr is
+     * silenced on this screen, so the verdict is a line of it */
+    if (l_chain_ok) {
+        char cmsg[384];
+        if (cli_compat(&lri, cmsg, sizeof(cmsg)) == 0)
+            st_kv("this CLI", "OK", "carries rule-set generations up to %u",
+                  (unsigned)nodus_runtime_generation_count());
+        else
+            st_kv("this CLI", "WARN", "%s", cmsg);
+    }
     char l_chain_hex[65] = "";
     if (l_chain_ok && l_has_chain) {
         st_hex(l_chain, 32, l_chain_hex);
@@ -7947,7 +8039,7 @@ static int cmd_name_register(const char *server_ip, uint16_t server_port,
         cfg.auto_reconnect  = false;
         if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
         connected = 1;
-        if (nodus_client_connect(&client) != 0) {
+        if (cli_client_connect(&client) != 0) {
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             goto done;
         }
@@ -8553,7 +8645,7 @@ static int cmd_v2_spend_msig(const char *server_ip, uint16_t server_port,
     cfg.auto_reconnect  = false;
     if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
     connected = 1;
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
         goto done;
     }
@@ -8925,7 +9017,7 @@ static int msig_inputs_verify(const char *server_ip, uint16_t server_port,
     nodus_dnac_utxo_result_t res;
     memset(&res, 0, sizeof(res));
     int res_valid = 0;
-    if (nodus_client_connect(&client) != 0) {
+    if (cli_client_connect(&client) != 0) {
         fprintf(stderr, "no PINNED session to %s:%u (the node's key is not "
                 "--pin, it sent no signed ML-KEM key, or it is down) — "
                 "inputs not verified, nothing signed\n", sip,
@@ -9272,7 +9364,7 @@ static int cmd_msig_combine2(const char *server_ip, uint16_t server_port,
         cfg.auto_reconnect  = false;
         if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
         connected = 1;
-        if (nodus_client_connect(&client) != 0) {
+        if (cli_client_connect(&client) != 0) {
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             goto done;
         }
@@ -9635,7 +9727,7 @@ static int cmd_msig_combine(const char *server_ip, uint16_t server_port,
         cfg.auto_reconnect  = false;
         if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
         connected = 1;
-        if (nodus_client_connect(&client) != 0) {
+        if (cli_client_connect(&client) != 0) {
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             goto done;
         }
@@ -10512,7 +10604,7 @@ static int evm_tx_run(const char *server_ip, uint16_t server_port,
         cfg.auto_reconnect  = false;
         if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
         connected = 1;
-        if (nodus_client_connect(&client) != 0) {
+        if (cli_client_connect(&client) != 0) {
             fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
             goto done;
         }
@@ -11466,7 +11558,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  coins            This identity's unspent coins (id, amount, bh, ub) and the tip\n");
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 #ifdef NODUS_CLI_HAS_DNAC
-    fprintf(stderr, "  ruleset-info     The rule-set generation the node runs (and if this CLI carries it)\n");
+    fprintf(stderr, "  ruleset-info     The rule-set generation the node runs (and if this CLI carries it),\n");
+    fprintf(stderr, "                   its next switch and whether this CLI needs an update\n");
+    fprintf(stderr, "                   (every session command warns once on stderr: \"WARNING: Update ...\")\n");
     fprintf(stderr, "  name register <name> --keys <dir> (--dry-run | --submit ip:port) [--fee <raw>]\n");
     fprintf(stderr, "  name lookup <name> | name of <fp128>   On-chain names (one node's answer)\n");
     fprintf(stderr, "  evm (address | balance | deploy | send | call | deposit | withdraw |\n");
