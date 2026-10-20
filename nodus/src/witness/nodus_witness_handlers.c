@@ -2327,11 +2327,88 @@ static int hf4_tip(nodus_witness_t *w, uint64_t *tip) {
  *   "sh" bstr64 SYSTEM ruleset_hash, "cv" u32, "ch" bstr64 (CORE),
  *   "pd" bstr64 the SYSTEM meter-policy digest of that generation,
  *   "H" u64 the earliest committed param-9 effective height (0 = none),
- *   "d2" u64 this build's DNAC_CFG_RULESET_GEN2_D2}. */
+ *   "d2" u64 this build's DNAC_CFG_RULESET_GEN2_D2,
+ *   "ng" u32 the generation a committed generation-switch row NOT yet
+ *        effective (effective_block > tip) moves the chain to, "nh" u64
+ *        that row's effective height — both 0 when there is none}.
+ * "ng"/"nh" (update-required warning, design docs/plans/2026-10-20-
+ * update-required-warning-design.md §1 A) are node-local reads of
+ * committed rows through RULESET_SWITCH_PARAMS; no root, verdict or block
+ * reads them. */
+
+/* The build's generation-switch votes: chain_config param -> the
+ * generation its edge moves the registry TO (nodus_witness_v2_apply.c:
+ * RULESET_EDGES param 9 -> NODUS_RT_GEN_2; phase_6b_evm_activation param
+ * 14 -> NODUS_RT_GEN_EVM; phase_6b_gen4_edge param 18 ->
+ * NODUS_RT_GEN_STORAGE; phase_6b_gen5_edge param 22 -> NODUS_RT_GEN_ROOTS).
+ * Every id and generation number is defined in every build; a build
+ * without NODUS_EVM_ENABLED reports a 14/18/22 row it could not itself
+ * execute (it stops at that edge) — the report is still the chain's. */
+static const struct {
+    uint8_t  param_id;
+    uint32_t to_gen;
+} RULESET_SWITCH_PARAMS[] = {
+    { (uint8_t)DNAC_CFG_RULESET_GEN2,      NODUS_RT_GEN_2       },
+    { (uint8_t)DNAC_CFG_EVM_ACTIVE,        NODUS_RT_GEN_EVM     },
+    { (uint8_t)DNAC_CFG_RULESET_GEN_ROLES, NODUS_RT_GEN_STORAGE },
+    { (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS, NODUS_RT_GEN_ROOTS   },
+};
+#define RULESET_SWITCH_N \
+    (sizeof(RULESET_SWITCH_PARAMS) / sizeof(RULESET_SWITCH_PARAMS[0]))
+_Static_assert(RULESET_SWITCH_N == 4,
+               "ruleset_next_switch binds exactly four switch params");
+
+/* The committed generation-switch row with the smallest effective_block
+ * above `tip` (ties: the smaller param_id). 0 with *ng = *nh = 0 when
+ * there is none; -1 on any read fault or a row the table does not map —
+ * never a made-up 0. */
+static int ruleset_next_switch(nodus_witness_t *w, uint64_t tip,
+                               uint32_t *ng, uint64_t *nh) {
+    sqlite3_stmt *st = NULL;
+    int rc = -1;
+    *ng = 0;
+    *nh = 0;
+    if (tip > (uint64_t)INT64_MAX) return -1;
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT param_id, effective_block FROM chain_config_history "
+            "WHERE param_id IN (?1, ?2, ?3, ?4) AND effective_block > ?5 "
+            "ORDER BY effective_block, param_id LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    for (size_t i = 0; i < RULESET_SWITCH_N; i++)
+        sqlite3_bind_int(st, (int)i + 1,
+                         (int)RULESET_SWITCH_PARAMS[i].param_id);
+    sqlite3_bind_int64(st, 5, (sqlite3_int64)tip);
+    int s = sqlite3_step(st);
+    if (s == SQLITE_DONE) {
+        rc = 0;
+    } else if (s == SQLITE_ROW &&
+               sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+               sqlite3_column_type(st, 1) == SQLITE_INTEGER) {
+        sqlite3_int64 p = sqlite3_column_int64(st, 0);
+        sqlite3_int64 e = sqlite3_column_int64(st, 1);
+        for (size_t i = 0; i < RULESET_SWITCH_N; i++) {
+            if (p == (sqlite3_int64)RULESET_SWITCH_PARAMS[i].param_id &&
+                e > 0 && (uint64_t)e > tip) {
+                *ng = RULESET_SWITCH_PARAMS[i].to_gen;
+                *nh = (uint64_t)e;
+                rc = 0;
+                break;
+            }
+        }
+    }
+    sqlite3_finalize(st);
+    if (rc != 0) { *ng = 0; *nh = 0; }
+    return rc;
+}
+
 static void handle_dnac_ruleset_info(nodus_witness_t *w,
                                      struct nodus_tcp_conn *conn,
                                      uint32_t txn_id) {
-    uint64_t tip = 0, H = 0;
+    uint64_t tip = 0, H = 0, nh = 0;
+    uint32_t ng = 0;
     const nodus_domain_runtime_t *rs = NULL, *rc = NULL;
     if (hf4_tip(w, &tip) != 0) {
         send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
@@ -2370,11 +2447,20 @@ static void handle_dnac_ruleset_info(nodus_witness_t *w,
             return;
         }
     }
+    if (ruleset_next_switch(w, tip, &ng, &nh) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "generation-switch history unreadable");
+        return;
+    }
 
+    /* Worst case ≈ 330 bytes: the header with the 17-byte method name
+     * (~37), four 64-byte bstrs with their keys (4 × 67), five u64/u32
+     * values with keys (≤ 13 each) and the two ng/nh pairs (≤ 20). An
+     * overflow still fails closed below (rlen == 0). */
     uint8_t buf[512];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
-    enc_dnac_response(&enc, txn_id, "dnac_ruleset_info", 9);
+    enc_dnac_response(&enc, txn_id, "dnac_ruleset_info", 11);
     cbor_encode_cstr(&enc, "tip"); cbor_encode_uint(&enc, tip);
     cbor_encode_cstr(&enc, "gen"); cbor_encode_uint(&enc, rs->generation);
     cbor_encode_cstr(&enc, "sv");  cbor_encode_uint(&enc, rs->ruleset_version);
@@ -2386,6 +2472,8 @@ static void handle_dnac_ruleset_info(nodus_witness_t *w,
     cbor_encode_cstr(&enc, "H");   cbor_encode_uint(&enc, H);
     cbor_encode_cstr(&enc, "d2");
     cbor_encode_uint(&enc, (uint64_t)DNAC_CFG_RULESET_GEN2_D2);
+    cbor_encode_cstr(&enc, "ng");  cbor_encode_uint(&enc, ng);
+    cbor_encode_cstr(&enc, "nh");  cbor_encode_uint(&enc, nh);
     size_t rlen = cbor_encoder_len(&enc);
     if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
     else send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,

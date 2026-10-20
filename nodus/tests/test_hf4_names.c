@@ -47,7 +47,11 @@
  *     pinned generation's (SYSTEM, CORE) tuple equals the compiled
  *     runtime table's; generation 0 / count + 1 are refused.
  *  8. client decoders (no network): dnac_ruleset_info (all nine keys
- *     required, gen 0 / a duplicate / a missing key / truncation refused),
+ *     required, gen 0 / a duplicate / a missing key / truncation refused;
+ *     the OPTIONAL pending-switch keys "ng" / "nh" — update-required
+ *     warning design 2026-10-20 §1 A — decoded into next_generation /
+ *     next_height, both 0 when an older node omits them, never a stand-in
+ *     for a required key, a duplicate "ng" or an "ng" above u32 refused),
  *     dnac_name_lookup / _name_of (found ⇔ the row keys; rh 0, an
  *     uppercase name refused), the dnac_fee_info HF-4 keys (np exactly 4
  *     non-zero, ns ≤ NODUS_DNAC_NAME_SCHED_MAX maps of p/v/e; an older
@@ -57,6 +61,14 @@
  *     storage_bond and power_cap_bps decoded beside the older keys, 0
  *     when an older server omits them, skipped by the name-price decoder;
  *     a truncated reply and NULL arguments refused.
+ *  9. nodus_ruleset_compat (pure): 0 OK when the build carries the
+ *     governing generation and no pending switch exceeds it; 2 UPDATE
+ *     REQUIRED when generation > max (checked before 1, so the block at
+ *     tip = H-1, where the registry has switched and ng names the same
+ *     generation, says "required"); 1 UPDATE BEFORE when next_generation
+ *     > max and next_height > tip, the message naming the generation, the
+ *     block and the block distance (singular at 1); next_height == tip is
+ *     0; NULL / zero-length / short message buffers; NULL ri is -1.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build. Environment: none. No
@@ -78,7 +90,12 @@
  *    oracle, not that the oracle read the design right.
  *  - Section 8 drives the decoders only; the node-side handlers in
  *    nodus_witness_handlers.c are static (they only send) and are not
- *    driven — the existing test_v3_block_query.c convention.
+ *    driven — the existing test_v3_block_query.c convention. In
+ *    particular the node's "ng" / "nh" derivation (handle_dnac_ruleset_
+ *    info's chain_config_history query and its param → generation table)
+ *    is NOT exercised here; section 8 proves only that the client reads
+ *    the keys the handler is written to send.
+ *  - Section 9 asserts message FRAGMENTS (strstr), not the whole text.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -911,13 +928,20 @@ static void reply_head(cbor_encoder_t *e, const char *method, size_t rkeys) {
 }
 
 /* ruleset_info: `skip` drops one key (1..9), `dup` repeats "tip",
- * `gen` is the generation value. */
-static size_t ri_reply(int skip, int dup, uint64_t gen) {
+ * `gen` is the generation value; `next` bit 1 writes "ng" = ng, bit 2
+ * writes "nh" = nh, bit 4 repeats "ng" (the optional pending-switch keys,
+ * update-required warning design 2026-10-20 §1 A). */
+static size_t ri_reply_ex(int skip, int dup, uint64_t gen, int next,
+                          uint64_t ng, uint64_t nh) {
     cbor_encoder_t e;
     uint8_t h1[64], h2[64], h3[64];
     memset(h1, 0x21, 64); memset(h2, 0x22, 64); memset(h3, 0x23, 64);
     reply_head(&e, "dnac_ruleset_info",
-               (size_t)(9 - (skip ? 1 : 0) + (dup ? 1 : 0)));
+               (size_t)(9 - (skip ? 1 : 0) + (dup ? 1 : 0) +
+                        ((next & 1) ? 1 : 0) + ((next & 2) ? 1 : 0) +
+                        ((next & 4) ? 1 : 0)));
+    if (next & 1) { cbor_encode_cstr(&e, "ng"); cbor_encode_uint(&e, ng); }
+    if (next & 4) { cbor_encode_cstr(&e, "ng"); cbor_encode_uint(&e, ng); }
     if (skip != 1) { cbor_encode_cstr(&e, "tip"); cbor_encode_uint(&e, 41); }
     if (dup)       { cbor_encode_cstr(&e, "tip"); cbor_encode_uint(&e, 41); }
     if (skip != 2) { cbor_encode_cstr(&e, "gen"); cbor_encode_uint(&e, gen); }
@@ -928,7 +952,12 @@ static size_t ri_reply(int skip, int dup, uint64_t gen) {
     if (skip != 7) { cbor_encode_cstr(&e, "pd"); cbor_encode_bstr(&e, h3, 64); }
     if (skip != 8) { cbor_encode_cstr(&e, "H"); cbor_encode_uint(&e, 4000); }
     if (skip != 9) { cbor_encode_cstr(&e, "d2"); cbor_encode_uint(&e, 77); }
+    if (next & 2) { cbor_encode_cstr(&e, "nh"); cbor_encode_uint(&e, nh); }
     return cbor_encoder_len(&e);
+}
+
+static size_t ri_reply(int skip, int dup, uint64_t gen) {
+    return ri_reply_ex(skip, dup, gen, 0, 0, 0);
 }
 
 /* name result: `found`; with_row writes owner|name + rh; `rh` value. */
@@ -1065,6 +1094,35 @@ static int t_decoders(void) {
         len = ri_reply(0, 0, 0);
         CHECK(nodus_dnac_ruleset_info_decode(g_buf, len, &ri) == -1,
               "generation 0 is refused");
+
+        /* the optional pending-switch keys ng / nh */
+        len = ri_reply(0, 0, 2);
+        CHECK(nodus_dnac_ruleset_info_decode(g_buf, len, &ri) == 0 &&
+              ri.next_generation == 0 && ri.next_height == 0,
+              "an older node's reply (no ng / nh) decodes, both 0");
+        len = ri_reply_ex(0, 0, 4, 3, 5, 300000);
+        CHECK(nodus_dnac_ruleset_info_decode(g_buf, len, &ri) == 0 &&
+              ri.generation == 4 && ri.next_generation == 5 &&
+              ri.next_height == 300000 && ri.tip == 41 && ri.d2 == 77,
+              "ng / nh decode beside the nine required keys");
+        len = ri_reply_ex(0, 0, 2, 3, 0, 0);
+        CHECK(nodus_dnac_ruleset_info_decode(g_buf, len, &ri) == 0 &&
+              ri.next_generation == 0 && ri.next_height == 0,
+              "ng = nh = 0 (no pending switch) decodes");
+        for (size_t cut = 1; cut < len; cut++)
+            CHECK(nodus_dnac_ruleset_info_decode(g_buf, len - cut, &ri) == -1,
+                  "a truncated reply with ng / nh is refused");
+        for (int s = 1; s <= 9; s++) {
+            len = ri_reply_ex(s, 0, 2, 3, 5, 300000);
+            CHECK(nodus_dnac_ruleset_info_decode(g_buf, len, &ri) == -1,
+                  "ng / nh do not stand in for a required key");
+        }
+        len = ri_reply_ex(0, 0, 2, 7, 5, 300000);
+        CHECK(nodus_dnac_ruleset_info_decode(g_buf, len, &ri) == -1,
+              "a duplicate ng is refused");
+        len = ri_reply_ex(0, 0, 2, 3, (uint64_t)UINT32_MAX + 1u, 300000);
+        CHECK(nodus_dnac_ruleset_info_decode(g_buf, len, &ri) == -1,
+              "an ng above u32 is refused");
     }
 
     /* dnac_name_lookup / dnac_name_of */
@@ -1191,6 +1249,79 @@ static int t_decoders(void) {
     return 0;
 }
 
+/* ══ 9. nodus_ruleset_compat — the update-required rule ═══════════════ */
+
+static int t_ruleset_compat(void) {
+    nodus_dnac_ruleset_info_t ri;
+    char m[256];
+
+    memset(&ri, 0, sizeof(ri));
+    ri.tip = 298766;
+    ri.generation = 5;
+
+    /* OK: the build carries the governing generation, nothing pending */
+    memset(m, 'x', sizeof(m));
+    CHECK(nodus_ruleset_compat(&ri, 5, m, sizeof(m)) == 0 && m[0] == '\0',
+          "same generation, no switch: OK, empty message");
+    CHECK(nodus_ruleset_compat(&ri, 6, m, sizeof(m)) == 0,
+          "a newer build: OK");
+
+    /* UPDATE REQUIRED: the chain already runs a newer generation */
+    CHECK(nodus_ruleset_compat(&ri, 4, m, sizeof(m)) == 2 &&
+          strstr(m, "Update required") != NULL &&
+          strstr(m, "generation 5") != NULL &&
+          strstr(m, "up to 4") != NULL &&
+          strstr(m, "Install the current release.") != NULL,
+          "generation > max: UPDATE REQUIRED with both numbers");
+
+    /* UPDATE BEFORE: a committed switch above tip to a generation this
+     * build does not carry; the distance is in blocks */
+    ri.next_generation = 6;
+    ri.next_height = 300000;
+    CHECK(nodus_ruleset_compat(&ri, 5, m, sizeof(m)) == 1 &&
+          strstr(m, "Update soon") != NULL &&
+          strstr(m, "generation 6") != NULL &&
+          strstr(m, "block 300000") != NULL &&
+          strstr(m, "in 1234 blocks") != NULL &&
+          strstr(m, "up to 5") != NULL,
+          "next_generation > max, next_height > tip: UPDATE BEFORE, "
+          "height and block count named");
+    CHECK(nodus_ruleset_compat(&ri, 6, m, sizeof(m)) == 0 && m[0] == '\0',
+          "a pending switch this build carries: OK");
+
+    /* boundary: next_height == tip is not "before" any more */
+    ri.next_height = ri.tip;
+    CHECK(nodus_ruleset_compat(&ri, 5, m, sizeof(m)) == 0,
+          "next_height == tip: not UPDATE BEFORE");
+    ri.next_height = ri.tip + 1;
+    CHECK(nodus_ruleset_compat(&ri, 5, m, sizeof(m)) == 1 &&
+          strstr(m, "(in 1 block);") != NULL,
+          "next_height == tip + 1: UPDATE BEFORE, 1 block");
+
+    /* precedence: a current generation above max wins over a pending one
+     * (at tip = H-1 the registry has already switched, ng names it too) */
+    ri.generation = 6;
+    ri.next_generation = 6;
+    ri.next_height = ri.tip + 1;
+    CHECK(nodus_ruleset_compat(&ri, 5, m, sizeof(m)) == 2 &&
+          strstr(m, "Update required") != NULL,
+          "generation > max and next > max: UPDATE REQUIRED first");
+
+    /* message buffer handling: NULL / 0 / a short buffer */
+    CHECK(nodus_ruleset_compat(&ri, 5, NULL, 0) == 2,
+          "no message buffer: the outcome alone");
+    m[0] = 'x';
+    CHECK(nodus_ruleset_compat(&ri, 5, m, 0) == 2 && m[0] == 'x',
+          "msg_len 0: nothing written");
+    memset(m, 'x', sizeof(m));
+    CHECK(nodus_ruleset_compat(&ri, 5, m, 8) == 2 && m[7] == '\0' &&
+          m[8] == 'x', "a short buffer: truncated, NUL-terminated, "
+          "nothing past it");
+    CHECK(nodus_ruleset_compat(NULL, 5, m, sizeof(m)) == -1 && m[0] == '\0',
+          "NULL ri: -1");
+    return 0;
+}
+
 int main(void) {
     memset(g_owner, 0xA7, sizeof(g_owner));
     memset(g_other, 0xB8, sizeof(g_other));
@@ -1207,7 +1338,7 @@ int main(void) {
     }
 
     int failed = 0, n = 0;
-    struct { const char *name; int rc; } res[7];
+    struct { const char *name; int rc; } res[8];
     res[n].name = "bytes_and_price";       res[n++].rc = t_bytes_and_price();
     res[n].name = "name_root_kats";        res[n++].rc = t_name_root();
     res[n].name = "read_plan";             res[n++].rc = t_read_plan(g1, g2);
@@ -1216,6 +1347,7 @@ int main(void) {
                                                t_describe_and_owner_key();
     res[n].name = "pins_generations";      res[n++].rc = t_pins();
     res[n].name = "client_decoders";       res[n++].rc = t_decoders();
+    res[n].name = "ruleset_compat";        res[n++].rc = t_ruleset_compat();
     for (int i = 0; i < n; i++) {
         fprintf(stderr, "%-22s %s\n", res[i].name, res[i].rc ? "FAIL" : "ok");
         if (res[i].rc) failed++;

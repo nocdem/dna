@@ -5663,6 +5663,23 @@ composition tag stays `"NDS.CORE.v2"`.
   vote), and this build's D2. No version-3 chain → `NOT_FOUND`. A client chooses the compiled
   generation whose tuple EQUALS (sv, sh, cv, ch) — never by height; an older node answers
   "unknown DNAC method" and the client must fail closed.
+  Since the update-required warning (design `docs/plans/2026-10-20-update-required-warning-design.md`
+  §1 A) the answer carries two more keys, `ng` (u32) and `nh` (u64): the committed
+  generation-switch row that is NOT yet effective — `chain_config_history` rows of params
+  9 / 14 / 18 / 22 with `effective_block > tip`, the smallest `effective_block` first (ties: the
+  smaller param id) — and the generation that row moves the chain to, through the handler's
+  own table `RULESET_SWITCH_PARAMS` (9 → 2 `NODUS_RT_GEN_2`, 14 → 3 `NODUS_RT_GEN_EVM`,
+  18 → 4 `NODUS_RT_GEN_STORAGE`, 22 → 5 `NODUS_RT_GEN_ROOTS` — the targets of the engine's
+  edges in `nodus_witness_v2_apply.c`: `RULESET_EDGES`, `phase_6b_evm_activation`,
+  `phase_6b_gen4_edge`, `phase_6b_gen5_edge`). Both 0 when there is none; a read fault is
+  `INTERNAL_ERROR`, never a 0. A node can only report a switch its own build knows. The keys are
+  node-local reads of committed rows — no root, verdict, vote or block reads them. The client
+  decoder treats them as OPTIONAL (an older node omits them → 0; the nine keys above stay
+  required), and the pure helper `nodus_ruleset_compat(ri, max_generation_supported, msg,
+  msg_len)` (`nodus.h`, `nodus_client.c`) turns the answer into 0 OK / 1 "Update soon" (a
+  pending `ng` above the build's maximum, `nh > tip`; the message names the generation, the
+  block and the distance in blocks — no clock) / 2 "Update required" (`gen` above the maximum,
+  checked first). It is a warning only: what a client builds stays chosen by the tuple match.
 - `dnac_name_lookup {name}` (lowercase only; the byte rule, else `PROTOCOL_ERROR`) →
   `{found, owner (128 hex), rh, ch}`; `dnac_name_of {owner}` (exactly 128 lowercase hex) →
   `{found, name, rh, ch}` — `rh` = registered_height, `ch` = the committed height the answer is

@@ -1304,9 +1304,20 @@ int nodus_dnac_cc_collect_decode(const uint8_t *raw, size_t raw_len,
  *   "H"  u64   the earliest committed RULESET_GEN2 effective height,
  *              0 = no vote committed
  *   "d2" u64   the node build's DNAC_CFG_RULESET_GEN2_D2
+ *   "ng" u32   OPTIONAL (update-required warning, design 2026-10-20 §1 A):
+ *              the generation a committed generation-switch row that is
+ *              NOT yet effective (effective_block > tip) moves the chain
+ *              to — the node's own param → generation table (9 → 2,
+ *              14 → 3, 18 → 4, 22 → 5); the row with the smallest
+ *              effective_block (ties: the smaller param id). 0 = none.
+ *   "nh" u64   OPTIONAL: that row's effective height, 0 = none.
+ *              A node older than these keys sends neither: the decoder
+ *              reads them as 0 (no pending switch known).
  * A client builds an envelope for the compiled generation whose tuple
  * EQUALS (sv, sh, cv, ch) — never by height; no match = this client is
  * out of date. An older node answers "unknown DNAC method": fail closed.
+ * ng / nh are for a WARNING only (nodus_ruleset_compat); they never
+ * choose what is built.
  *
  * dnac_name_lookup — "a": {"name": tstr, 3..36 of a-z0-9, LOWERCASE}.
  * dnac_name_of     — "a": {"owner": tstr, 128 lowercase hex}.
@@ -1333,6 +1344,8 @@ typedef struct {
     uint8_t  policy_digest[64];
     uint64_t gen2_height;              /* "H": 0 = no vote committed     */
     uint64_t d2;
+    uint32_t next_generation;          /* "ng": 0 = no pending switch    */
+    uint64_t next_height;              /* "nh": 0 = no pending switch    */
 } nodus_dnac_ruleset_info_t;
 
 typedef struct {
@@ -1378,6 +1391,26 @@ int nodus_dnac_name_result_decode(const uint8_t *raw, size_t raw_len,
                                   nodus_dnac_name_result_t *out);
 int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
                                   nodus_dnac_name_prices_t *out);
+
+/** Rule-set compatibility of THIS build with a node's dnac_ruleset_info
+ *  answer (update-required warning, design docs/plans/2026-10-20-update-
+ *  required-warning-design.md §1 B). Pure: no network, no clock.
+ *  `max_generation_supported` = the newest rule-set generation the
+ *  caller can build for.
+ *  @return 2 UPDATE REQUIRED — ri->generation > max (checked first);
+ *          1 UPDATE BEFORE  — ri->next_generation > max and
+ *                             ri->next_height > ri->tip;
+ *          0 OK;
+ *         -1 ri == NULL.
+ *  For 1 and 2 a one-line English message is written to `msg` (when msg
+ *  != NULL and msg_len > 0; truncated to fit, always NUL-terminated; ""
+ *  for 0). The distance is given in blocks (next_height − tip), never as
+ *  a time. The text says "Install the current release" — what that means
+ *  is the caller's to say. A warning only: it never decides what is
+ *  built. */
+int nodus_ruleset_compat(const nodus_dnac_ruleset_info_t *ri,
+                         uint32_t max_generation_supported,
+                         char *msg, size_t msg_len);
 
 /* ── Storage reward v1 — dnac_storage_status (package B2b-CLI; decision
  *    docs/plans/decisions/2026-10-05-storage-reward-is-for-archive.md) ──

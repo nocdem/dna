@@ -5516,11 +5516,53 @@ int nodus_dnac_ruleset_info_decode(const uint8_t *raw, size_t raw_len,
         } else if (KEY_EQ(k, "d2")) {
             if (v3d_u64(&dec, UINT64_MAX, &out->d2) != 0) return -1;
             have |= 256u;
+        } else if (KEY_EQ(k, "ng")) {
+            /* OPTIONAL (an older node sends neither ng nor nh): no `have`
+             * bit; absent = 0. A duplicate is refused by v3d_key. */
+            if (v3d_u64(&dec, UINT32_MAX, &v) != 0) return -1;
+            out->next_generation = (uint32_t)v;
+        } else if (KEY_EQ(k, "nh")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->next_height) != 0) return -1;
         } else if (v3d_skip(&dec, 0) != 0) {
             return -1;
         }
     }
-    if (have != 511u || dec.error) return -1;   /* every key is required */
+    if (have != 511u || dec.error) return -1;   /* the nine keys required */
+    return 0;
+}
+
+int nodus_ruleset_compat(const nodus_dnac_ruleset_info_t *ri,
+                         uint32_t max_generation_supported,
+                         char *msg, size_t msg_len)
+{
+    if (msg && msg_len > 0) msg[0] = '\0';
+    if (!ri) return -1;
+    if (ri->generation > max_generation_supported) {
+        if (msg && msg_len > 0)
+            snprintf(msg, msg_len,
+                     "Update required: the Nodus network runs rule-set "
+                     "generation %u; this version supports up to %u. "
+                     "Install the current release.",
+                     (unsigned)ri->generation,
+                     (unsigned)max_generation_supported);
+        return 2;
+    }
+    if (ri->next_generation > max_generation_supported &&
+        ri->next_height > ri->tip) {
+        const uint64_t left = ri->next_height - ri->tip;   /* ≥ 1 */
+        if (msg && msg_len > 0)
+            snprintf(msg, msg_len,
+                     "Update soon: the Nodus network switches to rule-set "
+                     "generation %u at block %llu (in %llu %s); this "
+                     "version supports up to %u and will stop building "
+                     "transactions then. Install the current release.",
+                     (unsigned)ri->next_generation,
+                     (unsigned long long)ri->next_height,
+                     (unsigned long long)left,
+                     left == 1u ? "block" : "blocks",
+                     (unsigned)max_generation_supported);
+        return 1;
+    }
     return 0;
 }
 
