@@ -6945,6 +6945,35 @@ over the Linux fixture, the reader, an interrupted build + republish, and a torn
 to the fixture. Its requirements, exit codes (2 = something did not run, NOT a pass) and how it can lie:
 `nodus/README.md` row 0.26.16 and the file header.
 
+### HF-7 P1a — root functions (inert, no caller) (2026-10-20, branch `hf7-p1a` only — not versioned, not voted)
+
+The normative byte spec of the HF-7 roots — snapshot design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md`
+§8.9 S1-S8, APPROVED by the operator 2026-10-15 (Kurultay #24; P1 plan §10 / §10.9 / §10.11, Kurultay #27) —
+now exists as pure functions in `shared/dnac/ledger_roots_v2.{h,c}`: the balance-copy leg
+(`dna_v2_bcopy_leaf_hash` / `dna_v2_bcopy_root`, S1), the active-count leg (`dna_v2_vstat_hash`, S2 — an
+absent row is an error), the storage-member leg (`dna_v2_stmem_leaf_hash` / `dna_v2_stmem_root`, S3), SYSTEM
+v6 (`dna_v2_system_root_v6`: the nine v5 legs, then bcopy, vstat, stmem — S4), the segment leaf v2 with
+`published_height` (`dna_v2_segment_leaf_hash_v2` / `dna_v2_segments_root_v2`, S5 — inner and empty tag
+unchanged), DomainHead v2 with `last_upd_hash` (`dna_v2_domain_head_hash_v2` / `dna_v2_domains_root_v2`, S6 —
+the domains Merkle unchanged in shape), the replay leg (`dna_v2_replay_leaf_hash` / `dna_v2_replay_root`, S7 —
+key tx_id strictly ascending, a repeated intent_id refused over a sorted copy, expiry 1..2^64−1) and GLOBAL v2
+(`dna_v2_global_root_v2` = domains_root ‖ replay_root, S8). Three empty kinds are appended to
+`dna_v2_empty_kind_t` (`"NDS.E.BCOPY.v1"`, `"NDS.E.STMEM.v1"`, `"NDS.E.REPLAY.v1"`); the indices of the
+existing kinds are unchanged. Every range is checked before encoding (never truncated), every key order is
+checked (never established) — §8.9 C3 / C5. **Nothing calls them:** the witness still computes SYSTEM v5,
+segment leaf v1, DomainHead v1 and GLOBAL v1 exactly as before (no v5 / v1 function changed); they take effect
+only when P1c wires them under rule-set generation 5 at the HF-7 edge. Signatures and return codes:
+`messenger/docs/functions/ledger.md` §1.2.
+
+**Tests.** `test_roots_hf7` — every KAT vector of the independent oracle
+`nodus/tests/vectors/hf7_root_coverage_kat.json` (generator `hf7_root_coverage_oracle.py`, brought in from
+branch `hf7` e7c1de2f6) that the C signature can express, as compiled-in literals: 79 of 87 (every leaf and
+root, the empty roots, S2/S4/S6/S8, and every representable ERROR vector); the 8 others (wrong byte-string
+lengths, S4 with 8 legs, S7 expiry 2^64, S6 domain_id 2^32 / status 256) cannot be passed through the fixed
+widths and are listed in the test header as absent coverage, not passes. `test_roots_v2`'s empty-root table
+gains the three new kinds. SELF-CONSISTENT: the KAT proves C == the §8.9 text as the oracle read it, not that
+the spec is sound. Written, NOT run by the builder.
+
 ### HF-8 — delegation requires an on-chain name (2026-10-07, branch only — not versioned, not voted; INERT until a param-17 vote)
 
 **Governing records:** design `docs/plans/2026-10-07-delegate-name-required-design.md` (local; rev 2,

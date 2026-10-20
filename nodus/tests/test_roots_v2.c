@@ -116,6 +116,15 @@ static const char *EMPTY_KAT[DNA_V2_EMPTY__COUNT] = {
      * (nodus/tests/vectors/archive_reward_kat.json "empty_roots",
      * generator archive_reward_oracle.py; author != auditor). */
     /* STSEG  */ "d50e4a36ac95b3e6101193f47fc7b362b5e1706ef259aba91f4d08f8e7b4846341df6ff0c0f2452554cba06a75dc1c943696ec8fe49600717bb1a11fb03801fe",
+    /* HF-7 roots (§8.9 S1/S3/S7) — SHA3-512 of "NDS.E.BCOPY.v1" /
+     * "NDS.E.STMEM.v1" / "NDS.E.REPLAY.v1" zero-padded to 16 bytes, pinned
+     * from the INDEPENDENT oracle (nodus/tests/vectors/
+     * hf7_root_coverage_kat.json "empty_roots", generator
+     * hf7_root_coverage_oracle.py; author != auditor). The HF-7 roots
+     * themselves: test_roots_hf7. */
+    /* BCOPY  */ "8c89eea63e93017d8c548c2a727a2c1764f1b287e6af1e065b9eeeb3dcf2a152b8e47d0eed8f807f23b2dfd60710c0c2d53371a456544461b30179af490bf4e5",
+    /* STMEM  */ "e5f7fac90e74fb474457f1c1e2cddec4a8ec6e25c8d25aaaf87944b65ed8983ce21f95533a912be282480da398035d00a7e9cb38170e58028d3ee13e9ff57efe",
+    /* REPLAY */ "8156613c0353dfbba44c463035f5a88204c04fbe865283ace9599a144828c379dc97a7fe684124f6be72413f8d2b0ceb6552e33a23a800b01b7213f671543ac0",
 };
 /* tokenomics-v3 P2 (P2-8) re-pin: the supply leaf gained reward_pool and
  * the tag "NDS.SUPPLY.v2"; the CORE composition gained a 7th leg

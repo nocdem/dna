@@ -1918,6 +1918,13 @@ if(JSONC_FOUND)
 endif()
 add_test(NAME test_roots_v2 COMMAND test_roots_v2)
 
+# HF-7 P1a — the snapshot design §8.9 S1-S8 root functions against the
+# independent oracle's KAT (nodus/tests/vectors/hf7_root_coverage_kat.json),
+# literals compiled in: no json-c, no env, no file read at run time.
+add_executable(test_roots_hf7 tests/test_roots_hf7.c)
+target_link_libraries(test_roots_hf7 nodus dsa nodus crypto)
+add_test(NAME test_roots_hf7 COMMAND test_roots_hf7)
+
 # Ledger V2 S2 — BlockHeader V2 codec: oracle-pinned KATs, mutation sweep,
 # strict negatives, deterministic fuzz.
 add_executable(test_block_v2 tests/test_block_v2.c)

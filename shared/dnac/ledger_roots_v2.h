@@ -135,6 +135,26 @@
  *   nodus/tests/vectors/archive_reward_oracle.py is the KAT.
  *   "NDS.STPROBE.v2" (the off-chain probe REQUEST, bytes §6) is a wire
  *   of the probe client and is NOT defined here.
+ *   HF-7 roots    "NDS.BCLEAF.v1"   balance-copy leaf (S1)
+ *   (snapshot     "NDS.BCNODE.v1"   balance-copy Merkle inner node
+ *    design §8.9, "NDS.E.BCOPY.v1"  bcopy_root of an EMPTY v2_balance_copy
+ *    APPROVED     "NDS.VSTAT.v1"    active-count leg (S2; no empty tag)
+ *    2026-10-15;  "NDS.SMLEAF.v1"   storage-member leaf (S3)
+ *    P1a: pure,   "NDS.SMNODE.v1"   storage-member Merkle inner node
+ *    no caller)   "NDS.E.STMEM.v1"  stmem_root of an EMPTY members table
+ *                 "NDS.SYS.v6"      system_state_root v6 (S4, 12 legs)
+ *                 "NDS.STSGLEAF.v2" segment leaf v2 (S5, + published_height)
+ *                 "NDS.DOMHEAD.v2"  DomainHead v2 hash (S6, + last_upd_hash)
+ *                 "NDS.RPLEAF.v1"   replay leaf (S7)
+ *                 "NDS.RPNODE.v1"   replay Merkle inner node
+ *                 "NDS.E.REPLAY.v1" replay_root of an EMPTY relation
+ *                 "NDS.GLOBAL.v2"   global_state_root v2 (S8)
+ *   HF-7 collision scan 2026-10-20: `git grep -nF` of each of the 14 tags
+ *   over the tree at 47b5d67ef — found ONLY in the oracle and its KAT
+ *   (nodus/tests/vectors/hf7_root_coverage_oracle.py / _kat.json).
+ *   SELF-CONSISTENT, not externally referenced; the independent oracle
+ *   KAT is the proof (author != auditor). The S5 inner node / empty tag,
+ *   the S6 inner node and the existing v5 / v1 tags are reused unchanged.
  *   (domains_root has NO empty tag: SYSTEM must always be present — an
  *    empty domain list is a hard error, not an empty tree.)
  *
@@ -354,6 +374,11 @@ typedef enum {
     DNA_V2_EMPTY_STORAGE_REPORTS, /* "NDS.E.STREP.v1" reports    */
     /* archive reward (2026-10-05 bytes item 2) — APPENDED. */
     DNA_V2_EMPTY_STORAGE_SEGS,    /* "NDS.E.STSEG.v1" segments   */
+    /* HF-7 roots (snapshot design §8.9 S1/S3/S7, APPROVED 2026-10-15) —
+     * APPENDED; the members above keep their index. */
+    DNA_V2_EMPTY_BCOPY,           /* "NDS.E.BCOPY.v1" balance copy  */
+    DNA_V2_EMPTY_STMEM,           /* "NDS.E.STMEM.v1" storage members */
+    DNA_V2_EMPTY_REPLAY,          /* "NDS.E.REPLAY.v1" replay relation */
     DNA_V2_EMPTY__COUNT
 } dna_v2_empty_kind_t;
 
@@ -903,6 +928,164 @@ int dna_v2_system_payload_root(const uint8_t validator_root[64],
                                const uint8_t validator_set_root[64],
                                const uint8_t treasury_root[64],
                                uint8_t out[DNA_V2_ROOT_LEN]);
+
+/* ── HF-7 roots (snapshot design §8.9, S1-S8) ──────────────────────────
+ * Normative byte spec: docs/plans/2026-09-11-nodus-ledger-snapshot-
+ * design.md §8.9 FINAL (APPROVED by the operator 2026-10-15; Kurultay #24,
+ * decisions/2026-10-15-kurultay-24-summary.md). Package P1a: pure
+ * functions, NO caller — inert until the HF-7 wiring (P1c) selects them
+ * by rule-set generation. Every v5 / v1 function above is unchanged.
+ *
+ * Common rules (§8.9 C1-C7) as they apply here:
+ *   - every integer is range-checked against the item's STATED range; a
+ *     value outside it is refused (-1) — never truncated or wrapped (C3).
+ *     Row integers are taken as uint64_t even where the preimage width is
+ *     narrower (kind u8, fail_streak u32) so that the caller's SQLite
+ *     INTEGER is passed through unnarrowed and this layer refuses it; a
+ *     negative SQLite value cast to uint64_t is >= 2^63 and is refused;
+ *   - rows MUST arrive strictly ascending by the stated key (C5); an
+ *     equal or descending neighbour is refused, never sorted silently;
+ *   - Merkle per C6 (tagged_merkle — odd node carried up unchanged,
+ *     n == 1 the leaf itself); empty set per C7 (the tagged empty root).
+ *
+ * Return convention (the file's): 0 on success, -1 on any refusal (NULL,
+ * range, order, duplicate, allocation, digest). No partial root. */
+
+/** 2^63 − 1: the upper bound of every "0..2^63−1" / "1..2^63−1" range. */
+#define DNA_V2_HF7_U63_MAX ((uint64_t)0x7FFFFFFFFFFFFFFFull)
+
+/** S1 — one `v2_balance_copy` row. Key (epoch_start, validator_fp,
+ *  owner_fp, kind). */
+typedef struct {
+    uint64_t epoch_start;                 /* 0..2^63−1                   */
+    uint8_t  validator_fp[DNA_V2_ROOT_LEN];
+    uint8_t  owner_fp[DNA_V2_ROOT_LEN];
+    uint64_t kind;                        /* {0, 1}; encoded as u8       */
+    uint64_t amount;                      /* 0..2^63−1                   */
+} dna_v2_bcopy_row_t;
+
+/** S1 leaf = SHA3-512("NDS.BCLEAF.v1" ‖ epoch_start(8 BE) ‖
+ *  validator_fp[64] ‖ owner_fp[64] ‖ kind(1) ‖ amount(8 BE)) — 161-byte
+ *  preimage. @return 0 / -1 (NULL, a field outside its range). */
+int dna_v2_bcopy_leaf_hash(const dna_v2_bcopy_row_t *row,
+                           uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S1 bcopy_root: tagged Merkle over the leaves, rows STRICTLY ascending
+ *  by (epoch_start, validator_fp, owner_fp, kind) — integers numerically,
+ *  fingerprints by memcmp, field by field; inner "NDS.BCNODE.v1"; n == 0
+ *  -> DNA_V2_EMPTY_BCOPY ("NDS.E.BCOPY.v1"). @return 0 / -1. */
+int dna_v2_bcopy_root(const dna_v2_bcopy_row_t *rows, size_t n,
+                      uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S2 vstat = SHA3-512("NDS.VSTAT.v1" ‖ active_count(8 BE)). The
+ *  `validator_stats` 'active_count' row is MANDATORY: the caller passes
+ *  NULL when the row is absent and that is refused (no empty tag exists).
+ *  @return 0 / -1 (NULL = absent, active_count > 2^63−1). */
+int dna_v2_vstat_hash(const uint64_t *active_count,
+                      uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S3 — one `v2_storage_set_members` row. Key (epoch_start, node_fp). */
+typedef struct {
+    uint64_t epoch_start;                 /* 1..2^63−1                   */
+    uint8_t  node_fp[DNA_V2_ROOT_LEN];
+    uint64_t fail_streak;                 /* 0..2^32−1; encoded as u32   */
+    uint64_t grace_until;                 /* 0..2^63−1                   */
+} dna_v2_stmem_row_t;
+
+/** S3 leaf = SHA3-512("NDS.SMLEAF.v1" ‖ epoch_start(8 BE) ‖ node_fp[64]
+ *  ‖ fail_streak(4 BE) ‖ grace_until(8 BE)) — 100-byte preimage.
+ *  @return 0 / -1 (NULL, a field outside its range). */
+int dna_v2_stmem_leaf_hash(const dna_v2_stmem_row_t *row,
+                           uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S3 stmem_root: tagged Merkle over the leaves, rows STRICTLY ascending
+ *  by (epoch_start, node_fp); inner "NDS.SMNODE.v1"; n == 0 ->
+ *  DNA_V2_EMPTY_STMEM ("NDS.E.STMEM.v1"). @return 0 / -1. */
+int dna_v2_stmem_root(const dna_v2_stmem_row_t *rows, size_t n,
+                      uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S4 system_state_root v6 = SHA3-512("NDS.SYS.v6" ‖ the nine
+ *  "NDS.SYS.v5" legs in v5 order ‖ bcopy_root ‖ vstat ‖ stmem_root) —
+ *  12 × 64 bytes after the tag. A NEW function: dna_v2_system_root_v5
+ *  is unchanged. Each leg is an opaque 64-byte input. @return 0 / -1. */
+int dna_v2_system_root_v6(const uint8_t validator_root[64],
+                          const uint8_t delegation_root[64],
+                          const uint8_t chain_config_root[64],
+                          const uint8_t validator_set_root[64],
+                          const uint8_t domain_registry_root[64],
+                          const uint8_t manifest_root[64],
+                          const uint8_t attendance_root[64],
+                          const uint8_t treasury_root[64],
+                          const uint8_t storage_root[64],
+                          const uint8_t bcopy_root[64],
+                          const uint8_t vstat[64],
+                          const uint8_t stmem_root[64],
+                          uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S5 segment leaf v2 = SHA3-512("NDS.STSGLEAF.v2" ‖ k(8 BE) ‖
+ *  root[64] ‖ published_height(8 BE)) — 96-byte preimage. k and
+ *  published_height each 1..2^63−1. dna_v2_segment_leaf_hash (v1) is
+ *  unchanged. @return 0 / -1 (NULL, range). */
+int dna_v2_segment_leaf_hash_v2(uint64_t k,
+                                const uint8_t root[DNA_V2_ROOT_LEN],
+                                uint64_t published_height,
+                                uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S5 segments_root over v2 leaves, STRICTLY ascending k; inner tag
+ *  "NDS.STSGNODE.v1" and empty root DNA_V2_EMPTY_STORAGE_SEGS UNCHANGED
+ *  (§8.9 S5). dna_v2_segments_root (v1) is unchanged. @return 0 / -1. */
+int dna_v2_segments_root_v2(const uint64_t *ks,
+                            const uint8_t (*roots)[DNA_V2_ROOT_LEN],
+                            const uint64_t *published_heights,
+                            size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S6 DomainHead v2 head hash = SHA3-512("NDS.DOMHEAD.v2" ‖ the 89-byte
+ *  dna_v2_domain_head_encode bytes ‖ last_upd_hash[64]) — 169-byte
+ *  preimage. Every enc89 field takes its full type width (no range of
+ *  its own in §8.9). dna_v2_domain_head_hash (v1) is unchanged.
+ *  @return 0 / -1. */
+int dna_v2_domain_head_hash_v2(const dna_v2_domain_head_t *head,
+                               const uint8_t last_upd_hash[DNA_V2_ROOT_LEN],
+                               uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S6 domains_root over v2 head hashes: shape unchanged from
+ *  dna_v2_domains_root — heads STRICTLY ascending by domain_id,
+ *  heads[0].domain_id == DNA_DOMAIN_SYSTEM, n == 0 refused (no empty
+ *  tag), inner "NDS.DOMNODE.v1". last_upd_hashes[i] belongs to heads[i].
+ *  @return 0 / -1. */
+int dna_v2_domains_root_v2(const dna_v2_domain_head_t *heads,
+                           const uint8_t (*last_upd_hashes)[DNA_V2_ROOT_LEN],
+                           size_t n, uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S7 — one replay-relation row. Key tx_id; intent_id unique too. */
+typedef struct {
+    uint8_t  tx_id[DNA_V2_ROOT_LEN];
+    uint8_t  intent_id[DNA_V2_ROOT_LEN];
+    uint64_t expiry_height;               /* 1..2^64−1                   */
+} dna_v2_replay_row_t;
+
+/** S7 leaf = SHA3-512("NDS.RPLEAF.v1" ‖ tx_id[64] ‖ intent_id[64] ‖
+ *  expiry_height(8 BE)) — 152-byte preimage. @return 0 / -1 (NULL,
+ *  expiry_height == 0). */
+int dna_v2_replay_leaf_hash(const dna_v2_replay_row_t *row,
+                            uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S7 replay_root: tagged Merkle over the leaves, rows STRICTLY ascending
+ *  by tx_id (memcmp); a repeated intent_id anywhere in the set is refused
+ *  (checked over a sorted copy of the intent_ids — the result does not
+ *  depend on the sort's tie order, equal keys are byte-identical); a
+ *  tx_id equal to another row's intent_id is NOT a conflict (uniqueness is
+ *  per column). Inner "NDS.RPNODE.v1"; n == 0 -> DNA_V2_EMPTY_REPLAY
+ *  ("NDS.E.REPLAY.v1"). @return 0 / -1. */
+int dna_v2_replay_root(const dna_v2_replay_row_t *rows, size_t n,
+                       uint8_t out[DNA_V2_ROOT_LEN]);
+
+/** S8 global_state_root v2 = SHA3-512("NDS.GLOBAL.v2" ‖ domains_root[64]
+ *  ‖ replay_root[64]). dna_v2_global_root (v1) is unchanged.
+ *  @return 0 / -1. */
+int dna_v2_global_root_v2(const uint8_t domains_root[64],
+                          const uint8_t replay_root[64],
+                          uint8_t out[DNA_V2_ROOT_LEN]);
 
 #ifdef __cplusplus
 }
