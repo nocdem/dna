@@ -847,8 +847,12 @@ NAMEOWN2) and exempts only the validator's OWNER (`delegator_fp == owner_fp` of 
 gated under generation ≥ 4 (`rtn_sysfund_name_gate`'s generation-4 arm) and keeps 15 inputs. On the testnet the
 genesis validators are owned by the Foundation vault (HF-6 migration), so a validator's NODE key delegating to its own
 validator needs a name too; the Foundation's own self-delegations are exempt. The design doc
-(`docs/plans/2026-10-07-delegate-name-required-design.md` §1, still the CORE / 14-input wording) and
-`nodus/docs/ARCHITECTURE.md`'s HF-8 section predate D3. It is the HF-2 / HF-3 shape — a
+(`docs/plans/2026-10-07-delegate-name-required-design.md` §1, still the CORE / 14-input wording) predates D3;
+`nodus/docs/ARCHITECTURE.md`'s HF-8 section states the generation split since the HF-8 pre-vote package (branch
+`hf8-pkg`). Activation decision: `docs/plans/decisions/2026-10-21-hf8-activation.md` (vote once every test passes,
+effective 720 blocks after the vote; its 2026-10-21 AMENDMENT widens the same flag to STAKE and to a multisig
+NAME_REGISTER — NOT implemented in this tree, byte details go to the HF-8 design rev 3; until that lands the vote would
+switch on the DELEGATE rule only). It is the HF-2 / HF-3 shape — a
 one-way flag (value exactly 1, no single-use rule, grace ERGONOMIC), NOT a rule-set generation,
 so there is no switch at H−1, no new startup line and no literal to compare; one stateful rule:
 the vote is refused unless rule-set generation ≥ 2 judges it (names must exist — on the testnet
@@ -865,18 +869,30 @@ that block). Pre-vote checklist (read 2026-10-21 on branch `hf8-prevote`, base 0
   first.
 - Roadmap / Wiki / Scan fork item: present, marked "later"; its self-delegation sentence corrected to the owner rule
   (commit 0cdb8ead0). DONE.
-- nodus-cli `v2-envelope delegate` help: corrected to the generation-4 rule (commit 343c6c4bc). The CLI has no name
-  pre-check.
+- nodus-cli `v2-envelope delegate` help: corrected to the generation-4 rule (commit 343c6c4bc). Name pre-check:
+  WRITTEN on branch `hf8-pkg` (commit b9aba9e7d) — it prints `delegate_name_required at tip + 1: 0|1|unknown` and,
+  when the rule is 1, refuses a nameless non-exempt delegator before signing ("This identity has no chain name. …");
+  `--no-name-precheck` sends it to the node regardless. Compiled; NOT run.
+- Node RPC field: WRITTEN on branch `hf8-pkg` (commit 93223558d) — `dnac_fee_info` key `delegate_name_required` (uint
+  0 / 1) = param 17 as the chain judges it at tip + 1 (the engine's own read, `env_delegate_name_required`, statement
+  for statement); client `nodus_client_dnac_delegate_name_rule` answers ON / OFF / UNKNOWN (an older node without the
+  key = UNKNOWN, never OFF). Unit test `test_hf4_names` client_decoders written, NOT run. Needs a node release + deploy
+  before any client can rely on it (the operator's word, decision `2026-10-21-hf8-activation.md` "Not covered").
 - Harness: `test_cmt_hf8_delegate_name.sh` PASSED 2026-10-07 but proves the generation-2 rule only (its header and README
-  row say so since commit fd173ac5d). OPEN: a generation-5 scenario (the six-vote path of `test_cmt_hf7.sh`, names, the
-  param-17 vote, a nameless non-owner refused with `domain 0 op 2: runtime exec refused (rc -1)`, a named delegator and
-  the owner landing) — not written; the generation-4 rule has unit coverage only (`test_hf6_calls` A4 / A7 / B5).
+  row say so since commit fd173ac5d). ⚠ With a CLI carrying the pre-check its step 7a / 7b meet the CLI's refusal, not
+  the node's CheckTx text, and the script FAILS there until its `delegate()` passes `--no-name-precheck` (that script was
+  outside the `hf8-pkg` whitelist — OPEN). Generation-5 scenario `test_cmt_hf8_gen5.sh`: WRITTEN on branch `hf8-pkg`
+  (commit 77e44e12f; the six-vote path of `test_cmt_hf7.sh`, a name, the param-17 vote, a nameless non-owner refused at
+  CheckTx with `domain 0 op 2: runtime exec refused (rc -1)` and by the CLI pre-check, a node key refused, a named
+  delegator and the TEST owner landing, the field 0 / 1; needs a TEST-OWNER build — `stagef_hf6_owner.sh`). OPEN: its
+  harness run (not run by its author).
 - Web wallet / Connect pre-check and its plain-language error ("register a name first, wait for it to be confirmed"):
-  OPEN, BLOCKED — no node RPC reports whether param 17 is in force at tip + 1 (`dnac_fee_info` and `dnac_ruleset_info`
-  do not carry it; no `dnac_*` method lists chain_config rows), so a client cannot know when to refuse. Unblocking it
-  needs a node change (e.g. a key in `dnac_fee_info`) — not decided. The validator's owner (for the exemption) is
-  already in the `dnac_validator_list_query` answer (`"owner"`, `nodus_witness_handlers.c`), the name in `dnac_name_of`. The 14-input cap is NOT a client item under
-  generation ≥ 4 (the shared builder `nodus_v2_stake.c` already uses 15 for a generation-4 DELEGATE).
+  OPEN — unblocked by the RPC field above once the node release carrying it is deployed. The validator's owner (for the
+  exemption) is in the `dnac_validator_list_query` answer (`"owner"`, `nodus_witness_handlers.c`), the name in
+  `dnac_name_of`; an UNKNOWN answer (an older node) must mean "no pre-check", never "rule off". The 14-input cap is NOT a
+  client item under generation ≥ 4 (the shared builder `nodus_v2_stake.c` already uses 15 for a generation-4 DELEGATE).
+- The decision's 2026-10-21 amendment (STAKE + multisig NAME_REGISTER under param 17): OPEN, not implemented (design
+  rev 3 + its Kurultay).
 - The vote itself, its effective height and the harness run: the operator's / ORCHESTRATOR's.
 Operational notes: CheckTx judges committed state at tip + 1, so a
 user registers a name, waits for it to land, then delegates; 2 of the 8 live delegators had no

@@ -7102,7 +7102,27 @@ not a new rule-set generation — the gate lives in the hooks, which are not in 
 (`nodus_witness_runtime.h` "hooks are not in the ruleset descriptor"), so no ruleset hash, no
 generation tuple, no meter policy and no EVM activation digest D moves (pinned by
 `test_v2_native` §20 K7). The activation procedure is HF-2's (`DEPLOY_RUNBOOK.md` §2.2, "HF-8"
-placeholder there).
+row and note). Activation decision: `docs/plans/decisions/2026-10-21-hf8-activation.md` (voted once
+every test passes, effective 720 blocks after the vote; before it the node reports the rule to
+clients — "Clients" below).
+
+**⚠ Which rule runs depends on the rule-set generation (decision D3,
+`docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md` :105-108).** The gate, the
+table and the 14-input cap below are the rule of **generations 1-3** (the CORE SYSFUND leg,
+exempt = `delegator_pubkey == validator_pubkey`). From **generation 4** (HF-6; the testnet runs
+generation 5, which shares the arm through `rtn_gen_roles`, generation ≥ 4) the rule is the
+**SYSTEM DELEGATE leg's**: `rtn_deleg2_name_gate` / `rtn_delegate2_exec`
+(`nodus_witness_rt_native.c`), one NAMEOWN2 read (SYSTEM op 16) keyed by the call's
+`delegator_fp`, and the exempt delegator is the validator row's **OWNER** (`delegator_fp ==
+owner_fp` of the observed row — kind 1 or kind 3). The CORE leg is NOT gated there
+(`rtn_sysfund_name_gate` returns 0 under `rtn_gen_roles`): no CORE NAMEOWN read, the funding keeps
+15 inputs. A validator's NODE key is not its owner (the genesis validators are owned by the
+Foundation vault, D2 (a)), so a node key delegating to its own validator needs a name too. A
+refused generation-4/5 DELEGATE reads `… domain 0 op 2: runtime exec refused (rc -1)` behind
+CheckTx's `dry run item code 7` (`nodus_witness_v2_apply.c` `exec_one_env`). Full description:
+"HF-6 sub-slice 3e" below. **Not implemented:** the decision's 2026-10-21 amendment (the same flag
+also requiring a name for STAKE and admitting a multisig NAME_REGISTER) — its byte details go to the
+HF-8 design rev 3; nothing in this tree reads param 17 for STAKE or NAME_REGISTER.
 
 **The parameter.** Chain-config id 17, `DELEGATE_NAME_REQUIRED` (`DNAC_CFG_DELEGATE_NAME_REQUIRED`,
 `dnac/include/dnac/dnac.h`; `CC_PARAM_DELEGATE_NAME_REQUIRED`, `nodus_witness_chain_config.c`,
@@ -7154,17 +7174,41 @@ validator is refused. A future name transfer can leave a live delegation nameles
 (owner/key split) reshapes DELEGATE later and must carry this rule.
 
 **Clients.** The shared stake builder (`nodus/src/client/nodus_v2_stake.c`) caps the funding of
-every non-self DELEGATE at 14 coins whether or not the rule is active (it has no chain state), so an
-envelope it builds is valid on both sides of H. nodus-cli `v2-envelope delegate` help names the rule
-and the cap. The web wallet's pre-check / error text is not part of this change.
+every non-self legacy (generation 1-3) DELEGATE at 14 coins whether or not the rule is active (it
+has no chain state), so an envelope it builds is valid on both sides of H. nodus-cli `v2-envelope
+delegate` help names the rule and the cap.
+
+**The node reports the rule (HF-8 pre-vote package, decision `2026-10-21-hf8-activation.md`).**
+`dnac_fee_info` (`handle_dnac_fee_info`, `nodus_witness_handlers.c`) carries an 11th key,
+**`delegate_name_required`** (uint 0 / 1): param 17 as the chain judges it at **tip + 1** — the
+height CheckTx judges the next envelope at. The read mirrors `env_delegate_name_required`
+statement for statement (the same `nodus_chain_config_get_u64`, the same height, default 0 = no
+row; a stored value outside {0, 1} answers `INTERNAL_ERROR`, never a value), as `stake_min` mirrors
+`env_stake_min`; a node with no chain open answers 0. Who is EXEMPT is not in the key — the chain
+decides per DELEGATE. Client: `nodus_client_dnac_delegate_name_rule` / the exported decoder
+`nodus_dnac_delegate_name_rule_decode` (`nodus/include/nodus/nodus.h`) answer
+`NODUS_DLG_NAME_RULE_ON` (1) / `_OFF` (0) / `_UNKNOWN` (−1 — the key absent: an older node, which
+must not be read as "off"); kept out of `nodus_dnac_fee_info_t` because that struct reads an absent
+key as 0. **nodus-cli pre-check:** `v2-envelope delegate` prints `delegate_name_required at tip +
+1: 0|1|unknown …` and, when the rule is 1, the delegator is positively not exempt (generation ≥ 4:
+the row's `owner_fp` read by validator_id ≠ the delegator fp — the `--msig` address with `--msig`;
+generations 1-3: the delegator key ≠ the validator key) and `dnac_name_of` finds no name, refuses
+before signing: "This identity has no chain name. Delegating needs one: register a name with `name
+register`, wait until it is in a block, then delegate." Unknown, an unreadable validator row or an
+unknown target → no pre-check, the node decides; `--no-name-precheck` skips the refusal (the node's
+CheckTx is the authority). The web wallet's pre-check is not part of this change.
 
 **Tests.** `test_v2_native` §20 (hook level K1-K7: the plan / exec count contract on / off, verdict
 vs fault, self-delegation and UNDELEGATE exempt, the 14/15 ceiling, an unparseable call, pins and D
 unchanged; engine E1-E7 over real blocks: before / at / after H, rollback of refused items, exactly
 one `w_read` more, the CheckTx dry run, both same-block orders). `test_hf4_params` (param 17's id,
 scalar, grace, stateful rule, cache slot). Harness `test_cmt_hf8_delegate_name.sh` (standalone,
-short-epoch + short-grace build — `nodus/tests/integration/stagef/README.md`). All written, NOT yet
-run at the time of writing.
+short-epoch + short-grace build — `nodus/tests/integration/stagef/README.md`; the GENERATION-2
+rule only — run 2026-10-07 PASS at E 15). Generation 4: `test_hf6_calls` A4 / A7 / B5 (unit).
+Generation 5: harness `test_cmt_hf8_gen5.sh` (standalone, TEST-OWNER short-epoch build — owner
+exempt, node key and nameless non-owner refused, the `dnac_fee_info` field 0 / 1, the CLI
+pre-check; written, NOT yet run). The `delegate_name_required` decoder: `test_hf4_names`
+client_decoders (present 0 / 1, absent = unknown, value 2 / duplicate / truncation refused).
 
 ### HF-6 sub-slice 3a — schema S18 (`v2_validator_roles`) and v2 row access (2026-10-09, branch `hf6` only — not versioned, not voted; INERT)
 
