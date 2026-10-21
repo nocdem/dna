@@ -3820,9 +3820,17 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  *     validators are owned by the Foundation vault), so its delegation
  *     needs a name too; the funding leg is never name-gated and keeps 15
  *     inputs.
- * This command has no name pre-check: no node RPC reports whether param
- * 17 is in force at tip + 1 (dnac_fee_info / dnac_ruleset_info do not
- * carry it), so a refusal is the node's CheckTx answer.
+ * Name pre-check (decision 2026-10-21-hf8-activation.md): the node reports
+ * param 17 at tip + 1 in dnac_fee_info ("delegate_name_required",
+ * nodus_client_dnac_delegate_name_rule); the command prints it and, when
+ * it is ON, the delegator is positively not exempt (the rule of the
+ * node's generation above) and dnac_name_of finds no name for the
+ * delegator's fingerprint, refuses before anything is signed. An older
+ * node that does not report the key (UNKNOWN), an unreadable validator
+ * row or an unknown target: no pre-check, the refusal (if any) is the
+ * node's CheckTx answer. `--no-name-precheck` skips the refusal (the
+ * state line is still printed) so the node's own verdict can be met — the
+ * chain, not this check, is the authority.
  *
  * `v2-envelope undelegate` is the DELEGATE layout under runtime_op 4
  * (DNA_SYSRULE_UNDELEGATE, rtn_deleg_parse): the --keys identity withdraws
@@ -4039,6 +4047,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     uint64_t bond = 0;
     uint32_t commission = 0;
     int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
+    int no_name_precheck = 0;     /* HF-8: delegate --no-name-precheck */
     /* "stake", "delegate", "unstake", "undelegate", and (HF-6 6f-1) the
      * generation-4 "stake2", (HF-6 slice 7b) "validator-update" — the word
      * after "v2-envelope"; (HF-6 6b-3) "register" and "exit" — the word
@@ -4113,6 +4122,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             node_fp_hex = argv[++i];
         else if (!strcmp(a, "--submit")     && i + 1 < argc) submit = argv[++i];
         else if (!strcmp(a, "--dry-run"))                    dry_run = 1;
+        else if (is_deleg && !is_undeleg &&
+                 !strcmp(a, "--no-name-precheck"))  no_name_precheck = 1;
         else if (!is_stake && !strcmp(a, "--msig") && i + 1 < argc)
             msig_path = argv[++i];
         else if (!is_stake && !strcmp(a, "--export") && i + 1 < argc)
@@ -4161,7 +4172,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "       [--commission <bps>] (--dry-run | --submit ip:port)\n"
             "       v2-envelope delegate --keys <keydir> --validator "
             "<validator_id hex128 | hex5184 pubkey>\n"
-            "       --amount <raw> (--dry-run | --submit ip:port)\n"
+            "       --amount <raw> [--no-name-precheck] "
+            "(--dry-run | --submit ip:port)\n"
             "       v2-envelope undelegate --keys <keydir> --validator "
             "<validator_id hex128 | hex5184 pubkey>\n"
             "       --amount <raw> (--dry-run | --submit ip:port)\n"
@@ -4200,8 +4212,17 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "  below generation 4 a validator delegating to itself, and a "
             "delegation to\n"
             "  another validator is then funded by at most 14 coins. The CLI "
-            "does not\n"
-            "  pre-check the name; a refusal is the node's.\n"
+            "asks the node\n"
+            "  whether the rule is in force (it prints "
+            "delegate_name_required at tip + 1:\n"
+            "  0, 1 or unknown) and, when it is and the delegator is not "
+            "exempt and has no\n"
+            "  name, refuses before signing. An older node that does not "
+            "report the rule:\n"
+            "  no pre-check, the node decides. --no-name-precheck skips the "
+            "refusal and\n"
+            "  sends the delegation to the node regardless (the node's "
+            "CheckTx decides).\n"
             "  unstake: the validator retires; its delegations are returned "
             "to their\n"
             "  delegators when it graduates (locked %d epochs), its bond "
@@ -4701,6 +4722,89 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                         "STAKE_MIN %llu — the chain refuses a bond below the "
                         "STAKE_MIN in force\n", (unsigned long long)bond,
                         (unsigned long long)smin);
+        }
+    }
+
+    /* HF-8 pre-check (decision 2026-10-21-hf8-activation.md): before
+     * anything is signed, ask the node whether "delegation requires an
+     * on-chain name" (chain_config param 17) is in force at tip + 1
+     * (dnac_fee_info "delegate_name_required"), and refuse a DELEGATE the
+     * chain would refuse for that reason — only when every fact is known:
+     * the rule is ON, the delegator is positively NOT exempt, and the
+     * node's committed name index has no name for it. The exemption
+     * mirrors the chain's per generation:
+     *   - generation 4 and later (decision D3; rtn_delegate2_exec):
+     *     delegator_fp (owner_raw — with --msig the multisig address) ==
+     *     the validator row's owner_fp, the row read by validator_id;
+     *   - generations 1-3 (rtn_sysfund_name_gate): the delegator's key ==
+     *     the validator's key.
+     * The name is looked up for that same fingerprint (dnac_name_of reads
+     * committed rows, as CheckTx does). UNKNOWN (an older node that does
+     * not report the key), an unreadable validator row, or a target with
+     * no row → no pre-check: the node decides. A failed query is refused
+     * like the gas price above — a fault is not "rule off". UNDELEGATE is
+     * never name-gated (the chain gates op 2 only). The rule's state is
+     * printed so a caller (the stagef HF-8 scenario) can read it from a
+     * --dry-run; --no-name-precheck skips only the refusal below. */
+    if (is_deleg && !is_undeleg) {
+        int dnr = NODUS_DLG_NAME_RULE_UNKNOWN;
+        int drc = nodus_client_dnac_delegate_name_rule(&client, &dnr);
+        if (drc != 0) {
+            fprintf(stderr, "dnac_fee_info query failed (rc=%d) — whether "
+                    "delegating needs a chain name is unknown, refusing to "
+                    "build\n", drc);
+            goto done;
+        }
+        printf("delegate_name_required at tip + 1: %s\n",
+               dnr == NODUS_DLG_NAME_RULE_ON    ? "1"
+               : dnr == NODUS_DLG_NAME_RULE_OFF ? "0"
+                                                : "unknown (the node does "
+                                                  "not report it)");
+        fflush(stdout);
+        if (dnr == NODUS_DLG_NAME_RULE_ON && no_name_precheck) {
+            printf("--no-name-precheck: the delegator's name is not "
+                   "checked here; the node decides\n");
+            fflush(stdout);
+        } else if (dnr == NODUS_DLG_NAME_RULE_ON) {
+            int exempt = -1;            /* -1 = not known here */
+            if (role2) {
+                nodus_dnac_validator_list_entry_t vrow;
+                memset(&vrow, 0, sizeof(vrow));
+                const int vr = cli_validator_row(&client, NULL, role_vid,
+                                                 &vrow);
+                if (vr == 1)
+                    exempt = memcmp(vrow.owner_fp, owner_raw, 64) == 0;
+                else
+                    fprintf(stderr, "warning: %s — the delegation name "
+                            "rule is not pre-checked here; the chain "
+                            "decides\n",
+                            vr == 0 ? "no validator with this validator_id "
+                                      "in the node's validator list"
+                                    : "the node's validator list could not "
+                                      "be read");
+            } else {
+                exempt = memcmp(validator_pk, keys[0].pk.bytes,
+                                DNAC_PUBKEY_SIZE) == 0;
+            }
+            if (exempt == 0) {
+                nodus_dnac_name_result_t dn;
+                memset(&dn, 0, sizeof(dn));
+                const int nrc = nodus_client_dnac_name_of(&client, owner_hex,
+                                                          &dn);
+                if (nrc != 0) {
+                    fprintf(stderr, "dnac_name_of failed (rc=%d) — the "
+                            "delegator's chain name is unknown, refusing to "
+                            "build\n", nrc);
+                    goto done;
+                }
+                if (!dn.found) {
+                    fprintf(stderr, "This identity has no chain name. "
+                            "Delegating needs one: register a name with "
+                            "`name register`, wait until it is in a block, "
+                            "then delegate.\n");
+                    goto done;
+                }
+            }
         }
     }
 
