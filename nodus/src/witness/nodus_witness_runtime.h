@@ -695,14 +695,19 @@ typedef struct {
      * row or a stored value outside {0, 1} is a node FAULT, never a
      * default) and filled on every ctx it builds (the authorization stage
      * and read_plan/exec). UNMETERED like hf2_active — the fact itself is
-     * no mediated read. Two consumers: under generations 1-3 the CORE
+     * no mediated read. Four consumers: under generations 1-3 the CORE
      * SYSFUND hooks' name gate (nodus_witness_rt_native.c
      * rtn_sysfund_name_gate), which — while it is 1, the sibling is SYSTEM
      * DELEGATE and the delegator is not the validator — adds ONE mediated,
      * charged CORE NAMEOWN read; under generation 4 (HF-6 sub-slice 3e,
      * decision D3) the SYSTEM DELEGATE's own plan/exec (rtn_deleg2_name_gate
      * / rtn_delegate2_exec), which reads the name through SYSTEM op 16 and
-     * exempts delegator_fp == the validator's owner_fp. Not part
+     * exempts delegator_fp == the validator's owner_fp; HF-8 rev 3
+     * (decision 2026-10-21-hf8-activation.md) the generation-4 STAKE
+     * plan/exec (rtn_stake2_read_plan / rtn_stake2_exec: one more SYSTEM
+     * op 16 read of the staker's owner_fp, no exemption) and the
+     * NAME_REGISTER owner derivation (rtn_name_owner_of: a satisfied
+     * multisig vault may register, every input vault-owned). Not part
      * of any committed identity (hooks are not in the ruleset descriptor).
      * A hook never chooses it. */
     uint8_t        delegate_name_required;

@@ -852,9 +852,12 @@ validator needs a name too; the Foundation's own self-delegations are exempt. Th
 `hf8-pkg`). Activation decision: `docs/plans/decisions/2026-10-21-hf8-activation.md` (vote once every test passes,
 effective 720 blocks after the vote; its 2026-10-21 AMENDMENT widens the same flag to STAKE — the STAKER's name, the
 generation-4 STAKE call's `owner_fp`, never the node key — and to a multisig NAME_REGISTER whose owner is the vault and
-whose every input must be the vault's: WRITTEN on branch `hf8-stake-msig` (HF-8 design rev 3, Kurultay #33;
-`nodus/docs/ARCHITECTURE.md` "HF-8 rev 3"), so a binary of that branch switches on all three rules at the one H, an
-older binary only the DELEGATE rule — mixed binaries after H diverge at the first STAKE or vault registration). It is the HF-2 / HF-3 shape — a
+whose every input must be the vault's: in nodus 0.26.19 (HF-8 design rev 3, Kurultay #33;
+`nodus/docs/ARCHITECTURE.md` "HF-8 rev 3"), so a 0.26.19+ binary switches on all three rules at the one H, an
+older binary (0.25.3 … 0.26.18) only the DELEGATE rule — after H an older node computes a different state at the
+first block carrying a nameless STAKE or a vault NAME_REGISTER and stays stuck there (the `test_cmt_hf1_gas_upgrade.sh`
+N5a shape: a restart does not recover it, wipe + pin rejoin does); older nodes holding ≥ 1/3 of the power stop the
+chain. Hence 8/8 on 0.26.19 BEFORE the vote). It is the HF-2 / HF-3 shape — a
 one-way flag (value exactly 1, no single-use rule, grace ERGONOMIC), NOT a rule-set generation,
 so there is no switch at H−1, no new startup line and no literal to compare; one stateful rule:
 the vote is refused unless rule-set generation ≥ 2 judges it (names must exist — on the testnet

@@ -260,8 +260,12 @@
 #   - rc 99 = SKIP, coverage that did not happen.
 #   - Duration ≈ 400 blocks (JUDGMENT, not measured: test_cmt_hf7.sh's
 #     path to generation 5 without its prune tail, plus param 17's grace).
-#   - Run results: none — written against the source, NOT run by its
-#     author.
+#   - Run results: 2026-10-21, ORCHESTRATOR — PASS (rc 0) at main
+#     6c3ae4ff9 + the test_v2_name_build fixture fix, test-owner build,
+#     E = 15 / BPY 20 / grace 15/15, combined mode; H = 367, node 2's
+#     STAKE at 378, 7/7 at 378 (about 380 blocks, ≈ 55 min with the
+#     bring-up). The
+#     LOGIC only.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail

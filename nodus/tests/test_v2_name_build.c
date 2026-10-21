@@ -979,7 +979,8 @@ static int t_msig_vault(void) {
         dna_env_view_t *w = calloc(1, sizeof(*w));
         CHECK(w && dna_env_decode(x.env, x.env_len, w) == 0, "decode");
         uint8_t *owner = x.env + w->call_off[0] + 144;
-        owner[0] = owner[0] == 'a' ? 'b' : 'a';
+        const uint8_t owner0 = owner[0];
+        owner[0] = owner0 == 'a' ? 'b' : 'a';
         free(w);
         CHECK(nodus_v2_msig_digest(&x, rs.core_ruleset_version,
                                    rs.core_ruleset_hash, pf)
@@ -991,7 +992,8 @@ static int t_msig_vault(void) {
                                         rs.core_ruleset_hash, g_mpk[0], pf,
                                         rv) == NODUS_V2_MSIG_ERR_CALL,
               "a change output that is not the vault's: CALL");
-        owner[0] = owner[0] == 'a' ? 'b' : 'a';
+        owner[0] = owner0;     /* the original byte back (a flip back would
+                                * not restore a char other than 'a' / 'b') */
         memcpy(x.digest, saved, 64);
     }
 
