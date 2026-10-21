@@ -261,7 +261,8 @@
  * 15;
  * HF-6 slice 4: STAKE takes the 7301-byte owner + node-consent layout
  * (owner_fp ‖ consensus_pk ‖ consent_sig ‖ expiry ‖ commission ‖ bond)
- * on adapter ops 7 / 13 / 17 (rtn_stake2_exec). ROTATE_CONSENSUS_KEY
+ * on adapter ops 7 / 13 / 17 (rtn_stake2_exec; + the read-only op 16 of
+ * the staker's name under the HF-8 gate). ROTATE_CONSENSUS_KEY
  * (op 10) is NOT a call of any generation: the khan removed it from HF-6
  * (decision docs/plans/decisions/2026-10-13-kurultay-18-summary.md item
  * 1) — no descriptor owns op 10, so admission refuses it like any unowned
@@ -2103,21 +2104,65 @@ static int rtn_name_parse(const dna_env_view_t *env, uint16_t leg,
     return 0;
 }
 
-/* The OWNER of a registration (design §2 "Owner"): the leg's verified
- * verdict for auth_kind 1 with EXACTLY one signer and no multisig facts —
- * owner = signer_fp[0], the 64 raw SHA3-512 bytes (the stake-auth
- * precedent, rtn_sys_stake_auth). Anything else — no verdict, kind 2/3,
- * several signers — is a REFUSAL (-1), never a fault: the owner key the
- * read plan derives cannot be guessed. @return 0 / -1. */
+static int rtn_deleg2_name_gate(const nodus_rt_exec_ctx_t *ctx);
+
+/* THE ONE OWNER DERIVATION of a registration (design §2 "Owner"; HF-8
+ * decision docs/plans/decisions/2026-10-21-hf8-activation.md amendment,
+ * operator "ekle." — design 2026-10-07-delegate-name-required-design.md
+ * rev 3 item 3), from the leg's verified verdict `a`:
+ *   kind 1  EXACTLY one signer and no multisig facts — owner =
+ *           signer_fp[0], the 64 raw SHA3-512 bytes (the stake-auth
+ *           precedent, rtn_sys_stake_auth);
+ *   kind 3  only when `kind3_ok` — the shape rtn_sys_owner_auth's kind-3
+ *           branch accepts: >= 1 verified signer, EXACTLY one carried
+ *           descriptor, SATISFIED (>= M of its keys signed), and EVERY
+ *           verified signer one of its keys (verdict bit 0 of
+ *           msig_signers_in_desc, decision D6) — owner = msig_addr[0], the
+ *           vault address (the same derivation the owner authority uses;
+ *           never a co-signer's fingerprint);
+ *   other   (no verdict, kind 2, kind 3 while !kind3_ok, several kind-1
+ *           signers, a kind-3 shape that fails a condition) — REFUSAL (-1),
+ *           never a fault: the owner key the read plan derives cannot be
+ *           guessed.
+ * Three callers derive through this function and nothing else, so the
+ * read plan's OWNER key, the exec's stored owner and the CheckTx conflict
+ * key cannot disagree: rtn_name_owner (plan + exec, kind3_ok = the HF-8
+ * gate) and nodus_rt_core_name_owner_key (kind3_ok = 1, see there).
+ * Pure: reads only the verdict and the leg header. @return 0 / -1. */
+static int rtn_name_owner_of(const dna_env_view_t *env, uint16_t leg,
+                             const nodus_rt_auth_verdict_t *a, int kind3_ok,
+                             const uint8_t **owner_out) {
+    if (!a) return -1;
+    switch (env->leg[leg].auth_kind) {
+    case NODUS_RT_AUTHKIND_DSA87_MULTI_V1:
+        if (a->n_signers != 1 || a->n_msig != 0) return -1;
+        *owner_out = a->signer_fp[0];
+        return 0;
+    case NODUS_RT_AUTHKIND_DSA87_MSIG_V1:
+        if (!kind3_ok) return -1;        /* before HF-8: single key only */
+        if (a->n_signers < 1 || a->n_msig != 1) return -1;
+        if (!a->msig_satisfied[0]) return -1;           /* < M signed   */
+        if ((a->msig_signers_in_desc & 1u) == 0) return -1;   /* foreign
+                                          * signer rode along (D6)       */
+        *owner_out = a->msig_addr[0];
+        return 0;
+    default:
+        return -1;                       /* kind 2: carriage, not policy */
+    }
+}
+
+/* The OWNER of a registration as the read plan and the exec see it:
+ * rtn_name_owner_of over the engine verdict, kind 3 admitted only under
+ * the HF-8 gate (rtn_deleg2_name_gate — the committed param-17 fact at the
+ * block height, the same predicate the generation-4 DELEGATE and STAKE
+ * read). With the gate 0 this is the pre-HF-8 rule byte for byte.
+ * @return 0 / -1. */
 static int rtn_name_owner(const dna_env_view_t *env, uint16_t leg,
                           const nodus_rt_exec_ctx_t *ctx,
                           const uint8_t **owner_out) {
-    if (!ctx || !ctx->auth) return -1;
-    if (env->leg[leg].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1)
-        return -1;
-    if (ctx->auth->n_signers != 1 || ctx->auth->n_msig != 0) return -1;
-    *owner_out = ctx->auth->signer_fp[0];
-    return 0;
+    if (!ctx) return -1;
+    return rtn_name_owner_of(env, leg, ctx->auth, rtn_deleg2_name_gate(ctx),
+                             owner_out);
 }
 
 /* ── DNA_CORERULE_SYSFUND (O11) — the staking funding/release leg ────
@@ -3262,7 +3307,9 @@ static int rtn_tc_exec(const rtn_tc_call_t *t,
  *     credited to the reward pool in ONE checked SET (tokenomics-v3
  *     decision: every fee goes to the pool; the name price likewise —
  *     design §2, decision item 6).
- * `owner` is the verdict's signer_fp[0] (rtn_name_owner).
+ * `owner` is rtn_name_owner's derivation: the verdict's signer_fp[0]
+ * (kind 1) or, under the HF-8 gate, the satisfied vault's msig_addr[0]
+ * (kind 3); every input must be owned by exactly that address.
  * @return 0 / -1 verdict / -2 node fault. */
 static int rtn_name_exec(const rtn_name_call_t *nc, const uint8_t *owner,
                          const dna_env_view_t *env,
@@ -3296,7 +3343,18 @@ static int rtn_name_exec(const rtn_name_call_t *nc, const uint8_t *owner,
     if (price == 0) return -2;                   /* parse bounded len    */
     if (nc->price != price) return -1;           /* wrong declared price */
 
-    /* ── inputs: exist, unlocked, owned, native-only ────────────────── */
+    /* ── inputs: exist, unlocked, owned, native-only — and every one the
+     *    REGISTERING OWNER's own coin (HF-8, operator "Yalnız kasanın
+     *    parası", decision 2026-10-21-hf8-activation.md: a vault name is
+     *    paid from the vault's coins only, never a member's). For kind 1
+     *    the owner is the one signer, whose coins are the only ones
+     *    rtn_input_owned accepts there (no descriptor), so the equality
+     *    adds no refusal and every pre-HF-8 verdict is unchanged; for
+     *    kind 3 it refuses a member's coin the ownership predicate would
+     *    accept. rtn_input_owned still runs first: it marks the
+     *    descriptor USED (rtn_owners_all_used below). ─────────────────── */
+    uint8_t owner_hex[128];
+    rtn_fp_hex(owner, owner_hex);
     uint64_t native_in = 0;
     for (uint8_t i = 0; i < c->in_count; i++) {
         const nodus_rt_read_res_t *r = &reads[i];
@@ -3307,6 +3365,9 @@ static int rtn_name_exec(const rtn_name_call_t *nc, const uint8_t *owner,
         if (unlock >= ctx->global_height) return -1;   /* locked         */
         if (!rtn_input_owned(own, rec + RTN_UTXO_OWNER_OFF))
             return -1;                           /* not the signer's     */
+        if (memcmp(rec + RTN_UTXO_OWNER_OFF, owner_hex, 128) != 0)
+            return -1;                           /* not the owner's own
+                                                  * coin (a member's)    */
         if (memcmp(rec + RTN_UTXO_TOKEN_OFF, native_token, 64) != 0)
             return -1;                           /* native-only          */
         if (dna_ck_add_u64(native_in,
@@ -3997,7 +4058,8 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
 
     /* HF-4 NAME_REGISTER: decided BEFORE the generic verdict check below,
      * because every owner-shape problem of a registration (no verdict,
-     * kind 2/3, several signers) is a REFUSAL (-1), never the fault (-2)
+     * kind 2, kind 3 before HF-8 or not one satisfied vault, several
+     * kind-1 signers) is a REFUSAL (-1), never the fault (-2)
      * rtn_owners_init answers for a missing verdict. Generation 2 only
      * (`rt` — NULL or a synthetic runtime reads as not generation 2). */
     const uint8_t *name_owner = NULL;
@@ -4069,7 +4131,18 @@ int nodus_rt_core_exec(const nodus_domain_runtime_t *rt,
 
 /* HF-4 (contract: nodus_witness_rt_native.h) — the CheckTx synthetic
  * OWNER conflict key of a NAME_REGISTER leg: (CORE, NAMEOWN op, owner).
- * The op id stays this file's own; the dry run only copies it. */
+ * The op id stays this file's own; the dry run only copies it.
+ * HF-8 (Kurultay #33, Fable r1 fix 2 / Astra r1 fix 1): the owner is
+ * derived by rtn_name_owner_of — the SAME function the read plan and the
+ * exec use — so a multisig registration's conflict key is its vault
+ * address. It is called with kind3_ok = 1 and needs no flag of its own:
+ * its one caller (nodus_witness_v2_apply.c, the CheckTx dry run's
+ * synthetic-row branch) reaches it only AFTER nodus_rt_core_exec accepted
+ * the leg, and that exec refuses a kind-3 registration (-1, a verdict)
+ * while the HF-8 gate is 0 (rtn_name_owner). So a kind-3 leg arrives here
+ * only when the gate admitted it, and an accepted leg's owner is always
+ * derivable — the dry run's "underivable owner key" FAULT stays an engine
+ * invariant, never something peer input can trigger. */
 int nodus_rt_core_name_owner_key(const dna_env_view_t *env,
                                  uint16_t leg_index,
                                  const nodus_rt_auth_verdict_t *verdict,
@@ -4080,11 +4153,12 @@ int nodus_rt_core_name_owner_key(const dna_env_view_t *env,
     if (env->leg[leg_index].domain_id != DNA_DOMAIN_CORE ||
         env->leg[leg_index].runtime_op != DNA_CORERULE_NAME_REGISTER)
         return 1;
-    if (env->leg[leg_index].auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1 ||
-        verdict->n_signers != 1 || verdict->n_msig != 0)
+    const uint8_t *owner = NULL;
+    if (rtn_name_owner_of(env, leg_index, verdict, /*kind3_ok=*/1,
+                          &owner) != 0)
         return -1;
     *op_id_out = RTN_CORE_OP_NAMEOWN;
-    memcpy(key_out, verdict->signer_fp[0], 64);
+    memcpy(key_out, owner, 64);
     return 0;
 }
 
@@ -5313,7 +5387,14 @@ static void rtn_req_set(nodus_rt_read_req_t *r, uint32_t op,
  * the price of a plan that is a pure function of the envelope and the
  * ctx fact). The plan and the exec both decide through this function, so
  * the planned and expected read counts never disagree (a disagreement is
- * the exec's n_reads FAULT on every node). Pure: no read, no clock. */
+ * the exec's n_reads FAULT on every node). Pure: no read, no clock.
+ * HF-8 rev 3 (decision 2026-10-21-hf8-activation.md amendment: "all
+ * three switch on together at param 17's height"): the SAME predicate
+ * also decides the generation-4 STAKE's name read (rtn_stake2_read_plan /
+ * rtn_stake2_exec) and whether a NAME_REGISTER may be authorised by a
+ * multisig (rtn_name_owner). Generation scope: the STAKE and DELEGATE
+ * arms exist only at generation >= 4; the NAME_REGISTER owner rule at
+ * every generation >= 2 the flag can be active in. */
 static int rtn_deleg2_name_gate(const nodus_rt_exec_ctx_t *ctx) {
     return ctx && ctx->delegate_name_required ? 1 : 0;
 }
@@ -5792,7 +5873,14 @@ static int rtn_vupd2_exec(const dna_env_view_t *env, uint16_t leg_index,
  *     the legacy exact DNAC_SELF_STAKE_AMOUNT; both ends are VERDICTs (an
  *     unbounded bond would surface as a mutate-side STORAGE_FAULT, -2, on
  *     every node — §1.5's reason for the upper end);
- *   - no unstake destination: the bond resolves to owner_fp (§1.5).
+ *   - no unstake destination: the bond resolves to owner_fp (§1.5);
+ *   - HF-8 (decision 2026-10-21-hf8-activation.md amendment, design
+ *     2026-10-07-delegate-name-required-design.md rev 3 item 2): under
+ *     the param-17 gate (rtn_deleg2_name_gate) the owner_fp must own a
+ *     v2_names row (SYSTEM op 16 NAMEOWN2) — read plan and index map at
+ *     rtn_stake2_read_plan. The funding leg is not gated (15 inputs, the
+ *     kind-3 payer binding rtn_sysfund_payer_bound unchanged): a
+ *     single-key third party may still pay the bond.
  * Unchanged: active_count + 1 and Rule M (count <= DNAC_MAX_VALIDATORS),
  * the commission bound, ACTIVE with active_since = h, the sibling SYSFUND
  * call parsed before anything is written; the CORE leg locks `bond`
@@ -5840,7 +5928,20 @@ static int rtn_stake2_vid(const nodus_rt_exec_ctx_t *ctx, uint8_t out[64]) {
 /* STAKE (gen 4) read plan: [STATS(7, active_count)] [VAL2(13,
  * validator_id)] [KEYRES(17, SHA3-512(consensus_pk))] — ascending
  * (op_id, key) by construction (7 < 13 < 17); the engine enforces strict
- * ascent. */
+ * ascent.
+ * HF-8 (decision docs/plans/decisions/2026-10-21-hf8-activation.md,
+ * amendment "Hem delegasyon da hem stake edenler için de aynı şey geçerli
+ * olması lazım."; design 2026-10-07-delegate-name-required-design.md rev
+ * 3 item 2): under the gate (rtn_deleg2_name_gate — the SAME predicate
+ * the DELEGATE uses, and the exec below) the plan carries the STAKER's
+ * name read [NAMEOWN2(16, call.owner_fp)] between VAL2 and KEYRES (13 <
+ * 16 < 17 keeps the strict ascent):
+ *   gate 0  [0] STATS  [1] VAL2  [2] KEYRES                 n = 3
+ *   gate 1  [0] STATS  [1] VAL2  [2] NAMEOWN2  [3] KEYRES   n = 4
+ * The key is the call's owner_fp — the party that stakes (kind 1: the
+ * signer; kind 3: the vault address, both bound by rtn_sys_owner_auth in
+ * the exec), never the consensus key and never the funding leg's payer
+ * (operator clarification, same decision). */
 static int rtn_stake2_read_plan(const dna_env_view_t *env,
                                 uint16_t leg_index,
                                 const nodus_rt_exec_ctx_t *ctx,
@@ -5851,7 +5952,9 @@ static int rtn_stake2_read_plan(const dna_env_view_t *env,
     if (rtn_stake2_parse(env->buf + env->call_off[leg_index],
                          env->leg[leg_index].call_len, &c) != 0)
         return -1;
-    if (max_reqs < 3) return -1;
+    const int name_gate = rtn_deleg2_name_gate(ctx);
+    const uint16_t need = (uint16_t)(name_gate ? 4u : 3u);
+    if (max_reqs < need) return -1;
     uint8_t vid[64], kh[RTN_KEYRES_KEY_LEN];
     int rc = rtn_stake2_vid(ctx, vid);
     if (rc != 0) return rc;
@@ -5861,9 +5964,11 @@ static int rtn_stake2_read_plan(const dna_env_view_t *env,
     rtn_req_set(&reqs_out[0], RTN_SYS_OP_STATS, &sel, 1);
     rtn_req_set(&reqs_out[1], RTN_SYS_OP_VAL2, vid,
                 (uint16_t)RTN_VAL2_KEY_LEN);
-    rtn_req_set(&reqs_out[2], RTN_SYS_OP_KEYRES, kh,
+    if (name_gate)
+        rtn_req_set(&reqs_out[2], RTN_SYS_OP_NAMEOWN2, c.owner_fp, 64u);
+    rtn_req_set(&reqs_out[need - 1u], RTN_SYS_OP_KEYRES, kh,
                 (uint16_t)RTN_KEYRES_KEY_LEN);
-    *n_out = 3;
+    *n_out = need;
     return 0;
 }
 
@@ -5920,10 +6025,29 @@ static int rtn_stake2_exec(const dna_env_view_t *env, uint16_t leg_index,
                                           * expiry                       */
     }
 
-    /* ── mediated reads (the plan's order: STATS, VAL2, KEYRES) ──────── */
-    if (!reads || n_reads != 3) return -2;
+    /* ── mediated reads (the plan's order: STATS, VAL2, [NAMEOWN2],
+     *    KEYRES). The same predicate the plan used decides the count; a
+     *    count that disagrees is this node's engine/plan invariant broken
+     *    — a FAULT, never a verdict — and it is judged BEFORE any read is
+     *    dereferenced (the rtn_delegate2_exec discipline). ─────────────── */
+    const int name_gate = rtn_deleg2_name_gate(ctx);
+    if (!reads || n_reads != (uint16_t)(name_gate ? 4u : 3u)) return -2;
     const nodus_rt_read_res_t *sr = &reads[0], *vr = &reads[1],
-                              *kr = &reads[2];
+                              *kr = &reads[name_gate ? 3 : 2];
+    /* HF-8 (decision 2026-10-21-hf8-activation.md amendment; design rev 3
+     * item 2): the STAKER (call.owner_fp, already bound to the verdict by
+     * rtn_sys_owner_auth above) must own a v2_names row. No exemption —
+     * the staker is the actor. ABSENT is the deterministic verdict; a
+     * PRESENT answer outside the adapter's contract (3..36 name bytes,
+     * rtn_core_nameown_fetch) is this node's adapter broken — a FAULT
+     * (the D3 precedent, rtn_delegate2_exec). */
+    if (name_gate) {
+        const nodus_rt_read_res_t *nr = &reads[2];
+        if (!nr->present) return -1;     /* nameless staker              */
+        if (nr->value_len < (uint32_t)DNAC_NAME_MIN_LEN ||
+            nr->value_len > (uint32_t)DNAC_NAME_MAX_LEN)
+            return -2;
+    }
     uint8_t vid[64], kh[RTN_KEYRES_KEY_LEN];
     {
         int rc = rtn_stake2_vid(ctx, vid);
@@ -6566,7 +6690,8 @@ int nodus_rt_system_read_plan(const nodus_domain_runtime_t *rt,
     }
     /* HF-6 sub-slice 3c: under the HF-6 generation ops 1..5 plan through
      * the generation-4 arms only (ops 13/14/15, + 16 under the HF-8 gate);
-     * slice 4: STAKE plans ops 7 / 13 / 17. Op 10 plans nothing in any
+     * slice 4: STAKE plans ops 7 / 13 / 17 (+ 16 under the HF-8 gate,
+     * rtn_stake2_read_plan). Op 10 plans nothing in any
      * generation (removed from HF-6, decision
      * 2026-10-13-kurultay-18-summary.md item 1). */
     if (rtn_gen_roles(rtn_gen_of(rt))) {

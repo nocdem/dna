@@ -195,10 +195,16 @@ int nodus_rt_native_committed_signer_fp(const dna_env_view_t *env,
  * HF-4 (design docs/plans/2026-10-02-onchain-names-design.md rev 4 §2
  * "Same owner, two names pending") — the CheckTx-only synthetic OWNER
  * conflict key of a CORE NAME_REGISTER leg: the CORE adapter's read-only
- * OWNER op id and the leg's owner (the verified verdict's signer_fp[0]).
- * The CheckTx dry run appends it to its conflict rows so one node's
- * mempool admits one registration per owner. Mempool only — it never
- * reaches consensus state or a result.
+ * OWNER op id and the leg's owner — the verified verdict's signer_fp[0]
+ * (auth_kind 1) or, HF-8 (decision docs/plans/decisions/2026-10-21-hf8-
+ * activation.md, "ekle."), the satisfied vault's msig_addr[0] (auth_kind
+ * 3: one descriptor, satisfied, no foreign signer). The derivation is the
+ * read plan's and the exec's own (rt_native.c rtn_name_owner_of). Kind 3
+ * is accepted here without the HF-8 flag: the dry run calls this only
+ * after the exec accepted the leg, and the exec refuses kind 3 while the
+ * flag is off. The CheckTx dry run appends it to its conflict rows so one
+ * node's mempool admits one registration per owner. Mempool only — it
+ * never reaches consensus state or a result.
  * @return 0 key filled; 1 the leg is not a CORE NAME_REGISTER leg (no
  *         key); -1 bad arguments or an owner shape the exec refuses.
  */
