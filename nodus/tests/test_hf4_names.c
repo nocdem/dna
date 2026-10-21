@@ -43,6 +43,20 @@
  *     created coins as the call carries them.
  *  6. nodus_rt_core_name_owner_key: (op 6, signer_fp[0]) for an op-8 leg;
  *     1 for a SPEND leg; -1 for two signers.
+ *  6b. HF-8 rev 3 (decision docs/plans/decisions/2026-10-21-hf8-
+ *     activation.md amendment, operator "ekle." / "Yalnız kasanın
+ *     parası"): an auth-kind-3 registration (two verified member signers,
+ *     one satisfied descriptor = the vault, every signer in it). With ctx
+ *     delegate_name_required 0 the plan and the exec refuse it (-1 — the
+ *     section-3 "auth kind 3 refuses" case is this one). With 1 the plan's
+ *     OWNER key is the vault address (never a co-signer's fp) and the exec
+ *     stores v2_names value = vault ‖ height. Refused (-1, never -2) under
+ *     the flag: unsatisfied, a foreign signer, two descriptors, no
+ *     descriptor fact, no verdict, a member's coin, a stranger's coin,
+ *     vault + member coins in either order, the vault already named, the
+ *     name taken; two vault coins apply. Kind 2 stays refused and kind 1
+ *     is unchanged under the flag. The CheckTx owner key of a kind-3 leg
+ *     is (op 6, vault); unsatisfied / foreign signer / two descriptors -1.
  *  7. pins: nodus_v2_pins_generation_count == NODUS_RT_GEN_MAX and every
  *     pinned generation's (SYSTEM, CORE) tuple equals the compiled
  *     runtime table's; generation 0 / count + 1 are refused.
@@ -435,6 +449,7 @@ typedef struct {
     uint64_t price[4];
     nodus_rt_read_res_t reads[NODUS_RT_MAX_READS];
     uint16_t n_reads;
+    uint8_t  dlg;                  /* HF-8: ctx delegate_name_required   */
 } nm_facts_t;
 
 static nm_facts_t g_f;
@@ -486,6 +501,7 @@ static void ctx_of(nodus_rt_exec_ctx_t *ctx) {
     ctx->leg_auth_digest     = digest;
     ctx->auth                = g_f.no_auth ? NULL : &g_f.av;
     ctx->token_create_fee    = DNAC_CFG_MIN_TOKEN_CREATE_FEE;
+    ctx->delegate_name_required = g_f.dlg;
     memcpy(ctx->name_price, g_f.price, sizeof(ctx->name_price));
 }
 
@@ -880,6 +896,203 @@ static int t_describe_and_owner_key(void) {
                  FEE) == 0 &&
           nodus_rt_core_name_owner_key(&e.view, 0, &av, &op, key) == 1,
           "a SPEND leg: 1 (no key)");
+    free(e.bytes);
+    e.bytes = NULL;
+    return 0;
+}
+
+/* ══ 6b. HF-8 rev 3 — a NAME_REGISTER authorised by a multisig ════════
+ * Decision docs/plans/decisions/2026-10-21-hf8-activation.md amendment
+ * (operator "ekle." and "Yalnız kasanın parası"). The verdict is
+ * fabricated: two verified signers (members g_owner, g_m2), one carried
+ * descriptor whose address is g_vault, satisfied, every signer in it. */
+
+static uint8_t g_vault[64];
+static char    g_vault_hex[129];
+static uint8_t g_m2[64];
+
+static void av_vault(void) {
+    memset(&g_f.av, 0, sizeof(g_f.av));
+    g_f.av.n_signers = 2;
+    memcpy(g_f.av.signer_fp[0], g_owner, 64);
+    memcpy(g_f.av.signer_fp[1], g_m2, 64);
+    g_f.av.n_msig = 1;
+    memcpy(g_f.av.msig_addr[0], g_vault, 64);
+    g_f.av.msig_satisfied[0] = 1;
+    g_f.av.msig_signers_in_desc = 1u;
+}
+
+/* facts_reset with the vault verdict and every input the vault's coin */
+static void facts_vault(uint8_t n_in, const uint64_t *amt) {
+    facts_reset(n_in, amt);
+    av_vault();
+    for (uint8_t i = 0; i < n_in; i++)
+        utxo_rec(g_f.reads[i].value, g_vault_hex, amt[i], NULL, 0);
+}
+
+static int t_msig_names(const nodus_domain_runtime_t *g2) {
+    static nm_env_t e;
+    nodus_rt_read_req_t reqs[NODUS_RT_MAX_READS];
+    uint16_t n = 0;
+    uint8_t ins[2][64];
+    memset(ins[0], 0x10, 64);
+    memset(ins[1], 0x11, 64);
+    uint64_t amt[2] = { P4 + FEE + CHG, 0 };
+    nm_out_t chg = { g_vault_hex, CHG, NULL, 0x5E };
+
+    e.call_len = nm_call(e.call, "vault", DNAC_NAME_PRICE_5P_DEFAULT, 1, ins,
+                         1, &chg);
+    amt[0] = DNAC_NAME_PRICE_5P_DEFAULT + FEE + CHG;
+    CHECK(nm_env(&e, DNA_CORERULE_NAME_REGISTER,
+                 NODUS_RT_AUTHKIND_DSA87_MSIG_V1, 1, FEE) == 0, "kind-3 env");
+
+    /* flag 0 (before H): refused by the plan and the exec, -1 never -2 */
+    facts_vault(1, amt);
+    g_f.dlg = 0;
+    CHECK(run_plan(g2, &e, reqs, &n) == -1, "flag 0: kind 3 plan refused");
+    CHECK(run_exec(g2, &e) == -1, "flag 0: kind 3 exec refused (-1)");
+
+    /* flag 1: the plan's OWNER key is the vault address */
+    g_f.dlg = 1;
+    CHECK(run_plan(g2, &e, reqs, &n) == 0 && n == 4, "flag 1: four reads");
+    CHECK(reqs[2].op_id == OP_NAME && reqs[2].key_len == 5 &&
+          memcmp(reqs[2].key, "vault", 5) == 0, "[2] NAME");
+    CHECK(reqs[3].op_id == OP_NAMEOWN && reqs[3].key_len == 64 &&
+          memcmp(reqs[3].key, g_vault, 64) == 0,
+          "[3] OWNER = the vault address (msig_addr[0])");
+    CHECK(memcmp(reqs[3].key, g_owner, 64) != 0 &&
+          memcmp(reqs[3].key, g_m2, 64) != 0, "never a co-signer's fp");
+
+    /* flag 1: the exec stores the vault as the owner */
+    CHECK(run_exec(g2, &e) == 0 && g_ev.effect_count == 4,
+          "flag 1: a satisfied vault registers (four effects)");
+    {
+        const uint8_t *v = g_ev.buf + g_ev.val_off[1];
+        CHECK(g_ev.eff[1].op_id == OP_NAME && g_ev.eff[1].value_len == 72 &&
+              memcmp(v, g_vault, 64) == 0 && get64(v + 64) == 100,
+              "v2_names value = vault address ‖ height");
+    }
+
+    /* the refusal matrix under the flag: -1, never -2 */
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    g_f.av.msig_satisfied[0] = 0;
+    CHECK(run_plan(g2, &e, reqs, &n) == -1 && run_exec(g2, &e) == -1,
+          "an unsatisfied descriptor (< M signed): -1");
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    g_f.av.msig_signers_in_desc = 0;
+    CHECK(run_plan(g2, &e, reqs, &n) == -1 && run_exec(g2, &e) == -1,
+          "a foreign signer rode along (D6): -1");
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    g_f.av.n_msig = 2;
+    memcpy(g_f.av.msig_addr[1], g_other, 64);
+    g_f.av.msig_satisfied[1] = 1;
+    CHECK(run_plan(g2, &e, reqs, &n) == -1 && run_exec(g2, &e) == -1,
+          "two carried descriptors: -1 (one canonical owner)");
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    g_f.av.n_msig = 0;
+    CHECK(run_plan(g2, &e, reqs, &n) == -1 && run_exec(g2, &e) == -1,
+          "a kind-3 leg with no descriptor fact: -1");
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    g_f.no_auth = 1;
+    CHECK(run_plan(g2, &e, reqs, &n) == -1 && run_exec(g2, &e) == -1,
+          "no verdict: -1");
+    /* the vault's coins only (operator "Yalnız kasanın parası") */
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    utxo_rec(g_f.reads[0].value, g_owner_hex, amt[0], NULL, 0);
+    CHECK(run_exec(g2, &e) == -1,
+          "a member's coin (owned by a verified signer) is refused");
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    utxo_rec(g_f.reads[0].value, g_other_hex, amt[0], NULL, 0);
+    CHECK(run_exec(g2, &e) == -1, "a stranger's coin is refused");
+    /* one name per vault */
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    g_f.reads[3].present = 1;
+    g_f.reads[3].value_len = 4;
+    memcpy(g_f.reads[3].value, "bios", 4);
+    CHECK(run_exec(g2, &e) == -1, "the vault already holds a name: -1");
+    facts_vault(1, amt);
+    g_f.dlg = 1;
+    g_f.reads[2].present = 1;
+    g_f.reads[2].value_len = 72;
+    CHECK(run_exec(g2, &e) == -1, "the name is taken: -1");
+
+    /* two inputs: both the vault's applies; vault + member refused */
+    e.call_len = nm_call(e.call, "vault", DNAC_NAME_PRICE_5P_DEFAULT, 2, ins,
+                         0, NULL);
+    CHECK(nm_env(&e, DNA_CORERULE_NAME_REGISTER,
+                 NODUS_RT_AUTHKIND_DSA87_MSIG_V1, 1, FEE) == 0, "env");
+    amt[0] = DNAC_NAME_PRICE_5P_DEFAULT;
+    amt[1] = FEE;
+    facts_vault(2, amt);
+    g_f.dlg = 1;
+    CHECK(run_exec(g2, &e) == 0, "two vault coins, no change: applies");
+    facts_vault(2, amt);
+    g_f.dlg = 1;
+    utxo_rec(g_f.reads[1].value, g_owner_hex, amt[1], NULL, 0);
+    CHECK(run_exec(g2, &e) == -1,
+          "a vault coin + a member's coin: refused (vault-only funding)");
+    facts_vault(2, amt);
+    g_f.dlg = 1;
+    utxo_rec(g_f.reads[0].value, g_owner_hex, amt[0], NULL, 0);
+    CHECK(run_exec(g2, &e) == -1,
+          "a member's coin first, the vault's second: refused");
+
+    /* kind 2 under the flag stays refused; kind 1 under the flag unchanged */
+    e.call_len = nm_call(e.call, "punk", P4, 1, ins, 1,
+                         &(nm_out_t){ g_owner_hex, CHG, NULL, 0x5E });
+    amt[0] = P4 + FEE + CHG;
+    CHECK(nm_env(&e, DNA_CORERULE_NAME_REGISTER,
+                 NODUS_RT_AUTHKIND_DSA87_CC_V1, 1, FEE) == 0, "kind-2 env");
+    facts_reset(1, amt);
+    g_f.dlg = 1;
+    CHECK(run_plan(g2, &e, reqs, &n) == -1 && run_exec(g2, &e) == -1,
+          "flag 1: auth kind 2 still refused");
+    CHECK(nm_env(&e, DNA_CORERULE_NAME_REGISTER,
+                 NODUS_RT_AUTHKIND_DSA87_MULTI_V1, 1, FEE) == 0, "kind-1 env");
+    facts_reset(1, amt);
+    g_f.dlg = 1;
+    CHECK(run_plan(g2, &e, reqs, &n) == 0 && n == 4 &&
+          memcmp(reqs[3].key, g_owner, 64) == 0 && run_exec(g2, &e) == 0,
+          "flag 1: a kind-1 registration is unchanged (owner = signer)");
+    facts_reset(1, amt);
+    g_f.dlg = 1;
+    utxo_rec(g_f.reads[0].value, g_other_hex, amt[0], NULL, 0);
+    CHECK(run_exec(g2, &e) == -1, "flag 1, kind 1: a foreign coin -1");
+
+    /* the CheckTx owner key: kind 3 -> (op 6, vault) — the same
+     * derivation, no flag (it runs only after the exec accepted) */
+    {
+        e.call_len = nm_call(e.call, "vault", DNAC_NAME_PRICE_5P_DEFAULT, 1,
+                             ins, 1, &chg);
+        CHECK(nm_env(&e, DNA_CORERULE_NAME_REGISTER,
+                     NODUS_RT_AUTHKIND_DSA87_MSIG_V1, 1, FEE) == 0, "env");
+        facts_vault(1, amt);
+        uint32_t op = 0;
+        uint8_t key[64];
+        CHECK(nodus_rt_core_name_owner_key(&e.view, 0, &g_f.av, &op, key)
+                  == 0 && op == OP_NAMEOWN && memcmp(key, g_vault, 64) == 0,
+              "kind 3: (CORE, OWNER op, the vault address)");
+        g_f.av.msig_satisfied[0] = 0;
+        CHECK(nodus_rt_core_name_owner_key(&e.view, 0, &g_f.av, &op, key)
+                  == -1, "kind 3 unsatisfied: -1 (the exec refuses it too)");
+        av_vault();
+        g_f.av.msig_signers_in_desc = 0;
+        CHECK(nodus_rt_core_name_owner_key(&e.view, 0, &g_f.av, &op, key)
+                  == -1, "kind 3 with a foreign signer: -1");
+        av_vault();
+        g_f.av.n_msig = 2;
+        CHECK(nodus_rt_core_name_owner_key(&e.view, 0, &g_f.av, &op, key)
+                  == -1, "kind 3 with two descriptors: -1");
+    }
+    g_f.dlg = 0;
     free(e.bytes);
     e.bytes = NULL;
     return 0;
@@ -1396,6 +1609,9 @@ int main(void) {
     memset(g_other, 0xB8, sizeof(g_other));
     hex_of(g_owner, g_owner_hex);
     hex_of(g_other, g_other_hex);
+    memset(g_vault, 0xD3, sizeof(g_vault));
+    hex_of(g_vault, g_vault_hex);
+    memset(g_m2, 0xC9, sizeof(g_m2));
 
     const nodus_domain_runtime_t *g1 =
         nodus_runtime_for_generation(NODUS_RT_GEN_1, DNA_DOMAIN_CORE);
@@ -1407,13 +1623,14 @@ int main(void) {
     }
 
     int failed = 0, n = 0;
-    struct { const char *name; int rc; } res[8];
+    struct { const char *name; int rc; } res[9];
     res[n].name = "bytes_and_price";       res[n++].rc = t_bytes_and_price();
     res[n].name = "name_root_kats";        res[n++].rc = t_name_root();
     res[n].name = "read_plan";             res[n++].rc = t_read_plan(g1, g2);
     res[n].name = "exec_matrix";           res[n++].rc = t_exec(g1, g2);
     res[n].name = "describe_owner_key";    res[n++].rc =
                                                t_describe_and_owner_key();
+    res[n].name = "hf8_msig_names";        res[n++].rc = t_msig_names(g2);
     res[n].name = "pins_generations";      res[n++].rc = t_pins();
     res[n].name = "client_decoders";       res[n++].rc = t_decoders();
     res[n].name = "ruleset_compat";        res[n++].rc = t_ruleset_compat();

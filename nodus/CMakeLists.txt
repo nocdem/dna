@@ -3248,6 +3248,12 @@ register_witness_test(test_hf4_genesis)
 # name_root, twin determinism, refusals, dry-run owner key, address index).
 register_witness_test(test_hf4_names)
 register_witness_test(test_hf4_names_engine)
+# HF-8 rev 3 (decision docs/plans/decisions/2026-10-21-hf8-activation.md
+# amendment): a NAME_REGISTER authorised by a 2-of-3 vault through the
+# engine at generation 2 — refused before the param-17 height, admitted by
+# the CheckTx dry run at it (owner key = the vault, never a fault), stored
+# with the vault as owner, one name per vault, vault-only funding.
+register_witness_test(test_hf8_msig_name)
 
 # Storage reward v1, package B1 (decision docs/plans/decisions/2026-10-04-
 # storage-reward-approved.md; design docs/plans/2026-10-04-storage-reward-

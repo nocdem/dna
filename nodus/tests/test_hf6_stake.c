@@ -51,6 +51,19 @@
  *      = inputs + pool); the read-only describer names the STAKE by its
  *      owner address (rec_v2 0, rec_validator_fp = owner_fp, amount =
  *      bond).
+ *   A8 HF-8 rev 3 (decision docs/plans/decisions/2026-10-21-hf8-
+ *      activation.md amendment: the STAKER needs a name): with ctx
+ *      delegate_name_required = 0 the plan stays [7][13][17] (capacity 3
+ *      suffices) and a 3-read exec applies; with 1 the plan is [op 7] [op
+ *      13] [op 16 keyed by the call's owner_fp — not the consensus key]
+ *      [op 17], capacity 3 refused; the 4-read exec applies with a 3- or
+ *      36-byte name, refuses a nameless owner (-1), faults on a 2- or
+ *      37-byte name answer (-2), reads KEYRES at index 3 (a reservation
+ *      there refuses); 3 reads under the gate and 4 without are both -2;
+ *      a named read does not rescue a non-owner signer; a kind-3 owner's
+ *      name key is the vault address (never a co-signer's fp) and it
+ *      applies with a name, refuses without; the CORE SYSFUND sibling
+ *      still plans inputs + pool.
  *  B. ENGINE (twin seeded chains, EVM-enabled build: V0..V6 ACTIVE 10M
  *     since 1, VR RETIRING 10M since 1, every block from 2 carrying the
  *     seven COMMIT votes; param 9 at 2, param 14 at 3, param 18 — the
@@ -98,7 +111,11 @@
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
  *  - Section A fabricates the verdicts and the read results: it proves the
  *    hooks' rule decisions, not the engine's reads (B does those). Its
- *    consent signatures are real.
+ *    consent signatures are real. A8 sets the ctx flag by hand: that the
+ *    ENGINE fills it from a committed param-17 row is driven by
+ *    test_hf8_msig_name.c (for NAME_REGISTER) and the stagef HF-8
+ *    generation-5 scenario (for STAKE), not here — B has no param-17 row,
+ *    so B proves the gate-0 path only.
  *  - B's genesis UTXOs and the RETIRING row are SEEDED
  *    (V2X_SEED_NOT_REAL_UTXOS / _STATUSES); the reward pool is non-zero
  *    by hand (the test_v2_econ device).
@@ -182,6 +199,7 @@ static int g_checks = 0;
 #define OP_STATS      7u
 #define OP_VAL2       13u
 #define OP_KEYRES     17u
+#define OP_NAMEOWN2   16u         /* HF-8: the read-only v2_names by owner */
 #define V2_REC_LEN    5389u
 #define V2_OWNER_OFF  64u
 #define V2_CPK_OFF    128u
@@ -534,6 +552,9 @@ static int try_stake(const nodus_domain_runtime_t *s4, hk_env_t *e,
     return sys_exec(s4, e, 3, NULL);
 }
 
+static int t_hf8_stake(const nodus_domain_runtime_t *s4,
+                       const nodus_domain_runtime_t *c4);
+
 static int t_hooks(void) {
     const nodus_domain_runtime_t *s4 =
         nodus_runtime_for_generation(NODUS_RT_GEN_STORAGE, DNA_DOMAIN_SYSTEM);
@@ -771,6 +792,158 @@ static int t_hooks(void) {
               d.rec_amount == SMIN && d.rec_commission_bps == 500,
               "describer: the STAKE by its owner address and its bond");
     }
+
+    /* ── A8. HF-8 rev 3: the staker's name (decision 2026-10-21-hf8-
+     *       activation.md amendment) ─────────────────────────────────── */
+    CHECK(t_hf8_stake(s4, c4) == 0, "A8: the HF-8 STAKE name rule");
+    return 0;
+}
+
+/* the four reads of a STAKE under the HF-8 gate that may apply:
+ * active_count `n`, the id absent, the owner's name `name` (NULL =
+ * absent), the key absent */
+static void rd_ok_named(uint64_t n, const char *name) {
+    rd_ok(n);
+    if (name) {
+        g_reads[2].present = 1;
+        g_reads[2].value_len = (uint32_t)strlen(name);
+        memcpy(g_reads[2].value, name, strlen(name));
+    }
+}
+
+/* A8 — the generation-4 STAKE under the HF-8 gate (ctx
+ * delegate_name_required = 1): the read plan's index map
+ *   gate 0  [0] STATS  [1] VAL2  [2] KEYRES                 n = 3
+ *   gate 1  [0] STATS  [1] VAL2  [2] NAMEOWN2(owner_fp) [3] KEYRES  n = 4
+ * and the exec's verdicts: named applies, nameless -1, a name answer
+ * outside 3..36 -2, a read count that is not the gate's -2 either way;
+ * a kind-3 owner's name key is the vault address; the CORE funding
+ * sibling stays inputs + pool. */
+static int t_hf8_stake(const nodus_domain_runtime_t *s4,
+                       const nodus_domain_runtime_t *c4) {
+    static hk_env_t e;
+    static uint8_t call[CALL_LEN + 8];
+    nodus_rt_read_req_t rq[NODUS_RT_MAX_READS];
+    uint16_t n = 0;
+    dna_effect_view_t ev;
+    const uint64_t H = 9;
+    const uint64_t EXP = H + 100;
+    ctx_reset(H);
+
+    uint8_t vid[64], kh[64];
+    CHECK(vid_expect(g_chain, g_intent, vid) == 0, "vid recomputation");
+    CHECK(qgp_sha3_512(g_k[KC1].pk, PK_LEN, kh) == 0, "key hash");
+    CHECK(stake2_call(call, g_chain, g_k[KO].fp, KC1, EXP, 500, SMIN, CS_OK)
+          == CALL_LEN && hk_build(&e, call, CALL_LEN, 1) == 0, "env");
+
+    /* gate 0: the pre-HF-8 plan, byte for byte (also A1) */
+    g_ctx.delegate_name_required = 0;
+    CHECK(sys_plan(s4, &e, rq, &n) == 0 && n == 3 &&
+          rq[2].op_id == OP_KEYRES, "gate 0: [7][13][17], three reads");
+    CHECK(nodus_rt_system_read_plan(s4, &e.view, 0, &g_ctx, rq, 3, &n) == 0
+          && n == 3, "gate 0: a capacity of 3 suffices");
+
+    /* gate 1: the plan */
+    g_ctx.delegate_name_required = 1;
+    CHECK(sys_plan(s4, &e, rq, &n) == 0 && n == 4, "gate 1: four reads");
+    CHECK(rq[0].op_id == OP_STATS && rq[0].key_len == 1 &&
+          rq[0].key[0] == 1u, "gate 1 read 0: op 7 active_count");
+    CHECK(rq[1].op_id == OP_VAL2 && rq[1].key_len == 64 &&
+          memcmp(rq[1].key, vid, 64) == 0, "gate 1 read 1: op 13 vid");
+    CHECK(rq[2].op_id == OP_NAMEOWN2 && rq[2].key_len == 64 &&
+          memcmp(rq[2].key, g_k[KO].fp, 64) == 0,
+          "gate 1 read 2: op 16 keyed by the call's owner_fp (the staker), "
+          "not the consensus key");
+    CHECK(memcmp(rq[2].key, kh, 64) != 0, "the name key is not the "
+          "consensus key's hash");
+    CHECK(rq[3].op_id == OP_KEYRES && rq[3].key_len == 64 &&
+          memcmp(rq[3].key, kh, 64) == 0, "gate 1 read 3: op 17 KEYRES");
+    CHECK(rq[1].op_id < rq[2].op_id && rq[2].op_id < rq[3].op_id,
+          "strictly ascending by op id");
+    CHECK(nodus_rt_system_read_plan(s4, &e.view, 0, &g_ctx, rq, 3, &n) == -1,
+          "gate 1: a capacity of 3 is refused (needs 4)");
+
+    /* gate 1: the exec */
+    av_k1(KO);
+    rd_ok_named(7, "punk");
+    CHECK(sys_exec(s4, &e, 4, &ev) == 0 && ev.effect_count == 3 &&
+          ev.eff[0].op_id == OP_VAL2 && ev.eff[1].op_id == OP_KEYRES &&
+          ev.eff[2].op_id == OP_STATS,
+          "gate 1, named staker: applies, the same three effects");
+    rd_ok_named(7, NULL);
+    CHECK(sys_exec(s4, &e, 4, NULL) == -1,
+          "gate 1, nameless staker: refused (-1)");
+    rd_ok_named(7, "ab");
+    CHECK(sys_exec(s4, &e, 4, NULL) == -2,
+          "gate 1, a 2-byte name answer: the adapter out of contract (-2)");
+    {
+        char n37[38];
+        memset(n37, 'z', 37);
+        n37[37] = '\0';
+        rd_ok_named(7, n37);
+        CHECK(sys_exec(s4, &e, 4, NULL) == -2,
+              "gate 1, a 37-byte name answer: -2");
+        char n36[37];
+        memset(n36, 'z', 36);
+        n36[36] = '\0';
+        rd_ok_named(7, n36);
+        CHECK(sys_exec(s4, &e, 4, NULL) == 0, "gate 1, a 36-byte name: ok");
+    }
+    rd_ok_named(7, "abc");
+    CHECK(sys_exec(s4, &e, 4, NULL) == 0, "gate 1, a 3-byte name: ok");
+    /* the KEYRES answer is read at index 3 under the gate */
+    rd_ok_named(7, "punk");
+    g_reads[3].present = 1;
+    g_reads[3].value_len = 65;
+    memset(g_reads[3].value, 0x77, 64);
+    g_reads[3].value[64] = 1;
+    CHECK(sys_exec(s4, &e, 4, NULL) == -1,
+          "gate 1: a reservation at index 3 refuses (-1) — KEYRES moved");
+    /* read counts that disagree with the gate */
+    rd_ok_named(7, "punk");
+    CHECK(sys_exec(s4, &e, 3, NULL) == -2,
+          "gate 1 with three reads: a node fault (-2)");
+    g_ctx.delegate_name_required = 0;
+    rd_ok(7);
+    CHECK(sys_exec(s4, &e, 4, NULL) == -2,
+          "gate 0 with four reads: a node fault (-2)");
+    CHECK(sys_exec(s4, &e, 3, NULL) == 0, "gate 0 with three reads: applies "
+          "(no name needed before H)");
+    g_ctx.delegate_name_required = 1;
+    /* authority first: a non-owner signer is refused before the reads */
+    av_k1(KX);
+    rd_ok_named(7, "punk");
+    CHECK(sys_exec(s4, &e, 4, NULL) == -1,
+          "gate 1: a named read does not rescue a non-owner signer");
+
+    /* kind-3 owner (the 2-of-3 vault): the name key is the vault address */
+    CHECK(stake2_call(call, g_chain, g_am, KC2, EXP, 0, SMIN, CS_OK)
+          == CALL_LEN && hk_build(&e, call, CALL_LEN, 3) == 0, "kind-3 env");
+    av_k3(g_am);
+    CHECK(sys_plan(s4, &e, rq, &n) == 0 && n == 4 &&
+          rq[2].op_id == OP_NAMEOWN2 && memcmp(rq[2].key, g_am, 64) == 0,
+          "kind-3 owner: op 16 keyed by the vault address");
+    CHECK(memcmp(rq[2].key, g_k[K1].fp, 64) != 0 &&
+          memcmp(rq[2].key, g_k[K2].fp, 64) != 0,
+          "never a co-signer's fingerprint");
+    rd_ok_named(7, "vault");
+    CHECK(sys_exec(s4, &e, 4, &ev) == 0 &&
+          memcmp(ev.buf + ev.val_off[0] + V2_OWNER_OFF, g_am, 64) == 0,
+          "kind-3 owner with a name: applies, owner_fp = the vault");
+    rd_ok_named(7, NULL);
+    CHECK(sys_exec(s4, &e, 4, NULL) == -1,
+          "kind-3 owner without a name: refused");
+
+    /* the CORE funding sibling is not gated: inputs + pool */
+    {
+        nodus_rt_read_req_t cr[NODUS_RT_MAX_READS];
+        uint16_t cn = 0;
+        CHECK(nodus_rt_core_read_plan(c4, &e.view, 1, &g_ctx, cr,
+                                      NODUS_RT_MAX_READS, &cn) == 0 &&
+              cn == 2, "gate 1: the STAKE's CORE sibling still plans "
+              "inputs + pool (no name read there)");
+    }
+    g_ctx.delegate_name_required = 0;
     return 0;
 }
 
