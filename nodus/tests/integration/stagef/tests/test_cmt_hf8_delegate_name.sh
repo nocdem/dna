@@ -104,6 +104,29 @@
 #   re-running.
 #
 # HOW IT CAN LIE
+#   - **It proves the GENERATION-2 rule only — NOT the rule the live
+#     chain would run.** The chain here stops at rule-set generation 2
+#     (votes 7 and 9), so every DELEGATE is the legacy pubkey layout and
+#     the name rule judged is the CORE SYSFUND leg's
+#     (nodus_witness_rt_native.c rtn_sysfund_name_gate: exempt =
+#     delegator_pubkey == validator_pubkey, 14-input ceiling). The testnet
+#     is on generation 5 (HF-6 + HF-7), where the rule is the SYSTEM
+#     DELEGATE leg's (decision D3, docs/plans/decisions/2026-10-09-
+#     kurultay-16-hf6-storage-summary.md; rtn_deleg2_name_gate /
+#     rtn_delegate2_exec, op 16 NAMEOWN2): the CORE leg is never gated
+#     (15 inputs), the refusal is "domain 0 op 2: runtime exec refused
+#     (rc -1)" (not domain 1 op 7), --validator is the 128-hex
+#     validator_id, the rows are the generation-4 ones, and the exempt
+#     delegator is the validator row's OWNER — node 6's key delegating to
+#     node 6 (step 7d) is NOT an owner self-delegation there (the genesis
+#     validators are owned by the Foundation vault) and would be refused.
+#     None of that is exercised by this scenario; the generation-4 rule
+#     has unit coverage only (nodus/tests/test_hf6_calls.c A4 / A7 / B5,
+#     on the generation-4 runtimes; generation 5 shares that arm through
+#     rtn_gen_roles, generation >= 4).
+#     A generation-5 scenario (the six-vote path of test_cmt_hf7.sh, then
+#     names, the param-17 vote and owner / non-owner delegations) is an
+#     OPEN pre-vote item (nodus/docs/DEPLOY_RUNBOOK.md HF-8 note).
 #   - **The refusals are judged at CheckTx, not inside a block.** The CLI
 #     submits to node 1 only; CheckTx's dry run judges committed state at
 #     tip + 1 (the design's UX note), which is how a client meets the
@@ -126,9 +149,10 @@
 #     because its row exists from step 2 (checked: its v2_intent_index row
 #     and its delegation row before H).
 #   - **The CLI's own refusal path is not exercised** — nodus-cli has no
-#     name pre-check for `v2-envelope delegate`; every refusal here is the
-#     NODE's CheckTx answer (the text comes back in the error frame,
-#     commit 4039bcc6).
+#     name pre-check for `v2-envelope delegate` (no node RPC reports
+#     whether param 17 is in force); every refusal here is the NODE's
+#     CheckTx answer (the text comes back in the error frame, commit
+#     4039bcc6).
 #   - Param 17's stateful rule (generation >= 2) is only SATISFIED here,
 #     never driven as a refusal; the vote's scalar / grace / stateful
 #     matrix is test_hf4_params.c.
