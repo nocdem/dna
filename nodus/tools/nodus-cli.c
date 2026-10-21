@@ -3802,13 +3802,27 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  * (1 <= amount <= total supply, rtn_delegate_exec's scalar rule).
  * HF-8 (design docs/plans/2026-10-07-delegate-name-required-design.md rev
  * 2 §1; chain_config param 17, inert until voted): from the activation
- * height on, a DELEGATE whose delegator is not the validator is refused
- * at CheckTx unless the delegator owns an on-chain name (CORE SYSFUND,
- * nodus_witness_rt_native.c rtn_sysfund_name_gate) — new delegations and
- * top-ups alike; CheckTx sees committed state only, so a `name register`
- * still in the mempool does not count yet. Such a funding leg carries at
- * most 14 inputs; the shared builder (nodus_v2_stake.c) caps every
- * non-self DELEGATE at 14 whether or not the rule is active.
+ * height on, a DELEGATE whose delegator is not exempt is refused at
+ * CheckTx unless the delegator owns an on-chain name — new delegations
+ * and top-ups alike; CheckTx sees committed state only, so a `name
+ * register` still in the mempool does not count yet. Where the rule
+ * lives depends on the rule-set generation:
+ *   - generations 1-3: the CORE SYSFUND leg (nodus_witness_rt_native.c
+ *     rtn_sysfund_name_gate), exempt = delegator_pubkey ==
+ *     validator_pubkey; the funding leg then carries at most 14 inputs,
+ *     and the shared builder (nodus_v2_stake.c) caps every non-self
+ *     legacy DELEGATE at 14 whether or not the rule is active;
+ *   - generation 4 and later (HF-6, decision D3 in
+ *     docs/plans/decisions/2026-10-09-kurultay-16-hf6-storage-summary.md):
+ *     the SYSTEM DELEGATE leg (rtn_deleg2_name_gate / rtn_delegate2_exec,
+ *     op 16 NAMEOWN2), exempt = delegator_fp == the validator row's
+ *     owner_fp — a validator's NODE key is not its owner (the genesis
+ *     validators are owned by the Foundation vault), so its delegation
+ *     needs a name too; the funding leg is never name-gated and keeps 15
+ *     inputs.
+ * This command has no name pre-check: no node RPC reports whether param
+ * 17 is in force at tip + 1 (dnac_fee_info / dnac_ruleset_info do not
+ * carry it), so a refusal is the node's CheckTx answer.
  *
  * `v2-envelope undelegate` is the DELEGATE layout under runtime_op 4
  * (DNA_SYSRULE_UNDELEGATE, rtn_deleg_parse): the --keys identity withdraws
@@ -4179,10 +4193,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "the --keys\n"
             "  identity must own an on-chain name (`name register`, and wait "
             "until it is in\n"
-            "  a block) to delegate or add more; self-delegation is exempt. "
-            "A delegation to\n"
-            "  another validator is funded by at most 14 coins (the chain "
-            "reads the name too).\n"
+            "  a block) to delegate or add more. Exempt: at generation 4 the "
+            "validator's\n"
+            "  OWNER delegating to its own validator (a node key is not the "
+            "owner);\n"
+            "  below generation 4 a validator delegating to itself, and a "
+            "delegation to\n"
+            "  another validator is then funded by at most 14 coins. The CLI "
+            "does not\n"
+            "  pre-check the name; a refusal is the node's.\n"
             "  unstake: the validator retires; its delegations are returned "
             "to their\n"
             "  delegators when it graduates (locked %d epochs), its bond "
