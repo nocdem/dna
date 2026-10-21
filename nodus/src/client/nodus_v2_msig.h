@@ -321,6 +321,19 @@ typedef struct {
 int nodus_v2_msig_leg_open(const nodus_v2_msig_export_t *x,
                            dna_env_view_t *v, nodus_v2_msig_leg_t *leg);
 
+/** nodus_v2_msig_leg_open for a named single-leg CORE operation:
+ *  `runtime_op` is DNA_CORERULE_SPEND (exactly nodus_v2_msig_leg_open) or
+ *  — HF-8 (decision docs/plans/decisions/2026-10-21-hf8-activation.md
+ *  amendment, operator "ekle.") — DNA_CORERULE_NAME_REGISTER, the vault's
+ *  name registration (client/nodus_v2_name.h nodus_v2_name_msig_build /
+ *  nodus_v2_name_msig_review). The leg's runtime_op must EQUAL it, so a
+ *  SPEND reader never opens a name export and vice versa (the SPEND
+ *  read-back would misread a name call). Any other op: ERR_ARG.
+ *  @return as nodus_v2_msig_leg_open / NODUS_V2_SPEND_ERR_ARG. */
+int nodus_v2_msig_leg_open_op(const nodus_v2_msig_export_t *x,
+                              dna_env_view_t *v, uint32_t runtime_op,
+                              nodus_v2_msig_leg_t *leg);
+
 /** The CORE leg's ruleset_version of an envelope — the caller picks the
  *  CORE tuple of that version (nodus-cli cli_core_runtime_for_env; the
  *  wallet's pinned generations). @return NODUS_V2_SPEND_OK / _ERR_ARG /
@@ -445,6 +458,20 @@ int nodus_v2_msig_combine(nodus_v2_msig_export_t *x, uint32_t core_version,
                           const uint8_t (*sigs)[NODUS_V2_MSIG_SIG_LEN],
                           int n_sig, dna_env_preflight_t *pf,
                           int *bad_index);
+
+/** nodus_v2_msig_combine for a named single-leg CORE operation (the leg
+ *  opened by nodus_v2_msig_leg_open_op with `runtime_op`): SPEND is exactly
+ *  nodus_v2_msig_combine; NAME_REGISTER (HF-8) combines a vault's name
+ *  registration the same way — the combine judges only the leg shape, the
+ *  digest and the signatures, never the call. */
+int nodus_v2_msig_combine_op(nodus_v2_msig_export_t *x, uint32_t runtime_op,
+                             uint32_t core_version,
+                             const uint8_t core_hash[DNA_ENV_RULESET_HASH_LEN],
+                             const uint8_t (*digests)[64],
+                             const uint8_t (*pks)[NODUS_V2_MSIG_PK_LEN],
+                             const uint8_t (*sigs)[NODUS_V2_MSIG_SIG_LEN],
+                             int n_sig, dna_env_preflight_t *pf,
+                             int *bad_index);
 
 /* ══ v2 — the multi-leg kind-3 envelope (the HF-6 owner operations) ════
  * Decision 2026-09-29-general-multisig.md, addendum "çok bacaklı ortak

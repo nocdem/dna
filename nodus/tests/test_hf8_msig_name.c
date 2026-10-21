@@ -41,10 +41,17 @@
  *     refused (over-determined here: V is named by then — the dry run at
  *     tip 5, before V held a name, is the case that isolates the
  *     vault-only funding rule); v2_names still holds exactly one row.
+ *   block 8: a second vault W (2-of-2 {K1, K2}, one seeded coin) registers
+ *     "wvlib" through the SHARED LIBRARY the CLI runs —
+ *     nodus_v2_name_msig_build, nodus_v2_name_msig_review by member K2,
+ *     two real signatures, nodus_v2_msig_combine_op(NAME_REGISTER): the dry
+ *     run admits it (the library's units, fee and auth blob are what the
+ *     engine accepts) with W's OWNER row, block 8 applies it, v2_names
+ *     holds (wvlib, W, 8), W's coin is spent.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; DNAC_EPOCH_LENGTH must be
- * > 8 (no epoch boundary among heights 1..7 — checked; true for the
+ * > 8 (no epoch boundary among heights 1..8 — checked; true for the
  * production 720 and the harness 15). Environment: none.
  *
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
@@ -86,6 +93,8 @@
 #include "witness/nodus_witness_runtime.h"
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_v2_spend.h"
+#include "client/nodus_v2_name.h"      /* the vault builder / read-back   */
+#include "client/nodus_v2_msig.h"      /* combine_op, desc_from_keys      */
 
 #include "dnac/dnac.h"
 #include "dnac/domain_wire.h"
@@ -145,6 +154,12 @@ static uint8_t  g_desc[DNA_MSIG_MAX_DESC_LEN];
 static size_t   g_desc_len;
 static uint8_t  g_vault[64];
 static char     g_vault_hex[129];
+/* W = 2-of-2 {K1, K2}: the vault whose registration the SHARED LIBRARY
+ * builds (nodus_v2_name_msig_build / _review, nodus_v2_msig_combine_op) */
+static uint8_t  g_wdesc[DNA_MSIG_MAX_DESC_LEN];
+static size_t   g_wdesc_len;
+static uint8_t  g_wvault[64];
+static char     g_wvault_hex[129];
 
 static void hex_of(const uint8_t raw[64], char out[129]) {
     static const char hx[] = "0123456789abcdef";
@@ -176,6 +191,16 @@ static int keys_make(void) {
         return -1;
     if (dna_msig_address(g_desc, g_desc_len, g_vault) != 0) return -1;
     hex_of(g_vault, g_vault_hex);
+    {
+        uint8_t two[2 * QGP_DSA87_PUBLICKEYBYTES];
+        memcpy(two, g_k[K1].pk, PK_LEN);
+        memcpy(two + PK_LEN, g_k[K2].pk, PK_LEN);
+        if (nodus_v2_msig_desc_from_keys(2, 2, two, g_wdesc, sizeof(g_wdesc),
+                                         &g_wdesc_len, g_wvault)
+            != NODUS_V2_SPEND_OK)
+            return -1;
+        hex_of(g_wvault, g_wvault_hex);
+    }
     return 0;
 }
 
@@ -187,20 +212,23 @@ typedef struct {
     uint8_t          chain16[16];
 } fixture_t;
 
-/* coins: owner (NULL = the vault, else member K1), seed byte, amount */
+/* coins: owner (0 = the vault V, 1 = member K1, 2 = the vault W), seed
+ * byte, amount */
 typedef struct { int member; uint8_t seed; uint64_t amount; } coin_def_t;
-enum { VC_EARLY, VC_REG, VC_SECOND, VC_MIXED, MC_MIXED, N_COINS };
+enum { VC_EARLY, VC_REG, VC_SECOND, VC_MIXED, MC_MIXED, WC_LIB, N_COINS };
 static const coin_def_t COINS[N_COINS] = {
     [VC_EARLY]  = { 0, 0xA1, P5 + FEE + CHG }, /* "vault" at 5 (flag 0)  */
     [VC_REG]    = { 0, 0xA2, P5 + FEE + CHG }, /* "vault" at 6 (= H)     */
     [VC_SECOND] = { 0, 0xA3, P6 + FEE },       /* "vaultb" at 7 (2nd)    */
     [VC_MIXED]  = { 0, 0xA4, P5 },             /* "mixed": vault part    */
     [MC_MIXED]  = { 1, 0xB1, FEE },            /* "mixed": K1's part     */
+    [WC_LIB]    = { 2, 0xC1, P5 + FEE + CHG }, /* W "wvlib" at 8 (lib)   */
 };
 static uint8_t g_nul[N_COINS][64];
 
 static const char *coin_owner_hex(int c) {
-    return COINS[c].member ? g_k[K1].hex : g_vault_hex;
+    return COINS[c].member == 1 ? g_k[K1].hex
+         : COINS[c].member == 2 ? g_wvault_hex : g_vault_hex;
 }
 
 static int coin_nul(int c, uint8_t out[64]) {
@@ -560,6 +588,135 @@ static int dry(nodus_witness_t *w, const uint8_t *env, size_t len,
     return rc;
 }
 
+static int lib_rand(void *ctx, uint8_t *buf, size_t len) {
+    uint8_t *next = ctx;
+    for (size_t i = 0; i < len; i++) buf[i] = (*next)++;
+    return 0;
+}
+
+/* Block 8 (tip 7): W's "wvlib" from its one coin, through the shared
+ * library end to end; the dry run admits it with W's owner row, block 8
+ * applies it on both twins, v2_names stores W. @return 0 / 1. */
+static int lib_vault_register(fixture_t *A, fixture_t *B) {
+    dna_domain_manifest_t core;
+    CHECK(nodus_witness_domreg_get(A->w, DNA_DOMAIN_CORE, NULL, &core, NULL)
+              == 0, "the CORE manifest in force");
+    const nodus_domain_runtime_t *sys =
+        nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_SYSTEM);
+    CHECK(sys && sys->meter_policy, "the generation-2 SYSTEM policy");
+    nodus_v2_ruleset_id_t rs;
+    memset(&rs, 0, sizeof(rs));
+    rs.core_ruleset_version = core.ruleset_version;
+    memcpy(rs.core_ruleset_hash, core.ruleset_hash, 64);
+    rs.meter_policy = sys->meter_policy;
+
+    nodus_v2_coin_t coin;
+    memset(&coin, 0, sizeof(coin));
+    memcpy(coin.nul, g_nul[WC_LIB], 64);
+    coin.amount = COINS[WC_LIB].amount;
+    uint8_t seed_next = 0x90;
+    nodus_v2_name_msig_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.rs            = &rs;
+    req.chain32       = A->w->v2_chain32;
+    req.tip           = 7;
+    req.expiry_height = 7 + NODUS_V2_MSIG_EXPIRY_AHEAD;
+    req.desc          = g_wdesc;
+    req.desc_len      = g_wdesc_len;
+    req.name          = "wvlib";
+    req.price         = P5;
+    req.coins         = &coin;
+    req.n_coins       = 1;
+    req.rand          = lib_rand;
+    req.rand_ctx      = &seed_next;
+    nodus_v2_name_msig_built_t *b = calloc(1, sizeof(*b));
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    nodus_v2_name_msig_review_t *rv = calloc(1, sizeof(*rv));
+    CHECK(b && pf && rv, "alloc");
+    nodus_v2_name_err_t err;
+    CHECK(nodus_v2_name_msig_build(&req, b, &err) == NODUS_V2_SPEND_OK &&
+          memcmp(b->addr, g_wvault, 64) == 0 && b->signers == 2,
+          "the library builds W's unsigned registration");
+
+    nodus_v2_msig_export_t x;
+    memset(&x, 0, sizeof(x));
+    memcpy(x.chain32, A->w->v2_chain32, DNA_CHAIN_ID_LEN);
+    x.tip = 7;
+    x.signers = b->signers;
+    memcpy(x.digest, b->digest, 64);
+    x.env = b->env;
+    x.env_len = b->env_len;
+    CHECK(nodus_v2_name_msig_review(&x, rs.core_ruleset_version,
+                                    rs.core_ruleset_hash, g_k[K2].pk, pf, rv)
+              == NODUS_V2_SPEND_OK &&
+          memcmp(rv->addr, g_wvault, 64) == 0 &&
+          strcmp(rv->name, "wvlib") == 0 && rv->n_out == 1,
+          "a member's read-back: W, the name, W's change");
+
+    static uint8_t pks[2][QGP_DSA87_PUBLICKEYBYTES];
+    static uint8_t sigs[2][QGP_DSA87_SIGNATURE_BYTES];
+    uint8_t dg[2][64];
+    const int who[2] = { K1, K2 };
+    for (int i = 0; i < 2; i++) {
+        size_t sl = 0;
+        memcpy(pks[i], g_k[who[i]].pk, PK_LEN);
+        memcpy(dg[i], x.digest, 64);
+        CHECK(qgp_dsa87_sign(sigs[i], &sl, x.digest, 64, g_k[who[i]].sk)
+                  == 0 && sl == SIG_LEN, "member signature");
+    }
+    int bad = -2;
+    CHECK(nodus_v2_msig_combine_op(&x, DNA_CORERULE_NAME_REGISTER,
+                                   rs.core_ruleset_version,
+                                   rs.core_ruleset_hash,
+                                   (const uint8_t (*)[64])dg,
+                                   (const uint8_t (*)[NODUS_V2_MSIG_PK_LEN])pks,
+                                   (const uint8_t (*)[NODUS_V2_MSIG_SIG_LEN])
+                                       sigs,
+                                   2, pf, &bad) == NODUS_V2_SPEND_OK,
+          "combine_op assembles the two signatures");
+
+    uint32_t code = 0;
+    int orow_w = 0;
+    {
+        char reason[256];
+        reason[0] = '\0';
+        nodus_v2_env_dry_run_t *d = calloc(1, sizeof(*d));
+        CHECK(d != NULL, "alloc");
+        int rc = nodus_witness_v2_env_dry_run(A->w, x.env, x.env_len, NULL, d,
+                                              reason, sizeof(reason));
+        if (rc != 0 && reason[0])
+            fprintf(stderr, "  (dry run rc %d: %s)\n", rc, reason);
+        code = d->code;
+        for (size_t i = 0; i < d->n_rows; i++)
+            if (d->rows[i].domain_id == DNA_DOMAIN_CORE &&
+                d->rows[i].op_id == OP_NAMEOWN && d->rows[i].key_len == 64 &&
+                memcmp(d->rows[i].key, g_wvault, 64) == 0)
+                orow_w++;
+        nodus_witness_v2_env_dry_run_free(d);
+        free(d);
+        CHECK(rc == 0 && code == NODUS_V2_TX_OK,
+              "the library-built envelope is admitted (units, fee, auth)");
+        CHECK(orow_w == 1, "its OWNER conflict row is W's address");
+    }
+    {
+        nodus_v2_envelope_t env[1] = { { x.env, x.env_len } };
+        uint32_t codes[1];
+        CHECK(apply_both(A, B, 8, env, 1, codes) == 0, "block 8");
+        CHECK(codes[0] == NODUS_V2_TX_OK, "W's registration applies");
+    }
+    uint8_t own[64];
+    uint64_t rh = 0;
+    CHECK(name_row(A->w, "wvlib", own, &rh) == 1 &&
+          memcmp(own, g_wvault, 64) == 0 && rh == 8,
+          "v2_names (wvlib, W, 8)");
+    CHECK(coin_live(A->w, g_nul[WC_LIB]) == 0, "W's coin is spent");
+    nodus_v2_name_msig_built_free(b);    /* x.env aliases b->env */
+    free(b);
+    free(rv);
+    free(pf);
+    return 0;
+}
+
 static int t_engine(void) {
     fixture_t A, B;
     uint32_t codes[2], code = 0;
@@ -570,7 +727,7 @@ static int t_engine(void) {
     sqlite3_int64 n = -1;
     int nr = 0, orow = 0;
 
-    CHECK(E_LEN > 8, "no epoch boundary among heights 1..7");
+    CHECK(E_LEN > 8, "no epoch boundary among heights 1..8");
     for (int c = 0; c < N_COINS; c++)
         CHECK(coin_nul(c, g_nul[c]) == 0, "coin ids");
     CHECK(fx_open(&A, "a") == 0 && fx_open(&B, "b") == 0,
@@ -676,6 +833,12 @@ static int t_engine(void) {
     }
     free(e1); e1 = NULL;
     free(e2); e2 = NULL;
+
+    /* block 8: vault W's registration built by the SHARED LIBRARY (what
+     * nodus-cli `name register --msig` / `msig sign` / `msig combine`
+     * run), read back by a member, signed by K1 + K2, combined */
+    CHECK(lib_vault_register(&A, &B) == 0,
+          "the library-built vault registration lands");
     CHECK(roots_agree(&A, &B) == 0, "the twins end identical");
 
     fx_close(&A);

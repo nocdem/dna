@@ -56,6 +56,25 @@
  *      v2_names (punk, owner, 4), the reward pool up by exactly fee +
  *      price. The same request built with the browser's ruleset source
  *      (nodus_v2_ruleset_from_pins_gen(2)) gives the same intent_id.
+ *  N5  HF-8 (decision docs/plans/decisions/2026-10-21-hf8-activation.md
+ *      amendment, "ekle." / "Yalnız kasanın parası") — the vault builder
+ *      nodus_v2_name_msig_build, library only: a 2-of-3 vault's "vault" from
+ *      two named coins is ONE CORE op-8 leg, auth kind 3 with K = M = 2 zero
+ *      slots + the descriptor, inputs ascending, the change to the VAULT
+ *      address, the digest a fresh preflight's; the v1 export round-trips;
+ *      nodus_v2_name_msig_review by a member reads back vault / name /
+ *      price / inputs / change / fee / K / M-of-N, refuses a stranger
+ *      (NOT_MEMBER), a flipped digest (DIGEST) and — with the digest
+ *      re-derived — a change owner that is not the vault (CALL); the SPEND
+ *      read-back and the SPEND combine refuse the name export (SHAPE);
+ *      nodus_v2_msig_combine_op(NAME_REGISTER) assembles two member
+ *      signatures and another op is ERR_ARG; the chain's own auth hook
+ *      returns one satisfied descriptor, every signer in it, address = the
+ *      vault. Refused: expiry past tip + 90, K below M / above N, a
+ *      duplicate or zero coin, price + fee not covered, a fixed fee below
+ *      the floor, an uppercase name, a truncated descriptor.
+ *      (The engine admitting and applying a library-built vault envelope
+ *      is test_hf8_msig_name.c's.)
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build; DNAC_EPOCH_LENGTH > 8 (no
@@ -805,6 +824,277 @@ static int t_engine(void) {
     return 0;
 }
 
+/* ══ N5 — HF-8: the vault's NAME_REGISTER (library only) ═════════════ */
+
+#define NB_P5    ((uint64_t)DNAC_NAME_PRICE_5P_DEFAULT)
+
+static uint8_t g_mpk[3][2592], g_msk[3][4896];
+
+static int vault_keys(uint8_t *desc, size_t cap, size_t *dlen,
+                      uint8_t addr[64]) {
+    uint8_t keys[3 * 2592];
+    for (int i = 0; i < 3; i++) {
+        uint8_t seed[32];
+        memset(seed, 0x61 + i, sizeof(seed));
+        if (qgp_dsa87_keypair_derand(g_mpk[i], g_msk[i], seed) != 0)
+            return -1;
+        memcpy(keys + (size_t)i * 2592, g_mpk[i], 2592);
+    }
+    return nodus_v2_msig_desc_from_keys(2, 3, keys, desc, cap, dlen, addr)
+               == NODUS_V2_SPEND_OK ? 0 : -1;
+}
+
+static void msig_req(nodus_v2_name_msig_req_t *r,
+                     const nodus_v2_ruleset_id_t *rs, const uint8_t *chain32,
+                     const uint8_t *desc, size_t dlen,
+                     const nodus_v2_coin_t *coins, int n, nb_rand_t *rnd) {
+    memset(r, 0, sizeof(*r));
+    r->rs            = rs;
+    r->chain32       = chain32;
+    r->tip           = NB_TIP;
+    r->expiry_height = NB_TIP + NB_AHEAD;
+    r->desc          = desc;
+    r->desc_len      = dlen;
+    r->name          = "vault";
+    r->price         = NB_P5;
+    r->coins         = coins;
+    r->n_coins       = n;
+    r->rand          = nb_rand;
+    r->rand_ctx      = rnd;
+}
+
+static int t_msig_vault(void) {
+    nodus_v2_ruleset_id_t rs;
+    CHECK(table_rs(&rs) == 0, "generation-2 ruleset");
+    uint8_t chain32[32];
+    memset(chain32, 0x5A, sizeof(chain32));
+    static uint8_t desc[DNA_MSIG_MAX_DESC_LEN];
+    size_t dlen = 0;
+    uint8_t addr[64];
+    CHECK(vault_keys(desc, sizeof(desc), &dlen, addr) == 0, "a 2-of-3 vault");
+    char addr_hex[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(addr, addr_hex);
+
+    nodus_v2_coin_t coins[2];
+    memset(coins, 0, sizeof(coins));
+    memset(coins[0].nul, 0x44, 64);
+    coins[0].amount = 3000000000ULL;
+    memset(coins[1].nul, 0x22, 64);
+    coins[1].amount = NB_P5;                     /* covers price + fee     */
+    nb_rand_t rnd = { 0xC0, 0, 0 };
+    nodus_v2_name_msig_req_t req;
+    nodus_v2_name_msig_built_t *b = calloc(1, sizeof(*b));
+    nodus_v2_name_err_t err;
+    CHECK(b != NULL, "alloc");
+    msig_req(&req, &rs, chain32, desc, dlen, coins, 2, &rnd);
+
+    /* ── the unsigned envelope ───────────────────────────────────────── */
+    CHECK(nodus_v2_name_msig_build(&req, b, &err) == NODUS_V2_SPEND_OK,
+          "the vault registration builds");
+    CHECK(b->m == 2 && b->n == 3 && b->signers == 2 &&
+          memcmp(b->addr, addr, 64) == 0, "K = M = 2; the vault address");
+    CHECK(b->n_in == 2 && b->sum_in == 3000000000ULL + NB_P5 &&
+          b->fee == NB_FLOOR && b->price == NB_P5 &&
+          b->change == b->sum_in - NB_P5 - NB_FLOOR && b->n_out == 1,
+          "every named coin spent; change = sum - price - fee");
+    CHECK(rnd.calls == 1, "one rand draw (one pass with change)");
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    CHECK(v && pf, "alloc");
+    CHECK(dna_env_decode(b->env, b->env_len, v) == 0 && v->leg_count == 1,
+          "one leg");
+    CHECK(v->leg[0].domain_id == DNA_DOMAIN_CORE &&
+          v->leg[0].runtime_op == DNA_CORERULE_NAME_REGISTER &&
+          v->leg[0].auth_kind == NODUS_RT_AUTHKIND_DSA87_MSIG_V1 &&
+          v->leg[0].auth_len ==
+              1u + 2u * NODUS_RT_AUTH_SIGNER_LEN + 3u + (uint32_t)dlen,
+          "CORE op 8, auth kind 3, K zero slots + one descriptor");
+    {
+        const uint8_t *c = v->buf + v->call_off[0];
+        CHECK(c[0] == 5 && memcmp(c + 1, "vault", 5) == 0, "the name");
+        CHECK(c[14] == 2 && memcmp(c + 15, coins[1].nul, 64) == 0 &&
+              memcmp(c + 79, coins[0].nul, 64) == 0,
+              "inputs ascending by nullifier (0x22.. before 0x44..)");
+        CHECK(c[143] == 1 && memcmp(c + 144, addr_hex, 128) == 0,
+              "one output: the change to the VAULT address");
+        const uint8_t *a = v->buf + v->auth_off[0];
+        uint8_t zero[NODUS_RT_AUTH_SIGNER_LEN];
+        memset(zero, 0, sizeof(zero));
+        CHECK(a[0] == 2 && memcmp(a + 1, zero, sizeof(zero)) == 0 &&
+              memcmp(a + 1 + NODUS_RT_AUTH_SIGNER_LEN, zero,
+                     sizeof(zero)) == 0,
+              "the two signer slots are zero (unsigned)");
+    }
+    {
+        nodus_v2_msig_export_t x;
+        memset(&x, 0, sizeof(x));
+        memcpy(x.chain32, chain32, 32);
+        x.tip = NB_TIP;
+        x.signers = b->signers;
+        x.env = b->env;
+        x.env_len = b->env_len;
+        CHECK(nodus_v2_msig_digest(&x, rs.core_ruleset_version,
+                                   rs.core_ruleset_hash, pf)
+                  == NODUS_V2_SPEND_OK &&
+              memcmp(pf->auth_digest[0], b->digest, 64) == 0,
+              "the digest is a fresh preflight's leg digest");
+    }
+
+    /* ── the export, the read-back, the shape separation ─────────────── */
+    char *text = NULL;
+    size_t tlen = 0;
+    nodus_v2_msig_export_t x;
+    CHECK(nodus_v2_msig_export_encode(chain32, NB_TIP, b->signers, b->digest,
+                                      b->env, b->env_len, &text, &tlen)
+              == NODUS_V2_SPEND_OK &&
+          nodus_v2_msig_export_parse(text, tlen, &x) == NODUS_V2_SPEND_OK,
+          "the v1 export round-trips");
+    free(text);
+    nodus_v2_name_msig_review_t *rv = calloc(1, sizeof(*rv));
+    nodus_v2_msig_review_t *sv = calloc(1, sizeof(*sv));
+    CHECK(rv && sv, "alloc");
+    CHECK(nodus_v2_name_msig_review(&x, rs.core_ruleset_version,
+                                    rs.core_ruleset_hash, g_mpk[0], pf, rv)
+              == NODUS_V2_SPEND_OK, "a member's read-back accepts it");
+    CHECK(memcmp(rv->addr, addr, 64) == 0 && strcmp(rv->name, "vault") == 0
+          && rv->price == NB_P5 && rv->n_in == 2 && rv->n_out == 1 &&
+          rv->change_amount == b->change && rv->fee == b->fee &&
+          rv->signers == 2 && rv->m == 2 && rv->n == 3,
+          "read back: vault, name, price, inputs, change, fee, K, M-of-N");
+    CHECK(nodus_v2_name_msig_review(&x, rs.core_ruleset_version,
+                                    rs.core_ruleset_hash, g_pk, pf, rv)
+              == NODUS_V2_MSIG_ERR_NOT_MEMBER, "a stranger: NOT_MEMBER");
+    CHECK(nodus_v2_msig_review(&x, rs.core_ruleset_version,
+                               rs.core_ruleset_hash, g_mpk[0], pf, sv)
+              == NODUS_V2_MSIG_ERR_SHAPE,
+          "the SPEND read-back refuses a name export (SHAPE)");
+    x.digest[0] ^= 1;
+    CHECK(nodus_v2_name_msig_review(&x, rs.core_ruleset_version,
+                                    rs.core_ruleset_hash, g_mpk[0], pf, rv)
+              == NODUS_V2_MSIG_ERR_DIGEST, "a flipped exported digest");
+    x.digest[0] ^= 1;
+    {
+        /* a change to anyone but the vault — re-derived digest, so only
+         * the D2 rule can refuse it */
+        dna_env_view_t *w = calloc(1, sizeof(*w));
+        CHECK(w && dna_env_decode(x.env, x.env_len, w) == 0, "decode");
+        uint8_t *owner = x.env + w->call_off[0] + 144;
+        owner[0] = owner[0] == 'a' ? 'b' : 'a';
+        free(w);
+        CHECK(nodus_v2_msig_digest(&x, rs.core_ruleset_version,
+                                   rs.core_ruleset_hash, pf)
+                  == NODUS_V2_SPEND_OK, "re-derive");
+        uint8_t saved[64];
+        memcpy(saved, x.digest, 64);
+        memcpy(x.digest, pf->auth_digest[0], 64);
+        CHECK(nodus_v2_name_msig_review(&x, rs.core_ruleset_version,
+                                        rs.core_ruleset_hash, g_mpk[0], pf,
+                                        rv) == NODUS_V2_MSIG_ERR_CALL,
+              "a change output that is not the vault's: CALL");
+        owner[0] = owner[0] == 'a' ? 'b' : 'a';
+        memcpy(x.digest, saved, 64);
+    }
+
+    /* ── signatures, the combine, the chain's own auth hook ──────────── */
+    {
+        static uint8_t pks[2][2592], sigs[2][4627];
+        uint8_t dg[2][64];
+        for (int i = 0; i < 2; i++) {
+            size_t sl = 0;
+            memcpy(pks[i], g_mpk[i], 2592);
+            memcpy(dg[i], x.digest, 64);
+            CHECK(qgp_dsa87_sign(sigs[i], &sl, x.digest, 64, g_msk[i]) == 0 &&
+                  sl == 4627, "member signature");
+        }
+        int bad = -2;
+        CHECK(nodus_v2_msig_combine(&x, rs.core_ruleset_version,
+                                    rs.core_ruleset_hash,
+                                    (const uint8_t (*)[64])dg,
+                                    (const uint8_t (*)[2592])pks,
+                                    (const uint8_t (*)[4627])sigs, 2, pf,
+                                    &bad) == NODUS_V2_MSIG_ERR_SHAPE,
+              "the SPEND combine refuses a name export");
+        CHECK(nodus_v2_msig_combine_op(&x, DNA_CORERULE_NAME_REGISTER,
+                                       rs.core_ruleset_version,
+                                       rs.core_ruleset_hash,
+                                       (const uint8_t (*)[64])dg,
+                                       (const uint8_t (*)[2592])pks,
+                                       (const uint8_t (*)[4627])sigs, 2, pf,
+                                       &bad) == NODUS_V2_SPEND_OK &&
+              bad == -1, "combine_op(NAME_REGISTER) assembles both");
+        CHECK(nodus_v2_msig_combine_op(&x, DNA_CORERULE_BURN,
+                                       rs.core_ruleset_version,
+                                       rs.core_ruleset_hash,
+                                       (const uint8_t (*)[64])dg,
+                                       (const uint8_t (*)[2592])pks,
+                                       (const uint8_t (*)[4627])sigs, 2, pf,
+                                       &bad) == NODUS_V2_SPEND_ERR_ARG,
+              "another op is refused (ERR_ARG)");
+        const nodus_domain_runtime_t *core =
+            nodus_runtime_for_generation(NODUS_RT_GEN_2, DNA_DOMAIN_CORE);
+        nodus_rt_auth_verdict_t av;
+        nodus_rt_exec_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.chain_id = x.chain32;
+        ctx.global_height = x.tip + 1;
+        ctx.leg_auth_digest = x.digest;
+        CHECK(core && dna_env_decode(x.env, x.env_len, v) == 0 &&
+              nodus_rt_auth_dsa87_v1(core, v, 0, &ctx, &av) == 0 &&
+              av.n_signers == 2 && av.n_msig == 1 && av.msig_satisfied[0] &&
+              (av.msig_signers_in_desc & 1u) &&
+              memcmp(av.msig_addr[0], addr, 64) == 0,
+              "the chain's auth hook: one satisfied vault, every signer in "
+              "it, its address the owner");
+    }
+    nodus_v2_msig_export_free(&x);
+
+    /* ── refusals ───────────────────────────────────────────────────── */
+#define MREFUSE(want, what) do {                                           \
+        int rc_ = nodus_v2_name_msig_build(&req, b, &err);                 \
+        CHECK(rc_ == (want) && b->env == NULL, what);                      \
+    } while (0)
+    nodus_v2_name_msig_built_free(b);
+    msig_req(&req, &rs, chain32, desc, dlen, coins, 2, &rnd);
+    req.expiry_height = NB_TIP + NB_AHEAD + 1;
+    MREFUSE(NODUS_V2_SPEND_ERR_EXPIRY, "an expiry past tip + 90");
+    msig_req(&req, &rs, chain32, desc, dlen, coins, 2, &rnd);
+    req.signers = 1;
+    MREFUSE(NODUS_V2_MSIG_ERR_SIGNERS, "K below M");
+    req.signers = 4;
+    MREFUSE(NODUS_V2_MSIG_ERR_SIGNERS, "K above N");
+    {
+        nodus_v2_coin_t dup[2];
+        memcpy(dup, coins, sizeof(dup));
+        memcpy(dup[1].nul, dup[0].nul, 64);
+        msig_req(&req, &rs, chain32, desc, dlen, dup, 2, &rnd);
+        MREFUSE(NODUS_V2_MSIG_ERR_COIN, "a duplicate coin");
+        dup[1] = coins[1];
+        dup[1].amount = 0;
+        msig_req(&req, &rs, chain32, desc, dlen, dup, 2, &rnd);
+        MREFUSE(NODUS_V2_MSIG_ERR_COIN, "a zero coin");
+    }
+    msig_req(&req, &rs, chain32, desc, dlen, &coins[1], 1, &rnd);
+    MREFUSE(NODUS_V2_SPEND_ERR_INSUFFICIENT,
+            "price + fee not covered (the vault's coin only)");
+    msig_req(&req, &rs, chain32, desc, dlen, coins, 2, &rnd);
+    req.fee_fixed = 1;
+    req.fee = NB_FLOOR - 1;
+    MREFUSE(NODUS_V2_NAME_ERR_FEE_FLOOR, "a fixed fee below the floor");
+    msig_req(&req, &rs, chain32, desc, dlen, coins, 2, &rnd);
+    req.name = "Vault";
+    MREFUSE(NODUS_V2_NAME_ERR_NAME, "a name outside the byte rule");
+    msig_req(&req, &rs, chain32, desc, dlen, coins, 2, &rnd);
+    req.desc_len = dlen - 1;
+    MREFUSE(NODUS_V2_MSIG_ERR_DESC, "a truncated descriptor");
+#undef MREFUSE
+    free(sv);
+    free(rv);
+    free(pf);
+    free(v);
+    free(b);
+    return 0;
+}
+
 int main(void) {
     static const struct {
         const char *name;
@@ -814,6 +1104,7 @@ int main(void) {
         { "fixture_and_cli",  t_fixture },
         { "refusals",         t_refusals },
         { "engine_gen2",      t_engine },
+        { "hf8_msig_vault",   t_msig_vault },
     };
     size_t failed = 0, n = sizeof(cases) / sizeof(cases[0]);
     if (keys_init() != 0) {

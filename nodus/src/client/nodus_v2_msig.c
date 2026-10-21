@@ -480,11 +480,22 @@ int nodus_v2_msig_export_parse(const char *text, size_t len,
 
 int nodus_v2_msig_leg_open(const nodus_v2_msig_export_t *x,
                            dna_env_view_t *v, nodus_v2_msig_leg_t *leg) {
+    return nodus_v2_msig_leg_open_op(x, v, DNA_CORERULE_SPEND, leg);
+}
+
+int nodus_v2_msig_leg_open_op(const nodus_v2_msig_export_t *x,
+                              dna_env_view_t *v, uint32_t runtime_op,
+                              nodus_v2_msig_leg_t *leg) {
     if (!x || !x->env || !v || !leg) return NODUS_V2_SPEND_ERR_ARG;
     memset(leg, 0, sizeof(*leg));
+    /* the single-leg kind-3 CORE operations this flow signs: the vault
+     * SPEND and (HF-8) the vault NAME_REGISTER — nothing else */
+    if (runtime_op != DNA_CORERULE_SPEND &&
+        runtime_op != DNA_CORERULE_NAME_REGISTER)
+        return NODUS_V2_SPEND_ERR_ARG;
     if (dna_env_decode(x->env, x->env_len, v) != 0 || v->leg_count != 1 ||
         v->leg[0].domain_id != DNA_DOMAIN_CORE ||
-        v->leg[0].runtime_op != DNA_CORERULE_SPEND ||
+        v->leg[0].runtime_op != runtime_op ||
         v->leg[0].auth_kind != NODUS_RT_AUTHKIND_DSA87_MSIG_V1)
         return NODUS_V2_MSIG_ERR_SHAPE;
     const uint8_t *a = v->buf + v->auth_off[0];
@@ -759,6 +770,19 @@ int nodus_v2_msig_combine(nodus_v2_msig_export_t *x, uint32_t core_version,
                           const uint8_t (*sigs)[NODUS_V2_MSIG_SIG_LEN],
                           int n_sig, dna_env_preflight_t *pf,
                           int *bad_index) {
+    return nodus_v2_msig_combine_op(x, DNA_CORERULE_SPEND, core_version,
+                                    core_hash, digests, pks, sigs, n_sig, pf,
+                                    bad_index);
+}
+
+int nodus_v2_msig_combine_op(nodus_v2_msig_export_t *x, uint32_t runtime_op,
+                             uint32_t core_version,
+                             const uint8_t core_hash[DNA_ENV_RULESET_HASH_LEN],
+                             const uint8_t (*digests)[64],
+                             const uint8_t (*pks)[NODUS_V2_MSIG_PK_LEN],
+                             const uint8_t (*sigs)[NODUS_V2_MSIG_SIG_LEN],
+                             int n_sig, dna_env_preflight_t *pf,
+                             int *bad_index) {
     if (bad_index) *bad_index = -1;
     if (!x || !x->env || !core_hash || !digests || !pks || !sigs || !pf ||
         n_sig < 1 || n_sig > (int)NODUS_RT_AUTH_MAX_SIGNERS)
@@ -766,7 +790,7 @@ int nodus_v2_msig_combine(nodus_v2_msig_export_t *x, uint32_t core_version,
     dna_env_view_t *v = calloc(1, sizeof(*v));
     if (!v) return NODUS_V2_SPEND_ERR_ALLOC;
     nodus_v2_msig_leg_t leg;
-    int rc = nodus_v2_msig_leg_open(x, v, &leg);
+    int rc = nodus_v2_msig_leg_open_op(x, v, runtime_op, &leg);
     if (rc != NODUS_V2_SPEND_OK) goto done;
     if ((uint32_t)n_sig != x->signers) {
         rc = NODUS_V2_MSIG_ERR_COUNT;

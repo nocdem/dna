@@ -43,6 +43,10 @@
  *   call = name_len u8 ‖ name ‖ price u64 BE ‖ in_count u8 ‖ nullifiers
  *          (strictly ascending) ‖ out_count u8 ‖ out_count × 232-byte
  *          native output records (this builder: 0 or 1, the change)
+ * Owner: auth_kind 1 with one signer (nodus_v2_name_build), or — from the
+ * HF-8 activation height — auth_kind 3, a satisfied vault whose address
+ * becomes the owner and whose own coins alone pay (nodus_v2_name_msig_
+ * build below; rt_native.c rtn_name_owner_of / rtn_name_exec).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -56,6 +60,8 @@
 
 #include "nodus/nodus_v2_spend.h"   /* rc values, ruleset id, rand fn     */
 #include "dnac/dnac.h"              /* DNAC_NAME_MAX_LEN, the byte rule    */
+#include "client/nodus_v2_msig.h"   /* HF-8: the vault flow's export type,
+                                     * rc values and leg / digest helpers  */
 
 #ifdef __cplusplus
 extern "C" {
@@ -214,6 +220,138 @@ int nodus_v2_name_decode(const uint8_t *env, size_t env_len,
 
 /** Free what nodus_v2_name_build allocated inside `b`. NULL-safe. */
 void nodus_v2_name_built_free(nodus_v2_name_built_t *b);
+
+/* ══ HF-8 — a NAME_REGISTER by a multisig vault ═════════════════════════
+ * Decision docs/plans/decisions/2026-10-21-hf8-activation.md, amendment
+ * 2026-10-21 (operator "ekle.": from the param-17 height a NAME_REGISTER
+ * may be authorised by a satisfied M-of-N multisig, the name's owner = the
+ * vault address; operator "Yalnız kasanın parası": the chain refuses it
+ * unless EVERY input is owned by the vault). The chain side is
+ * nodus_witness_rt_native.c rtn_name_owner_of / rtn_name_exec.
+ *
+ * The flow is the vault SPEND's v1 flow (client/nodus_v2_msig.h): this
+ * builder writes the UNSIGNED single-leg envelope (auth_kind 3, K zero
+ * signer slots, ONE descriptor — nodus_v2_msig_unsigned_auth) and returns
+ * its pass-1 leg digest; the export / signature texts are the v1 formats
+ * (nodus_v2_msig_export_encode / _sig_encode); each co-signer reads it
+ * back with nodus_v2_name_msig_review (NOT nodus_v2_msig_review, whose
+ * SPEND read-back would misread a name call) and checks every input
+ * against the vault's coins on its own node, exactly as for a vault SPEND;
+ * the combine is nodus_v2_msig_combine_op(…, DNA_CORERULE_NAME_REGISTER,
+ * …). What the builder does not know: whether param 17 is in force at the
+ * block height (the caller asks dnac_fee_info first; the chain decides),
+ * whether the name or the vault is already named, the price in force. */
+
+/** One vault NAME_REGISTER request. Every coin named is spent (the chain
+ *  checks that each is the vault's: present, unlocked, native, owner ==
+ *  the vault address); the change, if any, returns to the vault. */
+typedef struct {
+    const nodus_v2_ruleset_id_t *rs;  /* the CORE tuple of the generation
+                                       * the node runs (>= 2) + its SYSTEM
+                                       * meter policy                      */
+    const uint8_t *chain32;           /* DNA_CHAIN_ID_LEN bytes            */
+    uint64_t       tip;               /* committed tip (>= 1); the digest
+                                       * is preflighted at tip + 1         */
+    uint64_t       expiry_height;     /* (tip, tip + NODUS_V2_MSIG_EXPIRY_
+                                       * AHEAD] — the co-signer window     */
+    const uint8_t *desc;              /* the vault's descriptor            */
+    size_t         desc_len;
+    uint32_t       signers;           /* K (M <= K <= N); 0 = M            */
+    const char    *name;              /* already normalised                */
+    uint64_t       price;             /* the node's price for the length   */
+    const nodus_v2_coin_t *coins;     /* 1..NODUS_V2_NAME_MAX_IN native
+                                       * coins of the vault, any order     */
+    int            n_coins;
+    uint64_t       fee;               /* fee_fixed only                    */
+    int            fee_fixed;         /* 1 = never raised                  */
+    uint64_t       gas_price;         /* 0 = the rule is off               */
+    nodus_v2_rand_fn rand;            /* the change seed                   */
+    void            *rand_ctx;
+} nodus_v2_name_msig_req_t;
+
+typedef struct {
+    uint8_t  *env;                    /* heap; nodus_v2_name_msig_built_free*/
+    size_t    env_len;
+    uint8_t   digest[64];             /* the leg auth digest to sign       */
+    uint8_t   intent_id[64];
+    uint8_t   addr[64];               /* the vault address = the owner     */
+    uint8_t   m, n;
+    uint32_t  signers;                /* K                                 */
+    int       n_in, n_out;
+    uint64_t  sum_in, fee, price, change, units;
+    int       passes;
+} nodus_v2_name_msig_built_t;
+
+/**
+ * Build the UNSIGNED single-leg CORE NAME_REGISTER of the vault: call =
+ * name_len ‖ name ‖ price ‖ in_count ‖ the coins' nullifiers ascending ‖
+ * out_count ‖ (the change to the vault address when > 0); auth_kind 3
+ * with K zero slots and the descriptor; the effect declaration
+ * nodus_v2_name_effect_decl; units = nodus_v2_spend_ceiling over THIS
+ * envelope with reads = inputs + pool + NAME + OWNER; the fee starts at
+ * the floor max(DNAC_MIN_FEE_RAW, NODUS_W_BASE_TX_FEE) and is raised to
+ * units × gas_price when that is larger (refused instead when fee_fixed;
+ * at most NODUS_V2_NAME_MAX_PASSES passes). The digest is the pass-1
+ * preflight's leg auth digest at tip + 1.
+ * @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / _ERR_HASH /
+ *         _ERR_EXPIRY / _ERR_INPUT_SUM / _ERR_INSUFFICIENT / _ERR_METER /
+ *         _ERR_GAS_OVERFLOW / _ERR_FEE_BELOW_GAS / _ERR_FEE_UNSETTLED /
+ *         _ERR_RANDOM / _ERR_ENCODE / _ERR_PREFLIGHT1 /
+ *         NODUS_V2_NAME_ERR_NAME / _PRICE / _FEE_FLOOR /
+ *         NODUS_V2_MSIG_ERR_DESC / _SIGNERS / _COIN (zero / duplicate).
+ */
+int nodus_v2_name_msig_build(const nodus_v2_name_msig_req_t *req,
+                             nodus_v2_name_msig_built_t *out,
+                             nodus_v2_name_err_t *err);
+
+/** Free what nodus_v2_name_msig_build allocated inside `b`. NULL-safe. */
+void nodus_v2_name_msig_built_free(nodus_v2_name_msig_built_t *b);
+
+/** What a co-signer of a vault name registration is shown — every field
+ *  READ BACK from the export's envelope bytes. */
+typedef struct {
+    uint8_t  addr[64];                /* the vault = the name's owner      */
+    uint8_t  m, n;
+    uint32_t signers;
+    uint64_t tip, expiry_height, fee, units;
+    char     name[DNAC_NAME_MAX_LEN + 1];
+    uint64_t price;
+    int      n_in;
+    uint8_t  in_nul[NODUS_V2_NAME_MAX_IN][64];
+    int      n_out;                   /* 0 or 1                            */
+    uint64_t change_amount;           /* to the vault                      */
+    uint8_t  digest[64];
+    uint8_t  intent_id[64];
+} nodus_v2_name_msig_review_t;
+
+/**
+ * The checks a co-signer makes on a vault name export before signing, in
+ * order: the leg (nodus_v2_msig_leg_open_op, NAME_REGISTER — kind 3, K
+ * slots, ONE descriptor); `signer_pk` (NULL = skip) is one of the
+ * descriptor's keys (ERR_NOT_MEMBER); the digest re-derives
+ * (nodus_v2_msig_digest) and EQUALS the exported one (ERR_DIGEST); the
+ * expiry is not 0 and not beyond the export's tip +
+ * NODUS_V2_MSIG_EXPIRY_AHEAD (ERR_EXPIRY); the call parses exactly (a name
+ * dnac_name_bytes_ok accepts, a non-zero price, 1..NODUS_V2_NAME_MAX_IN
+ * strictly ascending nullifiers, at most one output) and its one output,
+ * if any, is a non-zero NATIVE change owned by the vault address (else
+ * ERR_CALL — the HF-6 D2 rule of review2: nothing leaves the vault but the
+ * price and the fee); the effect declaration is nodus_v2_name_effect_decl's
+ * (ERR_CALL). Like nodus_v2_msig_review it does NOT prove the inputs are
+ * the vault's coins (the descriptor is outside the signed context): the
+ * caller checks every input against the vault's coin set on its own node
+ * (nodus-cli `msig sign`, dnac_msig_utxo "nul") — and the chain refuses a
+ * kind-3 registration with any non-vault input. `pf` is heap scratch.
+ * @return NODUS_V2_SPEND_OK / _ERR_ARG / _ERR_ALLOC / _ERR_HASH /
+ *         NODUS_V2_SPEND_ERR_PREFLIGHT1 / NODUS_V2_MSIG_ERR_SHAPE / _DESC /
+ *         _NOT_MEMBER / _DIGEST / _EXPIRY / _CALL.
+ */
+int nodus_v2_name_msig_review(const nodus_v2_msig_export_t *x,
+                              uint32_t core_version,
+                              const uint8_t core_hash[DNA_ENV_RULESET_HASH_LEN],
+                              const uint8_t *signer_pk,
+                              dna_env_preflight_t *pf,
+                              nodus_v2_name_msig_review_t *out);
 
 #ifdef __cplusplus
 }
