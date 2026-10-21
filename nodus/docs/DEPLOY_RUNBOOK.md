@@ -858,6 +858,11 @@ without it would admit, at and after H, a nameless DELEGATE the others refuse �
 that block). Pre-vote checklist (read 2026-10-21 on branch `hf8-prevote`, base 086b64fa2):
 - Vote acceptance under generation 5: the stateful rule is `judging_generation >= 2`
   (`nodus_witness_chain_config.c` `CC_PARAM_DELEGATE_NAME_REQUIRED`), so it passes; scalar exactly 1, grace ERGONOMIC.
+  `chain-config propose` builds its envelope with the node-selected SYSTEM ruleset version and the shared expiry
+  helper (`nodus-cli.c` `cc_appr_build_pass1` → `cli_env_expiry`, tip + 90 — inside generation 5's [H, H + 720]), the
+  helper `test_cmt_hf7.sh` proved for a SPEND under generation 5. No chain-config vote under generation 5 has been run
+  in the harness (`test_cmt_hf7.sh` casts all its votes before A) — the generation-5 HF-8 scenario below would be the
+  first.
 - Roadmap / Wiki / Scan fork item: present, marked "later"; its self-delegation sentence corrected to the owner rule
   (commit 0cdb8ead0). DONE.
 - nodus-cli `v2-envelope delegate` help: corrected to the generation-4 rule (commit 343c6c4bc). The CLI has no name
