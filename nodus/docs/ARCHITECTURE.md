@@ -7091,7 +7091,7 @@ widths and are listed in the test header as absent coverage, not passes. `test_r
 gains the three new kinds. SELF-CONSISTENT: the KAT proves C == the §8.9 text as the oracle read it, not that
 the spec is sound. Written, NOT run by the builder.
 
-### HF-8 — delegation requires an on-chain name (2026-10-07; the DELEGATE rule shipped inert since 0.25.3, rev 3 in nodus 0.26.19; not voted — INERT until a param-17 vote)
+### HF-8 — delegation requires an on-chain name (2026-10-07; the DELEGATE rule shipped inert since 0.25.3, rev 3 in nodus 0.26.19; ACTIVE on the testnet since block 300722, voted in 299994)
 
 **Governing records:** design `docs/plans/2026-10-07-delegate-name-required-design.md` (local; rev 2,
 Kurultay #11 folded — `docs/plans/kurultay/2026-10-07-11-delegate-name/summary.md`); HF number:

@@ -284,8 +284,10 @@
 #   - Duration ≈ 300 blocks (JUDGMENT, not measured: the EVM window floor
 #     ≈ 262 pumped heights plus ~40 transactions and the ~5 idle blocks of
 #     the timelock wait).
-#   - Run results: none — written against the source, NOT run by its
-#     author.
+#   - Run results: 2026-10-21, session "evm" — PASS (rc 0, 133 [ok]) at
+#     aca408d5d (= 9b4493717 minus two README files), short-epoch build
+#     E = 15 / BPY 20 / grace 15/15, combined mode, fresh bring-up, final
+#     floor 314 identical 7/7. The LOGIC only.
 #
 # ════════════════════════════════════════════════════════════════════
 set -euo pipefail
