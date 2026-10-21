@@ -3831,6 +3831,12 @@ static int cli_validator_row(nodus_client_t *client, const uint8_t *pk,
  * node's CheckTx answer. `--no-name-precheck` skips the refusal (the
  * state line is still printed) so the node's own verdict can be met — the
  * chain, not this check, is the authority.
+ * HF-8 rev 3 (decision amendment 2026-10-21): the same flag makes the
+ * generation-4 STAKE need the STAKER's name (rtn_stake2_exec — the call's
+ * owner_fp, the --keys identity or the --msig vault; never the node's
+ * consensus key; no exemption), so `v2-envelope stake2` runs the same
+ * pre-check on that fingerprint, with the same UNKNOWN and
+ * --no-name-precheck behaviour.
  *
  * `v2-envelope undelegate` is the DELEGATE layout under runtime_op 4
  * (DNA_SYSRULE_UNDELEGATE, rtn_deleg_parse): the --keys identity withdraws
@@ -4047,7 +4053,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
     uint64_t bond = 0;
     uint32_t commission = 0;
     int dry_run = 0, have_bond = 0, have_comm = 0, bad_arg = 0;
-    int no_name_precheck = 0;     /* HF-8: delegate --no-name-precheck */
+    int no_name_precheck = 0;     /* HF-8: delegate / stake2
+                                   * --no-name-precheck               */
     /* "stake", "delegate", "unstake", "undelegate", and (HF-6 6f-1) the
      * generation-4 "stake2", (HF-6 slice 7b) "validator-update" — the word
      * after "v2-envelope"; (HF-6 6b-3) "register" and "exit" — the word
@@ -4122,7 +4129,7 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             node_fp_hex = argv[++i];
         else if (!strcmp(a, "--submit")     && i + 1 < argc) submit = argv[++i];
         else if (!strcmp(a, "--dry-run"))                    dry_run = 1;
-        else if (is_deleg && !is_undeleg &&
+        else if (((is_deleg && !is_undeleg) || is_stake2) &&
                  !strcmp(a, "--no-name-precheck"))  no_name_precheck = 1;
         else if (!is_stake && !strcmp(a, "--msig") && i + 1 < argc)
             msig_path = argv[++i];
@@ -4169,7 +4176,8 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "       (--dry-run | --submit ip:port)\n"
             "       v2-envelope stake2 --keys <owner keydir> --consent <file> "
             "--bond <raw>\n"
-            "       [--commission <bps>] (--dry-run | --submit ip:port)\n"
+            "       [--commission <bps>] [--no-name-precheck] "
+            "(--dry-run | --submit ip:port)\n"
             "       v2-envelope delegate --keys <keydir> --validator "
             "<validator_id hex128 | hex5184 pubkey>\n"
             "       --amount <raw> [--no-name-precheck] "
@@ -4233,7 +4241,15 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
             "identity is the OWNER\n"
             "  (it signs and pays); the node's consent comes from "
             "`validator consent`\n"
-            "  run with the node's identity. At generation 4 unstake and "
+            "  run with the node's identity. Once HF-8 is in force the "
+            "OWNER (the --keys\n"
+            "  identity, or the --msig vault) must own an on-chain name to "
+            "stake — not the\n"
+            "  node's key; the CLI refuses a nameless owner before signing "
+            "(unknown on an\n"
+            "  older node: no pre-check). --no-name-precheck skips that "
+            "refusal.\n"
+            "  At generation 4 unstake and "
             "validator-update\n"
             "  are signed by the OWNER (named in the call), delegate / "
             "undelegate by the\n"
@@ -4745,14 +4761,20 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
      * like the gas price above — a fault is not "rule off". UNDELEGATE is
      * never name-gated (the chain gates op 2 only). The rule's state is
      * printed so a caller (the stagef HF-8 scenario) can read it from a
-     * --dry-run; --no-name-precheck skips only the refusal below. */
-    if (is_deleg && !is_undeleg) {
+     * --dry-run; --no-name-precheck skips only the refusal below.
+     * HF-8 rev 3 (decision 2026-10-21-hf8-activation.md amendment: "Hem
+     * delegasyon da hem stake edenler için de aynı şey geçerli olması
+     * lazım.") — `stake2` (generation 4) takes the same pre-check on the
+     * STAKER: the call's owner_fp (owner_raw — the --keys identity, or the
+     * --msig vault address), never the node's consensus key; there is no
+     * exemption (rtn_stake2_exec — the staker is the actor). */
+    if ((is_deleg && !is_undeleg) || is_stake2) {
         int dnr = NODUS_DLG_NAME_RULE_UNKNOWN;
         int drc = nodus_client_dnac_delegate_name_rule(&client, &dnr);
         if (drc != 0) {
             fprintf(stderr, "dnac_fee_info query failed (rc=%d) — whether "
-                    "delegating needs a chain name is unknown, refusing to "
-                    "build\n", drc);
+                    "%s needs a chain name is unknown, refusing to build\n",
+                    drc, is_stake2 ? "staking" : "delegating");
             goto done;
         }
         printf("delegate_name_required at tip + 1: %s\n",
@@ -4762,12 +4784,14 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                                                   "not report it)");
         fflush(stdout);
         if (dnr == NODUS_DLG_NAME_RULE_ON && no_name_precheck) {
-            printf("--no-name-precheck: the delegator's name is not "
-                   "checked here; the node decides\n");
+            printf("--no-name-precheck: the %s's name is not checked here; "
+                   "the node decides\n", is_stake2 ? "staker" : "delegator");
             fflush(stdout);
         } else if (dnr == NODUS_DLG_NAME_RULE_ON) {
             int exempt = -1;            /* -1 = not known here */
-            if (role2) {
+            if (is_stake2) {
+                exempt = 0;             /* STAKE: no exemption           */
+            } else if (role2) {
                 nodus_dnac_validator_list_entry_t vrow;
                 memset(&vrow, 0, sizeof(vrow));
                 const int vr = cli_validator_row(&client, NULL, role_vid,
@@ -4793,8 +4817,18 @@ static int cmd_v2_stake(const char *server_ip, uint16_t server_port,
                                                           &dn);
                 if (nrc != 0) {
                     fprintf(stderr, "dnac_name_of failed (rc=%d) — the "
-                            "delegator's chain name is unknown, refusing to "
-                            "build\n", nrc);
+                            "%s's chain name is unknown, refusing to "
+                            "build\n", nrc,
+                            is_stake2 ? "staker" : "delegator");
+                    goto done;
+                }
+                if (!dn.found && is_stake2) {
+                    fprintf(stderr, "This %s has no chain name. Staking "
+                            "needs one (the owner's, not the node's): "
+                            "register a name with `name register`%s, wait "
+                            "until it is in a block, then stake.\n",
+                            is_msig ? "vault" : "identity",
+                            is_msig ? " --msig" : "");
                     goto done;
                 }
                 if (!dn.found) {
@@ -8081,11 +8115,21 @@ static int cmd_name_query(const char *server_ip, uint16_t server_port,
  * price comes from dnac_fee_info's "np" at tip + 1 and is declared in the
  * call; the network fee is the floor (or units × gas price). Generation 2
  * only: on a node still at generation 1 it refuses before building. */
+static int cmd_name_register_msig(const char *server_ip, uint16_t server_port,
+                                  int argc, char **argv, int cmd_start);
+
 static int cmd_name_register(const char *server_ip, uint16_t server_port,
                              int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *submit = NULL, *raw_name = NULL;
     uint64_t fee = 0;
     int dry_run = 0, have_fee = 0, bad_arg = 0;
+
+    /* HF-8: `name register --msig` — a vault's registration (its own
+     * flow, cmd_name_register_msig) */
+    for (int i = cmd_start + 2; i < argc; i++)
+        if (!strcmp(argv[i], "--msig"))
+            return cmd_name_register_msig(server_ip, server_port, argc, argv,
+                                          cmd_start);
 
     for (int i = cmd_start + 2; i < argc; i++) {  /* skip "name register" */
         const char *a = argv[i];
@@ -8107,12 +8151,21 @@ static int cmd_name_register(const char *server_ip, uint16_t server_port,
         fprintf(stderr,
             "Usage: name register <name> --keys <keydir> "
             "(--dry-run | --submit ip:port) [--fee <raw>]\n"
+            "       name register <name> --msig <descriptor> --keys <keydir> "
+            "--in <nul>:<amount> ...\n"
+            "         [--signers <K>] [--fee <raw>] --export <file> "
+            "[--submit ip:port]\n"
             "  Registers <name> (3-36 of a-z0-9, lower-cased ASCII-only) to "
             "the --keys\n"
             "  identity: first come, one name per ID, permanent. Pays the "
             "price for the\n"
             "  name's length (dnac_fee_info) into the reward pool, plus the "
-            "network fee.\n");
+            "network fee.\n"
+            "  --msig (from HF-8): the multisig vault registers the name "
+            "(its address is the\n"
+            "  owner) and pays from its own coins only; writes the UNSIGNED "
+            "export for\n"
+            "  `msig sign` / `msig combine`.\n");
         return 1;
     }
     char name[DNAC_NAME_MAX_LEN + 1];
@@ -8447,6 +8500,16 @@ done:
  * every signature over every leg, assembles every leg, runs the chain's
  * auth hook on each (the SYSTEM leg also under the owner rule: no
  * foreign signer) and submits. The v1 files and steps are unchanged.
+ *
+ * HF-8 — A VAULT'S NAME (decision 2026-10-21-hf8-activation.md amendment,
+ * operator "ekle." / "Yalnız kasanın parası"): step 2 may be `name
+ * register <name> --msig <descriptor> --in ... --export <file>`
+ * (cmd_name_register_msig) — a ONE-leg CORE NAME_REGISTER under kind 3,
+ * written as a v1 export. `msig sign` recognises the leg (msig_export_op),
+ * reads it back with nodus_v2_name_msig_review (the name, the price, the
+ * inputs, the change only to the vault), verifies every input against the
+ * vault's coins exactly as for a SPEND, and signs; `msig combine` opens the
+ * leg for its own op (msig_leg_open) and is otherwise unchanged.
  * ════════════════════════════════════════════════════════════════════ */
 
 /* The four steps' bodies — descriptor from keys, the unsigned build, the
@@ -8516,14 +8579,33 @@ static int msig_export_read(const char *path, nodus_v2_msig_export_t *x) {
     return rc;
 }
 
-/* The kind-3 leg of an export (nodus_v2_msig_leg_open). `v` is heap.
+/* The runtime_op of a v1 export's single leg — DNA_CORERULE_SPEND (the
+ * vault SPEND) or, HF-8 (decision 2026-10-21-hf8-activation.md
+ * amendment), DNA_CORERULE_NAME_REGISTER (the vault's name). Any other
+ * shape answers SPEND, whose reader then refuses it with its own message.
+ * @return the op. */
+static uint32_t msig_export_op(const nodus_v2_msig_export_t *x) {
+    uint32_t op = DNA_CORERULE_SPEND;
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    if (v && x && x->env && dna_env_decode(x->env, x->env_len, v) == 0 &&
+        v->leg_count == 1 && v->leg[0].domain_id == DNA_DOMAIN_CORE &&
+        v->leg[0].runtime_op == DNA_CORERULE_NAME_REGISTER)
+        op = DNA_CORERULE_NAME_REGISTER;
+    free(v);
+    return op;
+}
+
+/* The kind-3 leg of an export (nodus_v2_msig_leg_open_op for the export's
+ * op — a SPEND, or a vault NAME_REGISTER). `v` is heap.
  * @return 0 / -1 (message printed). */
 static int msig_leg_open(const nodus_v2_msig_export_t *x, dna_env_view_t *v,
                          nodus_v2_msig_leg_t *leg) {
-    int rc = nodus_v2_msig_leg_open(x, v, leg);
+    const uint32_t op = msig_export_op(x);
+    int rc = nodus_v2_msig_leg_open_op(x, v, op, leg);
     if (rc == NODUS_V2_MSIG_ERR_SHAPE)
-        fprintf(stderr, "the export is not a one-leg CORE SPEND under "
+        fprintf(stderr, "the export is not a one-leg CORE %s under "
                 "auth_kind 3 carrying %u signer slots and ONE descriptor\n",
+                op == DNA_CORERULE_NAME_REGISTER ? "NAME_REGISTER" : "SPEND",
                 (unsigned)x->signers);
     else if (rc != NODUS_V2_SPEND_OK)
         fprintf(stderr, "the carried descriptor is malformed\n");
@@ -8890,6 +8972,363 @@ done:
     free(dbuf);
     free(export_text);
     nodus_v2_msig_built_free(&built);
+    if (utxos_valid) nodus_client_free_utxo_result(&utxos);
+    if (connected) nodus_client_close(&client);
+    if (keys) {
+        for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+        free(keys);
+    }
+    return rc;
+}
+
+/* `name register <name> --msig <descriptor> --keys <dir> --in <nul>:<amt>
+ *  ... [--signers K] [--fee <raw>] --export <file> [--submit ip:port]` —
+ * HF-8 (decision docs/plans/decisions/2026-10-21-hf8-activation.md,
+ * amendment: operator "ekle." — from the param-17 height a NAME_REGISTER
+ * may be authorised by a satisfied multisig, the name's owner = the vault
+ * address; operator "Yalnız kasanın parası" — the chain refuses it unless
+ * EVERY input is the vault's). Builds the UNSIGNED single-leg envelope
+ * (nodus_v2_name_msig_build) and writes the v1 export; the co-signers run
+ * `msig sign` (which recognises the NAME_REGISTER leg, reads it back with
+ * nodus_v2_name_msig_review and verifies every input against the vault's
+ * coins on their own pinned node) and `msig combine`. --keys opens the
+ * session only (chain id, tip, rule-set generation, the HF-8 state, the
+ * price, the gas price, the name checks) and signs nothing; the coins are
+ * named with --in because dnac_utxo lists only the session's own coins.
+ * Pre-checks before anything is built: generation >= 2; the node's
+ * delegate_name_required at tip + 1 — 0 refuses (the chain refuses a
+ * multisig registration before HF-8), unknown (an older node that does not
+ * report it) warns and builds (the chain decides); the name is not taken;
+ * the vault holds no name yet (one name per ID). @return 0 / 1. */
+static int cmd_name_register_msig(const char *server_ip, uint16_t server_port,
+                                  int argc, char **argv, int cmd_start) {
+    const char *desc_path = NULL, *keys_csv = NULL, *export_path = NULL;
+    const char *submit = NULL, *raw_name = NULL;
+    const char *in_arg[NODUS_V2_NAME_MAX_IN];
+    int n_in = 0, bad = 0, have_fee = 0;
+    uint64_t fee = 0, k_signers = 0;
+    for (int i = cmd_start + 2; i < argc; i++) {  /* skip "name register" */
+        const char *a = argv[i];
+        if      (!strcmp(a, "--msig")   && i + 1 < argc) desc_path = argv[++i];
+        else if (!strcmp(a, "--keys")   && i + 1 < argc) keys_csv  = argv[++i];
+        else if (!strcmp(a, "--export") && i + 1 < argc) export_path = argv[++i];
+        else if (!strcmp(a, "--submit") && i + 1 < argc) submit    = argv[++i];
+        else if (!strcmp(a, "--fee") && i + 1 < argc) {
+            if (cli_u64(argv[++i], UINT64_MAX, &fee) != 0) { bad = 1; break; }
+            have_fee = 1;
+        } else if (!strcmp(a, "--signers") && i + 1 < argc) {
+            if (cli_u64(argv[++i], NODUS_RT_AUTH_MAX_SIGNERS, &k_signers) != 0
+                || k_signers == 0) {
+                bad = 1;
+                break;
+            }
+        } else if (!strcmp(a, "--in") && i + 1 < argc) {
+            if (n_in >= (int)NODUS_V2_NAME_MAX_IN) { bad = 1; break; }
+            in_arg[n_in++] = argv[++i];
+        } else if (a[0] != '-' && !raw_name) raw_name = a;
+        else { bad = 1; break; }
+    }
+    if (bad || !raw_name || !desc_path || !keys_csv || !export_path ||
+        n_in < 1) {
+        fprintf(stderr,
+            "Usage: name register <name> --msig <descriptor-file> --keys "
+            "<dir>\n"
+            "         --in <nullifier128hex>:<amount> [--in ...] (1..%u native "
+            "coins of the vault)\n"
+            "         [--signers <K>] [--fee <raw>] --export <file> "
+            "[--submit ip:port]\n"
+            "  From HF-8 (DELEGATE_NAME_REQUIRED in force): the multisig vault "
+            "registers <name>;\n"
+            "  its address is the owner. Every coin named is spent and must "
+            "be the VAULT's\n"
+            "  own (the chain refuses a member's coin); the change returns "
+            "to the vault.\n"
+            "  Writes the UNSIGNED export for `msig sign` (each co-signer) "
+            "and `msig combine`.\n"
+            "  --keys opens the session and signs nothing. K (default M) is "
+            "FINAL.\n",
+            (unsigned)NODUS_V2_NAME_MAX_IN);
+        return 1;
+    }
+    char name[DNAC_NAME_MAX_LEN + 1];
+    if (nodus_v2_name_normalize(raw_name, name) != 0) {
+        fprintf(stderr, "a name is 3-36 of a-z0-9 (an all-hex name of 8+ "
+                "characters is never a name)\n");
+        return 1;
+    }
+    const size_t name_len = strlen(name);
+
+    int rc = 1, connected = 0, utxos_valid = 0;
+    uint8_t *dbuf = NULL;
+    char *export_text = NULL;
+    nodus_identity_t *keys = NULL;
+    nodus_v2_name_msig_built_t built;
+    memset(&built, 0, sizeof(built));
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+    nodus_dnac_utxo_result_t utxos;
+    memset(&utxos, 0, sizeof(utxos));
+
+    /* the descriptor, K and the named coins — before any I/O */
+    size_t dlen = 0;
+    uint8_t m = 0, n = 0, addr[64];
+    if (msig_read_file(desc_path, &dbuf, &dlen, DNA_MSIG_MAX_DESC_LEN) != 0)
+        goto done;
+    if (dna_msig_desc_parse(dbuf, dlen, &m, &n, NULL) != 0 ||
+        dna_msig_address(dbuf, dlen, addr) != 0) {
+        fprintf(stderr, "%s is not a valid multisig descriptor\n", desc_path);
+        goto done;
+    }
+    if (k_signers == 0) k_signers = m;
+    if (k_signers < m || k_signers > n) {
+        fprintf(stderr, "--signers must be in [M=%u, N=%u]\n",
+                (unsigned)m, (unsigned)n);
+        goto done;
+    }
+    char addr_hex[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(addr, addr_hex);
+    nodus_v2_coin_t ins[NODUS_V2_NAME_MAX_IN];
+    memset(ins, 0, sizeof(ins));
+    for (int i = 0; i < n_in; i++) {
+        const char *c = strchr(in_arg[i], ':');
+        char nh[129];
+        if (!c || (size_t)(c - in_arg[i]) != 128) {
+            fprintf(stderr, "--in must be <nullifier 128 hex>:<amount>\n");
+            goto done;
+        }
+        memcpy(nh, in_arg[i], 128);
+        nh[128] = '\0';
+        if (t6_hex_exact(nh, ins[i].nul, 64) != 0 ||
+            cli_u64(c + 1, UINT64_MAX, &ins[i].amount) != 0 ||
+            ins[i].amount == 0) {
+            fprintf(stderr, "--in must be <nullifier 128 lowercase hex>:"
+                    "<amount >= 1, decimal>\n");
+            goto done;
+        }
+    }
+
+    /* ── the session — it signs nothing ─────────────────────────────── */
+    keys = calloc(4, sizeof(*keys));
+    if (!keys || act_load_keys(keys_csv, keys, 4) != 1) {
+        fprintf(stderr, "--msig needs exactly one --keys identity (the "
+                "session)\n");
+        goto done;
+    }
+    {
+        char sip[64];
+        uint16_t sport = 0;
+        if (t6_resolve_target(submit, server_ip, server_port, sip,
+                              &sport) != 0) {
+            fprintf(stderr, "invalid --submit target (and no -s server)\n");
+            goto done;
+        }
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "%s", sip);
+        cfg.servers[0].port = sport;
+        cfg.server_count    = 1;
+        cfg.auto_reconnect  = false;
+        if (nodus_client_init(&client, &cfg, &keys[0]) != 0) goto done;
+        connected = 1;
+        if (cli_client_connect(&client) != 0) {
+            fprintf(stderr, "client connect failed (%s:%u)\n", sip, sport);
+            goto done;
+        }
+    }
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    {
+        bool has = false;
+        if (nodus_client_dnac_chain_id32(&client, &has, chain32) != 0 ||
+            !has) {
+            fprintf(stderr, "this node is not on a version-3 chain\n");
+            goto done;
+        }
+    }
+    const nodus_domain_runtime_t *core_rt = NULL, *sys_rt = NULL;
+    if (cli_select_runtimes(&client, &sys_rt, &core_rt) != 0) goto done;
+    if (core_rt->generation < NODUS_RT_GEN_2) {
+        fprintf(stderr, "the node still runs rule-set generation %u — names "
+                "open at its RULESET_GEN2 height; nothing was built\n",
+                (unsigned)core_rt->generation);
+        goto done;
+    }
+    /* HF-8: the chain admits a multisig registration only while param 17
+     * is in force (the same flag as the delegation / stake name rule) */
+    {
+        int dnr = NODUS_DLG_NAME_RULE_UNKNOWN;
+        const int drc = nodus_client_dnac_delegate_name_rule(&client, &dnr);
+        if (drc != 0) {
+            fprintf(stderr, "dnac_fee_info query failed (rc=%d) — whether a "
+                    "vault may register a name is unknown, refusing to "
+                    "build\n", drc);
+            goto done;
+        }
+        printf("delegate_name_required at tip + 1: %s\n",
+               dnr == NODUS_DLG_NAME_RULE_ON    ? "1"
+               : dnr == NODUS_DLG_NAME_RULE_OFF ? "0"
+                                                : "unknown (the node does "
+                                                  "not report it)");
+        fflush(stdout);
+        if (dnr == NODUS_DLG_NAME_RULE_OFF) {
+            fprintf(stderr, "a multisig vault can register a name only once "
+                    "HF-8 (DELEGATE_NAME_REQUIRED) is in force — it is not "
+                    "at tip + 1; nothing was built\n");
+            goto done;
+        }
+        if (dnr != NODUS_DLG_NAME_RULE_ON)
+            fprintf(stderr, "warning: the node does not report whether HF-8 "
+                    "is in force — the chain decides\n");
+    }
+    {
+        nodus_dnac_name_result_t taken;
+        int nrc = nodus_client_dnac_name_lookup(&client, name, &taken);
+        if (nrc != 0) {
+            fprintf(stderr, "dnac_name_lookup failed (rc=%d)\n", nrc);
+            goto done;
+        }
+        if (taken.found) {
+            fprintf(stderr, "%s is already registered (owner %.16s...) — "
+                    "nothing was built\n", name, taken.owner);
+            goto done;
+        }
+        nodus_dnac_name_result_t mine;
+        nrc = nodus_client_dnac_name_of(&client, addr_hex, &mine);
+        if (nrc != 0) {
+            fprintf(stderr, "dnac_name_of failed (rc=%d)\n", nrc);
+            goto done;
+        }
+        if (mine.found) {
+            fprintf(stderr, "this vault already holds the name %s (one name "
+                    "per ID) — nothing was built\n", mine.name);
+            goto done;
+        }
+    }
+    uint64_t price = 0, gas_price = 0;
+    {
+        nodus_dnac_name_prices_t np;
+        int prc = nodus_client_dnac_name_prices(&client, &np);
+        if (prc != 0) {
+            fprintf(stderr, "dnac_fee_info carries no name prices (rc=%d) — "
+                    "refusing to guess a price\n", prc);
+            goto done;
+        }
+        if (nodus_v2_name_price_for(np.price, name_len, &price) != 0)
+            goto done;
+        nodus_dnac_fee_info_t fi;
+        memset(&fi, 0, sizeof(fi));
+        int frc = nodus_client_dnac_fee_info(&client, &fi);
+        if (frc != 0) {
+            fprintf(stderr, "dnac_fee_info failed (rc=%d) — the gas price is "
+                    "unknown, refusing to size a fee\n", frc);
+            goto done;
+        }
+        gas_price = fi.gas_price;
+    }
+    /* the tip rides the session's own dnac_utxo reply (its coins are not
+     * used) — the source `v2-envelope spend --msig` anchors expiry on */
+    if (nodus_client_dnac_utxo(&client, keys[0].fingerprint, 1, &utxos) != 0) {
+        fprintf(stderr, "dnac_utxo (tip) query failed\n");
+        goto done;
+    }
+    utxos_valid = 1;
+    const uint64_t tip = utxos.block_height;
+    if (tip == 0) {
+        fprintf(stderr, "the node reported tip 0 — refusing\n");
+        goto done;
+    }
+
+    nodus_v2_ruleset_id_t rs;
+    cli_ruleset_id(core_rt, sys_rt, &rs);
+    nodus_v2_name_msig_req_t req;
+    memset(&req, 0, sizeof(req));
+    if (cli_env_expiry(tip, &req.expiry_height) != 0) goto done;
+    req.rs        = &rs;
+    req.chain32   = chain32;
+    req.tip       = tip;
+    req.desc      = dbuf;
+    req.desc_len  = dlen;
+    req.signers   = (uint32_t)k_signers;
+    req.name      = name;
+    req.price     = price;
+    req.coins     = ins;
+    req.n_coins   = n_in;
+    req.fee       = fee;
+    req.fee_fixed = have_fee;
+    req.gas_price = gas_price;
+    req.rand      = cli_rand;
+    req.rand_ctx  = NULL;
+    nodus_v2_name_err_t ne;
+    const int brc = nodus_v2_name_msig_build(&req, &built, &ne);
+    if (brc != NODUS_V2_SPEND_OK) {
+        switch (brc) {
+        case NODUS_V2_SPEND_ERR_INSUFFICIENT:
+        case NODUS_V2_SPEND_ERR_INPUT_SUM:
+            fprintf(stderr, "the named coins do not cover price %llu + fee "
+                    "%llu raw — nothing was built\n",
+                    (unsigned long long)price, (unsigned long long)ne.fee);
+            break;
+        case NODUS_V2_MSIG_ERR_COIN:
+            fprintf(stderr, "a duplicate or zero --in coin\n");
+            break;
+        case NODUS_V2_NAME_ERR_FEE_FLOOR:
+            fprintf(stderr, "--fee %llu is below the network fee floor %llu "
+                    "raw\n", (unsigned long long)ne.fee,
+                    (unsigned long long)ne.floor);
+            break;
+        case NODUS_V2_SPEND_ERR_FEE_BELOW_GAS:
+            fprintf(stderr, "--fee %llu is below units %llu x gas price %llu "
+                    "= %llu raw — nothing was built\n",
+                    (unsigned long long)ne.fee, (unsigned long long)ne.units,
+                    (unsigned long long)ne.gas_price,
+                    (unsigned long long)ne.required);
+            break;
+        case NODUS_V2_MSIG_ERR_SIGNERS:
+            fprintf(stderr, "--signers must be in [M=%u, N=%u]\n",
+                    (unsigned)m, (unsigned)n);
+            break;
+        case NODUS_V2_SPEND_ERR_METER:
+            fprintf(stderr, "could not size res_max_total_units\n");
+            break;
+        case NODUS_V2_SPEND_ERR_PREFLIGHT1:
+            fprintf(stderr, "preflight of the unsigned envelope failed (wrong "
+                    "chain id, expired, or a different CORE ruleset)\n");
+            break;
+        default:
+            fprintf(stderr, "the vault name registration could not be built "
+                    "(rc=%d) — nothing was built\n", brc);
+            break;
+        }
+        goto done;
+    }
+    size_t export_len = 0;
+    if (nodus_v2_msig_export_encode(chain32, tip, built.signers, built.digest,
+                                    built.env, built.env_len, &export_text,
+                                    &export_len) != NODUS_V2_SPEND_OK ||
+        msig_write_text(export_path, export_text, export_len) != 0)
+        goto done;
+    printf("name register --msig: %s -> %u-of-%u vault %.16s... price=%llu "
+           "fee=%llu inputs=%d sum_in=%llu change=%llu units=%llu signers=%u "
+           "expiry=%llu generation=%u\n", name, (unsigned)built.m,
+           (unsigned)built.n, addr_hex, (unsigned long long)built.price,
+           (unsigned long long)built.fee, built.n_in,
+           (unsigned long long)built.sum_in,
+           (unsigned long long)built.change, (unsigned long long)built.units,
+           (unsigned)built.signers, (unsigned long long)req.expiry_height,
+           (unsigned)core_rt->generation);
+    printf("  intent_id=");
+    for (int b = 0; b < 64; b++) printf("%02x", built.intent_id[b]);
+    printf("\n  digest=");
+    for (int b = 0; b < 64; b++) printf("%02x", built.digest[b]);
+    printf("\n  export written to %s — next: `msig sign` by %u co-signers, "
+           "then `msig combine` before block %llu\n", export_path,
+           (unsigned)built.signers, (unsigned long long)req.expiry_height);
+    fflush(stdout);
+    rc = 0;
+
+done:
+    free(dbuf);
+    free(export_text);
+    nodus_v2_name_msig_built_free(&built);
     if (utxos_valid) nodus_client_free_utxo_result(&utxos);
     if (connected) nodus_client_close(&client);
     if (keys) {
@@ -9516,11 +9955,120 @@ done:
     return rc;
 }
 
+/* `msig sign` on a v1 export whose one leg is a vault NAME_REGISTER (HF-8,
+ * decision 2026-10-21-hf8-activation.md amendment): read back with
+ * nodus_v2_name_msig_review (membership, the digest re-derived and equal,
+ * the expiry window, the call, the change only to the vault), shown, the
+ * chain id checked, EVERY input verified against the vault's coins on the
+ * co-signer's own pinned node (msig_inputs_verify — the same check as a
+ * vault SPEND; the chain refuses any non-vault input too, operator "Yalnız
+ * kasanın parası"), then the digest signed into a v1 signature file.
+ * @return 0 / 1. */
+static int msig_sign_name(const char *server_ip, uint16_t server_port,
+                          const nodus_identity_t *key, const nodus_key_t *pin,
+                          const nodus_v2_msig_export_t *x,
+                          const nodus_domain_runtime_t *core_rt,
+                          const char *chain_hex, const char *out_path) {
+    int rc = 1;
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    nodus_v2_name_msig_review_t *rv = calloc(1, sizeof(*rv));
+    dna_env_view_t *vw = calloc(1, sizeof(*vw));
+    char *sig_text = NULL;
+    if (!pf || !rv || !vw) goto done;
+    const int vrc = nodus_v2_name_msig_review(x, core_rt->ruleset_version,
+                                              core_rt->ruleset_hash,
+                                              key->pk.bytes, pf, rv);
+    if (vrc != NODUS_V2_SPEND_OK) {
+        if (vrc == NODUS_V2_MSIG_ERR_SHAPE)
+            fprintf(stderr, "the export is not a one-leg CORE NAME_REGISTER "
+                    "under auth_kind 3 carrying %u signer slots and ONE "
+                    "descriptor\n", (unsigned)x->signers);
+        else if (vrc == NODUS_V2_MSIG_ERR_DESC)
+            fprintf(stderr, "the carried descriptor is malformed\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_NOT_MEMBER)
+            fprintf(stderr, "this key is not one of the descriptor's keys\n");
+        else if (vrc == NODUS_V2_SPEND_ERR_PREFLIGHT1)
+            fprintf(stderr, "preflight of the exported envelope failed (wrong "
+                    "chain id, expired, or a different CORE ruleset)\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_DIGEST)
+            fprintf(stderr, "REFUSED: the exported digest is not the digest "
+                    "of the exported envelope on this chain\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_CALL)
+            fprintf(stderr, "REFUSED: the exported NAME_REGISTER call is "
+                    "malformed, or its change output goes to someone other "
+                    "than the vault\n");
+        else if (vrc == NODUS_V2_MSIG_ERR_EXPIRY)
+            fprintf(stderr, "REFUSED: the export never expires, or expires "
+                    "later than its tip %llu + %u blocks\n",
+                    (unsigned long long)x->tip,
+                    (unsigned)NODUS_V2_MSIG_EXPIRY_AHEAD);
+        else
+            fprintf(stderr, "the export could not be read back (rc=%d)\n",
+                    vrc);
+        goto done;
+    }
+    {
+        char ah[QGP_FP_HEX_BUFFER];
+        qgp_fp_raw_to_hex(rv->addr, ah);
+        printf("signing a NAME REGISTRATION by %u-of-%u vault %s: name \"%s\" "
+               "(the vault becomes its owner), price %llu, fee %llu, "
+               "%d input(s)\n", (unsigned)rv->m, (unsigned)rv->n, ah,
+               rv->name, (unsigned long long)rv->price,
+               (unsigned long long)rv->fee, rv->n_in);
+        printf("  valid until block %llu (built at tip %llu)\n",
+               (unsigned long long)rv->expiry_height,
+               (unsigned long long)rv->tip);
+        for (int i = 0; i < rv->n_in; i++) {
+            char nh[129];
+            qgp_fp_raw_to_hex(rv->in_nul[i], nh);
+            printf("  in[%u]  nullifier %s\n", (unsigned)i, nh);
+        }
+        if (rv->n_out == 1)
+            printf("  out[0] -> the vault (change) amount %llu\n",
+                   (unsigned long long)rv->change_amount);
+        else
+            printf("  no change output\n");
+    }
+    if (msig_chain_check(x->chain32, chain_hex) != 0) goto done;
+    {
+        nodus_v2_msig_leg_t leg;
+        if (nodus_v2_msig_leg_open_op(x, vw, DNA_CORERULE_NAME_REGISTER,
+                                      &leg) != NODUS_V2_SPEND_OK)
+            goto done;
+        if (msig_inputs_verify(server_ip, server_port, key, pin, x->chain32,
+                               leg.desc, leg.desc_len, rv->addr, rv->n_in,
+                               (const uint8_t (*)[64])rv->in_nul, rv->tip,
+                               rv->expiry_height) != 0)
+            goto done;
+    }
+    uint8_t sig[DNAC_SIGNATURE_SIZE];
+    size_t sl = 0;
+    if (qgp_dsa87_sign(sig, &sl, x->digest, 64, key->sk.bytes) != 0 ||
+        sl != DNAC_SIGNATURE_SIZE) {
+        fprintf(stderr, "signing failed\n");
+        goto done;
+    }
+    size_t sig_len = 0;
+    if (nodus_v2_msig_sig_encode(x->digest, key->pk.bytes, sig, &sig_text,
+                                 &sig_len) != NODUS_V2_SPEND_OK ||
+        msig_write_text(out_path, sig_text, sig_len) != 0)
+        goto done;
+    printf("signature written to %s\n", out_path);
+    rc = 0;
+done:
+    free(sig_text);
+    free(vw);
+    free(rv);
+    free(pf);
+    return rc;
+}
+
 /* `msig sign` — one co-signer; -s <YOUR node> --pin <its fingerprint> for
  * the input verification (msig_inputs_verify — khan decision 2026-10-13-
  * kurultay-18-summary.md item 5; the pin and the named-coin query: design
  * 2026-10-03-hf5-validator-owner-stake §2 "ÖDEYİCİ BAĞLAMA", red-team
- * round 3). */
+ * round 3). A v1 export whose leg is a vault NAME_REGISTER (HF-8) takes
+ * msig_sign_name's read-back. */
 static int cmd_msig_sign(const char *server_ip, uint16_t server_port,
                          int argc, char **argv, int cmd_start) {
     const char *keys_csv = NULL, *in_path = NULL, *out_path = NULL;
@@ -9593,6 +10141,12 @@ static int cmd_msig_sign(const char *server_ip, uint16_t server_port,
     if (msig_export_read(in_path, &x) != 0) goto done;
     const nodus_domain_runtime_t *core_rt = msig_core_rt(&x);
     if (!core_rt) goto done;
+    /* HF-8: a vault's NAME_REGISTER has its own read-back */
+    if (msig_export_op(&x) == DNA_CORERULE_NAME_REGISTER) {
+        rc = msig_sign_name(server_ip, server_port, &keys[0], &pin, &x,
+                            core_rt, chain_hex, out_path);
+        goto done;
+    }
     /* the read-back: shape, membership, the digest re-derived and EQUAL
      * (never sign a digest you did not derive yourself), the call's
      * lengths — the shared library, in the order this command had */
@@ -12065,6 +12619,8 @@ int main(int argc, char **argv) {
         else {
             fprintf(stderr, "Usage: name register <name> --keys <dir> "
                     "(--dry-run | --submit ip:port) [--fee <raw>]\n"
+                    "       name register <name> --msig <descriptor> --keys "
+                    "<dir> --in <nul>:<amt> ... --export <file>\n"
                     "       name lookup <name>\n"
                     "       name of <fp128>\n");
             rc = 1;
