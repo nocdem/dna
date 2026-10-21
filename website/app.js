@@ -298,7 +298,7 @@ const turkish = {
   "history.hf7.body": "Bir bloğun yürütülürken okuduğu her tablo artık state root kapsamında; böylece yeni bir düğüm her bloğu yeniden oynatmak yerine doğrulanmış bir snapshot’tan başlayabilecek (snapshot indirme henüz yapılmadı). Bir işlem artık en fazla 720 blok (yaklaşık 100 dakika) ilerisini gösteren bir expiry taşımalı; uygulanmış bir işlem, expiry’si dolmadıkça yeniden uygulanamaz. 282.684. bloktan önce imzalanmış işlemler artık geçerli değil. 281.957. blokta oylandı; 282.684. bloktan beri sekiz witness’ın hepsinde canlı.",
   "history.delegate_name.date": "DAHA SONRA · HF-8",
   "history.delegate_name.title": "Delege etmek için zincir adı gerekir",
-  "history.delegate_name.body": "Yeni bir delegasyon ya da mevcut birine ekleme için, delege eden adresin bir zincir adı olması gerekecek. Mevcut delegasyonlar ve ödülleri etkilenmez; kendine delege eden bir witness’ın adı olması gerekmez. Yalnızca witness’ların oyladığı bir hard fork ile devreye girer.",
+  "history.delegate_name.body": "Yeni bir delegasyon ya da mevcut birine ekleme için, delege eden adresin bir zincir adı olması gerekecek. Mevcut delegasyonlar ve ödülleri etkilenmez; bir witness’ın sahibi o witness’a delege ederken ad gerekmez. Yalnızca witness’ların oyladığı bir hard fork ile devreye girer.",
   "history.storage_market.date": "SIRADAKİ",
   "history.storage_market.title": "Depolama kapasitesi pazarı",
   "history.storage_market.body": "Nodus ağı etrafında kurulacak depolama pazarından kişisel dosyalar ve uygulama verileri için alan satın alma.",
