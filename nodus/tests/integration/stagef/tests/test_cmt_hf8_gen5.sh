@@ -6,8 +6,9 @@
 # nameless non-owner DELEGATE lands before the vote and between the vote
 # and H, and after H the SYSTEM DELEGATE leg refuses a nameless non-owner
 # (new and top-up) and a validator's NODE key, while a named delegator
-# and the validator's OWNER land; dnac_fee_info reports the rule 0 / 1
-# (standalone — NOT in the sweep)
+# and the validator's OWNER land; dnac_fee_info reports the rule 0 / 1;
+# rev 3: after H a 2-of-3 VAULT registers a name, and a nameless STAKE is
+# refused while a named one lands (standalone — NOT in the sweep)
 # ════════════════════════════════════════════════════════════════════
 #
 # Governing records: decision docs/plans/decisions/2026-10-21-hf8-
@@ -90,7 +91,33 @@
 #      g. two heights later, on 7/7: node 2's row = AMOUNT, the owner's
 #         row = its pre-H amount + AMOUNT, no node 7 row, no node 6 → node
 #         6 row, node 4's row still exactly AMOUNT.
-#  10. stagef_cmt_diff_at_floor 7/7 at the start and at the end.
+#   7b. rev3 (decision 2026-10-21-hf8-activation.md amendment, "ekle."):
+#      between the vote and H, `name register NAME_V --msig` of the genesis
+#      2-of-3 vault (nodes 2, 3, 4 — stagef_up_v2.sh) is refused by the CLI
+#      ("a multisig vault can register a name only once HF-8 …") and
+#      writes no export.
+#  10. rev3, after H — a vault's name (rule 3):
+#      a. a registration funded by the vault's genesis coin AND node 2's
+#         own coin: `msig sign` by node 2 on its pinned node REFUSES ("is
+#         not an unspent coin of this vault") and writes no signature
+#         (operator "Yalnız kasanın parası");
+#      b. funded by the vault's coin only: nodes 2 and 3 sign (the
+#         NAME_REGISTER read-back is shown), `msig combine` submits, the
+#         v2_names row (NAME_V, the vault address) lands at >= H, `name
+#         lookup NAME_V` returns the vault address on 7/7, the genesis coin
+#         is spent.
+#  11. rev3, after H — the STAKER's name (rule 2), a fresh consensus key KS
+#      (stagef_hf6_owner.sh, the harness's identity maker) consenting to
+#      each owner, the same bond (STAKE_MIN 2M NODUS) and commission:
+#      a. node 7 (nameless) `v2-envelope stake2`: the CLI refuses before
+#         signing ("This identity has no chain name. Staking needs one"),
+#         nothing submitted, the state line reads 1;
+#      b. again with --no-name-precheck: REFUSED at CheckTx with "dry run
+#         item code 7" and "domain 0 op 1: runtime exec refused (rc -1)";
+#      c. node 2 (named) stakes KS: it LANDS at >= H; on 7/7 one validator
+#         row with key KS whose roles row's owner_fp = node 2, and no
+#         validator owned by node 7.
+#  12. stagef_cmt_diff_at_floor 7/7 at the start and at the end.
 #
 # WHAT IT REQUIRES
 #   Compile flags — ONE short-epoch + short-grace TEST-OWNER build of THIS
@@ -113,7 +140,12 @@
 #       STAGEF_HF6_OWNER_FP_HEX=<the owner's 128 hex>
 #       STAGEF_HF6_OWNER_KEYS=<DIR>/identity      (the owner signs step 9f)
 #   Leave STAGEF_PAYOUT_INTERVAL_EPOCHS and STAGEF_MODE unset.
-#   Tools: sqlite3, xxd, ss, openssl (SHA3-512).
+#   The bring-up's genesis 2-of-3 coin ($BASE_DIR/msig_genesis_2of3.desc,
+#   msig_genesis.addr — written by stagef_up_v2.sh when its nodus-cli has
+#   `msig address`, i.e. a CLI of this tree): absent -> SKIP.
+#   Tools: sqlite3, xxd, ss, openssl (SHA3-512), python3 (step 11 runs
+#   stagef_hf6_owner.sh for its fresh consensus key; that script checks
+#   its oracles).
 #   Exact command sequence (ORCHESTRATOR):
 #     S=<TREE>/nodus/tests/integration/stagef
 #     bash $S/stagef_hf6_owner.sh /tmp/hf8-owner <TREE>/nodus/build/nodus-server
@@ -133,12 +165,14 @@
 #   or the genesis epoch_length != 15, a grace variable != 15, not a Comet
 #   cluster, no $BASE_DIR/v2_genesis.conf, a tool missing,
 #   STAGEF_HF6_OWNER_KEYS unset (the owner exemption — step 9f — cannot be
-#   signed with the K8 default: its keys are not the harness's), any split
-#   STAGEF_MODE. A skip is not a pass.
+#   signed with the K8 default: its keys are not the harness's), no genesis
+#   2-of-3 coin files, python3 missing, any split STAGEF_MODE. A skip is
+#   not a pass.
 #   FAIL (rc 1) on the capability / TEST-OWNER gates, on a chain that
 #   already holds a param 7 / 8 / 9 / 14 / 16 / 17 / 18 / 22 row, a roles
-#   row or a delegation (every switch is one-way, the leaves single-use —
-#   it needs a fresh bring-up), and on a CLI that prints no
+#   row or a delegation, whose genesis 2-of-3 coin is spent or whose vault
+#   already holds a name (every switch is one-way, the leaves and the coin
+#   single-use — it needs a fresh bring-up), and on a CLI that prints no
 #   "delegate_name_required at tip + 1:" line (not a build of this
 #   package).
 #
@@ -153,7 +187,16 @@
 #   funding coin spent. Delegations that stay: node 4 -> node 1, node 5 ->
 #   node 1, node 2 -> node 1 (AMOUNT each) and the owner's node-1 row grown
 #   by AMOUNT (node 1's power and reward share grow from the next
-#   snapshots). $BASE_DIR/hf8g5/ (every CLI log). Nothing killed or
+#   snapshots). rev3: a SECOND v2_names row (NAME_V -> the 2-of-3 vault,
+#   permanent) and the vault's genesis coin spent (its change back to the
+#   vault); an EIGHTH validator (key KS, owner node 2, bond 2M NODUS,
+#   ACTIVE) whose consensus key runs on NO node — the scenario ends within
+#   a few blocks, before its Rule-R tenure (2E) could seat it; a cluster
+#   left running past that may seat an offline validator (its power is
+#   2M of the committee's, liveness unaffected while the seven hold >2/3 —
+#   JUDGMENT, not run). $BASE_DIR/hf8g5/stakekey/ (KS's identity, made by
+#   stagef_hf6_owner.sh on port block 90 and killed), $BASE_DIR/hf8g5/
+#   (every CLI log, the exports and signature files). Nothing killed or
 #   restarted. Tear down with stagef_down.sh before re-running.
 #
 # HOW IT CAN LIE
@@ -163,11 +206,21 @@
 #     fleet are NOT exercised. The rule itself is not new code here: it is
 #     the generation-4 arm every generation-5 runtime shares
 #     (rtn_gen_roles, generation >= 4).
-#   - **The scope amendment of 2026-10-21 is NOT exercised.** Decision
-#     2026-10-21-hf8-activation.md "Amendment" widens HF-8 to STAKE and to
-#     multisig NAME_REGISTER at the same height; this tree carries neither
-#     (byte details go to the HF-8 design rev 3). This scenario proves the
-#     DELEGATE rule only.
+#   - **rev3's chain-side refusals are partly the tools'.** The vault's
+#     mixed-funding registration (10a) is refused by the CO-SIGNER's input
+#     check (msig_inputs_verify), before any envelope exists — the chain's
+#     own refusal of a member's coin (rtn_name_exec, every input owned by
+#     the vault) is test_hf8_msig_name.c's (engine) and test_hf4_names.c's
+#     (hook), not this scenario's. Likewise the vault's pre-H refusal (7b)
+#     is the CLI's; the chain's (a kind-3 owner refused while param 17 is
+#     off) is the unit tests'. The STAKE refusal (11b) is the engine's
+#     GENERIC exec verdict of leg 0 op 1; what ties it to the name rule:
+#     the same key, bond, commission and builder LAND for named node 2.
+#   - The vault and both stakers are single scenarios each: a kind-3
+#     STAKE owner (the vault address needing its own name), the in-block
+#     NAME_REGISTER-then-STAKE ordering, the vault's change output read by
+#     an explorer, and the one-extra-w_read unit cost of a STAKE after H
+#     are NOT exercised here.
 #   - **The refusals are CheckTx's** (tip + 1 over committed state, node 1
 #     only). A refused envelope never enters a block, so the in-block
 #     refusal with its SYSTEM leg's writes rolled back is the unit tests'
@@ -262,6 +315,16 @@ REFUSE_CODE="dry run item code 7"
 REFUSE_TEXT="domain 0 op 2: runtime exec refused (rc -1)"
 CLI_NONAME="This identity has no chain name."
 STATE_LINE="delegate_name_required at tip + 1:"
+# rev3 (decision 2026-10-21-hf8-activation.md amendment): the STAKE and the
+# vault-name rules switched on by the same param 17
+REFUSE_TEXT_STAKE="domain 0 op 1: runtime exec refused (rc -1)"   # DNA_SYSRULE_STAKE = 1
+CLI_NONAME_STAKE="This identity has no chain name. Staking needs one"
+CLI_VAULT_PREH="a multisig vault can register a name only once HF-8"
+BOND=200000000000000       # rev3: DNAC_HF6_STAKE_MIN_DEFAULT (2M NODUS), no param-19 row
+NAME_V=hf8gfivevault       # rev3: the 2-of-3 vault's name (6+ tier)
+NAME_M=hf8gfivemixed       # rev3: the mixed-funding attempt's name (never lands)
+MSIG_DESC="$BASE_DIR/msig_genesis_2of3.desc"     # rev3: stagef_up_v2.sh's vault
+MSIG_ADDR_FILE="$BASE_DIR/msig_genesis.addr"
 
 # ── SKIP gates (rc 99 — a skip is not a pass) ───────────────────────
 for pair in "STAGEF_NODUS_BIN=$SRV" "STAGEF_NODUSCLI_BIN=$CLI"; do
@@ -294,6 +357,17 @@ if [ -z "$OWN_KEYS" ]; then
     echo "[SKIP] STAGEF_HF6_OWNER_KEYS is unset — the owner exemption (step 9f) needs a"
     echo "       TEST-OWNER build (stagef_hf6_owner.sh, header); with the K8 default no owner"
     echo "       delegation can be signed in the harness"
+    exit 99
+fi
+if [ ! -s "$MSIG_DESC" ] || [ ! -s "$MSIG_ADDR_FILE" ]; then
+    echo "[SKIP] no genesis 2-of-3 coin files ($MSIG_DESC, $MSIG_ADDR_FILE) — the vault-name"
+    echo "       steps need them; the bring-up writes them only with a nodus-cli that has"
+    echo "       \`msig address\` (stagef_up_v2.sh [warn])"
+    exit 99
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "[SKIP] python3 is not installed — stagef_hf6_owner.sh (the fresh consensus key of"
+    echo "       step 11) needs it"
     exit 99
 fi
 [ -n "${BASE_DIR:-}" ] && [ -d "$BASE_DIR" ] || die "no active Stage F run (bring one up with stagef_up_v2.sh)"
@@ -584,6 +658,48 @@ deleg_amount() {
           WHERE lower(hex(delegator_hash)) = '$2' AND lower(hex(validator_hash)) = '$3';" 2>/dev/null || echo ERR
 }
 
+pin_of() { fp_of "$(node_keys "$1")"; }
+
+# rev3: vname_build LABEL EXPORT NAME --in NUL:AMT ... — `name register
+# --msig` of the genesis 2-of-3 vault (session node 5, signs nothing).
+# Sets VB_RC / VB_LOG.
+vname_build() {
+    local label="$1" exp="$2" nm="$3" port
+    shift 3
+    port=$(stagef_tcp_port 5)
+    VB_LOG="$LOGD/vault_name_build_$label.log"; VB_RC=0
+    "$CLI" -s 127.0.0.1 -p "$port" name register "$nm" --msig "$MSIG_DESC" \
+        --keys "$(node_keys 5)" "$@" --export "$exp" --submit "127.0.0.1:$port" \
+        > "$VB_LOG" 2>&1 || VB_RC=$?
+    cat "$VB_LOG"
+}
+
+# rev3: consent_for OWNER_FP OUT — the fresh key KS consents to OWNER's
+# STAKE (`validator consent`, expiry tip + 300 — within the 720 window)
+consent_for() {
+    local owner="$1" out="$2" log="$LOGD/consent_$(basename "$2").log" t
+    t=$(tip_of 1)
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" -i "$KS_ID" validator consent --op stake \
+        --owner "$owner" --expiry $(( t + 300 )) --out "$out" > "$log" 2>&1 \
+        || { cat "$log" >&2; die "the consent of KS for ${owner:0:16}… was refused (see $log)"; }
+    [ -s "$out" ] || die "the consent file $out is empty"
+}
+
+# rev3: stake2 KEYS CONSENT LOG [EXTRA] — `v2-envelope stake2` of BOND,
+# submitted to node 1. Sets SK_RC, SK_INTENT, SK_STATE.
+stake2() {
+    local keys="$1" consent="$2" log="$3" extra="${4:-}" port args=()
+    port=$(stagef_tcp_port 1)
+    args=(v2-envelope stake2 --keys "$keys" --consent "$consent" --bond "$BOND" --commission 500)
+    [ -n "$extra" ] && args+=("$extra")
+    args+=(--submit "127.0.0.1:$port")
+    SK_RC=0
+    "$CLI" -s 127.0.0.1 -p "$port" "${args[@]}" > "$log" 2>&1 || SK_RC=$?
+    cat "$log"
+    SK_INTENT=$(awk '/^ *intent_id=/{sub(/^ *intent_id=/,""); print; exit}' "$log")
+    SK_STATE=$(sed -n "s/^$STATE_LINE \\([^ ]*\\).*/\\1/p" "$log" | head -1)
+}
+
 require_name_refusal() {
     local what="$1" log="$2"
     [ "$DG_RC" != 0 ] || die "$what was ADMITTED after H (see $log)"
@@ -617,6 +733,20 @@ done
 INIT_H=$(sed -n 's/^initial_height *= *\([0-9][0-9]*\) *$/\1/p' "$CONF")
 [ -n "$INIT_H" ] || die "no initial_height in $CONF"
 [ "$INIT_H" = 0 ] && INIT_H=1
+# rev3: the genesis 2-of-3 vault (nodes 2, 3, 4) and its one coin
+# (test_cmt_hf7.sh's identity: height 0, output_index 0, tx_hash =
+# nullifier) — single-use, so a spent coin needs a fresh bring-up
+MSIG_ADDR=$(tr -d '[:space:]' < "$MSIG_ADDR_FILE")
+[ "${#MSIG_ADDR}" = 128 ] || die "$MSIG_ADDR_FILE does not hold a 128-hex address"
+gcoin=$(sqlite3 "$ref_db0" \
+    "SELECT lower(hex(nullifier)) || ':' || amount FROM utxo_set
+      WHERE owner = '$MSIG_ADDR' AND block_height = 0 AND output_index = 0
+        AND tx_hash = nullifier LIMIT 1;" 2>/dev/null || true)
+[ -n "$gcoin" ] || die "no genesis coin owned by the 2-of-3 address (already spent? — needs a fresh bring-up)"
+GNUL="${gcoin%%:*}"; GAMT="${gcoin##*:}"
+[ "${#GNUL}" = 128 ] || die "the genesis 2-of-3 coin '$gcoin' is malformed"
+[ "$(sqlite3 "$ref_db0" "SELECT COUNT(*) FROM v2_names WHERE lower(hex(owner)) = '$MSIG_ADDR';" 2>/dev/null || echo ERR)" = 0 ] \
+    || die "the vault already holds a name — this scenario needs a fresh bring-up"
 stagef_cmt_pump_ready "$(db_of 1)" || die "the CLI-SPEND pump is not usable on this bring-up (reason above)"
 stagef_sentinel SETUP_OK
 stagef_cmt_diff_at_floor "pre-hf8g5" || exit 2
@@ -776,6 +906,15 @@ delegate "$(node_keys 5)" "$VID_T" "$LOGD/delegate_node5_vote_to_H.log" submit
 h5=$(wait_intent "$DG_INTENT" "node5's between-vote-and-H DELEGATE")
 [ "$h5" -lt "$H" ] || die "node5's delegation applied at $h5 >= H=$H — the between-vote check did not run below H (widen H_MARGIN)"
 echo "[ok] vote committed, below H: node5 (no name) delegated at height $h5 < H=$H"
+# rev3: below H the vault's name registration is refused by the CLI (the
+# chain admits a multisig registration only from H — rtn_name_owner)
+vname_build preH "$LOGD/vault_name_preH.export" "$NAME_V" --in "$GNUL:$GAMT"
+[ "$VB_RC" != 0 ] || die "the vault's name registration was BUILT below H (see $VB_LOG)"
+grep -qF "$CLI_VAULT_PREH" "$VB_LOG" \
+    || die "the pre-H vault registration failed, but not with '$CLI_VAULT_PREH' (see $VB_LOG)"
+[ ! -s "$LOGD/vault_name_preH.export" ] || die "an export was written below H"
+[ $(( $(tip_of 1) + 1 )) -lt "$H" ] || die "node1's tip reached H-1 during the between-vote-and-H checks (widen H_MARGIN)"
+echo "[ok] below H: the CLI refused the vault's name registration (delegate_name_required 0)"
 
 # ── 8. g5: cross H ──────────────────────────────────────────────────
 pump_to $(( H + 1 ))
@@ -838,14 +977,119 @@ for n in $(seq 1 "$N"); do
 done
 echo "[ok] 7/7: node2 and the owner delegated; node4's row unchanged; no node6-key or node7 row"
 
+# ── 10. rev3: a VAULT registers a name after H (rule 3) ─────────────
+# a. a member's coin among the inputs: the co-signer's own input check
+#    (`msig sign`, msig_inputs_verify on its pinned node) refuses to sign
+mixed_coin=$(sqlite3 "$(db_of 2)" \
+    "SELECT lower(hex(nullifier)) || ':' || amount FROM utxo_set
+      WHERE owner = '$FP2' AND token_id = zeroblob(64) AND amount > 0
+        AND unlock_block <= $(tip_of 2)
+      ORDER BY amount DESC, nullifier LIMIT 1;" 2>/dev/null || true)
+[ -n "$mixed_coin" ] || die "node2 holds no spendable native coin for the mixed-funding case"
+EXPM="$LOGD/vault_name_mixed.export"
+vname_build mixed "$EXPM" "$NAME_M" --in "$GNUL:$GAMT" --in "$mixed_coin"
+[ "$VB_RC" = 0 ] || die "the mixed-funding vault registration could not be BUILT (see $VB_LOG)"
+mslog="$LOGD/msig_sign_vault_mixed_node2.log"; msrc=0
+"$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 2)" msig sign --pin "$(pin_of 2)" \
+    --keys "$(node_keys 2)" --in "$EXPM" --out "$LOGD/sig_vault_mixed_node2" > "$mslog" 2>&1 || msrc=$?
+cat "$mslog"
+[ "$msrc" != 0 ] || die "node2 SIGNED a vault name registration funded by its own coin (see $mslog)"
+grep -qF "is not an unspent coin of this vault" "$mslog" \
+    || die "node2 refused to sign the mixed-funding export, but not for the member's coin (see $mslog)"
+[ ! -s "$LOGD/sig_vault_mixed_node2" ] || die "node2 wrote a signature file for the mixed-funding export"
+echo "[ok] a member's coin among a vault name registration's inputs: the co-signer refused to sign"
+# b. the vault's own coin only: nodes 2 and 3 sign, combine, it LANDS
+EXPV="$LOGD/vault_name.export"
+vname_build vault "$EXPV" "$NAME_V" --in "$GNUL:$GAMT"
+[ "$VB_RC" = 0 ] || die "the vault name registration could not be BUILT after H (see $VB_LOG)"
+for n in 2 3; do
+    vslog="$LOGD/msig_sign_vault_node$n.log"
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" msig sign --pin "$(pin_of "$n")" \
+        --keys "$(node_keys "$n")" --in "$EXPV" --out "$LOGD/sig_vault_node$n" > "$vslog" 2>&1 \
+        || { cat "$vslog" >&2; die "node$n could not sign the vault name registration (see $vslog)"; }
+    grep -qF "signing a NAME REGISTRATION by 2-of-3 vault $MSIG_ADDR" "$vslog" \
+        || die "node$n's msig sign did not show the vault NAME_REGISTER read-back (see $vslog)"
+done
+vclog="$LOGD/msig_combine_vault.log"; vcrc=0
+"$CLI" msig combine --in "$EXPV" --sig "$LOGD/sig_vault_node2" --sig "$LOGD/sig_vault_node3" \
+    --keys "$(node_keys 5)" --submit "127.0.0.1:$(stagef_tcp_port 1)" > "$vclog" 2>&1 || vcrc=$?
+cat "$vclog"
+[ "$vcrc" = 0 ] || die "the vault's name registration was refused after H (see $vclog)"
+hv=$(stagef_cmt_wait_row "$(db_of 1)" \
+    "SELECT COUNT(*) FROM v2_names WHERE name = CAST('$NAME_V' AS BLOB)
+       AND lower(hex(owner)) = '$MSIG_ADDR';") && wrc=0 || wrc=$?
+[ "$wrc" = 0 ] || die "the v2_names row '$NAME_V' -> the vault did not land (wait rc=$wrc, tip $hv)"
+[ "$hv" -ge "$H" ] || die "the vault's name landed at $hv < H=$H"
+wait_all "$hv"
+for n in $(seq 1 "$N"); do
+    lklog="$LOGD/lookup_${NAME_V}_node$n.log"; lkrc=0
+    "$CLI" -s 127.0.0.1 -p "$(stagef_tcp_port "$n")" name lookup "$NAME_V" > "$lklog" 2>&1 || lkrc=$?
+    [ "$lkrc" = 0 ] || { cat "$lklog" >&2; die "node$n: name lookup $NAME_V exited $lkrc"; }
+    lo=$(sed -n 's/^owner=\([0-9a-f]*\) .*/\1/p' "$lklog")
+    [ "$lo" = "$MSIG_ADDR" ] || { cat "$lklog" >&2; die "node$n: '$NAME_V' resolves to '${lo:0:16}…', not the vault ${MSIG_ADDR:0:16}…"; }
+done
+[ "$(sqlite3 "$(db_of 1)" "SELECT COUNT(*) FROM utxo_set WHERE lower(hex(nullifier)) = '$GNUL';" 2>/dev/null || echo ERR)" = 0 ] \
+    || die "the vault's genesis coin is still unspent after its name registration landed"
+echo "[ok] after H: the 2-of-3 vault registered '$NAME_V' at height $hv; name lookup returns the vault address on 7/7"
+
+# ── 11. rev3: STAKE needs the STAKER's name after H (rule 2) ────────
+# a fresh consensus key KS (the harness's own identity maker), consenting
+# to each owner; the same key, bond and shape for both stakers
+kslog="$LOGD/stakekey_gen.log"
+bash "$S_DIR/stagef_hf6_owner.sh" "$LOGD/stakekey" "$SRV" > "$kslog" 2>&1 \
+    || { cat "$kslog" >&2; die "could not generate the fresh consensus key for the STAKE steps (see $kslog)"; }
+KS_ID="$LOGD/stakekey/identity"
+[ -s "$KS_ID/nodus.pk" ] && [ -s "$KS_ID/nodus.sk" ] || die "the fresh consensus key has no nodus.pk / nodus.sk"
+KS_FP=$(fp_of "$KS_ID")
+for n in $(seq 1 "$N"); do
+    [ "$(fp_of "$(node_keys "$n")")" != "$KS_FP" ] || die "the fresh consensus key is node$n's key"
+done
+# a. node 7 (nameless) WITHOUT --no-name-precheck: the CLI refuses
+consent_for "$FP7" "$LOGD/consent_node7"
+stake2 "$(node_keys 7)" "$LOGD/consent_node7" "$LOGD/stake2_node7_cli.log"
+[ "$SK_RC" != 0 ] || die "node7's nameless STAKE passed the CLI pre-check after H (see $LOGD/stake2_node7_cli.log)"
+grep -qF "$CLI_NONAME_STAKE" "$LOGD/stake2_node7_cli.log" \
+    || die "node7's STAKE failed, but not with the CLI's '$CLI_NONAME_STAKE' (see $LOGD/stake2_node7_cli.log)"
+! grep -q "dnac_spend\|CheckTx" "$LOGD/stake2_node7_cli.log" \
+    || die "node7's STAKE pre-check refusal still reached the node (see $LOGD/stake2_node7_cli.log)"
+[ "$SK_STATE" = 1 ] || die "the stake2 state line reads '$SK_STATE' after H, expected 1"
+echo "[ok] node7 (nameless staker): the CLI refused before signing"
+# b. the same at CheckTx
+stake2 "$(node_keys 7)" "$LOGD/consent_node7" "$LOGD/stake2_node7_postH.log" --no-name-precheck
+[ "$SK_RC" != 0 ] || die "node7's nameless STAKE was ADMITTED after H (see $LOGD/stake2_node7_postH.log)"
+grep -qF "$REFUSE_CODE" "$LOGD/stake2_node7_postH.log" && grep -qF "$REFUSE_TEXT_STAKE" "$LOGD/stake2_node7_postH.log" \
+    || die "node7's nameless STAKE was refused for ANOTHER reason (see $LOGD/stake2_node7_postH.log) — expected '$REFUSE_CODE' and '$REFUSE_TEXT_STAKE'"
+echo "[ok] node7's nameless STAKE REFUSED at CheckTx (the SYSTEM STAKE exec verdict)"
+# c. node 2 (named) with the same key and bond: it LANDS
+consent_for "$FP2" "$LOGD/consent_node2"
+stake2 "$(node_keys 2)" "$LOGD/consent_node2" "$LOGD/stake2_node2_named.log"
+[ "$SK_RC" = 0 ] || die "node2's NAMED STAKE was refused after H (see $LOGD/stake2_node2_named.log)"
+[ "${#SK_INTENT}" = 128 ] || die "node2's stake2 SUBMIT printed no intent_id"
+hs=$(wait_intent "$SK_INTENT" "node2's named STAKE")
+[ "$hs" -ge "$H" ] || die "node2's STAKE applied at $hs < H=$H"
+wait_all "$hs"
+KS_PK=$(xxd -p -c 99999 "$KS_ID/nodus.pk")
+for n in $(seq 1 "$N"); do
+    so=$(sqlite3 "$(db_of "$n")" \
+        "SELECT COUNT(*) FROM validators v JOIN v2_validator_roles r ON r.validator_id = v.pubkey_hash
+          WHERE lower(hex(r.owner_fp)) = '$FP2' AND lower(hex(v.pubkey)) = '$KS_PK';" 2>/dev/null || echo ERR)
+    [ "$so" = 1 ] || die "node$n: the new validator (owner node2, key KS) reads '$so' rows, want 1"
+    s7=$(sqlite3 "$(db_of "$n")" \
+        "SELECT COUNT(*) FROM v2_validator_roles WHERE lower(hex(owner_fp)) = '$FP7';" 2>/dev/null || echo ERR)
+    [ "$s7" = 0 ] || die "node$n holds a validator owned by node7 ('$s7') — the refused STAKE landed"
+done
+echo "[ok] after H: node2 (named) staked KS at height $hs, on 7/7; no node7-owned validator"
+
 stagef_cmt_diff_at_floor "post-hf8g5" || exit 2
 stagef_sentinel PASS
 echo ""
 echo "[info] HEIGHTS: HF2 $H2 | HF3 $H3 | GEN2 $H4 | EVM $HE | HF-6 $H6 | HF-7 A $A | node4 pre-vote at $h4 | '$NAME_B' at $hn"
 echo "       | param-17 vote tip $T_V17, row commit $R_V17, H=$H | node5 at $h5 | node2 at $h2 | owner at $h_own"
+echo "       | vault '$NAME_V' at $hv | node2's STAKE at $hs"
 echo "[PASS] HF-8 on generation 5: DELEGATE_NAME_REQUIRED voted at H=$H; dnac_fee_info reported 0 before H and 1"
 echo "       after it; nameless non-owner delegations landed before H and were REFUSED after it at CheckTx"
 echo "       (new, top-up, a node key to its own validator) and by the CLI's pre-check; a named delegator and"
-echo "       the validator's owner landed 7/7; blocks AT H-1/H/H+1 identical on 7/7."
-echo "       ONE build, E=15 / grace 15 / BPY 20 — the LOGIC only; the 2026-10-21 STAKE / multisig-name"
-echo "       amendment is NOT exercised (header)."
+echo "       the validator's owner landed 7/7; a 2-of-3 vault registered a name after H (lookup = the vault"
+echo "       on 7/7) and a member's coin was refused by the co-signer; a nameless STAKE was refused (CLI and"
+echo "       CheckTx) and a named one landed 7/7; blocks AT H-1/H/H+1 identical on 7/7."
+echo "       ONE build, E=15 / grace 15 / BPY 20 — the LOGIC only (header)."

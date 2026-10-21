@@ -120,13 +120,17 @@
 #     delegator is the validator row's OWNER — node 6's key delegating to
 #     node 6 (step 7d) is NOT an owner self-delegation there (the genesis
 #     validators are owned by the Foundation vault) and would be refused.
-#     None of that is exercised by this scenario; the generation-4 rule
-#     has unit coverage only (nodus/tests/test_hf6_calls.c A4 / A7 / B5,
-#     on the generation-4 runtimes; generation 5 shares that arm through
-#     rtn_gen_roles, generation >= 4).
-#     A generation-5 scenario (the six-vote path of test_cmt_hf7.sh, then
-#     names, the param-17 vote and owner / non-owner delegations) is an
-#     OPEN pre-vote item (nodus/docs/DEPLOY_RUNBOOK.md HF-8 note).
+#     None of that is exercised by this scenario; the generation-4/5 rule
+#     is test_cmt_hf8_gen5.sh's (the six-vote path of test_cmt_hf7.sh to
+#     generation 5, then names, the param-17 vote, owner / non-owner
+#     delegations and — HF-8 rev 3 — a vault's name and the STAKE rule)
+#     and the unit tests' (nodus/tests/test_hf6_calls.c A4 / A7 / B5,
+#     test_hf6_stake.c A8).
+#   - **HF-8 rev 3 (decision 2026-10-21-hf8-activation.md amendment) is
+#     NOT exercised here.** The STAKE name rule lives on the generation-4
+#     STAKE only (this chain stops at generation 2), and a multisig
+#     NAME_REGISTER — which the same param 17 admits at every generation
+#     >= 2 — is not attempted; both are test_cmt_hf8_gen5.sh's.
 #   - **The refusals are judged at CheckTx, not inside a block.** The CLI
 #     submits to node 1 only; CheckTx's dry run judges committed state at
 #     tip + 1 (the design's UX note), which is how a client meets the
@@ -148,11 +152,13 @@
 #   - **Node 4's refused top-up** proves "top-ups are covered" only
 #     because its row exists from step 2 (checked: its v2_intent_index row
 #     and its delegation row before H).
-#   - **The CLI's own refusal path is not exercised** — nodus-cli has no
-#     name pre-check for `v2-envelope delegate` (no node RPC reports
-#     whether param 17 is in force); every refusal here is the NODE's
-#     CheckTx answer (the text comes back in the error frame, commit
-#     4039bcc6).
+#   - **The CLI's own refusal path is not exercised here** — since
+#     8c7f83abf `v2-envelope delegate` pre-checks the rule (dnac_fee_info
+#     "delegate_name_required") and refuses a nameless non-exempt
+#     delegator before signing; every delegate() call passes
+#     --no-name-precheck, so every refusal here is the NODE's CheckTx
+#     answer (the text comes back in the error frame, commit 4039bcc6).
+#     The CLI pre-check's refusal is test_cmt_hf8_gen5.sh step 9a's.
 #   - Param 17's stateful rule (generation >= 2) is only SATISFIED here,
 #     never driven as a refusal; the vote's scalar / grace / stateful
 #     matrix is test_hf4_params.c.
@@ -405,13 +411,19 @@ ruleset_info() {
 
 # HF-8: one `v2-envelope delegate` from node $1's identity to node $2's
 # key, submitted to node 1. Sets DG_RC and DG_INTENT; output in $3.
+# --no-name-precheck on EVERY call: since 8c7f83abf the CLI refuses a
+# nameless non-exempt delegation itself once the node reports the rule ON,
+# and this scenario judges the NODE's CheckTx answer (step 7) — the flag
+# skips only that client-side refusal (the CLI still prints its
+# "delegate_name_required at tip + 1:" line).
 delegate() {
     local from="$1" to="$2" log="$3" port
     port=$(stagef_tcp_port 1)
     DG_RC=0
     "$CLI" -s 127.0.0.1 -p "$port" v2-envelope delegate \
         --keys "$(node_keys "$from")" --validator "$(pk_of "$to")" \
-        --amount "$AMOUNT" --submit "127.0.0.1:$port" > "$log" 2>&1 || DG_RC=$?
+        --amount "$AMOUNT" --no-name-precheck \
+        --submit "127.0.0.1:$port" > "$log" 2>&1 || DG_RC=$?
     cat "$log"
     DG_INTENT=$(awk '/^ *intent_id=/{sub(/^ *intent_id=/,""); print; exit}' "$log")
 }
