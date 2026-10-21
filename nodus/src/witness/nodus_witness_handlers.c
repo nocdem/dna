@@ -294,12 +294,18 @@ static void handle_dnac_supply(nodus_witness_t *w,
  * dnac_fee_info — Return current dynamic fee parameters
  *
  * Response: { base_fee, mempool, min_fee, gas_price, token_create_fee,
- *             stake_min, storage_bond, power_cap_bps, np, ns }
+ *             stake_min, storage_bond, power_cap_bps,
+ *             delegate_name_required, np, ns }
  * Client uses min_fee directly when building TX.
  *
  * stake_min / storage_bond / power_cap_bps (HF-6 slice 8a): chain_config
  * params 19 / 21 / 20 active at tip + 1, compiled defaults with no row
  * (see the read below).
+ *
+ * delegate_name_required (HF-8 pre-vote package, decision 2026-10-21-
+ * hf8-activation.md): chain_config param 17 active at tip + 1 — 0 = a
+ * DELEGATE needs no name, 1 = a non-exempt delegator must own an
+ * on-chain name (see the read below).
  *
  * token_create_fee (final pre-testnet wipe W-C, decision 2026-09-28-
  * token-create-fee-governance.md) = the committed TOKEN_CREATE_FEE_RAW
@@ -470,9 +476,39 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
         }
     }
 
-    /* 10 keys. Worst case: the response envelope 31 bytes + the 5 scalar
+    /* HF-8 pre-vote package (decision 2026-10-21-hf8-activation.md): is
+     * "delegation requires an on-chain name" (chain_config param 17,
+     * DELEGATE_NAME_REQUIRED) in force at tip + 1 — the height CheckTx
+     * judges the next envelope at? The engine's own read
+     * (nodus_witness_v2_apply.c env_delegate_name_required) statement for
+     * statement, as stake_min above mirrors env_stake_min: the same
+     * three-valued accessor, the same height, the same default 0 (no
+     * active row = OFF), and a stored value other than 0 / ON answers an
+     * error (the engine FAULTs on it), never a value. tip is this
+     * function's checked read, which on a version-3 chain runs the
+     * statement the CheckTx candidate height is derived from (MAX
+     * global_height over v2_blocks). A node with no chain open (w->db
+     * NULL, pre-genesis) holds no rows: 0, as for gas_price. Who is
+     * EXEMPT is not this key's — the chain decides that per DELEGATE
+     * (generation 4: delegator_fp == the validator row's owner_fp,
+     * decision D3). An older server sends no such key; the client
+     * decoder reports that as "unknown", never as "off". */
+    uint64_t dlg_name = 0;
+    if (w->db &&
+        (nodus_chain_config_get_u64(w,
+                                    (uint8_t)DNAC_CFG_DELEGATE_NAME_REQUIRED,
+                                    tip + 1, 0ULL, &dlg_name) < 0 ||
+         (dlg_name != 0ULL &&
+          dlg_name != DNAC_CFG_DELEGATE_NAME_REQUIRED_ON))) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                   "delegation name rule unreadable");
+        return;
+    }
+
+    /* 11 keys. Worst case: the response envelope 31 bytes + the 5 scalar
      * keys (<= 97) + the 3 HF-6 keys (stake_min 19, storage_bond 22,
-     * power_cap_bps 17) = 186, inside the 256; "np" 3 + 1 + 4 × 9 = 40,
+     * power_cap_bps 17) + delegate_name_required (23 + 1 = 24) = 210,
+     * inside the 256; "np" 3 + 1 + 4 × 9 = 40,
      * inside the 64; "ns" 4 + NODUS_DNAC_NAME_SCHED_MAX × 26, inside
      * the × 32. The rlen check below still refuses an overflow rather
      * than sending a truncated map. */
@@ -480,7 +516,7 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
 
-    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 10);
+    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 11);
     cbor_encode_cstr(&enc, "base_fee");
     cbor_encode_uint(&enc, base_fee);
     cbor_encode_cstr(&enc, "mempool");
@@ -497,6 +533,8 @@ static void handle_dnac_fee_info(nodus_witness_t *w,
     cbor_encode_uint(&enc, storage_bond);
     cbor_encode_cstr(&enc, "power_cap_bps");
     cbor_encode_uint(&enc, power_cap);
+    cbor_encode_cstr(&enc, "delegate_name_required");
+    cbor_encode_uint(&enc, dlg_name);
     cbor_encode_cstr(&enc, "np");
     cbor_encode_array(&enc, 4);
     for (size_t len_i = 3; len_i <= 6; len_i++)

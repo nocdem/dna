@@ -60,7 +60,12 @@
  *     dnac_fee_info reply through nodus_dnac_fee_info_decode — stake_min,
  *     storage_bond and power_cap_bps decoded beside the older keys, 0
  *     when an older server omits them, skipped by the name-price decoder;
- *     a truncated reply and NULL arguments refused.
+ *     a truncated reply and NULL arguments refused. HF-8 pre-vote package
+ *     (decision 2026-10-21-hf8-activation.md): "delegate_name_required"
+ *     through nodus_dnac_delegate_name_rule_decode — present 0 = OFF,
+ *     present 1 = ON, absent (an older server) = UNKNOWN, which is not
+ *     OFF; value 2, a duplicate key, truncation and NULL refused; the
+ *     whole-reply and name-price decoders skip the key.
  *  9. nodus_ruleset_compat (pure): 0 OK when the build carries the
  *     governing generation and no pending switch exceeds it; 2 UPDATE
  *     REQUIRED when generation > max (checked before 1, so the block at
@@ -1005,11 +1010,15 @@ static size_t np_reply(int with_np, size_t np_n, size_t ns_n, int bad_map) {
 
 /* HF-6 slice 8a: the WHOLE dnac_fee_info reply in the server's key order
  * (nodus_witness_handlers.c handle_dnac_fee_info) — the five scalar keys,
- * the three HF-6 keys when `with_hf6` (an older server sends none), "np"
- * and an empty "ns". */
-static size_t fi_reply(int with_hf6) {
+ * the three HF-6 keys when `with_hf6` (an older server sends none), the
+ * HF-8 "delegate_name_required" key with value `dlg` when dlg >= 0 (dlg <
+ * 0: absent, an older server; dlg_dup: the key written twice), "np" and
+ * an empty "ns". */
+static size_t fi_reply_ex(int with_hf6, int dlg, int dlg_dup) {
     cbor_encoder_t e;
-    reply_head(&e, "dnac_fee_info", (size_t)(7 + (with_hf6 ? 3 : 0)));
+    reply_head(&e, "dnac_fee_info",
+               (size_t)(7 + (with_hf6 ? 3 : 0) + (dlg >= 0 ? 1 : 0) +
+                        (dlg >= 0 && dlg_dup ? 1 : 0)));
     cbor_encode_cstr(&e, "base_fee");  cbor_encode_uint(&e, 1000000);
     cbor_encode_cstr(&e, "mempool");   cbor_encode_uint(&e, 0);
     cbor_encode_cstr(&e, "min_fee");   cbor_encode_uint(&e, 1000000);
@@ -1024,6 +1033,14 @@ static size_t fi_reply(int with_hf6) {
         cbor_encode_cstr(&e, "power_cap_bps");
         cbor_encode_uint(&e, 500);
     }
+    if (dlg >= 0) {
+        cbor_encode_cstr(&e, "delegate_name_required");
+        cbor_encode_uint(&e, (uint64_t)dlg);
+        if (dlg_dup) {
+            cbor_encode_cstr(&e, "delegate_name_required");
+            cbor_encode_uint(&e, (uint64_t)dlg);
+        }
+    }
     cbor_encode_cstr(&e, "np");
     cbor_encode_array(&e, 4);
     for (size_t j = 0; j < 4; j++)
@@ -1031,6 +1048,10 @@ static size_t fi_reply(int with_hf6) {
     cbor_encode_cstr(&e, "ns");
     cbor_encode_array(&e, 0);
     return cbor_encoder_len(&e);
+}
+
+static size_t fi_reply(int with_hf6) {
+    return fi_reply_ex(with_hf6, -1, 0);
 }
 
 /* a one-item dnac_v3_block page: item code `code`, with effects when
@@ -1214,6 +1235,54 @@ static int t_decoders(void) {
         CHECK(nodus_dnac_fee_info_decode(NULL, len, &fi) == -1 &&
               nodus_dnac_fee_info_decode(g_buf, len, NULL) == -1,
               "NULL arguments refused");
+    }
+
+    /* HF-8 pre-vote package: dnac_fee_info's "delegate_name_required" —
+     * present 0 = off, present 1 = on, absent (an older server) =
+     * UNKNOWN, never off; a value outside {0, 1}, a duplicate key, a
+     * truncated reply and NULL arguments refused; the whole-reply and
+     * name-price decoders skip the key */
+    {
+        static nodus_dnac_fee_info_t fi;
+        static nodus_dnac_name_prices_t np;
+        int st = 7;
+        len = fi_reply_ex(1, 0, 0);
+        CHECK(nodus_dnac_delegate_name_rule_decode(g_buf, len, &st) == 0 &&
+              st == NODUS_DLG_NAME_RULE_OFF, "dlg name rule: present 0 = off");
+        CHECK(nodus_dnac_fee_info_decode(g_buf, len, &fi) == 0 &&
+              fi.gas_price == 7 && fi.power_cap_bps == 500,
+              "fee_info decoder skips delegate_name_required");
+        CHECK(nodus_dnac_name_prices_decode(g_buf, len, &np) == 0 &&
+              np.price[0] == 400000000ULL,
+              "the name-price decoder skips delegate_name_required");
+        st = 7;
+        len = fi_reply_ex(1, 1, 0);
+        CHECK(nodus_dnac_delegate_name_rule_decode(g_buf, len, &st) == 0 &&
+              st == NODUS_DLG_NAME_RULE_ON, "dlg name rule: present 1 = on");
+        st = 7;
+        len = fi_reply_ex(1, -1, 0);
+        CHECK(nodus_dnac_delegate_name_rule_decode(g_buf, len, &st) == 0 &&
+              st == NODUS_DLG_NAME_RULE_UNKNOWN &&
+              NODUS_DLG_NAME_RULE_UNKNOWN != NODUS_DLG_NAME_RULE_OFF,
+              "dlg name rule: absent (older server) = unknown, not off");
+        st = 7;
+        len = fi_reply_ex(0, -1, 0);
+        CHECK(nodus_dnac_delegate_name_rule_decode(g_buf, len, &st) == 0 &&
+              st == NODUS_DLG_NAME_RULE_UNKNOWN,
+              "dlg name rule: a pre-HF-6 reply = unknown");
+        st = 7;
+        len = fi_reply_ex(1, 2, 0);
+        CHECK(nodus_dnac_delegate_name_rule_decode(g_buf, len, &st) == -1 &&
+              st == 7, "dlg name rule: value 2 refused, output untouched");
+        len = fi_reply_ex(1, 1, 1);
+        CHECK(nodus_dnac_delegate_name_rule_decode(g_buf, len, &st) == -1,
+              "dlg name rule: a duplicate key refused");
+        len = fi_reply_ex(1, 1, 0);
+        CHECK(nodus_dnac_delegate_name_rule_decode(g_buf, len - 3, &st) == -1,
+              "dlg name rule: a truncated reply refused");
+        CHECK(nodus_dnac_delegate_name_rule_decode(NULL, len, &st) == -1 &&
+              nodus_dnac_delegate_name_rule_decode(g_buf, len, NULL) == -1,
+              "dlg name rule: NULL arguments refused");
     }
 
     /* dnac_v3_block "nm" / "pr" */

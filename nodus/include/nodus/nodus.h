@@ -1382,6 +1382,37 @@ int nodus_client_dnac_name_of(nodus_client_t *client, const char *owner_hex,
 int nodus_client_dnac_name_prices(nodus_client_t *client,
                                   nodus_dnac_name_prices_t *out);
 
+/** HF-8 (decision docs/plans/decisions/2026-10-21-hf8-activation.md):
+ *  dnac_fee_info's "delegate_name_required" key — chain_config param 17
+ *  (DELEGATE_NAME_REQUIRED) as the node judges it at tip + 1, the height
+ *  CheckTx judges the next envelope at. A thin reader over the same
+ *  request nodus_client_dnac_fee_info sends, kept out of
+ *  nodus_dnac_fee_info_t (nodus_types.h) because that struct's uint64_t
+ *  fields read an absent key as 0, and 0 here means "off": an older node
+ *  that predates the key must read as UNKNOWN. Who is exempt is not
+ *  reported — the chain decides per DELEGATE (generation 4: the
+ *  validator row's owner, decision D3). */
+#define NODUS_DLG_NAME_RULE_UNKNOWN  (-1)  /**< key absent: an older node */
+#define NODUS_DLG_NAME_RULE_OFF        0
+#define NODUS_DLG_NAME_RULE_ON         1
+
+/** dnac_fee_info → *state_out = NODUS_DLG_NAME_RULE_*. Same returns as
+ *  nodus_client_dnac_name_prices (0; a NODUS_ERR_* the node answered;
+ *  NODUS_ERR_TIMEOUT; NODUS_ERR_PROTOCOL_ERROR on a malformed reply; -1
+ *  on invalid args / transport failure). *state_out is meaningful only
+ *  on 0. */
+int nodus_client_dnac_delegate_name_rule(nodus_client_t *client,
+                                         int *state_out);
+
+/** The raw-reply decoder nodus_client_dnac_delegate_name_rule uses,
+ *  exported for tests (no network). The v3d_* discipline: a duplicate
+ *  key, truncation, or a "delegate_name_required" value that is not the
+ *  unsigned integer 0 or 1 refuses; every other key is skipped. Key
+ *  absent → NODUS_DLG_NAME_RULE_UNKNOWN.
+ *  @return 0 / -1 (NULL argument or malformed reply). */
+int nodus_dnac_delegate_name_rule_decode(const uint8_t *raw, size_t raw_len,
+                                         int *state_out);
+
 /** The raw-reply decoders the four functions above use, exported for
  *  tests (no network). @return 0 / -1 malformed. */
 int nodus_dnac_ruleset_info_decode(const uint8_t *raw, size_t raw_len,

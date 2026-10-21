@@ -5689,6 +5689,41 @@ int nodus_dnac_name_prices_decode(const uint8_t *raw, size_t raw_len,
     return 0;
 }
 
+/* HF-8 — dnac_fee_info's "delegate_name_required" (contract: nodus.h).
+ * The v3d_* discipline of the name-price decoder above over the same
+ * reply: duplicates, truncation and a wrong type refuse; every other key
+ * is skipped. The one key may be absent (a server that predates it) and
+ * is then UNKNOWN — the rule may be in force there or not, so a client
+ * must not read the absence as "off". Present, it is exactly 0 or 1 (the
+ * server refuses to answer any other stored value). */
+int nodus_dnac_delegate_name_rule_decode(const uint8_t *raw, size_t raw_len,
+                                         int *state_out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k;
+    uint64_t       v = 0;
+    int            state = NODUS_DLG_NAME_RULE_UNKNOWN;
+
+    if (!raw || !state_out) return -1;
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) return -1;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) return -1;
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) return -1;
+        if (KEY_EQ(k, "delegate_name_required")) {
+            if (v3d_u64(&dec, 1, &v) != 0) return -1;
+            state = v ? NODUS_DLG_NAME_RULE_ON : NODUS_DLG_NAME_RULE_OFF;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            return -1;
+        }
+    }
+    if (dec.error) return -1;
+    *state_out = state;
+    return 0;
+}
+
 /* Storage reward v1, package B2b-CLI — dnac_storage_status (wire and
  * rules: nodus.h). The v3d_* discipline: duplicate keys, truncation and
  * wrong types refuse; unknown keys are skipped.
@@ -6006,6 +6041,19 @@ int nodus_client_dnac_name_prices(nodus_client_t *client,
     memset(out, 0, sizeof(*out));
     return hf4_query(client, "dnac_fee_info", NULL, NULL, hf4_dec_prices,
                      out);
+}
+
+static int hf8_dec_dlg_name(const uint8_t *r, size_t l, void *o) {
+    return nodus_dnac_delegate_name_rule_decode(r, l, (int *)o);
+}
+
+int nodus_client_dnac_delegate_name_rule(nodus_client_t *client,
+                                         int *state_out)
+{
+    if (!nodus_client_is_ready(client) || !state_out) return -1;
+    *state_out = NODUS_DLG_NAME_RULE_UNKNOWN;
+    return hf4_query(client, "dnac_fee_info", NULL, NULL, hf8_dec_dlg_name,
+                     state_out);
 }
 
 int nodus_client_dnac_storage_status(nodus_client_t *client,
