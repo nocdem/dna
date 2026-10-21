@@ -7120,9 +7120,8 @@ owner_fp` of the observed row — kind 1 or kind 3). The CORE leg is NOT gated t
 Foundation vault, D2 (a)), so a node key delegating to its own validator needs a name too. A
 refused generation-4/5 DELEGATE reads `… domain 0 op 2: runtime exec refused (rc -1)` behind
 CheckTx's `dry run item code 7` (`nodus_witness_v2_apply.c` `exec_one_env`). Full description:
-"HF-6 sub-slice 3e" below. **Not implemented:** the decision's 2026-10-21 amendment (the same flag
-also requiring a name for STAKE and admitting a multisig NAME_REGISTER) — its byte details go to the
-HF-8 design rev 3; nothing in this tree reads param 17 for STAKE or NAME_REGISTER.
+"HF-6 sub-slice 3e" below. **The same flag switches two more rules (rev 3, below):** a name for the
+STAKER of a generation-4/5 STAKE, and a NAME_REGISTER authorised by a multisig vault.
 
 **The parameter.** Chain-config id 17, `DELEGATE_NAME_REQUIRED` (`DNAC_CFG_DELEGATE_NAME_REQUIRED`,
 `dnac/include/dnac/dnac.h`; `CC_PARAM_DELEGATE_NAME_REQUIRED`, `nodus_witness_chain_config.c`,
@@ -7169,7 +7168,8 @@ registers, waits for the name to land, then delegates.
 
 **Covered / not covered.** New delegations AND top-ups (CORE cannot read the delegation row, so it
 cannot tell them apart — covered by force). Not covered: UNDELEGATE, existing rows (no retroactive
-effect), payout shares, STAKE, UNSTAKE, VALIDATOR_UPDATE; a nameless validator delegating to ANOTHER
+effect), payout shares, UNSTAKE, VALIDATOR_UPDATE, STORAGE_REGISTER (STAKE: generations 1-3 not
+covered; generation ≥ 4 covered by rev 3 below); a nameless validator delegating to ANOTHER
 validator is refused. A future name transfer can leave a live delegation nameless (allowed). HF-6
 (owner/key split) reshapes DELEGATE later and must carry this rule.
 
@@ -7197,6 +7197,85 @@ before signing: "This identity has no chain name. Delegating needs one: register
 register`, wait until it is in a block, then delegate." Unknown, an unreadable validator row or an
 unknown target → no pre-check, the node decides; `--no-name-precheck` skips the refusal (the node's
 CheckTx is the authority). The web wallet's pre-check is not part of this change.
+
+#### HF-8 rev 3 — STAKE needs the staker's name; a vault may register a name (same flag, same height)
+
+**Governing records:** decision `docs/plans/decisions/2026-10-21-hf8-activation.md`, amendment
+2026-10-21 (operator: "Hem delegasyon da hem stake edenler için de aynı şey geçerli olması lazım."
+— STAKE too; the clarification that the name is the STAKER's ID, the generation-4 STAKE call's
+`owner_fp`, never the node / consensus key, and that a single-key third party may still pay the
+bond; "ekle." — multisig NAME_REGISTER, owner = the vault address; "Yalnız kasanın parası" — a
+kind-3 NAME_REGISTER is refused unless EVERY input is the vault's); design
+`docs/plans/2026-10-07-delegate-name-required-design.md` rev 3; Kurultay #33
+(`docs/plans/kurultay/2026-10-21-33-hf8-stake-msig/` fable-r1 / astra-r1 — the third owner site).
+All three rules read ONE predicate, `rtn_deleg2_name_gate(ctx)` (= the engine fact
+`ctx->delegate_name_required`); with it 0 every plan, read count, unit and verdict is byte-identical
+to before.
+
+**Generation matrix.** Rule 1 (DELEGATE) — generations 1-3 on the CORE SYSFUND leg, ≥ 4 on the SYSTEM
+DELEGATE leg (above). Rule 2 (STAKE) — generation ≥ 4 only (the 7301-byte owner STAKE,
+`rtn_stake2_read_plan` / `rtn_stake2_exec`; generations 1-3 STAKE is untouched). Rule 3 (multisig
+NAME_REGISTER) — every generation ≥ 2 (`rtn_name_owner`, the NAME_REGISTER code exists from
+generation 2) whenever param 17 is in force. Param 17's stateful vote rule (judging generation ≥ 2,
+`nodus_witness_chain_config.c`) is NOT tightened. Rules 2 and 3 are coupled for a vault owner: a
+kind-3 STAKE's `owner_fp` is the vault address, so after H a vault stakes a new witness only once the
+vault holds a name. The D3 exemption keeps a nameless OWNER's self-delegation (a top-up of its own
+validator) legal after H — "stake needs a name" binds a NEW STAKE only.
+
+**Rule 2 — STAKE (generation ≥ 4).** The read plan and the exec's read indices:
+
+| gate | [0] | [1] | [2] | [3] | n_reads | capacity check |
+|---|---|---|---|---|---|---|
+| 0 | STATS (op 7, active_count) | VAL2 (op 13, validator_id) | KEYRES (op 17, SHA3-512(consensus_pk)) | — | 3 | `max_reqs < 3` → −1 |
+| 1 | STATS (op 7) | VAL2 (op 13) | **NAMEOWN2 (op 16, the call's `owner_fp`)** | KEYRES (op 17) | 4 | `max_reqs < 4` → −1 |
+
+Strict ascent by op id (7 < 13 < 16 < 17). The exec checks `n_reads == (gate ? 4 : 3)` BEFORE
+dereferencing any read (else −2, a node fault), then — after the owner authority
+(`rtn_sys_owner_auth`, kind 1 or kind 3) and the consent — refuses an absent NAMEOWN2 answer (−1)
+and faults on a present one outside 3..36 bytes (−2, the D3 precedent). No exemption (the staker is
+the actor). The key is `owner_fp` — kind 1: the signer; kind 3: the vault address — never the
+consensus key, never the funding leg's payer. The CORE SYSFUND sibling is not gated (inputs + pool,
+15 inputs; the kind-3 payer binding `rtn_sysfund_payer_bound` unchanged). One extra `w_read` per STAKE
+after H; the client's fixed `NODUS_V2_STAKE_UNITS` (400 000) is far above a STAKE's actual units
+(JUDGMENT from the byte sizes — not measured). A refusal reads `… domain 0 op 1: runtime exec refused
+(rc -1)`.
+
+**Rule 3 — multisig NAME_REGISTER (generation ≥ 2).** One owner derivation,
+`rtn_name_owner_of(env, leg, verdict, kind3_ok, &owner)`, feeds all THREE consumers — the read
+plan's OWNER (op 6) key, the exec's stored owner, and the CheckTx synthetic conflict key
+`nodus_rt_core_name_owner_key` — so they cannot disagree. Kind 1: exactly one signer, no descriptor,
+owner = `signer_fp[0]` (unchanged). Kind 3 (only when `kind3_ok`): ≥ 1 verified signer, EXACTLY one
+carried descriptor, satisfied (≥ M of its keys signed), every signer one of its keys (D6) — owner =
+`msig_addr[0]`, the vault address (the shape `rtn_sys_owner_auth`'s kind-3 branch accepts). Kind 2
+and any other shape: −1. `rtn_name_owner` (plan + exec) passes `kind3_ok = rtn_deleg2_name_gate(ctx)`;
+`nodus_rt_core_name_owner_key` passes 1 and needs no flag: its one caller (the CheckTx dry run,
+`nodus_witness_v2_apply.c`) reaches it only after the exec accepted the leg, and the exec refuses kind
+3 while the flag is 0 — so a well-formed vault registration never hits the dry run's "owner key
+underivable" FAULT (Kurultay #33's finding). **Vault-only funding:** `rtn_name_exec` refuses (−1) any
+input whose owner is not the registering owner's hex — for kind 1 this adds no refusal
+(`rtn_input_owned` already accepts only the one signer's coins there), for kind 3 it refuses a
+member's coin the ownership predicate would accept; `rtn_input_owned` still runs first (it marks the
+descriptor used, `rtn_owners_all_used` unchanged). One name per ID, first wins, permanent: unchanged
+(the OWNER read keyed by the vault address). The read count stays inputs + 3 (13-input cap).
+
+**Clients.** The shared library builds the vault's registration through the existing v1 multisig
+flow: `nodus_v2_name_msig_build` (`nodus/src/client/nodus_v2_name.c` — the UNSIGNED single-leg
+envelope, auth kind 3 with K zero slots + the descriptor, every named coin spent, change to the
+vault, units = `nodus_v2_spend_ceiling` with inputs + 3 reads, pass-1 digest), the v1 export / sig
+texts, `nodus_v2_name_msig_review` (the co-signer's read-back: membership, the digest re-derived,
+the expiry window, the strict call, a change output only to the vault), and
+`nodus_v2_msig_combine_op(…, DNA_CORERULE_NAME_REGISTER, …)` (`nodus_v2_msig.c`; with
+`nodus_v2_msig_leg_open_op` — the SPEND entry points are unchanged and still refuse a name export).
+nodus-cli: `name register <name> --msig <descriptor> --keys <session> --in <nul>:<amt> … [--signers
+K] [--fee] --export <file>` (pre-checks generation ≥ 2, `delegate_name_required` — 0 refuses,
+unknown warns — the name not taken, the vault not yet named); `msig sign` recognises a
+NAME_REGISTER leg, reads it back and verifies every input against the vault's coins on the
+co-signer's own pinned node (`msig_inputs_verify`, as for a vault SPEND); `msig combine` opens the
+leg for its own op. `v2-envelope stake2` runs the delegate pre-check on the STAKER (the `--keys`
+identity or the `--msig` vault; no exemption; `--no-name-precheck`; unknown = no pre-check). The web
+wallet's WASM module compiles the same files but calls none of the new functions (not part of this
+change). Tests: `test_hf6_stake` A8, `test_hf4_names` 6b, `test_hf8_msig_name` (engine, twin chains),
+`test_v2_name_build` N5; stagef `test_cmt_hf8_gen5.sh` steps 7b, 10, 11.
 
 **Tests.** `test_v2_native` §20 (hook level K1-K7: the plan / exec count contract on / off, verdict
 vs fault, self-delegation and UNDELEGATE exempt, the 14/15 ceiling, an unparseable call, pins and D

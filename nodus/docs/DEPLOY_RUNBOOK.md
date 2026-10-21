@@ -733,7 +733,7 @@ time; text names the vote block and the effective block), plus the Wiki fork lis
 | HF-4 | rule-set generation 2 (SYSTEM v7 / CORE v5): the registry switches at the end of H−1; CORE op 8 NAME_REGISTER (on-chain names) and the name-price params 10-13 are in force from H | 9 `RULESET_GEN2` | 4962894749133920991 (D2 = 0x44dfbe7ad3c75adf) | 2431 | 3151 | 0.23.10 | `BD84A28A3D3EE5B1` |
 | HF-5 | rule-set generation 3: SYSTEM v8 / CORE v6 / EVM v2 — the EVM domain (domain 2) registered ACTIVE at the end of H−1; CORE op 9 EVMFUND; id 15 EVM_BLOCK_GAS_LIMIT in force | 14 `EVM_ACTIVE` | 188948158701949959 (D = 0x029f47596864d407) | 62425 | 79757 | 0.24.1 | `1D6A68F08EC42ED0` |
 | HF-6 validator owner/node roles + archive storage, after HF-5 | rule-set generation 4 (SYSTEM v10 / CORE v9 — SYSTEM v10 and CORE v8 since HF-6 D2, khan decision `2026-10-13-kurultay-18-summary.md` item 3, the call layouts of UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT changed and the ruleset hash does not commit layouts; CORE v9 since the payer binding, design `2026-10-03-hf5-validator-owner-stake` §2 "ÖDEYİCİ BAĞLAMA — han kararı 2026-10-13": a multisig (kind-3) CORE funding leg of an owner operation must be the vault the SYSTEM call's signed owner names — from the EVM generation 3 — only after HF-5 is in force; EVM v2 unchanged): at the end of H−1 the registry switches 3 → 4 AND the validator migration runs (keys re-valued to validator_id, each 10M bond → 2M bond + 8M Foundation-owned self-delegation, the Foundation accrual merge), the SYSTEM root becomes `NDS.SYS.v5` in H−1's own app_hash; from H: SYSTEM ops 7 STORAGE_REGISTER / 8 STORAGE_EXIT / 9 STORAGE_REPORT (no op 10: ROTATE_CONSENSUS_KEY was removed, khan decision `2026-10-13-kurultay-18-summary.md` item 1 — a used consensus key is burned for good, §2.7), the owner/node split for both roles (UNSTAKE / VALIDATOR_UPDATE / STORAGE_EXIT name their owner in the call, "C2", §2.6-§2.7), params 19 `STAKE_MIN` / 20 `POWER_CAP_BPS` / 21 `STORAGE_BOND` votable; the storage boundary gate opens at the first boundary ≥ H | 18 `RULESET_GEN_ROLES` (khan 2026-10-13; param 16 `RULESET_GEN_STORAGE` RETIRED — the new binary refuses it) | 7217855907516077065 (D4 = 0x642af9b4bf735409 since the payer binding / CORE v9 — 0x5922111a3501f58b at HF-6 D2 and 0x4dc61072d5982acd before it, neither ever voted; `DNAC_CFG_RULESET_GEN_ROLES_D`, from `shared/dnac/tests/hf6_vote_oracle.py`, design rev 6 §8.1) | 175307 | 176100 | 0.26.0 | `9C0C9A6B734742A4` |
-| HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not exempt is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; UNDELEGATE, existing rows and payouts untouched). Under rule-set generation 4 and later (the testnet: generation 5) the rule is the SYSTEM DELEGATE leg's (decision D3, `2026-10-09-kurultay-16-hf6-storage-summary.md`; op 16 NAMEOWN2) and the exempt delegator is the validator row's OWNER (`delegator_fp == owner_fp`) — a node key is not the owner; the funding leg keeps 15 inputs. Under generations 1-3 it was the CORE SYSFUND leg's (exempt = same pubkey, funding leg ≤ 14 inputs). No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | 0.25.3 (code released, inert, vote not cast) | — |
+| HF-8 delegation requires an on-chain name (**not voted** — placeholder) | a DELEGATE whose delegator is not exempt is refused unless the delegator's fingerprint owns a `v2_names` row (new delegations AND top-ups; UNDELEGATE, existing rows and payouts untouched). Under rule-set generation 4 and later (the testnet: generation 5) the rule is the SYSTEM DELEGATE leg's (decision D3, `2026-10-09-kurultay-16-hf6-storage-summary.md`; op 16 NAMEOWN2) and the exempt delegator is the validator row's OWNER (`delegator_fp == owner_fp`) — a node key is not the owner; the funding leg keeps 15 inputs. Under generations 1-3 it was the CORE SYSFUND leg's (exempt = same pubkey, funding leg ≤ 14 inputs). Rev 3 (decision amendment 2026-10-21; branch `hf8-stake-msig`): the same flag also refuses a generation-4/5 STAKE whose STAKER (`owner_fp`) owns no name (no exemption), and admits a NAME_REGISTER by a satisfied multisig (owner = the vault address, every input the vault's). No rule-set generation, no ruleset hash, no D moves | 17 `DELEGATE_NAME_REQUIRED` (number assigned in main merge order after storage's 16) | 1 | — | — | 0.25.3 (code released, inert, vote not cast) | — |
 | HF-7 the roots generation (**ACTIVE since block 282684** — nodus 0.26.17, voted in 281957; snapshot design `docs/plans/2026-09-11-nodus-ledger-snapshot-design.md` §10) | rule-set generation 5 (SYSTEM v11 / CORE v10 — generation 4's descriptors with only the version moved, so every pre-A SYSTEM / CORE leg and every pre-A EVM envelope (its CORE EVMFUND leg) fails preflight at A; EVM v2 unchanged), from generation 4 only: at the end of A−1 the registry switches 4 → 5 and every head's `last_upd_hash` is seeded; A−1's own roots are SYSTEM `NDS.SYS.v6` / DomainHead v2 / GLOBAL v2 over the EMPTY replay root; from A: the `v2_replay` relation is the only replay guard and an envelope with expiry 0 or outside [H, H + 720] makes the block INVALID (never a failed item). Grace ERGONOMIC 720 blocks (khan decision B, 2026-10-20). Requires witness schema **S19** at the edge. Harness: `nodus/tests/integration/stagef/tests/test_cmt_hf7.sh` (standalone, ONE short-epoch build — no OLD/NEW rolling upgrade; **PASS 2026-10-20** at E15 on `18d6892fe`; its README row lists what it does not cover) | 22 `RULESET_GEN_ROOTS` | 8019891019285098644 (D5 = 0x6f4c60640dd57094, `DNAC_CFG_RULESET_GEN_ROOTS_D`, from `shared/dnac/tests/hf7_vote_oracle.py`; binds the 720 window only — khan decision C) | — | — | — (not released) | — |
 
 Read 2026-10-20: HF-7 ACTIVE on 8/8 (the 7 Foundation nodes + the operator's node 62.171.136.77,
@@ -850,16 +850,20 @@ validator needs a name too; the Foundation's own self-delegations are exempt. Th
 (`docs/plans/2026-10-07-delegate-name-required-design.md` §1, still the CORE / 14-input wording) predates D3;
 `nodus/docs/ARCHITECTURE.md`'s HF-8 section states the generation split since the HF-8 pre-vote package (branch
 `hf8-pkg`). Activation decision: `docs/plans/decisions/2026-10-21-hf8-activation.md` (vote once every test passes,
-effective 720 blocks after the vote; its 2026-10-21 AMENDMENT widens the same flag to STAKE and to a multisig
-NAME_REGISTER — NOT implemented in this tree, byte details go to the HF-8 design rev 3; until that lands the vote would
-switch on the DELEGATE rule only). It is the HF-2 / HF-3 shape — a
+effective 720 blocks after the vote; its 2026-10-21 AMENDMENT widens the same flag to STAKE — the STAKER's name, the
+generation-4 STAKE call's `owner_fp`, never the node key — and to a multisig NAME_REGISTER whose owner is the vault and
+whose every input must be the vault's: WRITTEN on branch `hf8-stake-msig` (HF-8 design rev 3, Kurultay #33;
+`nodus/docs/ARCHITECTURE.md` "HF-8 rev 3"), so a binary of that branch switches on all three rules at the one H, an
+older binary only the DELEGATE rule — mixed binaries after H diverge at the first STAKE or vault registration). It is the HF-2 / HF-3 shape — a
 one-way flag (value exactly 1, no single-use rule, grace ERGONOMIC), NOT a rule-set generation,
 so there is no switch at H−1, no new startup line and no literal to compare; one stateful rule:
 the vote is refused unless rule-set generation ≥ 2 judges it (names must exist — on the testnet
 chain generation 2 is in force since HF-4). Its vote follows the HF-2 procedure below with
 `--param DELEGATE_NAME_REQUIRED --value 1`, ONLY after 7/7 run a binary that carries it (a node
 without it would admit, at and after H, a nameless DELEGATE the others refuse — it diverges at
-that block). Pre-vote checklist (read 2026-10-21 on branch `hf8-prevote`, base 086b64fa2):
+that block; with rev 3 the same holds for a nameless STAKE, and a node without rev 3 refuses a
+vault's name registration the others apply — so EVERY node runs the rev-3 binary BEFORE the vote,
+not merely before H, since H = vote + 720). Pre-vote checklist (read 2026-10-21 on branch `hf8-prevote`, base 086b64fa2):
 - Vote acceptance under generation 5: the stateful rule is `judging_generation >= 2`
   (`nodus_witness_chain_config.c` `CC_PARAM_DELEGATE_NAME_REQUIRED`), so it passes; scalar exactly 1, grace ERGONOMIC.
   `chain-config propose` builds its envelope with the node-selected SYSTEM ruleset version and the shared expiry
@@ -879,20 +883,32 @@ that block). Pre-vote checklist (read 2026-10-21 on branch `hf8-prevote`, base 0
   key = UNKNOWN, never OFF). Unit test `test_hf4_names` client_decoders written, NOT run. Needs a node release + deploy
   before any client can rely on it (the operator's word, decision `2026-10-21-hf8-activation.md` "Not covered").
 - Harness: `test_cmt_hf8_delegate_name.sh` PASSED 2026-10-07 but proves the generation-2 rule only (its header and README
-  row say so since commit fd173ac5d). ⚠ With a CLI carrying the pre-check its step 7a / 7b meet the CLI's refusal, not
-  the node's CheckTx text, and the script FAILS there until its `delegate()` passes `--no-name-precheck` (that script was
-  outside the `hf8-pkg` whitelist — OPEN). Generation-5 scenario `test_cmt_hf8_gen5.sh`: WRITTEN on branch `hf8-pkg`
-  (commit 77e44e12f; the six-vote path of `test_cmt_hf7.sh`, a name, the param-17 vote, a nameless non-owner refused at
-  CheckTx with `domain 0 op 2: runtime exec refused (rc -1)` and by the CLI pre-check, a node key refused, a named
-  delegator and the TEST owner landing, the field 0 / 1; needs a TEST-OWNER build — `stagef_hf6_owner.sh`). OPEN: its
-  harness run (not run by its author).
+  row say so since commit fd173ac5d). Its `delegate()` now passes `--no-name-precheck` (branch `hf8-stake-msig`), so step
+  7 meets the node's CheckTx text again with a CLI carrying the pre-check; NOT re-run. Generation-5 scenario
+  `test_cmt_hf8_gen5.sh`: WRITTEN on branch `hf8-pkg` (commit 77e44e12f; the six-vote path of `test_cmt_hf7.sh`, a name,
+  the param-17 vote, a nameless non-owner refused at CheckTx with `domain 0 op 2: runtime exec refused (rc -1)` and by
+  the CLI pre-check, a node key refused, a named delegator and the TEST owner landing, the field 0 / 1; needs a
+  TEST-OWNER build — `stagef_hf6_owner.sh`), extended on `hf8-stake-msig` with rev 3 (steps 7b, 10, 11: the CLI refusing
+  a vault name below H; after H a vault's name registered and looked up 7/7, a member's coin refused by the co-signer,
+  a nameless STAKE refused by the CLI and at CheckTx with `domain 0 op 1: runtime exec refused (rc -1)`, a named STAKE
+  landing; it now also needs the bring-up's genesis 2-of-3 coin files and python3). OPEN: its harness run (not run by
+  its author).
 - Web wallet / Connect pre-check and its plain-language error ("register a name first, wait for it to be confirmed"):
   OPEN — unblocked by the RPC field above once the node release carrying it is deployed. The validator's owner (for the
   exemption) is in the `dnac_validator_list_query` answer (`"owner"`, `nodus_witness_handlers.c`), the name in
   `dnac_name_of`; an UNKNOWN answer (an older node) must mean "no pre-check", never "rule off". The 14-input cap is NOT a
   client item under generation ≥ 4 (the shared builder `nodus_v2_stake.c` already uses 15 for a generation-4 DELEGATE).
-- The decision's 2026-10-21 amendment (STAKE + multisig NAME_REGISTER under param 17): OPEN, not implemented (design
-  rev 3 + its Kurultay).
+- The decision's 2026-10-21 amendment (STAKE + multisig NAME_REGISTER under param 17): WRITTEN on branch
+  `hf8-stake-msig` (design rev 3, Kurultay #33 fixes: the CheckTx owner-key helper derives the vault too — without it
+  every multisig registration would FAULT CheckTx; the STAKE read plan [7][13][16][17] with the count checked before any
+  read; vault-only funding). Unit tests `test_hf6_stake` A8, `test_hf4_names` 6b, `test_hf8_msig_name`,
+  `test_v2_name_build` N5 written and compiled, NOT run; ctest + the harness run OPEN. Client items: nodus-cli `name
+  register --msig`, `msig sign` / `msig combine` of a vault name, `v2-envelope stake2` name pre-check — compiled, NOT
+  run. NOT covered: the web wallet (its vault UI and stake flow call none of the new functions), the explorer (its
+  `item_names.owner` reads the first input's owner — per Kurultay #33 fable-r1, `explorer/src/exp_db.c` :165-169; with
+  vault-only funding the first input is the vault's; not re-read here).
+- Before the vote: every live node on the rev-3 binary (all three rules switch at the one H; a mixed fleet diverges at
+  the first STAKE or vault name after H).
 - The vote itself, its effective height and the harness run: the operator's / ORCHESTRATOR's.
 Operational notes: CheckTx judges committed state at tip + 1, so a
 user registers a name, waits for it to land, then delegates; 2 of the 8 live delegators had no

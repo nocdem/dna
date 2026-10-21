@@ -753,22 +753,36 @@ typedef enum {
                                           *   decision 2026-10-05-hf-
                                           *   numbering-evm-hf5.md "Ek
                                           *   2026-10-07"): the one-way
-                                          *   switch of "delegation
-                                          *   requires an on-chain name".
-                                          *   From the row's
-                                          *   effective_block on, the
-                                          *   CORE SYSFUND leg of a
-                                          *   DELEGATE envelope whose
-                                          *   delegator is not the
-                                          *   validator itself reads the
-                                          *   delegator's v2_names row by
-                                          *   owner (CORE NAMEOWN) and
-                                          *   refuses the envelope when
-                                          *   there is none; that funding
-                                          *   leg then takes at most 14
-                                          *   inputs (the read budget).
-                                          *   New delegations AND top-ups;
-                                          *   self-delegation exempt;
+                                          *   switch of THREE rules from
+                                          *   the row's effective_block
+                                          *   (decision docs/plans/
+                                          *   decisions/2026-10-21-hf8-
+                                          *   activation.md + its
+                                          *   amendment; design rev 3):
+                                          *   (1) a DELEGATE needs the
+                                          *   delegator's v2_names row —
+                                          *   generations 1-3 on the
+                                          *   CORE SYSFUND leg (CORE
+                                          *   NAMEOWN; exempt: delegator
+                                          *   == validator key; funding
+                                          *   <= 14 inputs), generation
+                                          *   >= 4 on the SYSTEM DELEGATE
+                                          *   leg (SYSTEM NAMEOWN2;
+                                          *   exempt: delegator == the
+                                          *   validator row's owner,
+                                          *   decision D3; funding 15) —
+                                          *   new delegations AND
+                                          *   top-ups; (2) generation
+                                          *   >= 4: a STAKE needs the
+                                          *   STAKER's (the call's
+                                          *   owner_fp, never the node
+                                          *   key) name, no exemption;
+                                          *   (3) generation >= 2: a
+                                          *   NAME_REGISTER may be
+                                          *   authorised by a satisfied
+                                          *   multisig — owner = the
+                                          *   vault address, every input
+                                          *   the vault's.
                                           *   UNDELEGATE, existing rows
                                           *   and payouts untouched. No
                                           *   row = OFF (byte-identical:
