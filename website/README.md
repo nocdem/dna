@@ -825,3 +825,22 @@ the HF-7 item; "Planned, not live" no longer says the HF-7 number is retired. Sc
 `hardForks` gains HF-7 (param 22, with `paramName`). The pages say the snapshot download for state
 sync is not built yet. `npm run build:portals` (Scan pages re-stamped: only the `?v=` values
 changed) and `npm run check` were run; browser validation has not been run for this change.
+
+2026-10-21, Wiki "Run a node" (operator: the Wiki had a storage-node guide but no witness guide, and the text
+was too complicated — "son kullanıcı için her şeyin çok kolay olması"; one node can hold every role). The
+resource-network page (`network.html`) replaces "Running a node" + "Run a storage node" with three sections
+(EN+TR): **Run a node** (`#node`) — what you need in one line and three steps: install with
+`install-node.sh`, wait until `nodus-cli status` "behind by" says OK, choose a role in Nodus Connect
+(More → Nodus → Become a witness / Become a storage node); **Choose a role** (`#roles`) — witness
+(bond ≥ 2,000,000), storage node (bond 1,000,000), bandwidth and compute planned; one node can hold
+several roles, each registered separately; leaving via My registered nodes (witness bond after 84 epochs);
+**Details for operators** (`#node-details`) — the three processes, the installer SHA-256 check (now its own
+code block, so it no longer runs off a phone screen), the network file, the consent, how storage is paid,
+block retention, the link to `nodus/docs/STORAGE_NODE.md`. Every fact moved from the old sections or was read
+at source: install installs only on Debian/Ubuntu (`install-node.sh:215-221`), "behind by" OK/WARN
+(`nodus/tools/nodus-cli.c:7652`), bonds (`dnac.h` `DNAC_HF6_STAKE_MIN_DEFAULT`, `DNAC_HF6_STORAGE_BOND_DEFAULT`;
+Connect shows the live value), Connect's row names (`web-wallet/src/nodus-roles.js:403-405`). The sentence
+"all seven testnet nodes run this layout" was dropped (a dated node count the steps do not need). The old anchor
+`#storage-node` is gone: links in the Wiki "Earn NODUS" list, `tokenomics.html` and its Turkish keys in
+`app.js` (`tok.streamStorageHow`, `tok.rolesPools`) now point to `#node`. `npm run build:portals` and
+`npm run check` run; local headless screenshots at 1280 px and 390 px checked.
