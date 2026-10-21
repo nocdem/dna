@@ -1,0 +1,1 @@
+[{"inputs":[],"name":"ForceFailed","type":"error"},{"inputs":[{"internalType":"address","name":"target","type":"address"}],"name":"force","outputs":[],"stateMutability":"payable","type":"function"}]
