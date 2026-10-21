@@ -10629,20 +10629,47 @@ typedef struct {
     evm_abi_kind_t k;
     unsigned       bits;      /* uint / int                             */
     unsigned       size;      /* bytes<M>                               */
+    unsigned       arr;       /* 1: T[] of the static element type above */
 } evm_abi_type_t;
 
 static int evm_abi_dynamic(const evm_abi_type_t *t) {
-    return t->k == EVM_ABI_BYTES || t->k == EVM_ABI_STRING;
+    return t->arr || t->k == EVM_ABI_BYTES || t->k == EVM_ABI_STRING;
 }
 
-/* One type name (n chars) → type + its canonical text. @return 0 / -1. */
+/* One type name (n chars) → type + its canonical text. A one-dimensional
+ * dynamic array T[] of a static T is accepted when `allow_arr`; T[k],
+ * nested arrays, string[] / bytes[] and tuples are refused with a message.
+ * @return 0 / -1. */
 static int evm_abi_type(const char *s, size_t n, evm_abi_type_t *t,
-                        char *canon, size_t cap) {
-    char name[24];
+                        char *canon, size_t cap, int allow_arr) {
+    char name[32];
     if (n == 0 || n >= sizeof(name)) return -1;
     memcpy(name, s, n);
     name[n] = '\0';
     memset(t, 0, sizeof(*t));
+    if (strchr(name, '(') || strchr(name, ')')) {
+        fprintf(stderr, "%s: tuples are not supported\n", name);
+        return -1;
+    }
+    char *lb = strchr(name, '[');
+    if (lb) {
+        if (!allow_arr) {
+            fprintf(stderr, "%s: arrays are not supported in a return list "
+                    "(they are not decoded)\n", name);
+            return -1;
+        }
+        if (strchr(lb + 1, '[')) {
+            fprintf(stderr, "%s: nested arrays are not supported\n", name);
+            return -1;
+        }
+        if (strcmp(lb, "[]") != 0) {
+            fprintf(stderr, "%s: only the dynamic array T[] is supported "
+                    "(no fixed-size T[k])\n", name);
+            return -1;
+        }
+        *lb = '\0';
+        t->arr = 1;
+    }
     if (!strcmp(name, "address")) t->k = EVM_ABI_ADDR;
     else if (!strcmp(name, "bool")) t->k = EVM_ABI_BOOL;
     else if (!strcmp(name, "string")) t->k = EVM_ABI_STRING;
@@ -10660,8 +10687,7 @@ static int evm_abi_type(const char *s, size_t n, evm_abi_type_t *t,
         if (bits < 8 || bits > 256 || bits % 8) return -1;
         t->k = is_u ? EVM_ABI_UINT : EVM_ABI_INT;
         t->bits = bits;
-        snprintf(canon, cap, "%s%u", is_u ? "uint" : "int", bits);
-        return 0;
+        snprintf(name, sizeof(name), "%s%u", is_u ? "uint" : "int", bits);
     } else if (!strncmp(name, "bytes", 5)) {
         char *end = NULL;
         unsigned long m = strtoul(name + 5, &end, 10);
@@ -10669,16 +10695,23 @@ static int evm_abi_type(const char *s, size_t n, evm_abi_type_t *t,
         t->k = EVM_ABI_FBYTES;
         t->size = (unsigned)m;
     } else {
-        return -1;                     /* arrays, tuples, function: refused */
+        return -1;                              /* function, unknown: refused */
     }
-    snprintf(canon, cap, "%s", name);
+    if (t->arr && (t->k == EVM_ABI_BYTES || t->k == EVM_ABI_STRING)) {
+        fprintf(stderr, "%s[]: arrays of a dynamic type are not supported\n",
+                name);
+        return -1;
+    }
+    /* the canonical text ("uint" -> "uint256"), as the selector hashes it */
+    if (snprintf(canon, cap, "%s%s", name, t->arr ? "[]" : "") >= (int)cap)
+        return -1;
     return 0;
 }
 
 /* "t1,t2" (n chars, may be empty) → types; appends the canonical list to
  * `canon`. @return the count, or -1. */
 static int evm_abi_list(const char *s, size_t n, evm_abi_type_t *ts,
-                        char *canon, size_t cap) {
+                        char *canon, size_t cap, int allow_arr) {
     int cnt = 0;
     size_t i = 0;
     while (i < n) {
@@ -10687,9 +10720,10 @@ static int evm_abi_list(const char *s, size_t n, evm_abi_type_t *ts,
         size_t a = i, b = j;
         while (a < b && s[a] == ' ') a++;
         while (b > a && s[b - 1] == ' ') b--;
-        char one[24];
+        char one[40];
         if (cnt >= EVM_ABI_MAX_ARGS ||
-            evm_abi_type(s + a, b - a, &ts[cnt], one, sizeof(one)) != 0)
+            evm_abi_type(s + a, b - a, &ts[cnt], one, sizeof(one),
+                         allow_arr) != 0)
             return -1;
         size_t cl = strlen(canon);
         if (snprintf(canon + cl, cap - cl, "%s%s", cnt ? "," : "", one) >=
@@ -10731,7 +10765,7 @@ static int evm_abi_sig(const char *sig, evm_abi_sig_t *g) {
     g->canon[nl] = '(';
     g->canon[nl + 1] = '\0';
     int n = evm_abi_list(lp + 1, (size_t)(rp - lp - 1), g->in, g->canon,
-                         sizeof(g->canon));
+                         sizeof(g->canon), 1);
     if (n < 0) return -1;
     g->n_in = n;
     size_t cl = strlen(g->canon);
@@ -10744,8 +10778,9 @@ static int evm_abi_sig(const char *sig, evm_abi_sig_t *g) {
     const char *rp2 = strchr(rest, ')');
     if (!rp2 || rp2[1] != '\0') return -1;
     char scratch[512] = "";
+    /* evm_abi_print has no array case: a return list refuses arrays */
     n = evm_abi_list(rest + 1, (size_t)(rp2 - rest - 1), g->out, scratch,
-                     sizeof(scratch));
+                     sizeof(scratch), 0);
     if (n < 0) return -1;
     g->n_out = n;
     g->has_out = 1;
@@ -10809,6 +10844,58 @@ static int evm_abi_word(const evm_abi_type_t *t, const char *v,
     }
 }
 
+/* enc(T[] value) — one argv element "[v1,v2,...]" ("[]" = empty) → the
+ * array's tail: its length word, then one static word per element
+ * (abi-spec "Formal Specification of the Encoding", T[k] / T[]). *out heap.
+ * @return 0 / -1 (message printed). */
+static int evm_abi_array(const evm_abi_type_t *t, const char *v, int argn,
+                         uint8_t **out, size_t *out_len) {
+    *out = NULL;
+    *out_len = 0;
+    size_t vl = strlen(v);
+    if (vl < 2 || v[0] != '[' || v[vl - 1] != ']') {
+        fprintf(stderr, "argument %d: an array is written [v1,v2,...] "
+                "([] = empty), as one argument\n", argn);
+        return -1;
+    }
+    char *body = malloc(vl - 1);
+    if (!body) return -1;
+    memcpy(body, v + 1, vl - 2);
+    body[vl - 2] = '\0';
+    size_t cnt = 0;
+    for (const char *c = body; *c; c++) {
+        if (*c != ' ') { cnt = 1; break; }
+    }
+    if (cnt)
+        for (const char *c = body; *c; c++)
+            if (*c == ',') cnt++;
+    uint8_t *buf = calloc(1, 32 + cnt * 32);
+    if (!buf) { free(body); return -1; }
+    for (int k = 0; k < 8; k++)
+        buf[31 - k] = (uint8_t)((uint64_t)cnt >> (8 * k));
+    char *p = body;
+    for (size_t e = 0; e < cnt; e++) {
+        char *comma = strchr(p, ',');
+        if (comma) *comma = '\0';
+        while (*p == ' ') p++;
+        size_t el = strlen(p);
+        while (el && p[el - 1] == ' ') p[--el] = '\0';
+        if (!*p || strchr(p, '[') || strchr(p, ']') ||
+            evm_abi_word(t, p, buf + 32 + e * 32) != 0) {
+            fprintf(stderr, "argument %d element %zu (%s) is not a valid "
+                    "value of its type\n", argn, e + 1, p);
+            free(buf);
+            free(body);
+            return -1;
+        }
+        if (comma) p = comma + 1;
+    }
+    free(body);
+    *out = buf;
+    *out_len = 32 + cnt * 32;
+    return 0;
+}
+
 /* enc((v1..vn)) — the head/tail encoding of a sequence of values
  * (abi-spec "Formal Specification of the Encoding"). *out heap.
  * @return 0 / -1 (message printed). */
@@ -10824,6 +10911,13 @@ static int evm_abi_encode(const evm_abi_type_t *ts, int n, char **vals,
     int rc = -1;
     for (int i = 0; i < n; i++) {
         if (!evm_abi_dynamic(&ts[i])) continue;
+        if (ts[i].arr) {
+            if (evm_abi_array(&ts[i], vals[i], i + 1, &dyn[i],
+                              &dyn_len[i]) != 0)
+                goto done;
+            tail += dyn_len[i];
+            continue;
+        }
         size_t blen = 0;
         uint8_t *b = NULL;
         if (ts[i].k == EVM_ABI_STRING) {
@@ -10977,12 +11071,12 @@ static void evm_print_revert(const uint8_t *o, size_t n) {
     }
     if (n >= 4 && evm_abi_selector("Error(string)", es) == 0 &&
         memcmp(o, es, 4) == 0) {
-        evm_abi_type_t t = { EVM_ABI_STRING, 0, 0 };
+        evm_abi_type_t t = { EVM_ABI_STRING, 0, 0, 0 };
         printf("  revert: Error(string)\n");
         if (evm_abi_print(&t, 1, o + 4, n - 4) == 0) return;
     } else if (n >= 4 && evm_abi_selector("Panic(uint256)", ps) == 0 &&
                memcmp(o, ps, 4) == 0) {
-        evm_abi_type_t t = { EVM_ABI_UINT, 256, 0 };
+        evm_abi_type_t t = { EVM_ABI_UINT, 256, 0, 0 };
         printf("  revert: Panic(uint256)\n");
         if (evm_abi_print(&t, 1, o + 4, n - 4) == 0) return;
     }
@@ -11609,6 +11703,12 @@ static void evm_usage(void) {
         "  evm deploy (<bytecode-hex> | --solc <file.sol>:<Contract>)\n"
         "             [--solc-bin <path>] [--args \"(t1,t2)\" v1 v2 ...]\n"
         "  evm send <address> <sig> [args ...]       a state-changing call\n"
+        "  evm send <address> --value <wei>          a plain value transfer (no\n"
+        "                                            calldata: the contract's receive())\n"
+        "  evm encode <sig> [args ...]               the call data (selector + args) as\n"
+        "                                            hex, offline\n"
+        "  evm encode --ctor \"(t1,t2)\" [args ...]    constructor args only (no selector),\n"
+        "                                            to append to a creation hex; offline\n"
         "  evm call <address> <sig> [args ...] [--from <address> | --keys <dir>]\n"
         "                                            read-only (evm_call); sig may end\n"
         "                                            with a return list: f(t)(r1,r2)\n"
@@ -11633,7 +11733,10 @@ static void evm_usage(void) {
         "  computed from the signed sender and nonce (exit 4 on a mismatch).\n"
         "  The solc is $NODUS_SOLC or --solc-bin (default " EVM_SOLC_DEFAULT ");\n"
         "  it must be the Nodus 32-byte-address variant (nodus/tools/evm/solc).\n"
-        "ABI types: uint<M> int<M> bool address bytes<M> bytes string.\n"
+        "ABI types: uint<M> int<M> bool address bytes<M> bytes string, and T[]\n"
+        "  of the static ones, given as ONE argument \"[v1,v2,...]\" (\"[]\" empty).\n"
+        "  Refused: T[k], nested arrays, string[] / bytes[], tuples, and any\n"
+        "  array in a return list.\n"
         "1 NODUS = 10^8 raw = 10^18 wei.\n");
 }
 
@@ -11650,6 +11753,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
     const char *pos[EVM_ABI_MAX_ARGS + 4];
     int n_pos = 0;
     const char *solc_spec = NULL, *solc_bin = NULL, *args_sig = NULL;
+    const char *ctor_sig = NULL;            /* evm encode --ctor "(t1,..)" */
     const char *from = NULL, *to_fp = NULL, *addr_f = NULL;
     const char *topic_f[4] = { NULL, NULL, NULL, NULL };
     const char *cursor_f = NULL;            /* evm logs --cursor h:x:li */
@@ -11687,6 +11791,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
         } else if (!strcmp(a, "--solc") && more) solc_spec = argv[++i];
         else if (!strcmp(a, "--solc-bin") && more) solc_bin = argv[++i];
         else if (!strcmp(a, "--args") && more) args_sig = argv[++i];
+        else if (!strcmp(a, "--ctor") && more) ctor_sig = argv[++i];
         else if (!strcmp(a, "--from") && more) from = argv[++i];
         else if (!strcmp(a, "--to") && more) to_fp = argv[++i];
         else if (!strcmp(a, "--address") && more) addr_f = argv[++i];
@@ -11737,6 +11842,41 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             free(keys);
         }
         return rc;
+    }
+    if (!strcmp(sub, "encode")) {
+        /* `name(t1,..)` → selector + args; `--ctor "(t1,..)"` → args only.
+         * Opens no connection. */
+        const char *sig = ctor_sig ? ctor_sig : (n_pos >= 1 ? pos[0] : NULL);
+        const int first = ctor_sig ? 0 : 1;
+        evm_abi_sig_t g;
+        if (!sig || evm_abi_sig(sig, &g) != 0 || g.has_out ||
+            (ctor_sig ? g.canon[0] != '(' : g.canon[0] == '(')) {
+            fprintf(stderr, "evm encode \"name(t1,...)\" v1 ...  |  "
+                    "evm encode --ctor \"(t1,...)\" v1 ...  (no return "
+                    "list)\n");
+            return 1;
+        }
+        if (n_pos - first != g.n_in) {
+            fprintf(stderr, "%s takes %d argument(s), %d given\n", g.canon,
+                    g.n_in, n_pos - first);
+            return 1;
+        }
+        uint8_t *enc = NULL;
+        size_t enc_len = 0;
+        if (evm_abi_encode(g.in, g.n_in, (char **)(pos + first), &enc,
+                           &enc_len) != 0)
+            return 1;
+        uint8_t sel[4];
+        if (!ctor_sig && evm_abi_selector(g.canon, sel) != 0) {
+            free(enc);
+            return 1;
+        }
+        printf("0x");
+        if (!ctor_sig) evm_print_hex(sel, 4);
+        evm_print_hex(enc, enc_len);
+        printf("\n");
+        free(enc);
+        return 0;
     }
 
     /* ── transactions ── */
@@ -11819,6 +11959,18 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
                 return 1;
             }
             c.op = DNA_EVM_OP_CREATE;
+        } else if (!strcmp(sub, "send") && n_pos == 1) {
+            /* a plain value transfer: empty calldata (receive()) */
+            if (!o.has_value || evm_addr_parse(pos[0], c.to) != 0) {
+                fprintf(stderr, "evm send <address> without a signature is "
+                        "a plain value transfer and needs --value <wei>\n");
+                evm_usage();
+                return 1;
+            }
+            data = malloc(1);
+            if (!data) return 1;
+            data_len = 0;
+            c.op = DNA_EVM_OP_CALL;
         } else if (!strcmp(sub, "send")) {
             evm_abi_sig_t g;
             if (n_pos < 2 || evm_addr_parse(pos[0], c.to) != 0 ||
@@ -12434,9 +12586,11 @@ int main(int argc, char **argv) {
 #endif
 
 #if defined(NODUS_CLI_HAS_DNAC) && defined(NODUS_EVM_ENABLED)
-    /* Nodus EVM — `evm address` is OFFLINE (the --keys identity's address) */
+    /* Nodus EVM — `evm address` (the --keys identity's address) and
+     * `evm encode` (ABI call data / constructor args) are OFFLINE */
     if (strcmp(command, "evm") == 0 && optind + 1 < argc &&
-        strcmp(argv[optind + 1], "address") == 0)
+        (strcmp(argv[optind + 1], "address") == 0 ||
+         strcmp(argv[optind + 1], "encode") == 0))
         return cmd_evm(server_ip, server_port, argc, argv, optind);
 #endif
 

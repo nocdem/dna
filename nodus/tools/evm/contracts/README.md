@@ -15,6 +15,96 @@ Nothing here changes the chain: these are ordinary contracts, run by the consens
 other. The library contains **no signature-based authorization** (no `ecrecover`, no permits):
 every check is `msg.sender`.
 
+## Quick start
+
+A 2-of-3 MultisigVault paying a Nodus account, and a MilestoneEscrow, deployed from the committed
+`out/default/` bytecode with `nodus-cli` alone (no compiler). These are the command lines
+`nodus/tests/integration/stagef/tests/test_cmt_evm_lib.sh` runs end to end on a 7-node test chain;
+the scenario adds `--no-wait` (it reads each receipt from the node's database) and points `-s` /
+`-p` / `--submit` at its local nodes. **Run 2026-10-21: PASS** on a fresh 7-node test chain
+(epoch 15 / grace 15 — the logic, not production timing): the vault paid a Nodus account through a
+ticket that redeemed to a native coin, the timelock paid only after its delay, the escrow paid both
+milestones, and every node agreed on the result.
+
+Run the commands in this directory (`nodus/tools/evm/contracts`). Placeholders: `<ip>` / `<port>`
+a node's client port, `<keysN>` an identity directory,
+`<A1>` … an EVM address as 64 lowercase hex WITHOUT `0x`, `<VAULT>` / `<ESC>` the contract
+addresses the deployments print, amounts in wei (1 NODUS = 10^8 raw = 10^18 wei; q = 10^10 wei).
+Every transaction below also takes `--keys <keysN> --submit <ip>:<port> --yes` (shown once, in step
+1). `--yes` skips the CLI's question when the fee is above 50 NODUS; leave it out to be asked, or
+give `--max-fee <raw>`. Without `--no-wait` the CLI waits and prints the receipt.
+
+```
+CLI="nodus-cli -s <ip> -p <port>"
+```
+
+Arrays are passed to `--args` (and to `evm send` / `evm call` / `evm encode`) as ONE argument
+`"[v1,v2,...]"`, `"[]"` for an empty one; only one-dimensional `T[]` of a static type (address,
+uintN, intN, bool, bytesN) is supported. `nodus-cli evm encode --ctor "(T…)" v…` prints the
+constructor arguments as hex offline (what `--args` appends to the creation code), and
+`nodus-cli evm encode "f(T…)" v…` a call's data (selector + arguments).
+
+1. **Your EVM address and EVM balance.** `nodus-cli evm address --keys <keys1>` prints `0x<64 hex>`
+   (offline). Then
+   `$CLI evm deposit <raw> --keys <keys1> --submit <ip>:<port> --yes`
+   — you see the build line (`evm DEPOSIT: sender 0x… nonce=… fee=…`), `accepted: mempool CheckTx
+   approved`, then `receipt (…): DEPOSIT SUCCEEDED, included at height …`.
+2. **Deploy a 2-of-3 vault.** The constructor is `(address[] owners, uint256 threshold)`:
+   ```
+   $CLI evm deploy "$(cat out/default/MultisigVault.creation.hex)" \
+       --args "(address[],uint256)" "[<A1>,<A2>,<A3>]" 2 --gas 5000000 …
+   ```
+   — the receipt says `CREATE SUCCEEDED` and `created contract: 0x<VAULT>`. Check it:
+   `$CLI evm call <VAULT> "isOwner(address)(bool)" <A2>` prints `ok at height …` and `[0] true`;
+   `$CLI evm call <VAULT> "threshold()(uint256)"` prints `[0] 2`.
+3. **Fund it.** The vault takes value only in `receive()`; a plain value transfer (an address and
+   `--value`, no signature) sends it with empty calldata:
+   ```
+   $CLI evm send <VAULT> --value <wei> --gas 1000000 …
+   ```
+   — `CALL SUCCEEDED`; `$CLI evm balance <VAULT>` shows the amount.
+4. **Pay a Nodus account through a ticket.** The ticket address
+   (`python3 -c 'import hashlib;print(hashlib.sha3_512(b"NDS.EVMWITHDRAW.v1").hexdigest()[:64])'`,
+   see "Getting value out of a contract"), a q-multiple amount, and the destination's 128-hex
+   fingerprint (its `nodus.fp`) as the 64 bytes of calldata. Owner 1 proposes (the id is
+   `proposalCount()` read before, here 0):
+   ```
+   $CLI evm send <VAULT> "submit(address,uint256,bytes)" <TICKET_ADDR> <wei> <FP128> --gas 1000000 … (keys1)
+   $CLI evm send <VAULT> "approve(uint256)" 0 --gas 1000000 …                                     (keys2)
+   $CLI evm send <VAULT> "execute(uint256)" 0 --gas 1000000 …                                     (keys3)
+   ```
+   — `getProposal(uint256)(address,uint256,bytes,uint256,uint256,bool)` shows the proposal and its
+   approvals; an `execute` below the threshold is refused by the simulation (`the call FAILS` and
+   the revert data; nothing is built unless you pass `--force`, which lands a failed transaction
+   that still pays its fee). The executing receipt prints `withdrawal ticket: <ticket_id>`. Anyone
+   then pays it out:
+   `$CLI evm redeem <ticket_id> …` — `ticket: <raw> raw to <FP128>`, then `REDEEM SUCCEEDED`; the
+   destination holds a native coin of exactly that amount.
+5. **A milestone escrow.** Constructor `(payer, payee, arbiter, uint256[] amounts, deadline)`,
+   the amounts each a multiple of q. The
+   deadline is a `block.timestamp` — the committed block's time in seconds; no `nodus-cli` verb
+   prints it (the scenario reads it from a Timelock, `getReadyTime(id)` minus the delay):
+   ```
+   $CLI evm deploy "$(cat out/default/MilestoneEscrow.creation.hex)" \
+       --args "(address,address,address,uint256[],uint256)" <A1> <A2> <A3> "[<m0>,<m1>]" <deadline> \
+       --gas 5000000 …                                                                 (any key)
+   $CLI evm send <ESC> "fund()" --value <m0+m1> --gas 1000000 …                    (payer)
+   $CLI evm send <ESC> "release(uint256)" 0 --gas 1000000 …                        (payer)
+   $CLI evm send <ESC> "withdraw()" --gas 1000000 …                                (payee)
+   $CLI evm send <ESC> "resolve(uint256,bool)" 1 false --gas 1000000 …             (arbiter)
+   $CLI evm send <ESC> "withdraw()" --gas 1000000 …                                (payer)
+   ```
+   — each `CALL SUCCEEDED`; `milestone(uint256)(uint256,uint8)` shows the state (0 Pending,
+   1 Released, 2 Refunded), `creditOf(address)(uint256)` what a party may withdraw, and each
+   `withdraw()` raises the caller's `evm balance` by exactly its credit. A party then takes EVM
+   value back to a native coin with `$CLI evm withdraw <raw> …` (`WITHDRAW SUCCEEDED`).
+
+The scenario also runs a Timelock (minDelay 300 s, deployed with `--args
+"(uint256,address[],address[],address[])" 300 "[<A1>]" "[<A1>]" "[]"` and funded with a plain
+value transfer; `schedule`, an `execute` refused before the ready time, the `execute` after it)
+and the negative controls named in its header. It also checks that `evm encode --ctor` prints
+exactly the constructor words it builds by hand, as an independent cross-check.
+
 ## Files
 
 | Path | What |
@@ -308,10 +398,15 @@ a write later undone would not show), event address topics hold all 32 bytes, an
 equals the committed runtime. A failed vault / timelock execute is checked byte for byte, including
 the inner `reason`.
 
+On a chain: `nodus/tests/integration/stagef/tests/test_cmt_evm_lib.sh` (PASS 2026-10-21, epoch 15 /
+grace 15) deploys MultisigVault, Timelock and MilestoneEscrow from the committed bytes through
+`nodus-cli` and the node's envelope / fee / receipt path, pays a Nodus account from the vault
+through the PRODUCTION ticket address and redeems it to a native coin, and checks the result on all
+7 nodes (its README row lists what it does not cover).
+
 Not covered:
-- REDEEM of a ticket, the chain fee path, a chain-level gas price of zero, the node's envelope /
-  receipt path — the tests run the bare engine.
-- The production ticket address (the tests configure a test-only one).
+- A chain-level gas price of zero; owner / threshold changes, cancel, `updateDelay`, refund and
+  re-entry on a chain (the engine tests cover them).
 - Contracts you write on top of the abstract ones: the tests exercise them only through the mocks
   in `test/mocks/`.
 - Compilers other than the pinned one, other optimizer settings, EVM versions other than prague.

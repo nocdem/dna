@@ -217,6 +217,12 @@ Usage (smart contracts, the EVM domain):
   evm deploy (<bytecode-hex> | --solc <file.sol>:<Contract>)
              [--solc-bin <path>] [--args "(t1,t2)" v1 v2 ...]
   evm send <address> <sig> [args ...]       a state-changing call
+  evm send <address> --value <wei>          a plain value transfer (no
+                                            calldata: the contract's receive())
+  evm encode <sig> [args ...]               the call data (selector + args) as
+                                            hex, offline
+  evm encode --ctor "(t1,t2)" [args ...]    constructor args only (no selector),
+                                            to append to a creation hex; offline
   evm call <address> <sig> [args ...] [--from <address> | --keys <dir>]
                                             read-only (evm_call); sig may end
                                             with a return list: f(t)(r1,r2)
@@ -241,7 +247,10 @@ Transactions (deploy / send / deposit / withdraw / redeem) take
   computed from the signed sender and nonce (exit 4 on a mismatch).
   The solc is $NODUS_SOLC or --solc-bin (default /usr/local/bin/solc-nodus);
   it must be the Nodus 32-byte-address variant (nodus/tools/evm/solc).
-ABI types: uint<M> int<M> bool address bytes<M> bytes string.
+ABI types: uint<M> int<M> bool address bytes<M> bytes string, and T[]
+  of the static ones, given as ONE argument "[v1,v2,...]" ("[]" empty).
+  Refused: T[k], nested arrays, string[] / bytes[], tuples, and any
+  array in a return list.
 1 NODUS = 10^8 raw = 10^18 wei.
 ```
 
