@@ -277,6 +277,39 @@ int nodus_v2_spend_units_for_shape(uint32_t core_ruleset_version,
  * (auth_len is committed, so the digest cannot depend on the signature
  * bytes), preflight at tip + 1 to derive every auth_digest, sign,
  * re-encode (same lengths ⇒ same digests), re-preflight as a self-check. */
+/* The scratch copy the pre-sign check sees: the pass-1 bytes with every
+ * leg's auth blob set to `count 1 ‖ pk` (the signature bytes stay zero), the
+ * same identity the signed envelope will carry. The builders' decoders read
+ * the signer from the blob (name / stake), so without it the unsigned bytes
+ * would not decode. The auth digest does not depend on the blob's content
+ * (only its committed length), so nothing the preflight derived changes.
+ * The caller's own auth buffers are NOT touched. 0 / NODUS_V2_SPEND_ERR_*. */
+static int presign_view_check(const uint8_t *env_bytes, size_t env_len,
+                              uint16_t leg_count, const uint8_t *pk,
+                              nodus_v2_presign_check_fn check, void *ctx) {
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    uint8_t *scratch = malloc(env_len);
+    int rc = NODUS_V2_SPEND_ERR_ALLOC;
+    if (!v || !scratch) goto done;
+    rc = NODUS_V2_SPEND_ERR_ENCODE;
+    if (dna_env_decode(env_bytes, env_len, v) != 0 || v->leg_count != leg_count)
+        goto done;
+    memcpy(scratch, env_bytes, env_len);
+    for (uint16_t L = 0; L < leg_count; L++) {
+        if (v->leg[L].auth_len != V2S_AUTH_LEN) goto done;
+        uint8_t *a = scratch + v->auth_off[L];
+        a[0] = 1;
+        memcpy(a + 1, pk, V2S_PK_LEN);
+    }
+    rc = check(scratch, env_len, ctx) == 0 ? NODUS_V2_SPEND_OK
+                                           : NODUS_V2_SPEND_ERR_PRESIGN_CHECK;
+done:
+    if (scratch) memset(scratch, 0, env_len);
+    free(scratch);
+    free(v);
+    return rc;
+}
+
 int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in,
                               uint8_t *const *auths,
                               const dna_env_leg_ctx_t *lctx,
@@ -285,6 +318,22 @@ int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in,
                               const uint8_t *sk, uint8_t **env_out,
                               size_t *env_len_out, dna_env_preflight_t *pf,
                               nodus_v2_spend_err_t *err) {
+    return nodus_v2_env_sign_one_key_checked(env_in, auths, lctx, chain32, tip,
+                                             pk, sk, env_out, env_len_out, pf,
+                                             err, NULL, NULL);
+}
+
+int nodus_v2_env_sign_one_key_checked(const dna_env_in_t *env_in,
+                                      uint8_t *const *auths,
+                                      const dna_env_leg_ctx_t *lctx,
+                                      const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                                      uint64_t tip, const uint8_t *pk,
+                                      const uint8_t *sk, uint8_t **env_out,
+                                      size_t *env_len_out,
+                                      dna_env_preflight_t *pf,
+                                      nodus_v2_spend_err_t *err,
+                                      nodus_v2_presign_check_fn check,
+                                      void *check_ctx) {
     if (!env_in || !auths || !lctx || !chain32 || !pk || !sk || !env_out ||
         !env_len_out || !pf)
         return NODUS_V2_SPEND_ERR_ARG;
@@ -297,6 +346,7 @@ int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in,
     if (!env_bytes) return NODUS_V2_SPEND_ERR_ALLOC;
 
     int rc = NODUS_V2_SPEND_ERR_ENCODE;
+    int signing = 0;     /* set once any auth buffer may hold a signature */
     size_t used = 0;
     if (dna_env_encode(env_in, env_bytes, env_len, &used) != 0 ||
         used != env_len) goto fail;
@@ -306,6 +356,16 @@ int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in,
         goto fail;
     }
 
+    /* "nothing is signed on a mismatch": the caller's predicate runs on the
+     * unsigned bytes before the first qgp_dsa87_sign */
+    if (check) {
+        rc = presign_view_check(env_bytes, env_len, env_in->leg_count, pk,
+                                check, check_ctx);
+        if (rc != NODUS_V2_SPEND_OK) goto fail;
+        rc = NODUS_V2_SPEND_ERR_ENCODE;
+    }
+
+    signing = 1;
     for (uint16_t L = 0; L < env_in->leg_count; L++) {
         uint8_t *ab = auths[L];
         ab[0] = 1;
@@ -333,7 +393,13 @@ int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in,
     return NODUS_V2_SPEND_OK;
 
 fail:
+    /* a refused buffer may carry signatures: wipe before free, and the
+     * caller's auth blobs that the signing loop wrote into */
+    memset(env_bytes, 0, env_len);
     free(env_bytes);
+    if (signing)
+        for (uint16_t L = 0; L < env_in->leg_count; L++)
+            memset(auths[L], 0, V2S_AUTH_LEN);
     return rc;
 }
 
@@ -619,6 +685,7 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
         !count_out || !fee_out || n_coins < 0 || (n_coins > 0 && !coins) ||
         (req->count_all && !req->amount_all) ||
         (req->amount_all && !req->is_native) ||
+        (req->native_amount != 0 && (req->is_native || req->amount_all)) ||
         (!req->count_all && req->count < 1) ||
         (!req->amount_all && req->amount == 0))
         return NODUS_V2_SPEND_ERR_ARG;
@@ -631,6 +698,12 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
     const int is_native = req->is_native;
     const int amount_all = req->amount_all;
     const uint64_t amount = req->amount;
+    const uint64_t native_amount = req->native_amount;  /* two-asset only */
+    /* recipient outputs of the planned shape: 2 for the two-asset spend
+     * ([recipient NODUS][recipient token]), else 1. The change outputs that
+     * follow are counted on top of it everywhere below (dust sweep,
+     * absorption, pricing). */
+    const int base_out = (!is_native && native_amount > 0) ? 2 : 1;
     const uint64_t gas_price = req->gas_price;
     uint64_t fee = req->fee;
     long count = req->count;
@@ -669,6 +742,14 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
                 goto fail;
             }
             native_need = amount + fee;
+        } else if (native_amount > 0) {
+            /* two-asset: the native inputs pay the NODUS amount + the fee,
+             * the token inputs pay `amount` (the token pick below) */
+            if (native_amount > UINT64_MAX - fee) {
+                rc = NODUS_V2_SPEND_ERR_OVERFLOW;
+                goto fail;
+            }
+            native_need = native_amount + fee;
         }
         for (int i = 0; i < n_coins; i++) coins[i].used = 0;
         free(plans);
@@ -735,7 +816,7 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
             /* the plan covers its need; sweep the dust into it */
             const int tok_out = (!is_native && p->token_change > 0) ? 1 : 0;
             int n_out = amount_all ? 1
-                      : 1 + tok_out + (p->native_change > 0 ? 1 : 0);
+                      : base_out + tok_out + (p->native_change > 0 ? 1 : 0);
             int bad_in = 0, bad_out = 0;
             if (dust_sweep(coins, n_coins, p, amount_all, n_out, gas_price,
                            su, &bad_in, &bad_out) != 0) {
@@ -749,7 +830,7 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
              * = outputs + fee stays exact) */
             if (req->fee_fixed || amount_all || p->native_change == 0)
                 continue;
-            n_out = 1 + tok_out + 1;
+            n_out = base_out + tok_out + 1;
             uint64_t thr = V2S_FEE_FLOOR;
             if (gas_price != 0) {
                 const int a = p->n_in < (int)NODUS_V2_SPEND_MAX_IN
@@ -772,7 +853,8 @@ int nodus_v2_spend_plan(const nodus_v2_spend_plan_req_t *req,
         uint64_t max_units = 0;
         for (long k = 0; k < count; k++) {
             const nodus_v2_spend_plan_t *p = &plans[k];
-            int n_out = 1 + ((!is_native && p->token_change > 0) ? 1 : 0) +
+            int n_out = base_out +
+                        ((!is_native && p->token_change > 0) ? 1 : 0) +
                         (p->native_change > 0 ? 1 : 0);
             uint64_t u = 0;
             if (nodus_v2_spend_units_for_shape(req->rs->core_ruleset_version,
@@ -875,6 +957,24 @@ int nodus_v2_spend_decode(const uint8_t *env, size_t env_len,
             goto done;
         }
     }
+    /* the derived view: out[0] native followed by a non-native out[1] is the
+     * two-asset shape (a native send's out[1] is native change, a token
+     * send's out[0] is itself non-native); what follows is change, native or
+     * token by its token id. The builder's read-back pins the exact shape;
+     * this only exposes the amounts. */
+    {
+        static const uint8_t zero64[64] = {0};
+        out->n_recipient_out =
+            (nout >= 2 && memcmp(out->out_token[0], zero64, 64) == 0 &&
+             memcmp(out->out_token[1], zero64, 64) != 0) ? 2 : 1;
+        for (int o = out->n_recipient_out; o < nout; o++) {
+            if (memcmp(out->out_token[o], zero64, 64) == 0) {
+                if (out->native_change == 0) out->native_change = out->out_amount[o];
+            } else if (out->token_change == 0) {
+                out->token_change = out->out_amount[o];
+            }
+        }
+    }
     out->n_in            = nin;
     out->n_out           = nout;
     out->expiry_height   = v->expiry_height;
@@ -897,6 +997,80 @@ void nodus_v2_spend_built_free(nodus_v2_spend_built_t *b) {
     free(b->env);
     b->env = NULL;
     b->env_len = 0;
+}
+
+/* What the builder asked for — the whole read-back predicate's input. */
+typedef struct {
+    int            n_in;
+    const uint8_t (*nulls)[64];          /* ascending, as on the wire       */
+    int            n_out;
+    const char    *o_owner[NODUS_V2_SPEND_MAX_OUTS];
+    uint64_t       o_amt[NODUS_V2_SPEND_MAX_OUTS];
+    const uint8_t *o_tok[NODUS_V2_SPEND_MAX_OUTS];
+    uint8_t        out_id[NODUS_V2_SPEND_MAX_OUTS][64];
+    uint64_t       fee, units, expiry_height;
+    uint32_t       ruleset_version;
+    uint64_t       sum_native_in, sum_token_in;   /* from the request's coins */
+    uint64_t       native_change, token_change;   /* 0 = no such output       */
+    int            n_recipient_out;               /* 1, or 2 (two-asset)      */
+} v2s_rb_t;
+
+/* THE read-back predicate: decode `env` and refuse unless it is exactly what
+ * the request asked for. It runs on the UNSIGNED bytes before any signature
+ * (v2s_presign_check) and again on the signed bytes — the same code, so a
+ * pre-sign pass cannot be looser than the post-sign one. Compared:
+ *  - header: input / output counts, fee, units, expiry, ruleset version;
+ *  - inputs: the exact nullifier list (every input is a request coin);
+ *  - outputs, position by position — owner (recipient for the recipient
+ *    outputs, the sender for change), amount, token id, derived id; so
+ *    [recipient NODUS][recipient token][token change?][native change?] is
+ *    pinned order and all, one change per kind, all change to the sender;
+ *  - sums: Σ native inputs == Σ native outputs + fee, and Σ token inputs ==
+ *    Σ token outputs (i.e. native amount + native change + fee, and token
+ *    amount + token change);
+ *  - the decoded derived view (recipient-output count, native and token
+ *    change) equals the plan's.
+ * Every call and header field the builder wrote is compared in both runs;
+ * the only thing not judged here is the signature itself (zero pre-sign;
+ * verified by the signer's pass-2 preflight post-sign).
+ * @return NODUS_V2_SPEND_OK / _ERR_DECODE (mismatch) / the decoder's code. */
+static int v2s_readback(const v2s_rb_t *rb, const uint8_t *env, size_t len,
+                        nodus_v2_spend_decoded_t *dec) {
+    int rc = nodus_v2_spend_decode(env, len, dec);
+    if (rc != NODUS_V2_SPEND_OK) return rc;
+    if (dec->n_in != rb->n_in || dec->n_out != rb->n_out ||
+        dec->fee != rb->fee || dec->units != rb->units ||
+        dec->expiry_height != rb->expiry_height ||
+        dec->ruleset_version != rb->ruleset_version ||
+        memcmp(dec->in_nul, rb->nulls, (size_t)rb->n_in * 64) != 0 ||
+        dec->n_recipient_out != rb->n_recipient_out ||
+        dec->native_change != rb->native_change ||
+        dec->token_change != rb->token_change)
+        return NODUS_V2_SPEND_ERR_DECODE;
+    static const uint8_t zero64[64] = {0};
+    uint64_t nat_out = rb->fee, tok_out = 0;       /* nat_out starts at the fee */
+    for (int o = 0; o < rb->n_out; o++) {
+        const uint8_t *tok = rb->o_tok[o] ? rb->o_tok[o] : zero64;
+        if (memcmp(dec->out_owner[o], rb->o_owner[o], 128) != 0 ||
+            dec->out_amount[o] != rb->o_amt[o] ||
+            memcmp(dec->out_token[o], tok, 64) != 0 ||
+            memcmp(dec->out_id[o], rb->out_id[o], 64) != 0)
+            return NODUS_V2_SPEND_ERR_DECODE;
+        uint64_t *acc = memcmp(dec->out_token[o], zero64, 64) == 0 ? &nat_out
+                                                                    : &tok_out;
+        if (*acc > UINT64_MAX - dec->out_amount[o])
+            return NODUS_V2_SPEND_ERR_DECODE;
+        *acc += dec->out_amount[o];
+    }
+    if (nat_out != rb->sum_native_in || tok_out != rb->sum_token_in)
+        return NODUS_V2_SPEND_ERR_DECODE;
+    return NODUS_V2_SPEND_OK;
+}
+
+static int v2s_presign_check(const uint8_t *env, size_t len, void *ctx) {
+    nodus_v2_spend_decoded_t dec;
+    return v2s_readback((const v2s_rb_t *)ctx, env, len, &dec) == NODUS_V2_SPEND_OK
+               ? 0 : -1;
 }
 
 int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req,
@@ -954,11 +1128,33 @@ int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req,
     call[off++] = (uint8_t)p->n_in;
     for (int j = 0; j < p->n_in; j++) { memcpy(call + off, nulls[j], 64); off += 64; }
 
-    /* outputs: recipient first, then the change the plan leaves */
+    /* per-kind input sums, from the request's own coins (never from the
+     * plan's derived fields): the read-back proves outputs + fee against
+     * them. A coin that is neither native (0) nor the requested token (1) is
+     * not a coin this spend can use. */
+    uint64_t sum_native_in = 0, sum_token_in = 0;
+    for (int j = 0; j < p->n_in; j++) {
+        const nodus_v2_coin_t *cn = &req->coins[p->idx[j]];
+        uint64_t *acc = cn->kind == 0 ? &sum_native_in
+                      : cn->kind == 1 ? &sum_token_in : NULL;
+        if (!acc || *acc > UINT64_MAX - cn->amount) {
+            rc = NODUS_V2_SPEND_ERR_ARG;
+            goto done;
+        }
+        *acc += cn->amount;
+    }
+
+    /* outputs, in this exact order: recipient NODUS (two-asset only),
+     * recipient (the asset sent), token change, native change */
     const char    *o_owner[NODUS_V2_SPEND_MAX_OUTS];
     uint64_t       o_amt[NODUS_V2_SPEND_MAX_OUTS];
     const uint8_t *o_tok[NODUS_V2_SPEND_MAX_OUTS];
     int n_out = 0;
+    const int two_asset = !is_native && req->native_amount > 0;
+    if (req->native_amount != 0 && (is_native || req->amount_all)) {
+        rc = NODUS_V2_SPEND_ERR_ARG;
+        goto done;
+    }
     /* amount_all: this plan's ONE coin minus the fee (> 0 — the planner
      * only picks coins above the fee) */
     if (req->amount_all && p->native_in <= req->fee) {
@@ -968,6 +1164,10 @@ int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req,
     const uint64_t send_amt = req->amount_all ? p->native_in - req->fee
                                               : req->amount;
     if (send_amt == 0) { rc = NODUS_V2_SPEND_ERR_ARG; goto done; }
+    if (two_asset) {
+        o_owner[n_out] = to_fp; o_amt[n_out] = req->native_amount;
+        o_tok[n_out] = NULL; n_out++;
+    }
     o_owner[n_out] = to_fp; o_amt[n_out] = send_amt;
     o_tok[n_out] = is_native ? NULL : req->token; n_out++;
     if (!is_native && p->token_change > 0) {
@@ -1073,31 +1273,39 @@ int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req,
     lctx.ruleset_version = req->rs->core_ruleset_version;
     memcpy(lctx.ruleset_hash, req->rs->core_ruleset_hash, 64);
 
+    /* what the envelope must read back as — checked BEFORE the signature
+     * (the pre-sign hook) and again on the signed bytes */
+    v2s_rb_t rb;
+    memset(&rb, 0, sizeof(rb));
+    rb.n_in            = p->n_in;
+    rb.nulls           = (const uint8_t (*)[64])nulls;
+    rb.n_out           = n_out;
+    for (int o = 0; o < n_out; o++) {
+        rb.o_owner[o] = o_owner[o];
+        rb.o_amt[o]   = o_amt[o];
+        rb.o_tok[o]   = o_tok[o];
+        memcpy(rb.out_id[o], out_id[o], 64);
+    }
+    rb.fee             = req->fee;
+    rb.units           = units;
+    rb.expiry_height   = req->expiry_height;
+    rb.ruleset_version = req->rs->core_ruleset_version;
+    rb.sum_native_in   = sum_native_in;
+    rb.sum_token_in    = sum_token_in;
+    rb.native_change   = p->native_change;
+    rb.token_change    = is_native ? 0 : p->token_change;
+    rb.n_recipient_out = two_asset ? 2 : 1;
+
     uint8_t *auths[1] = { auth };
-    rc = nodus_v2_env_sign_one_key(&env_in, auths, &lctx, req->chain32,
-                                   req->tip, req->pk, req->sk, &env_bytes,
-                                   &env_len, pf, err);
+    rc = nodus_v2_env_sign_one_key_checked(&env_in, auths, &lctx, req->chain32,
+                                           req->tip, req->pk, req->sk,
+                                           &env_bytes, &env_len, pf, err,
+                                           v2s_presign_check, &rb);
     if (rc != NODUS_V2_SPEND_OK) goto done;
 
     /* read back what was BUILT, and refuse if it is not what was asked */
-    rc = nodus_v2_spend_decode(env_bytes, env_len, &out->dec);
+    rc = v2s_readback(&rb, env_bytes, env_len, &out->dec);
     if (rc != NODUS_V2_SPEND_OK) goto done;
-    rc = NODUS_V2_SPEND_ERR_DECODE;
-    if (out->dec.n_in != p->n_in || out->dec.n_out != n_out ||
-        out->dec.fee != req->fee || out->dec.units != units ||
-        out->dec.expiry_height != req->expiry_height ||
-        out->dec.ruleset_version != req->rs->core_ruleset_version ||
-        memcmp(out->dec.in_nul, nulls, (size_t)p->n_in * 64) != 0)
-        goto done;
-    for (int o = 0; o < n_out; o++) {
-        static const uint8_t zero64[64] = {0};
-        const uint8_t *tok = o_tok[o] ? o_tok[o] : zero64;
-        if (memcmp(out->dec.out_owner[o], o_owner[o], 128) != 0 ||
-            out->dec.out_amount[o] != o_amt[o] ||
-            memcmp(out->dec.out_token[o], tok, 64) != 0 ||
-            memcmp(out->dec.out_id[o], out_id[o], 64) != 0)
-            goto done;
-    }
 
     memcpy(out->wire_id, pf->wire_id, 64);
     memcpy(out->intent_id, pf->intent_id, 64);
@@ -1108,8 +1316,12 @@ int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req,
 
 done:
     if (rc != NODUS_V2_SPEND_OK) memset(&out->dec, 0, sizeof(out->dec));
+    /* a refused signed buffer and the auth blob that held its signature are
+     * wiped before they are freed */
+    if (env_bytes) memset(env_bytes, 0, env_len);
     free(env_bytes);
     free(pf);
+    if (auth) memset(auth, 0, V2S_AUTH_LEN);
     free(auth);
     free(call);
     return rc;

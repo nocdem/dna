@@ -72,6 +72,29 @@
  *      becomes fee — no change output, fee = in − amount — and one raw
  *      above stays a change output; never under fee_fixed or the flag.
  *      Engine: the absorbed 1-output envelope of seeded coin D is admitted.
+ *  S9  MM-Dex A1 ("nothing is signed on a mismatch", operator 2026-10-22
+ *      "Hiç imzalanmasın"): nodus_v2_env_sign_one_key_checked with a refusing
+ *      check returns ERR_PRESIGN_CHECK, returns no envelope and leaves the
+ *      caller's auth blob all zero (no qgp_dsa87_sign ran); the check sees
+ *      the pass-1 bytes with `count 1 ‖ pk ‖ zero signature`; an accepting
+ *      check signs; the unchecked entry point still works.
+ *  S10 MM-Dex A2 ("Tek işlem"): ONE SPEND pays NODUS and a token to one
+ *      recipient. (a) the decoder takes 4 outputs, refuses 5, and derives the
+ *      recipient / change view (swapped order, a native out[1], a foreign
+ *      change owner are all visible); (b) plan + build: outputs are exactly
+ *      [recipient NODUS][recipient token][token change][native change], the
+ *      per-kind sums are exact, the native and token change are exposed
+ *      separately, the token-only shape keeps its old layout, a token coin
+ *      that covers the amount exactly leaves no token change, and a fee the
+ *      inputs do not cover / a wrong token or native change / a coin of a
+ *      foreign kind / a native_amount without a token are refused (the
+ *      mismatches BEFORE the signature).
+ *      The builder's positional read-back predicate is static; S10's wrong
+ *      token / swapped order / foreign owner cases are therefore shown at the
+ *      decoder level (what the predicate compares against), and the builder
+ *      level proves the sum and change refusals through the request.
+ *
+ * S9/S10 use synthetic coins and the seeded chain only for chain32 / tip.
  *
  * ── WHAT IT REQUIRES ────────────────────────────────────────────────────
  * Compile flags: none beyond a default build (one empty block at height 1;
@@ -1150,6 +1173,385 @@ static int t_dust_admitted(sb_chain_t *c) {
     return 0;
 }
 
+/* ══ S9 + S10 — MM-Dex package A1 (nothing signed on a mismatch) + A2 (one
+ *    SPEND pays NODUS and a token) ═══════════════════════════════════════ */
+
+#define SB_TOK_BYTE 0xEE
+
+/* A hand-built one-input SPEND (no signature): the shape the library
+ * decodes, made here independently of the builder so the decoder can be fed
+ * shapes the builder never emits. */
+typedef struct {
+    uint8_t              call[2 + 64 + NODUS_V2_SPEND_MAX_OUTS * 2 *
+                              NODUS_V2_SPEND_OUT_LEN];
+    uint8_t              auth[SB_ALEN];
+    dna_env_leg_in_t     leg;
+    dna_env_in_t         env_in;
+} sb_hand_t;
+
+static int hand_init(sb_hand_t *h, const nodus_v2_ruleset_id_t *rs, int n_out,
+                     const char *const owner[], const uint64_t amt[],
+                     const uint8_t *const tok[]) {
+    memset(h, 0, sizeof(*h));
+    size_t off = 0;
+    h->call[off++] = 1;
+    memset(h->call + off, 0x42, 64);
+    off += 64;
+    h->call[off++] = (uint8_t)n_out;
+    for (int o = 0; o < n_out; o++) {
+        uint8_t seed[32];
+        memset(seed, 0x60 + o, sizeof(seed));
+        nodus_v2_xfer_out_put(h->call + off, owner[o], amt[o], tok[o], seed);
+        off += NODUS_V2_SPEND_OUT_LEN;
+    }
+    h->leg.hdr.domain_id       = DNA_DOMAIN_CORE;
+    h->leg.hdr.runtime_op      = DNA_CORERULE_SPEND;
+    h->leg.hdr.ruleset_version = rs->core_ruleset_version;
+    h->leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
+    h->leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    h->leg.hdr.call_len        = (uint32_t)off;
+    h->leg.hdr.auth_len        = SB_ALEN;
+    nodus_v2_spend_effect_decl(1, (uint32_t)n_out, &h->leg.hdr.res_max_effects,
+                               &h->leg.hdr.res_max_effect_bytes);
+    h->leg.call_data = h->call;
+    h->leg.auth_data = h->auth;
+    h->env_in.expiry_height = 100;
+    h->env_in.fee_amount    = SB_FLOOR;
+    h->env_in.leg_count     = 1;
+    h->env_in.legs          = &h->leg;
+    uint64_t units = 0;
+    if (nodus_v2_spend_ceiling(&h->env_in, rs->meter_policy, 2, &units) != 0)
+        return -1;
+    h->env_in.res_max_total_units = units;
+    return 0;
+}
+
+/* encode the hand-built envelope (unsigned) and decode it with the library */
+static int hand_decode(const sb_hand_t *h, nodus_v2_spend_decoded_t *dec) {
+    size_t len = 0, used = 0;
+    if (dna_env_encoded_size(h->env_in.legs, 1, &len) != 0) return -100;
+    uint8_t *buf = malloc(len);
+    if (!buf) return -101;
+    int rc = -102;
+    if (dna_env_encode(&h->env_in, buf, len, &used) == 0 && used == len)
+        rc = nodus_v2_spend_decode(buf, len, dec);
+    free(buf);
+    return rc;
+}
+
+/* a counting pre-sign check */
+typedef struct { int calls; int refuse; int saw_pk; } sb_pre_t;
+
+static int sb_pre_check(const uint8_t *env, size_t len, void *ctx) {
+    sb_pre_t *p = (sb_pre_t *)ctx;
+    p->calls++;
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    if (v && dna_env_decode(env, len, v) == 0 && v->leg_count == 1) {
+        const uint8_t *a = v->buf + v->auth_off[0];
+        /* the auth blob is `count 1 ‖ pk ‖ zero signature` */
+        int sig_zero = 1;
+        for (size_t i = 1 + sizeof(g_pk); i < SB_ALEN; i++)
+            if (a[i]) sig_zero = 0;
+        p->saw_pk = a[0] == 1 && memcmp(a + 1, g_pk, sizeof(g_pk)) == 0 &&
+                    sig_zero;
+    }
+    free(v);
+    return p->refuse ? -1 : 0;
+}
+
+/* S9 — a refusing pre-sign check signs NOTHING (the primitive every builder
+ * hooks); an accepting one signs; the unchecked name is the NULL-check form */
+static int t_presign_refusal(sb_chain_t *c) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    const char *owner[1] = { g_to_fp };
+    const uint64_t amt[1] = { 1000 };
+    const uint8_t *tok[1] = { NULL };
+    sb_hand_t *h = calloc(1, sizeof(*h));
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    CHECK(h && pf, "alloc");
+    CHECK(hand_init(h, &tab, 1, owner, amt, tok) == 0, "hand envelope");
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id       = DNA_DOMAIN_CORE;
+    lctx.ruleset_version = tab.core_ruleset_version;
+    memcpy(lctx.ruleset_hash, tab.core_ruleset_hash, 64);
+    uint8_t *auths[1] = { h->auth };
+
+    sb_pre_t p = { 0, 1, 0 };
+    uint8_t *env = (uint8_t *)0x1;
+    size_t env_len = 77;
+    int rc = nodus_v2_env_sign_one_key_checked(&h->env_in, auths, &lctx,
+                                               c->chain32, c->tip, g_pk, g_sk,
+                                               &env, &env_len, pf, NULL,
+                                               sb_pre_check, &p);
+    CHECK(rc == NODUS_V2_SPEND_ERR_PRESIGN_CHECK,
+          "S9 a refusing check returns ERR_PRESIGN_CHECK");
+    CHECK(p.calls == 1 && p.saw_pk,
+          "S9 the check ran once, on bytes whose auth blob is pk + zero sig");
+    CHECK(env == NULL && env_len == 0, "S9 no envelope comes back");
+    int zero = 1;
+    for (size_t i = 0; i < SB_ALEN; i++) if (h->auth[i]) zero = 0;
+    CHECK(zero, "S9 NOTHING was signed: the caller's auth blob is untouched");
+
+    p.calls = 0; p.refuse = 0;
+    rc = nodus_v2_env_sign_one_key_checked(&h->env_in, auths, &lctx, c->chain32,
+                                           c->tip, g_pk, g_sk, &env, &env_len,
+                                           pf, NULL, sb_pre_check, &p);
+    CHECK(rc == NODUS_V2_SPEND_OK && env && p.calls == 1,
+          "S9 an accepting check signs");
+    int signed_ = 0;
+    for (size_t i = 1 + sizeof(g_pk); i < SB_ALEN; i++) if (h->auth[i]) signed_ = 1;
+    CHECK(signed_, "S9 the signature is in the auth blob");
+    free(env);
+
+    /* the unchecked entry point keeps its behaviour */
+    memset(h->auth, 0, sizeof(h->auth));
+    env = NULL;
+    rc = nodus_v2_env_sign_one_key(&h->env_in, auths, &lctx, c->chain32, c->tip,
+                                   g_pk, g_sk, &env, &env_len, pf, NULL);
+    CHECK(rc == NODUS_V2_SPEND_OK && env, "S9 nodus_v2_env_sign_one_key (no check)");
+    free(env);
+    free(pf);
+    free(h);
+    return 0;
+}
+
+/* S10 (a) — the decoder on hand-built shapes: the 4-output bound, the
+ * derived recipient / change view */
+static int t_decoder_shapes(void) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    uint8_t tokid[64];
+    memset(tokid, SB_TOK_BYTE, sizeof(tokid));
+    static const uint8_t zero64[64] = {0};
+    char foreign[QGP_FP_HEX_BUFFER];
+    memset(foreign, 'c', 128);
+    foreign[128] = '\0';
+    sb_hand_t *h = calloc(1, sizeof(*h));
+    nodus_v2_spend_decoded_t *d = calloc(1, sizeof(*d));
+    CHECK(h && d, "alloc");
+
+    /* the two-asset shape: [A nat][A tok][S tok chg][S nat chg] */
+    {
+        const char *o[4] = { g_to_fp, g_to_fp, g_sender_fp, g_sender_fp };
+        const uint64_t a[4] = { 10, 5, 3, 7 };
+        const uint8_t *t[4] = { NULL, tokid, tokid, NULL };
+        CHECK(hand_init(h, &tab, 4, o, a, t) == 0 && hand_decode(h, d) == 0,
+              "S10 a 4-output envelope decodes");
+        CHECK(d->n_out == 4 && d->n_recipient_out == 2 &&
+              d->token_change == 3 && d->native_change == 7 &&
+              d->out_amount[0] == 10 && d->out_amount[1] == 5 &&
+              memcmp(d->out_token[0], zero64, 64) == 0 &&
+              memcmp(d->out_token[1], tokid, 64) == 0,
+              "S10 two-asset: two recipient outputs, token and native change");
+    }
+    /* out[1] carries the wrong (native) token: not the two-asset view */
+    {
+        const char *o[2] = { g_to_fp, g_to_fp };
+        const uint64_t a[2] = { 10, 5 };
+        const uint8_t *t[2] = { NULL, NULL };
+        CHECK(hand_init(h, &tab, 2, o, a, t) == 0 && hand_decode(h, d) == 0,
+              "S10 decode");
+        CHECK(d->n_recipient_out == 1 && d->native_change == 5 &&
+              d->token_change == 0,
+              "S10 a native out[1] reads as native change, not a token output");
+    }
+    /* swapped order [A tok][A nat]: out[0] is the token, one recipient output */
+    {
+        const char *o[2] = { g_to_fp, g_to_fp };
+        const uint64_t a[2] = { 5, 10 };
+        const uint8_t *t[2] = { tokid, NULL };
+        CHECK(hand_init(h, &tab, 2, o, a, t) == 0 && hand_decode(h, d) == 0,
+              "S10 decode");
+        CHECK(d->n_recipient_out == 1 &&
+              memcmp(d->out_token[0], tokid, 64) == 0 && d->native_change == 10,
+              "S10 swapped order is visible: out[0] is the token");
+    }
+    /* change to a foreign owner: the decoder reports the owner as written */
+    {
+        const char *o[3] = { g_to_fp, g_to_fp, foreign };
+        const uint64_t a[3] = { 10, 5, 3 };
+        const uint8_t *t[3] = { NULL, tokid, tokid };
+        CHECK(hand_init(h, &tab, 3, o, a, t) == 0 && hand_decode(h, d) == 0,
+              "S10 decode");
+        CHECK(strcmp(d->out_owner[2], foreign) == 0 &&
+              strcmp(d->out_owner[2], g_sender_fp) != 0,
+              "S10 a foreign change owner is visible to the read-back");
+    }
+    /* five outputs: refused by the decoder (bound 4) */
+    {
+        const char *o[5] = { g_to_fp, g_to_fp, g_sender_fp, g_sender_fp,
+                             g_sender_fp };
+        const uint64_t a[5] = { 10, 5, 3, 7, 1 };
+        const uint8_t *t[5] = { NULL, tokid, tokid, NULL, NULL };
+        CHECK(hand_init(h, &tab, 5, o, a, t) == 0 &&
+              hand_decode(h, d) == NODUS_V2_SPEND_ERR_DECODE,
+              "S10 five outputs are refused by the decoder");
+    }
+    free(d);
+    free(h);
+    return 0;
+}
+
+/* S10 (b) — plan + build of the two-asset spend, and the read-back
+ * predicate's refusals reached through the request */
+static int t_two_asset(sb_chain_t *c) {
+    nodus_v2_ruleset_id_t tab;
+    table_ruleset(&tab);
+    uint8_t tokid[64];
+    memset(tokid, SB_TOK_BYTE, sizeof(tokid));
+    static const uint8_t zero64[64] = {0};
+    const uint64_t NAT = 1234567, TOK = 300;
+
+    nodus_v2_coin_t coins[3];
+    memset(coins, 0, sizeof(coins));
+    memset(coins[0].nul, 0x01, 64); coins[0].amount = 5000000; coins[0].kind = 0;
+    memset(coins[1].nul, 0x02, 64); coins[1].amount = 1000;    coins[1].kind = 1;
+    memset(coins[2].nul, 0x03, 64); coins[2].amount = 50;      coins[2].kind = 1;
+
+    nodus_v2_spend_plan_req_t q;
+    memset(&q, 0, sizeof(q));
+    q.rs            = &tab;
+    q.order         = NODUS_V2_SPEND_ORDER_LARGEST_FIRST;
+    q.is_native     = 0;
+    q.amount        = TOK;
+    q.native_amount = NAT;
+    q.fee           = SB_FLOOR;
+    q.count         = 1;
+    nodus_v2_spend_plan_t *plans = NULL;
+    long cnt = 0;
+    uint64_t fee = 0;
+    nodus_v2_spend_err_t e;
+    CHECK(nodus_v2_spend_plan(&q, coins, 3, &plans, &cnt, &fee, &e) == 0,
+          "S10 plan the two-asset spend");
+    CHECK(fee == SB_FLOOR && plans[0].n_in == 2 &&
+          plans[0].native_in == 5000000 && plans[0].token_in == 1000 &&
+          plans[0].token_change == 1000 - TOK &&
+          plans[0].native_change == 5000000 - NAT - SB_FLOOR &&
+          plans[0].native_change > SB_FLOOR,
+          "S10 the plan: native covers NODUS + fee, token covers the amount");
+
+    nodus_v2_spend_plan_t plan = plans[0];
+    sb_stream_t s;
+    stream_init(&s, 0x66);
+    nodus_v2_spend_build_req_t r;
+    build_req(&r, &tab, c, coins, &plan, fee, 0, &s);
+    r.token         = tokid;
+    r.amount        = TOK;
+    r.native_amount = NAT;
+    nodus_v2_spend_built_t b;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "S10 build the two-asset spend");
+    const nodus_v2_spend_decoded_t *d = &b.dec;
+    CHECK(d->n_in == 2 && d->n_out == 4 && d->n_recipient_out == 2 &&
+          d->fee == fee, "S10 2 inputs, 4 outputs, two recipient outputs");
+    CHECK(strcmp(d->out_owner[0], g_to_fp) == 0 && d->out_amount[0] == NAT &&
+          memcmp(d->out_token[0], zero64, 64) == 0,
+          "S10 out[0] = recipient NODUS");
+    CHECK(strcmp(d->out_owner[1], g_to_fp) == 0 && d->out_amount[1] == TOK &&
+          memcmp(d->out_token[1], tokid, 64) == 0,
+          "S10 out[1] = recipient token");
+    CHECK(strcmp(d->out_owner[2], g_sender_fp) == 0 &&
+          d->out_amount[2] == 1000 - TOK &&
+          memcmp(d->out_token[2], tokid, 64) == 0,
+          "S10 out[2] = token change to the sender");
+    CHECK(strcmp(d->out_owner[3], g_sender_fp) == 0 &&
+          d->out_amount[3] == 5000000 - NAT - fee &&
+          memcmp(d->out_token[3], zero64, 64) == 0,
+          "S10 out[3] = native change to the sender");
+    CHECK(d->token_change == 1000 - TOK &&
+          d->native_change == 5000000 - NAT - fee,
+          "S10 the decoded native and token change are exposed separately");
+    CHECK(5000000 == NAT + d->native_change + d->fee &&
+          1000 == TOK + d->token_change, "S10 per-kind sums are exact");
+    nodus_v2_spend_built_free(&b);
+
+    /* the token-only shape (native_amount 0) keeps today's layout */
+    stream_init(&s, 0x67);
+    nodus_v2_spend_plan_req_t q2 = q;
+    q2.native_amount = 0;
+    nodus_v2_spend_plan_t *plans2 = NULL;
+    CHECK(nodus_v2_spend_plan(&q2, coins, 3, &plans2, &cnt, &fee, &e) == 0,
+          "S10 plan the token-only spend");
+    nodus_v2_spend_plan_t plan2 = plans2[0];
+    build_req(&r, &tab, c, coins, &plan2, fee, 0, &s);
+    r.token  = tokid;
+    r.amount = TOK;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_OK,
+          "S10 build the token-only spend");
+    CHECK(b.dec.n_out == 3 && b.dec.n_recipient_out == 1 &&
+          memcmp(b.dec.out_token[0], tokid, 64) == 0 &&
+          b.dec.out_amount[0] == TOK &&
+          memcmp(b.dec.out_token[1], tokid, 64) == 0 &&
+          memcmp(b.dec.out_token[2], zero64, 64) == 0,
+          "S10 token-only: [recipient token][token change][native change]");
+    nodus_v2_spend_built_free(&b);
+    free(plans2);
+
+    /* no token change when the token inputs cover the amount exactly: 3 outs */
+    coins[1].amount = TOK;
+    coins[2].amount = 1;
+    stream_init(&s, 0x68);
+    nodus_v2_spend_plan_t *plans3 = NULL;
+    CHECK(nodus_v2_spend_plan(&q, coins, 3, &plans3, &cnt, &fee, &e) == 0 &&
+          plans3[0].token_change == 0, "S10 plan with an exact token coin");
+    nodus_v2_spend_plan_t plan3 = plans3[0];
+    build_req(&r, &tab, c, coins, &plan3, fee, 0, &s);
+    r.token = tokid; r.amount = TOK; r.native_amount = NAT;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == 0 && b.dec.n_out == 3 &&
+          b.dec.token_change == 0 && b.dec.native_change > 0 &&
+          memcmp(b.dec.out_token[1], tokid, 64) == 0 &&
+          memcmp(b.dec.out_token[2], zero64, 64) == 0,
+          "S10 [NODUS][token][native change] without a token change");
+    nodus_v2_spend_built_free(&b);
+    free(plans3);
+
+    /* read-back predicate refusals, reached through the request: every one
+     * is caught BEFORE the signature (ERR_PRESIGN_CHECK) */
+    coins[1].amount = 1000;
+    coins[2].amount = 50;
+    stream_init(&s, 0x69);
+    build_req(&r, &tab, c, coins, &plan, fee, 0, &s);
+    r.token = tokid; r.amount = TOK; r.native_amount = NAT;
+    r.fee = fee + 1;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_PRESIGN_CHECK,
+          "S10 native sum mismatch (a fee the inputs do not cover) is refused "
+          "before signing");
+    nodus_v2_spend_plan_t bad = plan;
+    bad.token_change += 1;
+    build_req(&r, &tab, c, coins, &bad, fee, 0, &s);
+    r.token = tokid; r.amount = TOK; r.native_amount = NAT;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_PRESIGN_CHECK,
+          "S10 token sum mismatch is refused before signing");
+    bad = plan;
+    bad.native_change -= 1;
+    build_req(&r, &tab, c, coins, &bad, fee, 0, &s);
+    r.token = tokid; r.amount = TOK; r.native_amount = NAT;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_PRESIGN_CHECK,
+          "S10 native change mismatch is refused before signing");
+    coins[1].kind = 2;
+    build_req(&r, &tab, c, coins, &plan, fee, 0, &s);
+    r.token = tokid; r.amount = TOK; r.native_amount = NAT;
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "S10 an input that is neither native nor the token is refused");
+    coins[1].kind = 1;
+
+    /* argument refusals */
+    build_req(&r, &tab, c, coins, &plan, fee, 0, &s);
+    r.native_amount = NAT;                 /* token NULL */
+    CHECK(nodus_v2_spend_build(&r, &b, &e) == NODUS_V2_SPEND_ERR_ARG,
+          "S10 a native_amount without a token is refused");
+    nodus_v2_spend_plan_req_t qn = q;
+    qn.is_native = 1;
+    nodus_v2_spend_plan_t *pn = NULL;
+    CHECK(nodus_v2_spend_plan(&qn, coins, 3, &pn, &cnt, &fee, &e) ==
+              NODUS_V2_SPEND_ERR_ARG && !pn,
+          "S10 the planner refuses native_amount with is_native");
+    free(plans);
+    return 0;
+}
+
 int main(void) {
     printf("=== shared CORE SPEND builder (web wallet package c2) ===\n");
     if (keys_init() != 0) {
@@ -1176,6 +1578,9 @@ int main(void) {
     fails += t_sweep_determinism();
     fails += t_absorb();
     fails += t_dust_admitted(&c);
+    fails += t_presign_refusal(&c);
+    fails += t_decoder_shapes();
+    fails += t_two_asset(&c);
     chain_close(&c);
 
     printf("=== %s: %d checks, %d failed section(s) ===\n",

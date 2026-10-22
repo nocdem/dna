@@ -66,8 +66,10 @@ extern "C" {
  * token64 + seed32). */
 #define NODUS_V2_SPEND_MAX_IN    15u
 #define NODUS_V2_SPEND_OUT_LEN   232u
-/* The outputs THIS builder emits: recipient + token change + native change. */
-#define NODUS_V2_SPEND_MAX_OUTS  3u
+/* The outputs THIS builder emits, at most: recipient NODUS + recipient token +
+ * token change + native change (the two-asset shape; the single-asset shapes
+ * emit up to 3). */
+#define NODUS_V2_SPEND_MAX_OUTS  4u
 
 /** Return codes. 0 = OK; NODUS_V2_SPEND_NONE_ELIGIBLE is a non-error
  *  answer of nodus_v2_spend_plan; every other value is a refusal. */
@@ -96,7 +98,10 @@ typedef enum {
     NODUS_V2_SPEND_ERR_EXPIRY       = -20, /* expiry outside the window     */
     NODUS_V2_SPEND_ERR_DECODE       = -21, /* read-back refused the bytes   */
     NODUS_V2_SPEND_ERR_PINS         = -22, /* pins policy != pinned digest  */
-    NODUS_V2_SPEND_ERR_DUP_OUTPUT   = -23  /* two outputs derived one id    */
+    NODUS_V2_SPEND_ERR_DUP_OUTPUT   = -23, /* two outputs derived one id    */
+    NODUS_V2_SPEND_ERR_PRESIGN_CHECK = -24 /* the pre-sign check refused the
+                                            * unsigned bytes — NOTHING was
+                                            * signed                        */
 } nodus_v2_spend_rc_t;
 
 /** Coin-selection direction for the COVERING pick. Only today's nodus-cli
@@ -212,6 +217,36 @@ int nodus_v2_env_sign_one_key(const dna_env_in_t *env_in,
                               size_t *env_len_out, dna_env_preflight_t *pf,
                               nodus_v2_spend_err_t *err);
 
+/** The pre-sign check ("nothing is signed on a mismatch", operator 2026-10-22
+ *  "Hiç imzalanmasın"). Called by nodus_v2_env_sign_one_key_checked with the
+ *  UNSIGNED envelope — the pass-1 bytes, after the first preflight succeeded
+ *  and BEFORE any signature — in which every leg's auth blob is
+ *  `count 1 ‖ pk ‖ 4627 zero signature bytes`: the signer's identity is
+ *  present (the builders' decoders read it from the blob), the signature is
+ *  not. The bytes are a scratch copy owned by the signer; the callback must
+ *  not keep them. Return 0 to proceed, non-zero to refuse. */
+typedef int (*nodus_v2_presign_check_fn)(const uint8_t *unsigned_env,
+                                         size_t len, void *ctx);
+
+/** nodus_v2_env_sign_one_key with a pre-sign check. `check` NULL = exactly
+ *  nodus_v2_env_sign_one_key (which is this function with a NULL check).
+ *  A non-zero return of `check` returns NODUS_V2_SPEND_ERR_PRESIGN_CHECK,
+ *  signs nothing, leaves every `auths[L]` buffer untouched (all zero as the
+ *  caller supplied it) and leaves *env_out NULL. The signed bytes of a pass-2
+ *  failure are wiped before they are freed.
+ *  @return as nodus_v2_env_sign_one_key, plus _ERR_PRESIGN_CHECK. */
+int nodus_v2_env_sign_one_key_checked(const dna_env_in_t *env_in,
+                                      uint8_t *const *auths,
+                                      const dna_env_leg_ctx_t *lctx,
+                                      const uint8_t chain32[DNA_CHAIN_ID_LEN],
+                                      uint64_t tip, const uint8_t *pk,
+                                      const uint8_t *sk, uint8_t **env_out,
+                                      size_t *env_len_out,
+                                      dna_env_preflight_t *pf,
+                                      nodus_v2_spend_err_t *err,
+                                      nodus_v2_presign_check_fn check,
+                                      void *check_ctx);
+
 /* ── the ruleset identity from the generated pins header ───────────── */
 
 /** Fill `out` from nodus_ruleset_pins.h: the CORE tuple, and the SYSTEM
@@ -252,7 +287,14 @@ typedef struct {
     const nodus_v2_ruleset_id_t *rs;
     nodus_v2_spend_order_t       order;
     int      is_native;      /* 1 native · 0 the coins' kind-1 token        */
-    uint64_t amount;         /* ignored under amount_all                    */
+    uint64_t amount;         /* ignored under amount_all; with is_native 0
+                              * the TOKEN amount                            */
+    uint64_t native_amount;  /* is_native 0 only: a NODUS amount sent to the
+                              * SAME recipient in the SAME spend (the two-
+                              * asset shape, 0 = token only, the zero-init
+                              * default). Refused with is_native 1 and with
+                              * amount_all. Must equal the build request's
+                              * native_amount.                              */
     int      amount_all;     /* each spend: ONE native coin minus the fee   */
     uint64_t fee;            /* the starting fee (the floor, or a fixed fee)*/
     int      fee_fixed;      /* 1 = never raised; refused when too low      */
@@ -294,6 +336,13 @@ typedef struct {
  *    its value joins the fee (*fee_out = native_in − amount for a native
  *    spend, native_in for a token spend). The fee only rises; the reduced
  *    shape is the one priced.
+ * TWO-ASSET shape (is_native 0, native_amount > 0): the native pick covers
+ * native_amount + fee, the token pick covers `amount`; outputs are
+ * [recipient NODUS][recipient token][token change?][native change?] (2 + up
+ * to 2), so the sweep and the absorption run on the SAME rules with the base
+ * output count 2 instead of 1 (the marginal fee is priced on that shape; the
+ * native change is the only thing swept into / absorbed; the token side is
+ * never swept). Inputs stay <= NODUS_V2_SPEND_MAX_IN in total.
  * With count > 1 neither runs: the input sets must stay disjoint, later
  * spends must not be starved, and the batch shares ONE fee. Under fee_fixed
  * the sweep still runs and a swept shape the fixed fee cannot pay is
@@ -325,6 +374,14 @@ typedef struct {
     uint64_t out_amount[NODUS_V2_SPEND_MAX_OUTS];
     uint8_t  out_token[NODUS_V2_SPEND_MAX_OUTS][64];
     uint8_t  out_id[NODUS_V2_SPEND_MAX_OUTS][64]; /* SHA3-512(owner‖seed)  */
+    /* Derived from the outputs above (no extra wire data). The recipient
+     * outputs come first: ONE (native send, or token send) or TWO — out[0] a
+     * native output followed by out[1] a non-native one (the two-asset
+     * shape). Every later output is change: a native one (token id all
+     * zero) or a token one. */
+    int      n_recipient_out;          /* 1 or 2                           */
+    uint64_t native_change;            /* the native change output, 0 = none */
+    uint64_t token_change;             /* the token change output, 0 = none  */
 } nodus_v2_spend_decoded_t;
 
 /** Decode a one-leg CORE SPEND envelope built by this module. Refuses any
@@ -346,7 +403,16 @@ typedef struct {
     const uint8_t *sk;               /* 4896 B                              */
     const uint8_t *to_fp;            /* recipient fingerprint, 64 raw bytes */
     const uint8_t *token;            /* NULL = native; else 64-byte id      */
-    uint64_t       amount;           /* ignored under amount_all            */
+    uint64_t       amount;           /* ignored under amount_all; with a
+                                      * token, the TOKEN amount             */
+    uint64_t       native_amount;    /* token != NULL only: the NODUS amount
+                                      * paid to the same recipient in the
+                                      * same spend (0 = token-only, the
+                                      * zero-init default). The envelope's
+                                      * outputs are then [recipient NODUS]
+                                      * [recipient token][token change?]
+                                      * [native change?]. Refused with
+                                      * token NULL and with amount_all.     */
     int            amount_all;       /* send = the plan's native_in − fee   */
     uint64_t       fee;              /* the plan's fee                      */
     uint64_t       gas_price;        /* 0 = rule off                        */
@@ -369,8 +435,14 @@ typedef struct {
 } nodus_v2_spend_built_t;
 
 /**
- * Build, sign and self-check ONE CORE SPEND envelope from one plan, then
- * decode it back and refuse if the decoded fields differ from the request.
+ * Build, sign and self-check ONE CORE SPEND envelope from one plan. The
+ * request's exact read-back predicate (shape, recipient outputs, change
+ * owned by the sender, per-kind input sums, input set, fee / expiry /
+ * ruleset / units) runs on the UNSIGNED bytes BEFORE any signature
+ * (nodus_v2_env_sign_one_key_checked: a mismatch returns
+ * NODUS_V2_SPEND_ERR_PRESIGN_CHECK and signs nothing) and AGAIN on the signed
+ * bytes (a mismatch returns NODUS_V2_SPEND_ERR_DECODE and the signed buffer
+ * is wiped).
  * @return NODUS_V2_SPEND_OK or a refusal (`err` may be NULL).
  */
 int nodus_v2_spend_build(const nodus_v2_spend_build_req_t *req,

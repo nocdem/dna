@@ -237,6 +237,123 @@ static void fmt_hex(const uint8_t *in, size_t n, char *out) {
     out[2 * n] = '\0';
 }
 
+/* What the builder asked for — the read-back predicate's input. */
+typedef struct {
+    const nodus_v2_evm_req_t *req;
+    const dna_env_leg_in_t *legs;      /* the two legs as built (headers)   */
+    uint64_t        fee, units, lock, sum_in, change;
+    uint8_t         role;
+    uint32_t        op;
+    int             n_in, n_out;
+    const char     *own_hex;           /* the change owner (128 hex)        */
+    const uint8_t  *change_id;         /* 64 bytes, when n_out              */
+    const uint8_t  *ecall;             /* the EVM leg's call bytes          */
+    size_t          ecall_len;
+} v2e_rb_t;
+
+/* THE read-back predicate: decode `env` and refuse unless it is what the
+ * request asked for — both legs' headers and auth identity (one signer, the
+ * request's key), the funding call (role, input and output counts, every
+ * input a request coin, their sum, the change output's owner / amount / id),
+ * lock + fee + change == the inputs' sum, and the EVM leg's bytes equal to
+ * the ones built, decoded strictly and re-encoded byte for byte. It runs on
+ * the UNSIGNED bytes before any signature (v2e_presign_check; the signer
+ * hands over the pass-1 bytes with `count 1 ‖ pk` in each leg's auth blob
+ * and a zero signature, so the identity IS compared pre-sign) and again on
+ * the signed bytes — the same code in both runs. Only the signature is not
+ * judged here. `dec` receives the decoded EVM call; it BORROWS `env` (a view
+ * borrows its buffer — env_wire.h), so `env` must outlive it.
+ * @return NODUS_V2_SPEND_OK, NODUS_V2_SPEND_ERR_ALLOC, or
+ *         NODUS_V2_EVM_ERR_MISMATCH. */
+static int v2e_readback(const v2e_rb_t *rb, const uint8_t *env, size_t len,
+                        dna_evm_call_t *dec) {
+    const nodus_v2_evm_req_t *req = rb->req;
+    dna_env_view_t *v = calloc(1, sizeof(*v));
+    if (!v) return NODUS_V2_SPEND_ERR_ALLOC;
+    int ok = dna_env_decode(env, len, v) == 0 &&
+             v->leg_count == 2 && v->expiry_height == req->expiry_height &&
+             v->fee_amount == rb->fee && v->res_max_total_units == rb->units;
+    for (int L = 0; ok && L < 2; L++) {
+        const dna_env_leg_hdr_t *h = &v->leg[L];
+        if (h->domain_id != rb->legs[L].hdr.domain_id ||
+            h->runtime_op != rb->legs[L].hdr.runtime_op ||
+            h->ruleset_version != rb->legs[L].hdr.ruleset_version ||
+            h->access_mode != DNA_ENV_ACCESS_INVOKE ||
+            h->auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1 ||
+            h->auth_len != V2E_AUTH_LEN ||
+            h->res_max_effects != rb->legs[L].hdr.res_max_effects ||
+            h->res_max_effect_bytes != rb->legs[L].hdr.res_max_effect_bytes)
+            ok = 0;
+        else {
+            const uint8_t *a = v->buf + v->auth_off[L];
+            if (a[0] != 1 || memcmp(a + 1, req->pk, V2E_PK_LEN) != 0) ok = 0;
+        }
+    }
+    dna_evmfund_call_t dfc;
+    memset(&dfc, 0, sizeof(dfc));
+    uint64_t in_sum = 0, d_change = 0;
+    if (ok && (dna_evmfund_decode(v->buf + v->call_off[0], v->leg[0].call_len,
+                                  &dfc) != 0 ||
+               dfc.role != rb->role || dfc.n_in != rb->n_in ||
+               dfc.n_out != rb->n_out))
+        ok = 0;
+    for (int i = 0; ok && i < dfc.n_in; i++) {
+        int found = 0;
+        for (int k = 0; k < req->n_coins && !found; k++)
+            if (memcmp(req->coins[k].nul, dfc.in_nul + (size_t)i * 64,
+                       64) == 0) {
+                found = 1;
+                if (dna_ck_add_u64(in_sum, req->coins[k].amount,
+                                   &in_sum) != 0)
+                    ok = 0;
+            }
+        if (!found) ok = 0;
+    }
+    if (ok && dfc.n_out == 1) {
+        const uint8_t *r = dfc.outs;
+        uint64_t amt = 0;
+        for (int b = 0; b < 8; b++) amt = (amt << 8) | r[128 + b];
+        uint8_t pre[160], id[64];
+        memcpy(pre, r, 128);
+        memcpy(pre + 128, r + 200, 32);
+        if (memcmp(r, rb->own_hex, 128) != 0 ||
+            qgp_sha3_512(pre, sizeof(pre), id) != 0 ||
+            memcmp(id, rb->change_id, 64) != 0)
+            ok = 0;
+        d_change = amt;
+    }
+    {
+        uint64_t rhs = 0;
+        if (ok && (d_change != rb->change || in_sum != rb->sum_in ||
+                   dna_ck_add_u64(rb->fee, rb->lock, &rhs) != 0 ||
+                   dna_ck_add_u64(rhs, d_change, &rhs) != 0 ||
+                   rhs != in_sum))
+            ok = 0;
+    }
+    /* the EVM leg's bytes: decoded strictly and re-encoded byte for byte */
+    if (ok) {
+        const uint8_t *eb = v->buf + v->call_off[1];
+        const size_t el = v->leg[1].call_len;
+        uint8_t *re = malloc(el ? el : 1);
+        size_t rl = 0;
+        if (!re || el != rb->ecall_len || memcmp(eb, rb->ecall, el) != 0 ||
+            dna_evm_call_decode(rb->op, eb, el, dec) != 0 ||
+            dna_evm_call_encode(dec, re, el, &rl) != 0 || rl != el ||
+            memcmp(re, rb->ecall, el) != 0)
+            ok = 0;
+        free(re);
+    }
+    free(v);
+    return ok ? NODUS_V2_SPEND_OK : NODUS_V2_EVM_ERR_MISMATCH;
+}
+
+static int v2e_presign_check(const uint8_t *env, size_t len, void *ctx) {
+    dna_evm_call_t dec;
+    memset(&dec, 0, sizeof(dec));
+    return v2e_readback((const v2e_rb_t *)ctx, env, len, &dec) ==
+                   NODUS_V2_SPEND_OK ? 0 : -1;
+}
+
 int nodus_v2_evm_build(const nodus_v2_evm_req_t *req,
                        nodus_v2_evm_built_t *out, nodus_v2_evm_err_t *err) {
     nodus_v2_evm_err_t e_local;
@@ -299,7 +416,6 @@ int nodus_v2_evm_build(const nodus_v2_evm_req_t *req,
     uint8_t *fcall = NULL, *auth0 = NULL, *auth1 = NULL, *env_bytes = NULL;
     size_t env_len = 0;
     dna_env_preflight_t *pf = NULL;
-    dna_env_view_t *v = NULL;
     uint8_t own_raw[64];
     char own_hex[129];
     /* declared before the first `goto done`: the error path reads fee and
@@ -491,98 +607,44 @@ int nodus_v2_evm_build(const nodus_v2_evm_req_t *req,
     lctx[1].domain_id       = DNA_DOMAIN_EVM;
     lctx[1].ruleset_version = req->evm_ruleset_version;
     memcpy(lctx[1].ruleset_hash, req->evm_ruleset_hash, 64);
+    v2e_rb_t rb;
+    memset(&rb, 0, sizeof(rb));
+    rb.req       = req;
+    rb.legs      = legs;
+    rb.fee       = fee;
+    rb.units     = units;
+    rb.lock      = lock;
+    rb.sum_in    = sum_in;
+    rb.change    = change;
+    rb.role      = role;
+    rb.op        = op;
+    rb.n_in      = n_in;
+    rb.n_out     = n_out;
+    rb.own_hex   = own_hex;
+    rb.change_id = out->change_id;
+    rb.ecall     = ecall;
+    rb.ecall_len = ecall_len;
     {
         uint8_t *auths[2] = { auth0, auth1 };
         nodus_v2_spend_err_t se;
         memset(&se, 0, sizeof(se));
-        rc = nodus_v2_env_sign_one_key(&env_in, auths, lctx, req->chain32,
-                                       req->tip, req->pk, req->sk,
-                                       &env_bytes, &env_len, pf, &se);
+        /* "nothing is signed on a mismatch": v2e_readback runs on the
+         * unsigned bytes first (a refusal is _ERR_PRESIGN_CHECK) */
+        rc = nodus_v2_env_sign_one_key_checked(&env_in, auths, lctx,
+                                               req->chain32, req->tip,
+                                               req->pk, req->sk, &env_bytes,
+                                               &env_len, pf, &se,
+                                               v2e_presign_check, &rb);
         if (rc != NODUS_V2_SPEND_OK) {
             err->leg = se.leg;
             goto done;
         }
     }
 
-    /* ── read back what was BUILT; refuse unless it is what was asked ── */
-    v = calloc(1, sizeof(*v));
-    if (!v) { rc = NODUS_V2_SPEND_ERR_ALLOC; goto done; }
-    int ok = dna_env_decode(env_bytes, env_len, v) == 0 &&
-             v->leg_count == 2 && v->expiry_height == req->expiry_height &&
-             v->fee_amount == fee && v->res_max_total_units == units;
-    for (int L = 0; ok && L < 2; L++) {
-        const dna_env_leg_hdr_t *h = &v->leg[L];
-        if (h->domain_id != legs[L].hdr.domain_id ||
-            h->runtime_op != legs[L].hdr.runtime_op ||
-            h->ruleset_version != legs[L].hdr.ruleset_version ||
-            h->access_mode != DNA_ENV_ACCESS_INVOKE ||
-            h->auth_kind != NODUS_RT_AUTHKIND_DSA87_MULTI_V1 ||
-            h->auth_len != V2E_AUTH_LEN ||
-            h->res_max_effects != legs[L].hdr.res_max_effects ||
-            h->res_max_effect_bytes != legs[L].hdr.res_max_effect_bytes)
-            ok = 0;
-        else {
-            const uint8_t *a = v->buf + v->auth_off[L];
-            if (a[0] != 1 || memcmp(a + 1, req->pk, V2E_PK_LEN) != 0) ok = 0;
-        }
-    }
-    dna_evmfund_call_t dfc;
-    memset(&dfc, 0, sizeof(dfc));
-    uint64_t in_sum = 0, d_change = 0;
-    if (ok && (dna_evmfund_decode(v->buf + v->call_off[0], v->leg[0].call_len,
-                                  &dfc) != 0 ||
-               dfc.role != role || dfc.n_in != n_in || dfc.n_out != n_out))
-        ok = 0;
-    for (int i = 0; ok && i < dfc.n_in; i++) {
-        int found = 0;
-        for (int k = 0; k < req->n_coins && !found; k++)
-            if (memcmp(req->coins[k].nul, dfc.in_nul + (size_t)i * 64,
-                       64) == 0) {
-                found = 1;
-                if (dna_ck_add_u64(in_sum, req->coins[k].amount,
-                                   &in_sum) != 0)
-                    ok = 0;
-            }
-        if (!found) ok = 0;
-    }
-    if (ok && dfc.n_out == 1) {
-        const uint8_t *r = dfc.outs;
-        uint64_t amt = 0;
-        for (int b = 0; b < 8; b++) amt = (amt << 8) | r[128 + b];
-        uint8_t pre[160], id[64];
-        memcpy(pre, r, 128);
-        memcpy(pre + 128, r + 200, 32);
-        if (memcmp(r, own_hex, 128) != 0 ||
-            qgp_sha3_512(pre, sizeof(pre), id) != 0 ||
-            memcmp(id, out->change_id, 64) != 0)
-            ok = 0;
-        d_change = amt;
-    }
-    {
-        uint64_t rhs = 0;
-        if (ok && (d_change != change || in_sum != sum_in ||
-                   dna_ck_add_u64(fee, lock, &rhs) != 0 ||
-                   dna_ck_add_u64(rhs, d_change, &rhs) != 0 ||
-                   rhs != in_sum))
-            ok = 0;
-    }
-    /* the EVM leg's bytes: decoded strictly and re-encoded byte for byte */
-    if (ok) {
-        const uint8_t *eb = v->buf + v->call_off[1];
-        const size_t el = v->leg[1].call_len;
-        uint8_t *re = malloc(el ? el : 1);
-        size_t rl = 0;
-        if (!re || el != ecall_len || memcmp(eb, ecall, el) != 0 ||
-            dna_evm_call_decode(op, eb, el, &out->dec) != 0 ||
-            dna_evm_call_encode(&out->dec, re, el, &rl) != 0 || rl != el ||
-            memcmp(re, ecall, el) != 0)
-            ok = 0;
-        free(re);
-    }
-    if (!ok) {
-        rc = NODUS_V2_EVM_ERR_MISMATCH;
-        goto done;
-    }
+    /* ── read back what was BUILT; refuse unless it is what was asked ──
+     * (`out->dec` borrows env_bytes, which moves into `out` below) */
+    rc = v2e_readback(&rb, env_bytes, env_len, &out->dec);
+    if (rc != NODUS_V2_SPEND_OK) goto done;
     /* `dec` points into v->buf, which IS env_bytes (a view borrows its
      * buffer — env_wire.h), and env_bytes moves into `out` below */
     out->env = env_bytes;                  /* ownership moves here */
@@ -605,9 +667,13 @@ done:
         err->units = err->units ? err->units : units;
         nodus_v2_evm_built_free(out);
     }
-    free(v);
+    /* a refused signed buffer and the auth blobs that held its signatures
+     * are wiped before they are freed */
+    if (env_bytes) memset(env_bytes, 0, env_len);
     free(env_bytes);
     free(pf);
+    if (auth0) memset(auth0, 0, V2E_AUTH_LEN);
+    if (auth1) memset(auth1, 0, V2E_AUTH_LEN);
     free(auth0);
     free(auth1);
     free(fcall);
