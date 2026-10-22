@@ -12515,12 +12515,19 @@ int main(int argc, char **argv) {
     while ((opt = getopt(argc, argv, "+s:p:i:h")) != -1) {
         switch (opt) {
         case 's': {
-            /* Support host:port format */
+            /* Support host:port format. The host ends up in
+             * nodus_server_endpoint_t.ip (64 bytes): a longer one is
+             * refused, never cut short. */
             char *colon = strchr(optarg, ':');
+            static char host_buf[sizeof(((nodus_server_endpoint_t *)0)->ip)];
+            const size_t hlen = colon ? (size_t)(colon - optarg)
+                                      : strlen(optarg);
+            if (hlen == 0 || hlen >= sizeof(host_buf)) {
+                fprintf(stderr, "-s: the host must be 1 to %zu characters\n",
+                        sizeof(host_buf) - 1);
+                return 1;
+            }
             if (colon) {
-                static char host_buf[256];
-                size_t hlen = (size_t)(colon - optarg);
-                if (hlen >= sizeof(host_buf)) hlen = sizeof(host_buf) - 1;
                 memcpy(host_buf, optarg, hlen);
                 host_buf[hlen] = '\0';
                 server_ip = host_buf;
