@@ -104,10 +104,10 @@ let quarantinedRows = [];
 const releasedQuarantine = new Set();
 const quarantineLocks = held => held.map(entry => ({ chain: NODUS_ASSET.chain, address: entry.address, status: 'pending', inputs: [...entry.inputs], tokenRow: entry.tokenRow === true, ...(entry.hash ? { hash: entry.hash } : {}), ...(entry.expiryHeight ? { expiryHeight: entry.expiryHeight } : {}) }));
 const nodusLockRows = address => [...history.filter(row => row.address === address), ...adapters.nodus.quarantineLockRows(quarantinedRows, releasedQuarantine).filter(row => row.address === address)];
-// Releases the locks of quarantined records whose coins are certainly free
-// (src/adapters/nodus.js quarantineReleasable) from one strict read of the
-// wallet's coins and the chain tip. A failed read releases nothing (the locks
-// stay: today's behaviour). One read at a time.
+// Releases the locks of quarantined records whose own expiry height the chain
+// tip has passed (src/adapters/nodus.js quarantineReleasable) from one strict
+// read of the chain tip. A failed read releases nothing (the locks stay:
+// today's behaviour). One read at a time.
 // Called from the tracker's updates too, so a read is made at most every
 // QUARANTINE_READ_MS (UI pacing only; nothing decided by it is consensus).
 //
@@ -116,8 +116,10 @@ const nodusLockRows = address => [...history.filter(row => row.address === addre
 // unreleased quarantined record exists (wallet unlocked, client connected) a
 // timer of its own re-runs this, one read at a time; it stops when none is left,
 // on lock and when the client goes away. UI pacing only — no clock value
-// decides a coin.
-let quarantineReading = false, quarantineReadAt = 0, quarantineTimer = 0;
+// decides a coin. The pacing uses performance.now() (monotonic: a wall-clock
+// change cannot stall reads); -Infinity means "never read yet".
+const QUARANTINE_NEVER_READ = -Infinity;
+let quarantineReading = false, quarantineReadAt = QUARANTINE_NEVER_READ, quarantineTimer = 0;
 const QUARANTINE_READ_MS = 15000;
 const stopQuarantineTimer = () => { clearTimeout(quarantineTimer); quarantineTimer = 0; };
 const quarantineActive = () => !!nodusClient && !!wallet && !wallet.locked && quarantinedRows.some(row => !releasedQuarantine.has(row));
@@ -129,8 +131,8 @@ async function reconcileQuarantine() {
   const client = nodusClient, source = wallet;
   if (!quarantineActive()) { stopQuarantineTimer(); return; }
   if (quarantineReading) return;      // the read in flight re-arms the timer when it ends
-  if (Date.now() - quarantineReadAt < QUARANTINE_READ_MS) { armQuarantineTimer(); return; }
-  quarantineReading = true; quarantineReadAt = Date.now();
+  if (quarantineReadAt !== QUARANTINE_NEVER_READ && performance.now() - quarantineReadAt < QUARANTINE_READ_MS) { armQuarantineTimer(); return; }
+  quarantineReading = true; quarantineReadAt = performance.now();
   try {
     const view = await adapters.nodus.coinView({ client, from: source.addresses.nodus });
     if (client !== nodusClient || source !== wallet || source.locked) return;
@@ -1094,7 +1096,7 @@ async function startNodusSend(source, address) {
     }
     setNodusReady(false);
   } });
-  nodusClient = client;
+  nodusClient = client; quarantineReadAt = QUARANTINE_NEVER_READ;
   const current = () => client === nodusClient && source === wallet && !source.locked;
   let seed;
   try {
@@ -1757,7 +1759,7 @@ function lock(event) {
   $('skip-verify-dialog').close(); $('skip-verify').checked = false;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
   resetWalletPages({ keepHash: event?.type === 'pagehide' });
-  history.length = 0; quarantinedRows = []; releasedQuarantine.clear(); stopQuarantineTimer(); $('account-explorer').removeAttribute('href');
+  history.length = 0; quarantinedRows = []; releasedQuarantine.clear(); quarantineReadAt = QUARANTINE_NEVER_READ; stopQuarantineTimer(); $('account-explorer').removeAttribute('href');
   $('activity').replaceChildren(); setReceiveAddress(''); $('balances').replaceChildren(); $('recipient').value = ''; $('amount').value = '';
   for (const id of ['unlock-password', 'vault-password', 'vault-confirm-password', 'vault-old-password']) $(id).value = '';
   $('vault-risk-confirm').checked = false; $('vault-save-status').textContent = '';
@@ -2552,7 +2554,7 @@ $('unlock-form').onsubmit = async event => {
     addressBook = keptBook; addressBookNote = bookProblem; addressBookUnreadable = !!bookProblem;
     walletFresh = false; siteLock.start();
     history.length = 0; history.push(...rows);
-    releasedQuarantine.clear(); quarantineReadAt = 0; quarantinedRows = quarantineLocks(rows.quarantined ?? []);
+    releasedQuarantine.clear(); quarantineReadAt = QUARANTINE_NEVER_READ; quarantinedRows = quarantineLocks(rows.quarantined ?? []);
     const aside = quarantinedRows.length;
     $('discard-activity').hidden = !problem && !aside;
     $('vault-status').textContent = problem || (aside ? `Saved activity authenticated. ${aside} saved ${aside === 1 ? 'record' : 'records'} could not be read and ${aside === 1 ? 'is' : 'are'} not shown; the coins ${aside === 1 ? 'it' : 'they'} used stay held. Check the explorer; discarding the unreadable history frees them.` : 'Saved activity authenticated.');
