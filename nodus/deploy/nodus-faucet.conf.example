@@ -1,0 +1,58 @@
+# /etc/nodus-faucet.conf — nodus-faucet configuration (copy, edit, chmod 0640,
+# chown root:nodus-faucet). One `key = value` per line; '#' starts a comment.
+# The file is STRICT: an unknown key, a duplicate, a malformed value or a
+# missing required key stops the service from starting.
+#
+# Governing records: docs/plans/decisions/2026-10-22-testnet-test-tokens-
+# faucet-dex.md (every default below is the operator's value) and
+# nodus/docs/FAUCET.md.
+
+# ── required ──────────────────────────────────────────────────────────────
+
+# The faucet talks to its OWN local node (operator: "Kendi düğümüne güvensin").
+node_host = 127.0.0.1
+node_port = 4001
+
+# The node's identity pin: SHA3-512 of the node's ML-DSA-87 public key, 128
+# lowercase hex characters (the content of <node data dir>/nodus.fp). The
+# faucet connects ONLY to a server proving this identity.
+node_fp = REPLACE_WITH_THE_NODES_128_HEX_FINGERPRINT
+
+# The only chain this faucet serves: the 32-byte derived chain id (64 hex)
+# as the node reports it in dnac_supply "chain_id32". On any other chain the
+# faucet refuses to start and stops if the node's chain changes.
+chain_id = REPLACE_WITH_THE_TESTNET_CHAIN_ID_64_HEX
+
+# The faucet's own key directory (created, mode 0700, with a NEW key on first
+# start) and its journal. Both under the unit's StateDirectory.
+key_dir = /var/lib/nodus-faucet/keys
+journal_path = /var/lib/nodus-faucet/journal.db
+
+# tUSDT: token id (128 hex), created in block 305991.
+token_id = 7142460f5dd73ce7123905c423e1eb17fbff36f14b031e24837a4b6d7bedd5677baaa3a3e6015e6d6fc706b0b0d8799a88d7fd63f6d1e7807dbb88577b7c3b50
+
+# HTTP listen port, on 127.0.0.1 only (not configurable).
+listen_port = 4010
+
+# ── optional (defaults shown = the operator's values) ─────────────────────
+
+# FULL payout, once per chain name, in ONE transaction:
+#   100 000 NODUS = 10^13 raw, 100 tUSDT = 10^8 raw (6 decimals)
+# full_native = 10000000000000
+# full_token  = 100000000
+# START airdrop, once per address without a name (NODUS balance 0): 10 NODUS
+# start_native = 1000000000
+# Fee ceiling per payout: 0.1 NODUS = 10^7 raw. Above it a claim pauses and
+# nothing is signed.
+# fee_ceiling = 10000000
+# Envelope lifetime in blocks after the tip (10..90; the mempool admits 100).
+# expiry_ahead = 90
+# Journal size at which new claims stop (bytes, >= 1 MiB). Paid markers are
+# never deleted.
+# storage_ceiling = 67108864
+# Open claims at most (queue cap), simultaneous HTTP connections, per-request
+# HTTP timeout, worker cycle.
+# queue_cap = 64
+# conn_cap = 16
+# request_timeout_ms = 5000
+# poll_ms = 4000

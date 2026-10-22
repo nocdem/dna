@@ -1,0 +1,54 @@
+# nodus-faucet — the testnet faucet (NODUS + tUSDT). Governing records:
+# docs/plans/decisions/2026-10-22-testnet-test-tokens-faucet-dex.md (operator
+# rules) and docs/plans/2026-10-22-testnet-faucet-design.md section 6.
+# Operation: nodus/docs/FAUCET.md and docs/DEPLOY_RUNBOOK.md "Testnet faucet".
+#
+# Host: the operator's node 62.171.136.77. The faucet runs as its OWN user
+# (not root, not the witness's), holds its OWN key (never the witness key),
+# listens on 127.0.0.1 ONLY — the faucet host opens no public port; the
+# wallet site forwards /faucet/ to it (design section 6.9, Wallet=Main's
+# deploy step). A compromise of THIS process alone does not reach the
+# witness key; a root compromise reaches both (accepted by the operator,
+# design section 6.10).
+#
+# StateDirectory= creates /var/lib/nodus-faucet (mode 0700, owned by the
+# service user): the journal (journal.db + -wal/-shm + .lock) and the key
+# directory (keys/) live there; it is the ONLY writable path. The user is
+# created by the runbook (useradd --system); DynamicUser is not used because
+# the key directory must keep a stable owner across restarts.
+[Unit]
+Description=Nodus testnet faucet (NODUS + tUSDT), 127.0.0.1 only
+Documentation=https://github.com/nocdem/dna
+After=network-online.target nodus-core.service nodus-witness.service nodus.service
+Wants=network-online.target
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+User=nodus-faucet
+Group=nodus-faucet
+StateDirectory=nodus-faucet
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/nodus-faucet --config /etc/nodus-faucet.conf
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nodus-faucet
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+CapabilityBoundingSet=
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nodus-faucet
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

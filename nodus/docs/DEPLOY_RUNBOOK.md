@@ -1969,6 +1969,60 @@ ran it. `git log` keeps the old text.)
 
 ---
 
+## 2.8 Testnet faucet (`nodus-faucet`) — TESTNET ONLY, per host, no chain impact
+
+Governing records (local): `docs/plans/decisions/2026-10-22-testnet-test-tokens-faucet-dex.md`
+(the operator's rules — host 62.171.136.77, a new dedicated faucet wallet, funded by the operator himself, reached
+through the wallet site), `docs/plans/2026-10-22-testnet-faucet-design.md` section 6. What the service is and how
+it behaves: `nodus/docs/FAUCET.md`. It is a plain service of its own; it changes no consensus rule and needs no
+rolling / stop-all procedure. **Install, funding and the forwarding are the ORCHESTRATOR's steps on the operator's
+word (a node host is touched).** The EU-6 forwarding of `/faucet/…` is Wallet=Main's separate step (package D).
+
+**1. Binary and files** (the build produces `nodus/build/nodus-faucet`; it is not part of `make-dist.sh`'s five
+binaries; how the file reaches the host is the ORCHESTRATOR's deploy step and is not chosen here):
+```
+install -m 0755 nodus-faucet /usr/local/bin/nodus-faucet
+useradd --system --home-dir /var/lib/nodus-faucet --shell /usr/sbin/nologin nodus-faucet
+install -m 0640 -o root -g nodus-faucet nodus-faucet.conf.example /etc/nodus-faucet.conf   # then edit it
+install -m 0644 nodus-faucet.service /etc/systemd/system/nodus-faucet.service
+```
+Edit `/etc/nodus-faucet.conf`: `node_fp` = the local node's `identity/nodus.fp`, `chain_id` = the testnet chain id (the
+node's `dnac_supply` `chain_id32`, 64 hex). Leave the amounts, the fee ceiling (10^7 raw) and the storage ceiling at
+the operator's defaults unless he says otherwise.
+
+**2. First start creates the key — and prints the address to fund.** The unit's `StateDirectory=nodus-faucet` creates
+`/var/lib/nodus-faucet` (0700, the only writable path); the key goes to `keys/` inside it.
+```
+systemctl daemon-reload
+systemctl start nodus-faucet
+journalctl -u nodus-faucet -n 20          # "faucet address: <128 hex> — fund this address with NODUS and tUSDT"
+sudo -u nodus-faucet /usr/local/bin/nodus-faucet --config /etc/nodus-faucet.conf --print-address   # the address alone
+```
+A start that does not reach "listening on 127.0.0.1:<port>" has a reason in the journal: a config key refused, the node
+not answering, the node's identity not the pinned one, or the node's chain id not the configured one (the service
+refuses to run on another chain).
+
+**3. Funding (the operator's own transfer).** He sends NODUS and tUSDT to the address printed above — a few large coins
+per token (the faucet reads at most 100 coins per token; a full list is "coin list incomplete" and pauses the claims).
+Capacity is then visible without any claim: `curl -s http://127.0.0.1:<listen_port>/faucet/status` →
+`{"open":true,"paused":false,"full_left":…,"start_left":…,…}` (FULL = min(NODUS / (10^13 + ceiling), tUSDT / 10^8); the
+NODUS pool is shared by FULL and START).
+
+**4. Verify** (read-only): `/faucet/status` shows `open:true`; a claim for a test address is answered with a claim id and
+progresses `planned → signed → submitted → confirmed` (`GET /faucet/claim/<id>`); the payout is ONE envelope with the NODUS
+and tUSDT outputs. Do not claim for a real user's address as a test.
+
+**5. Stop / rollback.** `systemctl stop nodus-faucet` is always safe: every claim state is in the journal
+(`/var/lib/nodus-faucet/journal.db`) and resumes at the next start, resubmitting the SAME signed bytes. Never run two
+instances (the second refuses: `journal.db.lock`). Never delete the journal while claims are open or paid markers exist —
+the markers are what keeps a name from being paid twice; deleting it re-opens every name and address.
+
+**6. Honest limits.** A claim in state `unknown` (a block the local node does not hold) keeps the faucet closed and has no
+force-command in this version (FAUCET.md section 7). The key sits on a witness host: a root compromise reaches both keys
+(accepted by the operator, design section 6.10); the faucet process alone does not reach the witness key.
+
+---
+
 ## 3. Post-deploy verification
 
 ```bash
