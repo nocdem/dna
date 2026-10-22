@@ -3421,6 +3421,13 @@ int nodus_client_dnac_chain_id32(nodus_client_t *client, bool *has_out,
 
 int nodus_client_dnac_fee_info(nodus_client_t *client,
                                 nodus_dnac_fee_info_t *result_out) {
+    return nodus_client_dnac_fee_info_ex(client, result_out, NULL);
+}
+
+int nodus_client_dnac_fee_info_ex(nodus_client_t *client,
+                                  nodus_dnac_fee_info_t *result_out,
+                                  bool *has_gas_price_out) {
+    if (has_gas_price_out) *has_gas_price_out = false;
     if (!nodus_client_is_ready(client) || !result_out)
         return -1;
 
@@ -3445,8 +3452,9 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
-    int drc = nodus_dnac_fee_info_decode(req->raw_response,
-                                         req->raw_response_len, result_out);
+    int drc = nodus_dnac_fee_info_decode_ex(req->raw_response,
+                                            req->raw_response_len, result_out,
+                                            has_gas_price_out);
     free_pending(client, req);
     return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
 }
@@ -3461,8 +3469,21 @@ int nodus_client_dnac_fee_info(nodus_client_t *client,
  * otherwise read as "rule off" / "not reported". */
 int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
                                nodus_dnac_fee_info_t *result_out) {
+    return nodus_dnac_fee_info_decode_ex(raw, raw_len, result_out, NULL);
+}
+
+/* The same decode, additionally reporting whether the reply CARRIED an
+ * unsigned "gas_price" exactly once (nodus.h). The struct field reads 0 for
+ * both "price 0 = rule off" and "key absent / wrong type"; a caller that
+ * must tell them apart (the faucet: an unknown price must stop it, never be
+ * read as zero) takes the flag. */
+int nodus_dnac_fee_info_decode_ex(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_fee_info_t *result_out,
+                                  bool *has_gas_price_out) {
+    if (has_gas_price_out) *has_gas_price_out = false;
     if (!raw || !result_out) return -1;
     memset(result_out, 0, sizeof(*result_out));
+    int gas_keys = 0, gas_uint = 0;
 
     cbor_decoder_t dec;
     size_t mc;
@@ -3485,7 +3506,11 @@ int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
             /* HF-1: absent on an older server -> stays 0 (memset above),
              * which means "the price rule is off". */
             cbor_item_t v = cbor_decode_next(&dec);
-            if (v.type == CBOR_ITEM_UINT) result_out->gas_price = v.uint_val;
+            gas_keys++;
+            if (v.type == CBOR_ITEM_UINT) {
+                result_out->gas_price = v.uint_val;
+                gas_uint++;
+            }
         } else if (key.tstr.len == 16 &&
                    memcmp(key.tstr.ptr, "token_create_fee", 16) == 0) {
             /* W-C: absent on an older server -> stays 0 (memset above);
@@ -3513,6 +3538,7 @@ int nodus_dnac_fee_info_decode(const uint8_t *raw, size_t raw_len,
         }
     }
     if (dec.error) return -1;
+    if (has_gas_price_out) *has_gas_price_out = (gas_keys == 1 && gas_uint == 1);
     return 0;
 }
 

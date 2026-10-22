@@ -61,24 +61,37 @@ int faucet_json_parse_claim(const char *body, size_t len, char addr_out[129]);
 int faucet_json_answer(const faucet_answer_t *a, char *out, size_t cap);
 int faucet_json_status(const faucet_status_t *s, char *out, size_t cap);
 
-/** The routing the server calls: fills `*status` and `body`. */
+/** The routing the server calls: fills `*status` and `body`. `deadline_ms`
+ *  is the connection's absolute faucet_now_ms() deadline; handler work waits
+ *  on the node at most until then (faucet_api_claim). GET claim and GET
+ *  status read only the journal and the worker's cache. */
 void faucet_http_route(faucet_core_t *core, const faucet_http_req_t *req,
-                       int *status, char *body, size_t cap);
+                       uint64_t deadline_ms, int *status, char *body,
+                       size_t cap);
 
 /* ── the server ─────────────────────────────────────────────────────── */
 
 typedef void (*faucet_http_handler_fn)(void *ctx, const faucet_http_req_t *req,
-                                       int *status, char *body, size_t cap);
+                                       uint64_t deadline_ms, int *status,
+                                       char *body, size_t cap);
 typedef struct faucet_http faucet_http_t;
 
 /** Listen on 127.0.0.1:`port` (0 = kernel-chosen, reported in *bound). */
 int  faucet_http_open(uint16_t port, int conn_cap, int timeout_ms,
                       faucet_http_handler_fn handler, void *ctx,
                       faucet_http_t **out, uint16_t *bound);
-/** One iteration: accept, read, answer, expire. Blocks at most wait_ms. */
+/** One iteration: accept, read, answer, expire. Blocks at most wait_ms. An
+ *  answer is built once into the connection and sent until complete —
+ *  through POLLOUT when the socket takes only part — within the
+ *  connection's deadline. */
 int  faucet_http_poll(faucet_http_t *h, int wait_ms);
 /** Open connections right now (for the cap test). */
 int  faucet_http_connections(const faucet_http_t *h);
 void faucet_http_close(faucet_http_t *h);
+
+/** TEST SEAM: send at most `n` bytes of an answer per flush (0 = no limit,
+ *  the production setting), to prove the POLLOUT continuation — a loopback
+ *  socket never short-writes a 1.3 KB answer by itself. */
+void faucet_http_set_max_send_chunk(size_t n);
 
 #endif /* FAUCET_HTTP_H */

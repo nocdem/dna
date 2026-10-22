@@ -214,7 +214,8 @@ static void answer_json(int http, const char *state, const char *msg,
 }
 
 void faucet_http_route(faucet_core_t *core, const faucet_http_req_t *req,
-                       int *status, char *body, size_t cap) {
+                       uint64_t deadline_ms, int *status, char *body,
+                       size_t cap) {
     static const char P_CLAIM[] = "/faucet/claim";
     static const char P_CLAIM_ID[] = "/faucet/claim/";
     static const char P_STATUS[] = "/faucet/status";
@@ -230,7 +231,7 @@ void faucet_http_route(faucet_core_t *core, const faucet_http_req_t *req,
             return;
         }
         faucet_answer_t a;
-        faucet_api_claim(core, addr, &a);
+        faucet_api_claim(core, addr, deadline_ms, &a);
         *status = a.http;
         if (faucet_json_answer(&a, body, cap) < 0) { *status = 500; body[0] = '\0'; }
         return;
@@ -259,12 +260,28 @@ void faucet_http_route(faucet_core_t *core, const faucet_http_req_t *req,
 #define FH_BUF_MAX  (FH_MAX_HEADER_BLOCK + 4 + FH_MAX_BODY)
 #define FH_CONN_HARD_MAX 256
 
+#define FH_RESP_BUF (FH_RESPONSE_MAX + 256)   /* head + body, bounded        */
+
+/* One connection. The request is read into buf; the answer is built ONCE
+ * into resp and sent from resp_off until resp_len — a short write or EAGAIN
+ * leaves the connection in `writing` and the rest goes out through POLLOUT,
+ * all within the connection's deadline. */
 typedef struct {
     int      fd;
     size_t   len;
     uint64_t deadline_ms;
+    int      writing;
+    size_t   resp_len, resp_off;
+    char     resp[FH_RESP_BUF];
     char     buf[FH_BUF_MAX];
 } fh_conn_t;
+
+/* 0 = send as much as the socket takes (production). A test sets a small
+ * number to prove the POLLOUT continuation: at most that many bytes leave
+ * per flush. */
+static size_t g_max_send_chunk = 0;
+
+void faucet_http_set_max_send_chunk(size_t n) { g_max_send_chunk = n; }
 
 struct faucet_http {
     int                    lfd;
@@ -298,24 +315,61 @@ static const char *reason(int s) {
     }
 }
 
-static void send_response(int fd, int status, const char *body) {
-    char resp[FH_RESPONSE_MAX + 256];
+/* Format one complete answer into out[cap]. @return its length, 0 when it
+ * does not fit. */
+static size_t format_response(char *out, size_t cap, int status, const char *body) {
     size_t bl = body ? strlen(body) : 0;
-    int n = snprintf(resp, sizeof(resp),
+    int n = snprintf(out, cap,
                      "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
                      "Content-Length: %zu\r\nCache-Control: no-store\r\n"
                      "Connection: close\r\n\r\n%s",
                      status, reason(status), bl, body ? body : "");
-    if (n > 0 && (size_t)n < sizeof(resp))
-        (void)send(fd, resp, (size_t)n, MSG_NOSIGNAL | MSG_DONTWAIT);
+    return (n > 0 && (size_t)n < cap) ? (size_t)n : 0;
 }
 
-static void send_error(int fd, int status, const char *msg) {
-    char body[256];
-    snprintf(body, sizeof(body),
+static void error_body(char *body, size_t cap, const char *msg) {
+    snprintf(body, cap,
              "{\"claim_id\":\"00000000000000000000000000000000\","
              "\"state\":\"refused\",\"kind\":\"none\",\"message\":\"%s\"}", msg);
-    send_response(fd, status, body);
+}
+
+/* BEST-EFFORT single send, for the two answers that owe the peer nothing:
+ * the over-the-cap 503 (no slot is kept for that socket) and the 408 of a
+ * client that already missed its deadline. Every other answer goes through
+ * the connection's buffered, POLLOUT-driven path below. */
+static void send_once(int fd, int status, const char *msg) {
+    char body[256], resp[FH_RESP_BUF];
+    error_body(body, sizeof(body), msg);
+    size_t n = format_response(resp, sizeof(resp), status, body);
+    if (n) (void)send(fd, resp, n, MSG_NOSIGNAL | MSG_DONTWAIT);
+}
+
+/* Build the answer into the connection and start sending it. */
+static void begin_response(fh_conn_t *c, int status, const char *body) {
+    size_t n = format_response(c->resp, sizeof(c->resp), status, body);
+    if (!n) n = format_response(c->resp, sizeof(c->resp), 500, "");
+    c->resp_len = n;
+    c->resp_off = 0;
+    c->writing = 1;
+}
+
+/* Send what the socket takes. @return 1 everything sent, 0 more to send
+ * (wait for POLLOUT), -1 the peer is gone. */
+static int flush_conn(fh_conn_t *c) {
+    while (c->resp_off < c->resp_len) {
+        size_t want = c->resp_len - c->resp_off;
+        if (g_max_send_chunk && want > g_max_send_chunk) want = g_max_send_chunk;
+        ssize_t r = send(c->fd, c->resp + c->resp_off, want,
+                         MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+            return -1;
+        }
+        c->resp_off += (size_t)r;
+        if (g_max_send_chunk) break;            /* one chunk per flush (test) */
+    }
+    return c->resp_off >= c->resp_len ? 1 : 0;
 }
 
 static void drop(faucet_http_t *h, int idx) {
@@ -363,8 +417,20 @@ int faucet_http_open(uint16_t port, int conn_cap, int timeout_ms,
 
 int faucet_http_connections(const faucet_http_t *h) { return h->nconn; }
 
+/* After begin_response: push it out now; a connection whose answer is not
+ * fully sent stays (writing) until POLLOUT or its deadline. */
+static void answer_conn(faucet_http_t *h, int idx, int status, const char *body) {
+    fh_conn_t *c = h->conns[idx];
+    begin_response(c, status, body);
+    if (flush_conn(c) != 0) drop(h, idx);       /* done, or the peer is gone */
+}
+
 static void serve_conn(faucet_http_t *h, int idx) {
     fh_conn_t *c = h->conns[idx];
+    if (c->writing) {                           /* POLLOUT: the rest of the answer */
+        if (flush_conn(c) != 0) drop(h, idx);
+        return;
+    }
     ssize_t r = recv(c->fd, c->buf + c->len, sizeof(c->buf) - c->len, 0);
     if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
         drop(h, idx);
@@ -373,23 +439,28 @@ static void serve_conn(faucet_http_t *h, int idx) {
     if (r < 0) return;
     c->len += (size_t)r;
 
+    char body[FH_RESPONSE_MAX];
     faucet_http_req_t req;
     int pr = faucet_http_parse(c->buf, c->len, &req);
     if (pr == 0) {
-        if (c->len >= sizeof(c->buf)) { send_error(c->fd, 413, "request too large"); drop(h, idx); }
+        if (c->len >= sizeof(c->buf)) {
+            error_body(body, sizeof(body), "request too large");
+            answer_conn(h, idx, 413, body);
+        }
         return;
     }
     if (pr < 0) {
-        send_error(c->fd, -pr, "request refused");
-        drop(h, idx);
+        error_body(body, sizeof(body), "request refused");
+        answer_conn(h, idx, -pr, body);
         return;
     }
     int status = 500;
-    char body[FH_RESPONSE_MAX];
     body[0] = '\0';
-    h->handler(h->ctx, &req, &status, body, sizeof(body));
-    send_response(c->fd, status, body);
-    drop(h, idx);
+    /* The handler is bounded by THIS connection's deadline (it may only
+     * wait on the node until then — faucet_node.h); it is the only place a
+     * request spends time that the deadline sweep below cannot interrupt. */
+    h->handler(h->ctx, &req, c->deadline_ms, &status, body, sizeof(body));
+    answer_conn(h, idx, status, body);
 }
 
 int faucet_http_poll(faucet_http_t *h, int wait_ms) {
@@ -399,7 +470,7 @@ int faucet_http_poll(faucet_http_t *h, int wait_ms) {
     pfd[0].events = POLLIN;
     for (int i = 0; i < h->nconn; i++) {
         pfd[i + 1].fd = h->conns[i]->fd;
-        pfd[i + 1].events = POLLIN;
+        pfd[i + 1].events = h->conns[i]->writing ? POLLOUT : POLLIN;
     }
     int n = poll(pfd, (nfds_t)(h->nconn + 1), wait_ms);
     if (n < 0 && errno != EINTR) return -1;
@@ -409,7 +480,7 @@ int faucet_http_poll(faucet_http_t *h, int wait_ms) {
             int cfd = accept4(h->lfd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
             if (cfd < 0) break;
             if (h->nconn >= h->conn_cap) {
-                send_error(cfd, 503, "too many connections");
+                send_once(cfd, 503, "too many connections");
                 close(cfd);
                 continue;
             }
@@ -425,14 +496,17 @@ int faucet_http_poll(faucet_http_t *h, int wait_ms) {
      * walking backwards never revisits or skips a polled one. */
     if (n > 0)
         for (int i = nold - 1; i >= 0; i--)
-            if (pfd[i + 1].revents & (POLLIN | POLLHUP | POLLERR))
+            if (pfd[i + 1].revents & (POLLIN | POLLOUT | POLLHUP | POLLERR))
                 serve_conn(h, i);
 
-    /* the per-request deadline */
+    /* the per-connection deadline: a client that has not finished its
+     * request gets a best-effort 408; an answer still not fully sent is cut
+     * (the peer is too slow to take 1.3 KB within the deadline) */
     uint64_t now = now_ms();
     for (int i = h->nconn - 1; i >= 0; i--) {
         if (now >= h->conns[i]->deadline_ms) {
-            send_error(h->conns[i]->fd, 408, "request timeout");
+            if (!h->conns[i]->writing)
+                send_once(h->conns[i]->fd, 408, "request timeout");
             drop(h, i);
         }
     }

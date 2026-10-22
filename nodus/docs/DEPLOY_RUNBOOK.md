@@ -1996,14 +1996,23 @@ the operator's defaults unless he says otherwise.
 systemctl daemon-reload
 systemctl start nodus-faucet
 journalctl -u nodus-faucet -n 20          # "faucet address: <128 hex> — fund this address with NODUS and tUSDT"
-sudo -u nodus-faucet /usr/local/bin/nodus-faucet --config /etc/nodus-faucet.conf --print-address   # the address alone
 ```
+The address alone: `--print-address` takes the same single-instance lock as the service (before it touches the key), so run it
+only while the service is STOPPED (`systemctl stop nodus-faucet` first); with the service running, take the address from
+the journal line above:
+```
+sudo -u nodus-faucet /usr/local/bin/nodus-faucet --config /etc/nodus-faucet.conf --print-address
+```
+The key is created atomically (temp files, fsync, rename, directory fsync; `nodus.pk` last). If `keys/` holds only SOME of
+its six identity files the service REFUSES to start (it never completes or regenerates a key over a partial one) — restore
+the files or move `keys/` away; only do that while no funds were ever sent to an address from that key.
 A start that does not reach "listening on 127.0.0.1:<port>" has a reason in the journal: a config key refused, the node
 not answering, the node's identity not the pinned one, or the node's chain id not the configured one (the service
 refuses to run on another chain).
 
 **3. Funding (the operator's own transfer).** He sends NODUS and tUSDT to the address printed above — a few large coins
-per token (the faucet reads at most 100 coins per token; a full list is "coin list incomplete" and pauses the claims).
+per token (the faucet reads the 100 LARGEST coins per token; it plans over them, so dust sent to the faucet does not stop
+it — only a full list whose coins do not cover a payout pauses the claim as "coin list incomplete").
 Capacity is then visible without any claim: `curl -s http://127.0.0.1:<listen_port>/faucet/status` →
 `{"open":true,"paused":false,"full_left":…,"start_left":…,…}` (FULL = min(NODUS / (10^13 + ceiling), tUSDT / 10^8); the
 NODUS pool is shared by FULL and START).
@@ -2017,8 +2026,12 @@ and tUSDT outputs. Do not claim for a real user's address as a test.
 instances (the second refuses: `journal.db.lock`). Never delete the journal while claims are open or paid markers exist —
 the markers are what keeps a name from being paid twice; deleting it re-opens every name and address.
 
-**6. Honest limits.** A claim in state `unknown` (a block the local node does not hold) keeps the faucet closed and has no
-force-command in this version (FAUCET.md section 7). The key sits on a witness host: a root compromise reaches both keys
+**6. Honest limits.** A claim in state `unknown` (a required block the local node does not hold, or one it could not serve
+completely — a timeout, a malformed page, an internal error) keeps the faucet closed to new claims; a transient node
+outage therefore closes it for its duration and it reopens by itself once the block is readable. A block the node never
+serves has no force-command in this version (FAUCET.md section 7). A claim paused with "the claim history is full" means
+the journal reached `storage_ceiling`: new claims have stopped too; free room by raising the ceiling (restart) — never by
+deleting journal rows. The key sits on a witness host: a root compromise reaches both keys
 (accepted by the operator, design section 6.10); the faucet process alone does not reach the witness key.
 
 ---

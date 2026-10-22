@@ -21,14 +21,23 @@
  *       and refuse a too-small buffer;
  *   R*  routing: POST claim -> 200 + claim shape; bad body 400; wrong method
  *       405; unknown path 404; GET claim/<id>; GET status;
+ *   R6  the connection's deadline reaches the claim handler (a POST past its
+ *       deadline is 503 with no node call; a live deadline is handed to the
+ *       node reads); GET status and GET claim make no node call at all;
  *   V*  the real server over 127.0.0.1: answers, a refused oversized request
  *       is answered at once, a slow client gets 408 after the deadline, the
- *       connection cap answers 503 and never grows past the cap.
+ *       connection cap answers 503 and never grows past the cap; V8: an
+ *       answer the socket takes only in pieces (16 bytes per flush through
+ *       the test seam) is completed through POLLOUT, whole and intact, and
+ *       the slot is released.
  * WHAT IT REQUIRES: a default build; a loopback listener on a kernel-chosen
  *   port (no fixed port); a mkdtemp directory for the stub core's journal.
  * LEAVES BEHIND: nothing (sockets closed, directory removed).
  * HOW IT CAN LIE: client and server run in ONE thread (the test drives
  *   faucet_http_poll), so concurrency between connections is not exercised.
+ *   V8 forces short writes with the seam (a loopback socket takes 1.3 KB at
+ *   once); that an unfinished answer is cut AT the connection deadline is
+ *   not tested (it would need a sleeping, timing-dependent test).
  */
 #define _GNU_SOURCE
 #include "test_faucet_stub.c"
@@ -184,7 +193,7 @@ static void route(env_t *e, const char *method, const char *path, const char *bo
     snprintf(r.path, sizeof(r.path), "%s", path);
     r.body = body;
     r.body_len = body ? strlen(body) : 0;
-    faucet_http_route(&e->core, &r, status, out, cap);
+    faucet_http_route(&e->core, &r, FAUCET_NODE_NO_DEADLINE, status, out, cap);
 }
 
 static void test_routes(void) {
@@ -221,6 +230,31 @@ static void test_routes(void) {
     route(&e, "GET", "/faucet/status", NULL, &status, out, sizeof(out));
     CHECK(status == 200 && strstr(out, "\"open\":true") && strstr(out, "\"full_left\":") &&
           strstr(out, "\"start_left\":") && strstr(out, "\"paused\":false"), "R5 GET /faucet/status");
+
+    /* R6: the request's deadline rides down to the claim; GET status and GET
+     * claim never call the node */
+    {
+        char addr2[129], body2[256];
+        make_addr(addr2, 10);
+        snprintf(body2, sizeof(body2), "{\"address\":\"%s\"}", addr2);
+        faucet_http_req_t r;
+        memset(&r, 0, sizeof(r));
+        snprintf(r.method, sizeof(r.method), "POST");
+        snprintf(r.path, sizeof(r.path), "/faucet/claim");
+        r.body = body2;
+        r.body_len = strlen(body2);
+        int calls = e.st.node_calls;
+        faucet_http_route(&e.core, &r, faucet_now_ms() - 1, &status, out, sizeof(out));
+        CHECK(status == 503 && strstr(out, "\"state\":\"refused\"") && e.st.node_calls == calls,
+              "R6 POST past its deadline is 503 without a node call");
+        uint64_t live = faucet_now_ms() + 60000;
+        faucet_http_route(&e.core, &r, live, &status, out, sizeof(out));
+        CHECK(status == 200 && e.st.last_deadline == live, "R6 a live deadline reaches the node reads");
+        calls = e.st.node_calls;
+        route(&e, "GET", "/faucet/status", NULL, &status, out, sizeof(out));
+        route(&e, "GET", path, NULL, &status, out, sizeof(out));
+        CHECK(e.st.node_calls == calls, "R6 GET status and GET claim make no node call");
+    }
     env_close(&e);
 }
 
@@ -257,8 +291,9 @@ static int await_response(faucet_http_t *h, int fd, char *buf, size_t cap, int r
     return (int)n;
 }
 
-static void handler_cb(void *ctx, const faucet_http_req_t *req, int *status, char *body, size_t cap) {
-    faucet_http_route((faucet_core_t *)ctx, req, status, body, cap);
+static void handler_cb(void *ctx, const faucet_http_req_t *req, uint64_t deadline_ms,
+                       int *status, char *body, size_t cap) {
+    faucet_http_route((faucet_core_t *)ctx, req, deadline_ms, status, body, cap);
 }
 
 static void test_server(void) {
@@ -338,6 +373,39 @@ static void test_server(void) {
     n = await_response(h, fd, buf, sizeof(buf), 20, 25);
     CHECK(n > 0 && !strncmp(buf, "HTTP/1.1 501", 12), "V7 Transfer-Encoding is answered 501");
     close(fd);
+
+    /* V8: an answer the socket takes only in pieces is finished through
+     * POLLOUT — 16 bytes leave per flush (the test seam), so the whole answer
+     * needs many polls, and arrives complete and intact */
+    for (int i = 0; i < 8; i++) faucet_http_poll(h, 10);
+    faucet_http_set_max_send_chunk(16);
+    fd = cli_connect(port);
+    send(fd, get, strlen(get), 0);
+    size_t got = 0;
+    int rounds = 0, eof = 0;
+    while (!eof && rounds < 2000) {
+        faucet_http_poll(h, 10);
+        rounds++;
+        for (;;) {
+            ssize_t r = recv(fd, buf + got, sizeof(buf) - 1 - got, MSG_DONTWAIT);
+            if (r > 0) { got += (size_t)r; continue; }
+            if (r == 0) eof = 1;
+            break;
+        }
+    }
+    buf[got] = '\0';
+    faucet_http_set_max_send_chunk(0);
+    size_t clen = 0;
+    const char *cl_h = strstr(buf, "Content-Length: ");
+    const char *body_at = strstr(buf, "\r\n\r\n");
+    if (cl_h) clen = (size_t)strtoul(cl_h + 16, NULL, 10);
+    CHECK(eof && !strncmp(buf, "HTTP/1.1 200 OK", 15) && body_at && cl_h &&
+          strlen(body_at + 4) == clen && clen > 0 && buf[got - 1] == '}',
+          "V8 a partially written answer is completed through POLLOUT, whole and intact");
+    CHECK(rounds > (int)(got / 16) / 2, "V8 it really took many flushes (one chunk each)");
+    close(fd);
+    for (int i = 0; i < 4; i++) faucet_http_poll(h, 10);
+    CHECK(faucet_http_connections(h) == 0, "V8 the connection slot is released after the answer");
 
     faucet_http_close(h);
     env_close(&e);

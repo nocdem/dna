@@ -12,7 +12,9 @@
  *   - small helpers (deterministic randomness, addresses, coins).
  *
  * HOW IT CAN LIE: the stub answers what the test tells it to; it proves the
- * faucet's logic against those answers, not the node's behaviour. The
+ * faucet's logic against those answers, not the node's behaviour. It does
+ * not wait, so it records the deadline of each call (last_deadline) instead
+ * of honouring it. The
  * builder and planner are the REAL ones (nodus_v2_spend_*) with the newest
  * pinned rule-set generation, so a built envelope is a real signed envelope.
  */
@@ -81,30 +83,41 @@ typedef struct {
     uint8_t *last_env;
     size_t   last_env_len;
     int      name_calls, bal_calls, scan_calls;
+    int      node_calls;              /* every call of any kind                */
+    uint64_t last_deadline;           /* the deadline of the latest call       */
     uint64_t scan_max_seen;
 } stub_t;
 
-static int s_chain(void *c, uint8_t out[32]) {
+/* The stub does not wait, so it cannot honour a deadline; it records what
+ * the core handed down (the deadline plumbing is what the tests pin). */
+#define STUB_NOTE(s, dl) do { (s)->node_calls++; (s)->last_deadline = (dl); } while (0)
+
+static int s_chain(void *c, uint8_t out[32], uint64_t dl) {
     stub_t *s = c;
+    STUB_NOTE(s, dl);
     if (s->chain_rc) return s->chain_rc;
     memcpy(out, s->chain, 32);
     return 0;
 }
-static int s_ri(void *c, nodus_dnac_ruleset_info_t *out) {
+static int s_ri(void *c, nodus_dnac_ruleset_info_t *out, uint64_t dl) {
     stub_t *s = c;
+    STUB_NOTE(s, dl);
     if (s->ri_rc) return s->ri_rc;
     *out = s->ri;
     return 0;
 }
-static int s_gas(void *c, uint64_t *out) {
+static int s_gas(void *c, uint64_t *out, uint64_t dl) {
     stub_t *s = c;
+    STUB_NOTE(s, dl);
     if (s->gas_rc) return s->gas_rc;
     *out = s->gas;
     return 0;
 }
-static int s_name(void *c, const char *owner, nodus_dnac_name_result_t *out) {
+static int s_name(void *c, const char *owner, nodus_dnac_name_result_t *out,
+                  uint64_t dl) {
     stub_t *s = c;
     (void)owner;
+    STUB_NOTE(s, dl);
     s->name_calls++;
     if (s->name_rc) return s->name_rc;
     memset(out, 0, sizeof(*out));
@@ -116,9 +129,10 @@ static int s_name(void *c, const char *owner, nodus_dnac_name_result_t *out) {
     return 0;
 }
 static int s_balance(void *c, const char *owner, const uint8_t token[64],
-                     uint64_t *tip, uint64_t *total) {
+                     uint64_t *tip, uint64_t *total, uint64_t dl) {
     stub_t *s = c;
     static const uint8_t zero[64] = {0};
+    STUB_NOTE(s, dl);
     int native = memcmp(token, zero, 64) == 0;
     if (!strcmp(owner, s->self_hex)) {
         if (s->self_rc) return s->self_rc;
@@ -132,9 +146,11 @@ static int s_balance(void *c, const char *owner, const uint8_t token[64],
     *total = native ? s->bal_native : 0;
     return 0;
 }
-static int s_coins(void *c, const uint8_t token[64], faucet_coin_list_t *out) {
+static int s_coins(void *c, const uint8_t token[64], faucet_coin_list_t *out,
+                   uint64_t dl) {
     stub_t *s = c;
     static const uint8_t zero[64] = {0};
+    STUB_NOTE(s, dl);
     if (memcmp(token, zero, 64) == 0) {
         if (s->nat_rc) return s->nat_rc;
         *out = s->nat;
@@ -144,8 +160,10 @@ static int s_coins(void *c, const uint8_t token[64], faucet_coin_list_t *out) {
     }
     return 0;
 }
-static int s_scan(void *c, uint64_t h, const uint8_t intent[64], int *found) {
+static int s_scan(void *c, uint64_t h, const uint8_t intent[64], int *found,
+                  uint64_t dl) {
     stub_t *s = c;
+    STUB_NOTE(s, dl);
     s->scan_calls++;
     if (h > s->scan_max_seen) s->scan_max_seen = h;
     if (s->err_height && h == s->err_height) return FAUCET_NODE_ERR;
@@ -154,9 +172,10 @@ static int s_scan(void *c, uint64_t h, const uint8_t intent[64], int *found) {
     return 0;
 }
 static int s_submit(void *c, const uint8_t wire[64], const uint8_t *env,
-                    size_t len, char *msg, size_t cap) {
+                    size_t len, char *msg, size_t cap, uint64_t dl) {
     stub_t *s = c;
     (void)wire;
+    STUB_NOTE(s, dl);
     s->submit_calls++;
     free(s->last_env);
     s->last_env = malloc(len);
@@ -226,6 +245,7 @@ static void env_wire(env_t *e) {
     }
     snprintf(e->st.self_hex, sizeof(e->st.self_hex), "%s", e->core.self_hex);
     faucet_core_check_chain(&e->core);
+    faucet_core_refresh_status(&e->core);   /* /status answers from this cache */
 }
 
 /* A funded faucet at tip 1000 on the newest pinned generation. */
@@ -299,6 +319,6 @@ FT_MAYBE_UNUSED static int head_state(env_t *e, char *state, size_t cap) {
 /* Create a claim through the API for a fresh address. @return the answer. */
 FT_MAYBE_UNUSED static faucet_answer_t api_claim(env_t *e, const char *addr) {
     faucet_answer_t a;
-    faucet_api_claim(&e->core, addr, &a);
+    faucet_api_claim(&e->core, addr, FAUCET_NODE_NO_DEADLINE, &a);
     return a;
 }

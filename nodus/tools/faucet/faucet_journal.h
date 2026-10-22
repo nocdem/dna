@@ -23,7 +23,22 @@
  *         an illegal request is refused and changes nothing.
  *
  * A DB failure is never a value: every function returns -1 on a database
- * fault and the caller must not treat the fact as "none" or "zero".
+ * fault and the caller must not treat the fact as "none" or "zero". That
+ * covers the READ side too: a column of the wrong type, a NULL text, a text
+ * that does not fit its field or a blob of the wrong length fails the whole
+ * read (-1); every bind is checked.
+ *
+ * STORAGE CEILING (db + wal bytes, "Yeni istekleri durdur"): the bytes
+ * counted are the LIVE pages of the database (page_count minus the free
+ * list — SQLite reuses freed pages but never shrinks the file) plus the
+ * -wal file. A NEW claim is admitted only while the live bytes plus a
+ * settlement reserve (FJ_CLAIM_RESERVE_BYTES for every open claim and for
+ * the new one) stay below the ceiling. A REPLACEMENT attempt (the second or
+ * later of a claim) first frees the claim's earlier, expired envelope
+ * payloads — wire id, intent id, inputs, expiry and scan cursor stay as
+ * evidence, the paid markers are never touched — and is refused (-4,
+ * nothing recorded) when the live bytes are still at the ceiling. The
+ * envelope payloads of a CONFIRMED claim are freed the same way.
  *
  * Thread safety: one connection, one mutex; every call takes the lock.
  */
@@ -37,6 +52,10 @@
 #define FJ_STATE_MAX   12
 #define FJ_MSG_MAX     160
 #define FJ_MAX_INPUTS  15
+/** Bytes reserved per open claim (and for the claim being admitted) for its
+ *  first signed attempt and settlement rows — an ML-DSA-87 spend envelope
+ *  is a few KiB; the reserve is generous. */
+#define FJ_CLAIM_RESERVE_BYTES  (64u * 1024u)
 
 typedef struct faucet_journal faucet_journal_t;
 
@@ -116,7 +135,10 @@ int faucet_journal_finish(faucet_journal_t *j, int64_t seq, const char *state,
  *  assigned) and flip the claim to signed, replacing the claim's
  *  reservations with a->inputs — all in ONE transaction. Legal only from
  *  planned, paused or expired. A nullifier reserved by ANOTHER claim ->
- *  -3 and nothing changes. 0 / -2 illegal / -3 reserved / -1. */
+ *  -3 and nothing changes. A replacement (attempt 2+) that would leave the
+ *  live bytes at the storage ceiling, after the claim's obsolete envelope
+ *  payloads were freed -> -4 and nothing changes.
+ *  0 / -2 illegal / -3 reserved / -4 storage / -1. */
 int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
                                 faucet_attempt_t *a);
 
@@ -144,7 +166,9 @@ int faucet_journal_reserved_other(faucet_journal_t *j, int64_t except_seq,
 
 int faucet_journal_counts(faucet_journal_t *j, faucet_jcounts_t *out);
 
-/** 1 when the db + wal bytes have reached the ceiling, 0 not, -1 fault. */
+/** 1 when a new claim would not fit (live bytes + the settlement reserve of
+ *  every open claim and of the new one have reached the ceiling), 0 room,
+ *  -1 fault (an absent -wal file is not a fault; any other stat() error is). */
 int faucet_journal_storage_full(faucet_journal_t *j);
 
 #endif /* FAUCET_JOURNAL_H */

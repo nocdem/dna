@@ -1,9 +1,15 @@
 /**
  * @file faucet_journal.c
  * @brief nodus-faucet durable journal (see faucet_journal.h).
+ *
+ * "A DB failure is never a value" (nodus/CLAUDE.md): every bind and every
+ * column extraction is checked; a column of the wrong type, a NULL text, a
+ * text that does not fit its field or a blob of the wrong length is a
+ * FAULT (-1) of the read, never an empty or zero field.
  */
 #include "faucet_journal.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -54,10 +60,46 @@ static const char *SCHEMA_SQL =
     " nul BLOB PRIMARY KEY,"
     " claim_seq INTEGER NOT NULL);";
 
-static void copy_str(char *dst, size_t cap, const unsigned char *src) {
-    if (!src) { dst[0] = '\0'; return; }
-    snprintf(dst, cap, "%s", (const char *)src);
+/* ── checked column access ──────────────────────────────────────────── */
+
+/* A TEXT column into dst[cap]. NULL, another type, or a text that does not
+ * fit (never truncated) is a fault. @return 0 / -1. */
+static int col_text(sqlite3_stmt *st, int i, char *dst, size_t cap) {
+    if (sqlite3_column_type(st, i) != SQLITE_TEXT) return -1;
+    const unsigned char *s = sqlite3_column_text(st, i);
+    int n = sqlite3_column_bytes(st, i);
+    if (!s || n < 0 || (size_t)n >= cap) return -1;
+    memcpy(dst, s, (size_t)n);
+    dst[n] = '\0';
+    return 0;
 }
+
+static int col_i64(sqlite3_stmt *st, int i, int64_t *out) {
+    if (sqlite3_column_type(st, i) != SQLITE_INTEGER) return -1;
+    *out = sqlite3_column_int64(st, i);
+    return 0;
+}
+
+/* A BLOB column: pointer + length (an empty blob has a NULL pointer). */
+static int col_blob(sqlite3_stmt *st, int i, const void **p, int *len) {
+    if (sqlite3_column_type(st, i) != SQLITE_BLOB) return -1;
+    *len = sqlite3_column_bytes(st, i);
+    *p = sqlite3_column_blob(st, i);
+    if (*len < 0 || (*len > 0 && !*p)) return -1;
+    return 0;
+}
+
+/* Bind result check: a failed bind leaves the parameter NULL, so the
+ * statement would run with a wrong filter or value. Finalises and jumps. */
+#define B_OK(call, st, lbl)                                                  \
+    do {                                                                     \
+        if ((call) != SQLITE_OK) {                                           \
+            QGP_LOG_ERROR(LOG_TAG, "bind failed: %s", sqlite3_errmsg(j->db)); \
+            sqlite3_finalize(st);                                            \
+            (st) = NULL;                                                     \
+            goto lbl;                                                        \
+        }                                                                    \
+    } while (0)
 
 static int exec_sql(sqlite3 *db, const char *sql) {
     char *em = NULL;
@@ -101,15 +143,35 @@ static int legal(const char *from, const char *to) {
     return 0;
 }
 
+static int known_state(const char *s) {
+    static const char *all[] = {"planned", "paused", "signed", "submitted",
+                                "confirmed", "expired", "unknown"};
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++)
+        if (!strcmp(s, all[i])) return 1;
+    return 0;
+}
+
+/* Load one claim row. Every field is checked; a row that does not read
+ * back as a valid claim is a fault. @return 0 / -1. */
 static int load_claim_row(sqlite3_stmt *st, faucet_claim_t *c) {
     memset(c, 0, sizeof(*c));
-    c->seq = sqlite3_column_int64(st, 0);
-    copy_str(c->claim_id, sizeof(c->claim_id), sqlite3_column_text(st, 1));
-    copy_str(c->kind, sizeof(c->kind), sqlite3_column_text(st, 2));
-    copy_str(c->address, sizeof(c->address), sqlite3_column_text(st, 3));
-    copy_str(c->name, sizeof(c->name), sqlite3_column_text(st, 4));
-    copy_str(c->state, sizeof(c->state), sqlite3_column_text(st, 5));
-    copy_str(c->message, sizeof(c->message), sqlite3_column_text(st, 6));
+    int64_t seq = 0;
+    if (col_i64(st, 0, &seq) != 0 ||
+        col_text(st, 1, c->claim_id, sizeof(c->claim_id)) != 0 ||
+        col_text(st, 2, c->kind, sizeof(c->kind)) != 0 ||
+        col_text(st, 3, c->address, sizeof(c->address)) != 0 ||
+        col_text(st, 4, c->name, sizeof(c->name)) != 0 ||
+        col_text(st, 5, c->state, sizeof(c->state)) != 0 ||
+        col_text(st, 6, c->message, sizeof(c->message)) != 0 ||
+        strlen(c->claim_id) != 32 || strlen(c->address) != 128 ||
+        (strcmp(c->kind, "full") && strcmp(c->kind, "start")) ||
+        !known_state(c->state)) {
+        QGP_LOG_ERROR(LOG_TAG, "a claim row does not read back as a valid claim "
+                      "(seq %lld)", (long long)seq);
+        memset(c, 0, sizeof(*c));
+        return -1;
+    }
+    c->seq = seq;
     return 0;
 }
 
@@ -124,18 +186,24 @@ static int claim_query(faucet_journal_t *j, const char *sql, const char *text,
         QGP_LOG_ERROR(LOG_TAG, "prepare failed: %s", sqlite3_errmsg(j->db));
         return -1;
     }
-    if (text) sqlite3_bind_text(st, 1, text, -1, SQLITE_STATIC);
-    else if (num >= 0) sqlite3_bind_int64(st, 1, num);
+    if (text) B_OK(sqlite3_bind_text(st, 1, text, -1, SQLITE_STATIC), st, bad);
+    else if (num >= 0) B_OK(sqlite3_bind_int64(st, 1, num), st, bad);
     int rc = sqlite3_step(st);
     int ret;
-    if (rc == SQLITE_ROW) { if (out) load_claim_row(st, out); ret = 0; }
-    else if (rc == SQLITE_DONE) ret = 1;
-    else {
+    if (rc == SQLITE_ROW) {
+        faucet_claim_t tmp;
+        if (load_claim_row(st, &tmp) != 0) ret = -1;
+        else { if (out) *out = tmp; ret = 0; }
+    } else if (rc == SQLITE_DONE) {
+        ret = 1;
+    } else {
         QGP_LOG_ERROR(LOG_TAG, "step failed: %s", sqlite3_errmsg(j->db));
         ret = -1;
     }
     sqlite3_finalize(st);
     return ret;
+bad:
+    return -1;
 }
 
 /* The state of a claim. @return 0 ok / 1 none / -1 fault. Lock held. */
@@ -147,16 +215,20 @@ static int claim_state(faucet_journal_t *j, int64_t seq, char *state, size_t cap
     return r;
 }
 
+/* A single integer result. @return 0 / -1 (a missing row, a step error or
+ * a non-integer column is a fault). */
 static int one_int(faucet_journal_t *j, const char *sql, const char *text,
                    int64_t *out) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(j->db, sql, -1, &st, NULL) != SQLITE_OK) return -1;
-    if (text) sqlite3_bind_text(st, 1, text, -1, SQLITE_STATIC);
+    if (text) B_OK(sqlite3_bind_text(st, 1, text, -1, SQLITE_STATIC), st, bad);
     int rc = sqlite3_step(st);
     int ret = -1;
-    if (rc == SQLITE_ROW) { *out = sqlite3_column_int64(st, 0); ret = 0; }
+    if (rc == SQLITE_ROW && col_i64(st, 0, out) == 0) ret = 0;
     sqlite3_finalize(st);
     return ret;
+bad:
+    return -1;
 }
 
 /* ── open / close ───────────────────────────────────────────────────── */
@@ -221,15 +293,41 @@ void faucet_journal_close(faucet_journal_t *j) {
 
 /* ── storage ceiling ────────────────────────────────────────────────── */
 
-static int storage_full_locked(faucet_journal_t *j) {
-    uint64_t total = 0;
+/* Bytes the journal holds NOW: the database's LIVE pages (page_count minus
+ * the free-list: SQLite reuses freed pages and never shrinks the file, so
+ * the file size would stay at its high-water mark after a compaction) plus
+ * the -wal file. An absent -wal file is 0; any other stat() failure is a
+ * fault. @return 0 / -1. Lock held. */
+static int storage_used_locked(faucet_journal_t *j, uint64_t *used) {
+    int64_t pages = 0, freep = 0, psize = 0;
+    if (one_int(j, "PRAGMA page_count", NULL, &pages) != 0 ||
+        one_int(j, "PRAGMA freelist_count", NULL, &freep) != 0 ||
+        one_int(j, "PRAGMA page_size", NULL, &psize) != 0 ||
+        pages < 0 || freep < 0 || freep > pages || psize <= 0) return -1;
+    uint64_t total = (uint64_t)(pages - freep) * (uint64_t)psize;
     char p[560];
     struct stat sb;
-    if (stat(j->path, &sb) != 0) return -1;
-    total += (uint64_t)sb.st_size;
     snprintf(p, sizeof(p), "%s-wal", j->path);
     if (stat(p, &sb) == 0) total += (uint64_t)sb.st_size;
-    return total >= j->ceiling ? 1 : 0;
+    else if (errno != ENOENT) {
+        QGP_LOG_ERROR(LOG_TAG, "cannot stat %s: %s", p, strerror(errno));
+        return -1;
+    }
+    *used = total;
+    return 0;
+}
+
+/* The ceiling test of NEW CLAIMS: the live bytes plus a settlement reserve
+ * for every open claim and for the one being admitted must stay below the
+ * ceiling. 1 full, 0 room, -1 fault. Lock held. */
+static int storage_full_locked(faucet_journal_t *j) {
+    uint64_t used = 0;
+    int64_t open = 0;
+    if (storage_used_locked(j, &used) != 0) return -1;
+    if (one_int(j, "SELECT COUNT(*) FROM claims WHERE state<>'confirmed'", NULL,
+                &open) != 0 || open < 0) return -1;
+    uint64_t reserve = ((uint64_t)open + 1u) * FJ_CLAIM_RESERVE_BYTES;
+    return (used >= j->ceiling || reserve >= j->ceiling - used) ? 1 : 0;
 }
 
 int faucet_journal_storage_full(faucet_journal_t *j) {
@@ -268,9 +366,9 @@ int faucet_journal_claim_create(faucet_journal_t *j, const char *kind,
     r = -1;
     if (sqlite3_prepare_v2(j->db, "SELECT claim_seq FROM paid WHERE marker=?1",
                            -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, marker, -1, SQLITE_STATIC);
+        B_OK(sqlite3_bind_text(st, 1, marker, -1, SQLITE_STATIC), st, rb);
         int s = sqlite3_step(st);
-        if (s == SQLITE_ROW) { seq = sqlite3_column_int64(st, 0); r = 0; }
+        if (s == SQLITE_ROW) { if (col_i64(st, 0, &seq) == 0) r = 0; }
         else if (s == SQLITE_DONE) r = 1;
     }
     sqlite3_finalize(st);
@@ -293,7 +391,7 @@ int faucet_journal_claim_create(faucet_journal_t *j, const char *kind,
     if (one_int(j, "SELECT COUNT(*) FROM claims WHERE state='unknown'", NULL,
                 &cnt) != 0) goto rb;
     if (cnt > 0) { rollback(j); ret = FJ_STOPPED; goto unlock; }
-    /* 4. storage */
+    /* 4. storage (live bytes + the settlement reserve of every open claim) */
     r = storage_full_locked(j);
     if (r < 0) goto rb;
     if (r == 1) { rollback(j); ret = FJ_STORAGE_FULL; goto unlock; }
@@ -309,10 +407,10 @@ int faucet_journal_claim_create(faucet_journal_t *j, const char *kind,
             "INSERT INTO claims(claim_id, kind, address, name, state, message)"
             " VALUES(?1, ?2, ?3, ?4, 'planned', '')", -1, &st, NULL) != SQLITE_OK)
         goto rb;
-    sqlite3_bind_text(st, 1, cid, -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 2, kind, -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 3, address, -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 4, name, -1, SQLITE_STATIC);
+    B_OK(sqlite3_bind_text(st, 1, cid, -1, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_text(st, 2, kind, -1, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_text(st, 3, address, -1, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_text(st, 4, name, -1, SQLITE_STATIC), st, rb);
     r = sqlite3_step(st);
     sqlite3_finalize(st);
     if (r != SQLITE_DONE) {
@@ -323,8 +421,8 @@ int faucet_journal_claim_create(faucet_journal_t *j, const char *kind,
     st = NULL;
     if (sqlite3_prepare_v2(j->db, "INSERT INTO paid(marker, claim_seq) VALUES(?1, ?2)",
                            -1, &st, NULL) != SQLITE_OK) goto rb;
-    sqlite3_bind_text(st, 1, marker, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 2, seq);
+    B_OK(sqlite3_bind_text(st, 1, marker, -1, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_int64(st, 2, seq), st, rb);
     r = sqlite3_step(st);
     sqlite3_finalize(st);
     if (r != SQLITE_DONE) {
@@ -374,6 +472,8 @@ int faucet_journal_head(faucet_journal_t *j, faucet_claim_t *out) {
 static int transition_locked(faucet_journal_t *j, int64_t seq, const char *to,
                              const char *msg, int release_reservations) {
     char from[FJ_STATE_MAX];
+    char m[FJ_MSG_MAX];                       /* a longer text is cut here,   */
+    snprintf(m, sizeof(m), "%s", msg ? msg : ""); /* never refused on reading */
     if (begin(j) != 0) return -1;
     int r = claim_state(j, seq, from, sizeof(from));
     if (r != 0) { rollback(j); return -1; }
@@ -384,23 +484,36 @@ static int transition_locked(faucet_journal_t *j, int64_t seq, const char *to,
         rollback(j);
         return -1;
     }
-    sqlite3_bind_text(st, 1, to, -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 2, msg ? msg : "", -1, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 3, seq);
+    B_OK(sqlite3_bind_text(st, 1, to, -1, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_text(st, 2, m, -1, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_int64(st, 3, seq), st, rb);
     int s = sqlite3_step(st);
     sqlite3_finalize(st);
-    if (s != SQLITE_DONE) { rollback(j); return -1; }
+    if (s != SQLITE_DONE) goto rb;
     if (release_reservations) {
         st = NULL;
         if (sqlite3_prepare_v2(j->db, "DELETE FROM reservations WHERE claim_seq=?1",
-                               -1, &st, NULL) != SQLITE_OK) { rollback(j); return -1; }
-        sqlite3_bind_int64(st, 1, seq);
+                               -1, &st, NULL) != SQLITE_OK) goto rb;
+        B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
         s = sqlite3_step(st);
         sqlite3_finalize(st);
-        if (s != SQLITE_DONE) { rollback(j); return -1; }
+        if (s != SQLITE_DONE) goto rb;
+        /* A paid claim's envelope bytes are obsolete; its evidence (wire id,
+         * intent id, inputs, expiry, cursor) and the paid marker stay. */
+        st = NULL;
+        if (sqlite3_prepare_v2(j->db, "UPDATE attempts SET env=X'' "
+                               "WHERE claim_seq=?1 AND length(env)>0", -1, &st,
+                               NULL) != SQLITE_OK) goto rb;
+        B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
+        s = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (s != SQLITE_DONE) goto rb;
     }
-    if (commit(j) != 0) { rollback(j); return -1; }
+    if (commit(j) != 0) goto rb;
     return 0;
+rb:
+    rollback(j);
+    return -1;
 }
 
 int faucet_journal_set_state(faucet_journal_t *j, int64_t seq,
@@ -431,7 +544,7 @@ int faucet_journal_finish(faucet_journal_t *j, int64_t seq, const char *state,
 int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
                                 faucet_attempt_t *a) {
     if (!a || !a->env || a->env_len == 0 || a->n_in < 1 ||
-        a->n_in > FJ_MAX_INPUTS) return -1;
+        a->n_in > FJ_MAX_INPUTS || a->env_len > 0x7fffffffu) return -1;
     int ret = -1;
     pthread_mutex_lock(&j->mu);
     if (begin(j) != 0) goto unlock;
@@ -445,9 +558,12 @@ int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
     if (sqlite3_prepare_v2(j->db, "SELECT COALESCE(MAX(n),0) FROM attempts "
                            "WHERE claim_seq=?1", -1, &st, NULL) != SQLITE_OK)
         goto rb;
-    sqlite3_bind_int64(st, 1, seq);
-    if (sqlite3_step(st) != SQLITE_ROW) { sqlite3_finalize(st); goto rb; }
-    n = sqlite3_column_int64(st, 0) + 1;
+    B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
+    if (sqlite3_step(st) != SQLITE_ROW || col_i64(st, 0, &n) != 0) {
+        sqlite3_finalize(st);
+        goto rb;
+    }
+    n += 1;
     sqlite3_finalize(st);
 
     st = NULL;
@@ -456,15 +572,15 @@ int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
             " build_tip, expiry, scan_next, last_submit_tip)"
             " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0)", -1, &st, NULL) != SQLITE_OK)
         goto rb;
-    sqlite3_bind_int64(st, 1, seq);
-    sqlite3_bind_int64(st, 2, n);
-    sqlite3_bind_blob(st, 3, a->env, (int)a->env_len, SQLITE_STATIC);
-    sqlite3_bind_blob(st, 4, a->wire_id, 64, SQLITE_STATIC);
-    sqlite3_bind_blob(st, 5, a->intent_id, 64, SQLITE_STATIC);
-    sqlite3_bind_blob(st, 6, a->inputs, a->n_in * 64, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 7, (sqlite3_int64)a->build_tip);
-    sqlite3_bind_int64(st, 8, (sqlite3_int64)a->expiry);
-    sqlite3_bind_int64(st, 9, (sqlite3_int64)a->scan_next);
+    B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
+    B_OK(sqlite3_bind_int64(st, 2, n), st, rb);
+    B_OK(sqlite3_bind_blob(st, 3, a->env, (int)a->env_len, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_blob(st, 4, a->wire_id, 64, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_blob(st, 5, a->intent_id, 64, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_blob(st, 6, a->inputs, a->n_in * 64, SQLITE_STATIC), st, rb);
+    B_OK(sqlite3_bind_int64(st, 7, (sqlite3_int64)a->build_tip), st, rb);
+    B_OK(sqlite3_bind_int64(st, 8, (sqlite3_int64)a->expiry), st, rb);
+    B_OK(sqlite3_bind_int64(st, 9, (sqlite3_int64)a->scan_next), st, rb);
     int s = sqlite3_step(st);
     sqlite3_finalize(st);
     if (s != SQLITE_DONE) {
@@ -472,11 +588,33 @@ int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
         goto rb;
     }
 
+    if (n > 1) {
+        /* A REPLACEMENT. The earlier attempts of this claim are expired and
+         * fully scanned: their envelope bytes are obsolete (a stored
+         * envelope past its expiry can never be applied). Free them — the
+         * evidence rows (wire id, intent id, inputs, cursor, expiry) and the
+         * paid marker stay — then require that the live bytes still fit
+         * under the storage ceiling; otherwise the replacement is NOT
+         * recorded (-4) and the claim waits. */
+        st = NULL;
+        if (sqlite3_prepare_v2(j->db, "UPDATE attempts SET env=X'' "
+                               "WHERE claim_seq=?1 AND n<?2 AND length(env)>0",
+                               -1, &st, NULL) != SQLITE_OK) goto rb;
+        B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
+        B_OK(sqlite3_bind_int64(st, 2, n), st, rb);
+        s = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (s != SQLITE_DONE) goto rb;
+        uint64_t used = 0;
+        if (storage_used_locked(j, &used) != 0) goto rb;
+        if (used >= j->ceiling) { rollback(j); ret = -4; goto unlock; }
+    }
+
     /* reservations: this claim's old set goes, the new set comes */
     st = NULL;
     if (sqlite3_prepare_v2(j->db, "DELETE FROM reservations WHERE claim_seq=?1",
                            -1, &st, NULL) != SQLITE_OK) goto rb;
-    sqlite3_bind_int64(st, 1, seq);
+    B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
     s = sqlite3_step(st);
     sqlite3_finalize(st);
     if (s != SQLITE_DONE) goto rb;
@@ -485,8 +623,8 @@ int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
         if (sqlite3_prepare_v2(j->db, "INSERT INTO reservations(nul, claim_seq) "
                                "VALUES(?1, ?2)", -1, &st, NULL) != SQLITE_OK)
             goto rb;
-        sqlite3_bind_blob(st, 1, a->inputs[i], 64, SQLITE_STATIC);
-        sqlite3_bind_int64(st, 2, seq);
+        B_OK(sqlite3_bind_blob(st, 1, a->inputs[i], 64, SQLITE_STATIC), st, rb);
+        B_OK(sqlite3_bind_int64(st, 2, seq), st, rb);
         s = sqlite3_step(st);
         sqlite3_finalize(st);
         if (s == SQLITE_CONSTRAINT) { rollback(j); ret = -3; goto unlock; }
@@ -496,7 +634,7 @@ int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
     st = NULL;
     if (sqlite3_prepare_v2(j->db, "UPDATE claims SET state='signed', message='' "
                            "WHERE seq=?1", -1, &st, NULL) != SQLITE_OK) goto rb;
-    sqlite3_bind_int64(st, 1, seq);
+    B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
     s = sqlite3_step(st);
     sqlite3_finalize(st);
     if (s != SQLITE_DONE) goto rb;
@@ -522,33 +660,41 @@ int faucet_journal_attempt_latest(faucet_journal_t *j, int64_t seq,
             "SELECT n, env, wire_id, intent_id, inputs, build_tip, expiry,"
             " scan_next, last_submit_tip FROM attempts WHERE claim_seq=?1 "
             "ORDER BY n DESC LIMIT 1", -1, &st, NULL) != SQLITE_OK) goto unlock;
-    sqlite3_bind_int64(st, 1, seq);
+    B_OK(sqlite3_bind_int64(st, 1, seq), st, unlock);
     int s = sqlite3_step(st);
     if (s == SQLITE_DONE) { ret = 1; goto fin; }
     if (s != SQLITE_ROW) goto fin;
-    int env_len = sqlite3_column_bytes(st, 1);
-    int in_len = sqlite3_column_bytes(st, 4);
-    if (env_len <= 0 || sqlite3_column_bytes(st, 2) != 64 ||
-        sqlite3_column_bytes(st, 3) != 64 || in_len <= 0 || in_len % 64 != 0 ||
-        in_len / 64 > FJ_MAX_INPUTS) {
-        QGP_LOG_ERROR(LOG_TAG, "malformed attempt row for claim %lld",
-                      (long long)seq);
-        goto fin;
+    {
+        int64_t n = 0, bt = 0, ex = 0, sn = 0, ls = 0;
+        const void *env = NULL, *wid = NULL, *iid = NULL, *inp = NULL;
+        int env_len = 0, wid_len = 0, iid_len = 0, in_len = 0;
+        if (col_i64(st, 0, &n) != 0 || col_blob(st, 1, &env, &env_len) != 0 ||
+            col_blob(st, 2, &wid, &wid_len) != 0 ||
+            col_blob(st, 3, &iid, &iid_len) != 0 ||
+            col_blob(st, 4, &inp, &in_len) != 0 ||
+            col_i64(st, 5, &bt) != 0 || col_i64(st, 6, &ex) != 0 ||
+            col_i64(st, 7, &sn) != 0 || col_i64(st, 8, &ls) != 0 ||
+            env_len <= 0 || wid_len != 64 || iid_len != 64 || in_len <= 0 ||
+            in_len % 64 != 0 || in_len / 64 > FJ_MAX_INPUTS || n < 1) {
+            QGP_LOG_ERROR(LOG_TAG, "malformed attempt row for claim %lld",
+                          (long long)seq);
+            goto fin;
+        }
+        out->env = malloc((size_t)env_len);
+        if (!out->env) goto fin;
+        memcpy(out->env, env, (size_t)env_len);
+        out->env_len = (size_t)env_len;
+        out->n = (int)n;
+        memcpy(out->wire_id, wid, 64);
+        memcpy(out->intent_id, iid, 64);
+        memcpy(out->inputs, inp, (size_t)in_len);
+        out->n_in = in_len / 64;
+        out->build_tip = (uint64_t)bt;
+        out->expiry = (uint64_t)ex;
+        out->scan_next = (uint64_t)sn;
+        out->last_submit_tip = (uint64_t)ls;
+        ret = 0;
     }
-    out->env = malloc((size_t)env_len);
-    if (!out->env) goto fin;
-    memcpy(out->env, sqlite3_column_blob(st, 1), (size_t)env_len);
-    out->env_len = (size_t)env_len;
-    out->n = (int)sqlite3_column_int64(st, 0);
-    memcpy(out->wire_id, sqlite3_column_blob(st, 2), 64);
-    memcpy(out->intent_id, sqlite3_column_blob(st, 3), 64);
-    memcpy(out->inputs, sqlite3_column_blob(st, 4), (size_t)in_len);
-    out->n_in = in_len / 64;
-    out->build_tip = (uint64_t)sqlite3_column_int64(st, 5);
-    out->expiry = (uint64_t)sqlite3_column_int64(st, 6);
-    out->scan_next = (uint64_t)sqlite3_column_int64(st, 7);
-    out->last_submit_tip = (uint64_t)sqlite3_column_int64(st, 8);
-    ret = 0;
 fin:
     sqlite3_finalize(st);
 unlock:
@@ -579,15 +725,15 @@ int faucet_journal_attempt_submitted(faucet_journal_t *j, int64_t seq,
             "UPDATE attempts SET last_submit_tip=?2 WHERE claim_seq=?1 AND n="
             "(SELECT MAX(n) FROM attempts WHERE claim_seq=?1)", -1, &st,
             NULL) != SQLITE_OK) goto rb;
-    sqlite3_bind_int64(st, 1, seq);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)tip);
+    B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
+    B_OK(sqlite3_bind_int64(st, 2, (sqlite3_int64)tip), st, rb);
     int s = sqlite3_step(st);
     sqlite3_finalize(st);
     if (s != SQLITE_DONE) goto rb;
     st = NULL;
     if (sqlite3_prepare_v2(j->db, "UPDATE claims SET state='submitted' WHERE seq=?1",
                            -1, &st, NULL) != SQLITE_OK) goto rb;
-    sqlite3_bind_int64(st, 1, seq);
+    B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
     s = sqlite3_step(st);
     sqlite3_finalize(st);
     if (s != SQLITE_DONE) goto rb;
@@ -612,8 +758,8 @@ int faucet_journal_attempt_scanned(faucet_journal_t *j, int64_t seq,
             "UPDATE attempts SET scan_next=?2 WHERE claim_seq=?1 AND n="
             "(SELECT MAX(n) FROM attempts WHERE claim_seq=?1) AND scan_next<?2",
             -1, &st, NULL) != SQLITE_OK) goto rb;
-    sqlite3_bind_int64(st, 1, seq);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)scan_next);
+    B_OK(sqlite3_bind_int64(st, 1, seq), st, rb);
+    B_OK(sqlite3_bind_int64(st, 2, (sqlite3_int64)scan_next), st, rb);
     int s = sqlite3_step(st);
     sqlite3_finalize(st);
     if (s != SQLITE_DONE) goto rb;
@@ -637,14 +783,16 @@ int faucet_journal_reserved_other(faucet_journal_t *j, int64_t except_seq,
     if (sqlite3_prepare_v2(j->db, "SELECT nul FROM reservations WHERE "
                            "claim_seq<>?1 ORDER BY nul", -1, &st,
                            NULL) != SQLITE_OK) goto unlock;
-    sqlite3_bind_int64(st, 1, except_seq);
+    B_OK(sqlite3_bind_int64(st, 1, except_seq), st, unlock);
     n = 0;
     int s;
     while ((s = sqlite3_step(st)) == SQLITE_ROW) {
-        if (n >= cap || sqlite3_column_bytes(st, 0) != 64) { n = -1; break; }
-        memcpy(out[n++], sqlite3_column_blob(st, 0), 64);
+        const void *p = NULL;
+        int len = 0;
+        if (n >= cap || col_blob(st, 0, &p, &len) != 0 || len != 64) { n = -1; break; }
+        memcpy(out[n++], p, 64);
     }
-    if (s != SQLITE_ROW && s != SQLITE_DONE) n = -1;
+    if (n >= 0 && s != SQLITE_DONE) n = -1;
     sqlite3_finalize(st);
 unlock:
     pthread_mutex_unlock(&j->mu);

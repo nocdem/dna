@@ -20,17 +20,17 @@
 
 #define FAUCET_BLOCKS_PER_STEP   64    /* scan bound per worker step        */
 #define FAUCET_RESUBMIT_BLOCKS   3     /* resubmit the SAME bytes every 3   */
-#define FAUCET_STATUS_TTL_MS     10000
 #define FAUCET_COIN_CAP          (2 * FAUCET_COINS_MAX)
 
 static const uint8_t NATIVE_TOKEN[64] = {0};
 
 /* ── small helpers ──────────────────────────────────────────────────── */
 
-static uint64_t mono_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+static uint64_t mono_ms(void) { return faucet_now_ms(); }
+
+/* A node call's outcome is only usable while the request's deadline holds. */
+static int past_deadline(uint64_t deadline_ms) {
+    return deadline_ms != FAUCET_NODE_NO_DEADLINE && mono_ms() >= deadline_ms;
 }
 
 static int is_hex_lower(const char *s, size_t n) {
@@ -82,6 +82,7 @@ int faucet_core_init(faucet_core_t *c, const faucet_cfg_t *cfg,
     c->sk = sk;
     c->rand = rand;
     c->rand_ctx = rand_ctx;
+    if (pthread_mutex_init(&c->smu, NULL) != 0) return -1;
     uint8_t raw[64];
     if (qgp_sha3_512(pk, 2592, raw) != 0) return -1;
     qgp_fp_raw_to_hex(raw, c->self_hex);
@@ -92,7 +93,8 @@ int faucet_core_init(faucet_core_t *c, const faucet_cfg_t *cfg,
 int faucet_core_check_chain(faucet_core_t *c) {
     uint8_t got[32];
     int ok = 0;
-    if (c->node->chain_id32(c->node->ctx, got) == FAUCET_NODE_OK &&
+    if (c->node->chain_id32(c->node->ctx, got, FAUCET_NODE_NO_DEADLINE) ==
+            FAUCET_NODE_OK &&
         memcmp(got, c->cfg->chain_id, 32) == 0)
         ok = 1;
     else
@@ -105,20 +107,21 @@ int faucet_core_check_chain(faucet_core_t *c) {
 /* ── decision (design 6.1) ──────────────────────────────────────────── */
 
 int faucet_decide(const faucet_node_t *node, const char *address_hex,
-                  faucet_verdict_t *out) {
+                  uint64_t deadline_ms, faucet_verdict_t *out) {
     if (!node || !address_hex || !out) return -1;
     memset(out, 0, sizeof(*out));
     out->kind = FD_UNREADABLE;
     if (!is_hex_lower(address_hex, 128)) return -1;
 
     for (int t = 0; t < FAUCET_DECIDE_TRIES; t++) {
+        if (past_deadline(deadline_ms)) return 0;     /* out of time         */
         nodus_dnac_name_result_t nr;
         memset(&nr, 0, sizeof(nr));
-        if (node->name_of(node->ctx, address_hex, &nr) != FAUCET_NODE_OK)
+        if (node->name_of(node->ctx, address_hex, &nr, deadline_ms) != FAUCET_NODE_OK)
             return 0;                         /* an error is never "no name" */
         uint64_t tip = 0, total = 0;
         if (node->balance(node->ctx, address_hex, NATIVE_TOKEN, &tip,
-                          &total) != FAUCET_NODE_OK)
+                          &total, deadline_ms) != FAUCET_NODE_OK)
             return 0;                         /* an error is never zero      */
         if (nr.committed_height == 0 || tip == 0 ||
             nr.committed_height != tip)
@@ -141,19 +144,20 @@ int faucet_decide(const faucet_node_t *node, const char *address_hex,
 
 /* ── faucet funds / capacity ────────────────────────────────────────── */
 
-static int read_self_funds(faucet_core_t *c, uint64_t *native, uint64_t *token) {
+static int read_self_funds(faucet_core_t *c, uint64_t *native, uint64_t *token,
+                           uint64_t deadline_ms) {
     uint64_t t1 = 0, t2 = 0;
     if (c->node->balance(c->node->ctx, c->self_hex, NATIVE_TOKEN, &t1,
-                         native) != FAUCET_NODE_OK) return -1;
+                         native, deadline_ms) != FAUCET_NODE_OK) return -1;
     if (c->node->balance(c->node->ctx, c->self_hex, c->cfg->token_id, &t2,
-                         token) != FAUCET_NODE_OK) return -1;
+                         token, deadline_ms) != FAUCET_NODE_OK) return -1;
     return 0;
 }
 
 /* 1 = enough for one payout of `kind` at the fee ceiling, 0 not, -1 unread */
-static int funded_for(faucet_core_t *c, int is_full) {
+static int funded_for(faucet_core_t *c, int is_full, uint64_t deadline_ms) {
     uint64_t nat = 0, tok = 0;
-    if (read_self_funds(c, &nat, &tok) != 0) return -1;
+    if (read_self_funds(c, &nat, &tok, deadline_ms) != 0) return -1;
     const faucet_cfg_t *g = c->cfg;
     uint64_t need = (is_full ? g->full_native : g->start_native) + g->fee_ceiling;
     if (nat < need) return 0;
@@ -164,7 +168,7 @@ static int funded_for(faucet_core_t *c, int is_full) {
 /* ── API ────────────────────────────────────────────────────────────── */
 
 void faucet_api_claim(faucet_core_t *c, const char *address_hex,
-                      faucet_answer_t *ans) {
+                      uint64_t deadline_ms, faucet_answer_t *ans) {
     if (!address_hex || !is_hex_lower(address_hex, 128)) {
         ans_set(ans, 400, NULL, "refused", "none",
                 "address must be 128 lowercase hex characters");
@@ -175,8 +179,14 @@ void faucet_api_claim(faucet_core_t *c, const char *address_hex,
                 "the faucet is stopped: its node's chain is not the configured one");
         return;
     }
+    if (past_deadline(deadline_ms)) {
+        ans_set(ans, 503, NULL, "refused", "none",
+                "the request ran out of time; try again shortly");
+        return;
+    }
     faucet_verdict_t v;
-    if (faucet_decide(c->node, address_hex, &v) != 0 || v.kind == FD_UNREADABLE) {
+    if (faucet_decide(c->node, address_hex, deadline_ms, &v) != 0 ||
+        v.kind == FD_UNREADABLE) {
         ans_set(ans, 503, NULL, "refused", "none",
                 "the node gave no consistent answer; try again shortly");
         return;
@@ -201,7 +211,7 @@ void faucet_api_claim(faucet_core_t *c, const char *address_hex,
         ans_claim(ans, &latest, NULL);
         return;
     }
-    int fr = funded_for(c, is_full);
+    int fr = funded_for(c, is_full, deadline_ms);
     if (fr < 0) {
         ans_set(ans, 503, NULL, "refused", "none",
                 "the faucet balance could not be read; try again shortly");
@@ -274,24 +284,25 @@ void faucet_api_status(faucet_core_t *c, faucet_status_t *out) {
     }
     out->paused = cnt.paused > 0;
 
+    /* The funds come from the cache the WORKER keeps: this thread never
+     * waits on the node. A cache the worker has not refreshed lately (the
+     * node is down, the worker is stuck) is not trusted. */
     uint64_t now = mono_ms();
-    if (!c->status_valid || now - c->status_at_ms >= FAUCET_STATUS_TTL_MS) {
-        uint64_t nat = 0, tok = 0;
-        if (read_self_funds(c, &nat, &tok) == 0) {
-            c->status_native = nat;
-            c->status_token = tok;
-            c->status_valid = 1;
-            c->status_at_ms = now;
-        } else {
-            c->status_valid = 0;
-        }
+    uint64_t status_native = 0, status_token = 0;
+    int status_valid = 0;
+    pthread_mutex_lock(&c->smu);
+    if (c->status_valid && now - c->status_at_ms < FAUCET_STATUS_MAX_AGE_MS) {
+        status_valid = 1;
+        status_native = c->status_native;
+        status_token = c->status_token;
     }
+    pthread_mutex_unlock(&c->smu);
     const faucet_cfg_t *g = c->cfg;
-    if (c->status_valid) {
-        uint64_t f_nat = c->status_native / (g->full_native + g->fee_ceiling);
-        uint64_t f_tok = c->status_token / g->full_token;
+    if (status_valid) {
+        uint64_t f_nat = status_native / (g->full_native + g->fee_ceiling);
+        uint64_t f_tok = status_token / g->full_token;
         out->full_left = f_nat < f_tok ? f_nat : f_tok;
-        out->start_left = c->status_native / (g->start_native + g->fee_ceiling);
+        out->start_left = status_native / (g->start_native + g->fee_ceiling);
     }
     const char *msg = "ok";
     if (!atomic_load(&c->chain_ok))
@@ -300,13 +311,31 @@ void faucet_api_status(faucet_core_t *c, faucet_status_t *out) {
         msg = "stopped: an open claim could not be settled; waiting for the operator";
     else if (sf == 1)
         msg = "stopped: the claim history is full";
-    else if (!c->status_valid)
+    else if (!status_valid)
         msg = "the node could not be read";
     else if (cnt.paused > 0)
         msg = "payouts are paused (fee above the ceiling, or funding short)";
     out->open = atomic_load(&c->chain_ok) && cnt.unknown == 0 && sf == 0 &&
-                c->status_valid;
+                status_valid;
     snprintf(out->message, sizeof(out->message), "%s", msg);
+}
+
+void faucet_core_refresh_status(faucet_core_t *c) {
+    uint64_t now = mono_ms();
+    pthread_mutex_lock(&c->smu);
+    int fresh = c->status_valid && now - c->status_at_ms < FAUCET_STATUS_TTL_MS;
+    pthread_mutex_unlock(&c->smu);
+    if (fresh) return;
+    uint64_t nat = 0, tok = 0;
+    int ok = read_self_funds(c, &nat, &tok, FAUCET_NODE_NO_DEADLINE) == 0;
+    pthread_mutex_lock(&c->smu);
+    c->status_valid = ok;
+    if (ok) {
+        c->status_native = nat;
+        c->status_token = tok;
+        c->status_at_ms = mono_ms();
+    }
+    pthread_mutex_unlock(&c->smu);
 }
 
 /* ── worker: plan + sign ────────────────────────────────────────────── */
@@ -331,10 +360,13 @@ static void pause_claim(faucet_core_t *c, const faucet_claim_t *cl,
         QGP_LOG_ERROR(LOG_TAG, "claim %s: could not record the pause", cl->claim_id);
 }
 
-static const char *plan_refusal(int prc, char *buf, size_t cap) {
+static const char *plan_refusal(int prc, int truncated, char *buf, size_t cap) {
     switch (prc) {
     case NODUS_V2_SPEND_ERR_INSUFFICIENT:
     case NODUS_V2_SPEND_ERR_NO_COIN_ALL:
+        /* short funding on a listing that filled the node's cap may only be
+         * "the coins we did not see": say so, never "funding short" */
+        if (truncated) return "coin list incomplete";
         return "the faucet's funding is short; waiting for funding";
     case NODUS_V2_SPEND_ERR_MAX_INPUTS:
         return "the payout would need more than 15 coins; the operator must consolidate";
@@ -422,7 +454,7 @@ static int do_plan_and_sign(faucet_core_t *c, const faucet_claim_t *cl,
 
     nodus_dnac_ruleset_info_t ri;
     memset(&ri, 0, sizeof(ri));
-    if (c->node->ruleset_info(c->node->ctx, &ri) != FAUCET_NODE_OK) {
+    if (c->node->ruleset_info(c->node->ctx, &ri, FAUCET_NODE_NO_DEADLINE) != FAUCET_NODE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "claim %s: dnac_ruleset_info unreadable", cl->claim_id);
         return -1;
     }
@@ -431,8 +463,16 @@ static int do_plan_and_sign(faucet_core_t *c, const faucet_claim_t *cl,
         QGP_LOG_ERROR(LOG_TAG, "the node reported tip 0 — refusing to build");
         return -1;
     }
+    /* The price must be REPORTED: a missing or malformed gas_price is not
+     * the price 0 ("rule off") — paying a fee computed from a guess is
+     * never done; the claim waits. A present 0 is a valid price. */
     uint64_t gas_price = 0;
-    if (c->node->gas_price(c->node->ctx, &gas_price) != FAUCET_NODE_OK) {
+    int gr = c->node->gas_price(c->node->ctx, &gas_price, FAUCET_NODE_NO_DEADLINE);
+    if (gr == FAUCET_NODE_UNREPORTED) {
+        pause_claim(c, cl, "the node did not report a gas price; waiting");
+        return 0;
+    }
+    if (gr != FAUCET_NODE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "claim %s: gas price unreadable", cl->claim_id);
         return -1;
     }
@@ -474,7 +514,13 @@ static int do_plan_and_sign(faucet_core_t *c, const faucet_claim_t *cl,
     }
 
     /* coins of the faucet itself, per token */
-    int cr = c->node->coins(c->node->ctx, NATIVE_TOKEN, nat);
+    /* FAUCET_NODE_INCOMPLETE = the node ignored the token filter (the list
+     * holds other tokens): unusable. A listing that merely filled the node's
+     * cap is OK + truncated: the node lists the LARGEST coins first, so the
+     * faucet plans over what it got (dust sent to it cannot stop it) and
+     * calls the list incomplete only if those coins do not cover the payout
+     * (below, at the planner's refusal). */
+    int cr = c->node->coins(c->node->ctx, NATIVE_TOKEN, nat, FAUCET_NODE_NO_DEADLINE);
     if (cr == FAUCET_NODE_INCOMPLETE) {
         pause_claim(c, cl, "coin list incomplete");
         ret = 0;
@@ -482,7 +528,7 @@ static int do_plan_and_sign(faucet_core_t *c, const faucet_claim_t *cl,
     }
     if (cr != FAUCET_NODE_OK) { QGP_LOG_ERROR(LOG_TAG, "native coins unreadable"); goto out; }
     if (is_full) {
-        cr = c->node->coins(c->node->ctx, g->token_id, tok);
+        cr = c->node->coins(c->node->ctx, g->token_id, tok, FAUCET_NODE_NO_DEADLINE);
         if (cr == FAUCET_NODE_INCOMPLETE) {
             pause_claim(c, cl, "coin list incomplete");
             ret = 0;
@@ -623,6 +669,11 @@ static int do_plan_and_sign(faucet_core_t *c, const faucet_claim_t *cl,
     if (sr == -3) {
         pause_claim(c, cl, "a coin is reserved by another claim; waiting");
         ret = 0;
+    } else if (sr == -4) {
+        /* the journal is at its storage ceiling: the replacement was NOT
+         * recorded and is not submitted; the claim waits for the operator */
+        pause_claim(c, cl, "the claim history is full; replacement signing is paused for the operator");
+        ret = 0;
     } else if (sr != 0) {
         QGP_LOG_ERROR(LOG_TAG, "claim %s: signed attempt not recorded (%d) — never submitted",
                       cl->claim_id, sr);
@@ -636,7 +687,9 @@ static int do_plan_and_sign(faucet_core_t *c, const faucet_claim_t *cl,
     goto out;
 refused: {
         char buf[FJ_MSG_MAX];
-        pause_claim(c, cl, plan_refusal(prc, buf, sizeof(buf)));
+        pause_claim(c, cl, plan_refusal(prc,
+                                        nat->truncated || (is_full && tok->truncated),
+                                        buf, sizeof(buf)));
         ret = 0;
     }
 out:
@@ -661,17 +714,25 @@ static int do_settle(faucet_core_t *c, const faucet_claim_t *cl) {
     int ret = -1;
     nodus_dnac_ruleset_info_t ri;
     memset(&ri, 0, sizeof(ri));
-    if (c->node->ruleset_info(c->node->ctx, &ri) != FAUCET_NODE_OK) goto out;
+    if (c->node->ruleset_info(c->node->ctx, &ri, FAUCET_NODE_NO_DEADLINE) != FAUCET_NODE_OK) goto out;
     const uint64_t tip = ri.tip;
     int progressed = 0;
     uint64_t next = a.scan_next;
     uint64_t last = tip < a.expiry ? tip : a.expiry;
+    const uint64_t step_start = mono_ms();
 
-    /* Only a COMPLETE block scan moves a state (design 6.4). */
+    /* Only a COMPLETE block scan moves a state (design 6.4). The step is
+     * bounded by block count AND by elapsed time (a slow node must not keep
+     * one step — and its claim — busy for minutes); what is not scanned yet
+     * is picked up from the stored cursor on the next step. */
     for (int budget = FAUCET_BLOCKS_PER_STEP; next <= last && budget > 0;
          budget--, next++) {
+        if (mono_ms() - step_start >= FAUCET_STEP_BUDGET_MS) break;
         int found = 0;
-        int sr = c->node->scan_block(c->node->ctx, next, a.intent_id, &found);
+        /* one block walk has its own time budget inside the adapter and
+         * releases the node session between pages */
+        int sr = c->node->scan_block(c->node->ctx, next, a.intent_id, &found,
+                                     FAUCET_NODE_NO_DEADLINE);
         if (sr == FAUCET_NODE_OK) {
             if (found) {
                 char m[FJ_MSG_MAX];
@@ -694,9 +755,20 @@ static int do_settle(faucet_core_t *c, const faucet_claim_t *cl) {
             ret = 1;
             goto out;
         } else {
+            /* ANY incomplete required scan (timeout, a malformed or missing
+             * page, an internal error — not only "not held") leaves the
+             * settlement evidence unreadable: the claim becomes `unknown`,
+             * which stops admission of new claims, and the cursor stays
+             * BEFORE this block. `unknown` returns to `submitted` by itself
+             * once a later step reads the evidence completely. */
             QGP_LOG_WARN(LOG_TAG, "claim %s: block %llu could not be read completely",
                          cl->claim_id, (unsigned long long)next);
-            ret = progressed ? 1 : -1;
+            if (!strcmp(cl->state, "unknown")) { ret = progressed ? 1 : -1; goto out; }
+            char m[FJ_MSG_MAX];
+            snprintf(m, sizeof(m), "block %llu could not be read completely; settlement unknown until it is readable",
+                     (unsigned long long)next);
+            if (faucet_journal_finish(c->journal, cl->seq, "unknown", m) != 0) goto out;
+            ret = 1;
             goto out;
         }
     }
@@ -723,7 +795,7 @@ static int do_settle(faucet_core_t *c, const faucet_claim_t *cl) {
         char msg[128];
         msg[0] = '\0';
         int sub = c->node->submit(c->node->ctx, a.wire_id, a.env, a.env_len,
-                                  msg, sizeof(msg));
+                                  msg, sizeof(msg), FAUCET_NODE_NO_DEADLINE);
         if (sub == -1) {
             QGP_LOG_WARN(LOG_TAG, "claim %s: submit got no answer", cl->claim_id);
         } else {
@@ -743,6 +815,7 @@ int faucet_worker_step(faucet_core_t *c) {
     /* every cycle: the chain guard, so the HTTP side stops at once when the
      * node's chain is not the configured one */
     if (!faucet_core_check_chain(c)) return 0;
+    faucet_core_refresh_status(c);      /* /status answers from this cache */
     faucet_claim_t cl;
     int hr = faucet_journal_head(c->journal, &cl);
     if (hr < 0) return -1;

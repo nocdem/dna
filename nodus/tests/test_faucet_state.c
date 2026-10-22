@@ -26,24 +26,40 @@
  *   F6  replacement only from expired, built from the old attempt's coins,
  *       sharing at least one input; with none of the old coins left the claim
  *       pauses and nothing is signed; never replaced while submitted;
- *   F7  a block the node does not hold -> unknown, new claims are refused,
- *       /status is closed; evidence returning moves it on; an unreadable
- *       block (error) moves nothing and the cursor stays;
+ *   F7  ANY required block that cannot be read completely — the node does not
+ *       hold it, or the read fails (error / timeout / malformed page) —
+ *       records the claim as unknown (the cursor stays BEFORE that block),
+ *       new claims are refused (503, nothing journalled), /status is closed;
+ *       evidence returning moves it back to submitted and reopens admission;
  *   F8  restart from every state (planned, signed, submitted, expired,
  *       paused, unknown): a new core on the reopened journal resumes —
  *       signed resubmits the SAME bytes, submitted continues from the
  *       stored scan cursor;
- *   F9  coin list incomplete (truncated / token filter ignored) pauses with
+ *   F9  a node that ignores the token filter (FAUCET_NODE_INCOMPLETE) pauses with
  *       "coin list incomplete", never "faucet empty"; short funding and
  *       locked coins pause; a wrong chain stops the worker;
- *   F10 one claim in flight: a second claim waits while the first is open.
+ *   F10 one claim in flight: a second claim waits while the first is open;
+ *   F11 a coin list that FILLS the node's cap is not "incomplete" by itself
+ *       (the node lists the largest coins first): when the listed coins cover
+ *       the payout the faucet signs — dust sent to it cannot stop it; only a
+ *       truncated list whose coins do not cover the payout pauses as "coin
+ *       list incomplete" (a complete list of the same coins is "funding
+ *       short");
+ *   F12 a node that does not REPORT a gas price (absent / malformed answer)
+ *       pauses the claim — nothing built, nothing signed; an unreadable
+ *       price is a fault; a reported 0 is a valid price and signs;
+ *   F13 a replacement attempt at the journal's storage ceiling is not signed
+ *       (the claim pauses, "history is full", no attempt row, no submit) and
+ *       signs by itself when room returns.
  * WHAT IT REQUIRES: a default build (the newest pinned rule-set generation);
  *   a mkdtemp directory per scenario under /tmp (removed); no network.
  *   Signing makes it slower than the other faucet tests (ML-DSA-87).
  * LEAVES BEHIND: nothing.
  * HOW IT CAN LIE: block contents and the tip are scripted; the node's real
  *   mempool, CheckTx and chain are not here. A built envelope is checked by
- *   decoding it, not by executing it on a chain.
+ *   decoding it, not by executing it on a chain. F13 reaches the ceiling by
+ *   reopening the journal with a 1-byte ceiling (the logic, not a real full
+ *   disk).
  */
 #include "test_faucet_stub.c"
 
@@ -280,15 +296,29 @@ int main(void) {
     step(&e); step(&e);
     e.st.ri.tip = 1005;
     e.st.err_height = 1001;
-    CHECK(step(&e) == -1 && state_is(&e, "submitted"), "F7 an unreadable block (error) moves nothing");
+    CHECK(step(&e) == 1 && state_is(&e, "unknown"),
+          "F7 a block that cannot be read completely (error, timeout, malformed page) -> unknown");
+    faucet_journal_claim_get(e.j, cl.claim_id, &cl);
+    CHECK(strstr(cl.message, "could not be read completely") != NULL, "F7 ... with the reason");
     attempt_of(&e, &cl, &at);
     CHECK(at.scan_next == 1001, "F7 ... and the scan cursor did not pass it");
     faucet_attempt_free(&at);
+    make_addr(other, 62);
+    e.st.name_found = 0; e.st.bal_native = 0;
+    ans = api_claim(&e, other);
+    CHECK(ans.http == 503 && faucet_journal_claim_by_address(e.j, other, &cl) == 1,
+          "F7 an unreadable required block stops admission of new claims too (nothing journalled)");
+    faucet_api_status(&e.core, &fs);
+    CHECK(fs.open == 0 && strstr(fs.message, "stopped") != NULL, "F7 ... and /status is closed");
+    CHECK(step(&e) == -1 && state_is(&e, "unknown"), "F7 a persistent read failure keeps it unknown (no rewrite)");
     e.st.err_height = 0;
-    CHECK(step(&e) == 1, "F7 once readable the scan goes on");
+    CHECK(step(&e) == 1 && state_is(&e, "submitted"), "F7 once readable the scan goes on and the claim is submitted again");
+    faucet_journal_claim_get(e.j, cl.claim_id, &cl);
     attempt_of(&e, &cl, &at);
     CHECK(at.scan_next == 1006, "F7 ... through 1005");
     faucet_attempt_free(&at);
+    ans = api_claim(&e, other);
+    CHECK(ans.http == 200 && !strcmp(ans.state, "planned"), "F7 admission reopens with the evidence readable");
     env_close(&e);
 
     /* ── F8 restart from every state ─────────────────────────────── */
@@ -342,7 +372,7 @@ int main(void) {
     env_open(&e, 64ULL << 20);
     cl = claim_full(&e, 10, "dave");
     e.st.nat_rc = FAUCET_NODE_INCOMPLETE;
-    CHECK(step(&e) == 0 && state_is(&e, "paused"), "F9 a truncated native coin list pauses");
+    CHECK(step(&e) == 0 && state_is(&e, "paused"), "F9 a native coin list the node filled with other tokens pauses");
     faucet_journal_claim_get(e.j, cl.claim_id, &cl);
     CHECK(!strcmp(cl.message, "coin list incomplete"), "F9 ... as 'coin list incomplete' (never 'faucet empty')");
     e.st.nat_rc = 0;
@@ -373,6 +403,84 @@ int main(void) {
     e.st.chain[3] ^= 0x5A;
     CHECK(step(&e) == 0 && state_is(&e, "planned") && attempt_of(&e, &cl, &at) == 1,
           "F9 a node on another chain: the worker does nothing");
+    env_close(&e);
+
+    /* ── F11 a coin list at the node's cap ───────────────────────── */
+    env_open(&e, 64ULL << 20);
+    cl = claim_start(&e, 30);
+    e.st.nat.n = 0;
+    add_coin(&e.st.nat, 70, 20000000000000ULL);      /* the largest: listed first (amount DESC) */
+    for (int i = 0; i < FAUCET_COINS_MAX - 1; i++) add_coin(&e.st.nat, 100 + i, 1);   /* dust */
+    e.st.nat.truncated = 1;                          /* the listing filled the cap */
+    CHECK(e.st.nat.n == FAUCET_COINS_MAX, "F11 (setup) 100 coins listed, the list is truncated");
+    CHECK(step(&e) == 1 && state_is(&e, "signed"),
+          "F11 a list at the cap whose listed coins cover the payout signs (dust does not stop the faucet)");
+    attempt_of(&e, &cl, &at);
+    CHECK(at.n_in >= 1 && at.n_in <= 15 && has_nul(&at, e.st.nat.c[0].nul),
+          "F11 ... spending the largest coin (the planner's dust sweep may add dust to it)");
+    faucet_attempt_free(&at);
+    env_close(&e);
+
+    env_open(&e, 64ULL << 20);
+    cl = claim_start(&e, 31);
+    e.st.nat.n = 0;
+    for (int i = 0; i < FAUCET_COINS_MAX; i++) {
+        add_coin(&e.st.nat, 100 + i, 1000);          /* 100 coins of 1000 raw ...        */
+        if (i < 90) e.st.nat.c[i].unlock_block = 5000;   /* ... 90 of them still locked   */
+    }
+    e.st.nat.truncated = 1;
+    CHECK(step(&e) == 0 && state_is(&e, "paused") && attempt_of(&e, &cl, &at) == 1,
+          "F11 a truncated list whose listed coins do NOT cover the payout pauses, nothing signed");
+    faucet_journal_claim_get(e.j, cl.claim_id, &cl);
+    CHECK(!strcmp(cl.message, "coin list incomplete"), "F11 ... as 'coin list incomplete'");
+    e.st.nat.truncated = 0;
+    step(&e);
+    faucet_journal_claim_get(e.j, cl.claim_id, &cl);
+    CHECK(strstr(cl.message, "funding") != NULL, "F11 the same coins in a COMPLETE list are 'funding short'");
+    env_close(&e);
+
+    /* ── F12 the gas price must be reported ──────────────────────── */
+    env_open(&e, 64ULL << 20);
+    cl = claim_start(&e, 32);
+    e.st.gas_rc = FAUCET_NODE_UNREPORTED;
+    CHECK(step(&e) == 0 && state_is(&e, "paused") && attempt_of(&e, &cl, &at) == 1,
+          "F12 a node that reports no gas price pauses the claim, nothing built or signed");
+    faucet_journal_claim_get(e.j, cl.claim_id, &cl);
+    CHECK(strstr(cl.message, "gas price") != NULL, "F12 ... and says why");
+    CHECK(e.st.submit_calls == 0, "F12 nothing was submitted");
+    e.st.gas_rc = FAUCET_NODE_ERR;
+    CHECK(step(&e) == -1 && state_is(&e, "paused"), "F12 an unreadable price is a fault, the claim stays paused");
+    e.st.gas_rc = 0;
+    e.st.gas = 0;                                    /* a REPORTED 0: the rule is off */
+    CHECK(step(&e) == 1 && state_is(&e, "signed"), "F12 a reported price 0 is a valid price: it signs");
+    env_close(&e);
+
+    /* ── F13 replacement at the storage ceiling ──────────────────── */
+    env_open(&e, 64ULL << 20);
+    cl = claim_start(&e, 33);
+    step(&e); step(&e);                              /* signed, submitted */
+    e.st.ri.tip = 1091;
+    step(&e);                                        /* scans 1001..1064 (64-block bound) */
+    step(&e);                                        /* scans 1065..1090: expired */
+    CHECK(state_is(&e, "expired"), "F13 (setup) attempt 1 expired");
+    e.cfg.storage_ceiling = 1;                       /* the journal is now at its ceiling */
+    env_reopen(&e);
+    attempt_of(&e, &cl, &at2);
+    int att_n = at2.n;
+    faucet_attempt_free(&at2);
+    CHECK(step(&e) == 0 && state_is(&e, "paused"), "F13 at the ceiling the replacement is NOT signed: the claim pauses");
+    faucet_journal_claim_get(e.j, cl.claim_id, &cl);
+    CHECK(strstr(cl.message, "history is full") != NULL, "F13 ... and says the history is full");
+    attempt_of(&e, &cl, &at2);
+    CHECK(at2.n == att_n, "F13 no replacement attempt row was recorded");
+    faucet_attempt_free(&at2);
+    CHECK(e.st.submit_calls == 1, "F13 nothing was submitted for the replacement");
+    e.cfg.storage_ceiling = 64ULL << 20;
+    env_reopen(&e);
+    CHECK(step(&e) == 1 && state_is(&e, "signed"), "F13 with room again the replacement signs on its own");
+    attempt_of(&e, &cl, &at2);
+    CHECK(at2.n == att_n + 1, "F13 ... as the next attempt");
+    faucet_attempt_free(&at2);
     env_close(&e);
 
     /* ── F10 one claim in flight ─────────────────────────────────── */

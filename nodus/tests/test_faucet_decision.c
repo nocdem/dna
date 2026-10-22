@@ -22,19 +22,54 @@
  *       a confirmed START is not paid twice; a confirmed FULL never turns
  *       into a START; an unreadable node and a wrong chain are 503 and
  *       create nothing; GET /claim answers known, unknown and the zero id;
- *       /status reports the remaining capacity at the fee ceiling.
+ *       /status reports the remaining capacity at the fee ceiling;
+ *   A2  DEADLINES: a request whose deadline has passed is 503 and makes NO
+ *       node call; a live deadline is handed down to every node read of the
+ *       decision (the stub records it); /status makes NO node call at all —
+ *       it answers from the worker's cache even while the node is
+ *       unreadable, and says "could not be read" when the cache was never
+ *       filled, was invalidated by a failed refresh, or is older than
+ *       FAUCET_STATUS_MAX_AGE_MS; the cache is refilled by the worker's
+ *       refresh;
+ *   G1  the gas-price decoder reports PRESENCE: nodus_dnac_fee_info_decode_ex
+ *       says has_gas_price only for exactly one unsigned gas_price (a present
+ *       0 included); an absent key, a wrong type and a repeated key leave it
+ *       false while the plain decoder still reads 0 and every other field.
  * WHAT IT REQUIRES: a default build; a mkdtemp directory under /tmp (removed);
  *   no network. The builder is not exercised here (test_faucet_state does).
  * LEAVES BEHIND: nothing.
  * HOW IT CAN LIE: the stub node answers what the test scripts; the rule is
- *   proven against those answers.
+ *   proven against those answers. The stub cannot wait, so A2 proves that the
+ *   deadline is CHECKED and HANDED DOWN, not that the real adapter honours it
+ *   (that is faucet_node_real.c: clocklock + bounded RPC, not stub-testable).
  */
 #include "test_faucet_stub.c"
 
+#include "protocol/nodus_cbor.h"
+
 static faucet_verdict_t decide(env_t *e, const char *addr, int *rc) {
     faucet_verdict_t v;
-    *rc = faucet_decide(&e->vt, addr, &v);
+    *rc = faucet_decide(&e->vt, addr, FAUCET_NODE_NO_DEADLINE, &v);
     return v;
+}
+
+/* A dnac_fee_info reply with the gas_price entry shaped by `mode`:
+ * 0 absent, 1 uint `gas`, 2 wrong type (text), 3 uint written twice. */
+static size_t fee_reply(uint8_t *buf, size_t cap, int mode, uint64_t gas) {
+    cbor_encoder_t e;
+    cbor_encoder_init(&e, buf, cap);
+    cbor_encode_map(&e, 4);
+    cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, 1);
+    cbor_encode_cstr(&e, "y"); cbor_encode_cstr(&e, "r");
+    cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, "dnac_fee_info");
+    cbor_encode_cstr(&e, "r");
+    cbor_encode_map(&e, (size_t)(2 + (mode == 0 ? 0 : mode == 3 ? 2 : 1)));
+    cbor_encode_cstr(&e, "base_fee"); cbor_encode_uint(&e, 1000000);
+    cbor_encode_cstr(&e, "min_fee");  cbor_encode_uint(&e, 1000000);
+    if (mode == 1 || mode == 3) { cbor_encode_cstr(&e, "gas_price"); cbor_encode_uint(&e, gas); }
+    if (mode == 3) { cbor_encode_cstr(&e, "gas_price"); cbor_encode_uint(&e, gas); }
+    if (mode == 2) { cbor_encode_cstr(&e, "gas_price"); cbor_encode_cstr(&e, "7"); }
+    return cbor_encoder_len(&e);
 }
 
 int main(void) {
@@ -95,7 +130,7 @@ int main(void) {
     snprintf(e.st.name, sizeof(e.st.name), "Al!ce");
     v = decide(&e, A, &rc);
     CHECK(v.kind == FD_UNREADABLE, "D2 a malformed name is UNREADABLE");
-    CHECK(faucet_decide(&e.vt, "xyz", &v) == -1, "D2 a bad address is refused");
+    CHECK(faucet_decide(&e.vt, "xyz", FAUCET_NODE_NO_DEADLINE, &v) == -1, "D2 a bad address is refused");
     env_close(&e);
 
     /* ── A1 the API ──────────────────────────────────────────────── */
@@ -227,6 +262,80 @@ int main(void) {
     faucet_api_status(&e.core, &st);
     CHECK(st.open == 0, "A1 /status shows it closed");
     env_close(&e);
+
+    /* ── A2 deadlines and the status cache ───────────────────────── */
+    env_open(&e, 64ULL << 20);
+    e.st.name_found = 0;
+    e.st.bal_native = 0;
+    int calls = e.st.node_calls;
+    faucet_answer_t dl;
+    faucet_api_claim(&e.core, A, faucet_now_ms() - 1, &dl);
+    CHECK(dl.http == 503 && !strcmp(dl.state, "refused") && e.st.node_calls == calls,
+          "A2 a request past its deadline is 503 and makes NO node call");
+    CHECK(faucet_journal_claim_by_address(e.j, A, &cl) == 1, "A2 ... and journals nothing");
+    uint64_t live = faucet_now_ms() + 60000;
+    faucet_api_claim(&e.core, A, live, &dl);
+    CHECK(dl.http == 200 && !strcmp(dl.kind, "start") && e.st.node_calls > calls &&
+          e.st.last_deadline == live,
+          "A2 a live deadline is handed down to the node reads of the decision");
+
+    calls = e.st.node_calls;
+    e.st.self_rc = -1;                           /* the node cannot be read now */
+    faucet_api_status(&e.core, &st);
+    CHECK(e.st.node_calls == calls && st.open == 1 && st.full_left > 0 && st.start_left > 0,
+          "A2 /status makes NO node call and answers from the worker's cache");
+    e.core.status_at_ms = faucet_now_ms() - FAUCET_STATUS_MAX_AGE_MS - 1;
+    faucet_api_status(&e.core, &st);
+    CHECK(e.st.node_calls == calls && st.open == 0 && strstr(st.message, "could not be read") &&
+          st.full_left == 0, "A2 a cache older than the maximum age is not trusted");
+    e.core.status_at_ms = 0;                     /* force the worker refresh   */
+    faucet_core_refresh_status(&e.core);
+    faucet_api_status(&e.core, &st);
+    CHECK(st.open == 0 && strstr(st.message, "could not be read"),
+          "A2 a refresh that fails invalidates the cache (no stale number is kept alive)");
+    e.st.self_rc = 0;
+    faucet_core_refresh_status(&e.core);
+    faucet_api_status(&e.core, &st);
+    CHECK(st.open == 1 && st.full_left > 0, "A2 the worker's refresh refills the cache");
+    env_close(&e);
+
+    /* ── G1 gas price presence (client decoder) ───────────────────── */
+    {
+        static uint8_t rb[512];
+        nodus_dnac_fee_info_t fi;
+        bool has = true;
+        size_t n = fee_reply(rb, sizeof(rb), 1, 7);
+        CHECK(nodus_dnac_fee_info_decode_ex(rb, n, &fi, &has) == 0 && has &&
+              fi.gas_price == 7 && fi.min_fee == 1000000, "G1 a present gas_price is reported (and decoded)");
+        n = fee_reply(rb, sizeof(rb), 1, 0);
+        has = false;
+        CHECK(nodus_dnac_fee_info_decode_ex(rb, n, &fi, &has) == 0 && has && fi.gas_price == 0,
+              "G1 a present 0 is a VALID price (the rule is off), distinct from unreadable");
+        n = fee_reply(rb, sizeof(rb), 0, 0);
+        has = true;
+        CHECK(nodus_dnac_fee_info_decode_ex(rb, n, &fi, &has) == 0 && !has && fi.min_fee == 1000000,
+              "G1 an absent gas_price is NOT reported (older node) — the rest still decodes");
+        CHECK(nodus_dnac_fee_info_decode(rb, n, &fi) == 0 && fi.gas_price == 0,
+              "G1 the plain decoder is unchanged: absent reads 0 for its other callers");
+        n = fee_reply(rb, sizeof(rb), 2, 0);
+        has = true;
+        CHECK(nodus_dnac_fee_info_decode_ex(rb, n, &fi, &has) == 0 && !has,
+              "G1 a wrongly typed gas_price is NOT reported");
+        n = fee_reply(rb, sizeof(rb), 3, 7);
+        has = true;
+        CHECK(nodus_dnac_fee_info_decode_ex(rb, n, &fi, &has) == 0 && !has,
+              "G1 a repeated gas_price is NOT reported");
+        n = fee_reply(rb, sizeof(rb), 1, 7);
+        has = true;
+        CHECK(nodus_dnac_fee_info_decode_ex(rb, n - 3, &fi, &has) == -1 && !has,
+              "G1 a truncated reply is refused and reports nothing");
+        has = true;
+        CHECK(nodus_dnac_fee_info_decode_ex(NULL, n, &fi, &has) == -1 && !has &&
+              nodus_dnac_fee_info_decode_ex(rb, n, NULL, &has) == -1,
+              "G1 NULL arguments are refused");
+        CHECK(nodus_dnac_fee_info_decode_ex(rb, n, &fi, NULL) == 0 && fi.gas_price == 7,
+              "G1 a NULL flag is the plain decoder");
+    }
 
     free(g_id);
     printf("%s (%d checks, %d failure(s))\n", g_failures ? "FAILED" : "PASSED", g_checks, g_failures);

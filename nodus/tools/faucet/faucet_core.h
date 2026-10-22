@@ -10,13 +10,19 @@
  * THE spec for this file.
  *
  * DETERMINISM / SCOPE: nothing here is consensus. The clock appears only in
- * the status cache and the HTTP timeouts. Every decision is a function of
- * ONE tip's node reads and the journal; nothing is decided while a claim is
- * open (it resumes).
+ * the status cache, the HTTP timeouts and the node-call deadlines. Every
+ * decision is a function of ONE tip's node reads and the journal; nothing is
+ * decided while a claim is open (it resumes).
+ *
+ * DEADLINES: the HTTP side hands every request's absolute deadline down
+ * (faucet_api_claim); each node read of that request is bounded by it, so
+ * handler work cannot outlive the connection's deadline. /status never
+ * reads the node: it answers from a cache the WORKER refreshes.
  */
 #ifndef FAUCET_CORE_H
 #define FAUCET_CORE_H
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -46,10 +52,12 @@ typedef struct {
  *  The two answers must come from the SAME committed height (name "ch" ==
  *  balance "tip"); a mismatch re-reads, at most FAUCET_DECIDE_TRIES times,
  *  then FD_UNREADABLE. An error is never a zero: a failed read is
- *  FD_UNREADABLE. `native_zero` = the all-zero token id. */
+ *  FD_UNREADABLE. `native_zero` = the all-zero token id. `deadline_ms` =
+ *  absolute faucet_now_ms() bound of every read (0 = none); a deadline that
+ *  passes is a failed read. */
 #define FAUCET_DECIDE_TRIES 3
 int faucet_decide(const faucet_node_t *node, const char *address_hex,
-                  faucet_verdict_t *out);
+                  uint64_t deadline_ms, faucet_verdict_t *out);
 
 /* ── the service object ─────────────────────────────────────────────── */
 
@@ -63,7 +71,9 @@ typedef struct faucet_core {
     nodus_v2_rand_fn      rand;         /* output seeds + claim ids         */
     void                 *rand_ctx;
     atomic_int            chain_ok;     /* 1 = the node's chain id matched  */
-    /* status cache (HTTP thread only) */
+    /* status cache: WRITTEN by the worker (faucet_core_refresh_status),
+     * READ by the HTTP thread; smu guards the four fields */
+    pthread_mutex_t       smu;
     uint64_t              status_at_ms;
     int                   status_valid;
     uint64_t              status_native, status_token;
@@ -90,9 +100,12 @@ typedef struct {
 } faucet_answer_t;
 
 /** POST /faucet/claim. `address_hex` already validated as 128 lowercase hex
- *  by the HTTP layer; this function does not trust that. */
+ *  by the HTTP layer; this function does not trust that. `deadline_ms` is
+ *  the request's absolute faucet_now_ms() deadline: a deadline already
+ *  passed answers 503 without touching the node, and every node read is
+ *  bounded by it (a read that cannot finish = 503, nothing journalled). */
 void faucet_api_claim(faucet_core_t *c, const char *address_hex,
-                      faucet_answer_t *ans);
+                      uint64_t deadline_ms, faucet_answer_t *ans);
 /** GET /faucet/claim/<claim_id>. */
 void faucet_api_get_claim(faucet_core_t *c, const char *claim_id,
                           faucet_answer_t *ans);
@@ -105,15 +118,32 @@ typedef struct {
     char     message[FJ_MSG_MAX];
 } faucet_status_t;
 
-/** GET /faucet/status. Capacity is read from the faucet's own balance at
- *  the fee ceiling; the NODUS pool is shared by FULL and START. */
+/** GET /faucet/status. Capacity comes from the faucet's own balance at the
+ *  fee ceiling (the NODUS pool is shared by FULL and START), READ FROM THE
+ *  CACHE the worker keeps — this call never touches the node. A cache older
+ *  than FAUCET_STATUS_MAX_AGE_MS (or never filled) is "the node could not
+ *  be read". */
 void faucet_api_status(faucet_core_t *c, faucet_status_t *out);
+
+#define FAUCET_STATUS_TTL_MS      10000   /* the worker re-reads after this   */
+#define FAUCET_STATUS_MAX_AGE_MS  30000   /* older = not trusted by /status   */
+
+/** Refresh the funds cache from the node (the worker calls it every cycle;
+ *  it reads only when the cache is older than FAUCET_STATUS_TTL_MS). A failed
+ *  read invalidates the cache — never keeps a stale number alive. */
+void faucet_core_refresh_status(faucet_core_t *c);
 
 /* ── worker (one claim in flight) ───────────────────────────────────── */
 
 /** Drive the oldest open claim one step (plan+sign, submit, scan,
- *  settle). @return 1 a claim was worked on, 0 nothing to do, -1 a fault
- *  that stopped the step (state unchanged; logged). */
+ *  settle); first refreshes the status cache. A step is bounded in time: a
+ *  block scan stops after FAUCET_STEP_BUDGET_MS and resumes at the stored
+ *  cursor next step. A required block that cannot be read completely (node
+ *  does not hold it, timeout, malformed page, internal error) records the
+ *  claim as `unknown`, which stops new claims until the evidence is readable
+ *  again. @return 1 a claim was worked on, 0 nothing to do, -1 a fault that
+ *  stopped the step (state unchanged; logged). */
+#define FAUCET_STEP_BUDGET_MS 10000
 int faucet_worker_step(faucet_core_t *c);
 
 /** The fixed answer for "no claim": 32 zero hex characters. */
