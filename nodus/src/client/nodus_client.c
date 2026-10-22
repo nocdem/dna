@@ -3734,7 +3734,15 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
 
             for (size_t j = 0; j < arr.count; j++) {
                 cbor_item_t emap = cbor_decode_next(&dec);
-                if (emap.type != CBOR_ITEM_MAP) continue;
+                if (emap.type != CBOR_ITEM_MAP) {
+                    if (strict_tid) {
+                        QGP_LOG_WARN(LOG_TAG, "dnac_utxo: utxo entry is not "
+                                     "a map — refused");
+                        nodus_client_free_utxo_result(result_out);
+                        return NODUS_ERR_PROTOCOL_ERROR;
+                    }
+                    continue;
+                }
                 if ((size_t)result_out->count >= cap) {
                     nodus_client_free_utxo_result(result_out);
                     return NODUS_ERR_PROTOCOL_ERROR;
@@ -3750,7 +3758,19 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
 
                 for (size_t k = 0; k < emap.count; k++) {
                     cbor_item_t ek = cbor_decode_next(&dec);
+                    /* strict: a key that is not text, or a recognized key
+                     * whose value has the wrong type / size, refuses the
+                     * whole answer. A wrong-typed container value would
+                     * otherwise leave its children to be read as this
+                     * entry's next keys. */
+                    bool bad = false;
                     if (ek.type != CBOR_ITEM_TSTR) {
+                        if (strict_tid) {
+                            QGP_LOG_WARN(LOG_TAG, "dnac_utxo: non-text key "
+                                         "in a utxo entry — refused");
+                            nodus_client_free_utxo_result(result_out);
+                            return NODUS_ERR_PROTOCOL_ERROR;
+                        }
                         cbor_decode_skip(&dec); continue;
                     }
                     if (strict_tid &&
@@ -3768,6 +3788,7 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
                             v.bstr.len == NODUS_T3_NULLIFIER_LEN)
                             memcpy(e->nullifier, v.bstr.ptr,
                                    NODUS_T3_NULLIFIER_LEN);
+                        else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 5 &&
                                memcmp(ek.tstr.ptr, "owner", 5) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
@@ -3776,12 +3797,13 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
                                         v.tstr.len : sizeof(e->owner) - 1;
                             memcpy(e->owner, v.tstr.ptr, cl);
                             e->owner[cl] = '\0';
-                        }
+                        } else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 6 &&
                                memcmp(ek.tstr.ptr, "amount", 6) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT)
                             e->amount = v.uint_val;
+                        else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 4 &&
                                memcmp(ek.tstr.ptr, "hash", 4) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
@@ -3789,23 +3811,26 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
                             v.bstr.len == NODUS_T3_TX_HASH_LEN)
                             memcpy(e->tx_hash, v.bstr.ptr,
                                    NODUS_T3_TX_HASH_LEN);
+                        else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 3 &&
                                memcmp(ek.tstr.ptr, "tid", 3) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 64) {
                             memcpy(e->token_id, v.bstr.ptr, 64);
                             tid_ok = true;
-                        }
+                        } else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 3 &&
                                memcmp(ek.tstr.ptr, "idx", 3) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT)
                             e->output_index = (uint32_t)v.uint_val;
+                        else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 2 &&
                                memcmp(ek.tstr.ptr, "bh", 2) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT)
                             e->block_height = v.uint_val;
+                        else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 2 &&
                                memcmp(ek.tstr.ptr, "ub", 2) == 0) {
                         /* O15B §7 — cooldown lock height. Absent from a
@@ -3815,6 +3840,7 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT)
                             e->unlock_block = v.uint_val;
+                        else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 4 &&
                                memcmp(ek.tstr.ptr, "pr_s", 4) == 0) {
                         /* Phase 7 / Task 38: flat sibling buffer
@@ -3824,18 +3850,20 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
                         if (v.type == CBOR_ITEM_BSTR &&
                             v.bstr.len <= sizeof(e->proof_siblings)) {
                             memcpy(e->proof_siblings, v.bstr.ptr, v.bstr.len);
-                        }
+                        } else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 4 &&
                                memcmp(ek.tstr.ptr, "pr_p", 4) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT)
                             e->proof_positions = (uint32_t)v.uint_val;
+                        else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 4 &&
                                memcmp(ek.tstr.ptr, "pr_d", 4) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT &&
                             v.uint_val <= NODUS_DNAC_PROOF_MAX_DEPTH)
                             e->proof_depth = (uint32_t)v.uint_val;
+                        else if (strict_tid) bad = true;
                     } else if (ek.tstr.len == 2 &&
                                memcmp(ek.tstr.ptr, "sr", 2) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
@@ -3843,9 +3871,22 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
                             v.bstr.len == NODUS_DNAC_PROOF_HASH_LEN)
                             memcpy(e->proof_root, v.bstr.ptr,
                                    NODUS_DNAC_PROOF_HASH_LEN);
+                        else if (strict_tid) bad = true;
                     } else {
                         cbor_decode_skip(&dec);
                     }
+                    if (bad) {
+                        QGP_LOG_WARN(LOG_TAG, "dnac_utxo: a utxo entry value "
+                                     "of the wrong type or size — refused");
+                        nodus_client_free_utxo_result(result_out);
+                        return NODUS_ERR_PROTOCOL_ERROR;
+                    }
+                }
+                if (strict_tid && dec.error) {
+                    QGP_LOG_WARN(LOG_TAG, "dnac_utxo: undecodable utxo "
+                                 "entry — refused");
+                    nodus_client_free_utxo_result(result_out);
+                    return NODUS_ERR_PROTOCOL_ERROR;
                 }
                 if (strict_tid && !tid_ok) {
                     QGP_LOG_WARN(LOG_TAG, "dnac_utxo: utxo entry without a "

@@ -1572,7 +1572,11 @@ static void t_dnac_utxo_token(void)
 /* Reply bytes for the token-filtered call, hand-built so a hostile node's
  * entry can be shaped: one utxo entry of amount 5 whose token id is carried
  * per `mode`. The client must read the token id of EVERY entry strictly. */
-enum { TE_GOOD, TE_REPEATED_TID, TE_NO_TID, TE_SHORT_TID, TE_TID_TSTR };
+enum { TE_GOOD, TE_REPEATED_TID, TE_NO_TID, TE_SHORT_TID, TE_TID_TSTR,
+       TE_NESTED_IDX,     /* idx holds ["tid", first]; the real tid = second */
+       TE_AMOUNT_BSTR,    /* amount is a bstr, then a good tid(first) */
+       TE_INT_KEY,        /* a uint key (7 -> 1), then a good tid(first) */
+       TE_UNKNOWN_MAP };  /* unknown "zz" -> {"tid": second}, tid = first */
 
 static size_t craft_token_reply(uint8_t *buf, size_t cap, int mode,
                                 const uint8_t first[64],
@@ -1590,9 +1594,34 @@ static size_t craft_token_reply(uint8_t *buf, size_t cap, int mode,
     cbor_encode_cstr(&enc, "utxos");
     cbor_encode_array(&enc, 1);
     cbor_encode_map(&enc, mode == TE_NO_TID ? 1 :
-                           mode == TE_REPEATED_TID ? 3 : 2);
-    cbor_encode_cstr(&enc, "amount"); cbor_encode_uint(&enc, 5);
+                           (mode == TE_REPEATED_TID ||
+                            mode == TE_INT_KEY ||
+                            mode == TE_UNKNOWN_MAP) ? 3 :
+                           mode == TE_NESTED_IDX ? 4 : 2);
+    cbor_encode_cstr(&enc, "amount");
+    if (mode == TE_AMOUNT_BSTR) cbor_encode_bstr(&enc, first, 8);
+    else cbor_encode_uint(&enc, 5);
     switch (mode) {
+    case TE_NESTED_IDX:
+        cbor_encode_cstr(&enc, "idx");
+        cbor_encode_array(&enc, 2);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        cbor_encode_cstr(&enc, "n"); cbor_encode_bstr(&enc, second, 64);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, second, 64);
+        break;
+    case TE_AMOUNT_BSTR:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        break;
+    case TE_INT_KEY:
+        cbor_encode_uint(&enc, 7); cbor_encode_uint(&enc, 1);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        break;
+    case TE_UNKNOWN_MAP:
+        cbor_encode_cstr(&enc, "zz");
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, second, 64);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        break;
     case TE_GOOD:
         cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
         break;
@@ -1652,6 +1681,38 @@ static void t_dnac_utxo_token_strict_tid(void)
     CHECK(nodus_client_test_parse_utxo_token(buf, n, tok0, &res)
           == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL,
           "strict tid: a text-string tid is refused");
+
+    /* a recognized key holding a container: the array header alone must not
+     * be consumed, or its children read as the entry's next keys — here the
+     * nested "tid"=A would satisfy the A request while the real tid is B */
+    n = craft_token_reply(buf, sizeof(buf), TE_NESTED_IDX, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a nested container under idx (hiding a tid) is refused");
+
+    /* a recognized key of the wrong type */
+    n = craft_token_reply(buf, sizeof(buf), TE_AMOUNT_BSTR, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a wrong-typed amount (bstr) is refused");
+
+    /* a non-text entry key */
+    n = craft_token_reply(buf, sizeof(buf), TE_INT_KEY, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a non-text entry key is refused");
+
+    /* an unknown key whose value is a nested map is skipped whole: its
+     * inner "tid"=B must not be read, the entry's own tid=A is */
+    n = craft_token_reply(buf, sizeof(buf), TE_UNKNOWN_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res) == 0 &&
+          res.count == 1 && res.entries[0].amount == 5 &&
+          memcmp(res.entries[0].token_id, tokA, 64) == 0,
+          "strict: an unknown key with a nested map is skipped whole");
+    nodus_client_free_utxo_result(&res);
 
     /* the legacy (unfiltered) decode keeps its lenient behaviour */
     n = craft_token_reply(buf, sizeof(buf), TE_NO_TID, NULL, NULL);
