@@ -67,6 +67,29 @@
  *                    chain height unreadable (`blocks` dropped) →
  *                    INTERNAL_ERROR for dnac_utxo and dnac_msig_utxo (the
  *                    shared encoder), never block_height 0.
+ *  t_dnac_utxo_token dnac_utxo "tok" (bstr 64; operator 2026-10-22): no tok
+ *                    = all six coins as before (3 "r" keys); tok A = this
+ *                    owner's A coins only (another owner's A coin absent),
+ *                    amount DESC / nullifier ASC, same 3-key shape; the
+ *                    zero id = native only; an unheld token = an empty
+ *                    success; "max" applies to the filtered list; 101 coins
+ *                    of one token → the 100 largest; tok of 63 / 65 bytes,
+ *                    a text string, a uint, a repeated tok → PROTOCOL_ERROR;
+ *                    a foreign owner / no session → NOT_AUTHENTICATED; the
+ *                    client seam (nodus_client_dnac_utxo_token's check)
+ *                    REFUSES an all-token answer (what a node that skips
+ *                    the unknown "tok" sends) with
+ *                    NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED and frees it,
+ *                    and accepts a filtered one. A store fault with tok is
+ *                    not driven separately (the fault path is the shared
+ *                    nodus_witness_utxo_by_owner body, driven by
+ *                    t_dnac_utxo_strict without tok).
+ *  t_dnac_utxo_token_strict_tid  hand-built replies to the token call: a
+ *                    repeated tid (B then A for an A request), a missing
+ *                    tid (native request), a 63-byte tid and a text-string
+ *                    tid each give NODUS_ERR_PROTOCOL_ERROR and a freed
+ *                    result; one well-formed tid is accepted; the legacy
+ *                    decode still accepts an entry without a tid.
  *  t_error_mapping   the dispatcher's answer to an unknown dnac_* method
  *                    maps to NODUS_CLIENT_ERR_METHOD_UNSUPPORTED; a
  *                    PROTOCOL_ERROR with other text stays 7; a
@@ -168,6 +191,9 @@ int nodus_client_test_parse_msig_utxo(const uint8_t *raw, size_t raw_len,
                                       nodus_dnac_utxo_result_t *out,
                                       bool *trunc_out);
 int nodus_client_test_msig_error_rc(const uint8_t *raw, size_t raw_len);
+int nodus_client_test_parse_utxo_token(const uint8_t *raw, size_t raw_len,
+                                       const uint8_t token_id[64],
+                                       nodus_dnac_utxo_result_t *out);
 int nodus_client_test_parse_msig_utxo_nuls(const uint8_t *raw,
                                            size_t raw_len,
                                            const uint8_t (*nuls)[64],
@@ -1391,6 +1417,452 @@ static void t_nul_beyond_page(void)
     fx_close(&f);
 }
 
+/* dnac_utxo "tok" (operator 2026-10-22, decision 2026-10-22-testnet-test-
+ * tokens-faucet-dex.md answer 3): the token-only listing, its refusals, and
+ * the client's refusal of a mixed answer. */
+static reply_t *utxo_tok(fx_t *f, const char *owner, const void *tok,
+                         size_t tok_len, bool with_max, uint64_t max)
+{
+    arg_t a[3];
+    size_t n = 0;
+    a[n++] = (arg_t)ARG_T("owner", owner, 128);
+    if (with_max) a[n++] = (arg_t)ARG_U("max", max);
+    if (tok) a[n++] = (arg_t)ARG_B("tok", tok, tok_len);
+    return call(f, "dnac_utxo", build_req("dnac_utxo", a, n, false));
+}
+
+static void t_dnac_utxo_token(void)
+{
+    fx_t f;
+    char me[129], other[129];
+    uint8_t raw[64], tokA[64], tokB[64], tokC[64], tok0[64];
+    nodus_dnac_utxo_result_t res;
+    reply_t *r;
+
+    fx_open(&f, "utxotok");
+    fx_session(&f, true, 2);
+    memcpy(raw, f.conn->peer_id.bytes, 64);
+    hex64(raw, me);
+    memset(other, 'f', 128); other[128] = '\0';
+    memset(tokA, 0xA1, 64); memset(tokB, 0xB2, 64);
+    memset(tokC, 0xC3, 64); memset(tok0, 0, 64);
+
+    plant_coin(&f, me, 0x81, 100);                /* native */
+    plant_coin(&f, me, 0x82, 50);                 /* native */
+    plant_coin_tok(&f, me, 0x83, 70, 0xA1);       /* token A */
+    plant_coin_tok(&f, me, 0x84, 70, 0xA1);       /* token A, same amount */
+    plant_coin_tok(&f, me, 0x85, 5, 0xA1);        /* token A */
+    plant_coin_tok(&f, me, 0x86, 999, 0xB2);      /* token B */
+    plant_coin_tok(&f, other, 0x87, 8000, 0xA1);  /* another owner's A */
+
+    /* no "tok": every token, amount DESC then nullifier ASC, 3 keys */
+    r = utxo_tok(&f, me, NULL, 0, false, 0);
+    CHECK(r->type == 'r' && r->rkeys == 3 && !r->has_trunc,
+          "no tok: the unchanged three-key answer");
+    CHECK(nodus_client_test_parse_utxo(r->payload, r->len, &res) == 0 &&
+          res.count == 6 && res.entries[0].amount == 999 &&
+          res.entries[1].amount == 100 && res.entries[2].amount == 70 &&
+          res.entries[3].amount == 70 && res.entries[4].amount == 50 &&
+          res.entries[5].amount == 5 &&
+          res.entries[2].nullifier[0] == 0x83 &&
+          res.entries[3].nullifier[0] == 0x84,
+          "no tok: all six coins of the owner, same order as before");
+    nodus_client_free_utxo_result(&res);
+
+    /* the client refuses that mixed answer when it asked for token A */
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokA, &res)
+          == NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED &&
+          res.entries == NULL && res.count == 0,
+          "client: a mixed answer to a token request is refused, freed");
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tok0, &res)
+          == NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED && res.entries == NULL,
+          "client: the mixed answer is refused for the native id too");
+
+    /* tok A: only A's three coins, same order, 3 keys */
+    r = utxo_tok(&f, me, tokA, 64, false, 0);
+    CHECK(r->type == 'r' && r->rkeys == 3 && !r->has_trunc,
+          "tok: same three-key response shape");
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokA, &res)
+          == 0 && res.count == 3 && res.entries[0].amount == 70 &&
+          res.entries[1].amount == 70 && res.entries[2].amount == 5 &&
+          res.entries[0].nullifier[0] == 0x83 &&
+          res.entries[1].nullifier[0] == 0x84 &&
+          memcmp(res.entries[0].token_id, tokA, 64) == 0 &&
+          strcmp(res.entries[0].owner, me) == 0,
+          "tok A: this owner's A coins only, amount DESC / nullifier ASC "
+          "(the other owner's 8000 coin is absent)");
+    nodus_client_free_utxo_result(&res);
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokB, &res)
+          == NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED,
+          "client: an A-only answer is refused for a B request");
+
+    /* the all-zero id = native only */
+    r = utxo_tok(&f, me, tok0, 64, false, 0);
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tok0, &res)
+          == 0 && res.count == 2 && res.entries[0].amount == 100 &&
+          res.entries[1].amount == 50,
+          "tok zero: native coins only");
+    nodus_client_free_utxo_result(&res);
+
+    /* tok B, and a token the owner does not hold (success, empty) */
+    r = utxo_tok(&f, me, tokB, 64, false, 0);
+    CHECK(nodus_client_test_parse_utxo(r->payload, r->len, &res) == 0 &&
+          res.count == 1 && res.entries[0].amount == 999, "tok B: one coin");
+    nodus_client_free_utxo_result(&res);
+    r = utxo_tok(&f, me, tokC, 64, false, 0);
+    CHECK(r->type == 'r' && nodus_client_test_parse_utxo_token(
+              r->payload, r->len, tokC, &res) == 0 && res.count == 0,
+          "tok of an unheld token: an empty success");
+
+    /* "max" applies to the filtered list: the first of tok A's order */
+    r = utxo_tok(&f, me, tokA, 64, true, 1);
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokA, &res)
+          == 0 && res.count == 1 && res.entries[0].nullifier[0] == 0x83,
+          "tok A, max 1: the first coin of the filtered order");
+    nodus_client_free_utxo_result(&res);
+
+    /* refusals: never silently ignored */
+    expect_err(utxo_tok(&f, me, tokA, 63, false, 0), NODUS_ERR_PROTOCOL_ERROR,
+               "tok of 63 bytes refused");
+    {
+        uint8_t long_tok[65];
+        memset(long_tok, 0xA1, sizeof(long_tok));
+        expect_err(utxo_tok(&f, me, long_tok, 65, false, 0),
+                   NODUS_ERR_PROTOCOL_ERROR, "tok of 65 bytes refused");
+    }
+    {
+        arg_t a[2] = { ARG_T("owner", me, 128), ARG_T("tok", me, 64) };
+        expect_err(call(&f, "dnac_utxo", build_req("dnac_utxo", a, 2, false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "tok as a text string refused");
+        arg_t b[2] = { ARG_T("owner", me, 128), ARG_U("tok", 7) };
+        expect_err(call(&f, "dnac_utxo", build_req("dnac_utxo", b, 2, false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "tok as a uint refused");
+        arg_t c[3] = { ARG_T("owner", me, 128), ARG_B("tok", tokA, 64),
+                       ARG_B("tok", tokB, 64) };
+        expect_err(call(&f, "dnac_utxo", build_req("dnac_utxo", c, 3, false)),
+                   NODUS_ERR_PROTOCOL_ERROR, "a repeated tok refused");
+    }
+
+    /* the owner == session gate is unchanged with tok */
+    expect_err(utxo_tok(&f, other, tokA, 64, false, 0),
+               NODUS_ERR_NOT_AUTHENTICATED,
+               "tok does not widen C11: a foreign owner is refused");
+    fx_session(&f, false, -1);
+    expect_err(utxo_tok(&f, me, tokA, 64, false, 0),
+               NODUS_ERR_NOT_AUTHENTICATED,
+               "tok without a session is refused");
+    fx_close(&f);
+
+    /* the cap: 101 coins of one token → the 100 largest */
+    fx_open(&f, "utxotokcap");
+    fx_session(&f, true, 2);
+    memcpy(raw, f.conn->peer_id.bytes, 64);
+    hex64(raw, me);
+    for (int c = 1; c <= 101; c++)
+        plant_coin_tok(&f, me, (uint8_t)c, (uint64_t)c, 0xA1);
+    r = utxo_tok(&f, me, tokA, 64, false, 0);
+    CHECK(nodus_client_test_parse_utxo_token(r->payload, r->len, tokA, &res)
+          == 0 && res.count == NODUS_DNAC_MAX_UTXO_RESULTS &&
+          res.entries[0].amount == 101 && res.entries[99].amount == 2,
+          "tok: capped at 100, the largest coins kept");
+    nodus_client_free_utxo_result(&res);
+    fx_close(&f);
+}
+
+/* Reply bytes for the token-filtered call, hand-built so a hostile node's
+ * entry can be shaped: one utxo entry of amount 5 whose token id is carried
+ * per `mode`. The client must read the token id of EVERY entry strictly. */
+enum { TE_GOOD, TE_REPEATED_TID, TE_NO_TID, TE_SHORT_TID, TE_TID_TSTR,
+       TE_NESTED_IDX,     /* idx holds ["tid", first]; the real tid = second */
+       TE_AMOUNT_BSTR,    /* amount is a bstr, then a good tid(first) */
+       TE_INT_KEY,        /* a uint key (7 -> 1), then a good tid(first) */
+       TE_UNKNOWN_MAP,    /* unknown "zz" -> {"tid": second}, tid = first */
+       /* response-map level (the entry is a good one unless said) */
+       TE_R_COUNT_MAP,    /* "count": {"utxos":[A(first)]}, "utxos":[B(second)] */
+       TE_R_COUNT_ARRAY,  /* "count": ["utxos", [A(first)]], "utxos":[B(second)] */
+       TE_R_UTXOS_UINT,   /* "count": 0, "utxos": 7 */
+       TE_R_NO_UTXOS,     /* "count": 0, "block_height": 3 */
+       TE_R_TRUNC_ENTRY,  /* entry declares 3 pairs, ends after its 3rd key */
+       TE_R_TRUNC_RESP,   /* response map declares 3 pairs, holds 2 */
+       TE_R_COUNT_MISMATCH, /* "count": 2 over a one-entry list */
+       TE_R_BH_MAP };     /* "block_height": {"utxos":[A(first)]}, "utxos":[B] */
+
+/* one entry {"amount": 5, "tid": tid} */
+static void craft_entry(cbor_encoder_t *enc, const uint8_t tid[64])
+{
+    cbor_encode_map(enc, 2);
+    cbor_encode_cstr(enc, "amount"); cbor_encode_uint(enc, 5);
+    cbor_encode_cstr(enc, "tid"); cbor_encode_bstr(enc, tid, 64);
+}
+
+static size_t craft_token_reply(uint8_t *buf, size_t cap, int mode,
+                                const uint8_t first[64],
+                                const uint8_t second[64])
+{
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "t"); cbor_encode_uint(&enc, 9);
+    cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "r");
+    cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "dnac_utxo");
+    cbor_encode_cstr(&enc, "r");
+    if (mode >= TE_R_COUNT_MAP) {
+        switch (mode) {
+        case TE_R_COUNT_MAP:
+        case TE_R_BH_MAP:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, mode == TE_R_COUNT_MAP ? "count"
+                                                          : "block_height");
+            cbor_encode_map(&enc, 1);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, first);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, second);
+            break;
+        case TE_R_COUNT_ARRAY:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count");
+            cbor_encode_array(&enc, 2);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, first);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, second);
+            break;
+        case TE_R_UTXOS_UINT:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 0);
+            cbor_encode_cstr(&enc, "utxos"); cbor_encode_uint(&enc, 7);
+            break;
+        case TE_R_NO_UTXOS:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 0);
+            cbor_encode_cstr(&enc, "block_height"); cbor_encode_uint(&enc, 3);
+            break;
+        case TE_R_TRUNC_ENTRY:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 1);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1);
+            cbor_encode_map(&enc, 3);
+            cbor_encode_cstr(&enc, "amount"); cbor_encode_uint(&enc, 5);
+            cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+            cbor_encode_cstr(&enc, "zz");   /* the value never comes */
+            break;
+        case TE_R_TRUNC_RESP:
+            cbor_encode_map(&enc, 3);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 1);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, first);
+            break;
+        default: /* TE_R_COUNT_MISMATCH */
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 2);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, first);
+            break;
+        }
+        return cbor_encoder_len(&enc);
+    }
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "utxos");
+    cbor_encode_array(&enc, 1);
+    cbor_encode_map(&enc, mode == TE_NO_TID ? 1 :
+                           (mode == TE_REPEATED_TID ||
+                            mode == TE_INT_KEY ||
+                            mode == TE_UNKNOWN_MAP) ? 3 :
+                           mode == TE_NESTED_IDX ? 4 : 2);
+    cbor_encode_cstr(&enc, "amount");
+    if (mode == TE_AMOUNT_BSTR) cbor_encode_bstr(&enc, first, 8);
+    else cbor_encode_uint(&enc, 5);
+    switch (mode) {
+    case TE_NESTED_IDX:
+        cbor_encode_cstr(&enc, "idx");
+        cbor_encode_array(&enc, 2);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        cbor_encode_cstr(&enc, "n"); cbor_encode_bstr(&enc, second, 64);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, second, 64);
+        break;
+    case TE_AMOUNT_BSTR:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        break;
+    case TE_INT_KEY:
+        cbor_encode_uint(&enc, 7); cbor_encode_uint(&enc, 1);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        break;
+    case TE_UNKNOWN_MAP:
+        cbor_encode_cstr(&enc, "zz");
+        cbor_encode_map(&enc, 1);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, second, 64);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        break;
+    case TE_GOOD:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        break;
+    case TE_REPEATED_TID:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, second, 64);
+        break;
+    case TE_SHORT_TID:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 63);
+        break;
+    case TE_TID_TSTR:
+        cbor_encode_cstr(&enc, "tid"); cbor_encode_tstr(&enc, "x", 1);
+        break;
+    default: break;
+    }
+    return cbor_encoder_len(&enc);
+}
+
+static void t_dnac_utxo_token_strict_tid(void)
+{
+    uint8_t buf[1024], tokA[64], tokB[64], tok0[64];
+    nodus_dnac_utxo_result_t res;
+    size_t n;
+
+    memset(tokA, 0xA1, 64); memset(tokB, 0xB2, 64); memset(tok0, 0, 64);
+
+    /* control: one well-formed entry of the requested token is accepted */
+    n = craft_token_reply(buf, sizeof(buf), TE_GOOD, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res) == 0 &&
+          res.count == 1 && memcmp(res.entries[0].token_id, tokA, 64) == 0,
+          "strict tid: a single 64-byte tid of the requested token is accepted");
+    nodus_client_free_utxo_result(&res);
+
+    /* B then A for an A request: the last-wins reading would pass it */
+    n = craft_token_reply(buf, sizeof(buf), TE_REPEATED_TID, tokB, tokA);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict tid: a repeated tid (B then A) for an A request is refused");
+
+    /* no tid: the entry would read as the all-zero id = native */
+    n = craft_token_reply(buf, sizeof(buf), TE_NO_TID, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tok0, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict tid: a missing tid for a native request is refused");
+
+    /* 63 bytes: ignored by the lenient reader, leaving the id all-zero */
+    n = craft_token_reply(buf, sizeof(buf), TE_SHORT_TID, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tok0, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict tid: a 63-byte tid is refused");
+
+    /* a tid of the wrong type */
+    n = craft_token_reply(buf, sizeof(buf), TE_TID_TSTR, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tok0, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL,
+          "strict tid: a text-string tid is refused");
+
+    /* a recognized key holding a container: the array header alone must not
+     * be consumed, or its children read as the entry's next keys — here the
+     * nested "tid"=A would satisfy the A request while the real tid is B */
+    n = craft_token_reply(buf, sizeof(buf), TE_NESTED_IDX, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a nested container under idx (hiding a tid) is refused");
+
+    /* a recognized key of the wrong type */
+    n = craft_token_reply(buf, sizeof(buf), TE_AMOUNT_BSTR, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a wrong-typed amount (bstr) is refused");
+
+    /* a non-text entry key */
+    n = craft_token_reply(buf, sizeof(buf), TE_INT_KEY, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a non-text entry key is refused");
+
+    /* an unknown key whose value is a nested map is skipped whole: its
+     * inner "tid"=B must not be read, the entry's own tid=A is */
+    n = craft_token_reply(buf, sizeof(buf), TE_UNKNOWN_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res) == 0 &&
+          res.count == 1 && res.entries[0].amount == 5 &&
+          memcmp(res.entries[0].token_id, tokA, 64) == 0,
+          "strict: an unknown key with a nested map is skipped whole");
+    nodus_client_free_utxo_result(&res);
+
+    /* response-map level. A recognized key holding a container must not
+     * leak its children as response keys: here the nested "utxos" holds A
+     * (an A request would be satisfied) while the real list holds B. */
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a response \"count\" map hiding a fake utxos list is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_ARRAY, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a response \"count\" array hiding a fake list is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_BH_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a response \"block_height\" map hiding a fake list is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_UTXOS_UINT, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a non-array \"utxos\" is refused (no empty success)");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_NO_UTXOS, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a reply without \"utxos\" is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_TRUNC_ENTRY, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: an entry that ends before its declared pairs is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_TRUNC_RESP, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a response map that ends before its declared pairs is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MISMATCH, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a \"count\" that is not the number of entries is refused");
+
+    /* the legacy (unfiltered) decode of the same malformed bytes is
+     * unchanged: pinned as it behaves today */
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1 &&
+          memcmp(res.entries[0].token_id, tokA, 64) == 0,
+          "legacy: the response count-map leak still reads the nested list");
+    nodus_client_free_utxo_result(&res);
+    n = craft_token_reply(buf, sizeof(buf), TE_R_UTXOS_UINT, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 0,
+          "legacy: a non-array utxos is still an empty success");
+    nodus_client_free_utxo_result(&res);
+    n = craft_token_reply(buf, sizeof(buf), TE_R_NO_UTXOS, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 0,
+          "legacy: a reply without utxos is still an empty success");
+    nodus_client_free_utxo_result(&res);
+    n = craft_token_reply(buf, sizeof(buf), TE_R_TRUNC_ENTRY, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
+          "legacy: a truncated entry is still counted");
+    nodus_client_free_utxo_result(&res);
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MISMATCH, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
+          "legacy: a count that differs from the list is still accepted");
+    nodus_client_free_utxo_result(&res);
+
+    /* the legacy (unfiltered) decode keeps its lenient behaviour */
+    n = craft_token_reply(buf, sizeof(buf), TE_NO_TID, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
+          "legacy dnac_utxo decode: an entry without a tid is still accepted");
+    nodus_client_free_utxo_result(&res);
+}
+
 int main(void)
 {
     printf("=== dnac_msig_utxo / dnac_msig_addr_history (vault member) ===\n");
@@ -1404,6 +1876,8 @@ int main(void)
     t_builder_gate();
     t_dnac_utxo_same();
     t_dnac_utxo_strict();
+    t_dnac_utxo_token();
+    t_dnac_utxo_token_strict_tid();
     t_error_mapping();
     t_nul();
     t_nul_beyond_page();

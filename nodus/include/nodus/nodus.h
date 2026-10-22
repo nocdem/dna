@@ -1046,6 +1046,32 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
                              const char *owner,
                              int max_results,
                              nodus_dnac_utxo_result_t *result_out);
+
+/**
+ * nodus_client_dnac_utxo for ONE token (operator 2026-10-22, decision
+ * 2026-10-22-testnet-test-tokens-faucet-dex.md answer 3): sends "tok"
+ * (bstr 64) and the node lists only coins of that token, same order and
+ * 100-coin cap. token_id is exactly 64 bytes; all-zero = native.
+ *
+ * A node that predates "tok" skips the unknown key and answers every
+ * token; the reply is then REFUSED (freed, result empty) with
+ * NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED if it holds a coin of another
+ * token. (A reply of only the requested token's coins is accepted — from
+ * an old node it is the same set a new one would send, up to the cap.)
+ * Every coin entry must carry exactly one "tid" (a 64-byte bstr) and no
+ * repeated key, else NODUS_ERR_PROTOCOL_ERROR (freed): a missing or
+ * mistyped tid would otherwise read as the all-zero native id.
+ *
+ * @return 0 / the node's error code (a malformed tok is PROTOCOL_ERROR) /
+ *         NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED / NODUS_ERR_PROTOCOL_ERROR
+ *         malformed reply / NODUS_ERR_TIMEOUT / -1 (bad arguments, transport)
+ */
+#define NODUS_CLIENT_ERR_TOKEN_FILTER_IGNORED  (-3)
+int nodus_client_dnac_utxo_token(nodus_client_t *client,
+                                 const char *owner,
+                                 const uint8_t token_id[64],
+                                 int max_results,
+                                 nodus_dnac_utxo_result_t *result_out);
 /* A vault member reading a multisig address's coins:
  * nodus_client_dnac_msig_utxo (beside dnac_addr_history below). */
 
