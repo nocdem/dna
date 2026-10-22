@@ -67,6 +67,9 @@
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
+/* shared/crypto/utils/qgp_platform.h:152 (see nodus_v2_spend.c) */
+extern void qgp_secure_memzero(void *ptr, size_t len);
+
 #define V2K_PK_LEN   2592u
 #define V2K_AUTH_LEN (1u + NODUS_RT_AUTH_SIGNER_LEN)   /* count 1 ‖ pk ‖ sig */
 
@@ -519,6 +522,114 @@ void nodus_v2_stake_built_free(nodus_v2_stake_built_t *b) {
     b->env_len = 0;
 }
 
+/* What the builder asked for — the read-back predicate's input. The flags
+ * are the builder's own, derived once from the request. */
+typedef struct {
+    const nodus_v2_stake_req_t *req;
+    nodus_v2_stake_op_t op;
+    uint8_t        akind;
+    uint64_t       fee, units;
+    int            is_msig, is_stake, is_stake2, is_unstake, is_stexit,
+                   is_vupd, is_role2, is_consented;
+    const uint8_t *signer_raw;               /* SHA3-512 of the signer      */
+    const char    *signer_fp;                /* 128 hex of it               */
+    int            n_in;
+    const uint8_t (*nulls)[64];              /* ascending, as on the wire   */
+    uint8_t        out_count;
+    uint64_t       change;
+    const uint8_t *change_id;                /* 64 bytes                    */
+} v2k_rb_t;
+
+/* THE read-back predicate: decode `env` and refuse unless it is what the
+ * request asked for — op, fee, units, expiry, both ruleset versions, auth
+ * kind, the signer identity (key, or the multisig address and signer
+ * count), the amount, the op-specific call fields, the exact funding inputs
+ * and the change output. It runs on the UNSIGNED bytes before any signature
+ * (v2k_presign_check; the signer hands over the pass-1 bytes with `count 1 ‖
+ * pk` in each leg's auth blob and a zero signature, so the identity IS
+ * compared pre-sign) and again on the signed bytes — and, for a kind-3
+ * owner, on the unsigned export, which is never signed here: the same code
+ * in every run. Only the signature is not judged here.
+ * @return OK / _ERR_DECODE (mismatch) / the decoder's code. */
+static int v2k_readback(const v2k_rb_t *rb, const uint8_t *env, size_t len,
+                        nodus_v2_stake_decoded_t *d) {
+    const nodus_v2_stake_req_t *req = rb->req;
+    const int is_msig = rb->is_msig, is_stake = rb->is_stake,
+              is_stake2 = rb->is_stake2, is_unstake = rb->is_unstake,
+              is_stexit = rb->is_stexit, is_vupd = rb->is_vupd,
+              is_role2 = rb->is_role2, is_consented = rb->is_consented;
+    int rc = nodus_v2_stake_decode(env, len, d);
+    if (rc != NODUS_V2_SPEND_OK) return rc;
+    rc = NODUS_V2_SPEND_ERR_DECODE;
+    if (d->op != (uint32_t)rb->op || d->fee != rb->fee ||
+        d->units != rb->units ||
+        d->expiry_height != req->expiry_height ||
+        d->sys_ruleset_version != req->rs->sys_ruleset_version ||
+        d->core_ruleset_version != req->rs->core_ruleset_version ||
+        d->auth_kind != rb->akind ||
+        (is_msig
+             ? (d->msig_signers != req->msig_signers ||
+                memcmp(d->msig_addr, rb->signer_raw, 64) != 0)
+             : memcmp(d->identity_pk, req->pk, V2K_PK_LEN) != 0) ||
+        (!is_unstake && !is_stexit && !is_vupd &&
+         d->amount != req->amount) ||
+        d->n_in != rb->n_in ||
+        memcmp(d->in_nul, rb->nulls, (size_t)rb->n_in * 64) != 0 ||
+        d->n_out != (int)rb->out_count ||
+        d->gen4 != (is_consented || is_stexit || is_role2))
+        return rc;
+    if (is_role2) {
+        /* HF-6 slice 7b: the signer's fingerprint (DELEGATE /
+         * UNDELEGATE: the call's delegator_fp), the validator_id, and
+         * no amount (UNSTAKE / VALIDATOR_UPDATE) */
+        if (memcmp(d->owner_fp, rb->signer_raw, 64) != 0 ||
+            memcmp(d->validator_id, req->validator_id, 64) != 0)
+            return rc;
+        if ((is_unstake || is_vupd) && d->amount != 0) return rc;
+        if (is_vupd && d->commission_bps != req->commission_bps)
+            return rc;
+    } else if (is_consented) {
+        if (memcmp(d->owner_fp, rb->signer_raw, 64) != 0 ||
+            memcmp(d->consensus_pk, req->consensus_pk, V2K_PK_LEN) != 0 ||
+            memcmp(d->consent_sig, req->consent_sig,
+                   DNA_VALBIND_SIG_LEN) != 0 ||
+            d->consent_expiry != req->consent_expiry)
+            return rc;
+        if (is_stake2 && d->commission_bps != req->commission_bps)
+            return rc;
+    } else if (is_stexit) {
+        if (d->amount != 0 ||
+            memcmp(d->owner_fp, rb->signer_raw, 64) != 0 ||
+            memcmp(d->node_fp, req->node_fp, 64) != 0)
+            return rc;
+    } else if (is_stake) {
+        if (d->commission_bps != req->commission_bps ||
+            memcmp(d->dest_fp, req->dest_fp, 64) != 0)
+            return rc;
+    } else if (is_unstake) {
+        if (d->amount != 0) return rc;   /* the call carries none */
+    } else if (memcmp(d->validator_pk, req->validator_pk,
+                      V2K_PK_LEN) != 0) {
+        return rc;
+    }
+    if (rb->out_count &&
+        (memcmp(d->change_owner, rb->signer_fp, 128) != 0 ||
+         d->change_amount != rb->change ||
+         memcmp(d->change_id, rb->change_id, 64) != 0))
+        return rc;
+    return NODUS_V2_SPEND_OK;
+}
+
+static int v2k_presign_check(const uint8_t *env, size_t len, void *ctx) {
+    /* heap: the decoded struct carries three 2592-byte keys */
+    nodus_v2_stake_decoded_t *d = calloc(1, sizeof(*d));
+    if (!d) return -1;
+    const int ok = v2k_readback((const v2k_rb_t *)ctx, env, len, d) ==
+                   NODUS_V2_SPEND_OK;
+    free(d);
+    return ok ? 0 : -1;
+}
+
 int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
                          nodus_v2_stake_built_t *out,
                          nodus_v2_stake_err_t *err) {
@@ -925,6 +1036,29 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
     lctx[1].ruleset_version = req->rs->core_ruleset_version;
     memcpy(lctx[1].ruleset_hash, req->rs->core_ruleset_hash, 64);
 
+    v2k_rb_t rb;
+    memset(&rb, 0, sizeof(rb));
+    rb.req          = req;
+    rb.op           = op;
+    rb.akind        = akind;
+    rb.fee          = fee;
+    rb.units        = units;
+    rb.is_msig      = is_msig;
+    rb.is_stake     = is_stake;
+    rb.is_stake2    = is_stake2;
+    rb.is_unstake   = is_unstake;
+    rb.is_stexit    = is_stexit;
+    rb.is_vupd      = is_vupd;
+    rb.is_role2     = is_role2;
+    rb.is_consented = is_consented;
+    rb.signer_raw   = signer_raw;
+    rb.signer_fp    = signer_fp;
+    rb.n_in         = n_in;
+    rb.nulls        = (const uint8_t (*)[64])nulls;
+    rb.out_count    = out_count;
+    rb.change       = change;
+    rb.change_id    = change_id;
+
     if (is_msig) {
         /* HF-6 kind-3 owner: NOTHING is signed here. The unsigned
          * envelope and its pass-1 leg auth digests (what each co-signer
@@ -951,9 +1085,13 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
         uint8_t *auths[2] = { auth0, auth1 };
         nodus_v2_spend_err_t se;
         memset(&se, 0, sizeof(se));
-        rc = nodus_v2_env_sign_one_key(&env_in, auths, lctx, req->chain32,
-                                       req->tip, req->pk, req->sk,
-                                       &env_bytes, &env_len, pf, &se);
+        /* "nothing is signed on a mismatch": v2k_readback runs on the
+         * unsigned bytes first (a refusal is _ERR_PRESIGN_CHECK) */
+        rc = nodus_v2_env_sign_one_key_checked(&env_in, auths, lctx,
+                                               req->chain32, req->tip,
+                                               req->pk, req->sk, &env_bytes,
+                                               &env_len, pf, &se,
+                                               v2k_presign_check, &rb);
         if (rc != NODUS_V2_SPEND_OK) {
             if (err) err->leg = se.leg;
             goto done;
@@ -962,67 +1100,8 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
 
     /* ── read back what was BUILT, and refuse if it is not what was
      *    asked ─────────────────────────────────────────────────────── */
-    rc = nodus_v2_stake_decode(env_bytes, env_len, &out->dec);
+    rc = v2k_readback(&rb, env_bytes, env_len, &out->dec);
     if (rc != NODUS_V2_SPEND_OK) goto done;
-    rc = NODUS_V2_SPEND_ERR_DECODE;
-    {
-        const nodus_v2_stake_decoded_t *d = &out->dec;
-        if (d->op != (uint32_t)op || d->fee != fee || d->units != units ||
-            d->expiry_height != req->expiry_height ||
-            d->sys_ruleset_version != req->rs->sys_ruleset_version ||
-            d->core_ruleset_version != req->rs->core_ruleset_version ||
-            d->auth_kind != akind ||
-            (is_msig
-                 ? (d->msig_signers != req->msig_signers ||
-                    memcmp(d->msig_addr, signer_raw, 64) != 0)
-                 : memcmp(d->identity_pk, req->pk, V2K_PK_LEN) != 0) ||
-            (!is_unstake && !is_stexit && !is_vupd &&
-             d->amount != req->amount) ||
-            d->n_in != n_in ||
-            memcmp(d->in_nul, nulls, (size_t)n_in * 64) != 0 ||
-            d->n_out != (int)out_count ||
-            d->gen4 != (is_consented || is_stexit || is_role2))
-            goto done;
-        if (is_role2) {
-            /* HF-6 slice 7b: the signer's fingerprint (DELEGATE /
-             * UNDELEGATE: the call's delegator_fp), the validator_id, and
-             * no amount (UNSTAKE / VALIDATOR_UPDATE) */
-            if (memcmp(d->owner_fp, signer_raw, 64) != 0 ||
-                memcmp(d->validator_id, req->validator_id, 64) != 0)
-                goto done;
-            if ((is_unstake || is_vupd) && d->amount != 0) goto done;
-            if (is_vupd && d->commission_bps != req->commission_bps)
-                goto done;
-        } else if (is_consented) {
-            if (memcmp(d->owner_fp, signer_raw, 64) != 0 ||
-                memcmp(d->consensus_pk, req->consensus_pk, V2K_PK_LEN) != 0 ||
-                memcmp(d->consent_sig, req->consent_sig,
-                       DNA_VALBIND_SIG_LEN) != 0 ||
-                d->consent_expiry != req->consent_expiry)
-                goto done;
-            if (is_stake2 && d->commission_bps != req->commission_bps)
-                goto done;
-        } else if (is_stexit) {
-            if (d->amount != 0 ||
-                memcmp(d->owner_fp, signer_raw, 64) != 0 ||
-                memcmp(d->node_fp, req->node_fp, 64) != 0)
-                goto done;
-        } else if (is_stake) {
-            if (d->commission_bps != req->commission_bps ||
-                memcmp(d->dest_fp, req->dest_fp, 64) != 0)
-                goto done;
-        } else if (is_unstake) {
-            if (d->amount != 0) goto done;   /* the call carries none */
-        } else if (memcmp(d->validator_pk, req->validator_pk,
-                          V2K_PK_LEN) != 0) {
-            goto done;
-        }
-        if (out_count &&
-            (memcmp(d->change_owner, signer_fp, 128) != 0 ||
-             d->change_amount != change ||
-             memcmp(d->change_id, change_id, 64) != 0))
-            goto done;
-    }
 
     /* kind 3: the unsigned envelope's wire_id is not the one that will be
      * submitted — left all zero (msig combine prints the final one); its
@@ -1041,8 +1120,14 @@ int nodus_v2_stake_build(const nodus_v2_stake_req_t *req,
 
 done:
     if (rc != NODUS_V2_SPEND_OK) memset(&out->dec, 0, sizeof(out->dec));
+    /* a refused signed buffer and the auth blobs that held its signatures
+     * are wiped before they are freed (kind 3: the blob is the unsigned
+     * descriptor — wiping it is harmless) */
+    if (env_bytes) qgp_secure_memzero(env_bytes, env_len);
     free(env_bytes);
     free(pf);
+    if (auth0) qgp_secure_memzero(auth0, V2K_AUTH_LEN);
+    if (auth1) qgp_secure_memzero(auth1, V2K_AUTH_LEN);
     free(auth0);
     free(auth1);
     free(fcall);

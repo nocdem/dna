@@ -1097,11 +1097,116 @@ static int t_msig_vault(void) {
     return 0;
 }
 
+/* ══ A1 — nothing is signed on a mismatch (name decoder as the check) ═══ */
+
+typedef struct { int calls; int refuse; int decoded_ok; int owner_ok; } nb_pre_t;
+
+/* the REAL name decoder over the pass-1 bytes the signer hands out: it must
+ * accept them (the auth blob carries `count 1 ‖ pk`) and read the owner key
+ * from it — what the name builder's pre-sign predicate relies on */
+static int nb_pre_check(const uint8_t *env, size_t len, void *ctx) {
+    nb_pre_t *p = (nb_pre_t *)ctx;
+    p->calls++;
+    nodus_v2_name_decoded_t *d = calloc(1, sizeof(*d));
+    if (d && nodus_v2_name_decode(env, len, d) == NODUS_V2_SPEND_OK) {
+        p->decoded_ok = 1;
+        p->owner_ok = memcmp(d->owner_pk, g_pk, sizeof(g_pk)) == 0;
+    }
+    free(d);
+    return p->refuse ? -1 : 0;
+}
+
+static int t_presign(void) {
+    nodus_v2_ruleset_id_t rs;
+    CHECK(table_rs(&rs) == 0, "ruleset (compiled table)");
+    uint8_t chain32[DNA_CHAIN_ID_LEN];
+    memset(chain32, 0x5C, sizeof(chain32));
+
+    /* a name call by hand: "punk", price, ONE input, no change */
+    const size_t name_len = 4;
+    uint8_t call[1 + 4 + 8 + 1 + 64 + 1];
+    size_t off = 0;
+    call[off++] = (uint8_t)name_len;
+    memcpy(call + off, "punk", name_len);           off += name_len;
+    for (int b = 0; b < 8; b++) call[off++] = (uint8_t)(NB_P4 >> (56 - 8 * b));
+    call[off++] = 1;
+    memset(call + off, 0x42, 64);                   off += 64;
+    call[off++] = 0;
+
+    uint8_t auth[NB_AUTH];
+    memset(auth, 0, sizeof(auth));
+    dna_env_leg_in_t leg;
+    memset(&leg, 0, sizeof(leg));
+    leg.hdr.domain_id       = DNA_DOMAIN_CORE;
+    leg.hdr.runtime_op      = DNA_CORERULE_NAME_REGISTER;
+    leg.hdr.ruleset_version = rs.core_ruleset_version;
+    leg.hdr.access_mode     = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind       = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    leg.hdr.call_len        = (uint32_t)off;
+    leg.hdr.auth_len        = NB_AUTH;
+    nodus_v2_name_effect_decl(1, 0, (uint32_t)name_len,
+                              &leg.hdr.res_max_effects,
+                              &leg.hdr.res_max_effect_bytes);
+    leg.call_data = call;
+    leg.auth_data = auth;
+    dna_env_in_t env_in;
+    memset(&env_in, 0, sizeof(env_in));
+    env_in.expiry_height = NB_TIP + NB_AHEAD;
+    env_in.fee_amount    = NB_FLOOR;
+    env_in.leg_count     = 1;
+    env_in.legs          = &leg;
+    uint64_t units = 0;
+    CHECK(nodus_v2_spend_ceiling(&env_in, rs.meter_policy, 4, &units) == 0,
+          "units ceiling");
+    env_in.res_max_total_units = units;
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id       = DNA_DOMAIN_CORE;
+    lctx.ruleset_version = rs.core_ruleset_version;
+    memcpy(lctx.ruleset_hash, rs.core_ruleset_hash, 64);
+    uint8_t *auths[1] = { auth };
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    CHECK(pf != NULL, "alloc");
+
+    /* a refusing check: nothing signed — the caller's auth blob is still all
+     * zero, no envelope is returned */
+    nb_pre_t p = { 0, 1, 0, 0 };
+    uint8_t *env = (uint8_t *)0x1;
+    size_t env_len = 99;
+    int rc = nodus_v2_env_sign_one_key_checked(&env_in, auths, &lctx, chain32,
+                                               NB_TIP, g_pk, g_sk, &env,
+                                               &env_len, pf, NULL,
+                                               nb_pre_check, &p);
+    CHECK(rc == NODUS_V2_SPEND_ERR_PRESIGN_CHECK, "a refusing check is refused");
+    CHECK(p.calls == 1 && p.decoded_ok && p.owner_ok,
+          "the name decoder accepted the pass-1 bytes and read the owner key");
+    CHECK(env == NULL && env_len == 0, "no envelope is returned");
+    int zero = 1;
+    for (size_t i = 0; i < sizeof(auth); i++) if (auth[i]) zero = 0;
+    CHECK(zero, "NOTHING was signed: the auth blob is untouched");
+
+    /* an accepting check: signed, and the signature is in the bytes */
+    p.calls = 0; p.refuse = 0;
+    rc = nodus_v2_env_sign_one_key_checked(&env_in, auths, &lctx, chain32,
+                                           NB_TIP, g_pk, g_sk, &env, &env_len,
+                                           pf, NULL, nb_pre_check, &p);
+    CHECK(rc == NODUS_V2_SPEND_OK && env && p.calls == 1, "an accepted check signs");
+    nodus_v2_name_decoded_t *d = calloc(1, sizeof(*d));
+    CHECK(d && nodus_v2_name_decode(env, env_len, d) == NODUS_V2_SPEND_OK &&
+          memcmp(d->owner_pk, g_pk, sizeof(g_pk)) == 0,
+          "the signed envelope decodes");
+    free(d);
+    free(env);
+    free(pf);
+    return 0;
+}
+
 int main(void) {
     static const struct {
         const char *name;
         int (*fn)(void);
     } cases[] = {
+        { "presign_hook",     t_presign },
         { "helpers",          t_helpers },
         { "fixture_and_cli",  t_fixture },
         { "refusals",         t_refusals },

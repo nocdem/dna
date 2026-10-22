@@ -35,6 +35,9 @@
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
+/* shared/crypto/utils/qgp_platform.h:152 (see nodus_v2_spend.c) */
+extern void qgp_secure_memzero(void *ptr, size_t len);
+
 #define V2N_PK_LEN   2592u
 #define V2N_AUTH_LEN (1u + NODUS_RT_AUTH_SIGNER_LEN)   /* count 1 ‖ pk ‖ sig */
 #define V2N_FLOOR    (DNAC_MIN_FEE_RAW > NODUS_W_BASE_TX_FEE \
@@ -208,6 +211,60 @@ void nodus_v2_name_built_free(nodus_v2_name_built_t *b) {
     free(b->env);
     b->env = NULL;
     b->env_len = 0;
+}
+
+/* What the builder asked for — the read-back predicate's input. */
+typedef struct {
+    const nodus_v2_name_req_t *req;
+    uint64_t       fee, units;
+    int            n_in;
+    const uint8_t (*nulls)[64];             /* ascending, as on the wire     */
+    uint32_t       n_out;
+    uint64_t       change;
+    const char    *owner_fp;                /* 128 hex, the change's owner   */
+    const uint8_t *change_seed;             /* 32 bytes (when n_out)         */
+} v2n_rb_t;
+
+/* THE read-back predicate: decode `env` and refuse unless it is what the
+ * request asked for — name, price, fee, units, expiry, ruleset, the owner
+ * key, the exact inputs, and the change output (owner, amount, id). It runs
+ * on the UNSIGNED bytes before any signature (v2n_presign_check; the signer
+ * hands over the pass-1 bytes with `count 1 ‖ pk` in the auth blob and a
+ * zero signature, so the owner key IS compared pre-sign) and again on the
+ * signed bytes: the same code in both runs. Only the signature itself is
+ * not judged here. @return OK / _ERR_DECODE (mismatch) / the decoder's code. */
+static int v2n_readback(const v2n_rb_t *rb, const uint8_t *env, size_t len,
+                        nodus_v2_name_decoded_t *d) {
+    const nodus_v2_name_req_t *req = rb->req;
+    int rc = nodus_v2_name_decode(env, len, d);
+    if (rc != NODUS_V2_SPEND_OK) return rc;
+    if (strcmp(d->name, req->name) != 0 || d->price != req->price ||
+        d->fee != rb->fee || d->units != rb->units ||
+        d->expiry_height != req->expiry_height ||
+        d->core_ruleset_version != req->rs->core_ruleset_version ||
+        memcmp(d->owner_pk, req->pk, V2N_PK_LEN) != 0 ||
+        d->n_in != rb->n_in ||
+        memcmp(d->in_nul, rb->nulls, (size_t)rb->n_in * 64) != 0 ||
+        d->n_out != (int)rb->n_out)
+        return NODUS_V2_SPEND_ERR_DECODE;
+    if (rb->n_out) {
+        uint8_t pre[160], change_id[64];
+        memcpy(pre, rb->owner_fp, 128);
+        memcpy(pre + 128, rb->change_seed, 32);
+        if (qgp_sha3_512(pre, sizeof(pre), change_id) != 0)
+            return NODUS_V2_SPEND_ERR_HASH;
+        if (memcmp(d->change_owner, rb->owner_fp, 128) != 0 ||
+            d->change_amount != rb->change ||
+            memcmp(d->change_id, change_id, 64) != 0)
+            return NODUS_V2_SPEND_ERR_DECODE;
+    }
+    return NODUS_V2_SPEND_OK;
+}
+
+static int v2n_presign_check(const uint8_t *env, size_t len, void *ctx) {
+    nodus_v2_name_decoded_t d;
+    return v2n_readback((const v2n_rb_t *)ctx, env, len, &d) ==
+                   NODUS_V2_SPEND_OK ? 0 : -1;
 }
 
 int nodus_v2_name_build(const nodus_v2_name_req_t *req,
@@ -401,13 +458,28 @@ int nodus_v2_name_build(const nodus_v2_name_req_t *req,
         fee = required;
     }
 
+    v2n_rb_t rb;
+    memset(&rb, 0, sizeof(rb));
+    rb.req         = req;
+    rb.fee         = fee;
+    rb.units       = units;
+    rb.n_in        = plan.n_in;
+    rb.nulls       = (const uint8_t (*)[64])nulls;
+    rb.n_out       = n_out;
+    rb.change      = change;
+    rb.owner_fp    = owner_fp;
+    rb.change_seed = change_seed;
     {
         uint8_t *auths[1] = { auth };
         nodus_v2_spend_err_t se;
         memset(&se, 0, sizeof(se));
-        rc = nodus_v2_env_sign_one_key(&env_in, auths, &lctx, req->chain32,
-                                       req->tip, req->pk, req->sk,
-                                       &env_bytes, &env_len, pf, &se);
+        /* "nothing is signed on a mismatch": v2n_readback runs on the
+         * unsigned bytes first (a refusal is _ERR_PRESIGN_CHECK) */
+        rc = nodus_v2_env_sign_one_key_checked(&env_in, auths, &lctx,
+                                               req->chain32, req->tip,
+                                               req->pk, req->sk, &env_bytes,
+                                               &env_len, pf, &se,
+                                               v2n_presign_check, &rb);
         if (rc != NODUS_V2_SPEND_OK) {
             if (err) err->leg = se.leg;
             goto done;
@@ -416,34 +488,8 @@ int nodus_v2_name_build(const nodus_v2_name_req_t *req,
 
     /* ── read back what was BUILT, and refuse if it is not what was
      *    asked ─────────────────────────────────────────────────────── */
-    rc = nodus_v2_name_decode(env_bytes, env_len, &out->dec);
+    rc = v2n_readback(&rb, env_bytes, env_len, &out->dec);
     if (rc != NODUS_V2_SPEND_OK) goto done;
-    rc = NODUS_V2_SPEND_ERR_DECODE;
-    {
-        const nodus_v2_name_decoded_t *d = &out->dec;
-        if (strcmp(d->name, req->name) != 0 || d->price != req->price ||
-            d->fee != fee || d->units != units ||
-            d->expiry_height != req->expiry_height ||
-            d->core_ruleset_version != req->rs->core_ruleset_version ||
-            memcmp(d->owner_pk, req->pk, V2N_PK_LEN) != 0 ||
-            d->n_in != plan.n_in ||
-            memcmp(d->in_nul, nulls, (size_t)plan.n_in * 64) != 0 ||
-            d->n_out != (int)n_out)
-            goto done;
-        if (n_out) {
-            uint8_t pre[160], change_id[64];
-            memcpy(pre, owner_fp, 128);
-            memcpy(pre + 128, change_seed, 32);
-            if (qgp_sha3_512(pre, sizeof(pre), change_id) != 0) {
-                rc = NODUS_V2_SPEND_ERR_HASH;
-                goto done;
-            }
-            if (memcmp(d->change_owner, owner_fp, 128) != 0 ||
-                d->change_amount != change ||
-                memcmp(d->change_id, change_id, 64) != 0)
-                goto done;
-        }
-    }
 
     memcpy(out->wire_id, pf->wire_id, 64);
     memcpy(out->intent_id, pf->intent_id, 64);
@@ -461,8 +507,12 @@ int nodus_v2_name_build(const nodus_v2_name_req_t *req,
 
 done:
     if (rc != NODUS_V2_SPEND_OK) memset(&out->dec, 0, sizeof(out->dec));
+    /* a refused signed buffer and the auth blob that held its signature are
+     * wiped before they are freed */
+    if (env_bytes) qgp_secure_memzero(env_bytes, env_len);
     free(env_bytes);
     free(pf);
+    if (auth) qgp_secure_memzero(auth, V2N_AUTH_LEN);
     free(auth);
     free(call);
     free(coins);
