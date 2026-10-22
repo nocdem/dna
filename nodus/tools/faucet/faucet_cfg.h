@@ -52,4 +52,16 @@ int faucet_cfg_parse(const char *text, faucet_cfg_t *cfg, char *err,
 int faucet_cfg_load(const char *path, faucet_cfg_t *cfg, char *err,
                     size_t err_cap);
 
+/** fsync a directory (its entries become durable). @return 0 / -1 (errno). */
+int faucet_fsync_dir(const char *dir);
+
+/** Create the key directory `dir` (0700) if absent, restrict it, and make
+ *  its EXISTENCE durable: fsync of `dir` AND of its parent directory (a
+ *  directory entry is the parent's data; without it a power loss after the
+ *  identity files were fsynced into `dir` can leave the whole directory —
+ *  and the address already shown to the operator — gone). The caller writes
+ *  nothing into `dir` before this returns 0. @return 0 / -1 (errno set;
+ *  nothing is created beyond `dir` itself). */
+int faucet_prepare_key_dir(const char *dir);
+
 #endif /* FAUCET_CFG_H */

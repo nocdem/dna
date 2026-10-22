@@ -503,6 +503,30 @@ int main(void) {
     CHECK(step(&e) == 1 && state_is(&e, "signed"), "F10 and gets signed");
     env_close(&e);
 
+    /* ── F14 a block walk longer than one budget resumes, never restarts ── */
+    env_open(&e, 64ULL << 20);
+    cl = claim_start(&e, 22);
+    step(&e); step(&e);                        /* signed -> submitted */
+    attempt_of(&e, &cl, &at);
+    e.st.applied_height = 1001;
+    memcpy(e.st.applied_intent, at.intent_id, 64);
+    faucet_attempt_free(&at);
+    e.st.scan_pages = 5;                       /* 5 pages, 2 readable per call */
+    e.st.scan_budget_pages = 2;
+    e.st.scan_found_page = 4;                  /* the applied item is on the LAST page */
+    e.st.ri.tip = 1001;
+    CHECK(step(&e) == 1 && state_is(&e, "unknown") && e.st.pages_read == 2,
+          "F14 call 1 reads pages 0-1 and runs out of budget: incomplete -> unknown (never 'not found')");
+    CHECK(step(&e) == -1 && state_is(&e, "unknown") && e.st.pages_read == 4,
+          "F14 call 2 resumes at page 2 (pages 2-3), still incomplete");
+    CHECK(step(&e) == 1 && state_is(&e, "none") && e.st.pages_read == 5,
+          "F14 call 3 reads page 4 only and finds the applied item: confirmed");
+    CHECK(e.st.scan_from_zero == 1, "F14 the walk started at page 0 exactly ONCE across the three steps");
+    faucet_journal_claim_get(e.j, cl.claim_id, &cl);
+    CHECK(!strcmp(cl.state, "confirmed") && strstr(cl.message, "1001") != NULL,
+          "F14 confirmed in block 1001, found on the resumed pages");
+    env_close(&e);
+
     free(res);
     free(g_id);
     printf("%s (%d checks, %d failure(s))\n", g_failures ? "FAILED" : "PASSED", g_checks, g_failures);

@@ -728,11 +728,22 @@ static int do_settle(faucet_core_t *c, const faucet_claim_t *cl) {
     for (int budget = FAUCET_BLOCKS_PER_STEP; next <= last && budget > 0;
          budget--, next++) {
         if (mono_ms() - step_start >= FAUCET_STEP_BUDGET_MS) break;
-        int found = 0;
         /* one block walk has its own time budget inside the adapter and
-         * releases the node session between pages */
-        int sr = c->node->scan_block(c->node->ctx, next, a.intent_id, &found,
+         * releases the node session between pages; its validated progress
+         * for THIS (height, intent) is resumed, never restarted */
+        if (!c->scan_prog.valid || c->scan_prog.height != next ||
+            memcmp(c->scan_prog.intent, a.intent_id, 64) != 0) {
+            memset(&c->scan_prog, 0, sizeof(c->scan_prog));
+            c->scan_prog.valid = 1;
+            c->scan_prog.height = next;
+            memcpy(c->scan_prog.intent, a.intent_id, 64);
+        }
+        int sr = c->node->scan_block(c->node->ctx, next, a.intent_id,
+                                     &c->scan_prog.from, &c->scan_prog.found,
                                      FAUCET_NODE_NO_DEADLINE);
+        const int found = c->scan_prog.found;
+        if (sr == FAUCET_NODE_OK || sr == FAUCET_NODE_NOT_HELD)
+            c->scan_prog.valid = 0;             /* done, or nothing to resume */
         if (sr == FAUCET_NODE_OK) {
             if (found) {
                 char m[FJ_MSG_MAX];
@@ -814,7 +825,10 @@ out:
 int faucet_worker_step(faucet_core_t *c) {
     /* every cycle: the chain guard, so the HTTP side stops at once when the
      * node's chain is not the configured one */
-    if (!faucet_core_check_chain(c)) return 0;
+    if (!faucet_core_check_chain(c)) {
+        c->scan_prog.valid = 0;     /* a height of another chain is another block */
+        return 0;
+    }
     faucet_core_refresh_status(c);      /* /status answers from this cache */
     faucet_claim_t cl;
     int hr = faucet_journal_head(c->journal, &cl);

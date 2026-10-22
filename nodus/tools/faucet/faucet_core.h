@@ -77,6 +77,20 @@ typedef struct faucet_core {
     uint64_t              status_at_ms;
     int                   status_valid;
     uint64_t              status_native, status_token;
+    /* Block-walk progress of the settlement scan, kept IN MEMORY across
+     * worker steps so a walk cut by its time budget resumes at the last
+     * validated page instead of page 0. Keyed by (height, intent_id) — a
+     * committed height is immutable — and dropped when the chain guard
+     * fails. Touched by the single worker thread only; a restart begins a
+     * fresh walk (nothing durable is needed: an incomplete walk decides
+     * nothing). */
+    struct {
+        int      valid;
+        uint64_t height;
+        uint8_t  intent[64];
+        uint32_t from;
+        int      found;
+    } scan_prog;
 } faucet_core_t;
 
 /** Wire a core together. self_hex is derived from pk (SHA3-512). */

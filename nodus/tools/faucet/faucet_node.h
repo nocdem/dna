@@ -108,9 +108,17 @@ typedef struct {
      *  APPLIED item (code 0) carries `intent_id`. Only a complete walk
      *  returns FAUCET_NODE_OK; a block the node does not hold returns
      *  FAUCET_NODE_NOT_HELD; a failed, malformed or too-slow page walk is
-     *  FAUCET_NODE_ERR. The node session is released between pages. */
+     *  FAUCET_NODE_ERR. The node session is released between pages.
+     *
+     *  RESUMABLE: `*from_io` is the item index the walk starts at (0 = the
+     *  first page) and `*found_io` whether an applied item was seen on the
+     *  pages before it; the caller keeps both for ONE (height, intent_id)
+     *  and hands them back. On every return the adapter leaves them at the
+     *  last VALIDATED page boundary (a malformed page resets them to 0/0),
+     *  so a walk that ran out of time (ERR) continues from there instead of
+     *  restarting at page 0. On FAUCET_NODE_OK `*found_io` is the verdict. An incomplete walk is never "not found". */
     int (*scan_block)(void *ctx, uint64_t height, const uint8_t intent_id[64],
-                      int *found_out, uint64_t deadline_ms);
+                      uint32_t *from_io, int *found_io, uint64_t deadline_ms);
 
     /** Submit signed bytes. 0 = the node took them into its mempool,
      *  1 = the node answered with a refusal (text in msg), -1 = no answer.

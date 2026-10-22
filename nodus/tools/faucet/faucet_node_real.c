@@ -29,6 +29,7 @@
 #define SCAN_MAX_PAGES      1000
 #define SCAN_BUDGET_MS      20000   /* one block walk, all pages            */
 #define RPC_TIMEOUT_MS      10000   /* the SDK default, restored per call   */
+#define PAGE_DEADLINE_MS    10000   /* one page: mutex wait + RPC           */
 #define CONNECT_TIMEOUT_MS  5000
 
 struct faucet_node_real {
@@ -214,31 +215,34 @@ static int scan_page(faucet_node_real_t *n, uint64_t height, uint32_t from,
 }
 
 static int r_scan_block(void *ctx, uint64_t height, const uint8_t intent_id[64],
-                        int *found_out, uint64_t dl) {
+                        uint32_t *from_io, int *found_io, uint64_t dl) {
     faucet_node_real_t *n = ctx;
-    /* Whole-walk budget; the session is taken per page, so the worker never
-     * holds it across the walk. The walk that runs out of time is
-     * incomplete (ERR), never "not found". The session may be rebuilt
-     * between pages (a worker call without deadline does that): fine, the
-     * block is a committed height. */
+    /* Per-call budget; the session is taken per page, so the worker never
+     * holds it across the walk. A call that runs out of time is incomplete
+     * (ERR), never "not found" — but the validated progress stays in
+     * *from_io / *found_io, so the caller's next call resumes at the page
+     * where this one stopped instead of at page 0. */
     uint64_t end = faucet_now_ms() + SCAN_BUDGET_MS;
     if (dl != FAUCET_NODE_NO_DEADLINE && dl < end) end = dl;
-    /* the per-page RPC is bounded by the walk's end; the worker (no caller
-     * deadline) may rebuild a down session between pages, so a page it
-     * takes passes no deadline when the caller had none */
-    uint32_t from = 0;
-    int found = 0;
+    uint32_t from = *from_io;
+    int found = *found_io;
     for (int page = 0; page < SCAN_MAX_PAGES; page++) {
-        if (faucet_now_ms() >= end) return FAUCET_NODE_ERR;
+        uint64_t now = faucet_now_ms();
+        if (now >= end) return FAUCET_NODE_ERR;
+        /* EVERY page has its own bounded deadline — also the worker's (no
+         * caller deadline): it never waits unboundedly for the session nor
+         * reconnects inside a page. A down session is rebuilt by the
+         * worker's deadline-less calls between steps. */
+        uint64_t page_dl = now + PAGE_DEADLINE_MS;
+        if (page_dl > end) page_dl = end;
         nodus_dnac_v3_block_result_t br;
         memset(&br, 0, sizeof(br));
-        int pr = scan_page(n, height, from,
-                           dl == FAUCET_NODE_NO_DEADLINE ? FAUCET_NODE_NO_DEADLINE : end,
-                           &br);
+        int pr = scan_page(n, height, from, page_dl, &br);
         if (pr == FAUCET_NODE_NOT_HELD) return FAUCET_NODE_NOT_HELD;
         if (pr != 0) return FAUCET_NODE_ERR;
         if (br.height != height) {
             nodus_client_free_v3_block_result(&br);
+            *from_io = 0; *found_io = 0;            /* malformed: start over  */
             return FAUCET_NODE_ERR;
         }
         for (size_t i = 0; i < br.count; i++) {
@@ -250,13 +254,18 @@ static int r_scan_block(void *ctx, uint64_t height, const uint8_t intent_id[64],
         uint32_t next = br.next_index;
         nodus_client_free_v3_block_result(&br);
         if (found || !more) {                       /* a COMPLETE walk        */
-            *found_out = found;
+            *found_io = found;
             return FAUCET_NODE_OK;
         }
-        if (next <= from) return FAUCET_NODE_ERR;   /* no progress: refuse    */
+        if (next <= from) {                         /* no progress: refuse    */
+            *from_io = 0; *found_io = 0;
+            return FAUCET_NODE_ERR;
+        }
         from = next;
+        *from_io = from;                            /* validated boundary     */
+        *found_io = found;
     }
-    return FAUCET_NODE_ERR;                         /* page bound: incomplete */
+    return FAUCET_NODE_ERR;                         /* page bound: resumable  */
 }
 
 static int r_submit(void *ctx, const uint8_t wire_id[64], const uint8_t *env,

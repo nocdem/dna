@@ -84,14 +84,6 @@ static void *worker_main(void *arg) {
  * "exists" signal and is written LAST. */
 typedef struct { const char *name; const uint8_t *bytes; size_t len; } id_file_t;
 
-static int fsync_dir(const char *dir) {
-    int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (fd < 0) return -1;
-    int rc = fsync(fd);
-    close(fd);
-    return rc;
-}
-
 /* temp file (O_EXCL, 0600) -> write -> fsync -> rename -> fsync(dir). A
  * crash or error at any point leaves either no file at the final path or a
  * complete one; secret bytes go through write(2), never a stdio buffer. */
@@ -115,7 +107,7 @@ static int write_file_atomic(const char *dir, const char *name,
     if (fsync(fd) != 0) { close(fd); unlink(tmp); return -1; }
     if (close(fd) != 0) { unlink(tmp); return -1; }
     if (rename(tmp, fin) != 0) { unlink(tmp); return -1; }
-    return fsync_dir(dir);
+    return faucet_fsync_dir(dir);
 }
 
 /* How many of the six identity files exist (any kind of entry counts: a
@@ -164,13 +156,27 @@ static int create_identity(const char *dir) {
             break;
         }
     if (written == nfiles) { rc = 0; goto out; }
+    int undo_ok = 1;
     for (int i = 0; i < nfiles; i++) {                 /* undo, pk first   */
         char p[FAUCET_PATH_MAX + 64];
         snprintf(p, sizeof(p), "%s/%s", dir, files[nfiles - 1 - i].name);
-        unlink(p);
+        if (unlink(p) != 0 && errno != ENOENT) {
+            QGP_LOG_ERROR(LOG_TAG, "rollback: cannot remove %s: %s", p, strerror(errno));
+            undo_ok = 0;
+        }
         snprintf(p, sizeof(p), "%s/%s.tmp", dir, files[nfiles - 1 - i].name);
-        unlink(p);
+        if (unlink(p) != 0 && errno != ENOENT) {
+            QGP_LOG_ERROR(LOG_TAG, "rollback: cannot remove %s: %s", p, strerror(errno));
+            undo_ok = 0;
+        }
     }
+    if (faucet_fsync_dir(dir) != 0) {                  /* removals durable */
+        QGP_LOG_ERROR(LOG_TAG, "rollback: cannot fsync %s: %s", dir, strerror(errno));
+        undo_ok = 0;
+    }
+    if (!undo_ok)
+        QGP_LOG_ERROR(LOG_TAG, "the failed creation could not be fully undone in %s — "
+                      "inspect it before the next start (a partial identity is refused)", dir);
 out:
     nodus_identity_clear(&fresh);
     return rc;
@@ -188,12 +194,11 @@ static int load_or_create_identity(const char *dir, nodus_identity_t *id,
     };
     const int n = (int)(sizeof(names) / sizeof(names[0]));
     *created = 0;
-    if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
-        QGP_LOG_ERROR(LOG_TAG, "cannot create key directory %s: %s", dir, strerror(errno));
-        return -1;
-    }
-    if (chmod(dir, 0700) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "cannot restrict key directory %s: %s", dir, strerror(errno));
+    /* the directory's EXISTENCE is made durable (its own and its parent's
+     * fsync) before any identity file is written, used or its address shown;
+     * a failure refuses the start */
+    if (faucet_prepare_key_dir(dir) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "cannot create / persist key directory %s: %s", dir, strerror(errno));
         return -1;
     }
     int have = count_identity_files(dir, names, n);

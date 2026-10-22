@@ -5,6 +5,9 @@
 #include "faucet_cfg.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -224,4 +227,48 @@ int faucet_cfg_load(const char *path, faucet_cfg_t *cfg, char *err,
     int rc = faucet_cfg_parse(buf, cfg, err, err_cap);
     free(buf);
     return rc;
+}
+
+int faucet_fsync_dir(const char *dir) {
+    int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    int rc = fsync(fd);
+    int e = errno;
+    close(fd);
+    errno = e;
+    return rc;
+}
+
+/* The directory part of `path` ("." when it has none, "/" for a top-level
+ * entry); trailing slashes of `path` are ignored. @return 0 / -1. */
+static int parent_of(const char *path, char *out, size_t cap) {
+    size_t len = strlen(path);
+    while (len > 1 && path[len - 1] == '/') len--;
+    size_t i = len;
+    while (i > 0 && path[i - 1] != '/') i--;
+    if (i == 0) {                                  /* no slash: current dir  */
+        if (cap < 2) return -1;
+        strcpy(out, ".");
+        return 0;
+    }
+    while (i > 1 && path[i - 1] == '/') i--;       /* drop the separator run */
+    if (i + 1 > cap) return -1;
+    memcpy(out, path, i);
+    out[i] = '\0';
+    return 0;
+}
+
+int faucet_prepare_key_dir(const char *dir) {
+    char parent[FAUCET_PATH_MAX + 2];
+    if (!dir || !dir[0] || parent_of(dir, parent, sizeof(parent)) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (mkdir(dir, 0700) != 0 && errno != EEXIST) return -1;
+    if (chmod(dir, 0700) != 0) return -1;
+    /* also when the directory already existed: a crash after mkdir but
+     * before the parent's fsync leaves it existing yet not durable */
+    if (faucet_fsync_dir(dir) != 0) return -1;
+    if (faucet_fsync_dir(parent) != 0) return -1;
+    return 0;
 }

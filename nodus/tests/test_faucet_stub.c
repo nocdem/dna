@@ -86,6 +86,11 @@ typedef struct {
     int      node_calls;              /* every call of any kind                */
     uint64_t last_deadline;           /* the deadline of the latest call       */
     uint64_t scan_max_seen;
+    int      scan_pages;              /* >0: a block has this many pages     */
+    int      scan_budget_pages;       /* pages one scan call may read        */
+    int      scan_found_page;         /* the page holding the applied item   */
+    int      pages_read;              /* pages read over all calls           */
+    int      scan_from_zero;          /* calls that started at page 0        */
 } stub_t;
 
 /* The stub does not wait, so it cannot honour a deadline; it records what
@@ -160,15 +165,29 @@ static int s_coins(void *c, const uint8_t token[64], faucet_coin_list_t *out,
     }
     return 0;
 }
-static int s_scan(void *c, uint64_t h, const uint8_t intent[64], int *found,
-                  uint64_t dl) {
+static int s_scan(void *c, uint64_t h, const uint8_t intent[64], uint32_t *from,
+                  int *found, uint64_t dl) {
     stub_t *s = c;
     STUB_NOTE(s, dl);
     s->scan_calls++;
     if (h > s->scan_max_seen) s->scan_max_seen = h;
     if (s->err_height && h == s->err_height) return FAUCET_NODE_ERR;
     if (s->not_held_below && h < s->not_held_below) return FAUCET_NODE_NOT_HELD;
-    *found = (s->applied_height == h && memcmp(intent, s->applied_intent, 64) == 0);
+    int applied = (s->applied_height == h && memcmp(intent, s->applied_intent, 64) == 0);
+    if (s->scan_pages <= 0) {                 /* one page: the whole block   */
+        *found = applied;
+        return 0;
+    }
+    /* a slow block: `scan_pages` pages, only `scan_budget_pages` readable
+     * per call (the adapter's time budget). `*from` is the page index. */
+    if (*from == 0) s->scan_from_zero++;
+    int budget = s->scan_budget_pages;
+    while ((int)*from < s->scan_pages) {
+        if (budget-- <= 0) return FAUCET_NODE_ERR;      /* out of time       */
+        s->pages_read++;
+        if (applied && (int)*from == s->scan_found_page) *found = 1;
+        (*from)++;
+    }
     return 0;
 }
 static int s_submit(void *c, const uint8_t wire[64], const uint8_t *env,
