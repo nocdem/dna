@@ -7,6 +7,13 @@ JSON API. The Nodus Scan frontend (`scan.nodusnetwork.io`) lives in
 `website/scan/` (see `website/deploy/README.md`); the legacy
 `scan.cpunk.io` frontend is no longer in this repository.
 
+**Next build (2026-10-22, HF EVM-ML-DSA; version number set by the merger)**
+names chain-config param 23 `MLDSA_ACTIVE` in `/api/governance` — the vote
+for the ML-DSA-87 EVM precompile (block 306,182, in force from 306,911); its
+value 7607927450973511004 is above 2^53 and is a decimal string like every
+`new_value`. Param 17 `DELEGATE_NAME_REQUIRED` (HF-8) was already named. The
+governance route test pins the new name. Nothing else changes.
+
 **0.2.7 (2026-10-20, HF-7)** names chain-config
 param 22 `RULESET_GEN_ROOTS` in `/api/governance` — the HF-7 vote for rule-set
 generation 5 (block 281,957, in force from 282,684), shown with `param_name`

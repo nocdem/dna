@@ -56,6 +56,8 @@ only the supported read endpoints. The browser makes same-origin requests.
   `RULESET_GEN_ROLES`), HF-7 rule-set generation 5: the roots generation
   (param 22 — `RULESET_GEN_ROOTS`, carried by the row for the same reason:
   an explorer older than its HF-7 build reports `param_name` null for 22),
+  HF-8 delegating needs a chain name (param 17 `DELEGATE_NAME_REQUIRED`) and
+  HF EVM-ML-DSA (param 23 `MLDSA_ACTIVE`; a name, not a number),
   each with its rule in one sentence (from
   `nodus/docs/DEPLOY_RUNBOOK.md` §2.2 "Live hard forks"), vote block,
   effective block and status — Active when the reported `tip` ≥ the effective
@@ -854,3 +856,26 @@ passed; turning storage off is not available yet (BUGS D-23). Facts from the cod
 The installer `install-node.sh` changed with that release (host lock): its SHA-256 on the Wiki (`#node-details`, EN+TR)
 is now 5425dd0f7657131eba56e98bff636d3c9f07121f024d415ae7a629bf6a141246 (`sha256sum website/install-node.sh` at
 fff14a181). `npm run build:portals`, `npm run check` run.
+
+2026-10-22, hard-fork lists and roadmap brought up to date (decisions `2026-10-21-hf8-activation.md`,
+`2026-10-21-mldsa87-evm-precompile.md` "Vote and name (2026-10-22)", `2026-10-21-hf9-scope-storage-lists-and-order.md`,
+`2026-10-22-testnet-test-tokens-faucet-dex.md`, `2026-10-05-hf-numbering-evm-hf5.md`). HF-8 is live (param 17
+`DELEGATE_NAME_REQUIRED` = 1, voted in block 299,994, in force from 300,722, nodus 0.26.19): the roadmap's planned item
+`history.delegate_name.*` became the built item `history.hf8.*` dated 21 October 2026; Scan `hardForks` gains an HF-8 row
+(with `paramName`); Wiki "Hard forks on the testnet" lists it and "Planned, not live" drops it. The ML-DSA-87 precompile
+fork is live under the name **HF EVM-ML-DSA** (the operator chose a name, not a number — "bunun adı da hf evm-ms-dsa
+olsun"; "HF-9" stays the keyed-tree fork): param 23 `MLDSA_ACTIVE` = 7607927450973511004 (0x6994c9b548381d5c), voted in
+block 306,182, in force from 306,911, nodus 0.26.22; roadmap built item `history.mldsa.*` dated 22 October 2026, a Scan
+row and a Wiki item (the Wiki now says nine active forks). The facts (context "nodus.evm.attest.v1", 25,000 + 12 gas per
+32-byte word, message at most 65,536 bytes, empty output when invalid) are from `nodus/docs/DEPLOY_RUNBOOK.md` §2.2 row
+"HF EVM-ML-DSA"; the precompile address itself is not printed on the site. Planned items added (EN in `roadmap.html`,
+TR keys in `app.js`, the same text in `wiki/content.mjs` and the Scan planned list in `build-portals.mjs`): HF-9 (one
+keyed tree for the growing state plus the storage registry and segment list, rendezvous hashing, then the light storage
+node — not voted, byte layout and height undecided), a native limit-order DEX (testnet first, tUSDT "Test USDT" created in
+block 305,991, a faucet through the wallet site; the order rule needs a hard fork, not designed), and "Mainnet: a new
+genesis; every hard fork on this page is active from mainnet genesis" — no date and no month (operator: "Yazma, yalnız
+'ana ağ: yeni genesis' de"). No AMM and no stablecoin promise. Explorer: `/api/governance` names param 23 `MLDSA_ACTIVE`
+(`explorer/src/exp_http.c`; param 17 was already named); the route test pins it with the value above 2^53 as a string. No
+explorer version bump. Generated pages (`wiki/chain.html`, `wiki/search-index.json`, `scan/hardforks.html` and the re-stamped
+Scan pages) rebuilt with `npm run build:portals`. Not changed here (outside this change's file list): `tokenomics.html` and
+its `tok.plannedDelegateName` TR key still list HF-8 as planned.
