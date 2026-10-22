@@ -126,10 +126,11 @@ typedef struct {
 } nodus_v2_coin_t;
 
 /** One planned spend: indices into the SORTED coin array. `n_coins` is the
- *  length of the coin array the planner planned over (set by
- *  nodus_v2_spend_plan); nodus_v2_spend_build refuses a plan whose idx is
- *  outside [0, n_coins) before it reads any coin. A plan not produced by
- *  nodus_v2_spend_plan has n_coins 0 and is refused by the builder. */
+ *  length of the coin array the idx refer to (set by nodus_v2_spend_plan
+ *  and by nodus_v2_spend_pick); nodus_v2_spend_build refuses a plan whose
+ *  idx is outside [0, n_coins) before it reads any coin. A hand-built plan
+ *  that never went through either has n_coins 0 and is refused by the
+ *  builder. */
 typedef struct {
     int      idx[NODUS_V2_SPEND_MAX_IN];
     int      n_in;
@@ -173,7 +174,10 @@ int nodus_v2_spend_sort_coins(nodus_v2_coin_t *coins, int n_coins,
 /** Append unused coins of `kind`, in array order, to plan->idx until their
  *  sum reaches `need`. @return 0 covered · -1 not enough coins of this kind
  *  · -2 would need more than NODUS_V2_SPEND_MAX_IN inputs in total · -3 the
- *  input sum overflows u64. */
+ *  input sum overflows u64 · -4 `n_coins` < 0, or the plan already carries
+ *  a different non-zero n_coins (its idx refer to another array; nothing
+ *  is changed). On success or -1/-2/-3 the plan's n_coins is `n_coins`, so
+ *  a plan made here can be passed to nodus_v2_spend_build. */
 int nodus_v2_spend_pick(const nodus_v2_coin_t *coins, int n_coins,
                         uint8_t kind, uint64_t need,
                         nodus_v2_spend_plan_t *plan, uint64_t *sum_out);

@@ -103,6 +103,12 @@ int nodus_v2_spend_pick(const nodus_v2_coin_t *coins, int n_coins,
                         uint8_t kind, uint64_t need,
                         nodus_v2_spend_plan_t *plan, uint64_t *sum_out) {
     uint64_t sum = 0;
+    /* The plan's idx index THIS array: record its length so the builder
+     * can range-check them. A plan already bound to a different array is
+     * refused, never re-bound. */
+    if (n_coins < 0 || (plan->n_coins != 0 && plan->n_coins != n_coins))
+        return -4;
+    plan->n_coins = n_coins;
     for (int i = 0; i < n_coins && sum < need; i++) {
         if (coins[i].used || coins[i].kind != kind) continue;
         if (plan->n_in >= (int)NODUS_V2_SPEND_MAX_IN) return -2;

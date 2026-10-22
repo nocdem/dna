@@ -1546,6 +1546,20 @@ static int t_two_asset(sb_chain_t *c) {
      * refused (ERR_ARG) before any coin is read — the coins array has
      * exactly 3 entries, so idx 3 / -1 would read out of bounds */
     CHECK(plan.n_coins == 3, "S10 the planner records the coin-array length");
+    {   /* a plan made with the exported picker carries n_coins too, and is
+         * not re-bound to a different array length */
+        nodus_v2_spend_plan_t pp;
+        uint64_t psum = 0;
+        for (int i = 0; i < 3; i++) coins[i].used = 0;
+        memset(&pp, 0, sizeof(pp));
+        CHECK(nodus_v2_spend_pick(coins, 3, 0, 1, &pp, &psum) == 0 &&
+              pp.n_in >= 1 && pp.n_coins == 3,
+              "S10 nodus_v2_spend_pick records n_coins == the array length");
+        CHECK(nodus_v2_spend_pick(coins, 2, 0, 1, &pp, &psum) == -4 &&
+              pp.n_coins == 3,
+              "S10 nodus_v2_spend_pick refuses to re-bind a plan to another length");
+        for (int i = 0; i < 3; i++) coins[i].used = 0;
+    }
     bad = plan;
     bad.idx[0] = 3;
     build_req(&r, &tab, c, coins, &bad, fee, 0, &s);
