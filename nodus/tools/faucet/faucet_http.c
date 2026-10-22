@@ -247,7 +247,16 @@ static void route_inner(faucet_core_t *core, const faucet_http_req_t *req,
     if (!strcmp(req->path, P_STATUS)) {
         if (!is_get) { answer_json(405, "refused", "use GET", status, body, cap); return; }
         faucet_status_t s;
-        faucet_api_status(core, &s);
+        int sr = faucet_api_status(core, &s);
+        if (sr == FJ_BUSY) {
+            answer_json(503, "refused", "busy, try again", status, body, cap);
+            return;
+        }
+        if (sr != 0) {
+            answer_json(503, "refused", "the faucet journal is unavailable",
+                        status, body, cap);
+            return;
+        }
         *status = 200;
         if (faucet_json_status(&s, body, cap) < 0) { *status = 500; body[0] = '\0'; }
         return;

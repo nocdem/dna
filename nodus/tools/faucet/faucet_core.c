@@ -288,14 +288,15 @@ void faucet_api_get_claim(faucet_core_t *c, const char *claim_id,
     else ans_claim(ans, &cl, NULL);
 }
 
-void faucet_api_status(faucet_core_t *c, faucet_status_t *out) {
+int faucet_api_status(faucet_core_t *c, faucet_status_t *out) {
     memset(out, 0, sizeof(*out));
     faucet_jcounts_t cnt;
     int sf = faucet_journal_storage_full(c->journal);
-    if (faucet_journal_counts(c->journal, &cnt) != 0 || sf < 0) {
-        snprintf(out->message, sizeof(out->message), "the faucet journal is unavailable");
-        return;
-    }
+    if (sf == FJ_BUSY) return FJ_BUSY;
+    if (sf < 0) return -1;
+    int cr = faucet_journal_counts(c->journal, &cnt);
+    if (cr == FJ_BUSY) return FJ_BUSY;
+    if (cr != 0) return -1;
     out->paused = cnt.paused > 0;
 
     /* The funds come from the cache the WORKER keeps: this thread never
@@ -332,6 +333,7 @@ void faucet_api_status(faucet_core_t *c, faucet_status_t *out) {
     out->open = atomic_load(&c->chain_ok) && cnt.unknown == 0 && sf == 0 &&
                 status_valid;
     snprintf(out->message, sizeof(out->message), "%s", msg);
+    return 0;
 }
 
 void faucet_core_refresh_status(faucet_core_t *c) {
