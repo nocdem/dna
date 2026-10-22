@@ -3675,6 +3675,38 @@ static int dnac_utxo_parse(const uint8_t *raw, size_t raw_len,
                               false);
 }
 
+/* Strict-decode helper (strict_tid only), used at the response-map level and
+ * inside each entry. The cbor decoder reports end-of-buffer as an item of
+ * type CBOR_ITEM_END WITHOUT setting dec->error, and cbor_decode_skip returns
+ * on it, so a map or array that declares more children than the buffer holds
+ * would otherwise pass. These two read one item and fail on anything else:
+ *  - utxo_strict_skip consumes one whole item (children included); false when
+ *    the buffer ends or errors while any declared part is outstanding.
+ *  - utxo_strict_want reads one item that must be of `type`; false on END,
+ *    ERROR, a decoder error or any other type (a container is only its
+ *    header here: the caller reads the declared children itself). */
+static bool utxo_strict_skip(cbor_decoder_t *dec) {
+    cbor_item_t it = cbor_decode_next(dec);
+    if (dec->error || it.type == CBOR_ITEM_END || it.type == CBOR_ITEM_ERROR)
+        return false;
+    if (it.type == CBOR_ITEM_MAP || it.type == CBOR_ITEM_ARRAY) {
+        if (dec->depth >= CBOR_MAX_DEPTH) { dec->error = true; return false; }
+        size_t n = it.type == CBOR_ITEM_MAP ? it.count * 2 : it.count;
+        dec->depth++;
+        for (size_t i = 0; i < n; i++) {
+            if (!utxo_strict_skip(dec)) { dec->depth--; return false; }
+        }
+        dec->depth--;
+    }
+    return true;
+}
+
+static bool utxo_strict_want(cbor_decoder_t *dec, cbor_item_type_t type,
+                             cbor_item_t *out) {
+    *out = cbor_decode_next(dec);
+    return !dec->error && out->type == type;
+}
+
 /* `strict_tid` (set ONLY by the token-filtered call, whose "every coin is
  * the requested token" check reads each entry's token id): every utxo entry
  * must carry exactly one "tid", a bstr of exactly 64 bytes, and no key of
@@ -3700,9 +3732,19 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
     nodus_map_keys_t ks;
     memset(&ks, 0, sizeof(ks));
     int count = 0;
+    bool have_count = false, have_utxos = false;
+    uint64_t count_val = 0;
     for (size_t i = 0; i < mc; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (key.type != CBOR_ITEM_TSTR) {
+            if (strict_tid) {
+                QGP_LOG_WARN(LOG_TAG, "dnac_utxo: non-text key in the "
+                             "response — refused");
+                nodus_client_free_utxo_result(result_out);
+                return NODUS_ERR_PROTOCOL_ERROR;
+            }
+            cbor_decode_skip(&dec); continue;
+        }
         if (nodus_map_key_once(&ks, key.tstr.ptr, key.tstr.len) != 0) {
             QGP_LOG_WARN(LOG_TAG, "dnac_utxo: repeated key in response — refused");
             nodus_client_free_utxo_result(result_out);
@@ -3710,7 +3752,19 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
         }
 
         if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "count", 5) == 0) {
-            cbor_item_t v = cbor_decode_next(&dec);
+            cbor_item_t v;
+            if (strict_tid) {
+                if (!utxo_strict_want(&dec, CBOR_ITEM_UINT, &v)) {
+                    QGP_LOG_WARN(LOG_TAG, "dnac_utxo: \"count\" is not a "
+                                 "uint — refused");
+                    nodus_client_free_utxo_result(result_out);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
+                have_count = true;
+                count_val = v.uint_val;
+            } else {
+                v = cbor_decode_next(&dec);
+            }
             if (v.type == CBOR_ITEM_UINT)
                 count = (int)v.uint_val;
         } else if (key.tstr.len == 12 &&
@@ -3718,12 +3772,33 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
             /* Phase 7 / Task 38: latest committed block_height — anchor
              * target for each UTXO's state_root proof. Pre-Phase 7
              * witnesses omit this; result_out->block_height stays 0. */
-            cbor_item_t v = cbor_decode_next(&dec);
+            cbor_item_t v;
+            if (strict_tid) {
+                if (!utxo_strict_want(&dec, CBOR_ITEM_UINT, &v)) {
+                    QGP_LOG_WARN(LOG_TAG, "dnac_utxo: \"block_height\" is "
+                                 "not a uint — refused");
+                    nodus_client_free_utxo_result(result_out);
+                    return NODUS_ERR_PROTOCOL_ERROR;
+                }
+            } else {
+                v = cbor_decode_next(&dec);
+            }
             if (v.type == CBOR_ITEM_UINT)
                 result_out->block_height = v.uint_val;
         } else if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "utxos", 5) == 0) {
             cbor_item_t arr = cbor_decode_next(&dec);
+            if (strict_tid &&
+                (dec.error || arr.type != CBOR_ITEM_ARRAY ||
+                 arr.count > dec.len - dec.pos)) {
+                /* every entry takes at least one byte: a larger declared
+                 * count cannot be true, and is not allocated */
+                QGP_LOG_WARN(LOG_TAG, "dnac_utxo: \"utxos\" is not an array "
+                             "that fits the reply — refused");
+                nodus_client_free_utxo_result(result_out);
+                return NODUS_ERR_PROTOCOL_ERROR;
+            }
             if (arr.type != CBOR_ITEM_ARRAY) continue;
+            have_utxos = true;
 
             size_t cap = arr.count;
             if (cap > 0) {
@@ -3872,6 +3947,10 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
                             memcpy(e->proof_root, v.bstr.ptr,
                                    NODUS_DNAC_PROOF_HASH_LEN);
                         else if (strict_tid) bad = true;
+                    } else if (strict_tid) {
+                        /* an unknown value is consumed whole, and a buffer
+                         * that ends inside it refuses the entry */
+                        if (!utxo_strict_skip(&dec)) bad = true;
                     } else {
                         cbor_decode_skip(&dec);
                     }
@@ -3914,9 +3993,26 @@ static int dnac_utxo_parse_ex(const uint8_t *raw, size_t raw_len,
             }
             *nul_out = v.uint_val;
             have_nul = true;
+        } else if (strict_tid) {
+            if (!utxo_strict_skip(&dec)) {
+                QGP_LOG_WARN(LOG_TAG, "dnac_utxo: truncated response value "
+                             "— refused");
+                nodus_client_free_utxo_result(result_out);
+                return NODUS_ERR_PROTOCOL_ERROR;
+            }
         } else {
             cbor_decode_skip(&dec);
         }
+    }
+
+    if (strict_tid &&
+        (dec.error || !have_utxos ||
+         (have_count && count_val != (uint64_t)result_out->count))) {
+        QGP_LOG_WARN(LOG_TAG, "dnac_utxo: reply without a complete \"utxos\" "
+                     "list or with a \"count\" that is not its length — "
+                     "refused");
+        nodus_client_free_utxo_result(result_out);
+        return NODUS_ERR_PROTOCOL_ERROR;
     }
 
     if (trunc_out && (!have_trunc || dec.error)) {

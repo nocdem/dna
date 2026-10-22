@@ -1576,7 +1576,24 @@ enum { TE_GOOD, TE_REPEATED_TID, TE_NO_TID, TE_SHORT_TID, TE_TID_TSTR,
        TE_NESTED_IDX,     /* idx holds ["tid", first]; the real tid = second */
        TE_AMOUNT_BSTR,    /* amount is a bstr, then a good tid(first) */
        TE_INT_KEY,        /* a uint key (7 -> 1), then a good tid(first) */
-       TE_UNKNOWN_MAP };  /* unknown "zz" -> {"tid": second}, tid = first */
+       TE_UNKNOWN_MAP,    /* unknown "zz" -> {"tid": second}, tid = first */
+       /* response-map level (the entry is a good one unless said) */
+       TE_R_COUNT_MAP,    /* "count": {"utxos":[A(first)]}, "utxos":[B(second)] */
+       TE_R_COUNT_ARRAY,  /* "count": ["utxos", [A(first)]], "utxos":[B(second)] */
+       TE_R_UTXOS_UINT,   /* "count": 0, "utxos": 7 */
+       TE_R_NO_UTXOS,     /* "count": 0, "block_height": 3 */
+       TE_R_TRUNC_ENTRY,  /* entry declares 3 pairs, ends after its 3rd key */
+       TE_R_TRUNC_RESP,   /* response map declares 3 pairs, holds 2 */
+       TE_R_COUNT_MISMATCH, /* "count": 2 over a one-entry list */
+       TE_R_BH_MAP };     /* "block_height": {"utxos":[A(first)]}, "utxos":[B] */
+
+/* one entry {"amount": 5, "tid": tid} */
+static void craft_entry(cbor_encoder_t *enc, const uint8_t tid[64])
+{
+    cbor_encode_map(enc, 2);
+    cbor_encode_cstr(enc, "amount"); cbor_encode_uint(enc, 5);
+    cbor_encode_cstr(enc, "tid"); cbor_encode_bstr(enc, tid, 64);
+}
 
 static size_t craft_token_reply(uint8_t *buf, size_t cap, int mode,
                                 const uint8_t first[64],
@@ -1589,6 +1606,63 @@ static size_t craft_token_reply(uint8_t *buf, size_t cap, int mode,
     cbor_encode_cstr(&enc, "y"); cbor_encode_cstr(&enc, "r");
     cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, "dnac_utxo");
     cbor_encode_cstr(&enc, "r");
+    if (mode >= TE_R_COUNT_MAP) {
+        switch (mode) {
+        case TE_R_COUNT_MAP:
+        case TE_R_BH_MAP:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, mode == TE_R_COUNT_MAP ? "count"
+                                                          : "block_height");
+            cbor_encode_map(&enc, 1);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, first);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, second);
+            break;
+        case TE_R_COUNT_ARRAY:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count");
+            cbor_encode_array(&enc, 2);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, first);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, second);
+            break;
+        case TE_R_UTXOS_UINT:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 0);
+            cbor_encode_cstr(&enc, "utxos"); cbor_encode_uint(&enc, 7);
+            break;
+        case TE_R_NO_UTXOS:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 0);
+            cbor_encode_cstr(&enc, "block_height"); cbor_encode_uint(&enc, 3);
+            break;
+        case TE_R_TRUNC_ENTRY:
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 1);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1);
+            cbor_encode_map(&enc, 3);
+            cbor_encode_cstr(&enc, "amount"); cbor_encode_uint(&enc, 5);
+            cbor_encode_cstr(&enc, "tid"); cbor_encode_bstr(&enc, first, 64);
+            cbor_encode_cstr(&enc, "zz");   /* the value never comes */
+            break;
+        case TE_R_TRUNC_RESP:
+            cbor_encode_map(&enc, 3);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 1);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, first);
+            break;
+        default: /* TE_R_COUNT_MISMATCH */
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 2);
+            cbor_encode_cstr(&enc, "utxos");
+            cbor_encode_array(&enc, 1); craft_entry(&enc, first);
+            break;
+        }
+        return cbor_encoder_len(&enc);
+    }
     cbor_encode_map(&enc, 2);
     cbor_encode_cstr(&enc, "count"); cbor_encode_uint(&enc, 1);
     cbor_encode_cstr(&enc, "utxos");
@@ -1712,6 +1786,74 @@ static void t_dnac_utxo_token_strict_tid(void)
           res.count == 1 && res.entries[0].amount == 5 &&
           memcmp(res.entries[0].token_id, tokA, 64) == 0,
           "strict: an unknown key with a nested map is skipped whole");
+    nodus_client_free_utxo_result(&res);
+
+    /* response-map level. A recognized key holding a container must not
+     * leak its children as response keys: here the nested "utxos" holds A
+     * (an A request would be satisfied) while the real list holds B. */
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a response \"count\" map hiding a fake utxos list is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_ARRAY, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a response \"count\" array hiding a fake list is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_BH_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a response \"block_height\" map hiding a fake list is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_UTXOS_UINT, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a non-array \"utxos\" is refused (no empty success)");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_NO_UTXOS, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a reply without \"utxos\" is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_TRUNC_ENTRY, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: an entry that ends before its declared pairs is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_TRUNC_RESP, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a response map that ends before its declared pairs is refused");
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MISMATCH, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo_token(buf, n, tokA, &res)
+          == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL &&
+          res.count == 0,
+          "strict: a \"count\" that is not the number of entries is refused");
+
+    /* the legacy (unfiltered) decode of the same malformed bytes is
+     * unchanged: pinned as it behaves today */
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MAP, tokA, tokB);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1 &&
+          memcmp(res.entries[0].token_id, tokA, 64) == 0,
+          "legacy: the response count-map leak still reads the nested list");
+    nodus_client_free_utxo_result(&res);
+    n = craft_token_reply(buf, sizeof(buf), TE_R_UTXOS_UINT, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 0,
+          "legacy: a non-array utxos is still an empty success");
+    nodus_client_free_utxo_result(&res);
+    n = craft_token_reply(buf, sizeof(buf), TE_R_NO_UTXOS, NULL, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 0,
+          "legacy: a reply without utxos is still an empty success");
+    nodus_client_free_utxo_result(&res);
+    n = craft_token_reply(buf, sizeof(buf), TE_R_TRUNC_ENTRY, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
+          "legacy: a truncated entry is still counted");
+    nodus_client_free_utxo_result(&res);
+    n = craft_token_reply(buf, sizeof(buf), TE_R_COUNT_MISMATCH, tokA, NULL);
+    CHECK(nodus_client_test_parse_utxo(buf, n, &res) == 0 && res.count == 1,
+          "legacy: a count that differs from the list is still accepted");
     nodus_client_free_utxo_result(&res);
 
     /* the legacy (unfiltered) decode keeps its lenient behaviour */
