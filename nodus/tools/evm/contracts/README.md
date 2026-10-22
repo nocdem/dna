@@ -1,8 +1,9 @@
-# Nodus security contract library — v0.1.0
+# Nodus security contract library — v0.2.0
 
 A small, reviewed set of reusable Solidity contracts for the Nodus EVM (32-byte addresses):
 ownership and roles, a reentrancy guard, a pause switch, a timelock, a multisig vault with
-on-chain approvals, and a milestone escrow.
+on-chain approvals, a milestone escrow, and (v0.2) a companion library for the ML-DSA-87
+signature-verification precompile: `MLDSA87` and `MLDSA87Attested` (one-time signed attestations).
 
 Design: `docs/plans/2026-10-21-nodus-contract-library-design.md` rev 3 (local); council record:
 `docs/plans/decisions/2026-10-21-kurultay-30-summary.md` (local). Governing records:
@@ -12,8 +13,10 @@ examples). The library is not yet linked from the Wiki developer page; it joins 
 when it is published.
 
 Nothing here changes the chain: these are ordinary contracts, run by the consensus EVM like any
-other. The library contains **no signature-based authorization** (no `ecrecover`, no permits):
-every check is `msg.sender`.
+other. The v0.1 contracts contain **no signature-based authorization** (no `ecrecover`, no
+permits): every check is `msg.sender`. Signature approvals exist only in the v0.2 companion
+library (`src/crypto/`, below), which a contract opts into explicitly, and only on a chain where
+the ML-DSA-87 precompile is active (HF EVM-ML-DSA; block 306911 on the live chain).
 
 ## Quick start
 
@@ -116,14 +119,19 @@ exactly the constructor words it builds by hand, as an independent cross-check.
 | `src/governance/Timelock.sol` | delayed calls with proposer / executor / canceller roles |
 | `src/vaults/MultisigVault.sol` | M-of-N owners approve a call on-chain before it runs |
 | `src/payments/MilestoneEscrow.sol` | payer / payee / arbiter escrow paid out per milestone |
-| `test/mocks/*.sol` | TEST FIXTURES, never shipped (concrete versions of the abstract contracts, a re-entering / reverting actor, a `false`-returning target, a `transfer()`-to-ticket sender, a SELFDESTRUCT forcer) |
+| `src/crypto/MLDSA87.sol` | `library MLDSA87` (internal functions only) — constants, `verify`, `requireSigner` over the ML-DSA-87 precompile |
+| `src/crypto/MLDSA87Attested.sol` | abstract — per-signer nonce store, `_consumeAttestation`, `cancelAttestationNonce` |
+| `test/mocks/*.sol` | TEST FIXTURES, never shipped (concrete versions of the abstract contracts, a re-entering / reverting actor, a `false`-returning target, a `transfer()`-to-ticket sender, a SELFDESTRUCT forcer, and `MockAttested`: single-signer, 2-of-3, misordered-header, header-only, re-entry and rollback actions over `MLDSA87Attested`) |
+| `test/fixtures/attest_v1.txt` | the signed-message byte fixtures (two cases), written by `attest_v1_oracle.py`; the engine test reads it and the mock's pure builders must reproduce it |
 | `build.sh` | compiles `src/` and `test/mocks/` with the pinned compiler into `out/` |
 | `verify.sh` | re-compiles into a temporary directory and diffs against `out/` (drift check) |
-| `out/` | COMMITTED bytecode + ABI, two configurations; `out/VERSION.txt` = compiler line, sources, flags. **Every `out/**/Mock*` file (`MockAccessControl`, `MockActor`, `MockFalseTarget`, `MockForcer`, `MockGuarded`, `MockOwnable`, `MockTicketSender`) is a TEST FIXTURE — test-only, NOT for deployment**: they are there only because the tests run `out/`; several are deliberately unsafe (open `pause`, re-entry, `transfer`, SELFDESTRUCT). Deploy only `Timelock`, `MultisigVault`, `MilestoneEscrow`, or your own contract built on the abstract ones. |
-| `VERSION` | the library version (`0.1.0`) |
+| `out/` | COMMITTED bytecode + ABI, two configurations; `out/VERSION.txt` = compiler line, sources, flags. **Every `out/**/Mock*` file (`MockAccessControl`, `MockActor`, `MockAttested`, `MockFalseTarget`, `MockForcer`, `MockGuarded`, `MockOwnable`, `MockTicketSender`) is a TEST FIXTURE — test-only, NOT for deployment**: they are there only because the tests run `out/`; several are deliberately unsafe (open `pause`, re-entry, `transfer`, SELFDESTRUCT, a misordered header, an unsigned effect). Deploy only `Timelock`, `MultisigVault`, `MilestoneEscrow`, or your own contract built on the abstract ones. `out/**/MLDSA87.*` is the compiled library alone (it has no deployable use: its functions are `internal`, inlined into your contract). |
+| `VERSION` | the library version (`0.2.0`) |
 
 The tests are `shared/evm/tests/test_contract_lib.c` (part of `cd shared/evm && make test`); they
-run the committed `out/` in the node's engine profile and need no compiler.
+run the committed `out/` in the node's engine profile and need no compiler. The companion-library
+cases run in a second engine state with the ML-DSA precompile switched on, sign at test time with
+the project's own ML-DSA-87 code, and read `test/fixtures/attest_v1.txt`.
 
 ## Build and verify
 
@@ -152,7 +160,11 @@ assembly, `selfdestruct`, `delegatecall`, `tx.origin`, `block.prevrandao`, `bloc
 `gasleft()`, `transfer` / `send`, immutables, linked (external) library functions. Loops run
 over stored owner / milestone lists of at most 32 entries (the Timelock constructor loops over
 its argument lists once, at deployment). `test/mocks/` is exempt — the fixtures there
-deliberately use `transfer`, re-entry, inline assembly and the SELFDESTRUCT opcode.
+deliberately use `transfer`, re-entry, inline assembly and the SELFDESTRUCT opcode (and
+`MockAttested` deliberately contains wrong actions and a `{gas: …}` self-call; see its header).
+`src/crypto/` follows the same rules: `MLDSA87` is a library of `internal` functions only (solc
+rule 7 — no linked library), and its precompile address is an all-lowercase number literal with an
+explicit `address(...)` conversion (solc rule 3).
 
 ## Contracts
 
@@ -291,6 +303,116 @@ Who may pause is the inheritor's choice. Pause stops **exactly** the functions m
   value that arrives anyway (only possible as a SELFDESTRUCT beneficiary) is **never credited and
   stays locked**. Invariant (`accounting()`): `unsettled + credited + withdrawn == funded total`.
 
+## ML-DSA-87 companion library (v0.2, `src/crypto/`)
+
+Design: `docs/plans/2026-10-22-mldsa87-companion-library-design.md` rev 2 (local); records:
+`docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md` (items 2, 3, 7(a), 8, TAG_ATTEST_V1,
+"Companion library: the actionType") and `2026-10-22-kurultay-40-mldsa-companion-library-summary.md`
+(local). The chain side (the precompile) is live since the hard fork HF EVM-ML-DSA; below its
+activation height the precompile address is an ordinary account and every helper here fails closed
+(`verify` reports `ok == false`; the helpers revert). The library authorises nothing by itself and
+never replaces chain authorization (`2026-10-04-nodus-evm-domain.md` decision 4): its result decides
+only the consuming contract's own policy.
+
+### MLDSA87 (library, internal functions)
+
+- Constants: `PRECOMPILE` = `SHA3-512("NDS.EVMMLDSA87.v1")[0..32]` =
+  `0x66e24906024f903b345880bf43c39224c772b9acf62cd78299ced278cb3c9cce` (never type it yourself, use
+  the constant); `TAG_ATTEST_V1 = keccak256("nodus.evm.attest.message.v1")` =
+  `0x99e805e35026bce860f6bbcda7466a18fd6a7bfe81d1524494fe541c9488a43d`; `PK_LEN` 2592, `SIG_LEN`
+  4627, `MSG_MAX` 65 536, `HEADER_LEN` 224. The precompile verifies under the fixed FIPS 204
+  context `nodus.evm.attest.v1` (19 bytes) — a signature made under any other context, including
+  the empty one a wallet transaction uses, is invalid here.
+- `verify(pk, sig, message) → (bool ok, address signer)`: reverts `MLDSA87BadLength()` unless
+  `pk` is 2592 and `sig` 4627 bytes; reverts `MLDSA87MessageTooLong(len)` for a message over 65 536
+  bytes (before the call). Then a zero-value `STATICCALL` to `PRECOMPILE` with `pk ‖ sig ‖ message`.
+  `ok` is true only when the call succeeded AND returned exactly 32 bytes; then `signer` is the
+  verified signer's address `SHA3-512(pk)[0..32]`. A failed call (including a precompile starved of
+  gas) or an empty output (invalid signature, or the precompile not active) gives `ok == false`.
+  A starved precompile leaves the calling frame only 1/64 of its gas (EIP-150). That is about 400
+  gas for a short message, which is too little for unoptimized code (the `default` build) to finish
+  and revert with `MLDSA87InvalidSignature`: such a call then runs out of gas and reverts with EMPTY
+  data instead (measured in `test_contract_lib.c`, `scen_starved`). Either way it is a refusal; only
+  the revert data differs.
+- `requireSigner(expected, pk, sig, message)`: reverts `MLDSA87ZeroSigner()` for a zero `expected`,
+  `MLDSA87InvalidSignature(expected)` unless `ok && signer == expected`.
+- Cost: the precompile charges 25 000 gas + 12 per 32-byte message word; the `pk ‖ sig ‖ message`
+  buffer is built in memory (a 7.2 KB call-data copy at minimum).
+
+### The signed message
+
+```
+message = abi.encode(
+    bytes32 TAG_ATTEST_V1,
+    uint256 block.chainid,        // the full 32-byte chain id
+    address verifyingContract,    // address(this) of the consuming contract (32 bytes)
+    bytes32 actionType,           // keccak256(bytes("Name(t1,...,tn)"))
+    uint256 nonce,                // per consuming contract, per signer
+    uint64  expiry,               // seconds; valid while block.timestamp <= expiry
+    address signer,               // the expected signer = SHA3-512(pk)[0..32]
+    p1, ..., pn)                  // the action's parameters, declared order and types
+```
+
+- ONE `abi.encode` over all values. The first 224 bytes are exactly the seven header words, whatever
+  parameters follow (all seven header types are static); a dynamic parameter's offset is relative to
+  the start of the whole tuple, not to the parameters. Concatenating a header with a separately
+  encoded parameter block gives the wrong offset for a `bytes` parameter.
+- `actionType` is the keccak256 of the action's canonical Solidity signature text: `Name(t1,...,tn)`,
+  canonical type names (`uint256`, never `uint`), no spaces, no parameter names. It is the text a
+  function selector hashes. One `actionType` therefore names one parameter-type list. Write the
+  literal in canonical form in your contract; the test compares the compiler's hash with the tree's
+  for the two fixture actions.
+- At most 65 536 bytes in all.
+- Fixtures: `test/fixtures/attest_v1.txt` holds two messages (static parameters; a `bytes`
+  parameter), encoded by hand by `test/fixtures/attest_v1_oracle.py` (python3, no ABI library). It pins
+  the ABI layout; the two hash words in it are copied inputs, and the independent hash check is the
+  engine test's comparison of the compiler's compile-time `keccak256` with the fixture.
+
+### MLDSA87Attested (abstract)
+
+- `_consumeAttestation(actionType, nonce, expiry, signer, pk, sig, message)` runs, in this order,
+  each failing with a custom error: (1) `block.timestamp <= expiry`, else `AttestationExpired(expiry)`;
+  (2) `(signer, nonce)` unused, else `AttestationNonceUsed(signer, nonce)`; (3) `message.length >= 224`
+  and its first seven words equal `(TAG_ATTEST_V1, block.chainid, address(this), actionType, nonce,
+  expiry, signer)`, else `AttestationHeaderMismatch()` (`expiry` is decoded as `uint256`: a dirty high
+  half is a mismatch with data, not an empty revert; trailing bytes after the header — the action's
+  parameters — are accepted); (4) `MLDSA87.requireSigner(signer, pk, sig, message)`; (5) mark the nonce
+  used and emit `AttestationConsumed(signer, nonce, actionType)`.
+- Call it BEFORE any effect. The mark is undone by any revert in the same call (tested: a later revert
+  rolls it back; a starved precompile never reaches the mark).
+- `isAttestationNonceUsed(signer, nonce)`; `cancelAttestationNonce(nonce)` (marks `(msg.sender, nonce)`
+  used, reverts `AttestationNonceUsed` if it already is; event `AttestationNonceCancelled`). The signer
+  sends it from its own account — a signer's EVM account address is the same `SHA3-512(pk)[0..32]`. It
+  is best-effort: a relayer already holding the attestation can land it first; transaction order is
+  the proposer's choice and only `expiry` is a hard bound. The cancel is ALWAYS available. It is not
+  `virtual`, so an inheriting contract cannot wrap it in its own pause or access rule: a signer can
+  void its own unused attestation whatever state the consumer is in.
+- Storage: one `mapping(address => mapping(uint256 => bool))` — ONE slot in every inheriting
+  contract (slot 0 if you list it first; list it after other bases and the slot moves). Plan your
+  layout before an upgrade or a proxy.
+- The nonce is tracked, never a signature hash: ML-DSA signing is hedged, so one signer can produce
+  many valid, different signatures over the same message.
+
+### Consumer rules (the library cannot enforce these)
+
+1. Build `message` from the ACTUAL execution parameters (the values the effect will use), header
+   first, in one `abi.encode`. **Every value the effect reads must be a signed parameter or
+   committed state.** A message that carries only the header passes the header check while the
+   effect reads unsigned call-data: the mock's `approveHeaderOnly` shows it (a relayer picks the
+   amount and the recipient). Execution-state limits the signer cares about (a minimum output, a
+   proposal revision) must be signed parameters; a signature binds the operation and its
+   parameters, not the state the call finds when it lands.
+2. Decide who may sign (the library only proves who DID sign), and count a signer once per decision:
+   a signer may sign the same action under two nonces, and only your own per-decision record stops a
+   double count (`MockAttested.submit` shows it for a 2-of-3).
+3. Never let the effect depend on `msg.sender` (the relayer) unless `msg.sender` is a signed parameter.
+4. Relayer ordering: a relayer cannot change the bound operation or its parameters, but it picks WHEN
+   the attestation lands (within `expiry`) and may land it before a pending cancel.
+5. An `evm_call` simulation of an expiry-gated function uses the node's local simulated block time;
+   it is advisory, the committed block decides.
+6. Re-entry: the nonce is marked before the effect, so a re-entering call with the same attestation
+   is refused (`AttestationNonceUsed`); that is the order to keep.
+
 ## What is different on Nodus
 
 - **Addresses are 32 bytes** (`nodus/tools/evm/solc/README.md`, semantic rules). An address takes
@@ -409,16 +531,26 @@ Not covered:
   re-entry on a chain (the engine tests cover them).
 - Contracts you write on top of the abstract ones: the tests exercise them only through the mocks
   in `test/mocks/`.
+- The companion library on a chain: the engine tests run it with the precompile switched on in the
+  node's engine profile; a mock deployed through `nodus-cli`, an attestation made with a CLI and
+  relayed by another identity (the stagef scenario of the design) is a separate step.
+- "Another chain id" in the companion tests is a message built for another chain id against the
+  one engine state; and the signing keys / the verifier are the project's own code (the NIST ACVP
+  vectors of `shared/evm/tests/test_mldsa_precompile.c` pin the verifier separately).
+- Signature bytes are hedged and differ per run: the tests assert outcomes and message bytes,
+  never signature bytes.
 - Compilers other than the pinned one, other optimizer settings, EVM versions other than prague.
 - The engine is the project's own (`shared/evm`): an engine defect that mirrors a compiler defect
   would not show; `test_addr32.c` and `test_nodus_profile.c` pin the engine's own rules.
-- No external audit. v0.1 has had the design council (Kurultay #30) and this test suite.
+- No external audit. v0.1 has had the design council (Kurultay #30) and this test suite; the v0.2
+  companion library has had Kurultay #40 and the same suite.
 
-## Deliberately not in v0.1
+## Deliberately not in the library
 
-ERC-20 / ERC-721 tokens (see `nodus/tools/evm/examples/`), upgradeable proxies, signature / permit
-approvals (they need an ML-DSA-87 verification precompile, a separate hard-fork design),
-`renounceOwnership`, timelock predecessors and batches, emergency "rescue" functions, token
+ERC-20 / ERC-721 tokens (see `nodus/tools/evm/examples/`), upgradeable proxies, a permit-style
+token consumer of the attestations, key registration (the v0.2 attestations are stateless: the
+caller supplies the public key), batch consumption or batch cancel, nonce bitmaps, relayed cancel
+signatures, a `_consumeDistinct` helper, generic raw-byte signing, `renounceOwnership`, timelock predecessors and batches, emergency "rescue" functions, token
 escrow, ERC-165, an arbiter-side `refund` (use `resolve(i, false)`), an escrow dispute window, a
 payee-side claim on an escrow whose payer and arbiter are both gone, a timelock external setup
 admin.

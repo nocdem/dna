@@ -1,4 +1,4 @@
 Version: 0.8.30+nodus.addr256.commit.73712a01.Linux.g++
-sources: src/access/AccessControl.sol src/access/Ownable.sol src/governance/Timelock.sol src/payments/MilestoneEscrow.sol src/security/Pausable.sol src/security/ReentrancyGuard.sol src/vaults/MultisigVault.sol test/mocks/MockAccessControl.sol test/mocks/MockActor.sol test/mocks/MockFalseTarget.sol test/mocks/MockForcer.sol test/mocks/MockGuarded.sol test/mocks/MockOwnable.sol test/mocks/MockTicketSender.sol
+sources: src/access/AccessControl.sol src/access/Ownable.sol src/crypto/MLDSA87.sol src/crypto/MLDSA87Attested.sol src/governance/Timelock.sol src/payments/MilestoneEscrow.sol src/security/Pausable.sol src/security/ReentrancyGuard.sol src/vaults/MultisigVault.sol test/mocks/MockAccessControl.sol test/mocks/MockActor.sol test/mocks/MockAttested.sol test/mocks/MockFalseTarget.sol test/mocks/MockForcer.sol test/mocks/MockGuarded.sol test/mocks/MockOwnable.sol test/mocks/MockTicketSender.sol
 default: --evm-version prague --bin --bin-runtime --abi
 optimize: --evm-version prague --optimize --bin --bin-runtime --abi

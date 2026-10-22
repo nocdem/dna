@@ -1,0 +1,1 @@
+[{"inputs":[],"name":"MLDSA87BadLength","type":"error"},{"inputs":[{"internalType":"address","name":"expected","type":"address"}],"name":"MLDSA87InvalidSignature","type":"error"},{"inputs":[{"internalType":"uint256","name":"length","type":"uint256"}],"name":"MLDSA87MessageTooLong","type":"error"},{"inputs":[],"name":"MLDSA87ZeroSigner","type":"error"}]

@@ -906,6 +906,15 @@ set(NODUS_EVM_ENABLED OFF)
 if(NODUS_STANDALONE AND NOT WIN32)
     set(NODUS_EVM_ENABLED ON)
     list(APPEND NODUS_SOURCES src/witness/nodus_witness_rt_evm.c)
+    # The EVM contract-ABI text layer (types, signatures, selectors, the
+    # argument encoder) and the ML-DSA-87 companion library's attested
+    # message + signature — `nodus-cli evm encode|send|call|deploy|attest`'s
+    # bodies, moved out I/O-free like the builders above. They call
+    # keccak256, which only the EVM build links (nodus_evm_keccak), so they
+    # join the library only here.
+    list(APPEND NODUS_SOURCES
+        src/client/nodus_evm_abi.c
+        src/client/nodus_evm_attest.c)
 endif()
 
 # Windows: five witness-server sources in the common list use POSIX-only
@@ -2905,6 +2914,40 @@ if(NODUS_EVM_ENABLED)
     target_link_libraries(test_keccak256 nodus)
     target_compile_options(test_keccak256 PRIVATE -Wall -Wextra)
     add_test(NAME test_keccak256 COMMAND test_keccak256)
+
+    # The EVM contract-ABI text layer (src/client/nodus_evm_abi.c, moved out
+    # of nodus-cli): the canonical-parser regressions refused (Kurultay #40
+    # finding A1), canonicalisation kept, pinned selectors and encodings.
+    # No environment, no network.
+    add_executable(test_evm_abi tests/test_evm_abi.c)
+    target_link_libraries(test_evm_abi nodus dsa nodus)
+    target_compile_options(test_evm_abi PRIVATE -Wall -Wextra)
+    add_test(NAME test_evm_abi COMMAND test_evm_abi)
+
+    # The ML-DSA-87 companion library's attested message and signature
+    # (src/client/nodus_evm_attest.c): both fixture cases byte for byte
+    # (tools/evm/contracts/test/fixtures/attest_v1.txt, read through the
+    # compiled-in path), the refusals, the signature under the context.
+    add_executable(test_evm_attest tests/test_evm_attest.c)
+    target_link_libraries(test_evm_attest nodus dsa nodus)
+    target_compile_options(test_evm_attest PRIVATE -Wall -Wextra)
+    target_compile_definitions(test_evm_attest PRIVATE
+        NODUS_ATTEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/evm/contracts/test/fixtures/attest_v1.txt")
+    add_test(NAME test_evm_attest COMMAND test_evm_attest)
+
+    # The executable `nodus-cli evm attest`, offline (--chain-id, no node):
+    # the printed fields, the signature under the context, the refusals'
+    # exit status and stream. Runs the BUILT nodus-cli as a child process
+    # (fork/execv, no shell); the path is the target's file, so the test
+    # depends on nodus-cli. No environment, no network.
+    add_executable(test_evm_attest_cli tests/test_evm_attest_cli.c)
+    target_link_libraries(test_evm_attest_cli nodus dsa nodus)
+    target_compile_options(test_evm_attest_cli PRIVATE -Wall -Wextra)
+    target_compile_definitions(test_evm_attest_cli PRIVATE
+        NODUS_ATTEST_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/evm/contracts/test/fixtures/attest_v1.txt"
+        NODUS_CLI_PATH="$<TARGET_FILE:nodus-cli>")
+    add_dependencies(test_evm_attest_cli nodus-cli)
+    add_test(NAME test_evm_attest_cli COMMAND test_evm_attest_cli)
 endif()
 
 # Ledger V2 O12 S2 — the engine-mandatory epoch boundary: the derivation

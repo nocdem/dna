@@ -1,13 +1,18 @@
 /**
  * @file test_contract_lib.c
- * @brief The Nodus security contract library v0.1 (nodus/tools/evm/contracts)
- *        runs as designed in the engine's 32-byte mode.
+ * @brief The Nodus contract library v0.2 (nodus/tools/evm/contracts) runs as
+ *        designed in the engine's 32-byte mode: the v0.1 security contracts
+ *        and the ML-DSA-87 companion library (MLDSA87, MLDSA87Attested).
  *
  * Governing records: docs/plans/2026-10-21-nodus-contract-library-design.md
  * rev 3 (§1 contract table, §5 test plan), docs/plans/decisions/
  * 2026-10-21-kurultay-30-summary.md, 2026-10-04-nodus-evm-domain.md decision
  * 3 (32-byte addresses), 2026-10-06-evm-dev-tooling.md item 1 (developer
- * pack), and the semantic rules of nodus/tools/evm/solc/README.md.
+ * pack), and the semantic rules of nodus/tools/evm/solc/README.md. For the
+ * companion library: docs/plans/2026-10-22-mldsa87-companion-library-design.md
+ * rev 2 (§1.2-1.5, §1.7, §5), docs/plans/decisions/2026-10-21-mldsa87-evm-
+ * precompile.md (items 2, 3, 7(a), 8, TAG_ATTEST_V1, "Companion library: the
+ * actionType") and 2026-10-22-kurultay-40-mldsa-companion-library-summary.md.
  *
  * WHAT IT PROVES
  *   For both committed compiler configurations (default = no optimizer, and
@@ -84,6 +89,49 @@
  *   - CALL-success semantics: a vault and a timelock execute whose target
  *     returns encoded `false` without reverting completes (Done / executed).
  *   - Deployed code of every contract and mock = the committed runtime.hex.
+ *   - ML-DSA-87 companion library (MockAttested over MLDSA87 +
+ *     MLDSA87Attested), in a SECOND engine state per configuration with
+ *     mldsa_precompile = 1 (the cases above stay at 0). Signatures are made
+ *     here with qgp_dsa87_sign_ctx under "nodus.evm.attest.v1" from four keys
+ *     derived from fixed seeds; the signer's account is SHA3-512(pk)[0..32].
+ *     Proven: a valid attestation applies its action once and emits
+ *     AttestationConsumed; the same nonce is refused (same signature, and a
+ *     second valid signature over the same nonce); a changed parameter, a
+ *     changed nonce, another contract, another chain id, another actionType
+ *     with the same parameter layout, a wrong signer, a flipped signature
+ *     byte, an all-zero signature of the right size and a signature under the
+ *     EMPTY context are each refused with MLDSA87InvalidSignature(signer); a
+ *     wrong pk / sig length reverts MLDSA87BadLength, a 65 537-byte message
+ *     reverts MLDSA87MessageTooLong before the call, a 65 536-byte message
+ *     verifies; a zero expected signer reverts MLDSA87ZeroSigner; accepted at
+ *     block.timestamp == expiry, AttestationExpired one second later; the
+ *     misordered-header action reverts AttestationHeaderMismatch even with a
+ *     valid signature over the misordered bytes; the decode pins of the
+ *     pinned compiler (a header followed by static parameters, by a bytes
+ *     parameter, exactly the header; 223 bytes -> AttestationHeaderMismatch;
+ *     an expiry word with bit 64 set -> AttestationHeaderMismatch with data,
+ *     not an empty revert); a starved precompile (a gas cap of a nested
+ *     frame, found by a run-time scan) reverts MLDSA87InvalidSignature, i.e.
+ *     the precompile call was REACHED and failed for lack of gas; the nonce mark is rolled back by a
+ *     later revert in the same call and the same nonce then works with
+ *     another signed message; re-entry with the same attestation is refused
+ *     (AttestationNonceUsed recorded by the re-entering target);
+ *     cancelAttestationNonce voids an unused nonce (then the attestation is
+ *     refused), is refused for a used or already cancelled nonce, and touches
+ *     only msg.sender's namespace; signer namespaces are independent; the
+ *     2-of-3 action counts a signer once per proposal even under two nonces
+ *     and executes at the second distinct signer, an outsider key is refused;
+ *     the header-only action shows the README rule (a relayer chooses the
+ *     unsigned amount and recipient). Pins: the mock's TAG_ATTEST_V1 view =
+ *     the decision bytes 99e805e3...a43d; its PRECOMPILE view =
+ *     evm_mldsa87_addr; the test TICKET differs from evm_mldsa87_addr; the
+ *     two actionType constants (the compiler's compile-time keccak256) =
+ *     the fixture's actiontype words (the tree's keccak256.c): the
+ *     compiler-vs-tree hash check; the mock's pure message builders
+ *     reproduce the bytes of test/fixtures/attest_v1.txt for both cases.
+ *     With the switch OFF (the original state): verify returns ok == false
+ *     for a VALID signature (an ordinary account, empty return) and the
+ *     helper and an action revert MLDSA87InvalidSignature.
  *   Negative controls of the address width: every EOA address result is
  *   checked to differ from its 160-bit-masked value (ck_addr), every refusal
  *   that names an account names the full 32-byte account (the twin, not the
@@ -98,7 +146,10 @@
  *   test time. Directory: argv[1], else CONTRACTS_OUT (default
  *   "../../nodus/tools/evm/contracts/out", relative to shared/evm, where
  *   `make test` runs it). A missing or malformed .hex is a FAIL, never a
- *   skip. No compile flags, no environment variables.
+ *   skip. No compile flags, no environment variables. The message fixture
+ *   <dir>/../test/fixtures/attest_v1.txt (read at run time; missing = FAIL).
+ *   The binary links the dsa signer (libevm_deps.a) and qgp_randombytes
+ *   (tests/evm_test_qgp_shim.c), as test_mldsa_precompile does.
  *
  * ENGINE PROFILE
  *   As nodus_witness_rt_evm.c builds it (addr_bytes 32, nodus_profile 1,
@@ -106,12 +157,35 @@
  *   gas price 0, type-1 txs, 32-byte chain id, coinbase zero). The ticket
  *   address is a fixed high-byte TEST constant (0x7e × 32), passed to the
  *   contracts as data — not the production SHA3-512("NDS.EVMWITHDRAW.v1")
- *   derivation. Block time is set per transaction (env.timestamp).
+ *   derivation. Block time is set per transaction (env.timestamp). Each
+ *   configuration runs TWO engine states: the original one
+ *   (mldsa_precompile 0) and one with mldsa_precompile 1 for the companion
+ *   library (evm_state_new refuses that switch when the TICKET equals the
+ *   tag address; the test asserts they differ).
  *
  * WHAT IT LEAVES BEHIND
  *   Nothing (in-memory backend, no files written).
  *
  * HOW IT CAN LIE
+ *   - ML-DSA signatures are HEDGED: each run signs afresh, so signature
+ *     bytes differ run to run. Every assertion is on an outcome (status,
+ *     revert bytes, state, logs) or on message bytes, never on signature
+ *     bytes; the gas-dependent assertion (the starved precompile) scans the
+ *     gas cap of a nested frame at run time instead of hard-coding it. A
+ *     top-level gas limit cannot reach that window (the tx's calldata floor,
+ *     EIP-7623, is above it), hence the nested frame. If the scan finds no cap
+ *     that reaches the precompile call and fails there, or never sees the
+ *     call succeed at a larger cap, the test FAILS (it never passes
+ *     vacuously).
+ *   - "Another chain id" is a message built for another chain id (the
+ *     consumer reads block.chainid from the one engine state); it proves the
+ *     signed bytes bind the chain id, not that a second engine refuses.
+ *   - The signing keys and the precompile are the project's own code
+ *     (shared/crypto/sign/dsa, evm_precompile.c): a defect shared by signer
+ *     and verifier would cancel out here; the NIST ACVP vectors of
+ *     test_mldsa_precompile pin the verifier separately.
+ *   - The fixture pins the ABI layout; its two hash words are copied inputs,
+ *     the hash check is the compiler-vs-tree comparison above.
  *   - It tests the bytecode in out/, i.e. whatever solc wrote it; check
  *     out/VERSION.txt. A source edit without re-running build.sh leaves
  *     out/ stale: only contracts/verify.sh compares the .sol with the .hex,
@@ -130,9 +204,12 @@
  * passed, 1 = an assertion failed (or a .hex is missing), 2 = engine fault.
  */
 #include "evm.h"
+#include "evm_internal.h"
 #include "evm_membackend.h"
 #include "addr32_vectors.h"
 #include "crypto/hash/keccak256.h"
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -165,7 +242,11 @@ static void mk_addr(uint8_t out[32], uint8_t hi, uint8_t lo)
     memset(out + 12, lo, 20);
 }
 
-enum { S_A, S_A_TWIN, S_B, S_B_TWIN, S_C, S_C_TWIN, S_D, S_OUT, S_VIEW, S_COUNT };
+/* S_SIG0..S_SIG3 are the ML-DSA-87 signers' own accounts (address =
+ * SHA3-512(pk)[0..32], set by init_keys): cancelAttestationNonce is sent
+ * from them. */
+enum { S_A, S_A_TWIN, S_B, S_B_TWIN, S_C, S_C_TWIN, S_D, S_OUT, S_VIEW,
+       S_SIG0, S_SIG1, S_SIG2, S_SIG3, S_COUNT };
 
 static uint8_t ACC[S_COUNT][32];
 #define A       ACC[S_A]
@@ -188,10 +269,13 @@ static void kec(const uint8_t *d, size_t n, uint8_t out[32]);
 
 static void init_inputs(void)
 {
+    /* the four S_SIG slots are placeholders, replaced by init_keys() */
     static const uint8_t hi[S_COUNT] = { 0xa1, 0xc1, 0xa2, 0xc2, 0xa3, 0xc3,
-                                         0xa4, 0xa5, 0xa9 };
+                                         0xa4, 0xa5, 0xa9, 0xb0, 0xb1, 0xb2,
+                                         0xb3 };
     static const uint8_t lo[S_COUNT] = { 0x11, 0x11, 0x22, 0x22, 0x33, 0x33,
-                                         0x44, 0x55, 0x99 };
+                                         0x44, 0x55, 0x99, 0x01, 0x02, 0x03,
+                                         0x04 };
     for (int i = 0; i < S_COUNT; i++) mk_addr(ACC[i], hi[i], lo[i]);
     memset(TICKET, 0x7e, 32);
     for (int i = 0; i < 64; i++) FP[i] = (uint8_t)(0x5a ^ i);
@@ -492,12 +576,12 @@ static int load_hex(const char *dir, const char *cfg, const char *name,
 /* ── per-configuration context ─────────────────────────────────────────── */
 
 enum { K_TIMELOCK, K_VAULT, K_ESCROW, K_OWNABLE, K_AC, K_GUARDED, K_ACTOR,
-       K_FALSE, K_TICKETSENDER, K_FORCER, K_COUNT };
+       K_FALSE, K_TICKETSENDER, K_FORCER, K_ATTESTED, K_COUNT };
 
 static const char *const NAMES[K_COUNT] = {
     "Timelock", "MultisigVault", "MilestoneEscrow", "MockOwnable",
     "MockAccessControl", "MockGuarded", "MockActor", "MockFalseTarget",
-    "MockTicketSender", "MockForcer",
+    "MockTicketSender", "MockForcer", "MockAttested",
 };
 
 #define MAX_DEPLOYED 64
@@ -999,7 +1083,9 @@ static void add_eoa(evm_membackend *mb, const uint8_t a[32], uint64_t balance)
         fatal("membackend add");
 }
 
-static int ctx_open(ctx_t *c, const char *dir, const char *cfg)
+/* mldsa: the engine's mldsa_precompile switch (0 = the original state, 1 =
+ * the companion-library state). */
+static int ctx_open(ctx_t *c, const char *dir, const char *cfg, int mldsa)
 {
     memset(c, 0, sizeof(*c));
     c->cfg = cfg;
@@ -1027,6 +1113,7 @@ static int ctx_open(ctx_t *c, const char *dir, const char *cfg)
     memcpy(c->ec.ticket_addr.b, TICKET, 32);
     evm_u256_from_u64(&c->ec.ticket_unit, Q);
     c->ec.ticket_gas = 25000;
+    c->ec.mldsa_precompile = mldsa;
 
     /* coinbase zero, as in production */
     c->env.number = 1000;
@@ -2448,6 +2535,1034 @@ static void scen_ticket_mock(ctx_t *c)
     ck_u64v(c, bal(c, ts), 4 * Q, "the ticket sender's balance dropped by 1 q");
 }
 
+/* ── ML-DSA-87 companion library (MLDSA87, MLDSA87Attested) ────────────── */
+
+#define PK_LEN      QGP_DSA87_PUBLICKEYBYTES
+#define SIG_LEN     QGP_DSA87_SIGNATURE_BYTES
+#define ATT_CTX     "nodus.evm.attest.v1"            /* the FIPS 204 context */
+#define ATT_CTX_LEN 19u
+#define MSG_MAX     65536u
+/* A far expiry: block time stays below it until the very last case. */
+#define EXPIRY      (T0 + 100000ull)
+
+/* action argument lists (the three Approve-shaped actions share them) */
+#define AP_ARGS     "(uint256,uint64,address,uint256,address,bytes,bytes)"
+#define SUBMIT_FN   "submit(uint256,uint64,address,address,uint256,bytes,bytes,bytes)"
+#define INVALID_SIG "MLDSA87InvalidSignature(address)"
+#define NONCE_USED  "AttestationNonceUsed(address,uint256)"
+#define HDR_MISMATCH "AttestationHeaderMismatch()"
+#define B_APPROVE_MSG "approveMessage(uint256,address,uint256,uint64,address,uint256,address)"
+#define B_MISORD_MSG  "misorderedMessage(uint256,address,uint256,uint64,address,uint256,address)"
+
+typedef struct {
+    uint8_t pk[PK_LEN];
+    uint8_t sk[QGP_DSA87_SECRETKEYBYTES];
+    uint8_t addr[32];                    /* SHA3-512(pk)[0..32] */
+} sigkey_t;
+
+static sigkey_t KEYS[4];                 /* 0,1,2 = the 2-of-3 signers; 3 = an outsider */
+static uint8_t  CHAIN32[32];             /* the engine's chain id (chain_id_word) */
+
+/* The four signing keys, from fixed seeds (qgp_dsa87_keypair_derand: no
+ * randomness); each signer's account is its address. Called once, after
+ * init_inputs and before any ctx_open. */
+static void init_keys(void)
+{
+    for (int i = 0; i < 4; i++) {
+        uint8_t seed[32], h[QGP_SHA3_512_DIGEST_LENGTH];
+        for (int k = 0; k < 32; k++) seed[k] = (uint8_t)(0x40 * (i + 1) + k);
+        if (qgp_dsa87_keypair_derand(KEYS[i].pk, KEYS[i].sk, seed) != 0)
+            fatal("qgp_dsa87_keypair_derand");
+        if (qgp_sha3_512(KEYS[i].pk, PK_LEN, h) != 0) fatal("qgp_sha3_512");
+        memcpy(KEYS[i].addr, h, 32);
+        if (!high_nonzero(KEYS[i].addr)) fatal("a signer address with zero high bytes");
+        memcpy(ACC[S_SIG0 + i], KEYS[i].addr, 32);
+    }
+    for (int i = 0; i < 32; i++) CHAIN32[i] = (uint8_t)(0xc0 + i);
+}
+
+/* hex text -> bytes. @return 0, -1 odd length / non-hex / over cap */
+static int hex_bytes(const char *s, uint8_t *out, size_t cap, size_t *n)
+{
+    size_t len = strlen(s);
+    if (len % 2 != 0 || len / 2 > cap) return -1;
+    for (size_t i = 0; i < len / 2; i++) {
+        int hi = hexval(s[2 * i]), lo = hexval(s[2 * i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[i] = (uint8_t)(hi * 16 + lo);
+    }
+    *n = len / 2;
+    return 0;
+}
+
+/* decimal text -> a 256-bit big-endian word. @return 0, -1 not a number /
+ * above 2^256-1 */
+static int dec_word(const char *s, uint8_t out[32])
+{
+    memset(out, 0, 32);
+    if (!*s) return -1;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9') return -1;
+        unsigned carry = (unsigned)(*s - '0');
+        for (int i = 31; i >= 0; i--) {
+            unsigned v = (unsigned)out[i] * 10u + carry;
+            out[i] = (uint8_t)v;
+            carry = v >> 8;
+        }
+        if (carry) return -1;
+    }
+    return 0;
+}
+
+/* The `bytes` a view returns, unwrapped from its ABI encoding. */
+static int view_bytes(ctx_t *c, const uint8_t *to, const char *sig, enc_t e,
+                      buf_t *out, const char *what)
+{
+    evm_tx_result_t r;
+    int ok = 0;
+    memset(out, 0, sizeof(*out));
+    if (!call_ok(c, S_VIEW, to, 0, sig, e, &r, what)) return -1;
+    if (r.output_len >= 64) {
+        uint64_t off = 0, len = 0;
+        int clean = 1;
+        for (int i = 0; i < 24; i++)
+            if (r.output[i] || r.output[32 + i]) clean = 0;
+        for (int i = 24; i < 32; i++) {
+            off = (off << 8) | r.output[i];
+            len = (len << 8) | r.output[32 + i];
+        }
+        if (clean && off == 32 && len <= r.output_len - 64) {
+            buf_put(out, r.output + 64, (size_t)len);
+            ok = 1;
+        }
+    }
+    evm_tx_result_free(&r);
+    ck(c, ok, what);
+    return ok ? 0 : -1;
+}
+
+/* sig over msg under the FIPS 204 context (ctx, ctxlen); ctx NULL = empty */
+static void att_sign(const sigkey_t *k, const buf_t *msg, const uint8_t *ctx,
+                     size_t ctxlen, uint8_t sig[SIG_LEN])
+{
+    static const uint8_t one = 0;
+    size_t sl = 0;
+    if (qgp_dsa87_sign_ctx(sig, &sl, msg->n ? msg->b : &one, msg->n, ctx, ctxlen,
+                           k->sk) != 0 || sl != SIG_LEN)
+        fatal("ML-DSA-87 signing");
+}
+
+static void att_sign_ok(const sigkey_t *k, const buf_t *msg, uint8_t sig[SIG_LEN])
+{
+    att_sign(k, msg, (const uint8_t *)ATT_CTX, ATT_CTX_LEN, sig);
+}
+
+/* The Approve-shaped message through a mock's pure builder `bsig`
+ * (approveMessage / misorderedMessage), for explicit chain id and contract. */
+static void bld_approve(ctx_t *c, const char *bsig, const uint8_t *mock,
+                        const uint8_t chain[32], const uint8_t *verifying,
+                        uint64_t nonce, uint64_t expiry, const uint8_t signer[32],
+                        uint64_t amount, const uint8_t to[32], buf_t *out)
+{
+    enc_t e = E0();
+    enc_word(&e, chain);
+    enc_word(&e, verifying);
+    enc_word(&e, U(nonce));
+    enc_word(&e, U(expiry));
+    enc_word(&e, signer);
+    enc_word(&e, U(amount));
+    enc_word(&e, to);
+    view_bytes(c, mock, bsig, e, out, bsig);
+}
+
+static void bld_submit(ctx_t *c, const uint8_t *mock, uint64_t nonce, uint64_t expiry,
+                       const uint8_t signer[32], const uint8_t target[32],
+                       uint64_t value, const uint8_t *data, size_t dn, buf_t *out)
+{
+    enc_t e = E0();
+    enc_word(&e, CHAIN32);
+    enc_word(&e, mock);
+    enc_word(&e, U(nonce));
+    enc_word(&e, U(expiry));
+    enc_word(&e, signer);
+    enc_word(&e, target);
+    enc_word(&e, U(value));
+    enc_bytes(&e, data, dn);
+    view_bytes(c, mock,
+               "submitMessage(uint256,address,uint256,uint64,address,address,uint256,bytes)",
+               e, out, "submitMessage");
+}
+
+/* calldata of fn(nonce, expiry, signer, amount, to, pk, sig) */
+static void data_ap(buf_t *d, const char *fn, uint64_t nonce, uint64_t expiry,
+                    const uint8_t signer[32], uint64_t amount, const uint8_t to[32],
+                    const uint8_t *pk, size_t pkn, const uint8_t *sg, size_t sgn)
+{
+    enc_t e = E0();
+    enc_word(&e, U(nonce));
+    enc_word(&e, U(expiry));
+    enc_word(&e, signer);
+    enc_word(&e, U(amount));
+    enc_word(&e, to);
+    enc_bytes(&e, pk, pkn);
+    enc_bytes(&e, sg, sgn);
+    mk_call(d, fn, e);
+}
+
+static void data_submit(buf_t *d, uint64_t nonce, uint64_t expiry,
+                        const uint8_t signer[32], const uint8_t target[32],
+                        uint64_t value, const uint8_t *data, size_t dn,
+                        const sigkey_t *k, const uint8_t *sg)
+{
+    enc_t e = E0();
+    enc_word(&e, U(nonce));
+    enc_word(&e, U(expiry));
+    enc_word(&e, signer);
+    enc_word(&e, target);
+    enc_word(&e, U(value));
+    enc_bytes(&e, data, dn);
+    enc_bytes(&e, k->pk, PK_LEN);
+    enc_bytes(&e, sg, SIG_LEN);
+    mk_call(d, SUBMIT_FN, e);
+}
+
+/* Approve attestation for (mock, chain) signed by `k` for the claimed `signer`. */
+static void ap_sign(ctx_t *c, const uint8_t *mock, const uint8_t chain[32],
+                    uint64_t nonce, uint64_t expiry, const sigkey_t *k,
+                    const uint8_t signer[32], uint64_t amount, const uint8_t to[32],
+                    uint8_t sg[SIG_LEN])
+{
+    buf_t msg;
+    bld_approve(c, B_APPROVE_MSG, mock, chain, mock, nonce, expiry, signer, amount,
+                to, &msg);
+    att_sign_ok(k, &msg, sg);
+    buf_free(&msg);
+}
+
+/* send d from S_OUT to `to`, expecting revert MLDSA87InvalidSignature(signer); frees d */
+static void rev_inv(ctx_t *c, const uint8_t *to, buf_t *d, const uint8_t signer[32],
+                    const char *what)
+{
+    rev_tx(c, S_OUT, to, 0, d, INVALID_SIG, ARGS(signer), what);
+    buf_free(d);
+}
+
+/* send d from S_OUT, expecting revert `esig(signer, U(nonce))`; frees d */
+static void rev_used(ctx_t *c, const uint8_t *to, buf_t *d, const uint8_t signer[32],
+                     uint64_t nonce, const char *what)
+{
+    rev_tx(c, S_OUT, to, 0, d, NONCE_USED, ARGS(signer, U(nonce)), what);
+    buf_free(d);
+}
+
+static void ck_bool(ctx_t *c, const uint8_t *to, const char *sig, enc_t e,
+                    uint64_t want, const char *what)
+{
+    uint8_t w[32];
+    view(c, to, sig, e, w, what);
+    ck_u64(c, w, want, what);
+}
+
+/* ── the message fixture test/fixtures/attest_v1.txt ───────────────────── */
+
+typedef struct {
+    char     name[16];
+    char     action[96];
+    uint8_t  atype[32], chain[32], contract[32], signer[32], nonce[32], expiry[32];
+    char     args[1024];
+    uint8_t *msg;
+    size_t   msglen;
+    unsigned have;                       /* a bit per field; all 9 are required */
+} fxcase_t;
+
+#define FX_MAX   4
+
+static const char *g_dir;                /* the out/ directory (argv[1] / default) */
+
+static int fx_load(const char *dir, fxcase_t *cs, size_t *ncs)
+{
+    char path[1100];
+    int pn = snprintf(path, sizeof(path), "%s/../test/fixtures/attest_v1.txt", dir);
+    if (pn < 0 || (size_t)pn >= sizeof(path)) return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "  [FAIL] fixture: missing %s\n", path);
+        return -1;
+    }
+    size_t cap = 8192, n = 0;
+    char *txt = malloc(cap);
+    if (!txt) fatal("oom");
+    int ch;
+    while ((ch = fgetc(f)) != EOF) {
+        if (n + 2 >= cap) {
+            cap *= 2;
+            char *x = realloc(txt, cap);
+            if (!x) fatal("oom");
+            txt = x;
+        }
+        txt[n++] = (char)ch;
+    }
+    txt[n] = 0;
+    fclose(f);
+    memset(cs, 0, FX_MAX * sizeof(*cs));
+    *ncs = 0;
+    int bad = 0;
+    char *end = txt + n;
+    for (char *line = txt, *next; line < end; line = next) {
+        char *nl = memchr(line, '\n', (size_t)(end - line));
+        if (nl) {
+            *nl = 0;
+            next = nl + 1;
+        } else {
+            next = end;
+        }
+        if (line[0] == '#' || line[0] == 0) continue;
+        char *val = strchr(line, ' ');
+        if (!val) { bad = 1; continue; }
+        *val++ = 0;
+        if (strcmp(line, "case") == 0) {
+            if (*ncs == FX_MAX) { bad = 1; break; }
+            snprintf(cs[*ncs].name, sizeof(cs[*ncs].name), "%s", val);
+            (*ncs)++;
+            continue;
+        }
+        if (*ncs == 0) { bad = 1; continue; }
+        fxcase_t *k = &cs[*ncs - 1];
+        size_t got = 0;
+        int rc = 0;
+        if (strcmp(line, "action") == 0) {
+            snprintf(k->action, sizeof(k->action), "%s", val); k->have |= 1u;
+        } else if (strcmp(line, "actiontype") == 0) {
+            rc = hex_bytes(val, k->atype, 32, &got); if (got != 32) rc = -1; k->have |= 2u;
+        } else if (strcmp(line, "chain") == 0) {
+            rc = hex_bytes(val, k->chain, 32, &got); if (got != 32) rc = -1; k->have |= 4u;
+        } else if (strcmp(line, "contract") == 0) {
+            rc = hex_bytes(val, k->contract, 32, &got); if (got != 32) rc = -1; k->have |= 8u;
+        } else if (strcmp(line, "signer") == 0) {
+            rc = hex_bytes(val, k->signer, 32, &got); if (got != 32) rc = -1; k->have |= 16u;
+        } else if (strcmp(line, "nonce") == 0) {
+            rc = dec_word(val, k->nonce); k->have |= 32u;
+        } else if (strcmp(line, "expiry") == 0) {
+            rc = dec_word(val, k->expiry); k->have |= 64u;
+        } else if (strcmp(line, "args") == 0) {
+            snprintf(k->args, sizeof(k->args), "%s", val); k->have |= 128u;
+        } else if (strcmp(line, "message") == 0) {
+            k->msg = malloc(strlen(val) / 2 + 1);
+            if (!k->msg) fatal("oom");
+            rc = hex_bytes(val, k->msg, strlen(val) / 2 + 1, &k->msglen); k->have |= 256u;
+        } else {
+            rc = -1;
+        }
+        if (rc != 0) bad = 1;
+    }
+    free(txt);
+    for (size_t i = 0; i < *ncs; i++)
+        if ((cs[i].have & 0x1ffu) != 0x1ffu) bad = 1;
+    return bad ? -1 : 0;
+}
+
+/* split `args` at spaces into at most `max` tokens (in place) */
+static size_t fx_tokens(char *args, char **tok, size_t max)
+{
+    size_t n = 0;
+    for (char *p = args; *p && n < max;) {
+        while (*p == ' ') *p++ = 0;
+        if (!*p) break;
+        tok[n++] = p;
+        while (*p && *p != ' ') p++;
+    }
+    return n;
+}
+
+/* The mock's pure builders reproduce the fixture's message bytes for every
+ * case, and the mock's two actionType constants (the compiler's compile-time
+ * keccak256 of the action text) equal the fixture's actiontype words (the
+ * tree's keccak256.c) — the compiler-vs-tree hash check. */
+static void scen_fixture(ctx_t *c, const uint8_t *mock)
+{
+    fxcase_t cs[FX_MAX];
+    size_t ncs = 0;
+    int have_static = 0, have_dynamic = 0;
+    uint8_t w[32];
+
+    if (fx_load(g_dir, cs, &ncs) != 0) {
+        ck(c, 0, "fixture attest_v1.txt loaded and well-formed");
+        for (size_t i = 0; i < ncs; i++) free(cs[i].msg);
+        return;
+    }
+    ck(c, ncs == 2, "fixture has exactly the two cases");
+    for (size_t i = 0; i < ncs; i++) {
+        fxcase_t *k = &cs[i];
+        char *tok[4] = { NULL, NULL, NULL, NULL };
+        size_t nt = fx_tokens(k->args, tok, 4);
+        buf_t got;
+        memset(&got, 0, sizeof(got));
+        if (strcmp(k->name, "static") == 0) {
+            uint8_t amount[32] = { 0 }, to[32] = { 0 };
+            size_t tn = 0;
+            have_static = 1;
+            ck(c, nt == 2 && dec_word(tok[0], amount) == 0 &&
+                  hex_bytes(tok[1], to, 32, &tn) == 0 && tn == 32,
+               "fixture static: args are (uint256, address)");
+            view(c, mock, "APPROVE()", E0(), w, "APPROVE()");
+            ck_word(c, w, k->atype,
+                    "Approve(uint256,address): compiler keccak256 = the fixture's tree keccak256");
+            enc_t e = E0();
+            enc_word(&e, k->chain);
+            enc_word(&e, k->contract);
+            enc_word(&e, k->nonce);
+            enc_word(&e, k->expiry);
+            enc_word(&e, k->signer);
+            enc_word(&e, amount);
+            enc_word(&e, to);
+            view_bytes(c, mock, B_APPROVE_MSG, e, &got, "fixture static: approveMessage");
+        } else if (strcmp(k->name, "dynamic") == 0) {
+            uint8_t target[32] = { 0 }, value[32] = { 0 }, data[64] = { 0 };
+            size_t tn = 0, dn = 0;
+            have_dynamic = 1;
+            ck(c, nt == 3 && hex_bytes(tok[0], target, 32, &tn) == 0 && tn == 32 &&
+                  dec_word(tok[1], value) == 0 &&
+                  hex_bytes(tok[2], data, sizeof(data), &dn) == 0,
+               "fixture dynamic: args are (address, uint256, bytes)");
+            view(c, mock, "SUBMIT()", E0(), w, "SUBMIT()");
+            ck_word(c, w, k->atype,
+                    "Submit(address,uint256,bytes): compiler keccak256 = the fixture's tree keccak256");
+            enc_t e = E0();
+            enc_word(&e, k->chain);
+            enc_word(&e, k->contract);
+            enc_word(&e, k->nonce);
+            enc_word(&e, k->expiry);
+            enc_word(&e, k->signer);
+            enc_word(&e, target);
+            enc_word(&e, value);
+            enc_bytes(&e, data, dn);
+            view_bytes(c, mock,
+                       "submitMessage(uint256,address,uint256,uint64,address,address,uint256,bytes)",
+                       e, &got, "fixture dynamic: submitMessage");
+        } else {
+            ck(c, 0, "fixture case has a known name");
+        }
+        ck(c, got.n == k->msglen && got.n > 0 && memcmp(got.b, k->msg, got.n) == 0,
+           "the mock's builder reproduces the fixture message byte for byte");
+        buf_free(&got);
+    }
+    ck(c, have_static && have_dynamic, "fixture has the static and the dynamic case");
+    for (size_t i = 0; i < ncs; i++) free(cs[i].msg);
+}
+
+/* ── the scenarios ─────────────────────────────────────────────────────── */
+
+/* the decision's TAG_ATTEST_V1 = keccak256("nodus.evm.attest.message.v1")
+ * (decisions/2026-10-21-mldsa87-evm-precompile.md, "TAG_ATTEST_V1") */
+static const uint8_t TAG_DECISION[32] = {
+    0x99, 0xe8, 0x05, 0xe3, 0x50, 0x26, 0xbc, 0xe8, 0x60, 0xf6, 0xbb, 0xcd,
+    0xa7, 0x46, 0x6a, 0x18, 0xfd, 0x6a, 0x7b, 0xfe, 0x81, 0xd1, 0x52, 0x44,
+    0x94, 0xfe, 0x54, 0x1c, 0x94, 0x88, 0xa4, 0x3d };
+
+/* The mldsa_precompile = 0 state: the precompile address is an ordinary
+ * account, so a VALID signature is not verified: verify reports ok == false
+ * and everything built on it reverts. */
+static void scen_mldsa_off(ctx_t *c)
+{
+    uint8_t m[32], w[32], sg[SIG_LEN];
+    buf_t msg, d;
+
+    if (deploy(c, S_A, K_ATTESTED, E(KEYS[0].addr, KEYS[1].addr, KEYS[2].addr), 0, m,
+               NULL, "deploy MockAttested (switch off)") != 0)
+        return;
+    bld_approve(c, B_APPROVE_MSG, m, CHAIN32, m, 1, EXPIRY, KEYS[0].addr, 1000, B, &msg);
+    att_sign_ok(&KEYS[0], &msg, sg);
+
+    data_ap(&d, "approve" AP_ARGS, 1, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "switch off: a valid attestation is refused");
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(1)), 0,
+            "switch off: the nonce was not consumed");
+
+    {
+        enc_t e = E0();
+        enc_bytes(&e, KEYS[0].pk, PK_LEN);
+        enc_bytes(&e, sg, SIG_LEN);
+        enc_bytes(&e, msg.b, msg.n);
+        view_at(c, m, "verifyRaw(bytes,bytes,bytes)", e, 0, w, "verifyRaw.ok");
+        ck_u64(c, w, 0, "switch off: verify reports ok == false for a valid signature");
+    }
+    {
+        enc_t e = E0();
+        enc_bytes(&e, KEYS[0].pk, PK_LEN);
+        enc_bytes(&e, sg, SIG_LEN);
+        enc_bytes(&e, msg.b, msg.n);
+        view_at(c, m, "verifyRaw(bytes,bytes,bytes)", e, 1, w, "verifyRaw.signer");
+        ck_word(c, w, ZERO, "switch off: verify returns signer 0");
+    }
+    {
+        enc_t e = E0();
+        enc_word(&e, KEYS[0].addr);
+        enc_bytes(&e, KEYS[0].pk, PK_LEN);
+        enc_bytes(&e, sg, SIG_LEN);
+        enc_bytes(&e, msg.b, msg.n);
+        buf_t rd;
+        mk_call(&rd, "requireSignerRaw(address,bytes,bytes,bytes)", e);
+        rev_tx(c, S_OUT, m, 0, &rd, INVALID_SIG, ARGS(KEYS[0].addr),
+               "switch off: requireSigner reverts");
+        buf_free(&rd);
+    }
+    buf_free(&msg);
+}
+
+/* the starved-precompile scan: requireSigner in a frame capped at gasCap */
+static void scen_starved(ctx_t *c, const uint8_t *m)
+{
+    uint8_t sg[SIG_LEN], want[36], sel[4];
+    buf_t msg;
+    uint64_t first_hit = 0, first_ok = 0;
+    int unexpected = 0;
+
+    /* A MAXIMUM-size message (65 536 bytes), not an Approve-sized one. The
+     * window this scan looks for exists only when the caller keeps enough
+     * gas after the starved STATICCALL to revert WITH data: the caller
+     * keeps 1/64 of what it had (EIP-150), i.e. about precompile cost / 63.
+     * Measured 2026-10-22 (ORCH): with a 288-byte message (cost 25 108,
+     * ~398 gas kept) the `default` (unoptimized) build never reverts with
+     * MLDSA87InvalidSignature — every starved call runs out of gas in the
+     * caller and reverts EMPTY, so the scan jumped from empty failures
+     * straight to success at cap 34 944 (the `optimize` build had the window
+     * 23 808 .. 33 024). With 65 536 bytes (cost 49 576, ~787 kept) both
+     * builds show it (default 162 304 .. 186 432, optimize 150 656 ..
+     * 184 704). Both outcomes are refusals; only the proof that the call
+     * was reached needs the larger message. */
+    {
+        static uint8_t big[65536];
+        for (size_t i = 0; i < sizeof(big); i++) big[i] = (uint8_t)(i * 7 + 1);
+        memset(&msg, 0, sizeof(msg));
+        buf_put(&msg, big, sizeof(big));
+    }
+    att_sign_ok(&KEYS[0], &msg, sg);
+    sel_of(INVALID_SIG, sel);
+    memcpy(want, sel, 4);
+    memcpy(want + 4, KEYS[0].addr, 32);
+
+    /* step 64: the windows measured above are thousands of gas wide */
+    for (uint64_t cap = 8000; cap <= 400000 && !first_ok; cap += 64) {
+        evm_tx_result_t r;
+        buf_t d;
+        enc_t e = E0();
+        enc_word(&e, U(cap));
+        enc_word(&e, KEYS[0].addr);
+        enc_bytes(&e, KEYS[0].pk, PK_LEN);
+        enc_bytes(&e, sg, SIG_LEN);
+        enc_bytes(&e, msg.b, msg.n);
+        mk_call(&d, "requireSignerWithGas(uint256,address,bytes,bytes,bytes)", e);
+        int rc = send_tx(c, S_OUT, m, 0, &d, &r);
+        buf_free(&d);
+        if (rc != 0 || r.status != EVM_EXEC_SUCCESS || r.output_len < 96) {
+            unexpected = 1;
+        } else {
+            /* (bool ok, bytes ret): word 0 = ok, word 1 = offset, then len + data */
+            int ok = r.output[31] == 1;
+            uint64_t len = 0;
+            for (int i = 24; i < 32; i++) len = (len << 8) | r.output[64 + i];
+            if (ok && len == 0) {
+                first_ok = cap;
+            } else if (!ok && len == 36 && r.output_len >= 96 + 36 &&
+                       memcmp(r.output + 96, want, 36) == 0) {
+                if (!first_hit) first_hit = cap;
+            } else if (!ok && len == 0) {
+                /* the frame ran out of gas before the precompile call */
+            } else {
+                unexpected = 1;
+            }
+        }
+        evm_tx_result_free(&r);
+    }
+    buf_free(&msg);
+    ck(c, !unexpected, "starved scan: every outcome is OOG-before-call, "
+                       "InvalidSignature(signer), or success");
+    ck(c, first_hit != 0, "starved scan: some cap reaches the precompile call and it "
+                          "fails for lack of gas -> MLDSA87InvalidSignature(signer)");
+    ck(c, first_ok != 0 && first_hit < first_ok,
+       "starved scan: a larger cap succeeds (the signature was valid all along)");
+}
+
+/* the mldsa_precompile = 1 state */
+static void scen_mldsa(ctx_t *c)
+{
+    static const uint8_t DATA5[5] = { 0xde, 0xad, 0xbe, 0xef, 0x01 };
+    uint8_t m[32], m2[32], x[32], w[32], pid[32], atype[32], gtype[32];
+    uint8_t sg[SIG_LEN], sg2[SIG_LEN];
+    uint8_t chain2[32];
+    evm_tx_result_t r;
+    buf_t msg, d;
+
+    /* ── pins ── */
+    ck(c, memcmp(TICKET, evm_mldsa87_addr.b, 32) != 0,
+       "the test ticket address differs from the ML-DSA tag address");
+    ck(c, c->ec.mldsa_precompile == 1, "this state has the precompile switch on");
+    if (deploy(c, S_A, K_ATTESTED, E(KEYS[0].addr, KEYS[1].addr, KEYS[2].addr), 0, m,
+               NULL, "deploy MockAttested") != 0)
+        return;
+    if (deploy(c, S_A, K_ATTESTED, E(KEYS[0].addr, KEYS[1].addr, KEYS[2].addr), 0, m2,
+               NULL, "deploy MockAttested #2") != 0)
+        return;
+    view(c, m, "tagAttestV1()", E0(), w, "tagAttestV1()");
+    ck_word(c, w, TAG_DECISION, "TAG_ATTEST_V1 = the decision's 99e805e3...a43d");
+    view(c, m, "precompileAddress()", E0(), w, "precompileAddress()");
+    ck_word(c, w, evm_mldsa87_addr.b, "MLDSA87.PRECOMPILE = evm_mldsa87_addr (all 32 bytes)");
+    view(c, m, "APPROVE()", E0(), atype, "APPROVE()");
+    view(c, m, "GUARDED()", E0(), gtype, "GUARDED()");
+    scen_fixture(c, m);
+
+    /* ── a valid attestation applies its action once ── */
+    ap_sign(c, m, CHAIN32, 1, EXPIRY, &KEYS[0], KEYS[0].addr, 1000, B, sg);
+    data_ap(&d, "approve" AP_ARGS, 1, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg, SIG_LEN);
+    if (ok_tx(c, S_OUT, m, 0, &d, &r, "valid attestation")) {
+        ck_log(c, &r, m, "AttestationConsumed(address,uint256,bytes32)",
+               ARGS(KEYS[0].addr, U(1), atype), "AttestationConsumed");
+        ck_log(c, &r, m, "Approved(address,address,uint256)", ARGS(KEYS[0].addr, B),
+               "Approved");
+        evm_tx_result_free(&r);
+    }
+    ck_bool(c, m, "allowance(address)", E(B), 1000, "the action ran once: allowance[B]");
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(1)), 1,
+            "nonce 1 of signer 0 is used");
+
+    /* ── replay: the same call, and a second valid signature over the same nonce ── */
+    rev_used(c, m, &d, KEYS[0].addr, 1, "replay of the same call refused");
+    ap_sign(c, m, CHAIN32, 1, EXPIRY, &KEYS[0], KEYS[0].addr, 1000, B, sg2);
+    data_ap(&d, "approve" AP_ARGS, 1, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg2, SIG_LEN);
+    rev_used(c, m, &d, KEYS[0].addr, 1,
+             "a second valid signature over the same nonce is refused");
+    ck_bool(c, m, "allowance(address)", E(B), 1000, "allowance[B] unchanged by the replays");
+
+    /* ── a changed parameter / nonce, another contract / chain / action ── */
+    ap_sign(c, m, CHAIN32, 2, EXPIRY, &KEYS[0], KEYS[0].addr, 1000, B, sg);
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1001, B, KEYS[0].pk, PK_LEN,
+            sg, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "changed amount, correct header: refused");
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, C, KEYS[0].pk, PK_LEN,
+            sg, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "changed recipient, correct header: refused");
+    data_ap(&d, "approve" AP_ARGS, 3, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "changed nonce, correct header: refused");
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY + 1, KEYS[0].addr, 1000, B, KEYS[0].pk,
+            PK_LEN, sg, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "changed expiry, correct header: refused");
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[1].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[1].addr, "claimed signer changed, correct header: refused");
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(2)), 0,
+            "the refusals left nonce 2 unused");
+
+    /* signed for contract m, presented to m2 */
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg, SIG_LEN);
+    rev_inv(c, m2, &d, KEYS[0].addr, "an attestation for one contract is refused by another");
+    /* signed for another chain id */
+    memcpy(chain2, CHAIN32, 32);
+    chain2[31] ^= 1;
+    ap_sign(c, m, chain2, 2, EXPIRY, &KEYS[0], KEYS[0].addr, 1000, B, sg2);
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg2, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "an attestation for another chain id is refused");
+    /* another actionType, same parameter layout (word 3 of the header) */
+    bld_approve(c, B_APPROVE_MSG, m, CHAIN32, m, 2, EXPIRY, KEYS[0].addr, 1000, B, &msg);
+    memcpy(msg.b + 96, gtype, 32);
+    att_sign_ok(&KEYS[0], &msg, sg2);
+    buf_free(&msg);
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg2, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "an attestation for another action is refused");
+
+    /* ── signature faults ── */
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[3].pk, PK_LEN,
+            sg, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "a wrong key's pk presented for the signer: refused");
+    ap_sign(c, m, CHAIN32, 2, EXPIRY, &KEYS[3], KEYS[0].addr, 1000, B, sg2);
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[3].pk, PK_LEN,
+            sg2, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "a valid signature by another key for this signer: refused");
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg2, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "another key's signature under the signer's pk: refused");
+    memcpy(sg2, sg, SIG_LEN);
+    sg2[100] ^= 1;
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg2, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "a correctly sized signature with one byte flipped: refused");
+    memset(sg2, 0, SIG_LEN);
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg2, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "an all-zero signature of the right size: refused");
+    bld_approve(c, B_APPROVE_MSG, m, CHAIN32, m, 2, EXPIRY, KEYS[0].addr, 1000, B, &msg);
+    att_sign(&KEYS[0], &msg, NULL, 0, sg2);              /* the EMPTY context */
+    buf_free(&msg);
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg2, SIG_LEN);
+    rev_inv(c, m, &d, KEYS[0].addr, "a signature under the empty context: refused");
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN - 1,
+            sg, SIG_LEN);
+    rev_tx(c, S_OUT, m, 0, &d, "MLDSA87BadLength()", NULL, 0, "pk one byte short reverts");
+    buf_free(&d);
+    data_ap(&d, "approve" AP_ARGS, 2, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk, PK_LEN,
+            sg, SIG_LEN - 1);
+    rev_tx(c, S_OUT, m, 0, &d, "MLDSA87BadLength()", NULL, 0, "sig one byte short reverts");
+    buf_free(&d);
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(2)), 0,
+            "the signature faults left nonce 2 unused");
+
+    /* ── raw verify / requireSigner ── */
+    {
+        enum { MAXN = MSG_MAX + 1 };
+        uint8_t *big = malloc(MAXN);
+        uint8_t zpk[PK_LEN], zsg[SIG_LEN];
+        buf_t bm;
+        if (!big) fatal("oom");
+        memset(zpk, 0, sizeof(zpk));
+        memset(zsg, 0, sizeof(zsg));
+        for (size_t i = 0; i < MAXN; i++) big[i] = (uint8_t)(i * 7u + 3u);
+
+        {
+            enc_t e = E0();
+            enc_bytes(&e, zpk, PK_LEN);
+            enc_bytes(&e, zsg, SIG_LEN);
+            enc_bytes(&e, big, MAXN);
+            mk_call(&bm, "verifyRaw(bytes,bytes,bytes)", e);
+            rev_tx(c, S_OUT, m, 0, &bm, "MLDSA87MessageTooLong(uint256)", ARGS(U(MAXN)),
+                   "a 65 537-byte message reverts before the call");
+            buf_free(&bm);
+        }
+        {
+            buf_t big_msg;
+            memset(&big_msg, 0, sizeof(big_msg));
+            buf_put(&big_msg, big, MSG_MAX);
+            att_sign_ok(&KEYS[1], &big_msg, sg);
+            enc_t e = E0();
+            enc_bytes(&e, KEYS[1].pk, PK_LEN);
+            enc_bytes(&e, sg, SIG_LEN);
+            enc_bytes(&e, big, MSG_MAX);
+            view_at(c, m, "verifyRaw(bytes,bytes,bytes)", e, 0, w, "verify 65536 ok");
+            ck_u64(c, w, 1, "a signature over a 65 536-byte message verifies (ok)");
+            enc_t e2 = E0();
+            enc_bytes(&e2, KEYS[1].pk, PK_LEN);
+            enc_bytes(&e2, sg, SIG_LEN);
+            enc_bytes(&e2, big, MSG_MAX);
+            view_at(c, m, "verifyRaw(bytes,bytes,bytes)", e2, 1, w, "verify 65536 signer");
+            ck_addr(c, w, KEYS[1].addr, "... and returns the signer's 32-byte address");
+            buf_free(&big_msg);
+        }
+        free(big);
+    }
+    {
+        buf_t rd;
+        enc_t e = E0();
+        enc_word(&e, ZERO);
+        enc_bytes(&e, KEYS[0].pk, PK_LEN);
+        enc_bytes(&e, sg, SIG_LEN);
+        enc_bytes(&e, DATA5, 5);
+        mk_call(&rd, "requireSignerRaw(address,bytes,bytes,bytes)", e);
+        rev_tx(c, S_OUT, m, 0, &rd, "MLDSA87ZeroSigner()", NULL, 0,
+               "a zero expected signer reverts MLDSA87ZeroSigner");
+        buf_free(&rd);
+    }
+    {
+        /* requireSigner passes for the right signer and refuses another */
+        buf_t body, rd;
+        memset(&body, 0, sizeof(body));
+        buf_put(&body, DATA5, 5);
+        att_sign_ok(&KEYS[2], &body, sg2);
+        for (int who = 0; who < 2; who++) {
+            enc_t e = E0();
+            enc_word(&e, who ? KEYS[1].addr : KEYS[2].addr);
+            enc_bytes(&e, KEYS[2].pk, PK_LEN);
+            enc_bytes(&e, sg2, SIG_LEN);
+            enc_bytes(&e, DATA5, 5);
+            mk_call(&rd, "requireSignerRaw(address,bytes,bytes,bytes)", e);
+            if (who) rev_tx(c, S_OUT, m, 0, &rd, INVALID_SIG, ARGS(KEYS[1].addr),
+                            "requireSigner: another expected signer refused");
+            else ok_tx(c, S_OUT, m, 0, &rd, NULL, "requireSigner: the right signer passes");
+            buf_free(&rd);
+        }
+        buf_free(&body);
+    }
+
+    /* ── decode pins of the pinned compiler (consumeRaw: any message) ── */
+    {
+        static const uint8_t NOPK[1] = { 0 };
+        buf_t rd, hm;
+        enc_t e;
+        memset(&hm, 0, sizeof(hm));
+        /* 223 bytes: AttestationHeaderMismatch (not an empty revert) */
+        {
+            uint8_t z223[223];
+            memset(z223, 0, sizeof(z223));
+            e = E0();
+            enc_word(&e, atype);
+            enc_word(&e, U(100));
+            enc_word(&e, U(EXPIRY));
+            enc_word(&e, KEYS[0].addr);
+            enc_bytes(&e, NOPK, 0);
+            enc_bytes(&e, NOPK, 0);
+            enc_bytes(&e, z223, sizeof(z223));
+            mk_call(&rd, "consumeRaw(bytes32,uint256,uint64,address,bytes,bytes,bytes)", e);
+            rev_tx(c, S_OUT, m, 0, &rd, HDR_MISMATCH, NULL, 0,
+                   "a 223-byte message reverts AttestationHeaderMismatch");
+            buf_free(&rd);
+        }
+        /* an expiry word with bit 64 set: AttestationHeaderMismatch, with data */
+        bld_approve(c, B_APPROVE_MSG, m, CHAIN32, m, 101, EXPIRY, KEYS[0].addr, 1, B, &hm);
+        hm.b[160 + 23] = 0x01;                    /* word 5 = expiry; byte 23 = bit 64 */
+        e = E0();
+        enc_word(&e, atype);
+        enc_word(&e, U(101));
+        enc_word(&e, U(EXPIRY));
+        enc_word(&e, KEYS[0].addr);
+        enc_bytes(&e, NOPK, 0);
+        enc_bytes(&e, NOPK, 0);
+        enc_bytes(&e, hm.b, hm.n);
+        mk_call(&rd, "consumeRaw(bytes32,uint256,uint64,address,bytes,bytes,bytes)", e);
+        rev_tx(c, S_OUT, m, 0, &rd, HDR_MISMATCH, NULL, 0,
+               "an expiry word with bit 64 set reverts AttestationHeaderMismatch (with data)");
+        buf_free(&rd);
+        buf_free(&hm);
+        /* a header followed by extra trailing bytes decodes (signed, consumed) */
+        bld_approve(c, B_APPROVE_MSG, m, CHAIN32, m, 102, EXPIRY, KEYS[0].addr, 1, B, &hm);
+        buf_put(&hm, DATA5, 5);
+        att_sign_ok(&KEYS[0], &hm, sg2);
+        e = E0();
+        enc_word(&e, atype);
+        enc_word(&e, U(102));
+        enc_word(&e, U(EXPIRY));
+        enc_word(&e, KEYS[0].addr);
+        enc_bytes(&e, KEYS[0].pk, PK_LEN);
+        enc_bytes(&e, sg2, SIG_LEN);
+        enc_bytes(&e, hm.b, hm.n);
+        mk_call(&rd, "consumeRaw(bytes32,uint256,uint64,address,bytes,bytes,bytes)", e);
+        ok_tx(c, S_OUT, m, 0, &rd, NULL, "a header followed by trailing bytes is accepted");
+        buf_free(&rd);
+        buf_free(&hm);
+        ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(102)), 1,
+                "... and consumed");
+    }
+
+    /* ── the misordered header ── */
+    bld_approve(c, B_MISORD_MSG, m, CHAIN32, m, 4, EXPIRY, KEYS[0].addr, 1000, B, &msg);
+    att_sign_ok(&KEYS[0], &msg, sg);
+    buf_free(&msg);
+    data_ap(&d, "approveMisordered" AP_ARGS, 4, EXPIRY, KEYS[0].addr, 1000, B, KEYS[0].pk,
+            PK_LEN, sg, SIG_LEN);
+    rev_tx(c, S_OUT, m, 0, &d, HDR_MISMATCH, NULL, 0,
+           "a misordered header is refused even with a valid signature over it");
+    buf_free(&d);
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(4)), 0,
+            "the misordered attempt left nonce 4 unused");
+
+    /* ── the header-only negative: the relayer chooses the unsigned values ── */
+    {
+        enc_t e = E0();
+        enc_word(&e, CHAIN32);
+        enc_word(&e, m);
+        enc_word(&e, U(5));
+        enc_word(&e, U(EXPIRY));
+        enc_word(&e, KEYS[0].addr);
+        view_bytes(c, m, "headerOnlyMessage(uint256,address,uint256,uint64,address)", e,
+                   &msg, "headerOnlyMessage");
+    }
+    ck(c, msg.n == 224, "the header-only message is exactly the 224-byte header");
+    att_sign_ok(&KEYS[0], &msg, sg);
+    buf_free(&msg);
+    data_ap(&d, "approveHeaderOnly" AP_ARGS, 5, EXPIRY, KEYS[0].addr, 777777, C, KEYS[0].pk,
+            PK_LEN, sg, SIG_LEN);
+    ok_tx(c, S_D, m, 0, &d, NULL,
+          "header-only: the relayer picks amount and recipient and it is accepted");
+    buf_free(&d);
+    ck_bool(c, m, "allowance(address)", E(C), 777777,
+            "header-only: the UNSIGNED values took effect (the README rule, negative example)");
+
+    /* ── cancel and namespaces ── */
+    if (call_ok(c, S_SIG1, m, 0, "cancelAttestationNonce(uint256)", E(U(50)), &r,
+                "signer 1 cancels nonce 50")) {
+        ck_log(c, &r, m, "AttestationNonceCancelled(address,uint256)",
+               ARGS(KEYS[1].addr, U(50)), "AttestationNonceCancelled");
+        evm_tx_result_free(&r);
+    }
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[1].addr, U(50)), 1,
+            "nonce 50 of signer 1 is used");
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(50)), 0,
+            "nonce 50 of signer 0 is untouched (namespaces are independent)");
+    ap_sign(c, m, CHAIN32, 50, EXPIRY, &KEYS[1], KEYS[1].addr, 5, B, sg);
+    data_ap(&d, "approve" AP_ARGS, 50, EXPIRY, KEYS[1].addr, 5, B, KEYS[1].pk, PK_LEN, sg,
+            SIG_LEN);
+    rev_used(c, m, &d, KEYS[1].addr, 50, "a cancelled nonce: the attestation is refused");
+    call_rev(c, S_SIG1, m, 0, "cancelAttestationNonce(uint256)", E(U(50)), NONCE_USED,
+             ARGS(KEYS[1].addr, U(50)), "cancelling twice is refused");
+    call_rev(c, S_SIG0, m, 0, "cancelAttestationNonce(uint256)", E(U(1)), NONCE_USED,
+             ARGS(KEYS[0].addr, U(1)), "cancelling a USED nonce is refused");
+    call_ok(c, S_D, m, 0, "cancelAttestationNonce(uint256)", E(U(51)), NULL,
+            "an outsider cancels its own nonce 51");
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(D, U(51)), 1,
+            "the outsider's nonce 51 is used");
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(51)), 0,
+            "... and signer 0's nonce 51 is untouched");
+    ap_sign(c, m, CHAIN32, 50, EXPIRY, &KEYS[0], KEYS[0].addr, 5, B, sg);
+    data_ap(&d, "approve" AP_ARGS, 50, EXPIRY, KEYS[0].addr, 5, B, KEYS[0].pk, PK_LEN, sg,
+            SIG_LEN);
+    ok_tx(c, S_OUT, m, 0, &d, NULL, "signer 0's nonce 50 still works after signer 1's cancel");
+    buf_free(&d);
+
+    /* ── the 2-of-3 action: a signer counts once per proposal ── */
+    {
+        enc_t e = E0();
+        enc_word(&e, B);
+        enc_word(&e, U(5));
+        enc_bytes(&e, DATA5, 5);
+        view(c, m, "proposalId(address,uint256,bytes)", e, pid, "proposalId");
+    }
+    bld_submit(c, m, 60, EXPIRY, KEYS[0].addr, B, 5, DATA5, 5, &msg);
+    att_sign_ok(&KEYS[0], &msg, sg);
+    buf_free(&msg);
+    data_submit(&d, 60, EXPIRY, KEYS[0].addr, B, 5, DATA5, 5, &KEYS[0], sg);
+    if (ok_tx(c, S_OUT, m, 0, &d, &r, "signer 0 submits (nonce 60)")) {
+        ck_log(c, &r, m, "Counted(bytes32,address,uint256)", ARGS(pid, KEYS[0].addr),
+               "Counted");
+        evm_tx_result_free(&r);
+    }
+    buf_free(&d);
+    ck_bool(c, m, "approvals(bytes32)", E(pid), 1, "one approval");
+    bld_submit(c, m, 61, EXPIRY, KEYS[0].addr, B, 5, DATA5, 5, &msg);
+    att_sign_ok(&KEYS[0], &msg, sg);
+    buf_free(&msg);
+    data_submit(&d, 61, EXPIRY, KEYS[0].addr, B, 5, DATA5, 5, &KEYS[0], sg);
+    ok_tx(c, S_OUT, m, 0, &d, NULL, "signer 0 submits the same proposal under nonce 61");
+    buf_free(&d);
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(61)), 1,
+            "nonce 61 was consumed");
+    ck_bool(c, m, "approvals(bytes32)", E(pid), 1,
+            "the same signer under two nonces is still ONE approval");
+    ck_bool(c, m, "executed(bytes32)", E(pid), 0, "not executed at one distinct signer");
+    bld_submit(c, m, 60, EXPIRY, KEYS[1].addr, B, 5, DATA5, 5, &msg);
+    att_sign_ok(&KEYS[1], &msg, sg);
+    buf_free(&msg);
+    data_submit(&d, 60, EXPIRY, KEYS[1].addr, B, 5, DATA5, 5, &KEYS[1], sg);
+    if (ok_tx(c, S_OUT, m, 0, &d, &r, "signer 1 submits (nonce 60 of its own namespace)")) {
+        ck_log(c, &r, m, "Executed(bytes32)", ARGS(pid), "Executed");
+        evm_tx_result_free(&r);
+    }
+    buf_free(&d);
+    ck_bool(c, m, "approvals(bytes32)", E(pid), 2, "two distinct signers");
+    ck_bool(c, m, "executed(bytes32)", E(pid), 1, "executed at the second distinct signer");
+    bld_submit(c, m, 62, EXPIRY, KEYS[3].addr, B, 5, DATA5, 5, &msg);
+    att_sign_ok(&KEYS[3], &msg, sg);
+    buf_free(&msg);
+    data_submit(&d, 62, EXPIRY, KEYS[3].addr, B, 5, DATA5, 5, &KEYS[3], sg);
+    rev_tx(c, S_OUT, m, 0, &d, "MockNotSigner(address)", ARGS(KEYS[3].addr),
+           "a valid attestation by a key outside the set is refused by the consumer");
+    buf_free(&d);
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[3].addr, U(62)), 0,
+            "... and its nonce mark rolled back");
+    ck_bool(c, m, "approvals(bytes32)", E(pid), 2, "approvals unchanged by the outsider");
+
+    /* ── re-entry with the same attestation ── */
+    if (deploy(c, S_A, K_ACTOR, E0(), 0, x, NULL, "deploy MockActor") != 0) return;
+    {
+        enc_t e = E0();
+        enc_word(&e, CHAIN32);
+        enc_word(&e, m);
+        enc_word(&e, U(70));
+        enc_word(&e, U(EXPIRY));
+        enc_word(&e, KEYS[0].addr);
+        enc_word(&e, x);
+        view_bytes(c, m, "notifyMessage(uint256,address,uint256,uint64,address,address)", e,
+                   &msg, "notifyMessage");
+    }
+    att_sign_ok(&KEYS[0], &msg, sg);
+    buf_free(&msg);
+    {
+        enc_t e = E0();
+        enc_word(&e, U(70));
+        enc_word(&e, U(EXPIRY));
+        enc_word(&e, KEYS[0].addr);
+        enc_word(&e, x);
+        enc_bytes(&e, KEYS[0].pk, PK_LEN);
+        enc_bytes(&e, sg, SIG_LEN);
+        mk_call(&d, "notify(uint256,uint64,address,address,bytes,bytes)", e);
+    }
+    actor_mode(c, x, MODE_REENTER, m, &d);           /* hook() replays this very call */
+    ok_tx(c, S_OUT, m, 0, &d, NULL, "notify: consume, then the target hook runs");
+    buf_free(&d);
+    ck_bool(c, m, "notified()", E0(), 1, "the effect ran exactly once");
+    ck_bool(c, x, "reAttempts()", E0(), 1, "the target re-entered once");
+    ck_bool(c, x, "reOk()", E0(), 0, "the re-entry failed");
+    view(c, x, "reErr()", E0(), w, "reErr()");
+    ck_sel(c, w, NONCE_USED, "the re-entry was refused with AttestationNonceUsed");
+
+    /* ── a revert after the consume rolls the nonce mark back ── */
+    for (int fail = 1; fail >= 0; fail--) {
+        enc_t e = E0();
+        enc_word(&e, CHAIN32);
+        enc_word(&e, m);
+        enc_word(&e, U(80));
+        enc_word(&e, U(EXPIRY));
+        enc_word(&e, KEYS[0].addr);
+        enc_word(&e, U(9));
+        enc_word(&e, U((uint64_t)fail));
+        view_bytes(c, m, "guardedMessage(uint256,address,uint256,uint64,address,uint256,bool)",
+                   e, &msg, "guardedMessage");
+        att_sign_ok(&KEYS[0], &msg, sg);
+        buf_free(&msg);
+        e = E0();
+        enc_word(&e, U(80));
+        enc_word(&e, U(EXPIRY));
+        enc_word(&e, KEYS[0].addr);
+        enc_word(&e, U(9));
+        enc_word(&e, U((uint64_t)fail));
+        enc_bytes(&e, KEYS[0].pk, PK_LEN);
+        enc_bytes(&e, sg, SIG_LEN);
+        mk_call(&d, "guarded(uint256,uint64,address,uint256,bool,bytes,bytes)", e);
+        if (fail) {
+            rev_tx(c, S_OUT, m, 0, &d, "MockEffectFailed()", NULL, 0,
+                   "guarded: the signed flag makes the effect revert");
+            ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(80)),
+                    0, "the nonce mark rolled back with the revert");
+            ck_bool(c, m, "guardedRuns()", E0(), 0, "the effect's write rolled back too");
+        } else {
+            ok_tx(c, S_OUT, m, 0, &d, NULL,
+                  "the same nonce works for another signed message after the rollback");
+            ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(80)),
+                    1, "nonce 80 is now used");
+            ck_bool(c, m, "guardedRuns()", E0(), 1, "the effect ran once");
+        }
+        buf_free(&d);
+    }
+
+    /* ── a starved precompile ── */
+    scen_starved(c, m);
+
+    /* ── expiry: accepted AT block.timestamp == expiry, refused one second later ── */
+    ap_sign(c, m, CHAIN32, 95, T0, &KEYS[0], KEYS[0].addr, 1, B, sg2);       /* for later */
+    ap_sign(c, m, CHAIN32, 96, T0, &KEYS[0], KEYS[0].addr, 1, B, sg);
+    data_ap(&d, "approve" AP_ARGS, 96, T0, KEYS[0].addr, 1, B, KEYS[0].pk, PK_LEN, sg,
+            SIG_LEN);
+    ok_tx(c, S_OUT, m, 0, &d, NULL, "accepted at block.timestamp == expiry");
+    buf_free(&d);
+    ap_sign(c, m, CHAIN32, 97, T0 - 1, &KEYS[0], KEYS[0].addr, 1, B, sg);
+    data_ap(&d, "approve" AP_ARGS, 97, T0 - 1, KEYS[0].addr, 1, B, KEYS[0].pk, PK_LEN, sg,
+            SIG_LEN);
+    rev_tx(c, S_OUT, m, 0, &d, "AttestationExpired(uint64)", ARGS(U(T0 - 1)),
+           "an expiry in the past is refused");
+    buf_free(&d);
+    at_time(c, T0 + 1);
+    data_ap(&d, "approve" AP_ARGS, 95, T0, KEYS[0].addr, 1, B, KEYS[0].pk, PK_LEN, sg2,
+            SIG_LEN);
+    rev_tx(c, S_OUT, m, 0, &d, "AttestationExpired(uint64)", ARGS(U(T0)),
+           "refused at expiry + 1 (a valid, unused attestation)");
+    buf_free(&d);
+    ck_bool(c, m, "isAttestationNonceUsed(address,uint256)", E(KEYS[0].addr, U(95)), 0,
+            "the expired attestation's nonce stayed unused");
+}
+
 /* ── deployed code = committed runtime ─────────────────────────────────── */
 
 static void post_code(ctx_t *c)
@@ -2474,6 +3589,14 @@ static void run_config(ctx_t *c)
     scen_vault(c);
     scen_escrow(c);
     scen_ticket_mock(c);
+    scen_mldsa_off(c);
+    post_code(c);
+}
+
+/* The second engine state of a configuration: mldsa_precompile = 1. */
+static void run_config_mldsa(ctx_t *c)
+{
+    scen_mldsa(c);
     post_code(c);
 }
 
@@ -2483,17 +3606,25 @@ int main(int argc, char **argv)
     const char *dir = argc > 1 ? argv[1] : CONTRACTS_OUT;
     int failed = 0;
 
+    g_dir = dir;
     init_inputs();
+    init_keys();
     if (self_check_rules() != 0) failed = 1;
     fprintf(stderr, "bytecode: %s\n", dir);
     for (int i = 0; i < 2; i++) {
-        ctx_t *c = calloc(1, sizeof(*c));
-        if (!c) fatal("oom");
-        if (ctx_open(c, dir, CFGS[i]) == 0) run_config(c);
-        fprintf(stderr, "config %-9s: %u passed, %u failed\n", CFGS[i], c->pass, c->fail);
-        if (c->fail || c->pass == 0) failed = 1;
-        ctx_close(c);
-        free(c);
+        for (int mldsa = 0; mldsa < 2; mldsa++) {
+            ctx_t *c = calloc(1, sizeof(*c));
+            if (!c) fatal("oom");
+            if (ctx_open(c, dir, CFGS[i], mldsa) == 0) {
+                if (mldsa) run_config_mldsa(c);
+                else run_config(c);
+            }
+            fprintf(stderr, "config %-9s mldsa_precompile %d: %u passed, %u failed\n",
+                    CFGS[i], mldsa, c->pass, c->fail);
+            if (c->fail || c->pass == 0) failed = 1;
+            ctx_close(c);
+            free(c);
+        }
     }
     if (failed) {
         fprintf(stderr, "test_contract_lib: FAILED\n");

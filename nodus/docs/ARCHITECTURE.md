@@ -6342,7 +6342,10 @@ ORCHESTRATOR's last run before this document: PASS (rc 0) at the Nodus EVM branc
 241/241 there — at E = 15 / BPY 20 / grace 15 / 15, which proves the LOGIC, nothing about the
 production 720 / 17 280.
 
-#### ML-DSA-87 signature verification precompile — activation through chain-config param 23 (branch `mldsa`, not versioned, not voted; INERT until a param-23 vote)
+#### ML-DSA-87 signature verification precompile — activation through chain-config param 23 (HF EVM-ML-DSA: voted in block 306182, ACTIVE since block 306911, nodus 0.26.22 on 8/8 before the vote)
+
+(Until 2026-10-22 this heading read "branch `mldsa`, not versioned, not voted; INERT until a param-23
+vote". The vote and the heights are recorded in the decision file, section "Vote and name".)
 
 Decision `docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md` (items 1-8, the measured
 numbers, "Activation route and grace": Route B, ERGONOMIC grace); design
@@ -6400,6 +6403,25 @@ verification precompile".
   signature and a short input, and a node SIGKILLed below H−2 that rejoins after H with identical
   blocks at H−1 / H / H+1 and an identical EVM state. Its README row lists what it does not
   cover (generation 3 only; no OLD/NEW rolling upgrade; gas hidden under the EIP-7623 floor).
+- **Companion library and signing command (2026-10-22; no node, wire, consensus or state-root
+  change).**
+  - Design `docs/plans/2026-10-22-mldsa87-companion-library-design.md` rev 2. Kurultay #40
+    (`docs/plans/decisions/2026-10-22-kurultay-40-mldsa-companion-library-summary.md`). The decision
+    file's section "Companion library: the actionType": operator "a", and "onerilerle devam et" for
+    the text form.
+  - **Contracts:** `nodus/tools/evm/contracts/src/crypto/MLDSA87.sol` (verify / requireSigner over the
+    precompile) and `MLDSA87Attested.sol` (per-signer nonces, `_consumeAttestation`,
+    `cancelAttestationNonce`). Library v0.2.0; account in `nodus/tools/evm/contracts/README.md`.
+  - **The signed message:** ONE `abi.encode(TAG_ATTEST_V1, block.chainid, address(this), actionType,
+    nonce, expiry, signer, p1 … pn)`. `actionType` = keccak256 of the canonical text `Name(t1,…,tn)`.
+  - **Signing:** `nodus-cli evm attest` (`src/client/nodus_evm_attest.{c,h}`, over the ABI layer moved
+    out of the CLI, `src/client/nodus_evm_abi.{c,h}`, now strictly canonical). It signs under the
+    precompile's context `nodus.evm.attest.v1`.
+  - **Tests:** `test_evm_abi`, `test_evm_attest`, `test_evm_attest_cli` (runs the built `nodus-cli`
+    offline; ctest, EVM build); `shared/evm/tests/test_contract_lib.c`
+    (the ML-DSA cases run with `mldsa_precompile = 1`, both compiler configurations). Shared fixture:
+    `nodus/tools/evm/contracts/test/fixtures/attest_v1.txt`, ABI encoded by hand.
+  - **Not covered:** no Genesis Protocol scenario runs the library on a chain yet.
 
 ### Storage reward v1, package B1 — storage-node registry, the GEN_STORAGE rule-set generation and the `NDS.SYS.v5` SYSTEM root (2026-10-04, branch only — not versioned, not voted)
 

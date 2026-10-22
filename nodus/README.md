@@ -227,6 +227,15 @@ Usage (smart contracts, the EVM domain):
   evm call <address> <sig> [args ...] [--from <address> | --keys <dir>]
                                             read-only (evm_call); sig may end
                                             with a return list: f(t)(r1,r2)
+  evm attest "<Name(t1,..)>" <contract> <nonce> <expiry> [v1 ...]
+             --keys <dir> [--chain-id <64 hex>]
+                                            sign an ML-DSA-87 attestation (the
+                                            companion library's message, context
+                                            nodus.evm.attest.v1); prints the
+                                            message, pubkey and signature, sends
+                                            nothing. Offline with --chain-id and
+                                            no -s; otherwise the node's chain id
+                                            (at most 9 parameters)
   evm deposit <raw>                         NODUS -> EVM balance
   evm withdraw <raw> [--to <fp128>]         EVM balance -> NODUS (default: self)
   evm redeem <ticket_id>                    pay out a contract's withdrawal ticket
@@ -256,6 +265,8 @@ ABI types: uint<M> int<M> bool address bytes<M> bytes string, and T[]
 ```
 
 (The default path is `EVM_SOLC_DEFAULT`, `tools/nodus-cli.c:6396`; the 32-byte-address Solidity compiler is built from `nodus/tools/evm/solc/` — see its README.)
+
+`evm attest "<Name(t1,…)>" <contract> <nonce> <expiry> [v1 …] --keys <dir> [--chain-id <64 hex>]` (the ML-DSA-87 companion library's signing command; design `docs/plans/2026-10-22-mldsa87-companion-library-design.md` §1.3, §1.6; decision `2026-10-21-mldsa87-evm-precompile.md` item 2) builds the attested message `abi.encode(TAG_ATTEST_V1, chainid, contract, actionType, nonce, expiry, signer, p1…pn)` in ONE encode — so at most 9 parameters — where `actionType` = keccak256 of the canonical action text (types only, `uint` written `uint256`, the name a Solidity identifier; an empty name or a return list is refused), the chain id is a full 32-byte word, `expiry` must fit uint64, `signer` is the `--keys` identity's EVM address (SHA3-512(pk)[0..32]) and the message may not exceed 65 536 bytes. It signs with the identity key under the FIPS 204 context `nodus.evm.attest.v1` (19 bytes), requires a 4627-byte signature and verifies it again under the same context before printing (fail closed). Output, plain lowercase hex with no `0x`: `action`, `actionType`, `chain`, `contract`, `nonce`, `expiry`, `signer`, `message`, `pubkey`, `signature` — the `pubkey` and `signature` lines are the `bytes` arguments of the consuming contract's function, sent by anyone with `evm send`. It never submits anything and clears the loaded secret key on every exit. The chain id is `--chain-id` when given (then no node is needed: the command is offline with no `-s`), else the one the node `-s` names (`dnac_supply` `chain_id32`); with both, `--chain-id` is used and a mismatch with the node is reported as a warning. Signing is hedged, so the signature differs per run; the message does not. Code: `src/client/nodus_evm_attest.{c,h}` (message + signature) over `src/client/nodus_evm_abi.{c,h}` (the ABI text layer moved out of `tools/nodus-cli.c`). The ABI parser is strictly canonical since this command: an integer width or bytes size is plain decimal digits only and is range-checked before any narrowing (`uint4294967552`, `uint+8`, `uint 8`, `bytes+1`, `uint08` are refused), and a function name is a Solidity identifier (`1Approve` is refused) — for `evm encode|send|call|deploy` too. Tests: `test_evm_abi`, `test_evm_attest`, `test_evm_attest_cli` (the last one runs the built `nodus-cli` offline: the printed fields, the signature under the context and not under the empty one, six refusals; EVM build only).
 
 `evm logs --pretty` prints a readable layout — one block per log (block, item index, log index, contract, transaction, topics, the data split into 32-byte words) and an "N event log(s) found." footer; without it the output stays one `h=… x=… li=… address=… tx=…` line per log plus its `topic`/`data` lines and an `N log(s)` count, for scripts. Either way the "more: next --cursor" line follows when the node stopped early. The connection and debug lines (`Using random identity: …` when no `-i` is given, the client's `[NODUS_CLIENT] …` connect lines, the transport's `TCP_CONN: …` lines) go to stderr, so `2>/dev/null` hides them and leaves only the result on stdout.
 

@@ -90,6 +90,8 @@
 #ifdef NODUS_EVM_ENABLED
 #include "client/nodus_v2_evm.h"               /* Nodus EVM: the shared EVM
                                                  * envelope builder         */
+#include "client/nodus_evm_abi.h"              /* Nodus EVM: ABI text layer  */
+#include "client/nodus_evm_attest.h"           /* `evm attest`: the message  */
 #include "crypto/hash/keccak256.h"             /* Nodus EVM: ABI selectors  */
 #include <sys/wait.h>                          /* Nodus EVM: --solc         */
 #endif
@@ -10464,7 +10466,6 @@ done:
  * constructor's is `(t1,t2)`. Selector = keccak256(canonical)[0..4].
  * ════════════════════════════════════════════════════════════════════ */
 
-#define EVM_ABI_MAX_ARGS     16
 #define EVM_SOLC_DEFAULT     "/usr/local/bin/solc-nodus"
 #define EVM_SOLC_OUT_MAX     ((size_t)32 * 1024 * 1024)
 #define EVM_RECEIPT_POLL_S   2u
@@ -10482,72 +10483,16 @@ done:
  * honest full-cap call needs --yes or --max-fee. */
 #define EVM_FEE_CONFIRM_RAW  5000000000ull
 
-/* ── 256-bit big-endian integers ─────────────────────────────────────── */
-
-/* out = decimal string `s` (digits only). @return 0 / -1 (empty, a
- * non-digit, or above 2^256 - 1). */
-static int evm_u256_dec(const char *s, uint8_t out[32]) {
-    memset(out, 0, 32);
-    if (!s || !*s) return -1;
-    for (const char *p = s; *p; p++) {
-        if (*p < '0' || *p > '9') return -1;
-        unsigned carry = (unsigned)(*p - '0');
-        for (int i = 31; i >= 0; i--) {
-            unsigned v = (unsigned)out[i] * 10u + carry;
-            out[i] = (uint8_t)v;
-            carry = v >> 8;
-        }
-        if (carry) return -1;
-    }
-    return 0;
-}
-
-/* out = "0x"-prefixed hex (1..64 digits), right-aligned. @return 0 / -1. */
-static int evm_u256_hexnum(const char *s, uint8_t out[32]) {
-    memset(out, 0, 32);
-    if (!s || s[0] != '0' || (s[1] != 'x' && s[1] != 'X')) return -1;
-    s += 2;
-    size_t n = strlen(s);
-    if (n == 0 || n > 64) return -1;
-    for (size_t i = 0; i < n; i++) {
-        char c = s[n - 1 - i];
-        int d;
-        if (c >= '0' && c <= '9') d = c - '0';
-        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-        else return -1;
-        out[31 - i / 2] |= (uint8_t)(d << ((i % 2) * 4));
-    }
-    return 0;
-}
-
-/* Decimal text of a 32-byte big-endian unsigned value (out >= 80). */
-static void evm_u256_to_dec(const uint8_t in[32], char *out) {
-    uint8_t v[32];
-    char tmp[80];
-    size_t n = 0;
-    memcpy(v, in, 32);
-    for (;;) {
-        unsigned rem = 0;
-        int zero = 1;
-        for (int i = 0; i < 32; i++) {
-            unsigned cur = (rem << 8) | v[i];
-            v[i] = (uint8_t)(cur / 10u);
-            rem = cur % 10u;
-            if (v[i]) zero = 0;
-        }
-        tmp[n++] = (char)('0' + rem);
-        if (zero) break;
-    }
-    for (size_t i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
-    out[n] = '\0';
-}
+/* The 256-bit integer / hex / address text helpers and the whole ABI layer
+ * (types, signatures, selectors, the argument encoder) live in the shared
+ * I/O-free module nodus/src/client/nodus_evm_abi.{c,h}; `evm attest`'s
+ * message builder is nodus/src/client/nodus_evm_attest.{c,h}. */
 
 /* Wei as NODUS: 1 NODUS = 10^8 raw = 10^18 wei (q = 10^10, operator
  * decision k1 #3). */
 static void evm_wei_to_nodus(const uint8_t wei[32], char *out, size_t cap) {
     char d[80];
-    evm_u256_to_dec(wei, d);
+    nodus_evm_u256_to_dec(wei, d);
     size_t n = strlen(d);
     if (n <= 18) {
         char frac[19];
@@ -10560,426 +10505,13 @@ static void evm_wei_to_nodus(const uint8_t wei[32], char *out, size_t cap) {
     }
 }
 
-/* Hex (optional 0x) → bytes. @return 0 / -1 (odd, a non-hex, too long). */
-static int evm_hex_bytes(const char *hex, uint8_t *out, size_t cap,
-                         size_t *len) {
-    if (!hex) return -1;
-    if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) hex += 2;
-    size_t n = strlen(hex);
-    if (n % 2 || n / 2 > cap) return -1;
-    for (size_t i = 0; i < n / 2; i++) {
-        int v = 0;
-        for (int j = 0; j < 2; j++) {
-            char c = hex[2 * i + (size_t)j];
-            int d;
-            if (c >= '0' && c <= '9') d = c - '0';
-            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-            else return -1;
-            v = (v << 4) | d;
-        }
-        out[i] = (uint8_t)v;
-    }
-    *len = n / 2;
-    return 0;
-}
-
 static void evm_print_hex(const uint8_t *b, size_t n) {
     for (size_t i = 0; i < n; i++) printf("%02x", b[i]);
 }
 
-/* A 32-byte EVM address from text: 64 hex digits (optional 0x). Mixed
- * case must carry the Nodus 64-digit EIP-55 checksum (solc README rule
- * 4: keccak256 of the 64 lowercase hex characters; the i-th letter is
- * upper case iff the i-th nibble of the hash is >= 8). @return 0 / -1. */
-static int evm_addr_parse(const char *s, uint8_t out[32]) {
-    if (!s) return -1;
-    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
-    if (strlen(s) != 64) return -1;
-    int lower = 0, upper = 0;
-    char low[64];
-    for (int i = 0; i < 64; i++) {
-        char c = s[i];
-        if (c >= 'A' && c <= 'F') { upper = 1; c = (char)(c - 'A' + 'a'); }
-        else if (c >= 'a' && c <= 'f') lower = 1;
-        else if (!(c >= '0' && c <= '9')) return -1;
-        low[i] = c;
-    }
-    if (lower && upper) {
-        uint8_t h[32];
-        if (keccak256((const uint8_t *)low, 64, h) != 0) return -1;
-        for (int i = 0; i < 64; i++) {
-            if (low[i] < 'a') continue;            /* a digit */
-            int nib = (h[i / 2] >> (i % 2 ? 0 : 4)) & 0x0F;
-            int want_upper = nib >= 8;
-            int is_upper = s[i] >= 'A' && s[i] <= 'F';
-            if (want_upper != is_upper) return -1;
-        }
-    }
-    size_t n = 0;
-    char buf[65];
-    memcpy(buf, low, 64);
-    buf[64] = '\0';
-    return evm_hex_bytes(buf, out, 32, &n) == 0 && n == 32 ? 0 : -1;
-}
-
-/* The EVM address of a Nodus key: SHA3-512(pk)[0..32] (design §2). */
-static int evm_addr_of_pk(const uint8_t *pk, uint8_t out[32]) {
-    uint8_t fp[64];
-    if (qgp_sha3_512(pk, DNAC_PUBKEY_SIZE, fp) != 0) return -1;
-    memcpy(out, fp, 32);
-    return 0;
-}
-
-/* ── ABI ─────────────────────────────────────────────────────────────── */
-
-typedef enum {
-    EVM_ABI_UINT, EVM_ABI_INT, EVM_ABI_BOOL, EVM_ABI_ADDR,
-    EVM_ABI_FBYTES, EVM_ABI_BYTES, EVM_ABI_STRING
-} evm_abi_kind_t;
-
-typedef struct {
-    evm_abi_kind_t k;
-    unsigned       bits;      /* uint / int                             */
-    unsigned       size;      /* bytes<M>                               */
-    unsigned       arr;       /* 1: T[] of the static element type above */
-} evm_abi_type_t;
-
-static int evm_abi_dynamic(const evm_abi_type_t *t) {
-    return t->arr || t->k == EVM_ABI_BYTES || t->k == EVM_ABI_STRING;
-}
-
-/* One type name (n chars) → type + its canonical text. A one-dimensional
- * dynamic array T[] of a static T is accepted when `allow_arr`; T[k],
- * nested arrays, string[] / bytes[] and tuples are refused with a message.
- * @return 0 / -1. */
-static int evm_abi_type(const char *s, size_t n, evm_abi_type_t *t,
-                        char *canon, size_t cap, int allow_arr) {
-    char name[32];
-    if (n == 0 || n >= sizeof(name)) return -1;
-    memcpy(name, s, n);
-    name[n] = '\0';
-    memset(t, 0, sizeof(*t));
-    if (strchr(name, '(') || strchr(name, ')')) {
-        fprintf(stderr, "%s: tuples are not supported\n", name);
-        return -1;
-    }
-    char *lb = strchr(name, '[');
-    if (lb) {
-        if (!allow_arr) {
-            fprintf(stderr, "%s: arrays are not supported in a return list "
-                    "(they are not decoded)\n", name);
-            return -1;
-        }
-        if (strchr(lb + 1, '[')) {
-            fprintf(stderr, "%s: nested arrays are not supported\n", name);
-            return -1;
-        }
-        if (strcmp(lb, "[]") != 0) {
-            fprintf(stderr, "%s: only the dynamic array T[] is supported "
-                    "(no fixed-size T[k])\n", name);
-            return -1;
-        }
-        *lb = '\0';
-        t->arr = 1;
-    }
-    if (!strcmp(name, "address")) t->k = EVM_ABI_ADDR;
-    else if (!strcmp(name, "bool")) t->k = EVM_ABI_BOOL;
-    else if (!strcmp(name, "string")) t->k = EVM_ABI_STRING;
-    else if (!strcmp(name, "bytes")) t->k = EVM_ABI_BYTES;
-    else if (!strncmp(name, "uint", 4) || !strncmp(name, "int", 3)) {
-        int is_u = name[0] == 'u';
-        const char *num = name + (is_u ? 4 : 3);
-        unsigned bits = 256;
-        if (*num) {
-            char *end = NULL;
-            unsigned long b = strtoul(num, &end, 10);
-            if (!end || *end || num[0] == '0') return -1;
-            bits = (unsigned)b;
-        }
-        if (bits < 8 || bits > 256 || bits % 8) return -1;
-        t->k = is_u ? EVM_ABI_UINT : EVM_ABI_INT;
-        t->bits = bits;
-        snprintf(name, sizeof(name), "%s%u", is_u ? "uint" : "int", bits);
-    } else if (!strncmp(name, "bytes", 5)) {
-        char *end = NULL;
-        unsigned long m = strtoul(name + 5, &end, 10);
-        if (!end || *end || name[5] == '0' || m < 1 || m > 32) return -1;
-        t->k = EVM_ABI_FBYTES;
-        t->size = (unsigned)m;
-    } else {
-        return -1;                              /* function, unknown: refused */
-    }
-    if (t->arr && (t->k == EVM_ABI_BYTES || t->k == EVM_ABI_STRING)) {
-        fprintf(stderr, "%s[]: arrays of a dynamic type are not supported\n",
-                name);
-        return -1;
-    }
-    /* the canonical text ("uint" -> "uint256"), as the selector hashes it */
-    if (snprintf(canon, cap, "%s%s", name, t->arr ? "[]" : "") >= (int)cap)
-        return -1;
-    return 0;
-}
-
-/* "t1,t2" (n chars, may be empty) → types; appends the canonical list to
- * `canon`. @return the count, or -1. */
-static int evm_abi_list(const char *s, size_t n, evm_abi_type_t *ts,
-                        char *canon, size_t cap, int allow_arr) {
-    int cnt = 0;
-    size_t i = 0;
-    while (i < n) {
-        size_t j = i;
-        while (j < n && s[j] != ',') j++;
-        size_t a = i, b = j;
-        while (a < b && s[a] == ' ') a++;
-        while (b > a && s[b - 1] == ' ') b--;
-        char one[40];
-        if (cnt >= EVM_ABI_MAX_ARGS ||
-            evm_abi_type(s + a, b - a, &ts[cnt], one, sizeof(one),
-                         allow_arr) != 0)
-            return -1;
-        size_t cl = strlen(canon);
-        if (snprintf(canon + cl, cap - cl, "%s%s", cnt ? "," : "", one) >=
-            (int)(cap - cl))
-            return -1;
-        cnt++;
-        if (j == n) break;
-        i = j + 1;
-        if (i == n) return -1;          /* a trailing comma */
-    }
-    return cnt;
-}
-
-typedef struct {
-    char           canon[512];          /* name(t1,t2)                  */
-    evm_abi_type_t in[EVM_ABI_MAX_ARGS];
-    int            n_in;
-    evm_abi_type_t out[EVM_ABI_MAX_ARGS];
-    int            n_out;
-    int            has_out;
-} evm_abi_sig_t;
-
-/* `name(t1,..)[(r1,..)]`, or `(t1,..)` for a constructor. @return 0/-1. */
-static int evm_abi_sig(const char *sig, evm_abi_sig_t *g) {
-    memset(g, 0, sizeof(*g));
-    const char *lp = strchr(sig, '(');
-    if (!lp) return -1;
-    const char *rp = strchr(lp, ')');
-    if (!rp) return -1;
-    size_t nl = (size_t)(lp - sig);
-    for (size_t i = 0; i < nl; i++) {
-        char c = sig[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') || c == '_' || c == '$'))
-            return -1;
-    }
-    if (nl >= 128) return -1;
-    memcpy(g->canon, sig, nl);
-    g->canon[nl] = '(';
-    g->canon[nl + 1] = '\0';
-    int n = evm_abi_list(lp + 1, (size_t)(rp - lp - 1), g->in, g->canon,
-                         sizeof(g->canon), 1);
-    if (n < 0) return -1;
-    g->n_in = n;
-    size_t cl = strlen(g->canon);
-    if (cl + 2 > sizeof(g->canon)) return -1;
-    g->canon[cl] = ')';
-    g->canon[cl + 1] = '\0';
-    const char *rest = rp + 1;
-    if (*rest == '\0') return 0;
-    if (*rest != '(') return -1;
-    const char *rp2 = strchr(rest, ')');
-    if (!rp2 || rp2[1] != '\0') return -1;
-    char scratch[512] = "";
-    /* evm_abi_print has no array case: a return list refuses arrays */
-    n = evm_abi_list(rest + 1, (size_t)(rp2 - rest - 1), g->out, scratch,
-                     sizeof(scratch), 0);
-    if (n < 0) return -1;
-    g->n_out = n;
-    g->has_out = 1;
-    return 0;
-}
-
-static int evm_abi_selector(const char *canon, uint8_t sel[4]) {
-    uint8_t h[32];
-    if (keccak256((const uint8_t *)canon, strlen(canon), h) != 0) return -1;
-    memcpy(sel, h, 4);
-    return 0;
-}
-
-/* One static word of `t` from text `v`. @return 0 / -1. */
-static int evm_abi_word(const evm_abi_type_t *t, const char *v,
-                        uint8_t w[32]) {
-    memset(w, 0, 32);
-    switch (t->k) {
-    case EVM_ABI_ADDR:
-        return evm_addr_parse(v, w);
-    case EVM_ABI_BOOL:
-        if (!strcmp(v, "true") || !strcmp(v, "1")) { w[31] = 1; return 0; }
-        if (!strcmp(v, "false") || !strcmp(v, "0")) return 0;
-        return -1;
-    case EVM_ABI_UINT: {
-        if ((v[0] == '0' && (v[1] == 'x' || v[1] == 'X'))
-                ? evm_u256_hexnum(v, w) != 0 : evm_u256_dec(v, w) != 0)
-            return -1;
-        for (unsigned i = 0; i < (256u - t->bits) / 8u; i++)
-            if (w[i]) return -1;                       /* out of range */
-        return 0;
-    }
-    case EVM_ABI_INT: {
-        int neg = v[0] == '-';
-        uint8_t m[32];
-        if (evm_u256_dec(v + neg, m) != 0) return -1;
-        /* |v| < 2^(bits-1), or == 2^(bits-1) when negative */
-        uint8_t lim[32];
-        memset(lim, 0, sizeof(lim));
-        unsigned bit = t->bits - 1u;
-        lim[31 - bit / 8] = (uint8_t)(1u << (bit % 8));
-        int c = memcmp(m, lim, 32);
-        if (c > 0 || (c == 0 && !neg)) return -1;
-        if (!neg) { memcpy(w, m, 32); return 0; }
-        /* two's complement: ~m + 1 */
-        unsigned carry = 1;
-        for (int i = 31; i >= 0; i--) {
-            unsigned x = (unsigned)(uint8_t)~m[i] + carry;
-            w[i] = (uint8_t)x;
-            carry = x >> 8;
-        }
-        return 0;
-    }
-    case EVM_ABI_FBYTES: {
-        size_t n = 0;
-        if (evm_hex_bytes(v, w, 32, &n) != 0 || n != t->size) return -1;
-        return 0;
-    }
-    default:
-        return -1;
-    }
-}
-
-/* enc(T[] value) — one argv element "[v1,v2,...]" ("[]" = empty) → the
- * array's tail: its length word, then one static word per element
- * (abi-spec "Formal Specification of the Encoding", T[k] / T[]). *out heap.
- * @return 0 / -1 (message printed). */
-static int evm_abi_array(const evm_abi_type_t *t, const char *v, int argn,
-                         uint8_t **out, size_t *out_len) {
-    *out = NULL;
-    *out_len = 0;
-    size_t vl = strlen(v);
-    if (vl < 2 || v[0] != '[' || v[vl - 1] != ']') {
-        fprintf(stderr, "argument %d: an array is written [v1,v2,...] "
-                "([] = empty), as one argument\n", argn);
-        return -1;
-    }
-    char *body = malloc(vl - 1);
-    if (!body) return -1;
-    memcpy(body, v + 1, vl - 2);
-    body[vl - 2] = '\0';
-    size_t cnt = 0;
-    for (const char *c = body; *c; c++) {
-        if (*c != ' ') { cnt = 1; break; }
-    }
-    if (cnt)
-        for (const char *c = body; *c; c++)
-            if (*c == ',') cnt++;
-    uint8_t *buf = calloc(1, 32 + cnt * 32);
-    if (!buf) { free(body); return -1; }
-    for (int k = 0; k < 8; k++)
-        buf[31 - k] = (uint8_t)((uint64_t)cnt >> (8 * k));
-    char *p = body;
-    for (size_t e = 0; e < cnt; e++) {
-        char *comma = strchr(p, ',');
-        if (comma) *comma = '\0';
-        while (*p == ' ') p++;
-        size_t el = strlen(p);
-        while (el && p[el - 1] == ' ') p[--el] = '\0';
-        if (!*p || strchr(p, '[') || strchr(p, ']') ||
-            evm_abi_word(t, p, buf + 32 + e * 32) != 0) {
-            fprintf(stderr, "argument %d element %zu (%s) is not a valid "
-                    "value of its type\n", argn, e + 1, p);
-            free(buf);
-            free(body);
-            return -1;
-        }
-        if (comma) p = comma + 1;
-    }
-    free(body);
-    *out = buf;
-    *out_len = 32 + cnt * 32;
-    return 0;
-}
-
-/* enc((v1..vn)) — the head/tail encoding of a sequence of values
- * (abi-spec "Formal Specification of the Encoding"). *out heap.
- * @return 0 / -1 (message printed). */
-static int evm_abi_encode(const evm_abi_type_t *ts, int n, char **vals,
-                          uint8_t **out, size_t *out_len) {
-    *out = NULL;
-    *out_len = 0;
-    size_t head = (size_t)n * 32, tail = 0;
-    uint8_t *dyn[EVM_ABI_MAX_ARGS];
-    size_t   dyn_len[EVM_ABI_MAX_ARGS];
-    memset(dyn, 0, sizeof(dyn));
-    memset(dyn_len, 0, sizeof(dyn_len));
-    int rc = -1;
-    for (int i = 0; i < n; i++) {
-        if (!evm_abi_dynamic(&ts[i])) continue;
-        if (ts[i].arr) {
-            if (evm_abi_array(&ts[i], vals[i], i + 1, &dyn[i],
-                              &dyn_len[i]) != 0)
-                goto done;
-            tail += dyn_len[i];
-            continue;
-        }
-        size_t blen = 0;
-        uint8_t *b = NULL;
-        if (ts[i].k == EVM_ABI_STRING) {
-            blen = strlen(vals[i]);
-            b = malloc(blen ? blen : 1);
-            if (!b) goto done;
-            memcpy(b, vals[i], blen);
-        } else {
-            size_t hl = strlen(vals[i]);
-            b = malloc(hl / 2 + 1);
-            if (!b || evm_hex_bytes(vals[i], b, hl / 2 + 1, &blen) != 0) {
-                free(b);
-                fprintf(stderr, "argument %d: bytes must be hex\n", i + 1);
-                goto done;
-            }
-        }
-        size_t padded = (blen + 31) / 32 * 32;
-        dyn[i] = calloc(1, 32 + padded + 1);
-        if (!dyn[i]) { free(b); goto done; }
-        for (int k = 0; k < 8; k++)
-            dyn[i][31 - k] = (uint8_t)((uint64_t)blen >> (8 * k));
-        if (blen) memcpy(dyn[i] + 32, b, blen);
-        free(b);
-        dyn_len[i] = 32 + padded;
-        tail += dyn_len[i];
-    }
-    uint8_t *buf = calloc(1, head + tail + 1);
-    if (!buf) goto done;
-    size_t toff = head;
-    for (int i = 0; i < n; i++) {
-        uint8_t *w = buf + (size_t)i * 32;
-        if (evm_abi_dynamic(&ts[i])) {
-            for (int k = 0; k < 8; k++)
-                w[31 - k] = (uint8_t)((uint64_t)toff >> (8 * k));
-            memcpy(buf + toff, dyn[i], dyn_len[i]);
-            toff += dyn_len[i];
-        } else if (evm_abi_word(&ts[i], vals[i], w) != 0) {
-            fprintf(stderr, "argument %d (%s) is not a valid value of its "
-                    "type\n", i + 1, vals[i]);
-            free(buf);
-            goto done;
-        }
-    }
-    *out = buf;
-    *out_len = head + tail;
-    rc = 0;
-done:
-    for (int i = 0; i < n; i++) free(dyn[i]);
-    return rc;
+/* Print a refusal text the ABI module left in `err` (empty: nothing). */
+static void evm_abi_report(const char *err) {
+    if (err[0]) fprintf(stderr, "%s\n", err);
 }
 
 /* A word as an offset / length into `len` bytes. @return 0 / -1. */
@@ -10996,7 +10528,7 @@ static int evm_abi_usize(const uint8_t w[32], size_t len, size_t *out) {
 /* Decode and print the return values of `ts` from `d` (strict: dirty
  * high bits, bad sign extension, a bool other than 0/1, non-zero padding
  * and any offset / length outside the data refuse). @return 0 / -1. */
-static int evm_abi_print(const evm_abi_type_t *ts, int n, const uint8_t *d,
+static int evm_abi_print(const nodus_evm_abi_type_t *ts, int n, const uint8_t *d,
                          size_t len) {
     if ((size_t)n * 32 > len) return -1;
     for (int i = 0; i < n; i++) {
@@ -11004,13 +10536,13 @@ static int evm_abi_print(const evm_abi_type_t *ts, int n, const uint8_t *d,
         char dec[80];
         printf("  [%d] ", i);
         switch (ts[i].k) {
-        case EVM_ABI_UINT:
+        case NODUS_EVM_ABI_UINT:
             for (unsigned b = 0; b < (256u - ts[i].bits) / 8u; b++)
                 if (w[b]) return -1;
-            evm_u256_to_dec(w, dec);
+            nodus_evm_u256_to_dec(w, dec);
             printf("%s\n", dec);
             break;
-        case EVM_ABI_INT: {
+        case NODUS_EVM_ABI_INT: {
             int neg = (w[(256u - ts[i].bits) / 8u] & 0x80) != 0;
             for (unsigned b = 0; b < (256u - ts[i].bits) / 8u; b++)
                 if (w[b] != (neg ? 0xFF : 0x00)) return -1;
@@ -11025,36 +10557,36 @@ static int evm_abi_print(const evm_abi_type_t *ts, int n, const uint8_t *d,
             } else {
                 memcpy(m, w, 32);
             }
-            evm_u256_to_dec(m, dec);
+            nodus_evm_u256_to_dec(m, dec);
             printf("%s%s\n", neg ? "-" : "", dec);
             break;
         }
-        case EVM_ABI_BOOL:
+        case NODUS_EVM_ABI_BOOL:
             for (int b = 0; b < 31; b++)
                 if (w[b]) return -1;
             if (w[31] > 1) return -1;
             printf("%s\n", w[31] ? "true" : "false");
             break;
-        case EVM_ABI_ADDR:
+        case NODUS_EVM_ABI_ADDR:
             printf("0x");
             evm_print_hex(w, 32);
             printf("\n");
             break;
-        case EVM_ABI_FBYTES:
+        case NODUS_EVM_ABI_FBYTES:
             for (unsigned b = ts[i].size; b < 32; b++)
                 if (w[b]) return -1;
             printf("0x");
             evm_print_hex(w, ts[i].size);
             printf("\n");
             break;
-        case EVM_ABI_BYTES:
-        case EVM_ABI_STRING: {
+        case NODUS_EVM_ABI_BYTES:
+        case NODUS_EVM_ABI_STRING: {
             size_t off = 0, bl = 0;
             if (evm_abi_usize(w, len, &off) != 0 || len - off < 32 ||
                 evm_abi_usize(d + off, len - off - 32, &bl) != 0)
                 return -1;
             const uint8_t *p = d + off + 32;
-            if (ts[i].k == EVM_ABI_BYTES) {
+            if (ts[i].k == NODUS_EVM_ABI_BYTES) {
                 printf("0x");
                 evm_print_hex(p, bl);
                 printf("\n");
@@ -11082,14 +10614,14 @@ static void evm_print_revert(const uint8_t *o, size_t n) {
         printf("  revert: (no data)\n");
         return;
     }
-    if (n >= 4 && evm_abi_selector("Error(string)", es) == 0 &&
+    if (n >= 4 && nodus_evm_abi_selector("Error(string)", es) == 0 &&
         memcmp(o, es, 4) == 0) {
-        evm_abi_type_t t = { EVM_ABI_STRING, 0, 0, 0 };
+        nodus_evm_abi_type_t t = { NODUS_EVM_ABI_STRING, 0, 0, 0 };
         printf("  revert: Error(string)\n");
         if (evm_abi_print(&t, 1, o + 4, n - 4) == 0) return;
-    } else if (n >= 4 && evm_abi_selector("Panic(uint256)", ps) == 0 &&
+    } else if (n >= 4 && nodus_evm_abi_selector("Panic(uint256)", ps) == 0 &&
                memcmp(o, ps, 4) == 0) {
-        evm_abi_type_t t = { EVM_ABI_UINT, 256, 0, 0 };
+        nodus_evm_abi_type_t t = { NODUS_EVM_ABI_UINT, 256, 0, 0 };
         printf("  revert: Panic(uint256)\n");
         if (evm_abi_print(&t, 1, o + 4, n - 4) == 0) return;
     }
@@ -11210,7 +10742,7 @@ static int evm_solc(const char *solc_bin, const char *spec, uint8_t **code,
                 hexline = 0;
         if (!hexline) continue;
         *code = malloc(ll / 2 + 1);
-        if (*code && evm_hex_bytes(line, *code, ll / 2 + 1, code_len) == 0 &&
+        if (*code && nodus_evm_hex_bytes(line, *code, ll / 2 + 1, code_len) == 0 &&
             *code_len > 0)
             rc = 0;
         break;
@@ -11286,7 +10818,7 @@ static int evm_print_receipt(const nodus_evm_receipt_t *r,
         static const uint8_t z[32] = { 0 };
         if (memcmp(r->wei_destroyed, z, 32) != 0) {
             char dec[80];
-            evm_u256_to_dec(r->wei_destroyed, dec);
+            nodus_evm_u256_to_dec(r->wei_destroyed, dec);
             printf("  value destroyed (wei): %s\n", dec);
         }
     }
@@ -11368,7 +10900,7 @@ static int evm_tx_run(const char *server_ip, uint16_t server_port,
     }
     uint8_t self_addr[32], own_raw[64];
     char own_fp[QGP_FP_HEX_BUFFER];
-    if (evm_addr_of_pk(keys[0].pk.bytes, self_addr) != 0 ||
+    if (nodus_evm_addr_of_pk(keys[0].pk.bytes, self_addr) != 0 ||
         qgp_sha3_512(keys[0].pk.bytes, DNAC_PUBKEY_SIZE, own_raw) != 0)
         goto done;
     qgp_fp_raw_to_hex(own_raw, own_fp);
@@ -11725,6 +11257,15 @@ static void evm_usage(void) {
         "  evm call <address> <sig> [args ...] [--from <address> | --keys <dir>]\n"
         "                                            read-only (evm_call); sig may end\n"
         "                                            with a return list: f(t)(r1,r2)\n"
+        "  evm attest \"<Name(t1,..)>\" <contract> <nonce> <expiry> [v1 ...]\n"
+        "             --keys <dir> [--chain-id <64 hex>]\n"
+        "                                            sign an ML-DSA-87 attestation (the\n"
+        "                                            companion library's message, context\n"
+        "                                            nodus.evm.attest.v1); prints the\n"
+        "                                            message, pubkey and signature, sends\n"
+        "                                            nothing. Offline with --chain-id and\n"
+        "                                            no -s; otherwise the node's chain id\n"
+        "                                            (at most 9 parameters)\n"
         "  evm deposit <raw>                         NODUS -> EVM balance\n"
         "  evm withdraw <raw> [--to <fp128>]         EVM balance -> NODUS (default: self)\n"
         "  evm redeem <ticket_id>                    pay out a contract's withdrawal ticket\n"
@@ -11758,18 +11299,143 @@ static int evm_u64(const char *s, uint64_t *out) {
     return cli_u64(s, UINT64_MAX, out);
 }
 
+/* 1 when `flag` appears among argv[from .. argc). */
+static int evm_argv_has(int argc, char **argv, int from, const char *flag) {
+    for (int i = from; i < argc; i++)
+        if (!strcmp(argv[i], flag)) return 1;
+    return 0;
+}
+
+/* `evm attest "<Name(t1,..)>" <contract> <nonce> <expiry> [v1 ..]
+ *  --keys <dir> [--chain-id <64 hex>]` — signs the ML-DSA-87 companion
+ * library's attested message (design 2026-10-22-mldsa87-companion-library
+ * §1.3, §1.6) with the --keys identity under the FIPS 204 context
+ * "nodus.evm.attest.v1" and prints it for `evm send … <pubkey> <signature>`
+ * by anyone. Offline when --chain-id is given and no node is; otherwise the
+ * chain id is the node's (nodus_client_dnac_chain_id32). With both, the
+ * explicit id is used and a mismatch with the node's is reported. Never
+ * submits anything. The loaded secret keys are cleared on every exit. */
+static int evm_attest(const char *server_ip, uint16_t server_port,
+                      const char *keys_csv, const char *chain_id_f,
+                      const char **pos, int n_pos) {
+    if (n_pos < 4 || !keys_csv) {
+        fprintf(stderr, "evm attest \"<Name(t1,...)>\" <contract> <nonce> "
+                "<expiry> [v1 ...] --keys <dir> [--chain-id <64 hex>]\n");
+        return 1;
+    }
+    uint8_t chain32[32];
+    if (chain_id_f && t6_hex_exact(chain_id_f, chain32, 32) != 0) {
+        fprintf(stderr, "--chain-id must be exactly 64 lowercase hex "
+                "characters\n");
+        return 1;
+    }
+    if (!chain_id_f && !server_ip) {
+        fprintf(stderr, "evm attest needs --chain-id (offline) or a node "
+                "(-s <ip>) to name the chain\n");
+        return 1;
+    }
+    uint8_t contract[32];
+    if (nodus_evm_addr_parse(pos[1], contract) != 0) {
+        fprintf(stderr, "the contract is an address of 64 hex characters\n");
+        return 1;
+    }
+
+    nodus_identity_t *keys = calloc(4, sizeof(*keys));
+    nodus_evm_attest_msg_t m;
+    memset(&m, 0, sizeof(m));
+    int rc = 1;
+    if (!keys) return 1;
+    if (act_load_keys(keys_csv, keys, 4) != 1) {
+        fprintf(stderr, "evm attest wants exactly one identity in --keys\n");
+        goto done;
+    }
+
+    if (server_ip) {
+        nodus_client_t client;
+        if (t8_session(&client, server_ip, server_port) != 0) goto done;
+        bool has_chain32 = false;
+        uint8_t node32[32];
+        const int crc = nodus_client_dnac_chain_id32(&client, &has_chain32,
+                                                     node32);
+        nodus_client_close(&client);
+        if (crc != 0 || !has_chain32) {
+            if (!chain_id_f) {
+                fprintf(stderr, "this node names no version-3 chain id "
+                        "(dnac_supply chain_id32) — nothing signed\n");
+                goto done;
+            }
+            fprintf(stderr, "WARNING: the node's chain id could not be read; "
+                    "using --chain-id\n");
+        } else if (!chain_id_f) {
+            memcpy(chain32, node32, 32);
+        } else if (memcmp(chain32, node32, 32) != 0) {
+            fprintf(stderr, "WARNING: --chain-id differs from the chain id "
+                    "this node names; using --chain-id\n");
+        }
+    }
+
+    uint8_t signer[32];
+    if (nodus_evm_addr_of_pk(keys[0].pk.bytes, signer) != 0) goto done;
+    char aerr[256] = "";
+    if (nodus_evm_attest_build(pos[0], chain32, contract, pos[2], pos[3],
+                               signer, (char **)(pos + 4), n_pos - 4, &m,
+                               aerr, sizeof(aerr)) != 0) {
+        evm_abi_report(aerr);
+        goto done;
+    }
+    uint8_t sig[NODUS_EVM_ATTEST_SIG_LEN];
+    if (nodus_evm_attest_sign(m.message, m.message_len, keys[0].sk.bytes,
+                              keys[0].pk.bytes, sig) != 0) {
+        fprintf(stderr, "the attestation signature failed its own "
+                "verification — nothing printed\n");
+        goto done;
+    }
+
+    /* nonce / expiry as the message carries them (leading zeros dropped) */
+    uint8_t nw[32], ew[32];
+    char nonce_t[80], expiry_t[80];
+    if (nodus_evm_u256_dec(pos[2], nw) != 0 ||
+        nodus_evm_u256_dec(pos[3], ew) != 0)
+        goto done;
+    nodus_evm_u256_to_dec(nw, nonce_t);
+    nodus_evm_u256_to_dec(ew, expiry_t);
+    printf("action %s\nactionType ", m.canon);
+    evm_print_hex(m.action_type, 32);
+    printf("\nchain ");
+    evm_print_hex(chain32, 32);
+    printf("\ncontract ");
+    evm_print_hex(contract, 32);
+    printf("\nnonce %s\nexpiry %s\nsigner ", nonce_t, expiry_t);
+    evm_print_hex(signer, 32);
+    printf("\nmessage ");
+    evm_print_hex(m.message, m.message_len);
+    printf("\npubkey ");
+    evm_print_hex(keys[0].pk.bytes, NODUS_PK_BYTES);
+    printf("\nsignature ");
+    evm_print_hex(sig, sizeof(sig));
+    printf("\n");
+    rc = 0;
+done:
+    nodus_evm_attest_msg_free(&m);
+    for (int i = 0; i < 4; i++) nodus_identity_clear(&keys[i]);
+    free(keys);
+    return rc;
+}
+
 static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
                    char **argv, int cmd_start) {
     const char *sub = cmd_start + 1 < argc ? argv[cmd_start + 1] : "";
     evm_tx_opts_t o;
     memset(&o, 0, sizeof(o));
-    const char *pos[EVM_ABI_MAX_ARGS + 4];
+    const char *pos[NODUS_EVM_ABI_MAX_ARGS + 4];
     int n_pos = 0;
+    char aerr[256] = "";                    /* the ABI module's refusal text */
     const char *solc_spec = NULL, *solc_bin = NULL, *args_sig = NULL;
     const char *ctor_sig = NULL;            /* evm encode --ctor "(t1,..)" */
     const char *from = NULL, *to_fp = NULL, *addr_f = NULL;
     const char *topic_f[4] = { NULL, NULL, NULL, NULL };
     const char *cursor_f = NULL;            /* evm logs --cursor h:x:li */
+    const char *chain_id_f = NULL;          /* evm attest --chain-id <hex64> */
     int pretty = 0;                         /* evm logs --pretty */
     uint64_t fh = 0, th = 0, lim = 100;
     int has_fh = 0, has_th = 0;
@@ -11796,7 +11462,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
                 return 1;
             }
         } else if (!strcmp(a, "--value") && more) {
-            if (evm_u256_dec(argv[++i], o.value) != 0) {
+            if (nodus_evm_u256_dec(argv[++i], o.value) != 0) {
                 fprintf(stderr, "--value wants a decimal wei amount\n");
                 return 1;
             }
@@ -11819,6 +11485,8 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             has_th = 1;
         } else if (!strcmp(a, "--limit") && more) {
             if (evm_u64(argv[++i], &lim) != 0) return 1;
+        } else if (!strcmp(a, "--chain-id") && more) {
+            chain_id_f = argv[++i];
         } else if (!strcmp(a, "--cursor") && more) {
             cursor_f = argv[++i];
         } else if (!strcmp(a, "--pretty")) {
@@ -11842,7 +11510,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
         int rc = 1;
         uint8_t a[32];
         if (keys && o.keys_csv && act_load_keys(o.keys_csv, keys, 4) == 1 &&
-            evm_addr_of_pk(keys[0].pk.bytes, a) == 0) {
+            nodus_evm_addr_of_pk(keys[0].pk.bytes, a) == 0) {
             printf("0x");
             evm_print_hex(a, 32);
             printf("\n");
@@ -11861,9 +11529,11 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
          * Opens no connection. */
         const char *sig = ctor_sig ? ctor_sig : (n_pos >= 1 ? pos[0] : NULL);
         const int first = ctor_sig ? 0 : 1;
-        evm_abi_sig_t g;
-        if (!sig || evm_abi_sig(sig, &g) != 0 || g.has_out ||
+        nodus_evm_abi_sig_t g;
+        if (!sig || nodus_evm_abi_sig(sig, &g, aerr, sizeof(aerr)) != 0 ||
+            g.has_out ||
             (ctor_sig ? g.canon[0] != '(' : g.canon[0] == '(')) {
+            evm_abi_report(aerr);
             fprintf(stderr, "evm encode \"name(t1,...)\" v1 ...  |  "
                     "evm encode --ctor \"(t1,...)\" v1 ...  (no return "
                     "list)\n");
@@ -11876,11 +11546,13 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
         }
         uint8_t *enc = NULL;
         size_t enc_len = 0;
-        if (evm_abi_encode(g.in, g.n_in, (char **)(pos + first), &enc,
-                           &enc_len) != 0)
+        if (nodus_evm_abi_encode(g.in, g.n_in, (char **)(pos + first), &enc,
+                                 &enc_len, aerr, sizeof(aerr)) != 0) {
+            evm_abi_report(aerr);
             return 1;
+        }
         uint8_t sel[4];
-        if (!ctor_sig && evm_abi_selector(g.canon, sel) != 0) {
+        if (!ctor_sig && nodus_evm_abi_selector(g.canon, sel) != 0) {
             free(enc);
             return 1;
         }
@@ -11891,6 +11563,9 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
         free(enc);
         return 0;
     }
+    if (!strcmp(sub, "attest"))
+        return evm_attest(server_ip, server_port, o.keys_csv, chain_id_f, pos,
+                          n_pos);
 
     /* ── transactions ── */
     if (!strcmp(sub, "deploy") || !strcmp(sub, "send") ||
@@ -11915,7 +11590,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             } else if (n_pos >= 1) {
                 size_t hl = strlen(pos[0]);
                 code = malloc(hl / 2 + 1);
-                if (!code || evm_hex_bytes(pos[0], code, hl / 2 + 1,
+                if (!code || nodus_evm_hex_bytes(pos[0], code, hl / 2 + 1,
                                            &code_len) != 0 || !code_len) {
                     free(code);
                     fprintf(stderr, "the bytecode must be hex\n");
@@ -11931,9 +11606,10 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             uint8_t *enc = NULL;
             size_t enc_len = 0;
             if (args_sig) {
-                evm_abi_sig_t g;
-                if (evm_abi_sig(args_sig, &g) != 0 || g.has_out ||
-                    g.canon[0] != '(') {
+                nodus_evm_abi_sig_t g;
+                if (nodus_evm_abi_sig(args_sig, &g, aerr, sizeof(aerr)) != 0 ||
+                    g.has_out || g.canon[0] != '(') {
+                    evm_abi_report(aerr);
                     fprintf(stderr, "--args wants \"(t1,t2,...)\"\n");
                     free(code);
                     return 1;
@@ -11944,8 +11620,10 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
                     free(code);
                     return 1;
                 }
-                if (evm_abi_encode(g.in, g.n_in, (char **)(pos + first),
-                                   &enc, &enc_len) != 0) {
+                if (nodus_evm_abi_encode(g.in, g.n_in, (char **)(pos + first),
+                                         &enc, &enc_len, aerr,
+                                         sizeof(aerr)) != 0) {
+                    evm_abi_report(aerr);
                     free(code);
                     return 1;
                 }
@@ -11974,7 +11652,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             c.op = DNA_EVM_OP_CREATE;
         } else if (!strcmp(sub, "send") && n_pos == 1) {
             /* a plain value transfer: empty calldata (receive()) */
-            if (!o.has_value || evm_addr_parse(pos[0], c.to) != 0) {
+            if (!o.has_value || nodus_evm_addr_parse(pos[0], c.to) != 0) {
                 fprintf(stderr, "evm send <address> without a signature is "
                         "a plain value transfer and needs --value <wei>\n");
                 evm_usage();
@@ -11985,9 +11663,11 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             data_len = 0;
             c.op = DNA_EVM_OP_CALL;
         } else if (!strcmp(sub, "send")) {
-            evm_abi_sig_t g;
-            if (n_pos < 2 || evm_addr_parse(pos[0], c.to) != 0 ||
-                evm_abi_sig(pos[1], &g) != 0 || g.canon[0] == '(') {
+            nodus_evm_abi_sig_t g;
+            if (n_pos < 2 || nodus_evm_addr_parse(pos[0], c.to) != 0 ||
+                nodus_evm_abi_sig(pos[1], &g, aerr, sizeof(aerr)) != 0 ||
+                g.canon[0] == '(') {
+                evm_abi_report(aerr);
                 evm_usage();
                 return 1;
             }
@@ -11998,12 +11678,14 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             }
             uint8_t *enc = NULL;
             size_t enc_len = 0;
-            if (evm_abi_encode(g.in, g.n_in, (char **)(pos + 2), &enc,
-                               &enc_len) != 0)
+            if (nodus_evm_abi_encode(g.in, g.n_in, (char **)(pos + 2), &enc,
+                                     &enc_len, aerr, sizeof(aerr)) != 0) {
+                evm_abi_report(aerr);
                 return 1;
+            }
             data_len = 4 + enc_len;
             data = malloc(data_len);
-            if (!data || evm_abi_selector(g.canon, data) != 0) {
+            if (!data || nodus_evm_abi_selector(g.canon, data) != 0) {
                 free(enc);
                 free(data);
                 return 1;
@@ -12041,7 +11723,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             }
         } else {                                       /* redeem */
             size_t tl = 0;
-            if (n_pos != 1 || evm_hex_bytes(pos[0], c.ticket_id, 64,
+            if (n_pos != 1 || nodus_evm_hex_bytes(pos[0], c.ticket_id, 64,
                                             &tl) != 0 || tl != 64) {
                 fprintf(stderr, "evm redeem <ticket_id: 128 hex>\n");
                 return 1;
@@ -12095,14 +11777,14 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
     if (!strcmp(sub, "balance")) {
         uint8_t a[32];
         if (n_pos == 1) {
-            if (evm_addr_parse(pos[0], a) != 0) {
+            if (nodus_evm_addr_parse(pos[0], a) != 0) {
                 fprintf(stderr, "an address is 64 hex characters\n");
                 return 1;
             }
         } else {
             nodus_identity_t *k = calloc(4, sizeof(*k));
             int ok = k && o.keys_csv && act_load_keys(o.keys_csv, k, 4) == 1 &&
-                     evm_addr_of_pk(k[0].pk.bytes, a) == 0;
+                     nodus_evm_addr_of_pk(k[0].pk.bytes, a) == 0;
             if (k) {
                 for (int i = 0; i < 4; i++) nodus_identity_clear(&k[i]);
                 free(k);
@@ -12121,7 +11803,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             return 1;
         }
         char wei[80], nod[96];
-        evm_u256_to_dec(acc.balance_wei, wei);
+        nodus_evm_u256_to_dec(acc.balance_wei, wei);
         evm_wei_to_nodus(acc.balance_wei, nod, sizeof(nod));
         printf("address 0x");
         evm_print_hex(a, 32);
@@ -12132,11 +11814,13 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
         return 0;
     }
     if (!strcmp(sub, "call")) {
-        evm_abi_sig_t g;
+        nodus_evm_abi_sig_t g;
         uint8_t to[32], fromb[32];
         memset(fromb, 0, sizeof(fromb));
-        if (n_pos < 2 || evm_addr_parse(pos[0], to) != 0 ||
-            evm_abi_sig(pos[1], &g) != 0 || g.canon[0] == '(') {
+        if (n_pos < 2 || nodus_evm_addr_parse(pos[0], to) != 0 ||
+            nodus_evm_abi_sig(pos[1], &g, aerr, sizeof(aerr)) != 0 ||
+            g.canon[0] == '(') {
+            evm_abi_report(aerr);
             evm_usage();
             return 1;
         }
@@ -12146,14 +11830,14 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
             return 1;
         }
         if (from) {
-            if (evm_addr_parse(from, fromb) != 0) {
+            if (nodus_evm_addr_parse(from, fromb) != 0) {
                 fprintf(stderr, "--from wants a 64-hex address\n");
                 return 1;
             }
         } else if (o.keys_csv) {
             nodus_identity_t *k = calloc(4, sizeof(*k));
             int ok = k && act_load_keys(o.keys_csv, k, 4) == 1 &&
-                     evm_addr_of_pk(k[0].pk.bytes, fromb) == 0;
+                     nodus_evm_addr_of_pk(k[0].pk.bytes, fromb) == 0;
             if (k) {
                 for (int i = 0; i < 4; i++) nodus_identity_clear(&k[i]);
                 free(k);
@@ -12162,11 +11846,13 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
         }
         uint8_t *enc = NULL, *data = NULL;
         size_t enc_len = 0;
-        if (evm_abi_encode(g.in, g.n_in, (char **)(pos + 2), &enc,
-                           &enc_len) != 0)
+        if (nodus_evm_abi_encode(g.in, g.n_in, (char **)(pos + 2), &enc,
+                                 &enc_len, aerr, sizeof(aerr)) != 0) {
+            evm_abi_report(aerr);
             return 1;
+        }
         data = malloc(4 + enc_len);
-        if (!data || evm_abi_selector(g.canon, data) != 0) {
+        if (!data || nodus_evm_abi_selector(g.canon, data) != 0) {
             free(enc);
             free(data);
             return 1;
@@ -12221,7 +11907,7 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
     if (!strcmp(sub, "receipt")) {
         uint8_t id[64];
         size_t il = 0;
-        if (n_pos != 1 || evm_hex_bytes(pos[0], id, 64, &il) != 0 ||
+        if (n_pos != 1 || nodus_evm_hex_bytes(pos[0], id, 64, &il) != 0 ||
             il != 64) {
             fprintf(stderr, "evm receipt <intent_id: 128 hex>\n");
             return 1;
@@ -12258,13 +11944,13 @@ static int cmd_evm(const char *server_ip, uint16_t server_port, int argc,
         lq.to_height = th;
         lq.limit = (uint32_t)lim;
         if (addr_f) {
-            if (evm_addr_parse(addr_f, addr) != 0) return 1;
+            if (nodus_evm_addr_parse(addr_f, addr) != 0) return 1;
             lq.addr = addr;
         }
         for (int t = 0; t < 4; t++)
             if (topic_f[t]) {
                 size_t tl = 0;
-                if (evm_hex_bytes(topic_f[t], tp[t], 32, &tl) != 0 ||
+                if (nodus_evm_hex_bytes(topic_f[t], tp[t], 32, &tl) != 0 ||
                     tl != 32)
                     return 1;
                 lq.topic[t] = tp[t];
@@ -12405,8 +12091,10 @@ static void usage(const char *prog) {
     fprintf(stderr, "                   (every session command warns once on stderr: \"WARNING: Update ...\")\n");
     fprintf(stderr, "  name register <name> --keys <dir> (--dry-run | --submit ip:port) [--fee <raw>]\n");
     fprintf(stderr, "  name lookup <name> | name of <fp128>   On-chain names (one node's answer)\n");
-    fprintf(stderr, "  evm (address | balance | deploy | send | call | deposit | withdraw |\n");
-    fprintf(stderr, "       redeem | receipt | logs) ...   Smart contracts (`evm` alone: usage)\n");
+    fprintf(stderr, "  evm (address | balance | deploy | send | call | encode | attest |\n");
+    fprintf(stderr, "       deposit | withdraw | redeem | receipt | logs) ...\n");
+    fprintf(stderr, "                   Smart contracts (`evm` alone: usage; `evm attest` signs an\n");
+    fprintf(stderr, "                   ML-DSA-87 attestation, offline with --chain-id)\n");
     fprintf(stderr, "  chain-config propose --param <NAME> --value <N> --effective <BLOCK>\n");
     fprintf(stderr, "  stake [--commission BPS] [--bond RAW = exactly 10M NODUS]   Bond this node identity as validator (S3)\n");
     fprintf(stderr, "                              [--nonce <N>]  (committee operator only)\n");
@@ -12636,10 +12324,13 @@ int main(int argc, char **argv) {
 
 #if defined(NODUS_CLI_HAS_DNAC) && defined(NODUS_EVM_ENABLED)
     /* Nodus EVM — `evm address` (the --keys identity's address) and
-     * `evm encode` (ABI call data / constructor args) are OFFLINE */
+     * `evm encode` (ABI call data / constructor args) are OFFLINE, and so
+     * is `evm attest` when --chain-id names the chain and no node is given */
     if (strcmp(command, "evm") == 0 && optind + 1 < argc &&
         (strcmp(argv[optind + 1], "address") == 0 ||
-         strcmp(argv[optind + 1], "encode") == 0))
+         strcmp(argv[optind + 1], "encode") == 0 ||
+         (strcmp(argv[optind + 1], "attest") == 0 && !server_ip &&
+          evm_argv_has(argc, argv, optind + 2, "--chain-id"))))
         return cmd_evm(server_ip, server_port, argc, argv, optind);
 #endif
 
