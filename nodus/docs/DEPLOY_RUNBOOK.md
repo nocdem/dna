@@ -169,7 +169,68 @@ wire are unchanged, so no hard fork is involved):
 
 **Rollback = the combined unit:** `systemctl disable --now nodus-core nodus-storage
 nodus-witness && systemctl enable --now nodus`. Same config, same data directory; no
-data migration in either direction (the `addr_seq` caveat above aside).
+data migration in either direction (the `addr_seq` caveat above aside). The combined
+server always runs both the storage and the witness part: on a host where a package was
+removed (below), this by-hand rollback turns it back on — add the package first
+(`install.sh --layout combined` refuses that case).
+
+**Adding or removing a package on a running node** (decisions
+`2026-10-22-nodus-packages-add-remove.md`, `2026-10-22-kurultay-36-summary.md`, local
+files; branch `dna95`, not versioned). On a three-service host:
+```
+sudo nodus-cli package list
+sudo nodus-cli package add witness      # or: add storage
+sudo nodus-cli package remove witness
+```
+`add` = `systemctl enable --now` of the package's unit, `remove` = `systemctl disable
+--now`; `witness` is `nodus-witness` (the chain program — the storage-NODE role runs in
+it too), `storage` is `nodus-storage` (the DHT store). `nodus-core` is never changed. What
+it never does: download or delete a program (all five stay installed), delete a
+package's data (it stays on disk, so adding the package back does not resync from
+scratch; the partial-wipe gate is not touched), or touch the identity (the key is only
+loaded read-only, for the registration read). Refused, nothing changed: `remove storage`
+in this version (BUGS.md D-23: a node whose storage is off keeps being chosen as a DHT
+replica — it ships after that is fixed and proven on a multi-node test); the combined
+layout (`nodus.service` enabled); both layouts or a package without `nodus-core`
+enabled; `nodus.service` running beside enabled split units; a unit state that cannot
+be read; a removal that would leave `nodus-core` alone (decision item 12). `remove
+witness` asks this node's own witness (`dnac_node_duties`, `docs/ARCHITECTURE.md` §19)
+and goes ahead only when the node is not registered as a witness or a storage node,
+owes no post-leave duty and is caught up; otherwise the message names the owner who
+must leave in Nodus Connect, or the block after which to try again. A witness that is
+down, or a reply that cannot be read, refuses too — there is no override. Full command
+reference: `nodus/README.md` (`package`).
+
+**The host lock.** One install, update or package change at a time on a host:
+`nodus-cli package add|remove`, `deploy/install.sh` (a real run; `--dry-run` takes no
+lock), `website/install-node.sh` (not with `--build-only`), `tools/nodus-update.sh` and
+`deploy/build-nodus.sh` all take an exclusive `flock` on `/run/lock/nodus-admin.lock`,
+without waiting, before they read which units are enabled, and hold it until they exit
+(the scripts: after the last unit start). The file is `root:root` mode `0600`, created so
+when missing (`O_EXCL` / noclobber — never written through a planted symlink).
+- Held by another of them → refused at once. `nodus-cli package`: `another Nodus install,
+  update or package change is running on this host — nothing was changed`; `install.sh`
+  and `install-node.sh`: the same sentence; `nodus-update.sh`: `❌ Refusing: another Nodus
+  install, update or package change is running on this host — nothing was changed.`;
+  `build-nodus.sh`: `Refusing: another Nodus install, update or package change is running
+  on this host (or sudo / flock could not take the lock) — nothing was changed.`
+- `/run/lock` is world-writable, so the file itself is checked: a symlink, anything that
+  is not a regular file, a file not owned by uid 0, or a mode other than exactly 600 (the
+  scripts; `nodus-cli package` refuses any group/other permission bit) is
+  refused with `/run/lock/nodus-admin.lock is not a root-owned 0600 regular file; remove
+  it and retry. Nothing was changed.` (never reported as "busy", never adopted). If you
+  see it: make sure no install, update or package change is running, `sudo rm
+  /run/lock/nodus-admin.lock`, run the command again (it creates a correct file).
+- `flock` missing (util-linux) → refused in every script.
+- `install-node.sh` takes the lock itself and hands the open descriptor to `install.sh`
+  as `NODUS_ADMIN_LOCK_HELD=9`; `install.sh` uses an inherited descriptor (3-9) only when
+  it refers to the lock file itself (device:inode), else it takes the lock on fd 9.
+- `nodus-update.sh` now refuses to run without root (`❌ Refusing: must run as root (the
+  host lock /run/lock/nodus-admin.lock is root-owned). Nothing was changed.`).
+  `build-nodus.sh` runs as a normal user with `sudo` per command, so it holds the lock in
+  a root child — a coproc running `sudo flock -n -E 75 <file> sh -c 'echo held; exec cat
+  >/dev/null'` that ends when the script's end of the pipe closes; run as root it locks
+  fd 9 directly.
 
 **DECIDED (operator 2026-10-08, "1 a 2 a" — decision `2026-10-01-nodus-component-split.md`):**
 - **nodus-witness runs the partial-wipe gate.** Like core and nodus-storage it refuses a
@@ -250,6 +311,22 @@ sudo ./install.sh --layout split --no-witness   # core + storage   (decision ite
 sudo ./install.sh --layout split --no-storage   # core + witness
 sudo ./install.sh --layout combined             # nodus.service
 ```
+**An existing split host keeps its packages** (branch `dna95`, not versioned; Kurultay
+#36 agreed item 5). On a host where `nodus-core` is enabled, `--layout split` WITHOUT
+`--no-storage` / `--no-witness` installs and restarts exactly the split units that are
+enabled now — a package turned off with `nodus-cli package remove` stays off (the plan
+prints `split host: keeping the enabled split units as they are (…); a package turned off
+stays off`). A first install (no split unit enabled) still turns all three on. A host
+with ONLY `nodus-core` enabled has nothing to keep and is refused (`only nodus-core is
+enabled on this host — core alone is not an install of decision item 12 …`): enable the
+package(s) the node should run, or name them with `--no-*`. `--layout combined` on a split
+host where `nodus-storage` or `nodus-witness` is not enabled is refused (`packages
+removed: <names>; add them first (sudo nodus-cli package add <name>) — the combined
+server always runs both. Nothing was changed.`). A real run takes the host lock (the
+"host lock" paragraph in "Three-process node" above) right after the root and
+`systemctl` checks, before any unit state is read, and holds it until it exits;
+`--dry-run` takes no lock. Run from `website/install-node.sh`, it inherits that
+script's lock (`NODUS_ADMIN_LOCK_HELD=9`).
 **Run it inside `tmux` (or `screen`) on a remote host.** The installer traps Ctrl-C,
 SIGTERM and SIGHUP and exits through the same path as a failure, so the rollback
 commands are printed — but after an SSH drop they go to a terminal that no longer
@@ -284,7 +361,9 @@ What a run checks, in the script's order — any failure refuses and changes not
    `--prefix` a plain absolute path, not under the protected directories above (as typed
    and resolved); `--config` a file;
 2. the payload (step 2 above): `SHA256SUMS`, `VERSION`, arch, each binary's `-h`;
-3. root (not for `--dry-run`); `systemctl` present;
+3. root (not for `--dry-run`); `systemctl` present; then (a real run only) the host
+   lock `/run/lock/nodus-admin.lock` — `flock` present, the file a root-owned 0600
+   regular file, not held by another install, update or package change;
 4. the config: `/etc/nodus.conf`, or `--config` when it does not exist (a `--config` that
    differs from an existing file refuses); readable;
 5. `identity_path` / `data_path`: present twice, or not a non-empty string → refuse; then
@@ -308,8 +387,11 @@ What a run checks, in the script's order — any failure refuses and changes not
 9. the installed version (the `--allow-downgrade` paragraph above);
 10. the current layout, by `systemctl is-enabled` (exactly `enabled`), the same rule as
    `build-nodus.sh` / `nodus-update.sh`: both layouts enabled, or storage / witness
-   enabled without core → refuse; then a split unit that is enabled but not asked for →
-   refuse (it never removes a split service — disable it yourself first);
+   enabled without core → refuse; on a split host `--layout split` without `--no-*`
+   asks for exactly the enabled split units (only `nodus-core` enabled → refuse);
+   `--layout combined` while `nodus-storage` or `nodus-witness` is not enabled → refuse;
+   then a split unit that is enabled but not asked for → refuse (it never removes a split
+   service — disable it yourself first);
 11. `nodus.addr_seq` in both the identity and the data directory → refuse (below).
 
 Then it prints the plan and, in order:
@@ -345,7 +427,8 @@ Then it prints the plan and, in order:
 
 **4. Switch layout** = run `install.sh` with the other `--layout`. combined → split: stop +
 disable `nodus`, the `addr_seq` move, enable + start core → storage → witness. split →
-combined: stop + disable the split units, enable + start `nodus`; the `addr_seq` file is
+combined (refused while a package is off — add it first): stop + disable the split
+units, enable + start `nodus`; the `addr_seq` file is
 NOT moved back (item 21 names only the forward move) — the plan prints a note, and the
 combined server's own sequence lives in `<identity_path>/nodus.addr_seq`; move it back by
 hand while `nodus` is stopped if you want to keep the sequence. Never both layouts
@@ -364,9 +447,10 @@ safe only while the chain has voted no hard fork the previous release lacks** �
 such a vote the older binary stops following the chain (§2.2); the printed hint says so.
 
 What the installer does NOT do: pick a restart order on a live validator beyond core →
-storage → witness at start (the "Restart order" item above stays OPEN), add a
-partial-wipe gate to the witness (OPEN above), publish or sign anything, or touch any
-node it is not run on.
+storage → witness at start (the DECIDED restart rule above: the three units stop
+together and start together), publish or sign anything, or touch any node it is not
+run on. The partial-wipe gate of the witness is in `nodus-witness` itself (DECIDED
+above), not in the installer.
 
 ---
 

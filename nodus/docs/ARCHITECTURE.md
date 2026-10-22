@@ -11780,3 +11780,229 @@ These will be added as the DNAC consensus system matures:
 | `witness leader` | Current epoch's leader node |
 | `witness blocks [n]` | Last n committed blocks with TX hashes |
 | `witness supply` | Total supply, burned fees, circulating |
+
+---
+
+## 19. Nodus packages — `nodus-cli package` and `dnac_node_duties` (2026-10-22, branch `dna95`, not versioned)
+
+**Governing records (local files):** decision `2026-10-22-nodus-packages-add-remove.md` (the
+operator's product answers: adding a package = turning its unit on, removing = turning it off,
+every program stays installed; removing the chain program while the node is registered as a
+witness or a storage node is refused with "leave first in Connect"; a removed package's data
+stays on disk; package names `witness` and `storage`; a first install turns both on; `nodus-core`
+never runs alone — decision item 12 of the component split) and `2026-10-22-kurultay-36-summary.md`
+(the khan's decisions: `remove storage` ships only after the storage-off replica defect, BUGS.md
+D-23, is fixed and proven on a multi-node test; `remove witness` is refused until registration is
+gone AND every post-leave duty is done, naming the block after which to retry; one host-level
+lock shared by the package command and the installers / updater in the first version). Design:
+`docs/plans/2026-10-22-nodus-packages-design.md` §1-§5 (local). NOT consensus code: nothing here
+is read by a block, a vote, a verdict or a state root.
+
+### 19.1 The query — `dnac_node_duties` ("may this node switch its witness package off?")
+
+Served by the witness (`handle_dnac_node_duties`, `src/witness/nodus_witness_handlers.c`), routed
+by the generic `dnac_` dispatch (`nodus_witness_handle_dnac`). Wire and every key:
+`include/nodus/nodus.h`, beside `nodus_client_dnac_node_duties`.
+
+- **Request** `"a": {}` — no argument; it always answers for the node that is asked.
+- **Auth.** Served ONLY to a session whose authenticated public key IS this node's own identity
+  key (`conn->peer_pk` = `w->host->identity->pk`; the combined server and the split witness both
+  fill `peer_pk` from the session — `nodus_auth.c`, the IPC preface in `nodus_witness_ipc.c`).
+  Any other session, or none: `NODUS_ERR_NOT_AUTHENTICATED` ("dnac_node_duties is served to this
+  node's own identity only"). An older node answers "unknown DNAC method"; a node without a
+  version-3 chain `NODUS_ERR_NOT_FOUND` ("no version-3 chain on this node"); a core without a
+  witness `NODUS_CHAIN_NO_WITNESS_MSG` ("witness module not enabled",
+  `NODUS_ERR_PROTOCOL_ERROR`).
+- **Reply `"r"`** — 11 keys, 12 with `"why"`:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `ch` | u64 | the committed tip T, read at the start and again at the end — a different value makes the answer UNKNOWN ("the committed tip moved while reading") |
+| `cid` | bstr32 | the chain id; all zero when it could not be read |
+| `bh` | bstr64 | the block id at T (`v2_blocks.block_id`); all zero when it could not be read |
+| `fresh` | bool | the node is caught up: `ws` false AND `cs` true AND `np` ≥ 1 AND `ch` + 1 ≥ `mph` (T ≥ maxPeerHeight − 1: a peer at height h has committed h − 1) |
+| `ws` | bool | the consensus reactor's wait-sync flag (`cmt_conr_wait_sync`) |
+| `cs` | bool | the consensus state machine has started (`nodus_cmt_node_t.cs_started`) |
+| `np` | u32 | consensus peers that are in the reactor's set, started, and whose round-state height is known (> 0); ≤ 65535 |
+| `mph` | u64 | the highest such peer height; 0 when `np` is 0 |
+| `state` | u8 | `NODUS_DNAC_DUTIES_CLEAR` (0) / `_BLOCKED` (1) / `_UNKNOWN` (2) |
+| `bl` | array | ≤ `NODUS_DNAC_DUTIES_BL_MAX` (= `NODUS_DNAC_DUTY_MAX` = 9) maps `{"c" u8 code, "eh" u64 end}`, one per code, `c` strictly ascending in 1..9; `eh` = the committed tip from which the blocker no longer applies (ask again once `ch` ≥ `eh`); 0 = "until the owner leaves", only for codes 1 and 6; otherwise `eh` > `ch` |
+| `own` | array | ≤ `NODUS_DNAC_DUTIES_OWNERS_MAX` (16) tstr128 (lowercase hex), strictly ascending: the owner fingerprints of the rows behind codes 1, 2, 6 and 7 (a validators row's `owner_fp`; the storage row's `payee`) |
+| `why` | tstr | ≤ `NODUS_DNAC_DUTIES_WHY_MAX` (96) characters, present exactly when `state` is UNKNOWN |
+
+`state` is decided from the committed rows alone; `fresh` is a separate fact and is NOT folded
+into it — a caller must require BOTH `fresh` and CLEAR. CLEAR is never sent when any read failed
+or returned −1, a row that must exist is missing, or an unsupported status was met: those are
+UNKNOWN with `bl` and `own` empty and the fault text in `why` (also logged as a WARN). Unlike its
+neighbouring queries, a fault after the tip was read is a SUCCESSFUL reply with state UNKNOWN,
+not an error frame — an error or a dropped connection could be mistaken for "no information" and
+retried into an allow.
+
+**The blockers** (with T = `ch`, E = `DNAC_EPOCH_LENGTH`, B = ⌊(T+1)/E⌋·E — the epoch start of
+block T + 1, the committee convention; "snapshot(X)" = the validator-set snapshot of epoch X read
+through `nodus_witness_v2_epoch_authority_for_epoch`, no cache, no recompute):
+
+| Code | Name | When | `eh` |
+|---|---|---|---|
+| 1 | `NODUS_DNAC_DUTY_WITNESS_REGISTERED` | a `validators` row whose consensus key is this node's key is ACTIVE or ELIGIBLE (every row with that key is read, ordered by `pubkey_hash`, at most `DUTY_ROWS_MAX` = 8 — more is a fault; UNSTAKED is no blocker) | 0 |
+| 2 | `NODUS_DNAC_DUTY_WITNESS_LEAVING` | such a row is RETIRING or AUTO_RETIRED — it graduates by itself at the first boundary where the key is not an entry of the snapshot taking effect | B + 2E when the key is an entry of snapshot(B + E), else B + E |
+| 3 | `NODUS_DNAC_DUTY_SEATED_NOW` | the key is an entry of snapshot(B) | B + E |
+| 4 | `NODUS_DNAC_DUTY_SEATED_NEXT` | the key is an entry of the frozen snapshot(B + E) | B + 2E |
+| 5 | `NODUS_DNAC_DUTY_CMT_TRANSITION` | T + 1 ∈ {B, B + 1}, B ≥ E, and the key is an entry of snapshot(B − E) (cometbft applies validator updates two blocks late) | B + 1 |
+| 6 | `NODUS_DNAC_DUTY_STORAGE_REGISTERED` | the storage registry row of this node's fingerprint (SHA3-512 of its key) is ACTIVE | 0 |
+| 7 | `NODUS_DNAC_DUTY_STORAGE_LEAVING` | that row is EXITING (RELEASED is no blocker) | the first multiple of E that is ≥ T + 1 (the release boundary) |
+| 8 | `NODUS_DNAC_DUTY_ARCHIVE_OVERLAP` | H = ⌊T/E⌋·E > 0 and `nodus_witness_sthold_must_hold(H, me)` returns segments | H + 2E when the node is a member of storage_set(H), else H + E |
+| 9 | `NODUS_DNAC_DUTY_STORAGE_REPORT` | B ≥ 2E; with P = B − E, `nodus_stprobe_report_window(P, E, T)` is open (T + 1 ∈ (P + E, P + E + ⌊E/2⌋]); the key is seat s of snapshot(P); storage_set(P) exists with ≥ 1 member; no STORAGE_REPORT (P, s) is committed (`nodus_witness_stprobe_report_committed`) | P + E + ⌊E/2⌋ |
+
+**Where the code chose and the design left it open, or differs from the design's §3.3 text**
+(the handler's header comment states these choices; they are the code's, not a recorded
+decision):
+- snapshot(B + E) is frozen inside block B. While T + 1 = B (block B not yet committed) its
+  absence means "not an entry"; once T + 1 > B it must exist and its absence is a fault.
+  snapshot(B), snapshot(B − E) and snapshot(P) must exist — absent is a fault.
+- Code 7: the design names B as the end; the code uses the first multiple of E ≥ T + 1 (= B when
+  T + 1 = B, else B + E), because the release runs at every storage boundary.
+- Code 8: the design reads must-hold at B and ends at B + E; the code uses the holder's own
+  convention H = ⌊T/E⌋·E (the epoch whose storage_set governs (H, H + E]), no duty at H = 0, and
+  ends at H + 2E for a member of storage_set(H) (it still holds in the overlap epoch after being
+  displaced), else H + E.
+- Storage sets: the chain writes storage_set(X) at every boundary X at which chain_config param
+  18 (`RULESET_GEN_ROLES`) is in effect, an empty set included. So an absent storage_set(H) for
+  code 8, or storage_set(P) for code 9, is a fault (UNKNOWN) when param 18 is in effect at that
+  boundary, and "no storage duty" before the activation (`duty_storage_sets_expected`); a
+  history read fault is UNKNOWN.
+- Code 9: `nodus_stprobe_report_window`'s "closed or overflow" (−1) is read as "not owed"; T <
+  UINT64_MAX >> 3 is checked first (a larger tip is the fault "committed tip out of range").
+
+**Read-only, no clock, bounded.** The handler opens no transaction and writes nothing (the witness
+thread is the database connection's only user, so the reads see one committed state); the test
+checks `sqlite3_total_changes` is unchanged. No clock is read. Bounded work: the validators rows of
+one key (≤ 8), at most five snapshot reads, the node's storage row, a few storage-set reads
+(storage_set(H) inside the must-hold computation and once more for membership, storage_set(H − E) inside the must-hold
+computation, storage_set(P)), one must-hold computation (`NODUS_STHOLD_MAX_SEGS`), one report-row read; the reply is
+encoded into a fixed 4096-byte buffer (overflow → `NODUS_ERR_INTERNAL_ERROR` "response buffer
+overflow"). The freshness facts are read from the consensus reactor's public peer table
+(`cmt_conr` `peers[]`, `CMT_CONR_MAX_PEERS` slots, `cmt_ps_get_round_state`) on the witness thread
+that owns it; `shared/dnac/` is untouched. A node whose consensus lane is not live reports
+`ws` false, `cs` false, `np` 0, `mph` 0 → `fresh` false.
+
+`report_committed` of `nodus_witness_storage_reporter.c` is exported for this read as
+`nodus_witness_stprobe_report_committed` (body unchanged; 1 committed / 0 not / −1 fault or H
+above INT64_MAX).
+
+### 19.2 The SDK call and its decoder
+
+`nodus_client_dnac_node_duties(client, out)` sends one `dnac_node_duties` request (no argument)
+through `hf4_query_x` with `strict_err` set: an error frame with no code, or a code ≤ 0, becomes
+`NODUS_ERR_PROTOCOL_ERROR` (`client_error_rc`) instead of a 0 that would read as success; the other
+HF-4 queries keep the old behaviour through the `hf4_query` wrapper. A failed call never leaves the
+zero value (which is CLEAR): `out` is set to state UNKNOWN, `fresh` false, before the call and
+again after any failure. Returns 0; a `NODUS_ERR_*` the node answered (`NOT_AUTHENTICATED` for a
+session that is not the node's own identity); `NODUS_ERR_PROTOCOL_ERROR` for a reply the decoder
+refuses; `NODUS_ERR_TIMEOUT`; −1 for invalid arguments or a client that is not ready.
+
+`nodus_dnac_node_duties_decode` (exported for tests) follows the v3d_* discipline: a duplicate
+key, truncation or a wrong type refuses, an unknown key is skipped. It refuses unless all 11 keys
+are present exactly once; `ch` < UINT64_MAX; `cid` exactly 32 bytes, `bh` exactly 64; `np` ≤
+65535; `state` ≤ 2; each `bl` entry a map of exactly `c` and `eh`, `c` in 1..9, strictly
+ascending, `eh` 0 only for codes 1 and 6, every non-zero `eh` > `ch`; `own` ≤ 16 entries of
+exactly 128 lowercase hex, strictly ascending; `why` 1..96 characters, present exactly when
+`state` is UNKNOWN; CLEAR ⇒ `bl` and `own` empty; BLOCKED ⇒ `bl` non-empty; UNKNOWN ⇒ `bl` and
+`own` empty; `np` = 0 ⇔ `mph` = 0; and `fresh` equal to the conjunction of its inputs. On −1 `out`
+is zeroed.
+
+### 19.3 The command — `nodus-cli package list | add <witness|storage> | remove <witness|storage>`
+
+`nodus-cli.c` `main` dispatches `package` (inside `#ifdef NODUS_CLI_HAS_DNAC`) to
+`nodus_node_package_main` (`src/client/nodus_node_package.c`) after refusing `-i` / `-s` / `-p`;
+it passes the fixed `/bin/systemctl`, `/run/lock/nodus-admin.lock` with owner uid 0, and
+`/etc/nodus.conf`, ignores SIGPIPE, and prints the module's text to stdout on 0 and stderr on 1.
+The module has four parts, each tested on its own:
+
+1. **The pure verdict** (`nodus_node_package_verdict`, no I/O), rules in this order:
+   `remove storage` → REFUSE (not in this version); any of the four unit states
+   (`nodus`, `nodus-core`, `nodus-storage`, `nodus-witness` — `is-enabled` exactly `enabled` = ON,
+   exactly `disabled` = OFF, anything else UNKNOWN) unknown → REFUSE; layout COMBINED (`nodus`
+   enabled, no split unit), AMBIGUOUS (both, or a split unit without `nodus-core`) or NONE →
+   REFUSE; `nodus.service`'s `is-active` word not `inactive` / `failed` (active, activating,
+   deactivating, reloading, refreshing, unknown or unread — enabling a split unit, which
+   `Conflicts=` with it, would stop a running combined server and its witness with no duty read)
+   → REFUSE; add of a package that is ON / remove of one that is OFF → ALREADY (success, no
+   reply consulted); add of an OFF package → DO; a removal that leaves `nodus-core` the only
+   package ON → REFUSE; `remove witness` of an ON witness → DO ONLY when the `dnac_node_duties`
+   reply decoded AND `state` = CLEAR AND `fresh` AND it carries no blocker. Otherwise: not read
+   → NOT_READ; UNKNOWN or an inconsistent reply → UNKNOWN; not fresh → NOT_FRESH; BLOCKED → a
+   blocker with end 0 (code 1 or 6) → REGISTERED, else a leaving row (code 2 or 7) → LEAVING,
+   else DUTIES. The retry height is the largest `eh` of the blockers.
+2. **The systemd adapter**: an absolute systemctl path that must be a regular executable file,
+   a fixed argument table (`is-enabled`, `is-active`, `enable --now`, `disable --now` + a unit
+   name from the fixed list — nothing the user typed reaches an argv), stdin / stderr
+   `/dev/null`, a fixed environment (`PATH=/usr/sbin:/usr/bin:/sbin:/bin`, `LC_ALL=C`), a
+   `CLOCK_MONOTONIC` deadline per child (`NODUS_NODE_PACKAGE_QUERY_MS` 10000,
+   `NODUS_NODE_PACKAGE_CHANGE_MS` 180000) after which it is killed and reaped and the answer is
+   "unknown" → refuse; after a change `is-enabled` is read again and must be the wanted word. Only
+   `nodus-storage` and `nodus-witness` can ever be changed.
+3. **The host lock** (`nodus_node_package_lock_take`): `/run/lock/nodus-admin.lock` opened
+   `O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK` (a planted symlink fails with ELOOP, a planted FIFO
+   cannot block), created when missing with `O_CREAT|O_EXCL` and `fchmod` 0600; then `fstat` of
+   the open descriptor must show a regular file owned by the expected uid with no group / other
+   bit, else −2 with "<path> is not a root-owned 0600 regular file; remove it and retry. Nothing
+   was changed." (never "busy"); `flock(LOCK_EX|LOCK_NB)` — held elsewhere → 1. Taken before any
+   unit state is read; held until the command ends.
+4. **The registration read** (`nodus_node_package_read_duties`): `identity_path` and `tcp_port`
+   from the config (`nodus_consent_req_read_config`), the key loaded ONLY with
+   `nodus_identity_load_readonly` (never the loader that may write), one session to
+   `127.0.0.1:<tcp_port>` that authenticates with that key and is pinned to the same key's
+   id (`pinned_server_fps`, so only this node can answer; no auto-reconnect, 5 s connect, 10 s
+   request), one `nodus_client_dnac_node_duties`, close, the key wiped. And the `add witness`
+   `nodus.addr_seq` rule of `install.sh` item 21 (`nodus_node_package_addr_seq`).
+
+`nodus_node_package_main`: usage check; `remove storage` refused before the lock; the lock; the
+unit states; a first verdict without a reply — only the `remove witness` case comes back
+NOT_READ, and only then is the witness asked and the verdict taken again; REFUSE / ALREADY → the
+text; DO → (`add witness`: the addr_seq rule) → the unit change → `<pkg> is now on (enabled and
+started).` / `<pkg> is now off (stopped and disabled). Its data and the node identity were kept.`
+Every refusal text says that nothing was changed — at its end ("Nothing was changed."), in the
+middle for the cannot-check text ("… (<reason>). Nothing was changed. Start or repair the witness …, then try again."),
+or as the lowercase "— nothing was changed" of the `remove storage` and lock-busy lines; a refusal longer than
+`NODUS_NODE_PACKAGE_TEXT_MAX` (4096) becomes the short fixed "This answer is too long to show here. Nothing was
+changed.". Exit 0 for success, "already" and a `list` that could read the units (a `list` whose unit states cannot be
+read exits 1); 1 otherwise. The module reads only `CLOCK_MONOTONIC`, for the child deadlines.
+
+### 19.4 The host lock in the scripts
+
+`deploy/install.sh` (a real run; `--dry-run` takes none), `website/install-node.sh` (not with
+`--build-only`), `tools/nodus-update.sh` and `deploy/build-nodus.sh` take the same lock with
+`flock -n` (util-linux; missing → refused), before they read the enabled units, and hold it until
+they exit (after the last unit start). Each first creates the file when missing (`umask 077;
+set -C` — noclobber: exclusive only while the path is truly absent; a non-regular file planted in the tiny window
+between the existence test and the create is opened without O_EXCL, and the check below then refuses it) and accepts only
+a non-symlink regular file with `stat` uid 0 and mode exactly `600`. (The C command is a little wider: any root-owned
+regular file with no group/other permission bit, e.g. 0400.) `install-node.sh` exports `NODUS_ADMIN_LOCK_HELD=9` to `install.sh`, which uses
+an inherited descriptor 3-9 only when `/proc/self/fd/<fd>` and the lock path have the same
+device:inode, else locks fd 9 itself. `nodus-update.sh` refuses to run without root.
+`build-nodus.sh`, which runs as a normal user with `sudo` per command, holds the lock in a root
+coproc (`sudo flock -n -E 75 <file> sh -c 'echo held; exec cat >/dev/null'`) that releases it when
+the script's end of the pipe closes; a script already running as root locks fd 9 directly.
+
+`install.sh` also keeps a split host's package choice: `--layout split` without `--no-*` on a
+host where `nodus-core` is enabled wants exactly the enabled split units (only `nodus-core`
+enabled → refused); `--layout combined` on a split host whose `nodus-storage` or `nodus-witness`
+is not enabled is refused, naming `sudo nodus-cli package add <name>`. Operator procedure:
+`docs/DEPLOY_RUNBOOK.md` "Three-process node" and "tar.gz installer".
+
+### 19.5 Tests (written; NOT run by the builder)
+
+- `test_node_duties_rpc` (`tests/test_node_duties_rpc.c`, `register_witness_test`): the real
+  dispatcher over a socketpair against a planted version-3 schema — a foreign or unauthenticated
+  session refused, CLEAR, every blocker code with its end height, the snapshot(B + E) and
+  storage-set absence rules, faults → UNKNOWN with a `why`, `sqlite3_total_changes` unchanged —
+  and the decoder's refusals over crafted replies. It does not drive the peer-table read (`fresh`
+  only as "false with zero inputs") nor the client request function; see its "HOW IT CAN LIE".
+- `test_node_package` (`tests/test_node_package.c`): the verdict matrix, the exact texts, the
+  adapter against a fake systemctl script, the lock (taken as the test's own uid), the addr_seq
+  rule, `nodus_node_package_main` end to end with the fake systemctl.
+- `test_install_layout` (`tests/scripts/test_install_layout.sh install.sh`): `install.sh
+  --dry-run` against a fake package and a fake systemctl — a first install plans all three,
+  a split host keeps its enabled set, the combined refusal, core alone. Exit 77 = SKIPPED (the
+  host has `/etc/nodus.conf` or a nodus drop-in), never a pass; it does not prove the lock.

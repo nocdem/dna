@@ -52,6 +52,12 @@
 #include "witness/nodus_witness_v2_claims.h"    /* HF-4: runtime_for     */
 #include "witness/nodus_witness_runtime.h"      /* HF-4: generation      */
 #include "witness/nodus_witness_v2_storage.h"   /* dnac_storage_status   */
+/* dnac_node_duties — the archive overlap, the last storage report, the
+ * consensus reactor's peer table */
+#include "witness/nodus_witness_storage_holder.h"
+#include "witness/nodus_witness_storage_reporter.h"
+#include "dnac/cmt_conr.h"
+#include "dnac/cmt_ps.h"
 #include "witness/nodus_witness_v2_epoch.h"     /* HF-6 3e: key generation */
 #include "witness/nodus_witness_vset.h"         /* Z-30a: the seat's id   */
 #include "dnac/valbind_wire.h"                  /* Z-30a: migrated id     */
@@ -2737,7 +2743,10 @@ static int st_status_row(nodus_witness_t *w, const uint8_t fp[64],
         sqlite3_finalize(st);
         return -1;
     }
-    sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT);
+    if (sqlite3_bind_blob(st, 1, fp, 64, SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;                       /* a failed bind is a fault */
+    }
     int rc = sqlite3_step(st);
     if (rc == SQLITE_DONE) {
         ret = 0;
@@ -3091,6 +3100,583 @@ done:
     free(fps);
     free(set);
     free(o);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_node_duties — "may this node switch its witness package off?"
+ * (design docs/plans/2026-10-22-nodus-packages-design.md §3; wire and
+ * every key: include/nodus/nodus.h beside nodus_client_dnac_node_duties.)
+ *
+ * Request "a": {} — no argument; it always answers for THIS node.
+ * AUTH: only a session whose authenticated public key IS this node's own
+ * identity key (w->host->identity->pk) — the combined server and the split
+ * witness both fill conn->peer_pk from the session (nodus_auth.c; the IPC
+ * preface, nodus_witness_ipc.c). Any other session, or none:
+ * NODUS_ERR_NOT_AUTHENTICATED.
+ *
+ * READ-ONLY and node-local: it opens no transaction and writes nothing
+ * (the witness thread is the DB connection's only user, so the reads below
+ * see one committed state; the tip is read first and last and a difference
+ * makes the answer UNKNOWN). No clock is read. Bounded work: the validators
+ * rows of one key (DUTY_ROWS_MAX), at most five snapshot reads (B+E twice
+ * — once for a leaving row, once for the next seat — then B, B-E for the
+ * transition and P = B-E for the report), the node's
+ * storage row, up to three storage sets (H for the overlap's membership,
+ * H - E for the previous epoch's presence, P for the report), one
+ * must-hold computation (NODUS_STHOLD_MAX_SEGS) and one report-row read.
+ *
+ * Unlike its neighbours, a fault AFTER the tip was read is not an error
+ * reply but a successful reply with state UNKNOWN and a "why" — the caller
+ * must refuse on it, and a dropped connection or an error code could be
+ * mistaken for "no information" and retried into an allow. Without a
+ * version-3 chain at all there is no tip to report: NODUS_ERR_NOT_FOUND, as
+ * the other chain queries answer.
+ *
+ * Choices made where the design leaves one open (design §3.3 names B, the
+ * epoch start of block T + 1, for every item; the sub-systems do not all
+ * use it):
+ *  - items 1-3, 6 use B = ((T+1)/E)*E, the committee convention (block h
+ *    belongs to the epoch starting at (h/E)*E); snapshots are read through
+ *    nodus_witness_v2_epoch_authority_for_epoch (0 found / 1 absent / -1
+ *    fault; no cache, no recompute) — the snapshot is the committee
+ *    authority for every epoch that has one (nodus_committee_get_for_block).
+ *    snapshot(B+E) is frozen one epoch ahead, inside block B
+ *    (nodus_witness_vset_commit_next, run by the epoch transition of block
+ *    B): while T + 1 = B that block is not committed and its absence is
+ *    "not an entry"; once T + 1 > B it must exist — absent is a fault
+ *    (duty_next_snapshot). The snapshots (B) and (B-E) and (P) must exist
+ *    — absent is a fault.
+ *  - STORAGE SETS: st_freeze (nodus_witness_v2_storage.c) INSERTs
+ *    storage_set(B') at EVERY boundary B' at which chain_config param 18
+ *    (RULESET_GEN_ROLES) is in effect — an empty set included — and
+ *    nodus_witness_storage_boundary_apply returns early (writes nothing)
+ *    only when nodus_chain_config_get_u64(param 18, B') != 0; the sets are
+ *    pruned only below B' - 2E, and every set read here is at or above
+ *    the last committed boundary - E. So an absent storage_set(X) at a
+ *    boundary X where param 18 is in effect is a fault (UNKNOWN); an
+ *    absent one before that activation is "no storage duty"
+ *    (duty_storage_sets_expected).
+ *  - item 4 EXITING: the release runs at EVERY storage boundary
+ *    (st_release), so the end is the first multiple of E that is >= T + 1
+ *    (= B when T + 1 = B, else B + E), not B.
+ *  - item 5 uses the HOLDER's own convention, H = (T/E)*E ("must hold at
+ *    the epoch the tip lies in", nodus_witness_storage_holder.h), the
+ *    epoch whose storage_set governs (H, H+E]. H = 0 has no storage set:
+ *    no duty. The end is H + 2E for a member of storage_set(H) (it still
+ *    holds in the overlap epoch after being displaced), else H + E.
+ *    For H > E, storage_set(H - E) is also read: absent where param 18 was
+ *    in effect at H - E, or unreadable, is UNKNOWN (a member of it still
+ *    holds in (H, H + E]); nodus_witness_sthold_must_hold is not changed.
+ *  - item 6 is owed only when storage_set(P) exists with >= 1 member
+ *    (epoch_open, nodus_witness_storage_reporter.c) and P >= E
+ *    (nodus_stprobe_epoch_for_tip); nodus_stprobe_report_window's -1
+ *    ("closed or overflow") is read as "not owed" — P and E are chain
+ *    constants and T < UINT64_MAX is checked, so overflow cannot occur.
+ *  - FRESHNESS is separate from "state" (design §3.2/§3.4: the CLI refuses
+ *    on !fresh). It reads the consensus reactor's public peer table on the
+ *    witness thread that owns it; shared/dnac/ is untouched.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** validators rows of ONE consensus key we will read; more is a fault.
+ *  The reservation index is permanent and unique per key (Z-29 is the
+ *  pre-HF-6 duplicate case), so a handful is generous. */
+#define DUTY_ROWS_MAX  8u
+
+_Static_assert(NODUS_PK_BYTES == DNAC_PUBKEY_SIZE,
+               "the node key and a validator's consensus key are one size");
+
+typedef struct {
+    bool     has[NODUS_DNAC_DUTY_MAX + 1u];
+    uint64_t end[NODUS_DNAC_DUTY_MAX + 1u];
+    char     owners[NODUS_DNAC_DUTIES_OWNERS_MAX][129];
+    size_t   n_owners;
+} duty_acc_t;
+
+/* Record blocker `code` ending at `end` (0 = until the owner leaves). */
+static void duty_add(duty_acc_t *a, unsigned code, uint64_t end) {
+    a->has[code] = true;
+    if (end > a->end[code]) a->end[code] = end;
+}
+
+/* Record an owner (128 lowercase hex), sorted and unique. @return 0 / -1
+ * the list is full. */
+static int duty_add_owner(duty_acc_t *a, const char hex[129]) {
+    size_t i = 0;
+    while (i < a->n_owners) {
+        int c = strcmp(a->owners[i], hex);
+        if (c == 0) return 0;
+        if (c > 0) break;
+        i++;
+    }
+    if (a->n_owners >= NODUS_DNAC_DUTIES_OWNERS_MAX) return -1;
+    memmove(&a->owners[i + 1u], &a->owners[i],
+            (a->n_owners - i) * sizeof(a->owners[0]));
+    memcpy(a->owners[i], hex, 129);
+    a->n_owners++;
+    return 0;
+}
+
+/* Is `pk` an entry of snapshot(epoch)? *present = the snapshot row exists
+ * (absent is NOT a fault here — the caller decides), *in / *seat = the
+ * entry (seat optional). @return 0 / -1 fault. */
+static int duty_snapshot_seat(nodus_witness_t *w, uint64_t epoch,
+                              const uint8_t pk[NODUS_PK_BYTES],
+                              bool *present, bool *in, uint32_t *seat) {
+    dna_vset_snapshot_t *snap = NULL;
+    *present = false;
+    *in = false;
+    int rc = nodus_witness_v2_epoch_authority_for_epoch(w, epoch, &snap,
+                                                        NULL, NULL);
+    if (rc == 1) return 0;
+    if (rc != 0 || !snap) {
+        dna_vset_free(&snap);
+        return -1;
+    }
+    *present = true;
+    for (uint32_t s = 0; s < snap->active_count; s++) {
+        if (memcmp(snap->entries[s].pubkey, pk, NODUS_PK_BYTES) == 0) {
+            *in = true;
+            if (seat) *seat = s;
+            break;                       /* a snapshot's pubkeys are unique */
+        }
+    }
+    dna_vset_free(&snap);
+    return 0;
+}
+
+/* Is `pk` an entry of snapshot(B + E)? That snapshot is frozen inside block
+ * B, so while block B is not committed (`frozen` false, T + 1 = B) its
+ * absence is "not an entry"; once it is (T + 1 > B) the row must exist and
+ * its absence is a fault. @return NULL / the fault text. */
+static const char *duty_next_snapshot(nodus_witness_t *w, uint64_t B,
+                                      bool frozen,
+                                      const uint8_t pk[NODUS_PK_BYTES],
+                                      bool *in) {
+    bool present = false;
+    if (duty_snapshot_seat(w, B + (uint64_t)DNAC_EPOCH_LENGTH, pk, &present,
+                           in, NULL) != 0)
+        return "snapshot of the next epoch unreadable";
+    if (!present && frozen) return "snapshot of the next epoch is absent";
+    return NULL;
+}
+
+/* Must storage_set(epoch) exist? The chain writes one at every boundary at
+ * which chain_config param 18 is in effect (see the STORAGE SETS note
+ * above). @return 1 yes — its absence is a fault; 0 no — before the
+ * storage activation, there is no storage duty; -1 the history is
+ * unreadable. */
+static int duty_storage_sets_expected(nodus_witness_t *w, uint64_t epoch) {
+    uint64_t v = 0;
+    int rc = nodus_chain_config_get_u64(
+                 w, (uint8_t)DNAC_CFG_RULESET_GEN_ROLES, epoch, 0ULL, &v);
+    if (rc < 0) return -1;
+    return rc == 0 ? 1 : 0;
+}
+
+/* Items 1 and 2's first half: every validators row whose consensus key is
+ * `pk`, ordered by validator_id. `frozen`: T + 1 > B (block B is
+ * committed). @return NULL / the fault text. */
+static const char *duty_witness_rows(nodus_witness_t *w,
+                                     const uint8_t pk[NODUS_PK_BYTES],
+                                     uint64_t B, bool frozen,
+                                     duty_acc_t *a) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    uint8_t ids[DUTY_ROWS_MAX][NODUS_V2_VALIDATOR_ID_LEN];
+    size_t n = 0;
+    sqlite3_stmt *st = NULL;
+    nodus_v2_validator_row_t *row = NULL;
+    const char *fault = NULL;
+    bool next_known = false, in_next = false;
+
+    if (sqlite3_prepare_v2(w->db,
+            "SELECT pubkey_hash FROM validators WHERE pubkey = ?1 "
+            "ORDER BY pubkey_hash ASC LIMIT ?2",
+            -1, &st, NULL) != SQLITE_OK)
+        return "validators table unreadable";
+    if (sqlite3_bind_blob(st, 1, pk, NODUS_PK_BYTES, SQLITE_TRANSIENT)
+            != SQLITE_OK ||
+        sqlite3_bind_int(st, 2, (int)DUTY_ROWS_MAX + 1) != SQLITE_OK) {
+        fault = "validators table unreadable";
+        goto done;
+    }
+    for (;;) {
+        int rc = sqlite3_step(st);
+        if (rc == SQLITE_DONE) break;
+        if (rc != SQLITE_ROW ||
+            sqlite3_column_type(st, 0) != SQLITE_BLOB ||
+            sqlite3_column_bytes(st, 0) != (int)NODUS_V2_VALIDATOR_ID_LEN ||
+            sqlite3_column_blob(st, 0) == NULL) {
+            fault = "validators table unreadable";
+            goto done;
+        }
+        if (n >= DUTY_ROWS_MAX) {
+            fault = "more validators rows of this key than expected";
+            goto done;
+        }
+        memcpy(ids[n], sqlite3_column_blob(st, 0),
+               NODUS_V2_VALIDATOR_ID_LEN);
+        n++;
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+
+    row = malloc(sizeof(*row));                      /* ~5.4 KB */
+    if (!row) return "out of memory";
+    for (size_t i = 0; i < n; i++) {
+        /* 0 found; a row just listed that is absent (1) or half-migrated
+         * (-1) is a fault, never "no row" */
+        if (nodus_validator_v2_get(w, ids[i], row) != 0 ||
+            memcmp(row->rec.pubkey, pk, NODUS_PK_BYTES) != 0) {
+            fault = "a validators row of this key is unreadable";
+            goto done;
+        }
+        char hex[129];
+        switch (row->rec.status) {
+        case DNAC_VALIDATOR_ACTIVE:
+        case DNAC_VALIDATOR_ELIGIBLE:
+            duty_add(a, NODUS_DNAC_DUTY_WITNESS_REGISTERED, 0);
+            break;
+        case DNAC_VALIDATOR_RETIRING:
+        case DNAC_VALIDATOR_AUTO_RETIRED:
+            /* graduates at the first boundary where the key is not an
+             * entry of the snapshot taking effect (v2ep_graduate): B + E,
+             * or one epoch later when it still sits in snapshot(B + E) */
+            if (!next_known) {
+                fault = duty_next_snapshot(w, B, frozen, pk, &in_next);
+                if (fault) goto done;
+                next_known = true;
+            }
+            duty_add(a, NODUS_DNAC_DUTY_WITNESS_LEAVING,
+                     in_next ? B + 2u * E : B + E);
+            break;
+        case DNAC_VALIDATOR_UNSTAKED:
+            continue;                    /* gone: no duty, no owner shown */
+        default:
+            fault = "a validators row of this key has an unknown status";
+            goto done;
+        }
+        hf4_hex128(row->owner_fp, hex);
+        if (duty_add_owner(a, hex) != 0) {
+            fault = "too many owner fingerprints";
+            goto done;
+        }
+    }
+done:
+    sqlite3_finalize(st);
+    free(row);
+    return fault;
+}
+
+/* Every duty of the node (key `pk`) at committed tip T. @return NULL (acc
+ * filled) / the fault text (acc is then not an answer). */
+static const char *duty_compute(nodus_witness_t *w,
+                                const uint8_t pk[NODUS_PK_BYTES],
+                                uint64_t T, duty_acc_t *a) {
+    const uint64_t E = (uint64_t)DNAC_EPOCH_LENGTH;
+    const uint64_t B = ((T + 1u) / E) * E;
+    uint8_t my_fp[64];
+    bool present, in;
+    const char *fault;
+
+    if (qgp_sha3_512(pk, NODUS_PK_BYTES, my_fp) != 0)
+        return "node fingerprint did not derive";
+
+    /* 1. witness rows (and the first half of 2's owners) */
+    const bool frozen = (T + 1u) > B;    /* block B is committed */
+    fault = duty_witness_rows(w, pk, B, frozen, a);
+    if (fault) return fault;
+
+    /* 2. seated now / next */
+    if (duty_snapshot_seat(w, B, pk, &present, &in, NULL) != 0)
+        return "snapshot of the current epoch unreadable";
+    if (!present) return "snapshot of the current epoch is absent";
+    if (in) duty_add(a, NODUS_DNAC_DUTY_SEATED_NOW, B + E);
+    fault = duty_next_snapshot(w, B, frozen, pk, &in);
+    if (fault) return fault;
+    if (in) duty_add(a, NODUS_DNAC_DUTY_SEATED_NEXT, B + 2u * E);
+
+    /* 3. cometbft's two-block transition: validator updates emitted in
+     *    block B take effect at B + 2 (design §3.3 item 3) */
+    if (B >= E && (T + 1u) - B <= 1u) {
+        if (duty_snapshot_seat(w, B - E, pk, &present, &in, NULL) != 0)
+            return "snapshot of the previous epoch unreadable";
+        if (!present) return "snapshot of the previous epoch is absent";
+        if (in) duty_add(a, NODUS_DNAC_DUTY_CMT_TRANSITION, B + 1u);
+    }
+
+    /* 4. the storage row of this node */
+    {
+        nodus_dnac_storage_status_t *o = calloc(1, sizeof(*o));
+        if (!o) return "out of memory";
+        int rr = st_status_row(w, my_fp, o);
+        if (rr < 0) {
+            free(o);
+            return "storage registry unreadable";
+        }
+        if (rr == 1) {
+            if (o->status == DNA_V2_STORAGE_ACTIVE) {
+                duty_add(a, NODUS_DNAC_DUTY_STORAGE_REGISTERED, 0);
+            } else if (o->status == DNA_V2_STORAGE_EXITING) {
+                duty_add(a, NODUS_DNAC_DUTY_STORAGE_LEAVING,
+                         ((T + E) / E) * E);   /* first multiple >= T + 1 */
+            } else if (o->status != DNA_V2_STORAGE_RELEASED) {
+                free(o);
+                return "the storage row has an unknown status";
+            }
+            if (o->status != DNA_V2_STORAGE_RELEASED &&
+                duty_add_owner(a, o->payee) != 0) {
+                free(o);
+                return "too many owner fingerprints";
+            }
+        }
+        free(o);
+    }
+
+    /* 5. archive overlap — the holder's own epoch, H = (T/E)*E */
+    {
+        const uint64_t H = (T / E) * E;
+        if (H > 0) {
+            uint64_t *ks = calloc(NODUS_STHOLD_MAX_SEGS, sizeof(*ks));
+            size_t n = 0;
+            if (!ks) return "out of memory";
+            int mh = nodus_witness_sthold_must_hold(
+                w, H, my_fp, ks, NODUS_STHOLD_MAX_SEGS, &n);
+            free(ks);
+            if (mh < 0) return "archive duty could not be computed";
+            if (mh == 1) {
+                /* storage_set(H) absent: no duty only before the storage
+                 * activation; at/after it the chain always wrote one */
+                int ex = duty_storage_sets_expected(w, H);
+                if (ex < 0) return "storage activation unreadable";
+                if (ex == 1) return "storage set of the current epoch is "
+                                    "absent";
+            }
+            /* The overlap epoch's own set: a member of storage_set(H - E)
+             * still holds in (H, H + E], so a set that the chain wrote and
+             * the node cannot read is UNKNOWN, never "no duty". H - E = 0
+             * has no set. */
+            if (H > E) {
+                nodus_storage_set_t *prev = calloc(1, sizeof(*prev));
+                if (!prev) return "out of memory";
+                int pg = nodus_witness_storage_set_get(w, H - E, prev);
+                free(prev);
+                if (pg < 0) return "storage set of the previous epoch "
+                                   "unreadable";
+                if (pg == 1) {
+                    int ex = duty_storage_sets_expected(w, H - E);
+                    if (ex < 0) return "storage activation unreadable";
+                    if (ex == 1) return "storage set of the previous epoch "
+                                        "is absent";
+                }
+            }
+            if (mh == 0 && n > 0) {
+                nodus_storage_set_t *set = calloc(1, sizeof(*set));
+                bool member = false;
+                if (!set) return "out of memory";
+                if (nodus_witness_storage_set_get(w, H, set) != 0) {
+                    free(set);
+                    return "storage set unreadable";
+                }
+                for (uint32_t i = 0; i < set->count; i++)
+                    if (memcmp(set->fps[i], my_fp, 64) == 0) member = true;
+                free(set);
+                duty_add(a, NODUS_DNAC_DUTY_ARCHIVE_OVERLAP,
+                         member ? H + 2u * E : H + E);
+            }
+        }
+    }
+
+    /* 6. the last storage report: seat of the probing epoch P = B - E,
+     *    window (P+E, P+E+E/2] open at T, no report (P, seat) committed */
+    if (B >= 2u * E) {
+        const uint64_t P = B - E;
+        uint64_t expiry = 0;
+        if (nodus_stprobe_report_window(P, E, T, &expiry) == 0) {
+            uint32_t seat = 0;
+            if (duty_snapshot_seat(w, P, pk, &present, &in, &seat) != 0)
+                return "snapshot of the probing epoch unreadable";
+            if (!present) return "snapshot of the probing epoch is absent";
+            if (in) {
+                nodus_storage_set_t *set = calloc(1, sizeof(*set));
+                if (!set) return "out of memory";
+                int sg = nodus_witness_storage_set_get(w, P, set);
+                uint32_t cnt = set->count;
+                free(set);
+                if (sg < 0) return "storage set unreadable";
+                if (sg == 1) {
+                    /* storage_set(P) absent: see item 5 */
+                    int ex = duty_storage_sets_expected(w, P);
+                    if (ex < 0) return "storage activation unreadable";
+                    if (ex == 1) return "storage set of the probing epoch "
+                                        "is absent";
+                }
+                if (sg == 0 && cnt > 0) {
+                    int c = nodus_witness_stprobe_report_committed(w, P,
+                                                                   seat);
+                    if (c < 0) return "storage report row unreadable";
+                    if (c == 0)
+                        duty_add(a, NODUS_DNAC_DUTY_STORAGE_REPORT,
+                                 P + E + E / 2u);
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+/* The node-local sync facts of design §3.2, read from the consensus
+ * reactor on the witness thread that owns it. */
+typedef struct {
+    bool     wait_sync;
+    bool     cs_started;
+    uint32_t n_peers;
+    uint64_t max_peer_height;
+} duty_sync_t;
+
+static void duty_sync_read(nodus_witness_t *w, duty_sync_t *s) {
+    memset(s, 0, sizeof(*s));
+    if (!w->cmt_live || !w->cmt_node || !w->cmt_conr) return;
+    const nodus_cmt_node_t *node = (const nodus_cmt_node_t *)w->cmt_node;
+    const cmt_conr_t *conr = (const cmt_conr_t *)w->cmt_conr;
+    s->cs_started = node->cs_started;
+    s->wait_sync = cmt_conr_wait_sync(conr);
+    if (!conr->peers) return;
+    for (size_t i = 0; i < CMT_CONR_MAX_PEERS; i++) {
+        const cmt_conr_peer_slot_t *p = &conr->peers[i];
+        if (!p->in_set || !p->started) continue;
+        cmt_prs_t prs;
+        cmt_ps_get_round_state(&p->ps, &prs);
+        if (prs.height <= 0) continue;           /* height not known yet */
+        s->n_peers++;
+        if ((uint64_t)prs.height > s->max_peer_height)
+            s->max_peer_height = (uint64_t)prs.height;
+    }
+}
+
+/* The block id at height T. @return 0 / -1. */
+static int duty_block_hash(nodus_witness_t *w, uint64_t T, uint8_t out[64]) {
+    sqlite3_stmt *st = NULL;
+    int ret = -1;
+    if (T > (uint64_t)INT64_MAX ||
+        sqlite3_prepare_v2(w->db,
+            "SELECT block_id FROM v2_blocks WHERE global_height = ?1",
+            -1, &st, NULL) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)T) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    if (sqlite3_step(st) == SQLITE_ROW &&
+        sqlite3_column_bytes(st, 0) == 64 &&
+        sqlite3_column_blob(st, 0) != NULL) {
+        memcpy(out, sqlite3_column_blob(st, 0), 64);
+        ret = 0;
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+static void handle_dnac_node_duties(nodus_witness_t *w,
+                                    struct nodus_tcp_conn *conn,
+                                    uint32_t txn_id) {
+    uint64_t T = 0, T_end = 0;
+
+    /* ── auth: this node's own identity key, nobody else ─────────── */
+    if (!conn->peer_id_set || !w->host || !w->host->identity ||
+        memcmp(conn->peer_pk.bytes, w->host->identity->pk.bytes,
+               NODUS_PK_BYTES) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                   "dnac_node_duties is served to this node's own "
+                   "identity only");
+        return;
+    }
+    if (hf4_tip(w, &T) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                   "no version-3 chain on this node");
+        return;
+    }
+
+    duty_acc_t *acc = calloc(1, sizeof(*acc));
+    uint8_t chain_id[DNA_CHAIN_ID_LEN] = {0};
+    uint8_t bh[64] = {0};
+    duty_sync_t sync;
+    const char *fault = NULL;
+    char why[NODUS_DNAC_DUTIES_WHY_MAX + 1] = {0};
+    uint8_t buf[4096];
+
+    duty_sync_read(w, &sync);
+    if (!acc) {
+        fault = "out of memory";
+    } else if (T >= (UINT64_MAX >> 3)) {
+        fault = "committed tip out of range";
+    } else if (nodus_witness_v2_chain_id(w, chain_id) != 0) {
+        memset(chain_id, 0, sizeof(chain_id));
+        fault = "chain id unreadable";
+    } else if (duty_block_hash(w, T, bh) != 0) {
+        memset(bh, 0, sizeof(bh));
+        fault = "block id at the tip unreadable";
+    } else {
+        fault = duty_compute(w, w->host->identity->pk.bytes, T, acc);
+    }
+    /* the second tip read: a block committed in between (it cannot, on the
+     * one thread, but the check is the contract) makes the answer UNKNOWN */
+    if (!fault && (hf4_tip(w, &T_end) != 0 || T_end != T))
+        fault = "the committed tip moved while reading";
+
+    const bool fresh = !sync.wait_sync && sync.cs_started &&
+                       sync.n_peers >= 1 && T + 1u >= sync.max_peer_height;
+    size_t n_bl = 0;
+    if (!fault)
+        for (unsigned c = 1; c <= NODUS_DNAC_DUTY_MAX; c++)
+            if (acc->has[c]) n_bl++;
+    const unsigned state = fault ? NODUS_DNAC_DUTIES_UNKNOWN
+                         : n_bl ? NODUS_DNAC_DUTIES_BLOCKED
+                                : NODUS_DNAC_DUTIES_CLEAR;
+    if (fault) {
+        snprintf(why, sizeof(why), "%s", fault);
+        QGP_LOG_WARN(LOG_TAG, "dnac_node_duties: %s", fault);
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "dnac_node_duties", fault ? 12u : 11u);
+    cbor_encode_cstr(&enc, "ch");    cbor_encode_uint(&enc, T);
+    cbor_encode_cstr(&enc, "cid");   cbor_encode_bstr(&enc, chain_id,
+                                                      sizeof(chain_id));
+    cbor_encode_cstr(&enc, "bh");    cbor_encode_bstr(&enc, bh, sizeof(bh));
+    cbor_encode_cstr(&enc, "fresh"); cbor_encode_bool(&enc, fresh);
+    cbor_encode_cstr(&enc, "ws");    cbor_encode_bool(&enc, sync.wait_sync);
+    cbor_encode_cstr(&enc, "cs");    cbor_encode_bool(&enc, sync.cs_started);
+    cbor_encode_cstr(&enc, "np");    cbor_encode_uint(&enc, sync.n_peers);
+    cbor_encode_cstr(&enc, "mph");
+    cbor_encode_uint(&enc, sync.max_peer_height);
+    cbor_encode_cstr(&enc, "state"); cbor_encode_uint(&enc, state);
+    cbor_encode_cstr(&enc, "bl");
+    cbor_encode_array(&enc, n_bl);
+    if (!fault) {
+        for (unsigned c = 1; c <= NODUS_DNAC_DUTY_MAX; c++) {
+            if (!acc->has[c]) continue;
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "c");  cbor_encode_uint(&enc, c);
+            cbor_encode_cstr(&enc, "eh"); cbor_encode_uint(&enc, acc->end[c]);
+        }
+    }
+    cbor_encode_cstr(&enc, "own");
+    cbor_encode_array(&enc, fault ? 0u : acc->n_owners);
+    if (!fault)
+        for (size_t i = 0; i < acc->n_owners; i++)
+            cbor_encode_cstr(&enc, acc->owners[i]);
+    if (fault) {
+        cbor_encode_cstr(&enc, "why");
+        cbor_encode_cstr(&enc, why);
+    }
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+    else send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    free(acc);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -6421,6 +7007,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_storage_status(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_storage_by_owner") == 0) {
         handle_dnac_storage_by_owner(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_node_duties") == 0) {
+        handle_dnac_node_duties(w, conn, txn_id);
     } else if (strcmp(method, "dnac_committee_query") == 0) {
         handle_dnac_committee_query(w, conn, txn_id);
     } else if (strcmp(method, "dnac_validator_list_query") == 0) {

@@ -83,6 +83,7 @@
 #include "client/nodus_v2_name.h"              /* the shared name builder    */
 #include "client/nodus_v2_msig.h"              /* the shared msig library    */
 #include "client/nodus_consent_req.h"          /* `consent <code>`           */
+#include "client/nodus_node_package.h"         /* `package list|add|remove`  */
 #include "client/nodus_node_status.h"          /* `status`                   */
 #include "witness/nodus_witness_network_file.h" /* `status`: network file    */
 #include <fcntl.h>                             /* `status`: quiet stderr     */
@@ -12461,6 +12462,9 @@ static void usage(const char *prog) {
     fprintf(stderr, "  status [--config <file>]         run on the node (sudo): version, services, height\n");
     fprintf(stderr, "                                   vs the network, chain id, roles, disk, memory,\n");
     fprintf(stderr, "                                   clock, config — read-only; no -s/-i needed\n");
+    fprintf(stderr, "  package list | add <witness|storage> | remove <witness|storage>\n");
+    fprintf(stderr, "                                   run on the node (sudo): turn a package on or off;\n");
+    fprintf(stderr, "                                   data kept; no -s/-i/-p (key from /etc/nodus.conf)\n");
     fprintf(stderr, "  v2-envelope stake2 --keys <owner dir> --consent <file> --bond <raw>\n");
     fprintf(stderr, "           [--commission <bps>] (--dry-run | --submit ip:port)\n");
     fprintf(stderr, "                                   HF-6 generation-4 STAKE; prints validator_id\n");
@@ -12594,6 +12598,32 @@ int main(int argc, char **argv) {
         signal(SIGPIPE, SIG_IGN);
         return cmd_status(server_ip, server_port, port_given, identity_dir,
                           argc, argv, optind);
+    }
+
+    /* `package list | add <witness|storage> | remove <witness|storage>`
+     * (decision 2026-10-22-nodus-packages-add-remove.md): run ON the node.
+     * The node key comes from /etc/nodus.conf only — -i / -s / -p are
+     * refused, never used to pick another key or node. */
+    if (strcmp(command, "package") == 0) {
+        if (identity_dir || server_ip || port_given) {
+            fprintf(stderr, "package takes no -i / -s / -p: it acts on this "
+                    "node and finds its key in %s. Nothing was changed.\n",
+                    NODUS_NODE_PACKAGE_CONFIG_PATH);
+            return 1;
+        }
+        /* a closed stdout/stderr must not kill the command half-way
+         * through a unit change (same as `status` / `consent`) */
+        signal(SIGPIPE, SIG_IGN);
+        nodus_np_sysd_t sysd;
+        nodus_node_package_sysd_default(&sysd);
+        char pkg_out[NODUS_NODE_PACKAGE_TEXT_MAX];
+        /* the host lock file must belong to root (uid 0) */
+        const int pkg_rc = nodus_node_package_main(
+            (const char *const *)&argv[optind + 1], argc - optind - 1, &sysd,
+            NODUS_NODE_PACKAGE_LOCK_PATH, 0, NODUS_NODE_PACKAGE_CONFIG_PATH,
+            pkg_out, sizeof(pkg_out));
+        fputs(pkg_out, pkg_rc == 0 ? stdout : stderr);
+        return pkg_rc == 0 ? 0 : 1;
     }
 #endif
 

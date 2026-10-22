@@ -21,8 +21,17 @@
 #                [--prefix DIR] [--config FILE] [--allow-downgrade]
 #                [--dry-run]
 #
-#   --layout combined   nodus.service (the combined nodus-server)
-#   --layout split      nodus-core + nodus-storage + nodus-witness
+#   --layout combined   nodus.service (the combined nodus-server). Refused on
+#                       a split host where nodus-storage or nodus-witness is
+#                       not enabled (a package was removed): add it first
+#                       (sudo nodus-cli package add <storage|witness>) — the
+#                       combined server always runs both
+#   --layout split      nodus-core + nodus-storage + nodus-witness on a first
+#                       install. On a split host (nodus-core enabled) without
+#                       --no-* the split units that are enabled stay as they
+#                       are — a package that was turned off stays off (a host
+#                       with only nodus-core enabled has nothing to keep:
+#                       refused, name the packages with --no-*)
 #   --no-storage        split without nodus-storage (core + witness)
 #   --no-witness        split without nodus-witness (core + storage)
 #   --prefix DIR        where the binaries go (default /usr/local/bin); the
@@ -40,7 +49,19 @@
 #                       a hard fork it lacks (docs/DEPLOY_RUNBOOK.md §2.2).
 #   --dry-run           print every action, change nothing (root not
 #                       required, but the config must be readable — an
-#                       /etc/nodus.conf this installer wrote is 0600)
+#                       /etc/nodus.conf this installer wrote is 0600; takes
+#                       no host lock)
+#
+# Host lock: a real run holds /run/lock/nodus-admin.lock (flock -n, util-linux;
+# never waits) from before the enabled units are read until the process
+# exits, after the last unit start. Another Nodus install, update or package
+# change holding it → exit 1, nothing changed. The lock file is root:root
+# 0600 (created so when missing); a file that is not a regular, non-symlink,
+# root-owned 0600 file is refused with "remove it and retry", never adopted.
+# website/install-node.sh holds the lock itself and hands this script its
+# open descriptor in NODUS_ADMIN_LOCK_HELD=<fd>; it is accepted only when that
+# fd refers to the lock file (and the file passes the same check), otherwise
+# this script takes the lock itself.
 #
 # Order (nothing on the system is changed until every check has passed):
 #   0. Arguments: --layout and the --no-* flags; `readlink -m` must work
@@ -62,6 +83,8 @@
 #      (*.conf in <unit>.service.d/, nodus-.service.d/ or service.d/ under
 #      /etc, /run, /lib or /usr/lib systemd/system) for any nodus unit —
 #      the checks read the packaged unit, not what a drop-in turns it into;
+#      the host lock (a real run; above) is taken right after root and
+#      systemctl, before any unit state is read;
 #      an installed nodus (in --prefix, or named by an installed unit's
 #      ExecStart=) newer than this package, or of a version that cannot be
 #      read, without --allow-downgrade; the current layout — what systemd
@@ -69,8 +92,10 @@
 #      same rule as deploy/build-nodus.sh and tools/nodus-update.sh): both
 #      layouts enabled, or nodus-storage / nodus-witness enabled without
 #      nodus-core; a split unit enabled but not asked for (a split host is
-#      never shrunk silently); nodus.addr_seq in both the identity and the
-#      data directory. Any of these → refuse.
+#      never shrunk silently); on a split host --layout split without --no-*
+#      keeps exactly the enabled split units; --layout combined while
+#      nodus-storage or nodus-witness is not enabled; nodus.addr_seq in both
+#      the identity and the data directory. Any of these → refuse.
 #   3. The five binaries and four units are staged as <dest>.new while the
 #      node still runs (a failed copy stops nothing, and the .new files are
 #      removed; the failure message lists only what this run created — an
@@ -102,6 +127,10 @@ SPLIT_UNITS="nodus-core nodus-storage nodus-witness"
 DEBUG_UNIT="nodus-debug"        # deploy/build-nodus.sh --debug
 UNIT_DIR="/etc/systemd/system"
 ETC_CONF="/etc/nodus.conf"
+# One lock for every Nodus install / update / package change on this host
+# (also taken by nodus-cli package, website/install-node.sh,
+# tools/nodus-update.sh, deploy/build-nodus.sh). Same path, exclusive flock.
+ADMIN_LOCK="/run/lock/nodus-admin.lock"
 UNIT_PREFIX="/usr/local/bin"   # the ExecStart= prefix in the shipped units
 # Core's identity files (nodus_identity.c, nodus_identity_load_readonly):
 # storage and witness refuse to start until all six exist.
@@ -114,6 +143,7 @@ VERSION_TIMEOUT=10              # s, for each `<binary> -h`
 LAYOUT=""
 WANT_STORAGE=1
 WANT_WITNESS=1
+NO_FLAG=0         # 1 when --no-storage or --no-witness was typed
 PREFIX="/usr/local/bin"
 CONFIG_ARG=""
 ALLOW_DOWNGRADE=0
@@ -254,8 +284,8 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || die "--layout needs combined or split"
             LAYOUT=$2; shift ;;
         --layout=*) LAYOUT=${1#--layout=} ;;
-        --no-storage) WANT_STORAGE=0 ;;
-        --no-witness) WANT_WITNESS=0 ;;
+        --no-storage) WANT_STORAGE=0; NO_FLAG=1 ;;
+        --no-witness) WANT_WITNESS=0; NO_FLAG=1 ;;
         --prefix)
             [ $# -ge 2 ] || die "--prefix needs a directory"
             PREFIX=$2; shift ;;
@@ -424,6 +454,54 @@ if [ "$DRY" -eq 0 ] && [ "$(id -u)" != 0 ]; then
     die "must run as root (or use --dry-run)"
 fi
 command -v systemctl >/dev/null 2>&1 || die "systemctl not found — this installer drives systemd units"
+
+# take_admin_lock — hold the host lock (exclusive flock on ADMIN_LOCK) for
+# the rest of this process, without waiting: held elsewhere → exit 1 at
+# once, nothing changed. The lock is released when this process exits (the
+# descriptor closes), which is after the last unit start. Called before any
+# unit state is read, so the enabled set read below cannot go stale under
+# another install, update or package change.
+# website/install-node.sh holds the lock itself and passes the open, locked
+# descriptor in NODUS_ADMIN_LOCK_HELD=<fd>. It is used only when that fd is
+# open and refers to the very file ADMIN_LOCK names (device:inode compare);
+# `flock -n` on it then keeps the exclusive lock (on the parent's open file
+# description it is a no-op, on any other it is a real, non-waiting take).
+# Any other value → the lock is taken here, on descriptor 9.
+#
+# /run/lock is world-writable, so the file itself is vetted before anything
+# opens it: created (when missing) root-owned 0600 with noclobber (O_EXCL —
+# never written through a planted symlink), and accepted only when it is a
+# regular file, not a symlink, owned by uid 0, mode exactly 600. The same
+# check applies to the file behind an inherited descriptor.
+take_admin_lock() {
+    lock_busy="another Nodus install, update or package change is running on this host — nothing was changed"
+    command -v flock >/dev/null 2>&1 ||
+        die "flock not found (util-linux) — it provides the host lock that keeps two Nodus installs, updates or package changes apart. Nothing was changed."
+    if [ ! -e "$ADMIN_LOCK" ] && [ ! -L "$ADMIN_LOCK" ]; then
+        ( umask 077; set -C; : > "$ADMIN_LOCK" ) 2>/dev/null || :
+    fi
+    if [ -L "$ADMIN_LOCK" ] || [ ! -f "$ADMIN_LOCK" ] ||
+       [ "$(stat -c '%u' "$ADMIN_LOCK" 2>/dev/null || :)" != "0" ] ||
+       [ "$(stat -c '%a' "$ADMIN_LOCK" 2>/dev/null || :)" != "600" ]; then
+        die "$ADMIN_LOCK is not a root-owned 0600 regular file; remove it and retry. Nothing was changed."
+    fi
+    lock_fd=${NODUS_ADMIN_LOCK_HELD:-}
+    case "$lock_fd" in
+        [3-9])
+            lock_want=$(stat -c '%d:%i' "$ADMIN_LOCK" 2>/dev/null || true)
+            lock_have=$(stat -L -c '%d:%i' "/proc/self/fd/$lock_fd" 2>/dev/null || true)
+            if [ -n "$lock_want" ] && [ "$lock_want" = "$lock_have" ]; then
+                flock -n "$lock_fd" || die "$lock_busy"
+                return 0
+            fi ;;
+    esac
+    [ -r "$ADMIN_LOCK" ] || die "cannot read $ADMIN_LOCK — nothing was changed."
+    exec 9< "$ADMIN_LOCK"
+    flock -n 9 || die "$lock_busy"
+}
+if [ "$DRY" -eq 0 ]; then
+    take_admin_lock
+fi
 
 # Config: /etc/nodus.conf is the one config of every service (item 18).
 INSTALL_CONF=0
@@ -625,7 +703,43 @@ else
     CURRENT="none"
     CURRENT_UNITS=""
 fi
+
+# A split host keeps the packages it has. --layout split without --no-*
+# on a host where nodus-core is enabled means "update this split node":
+# the wanted set is the split units that are enabled now (a storage or
+# witness package that was turned off stays off). A first install (no
+# split unit enabled) keeps the default, all three.
+KEEP_NOTE=""
+if [ "$LAYOUT" = split ] && [ "$CURRENT" = split ] && [ "$NO_FLAG" -eq 0 ]; then
+    WANTED="$CURRENT_UNITS"
+    WANT_STORAGE=0
+    WANT_WITNESS=0
+    # shellcheck disable=SC2086
+    in_list nodus-storage $CURRENT_UNITS && WANT_STORAGE=1
+    # shellcheck disable=SC2086
+    in_list nodus-witness $CURRENT_UNITS && WANT_WITNESS=1
+    [ "$WANT_STORAGE" -eq 1 ] || [ "$WANT_WITNESS" -eq 1 ] ||
+        die "only nodus-core is enabled on this host — core alone is not an install of decision item 12 (core+storage / core+witness / all three), so there is no split set to keep. Enable the package(s) this node should run (systemctl enable nodus-storage and/or nodus-witness), or pass --no-storage / --no-witness to say which one is meant. Nothing was changed."
+    KEEP_NOTE="split host: keeping the enabled split units as they are ($WANTED); a package turned off stays off"
+fi
+# The combined server always runs storage and witness: it cannot be the
+# way back for a host whose package was removed.
+if [ "$LAYOUT" = combined ] && [ "$CURRENT" = split ]; then
+    REMOVED=""
+    for u in nodus-storage nodus-witness; do
+        # shellcheck disable=SC2086
+        in_list "$u" $CURRENT_UNITS || REMOVED="$REMOVED ${u#nodus-}"
+    done
+    if [ -n "$REMOVED" ]; then
+        ADD_CMDS=""
+        for p in $REMOVED; do
+            ADD_CMDS="$ADD_CMDS${ADD_CMDS:+; }sudo nodus-cli package add $p"
+        done
+        die "packages removed:$REMOVED; add them first ($ADD_CMDS) — the combined server always runs both. Nothing was changed."
+    fi
+fi
 say "current layout: $CURRENT${CURRENT_UNITS:+ ($CURRENT_UNITS)}; wanted: $LAYOUT ($WANTED)"
+[ -z "$KEEP_NOTE" ] || say "$KEEP_NOTE"
 
 # A split host is never shrunk silently (e.g. a validator's witness
 # disabled because --no-witness was typed by mistake).

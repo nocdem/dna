@@ -650,6 +650,10 @@ if(NOT WIN32)
         # POSIX only (fork/exec, statvfs, /proc) — the messenger tree's
         # Windows build compiles this source list too, so it sits here.
         src/client/nodus_node_status.c
+        # `nodus-cli package list|add|remove` (decision 2026-10-22-nodus-
+        # packages-add-remove.md): the pure verdict, the systemctl adapter,
+        # the host lock, the registration read. POSIX only (fork, flock).
+        src/client/nodus_node_package.c
         src/transport/nodus_udp.c
         # WebSocket entry of the client port (RFC 6455 handshake + frame
         # codec; pure, no sockets). Server-side only, like the listener
@@ -1402,6 +1406,23 @@ add_test(NAME test_consent_req COMMAND test_consent_req)
 add_executable(test_node_status tests/test_node_status.c)
 target_link_libraries(test_node_status nodus)
 add_test(NAME test_node_status COMMAND test_node_status)
+
+# `nodus-cli package` (src/client/nodus_node_package.c): the verdict matrix
+# (layout x action x preflight reply), the systemd adapter against a fake
+# systemctl script, the host lock, the addr_seq rule. Fixtures under a
+# mkdtemp directory in /tmp only; no network, no real systemctl.
+add_executable(test_node_package tests/test_node_package.c)
+target_link_libraries(test_node_package nodus)
+add_test(NAME test_node_package COMMAND test_node_package)
+
+# deploy/install.sh --dry-run against a fake package and a fake systemctl:
+# preserve-choice on a split host, the combined-layout refusal, core alone.
+# Exit 77 = skipped (the host has nodus drop-ins or /etc/nodus.conf that the
+# dry run would read) — reported as skipped, never as passed.
+add_test(NAME test_install_layout
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/test_install_layout.sh
+                 ${CMAKE_CURRENT_SOURCE_DIR}/deploy/install.sh)
+set_tests_properties(test_install_layout PROPERTIES SKIP_RETURN_CODE 77)
 
 # Phase-C C1 — shielded ZK verify stack linkage gate (pulls the whole
 # consensus verify chain out of libnodus.a; a missing zk source in
@@ -3374,6 +3395,14 @@ endif()
 # the client decoder's refusals over crafted replies. Default build, no
 # environment; one /tmp chain dir per case. See the file's "HOW IT CAN LIE".
 register_witness_test(test_storage_by_owner)
+
+# dnac_node_duties (packages design 2026-10-22 §3): the REAL dispatcher over a
+# socketpair against a planted version-3 schema — a foreign session refused,
+# CLEAR, each blocker code, a read fault = state UNKNOWN, the DB's
+# total_changes unchanged — and the client decoder's refusals over crafted
+# replies. Default build, no environment; one /tmp chain dir per case. See the
+# file's "HOW IT CAN LIE".
+register_witness_test(test_node_duties_rpc)
 
 # HF-6 6f-1 — the client path of a generation-4 STAKE and a ROTATE (design
 # 2026-10-03-hf5-validator-owner-stake rev 6 §2, §6.1, §6.2; K7): the node

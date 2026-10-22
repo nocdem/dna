@@ -144,8 +144,11 @@ static int own_block_id(nodus_witness_t *w, uint64_t h, uint8_t out[64]) {
     return ret;
 }
 
-/* Is a STORAGE_REPORT for (H, seat) committed? @return 1 / 0 / -1. */
-static int report_committed(nodus_witness_t *w, uint64_t H, uint32_t seat) {
+/* Is a STORAGE_REPORT for (H, seat) committed? @return 1 / 0 / -1.
+ * Exported (nodus_witness_stprobe_report_committed) for the dnac_node_duties
+ * read; the body is unchanged. */
+int nodus_witness_stprobe_report_committed(nodus_witness_t *w, uint64_t H,
+                                           uint32_t seat) {
     sqlite3_stmt *st = NULL;
     if (H > (uint64_t)INT64_MAX) return -1;
     if (sqlite3_prepare_v2(w->db,
@@ -649,7 +652,7 @@ static void report_step(nodus_witness_t *w, stp_epoch_t *e, uint64_t tip) {
     int win = nodus_stprobe_report_window(e->H, E, tip, &expiry);
     if (win == 1) return;                       /* not open yet          */
     if (win != 0) {
-        int c = report_committed(w, e->H, e->seat);
+        int c = nodus_witness_stprobe_report_committed(w, e->H, e->seat);
         if (c != 1)
             QGP_LOG_WARN(LOG_TAG, "report window for H=%llu closed with no "
                          "committed report from seat %u",
@@ -657,7 +660,7 @@ static void report_step(nodus_witness_t *w, stp_epoch_t *e, uint64_t tip) {
         e->done = true;
         return;
     }
-    int c = report_committed(w, e->H, e->seat);
+    int c = nodus_witness_stprobe_report_committed(w, e->H, e->seat);
     if (c == 1) {
         QGP_LOG_INFO(LOG_TAG, "report for H=%llu committed",
                      (unsigned long long)e->H);

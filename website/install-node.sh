@@ -18,6 +18,14 @@
 # script UPDATES the node in place: it keeps the node's key, its settings and
 # its chain data.
 #
+# A real run (not --build-only) holds the host lock /run/lock/nodus-admin.lock
+# (flock -n, never waits) from before it reads which services are enabled
+# until it exits; a second install, update or package change on the same
+# machine stops with "nothing was changed". The lock file is root:root 0600
+# (created so when missing); one that is not a regular, non-symlink,
+# root-owned 0600 file is refused ("remove it and retry"), never adopted.
+# install.sh receives the open lock in NODUS_ADMIN_LOCK_HELD=9.
+#
 # Afterwards the owner goes to Nodus Connect -> More -> Nodus -> "Become a
 # storage node" / "Become a witness" and runs the one command shown there
 # (sudo nodus-cli consent <code>).
@@ -54,6 +62,10 @@ PERSISTENT_PEERS=(
 
 PROG="install-node"
 ETC_CONF="/etc/nodus.conf"
+# One lock for every Nodus install / update / package change on this host
+# (also install.sh, tools/nodus-update.sh, deploy/build-nodus.sh, nodus-cli
+# package). Same path, exclusive flock.
+ADMIN_LOCK="/run/lock/nodus-admin.lock"
 NETWORK_FILE="/etc/nodus-network.json"
 VAR_DIR="/var/lib/nodus"                 # the units' ReadWritePaths=
 IDENTITY_DIR="$VAR_DIR/identity"
@@ -121,6 +133,35 @@ ask_yes_no() {
         y|Y|yes|YES|Yes) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# take_admin_lock — hold the host lock for the rest of this process: an
+# exclusive flock on ADMIN_LOCK, taken without waiting. Another Nodus
+# install, update or package change holding it → stop at once, nothing
+# changed. Taken before the enabled units are read (the update below keeps
+# exactly what is enabled) and released when this script exits, which is
+# after install.sh has started the last unit. The open, locked descriptor
+# (9) is handed on to install.sh: NODUS_ADMIN_LOCK_HELD=9, which install.sh
+# accepts only when fd 9 refers to the lock file.
+take_admin_lock() {
+    command -v flock >/dev/null 2>&1 ||
+        die "flock not found (util-linux) — it provides the host lock that keeps two Nodus installs, updates or package changes apart. Nothing was changed."
+    # /run/lock is world-writable: create the file root-owned 0600 with
+    # noclobber (O_EXCL, never written through a planted symlink) and accept
+    # only a regular, non-symlink file owned by uid 0 with mode exactly 600.
+    if [ ! -e "$ADMIN_LOCK" ] && [ ! -L "$ADMIN_LOCK" ]; then
+        ( umask 077; set -C; : >"$ADMIN_LOCK" ) 2>/dev/null || :
+    fi
+    if [ -L "$ADMIN_LOCK" ] || [ ! -f "$ADMIN_LOCK" ] ||
+       [ "$(stat -c '%u' "$ADMIN_LOCK" 2>/dev/null || :)" != "0" ] ||
+       [ "$(stat -c '%a' "$ADMIN_LOCK" 2>/dev/null || :)" != "600" ]; then
+        die "$ADMIN_LOCK is not a root-owned 0600 regular file; remove it and retry. Nothing was changed."
+    fi
+    [ -r "$ADMIN_LOCK" ] || die "cannot read $ADMIN_LOCK. Nothing was changed."
+    exec 9<"$ADMIN_LOCK"
+    flock -n 9 ||
+        die "another Nodus install, update or package change is running on this host — nothing was changed."
+    export NODUS_ADMIN_LOCK_HELD=9
 }
 
 unit_enabled() {
@@ -237,6 +278,7 @@ main() {
     local -a seen=()
     if [ "$opt_build_only" -eq 0 ]; then
         command -v systemctl >/dev/null 2>&1 || die "systemctl not found — the node runs as systemd services."
+        take_admin_lock
         [ ! -e "$ETC_CONF" ] || seen+=("$ETC_CONF exists")
         for u in "${UNITS_ALL[@]}"; do
             if unit_enabled "$u"; then seen+=("$u.service is enabled"); fi

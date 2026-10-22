@@ -27,6 +27,14 @@
 # starts by After= (core first); no restart ORDER beyond that is claimed
 # here — the per-host order on a live validator is an OPEN operator item
 # (docs/DEPLOY_RUNBOOK.md "Three-process node").
+#
+# Host lock: /run/lock/nodus-admin.lock (flock -n; never waits), taken after
+# the confirmation and before the enabled set is read, released when the
+# script exits. Another Nodus install, update or package change holding it →
+# refuse, nothing changed. The lock file is root:root 0600; one that is not a
+# regular, non-symlink, root-owned 0600 file is refused ("remove it and
+# retry"), never adopted. The script needs root for the lock (and for the
+# install that follows).
 
 set -e
 
@@ -96,6 +104,45 @@ if [ "$SILENT" -eq 0 ]; then
         echo "Cancelled."
         exit 0
     fi
+fi
+
+# Host lock: one Nodus install, update or package change at a time on this
+# host (also taken by install.sh, install-node.sh, build-nodus.sh and
+# nodus-cli package — same file, exclusive flock). Taken without waiting,
+# BEFORE the enabled set is read and held until this process exits, after
+# the last unit start (the descriptor closes then). Held elsewhere → exit 1,
+# nothing changed.
+ADMIN_LOCK="/run/lock/nodus-admin.lock"
+if ! command -v flock >/dev/null 2>&1; then
+    echo "❌ Refusing: flock not found (util-linux) — it provides the host lock that keeps two Nodus installs, updates or package changes apart. Nothing was changed."
+    exit 1
+fi
+# /run/lock is world-writable: the file is root:root 0600 (created so when
+# missing, with noclobber = O_EXCL, never written through a planted symlink)
+# and is accepted only as a regular, non-symlink file owned by uid 0 with
+# mode exactly 600. A non-root run must not create it (a file owned by
+# someone else would then block every later root run).
+if [ "$(id -u)" != "0" ]; then
+    echo "❌ Refusing: must run as root (the host lock $ADMIN_LOCK is root-owned). Nothing was changed."
+    exit 1
+fi
+if [ ! -e "$ADMIN_LOCK" ] && [ ! -L "$ADMIN_LOCK" ]; then
+    ( umask 077; set -C; : > "$ADMIN_LOCK" ) 2>/dev/null || :
+fi
+if [ -L "$ADMIN_LOCK" ] || [ ! -f "$ADMIN_LOCK" ] ||
+   [ "$(stat -c '%u' "$ADMIN_LOCK" 2>/dev/null || :)" != "0" ] ||
+   [ "$(stat -c '%a' "$ADMIN_LOCK" 2>/dev/null || :)" != "600" ]; then
+    echo "❌ Refusing: $ADMIN_LOCK is not a root-owned 0600 regular file; remove it and retry. Nothing was changed."
+    exit 1
+fi
+if [ ! -r "$ADMIN_LOCK" ]; then
+    echo "❌ Refusing: cannot read $ADMIN_LOCK. Nothing was changed."
+    exit 1
+fi
+exec 9< "$ADMIN_LOCK"
+if ! flock -n 9; then
+    echo "❌ Refusing: another Nodus install, update or package change is running on this host — nothing was changed."
+    exit 1
 fi
 
 # unit_enabled UNIT — 0 when `systemctl is-enabled UNIT` prints exactly

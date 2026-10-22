@@ -26,6 +26,15 @@
 # A --debug build still builds and installs only nodus-server-debug, and
 # refuses on a host where any split unit is enabled or active.
 #
+# Host lock: /run/lock/nodus-admin.lock (flock -n; never waits), taken after
+# the dependency check and before any unit state is read, released when the
+# script exits. Another Nodus install, update or package change holding it →
+# refuse, nothing changed. The lock file is root:root 0600; this script runs
+# as a normal user with sudo per command, so it holds the lock through a root
+# child bound to its own lifetime (see the "Host lock" block below); a file
+# that is not a regular, non-symlink, root-owned 0600 file is refused
+# ("remove it and retry").
+#
 # Usage:
 #   ./build-nodus.sh           # Build + install + restart service
 #   ./build-nodus.sh --debug   # Build with AddressSanitizer
@@ -363,6 +372,61 @@ show_status() {
 # Main. Every refusal comes before the pull, so a refused host has
 # nothing changed, not even its checkout.
 check_deps
+
+# Host lock: one Nodus install, update or package change at a time on this
+# host (also taken by install.sh, install-node.sh, nodus-update.sh and
+# nodus-cli package — same file, exclusive flock). Taken without waiting,
+# BEFORE the enabled units are read, held until this script exits (the
+# descriptor closes), which is after the last unit start. Held elsewhere →
+# exit 1, nothing changed. /run/lock is world-writable, so the file is
+# root:root 0600 (created so when missing, through sudo, with noclobber =
+# O_EXCL — never written through a planted symlink) and is accepted only as
+# a regular, non-symlink file owned by uid 0 with mode exactly 600; anything
+# else → refuse, "remove it and retry". A normal user cannot open a 0600
+# root file, so a script running through sudo holds the lock in a ROOT
+# child: a coproc running `sudo flock -n -E 75 <file> sh -c 'echo held;
+# exec cat >/dev/null'`. It prints "held" once it owns the lock and then
+# sits on its stdin, a pipe whose write end only this script holds — when
+# this script exits (normally, on error or killed) the pipe closes, `cat`
+# ends and the lock is released. Not "held" (the lock is taken, or sudo /
+# flock failed) → refuse. No waiting, no retry, no sleep. A script already
+# running as root holds the lock on descriptor 9 directly.
+ADMIN_LOCK="/run/lock/nodus-admin.lock"
+if ! command -v flock >/dev/null 2>&1; then
+    echo -e "${RED}Refusing: flock not found (util-linux) — it provides the host lock that keeps two Nodus installs, updates or package changes apart. Nothing was changed.${NC}"
+    exit 1
+fi
+LOCK_SUDO="sudo"
+[ "$(id -u)" = "0" ] && LOCK_SUDO=""
+if ! $LOCK_SUDO sh -c '
+        f=$1
+        if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+            ( umask 077; set -C; : > "$f" ) 2>/dev/null || :
+        fi
+        [ ! -L "$f" ] && [ -f "$f" ] &&
+            [ "$(stat -c %u "$f" 2>/dev/null || :)" = 0 ] &&
+            [ "$(stat -c %a "$f" 2>/dev/null || :)" = 600 ]
+    ' sh "$ADMIN_LOCK"; then
+    echo -e "${RED}Refusing: ${ADMIN_LOCK} is not a root-owned 0600 regular file; remove it and retry. Nothing was changed.${NC}"
+    exit 1
+fi
+LOCK_REFUSED="Refusing: another Nodus install, update or package change is running on this host (or sudo / flock could not take the lock) — nothing was changed."
+if [ -z "$LOCK_SUDO" ]; then
+    exec 9< "$ADMIN_LOCK"
+    if ! flock -n 9; then
+        echo -e "${RED}${LOCK_REFUSED}${NC}"
+        exit 1
+    fi
+else
+    coproc LOCKER { sudo flock -n -E 75 "$ADMIN_LOCK" sh -c 'echo held; exec cat >/dev/null'; }
+    LOCK_LINE=""
+    read -r -u "${LOCKER[0]}" LOCK_LINE || true
+    if [ "$LOCK_LINE" != "held" ]; then
+        echo -e "${RED}${LOCK_REFUSED}${NC}"
+        exit 1
+    fi
+fi
+
 FIRST_INSTALL=0
 [ -f /etc/systemd/system/${SERVICE_NAME}.service ] || FIRST_INSTALL=1
 if [ $DEBUG_BUILD -eq 1 ]; then

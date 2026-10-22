@@ -1573,6 +1573,157 @@ int nodus_dnac_storage_by_owner_decode(const uint8_t *raw, size_t raw_len,
 /** Free a dnac_storage_by_owner answer (nodes) and zero it. NULL-safe. */
 void nodus_dnac_storage_by_owner_free(nodus_dnac_storage_by_owner_t *r);
 
+/* ── dnac_node_duties — "may this node switch its witness package off?"
+ *    (design docs/plans/2026-10-22-nodus-packages-design.md §3; decisions
+ *    2026-10-22-nodus-packages-add-remove.md, 2026-10-22-kurultay-36-
+ *    summary.md) ──
+ *
+ * READ-ONLY, node-local, committed tables only. NO ARGUMENTS: it always
+ * answers for the node that is asked. SERVED ONLY to a session
+ * authenticated with THIS node's own identity key — any other session
+ * gets NODUS_ERR_NOT_AUTHENTICATED. An older node answers "unknown DNAC
+ * method"; a node without a chain, NODUS_ERR_NOT_FOUND; a core without a
+ * witness, NODUS_CHAIN_NO_WITNESS_MSG.
+ *
+ * Response "r" (every key exactly once, except "why"):
+ *   "ch"    u64     the committed tip T (read at the start; read again at
+ *                   the end — a different value turns the answer UNKNOWN)
+ *   "cid"   bstr32  the chain id; all zero when it could not be read
+ *   "bh"    bstr64  the block id at T; all zero when it could not be read
+ *   "fresh" bool    the node is caught up with its peers. True exactly
+ *                   when ALL hold (the decoder re-checks it):
+ *                     "ws" is false  (the consensus reactor is not
+ *                                     waiting for block sync),
+ *                     "cs" is true   (the consensus state machine has
+ *                                     started),
+ *                     "np" >= 1      (consensus peers that are in the
+ *                                     reactor's set, started, and whose
+ *                                     round-state height is known, > 0),
+ *                     "ch" + 1 >= "mph"  (T >= maxPeerHeight - 1: a peer
+ *                                     at height h has committed h - 1).
+ *   "ws"    bool    the reactor's wait-sync flag
+ *   "cs"    bool    the state machine started
+ *   "np"    u32     peers with a known height (<= 65535)
+ *   "mph"   u64     the highest such peer height (0 when "np" is 0)
+ *   "state" u8      NODUS_DNAC_DUTIES_CLEAR / _BLOCKED / _UNKNOWN. It is
+ *                   decided from the committed rows alone; "fresh" is a
+ *                   separate fact and is NOT folded into it — a caller
+ *                   must require BOTH fresh and CLEAR.
+ *                   CLEAR    no duty found. Never sent when any read
+ *                            failed, returned -1, found a row that must
+ *                            exist missing, or met an unsupported state.
+ *                   BLOCKED  at least one blocker, below.
+ *                   UNKNOWN  something could not be established; "bl" and
+ *                            "own" are empty and "why" says what.
+ *   "bl"    array of <= NODUS_DNAC_DUTIES_BL_MAX maps {"c" u8 code,
+ *                   "eh" u64 end}, "c" STRICTLY ASCENDING (one entry per
+ *                   code), "c" in 1..NODUS_DNAC_DUTY_MAX. "eh" is the
+ *                   committed tip at which the blocker no longer applies
+ *                   (the node may be asked again once ch >= eh); 0 means
+ *                   "until the owner leaves" and occurs only for codes
+ *                   WITNESS_REGISTERED and STORAGE_REGISTERED. Otherwise
+ *                   eh > ch.
+ *   "own"   array of <= NODUS_DNAC_DUTIES_OWNERS_MAX tstr128 (lowercase
+ *                   hex), strictly ascending: the owner fingerprints of
+ *                   the rows behind codes 1, 2, 6 and 7.
+ *   "why"   tstr    (<= NODUS_DNAC_DUTIES_WHY_MAX chars) only when
+ *                   state is UNKNOWN.
+ * Rules the decoder enforces: the 11 keys above present exactly once (a
+ * duplicate, a missing key, a wrong type or a length that is not exact
+ * refuses; an unknown key is skipped as in every v3d_* decoder); "fresh"
+ * consistent with its inputs; "np" 0 <=> "mph" 0; CLEAR => "bl" and "own"
+ * empty; BLOCKED => "bl" non-empty; UNKNOWN => "bl" and "own" empty and
+ * "why" present; non-UNKNOWN => "why" absent; "ch" < UINT64_MAX.
+ *
+ * The blockers (design §3.3; B = the epoch start of block ch + 1, E =
+ * DNAC_EPOCH_LENGTH; the choices the code makes where the design leaves
+ * one open are in nodus_witness_handlers.c, handle_dnac_node_duties):
+ *   1 WITNESS_REGISTERED  a validators row with this node's key is ACTIVE
+ *                         or ELIGIBLE (several rows with one key are all
+ *                         read); eh 0.
+ *   2 WITNESS_LEAVING     such a row is RETIRING or AUTO_RETIRED; it
+ *                         graduates by itself: eh = B + 2E when the key
+ *                         is an entry of snapshot(B + E), else B + E.
+ *   3 SEATED_NOW          the key is an entry of the snapshot governing
+ *                         block ch + 1; eh = B + E.
+ *   4 SEATED_NEXT         the key is an entry of the already frozen
+ *                         snapshot(B + E); eh = B + 2E.
+ *   5 CMT_TRANSITION      ch + 1 is B or B + 1 and the key is an entry of
+ *                         snapshot(B - E) (cometbft applies validator
+ *                         updates two blocks late); eh = B + 1.
+ *   6 STORAGE_REGISTERED  the storage registry row of this node is ACTIVE;
+ *                         eh 0.
+ *   7 STORAGE_LEAVING     that row is EXITING; eh = the first multiple of
+ *                         E that is >= ch + 1 (the release boundary).
+ *   8 ARCHIVE_OVERLAP     this node still must hold archive segments at
+ *                         H = ch - ch mod E (nodus_witness_sthold_must_hold);
+ *                         eh = H + 2E when it is a member of storage_set(H),
+ *                         else H + E.
+ *   9 STORAGE_REPORT      this node held seat s of the committee of the
+ *                         probing epoch P = B - E, the report window
+ *                         (P + E, P + E + E/2] is open at ch and no
+ *                         STORAGE_REPORT (P, s) is committed; eh = P + E +
+ *                         E/2.
+ * One node is trusted for the answer: the CLI pins the session to the
+ * node's own id on 127.0.0.1. */
+
+/** "state" values. */
+#define NODUS_DNAC_DUTIES_CLEAR    0u
+#define NODUS_DNAC_DUTIES_BLOCKED  1u
+#define NODUS_DNAC_DUTIES_UNKNOWN  2u
+
+/** Blocker codes ("bl" entry "c"). */
+#define NODUS_DNAC_DUTY_WITNESS_REGISTERED  1u
+#define NODUS_DNAC_DUTY_WITNESS_LEAVING     2u
+#define NODUS_DNAC_DUTY_SEATED_NOW          3u
+#define NODUS_DNAC_DUTY_SEATED_NEXT         4u
+#define NODUS_DNAC_DUTY_CMT_TRANSITION      5u
+#define NODUS_DNAC_DUTY_STORAGE_REGISTERED  6u
+#define NODUS_DNAC_DUTY_STORAGE_LEAVING     7u
+#define NODUS_DNAC_DUTY_ARCHIVE_OVERLAP     8u
+#define NODUS_DNAC_DUTY_STORAGE_REPORT      9u
+#define NODUS_DNAC_DUTY_MAX                 9u
+
+/** Bounds of the lists (one blocker per code; owners of the rows). */
+#define NODUS_DNAC_DUTIES_BL_MAX      NODUS_DNAC_DUTY_MAX
+#define NODUS_DNAC_DUTIES_OWNERS_MAX  16u
+/** Longest "why" text. */
+#define NODUS_DNAC_DUTIES_WHY_MAX     96u
+
+typedef struct {
+    uint8_t  code;                     /* NODUS_DNAC_DUTY_*              */
+    uint64_t end_height;               /* "eh"; 0 = until the owner leaves */
+} nodus_dnac_duty_blocker_t;
+
+typedef struct {
+    uint64_t committed_height;         /* "ch"                           */
+    uint8_t  chain_id[32];             /* "cid"                          */
+    uint8_t  block_hash[64];           /* "bh"                           */
+    bool     fresh;                    /* "fresh"                        */
+    bool     wait_sync;                /* "ws"                           */
+    bool     cs_started;               /* "cs"                           */
+    uint32_t n_peers;                  /* "np"                           */
+    uint64_t max_peer_height;          /* "mph"                          */
+    uint8_t  state;                    /* NODUS_DNAC_DUTIES_*            */
+    size_t   n_blockers;               /* entries of blockers[]          */
+    nodus_dnac_duty_blocker_t blockers[NODUS_DNAC_DUTIES_BL_MAX];
+    size_t   n_owners;                 /* entries of owners[]            */
+    char     owners[NODUS_DNAC_DUTIES_OWNERS_MAX][129];  /* 128 hex + NUL */
+    char     why[NODUS_DNAC_DUTIES_WHY_MAX + 1];         /* UNKNOWN only  */
+} nodus_dnac_node_duties_t;
+
+/** dnac_node_duties of the connected node (no arguments). @return 0; a
+ *  NODUS_ERR_* the node answered (NODUS_ERR_NOT_AUTHENTICATED for a
+ *  session that is not the node's own identity; an older node: "unknown
+ *  DNAC method"); NODUS_ERR_PROTOCOL_ERROR for a reply the decoder
+ *  refuses; NODUS_ERR_TIMEOUT; -1 on invalid args / transport failure. */
+int nodus_client_dnac_node_duties(nodus_client_t *client,
+                                  nodus_dnac_node_duties_t *out);
+/** Its raw-reply decoder, exported for tests (no network). `out` is zeroed
+ *  on -1. @return 0 / -1 malformed (the rules above). */
+int nodus_dnac_node_duties_decode(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_node_duties_t *out);
+
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MIN      1024u
 #define NODUS_DNAC_V3_BLOCK_BUDGET_MAX      (1024u * 1024u)
 /** Items one page may carry — bounds the client's allocation. */

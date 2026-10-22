@@ -5954,12 +5954,172 @@ bad:
     return -1;
 }
 
+/* dnac_node_duties (wire and rules: nodus.h). The v3d_* discipline:
+ * duplicate keys, truncation and wrong types refuse; unknown keys are
+ * skipped. Every key is required except "why", which is required exactly
+ * when the state is UNKNOWN. */
+static int nd_bool(cbor_decoder_t *d, bool *out)
+{
+    cbor_item_t it;
+    if (v3d_next(d, &it) != 0 || it.type != CBOR_ITEM_BOOL) return -1;
+    *out = it.bool_val;
+    return 0;
+}
+
+/* One "bl" array: <= BL_MAX maps {"c","eh"}, "c" strictly ascending in
+ * 1..NODUS_DNAC_DUTY_MAX, "eh" 0 only for the two "registered" codes. */
+static int nd_blockers(cbor_decoder_t *d, nodus_dnac_node_duties_t *out)
+{
+    cbor_item_t arr;
+    if (v3d_next(d, &arr) != 0 || arr.type != CBOR_ITEM_ARRAY ||
+        arr.count > NODUS_DNAC_DUTIES_BL_MAX)
+        return -1;
+    for (size_t j = 0; j < arr.count; j++) {
+        cbor_item_t m, k;
+        v3d_keys_t  ks;
+        unsigned    have = 0;
+        uint64_t    c = 0, eh = 0;
+        memset(&ks, 0, sizeof(ks));
+        if (v3d_next(d, &m) != 0 || m.type != CBOR_ITEM_MAP || m.count != 2)
+            return -1;
+        for (size_t i = 0; i < 2; i++) {
+            if (v3d_key(d, &ks, &k) != 0) return -1;
+            if (KEY_EQ(k, "c")) {
+                if (v3d_u64(d, NODUS_DNAC_DUTY_MAX, &c) != 0 || c == 0)
+                    return -1;
+                have |= 1u;
+            } else if (KEY_EQ(k, "eh")) {
+                if (v3d_u64(d, UINT64_MAX, &eh) != 0) return -1;
+                have |= 2u;
+            } else {
+                return -1;                       /* exactly these two   */
+            }
+        }
+        if (have != 3u) return -1;
+        if (j > 0 && out->blockers[j - 1].code >= c) return -1;  /* asc */
+        if (eh == 0 && c != NODUS_DNAC_DUTY_WITNESS_REGISTERED &&
+            c != NODUS_DNAC_DUTY_STORAGE_REGISTERED)
+            return -1;
+        out->blockers[j].code = (uint8_t)c;
+        out->blockers[j].end_height = eh;
+    }
+    out->n_blockers = arr.count;
+    return 0;
+}
+
+int nodus_dnac_node_duties_decode(const uint8_t *raw, size_t raw_len,
+                                  nodus_dnac_node_duties_t *out)
+{
+    cbor_decoder_t dec;
+    size_t         mc;
+    v3d_keys_t     ks;
+    cbor_item_t    k, it;
+    uint64_t       v;
+    unsigned       have = 0;            /* the 11 required keys           */
+    int            have_why = 0;
+
+    if (!raw || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    memset(&ks, 0, sizeof(ks));
+    if (find_response_map(raw, raw_len, &dec, &mc) != 0) goto bad;
+    if (mc > V3D_MAX_KEYS || mc > v3d_left(&dec) / 2) goto bad;
+    for (size_t i = 0; i < mc; i++) {
+        if (v3d_key(&dec, &ks, &k) != 0) goto bad;
+        if (KEY_EQ(k, "ch")) {
+            /* < UINT64_MAX: "ch" + 1 is formed below */
+            if (v3d_u64(&dec, UINT64_MAX - 1u, &out->committed_height) != 0)
+                goto bad;
+            have |= 1u;
+        } else if (KEY_EQ(k, "cid")) {
+            if (v3d_b32(&dec, out->chain_id) != 0) goto bad;
+            have |= 2u;
+        } else if (KEY_EQ(k, "bh")) {
+            if (v3d_b64(&dec, out->block_hash) != 0) goto bad;
+            have |= 4u;
+        } else if (KEY_EQ(k, "fresh")) {
+            if (nd_bool(&dec, &out->fresh) != 0) goto bad;
+            have |= 8u;
+        } else if (KEY_EQ(k, "ws")) {
+            if (nd_bool(&dec, &out->wait_sync) != 0) goto bad;
+            have |= 16u;
+        } else if (KEY_EQ(k, "cs")) {
+            if (nd_bool(&dec, &out->cs_started) != 0) goto bad;
+            have |= 32u;
+        } else if (KEY_EQ(k, "np")) {
+            if (v3d_u64(&dec, 65535u, &v) != 0) goto bad;
+            out->n_peers = (uint32_t)v;
+            have |= 64u;
+        } else if (KEY_EQ(k, "mph")) {
+            if (v3d_u64(&dec, UINT64_MAX, &out->max_peer_height) != 0)
+                goto bad;
+            have |= 128u;
+        } else if (KEY_EQ(k, "state")) {
+            if (v3d_u64(&dec, NODUS_DNAC_DUTIES_UNKNOWN, &v) != 0) goto bad;
+            out->state = (uint8_t)v;
+            have |= 256u;
+        } else if (KEY_EQ(k, "bl")) {
+            if (nd_blockers(&dec, out) != 0) goto bad;
+            have |= 512u;
+        } else if (KEY_EQ(k, "own")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_ARRAY ||
+                it.count > NODUS_DNAC_DUTIES_OWNERS_MAX)
+                goto bad;
+            for (size_t j = 0; j < it.count; j++) {
+                if (v3d_hex128(&dec, out->owners[j]) != 0) goto bad;
+                if (j > 0 && strcmp(out->owners[j - 1], out->owners[j]) >= 0)
+                    goto bad;                    /* strictly ascending  */
+            }
+            out->n_owners = it.count;
+            have |= 1024u;
+        } else if (KEY_EQ(k, "why")) {
+            if (v3d_next(&dec, &it) != 0 || it.type != CBOR_ITEM_TSTR ||
+                it.tstr.len == 0 || it.tstr.len > NODUS_DNAC_DUTIES_WHY_MAX)
+                goto bad;
+            memcpy(out->why, it.tstr.ptr, it.tstr.len);
+            out->why[it.tstr.len] = '\0';
+            have_why = 1;
+        } else if (v3d_skip(&dec, 0) != 0) {
+            goto bad;
+        }
+    }
+    if (dec.error || have != 2047u) goto bad;   /* every key is required */
+    /* an end height, when given, lies past the tip it was computed at */
+    for (size_t j = 0; j < out->n_blockers; j++)
+        if (out->blockers[j].end_height != 0 &&
+            out->blockers[j].end_height <= out->committed_height)
+            goto bad;
+    /* the state / list rules */
+    if (out->state == NODUS_DNAC_DUTIES_CLEAR &&
+        (out->n_blockers != 0 || out->n_owners != 0))
+        goto bad;
+    if (out->state == NODUS_DNAC_DUTIES_BLOCKED && out->n_blockers == 0)
+        goto bad;
+    if (out->state == NODUS_DNAC_DUTIES_UNKNOWN
+            ? (out->n_blockers != 0 || out->n_owners != 0 || !have_why)
+            : have_why)
+        goto bad;
+    /* the peer facts, and "fresh" = exactly their conjunction */
+    if ((out->n_peers == 0) != (out->max_peer_height == 0)) goto bad;
+    if (out->fresh != (!out->wait_sync && out->cs_started &&
+                       out->n_peers >= 1 &&
+                       out->committed_height + 1u >= out->max_peer_height))
+        goto bad;
+    return 0;
+bad:
+    memset(out, 0, sizeof(*out));
+    return -1;
+}
+
 /* One HF-4 request: `method` with zero or one text argument; the raw
- * reply is handed to `decode`. @return 0 / NODUS_ERR_* / -1. */
-static int hf4_query(nodus_client_t *client, const char *method,
-                     const char *arg_key, const char *arg_val,
-                     int (*decode)(const uint8_t *, size_t, void *),
-                     void *out)
+ * reply is handed to `decode`. @return 0 / NODUS_ERR_* / -1.
+ * `strict_err`: an error frame with no code, or a code <= 0, is
+ * NODUS_ERR_PROTOCOL_ERROR (client_error_rc) instead of the code as
+ * decoded — which may be 0 and would read as success. Only
+ * dnac_node_duties asks for it; the other HF-4 queries are unchanged. */
+static int hf4_query_x(nodus_client_t *client, const char *method,
+                       const char *arg_key, const char *arg_val,
+                       int (*decode)(const uint8_t *, size_t, void *),
+                       void *out, bool strict_err)
 {
     uint8_t *buf = malloc(CLIENT_BUF_SIZE);
     if (!buf) return -1;
@@ -5984,11 +6144,20 @@ static int hf4_query(nodus_client_t *client, const char *method,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = strict_err ? client_error_rc(resp) : resp->error_code;
+        free_pending(client, req); return rc;
     }
     int drc = decode(req->raw_response, req->raw_response_len, out);
     free_pending(client, req);
     return drc == 0 ? 0 : NODUS_ERR_PROTOCOL_ERROR;
+}
+
+static int hf4_query(nodus_client_t *client, const char *method,
+                     const char *arg_key, const char *arg_val,
+                     int (*decode)(const uint8_t *, size_t, void *),
+                     void *out)
+{
+    return hf4_query_x(client, method, arg_key, arg_val, decode, out, false);
 }
 
 static int hf4_dec_ruleset(const uint8_t *r, size_t l, void *o) {
@@ -6101,6 +6270,31 @@ int nodus_client_dnac_storage_by_owner(nodus_client_t *client,
     st_by_owner_ctx_t ctx = { owner_hex, out };
     return hf4_query(client, "dnac_storage_by_owner", "owner", owner_hex,
                      st_dec_by_owner, &ctx);
+}
+
+static int nd_dec_duties(const uint8_t *r, size_t l, void *o) {
+    return nodus_dnac_node_duties_decode(r, l,
+                                         (nodus_dnac_node_duties_t *)o);
+}
+
+int nodus_client_dnac_node_duties(nodus_client_t *client,
+                                  nodus_dnac_node_duties_t *out)
+{
+    if (!out) return -1;
+    /* A failed call must never leave the zero value, which is CLEAR (the
+     * state that lets a witness be stopped): UNKNOWN, not fresh. The
+     * decoder zeroes `out` on a bad reply, so this is re-applied after. */
+    memset(out, 0, sizeof(*out));
+    out->state = NODUS_DNAC_DUTIES_UNKNOWN;
+    if (!nodus_client_is_ready(client)) return -1;
+    const int rc = hf4_query_x(client, "dnac_node_duties", NULL, NULL,
+                               nd_dec_duties, out, true);
+    if (rc != 0) {
+        memset(out, 0, sizeof(*out));
+        out->state = NODUS_DNAC_DUTIES_UNKNOWN;
+        out->fresh = false;
+    }
+    return rc;
 }
 
 int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,

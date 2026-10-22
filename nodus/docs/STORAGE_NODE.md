@@ -246,6 +246,17 @@ boundary; the bond comes back to the owner as one coin, locked for 12 epochs.
 **Stopping the machine is not leaving.** The bond stays locked and the node fails its checks
 until it is skipped. Always leave first, then shut down.
 
+The same holds for turning the chain program off on a running machine. The storage-node
+role runs in the `witness` package, so the command is `sudo nodus-cli package remove
+witness` (`remove storage` is the DHT store, a different program, and is not available
+in this version). It refuses while this node is registered — as a storage node or a
+witness — and names the owner, who must leave first in Nodus Connect (More → Nodus → My
+registered nodes). After leaving, it still refuses until the node's last duties are done
+(the release at the epoch boundary, the archive hand-over, the last storage report) and
+says the block after which to try again. It also refuses while the node is not caught up
+with the chain, or when the witness cannot answer. Turning a package off never deletes
+its data or the node's key.
+
 ## Good to know
 
 - One machine can be a witness and a storage node at the same time; each role has its own

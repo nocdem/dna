@@ -116,6 +116,12 @@ nodus_stprobe_code_t nodus_witness_stprobe_serve(
         uint64_t E, uint64_t now_wall_ms,
         uint8_t *out, size_t cap, size_t *len_out);
 
+/** Is a STORAGE_REPORT for (epoch_start H, seat) committed
+ *  (v2_storage_reports)? Read-only. Exported for dnac_node_duties.
+ *  @return 1 committed / 0 not / -1 fault (or H above INT64_MAX). */
+int nodus_witness_stprobe_report_committed(nodus_witness_t *w, uint64_t H,
+                                           uint32_t seat);
+
 /** One pass of the reporter (header "THE REPORTER"); a no-op until the
  *  node runs a live, caught-up version-3 lane. Called by the witness tick. */
 void nodus_witness_stprobe_tick(nodus_witness_t *w);
