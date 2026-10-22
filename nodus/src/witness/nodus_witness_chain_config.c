@@ -70,7 +70,7 @@
 #define CC_MAX_ACTIVE               DNA_MAX_ACTIVE_VALIDATORS
 
 #define CC_PURPOSE_TAG_LEN          16
-#define CC_PARAM_MAX_ID            22
+#define CC_PARAM_MAX_ID            23
 #define CC_PARAM_MAX_TXS            1
 #define CC_PARAM_BLOCK_INTERVAL     2
 #define CC_PARAM_INFLATION_START    3
@@ -97,6 +97,8 @@
 #define CC_PARAM_POWER_CAP_BPS     20     /* HF-6 — DNAC_CFG_POWER_CAP_BPS */
 #define CC_PARAM_STORAGE_BOND      21     /* HF-6 — DNAC_CFG_STORAGE_BOND */
 #define CC_PARAM_RULESET_GEN_ROOTS 22     /* HF-7 — DNAC_CFG_RULESET_GEN_ROOTS */
+#define CC_PARAM_MLDSA_ACTIVE      23     /* ML-DSA-87 precompile —
+                                           * DNAC_CFG_MLDSA_ACTIVE */
 /* Number of per-param cache rows dimensions: param ids are 1..CC_PARAM_MAX_ID
  * and index 0 is unused, so the arrays are CC_PARAM_MAX_ID + 1 wide.
  * HF-4 grew it 9 -> 14 (design 2026-10-02-onchain-names-design.md rev 4
@@ -106,7 +108,8 @@
  * storage reward v1 grows it 16 -> 17 (id 16), HF-8 17 -> 18 (id 17,
  * DELEGATE_NAME_REQUIRED) and HF-6 18 -> 22 (ids 18 RULESET_GEN_ROLES,
  * 19 STAKE_MIN, 20 POWER_CAP_BPS, 21 STORAGE_BOND) and HF-7 22 -> 23 (id
- * 22 RULESET_GEN_ROOTS) through the same derivation. Slot 16 stays:
+ * 22 RULESET_GEN_ROOTS) and the ML-DSA-87 precompile 23 -> 24 (id 23
+ * MLDSA_ACTIVE) through the same derivation. Slot 16 stays:
  * RETIRED id 16 is still READ (any committed row refuses the param-18
  * vote). */
 #define CC_PARAM_SLOTS              (CC_PARAM_MAX_ID + 1)
@@ -210,6 +213,8 @@ _Static_assert(CC_PARAM_RULESET_GEN_ROLES == DNAC_CFG_RULESET_GEN_ROLES,
                "CC_PARAM_RULESET_GEN_ROLES drift vs dnac param id");
 _Static_assert(CC_PARAM_RULESET_GEN_ROOTS == DNAC_CFG_RULESET_GEN_ROOTS,
                "CC_PARAM_RULESET_GEN_ROOTS drift vs dnac param id");
+_Static_assert(CC_PARAM_MLDSA_ACTIVE == DNAC_CFG_MLDSA_ACTIVE,
+               "CC_PARAM_MLDSA_ACTIVE drift vs dnac param id");
 _Static_assert(CC_PARAM_DELEGATE_NAME_REQUIRED ==
                    DNAC_CFG_DELEGATE_NAME_REQUIRED,
                "CC_PARAM_DELEGATE_NAME_REQUIRED drift vs dnac param id");
@@ -892,6 +897,18 @@ int nodus_chain_config_scalar_rules(uint8_t param_id, uint64_t new_value,
              * rules need chain state: nodus_chain_config_stateful_rules_ex. */
             if (new_value != (uint64_t)DNAC_CFG_EVM_ACTIVE_D) return -1;
             break;
+        case CC_PARAM_MLDSA_ACTIVE:
+            /* ML-DSA-87 precompile (decision 2026-10-21-mldsa87-evm-
+             * precompile.md, Route B; design rev 2 §1.7): EXACTLY the
+             * compiled vote literal, the param-14 shape — the literal
+             * binds the precompile's constants (tag address, context
+             * bytes, gas, message bound, widths), so a binary whose
+             * precompile differs refuses here, at the vote block. Pure:
+             * the literal, never a hash. The single-use / EVM-generation /
+             * epoch-boundary rules need chain state:
+             * nodus_chain_config_stateful_rules_ex. */
+            if (new_value != (uint64_t)DNAC_CFG_MLDSA_ACTIVE_D) return -1;
+            break;
         case CC_PARAM_EVM_BLOCK_GAS:
             /* Nodus EVM (design §8): [MIN, MAX], placeholders pending the
              * measurement gate (dnac.h). */
@@ -1044,6 +1061,12 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
             /* Nodus EVM — SAFETY (design §9: "SAFETY grace (bilinçli seçim:
              * yeni domain)"). Its own return, never the default: branch. */
             return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
+        case CC_PARAM_MLDSA_ACTIVE:
+            /* ML-DSA-87 precompile — ERGONOMIC (decision 2026-10-21-
+             * mldsa87-evm-precompile.md "Activation route and grace",
+             * operator: "720 blokta geçelim gidelim işte"). Its own
+             * return, never the default: branch. */
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
         case CC_PARAM_EVM_BLOCK_GAS:
             /* Nodus EVM — SAFETY (the dispatch of the activation package: the
              * block gas bound is a block-work limit). */
@@ -1076,7 +1099,8 @@ uint64_t nodus_chain_config_grace_for_param(uint8_t param_id) {
  * The 4th argument is the SINGLE-USE fact OF THE PARAM BEING VOTED — "any
  * committed param-9 row" for a param-9 vote, "any committed param-18 row"
  * for a param-18 vote (HF-6 slice 8c), "any committed param-22 row" for a
- * param-22 vote (HF-7 P1d) — so this form sets ALL THREE of those
+ * param-22 vote (HF-7 P1d), "any committed param-23 row" for a param-23
+ * vote (the ML-DSA-87 precompile) — so this form sets ALL FOUR of those
  * single-use facts from it (the _ex form reads only the one matching
  * param_id). It has no "any committed param-16 row" input: that fact is
  * 0 here (no param-16 row), and only the _ex form can set it. The
@@ -1093,6 +1117,7 @@ int nodus_chain_config_stateful_rules(uint8_t param_id,
     f.ruleset_gen2_voted = ruleset_gen2_voted;
     f.ruleset_gen_roles_voted = ruleset_gen2_voted;
     f.ruleset_gen_roots_voted = ruleset_gen2_voted;
+    f.mldsa_active_voted = ruleset_gen2_voted;
     f.judging_generation = judging_generation;
     return nodus_chain_config_stateful_rules_ex(param_id,
                                                 effective_block_height, &f);
@@ -1160,6 +1185,32 @@ int nodus_chain_config_stateful_rules_ex(uint8_t param_id,
         }
         case CC_PARAM_EVM_BLOCK_GAS:
             return 0;              /* the scalar rules decide it alone   */
+        case CC_PARAM_MLDSA_ACTIVE:
+            /* ML-DSA-87 precompile (decision 2026-10-21-mldsa87-evm-
+             * precompile.md, Route B; design rev 2 §1.7) — param 14's
+             * shape over its own facts: */
+            /* (a) single use: any committed param-23 row, at any
+             * effective height (the far-future one included), refuses
+             * every further vote. Both callers fill the fact: the 0x71
+             * responder below and the SYSTEM CHAIN_CONFIG exec
+             * (nodus_witness_rt_native.c, from ctx.mldsa_active_voted). */
+            if (facts->mldsa_active_voted) return -1;
+            /* (b) the EVM domain exists: judged under the EVM generation
+             * or a later one (3, 4, 5). Route B switches no registry
+             * generation, so no EXACT predecessor is needed. A synthetic
+             * or unresolved runtime reads 0 here. */
+            if (judging_generation < NODUS_RT_GEN_EVM) return -1;
+            /* (c) H-1 must not be an epoch boundary (the param-9 rule
+             * (c), as param 14). H itself MAY be one: Route B runs no
+             * procedure at H, so param 22's rule (e) has no reason
+             * here. */
+            if (effective_block_height == 0) return -1;
+            {
+                uint64_t h1 = effective_block_height - 1u;
+                if (h1 != 0 && (h1 % (uint64_t)DNAC_EPOCH_LENGTH) == 0)
+                    return -1;
+            }
+            return 0;
         case CC_PARAM_RULESET_GEN_ROLES:
             /* HF-6 (design 2026-10-03-hf5-validator-owner-stake-design.md
              * rev 6 §8 "Durumlu kural (param 18)"; decision 2026-10-09-
@@ -1584,7 +1635,10 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
      * gen_storage_voted) are each read the param-9 way into their own
      * fact; the param-18 vote is refused by either.
      * HF-7 P1d: "any param-22 row" is read the same way into
-     * facts.ruleset_gen_roots_voted (the param-22 single-use rule (a)). */
+     * facts.ruleset_gen_roots_voted (the param-22 single-use rule (a)).
+     * ML-DSA-87 precompile: "any param-23 row" is read the same way into
+     * facts.mldsa_active_voted (the param-23 single-use rule (a); exec:
+     * ctx.mldsa_active_voted, nodus_witness_v2_apply.c env_evm_facts). */
     {
         /* Nodus EVM: + HF-3 at h (param 8), a non-zero gas price at h
          * (param 5) and "any param-14 row" — the EVM_ACTIVE facts the
@@ -1592,7 +1646,7 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
          * evm_active_voted), derived here with the same discipline; and
          * (red-team 1 F5) the chain's initial height for param 14. */
         uint64_t v7 = 0, v9 = 0, v8 = 0, v5 = 0, v14 = 0, v16 = 0, v18 = 0,
-                 v22 = 0;
+                 v22 = 0, v23 = 0;
         int r7 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_HF2_ACTIVE,
                                             h, 0ULL, &v7);
         int r9 = nodus_chain_config_get_u64(w, (uint8_t)CC_PARAM_RULESET_GEN2,
@@ -1612,9 +1666,12 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         int r22 = nodus_chain_config_get_u64(
                       w, (uint8_t)CC_PARAM_RULESET_GEN_ROOTS,
                       (uint64_t)INT64_MAX, 0ULL, &v22);
+        int r23 = nodus_chain_config_get_u64(
+                      w, (uint8_t)CC_PARAM_MLDSA_ACTIVE,
+                      (uint64_t)INT64_MAX, 0ULL, &v23);
         const nodus_domain_runtime_t *sys_rt = NULL;
         if (r7 < 0 || r9 < 0 || r8 < 0 || r5 < 0 || r14 < 0 || r16 < 0 ||
-            r18 < 0 || r22 < 0 ||
+            r18 < 0 || r22 < 0 || r23 < 0 ||
             (v7 != 0ULL && v7 != CC_HF2_ACTIVE_ON) ||
             (v8 != 0ULL && v8 != CC_HF3_ACTIVE_ON)) {
             snprintf(reason, reason_size,
@@ -1637,6 +1694,7 @@ static int cc_appr_rules_chain_config(nodus_witness_t *w,
         facts.ruleset_gen_storage_voted = (uint8_t)(r16 == 0 ? 1u : 0u);
         facts.ruleset_gen_roles_voted = (uint8_t)(r18 == 0 ? 1u : 0u);
         facts.ruleset_gen_roots_voted = (uint8_t)(r22 == 0 ? 1u : 0u);
+        facts.mldsa_active_voted = (uint8_t)(r23 == 0 ? 1u : 0u);
         facts.judging_generation = sys_rt->generation;
         /* red-team 1 F5: the chain's first block height, from the stored
          * genesis document (nodus_witness_v2_chain_initial_height — the

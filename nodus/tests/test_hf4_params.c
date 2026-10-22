@@ -23,8 +23,9 @@
  *     when effective-1 is a nonzero epoch-length multiple, when effective
  *     is 0; accepted otherwise (effective 1 included: height 0 is not a
  *     boundary). Params 10-13 refused under generation 0/1, accepted
- *     under 2. Ids 1-8 no stateful rule; 0, 16, 23, 255 refused (22 is
- *     HF-7's RULESET_GEN_ROOTS since P1d — test_hf7_activation.c).
+ *     under 2. Ids 1-8 no stateful rule; 0, 16, 24, 255 refused (22 is
+ *     HF-7's RULESET_GEN_ROOTS since P1d — test_hf7_activation.c; 23 the
+ *     ML-DSA-87 precompile vote — test_v2_evm.c section 15).
  *  5. the SYSTEM CHAIN_CONFIG exec hook (nodus_rt_system_exec) applies
  *     the SAME rules from the engine-filled ctx facts and its own
  *     runtime's generation: one accepted param-9 leg produces exactly one
@@ -89,8 +90,9 @@
  *  STORAGE_BOND; ranges from Kurultay #14 K5 / K9 and #16 khan decision 3;
  *  ERGONOMIC from #16 "4 ok"), added to the sections above:
  *   1. ids 19 / 20 / 21, all three on the read list; since HF-7 P1d
- *      MAX_ID = 22 (RULESET_GEN_ROOTS, on the list) and 23 is the first id
- *      past the end; the named bounds are the records' numbers.
+ *      22 RULESET_GEN_ROOTS on the list; since the ML-DSA-87 precompile
+ *      MAX_ID = 23 (MLDSA_ACTIVE, on the list) and 24 is the first id past
+ *      the end; the named bounds are the records' numbers.
  *   2. scalar: 19 refuses 10^13 - 1, accepts 10^13, 2·10^14 and
  *      INT64_MAX, refuses INT64_MAX + 1 and UINT64_MAX — with a valid
  *      window and nonce, so the refusal can only come from param 19's OWN
@@ -98,7 +100,8 @@
  *      case written as "≥ MIN only" fails here. 20: 499 / 3001 refused,
  *      500 / 3000 accepted. 21: 10^13 - 1 / 10^14 + 1 refused, 10^13 /
  *      10^14 accepted. 18 refuses each neighbour's value, 22 (exactly D5)
- *      them and D4, 23 every value.
+ *      them and D4, 23 (exactly the ML-DSA literal) them and D5, 24 every
+ *      value.
  *   3. grace 19-21 ERGONOMIC.
  *   4. stateful: 19-21 refused under generations 0-3, accepted under 4
  *      whatever the HF-2 / single-use / boundary facts; the facts form
@@ -360,16 +363,20 @@ int main(void) {
     CHECK(DNAC_CFG_POWER_CAP_BPS == 20);
     CHECK(DNAC_CFG_STORAGE_BOND == 21);
     /* HF-7 P1d appends 22 RULESET_GEN_ROOTS (its own rules:
-     * test_hf7_activation.c); 23 is now the first id past the end */
+     * test_hf7_activation.c), the ML-DSA-87 precompile 23 MLDSA_ACTIVE
+     * (its own rules: test_v2_evm.c section 15); 24 is now the first id
+     * past the end */
     CHECK(DNAC_CFG_RULESET_GEN_ROOTS == 22);
-    CHECK(DNAC_CFG_PARAM_MAX_ID == 22);
-    for (unsigned id = 9; id <= 22; id++)
+    CHECK(DNAC_CFG_MLDSA_ACTIVE == 23);
+    CHECK(DNAC_CFG_PARAM_MAX_ID == 23);
+    for (unsigned id = 9; id <= 23; id++)
         CHECK(dnac_cfg_param_read_by_consensus((uint8_t)id) ==
               (id != DNAC_CFG_RULESET_GEN_STORAGE));
     CHECK(!dnac_cfg_param_read_by_consensus(16));
     CHECK(dnac_cfg_param_read_by_consensus(18));
     CHECK(dnac_cfg_param_read_by_consensus(22));
-    CHECK(!dnac_cfg_param_read_by_consensus(23));
+    CHECK(dnac_cfg_param_read_by_consensus(23));
+    CHECK(!dnac_cfg_param_read_by_consensus(24));
     /* the records' numbers (K9: 100k NODUS floor, default 2M; K5: [500,
      * 3000], default 3000; Kurultay #16 decision 3: [100k, 1M], 1M) */
     CHECK(DNAC_HF6_STAKE_MIN_MIN == 10000000000000ULL);
@@ -530,8 +537,9 @@ int main(void) {
                   == -1);
         }
         /* 18 (exactly D4) refuses every value one of its neighbours
-         * would accept; 22 (exactly D5, HF-7) refuses them and D4; 23 is
-         * past the end, whatever the value */
+         * would accept; 22 (exactly D5, HF-7) refuses them and D4; 23
+         * (exactly the ML-DSA-87 precompile literal) refuses them and D5;
+         * 24 is past the end, whatever the value */
         CHECK(nodus_chain_config_scalar_rules(18, 500, 1, 5000, 4000, 7)
               == -1);
         CHECK(nodus_chain_config_scalar_rules(
@@ -547,6 +555,9 @@ int main(void) {
         CHECK(nodus_chain_config_scalar_rules(
                   23, (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D, 1, 5000, 4000,
                   7) == -1);
+        CHECK(nodus_chain_config_scalar_rules(
+                  24, (uint64_t)DNAC_CFG_MLDSA_ACTIVE_D, 1, 5000, 4000, 7)
+              == -1);
     }
 
     /* ── 3. grace: ERGONOMIC, HF-3's class (the EVM ids 14-15 are
@@ -798,8 +809,9 @@ int main(void) {
         CHECK(nodus_chain_config_stateful_rules(18, ok_eff, 1, 0,
                                                 NODUS_RT_GEN_STORAGE) == -1);
         /* HF-7 P1d: 22 is RULESET_GEN_ROOTS now (its stateful matrix is
-         * test_hf7_activation.c); 23 is the first unknown id */
-        CHECK(nodus_chain_config_stateful_rules(23, ok_eff, 1, 0,
+         * test_hf7_activation.c); 23 is the ML-DSA-87 precompile vote
+         * (test_v2_evm.c section 15); 24 is the first unknown id */
+        CHECK(nodus_chain_config_stateful_rules(24, ok_eff, 1, 0,
                                                 NODUS_RT_GEN_STORAGE) == -1);
         CHECK(nodus_chain_config_stateful_rules(255, ok_eff, 1, 0, 2) == -1);
     }

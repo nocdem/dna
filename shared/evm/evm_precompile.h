@@ -16,7 +16,11 @@ extern "C" {
 /**
  * Known-answer self-test of the precompile set: one or more vectors per
  * library — 0x01-0x03, 0x05, 0x06, 0x08-0x0b, 0x0f, 0x11 (11 of the 17
- * addresses; PC_KATS in evm_precompile.c).
+ * addresses; PC_KATS in evm_precompile.c) — plus the Nodus ML-DSA-87
+ * precompile at its tag address (evm.h mldsa_precompile): its address is
+ * recomputed as SHA3-512 of its tag and compared with the committed
+ * constant, and its rows (PC_KATS32) run with the switch on, whether or
+ * not the node has activated it.
  *
  * Runs fixed vectors (sources cited next to each vector in
  * evm_precompile.c) through the same dispatch the interpreter uses, and

@@ -458,7 +458,11 @@ int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx) {
  *                                HF-7, param 22; the RULESET_GEN_ROLES
  *                                shape — the witness's stateful rules are
  *                                not mirrored)
- *   - signed_at_block > 0             (CC-AUDIT-008)
+ *       MLDSA_ACTIVE           : exactly DNAC_CFG_MLDSA_ACTIVE_D (the
+ *                                ML-DSA-87 precompile, param 23; the
+ *                                EVM_ACTIVE shape — the witness's
+ *                                stateful rules are not mirrored)
+ *   - signed_at_block > 0            (CC-AUDIT-008)
  *   - valid_before_block > effective_block_height
  *   - valid_before_block > signed_at_block
  *   - proposal_nonce, signed_at_block, valid_before_block and
@@ -676,6 +680,23 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
                               "D=0x%016llx is a legal value",
                               (unsigned long long)cc->new_value,
                               (unsigned long long)DNAC_CFG_EVM_ACTIVE_D);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_MLDSA_ACTIVE:
+            /* ML-DSA-87 precompile (decision 2026-10-21-mldsa87-evm-
+             * precompile.md, Route B; design rev 2 §1.7), mirroring the
+             * witness scalar rules: EXACTLY the compiled vote literal (it
+             * binds the precompile's constants). The witness's stateful
+             * rules — single use, judged under a generation that has the
+             * EVM, H-1 not an epoch boundary — need chain state this
+             * mirror does not have (the EVM_ACTIVE divergence). */
+            if (cc->new_value != (uint64_t)DNAC_CFG_MLDSA_ACTIVE_D) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: MLDSA_ACTIVE=0x%016llx, only "
+                              "D=0x%016llx is a legal value",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_MLDSA_ACTIVE_D);
                 return DNAC_ERROR_INVALID_PARAM;
             }
             break;

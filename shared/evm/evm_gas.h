@@ -76,6 +76,14 @@
  * prague/vm/precompiled_contracts/bls12_381/bls12_381_pairing.py */
 #define EVM_G_PRECOMPILE_BLS_PAIRING_PER_PAIR 32600u
 #define EVM_G_PRECOMPILE_BLS_PAIRING_BASE 37700u
+/* Nodus ML-DSA-87 verification precompile (evm.h mldsa_precompile; NOT a
+ * Prague constant): 25 000 + 12 per 32-byte word of the message part
+ * (rounded up), charged before any work, for every input — decision
+ * docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md "Measurement"
+ * (operator "approved", 2026-10-21; the per-word price is the SHA-256
+ * precompile's, EVM_G_PRECOMPILE_SHA256_PER_WORD above). */
+#define EVM_G_PRECOMPILE_MLDSA87_BASE     25000u
+#define EVM_G_PRECOMPILE_MLDSA87_PER_WORD 12u
 
 /* ── authorization (EIP-7702; type-4 txs are refused in this phase) ─── */
 #define EVM_G_AUTH_PER_EMPTY_ACCOUNT     25000   /* GasCosts.AUTH_PER_EMPTY_ACCOUNT */

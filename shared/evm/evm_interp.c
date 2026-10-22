@@ -541,15 +541,17 @@ static int start_message(ctx_t *c, frame *f, int take_mark)
     if (f->should_transfer && !evm_u256_is_zero(&f->value))
         EVM_CHECK(evm_st_move_ether(st, &f->caller, &f->target, &f->value));
     /* `code_address in PRE_COMPILED_CONTRACTS` — the set is configuration
-     * (evm_config_t.precompile_mask, red-team fix 7): with its bit clear
-     * the address is an ordinary account and its code runs. */
+     * (evm_config_t.precompile_mask, red-team fix 7; mldsa_precompile):
+     * with its bit / switch clear the address is an ordinary account and
+     * its code runs. */
     if (!f->is_create && evm_precompile_enabled(st, &f->code_address)) {
         if (!f->disable_precompiles) {
             evm_pc_result_t res;
             uint8_t *out = NULL;
             size_t out_len = 0;
-            if (evm_precompile_run(&f->code_address, f->data, f->data_len,
-                                   &f->gas, &res, &out, &out_len) != 0)
+            if (evm_precompile_run_cfg(&st->cfg, &f->code_address, f->data,
+                                       f->data_len, &f->gas, &res, &out,
+                                       &out_len) != 0)
                 return EVM_FAULT;
             switch (res) {
             case EVM_PC_OK:

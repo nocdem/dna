@@ -318,17 +318,22 @@ int evm_tx_apply(evm_state_t *st, const evm_block_env_t *env,
     }
     if (evm_st_access_addr(st, sender, &warm) != 0) return EVM_FAULT;
     /* PRE_COMPILED_CONTRACTS.keys(): the configured set (evm.h
-     * precompile_mask, red-team fix 7) */
+     * precompile_mask, red-team fix 7), asked of the one resolver */
     for (unsigned p = EVM_PRECOMPILE_FIRST; p <= EVM_PRECOMPILE_LAST; p++) {
-        if (!((st->cfg.precompile_mask >> p) & 1u)) continue;
         evm_addr pa;
         memset(pa.b, 0, 32);
         pa.b[31] = (uint8_t)p;
+        if (!evm_precompile_enabled(st, &pa)) continue;
         if (evm_st_access_addr(st, &pa, &warm) != 0) return EVM_FAULT;
     }
     /* Nodus: the ticket system address is warm like a precompile (evm.h) */
     if (st->cfg.nodus_profile &&
         evm_st_access_addr(st, &st->cfg.ticket_addr, &warm) != 0)
+        return EVM_FAULT;
+    /* Nodus: the ML-DSA-87 precompile's tag address, only when the switch
+     * is on (evm.h mldsa_precompile); off, it stays cold like any account */
+    if (evm_precompile_enabled(st, &evm_mldsa87_addr) &&
+        evm_st_access_addr(st, &evm_mldsa87_addr, &warm) != 0)
         return EVM_FAULT;
 
     evm_tx_env_t txenv;

@@ -15,3 +15,11 @@ event 38ac789ed44572701765277c4d0970f2db1c1a571ed39e84358095ae4eaa5420: Incremen
 # Ticketer.sol:Ticketer
 cbaf5697: openTicket(address,bytes)
 event b871e08e1975bf447b3ac22720b72a3064088fe14a5e9a38540fc563cf809a26: TicketOpened(bytes)
+
+# MldsaProbe.sol:MldsaProbe
+305f72b7: calls()
+118e919d: lastLen()
+8d05197c: lastOk()
+1bc0261f: lastWord()
+396d7314: probe(address,bytes)
+6602b656: record(address,bytes)

@@ -1068,6 +1068,16 @@ static int rtevm_vm_pre(const nodus_rt_exec_ctx_t *ctx,
     if (nodus_rt_evm_ticket_addr(cfg->ticket_addr.b) != 0) return -2;
     evm_u256_from_u64(&cfg->ticket_unit, NODUS_RT_EVM_Q);
     cfg->ticket_gas = NODUS_RT_EVM_TICKET_GAS;
+    /* ML-DSA-87 precompile (decision 2026-10-21-mldsa87-evm-precompile.md,
+     * Route B): on from the param-23 row's effective height, off below it
+     * (the tag address an ordinary account — the engine byte-identical to
+     * the build before the switch). The ONE source is the engine fact
+     * ctx->mldsa_active (runtime.h), which the exec AND the prevalidation
+     * of a leg read from the same ctx (nodus_witness_v2_apply.c
+     * exec_evm_leg) and the RPC simulation derives through the same
+     * reader (nodus_rt_evm_mldsa_active_at). Only 0 / 1 reach the engine:
+     * evm_state_new refuses any other value. */
+    cfg->mldsa_precompile = ctx->mldsa_active ? 1 : 0;
 
     evm_backend_t *bk = &vm->bk;
     bk->ctx = be;
@@ -1708,6 +1718,19 @@ int nodus_rt_evm_simulate(const nodus_domain_runtime_t *rt,
     ctx.auth                = av;
     ctx.block_time_s        = req->block_time_s;
     ctx.evm_block_gas_limit = req->evm_block_gas_limit;
+    /* ML-DSA-87 precompile: the switch at the height the call would land
+     * in, through THE reader the engine fills ctx.mldsa_active with
+     * (nodus_witness_rt_evm.h) — so a simulation never disagrees with the
+     * block that would execute the same call. Unreadable = fault (-2),
+     * never "off". */
+    if (nodus_rt_evm_mldsa_active_at(w, req->global_height,
+                                     &ctx.mldsa_active) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "simulate: MLDSA_ACTIVE at height %llu is "
+                      "unreadable or holds a value no committed row can "
+                      "hold on this node",
+                      (unsigned long long)req->global_height);
+        goto done;
+    }
 
     out.priv = p;
     out.release = rtevm_release;

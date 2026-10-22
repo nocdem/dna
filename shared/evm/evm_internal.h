@@ -187,8 +187,20 @@ static inline int evm_size_mul(size_t count, size_t elem, size_t *out)
  *  to_address_masked in 20-byte mode; the full word in 32-byte mode). */
 void evm_addr_from_word(const evm_state_t *st, const evm_u256 *w, evm_addr *out);
 void evm_addr_to_word(const evm_addr *a, evm_u256 *out);
-/** Address k (1..17, right-aligned) is a precompile in THIS configuration:
- *  bit k of cfg.precompile_mask is set (evm.h). */
+/** Precompile id of a tag-derived address (outside the numeric 0x01..0x11
+ *  range, so it can never be a shift count or a numeric address). */
+#define EVM_PC_ID_MLDSA87 0x100
+/** The ML-DSA-87 precompile's address (evm.h EVM_MLDSA87_ADDR_BYTES). */
+extern const evm_addr evm_mldsa87_addr;
+/** THE one answer to "is this address an enabled precompile in this
+ *  configuration" (recognition, warming and dispatch all ask it):
+ *  @return the precompile id — 0x01..0x11 for a numeric address whose bit
+ *  of cfg->precompile_mask is set, EVM_PC_ID_MLDSA87 for evm_mldsa87_addr
+ *  when cfg->mldsa_precompile is on (Nodus profile, 32-byte addresses) —
+ *  or 0 (an ordinary account). The tag address is resolved BEFORE the
+ *  numeric mask arithmetic. */
+int  evm_precompile_resolve(const evm_config_t *cfg, const evm_addr *a);
+/** evm_precompile_resolve(&st->cfg, a) != 0. */
 int  evm_precompile_enabled(const evm_state_t *st, const evm_addr *a);
 /** 1..0x11 right-aligned (prague/vm/precompiled_contracts/mapping.py) —
  *  numeric range only; consensus decisions use evm_precompile_enabled. */
@@ -348,9 +360,19 @@ typedef enum {
     EVM_PC_INVALID                   /* InvalidParameter / other halt       */
 } evm_pc_result_t;
 
-/** Run the precompile at `addr` (evm_is_precompile(addr) must hold).
- *  *gas_left is charged per the reference. *out (malloc'd, may be NULL when
+/** Run the precompile at `addr` under configuration `cfg`:
+ *  evm_precompile_resolve(cfg, addr) must be non-zero, else -2. This is
+ *  the interpreter's entry. *gas_left is charged per the reference (per
+ *  pc_mldsa87 for the tag address). *out (malloc'd, may be NULL when
  *  *out_len == 0) is owned by the caller. @return 0 (*res set) or -2. */
+int evm_precompile_run_cfg(const evm_config_t *cfg, const evm_addr *addr,
+                           const uint8_t *data, size_t len,
+                           uint64_t *gas_left, evm_pc_result_t *res,
+                           uint8_t **out, size_t *out_len);
+/** Configuration-free entry for the numeric set only (known-answer tests,
+ *  the bench): `addr` must satisfy evm_is_precompile, else -2; the mask is
+ *  not consulted and the tag address is never reached. Otherwise as
+ *  evm_precompile_run_cfg. */
 int evm_precompile_run(const evm_addr *addr, const uint8_t *data, size_t len,
                        uint64_t *gas_left, evm_pc_result_t *res,
                        uint8_t **out, size_t *out_len);

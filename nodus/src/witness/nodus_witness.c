@@ -45,6 +45,8 @@
 #include "nodus/nodus_chain_config.h"           /* unknown-param scan    */
 #ifdef NODUS_EVM_ENABLED
 #include "evm/evm_precompile.h"                 /* Nodus EVM F2: start KAT */
+#include "evm/evm.h"                            /* EVM_MLDSA87_* (param 23) */
+#include "evm/evm_gas.h"                        /* EVM_G_PRECOMPILE_MLDSA87_* */
 #endif
 #include "dnac/dnac.h"                          /* HF-4: D2 + switch spec */
 #include "witness/nodus_witness_emission.h"    /* DNAC_BLOCKS_PER_YEAR    */
@@ -2703,6 +2705,67 @@ static int64_t witness_cmt_tick(nodus_witness_t *witness) {
     return deadline;
 }
 
+#ifdef NODUS_EVM_ENABLED
+/* ML-DSA-87 precompile (decision docs/plans/decisions/2026-10-21-mldsa87-
+ * evm-precompile.md, Route B; Kurultay #31 round 3: "The vote literal D is
+ * the sole committed binding of the precompile's constants"): re-derive
+ * the param-23 vote literal from THIS binary's compiled precompile
+ * constants (shared/evm/evm.h EVM_MLDSA87_*, evm_gas.h
+ * EVM_G_PRECOMPILE_MLDSA87_*) and compare it with the compiled literal
+ * DNAC_CFG_MLDSA_ACTIVE_D. The 115-byte preimage (dnac.h, the oracle
+ * shared/dnac/tests/nodus_mldsa_activation_oracle.py — SELF-DERIVED, its
+ * layout DECIDED by the operator 2026-10-22):
+ *   TAG16("NDS.MLDSAACT.v1") ‖ address[32] ‖ u32 BE 19 ‖ context[19]
+ *   ‖ u32 BE 5 ‖ u64 BE 25000, 12, 65536, 2592, 4627
+ * SHA3-512, first 8 bytes big-endian, top bit cleared. A binary whose
+ * precompile constants differ derives another D and refuses to start, so
+ * it can never accept (or execute under) a vote cast for other constants.
+ * @return 0 match / -1 mismatch or hash failure (*got written on 0/-1
+ * when the hash ran). */
+static int mldsa_active_d_selfcheck(uint64_t *got)
+{
+    static const char tag[] = "NDS.MLDSAACT.v1";
+    static const uint8_t addr[32] = EVM_MLDSA87_ADDR_BYTES;
+    static const uint8_t ctx[] = EVM_MLDSA87_CTX;
+    static const uint64_t consts[5] = {
+        EVM_G_PRECOMPILE_MLDSA87_BASE,
+        EVM_G_PRECOMPILE_MLDSA87_PER_WORD,
+        EVM_MLDSA87_MSG_MAX,
+        EVM_MLDSA87_PK_BYTES,
+        EVM_MLDSA87_SIG_BYTES,
+    };
+    _Static_assert(sizeof(tag) - 1u < 16u,
+                   "the MLDSA_ACTIVE tag fits 16 bytes with padding");
+    _Static_assert(sizeof(ctx) - 1u == EVM_MLDSA87_CTX_LEN &&
+                   EVM_MLDSA87_CTX_LEN == 19u,
+                   "the FIPS 204 context is the 19 bytes of the decision");
+    uint8_t pre[16 + 32 + 4 + EVM_MLDSA87_CTX_LEN + 4 + 5 * 8];
+    _Static_assert(sizeof(pre) == 115u, "the 115-byte preimage");
+    uint8_t *p = pre;
+    uint8_t h[QGP_SHA3_512_DIGEST_LENGTH];
+
+    memset(p, 0, 16);
+    memcpy(p, tag, sizeof(tag) - 1u);                 p += 16;
+    memcpy(p, addr, 32);                              p += 32;
+    p[0] = 0; p[1] = 0; p[2] = 0; p[3] = (uint8_t)EVM_MLDSA87_CTX_LEN;
+                                                      p += 4;
+    memcpy(p, ctx, EVM_MLDSA87_CTX_LEN);              p += EVM_MLDSA87_CTX_LEN;
+    p[0] = 0; p[1] = 0; p[2] = 0; p[3] = 5;           p += 4;
+    for (int i = 0; i < 5; i++) {
+        for (int b = 0; b < 8; b++)
+            p[b] = (uint8_t)(consts[i] >> (56 - 8 * b));
+        p += 8;
+    }
+    if ((size_t)(p - pre) != sizeof(pre)) return -1;
+    if (qgp_sha3_512(pre, sizeof(pre), h) != 0) return -1;
+    uint64_t d = 0;
+    for (int b = 0; b < 8; b++) d = (d << 8) | h[b];
+    d &= 0x7FFFFFFFFFFFFFFFULL;
+    *got = d;
+    return d == (uint64_t)DNAC_CFG_MLDSA_ACTIVE_D ? 0 : -1;
+}
+#endif
+
 /* ── Public API ──────────────────────────────────────────────────── */
 
 int nodus_witness_init(nodus_witness_t *witness,
@@ -2762,6 +2825,30 @@ int nodus_witness_init(nodus_witness_t *witness,
         QGP_LOG_INFO(LOG_TAG, "EVM precompile self-test passed "
                      "(one known answer per library: 0x01-0x03, 0x05, "
                      "0x06, 0x08-0x0b, 0x0f, 0x11; KZG setup loaded)");
+    }
+    /* ML-DSA-87 precompile: the param-23 vote literal re-derived from the
+     * compiled precompile constants (mldsa_active_d_selfcheck above). Its
+     * own log line, so the D2 / D4 / D5 lines below keep the exact text
+     * the harness scenarios grep; printed for the same 7/7 comparison
+     * before THAT vote (DEPLOY_RUNBOOK §2.2). */
+    {
+        uint64_t d = 0;
+        if (mldsa_active_d_selfcheck(&d) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "REFUSING START — the ML-DSA-87 "
+                          "precompile vote literal does not re-derive: "
+                          "compiled DNAC_CFG_MLDSA_ACTIVE_D 0x%016llx, "
+                          "re-derived from this binary's precompile "
+                          "constants 0x%016llx (0 = SHA3-512 failed). "
+                          "This build is broken; do not run it.",
+                          (unsigned long long)DNAC_CFG_MLDSA_ACTIVE_D,
+                          (unsigned long long)d);
+            return -1;
+        }
+        QGP_LOG_INFO(LOG_TAG, "ML-DSA-87 precompile vote D 0x%016llx "
+                     "(param %u MLDSA_ACTIVE), built from git commit %s",
+                     (unsigned long long)DNAC_CFG_MLDSA_ACTIVE_D,
+                     (unsigned)DNAC_CFG_MLDSA_ACTIVE,
+                     NODUS_BUILD_GIT_COMMIT);
     }
 #endif
     /* HF-4 (design 2026-10-02-onchain-names-design.md rev 4 §1.5): the

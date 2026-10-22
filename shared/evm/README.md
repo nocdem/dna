@@ -46,8 +46,8 @@ oracle only.
 | `evm_state.c` | the journaled overlay (accounts, storage, transient storage, access sets, logs, tickets) |
 | `evm_interp.c` | the interpreter |
 | `evm_tx.c` | the transaction state transition, `evm_tx_prevalidate` |
-| `evm_precompile.{h,c}` | precompiles 0x01-0x11 and the start-up self-test |
-| `evm_gas.h` | Prague gas constants |
+| `evm_precompile.{h,c}` | precompiles 0x01-0x11, the Nodus ML-DSA-87 precompile (tag address, off by default) and the start-up self-test |
+| `evm_gas.h` | Prague gas constants (+ the ML-DSA-87 precompile's) |
 | `trie/` | the Nodus state commitment: SHA3-512 Merkle Patricia Trie (consensus code — `trie/evm_trie.h` header for the root definition and its substitutions) |
 | `tests/` | u256 / addr32 / Nodus-profile / precompile tests, the official state-test runner (json-c), test-only RLP + MPT, an in-memory backend |
 | `bench/` | the measurement-gate bench (worst-case workloads, shared with `nodus/tests/bench/bench_evm_apply.c`) |
@@ -58,13 +58,17 @@ From `shared/evm/` (targets from `Makefile`'s header):
 
 ```bash
 make lib            # build/libevm.a
-make deps           # build/libevm_deps.a (blst, c-kzg-4844, mcl, secp256k1 + the
-                    # embedded KZG trusted setup) and build/gmp/install/lib/libgmp.a
+make deps           # build/libevm_deps.a (blst, c-kzg-4844, mcl, secp256k1,
+                    # RIPEMD-160, the shared ML-DSA-87 code ../crypto/sign/dsa +
+                    # qgp_dilithium.c, the embedded KZG trusted setup) and
+                    # build/gmp/install/lib/libgmp.a
 make test           # addr32-vectors-check, then run test_u256, test_u256_portable,
                     # test_addr32, test_nodus_profile, test_solc_exec,
                     # test_example_token (nodus/tools/evm/examples/out/),
                     # test_contract_lib (nodus/tools/evm/contracts/out/, the
-                    # security contract library v0.1), test_trie
+                    # security contract library v0.1), test_trie,
+                    # test_mldsa_precompile (+ the ACVP fixture)
+make mldsa-acvp-vectors-check ACVP=<dir>  # the committed ACVP fixture vs upstream
 make statetest      # link the state-test runner, test_rlp_mpt, test_precompile
 make conformance FIXTURES=<extracted fixtures/state_tests dir>
                     # test_rlp_mpt + statetest --fork Prague over the fixtures
@@ -74,7 +78,9 @@ make clean
 ```
 
 A consumer links, in this order: `libevm.a libevm_deps.a libgmp.a -lcrypto
--lstdc++ -lpthread` (`Makefile`, "vendored precompile libraries"). Build host
+-lstdc++ -lpthread` (`Makefile`, "vendored precompile libraries"), and must
+provide `qgp_randombytes` (the ML-DSA signer in `libevm_deps.a`, `dsa/sign.c`,
+references it; the node links `shared/crypto/utils/qgp_random.c`). Build host
 needs: a C11 compiler and a C++ compiler (mcl), `xxd` (the KZG trusted setup
 is embedded), `sha256sum`, `xz` and `m4` (the GMP tarball is checked,
 extracted and configured), python3 (the u256 / addr32 oracles), OpenSSL ≥
@@ -200,6 +206,71 @@ initialisation, the KZG trusted setup, then known-answer vectors for 0x01,
 `evm_precompile.c:1491-1626` — 11 of the 17; at least one per library family).
 On failure it names the missing capability. The node runs it on every start and
 refuses to start on a failure (`nodus/src/witness/nodus_witness.c:2616-2639`).
+It also checks the ML-DSA-87 precompile (below): its address is recomputed as
+SHA3-512 of its tag and compared with the committed constant, and its rows
+(`PC_KATS32`, keyed by a 32-byte address) run with the switch on, whether or
+not the node has activated it.
+
+## ML-DSA-87 signature verification precompile (Nodus, not Prague)
+
+Decision `docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md` (items
+1-8, the measured numbers, Route B, the input order); design
+`docs/plans/2026-10-21-mldsa87-evm-precompile-design.md` rev 2 §1. Engine half
+only; the node's activation (its own hard fork and chain-config vote) is not
+in this directory.
+
+- **Switch:** `evm_config_t.mldsa_precompile` — 0 (default) or 1.
+  `evm_state_new` returns NULL for any other value, and for 1 unless
+  `addr_bytes == 32` and `nodus_profile == 1` and the address is not
+  `ticket_addr` (and not numeric-looking). **Off, the address is an ordinary
+  account**: never dispatched, never warmed — byte-identical to the engine
+  before this change.
+- **Address:** `SHA3-512("NDS.EVMMLDSA87.v1")[0..32]` (17 ASCII bytes, no
+  terminator) = `0x66e24906024f903b345880bf43c39224c772b9acf62cd78299ced278cb3c9cce`
+  (`evm.h` `EVM_MLDSA87_ADDR_BYTES`).
+- **Resolver:** `evm_precompile_resolve(cfg, addr)` (`evm_state.c`) is the
+  one answer to "is this an enabled precompile": the tag address first, then
+  the numeric 0x01..0x11 mask. Recognition (`evm_precompile_enabled`),
+  warming (`evm_tx.c`) and dispatch (`evm_precompile_run_cfg`, the
+  interpreter's entry) all use it. `evm_precompile_run` (no configuration) is
+  the numeric-only entry for known-answer tests and the bench: it never
+  reaches the tag address and does not read the mask.
+- **Input:** public key (2592 B) ‖ signature (4627 B) ‖ message (0 .. 65 536
+  B); fixed widths, no length fields, never zero-padded.
+- **Gas** (`evm_gas.h`), charged first for every input:
+  `25 000 + 12 × ceil(m / 32)`, `m = len − 7219` (0 when shorter), saturating
+  arithmetic. Not enough gas → `EVM_PC_OOG` (wins over malformed).
+- **Result:** length < 7219 or message > 65 536 B → success, empty output.
+  Otherwise `qgp_dsa87_verify_ctx` under the fixed FIPS 204 context
+  `nodus.evm.attest.v1` (19 bytes; never empty, never the caller's, no
+  fallback): valid → success, 32 bytes = `SHA3-512(pk)[0..32]` (the signer's
+  Nodus address); invalid → success, empty output. A SHA3 backend or
+  allocation failure is a node fault (-2), never "invalid".
+- **Call kinds:** CALL, STATICCALL, DELEGATECALL and CALLCODE reach it like
+  0x01..0x11 (dispatch on the code address); value sent with a CALL stays at
+  the address.
+- **Verifier code:** the vendored pq-crystals reference in
+  `shared/crypto/sign/dsa` (pin: `shared/crypto/sign/dsa/PINNED.md`) behind
+  `shared/crypto/sign/qgp_dilithium.c` — the code that verifies every chain
+  signature. Standalone builds take it from `libevm_deps.a`; the node from
+  `libnodus`.
+- **Tests:** `tests/test_mldsa_precompile.c` (`make test_mldsa_precompile`):
+  the precompile layer with a fixed-seed key and run-time signatures
+  (self-consistent), the engine paths (all four call kinds, switch off =
+  ordinary cold account, warm/cold gas, top-level tx, `evm_state_new`
+  refusals) and the NIST ACVP ML-DSA-87 sigVer group-5 fixture
+  (`tests/fixtures/mldsa87/README.md`, external).
+- **Self-test rows:** `PC_KATS32` in `evm_precompile.c` holds three rows:
+  a valid signature → the 32-byte signer address, 25 012 gas; a signature
+  of the same key over the same message under the EMPTY context → empty
+  output, 25 012 gas; a malformed length → empty, 25 000 gas. The vectors
+  are the output of `./build/test_mldsa_precompile --gen-kat` (run once on
+  2026-10-21; key from `qgp_dsa87_keypair_derand` with seed 0x00..0x1f,
+  message "Nodus EVM ML-DSA-87 self-test v1"). Signing is hedged, so the
+  two signatures are RECORDED draws: a re-run prints the same key and
+  address but different signature bytes. Self-consistent vectors (this
+  tree's own signer and verifier) — the external layer is the ACVP
+  fixture above.
 
 ## What this directory does not settle
 

@@ -471,8 +471,13 @@ static int t_scalar_rule_matrix(void)
               dnac_cfg_param_read_by_consensus(
                   (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS),
           "id 21 is followed by HF-7's generation-5 vote id 22");
-    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_RULESET_GEN_ROOTS,
-          "22 is the last id");
+    CHECK(DNAC_CFG_RULESET_GEN_ROOTS + 1 == DNAC_CFG_MLDSA_ACTIVE &&
+              DNAC_CFG_MLDSA_ACTIVE == 23 &&
+              dnac_cfg_param_read_by_consensus(
+                  (uint8_t)DNAC_CFG_MLDSA_ACTIVE),
+          "id 22 is followed by the ML-DSA-87 precompile vote id 23");
+    CHECK(DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_MLDSA_ACTIVE,
+          "23 is the last id");
     return 0;
 }
 

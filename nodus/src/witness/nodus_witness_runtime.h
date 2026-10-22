@@ -777,6 +777,29 @@ typedef struct {
      * derived, which refuses the EVM_ACTIVE vote (fail closed). Read only
      * by the SYSTEM CHAIN_CONFIG exec. */
     uint64_t       chain_initial_height;
+    /* ML-DSA-87 verification precompile (decision docs/plans/decisions/
+     * 2026-10-21-mldsa87-evm-precompile.md, Route B; design docs/plans/
+     * 2026-10-21-mldsa87-evm-precompile-design.md rev 2 §1.7): 1 when the
+     * COMMITTED chain_config param 23 (MLDSA_ACTIVE) row is in force at
+     * `global_height`, else 0. Read by the ENGINE with the hf3_active
+     * discipline (nodus_rt_evm_mldsa_active_at, nodus_witness_rt_evm.c,
+     * called by nodus_witness_v2_apply.c env_evm_facts: an unreadable row
+     * or a stored value other than DNAC_CFG_MLDSA_ACTIVE_D is a node FAULT,
+     * never a default) and filled on every ctx it builds. UNMETERED. One
+     * consumer: the EVM runtime's VM configuration (rtevm_vm_pre:
+     * evm_config_t.mldsa_precompile), shared by exec and prevalidation;
+     * the RPC simulation derives it through the same reader at its own
+     * height. With no row it is 0 and the EVM engine is byte-identical to
+     * the build before this field. Not part of any committed identity (the
+     * EVM rule-set tuple is unchanged — the Route B deviation the decision
+     * records). A hook never chooses it. */
+    uint8_t        mldsa_active;
+    /* 1 when ANY chain_config param-23 (MLDSA_ACTIVE) row exists, at any
+     * effective height, else 0 — the ruleset_gen2_voted contract above,
+     * verbatim (nodus_witness_v2_apply.c env_evm_facts, read at INT64_MAX).
+     * UNMETERED. One consumer: the SYSTEM CHAIN_CONFIG exec, the param-23
+     * single-use rule. */
+    uint8_t        mldsa_active_voted;
     /* Nodus EVM pairing rule (nodus/BUGS.md, "EVM DEPOSIT/CALL ... imzasına
      * bağlı değil"; operator option A, 2026-10-07): the ENGINE-owned
      * VERIFIED verdicts of EVERY leg of this envelope, indexed by leg

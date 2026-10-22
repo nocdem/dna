@@ -113,9 +113,9 @@ int main(void) {
      * case checks accepts a valid value. */
     build_valid_chain_config(&tx, 0, 5);
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 23 (Nodus EVM 14-15, storage reward v1 16 (retired), HF-8 17, HF-6 18-21, HF-7 22) */
+    build_valid_chain_config(&tx, DNAC_CFG_PARAM_MAX_ID + 1, 0);   /* 24 (Nodus EVM 14-15, storage reward v1 16 (retired), HF-8 17, HF-6 18-21, HF-7 22, ML-DSA-87 precompile 23) */
     CHECK_ERR(dnac_tx_verify_chain_config_rules(&tx));
-    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 23);
+    CHECK(DNAC_CFG_PARAM_MAX_ID + 1 == 24);
     build_valid_chain_config(&tx, VEH_PARAM, VEH_VALUE);
     CHECK_OK(dnac_tx_verify_chain_config_rules(&tx));
 

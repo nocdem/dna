@@ -6320,6 +6320,65 @@ ORCHESTRATOR's last run before this document: PASS (rc 0) at the Nodus EVM branc
 241/241 there — at E = 15 / BPY 20 / grace 15 / 15, which proves the LOGIC, nothing about the
 production 720 / 17 280.
 
+#### ML-DSA-87 signature verification precompile — activation through chain-config param 23 (branch `mldsa`, not versioned, not voted; INERT until a param-23 vote)
+
+Decision `docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md` (items 1-8, the measured
+numbers, "Activation route and grace": Route B, ERGONOMIC grace); design
+`docs/plans/2026-10-21-mldsa87-evm-precompile-design.md` rev 2 §1.7. The engine half (the
+precompile itself, its gas, its self-test rows) is `shared/evm/README.md` "ML-DSA-87 signature
+verification precompile".
+
+- **What it does:** from the param-23 row's effective height H, a call to the tag address
+  `0x66e24906…9cce` (`SHA3-512("NDS.EVMMLDSA87.v1")[0..32]`) runs the precompile —
+  `pk (2592 B) ‖ sig (4627 B) ‖ msg (≤ 65 536 B)`, verified under the fixed FIPS 204 context
+  `nodus.evm.attest.v1`, `25 000 + 12 × ceil(msg / 32)` gas, output = the signer's 32-byte
+  address or empty. Below H the address is an ordinary account (the engine is byte-identical to
+  the build before). **Route B:** the EVM rule-set tuple stays v2 — a recorded, bounded deviation
+  from "new semantics → new version" (`nodus_witness_runtime.h`); the ruleset hash alone no longer
+  identifies precompile semantics, the height plus the committed param row do.
+- **The vote:** chain_config param 23 `DNAC_CFG_MLDSA_ACTIVE` (`dnac/include/dnac/dnac.h`), value
+  EXACTLY `DNAC_CFG_MLDSA_ACTIVE_D` = 0x6994c9b548381d5c (7607927450973511004) — the first 8
+  bytes, top bit cleared, of SHA3-512 over a 115-byte preimage: `TAG16("NDS.MLDSAACT.v1")` ‖ the
+  32-byte address ‖ u32 19 ‖ the 19 context bytes ‖ u32 5 ‖ u64 25000, 12, 65536, 2592, 4627.
+  The literal is SELF-DERIVED (`shared/dnac/tests/nodus_mldsa_activation_oracle.py`, whose control
+  stage reproduces the shipped EVM_ACTIVE literal and the pinned address first); the tag string and
+  the layout are DECIDED (operator, 2026-10-22). `nodus_witness_init` (`nodus_witness.c`,
+  EVM builds) re-derives it from the engine's compiled constants (`shared/evm/evm.h`
+  `EVM_MLDSA87_*`, `evm_gas.h`) on every start and refuses to start on a mismatch, so a binary with
+  other constants can never carry the vote; it logs `ML-DSA-87 precompile vote D 0x… (param 23
+  MLDSA_ACTIVE)` for the 7/7 comparison before the vote.
+- **Rules** (`nodus_witness_chain_config.c`): scalar — exactly the literal; grace ERGONOMIC
+  (720 blocks). Stateful (`nodus_chain_config_stateful_rules_ex`, case `CC_PARAM_MLDSA_ACTIVE`):
+  (a) single use — any param-23 row at any height, future-effective rows included, refuses
+  (`mldsa_active_voted`, read at INT64_MAX by the 0x71 responder and by the engine's
+  `env_evm_facts` for the SYSTEM CHAIN_CONFIG exec; an unreadable history is a fault);
+  (b) judged under a rule-set generation ≥ `NODUS_RT_GEN_EVM` (3) — generations 3, 4 and 5 all
+  carry the EVM; (c) H ≠ 0 and H−1 not an epoch boundary (param 14's rule; H itself may be a
+  boundary — Route B runs no registry procedure at H). Param 23 is on
+  `dnac_cfg_param_read_by_consensus`; the client mirror (`dnac/src/transaction/verify.c`) refuses
+  any value but the literal.
+- **The fact:** ONE reader, `nodus_rt_evm_mldsa_active_at` (`nodus_witness_rt_evm.h`, a header
+  inline so the engine and the EVM runtime share one definition): the param-23 row in force at
+  the height, 0 / the literal → off / on, anything else or an unreadable history → node FAULT.
+  The engine (`nodus_witness_v2_apply.c` `env_evm_facts`) fills `nodus_rt_exec_ctx_t.mldsa_active`
+  (and `mldsa_active_voted`, "any param-23 row") on both ctx builders; the EVM runtime's VM
+  configuration (`nodus_witness_rt_evm.c` `rtevm_vm_pre`, shared by exec and prevalidation) sets
+  `evm_config_t.mldsa_precompile` from it; the RPC simulation (`nodus_rt_evm_simulate`) calls the
+  same reader at the request's `global_height` (the block it would land in). Exec,
+  prevalidation and simulation therefore cannot derive the switch two ways.
+- **Tests:** `test_v2_evm` section 15 (the literal and its drift, the scalar rule and the grace,
+  the reader at H−1 / H / after, simulate + exec + the CheckTx dry run and its recheck at H−2,
+  H−1, H, an altered message, the corrupt-row and unreadable-history faults, the no-row chain);
+  `test_hf4_params`, `test_v2_gas_price`, `test_hf7_activation`, `test_cc_unknown_param` moved
+  to id 23 as the last id. Harness: `nodus/tests/integration/stagef/tests/test_cmt_mldsa.sh`
+  (standalone; PASS 2026-10-22 at E15 / grace 15 / BPY 20, combined): the vote refused under
+  generation 2 and a second time, a probe contract's STATICCALL empty below H (simulated and
+  executed, also after the vote), the simulation flipping between tip H−2 and tip H−1, executed
+  calls from H storing the signer for a valid signature and empty output for an empty-context
+  signature and a short input, and a node SIGKILLed below H−2 that rejoins after H with identical
+  blocks at H−1 / H / H+1 and an identical EVM state. Its README row lists what it does not
+  cover (generation 3 only; no OLD/NEW rolling upgrade; gas hidden under the EIP-7623 floor).
+
 ### Storage reward v1, package B1 — storage-node registry, the GEN_STORAGE rule-set generation and the `NDS.SYS.v5` SYSTEM root (2026-10-04, branch only — not versioned, not voted)
 
 **Owner split since HF-6 slice 6b-1** (section "HF-6 slice 6b-1" below): the STORAGE_REGISTER /

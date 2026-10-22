@@ -186,17 +186,17 @@ int main(void) {
         CHECK(rc1 == 0);
         CHECK(strstr(buf, "UPDATE REQUIRED") == NULL);
 
-        /* unknown rows: 23 twice (two effective heights — ONE distinct id)
-         * and 40 */
-        insert_row(w, 23, 7, 500);
-        insert_row(w, 23, 8, 900);
+        /* unknown rows: 24 twice (two effective heights — ONE distinct id)
+         * and 40 (23 is the ML-DSA-87 precompile vote, a known id) */
+        insert_row(w, 24, 7, 500);
+        insert_row(w, 24, 8, 900);
         insert_row(w, 40, 1, 600);
         cap_begin(&c);
         int rc2 = nodus_chain_config_scan_unknown_params(w);
         cap_end(&c, buf, sizeof(buf));
         CHECK(rc2 == 2);
         snprintf(needle, sizeof(needle),
-                 "UPDATE REQUIRED: a chain_config proposal names param 23, "
+                 "UPDATE REQUIRED: a chain_config proposal names param 24, "
                  "which this build (nodus %s) does not know",
                  NODUS_VERSION_STRING);
         CHECK(count_occurrences(buf, needle) == 1);
@@ -249,23 +249,23 @@ int main(void) {
     {
         cap_t c;
 
-        /* id 24: never warned in this process yet */
+        /* id 25: never warned in this process yet */
         cap_begin(&c);
-        int r1 = nodus_chain_config_scalar_rules(24, 1, 10, 2000, 1500, 1);
-        int r2 = nodus_chain_config_scalar_rules(24, 1, 10, 2000, 1500, 1);
+        int r1 = nodus_chain_config_scalar_rules(25, 1, 10, 2000, 1500, 1);
+        int r2 = nodus_chain_config_scalar_rules(25, 1, 10, 2000, 1500, 1);
         cap_end(&c, buf, sizeof(buf));
         CHECK(r1 == -1);
         CHECK(r2 == -1);
         snprintf(needle, sizeof(needle),
-                 "UPDATE REQUIRED: a chain_config proposal names param 24, "
+                 "UPDATE REQUIRED: a chain_config proposal names param 25, "
                  "which this build (nodus %s) does not know",
                  NODUS_VERSION_STRING);
         CHECK(count_occurrences(buf, needle) == 1);
 
-        /* id 23: already printed by the scan above — same process, so
+        /* id 24: already printed by the scan above — same process, so
          * silent here; the verdict is still -1 */
         cap_begin(&c);
-        int r3 = nodus_chain_config_scalar_rules(23, 1, 10, 2000, 1500, 1);
+        int r3 = nodus_chain_config_scalar_rules(24, 1, 10, 2000, 1500, 1);
         cap_end(&c, buf, sizeof(buf));
         CHECK(r3 == -1);
         CHECK(strstr(buf, "UPDATE REQUIRED") == NULL);

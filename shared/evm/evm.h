@@ -118,10 +118,46 @@ typedef struct {
      *     access (warm) + CALL_VALUE + memory, plus ticket_gas taken
      *     from the forwarded gas — the same on every node regardless of
      *     the ticket address's balance. SELFDESTRUCT to that address
-     *     keeps the reference NEW_ACCOUNT rule. */
+     *     keeps the reference NEW_ACCOUNT rule.
+     *   - mldsa_precompile (below): one extra precompile at a
+     *     tag-derived address. */
+    /* ML-DSA-87 signature verification precompile (decision
+     * docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md; design
+     * docs/plans/2026-10-21-mldsa87-evm-precompile-design.md rev 2 §1).
+     * 0 = off (default): EVM_MLDSA87_ADDR_BYTES is an ordinary account —
+     * never dispatched, never warmed. 1 = on: that address is a
+     * precompile, warm at tx start and dispatched like 0x01..0x11 (all
+     * four call kinds). On requires addr_bytes == 32 and
+     * nodus_profile == 1, and the address must not be ticket_addr; any
+     * other value, or on without those, makes evm_state_new return NULL.
+     * The node turns it on from the activation height of its own hard
+     * fork (decision item 6; Route B: the EVM rule-set tuple is
+     * unchanged). Input, gas and output: evm_precompile.c pc_mldsa87. */
+    int        mldsa_precompile;
 } evm_config_t;
 
 #define EVM_PRECOMPILES_PRAGUE   0x0003FFFEu     /* bits 1..17          */
+
+/* ML-DSA-87 precompile constants (decision 2026-10-21-mldsa87-evm-
+ * precompile.md items 2, 5 and "Measurement"; the gas is in evm_gas.h).
+ * Address = SHA3-512(EVM_MLDSA87_TAG)[0..32], the tag being the 17 ASCII
+ * bytes with no terminator; the start-up self-test recomputes it
+ * (evm_precompile_selftest). FIPS 204 context = the 19 ASCII bytes of
+ * EVM_MLDSA87_CTX, no terminator. Input = public key (2592 B) ‖ signature
+ * (4627 B) ‖ message (0 .. EVM_MLDSA87_MSG_MAX B). */
+#define EVM_MLDSA87_TAG          "NDS.EVMMLDSA87.v1"
+#define EVM_MLDSA87_TAG_LEN      17u
+#define EVM_MLDSA87_ADDR_BYTES { \
+    0x66, 0xe2, 0x49, 0x06, 0x02, 0x4f, 0x90, 0x3b, \
+    0x34, 0x58, 0x80, 0xbf, 0x43, 0xc3, 0x92, 0x24, \
+    0xc7, 0x72, 0xb9, 0xac, 0xf6, 0x2c, 0xd7, 0x82, \
+    0x99, 0xce, 0xd2, 0x78, 0xcb, 0x3c, 0x9c, 0xce }
+#define EVM_MLDSA87_CTX          "nodus.evm.attest.v1"
+#define EVM_MLDSA87_CTX_LEN      19u
+#define EVM_MLDSA87_PK_BYTES     2592u
+#define EVM_MLDSA87_SIG_BYTES    4627u
+#define EVM_MLDSA87_PREFIX_BYTES (EVM_MLDSA87_PK_BYTES + EVM_MLDSA87_SIG_BYTES)
+#define EVM_MLDSA87_MSG_MAX      65536u
 
 /* ── backend: committed state, read-only, pulled on demand ────────── */
 typedef struct {

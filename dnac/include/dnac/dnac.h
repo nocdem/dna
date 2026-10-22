@@ -940,7 +940,40 @@ typedef enum {
                                           *   10-20-kurultay-27-hf7-p1-
                                           *   summary.md: "720 blok
                                           *   (≈ 100 dk)"). */
-    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_RULESET_GEN_ROOTS
+    DNAC_CFG_MLDSA_ACTIVE          = 23, /**< The ML-DSA-87 verification
+                                          *   precompile's activation
+                                          *   vote (decision docs/plans/
+                                          *   decisions/2026-10-21-
+                                          *   mldsa87-evm-precompile.md
+                                          *   items 6 and "Activation
+                                          *   route and grace": Route B;
+                                          *   fork number given at
+                                          *   landing). From the row's
+                                          *   effective_block H on, the
+                                          *   engine turns the EVM
+                                          *   engine's mldsa_precompile
+                                          *   switch on (exec,
+                                          *   prevalidation and the RPC
+                                          *   simulation); below H the
+                                          *   tag address is an ordinary
+                                          *   account. No edge procedure;
+                                          *   the EVM rule-set tuple is
+                                          *   unchanged. Value domain
+                                          *   EXACTLY DNAC_CFG_MLDSA_
+                                          *   ACTIVE_D. Single use
+                                          *   (future-effective rows
+                                          *   included); judged under a
+                                          *   generation that has the EVM
+                                          *   (>= NODUS_RT_GEN_EVM); H-1
+                                          *   not an epoch boundary —
+                                          *   witness-side stateful
+                                          *   rules. Grace class
+                                          *   ERGONOMIC (operator "720
+                                          *   blokta geçelim").
+                                          *   NEXT FREE id in this tree —
+                                          *   renumber at merge if
+                                          *   another hard fork took it. */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_MLDSA_ACTIVE
 } dnac_chain_config_param_id_t;
 
 /** The chain-config parameters the RUNNING consensus reads — the one list
@@ -1019,7 +1052,11 @@ typedef enum {
  *      registry generation 4 -> 5 and seeds the heads' last_upd_hash at
  *      the end of block A-1) and the 0x71 approval responder's "any
  *      param-22 row" read (nodus_witness_chain_config.c, the single-use
- *      vote rule).
+ *      vote rule);
+ *    - MLDSA_ACTIVE (23, the ML-DSA-87 precompile): nodus_witness_v2_apply.c
+ *      env_evm_facts (nodus_rt_evm_mldsa_active_at -> ctx.mldsa_active,
+ *      the EVM VM switch; "any param-23 row" -> ctx.mldsa_active_voted,
+ *      the single use).
  *  No other governed id is votable: 1, 3 and 16 are RETIRED (above), 2
  *  (BLOCK_INTERVAL_SEC) is not read on this lane. RETIRED 16
  *  (RULESET_GEN_STORAGE) is off this list, so no new param-16 row can be
@@ -1055,7 +1092,8 @@ static inline bool dnac_cfg_param_read_by_consensus(uint8_t param_id) {
            param_id == (uint8_t)DNAC_CFG_STAKE_MIN ||
            param_id == (uint8_t)DNAC_CFG_POWER_CAP_BPS ||
            param_id == (uint8_t)DNAC_CFG_STORAGE_BOND ||
-           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS;
+           param_id == (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS ||
+           param_id == (uint8_t)DNAC_CFG_MLDSA_ACTIVE;
 }
 
 /** Value range bounds — consensus-critical (client + witness reject out-of-range).
@@ -1537,6 +1575,31 @@ static inline uint64_t dnac_name_price_for_len(const uint64_t p[4],
 #define DNAC_CFG_MIN_EVM_BLOCK_GAS          1000000ULL
 #define DNAC_CFG_MAX_EVM_BLOCK_GAS          1000000000ULL
 
+/** MLDSA_ACTIVE value domain (the ML-DSA-87 precompile, param_id 23):
+ *  EXACTLY this literal — the vote literal that binds the precompile's
+ *  constants (Kurultay #31 round 3: "The vote literal D is the sole
+ *  committed binding of the precompile's constants").
+ *
+ *  D = the first 8 bytes, big-endian, top bit cleared, of SHA3-512 over a
+ *  115-byte preimage:
+ *    TAG16("NDS.MLDSAACT.v1")
+ *    ‖ the precompile address[32] = SHA3-512("NDS.EVMMLDSA87.v1")[0..32]
+ *    ‖ u32 BE 19 ‖ the 19 context bytes "nodus.evm.attest.v1"
+ *    ‖ u32 BE 5 ‖ 5 × u64 BE: 25000 (gas base), 12 (gas per 32-byte word),
+ *      65536 (message bound), 2592 (public key), 4627 (signature)
+ *  — the values of shared/evm/evm.h EVM_MLDSA87_* and evm_gas.h
+ *  EVM_G_PRECOMPILE_MLDSA87_*. A binary whose precompile constants differ
+ *  re-derives another D at start-up and refuses to start
+ *  (nodus_witness.c), so it can never carry this vote.
+ *
+ *  ⚠ SELF-DERIVED BY THE IMPLEMENTING AGENT (shared/dnac/tests/
+ *  nodus_mldsa_activation_oracle.py, whose control stage reproduces the
+ *  shipped EVM_ACTIVE literal and the decision's pinned address first) —
+ *  NOT an independent pin. The tag "NDS.MLDSAACT.v1" and the preimage
+ *  layout are DECIDED (operator, 2026-10-22). An agent that has not read
+ *  this C must re-derive it before any vote. */
+#define DNAC_CFG_MLDSA_ACTIVE_D             0x6994c9b548381d5cULL /* M2 of shared/dnac/tests/nodus_mldsa_activation_oracle.py (7607927450973511004) — SELF-DERIVED */
+
 #ifndef __cplusplus
 _Static_assert(DNAC_CFG_RULESET_GEN2_D2 <= 0x7FFFFFFFFFFFFFFFULL,
                "D2 must fit SQLite int64 (top bit cleared by construction)");
@@ -1586,9 +1649,20 @@ _Static_assert(DNAC_CFG_RULESET_GEN_ROLES == 18 &&
                DNAC_CFG_STAKE_MIN == 19 && DNAC_CFG_POWER_CAP_BPS == 20 &&
                DNAC_CFG_STORAGE_BOND == 21,
                "HF-6 param ids (design rev 6 §8)");
-_Static_assert(DNAC_CFG_RULESET_GEN_ROOTS == 22 &&
-               DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_RULESET_GEN_ROOTS,
+_Static_assert(DNAC_CFG_RULESET_GEN_ROOTS == 22,
                "HF-7 param id (snapshot design §10.1: next free id 22)");
+_Static_assert(DNAC_CFG_MLDSA_ACTIVE == 23 &&
+               DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_MLDSA_ACTIVE,
+               "ML-DSA-87 precompile param id (the next free id, 23)");
+_Static_assert(DNAC_CFG_MLDSA_ACTIVE_D <= 0x7FFFFFFFFFFFFFFFULL,
+               "the MLDSA_ACTIVE literal must fit SQLite int64 (top bit "
+               "cleared by construction)");
+_Static_assert(DNAC_CFG_MLDSA_ACTIVE_D != DNAC_CFG_RULESET_GEN2_D2 &&
+               DNAC_CFG_MLDSA_ACTIVE_D != DNAC_CFG_EVM_ACTIVE_D &&
+               DNAC_CFG_MLDSA_ACTIVE_D != DNAC_CFG_RULESET_GEN_ROLES_D &&
+               DNAC_CFG_MLDSA_ACTIVE_D != DNAC_CFG_RULESET_GEN_ROOTS_D,
+               "the MLDSA_ACTIVE literal differs from every earlier vote "
+               "literal (D2, EVM_ACTIVE, D4, D5)");
 _Static_assert(DNAC_NAME_PRICE_3P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&
                DNAC_NAME_PRICE_3P_DEFAULT <= DNAC_CFG_MAX_NAME_PRICE &&
                DNAC_NAME_PRICE_4P_DEFAULT >= DNAC_CFG_MIN_NAME_PRICE &&

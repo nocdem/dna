@@ -52,10 +52,49 @@
 #include <stddef.h>
 
 #include "witness/nodus_witness_runtime.h"
+#include "nodus/nodus_chain_config.h"   /* nodus_chain_config_get_u64   */
+#include "dnac/dnac.h"                  /* DNAC_CFG_MLDSA_ACTIVE(_D)    */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * The ML-DSA-87 verification precompile's switch at `height` (decision
+ * docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md, Route B;
+ * design docs/plans/2026-10-21-mldsa87-evm-precompile-design.md rev 2
+ * §1.7): *on = 1 when the committed chain_config param 23 (MLDSA_ACTIVE)
+ * row in force at `height` holds DNAC_CFG_MLDSA_ACTIVE_D, 0 when no row is
+ * in force there. The hf3_active discipline (nodus_witness_v2_apply.c
+ * env_hf3_active): the one three-valued accessor; an unanswerable read is a
+ * node FAULT, never "off"; a stored value other than 0 / the literal is
+ * this node's storage disagreeing with every writer (the scalar rules admit
+ * only the literal) — a FAULT too.
+ *
+ * THE ONE READER of the fact, in a header so that every build that
+ * compiles the engine (nodus_witness_v2_apply.c, which includes this
+ * header unconditionally) and the EVM runtime (nodus_witness_rt_evm.c,
+ * NODUS_EVM_ENABLED only) share one definition: the engine fills
+ * nodus_rt_exec_ctx_t.mldsa_active with it (env_evm_facts — exec and
+ * prevalidation read that ctx), and nodus_rt_evm_simulate calls it at the
+ * request's global_height. So exec, prevalidation and the RPC simulation
+ * cannot derive the switch two ways. Pure over committed rows; no clock.
+ * @return 0 (*on = 0/1) / -2 fault (*on untouched).
+ */
+static inline int nodus_rt_evm_mldsa_active_at(struct nodus_witness *w,
+                                               uint64_t height,
+                                               uint8_t *on)
+{
+    uint64_t v = 0;
+
+    if (!w || !on) return -2;
+    if (nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_MLDSA_ACTIVE,
+                                   height, 0ULL, &v) < 0)
+        return -2;
+    if (v != 0ULL && v != (uint64_t)DNAC_CFG_MLDSA_ACTIVE_D) return -2;
+    *on = (v == (uint64_t)DNAC_CFG_MLDSA_ACTIVE_D) ? 1u : 0u;
+    return 0;
+}
 
 /* ── runtime ops (design §2) — the descriptor's rule ids: NODUS_RT_EVM_CALL
  *    .. NODUS_RT_EVM_REDEEM and NODUS_RT_EVM_CALL_VER live in

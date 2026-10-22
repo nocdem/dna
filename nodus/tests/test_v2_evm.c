@@ -181,6 +181,40 @@
  *     reserve and the pool unmoved; the same shapes signed by A on both
  *     legs are then admitted and land (A credited, not B); (c) a swapped
  *     DEPOSIT onto A's LIVE account funded by B is refused, A untouched.
+ * 15. the ML-DSA-87 precompile activation (param 23, Route B — decision
+ *     2026-10-21-mldsa87-evm-precompile.md item 6, design rev 2 §1.7/§5):
+ *     (a) the vote literal D re-derives from the engine's compiled
+ *     address, context and constants, and any drift moves it; (b) the
+ *     scalar rule (exactly D), ERGONOMIC grace and the stateful rules as
+ *     pure functions (single use, generation >= 3, H-1 not an epoch
+ *     boundary); (c) on a chain whose row (written before genesis) is
+ *     effective at H = HE + 2: the reader off at H-1 / on at H, and
+ *     simulate AND exec give an empty output at H-2 / H-1 and the
+ *     signer's address at H (an altered message: empty); the CheckTx dry
+ *     run and its recheck at H are ADMISSION checks only (neither can
+ *     see the switch); (d) a corrupt row and an unreadable history fault
+ *     (-2), never "off"; (e) no row: off everywhere.
+ *     (f) THE BLOCK PATH, on an EVM chain with NO param-23 row, every
+ *     vote a SYSTEM CHAIN_CONFIG envelope through FinalizeBlock: two
+ *     votes in ONE block (the first far-future, the second at the grace
+ *     floor) — the first applies, the second is refused
+ *     NODUS_V2_TX_ERR_EXEC, the engine handed the exec the fact 0 then 1
+ *     (re-read per item), exactly ONE row (the first's: D, effective far,
+ *     committed at that block) and no switch at the refused vote's
+ *     height; a later block's vote refused from the committed FUTURE-
+ *     effective row; the database closed and reopened: the reader
+ *     answers the same at H-1 / H / H+1, roots agree, and a fourth vote
+ *     is refused from the row read back from disk. Removing either fact
+ *     copy (nodus_witness_rt_native.c `facts.mldsa_active_voted = ...`,
+ *     nodus_witness_v2_apply.c exec_one_env `ctx.mldsa_active_voted =
+ *     ...`) makes the second vote apply — two rows — and fails it.
+ *     (g) RESTART + LOCKSTEP TWIN around H (the (c) row): chain A reopened
+ *     once before H and once after H+1, its twin B never; the reader at
+ *     H-1 / H / H+1 answers the same across each reopen; every block
+ *     H-2 .. H+2 (one precompile CALL each) is applied to both with the
+ *     same bytes and identical per-item results; the committed global
+ *     roots at H-1 / H / H+1 and at the first block after the second
+ *     reopen are equal on A and B.
  *  Section 1 also proves the address width is in D (Kurultay #9 item 2):
  *     a restatement of EVM_ACT_CONSTS re-derives the D literal, and the
  *     same vector with a width of 20 — or without the width entry — does
@@ -196,7 +230,8 @@
  * ── WHAT IT LEAVES BEHIND ───────────────────────────────────────────────
  * One /tmp/test_v2_evm_* directory per fixture, removed at its end (left
  * behind when a CHECK aborts — section 8c closes its fixture BEFORE its
- * acceptance CHECKs, so a refused CLI envelope leaves nothing).
+ * acceptance CHECKs, so a refused CLI envelope leaves nothing). Section
+ * 15 (g) opens two at once (/tmp/test_v2_evm_mldsaA_* and _mldsaB_*).
  *
  * ── HOW IT CAN LIE ──────────────────────────────────────────────────────
  *  - The genesis is SEEDED with spendable UTXOs (V2X_SEED_NOT_REAL_UTXOS)
@@ -272,6 +307,37 @@
  *    engine (exec_evm_leg's discard at `done`) is not injectable: (b)
  *    proves discard on the adapter, (c) the engine's flush + rollback.
  *    The node-count drop is asserted as "fewer", not a measured size.
+ *  - Section 15 (f) fabricates the committee quorum inside a probe of the
+ *    EVM generation's SYSTEM exec (test_hf7_edge.c case D's pattern: the
+ *    fixture's validators have no secret keys); the verdict is still the
+ *    production nodus_rt_system_exec's, and the auth hook still verifies
+ *    the real signature (key 0's). The refusal is observed as the item
+ *    code ERR_EXEC; the probe's record of the fact plus the row count is
+ *    what ties that code to rule (a). Only rule (a) is exercised on the
+ *    block path — (b) the generation and (c) the epoch rule are (b)'s
+ *    pure-function cases.
+ *  - ABSENT in section 15: the fact's THIRD copy (nodus_witness_v2_apply.c
+ *    env_authorize_legs `actx.mldsa_active_voted`, the authorization-stage
+ *    ctx) — no auth hook reads it, so no test observes it; the CheckTx dry
+ *    run of a second param-23 vote (the probe table would also have to
+ *    fake the dry run's quorum); the 0x71 approval responder's fill
+ *    (nodus_witness_chain_config.c, `facts.mldsa_active_voted = (r23 ==
+ *    0)`).
+ *  - ABSENT: a block-path vote followed by CROSSING its H. A vote's H is
+ *    >= the ERGONOMIC grace (720 blocks at the default build) past the
+ *    vote, beyond the epoch boundary at E_LEN no fixture here crosses;
+ *    (g) crosses H on a row written BEFORE genesis instead. The two
+ *    halves (the vote writes the row; a row switches at H) are each
+ *    tested, their combination on one chain is not.
+ *  - Section 15 (g) is a LOCKSTEP twin, not a replay of stored blocks:
+ *    both chains build their genesis and idle blocks 1..HE-1 themselves
+ *    (deterministically, from the same fixture code) and then take the
+ *    same envelope bytes block by block. A replay from a block store
+ *    (Comet's handshake path) is not driven here.
+ *  - ABSENT: the node-level H-1 / H scenario (the decision's stagef
+ *    scenario on 7 nodes: the switch flipping at H across a cluster,
+ *    restart and replay through the real host) — no Genesis Protocol
+ *    scenario exists for it yet.
  *
  * @file test_v2_evm.c
  */
@@ -311,6 +377,8 @@
 #include "crypto/hash/keccak256.h"
 #include "crypto/sign/qgp_dilithium.h"
 
+#include "evm/evm.h"                     /* 15: EVM_MLDSA87_*        */
+#include "evm/evm_gas.h"                 /* 15: the precompile gas   */
 #include "evm/trie/evm_trie.h"
 #include "evm/trie/evm_trie_full.h"
 #include "evm/trie/evm_trie_rlp.h"
@@ -335,6 +403,10 @@ static int g_checks = 0;
 #define E_LEN    ((uint64_t)DNAC_EPOCH_LENGTH)
 #define D2       ((uint64_t)DNAC_CFG_RULESET_GEN2_D2)
 #define DEVM     ((uint64_t)DNAC_CFG_EVM_ACTIVE_D)
+#define DMLDSA   ((uint64_t)DNAC_CFG_MLDSA_ACTIVE_D)
+/* section 15: the effective height of the param-23 row fx_open_ex writes
+ * before genesis; 0 = no row (every other section) */
+static uint64_t g_mldsa_eff = 0;
 /* The fixture's fee per envelope. Red-team 1 D1 (operator decision
  * 2026-10-05-nodus-evm-redteam1-operator.md: "Fiyat 0 iken EVM durur")
  * refuses EVM CALL / CREATE / DEPOSIT while the gas price is 0, so the
@@ -519,6 +591,11 @@ static int fx_open_ex(fixture_t *fx, const char *tag, int gen2, int evm,
     if (gen2 && cc_row(fx->w, DNAC_CFG_RULESET_GEN2, D2, H2, 13) != 0)
         return -1;
     if (evm && cc_row(fx->w, DNAC_CFG_EVM_ACTIVE, DEVM, HE, 14) != 0)
+        return -1;
+    /* section 15: the ML-DSA-87 precompile vote (param 23) at g_mldsa_eff
+     * when a case sets it — 0 (every other section) writes nothing */
+    if (g_mldsa_eff &&
+        cc_row(fx->w, DNAC_CFG_MLDSA_ACTIVE, DMLDSA, g_mldsa_eff, 19) != 0)
         return -1;
     if (evm_gas &&
         cc_row(fx->w, DNAC_CFG_EVM_BLOCK_GAS_LIMIT, evm_gas, HE, 15) != 0)
@@ -4879,6 +4956,806 @@ static int test_sender_binding(void) {
     return 0;
 }
 
+/* ══ 15. the ML-DSA-87 precompile activation (param 23, Route B) ══════ */
+
+/* The vote literal re-derived from the engine's compiled constants — the
+ * 115-byte preimage of dnac.h DNAC_CFG_MLDSA_ACTIVE_D (a test-side
+ * restatement of nodus_witness.c mldsa_active_d_selfcheck; `consts` lets a
+ * case drift one constant). @return the literal, 0 on a hash failure. */
+static uint64_t mldsa_d_of(const uint8_t addr[32], const uint8_t *ctx,
+                           uint32_t ctx_len, const uint64_t consts[5]) {
+    uint8_t pre[16 + 32 + 4 + 64 + 4 + 5 * 8], h[64];
+    size_t o = 0;
+    if (ctx_len > 64) return 0;
+    memset(pre, 0, 16);
+    memcpy(pre, "NDS.MLDSAACT.v1", 15);              o = 16;
+    memcpy(pre + o, addr, 32);                      o += 32;
+    o += put_be(pre + o, ctx_len, 4);
+    memcpy(pre + o, ctx, ctx_len);                  o += ctx_len;
+    o += put_be(pre + o, 5, 4);
+    for (int i = 0; i < 5; i++) o += put_be(pre + o, consts[i], 8);
+    if (qgp_sha3_512(pre, o, h) != 0) return 0;
+    uint64_t d = 0;
+    for (int i = 0; i < 8; i++) d = (d << 8) | h[i];
+    return d & 0x7FFFFFFFFFFFFFFFULL;
+}
+
+/* pk ‖ sig ‖ msg for key k: a signature under the fixed precompile
+ * context (or `ctx`/`ctx_len` when given), signed at test time — hedged
+ * signing, so the bytes differ per run; the verdict does not. *len out;
+ * malloc'd. */
+static uint8_t *mldsa_input(int k, const uint8_t *msg, size_t mlen,
+                            size_t *len) {
+    static const uint8_t ctx[] = EVM_MLDSA87_CTX;
+    uint8_t *in = malloc(EVM_MLDSA87_PREFIX_BYTES + mlen);
+    size_t sl = 0;
+    if (!in) return NULL;
+    memcpy(in, g_k[k].pk, EVM_MLDSA87_PK_BYTES);
+    if (qgp_dsa87_sign_ctx(in + EVM_MLDSA87_PK_BYTES, &sl, msg, mlen, ctx,
+                           EVM_MLDSA87_CTX_LEN, g_k[k].sk) != 0 ||
+        sl != EVM_MLDSA87_SIG_BYTES) {
+        free(in);
+        return NULL;
+    }
+    memcpy(in + EVM_MLDSA87_PREFIX_BYTES, msg, mlen);
+    *len = EVM_MLDSA87_PREFIX_BYTES + mlen;
+    return in;
+}
+
+/* The receipt's output (design §7: output_len u32 @58, output @62). */
+static int rcpt_output(const uint8_t *r, size_t rl, const uint8_t **out,
+                       uint32_t *out_len) {
+    if (rl < 62) return -1;
+    uint32_t n = ((uint32_t)r[58] << 24) | ((uint32_t)r[59] << 16) |
+                 ((uint32_t)r[60] << 8) | (uint32_t)r[61];
+    if ((size_t)62 + n > rl) return -1;
+    *out = r + 62;
+    *out_len = n;
+    return 0;
+}
+
+/* One CALL from key k at nonce `nonce` to the tag address with `in` as
+ * calldata, applied in its own block; the receipt's output length and
+ * whether that output is k's address. @return 0 / -1. */
+static int mldsa_call_apply(fixture_t *fx, int k, uint64_t nonce,
+                            const uint8_t *in, size_t in_len,
+                            uint32_t *out_len, int *is_addr) {
+    static const uint8_t tag_addr[32] = EVM_MLDSA87_ADDR_BYTES;
+    uint8_t *call = malloc(128 + in_len), rc[8192], dg[64];
+    size_t rl = 0;
+    tx_t t;
+    nodus_v2_tx_result_t r;
+    const uint8_t *o = NULL;
+    int ret = -1;
+    if (!call) return -1;
+    size_t cl = enc_call(call, tag_addr, 0, 1000000, nonce, in,
+                         (uint32_t)in_len, NULL, NULL);
+    uint64_t h = fx->h;
+    if (evm_tx(fx, k, NODUS_RT_EVM_CALL, call, (uint32_t)cl, &t) == 0) {
+        if (apply_one(fx, &t, &r) == NODUS_V2_TX_OK &&
+            receipt_of(fx->w, h, 0, rc, sizeof(rc), &rl, dg) == 0 &&
+            rc[16] == 1 && rcpt_output(rc, rl, &o, out_len) == 0) {
+            *is_addr = (*out_len == 32 && memcmp(o, sender_of(k), 32) == 0);
+            ret = 0;
+        }
+        tx_free(&t);
+    }
+    free(call);
+    return ret;
+}
+
+/* One simulation of the same CALL at `height`. @return 0 / -1. */
+static int mldsa_call_sim(fixture_t *fx, int k, uint64_t height,
+                          const uint8_t *in, size_t in_len,
+                          uint32_t *out_len, int *is_addr) {
+    static const uint8_t tag_addr[32] = EVM_MLDSA87_ADDR_BYTES;
+    const nodus_domain_runtime_t *ert = NULL;
+    uint8_t chain32[32];
+    uint64_t gas_lim = 0;
+    char why[160];
+    if (nodus_witness_v2_runtime_for(fx->w, DNA_DOMAIN_EVM, 1, &ert) != 0 ||
+        !ert || nodus_witness_v2_chain_id(fx->w, chain32) != 0 ||
+        nodus_witness_v2_evm_block_gas_limit(fx->w, height, &gas_lim, why,
+                                             sizeof(why)) != 0)
+        return -1;
+    nodus_rt_evm_sim_req_t rq;
+    memset(&rq, 0, sizeof(rq));
+    rq.from = sender_of(k);
+    rq.to = tag_addr;
+    rq.data = in;
+    rq.data_len = in_len;
+    rq.gas_limit = 1000000;
+    rq.chain_id = chain32;
+    rq.global_height = height;
+    rq.evm_block_gas_limit = gas_lim;
+    nodus_rt_evm_sim_res_t r;
+    if (nodus_rt_evm_simulate(ert, fx->w, &rq, &r) != 0) return -1;
+    int ok = r.executed && r.success == 1;
+    *out_len = (uint32_t)r.output_len;
+    *is_addr = (r.output_len == 32 &&
+                memcmp(r.output, sender_of(k), 32) == 0);
+    nodus_rt_evm_sim_res_free(&r);
+    return ok ? 0 : -1;
+}
+
+static int test_mldsa_activation(void) {
+    static const uint8_t tag_addr[32] = EVM_MLDSA87_ADDR_BYTES;
+    static const uint8_t ctx[] = EVM_MLDSA87_CTX;
+    const uint64_t consts[5] = {
+        EVM_G_PRECOMPILE_MLDSA87_BASE, EVM_G_PRECOMPILE_MLDSA87_PER_WORD,
+        EVM_MLDSA87_MSG_MAX, EVM_MLDSA87_PK_BYTES, EVM_MLDSA87_SIG_BYTES };
+
+    /* (a) the literal: the oracle's value, re-derived from the engine's
+     * compiled constants, and every constant drift moves it */
+    CHECK(DMLDSA == 0x6994c9b548381d5cULL && DMLDSA <= 0x7FFFFFFFFFFFFFFFULL,
+          "MLDSA_ACTIVE_D is the oracle's M2 (nodus_mldsa_activation_"
+          "oracle.py)"); OK();
+    CHECK(consts[0] == 25000u && consts[1] == 12u && consts[2] == 65536u &&
+          consts[3] == 2592u && consts[4] == 4627u &&
+          EVM_MLDSA87_CTX_LEN == 19u,
+          "the engine's constants are the decision's numbers"); OK();
+    CHECK(mldsa_d_of(tag_addr, ctx, EVM_MLDSA87_CTX_LEN, consts) == DMLDSA,
+          "D re-derives from the compiled address, context and constants");
+    OK();
+    for (int i = 0; i < 5; i++) {
+        uint64_t c2[5];
+        memcpy(c2, consts, sizeof(c2));
+        c2[i] += 1u;
+        CHECK(mldsa_d_of(tag_addr, ctx, EVM_MLDSA87_CTX_LEN, c2) != DMLDSA,
+              "a drifted constant moves D"); OK();
+    }
+    {
+        uint8_t a2[32];
+        memcpy(a2, tag_addr, 32);
+        a2[31] ^= 1u;
+        CHECK(mldsa_d_of(a2, ctx, EVM_MLDSA87_CTX_LEN, consts) != DMLDSA,
+              "another address moves D"); OK();
+        static const uint8_t vb[] = "nodus.valbind.v1";
+        CHECK(mldsa_d_of(tag_addr, vb, sizeof(vb) - 1u, consts) != DMLDSA &&
+              mldsa_d_of(tag_addr, ctx, 0, consts) != DMLDSA,
+              "another (or an empty) context moves D"); OK();
+    }
+    CHECK(DMLDSA != D2 && DMLDSA != DEVM &&
+          DMLDSA != (uint64_t)DNAC_CFG_RULESET_GEN_ROLES_D &&
+          DMLDSA != (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D,
+          "D differs from every earlier vote literal"); OK();
+
+    /* (b) the scalar rule, the grace and the stateful rules (the param-14
+     * / param-22 shape) */
+    {
+        uint64_t ok_k = 2u;
+        while (ok_k * E_LEN + 5u < 257u) ok_k++;
+        const uint64_t ok_eff = ok_k * E_LEN + 5u;
+        CHECK(DNAC_CFG_MLDSA_ACTIVE == 23 &&
+              DNAC_CFG_PARAM_MAX_ID == DNAC_CFG_MLDSA_ACTIVE &&
+              dnac_cfg_param_read_by_consensus(
+                  (uint8_t)DNAC_CFG_MLDSA_ACTIVE),
+              "id 23, the last id, read by the running consensus"); OK();
+        CHECK(nodus_chain_config_scalar_rules(23, DMLDSA, 1, ok_eff + 10,
+                                              ok_eff, 1) == 0,
+              "MLDSA_ACTIVE: D accepted"); OK();
+        const uint64_t bad[] = {
+            DMLDSA + 1u, DMLDSA - 1u, 0u, 1u, DEVM, D2,
+            (uint64_t)DNAC_CFG_RULESET_GEN_ROOTS_D, UINT64_MAX };
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+            CHECK(nodus_chain_config_scalar_rules(23, bad[i], 1, ok_eff + 10,
+                                                  ok_eff, 1) == -1,
+                  "MLDSA_ACTIVE: anything but D refused"); OK();
+        CHECK(nodus_chain_config_grace_for_param(23) ==
+                  (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS &&
+              nodus_chain_config_grace_for_param(23) ==
+                  nodus_chain_config_grace_for_param(
+                      (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS),
+              "ERGONOMIC grace (param 22's class)"); OK();
+
+        /* the stateful rules (param 14's shape over its own facts): every
+         * fact NOT named by the rule stays 0 — HF-2 / HF-3 / gas price /
+         * initial height / the other single-use facts — so a legal answer
+         * proves the rule reads only voted, the generation and H */
+        nodus_cc_state_facts_t f, g;
+        memset(&f, 0, sizeof(f));
+        const uint32_t legal_gens[] = { NODUS_RT_GEN_EVM,
+                                        NODUS_RT_GEN_STORAGE,
+                                        NODUS_RT_GEN_ROOTS };
+        for (size_t i = 0; i < 3; i++) {
+            g = f; g.judging_generation = legal_gens[i];
+            CHECK(nodus_chain_config_stateful_rules_ex(23, ok_eff, &g) == 0,
+                  "MLDSA_ACTIVE: legal under generations 3, 4 and 5 "
+                  "(nothing but the generation set)"); OK();
+        }
+        g = f; g.judging_generation = NODUS_RT_GEN_EVM;
+        g.mldsa_active_voted = 1;
+        CHECK(nodus_chain_config_stateful_rules_ex(23, ok_eff, &g) == -1,
+              "MLDSA_ACTIVE: a second vote (any param-23 row) refused");
+        OK();
+        g = f; g.judging_generation = NODUS_RT_GEN_EVM;
+        g.evm_active_voted = 1; g.ruleset_gen2_voted = 1;
+        g.ruleset_gen_roles_voted = 1; g.ruleset_gen_roots_voted = 1;
+        CHECK(nodus_chain_config_stateful_rules_ex(23, ok_eff, &g) == 0,
+              "MLDSA_ACTIVE: another param's single-use fact does not "
+              "refuse it"); OK();
+        const uint32_t bad_gens[] = { 0u, NODUS_RT_GEN_1, NODUS_RT_GEN_2 };
+        for (size_t i = 0; i < 3; i++) {
+            g = f; g.judging_generation = bad_gens[i];
+            CHECK(nodus_chain_config_stateful_rules_ex(23, ok_eff, &g) == -1,
+                  "MLDSA_ACTIVE: refused under generations 0, 1 and 2 (no "
+                  "EVM domain)"); OK();
+        }
+        g = f; g.judging_generation = NODUS_RT_GEN_EVM;
+        CHECK(nodus_chain_config_stateful_rules_ex(23, ok_k * E_LEN + 1u,
+                                                   &g) == -1,
+              "MLDSA_ACTIVE: H-1 on an epoch boundary refused"); OK();
+        CHECK(nodus_chain_config_stateful_rules_ex(23, 0, &g) == -1,
+              "MLDSA_ACTIVE: H = 0 refused"); OK();
+        CHECK(nodus_chain_config_stateful_rules_ex(23, ok_k * E_LEN, &g) == 0,
+              "MLDSA_ACTIVE: H on an epoch boundary (H-1 not) legal — no "
+              "param-22 rule (e), Route B runs no procedure at H"); OK();
+        CHECK(nodus_chain_config_stateful_rules_ex(23, 1, &g) == 0,
+              "MLDSA_ACTIVE: H = 1 legal (height 0 is not a boundary)");
+        OK();
+        /* the 5-argument form sets the param-23 single-use fact from its
+         * 4th argument, like the param-9 / 18 / 22 ones */
+        CHECK(nodus_chain_config_stateful_rules(23, ok_eff, 0, 1,
+                                                NODUS_RT_GEN_EVM) == -1 &&
+              nodus_chain_config_stateful_rules(23, ok_eff, 0, 0,
+                                                NODUS_RT_GEN_EVM) == 0,
+              "MLDSA_ACTIVE: the 5-argument form reads its 4th argument as "
+              "the single-use fact"); OK();
+    }
+
+    /* (c) the reader and the engine paths on a chain whose param-23 row is
+     * effective at HM = HE + 2 (written before genesis, like the EVM vote) */
+    const uint64_t HM = HE + 2u;
+    fixture_t fx;
+    g_mldsa_eff = HM;
+    int orc = fx_evm_ready(&fx, "mldsa");
+    g_mldsa_eff = 0;
+    CHECK(orc == 0 && fx.h == HE, "EVM chain with the param-23 row"); OK();
+    {
+        uint8_t on = 9;
+        CHECK(nodus_rt_evm_mldsa_active_at(fx.w, HM - 1u, &on) == 0 &&
+              on == 0, "below H: off"); OK();
+        on = 9;
+        CHECK(nodus_rt_evm_mldsa_active_at(fx.w, HM, &on) == 0 && on == 1,
+              "at H: on"); OK();
+        on = 9;
+        CHECK(nodus_rt_evm_mldsa_active_at(fx.w, HM + 1000u, &on) == 0 &&
+              on == 1, "after H: on"); OK();
+        CHECK(nodus_rt_evm_mldsa_active_at(NULL, HM, &on) == -2 &&
+              nodus_rt_evm_mldsa_active_at(fx.w, HM, NULL) == -2,
+              "NULL arguments fault"); OK();
+    }
+
+    const int A = 0;
+    static const uint8_t msg[] = "nodus mldsa precompile activation case";
+    const size_t mlen = sizeof(msg) - 1u;
+    size_t in_len = 0;
+    uint8_t *in = mldsa_input(A, msg, mlen, &in_len);
+    CHECK(in != NULL, "a valid precompile input (signed at test time)");
+    OK();
+    uint32_t ol = 99;
+    int is_addr = 9;
+    uint64_t na = 0;
+
+    /* below H: simulate, exec and the CheckTx dry run see an ordinary
+     * account — success, empty output */
+    CHECK(mldsa_call_sim(&fx, A, fx.h, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 0, "H-2 simulate: empty output (no precompile)"); OK();
+    CHECK(mldsa_call_apply(&fx, A, na++, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 0, "H-2 exec: empty output (no precompile)"); OK();
+    CHECK(fx.h == HM - 1u, "next height H-1"); OK();
+    CHECK(mldsa_call_sim(&fx, A, fx.h, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 0, "H-1 simulate: empty output"); OK();
+    CHECK(mldsa_call_apply(&fx, A, na++, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 0, "H-1 exec: empty output (the last block before H)"); OK();
+    CHECK(fx.h == HM, "next height H"); OK();
+
+    /* at H: ADMISSION only — the CheckTx dry run (novm 0) and its recheck
+     * (novm 1) admit the CALL. Neither observes the switch: the dry-run
+     * answer (nodus_witness_v2_apply.h nodus_v2_env_dry_run_t) carries a
+     * code and conflict rows, no output and no gas, and the recheck's
+     * pre-validation (nodus_witness_rt_evm.c rtevm_vm_pre) only builds the
+     * state and runs evm_tx_prevalidate — a precompile CALL and a CALL to
+     * an ordinary account are admitted alike. The switch is observed by
+     * simulate and exec below (the receipt's output). */
+    {
+        static const uint8_t tag[32] = EVM_MLDSA87_ADDR_BYTES;
+        uint8_t *call = malloc(128 + in_len);
+        CHECK(call != NULL, "alloc");
+        size_t cl = enc_call(call, tag, 0, 1000000, na, in,
+                             (uint32_t)in_len, NULL, NULL);
+        tx_t t;
+        CHECK(evm_tx(&fx, A, NODUS_RT_EVM_CALL, call, (uint32_t)cl, &t) == 0,
+              "env");
+        free(call);
+        nodus_v2_env_dry_run_t *d = calloc(1, sizeof(*d));
+        CHECK(d != NULL, "alloc");
+        CHECK(dry_ex(fx.w, &t, 0, d) == 0 && d->code == NODUS_V2_TX_OK,
+              "H: admission — the CheckTx dry run admits the CALL (the "
+              "switch is not observable here)");
+        OK();
+        nodus_witness_v2_env_dry_run_free(d);
+        CHECK(dry_ex(fx.w, &t, 1, d) == 0 && d->code == NODUS_V2_TX_OK,
+              "H: admission — the recheck (pre-validation only) admits it "
+              "(the switch is not observable here)"); OK();
+        nodus_witness_v2_env_dry_run_free(d);
+        free(d);
+        tx_free(&t);
+    }
+
+    /* at H: simulate and exec run the precompile — the signer's address */
+    CHECK(mldsa_call_sim(&fx, A, fx.h, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 32 && is_addr == 1,
+          "H simulate: the 32-byte signer address"); OK();
+    CHECK(mldsa_call_apply(&fx, A, na++, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 32 && is_addr == 1,
+          "H exec: the 32-byte signer address in the receipt"); OK();
+    {
+        /* an altered message: the precompile runs and says invalid */
+        in[in_len - 1u] ^= 1u;
+        CHECK(mldsa_call_sim(&fx, A, fx.h, in, in_len, &ol, &is_addr) == 0 &&
+              ol == 0, "H+1 simulate, altered message: empty output"); OK();
+        CHECK(mldsa_call_apply(&fx, A, na++, in, in_len, &ol, &is_addr) ==
+                  0 && ol == 0,
+              "H+1 exec, altered message: empty output"); OK();
+        in[in_len - 1u] ^= 1u;
+    }
+    CHECK(invariants_ok(fx.w) && roots_ok(fx.w) == 0,
+          "invariants and roots after the activation"); OK();
+
+    /* (d) fail closed: a stored value no committed row can hold, then an
+     * unreadable history — each a fault (-2), never "off", in the reader
+     * and in the simulation */
+    {
+        uint8_t on = 9;
+        CHECK(cc_row(fx.w, DNAC_CFG_MLDSA_ACTIVE, DMLDSA + 1u, HM + 50u, 20)
+                  == 0, "a corrupt param-23 row (outside any block)"); OK();
+        CHECK(nodus_rt_evm_mldsa_active_at(fx.w, HM + 50u, &on) == -2 &&
+              on == 9, "a value other than D faults"); OK();
+        CHECK(nodus_rt_evm_mldsa_active_at(fx.w, HM, &on) == 0 && on == 1,
+              "below the corrupt row the D row still answers"); OK();
+        CHECK(mldsa_call_sim(&fx, A, HM + 50u, in, in_len, &ol, &is_addr) ==
+                  -1, "the simulation faults on it (no guessed switch)");
+        OK();
+        /* no open database: nodus_chain_config_get_u64 answers -1 ("this
+         * node cannot answer"). A DROPPED table is not this case — the
+         * accessor reads a missing table as a pre-migration fixture with
+         * no rows (nodus_witness_chain_config.c cc_history_exists == 0) */
+        sqlite3 *keep = fx.w->db;
+        fx.w->db = NULL;
+        fx.w->chain_config_cache_warm = false;
+        on = 9;
+        int frc = nodus_rt_evm_mldsa_active_at(fx.w, HM, &on);
+        fx.w->db = keep;
+        CHECK(frc == -2 && on == 9, "an unreadable history faults"); OK();
+    }
+    free(in);
+    fx_close(&fx);
+
+    /* (e) no row at all (the EVM chain of every other section): off at
+     * every height — the engine byte-identical to the build before */
+    CHECK(fx_evm_ready(&fx, "mldsa0") == 0, "EVM chain, no param-23 row");
+    OK();
+    {
+        uint8_t on = 9;
+        CHECK(nodus_rt_evm_mldsa_active_at(fx.w, fx.h, &on) == 0 && on == 0 &&
+              nodus_rt_evm_mldsa_active_at(fx.w, (uint64_t)INT64_MAX, &on)
+                  == 0 && on == 0, "no row: off everywhere"); OK();
+    }
+    fx_close(&fx);
+    return 0;
+}
+
+/* ── 15 (f): the param-23 vote on the BLOCK path ────────────────────── */
+
+/* The probe SYSTEM exec (test_hf7_edge.c probe_exec, test_hf4_switch case
+ * D): it records the param-23 single-use fact the engine handed each call
+ * (ctx->mldsa_active_voted, in call order), fabricates the committee
+ * quorum (the fixture's validators have no secret keys), then runs the
+ * PRODUCTION nodus_rt_system_exec — so the verdict, and the facts copy
+ * inside it (nodus_witness_rt_native.c, facts.mldsa_active_voted), are the
+ * production code's. */
+#define MV_PROBE_MAX 8
+static uint8_t g_mv_seen[MV_PROBE_MAX];
+static int     g_mv_n_seen;
+static nodus_domain_runtime_t *g_mv_probe = NULL;
+
+static int mv_probe_exec(const nodus_domain_runtime_t *rt,
+                         const dna_env_view_t *env, uint16_t leg_index,
+                         const nodus_rt_exec_ctx_t *ctx,
+                         const nodus_rt_read_res_t *reads, uint16_t n_reads,
+                         uint8_t *res_out, size_t res_cap,
+                         size_t *res_len_out) {
+    if (!ctx || !ctx->auth) return -2;
+    if (g_mv_n_seen < MV_PROBE_MAX)
+        g_mv_seen[g_mv_n_seen++] = ctx->mldsa_active_voted;
+    nodus_rt_auth_verdict_t av = *ctx->auth;
+    av.n_approvals = 7;
+    av.committee_n = 7;
+    av.approved_power = 7;
+    av.committee_power = 7;
+    nodus_rt_exec_ctx_t c2 = *ctx;
+    c2.auth = &av;
+    return nodus_rt_system_exec(rt, env, leg_index, &c2, reads, n_reads,
+                                res_out, res_cap, res_len_out);
+}
+
+/* The compiled table, copied, with ONLY the EVM generation's SYSTEM exec
+ * replaced (every tuple unchanged, so the committed registry resolves
+ * onto the same entries). The caller frees g_mv_probe after fx_close. */
+static int mv_probe_install(nodus_witness_t *w) {
+    size_t n = 0;
+    const nodus_domain_runtime_t *all = nodus_runtime_all_table(&n);
+    if (!all || n == 0) return -1;
+    free(g_mv_probe);
+    g_mv_probe = malloc(n * sizeof(*g_mv_probe));
+    if (!g_mv_probe) return -1;
+    memcpy(g_mv_probe, all, n * sizeof(*g_mv_probe));
+    int hit = 0;
+    for (size_t i = 0; i < n; i++)
+        if (g_mv_probe[i].generation == NODUS_RT_GEN_EVM &&
+            g_mv_probe[i].domain_id == DNA_DOMAIN_SYSTEM) {
+            g_mv_probe[i].exec = mv_probe_exec;
+            hit++;
+        }
+    if (hit != 1) return -1;
+    w->v2_runtime_table = g_mv_probe;
+    w->v2_runtime_table_n = n;
+    g_mv_n_seen = 0;
+    return 0;
+}
+
+static void mv_probe_free(void) {
+    free(g_mv_probe);
+    g_mv_probe = NULL;
+}
+
+/* the smallest effective >= floor_h the param-23 rule (c) admits:
+ * H != 0 and H-1 not an epoch boundary (nodus_witness_chain_config.c,
+ * CC_PARAM_MLDSA_ACTIVE) */
+static uint64_t mv_eff_ok(uint64_t floor_h) {
+    uint64_t e = floor_h ? floor_h : 1u;
+    while ((e - 1u) != 0 && ((e - 1u) % E_LEN) == 0) e++;
+    return e;
+}
+
+#define MV_CC_CALL_LEN 41u
+
+/* One SYSTEM CHAIN_CONFIG envelope voting param 23 = D at `effective`
+ * (test_hf7_edge.c cc_env_build's shape): call = param ‖ value ‖
+ * effective ‖ nonce ‖ signed_at (the block height) ‖ valid_before
+ * (effective + 1000), fee 0 (the exec refuses a SYSTEM fee; an all-SYSTEM
+ * envelope is exempt from the fixture's gas price), expiry 0, auth kind 1
+ * REALLY signed by key 0 over the engine-derived leg digest at the next
+ * height. @return 0 / -1. */
+static int mv_vote_build(fixture_t *fx, uint64_t effective, uint64_t nonce,
+                         tx_t *out) {
+    uint8_t call[MV_CC_CALL_LEN], auth[AUTH_LEN];
+    dna_domain_manifest_t sys;
+    const uint64_t height = fx->h;
+    memset(out, 0, sizeof(*out));
+    memset(auth, 0, sizeof(auth));
+    if (nodus_witness_domreg_get(fx->w, DNA_DOMAIN_SYSTEM, NULL, &sys, NULL)
+        != 0)
+        return -1;
+    call[0] = (uint8_t)DNAC_CFG_MLDSA_ACTIVE;
+    put64(call + 1, DMLDSA);
+    put64(call + 9, effective);
+    put64(call + 17, nonce);
+    put64(call + 25, height);                  /* signed_at              */
+    put64(call + 33, effective + 1000u);       /* valid_before           */
+
+    dna_env_leg_in_t leg;
+    memset(&leg, 0, sizeof(leg));
+    leg.hdr.domain_id            = DNA_DOMAIN_SYSTEM;
+    leg.hdr.runtime_op           = DNA_SYSRULE_CHAIN_CONFIG;
+    leg.hdr.ruleset_version      = sys.ruleset_version;
+    leg.hdr.access_mode          = DNA_ENV_ACCESS_INVOKE;
+    leg.hdr.auth_kind            = NODUS_RT_AUTHKIND_DSA87_MULTI_V1;
+    leg.hdr.call_len             = MV_CC_CALL_LEN;
+    leg.hdr.auth_len             = AUTH_LEN;
+    leg.hdr.res_max_effects      = 4;
+    leg.hdr.res_max_effect_bytes = 4096;
+    leg.call_data = call;
+    leg.auth_data = auth;
+
+    dna_env_in_t in;
+    memset(&in, 0, sizeof(in));
+    in.expiry_height       = 0;
+    in.fee_amount          = 0;
+    in.res_max_total_units = 200000;
+    in.leg_count           = 1;
+    in.legs                = &leg;
+
+    dna_env_leg_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    lctx.domain_id       = DNA_DOMAIN_SYSTEM;
+    lctx.ruleset_version = sys.ruleset_version;
+    memcpy(lctx.ruleset_hash, sys.ruleset_hash, 64);
+
+    if (dna_env_encoded_size(&leg, 1, &out->len) != 0) return -1;
+    out->bytes = malloc(out->len);
+    if (!out->bytes) return -1;
+    dna_env_preflight_t *pf = calloc(1, sizeof(*pf));
+    if (!pf) { tx_free(out); return -1; }
+    size_t used = 0;
+    int ok = -1;
+    do {
+        if (dna_env_encode(&in, out->bytes, out->len, &used) != 0 ||
+            used != out->len) break;
+        if (dna_env_preflight(out->bytes, out->len, fx->w->v2_chain32,
+                              height, &lctx, 1, pf) != DNA_ENV_PF_OK) break;
+        auth[0] = 1;
+        memcpy(auth + 1, g_k[0].pk, QGP_DSA87_PUBLICKEYBYTES);
+        size_t sl = 0;
+        if (qgp_dsa87_sign(auth + 1 + QGP_DSA87_PUBLICKEYBYTES, &sl,
+                           pf->auth_digest[0], 64, g_k[0].sk) != 0) break;
+        if (dna_env_encode(&in, out->bytes, out->len, &used) != 0 ||
+            used != out->len) break;
+        memcpy(out->intent, pf->intent_id, 64);
+        ok = 0;
+    } while (0);
+    free(pf);
+    if (ok != 0) tx_free(out);
+    return ok;
+}
+
+static uint64_t mv_rows(nodus_witness_t *w) {
+    return q1(w, "SELECT COUNT(*) FROM chain_config_history WHERE "
+                 "param_id = 23");
+}
+
+/* the switch at h-1 / h / h+1: 0 when all three answer (on[] filled),
+ * -1 when any faults */
+static int mv_switch3(nodus_witness_t *w, uint64_t h, uint8_t on[3]) {
+    for (int i = 0; i < 3; i++) {
+        on[i] = 9;
+        if (nodus_rt_evm_mldsa_active_at(w, h - 1u + (uint64_t)i, &on[i])
+            != 0)
+            return -1;
+    }
+    return 0;
+}
+
+/* (f) Every vote below is cast THROUGH THE BLOCK PATH (a SYSTEM
+ * CHAIN_CONFIG envelope applied by FinalizeBlock), on an EVM chain with
+ * NO param-23 row. The refused vote's code is the item code
+ * NODUS_V2_TX_ERR_EXEC: the exec's -1 (stateful rule (a)) is a
+ * deterministic refusal of exec_one_env, which the cometbft lane records
+ * as ERR_EXEC (nodus_witness_v2_apply.c, "code = NODUS_V2_TX_ERR_EXEC"
+ * after exec_one_env).
+ *
+ * WHY THIS FAILS IF A FACT LINE IS REMOVED: both votes in one block carry
+ * DIFFERENT effective heights — the history row key is (param, effective)
+ * with precondition ABSENT, so a duplicate key cannot refuse the second
+ * vote on its own. The ONLY refusal left is rule (a), which reads
+ * facts.mldsa_active_voted. `facts` is memset to 0 in the exec
+ * (nodus_witness_rt_native.c) and `ctx` in the engine's per-item build
+ * (nodus_witness_v2_apply.c exec_one_env), so deleting either copy —
+ * `facts.mldsa_active_voted = ctx->mldsa_active_voted;` or
+ * `ctx.mldsa_active_voted = evm_facts.mldsa_active_voted;` — leaves the
+ * fact 0: the second vote APPLIES, the history holds TWO param-23 rows,
+ * and "exactly one row" and "the second refused" fail. Deleting the
+ * engine copy also turns the probe's record into {0, 0}. */
+static int test_mldsa_vote_block_path(void) {
+    fixture_t fx;
+    tx_t t[2];
+    nodus_v2_tx_result_t res[2];
+    const uint64_t GE = (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
+    uint8_t on[3];
+    char sql[256];
+
+    CHECK(fx_evm_ready(&fx, "mldsav") == 0 && fx.h == HE,
+          "EVM chain, no param-23 row"); OK();
+    {
+        dna_domain_manifest_t ms;
+        CHECK(nodus_witness_domreg_get(fx.w, DNA_DOMAIN_SYSTEM, NULL, &ms,
+                                       NULL) == 0 &&
+              ms.ruleset_version == 8,
+              "the registry is the EVM generation (SYSTEM v8) — a "
+              "generation rule (b) admits"); OK();
+    }
+    CHECK(mv_rows(fx.w) == 0, "no param-23 row before the votes"); OK();
+    CHECK(mv_probe_install(fx.w) == 0,
+          "probe runtime table (the EVM generation's SYSTEM exec)"); OK();
+
+    const uint64_t h = fx.h;
+    /* the FIRST vote is far-future (100 epochs past the grace floor), the
+     * second near (the grace floor itself): the far row must refuse the
+     * near one — "any param-23 row, at any effective height" */
+    const uint64_t eff_far  = mv_eff_ok(h + GE + 100u * E_LEN);
+    const uint64_t eff_near = mv_eff_ok(h + GE);
+    CHECK(eff_near < eff_far && eff_far + 1000u <= (uint64_t)INT64_MAX,
+          "two legal effective heights, the first one far"); OK();
+
+    /* (f1) two votes in ONE block: the engine re-reads the fact per item,
+     * so the second sees the row the first wrote */
+    CHECK(mv_vote_build(&fx, eff_far, 41, &t[0]) == 0 &&
+          mv_vote_build(&fx, eff_near, 42, &t[1]) == 0,
+          "two param-23 envelopes"); OK();
+    CHECK(apply_txs(&fx, t, 2, res) == 0 && fx.h == h + 1u,
+          "block h commits"); OK();
+    CHECK(res[0].code == NODUS_V2_TX_OK, "the first param-23 vote applies");
+    OK();
+    CHECK(res[1].code == NODUS_V2_TX_ERR_EXEC,
+          "the second param-23 vote is refused in exec (rule (a))"); OK();
+    CHECK(g_mv_n_seen == 2 && g_mv_seen[0] == 0 && g_mv_seen[1] == 1,
+          "the engine filled ctx.mldsa_active_voted per item (0, then 1)");
+    OK();
+    CHECK(mv_rows(fx.w) == 1, "exactly one param-23 row"); OK();
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM chain_config_history "
+             "WHERE param_id = 23 AND effective_block = %llu AND "
+             "commit_block = %llu AND new_value = %lld",
+             (unsigned long long)eff_far, (unsigned long long)h,
+             (long long)DMLDSA);
+    CHECK(q1(fx.w, sql) == 1,
+          "the row is the FIRST vote's: D, effective far, committed at h");
+    OK();
+    tx_free(&t[0]);
+    tx_free(&t[1]);
+    CHECK(nodus_rt_evm_mldsa_active_at(fx.w, eff_near, &on[0]) == 0 &&
+          on[0] == 0, "the refused near vote left no switch at its height");
+    OK();
+    CHECK(mv_switch3(fx.w, eff_far, on) == 0 && on[0] == 0 && on[1] == 1 &&
+          on[2] == 1, "the far row: off at H-1, on at H and H+1"); OK();
+
+    /* (f2) a vote in a LATER block: the committed (future-effective) row
+     * refuses it */
+    g_mv_n_seen = 0;
+    CHECK(mv_vote_build(&fx, mv_eff_ok(eff_near + 3u), 43, &t[0]) == 0,
+          "third param-23 envelope"); OK();
+    CHECK(apply_txs(&fx, t, 1, res) == 0, "block h+1 commits"); OK();
+    CHECK(res[0].code == NODUS_V2_TX_ERR_EXEC,
+          "a param-23 vote after a committed future-effective row is "
+          "refused"); OK();
+    CHECK(g_mv_n_seen == 1 && g_mv_seen[0] == 1,
+          "the engine handed the exec the committed row's fact"); OK();
+    CHECK(mv_rows(fx.w) == 1, "still exactly one param-23 row"); OK();
+    tx_free(&t[0]);
+
+    /* (f3) RESTART after the row landed: the database closed and reopened
+     * (the chain_config cache cold) — the reader answers the same at
+     * H-1 / H / H+1, the committed and recomputed roots agree, and a
+     * fourth vote is refused from the row read back from disk */
+    CHECK(fx_reopen(&fx) == 0, "reopen after the vote"); OK();
+    CHECK(mv_switch3(fx.w, eff_far, on) == 0 && on[0] == 0 && on[1] == 1 &&
+          on[2] == 1, "after the reopen: off at H-1, on at H and H+1");
+    OK();
+    CHECK(roots_ok(fx.w) == 0 && invariants_ok(fx.w),
+          "roots and invariants after the reopen"); OK();
+    g_mv_n_seen = 0;
+    CHECK(mv_vote_build(&fx, mv_eff_ok(eff_near + 7u), 44, &t[0]) == 0,
+          "fourth param-23 envelope"); OK();
+    CHECK(apply_txs(&fx, t, 1, res) == 0 &&
+          res[0].code == NODUS_V2_TX_ERR_EXEC &&
+          g_mv_n_seen == 1 && g_mv_seen[0] == 1 && mv_rows(fx.w) == 1,
+          "after the reopen a vote is refused (fact 1 from the disk row), "
+          "still one row"); OK();
+    tx_free(&t[0]);
+    CHECK(roots_ok(fx.w) == 0 && invariants_ok(fx.w),
+          "roots and invariants at the end"); OK();
+    fx_close(&fx);
+    mv_probe_free();
+    return 0;
+}
+
+/* ── 15 (g): restart and a lockstep twin around H ───────────────────── */
+
+/* the committed global root of block `h` (test_hf7_edge.c block_global) */
+static int mv_block_root(nodus_witness_t *w, uint64_t h, uint8_t out[64]) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT global_root FROM v2_blocks WHERE "
+                           "global_height = ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)h);
+    int ok = sqlite3_step(st) == SQLITE_ROW &&
+             sqlite3_column_bytes(st, 0) == 64;
+    if (ok) memcpy(out, sqlite3_column_blob(st, 0), 64);
+    sqlite3_finalize(st);
+    return ok ? 0 : -1;
+}
+
+/* one precompile CALL applied to `fa` AND, byte for byte, to the twin
+ * `fb` (g_mirror — apply_txs fails on any rc / code / gas / Data
+ * difference); g_mirror is cleared before returning on every path */
+static int mv_twin_call(fixture_t *fa, fixture_t *fb, int k, uint64_t nonce,
+                        const uint8_t *in, size_t in_len, uint32_t *ol,
+                        int *is_addr) {
+    g_mirror = fb;
+    int rc = mldsa_call_apply(fa, k, nonce, in, in_len, ol, is_addr);
+    g_mirror = NULL;
+    return (rc == 0 && fa->h == fb->h) ? 0 : -1;
+}
+
+/* (g) The param-23 row effective at HM = HE + 2, written BEFORE genesis
+ * (the (c) shape — a block-path vote's H is >= ERGONOMIC grace = 720
+ * blocks away, past the epoch boundary no fixture here crosses; see the
+ * header's HOW IT CAN LIE). Two chains, A and its twin B, open the same
+ * way; every block from HE on is applied to both with the SAME envelope
+ * bytes. A is closed and reopened twice — once with the row in place
+ * before H, once after crossing H — and B never: the reader at H-1 / H /
+ * H+1 answers the same before and after each reopen, and the committed
+ * global roots of A's blocks H-1 / H / H+1 and of the block after the
+ * second reopen equal B's. */
+static int test_mldsa_restart_twin(void) {
+    const uint64_t HM = HE + 2u;
+    fixture_t fa, fb;
+    uint8_t on[3], on2[3];
+    uint8_t ra[3][64], rb[3][64], r[64], rr[64];
+
+    g_mldsa_eff = HM;
+    int oa = fx_evm_ready(&fa, "mldsaA");
+    int ob = oa == 0 ? fx_evm_ready(&fb, "mldsaB") : -1;
+    g_mldsa_eff = 0;
+    CHECK(oa == 0 && ob == 0 && fa.h == HE && fb.h == HE,
+          "two EVM chains with the param-23 row at H"); OK();
+
+    const int A = 0;
+    static const uint8_t msg[] = "nodus mldsa precompile restart case";
+    size_t in_len = 0;
+    uint8_t *in = mldsa_input(A, msg, sizeof(msg) - 1u, &in_len);
+    CHECK(in != NULL, "a valid precompile input"); OK();
+    uint32_t ol = 99;
+    int is_addr = 9;
+    uint64_t na = 0;
+
+    /* restart 1: the row in place, H not yet reached */
+    CHECK(mv_switch3(fa.w, HM, on) == 0 && on[0] == 0 && on[1] == 1 &&
+          on[2] == 1, "A before the reopen: off / on / on at H-1 / H / H+1");
+    OK();
+    CHECK(fx_reopen(&fa) == 0, "A reopened before H"); OK();
+    CHECK(mv_switch3(fa.w, HM, on2) == 0 && memcmp(on, on2, 3) == 0,
+          "A after the reopen: the same three answers"); OK();
+    CHECK(roots_ok(fa.w) == 0, "A's roots after the reopen"); OK();
+
+    /* blocks H-2, H-1, H, H+1 — each one precompile CALL, mirrored */
+    CHECK(mv_twin_call(&fa, &fb, A, na++, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 0, "H-2: empty output on A, B identical"); OK();
+    CHECK(mv_twin_call(&fa, &fb, A, na++, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 0, "H-1: empty output on A, B identical"); OK();
+    CHECK(mv_twin_call(&fa, &fb, A, na++, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 32 && is_addr == 1,
+          "H: the signer's address on A, B identical"); OK();
+    CHECK(mv_twin_call(&fa, &fb, A, na++, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 32 && is_addr == 1,
+          "H+1: the signer's address on A, B identical"); OK();
+    CHECK(fa.h == HM + 2u, "both chains past H+1"); OK();
+    for (int i = 0; i < 3; i++)
+        CHECK(mv_block_root(fa.w, HM - 1u + (uint64_t)i, ra[i]) == 0 &&
+              mv_block_root(fb.w, HM - 1u + (uint64_t)i, rb[i]) == 0 &&
+              memcmp(ra[i], rb[i], 64) == 0,
+              "A and B commit the same global root at H-1 / H / H+1");
+    OK();
+
+    /* restart 2: after crossing H */
+    CHECK(mv_switch3(fa.w, HM, on) == 0 && on[0] == 0 && on[1] == 1 &&
+          on[2] == 1, "A after crossing H: off / on / on"); OK();
+    CHECK(fx_reopen(&fa) == 0, "A reopened after H"); OK();
+    CHECK(mv_switch3(fa.w, HM, on2) == 0 && memcmp(on, on2, 3) == 0,
+          "A after the second reopen: the same three answers"); OK();
+    CHECK(roots_ok(fa.w) == 0, "A's roots after the second reopen"); OK();
+    for (int i = 0; i < 3; i++)
+        CHECK(mv_block_root(fa.w, HM - 1u + (uint64_t)i, r) == 0 &&
+              memcmp(r, ra[i], 64) == 0,
+              "A's committed roots at H-1 / H / H+1 read back unchanged");
+    OK();
+    /* the first block after the reopen: the reopened A and the never-
+     * reopened B apply it alike and commit the same root */
+    CHECK(mv_twin_call(&fa, &fb, A, na++, in, in_len, &ol, &is_addr) == 0 &&
+          ol == 32 && is_addr == 1,
+          "H+2 after the reopen: the signer's address, B identical"); OK();
+    CHECK(mv_block_root(fa.w, HM + 2u, r) == 0 &&
+          mv_block_root(fb.w, HM + 2u, rr) == 0 && memcmp(r, rr, 64) == 0,
+          "the reopened A and B commit the same root at H+2"); OK();
+    CHECK(invariants_ok(fa.w) && invariants_ok(fb.w) &&
+          roots_ok(fa.w) == 0 && roots_ok(fb.w) == 0,
+          "invariants and roots on both chains"); OK();
+    free(in);
+    fx_close(&fa);
+    fx_close(&fb);
+    return 0;
+}
+
 int main(void) {
     if (E_LEN <= 64) {
         fprintf(stderr, "test_v2_evm: needs DNAC_EPOCH_LENGTH > 64 (this "
@@ -4909,6 +5786,9 @@ int main(void) {
     fails += test_bridge_sender_code();
     fails += test_block_position();
     fails += test_sender_binding();
+    fails += test_mldsa_activation();
+    fails += test_mldsa_vote_block_path();
+    fails += test_mldsa_restart_twin();
     if (fails) {
         fprintf(stderr, "test_v2_evm: %d section(s) FAILED (%d checks "
                 "passed)\n", fails, g_checks);

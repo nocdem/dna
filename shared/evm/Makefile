@@ -7,7 +7,9 @@
 #   make deps           — build/libevm_deps.a: the vendored precompile
 #                         libraries (third_party/{blst,c-kzg-4844,mcl,
 #                         secp256k1,ripemd160}, pinned in each PINNED.md)
-#                         + the
+#                         + the shared ML-DSA-87 code (../crypto/sign/dsa,
+#                         pinned in its PINNED.md, + qgp_dilithium.c; a
+#                         consumer must provide qgp_randombytes) + the
 #                         embedded KZG trusted setup, and
 #                         build/gmp/install/lib/libgmp.a (third_party/gmp,
 #                         the pinned release tarball, configured and built
@@ -48,6 +50,21 @@
 #                         ../../nodus/tools/evm/contracts/out/ (two compiler
 #                         configurations); no solc needed; linked like
 #                         test_addr32
+#   make test_mldsa_precompile — build/test_mldsa_precompile: the Nodus
+#                         ML-DSA-87 precompile (evm.h mldsa_precompile;
+#                         decision 2026-10-21-mldsa87-evm-precompile.md) and
+#                         the NIST ACVP ML-DSA-87 sigVer group-5 fixture
+#                         (tests/fixtures/mldsa87/); linked like test_addr32.
+#                         `./build/test_mldsa_precompile --gen-kat` prints
+#                         the start-up self-test vectors instead (once, by
+#                         hand; see the file header)
+#   make mldsa-acvp-vectors ACVP=<dir>
+#                       — regenerate the COMMITTED ACVP fixture with
+#                         tests/fixtures/mldsa87/acvp_group5_extract.py
+#                         (needs python3 and the pinned upstream JSON files)
+#   make mldsa-acvp-vectors-check ACVP=<dir>
+#                       — regenerate into build/ and compare with the
+#                         committed fixture
 #   make test_trie    — build/test_trie: the Nodus EVM state trie (trie/,
 #                         SHA3-512 MPT, design 2026-10-04-nodus-evm-chain-
 #                         integration-design.md §6) against the committed
@@ -62,7 +79,8 @@
 #   make test           — check the committed addr32 vectors against their
 #                         oracle, then build and run the u256 test binaries,
 #                         test_addr32, test_nodus_profile, test_solc_exec,
-#                         test_example_token, test_contract_lib and test_trie
+#                         test_example_token, test_contract_lib, test_trie
+#                         and test_mldsa_precompile
 #                         (test_trie uses the committed trie vectors;
 #                         checking them against the oracle needs FIXTURES,
 #                         so it is trie-vectors-check, not part of
@@ -133,12 +151,31 @@ SECP_CFLAGS := -O2 -fPIC -Wall -Wextra -Wno-unused-function \
 # level. No NDEBUG: its asserts stay live, as upstream builds them.
 RMD_CFLAGS := -O2 -fPIC -std=gnu11 -Wall -Wextra -I$(RMD_DIR)
 
+# ML-DSA-87 (the Nodus ML-DSA-87 precompile, evm.h mldsa_precompile;
+# decision docs/plans/decisions/2026-10-21-mldsa87-evm-precompile.md): the
+# shared vendored pq-crystals reference (../crypto/sign/dsa, pinned in its
+# PINNED.md) + the shared wrapper qgp_dilithium.c — the same code that
+# verifies every chain signature. Built with dsa/CMakeLists.txt's own flags
+# (-Wall -Wextra -O3 -fPIC; include dirs: the dsa directory and shared/ for
+# crypto/utils/qgp_random.h). Archived in libevm_deps.a rather than linked
+# per test like qgp_sha3.o: tests/Makefile.statetest (statetest,
+# test_precompile) already links $(EVM_DEPS_LIB) and nothing else of ours.
+# The dsa signer (sign.c, pulled in with the verifier) calls
+# qgp_randombytes; a standalone consumer must provide it (the node links
+# shared/crypto/utils/qgp_random.c).
+DSA_DIR    := ../crypto/sign/dsa
+DSA_CFLAGS := -O3 -fPIC -Wall -Wextra -I$(DSA_DIR) -I..
+DSA_SRCS   := fips202 ntt packing poly polyvec reduce rounding sign \
+              symmetric-shake
+DSA_OBJS   := $(DSA_SRCS:%=$(BUILD)/deps/dsa_%.o) $(BUILD)/deps/qgp_dilithium.o
+
 DEP_OBJS := $(BUILD)/deps/blst_server.o $(BUILD)/deps/blst_assembly.o \
             $(BUILD)/deps/ckzg.o $(BUILD)/deps/mcl_fp.o \
             $(BUILD)/deps/mcl_bn_c256.o $(BUILD)/deps/kzg_trusted_setup.o \
             $(BUILD)/deps/secp256k1.o $(BUILD)/deps/secp256k1_pre_ecmult.o \
             $(BUILD)/deps/secp256k1_pre_ecmult_gen.o \
-            $(BUILD)/deps/ripemd160.o $(BUILD)/deps/memzero.o
+            $(BUILD)/deps/ripemd160.o $(BUILD)/deps/memzero.o \
+            $(DSA_OBJS)
 
 # GMP 6.3.0 (third_party/gmp/PINNED.md): the signed upstream release
 # tarball, sha256-checked before extraction, configured for a generic
@@ -203,6 +240,7 @@ TRIE_OBJS  := $(TRIE_BUILD)/evm_trie.o $(TRIE_BUILD)/evm_trie_rlp.o \
 
 .PHONY: all lib deps test_u256 test-portable test test_addr32 \
         test_nodus_profile test_solc_exec test_example_token test_contract_lib \
+        test_mldsa_precompile mldsa-acvp-vectors mldsa-acvp-vectors-check \
         vectors addr32-vectors \
         addr32-vectors-check \
         statetest conformance differential clean test_trie trie-vectors trie-vectors-check \
@@ -255,6 +293,14 @@ $(BUILD)/deps/ripemd160.o: $(RMD_DIR)/ripemd160.c $(RMD_DIR)/ripemd160.h \
 
 $(BUILD)/deps/memzero.o: $(RMD_DIR)/memzero.c $(RMD_DIR)/memzero.h | $(BUILD)/deps
 	$(CC) $(RMD_CFLAGS) -c $< -o $@
+
+$(BUILD)/deps/dsa_%.o: $(DSA_DIR)/%.c $(wildcard $(DSA_DIR)/*.h) | $(BUILD)/deps
+	$(CC) $(DSA_CFLAGS) -c $< -o $@
+
+$(BUILD)/deps/qgp_dilithium.o: ../crypto/sign/qgp_dilithium.c \
+                               ../crypto/sign/qgp_dilithium.h \
+                               $(wildcard $(DSA_DIR)/*.h) | $(BUILD)/deps
+	$(CC) $(DSA_CFLAGS) -c $< -o $@
 
 $(BUILD)/libevm_deps.a: $(DEP_OBJS) $(GMP_LIB)
 	rm -f $@
@@ -362,6 +408,42 @@ $(BUILD)/test_example_token: $(TBUILD)/test_example_token.o $(ADDR32_SUPPORT) \
 # build.sh; verify.sh is its drift check); a missing .hex is a failure.
 test_contract_lib: $(BUILD)/test_contract_lib
 
+# Nodus ML-DSA-87 precompile (evm.h mldsa_precompile): the precompile, its
+# configuration and its engine paths (dispatch from the four call kinds,
+# warming, evm_state_new refusals), plus the NIST ACVP group-5 fixture run
+# through qgp_dsa87_verify_ctx (primitive layer). Linked like test_addr32;
+# reads $(MLDSA_ACVP_FIXTURE), whose path is compiled in.
+MLDSA_FIXDIR       := tests/fixtures/mldsa87
+MLDSA_ACVP_FIXTURE := $(MLDSA_FIXDIR)/acvp_sigver_group5.txt
+
+test_mldsa_precompile: $(BUILD)/test_mldsa_precompile
+
+$(TBUILD)/test_mldsa_precompile.o: tests/test_mldsa_precompile.c $(HDRS) \
+                                   ../crypto/sign/qgp_dilithium.h | $(TBUILD)
+	$(CC) $(CFLAGS) -Itests \
+	      -DMLDSA_ACVP_FIXTURE='"$(abspath $(MLDSA_ACVP_FIXTURE))"' \
+	      -c $< -o $@
+
+$(BUILD)/test_mldsa_precompile: $(TBUILD)/test_mldsa_precompile.o \
+                                $(ADDR32_SUPPORT) $(BUILD)/libevm.a \
+                                $(BUILD)/libevm_deps.a
+	$(CC) $(CFLAGS) -o $@ $(TBUILD)/test_mldsa_precompile.o $(ADDR32_SUPPORT) \
+	      $(BUILD)/libevm.a $(BUILD)/libevm_deps.a $(GMP_LIB) $(EVM_SYSLIBS)
+
+# The ACVP fixture is COMMITTED; it is rewritten only on request, from the
+# pinned upstream files (ACVP=<dir holding prompt.json and
+# expectedResults.json of ACVP-Server 975de31e, gen-val/json-files/
+# ML-DSA-sigVer-FIPS204/>). The extractor refuses inputs whose sha256
+# differs from the pin. The check target proves the committed copy is
+# byte-identical to a fresh extraction.
+mldsa-acvp-vectors:
+	python3 $(MLDSA_FIXDIR)/acvp_group5_extract.py $(ACVP) $(MLDSA_ACVP_FIXTURE)
+
+mldsa-acvp-vectors-check: | $(BUILD)
+	python3 $(MLDSA_FIXDIR)/acvp_group5_extract.py $(ACVP) \
+	        $(BUILD)/acvp_sigver_group5.check.txt
+	cmp $(BUILD)/acvp_sigver_group5.check.txt $(MLDSA_ACVP_FIXTURE)
+
 $(BUILD)/test_contract_lib: $(TBUILD)/test_contract_lib.o $(ADDR32_SUPPORT) \
                             $(BUILD)/libevm.a $(BUILD)/libevm_deps.a
 	$(CC) $(CFLAGS) -o $@ $(TBUILD)/test_contract_lib.o $(ADDR32_SUPPORT) \
@@ -424,7 +506,8 @@ trie-vectors-check: | $(BUILD)
 test: addr32-vectors-check $(BUILD)/test_u256 $(BUILD)/test_u256_portable \
       $(BUILD)/test_addr32 $(BUILD)/test_nodus_profile \
       $(BUILD)/test_solc_exec $(BUILD)/test_example_token \
-      $(BUILD)/test_contract_lib $(BUILD)/test_trie
+      $(BUILD)/test_contract_lib $(BUILD)/test_trie \
+      $(BUILD)/test_mldsa_precompile
 	./$(BUILD)/test_u256
 	./$(BUILD)/test_u256_portable
 	./$(BUILD)/test_addr32
@@ -433,6 +516,7 @@ test: addr32-vectors-check $(BUILD)/test_u256 $(BUILD)/test_u256_portable \
 	./$(BUILD)/test_example_token
 	./$(BUILD)/test_contract_lib
 	./$(BUILD)/test_trie
+	./$(BUILD)/test_mldsa_precompile
 
 vectors: $(BUILD)/u256_vectors.h
 

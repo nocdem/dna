@@ -7879,6 +7879,7 @@ int nodus_rt_system_exec(const nodus_domain_runtime_t *rt,
         facts.ruleset_gen_storage_voted = ctx->ruleset_gen_storage_voted;
         facts.ruleset_gen_roles_voted = ctx->ruleset_gen_roles_voted;
         facts.ruleset_gen_roots_voted = ctx->ruleset_gen_roots_voted;
+        facts.mldsa_active_voted = ctx->mldsa_active_voted;
         facts.chain_initial_height = ctx->chain_initial_height; /* F5 */
         facts.judging_generation = rt ? rt->generation : 0u;
         if (nodus_chain_config_stateful_rules_ex(c.param_id, c.effective,

@@ -12,14 +12,20 @@
  *   - WARN and ERROR messages are written to stderr; DEBUG/INFO are dropped
  *   - the ring buffer is not kept (no viewer in a test run)
  *   - qgp_secure_memzero wipes through a volatile pointer
+ *   - qgp_randombytes (crypto/utils/qgp_random.h) reads getrandom(2): the
+ *     ML-DSA code archived in libevm_deps.a (keygen / signing, used only by
+ *     the tests that make their own signatures) references it; the engine's
+ *     verification never calls it. The node links the real provider.
  * If the engine library (libevm.a) ever provides these symbols itself, drop
  * this object from the link (Makefile.statetest: QGP_SHIM_OBJ=).
  */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_random.h"
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <sys/random.h>
 
 bool qgp_log_should_log(qgp_log_level_t level, const char *tag)
 {
@@ -51,4 +57,15 @@ void qgp_secure_memzero(void *ptr, size_t len)
 {
     volatile unsigned char *p = ptr;
     while (len--) *p++ = 0;
+}
+
+int qgp_randombytes(uint8_t *buf, size_t len)
+{
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = getrandom(buf + off, len - off, 0);
+        if (n <= 0) return -1;
+        off += (size_t)n;
+    }
+    return 0;
 }

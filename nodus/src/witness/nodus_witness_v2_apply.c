@@ -1416,8 +1416,8 @@ static int env_evm_facts(nodus_witness_t *w, uint64_t height,
                          nodus_rt_exec_ctx_t *ctx, char *reason,
                          size_t reason_size)
 {
-    uint64_t price = 0, v14 = 0;
-    int      r14;
+    uint64_t price = 0, v14 = 0, v23 = 0;
+    int      r14, r23;
 
     if (env_hf3_active(w, height, &ctx->hf3_active, reason,
                        reason_size) != 0)
@@ -1435,6 +1435,27 @@ static int env_evm_facts(nodus_witness_t *w, uint64_t height,
         return -2;
     }
     ctx->evm_active_voted = (r14 == 0) ? 1u : 0u;
+    /* ML-DSA-87 precompile (decision 2026-10-21-mldsa87-evm-precompile.md,
+     * Route B): the switch at `height` through THE one reader
+     * (nodus_witness_rt_evm.h nodus_rt_evm_mldsa_active_at — the RPC
+     * simulation calls it too), and "any param-23 row" at INT64_MAX for
+     * the single-use rule. Unreadable = FAULT like every fact here. */
+    if (nodus_rt_evm_mldsa_active_at(w, height, &ctx->mldsa_active) != 0) {
+        V2AP_ENV_FAULT("ML-DSA-87 precompile: MLDSA_ACTIVE at height %llu "
+                       "is unreadable or holds a value no committed row "
+                       "can hold on this node - refusing to judge under a "
+                       "guessed rule set", (unsigned long long)height);
+        return -2;
+    }
+    r23 = nodus_chain_config_get_u64(w, (uint8_t)DNAC_CFG_MLDSA_ACTIVE,
+                                     (uint64_t)INT64_MAX, 0ULL, &v23);
+    if (r23 < 0) {
+        V2AP_ENV_FAULT("%s", "ML-DSA-87 precompile: the MLDSA_ACTIVE history "
+                       "is unreadable on this node - refusing to judge a "
+                       "vote's single-use rule against a guess");
+        return -2;
+    }
+    ctx->mldsa_active_voted = (r23 == 0) ? 1u : 0u;
     /* red-team 1 F5: the chain's first height — the once-per-open cache
      * (nodus_witness.h v2_initial_height) on every gate-accepted handle,
      * so no per-item document read there; the same function derives it
@@ -2825,6 +2846,8 @@ static int exec_one_env(nodus_witness_t *w, const nodus_v2_block_t *blk,
         ctx.hf3_active          = evm_facts.hf3_active;
         ctx.gas_price_on        = evm_facts.gas_price_on;
         ctx.evm_active_voted    = evm_facts.evm_active_voted;
+        ctx.mldsa_active        = evm_facts.mldsa_active;
+        ctx.mldsa_active_voted  = evm_facts.mldsa_active_voted;
         ctx.chain_initial_height = evm_facts.chain_initial_height; /* F5 */
         /* Nodus EVM pairing rule: every leg's verified verdict (the item's
          * auth stage verified and filled `auths` for all legs before this
@@ -3861,6 +3884,8 @@ static int env_authorize_legs(nodus_witness_t *w,
         actx.hf3_active          = evm_facts.hf3_active;
         actx.gas_price_on        = evm_facts.gas_price_on;
         actx.evm_active_voted    = evm_facts.evm_active_voted;
+        actx.mldsa_active        = evm_facts.mldsa_active;
+        actx.mldsa_active_voted  = evm_facts.mldsa_active_voted;
         actx.chain_initial_height = evm_facts.chain_initial_height;
         /* the resolved snapshot view, ONLY for the kind that consumes it
          * (runtime.h's ctx contract) */

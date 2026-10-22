@@ -375,7 +375,8 @@ static uint64_t eff_ok(uint64_t floor_h) {
 
 static void t_vote_rules(void) {
     const uint8_t P = (uint8_t)DNAC_CFG_RULESET_GEN_ROOTS;
-    CHECK(P == 22u && DNAC_CFG_PARAM_MAX_ID == 22); OK();
+    /* 22 is no longer the last id: the ML-DSA-87 precompile vote took 23 */
+    CHECK(P == 22u && DNAC_CFG_PARAM_MAX_ID == 23); OK();
     CHECK(dnac_cfg_param_read_by_consensus(P)); OK();
     /* scalar: exactly D5 */
     CHECK(nodus_chain_config_scalar_rules(

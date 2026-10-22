@@ -112,11 +112,24 @@ int evm_is_precompile(const evm_addr *a)
     return a->b[31] >= EVM_PRECOMPILE_FIRST && a->b[31] <= EVM_PRECOMPILE_LAST;
 }
 
+const evm_addr evm_mldsa87_addr = { EVM_MLDSA87_ADDR_BYTES };
+
+int evm_precompile_resolve(const evm_config_t *cfg, const evm_addr *a)
+{
+    /* configuration, not build (evm.h precompile_mask, mldsa_precompile).
+     * The tag address first: its last byte (0xce) must never reach the
+     * numeric shift below. */
+    if (cfg->mldsa_precompile == 1 && cfg->nodus_profile == 1 &&
+        cfg->addr_bytes == 32 &&
+        memcmp(a->b, evm_mldsa87_addr.b, 32) == 0)
+        return EVM_PC_ID_MLDSA87;
+    if (!evm_is_precompile(a)) return 0;
+    return ((cfg->precompile_mask >> a->b[31]) & 1u) ? (int)a->b[31] : 0;
+}
+
 int evm_precompile_enabled(const evm_state_t *st, const evm_addr *a)
 {
-    /* configuration, not build (evm.h precompile_mask) */
-    if (!evm_is_precompile(a)) return 0;
-    return (st->cfg.precompile_mask >> a->b[31]) & 1u;
+    return evm_precompile_resolve(&st->cfg, a) != 0;
 }
 
 int evm_grow(void **p, size_t *cap, size_t elem, size_t init)
@@ -1269,6 +1282,19 @@ evm_state_t *evm_state_new(const evm_config_t *cfg, const evm_backend_t *be)
             for (int i = 0; i < 12; i++)
                 if (cfg->ticket_addr.b[i] != 0) return NULL;
         if (evm_u256_is_zero(&cfg->ticket_unit)) return NULL;
+    }
+    /* ML-DSA-87 precompile (evm.h mldsa_precompile): a Nodus-profile,
+     * 32-byte-address feature; its tag address is no precompile number
+     * (bytes 0..30 not all zero) and is not the ticket address */
+    if (cfg->mldsa_precompile != 0 && cfg->mldsa_precompile != 1) return NULL;
+    if (cfg->mldsa_precompile) {
+        int numeric = 1;
+        if (cfg->addr_bytes != 32 || cfg->nodus_profile != 1) return NULL;
+        for (int i = 0; i < 31; i++)
+            if (evm_mldsa87_addr.b[i] != 0) numeric = 0;
+        if (numeric) return NULL;
+        if (memcmp(evm_mldsa87_addr.b, cfg->ticket_addr.b, 32) == 0)
+            return NULL;
     }
     evm_state_t *st = calloc(1, sizeof(*st));
     if (!st) return NULL;
