@@ -248,7 +248,9 @@ export function lockedInputs(rows) {
 // and the coin list, checked like prepare() checks them before a send — an
 // invalid list, a tip of 0 (the node's answer to a failed read), or an empty
 // list under a positive balance is an error, never "no coins".
-// -> { coins: Set of nullifiers, tip: BigInt }
+// -> { coins: Set of nullifiers, tip: BigInt, complete: boolean } — `complete`
+// is true only when the module said the listing is not truncated (the native
+// list is capped: a coin outside a truncated page merely looks "not listed").
 export async function coinView({ client, from } = {}) {
   if (!client || client.state !== 'ready') throw new Error('Nodus connection is not ready.');
   if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
@@ -256,7 +258,13 @@ export async function coinView({ client, from } = {}) {
   const listing = await client.list();
   const coins = parseCoins(listing), tip = parseTip(listing.tip);
   if (tip <= 0n || (coins.length === 0 && spendable > 0n)) throw new Error('Your coin list could not be read.');
-  return { coins: new Set(coins.map(coin => coin.nullifier)), tip };
+  return { coins: new Set(coins.map(coin => coin.nullifier)), tip, complete: listing.truncated === false };
+}
+// The quarantined records that still lock coins: every record object not in
+// `released` (a Set of the record objects themselves — two records may list the
+// same inputs, so a record is never identified by its inputs).
+export function quarantineLockRows(quarantined, released) {
+  return quarantined.filter(row => !released.has(row));
 }
 // Whether the lock of a quarantined record (src/activity-storage.js
 // parseActivity `quarantined`: { inputs, expiryHeight?, tokenRow }) can be
@@ -265,13 +273,15 @@ export async function coinView({ client, from } = {}) {
 //   spends every input or none, so one spent coin means it can never be
 //   applied (a double spend) and holding the rest buys nothing. Only for a
 //   native record: a token record's token coins are not in this native list.
-//   Released when NONE of its inputs is listed any more (every one spent).
+//   Released when NONE of its inputs is listed any more (every one spent) —
+//   and only from a COMPLETE listing (view.complete === true): in a truncated
+//   page an unspent coin is merely absent.
 // - its expiry is known and the chain is past it: it can no longer be applied.
 // Otherwise (an input still unspent and no usable expiry) it stays held.
 export function quarantineReleasable(entry, view) {
   if (!entry || !view || !(view.coins instanceof Set) || typeof view.tip !== 'bigint' || view.tip <= 0n) return false;
   if (typeof entry.expiryHeight === 'string' && /^[1-9]\d{0,19}$/.test(entry.expiryHeight) && view.tip > BigInt(entry.expiryHeight)) return true;
-  return entry.tokenRow !== true && Array.isArray(entry.inputs) && entry.inputs.length > 0 && entry.inputs.every(input => !view.coins.has(input));
+  return view.complete === true && entry.tokenRow !== true && Array.isArray(entry.inputs) && entry.inputs.length > 0 && entry.inputs.every(input => !view.coins.has(input));
 }
 // Which coins a resend of `row` may use (session-expiry note item 3):
 // - 'confirmed': none, it is already in the chain;
