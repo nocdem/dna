@@ -1,0 +1,150 @@
+/**
+ * @file faucet_journal.h
+ * @brief The faucet's durable journal (SQLite, WAL, synchronous=FULL).
+ *
+ * Governing records: docs/plans/2026-10-22-testnet-faucet-design.md section
+ * 6.4-6.7 and the operator's "Yeni istekleri durdur" (at the storage limit
+ * new claims stop; paid markers are never deleted).
+ *
+ * WHAT IS KEPT
+ *   claims        one row per claim: kind full|start, address, name, state
+ *   paid          the permanent paid markers: "full:<name>" / "start:<addr>"
+ *                 (written in the SAME transaction as the claim, never
+ *                 deleted — the single source of "already paid", G1)
+ *   attempts      one row per signed envelope of a claim: the stored bytes,
+ *                 wire id, intent id, input nullifiers, build tip, expiry,
+ *                 scan cursor, last submit tip
+ *   reservations  the nullifiers an open claim holds (survive restart)
+ *
+ * STATES  planned -> signed -> submitted -> confirmed | expired | unknown
+ *         (paused = nothing signed, waiting; expired -> signed on a
+ *         replacement attempt). Every transition is checked against the
+ *         legal table here and runs inside one BEGIN IMMEDIATE transaction;
+ *         an illegal request is refused and changes nothing.
+ *
+ * A DB failure is never a value: every function returns -1 on a database
+ * fault and the caller must not treat the fact as "none" or "zero".
+ *
+ * Thread safety: one connection, one mutex; every call takes the lock.
+ */
+#ifndef FAUCET_JOURNAL_H
+#define FAUCET_JOURNAL_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+#define FJ_KIND_MAX    8
+#define FJ_STATE_MAX   12
+#define FJ_MSG_MAX     160
+#define FJ_MAX_INPUTS  15
+
+typedef struct faucet_journal faucet_journal_t;
+
+typedef struct {
+    int64_t seq;
+    char    claim_id[33];            /* 32 lowercase hex                    */
+    char    kind[FJ_KIND_MAX];       /* "full" | "start"                    */
+    char    address[129];
+    char    name[37];                /* full only                           */
+    char    state[FJ_STATE_MAX];
+    char    message[FJ_MSG_MAX];
+} faucet_claim_t;
+
+typedef struct {
+    int      n;                      /* attempt number, 1-based             */
+    uint8_t *env;                    /* heap; faucet_attempt_free           */
+    size_t   env_len;
+    uint8_t  wire_id[64];
+    uint8_t  intent_id[64];
+    uint8_t  inputs[FJ_MAX_INPUTS][64];
+    int      n_in;
+    uint64_t build_tip;
+    uint64_t expiry;
+    uint64_t scan_next;              /* next height to scan                 */
+    uint64_t last_submit_tip;        /* 0 = never submitted                 */
+} faucet_attempt_t;
+
+typedef enum {
+    FJ_CREATED      = 0,
+    FJ_EXISTS       = 1,   /* a marker or an open claim for the address    */
+    FJ_QUEUE_FULL   = 2,
+    FJ_STORAGE_FULL = 3,
+    FJ_STOPPED      = 4,   /* a claim is in state unknown                  */
+    FJ_ERR          = -1
+} faucet_jcreate_rc_t;
+
+typedef struct { int open; int paused; int unknown; } faucet_jcounts_t;
+
+/** Open (and create) the journal. `storage_ceiling` bytes (db + wal).
+ *  Refuses a newer schema. @return 0 / -1. */
+int  faucet_journal_open(const char *path, uint64_t storage_ceiling,
+                         faucet_journal_t **out);
+void faucet_journal_close(faucet_journal_t *j);
+
+/** Create a claim atomically with its paid marker. kind "full" needs a
+ *  name (marker "full:<name>"), "start" marker "start:<address>".
+ *  Checks, in order: marker exists -> FJ_EXISTS (that claim); an open
+ *  claim for the address -> FJ_EXISTS; a claim in state unknown ->
+ *  FJ_STOPPED; storage ceiling -> FJ_STORAGE_FULL; open claims >=
+ *  queue_cap -> FJ_QUEUE_FULL; else insert -> FJ_CREATED. `out` is the
+ *  created or the existing claim. */
+int faucet_journal_claim_create(faucet_journal_t *j, const char *kind,
+                                const char *address, const char *name,
+                                int queue_cap, const uint8_t rand16[16],
+                                faucet_claim_t *out);
+
+/** @return 0 found, 1 not found, -1 fault. */
+int faucet_journal_claim_get(faucet_journal_t *j, const char *claim_id,
+                             faucet_claim_t *out);
+/** The latest claim (highest seq) of an address. 0 / 1 / -1. */
+int faucet_journal_claim_by_address(faucet_journal_t *j, const char *address,
+                                    faucet_claim_t *out);
+/** The oldest claim that is not confirmed. 0 found / 1 none / -1. */
+int faucet_journal_head(faucet_journal_t *j, faucet_claim_t *out);
+
+/** planned/paused/submitted (the non-signing, non-terminal moves) with a
+ *  message. Illegal -> -2, nothing changed. 0 / -2 / -1. */
+int faucet_journal_set_state(faucet_journal_t *j, int64_t seq,
+                             const char *state, const char *message);
+
+/** confirmed | expired | unknown. confirmed releases the reservations.
+ *  Illegal -> -2. 0 / -2 / -1. */
+int faucet_journal_finish(faucet_journal_t *j, int64_t seq, const char *state,
+                          const char *message);
+
+/** Store a NEW signed attempt (a->env etc. filled by the caller; a->n is
+ *  assigned) and flip the claim to signed, replacing the claim's
+ *  reservations with a->inputs — all in ONE transaction. Legal only from
+ *  planned, paused or expired. A nullifier reserved by ANOTHER claim ->
+ *  -3 and nothing changes. 0 / -2 illegal / -3 reserved / -1. */
+int faucet_journal_attempt_sign(faucet_journal_t *j, int64_t seq,
+                                faucet_attempt_t *a);
+
+/** The latest attempt of a claim (env heap). 0 / 1 none / -1. */
+int faucet_journal_attempt_latest(faucet_journal_t *j, int64_t seq,
+                                  faucet_attempt_t *out);
+void faucet_attempt_free(faucet_attempt_t *a);
+
+/** Record a submit CALL on the latest attempt: last_submit_tip = tip and,
+ *  from signed, the claim becomes submitted. (The node's answer is not an
+ *  input — design section 6.4.) 0 / -2 illegal / -1. */
+int faucet_journal_attempt_submitted(faucet_journal_t *j, int64_t seq,
+                                     uint64_t tip);
+
+/** Advance the scan cursor of the latest attempt. Never backwards.
+ *  0 / -2 (not above the stored cursor) / -1. */
+int faucet_journal_attempt_scanned(faucet_journal_t *j, int64_t seq,
+                                   uint64_t scan_next);
+
+/** Nullifiers reserved by claims OTHER than `except_seq`. Up to `cap`
+ *  (cap is large enough: 15 inputs per open claim, queue-bounded).
+ *  @return the number, or -1. */
+int faucet_journal_reserved_other(faucet_journal_t *j, int64_t except_seq,
+                                  uint8_t (*out)[64], int cap);
+
+int faucet_journal_counts(faucet_journal_t *j, faucet_jcounts_t *out);
+
+/** 1 when the db + wal bytes have reached the ceiling, 0 not, -1 fault. */
+int faucet_journal_storage_full(faucet_journal_t *j);
+
+#endif /* FAUCET_JOURNAL_H */
