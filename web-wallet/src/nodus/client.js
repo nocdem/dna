@@ -32,11 +32,18 @@
 //                                Resolves { total, spendable } — raw-unit
 //                                decimal integer strings (1 NODUS = 10^8).
 //                                Must reject on any read error, never resolve 0.
-//     list()                     Own coins (dnac_utxo). Resolves { tip, coins:
+//                                OPTIONAL `tokens: [{ tokenId, total,
+//                                spendable }]` — one row per pinned token
+//                                (TOKEN_OPS below), raw units of that token.
+//     list()                   Own coins (dnac_utxo). Resolves { tip, coins:
 //                                [{ nullifier: 128 hex, amount }], truncated }
 //                                — tip and amounts raw decimal strings; tip is
 //                                the block_height the node reported ("0" is
 //                                passed through, the wallet refuses it).
+//                                `coins` are the NATIVE coins only. OPTIONAL
+//                                `tokenCoins: [{ nullifier, amount, tokenId }]`
+//                                (pinned tokens' coins) and `tokens: [{
+//                                tokenId, listed, truncated }]` (TOKEN_OPS).
 //     buildAndSign({ to, amount, expiryHeight, coins })
 //                                Builds and signs one CORE SPEND envelope from
 //                                the candidate `coins` only (the wallet has
@@ -246,6 +253,13 @@ const ADDR_HISTORY_OPS = ['addrHistory'];
 // without it still unlocks; this client then answers "not available" and
 // the page shows no update notice (src/nodus/update-notice.js).
 const COMPAT_OPS = ['rulesetCompat'];
+// OPTIONAL (pinned tokens — design docs/plans/2026-10-22-connect-native-
+// tokens-design.md §6; shapes in src/nodus/send-module.js): a module without
+// both still unlocks and still sends NODUS; this client then answers "tokens
+// are not available" and the wallet shows no token. tokenPins is
+// synchronous (it reads statics: never reaches emscripten_sleep),
+// tokenBuildAndSign is queued like buildAndSign.
+const TOKEN_OPS = ['tokenPins', 'tokenBuildAndSign'];
 const U32_DEC = /^(0|[1-9]\d{0,9})$/;
 // A page request, checked: `limit` 1..NODUS_HISTORY_MAX_LIMIT (default
 // NODUS_HISTORY_LIMIT); `before` (optional) the cursor { h, i, q } of
@@ -405,7 +419,7 @@ export const isNodusBusy = error => error?.busy === true;
 // 'session lost', error } — for the session log only.
 export function createNodusClient({ factory, onState, steps, setInterval: every = globalThis.setInterval, clearInterval: stopEvery = globalThis.clearInterval, setTimeout: after = globalThis.setTimeout, clearTimeout: stopAfter = globalThis.clearTimeout } = {}) {
   if (typeof factory !== 'function') throw new Error('The Nodus send module is not available.');
-  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, hf6able = false, hf6Rules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false, historyReadable = false, compatReadable = false;
+  let module, state = 'idle', stopped = false, started = false, timer, inFlight, tickQueued = false, fingerprint, chainId, claimable = false, stakeable = false, stakingRules, hf6able = false, hf6Rules, connectable = false, nameable = false, registrable = false, vaultable = false, splittable = false, connecting, evmGen = 0, evmBuildable = false, evmReadable = false, historyReadable = false, compatReadable = false, tokenable = false;
   // The connection step running now ({ name, handle }) and whether the first
   // keepalive after 'ready' is still to be logged.
   let currentStep, firstTick = false;
@@ -588,6 +602,7 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     evmReadable = evmGen > 0 && EVM_QUERY_OPS.every(name => typeof loaded[name] === 'function');
     historyReadable = ADDR_HISTORY_OPS.every(name => typeof loaded[name] === 'function');
     compatReadable = COMPAT_OPS.every(name => typeof loaded[name] === 'function');
+    tokenable = TOKEN_OPS.every(name => typeof loaded[name] === 'function');
   }
   // Smart contracts only where the node runs the EVM generation: a node
   // that has not voted the EVM in (or does not say) offers neither group
@@ -712,6 +727,14 @@ export function createNodusClient({ factory, onState, steps, setInterval: every 
     balance: (options) => call('balance')(undefined, options),
     list: (options) => call('list')(undefined, options),
     buildAndSign: call('buildAndSign'),
+    // Pinned tokens (TOKEN_OPS): whether the loaded module offers them; the
+    // pinned list as the module reports it right now ([{ tokenId, name,
+    // symbol, decimals, available }] — `available` false = the node's
+    // metadata for it did not equal the pin, in this session; [] before
+    // 'ready' or without the group) and the token send.
+    get tokenable() { return tokenable && state === 'ready'; },
+    tokenPins() { return tokenable && state === 'ready' && module ? module.tokenPins() : []; },
+    tokenBuildAndSign: (args, options) => tokenable ? call('tokenBuildAndSign')(args, options) : Promise.reject(new Error('Tokens are not available in this wallet version.')),
     submit: call('submit'),
     scanConfirm: call('scanConfirm'),
     rulesetInfo: (options) => call('rulesetInfo')(undefined, options),

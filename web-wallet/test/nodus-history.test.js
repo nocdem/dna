@@ -194,7 +194,7 @@ test('a module without addrHistory still unlocks; history is "not available"', a
 test('the wire id of a send stays in this tab: recorded in memory, never saved', async () => {
   const { mock, client } = await readyClient();
   mock.state.wireId = WIRE(42);
-  const t = await prepare({ client, from: FINGERPRINT, to: RECIPIENT, amount: '1' });
+  const t = await prepare({ client, from: FINGERPRINT, to: RECIPIENT, amount: '1', tokenId: NATIVE });
   let details;
   await t.send(async d => { details = d; });
   assert.equal(details.hash, INTENT_ID); assert.equal(details.wire, WIRE(42));
@@ -207,7 +207,7 @@ test('the wire id of a send stays in this tab: recorded in memory, never saved',
   assert.equal(saved.length, 1); assert.equal('wire' in saved[0], false);
   // a module without a wire id: no `wire` at all (never invented)
   mock.state.wireId = null;
-  const u = await prepare({ client, from: FINGERPRINT, to: RECIPIENT, amount: '1' });
+  const u = await prepare({ client, from: FINGERPRINT, to: RECIPIENT, amount: '1', tokenId: NATIVE });
   let plain;
   await u.send(async d => { plain = d; });
   assert.equal('wire' in plain, false);

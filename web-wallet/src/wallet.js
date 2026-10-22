@@ -21,13 +21,21 @@ function reviewed(prepared, fields) {
       return prepared.send(onBroadcast);
     } };
 }
-export async function prepareTransfer({ wallet, chain, symbol, to, amount, endpoint, nodusLocked }, implementations = adapters) {
+// `asset`: the send form's asset identity { chain, tokenId } (design 2026-10-22-
+// connect-native-tokens-design.md §6 item 1). For NODUS it is REQUIRED and its
+// chain must be the chain being sent on: no hop defaults to native, so a
+// missing or malformed tokenId refuses here, before any module call. The
+// other networks still take their asset by `symbol`.
+export async function prepareTransfer({ wallet, chain, symbol, asset: identity, to, amount, endpoint, nodusLocked }, implementations = adapters) {
   if (!wallet || !implementations[chain]) throw new Error('Open a wallet first.');
   if (chain === NODUS_ASSET.chain) {
+    if (!identity || identity.chain !== NODUS_ASSET.chain || typeof identity.tokenId !== 'string' || !/^[0-9a-f]{128}$/.test(identity.tokenId)) throw new Error('Choose the asset to send.');
     // Recipient, amount, fee and expiry are decoded from the signed envelope by
     // the module, never taken from the form (design G1); `review` lists them.
-    const prepared = await implementations.nodus.prepare({ client: wallet.nodusClient, from: wallet.addresses.nodus, to, amount, locked: nodusLocked });
-    return reviewed(prepared, { endpoint: undefined, chain, symbol: prepared.symbol, to: prepared.to, recipientName: prepared.recipientName, amount: prepared.amount, from: wallet.addresses.nodus, review: prepared.review });
+    const prepared = await implementations.nodus.prepare({ client: wallet.nodusClient, from: wallet.addresses.nodus, to, amount, tokenId: identity.tokenId, locked: nodusLocked });
+    // The prepared transfer must be for the asset that was asked for.
+    if (prepared.tokenId !== identity.tokenId) throw new Error('The prepared transfer is not for the asset you chose. Nothing was sent.');
+    return reviewed(prepared, { endpoint: undefined, chain, symbol: prepared.symbol, tokenId: prepared.tokenId, to: prepared.to, recipientName: prepared.recipientName, amount: prepared.amount, from: wallet.addresses.nodus, review: prepared.review });
   }
   const asset = assetFor(chain, symbol), units = amountUnits(amount, asset.decimals);
   endpoint = endpointUrl(endpoint || CHAINS[chain].endpoint);

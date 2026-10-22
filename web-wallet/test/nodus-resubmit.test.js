@@ -25,7 +25,7 @@ import { prepareTransfer } from '../src/wallet.js';
 import { recordActivity } from '../src/activity.js';
 import { serializeActivity, parseActivity, activityKeyFor } from '../src/activity-storage.js';
 import { lockedInputs } from '../src/adapters/nodus.js';
-import { createMockNodusModule, FINGERPRINT, RECIPIENT, INTENT_ID, busyError, coin } from './nodus-mock-module.js';
+import { createMockNodusModule, FINGERPRINT, RECIPIENT, INTENT_ID, busyError, coin, NODUS_NATIVE } from './nodus-mock-module.js';
 
 const ENVELOPE = Uint8Array.of(4, 5, 6, 7);
 const INPUT = coin(2, '1').nullifier;
@@ -152,7 +152,7 @@ test('resubmit: the kept bytes never reach the saved Activity', async () => {
 test('resubmit, send path: busy at Confirm, busy again, then accepted — three submissions of the SAME bytes, one signing', async () => {
   const { mock, client } = await readyClient();
   mock.state.hedged = true;            // each build signs different bytes
-  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1.5' });
+  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1.5' });
   assert.equal(mock.state.builds, 1);
   mock.state.busy.add('submit');
   let record;
@@ -182,7 +182,7 @@ test('resubmit, send path: busy at Confirm, busy again, then accepted — three 
 test('resubmit, send path: a refusal at Confirm keeps nothing (today\'s handling)', async () => {
   const { mock, client } = await readyClient();
   mock.state.accepted = false;
-  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to: RECIPIENT, amount: '1.5' });
+  const transfer = await prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to: RECIPIENT, amount: '1.5' });
   let record;
   const error = await transfer.confirm(async details => { record = recordActivity(transfer, details); }).then(() => assert.fail('a refusal must reject'), e => e);
   assert.match(error.message, /did not accept/);

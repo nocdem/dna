@@ -66,10 +66,18 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   const networks = { ...entries(leadingNetworks), ...CHAINS, ...entries(extraNetworks) };
   const baseAssets = [...leadingNetworks.map(({ asset }) => asset), ...ASSETS, ...extraNetworks.map(({ asset }) => asset)];
   let assets, chains;
+  // A leading network's own tokens (NODUS: the pinned tokens its send module
+  // reports while ready — network.tokens, src/nodus/network.js nodusTokens;
+  // design docs/plans/2026-10-22-connect-native-tokens-design.md §6) are rows
+  // of that network, listed right after its own asset. Unpriced like the
+  // network's asset (no priceId), keyed `chain:SYMBOL`.
+  const tokenAssets = chain => (networks[chain].tokens || []).map(t => ({ chain, symbol: t.symbol, decimals: t.decimals, tokenId: t.tokenId, key: `${chain}:${t.symbol}` }));
+  const leadingAssets = new Set(leadingNetworks.map(({ asset }) => asset));
   // Re-derived when setNetwork() swaps a network (NODUS while its send module
   // is ready, src/nodus/network.js nodusNetworkFor).
   function flag() {
-    assets = baseAssets.map(asset => networks[asset.chain].balanceUnavailable ? { ...asset, balanceUnavailable: true } : asset);
+    assets = baseAssets.flatMap(asset => [asset, ...(leadingAssets.has(asset) ? tokenAssets(asset.chain) : [])])
+      .map(asset => networks[asset.chain].balanceUnavailable ? { ...asset, balanceUnavailable: true } : asset);
     chains = Object.keys(networks).filter(chain => !networks[chain].balanceUnavailable);
   }
   flag();
@@ -181,7 +189,7 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
         identity.onclick = () => selectAsset(row.chain, row.symbol, 'select');
         entry.onclick = event => { if (!event.target.closest('button')) selectAsset(row.chain, row.symbol, 'select'); };
         const value = el('span', 'holding-value');
-        const state = row.state === 'unsupported' ? 'Balance not shown yet' : row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
+        const state = row.unavailable === true ? 'Unavailable right now' : row.state === 'unsupported' ? 'Balance not shown yet' : row.state === 'loading' ? 'Reading…' : row.state === 'stale' ? 'Balance out of date' : row.state === 'idle' ? 'Not read' : 'Balance unavailable';
         const rowAmount = el('strong', '', text(row.balance === null ? state : `${displayAmount(row.balance)} ${row.symbol}`));
         if (row.balance !== null && !hidden) rowAmount.title = `${row.balance} ${row.symbol}`;
         value.append(rowAmount,
@@ -196,16 +204,19 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
       }
       // The network's extra action sits right under its asset group, outside
       // the collapsible rows so it is visible without expanding them.
-      const chains = [...new Set(group.rows.map(row => row.chain))].filter(chain => rowActions[chain]);
-      return [detail, ...chains.map(chain => {
-        const block = el('div', 'asset-action notice'), action = rowActions[chain];
-        const button = el('button', 'small', action.label); button.type = 'button'; button.dataset.rowAction = chain;
+      // Under the network's OWN asset only (a leading network's tokens, e.g.
+      // tUSDT on NODUS, are groups of their own and carry no action), and
+      // one block per action of that network (setAction `id`).
+      const chains = [...new Set(group.rows.filter(row => row.symbol === networks[row.chain].symbol).map(row => row.chain))].filter(chain => rowActions[chain]);
+      return [detail, ...chains.flatMap(chain => Object.entries(rowActions[chain]).map(([id, action]) => {
+        const block = el('div', 'asset-action notice');
+        const button = el('button', 'small', action.label); button.type = 'button'; button.dataset.rowAction = id === 'main' ? chain : `${chain}:${id}`;
         // The button is handed to the action so it can show its own
         // "Preparing…" state (src/app.js showPreparing).
         button.onclick = () => action.run(button);
         block.append(el('p', '', action.note), button);
         return block;
-      })];
+      }))];
     }));
     // Reading another network or expiring a quote must not interrupt keyboard navigation.
     if (focusedRowAction) $('balances').querySelector(`button[data-row-action="${CSS.escape(focusedRowAction)}"]`)?.focus({ preventScroll: true });
@@ -386,9 +397,10 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
   // read as soon as setAddress() reports its address.
   function setNetwork(chain, network) {
     if (!Object.hasOwn(networks, chain) || networks[chain] === network) return;
+    const before = assets.filter(a => a.chain === chain);       // incl. the old network's tokens
     networks[chain] = network; flag();
     jobs.get(chain)?.abort(); jobs.delete(chain);
-    for (const asset of baseAssets.filter(a => a.chain === chain)) delete balances[asset.key];
+    for (const asset of [...before, ...assets.filter(a => a.chain === chain)]) delete balances[asset.key];
     // The address stays (0.1.96): its last read balance (kept) is shown as
     // "last read" while the network has no source, e.g. NODUS reconnecting.
     render();
@@ -406,12 +418,13 @@ export function createPortfolio({ readBalances, selectAsset, leadingNetworks = [
     }
   }
   // Shows (`{ label, note, run }`) or removes (undefined) the extra action
-  // under `chain`'s asset group. Only an open portfolio shows one.
-  function setAction(chain, action) {
-    if (!Object.hasOwn(networks, chain)) return;
-    if (action && addresses && typeof action.label === 'string' && typeof action.note === 'string' && typeof action.run === 'function') rowActions[chain] = action;
-    else if (!rowActions[chain]) return;
-    else delete rowActions[chain];
+  // `id` ('main' by default; NODUS also has 'faucet': "Get testnet coins")
+  // under `chain`'s own asset group. Only an open portfolio shows one.
+  function setAction(chain, action, id = 'main') {
+    if (!Object.hasOwn(networks, chain) || typeof id !== 'string' || !/^[a-z]{1,12}$/.test(id)) return;
+    if (action && addresses && typeof action.label === 'string' && typeof action.note === 'string' && typeof action.run === 'function') rowActions[chain] = { ...rowActions[chain], [id]: action };
+    else if (!rowActions[chain]?.[id]) return;
+    else { const { [id]: _gone, ...rest } = rowActions[chain]; if (Object.keys(rest).length) rowActions[chain] = rest; else delete rowActions[chain]; }
     render();
   }
   // Adds (true) or removes (false) the "Earn" button on `chain`'s rows.

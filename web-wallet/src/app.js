@@ -5,13 +5,13 @@ import { serializeActivity, parseActivity, requireSavedForEvm, activityKeyFor, s
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
-import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus, evmActivityText } from './activity.js';
+import { recordActivity, watchActivity, checkActivity, terminal, submissionStatus, evmActivityText, activitySymbol } from './activity.js';
 import { CHAINS, CELLFRAME, rpcChoiceOffered } from './config.js';
 import { CPUNK_ASSET, displayAmount } from './portfolio.js';
 // Pure data, referenced only inside `if (import.meta.env.VITE_ENABLE_IXIOS === 'true')`
 // blocks below, so a disabled build tree-shakes the whole module away.
 import { IXIOS_NETWORK, IXIOS_ASSET } from './ixios/network.js';
-import { NODUS_ASSET, nodusNetworkFor } from './nodus/network.js';
+import { NODUS_ASSET, NODUS_TOKEN_ID, nodusNetworkFor } from './nodus/network.js';
 // null until package (c3) ships the module; see src/nodus/send-module.js.
 import { nodusSendModuleFactory } from './nodus/send-module.js';
 import { createNodusClient, NODUS_CONNECT_BOUND_MS, isNodusBusy } from './nodus/client.js';
@@ -19,7 +19,7 @@ import { nodusHistoryRow, nodusHistoryStatus, NODUS_HISTORY_LIMIT } from './nodu
 import { parseNameOf } from './nodus/names.js';
 import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, busyReadyText } from './nodus/resubmit.js';
 import { updateNoticeOf, createUpdateNotice } from './nodus/update-notice.js';
-import { parseRulesetCompat } from './adapters/nodus.js';
+import { parseRulesetCompat, pinnedTokens, faucetAvailable, claimTestnetCoins } from './adapters/nodus.js';
 import { netLevelFor, netStatusView } from './net-status.js';
 // The session log (memory only, cleared on lock; the Logs page).
 import { sessionLog, stepLog, logPageErrors, mountSessionLogView } from './session-log.js';
@@ -351,7 +351,7 @@ function renderNodusHistory(list, status, button) {
     : nodusHistoryStatus({ page: kept?.page ?? null, error: nodusHistoryError, reading: !!nodusHistoryJob, readAt: kept ? historyTime(kept.readAt) : '', limit: NODUS_HISTORY_LIMIT });
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node; };
   list.replaceChildren(...(kept ? kept.page.entries : []).map(entry => {
-    const r = nodusHistoryRow(entry, { names: peerNamesShown() });
+    const r = nodusHistoryRow(entry, { names: peerNamesShown(), tokens: nodusPins });
     const div = el('div', `activity-row nodus-history-row${r.dir ? ` history-dir-${r.dir}` : ''}`), main = el('span', 'activity-main');
     main.append(el('strong', '', r.amount ? `${r.sign}${r.amount}` : r.title), el('small', '', [r.amount ? r.title : '', r.detail].filter(Boolean).join(' · ')));
     const side = el('span', 'activity-side'), badge = el('span', 'status-badge', 'confirmed');
@@ -453,7 +453,8 @@ function renderActivity(save = true) {
     // (src/activity.js evmActivityText), not the stored amount + fee sum.
     const evm = row.kind === 'evm' ? evmActivityText(row) : null;
     const main = el('span', 'activity-main');
-    main.append(el('strong', '', evm ? evm.amount : `${row.amount} ${row.symbol}`), el('small', '', evm ? evm.what : what.join(' · ')));
+    // a token row's symbol is judged against the pinned list (unknown token)
+    main.append(el('strong', '', evm ? evm.amount : `${row.amount} ${activitySymbol(row, nodusPins, nodusPinsKnown)}`), el('small', '', evm ? evm.what : what.join(' · ')));
     const side = el('span', 'activity-side'), badge = el('span', 'status-badge', row.status);
     badge.dataset.status = row.status;
     const when = el('time', '', new Date(row.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
@@ -572,7 +573,7 @@ const portfolio = createPortfolio({
   selectAsset(chain, symbol, action) {
     if (!wallet) return;
     if (action !== 'earn') navigateWalletPage(null);
-    $('chain').value = chain; selectChain(); $('asset').value = symbol;
+    $('chain').value = chain; selectChain(); selectAssetOption(chain, symbol);
     if (action === 'select') { if (matchMedia(SINGLE_COLUMN_DASHBOARD).matches) $('send-form').scrollIntoView({ block: 'start' }); return; }
     // 'choose' (a network badge, 0.1.108): only the network changes — the
     // TRANSFER NETWORK box below says it — nothing scrolls, nothing opens.
@@ -894,12 +895,20 @@ function closeReview() { clearTimeout(confirmEnableTimer); pending?.cancel(); pe
 $('review-dialog').addEventListener('keydown', event => { if (event.key === 'Enter' && $('confirm-send').disabled) event.preventDefault(); });
 // NODUS leaves receive-only mode only while `ready` (a module client that
 // finished unlock for the open wallet); any other state restores it.
+// The pinned tokens (the send module's one table, src/adapters/nodus.js
+// pinnedTokens) while the NODUS connection is ready; `nodusPinsKnown`: the
+// module reported them (Activity then judges a row's tokenId against them,
+// src/activity.js activitySymbol). They become the NODUS network's `tokens`
+// (the Send panel's asset list and the portfolio's rows).
+let nodusPins = [], nodusPinsKnown = false;
 function setNodusReady(ready, { reselect = true } = {}) {
-  const network = nodusNetworkFor(ready, { module: NODUS_HAS_MODULE });
+  nodusPins = ready ? pinnedTokens(nodusClient) : [];
+  nodusPinsKnown = ready && nodusClient?.tokenable === true;
+  const network = nodusNetworkFor(ready, { module: NODUS_HAS_MODULE, tokens: nodusPins });
   if (receiveOnlyNetworks[NODUS_ASSET.chain] === network) return;
   receiveOnlyNetworks[NODUS_ASSET.chain] = network;
   if (!ready && wallet) wallet.nodusClient = undefined;
-  if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); hideStaking(); hideName(); }
+  if (!ready) { claimCheck++; portfolio.setAction(NODUS_ASSET.chain, undefined); portfolio.setAction(NODUS_ASSET.chain, undefined, 'faucet'); hideStaking(); hideName(); }
   portfolio.setNetwork(NODUS_ASSET.chain, network);
   if (reselect && wallet && $('chain').value === NODUS_ASSET.chain) selectChain();
 }
@@ -1103,6 +1112,7 @@ async function connectNodus(source, address, client, markReady) {
     portfolio.setAddress(NODUS_ASSET.chain, address);
     void refreshUpdateNotice(client);
     void refreshClaim();
+    refreshFaucet();
     void refreshStaking();
     void refreshName();
     void loadNodusHistory({ force: true });
@@ -1280,6 +1290,45 @@ async function refreshClaim() {
       run: () => void refreshClaim()
     });
   }
+}
+// TESTNET FAUCET (operator 2026-10-22 "Cüzdanın içinde"): "Get testnet coins"
+// under the NODUS asset, offered only while the connected module reports the
+// testnet chain (src/adapters/nodus.js faucetAvailable) — never on another
+// chain. It asks the faucet service on this page's own origin for this
+// wallet's own personal address (no vault selector in the first version,
+// operator "İlk sürümde yok") and shows what the faucet answers; the coins
+// arrive as ordinary incoming coins, so the balance is read again once the
+// claim is final. A claim the faucet has not finished within the bounded
+// polling stays "pending — check again later", never "failed".
+let faucetBusy = false;
+function refreshFaucet() {
+  portfolio.setAction(NODUS_ASSET.chain, undefined, 'faucet');
+  const client = nodusClient, source = wallet;
+  if (!client || !source || source.locked || !faucetAvailable(client, source.addresses.nodus)) return;
+  portfolio.setAction(NODUS_ASSET.chain, {
+    label: 'Get testnet coins',
+    note: 'Testnet only: ask the faucet for test NODUS and test USDT. They have no value.',
+    run: button => void startFaucet(button)
+  }, 'faucet');
+}
+async function startFaucet(button) {
+  if (faucetBusy || !wallet) return;
+  faucetBusy = true;
+  const client = nodusClient, source = wallet, restore = showPreparing(button, { text: 'Asking the faucet…' });
+  const category = 'wallet';
+  message('Asking the faucet for testnet coins…', { category });
+  try {
+    const claim = await claimTestnetCoins({
+      client, address: source.addresses.nodus,
+      onState: answer => { if (source === wallet && !source.locked) message(`Faucet: ${answer.state}. ${answer.message}`.trim(), { category }); },
+      stopped: () => source !== wallet || source.locked || client !== nodusClient
+    });
+    if (source !== wallet || source.locked) return;
+    const failed = ['refused', 'expired', 'unknown', 'paused'].includes(claim.state);
+    message(`Faucet: ${claim.state}. ${claim.message}`.trim(), { category, error: failed });
+    if (claim.state === 'confirmed') portfolio.reread(NODUS_ASSET.chain);
+  } catch (error) { if (source === wallet) message(error.message, { category, error: true }); }
+  finally { faucetBusy = false; restore(); }
 }
 // STAKING (0.1.29): the "Delegate NODUS" panel, shown while the connected
 // module offers staking (src/nodus/client.js stakeable). Every read and
@@ -1879,6 +1928,28 @@ function showTransferActions(chain, c) {
   $('quick-earn').hidden = chain !== NODUS_ASSET.chain;
   $('quick-swap').hidden = chain !== NODUS_ASSET.chain;
 }
+// The Send panel's asset list. NODUS: the option's VALUE is the asset's token
+// id (all zeros = NODUS itself), never its symbol — the id is what travels to
+// the module (design docs/plans/2026-10-22-connect-native-tokens-design.md §6
+// item 1); a pinned token the node's metadata does not confirm is listed but
+// disabled ("unavailable right now"). Every other network: value = symbol.
+function assetOptions(chain, c) {
+  const option = (text, value, symbol) => { const o = new Option(text, value); o.dataset.symbol = symbol; return o; };
+  if (chain !== NODUS_ASSET.chain) return [c.symbol, ...c.tokens.map(t => t.symbol)].map(s => option(s, s, s));
+  return [option(c.symbol, NODUS_TOKEN_ID, c.symbol), ...c.tokens.map(t => {
+    const o = option(t.available ? t.symbol : `${t.symbol} (unavailable right now)`, t.tokenId, t.symbol);
+    o.disabled = !t.available;
+    return o;
+  })];
+}
+// The asset a row of the portfolio names, selected in the Send panel: by
+// symbol on every network but NODUS, whose options are token ids (an
+// unavailable token's option is disabled and is never selected).
+function selectAssetOption(chain, symbol) {
+  const found = [...$('asset').options].find(o => o.dataset.symbol === symbol && !o.disabled);
+  if (found) $('asset').value = found.value;
+  else if (chain !== NODUS_ASSET.chain) $('asset').value = symbol;
+}
 function selectChain() {
   revision++; closeReview(); const chain = $('chain').value; const c = networkFor(chain);
   for (const label of document.querySelectorAll('.selected-network-name')) label.textContent = c.name;
@@ -1893,7 +1964,7 @@ function selectChain() {
   // with one provider (Cellframe, TRON, Solana, Ixios) uses it, no block.
   const offered = rpcChoiceOffered(c);
   $('rpc-settings').hidden = !offered; if (offered) populateRpcChoice(chain, c);
-  $('asset').replaceChildren(...[c.symbol, ...c.tokens.map(t => t.symbol)].map(s => new Option(s, s)));
+  $('asset').replaceChildren(...assetOptions(chain, c));
   $('solana-send-hint').hidden = chain !== 'solana';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
   if (explorers[chain]) { $('account-explorer').href = explorers[chain] + encodeURIComponent(address); $('account-explorer').hidden = false; }
@@ -2142,7 +2213,10 @@ $('send-form').onsubmit = async event => {
     // NODUS: coins of this wallet's unresolved NODUS sends are not offered to
     // the builder (G7; src/adapters/nodus.js lockedInputs).
     const nodusLocked = chain === NODUS_ASSET.chain ? adapters.nodus.lockedInputs(history.filter(row => row.address === wallet.addresses.nodus)) : undefined;
-    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked });
+    // NODUS: the asset travels as its token id (the option's value), required
+    // by prepareTransfer — never defaulted to native on the way.
+    const asset = chain === NODUS_ASSET.chain ? { chain, tokenId: $('asset').value } : undefined;
+    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, asset, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked });
     if (current !== revision || !wallet) { transfer.cancel(); return; }
     let entries;
     if (transfer.review) {
@@ -2190,7 +2264,9 @@ $('confirm-send').onclick = async () => {
     // A plain NODUS transfer the network accepted: Nodus Connect's Messages
     // may post its payment card in the chat it was started from (web
     // 0.1.90, src/connect/ui/messages.js walletExtension.nodusSent).
-    if (!transfer.kind && transfer.chain === NODUS_ASSET.chain && sentWire) raise('nodusSent', { to: transfer.to, amount: transfer.amount, wire: sentWire, intentId: hash });
+    // A token send does NOT raise it in v1 (design 2026-10-22-connect-native-
+    // tokens-design.md §6 item 8): the card states a NODUS amount.
+    if (!transfer.kind && transfer.chain === NODUS_ASSET.chain && transfer.tokenId === NODUS_TOKEN_ID && sentWire) raise('nodusSent', { to: transfer.to, amount: transfer.amount, wire: sentWire, intentId: hash });
     closeReview();
     // A submitted claim withdraws the offer while its record is unresolved.
     if (transfer.kind === 'claim') void refreshClaim();
@@ -2275,7 +2351,8 @@ async function resubmitRow(row) {
   if (result.outcome === 'sent') {
     // A plain NODUS transfer the network accepted: Nodus Connect's Messages
     // may post its payment card (as the confirm-send handler does).
-    if (!row.kind && typeof row.wire === 'string') raise('nodusSent', { to: row.to, amount: row.amount, wire: row.wire, intentId: row.hash });
+    // (a token row — it has a tokenId — raises nothing, as at Confirm above)
+    if (!row.kind && row.tokenId === undefined && typeof row.wire === 'string') raise('nodusSent', { to: row.to, amount: row.amount, wire: row.wire, intentId: row.hash });
     if (STAKE_KINDS.includes(row.kind)) closeStakeRow();
     message(`${what} submitted; confirmation is pending. ${idLabel} ${row.hash}. Its status is tracked in Activity.`, { category: logCategoryFor(row.kind) });
   } else if (result.outcome === 'refused') {

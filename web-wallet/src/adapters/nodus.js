@@ -26,7 +26,7 @@
 // - Confirmation screen values are decoded from the signed envelope (G1).
 // - Amounts are decimal strings at the module boundary, BigInt here (RT1 L4 F10).
 import { amountUnits, formatUnits } from '../core.js';
-import { NODUS_ASSET } from '../nodus/network.js';
+import { NODUS_ASSET, NODUS_TOKEN_ID, nodusTokens } from '../nodus/network.js';
 import { chainName, chainNameOk, parseNameOf } from '../nodus/names.js';
 import { isNodusBusy } from '../nodus/client.js';
 
@@ -264,6 +264,57 @@ export function parseBalance(result) {
   if (spendable > total) throw new Error('The Nodus module returned an invalid balance.');
   return { total, spendable };
 }
+// ── Pinned tokens (design docs/plans/2026-10-22-connect-native-tokens-design.md
+// §6; operator "Yalnız tUSDT") ────────────────────────────────────────────
+// The pinned tokens the module reports now (client.tokenPins(): the C
+// module's one table, checked by nodusTokens); [] for a module without the
+// token group.
+export function pinnedTokens(client) {
+  return client?.tokenable === true ? nodusTokens(client.tokenPins()) : [];
+}
+// The asset a NODUS send is for, from its token id: { native: true } for the
+// all-zero id, { native: false, pin } for a pinned token. Throws for a missing
+// or malformed id (NO hop defaults to native, §6 item 1) and for a token the
+// module does not pin ("Yalnız tUSDT").
+function sendAsset(client, tokenId) {
+  if (typeof tokenId !== 'string' || !HEX128.test(tokenId)) throw new Error('Choose the asset to send.');
+  if (tokenId === NODUS_TOKEN_ID) return { native: true, tokenId, symbol: NODUS_ASSET.symbol, decimals: DECIMALS };
+  const pin = pinnedTokens(client).find(p => p.tokenId === tokenId);
+  if (!pin) throw new Error('This token is not supported by this wallet.');
+  // metadata that does not equal the pin (operator "tUSDT'yi kapat")
+  if (!pin.available) throw new Error(`${pin.symbol} is unavailable right now. Nothing was sent.`);
+  return { native: false, ...pin };
+}
+// One pinned token's row of the module's balance answer: { total, spendable }
+// as BigInt, or null when the answer has no such row / an invalid one. The
+// module reports a row for every pin (an owner holding none is a real zero);
+// no row is NOT a zero.
+export function tokenBalanceOf(result, tokenId) {
+  const row = Array.isArray(result?.tokens) ? result.tokens.find(t => t?.tokenId === tokenId) : undefined;
+  if (!row) return null;
+  try {
+    const total = rawUnits(row.total, 'balance'), spendable = rawUnits(row.spendable, 'balance');
+    return spendable > total ? null : { total, spendable };
+  } catch { return null; }
+}
+// The pinned tokens' coins of a listing, for ONE token: [{ nullifier, amount
+// }] after the same checks as parseCoins, and whether the module read that
+// token's coin list at all (`listed` — a node that ignores the token filter,
+// or a failed read, leaves it false: never a list of another token's coins).
+export function parseTokenCoins(listing, tokenId) {
+  const invalid = () => new Error('The Nodus module returned an invalid coin list.');
+  const rows = Array.isArray(listing?.tokenCoins) ? listing.tokenCoins : [];
+  if (rows.length > MAX_LISTED_COINS) throw invalid();
+  const seen = new Set();
+  const coins = rows.filter(coin => {
+    if (!coin || typeof coin.nullifier !== 'string' || !HEX128.test(coin.nullifier) || typeof coin.tokenId !== 'string' || !HEX128.test(coin.tokenId) || seen.has(coin.nullifier)) throw invalid();
+    seen.add(coin.nullifier);
+    if (rawUnits(coin.amount, 'coin amount') === 0n) throw invalid();
+    return coin.tokenId === tokenId;
+  }).map(coin => ({ nullifier: coin.nullifier, amount: coin.amount }));
+  const status = Array.isArray(listing?.tokens) ? listing.tokens.find(t => t?.tokenId === tokenId) : undefined;
+  return { coins, listed: status?.listed === true, truncated: status?.truncated === true };
+}
 // Everything shown on the review screen comes from here: the module's own
 // decoding of the envelope it signed. Anything malformed stops the send.
 export function decodeBuilt(built) {
@@ -271,73 +322,126 @@ export function decodeBuilt(built) {
   if (!built || !(built.envelope instanceof Uint8Array) || built.envelope.length === 0 || typeof built.intentId !== 'string' || !HEX128.test(built.intentId) || !d) throw new Error('The Nodus module returned an invalid transaction.');
   if (typeof d.recipient !== 'string' || !HEX128.test(d.recipient) || typeof d.chainId !== 'string' || !HEX64.test(d.chainId)) throw new Error('The Nodus module returned an invalid transaction.');
   if (!Array.isArray(d.inputs) || d.inputs.length < 1 || d.inputs.length > NODUS_MAX_INPUTS || new Set(d.inputs).size !== d.inputs.length || !d.inputs.every(input => typeof input === 'string' && HEX128.test(input))) throw new Error('The Nodus module returned an invalid transaction.');
+  // The token the bytes pay (128 hex, all zeros = NODUS) and its change are
+  // REQUIRED: a module that does not report them is refused, never read as
+  // NODUS (§6 item 1: no hop defaults to native).
+  if (typeof d.tokenId !== 'string' || !HEX128.test(d.tokenId)) throw new Error('The Nodus module returned an invalid transaction.');
   return {
     envelope: built.envelope, intentId: built.intentId, recipient: d.recipient, chainId: d.chainId, inputs: [...d.inputs],
     amount: rawUnits(d.amount, 'transaction amount'), fee: rawUnits(d.fee, 'network fee'), change: rawUnits(d.change, 'change amount'),
+    tokenId: d.tokenId, tokenChange: rawUnits(d.tokenChange, 'token change amount'),
     expiryHeight: rawUnits(d.expiryHeight, 'expiry height'), ...builtWire(built)
   };
 }
 const nodusText = units => `${formatUnits(units, DECIMALS)} ${NODUS_ASSET.symbol}`;
 
 // Portfolio balance read (src/portfolio-view.js readBalances): the spendable
-// native balance. Any failure throws, which the portfolio shows as "Balance
-// unavailable" — never as zero (design G5).
+// native balance, then one row per pinned token. Any failure of the read
+// throws, which the portfolio shows as "Balance unavailable" — never as zero
+// (design G5); a token the node's metadata does not confirm gets a row of its
+// own that says so (`unavailable`, "Unavailable right now"), and one whose
+// balance row is missing or invalid an error row — neither touches the NODUS
+// row. (An address holding more than 256 token kinds makes the node refuse
+// the whole answer, and with it this read: no balance, never a zero.)
 export async function balances(chain, address, _endpoint, { signal, client } = {}) {
   if (chain !== NODUS_ASSET.chain || !client || client.state !== 'ready') throw new Error('Nodus connection is not ready.');
   if (address !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
-  const { spendable } = parseBalance(await client.balance({ signal }));
-  return [{ symbol: NODUS_ASSET.symbol, balance: formatUnits(spendable, DECIMALS) }];
+  const result = await client.balance({ signal });
+  const { spendable } = parseBalance(result);
+  const rows = [{ symbol: NODUS_ASSET.symbol, balance: formatUnits(spendable, DECIMALS) }];
+  for (const pin of pinnedTokens(client)) {
+    const row = pin.available ? tokenBalanceOf(result, pin.tokenId) : null;
+    rows.push(!pin.available ? { symbol: pin.symbol, error: true, unavailable: true }
+      : row ? { symbol: pin.symbol, balance: formatUnits(row.spendable, pin.decimals) } : { symbol: pin.symbol, error: true });
+  }
+  return rows;
 }
 
 // Builds and signs one SPEND for review. `locked`: coins of pending sends
 // (lockedInputs). `inputs`: a resend's exact coins (resendInputs), else null.
-export async function prepare({ client, from, to, amount, locked = new Set(), inputs = null }) {
+// `tokenId` (REQUIRED, 128 hex; all zeros = NODUS): the asset being sent — the
+// send form's identity, never a symbol (design 2026-10-22-connect-native-
+// tokens-design.md §6 item 1). A pinned token is sent through the module's
+// token build; its amount is in that token's decimals.
+export async function prepare({ client, from, to, amount, tokenId, locked = new Set(), inputs = null }) {
   if (!client || client.state !== 'ready') throw new Error('Nodus sending is not available right now.');
   if (from !== client.fingerprint) throw new Error('Nodus address does not match the connected identity.');
-  const units = nodusAmountUnits(amount);
+  const asset = sendAsset(client, tokenId);
+  const units = asset.native ? nodusAmountUnits(amount) : (() => {
+    const value = amountUnits(typeof amount === 'string' ? amount.trim() : amount, asset.decimals);
+    if (value > U64_MAX) throw new Error('Amount is out of range.');
+    return value;
+  })();
   // A chain name resolves to its owner first (one node, decision item 9).
   const { recipient, resolved } = await resolveNodusRecipient(client, to);
-  const { spendable } = parseBalance(await client.balance());
+  const balanceAnswer = await client.balance();
+  const { spendable } = parseBalance(balanceAnswer);
   const listing = await client.list();
   const coins = parseCoins(listing);
   // A read error on the node answers "0 coins" (design §1.4); with a positive
   // spendable balance, an empty list is a read failure, not "insufficient".
   if (coins.length === 0 && spendable > 0n) throw new Error('Your coin list could not be read. Nothing was sent; try again later.');
+  // A token send: the token's own balance and coin list, read the same way
+  // ("coin list unavailable" for a node that ignores the token filter —
+  // never a zero, never another token's coins).
+  let tokenCoins = [], tokenSpendable = 0n;
+  if (!asset.native) {
+    const held = tokenBalanceOf(balanceAnswer, asset.tokenId);
+    if (!held) throw new Error(`Your ${asset.symbol} balance could not be read. Nothing was sent; try again later.`);
+    tokenSpendable = held.spendable;
+    const listed = parseTokenCoins(listing, asset.tokenId);
+    if (!listed.listed) throw new Error(`The ${asset.symbol} coin list is unavailable right now. Nothing was sent; try again later.`);
+    tokenCoins = listed.coins;
+    if (tokenCoins.length === 0 && tokenSpendable > 0n) throw new Error(`Your ${asset.symbol} coin list could not be read. Nothing was sent; try again later.`);
+  }
   // HF-4: which rules the node runs, then the expiry they allow.
   const ruleset = parseRulesetInfo(await client.rulesetInfo());
   const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip, ruleset);
   let candidates;
   if (inputs) {
-    const listed = new Map(coins.map(coin => [coin.nullifier, coin]));
+    const listed = new Map([...coins, ...tokenCoins].map(coin => [coin.nullifier, coin]));
     if (!inputs.every(input => listed.has(input))) throw new Error('The coins of the earlier send are no longer listed. Check its status before sending again.');
     candidates = inputs.map(input => listed.get(input));
   } else {
-    candidates = coins.filter(coin => !locked.has(coin.nullifier));
-    if (candidates.length === 0) throw new Error(locked.size ? 'Your coins are held by a pending send. Wait for it to be included or to expire.' : 'Insufficient NODUS balance.');
+    const free = list => list.filter(coin => !locked.has(coin.nullifier));
+    candidates = free(coins);
+    if (candidates.length === 0) throw new Error(locked.size ? 'Your coins are held by a pending send. Wait for it to be included or to expire.' : asset.native ? 'Insufficient NODUS balance.' : 'Not enough NODUS for the network fee.');
+    if (!asset.native) {
+      const tokenCandidates = free(tokenCoins);
+      if (tokenCandidates.reduce((sum, coin) => sum + BigInt(coin.amount), 0n) < units) throw new Error(locked.size && tokenSpendable >= units ? 'Your coins are held by a pending send. Wait for it to be included or to expire.' : `Not enough ${asset.symbol}.`);
+      candidates = [...candidates, ...tokenCandidates];
+    }
   }
-  const decoded = decodeBuilt(await client.buildAndSign({ to: recipient, amount: units.toString(), expiryHeight: expiryHeight.toString(), coins: candidates }));
-  // The signed envelope must be exactly what was requested, or nothing is shown.
-  if (decoded.recipient !== recipient || decoded.amount !== units || decoded.expiryHeight !== expiryHeight || decoded.chainId !== client.chainId) throw new Error('The signed transaction does not match your request. Nothing was sent.');
+  const request = { to: recipient, amount: units.toString(), expiryHeight: expiryHeight.toString(), coins: candidates };
+  const decoded = decodeBuilt(await (asset.native ? client.buildAndSign(request) : client.tokenBuildAndSign({ ...request, tokenId: asset.tokenId })));
+  // The signed envelope must be exactly what was requested — the TOKEN too
+  // (§6 item 1: prepare() refuses when decoded.token differs from the
+  // requested one) — or nothing is shown.
+  if (decoded.recipient !== recipient || decoded.amount !== units || decoded.tokenId !== asset.tokenId || decoded.expiryHeight !== expiryHeight || decoded.chainId !== client.chainId) throw new Error('The signed transaction does not match your request. Nothing was sent.');
+  if (asset.native && decoded.tokenChange !== 0n) throw new Error('The signed transaction does not match your request. Nothing was sent.');
   const allowed = new Set(candidates.map(coin => coin.nullifier));
   if (!decoded.inputs.every(input => allowed.has(input))) throw new Error('The signed transaction uses coins it may not use. Nothing was sent.');
+  const amountText = `${formatUnits(decoded.amount, asset.decimals)} ${asset.symbol}`;
   const review = [
     ['Network', 'Nodus'],
     ['From', from],
     ...(resolved ? nameReviewRows(resolved, { showOwner: false }) : []),
     ['To', decoded.recipient],
     resolved ? [...NAME_CHECK_ROW] : ['Address check', 'Nodus addresses have no checksum. Compare all 128 characters with your source.'],
-    ['Amount', nodusText(decoded.amount)],
+    ['Amount', amountText],
     ['Network fee', nodusText(decoded.fee)],
-    ['Change back to you', nodusText(decoded.change)],
+    // a token send names both changes: the token's and the NODUS one
+    ...(asset.native ? [['Change back to you', nodusText(decoded.change)]]
+      : [[`${asset.symbol} change back to you`, `${formatUnits(decoded.tokenChange, asset.decimals)} ${asset.symbol}`], ['NODUS change back to you', nodusText(decoded.change)]]),
     ['Valid until block', decoded.expiryHeight.toString()],
     ...expiryCapRows(tip, decoded.expiryHeight, ruleset),
     ['Chain ID', decoded.chainId],
     ['Fee note', 'The network fee may be charged even if the transfer fails.']
   ];
-  if (listing.truncated === true) review.push(['Coin list', 'Your coin list may be incomplete; the transfer uses only the coins listed.']);
+  if (listing.truncated === true || (!asset.native && parseTokenCoins(listing, asset.tokenId).truncated)) review.push(['Coin list', 'Your coin list may be incomplete; the transfer uses only the coins listed.']);
   let used = false;
   return {
-    to: decoded.recipient, recipientName: resolved?.name, amount: formatUnits(decoded.amount, DECIMALS), symbol: NODUS_ASSET.symbol, fee: nodusText(decoded.fee),
+    to: decoded.recipient, recipientName: resolved?.name, amount: formatUnits(decoded.amount, asset.decimals), symbol: asset.symbol, tokenId: asset.tokenId, fee: nodusText(decoded.fee),
     // Review-dialog timeout only (UI). The envelope's own validity is its
     // expiry height, checked by the chain.
     expiresAt: Date.now() + NODUS_REVIEW_MS,
@@ -1131,4 +1235,74 @@ export async function prepareClaim({ client, from } = {}) {
       return d.outputId;
     }
   };
+}
+
+// ── Testnet faucet: "Get testnet coins" (operator 2026-10-22: "Cüzdanın
+// içinde"; docs/plans/2026-10-22-testnet-faucet-design.md §6 item 11; the HTTP
+// API is the one of docs/plans/2026-10-22-mm-dex-build-plan.md, package C) ──
+// The wallet sends its OWN personal address to the faucet service on the
+// wallet site's own origin (EU-6 forwards /faucet/ to the faucet host; no
+// separate faucet site) and shows what it answers. The result arrives as
+// ordinary incoming coins. Vault names are not part of the first version
+// (operator "İlk sürümde yok"): the address is always this wallet's own.
+//   POST /faucet/claim  {"address":"<128 lowercase hex>"} ->
+//     {"claim_id":"<hex>","state":"planned|signed|submitted|confirmed|expired|
+//      unknown|refused|paused","kind":"full|start|none","message":"…"}
+//   GET  /faucet/claim/<claim_id> -> the same shape
+// Final states: confirmed, expired, refused, unknown, paused. Anything else is
+// in progress: the claim is polled a BOUNDED number of times; a claim still not
+// final after that is "pending — check again later", never "failed" (the
+// faucet may well pay it afterwards; it keeps its own journal). Display only:
+// nothing here decides a balance, a signature or an amount.
+export const NODUS_TESTNET_CHAIN_ID = 'a48d1a785500a1cdecd739ecd53ef0e95b1dc4a7a300f49176a7fa25ae176114';
+export const FAUCET_STATES = Object.freeze(['planned', 'signed', 'submitted', 'confirmed', 'expired', 'unknown', 'refused', 'paused']);
+export const FAUCET_FINAL = Object.freeze(['confirmed', 'expired', 'refused', 'unknown', 'paused']);
+export const FAUCET_KINDS = Object.freeze(['full', 'start', 'none']);
+export const FAUCET_MAX_POLLS = 20;
+export const FAUCET_POLL_MS = 3000;
+export const FAUCET_PENDING_TEXT = 'Pending — check again later. The faucet has not finished this claim yet; your coins arrive as soon as it does.';
+// The button is offered only while the connected module reports the TESTNET
+// chain (the id the module itself read from the node, client.chainId), for the
+// connected identity.
+export function faucetAvailable(client, address) {
+  return !!client && client.state === 'ready' && client.chainId === NODUS_TESTNET_CHAIN_ID && typeof address === 'string' && HEX128.test(address) && address === client.fingerprint;
+}
+// One faucet answer, checked: exactly the documented keys' shapes, nothing
+// else is trusted. -> { claimId, state, kind, message }.
+export function parseFaucetClaim(answer) {
+  const invalid = () => new Error('The faucet answered in a form this wallet does not understand.');
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw invalid();
+  const { claim_id: claimId, state, kind, message } = answer;
+  if (typeof claimId !== 'string' || !/^[0-9a-f]{8,128}$/.test(claimId) || !FAUCET_STATES.includes(state) || !FAUCET_KINDS.includes(kind) || typeof message !== 'string' || message.length > 500) throw invalid();
+  return { claimId, state, kind, message };
+}
+const faucetJson = async response => {
+  let answer;
+  try { answer = await response.json(); } catch { throw new Error('The faucet is not available right now.'); }
+  return parseFaucetClaim(answer);
+};
+// Asks the faucet for the open wallet's coins and follows the claim.
+// `fetcher` / `sleep` exist for tests. `onState(claim)`: told of every answer
+// read (a status line); `stopped()`: true once the wallet is closed — the
+// polling then ends quietly. Resolves { state, kind, message, claimId } of the
+// last answer, with state 'pending' (and FAUCET_PENDING_TEXT) when the poll
+// bound ran out first; rejects only when no usable first answer came.
+export async function claimTestnetCoins({ client, address, fetcher = (...args) => globalThis.fetch(...args), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), onState = () => {}, stopped = () => false } = {}) {
+  if (!faucetAvailable(client, address)) throw new Error('Testnet coins are available only on the Nodus testnet while the wallet is connected.');
+  let response;
+  try { response = await fetcher('/faucet/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ address }), cache: 'no-store', credentials: 'omit' }); }
+  catch { throw new Error('The faucet could not be reached. Try again later.'); }
+  let claim = await faucetJson(response);
+  onState(claim);
+  for (let poll = 0; !FAUCET_FINAL.includes(claim.state); poll++) {
+    if (poll >= FAUCET_MAX_POLLS) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
+    await sleep(FAUCET_POLL_MS);
+    if (stopped()) return { ...claim, state: 'pending', message: FAUCET_PENDING_TEXT };
+    try {
+      const next = await faucetJson(await fetcher(`/faucet/claim/${claim.claimId}`, { method: 'GET', cache: 'no-store', credentials: 'omit' }));
+      // the answer must be for THIS claim
+      if (next.claimId === claim.claimId) { claim = next; onState(claim); }
+    } catch { /* a poll that fails counts against the bound; the next one asks again */ }
+  }
+  return claim;
 }

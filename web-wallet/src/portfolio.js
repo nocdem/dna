@@ -34,7 +34,13 @@ export function chainBalances(chain, rows, observedAt = Date.now(), assets = ASS
       if (matches.length !== 1 || matches[0].error) throw new Error();
       const units = balanceUnits(matches[0].balance, asset.decimals);
       return [asset.key, { state: 'ready', units, observedAt }];
-    } catch { return [asset.key, { state: 'error', error: 'Balance unavailable' }]; }
+    } catch {
+      // `unavailable`: the row's reader says the asset itself cannot be used
+      // right now (a pinned token whose chain metadata does not equal the
+      // pin, src/adapters/nodus.js balances) — shown as such, not as a read
+      // failure; never a zero.
+      return [asset.key, { state: 'error', error: 'Balance unavailable', ...(matches.length === 1 && matches[0].unavailable === true ? { unavailable: true } : {}) }];
+    }
   }));
 }
 export function parsePrices(data, now = Date.now()) {

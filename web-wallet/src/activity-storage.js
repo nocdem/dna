@@ -251,8 +251,10 @@ export async function serializeActivity(id, rows, key) {
   // them (undefined) for every other network, whose saved form is unchanged.
   // `status` is written as savedForm (above); `savedStatus` is never written.
   const selected = keptActivity(rows).map(row => {
-    const { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, expiryHeight, fromHeight, inputs } = row;
-    return { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status: savedForm(row), expiryHeight, fromHeight, inputs };
+    const { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, expiryHeight, fromHeight, inputs, tokenId } = row;
+    // tokenId: a pinned token's NODUS send only (src/activity.js recordActivity);
+    // absent (dropped by JSON) for every native row and every other network.
+    return { chain, address, to, symbol, amount, hash, lastValidBlockHeight, expiration, nonce, createdAt, status: savedForm(row), expiryHeight, fromHeight, inputs, tokenId };
   });
   const bytes = encoder.encode(JSON.stringify(selected));
   try {
@@ -280,7 +282,19 @@ export async function parseActivity(text, id, addresses, key) {
     // owner is accepted — the row is inside this wallet's authenticated
     // envelope — and the app shows it only once the addresses match.
     const nodus = row?.chain === NODUS_ASSET.chain;
-    if (nodus && (!(addresses.nodus === undefined ? /^[0-9a-f]{128}$/.test(row.address) : row.address === addresses.nodus) || row.symbol !== NODUS_ASSET.symbol || !/^[0-9a-f]{128}$/.test(row.to) || !validNodusPending(row) || row.lastValidBlockHeight !== undefined || row.expiration !== undefined || row.nonce !== undefined)) throw new Error('Invalid saved activity.');
+    // tokenId (design docs/plans/2026-10-22-connect-native-tokens-design.md
+    // §6 item 7): a row without one is a native row (its symbol NODUS, as
+    // every row saved before tokens); one WITH one is a token send — 128 hex,
+    // not all zero (a native send never writes it), and a symbol of the
+    // wallet's own shape. Whether the token is still pinned is NOT judged
+    // here: such a row is kept either way (its coins stay held) and shown
+    // "unknown token" by src/activity.js activitySymbol, so one token row
+    // never costs the whole file. Any other network's row has none.
+    const tokenRow = nodus && row.tokenId !== undefined;
+    if (!nodus && row?.tokenId !== undefined) throw new Error('Invalid saved activity.');
+    if (nodus && (!(addresses.nodus === undefined ? /^[0-9a-f]{128}$/.test(row.address) : row.address === addresses.nodus)
+        || (tokenRow ? typeof row.tokenId !== 'string' || !/^[0-9a-f]{128}$/.test(row.tokenId) || row.tokenId === '0'.repeat(128) || typeof row.symbol !== 'string' || !/^[A-Za-z0-9]{1,12}$/.test(row.symbol) : row.symbol !== NODUS_ASSET.symbol)
+        || !/^[0-9a-f]{128}$/.test(row.to) || !validNodusPending(row) || row.lastValidBlockHeight !== undefined || row.expiration !== undefined || row.nonce !== undefined)) throw new Error('Invalid saved activity.');
     if (!row || !(nodus || Object.hasOwn(CHAINS, row.chain)) || (!nodus && row.address !== addresses[row.chain]) || !validHash(row.chain, row.hash) || typeof row.to !== 'string' || row.to.length > 128 || typeof row.symbol !== 'string' || row.symbol.length > 12 || typeof row.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(row.amount) || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt)) || !(row.nonce === undefined || Number.isSafeInteger(row.nonce)) || !['pending','included','unknown','confirmed','failed','expired','replaced','abandoned'].includes(row.status)) throw new Error('Invalid saved activity.');
     if (row.lastValidBlockHeight !== undefined && (!Number.isSafeInteger(row.lastValidBlockHeight) || row.lastValidBlockHeight < 0)) throw new Error('Invalid saved expiry.');
     if (row.expiration !== undefined && (!Number.isSafeInteger(row.expiration) || row.expiration < 0)) throw new Error('Invalid saved expiry.');
@@ -288,6 +302,6 @@ export async function parseActivity(text, id, addresses, key) {
     // 'expired' row locks its coins again until a fresh scan says so). The
     // status it was saved with stays in memory as `savedStatus`, for
     // serializeActivity's retention and re-save only (keptActivity / savedForm).
-    return { savedStatus: row.status, chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount, endpoint: nodus ? undefined : CHAINS[row.chain].endpoint, hash: row.hash, createdAt: row.createdAt, lastValidBlockHeight: row.lastValidBlockHeight, expiration: row.expiration, nonce: row.nonce, ...(nodus ? { expiryHeight: row.expiryHeight, fromHeight: row.fromHeight, inputs: [...row.inputs] } : {}), ...(row.status === 'abandoned' ? { status: 'abandoned', note: 'Marked abandoned by you; the network may still include it. Check the explorer.' } : { status: 'pending', note: 'Authenticated local record; verifying network status.' }) };
+    return { savedStatus: row.status, chain: row.chain, address: row.address, to: row.to, symbol: row.symbol, amount: row.amount, endpoint: nodus ? undefined : CHAINS[row.chain].endpoint, hash: row.hash, createdAt: row.createdAt, lastValidBlockHeight: row.lastValidBlockHeight, expiration: row.expiration, nonce: row.nonce, ...(nodus ? { expiryHeight: row.expiryHeight, fromHeight: row.fromHeight, inputs: [...row.inputs], ...(tokenRow ? { tokenId: row.tokenId } : {}) } : {}), ...(row.status === 'abandoned' ? { status: 'abandoned', note: 'Marked abandoned by you; the network may still include it. Check the explorer.' } : { status: 'pending', note: 'Authenticated local record; verifying network status.' }) };
   });
 }

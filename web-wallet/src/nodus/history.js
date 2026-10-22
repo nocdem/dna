@@ -88,9 +88,9 @@ export function parseAddrHistory(page, { limit = NODUS_HISTORY_LIMIT } = {}) {
 
 // Raw units -> decimal text with the NODUS decimals: "1.0", "0.00019388"
 // (the same form as ethers formatUnits, which the rest of the wallet shows).
-export function nodusUnits(units) {
-  const scale = 10n ** BigInt(DECIMALS);
-  const fraction = (units % scale).toString().padStart(DECIMALS, '0').replace(/0+$/, '');
+export function nodusUnits(units, decimals = DECIMALS) {
+  const scale = 10n ** BigInt(decimals);
+  const fraction = (units % scale).toString().padStart(decimals, '0').replace(/0+$/, '');
   return `${units / scale}.${fraction || '0'}`;
 }
 export const shortId = id => (id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id);
@@ -122,18 +122,25 @@ const EVM_RELEASE = 'Moved back from smart contracts';
 
 // One checked entry -> what the page shows. `names`: Map fingerprint ->
 // chain name ('' = none) from the wallet's name lookups; a name is shown
-// beside the short address, never instead of it.
+// beside the short address, never instead of it. `tokens`: the pinned tokens
+// of the send module (src/nodus/network.js nodusTokens: [{ tokenId, symbol,
+// decimals }]) — a row of a pinned token shows its symbol and decimals (design
+// docs/plans/2026-10-22-connect-native-tokens-design.md §6 item 8); a row of
+// any other token keeps the raw units and a short token id. A fee is always
+// NODUS, whatever token the row names.
 // -> { key, kind, title, sign ('+' | '−' | ''), amount (text, '' when the
 //    row moves nothing), detail (the line below), height, time (ms or null),
 //    wire, dir ('in' | 'out' | '') }
-export function nodusHistoryRow(entry, { names = new Map() } = {}) {
+export function nodusHistoryRow(entry, { names = new Map(), tokens = [] } = {}) {
   const [baseTitle, dir, peerWord] = KIND_TEXT[entry.kind];
   const title = entry.kind === 'release' && entry.wire !== '' ? EVM_RELEASE : baseTitle;
-  const native = entry.token === NATIVE;
+  const native = entry.token === NATIVE || entry.kind === 'fee';
   const units = entry.kind === 'fee' ? entry.fee : entry.amount;
+  const pinned = native ? undefined : tokens.find(t => t.tokenId === entry.token);
   const amount = units === 0n ? ''
     : native ? `${nodusUnits(units)} NODUS`
-    // No token registry in the wallet: the raw units and a short token id.
+    : pinned ? `${nodusUnits(units, pinned.decimals)} ${pinned.symbol}`
+    // Not a pinned token: the raw units and a short token id.
     : `${units} units of token ${shortId(entry.token)}`;
   const parts = [];
   if (entry.peer && peerWord) {

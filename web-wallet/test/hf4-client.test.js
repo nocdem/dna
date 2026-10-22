@@ -40,7 +40,7 @@ import { prepareTransfer, adapters } from '../src/wallet.js';
 import { expiryHeightFor, parseRulesetInfo, expiryCapRows, NODUS_REVIEW_MS, NODUS_MIN_BLOCK_MS, parseNameLookup, PROFILE_ADDRESS_FIELD } from '../src/adapters/nodus.js';
 import { contactNames, shortId } from '../src/connect/ui/text.js';
 import { emptyState, checkState, StorageError } from '../src/connect/store.js';
-import { createMockNodusModule, FINGERPRINT, RECIPIENT } from './nodus-mock-module.js';
+import { createMockNodusModule, FINGERPRINT, RECIPIENT, NODUS_NATIVE } from './nodus-mock-module.js';
 
 async function readyClient(prepare = () => {}) {
   const mock = createMockNodusModule();
@@ -50,7 +50,7 @@ async function readyClient(prepare = () => {}) {
   return { mock, client };
 }
 const walletFor = client => ({ addresses: { nodus: FINGERPRINT, ethereum: '0x' + '22'.repeat(20) }, nodusClient: client });
-const sendNodus = (client, to, amount = '1') => prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', to, amount });
+const sendNodus = (client, to, amount = '1') => prepareTransfer({ wallet: walletFor(client), chain: 'nodus', symbol: 'NODUS', asset: NODUS_NATIVE, to, amount });
 
 // ── the chain-name rule ──────────────────────────────────────────────────
 test('chain names: the JS byte rule equals the shared vector list', () => {
